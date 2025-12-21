@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+
+    <!-- Security -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self' ws: wss: http: https:;"
+    />
+
+    <!-- Performance -->
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0c0c0f" />
+
+    <!-- Preconnect for fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+    <!-- App Info -->
+    <title>GoAria - Luminous</title>
+    <meta name="description" content="High-performance download manager powered by Aria2" />
+    <meta name="author" content="superGekFordJ" />
+
+    <!-- Prevent drag and context menu on production -->
+    <style>
+      /* Prevent text selection during window drag */
+      html,
+      body {
+        -webkit-user-select: none;
+        user-select: none;
+        overflow: hidden;
+      }
+
+      /* Allow text selection in specific elements */
+      input,
+      textarea,
+      [contenteditable='true'] {
+        -webkit-user-select: text;
+        user-select: text;
+      }
+
+      /* Wails drag region support */
+      [style*='--wails-draggable:drag'] {
+        -webkit-app-region: drag;
+      }
+
+      [style*='--wails-draggable:no-drag'] {
+        -webkit-app-region: no-drag;
+      }
+
+      /* Smooth font rendering */
+      * {
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      /* Initial loading state */
+      #app:empty {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        background: #0c0c0f;
+      }
+
+      #app:empty::after {
+        content: '';
+        width: 32px;
+        height: 32px;
+        border: 2px solid rgba(6, 255, 213, 0.2);
+        border-top-color: #06ffd5;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

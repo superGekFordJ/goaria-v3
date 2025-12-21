@@ -1,0 +1,165 @@
+package rpc
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"path/filepath"
+	"time"
+)
+
+var (
+	currentURL    string
+	currentSecret string
+	httpClient    = &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:    10,
+			IdleConnTimeout: 30 * time.Second,
+		},
+	}
+)
+
+func Init(port, secret string) {
+	currentURL = fmt.Sprintf("http://127.0.0.1:%s/jsonrpc", port)
+	currentSecret = secret
+}
+
+type File struct {
+	Path string `json:"path"`
+}
+
+type Task struct {
+	GID             string `json:"gid"`
+	Status          string `json:"status"`
+	TotalLength     string `json:"totalLength"`
+	CompletedLength string `json:"completedLength"`
+	DownloadSpeed   string `json:"downloadSpeed"`
+	ErrorCode       string `json:"errorCode"`
+	ErrorMessage    string `json:"errorMessage"`
+	Dir             string `json:"dir"`
+	Files           []File `json:"files"`
+}
+
+func (t Task) GetTitle() string {
+	if len(t.Files) > 0 && t.Files[0].Path != "" {
+		return filepath.Base(t.Files[0].Path)
+	}
+	return t.GID
+}
+
+// --- 核心控制 ---
+
+func ForceSaveSession() {
+	_, _ = sendRequest("aria2.saveSession", nil)
+}
+
+// ChangeGlobalOption 强制修改运行中的配置
+func ChangeGlobalOption(options map[string]string) error {
+	_, err := sendRequest("aria2.changeGlobalOption", []any{options})
+	return err
+}
+
+func Remove(gid string) error {
+	// 1. 从活跃列表移除
+	_, _ = sendRequest("aria2.remove", []any{gid})
+	// 2. 从结果列表移除 (这是让 .aria2 文件消失的关键)
+	_, _ = sendRequest("aria2.removeDownloadResult", []any{gid})
+	ForceSaveSession()
+	return nil
+}
+
+func AddUri(url string, downloadDir string) error {
+	params := []any{
+		[]string{url},
+		map[string]string{"dir": downloadDir},
+	}
+	_, err := sendRequest("aria2.addUri", params)
+	if err == nil {
+		ForceSaveSession()
+	}
+	return err
+}
+
+func Pause(gid string) error {
+	_, err := sendRequest("aria2.pause", []any{gid})
+	ForceSaveSession()
+	return err
+}
+func Unpause(gid string) error {
+	_, err := sendRequest("aria2.unpause", []any{gid})
+	ForceSaveSession()
+	return err
+}
+
+// --- 数据获取 ---
+
+func TellActive() ([]Task, error) { return getTasks("aria2.tellActive", nil) }
+func TellWaiting(offset, num int) ([]Task, error) {
+	return getTasks("aria2.tellWaiting", []any{offset, num})
+}
+func TellStopped(offset, num int) ([]Task, error) {
+	return getTasks("aria2.tellStopped", []any{offset, num})
+}
+
+func getTasks(method string, extraParams []any) ([]Task, error) {
+	keys := []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "errorCode", "errorMessage", "files", "dir"}
+	params := []any{}
+	if extraParams != nil {
+		params = append(params, extraParams...)
+	}
+	params = append(params, keys)
+	resp, err := sendRequest(method, params)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Result []Task `json:"result"`
+	}
+	json.Unmarshal(resp, &result)
+	return result.Result, nil
+}
+
+func GetGlobalStat() (string, error) {
+	resp, err := sendRequest("aria2.getGlobalStat", nil)
+	if err != nil {
+		return "0", err
+	}
+	var res struct {
+		Result struct {
+			Speed string `json:"downloadSpeed"`
+		} `json:"result" `
+	}
+	json.Unmarshal(resp, &res)
+	return res.Result.Speed, nil
+}
+
+func sendRequest(method string, params []any) ([]byte, error) {
+	finalParams := params
+	if currentSecret != "" {
+		finalParams = append([]any{"token:" + currentSecret}, params...)
+	}
+	payload := map[string]any{"jsonrpc": "2.0", "id": "goaria", "method": method, "params": finalParams}
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(payload)
+	resp, err := httpClient.Post(currentURL, "application/json", &buf)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var resBuf bytes.Buffer
+	resBuf.ReadFrom(resp.Body)
+	return resBuf.Bytes(), nil
+}
+
+func WaitForReady(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := GetGlobalStat(); err == nil {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("Aria2 无响应")
+}

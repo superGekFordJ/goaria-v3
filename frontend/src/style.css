@@ -1,0 +1,1085 @@
+@import 'tailwindcss';
+
+/* ============================================
+   🎨 LUMINOUS UTILITY - Cyber-Minimalism Theme
+   ============================================ */
+
+/* === Font Faces (local) === */
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('./assets/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('./assets/fonts/JetBrainsMono-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'Sarasa UI SC';
+  src: url('./assets/fonts/SarasaUiSC-Regular.subset.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+}
+
+/* === Tailwind Theme Extensions === */
+@theme {
+  /* Core App Colors - Cyber Deep Slate */
+  --color-app-bg: var(--app-bg);
+  --color-app-text: var(--app-text);
+  --color-card-bg: var(--card-bg);
+  --color-card-border: var(--card-border);
+
+  /* Glass Panel Colors */
+  --color-glass-bg: var(--glass-bg);
+  --color-glass-border: var(--glass-border);
+  --color-glass-hover: var(--glass-hover);
+
+  /* Sidebar Muted Colors */
+  --color-sidebar-bg: var(--sidebar-bg);
+  --color-sidebar-text: var(--sidebar-text);
+  --color-sidebar-hover: var(--sidebar-hover);
+
+  /* Neon Accent Colors */
+  --color-neon-cyan: #06ffd5;
+  --color-neon-green: #22ff88;
+  --color-neon-blue: #3b82f6;
+  --color-neon-purple: #a855f7;
+
+  /* Status Indicators */
+  --color-status-active: #22ff88;
+  --color-status-paused: #fbbf24;
+  --color-status-complete: #06ffd5;
+  --color-status-error: #ef4444;
+
+  /* Typography */
+  --font-family-ui: 'Sarasa UI SC', 'Inter', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-family-mono: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
+
+  /* Squircle Radii */
+  --radius-squircle-sm: 1rem;
+  --radius-squircle-md: 1.5rem;
+  --radius-squircle-lg: 2rem;
+  --radius-squircle-xl: 2.5rem;
+  --radius-squircle-2xl: 3rem;
+}
+
+/* === Theme Variables === */
+:root {
+  /* Base Typography - Always applied */
+  font-family: var(--font-family-ui);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+/* === Dark Theme (Default) - Obsidian Glass === */
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* Deep Slate Base - Not pure black */
+  --app-bg: #0c0c0f;
+  --app-text: #e4e4e7;
+  --app-text-muted: rgba(228, 228, 231, 0.5);
+  --app-text-subtle: rgba(228, 228, 231, 0.3);
+
+  /* Card Colors - Solid enough for readability */
+  --card-bg: rgba(24, 24, 30, 0.85);
+  --card-border: rgba(255, 255, 255, 0.08);
+  --card-hover: rgba(255, 255, 255, 0.06);
+
+  /* Glass Effects - Dark mode: More opaque for readability */
+  --glass-bg: rgba(20, 20, 26, 0.9);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-border-highlight: rgba(255, 255, 255, 0.12);
+  --glass-hover: rgba(255, 255, 255, 0.04);
+  --glass-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.4);
+
+  /* Sidebar - Fused with background */
+  --sidebar-bg: rgba(12, 12, 15, 0.6);
+  --sidebar-text: rgba(228, 228, 231, 0.5);
+  --sidebar-hover: rgba(255, 255, 255, 0.05);
+  --sidebar-active: rgba(255, 255, 255, 0.08);
+
+  /* Input Elements */
+  --input-bg: rgba(0, 0, 0, 0.3);
+  --input-border: rgba(255, 255, 255, 0.08);
+  --input-focus: rgba(6, 255, 213, 0.3);
+  --input-placeholder: rgba(255, 255, 255, 0.2);
+
+  /* Button Colors */
+  --btn-glass-bg: rgba(255, 255, 255, 0.06);
+  --btn-glass-border: rgba(255, 255, 255, 0.08);
+  --btn-glass-hover: rgba(255, 255, 255, 0.1);
+
+  /* Neon Colors - Theme aware */
+  --neon-primary: #06ffd5;
+  --neon-secondary: #22ff88;
+  --neon-glow: rgba(6, 255, 213, 0.4);
+
+  /* Status Colors */
+  --status-active: #22ff88;
+  --status-paused: #fbbf24;
+  --status-complete: #06ffd5;
+  --status-error: #ef4444;
+
+  /* Overlay */
+  --overlay-bg: rgba(0, 0, 0, 0.7);
+
+  /* Scrollbar */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.1);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
+}
+
+/* === Light Theme === */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    color-scheme: light;
+
+    /* Light Background */
+    --app-bg: #f5f5f7;
+    --app-text: #1a1a1c;
+    --app-text-muted: rgba(26, 26, 28, 0.6);
+    --app-text-subtle: rgba(26, 26, 28, 0.4);
+
+    /* Card Colors */
+    --card-bg: rgba(255, 255, 255, 0.85);
+    --card-border: rgba(0, 0, 0, 0.06);
+    --card-hover: rgba(0, 0, 0, 0.04);
+
+    /* Glass Effects - Lighter */
+    --glass-bg: rgba(255, 255, 255, 0.9);
+    --glass-border: rgba(0, 0, 0, 0.08);
+    --glass-hover: rgba(0, 0, 0, 0.03);
+
+    /* Sidebar */
+    --sidebar-bg: rgba(245, 245, 248, 0.7);
+    --sidebar-text: rgba(26, 26, 28, 0.5);
+    --sidebar-hover: rgba(0, 0, 0, 0.04);
+    --sidebar-active: rgba(0, 0, 0, 0.06);
+
+    /* Input Elements */
+    --input-bg: rgba(0, 0, 0, 0.04);
+    --input-border: rgba(0, 0, 0, 0.1);
+    --input-focus: rgba(6, 200, 170, 0.3);
+    --input-placeholder: rgba(0, 0, 0, 0.3);
+
+    /* Button Colors */
+    --btn-glass-bg: rgba(0, 0, 0, 0.04);
+    --btn-glass-border: rgba(0, 0, 0, 0.08);
+    --btn-glass-hover: rgba(0, 0, 0, 0.08);
+
+    /* Neon Colors - Adjusted for light mode (less vibrant) */
+    --neon-primary: #00b8a0;
+    --neon-secondary: #10b981;
+    --neon-glow: rgba(0, 184, 160, 0.3);
+
+    /* Status Colors - Slightly adjusted for visibility */
+    --status-active: #10b981;
+    --status-paused: #f59e0b;
+    --status-complete: #00b8a0;
+    --status-error: #ef4444;
+
+    /* Overlay */
+    --overlay-bg: rgba(0, 0, 0, 0.4);
+
+    /* Scrollbar */
+    --scrollbar-thumb: rgba(0, 0, 0, 0.15);
+    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.25);
+  }
+}
+
+/* Force dark theme class */
+[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+/* Force light theme class - Frosted Ceramic */
+[data-theme='light'] {
+  color-scheme: light;
+
+  /* Ceramic White Base - Slightly warmer */
+  --app-bg: #f8f8fa;
+  --app-text: #1f1f23;
+  --app-text-muted: rgba(31, 31, 35, 0.7);
+  --app-text-subtle: rgba(31, 31, 35, 0.5);
+
+  /* Card - More opaque for text readability */
+  --card-bg: rgba(255, 255, 255, 0.92);
+  --card-border: rgba(0, 0, 0, 0.08);
+  --card-hover: rgba(0, 0, 0, 0.04);
+
+  /* Glass - Frosted Ceramic: True glass effect with blur */
+  --glass-bg: rgba(255, 255, 255, 0.6);
+  --glass-border: rgba(0, 0, 0, 0.06);
+  --glass-border-highlight: rgba(255, 255, 255, 0.8);
+  --glass-hover: rgba(0, 0, 0, 0.02);
+  --glass-shadow: 0 8px 32px -8px rgba(0, 0, 0, 0.12);
+
+  /* Sidebar - Subtle separation */
+  --sidebar-bg: rgba(255, 255, 255, 0.7);
+  --sidebar-text: rgba(31, 31, 35, 0.6);
+  --sidebar-hover: rgba(0, 0, 0, 0.05);
+  --sidebar-active: rgba(13, 148, 136, 0.1);
+
+  /* Input Elements - Better contrast */
+  --input-bg: rgba(0, 0, 0, 0.04);
+  --input-border: rgba(0, 0, 0, 0.12);
+  --input-focus: rgba(13, 148, 136, 0.3);
+  --input-placeholder: rgba(0, 0, 0, 0.4);
+
+  /* Button Colors */
+  --btn-glass-bg: rgba(0, 0, 0, 0.05);
+  --btn-glass-border: rgba(0, 0, 0, 0.1);
+  --btn-glass-hover: rgba(0, 0, 0, 0.08);
+
+  /* Gem Colors - Darker for better contrast on white */
+  --neon-primary: #0f766e; /* Teal-700 */
+  --neon-secondary: #047857; /* Emerald-700 */
+  --neon-glow: rgba(15, 118, 110, 0.15);
+
+  /* Status Colors - Darker gem tones for readability */
+  --status-active: #047857; /* Emerald-700 */
+  --status-paused: #b45309; /* Amber-700 */
+  --status-complete: #0f766e; /* Teal-700 */
+  --status-error: #b91c1c; /* Red-700 */
+
+  /* Overlay */
+  --overlay-bg: rgba(0, 0, 0, 0.4);
+
+  /* Scrollbar */
+  --scrollbar-thumb: rgba(0, 0, 0, 0.15);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.25);
+}
+
+/* === Base Resets === */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background-color: var(--app-bg);
+  color: var(--app-text);
+  overflow: hidden;
+  /* Prevent text selection during drag */
+  user-select: none;
+}
+
+#app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* === Custom Frameless Window Drag Region === */
+.drag-region {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* === Glass Panel Effects - Micro-Glass Aesthetic === */
+.glass-panel {
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  border-top-color: var(--glass-border-highlight);
+  border-left-color: var(--glass-border-highlight);
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-border-highlight),
+    var(--glass-shadow);
+}
+
+/* Floating panel with gap from edges */
+.glass-panel-floating {
+  background: var(--glass-bg);
+  backdrop-filter: blur(24px) saturate(200%);
+  -webkit-backdrop-filter: blur(24px) saturate(200%);
+  border: 1px solid var(--glass-border);
+  border-top-color: var(--glass-border-highlight);
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-border-highlight),
+    0 0 0 1px rgba(0, 0, 0, 0.05),
+    var(--glass-shadow);
+}
+
+.glass-panel-subtle {
+  background: var(--btn-glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+}
+
+/* === Neon Glow Effects === */
+.neon-glow-cyan {
+  box-shadow:
+    0 0 10px var(--neon-glow),
+    0 0 20px color-mix(in srgb, var(--neon-primary) 30%, transparent),
+    0 0 40px color-mix(in srgb, var(--neon-primary) 15%, transparent);
+}
+
+.neon-glow-green {
+  box-shadow:
+    0 0 10px color-mix(in srgb, var(--neon-secondary) 40%, transparent),
+    0 0 20px color-mix(in srgb, var(--neon-secondary) 20%, transparent),
+    0 0 40px color-mix(in srgb, var(--neon-secondary) 10%, transparent);
+}
+
+.neon-glow-blue {
+  box-shadow:
+    0 0 10px rgba(59, 130, 246, 0.4),
+    0 0 20px rgba(59, 130, 246, 0.2),
+    0 0 40px rgba(59, 130, 246, 0.1);
+}
+
+/* === Neon Progress Bar === */
+.progress-bar-container {
+  position: relative;
+  height: 6px;
+  background: var(--btn-glass-bg);
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--neon-primary), var(--neon-secondary));
+  border-radius: 9999px;
+  position: relative;
+  transition: width 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow:
+    0 0 12px var(--neon-glow),
+    0 0 24px color-mix(in srgb, var(--neon-secondary) 30%, transparent);
+}
+
+.progress-bar-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
+  animation: progress-shimmer 2s infinite;
+}
+
+/* === Data Typography === */
+.font-mono-data {
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.text-neon {
+  color: var(--neon-primary);
+  text-shadow: 0 0 10px var(--neon-glow);
+}
+
+.text-neon-green {
+  color: var(--neon-secondary);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--neon-secondary) 50%, transparent);
+}
+
+/* === Status Indicator Dots === */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  position: relative;
+}
+
+.status-dot::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  animation: status-pulse 2s ease-in-out infinite;
+}
+
+.status-active {
+  background: var(--status-active);
+  box-shadow: 0 0 10px var(--status-active);
+}
+
+.status-active::after {
+  background: color-mix(in srgb, var(--status-active) 30%, transparent);
+}
+
+.status-paused {
+  background: var(--status-paused);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--status-paused) 50%, transparent);
+}
+
+.status-complete {
+  background: var(--status-complete);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--status-complete) 50%, transparent);
+}
+
+.status-error {
+  background: var(--status-error);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--status-error) 50%, transparent);
+}
+
+.status-waiting {
+  background: var(--app-text-subtle);
+}
+
+/* === Animations === */
+
+/* Spring-physics inspired easing */
+@keyframes spring-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.9) translateY(10px);
+  }
+  50% {
+    transform: scale(1.02) translateY(-2px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes spring-out {
+  0% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.95) translateY(10px);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes zoom-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes progress-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0;
+    transform: scale(1.5);
+  }
+}
+
+@keyframes glow-pulse {
+  0%,
+  100% {
+    filter: brightness(1);
+    box-shadow: 0 0 10px currentColor;
+  }
+  50% {
+    filter: brightness(1.2);
+    box-shadow: 0 0 20px currentColor;
+  }
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+/* Animation utility classes */
+.animate-spring-in {
+  animation: spring-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.animate-spring-out {
+  animation: spring-out 0.3s ease-out both;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out both;
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-zoom-in {
+  animation: zoom-in 0.2s ease-out both;
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite;
+}
+
+.animate-glow-pulse {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+/* Staggered animation delays */
+.delay-75 {
+  animation-delay: 75ms;
+}
+.delay-100 {
+  animation-delay: 100ms;
+}
+.delay-150 {
+  animation-delay: 150ms;
+}
+.delay-200 {
+  animation-delay: 200ms;
+}
+.delay-300 {
+  animation-delay: 300ms;
+}
+
+/* === Scrollbar Styling === */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 10px;
+  transition: background 0.2s;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* === Input & Form Styling === */
+input,
+textarea,
+select {
+  font-family: inherit;
+  color: inherit;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--input-placeholder);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--neon-primary) 40%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--neon-primary) 10%, transparent);
+}
+
+/* Custom checkbox styling */
+input[type='checkbox'] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  cursor: pointer;
+  position: relative;
+  transition: all 0.2s ease;
+}
+
+input[type='checkbox']:checked {
+  background: var(--neon-primary);
+  border-color: var(--neon-primary);
+}
+
+input[type='checkbox']:checked::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 3px;
+  width: 5px;
+  height: 10px;
+  border: solid var(--app-bg);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+/* Custom select arrow - theme aware */
+select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
+}
+
+@media (prefers-color-scheme: light) {
+  select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23555' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  }
+}
+
+/* === Button Base Styles === */
+.btn-glass {
+  background: var(--btn-glass-bg);
+  border: 1px solid var(--btn-glass-border);
+  backdrop-filter: blur(8px);
+  transition: all 0.2s ease;
+}
+
+.btn-glass:hover {
+  background: var(--btn-glass-hover);
+  border-color: var(--glass-border);
+  transform: translateY(-1px);
+}
+
+.btn-glass:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.btn-neon {
+  background: linear-gradient(135deg, var(--neon-primary), var(--neon-secondary));
+  color: var(--app-bg);
+  font-weight: 700;
+  border: none;
+  box-shadow:
+    0 0 20px var(--neon-glow),
+    0 4px 15px rgba(0, 0, 0, 0.2);
+  transition: all 0.2s ease;
+}
+
+.btn-neon:hover {
+  box-shadow:
+    0 0 30px var(--neon-glow),
+    0 6px 20px rgba(0, 0, 0, 0.3);
+  transform: translateY(-2px);
+  filter: brightness(1.1);
+}
+
+.btn-neon:active {
+  transform: translateY(0) scale(0.98);
+}
+
+/* === Hover Reveal Pattern === */
+.hover-reveal-container .hover-reveal-target {
+  opacity: 0;
+  transform: translateX(10px);
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.hover-reveal-container:hover .hover-reveal-target {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* === Task Card Specific === */
+.task-card {
+  position: relative;
+  overflow: hidden;
+  transition: box-shadow 0.5s ease, border-color 0.3s ease;
+}
+
+.task-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: transparent;
+  opacity: 0;
+  transition: opacity 0.3s ease, background 0.3s ease;
+  pointer-events: none;
+}
+
+/* Default hover - neutral */
+.task-card:hover::before {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, transparent 50%);
+  opacity: 1;
+}
+
+/* Status-specific hover glows - use !important to override default */
+.task-card-active::before {
+  background: linear-gradient(135deg, rgba(6, 255, 213, 0.05) 0%, transparent 50%) !important;
+}
+
+.task-card-paused::before {
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.05) 0%, transparent 50%) !important;
+}
+
+.task-card-error::before {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.05) 0%, transparent 50%) !important;
+}
+
+.task-card-complete::before {
+  background: linear-gradient(135deg, rgba(6, 255, 213, 0.03) 0%, transparent 50%) !important;
+}
+
+/* === Status-Based Card Glow (Light is Status) === */
+
+/* Active/Downloading - Cyan/Emerald breathing glow */
+.task-card-active {
+  border-color: rgba(6, 255, 213, 0.2);
+  box-shadow:
+    0 0 20px rgba(6, 255, 213, 0.08),
+    0 0 40px rgba(34, 255, 136, 0.05),
+    var(--glass-shadow);
+  animation: glow-breathe-active 3s ease-in-out infinite;
+}
+
+@keyframes glow-breathe-active {
+  0%, 100% {
+    box-shadow:
+      0 0 15px rgba(6, 255, 213, 0.08),
+      0 0 30px rgba(34, 255, 136, 0.04),
+      var(--glass-shadow);
+  }
+  50% {
+    box-shadow:
+      0 0 25px rgba(6, 255, 213, 0.12),
+      0 0 50px rgba(34, 255, 136, 0.08),
+      var(--glass-shadow);
+  }
+}
+
+/* Paused - Amber dormant glow */
+.task-card-paused {
+  border-color: rgba(251, 191, 36, 0.15);
+  box-shadow:
+    0 0 12px rgba(251, 191, 36, 0.06),
+    var(--glass-shadow);
+  filter: brightness(0.95);
+}
+
+/* Error - Rose warning glow */
+.task-card-error {
+  border-color: rgba(239, 68, 68, 0.2);
+  box-shadow:
+    0 0 15px rgba(239, 68, 68, 0.1),
+    0 0 30px rgba(239, 68, 68, 0.05),
+    var(--glass-shadow);
+  animation: glow-pulse-error 2s ease-in-out infinite;
+}
+
+@keyframes glow-pulse-error {
+  0%, 100% {
+    box-shadow:
+      0 0 12px rgba(239, 68, 68, 0.08),
+      0 0 25px rgba(239, 68, 68, 0.04),
+      var(--glass-shadow);
+  }
+  50% {
+    box-shadow:
+      0 0 18px rgba(239, 68, 68, 0.15),
+      0 0 35px rgba(239, 68, 68, 0.08),
+      var(--glass-shadow);
+  }
+}
+
+/* Complete - Subtle teal accent */
+.task-card-complete {
+  border-color: rgba(6, 255, 213, 0.1);
+}
+
+/* === Energy Flow Progress Bar === */
+.progress-bar-energy {
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-bar-energy::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.4),
+    transparent
+  );
+  animation: energy-flow 1.5s ease-in-out infinite;
+}
+
+@keyframes energy-flow {
+  0% {
+    left: -50%;
+  }
+  100% {
+    left: 150%;
+  }
+}
+
+/* Light mode adjustments for status glows */
+[data-theme='light'] .task-card-active {
+  border-color: rgba(5, 150, 105, 0.25);
+  box-shadow:
+    0 0 20px rgba(5, 150, 105, 0.08),
+    0 0 40px rgba(13, 148, 136, 0.04),
+    var(--glass-shadow);
+  animation: glow-breathe-active-light 3s ease-in-out infinite;
+}
+
+@keyframes glow-breathe-active-light {
+  0%, 100% {
+    box-shadow:
+      0 0 15px rgba(5, 150, 105, 0.06),
+      0 0 30px rgba(13, 148, 136, 0.03),
+      var(--glass-shadow);
+  }
+  50% {
+    box-shadow:
+      0 0 25px rgba(5, 150, 105, 0.1),
+      0 0 50px rgba(13, 148, 136, 0.06),
+      var(--glass-shadow);
+  }
+}
+
+[data-theme='light'] .task-card-paused {
+  border-color: rgba(217, 119, 6, 0.2);
+  box-shadow:
+    0 0 15px rgba(217, 119, 6, 0.05),
+    var(--glass-shadow);
+}
+
+[data-theme='light'] .task-card-error {
+  border-color: rgba(220, 38, 38, 0.2);
+  box-shadow:
+    0 0 15px rgba(220, 38, 38, 0.08),
+    var(--glass-shadow);
+}
+
+/* === Noise Texture Overlay (Subtle) === */
+.noise-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0.015;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+}
+
+/* === Virtual Scroller Styles === */
+.vue-recycle-scroller {
+  height: 100%;
+}
+
+.vue-recycle-scroller__item-wrapper {
+  overflow: visible;
+}
+
+.vue-recycle-scroller__item-view {
+  padding: 8px 0;
+}
+
+/* === Selection Highlight === */
+::selection {
+  background: rgba(6, 255, 213, 0.3);
+  color: inherit;
+}
+
+/* === Focus Visible (Keyboard Navigation) === */
+:focus-visible {
+  outline: 2px solid rgba(6, 255, 213, 0.5);
+  outline-offset: 2px;
+}
+
+/* === Window Controls Area (macOS-style) === */
+.window-controls {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+}
+
+.window-control-btn {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.window-control-btn:hover {
+  filter: brightness(1.2);
+}
+
+.window-control-close {
+  background: #ff5f57;
+}
+
+.window-control-minimize {
+  background: #febc2e;
+}
+
+.window-control-maximize {
+  background: #28c840;
+}
+
+/* === Modal Backdrop === */
+.modal-backdrop {
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* === Tooltip Styles === */
+.tooltip {
+  position: relative;
+}
+
+.tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%) translateY(-4px);
+  padding: 6px 12px;
+  background: rgba(0, 0, 0, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.2s ease;
+  pointer-events: none;
+}
+
+.tooltip:hover::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(-8px);
+}
+
+/* === Loading Skeleton === */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 25%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.04) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-loading 1.5s infinite;
+  border-radius: 8px;
+}
+
+@keyframes skeleton-loading {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* === Divider Line === */
+.divider-glow {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(6, 255, 213, 0.3), transparent);
+}
+
+/* === Empty State === */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+  color: rgba(228, 228, 231, 0.4);
+}
+
+.empty-state-icon {
+  width: 80px;
+  height: 80px;
+  margin-bottom: 24px;
+  opacity: 0.2;
+}

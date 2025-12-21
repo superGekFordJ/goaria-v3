@@ -1,0 +1,89 @@
+version: '3'
+
+includes:
+  common: ./build/Taskfile.yml
+  windows: ./build/windows/Taskfile.yml
+  darwin: ./build/darwin/Taskfile.yml
+  linux: ./build/linux/Taskfile.yml
+  ios: ./build/ios/Taskfile.yml
+  android: ./build/android/Taskfile.yml
+
+vars:
+  APP_NAME: "goaria-v3"
+  BIN_DIR: "bin"
+  VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
+
+tasks:
+  build:
+    summary: Builds the application
+    cmds:
+      - task: "{{OS}}:build"
+
+  package:
+    summary: Packages a production build of the application
+    cmds:
+      - task: "{{OS}}:package"
+
+  run:
+    summary: Runs the application
+    cmds:
+      - task: "{{OS}}:run"
+
+  dev:
+    summary: Runs the application in development mode
+    cmds:
+      - wails3 dev -config ./build/config.yml -port {{.VITE_PORT}}
+
+  # Convenience: frontend dev only (no Go dev server)
+  dev:frontend:
+    summary: Runs only the frontend dev server (uses VITE_PORT)
+    cmds:
+      - task: common:dev:frontend
+
+  # Code quality
+  lint:go:
+    summary: Run gofmt + go vet
+    cmds:
+      - gofmt -w .
+      - go vet ./...
+
+  lint:frontend:
+    summary: Run frontend lint (pnpm run lint)
+    dir: frontend
+    cmds:
+      - pnpm run lint
+
+  test:go:
+    summary: Run Go tests
+    cmds:
+      - go test ./...
+
+  # Dependency helpers
+  deps:update:frontend:
+    summary: Update frontend deps (respecting lockfile)
+    dir: frontend
+    cmds:
+      - pnpm update --latest
+
+  deps:update:go:
+    summary: Update Go deps (tidy + check)
+    cmds:
+      - go mod tidy
+      - go list -m all > /dev/null
+
+  # Clean helpers
+  clean:dist:
+    summary: Remove frontend build artifacts
+    cmds:
+      - powershell -Command "Remove-Item -Recurse -Force frontend/dist -ErrorAction SilentlyContinue"
+
+  clean:all:
+    summary: Remove frontend dist and binaries (non-destructive to cache)
+    cmds:
+      - powershell -Command "Remove-Item -Recurse -Force frontend/dist -ErrorAction SilentlyContinue"
+      - powershell -Command "Remove-Item -Recurse -Force bin -ErrorAction SilentlyContinue"
+
+  setup:docker:
+    summary: Builds Docker image for cross-compilation (~800MB download)
+    cmds:
+      - task: common:setup:docker

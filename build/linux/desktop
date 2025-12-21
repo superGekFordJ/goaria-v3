@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=My Product
+Comment=A goaria-v3 application
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/goaria-v3.exe %u
+Terminal=false
+Type=Application
+Icon=goaria-v3.exe
+Categories=Utility;
+StartupWMClass=goaria-v3.exe
+
+ 

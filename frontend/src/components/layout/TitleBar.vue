@@ -1,0 +1,135 @@
+<script setup lang="ts">
+  import { ref, onMounted } from 'vue'
+  import { Minus, Square, X, PanelBottomClose } from 'lucide-vue-next'
+  import { Window, Application } from '@wailsio/runtime'
+
+  const isMaximized = ref(false)
+
+  // Check initial maximized state
+  onMounted(async () => {
+    try {
+      isMaximized.value = await Window.IsMaximised()
+    } catch {
+      // Ignore errors during development
+    }
+  })
+
+  const handleMinimize = () => {
+    Window.Minimise()
+  }
+
+  const handleMaximize = async () => {
+    Window.ToggleMaximise()
+    // Update state after toggle
+    setTimeout(async () => {
+      try {
+        isMaximized.value = await Window.IsMaximised()
+      } catch {
+        isMaximized.value = !isMaximized.value
+      }
+    }, 100)
+  }
+
+  const handleClose = () => {
+    Application.Quit()
+  }
+
+  // Minimize to system tray (hide window)
+  const handleHideToTray = () => {
+    Window.Hide()
+  }
+</script>
+
+<template>
+  <header
+    class="h-10 flex items-center justify-between px-4 bg-transparent relative z-50 shrink-0 select-none"
+    style="--wails-draggable: drag"
+  >
+    <!-- Left: App branding (draggable area) -->
+    <div class="flex items-center gap-2 pointer-events-none">
+      <div class="flex items-center gap-1.5 opacity-50">
+        <div
+          class="w-2 h-2 rounded-full bg-[var(--neon-primary)] shadow-[0_0_6px_var(--neon-primary)]"
+        ></div>
+        <span class="text-[10px] font-bold tracking-widest uppercase text-[var(--app-text-muted)]">
+          GoAria
+        </span>
+      </div>
+    </div>
+
+    <!-- Center: Subtle drag indicator -->
+    <div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
+      <div class="w-10 h-1 rounded-full bg-[var(--btn-glass-bg)]"></div>
+    </div>
+
+    <!-- Right: Window Controls (non-draggable) -->
+    <div class="flex items-center gap-0.5" style="--wails-draggable: no-drag">
+      <!-- Minimize to Tray Button -->
+      <button
+        class="group w-9 h-9 flex items-center justify-center rounded-lg transition-all duration-200 hover:bg-[var(--neon-primary)]/10 active:bg-[var(--neon-primary)]/20"
+        title="最小化到托盘"
+        @click="handleHideToTray"
+      >
+        <PanelBottomClose
+          :size="14"
+          class="text-[var(--app-text-subtle)] group-hover:text-[var(--neon-primary)] transition-colors duration-200"
+        />
+      </button>
+
+      <!-- Minimize Button -->
+      <button
+        class="group w-9 h-9 flex items-center justify-center rounded-lg transition-all duration-200 hover:bg-[var(--btn-glass-hover)] active:bg-[var(--sidebar-active)]"
+        title="最小化"
+        @click="handleMinimize"
+      >
+        <Minus
+          :size="14"
+          class="text-[var(--app-text-subtle)] group-hover:text-[var(--app-text)]/70 transition-colors duration-200"
+        />
+      </button>
+
+      <!-- Maximize/Restore Button -->
+      <button
+        class="group w-9 h-9 flex items-center justify-center rounded-lg transition-all duration-200 hover:bg-[var(--btn-glass-hover)] active:bg-[var(--sidebar-active)]"
+        :title="isMaximized ? '还原' : '最大化'"
+        @click="handleMaximize"
+      >
+        <Square
+          :size="11"
+          :stroke-width="2"
+          :class="[
+            'transition-colors duration-200',
+            isMaximized
+              ? 'text-[var(--neon-primary)]/50 group-hover:text-[var(--neon-primary)]'
+              : 'text-[var(--app-text-subtle)] group-hover:text-[var(--app-text)]/70',
+          ]"
+        />
+      </button>
+
+      <!-- Close Button -->
+      <button
+        class="group w-9 h-9 flex items-center justify-center rounded-lg transition-all duration-200 hover:bg-[var(--status-error)]/20 active:bg-[var(--status-error)]/30"
+        title="关闭"
+        @click="handleClose"
+      >
+        <X
+          :size="14"
+          class="text-[var(--app-text-subtle)] group-hover:text-[var(--status-error)] transition-colors duration-200"
+        />
+      </button>
+    </div>
+  </header>
+</template>
+
+<style scoped>
+  /* Ensure buttons don't interfere with drag */
+  button {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+
+  /* Hover effects animation */
+  button:active {
+    transform: scale(0.95);
+  }
+</style>

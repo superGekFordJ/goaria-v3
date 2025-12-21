@@ -1,0 +1,30 @@
+# --- Wails 编译产物 ---
+./bin/
+frontend/dist/
+frontend/wailsjs/
+frontend/bindings/
+.task/
+# --- Go 相关 ---
+/vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# --- Node/Frontend 相关 ---
+frontend/node_modules/
+frontend/.pnpm-debug.log
+.DS_Store
+
+# --- Aria2 运行时产生的文件 (不建议进入版本库) ---
+aria2c.exe
+aria2.session
+config.json
+*.aria2
+/downloads/
+
+# --- IDE 相关 ---
+.vscode/
+.idea/
+/docs/
