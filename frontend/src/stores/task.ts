@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import {
   GetTasks,
+  GetTaskMetadata,
   AddUri,
   PauseTask,
   ResumeTask,
@@ -19,11 +20,19 @@ export const useTaskStore = defineStore('task', () => {
     stopped: [],
   })
 
-  const pollingTimer = ref<ReturnType<typeof setInterval> | null>(null)
+  const pollingTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+  const pollingEnabled = ref(false)
+  const pollingContextEnabled = ref(false)
+  const isFetching = ref(false)
   const isWindowVisible = ref(true)
-  const currentInterval = ref(1000)
+  const preferredInterval = ref(1000)
   const consecutiveErrors = ref(0)
   const MAX_CONSECUTIVE_ERRORS = 3
+
+  let pollingGeneration = 0
+
+  let metadataInFlight = false
+  const metadataPending = new Set<string>()
 
   // Getters
   const activeTasks = computed(() => tasks.value.active || [])
@@ -36,6 +45,7 @@ export const useTaskStore = defineStore('task', () => {
 
   /**
    * Fetch task list from Aria2 via Go backend
+   * Implements two-stage refresh: first get tasks, then recover missing metadata
    */
   async function fetchTasks() {
     try {
@@ -44,11 +54,61 @@ export const useTaskStore = defineStore('task', () => {
       consecutiveErrors.value = 0
 
       // Ensure we always have arrays even if backend returns empty/null
-      tasks.value = {
+      const newTasks = {
         active: res.active || [],
         waiting: res.waiting || [],
         stopped: res.stopped || [],
       }
+
+      // Stage 2: Identify tasks with missing file paths and fetch metadata
+      const tasksNeedingMetadata: string[] = []
+      for (const t of [...newTasks.active, ...newTasks.waiting]) {
+        if (!t.files?.[0]?.path) {
+          tasksNeedingMetadata.push(t.gid)
+        }
+      }
+
+      // Fetch missing metadata asynchronously (don't block initial render)
+      if (tasksNeedingMetadata.length > 0) {
+        for (const gid of tasksNeedingMetadata) {
+          metadataPending.add(gid)
+        }
+        if (!metadataInFlight) {
+          metadataInFlight = true
+          const batch = Array.from(metadataPending)
+          metadataPending.clear()
+          GetTaskMetadata(batch)
+            .then(metadata => {
+              if (!metadata) return
+
+              let updated = false
+              for (const gid of Object.keys(metadata)) {
+                const meta = metadata[gid]
+                if (!meta?.files?.[0]?.path) continue
+
+                for (const list of [tasks.value.active, tasks.value.waiting]) {
+                  const idx = list.findIndex(t => t.gid === gid)
+                  if (idx !== -1) {
+                    list[idx] = { ...list[idx], ...meta }
+                    updated = true
+                  }
+                }
+              }
+
+              if (updated) {
+                tasks.value = { ...tasks.value }
+              }
+            })
+            .catch(err => {
+              console.warn('Failed to fetch task metadata:', err)
+            })
+            .finally(() => {
+              metadataInFlight = false
+            })
+        }
+      }
+
+      tasks.value = newTasks
 
       // Update tray icon based on task states
       const hasActive = tasks.value.active.length > 0
@@ -74,11 +134,46 @@ export const useTaskStore = defineStore('task', () => {
    * @param interval Polling interval in milliseconds
    */
   function startPolling(interval: number = 1000) {
-    if (pollingTimer.value) return
+    preferredInterval.value = interval
+    pollingContextEnabled.value = true
 
-    currentInterval.value = interval
-    fetchTasks()
-    pollingTimer.value = setInterval(fetchTasks, interval)
+    if (!isWindowVisible.value) {
+      startPollingInternal(3000)
+      return
+    }
+    startPollingInternal(interval)
+  }
+
+  function startPollingInternal(interval: number) {
+    pollingEnabled.value = true
+    const gen = ++pollingGeneration
+
+    if (pollingTimer.value) {
+      clearTimeout(pollingTimer.value)
+      pollingTimer.value = null
+    }
+
+    const run = async () => {
+      if (!pollingEnabled.value || pollingGeneration !== gen) return
+      if (isFetching.value) {
+        if (pollingEnabled.value && pollingGeneration === gen) {
+          pollingTimer.value = setTimeout(run, interval)
+        }
+        return
+      }
+
+      isFetching.value = true
+      try {
+        await fetchTasks()
+      } finally {
+        isFetching.value = false
+      }
+
+      if (!pollingEnabled.value || pollingGeneration !== gen) return
+      pollingTimer.value = setTimeout(run, interval)
+    }
+
+    void run()
   }
 
   /**
@@ -87,31 +182,36 @@ export const useTaskStore = defineStore('task', () => {
    * Visible: resume normal polling
    */
   function setWindowVisibility(visible: boolean) {
+    if (isWindowVisible.value === visible) return
     isWindowVisible.value = visible
     
     // Clear existing timer first
-    if (pollingTimer.value) {
-      clearInterval(pollingTimer.value)
-      pollingTimer.value = null
-    }
+    stopPolling(false)
+
+    // If task list isn't active (e.g. Settings panel), never start polling
+    if (!pollingContextEnabled.value) return
 
     if (visible) {
       // Resume normal fast polling (default 1000ms or last set interval)
-      const interval = currentInterval.value < 1000 ? 1000 : currentInterval.value
-      startPolling(interval)
+      const interval = preferredInterval.value < 1000 ? 1000 : preferredInterval.value
+      startPollingInternal(interval)
     } else {
       // Slow background polling (3000ms) for tray icon updates
-      fetchTasks()
-      pollingTimer.value = setInterval(fetchTasks, 3000)
+      startPollingInternal(3000)
     }
   }
 
   /**
    * Stop task polling
    */
-  function stopPolling() {
+  function stopPolling(disableContext: boolean = true) {
+    pollingEnabled.value = false
+    pollingGeneration++
+    if (disableContext) {
+      pollingContextEnabled.value = false
+    }
     if (pollingTimer.value) {
-      clearInterval(pollingTimer.value)
+      clearTimeout(pollingTimer.value)
       pollingTimer.value = null
     }
   }

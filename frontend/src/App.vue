@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { onMounted, onUnmounted, ref } from 'vue'
+  import { onMounted, onUnmounted, ref, watch } from 'vue'
   import Sidebar from './components/layout/Sidebar.vue'
   import TitleBar from './components/layout/TitleBar.vue'
   import TaskList from './components/tasks/TaskList.vue'
@@ -15,9 +15,35 @@
   const isReady = ref(false)
   const unsubs: Array<() => void> = []
 
+  const getWindowTransparency = (): string => {
+    const s = configStore.settings as unknown as { window_transparency?: string }
+    return s.window_transparency || 'none'
+  }
+
+  const applyWindowTransparency = () => {
+    document.documentElement.setAttribute('data-window-transparency', getWindowTransparency())
+  }
+
+  let stopWindowTransparencyWatch: (() => void) | null = null
+
   onMounted(async () => {
+    // Initialize theme and skin from persisted state
+    uiStore.initTheme()
+
     // Global initialization: fetch config from Go backend
     await configStore.fetchConfig()
+
+    // Apply window transparency state to CSS (required for acrylic/mica to be visible)
+    applyWindowTransparency()
+
+    // Reactively apply on change (settings panel saves async)
+    stopWindowTransparencyWatch = watch(
+      () => getWindowTransparency(),
+      () => {
+        applyWindowTransparency()
+      },
+    )
+
     // Small delay for smooth entrance animation
     setTimeout(() => {
       isReady.value = true
@@ -33,13 +59,17 @@
     unsubs.push(Events.On('common:WindowShow', () => taskStore.setWindowVisibility(true)))
     unsubs.push(Events.On('common:WindowUnMinimise', () => taskStore.setWindowVisibility(true)))
     unsubs.push(Events.On('common:WindowRestore', () => taskStore.setWindowVisibility(true)))
-    unsubs.push(Events.On('common:WindowFocus', () => taskStore.setWindowVisibility(true)))
   })
 
   onUnmounted(() => {
     document.removeEventListener('visibilitychange', handleVisibilityChange)
     // Clean up Wails event listeners
     unsubs.forEach(unsub => unsub())
+
+    if (stopWindowTransparencyWatch) {
+      stopWindowTransparencyWatch()
+      stopWindowTransparencyWatch = null
+    }
   })
 
   // Pause polling when window is hidden to save CPU and reduce log growth
@@ -69,7 +99,7 @@
         <div
           :class="[
             'flex-1 flex flex-col min-h-0 glass-panel rounded-[var(--radius-squircle-xl)] overflow-hidden',
-            'transition-all duration-700 ease-out',
+            'transition-opacity transition-transform duration-700 ease-out',
             isReady ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4',
           ]"
         >

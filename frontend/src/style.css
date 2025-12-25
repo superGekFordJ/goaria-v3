@@ -133,6 +133,16 @@
   /* Scrollbar */
   --scrollbar-thumb: rgba(255, 255, 255, 0.1);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
+
+  /* Modal/Dialog */
+  --modal-text: #e4e4e7;
+  --modal-text-muted: rgba(228, 228, 231, 0.6);
+  --modal-text-subtle: rgba(228, 228, 231, 0.4);
+
+  /* Keyboard Shortcuts */
+  --kbd-bg: rgba(255, 255, 255, 0.05);
+  --kbd-border: rgba(255, 255, 255, 0.1);
+  --kbd-text: rgba(255, 255, 255, 0.3);
 }
 
 /* === Light Theme === */
@@ -190,6 +200,16 @@
     /* Scrollbar */
     --scrollbar-thumb: rgba(0, 0, 0, 0.15);
     --scrollbar-thumb-hover: rgba(0, 0, 0, 0.25);
+
+    /* Modal/Dialog */
+    --modal-text: #1a1a1c;
+    --modal-text-muted: rgba(26, 26, 28, 0.7);
+    --modal-text-subtle: rgba(26, 26, 28, 0.5);
+
+    /* Keyboard Shortcuts */
+    --kbd-bg: rgba(0, 0, 0, 0.06);
+    --kbd-border: rgba(0, 0, 0, 0.12);
+    --kbd-text: rgba(0, 0, 0, 0.4);
   }
 }
 
@@ -254,6 +274,75 @@
   /* Scrollbar */
   --scrollbar-thumb: rgba(0, 0, 0, 0.15);
   --scrollbar-thumb-hover: rgba(0, 0, 0, 0.25);
+
+  /* Modal/Dialog */
+  --modal-text: #1f1f23;
+  --modal-text-muted: rgba(31, 31, 35, 0.7);
+  --modal-text-subtle: rgba(31, 31, 35, 0.5);
+
+  /* Keyboard Shortcuts */
+  --kbd-bg: rgba(0, 0, 0, 0.05);
+  --kbd-border: rgba(0, 0, 0, 0.1);
+  --kbd-text: rgba(0, 0, 0, 0.4);
+}
+
+/* === Skin: Obsidian (Default Dark) === */
+/* Obsidian skin uses the default dark theme values - no overrides needed */
+[data-skin='obsidian'] {
+  /* Accent color intensity */
+  --skin-accent-intensity: 1;
+  --skin-glass-opacity: 0.9;
+  --skin-border-radius-scale: 1;
+}
+
+/* === Skin: Ceramic (Warm Light) === */
+[data-skin='ceramic'] {
+  /* Slightly warmer accent colors */
+  --skin-accent-intensity: 0.85;
+  --skin-glass-opacity: 0.85;
+  --skin-border-radius-scale: 1.1;
+}
+
+/* Ceramic skin in dark mode - warmer tones */
+[data-skin='ceramic'][data-theme='dark'],
+[data-skin='ceramic']:not([data-theme='light']) {
+  --neon-primary: #0dd9b5;
+  --neon-secondary: #1ed96e;
+  --neon-glow: rgba(13, 217, 181, 0.35);
+  --glass-bg: rgba(22, 22, 28, 0.88);
+}
+
+/* Ceramic skin in light mode - softer, warmer */
+[data-skin='ceramic'][data-theme='light'] {
+  --neon-primary: #0d9488;
+  --neon-secondary: #059669;
+  --neon-glow: rgba(13, 148, 136, 0.12);
+  --glass-bg: rgba(255, 255, 255, 0.75);
+  --app-bg: #fafaf9;
+}
+
+/* === Window Transparency (Acrylic / Mica / Tabbed) === */
+/* When enabled, the window background must be transparent so the OS backdrop is visible. */
+:root[data-window-transparency='acrylic'],
+:root[data-window-transparency='mica'],
+:root[data-window-transparency='tabbed'] {
+  --app-bg: transparent;
+}
+
+:root[data-window-transparency='acrylic'][data-theme='dark'],
+:root[data-window-transparency='mica'][data-theme='dark'],
+:root[data-window-transparency='tabbed'][data-theme='dark'] {
+  --glass-bg: rgba(20, 20, 26, 0.55);
+  --card-bg: rgba(24, 24, 30, 0.6);
+  --sidebar-bg: rgba(12, 12, 15, 0.35);
+}
+
+:root[data-window-transparency='acrylic'][data-theme='light'],
+:root[data-window-transparency='mica'][data-theme='light'],
+:root[data-window-transparency='tabbed'][data-theme='light'] {
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --card-bg: rgba(255, 255, 255, 0.6);
+  --sidebar-bg: rgba(248, 248, 250, 0.35);
 }
 
 /* === Base Resets === */
@@ -305,6 +394,13 @@ body {
     var(--glass-shadow);
 }
 
+:root[data-window-transparency='acrylic'] .glass-panel,
+:root[data-window-transparency='mica'] .glass-panel,
+:root[data-window-transparency='tabbed'] .glass-panel {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 /* Floating panel with gap from edges */
 .glass-panel-floating {
   background: var(--glass-bg);
@@ -318,11 +414,25 @@ body {
     var(--glass-shadow);
 }
 
+:root[data-window-transparency='acrylic'] .glass-panel-floating,
+:root[data-window-transparency='mica'] .glass-panel-floating,
+:root[data-window-transparency='tabbed'] .glass-panel-floating {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .glass-panel-subtle {
   background: var(--btn-glass-bg);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--glass-border);
+}
+
+:root[data-window-transparency='acrylic'] .glass-panel-subtle,
+:root[data-window-transparency='mica'] .glass-panel-subtle,
+:root[data-window-transparency='tabbed'] .glass-panel-subtle {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 /* === Neon Glow Effects === */
@@ -943,6 +1053,12 @@ select {
   z-index: 9999;
   opacity: 0.015;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+}
+
+:root[data-window-transparency='acrylic'] .noise-overlay,
+:root[data-window-transparency='mica'] .noise-overlay,
+:root[data-window-transparency='tabbed'] .noise-overlay {
+  display: none;
 }
 
 /* === Virtual Scroller Styles === */

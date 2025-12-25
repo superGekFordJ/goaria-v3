@@ -42,8 +42,8 @@
     <div
       :class="[
         'flex gap-3 p-2 rounded-[var(--radius-squircle-lg)] transition-all duration-300',
-        'bg-black/20 backdrop-blur-md',
-        'border border-white/[0.06]',
+        'bg-[var(--input-bg)] backdrop-blur-md',
+        'border border-[var(--input-border)]',
         inputFocused ? 'input-container-focused' : '',
       ]"
     >
@@ -52,7 +52,7 @@
         <!-- Icon -->
         <div
           class="absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none transition-colors duration-300"
-          :class="inputFocused ? 'text-[#06ffd5]/60' : 'text-white/20'"
+          :class="inputFocused ? 'text-[var(--neon-primary)]/60' : 'text-[var(--app-text-subtle)]'"
         >
           <Link :size="16" />
         </div>
@@ -62,7 +62,7 @@
           v-model="urlInput"
           type="text"
           placeholder="粘贴下载链接 (HTTP / HTTPS / 磁力链接)..."
-          class="w-full bg-transparent pl-11 pr-4 py-3 text-sm text-white/90 font-medium focus:outline-none placeholder:text-white/20 placeholder:font-normal select-text"
+          class="w-full bg-transparent pl-11 pr-4 py-3 text-sm text-[var(--app-text)] font-medium focus:outline-none placeholder:text-[var(--input-placeholder)] placeholder:font-normal select-text"
           @focus="inputFocused = true"
           @blur="inputFocused = false"
           @keyup.enter="handleAdd"
@@ -74,7 +74,7 @@
           :class="[
             'absolute bottom-0 left-4 right-4 h-px transition-all duration-500',
             inputFocused
-              ? 'bg-gradient-to-r from-transparent via-[#06ffd5]/40 to-transparent'
+              ? 'bg-gradient-to-r from-transparent via-[var(--neon-primary)]/40 to-transparent'
               : 'bg-transparent',
           ]"
         ></div>
@@ -88,7 +88,7 @@
           'disabled:opacity-30 disabled:cursor-not-allowed disabled:transform-none',
           urlInput.trim() && !isAdding
             ? 'btn-neon'
-            : 'bg-white/5 text-white/30 border border-white/5',
+            : 'bg-[var(--btn-glass-bg)] text-[var(--app-text-subtle)] border border-[var(--glass-border)]',
         ]"
         @click="handleAdd"
       >
@@ -100,14 +100,14 @@
 
     <!-- Quick Tips (subtle) -->
     <div class="flex items-center gap-4 mt-3 px-2">
-      <div class="flex items-center gap-2 text-[10px] text-white/20">
-        <kbd class="px-1.5 py-0.5 rounded bg-white/5 border border-white/10 font-mono text-[9px]">
+      <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
+        <kbd class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]">
           Enter
         </kbd>
         <span>快速添加</span>
       </div>
-      <div class="flex items-center gap-2 text-[10px] text-white/20">
-        <kbd class="px-1.5 py-0.5 rounded bg-white/5 border border-white/10 font-mono text-[9px]">
+      <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
+        <kbd class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]">
           Ctrl+V
         </kbd>
         <span>粘贴链接</span>
@@ -120,18 +120,18 @@
   /* Focus container glow effect - uses pseudo element for smooth rounded glow */
   .input-container-focused {
     position: relative;
-    border-color: rgba(6, 255, 213, 0.25) !important;
+    border-color: color-mix(in srgb, var(--neon-primary) 25%, transparent) !important;
     box-shadow:
-      0 0 0 1px rgba(6, 255, 213, 0.15),
-      0 0 20px rgba(6, 255, 213, 0.08),
-      inset 0 0 20px rgba(6, 255, 213, 0.03);
+      0 0 0 1px color-mix(in srgb, var(--neon-primary) 15%, transparent),
+      0 0 20px color-mix(in srgb, var(--neon-primary) 8%, transparent),
+      inset 0 0 20px color-mix(in srgb, var(--neon-primary) 3%, transparent);
   }
 
   /* Input autofill styling override */
   input:-webkit-autofill,
   input:-webkit-autofill:hover,
   input:-webkit-autofill:focus {
-    -webkit-text-fill-color: rgba(255, 255, 255, 0.9);
+    -webkit-text-fill-color: var(--app-text);
     -webkit-box-shadow: 0 0 0px 1000px transparent inset;
     transition: background-color 5000s ease-in-out 0s;
   }

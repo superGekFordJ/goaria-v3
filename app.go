@@ -2,6 +2,7 @@ package main
 
 import (
 	"goaria-v3/internal/config"
+	"goaria-v3/internal/history"
 	"goaria-v3/internal/process"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/tray"
@@ -77,8 +78,54 @@ func (a *App) GetTasks() map[string][]rpc.Task {
 	var stopped []rpc.Task
 	if config.Current.ShowHistory {
 		stopped, _ = rpc.TellStopped(0, 50)
+
+		// Track completed tasks for history persistence
+		for _, t := range stopped {
+			if t.Status == "complete" && len(t.Files) > 0 && t.Files[0].Path != "" {
+				history.Add(history.HistoryEntry{
+					GID:             t.GID,
+					Title:           filepath.Base(t.Files[0].Path),
+					Dir:             t.Dir,
+					Path:            t.Files[0].Path,
+					TotalLength:     t.TotalLength,
+					CompletedLength: t.CompletedLength,
+				})
+			}
+		}
+
+		// Merge history entries with stopped tasks (dedup by GID)
+		gidSet := make(map[string]bool)
+		for _, t := range stopped {
+			gidSet[t.GID] = true
+		}
+
+		for _, h := range history.GetAll() {
+			if !gidSet[h.GID] {
+				// Convert history entry to Task for UI display
+				stopped = append(stopped, rpc.Task{
+					GID:             h.GID,
+					Status:          "complete",
+					TotalLength:     h.TotalLength,
+					CompletedLength: h.CompletedLength,
+					Dir:             h.Dir,
+					Files:           []rpc.File{{Path: h.Path}},
+				})
+			}
+		}
 	}
 	return map[string][]rpc.Task{"active": active, "waiting": waiting, "stopped": stopped}
+}
+
+// GetTaskMetadata fetches detailed metadata for tasks with missing file paths
+func (a *App) GetTaskMetadata(gids []string) map[string]rpc.Task {
+	result := make(map[string]rpc.Task)
+	for _, gid := range gids {
+		task, err := rpc.TellStatus(gid)
+		if err == nil && task != nil {
+			result[gid] = *task
+		}
+	}
+	return result
 }
 
 // PauseTask pauses a download task
@@ -110,7 +157,10 @@ func (a *App) RemoveTask(gid string, deleteFile bool) {
 	// 2. Remove from Aria2 memory and result list
 	rpc.Remove(gid)
 
-	// 3. Physical cleanup
+	// 3. Remove from history
+	history.Remove(gid)
+
+	// 4. Physical cleanup
 	if targetPath != "" {
 		go func(p string) {
 			// Give Aria2 enough time to release file handle

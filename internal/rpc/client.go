@@ -95,6 +95,21 @@ func Unpause(gid string) error {
 
 // --- 数据获取 ---
 
+// TellStatus gets detailed status for a specific task by GID
+func TellStatus(gid string) (*Task, error) {
+	keys := []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "errorCode", "errorMessage", "files", "dir"}
+	params := []any{gid, keys}
+	resp, err := sendRequest("aria2.tellStatus", params)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Result Task `json:"result"`
+	}
+	json.Unmarshal(resp, &result)
+	return &result.Result, nil
+}
+
 func TellActive() ([]Task, error) { return getTasks("aria2.tellActive", nil) }
 func TellWaiting(offset, num int) ([]Task, error) {
 	return getTasks("aria2.tellWaiting", []any{offset, num})

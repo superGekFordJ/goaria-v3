@@ -3,12 +3,14 @@ package main
 import (
 	"embed"
 	"goaria-v3/internal/config"
+	"goaria-v3/internal/history"
 	"goaria-v3/internal/process"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/tray"
 	"io/fs"
 	"log"
 	"net/http"
+	"runtime"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -21,8 +23,9 @@ var assets embed.FS
 var appIcon []byte
 
 func main() {
-	// Initialize config and Aria2
+	// Initialize config, history, and Aria2
 	config.Load()
+	history.Load()
 	rpc.Init(config.Current.RPCPort, config.Current.RPCSecret)
 	_ = process.StartAria2(config.Current)
 
@@ -56,6 +59,50 @@ func main() {
 		process.StopAria2()
 	})
 
+	// Determine window background/backdrop configuration
+	backgroundType := application.BackgroundTypeSolid
+	backgroundColour := application.NewRGBA(12, 12, 15, 255)
+	backdropType := application.Auto
+	macBackdrop := application.MacBackdropNormal
+
+	switch config.Current.WindowTransparency {
+	case "acrylic":
+		backgroundType = application.BackgroundTypeTranslucent
+		backgroundColour = application.NewRGBA(0, 0, 0, 0)
+		backdropType = application.Acrylic
+		macBackdrop = application.MacBackdropTranslucent
+	case "mica":
+		backgroundType = application.BackgroundTypeTranslucent
+		backgroundColour = application.NewRGBA(0, 0, 0, 0)
+		backdropType = application.Mica
+		macBackdrop = application.MacBackdropTranslucent
+	case "tabbed":
+		backgroundType = application.BackgroundTypeTranslucent
+		backgroundColour = application.NewRGBA(0, 0, 0, 0)
+		backdropType = application.Tabbed
+		macBackdrop = application.MacBackdropTranslucent
+	default:
+		backgroundType = application.BackgroundTypeSolid
+		backgroundColour = application.NewRGBA(12, 12, 15, 255)
+		backdropType = application.Auto
+		macBackdrop = application.MacBackdropNormal
+	}
+
+	// Linux currently only supports solid background
+	if runtime.GOOS == "linux" {
+		backgroundType = application.BackgroundTypeSolid
+		backgroundColour = application.NewRGBA(12, 12, 15, 255)
+		backdropType = application.Auto
+		macBackdrop = application.MacBackdropNormal
+	}
+
+	log.Printf(
+		"window_transparency=%s backgroundType=%v windowsBackdropType=%v",
+		config.Current.WindowTransparency,
+		backgroundType,
+		backdropType,
+	)
+
 	// Create the main window using Window manager
 	mainWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "main",
@@ -65,10 +112,15 @@ func main() {
 		MinWidth:         800,
 		MinHeight:        500,
 		Frameless:        true,
-		BackgroundColour: application.NewRGBA(12, 12, 15, 255),
+		BackgroundType:   backgroundType,
+		BackgroundColour: backgroundColour,
 		Hidden:           false,
+		Mac: application.MacWindow{
+			Backdrop: macBackdrop,
+		},
 		Windows: application.WindowsWindow{
 			DisableFramelessWindowDecorations: false,
+			BackdropType:                      backdropType,
 		},
 	})
 

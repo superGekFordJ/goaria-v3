@@ -1,6 +1,7 @@
 <script setup lang="ts">
   import { ref, onMounted, onUnmounted } from 'vue'
   import { useConfigStore } from '../../stores/config'
+  import { useUIStore, type ThemeMode, type SkinId } from '../../stores/ui'
   import {
     Settings as SettingsIcon,
     Shield,
@@ -11,9 +12,15 @@
     Zap,
     CheckCircle,
     Loader2,
+    Sun,
+    Moon,
+    Monitor,
+    Palette,
+    Layers,
   } from 'lucide-vue-next'
 
   const configStore = useConfigStore()
+  const uiStore = useUIStore()
 
   // Local form state - decoupled from store to prevent reactivity issues
   const formData = ref({
@@ -24,6 +31,7 @@
     max_concurrent_downloads: '',
     user_agent: '',
     show_history: false,
+    window_transparency: 'none',
   })
 
   // Save status for UI feedback only
@@ -43,6 +51,7 @@
       max_concurrent_downloads: String(s.max_concurrent_downloads || ''),
       user_agent: s.user_agent || '',
       show_history: Boolean(s.show_history),
+      window_transparency: (s as any).window_transparency || 'none',
     }
     // Mark as initialized after a tick to avoid triggering save on mount
     setTimeout(() => {
@@ -139,7 +148,10 @@
               <CheckCircle :size="12" class="text-[var(--status-active)]" />
               <span class="text-[10px] font-mono-data text-[var(--status-active)]">已保存</span>
             </div>
-            <div v-else class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]">
+            <div
+              v-else
+              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]"
+            >
               <div class="w-1.5 h-1.5 rounded-full bg-[var(--app-text-subtle)]"></div>
               <span class="text-[10px] font-mono-data text-[var(--app-text-subtle)]">自动保存</span>
             </div>
@@ -152,7 +164,9 @@
         <!-- Download Directory Card -->
         <div class="glass-panel rounded-[var(--radius-squircle-lg)] p-6">
           <div class="flex items-center gap-3 mb-4">
-            <div class="w-8 h-8 rounded-xl bg-[var(--neon-primary)]/10 flex items-center justify-center">
+            <div
+              class="w-8 h-8 rounded-xl bg-[var(--neon-primary)]/10 flex items-center justify-center"
+            >
               <FolderOpen :size="16" class="text-[var(--neon-primary)]" />
             </div>
             <div>
@@ -259,7 +273,13 @@
                 </select>
                 <!-- Custom dropdown arrow -->
                 <div class="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
-                  <svg width="10" height="6" viewBox="0 0 10 6" fill="none" class="text-[var(--app-text-subtle)]">
+                  <svg
+                    width="10"
+                    height="6"
+                    viewBox="0 0 10 6"
+                    fill="none"
+                    class="text-[var(--app-text-subtle)]"
+                  >
                     <path
                       d="M1 1L5 5L9 1"
                       stroke="currentColor"
@@ -312,6 +332,138 @@
           ></textarea>
         </div>
 
+        <!-- Theme & Appearance Card -->
+        <div class="glass-panel rounded-[var(--radius-squircle-lg)] p-6">
+          <div class="flex items-center gap-3 mb-6">
+            <div class="w-8 h-8 rounded-xl bg-indigo-500/10 flex items-center justify-center">
+              <Palette :size="16" class="text-indigo-400" />
+            </div>
+            <div>
+              <h3 class="text-sm font-semibold text-[var(--app-text)]/80">外观设置</h3>
+              <p class="text-[10px] text-[var(--app-text-subtle)]">主题模式与皮肤风格</p>
+            </div>
+          </div>
+
+          <!-- Theme Mode Selector -->
+          <div class="mb-6">
+            <label
+              class="text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-3 block"
+            >
+              主题模式
+            </label>
+            <div class="grid grid-cols-3 gap-2">
+              <button
+                v-for="mode in ['system', 'light', 'dark'] as ThemeMode[]"
+                :key="mode"
+                :class="[
+                  'flex flex-col items-center gap-2 p-4 rounded-xl border transition-all duration-200',
+                  uiStore.themeMode === mode
+                    ? 'bg-[var(--neon-primary)]/10 border-[var(--neon-primary)]/30 text-[var(--neon-primary)]'
+                    : 'bg-[var(--btn-glass-bg)] border-[var(--glass-border)] text-[var(--app-text-muted)] hover:border-[var(--neon-primary)]/20',
+                ]"
+                @click="uiStore.setTheme(mode)"
+              >
+                <Monitor v-if="mode === 'system'" :size="20" />
+                <Sun v-else-if="mode === 'light'" :size="20" />
+                <Moon v-else :size="20" />
+                <span class="text-[10px] font-semibold">
+                  {{ mode === 'system' ? '跟随系统' : mode === 'light' ? '亮色' : '暗色' }}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Skin Selector -->
+          <div>
+            <label
+              class="text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-3 block"
+            >
+              皮肤风格
+            </label>
+            <div class="grid grid-cols-2 gap-3">
+              <button
+                v-for="skin in ['obsidian', 'ceramic'] as SkinId[]"
+                :key="skin"
+                :class="[
+                  'flex items-center gap-3 p-4 rounded-xl border transition-all duration-200',
+                  uiStore.skinId === skin
+                    ? 'bg-[var(--neon-primary)]/10 border-[var(--neon-primary)]/30'
+                    : 'bg-[var(--btn-glass-bg)] border-[var(--glass-border)] hover:border-[var(--neon-primary)]/20',
+                ]"
+                @click="uiStore.setSkin(skin)"
+              >
+                <div
+                  :class="[
+                    'w-8 h-8 rounded-lg',
+                    skin === 'obsidian'
+                      ? 'bg-gradient-to-br from-gray-800 to-gray-900'
+                      : 'bg-gradient-to-br from-gray-100 to-white border border-gray-200',
+                  ]"
+                ></div>
+                <div class="text-left">
+                  <span
+                    :class="[
+                      'text-xs font-semibold block',
+                      uiStore.skinId === skin
+                        ? 'text-[var(--neon-primary)]'
+                        : 'text-[var(--app-text)]/80',
+                    ]"
+                  >
+                    {{ skin === 'obsidian' ? 'Obsidian' : 'Ceramic' }}
+                  </span>
+                  <span class="text-[9px] text-[var(--app-text-subtle)]">
+                    {{ skin === 'obsidian' ? '深邃黑曜石' : '温润陶瓷白' }}
+                  </span>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Window Transparency Card (Windows 11 only) -->
+        <div class="glass-panel rounded-[var(--radius-squircle-lg)] p-6">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-8 h-8 rounded-xl bg-cyan-500/10 flex items-center justify-center">
+              <Layers :size="16" class="text-cyan-400" />
+            </div>
+            <div>
+              <h3 class="text-sm font-semibold text-[var(--app-text)]/80">窗口透明效果</h3>
+              <p class="text-[10px] text-[var(--app-text-subtle)]">仅 Windows 11 支持，更改后需重启应用</p>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <button
+              v-for="opt in [
+                { value: 'none', label: '关闭', desc: '标准窗口' },
+                { value: 'acrylic', label: '亚克力', desc: 'Acrylic 模糊' },
+                { value: 'mica', label: '云母', desc: 'Mica 材质' },
+                { value: 'tabbed', label: 'Tabbed', desc: '标签页风格' },
+              ]"
+              :key="opt.value"
+              :class="[
+                'flex flex-col items-start p-4 rounded-xl border transition-all duration-200',
+                formData.window_transparency === opt.value
+                  ? 'bg-[var(--neon-primary)]/10 border-[var(--neon-primary)]/30'
+                  : 'bg-[var(--btn-glass-bg)] border-[var(--glass-border)] hover:border-[var(--neon-primary)]/20',
+              ]"
+              @click="formData.window_transparency = opt.value; triggerSave()"
+            >
+              <span
+                :class="[
+                  'text-xs font-semibold',
+                  formData.window_transparency === opt.value
+                    ? 'text-[var(--neon-primary)]'
+                    : 'text-[var(--app-text)]/80',
+                ]"
+              >
+                {{ opt.label }}
+              </span>
+              <span class="text-[9px] text-[var(--app-text-subtle)]">{{ opt.desc }}</span>
+            </button>
+          </div>
+        </div>
+
         <!-- History Toggle Card -->
         <div
           class="glass-panel rounded-[var(--radius-squircle-lg)] p-6 cursor-pointer transition-all duration-300 hover:border-[var(--neon-primary)]/20"
@@ -322,17 +474,25 @@
               <div
                 :class="[
                   'w-8 h-8 rounded-xl flex items-center justify-center transition-colors duration-300',
-                  formData.show_history ? 'bg-[var(--neon-primary)]/10' : 'bg-[var(--btn-glass-bg)]',
+                  formData.show_history
+                    ? 'bg-[var(--neon-primary)]/10'
+                    : 'bg-[var(--btn-glass-bg)]',
                 ]"
               >
                 <History
                   :size="16"
-                  :class="formData.show_history ? 'text-[var(--neon-primary)]' : 'text-[var(--app-text-subtle)]'"
+                  :class="
+                    formData.show_history
+                      ? 'text-[var(--neon-primary)]'
+                      : 'text-[var(--app-text-subtle)]'
+                  "
                 />
               </div>
               <div>
                 <h3 class="text-sm font-semibold text-[var(--app-text)]/80">显示下载历史</h3>
-                <p class="text-[10px] text-[var(--app-text-subtle)]">在"已完成"标签页显示历史记录</p>
+                <p class="text-[10px] text-[var(--app-text-subtle)]">
+                  在"已完成"标签页显示历史记录
+                </p>
               </div>
             </div>
 
@@ -364,10 +524,14 @@
               </div>
               <div>
                 <span class="text-sm font-bold text-[var(--app-text)]/60">GoAria</span>
-                <span class="text-[10px] text-[var(--app-text-subtle)] ml-2 font-mono-data">Luminous Edition</span>
+                <span class="text-[10px] text-[var(--app-text-subtle)] ml-2 font-mono-data"
+                  >Luminous Edition</span
+                >
               </div>
             </div>
-            <div class="text-[10px] font-mono-data text-[var(--app-text-subtle)]/50">Powered by Aria2 + Wails</div>
+            <div class="text-[10px] font-mono-data text-[var(--app-text-subtle)]/50">
+              Powered by Aria2 + Wails
+            </div>
           </div>
         </div>
       </div>
@@ -389,8 +553,8 @@
 
   /* Select option styling (limited support) */
   select option {
-    background: #18181e;
-    color: rgba(255, 255, 255, 0.8);
+    background: var(--glass-bg);
+    color: var(--app-text);
     padding: 8px;
   }
 

@@ -15,6 +15,7 @@ type AppConfig struct {
 	MaxConcurrentDownloads string `json:"max_concurrent_downloads"`
 	UserAgent              string `json:"user_agent"`
 	ShowHistory            bool   `json:"show_history"`
+	WindowTransparency     string `json:"window_transparency"` // "none", "acrylic", "mica", "tabbed"
 }
 
 var (
@@ -40,6 +41,7 @@ func Load() {
 		MaxConcurrentDownloads: "3",
 		UserAgent:              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 		ShowHistory:            true,
+		WindowTransparency:     "none",
 	}
 	data, err := os.ReadFile(GetConfigPath())
 	if err == nil {

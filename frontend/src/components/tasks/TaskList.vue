@@ -82,7 +82,7 @@
   })
 
   onUnmounted(() => {
-    taskStore.stopPolling()
+    taskStore.stopPolling(true)
   })
 
   // Close modal on escape key
@@ -135,10 +135,10 @@
               />
             </div>
 
-            <h3 class="text-lg font-bold text-white/60 mb-2">
+            <h3 class="text-lg font-bold text-[var(--app-text-muted)] mb-2">
               {{ emptyStateConfig.title }}
             </h3>
-            <p class="text-sm text-white/30">
+            <p class="text-sm text-[var(--app-text-subtle)]">
               {{ emptyStateConfig.description }}
             </p>
           </div>
@@ -162,20 +162,6 @@
           <TaskCard :task="item" @confirm-delete="confirmDelete" />
         </div>
       </RecycleScroller>
-
-      <!-- Fallback for small lists (non-virtual) -->
-      <!-- Uncomment if you prefer non-virtual for small lists
-      <div v-else-if="displayTasks.length > 0" class="h-full overflow-y-auto px-5 py-4">
-        <TransitionGroup name="task-list" tag="div" class="space-y-4">
-          <TaskCard
-            v-for="task in displayTasks"
-            :key="task.gid"
-            :task="task"
-            @confirm-delete="confirmDelete"
-          />
-        </TransitionGroup>
-      </div>
-      -->
     </div>
 
     <!-- Delete Confirmation Modal -->
@@ -203,11 +189,11 @@
             </div>
 
             <!-- Title -->
-            <h3 class="text-xl font-bold text-center text-white/90 mb-2">确认删除任务？</h3>
+            <h3 class="text-xl font-bold text-center text-[var(--modal-text)] mb-2">确认删除任务？</h3>
 
             <!-- Filename -->
             <p
-              class="text-sm text-white/40 text-center mb-8 px-4 truncate font-mono-data"
+              class="text-sm text-[var(--modal-text-muted)] text-center mb-8 px-4 truncate font-mono-data"
               :title="targetFileName"
             >
               {{ targetFileName }}
@@ -219,7 +205,7 @@
               :class="
                 deleteLocalFile
                   ? 'bg-red-500/10 border border-red-500/20'
-                  : 'bg-white/[0.03] border border-white/[0.06] hover:bg-red-500/5 hover:border-red-500/10'
+                  : 'bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:bg-red-500/5 hover:border-red-500/10'
               "
             >
               <input v-model="deleteLocalFile" type="checkbox" class="shrink-0" />
@@ -227,7 +213,7 @@
                 <HardDrive
                   :size="18"
                   :class="
-                    deleteLocalFile ? 'text-red-400' : 'text-white/30 group-hover:text-red-400/60'
+                    deleteLocalFile ? 'text-red-400' : 'text-[var(--app-text-subtle)] group-hover:text-red-400/60'
                   "
                 />
                 <div class="flex flex-col">
@@ -236,12 +222,12 @@
                       'text-sm font-semibold transition-colors',
                       deleteLocalFile
                         ? 'text-red-400'
-                        : 'text-white/60 group-hover:text-red-400/80',
+                        : 'text-[var(--modal-text-muted)] group-hover:text-red-400/80',
                     ]"
                   >
                     同时删除本地文件
                   </span>
-                  <span class="text-[10px] text-white/30"> 此操作不可撤销 </span>
+                  <span class="text-[10px] text-[var(--modal-text-subtle)]"> 此操作不可撤销 </span>
                 </div>
               </div>
             </label>
@@ -249,14 +235,14 @@
             <!-- Action Buttons -->
             <div class="flex gap-3">
               <button
-                class="flex-1 py-4 rounded-[var(--radius-squircle-md)] bg-white/[0.06] border border-white/[0.08] text-white/60 font-semibold text-sm transition-all duration-200 hover:bg-white/[0.1] hover:text-white/80 active:scale-[0.98]"
+                class="flex-1 py-4 rounded-[var(--radius-squircle-md)] bg-[var(--btn-glass-bg)] border border-[var(--btn-glass-border)] text-[var(--modal-text-muted)] font-semibold text-sm transition-all duration-200 hover:bg-[var(--btn-glass-hover)] hover:text-[var(--modal-text)] active:scale-[0.98]"
                 @click="cancelDelete"
               >
                 取消
               </button>
               <button
                 :disabled="isDeleting"
-                class="flex-1 py-4 rounded-[var(--radius-squircle-md)] bg-red-500 border border-red-400/20 text-white font-bold text-sm transition-all duration-200 hover:bg-red-400 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-red-500/20"
+                class="flex-1 py-4 rounded-[var(--radius-squircle-md)] bg-[var(--status-error)] border border-red-400/20 text-white font-bold text-sm transition-all duration-200 hover:bg-red-400 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-red-500/20"
                 @click="handleDelete"
               >
                 <span v-if="isDeleting" class="flex items-center justify-center gap-2">
@@ -269,9 +255,9 @@
 
             <!-- Keyboard Shortcut Hint -->
             <div class="flex justify-center mt-6">
-              <div class="flex items-center gap-2 text-[10px] text-white/20">
+              <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
                 <kbd
-                  class="px-1.5 py-0.5 rounded bg-white/5 border border-white/10 font-mono text-[9px]"
+                  class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]"
                 >
                   Esc
                 </kbd>

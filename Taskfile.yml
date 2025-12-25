@@ -87,3 +87,14 @@ tasks:
     summary: Builds Docker image for cross-compilation (~800MB download)
     cmds:
       - task: common:setup:docker
+
+# ==================== Info ====================
+
+  info:
+    desc: "Show project info"
+    cmds:
+      - echo "App Name - {{.APP_NAME}}"
+      - go version
+      - wails3 version
+      - node --version
+      - pnpm --version

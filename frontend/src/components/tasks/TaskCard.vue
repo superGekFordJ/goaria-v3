@@ -76,14 +76,14 @@
         return {
           dotClass: 'status-active',
           label: '下载中',
-          labelClass: 'text-[#22ff88]',
+          labelClass: 'text-[var(--status-active)]',
           showProgress: true,
         }
       case 'complete':
         return {
           dotClass: 'status-complete',
           label: '已完成',
-          labelClass: 'text-[#06ffd5]',
+          labelClass: 'text-[var(--status-complete)]',
           showProgress: false,
         }
       case 'paused':
@@ -97,7 +97,7 @@
         return {
           dotClass: 'status-waiting',
           label: '等待中',
-          labelClass: 'text-white/40',
+          labelClass: 'text-[var(--app-text-muted)]',
           showProgress: true,
         }
       case 'error':
@@ -111,7 +111,7 @@
         return {
           dotClass: 'status-waiting',
           label: props.task.status || '未知',
-          labelClass: 'text-white/40',
+          labelClass: 'text-[var(--app-text-muted)]',
           showProgress: false,
         }
     }
@@ -137,7 +137,7 @@
   <div
     :class="[
       'task-card glass-panel rounded-[var(--radius-squircle-xl)] p-5 group hover-reveal-container',
-      cardGlowClass
+      cardGlowClass,
     ]"
   >
     <!-- Top Row: Filename & Actions -->
@@ -222,7 +222,7 @@
           :class="[
             'progress-bar-fill',
             { 'opacity-50': isPaused },
-            { 'progress-bar-energy': isActive }
+            { 'progress-bar-energy': isActive },
           ]"
           :style="{ width: progress + '%' }"
         ></div>
