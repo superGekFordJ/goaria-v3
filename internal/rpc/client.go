@@ -26,8 +26,14 @@ func Init(port, secret string) {
 	currentSecret = secret
 }
 
+type Uri struct {
+	Uri    string `json:"uri"`
+	Status string `json:"status"`
+}
+
 type File struct {
 	Path string `json:"path"`
+	Uris []Uri  `json:"uris"`
 }
 
 type Task struct {

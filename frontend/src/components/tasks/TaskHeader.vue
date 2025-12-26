@@ -7,22 +7,28 @@
   const urlInput = ref('')
   const isAdding = ref(false)
   const inputFocused = ref(false)
+  const errorMessage = ref('')
 
   const handleAdd = async () => {
     const url = urlInput.value.trim()
     if (!url || isAdding.value) return
 
+    errorMessage.value = ''
     isAdding.value = true
     try {
       const res = await taskStore.addUri(url)
       if (res === 'success') {
         urlInput.value = ''
+      } else if (res === 'duplicate') {
+        errorMessage.value = '存在重复任务，请检查下载列表或已完成的任务'
+        setTimeout(() => { errorMessage.value = '' }, 3000)
       } else {
-        // Could implement toast notification here
-        console.error('Failed to add task:', res)
+        errorMessage.value = `添加失败: ${res}`
+        setTimeout(() => { errorMessage.value = '' }, 3000)
       }
     } catch (err) {
-      console.error('Failed to add task:', err)
+      errorMessage.value = '添加失败，请重试'
+      setTimeout(() => { errorMessage.value = '' }, 3000)
     } finally {
       isAdding.value = false
     }
@@ -98,20 +104,27 @@
       </button>
     </div>
 
-    <!-- Quick Tips (subtle) -->
-    <div class="flex items-center gap-4 mt-3 px-2">
-      <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
-        <kbd class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]">
-          Enter
-        </kbd>
-        <span>快速添加</span>
-      </div>
-      <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
-        <kbd class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]">
-          Ctrl+V
-        </kbd>
-        <span>粘贴链接</span>
-      </div>
+    <!-- Error Message / Quick Tips -->
+    <div class="flex items-center gap-4 mt-3 px-2 min-h-[20px]">
+      <Transition name="fade" mode="out-in">
+        <div v-if="errorMessage" class="flex items-center gap-2 text-[11px] text-red-400 font-medium">
+          <span>{{ errorMessage }}</span>
+        </div>
+        <div v-else class="flex items-center gap-4">
+          <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
+            <kbd class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]">
+              Enter
+            </kbd>
+            <span>快速添加</span>
+          </div>
+          <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
+            <kbd class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]">
+              Ctrl+V
+            </kbd>
+            <span>粘贴链接</span>
+          </div>
+        </div>
+      </Transition>
     </div>
   </header>
 </template>
@@ -139,5 +152,15 @@
   /* Keyboard shortcut styling */
   kbd {
     font-family: var(--font-family-mono);
+  }
+
+  /* Fade transition for error message */
+  .fade-enter-active,
+  .fade-leave-active {
+    transition: opacity 0.2s ease;
+  }
+  .fade-enter-from,
+  .fade-leave-to {
+    opacity: 0;
   }
 </style>

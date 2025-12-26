@@ -82,6 +82,7 @@ tasks:
     cmds:
       - powershell -Command "Remove-Item -Recurse -Force frontend/dist -ErrorAction SilentlyContinue"
       - powershell -Command "Remove-Item -Recurse -Force bin -ErrorAction SilentlyContinue"
+      - powershell -Command "Remove-Item -Recurse -Force frontend/bindings -ErrorAction SilentlyContinue"
 
   setup:docker:
     summary: Builds Docker image for cross-compilation (~800MB download)

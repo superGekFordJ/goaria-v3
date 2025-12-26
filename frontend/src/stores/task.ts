@@ -53,12 +53,28 @@ export const useTaskStore = defineStore('task', () => {
       // Reset error count on success
       consecutiveErrors.value = 0
 
-      // Ensure we always have arrays even if backend returns empty/null
-      const newTasks = {
-        active: res.active || [],
-        waiting: res.waiting || [],
-        stopped: res.stopped || [],
+      const dedupByGid = (list: Task[]) => {
+        const seen = new Set<string>()
+        return (list || []).filter(t => {
+          const gid = t?.gid
+          if (!gid) return false
+          if (seen.has(gid)) return false
+          seen.add(gid)
+          return true
+        })
       }
+
+      // Ensure we always have arrays even if backend returns empty/null
+      // Also: deduplicate by gid across lists to avoid duplicated keys and UI state reuse
+      const active = dedupByGid(res.active || [])
+      const activeGids = new Set(active.map(t => t.gid))
+
+      const waiting = dedupByGid((res.waiting || []).filter(t => !activeGids.has(t.gid)))
+      const waitingGids = new Set(waiting.map(t => t.gid))
+
+      const stopped = dedupByGid((res.stopped || []).filter(t => !activeGids.has(t.gid) && !waitingGids.has(t.gid)))
+
+      const newTasks = { active, waiting, stopped }
 
       // Stage 2: Identify tasks with missing file paths and fetch metadata
       const tasksNeedingMetadata: string[] = []

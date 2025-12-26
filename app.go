@@ -63,7 +63,33 @@ func (a *App) UpdateTrayState(hasActive, hasPaused, hasError bool) {
 // --- Task Management ---
 
 // AddUri adds a new download task
+// Returns "success" on success, "duplicate" if task already exists, or error message
 func (a *App) AddUri(url string) string {
+	// Check for duplicate URL in existing tasks
+	normalizedUrl := strings.TrimSpace(url)
+	active, _ := rpc.TellActive()
+	waiting, _ := rpc.TellWaiting(0, 1000)
+	stopped, _ := rpc.TellStopped(0, 1000)
+	allTasks := append(active, append(waiting, stopped...)...)
+
+	for _, t := range allTasks {
+		for _, f := range t.Files {
+			for _, u := range f.Uris {
+				if strings.TrimSpace(u.Uri) == normalizedUrl {
+					// Found duplicate - return special marker
+					return "duplicate"
+				}
+			}
+		}
+	}
+
+	// Also check history for completed tasks that may have been cleared from aria2
+	for _, h := range history.GetAll() {
+		if h.Source == normalizedUrl {
+			return "duplicate"
+		}
+	}
+
 	err := rpc.AddUri(url, config.Current.DownloadDir)
 	if err != nil {
 		return err.Error()
@@ -82,6 +108,11 @@ func (a *App) GetTasks() map[string][]rpc.Task {
 		// Track completed tasks for history persistence
 		for _, t := range stopped {
 			if t.Status == "complete" && len(t.Files) > 0 && t.Files[0].Path != "" {
+				// Extract source URL from first file's URIs
+				var sourceUrl string
+				if len(t.Files[0].Uris) > 0 {
+					sourceUrl = t.Files[0].Uris[0].Uri
+				}
 				history.Add(history.HistoryEntry{
 					GID:             t.GID,
 					Title:           filepath.Base(t.Files[0].Path),
@@ -89,6 +120,7 @@ func (a *App) GetTasks() map[string][]rpc.Task {
 					Path:            t.Files[0].Path,
 					TotalLength:     t.TotalLength,
 					CompletedLength: t.CompletedLength,
+					Source:          sourceUrl,
 				})
 			}
 		}
@@ -141,6 +173,7 @@ func (a *App) ResumeTask(gid string) {
 // RemoveTask removes a task and optionally deletes the file
 func (a *App) RemoveTask(gid string, deleteFile bool) {
 	var targetPath string
+	var targetDir string
 
 	// 1. Find the file path
 	active, _ := rpc.TellActive()
@@ -150,7 +183,27 @@ func (a *App) RemoveTask(gid string, deleteFile bool) {
 	for _, t := range all {
 		if t.GID == gid && len(t.Files) > 0 && t.Files[0].Path != "" {
 			targetPath = t.Files[0].Path
+			targetDir = t.Dir
 			break
+		}
+	}
+
+	// Fallback: some tasks may not include file metadata in TellActive/TellWaiting
+	if targetPath == "" {
+		if t, err := rpc.TellStatus(gid); err == nil && t != nil && len(t.Files) > 0 && t.Files[0].Path != "" {
+			targetPath = t.Files[0].Path
+			targetDir = t.Dir
+		}
+	}
+
+	// Fallback: tasks restored from history may not exist in Aria2 lists after restart
+	if targetPath == "" {
+		for _, h := range history.GetAll() {
+			if h.GID == gid && h.Path != "" {
+				targetPath = h.Path
+				targetDir = h.Dir
+				break
+			}
 		}
 	}
 
@@ -162,19 +215,27 @@ func (a *App) RemoveTask(gid string, deleteFile bool) {
 
 	// 4. Physical cleanup
 	if targetPath != "" {
-		go func(p string) {
+		go func(p string, dir string) {
 			// Give Aria2 enough time to release file handle
 			time.Sleep(1 * time.Second)
 
-			absPath := p
-			if !filepath.IsAbs(p) {
-				absPath = filepath.Join(config.Current.DownloadDir, p)
+			cleanP := filepath.Clean(filepath.FromSlash(p))
+			absPath := cleanP
+			if !filepath.IsAbs(cleanP) {
+				baseDir := dir
+				if baseDir == "" {
+					baseDir = config.Current.DownloadDir
+				}
+				absPath = filepath.Clean(filepath.Join(filepath.FromSlash(baseDir), cleanP))
 			}
-			absPath = filepath.Clean(filepath.FromSlash(absPath))
 
 			// If user checked delete file
 			if deleteFile {
-				_ = os.Remove(absPath)
+				if fi, err := os.Stat(absPath); err == nil && fi.IsDir() {
+					_ = os.RemoveAll(absPath)
+				} else {
+					_ = os.Remove(absPath)
+				}
 			}
 
 			// Always remove .aria2 control file when task is removed from UI
@@ -184,7 +245,7 @@ func (a *App) RemoveTask(gid string, deleteFile bool) {
 			if strings.HasSuffix(absPath, ".torrent") {
 				_ = os.Remove(absPath)
 			}
-		}(targetPath)
+		}(targetPath, targetDir)
 	}
 }
 

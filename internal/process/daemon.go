@@ -60,6 +60,8 @@ func StartAria2(cfg *config.AppConfig) error {
 		"--rpc-listen-all=false",
 		fmt.Sprintf("--rpc-listen-port=%s", cfg.RPCPort),
 		fmt.Sprintf("--dir=%s", cleanDir),
+		"--auto-file-renaming=true",
+		"--allow-overwrite=false",
 		fmt.Sprintf("--max-concurrent-downloads=%s", cfg.MaxConcurrentDownloads),
 		fmt.Sprintf("--max-connection-per-server=%s", cfg.MaxConnections),
 		fmt.Sprintf("--user-agent=%s", cfg.UserAgent),

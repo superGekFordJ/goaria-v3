@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
+  import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch } from 'vue'
   import { RecycleScroller } from 'vue-virtual-scroller'
   import { useTaskStore } from '../../stores/task'
   import { useUIStore } from '../../stores/ui'
@@ -23,6 +23,8 @@
   const displayTasks = computed(() => {
     return uiStore.activeTab === 'downloads' ? combinedDownloads.value : taskStore.stoppedTasks
   })
+
+  const useVirtualList = computed(() => displayTasks.value.length > 200)
 
   // Empty state configuration
   const emptyStateConfig = computed(() => {
@@ -75,6 +77,55 @@
     if (!delTarget.value?.files?.[0]?.path) return '未知任务'
     return delTarget.value.files[0].path.split(/[\\/]/).pop() || '未知任务'
   })
+
+  const listContainer = ref<HTMLElement | null>(null)
+  const prevOrderByGid = new Map<string, number>()
+
+  const scrollToTask = (gid: string, block: 'start' | 'center' | 'end' | 'nearest' = 'center') => {
+    const container = listContainer.value
+    if (!container) return
+    const el = container.querySelector<HTMLElement>(`[data-gid="${gid}"]`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block })
+  }
+
+  watch(
+    displayTasks,
+    (newList, oldList) => {
+      if (useVirtualList.value || !oldList) {
+        prevOrderByGid.clear()
+        newList.forEach((t, i) => prevOrderByGid.set(t.gid, i))
+        return
+      }
+
+      // Find any task that moved significantly (index changed by >= 2)
+      let movedGid: string | null = null
+      let movedDirection: 'up' | 'down' = 'up'
+
+      for (const [gid, oldIdx] of prevOrderByGid) {
+        const newIdx = newList.findIndex(t => t.gid === gid)
+        if (newIdx === -1) continue // task removed
+        const delta = newIdx - oldIdx
+        if (Math.abs(delta) >= 2) {
+          movedGid = gid
+          movedDirection = delta < 0 ? 'up' : 'down'
+          break
+        }
+      }
+
+      // Update order tracking
+      prevOrderByGid.clear()
+      newList.forEach((t, i) => prevOrderByGid.set(t.gid, i))
+
+      if (!movedGid) return
+
+      // Wait for TransitionGroup animation to complete (500ms is the animation duration)
+      setTimeout(() => {
+        scrollToTask(movedGid!, movedDirection === 'up' ? 'start' : 'end')
+      }, 550)
+    },
+    { flush: 'post' },
+  )
 
   // Performance: Start polling only when the list is visible
   // Use onActivated/onDeactivated for KeepAlive compatibility
@@ -156,12 +207,30 @@
       </Transition>
 
       <!-- Virtual Scrolling Task List -->
+      <div
+        v-if="displayTasks.length > 0 && !useVirtualList"
+        ref="listContainer"
+        class="h-full overflow-y-auto px-5 py-4"
+      >
+        <TransitionGroup name="task-list" tag="div" class="flex flex-col gap-4">
+          <div
+            v-for="(item, index) in displayTasks"
+            :key="item.gid"
+            :data-gid="item.gid"
+            class="animate-spring-in"
+            :style="{ animationDelay: `${Math.min(index * 50, 300)}ms` }"
+          >
+            <TaskCard :task="item" @confirm-delete="confirmDelete" />
+          </div>
+        </TransitionGroup>
+      </div>
+
       <RecycleScroller
-        v-if="displayTasks.length > 0"
+        v-else-if="displayTasks.length > 0"
         v-slot="{ item, index }"
         class="h-full px-5 py-4"
         :items="displayTasks"
-        :item-size="160"
+        :item-size="176"
         key-field="gid"
         :buffer="200"
       >
