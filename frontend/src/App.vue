@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { onMounted, onUnmounted, ref, watch } from 'vue'
+  import { onMounted, onUnmounted, ref, watch, defineAsyncComponent } from 'vue'
   import Sidebar from './components/layout/Sidebar.vue'
   import TitleBar from './components/layout/TitleBar.vue'
   import TaskList from './components/tasks/TaskList.vue'
@@ -8,6 +8,10 @@
   import { useConfigStore } from './stores/config'
   import { useTaskStore } from './stores/task'
   import { Events } from '@wailsio/runtime'
+
+  const DebugPanel = import.meta.env.DEV
+    ? defineAsyncComponent(() => import('./components/debug/DebugPanel.vue'))
+    : null
 
   const uiStore = useUIStore()
   const configStore = useConfigStore()
@@ -80,6 +84,9 @@
 </script>
 
 <template>
+  <!-- Debug Panel (dev-only; activate with #debug in URL) -->
+  <component :is="DebugPanel" v-if="DebugPanel" />
+
   <!-- Noise texture overlay for depth -->
   <div class="noise-overlay"></div>
 
@@ -103,11 +110,13 @@
             isReady ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4',
           ]"
         >
-          <!-- Content Area with smooth transitions -->
-          <Transition name="panel-fade" mode="out-in">
-            <SettingsPanel v-if="uiStore.activeTab === 'settings'" key="settings" />
-            <TaskList v-else :key="uiStore.activeTab" />
-          </Transition>
+          <!-- Content Area with KeepAlive to prevent remount on tab switch -->
+          <KeepAlive>
+            <component
+              :is="uiStore.activeTab === 'settings' ? SettingsPanel : TaskList"
+              :tab="uiStore.activeTab"
+            />
+          </KeepAlive>
         </div>
       </main>
     </div>

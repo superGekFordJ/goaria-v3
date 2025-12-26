@@ -99,9 +99,9 @@
   --glass-hover: rgba(255, 255, 255, 0.04);
   --glass-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.4);
 
-  /* Sidebar - Fused with background */
-  --sidebar-bg: rgba(12, 12, 15, 0.6);
-  --sidebar-text: rgba(228, 228, 231, 0.5);
+  /* Sidebar - Fused with background, more transparent */
+  --sidebar-bg: transparent;
+  --sidebar-text: rgba(228, 228, 231, 0.7);
   --sidebar-hover: rgba(255, 255, 255, 0.05);
   --sidebar-active: rgba(255, 255, 255, 0.08);
 
@@ -120,6 +120,9 @@
   --neon-primary: #06ffd5;
   --neon-secondary: #22ff88;
   --neon-glow: rgba(6, 255, 213, 0.4);
+
+  /* Neon Button Text - Must remain solid for readability */
+  --neon-btn-text: #0c0c0f;
 
   /* Status Colors */
   --status-active: #22ff88;
@@ -240,11 +243,15 @@
   --glass-hover: rgba(0, 0, 0, 0.02);
   --glass-shadow: 0 8px 32px -8px rgba(0, 0, 0, 0.12);
 
-  /* Sidebar - Subtle separation */
-  --sidebar-bg: rgba(255, 255, 255, 0.7);
-  --sidebar-text: rgba(31, 31, 35, 0.6);
-  --sidebar-hover: rgba(0, 0, 0, 0.05);
-  --sidebar-active: rgba(13, 148, 136, 0.1);
+  /* Sidebar - Subtle separation with better text contrast */
+  --sidebar-bg: transparent;
+  --sidebar-text: rgba(31, 31, 35, 0.85);
+  --sidebar-hover: rgba(0, 0, 0, 0.06);
+  --sidebar-active: rgba(13, 148, 136, 0.12);
+
+  /* Light mode text needs higher contrast */
+  --app-text-muted: rgba(31, 31, 35, 0.75);
+  --app-text-subtle: rgba(31, 31, 35, 0.6);
 
   /* Input Elements - Better contrast */
   --input-bg: rgba(0, 0, 0, 0.04);
@@ -261,6 +268,9 @@
   --neon-primary: #0f766e; /* Teal-700 */
   --neon-secondary: #047857; /* Emerald-700 */
   --neon-glow: rgba(15, 118, 110, 0.15);
+
+  /* Neon Button Text - Must remain solid for readability */
+  --neon-btn-text: #ffffff;
 
   /* Status Colors - Darker gem tones for readability */
   --status-active: #047857; /* Emerald-700 */
@@ -309,7 +319,6 @@
   --neon-primary: #0dd9b5;
   --neon-secondary: #1ed96e;
   --neon-glow: rgba(13, 217, 181, 0.35);
-  --glass-bg: rgba(22, 22, 28, 0.88);
 }
 
 /* Ceramic skin in light mode - softer, warmer */
@@ -317,8 +326,52 @@
   --neon-primary: #0d9488;
   --neon-secondary: #059669;
   --neon-glow: rgba(13, 148, 136, 0.12);
-  --glass-bg: rgba(255, 255, 255, 0.75);
-  --app-bg: #fafaf9;
+}
+
+/* === Density Settings === */
+/* Compact: Higher information density */
+[data-density='compact'] {
+  --density-row-height: 120px;
+  --density-padding-scale: 0.75;
+  --density-gap-scale: 0.75;
+}
+
+/* Comfortable: Default spacing */
+[data-density='comfortable'] {
+  --density-row-height: 160px;
+  --density-padding-scale: 1;
+  --density-gap-scale: 1;
+}
+
+/* === Effects Settings === */
+/* Full: All animations and effects enabled */
+[data-effects='full'] {
+  --effects-glow-intensity: 1;
+  --effects-animation-enabled: 1;
+  --effects-blur-enabled: 1;
+}
+
+/* Reduced: Minimal animations for performance */
+[data-effects='reduced'] {
+  --effects-glow-intensity: 0.3;
+  --effects-animation-enabled: 0;
+  --effects-blur-enabled: 0;
+}
+
+/* Disable animations when effects are reduced */
+[data-effects='reduced'] .animate-shimmer,
+[data-effects='reduced'] .animate-glow-pulse,
+[data-effects='reduced'] .animate-float,
+[data-effects='reduced'] .animate-ping {
+  animation: none !important;
+}
+
+[data-effects='reduced'] .progress-bar-fill::after {
+  animation: none !important;
+}
+
+[data-effects='reduced'] .task-card-active {
+  animation: none !important;
 }
 
 /* === Window Transparency (Acrylic / Mica / Tabbed) === */
@@ -334,7 +387,10 @@
 :root[data-window-transparency='tabbed'][data-theme='dark'] {
   --glass-bg: rgba(20, 20, 26, 0.55);
   --card-bg: rgba(24, 24, 30, 0.6);
-  --sidebar-bg: rgba(12, 12, 15, 0.35);
+  --sidebar-bg: transparent;
+  
+  /* Enhanced text contrast for transparency mode */
+  --neon-text-glow: 0 1px 2px rgba(0, 0, 0, 0.8), 0 0 8px rgba(0, 0, 0, 0.4);
 }
 
 :root[data-window-transparency='acrylic'][data-theme='light'],
@@ -342,9 +398,47 @@
 :root[data-window-transparency='tabbed'][data-theme='light'] {
   --glass-bg: rgba(255, 255, 255, 0.55);
   --card-bg: rgba(255, 255, 255, 0.6);
-  --sidebar-bg: rgba(248, 248, 250, 0.35);
+  --sidebar-bg: transparent;
+  
+  /* Enhanced text contrast for transparency mode */
+  --neon-text-glow: 0 1px 2px rgba(255, 255, 255, 0.9), 0 0 8px rgba(255, 255, 255, 0.5);
 }
 
+/* === Sidebar Transparency Mode Styling === */
+/* In transparency mode, sidebar becomes transparent with internal glass panels */
+:root[data-window-transparency='acrylic'] .sidebar-container,
+:root[data-window-transparency='mica'] .sidebar-container,
+:root[data-window-transparency='tabbed'] .sidebar-container {
+  border-right-color: transparent;
+}
+
+/* === Neon Text Contrast Enhancement for Transparency Mode === */
+/* Ensure fluorescent text remains readable against variable OS backgrounds */
+:root[data-window-transparency='acrylic'] .text-neon,
+:root[data-window-transparency='mica'] .text-neon,
+:root[data-window-transparency='tabbed'] .text-neon {
+  text-shadow: var(--neon-text-glow, none);
+}
+
+:root[data-window-transparency='acrylic'] .text-neon-green,
+:root[data-window-transparency='mica'] .text-neon-green,
+:root[data-window-transparency='tabbed'] .text-neon-green {
+  text-shadow: var(--neon-text-glow, none);
+}
+
+/* Enhanced contrast for brand text in transparency mode */
+:root[data-window-transparency='acrylic'] .sidebar-brand-text,
+:root[data-window-transparency='mica'] .sidebar-brand-text,
+:root[data-window-transparency='tabbed'] .sidebar-brand-text {
+  text-shadow: var(--neon-text-glow, none);
+}
+
+/* Neon button text shadow for better legibility */
+:root[data-window-transparency='acrylic'] .btn-neon,
+:root[data-window-transparency='mica'] .btn-neon,
+:root[data-window-transparency='tabbed'] .btn-neon {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
 /* === Base Resets === */
 *,
 *::before,
@@ -835,7 +929,7 @@ select {
 
 .btn-neon {
   background: linear-gradient(135deg, var(--neon-primary), var(--neon-secondary));
-  color: var(--app-bg);
+  color: var(--neon-btn-text);
   font-weight: 700;
   border: none;
   box-shadow:

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { ref, computed, onMounted, onUnmounted } from 'vue'
+  import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
   import { RecycleScroller } from 'vue-virtual-scroller'
   import { useTaskStore } from '../../stores/task'
   import { useUIStore } from '../../stores/ui'
@@ -77,12 +77,22 @@
   })
 
   // Performance: Start polling only when the list is visible
+  // Use onActivated/onDeactivated for KeepAlive compatibility
   onMounted(() => {
     taskStore.startPolling(500)
   })
 
   onUnmounted(() => {
     taskStore.stopPolling(true)
+  })
+
+  // KeepAlive lifecycle: resume/pause polling when tab switches
+  onActivated(() => {
+    taskStore.startPolling(500)
+  })
+
+  onDeactivated(() => {
+    taskStore.stopPolling(false) // Don't disable context, just pause
   })
 
   // Close modal on escape key
@@ -153,7 +163,7 @@
         :items="displayTasks"
         :item-size="160"
         key-field="gid"
-        :buffer="400"
+        :buffer="200"
       >
         <div
           class="py-2 animate-spring-in"

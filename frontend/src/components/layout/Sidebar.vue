@@ -40,7 +40,7 @@
 
 <template>
   <aside
-    class="w-56 flex flex-col shrink-0 z-20 bg-[var(--sidebar-bg)] border-r border-[var(--card-border)]"
+    class="sidebar-container w-56 flex flex-col shrink-0 z-20 bg-[var(--sidebar-bg)] border-r border-[var(--card-border)]"
   >
     <!-- Logo Section -->
     <div class="p-6 pt-2">
@@ -55,14 +55,14 @@
           <div
             class="absolute inset-0 bg-gradient-to-tr from-transparent via-white/20 to-transparent animate-shimmer"
           ></div>
-          <Zap class="relative text-[var(--app-bg)] fill-current" :size="20" />
+          <Zap class="relative text-[var(--neon-btn-text)] fill-current" :size="20" />
         </div>
         <div class="flex flex-col">
           <span class="text-base font-black tracking-tight leading-none text-[var(--app-text)]/90">
             GoAria
           </span>
           <span
-            class="text-[9px] font-mono-data font-bold text-[var(--neon-primary)]/70 tracking-widest mt-0.5"
+            class="sidebar-brand-text text-[9px] font-mono-data font-bold text-[var(--neon-primary)] tracking-widest mt-0.5"
           >
             LUMINOUS
           </span>

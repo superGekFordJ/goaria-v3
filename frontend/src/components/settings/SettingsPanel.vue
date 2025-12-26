@@ -520,7 +520,7 @@
               <div
                 class="w-8 h-8 rounded-xl bg-gradient-to-br from-[var(--neon-primary)] to-[var(--neon-secondary)] flex items-center justify-center"
               >
-                <Zap :size="14" class="text-[var(--app-bg)]" />
+                <Zap :size="14" class="text-[var(--neon-btn-text)]" />
               </div>
               <div>
                 <span class="text-sm font-bold text-[var(--app-text)]/60">GoAria</span>
