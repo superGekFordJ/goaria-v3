@@ -24,7 +24,7 @@
     return uiStore.activeTab === 'downloads' ? combinedDownloads.value : taskStore.stoppedTasks
   })
 
-  const useVirtualList = computed(() => displayTasks.value.length > 200)
+  const useVirtualList = computed(() => displayTasks.value.length > 15)
 
   // Empty state configuration
   const emptyStateConfig = computed(() => {
