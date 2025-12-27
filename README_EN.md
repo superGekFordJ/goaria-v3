@@ -31,8 +31,6 @@
   </p>
 </div>
 
----
-
 ## 📖 Introduction
 
 **GoAria** is a modern graphical interface for Aria2, built on [Wails v3](https://wails.io).
@@ -41,11 +39,9 @@ Unlike feature-heavy download managers, GoAria's philosophy is rooted in **Pragm
 
 <div align="center">
   <!-- Replace with your actual application screenshot -->
-  <img src="https://placehold.co/800x500/18181b/10b981?text=GoAria+Dashboard+Preview&font=montserrat" alt="GoAria Screenshot" width="800" />
+  <img src="frontend/src/assets/images/display.png" alt="GoAria Screenshot" width="800" />
   <p><em>Dark Mode: A visual symphony of Obsidian and Laser</em></p>
 </div>
-
----
 
 ## ✨ Key Features
 
@@ -72,8 +68,8 @@ GoAria adopts a **Frontend-Backend-Daemon** three-tier architecture to ensure st
 
 ```mermaid
 graph TD
-    A[Frontend UI (Vue 3 + Pinia)] <-->|Wails Bindings| B[Backend (Go App)]
-    B <-->|RPC| C[Daemon (Aria2c Process)]
+    A["Frontend UI (Vue 3 + Pinia)"] <-->|Wails Bindings| B["Backend (Go App)"]
+    B <-->|RPC| C["Daemon (Aria2c Process)"]
     B -->|Manage| C
 ```
 

@@ -31,8 +31,6 @@
   </p>
 </div>
 
----
-
 ## 📖 简介
 
 **GoAria** 是基于 [Wails v3](https://wails.io) 构建的现代化 Aria2 图形界面。
@@ -41,11 +39,9 @@
 
 <div align="center">
   <!-- 占位符图片：展示应用界面的设计理念 -->
-  <img src="https://placehold.co/800x500/18181b/10b981?text=GoAria+Dashboard+Preview&font=montserrat" alt="GoAria Screenshot" width="800" />
+  <img src="frontend/src/assets/images/display.png" alt="GoAria Screenshot" width="800" />
   <p><em>深色模式：黑曜石与激光的视觉交响</em></p>
 </div>
-
----
 
 ## ✨ 核心特性
 
@@ -72,8 +68,8 @@ GoAria 采用 **Frontend-Backend-Daemon** 三层架构，确保稳定性与扩�
 
 ```mermaid
 graph TD
-    A[Frontend UI (Vue 3 + Pinia)] <-->|Wails Bindings| B[Backend (Go App)]
-    B <-->|RPC| C[Daemon (Aria2c Process)]
+    A["Frontend UI (Vue 3 + Pinia)"] <-->|Wails Bindings| B["Backend (Go App)"]
+    B <-->|RPC| C["Daemon (Aria2c Process)"]
     B -->|Manage| C
 ```
 

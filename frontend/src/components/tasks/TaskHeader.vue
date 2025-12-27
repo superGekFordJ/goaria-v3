@@ -67,7 +67,7 @@
         <input
           v-model="urlInput"
           type="text"
-          placeholder="粘贴下载链接 (HTTP / HTTPS / 磁力链接)..."
+          placeholder="粘贴下载链接 (HTTP / HTTPS / FTP / SFTP)..."
           class="w-full bg-transparent pl-11 pr-4 py-3 text-sm text-[var(--app-text)] font-medium focus:outline-none placeholder:text-[var(--input-placeholder)] placeholder:font-normal select-text"
           @focus="inputFocused = true"
           @blur="inputFocused = false"
