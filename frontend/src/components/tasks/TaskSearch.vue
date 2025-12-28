@@ -11,7 +11,7 @@
 </script>
 
 <template>
-  <div class="px-5 pb-2 pt-4 shrink-0">
+  <div class="p-5 pb-2 shrink-0">
     <div
       :class="[
         'flex items-center gap-3 p-2 rounded-[var(--radius-squircle-lg)] transition-all duration-300',
@@ -34,7 +34,7 @@
         type="text"
         placeholder="搜索已完成任务..."
         aria-label="搜索已完成任务"
-        class="flex-1 bg-transparent py-2.5 text-sm text-[var(--app-text)] font-medium focus:outline-none placeholder:text-[var(--input-placeholder)] placeholder:font-normal select-text"
+        class="flex-1 bg-transparent py-3 text-sm text-[var(--app-text)] font-medium focus:outline-none placeholder:text-[var(--input-placeholder)] placeholder:font-normal select-text"
         @focus="inputFocused = true"
         @blur="inputFocused = false"
       />

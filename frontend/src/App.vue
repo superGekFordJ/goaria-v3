@@ -87,33 +87,69 @@
     unsubs.push(Events.On('common:WindowUnMinimise', () => taskStore.setWindowVisibility(true)))
     unsubs.push(Events.On('common:WindowRestore', () => taskStore.setWindowVisibility(true)))
 
-    unsubs.push(
-      Events.On('common:WindowFocus', async () => {
-        try {
-          const text = (await Clipboard.Text()).trim()
-          if (!text) return
-          if (!isValidUrl(text)) return
+    // Centralized Clipboard Processing Logic
+    const processClipboard = async (trigger: 'auto' | 'manual') => {
+      try {
+        const text = (await Clipboard.Text()).trim()
+        if (!text) return
+        if (!isValidUrl(text)) return
 
-          const now = Date.now()
-          if (text === lastClipboardCandidate && now - lastClipboardCandidateAt < 1500) return
-          lastClipboardCandidate = text
-          lastClipboardCandidateAt = now
+        // 1. Check against history (Deduplication for Auto-Trigger)
+        // If triggered automatically (Focus), we ONLY act if the content has changed.
+        // If triggered manually (Tab Switch), we allow re-processing (user might want to paste what they have).
+        if (trigger === 'auto' && text === lastClipboardCandidate) {
+          return
+        }
 
-          if (now - lastTasksRefreshAt > 1500) {
-            lastTasksRefreshAt = now
-            await taskStore.fetchTasks()
-          }
+        // Update history
+        lastClipboardCandidate = text
+        lastClipboardCandidateAt = Date.now()
 
-          if (isDuplicateUri(text)) return
+        // 2. Refresh tasks if stale (to ensure duplicate check is accurate)
+        const now = Date.now()
+        if (now - lastTasksRefreshAt > 1500) {
+          lastTasksRefreshAt = now
+          await taskStore.fetchTasks()
+        }
 
+        // 3. Check for duplicates in existing tasks
+        if (isDuplicateUri(text)) return
+
+        // 4. Action
+        if (trigger === 'auto') {
+          // For auto-trigger, we jump to the downloads tab
           if (uiStore.activeTab !== 'downloads') {
             uiStore.setActiveTab('downloads')
           }
-          uiStore.setPendingPasteUri(text)
-        } catch {
-          return
         }
+
+        // If we are (or became) on the downloads tab, populate the field
+        if (uiStore.activeTab === 'downloads') {
+          uiStore.setPendingPasteUri(text)
+        }
+      } catch {
+        // Permission denied or empty clipboard, silently ignore
+      }
+    }
+
+    // Trigger 1: Window Focus (Smart Auto-Detection)
+    unsubs.push(
+      Events.On('common:WindowFocus', () => {
+        processClipboard('auto')
       }),
+    )
+
+    // Trigger 2: Tab Switch (Context-Aware Detection)
+    // When user manually enters Downloads tab, check clipboard
+    watch(
+      () => uiStore.activeTab,
+      (newTab) => {
+        if (newTab === 'downloads') {
+          // Use 'manual' mode to be more permissive (allow current clipboard even if seen before)
+          // But 'processClipboard' updates 'lastClipboardCandidate', so it syncs up.
+          processClipboard('manual')
+        }
+      },
     )
   })
 
