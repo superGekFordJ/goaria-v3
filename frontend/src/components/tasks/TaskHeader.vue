@@ -1,13 +1,54 @@
 <script setup lang="ts">
-  import { ref } from 'vue'
+  import { ref, onMounted, onUnmounted } from 'vue'
   import { useTaskStore } from '../../stores/task'
+  import { useUIStore } from '../../stores/ui'
   import { Link, Plus, Loader2 } from 'lucide-vue-next'
+  import { Events } from '@wailsio/runtime'
 
   const taskStore = useTaskStore()
+  const uiStore = useUIStore()
   const urlInput = ref('')
   const isAdding = ref(false)
   const inputFocused = ref(false)
   const errorMessage = ref('')
+  const clipboardHint = ref('')
+  let unsubWindowFocus: (() => void) | null = null
+
+  // Validate URL helper
+  const isValidUrl = (text: string): boolean => {
+    return /^(https?|ftp|sftp|magnet):/i.test(text)
+  }
+
+  // Check clipboard when window gains focus (only if we're on downloads tab)
+  const checkClipboard = async () => {
+    if (urlInput.value.trim()) return // Already has input, don't override
+    if (uiStore.activeTab !== 'downloads') return // Only check on downloads tab
+    try {
+      const text = await navigator.clipboard.readText()
+      const trimmed = text.trim()
+      if (isValidUrl(trimmed)) {
+        urlInput.value = trimmed
+        clipboardHint.value = '已从剪贴板填入链接'
+        setTimeout(() => { clipboardHint.value = '' }, 3000)
+      }
+    } catch {
+      // Permission denied or empty clipboard, silently ignore
+    }
+  }
+
+  // Listen to Wails window focus event
+  onMounted(() => {
+    unsubWindowFocus = Events.On('common:WindowFocus', () => {
+      checkClipboard()
+    })
+  })
+
+  onUnmounted(() => {
+    if (unsubWindowFocus) {
+      unsubWindowFocus()
+      unsubWindowFocus = null
+    }
+  })
 
   const handleAdd = async () => {
     const url = urlInput.value.trim()
@@ -37,7 +78,7 @@
   // Handle paste event for quick add
   const handlePaste = (e: ClipboardEvent) => {
     const text = e.clipboardData?.getData('text')
-    if (text && (text.startsWith('http') || text.startsWith('magnet:'))) {
+    if (text && (text.startsWith('http') || text.startsWith('https'))) {
       // Auto-focus happens naturally, user can press Enter
     }
   }
@@ -104,13 +145,16 @@
       </button>
     </div>
 
-    <!-- Error Message / Quick Tips -->
+    <!-- Error Message / Clipboard Hint / Quick Tips -->
     <div class="flex items-center gap-4 mt-3 px-2 min-h-[20px]">
       <Transition name="fade" mode="out-in">
-        <div v-if="errorMessage" class="flex items-center gap-2 text-[11px] text-red-400 font-medium">
+        <div v-if="errorMessage" key="error" class="flex items-center gap-2 text-[11px] text-red-400 font-medium">
           <span>{{ errorMessage }}</span>
         </div>
-        <div v-else class="flex items-center gap-4">
+        <div v-else-if="clipboardHint" key="hint" class="flex items-center gap-2 text-[11px] text-[var(--status-active)] font-medium">
+          <span>{{ clipboardHint }}</span>
+        </div>
+        <div v-else key="tips" class="flex items-center gap-4">
           <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
             <kbd class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]">
               Enter
