@@ -18,10 +18,19 @@ export const useUIStore = defineStore(
     const skinId = ref<SkinId>('obsidian')
     const density = ref<Density>('comfortable')
     const effects = ref<Effects>('full')
+    const pendingPasteUri = ref('')
 
     // Actions
     function setActiveTab(tab: string) {
       activeTab.value = tab
+    }
+
+    function setPendingPasteUri(uri: string) {
+      pendingPasteUri.value = uri
+    }
+
+    function consumePendingPasteUri() {
+      pendingPasteUri.value = ''
     }
 
     function setTheme(newTheme: ThemeMode) {
@@ -105,8 +114,11 @@ export const useUIStore = defineStore(
       skinId,
       density,
       effects,
+      pendingPasteUri,
       // Actions
       setActiveTab,
+      setPendingPasteUri,
+      consumePendingPasteUri,
       setTheme,
       setSkin,
       setDensity,
@@ -115,6 +127,8 @@ export const useUIStore = defineStore(
     }
   },
   {
-    persist: true,
+    persist: {
+      pick: ['activeTab', 'themeMode', 'skinId', 'density', 'effects'],
+    },
   },
 )

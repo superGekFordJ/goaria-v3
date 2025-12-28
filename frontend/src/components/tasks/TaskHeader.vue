@@ -1,13 +1,40 @@
 <script setup lang="ts">
-  import { ref } from 'vue'
+  import { ref, watch } from 'vue'
   import { useTaskStore } from '../../stores/task'
+  import { useUIStore } from '../../stores/ui'
   import { Link, Plus, Loader2 } from 'lucide-vue-next'
 
   const taskStore = useTaskStore()
+  const uiStore = useUIStore()
   const urlInput = ref('')
+  const urlInputEl = ref<HTMLInputElement | null>(null)
   const isAdding = ref(false)
   const inputFocused = ref(false)
   const errorMessage = ref('')
+  const clipboardHint = ref('')
+
+  watch(
+    () => uiStore.pendingPasteUri,
+    (uri) => {
+      const trimmed = (uri || '').trim()
+      if (!trimmed) return
+
+      if (!urlInput.value.trim()) {
+        urlInput.value = trimmed
+        clipboardHint.value = '已从剪贴板填入链接'
+        setTimeout(() => {
+          urlInputEl.value?.focus()
+        }, 0)
+      } else {
+        clipboardHint.value = '剪贴板中有新链接'
+      }
+      setTimeout(() => {
+        clipboardHint.value = ''
+      }, 3000)
+      uiStore.consumePendingPasteUri()
+    },
+    { immediate: true },
+  )
 
   const handleAdd = async () => {
     const url = urlInput.value.trim()
@@ -37,7 +64,7 @@
   // Handle paste event for quick add
   const handlePaste = (e: ClipboardEvent) => {
     const text = e.clipboardData?.getData('text')
-    if (text && (text.startsWith('http') || text.startsWith('magnet:'))) {
+    if (text && (text.startsWith('http') || text.startsWith('https'))) {
       // Auto-focus happens naturally, user can press Enter
     }
   }
@@ -65,6 +92,7 @@
 
         <!-- Input Field -->
         <input
+          ref="urlInputEl"
           v-model="urlInput"
           type="text"
           placeholder="粘贴下载链接 (HTTP / HTTPS / FTP / SFTP)..."
@@ -104,13 +132,16 @@
       </button>
     </div>
 
-    <!-- Error Message / Quick Tips -->
+    <!-- Error Message / Clipboard Hint / Quick Tips -->
     <div class="flex items-center gap-4 mt-3 px-2 min-h-[20px]">
       <Transition name="fade" mode="out-in">
-        <div v-if="errorMessage" class="flex items-center gap-2 text-[11px] text-red-400 font-medium">
+        <div v-if="errorMessage" key="error" class="flex items-center gap-2 text-[11px] text-red-400 font-medium">
           <span>{{ errorMessage }}</span>
         </div>
-        <div v-else class="flex items-center gap-4">
+        <div v-else-if="clipboardHint" key="hint" class="flex items-center gap-2 text-[11px] text-[var(--status-active)] font-medium">
+          <span>{{ clipboardHint }}</span>
+        </div>
+        <div v-else key="tips" class="flex items-center gap-4">
           <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
             <kbd class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]">
               Enter

@@ -98,6 +98,7 @@ cd goaria-v3
 
 # 我们推荐使用 pnpm，如果没有安装的话
 # cd frontend
+# corepack enable
 # corepack prepare pnpm@latest --activate
 # corepack use pnpm
 

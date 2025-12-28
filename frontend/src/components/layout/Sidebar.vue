@@ -3,7 +3,8 @@
   import { useUIStore } from '../../stores/ui'
   import { useConfigStore } from '../../stores/config'
   import { useTaskStore } from '../../stores/task'
-  import { Download, CheckCircle, Settings as SettingsIcon, Zap, Activity } from 'lucide-vue-next'
+  import { Download, CheckCircle, Settings as SettingsIcon, Activity } from 'lucide-vue-next'
+  import ThemeIcon from '../common/ThemeIcon.vue'
 
   const uiStore = useUIStore()
   const configStore = useConfigStore()
@@ -45,18 +46,7 @@
     <!-- Logo Section -->
     <div class="p-6 pt-2">
       <div class="flex items-center gap-3 group cursor-default select-none">
-        <div
-          class="w-10 h-10 rounded-[var(--radius-squircle-sm)] flex items-center justify-center relative overflow-hidden"
-        >
-          <!-- Animated gradient background -->
-          <div
-            class="absolute inset-0 bg-gradient-to-br from-[var(--neon-primary)] to-[var(--neon-secondary)] opacity-90"
-          ></div>
-          <div
-            class="absolute inset-0 bg-gradient-to-tr from-transparent via-white/20 to-transparent animate-shimmer"
-          ></div>
-          <Zap class="relative text-[var(--neon-btn-text)] fill-current" :size="20" />
-        </div>
+        <ThemeIcon :size="40" />
         <div class="flex flex-col">
           <span class="text-base font-black tracking-tight leading-none text-[var(--app-text)]/90">
             GoAria

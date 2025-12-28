@@ -7,7 +7,7 @@
   import { useUIStore } from './stores/ui'
   import { useConfigStore } from './stores/config'
   import { useTaskStore } from './stores/task'
-  import { Events } from '@wailsio/runtime'
+  import { Clipboard, Events } from '@wailsio/runtime'
 
   const DebugPanel = import.meta.env.DEV
     ? defineAsyncComponent(() => import('./components/debug/DebugPanel.vue'))
@@ -18,6 +18,29 @@
   const taskStore = useTaskStore()
   const isReady = ref(false)
   const unsubs: Array<() => void> = []
+
+  let lastClipboardCandidate = ''
+  let lastClipboardCandidateAt = 0
+  let lastTasksRefreshAt = 0
+
+  const isValidUrl = (text: string): boolean => {
+    return /^(https?|ftp|sftp|magnet):/i.test(text)
+  }
+
+  const isDuplicateUri = (uri: string): boolean => {
+    const needle = uri.trim()
+    if (!needle) return false
+    for (const list of [taskStore.activeTasks, taskStore.waitingTasks, taskStore.stoppedTasks]) {
+      for (const t of list) {
+        for (const f of t.files || []) {
+          for (const u of f.uris || []) {
+            if (u?.uri === needle) return true
+          }
+        }
+      }
+    }
+    return false
+  }
 
   const getWindowTransparency = (): string => {
     const s = configStore.settings as unknown as { window_transparency?: string }
@@ -63,6 +86,35 @@
     unsubs.push(Events.On('common:WindowShow', () => taskStore.setWindowVisibility(true)))
     unsubs.push(Events.On('common:WindowUnMinimise', () => taskStore.setWindowVisibility(true)))
     unsubs.push(Events.On('common:WindowRestore', () => taskStore.setWindowVisibility(true)))
+
+    unsubs.push(
+      Events.On('common:WindowFocus', async () => {
+        try {
+          const text = (await Clipboard.Text()).trim()
+          if (!text) return
+          if (!isValidUrl(text)) return
+
+          const now = Date.now()
+          if (text === lastClipboardCandidate && now - lastClipboardCandidateAt < 1500) return
+          lastClipboardCandidate = text
+          lastClipboardCandidateAt = now
+
+          if (now - lastTasksRefreshAt > 1500) {
+            lastTasksRefreshAt = now
+            await taskStore.fetchTasks()
+          }
+
+          if (isDuplicateUri(text)) return
+
+          if (uiStore.activeTab !== 'downloads') {
+            uiStore.setActiveTab('downloads')
+          }
+          uiStore.setPendingPasteUri(text)
+        } catch {
+          return
+        }
+      }),
+    )
   })
 
   onUnmounted(() => {

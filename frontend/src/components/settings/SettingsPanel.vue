@@ -9,7 +9,6 @@
     Globe,
     History,
     FolderOpen,
-    Zap,
     CheckCircle,
     Loader2,
     Sun,
@@ -17,7 +16,9 @@
     Monitor,
     Palette,
     Layers,
+    Zap,
   } from 'lucide-vue-next'
+  import ThemeIcon from '../common/ThemeIcon.vue'
 
   const configStore = useConfigStore()
   const uiStore = useUIStore()
@@ -517,11 +518,7 @@
         <div class="glass-panel-subtle rounded-[var(--radius-squircle-lg)] p-5 mt-6">
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-3">
-              <div
-                class="w-8 h-8 rounded-xl bg-gradient-to-br from-[var(--neon-primary)] to-[var(--neon-secondary)] flex items-center justify-center"
-              >
-                <Zap :size="14" class="text-[var(--neon-btn-text)]" />
-              </div>
+              <ThemeIcon :size="32" />
               <div>
                 <span class="text-sm font-bold text-[var(--app-text)]/60">GoAria</span>
                 <span class="text-[10px] text-[var(--app-text-subtle)] ml-2 font-mono-data"
@@ -566,6 +563,7 @@
   }
 
   input[type='number'] {
+    appearance: textfield;
     -moz-appearance: textfield;
   }
 

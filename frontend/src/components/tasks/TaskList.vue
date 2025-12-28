@@ -5,7 +5,8 @@
   import { useUIStore } from '../../stores/ui'
   import TaskCard from './TaskCard.vue'
   import TaskHeader from './TaskHeader.vue'
-  import { Trash2, HardDrive, Download, CheckCircle2, AlertCircle } from 'lucide-vue-next'
+  import TaskSearch from './TaskSearch.vue'
+  import { Trash2, HardDrive, Download, CheckCircle2, AlertCircle, SearchX } from 'lucide-vue-next'
   import { Task } from '../../../bindings/goaria-v3/internal/rpc/models'
 
   const taskStore = useTaskStore()
@@ -17,11 +18,31 @@
   const deleteLocalFile = ref(false)
   const isDeleting = ref(false)
 
+  // Search State
+  const searchQuery = ref('')
+
   // Task filtering logic based on active tab
   const combinedDownloads = computed(() => [...taskStore.activeTasks, ...taskStore.waitingTasks])
 
   const displayTasks = computed(() => {
-    return uiStore.activeTab === 'downloads' ? combinedDownloads.value : taskStore.stoppedTasks
+    const base = uiStore.activeTab === 'downloads' 
+      ? combinedDownloads.value 
+      : taskStore.stoppedTasks
+    if (uiStore.activeTab !== 'stopped' || !searchQuery.value.trim()) {
+      return base
+    }
+    const q = searchQuery.value.toLowerCase()
+    return base.filter(t => {
+      const filename = t.files?.[0]?.path?.split(/[\\/]/).pop() || ''
+      return filename.toLowerCase().includes(q)
+    })
+  })
+
+  // Check if search returned no results
+  const isSearchEmpty = computed(() => {
+    return uiStore.activeTab === 'stopped' && 
+           searchQuery.value.trim() !== '' && 
+           displayTasks.value.length === 0
   })
 
   const useVirtualList = computed(() => displayTasks.value.length > 15)
@@ -34,6 +55,15 @@
         title: '暂无下载任务',
         description: '在上方粘贴链接开始下载',
         accent: '#06ffd5',
+      }
+    }
+    // Search empty state
+    if (isSearchEmpty.value) {
+      return {
+        icon: SearchX,
+        title: '未找到匹配任务',
+        description: '尝试使用其他关键词搜索',
+        accent: '#f59e0b',
       }
     }
     return {
@@ -166,6 +196,9 @@
   <div class="flex-1 flex flex-col min-h-0">
     <!-- Task Addition Header (only in downloads tab) -->
     <TaskHeader v-if="uiStore.activeTab === 'downloads'" />
+
+    <!-- Search Box (only in stopped tab) -->
+    <TaskSearch v-if="uiStore.activeTab === 'stopped'" v-model="searchQuery" />
 
     <!-- Task List Container -->
     <div class="flex-1 min-h-0 relative">
