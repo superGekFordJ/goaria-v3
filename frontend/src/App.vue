@@ -7,7 +7,7 @@
   import { useUIStore } from './stores/ui'
   import { useConfigStore } from './stores/config'
   import { useTaskStore } from './stores/task'
-  import { Events } from '@wailsio/runtime'
+  import { Clipboard, Events } from '@wailsio/runtime'
 
   const DebugPanel = import.meta.env.DEV
     ? defineAsyncComponent(() => import('./components/debug/DebugPanel.vue'))
@@ -18,6 +18,29 @@
   const taskStore = useTaskStore()
   const isReady = ref(false)
   const unsubs: Array<() => void> = []
+
+  let lastClipboardCandidate = ''
+  let lastClipboardCandidateAt = 0
+  let lastTasksRefreshAt = 0
+
+  const isValidUrl = (text: string): boolean => {
+    return /^(https?|ftp|sftp|magnet):/i.test(text)
+  }
+
+  const isDuplicateUri = (uri: string): boolean => {
+    const needle = uri.trim()
+    if (!needle) return false
+    for (const list of [taskStore.activeTasks, taskStore.waitingTasks, taskStore.stoppedTasks]) {
+      for (const t of list) {
+        for (const f of t.files || []) {
+          for (const u of f.uris || []) {
+            if (u?.uri === needle) return true
+          }
+        }
+      }
+    }
+    return false
+  }
 
   const getWindowTransparency = (): string => {
     const s = configStore.settings as unknown as { window_transparency?: string }
@@ -63,6 +86,71 @@
     unsubs.push(Events.On('common:WindowShow', () => taskStore.setWindowVisibility(true)))
     unsubs.push(Events.On('common:WindowUnMinimise', () => taskStore.setWindowVisibility(true)))
     unsubs.push(Events.On('common:WindowRestore', () => taskStore.setWindowVisibility(true)))
+
+    // Centralized Clipboard Processing Logic
+    const processClipboard = async (trigger: 'auto' | 'manual') => {
+      try {
+        const text = (await Clipboard.Text()).trim()
+        if (!text) return
+        if (!isValidUrl(text)) return
+
+        // 1. Check against history (Deduplication for Auto-Trigger)
+        // If triggered automatically (Focus), we ONLY act if the content has changed.
+        // If triggered manually (Tab Switch), we allow re-processing (user might want to paste what they have).
+        if (trigger === 'auto' && text === lastClipboardCandidate) {
+          return
+        }
+
+        // Update history
+        lastClipboardCandidate = text
+        lastClipboardCandidateAt = Date.now()
+
+        // 2. Refresh tasks if stale (to ensure duplicate check is accurate)
+        const now = Date.now()
+        if (now - lastTasksRefreshAt > 1500) {
+          lastTasksRefreshAt = now
+          await taskStore.fetchTasks()
+        }
+
+        // 3. Check for duplicates in existing tasks
+        if (isDuplicateUri(text)) return
+
+        // 4. Action
+        if (trigger === 'auto') {
+          // For auto-trigger, we jump to the downloads tab
+          if (uiStore.activeTab !== 'downloads') {
+            uiStore.setActiveTab('downloads')
+          }
+        }
+
+        // If we are (or became) on the downloads tab, populate the field
+        if (uiStore.activeTab === 'downloads') {
+          uiStore.setPendingPasteUri(text)
+        }
+      } catch {
+        // Permission denied or empty clipboard, silently ignore
+      }
+    }
+
+    // Trigger 1: Window Focus (Smart Auto-Detection)
+    unsubs.push(
+      Events.On('common:WindowFocus', () => {
+        processClipboard('auto')
+      }),
+    )
+
+    // Trigger 2: Tab Switch (Context-Aware Detection)
+    // When user manually enters Downloads tab, check clipboard
+    watch(
+      () => uiStore.activeTab,
+      (newTab) => {
+        if (newTab === 'downloads') {
+          // Use 'manual' mode to be more permissive (allow current clipboard even if seen before)
+          // But 'processClipboard' updates 'lastClipboardCandidate', so it syncs up.
+          processClipboard('manual')
+        }
+      },
+    )
   })
 
   onUnmounted(() => {

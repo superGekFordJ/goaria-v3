@@ -1,54 +1,39 @@
 <script setup lang="ts">
-  import { ref, onMounted, onUnmounted } from 'vue'
+  import { ref, watch } from 'vue'
   import { useTaskStore } from '../../stores/task'
   import { useUIStore } from '../../stores/ui'
   import { Link, Plus, Loader2 } from 'lucide-vue-next'
-  import { Events } from '@wailsio/runtime'
 
   const taskStore = useTaskStore()
   const uiStore = useUIStore()
   const urlInput = ref('')
+  const urlInputEl = ref<HTMLInputElement | null>(null)
   const isAdding = ref(false)
   const inputFocused = ref(false)
   const errorMessage = ref('')
   const clipboardHint = ref('')
-  let unsubWindowFocus: (() => void) | null = null
+  watch(
+    () => uiStore.pendingPasteUri,
+    (uri) => {
+      const trimmed = (uri || '').trim()
+      if (!trimmed) return
 
-  // Validate URL helper
-  const isValidUrl = (text: string): boolean => {
-    return /^(https?|ftp|sftp|magnet):/i.test(text)
-  }
-
-  // Check clipboard when window gains focus (only if we're on downloads tab)
-  const checkClipboard = async () => {
-    if (urlInput.value.trim()) return // Already has input, don't override
-    if (uiStore.activeTab !== 'downloads') return // Only check on downloads tab
-    try {
-      const text = await navigator.clipboard.readText()
-      const trimmed = text.trim()
-      if (isValidUrl(trimmed)) {
+      if (!urlInput.value.trim()) {
         urlInput.value = trimmed
         clipboardHint.value = '已从剪贴板填入链接'
-        setTimeout(() => { clipboardHint.value = '' }, 3000)
+        setTimeout(() => {
+          urlInputEl.value?.focus()
+        }, 0)
+      } else {
+        clipboardHint.value = '剪贴板中有新链接'
       }
-    } catch {
-      // Permission denied or empty clipboard, silently ignore
-    }
-  }
-
-  // Listen to Wails window focus event
-  onMounted(() => {
-    unsubWindowFocus = Events.On('common:WindowFocus', () => {
-      checkClipboard()
-    })
-  })
-
-  onUnmounted(() => {
-    if (unsubWindowFocus) {
-      unsubWindowFocus()
-      unsubWindowFocus = null
-    }
-  })
+      setTimeout(() => {
+        clipboardHint.value = ''
+      }, 3000)
+      uiStore.consumePendingPasteUri()
+    },
+    { immediate: true },
+  )
 
   const handleAdd = async () => {
     const url = urlInput.value.trim()
@@ -106,6 +91,7 @@
 
         <!-- Input Field -->
         <input
+          ref="urlInputEl"
           v-model="urlInput"
           type="text"
           placeholder="粘贴下载链接 (HTTP / HTTPS / FTP / SFTP)..."

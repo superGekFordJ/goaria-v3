@@ -244,6 +244,7 @@
         v-if="displayTasks.length > 0 && !useVirtualList"
         ref="listContainer"
         class="h-full overflow-y-auto px-5 py-4"
+        :key="uiStore.activeTab"
       >
         <TransitionGroup name="task-list" tag="div" class="flex flex-col gap-4">
           <div
