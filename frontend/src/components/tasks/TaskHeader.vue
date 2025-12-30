@@ -12,6 +12,7 @@
   const inputFocused = ref(false)
   const errorMessage = ref('')
   const clipboardHint = ref('')
+  
   watch(
     () => uiStore.pendingPasteUri,
     (uri) => {
