@@ -88,9 +88,10 @@
 
   // Handle directory picker
   const handlePickDirectory = async () => {
-    await configStore.pickDirectory()
+    const selected = await configStore.pickDirectory()
+    if (!selected) return
     // Sync the new value
-    formData.value.download_dir = configStore.settings.download_dir || ''
+    formData.value.download_dir = selected
     triggerSave()
   }
 

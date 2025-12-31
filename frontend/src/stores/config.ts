@@ -56,14 +56,17 @@ export const useConfigStore = defineStore(
     /**
      * Open native directory picker and update download_dir
      */
-    async function pickDirectory() {
+    async function pickDirectory(): Promise<string | null> {
       try {
         const path = await SelectDirectory()
         if (path) {
           settings.download_dir = path
+          return path
         }
+        return null
       } catch (err) {
         console.error('Failed to select directory:', err)
+        return null
       }
     }
 

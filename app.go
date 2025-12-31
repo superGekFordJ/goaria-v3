@@ -310,18 +310,47 @@ func (a *App) SaveConfig(newCfg config.AppConfig) string {
 
 // SelectDirectory opens a directory picker dialog
 func (a *App) SelectDirectory() string {
+	resolveExistingDir := func(dir string) string {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			return ""
+		}
+		dir = filepath.Clean(dir)
+		for {
+			if st, err := os.Stat(dir); err == nil && st.IsDir() {
+				return dir
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+		return ""
+	}
+
 	// Use the global app instance for dialog
 	app := application.Get()
 	if app == nil {
 		return ""
 	}
 
-	result, err := app.Dialog.OpenFile().
+	startDir := resolveExistingDir(config.Current.DownloadDir)
+	if startDir == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			startDir = resolveExistingDir(home)
+		}
+	}
+
+	dlg := app.Dialog.OpenFile().
 		SetTitle("选择下载目录").
-		SetDirectory(config.Current.DownloadDir).
 		CanChooseDirectories(true).
-		CanChooseFiles(false).
-		PromptForSingleSelection()
+		CanChooseFiles(false)
+	if startDir != "" {
+		dlg = dlg.SetDirectory(startDir)
+	}
+
+	result, err := dlg.PromptForSingleSelection()
 
 	if err != nil || result == "" {
 		return ""
