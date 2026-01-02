@@ -9,6 +9,9 @@ import {
   RemoveTask,
   OpenFolder,
   UpdateTrayState,
+  BatchPause,
+  BatchResume,
+  BatchRemove,
 } from '../../bindings/goaria-v3/app'
 import { Task } from '../../bindings/goaria-v3/internal/rpc/models'
 
@@ -19,6 +22,9 @@ export const useTaskStore = defineStore('task', () => {
     waiting: [],
     stopped: [],
   })
+
+  // Selection State for batch operations
+  const selectedGids = ref<Set<string>>(new Set())
 
   const pollingTimer = ref<ReturnType<typeof setTimeout> | null>(null)
   const pollingEnabled = ref(false)
@@ -42,6 +48,11 @@ export const useTaskStore = defineStore('task', () => {
   const allTasksCount = computed(() => {
     return activeTasks.value.length + waitingTasks.value.length + stoppedTasks.value.length
   })
+
+  // Selection Getters
+  const selectedCount = computed(() => selectedGids.value.size)
+  const isSelected = (gid: string) => selectedGids.value.has(gid)
+  const getSelectedGids = computed(() => Array.from(selectedGids.value))
 
   /**
    * Fetch task list from Aria2 via Go backend
@@ -302,14 +313,94 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
+  // === Selection Actions ===
+
+  /**
+   * Toggle selection state of a task
+   */
+  function toggleSelect(gid: string) {
+    if (selectedGids.value.has(gid)) {
+      selectedGids.value.delete(gid)
+    } else {
+      selectedGids.value.add(gid)
+    }
+    selectedGids.value = new Set(selectedGids.value) // Trigger reactivity
+  }
+
+  /**
+   * Select all tasks by their gids
+   */
+  function selectAll(gids: string[]) {
+    selectedGids.value = new Set(gids)
+  }
+
+  /**
+   * Clear all selections
+   */
+  function clearSelection() {
+    selectedGids.value = new Set()
+  }
+
+  // === Batch Operations ===
+
+  /**
+   * Batch pause multiple tasks
+   */
+  async function batchPause(gids: string[]) {
+    try {
+      await BatchPause(gids)
+      await fetchTasks()
+    } catch (err) {
+      console.error('Batch pause failed:', err)
+    }
+  }
+
+  /**
+   * Batch resume multiple tasks
+   */
+  async function batchResume(gids: string[]) {
+    try {
+      await BatchResume(gids)
+      await fetchTasks()
+    } catch (err) {
+      console.error('Batch resume failed:', err)
+    }
+  }
+
+  /**
+   * Batch remove multiple tasks with optimistic update
+   */
+  async function batchRemove(gids: string[], deleteFiles: boolean) {
+    // Optimistic Update: Immediately remove from local state
+    const gidSet = new Set(gids)
+    tasks.value = {
+      active: tasks.value.active.filter(t => !gidSet.has(t.gid)),
+      waiting: tasks.value.waiting.filter(t => !gidSet.has(t.gid)),
+      stopped: tasks.value.stopped.filter(t => !gidSet.has(t.gid)),
+    }
+    clearSelection()
+
+    try {
+      await BatchRemove(gids, deleteFiles)
+    } catch (err) {
+      console.error('Batch remove failed:', err)
+      // Rollback: re-fetch tasks if the server call fails
+      await fetchTasks()
+    }
+  }
+
   return {
     // State
     tasks,
+    selectedGids,
     // Getters
     activeTasks,
     waitingTasks,
     stoppedTasks,
     allTasksCount,
+    selectedCount,
+    isSelected,
+    getSelectedGids,
     // Actions
     fetchTasks,
     startPolling,
@@ -320,5 +411,13 @@ export const useTaskStore = defineStore('task', () => {
     resume,
     remove,
     openTaskFolder,
+    // Selection Actions
+    toggleSelect,
+    selectAll,
+    clearSelection,
+    // Batch Actions
+    batchPause,
+    batchResume,
+    batchRemove,
   }
 })

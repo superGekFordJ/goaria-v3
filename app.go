@@ -170,6 +170,27 @@ func (a *App) ResumeTask(gid string) {
 	rpc.Unpause(gid)
 }
 
+// BatchPause pauses multiple tasks
+func (a *App) BatchPause(gids []string) {
+	for _, gid := range gids {
+		rpc.Pause(gid)
+	}
+}
+
+// BatchResume resumes multiple paused tasks
+func (a *App) BatchResume(gids []string) {
+	for _, gid := range gids {
+		rpc.Unpause(gid)
+	}
+}
+
+// BatchRemove removes multiple tasks
+func (a *App) BatchRemove(gids []string, deleteFiles bool) {
+	for _, gid := range gids {
+		a.RemoveTask(gid, deleteFiles)
+	}
+}
+
 // RemoveTask removes a task and optionally deletes the file
 func (a *App) RemoveTask(gid string, deleteFile bool) {
 	var targetPath string

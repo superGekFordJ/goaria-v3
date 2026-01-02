@@ -6,6 +6,7 @@
   import TaskCard from './TaskCard.vue'
   import TaskHeader from './TaskHeader.vue'
   import TaskSearch from './TaskSearch.vue'
+  import BatchActionBar from './BatchActionBar.vue'
   import { Trash2, HardDrive, Download, CheckCircle2, AlertCircle, SearchX } from 'lucide-vue-next'
   import { Task } from '../../../bindings/goaria-v3/internal/rpc/models'
 
@@ -17,6 +18,10 @@
   const delTarget = ref<Task | null>(null)
   const deleteLocalFile = ref(false)
   const isDeleting = ref(false)
+
+  // Batch Delete Modal State
+  const showBatchDelModal = ref(false)
+  const isBatchDeleting = ref(false)
 
   // Search State
   const searchQuery = ref('')
@@ -176,12 +181,58 @@
     taskStore.stopPolling(false) // Don't disable context, just pause
   })
 
-  // Close modal on escape key
+  // Keyboard shortcuts handler
   const handleKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape' && showDelModal.value) {
-      cancelDelete()
+    // Escape: Close modal or clear selection
+    if (e.key === 'Escape') {
+      if (showDelModal.value) {
+        cancelDelete()
+        return
+      }
+      if (showBatchDelModal.value) {
+        cancelBatchDelete()
+        return
+      }
+      // Clear selection when no modal is open
+      taskStore.clearSelection()
+      return
+    }
+
+    // Ctrl+A / Cmd+A: Select all visible tasks
+    if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+      e.preventDefault()
+      const allGids = displayTasks.value.map(t => t.gid)
+      taskStore.selectAll(allGids)
     }
   }
+
+  // Batch delete handlers
+  const confirmBatchDelete = () => {
+    deleteLocalFile.value = false
+    showBatchDelModal.value = true
+  }
+
+  const cancelBatchDelete = () => {
+    showBatchDelModal.value = false
+    deleteLocalFile.value = false
+  }
+
+  const handleBatchDelete = async () => {
+    if (isBatchDeleting.value) return
+    isBatchDeleting.value = true
+    try {
+      await taskStore.batchRemove(taskStore.getSelectedGids, deleteLocalFile.value)
+    } finally {
+      isBatchDeleting.value = false
+      showBatchDelModal.value = false
+      deleteLocalFile.value = false
+    }
+  }
+
+  // Clear selection when tab changes
+  watch(() => uiStore.activeTab, () => {
+    taskStore.clearSelection()
+  })
 
   onMounted(() => {
     window.addEventListener('keydown', handleKeydown)
@@ -277,6 +328,9 @@
       </RecycleScroller>
     </div>
 
+    <!-- Batch Action Bar -->
+    <BatchActionBar @confirm-batch-delete="confirmBatchDelete" />
+
     <!-- Delete Confirmation Modal -->
     <Teleport to="body">
       <Transition name="modal">
@@ -359,6 +413,108 @@
                 @click="handleDelete"
               >
                 <span v-if="isDeleting" class="flex items-center justify-center gap-2">
+                  <AlertCircle :size="16" class="animate-pulse" />
+                  删除中...
+                </span>
+                <span v-else>确认删除</span>
+              </button>
+            </div>
+
+            <!-- Keyboard Shortcut Hint -->
+            <div class="flex justify-center mt-6">
+              <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
+                <kbd
+                  class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]"
+                >
+                  Esc
+                </kbd>
+                <span>取消</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Transition>
+
+      <!-- Batch Delete Confirmation Modal -->
+      <Transition name="modal">
+        <div
+          v-if="showBatchDelModal"
+          class="fixed inset-0 z-[100] flex items-center justify-center p-6"
+          @click.self="cancelBatchDelete"
+        >
+          <!-- Backdrop -->
+          <div class="absolute inset-0 modal-backdrop animate-fade-in"></div>
+
+          <!-- Modal Content -->
+          <div
+            class="relative glass-panel rounded-[var(--radius-squircle-2xl)] w-full max-w-md p-8 animate-spring-in"
+          >
+            <!-- Warning Icon -->
+            <div class="flex justify-center mb-6">
+              <div
+                class="w-20 h-20 rounded-[var(--radius-squircle-lg)] bg-red-500/10 border border-red-500/20 flex items-center justify-center"
+              >
+                <Trash2 :size="36" class="text-red-400" />
+              </div>
+            </div>
+
+            <!-- Title -->
+            <h3 class="text-xl font-bold text-center text-[var(--modal-text)] mb-2">
+              确认删除 <span class="text-[var(--neon-primary)] font-mono-data">{{ taskStore.selectedCount }}</span> 个任务？
+            </h3>
+
+            <!-- Description -->
+            <p class="text-sm text-[var(--modal-text-muted)] text-center mb-8 px-4">
+              此操作将删除所有选中的任务
+            </p>
+
+            <!-- Delete Local File Option -->
+            <label
+              class="flex items-center gap-4 p-4 mb-8 rounded-[var(--radius-squircle-md)] cursor-pointer transition-all duration-200 group"
+              :class="
+                deleteLocalFile
+                  ? 'bg-red-500/10 border border-red-500/20'
+                  : 'bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:bg-red-500/5 hover:border-red-500/10'
+              "
+            >
+              <input v-model="deleteLocalFile" type="checkbox" class="shrink-0" />
+              <div class="flex items-center gap-3">
+                <HardDrive
+                  :size="18"
+                  :class="
+                    deleteLocalFile ? 'text-red-400' : 'text-[var(--app-text-subtle)] group-hover:text-red-400/60'
+                  "
+                />
+                <div class="flex flex-col">
+                  <span
+                    :class="[
+                      'text-sm font-semibold transition-colors',
+                      deleteLocalFile
+                        ? 'text-red-400'
+                        : 'text-[var(--modal-text-muted)] group-hover:text-red-400/80',
+                    ]"
+                  >
+                    同时删除本地文件
+                  </span>
+                  <span class="text-[10px] text-[var(--modal-text-subtle)]"> 此操作不可撤销 </span>
+                </div>
+              </div>
+            </label>
+
+            <!-- Action Buttons -->
+            <div class="flex gap-3">
+              <button
+                class="flex-1 py-4 rounded-[var(--radius-squircle-md)] bg-[var(--btn-glass-bg)] border border-[var(--btn-glass-border)] text-[var(--modal-text-muted)] font-semibold text-sm transition-all duration-200 hover:bg-[var(--btn-glass-hover)] hover:text-[var(--modal-text)] active:scale-[0.98]"
+                @click="cancelBatchDelete"
+              >
+                取消
+              </button>
+              <button
+                :disabled="isBatchDeleting"
+                class="flex-1 py-4 rounded-[var(--radius-squircle-md)] bg-[var(--status-error)] border border-red-400/20 text-white font-bold text-sm transition-all duration-200 hover:bg-red-400 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-red-500/20"
+                @click="handleBatchDelete"
+              >
+                <span v-if="isBatchDeleting" class="flex items-center justify-center gap-2">
                   <AlertCircle :size="16" class="animate-pulse" />
                   删除中...
                 </span>

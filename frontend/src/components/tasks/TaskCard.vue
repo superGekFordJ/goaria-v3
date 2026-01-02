@@ -131,6 +131,9 @@
     if (isCompleted.value) return 'task-card-complete'
     return ''
   })
+
+  // Selection state from store
+  const isSelected = computed(() => taskStore.isSelected(props.task.gid))
 </script>
 
 <template>
@@ -138,6 +141,7 @@
     :class="[
       'task-card glass-panel rounded-[var(--radius-squircle-xl)] p-5 group hover-reveal-container',
       cardGlowClass,
+      { 'task-card-selected': isSelected },
     ]"
   >
     <!-- Top Row: Filename & Actions -->
@@ -145,6 +149,19 @@
       <!-- File Info -->
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-3 mb-2">
+          <!-- Checkbox (Hover Reveal) -->
+          <div 
+            class="checkbox-container"
+            :class="{ 'always-visible': isSelected }"
+          >
+            <input 
+              type="checkbox" 
+              :checked="isSelected"
+              class="task-checkbox"
+              @click.stop="taskStore.toggleSelect(task.gid)"
+            />
+          </div>
+
           <!-- File Icon -->
           <div
             :class="[
