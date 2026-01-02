@@ -252,6 +252,12 @@ func (a *App) RemoveTask(gid string, deleteFile bool) {
 // --- System Operations ---
 
 // OpenFolder opens the folder containing the downloaded file
+// Strategy:
+// 1) Resolve target path (file preferred, fallback to task.Dir) and normalize slashes.
+// 2) Anchor relative paths to configured download dir and prevent escaping it.
+// 3) If target is missing, walk up to nearest existing parent; fallback to download dir, then home.
+// 4) Block path traversal: relative inputs are clamped to the download dir boundary.
+// 5) Open with platform-specific explorer, selecting the file when possible.
 func (a *App) OpenFolder(task rpc.Task) {
 	// Prefer file path
 	target := task.Dir
@@ -259,26 +265,120 @@ func (a *App) OpenFolder(task rpc.Task) {
 		target = task.Files[0].Path
 	}
 
-	// Clean path: handle slashes and absolute paths
-	cleanPath := filepath.Clean(filepath.FromSlash(target))
-	if !filepath.IsAbs(cleanPath) {
-		cleanPath = filepath.Join(config.Current.DownloadDir, cleanPath)
+	resolveExistingDir := func(dir string) string {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			return ""
+		}
+		dir = filepath.Clean(dir)
+		for {
+			if st, err := os.Stat(dir); err == nil && st.IsDir() {
+				return dir
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+		return ""
+	}
+
+	trimmed := strings.TrimSpace(target)
+	cleanTarget := ""
+	if trimmed != "" {
+		cleanTarget = filepath.Clean(filepath.FromSlash(trimmed))
+	}
+
+	baseDir := strings.TrimSpace(config.Current.DownloadDir)
+	if baseDir != "" {
+		baseDir = filepath.Clean(filepath.FromSlash(baseDir))
+	}
+
+	absBase := ""
+	if baseDir != "" {
+		if b, err := filepath.Abs(baseDir); err == nil {
+			absBase = b
+		} else {
+			absBase = baseDir
+		}
+	}
+
+	absPath := ""
+	if cleanTarget != "" {
+		if filepath.IsAbs(cleanTarget) {
+			if a, err := filepath.Abs(cleanTarget); err == nil {
+				absPath = a
+			} else {
+				absPath = cleanTarget
+			}
+		} else if absBase != "" {
+			joined := filepath.Clean(filepath.Join(absBase, cleanTarget))
+			if a, err := filepath.Abs(joined); err == nil {
+				absPath = a
+			} else {
+				absPath = joined
+			}
+		}
+	}
+	if absPath == "" {
+		absPath = absBase
+	}
+
+	if cleanTarget != "" && !filepath.IsAbs(cleanTarget) && absBase != "" && absPath != "" {
+		rel, err := filepath.Rel(absBase, absPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			absPath = absBase
+		}
+	}
+
+	selectFile := ""
+	openDir := ""
+	if absPath != "" {
+		if fi, err := os.Stat(absPath); err == nil {
+			if fi.IsDir() {
+				openDir = absPath
+			} else {
+				selectFile = absPath
+				openDir = filepath.Dir(absPath)
+			}
+		} else {
+			openDir = resolveExistingDir(filepath.Dir(absPath))
+		}
+	}
+	if openDir == "" {
+		openDir = resolveExistingDir(absBase)
+	}
+	if openDir == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			openDir = resolveExistingDir(home)
+		}
 	}
 
 	if runtime.GOOS == "windows" {
-		// Check if it's a file or directory
-		fi, err := os.Stat(cleanPath)
-		if err == nil && !fi.IsDir() {
-			// If it's a file, use /select to locate it precisely
-			exec.Command("explorer.exe", "/select,", cleanPath).Run()
-		} else {
-			// If it's a directory or file doesn't exist, open directory
-			exec.Command("explorer.exe", filepath.Dir(cleanPath)).Run()
+		if selectFile != "" {
+			_ = exec.Command("explorer.exe", "/select,", selectFile).Run()
+			return
 		}
-	} else if runtime.GOOS == "darwin" {
-		exec.Command("open", "-R", cleanPath).Run()
-	} else {
-		exec.Command("xdg-open", filepath.Dir(cleanPath)).Run()
+		if openDir != "" {
+			_ = exec.Command("explorer.exe", openDir).Run()
+		}
+		return
+	}
+
+	if runtime.GOOS == "darwin" {
+		if selectFile != "" {
+			_ = exec.Command("open", "-R", selectFile).Run()
+			return
+		}
+		if openDir != "" {
+			_ = exec.Command("open", openDir).Run()
+		}
+		return
+	}
+
+	if openDir != "" {
+		_ = exec.Command("xdg-open", openDir).Run()
 	}
 }
 
