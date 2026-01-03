@@ -41,6 +41,16 @@ function isTaskEqual(a: Task, b: Task): boolean {
  * @returns { merged: Task[], changed: boolean }
  */
 function mergeTasks(oldList: Task[], newList: Task[]): { merged: Task[]; changed: boolean } {
+  // 快速路径：两个列表都为空
+  if (oldList.length === 0 && newList.length === 0) {
+    return { merged: oldList, changed: false }
+  }
+  
+  // 快速路径：旧列表为空，直接返回新列表
+  if (oldList.length === 0) {
+    return { merged: newList, changed: true }
+  }
+  
   const oldMap = new Map(oldList.map(t => [t.gid, t]))
   
   // 检查是否有任务增减
@@ -77,15 +87,15 @@ function mergeTasks(oldList: Task[], newList: Task[]): { merged: Task[]; changed
 }
 
 /**
- * 按 GID 去重
+ * 按 GID 去重（复用 Set 实例减少 GC 压力）
  */
+const _dedupGidSet = new Set<string>()
 function dedupByGid(list: Task[]): Task[] {
-  const seen = new Set<string>()
+  _dedupGidSet.clear()
   return (list || []).filter(t => {
     const gid = t?.gid
-    if (!gid) return false
-    if (seen.has(gid)) return false
-    seen.add(gid)
+    if (!gid || _dedupGidSet.has(gid)) return false
+    _dedupGidSet.add(gid)
     return true
   })
 }
@@ -139,14 +149,17 @@ export const useTaskStore = defineStore('task', () => {
   const getSelectedGids = computed(() => Array.from(selectedGids.value))
 
   /**
-   * 更新托盘图标状态
+   * 更新托盘图标状态（避免创建临时数组）
    */
   function updateTrayIcon() {
     const hasActive = tasks.value.active.length > 0
     const hasPaused = tasks.value.waiting.some(t => t.status === 'paused') ||
                       tasks.value.active.some(t => t.status === 'paused')
-    const hasError = [...tasks.value.active, ...tasks.value.waiting, ...tasks.value.stopped]
-                      .some(t => t.status === 'error')
+    // 分别遍历各列表，避免 spread 创建合并数组
+    const hasError = 
+      tasks.value.active.some(t => t.status === 'error') ||
+      tasks.value.waiting.some(t => t.status === 'error') ||
+      tasks.value.stopped.some(t => t.status === 'error')
     UpdateTrayState(hasActive, hasPaused, hasError)
   }
 
@@ -163,13 +176,10 @@ export const useTaskStore = defineStore('task', () => {
       const activeGids = new Set(active.map(t => t.gid))
       const waiting = dedupByGid((res.waiting || []).filter((t: Task) => !activeGids.has(t.gid)))
       
-      // 检测任务完成：之前在 active/waiting 中但现在不在了
-      const oldGids = new Set([
-        ...tasks.value.active.map(t => t.gid),
-        ...tasks.value.waiting.map(t => t.gid)
-      ])
-      const newGids = new Set([...active.map(t => t.gid), ...waiting.map(t => t.gid)])
-      const taskCompleted = [...oldGids].some(gid => !newGids.has(gid))
+      // 检测任务完成：通过数量变化判断（避免创建临时 Set）
+      const oldCount = tasks.value.active.length + tasks.value.waiting.length
+      const newCount = active.length + waiting.length
+      const taskCompleted = newCount < oldCount
       
       // 增量合并
       const activeResult = mergeTasks(tasks.value.active, active)
