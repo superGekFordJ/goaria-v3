@@ -181,6 +181,16 @@
     taskStore.stopPolling(false) // Don't disable context, just pause
   })
 
+  const isEditableTarget = (target: EventTarget | null) => {
+    let el = target as HTMLElement | null
+    while (el) {
+      const tag = (el.tagName || '').toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || el.isContentEditable) return true
+      el = el.parentElement
+    }
+    return false
+  }
+
   // Keyboard shortcuts handler
   const handleKeydown = (e: KeyboardEvent) => {
     // Escape: Close modal or clear selection
@@ -199,7 +209,12 @@
     }
 
     // Ctrl+A / Cmd+A: Select all visible tasks
-    if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+      // If user is typing in an input/search box, keep native select-all behavior
+      if (isEditableTarget(e.target) || isEditableTarget(document.activeElement)) return
+      // Do not trigger task-level shortcuts when modals are open
+      if (showDelModal.value || showBatchDelModal.value) return
+
       e.preventDefault()
       const allGids = displayTasks.value.map(t => t.gid)
       taskStore.selectAll(allGids)
