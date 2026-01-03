@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import {
   GetTasks,
+  GetActiveTasks,
+  GetStoppedTasks,
   GetTaskMetadata,
   AddUri,
   PauseTask,
@@ -14,6 +16,82 @@ import {
   BatchRemove,
 } from '../../bindings/goaria-v3/app'
 import { Task } from '../../bindings/goaria-v3/internal/rpc/models'
+
+/**
+ * 浅比对两个任务是否相等（仅比较高频变化字段）
+ * 高频字段：completedLength, downloadSpeed, status
+ * 低频字段：files, dir, errorCode 等变化极少
+ */
+function isTaskEqual(a: Task, b: Task): boolean {
+  if (!a || !b) return false
+  return (
+    a.gid === b.gid &&
+    a.status === b.status &&
+    a.completedLength === b.completedLength &&
+    a.downloadSpeed === b.downloadSpeed &&
+    a.totalLength === b.totalLength &&
+    a.errorCode === b.errorCode
+  )
+}
+
+/**
+ * 增量合并任务列表
+ * @param oldList 当前列表
+ * @param newList 新获取的列表
+ * @returns { merged: Task[], changed: boolean }
+ */
+function mergeTasks(oldList: Task[], newList: Task[]): { merged: Task[]; changed: boolean } {
+  const oldMap = new Map(oldList.map(t => [t.gid, t]))
+  
+  // 检查是否有任务增减
+  if (oldList.length !== newList.length) {
+    return { merged: newList, changed: true }
+  }
+  
+  // 检查 GID 集合是否一致
+  const oldGids = new Set(oldList.map(t => t.gid))
+  for (const newTask of newList) {
+    if (!oldGids.has(newTask.gid)) {
+      return { merged: newList, changed: true }
+    }
+  }
+  
+  // 逐个比对，保留未变化任务的引用
+  let changed = false
+  const merged = newList.map(newTask => {
+    const oldTask = oldMap.get(newTask.gid)
+    if (oldTask && isTaskEqual(oldTask, newTask)) {
+      return oldTask // 保持原引用
+    }
+    changed = true
+    return newTask
+  })
+  
+  // 开发模式日志
+  if (import.meta.env.DEV && changed) {
+    const changedCount = merged.filter((t, i) => t !== oldList[i]).length
+    console.debug(`[Polling] Merged ${newList.length} tasks, ${changedCount} changed`)
+  }
+  
+  return { merged, changed }
+}
+
+/**
+ * 按 GID 去重
+ */
+function dedupByGid(list: Task[]): Task[] {
+  const seen = new Set<string>()
+  return (list || []).filter(t => {
+    const gid = t?.gid
+    if (!gid) return false
+    if (seen.has(gid)) return false
+    seen.add(gid)
+    return true
+  })
+}
+
+// 低频通道间隔常量
+const LOW_FREQ_INTERVAL = 30000 // 30s
 
 export const useTaskStore = defineStore('task', () => {
   // State
@@ -39,6 +117,12 @@ export const useTaskStore = defineStore('task', () => {
 
   let metadataInFlight = false
   const metadataPending = new Set<string>()
+  
+  // 低频通道最后拉取时间
+  let lastStoppedFetchTime = 0
+  
+  // 空闲轮询间隔（无活跃任务时使用）
+  const IDLE_INTERVAL = 5000 // 5s
 
   // Getters
   const activeTasks = computed(() => tasks.value.active || [])
@@ -55,7 +139,105 @@ export const useTaskStore = defineStore('task', () => {
   const getSelectedGids = computed(() => Array.from(selectedGids.value))
 
   /**
-   * Fetch task list from Aria2 via Go backend
+   * 更新托盘图标状态
+   */
+  function updateTrayIcon() {
+    const hasActive = tasks.value.active.length > 0
+    const hasPaused = tasks.value.waiting.some(t => t.status === 'paused') ||
+                      tasks.value.active.some(t => t.status === 'paused')
+    const hasError = [...tasks.value.active, ...tasks.value.waiting, ...tasks.value.stopped]
+                      .some(t => t.status === 'error')
+    UpdateTrayState(hasActive, hasPaused, hasError)
+  }
+
+  /**
+   * 高频轮询：仅获取 active + waiting 任务
+   * 返回是否有活跃任务（用于调整轮询频率）
+   */
+  async function fetchActiveTasks(): Promise<{ hasActiveTasks: boolean; taskCompleted: boolean }> {
+    try {
+      const res = await GetActiveTasks()
+      consecutiveErrors.value = 0
+      
+      const active = dedupByGid(res.active || [])
+      const activeGids = new Set(active.map(t => t.gid))
+      const waiting = dedupByGid((res.waiting || []).filter((t: Task) => !activeGids.has(t.gid)))
+      
+      // 检测任务完成：之前在 active/waiting 中但现在不在了
+      const oldGids = new Set([
+        ...tasks.value.active.map(t => t.gid),
+        ...tasks.value.waiting.map(t => t.gid)
+      ])
+      const newGids = new Set([...active.map(t => t.gid), ...waiting.map(t => t.gid)])
+      const taskCompleted = [...oldGids].some(gid => !newGids.has(gid))
+      
+      // 增量合并
+      const activeResult = mergeTasks(tasks.value.active, active)
+      const waitingResult = mergeTasks(tasks.value.waiting, waiting)
+      
+      if (activeResult.changed || waitingResult.changed) {
+        tasks.value = {
+          active: activeResult.merged,
+          waiting: waitingResult.merged,
+          stopped: tasks.value.stopped, // 保持 stopped 不变
+        }
+      }
+      
+      // 更新托盘图标
+      updateTrayIcon()
+      
+      const hasActiveTasks = active.length > 0 || waiting.length > 0
+      return { hasActiveTasks, taskCompleted }
+      
+    } catch (err) {
+      handleFetchError(err)
+      return { hasActiveTasks: false, taskCompleted: false }
+    }
+  }
+
+  /**
+   * 低频拉取：获取 stopped 任务（按需或定时）
+   */
+  async function fetchStoppedTasks() {
+    try {
+      const res = await GetStoppedTasks()
+      const stopped = dedupByGid(res || [])
+      
+      // 与 active/waiting 去重
+      const activeGids = new Set(tasks.value.active.map(t => t.gid))
+      const waitingGids = new Set(tasks.value.waiting.map(t => t.gid))
+      const filteredStopped = stopped.filter(t => !activeGids.has(t.gid) && !waitingGids.has(t.gid))
+      
+      const stoppedResult = mergeTasks(tasks.value.stopped, filteredStopped)
+      if (stoppedResult.changed) {
+        tasks.value = {
+          ...tasks.value,
+          stopped: stoppedResult.merged,
+        }
+      }
+      
+      lastStoppedFetchTime = Date.now()
+    } catch (err) {
+      console.warn('Failed to fetch stopped tasks:', err)
+    }
+  }
+
+  /**
+   * 处理拉取错误（熔断机制）
+   */
+  function handleFetchError(err: unknown) {
+    console.error('Failed to fetch tasks:', err)
+    consecutiveErrors.value++
+    
+    // Circuit breaker: Stop polling if too many consecutive errors
+    if (consecutiveErrors.value >= MAX_CONSECUTIVE_ERRORS) {
+      console.warn(`Stopped polling after ${MAX_CONSECUTIVE_ERRORS} consecutive errors to prevent log spam.`)
+      stopPolling()
+    }
+  }
+
+  /**
+   * Fetch task list from Aria2 via Go backend (Fallback: 全量刷新)
    * Implements two-stage refresh: first get tasks, then recover missing metadata
    */
   async function fetchTasks() {
@@ -64,26 +246,15 @@ export const useTaskStore = defineStore('task', () => {
       // Reset error count on success
       consecutiveErrors.value = 0
 
-      const dedupByGid = (list: Task[]) => {
-        const seen = new Set<string>()
-        return (list || []).filter(t => {
-          const gid = t?.gid
-          if (!gid) return false
-          if (seen.has(gid)) return false
-          seen.add(gid)
-          return true
-        })
-      }
-
       // Ensure we always have arrays even if backend returns empty/null
       // Also: deduplicate by gid across lists to avoid duplicated keys and UI state reuse
       const active = dedupByGid(res.active || [])
       const activeGids = new Set(active.map(t => t.gid))
 
-      const waiting = dedupByGid((res.waiting || []).filter(t => !activeGids.has(t.gid)))
+      const waiting = dedupByGid((res.waiting || []).filter((t: Task) => !activeGids.has(t.gid)))
       const waitingGids = new Set(waiting.map(t => t.gid))
 
-      const stopped = dedupByGid((res.stopped || []).filter(t => !activeGids.has(t.gid) && !waitingGids.has(t.gid)))
+      const stopped = dedupByGid((res.stopped || []).filter((t: Task) => !activeGids.has(t.gid) && !waitingGids.has(t.gid)))
 
       const newTasks = { active, waiting, stopped }
 
@@ -180,27 +351,50 @@ export const useTaskStore = defineStore('task', () => {
       pollingTimer.value = null
     }
 
-    const run = async () => {
+    // 自适应轮询循环
+    const runAdaptivePolling = async () => {
       if (!pollingEnabled.value || pollingGeneration !== gen) return
       if (isFetching.value) {
         if (pollingEnabled.value && pollingGeneration === gen) {
-          pollingTimer.value = setTimeout(run, interval)
+          pollingTimer.value = setTimeout(runAdaptivePolling, interval)
         }
         return
       }
 
       isFetching.value = true
+      let nextInterval = interval
       try {
-        await fetchTasks()
+        const { hasActiveTasks, taskCompleted } = await fetchActiveTasks()
+        
+        // 任务完成时立即刷新 stopped 列表
+        if (taskCompleted) {
+          if (import.meta.env.DEV) {
+            console.debug('[Polling] Task completed, refreshing stopped list')
+          }
+          fetchStoppedTasks() // 异步执行
+        } else {
+          // 定时刷新 stopped 列表
+          const now = Date.now()
+          if (now - lastStoppedFetchTime > LOW_FREQ_INTERVAL) {
+            fetchStoppedTasks()
+          }
+        }
+        
+        // 自适应频率：无活跃任务时使用空闲间隔
+        if (!hasActiveTasks && isWindowVisible.value) {
+          nextInterval = IDLE_INTERVAL
+        } else if (hasActiveTasks && isWindowVisible.value) {
+          nextInterval = interval // 恢复高频
+        }
       } finally {
         isFetching.value = false
       }
 
       if (!pollingEnabled.value || pollingGeneration !== gen) return
-      pollingTimer.value = setTimeout(run, interval)
+      pollingTimer.value = setTimeout(runAdaptivePolling, nextInterval)
     }
 
-    void run()
+    void runAdaptivePolling()
   }
 
   /**
@@ -251,6 +445,13 @@ export const useTaskStore = defineStore('task', () => {
     try {
       const res = await AddUri(uri)
       await fetchTasks()
+      
+      // 添加任务后重启高频轮询（避免在空闲间隔中等待太久）
+      if (pollingContextEnabled.value && isWindowVisible.value) {
+        stopPolling(false)
+        startPollingInternal(preferredInterval.value)
+      }
+      
       return res
     } catch (err) {
       console.error('Failed to add URI:', err)
@@ -403,6 +604,7 @@ export const useTaskStore = defineStore('task', () => {
     getSelectedGids,
     // Actions
     fetchTasks,
+    fetchStoppedTasks,
     startPolling,
     stopPolling,
     setWindowVisibility,

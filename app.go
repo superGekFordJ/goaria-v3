@@ -97,6 +97,64 @@ func (a *App) AddUri(url string) string {
 	return "success"
 }
 
+// GetActiveTasks returns only active and waiting tasks (high-frequency channel)
+// This endpoint is optimized for frequent polling (every 500ms)
+func (a *App) GetActiveTasks() map[string][]rpc.Task {
+	active, _ := rpc.TellActive()
+	waiting, _ := rpc.TellWaiting(0, 50)
+	return map[string][]rpc.Task{"active": active, "waiting": waiting}
+}
+
+// GetStoppedTasks returns stopped tasks with history (low-frequency channel)
+// Called on-demand when user switches to "Completed" tab or every 30s in background
+func (a *App) GetStoppedTasks() []rpc.Task {
+	if !config.Current.ShowHistory {
+		return []rpc.Task{}
+	}
+
+	stopped, _ := rpc.TellStopped(0, 50)
+
+	// Track completed tasks for history persistence
+	for _, t := range stopped {
+		if t.Status == "complete" && len(t.Files) > 0 && t.Files[0].Path != "" {
+			var sourceUrl string
+			if len(t.Files[0].Uris) > 0 {
+				sourceUrl = t.Files[0].Uris[0].Uri
+			}
+			history.Add(history.HistoryEntry{
+				GID:             t.GID,
+				Title:           filepath.Base(t.Files[0].Path),
+				Dir:             t.Dir,
+				Path:            t.Files[0].Path,
+				TotalLength:     t.TotalLength,
+				CompletedLength: t.CompletedLength,
+				Source:          sourceUrl,
+			})
+		}
+	}
+
+	// Merge history entries
+	gidSet := make(map[string]bool)
+	for _, t := range stopped {
+		gidSet[t.GID] = true
+	}
+
+	for _, h := range history.GetAll() {
+		if !gidSet[h.GID] {
+			stopped = append(stopped, rpc.Task{
+				GID:             h.GID,
+				Status:          "complete",
+				TotalLength:     h.TotalLength,
+				CompletedLength: h.CompletedLength,
+				Dir:             h.Dir,
+				Files:           []rpc.File{{Path: h.Path}},
+			})
+		}
+	}
+
+	return stopped
+}
+
 // GetTasks returns all tasks grouped by status
 func (a *App) GetTasks() map[string][]rpc.Task {
 	active, _ := rpc.TellActive()

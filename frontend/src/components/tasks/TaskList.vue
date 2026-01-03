@@ -244,9 +244,14 @@
     }
   }
 
-  // Clear selection when tab changes
-  watch(() => uiStore.activeTab, () => {
+  // Clear selection when tab changes, and trigger stopped fetch when switching to stopped tab
+  watch(() => uiStore.activeTab, (newTab) => {
     taskStore.clearSelection()
+    
+    // 切换到"已完成"时立即拉取 stopped 任务
+    if (newTab === 'stopped') {
+      taskStore.fetchStoppedTasks()
+    }
   })
 
   onMounted(() => {
