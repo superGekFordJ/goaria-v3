@@ -48,6 +48,12 @@ type Task struct {
 	Files           []File `json:"files"`
 }
 
+type TaskProgress struct {
+	GID             string `json:"gid"`
+	CompletedLength string `json:"completedLength"`
+	DownloadSpeed   string `json:"downloadSpeed"`
+}
+
 func (t Task) GetTitle() string {
 	if len(t.Files) > 0 && t.Files[0].Path != "" {
 		return filepath.Base(t.Files[0].Path)
@@ -122,6 +128,19 @@ func TellWaiting(offset, num int) ([]Task, error) {
 }
 func TellStopped(offset, num int) ([]Task, error) {
 	return getTasks("aria2.tellStopped", []any{offset, num})
+}
+
+func TellActiveProgress() ([]TaskProgress, error) {
+	keys := []string{"gid", "completedLength", "downloadSpeed"}
+	resp, err := sendRequest("aria2.tellActive", []any{keys})
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Result []TaskProgress `json:"result"`
+	}
+	json.Unmarshal(resp, &result)
+	return result.Result, nil
 }
 
 func getTasks(method string, extraParams []any) ([]Task, error) {

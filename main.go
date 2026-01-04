@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"goaria-v3/internal/config"
+	"goaria-v3/internal/events"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/process"
 	"goaria-v3/internal/rpc"
@@ -51,9 +52,20 @@ func main() {
 		},
 	})
 
+	// Initialize Event Hub (after app is created)
+	eventHub := events.NewHub(app)
+
+	// Start Aria2 WebSocket listener (after Aria2 is ready)
+	go func() {
+		if err := rpc.WaitForReady(5 * time.Second); err == nil {
+			rpc.InitNotifier(eventHub, config.Current.RPCPort, config.Current.RPCSecret)
+		}
+	}()
+
 	// Set shutdown handler
 	app.OnShutdown(func() {
 		// Save session and stop Aria2 on shutdown
+		rpc.StopNotifier()
 		rpc.ForceSaveSession()
 		time.Sleep(500 * time.Millisecond)
 		process.StopAria2()

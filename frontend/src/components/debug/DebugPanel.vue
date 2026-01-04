@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useUIStore } from '../../stores/ui'
+import { useTaskStore } from '../../stores/task'
 import { Activity, Cpu, Database, X } from 'lucide-vue-next'
 
 const uiStore = useUIStore()
+const taskStore = useTaskStore()
 
 // Debug panel visibility (controlled by URL hash or env)
 const isVisible = ref(false)
@@ -68,6 +70,13 @@ const themeDisplay = computed(() => uiStore.themeMode)
 const skinDisplay = computed(() => uiStore.skinId)
 const densityDisplay = computed(() => uiStore.density)
 const effectsDisplay = computed(() => uiStore.effects)
+
+const taskStats = computed(() => ({
+  active: taskStore.activeTasks.length,
+  waiting: taskStore.waitingTasks.length,
+  stopped: taskStore.stoppedTasks.length,
+  total: taskStore.allTasksCount,
+}))
 </script>
 
 <template>
@@ -140,6 +149,25 @@ const effectsDisplay = computed(() => uiStore.effects)
                 <div class="flex justify-between">
                   <span class="text-white/40">Effects:</span>
                   <span class="text-purple-400">{{ effectsDisplay }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="space-y-1">
+              <div class="flex items-center gap-2 text-white/50">
+                <Database :size="10" />
+                <span>Task Store</span>
+              </div>
+              <div class="pl-4 space-y-1">
+                <div class="flex justify-between">
+                  <span class="text-white/40">Counts:</span>
+                  <span class="text-cyan-400">
+                    A:{{ taskStats.active }} W:{{ taskStats.waiting }} S:{{ taskStats.stopped }}
+                  </span>
+                </div>
+                <div class="flex justify-between">
+                  <span class="text-white/40">Total:</span>
+                  <span class="text-cyan-400">{{ taskStats.total }}</span>
                 </div>
               </div>
             </div>

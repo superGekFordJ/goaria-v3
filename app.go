@@ -105,6 +105,14 @@ func (a *App) GetActiveTasks() map[string][]rpc.Task {
 	return map[string][]rpc.Task{"active": active, "waiting": waiting}
 }
 
+func (a *App) GetActiveProgress() []rpc.TaskProgress {
+	progress, err := rpc.TellActiveProgress()
+	if err != nil {
+		return []rpc.TaskProgress{}
+	}
+	return progress
+}
+
 // GetStoppedTasks returns stopped tasks with history (low-frequency channel)
 // Called on-demand when user switches to "Completed" tab or every 30s in background
 func (a *App) GetStoppedTasks() []rpc.Task {
