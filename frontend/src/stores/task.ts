@@ -379,6 +379,11 @@ export const useTaskStore = defineStore('task', () => {
       waiting: tasks.value.waiting.filter(t => t.gid !== gid),
       stopped: tasks.value.stopped.filter(t => t.gid !== gid),
     }
+    // Also remove from selection if present
+    if (selectedGids.value.has(gid)) {
+      selectedGids.value.delete(gid)
+      selectedGids.value = new Set(selectedGids.value)
+    }
   }
 
   function initEventSubscription() {
@@ -763,6 +768,13 @@ export const useTaskStore = defineStore('task', () => {
       waiting: tasks.value.waiting.filter(t => t.gid !== gid),
       stopped: tasks.value.stopped.filter(t => t.gid !== gid),
     }
+
+    // Also remove from selection to update UI (BatchActionBar)
+    if (selectedGids.value.has(gid)) {
+      selectedGids.value.delete(gid)
+      selectedGids.value = new Set(selectedGids.value)
+    }
+
     immediateUpdateTrayIcon()
 
     try {
