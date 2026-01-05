@@ -38,7 +38,6 @@
 与追求全功能的下载器不同，GoAria 的哲学是**实用主义**与**零干扰**。我们剔除了磁力链接等复杂功能，专注于提升 link（HTTP/HTTPS/FTP）下载的效率。它不仅仅是一个壳，而是一个经过深度优化的生产力工具，旨在以极低的资源占用，提供原生应用级的操作手感
 
 <div align="center">
-  <!-- 占位符图片：展示应用界面的设计理念 -->
   <img src="frontend/src/assets/images/display.png" alt="GoAria Screenshot" width="800" />
   <p><em>深色模式：黑曜石与激光的视觉交响</em></p>
 </div>
@@ -56,11 +55,11 @@
 - **极小分发体积**: 经过 UPX 压缩后的成品仅约 **10MB**，开箱即用，轻快如风。
 - **智能轮询控制**: 当窗口隐藏时自动优化 API 请求频率，尊重你的 CPU 和电量。
 
-### 🎨 零干扰美学
+### 🎨 现代美学 (Aesthetics)
 
-- **原生沉浸**: 适配 Windows 11 的 Mica / Acrylic 透明材质，界面与系统完美融合。
-- **直观反馈**: 摒弃传统冗长的文字说明，通过呼吸灯效果与色彩变化优雅地表达任务状态。
-- **流畅体验**: 采用虚拟列表技术，即使处理数千个任务也能保持 60 帧的滚动性能。
+- **原生沉浸**: 深度适配 Windows 11 Mica / Acrylic 材质，支持自定义皮肤（黑曜石与激光 / 电子纸与陶瓷）。
+- **智慧交互**: 灵感源自 Spotlight 的一键抓取设计，通过动态光效而非枯燥文字传达任务状态。
+- **极致流畅**: 虚拟滚动技术加持，处理上千个任务依旧丝滑无感。
 
 ## 🛠️ 技术架构
 
@@ -93,7 +92,7 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1
 
 ```bash
 # 克隆项目
-git clone https://github.com/yourusername/goaria-v3.git
+git clone https://github.com/superGekFordJ/goaria-v3.git
 cd goaria-v3
 
 # 我们推荐使用 pnpm，如果没有安装的话

@@ -93,7 +93,7 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1
 
 ```bash
 # Clone the project
-git clone https://github.com/yourusername/goaria-v3.git
+git clone https://github.com/superGekFordJ/goaria-v3.git
 cd goaria-v3
 
 # We recommend using pnpm. If not installed:
