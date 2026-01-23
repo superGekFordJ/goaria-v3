@@ -5,16 +5,33 @@ import (
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/process"
 	"goaria-v3/internal/rpc"
+	"goaria-v3/internal/smartthread"
+	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/tray"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
+
+// taskPeakSpeeds 跟踪每个 gid 的峰值速度
+var taskPeakSpeeds = make(map[string]int64)
+var taskPeakMu sync.RWMutex
+
+// 辅助用于“洗涤”瞬时爆发流量
+var taskSustainedSpeed = make(map[string]int64)
+var taskSustainedCount = make(map[string]int)
+var taskSustainedMu sync.Mutex
+
+// taskThreadCounts 跟踪每个 gid 实际使用的线程数（仅智能模式）
+var taskThreadCounts = make(map[string]int)
+var taskThreadMu sync.RWMutex
 
 // App struct for service bindings
 type App struct {
@@ -62,6 +79,35 @@ func (a *App) UpdateTrayState(hasActive, hasPaused, hasError bool) {
 
 // --- Task Management ---
 
+// RecordTaskSpeed 由前端轮询时调用，更新峰值速度
+func (a *App) RecordTaskSpeed(gid string, speed int64, cl int64) {
+	if speed <= 0 {
+		return
+	}
+
+	taskSustainedMu.Lock()
+	defer taskSustainedMu.Unlock()
+
+	last := taskSustainedSpeed[gid]
+	// 误差在 15% 以内视为“平稳”针对高带宽抖动比较大
+	diff := float64(speed-last) / float64(last+1)
+	if diff > -0.15 && diff < 0.15 {
+		taskSustainedCount[gid]++
+	} else {
+		taskSustainedSpeed[gid] = speed
+		taskSustainedCount[gid] = 1
+	}
+
+	// 持续 3 次（约 3 秒）且下载进度 > 50MB 才入库
+	if taskSustainedCount[gid] >= 3 && cl > 50*1024*1024 {
+		taskPeakMu.Lock()
+		if speed > taskPeakSpeeds[gid] {
+			taskPeakSpeeds[gid] = speed
+		}
+		taskPeakMu.Unlock()
+	}
+}
+
 // AddUri adds a new download task
 // Returns "success" on success, "duplicate" if task already exists, or error message
 func (a *App) AddUri(url string) string {
@@ -90,6 +136,30 @@ func (a *App) AddUri(url string) string {
 		}
 	}
 
+	if config.Current.SmartThreadMode {
+		// 智能模式：根据历史数据动态计算线程参数
+		fileSize := rpc.HeadContentLength(url, 3*time.Second)
+
+		maxConn, _ := strconv.Atoi(config.Current.MaxConnections)
+		if maxConn <= 0 {
+			maxConn = 16
+		}
+
+		params := smartthread.Calculate(fileSize, maxConn, url)
+		gid, err := rpc.AddUriWithOptions(url, config.Current.DownloadDir, params.Split, params.MinSize)
+		if err != nil {
+			return err.Error()
+		}
+
+		if gid != "" && params.Split > 0 {
+			taskThreadMu.Lock()
+			taskThreadCounts[gid] = params.Split
+			taskThreadMu.Unlock()
+		}
+		return "success"
+	}
+
+	// 非智能模式，走原逻辑
 	err := rpc.AddUri(url, config.Current.DownloadDir)
 	if err != nil {
 		return err.Error()
@@ -122,9 +192,45 @@ func (a *App) GetStoppedTasks() []rpc.Task {
 
 	stopped, _ := rpc.TellStopped(0, 50)
 
-	// Track completed tasks for history persistence
+	// Track completed tasks for history persistence and speed stats
 	for _, t := range stopped {
 		if t.Status == "complete" && len(t.Files) > 0 && t.Files[0].Path != "" {
+			// 记录速度统计（仅 >50MB 的文件）
+			totalLen, _ := strconv.ParseInt(t.TotalLength, 10, 64)
+			if totalLen > 50*1024*1024 {
+				taskPeakMu.RLock()
+				peak := taskPeakSpeeds[t.GID]
+				taskPeakMu.RUnlock()
+				if peak > 0 {
+					threadCount := 0
+					taskThreadMu.RLock()
+					trackedCount, tracked := taskThreadCounts[t.GID]
+					taskThreadMu.RUnlock()
+					if tracked {
+						threadCount = trackedCount
+					} else {
+						threadCount, _ = strconv.Atoi(config.Current.MaxConnections)
+						if threadCount <= 0 {
+							threadCount = 16
+						}
+					}
+					speedstats.AddRecord(peak, threadCount, totalLen)
+				}
+				// 清理已完成任务的峰值记录
+				taskPeakMu.Lock()
+				delete(taskPeakSpeeds, t.GID)
+				taskPeakMu.Unlock()
+
+				taskThreadMu.Lock()
+				delete(taskThreadCounts, t.GID)
+				taskThreadMu.Unlock()
+
+				taskSustainedMu.Lock()
+				delete(taskSustainedSpeed, t.GID)
+				delete(taskSustainedCount, t.GID)
+				taskSustainedMu.Unlock()
+			}
+
 			var sourceUrl string
 			if len(t.Files[0].Uris) > 0 {
 				sourceUrl = t.Files[0].Uris[0].Uri
@@ -299,6 +405,20 @@ func (a *App) RemoveTask(gid string, deleteFile bool) {
 
 	// 3. Remove from history
 	history.Remove(gid)
+
+	// Clean up tracking maps
+	taskPeakMu.Lock()
+	delete(taskPeakSpeeds, gid)
+	taskPeakMu.Unlock()
+
+	taskThreadMu.Lock()
+	delete(taskThreadCounts, gid)
+	taskThreadMu.Unlock()
+
+	taskSustainedMu.Lock()
+	delete(taskSustainedSpeed, gid)
+	delete(taskSustainedCount, gid)
+	taskSustainedMu.Unlock()
 
 	// 4. Physical cleanup
 	if targetPath != "" {

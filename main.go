@@ -7,6 +7,7 @@ import (
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/process"
 	"goaria-v3/internal/rpc"
+	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/tray"
 	"io/fs"
 	"log"
@@ -24,9 +25,10 @@ var assets embed.FS
 var appIcon []byte
 
 func main() {
-	// Initialize config, history, and Aria2
+	// Initialize config, history, speedstats, and Aria2
 	config.Load()
 	history.Load()
+	speedstats.Load()
 	rpc.Init(config.Current.RPCPort, config.Current.RPCSecret)
 	_ = process.StartAria2(config.Current)
 

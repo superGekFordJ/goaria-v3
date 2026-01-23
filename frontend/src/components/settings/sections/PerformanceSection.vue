@@ -6,11 +6,13 @@
     connections: string
     concurrentDownloads: string
     connectionOptions: string[]
+    smartThreadMode: boolean
   }>()
 
   const emit = defineEmits<{
     (e: 'update:connections', value: string): void
     (e: 'update:concurrentDownloads', value: string): void
+    (e: 'update:smartThreadMode', value: boolean): void
     (e: 'change'): void
   }>()
 </script>
@@ -22,13 +24,36 @@
     :icon="Cpu" 
     icon-class="bg-amber-500/10 text-amber-400"
   >
+    <!-- Smart Thread Mode Toggle -->
+    <div class="mb-4 flex items-center justify-between p-3 bg-[var(--input-bg)] rounded-xl border border-[var(--input-border)]">
+      <div>
+        <div class="text-sm font-medium text-[var(--app-text)]">智能线程模式</div>
+        <div class="text-xs text-[var(--app-text-subtle)]">根据网络状况自动调整线程数</div>
+      </div>
+      <button
+        type="button"
+        :class="[
+          'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none',
+          smartThreadMode ? 'bg-[var(--neon-primary)]' : 'bg-[var(--input-border)]'
+        ]"
+        @click="emit('update:smartThreadMode', !smartThreadMode); emit('change')"
+      >
+        <span
+          :class="[
+            'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+            smartThreadMode ? 'translate-x-5' : 'translate-x-0'
+          ]"
+        />
+      </button>
+    </div>
+
     <div class="grid grid-cols-2 gap-4">
       <!-- Max Connections Per Server -->
       <div class="space-y-2">
         <label
           class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)]"
         >
-          单任务连接数
+          单任务最大连接数
         </label>
         <div class="relative">
           <select

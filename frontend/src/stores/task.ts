@@ -15,6 +15,7 @@ import {
   BatchPause,
   BatchResume,
   BatchRemove,
+  RecordTaskSpeed,
 } from '../../bindings/goaria-v3/app'
 import { Task, TaskProgress } from '../../bindings/goaria-v3/internal/rpc/models'
 import { subscribeToTaskEvents, unsubscribeFromTaskEvents } from './events'
@@ -217,6 +218,14 @@ export const useTaskStore = defineStore('task', () => {
         const gid = p?.gid
         if (!gid) continue
         _progressGidSet.add(gid)
+
+        // 记录峰值速度用于智能线程模式
+        const speed = parseInt(p.downloadSpeed || '0', 10)
+        const cl = parseInt(p.completedLength || '0', 10)
+        if (speed > 0) {
+          // 异步记录，不阻塞轮询
+          RecordTaskSpeed(gid, speed, cl).catch(() => {})
+        }
 
         const task = tasks.value.active.find(t => t.gid === gid)
         if (task) {

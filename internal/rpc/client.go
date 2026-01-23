@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"time"
+
+	"goaria-v3/internal/config"
 )
 
 var (
@@ -92,6 +95,80 @@ func AddUri(url string, downloadDir string) error {
 		ForceSaveSession()
 	}
 	return err
+}
+
+// AddUriWithOptions 添加下载任务，支持动态线程参数
+// 返回 (gid, error)
+func AddUriWithOptions(url string, downloadDir string, split int, minSplitSize int64) (string, error) {
+	options := map[string]string{"dir": downloadDir}
+	if split > 0 {
+		options["split"] = strconv.Itoa(split)
+		options["max-connection-per-server"] = strconv.Itoa(split)
+	}
+	if minSplitSize > 0 {
+		options["min-split-size"] = strconv.FormatInt(minSplitSize, 10)
+	}
+	params := []any{
+		[]string{url},
+		options,
+	}
+	resp, err := sendRequest("aria2.addUri", params)
+	if err != nil {
+		return "", err
+	}
+	ForceSaveSession()
+
+	var result struct {
+		Result any `json:"result"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return "", err
+	}
+	if gid, ok := result.Result.(string); ok {
+		return gid, nil
+	}
+	return "", nil
+}
+
+// HeadContentLength 发送 HEAD 请求获取文件大小
+// 返回 Content-Length (bytes)，失败返回 0
+// timeout: 超时时间
+func HeadContentLength(url string, timeout time.Duration) int64 {
+	client := &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
+
+	req, err := http.NewRequest("HEAD", url, nil)
+	if err != nil {
+		return 0
+	}
+
+	ua := ""
+	if config.Current != nil {
+		ua = config.Current.UserAgent
+	}
+	if ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		if resp.ContentLength > 0 {
+			return resp.ContentLength
+		}
+	}
+	return 0
 }
 
 func Pause(gid string) error {

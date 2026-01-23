@@ -49,6 +49,7 @@ Unlike feature-heavy download managers, GoAria's philosophy is rooted in **Pragm
 
 - **Streamlined Core**: Exclusively handles HTTP/HTTPS/FTP/SFTP links. No bloat from magnet or torrent modules, keeping the functionality pure.
 - **Spotlight Interaction**: A system-level search inspired header design with automatic link recognition for one-click task initiation.
+- **Smart Thread**: Automatically calculates the optimal number of threads based on file size to avoid resource waste.
 
 ### 🚀 Extreme Lightweight
 

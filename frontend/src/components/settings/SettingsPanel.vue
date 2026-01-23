@@ -28,6 +28,7 @@
     user_agent: '',
     show_history: false,
     window_transparency: 'none',
+    smart_thread_mode: false,
   })
 
   // Save status for UI feedback only
@@ -48,6 +49,7 @@
       user_agent: s.user_agent || '',
       show_history: Boolean(s.show_history),
       window_transparency: ((s as Record<string, unknown>).window_transparency as string) || 'none',
+      smart_thread_mode: Boolean((s as Record<string, unknown>).smart_thread_mode),
     }
     // Mark as initialized after a tick to avoid triggering save on mount
     setTimeout(() => {
@@ -169,6 +171,7 @@
         <PerformanceSection 
           v-model:connections="formData.max_connections" 
           v-model:concurrent-downloads="formData.max_concurrent_downloads" 
+          v-model:smart-thread-mode="formData.smart_thread_mode"
           :connection-options="connectionOptions"
           @change="triggerSave"
         />
