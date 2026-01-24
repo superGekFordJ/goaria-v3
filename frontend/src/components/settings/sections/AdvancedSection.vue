@@ -96,7 +96,7 @@
         >
           <div
             :class="[
-              'absolute top-1 w-5 h-5 rounded-full bg-white shadow-lg transition-all duration-300',
+              'absolute top-1 w-5 h-5 rounded-full bg-[var(--card-bg)] shadow-lg ring-1 ring-[var(--glass-border)] transition-all duration-300',
               showHistory ? 'left-6' : 'left-1',
             ]"
           ></div>
