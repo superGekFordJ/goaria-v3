@@ -14,8 +14,9 @@ const (
 
 // ThreadParams 计算结果
 type ThreadParams struct {
-	Split   int   // -x 参数：线程数
-	MinSize int64 // -k 参数：最小切分大小 (bytes)
+	Split         int   // -x 参数：线程数
+	MinSize       int64 // -k 参数：最小切分大小 (bytes)
+	IsExploration bool  // 是否触发了探索模式
 }
 
 // Calculate 根据文件大小计算最优线程参数
@@ -43,6 +44,7 @@ func Calculate(fileSize int64, maxConnections int, url string) ThreadParams {
 	}
 
 	var nFinal int
+	var isExploration bool
 
 	if fileSize <= 0 {
 		// 文件大小未知，使用保守策略（最大线程数）
@@ -65,6 +67,7 @@ func Calculate(fileSize int64, maxConnections int, url string) ThreadParams {
 		// 卫语句：如果计算出的线程数已经是 1，则无需探索
 		if nFinal > 1 && ShouldExplore(url) {
 			nFinal = (nFinal + 1) / 2
+			isExploration = true
 			if nFinal < 1 {
 				nFinal = 1
 			}
@@ -82,8 +85,9 @@ func Calculate(fileSize int64, maxConnections int, url string) ThreadParams {
 	}
 
 	return ThreadParams{
-		Split:   nFinal,
-		MinSize: minSize,
+		Split:         nFinal,
+		MinSize:       minSize,
+		IsExploration: isExploration,
 	}
 }
 
@@ -91,6 +95,6 @@ func Calculate(fileSize int64, maxConnections int, url string) ThreadParams {
 func ShouldExplore(url string) bool {
 	h := fnv.New32a()
 	h.Write([]byte(url))
-	// 10% 概率触发
-	return h.Sum32()%10 == 0
+	// 20% 概率触发探索 (平均每 5 个任务 1 个探索，确保 10 个任务的窗口内有足够的验证机会)
+	return h.Sum32()%5 == 0
 }

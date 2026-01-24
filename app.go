@@ -20,18 +20,26 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-// taskPeakSpeeds 跟踪每个 gid 的峰值速度
-var taskPeakSpeeds = make(map[string]int64)
-var taskPeakMu sync.RWMutex
+// taskMeta 存储任务的元数据（不仅是线程数）
+type taskMeta struct {
+	ThreadCount   int
+	IsExploration bool
+}
+
+var (
+	// taskPeakSpeeds 跟踪每个 gid 的峰值速度
+	taskPeakSpeeds = make(map[string]int64)
+	taskPeakMu     sync.RWMutex
+
+	// taskThreadCounts 跟踪每个 gid 实际使用的线程数（仅智能模式）
+	taskThreadCounts = make(map[string]taskMeta)
+	taskThreadMu     sync.RWMutex
+)
 
 // 辅助用于“洗涤”瞬时爆发流量
 var taskSustainedSpeed = make(map[string]int64)
 var taskSustainedCount = make(map[string]int)
 var taskSustainedMu sync.Mutex
-
-// taskThreadCounts 跟踪每个 gid 实际使用的线程数（仅智能模式）
-var taskThreadCounts = make(map[string]int)
-var taskThreadMu sync.RWMutex
 
 // App struct for service bindings
 type App struct {
@@ -145,15 +153,18 @@ func (a *App) AddUri(url string) string {
 			maxConn = 16
 		}
 
-		params := smartthread.Calculate(fileSize, maxConn, url)
-		gid, err := rpc.AddUriWithOptions(url, config.Current.DownloadDir, params.Split, params.MinSize)
+		params := smartthread.Calculate(fileSize, maxConn, normalizedUrl)
+		gid, err := rpc.AddUriWithOptions(normalizedUrl, config.Current.DownloadDir, params.Split, params.MinSize)
 		if err != nil {
 			return err.Error()
 		}
 
 		if gid != "" && params.Split > 0 {
 			taskThreadMu.Lock()
-			taskThreadCounts[gid] = params.Split
+			taskThreadCounts[gid] = taskMeta{
+				ThreadCount:   params.Split,
+				IsExploration: params.IsExploration,
+			}
 			taskThreadMu.Unlock()
 		}
 		return "success"
@@ -203,23 +214,28 @@ func (a *App) GetStoppedTasks() []rpc.Task {
 				taskPeakMu.RUnlock()
 				if peak > 0 {
 					threadCount := 0
+					isExploration := false
+
 					taskThreadMu.RLock()
-					trackedCount, tracked := taskThreadCounts[t.GID]
+					meta, tracked := taskThreadCounts[t.GID]
 					taskThreadMu.RUnlock()
+
 					if tracked {
-						threadCount = trackedCount
+						threadCount = meta.ThreadCount
+						isExploration = meta.IsExploration
 					} else {
 						threadCount, _ = strconv.Atoi(config.Current.MaxConnections)
 						if threadCount <= 0 {
 							threadCount = 16
 						}
+						// 对于未追踪的任务（如重启后），尝试重新计算
+						var sourceUrl string
+						if len(t.Files[0].Uris) > 0 {
+							sourceUrl = strings.TrimSpace(t.Files[0].Uris[0].Uri)
+						}
+						isExploration = smartthread.ShouldExplore(sourceUrl)
 					}
 
-					var sourceUrl string
-					if len(t.Files[0].Uris) > 0 {
-						sourceUrl = t.Files[0].Uris[0].Uri
-					}
-					isExploration := smartthread.ShouldExplore(sourceUrl)
 					speedstats.AddRecord(peak, threadCount, totalLen, isExploration)
 				}
 				// 清理已完成任务的峰值记录
