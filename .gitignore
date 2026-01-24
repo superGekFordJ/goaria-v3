@@ -29,3 +29,7 @@ config.json
 .idea/
 /docs/
 .windsurf
+
+# --- 构建产物 ---
+*.zip
+

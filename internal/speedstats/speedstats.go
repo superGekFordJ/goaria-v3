@@ -18,12 +18,14 @@ const (
 
 // SpeedRecord 记录单次大文件下载的峰值数据
 type SpeedRecord struct {
-	Timestamp   int64 `json:"timestamp"`    // Unix 时间戳
-	PeakSpeed   int64 `json:"peak_speed"`   // 峰值速度 (bytes/s)
-	ThreadCount int   `json:"thread_count"` // 使用的线程数
-	FileSize    int64 `json:"file_size"`    // 文件大小 (bytes)
+	Timestamp     int64 `json:"timestamp"`      // Unix 时间戳
+	PeakSpeed     int64 `json:"peak_speed"`     // 峰值速度 (bytes/s)
+	ThreadCount   int   `json:"thread_count"`   // 达成该速度时使用的线程数
+	FileSize      int64 `json:"file_size"`      // 文件大小
+	IsExploration bool  `json:"is_exploration"` // 是否为探索任务
 }
 
+// 全局变量
 var (
 	records []SpeedRecord
 	mu      sync.RWMutex
@@ -61,24 +63,22 @@ func Save() error {
 	return os.WriteFile(getStatsPath(), data, 0644)
 }
 
-// AddRecord 添加一条下载峰值记录
-// 仅当 fileSize > 50MB 时才记录
-func AddRecord(peakSpeed int64, threadCount int, fileSize int64) {
-	if fileSize < minFileSize {
+// AddRecord 添加一条新的速度记录
+func AddRecord(peakSpeed int64, threadCount int, fileSize int64, isExploration bool) {
+	if peakSpeed <= 0 || threadCount <= 0 {
 		return
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
 
-	record := SpeedRecord{
-		Timestamp:   time.Now().Unix(),
-		PeakSpeed:   peakSpeed,
-		ThreadCount: threadCount,
-		FileSize:    fileSize,
-	}
-
-	records = append(records, record)
+	records = append(records, SpeedRecord{
+		Timestamp:     time.Now().Unix(),
+		PeakSpeed:     peakSpeed,
+		ThreadCount:   threadCount,
+		FileSize:      fileSize,
+		IsExploration: isExploration,
+	})
 
 	// 超出限制时删除最旧的
 	if len(records) > maxRecords {
@@ -123,26 +123,47 @@ func GetRecentPeak() (vSingleEst int64, ok bool) {
 		vValues = vValues[len(vValues)-10:]
 	}
 
-	// 计算当前窗口内的最大效率作为标杆
-	var maxWindowEff int64
-	for _, v := range vValues {
-		if v > maxWindowEff {
-			maxWindowEff = v
-		}
-	}
-
-	// 1. 计算中位数级别
+	// 1. 计算中位数基准 (Baseline)
 	sort.Slice(vValues, func(i, j int) bool {
 		return vValues[i] < vValues[j]
 	})
 	medianV := vValues[len(vValues)/2]
 
-	// 2. 进化机制：如果最近出现了极高效率的“探测成功”样本，即使是少数，也应作为标杆
-	// 我们取（中位数）和（当前窗口高点 * 0.9）的较大者
-	// 限制在当前窗口 (maxWindowEff) 而非历史最大值，保证了环境切换时的快速衰减
+	// 2. 科学验证机制 (Scientific Validation)
+	// 不再盲目信任所有高分，只有当“探索任务”显著超越基准时，才采纳为新标杆
+	// 验证阈值：探索效率 >= 基准 * 1.5
+	var verifiedBenchmark int64
+
+	// 重新遍历窗口寻找成功的探索任务
+	// 注意：我们需要原始记录来检查 IsExploration，上面的 vValues 丢失了该信息
+	// 这里做一个简单的优化：在收集 vValues 时其实可以保留更多信息，或者再次遍历 recentRecords
+	limit := 10
+	startIdx := len(records) - limit
+	if startIdx < 0 {
+		startIdx = 0
+	}
+
+	for i := startIdx; i < len(records); i++ {
+		r := records[i]
+		if r.IsExploration && r.ThreadCount > 0 {
+			eff := r.PeakSpeed / int64(r.ThreadCount)
+			// 只有显著超越中位数的探索才算成功
+			if eff >= medianV*3/2 { // eff >= median * 1.5
+				if eff > verifiedBenchmark {
+					verifiedBenchmark = eff
+				}
+			}
+		}
+	}
+
+	// 决策：如果有验证成功的标杆，使用标杆（打九折以防万一）；否则坚持中位数
 	finalV := medianV
-	if maxWindowEff*9/10 > finalV {
-		finalV = maxWindowEff * 9 / 10
+	if verifiedBenchmark > 0 {
+		// 采用成功探索的值，保留 10% 安全余量
+		candidate := verifiedBenchmark * 9 / 10
+		if candidate > finalV {
+			finalV = candidate
+		}
 	}
 
 	return finalV, true

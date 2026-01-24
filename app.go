@@ -214,7 +214,13 @@ func (a *App) GetStoppedTasks() []rpc.Task {
 							threadCount = 16
 						}
 					}
-					speedstats.AddRecord(peak, threadCount, totalLen)
+
+					var sourceUrl string
+					if len(t.Files[0].Uris) > 0 {
+						sourceUrl = t.Files[0].Uris[0].Uri
+					}
+					isExploration := smartthread.ShouldExplore(sourceUrl)
+					speedstats.AddRecord(peak, threadCount, totalLen, isExploration)
 				}
 				// 清理已完成任务的峰值记录
 				taskPeakMu.Lock()

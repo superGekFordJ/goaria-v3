@@ -63,7 +63,7 @@ func Calculate(fileSize int64, maxConnections int, url string) ThreadParams {
 		// 探索机制 (Exploration)
 		// 10% 的概率尝试使用一半的线程，看看是否能维持同样的效率或更高效率
 		// 卫语句：如果计算出的线程数已经是 1，则无需探索
-		if nFinal > 1 && shouldExplore(url) {
+		if nFinal > 1 && ShouldExplore(url) {
 			nFinal = (nFinal + 1) / 2
 			if nFinal < 1 {
 				nFinal = 1
@@ -87,8 +87,8 @@ func Calculate(fileSize int64, maxConnections int, url string) ThreadParams {
 	}
 }
 
-// shouldExplore 确定性判定是否进行低并发探索
-func shouldExplore(url string) bool {
+// ShouldExplore 确定性判定是否进行低并发探索
+func ShouldExplore(url string) bool {
 	h := fnv.New32a()
 	h.Write([]byte(url))
 	// 10% 概率触发
