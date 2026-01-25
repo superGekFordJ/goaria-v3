@@ -1,11 +1,7 @@
 <script setup lang="ts">
   import { ref, onMounted, onUnmounted } from 'vue'
   import { useConfigStore } from '../../stores/config'
-  import {
-    Settings as SettingsIcon,
-    CheckCircle,
-    Loader2,
-  } from 'lucide-vue-next'
+  import { Settings as SettingsIcon, CheckCircle, Loader2 } from 'lucide-vue-next'
   import ThemeIcon from '../common/ThemeIcon.vue'
 
   // Sections
@@ -155,38 +151,32 @@
       <!-- Settings Cards Container -->
       <div class="space-y-4">
         <!-- Download Directory -->
-        <DownloadSection 
-          v-model="formData.download_dir" 
-          @pick="handlePickDirectory" 
-        />
+        <DownloadSection v-model="formData.download_dir" @pick="handlePickDirectory" />
 
         <!-- RPC Configuration -->
-        <RPCSection 
-          v-model:port="formData.rpc_port" 
-          v-model:secret="formData.rpc_secret" 
+        <RPCSection
+          v-model:port="formData.rpc_port"
+          v-model:secret="formData.rpc_secret"
           @change="triggerSave"
         />
 
         <!-- Performance Settings -->
-        <PerformanceSection 
-          v-model:connections="formData.max_connections" 
-          v-model:concurrent-downloads="formData.max_concurrent_downloads" 
+        <PerformanceSection
+          v-model:connections="formData.max_connections"
+          v-model:concurrent-downloads="formData.max_concurrent_downloads"
           v-model:smart-thread-mode="formData.smart_thread_mode"
           :connection-options="connectionOptions"
           @change="triggerSave"
         />
 
         <!-- User Agent -->
-        <UASection 
-          v-model="formData.user_agent" 
-          @change="triggerSave"
-        />
+        <UASection v-model="formData.user_agent" @change="triggerSave" />
 
         <!-- Appearance Settings -->
         <AppearanceSection />
 
         <!-- Advanced Settings (Transparency & History) -->
-        <AdvancedSection 
+        <AdvancedSection
           v-model:transparency="formData.window_transparency"
           v-model:show-history="formData.show_history"
           @change="triggerSave"

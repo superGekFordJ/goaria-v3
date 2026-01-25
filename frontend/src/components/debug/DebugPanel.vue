@@ -1,82 +1,82 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { useUIStore } from '../../stores/ui'
-import { useTaskStore } from '../../stores/task'
-import { Activity, Cpu, Database, X } from 'lucide-vue-next'
+  import { ref, onMounted, onUnmounted, computed } from 'vue'
+  import { useUIStore } from '../../stores/ui'
+  import { useTaskStore } from '../../stores/task'
+  import { Activity, Cpu, Database, X } from 'lucide-vue-next'
 
-const uiStore = useUIStore()
-const taskStore = useTaskStore()
+  const uiStore = useUIStore()
+  const taskStore = useTaskStore()
 
-// Debug panel visibility (controlled by URL hash or env)
-const isVisible = ref(false)
-const isMinimized = ref(false)
+  // Debug panel visibility (controlled by URL hash or env)
+  const isVisible = ref(false)
+  const isMinimized = ref(false)
 
-// Memory metrics
-const jsHeapSize = ref<number | null>(null)
-const domNodeCount = ref(0)
-const pollingStatus = ref('unknown')
+  // Memory metrics
+  const jsHeapSize = ref<number | null>(null)
+  const domNodeCount = ref(0)
+  const pollingStatus = ref('unknown')
 
-// Update interval
-let updateTimer: ReturnType<typeof setInterval> | null = null
+  // Update interval
+  let updateTimer: ReturnType<typeof setInterval> | null = null
 
-const formatBytes = (bytes: number | null): string => {
-  if (bytes === null) return 'N/A'
-  const mb = bytes / (1024 * 1024)
-  return `${mb.toFixed(2)} MB`
-}
-
-const updateMetrics = () => {
-  // JS Heap Size (Chrome/Edge only)
-  const perf = performance as Performance & {
-    memory?: { usedJSHeapSize: number; totalJSHeapSize: number }
-  }
-  if (perf.memory) {
-    jsHeapSize.value = perf.memory.usedJSHeapSize
+  const formatBytes = (bytes: number | null): string => {
+    if (bytes === null) return 'N/A'
+    const mb = bytes / (1024 * 1024)
+    return `${mb.toFixed(2)} MB`
   }
 
-  // DOM Node Count
-  domNodeCount.value = document.getElementsByTagName('*').length
-}
+  const updateMetrics = () => {
+    // JS Heap Size (Chrome/Edge only)
+    const perf = performance as Performance & {
+      memory?: { usedJSHeapSize: number; totalJSHeapSize: number }
+    }
+    if (perf.memory) {
+      jsHeapSize.value = perf.memory.usedJSHeapSize
+    }
 
-const toggleMinimize = () => {
-  isMinimized.value = !isMinimized.value
-}
-
-const close = () => {
-  isVisible.value = false
-  window.location.hash = ''
-}
-
-onMounted(() => {
-  // Check URL hash for debug mode
-  const checkHash = () => {
-    isVisible.value = window.location.hash === '#debug'
+    // DOM Node Count
+    domNodeCount.value = document.getElementsByTagName('*').length
   }
-  checkHash()
-  window.addEventListener('hashchange', checkHash)
 
-  // Start metrics update
-  updateMetrics()
-  updateTimer = setInterval(updateMetrics, 1000)
-})
-
-onUnmounted(() => {
-  if (updateTimer) {
-    clearInterval(updateTimer)
+  const toggleMinimize = () => {
+    isMinimized.value = !isMinimized.value
   }
-})
 
-const themeDisplay = computed(() => uiStore.themeMode)
-const skinDisplay = computed(() => uiStore.skinId)
-const densityDisplay = computed(() => uiStore.density)
-const effectsDisplay = computed(() => uiStore.effects)
+  const close = () => {
+    isVisible.value = false
+    window.location.hash = ''
+  }
 
-const taskStats = computed(() => ({
-  active: taskStore.activeTasks.length,
-  waiting: taskStore.waitingTasks.length,
-  stopped: taskStore.stoppedTasks.length,
-  total: taskStore.allTasksCount,
-}))
+  onMounted(() => {
+    // Check URL hash for debug mode
+    const checkHash = () => {
+      isVisible.value = window.location.hash === '#debug'
+    }
+    checkHash()
+    window.addEventListener('hashchange', checkHash)
+
+    // Start metrics update
+    updateMetrics()
+    updateTimer = setInterval(updateMetrics, 1000)
+  })
+
+  onUnmounted(() => {
+    if (updateTimer) {
+      clearInterval(updateTimer)
+    }
+  })
+
+  const themeDisplay = computed(() => uiStore.themeMode)
+  const skinDisplay = computed(() => uiStore.skinId)
+  const densityDisplay = computed(() => uiStore.density)
+  const effectsDisplay = computed(() => uiStore.effects)
+
+  const taskStats = computed(() => ({
+    active: taskStore.activeTasks.length,
+    waiting: taskStore.waitingTasks.length,
+    stopped: taskStore.stoppedTasks.length,
+    total: taskStore.allTasksCount,
+  }))
 </script>
 
 <template>
@@ -99,10 +99,7 @@ const taskStats = computed(() => ({
               <Activity :size="12" class="text-emerald-400" />
               <span class="text-white/80 font-bold">Debug Panel</span>
             </div>
-            <button
-              class="p-1 hover:bg-white/10 rounded transition-colors"
-              @click.stop="close"
-            >
+            <button class="p-1 hover:bg-white/10 rounded transition-colors" @click.stop="close">
               <X :size="12" class="text-white/50" />
             </button>
           </div>
@@ -184,14 +181,14 @@ const taskStats = computed(() => ({
 </template>
 
 <style scoped>
-.slide-enter-active,
-.slide-leave-active {
-  transition: all 0.3s ease;
-}
+  .slide-enter-active,
+  .slide-leave-active {
+    transition: all 0.3s ease;
+  }
 
-.slide-enter-from,
-.slide-leave-to {
-  opacity: 0;
-  transform: translateY(20px);
-}
+  .slide-enter-from,
+  .slide-leave-to {
+    opacity: 0;
+    transform: translateY(20px);
+  }
 </style>

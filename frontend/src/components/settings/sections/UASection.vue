@@ -26,13 +26,19 @@
     closeUADropdown()
     emit('change')
   }
+
+  const updateModelValue = (event: Event) => {
+    const value = (event.target as HTMLTextAreaElement).value
+    emit('update:modelValue', value)
+    emit('change')
+  }
 </script>
 
 <template>
-  <SectionCard 
-    title="User-Agent" 
-    description="自定义浏览器标识" 
-    :icon="Globe" 
+  <SectionCard
+    title="User-Agent"
+    description="自定义浏览器标识"
+    :icon="Globe"
     icon-class="bg-blue-500/10 text-blue-400"
   >
     <template #header-extra>
@@ -49,7 +55,10 @@
     </template>
 
     <!-- Error Message -->
-    <div v-if="uaFetchError" class="mb-3 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-[10px]">
+    <div
+      v-if="uaFetchError"
+      class="mb-3 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-[10px]"
+    >
       {{ uaFetchError }}
     </div>
 
@@ -75,10 +84,18 @@
             @click="selectUserAgent(item.ua)"
           >
             <div class="flex items-center gap-1.5 mb-1">
-              <span class="text-[10px] font-bold text-[var(--app-text)]/90">{{ item.browser }}</span>
-              <span class="px-1 py-0.5 rounded-md bg-[var(--app-text-subtle)]/10 text-[8px] font-semibold text-[var(--app-text-subtle)] border border-[var(--app-text-subtle)]/20">{{ item.os }}</span>
+              <span class="text-[10px] font-bold text-[var(--app-text)]/90">{{
+                item.browser
+              }}</span>
+              <span
+                class="px-1 py-0.5 rounded-md bg-[var(--app-text-subtle)]/10 text-[8px] font-semibold text-[var(--app-text-subtle)] border border-[var(--app-text-subtle)]/20"
+                >{{ item.os }}</span
+              >
             </div>
-            <span class="text-[9px] text-[var(--app-text-subtle)] line-clamp-2 break-all leading-relaxed">{{ item.ua }}</span>
+            <span
+              class="text-[9px] text-[var(--app-text-subtle)] line-clamp-2 break-all leading-relaxed"
+              >{{ item.ua }}</span
+            >
           </button>
         </div>
       </div>
@@ -89,7 +106,7 @@
       rows="2"
       placeholder="留空使用默认值"
       class="w-full bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl px-4 py-3 text-[11px] font-mono-data text-[var(--app-text)]/70 outline-none resize-none transition-all duration-200 focus:border-[var(--neon-primary)]/40 focus:shadow-[0_0_0_3px_var(--input-focus)] placeholder:text-[var(--input-placeholder)]"
-      @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value); emit('change')"
+      @input="updateModelValue"
     ></textarea>
   </SectionCard>
 </template>

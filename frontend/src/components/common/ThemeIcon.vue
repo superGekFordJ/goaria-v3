@@ -27,7 +27,7 @@
 
   onMounted(() => {
     updateTheme()
-    observer = new MutationObserver((mutations) => {
+    observer = new MutationObserver(mutations => {
       for (const mutation of mutations) {
         if (mutation.attributeName === 'data-theme') {
           updateTheme()

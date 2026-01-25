@@ -2,7 +2,7 @@
   import { Cpu } from 'lucide-vue-next'
   import SectionCard from './SectionCard.vue'
 
-  defineProps<{
+  const props = defineProps<{
     connections: string
     concurrentDownloads: string
     connectionOptions: string[]
@@ -15,17 +15,36 @@
     (e: 'update:smartThreadMode', value: boolean): void
     (e: 'change'): void
   }>()
+
+  const toggleSmartThreadMode = () => {
+    emit('update:smartThreadMode', !props.smartThreadMode)
+    emit('change')
+  }
+
+  const updateConnections = (event: Event) => {
+    const value = (event.target as HTMLSelectElement).value
+    emit('update:connections', value)
+    emit('change')
+  }
+
+  const updateConcurrentDownloads = (event: Event) => {
+    const value = (event.target as HTMLInputElement).value
+    emit('update:concurrentDownloads', value)
+    emit('change')
+  }
 </script>
 
 <template>
-  <SectionCard 
-    title="性能设置" 
-    description="优化下载速度和资源占用" 
-    :icon="Cpu" 
+  <SectionCard
+    title="性能设置"
+    description="优化下载速度和资源占用"
+    :icon="Cpu"
     icon-class="bg-amber-500/10 text-amber-400"
   >
     <!-- Smart Thread Mode Toggle -->
-    <div class="mb-4 flex items-center justify-between p-3 bg-[var(--input-bg)] rounded-xl border border-[var(--input-border)]">
+    <div
+      class="mb-4 flex items-center justify-between p-3 bg-[var(--input-bg)] rounded-xl border border-[var(--input-border)]"
+    >
       <div>
         <div class="text-sm font-medium text-[var(--app-text)]">智能线程模式</div>
         <div class="text-xs text-[var(--app-text-subtle)]">根据网络状况自动调整线程数</div>
@@ -34,14 +53,14 @@
         type="button"
         :class="[
           'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none',
-          smartThreadMode ? 'bg-[var(--neon-primary)]' : 'bg-[var(--input-border)]'
+          smartThreadMode ? 'bg-[var(--neon-primary)]' : 'bg-[var(--input-border)]',
         ]"
-        @click="emit('update:smartThreadMode', !smartThreadMode); emit('change')"
+        @click="toggleSmartThreadMode"
       >
         <span
           :class="[
             'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-[var(--card-bg)] shadow ring-1 ring-[var(--glass-border)] transition duration-200 ease-in-out',
-            smartThreadMode ? 'translate-x-5' : 'translate-x-0'
+            smartThreadMode ? 'translate-x-5' : 'translate-x-0',
           ]"
         />
       </button>
@@ -59,7 +78,7 @@
           <select
             :value="connections"
             class="w-full bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl px-4 py-3 text-sm font-mono-data text-[var(--app-text)]/80 outline-none appearance-none cursor-pointer transition-all duration-200 focus:border-[var(--neon-primary)]/40 focus:shadow-[0_0_0_3px_var(--input-focus)]"
-            @change="emit('update:connections', ($event.target as HTMLSelectElement).value); emit('change')"
+            @change="updateConnections"
           >
             <option v-for="n in connectionOptions" :key="n" :value="n">{{ n }} 线程</option>
           </select>
@@ -97,7 +116,7 @@
           min="1"
           max="10"
           class="w-full bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl px-4 py-3 text-sm font-mono-data text-[var(--app-text)]/80 outline-none transition-all duration-200 focus:border-[var(--neon-primary)]/40 focus:shadow-[0_0_0_3px_var(--input-focus)]"
-          @input="emit('update:concurrentDownloads', ($event.target as HTMLInputElement).value); emit('change')"
+          @input="updateConcurrentDownloads"
         />
       </div>
     </div>

@@ -15,13 +15,25 @@
   }>()
 
   const showSecret = ref(false)
+
+  const updatePort = (event: Event) => {
+    const value = (event.target as HTMLInputElement).value
+    emit('update:port', value)
+    emit('change')
+  }
+
+  const updateSecret = (event: Event) => {
+    const value = (event.target as HTMLInputElement).value
+    emit('update:secret', value)
+    emit('change')
+  }
 </script>
 
 <template>
-  <SectionCard 
-    title="RPC 连接" 
-    description="Aria2 后端通信配置" 
-    :icon="Zap" 
+  <SectionCard
+    title="RPC 连接"
+    description="Aria2 后端通信配置"
+    :icon="Zap"
     icon-class="bg-purple-500/10 text-purple-400"
   >
     <div class="grid grid-cols-2 gap-4">
@@ -37,7 +49,7 @@
           :value="port"
           type="text"
           class="w-full bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl px-4 py-3 text-sm font-mono-data text-[var(--app-text)]/80 outline-none transition-all duration-200 focus:border-[var(--neon-primary)]/40 focus:shadow-[0_0_0_3px_var(--input-focus)]"
-          @input="emit('update:port', ($event.target as HTMLInputElement).value); emit('change')"
+          @input="updatePort"
         />
       </div>
 
@@ -55,7 +67,7 @@
             :type="showSecret ? 'text' : 'password'"
             placeholder="可选"
             class="w-full bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl px-4 py-3 pr-12 text-sm font-mono-data text-[var(--app-text)]/80 outline-none transition-all duration-200 focus:border-[var(--neon-primary)]/40 focus:shadow-[0_0_0_3px_var(--input-focus)] placeholder:text-[var(--input-placeholder)]"
-            @input="emit('update:secret', ($event.target as HTMLInputElement).value); emit('change')"
+            @input="updateSecret"
           />
           <button
             type="button"

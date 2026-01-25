@@ -7,10 +7,10 @@
 </script>
 
 <template>
-  <SectionCard 
-    title="外观设置" 
-    description="主题模式与皮肤风格" 
-    :icon="Palette" 
+  <SectionCard
+    title="外观设置"
+    description="主题模式与皮肤风格"
+    :icon="Palette"
     icon-class="bg-indigo-500/10 text-indigo-400"
   >
     <!-- Theme Mode Selector -->

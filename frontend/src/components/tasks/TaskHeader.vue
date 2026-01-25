@@ -12,10 +12,10 @@
   const inputFocused = ref(false)
   const errorMessage = ref('')
   const clipboardHint = ref('')
-  
+
   watch(
     () => uiStore.pendingPasteUri,
-    (uri) => {
+    uri => {
       const trimmed = (uri || '').trim()
       if (!trimmed) return
 
@@ -48,14 +48,20 @@
         urlInput.value = ''
       } else if (res === 'duplicate') {
         errorMessage.value = '存在重复任务，请检查下载列表或已完成的任务'
-        setTimeout(() => { errorMessage.value = '' }, 3000)
+        setTimeout(() => {
+          errorMessage.value = ''
+        }, 3000)
       } else {
         errorMessage.value = `添加失败: ${res}`
-        setTimeout(() => { errorMessage.value = '' }, 3000)
+        setTimeout(() => {
+          errorMessage.value = ''
+        }, 3000)
       }
     } catch (err) {
       errorMessage.value = '添加失败，请重试'
-      setTimeout(() => { errorMessage.value = '' }, 3000)
+      setTimeout(() => {
+        errorMessage.value = ''
+      }, 3000)
     } finally {
       isAdding.value = false
     }
@@ -135,21 +141,33 @@
     <!-- Error Message / Clipboard Hint / Quick Tips -->
     <div class="flex items-center gap-4 mt-3 px-2 min-h-[20px]">
       <Transition name="fade" mode="out-in">
-        <div v-if="errorMessage" key="error" class="flex items-center gap-2 text-[11px] text-red-400 font-medium">
+        <div
+          v-if="errorMessage"
+          key="error"
+          class="flex items-center gap-2 text-[11px] text-red-400 font-medium"
+        >
           <span>{{ errorMessage }}</span>
         </div>
-        <div v-else-if="clipboardHint" key="hint" class="flex items-center gap-2 text-[11px] text-[var(--status-active)] font-medium">
+        <div
+          v-else-if="clipboardHint"
+          key="hint"
+          class="flex items-center gap-2 text-[11px] text-[var(--status-active)] font-medium"
+        >
           <span>{{ clipboardHint }}</span>
         </div>
         <div v-else key="tips" class="flex items-center gap-4">
           <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
-            <kbd class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]">
+            <kbd
+              class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]"
+            >
               Enter
             </kbd>
             <span>快速添加</span>
           </div>
           <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
-            <kbd class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]">
+            <kbd
+              class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]"
+            >
               Ctrl+V
             </kbd>
             <span>粘贴链接</span>

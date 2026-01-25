@@ -36,16 +36,20 @@ export function useUserAgent() {
     isFetchingUA.value = true
     uaFetchError.value = ''
     try {
-      const response = await fetch('https://raw.githubusercontent.com/microlinkhq/top-user-agents/master/src/index.json')
+      const response = await fetch(
+        'https://raw.githubusercontent.com/microlinkhq/top-user-agents/master/src/index.json',
+      )
       if (!response.ok) throw new Error('Failed to fetch')
       const data: string[] = await response.json()
-      
+
       // Parse first 20 popular UAs
       userAgentPresets.value = data.slice(0, 24).map(parseUA)
       showUADropdown.value = true
     } catch {
       uaFetchError.value = '获取失败，请检查网络'
-      setTimeout(() => { uaFetchError.value = '' }, 3000)
+      setTimeout(() => {
+        uaFetchError.value = ''
+      }, 3000)
     } finally {
       isFetchingUA.value = false
     }
@@ -61,6 +65,6 @@ export function useUserAgent() {
     showUADropdown,
     uaFetchError,
     fetchUserAgents,
-    closeUADropdown
+    closeUADropdown,
   }
 }

@@ -7,12 +7,7 @@
   import { useUIStore } from './stores/ui'
   import { useConfigStore } from './stores/config'
   import { useTaskStore } from './stores/task'
-  import {
-    subscribeToTaskEvents,
-    unsubscribeFromTaskEvents,
-    subscribeToWindowEvents,
-    unsubscribeFromWindowEvents,
-  } from './stores/events'
+  import { subscribeToWindowEvents, unsubscribeFromWindowEvents } from './stores/events'
   import { Clipboard, Events } from '@wailsio/runtime'
 
   const DebugPanel = import.meta.env.DEV
@@ -155,7 +150,7 @@
     // When user manually enters Downloads tab, check clipboard
     watch(
       () => uiStore.activeTab,
-      (newTab) => {
+      newTab => {
         if (newTab === 'downloads') {
           // Use 'manual' mode to be more permissive (allow current clipboard even if seen before)
           // But 'processClipboard' updates 'lastClipboardCandidate', so it syncs up.

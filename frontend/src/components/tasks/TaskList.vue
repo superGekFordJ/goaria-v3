@@ -30,9 +30,8 @@
   const combinedDownloads = computed(() => [...taskStore.activeTasks, ...taskStore.waitingTasks])
 
   const displayTasks = computed(() => {
-    const base = uiStore.activeTab === 'downloads' 
-      ? combinedDownloads.value 
-      : taskStore.stoppedTasks
+    const base =
+      uiStore.activeTab === 'downloads' ? combinedDownloads.value : taskStore.stoppedTasks
     if (uiStore.activeTab !== 'stopped' || !searchQuery.value.trim()) {
       return base
     }
@@ -45,9 +44,11 @@
 
   // Check if search returned no results
   const isSearchEmpty = computed(() => {
-    return uiStore.activeTab === 'stopped' && 
-           searchQuery.value.trim() !== '' && 
-           displayTasks.value.length === 0
+    return (
+      uiStore.activeTab === 'stopped' &&
+      searchQuery.value.trim() !== '' &&
+      displayTasks.value.length === 0
+    )
   })
 
   const useVirtualList = computed(() => displayTasks.value.length > 15)
@@ -245,14 +246,17 @@
   }
 
   // Clear selection when tab changes, and trigger stopped fetch when switching to stopped tab
-  watch(() => uiStore.activeTab, (newTab) => {
-    taskStore.clearSelection()
-    
-    // 切换到"已完成"时立即拉取 stopped 任务
-    if (newTab === 'stopped') {
-      taskStore.fetchStoppedTasks()
-    }
-  })
+  watch(
+    () => uiStore.activeTab,
+    newTab => {
+      taskStore.clearSelection()
+
+      // 切换到"已完成"时立即拉取 stopped 任务
+      if (newTab === 'stopped') {
+        taskStore.fetchStoppedTasks()
+      }
+    },
+  )
 
   onMounted(() => {
     window.addEventListener('keydown', handleKeydown)
@@ -376,7 +380,9 @@
             </div>
 
             <!-- Title -->
-            <h3 class="text-xl font-bold text-center text-[var(--modal-text)] mb-2">确认删除任务？</h3>
+            <h3 class="text-xl font-bold text-center text-[var(--modal-text)] mb-2">
+              确认删除任务？
+            </h3>
 
             <!-- Filename -->
             <p
@@ -400,7 +406,9 @@
                 <HardDrive
                   :size="18"
                   :class="
-                    deleteLocalFile ? 'text-red-400' : 'text-[var(--app-text-subtle)] group-hover:text-red-400/60'
+                    deleteLocalFile
+                      ? 'text-red-400'
+                      : 'text-[var(--app-text-subtle)] group-hover:text-red-400/60'
                   "
                 />
                 <div class="flex flex-col">
@@ -480,7 +488,11 @@
 
             <!-- Title -->
             <h3 class="text-xl font-bold text-center text-[var(--modal-text)] mb-2">
-              确认删除 <span class="text-[var(--neon-primary)] font-mono-data">{{ taskStore.selectedCount }}</span> 个任务？
+              确认删除
+              <span class="text-[var(--neon-primary)] font-mono-data">{{
+                taskStore.selectedCount
+              }}</span>
+              个任务？
             </h3>
 
             <!-- Description -->
@@ -502,7 +514,9 @@
                 <HardDrive
                   :size="18"
                   :class="
-                    deleteLocalFile ? 'text-red-400' : 'text-[var(--app-text-subtle)] group-hover:text-red-400/60'
+                    deleteLocalFile
+                      ? 'text-red-400'
+                      : 'text-[var(--app-text-subtle)] group-hover:text-red-400/60'
                   "
                 />
                 <div class="flex flex-col">

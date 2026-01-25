@@ -388,7 +388,7 @@
   --glass-bg: rgba(20, 20, 26, 0.55);
   --card-bg: rgba(24, 24, 30, 0.6);
   --sidebar-bg: transparent;
-  
+
   /* Enhanced text contrast for transparency mode */
   --neon-text-glow: 0 1px 2px rgba(0, 0, 0, 0.8), 0 0 8px rgba(0, 0, 0, 0.4);
 }
@@ -399,7 +399,7 @@
   --glass-bg: rgba(255, 255, 255, 0.55);
   --card-bg: rgba(255, 255, 255, 0.6);
   --sidebar-bg: transparent;
-  
+
   /* Enhanced text contrast for transparency mode */
   --neon-text-glow: 0 1px 2px rgba(255, 255, 255, 0.9), 0 0 8px rgba(255, 255, 255, 0.5);
 }
@@ -966,7 +966,9 @@ select {
 .task-card {
   position: relative;
   overflow: hidden;
-  transition: box-shadow 0.5s ease, border-color 0.3s ease;
+  transition:
+    box-shadow 0.5s ease,
+    border-color 0.3s ease;
 }
 
 .task-card::before {
@@ -976,7 +978,9 @@ select {
   border-radius: inherit;
   background: transparent;
   opacity: 0;
-  transition: opacity 0.3s ease, background 0.3s ease;
+  transition:
+    opacity 0.3s ease,
+    background 0.3s ease;
   pointer-events: none;
 }
 
@@ -1016,7 +1020,8 @@ select {
 }
 
 @keyframes glow-breathe-active {
-  0%, 100% {
+  0%,
+  100% {
     box-shadow:
       0 0 15px rgba(6, 255, 213, 0.08),
       0 0 30px rgba(34, 255, 136, 0.04),
@@ -1050,7 +1055,8 @@ select {
 }
 
 @keyframes glow-pulse-error {
-  0%, 100% {
+  0%,
+  100% {
     box-shadow:
       0 0 12px rgba(239, 68, 68, 0.08),
       0 0 25px rgba(239, 68, 68, 0.04),
@@ -1082,12 +1088,7 @@ select {
   left: -100%;
   width: 50%;
   height: 100%;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.4),
-    transparent
-  );
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
   animation: energy-flow 1.5s ease-in-out infinite;
 }
 
@@ -1111,7 +1112,8 @@ select {
 }
 
 @keyframes glow-breathe-active-light {
-  0%, 100% {
+  0%,
+  100% {
     box-shadow:
       0 0 15px rgba(5, 150, 105, 0.06),
       0 0 30px rgba(13, 148, 136, 0.03),
@@ -1330,7 +1332,7 @@ select {
 /* Selected card highlight */
 .task-card-selected {
   border-color: var(--neon-primary) !important;
-  box-shadow: 
+  box-shadow:
     0 0 0 1px color-mix(in srgb, var(--neon-primary) 30%, transparent),
     0 0 20px color-mix(in srgb, var(--neon-primary) 15%, transparent),
     var(--glass-shadow) !important;
@@ -1339,7 +1341,7 @@ select {
 /* Light mode adjustments for selected card */
 [data-theme='light'] .task-card-selected {
   border-color: var(--neon-primary) !important;
-  box-shadow: 
+  box-shadow:
     0 0 0 1px color-mix(in srgb, var(--neon-primary) 20%, transparent),
     0 0 15px color-mix(in srgb, var(--neon-primary) 10%, transparent),
     var(--glass-shadow) !important;

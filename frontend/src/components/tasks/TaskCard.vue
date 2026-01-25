@@ -150,12 +150,9 @@
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-3 mb-2">
           <!-- Checkbox (Hover Reveal) -->
-          <div 
-            class="checkbox-container"
-            :class="{ 'always-visible': isSelected }"
-          >
-            <input 
-              type="checkbox" 
+          <div class="checkbox-container" :class="{ 'always-visible': isSelected }">
+            <input
+              type="checkbox"
               :checked="isSelected"
               class="task-checkbox"
               @click.stop="taskStore.toggleSelect(task.gid)"

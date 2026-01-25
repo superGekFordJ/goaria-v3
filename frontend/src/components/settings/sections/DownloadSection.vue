@@ -12,10 +12,10 @@
 </script>
 
 <template>
-  <SectionCard 
-    title="下载目录" 
-    description="文件默认保存位置" 
-    :icon="FolderOpen" 
+  <SectionCard
+    title="下载目录"
+    description="文件默认保存位置"
+    :icon="FolderOpen"
     icon-class="bg-[var(--neon-primary)]/10 text-[var(--neon-primary)]"
   >
     <div

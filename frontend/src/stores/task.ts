@@ -54,19 +54,19 @@ function mergeTasks(oldList: Task[], newList: Task[]): { merged: Task[]; changed
   if (oldList.length === 0 && newList.length === 0) {
     return { merged: oldList, changed: false }
   }
-  
+
   // 快速路径：旧列表为空，直接返回新列表
   if (oldList.length === 0) {
     return { merged: newList, changed: true }
   }
-  
+
   const oldMap = new Map(oldList.map(t => [t.gid, t]))
-  
+
   // 检查是否有任务增减
   if (oldList.length !== newList.length) {
     return { merged: newList, changed: true }
   }
-  
+
   // 检查 GID 集合是否一致
   const oldGids = new Set(oldList.map(t => t.gid))
   for (const newTask of newList) {
@@ -74,7 +74,7 @@ function mergeTasks(oldList: Task[], newList: Task[]): { merged: Task[]; changed
       return { merged: newList, changed: true }
     }
   }
-  
+
   // 逐个比对，保留未变化任务的引用
   let changed = false
   const merged = newList.map(newTask => {
@@ -85,13 +85,13 @@ function mergeTasks(oldList: Task[], newList: Task[]): { merged: Task[]; changed
     changed = true
     return newTask
   })
-  
+
   // 开发模式日志
   if (import.meta.env.DEV && changed) {
     const changedCount = merged.filter((t, i) => t !== oldList[i]).length
     console.debug(`[Polling] Merged ${newList.length} tasks, ${changedCount} changed`)
   }
-  
+
   return { merged, changed }
 }
 
@@ -139,10 +139,10 @@ export const useTaskStore = defineStore('task', () => {
   const metadataPending = new Set<string>()
 
   let eventsSubscribed = false
-  
+
   // 低频通道最后拉取时间
   let lastStoppedFetchTime = 0
-  
+
   // 空闲轮询间隔（无活跃任务时使用）
   const IDLE_INTERVAL = 5000 // 5s
 
@@ -436,20 +436,20 @@ export const useTaskStore = defineStore('task', () => {
     try {
       const res = await GetActiveTasks()
       consecutiveErrors.value = 0
-      
+
       const active = dedupByGid(res.active || [])
       const activeGids = new Set(active.map(t => t.gid))
       const waiting = dedupByGid((res.waiting || []).filter((t: Task) => !activeGids.has(t.gid)))
-      
+
       // 检测任务完成：通过数量变化判断（避免创建临时 Set）
       const oldCount = tasks.value.active.length + tasks.value.waiting.length
       const newCount = active.length + waiting.length
       const taskCompleted = newCount < oldCount
-      
+
       // 增量合并
       const activeResult = mergeTasks(tasks.value.active, active)
       const waitingResult = mergeTasks(tasks.value.waiting, waiting)
-      
+
       if (activeResult.changed || waitingResult.changed) {
         tasks.value = {
           active: activeResult.merged,
@@ -457,13 +457,12 @@ export const useTaskStore = defineStore('task', () => {
           stopped: tasks.value.stopped, // 保持 stopped 不变
         }
       }
-      
+
       // 更新托盘图标
       throttledUpdateTrayIcon()
-      
+
       const hasActiveTasks = active.length > 0 || waiting.length > 0
       return { hasActiveTasks, taskCompleted }
-      
     } catch (err) {
       handleFetchError(err)
       return { hasActiveTasks: false, taskCompleted: false }
@@ -477,12 +476,12 @@ export const useTaskStore = defineStore('task', () => {
     try {
       const res = await GetStoppedTasks()
       const stopped = dedupByGid(res || [])
-      
+
       // 与 active/waiting 去重
       const activeGids = new Set(tasks.value.active.map(t => t.gid))
       const waitingGids = new Set(tasks.value.waiting.map(t => t.gid))
       const filteredStopped = stopped.filter(t => !activeGids.has(t.gid) && !waitingGids.has(t.gid))
-      
+
       const stoppedResult = mergeTasks(tasks.value.stopped, filteredStopped)
       if (stoppedResult.changed) {
         tasks.value = {
@@ -490,7 +489,7 @@ export const useTaskStore = defineStore('task', () => {
           stopped: stoppedResult.merged,
         }
       }
-      
+
       lastStoppedFetchTime = Date.now()
     } catch (err) {
       console.warn('Failed to fetch stopped tasks:', err)
@@ -503,10 +502,12 @@ export const useTaskStore = defineStore('task', () => {
   function handleFetchError(err: unknown) {
     console.error('Failed to fetch tasks:', err)
     consecutiveErrors.value++
-    
+
     // Circuit breaker: Stop polling if too many consecutive errors
     if (consecutiveErrors.value >= MAX_CONSECUTIVE_ERRORS) {
-      console.warn(`Stopped polling after ${MAX_CONSECUTIVE_ERRORS} consecutive errors to prevent log spam.`)
+      console.warn(
+        `Stopped polling after ${MAX_CONSECUTIVE_ERRORS} consecutive errors to prevent log spam.`,
+      )
       stopPolling()
     }
   }
@@ -529,7 +530,9 @@ export const useTaskStore = defineStore('task', () => {
       const waiting = dedupByGid((res.waiting || []).filter((t: Task) => !activeGids.has(t.gid)))
       const waitingGids = new Set(waiting.map(t => t.gid))
 
-      const stopped = dedupByGid((res.stopped || []).filter((t: Task) => !activeGids.has(t.gid) && !waitingGids.has(t.gid)))
+      const stopped = dedupByGid(
+        (res.stopped || []).filter((t: Task) => !activeGids.has(t.gid) && !waitingGids.has(t.gid)),
+      )
 
       const newTasks = { active, waiting, stopped }
 
@@ -587,10 +590,12 @@ export const useTaskStore = defineStore('task', () => {
     } catch (err) {
       console.error('Failed to fetch tasks:', err)
       consecutiveErrors.value++
-      
+
       // Circuit breaker: Stop polling if too many consecutive errors
       if (consecutiveErrors.value >= MAX_CONSECUTIVE_ERRORS) {
-        console.warn(`Stopped polling after ${MAX_CONSECUTIVE_ERRORS} consecutive errors to prevent log spam.`)
+        console.warn(
+          `Stopped polling after ${MAX_CONSECUTIVE_ERRORS} consecutive errors to prevent log spam.`,
+        )
         stopPolling()
       }
     }
@@ -687,7 +692,7 @@ export const useTaskStore = defineStore('task', () => {
   function setWindowVisibility(visible: boolean) {
     if (isWindowVisible.value === visible) return
     isWindowVisible.value = visible
-    
+
     // Clear existing timer first
     stopPolling(false)
 
@@ -735,13 +740,13 @@ export const useTaskStore = defineStore('task', () => {
       const res = await AddUri(uri)
       await fetchTasks()
       immediateUpdateTrayIcon()
-      
+
       // 添加任务后重启高频轮询（避免在空闲间隔中等待太久）
       if (pollingContextEnabled.value && isWindowVisible.value) {
         stopPolling(false)
         startPollingInternal(preferredInterval.value)
       }
-      
+
       return res
     } catch (err) {
       console.error('Failed to add URI:', err)

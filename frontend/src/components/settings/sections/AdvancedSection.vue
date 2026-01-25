@@ -2,7 +2,7 @@
   import { Layers, History } from 'lucide-vue-next'
   import SectionCard from './SectionCard.vue'
 
-  defineProps<{
+  const props = defineProps<{
     transparency: string
     showHistory: boolean
   }>()
@@ -12,15 +12,25 @@
     (e: 'update:showHistory', value: boolean): void
     (e: 'change'): void
   }>()
+
+  const updateTransparency = (value: string) => {
+    emit('update:transparency', value)
+    emit('change')
+  }
+
+  const toggleHistory = () => {
+    emit('update:showHistory', !props.showHistory)
+    emit('change')
+  }
 </script>
 
 <template>
   <div class="space-y-4">
     <!-- Window Transparency Card -->
-    <SectionCard 
-      title="窗口透明效果" 
-      description="仅 Windows 11 支持，更改后需重启应用" 
-      :icon="Layers" 
+    <SectionCard
+      title="窗口透明效果"
+      description="仅 Windows 11 支持，更改后需重启应用"
+      :icon="Layers"
       icon-class="bg-cyan-500/10 text-cyan-400"
     >
       <div class="grid grid-cols-2 gap-3">
@@ -38,7 +48,7 @@
               ? 'bg-[var(--neon-primary)]/10 border-[var(--neon-primary)]/30'
               : 'bg-[var(--btn-glass-bg)] border-[var(--glass-border)] hover:border-[var(--neon-primary)]/20',
           ]"
-          @click="emit('update:transparency', opt.value); emit('change')"
+          @click="updateTransparency(opt.value)"
         >
           <span
             :class="[
@@ -58,32 +68,24 @@
     <!-- History Toggle Card -->
     <div
       class="glass-panel rounded-[var(--radius-squircle-lg)] p-6 cursor-pointer transition-all duration-300 hover:border-[var(--neon-primary)]/20"
-      @click="emit('update:showHistory', !showHistory); emit('change')"
+      @click="toggleHistory"
     >
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-3">
           <div
             :class="[
               'w-8 h-8 rounded-xl flex items-center justify-center transition-colors duration-300',
-              showHistory
-                ? 'bg-[var(--neon-primary)]/10'
-                : 'bg-[var(--btn-glass-bg)]',
+              showHistory ? 'bg-[var(--neon-primary)]/10' : 'bg-[var(--btn-glass-bg)]',
             ]"
           >
             <History
               :size="16"
-              :class="
-                showHistory
-                  ? 'text-[var(--neon-primary)]'
-                  : 'text-[var(--app-text-subtle)]'
-              "
+              :class="showHistory ? 'text-[var(--neon-primary)]' : 'text-[var(--app-text-subtle)]'"
             />
           </div>
           <div>
             <h3 class="text-sm font-semibold text-[var(--app-text)]/80">显示下载历史</h3>
-            <p class="text-[10px] text-[var(--app-text-subtle)]">
-              在"已完成"标签页显示历史记录
-            </p>
+            <p class="text-[10px] text-[var(--app-text-subtle)]">在"已完成"标签页显示历史记录</p>
           </div>
         </div>
 
