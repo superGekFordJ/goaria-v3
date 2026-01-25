@@ -2,6 +2,9 @@
   import { ref, onMounted } from 'vue'
   import { Minus, Square, X, PanelBottomClose } from 'lucide-vue-next'
   import { Window, Application } from '@wailsio/runtime'
+  import { useTaskStore } from '../../stores/task'
+
+  const taskStore = useTaskStore()
 
   const isMaximized = ref(false)
 
@@ -34,9 +37,9 @@
     Application.Quit()
   }
 
-  // Minimize to system tray (hide window)
+  // Minimize to system tray (true headless mode - destroys window)
   const handleHideToTray = () => {
-    Window.Hide()
+    taskStore.minimizeToTray()
   }
 </script>
 

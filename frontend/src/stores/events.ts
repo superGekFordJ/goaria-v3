@@ -58,3 +58,22 @@ export function unsubscribeFromTaskEvents() {
   fullSyncUnsubscribe = null
   connectionUnsubscribe = null
 }
+
+// Window lifecycle event subscriptions
+let windowCreatedUnsubscribe: (() => void) | null = null
+
+export function subscribeToWindowEvents(onWindowCreated: () => void) {
+  if (windowCreatedUnsubscribe) return
+
+  windowCreatedUnsubscribe = Events.On('window:created', () => {
+    if (import.meta.env.DEV) {
+      console.debug('[Events] window:created')
+    }
+    onWindowCreated()
+  })
+}
+
+export function unsubscribeFromWindowEvents() {
+  windowCreatedUnsubscribe?.()
+  windowCreatedUnsubscribe = null
+}

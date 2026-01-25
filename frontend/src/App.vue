@@ -7,6 +7,12 @@
   import { useUIStore } from './stores/ui'
   import { useConfigStore } from './stores/config'
   import { useTaskStore } from './stores/task'
+  import {
+    subscribeToTaskEvents,
+    unsubscribeFromTaskEvents,
+    subscribeToWindowEvents,
+    unsubscribeFromWindowEvents,
+  } from './stores/events'
   import { Clipboard, Events } from '@wailsio/runtime'
 
   const DebugPanel = import.meta.env.DEV
@@ -87,6 +93,12 @@
     unsubs.push(Events.On('common:WindowUnMinimise', () => taskStore.setWindowVisibility(true)))
     unsubs.push(Events.On('common:WindowRestore', () => taskStore.setWindowVisibility(true)))
 
+    // Listen for window creation events (for recovery from headless mode)
+    subscribeToWindowEvents(() => {
+      // Window just created, sync state from backend snapshot
+      taskStore.syncFromSnapshot()
+    })
+
     // Centralized Clipboard Processing Logic
     const processClipboard = async (trigger: 'auto' | 'manual') => {
       try {
@@ -157,6 +169,8 @@
     document.removeEventListener('visibilitychange', handleVisibilityChange)
     // Clean up Wails event listeners
     unsubs.forEach(unsub => unsub())
+    // Clean up window lifecycle events
+    unsubscribeFromWindowEvents()
 
     if (stopWindowTransparencyWatch) {
       stopWindowTransparencyWatch()

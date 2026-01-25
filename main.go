@@ -2,9 +2,11 @@ package main
 
 import (
 	"embed"
+	"flag"
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/history"
+	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/process"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/speedstats"
@@ -12,10 +14,14 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"runtime"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+)
+
+// 命令行参数
+var (
+	flagHidden = flag.Bool("hidden", false, "Start in headless mode (tray only, no window)")
 )
 
 //go:embed all:frontend/dist
@@ -25,6 +31,8 @@ var assets embed.FS
 var appIcon []byte
 
 func main() {
+	flag.Parse()
+
 	// Initialize config, history, speedstats, and Aria2
 	config.Load()
 	history.Load()
@@ -52,6 +60,12 @@ func main() {
 		Assets: application.AssetOptions{
 			Handler: http.FileServer(http.FS(frontendFS)),
 		},
+		Windows: application.WindowsOptions{
+			DisableQuitOnLastWindowClosed: true,
+		},
+		Mac: application.MacOptions{
+			ApplicationShouldTerminateAfterLastWindowClosed: false,
+		},
 	})
 
 	// Initialize Event Hub (after app is created)
@@ -64,117 +78,48 @@ func main() {
 		}
 	}()
 
-	// Set shutdown handler
+	// Store app and event hub references for window creation
+	appService.SetApp(app)
+	appService.SetEventHub(eventHub)
+
+	// Create system tray (always created, even in headless mode)
+	systray := app.SystemTray.New()
+	appService.SetSystemTray(systray)
+	systray.SetIcon(tray.GetIconForState(tray.StateIdle))
+	systray.SetTooltip("GoAria - Download Manager")
+
+	// Start backend monitor loop
+	mon := monitor.New(app, eventHub, systray)
+	mon.Start()
+
+	// Update shutdown handler to stop monitor
 	app.OnShutdown(func() {
-		// Save session and stop Aria2 on shutdown
+		mon.Stop()
 		rpc.StopNotifier()
 		rpc.ForceSaveSession()
 		time.Sleep(500 * time.Millisecond)
 		process.StopAria2()
 	})
 
-	// Determine window background/backdrop configuration
-	backgroundType := application.BackgroundTypeSolid
-	backgroundColour := application.NewRGBA(12, 12, 15, 255)
-	backdropType := application.Auto
-	macBackdrop := application.MacBackdropNormal
-
-	switch config.Current.WindowTransparency {
-	case "acrylic":
-		backgroundType = application.BackgroundTypeTranslucent
-		backgroundColour = application.NewRGBA(0, 0, 0, 0)
-		backdropType = application.Acrylic
-		macBackdrop = application.MacBackdropTranslucent
-	case "mica":
-		backgroundType = application.BackgroundTypeTranslucent
-		backgroundColour = application.NewRGBA(0, 0, 0, 0)
-		backdropType = application.Mica
-		macBackdrop = application.MacBackdropTranslucent
-	case "tabbed":
-		backgroundType = application.BackgroundTypeTranslucent
-		backgroundColour = application.NewRGBA(0, 0, 0, 0)
-		backdropType = application.Tabbed
-		macBackdrop = application.MacBackdropTranslucent
-	default:
-		backgroundType = application.BackgroundTypeSolid
-		backgroundColour = application.NewRGBA(12, 12, 15, 255)
-		backdropType = application.Auto
-		macBackdrop = application.MacBackdropNormal
+	// Conditionally create window based on --hidden flag
+	if !*flagHidden {
+		appService.CreateWindow()
 	}
 
-	// Linux currently only supports solid background
-	if runtime.GOOS == "linux" {
-		backgroundType = application.BackgroundTypeSolid
-		backgroundColour = application.NewRGBA(12, 12, 15, 255)
-		backdropType = application.Auto
-		macBackdrop = application.MacBackdropNormal
-	}
-
-	log.Printf(
-		"window_transparency=%s backgroundType=%v windowsBackdropType=%v",
-		config.Current.WindowTransparency,
-		backgroundType,
-		backdropType,
-	)
-
-	// Create the main window using Window manager
-	mainWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:             "main",
-		Title:            "GoAria",
-		Width:            1024,
-		Height:           680,
-		MinWidth:         800,
-		MinHeight:        500,
-		Frameless:        true,
-		BackgroundType:   backgroundType,
-		BackgroundColour: backgroundColour,
-		Hidden:           false,
-		Mac: application.MacWindow{
-			Backdrop: macBackdrop,
-		},
-		Windows: application.WindowsWindow{
-			DisableFramelessWindowDecorations: false,
-			BackdropType:                      backdropType,
-		},
-	})
-
-	// Store window reference for the app service
-	appService.SetWindow(mainWindow)
-
-	// Create system tray using SystemTray manager
-	systray := app.SystemTray.New()
-
-	// Store systray reference in app service for dynamic icon updates
-	appService.SetSystemTray(systray)
-
-	// Set initial tray icon (idle state) and tooltip
-	systray.SetIcon(tray.GetIconForState(tray.StateIdle))
-	systray.SetTooltip("GoAria - Download Manager")
-
-	// Handle left-click on tray icon - toggle window visibility
+	// Handle tray click - toggle window
 	systray.OnClick(func() {
-		if mainWindow.IsVisible() {
-			mainWindow.Hide()
-		} else {
-			mainWindow.Show()
-			mainWindow.Focus()
-		}
+		appService.ToggleWindow()
 	})
 
 	// Create tray menu (shown on right-click)
 	trayMenu := app.NewMenu()
-
 	trayMenu.Add("显示 GoAria").OnClick(func(ctx *application.Context) {
-		mainWindow.Show()
-		mainWindow.Focus()
+		appService.ShowWindow()
 	})
-
 	trayMenu.AddSeparator()
-
 	trayMenu.Add("退出").OnClick(func(ctx *application.Context) {
 		app.Quit()
 	})
-
 	systray.SetMenu(trayMenu)
 
 	// Run the application

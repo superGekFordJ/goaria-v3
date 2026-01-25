@@ -16,6 +16,8 @@ import {
   BatchResume,
   BatchRemove,
   RecordTaskSpeed,
+  GetFullSnapshot,
+  MinimizeToTray,
 } from '../../bindings/goaria-v3/app'
 import { Task, TaskProgress } from '../../bindings/goaria-v3/internal/rpc/models'
 import { subscribeToTaskEvents, unsubscribeFromTaskEvents } from './events'
@@ -885,6 +887,50 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
+  /**
+   * Sync state from backend snapshot (for window rebuild after headless mode)
+   */
+  async function syncFromSnapshot() {
+    try {
+      const snapshot = await GetFullSnapshot()
+
+      if (import.meta.env.DEV) {
+        console.debug('[Snapshot] Syncing from backend:', snapshot)
+      }
+
+      // Apply snapshot data directly
+      tasks.value = {
+        active: snapshot.tasks.active || [],
+        waiting: snapshot.tasks.waiting || [],
+        stopped: snapshot.tasks.stopped || [],
+      }
+
+      // Update tray state cache
+      const { hasActive, hasPaused, hasError } = snapshot.trayState
+      lastTrayState = { hasActive, hasPaused, hasError }
+
+      // Restart polling if not already enabled
+      if (!pollingEnabled.value) {
+        startPolling()
+      }
+    } catch (err) {
+      console.error('[Snapshot] Sync failed:', err)
+      // Fallback to normal fetch
+      await fetchTasks()
+    }
+  }
+
+  /**
+   * Minimize to tray (true headless mode - destroys window)
+   */
+  async function minimizeToTray() {
+    // Stop polling before window destruction
+    stopPolling()
+
+    // Call backend to destroy window
+    await MinimizeToTray()
+  }
+
   return {
     // State
     tasks,
@@ -916,5 +962,8 @@ export const useTaskStore = defineStore('task', () => {
     batchPause,
     batchResume,
     batchRemove,
+    // Headless Mode
+    syncFromSnapshot,
+    minimizeToTray,
   }
 })

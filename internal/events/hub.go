@@ -44,3 +44,21 @@ func (h *Hub) EmitConnectionStatus(connected bool) {
 		h.app.Event.Emit("aria2:connection", map[string]bool{"connected": connected})
 	}
 }
+
+// EmitTraySnapshot 推送托盘状态快照（用于前端同步）
+func (h *Hub) EmitTraySnapshot(snapshot interface{}) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.app != nil && h.app.Event != nil {
+		h.app.Event.Emit("tray:snapshot", snapshot)
+	}
+}
+
+// EmitWindowCreated 通知前端窗口已创建
+func (h *Hub) EmitWindowCreated() {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.app != nil && h.app.Event != nil {
+		h.app.Event.Emit("window:created")
+	}
+}
