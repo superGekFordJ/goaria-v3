@@ -1,15 +1,15 @@
 {
 	"fixed": {
-		"file_version": "0.1.0"
+		"file_version": "1.2.0"
 	},
 	"info": {
 		"0000": {
-			"ProductVersion": "0.1.0",
-			"CompanyName": "My Company",
-			"FileDescription": "A goaria-v3 application",
-			"LegalCopyright": "© 2025, My Company",
-			"ProductName": "My Product",
-			"Comments": "This is a comment"
+			"ProductVersion": "1.2.0",
+			"CompanyName": "GoAria",
+			"FileDescription": "GoAria v3",
+			"LegalCopyright": "© 2026, GoAria",
+			"ProductName": "GoAria",
+			"Comments": "A light-weight aria2 GUI"
 		}
 	}
 }

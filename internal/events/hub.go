@@ -62,3 +62,31 @@ func (h *Hub) EmitWindowCreated() {
 		h.app.Event.Emit("window:created")
 	}
 }
+
+// EmitWindowFocus 手动发送窗口焦点事件
+// 用于托盘恢复时触发剪贴板检测（Wails 对新创建窗口可能不发送 focus 事件）
+func (h *Hub) EmitWindowFocus() {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.app != nil && h.app.Event != nil {
+		h.app.Event.Emit("common:WindowFocus")
+	}
+}
+
+// EmitTaskComplete 推送任务完成事件
+func (h *Hub) EmitTaskComplete(gid string) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.app != nil && h.app.Event != nil {
+		h.app.Event.Emit("task:complete", map[string]string{"gid": gid})
+	}
+}
+
+// EmitTaskDeltas 批量推送任务增量
+func (h *Hub) EmitTaskDeltas(deltas []TaskDelta) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.app != nil && h.app.Event != nil && len(deltas) > 0 {
+		h.app.Event.Emit("task:deltas", deltas)
+	}
+}

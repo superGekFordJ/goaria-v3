@@ -3,11 +3,17 @@ package monitor
 import (
 	"fmt"
 	"log"
+	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
+	"goaria-v3/internal/config"
 	"goaria-v3/internal/events"
+	"goaria-v3/internal/history"
 	"goaria-v3/internal/rpc"
+	"goaria-v3/internal/smartthread"
+	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/tray"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -27,6 +33,8 @@ type Monitor struct {
 	app     *application.App
 	hub     *events.Hub
 	systray *application.SystemTray
+	tracker *TaskTracker
+	pusher  *Pusher
 
 	stopChan chan struct{}
 	stopOnce sync.Once
@@ -37,7 +45,7 @@ type Monitor struct {
 }
 
 func New(app *application.App, hub *events.Hub, systray *application.SystemTray) *Monitor {
-	return &Monitor{
+	m := &Monitor{
 		app:              app,
 		hub:              hub,
 		systray:          systray,
@@ -45,6 +53,17 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray)
 		headlessInterval: 5 * time.Second, // 无头模式：5秒
 		windowInterval:   1 * time.Second, // 窗口模式：1秒（由前端主导）
 	}
+
+	// 创建任务追踪器
+	m.tracker = NewTaskTracker()
+
+	// 创建增量推送器
+	m.pusher = NewPusher(hub)
+
+	// 注册到全局状态
+	State.SetTracker(m.tracker)
+
+	return m
 }
 
 func (m *Monitor) Start() {
@@ -81,31 +100,91 @@ func (m *Monitor) runLoop() {
 }
 
 func (m *Monitor) tick() {
-	// 仅获取托盘所需的最小数据
-	snapshot := m.fetchTraySnapshot()
+	// 获取所有任务列表
+	active, err := rpc.TellActive()
+	if err != nil {
+		log.Printf("[Monitor] TellActive error: %v", err)
+		return
+	}
+	waiting, _ := rpc.TellWaiting(0, 100)
+	stopped, _ := rpc.TellStopped(0, 100)
+
+	// 更新缓存
+	Cache.UpdateFromAria2(active, waiting, stopped)
+
+	// 更新追踪器并获取已完成任务
+	completedTasks := m.tracker.Update(active, waiting, stopped)
+
+	// 处理已完成任务（写入历史和速度统计）
+	for _, task := range completedTasks {
+		m.handleTaskComplete(task)
+	}
+
+	// 构建托盘快照
+	snapshot := m.buildTraySnapshot(active, waiting)
 
 	// 更新托盘状态（仅在变化时）
 	if State.UpdateTrayState(snapshot.HasActive, snapshot.HasPaused, snapshot.HasError, snapshot.ActiveCount) {
 		m.updateTrayIcon()
 	}
 
-	// 如果有窗口，通过事件推送数据（前端仍主导高频轮询）
-	// 无头模式下不推送，节省资源
+	// 如果有窗口，通过事件推送数据
 	if State.HasWindow() {
 		m.hub.EmitTraySnapshot(snapshot)
+
+		// 推送任务完成事件（通过 pusher 批量推送）
+		for _, task := range completedTasks {
+			m.pusher.Queue(events.TaskDelta{
+				Type: "complete",
+				GID:  task.GID,
+			})
+		}
 	}
 }
 
-func (m *Monitor) fetchTraySnapshot() TraySnapshot {
-	// 使用轻量 API 仅获取状态计数
-	active, err := rpc.TellActive()
-	if err != nil {
-		log.Printf("[Monitor] TellActive error: %v", err)
-		return TraySnapshot{}
+// handleTaskComplete 处理任务完成
+func (m *Monitor) handleTaskComplete(task *TrackedTask) {
+	if task == nil || task.FilePath == "" {
+		return
 	}
 
-	waiting, _ := rpc.TellWaiting(0, 100)
+	log.Printf("[Monitor] Task completed: %s, peak speed: %d B/s", task.GID, task.PeakSpeed)
 
+	// 1. 记录速度统计（仅 >50MB 文件）
+	if task.TotalLength > 50*1024*1024 && task.PeakSpeed > 0 {
+		threadCount := task.ThreadCount
+		isExploration := task.IsExploration
+
+		// 如果没有追踪到线程数，使用全局配置
+		if threadCount <= 0 {
+			threadCount, _ = strconv.Atoi(config.Current.MaxConnections)
+			if threadCount <= 0 {
+				threadCount = 16
+			}
+			// 尝试判断是否为探索任务
+			isExploration = smartthread.ShouldExplore(task.SourceURL)
+		}
+
+		speedstats.AddRecord(task.PeakSpeed, threadCount, task.TotalLength, isExploration)
+		log.Printf("[Monitor] Speed stats recorded: peak=%d, threads=%d, exploration=%v",
+			task.PeakSpeed, threadCount, isExploration)
+	}
+
+	// 2. 写入历史记录
+	history.Add(history.HistoryEntry{
+		GID:             task.GID,
+		Title:           filepath.Base(task.FilePath),
+		Dir:             task.Dir,
+		Path:            task.FilePath,
+		TotalLength:     fmt.Sprintf("%d", task.TotalLength),
+		CompletedLength: fmt.Sprintf("%d", task.CompletedLength),
+		Source:          task.SourceURL,
+	})
+	log.Printf("[Monitor] History recorded: %s", task.GID)
+}
+
+// buildTraySnapshot 构建托盘快照
+func (m *Monitor) buildTraySnapshot(active, waiting []rpc.Task) TraySnapshot {
 	hasActive := len(active) > 0
 	hasPaused := false
 	hasError := false

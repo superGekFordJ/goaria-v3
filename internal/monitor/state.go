@@ -19,6 +19,9 @@ type AppState struct {
 
 	// 活跃任务数（用于托盘提示）
 	activeCount atomic.Int32
+
+	// 任务追踪器（后端自洽核心）
+	tracker *TaskTracker
 }
 
 var State = &AppState{}
@@ -48,4 +51,18 @@ func (s *AppState) UpdateTrayState(hasActive, hasPaused, hasError bool, activeCo
 
 func (s *AppState) GetTrayState() (hasActive, hasPaused, hasError bool, activeCount int) {
 	return s.hasActive.Load(), s.hasPaused.Load(), s.hasError.Load(), int(s.activeCount.Load())
+}
+
+// SetTracker 设置任务追踪器
+func (s *AppState) SetTracker(t *TaskTracker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tracker = t
+}
+
+// GetTracker 获取任务追踪器
+func (s *AppState) GetTracker() *TaskTracker {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.tracker
 }

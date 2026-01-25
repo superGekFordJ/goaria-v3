@@ -77,3 +77,23 @@ export function unsubscribeFromWindowEvents() {
   windowCreatedUnsubscribe?.()
   windowCreatedUnsubscribe = null
 }
+
+// Task complete event subscription (backend-driven completion detection)
+let taskCompleteUnsubscribe: (() => void) | null = null
+
+export function subscribeToTaskCompleteEvent(onComplete: (gid: string) => void) {
+  if (taskCompleteUnsubscribe) return
+
+  taskCompleteUnsubscribe = Events.On('task:complete', (ev: any) => {
+    const data = (ev?.data ?? ev) as { gid: string }
+    if (import.meta.env.DEV) {
+      console.debug('[Events] task:complete', data.gid)
+    }
+    onComplete(data.gid)
+  })
+}
+
+export function unsubscribeFromTaskCompleteEvent() {
+  taskCompleteUnsubscribe?.()
+  taskCompleteUnsubscribe = null
+}

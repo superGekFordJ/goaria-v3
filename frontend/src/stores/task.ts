@@ -15,12 +15,16 @@ import {
   BatchPause,
   BatchResume,
   BatchRemove,
-  RecordTaskSpeed,
   GetFullSnapshot,
   MinimizeToTray,
 } from '../../bindings/goaria-v3/app'
 import { Task, TaskProgress } from '../../bindings/goaria-v3/internal/rpc/models'
-import { subscribeToTaskEvents, unsubscribeFromTaskEvents } from './events'
+import {
+  subscribeToTaskEvents,
+  unsubscribeFromTaskEvents,
+  subscribeToTaskCompleteEvent,
+  unsubscribeFromTaskCompleteEvent,
+} from './events'
 
 /**
  * 浅比对两个任务是否相等（仅比较高频变化字段）
@@ -221,13 +225,7 @@ export const useTaskStore = defineStore('task', () => {
         if (!gid) continue
         _progressGidSet.add(gid)
 
-        // 记录峰值速度用于智能线程模式
-        const speed = parseInt(p.downloadSpeed || '0', 10)
-        const cl = parseInt(p.completedLength || '0', 10)
-        if (speed > 0) {
-          // 异步记录，不阻塞轮询
-          RecordTaskSpeed(gid, speed, cl).catch(() => {})
-        }
+        // 峰值速度采集已迁移到后端 TaskTracker，前端不再处理
 
         const task = tasks.value.active.find(t => t.gid === gid)
         if (task) {
@@ -413,12 +411,20 @@ export const useTaskStore = defineStore('task', () => {
         }
       },
     )
+
+    // 订阅后端驱动的任务完成事件
+    subscribeToTaskCompleteEvent(gid => {
+      moveTaskToStopped(gid)
+      fetchStoppedTasks()
+    })
+
     eventsSubscribed = true
   }
 
   function cleanupEventSubscription() {
     if (!eventsSubscribed) return
     unsubscribeFromTaskEvents()
+    unsubscribeFromTaskCompleteEvent()
     eventsSubscribed = false
   }
 

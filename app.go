@@ -1,15 +1,6 @@
 package main
 
 import (
-	"goaria-v3/internal/config"
-	"goaria-v3/internal/events"
-	"goaria-v3/internal/history"
-	"goaria-v3/internal/monitor"
-	"goaria-v3/internal/process"
-	"goaria-v3/internal/rpc"
-	"goaria-v3/internal/smartthread"
-	"goaria-v3/internal/speedstats"
-	"goaria-v3/internal/tray"
 	"log"
 	"os"
 	"os/exec"
@@ -20,29 +11,17 @@ import (
 	"sync"
 	"time"
 
+	"goaria-v3/internal/config"
+	"goaria-v3/internal/events"
+	"goaria-v3/internal/history"
+	"goaria-v3/internal/monitor"
+	"goaria-v3/internal/process"
+	"goaria-v3/internal/rpc"
+	"goaria-v3/internal/smartthread"
+	"goaria-v3/internal/tray"
+
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
-
-// taskMeta 存储任务的元数据（不仅是线程数）
-type taskMeta struct {
-	ThreadCount   int
-	IsExploration bool
-}
-
-var (
-	// taskPeakSpeeds 跟踪每个 gid 的峰值速度
-	taskPeakSpeeds = make(map[string]int64)
-	taskPeakMu     sync.RWMutex
-
-	// taskThreadCounts 跟踪每个 gid 实际使用的线程数（仅智能模式）
-	taskThreadCounts = make(map[string]taskMeta)
-	taskThreadMu     sync.RWMutex
-)
-
-// 辅助用于“洗涤”瞬时爆发流量
-var taskSustainedSpeed = make(map[string]int64)
-var taskSustainedCount = make(map[string]int)
-var taskSustainedMu sync.Mutex
 
 // App struct for service bindings
 type App struct {
@@ -111,6 +90,7 @@ func (a *App) CreateWindow() {
 	a.window = a.app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "main",
 		Title:            "GoAria",
+		URL:              "/", // 重要：确保窗口导航到前端 URL
 		Width:            1024,
 		Height:           680,
 		MinWidth:         800,
@@ -134,6 +114,13 @@ func (a *App) CreateWindow() {
 	// 通知前端窗口已创建
 	if a.eventHub != nil {
 		a.eventHub.EmitWindowCreated()
+
+		// 延迟发送焦点事件，确保前端已初始化完成
+		// 用于托盘恢复时触发剪贴板检测
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			a.eventHub.EmitWindowFocus()
+		}()
 	}
 
 	log.Println("[App] Window created")
@@ -319,33 +306,11 @@ func (a *App) GetFullSnapshot() FullSnapshot {
 
 // --- Task Management ---
 
-// RecordTaskSpeed 由前端轮询时调用，更新峰值速度
+// RecordTaskSpeed 已废弃 - 后端 TaskTracker 自动采集
+// 保留空实现以兼容现有前端
 func (a *App) RecordTaskSpeed(gid string, speed int64, cl int64) {
-	if speed <= 0 {
-		return
-	}
-
-	taskSustainedMu.Lock()
-	defer taskSustainedMu.Unlock()
-
-	last := taskSustainedSpeed[gid]
-	// 误差在 15% 以内视为“平稳”针对高带宽抖动比较大
-	diff := float64(speed-last) / float64(last+1)
-	if diff > -0.15 && diff < 0.15 {
-		taskSustainedCount[gid]++
-	} else {
-		taskSustainedSpeed[gid] = speed
-		taskSustainedCount[gid] = 1
-	}
-
-	// 持续 3 次（约 3 秒）且下载进度 > 50MB 才入库
-	if taskSustainedCount[gid] >= 3 && cl > 50*1024*1024 {
-		taskPeakMu.Lock()
-		if speed > taskPeakSpeeds[gid] {
-			taskPeakSpeeds[gid] = speed
-		}
-		taskPeakMu.Unlock()
-	}
+	// 业务逻辑已迁移到 monitor.TaskTracker
+	// 此方法保留以兼容前端，但不执行任何操作
 }
 
 // AddUri adds a new download task
@@ -392,12 +357,10 @@ func (a *App) AddUri(url string) string {
 		}
 
 		if gid != "" && params.Split > 0 {
-			taskThreadMu.Lock()
-			taskThreadCounts[gid] = taskMeta{
-				ThreadCount:   params.Split,
-				IsExploration: params.IsExploration,
+			// 通过 Monitor Tracker 注册线程信息
+			if tracker := monitor.State.GetTracker(); tracker != nil {
+				tracker.SetThreadInfo(gid, params.Split, params.IsExploration)
 			}
-			taskThreadMu.Unlock()
 		}
 		return "success"
 	}
@@ -428,6 +391,7 @@ func (a *App) GetActiveProgress() []rpc.TaskProgress {
 
 // GetStoppedTasks returns stopped tasks with history (low-frequency channel)
 // Called on-demand when user switches to "Completed" tab or every 30s in background
+// 业务逻辑（速度统计、历史写入）已迁移到 Monitor
 func (a *App) GetStoppedTasks() []rpc.Task {
 	if !config.Current.ShowHistory {
 		return []rpc.Task{}
@@ -435,73 +399,7 @@ func (a *App) GetStoppedTasks() []rpc.Task {
 
 	stopped, _ := rpc.TellStopped(0, 50)
 
-	// Track completed tasks for history persistence and speed stats
-	for _, t := range stopped {
-		if t.Status == "complete" && len(t.Files) > 0 && t.Files[0].Path != "" {
-			// 记录速度统计（仅 >50MB 的文件）
-			totalLen, _ := strconv.ParseInt(t.TotalLength, 10, 64)
-			if totalLen > 50*1024*1024 {
-				taskPeakMu.RLock()
-				peak := taskPeakSpeeds[t.GID]
-				taskPeakMu.RUnlock()
-				if peak > 0 {
-					threadCount := 0
-					isExploration := false
-
-					taskThreadMu.RLock()
-					meta, tracked := taskThreadCounts[t.GID]
-					taskThreadMu.RUnlock()
-
-					if tracked {
-						threadCount = meta.ThreadCount
-						isExploration = meta.IsExploration
-					} else {
-						threadCount, _ = strconv.Atoi(config.Current.MaxConnections)
-						if threadCount <= 0 {
-							threadCount = 16
-						}
-						// 对于未追踪的任务（如重启后），尝试重新计算
-						var sourceUrl string
-						if len(t.Files[0].Uris) > 0 {
-							sourceUrl = strings.TrimSpace(t.Files[0].Uris[0].Uri)
-						}
-						isExploration = smartthread.ShouldExplore(sourceUrl)
-					}
-
-					speedstats.AddRecord(peak, threadCount, totalLen, isExploration)
-				}
-				// 清理已完成任务的峰值记录
-				taskPeakMu.Lock()
-				delete(taskPeakSpeeds, t.GID)
-				taskPeakMu.Unlock()
-
-				taskThreadMu.Lock()
-				delete(taskThreadCounts, t.GID)
-				taskThreadMu.Unlock()
-
-				taskSustainedMu.Lock()
-				delete(taskSustainedSpeed, t.GID)
-				delete(taskSustainedCount, t.GID)
-				taskSustainedMu.Unlock()
-			}
-
-			var sourceUrl string
-			if len(t.Files[0].Uris) > 0 {
-				sourceUrl = t.Files[0].Uris[0].Uri
-			}
-			history.Add(history.HistoryEntry{
-				GID:             t.GID,
-				Title:           filepath.Base(t.Files[0].Path),
-				Dir:             t.Dir,
-				Path:            t.Files[0].Path,
-				TotalLength:     t.TotalLength,
-				CompletedLength: t.CompletedLength,
-				Source:          sourceUrl,
-			})
-		}
-	}
-
-	// Merge history entries
+	// 合并历史记录（仅用于 UI 展示）
 	gidSet := make(map[string]bool)
 	for _, t := range stopped {
 		gidSet[t.GID] = true
@@ -524,6 +422,7 @@ func (a *App) GetStoppedTasks() []rpc.Task {
 }
 
 // GetTasks returns all tasks grouped by status
+// 业务逻辑（历史写入）已迁移到 Monitor
 func (a *App) GetTasks() map[string][]rpc.Task {
 	active, _ := rpc.TellActive()
 	waiting, _ := rpc.TellWaiting(0, 50)
@@ -531,27 +430,7 @@ func (a *App) GetTasks() map[string][]rpc.Task {
 	if config.Current.ShowHistory {
 		stopped, _ = rpc.TellStopped(0, 50)
 
-		// Track completed tasks for history persistence
-		for _, t := range stopped {
-			if t.Status == "complete" && len(t.Files) > 0 && t.Files[0].Path != "" {
-				// Extract source URL from first file's URIs
-				var sourceUrl string
-				if len(t.Files[0].Uris) > 0 {
-					sourceUrl = t.Files[0].Uris[0].Uri
-				}
-				history.Add(history.HistoryEntry{
-					GID:             t.GID,
-					Title:           filepath.Base(t.Files[0].Path),
-					Dir:             t.Dir,
-					Path:            t.Files[0].Path,
-					TotalLength:     t.TotalLength,
-					CompletedLength: t.CompletedLength,
-					Source:          sourceUrl,
-				})
-			}
-		}
-
-		// Merge history entries with stopped tasks (dedup by GID)
+		// 合并历史记录（仅用于 UI 展示）
 		gidSet := make(map[string]bool)
 		for _, t := range stopped {
 			gidSet[t.GID] = true
@@ -559,7 +438,6 @@ func (a *App) GetTasks() map[string][]rpc.Task {
 
 		for _, h := range history.GetAll() {
 			if !gidSet[h.GID] {
-				// Convert history entry to Task for UI display
 				stopped = append(stopped, rpc.Task{
 					GID:             h.GID,
 					Status:          "complete",
@@ -660,19 +538,10 @@ func (a *App) RemoveTask(gid string, deleteFile bool) {
 	// 3. Remove from history
 	history.Remove(gid)
 
-	// Clean up tracking maps
-	taskPeakMu.Lock()
-	delete(taskPeakSpeeds, gid)
-	taskPeakMu.Unlock()
-
-	taskThreadMu.Lock()
-	delete(taskThreadCounts, gid)
-	taskThreadMu.Unlock()
-
-	taskSustainedMu.Lock()
-	delete(taskSustainedSpeed, gid)
-	delete(taskSustainedCount, gid)
-	taskSustainedMu.Unlock()
+	// 4. Clean up from Tracker
+	if tracker := monitor.State.GetTracker(); tracker != nil {
+		tracker.RemoveTask(gid)
+	}
 
 	// 4. Physical cleanup
 	if targetPath != "" {
