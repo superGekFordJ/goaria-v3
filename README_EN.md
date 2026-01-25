@@ -56,6 +56,7 @@ Unlike feature-heavy download managers, GoAria's philosophy is rooted in **Pragm
 - **Low Resource Usage**: Built with Go and Wails v3, ensuring minimal storage space.
 - **Tiny Distribution**: The final binary is approximately **10MB** after UPX compression. Portable and blazing fast.
 - **Smart Polling**: Automatically optimizes API request frequency when the window is hidden to respect your CPU and battery life.
+- **Lightweight Mode**: Support headless mode, no UI, only as Aria2 frontend, through RPC with Aria2 interaction. You can use `--hidden` to directly start headless mode.
 
 ### 🎨 Zero-Interference Aesthetics
 
