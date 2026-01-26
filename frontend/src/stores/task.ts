@@ -109,6 +109,14 @@ function dedupByGid(list: Task[]): Task[] {
   })
 }
 
+/**
+ * 复用的 Set 实例，用于 fetchActiveTasks / fetchStoppedTasks 中的去重
+ * 避免每次调用都创建新 Set 对象
+ */
+const _activeGidSet = new Set<string>()
+const _waitingGidSet = new Set<string>()
+const _stoppedGidSet = new Set<string>()
+
 // 低频通道间隔常量
 const PROGRESS_INTERVAL = 1000 // 1s
 const LOW_FREQ_INTERVAL = 30000 // 30s
@@ -259,8 +267,9 @@ export const useTaskStore = defineStore('task', () => {
       }
 
       if (stateMismatch) {
+        // 优化：仅刷新 active/waiting，stopped 由后端事件驱动
+        // 不再调用 fetchStoppedTasks，减少不必要的 IPC
         await fetchActiveTasks()
-        fetchStoppedTasks() // 异步刷新
         return true
       }
 
@@ -316,10 +325,15 @@ export const useTaskStore = defineStore('task', () => {
           const metadata = await GetTaskMetadata([delta.gid])
           const newTask = metadata?.[delta.gid]
           if (newTask) {
-            tasks.value = {
-              ...tasks.value,
-              active: [newTask, ...tasks.value.active.filter(t => t.gid !== delta.gid)],
-              waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
+            // 优化：检查是否已存在，避免不必要的数组操作
+            const existsInActive = tasks.value.active.some(t => t.gid === delta.gid)
+            const existsInWaiting = tasks.value.waiting.some(t => t.gid === delta.gid)
+            if (!existsInActive) {
+              tasks.value = {
+                ...tasks.value,
+                active: [newTask, ...tasks.value.active],
+                waiting: existsInWaiting ? tasks.value.waiting.filter(t => t.gid !== delta.gid) : tasks.value.waiting,
+              }
             }
           } else {
             await fetchActiveTasks()
@@ -332,7 +346,7 @@ export const useTaskStore = defineStore('task', () => {
 
       case 'complete': {
         moveTaskToStopped(delta.gid)
-        fetchStoppedTasks()
+        // 优化：后端已自动处理历史记录，仅在切换到已完成tab时按需拉取
         break
       }
 
@@ -367,26 +381,42 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   function moveTaskToStopped(gid: string) {
-    let task = tasks.value.active.find(t => t.gid === gid)
-    if (!task) {
-      task = tasks.value.waiting.find(t => t.gid === gid)
-    }
-
-    if (task) {
+    const activeIdx = tasks.value.active.findIndex(t => t.gid === gid)
+    const waitingIdx = activeIdx === -1 ? tasks.value.waiting.findIndex(t => t.gid === gid) : -1
+    
+    // 优化：仅当任务存在时才创建新数组
+    if (activeIdx !== -1) {
+      const task = tasks.value.active[activeIdx]
       task.status = 'complete'
       tasks.value = {
         active: tasks.value.active.filter(t => t.gid !== gid),
+        waiting: tasks.value.waiting,
+        stopped: [task, ...tasks.value.stopped],
+      }
+    } else if (waitingIdx !== -1) {
+      const task = tasks.value.waiting[waitingIdx]
+      task.status = 'complete'
+      tasks.value = {
+        active: tasks.value.active,
         waiting: tasks.value.waiting.filter(t => t.gid !== gid),
-        stopped: [task, ...tasks.value.stopped.filter(t => t.gid !== gid)],
+        stopped: [task, ...tasks.value.stopped],
       }
     }
+    // 如果任务不存在，不做任何操作，避免不必要的响应式更新
   }
 
   function removeTaskFromState(gid: string) {
-    tasks.value = {
-      active: tasks.value.active.filter(t => t.gid !== gid),
-      waiting: tasks.value.waiting.filter(t => t.gid !== gid),
-      stopped: tasks.value.stopped.filter(t => t.gid !== gid),
+    // 优化：检查任务是否存在，避免不必要的数组创建
+    const inActive = tasks.value.active.some(t => t.gid === gid)
+    const inWaiting = tasks.value.waiting.some(t => t.gid === gid)
+    const inStopped = tasks.value.stopped.some(t => t.gid === gid)
+    
+    if (inActive || inWaiting || inStopped) {
+      tasks.value = {
+        active: inActive ? tasks.value.active.filter(t => t.gid !== gid) : tasks.value.active,
+        waiting: inWaiting ? tasks.value.waiting.filter(t => t.gid !== gid) : tasks.value.waiting,
+        stopped: inStopped ? tasks.value.stopped.filter(t => t.gid !== gid) : tasks.value.stopped,
+      }
     }
     // Also remove from selection if present
     if (selectedGids.value.has(gid)) {
@@ -413,9 +443,11 @@ export const useTaskStore = defineStore('task', () => {
     )
 
     // 订阅后端驱动的任务完成事件
+    // 优化：后端已自动处理历史记录，前端仅更新 UI 状态
     subscribeToTaskCompleteEvent(gid => {
       moveTaskToStopped(gid)
-      fetchStoppedTasks()
+      // 不再调用 fetchStoppedTasks，减少 IPC 开销
+      // 用户切换到"已完成"tab时会按需拉取
     })
 
     eventsSubscribed = true
@@ -431,15 +463,28 @@ export const useTaskStore = defineStore('task', () => {
   /**
    * 高频轮询：仅获取 active + waiting 任务
    * 返回是否有活跃任务（用于调整轮询频率）
+   * 优化：复用 Set 实例减少 GC 压力
    */
   async function fetchActiveTasks(): Promise<{ hasActiveTasks: boolean; taskCompleted: boolean }> {
     try {
       const res = await GetActiveTasks()
       consecutiveErrors.value = 0
 
-      const active = dedupByGid(res.active || [])
-      const activeGids = new Set(active.map(t => t.gid))
-      const waiting = dedupByGid((res.waiting || []).filter((t: Task) => !activeGids.has(t.gid)))
+      // 防止时序竞争：过滤掉已在 stopped 列表中的任务
+      // 场景：fetchActiveTasks 请求发出后，complete 事件先到达，任务已移到 stopped
+      // 此时响应返回会错误地将任务重新放回 active（幽灵任务）
+      _stoppedGidSet.clear()
+      for (const t of tasks.value.stopped) {
+        _stoppedGidSet.add(t.gid)
+      }
+
+      const active = dedupByGid((res.active || []).filter((t: Task) => !_stoppedGidSet.has(t.gid)))
+      // 复用 Set 实例
+      _activeGidSet.clear()
+      for (const t of active) {
+        _activeGidSet.add(t.gid)
+      }
+      const waiting = dedupByGid((res.waiting || []).filter((t: Task) => !_activeGidSet.has(t.gid) && !_stoppedGidSet.has(t.gid)))
 
       // 检测任务完成：通过数量变化判断（避免创建临时 Set）
       const oldCount = tasks.value.active.length + tasks.value.waiting.length
@@ -471,16 +516,23 @@ export const useTaskStore = defineStore('task', () => {
 
   /**
    * 低频拉取：获取 stopped 任务（按需或定时）
+   * 优化：复用 Set 实例减少 GC 压力
    */
   async function fetchStoppedTasks() {
     try {
       const res = await GetStoppedTasks()
       const stopped = dedupByGid(res || [])
 
-      // 与 active/waiting 去重
-      const activeGids = new Set(tasks.value.active.map(t => t.gid))
-      const waitingGids = new Set(tasks.value.waiting.map(t => t.gid))
-      const filteredStopped = stopped.filter(t => !activeGids.has(t.gid) && !waitingGids.has(t.gid))
+      // 复用 Set 实例与 active/waiting 去重
+      _activeGidSet.clear()
+      _waitingGidSet.clear()
+      for (const t of tasks.value.active) {
+        _activeGidSet.add(t.gid)
+      }
+      for (const t of tasks.value.waiting) {
+        _waitingGidSet.add(t.gid)
+      }
+      const filteredStopped = stopped.filter(t => !_activeGidSet.has(t.gid) && !_waitingGidSet.has(t.gid))
 
       const stoppedResult = mergeTasks(tasks.value.stopped, filteredStopped)
       if (stoppedResult.changed) {
@@ -515,6 +567,7 @@ export const useTaskStore = defineStore('task', () => {
   /**
    * Fetch task list from Aria2 via Go backend (Fallback: 全量刷新)
    * Implements two-stage refresh: first get tasks, then recover missing metadata
+   * 优化：复用 Set 实例减少 GC 压力
    */
   async function fetchTasks() {
     try {
@@ -525,20 +578,33 @@ export const useTaskStore = defineStore('task', () => {
       // Ensure we always have arrays even if backend returns empty/null
       // Also: deduplicate by gid across lists to avoid duplicated keys and UI state reuse
       const active = dedupByGid(res.active || [])
-      const activeGids = new Set(active.map(t => t.gid))
+      // 复用 Set 实例
+      _activeGidSet.clear()
+      for (const t of active) {
+        _activeGidSet.add(t.gid)
+      }
 
-      const waiting = dedupByGid((res.waiting || []).filter((t: Task) => !activeGids.has(t.gid)))
-      const waitingGids = new Set(waiting.map(t => t.gid))
+      const waiting = dedupByGid((res.waiting || []).filter((t: Task) => !_activeGidSet.has(t.gid)))
+      _waitingGidSet.clear()
+      for (const t of waiting) {
+        _waitingGidSet.add(t.gid)
+      }
 
       const stopped = dedupByGid(
-        (res.stopped || []).filter((t: Task) => !activeGids.has(t.gid) && !waitingGids.has(t.gid)),
+        (res.stopped || []).filter((t: Task) => !_activeGidSet.has(t.gid) && !_waitingGidSet.has(t.gid)),
       )
 
       const newTasks = { active, waiting, stopped }
 
       // Stage 2: Identify tasks with missing file paths and fetch metadata
+      // 优化：避免创建临时数组
       const tasksNeedingMetadata: string[] = []
-      for (const t of [...newTasks.active, ...newTasks.waiting]) {
+      for (const t of newTasks.active) {
+        if (!t.files?.[0]?.path) {
+          tasksNeedingMetadata.push(t.gid)
+        }
+      }
+      for (const t of newTasks.waiting) {
         if (!t.files?.[0]?.path) {
           tasksNeedingMetadata.push(t.gid)
         }

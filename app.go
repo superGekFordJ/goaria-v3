@@ -374,11 +374,13 @@ func (a *App) AddUri(url string) string {
 }
 
 // GetActiveTasks returns only active and waiting tasks (high-frequency channel)
-// This endpoint is optimized for frequent polling (every 500ms)
+// This endpoint is optimized for frequent polling (every 1000ms)
+// 优化：从后端 Cache 读取，避免重复调用 Aria2 RPC
 func (a *App) GetActiveTasks() map[string][]rpc.Task {
-	active, _ := rpc.TellActive()
-	waiting, _ := rpc.TellWaiting(0, 50)
-	return map[string][]rpc.Task{"active": active, "waiting": waiting}
+	return map[string][]rpc.Task{
+		"active":  monitor.Cache.GetActive(),
+		"waiting": monitor.Cache.GetWaiting(),
+	}
 }
 
 func (a *App) GetActiveProgress() []rpc.TaskProgress {
@@ -392,12 +394,13 @@ func (a *App) GetActiveProgress() []rpc.TaskProgress {
 // GetStoppedTasks returns stopped tasks with history (low-frequency channel)
 // Called on-demand when user switches to "Completed" tab or every 30s in background
 // 业务逻辑（速度统计、历史写入）已迁移到 Monitor
+// 优化：从后端 Cache 读取，避免重复调用 Aria2 RPC
 func (a *App) GetStoppedTasks() []rpc.Task {
 	if !config.Current.ShowHistory {
 		return []rpc.Task{}
 	}
 
-	stopped, _ := rpc.TellStopped(0, 50)
+	stopped := monitor.Cache.GetStopped()
 
 	// 合并历史记录（仅用于 UI 展示）
 	gidSet := make(map[string]bool)
@@ -423,12 +426,13 @@ func (a *App) GetStoppedTasks() []rpc.Task {
 
 // GetTasks returns all tasks grouped by status
 // 业务逻辑（历史写入）已迁移到 Monitor
+// 优化：从后端 Cache 读取，避免重复调用 Aria2 RPC
 func (a *App) GetTasks() map[string][]rpc.Task {
-	active, _ := rpc.TellActive()
-	waiting, _ := rpc.TellWaiting(0, 50)
+	active := monitor.Cache.GetActive()
+	waiting := monitor.Cache.GetWaiting()
 	var stopped []rpc.Task
 	if config.Current.ShowHistory {
-		stopped, _ = rpc.TellStopped(0, 50)
+		stopped = monitor.Cache.GetStopped()
 
 		// 合并历史记录（仅用于 UI 展示）
 		gidSet := make(map[string]bool)

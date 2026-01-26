@@ -27,7 +27,15 @@
   const searchQuery = ref('')
 
   // Task filtering logic based on active tab
-  const combinedDownloads = computed(() => [...taskStore.activeTasks, ...taskStore.waitingTasks])
+  // 优化：避免每次访问都创建新数组，直接使用 store 的响应式数据
+  const combinedDownloads = computed(() => {
+    const active = taskStore.activeTasks
+    const waiting = taskStore.waitingTasks
+    // 仅当有 waiting 任务时才合并，否则直接返回 active 避免创建新数组
+    if (waiting.length === 0) return active
+    if (active.length === 0) return waiting
+    return [...active, ...waiting]
+  })
 
   const displayTasks = computed(() => {
     const base =
@@ -115,6 +123,7 @@
   })
 
   const listContainer = ref<HTMLElement | null>(null)
+  // 优化：复用 Map 实例减少 GC 压力
   const prevOrderByGid = new Map<string, number>()
 
   const scrollToTask = (gid: string, block: 'start' | 'center' | 'end' | 'nearest' = 'center') => {
@@ -165,8 +174,9 @@
 
   // Performance: Start polling only when the list is visible
   // Use onActivated/onDeactivated for KeepAlive compatibility
+  // 优化：使用 1000ms 间隔（符合 008 spec），降低 GC 压力
   onMounted(() => {
-    taskStore.startPolling(500)
+    taskStore.startPolling(1000)
   })
 
   onUnmounted(() => {
@@ -174,8 +184,9 @@
   })
 
   // KeepAlive lifecycle: resume/pause polling when tab switches
+  // 优化：使用 1000ms 间隔（符合 008 spec）
   onActivated(() => {
-    taskStore.startPolling(500)
+    taskStore.startPolling(1000)
   })
 
   onDeactivated(() => {

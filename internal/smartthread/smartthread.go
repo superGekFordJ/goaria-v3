@@ -95,6 +95,6 @@ func Calculate(fileSize int64, maxConnections int, url string) ThreadParams {
 func ShouldExplore(url string) bool {
 	h := fnv.New32a()
 	h.Write([]byte(url))
-	// 20% 概率触发探索 (平均每 5 个任务 1 个探索，确保 10 个任务的窗口内有足够的验证机会)
-	return h.Sum32()%5 == 0
+	// 25% 概率触发探索 (平均每 4 个任务 1 个探索，确保 10 个任务的窗口内有足够的验证机会)
+	return h.Sum32()%4 == 0
 }
