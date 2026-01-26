@@ -3,26 +3,26 @@
 #
 # The lines below are called `modelines`. See `:help modeline`
 
-name: "goaria-v3.exe"
+name: "goaria-v3"
 arch: ${GOARCH}
 platform: "linux"
-version: "0.1.0"
+version: "1.2.1"
 section: "default"
 priority: "extra"
 maintainer: ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>
-description: "A goaria-v3 application"
-vendor: "My Company"
+description: "A light-weight aria2 GUI"
+vendor: "GoAria"
 homepage: "https://wails.io"
 license: "MIT"
 release: "1"
 
 contents:
-  - src: "./bin/goaria-v3.exe"
-    dst: "/usr/local/bin/goaria-v3.exe"
+  - src: "./bin/goaria-v3"
+    dst: "/usr/local/bin/goaria-v3"
   - src: "./build/appicon.png"
-    dst: "/usr/share/icons/hicolor/128x128/apps/goaria-v3.exe.png"
-  - src: "./build/linux/goaria-v3.exe.desktop"
-    dst: "/usr/share/applications/goaria-v3.exe.desktop"
+    dst: "/usr/share/icons/hicolor/128x128/apps/goaria-v3.png"
+  - src: "./build/linux/goaria-v3.desktop"
+    dst: "/usr/share/applications/goaria-v3.desktop"
 
 # Default dependencies for Debian 12/Ubuntu 22.04+ with WebKit 4.1
 depends:

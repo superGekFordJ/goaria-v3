@@ -2,10 +2,10 @@
 set -e
 
 # Build configuration
-APP_NAME="goaria-v3.exe"
-BUNDLE_ID="com.example.goariav3"
-VERSION="0.1.0"
-BUILD_NUMBER="0.1.0"
+APP_NAME="goaria-v3"
+BUNDLE_ID=""
+VERSION="1.2.1"
+BUILD_NUMBER="1.2.1"
 BUILD_DIR="build/ios"
 TARGET="simulator"
 
