@@ -60,6 +60,12 @@ func main() {
 		Assets: application.AssetOptions{
 			Handler: http.FileServer(http.FS(frontendFS)),
 		},
+		SingleInstance: &application.SingleInstanceOptions{
+			UniqueID: "singleinstance-goaria-cf3e88a7f3c5",
+			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
+				appService.ShowWindow()
+			},
+		},
 		Windows: application.WindowsOptions{
 			DisableQuitOnLastWindowClosed: true,
 		},
