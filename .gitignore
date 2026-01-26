@@ -33,3 +33,4 @@ config.json
 # --- 构建产物 ---
 *.zip
 
+build.ps1
