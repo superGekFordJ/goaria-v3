@@ -114,7 +114,10 @@ func main() {
 
 	// Handle tray click - toggle window
 	systray.OnClick(func() {
-		appService.ToggleWindow()
+		// 使用 goroutine 异步调用，避免阻塞 UI 主线程。
+		// 关键原因：Wails 的 Window.NewWithOptions 创建窗口时需要主线程的消息循环来处理初始化。
+		// 如果在此处同步调用，会占住主线程，导致窗口创建请求无法被处理（死锁），从而出现创建失败或 about:blank。
+		go appService.ToggleWindow()
 	})
 
 	// Create tray menu (shown on right-click)

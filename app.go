@@ -31,7 +31,9 @@ type App struct {
 	eventHub  *events.Hub
 	trayState tray.TrayState
 
-	windowMu sync.Mutex // 保护窗口操作
+	windowMu       sync.Mutex // 保护窗口操作
+	lastToggleTime time.Time  // 上次切换窗口时间，用于全局防抖
+	isToggling     bool       // 防止重入标志
 }
 
 // NewApp creates a new App instance
@@ -108,6 +110,11 @@ func (a *App) CreateWindow() {
 		},
 	})
 
+	// 强制导航到根路径，解决部分场景下重建窗口显示 about:blank 的问题
+	if a.window != nil {
+		a.window.SetURL("/")
+	}
+
 	// 更新状态
 	monitor.State.SetWindowExists(true)
 
@@ -147,9 +154,38 @@ func (a *App) DestroyWindow() {
 // ToggleWindow toggles window visibility (or create/destroy)
 func (a *App) ToggleWindow() {
 	a.windowMu.Lock()
+
+	// 1. 重入保护：如果正在处理上一次切换（创建/销毁中），直接忽略
+	// 这解决了 click -> async -> blocking operation 期间的任何后续点击
+	if a.isToggling {
+		log.Println("[App] ToggleWindow: ignoring click (operation in progress)")
+		a.windowMu.Unlock()
+		return
+	}
+
+	// 2. 时间防抖：操作完成后的一小段时间内也忽略，防止快速连击
+	if time.Since(a.lastToggleTime) < 500*time.Millisecond {
+		log.Println("[App] ToggleWindow: ignoring rapid click (debounced)")
+		a.windowMu.Unlock()
+		return
+	}
+
+	// 设置处理中标志
+	a.isToggling = true
+
+	// 获取当前状态决定下一步操作
 	hasWindow := a.window != nil
 	isVisible := hasWindow && a.window.IsVisible()
+
 	a.windowMu.Unlock()
+
+	// 确保操作完成后清除标志并更新时间
+	defer func() {
+		a.windowMu.Lock()
+		a.isToggling = false
+		a.lastToggleTime = time.Now()
+		a.windowMu.Unlock()
+	}()
 
 	if !hasWindow {
 		// 无窗口，创建新窗口
