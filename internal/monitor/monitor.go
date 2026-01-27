@@ -134,8 +134,12 @@ func (m *Monitor) tick() {
 
 		// 推送任务完成事件（通过 pusher 批量推送）
 		for _, task := range completedTasks {
+			eventType := "complete"
+			if task.Status == "error" {
+				eventType = "error"
+			}
 			m.pusher.Queue(events.TaskDelta{
-				Type: "complete",
+				Type: eventType,
 				GID:  task.GID,
 			})
 		}

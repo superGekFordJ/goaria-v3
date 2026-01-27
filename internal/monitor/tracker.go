@@ -70,16 +70,16 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 	// 处理已停止任务：检测新完成
 	for _, task := range stopped {
 		currentGids[task.GID] = true
-		if task.Status == "complete" {
+		if task.Status == "complete" || task.Status == "error" {
 			// 检查是否已处理过
 			if t.processedComplete[task.GID] {
 				continue
 			}
 
 			if tracked := t.tasks[task.GID]; tracked != nil {
-				if tracked.Status != "complete" {
+				if tracked.Status != "complete" && tracked.Status != "error" {
 					// 状态变为完成，触发完成处理
-					tracked.Status = "complete"
+					tracked.Status = task.Status
 					t.fillTaskInfo(tracked, task)
 					completed = append(completed, tracked)
 					t.processedComplete[task.GID] = true
@@ -87,7 +87,7 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 			} else {
 				// 新发现的已完成任务（可能是重启后）
 				tracked = t.createTrackedTask(task)
-				tracked.Status = "complete"
+				tracked.Status = task.Status
 				t.tasks[task.GID] = tracked
 				completed = append(completed, tracked)
 				t.processedComplete[task.GID] = true

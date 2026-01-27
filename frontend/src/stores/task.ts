@@ -332,7 +332,9 @@ export const useTaskStore = defineStore('task', () => {
               tasks.value = {
                 ...tasks.value,
                 active: [newTask, ...tasks.value.active],
-                waiting: existsInWaiting ? tasks.value.waiting.filter(t => t.gid !== delta.gid) : tasks.value.waiting,
+                waiting: existsInWaiting
+                  ? tasks.value.waiting.filter(t => t.gid !== delta.gid)
+                  : tasks.value.waiting,
               }
             }
           } else {
@@ -357,6 +359,7 @@ export const useTaskStore = defineStore('task', () => {
 
       case 'error': {
         patchTaskStatus(delta.gid, 'error')
+        moveTaskToStopped(delta.gid)
         break
       }
 
@@ -383,11 +386,13 @@ export const useTaskStore = defineStore('task', () => {
   function moveTaskToStopped(gid: string) {
     const activeIdx = tasks.value.active.findIndex(t => t.gid === gid)
     const waitingIdx = activeIdx === -1 ? tasks.value.waiting.findIndex(t => t.gid === gid) : -1
-    
+
     // 优化：仅当任务存在时才创建新数组
     if (activeIdx !== -1) {
       const task = tasks.value.active[activeIdx]
-      task.status = 'complete'
+      if (task.status !== 'error') {
+        task.status = 'complete'
+      }
       tasks.value = {
         active: tasks.value.active.filter(t => t.gid !== gid),
         waiting: tasks.value.waiting,
@@ -395,7 +400,9 @@ export const useTaskStore = defineStore('task', () => {
       }
     } else if (waitingIdx !== -1) {
       const task = tasks.value.waiting[waitingIdx]
-      task.status = 'complete'
+      if (task.status !== 'error') {
+        task.status = 'complete'
+      }
       tasks.value = {
         active: tasks.value.active,
         waiting: tasks.value.waiting.filter(t => t.gid !== gid),
@@ -404,13 +411,12 @@ export const useTaskStore = defineStore('task', () => {
     }
     // 如果任务不存在，不做任何操作，避免不必要的响应式更新
   }
-
   function removeTaskFromState(gid: string) {
     // 优化：检查任务是否存在，避免不必要的数组创建
     const inActive = tasks.value.active.some(t => t.gid === gid)
     const inWaiting = tasks.value.waiting.some(t => t.gid === gid)
     const inStopped = tasks.value.stopped.some(t => t.gid === gid)
-    
+
     if (inActive || inWaiting || inStopped) {
       tasks.value = {
         active: inActive ? tasks.value.active.filter(t => t.gid !== gid) : tasks.value.active,
@@ -484,7 +490,11 @@ export const useTaskStore = defineStore('task', () => {
       for (const t of active) {
         _activeGidSet.add(t.gid)
       }
-      const waiting = dedupByGid((res.waiting || []).filter((t: Task) => !_activeGidSet.has(t.gid) && !_stoppedGidSet.has(t.gid)))
+      const waiting = dedupByGid(
+        (res.waiting || []).filter(
+          (t: Task) => !_activeGidSet.has(t.gid) && !_stoppedGidSet.has(t.gid),
+        ),
+      )
 
       // 检测任务完成：通过数量变化判断（避免创建临时 Set）
       const oldCount = tasks.value.active.length + tasks.value.waiting.length
@@ -532,7 +542,9 @@ export const useTaskStore = defineStore('task', () => {
       for (const t of tasks.value.waiting) {
         _waitingGidSet.add(t.gid)
       }
-      const filteredStopped = stopped.filter(t => !_activeGidSet.has(t.gid) && !_waitingGidSet.has(t.gid))
+      const filteredStopped = stopped.filter(
+        t => !_activeGidSet.has(t.gid) && !_waitingGidSet.has(t.gid),
+      )
 
       const stoppedResult = mergeTasks(tasks.value.stopped, filteredStopped)
       if (stoppedResult.changed) {
@@ -591,7 +603,9 @@ export const useTaskStore = defineStore('task', () => {
       }
 
       const stopped = dedupByGid(
-        (res.stopped || []).filter((t: Task) => !_activeGidSet.has(t.gid) && !_waitingGidSet.has(t.gid)),
+        (res.stopped || []).filter(
+          (t: Task) => !_activeGidSet.has(t.gid) && !_waitingGidSet.has(t.gid),
+        ),
       )
 
       const newTasks = { active, waiting, stopped }
