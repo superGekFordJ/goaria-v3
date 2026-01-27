@@ -14,10 +14,15 @@
     ? defineAsyncComponent(() => import('./components/debug/DebugPanel.vue'))
     : null
 
+  const TestSimulator = import.meta.env.DEV
+    ? defineAsyncComponent(() => import('./components/debug/TestSimulator.vue'))
+    : null
+
   const uiStore = useUIStore()
   const configStore = useConfigStore()
   const taskStore = useTaskStore()
   const isReady = ref(false)
+  const showTestSimulator = ref(window.location.hash.includes('test-simulator'))
   const unsubs: Array<() => void> = []
 
   let lastClipboardCandidate = ''
@@ -148,6 +153,13 @@
 
     // Trigger 2: Tab Switch (Context-Aware Detection)
     // When user manually enters Downloads tab, check clipboard
+    // Reactively show/hide test simulator based on URL hash
+    const updateSimulatorVisibility = () => {
+      showTestSimulator.value = window.location.hash.includes('test-simulator')
+    }
+    window.addEventListener('hashchange', updateSimulatorVisibility)
+    unsubs.push(() => window.removeEventListener('hashchange', updateSimulatorVisibility))
+
     watch(
       () => uiStore.activeTab,
       newTab => {
@@ -183,6 +195,9 @@
 <template>
   <!-- Debug Panel (dev-only; activate with #debug in URL) -->
   <component :is="DebugPanel" v-if="DebugPanel" />
+
+  <!-- Test Simulator (dev-only; activate with #test-simulator in URL) -->
+  <component v-if="TestSimulator && showTestSimulator" :is="TestSimulator" />
 
   <!-- Noise texture overlay for depth -->
   <div class="noise-overlay"></div>

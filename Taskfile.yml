@@ -1,4 +1,4 @@
-version: '3'
+version: "3"
 
 includes:
   common: ./build/Taskfile.yml
@@ -11,7 +11,7 @@ includes:
 vars:
   APP_NAME: "goaria-v3"
   BIN_DIR: "bin"
-  VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
+  VITE_PORT: "{{.WAILS_VITE_PORT | default 9245}}"
 
 tasks:
   build:
@@ -58,6 +58,18 @@ tasks:
     cmds:
       - go test ./...
 
+  test:frontend:
+    summary: Run frontend tests (Vitest)
+    dir: frontend
+    cmds:
+      - pnpm test:run
+
+  test:all:
+    summary: Run all tests (Go + Frontend)
+    cmds:
+      - task: test:go
+      - task: test:frontend
+
   # Dependency helpers
   deps:update:frontend:
     summary: Update frontend deps (respecting lockfile)
@@ -89,7 +101,7 @@ tasks:
     cmds:
       - task: common:setup:docker
 
-# ==================== Info ====================
+  # ==================== Info ====================
 
   info:
     desc: "Show project info"

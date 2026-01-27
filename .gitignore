@@ -34,3 +34,6 @@ config.json
 *.zip
 
 build.ps1
+
+# --- 测试脚本 ---
+scripts/*
