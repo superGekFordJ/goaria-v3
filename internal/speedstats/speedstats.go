@@ -2,6 +2,7 @@ package speedstats
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,10 +30,32 @@ type SpeedRecord struct {
 var (
 	records []SpeedRecord
 	mu      sync.RWMutex
+
+	// Async save control
+	saveTimer    *time.Timer
+	saveTimerMu  sync.Mutex
+	saveFileMu   sync.Mutex
+	statsPath    string
+	saveInterval = 1 * time.Second
 )
+
+// SetStatsPath overrides the default speed stats file path.
+// This is primarily used for testing to isolate test data.
+func SetStatsPath(path string) {
+	statsPath = path
+}
+
+// SetSaveInterval configures the write coalescing interval.
+// Default is 1 second. This is primarily used for testing.
+func SetSaveInterval(d time.Duration) {
+	saveInterval = d
+}
 
 // getStatsPath returns the path to speed_stats.json
 func getStatsPath() string {
+	if statsPath != "" {
+		return statsPath
+	}
 	home, _ := os.UserHomeDir()
 	dir := filepath.Join(home, ".goaria")
 	_ = os.MkdirAll(dir, 0755)
@@ -53,13 +76,19 @@ func Load() {
 
 // Save writes speed stats to disk
 func Save() error {
-	mu.Lock()
-	defer mu.Unlock()
-
+	mu.RLock()
 	data, err := json.MarshalIndent(records, "", "  ")
+	mu.RUnlock()
+
 	if err != nil {
 		return err
 	}
+	return writeToDisk(data)
+}
+
+func writeToDisk(data []byte) error {
+	saveFileMu.Lock()
+	defer saveFileMu.Unlock()
 	return os.WriteFile(getStatsPath(), data, 0644)
 }
 
@@ -85,7 +114,7 @@ func AddRecord(peakSpeed int64, threadCount int, fileSize int64, isExploration b
 		records = records[len(records)-maxRecords:]
 	}
 
-	go saveAsync()
+	saveAsync()
 }
 
 // GetRecentPeak 获取最近有效峰值（采用单线程开发效率中位数 + 标杆优先逻辑）
@@ -185,7 +214,7 @@ func CleanExpired(days int) {
 
 	if len(filtered) != len(records) {
 		records = filtered
-		go saveAsync()
+		saveAsync()
 	}
 }
 
@@ -205,13 +234,22 @@ func GetAllRecords() []SpeedRecord {
 	return result
 }
 
-// saveAsync saves stats in background
+// saveAsync saves stats in background with coalescing
 func saveAsync() {
-	mu.RLock()
-	data, err := json.MarshalIndent(records, "", "  ")
-	mu.RUnlock()
+	saveTimerMu.Lock()
+	defer saveTimerMu.Unlock()
 
-	if err == nil {
-		_ = os.WriteFile(getStatsPath(), data, 0644)
+	if saveTimer != nil {
+		return
 	}
+
+	saveTimer = time.AfterFunc(saveInterval, func() {
+		saveTimerMu.Lock()
+		saveTimer = nil
+		saveTimerMu.Unlock()
+
+		if err := Save(); err != nil {
+			log.Printf("[speedstats] Failed to save: %v", err)
+		}
+	})
 }

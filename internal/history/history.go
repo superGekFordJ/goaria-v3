@@ -2,6 +2,7 @@ package history
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -21,12 +22,41 @@ type HistoryEntry struct {
 }
 
 var (
-	entries []HistoryEntry
-	mu      sync.RWMutex
+	entries          []HistoryEntry
+	gidIndex         map[string]int
+	mu               sync.RWMutex
+	historyPath      string
+	saveChan         = make(chan struct{}, 1)
+	debounceInterval = 500 * time.Millisecond
+	saverOnce        sync.Once
+	SaveEnabled      = true
 )
+
+// SetHistoryPath overrides the default history file path.
+// This is primarily used for testing to isolate test data.
+func SetHistoryPath(path string) {
+	historyPath = path
+}
+
+// SetDebounceDuration configures the debounce interval for batch saving.
+// Default is 500ms. This is primarily used for testing.
+func SetDebounceDuration(d time.Duration) {
+	debounceInterval = d
+}
+
+// DisableSaveForTest disables disk persistence for testing.
+// This prevents test data from being written to the filesystem.
+func DisableSaveForTest() {
+	mu.Lock()
+	defer mu.Unlock()
+	SaveEnabled = false
+}
 
 // GetHistoryPath returns the path to history.json
 func GetHistoryPath() string {
+	if historyPath != "" {
+		return historyPath
+	}
 	home, _ := os.UserHomeDir()
 	dir := filepath.Join(home, ".goaria")
 	_ = os.MkdirAll(dir, 0755)
@@ -39,9 +69,13 @@ func Load() {
 	defer mu.Unlock()
 
 	entries = []HistoryEntry{}
+	gidIndex = make(map[string]int)
 	data, err := os.ReadFile(GetHistoryPath())
 	if err == nil {
 		_ = json.Unmarshal(data, &entries)
+		for i, e := range entries {
+			gidIndex[e.GID] = i
+		}
 	}
 }
 
@@ -62,20 +96,23 @@ func Add(entry HistoryEntry) {
 	mu.Lock()
 	defer mu.Unlock()
 
+	if gidIndex == nil {
+		gidIndex = make(map[string]int)
+	}
+
 	// Check if already exists
-	for i, e := range entries {
-		if e.GID == entry.GID {
-			// Update existing entry
-			entries[i] = entry
-			go saveAsync()
-			return
-		}
+	if i, ok := gidIndex[entry.GID]; ok {
+		// Update existing entry
+		entries[i] = entry
+		triggerSave()
+		return
 	}
 
 	// Add new entry
 	entry.CompletedAt = time.Now().Unix()
 	entries = append(entries, entry)
-	go saveAsync()
+	gidIndex[entry.GID] = len(entries) - 1
+	triggerSave()
 }
 
 // Remove removes an entry by GID
@@ -83,12 +120,18 @@ func Remove(gid string) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	for i, e := range entries {
-		if e.GID == gid {
-			entries = append(entries[:i], entries[i+1:]...)
-			go saveAsync()
-			return
+	if gidIndex == nil {
+		return
+	}
+
+	if i, ok := gidIndex[gid]; ok {
+		entries = append(entries[:i], entries[i+1:]...)
+		delete(gidIndex, gid)
+		// Update indices for shifted elements
+		for j := i; j < len(entries); j++ {
+			gidIndex[entries[j].GID] = j
 		}
+		triggerSave()
 	}
 }
 
@@ -108,16 +151,50 @@ func Clear() {
 	defer mu.Unlock()
 
 	entries = []HistoryEntry{}
-	go saveAsync()
+	gidIndex = make(map[string]int)
+	triggerSave()
 }
 
-// saveAsync saves history in background
-func saveAsync() {
+func triggerSave() {
+	saverOnce.Do(func() {
+		go saveLoop()
+	})
+	select {
+	case saveChan <- struct{}{}:
+	default:
+	}
+}
+
+func saveLoop() {
+	for {
+		<-saveChan
+		time.Sleep(debounceInterval)
+		// drain extra signals
+		select {
+		case <-saveChan:
+		default:
+		}
+
+		doSave()
+	}
+}
+
+// doSave performs the actual save operation
+func doSave() {
 	mu.RLock()
+	if !SaveEnabled {
+		mu.RUnlock()
+		return
+	}
 	data, err := json.MarshalIndent(entries, "", "  ")
 	mu.RUnlock()
 
-	if err == nil {
-		_ = os.WriteFile(GetHistoryPath(), data, 0644)
+	if err != nil {
+		log.Printf("[history] Failed to marshal entries: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(GetHistoryPath(), data, 0644); err != nil {
+		log.Printf("[history] Failed to write file: %v", err)
 	}
 }

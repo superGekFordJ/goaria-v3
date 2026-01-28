@@ -18,8 +18,9 @@ var (
 	httpClient    = &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
-			MaxIdleConns:    10,
-			IdleConnTimeout: 30 * time.Second,
+			MaxIdleConns:        10,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     30 * time.Second,
 		},
 	}
 )
