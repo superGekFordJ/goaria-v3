@@ -15,15 +15,33 @@ type TaskDelta struct {
 type Hub struct {
 	app *application.App
 	mu  sync.RWMutex
+
+	// Listeners for internal events
+	deltaListeners []func(TaskDelta)
 }
 
 func NewHub(app *application.App) *Hub {
-	return &Hub{app: app}
+	return &Hub{
+		app:            app,
+		deltaListeners: make([]func(TaskDelta), 0),
+	}
+}
+
+func (h *Hub) SubscribeTaskDelta(fn func(TaskDelta)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.deltaListeners = append(h.deltaListeners, fn)
 }
 
 func (h *Hub) EmitTaskDelta(delta TaskDelta) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+
+	// Notify internal listeners
+	for _, fn := range h.deltaListeners {
+		fn(delta)
+	}
+
 	if h.app != nil && h.app.Event != nil {
 		h.app.Event.Emit("task:delta", delta)
 	}

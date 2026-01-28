@@ -36,8 +36,9 @@ type Monitor struct {
 	tracker *TaskTracker
 	pusher  *Pusher
 
-	stopChan chan struct{}
-	stopOnce sync.Once
+	stopChan      chan struct{}
+	forceTickChan chan struct{}
+	stopOnce      sync.Once
 
 	// 轮询间隔
 	headlessInterval time.Duration
@@ -50,9 +51,27 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray)
 		hub:              hub,
 		systray:          systray,
 		stopChan:         make(chan struct{}),
+		forceTickChan:    make(chan struct{}, 1),
 		headlessInterval: 5 * time.Second, // 无头模式：5秒
 		windowInterval:   1 * time.Second, // 窗口模式：1秒（由前端主导）
 	}
+
+	// 订阅任务变更事件，触发即时刷新
+	hub.SubscribeTaskDelta(func(delta events.TaskDelta) {
+		// 仅关注影响列表状态的事件（添加、暂停、恢复、删除）
+		// 进度更新 (progress/complete/error) 暂不需要强制刷新，由轮询/pusher处理
+		// 修正：AddUri 后需要立即看到任务，所以主要关注 add
+		// Pause/Resume/Remove 也会改变 API 返回的状态，所以也需要刷新
+		switch delta.Type {
+		case "add", "pause", "resume", "remove":
+			select {
+			case m.forceTickChan <- struct{}{}:
+				log.Printf("[Monitor] Triggering immediate update used by event: %s", delta.Type)
+			default:
+				// channel full, update already pending
+			}
+		}
+	})
 
 	// 创建任务追踪器
 	m.tracker = NewTaskTracker()
@@ -90,6 +109,14 @@ func (m *Monitor) runLoop() {
 		case <-ticker.C:
 			m.tick()
 			// 根据窗口状态动态调整间隔
+			if State.HasWindow() {
+				ticker.Reset(m.windowInterval)
+			} else {
+				ticker.Reset(m.headlessInterval)
+			}
+		case <-m.forceTickChan:
+			m.tick()
+			// 重置定时器，避免立即再次轮询
 			if State.HasWindow() {
 				ticker.Reset(m.windowInterval)
 			} else {
