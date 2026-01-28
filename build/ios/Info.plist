@@ -7,7 +7,7 @@
 		<key>CFBundleExecutable</key>
 		<string>goaria-v3</string>
 		<key>CFBundleGetInfoString</key>
-		<string>A light-weight aria2 GUI</string>
+		<string>GoAria backend service</string>
 		<key>CFBundleIdentifier</key>
 		<string/>
 		<key>CFBundleName</key>
@@ -15,9 +15,9 @@
 		<key>CFBundlePackageType</key>
 		<string>APPL</string>
 		<key>CFBundleShortVersionString</key>
-		<string>1.2.2</string>
+		<string>1.2.3</string>
 		<key>CFBundleVersion</key>
-		<string>1.2.2</string>
+		<string>1.2.3</string>
 		<key>LSRequiresIPhoneOS</key>
 		<true/>
 		<key>MinimumOSVersion</key>

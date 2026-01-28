@@ -10,8 +10,8 @@ info:
   productIdentifier: "" # The unique product identifier
   description: "A light-weight aria2 GUI" # The application description
   copyright: "(c) 2026, GoAria" # Copyright text
-  comments: "A light-weight aria2 GUI" # Comments
-  version: "1.2.2" # The application version
+  comments: "GoAria backend service" # Comments
+  version: "1.2.3" # The application version
 
 # iOS build configuration (uncomment to customise iOS project generation)
 # Note: Keys under `ios` OVERRIDE values under `info` when set.
