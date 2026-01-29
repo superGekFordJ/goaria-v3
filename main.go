@@ -96,6 +96,7 @@ func main() {
 
 	// Start backend monitor loop
 	mon := monitor.New(app, eventHub, systray)
+	monitor.State.SetMonitor(mon) // 注册到全局状态，供 RemoveTask 调用
 	mon.Start()
 
 	// Update shutdown handler to stop monitor

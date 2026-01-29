@@ -438,12 +438,20 @@ func (a *App) GetStoppedTasks() []rpc.Task {
 
 	stopped := monitor.Cache.GetStopped()
 
-	// 合并历史记录（仅用于 UI 展示）
+	// 用历史记录补全缺失的文件信息
+	// 场景：Lite RPC 返回的任务没有文件信息，但历史记录有
 	gidSet := make(map[string]bool)
-	for _, t := range stopped {
-		gidSet[t.GID] = true
+	for i := range stopped {
+		gidSet[stopped[i].GID] = true
+		// 如果缓存任务缺少文件信息，尝试从历史记录补全
+		if len(stopped[i].Files) == 0 || stopped[i].Files[0].Path == "" {
+			if h, ok := history.Get(stopped[i].GID); ok && h.Path != "" {
+				stopped[i].Files = []rpc.File{{Path: h.Path}}
+			}
+		}
 	}
 
+	// 添加仅存在于历史记录中的任务（Aria2 重启后丢失的）
 	for _, h := range history.GetAll() {
 		if !gidSet[h.GID] {
 			stopped = append(stopped, rpc.Task{
@@ -470,12 +478,19 @@ func (a *App) GetTasks() map[string][]rpc.Task {
 	if config.Current.ShowHistory {
 		stopped = monitor.Cache.GetStopped()
 
-		// 合并历史记录（仅用于 UI 展示）
+		// 用历史记录补全缺失的文件信息
 		gidSet := make(map[string]bool)
-		for _, t := range stopped {
-			gidSet[t.GID] = true
+		for i := range stopped {
+			gidSet[stopped[i].GID] = true
+			// 如果缓存任务缺少文件信息，尝试从历史记录补全
+			if len(stopped[i].Files) == 0 || stopped[i].Files[0].Path == "" {
+				if h, ok := history.Get(stopped[i].GID); ok && h.Path != "" {
+					stopped[i].Files = []rpc.File{{Path: h.Path}}
+				}
+			}
 		}
 
+		// 添加仅存在于历史记录中的任务
 		for _, h := range history.GetAll() {
 			if !gidSet[h.GID] {
 				stopped = append(stopped, rpc.Task{
@@ -581,6 +596,12 @@ func (a *App) RemoveTask(gid string, deleteFile bool) {
 	// 4. Clean up from Tracker
 	if tracker := monitor.State.GetTracker(); tracker != nil {
 		tracker.RemoveTask(gid)
+	}
+
+	// 5. Invalidate cache and emit remove event
+	// 这确保 lastStopped 缓存和元数据缓存被清理，防止幽灵任务
+	if mon := monitor.State.GetMonitor(); mon != nil {
+		mon.InvalidateTask(gid)
 	}
 
 	// 4. Physical cleanup
