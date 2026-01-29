@@ -145,6 +145,20 @@ func GetAll() []HistoryEntry {
 	return result
 }
 
+// Get returns a single history entry by GID (O(1) lookup)
+func Get(gid string) (HistoryEntry, bool) {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if gidIndex == nil {
+		return HistoryEntry{}, false
+	}
+	if i, ok := gidIndex[gid]; ok {
+		return entries[i], true
+	}
+	return HistoryEntry{}, false
+}
+
 // Clear removes all history entries
 func Clear() {
 	mu.Lock()

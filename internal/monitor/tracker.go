@@ -119,6 +119,16 @@ func (t *TaskTracker) updateActiveTask(task rpc.Task) {
 	tracked.CompletedLength = parseInt64(task.CompletedLength)
 	tracked.TotalLength = parseInt64(task.TotalLength)
 
+	// 如果 FilePath 为空但 task 有文件信息，补充之
+	// 场景：首次创建时 Lite 任务无文件，后续 tick enrichTasks 后有了
+	if tracked.FilePath == "" && len(task.Files) > 0 && task.Files[0].Path != "" {
+		tracked.FilePath = task.Files[0].Path
+		tracked.Dir = task.Dir
+		if len(task.Files[0].Uris) > 0 {
+			tracked.SourceURL = task.Files[0].Uris[0].Uri
+		}
+	}
+
 	// 速度采样（仅 >50MB 文件）
 	speed := parseInt64(task.DownloadSpeed)
 	if speed > 0 && tracked.TotalLength > 50*1024*1024 {
@@ -156,6 +166,7 @@ func (t *TaskTracker) sampleSpeed(task *TrackedTask, speed int64) {
 }
 
 // createTrackedTask 创建追踪任务
+// 注意：task 应该已经被 enrichTasks() 丰富过，包含文件信息
 func (t *TaskTracker) createTrackedTask(task rpc.Task) *TrackedTask {
 	tracked := &TrackedTask{
 		GID:             task.GID,
@@ -165,7 +176,8 @@ func (t *TaskTracker) createTrackedTask(task rpc.Task) *TrackedTask {
 		Dir:             task.Dir,
 	}
 
-	if len(task.Files) > 0 {
+	// 优先使用 task.Files（已被 enrichTasks 填充）
+	if len(task.Files) > 0 && task.Files[0].Path != "" {
 		tracked.FilePath = task.Files[0].Path
 		if len(task.Files[0].Uris) > 0 {
 			tracked.SourceURL = task.Files[0].Uris[0].Uri
@@ -176,12 +188,14 @@ func (t *TaskTracker) createTrackedTask(task rpc.Task) *TrackedTask {
 }
 
 // fillTaskInfo 填充任务完整信息（从 stopped 任务）
+// 注意：task 应该已经被 enrichTasks() 丰富过，包含文件信息
 func (t *TaskTracker) fillTaskInfo(tracked *TrackedTask, task rpc.Task) {
 	tracked.TotalLength = parseInt64(task.TotalLength)
 	tracked.CompletedLength = parseInt64(task.CompletedLength)
 	tracked.Dir = task.Dir
 
-	if len(task.Files) > 0 {
+	// 仅当新信息有效时才覆盖（避免用空值覆盖已有值）
+	if len(task.Files) > 0 && task.Files[0].Path != "" {
 		tracked.FilePath = task.Files[0].Path
 		if len(task.Files[0].Uris) > 0 {
 			tracked.SourceURL = task.Files[0].Uris[0].Uri

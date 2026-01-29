@@ -45,6 +45,8 @@ var Cache = &TaskCache{
 }
 
 // UpdateFromAria2 从 Aria2 更新缓存（批量获取）
+// 注意：此方法仅更新任务列表，不再自动调用 ensureMetadata
+// 元数据预取由 Monitor.tick() 显式处理，避免 Lite 任务污染缓存
 func (c *TaskCache) UpdateFromAria2(active, waiting, stopped []rpc.Task) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -53,19 +55,18 @@ func (c *TaskCache) UpdateFromAria2(active, waiting, stopped []rpc.Task) {
 	c.waiting = waiting
 	c.stopped = stopped
 	c.lastUpdate = time.Now()
-
-	// 自动预取新任务的元数据
-	for _, t := range active {
-		c.ensureMetadata(t)
-	}
-	for _, t := range waiting {
-		c.ensureMetadata(t)
-	}
 }
 
 // ensureMetadata 确保任务元数据已缓存（预取）
+// 注意：仅当任务包含有效的文件信息时才缓存，避免 Lite 任务污染缓存
 func (c *TaskCache) ensureMetadata(task rpc.Task) {
 	if _, exists := c.metadata[task.GID]; exists {
+		return
+	}
+
+	// 关键检查：如果 Files 为空，说明是 Lite 任务或元数据不完整
+	// 此时不应缓存，避免污染 metadata cache
+	if len(task.Files) == 0 {
 		return
 	}
 
@@ -76,14 +77,12 @@ func (c *TaskCache) ensureMetadata(task rpc.Task) {
 		FetchedAt:   time.Now(),
 	}
 
-	if len(task.Files) > 0 {
-		meta.Title = filepath.Base(task.Files[0].Path)
-		for _, f := range task.Files {
-			meta.Files = append(meta.Files, f.Path)
-		}
-		if len(task.Files[0].Uris) > 0 {
-			meta.SourceURL = task.Files[0].Uris[0].Uri
-		}
+	meta.Title = filepath.Base(task.Files[0].Path)
+	for _, f := range task.Files {
+		meta.Files = append(meta.Files, f.Path)
+	}
+	if len(task.Files[0].Uris) > 0 {
+		meta.SourceURL = task.Files[0].Uris[0].Uri
 	}
 
 	c.metadata[task.GID] = meta
@@ -115,6 +114,22 @@ func (c *TaskCache) GetMetadata(gid string) *TaskMetadata {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.metadata[gid]
+}
+
+// HasValidMetadata 检查任务是否有有效的元数据（包含文件信息）
+// 用于检测被污染的缓存条目并触发重试
+func (c *TaskCache) HasValidMetadata(gid string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	meta := c.metadata[gid]
+	return meta != nil && len(meta.Files) > 0
+}
+
+// InvalidateMetadata 删除指定任务的元数据（用于强制重新获取）
+func (c *TaskCache) InvalidateMetadata(gid string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.metadata, gid)
 }
 
 // PrefetchMetadata 强制预取指定任务的元数据

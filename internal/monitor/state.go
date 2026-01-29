@@ -22,6 +22,9 @@ type AppState struct {
 
 	// 任务追踪器（后端自洽核心）
 	tracker *TaskTracker
+
+	// 监控器引用（用于任务删除时的缓存失效）
+	monitor *Monitor
 }
 
 var State = &AppState{}
@@ -65,4 +68,18 @@ func (s *AppState) GetTracker() *TaskTracker {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.tracker
+}
+
+// SetMonitor 设置监控器引用
+func (s *AppState) SetMonitor(m *Monitor) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.monitor = m
+}
+
+// GetMonitor 获取监控器引用
+func (s *AppState) GetMonitor() *Monitor {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.monitor
 }

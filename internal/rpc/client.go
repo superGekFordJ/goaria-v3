@@ -42,6 +42,7 @@ type File struct {
 
 type Task struct {
 	GID             string `json:"gid"`
+	Title           string `json:"title,omitempty"`
 	Status          string `json:"status"`
 	TotalLength     string `json:"totalLength"`
 	CompletedLength string `json:"completedLength"`
@@ -200,12 +201,25 @@ func TellStatus(gid string) (*Task, error) {
 	return &result.Result, nil
 }
 
-func TellActive() ([]Task, error) { return getTasks("aria2.tellActive", nil) }
+func TellActive() ([]Task, error) { return getTasks("aria2.tellActive", nil, nil) }
 func TellWaiting(offset, num int) ([]Task, error) {
-	return getTasks("aria2.tellWaiting", []any{offset, num})
+	return getTasks("aria2.tellWaiting", []any{offset, num}, nil)
 }
 func TellStopped(offset, num int) ([]Task, error) {
-	return getTasks("aria2.tellStopped", []any{offset, num})
+	return getTasks("aria2.tellStopped", []any{offset, num}, nil)
+}
+
+func TellActiveLite() ([]Task, error) {
+	keys := []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "errorCode", "errorMessage", "dir"}
+	return getTasks("aria2.tellActive", nil, keys)
+}
+func TellWaitingLite(offset, num int) ([]Task, error) {
+	keys := []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "errorCode", "errorMessage", "dir"}
+	return getTasks("aria2.tellWaiting", []any{offset, num}, keys)
+}
+func TellStoppedLite(offset, num int) ([]Task, error) {
+	keys := []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "errorCode", "errorMessage", "dir"}
+	return getTasks("aria2.tellStopped", []any{offset, num}, keys)
 }
 
 func TellActiveProgress() ([]TaskProgress, error) {
@@ -221,8 +235,10 @@ func TellActiveProgress() ([]TaskProgress, error) {
 	return result.Result, nil
 }
 
-func getTasks(method string, extraParams []any) ([]Task, error) {
-	keys := []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "errorCode", "errorMessage", "files", "dir"}
+func getTasks(method string, extraParams []any, keys []string) ([]Task, error) {
+	if keys == nil {
+		keys = []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "errorCode", "errorMessage", "files", "dir"}
+	}
 	params := []any{}
 	if extraParams != nil {
 		params = append(params, extraParams...)
