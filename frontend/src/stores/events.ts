@@ -1,7 +1,7 @@
 import { Events } from '@wailsio/runtime'
 
 type TaskDelta = {
-  type: 'add' | 'update' | 'remove' | 'complete' | 'error' | 'pause'
+  type: 'add' | 'update' | 'remove' | 'complete' | 'error' | 'pause' | 'progress'
   gid: string
   payload?: Record<string, unknown>
 }
@@ -11,6 +11,7 @@ type FullSyncHandler = () => void
 type ConnectionHandler = (connected: boolean) => void
 
 let deltaUnsubscribe: (() => void) | null = null
+let batchDeltaUnsubscribe: (() => void) | null = null
 let fullSyncUnsubscribe: (() => void) | null = null
 let connectionUnsubscribe: (() => void) | null = null
 
@@ -19,7 +20,7 @@ export function subscribeToTaskEvents(
   onFullSync: FullSyncHandler,
   onConnectionChange?: ConnectionHandler,
 ) {
-  if (deltaUnsubscribe || fullSyncUnsubscribe || connectionUnsubscribe) {
+  if (deltaUnsubscribe || batchDeltaUnsubscribe || fullSyncUnsubscribe || connectionUnsubscribe) {
     return
   }
 
@@ -29,6 +30,14 @@ export function subscribeToTaskEvents(
       console.debug('[Events] task:delta', delta)
     }
     onDelta(delta)
+  })
+
+  batchDeltaUnsubscribe = Events.On('task:deltas', (ev: any) => {
+    const deltas = (ev?.data ?? ev) as TaskDelta[]
+    if (import.meta.env.DEV) {
+      // console.debug('[Events] task:deltas', deltas.length)
+    }
+    deltas.forEach(onDelta)
   })
 
   fullSyncUnsubscribe = Events.On('task:fullsync', () => {
@@ -51,10 +60,12 @@ export function subscribeToTaskEvents(
 
 export function unsubscribeFromTaskEvents() {
   deltaUnsubscribe?.()
+  batchDeltaUnsubscribe?.()
   fullSyncUnsubscribe?.()
   connectionUnsubscribe?.()
 
   deltaUnsubscribe = null
+  batchDeltaUnsubscribe = null
   fullSyncUnsubscribe = null
   connectionUnsubscribe = null
 }
@@ -96,4 +107,31 @@ export function subscribeToTaskCompleteEvent(onComplete: (gid: string) => void) 
 export function unsubscribeFromTaskCompleteEvent() {
   taskCompleteUnsubscribe?.()
   taskCompleteUnsubscribe = null
+}
+
+// Task move event subscription (cross-list metadata preservation)
+export type TaskMove = {
+  gid: string
+  from: 'active' | 'waiting' | 'stopped'
+  to: 'active' | 'waiting' | 'stopped'
+  task: Record<string, unknown>
+}
+
+let taskMoveUnsubscribe: (() => void) | null = null
+
+export function subscribeToTaskMoveEvent(onMove: (move: TaskMove) => void) {
+  if (taskMoveUnsubscribe) return
+
+  taskMoveUnsubscribe = Events.On('task:move', (ev: any) => {
+    const data = (ev?.data ?? ev) as TaskMove
+    if (import.meta.env.DEV) {
+      console.debug('[Events] task:move', data.gid, data.from, '->', data.to)
+    }
+    onMove(data)
+  })
+}
+
+export function unsubscribeFromTaskMoveEvent() {
+  taskMoveUnsubscribe?.()
+  taskMoveUnsubscribe = null
 }

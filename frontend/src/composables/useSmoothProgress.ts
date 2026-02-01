@@ -4,9 +4,11 @@ export interface DownloadStats {
   downloaded: number;
   speed: number;
   total: number;
+  status?: string; // Add status to detect pauses immediately
 }
 
 export function useSmoothProgress() {
+  // ... (state vars remain same) ...
   // Core state
   const displayDownloaded = ref(0); // Visually displayed progress (bytes)
   const realDownloaded = ref(0);    // Real progress from backend (bytes)
@@ -25,6 +27,7 @@ export function useSmoothProgress() {
   const MAX_SCALE_DELTA = 0.005;    // Max scale change per frame (0.5%)
   const PREMATURE_CAP = 0.999;      // Cap at 99.9% if not truly finished
 
+  // ... (updateLoop remains same) ...
   // Render loop (60FPS)
   const updateLoop = () => {
     const now = performance.now();
@@ -76,8 +79,14 @@ export function useSmoothProgress() {
 
     // Sanitize inputs
     const newDownloaded = Number(stats.downloaded) || 0;
-    const newSpeed = Number(stats.speed) || 0;
+    let newSpeed = Number(stats.speed) || 0;
     const newTotal = Math.max(Number(stats.total) || 0, 1); // Prevent zero total
+
+    // STATUS OVERRIDE: If not active, force speed to 0 immediately
+    // This fixes the lag between "pause" event and "speed=0" data
+    if (stats.status && stats.status !== 'active') {
+        newSpeed = 0;
+    }
 
     // Update real values
     realDownloaded.value = newDownloaded;
@@ -92,7 +101,11 @@ export function useSmoothProgress() {
     }
 
     // EMA speed smoothing
-    if (prevSpeed === 0 || newDownloaded < prevReal) {
+    if (newSpeed === 0) {
+        // Immediate cutoff if speed is 0 (paused/completed)
+        // This prevents "ghost prediction" where prediction continues based on residual EMA speed
+        smoothSpeed.value = 0;
+    } else if (prevSpeed === 0 || newDownloaded < prevReal) {
       // Cold start or reset: use new speed directly
       smoothSpeed.value = newSpeed;
     } else {

@@ -12,6 +12,13 @@ type TaskDelta struct {
 	Payload interface{} `json:"payload,omitempty"`
 }
 
+type TaskMove struct {
+	GID  string      `json:"gid"`
+	From string      `json:"from"` // "active", "waiting", "stopped"
+	To   string      `json:"to"`
+	Task interface{} `json:"task"` // Full task with metadata
+}
+
 type Hub struct {
 	app *application.App
 	mu  sync.RWMutex
@@ -106,5 +113,14 @@ func (h *Hub) EmitTaskDeltas(deltas []TaskDelta) {
 	defer h.mu.RUnlock()
 	if h.app != nil && h.app.Event != nil && len(deltas) > 0 {
 		h.app.Event.Emit("task:deltas", deltas)
+	}
+}
+
+// EmitTaskMove 推送任务列表转移事件（用于跨列表元数据保留）
+func (h *Hub) EmitTaskMove(move TaskMove) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.app != nil && h.app.Event != nil {
+		h.app.Event.Emit("task:move", move)
 	}
 }

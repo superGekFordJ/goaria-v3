@@ -48,6 +48,11 @@ type Monitor struct {
 	mu                 sync.Mutex
 	shouldFetchStopped bool
 	lastStopped        []rpc.Task
+
+	// Previous tick state for transition detection
+	prevActiveGids  map[string]bool
+	prevWaitingGids map[string]bool
+	prevStoppedGids map[string]bool
 }
 
 func New(app *application.App, hub *events.Hub, systray *application.SystemTray) *Monitor {
@@ -60,6 +65,9 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray)
 		headlessInterval:   5 * time.Second, // 无头模式：5秒
 		windowInterval:     1 * time.Second, // 窗口模式：1秒（由前端主导）
 		shouldFetchStopped: true,            // 初始时获取一次 stopped 任务
+		prevActiveGids:     make(map[string]bool),
+		prevWaitingGids:    make(map[string]bool),
+		prevStoppedGids:    make(map[string]bool),
 	}
 
 	// 订阅任务变更事件，触发即时刷新
@@ -225,6 +233,14 @@ func (m *Monitor) tick() {
 		m.mu.Unlock()
 	}
 
+	// 检测列表转移并发射事件（在有窗口时）
+	if State.HasWindow() {
+		m.detectAndEmitTaskMoves(active, waiting, stopped)
+	}
+
+	// 更新前一次的 GID 集合（用于下次检测）
+	m.updatePrevGids(active, waiting, stopped)
+
 	// 更新缓存
 	Cache.UpdateFromAria2(active, waiting, stopped)
 
@@ -248,7 +264,26 @@ func (m *Monitor) tick() {
 	if State.HasWindow() {
 		m.hub.EmitTraySnapshot(snapshot)
 
-		// 推送任务完成事件（通过 pusher 批量推送）
+		// 1. 推送任务进度 (progress)
+		for _, task := range active {
+			// 仅推送 active 任务的进度
+			// 使用 map reduce payload 大小
+			payload := map[string]interface{}{
+				"completedLength": task.CompletedLength,
+				"downloadSpeed":   task.DownloadSpeed,
+				"totalLength":     task.TotalLength,
+				"errorCode":       task.ErrorCode,
+                "errorMessage":    task.ErrorMessage,
+			}
+			
+			m.pusher.Queue(events.TaskDelta{
+				Type:    "progress",
+				GID:     task.GID,
+				Payload: payload,
+			})
+		}
+
+		// 2. 推送任务完成事件（通过 pusher 批量推送）
 		for _, task := range completedTasks {
 			eventType := "complete"
 			if task.Status == "error" {
@@ -420,4 +455,106 @@ func (m *Monitor) InvalidateTask(gid string) {
 	}
 
 	log.Printf("[Monitor] Task invalidated: %s", gid)
+}
+
+// detectAndEmitTaskMoves 检测任务列表转移并发射事件
+func (m *Monitor) detectAndEmitTaskMoves(active, waiting, stopped []rpc.Task) {
+	// 构建当前 GID 集合
+	currentActiveGids := make(map[string]bool)
+	currentWaitingGids := make(map[string]bool)
+	currentStoppedGids := make(map[string]bool)
+
+	activeByGid := make(map[string]*rpc.Task)
+	waitingByGid := make(map[string]*rpc.Task)
+	stoppedByGid := make(map[string]*rpc.Task)
+
+	for i := range active {
+		currentActiveGids[active[i].GID] = true
+		activeByGid[active[i].GID] = &active[i]
+	}
+	for i := range waiting {
+		currentWaitingGids[waiting[i].GID] = true
+		waitingByGid[waiting[i].GID] = &waiting[i]
+	}
+	for i := range stopped {
+		currentStoppedGids[stopped[i].GID] = true
+		stoppedByGid[stopped[i].GID] = &stopped[i]
+	}
+
+	// 检测 active -> waiting (pause)
+	for gid := range currentWaitingGids {
+		if m.prevActiveGids[gid] {
+			if task := waitingByGid[gid]; task != nil {
+				m.hub.EmitTaskMove(events.TaskMove{
+					GID:  gid,
+					From: "active",
+					To:   "waiting",
+					Task: task,
+				})
+				log.Printf("[Monitor] Task moved: %s active -> waiting", gid)
+			}
+		}
+	}
+
+	// 检测 waiting -> active (resume)
+	for gid := range currentActiveGids {
+		if m.prevWaitingGids[gid] {
+			if task := activeByGid[gid]; task != nil {
+				m.hub.EmitTaskMove(events.TaskMove{
+					GID:  gid,
+					From: "waiting",
+					To:   "active",
+					Task: task,
+				})
+				log.Printf("[Monitor] Task moved: %s waiting -> active", gid)
+			}
+		}
+	}
+
+	// 检测 active -> stopped (complete/error)
+	for gid := range currentStoppedGids {
+		if m.prevActiveGids[gid] {
+			if task := stoppedByGid[gid]; task != nil {
+				m.hub.EmitTaskMove(events.TaskMove{
+					GID:  gid,
+					From: "active",
+					To:   "stopped",
+					Task: task,
+				})
+				log.Printf("[Monitor] Task moved: %s active -> stopped", gid)
+			}
+		}
+	}
+
+	// 检测 waiting -> stopped (complete while paused)
+	for gid := range currentStoppedGids {
+		if m.prevWaitingGids[gid] && !m.prevActiveGids[gid] {
+			if task := stoppedByGid[gid]; task != nil {
+				m.hub.EmitTaskMove(events.TaskMove{
+					GID:  gid,
+					From: "waiting",
+					To:   "stopped",
+					Task: task,
+				})
+				log.Printf("[Monitor] Task moved: %s waiting -> stopped", gid)
+			}
+		}
+	}
+}
+
+// updatePrevGids 更新前一次的 GID 集合
+func (m *Monitor) updatePrevGids(active, waiting, stopped []rpc.Task) {
+	m.prevActiveGids = make(map[string]bool)
+	m.prevWaitingGids = make(map[string]bool)
+	m.prevStoppedGids = make(map[string]bool)
+
+	for _, t := range active {
+		m.prevActiveGids[t.GID] = true
+	}
+	for _, t := range waiting {
+		m.prevWaitingGids[t.GID] = true
+	}
+	for _, t := range stopped {
+		m.prevStoppedGids[t.GID] = true
+	}
 }

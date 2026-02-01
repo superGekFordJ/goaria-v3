@@ -21,13 +21,15 @@
     [
         () => props.task.completedLength,
         () => props.task.downloadSpeed,
-        () => props.task.totalLength
+        () => props.task.totalLength,
+        () => props.task.status
     ],
-    ([downloaded, speed, total]) => {
+    ([downloaded, speed, total, status]) => {
     updateStats({
       downloaded: Number(downloaded),
       speed: Number(speed),
-      total: Number(total)
+      total: Number(total),
+      status: status as string
     })
   }, { immediate: true })
 

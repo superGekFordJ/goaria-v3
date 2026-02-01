@@ -206,4 +206,39 @@ describe('useSmoothProgress', () => {
     
     expect(cancelAnimationFrameMock).toHaveBeenCalledWith(lastRafId);
   });
+
+  it('should stop prediction immediately when speed becomes 0 (fix pause overshoot)', () => {
+    const { displayDownloaded, smoothSpeed, updateStats } = useSmoothProgress();
+
+    // 1. High speed download
+    updateStats({ downloaded: 100, speed: 1000, total: 2000 });
+    expect(smoothSpeed.value).toBe(1000);
+
+    // 2. Sudden pause
+    updateStats({ downloaded: 100, speed: 0, total: 2000 });
+    
+    // EMA/Smooth speed should be cut to 0 instantly, not decayed
+    expect(smoothSpeed.value).toBe(0);
+
+    // 3. Advance frames
+    advanceFrame(100);
+    
+    // Display should NOT increase (because realDownloaded is still 100)
+    // It should stay close to 100
+    expect(displayDownloaded.value).toBe(100);
+  });
+
+  it('should force speed to 0 when status is paused even if speed > 0 (status override)', () => {
+    const { smoothSpeed, updateStats } = useSmoothProgress();
+
+    // 1. Downloading
+    updateStats({ downloaded: 100, speed: 1000, total: 2000, status: 'active' });
+    expect(smoothSpeed.value).toBe(1000);
+
+    // 2. Pause Event (Backend reports 'paused', but Speed might still be stale/non-zero)
+    updateStats({ downloaded: 120, speed: 1000, total: 2000, status: 'paused' });
+
+    // 3. Expect immediate kill
+    expect(smoothSpeed.value).toBe(0);
+  });
 });

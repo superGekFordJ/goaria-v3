@@ -24,6 +24,9 @@ import {
   unsubscribeFromTaskEvents,
   subscribeToTaskCompleteEvent,
   unsubscribeFromTaskCompleteEvent,
+  subscribeToTaskMoveEvent,
+  unsubscribeFromTaskMoveEvent,
+  type TaskMove,
 } from './events'
 
 /**
@@ -55,32 +58,67 @@ function mergeTasks(oldList: Task[], newList: Task[]): { merged: Task[]; changed
     return { merged: oldList, changed: false }
   }
 
-  // 快速路径：旧列表为空，直接返回新列表
+  // 快速路径：旧列表为空，直接返回新列表（但先应用缓存）
   if (oldList.length === 0) {
-    return { merged: newList, changed: true }
+    const merged = newList.map(t => {
+      cacheMetadata(t)
+      return applyMetadataFromCache(t)
+    })
+    return { merged, changed: true }
   }
 
   const oldMap = new Map(oldList.map(t => [t.gid, t]))
 
   // 检查是否有任务增减
   if (oldList.length !== newList.length) {
-    return { merged: newList, changed: true }
+    const merged = newList.map(t => {
+      cacheMetadata(t)
+      return applyMetadataFromCache(t)
+    })
+    return { merged, changed: true }
   }
 
   // 检查 GID 集合是否一致
   const oldGids = new Set(oldList.map(t => t.gid))
   for (const newTask of newList) {
     if (!oldGids.has(newTask.gid)) {
-      return { merged: newList, changed: true }
+      const merged = newList.map(t => {
+        cacheMetadata(t)
+        return applyMetadataFromCache(t)
+      })
+      return { merged, changed: true }
     }
   }
 
   // 逐个比对，保留未变化任务的引用
   let changed = false
   const merged = newList.map(newTask => {
+    // Always cache valid metadata from new data
+    cacheMetadata(newTask)
+
+    // Apply cached metadata if new task is missing files - DO THIS EARLY
+    if (!newTask.files?.length || !newTask.files[0]?.path) {
+      newTask = applyMetadataFromCache(newTask)
+    }
+
     const oldTask = oldMap.get(newTask.gid)
-    if (oldTask && isTaskEqual(oldTask, newTask)) {
-      return oldTask // 保持原引用
+    if (oldTask) {
+      // Check if we gained metadata (files appeared)
+      const gainedMetadata = (!oldTask.files?.length || !oldTask.files[0]?.path) && (newTask.files?.length && newTask.files[0]?.path)
+
+      if (isTaskEqual(oldTask, newTask) && !gainedMetadata) {
+        return oldTask // 保持原引用
+      }
+
+      // Preserve old task's metadata if still missing in new task (and cache didn't help)
+      if ((!newTask.files || newTask.files.length === 0) && oldTask.files && oldTask.files.length > 0) {
+        newTask.files = oldTask.files
+      }
+      if (!newTask.dir && oldTask.dir) {
+        newTask.dir = oldTask.dir
+      }
+    } else {
+      // New task - already applied cache above
     }
     changed = true
     return newTask
@@ -120,6 +158,33 @@ const _stoppedGidSet = new Set<string>()
 // 低频通道间隔常量
 const PROGRESS_INTERVAL = 1000 // 1s
 const LOW_FREQ_INTERVAL = 30000 // 30s
+
+// Global metadata cache - persists across list transitions
+// Key: gid, Value: { files, dir, totalLength }
+type CachedMetadata = {
+  files: Task['files']
+  dir: string
+  totalLength: string
+}
+const metadataCache = new Map<string, CachedMetadata>()
+
+function cacheMetadata(task: Task) {
+  if (task.files?.length && task.files[0]?.path) {
+    metadataCache.set(task.gid, {
+      files: task.files,
+      dir: task.dir || '',
+      totalLength: task.totalLength || '0',
+    })
+  }
+}
+
+function applyMetadataFromCache(task: Task): Task {
+  if ((!task.files || !task.files[0]?.path) && metadataCache.has(task.gid)) {
+    const cached = metadataCache.get(task.gid)!
+    return { ...task, files: cached.files, dir: cached.dir }
+  }
+  return task
+}
 
 export const useTaskStore = defineStore('task', () => {
   // State
@@ -314,24 +379,71 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function handleTaskDelta(delta: { type: string; gid: string }) {
+  async function handleTaskDelta(delta: { type: string; gid: string; payload?: any }) {
     if (import.meta.env.DEV) {
       console.debug('[Events] Handling delta:', delta)
     }
 
     switch (delta.type) {
+      case 'progress': {
+        const payload = delta.payload as any
+        if (payload) {
+          const task = tasks.value.active.find(t => t.gid === delta.gid)
+          if (task) {
+            if (payload.completedLength) task.completedLength = payload.completedLength
+            if (payload.downloadSpeed) task.downloadSpeed = payload.downloadSpeed
+            if (payload.totalLength) task.totalLength = payload.totalLength
+            if (payload.errorCode) task.errorCode = payload.errorCode
+            if (payload.errorMessage) task.errorMessage = payload.errorMessage
+
+            // Check if metadata is missing (self-healing for new tasks)
+            if (!task.files?.[0]?.path && !metadataPending.has(delta.gid)) {
+               metadataPending.add(delta.gid)
+               if (!metadataInFlight) {
+                 metadataInFlight = true
+                 // Small debounce to allow batching
+                 setTimeout(() => {
+                   const batch = Array.from(metadataPending)
+                   metadataPending.clear()
+                   GetTaskMetadata(batch).then(metadata => {
+                      if (!metadata) return
+                      let updated = false
+                      for (const gid of Object.keys(metadata)) {
+                        const meta = metadata[gid]
+                        if (!meta?.files?.[0]?.path) continue
+                        cacheMetadata(meta)
+                        const t = tasks.value.active.find(x => x.gid === gid) || tasks.value.waiting.find(x => x.gid === gid)
+                        if (t) {
+                           t.files = meta.files
+                           t.dir = meta.dir
+                           updated = true
+                        }
+                      }
+                      if (updated) tasks.value = { ...tasks.value }
+                   }).finally(() => metadataInFlight = false)
+                 }, 50)
+               }
+            }
+          }
+        }
+        break
+      }
+
       case 'add': {
         try {
           const metadata = await GetTaskMetadata([delta.gid])
           const newTask = metadata?.[delta.gid]
           if (newTask) {
             // 优化：检查是否已存在，避免不必要的数组操作
+            cacheMetadata(newTask) // Cache metadata immediately
+            
             const existsInActive = tasks.value.active.some(t => t.gid === delta.gid)
             const existsInWaiting = tasks.value.waiting.some(t => t.gid === delta.gid)
             if (!existsInActive) {
+              const taskToAdd = applyMetadataFromCache(newTask)
               tasks.value = {
                 ...tasks.value,
-                active: [newTask, ...tasks.value.active],
+                active: [taskToAdd, ...tasks.value.active],
                 waiting: existsInWaiting
                   ? tasks.value.waiting.filter(t => t.gid !== delta.gid)
                   : tasks.value.waiting,
@@ -369,7 +481,7 @@ export const useTaskStore = defineStore('task', () => {
       }
     }
 
-    immediateUpdateTrayIcon()
+    throttledUpdateTrayIcon()
   }
 
   function patchTaskStatus(gid: string, status: string) {
@@ -429,6 +541,59 @@ export const useTaskStore = defineStore('task', () => {
       selectedGids.value.delete(gid)
       selectedGids.value = new Set(selectedGids.value)
     }
+    // Cleanup metadata cache
+    metadataCache.delete(gid)
+  }
+
+  function handleTaskMove(move: TaskMove) {
+    const { gid, from, to, task: taskData } = move
+
+    // Cache full metadata from event
+    const fullTask = taskData as unknown as Task | undefined
+    if (fullTask?.files?.length) {
+      cacheMetadata(fullTask)
+    }
+
+    // Remove from source list
+    let movedTask: Task | undefined
+    if (from === 'active') {
+      movedTask = tasks.value.active.find(t => t.gid === gid)
+      tasks.value.active = tasks.value.active.filter(t => t.gid !== gid)
+    } else if (from === 'waiting') {
+      movedTask = tasks.value.waiting.find(t => t.gid === gid)
+      tasks.value.waiting = tasks.value.waiting.filter(t => t.gid !== gid)
+    } else if (from === 'stopped') {
+      movedTask = tasks.value.stopped.find(t => t.gid === gid)
+      tasks.value.stopped = tasks.value.stopped.filter(t => t.gid !== gid)
+    }
+
+    // Determine the task to add (prefer event payload, fallback to moved task or cached)
+    let taskToAdd: Task
+    if (fullTask?.gid) {
+      taskToAdd = applyMetadataFromCache(fullTask)
+    } else if (movedTask) {
+      taskToAdd = movedTask
+    } else {
+      taskToAdd = applyMetadataFromCache({ gid } as Task)
+    }
+
+    // Add to destination list (avoid duplicates)
+    if (to === 'active' && !tasks.value.active.some(t => t.gid === gid)) {
+      tasks.value.active = [taskToAdd, ...tasks.value.active]
+    } else if (to === 'waiting' && !tasks.value.waiting.some(t => t.gid === gid)) {
+      tasks.value.waiting = [taskToAdd, ...tasks.value.waiting]
+    } else if (to === 'stopped' && !tasks.value.stopped.some(t => t.gid === gid)) {
+      tasks.value.stopped = [taskToAdd, ...tasks.value.stopped]
+    }
+
+    // Trigger reactivity
+    tasks.value = { ...tasks.value }
+
+    if (import.meta.env.DEV) {
+      console.debug(`[TaskMove] ${gid}: ${from} -> ${to}`)
+    }
+
+    immediateUpdateTrayIcon()
   }
 
   function initEventSubscription() {
@@ -456,6 +621,11 @@ export const useTaskStore = defineStore('task', () => {
       // 用户切换到"已完成"tab时会按需拉取
     })
 
+    // 订阅任务列表转移事件（保留元数据跨列表）
+    subscribeToTaskMoveEvent((move: TaskMove) => {
+      handleTaskMove(move)
+    })
+
     eventsSubscribed = true
   }
 
@@ -463,6 +633,7 @@ export const useTaskStore = defineStore('task', () => {
     if (!eventsSubscribed) return
     unsubscribeFromTaskEvents()
     unsubscribeFromTaskCompleteEvent()
+    unsubscribeFromTaskMoveEvent()
     eventsSubscribed = false
   }
 
@@ -495,6 +666,53 @@ export const useTaskStore = defineStore('task', () => {
           (t: Task) => !_activeGidSet.has(t.gid) && !_stoppedGidSet.has(t.gid),
         ),
       )
+
+      // Cache all valid metadata from incoming tasks
+      for (const t of [...active, ...waiting]) {
+        cacheMetadata(t)
+      }
+
+      // Stage 2: Identify tasks with missing file paths and fetch metadata (Cross-verification with Backend Cache)
+      const tasksNeedingMetadata: string[] = []
+      for (const t of active) {
+        if (!t.files?.[0]?.path) tasksNeedingMetadata.push(t.gid)
+      }
+      for (const t of waiting) {
+        if (!t.files?.[0]?.path) tasksNeedingMetadata.push(t.gid)
+      }
+
+      if (tasksNeedingMetadata.length > 0 && !metadataInFlight) {
+        // Debounce/Queue metadata fetches
+        for (const gid of tasksNeedingMetadata) metadataPending.add(gid)
+        
+        metadataInFlight = true
+        const batch = Array.from(metadataPending)
+        metadataPending.clear()
+        
+        GetTaskMetadata(batch).then(metadata => {
+           if (!metadata) return
+           let updated = false
+           for (const gid of Object.keys(metadata)) {
+             const meta = metadata[gid]
+             if (!meta?.files?.[0]?.path) continue
+             
+             // Update cache
+             cacheMetadata(meta)
+             
+             // Update local state directly
+             for (const list of [tasks.value.active, tasks.value.waiting]) {
+                const idx = list.findIndex(t => t.gid === gid)
+                if (idx !== -1) {
+                  list[idx] = { ...list[idx], ...meta }
+                  updated = true
+                }
+             }
+           }
+           if (updated) tasks.value = { ...tasks.value }
+        }).finally(() => {
+           metadataInFlight = false
+        })
+      }
 
       // 检测任务完成：通过数量变化判断（避免创建临时 Set）
       const oldCount = tasks.value.active.length + tasks.value.waiting.length
@@ -608,7 +826,17 @@ export const useTaskStore = defineStore('task', () => {
         ),
       )
 
-      const newTasks = { active, waiting, stopped }
+      // Cache all valid metadata from incoming tasks
+      for (const t of [...active, ...waiting, ...stopped]) {
+        cacheMetadata(t)
+      }
+
+      // Apply cached metadata to tasks missing files (cross-list preservation)
+      const activeWithMeta = active.map(applyMetadataFromCache)
+      const waitingWithMeta = waiting.map(applyMetadataFromCache)
+      const stoppedWithMeta = stopped.map(applyMetadataFromCache)
+
+      const newTasks = { active: activeWithMeta, waiting: waitingWithMeta, stopped: stoppedWithMeta }
 
       // Stage 2: Identify tasks with missing file paths and fetch metadata
       // 优化：避免创建临时数组
@@ -731,9 +959,10 @@ export const useTaskStore = defineStore('task', () => {
 
         const hasActive = tasks.value.active.length > 0
         if (hasActive) {
-          await patchActiveProgress()
-          // 前台固定 1s 更新进度；后台保持传入 interval（通常为 3000ms）
-          nextInterval = isWindowVisible.value ? PROGRESS_INTERVAL : interval
+          // Event-driven: disable polling for progress
+          // await patchActiveProgress()
+          // 前台固定 1s 更新进度 -> Change to slower fallback
+          nextInterval = 3000 
         } else {
           // 无活跃任务：空闲间隔（前台） / 低频间隔（后台）
           if (isWindowVisible.value) {
@@ -743,7 +972,7 @@ export const useTaskStore = defineStore('task', () => {
           }
 
           // 空闲时执行一次状态同步（保留 fallback）
-          await fetchActiveTasks()
+          // await fetchActiveTasks() // Reduce polling even in idle
         }
 
         // 定时刷新 stopped 列表
