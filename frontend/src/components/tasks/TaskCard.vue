@@ -1,8 +1,9 @@
 <script setup lang="ts">
-  import { computed } from 'vue'
+  import { computed, watch } from 'vue'
   import { Task } from '../../../bindings/goaria-v3/internal/rpc/models'
   import { useTaskStore } from '../../stores/task'
   import { Pause, Play, FolderOpen, Trash2, FileDown, Clock, Zap } from 'lucide-vue-next'
+  import { useSmoothProgress } from '../../composables/useSmoothProgress'
 
   const props = defineProps<{
     task: Task
@@ -13,6 +14,22 @@
   }>()
 
   const taskStore = useTaskStore()
+  const { displayDownloaded, totalBytes, updateStats } = useSmoothProgress()
+
+  // Sync with prop updates - optimized to watch specific fields
+  watch(
+    [
+        () => props.task.completedLength,
+        () => props.task.downloadSpeed,
+        () => props.task.totalLength
+    ],
+    ([downloaded, speed, total]) => {
+    updateStats({
+      downloaded: Number(downloaded),
+      speed: Number(speed),
+      total: Number(total)
+    })
+  }, { immediate: true })
 
   // Extract filename from path
   const fileName = computed(() => {
@@ -21,12 +38,19 @@
     return path.split(/[\\/]/).pop() || '未知文件'
   })
 
-  // Calculate progress percentage
+  // Calculate progress percentage for display
   const progress = computed(() => {
     const total = Number(props.task.totalLength)
     const completed = Number(props.task.completedLength)
     if (total <= 0) return 0
     return Math.min((completed / total) * 100, 100)
+  })
+
+  // Calculate smooth progress scale (0-1) for GPU animation
+  const progressScale = computed(() => {
+    if (totalBytes.value <= 0) return 0
+    const ratio = displayDownloaded.value / totalBytes.value
+    return Math.min(Math.max(ratio, 0), 1)
   })
 
   // Format bytes to human readable
@@ -238,7 +262,7 @@
             { 'opacity-50': isPaused },
             { 'progress-bar-energy': isActive },
           ]"
-          :style="{ width: progress + '%' }"
+          :style="{ transform: `scaleX(${progressScale})` }"
         ></div>
       </div>
     </div>

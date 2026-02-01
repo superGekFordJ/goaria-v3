@@ -562,10 +562,13 @@ body {
 
 .progress-bar-fill {
   height: 100%;
+  width: 100%;
   background: linear-gradient(90deg, var(--neon-primary), var(--neon-secondary));
   border-radius: 9999px;
   position: relative;
-  transition: width 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: none;
+  transform-origin: left;
+  will-change: transform;
   box-shadow:
     0 0 12px var(--neon-glow),
     0 0 24px color-mix(in srgb, var(--neon-secondary) 30%, transparent);
