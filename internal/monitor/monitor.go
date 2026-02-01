@@ -151,10 +151,20 @@ func (m *Monitor) tick() {
 	// 获取轻量任务列表（不含文件列表）
 	active, err := rpc.TellActiveLite()
 	if err != nil {
-		log.Printf("[Monitor] TellActive error: %v", err)
-		return
+		log.Printf("[Monitor] TellActiveLite error: %v, retrying with full request", err)
+		// Fallback: 尝试获取完整信息（兜底策略）
+		active, err = rpc.TellActive()
+		if err != nil {
+			log.Printf("[Monitor] TellActive fallback error: %v", err)
+			return
+		}
 	}
-	waiting, _ := rpc.TellWaitingLite(0, 100)
+
+	waiting, err := rpc.TellWaitingLite(0, 100)
+	if err != nil {
+		log.Printf("[Monitor] TellWaitingLite error: %v, retrying with full request", err)
+		waiting, _ = rpc.TellWaiting(0, 100)
+	}
 
 	// 3. 获取 Stopped 任务 (仅在需要时或首次启动时)
 	m.mu.Lock()
@@ -167,10 +177,14 @@ func (m *Monitor) tick() {
 		// 优化：使用 Lite 接口减少数据量
 		stopped, err = rpc.TellStoppedLite(0, 100)
 		if err != nil {
-			log.Printf("[Monitor] TellStopped error: %v", err)
-			m.mu.Lock()
-			stopped = m.lastStopped
-			m.mu.Unlock()
+			log.Printf("[Monitor] TellStoppedLite error: %v, retrying with full request", err)
+			stopped, err = rpc.TellStopped(0, 100)
+			if err != nil {
+				log.Printf("[Monitor] TellStopped fallback error: %v", err)
+				m.mu.Lock()
+				stopped = m.lastStopped
+				m.mu.Unlock()
+			}
 		}
 		// 注意：lastStopped 将在 enrichTasks 后更新，确保缓存包含完整文件信息
 	} else {
@@ -255,7 +269,7 @@ func (m *Monitor) tick() {
 	snapshot := m.buildTraySnapshot(active, waiting)
 
 	// 更新托盘状态（仅在变化时）
-	if State.UpdateTrayState(snapshot.HasActive, snapshot.HasPaused, snapshot.HasError, snapshot.ActiveCount) {
+	if State.UpdateTrayState(snapshot.HasActive, snapshot.HasPaused, snapshot.HasError, snapshot.ActiveCount, snapshot.WaitingCount) {
 		m.updateTrayIcon()
 	}
 
@@ -404,7 +418,7 @@ func (m *Monitor) updateTrayIcon() {
 		return
 	}
 
-	hasActive, hasPaused, hasError, count := State.GetTrayState()
+	hasActive, hasPaused, hasError, activeCount, waitingCount := State.GetTrayState()
 
 	var state tray.TrayState
 	if hasError {
@@ -418,13 +432,21 @@ func (m *Monitor) updateTrayIcon() {
 	}
 
 	m.systray.SetIcon(tray.GetIconForState(state))
+	time.Sleep(100 * time.Millisecond) // Wait for icon update
 
-	// 更新 tooltip 显示活跃任务数
-	if count > 0 {
-		m.systray.SetTooltip(fmt.Sprintf("GoAria - %d 个任务下载中", count))
+	// 更新 tooltip
+	// 1. 下载中：GoAria - 3 个任务下载中
+	// 2. 仅等待/暂停：GoAria - 2 个任务等待中
+	// 3. 空闲：GoAria - Download Manager
+	var tooltip string
+	if activeCount > 0 {
+		tooltip = fmt.Sprintf("GoAria - %d 个任务下载中", activeCount)
+	} else if waitingCount > 0 {
+		tooltip = fmt.Sprintf("GoAria - %d 个任务等待中", waitingCount)
 	} else {
-		m.systray.SetTooltip("GoAria - Download Manager")
+		tooltip = "GoAria - Download Manager"
 	}
+	m.systray.SetTooltip(tooltip)
 }
 
 // InvalidateTask 使指定任务的缓存失效并发送删除事件

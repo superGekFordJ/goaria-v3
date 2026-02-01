@@ -170,6 +170,9 @@
         }
       },
     )
+
+    // Start global polling for task status (required for Sidebar and Tray syncing)
+    taskStore.startPolling(1000)
   })
 
   onUnmounted(() => {
@@ -183,6 +186,8 @@
       stopWindowTransparencyWatch()
       stopWindowTransparencyWatch = null
     }
+    
+    taskStore.stopPolling(true)
   })
 
   // Pause polling when window is hidden to save CPU and reduce log growth

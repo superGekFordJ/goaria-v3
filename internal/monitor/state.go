@@ -18,7 +18,8 @@ type AppState struct {
 	hasError  atomic.Bool
 
 	// 活跃任务数（用于托盘提示）
-	activeCount atomic.Int32
+	activeCount  atomic.Int32
+	waitingCount atomic.Int32
 
 	// 任务追踪器（后端自洽核心）
 	tracker *TaskTracker
@@ -37,7 +38,7 @@ func (s *AppState) HasWindow() bool {
 	return s.windowExists.Load()
 }
 
-func (s *AppState) UpdateTrayState(hasActive, hasPaused, hasError bool, activeCount int) bool {
+func (s *AppState) UpdateTrayState(hasActive, hasPaused, hasError bool, activeCount, waitingCount int) bool {
 	changed := false
 	if s.hasActive.Swap(hasActive) != hasActive {
 		changed = true
@@ -48,12 +49,17 @@ func (s *AppState) UpdateTrayState(hasActive, hasPaused, hasError bool, activeCo
 	if s.hasError.Swap(hasError) != hasError {
 		changed = true
 	}
-	s.activeCount.Store(int32(activeCount))
+	if s.activeCount.Swap(int32(activeCount)) != int32(activeCount) {
+		changed = true
+	}
+	if s.waitingCount.Swap(int32(waitingCount)) != int32(waitingCount) {
+		changed = true
+	}
 	return changed
 }
 
-func (s *AppState) GetTrayState() (hasActive, hasPaused, hasError bool, activeCount int) {
-	return s.hasActive.Load(), s.hasPaused.Load(), s.hasError.Load(), int(s.activeCount.Load())
+func (s *AppState) GetTrayState() (hasActive, hasPaused, hasError bool, activeCount, waitingCount int) {
+	return s.hasActive.Load(), s.hasPaused.Load(), s.hasError.Load(), int(s.activeCount.Load()), int(s.waitingCount.Load())
 }
 
 // SetTracker 设置任务追踪器

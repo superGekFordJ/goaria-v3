@@ -248,11 +248,36 @@ func getTasks(method string, extraParams []any, keys []string) ([]Task, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// 1. Try to parse successful result
 	var result struct {
 		Result []Task `json:"result"`
 	}
-	json.Unmarshal(resp, &result)
-	return result.Result, nil
+	if err := json.Unmarshal(resp, &result); err == nil && result.Result != nil {
+		return result.Result, nil
+	}
+
+	// 2. If result is missing/null, check for RPC error
+	if err := checkError(resp); err != nil {
+		return nil, fmt.Errorf("%s: %w", method, err)
+	}
+
+	// 3. If no RPC error but result is still nil, it might be a structure mismatch
+	// or truly empty result (though empty array comes as [])
+	return nil, fmt.Errorf("%s: unmarshal failed or empty result", method)
+}
+
+func checkError(resp []byte) error {
+	var errResp struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(resp, &errResp); err == nil && errResp.Error.Message != "" {
+		return fmt.Errorf("rpc error %d: %s", errResp.Error.Code, errResp.Error.Message)
+	}
+	return nil
 }
 
 func GetGlobalStat() (string, error) {

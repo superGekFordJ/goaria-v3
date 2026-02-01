@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch } from 'vue'
+  import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
   import { RecycleScroller } from 'vue-virtual-scroller'
   import { useTaskStore } from '../../stores/task'
   import { useUIStore } from '../../stores/ui'
@@ -8,7 +8,7 @@
   import TaskSearch from './TaskSearch.vue'
   import BatchActionBar from './BatchActionBar.vue'
   import { Trash2, HardDrive, Download, CheckCircle2, AlertCircle, SearchX } from 'lucide-vue-next'
-  import { Task } from '../../../bindings/goaria-v3/internal/rpc/models'
+  import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 
   const taskStore = useTaskStore()
   const uiStore = useUIStore()
@@ -172,26 +172,8 @@
     { flush: 'post' },
   )
 
-  // Performance: Start polling only when the list is visible
-  // Use onActivated/onDeactivated for KeepAlive compatibility
-  // 优化：使用 1000ms 间隔（符合 008 spec），降低 GC 压力
-  onMounted(() => {
-    taskStore.startPolling(1000)
-  })
-
-  onUnmounted(() => {
-    taskStore.stopPolling(true)
-  })
-
-  // KeepAlive lifecycle: resume/pause polling when tab switches
-  // 优化：使用 1000ms 间隔（符合 008 spec）
-  onActivated(() => {
-    taskStore.startPolling(1000)
-  })
-
-  onDeactivated(() => {
-    taskStore.stopPolling(false) // Don't disable context, just pause
-  })
+  // Performance: Polling is now managed globally in App.vue to support Sidebar status
+  // onMounted / onUnmounted / onActivated logic removed from here
 
   const isEditableTarget = (target: EventTarget | null) => {
     let el = target as HTMLElement | null

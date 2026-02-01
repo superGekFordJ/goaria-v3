@@ -6,7 +6,7 @@
  */
 import { ref, computed } from 'vue'
 import { useTaskStore } from '@/stores/task'
-import type { Task } from '../../../bindings/goaria-v3/internal/rpc/models'
+import type { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 
 const taskStore = useTaskStore()
 const renderTime = ref(0)
@@ -28,6 +28,7 @@ const currentMemory = computed(() => {
 function createMockTask(index: number, status: string = 'complete'): Task {
   return {
     gid: `sim-${Date.now()}-${index.toString().padStart(6, '0')}`,
+    title: `sim-task-${index}`,
     status,
     totalLength: `${Math.floor(Math.random() * 1000000000) + 100000}`,
     completedLength: `${Math.floor(Math.random() * 1000000000) + 100000}`,
