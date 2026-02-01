@@ -332,7 +332,7 @@ func (a *App) GetFullSnapshot() FullSnapshot {
 	}
 
 	// 获取托盘状态
-	hasActive, hasPaused, hasError, _ := monitor.State.GetTrayState()
+	hasActive, hasPaused, hasError, _, _ := monitor.State.GetTrayState()
 	snapshot.TrayState.HasActive = hasActive
 	snapshot.TrayState.HasPaused = hasPaused
 	snapshot.TrayState.HasError = hasError
