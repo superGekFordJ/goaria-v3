@@ -170,8 +170,9 @@ const metadataCache = new Map<string, CachedMetadata>()
 
 function cacheMetadata(task: Task) {
   if (task.files?.length && task.files[0]?.path) {
+    // Deep clone files to avoid reference corruption when task object is mutated
     metadataCache.set(task.gid, {
-      files: task.files,
+      files: task.files.map(f => ({ ...f, uris: f.uris ? [...f.uris] : [] })),
       dir: task.dir || '',
       totalLength: task.totalLength || '0',
     })
@@ -390,11 +391,27 @@ export const useTaskStore = defineStore('task', () => {
         if (payload) {
           const task = tasks.value.active.find(t => t.gid === delta.gid)
           if (task) {
-            if (payload.completedLength) task.completedLength = payload.completedLength
-            if (payload.downloadSpeed) task.downloadSpeed = payload.downloadSpeed
-            if (payload.totalLength) task.totalLength = payload.totalLength
-            if (payload.errorCode) task.errorCode = payload.errorCode
-            if (payload.errorMessage) task.errorMessage = payload.errorMessage
+            let hasUpdate = false
+            // Use !== undefined to allow zero values (e.g., downloadSpeed = 0 when paused)
+            if (payload.completedLength !== undefined && task.completedLength !== payload.completedLength) {
+              task.completedLength = payload.completedLength
+              hasUpdate = true
+            }
+            if (payload.downloadSpeed !== undefined && task.downloadSpeed !== payload.downloadSpeed) {
+              task.downloadSpeed = payload.downloadSpeed
+              hasUpdate = true
+            }
+            if (payload.totalLength !== undefined && task.totalLength !== payload.totalLength) {
+              task.totalLength = payload.totalLength
+              hasUpdate = true
+            }
+            if (payload.errorCode !== undefined) task.errorCode = payload.errorCode
+            if (payload.errorMessage !== undefined) task.errorMessage = payload.errorMessage
+
+            // Trigger reactivity only when values changed
+            if (hasUpdate) {
+              tasks.value = { ...tasks.value }
+            }
 
             // Check if metadata is missing (self-healing for new tasks)
             if (!task.files?.[0]?.path && !metadataPending.has(delta.gid)) {
@@ -584,6 +601,17 @@ export const useTaskStore = defineStore('task', () => {
       tasks.value.waiting = [taskToAdd, ...tasks.value.waiting]
     } else if (to === 'stopped' && !tasks.value.stopped.some(t => t.gid === gid)) {
       tasks.value.stopped = [taskToAdd, ...tasks.value.stopped]
+    }
+
+    // Cleanup metadata cache when task moves to stopped (memory management)
+    // Keep cache for a short period to handle rapid transitions, then clean up
+    if (to === 'stopped') {
+      setTimeout(() => {
+        // Only delete if task is still in stopped list (not re-added)
+        if (tasks.value.stopped.some(t => t.gid === gid)) {
+          metadataCache.delete(gid)
+        }
+      }, 5000)
     }
 
     // Trigger reactivity
