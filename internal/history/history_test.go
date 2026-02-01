@@ -70,7 +70,6 @@ func TestRaceCondition(t *testing.T) {
 
 func TestPerformance(t *testing.T) {
 	setupTest(t)
-	SetDebounceDuration(1 * time.Second)
 
 	start := time.Now()
 	n := 1000

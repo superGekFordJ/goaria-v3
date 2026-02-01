@@ -1,6 +1,6 @@
 <script setup lang="ts">
   import { computed, watch } from 'vue'
-  import { Task } from '../../../bindings/goaria-v3/internal/rpc/models'
+  import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
   import { useTaskStore } from '../../stores/task'
   import { Pause, Play, FolderOpen, Trash2, FileDown, Clock, Zap } from 'lucide-vue-next'
   import { useSmoothProgress } from '../../composables/useSmoothProgress'
