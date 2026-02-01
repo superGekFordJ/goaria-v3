@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { ref } from 'vue'
-import { Task } from '../../../bindings/goaria-v3/internal/rpc/models'
+import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 
 // 模拟 store 的 tasks 状态
 function createMockStore() {
@@ -63,6 +63,7 @@ function createMockStore() {
 function createMockTask(gid: string, status: string): Task {
   return {
     gid,
+    title: `task-${gid}`,
     status,
     totalLength: '100000000',
     completedLength: '50000000',

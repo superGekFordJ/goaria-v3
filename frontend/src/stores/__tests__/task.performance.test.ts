@@ -1,13 +1,16 @@
 /**
  * 性能测试 - 测试大量任务列表的渲染性能和内存消耗
  */
-import { describe, it, expect } from 'vitest'
-import { Task } from '../../../bindings/goaria-v3/internal/rpc/models'
+import { describe, it, expect, beforeEach } from 'vitest'
+import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
+import { mergeTasks, dedupByGid } from '../task/utils'
+import { clearMetadataCache } from '../task/metadata'
 
 // 创建模拟任务的工厂函数
 function createMockTask(index: number, status: string = 'complete'): Task {
   return {
     gid: `gid-${index.toString().padStart(6, '0')}`,
+    title: `task-${index}`,
     status,
     totalLength: `${(Math.random() * 1000000000).toFixed(0)}`,
     completedLength: `${(Math.random() * 1000000000).toFixed(0)}`,
@@ -29,67 +32,11 @@ function generateMockTasks(count: number, status: string = 'complete'): Task[] {
   return Array.from({ length: count }, (_, i) => createMockTask(i, status))
 }
 
-/**
- * 增量合并函数 - 从 task.ts 提取用于独立测试
- */
-function isTaskEqual(a: Task, b: Task): boolean {
-  if (!a || !b) return false
-  return (
-    a.gid === b.gid &&
-    a.status === b.status &&
-    a.completedLength === b.completedLength &&
-    a.downloadSpeed === b.downloadSpeed &&
-    a.totalLength === b.totalLength &&
-    a.errorCode === b.errorCode
-  )
-}
-
-function mergeTasks(oldList: Task[], newList: Task[]): { merged: Task[]; changed: boolean } {
-  if (oldList.length === 0 && newList.length === 0) {
-    return { merged: oldList, changed: false }
-  }
-  if (oldList.length === 0) {
-    return { merged: newList, changed: true }
-  }
-
-  const oldMap = new Map(oldList.map(t => [t.gid, t]))
-
-  if (oldList.length !== newList.length) {
-    return { merged: newList, changed: true }
-  }
-
-  const oldGids = new Set(oldList.map(t => t.gid))
-  for (const newTask of newList) {
-    if (!oldGids.has(newTask.gid)) {
-      return { merged: newList, changed: true }
-    }
-  }
-
-  let changed = false
-  const merged = newList.map(newTask => {
-    const oldTask = oldMap.get(newTask.gid)
-    if (oldTask && isTaskEqual(oldTask, newTask)) {
-      return oldTask
-    }
-    changed = true
-    return newTask
-  })
-
-  return { merged, changed }
-}
-
-const _dedupGidSet = new Set<string>()
-function dedupByGid(list: Task[]): Task[] {
-  _dedupGidSet.clear()
-  return (list || []).filter(t => {
-    const gid = t?.gid
-    if (!gid || _dedupGidSet.has(gid)) return false
-    _dedupGidSet.add(gid)
-    return true
-  })
-}
-
 describe('Performance Tests', () => {
+  beforeEach(() => {
+    clearMetadataCache()
+  })
+
   describe('Task List Generation', () => {
     it('should generate 300 mock tasks efficiently', () => {
       const start = performance.now()
@@ -122,6 +69,7 @@ describe('Performance Tests', () => {
       const elapsed = performance.now() - start
 
       // 由于是新对象，changed 为 false（所有字段相等）
+      // mergeTasks returns old object if equal
       expect(result.changed).toBe(false)
       // merged 应该是 sameTasks（即使字段相等，也返回原对象引用）
       expect(result.merged.length).toBe(300)
