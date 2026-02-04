@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"testing"
+	"time"
 
 	"goaria-v3/internal/rpc"
 )
@@ -142,6 +143,10 @@ func TestTaskTracker_CleansRemovedTasks(t *testing.T) {
 	active := []rpc.Task{createMockTask("gid-005", "active")}
 	tracker.Update(active, nil, nil)
 
+	// 修改任务创建时间，使其超过宽限期 (模拟旧任务)
+	tracked := tracker.tasks["gid-005"]
+	tracked.CreatedAt = time.Now().Add(-10 * time.Second)
+
 	// 任务被移除（不在任何列表中）
 	tracker.Update(nil, nil, nil)
 
@@ -190,6 +195,50 @@ func TestTaskTracker_ThreadInfoTracking(t *testing.T) {
 
 	if !isExploration {
 		t.Error("Expected isExploration to be true")
+	}
+}
+
+func TestTaskTracker_ThreadInfoPersistence(t *testing.T) {
+	tracker := NewTaskTracker()
+
+	// 1. 设置线程信息 (模拟 AddUri)
+	gid := "gid-persistence-001"
+	tracker.SetThreadInfo(gid, 8, true)
+
+	// 2. 模拟 Update 在任务出现在列表前触发 (空列表)
+	// 此时应该触发宽限期保护，任务不应被删除
+	tracker.Update(nil, nil, nil)
+
+	// 验证：任务仍在，且线程信息保留
+	threadCount, isExploration, ok := tracker.GetThreadInfo(gid)
+	if !ok {
+		t.Fatal("Task info missing prematurely (race condition detected)")
+	}
+	if threadCount != 8 {
+		t.Errorf("Thread info lost/corrupted, got %d, want 8", threadCount)
+	}
+	if !isExploration {
+		t.Error("Exploration flag lost")
+	}
+
+	// 3. 模拟多次更新，仍在宽限期内
+	time.Sleep(100 * time.Millisecond) // 稍微等一下
+	tracker.Update(nil, nil, nil)
+	if _, _, ok := tracker.GetThreadInfo(gid); !ok {
+		t.Fatal("Task info missing within grace period")
+	}
+
+	// 4. 终于，任务出现在 Aria2 列表中
+	active := []rpc.Task{createMockTask(gid, "active")}
+	tracker.Update(active, nil, nil)
+
+	// 验证：最终信息正确
+	threadCount, isExploration, ok = tracker.GetThreadInfo(gid)
+	if !ok {
+		t.Fatal("Task info missing after appearing in active list")
+	}
+	if threadCount != 8 {
+		t.Errorf("Thread info overwritten/lost, got %d", threadCount)
 	}
 }
 

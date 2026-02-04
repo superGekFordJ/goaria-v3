@@ -3,6 +3,7 @@ package monitor
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"goaria-v3/internal/rpc"
 )
@@ -13,6 +14,7 @@ type TrackedTask struct {
 	Status          string
 	TotalLength     int64
 	CompletedLength int64
+	CreatedAt       time.Time
 
 	// 速度采样
 	PeakSpeed      int64
@@ -96,8 +98,13 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 	}
 
 	// 清理已移除的任务
-	for gid := range t.tasks {
+	for gid, tracked := range t.tasks {
 		if !currentGids[gid] {
+			// 给新创建的任务 5 秒宽限期，避免 Aria2 尚未报告时的竞态条件
+			if time.Since(tracked.CreatedAt) < 5*time.Second {
+				continue
+			}
+
 			delete(t.tasks, gid)
 			delete(t.processedComplete, gid)
 		}
@@ -174,6 +181,7 @@ func (t *TaskTracker) createTrackedTask(task rpc.Task) *TrackedTask {
 		TotalLength:     parseInt64(task.TotalLength),
 		CompletedLength: parseInt64(task.CompletedLength),
 		Dir:             task.Dir,
+		CreatedAt:       time.Now(),
 	}
 
 	// 优先使用 task.Files（已被 enrichTasks 填充）
@@ -224,6 +232,7 @@ func (t *TaskTracker) SetThreadInfo(gid string, threadCount int, isExploration b
 			GID:           gid,
 			ThreadCount:   threadCount,
 			IsExploration: isExploration,
+			CreatedAt:     time.Now(),
 		}
 	}
 }

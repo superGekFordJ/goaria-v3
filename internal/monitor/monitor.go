@@ -361,6 +361,12 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 			}
 			// 尝试判断是否为探索任务
 			isExploration = smartthread.ShouldExplore(task.SourceURL)
+			if isExploration && threadCount > 1 {
+				threadCount = (threadCount + 1) / 2
+				if threadCount < 1 {
+					threadCount = 1
+				}
+			}
 		}
 
 		speedstats.AddRecord(task.PeakSpeed, threadCount, task.TotalLength, isExploration)
