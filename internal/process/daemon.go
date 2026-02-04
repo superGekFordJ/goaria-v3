@@ -1,6 +1,7 @@
 package process
 
 import (
+	"bytes"
 	_ "embed"
 	"fmt"
 	"goaria-v3/internal/config"
@@ -8,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"time"
 )
 
@@ -20,7 +20,7 @@ var aria2Cmd *exec.Cmd
 func KillAllOldProcesses() {
 	if runtime.GOOS == "windows" {
 		cmd := exec.Command("taskkill", "/F", "/IM", "aria2c.exe", "/T")
-		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		configureCommand(cmd)
 		_ = cmd.Run()
 	} else {
 		_ = exec.Command("pkill", "-9", "aria2").Run()
@@ -46,7 +46,7 @@ func StartAria2(cfg *config.AppConfig) error {
 		aria2Path = filepath.Join(appDataDir, "aria2c")
 	}
 
-	_ = os.WriteFile(aria2Path, aria2cBin, 0755)
+	_ = extractAria2Binary(aria2Path)
 
 	cleanDir := filepath.Clean(cfg.DownloadDir)
 	sessionPath := filepath.Join(appDataDir, "aria2.session")
@@ -81,7 +81,7 @@ func StartAria2(cfg *config.AppConfig) error {
 
 	cmd := exec.Command(aria2Path, args...)
 	if runtime.GOOS == "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		configureCommand(cmd)
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -98,4 +98,15 @@ func StopAria2() {
 		_, _ = aria2Cmd.Process.Wait()
 		aria2Cmd = nil
 	}
+}
+
+func extractAria2Binary(path string) error {
+	info, err := os.Stat(path)
+	if err == nil && info.Size() == int64(len(aria2cBin)) {
+		content, err := os.ReadFile(path)
+		if err == nil && bytes.Equal(content, aria2cBin) {
+			return nil
+		}
+	}
+	return os.WriteFile(path, aria2cBin, 0755)
 }

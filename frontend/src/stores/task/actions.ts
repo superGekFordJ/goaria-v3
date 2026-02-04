@@ -19,15 +19,14 @@ import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 import { cacheMetadata, applyMetadataFromCache, removeMetadata } from './metadata'
 import { mergeTasks, dedupByGid } from './utils'
 
-// Reuse sets to avoid GC
-const _dedupGidSet = new Set<string>()
-const _activeGidSet = new Set<string>()
-const _waitingGidSet = new Set<string>()
-const _stoppedGidSet = new Set<string>()
-const metadataPending = new Set<string>()
-let metadataInFlight = false
-
 export function setupActions(state: TaskState) {
+  // Reuse sets to avoid GC - scoped to setupActions for better encapsulation
+  const _activeGidSet = new Set<string>()
+  const _waitingGidSet = new Set<string>()
+  const _stoppedGidSet = new Set<string>()
+  const metadataPending = new Set<string>()
+  let metadataInFlight = false
+
   const {
     tasks,
     selectedGids,
@@ -43,6 +42,7 @@ export function setupActions(state: TaskState) {
 
   const MAX_CONSECUTIVE_ERRORS = 3
   let lastStoppedFetchTime = 0
+  let lastStoppedTasksRef: Task[] | null = null
 
   // Callback to restart polling if needed (will be injected by index.ts or polling.ts)
   let _restartPollingCallback: (() => void) | null = null
@@ -72,10 +72,13 @@ export function setupActions(state: TaskState) {
       const res = await GetActiveTasks()
       consecutiveErrors.value = 0
 
-      // Deduplicate stopped tasks
-      _stoppedGidSet.clear()
-      for (const t of tasks.value.stopped) {
-        _stoppedGidSet.add(t.gid)
+      // Deduplicate stopped tasks (skip rebuild if reference unchanged)
+      if (tasks.value.stopped !== lastStoppedTasksRef) {
+        _stoppedGidSet.clear()
+        for (const t of tasks.value.stopped) {
+          _stoppedGidSet.add(t.gid)
+        }
+        lastStoppedTasksRef = tasks.value.stopped
       }
 
       const active = dedupByGid((res.active || []).filter((t: Task) => !_stoppedGidSet.has(t.gid)))

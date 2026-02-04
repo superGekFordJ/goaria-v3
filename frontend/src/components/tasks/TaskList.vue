@@ -45,7 +45,12 @@
     }
     const q = searchQuery.value.toLowerCase()
     return base.filter(t => {
-      const filename = t.files?.[0]?.path?.split(/[\\/]/).pop() || ''
+      const path = t.files?.[0]?.path
+      if (!path) return false
+
+      const lastSlashIndex = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+      const filename = lastSlashIndex >= 0 ? path.slice(lastSlashIndex + 1) : path
+
       return filename.toLowerCase().includes(q)
     })
   })

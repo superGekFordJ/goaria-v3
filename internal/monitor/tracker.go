@@ -101,7 +101,7 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 	for gid, tracked := range t.tasks {
 		if !currentGids[gid] {
 			// 给新创建的任务 5 秒宽限期，避免 Aria2 尚未报告时的竞态条件
-			if time.Since(tracked.CreatedAt) < 5*time.Second {
+			if time.Since(tracked.CreatedAt) < TaskGracePeriod {
 				continue
 			}
 
@@ -218,6 +218,8 @@ func (t *TaskTracker) ensureTracked(task rpc.Task) {
 	}
 }
 
+const TaskGracePeriod = 5 * time.Second
+
 // SetThreadInfo 设置任务的线程信息（由 AddUri 调用）
 func (t *TaskTracker) SetThreadInfo(gid string, threadCount int, isExploration bool) {
 	t.mu.Lock()
@@ -226,6 +228,8 @@ func (t *TaskTracker) SetThreadInfo(gid string, threadCount int, isExploration b
 	if tracked := t.tasks[gid]; tracked != nil {
 		tracked.ThreadCount = threadCount
 		tracked.IsExploration = isExploration
+		// 刷新 CreatedAt 以确保复用或濒临删除的任务获得新的宽限期
+		tracked.CreatedAt = time.Now()
 	} else {
 		// 任务尚未被追踪，创建占位
 		t.tasks[gid] = &TrackedTask{
