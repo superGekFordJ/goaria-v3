@@ -14,6 +14,7 @@ export function setupState() {
   const selectedGids = ref<Set<string>>(new Set())
 
   // Polling & App Flags
+  const syncMode = ref<'polling' | 'event-driven'>('event-driven')
   const pollingEnabled = ref(false)
   const pollingContextEnabled = ref(false)
   const isFetching = ref(false)
@@ -86,6 +87,7 @@ export function setupState() {
   return {
     tasks,
     selectedGids,
+    syncMode,
     pollingEnabled,
     pollingContextEnabled,
     isFetching,

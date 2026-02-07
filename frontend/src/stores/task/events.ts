@@ -128,35 +128,42 @@ export function setupEvents(state: TaskState, actions: TaskActions, polling: Tas
       }
 
       case 'add': {
-        try {
-          // Attempt to fetch metadata for the new task immediately
-          const metadata = await GetTaskMetadata([delta.gid])
-          const newTask = metadata?.[delta.gid]
+        const MAX_RETRIES = 3
+        const RETRY_DELAYS = [500, 1000, 2000]
 
-          if (newTask && newTask.files && newTask.files.length > 0) {
-            // If we have valid task data, add it to the state optimistically
-            cacheMetadata(newTask)
-            const existsInActive = tasks.value.active.some(t => t.gid === delta.gid)
-            const existsInWaiting = tasks.value.waiting.some(t => t.gid === delta.gid)
+        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+          try {
+            const metadata = await GetTaskMetadata([delta.gid])
+            const newTask = metadata?.[delta.gid]
 
-            if (!existsInActive) {
-              const taskToAdd = applyMetadataFromCache(newTask)
-              tasks.value = {
-                ...tasks.value,
-                active: [taskToAdd, ...tasks.value.active],
-                waiting: existsInWaiting
-                  ? tasks.value.waiting.filter(t => t.gid !== delta.gid)
-                  : tasks.value.waiting,
+            if (newTask && newTask.files?.length > 0 && newTask.files[0]?.path) {
+              cacheMetadata(newTask)
+              const existsInActive = tasks.value.active.some(t => t.gid === delta.gid)
+              if (!existsInActive) {
+                const taskToAdd = applyMetadataFromCache(newTask)
+                tasks.value = {
+                  ...tasks.value,
+                  active: [taskToAdd, ...tasks.value.active],
+                  waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
+                }
               }
+              break
             }
-          } else {
-            // Task not found or metadata incomplete, fallback to full sync
-            // This handles the case where the task might be in a state not yet visible to TellStatus
-            await fetchTasks()
+
+            if (attempt < MAX_RETRIES) {
+              if (import.meta.env.DEV) {
+                console.debug(`[Events] add: metadata incomplete for ${delta.gid}, retry ${attempt + 1}/${MAX_RETRIES}`)
+              }
+              await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]))
+            } else {
+              await fetchTasks()
+            }
+          } catch (e) {
+            if (attempt >= MAX_RETRIES) {
+              console.error('[Events] Failed to handle add event after retries, falling back:', e)
+              await fetchTasks()
+            }
           }
-        } catch (e) {
-             console.error('[Events] Failed to handle add event, falling back to full fetch:', e)
-             await fetchTasks()
         }
         break
       }

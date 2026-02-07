@@ -31,6 +31,7 @@ export const useTaskStore = defineStore('task', () => {
     // State
     tasks: state.tasks,
     selectedGids: state.selectedGids,
+    syncMode: state.syncMode,
     pollingEnabled: state.pollingEnabled,
     pollingContextEnabled: state.pollingContextEnabled,
     isFetching: state.isFetching,

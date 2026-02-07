@@ -23,6 +23,7 @@ export function setupPolling(
     preferredInterval,
     isFetching,
     tasks,
+    syncMode,
     throttledUpdateTrayIcon,
   } = state
 
@@ -78,7 +79,7 @@ export function setupPolling(
 
   function startPollingInternal(interval: number) {
     if (import.meta.env.DEV) {
-      console.debug(`[Polling] Starting with interval ${interval}ms`)
+      console.debug(`[Polling] Starting with interval ${interval}ms, syncMode=${syncMode.value}`)
     }
     pollingEnabled.value = true
     const gen = ++pollingGeneration
@@ -95,7 +96,9 @@ export function setupPolling(
     const runPolling = async () => {
       if (!pollingEnabled.value || pollingGeneration !== gen) return
       if (isFetching.value) {
-        pollingTimer.value = setTimeout(runPolling, interval)
+        if (syncMode.value === 'polling') {
+          pollingTimer.value = setTimeout(runPolling, interval)
+        }
         return
       }
 
@@ -108,9 +111,21 @@ export function setupPolling(
           await fetchActiveTasks()
         }
 
+        // Event-driven mode: after initial sync, do not continue polling
+        if (syncMode.value === 'event-driven') {
+          const now = Date.now()
+          if (now - getLastStoppedFetchTime() > LOW_FREQ_INTERVAL) {
+            fetchStoppedTasks()
+          }
+          throttledUpdateTrayIcon()
+          isFetching.value = false
+          return
+        }
+
+        // Polling mode: keep existing logic
         const hasActive = tasks.value.active.length > 0
         if (hasActive) {
-          nextInterval = 3000 // Slow fallback when active, relying on events/progress
+          nextInterval = 3000
         } else {
           if (isWindowVisible.value) {
             nextInterval = IDLE_INTERVAL
@@ -165,6 +180,15 @@ export function setupPolling(
     if (isWindowVisible.value === visible) return
     isWindowVisible.value = visible
 
+    if (syncMode.value === 'event-driven') {
+      // Event-driven mode: only do a one-shot sync on window focus restore
+      if (visible && pollingContextEnabled.value) {
+        fetchActiveTasks()
+      }
+      return
+    }
+
+    // Polling mode: keep existing logic
     stopPolling(false)
 
     if (!pollingContextEnabled.value) return
