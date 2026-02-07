@@ -37,3 +37,6 @@ build.ps1
 
 # --- 测试脚本 ---
 scripts/*
+
+# --- 发布临时文件 ---
+release_notes.md
