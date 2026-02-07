@@ -182,7 +182,7 @@ export function setupPolling(
 
     if (syncMode.value === 'event-driven') {
       // Event-driven mode: only do a one-shot sync on window focus restore
-      if (visible && pollingContextEnabled.value) {
+      if (visible && pollingContextEnabled.value && !isFetching.value) {
         fetchActiveTasks()
       }
       return

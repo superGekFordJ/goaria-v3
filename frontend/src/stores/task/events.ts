@@ -32,6 +32,13 @@ export function setupEvents(state: TaskState, actions: TaskActions, polling: Tas
         stopped: [task, ...tasks.value.stopped],
       }
     }
+
+    // Delayed metadata cleanup — stopped tasks no longer need cached metadata
+    setTimeout(() => {
+      if (tasks.value.stopped.some(t => t.gid === gid)) {
+        removeMetadata(gid)
+      }
+    }, 5000)
   }
 
   function removeTaskFromState(gid: string) {
@@ -162,6 +169,8 @@ export function setupEvents(state: TaskState, actions: TaskActions, polling: Tas
             if (attempt >= MAX_RETRIES) {
               console.error('[Events] Failed to handle add event after retries, falling back:', e)
               await fetchTasks()
+            } else {
+              await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]))
             }
           }
         }

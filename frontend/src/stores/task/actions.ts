@@ -200,6 +200,9 @@ export function setupActions(state: TaskState) {
 
       const newTasks = { active: activeWithMeta, waiting: waitingWithMeta, stopped: stoppedWithMeta }
 
+      // Assign tasks FIRST so the async metadata callback operates on current state
+      tasks.value = newTasks
+
       // Metadata fetching logic similar to fetchActiveTasks...
       const tasksNeedingMetadata: string[] = []
       for (const t of newTasks.active) if (!t.files?.[0]?.path) tasksNeedingMetadata.push(t.gid)
@@ -217,6 +220,7 @@ export function setupActions(state: TaskState) {
                for (const gid of Object.keys(metadata)) {
                   const meta = metadata[gid]
                   if (!meta?.files?.[0]?.path) continue
+                  cacheMetadata(meta)
                   for (const list of [tasks.value.active, tasks.value.waiting]) {
                      const idx = list.findIndex(t => t.gid === gid)
                      if (idx !== -1) {
@@ -229,8 +233,6 @@ export function setupActions(state: TaskState) {
             }).finally(() => metadataInFlight = false)
          }
       }
-
-      tasks.value = newTasks
       immediateUpdateTrayIcon()
     } catch (err) {
       handleFetchError(err)

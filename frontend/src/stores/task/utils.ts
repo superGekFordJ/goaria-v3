@@ -39,7 +39,8 @@ export function mergeTasks(oldList: Task[], newList: Task[]): { merged: Task[]; 
     return { merged, changed: true }
   }
 
-  const oldMap = new Map(oldList.map(t => [t.gid, t]))
+  _mergeOldMap.clear()
+  for (const t of oldList) _mergeOldMap.set(t.gid, t)
 
   // 检查是否有任务增减
   if (oldList.length !== newList.length) {
@@ -51,9 +52,10 @@ export function mergeTasks(oldList: Task[], newList: Task[]): { merged: Task[]; 
   }
 
   // 检查 GID 集合是否一致
-  const oldGids = new Set(oldList.map(t => t.gid))
+  _mergeOldGids.clear()
+  for (const t of oldList) _mergeOldGids.add(t.gid)
   for (const newTask of newList) {
-    if (!oldGids.has(newTask.gid)) {
+    if (!_mergeOldGids.has(newTask.gid)) {
       const merged = newList.map(t => {
         cacheMetadata(t)
         return applyMetadataFromCache(t)
@@ -73,7 +75,7 @@ export function mergeTasks(oldList: Task[], newList: Task[]): { merged: Task[]; 
       newTask = applyMetadataFromCache(newTask)
     }
 
-    const oldTask = oldMap.get(newTask.gid)
+    const oldTask = _mergeOldMap.get(newTask.gid)
     if (oldTask) {
       // Check if we gained metadata (files appeared)
       const gainedMetadata = (!oldTask.files?.length || !oldTask.files[0]?.path) && (newTask.files?.length && newTask.files[0]?.path)
@@ -108,6 +110,9 @@ export function mergeTasks(oldList: Task[], newList: Task[]): { merged: Task[]; 
 /**
  * 按 GID 去重（复用 Set 实例减少 GC 压力）
  */
+// Reuse Map/Set instances to reduce GC pressure in hot paths
+const _mergeOldMap = new Map<string, Task>()
+const _mergeOldGids = new Set<string>()
 const _dedupGidSet = new Set<string>()
 export function dedupByGid(list: Task[]): Task[] {
   _dedupGidSet.clear()
