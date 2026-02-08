@@ -12,7 +12,8 @@
     "format": "prettier --write \"src/**/*.{js,ts,vue,css,html}\"",
     "type-check": "vue-tsc --noEmit",
     "test": "vitest",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "detect:i18n": "eslint -c eslint-i18n.config.js . --format json --output-file eslint-report.json --no-error-on-unmatched-pattern || node ../scripts/parse_eslint_report.js"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.18",
@@ -22,10 +23,12 @@
     "pinia-plugin-persistedstate": "^4.7.1",
     "tailwindcss": "^4.1.18",
     "vue": "^3.5.27",
+    "vue-i18n": "^11.2.8",
     "vue-virtual-scroller": "2.0.0-beta.8"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
+    "@intlify/eslint-plugin-vue-i18n": "^4.1.1",
     "@types/node": "^24.10.9",
     "@vitejs/plugin-vue": "^6.0.3",
     "@vue/test-utils": "^2.4.6",

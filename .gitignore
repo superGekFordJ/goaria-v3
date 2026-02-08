@@ -36,7 +36,8 @@ config.json
 build.ps1
 
 # --- 测试脚本 ---
-scripts/*
+scripts/gen_history.go
+frontend/i18n-report.txt
 
 # --- 发布临时文件 ---
 release_notes.md
