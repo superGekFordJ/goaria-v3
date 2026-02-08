@@ -1,0 +1,138 @@
+{
+  "sidebar": {
+    "inProgress": "进行中",
+    "completed": "已完成",
+    "settings": "偏好设置",
+    "liveSpeed": "实时速度",
+    "aria2Online": "Aria2 在线",
+    "aria2Offline": "Aria2 离线"
+  },
+  "titleBar": {
+    "minimizeToTray": "最小化到托盘",
+    "minimize": "最小化",
+    "restore": "还原",
+    "maximize": "最大化",
+    "close": "关闭"
+  },
+  "settings": {
+    "title": "偏好设置",
+    "description": "配置您的下载偏好",
+    "saving": "保存中...",
+    "saved": "已保存",
+    "autoSave": "自动保存"
+  },
+  "appearance": {
+    "title": "外观设置",
+    "description": "主题模式与皮肤风格",
+    "themeMode": "主题模式",
+    "system": "跟随系统",
+    "light": "亮色",
+    "dark": "暗色",
+    "skinStyle": "皮肤风格",
+    "obsidianDesc": "深邃黑曜石",
+    "ceramicDesc": "温润陶瓷白",
+    "language": "语言",
+    "auto": "自动"
+  },
+  "download": {
+    "title": "下载目录",
+    "description": "文件默认保存位置",
+    "browse": "浏览"
+  },
+  "rpc": {
+    "title": "RPC 连接",
+    "description": "Aria2 后端通信配置",
+    "port": "RPC 端口",
+    "secret": "RPC 密钥",
+    "optional": "可选",
+    "hideSecret": "隐藏密钥",
+    "showSecret": "显示密钥"
+  },
+  "performance": {
+    "title": "性能设置",
+    "description": "优化下载速度和资源占用",
+    "smartThreadMode": "智能线程模式",
+    "smartThreadDesc": "根据网络状况自动调整线程数",
+    "maxConnections": "单任务最大连接数",
+    "threads": "线程",
+    "maxConcurrent": "最大并发任务"
+  },
+  "ua": {
+    "description": "自定义浏览器标识",
+    "fetchPresets": "获取预设",
+    "selectPreset": "选择预设",
+    "placeholder": "留空使用默认值"
+  },
+  "advanced": {
+    "transparencyTitle": "窗口透明效果",
+    "transparencyDesc": "仅 Windows 11 支持，更改后需重启应用",
+    "transparencyClose": "关闭",
+    "transparencyStandard": "标准窗口",
+    "transparencyAcrylic": "亚克力",
+    "transparencyAcrylicBlur": "Acrylic 模糊",
+    "transparencyMica": "云母",
+    "transparencyMicaAlt": "Mica 材质",
+    "transparencyTabbed": "标签页风格",
+    "showHistory": "显示下载历史",
+    "showHistoryDesc": "在\"已完成\"标签页显示历史记录"
+  },
+  "taskList": {
+    "noDownloads": "暂无下载任务",
+    "pasteLink": "在上方粘贴链接开始下载",
+    "noMatch": "未找到匹配任务",
+    "tryOtherKeywords": "尝试使用其他关键词搜索",
+    "noCompleted": "暂无完成任务",
+    "completedHere": "完成的下载任务将在此处显示",
+    "unknownTask": "未知任务",
+    "confirmDelete": "确认删除任务？",
+    "deleteFile": "同时删除本地文件",
+    "irreversible": "此操作不可撤销",
+    "cancel": "取消",
+    "deleting": "删除中...",
+    "confirm": "确认删除",
+    "confirmBatchDelete": "确认删除 {count} 个任务？",
+    "batchDeleteDesc": "此操作将删除所有选中的任务"
+  },
+  "taskCard": {
+    "parsing": "正在解析资源...",
+    "unknownFile": "未知文件",
+    "downloading": "下载中",
+    "completed": "已完成",
+    "paused": "已暂停",
+    "waiting": "等待中",
+    "error": "错误",
+    "unknown": "未知",
+    "pause": "暂停",
+    "resume": "继续",
+    "openFolder": "打开文件夹",
+    "delete": "删除任务",
+    "progress": "进度",
+    "done": "完成",
+    "remaining": "剩余",
+    "speed": "速度",
+    "downloadComplete": "下载完成"
+  },
+  "taskHeader": {
+    "clipboardFilled": "已从剪贴板填入链接",
+    "clipboardNew": "剪贴板中有新链接",
+    "placeholder": "粘贴下载链接 (HTTP / HTTPS / FTP / SFTP)...",
+    "parsing": "解析中...",
+    "startDownload": "开始下载",
+    "duplicateTask": "存在重复任务，请检查下载列表或已完成的任务",
+    "addFailed": "添加失败",
+    "addFailedRetry": "添加失败，请重试",
+    "quickAdd": "快速添加",
+    "pasteLink": "粘贴链接"
+  },
+  "taskSearch": {
+    "placeholder": "搜索已完成任务...",
+    "clear": "清除搜索"
+  },
+  "batch": {
+    "selected": "已选择 {count} 项",
+    "pauseAll": "批量暂停",
+    "resumeAll": "批量继续",
+    "deleteAll": "批量删除",
+    "clearSelection": "取消选择 (Esc)"
+  }
+}

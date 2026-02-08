@@ -1,6 +1,9 @@
 <script setup lang="ts">
   import { FolderOpen } from 'lucide-vue-next'
+  import { useI18n } from 'vue-i18n'
   import SectionCard from './SectionCard.vue'
+
+  const { t } = useI18n()
 
   defineProps<{
     modelValue: string
@@ -13,8 +16,8 @@
 
 <template>
   <SectionCard
-    title="下载目录"
-    description="文件默认保存位置"
+    :title="t('download.title')"
+    :description="t('download.description')"
     :icon="FolderOpen"
     icon-class="bg-[var(--neon-primary)]/10 text-[var(--neon-primary)]"
   >
@@ -31,7 +34,7 @@
         class="btn-neon px-5 py-2 rounded-xl text-xs font-bold shrink-0"
         @click="$emit('pick')"
       >
-        浏览
+        {{ t('download.browse') }}
       </button>
     </div>
   </SectionCard>

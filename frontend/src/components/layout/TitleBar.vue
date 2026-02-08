@@ -1,9 +1,11 @@
 <script setup lang="ts">
   import { ref, onMounted } from 'vue'
+  import { useI18n } from 'vue-i18n'
   import { Minus, Square, X, PanelBottomClose } from 'lucide-vue-next'
   import { Window, Application } from '@wailsio/runtime'
   import { useTaskStore } from '../../stores/task'
 
+  const { t } = useI18n()
   const taskStore = useTaskStore()
 
   const isMaximized = ref(false)
@@ -70,7 +72,7 @@
       <!-- Minimize to Tray Button -->
       <button
         class="group w-9 h-9 flex items-center justify-center rounded-lg transition-all duration-200 hover:bg-[var(--neon-primary)]/10 active:bg-[var(--neon-primary)]/20"
-        title="最小化到托盘"
+        :title="t('titleBar.minimizeToTray')"
         @click="handleHideToTray"
       >
         <PanelBottomClose
@@ -82,7 +84,7 @@
       <!-- Minimize Button -->
       <button
         class="group w-9 h-9 flex items-center justify-center rounded-lg transition-all duration-200 hover:bg-[var(--btn-glass-hover)] active:bg-[var(--sidebar-active)]"
-        title="最小化"
+        :title="t('titleBar.minimize')"
         @click="handleMinimize"
       >
         <Minus
@@ -94,7 +96,7 @@
       <!-- Maximize/Restore Button -->
       <button
         class="group w-9 h-9 flex items-center justify-center rounded-lg transition-all duration-200 hover:bg-[var(--btn-glass-hover)] active:bg-[var(--sidebar-active)]"
-        :title="isMaximized ? '还原' : '最大化'"
+        :title="isMaximized ? t('titleBar.restore') : t('titleBar.maximize')"
         @click="handleMaximize"
       >
         <Square
@@ -112,7 +114,7 @@
       <!-- Close Button -->
       <button
         class="group w-9 h-9 flex items-center justify-center rounded-lg transition-all duration-200 hover:bg-[var(--status-error)]/20 active:bg-[var(--status-error)]/30"
-        title="关闭"
+        :title="t('titleBar.close')"
         @click="handleClose"
       >
         <X

@@ -1,0 +1,138 @@
+{
+  "sidebar": {
+    "inProgress": "進行中",
+    "completed": "已完成",
+    "settings": "偏好設定",
+    "liveSpeed": "即時速度",
+    "aria2Online": "Aria2 線上",
+    "aria2Offline": "Aria2 離線"
+  },
+  "titleBar": {
+    "minimizeToTray": "縮小至系統匣",
+    "minimize": "最小化",
+    "restore": "還原",
+    "maximize": "最大化",
+    "close": "關閉"
+  },
+  "settings": {
+    "title": "偏好設定",
+    "description": "設定您的下載偏好",
+    "saving": "儲存中...",
+    "saved": "已儲存",
+    "autoSave": "自動儲存"
+  },
+  "appearance": {
+    "title": "外觀設定",
+    "description": "介面主題與面板風格",
+    "themeMode": "主題模式",
+    "system": "跟隨系統",
+    "light": "亮色",
+    "dark": "深色",
+    "skinStyle": "面板風格",
+    "obsidianDesc": "深邃黑曜石",
+    "ceramicDesc": "溫潤陶瓷白",
+    "language": "語言",
+    "auto": "自動"
+  },
+  "download": {
+    "title": "下載目錄",
+    "description": "檔案預設儲存位置",
+    "browse": "瀏覽"
+  },
+  "rpc": {
+    "title": "RPC 連線",
+    "description": "Aria2 後端通訊設定",
+    "port": "RPC 連接埠",
+    "secret": "RPC 金鑰",
+    "optional": "選填",
+    "hideSecret": "隱藏金鑰",
+    "showSecret": "顯示金鑰"
+  },
+  "performance": {
+    "title": "效能設定",
+    "description": "最佳化下載速度與資源佔用",
+    "smartThreadMode": "智慧多執行緒模式",
+    "smartThreadDesc": "根據網路狀況自動調整執行緒數量",
+    "maxConnections": "單任務最大連線數",
+    "threads": "執行緒",
+    "maxConcurrent": "最大同時下載任務數"
+  },
+  "ua": {
+    "description": "自訂瀏覽器識別 (User-Agent)",
+    "fetchPresets": "取得預設值",
+    "selectPreset": "選擇預設值",
+    "placeholder": "留空則使用預設值"
+  },
+  "advanced": {
+    "transparencyTitle": "視窗透明效果",
+    "transparencyDesc": "僅支援 Windows 11，變更後需重新啟動應用程式",
+    "transparencyClose": "關閉",
+    "transparencyStandard": "標準視窗",
+    "transparencyAcrylic": "亞克力 (Acrylic)",
+    "transparencyAcrylicBlur": "Acrylic 模糊",
+    "transparencyMica": "雲母 (Mica)",
+    "transparencyMicaAlt": "Mica 材質",
+    "transparencyTabbed": "分頁風格",
+    "showHistory": "顯示下載記錄",
+    "showHistoryDesc": "在「已完成」分頁顯示歷史記錄"
+  },
+  "taskList": {
+    "noDownloads": "目前沒有下載任務",
+    "pasteLink": "在上方貼上連結以開始下載",
+    "noMatch": "找不到符合的任務",
+    "tryOtherKeywords": "請嘗試使用其他關鍵字搜尋",
+    "noCompleted": "沒有已完成的任務",
+    "completedHere": "已完成的下載任務將顯示於此",
+    "unknownTask": "未知的任務",
+    "confirmDelete": "確認刪除任務？",
+    "deleteFile": "同時刪除本機檔案",
+    "irreversible": "此操作無法復原",
+    "cancel": "取消",
+    "deleting": "刪除中...",
+    "confirm": "確認刪除",
+    "confirmBatchDelete": "確認刪除 {count} 個任務？",
+    "batchDeleteDesc": "此操作將刪除所有選取的任務"
+  },
+  "taskCard": {
+    "parsing": "正在解析資源...",
+    "unknownFile": "未知的檔案",
+    "downloading": "下載中",
+    "completed": "已完成",
+    "paused": "已暫停",
+    "waiting": "等待中",
+    "error": "錯誤",
+    "unknown": "未知",
+    "pause": "暫停",
+    "resume": "繼續",
+    "openFolder": "開啟資料夾",
+    "delete": "刪除任務",
+    "progress": "進度",
+    "done": "完成",
+    "remaining": "剩餘",
+    "speed": "速度",
+    "downloadComplete": "下載完成"
+  },
+  "taskHeader": {
+    "clipboardFilled": "已從剪貼簿填入連結",
+    "clipboardNew": "剪貼簿中有新的連結",
+    "placeholder": "貼上下載連結 (HTTP / HTTPS / FTP / SFTP)...",
+    "parsing": "解析中...",
+    "startDownload": "開始下載",
+    "duplicateTask": "存在重複的任務，請檢查下載列表或已完成的任務",
+    "addFailed": "新增失敗",
+    "addFailedRetry": "新增失敗，請重試",
+    "quickAdd": "快速新增",
+    "pasteLink": "貼上連結"
+  },
+  "taskSearch": {
+    "placeholder": "搜尋已完成的任務...",
+    "clear": "清除搜尋"
+  },
+  "batch": {
+    "selected": "已選取 {count} 個項目",
+    "pauseAll": "批次暫停",
+    "resumeAll": "批次繼續",
+    "deleteAll": "批次刪除",
+    "clearSelection": "取消選取 (Esc)"
+  }
+}

@@ -1,9 +1,12 @@
 <script setup lang="ts">
   import { computed, watch } from 'vue'
+  import { useI18n } from 'vue-i18n'
   import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
   import { useTaskStore } from '../../stores/task'
   import { Pause, Play, FolderOpen, Trash2, FileDown, Clock, Zap } from 'lucide-vue-next'
   import { useSmoothProgress } from '../../composables/useSmoothProgress'
+
+  const { t } = useI18n()
 
   const props = defineProps<{
     task: Task
@@ -36,8 +39,8 @@
   // Extract filename from path
   const fileName = computed(() => {
     const path = props.task.files?.[0]?.path
-    if (!path) return '正在解析资源...'
-    return path.split(/[\\/]/).pop() || '未知文件'
+    if (!path) return t('taskCard.parsing')
+    return path.split(/[\\/]/).pop() || t('taskCard.unknownFile')
   })
 
   // Calculate progress percentage for display
@@ -101,42 +104,42 @@
       case 'active':
         return {
           dotClass: 'status-active',
-          label: '下载中',
+          label: t('taskCard.downloading'),
           labelClass: 'text-[var(--status-active)]',
           showProgress: true,
         }
       case 'complete':
         return {
           dotClass: 'status-complete',
-          label: '已完成',
+          label: t('taskCard.completed'),
           labelClass: 'text-[var(--status-complete)]',
           showProgress: false,
         }
       case 'paused':
         return {
           dotClass: 'status-paused',
-          label: '已暂停',
+          label: t('taskCard.paused'),
           labelClass: 'text-amber-400',
           showProgress: true,
         }
       case 'waiting':
         return {
           dotClass: 'status-waiting',
-          label: '等待中',
+          label: t('taskCard.waiting'),
           labelClass: 'text-[var(--app-text-muted)]',
           showProgress: true,
         }
       case 'error':
         return {
           dotClass: 'status-error',
-          label: '错误',
+          label: t('taskCard.error'),
           labelClass: 'text-red-400',
           showProgress: false,
         }
       default:
         return {
           dotClass: 'status-waiting',
-          label: props.task.status || '未知',
+          label: props.task.status || t('taskCard.unknown'),
           labelClass: 'text-[var(--app-text-muted)]',
           showProgress: false,
         }
@@ -227,7 +230,7 @@
         <template v-if="!isCompleted">
           <button
             class="btn-glass w-10 h-10 rounded-xl flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--neon-primary)] hover:border-[var(--neon-primary)]/30"
-            :title="isActive ? '暂停' : '继续'"
+            :title="isActive ? t('taskCard.pause') : t('taskCard.resume')"
             @click="isActive ? taskStore.pause(task.gid) : taskStore.resume(task.gid)"
           >
             <Pause v-if="isActive" :size="16" />
@@ -238,7 +241,7 @@
         <!-- Open Folder Button -->
         <button
           class="btn-glass w-10 h-10 rounded-xl flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:border-[var(--glass-border)]"
-          title="打开文件夹"
+          :title="t('taskCard.openFolder')"
           @click="taskStore.openTaskFolder(task)"
         >
           <FolderOpen :size="16" />
@@ -247,7 +250,7 @@
         <!-- Delete Button -->
         <button
           class="btn-glass w-10 h-10 rounded-xl flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--status-error)] hover:bg-[var(--status-error)]/10 hover:border-[var(--status-error)]/30"
-          title="删除任务"
+          :title="t('taskCard.delete')"
           @click="emit('confirm-delete', task)"
         >
           <Trash2 :size="16" />
@@ -278,7 +281,7 @@
           <span
             class="text-[9px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-1"
           >
-            进度
+            {{ t('taskCard.progress') }}
           </span>
           <div class="font-mono-data text-xs text-[var(--app-text-muted)]">
             <span class="text-[var(--app-text)]/70">{{ formatSize(task.completedLength) }}</span>
@@ -292,7 +295,7 @@
           <span
             class="text-[9px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-1"
           >
-            完成
+            {{ t('taskCard.done') }}
           </span>
           <div class="font-mono-data text-xs text-[var(--app-text-muted)]">
             {{ progress.toFixed(1)
@@ -305,7 +308,7 @@
           <span
             class="text-[9px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-1"
           >
-            剩余
+            {{ t('taskCard.remaining') }}
           </span>
           <div class="flex items-center gap-1 font-mono-data text-xs text-[var(--app-text-muted)]">
             <Clock :size="10" class="text-[var(--app-text-subtle)]" />
@@ -319,7 +322,7 @@
         <span
           class="text-[9px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-1"
         >
-          速度
+          {{ t('taskCard.speed') }}
         </span>
         <div class="flex items-baseline gap-1">
           <Zap :size="12" class="text-[var(--neon-primary)]/60 mb-0.5" />
@@ -339,7 +342,7 @@
         >
           <div class="w-1.5 h-1.5 rounded-full bg-[var(--status-complete)]"></div>
           <span class="font-mono-data text-[10px] font-bold text-[var(--status-complete)]">
-            下载完成
+            {{ t('taskCard.downloadComplete') }}
           </span>
         </div>
       </div>

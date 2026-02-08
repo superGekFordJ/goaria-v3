@@ -1,7 +1,9 @@
 <script setup lang="ts">
   import { ref } from 'vue'
+  import { useI18n } from 'vue-i18n'
   import { Search, X } from 'lucide-vue-next'
 
+  const { t } = useI18n()
   const searchQuery = defineModel<string>({ default: '' })
   const inputFocused = ref(false)
 
@@ -32,8 +34,8 @@
       <input
         v-model="searchQuery"
         type="text"
-        placeholder="搜索已完成任务..."
-        aria-label="搜索已完成任务"
+        :placeholder="t('taskSearch.placeholder')"
+        :aria-label="t('taskSearch.placeholder')"
         class="flex-1 bg-transparent py-3 text-sm text-[var(--app-text)] font-medium focus:outline-none placeholder:text-[var(--input-placeholder)] placeholder:font-normal select-text"
         @focus="inputFocused = true"
         @blur="inputFocused = false"
@@ -43,7 +45,7 @@
       <button
         v-if="searchQuery"
         class="p-2 mr-1 rounded-lg text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--btn-glass-bg)] transition-all duration-200"
-        aria-label="清除搜索"
+        :aria-label="t('taskSearch.clear')"
         @click="clearSearch"
       >
         <X :size="14" />

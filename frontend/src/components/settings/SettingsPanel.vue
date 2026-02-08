@@ -1,5 +1,6 @@
 <script setup lang="ts">
   import { ref, onMounted, onUnmounted } from 'vue'
+  import { useI18n } from 'vue-i18n'
   import { useConfigStore } from '../../stores/config'
   import { Settings as SettingsIcon, CheckCircle, Loader2 } from 'lucide-vue-next'
   import ThemeIcon from '../common/ThemeIcon.vue'
@@ -12,6 +13,7 @@
   import AppearanceSection from './sections/AppearanceSection.vue'
   import AdvancedSection from './sections/AdvancedSection.vue'
 
+  const { t } = useI18n()
   const configStore = useConfigStore()
 
   // Local form state - decoupled from store to prevent reactivity issues
@@ -115,8 +117,12 @@
             <SettingsIcon :size="22" class="text-[var(--app-text-muted)]" />
           </div>
           <div>
-            <h2 class="text-2xl font-bold text-[var(--app-text)] tracking-tight">偏好设置</h2>
-            <p class="text-xs text-[var(--app-text-subtle)] mt-0.5">配置您的下载偏好</p>
+            <h2 class="text-2xl font-bold text-[var(--app-text)] tracking-tight">
+              {{ t('settings.title') }}
+            </h2>
+            <p class="text-xs text-[var(--app-text-subtle)] mt-0.5">
+              {{ t('settings.description') }}
+            </p>
           </div>
         </div>
 
@@ -128,21 +134,27 @@
               class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]"
             >
               <Loader2 :size="12" class="animate-spin text-[var(--neon-primary)]" />
-              <span class="text-[10px] font-mono-data text-[var(--app-text-muted)]">保存中...</span>
+              <span class="text-[10px] font-mono-data text-[var(--app-text-muted)]">
+                {{ t('settings.saving') }}
+              </span>
             </div>
             <div
               v-else-if="saveStatus === 'saved'"
               class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-active)]/10 border border-[var(--status-active)]/20"
             >
               <CheckCircle :size="12" class="text-[var(--status-active)]" />
-              <span class="text-[10px] font-mono-data text-[var(--status-active)]">已保存</span>
+              <span class="text-[10px] font-mono-data text-[var(--status-active)]">
+                {{ t('settings.saved') }}
+              </span>
             </div>
             <div
               v-else
               class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]"
             >
               <div class="w-1.5 h-1.5 rounded-full bg-[var(--app-text-subtle)]"></div>
-              <span class="text-[10px] font-mono-data text-[var(--app-text-subtle)]">自动保存</span>
+              <span class="text-[10px] font-mono-data text-[var(--app-text-subtle)]">
+                {{ t('settings.autoSave') }}
+              </span>
             </div>
           </Transition>
         </div>

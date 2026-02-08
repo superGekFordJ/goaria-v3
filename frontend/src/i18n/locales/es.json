@@ -1,0 +1,138 @@
+{
+  "sidebar": {
+    "inProgress": "En Progreso",
+    "completed": "Completado",
+    "settings": "Ajustes",
+    "liveSpeed": "Velocidad",
+    "aria2Online": "Aria2 En línea",
+    "aria2Offline": "Aria2 Desconectado"
+  },
+  "titleBar": {
+    "minimizeToTray": "Minimizar a la bandeja",
+    "minimize": "Minimizar",
+    "restore": "Restaurar",
+    "maximize": "Maximizar",
+    "close": "Cerrar"
+  },
+  "settings": {
+    "title": "Ajustes",
+    "description": "Configura tus preferencias de descarga",
+    "saving": "Guardando...",
+    "saved": "Guardado",
+    "autoSave": "Autoguardado"
+  },
+  "appearance": {
+    "title": "Apariencia",
+    "description": "Tema y estilo de la interfaz",
+    "themeMode": "Modo de tema",
+    "system": "Sistema",
+    "light": "Claro",
+    "dark": "Oscuro",
+    "skinStyle": "Estilo de piel",
+    "obsidianDesc": "Obsidian (Negro Profundo)",
+    "ceramicDesc": "Ceramic (Blanco Cerámica)",
+    "language": "Idioma",
+    "auto": "Auto"
+  },
+  "download": {
+    "title": "Directorio de Descargas",
+    "description": "Ubicación predeterminada para guardar archivos",
+    "browse": "Explorar"
+  },
+  "rpc": {
+    "title": "Conexión RPC",
+    "description": "Configuración de comunicación con Aria2",
+    "port": "Puerto RPC",
+    "secret": "Clave RPC",
+    "optional": "Opcional",
+    "hideSecret": "Ocultar clave",
+    "showSecret": "Mostrar clave"
+  },
+  "performance": {
+    "title": "Rendimiento",
+    "description": "Optimizar velocidad y recursos",
+    "smartThreadMode": "Hilos Inteligentes",
+    "smartThreadDesc": "Ajustar hilos automáticamente según la red",
+    "maxConnections": "Conexiones máx. por tarea",
+    "threads": "Hilos",
+    "maxConcurrent": "Tareas concurrentes máx."
+  },
+  "ua": {
+    "description": "User-Agent Personalizado",
+    "fetchPresets": "Obtener preajustes",
+    "selectPreset": "Seleccionar preajuste",
+    "placeholder": "Dejar vacío para usar predeterminado"
+  },
+  "advanced": {
+    "transparencyTitle": "Efectos de Transparencia",
+    "transparencyDesc": "Solo Windows 11. Requiere reiniciar para aplicar cambios.",
+    "transparencyClose": "Desactivado",
+    "transparencyStandard": "Ventana Estándar",
+    "transparencyAcrylic": "Acrílico (Acrylic)",
+    "transparencyAcrylicBlur": "Desenfoque Acrílico",
+    "transparencyMica": "Mica",
+    "transparencyMicaAlt": "Mica Alt",
+    "transparencyTabbed": "Estilo Pestaña",
+    "showHistory": "Mostrar Historial",
+    "showHistoryDesc": "Mostrar historial en la pestaña 'Completado'"
+  },
+  "taskList": {
+    "noDownloads": "No hay descargas",
+    "pasteLink": "Pega un enlace arriba para comenzar",
+    "noMatch": "No se encontraron tareas",
+    "tryOtherKeywords": "Intenta buscar con otras palabras clave",
+    "noCompleted": "No hay tareas completadas",
+    "completedHere": "Las tareas completadas aparecerán aquí",
+    "unknownTask": "Tarea desconocida",
+    "confirmDelete": "¿Eliminar tarea?",
+    "deleteFile": "Eliminar también el archivo local",
+    "irreversible": "Esta acción no se puede deshacer",
+    "cancel": "Cancelar",
+    "deleting": "Eliminando...",
+    "confirm": "Eliminar",
+    "confirmBatchDelete": "¿Eliminar {count} tareas?",
+    "batchDeleteDesc": "Esto eliminará todas las tareas seleccionadas"
+  },
+  "taskCard": {
+    "parsing": "Analizando recursos...",
+    "unknownFile": "Archivo desconocido",
+    "downloading": "Descargando",
+    "completed": "Completado",
+    "paused": "Pausado",
+    "waiting": "Esperando",
+    "error": "Error",
+    "unknown": "Desconocido",
+    "pause": "Pausar",
+    "resume": "Reanudar",
+    "openFolder": "Abrir carpeta",
+    "delete": "Eliminar tarea",
+    "progress": "Progreso",
+    "done": "Hecho",
+    "remaining": "Restante",
+    "speed": "Velocidad",
+    "downloadComplete": "Descarga completa"
+  },
+  "taskHeader": {
+    "clipboardFilled": "Enlace pegado desde el portapapeles",
+    "clipboardNew": "Nuevo enlace en el portapapeles",
+    "placeholder": "Pegar enlace de descarga (HTTP / HTTPS / FTP / SFTP)...",
+    "parsing": "Analizando...",
+    "startDownload": "Descargar",
+    "duplicateTask": "Tarea duplicada, verifica la lista o tareas completadas",
+    "addFailed": "Error al añadir",
+    "addFailedRetry": "Falló, reintenta",
+    "quickAdd": "Añadir rápido",
+    "pasteLink": "Pegar enlace"
+  },
+  "taskSearch": {
+    "placeholder": "Buscar tareas completadas...",
+    "clear": "Limpiar búsqueda"
+  },
+  "batch": {
+    "selected": "{count} seleccionados",
+    "pauseAll": "Pausar todo",
+    "resumeAll": "Reanudar todo",
+    "deleteAll": "Eliminar todo",
+    "clearSelection": "Deseleccionar (Esc)"
+  }
+}

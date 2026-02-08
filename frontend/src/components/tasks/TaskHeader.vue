@@ -1,9 +1,11 @@
 <script setup lang="ts">
   import { ref, watch } from 'vue'
+  import { useI18n } from 'vue-i18n'
   import { useTaskStore } from '../../stores/task'
   import { useUIStore } from '../../stores/ui'
   import { Link, Plus, Loader2 } from 'lucide-vue-next'
 
+  const { t } = useI18n()
   const taskStore = useTaskStore()
   const uiStore = useUIStore()
   const urlInput = ref('')
@@ -21,12 +23,12 @@
 
       if (!urlInput.value.trim()) {
         urlInput.value = trimmed
-        clipboardHint.value = '已从剪贴板填入链接'
+        clipboardHint.value = t('taskHeader.clipboardFilled')
         setTimeout(() => {
           urlInputEl.value?.focus()
         }, 0)
       } else {
-        clipboardHint.value = '剪贴板中有新链接'
+        clipboardHint.value = t('taskHeader.clipboardNew')
       }
       setTimeout(() => {
         clipboardHint.value = ''
@@ -47,18 +49,18 @@
       if (res === 'success') {
         urlInput.value = ''
       } else if (res === 'duplicate') {
-        errorMessage.value = '存在重复任务，请检查下载列表或已完成的任务'
+        errorMessage.value = t('taskHeader.duplicateTask')
         setTimeout(() => {
           errorMessage.value = ''
         }, 3000)
       } else {
-        errorMessage.value = `添加失败: ${res}`
+        errorMessage.value = `${t('taskHeader.addFailed')}: ${res}`
         setTimeout(() => {
           errorMessage.value = ''
         }, 3000)
       }
     } catch (err) {
-      errorMessage.value = '添加失败，请重试'
+      errorMessage.value = t('taskHeader.addFailedRetry')
       setTimeout(() => {
         errorMessage.value = ''
       }, 3000)
@@ -101,7 +103,7 @@
           ref="urlInputEl"
           v-model="urlInput"
           type="text"
-          placeholder="粘贴下载链接 (HTTP / HTTPS / FTP / SFTP)..."
+          :placeholder="t('taskHeader.placeholder')"
           class="w-full bg-transparent pl-11 pr-4 py-3 text-sm text-[var(--app-text)] font-medium focus:outline-none placeholder:text-[var(--input-placeholder)] placeholder:font-normal select-text"
           @focus="inputFocused = true"
           @blur="inputFocused = false"
@@ -134,7 +136,7 @@
       >
         <Loader2 v-if="isAdding" :size="16" class="animate-spin" />
         <Plus v-else :size="16" />
-        <span>{{ isAdding ? '解析中...' : '开始下载' }}</span>
+        <span>{{ isAdding ? t('taskHeader.parsing') : t('taskHeader.startDownload') }}</span>
       </button>
     </div>
 
@@ -162,7 +164,7 @@
             >
               Enter
             </kbd>
-            <span>快速添加</span>
+            <span>{{ t('taskHeader.quickAdd') }}</span>
           </div>
           <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
             <kbd
@@ -170,7 +172,7 @@
             >
               Ctrl+V
             </kbd>
-            <span>粘贴链接</span>
+            <span>{{ t('taskHeader.pasteLink') }}</span>
           </div>
         </div>
       </Transition>

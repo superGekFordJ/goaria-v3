@@ -62,6 +62,7 @@
   onMounted(async () => {
     // Initialize theme and skin from persisted state
     uiStore.initTheme()
+    uiStore.initLocale()
 
     // Global initialization: fetch config from Go backend
     await configStore.fetchConfig()

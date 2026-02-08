@@ -1,0 +1,138 @@
+{
+  "sidebar": {
+    "inProgress": "Aktiv",
+    "completed": "Fertig",
+    "settings": "Einstellungen",
+    "liveSpeed": "Geschwindigkeit",
+    "aria2Online": "Aria2 Online",
+    "aria2Offline": "Aria2 Offline"
+  },
+  "titleBar": {
+    "minimizeToTray": "In System-Tray minimieren",
+    "minimize": "Minimieren",
+    "restore": "Wiederherstellen",
+    "maximize": "Maximieren",
+    "close": "Schließen"
+  },
+  "settings": {
+    "title": "Einstellungen",
+    "description": "Konfigurieren Sie Ihre Download-Präferenzen",
+    "saving": "Speichern...",
+    "saved": "Gespeichert",
+    "autoSave": "Automatisches Speichern"
+  },
+  "appearance": {
+    "title": "Erscheinungsbild",
+    "description": "Design und Stile",
+    "themeMode": "Design-Modus",
+    "system": "System",
+    "light": "Hell",
+    "dark": "Dunkel",
+    "skinStyle": "Skin-Stil",
+    "obsidianDesc": "Obsidian (Tiefschwarz)",
+    "ceramicDesc": "Ceramic (Keramikweiß)",
+    "language": "Sprache",
+    "auto": "Auto"
+  },
+  "download": {
+    "title": "Download-Verzeichnis",
+    "description": "Standard-Speicherort für Dateien",
+    "browse": "Durchsuchen"
+  },
+  "rpc": {
+    "title": "RPC Verbindung",
+    "description": "Aria2 Backend-Kommunikation",
+    "port": "RPC Port",
+    "secret": "RPC Schlüssel",
+    "optional": "Optional",
+    "hideSecret": "Verbergen",
+    "showSecret": "Anzeigen"
+  },
+  "performance": {
+    "title": "Leistung",
+    "description": "Geschwindigkeit und Ressourcen optimieren",
+    "smartThreadMode": "Intelligente Threads",
+    "smartThreadDesc": "Threads automatisch an Netzwerk anpassen",
+    "maxConnections": "Max. Verbindungen pro Task",
+    "threads": "Threads",
+    "maxConcurrent": "Max. gleichzeitige Tasks"
+  },
+  "ua": {
+    "description": "Benutzerdefinierter User-Agent",
+    "fetchPresets": "Presets abrufen",
+    "selectPreset": "Preset wählen",
+    "placeholder": "Leer lassen für Standard"
+  },
+  "advanced": {
+    "transparencyTitle": "Fenstertransparenz",
+    "transparencyDesc": "Nur Windows 11. Neustart erforderlich.",
+    "transparencyClose": "Aus",
+    "transparencyStandard": "Standardfenster",
+    "transparencyAcrylic": "Acryl (Acrylic)",
+    "transparencyAcrylicBlur": "Acryl Blur",
+    "transparencyMica": "Glimmer (Mica)",
+    "transparencyMicaAlt": "Mica Alt",
+    "transparencyTabbed": "Tabbed",
+    "showHistory": "Verlauf anzeigen",
+    "showHistoryDesc": "Verlauf im Tab \"Fertig\" anzeigen"
+  },
+  "taskList": {
+    "noDownloads": "Keine Downloads",
+    "pasteLink": "Link oben einfügen zum Starten",
+    "noMatch": "Keine Aufgaben gefunden",
+    "tryOtherKeywords": "Versuchen Sie andere Suchbegriffe",
+    "noCompleted": "Keine abgeschlossenen Aufgaben",
+    "completedHere": "Fertige Downloads erscheinen hier",
+    "unknownTask": "Unbekannte Aufgabe",
+    "confirmDelete": "Aufgabe löschen?",
+    "deleteFile": "Auch lokale Datei löschen",
+    "irreversible": "Diese Aktion kann nicht rückgängig gemacht werden",
+    "cancel": "Abbrechen",
+    "deleting": "Löschen...",
+    "confirm": "Löschen",
+    "confirmBatchDelete": "{count} Aufgaben löschen?",
+    "batchDeleteDesc": "Dies wird alle ausgewählten Aufgaben löschen"
+  },
+  "taskCard": {
+    "parsing": "Ressourcen werden analysiert...",
+    "unknownFile": "Unbekannte Datei",
+    "downloading": "Lädt herunter",
+    "completed": "Fertig",
+    "paused": "Pausiert",
+    "waiting": "Wartend",
+    "error": "Fehler",
+    "unknown": "Unbekannt",
+    "pause": "Pause",
+    "resume": "Fortsetzen",
+    "openFolder": "Ordner öffnen",
+    "delete": "Löschen",
+    "progress": "Fortschritt",
+    "done": "Fertig",
+    "remaining": "Rest",
+    "speed": "Geschw.",
+    "downloadComplete": "Download abgeschlossen"
+  },
+  "taskHeader": {
+    "clipboardFilled": "Link aus Zwischenablage eingefügt",
+    "clipboardNew": "Neuer Link in Zwischenablage",
+    "placeholder": "Download-Link einfügen (HTTP / HTTPS / FTP / SFTP)...",
+    "parsing": "Analysieren...",
+    "startDownload": "Starten",
+    "duplicateTask": "Aufgabe existiert bereits, bitte Liste prüfen",
+    "addFailed": "Hinzufügen fehlgeschlagen",
+    "addFailedRetry": "Fehler, bitte wiederholen",
+    "quickAdd": "Schnell hinzufügen",
+    "pasteLink": "Einfügen"
+  },
+  "taskSearch": {
+    "placeholder": "Fertige Aufgaben suchen...",
+    "clear": "Suche löschen"
+  },
+  "batch": {
+    "selected": "{count} ausgewählt",
+    "pauseAll": "Alle pausieren",
+    "resumeAll": "Alle fortsetzen",
+    "deleteAll": "Alle löschen",
+    "clearSelection": "Auswahl aufheben (Esc)"
+  }
+}

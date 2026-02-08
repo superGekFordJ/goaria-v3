@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { resolveLocale, setI18nLocale } from '../i18n'
 
+export type LocalePreference = 'auto' | 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'es' | 'de'
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type SkinId = 'obsidian' | 'ceramic'
 export type Density = 'compact' | 'comfortable'
@@ -14,6 +16,7 @@ export const useUIStore = defineStore(
   () => {
     // State
     const activeTab = ref('downloads')
+    const locale = ref<LocalePreference>('auto')
     const themeMode = ref<ThemeMode>('system')
     const skinId = ref<SkinId>('obsidian')
     const density = ref<Density>('comfortable')
@@ -31,6 +34,15 @@ export const useUIStore = defineStore(
 
     function consumePendingPasteUri() {
       pendingPasteUri.value = ''
+    }
+
+    function setLocale(newLocale: LocalePreference) {
+      locale.value = newLocale
+      setI18nLocale(resolveLocale(newLocale))
+    }
+
+    function initLocale() {
+      setI18nLocale(resolveLocale(locale.value))
     }
 
     function setTheme(newTheme: ThemeMode) {
@@ -124,11 +136,15 @@ export const useUIStore = defineStore(
       setDensity,
       setEffects,
       initTheme,
+      // Locale
+      locale,
+      setLocale,
+      initLocale,
     }
   },
   {
     persist: {
-      pick: ['activeTab', 'themeMode', 'skinId', 'density', 'effects'],
+      pick: ['activeTab', 'locale', 'themeMode', 'skinId', 'density', 'effects'],
     },
   },
 )

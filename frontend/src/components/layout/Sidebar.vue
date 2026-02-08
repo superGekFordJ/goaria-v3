@@ -1,11 +1,13 @@
 <script setup lang="ts">
   import { computed } from 'vue'
+  import { useI18n } from 'vue-i18n'
   import { useUIStore } from '../../stores/ui'
   import { useConfigStore } from '../../stores/config'
   import { useTaskStore } from '../../stores/task'
   import { Download, CheckCircle, Settings as SettingsIcon, Activity } from 'lucide-vue-next'
   import ThemeIcon from '../common/ThemeIcon.vue'
 
+  const { t } = useI18n()
   const uiStore = useUIStore()
   const configStore = useConfigStore()
   const taskStore = useTaskStore()
@@ -14,14 +16,14 @@
   const navItems = computed(() => [
     {
       id: 'downloads',
-      name: '进行中',
+      name: t('sidebar.inProgress'),
       icon: Download,
       count: taskStore.activeTasks.length + taskStore.waitingTasks.length,
       accent: 'cyan',
     },
     {
       id: 'stopped',
-      name: '已完成',
+      name: t('sidebar.completed'),
       icon: CheckCircle,
       count: taskStore.stoppedTasks.length,
       accent: 'green',
@@ -68,7 +70,7 @@
           <span
             class="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--app-text-subtle)]"
           >
-            实时速度
+            {{ t('sidebar.liveSpeed') }}
           </span>
         </div>
         <div class="font-mono-data text-xl font-bold text-neon leading-none">
@@ -161,7 +163,7 @@
               : 'text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]/60',
           ]"
         >
-          偏好设置
+          {{ t('sidebar.settings') }}
         </span>
       </button>
     </nav>
@@ -186,7 +188,7 @@
           <span
             class="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--app-text-subtle)]"
           >
-            {{ isConnected ? 'Aria2 在线' : 'Aria2 离线' }}
+            {{ isConnected ? t('sidebar.aria2Online') : t('sidebar.aria2Offline') }}
           </span>
         </div>
         <div class="font-mono-data text-[10px] text-[var(--app-text-subtle)] truncate">

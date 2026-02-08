@@ -1,0 +1,138 @@
+{
+  "sidebar": {
+    "inProgress": "ダウンロード中",
+    "completed": "完了",
+    "settings": "設定",
+    "liveSpeed": "現在の速度",
+    "aria2Online": "Aria2 オンライン",
+    "aria2Offline": "Aria2 オフライン"
+  },
+  "titleBar": {
+    "minimizeToTray": "トレイに最小化",
+    "minimize": "最小化",
+    "restore": "元に戻す",
+    "maximize": "最大化",
+    "close": "閉じる"
+  },
+  "settings": {
+    "title": "設定",
+    "description": "ダウンロード設定の構成",
+    "saving": "保存中...",
+    "saved": "保存しました",
+    "autoSave": "自動保存"
+  },
+  "appearance": {
+    "title": "外観",
+    "description": "テーマとスキン",
+    "themeMode": "テーマモード",
+    "system": "システム設定に従う",
+    "light": "ライト",
+    "dark": "ダーク",
+    "skinStyle": "スキンスタイル",
+    "obsidianDesc": "Obsidian (黒曜石)",
+    "ceramicDesc": "Ceramic (陶磁器)",
+    "language": "言語",
+    "auto": "自動"
+  },
+  "download": {
+    "title": "ダウンロード先",
+    "description": "ファイルのデフォルト保存場所",
+    "browse": "参照"
+  },
+  "rpc": {
+    "title": "RPC 接続",
+    "description": "Aria2 バックエンド通信設定",
+    "port": "RPC ポート",
+    "secret": "RPC シークレット",
+    "optional": "オプション",
+    "hideSecret": "シークレットを隠す",
+    "showSecret": "シークレットを表示"
+  },
+  "performance": {
+    "title": "パフォーマンス",
+    "description": "ダウンロード速度とリソースの最適化",
+    "smartThreadMode": "スマートスレッドモード",
+    "smartThreadDesc": "ネットワーク状況に応じてスレッド数を自動調整",
+    "maxConnections": "タスクごとの最大接続数",
+    "threads": "スレッド",
+    "maxConcurrent": "最大同時タスク数"
+  },
+  "ua": {
+    "description": "カスタム User-Agent",
+    "fetchPresets": "プリセットを取得",
+    "selectPreset": "プリセットを選択",
+    "placeholder": "空欄の場合はデフォルトを使用"
+  },
+  "advanced": {
+    "transparencyTitle": "ウィンドウの透明効果",
+    "transparencyDesc": "Windows 11 専用機能。変更を適用するには再起動が必要です。",
+    "transparencyClose": "オフ",
+    "transparencyStandard": "標準ウィンドウ",
+    "transparencyAcrylic": "アクリル (Acrylic)",
+    "transparencyAcrylicBlur": "アクリルぼかし",
+    "transparencyMica": "マイカ (Mica)",
+    "transparencyMicaAlt": "マイカ (Mica Alt)",
+    "transparencyTabbed": "タブ風",
+    "showHistory": "ダウンロード履歴を表示",
+    "showHistoryDesc": "「完了」タブに履歴を表示する"
+  },
+  "taskList": {
+    "noDownloads": "ダウンロードタスクがありません",
+    "pasteLink": "上にリンクを貼り付けてダウンロードを開始",
+    "noMatch": "一致するタスクが見つかりません",
+    "tryOtherKeywords": "別のキーワードで検索してください",
+    "noCompleted": "完了したタスクはありません",
+    "completedHere": "完了したダウンロードタスクはここに表示されます",
+    "unknownTask": "不明なタスク",
+    "confirmDelete": "タスクを削除しますか？",
+    "deleteFile": "ローカルファイルも同時に削除する",
+    "irreversible": "この操作は取り消せません",
+    "cancel": "キャンセル",
+    "deleting": "削除中...",
+    "confirm": "削除",
+    "confirmBatchDelete": "{count} 個のタスクを削除しますか？",
+    "batchDeleteDesc": "選択したすべてのタスクが削除されます"
+  },
+  "taskCard": {
+    "parsing": "リソースを解析中...",
+    "unknownFile": "不明なファイル",
+    "downloading": "ダウンロード中",
+    "completed": "完了",
+    "paused": "一時停止中",
+    "waiting": "待機中",
+    "error": "エラー",
+    "unknown": "不明",
+    "pause": "一時停止",
+    "resume": "再開",
+    "openFolder": "フォルダーを開く",
+    "delete": "タスクを削除",
+    "progress": "進捗",
+    "done": "完了",
+    "remaining": "残り",
+    "speed": "速度",
+    "downloadComplete": "ダウンロード完了"
+  },
+  "taskHeader": {
+    "clipboardFilled": "クリップボードからリンクを入力しました",
+    "clipboardNew": "クリップボードに新しいリンクがあります",
+    "placeholder": "ダウンロードリンクを貼り付け (HTTP / HTTPS / FTP / SFTP)...",
+    "parsing": "解析中...",
+    "startDownload": "ダウンロード開始",
+    "duplicateTask": "重複するタスクが存在します。リストまたは完了済みタスクを確認してください",
+    "addFailed": "追加に失敗しました",
+    "addFailedRetry": "追加に失敗しました。再試行してください",
+    "quickAdd": "クイック追加",
+    "pasteLink": "リンクを貼り付け"
+  },
+  "taskSearch": {
+    "placeholder": "完了したタスクを検索...",
+    "clear": "検索をクリア"
+  },
+  "batch": {
+    "selected": "{count} 項目を選択中",
+    "pauseAll": "すべて一時停止",
+    "resumeAll": "すべて再開",
+    "deleteAll": "すべて削除",
+    "clearSelection": "選択を解除 (Esc)"
+  }
+}

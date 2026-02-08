@@ -1,7 +1,10 @@
 <script setup lang="ts">
   import { Globe, Loader2, Download, X } from 'lucide-vue-next'
+  import { useI18n } from 'vue-i18n'
   import SectionCard from './SectionCard.vue'
   import { useUserAgent } from '../../common/useUserAgent'
+
+  const { t } = useI18n()
 
   defineProps<{
     modelValue: string
@@ -37,7 +40,7 @@
 <template>
   <SectionCard
     title="User-Agent"
-    description="自定义浏览器标识"
+    :description="t('ua.description')"
     :icon="Globe"
     icon-class="bg-blue-500/10 text-blue-400"
   >
@@ -50,7 +53,7 @@
       >
         <Loader2 v-if="isFetchingUA" :size="12" class="animate-spin" />
         <Download v-else :size="12" />
-        获取预设
+        {{ t('ua.fetchPresets') }}
       </button>
     </template>
 
@@ -66,7 +69,9 @@
     <Transition name="slide-fade">
       <div v-if="showUADropdown && userAgentPresets.length > 0" class="mb-4 relative">
         <div class="flex items-center justify-between mb-2">
-          <span class="text-[10px] font-semibold text-[var(--app-text-subtle)]">选择预设</span>
+          <span class="text-[10px] font-semibold text-[var(--app-text-subtle)]">
+            {{ t('ua.selectPreset') }}
+          </span>
           <button
             type="button"
             class="p-1 rounded-md text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--btn-glass-bg)] transition-all duration-200"
@@ -104,7 +109,7 @@
     <textarea
       :value="modelValue"
       rows="2"
-      placeholder="留空使用默认值"
+      :placeholder="t('ua.placeholder')"
       class="w-full bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl px-4 py-3 text-[11px] font-mono-data text-[var(--app-text)]/70 outline-none resize-none transition-all duration-200 focus:border-[var(--neon-primary)]/40 focus:shadow-[0_0_0_3px_var(--input-focus)] placeholder:text-[var(--input-placeholder)]"
       @input="updateModelValue"
     ></textarea>

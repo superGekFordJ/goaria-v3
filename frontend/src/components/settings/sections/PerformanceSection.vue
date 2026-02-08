@@ -1,6 +1,9 @@
 <script setup lang="ts">
   import { Cpu } from 'lucide-vue-next'
+  import { useI18n } from 'vue-i18n'
   import SectionCard from './SectionCard.vue'
+
+  const { t } = useI18n()
 
   const props = defineProps<{
     connections: string
@@ -36,8 +39,8 @@
 
 <template>
   <SectionCard
-    title="性能设置"
-    description="优化下载速度和资源占用"
+    :title="t('performance.title')"
+    :description="t('performance.description')"
     :icon="Cpu"
     icon-class="bg-amber-500/10 text-amber-400"
   >
@@ -46,8 +49,12 @@
       class="mb-4 flex items-center justify-between p-3 bg-[var(--input-bg)] rounded-xl border border-[var(--input-border)]"
     >
       <div>
-        <div class="text-sm font-medium text-[var(--app-text)]">智能线程模式</div>
-        <div class="text-xs text-[var(--app-text-subtle)]">根据网络状况自动调整线程数</div>
+        <div class="text-sm font-medium text-[var(--app-text)]">
+          {{ t('performance.smartThreadMode') }}
+        </div>
+        <div class="text-xs text-[var(--app-text-subtle)]">
+          {{ t('performance.smartThreadDesc') }}
+        </div>
       </div>
       <button
         type="button"
@@ -72,7 +79,7 @@
         <label
           class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)]"
         >
-          单任务最大连接数
+          {{ t('performance.maxConnections') }}
         </label>
         <div class="relative">
           <select
@@ -80,7 +87,9 @@
             class="w-full bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl px-4 py-3 text-sm font-mono-data text-[var(--app-text)]/80 outline-none appearance-none cursor-pointer transition-all duration-200 focus:border-[var(--neon-primary)]/40 focus:shadow-[0_0_0_3px_var(--input-focus)]"
             @change="updateConnections"
           >
-            <option v-for="n in connectionOptions" :key="n" :value="n">{{ n }} 线程</option>
+            <option v-for="n in connectionOptions" :key="n" :value="n">
+              {{ n }} {{ t('performance.threads') }}
+            </option>
           </select>
           <!-- Custom dropdown arrow -->
           <div class="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
@@ -108,7 +117,7 @@
         <label
           class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)]"
         >
-          最大并发任务
+          {{ t('performance.maxConcurrent') }}
         </label>
         <input
           :value="concurrentDownloads"

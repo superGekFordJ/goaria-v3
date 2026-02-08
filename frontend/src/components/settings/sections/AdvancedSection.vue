@@ -1,6 +1,9 @@
 <script setup lang="ts">
   import { Layers, History } from 'lucide-vue-next'
+  import { useI18n } from 'vue-i18n'
   import SectionCard from './SectionCard.vue'
+
+  const { t } = useI18n()
 
   const props = defineProps<{
     transparency: string
@@ -28,18 +31,30 @@
   <div class="space-y-4">
     <!-- Window Transparency Card -->
     <SectionCard
-      title="窗口透明效果"
-      description="仅 Windows 11 支持，更改后需重启应用"
+      :title="t('advanced.transparencyTitle')"
+      :description="t('advanced.transparencyDesc')"
       :icon="Layers"
       icon-class="bg-cyan-500/10 text-cyan-400"
     >
       <div class="grid grid-cols-2 gap-3">
         <button
           v-for="opt in [
-            { value: 'none', label: '关闭', desc: '标准窗口' },
-            { value: 'acrylic', label: '亚克力', desc: 'Acrylic 模糊' },
-            { value: 'mica', label: '云母', desc: 'Mica 材质' },
-            { value: 'tabbed', label: 'Tabbed', desc: '标签页风格' },
+            {
+              value: 'none',
+              label: t('advanced.transparencyClose'),
+              desc: t('advanced.transparencyStandard'),
+            },
+            {
+              value: 'acrylic',
+              label: t('advanced.transparencyAcrylic'),
+              desc: t('advanced.transparencyAcrylicBlur'),
+            },
+            {
+              value: 'mica',
+              label: t('advanced.transparencyMica'),
+              desc: t('advanced.transparencyMicaAlt'),
+            },
+            { value: 'tabbed', label: 'Tabbed', desc: t('advanced.transparencyTabbed') },
           ]"
           :key="opt.value"
           :class="[
@@ -84,8 +99,12 @@
             />
           </div>
           <div>
-            <h3 class="text-sm font-semibold text-[var(--app-text)]/80">显示下载历史</h3>
-            <p class="text-[10px] text-[var(--app-text-subtle)]">在"已完成"标签页显示历史记录</p>
+            <h3 class="text-sm font-semibold text-[var(--app-text)]/80">
+              {{ t('advanced.showHistory') }}
+            </h3>
+            <p class="text-[10px] text-[var(--app-text-subtle)]">
+              {{ t('advanced.showHistoryDesc') }}
+            </p>
           </div>
         </div>
 

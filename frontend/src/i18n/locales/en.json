@@ -1,0 +1,138 @@
+{
+  "sidebar": {
+    "inProgress": "In Progress",
+    "completed": "Completed",
+    "settings": "Settings",
+    "liveSpeed": "Live Speed",
+    "aria2Online": "Aria2 Online",
+    "aria2Offline": "Aria2 Offline"
+  },
+  "titleBar": {
+    "minimizeToTray": "Minimize to Tray",
+    "minimize": "Minimize",
+    "restore": "Restore",
+    "maximize": "Maximize",
+    "close": "Close"
+  },
+  "settings": {
+    "title": "Settings",
+    "description": "Configure your download preferences",
+    "saving": "Saving...",
+    "saved": "Saved",
+    "autoSave": "Auto Save"
+  },
+  "appearance": {
+    "title": "Appearance",
+    "description": "Theme Mode & Skin Style",
+    "themeMode": "Theme Mode",
+    "system": "Follow System",
+    "light": "Light",
+    "dark": "Dark",
+    "skinStyle": "Skin Style",
+    "obsidianDesc": "Obsidian",
+    "ceramicDesc": "Ceramic",
+    "language": "Language",
+    "auto": "Auto"
+  },
+  "download": {
+    "title": "Download Directory",
+    "description": "Default save location",
+    "browse": "Browse"
+  },
+  "rpc": {
+    "title": "RPC Connection",
+    "description": "Aria2 Backend Configuration",
+    "port": "RPC Port",
+    "secret": "RPC Secret",
+    "optional": "Optional",
+    "hideSecret": "Hide Secret",
+    "showSecret": "Show Secret"
+  },
+  "performance": {
+    "title": "Performance",
+    "description": "Optimize download speed and resource usage",
+    "smartThreadMode": "Smart Thread Mode",
+    "smartThreadDesc": "Automatically adjust threads based on network",
+    "maxConnections": "Max Connections per Task",
+    "threads": "Threads",
+    "maxConcurrent": "Max Concurrent Tasks"
+  },
+  "ua": {
+    "description": "Custom User Agent",
+    "fetchPresets": "Fetch Presets",
+    "selectPreset": "Select Preset",
+    "placeholder": "Leave empty to use default"
+  },
+  "advanced": {
+    "transparencyTitle": "Window Transparency",
+    "transparencyDesc": "Windows 11 only, restart required",
+    "transparencyClose": "Off",
+    "transparencyStandard": "Standard",
+    "transparencyAcrylic": "Acrylic",
+    "transparencyAcrylicBlur": "Acrylic Blur",
+    "transparencyMica": "Mica",
+    "transparencyMicaAlt": "Mica Material",
+    "transparencyTabbed": "Tabbed",
+    "showHistory": "Show Download History",
+    "showHistoryDesc": "Show history in \"Completed\" tab"
+  },
+  "taskList": {
+    "noDownloads": "No downloads yet",
+    "pasteLink": "Paste link above to start downloading",
+    "noMatch": "No matching tasks",
+    "tryOtherKeywords": "Try other keywords",
+    "noCompleted": "No completed tasks",
+    "completedHere": "Completed tasks will appear here",
+    "unknownTask": "Unknown Task",
+    "confirmDelete": "Delete task?",
+    "deleteFile": "Also delete local file",
+    "irreversible": "This action cannot be undone",
+    "cancel": "Cancel",
+    "deleting": "Deleting...",
+    "confirm": "Delete",
+    "confirmBatchDelete": "Delete {count} tasks?",
+    "batchDeleteDesc": "This will delete all selected tasks"
+  },
+  "taskCard": {
+    "parsing": "Parsing resources...",
+    "unknownFile": "Unknown File",
+    "downloading": "Downloading",
+    "completed": "Completed",
+    "paused": "Paused",
+    "waiting": "Waiting",
+    "error": "Error",
+    "unknown": "Unknown",
+    "pause": "Pause",
+    "resume": "Resume",
+    "openFolder": "Open Folder",
+    "delete": "Delete Task",
+    "progress": "Progress",
+    "done": "Done",
+    "remaining": "Remaining",
+    "speed": "Speed",
+    "downloadComplete": "Download Complete"
+  },
+  "taskHeader": {
+    "clipboardFilled": "Link filled from clipboard",
+    "clipboardNew": "New link in clipboard",
+    "placeholder": "Paste download link (HTTP / HTTPS / FTP / SFTP)...",
+    "parsing": "Parsing...",
+    "startDownload": "Start Download",
+    "duplicateTask": "Duplicate task exists, please check download list or completed tasks",
+    "addFailed": "Add failed",
+    "addFailedRetry": "Add failed, please retry",
+    "quickAdd": "Quick Add",
+    "pasteLink": "Paste Link"
+  },
+  "taskSearch": {
+    "placeholder": "Search completed tasks...",
+    "clear": "Clear search"
+  },
+  "batch": {
+    "selected": "Selected {count} items",
+    "pauseAll": "Pause All",
+    "resumeAll": "Resume All",
+    "deleteAll": "Delete All",
+    "clearSelection": "Clear Selection (Esc)"
+  }
+}

@@ -1,5 +1,6 @@
 <script setup lang="ts">
   import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+  import { useI18n } from 'vue-i18n'
   import { RecycleScroller } from 'vue-virtual-scroller'
   import { useTaskStore } from '../../stores/task'
   import { useUIStore } from '../../stores/ui'
@@ -10,6 +11,7 @@
   import { Trash2, HardDrive, Download, CheckCircle2, AlertCircle, SearchX } from 'lucide-vue-next'
   import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 
+  const { t } = useI18n()
   const taskStore = useTaskStore()
   const uiStore = useUIStore()
 
@@ -71,8 +73,8 @@
     if (uiStore.activeTab === 'downloads') {
       return {
         icon: Download,
-        title: '暂无下载任务',
-        description: '在上方粘贴链接开始下载',
+        title: t('taskList.noDownloads'),
+        description: t('taskList.pasteLink'),
         accent: '#06ffd5',
       }
     }
@@ -80,15 +82,15 @@
     if (isSearchEmpty.value) {
       return {
         icon: SearchX,
-        title: '未找到匹配任务',
-        description: '尝试使用其他关键词搜索',
+        title: t('taskList.noMatch'),
+        description: t('taskList.tryOtherKeywords'),
         accent: '#f59e0b',
       }
     }
     return {
       icon: CheckCircle2,
-      title: '暂无完成任务',
-      description: '完成的下载任务将在此处显示',
+      title: t('taskList.noCompleted'),
+      description: t('taskList.completedHere'),
       accent: '#22ff88',
     }
   })
@@ -123,8 +125,8 @@
 
   // Extract filename for modal display
   const targetFileName = computed(() => {
-    if (!delTarget.value?.files?.[0]?.path) return '未知任务'
-    return delTarget.value.files[0].path.split(/[\\/]/).pop() || '未知任务'
+    if (!delTarget.value?.files?.[0]?.path) return t('taskList.unknownTask')
+    return delTarget.value.files[0].path.split(/[\\/]/).pop() || t('taskList.unknownTask')
   })
 
   const listContainer = ref<HTMLElement | null>(null)
@@ -379,7 +381,7 @@
 
             <!-- Title -->
             <h3 class="text-xl font-bold text-center text-[var(--modal-text)] mb-2">
-              确认删除任务？
+              {{ t('taskList.confirmDelete') }}
             </h3>
 
             <!-- Filename -->
@@ -418,9 +420,11 @@
                         : 'text-[var(--modal-text-muted)] group-hover:text-red-400/80',
                     ]"
                   >
-                    同时删除本地文件
+                    {{ t('taskList.deleteFile') }}
                   </span>
-                  <span class="text-[10px] text-[var(--modal-text-subtle)]"> 此操作不可撤销 </span>
+                  <span class="text-[10px] text-[var(--modal-text-subtle)]">
+                    {{ t('taskList.irreversible') }}
+                  </span>
                 </div>
               </div>
             </label>
@@ -431,7 +435,7 @@
                 class="flex-1 py-4 rounded-[var(--radius-squircle-md)] bg-[var(--btn-glass-bg)] border border-[var(--btn-glass-border)] text-[var(--modal-text-muted)] font-semibold text-sm transition-all duration-200 hover:bg-[var(--btn-glass-hover)] hover:text-[var(--modal-text)] active:scale-[0.98]"
                 @click="cancelDelete"
               >
-                取消
+                {{ t('taskList.cancel') }}
               </button>
               <button
                 :disabled="isDeleting"
@@ -440,9 +444,9 @@
               >
                 <span v-if="isDeleting" class="flex items-center justify-center gap-2">
                   <AlertCircle :size="16" class="animate-pulse" />
-                  删除中...
+                  {{ t('taskList.deleting') }}
                 </span>
-                <span v-else>确认删除</span>
+                <span v-else>{{ t('taskList.confirm') }}</span>
               </button>
             </div>
 
@@ -454,7 +458,7 @@
                 >
                   Esc
                 </kbd>
-                <span>取消</span>
+                <span>{{ t('taskList.cancel') }}</span>
               </div>
             </div>
           </div>
@@ -486,16 +490,12 @@
 
             <!-- Title -->
             <h3 class="text-xl font-bold text-center text-[var(--modal-text)] mb-2">
-              确认删除
-              <span class="text-[var(--neon-primary)] font-mono-data">{{
-                taskStore.selectedCount
-              }}</span>
-              个任务？
+              {{ t('taskList.confirmBatchDelete', { count: taskStore.selectedCount }) }}
             </h3>
 
             <!-- Description -->
             <p class="text-sm text-[var(--modal-text-muted)] text-center mb-8 px-4">
-              此操作将删除所有选中的任务
+              {{ t('taskList.batchDeleteDesc') }}
             </p>
 
             <!-- Delete Local File Option -->
@@ -526,9 +526,11 @@
                         : 'text-[var(--modal-text-muted)] group-hover:text-red-400/80',
                     ]"
                   >
-                    同时删除本地文件
+                    {{ t('taskList.deleteFile') }}
                   </span>
-                  <span class="text-[10px] text-[var(--modal-text-subtle)]"> 此操作不可撤销 </span>
+                  <span class="text-[10px] text-[var(--modal-text-subtle)]">
+                    {{ t('taskList.irreversible') }}
+                  </span>
                 </div>
               </div>
             </label>
@@ -539,7 +541,7 @@
                 class="flex-1 py-4 rounded-[var(--radius-squircle-md)] bg-[var(--btn-glass-bg)] border border-[var(--btn-glass-border)] text-[var(--modal-text-muted)] font-semibold text-sm transition-all duration-200 hover:bg-[var(--btn-glass-hover)] hover:text-[var(--modal-text)] active:scale-[0.98]"
                 @click="cancelBatchDelete"
               >
-                取消
+                {{ t('taskList.cancel') }}
               </button>
               <button
                 :disabled="isBatchDeleting"
@@ -548,9 +550,9 @@
               >
                 <span v-if="isBatchDeleting" class="flex items-center justify-center gap-2">
                   <AlertCircle :size="16" class="animate-pulse" />
-                  删除中...
+                  {{ t('taskList.deleting') }}
                 </span>
-                <span v-else>确认删除</span>
+                <span v-else>{{ t('taskList.confirm') }}</span>
               </button>
             </div>
 
@@ -562,7 +564,7 @@
                 >
                   Esc
                 </kbd>
-                <span>取消</span>
+                <span>{{ t('taskList.cancel') }}</span>
               </div>
             </div>
           </div>
