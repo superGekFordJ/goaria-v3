@@ -26,7 +26,6 @@
   const unsubs: Array<() => void> = []
 
   let lastClipboardCandidate = ''
-  let lastClipboardCandidateAt = 0
   let lastTasksRefreshAt = 0
 
   const isValidUrl = (text: string): boolean => {
@@ -116,7 +115,6 @@
 
         // Update history
         lastClipboardCandidate = text
-        lastClipboardCandidateAt = Date.now()
 
         // 2. Refresh tasks if stale (to ensure duplicate check is accurate)
         const now = Date.now()
@@ -203,7 +201,7 @@
   <component :is="DebugPanel" v-if="DebugPanel" />
 
   <!-- Test Simulator (dev-only; activate with #test-simulator in URL) -->
-  <component v-if="TestSimulator && showTestSimulator" :is="TestSimulator" />
+  <component :is="TestSimulator" v-if="TestSimulator && showTestSimulator" />
 
   <!-- Noise texture overlay for depth -->
   <div class="noise-overlay"></div>

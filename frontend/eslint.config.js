@@ -6,7 +6,7 @@ import eslintConfigPrettier from 'eslint-config-prettier'
 
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/wailsjs/**', '**/node_modules/**'],
+    ignores: ['**/dist/**', '**/wailsjs/**', '**/node_modules/**', '**/bindings/**'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

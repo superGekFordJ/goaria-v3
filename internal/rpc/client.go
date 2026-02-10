@@ -313,12 +313,24 @@ func sendRequest(method string, params []any) ([]byte, error) {
 }
 
 func WaitForReady(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if _, err := GetGlobalStat(); err == nil {
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
+	// Check immediately
+	if _, err := GetGlobalStat(); err == nil {
+		return nil
 	}
-	return fmt.Errorf("Aria2 无响应")
+
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	timeoutChan := time.After(timeout)
+
+	for {
+		select {
+		case <-timeoutChan:
+			return fmt.Errorf("Aria2 无响应")
+		case <-ticker.C:
+			if _, err := GetGlobalStat(); err == nil {
+				return nil
+			}
+		}
+	}
 }

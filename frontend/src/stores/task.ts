@@ -2,7 +2,6 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import {
   GetTasks,
-  GetActiveProgress,
   GetActiveTasks,
   GetStoppedTasks,
   GetTaskMetadata,
@@ -18,7 +17,7 @@ import {
   GetFullSnapshot,
   MinimizeToTray,
 } from '../../bindings/goaria-v3/app'
-import { Task, TaskProgress } from '../../bindings/goaria-v3/internal/rpc/models'
+import { Task } from '../../bindings/goaria-v3/internal/rpc/models'
 import {
   subscribeToTaskEvents,
   unsubscribeFromTaskEvents,
@@ -27,6 +26,7 @@ import {
   subscribeToTaskMoveEvent,
   unsubscribeFromTaskMoveEvent,
   type TaskMove,
+  type TaskDelta,
 } from './events'
 
 /**
@@ -156,7 +156,6 @@ const _waitingGidSet = new Set<string>()
 const _stoppedGidSet = new Set<string>()
 
 // 低频通道间隔常量
-const PROGRESS_INTERVAL = 1000 // 1s
 const LOW_FREQ_INTERVAL = 30000 // 30s
 
 // Global metadata cache - persists across list transitions
@@ -284,110 +283,16 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  const _progressGidSet = new Set<string>()
 
-  async function patchActiveProgress(): Promise<boolean> {
-    try {
-      const progresses = await GetActiveProgress()
-      _progressGidSet.clear()
-      let hasUpdate = false
-      let stateMismatch = false
-      const needsMetadata: string[] = []
 
-      for (const p of progresses as TaskProgress[]) {
-        const gid = p?.gid
-        if (!gid) continue
-        _progressGidSet.add(gid)
-
-        // 峰值速度采集已迁移到后端 TaskTracker，前端不再处理
-
-        const task = tasks.value.active.find(t => t.gid === gid)
-        if (task) {
-          if (task.completedLength !== p.completedLength) {
-            task.completedLength = p.completedLength
-            hasUpdate = true
-          }
-          if (task.downloadSpeed !== p.downloadSpeed) {
-            task.downloadSpeed = p.downloadSpeed
-            hasUpdate = true
-          }
-          // 检测缺失元数据的任务（totalLength 为空/0 表示 Aria2 尚未解析完成）
-          const total = task.totalLength
-          if (!total || total === '0') {
-            needsMetadata.push(gid)
-          }
-        } else {
-          // aria2 active 列表与本地列表不同步（例如 waiting->active 或新增任务）
-          stateMismatch = true
-        }
-      }
-
-      // aria2 tellActive 不再包含的任务：可能完成/移除/状态变更，需要全量同步一次
-      if (!stateMismatch && tasks.value.active.length > 0) {
-        for (const t of tasks.value.active) {
-          if (!_progressGidSet.has(t.gid)) {
-            stateMismatch = true
-            break
-          }
-        }
-      }
-
-      if (stateMismatch) {
-        // 优化：仅刷新 active/waiting，stopped 由后端事件驱动
-        // 不再调用 fetchStoppedTasks，减少不必要的 IPC
-        await fetchActiveTasks()
-        return true
-      }
-
-      // 按需补全缺失元数据（低频、targeted）
-      if (needsMetadata.length > 0) {
-        try {
-          const metadata = await GetTaskMetadata(needsMetadata)
-          for (const gid of needsMetadata) {
-            const newData = metadata?.[gid]
-            const task = tasks.value.active.find(t => t.gid === gid)
-            if (task && newData) {
-              // 仅补全缺失字段，保留已有进度
-              if (newData.totalLength && newData.totalLength !== '0') {
-                task.totalLength = newData.totalLength
-                hasUpdate = true
-              }
-              if (newData.files && newData.files.length > 0) {
-                task.files = newData.files
-                hasUpdate = true
-              }
-            }
-          }
-          if (import.meta.env.DEV) {
-            console.debug(`[Progress] Fetched metadata for ${needsMetadata.length} tasks`)
-          }
-        } catch (err) {
-          console.warn('[Progress] Metadata fetch failed:', err)
-        }
-      }
-
-      if (hasUpdate) {
-        tasks.value = { ...tasks.value }
-        if (import.meta.env.DEV) {
-          console.debug(`[Progress] Patched ${progresses.length} tasks`)
-        }
-      }
-
-      return hasUpdate
-    } catch (err) {
-      console.warn('[Progress] Patch failed:', err)
-      return false
-    }
-  }
-
-  async function handleTaskDelta(delta: { type: string; gid: string; payload?: any }) {
+  async function handleTaskDelta(delta: TaskDelta) {
     if (import.meta.env.DEV) {
       console.debug('[Events] Handling delta:', delta)
     }
 
     switch (delta.type) {
       case 'progress': {
-        const payload = delta.payload as any
+        const payload = delta.payload as Partial<Task> | undefined
         if (payload) {
           const task = tasks.value.active.find(t => t.gid === delta.gid)
           if (task) {

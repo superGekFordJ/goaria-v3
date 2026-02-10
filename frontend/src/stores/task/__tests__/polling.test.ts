@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { ref } from 'vue'
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest'
+import { ref, computed } from 'vue'
 import { setupPolling } from '../polling'
 import type { TaskState } from '../state'
 import type { TaskActions } from '../actions'
@@ -19,9 +19,7 @@ vi.mock('../../events', () => ({
 import {
   subscribeToTaskEvents,
   unsubscribeFromTaskEvents,
-  subscribeToTaskCompleteEvent,
   unsubscribeFromTaskCompleteEvent,
-  subscribeToTaskMoveEvent,
   unsubscribeFromTaskMoveEvent,
 } from '../../events'
 
@@ -44,13 +42,13 @@ function createMockState(): TaskState {
     isWindowVisible: ref(true),
     preferredInterval: ref(1000),
     consecutiveErrors: ref(0),
-    activeTasks: { value: [] } as any,
-    waitingTasks: { value: [] } as any,
-    stoppedTasks: { value: [] } as any,
-    allTasksCount: { value: 0 } as any,
-    selectedCount: { value: 0 } as any,
+    activeTasks: computed(() => []),
+    waitingTasks: computed(() => []),
+    stoppedTasks: computed(() => []),
+    allTasksCount: computed(() => 0),
+    selectedCount: computed(() => 0),
     isSelected: () => false,
-    getSelectedGids: { value: [] } as any,
+    getSelectedGids: computed(() => []),
     throttledUpdateTrayIcon: vi.fn(),
     immediateUpdateTrayIcon: vi.fn(),
   } as unknown as TaskState
@@ -161,9 +159,9 @@ describe('setupPolling', () => {
       polling.stopPolling()
 
       // After stopping, no more fetches should happen
-      const callCount = (actions.fetchActiveTasks as any).mock.calls.length
+      const callCount = (actions.fetchActiveTasks as Mock).mock.calls.length
       await vi.advanceTimersByTimeAsync(5000)
-      expect((actions.fetchActiveTasks as any).mock.calls.length).toBe(callCount)
+      expect((actions.fetchActiveTasks as Mock).mock.calls.length).toBe(callCount)
     })
   })
 
@@ -175,9 +173,9 @@ describe('setupPolling', () => {
       polling.startPolling(1000)
       await vi.advanceTimersByTimeAsync(0)
 
-      const callsBefore = (subscribeToTaskEvents as any).mock.calls.length
+      const callsBefore = (subscribeToTaskEvents as Mock).mock.calls.length
       polling.setWindowVisibility(true) // same as default
-      expect((subscribeToTaskEvents as any).mock.calls.length).toBe(callsBefore)
+      expect((subscribeToTaskEvents as Mock).mock.calls.length).toBe(callsBefore)
     })
 
     it('should restart polling when visibility changes to false (polling mode)', async () => {
@@ -262,14 +260,14 @@ describe('setupPolling', () => {
       polling.startPolling(1000)
       await vi.advanceTimersByTimeAsync(0) // initial tick
 
-      const callsBefore = (actions.fetchActiveTasks as any).mock.calls.length
+      const callsBefore = (actions.fetchActiveTasks as Mock).mock.calls.length
 
       // Hide then show
       polling.setWindowVisibility(false)
       polling.setWindowVisibility(true)
 
       // Should have triggered one additional fetchActiveTasks
-      expect((actions.fetchActiveTasks as any).mock.calls.length).toBe(callsBefore + 1)
+      expect((actions.fetchActiveTasks as Mock).mock.calls.length).toBe(callsBefore + 1)
     })
 
     it('should NOT start polling loop on window focus restore', async () => {
@@ -280,11 +278,11 @@ describe('setupPolling', () => {
       polling.setWindowVisibility(false)
       polling.setWindowVisibility(true)
 
-      const callsAfterRestore = (actions.fetchActiveTasks as any).mock.calls.length
+      const callsAfterRestore = (actions.fetchActiveTasks as Mock).mock.calls.length
 
       // Advance time — should NOT trigger additional fetches
       await vi.advanceTimersByTimeAsync(10000)
-      expect((actions.fetchActiveTasks as any).mock.calls.length).toBe(callsAfterRestore)
+      expect((actions.fetchActiveTasks as Mock).mock.calls.length).toBe(callsAfterRestore)
     })
 
     it('should skip fetchActiveTasks on window focus if isFetching is true', async () => {
@@ -292,7 +290,7 @@ describe('setupPolling', () => {
       polling.startPolling(1000)
       await vi.advanceTimersByTimeAsync(0) // initial tick
 
-      const callsBefore = (actions.fetchActiveTasks as any).mock.calls.length
+      const callsBefore = (actions.fetchActiveTasks as Mock).mock.calls.length
 
       // Simulate concurrent fetch in progress
       state.isFetching.value = true
@@ -300,7 +298,7 @@ describe('setupPolling', () => {
       polling.setWindowVisibility(true)
 
       // Should NOT have triggered additional fetchActiveTasks due to isFetching guard
-      expect((actions.fetchActiveTasks as any).mock.calls.length).toBe(callsBefore)
+      expect((actions.fetchActiveTasks as Mock).mock.calls.length).toBe(callsBefore)
       state.isFetching.value = false
     })
 
@@ -309,11 +307,11 @@ describe('setupPolling', () => {
       polling.startPolling(1000)
       await vi.advanceTimersByTimeAsync(0)
 
-      const callsBefore = (actions.fetchActiveTasks as any).mock.calls.length
+      const callsBefore = (actions.fetchActiveTasks as Mock).mock.calls.length
       polling.setWindowVisibility(false)
 
       // No additional fetch should happen
-      expect((actions.fetchActiveTasks as any).mock.calls.length).toBe(callsBefore)
+      expect((actions.fetchActiveTasks as Mock).mock.calls.length).toBe(callsBefore)
     })
   })
 
@@ -331,7 +329,7 @@ describe('setupPolling', () => {
       // Advance past the next interval (IDLE_INTERVAL=5000 since no active tasks)
       await vi.advanceTimersByTimeAsync(5000)
       // Should have been called again
-      expect((actions.fetchActiveTasks as any).mock.calls.length).toBeGreaterThanOrEqual(1)
+      expect((actions.fetchActiveTasks as Mock).mock.calls.length).toBeGreaterThanOrEqual(1)
     })
 
     it('should restart polling on window visibility change', async () => {
@@ -356,7 +354,7 @@ describe('setupPolling', () => {
       polling.startPolling(1000)
       await vi.advanceTimersByTimeAsync(0) // initial tick
 
-      const firstCallCount = (actions.fetchActiveTasks as any).mock.calls.length
+      const firstCallCount = (actions.fetchActiveTasks as Mock).mock.calls.length
 
       // Start again — should cancel old generation
       polling.startPolling(1000)
@@ -368,7 +366,7 @@ describe('setupPolling', () => {
 
       // fetchActiveTasks should only have been called for: first start + second start
       // Not for the old timer's subsequent ticks
-      expect((actions.fetchActiveTasks as any).mock.calls.length).toBeGreaterThanOrEqual(firstCallCount + 1)
+      expect((actions.fetchActiveTasks as Mock).mock.calls.length).toBeGreaterThanOrEqual(firstCallCount + 1)
     })
   })
 })

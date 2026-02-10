@@ -69,7 +69,7 @@ describe('setupActions — integration', () => {
     // Wire up polling callbacks
     actions.setPollingCallbacks(
       () => {}, // restart
-      (disableContext: boolean) => { stopPollingCalled = true }, // stop
+      (_disableContext: boolean) => { stopPollingCalled = true }, // stop
     )
   })
 
@@ -81,7 +81,7 @@ describe('setupActions — integration', () => {
       mockGetActiveTasks.mockResolvedValue({
         active: [mockTask('a1'), mockTask('a2')],
         waiting: [mockTask('w1')],
-      } as any)
+      } as unknown as { active: Task[]; waiting: Task[] })
 
       const result = await actions.fetchActiveTasks()
 
@@ -96,7 +96,7 @@ describe('setupActions — integration', () => {
       mockGetActiveTasks.mockResolvedValue({
         active: [mockTask('a1'), mockTask('a2')],
         waiting: [],
-      } as any)
+      } as unknown as { active: Task[]; waiting: Task[] })
 
       await actions.fetchActiveTasks()
 
@@ -109,8 +109,8 @@ describe('setupActions — integration', () => {
       mockGetActiveTasks.mockResolvedValue({
         active: [mockTask('a1', { files: [] })],
         waiting: [],
-      } as any)
-      mockGetTaskMetadata.mockResolvedValue({} as any)
+      } as unknown as { active: Task[]; waiting: Task[] })
+      mockGetTaskMetadata.mockResolvedValue({} as Record<string, Task>)
 
       await actions.fetchActiveTasks()
 
@@ -129,7 +129,7 @@ describe('setupActions — integration', () => {
 
     it('should reset consecutiveErrors on success', async () => {
       state.consecutiveErrors.value = 2
-      mockGetActiveTasks.mockResolvedValue({ active: [], waiting: [] } as any)
+      mockGetActiveTasks.mockResolvedValue({ active: [], waiting: [] } as unknown as { active: Task[]; waiting: Task[] })
 
       await actions.fetchActiveTasks()
 
@@ -145,7 +145,7 @@ describe('setupActions — integration', () => {
       mockGetStoppedTasks.mockResolvedValue([
         mockTask('s1', { status: 'complete' }),
         mockTask('s2', { status: 'error' }),
-      ] as any)
+      ] as Task[])
 
       await actions.fetchStoppedTasks()
 
@@ -157,7 +157,7 @@ describe('setupActions — integration', () => {
       mockGetStoppedTasks.mockResolvedValue([
         mockTask('overlap', { status: 'complete' }),
         mockTask('s1', { status: 'complete' }),
-      ] as any)
+      ] as Task[])
 
       await actions.fetchStoppedTasks()
 
@@ -176,7 +176,7 @@ describe('setupActions — integration', () => {
         active: [mockTask('a1')],
         waiting: [mockTask('w1')],
         stopped: [mockTask('s1', { status: 'complete' })],
-      } as any)
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
 
       await actions.fetchTasks()
 
@@ -190,7 +190,7 @@ describe('setupActions — integration', () => {
         active: [mockTask('a1', { files: [{ path: '/downloads/test.zip', uris: [] }] })],
         waiting: [],
         stopped: [],
-      } as any)
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
 
       await actions.fetchTasks()
 
@@ -203,7 +203,7 @@ describe('setupActions — integration', () => {
         active: [],
         waiting: [],
         stopped: [],
-      } as any)
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
 
       await actions.fetchTasks()
 

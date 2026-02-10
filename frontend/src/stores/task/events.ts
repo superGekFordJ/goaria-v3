@@ -4,12 +4,12 @@ import { TaskPolling } from './polling'
 import { GetTaskMetadata } from '../../../bindings/goaria-v3/app.js'
 import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 import { cacheMetadata, applyMetadataFromCache, removeMetadata } from './metadata'
-import { TaskMove } from '../events'
+import { TaskMove, TaskDelta } from '../events'
 
-export function setupEvents(state: TaskState, actions: TaskActions, polling: TaskPolling) {
+export function setupEvents(state: TaskState, actions: TaskActions, _polling: TaskPolling) {
   const { tasks, selectedGids, throttledUpdateTrayIcon, immediateUpdateTrayIcon } = state
-  const { fetchActiveTasks, fetchTasks } = actions
-  const { metadataPending, setMetadataInFlight } = actions // Shared state from actions
+  const { fetchTasks } = actions
+  const { metadataPending } = actions // Shared state from actions
 
   function moveTaskToStopped(gid: string) {
     const activeIdx = tasks.value.active.findIndex(t => t.gid === gid)
@@ -71,14 +71,14 @@ export function setupEvents(state: TaskState, actions: TaskActions, polling: Tas
     }
   }
 
-  async function handleTaskDelta(delta: { type: string; gid: string; payload?: any }) {
+  async function handleTaskDelta(delta: TaskDelta) {
     if (import.meta.env.DEV) {
       console.debug('[Events] Handling delta:', delta)
     }
 
     switch (delta.type) {
       case 'progress': {
-        const payload = delta.payload as any
+        const payload = delta.payload as Partial<Task> | undefined
         if (payload) {
           const task = tasks.value.active.find(t => t.gid === delta.gid)
           if (task) {

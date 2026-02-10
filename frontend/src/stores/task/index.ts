@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { setupState } from './state'
 import { setupActions } from './actions'
-import { setupPolling } from './polling'
+import { setupPolling, TaskPolling } from './polling'
 import { setupEvents } from './events'
 
 export const useTaskStore = defineStore('task', () => {
@@ -12,7 +12,7 @@ export const useTaskStore = defineStore('task', () => {
   const actions = setupActions(state)
 
   // 3. Setup Events (Subscribers) - Lazy resolved in polling
-  const events = setupEvents(state, actions, {} as any) // polling dependency resolved below
+  const events = setupEvents(state, actions, {} as TaskPolling) // polling dependency resolved below
 
   // 4. Setup Polling (needs actions & events)
   const polling = setupPolling(state, actions, () => events)

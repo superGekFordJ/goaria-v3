@@ -1,6 +1,6 @@
 import { Events } from '@wailsio/runtime'
 
-type TaskDelta = {
+export type TaskDelta = {
   type: 'add' | 'update' | 'remove' | 'complete' | 'error' | 'pause' | 'progress'
   gid: string
   payload?: Record<string, unknown>
@@ -24,16 +24,18 @@ export function subscribeToTaskEvents(
     return
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   deltaUnsubscribe = Events.On('task:delta', (ev: any) => {
-    const delta = (ev?.data ?? ev) as TaskDelta
+    const delta = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as TaskDelta
     if (import.meta.env.DEV) {
       console.debug('[Events] task:delta', delta)
     }
     onDelta(delta)
   })
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   batchDeltaUnsubscribe = Events.On('task:deltas', (ev: any) => {
-    const deltas = (ev?.data ?? ev) as TaskDelta[]
+    const deltas = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as TaskDelta[]
     if (import.meta.env.DEV) {
       // console.debug('[Events] task:deltas', deltas.length)
     }
@@ -48,8 +50,9 @@ export function subscribeToTaskEvents(
   })
 
   if (onConnectionChange) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     connectionUnsubscribe = Events.On('aria2:connection', (ev: any) => {
-      const data = (ev?.data ?? ev) as { connected: boolean }
+      const data = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as { connected: boolean }
       if (import.meta.env.DEV) {
         console.debug('[Events] aria2:connection', data.connected)
       }
@@ -95,8 +98,9 @@ let taskCompleteUnsubscribe: (() => void) | null = null
 export function subscribeToTaskCompleteEvent(onComplete: (gid: string) => void) {
   if (taskCompleteUnsubscribe) return
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   taskCompleteUnsubscribe = Events.On('task:complete', (ev: any) => {
-    const data = (ev?.data ?? ev) as { gid: string }
+    const data = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as { gid: string }
     if (import.meta.env.DEV) {
       console.debug('[Events] task:complete', data.gid)
     }
@@ -122,8 +126,9 @@ let taskMoveUnsubscribe: (() => void) | null = null
 export function subscribeToTaskMoveEvent(onMove: (move: TaskMove) => void) {
   if (taskMoveUnsubscribe) return
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   taskMoveUnsubscribe = Events.On('task:move', (ev: any) => {
-    const data = (ev?.data ?? ev) as TaskMove
+    const data = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as TaskMove
     if (import.meta.env.DEV) {
       console.debug('[Events] task:move', data.gid, data.from, '->', data.to)
     }

@@ -59,7 +59,7 @@
           errorMessage.value = ''
         }, 3000)
       }
-    } catch (err) {
+    } catch {
       errorMessage.value = t('taskHeader.addFailedRetry')
       setTimeout(() => {
         errorMessage.value = ''

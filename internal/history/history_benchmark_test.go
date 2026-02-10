@@ -31,6 +31,67 @@ func BenchmarkAdd_Update(b *testing.B) {
 	}
 }
 
+func BenchmarkGetAll_Scan(b *testing.B) {
+	DisableSaveForTest()
+	// Setup: fill entries with N items
+	n := 10000
+	mu.Lock()
+	entries = make([]HistoryEntry, n)
+	gidIndex = make(map[string]int)
+	for i := 0; i < n; i++ {
+		gid := fmt.Sprintf("gid-%d", i)
+		entries[i] = HistoryEntry{
+			GID:    gid,
+			Source: fmt.Sprintf("http://example.com/file-%d.zip", i),
+		}
+		gidIndex[gid] = i
+	}
+	mu.Unlock()
+
+	target := "http://example.com/non-existent.zip"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Simulate app.go logic: get all and iterate
+		all := GetAll()
+		found := false
+		for _, h := range all {
+			if h.Source == target {
+				found = true
+				break
+			}
+		}
+		if found {
+			// just to use the variable
+		}
+	}
+}
+
+func BenchmarkContainsSource(b *testing.B) {
+	DisableSaveForTest()
+	// Setup: fill entries with N items
+	n := 10000
+	mu.Lock()
+	entries = make([]HistoryEntry, n)
+	gidIndex = make(map[string]int)
+	for i := 0; i < n; i++ {
+		gid := fmt.Sprintf("gid-%d", i)
+		entries[i] = HistoryEntry{
+			GID:    gid,
+			Source: fmt.Sprintf("http://example.com/file-%d.zip", i),
+		}
+		gidIndex[gid] = i
+	}
+	mu.Unlock()
+
+	target := "http://example.com/non-existent.zip"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ContainsSource(target)
+	}
+}
+
 func BenchmarkAdd_New(b *testing.B) {
 	DisableSaveForTest()
 	// Setup: fill entries with N items

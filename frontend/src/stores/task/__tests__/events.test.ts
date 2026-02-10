@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { setupEvents } from '../events'
 import { clearMetadataCache, getMetadataCacheSize } from '../metadata'
 import type { Task } from '../../../../bindings/goaria-v3/internal/rpc/models'
@@ -50,13 +50,13 @@ function createMockState(): TaskState {
     isWindowVisible: ref(true),
     preferredInterval: ref(1000),
     consecutiveErrors: ref(0),
-    activeTasks: { value: [] } as any,
-    waitingTasks: { value: [] } as any,
-    stoppedTasks: { value: [] } as any,
-    allTasksCount: { value: 0 } as any,
-    selectedCount: { value: 0 } as any,
+    activeTasks: computed(() => []),
+    waitingTasks: computed(() => []),
+    stoppedTasks: computed(() => []),
+    allTasksCount: computed(() => 0),
+    selectedCount: computed(() => 0),
     isSelected: () => false,
-    getSelectedGids: { value: [] } as any,
+    getSelectedGids: computed(() => []),
     throttledUpdateTrayIcon: vi.fn(),
     immediateUpdateTrayIcon: vi.fn(),
   } as unknown as TaskState
@@ -144,7 +144,7 @@ describe('setupEvents', () => {
 
       mockGetTaskMetadata.mockResolvedValue({
         'gid-1': mockTask('gid-1', { files: [{ path: '/downloads/resolved.zip', uris: [] }] }),
-      } as any)
+      } as Record<string, Task>)
 
       await events.handleTaskDelta({
         type: 'progress',
@@ -165,7 +165,7 @@ describe('setupEvents', () => {
       const newTask = mockTask('gid-new', {
         files: [{ path: '/downloads/newfile.zip', uris: [] }],
       })
-      mockGetTaskMetadata.mockResolvedValue({ 'gid-new': newTask } as any)
+      mockGetTaskMetadata.mockResolvedValue({ 'gid-new': newTask } as Record<string, Task>)
 
       await events.handleTaskDelta({ type: 'add', gid: 'gid-new' })
 
@@ -178,7 +178,7 @@ describe('setupEvents', () => {
       // Always return incomplete metadata
       mockGetTaskMetadata.mockResolvedValue({
         'gid-new': mockTask('gid-new', { files: [] }),
-      } as any)
+      } as Record<string, Task>)
 
       const promise = events.handleTaskDelta({ type: 'add', gid: 'gid-new' })
 
@@ -197,7 +197,7 @@ describe('setupEvents', () => {
       state.tasks.value.active = [mockTask('gid-dup')]
       mockGetTaskMetadata.mockResolvedValue({
         'gid-dup': mockTask('gid-dup'),
-      } as any)
+      } as Record<string, Task>)
 
       await events.handleTaskDelta({ type: 'add', gid: 'gid-dup' })
 
@@ -235,8 +235,8 @@ describe('setupEvents', () => {
 
       // First call: incomplete, second call: complete
       mockGetTaskMetadata
-        .mockResolvedValueOnce({ 'gid-retry': incompleteTask } as any)
-        .mockResolvedValueOnce({ 'gid-retry': completeTask } as any)
+        .mockResolvedValueOnce({ 'gid-retry': incompleteTask } as Record<string, Task>)
+        .mockResolvedValueOnce({ 'gid-retry': completeTask } as Record<string, Task>)
 
       const promise = events.handleTaskDelta({ type: 'add', gid: 'gid-retry' })
       // Advance past first retry delay (500ms)
@@ -255,7 +255,7 @@ describe('setupEvents', () => {
         status: 'active',
         files: [{ path: '/downloads/file.zip', uris: [] }],
       })
-      mockGetTaskMetadata.mockResolvedValue({ 'gid-w': newTask } as any)
+      mockGetTaskMetadata.mockResolvedValue({ 'gid-w': newTask } as Record<string, Task>)
 
       await events.handleTaskDelta({ type: 'add', gid: 'gid-w' })
 
@@ -393,7 +393,7 @@ describe('setupEvents', () => {
         gid: 'gid-m',
         from: 'active',
         to: 'waiting',
-        task: fullTask as any,
+        task: fullTask as unknown as Record<string, unknown>,
       })
 
       expect(getMetadataCacheSize()).toBe(1)

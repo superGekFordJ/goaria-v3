@@ -14,7 +14,6 @@
   // Memory metrics
   const jsHeapSize = ref<number | null>(null)
   const domNodeCount = ref(0)
-  const pollingStatus = ref('unknown')
 
   // Update interval
   let updateTimer: ReturnType<typeof setInterval> | null = null

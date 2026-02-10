@@ -195,7 +195,7 @@ describe('useSmoothProgress', () => {
   });
 
   it('should cleanup RAF on unmount', () => {
-    const { displayDownloaded } = useSmoothProgress();
+    useSmoothProgress();
     
     // Initial RAF should be requested
     expect(requestAnimationFrameMock).toHaveBeenCalled();

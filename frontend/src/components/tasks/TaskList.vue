@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+  import { ref, computed, onMounted, onUnmounted, watch, toRaw } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { RecycleScroller } from 'vue-virtual-scroller'
   import { useTaskStore } from '../../stores/task'
@@ -36,7 +36,8 @@
     // 仅当有 waiting 任务时才合并，否则直接返回 active 避免创建新数组
     if (waiting.length === 0) return active
     if (active.length === 0) return waiting
-    return [...active, ...waiting]
+    // 性能优化：使用 toRaw 和 concat 避免 reactive proxy 迭代开销
+    return toRaw(active).concat(toRaw(waiting))
   })
 
   const displayTasks = computed(() => {

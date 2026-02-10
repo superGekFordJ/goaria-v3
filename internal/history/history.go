@@ -145,6 +145,20 @@ func GetAll() []HistoryEntry {
 	return result
 }
 
+// ContainsSource checks if a history entry with the given source exists.
+// This is more efficient than GetAll() as it avoids copying the slice.
+func ContainsSource(source string) bool {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	for _, e := range entries {
+		if e.Source == source {
+			return true
+		}
+	}
+	return false
+}
+
 // Get returns a single history entry by GID (O(1) lookup)
 func Get(gid string) (HistoryEntry, bool) {
 	mu.RLock()

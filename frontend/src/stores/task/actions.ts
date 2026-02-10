@@ -16,7 +16,7 @@ import {
   MinimizeToTray,
 } from '../../../bindings/goaria-v3/app.js'
 import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
-import { cacheMetadata, applyMetadataFromCache, removeMetadata } from './metadata'
+import { cacheMetadata, applyMetadataFromCache } from './metadata'
 import { mergeTasks, dedupByGid } from './utils'
 
 export function setupActions(state: TaskState) {
@@ -33,11 +33,9 @@ export function setupActions(state: TaskState) {
     consecutiveErrors,
     pollingContextEnabled,
     isWindowVisible,
-    preferredInterval,
     throttledUpdateTrayIcon,
     immediateUpdateTrayIcon,
     pollingEnabled,
-    isFetching,
   } = state
 
   const MAX_CONSECUTIVE_ERRORS = 3
@@ -108,20 +106,42 @@ export function setupActions(state: TaskState) {
         GetTaskMetadata(batch)
           .then((metadata: Record<string, Task>) => {
             if (!metadata) return
-            let updated = false
+            let newActive = tasks.value.active
+            let newWaiting = tasks.value.waiting
+            let activeChanged = false
+            let waitingChanged = false
+
             for (const gid of Object.keys(metadata)) {
               const meta = metadata[gid]
               if (!meta?.files?.[0]?.path) continue
               cacheMetadata(meta)
-              for (const list of [tasks.value.active, tasks.value.waiting]) {
-                const idx = list.findIndex(t => t.gid === gid)
-                if (idx !== -1) {
-                  list[idx] = { ...list[idx], ...meta }
-                  updated = true
+
+              const activeIdx = newActive.findIndex(t => t.gid === gid)
+              if (activeIdx !== -1) {
+                if (!activeChanged) {
+                  newActive = [...newActive]
+                  activeChanged = true
                 }
+                newActive[activeIdx] = { ...newActive[activeIdx], ...meta }
+              }
+
+              const waitingIdx = newWaiting.findIndex(t => t.gid === gid)
+              if (waitingIdx !== -1) {
+                if (!waitingChanged) {
+                  newWaiting = [...newWaiting]
+                  waitingChanged = true
+                }
+                newWaiting[waitingIdx] = { ...newWaiting[waitingIdx], ...meta }
               }
             }
-            if (updated) tasks.value = { ...tasks.value }
+
+            if (activeChanged || waitingChanged) {
+              tasks.value = {
+                ...tasks.value,
+                active: newActive,
+                waiting: newWaiting,
+              }
+            }
           })
           .finally(() => (metadataInFlight = false))
       }
@@ -214,23 +234,47 @@ export function setupActions(state: TaskState) {
             metadataInFlight = true
             const batch = Array.from(metadataPending)
             metadataPending.clear()
-            GetTaskMetadata(batch).then((metadata: Record<string, Task>) => {
-               if (!metadata) return
-               let updated = false
-               for (const gid of Object.keys(metadata)) {
+            GetTaskMetadata(batch)
+              .then((metadata: Record<string, Task>) => {
+                if (!metadata) return
+                let newActive = tasks.value.active
+                let newWaiting = tasks.value.waiting
+                let activeChanged = false
+                let waitingChanged = false
+
+                for (const gid of Object.keys(metadata)) {
                   const meta = metadata[gid]
                   if (!meta?.files?.[0]?.path) continue
                   cacheMetadata(meta)
-                  for (const list of [tasks.value.active, tasks.value.waiting]) {
-                     const idx = list.findIndex(t => t.gid === gid)
-                     if (idx !== -1) {
-                        list[idx] = { ...list[idx], ...meta }
-                        updated = true
-                     }
+
+                  const activeIdx = newActive.findIndex(t => t.gid === gid)
+                  if (activeIdx !== -1) {
+                    if (!activeChanged) {
+                      newActive = [...newActive]
+                      activeChanged = true
+                    }
+                    newActive[activeIdx] = { ...newActive[activeIdx], ...meta }
                   }
-               }
-               if (updated) tasks.value = { ...tasks.value }
-            }).finally(() => metadataInFlight = false)
+
+                  const waitingIdx = newWaiting.findIndex(t => t.gid === gid)
+                  if (waitingIdx !== -1) {
+                    if (!waitingChanged) {
+                      newWaiting = [...newWaiting]
+                      waitingChanged = true
+                    }
+                    newWaiting[waitingIdx] = { ...newWaiting[waitingIdx], ...meta }
+                  }
+                }
+
+                if (activeChanged || waitingChanged) {
+                  tasks.value = {
+                    ...tasks.value,
+                    active: newActive,
+                    waiting: newWaiting,
+                  }
+                }
+              })
+              .finally(() => (metadataInFlight = false))
          }
       }
       immediateUpdateTrayIcon()
