@@ -12,7 +12,7 @@ import (
 )
 
 // GitHubRepo is the owner/repo for GitHub Releases API
-const GitHubRepo = "superGekFordJ/GoAria"
+const GitHubRepo = "superGekFordJ/goaria-v3"
 
 // githubAsset represents a single asset in a GitHub Release
 type githubAsset struct {
