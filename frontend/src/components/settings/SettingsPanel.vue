@@ -3,7 +3,6 @@
   import { useI18n } from 'vue-i18n'
   import { useConfigStore } from '../../stores/config'
   import { Settings as SettingsIcon, CheckCircle, Loader2 } from 'lucide-vue-next'
-  import ThemeIcon from '../common/ThemeIcon.vue'
 
   // Sections
   import DownloadSection from './sections/DownloadSection.vue'
@@ -12,6 +11,7 @@
   import UASection from './sections/UASection.vue'
   import AppearanceSection from './sections/AppearanceSection.vue'
   import AdvancedSection from './sections/AdvancedSection.vue'
+  import UpdateSection from './sections/UpdateSection.vue'
 
   const { t } = useI18n()
   const configStore = useConfigStore()
@@ -194,23 +194,8 @@
           @change="triggerSave"
         />
 
-        <!-- About / Version Info -->
-        <div class="glass-panel-subtle rounded-[var(--radius-squircle-lg)] p-5 mt-6">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-3">
-              <ThemeIcon :size="32" />
-              <div>
-                <span class="text-sm font-bold text-[var(--app-text)]/60">GoAria</span>
-                <span class="text-[10px] text-[var(--app-text-subtle)] ml-2 font-mono-data"
-                  >Luminous Edition</span
-                >
-              </div>
-            </div>
-            <div class="text-[10px] font-mono-data text-[var(--app-text-subtle)]/50">
-              Powered by Aria2 + Wails
-            </div>
-          </div>
-        </div>
+        <!-- About / Version Info & Update -->
+        <UpdateSection />
       </div>
     </div>
   </div>

@@ -124,3 +124,24 @@ func (h *Hub) EmitTaskMove(move TaskMove) {
 		h.app.Event.Emit("task:move", move)
 	}
 }
+
+// EmitUpdateStatus 推送更新状态变化
+func (h *Hub) EmitUpdateStatus(status string, payload interface{}) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.app != nil && h.app.Event != nil {
+		h.app.Event.Emit("update:status", map[string]interface{}{
+			"status":  status,
+			"payload": payload,
+		})
+	}
+}
+
+// EmitUpdateProgress 推送更新下载进度 (0-100)
+func (h *Hub) EmitUpdateProgress(percent int) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.app != nil && h.app.Event != nil {
+		h.app.Event.Emit("update:progress", map[string]int{"percent": percent})
+	}
+}

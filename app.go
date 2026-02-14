@@ -19,6 +19,7 @@ import (
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/tray"
+	"goaria-v3/internal/update"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -29,6 +30,7 @@ type App struct {
 	window    *application.WebviewWindow
 	systray   *application.SystemTray
 	eventHub  *events.Hub
+	updater   *update.Updater
 	trayState tray.TrayState
 
 	windowMu       sync.Mutex // 保护窗口操作
@@ -797,6 +799,73 @@ func (a *App) SaveConfig(newCfg config.AppConfig) string {
 		"user-agent":                config.Current.UserAgent,
 	})
 	return "success"
+}
+
+// --- Self-Update ---
+
+// GetAppVersion returns the current application version
+func (a *App) GetAppVersion() string {
+	return version
+}
+
+// CheckForUpdate checks GitHub Releases for a newer version
+func (a *App) CheckForUpdate() update.UpdateResult {
+	if a.eventHub != nil {
+		a.eventHub.EmitUpdateStatus(update.StatusChecking, nil)
+	}
+
+	result, err := update.Check(version)
+	if err != nil {
+		errResult := update.UpdateResult{
+			Current: version,
+			Error:   err.Error(),
+		}
+		if a.eventHub != nil {
+			a.eventHub.EmitUpdateStatus(update.StatusError, err.Error())
+		}
+		return errResult
+	}
+
+	if result.Available {
+		if a.eventHub != nil {
+			a.eventHub.EmitUpdateStatus(update.StatusAvailable, result)
+		}
+	} else {
+		if a.eventHub != nil {
+			a.eventHub.EmitUpdateStatus(update.StatusIdle, nil)
+		}
+	}
+
+	return *result
+}
+
+// ApplyUpdate starts downloading and applying the update in the background
+func (a *App) ApplyUpdate(assetURL string, assetSize int64) string {
+	if a.updater == nil {
+		return "updater not initialized"
+	}
+
+	info := &update.ReleaseInfo{
+		AssetURL:  assetURL,
+		AssetSize: assetSize,
+	}
+
+	go func() {
+		if err := a.updater.Apply(info); err != nil {
+			log.Printf("[Update] Apply failed: %v", err)
+		}
+	}()
+
+	return "started"
+}
+
+// RestartApp restarts the application to apply the update
+func (a *App) RestartApp() {
+	if a.updater != nil {
+		if err := a.updater.Restart(); err != nil {
+			log.Printf("[Update] Restart failed: %v", err)
+		}
+	}
 }
 
 // SelectDirectory opens a directory picker dialog

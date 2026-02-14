@@ -134,5 +134,18 @@
     "resumeAll": "Resume All",
     "deleteAll": "Delete All",
     "clearSelection": "Clear Selection (Esc)"
+  },
+  "update": {
+    "checkUpdate": "Check for Update",
+    "checking": "Checking...",
+    "available": "v{version} Available",
+    "downloading": "Downloading...",
+    "ready": "Restart to Update",
+    "upToDate": "Up to Date",
+    "error": "Check Failed",
+    "retry": "Retry",
+    "download": "Download Update",
+    "restart": "Restart App",
+    "currentVersion": "Current Version"
   }
 }

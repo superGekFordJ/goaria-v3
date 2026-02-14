@@ -134,5 +134,18 @@
     "resumeAll": "Reanudar todo",
     "deleteAll": "Eliminar todo",
     "clearSelection": "Deseleccionar (Esc)"
+  },
+  "update": {
+    "checkUpdate": "Buscar Actualización",
+    "checking": "Comprobando...",
+    "available": "v{version} Disponible",
+    "downloading": "Descargando...",
+    "ready": "Reiniciar para Actualizar",
+    "upToDate": "Actualizado",
+    "error": "Error al Comprobar",
+    "retry": "Reintentar",
+    "download": "Descargar Actualización",
+    "restart": "Reiniciar App",
+    "currentVersion": "Versión Actual"
   }
 }

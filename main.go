@@ -11,13 +11,18 @@ import (
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/tray"
+	"goaria-v3/internal/update"
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
+
+// version is injected at build time via -ldflags "-X main.version=..."
+var version = "dev"
 
 // 命令行参数
 var (
@@ -35,6 +40,16 @@ func main() {
 
 	// Initialize config, history, speedstats, and Aria2
 	config.Load()
+
+	// Clean up old binary from previous update
+	if exe, err := os.Executable(); err == nil {
+		oldExe := exe + ".old"
+		if _, err := os.Stat(oldExe); err == nil {
+			_ = os.Remove(oldExe)
+			log.Println("[Update] Cleaned up old binary:", oldExe)
+		}
+	}
+
 	history.Load()
 	speedstats.Load()
 	rpc.Init(config.Current.RPCPort, config.Current.RPCSecret)
@@ -87,6 +102,7 @@ func main() {
 	// Store app and event hub references for window creation
 	appService.SetApp(app)
 	appService.SetEventHub(eventHub)
+	appService.updater = update.NewUpdater(eventHub)
 
 	// Create system tray (always created, even in headless mode)
 	systray := app.SystemTray.New()

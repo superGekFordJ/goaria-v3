@@ -134,5 +134,18 @@
     "resumeAll": "すべて再開",
     "deleteAll": "すべて削除",
     "clearSelection": "選択を解除 (Esc)"
+  },
+  "update": {
+    "checkUpdate": "更新を確認",
+    "checking": "確認中...",
+    "available": "v{version} が利用可能",
+    "downloading": "ダウンロード中...",
+    "ready": "再起動して更新",
+    "upToDate": "最新版です",
+    "error": "確認に失敗しました",
+    "retry": "再試行",
+    "download": "更新をダウンロード",
+    "restart": "アプリを再起動",
+    "currentVersion": "現在のバージョン"
   }
 }

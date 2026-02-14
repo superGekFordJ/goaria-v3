@@ -134,5 +134,18 @@
     "resumeAll": "批量继续",
     "deleteAll": "批量删除",
     "clearSelection": "取消选择 (Esc)"
+  },
+  "update": {
+    "checkUpdate": "检查更新",
+    "checking": "检查中...",
+    "available": "v{version} 可用",
+    "downloading": "下载中...",
+    "ready": "重启以更新",
+    "upToDate": "已是最新版本",
+    "error": "检查失败",
+    "retry": "重试",
+    "download": "下载更新",
+    "restart": "重启应用",
+    "currentVersion": "当前版本"
   }
 }

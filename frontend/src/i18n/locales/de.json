@@ -134,5 +134,18 @@
     "resumeAll": "Alle fortsetzen",
     "deleteAll": "Alle löschen",
     "clearSelection": "Auswahl aufheben (Esc)"
+  },
+  "update": {
+    "checkUpdate": "Nach Update suchen",
+    "checking": "Prüfen...",
+    "available": "v{version} verfügbar",
+    "downloading": "Herunterladen...",
+    "ready": "Neustart zum Aktualisieren",
+    "upToDate": "Aktuell",
+    "error": "Prüfung fehlgeschlagen",
+    "retry": "Erneut versuchen",
+    "download": "Update herunterladen",
+    "restart": "App neu starten",
+    "currentVersion": "Aktuelle Version"
   }
 }

@@ -134,5 +134,18 @@
     "resumeAll": "批次繼續",
     "deleteAll": "批次刪除",
     "clearSelection": "取消選取 (Esc)"
+  },
+  "update": {
+    "checkUpdate": "檢查更新",
+    "checking": "檢查中...",
+    "available": "v{version} 可用",
+    "downloading": "下載中...",
+    "ready": "重新啟動以更新",
+    "upToDate": "已是最新版本",
+    "error": "檢查失敗",
+    "retry": "重試",
+    "download": "下載更新",
+    "restart": "重新啟動應用程式",
+    "currentVersion": "目前版本"
   }
 }

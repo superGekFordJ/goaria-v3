@@ -47,7 +47,9 @@ tasks:
       - cmd: rm -f *.syso
         platforms: [linux, darwin]
     vars:
-      BUILD_FLAGS: '{{if eq .DEV "true"}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui"{{end}}'
+      APP_VERSION:
+        sh: 'powershell -NoProfile -Command "(Select-String -Path build/config.yml -Pattern ''^\s+version:'').Line.Split(''\"'')[1]"'
+      BUILD_FLAGS: '{{if eq .DEV "true"}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui -X main.version={{.APP_VERSION}}"{{end}}'
     env:
       GOOS: windows
       CGO_ENABLED: '{{.CGO_ENABLED | default "0"}}'
@@ -67,12 +69,15 @@ tasks:
       - wails3 generate syso -arch arm64 -icon build/windows/icon.ico -manifest build/windows/wails.exe.manifest -info build/windows/info.json -out wails_windows_arm64.syso
 
       # 2. 强制编译 ARM64 的 EXE
-      - go build -tags production -trimpath -ldflags="-w -s -H windowsgui" -o bin/{{.APP_NAME}}-arm64.exe
+      - go build -tags production -trimpath -ldflags="-w -s -H windowsgui -X main.version={{.APP_VERSION}}" -o bin/{{.APP_NAME}}-arm64.exe
 
       # 3. 清理 syso 文件
       - cmd: powershell Remove-item *.syso
         platforms: [windows]
 
+    vars:
+      APP_VERSION:
+        sh: 'powershell -NoProfile -Command "(Select-String -Path build/config.yml -Pattern ''^\s+version:'').Line.Split(''\"'')[1]"'
     env:
       GOOS: windows
       GOARCH: arm64
