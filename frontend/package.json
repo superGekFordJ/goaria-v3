@@ -16,34 +16,34 @@
     "detect:i18n": "eslint -c eslint-i18n.config.js . --format json --output-file eslint-report.json --no-error-on-unmatched-pattern || node ../scripts/parse_eslint_report.js"
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.1.18",
+    "@tailwindcss/vite": "^4.2.1",
     "@wailsio/runtime": "3.0.0-alpha.77",
     "lucide-vue-next": "^0.562.0",
     "pinia": "^3.0.4",
     "pinia-plugin-persistedstate": "^4.7.1",
-    "tailwindcss": "^4.1.18",
-    "vue": "^3.5.27",
+    "tailwindcss": "^4.2.1",
+    "vue": "^3.5.29",
     "vue-i18n": "^11.2.8",
     "vue-virtual-scroller": "2.0.0-beta.8"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.2",
-    "@intlify/eslint-plugin-vue-i18n": "^4.1.1",
-    "@types/node": "^24.10.9",
-    "@vitejs/plugin-vue": "^6.0.3",
+    "@eslint/js": "^9.39.3",
+    "@intlify/eslint-plugin-vue-i18n": "^4.2.0",
+    "@types/node": "^24.10.13",
+    "@vitejs/plugin-vue": "^6.0.4",
     "@vue/test-utils": "^2.4.6",
     "@vue/tsconfig": "^0.8.1",
-    "eslint": "^9.39.2",
+    "eslint": "^9.39.3",
     "eslint-config-prettier": "^10.1.8",
-    "eslint-plugin-vue": "^10.7.0",
-    "globals": "^17.1.0",
-    "happy-dom": "^20.3.9",
+    "eslint-plugin-vue": "^10.8.0",
+    "globals": "^17.3.0",
+    "happy-dom": "^20.7.0",
     "prettier": "^3.8.1",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.53.1",
+    "typescript-eslint": "^8.56.1",
     "vite": "^7.3.1",
     "vitest": "^4.0.18",
-    "vue-tsc": "^3.2.3"
+    "vue-tsc": "^3.2.5"
   },
-  "packageManager": "pnpm@10.28.2+sha512.41872f037ad22f7348e3b1debbaf7e867cfd448f2726d9cf74c08f19507c31d2c8e7a11525b983febc2df640b5438dee6023ebb1f84ed43cc2d654d2bc326264"
+  "packageManager": "pnpm@10.30.2+sha512.36cdc707e7b7940a988c9c1ecf88d084f8514b5c3f085f53a2e244c2921d3b2545bc20dd4ebe1fc245feec463bb298aecea7a63ed1f7680b877dc6379d8d0cb4"
 }
