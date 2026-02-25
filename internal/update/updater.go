@@ -57,7 +57,6 @@ func (u *Updater) Apply(info *ReleaseInfo) error {
 
 	// Emit downloading status
 	u.emitStatus(StatusDownloading, nil)
-	u.emitProgress(0)
 
 	// Download the asset
 	log.Printf("[Update] Downloading asset: %s", info.AssetURL)
@@ -79,6 +78,9 @@ func (u *Updater) Apply(info *ReleaseInfo) error {
 		totalSize = info.AssetSize
 	}
 
+	// Emit initial progress with total size (for frontend smooth algorithm)
+	u.emitProgress(0, totalSize, 0)
+
 	// Read with progress tracking
 	var buf bytes.Buffer
 	reader := &progressReader{
@@ -94,7 +96,7 @@ func (u *Updater) Apply(info *ReleaseInfo) error {
 		return fmt.Errorf("download interrupted: %w", err)
 	}
 
-	u.emitProgress(100)
+	u.emitProgress(int64(buf.Len()), totalSize, 0)
 	log.Printf("[Update] Download complete (%d bytes)", buf.Len())
 
 	// Extract .exe from zip
@@ -143,20 +145,21 @@ func (u *Updater) emitStatus(status string, payload interface{}) {
 }
 
 // emitProgress sends an update progress event to the frontend
-func (u *Updater) emitProgress(percent int) {
+func (u *Updater) emitProgress(downloaded, total, speed int64) {
 	if u.eventHub != nil {
-		u.eventHub.EmitUpdateProgress(percent)
+		u.eventHub.EmitUpdateProgress(downloaded, total, speed)
 	}
 }
 
 // progressReader wraps an io.Reader to track download progress
 type progressReader struct {
-	reader    io.Reader
-	total     int64
-	read      int64
-	updater   *Updater
-	lastEmit  time.Time
-	emitEvery time.Duration
+	reader       io.Reader
+	total        int64
+	read         int64
+	updater      *Updater
+	lastEmit     time.Time
+	lastReadMark int64
+	emitEvery    time.Duration
 }
 
 func (pr *progressReader) Read(p []byte) (int, error) {
@@ -164,11 +167,13 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	pr.read += int64(n)
 
 	if pr.total > 0 && time.Since(pr.lastEmit) >= pr.emitEvery {
-		percent := int(pr.read * 100 / pr.total)
-		if percent > 100 {
-			percent = 100
+		elapsed := time.Since(pr.lastEmit).Seconds()
+		var speed int64
+		if elapsed > 0 {
+			speed = int64(float64(pr.read-pr.lastReadMark) / elapsed)
 		}
-		pr.updater.emitProgress(percent)
+		pr.updater.emitProgress(pr.read, pr.total, speed)
+		pr.lastReadMark = pr.read
 		pr.lastEmit = time.Now()
 	}
 

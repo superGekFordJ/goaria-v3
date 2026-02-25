@@ -1,21 +1,29 @@
 <script setup lang="ts">
-  import { ref, onMounted, onUnmounted } from 'vue'
+  import { ref, computed, onMounted, onUnmounted } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { Loader2, RefreshCw, Download, RotateCcw, AlertCircle, CheckCircle } from 'lucide-vue-next'
   import ThemeIcon from '../../common/ThemeIcon.vue'
   import { GetAppVersion, CheckForUpdate, ApplyUpdate, RestartApp } from '../../../../bindings/goaria-v3/app.js'
   import { Events } from '@wailsio/runtime'
+  import { useSmoothProgress } from '../../../composables/useSmoothProgress'
 
   const { t } = useI18n()
 
   const currentVersion = ref('...')
   const status = ref<'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'>('idle')
-  const progress = ref(0)
   const latestVersion = ref('')
   const assetURL = ref('')
   const assetSize = ref(0)
   const errorMsg = ref('')
   const upToDate = ref(false)
+
+  // Smooth progress algorithm (reused from download tasks)
+  const { displayDownloaded, totalBytes, updateStats } = useSmoothProgress()
+  const progressScale = computed(() => {
+    if (totalBytes.value <= 0) return 0
+    return Math.min(Math.max(displayDownloaded.value / totalBytes.value, 0), 1)
+  })
+  const progressPercent = computed(() => Math.round(progressScale.value * 100))
 
   const unsubs: Array<() => void> = []
 
@@ -38,20 +46,26 @@
         status.value = 'downloading'
       } else if (data.status === 'ready') {
         status.value = 'ready'
-        progress.value = 100
       } else if (data.status === 'error') {
         status.value = 'error'
         errorMsg.value = typeof data.payload === 'string' ? data.payload : t('update.error')
       }
     }))
 
-    // Listen for update progress events
+    // Listen for update progress events (bytes-level data for smooth algorithm)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     unsubs.push(Events.On('update:progress', (ev: any) => {
       const data = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as {
-        percent: number
+        downloaded: number
+        total: number
+        speed: number
       }
-      progress.value = data.percent
+      updateStats({
+        downloaded: data.downloaded,
+        total: data.total,
+        speed: data.speed,
+        status: 'active',
+      })
     }))
   })
 
@@ -90,7 +104,6 @@
 
   const applyUpdate = async () => {
     status.value = 'downloading'
-    progress.value = 0
     try {
       await ApplyUpdate(assetURL.value, assetSize.value)
     } catch {
@@ -183,12 +196,12 @@
             </span>
             <div class="w-32 h-1.5 rounded-full bg-[var(--btn-glass-bg)] overflow-hidden">
               <div
-                class="h-full rounded-full bg-[var(--neon-primary)] transition-all duration-300"
-                :style="{ width: `${progress}%` }"
+                class="h-full rounded-full bg-[var(--neon-primary)]"
+                :style="{ transform: `scaleX(${progressScale})`, transformOrigin: 'left' }"
               ></div>
             </div>
             <span class="text-[10px] font-mono-data text-[var(--neon-primary)]">
-              {{ progress }}%
+              {{ progressPercent }}%
             </span>
           </div>
         </template>

@@ -137,11 +137,15 @@ func (h *Hub) EmitUpdateStatus(status string, payload interface{}) {
 	}
 }
 
-// EmitUpdateProgress 推送更新下载进度 (0-100)
-func (h *Hub) EmitUpdateProgress(percent int) {
+// EmitUpdateProgress 推送更新下载进度（字节级精度，供前端平滑算法使用）
+func (h *Hub) EmitUpdateProgress(downloaded, total, speed int64) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	if h.app != nil && h.app.Event != nil {
-		h.app.Event.Emit("update:progress", map[string]int{"percent": percent})
+		h.app.Event.Emit("update:progress", map[string]int64{
+			"downloaded": downloaded,
+			"total":      total,
+			"speed":      speed,
+		})
 	}
 }
