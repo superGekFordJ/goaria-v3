@@ -76,7 +76,7 @@
         icon: Download,
         title: t('taskList.noDownloads'),
         description: t('taskList.pasteLink'),
-        accent: '#06ffd5',
+        accent: 'var(--neon-primary)',
       }
     }
     // Search empty state
@@ -85,14 +85,14 @@
         icon: SearchX,
         title: t('taskList.noMatch'),
         description: t('taskList.tryOtherKeywords'),
-        accent: '#f59e0b',
+        accent: 'var(--status-paused)',
       }
     }
     return {
       icon: CheckCircle2,
       title: t('taskList.noCompleted'),
       description: t('taskList.completedHere'),
-      accent: '#22ff88',
+      accent: 'var(--status-active)',
     }
   })
 
@@ -288,19 +288,19 @@
             <!-- Animated Icon Container -->
             <div
               class="w-24 h-24 rounded-[var(--radius-squircle-xl)] flex items-center justify-center mb-6 relative overflow-hidden"
-              :style="{ background: `${emptyStateConfig.accent}08` }"
+              :style="{ background: `color-mix(in srgb, ${emptyStateConfig.accent} 3%, transparent)` }"
             >
               <!-- Subtle glow effect -->
               <div
                 class="absolute inset-0 opacity-30"
                 :style="{
-                  background: `radial-gradient(circle at center, ${emptyStateConfig.accent}20 0%, transparent 70%)`,
+                  background: `radial-gradient(circle at center, color-mix(in srgb, ${emptyStateConfig.accent} 12%, transparent) 0%, transparent 70%)`,
                 }"
               ></div>
               <component
                 :is="emptyStateConfig.icon"
                 :size="40"
-                :style="{ color: `${emptyStateConfig.accent}60` }"
+                :style="{ color: `color-mix(in srgb, ${emptyStateConfig.accent} 38%, transparent)` }"
                 class="animate-float"
               />
             </div>

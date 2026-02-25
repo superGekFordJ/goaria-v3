@@ -43,16 +43,16 @@
   --color-sidebar-hover: var(--sidebar-hover);
 
   /* Neon Accent Colors */
-  --color-neon-cyan: #06ffd5;
-  --color-neon-green: #22ff88;
-  --color-neon-blue: #3b82f6;
+  --color-neon-cyan: var(--neon-primary);
+  --color-neon-green: var(--neon-secondary);
+  --color-neon-blue: var(--neon-blue);
   --color-neon-purple: #a855f7;
 
   /* Status Indicators */
-  --color-status-active: #22ff88;
-  --color-status-paused: #fbbf24;
-  --color-status-complete: #06ffd5;
-  --color-status-error: #ef4444;
+  --color-status-active: var(--status-active);
+  --color-status-paused: var(--status-paused);
+  --color-status-complete: var(--status-complete);
+  --color-status-error: var(--status-error);
 
   /* Typography */
   --font-family-ui: 'Sarasa UI SC', 'Inter', 'Microsoft YaHei', system-ui, sans-serif;
@@ -108,7 +108,7 @@
   /* Input Elements */
   --input-bg: rgba(0, 0, 0, 0.3);
   --input-border: rgba(255, 255, 255, 0.08);
-  --input-focus: rgba(6, 255, 213, 0.3);
+  --input-focus: color-mix(in srgb, var(--neon-primary) 30%, transparent);
   --input-placeholder: rgba(255, 255, 255, 0.2);
 
   /* Button Colors */
@@ -129,6 +129,23 @@
   --status-paused: #fbbf24;
   --status-complete: #06ffd5;
   --status-error: #ef4444;
+
+  /* Neon Blue */
+  --neon-blue: #3b82f6;
+
+  /* Glow Colors - Derived from status colors for skin-level override */
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-paused: var(--status-paused);
+  --glow-error: var(--status-error);
+  --glow-complete: var(--neon-primary);
+
+  /* Selection & Focus */
+  --selection-bg: var(--neon-primary);
+  --focus-ring: var(--neon-primary);
+
+  /* Divider */
+  --divider-glow: var(--neon-primary);
 
   /* Overlay */
   --overlay-bg: rgba(0, 0, 0, 0.7);
@@ -178,7 +195,7 @@
     /* Input Elements */
     --input-bg: rgba(0, 0, 0, 0.04);
     --input-border: rgba(0, 0, 0, 0.1);
-    --input-focus: rgba(6, 200, 170, 0.3);
+    --input-focus: color-mix(in srgb, var(--neon-primary) 30%, transparent);
     --input-placeholder: rgba(0, 0, 0, 0.3);
 
     /* Button Colors */
@@ -196,6 +213,23 @@
     --status-paused: #f59e0b;
     --status-complete: #00b8a0;
     --status-error: #ef4444;
+
+    /* Neon Blue */
+    --neon-blue: #3b82f6;
+
+    /* Glow Colors */
+    --glow-active: var(--status-active);
+    --glow-active-secondary: var(--neon-primary);
+    --glow-paused: var(--status-paused);
+    --glow-error: var(--status-error);
+    --glow-complete: var(--neon-primary);
+
+    /* Selection & Focus */
+    --selection-bg: var(--neon-primary);
+    --focus-ring: var(--neon-primary);
+
+    /* Divider */
+    --divider-glow: var(--neon-primary);
 
     /* Overlay */
     --overlay-bg: rgba(0, 0, 0, 0.4);
@@ -256,7 +290,7 @@
   /* Input Elements - Better contrast */
   --input-bg: rgba(0, 0, 0, 0.04);
   --input-border: rgba(0, 0, 0, 0.12);
-  --input-focus: rgba(13, 148, 136, 0.3);
+  --input-focus: color-mix(in srgb, var(--neon-primary) 30%, transparent);
   --input-placeholder: rgba(0, 0, 0, 0.4);
 
   /* Button Colors */
@@ -278,6 +312,23 @@
   --status-complete: #0f766e; /* Teal-700 */
   --status-error: #b91c1c; /* Red-700 */
 
+  /* Neon Blue */
+  --neon-blue: #3b82f6;
+
+  /* Glow Colors */
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-paused: var(--status-paused);
+  --glow-error: var(--status-error);
+  --glow-complete: var(--neon-primary);
+
+  /* Selection & Focus */
+  --selection-bg: var(--neon-primary);
+  --focus-ring: var(--neon-primary);
+
+  /* Divider */
+  --divider-glow: var(--neon-primary);
+
   /* Overlay */
   --overlay-bg: rgba(0, 0, 0, 0.4);
 
@@ -296,21 +347,16 @@
   --kbd-text: rgba(0, 0, 0, 0.4);
 }
 
-/* === Skin: Obsidian (Default Dark) === */
-/* Obsidian skin uses the default dark theme values - no overrides needed */
+/* === Skin: Obsidian (Default) === */
+/* Obsidian is the default skin. All base values defined in :root / [data-theme] blocks apply. */
+/* No variable overrides needed. */
 [data-skin='obsidian'] {
-  /* Accent color intensity */
-  --skin-accent-intensity: 1;
-  --skin-glass-opacity: 0.9;
-  --skin-border-radius-scale: 1;
+  /* intentionally empty — default values */
 }
 
-/* === Skin: Ceramic (Warm Light) === */
+/* === Skin: Ceramic (Warm Teal) === */
 [data-skin='ceramic'] {
-  /* Slightly warmer accent colors */
-  --skin-accent-intensity: 0.85;
-  --skin-glass-opacity: 0.85;
-  --skin-border-radius-scale: 1.1;
+  /* intentionally empty for base — theme-specific below */
 }
 
 /* Ceramic skin in dark mode - warmer tones */
@@ -319,6 +365,15 @@
   --neon-primary: #0dd9b5;
   --neon-secondary: #1ed96e;
   --neon-glow: rgba(13, 217, 181, 0.35);
+
+  /* Status colors - warmer variants */
+  --status-active: #1ed96e;
+  --status-complete: #0dd9b5;
+
+  /* Glow overrides */
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-complete: var(--neon-primary);
 }
 
 /* Ceramic skin in light mode - softer, warmer */
@@ -326,6 +381,15 @@
   --neon-primary: #0d9488;
   --neon-secondary: #059669;
   --neon-glow: rgba(13, 148, 136, 0.12);
+
+  /* Status colors - warmer variants */
+  --status-active: #059669;
+  --status-complete: #0d9488;
+
+  /* Glow overrides */
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-complete: var(--neon-primary);
 }
 
 /* === Density Settings === */
@@ -546,9 +610,9 @@ body {
 
 .neon-glow-blue {
   box-shadow:
-    0 0 10px rgba(59, 130, 246, 0.4),
-    0 0 20px rgba(59, 130, 246, 0.2),
-    0 0 40px rgba(59, 130, 246, 0.1);
+    0 0 10px color-mix(in srgb, var(--neon-blue) 40%, transparent),
+    0 0 20px color-mix(in srgb, var(--neon-blue) 20%, transparent),
+    0 0 40px color-mix(in srgb, var(--neon-blue) 10%, transparent);
 }
 
 /* === Neon Progress Bar === */
@@ -995,29 +1059,29 @@ select {
 
 /* Status-specific hover glows - use !important to override default */
 .task-card-active::before {
-  background: linear-gradient(135deg, rgba(6, 255, 213, 0.05) 0%, transparent 50%) !important;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--glow-active-secondary) 5%, transparent) 0%, transparent 50%) !important;
 }
 
 .task-card-paused::before {
-  background: linear-gradient(135deg, rgba(251, 191, 36, 0.05) 0%, transparent 50%) !important;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--glow-paused) 5%, transparent) 0%, transparent 50%) !important;
 }
 
 .task-card-error::before {
-  background: linear-gradient(135deg, rgba(239, 68, 68, 0.05) 0%, transparent 50%) !important;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--glow-error) 5%, transparent) 0%, transparent 50%) !important;
 }
 
 .task-card-complete::before {
-  background: linear-gradient(135deg, rgba(6, 255, 213, 0.03) 0%, transparent 50%) !important;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--glow-complete) 3%, transparent) 0%, transparent 50%) !important;
 }
 
 /* === Status-Based Card Glow (Light is Status) === */
 
 /* Active/Downloading - Cyan/Emerald breathing glow */
 .task-card-active {
-  border-color: rgba(6, 255, 213, 0.2);
+  border-color: color-mix(in srgb, var(--glow-active-secondary) 20%, transparent);
   box-shadow:
-    0 0 20px rgba(6, 255, 213, 0.08),
-    0 0 40px rgba(34, 255, 136, 0.05),
+    0 0 20px color-mix(in srgb, var(--glow-active-secondary) 8%, transparent),
+    0 0 40px color-mix(in srgb, var(--glow-active) 5%, transparent),
     var(--glass-shadow);
   animation: glow-breathe-active 3s ease-in-out infinite;
 }
@@ -1026,33 +1090,33 @@ select {
   0%,
   100% {
     box-shadow:
-      0 0 15px rgba(6, 255, 213, 0.08),
-      0 0 30px rgba(34, 255, 136, 0.04),
+      0 0 15px color-mix(in srgb, var(--glow-active-secondary) 8%, transparent),
+      0 0 30px color-mix(in srgb, var(--glow-active) 4%, transparent),
       var(--glass-shadow);
   }
   50% {
     box-shadow:
-      0 0 25px rgba(6, 255, 213, 0.12),
-      0 0 50px rgba(34, 255, 136, 0.08),
+      0 0 25px color-mix(in srgb, var(--glow-active-secondary) 12%, transparent),
+      0 0 50px color-mix(in srgb, var(--glow-active) 8%, transparent),
       var(--glass-shadow);
   }
 }
 
 /* Paused - Amber dormant glow */
 .task-card-paused {
-  border-color: rgba(251, 191, 36, 0.15);
+  border-color: color-mix(in srgb, var(--glow-paused) 15%, transparent);
   box-shadow:
-    0 0 12px rgba(251, 191, 36, 0.06),
+    0 0 12px color-mix(in srgb, var(--glow-paused) 6%, transparent),
     var(--glass-shadow);
   filter: brightness(0.95);
 }
 
 /* Error - Rose warning glow */
 .task-card-error {
-  border-color: rgba(239, 68, 68, 0.2);
+  border-color: color-mix(in srgb, var(--glow-error) 20%, transparent);
   box-shadow:
-    0 0 15px rgba(239, 68, 68, 0.1),
-    0 0 30px rgba(239, 68, 68, 0.05),
+    0 0 15px color-mix(in srgb, var(--glow-error) 10%, transparent),
+    0 0 30px color-mix(in srgb, var(--glow-error) 5%, transparent),
     var(--glass-shadow);
   animation: glow-pulse-error 2s ease-in-out infinite;
 }
@@ -1061,21 +1125,21 @@ select {
   0%,
   100% {
     box-shadow:
-      0 0 12px rgba(239, 68, 68, 0.08),
-      0 0 25px rgba(239, 68, 68, 0.04),
+      0 0 12px color-mix(in srgb, var(--glow-error) 8%, transparent),
+      0 0 25px color-mix(in srgb, var(--glow-error) 4%, transparent),
       var(--glass-shadow);
   }
   50% {
     box-shadow:
-      0 0 18px rgba(239, 68, 68, 0.15),
-      0 0 35px rgba(239, 68, 68, 0.08),
+      0 0 18px color-mix(in srgb, var(--glow-error) 15%, transparent),
+      0 0 35px color-mix(in srgb, var(--glow-error) 8%, transparent),
       var(--glass-shadow);
   }
 }
 
 /* Complete - Subtle teal accent */
 .task-card-complete {
-  border-color: rgba(6, 255, 213, 0.1);
+  border-color: color-mix(in srgb, var(--glow-complete) 10%, transparent);
 }
 
 /* === Energy Flow Progress Bar === */
@@ -1106,10 +1170,10 @@ select {
 
 /* Light mode adjustments for status glows */
 [data-theme='light'] .task-card-active {
-  border-color: rgba(5, 150, 105, 0.25);
+  border-color: color-mix(in srgb, var(--glow-active-secondary) 25%, transparent);
   box-shadow:
-    0 0 20px rgba(5, 150, 105, 0.08),
-    0 0 40px rgba(13, 148, 136, 0.04),
+    0 0 20px color-mix(in srgb, var(--glow-active-secondary) 8%, transparent),
+    0 0 40px color-mix(in srgb, var(--glow-active) 4%, transparent),
     var(--glass-shadow);
   animation: glow-breathe-active-light 3s ease-in-out infinite;
 }
@@ -1118,29 +1182,29 @@ select {
   0%,
   100% {
     box-shadow:
-      0 0 15px rgba(5, 150, 105, 0.06),
-      0 0 30px rgba(13, 148, 136, 0.03),
+      0 0 15px color-mix(in srgb, var(--glow-active-secondary) 6%, transparent),
+      0 0 30px color-mix(in srgb, var(--glow-active) 3%, transparent),
       var(--glass-shadow);
   }
   50% {
     box-shadow:
-      0 0 25px rgba(5, 150, 105, 0.1),
-      0 0 50px rgba(13, 148, 136, 0.06),
+      0 0 25px color-mix(in srgb, var(--glow-active-secondary) 10%, transparent),
+      0 0 50px color-mix(in srgb, var(--glow-active) 6%, transparent),
       var(--glass-shadow);
   }
 }
 
 [data-theme='light'] .task-card-paused {
-  border-color: rgba(217, 119, 6, 0.2);
+  border-color: color-mix(in srgb, var(--glow-paused) 20%, transparent);
   box-shadow:
-    0 0 15px rgba(217, 119, 6, 0.05),
+    0 0 15px color-mix(in srgb, var(--glow-paused) 5%, transparent),
     var(--glass-shadow);
 }
 
 [data-theme='light'] .task-card-error {
-  border-color: rgba(220, 38, 38, 0.2);
+  border-color: color-mix(in srgb, var(--glow-error) 20%, transparent);
   box-shadow:
-    0 0 15px rgba(220, 38, 38, 0.08),
+    0 0 15px color-mix(in srgb, var(--glow-error) 8%, transparent),
     var(--glass-shadow);
 }
 
@@ -1175,13 +1239,13 @@ select {
 
 /* === Selection Highlight === */
 ::selection {
-  background: rgba(6, 255, 213, 0.3);
+  background: color-mix(in srgb, var(--selection-bg) 30%, transparent);
   color: inherit;
 }
 
 /* === Focus Visible (Keyboard Navigation) === */
 :focus-visible {
-  outline: 2px solid rgba(6, 255, 213, 0.5);
+  outline: 2px solid color-mix(in srgb, var(--focus-ring) 50%, transparent);
   outline-offset: 2px;
 }
 
@@ -1278,7 +1342,7 @@ select {
 /* === Divider Line === */
 .divider-glow {
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(6, 255, 213, 0.3), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--divider-glow) 30%, transparent), transparent);
 }
 
 /* === Empty State === */
