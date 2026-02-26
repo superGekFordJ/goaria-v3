@@ -116,6 +116,29 @@ func (c *TaskCache) GetMetadata(gid string) *TaskMetadata {
 	return c.metadata[gid]
 }
 
+// EnrichTasks 批量丰富任务信息（使用缓存的元数据）
+// 优化：一次性获取锁，避免循环中重复获取锁
+func (c *TaskCache) EnrichTasks(tasks []rpc.Task) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	for i := range tasks {
+		meta := c.metadata[tasks[i].GID]
+		if meta != nil {
+			tasks[i].Title = meta.Title
+			// 构造一个包含首个文件信息的 Files 列表，满足前端和 Tracker 的基本需求
+			if len(meta.Files) > 0 {
+				tasks[i].Files = []rpc.File{
+					{
+						Path: meta.Files[0],
+						Uris: []rpc.Uri{{Uri: meta.SourceURL}},
+					},
+				}
+			}
+		}
+	}
+}
+
 // HasValidMetadata 检查任务是否有有效的元数据（包含文件信息）
 // 用于检测被污染的缓存条目并触发重试
 func (c *TaskCache) HasValidMetadata(gid string) bool {

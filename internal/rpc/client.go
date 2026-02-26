@@ -7,12 +7,19 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"goaria-v3/internal/config"
 )
 
 var (
+	bufferPool = sync.Pool{
+		New: func() any {
+			return new(bytes.Buffer)
+		},
+	}
+
 	currentURL    string
 	currentSecret string
 	httpClient    = &http.Client{
@@ -249,35 +256,27 @@ func getTasks(method string, extraParams []any, keys []string) ([]Task, error) {
 		return nil, err
 	}
 
-	// 1. Try to parse successful result
 	var result struct {
 		Result []Task `json:"result"`
-	}
-	if err := json.Unmarshal(resp, &result); err == nil && result.Result != nil {
-		return result.Result, nil
-	}
-
-	// 2. If result is missing/null, check for RPC error
-	if err := checkError(resp); err != nil {
-		return nil, fmt.Errorf("%s: %w", method, err)
-	}
-
-	// 3. If no RPC error but result is still nil, it might be a structure mismatch
-	// or truly empty result (though empty array comes as [])
-	return nil, fmt.Errorf("%s: unmarshal failed or empty result", method)
-}
-
-func checkError(resp []byte) error {
-	var errResp struct {
-		Error struct {
+		Error  *struct {
 			Code    int    `json:"code"`
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(resp, &errResp); err == nil && errResp.Error.Message != "" {
-		return fmt.Errorf("rpc error %d: %s", errResp.Error.Code, errResp.Error.Message)
+
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, err
 	}
-	return nil
+
+	if result.Error != nil && result.Error.Message != "" {
+		return nil, fmt.Errorf("%s: rpc error %d: %s", method, result.Error.Code, result.Error.Message)
+	}
+
+	if result.Result == nil {
+		return nil, fmt.Errorf("%s: unmarshal failed or empty result", method)
+	}
+
+	return result.Result, nil
 }
 
 func GetGlobalStat() (string, error) {
@@ -300,9 +299,15 @@ func sendRequest(method string, params []any) ([]byte, error) {
 		finalParams = append([]any{"token:" + currentSecret}, params...)
 	}
 	payload := map[string]any{"jsonrpc": "2.0", "id": "goaria", "method": method, "params": finalParams}
-	var buf bytes.Buffer
-	json.NewEncoder(&buf).Encode(payload)
-	resp, err := httpClient.Post(currentURL, "application/json", &buf)
+
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufferPool.Put(buf)
+
+	if err := json.NewEncoder(buf).Encode(payload); err != nil {
+		return nil, err
+	}
+	resp, err := httpClient.Post(currentURL, "application/json", buf)
 	if err != nil {
 		return nil, err
 	}

@@ -148,49 +148,77 @@ func (m *Monitor) runLoop() {
 }
 
 func (m *Monitor) tick() {
-	// 获取轻量任务列表（不含文件列表）
-	active, err := rpc.TellActiveLite()
-	if err != nil {
-		log.Printf("[Monitor] TellActiveLite error: %v, retrying with full request", err)
-		// Fallback: 尝试获取完整信息（兜底策略）
-		active, err = rpc.TellActive()
-		if err != nil {
-			log.Printf("[Monitor] TellActive fallback error: %v", err)
-			return
-		}
-	}
+	var (
+		active    []rpc.Task
+		waiting   []rpc.Task
+		stopped   []rpc.Task
+		activeErr error
+		wg        sync.WaitGroup
+	)
 
-	waiting, err := rpc.TellWaitingLite(0, 100)
-	if err != nil {
-		log.Printf("[Monitor] TellWaitingLite error: %v, retrying with full request", err)
-		waiting, _ = rpc.TellWaiting(0, 100)
-	}
+	// 1. 获取 Active 任务
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var err error
+		active, err = rpc.TellActiveLite()
+		if err != nil {
+			log.Printf("[Monitor] TellActiveLite error: %v, retrying with full request", err)
+			// Fallback: 尝试获取完整信息（兜底策略）
+			active, err = rpc.TellActive()
+			if err != nil {
+				log.Printf("[Monitor] TellActive fallback error: %v", err)
+				activeErr = err
+			}
+		}
+	}()
+
+	// 2. 获取 Waiting 任务
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var err error
+		waiting, err = rpc.TellWaitingLite(0, 100)
+		if err != nil {
+			log.Printf("[Monitor] TellWaitingLite error: %v, retrying with full request", err)
+			waiting, _ = rpc.TellWaiting(0, 100)
+		}
+	}()
 
 	// 3. 获取 Stopped 任务 (仅在需要时或首次启动时)
 	m.mu.Lock()
 	fetchStopped := m.shouldFetchStopped
 	m.mu.Unlock()
 
-	var stopped []rpc.Task
 	if fetchStopped {
-		var err error
-		// 优化：使用 Lite 接口减少数据量
-		stopped, err = rpc.TellStoppedLite(0, 100)
-		if err != nil {
-			log.Printf("[Monitor] TellStoppedLite error: %v, retrying with full request", err)
-			stopped, err = rpc.TellStopped(0, 100)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var err error
+			// 优化：使用 Lite 接口减少数据量
+			stopped, err = rpc.TellStoppedLite(0, 100)
 			if err != nil {
-				log.Printf("[Monitor] TellStopped fallback error: %v", err)
-				m.mu.Lock()
-				stopped = m.lastStopped
-				m.mu.Unlock()
+				log.Printf("[Monitor] TellStoppedLite error: %v, retrying with full request", err)
+				stopped, err = rpc.TellStopped(0, 100)
+				if err != nil {
+					log.Printf("[Monitor] TellStopped fallback error: %v", err)
+					m.mu.Lock()
+					stopped = m.lastStopped
+					m.mu.Unlock()
+				}
 			}
-		}
-		// 注意：lastStopped 将在 enrichTasks 后更新，确保缓存包含完整文件信息
+			// 注意：lastStopped 将在 enrichTasks 后更新，确保缓存包含完整文件信息
+		}()
 	} else {
 		m.mu.Lock()
 		stopped = m.lastStopped
 		m.mu.Unlock()
+	}
+
+	wg.Wait()
+
+	if activeErr != nil {
+		return
 	}
 
 	// 1. 检查并补充元数据（如果缺少）
@@ -214,27 +242,9 @@ func (m *Monitor) tick() {
 	}
 
 	// 2. 使用缓存的元数据丰富轻量任务
-	enrichTasks := func(tasks []rpc.Task) {
-		for i := range tasks {
-			meta := Cache.GetMetadata(tasks[i].GID)
-			if meta != nil {
-				tasks[i].Title = meta.Title
-				// 构造一个包含首个文件信息的 Files 列表，满足前端和 Tracker 的基本需求
-				if len(meta.Files) > 0 {
-					tasks[i].Files = []rpc.File{
-						{
-							Path: meta.Files[0],
-							Uris: []rpc.Uri{{Uri: meta.SourceURL}},
-						},
-					}
-				}
-			}
-		}
-	}
-
-	enrichTasks(active)
-	enrichTasks(waiting)
-	enrichTasks(stopped)
+	Cache.EnrichTasks(active)
+	Cache.EnrichTasks(waiting)
+	Cache.EnrichTasks(stopped)
 
 	// 更新 lastStopped 缓存（包含已丰富的文件信息）
 	// 这确保下次 tick 使用缓存时，任务已有正确的文件名

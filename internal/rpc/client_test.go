@@ -74,3 +74,83 @@ func BenchmarkGetGlobalStat(b *testing.B) {
 		}
 	})
 }
+
+func TestTellActive(t *testing.T) {
+	// Mock Aria2 server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if req.Method == "aria2.tellActive" {
+			response := map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      "goaria",
+				"result": []interface{}{
+					map[string]interface{}{
+						"gid": "12345",
+						"status": "active",
+						"totalLength": "1000",
+						"completedLength": "500",
+						"downloadSpeed": "10",
+					},
+				},
+			}
+			json.NewEncoder(w).Encode(response)
+		} else {
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	port := parts[len(parts)-1]
+
+	Init(port, "secret")
+
+	tasks, err := TellActive()
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("Expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].GID != "12345" {
+		t.Errorf("Expected task GID 12345, got %s", tasks[0].GID)
+	}
+}
+
+func TestTellActiveError(t *testing.T) {
+	// Mock Aria2 server returning error
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "goaria",
+			"error": map[string]interface{}{
+				"code":    1,
+				"message": "some error",
+			},
+		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	port := parts[len(parts)-1]
+
+	Init(port, "secret")
+
+	_, err := TellActive()
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	// Error message format depends on implementation, but typically "rpc error 1: some error"
+	expected := "rpc error 1: some error"
+	if !strings.Contains(err.Error(), expected) {
+		t.Errorf("Expected error to contain %q, got %q", expected, err.Error())
+	}
+}
