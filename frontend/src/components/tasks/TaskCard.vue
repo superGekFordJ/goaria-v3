@@ -17,7 +17,17 @@
   }>()
 
   const taskStore = useTaskStore()
-  const { displayDownloaded, totalBytes, updateStats } = useSmoothProgress()
+
+  // 新后端的事件推送经过了防抖和批处理 (Monitor -> Pusher)
+  // 导致前端接收进度的频率变低，因此需要更激进的平滑参数来快速跟上实际进度，防止视觉滞后
+  const TASK_PROGRESS_CONFIG = {
+    emaAlpha: 0.1,         // 更快地追踪最新速度
+    smoothingFactor: 0.1,  // 提高显示值向目标值靠拢的速度
+    deviationDecay: 0.07,    // 强力修正预测偏差
+    maxScaleDelta: 0.009,    // 每帧允许最大 0.9% 的跳跃（解决极快下载时的卡顿感）
+  } as const
+
+  const { displayDownloaded, totalBytes, updateStats } = useSmoothProgress(TASK_PROGRESS_CONFIG)
 
   // Sync with prop updates - optimized to watch specific fields
   watch(

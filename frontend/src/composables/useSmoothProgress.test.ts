@@ -84,6 +84,20 @@ describe('useSmoothProgress', () => {
     expect(totalBytes.value).toBe(1000);
   });
 
+  it('should support custom smoothing config for more responsive progress', () => {
+    const { displayDownloaded, updateStats } = useSmoothProgress({
+      smoothingFactor: 0.5,
+      maxScaleDelta: 0.02,
+    });
+
+    updateStats({ downloaded: 100, speed: 50, total: 1000 });
+
+    // One second later: target is 150, max frame delta is 20, then apply 0.5 factor => +10
+    advanceFrame(1000);
+
+    expect(displayDownloaded.value).toBeCloseTo(110, 5);
+  });
+
   it('should smooth progress when speed > 0', async () => {
     const { displayDownloaded, updateStats } = useSmoothProgress();
 

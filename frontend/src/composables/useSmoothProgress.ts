@@ -7,7 +7,28 @@ export interface DownloadStats {
   status?: string; // Add status to detect pauses immediately
 }
 
-export function useSmoothProgress() {
+export interface SmoothProgressConfig {
+  emaAlpha: number;
+  smoothingFactor: number;
+  deviationDecay: number;
+  maxScaleDelta: number;
+  prematureCap: number;
+}
+
+const DEFAULT_CONFIG: SmoothProgressConfig = {
+  emaAlpha: 0.1,        // Speed smoothing factor (lower = smoother)
+  smoothingFactor: 0.1, // Display value tracking factor (LERP)
+  deviationDecay: 0.05, // Deviation compensation decay rate (lower = gentler correction)
+  maxScaleDelta: 0.005, // Max scale change per frame (0.5%)
+  prematureCap: 0.999,  // Cap at 99.9% if not truly finished
+};
+
+export function useSmoothProgress(configOverrides: Partial<SmoothProgressConfig> = {}) {
+  const config: SmoothProgressConfig = {
+    ...DEFAULT_CONFIG,
+    ...configOverrides,
+  };
+
   // ... (state vars remain same) ...
   // Core state
   const displayDownloaded = ref(0); // Visually displayed progress (bytes)
@@ -19,13 +40,6 @@ export function useSmoothProgress() {
   let deviation = 0;                // Accumulated prediction deviation
   let lastUpdateTimestamp = 0;      // Timestamp of last backend update
   let rafId = 0;                    // Initialize safely
-
-  // Algorithm parameters
-  const EMA_ALPHA = 0.1;            // Speed smoothing factor (lower = smoother)
-  const SMOOTHING_FACTOR = 0.1;     // Display value tracking factor (LERP)
-  const DEVIATION_DECAY = 0.05;     // Deviation compensation decay rate (lower = gentler correction)
-  const MAX_SCALE_DELTA = 0.005;    // Max scale change per frame (0.5%)
-  const PREMATURE_CAP = 0.999;      // Cap at 99.9% if not truly finished
 
   // ... (updateLoop remains same) ...
   // Render loop (60FPS)
@@ -40,11 +54,11 @@ export function useSmoothProgress() {
       const predictedBytes = realDownloaded.value + (smoothSpeed.value * elapsedSeconds);
 
       // 3. Deviation compensation
-      const deviationCompensation = deviation * DEVIATION_DECAY;
+      const deviationCompensation = deviation * config.deviationDecay;
       const targetBytes = predictedBytes - deviationCompensation;
 
       // 4. Max delta clamping
-      const maxDelta = totalBytes.value * MAX_SCALE_DELTA;
+      const maxDelta = totalBytes.value * config.maxScaleDelta;
       const rawDelta = targetBytes - displayDownloaded.value;
       
       // Enforce Monotonicity: clampedDelta cannot be negative when downloading
@@ -52,20 +66,20 @@ export function useSmoothProgress() {
       const clampedDelta = Math.max(0, Math.min(rawDelta, maxDelta));
 
       // 5. Apply smoothed delta
-      displayDownloaded.value += clampedDelta * SMOOTHING_FACTOR;
+      displayDownloaded.value += clampedDelta * config.smoothingFactor;
     } else {
       // If speed is 0, allow backward movement only if correcting a large error
       // But generally we still prefer syncing smoothly without jumping back
-      const maxDelta = totalBytes.value * MAX_SCALE_DELTA;
+      const maxDelta = totalBytes.value * config.maxScaleDelta;
       const rawDelta = realDownloaded.value - displayDownloaded.value;
       const clampedDelta = Math.max(-maxDelta, Math.min(rawDelta, maxDelta));
-      displayDownloaded.value += clampedDelta * SMOOTHING_FACTOR;
+      displayDownloaded.value += clampedDelta * config.smoothingFactor;
     }
 
     // Ensure display never exceeds 100% (or 99.9% if incomplete)
     let maxAllowed = totalBytes.value;
     if (realDownloaded.value < totalBytes.value) {
-        maxAllowed = totalBytes.value * PREMATURE_CAP;
+        maxAllowed = totalBytes.value * config.prematureCap;
     }
     displayDownloaded.value = Math.min(displayDownloaded.value, maxAllowed);
 
@@ -110,7 +124,7 @@ export function useSmoothProgress() {
       smoothSpeed.value = newSpeed;
     } else {
       // Exponential Moving Average
-      smoothSpeed.value = EMA_ALPHA * newSpeed + (1 - EMA_ALPHA) * prevSpeed;
+      smoothSpeed.value = config.emaAlpha * newSpeed + (1 - config.emaAlpha) * prevSpeed;
     }
 
     // Calculate deviation (actual progress vs expected progress)

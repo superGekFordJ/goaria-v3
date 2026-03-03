@@ -17,8 +17,13 @@
   const errorMsg = ref('')
   const upToDate = ref(false)
 
-  // Smooth progress algorithm (reused from download tasks)
-  const { displayDownloaded, totalBytes, updateStats } = useSmoothProgress()
+  // Keep smoothing for update download, but tune it to be more responsive than task cards
+  const UPDATE_PROGRESS_CONFIG = {
+    deviationDecay: 0.07,
+    maxScaleDelta: 0.008,
+  } as const
+
+  const { displayDownloaded, totalBytes, updateStats } = useSmoothProgress(UPDATE_PROGRESS_CONFIG)
   const progressScale = computed(() => {
     if (totalBytes.value <= 0) return 0
     return Math.min(Math.max(displayDownloaded.value / totalBytes.value, 0), 1)
