@@ -3,8 +3,6 @@ import { TaskActions } from './actions'
 import {
   subscribeToTaskEvents,
   unsubscribeFromTaskEvents,
-  subscribeToTaskCompleteEvent,
-  unsubscribeFromTaskCompleteEvent,
   subscribeToTaskMoveEvent,
   unsubscribeFromTaskMoveEvent,
   type TaskMove,
@@ -58,10 +56,6 @@ export function setupPolling(
       },
     )
 
-    subscribeToTaskCompleteEvent(gid => {
-        events.moveTaskToStopped(gid)
-    })
-
     subscribeToTaskMoveEvent((move: TaskMove) => {
         events.handleTaskMove(move)
     })
@@ -72,7 +66,6 @@ export function setupPolling(
   function cleanupEventSubscription() {
     if (!eventsSubscribed) return
     unsubscribeFromTaskEvents()
-    unsubscribeFromTaskCompleteEvent()
     unsubscribeFromTaskMoveEvent()
     eventsSubscribed = false
   }

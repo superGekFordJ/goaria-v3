@@ -10,8 +10,6 @@ import type { Task } from '../../../../bindings/goaria-v3/internal/rpc/models'
 vi.mock('../../events', () => ({
   subscribeToTaskEvents: vi.fn(),
   unsubscribeFromTaskEvents: vi.fn(),
-  subscribeToTaskCompleteEvent: vi.fn(),
-  unsubscribeFromTaskCompleteEvent: vi.fn(),
   subscribeToTaskMoveEvent: vi.fn(),
   unsubscribeFromTaskMoveEvent: vi.fn(),
 }))
@@ -19,7 +17,6 @@ vi.mock('../../events', () => ({
 import {
   subscribeToTaskEvents,
   unsubscribeFromTaskEvents,
-  unsubscribeFromTaskCompleteEvent,
   unsubscribeFromTaskMoveEvent,
 } from '../../events'
 
@@ -148,7 +145,6 @@ describe('setupPolling', () => {
       polling.stopPolling(true)
 
       expect(unsubscribeFromTaskEvents).toHaveBeenCalled()
-      expect(unsubscribeFromTaskCompleteEvent).toHaveBeenCalled()
       expect(unsubscribeFromTaskMoveEvent).toHaveBeenCalled()
     })
 

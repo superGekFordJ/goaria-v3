@@ -161,92 +161,55 @@ describe('setupEvents', () => {
   // handleTaskDelta — add event
   // =====================================================
   describe('handleTaskDelta — add', () => {
-    it('should add a new task to active when GetTaskMetadata returns complete data', async () => {
+    it('should add a new task to active when payload contains complete data', async () => {
       const newTask = mockTask('gid-new', {
         files: [{ path: '/downloads/newfile.zip', uris: [] }],
       })
-      mockGetTaskMetadata.mockResolvedValue({ 'gid-new': newTask } as Record<string, Task>)
 
-      await events.handleTaskDelta({ type: 'add', gid: 'gid-new' })
+      await events.handleTaskDelta({ type: 'add', gid: 'gid-new', payload: newTask as unknown as Record<string, unknown> })
 
       expect(state.tasks.value.active.length).toBe(1)
       expect(state.tasks.value.active[0].gid).toBe('gid-new')
     })
 
-    it('should fallback to fetchTasks when metadata is always incomplete (after retries)', async () => {
-      vi.useFakeTimers()
-      // Always return incomplete metadata
-      mockGetTaskMetadata.mockResolvedValue({
-        'gid-new': mockTask('gid-new', { files: [] }),
-      } as Record<string, Task>)
+    it('should fallback to fetchTasks when payload is empty', async () => {
+      await events.handleTaskDelta({ type: 'add', gid: 'gid-new' })
 
-      const promise = events.handleTaskDelta({ type: 'add', gid: 'gid-new' })
-
-      // Advance through all retry delays: 500 + 1000 + 2000
-      await vi.advanceTimersByTimeAsync(500)
-      await vi.advanceTimersByTimeAsync(1000)
-      await vi.advanceTimersByTimeAsync(2000)
-      await promise
-
-      // After MAX_RETRIES with incomplete data, should fallback to fetchTasks
       expect(actions.fetchTasks).toHaveBeenCalled()
-      vi.useRealTimers()
+      expect(state.tasks.value.active.length).toBe(0)
+    })
+
+    it('should fallback to fetchTasks when payload has no file path', async () => {
+      const incompleteTask = mockTask('gid-new', { files: [] })
+
+      await events.handleTaskDelta({ type: 'add', gid: 'gid-new', payload: incompleteTask as unknown as Record<string, unknown> })
+
+      expect(actions.fetchTasks).toHaveBeenCalled()
     })
 
     it('should not duplicate task if GID already exists in active', async () => {
       state.tasks.value.active = [mockTask('gid-dup')]
-      mockGetTaskMetadata.mockResolvedValue({
-        'gid-dup': mockTask('gid-dup'),
-      } as Record<string, Task>)
 
-      await events.handleTaskDelta({ type: 'add', gid: 'gid-dup' })
-
-      expect(state.tasks.value.active.length).toBe(1)
-    })
-
-    it('should fallback to fetchTasks on GetTaskMetadata error after retries with delays', async () => {
-      vi.useFakeTimers()
-      mockGetTaskMetadata.mockRejectedValue(new Error('RPC error'))
-
-      const promise = events.handleTaskDelta({ type: 'add', gid: 'gid-fail' })
-
-      // Error retries should use delays (500, 1000, 2000ms)
-      // Before advancing timers, fetchTasks should NOT have been called yet
-      await vi.advanceTimersByTimeAsync(0)
-      expect(actions.fetchTasks).not.toHaveBeenCalled()
-
-      await vi.advanceTimersByTimeAsync(500)  // first retry delay
-      await vi.advanceTimersByTimeAsync(1000) // second retry delay
-      await vi.advanceTimersByTimeAsync(2000) // third retry delay
-      await promise
-
-      // After all retries exhausted, should fallback
-      expect(actions.fetchTasks).toHaveBeenCalled()
-      expect(mockGetTaskMetadata).toHaveBeenCalledTimes(4) // initial + 3 retries
-      vi.useRealTimers()
-    })
-
-    it('should succeed on retry when metadata becomes complete', async () => {
-      vi.useFakeTimers()
-      const incompleteTask = mockTask('gid-retry', { files: [] })
-      const completeTask = mockTask('gid-retry', {
-        files: [{ path: '/downloads/resolved.zip', uris: [] }],
+      await events.handleTaskDelta({
+        type: 'add',
+        gid: 'gid-dup',
+        payload: mockTask('gid-dup') as unknown as Record<string, unknown>,
       })
 
-      // First call: incomplete, second call: complete
-      mockGetTaskMetadata
-        .mockResolvedValueOnce({ 'gid-retry': incompleteTask } as Record<string, Task>)
-        .mockResolvedValueOnce({ 'gid-retry': completeTask } as Record<string, Task>)
-
-      const promise = events.handleTaskDelta({ type: 'add', gid: 'gid-retry' })
-      // Advance past first retry delay (500ms)
-      await vi.advanceTimersByTimeAsync(500)
-      await promise
-
       expect(state.tasks.value.active.length).toBe(1)
-      expect(state.tasks.value.active[0].gid).toBe('gid-retry')
-      expect(actions.fetchTasks).not.toHaveBeenCalled()
-      vi.useRealTimers()
+    })
+
+    it('should not add task if GID already exists in stopped', async () => {
+      state.tasks.value.stopped = [mockTask('gid-done', { status: 'complete' })]
+
+      await events.handleTaskDelta({
+        type: 'add',
+        gid: 'gid-done',
+        payload: mockTask('gid-done') as unknown as Record<string, unknown>,
+      })
+
+      expect(state.tasks.value.active.length).toBe(0)
+      expect(state.tasks.value.stopped.length).toBe(1)
     })
 
     it('should remove task from waiting when adding to active', async () => {
@@ -255,9 +218,8 @@ describe('setupEvents', () => {
         status: 'active',
         files: [{ path: '/downloads/file.zip', uris: [] }],
       })
-      mockGetTaskMetadata.mockResolvedValue({ 'gid-w': newTask } as Record<string, Task>)
 
-      await events.handleTaskDelta({ type: 'add', gid: 'gid-w' })
+      await events.handleTaskDelta({ type: 'add', gid: 'gid-w', payload: newTask as unknown as Record<string, unknown> })
 
       expect(state.tasks.value.active.length).toBe(1)
       expect(state.tasks.value.waiting.length).toBe(0)
@@ -300,9 +262,69 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active.length).toBe(0)
       expect(state.tasks.value.stopped.length).toBe(1)
       expect(state.tasks.value.stopped[0].status).toBe('complete')
-      // This assertion will test if the frontend correctly applied the payload before moving it to stopped
       expect(state.tasks.value.stopped[0].completedLength).toBe('100')
       expect(state.tasks.value.stopped[0].downloadSpeed).toBe('0')
+    })
+
+    it('should handle small-file race: task not in any list, use payload to build stopped task', async () => {
+      // Task not in active, waiting, or stopped
+      const fullTask = mockTask('gid-small', {
+        status: 'complete',
+        completedLength: '512',
+        totalLength: '512',
+        downloadSpeed: '0',
+        files: [{ path: '/downloads/tiny.txt', uris: [] }],
+      })
+
+      await events.handleTaskDelta({
+        type: 'complete',
+        gid: 'gid-small',
+        payload: fullTask as unknown as Record<string, unknown>,
+      })
+
+      expect(state.tasks.value.stopped.length).toBe(1)
+      expect(state.tasks.value.stopped[0].gid).toBe('gid-small')
+      expect(state.tasks.value.stopped[0].status).toBe('complete')
+      expect(state.tasks.value.stopped[0].completedLength).toBe('512')
+    })
+
+    it('should fallback to fetchTasks when complete payload is empty and task not in any list', async () => {
+      await events.handleTaskDelta({ type: 'complete', gid: 'gid-unknown' })
+
+      expect(actions.fetchTasks).toHaveBeenCalled()
+    })
+
+    it('should fallback to fetchTasks when complete payload has no file path and task not in any list', async () => {
+      const incompleteTask = mockTask('gid-nofile', { files: [] })
+
+      await events.handleTaskDelta({
+        type: 'complete',
+        gid: 'gid-nofile',
+        payload: incompleteTask as unknown as Record<string, unknown>,
+      })
+
+      expect(actions.fetchTasks).toHaveBeenCalled()
+    })
+
+    it('should apply payload updates to already-stopped task (Pusher dedup supplement)', async () => {
+      state.tasks.value.stopped = [mockTask('gid-s', {
+        status: 'complete',
+        completedLength: '0',
+        totalLength: '0',
+      })]
+
+      await events.handleTaskDelta({
+        type: 'complete',
+        gid: 'gid-s',
+        payload: mockTask('gid-s', {
+          completedLength: '1024',
+          totalLength: '1024',
+          downloadSpeed: '0',
+        }) as unknown as Record<string, unknown>,
+      })
+
+      expect(state.tasks.value.stopped[0].completedLength).toBe('1024')
+      expect(state.tasks.value.stopped[0].totalLength).toBe('1024')
     })
 
   })
@@ -319,6 +341,75 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active.length).toBe(0)
       expect(state.tasks.value.stopped.length).toBe(1)
       expect(state.tasks.value.stopped[0].status).toBe('error')
+    })
+
+    it('should apply payload error info to existing task before moving to stopped', async () => {
+      state.tasks.value.active = [mockTask('gid-e2', { status: 'active', errorCode: '', errorMessage: '' })]
+
+      await events.handleTaskDelta({
+        type: 'error',
+        gid: 'gid-e2',
+        payload: mockTask('gid-e2', {
+          errorCode: '1',
+          errorMessage: 'Network error',
+          completedLength: '0',
+          totalLength: '1000',
+        }) as unknown as Record<string, unknown>,
+      })
+
+      expect(state.tasks.value.stopped.length).toBe(1)
+      expect(state.tasks.value.stopped[0].status).toBe('error')
+      expect(state.tasks.value.stopped[0].errorCode).toBe('1')
+      expect(state.tasks.value.stopped[0].errorMessage).toBe('Network error')
+    })
+
+    it('should handle small-file race: task not in any list, use payload to build stopped task', async () => {
+      const fullTask = mockTask('gid-err-small', {
+        status: 'error',
+        errorCode: '3',
+        errorMessage: 'Resource not found',
+        files: [{ path: '/downloads/missing.txt', uris: [] }],
+      })
+
+      await events.handleTaskDelta({
+        type: 'error',
+        gid: 'gid-err-small',
+        payload: fullTask as unknown as Record<string, unknown>,
+      })
+
+      expect(state.tasks.value.stopped.length).toBe(1)
+      expect(state.tasks.value.stopped[0].gid).toBe('gid-err-small')
+      expect(state.tasks.value.stopped[0].status).toBe('error')
+    })
+
+    it('should fallback to fetchTasks when error payload is empty and task not in any list', async () => {
+      await events.handleTaskDelta({ type: 'error', gid: 'gid-err-unknown' })
+
+      expect(actions.fetchTasks).toHaveBeenCalled()
+    })
+
+    it('should fallback to fetchTasks when error payload has no file path and task not in any list', async () => {
+      const incompleteTask = mockTask('gid-err-nofile', { files: [] })
+
+      await events.handleTaskDelta({
+        type: 'error',
+        gid: 'gid-err-nofile',
+        payload: incompleteTask as unknown as Record<string, unknown>,
+      })
+
+      expect(actions.fetchTasks).toHaveBeenCalled()
+    })
+
+    it('should not duplicate task if already in stopped', async () => {
+      state.tasks.value.stopped = [mockTask('gid-err-dup', { status: 'error' })]
+
+      await events.handleTaskDelta({
+        type: 'error',
+        gid: 'gid-err-dup',
+        payload: mockTask('gid-err-dup', { status: 'error' }) as unknown as Record<string, unknown>,
+      })
+
+      expect(state.tasks.value.stopped.length).toBe(1)
     })
   })
 

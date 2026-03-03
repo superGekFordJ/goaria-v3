@@ -54,6 +54,17 @@ func (h *Hub) EmitTaskDelta(delta TaskDelta) {
 	}
 }
 
+// NotifyInternal 仅通知内部监听器，不向前端发射事件
+// 用于 WebSocket Sensor 模式：触发 Monitor 的 forceTickChan，但不直推前端
+func (h *Hub) NotifyInternal(delta TaskDelta) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for _, fn := range h.deltaListeners {
+		fn(delta)
+	}
+}
+
 func (h *Hub) EmitFullSync() {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -95,15 +106,6 @@ func (h *Hub) EmitWindowFocus() {
 	defer h.mu.RUnlock()
 	if h.app != nil && h.app.Event != nil {
 		h.app.Event.Emit("common:WindowFocus")
-	}
-}
-
-// EmitTaskComplete 推送任务完成事件
-func (h *Hub) EmitTaskComplete(gid string) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	if h.app != nil && h.app.Event != nil {
-		h.app.Event.Emit("task:complete", map[string]string{"gid": gid})
 	}
 }
 

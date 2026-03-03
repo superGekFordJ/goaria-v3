@@ -135,51 +135,31 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       }
 
       case 'add': {
-        const MAX_RETRIES = 3
-        const RETRY_DELAYS = [500, 1000, 2000]
+        const payload = delta.payload as Task | undefined
 
-        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-          try {
-            const metadata = await GetTaskMetadata([delta.gid])
-            const newTask = metadata?.[delta.gid]
-
-            if (newTask && newTask.files?.length > 0 && newTask.files[0]?.path) {
-              cacheMetadata(newTask)
-              const existsInActive = tasks.value.active.some(t => t.gid === delta.gid)
-              const existsInStopped = tasks.value.stopped.some(t => t.gid === delta.gid)
-              if (!existsInActive && !existsInStopped) {
-                const taskToAdd = applyMetadataFromCache(newTask)
-                tasks.value = {
-                  ...tasks.value,
-                  active: [taskToAdd, ...tasks.value.active],
-                  waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
-                }
-              }
-              break
-            }
-
-            if (attempt < MAX_RETRIES) {
-              if (import.meta.env.DEV) {
-                console.debug(`[Events] add: metadata incomplete for ${delta.gid}, retry ${attempt + 1}/${MAX_RETRIES}`)
-              }
-              await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]))
-            } else {
-              await fetchTasks()
-            }
-          } catch (e) {
-            if (attempt >= MAX_RETRIES) {
-              console.error('[Events] Failed to handle add event after retries, falling back:', e)
-              await fetchTasks()
-            } else {
-              await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]))
+        if (payload?.files?.[0]?.path) {
+          cacheMetadata(payload)
+          const existsInActive = tasks.value.active.some(t => t.gid === delta.gid)
+          const existsInStopped = tasks.value.stopped.some(t => t.gid === delta.gid)
+          if (!existsInActive && !existsInStopped) {
+            const taskToAdd = applyMetadataFromCache(payload)
+            tasks.value = {
+              ...tasks.value,
+              active: [taskToAdd, ...tasks.value.active],
+              waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
             }
           }
+        } else {
+          if (import.meta.env.DEV) {
+            console.debug(`[Events] add: payload incomplete for ${delta.gid}, falling back to fetchTasks`)
+          }
+          await fetchTasks()
         }
         break
       }
 
       case 'complete': {
-        const payload = delta.payload as Partial<Task> | undefined
+        const payload = delta.payload as Task | undefined
 
         // 对于已经进入 stopped 的任务，应用随后到来的带精确 payload 的 Pusher 推送
         const stoppedTask = tasks.value.stopped.find(t => t.gid === delta.gid)
@@ -214,37 +194,21 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
           }
           moveTaskToStopped(delta.gid)
         } else if (!tasks.value.stopped.some(t => t.gid === delta.gid)) {
-          // 竞态修复：小文件 complete 事件在 add 完成之前抵达
-          // 任务不在任何列表中 → 直接获取数据并放入 stopped
-          try {
-            const metadata = await GetTaskMetadata([delta.gid])
-            const taskData = metadata?.[delta.gid]
-            if (taskData) {
-              cacheMetadata(taskData)
-              const taskToAdd = applyMetadataFromCache(taskData)
-              // 用 payload 中的精确数据覆盖可能的 0B
-              if (payload) {
-                if (payload.completedLength !== undefined) taskToAdd.completedLength = payload.completedLength
-                if (payload.totalLength !== undefined) taskToAdd.totalLength = payload.totalLength
-                if (payload.downloadSpeed !== undefined) taskToAdd.downloadSpeed = payload.downloadSpeed
-              }
-              taskToAdd.status = 'complete'
-              // 确保不重复添加（add handler 可能在此期间完成了）
-              const nowInActive = tasks.value.active.some(t => t.gid === delta.gid)
-              const nowInStopped = tasks.value.stopped.some(t => t.gid === delta.gid)
-              if (nowInActive) {
-                // add 已经完成，走正常移动路径
-                moveTaskToStopped(delta.gid)
-              } else if (!nowInStopped) {
-                tasks.value = {
-                  active: tasks.value.active.filter(t => t.gid !== delta.gid),
-                  waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
-                  stopped: [taskToAdd, ...tasks.value.stopped],
-                }
-              }
+          // 小文件竞态路径：任务不在任何列表中，直接从 payload 构建 stopped 任务
+          if (payload?.files?.[0]?.path) {
+            cacheMetadata(payload)
+            const taskToAdd = applyMetadataFromCache(payload)
+            taskToAdd.status = 'complete'
+            tasks.value = {
+              active: tasks.value.active.filter(t => t.gid !== delta.gid),
+              waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
+              stopped: [taskToAdd, ...tasks.value.stopped],
             }
-          } catch (e) {
-            console.warn('[Events] Failed to fetch metadata for completing task:', delta.gid, e)
+          } else {
+            if (import.meta.env.DEV) {
+              console.debug(`[Events] complete: payload incomplete for ${delta.gid}, falling back to fetchTasks`)
+            }
+            await fetchTasks()
           }
         }
         // 如果已经在 stopped 中，忽略重复的 complete 事件
@@ -257,8 +221,40 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       }
 
       case 'error': {
-        patchTaskStatus(delta.gid, 'error')
-        moveTaskToStopped(delta.gid)
+        const errorPayload = delta.payload as Task | undefined
+
+        // 尝试在 active/waiting 中找到任务
+        const errorTask = tasks.value.active.find(t => t.gid === delta.gid) ??
+                          tasks.value.waiting.find(t => t.gid === delta.gid)
+
+        if (errorTask) {
+          // 正常路径：任务在列表中，应用 payload 后移到 stopped
+          if (errorPayload) {
+            if (errorPayload.completedLength !== undefined) errorTask.completedLength = errorPayload.completedLength
+            if (errorPayload.totalLength !== undefined) errorTask.totalLength = errorPayload.totalLength
+            if (errorPayload.errorCode !== undefined) errorTask.errorCode = errorPayload.errorCode
+            if (errorPayload.errorMessage !== undefined) errorTask.errorMessage = errorPayload.errorMessage
+          }
+          patchTaskStatus(delta.gid, 'error')
+          moveTaskToStopped(delta.gid)
+        } else if (!tasks.value.stopped.some(t => t.gid === delta.gid)) {
+          // 小文件竞态路径：任务不在任何列表中，直接从 payload 构建 stopped 任务
+          if (errorPayload?.files?.[0]?.path) {
+            cacheMetadata(errorPayload)
+            const taskToAdd = applyMetadataFromCache(errorPayload)
+            taskToAdd.status = 'error'
+            tasks.value = {
+              active: tasks.value.active.filter(t => t.gid !== delta.gid),
+              waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
+              stopped: [taskToAdd, ...tasks.value.stopped],
+            }
+          } else {
+            if (import.meta.env.DEV) {
+              console.debug(`[Events] error: payload incomplete for ${delta.gid}, falling back to fetchTasks`)
+            }
+            await fetchTasks()
+          }
+        }
         break
       }
 

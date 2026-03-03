@@ -92,27 +92,6 @@ export function unsubscribeFromWindowEvents() {
   windowCreatedUnsubscribe = null
 }
 
-// Task complete event subscription (backend-driven completion detection)
-let taskCompleteUnsubscribe: (() => void) | null = null
-
-export function subscribeToTaskCompleteEvent(onComplete: (gid: string) => void) {
-  if (taskCompleteUnsubscribe) return
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  taskCompleteUnsubscribe = Events.On('task:complete', (ev: any) => {
-    const data = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as { gid: string }
-    if (import.meta.env.DEV) {
-      console.debug('[Events] task:complete', data.gid)
-    }
-    onComplete(data.gid)
-  })
-}
-
-export function unsubscribeFromTaskCompleteEvent() {
-  taskCompleteUnsubscribe?.()
-  taskCompleteUnsubscribe = null
-}
-
 // Task move event subscription (cross-list metadata preservation)
 export type TaskMove = {
   gid: string

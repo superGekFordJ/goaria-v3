@@ -150,6 +150,6 @@ func (n *Notifier) handleNotification(method, gid string) {
 		return
 	}
 
-	log.Printf("[WS] Event: %s -> %s (gid: %s)", method, deltaType, gid)
-	n.hub.EmitTaskDelta(events.TaskDelta{Type: deltaType, GID: gid})
+	log.Printf("[WS] Sensor: %s -> %s (gid: %s)", method, deltaType, gid)
+	n.hub.NotifyInternal(events.TaskDelta{Type: deltaType, GID: gid})
 }

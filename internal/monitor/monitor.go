@@ -261,6 +261,36 @@ func (m *Monitor) tick() {
 		m.detectAndEmitTaskMoves(active, waiting)
 	}
 
+	// 检测新增任务并通过 Pusher 推送 add 事件（必须在 updatePrevGids 之前执行）
+	if State.HasWindow() {
+		hasNewTasks := false
+		for _, task := range active {
+			if !m.prevActiveGids[task.GID] && !m.prevWaitingGids[task.GID] {
+				m.pusher.Queue(events.TaskDelta{
+					Type:    "add",
+					GID:     task.GID,
+					Payload: task,
+				})
+				hasNewTasks = true
+				log.Printf("[Monitor] New task detected (active): %s", task.GID)
+			}
+		}
+		for _, task := range waiting {
+			if !m.prevActiveGids[task.GID] && !m.prevWaitingGids[task.GID] {
+				m.pusher.Queue(events.TaskDelta{
+					Type:    "add",
+					GID:     task.GID,
+					Payload: task,
+				})
+				hasNewTasks = true
+				log.Printf("[Monitor] New task detected (waiting): %s", task.GID)
+			}
+		}
+		if hasNewTasks {
+			m.pusher.FlushNow()
+		}
+	}
+
 	// 更新前一次的 GID 集合（用于下次检测）
 	m.updatePrevGids(active, waiting)
 
@@ -306,17 +336,17 @@ func (m *Monitor) tick() {
 			})
 		}
 
-		// 2. 推送任务完成事件（通过 pusher 批量推送）
+		// 2. 推送任务完成事件（通过 pusher 批量推送，携带完整 rpc.Task payload）
 		for _, task := range completedTasks {
 			// 关键修复：快速完成的小文件，通过 Tracker 拿到的 TotalLength 可能仍为 0
 			// 必须在压入 Pusher 前利用 TellStatus 获取真正的数据负载，防止 0B 覆盖前端
 			if (task.Status == "complete" || task.Status == "error") && (task.TotalLength == 0 || task.CompletedLength == 0) {
-				if fullTask, err := rpc.TellStatus(task.GID); err == nil && fullTask != nil {
+				if statusTask, err := rpc.TellStatus(task.GID); err == nil && statusTask != nil {
 					if task.TotalLength == 0 {
-						task.TotalLength = parseInt64(fullTask.TotalLength)
+						task.TotalLength = parseInt64(statusTask.TotalLength)
 					}
 					if task.CompletedLength == 0 {
-						task.CompletedLength = parseInt64(fullTask.CompletedLength)
+						task.CompletedLength = parseInt64(statusTask.CompletedLength)
 					}
 				}
 			}
@@ -325,18 +355,27 @@ func (m *Monitor) tick() {
 			if task.Status == "error" {
 				eventType = "error"
 			}
-			m.pusher.Queue(events.TaskDelta{
-				Type: eventType,
-				GID:  task.GID,
-				Payload: map[string]interface{}{
-					"completedLength": fmt.Sprintf("%d", task.CompletedLength),
-					"totalLength":     fmt.Sprintf("%d", task.TotalLength),
-					"downloadSpeed":   "0", // 强制置零表示已停止
-				},
-			})
 
-			// 异步处理：补充信息并写入历史记录，触发完成通知
-			go m.handleTaskComplete(task)
+			fullTask := rpc.Task{
+				GID:             task.GID,
+				Status:          task.Status,
+				TotalLength:     fmt.Sprintf("%d", task.TotalLength),
+				CompletedLength: fmt.Sprintf("%d", task.CompletedLength),
+				DownloadSpeed:   "0",
+				Dir:             task.Dir,
+			}
+			if task.FilePath != "" {
+				fullTask.Files = []rpc.File{{
+					Path: task.FilePath,
+					Uris: []rpc.Uri{{Uri: task.SourceURL}},
+				}}
+			}
+
+			m.pusher.Queue(events.TaskDelta{
+				Type:    eventType,
+				GID:     task.GID,
+				Payload: fullTask,
+			})
 		}
 	}
 }
