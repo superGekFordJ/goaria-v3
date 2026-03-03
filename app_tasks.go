@@ -117,10 +117,16 @@ func (a *App) GetStoppedTasks() []rpc.Task {
 	gidSet := make(map[string]bool)
 	for i := range stopped {
 		gidSet[stopped[i].GID] = true
-		// 如果缓存任务缺少文件信息，尝试从历史记录补全
-		if len(stopped[i].Files) == 0 || stopped[i].Files[0].Path == "" {
-			if h, ok := history.Get(stopped[i].GID); ok && h.Path != "" {
+		// 如果缓存任务缺少文件或大小信息(小文件竞态)，尝试从历史记录补全
+		if h, ok := history.Get(stopped[i].GID); ok {
+			if (len(stopped[i].Files) == 0 || stopped[i].Files[0].Path == "") && h.Path != "" {
 				stopped[i].Files = []rpc.File{{Path: h.Path}}
+			}
+			if stopped[i].TotalLength == "0" && h.TotalLength != "0" {
+				stopped[i].TotalLength = h.TotalLength
+			}
+			if stopped[i].CompletedLength == "0" && h.CompletedLength != "0" {
+				stopped[i].CompletedLength = h.CompletedLength
 			}
 		}
 	}
@@ -152,14 +158,19 @@ func (a *App) GetTasks() map[string][]rpc.Task {
 	if config.Current.ShowHistory {
 		stopped = monitor.Cache.GetStopped()
 
-		// 用历史记录补全缺失的文件信息
+		// 用历史记录补全缺失的文件信息和大小(小文件竞态)
 		gidSet := make(map[string]bool)
 		for i := range stopped {
 			gidSet[stopped[i].GID] = true
-			// 如果缓存任务缺少文件信息，尝试从历史记录补全
-			if len(stopped[i].Files) == 0 || stopped[i].Files[0].Path == "" {
-				if h, ok := history.Get(stopped[i].GID); ok && h.Path != "" {
+			if h, ok := history.Get(stopped[i].GID); ok {
+				if (len(stopped[i].Files) == 0 || stopped[i].Files[0].Path == "") && h.Path != "" {
 					stopped[i].Files = []rpc.File{{Path: h.Path}}
+				}
+				if stopped[i].TotalLength == "0" && h.TotalLength != "0" {
+					stopped[i].TotalLength = h.TotalLength
+				}
+				if stopped[i].CompletedLength == "0" && h.CompletedLength != "0" {
+					stopped[i].CompletedLength = h.CompletedLength
 				}
 			}
 		}

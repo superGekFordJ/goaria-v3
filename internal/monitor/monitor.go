@@ -308,6 +308,19 @@ func (m *Monitor) tick() {
 
 		// 2. 推送任务完成事件（通过 pusher 批量推送）
 		for _, task := range completedTasks {
+			// 关键修复：快速完成的小文件，通过 Tracker 拿到的 TotalLength 可能仍为 0
+			// 必须在压入 Pusher 前利用 TellStatus 获取真正的数据负载，防止 0B 覆盖前端
+			if (task.Status == "complete" || task.Status == "error") && (task.TotalLength == 0 || task.CompletedLength == 0) {
+				if fullTask, err := rpc.TellStatus(task.GID); err == nil && fullTask != nil {
+					if task.TotalLength == 0 {
+						task.TotalLength = parseInt64(fullTask.TotalLength)
+					}
+					if task.CompletedLength == 0 {
+						task.CompletedLength = parseInt64(fullTask.CompletedLength)
+					}
+				}
+			}
+
 			eventType := "complete"
 			if task.Status == "error" {
 				eventType = "error"
@@ -315,7 +328,15 @@ func (m *Monitor) tick() {
 			m.pusher.Queue(events.TaskDelta{
 				Type: eventType,
 				GID:  task.GID,
+				Payload: map[string]interface{}{
+					"completedLength": fmt.Sprintf("%d", task.CompletedLength),
+					"totalLength":     fmt.Sprintf("%d", task.TotalLength),
+					"downloadSpeed":   "0", // 强制置零表示已停止
+				},
 			})
+
+			// 异步处理：补充信息并写入历史记录，触发完成通知
+			go m.handleTaskComplete(task)
 		}
 	}
 }

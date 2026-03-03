@@ -277,6 +277,34 @@ describe('setupEvents', () => {
       expect(state.tasks.value.stopped.length).toBe(1)
       expect(state.tasks.value.stopped[0].status).toBe('complete')
     })
+
+    it('should update progress to 100% when complete event contains payload with final stats (Stale Data Bug Reproduction)', async () => {
+      const task = mockTask('gid-c2', {
+        status: 'active',
+        completedLength: '50',
+        totalLength: '100',
+        downloadSpeed: '10',
+      })
+      state.tasks.value.active = [task]
+
+      await events.handleTaskDelta({ 
+        type: 'complete', 
+        gid: 'gid-c2',
+        payload: {
+          completedLength: '100',
+          totalLength: '100',
+          downloadSpeed: '0'
+        }
+      })
+
+      expect(state.tasks.value.active.length).toBe(0)
+      expect(state.tasks.value.stopped.length).toBe(1)
+      expect(state.tasks.value.stopped[0].status).toBe('complete')
+      // This assertion will test if the frontend correctly applied the payload before moving it to stopped
+      expect(state.tasks.value.stopped[0].completedLength).toBe('100')
+      expect(state.tasks.value.stopped[0].downloadSpeed).toBe('0')
+    })
+
   })
 
   // =====================================================

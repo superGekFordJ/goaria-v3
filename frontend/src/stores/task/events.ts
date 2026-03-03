@@ -110,7 +110,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
                  setTimeout(() => {
                    const batch = Array.from(metadataPending)
                    metadataPending.clear()
-                   GetTaskMetadata(batch).then((metadata: Record<string, Task>) => {
+                   GetTaskMetadata(batch).then((metadata: Record<string, Task | undefined>) => {
                       if (!metadata) return
                       let updated = false
                       for (const gid of Object.keys(metadata)) {
@@ -146,7 +146,8 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
             if (newTask && newTask.files?.length > 0 && newTask.files[0]?.path) {
               cacheMetadata(newTask)
               const existsInActive = tasks.value.active.some(t => t.gid === delta.gid)
-              if (!existsInActive) {
+              const existsInStopped = tasks.value.stopped.some(t => t.gid === delta.gid)
+              if (!existsInActive && !existsInStopped) {
                 const taskToAdd = applyMetadataFromCache(newTask)
                 tasks.value = {
                   ...tasks.value,
@@ -178,7 +179,75 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       }
 
       case 'complete': {
-        moveTaskToStopped(delta.gid)
+        const payload = delta.payload as Partial<Task> | undefined
+
+        // 对于已经进入 stopped 的任务，应用随后到来的带精确 payload 的 Pusher 推送
+        const stoppedTask = tasks.value.stopped.find(t => t.gid === delta.gid)
+        if (stoppedTask && payload) {
+          let updated = false
+          if (payload.completedLength !== undefined && stoppedTask.completedLength !== payload.completedLength) {
+            stoppedTask.completedLength = payload.completedLength
+            updated = true
+          }
+          if (payload.totalLength !== undefined && stoppedTask.totalLength !== payload.totalLength) {
+            stoppedTask.totalLength = payload.totalLength
+            updated = true
+          }
+          if (payload.downloadSpeed !== undefined && stoppedTask.downloadSpeed !== payload.downloadSpeed) {
+            stoppedTask.downloadSpeed = payload.downloadSpeed
+            updated = true
+          }
+          if (updated) tasks.value = { ...tasks.value }
+          break
+        }
+
+        // 尝试在 active/waiting 中找到任务
+        const existingTask = tasks.value.active.find(t => t.gid === delta.gid) ??
+                             tasks.value.waiting.find(t => t.gid === delta.gid)
+
+        if (existingTask) {
+          // 正常路径：任务已在列表中，应用 payload 后移到 stopped
+          if (payload) {
+            if (payload.completedLength !== undefined) existingTask.completedLength = payload.completedLength
+            if (payload.totalLength !== undefined) existingTask.totalLength = payload.totalLength
+            if (payload.downloadSpeed !== undefined) existingTask.downloadSpeed = payload.downloadSpeed
+          }
+          moveTaskToStopped(delta.gid)
+        } else if (!tasks.value.stopped.some(t => t.gid === delta.gid)) {
+          // 竞态修复：小文件 complete 事件在 add 完成之前抵达
+          // 任务不在任何列表中 → 直接获取数据并放入 stopped
+          try {
+            const metadata = await GetTaskMetadata([delta.gid])
+            const taskData = metadata?.[delta.gid]
+            if (taskData) {
+              cacheMetadata(taskData)
+              const taskToAdd = applyMetadataFromCache(taskData)
+              // 用 payload 中的精确数据覆盖可能的 0B
+              if (payload) {
+                if (payload.completedLength !== undefined) taskToAdd.completedLength = payload.completedLength
+                if (payload.totalLength !== undefined) taskToAdd.totalLength = payload.totalLength
+                if (payload.downloadSpeed !== undefined) taskToAdd.downloadSpeed = payload.downloadSpeed
+              }
+              taskToAdd.status = 'complete'
+              // 确保不重复添加（add handler 可能在此期间完成了）
+              const nowInActive = tasks.value.active.some(t => t.gid === delta.gid)
+              const nowInStopped = tasks.value.stopped.some(t => t.gid === delta.gid)
+              if (nowInActive) {
+                // add 已经完成，走正常移动路径
+                moveTaskToStopped(delta.gid)
+              } else if (!nowInStopped) {
+                tasks.value = {
+                  active: tasks.value.active.filter(t => t.gid !== delta.gid),
+                  waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
+                  stopped: [taskToAdd, ...tasks.value.stopped],
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('[Events] Failed to fetch metadata for completing task:', delta.gid, e)
+          }
+        }
+        // 如果已经在 stopped 中，忽略重复的 complete 事件
         break
       }
 

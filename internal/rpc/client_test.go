@@ -92,11 +92,11 @@ func TestTellActive(t *testing.T) {
 				"id":      "goaria",
 				"result": []interface{}{
 					map[string]interface{}{
-						"gid": "12345",
-						"status": "active",
-						"totalLength": "1000",
+						"gid":             "12345",
+						"status":          "active",
+						"totalLength":     "1000",
 						"completedLength": "500",
-						"downloadSpeed": "10",
+						"downloadSpeed":   "10",
 					},
 				},
 			}
@@ -152,5 +152,32 @@ func TestTellActiveError(t *testing.T) {
 	expected := "rpc error 1: some error"
 	if !strings.Contains(err.Error(), expected) {
 		t.Errorf("Expected error to contain %q, got %q", expected, err.Error())
+	}
+}
+
+func TestAria2RealSmallFile(t *testing.T) {
+	// This test requires a running Aria2 instance on port 6800 with secret "mysecret"
+	t.Skip("Skipping integration test that requires real Aria2 instance")
+
+	Init("6800", "secret")
+
+	gid, err := AddUriWithOptions("https://example.com/file.zip", "D:\\testdown", 0, 0)
+	if err != nil {
+		t.Fatalf("AddUri error: %v", err)
+	}
+	t.Logf("Added GID: %s", gid)
+
+	for {
+		task, err := TellStatus(gid)
+		if err != nil {
+			t.Fatalf("TellStatus error: %v", err)
+		}
+		t.Logf("Status: %s, Completed: %s, Total: %s", task.Status, task.CompletedLength, task.TotalLength)
+		if task.Status == "complete" || task.Status == "error" {
+			if task.TotalLength == "0" && task.Status == "complete" {
+				t.Errorf("BUG VERIFIED: Aria2 returned totalLength=0 for a completed task!")
+			}
+			break
+		}
 	}
 }
