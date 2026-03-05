@@ -122,7 +122,18 @@
     "addFailed": "新增失敗",
     "addFailedRetry": "新增失敗，請重試",
     "quickAdd": "快速新增",
-    "pasteLink": "貼上連結"
+    "pasteLink": "貼上連結",
+    "multilinePlaceholder": "每行一個連結",
+    "addAll": "全部新增 ({count})",
+    "submitAll": "提交全部",
+    "collapse": "收起",
+    "validLinks": "{count} 個有效連結",
+    "duplicateLinks": "{count} 個重複",
+    "invalidLinks": "{count} 個無效",
+    "batchSucceeded": "已新增 {count} 個任務",
+    "batchDuplicates": "{count} 個重複已略過",
+    "batchErrors": "{count} 個失敗",
+    "batchTruncated": "已截斷至 100 條"
   },
   "taskSearch": {
     "placeholder": "搜尋已完成的任務...",
@@ -134,6 +145,10 @@
     "resumeAll": "批次繼續",
     "deleteAll": "批次刪除",
     "clearSelection": "取消選取 (Esc)"
+  },
+  "drop": {
+    "releaseToAdd": "鬆開以新增下載",
+    "supportedFormats": "連結或 .txt 檔案"
   },
   "update": {
     "checkUpdate": "檢查更新",

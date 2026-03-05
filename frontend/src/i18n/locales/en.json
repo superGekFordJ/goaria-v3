@@ -122,7 +122,18 @@
     "addFailed": "Add failed",
     "addFailedRetry": "Add failed, please retry",
     "quickAdd": "Quick Add",
-    "pasteLink": "Paste Link"
+    "pasteLink": "Paste Link",
+    "multilinePlaceholder": "One link per line",
+    "addAll": "Add All ({count})",
+    "submitAll": "Submit All",
+    "collapse": "Collapse",
+    "validLinks": "{count} valid",
+    "duplicateLinks": "{count} duplicate",
+    "invalidLinks": "{count} invalid",
+    "batchSucceeded": "{count} tasks added",
+    "batchDuplicates": "{count} duplicates skipped",
+    "batchErrors": "{count} failed",
+    "batchTruncated": "Truncated to 100 items"
   },
   "taskSearch": {
     "placeholder": "Search completed tasks...",
@@ -134,6 +145,10 @@
     "resumeAll": "Resume All",
     "deleteAll": "Delete All",
     "clearSelection": "Clear Selection (Esc)"
+  },
+  "drop": {
+    "releaseToAdd": "Release to add downloads",
+    "supportedFormats": "Links or .txt files"
   },
   "update": {
     "checkUpdate": "Check for Update",

@@ -122,7 +122,18 @@
     "addFailed": "Hinzufügen fehlgeschlagen",
     "addFailedRetry": "Fehler, bitte wiederholen",
     "quickAdd": "Schnell hinzufügen",
-    "pasteLink": "Einfügen"
+    "pasteLink": "Einfügen",
+    "multilinePlaceholder": "Ein Link pro Zeile",
+    "addAll": "Alle hinzufügen ({count})",
+    "submitAll": "Alle senden",
+    "collapse": "Zuklappen",
+    "validLinks": "{count} gültig",
+    "duplicateLinks": "{count} doppelt",
+    "invalidLinks": "{count} ungültig",
+    "batchSucceeded": "{count} Aufgaben hinzugefügt",
+    "batchDuplicates": "{count} Duplikate übersprungen",
+    "batchErrors": "{count} fehlgeschlagen",
+    "batchTruncated": "Auf 100 Einträge gekürzt"
   },
   "taskSearch": {
     "placeholder": "Fertige Aufgaben suchen...",
@@ -134,6 +145,10 @@
     "resumeAll": "Alle fortsetzen",
     "deleteAll": "Alle löschen",
     "clearSelection": "Auswahl aufheben (Esc)"
+  },
+  "drop": {
+    "releaseToAdd": "Loslassen zum Hinzufügen",
+    "supportedFormats": "Links oder .txt-Dateien"
   },
   "update": {
     "checkUpdate": "Nach Update suchen",

@@ -122,7 +122,18 @@
     "addFailed": "添加失败",
     "addFailedRetry": "添加失败，请重试",
     "quickAdd": "快速添加",
-    "pasteLink": "粘贴链接"
+    "pasteLink": "粘贴链接",
+    "multilinePlaceholder": "每行一个链接",
+    "addAll": "全部添加 ({count})",
+    "submitAll": "提交全部",
+    "collapse": "收起",
+    "validLinks": "{count} 个有效链接",
+    "duplicateLinks": "{count} 个重复",
+    "invalidLinks": "{count} 个无效",
+    "batchSucceeded": "已添加 {count} 个任务",
+    "batchDuplicates": "{count} 个重复已跳过",
+    "batchErrors": "{count} 个失败",
+    "batchTruncated": "已截断至 100 条"
   },
   "taskSearch": {
     "placeholder": "搜索已完成任务...",
@@ -134,6 +145,10 @@
     "resumeAll": "批量继续",
     "deleteAll": "批量删除",
     "clearSelection": "取消选择 (Esc)"
+  },
+  "drop": {
+    "releaseToAdd": "松开以添加下载",
+    "supportedFormats": "链接或 .txt 文件"
   },
   "update": {
     "checkUpdate": "检查更新",

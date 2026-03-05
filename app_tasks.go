@@ -23,10 +23,16 @@ func (a *App) RecordTaskSpeed(gid string, speed int64, cl int64) {
 	// 此方法保留以兼容前端，但不执行任何操作
 }
 
+// BatchAddResult holds the result of a batch add operation
+type BatchAddResult struct {
+	Succeeded  []string          `json:"succeeded"`
+	Duplicates []string          `json:"duplicates"`
+	Errors     map[string]string `json:"errors"`
+}
+
 // AddUri adds a new download task
 // Returns "success" on success, "duplicate" if task already exists, or error message
 func (a *App) AddUri(url string) string {
-	// Check for duplicate URL in existing tasks
 	normalizedUrl := strings.TrimSpace(url)
 	active, _ := rpc.TellActive()
 	waiting, _ := rpc.TellWaiting(0, 1000)
@@ -37,23 +43,93 @@ func (a *App) AddUri(url string) string {
 		for _, f := range t.Files {
 			for _, u := range f.Uris {
 				if strings.TrimSpace(u.Uri) == normalizedUrl {
-					// Found duplicate - return special marker
 					return "duplicate"
 				}
 			}
 		}
 	}
 
-	// Also check history for completed tasks that may have been cleared from aria2
 	for _, h := range history.GetAll() {
 		if h.Source == normalizedUrl {
 			return "duplicate"
 		}
 	}
 
+	if err := a.addSingleTask(normalizedUrl); err != nil {
+		return err.Error()
+	}
+	return "success"
+}
+
+// BatchAddUri adds multiple download URLs in one batch.
+// Performs O(1) Set-based deduplication with only 3 RPC calls total.
+func (a *App) BatchAddUri(urls []string) BatchAddResult {
+	result := BatchAddResult{
+		Succeeded:  []string{},
+		Duplicates: []string{},
+		Errors:     make(map[string]string),
+	}
+
+	if len(urls) > 100 {
+		urls = urls[:100]
+	}
+
+	// 3 RPC calls total for deduplication (not 3N)
+	active, _ := rpc.TellActive()
+	waiting, _ := rpc.TellWaiting(0, 1000)
+	stopped, _ := rpc.TellStopped(0, 1000)
+
+	// Build existing URL set for O(1) lookup
+	existingUrls := make(map[string]bool)
+	for _, t := range append(active, append(waiting, stopped...)...) {
+		for _, f := range t.Files {
+			for _, u := range f.Uris {
+				existingUrls[strings.TrimSpace(u.Uri)] = true
+			}
+		}
+	}
+
+	// History dedup
+	for _, h := range history.GetAll() {
+		existingUrls[h.Source] = true
+	}
+
+	// Batch-internal dedup
+	seen := make(map[string]bool)
+
+	for _, rawUrl := range urls {
+		normalized := strings.TrimSpace(rawUrl)
+		if normalized == "" {
+			continue
+		}
+
+		// Batch-internal dedup
+		if seen[normalized] {
+			result.Duplicates = append(result.Duplicates, normalized)
+			continue
+		}
+		seen[normalized] = true
+
+		// Existing task/history dedup
+		if existingUrls[normalized] {
+			result.Duplicates = append(result.Duplicates, normalized)
+			continue
+		}
+
+		if err := a.addSingleTask(normalized); err != nil {
+			result.Errors[normalized] = err.Error()
+		} else {
+			result.Succeeded = append(result.Succeeded, normalized)
+		}
+	}
+
+	return result
+}
+
+// addSingleTask handles the SmartThread + AddUri logic for a single normalized URL.
+func (a *App) addSingleTask(normalizedUrl string) error {
 	if config.Current.SmartThreadMode {
-		// 智能模式：根据历史数据动态计算线程参数
-		fileSize := rpc.HeadContentLength(url, 3*time.Second)
+		fileSize := rpc.HeadContentLength(normalizedUrl, 3*time.Second)
 
 		maxConn, _ := strconv.Atoi(config.Current.MaxConnections)
 		if maxConn <= 0 {
@@ -63,24 +139,18 @@ func (a *App) AddUri(url string) string {
 		params := smartthread.Calculate(fileSize, maxConn, normalizedUrl)
 		gid, err := rpc.AddUriWithOptions(normalizedUrl, config.Current.DownloadDir, params.Split, params.MinSize)
 		if err != nil {
-			return err.Error()
+			return err
 		}
 
 		if gid != "" && params.Split > 0 {
-			// 通过 Monitor Tracker 注册线程信息
 			if tracker := monitor.State.GetTracker(); tracker != nil {
 				tracker.SetThreadInfo(gid, params.Split, params.IsExploration)
 			}
 		}
-		return "success"
+		return nil
 	}
 
-	// 非智能模式，走原逻辑
-	err := rpc.AddUri(url, config.Current.DownloadDir)
-	if err != nil {
-		return err.Error()
-	}
-	return "success"
+	return rpc.AddUri(normalizedUrl, config.Current.DownloadDir)
 }
 
 // GetActiveTasks returns only active and waiting tasks (high-frequency channel)
@@ -120,8 +190,11 @@ func (a *App) GetStoppedTasks() []rpc.Task {
 		// 如果缓存任务缺少文件或大小信息(小文件竞态)，尝试从历史记录补全
 		if h, ok := history.Get(stopped[i].GID); ok {
 			if (len(stopped[i].Files) == 0 || stopped[i].Files[0].Path == "") && h.Path != "" {
-				stopped[i].Files = []rpc.File{{Path: h.Path}}
+				stopped[i].Files = []rpc.File{{Path: h.Path, Uris: []rpc.Uri{{Uri: h.Source}}}}
+			} else if len(stopped[i].Files) > 0 && len(stopped[i].Files[0].Uris) == 0 && h.Source != "" {
+				stopped[i].Files[0].Uris = []rpc.Uri{{Uri: h.Source}}
 			}
+			
 			if stopped[i].TotalLength == "0" && h.TotalLength != "0" {
 				stopped[i].TotalLength = h.TotalLength
 			}
@@ -140,7 +213,7 @@ func (a *App) GetStoppedTasks() []rpc.Task {
 				TotalLength:     h.TotalLength,
 				CompletedLength: h.CompletedLength,
 				Dir:             h.Dir,
-				Files:           []rpc.File{{Path: h.Path}},
+				Files:           []rpc.File{{Path: h.Path, Uris: []rpc.Uri{{Uri: h.Source}}}},
 			})
 		}
 	}
@@ -164,8 +237,11 @@ func (a *App) GetTasks() map[string][]rpc.Task {
 			gidSet[stopped[i].GID] = true
 			if h, ok := history.Get(stopped[i].GID); ok {
 				if (len(stopped[i].Files) == 0 || stopped[i].Files[0].Path == "") && h.Path != "" {
-					stopped[i].Files = []rpc.File{{Path: h.Path}}
+					stopped[i].Files = []rpc.File{{Path: h.Path, Uris: []rpc.Uri{{Uri: h.Source}}}}
+				} else if len(stopped[i].Files) > 0 && len(stopped[i].Files[0].Uris) == 0 && h.Source != "" {
+					stopped[i].Files[0].Uris = []rpc.Uri{{Uri: h.Source}}
 				}
+				
 				if stopped[i].TotalLength == "0" && h.TotalLength != "0" {
 					stopped[i].TotalLength = h.TotalLength
 				}
@@ -184,7 +260,7 @@ func (a *App) GetTasks() map[string][]rpc.Task {
 					TotalLength:     h.TotalLength,
 					CompletedLength: h.CompletedLength,
 					Dir:             h.Dir,
-					Files:           []rpc.File{{Path: h.Path}},
+					Files:           []rpc.File{{Path: h.Path, Uris: []rpc.Uri{{Uri: h.Source}}}},
 				})
 			}
 		}

@@ -8,7 +8,10 @@
   import { useConfigStore } from './stores/config'
   import { useTaskStore } from './stores/task'
   import { subscribeToWindowEvents, unsubscribeFromWindowEvents } from './stores/events'
-  import { Clipboard, Events } from '@wailsio/runtime'
+  import { Events } from '@wailsio/runtime'
+  import { useSmartInput } from './composables/useSmartInput'
+  import { Download } from 'lucide-vue-next'
+  import { useI18n } from 'vue-i18n'
 
   const DebugPanel = import.meta.env.DEV
     ? defineAsyncComponent(() => import('./components/debug/DebugPanel.vue'))
@@ -21,31 +24,12 @@
   const uiStore = useUIStore()
   const configStore = useConfigStore()
   const taskStore = useTaskStore()
+  const { t } = useI18n()
   const isReady = ref(false)
   const showTestSimulator = ref(window.location.hash.includes('test-simulator'))
   const unsubs: Array<() => void> = []
 
-  let lastClipboardCandidate = ''
-  let lastTasksRefreshAt = 0
-
-  const isValidUrl = (text: string): boolean => {
-    return /^(https?|ftp|sftp|magnet):/i.test(text)
-  }
-
-  const isDuplicateUri = (uri: string): boolean => {
-    const needle = uri.trim()
-    if (!needle) return false
-    for (const list of [taskStore.activeTasks, taskStore.waitingTasks, taskStore.stoppedTasks]) {
-      for (const t of list) {
-        for (const f of t.files || []) {
-          for (const u of f.uris || []) {
-            if (u?.uri === needle) return true
-          }
-        }
-      }
-    }
-    return false
-  }
+  const { isDragging, initSmartInput, cleanupSmartInput } = useSmartInput()
 
   const getWindowTransparency = (): string => {
     const s = configStore.settings as unknown as { window_transparency?: string }
@@ -99,59 +83,9 @@
       taskStore.syncFromSnapshot()
     })
 
-    // Centralized Clipboard Processing Logic
-    const processClipboard = async (trigger: 'auto' | 'manual') => {
-      try {
-        const text = (await Clipboard.Text()).trim()
-        if (!text) return
-        if (!isValidUrl(text)) return
+    // Init Smart Input (Clipboard & Drag-Drop logic)
+    initSmartInput()
 
-        // 1. Check against history (Deduplication for Auto-Trigger)
-        // If triggered automatically (Focus), we ONLY act if the content has changed.
-        // If triggered manually (Tab Switch), we allow re-processing (user might want to paste what they have).
-        if (trigger === 'auto' && text === lastClipboardCandidate) {
-          return
-        }
-
-        // Update history
-        lastClipboardCandidate = text
-
-        // 2. Refresh tasks if stale (to ensure duplicate check is accurate)
-        const now = Date.now()
-        if (now - lastTasksRefreshAt > 1500) {
-          lastTasksRefreshAt = now
-          await taskStore.fetchTasks()
-        }
-
-        // 3. Check for duplicates in existing tasks
-        if (isDuplicateUri(text)) return
-
-        // 4. Action
-        if (trigger === 'auto') {
-          // For auto-trigger, we jump to the downloads tab
-          if (uiStore.activeTab !== 'downloads') {
-            uiStore.setActiveTab('downloads')
-          }
-        }
-
-        // If we are (or became) on the downloads tab, populate the field
-        if (uiStore.activeTab === 'downloads') {
-          uiStore.setPendingPasteUri(text)
-        }
-      } catch {
-        // Permission denied or empty clipboard, silently ignore
-      }
-    }
-
-    // Trigger 1: Window Focus (Smart Auto-Detection)
-    unsubs.push(
-      Events.On('common:WindowFocus', () => {
-        processClipboard('auto')
-      }),
-    )
-
-    // Trigger 2: Tab Switch (Context-Aware Detection)
-    // When user manually enters Downloads tab, check clipboard
     // Reactively show/hide test simulator based on URL hash
     const updateSimulatorVisibility = () => {
       showTestSimulator.value = window.location.hash.includes('test-simulator')
@@ -159,22 +93,12 @@
     window.addEventListener('hashchange', updateSimulatorVisibility)
     unsubs.push(() => window.removeEventListener('hashchange', updateSimulatorVisibility))
 
-    watch(
-      () => uiStore.activeTab,
-      newTab => {
-        if (newTab === 'downloads') {
-          // Use 'manual' mode to be more permissive (allow current clipboard even if seen before)
-          // But 'processClipboard' updates 'lastClipboardCandidate', so it syncs up.
-          processClipboard('manual')
-        }
-      },
-    )
-
     // Start global polling for task status (required for Sidebar and Tray syncing)
     taskStore.startPolling(1000)
   })
 
   onUnmounted(() => {
+    cleanupSmartInput()
     document.removeEventListener('visibilitychange', handleVisibilityChange)
     // Clean up Wails event listeners
     unsubs.forEach(unsub => unsub())
@@ -185,7 +109,7 @@
       stopWindowTransparencyWatch()
       stopWindowTransparencyWatch = null
     }
-    
+
     taskStore.stopPolling(true)
   })
 
@@ -205,6 +129,17 @@
 
   <!-- Noise texture overlay for depth -->
   <div class="noise-overlay"></div>
+
+  <!-- Drag-over overlay -->
+  <Transition name="drop-overlay">
+    <div v-if="isDragging" class="drop-overlay">
+      <div class="drop-overlay-inner">
+        <Download :size="32" class="drop-overlay-icon" />
+        <p class="drop-overlay-text">{{ t('drop.releaseToAdd') }}</p>
+        <p class="drop-overlay-hint">{{ t('drop.supportedFormats') }}</p>
+      </div>
+    </div>
+  </Transition>
 
   <div
     class="flex flex-col h-screen bg-[var(--color-app-bg)] text-[var(--color-app-text)] overflow-hidden"
@@ -317,5 +252,62 @@
 
   .zoom-in-95 {
     animation-name: zoom-in-95;
+  }
+
+  /* Drag-over overlay */
+  .drop-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: color-mix(in srgb, var(--app-bg) 70%, transparent);
+    backdrop-filter: blur(12px);
+    pointer-events: none;
+  }
+
+  .drop-overlay-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 40px 60px;
+    border-radius: var(--radius-squircle-xl);
+    border: 2px dashed color-mix(in srgb, var(--neon-primary) 50%, transparent);
+    background: color-mix(in srgb, var(--neon-primary) 5%, transparent);
+    box-shadow: 0 0 40px color-mix(in srgb, var(--neon-primary) 15%, transparent);
+  }
+
+  .drop-overlay-icon {
+    color: var(--neon-primary);
+  }
+
+  .drop-overlay-text {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--app-text);
+  }
+
+  .drop-overlay-hint {
+    font-size: 12px;
+    color: var(--app-text-subtle);
+  }
+
+  /* Reduced effects: no blur, instant transition */
+  [data-effects='reduced'] .drop-overlay {
+    backdrop-filter: none;
+  }
+
+  /* Transition */
+  .drop-overlay-enter-active {
+    transition: opacity 0.25s ease;
+  }
+  .drop-overlay-leave-active {
+    transition: opacity 0.15s ease;
+  }
+  .drop-overlay-enter-from,
+  .drop-overlay-leave-to {
+    opacity: 0;
   }
 </style>

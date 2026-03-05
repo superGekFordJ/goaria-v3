@@ -5,6 +5,7 @@ import {
   GetStoppedTasks,
   GetTaskMetadata,
   AddUri,
+  BatchAddUri,
   PauseTask,
   ResumeTask,
   RemoveTask,
@@ -302,6 +303,22 @@ export function setupActions(state: TaskState) {
     }
   }
 
+  async function batchAddUri(uris: string[]) {
+    try {
+      const res = await BatchAddUri(uris)
+      await fetchTasks()
+      immediateUpdateTrayIcon()
+      if (pollingContextEnabled.value && isWindowVisible.value && _restartPollingCallback && _stopPollingCallback) {
+        _stopPollingCallback(false)
+        _restartPollingCallback()
+      }
+      return res
+    } catch (err) {
+      console.error('Failed to batch add URIs:', err)
+      throw err
+    }
+  }
+
   async function pause(gid: string) {
     try {
       await PauseTask(gid)
@@ -438,6 +455,7 @@ export function setupActions(state: TaskState) {
     fetchStoppedTasks,
     fetchTasks,
     addUri,
+    batchAddUri,
     pause,
     resume,
     remove,

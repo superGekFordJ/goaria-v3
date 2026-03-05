@@ -122,7 +122,18 @@
     "addFailed": "追加に失敗しました",
     "addFailedRetry": "追加に失敗しました。再試行してください",
     "quickAdd": "クイック追加",
-    "pasteLink": "リンクを貼り付け"
+    "pasteLink": "リンクを貼り付け",
+    "multilinePlaceholder": "1行に1つのリンク",
+    "addAll": "すべて追加 ({count})",
+    "submitAll": "すべて送信",
+    "collapse": "折りたたむ",
+    "validLinks": "{count} 件有効",
+    "duplicateLinks": "{count} 件重複",
+    "invalidLinks": "{count} 件無効",
+    "batchSucceeded": "{count} 件のタスクを追加",
+    "batchDuplicates": "{count} 件の重複をスキップ",
+    "batchErrors": "{count} 件失敗",
+    "batchTruncated": "100件に制限しました"
   },
   "taskSearch": {
     "placeholder": "完了したタスクを検索...",
@@ -134,6 +145,10 @@
     "resumeAll": "すべて再開",
     "deleteAll": "すべて削除",
     "clearSelection": "選択を解除 (Esc)"
+  },
+  "drop": {
+    "releaseToAdd": "離してダウンロードを追加",
+    "supportedFormats": "リンクまたは .txt ファイル"
   },
   "update": {
     "checkUpdate": "更新を確認",

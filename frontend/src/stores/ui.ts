@@ -22,6 +22,7 @@ export const useUIStore = defineStore(
     const density = ref<Density>('comfortable')
     const effects = ref<Effects>('full')
     const pendingPasteUri = ref('')
+    const pendingPasteUris = ref<string[]>([])
 
     // Actions
     function setActiveTab(tab: string) {
@@ -34,6 +35,16 @@ export const useUIStore = defineStore(
 
     function consumePendingPasteUri() {
       pendingPasteUri.value = ''
+    }
+
+    function setPendingPasteUris(uris: string[]) {
+      pendingPasteUris.value = uris
+    }
+
+    function consumePendingPasteUris(): string[] {
+      const uris = pendingPasteUris.value
+      pendingPasteUris.value = []
+      return uris
     }
 
     function setLocale(newLocale: LocalePreference) {
@@ -127,10 +138,13 @@ export const useUIStore = defineStore(
       density,
       effects,
       pendingPasteUri,
+      pendingPasteUris,
       // Actions
       setActiveTab,
       setPendingPasteUri,
       consumePendingPasteUri,
+      setPendingPasteUris,
+      consumePendingPasteUris,
       setTheme,
       setSkin,
       setDensity,

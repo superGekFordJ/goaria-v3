@@ -122,7 +122,18 @@
     "addFailed": "Error al añadir",
     "addFailedRetry": "Falló, reintenta",
     "quickAdd": "Añadir rápido",
-    "pasteLink": "Pegar enlace"
+    "pasteLink": "Pegar enlace",
+    "multilinePlaceholder": "Un enlace por línea",
+    "addAll": "Añadir todo ({count})",
+    "submitAll": "Enviar todo",
+    "collapse": "Contraer",
+    "validLinks": "{count} válidos",
+    "duplicateLinks": "{count} duplicados",
+    "invalidLinks": "{count} inválidos",
+    "batchSucceeded": "{count} tareas añadidas",
+    "batchDuplicates": "{count} duplicados omitidos",
+    "batchErrors": "{count} fallidos",
+    "batchTruncated": "Truncado a 100 elementos"
   },
   "taskSearch": {
     "placeholder": "Buscar tareas completadas...",
@@ -134,6 +145,10 @@
     "resumeAll": "Reanudar todo",
     "deleteAll": "Eliminar todo",
     "clearSelection": "Deseleccionar (Esc)"
+  },
+  "drop": {
+    "releaseToAdd": "Suelta para añadir descargas",
+    "supportedFormats": "Enlaces o archivos .txt"
   },
   "update": {
     "checkUpdate": "Buscar Actualización",

@@ -53,6 +53,7 @@ export const useTaskStore = defineStore('task', () => {
     fetchStoppedTasks: actions.fetchStoppedTasks,
     fetchTasks: actions.fetchTasks,
     addUri: actions.addUri,
+    batchAddUri: actions.batchAddUri,
     pause: actions.pause,
     resume: actions.resume,
     remove: actions.remove,
