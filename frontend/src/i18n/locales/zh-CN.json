@@ -29,8 +29,28 @@
     "light": "亮色",
     "dark": "暗色",
     "skinStyle": "皮肤风格",
-    "obsidianDesc": "深邃黑曜石",
-    "ceramicDesc": "温润陶瓷白",
+    "skins": {
+      "obsidian": {
+        "name": "Obsidian",
+        "description": "黑曜石与激光精密感",
+        "concept": "冷冽、深邃、穿透"
+      },
+      "ceramic": {
+        "name": "Celadon",
+        "description": "青瓷釉色与温润编辑感",
+        "concept": "静谧、克制、温润"
+      },
+      "aurora": {
+        "name": "Aurora",
+        "description": "极光频谱与夜空遥测",
+        "concept": "光谱、极地、漂浮"
+      },
+      "ember": {
+        "name": "Ember",
+        "description": "窑火余烬与机械温度",
+        "concept": "铜火微熔、沉稳余温"
+      }
+    },
     "language": "语言",
     "auto": "自动"
   },

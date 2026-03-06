@@ -29,8 +29,28 @@
     "light": "Claro",
     "dark": "Oscuro",
     "skinStyle": "Estilo de piel",
-    "obsidianDesc": "Obsidian (Negro Profundo)",
-    "ceramicDesc": "Ceramic (Blanco Cerámica)",
+    "skins": {
+      "obsidian": {
+        "name": "Obsidian",
+        "description": "Cristal de obsidiana y precisión láser",
+        "concept": "Frío, profundo, penetrante"
+      },
+      "ceramic": {
+        "name": "Celadon",
+        "description": "Esmalte celadón y editorial serena",
+        "concept": "Calma, contención cálida"
+      },
+      "aurora": {
+        "name": "Aurora",
+        "description": "Espectro polar y telemetría nocturna",
+        "concept": "Espectral, polar, flotante"
+      },
+      "ember": {
+        "name": "Ember",
+        "description": "Brasa de horno y calidez mecánica",
+        "concept": "Resplandor cobrizo, calor residual"
+      }
+    },
     "language": "Idioma",
     "auto": "Auto"
   },

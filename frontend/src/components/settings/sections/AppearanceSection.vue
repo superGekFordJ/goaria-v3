@@ -1,9 +1,10 @@
 <script setup lang="ts">
   import { Palette, Monitor, Sun, Moon, Languages, ChevronDown, Check } from 'lucide-vue-next'
   import { useI18n } from 'vue-i18n'
-  import { ref } from 'vue'
+  import { ref, computed } from 'vue'
   import SectionCard from './SectionCard.vue'
-  import { useUIStore, type ThemeMode, type SkinId, type LocalePreference } from '../../../stores/ui'
+  import { useUIStore, type ThemeMode, type LocalePreference } from '../../../stores/ui'
+  import { skinCatalog, type SkinId } from '../../../utils/skinCatalog'
 
   const uiStore = useUIStore()
   const { t } = useI18n()
@@ -14,6 +15,12 @@
     uiStore.setLocale(locale)
     showLanguageDropdown.value = false
   }
+
+  const resolvedTheme = computed(() => {
+    if (uiStore.themeMode === 'light') return 'light'
+    if (uiStore.themeMode === 'dark') return 'dark'
+    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+  })
 </script>
 
 <template>
@@ -177,37 +184,38 @@
       </label>
       <div class="grid grid-cols-2 gap-3">
         <button
-          v-for="skin in ['obsidian', 'ceramic'] as SkinId[]"
-          :key="skin"
+          v-for="skin in skinCatalog"
+          :key="skin.id"
           :class="[
-            'flex items-center gap-3 p-4 rounded-xl border transition-all duration-200',
-            uiStore.skinId === skin
+            'flex items-center gap-3 p-4 rounded-xl border transition-all duration-200 text-left',
+            uiStore.skinId === skin.id
               ? 'bg-[var(--neon-primary)]/10 border-[var(--neon-primary)]/30'
               : 'bg-[var(--btn-glass-bg)] border-[var(--glass-border)] hover:border-[var(--neon-primary)]/20',
           ]"
-          @click="uiStore.setSkin(skin)"
+          @click="uiStore.setSkin(skin.id as SkinId)"
         >
           <div
-            :class="[
-              'w-8 h-8 rounded-lg',
-              skin === 'obsidian'
-                ? 'bg-gradient-to-br from-gray-800 to-gray-900'
-                : 'bg-gradient-to-br from-gray-100 to-white border border-gray-200',
-            ]"
+            class="w-8 h-8 rounded-lg shrink-0"
+            :style="{
+              background: `linear-gradient(135deg, ${resolvedTheme === 'light' ? skin.preview.light.from : skin.preview.dark.from}, ${resolvedTheme === 'light' ? skin.preview.light.to : skin.preview.dark.to})`,
+            }"
           ></div>
-          <div class="text-left">
+          <div class="min-w-0">
             <span
               :class="[
-                'text-xs font-semibold block',
-                uiStore.skinId === skin
+                'text-xs font-semibold block truncate',
+                uiStore.skinId === skin.id
                   ? 'text-[var(--neon-primary)]'
                   : 'text-[var(--app-text)]/80',
               ]"
             >
-              {{ skin === 'obsidian' ? 'Obsidian' : 'Ceramic' }}
+              {{ t(skin.labelKey) }}
             </span>
-            <span class="text-[9px] text-[var(--app-text-subtle)]">
-              {{ skin === 'obsidian' ? t('appearance.obsidianDesc') : t('appearance.ceramicDesc') }}
+            <span class="text-[9px] text-[var(--app-text-subtle)] block truncate">
+              {{ t(skin.descriptionKey) }}
+            </span>
+            <span class="text-[8px] text-[var(--app-text-subtle)]/60 italic block truncate">
+              {{ t(skin.conceptKey) }}
             </span>
           </div>
         </button>

@@ -1,10 +1,11 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { resolveLocale, setI18nLocale } from '../i18n'
+import { type SkinId, DEFAULT_SKIN_ID, normaliseSkinId } from '../utils/skinCatalog'
 
 export type LocalePreference = 'auto' | 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'es' | 'de'
 export type ThemeMode = 'system' | 'light' | 'dark'
-export type SkinId = 'obsidian' | 'ceramic'
+export type { SkinId } from '../utils/skinCatalog'
 export type Density = 'compact' | 'comfortable'
 export type Effects = 'full' | 'reduced'
 
@@ -18,7 +19,7 @@ export const useUIStore = defineStore(
     const activeTab = ref('downloads')
     const locale = ref<LocalePreference>('auto')
     const themeMode = ref<ThemeMode>('system')
-    const skinId = ref<SkinId>('obsidian')
+    const skinId = ref<SkinId>(DEFAULT_SKIN_ID)
     const density = ref<Density>('comfortable')
     const effects = ref<Effects>('full')
     const pendingPasteUri = ref('')
@@ -62,7 +63,7 @@ export const useUIStore = defineStore(
     }
 
     function setSkin(newSkin: SkinId) {
-      skinId.value = newSkin
+      skinId.value = normaliseSkinId(newSkin)
       applySkin()
     }
 
@@ -124,6 +125,8 @@ export const useUIStore = defineStore(
      * Should be called in App.vue onMounted
      */
     function initTheme() {
+      // Defensive: normalise persisted skinId in case it was set to an unknown value
+      skinId.value = normaliseSkinId(skinId.value)
       applyTheme()
       applySkin()
       applyDensity()

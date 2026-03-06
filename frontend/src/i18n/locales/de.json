@@ -29,8 +29,28 @@
     "light": "Hell",
     "dark": "Dunkel",
     "skinStyle": "Skin-Stil",
-    "obsidianDesc": "Obsidian (Tiefschwarz)",
-    "ceramicDesc": "Ceramic (Keramikweiß)",
+    "skins": {
+      "obsidian": {
+        "name": "Obsidian",
+        "description": "Obsidianglas & Laserpräzision",
+        "concept": "Kalt, tief, durchdringend"
+      },
+      "ceramic": {
+        "name": "Celadon",
+        "description": "Seladon-Glasur & ruhige Ästhetik",
+        "concept": "Still, zurückhaltend, warm"
+      },
+      "aurora": {
+        "name": "Aurora",
+        "description": "Polarspektrum & Nachthimmel-Telemetrie",
+        "concept": "Spektral, polar, schwebend"
+      },
+      "ember": {
+        "name": "Ember",
+        "description": "Ofenglut & mechanische Wärme",
+        "concept": "Kupferglühen, Restwärme"
+      }
+    },
     "language": "Sprache",
     "auto": "Auto"
   },

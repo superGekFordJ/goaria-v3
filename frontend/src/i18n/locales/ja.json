@@ -29,8 +29,28 @@
     "light": "ライト",
     "dark": "ダーク",
     "skinStyle": "スキンスタイル",
-    "obsidianDesc": "Obsidian (黒曜石)",
-    "ceramicDesc": "Ceramic (陶磁器)",
+    "skins": {
+      "obsidian": {
+        "name": "Obsidian",
+        "description": "黒曜石とレーザーの精密感",
+        "concept": "冷徹・深淵・貫通"
+      },
+      "ceramic": {
+        "name": "Celadon",
+        "description": "青磁の釉薬と穏やかな編集感",
+        "concept": "静寂・節制・温潤"
+      },
+      "aurora": {
+        "name": "Aurora",
+        "description": "極光スペクトルと夜空テレメトリ",
+        "concept": "光彩・極地・浮遊"
+      },
+      "ember": {
+        "name": "Ember",
+        "description": "窯火の余燼と機械的な温もり",
+        "concept": "銅火の微溶・沈着な余熱"
+      }
+    },
     "language": "言語",
     "auto": "自動"
   },

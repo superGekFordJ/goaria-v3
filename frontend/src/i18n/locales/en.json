@@ -29,8 +29,28 @@
     "light": "Light",
     "dark": "Dark",
     "skinStyle": "Skin Style",
-    "obsidianDesc": "Obsidian",
-    "ceramicDesc": "Ceramic",
+    "skins": {
+      "obsidian": {
+        "name": "Obsidian",
+        "description": "Obsidian glass & laser precision",
+        "concept": "Cold, deep, penetrating"
+      },
+      "ceramic": {
+        "name": "Celadon",
+        "description": "Celadon glaze & quiet editorial",
+        "concept": "Calm, warm restraint"
+      },
+      "aurora": {
+        "name": "Aurora",
+        "description": "Polar spectrum & night-sky telemetry",
+        "concept": "Spectral, polar, drifting"
+      },
+      "ember": {
+        "name": "Ember",
+        "description": "Kiln fire & mechanical warmth",
+        "concept": "Copper glow, residual heat"
+      }
+    },
     "language": "Language",
     "auto": "Auto"
   },

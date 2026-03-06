@@ -163,6 +163,14 @@
   --kbd-bg: rgba(255, 255, 255, 0.05);
   --kbd-border: rgba(255, 255, 255, 0.1);
   --kbd-text: rgba(255, 255, 255, 0.3);
+
+  /* Skin-Detail Tokens (defaults = obsidian baseline) */
+  --skin-accent-from: #06ffd5;
+  --skin-accent-to: #22ff88;
+  --skin-surface-tint: rgba(6, 255, 213, 0.04);
+  --skin-surface-border: rgba(6, 255, 213, 0.12);
+  --skin-focus-beam: #06ffd5;
+  --skin-ambient-glow: rgba(6, 255, 213, 0.25);
 }
 
 /* === Light Theme === */
@@ -247,6 +255,14 @@
     --kbd-bg: rgba(0, 0, 0, 0.06);
     --kbd-border: rgba(0, 0, 0, 0.12);
     --kbd-text: rgba(0, 0, 0, 0.4);
+
+    /* Skin-Detail Tokens (light defaults = obsidian baseline) */
+    --skin-accent-from: #00b8a0;
+    --skin-accent-to: #10b981;
+    --skin-surface-tint: rgba(0, 184, 160, 0.05);
+    --skin-surface-border: rgba(0, 184, 160, 0.15);
+    --skin-focus-beam: #00b8a0;
+    --skin-ambient-glow: rgba(0, 184, 160, 0.15);
   }
 }
 
@@ -345,51 +361,185 @@
   --kbd-bg: rgba(0, 0, 0, 0.05);
   --kbd-border: rgba(0, 0, 0, 0.1);
   --kbd-text: rgba(0, 0, 0, 0.4);
+
+  /* Skin-Detail Tokens (explicit light = obsidian baseline) */
+  --skin-accent-from: #0f766e;
+  --skin-accent-to: #047857;
+  --skin-surface-tint: rgba(15, 118, 110, 0.05);
+  --skin-surface-border: rgba(15, 118, 110, 0.15);
+  --skin-focus-beam: #0f766e;
+  --skin-ambient-glow: rgba(15, 118, 110, 0.12);
 }
 
 /* === Skin: Obsidian (Default) === */
 /* Obsidian is the default skin. All base values defined in :root / [data-theme] blocks apply. */
-/* No variable overrides needed. */
+/* No variable overrides needed — skin-detail tokens already default to obsidian baseline. */
 [data-skin='obsidian'] {
   /* intentionally empty — default values */
 }
 
-/* === Skin: Ceramic (Warm Teal) === */
-[data-skin='ceramic'] {
-  /* intentionally empty for base — theme-specific below */
-}
+/* === Skin: Celadon (storage ID: ceramic) — Celadon Glaze & Quiet Editorial === */
 
-/* Ceramic skin in dark mode - warmer tones */
+/* Celadon / dark */
 [data-skin='ceramic'][data-theme='dark'],
 [data-skin='ceramic']:not([data-theme='light']) {
-  --neon-primary: #0dd9b5;
-  --neon-secondary: #1ed96e;
-  --neon-glow: rgba(13, 217, 181, 0.35);
+  --neon-primary: #5eead4;
+  --neon-secondary: #2dd4bf;
+  --neon-glow: rgba(94, 234, 212, 0.25);
 
-  /* Status colors - warmer variants */
-  --status-active: #1ed96e;
-  --status-complete: #0dd9b5;
+  --status-active: #2dd4bf;
+  --status-complete: #5eead4;
 
-  /* Glow overrides */
   --glow-active: var(--status-active);
   --glow-active-secondary: var(--neon-primary);
   --glow-complete: var(--neon-primary);
+
+  --skin-accent-from: #5eead4;
+  --skin-accent-to: #2dd4bf;
+  --skin-surface-tint: rgba(94, 234, 212, 0.04);
+  --skin-surface-border: rgba(94, 234, 212, 0.10);
+  --skin-focus-beam: #5eead4;
+  --skin-ambient-glow: rgba(94, 234, 212, 0.20);
+
+  --selection-bg: var(--neon-primary);
+  --focus-ring: var(--neon-primary);
+  --divider-glow: var(--neon-primary);
 }
 
-/* Ceramic skin in light mode - softer, warmer */
+/* Celadon / light */
 [data-skin='ceramic'][data-theme='light'] {
   --neon-primary: #0d9488;
-  --neon-secondary: #059669;
+  --neon-secondary: #0f766e;
   --neon-glow: rgba(13, 148, 136, 0.12);
+  --neon-btn-text: #ffffff;
 
-  /* Status colors - warmer variants */
-  --status-active: #059669;
+  --status-active: #0f766e;
   --status-complete: #0d9488;
 
-  /* Glow overrides */
   --glow-active: var(--status-active);
   --glow-active-secondary: var(--neon-primary);
   --glow-complete: var(--neon-primary);
+
+  --skin-accent-from: #0d9488;
+  --skin-accent-to: #0f766e;
+  --skin-surface-tint: rgba(13, 148, 136, 0.05);
+  --skin-surface-border: rgba(13, 148, 136, 0.12);
+  --skin-focus-beam: #0d9488;
+  --skin-ambient-glow: rgba(13, 148, 136, 0.10);
+
+  --selection-bg: var(--neon-primary);
+  --focus-ring: var(--neon-primary);
+  --divider-glow: var(--neon-primary);
+}
+
+/* === Skin: Aurora — Polar Spectrum & Night-Sky Telemetry === */
+
+/* Aurora / dark */
+[data-skin='aurora'][data-theme='dark'],
+[data-skin='aurora']:not([data-theme='light']) {
+  --neon-primary: #818cf8;
+  --neon-secondary: #38bdf8;
+  --neon-glow: rgba(129, 140, 248, 0.30);
+  --neon-btn-text: #0c0c0f;
+
+  --status-active: #34d399;
+  --status-complete: #818cf8;
+
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-complete: var(--neon-primary);
+
+  --skin-accent-from: #818cf8;
+  --skin-accent-to: #38bdf8;
+  --skin-surface-tint: rgba(129, 140, 248, 0.05);
+  --skin-surface-border: rgba(129, 140, 248, 0.12);
+  --skin-focus-beam: #818cf8;
+  --skin-ambient-glow: rgba(129, 140, 248, 0.25);
+
+  --selection-bg: var(--neon-primary);
+  --focus-ring: var(--neon-primary);
+  --divider-glow: var(--neon-primary);
+}
+
+/* Aurora / light */
+[data-skin='aurora'][data-theme='light'] {
+  --neon-primary: #6366f1;
+  --neon-secondary: #0ea5e9;
+  --neon-glow: rgba(99, 102, 241, 0.15);
+  --neon-btn-text: #ffffff;
+
+  --status-active: #059669;
+  --status-complete: #6366f1;
+
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-complete: var(--neon-primary);
+
+  --skin-accent-from: #6366f1;
+  --skin-accent-to: #0ea5e9;
+  --skin-surface-tint: rgba(99, 102, 241, 0.05);
+  --skin-surface-border: rgba(99, 102, 241, 0.12);
+  --skin-focus-beam: #6366f1;
+  --skin-ambient-glow: rgba(99, 102, 241, 0.12);
+
+  --selection-bg: var(--neon-primary);
+  --focus-ring: var(--neon-primary);
+  --divider-glow: var(--neon-primary);
+}
+
+/* === Skin: Ember — Kiln Fire & Mechanical Warmth === */
+
+/* Ember / dark */
+[data-skin='ember'][data-theme='dark'],
+[data-skin='ember']:not([data-theme='light']) {
+  --neon-primary: #f59e0b;
+  --neon-secondary: #ef4444;
+  --neon-glow: rgba(245, 158, 11, 0.30);
+  --neon-btn-text: #0c0c0f;
+
+  --status-active: #34d399;
+  --status-complete: #f59e0b;
+
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-complete: var(--neon-primary);
+
+  --skin-accent-from: #f59e0b;
+  --skin-accent-to: #ef4444;
+  --skin-surface-tint: rgba(245, 158, 11, 0.05);
+  --skin-surface-border: rgba(245, 158, 11, 0.12);
+  --skin-focus-beam: #f59e0b;
+  --skin-ambient-glow: rgba(245, 158, 11, 0.25);
+
+  --selection-bg: var(--neon-primary);
+  --focus-ring: var(--neon-primary);
+  --divider-glow: var(--neon-primary);
+}
+
+/* Ember / light */
+[data-skin='ember'][data-theme='light'] {
+  --neon-primary: #b45309;
+  --neon-secondary: #c2410c;
+  --neon-glow: rgba(180, 83, 9, 0.15);
+  --neon-btn-text: #ffffff;
+
+  --status-active: #047857;
+  --status-complete: #b45309;
+
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-complete: var(--neon-primary);
+
+  --skin-accent-from: #b45309;
+  --skin-accent-to: #c2410c;
+  --skin-surface-tint: rgba(180, 83, 9, 0.05);
+  --skin-surface-border: rgba(180, 83, 9, 0.12);
+  --skin-focus-beam: #b45309;
+  --skin-ambient-glow: rgba(180, 83, 9, 0.10);
+
+  --selection-bg: var(--neon-primary);
+  --focus-ring: var(--neon-primary);
+  --divider-glow: var(--neon-primary);
 }
 
 /* === Density Settings === */
@@ -627,15 +777,15 @@ body {
 .progress-bar-fill {
   height: 100%;
   width: 100%;
-  background: linear-gradient(90deg, var(--neon-primary), var(--neon-secondary));
+  background: linear-gradient(90deg, var(--skin-accent-from), var(--skin-accent-to));
   border-radius: 9999px;
   position: relative;
   transition: none;
   transform-origin: left;
   will-change: transform;
   box-shadow:
-    0 0 12px var(--neon-glow),
-    0 0 24px color-mix(in srgb, var(--neon-secondary) 30%, transparent);
+    0 0 12px var(--skin-ambient-glow),
+    0 0 24px color-mix(in srgb, var(--skin-accent-to) 30%, transparent);
 }
 
 .progress-bar-fill::after {
@@ -995,7 +1145,7 @@ select {
 }
 
 .btn-neon {
-  background: linear-gradient(135deg, var(--neon-primary), var(--neon-secondary));
+  background: linear-gradient(135deg, var(--skin-accent-from), var(--skin-accent-to));
   color: var(--neon-btn-text);
   font-weight: 700;
   border: none;

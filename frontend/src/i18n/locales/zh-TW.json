@@ -29,8 +29,28 @@
     "light": "亮色",
     "dark": "深色",
     "skinStyle": "面板風格",
-    "obsidianDesc": "深邃黑曜石",
-    "ceramicDesc": "溫潤陶瓷白",
+    "skins": {
+      "obsidian": {
+        "name": "Obsidian",
+        "description": "黑曜石與雷射精密感",
+        "concept": "冷冽、深邃、穿透"
+      },
+      "ceramic": {
+        "name": "Celadon",
+        "description": "青瓷釉色與溫潤編輯感",
+        "concept": "靜謐、克制、溫潤"
+      },
+      "aurora": {
+        "name": "Aurora",
+        "description": "極光頻譜與夜空遙測",
+        "concept": "光譜、極地、漂浮"
+      },
+      "ember": {
+        "name": "Ember",
+        "description": "窯火餘燼與機械溫度",
+        "concept": "銅火微熔、沉穩餘溫"
+      }
+    },
     "language": "語言",
     "auto": "自動"
   },

@@ -240,7 +240,7 @@
           :class="[
             'absolute bottom-0 left-4 right-4 h-px transition-all duration-500',
             inputFocused
-              ? 'bg-gradient-to-r from-transparent via-[var(--neon-primary)]/40 to-transparent'
+              ? 'bg-gradient-to-r from-transparent via-[var(--skin-focus-beam)]/40 to-transparent'
               : 'bg-transparent',
           ]"
         ></div>
@@ -393,11 +393,11 @@
   /* Focus container glow effect - uses pseudo element for smooth rounded glow */
   .input-container-focused {
     position: relative;
-    border-color: color-mix(in srgb, var(--neon-primary) 25%, transparent) !important;
+    border-color: color-mix(in srgb, var(--skin-focus-beam) 25%, transparent) !important;
     box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--neon-primary) 15%, transparent),
-      0 0 20px color-mix(in srgb, var(--neon-primary) 8%, transparent),
-      inset 0 0 20px color-mix(in srgb, var(--neon-primary) 3%, transparent);
+      0 0 0 1px color-mix(in srgb, var(--skin-focus-beam) 15%, transparent),
+      0 0 20px color-mix(in srgb, var(--skin-focus-beam) 8%, transparent),
+      inset 0 0 20px color-mix(in srgb, var(--skin-focus-beam) 3%, transparent);
   }
 
   /* Input autofill styling override */
