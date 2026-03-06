@@ -92,7 +92,7 @@
       icon: CheckCircle2,
       title: t('taskList.noCompleted'),
       description: t('taskList.completedHere'),
-      accent: 'var(--status-active)',
+      accent: 'var(--status-complete)',
     }
   })
 

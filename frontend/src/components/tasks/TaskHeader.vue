@@ -305,7 +305,7 @@
           key="result"
           class="flex items-center gap-3 text-[11px] font-medium"
         >
-          <span class="text-[var(--status-active)]">
+          <span class="text-[var(--status-complete)]">
             {{ t('taskHeader.batchSucceeded', { count: batchResult.succeeded }) }}
           </span>
           <span v-if="batchResult.duplicates > 0" class="text-amber-400 dark:text-amber-400">
@@ -322,7 +322,7 @@
           key="stats"
           class="flex items-center gap-3 text-[11px] font-medium w-full"
         >
-          <span class="text-[var(--status-active)]">
+          <span class="text-[var(--status-complete)]">
             {{ t('taskHeader.validLinks', { count: parsedStats.valid }) }}
           </span>
           <span v-if="parsedStats.duplicate > 0" class="text-amber-400 dark:text-amber-400">
@@ -360,7 +360,7 @@
         <div
           v-else-if="clipboardHint"
           key="hint"
-          class="flex items-center gap-2 text-[11px] text-[var(--status-active)] font-medium"
+          class="flex items-center gap-2 text-[11px] text-[var(--status-complete)] font-medium"
         >
           <span>{{ clipboardHint }}</span>
         </div>

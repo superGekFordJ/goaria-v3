@@ -140,10 +140,10 @@
             </div>
             <div
               v-else-if="saveStatus === 'saved'"
-              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-active)]/10 border border-[var(--status-active)]/20"
+              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
             >
-              <CheckCircle :size="12" class="text-[var(--status-active)]" />
-              <span class="text-[10px] font-mono-data text-[var(--status-active)]">
+              <CheckCircle :size="12" class="text-[var(--status-complete)]" />
+              <span class="text-[10px] font-mono-data text-[var(--status-complete)]">
                 {{ t('settings.saved') }}
               </span>
             </div>

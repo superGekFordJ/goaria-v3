@@ -155,9 +155,9 @@
 
         <!-- up to date -->
         <template v-else-if="status === 'idle' && upToDate">
-          <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-active)]/10 border border-[var(--status-active)]/20">
-            <CheckCircle :size="12" class="text-[var(--status-active)]" />
-            <span class="text-[10px] font-mono-data text-[var(--status-active)]">
+          <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20">
+            <CheckCircle :size="12" class="text-[var(--status-complete)]" />
+            <span class="text-[10px] font-mono-data text-[var(--status-complete)]">
               {{ t('update.upToDate') }}
             </span>
           </div>
@@ -214,7 +214,7 @@
         <!-- ready -->
         <template v-else-if="status === 'ready'">
           <button
-            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-active)]/10 border border-[var(--status-active)]/30 hover:bg-[var(--status-active)]/20 transition-all duration-200 text-[10px] font-mono-data text-[var(--status-active)]"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/30 hover:bg-[var(--status-complete)]/20 transition-all duration-200 text-[10px] font-mono-data text-[var(--status-complete)]"
             @click="restartApp"
           >
             <RotateCcw :size="12" />
