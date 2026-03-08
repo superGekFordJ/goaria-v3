@@ -80,16 +80,23 @@ export function setupActions(state: TaskState) {
         lastStoppedTasksRef = tasks.value.stopped
       }
 
-      const active = dedupByGid((res.active || []).filter((t: Task) => !_stoppedGidSet.has(t.gid)))
+      const active: Task[] = []
       _activeGidSet.clear()
-      for (const t of active) {
-        _activeGidSet.add(t.gid)
+      for (const t of res.active || []) {
+        const gid = t?.gid
+        if (!gid || _stoppedGidSet.has(gid) || _activeGidSet.has(gid)) continue
+        _activeGidSet.add(gid)
+        active.push(t)
       }
-      const waiting = dedupByGid(
-        (res.waiting || []).filter(
-          (t: Task) => !_activeGidSet.has(t.gid) && !_stoppedGidSet.has(t.gid),
-        ),
-      )
+
+      const waiting: Task[] = []
+      _waitingGidSet.clear()
+      for (const t of res.waiting || []) {
+        const gid = t?.gid
+        if (!gid || _activeGidSet.has(gid) || _stoppedGidSet.has(gid) || _waitingGidSet.has(gid)) continue
+        _waitingGidSet.add(gid)
+        waiting.push(t)
+      }
 
       for (const t of [...active, ...waiting]) cacheMetadata(t)
 
@@ -105,7 +112,7 @@ export function setupActions(state: TaskState) {
         metadataPending.clear()
 
         GetTaskMetadata(batch)
-          .then((metadata: Record<string, Task>) => {
+          .then((metadata: Record<string, Task | undefined>) => {
             if (!metadata) return
             let newActive = tasks.value.active
             let newWaiting = tasks.value.waiting
@@ -199,19 +206,32 @@ export function setupActions(state: TaskState) {
       const res = await GetTasks()
       consecutiveErrors.value = 0
 
-      const active = dedupByGid(res.active || [])
+      const active: Task[] = []
       _activeGidSet.clear()
-      for (const t of active) _activeGidSet.add(t.gid)
+      for (const t of res.active || []) {
+        const gid = t?.gid
+        if (!gid || _activeGidSet.has(gid)) continue
+        _activeGidSet.add(gid)
+        active.push(t)
+      }
 
-      const waiting = dedupByGid((res.waiting || []).filter((t: Task) => !_activeGidSet.has(t.gid)))
+      const waiting: Task[] = []
       _waitingGidSet.clear()
-      for (const t of waiting) _waitingGidSet.add(t.gid)
+      for (const t of res.waiting || []) {
+        const gid = t?.gid
+        if (!gid || _activeGidSet.has(gid) || _waitingGidSet.has(gid)) continue
+        _waitingGidSet.add(gid)
+        waiting.push(t)
+      }
 
-      const stopped = dedupByGid(
-        (res.stopped || []).filter(
-          (t: Task) => !_activeGidSet.has(t.gid) && !_waitingGidSet.has(t.gid),
-        ),
-      )
+      const stopped: Task[] = []
+      _stoppedGidSet.clear()
+      for (const t of res.stopped || []) {
+        const gid = t?.gid
+        if (!gid || _activeGidSet.has(gid) || _waitingGidSet.has(gid) || _stoppedGidSet.has(gid)) continue
+        _stoppedGidSet.add(gid)
+        stopped.push(t)
+      }
 
       for (const t of [...active, ...waiting, ...stopped]) cacheMetadata(t)
 
@@ -223,6 +243,7 @@ export function setupActions(state: TaskState) {
 
       // Assign tasks FIRST so the async metadata callback operates on current state
       tasks.value = newTasks
+      lastStoppedTasksRef = newTasks.stopped
 
       // Metadata fetching logic similar to fetchActiveTasks...
       const tasksNeedingMetadata: string[] = []
@@ -236,7 +257,7 @@ export function setupActions(state: TaskState) {
             const batch = Array.from(metadataPending)
             metadataPending.clear()
             GetTaskMetadata(batch)
-              .then((metadata: Record<string, Task>) => {
+              .then((metadata: Record<string, Task | undefined>) => {
                 if (!metadata) return
                 let newActive = tasks.value.active
                 let newWaiting = tasks.value.waiting
