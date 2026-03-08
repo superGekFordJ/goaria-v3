@@ -233,13 +233,20 @@ func (m *Monitor) tick() {
 		allTasks = append(allTasks, &stopped[i])
 	}
 
+	missingMetadataSet := make(map[string]struct{}, len(allTasks))
+	missingMetadataGids := make([]string, 0, len(allTasks))
 	for _, task := range allTasks {
 		// 如果缓存中没有有效元数据（新任务或被污染的缓存），则发起完整请求
 		// 使用 HasValidMetadata 检测并修复被污染的空文件列表缓存
 		if !Cache.HasValidMetadata(task.GID) {
-			Cache.PrefetchMetadata(task.GID)
+			if _, exists := missingMetadataSet[task.GID]; exists {
+				continue
+			}
+			missingMetadataSet[task.GID] = struct{}{}
+			missingMetadataGids = append(missingMetadataGids, task.GID)
 		}
 	}
+	Cache.PrefetchMetadataMulti(missingMetadataGids)
 
 	// 2. 使用缓存的元数据丰富轻量任务
 	Cache.EnrichTasks(active)

@@ -185,6 +185,7 @@ func Pause(gid string) error {
 	ForceSaveSession()
 	return err
 }
+
 func Unpause(gid string) error {
 	_, err := sendRequest("aria2.unpause", []any{gid})
 	ForceSaveSession()
@@ -193,7 +194,60 @@ func Unpause(gid string) error {
 
 // --- 数据获取 ---
 
-// TellStatus gets detailed status for a specific task by GID
+func TellStatusMulti(gids []string) ([]*Task, error) {
+	if len(gids) == 0 {
+		return nil, nil
+	}
+
+	keys := []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "errorCode", "errorMessage", "files", "dir"}
+	calls := make([]any, 0, len(gids))
+	for _, gid := range gids {
+		params := make([]any, 0, 3)
+		if currentSecret != "" {
+			params = append(params, "token:"+currentSecret)
+		}
+		params = append(params, gid, keys)
+
+		calls = append(calls, map[string]any{
+			"methodName": "aria2.tellStatus",
+			"params":     params,
+		})
+	}
+
+	resp, err := sendRequestInternal("system.multicall", []any{calls}, false)
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Result []json.RawMessage `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, err
+	}
+
+	if result.Error != nil && result.Error.Message != "" {
+		return nil, fmt.Errorf("system.multicall: rpc error %d: %s", result.Error.Code, result.Error.Message)
+	}
+
+	tasks := make([]*Task, 0, len(result.Result))
+	for _, raw := range result.Result {
+		var batch []Task
+		if err := json.Unmarshal(raw, &batch); err != nil || len(batch) == 0 {
+			continue
+		}
+		task := batch[0]
+		tasks = append(tasks, &task)
+	}
+
+	return tasks, nil
+}
+
 func TellStatus(gid string) (*Task, error) {
 	keys := []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "errorCode", "errorMessage", "files", "dir"}
 	params := []any{gid, keys}
@@ -294,8 +348,12 @@ func GetGlobalStat() (string, error) {
 }
 
 func sendRequest(method string, params []any) ([]byte, error) {
+	return sendRequestInternal(method, params, true)
+}
+
+func sendRequestInternal(method string, params []any, prependSecret bool) ([]byte, error) {
 	finalParams := params
-	if currentSecret != "" {
+	if prependSecret && currentSecret != "" {
 		finalParams = append([]any{"token:" + currentSecret}, params...)
 	}
 	payload := map[string]any{"jsonrpc": "2.0", "id": "goaria", "method": method, "params": finalParams}

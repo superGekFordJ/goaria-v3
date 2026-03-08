@@ -155,6 +155,38 @@ func (c *TaskCache) InvalidateMetadata(gid string) {
 	delete(c.metadata, gid)
 }
 
+func (c *TaskCache) PrefetchMetadataMulti(gids []string) {
+	if len(gids) == 0 {
+		return
+	}
+
+	seen := make(map[string]struct{}, len(gids))
+	uniqueGids := make([]string, 0, len(gids))
+	for _, gid := range gids {
+		if gid == "" {
+			continue
+		}
+		if _, exists := seen[gid]; exists {
+			continue
+		}
+		seen[gid] = struct{}{}
+		uniqueGids = append(uniqueGids, gid)
+	}
+
+	tasks, err := rpc.TellStatusMulti(uniqueGids)
+	if err != nil || len(tasks) == 0 {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, task := range tasks {
+		if task != nil {
+			c.ensureMetadata(*task)
+		}
+	}
+}
+
 // PrefetchMetadata 强制预取指定任务的元数据
 // 用于任务添加后立即获取完整信息
 func (c *TaskCache) PrefetchMetadata(gid string) {

@@ -155,6 +155,158 @@ func TestTellActiveError(t *testing.T) {
 	}
 }
 
+func TestTellStatusMulti(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if req.Method != "system.multicall" {
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+			return
+		}
+
+		if len(req.Params) != 1 {
+			http.Error(w, "unexpected top-level params", http.StatusBadRequest)
+			return
+		}
+
+		var calls []struct {
+			MethodName string            `json:"methodName"`
+			Params     []json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal(req.Params[0], &calls); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if len(calls) != 2 {
+			http.Error(w, "unexpected call count", http.StatusBadRequest)
+			return
+		}
+
+		for i, call := range calls {
+			if call.MethodName != "aria2.tellStatus" {
+				http.Error(w, "unexpected nested method", http.StatusBadRequest)
+				return
+			}
+			if len(call.Params) != 3 {
+				http.Error(w, "unexpected nested param count", http.StatusBadRequest)
+				return
+			}
+
+			var token string
+			if err := json.Unmarshal(call.Params[0], &token); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if token != "token:secret" {
+				http.Error(w, "unexpected nested token", http.StatusBadRequest)
+				return
+			}
+
+			var gid string
+			if err := json.Unmarshal(call.Params[1], &gid); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if gid != []string{"gid-1", "gid-2"}[i] {
+				http.Error(w, "unexpected gid", http.StatusBadRequest)
+				return
+			}
+		}
+
+		response := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "goaria",
+			"result": []interface{}{
+				[]interface{}{map[string]interface{}{
+					"gid":             "gid-1",
+					"status":          "active",
+					"totalLength":     "100",
+					"completedLength": "10",
+					"downloadSpeed":   "1",
+					"errorCode":       "",
+					"errorMessage":    "",
+					"files": []interface{}{map[string]interface{}{
+						"path": "D:/Downloads/a.zip",
+						"uris": []interface{}{map[string]interface{}{"uri": "https://example.com/a.zip"}},
+					}},
+					"dir": "D:/Downloads",
+				}},
+				[]interface{}{map[string]interface{}{
+					"gid":             "gid-2",
+					"status":          "waiting",
+					"totalLength":     "200",
+					"completedLength": "20",
+					"downloadSpeed":   "2",
+					"errorCode":       "",
+					"errorMessage":    "",
+					"files": []interface{}{map[string]interface{}{
+						"path": "D:/Downloads/b.zip",
+						"uris": []interface{}{map[string]interface{}{"uri": "https://example.com/b.zip"}},
+					}},
+					"dir": "D:/Downloads",
+				}},
+			},
+		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	port := parts[len(parts)-1]
+
+	Init(port, "secret")
+
+	tasks, err := TellStatusMulti([]string{"gid-1", "gid-2"})
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("Expected 2 tasks, got %d", len(tasks))
+	}
+	if tasks[0].GID != "gid-1" || tasks[1].GID != "gid-2" {
+		t.Fatalf("Unexpected gids returned: %v %v", tasks[0].GID, tasks[1].GID)
+	}
+	if len(tasks[0].Files) != 1 || tasks[0].Files[0].Path != "D:/Downloads/a.zip" {
+		t.Fatalf("Unexpected first task files: %+v", tasks[0].Files)
+	}
+}
+
+func TestTellStatusMultiError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "goaria",
+			"error": map[string]interface{}{
+				"code":    1,
+				"message": "multicall failed",
+			},
+		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	port := parts[len(parts)-1]
+
+	Init(port, "secret")
+
+	_, err := TellStatusMulti([]string{"gid-1"})
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "multicall failed") {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
 func TestAria2RealSmallFile(t *testing.T) {
 	// This test requires a running Aria2 instance on port 6800 with secret "mysecret"
 	t.Skip("Skipping integration test that requires real Aria2 instance")
