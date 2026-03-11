@@ -49,10 +49,8 @@ func (a *App) AddUri(url string) string {
 		}
 	}
 
-	for _, h := range history.GetAll() {
-		if h.Source == normalizedUrl {
-			return "duplicate"
-		}
+	if history.ContainsSource(normalizedUrl) {
+		return "duplicate"
 	}
 
 	if err := a.addSingleTask(normalizedUrl); err != nil {
@@ -194,7 +192,7 @@ func (a *App) GetStoppedTasks() []rpc.Task {
 			} else if len(stopped[i].Files) > 0 && len(stopped[i].Files[0].Uris) == 0 && h.Source != "" {
 				stopped[i].Files[0].Uris = []rpc.Uri{{Uri: h.Source}}
 			}
-			
+
 			if stopped[i].TotalLength == "0" && h.TotalLength != "0" {
 				stopped[i].TotalLength = h.TotalLength
 			}
@@ -241,7 +239,7 @@ func (a *App) GetTasks() map[string][]rpc.Task {
 				} else if len(stopped[i].Files) > 0 && len(stopped[i].Files[0].Uris) == 0 && h.Source != "" {
 					stopped[i].Files[0].Uris = []rpc.Uri{{Uri: h.Source}}
 				}
-				
+
 				if stopped[i].TotalLength == "0" && h.TotalLength != "0" {
 					stopped[i].TotalLength = h.TotalLength
 				}
