@@ -192,7 +192,7 @@ func (a *App) GetStoppedTasks() []rpc.Task {
 			} else if len(stopped[i].Files) > 0 && len(stopped[i].Files[0].Uris) == 0 && h.Source != "" {
 				stopped[i].Files[0].Uris = []rpc.Uri{{Uri: h.Source}}
 			}
-
+			
 			if stopped[i].TotalLength == "0" && h.TotalLength != "0" {
 				stopped[i].TotalLength = h.TotalLength
 			}
@@ -239,7 +239,7 @@ func (a *App) GetTasks() map[string][]rpc.Task {
 				} else if len(stopped[i].Files) > 0 && len(stopped[i].Files[0].Uris) == 0 && h.Source != "" {
 					stopped[i].Files[0].Uris = []rpc.Uri{{Uri: h.Source}}
 				}
-
+				
 				if stopped[i].TotalLength == "0" && h.TotalLength != "0" {
 					stopped[i].TotalLength = h.TotalLength
 				}
@@ -269,10 +269,16 @@ func (a *App) GetTasks() map[string][]rpc.Task {
 // GetTaskMetadata fetches detailed metadata for tasks with missing file paths
 func (a *App) GetTaskMetadata(gids []string) map[string]rpc.Task {
 	result := make(map[string]rpc.Task)
-	for _, gid := range gids {
-		task, err := rpc.TellStatus(gid)
-		if err == nil && task != nil {
-			result[gid] = *task
+	if len(gids) == 0 {
+		return result
+	}
+	
+	tasks, err := rpc.TellStatusMulti(gids)
+	if err == nil {
+		for _, task := range tasks {
+			if task != nil {
+				result[task.GID] = *task
+			}
 		}
 	}
 	return result
@@ -290,16 +296,12 @@ func (a *App) ResumeTask(gid string) {
 
 // BatchPause pauses multiple tasks
 func (a *App) BatchPause(gids []string) {
-	for _, gid := range gids {
-		rpc.Pause(gid)
-	}
+	_ = rpc.PauseMulti(gids)
 }
 
 // BatchResume resumes multiple paused tasks
 func (a *App) BatchResume(gids []string) {
-	for _, gid := range gids {
-		rpc.Unpause(gid)
-	}
+	_ = rpc.UnpauseMulti(gids)
 }
 
 // BatchRemove removes multiple tasks

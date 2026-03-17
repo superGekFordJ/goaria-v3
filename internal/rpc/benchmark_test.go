@@ -3,6 +3,8 @@ package rpc
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -64,4 +66,208 @@ func BenchmarkUnmarshalTasks(b *testing.B) {
 			json.Unmarshal([]byte(lightJson), &result)
 		}
 	})
+}
+
+func BenchmarkBatchPause_Sequential(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "goaria",
+			"result":  "12345",
+		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	port := parts[len(parts)-1]
+	Init(port, "secret")
+
+	gids := make([]string, 100)
+	for i := 0; i < 100; i++ {
+		gids[i] = fmt.Sprintf("gid-%d", i)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, gid := range gids {
+			Pause(gid)
+		}
+	}
+}
+
+func BenchmarkBatchResume_Sequential(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "goaria",
+			"result":  "12345",
+		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	port := parts[len(parts)-1]
+	Init(port, "secret")
+
+	gids := make([]string, 100)
+	for i := 0; i < 100; i++ {
+		gids[i] = fmt.Sprintf("gid-%d", i)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, gid := range gids {
+			Unpause(gid)
+		}
+	}
+}
+
+func BenchmarkGetTaskMetadata_Sequential(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "goaria",
+			"result": map[string]interface{}{
+				"gid":             "gid-x",
+				"status":          "active",
+				"totalLength":     "100",
+				"completedLength": "10",
+				"downloadSpeed":   "1",
+				"errorCode":       "",
+				"errorMessage":    "",
+				"files": []interface{}{map[string]interface{}{
+					"path": "D:/Downloads/a.zip",
+					"uris": []interface{}{map[string]interface{}{"uri": "https://example.com/a.zip"}},
+				}},
+				"dir": "D:/Downloads",
+			},
+		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	port := parts[len(parts)-1]
+	Init(port, "secret")
+
+	gids := make([]string, 100)
+	for i := 0; i < 100; i++ {
+		gids[i] = fmt.Sprintf("gid-%d", i)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		result := make(map[string]Task)
+		for _, gid := range gids {
+			task, err := TellStatus(gid)
+			if err == nil && task != nil {
+				result[gid] = *task
+			}
+		}
+	}
+}
+
+func BenchmarkBatchPause_Multi(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "goaria",
+			"result":  []interface{}{"12345"},
+		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	port := parts[len(parts)-1]
+	Init(port, "secret")
+
+	gids := make([]string, 100)
+	for i := 0; i < 100; i++ {
+		gids[i] = fmt.Sprintf("gid-%d", i)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		PauseMulti(gids)
+	}
+}
+
+func BenchmarkBatchResume_Multi(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "goaria",
+			"result":  []interface{}{"12345"},
+		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	port := parts[len(parts)-1]
+	Init(port, "secret")
+
+	gids := make([]string, 100)
+	for i := 0; i < 100; i++ {
+		gids[i] = fmt.Sprintf("gid-%d", i)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		UnpauseMulti(gids)
+	}
+}
+
+func BenchmarkGetTaskMetadata_Multi(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resultArr := make([]interface{}, 100)
+		for i := 0; i < 100; i++ {
+			resultArr[i] = []interface{}{map[string]interface{}{
+				"gid":             fmt.Sprintf("gid-%d", i),
+				"status":          "active",
+				"totalLength":     "100",
+				"completedLength": "10",
+				"downloadSpeed":   "1",
+				"errorCode":       "",
+				"errorMessage":    "",
+				"files": []interface{}{map[string]interface{}{
+					"path": "D:/Downloads/a.zip",
+					"uris": []interface{}{map[string]interface{}{"uri": "https://example.com/a.zip"}},
+				}},
+				"dir": "D:/Downloads",
+			}}
+		}
+		response := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "goaria",
+			"result":  resultArr,
+		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	port := parts[len(parts)-1]
+	Init(port, "secret")
+
+	gids := make([]string, 100)
+	for i := 0; i < 100; i++ {
+		gids[i] = fmt.Sprintf("gid-%d", i)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		result := make(map[string]Task)
+		tasks, err := TellStatusMulti(gids)
+		if err == nil {
+			for _, task := range tasks {
+				if task != nil {
+					result[task.GID] = *task
+				}
+			}
+		}
+	}
 }

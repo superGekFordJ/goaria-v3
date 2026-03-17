@@ -397,3 +397,51 @@ func WaitForReady(timeout time.Duration) error {
 		}
 	}
 }
+
+func PauseMulti(gids []string) error {
+	if len(gids) == 0 {
+		return nil
+	}
+
+	calls := make([]any, 0, len(gids))
+	for _, gid := range gids {
+		params := make([]any, 0, 2)
+		if currentSecret != "" {
+			params = append(params, "token:"+currentSecret)
+		}
+		params = append(params, gid)
+
+		calls = append(calls, map[string]any{
+			"methodName": "aria2.pause",
+			"params":     params,
+		})
+	}
+
+	_, err := sendRequestInternal("system.multicall", []any{calls}, false)
+	ForceSaveSession()
+	return err
+}
+
+func UnpauseMulti(gids []string) error {
+	if len(gids) == 0 {
+		return nil
+	}
+
+	calls := make([]any, 0, len(gids))
+	for _, gid := range gids {
+		params := make([]any, 0, 2)
+		if currentSecret != "" {
+			params = append(params, "token:"+currentSecret)
+		}
+		params = append(params, gid)
+
+		calls = append(calls, map[string]any{
+			"methodName": "aria2.unpause",
+			"params":     params,
+		})
+	}
+
+	_, err := sendRequestInternal("system.multicall", []any{calls}, false)
+	ForceSaveSession()
+	return err
+}
