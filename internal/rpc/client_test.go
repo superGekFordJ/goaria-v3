@@ -8,6 +8,16 @@ import (
 	"testing"
 )
 
+func countMethodCalls(methods []string, target string) int {
+	count := 0
+	for _, method := range methods {
+		if method == target {
+			count++
+		}
+	}
+	return count
+}
+
 func TestGetGlobalStat(t *testing.T) {
 	// Mock Aria2 server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -304,6 +314,276 @@ func TestTellStatusMultiError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "multicall failed") {
 		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
+func TestPauseMulti(t *testing.T) {
+	var topLevelMethods []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		topLevelMethods = append(topLevelMethods, req.Method)
+
+		switch req.Method {
+		case "system.multicall":
+			if len(req.Params) != 1 {
+				http.Error(w, "unexpected top-level params", http.StatusBadRequest)
+				return
+			}
+
+			var calls []struct {
+				MethodName string            `json:"methodName"`
+				Params     []json.RawMessage `json:"params"`
+			}
+			if err := json.Unmarshal(req.Params[0], &calls); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			if len(calls) != 2 {
+				http.Error(w, "unexpected call count", http.StatusBadRequest)
+				return
+			}
+
+			for i, call := range calls {
+				if call.MethodName != "aria2.pause" {
+					http.Error(w, "unexpected nested method", http.StatusBadRequest)
+					return
+				}
+				if len(call.Params) != 2 {
+					http.Error(w, "unexpected nested param count", http.StatusBadRequest)
+					return
+				}
+
+				var token string
+				if err := json.Unmarshal(call.Params[0], &token); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if token != "token:secret" {
+					http.Error(w, "unexpected nested token", http.StatusBadRequest)
+					return
+				}
+
+				var gid string
+				if err := json.Unmarshal(call.Params[1], &gid); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if gid != []string{"gid-1", "gid-2"}[i] {
+					http.Error(w, "unexpected gid", http.StatusBadRequest)
+					return
+				}
+			}
+
+			response := map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      "goaria",
+				"result": []interface{}{
+					[]interface{}{"OK"},
+					[]interface{}{"OK"},
+				},
+			}
+			json.NewEncoder(w).Encode(response)
+		case "aria2.saveSession":
+			response := map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      "goaria",
+				"result":  "OK",
+			}
+			json.NewEncoder(w).Encode(response)
+		default:
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	port := parts[len(parts)-1]
+
+	Init(port, "secret")
+
+	if err := PauseMulti([]string{"gid-1", "gid-2"}); err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if count := countMethodCalls(topLevelMethods, "system.multicall"); count != 1 {
+		t.Fatalf("Expected exactly 1 multicall request, got %d (%v)", count, topLevelMethods)
+	}
+	if count := countMethodCalls(topLevelMethods, "aria2.pause"); count != 0 {
+		t.Fatalf("Expected no top-level aria2.pause requests, got %d (%v)", count, topLevelMethods)
+	}
+	if count := countMethodCalls(topLevelMethods, "aria2.saveSession"); count != 1 {
+		t.Fatalf("Expected exactly 1 saveSession request, got %d (%v)", count, topLevelMethods)
+	}
+}
+
+func TestUnpauseMulti(t *testing.T) {
+	var topLevelMethods []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		topLevelMethods = append(topLevelMethods, req.Method)
+
+		switch req.Method {
+		case "system.multicall":
+			if len(req.Params) != 1 {
+				http.Error(w, "unexpected top-level params", http.StatusBadRequest)
+				return
+			}
+
+			var calls []struct {
+				MethodName string            `json:"methodName"`
+				Params     []json.RawMessage `json:"params"`
+			}
+			if err := json.Unmarshal(req.Params[0], &calls); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			if len(calls) != 2 {
+				http.Error(w, "unexpected call count", http.StatusBadRequest)
+				return
+			}
+
+			for i, call := range calls {
+				if call.MethodName != "aria2.unpause" {
+					http.Error(w, "unexpected nested method", http.StatusBadRequest)
+					return
+				}
+				if len(call.Params) != 2 {
+					http.Error(w, "unexpected nested param count", http.StatusBadRequest)
+					return
+				}
+
+				var token string
+				if err := json.Unmarshal(call.Params[0], &token); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if token != "token:secret" {
+					http.Error(w, "unexpected nested token", http.StatusBadRequest)
+					return
+				}
+
+				var gid string
+				if err := json.Unmarshal(call.Params[1], &gid); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if gid != []string{"gid-1", "gid-2"}[i] {
+					http.Error(w, "unexpected gid", http.StatusBadRequest)
+					return
+				}
+			}
+
+			response := map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      "goaria",
+				"result": []interface{}{
+					[]interface{}{"OK"},
+					[]interface{}{"OK"},
+				},
+			}
+			json.NewEncoder(w).Encode(response)
+		case "aria2.saveSession":
+			response := map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      "goaria",
+				"result":  "OK",
+			}
+			json.NewEncoder(w).Encode(response)
+		default:
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	port := parts[len(parts)-1]
+
+	Init(port, "secret")
+
+	if err := UnpauseMulti([]string{"gid-1", "gid-2"}); err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if count := countMethodCalls(topLevelMethods, "system.multicall"); count != 1 {
+		t.Fatalf("Expected exactly 1 multicall request, got %d (%v)", count, topLevelMethods)
+	}
+	if count := countMethodCalls(topLevelMethods, "aria2.unpause"); count != 0 {
+		t.Fatalf("Expected no top-level aria2.unpause requests, got %d (%v)", count, topLevelMethods)
+	}
+	if count := countMethodCalls(topLevelMethods, "aria2.saveSession"); count != 1 {
+		t.Fatalf("Expected exactly 1 saveSession request, got %d (%v)", count, topLevelMethods)
+	}
+}
+
+func TestPauseMultiEmpty(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		response := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "goaria",
+			"result":  "OK",
+		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	port := parts[len(parts)-1]
+
+	Init(port, "secret")
+
+	if err := PauseMulti(nil); err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("Expected no requests for empty input, got %d", requests)
+	}
+}
+
+func TestUnpauseMultiEmpty(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		response := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "goaria",
+			"result":  "OK",
+		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	port := parts[len(parts)-1]
+
+	Init(port, "secret")
+
+	if err := UnpauseMulti([]string{}); err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("Expected no requests for empty input, got %d", requests)
 	}
 }
 

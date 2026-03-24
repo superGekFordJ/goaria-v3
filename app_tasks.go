@@ -30,6 +30,29 @@ type BatchAddResult struct {
 	Errors     map[string]string `json:"errors"`
 }
 
+func containsTaskSourceURL(tasks []rpc.Task, normalizedURL string) bool {
+	for _, task := range tasks {
+		for _, file := range task.Files {
+			for _, uri := range file.Uris {
+				if strings.TrimSpace(uri.Uri) == normalizedURL {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func collectTaskSourceURLs(existingURLs map[string]bool, tasks []rpc.Task) {
+	for _, task := range tasks {
+		for _, file := range task.Files {
+			for _, uri := range file.Uris {
+				existingURLs[strings.TrimSpace(uri.Uri)] = true
+			}
+		}
+	}
+}
+
 // AddUri adds a new download task
 // Returns "success" on success, "duplicate" if task already exists, or error message
 func (a *App) AddUri(url string) string {
@@ -37,16 +60,9 @@ func (a *App) AddUri(url string) string {
 	active, _ := rpc.TellActive()
 	waiting, _ := rpc.TellWaiting(0, 1000)
 	stopped, _ := rpc.TellStopped(0, 1000)
-	allTasks := append(active, append(waiting, stopped...)...)
 
-	for _, t := range allTasks {
-		for _, f := range t.Files {
-			for _, u := range f.Uris {
-				if strings.TrimSpace(u.Uri) == normalizedUrl {
-					return "duplicate"
-				}
-			}
-		}
+	if containsTaskSourceURL(active, normalizedUrl) || containsTaskSourceURL(waiting, normalizedUrl) || containsTaskSourceURL(stopped, normalizedUrl) {
+		return "duplicate"
 	}
 
 	if history.ContainsSource(normalizedUrl) {
@@ -79,13 +95,9 @@ func (a *App) BatchAddUri(urls []string) BatchAddResult {
 
 	// Build existing URL set for O(1) lookup
 	existingUrls := make(map[string]bool)
-	for _, t := range append(active, append(waiting, stopped...)...) {
-		for _, f := range t.Files {
-			for _, u := range f.Uris {
-				existingUrls[strings.TrimSpace(u.Uri)] = true
-			}
-		}
-	}
+	collectTaskSourceURLs(existingUrls, active)
+	collectTaskSourceURLs(existingUrls, waiting)
+	collectTaskSourceURLs(existingUrls, stopped)
 
 	// History dedup
 	for _, h := range history.GetAll() {
@@ -192,7 +204,7 @@ func (a *App) GetStoppedTasks() []rpc.Task {
 			} else if len(stopped[i].Files) > 0 && len(stopped[i].Files[0].Uris) == 0 && h.Source != "" {
 				stopped[i].Files[0].Uris = []rpc.Uri{{Uri: h.Source}}
 			}
-			
+
 			if stopped[i].TotalLength == "0" && h.TotalLength != "0" {
 				stopped[i].TotalLength = h.TotalLength
 			}
@@ -239,7 +251,7 @@ func (a *App) GetTasks() map[string][]rpc.Task {
 				} else if len(stopped[i].Files) > 0 && len(stopped[i].Files[0].Uris) == 0 && h.Source != "" {
 					stopped[i].Files[0].Uris = []rpc.Uri{{Uri: h.Source}}
 				}
-				
+
 				if stopped[i].TotalLength == "0" && h.TotalLength != "0" {
 					stopped[i].TotalLength = h.TotalLength
 				}
@@ -272,7 +284,7 @@ func (a *App) GetTaskMetadata(gids []string) map[string]rpc.Task {
 	if len(gids) == 0 {
 		return result
 	}
-	
+
 	tasks, err := rpc.TellStatusMulti(gids)
 	if err == nil {
 		for _, task := range tasks {
@@ -304,99 +316,221 @@ func (a *App) BatchResume(gids []string) {
 	_ = rpc.UnpauseMulti(gids)
 }
 
-// BatchRemove removes multiple tasks
-func (a *App) BatchRemove(gids []string, deleteFiles bool) {
+type removalTarget struct {
+	path string
+	dir  string
+}
+
+func removalTargetFromTask(task rpc.Task) (removalTarget, bool) {
+	if len(task.Files) == 0 || task.Files[0].Path == "" {
+		return removalTarget{}, false
+	}
+	return removalTarget{path: task.Files[0].Path, dir: task.Dir}, true
+}
+
+func removalTargetFromMetadata(meta *monitor.TaskMetadata) (removalTarget, bool) {
+	if meta == nil || len(meta.Files) == 0 || meta.Files[0] == "" {
+		return removalTarget{}, false
+	}
+	return removalTarget{path: meta.Files[0], dir: meta.Dir}, true
+}
+
+func removalTargetFromHistory(entry history.HistoryEntry) (removalTarget, bool) {
+	if entry.Path == "" {
+		return removalTarget{}, false
+	}
+	return removalTarget{path: entry.Path, dir: entry.Dir}, true
+}
+
+func normalizeRemovalGIDs(gids []string) []string {
+	seen := make(map[string]struct{}, len(gids))
+	unique := make([]string, 0, len(gids))
 	for _, gid := range gids {
-		a.RemoveTask(gid, deleteFiles)
+		gid = strings.TrimSpace(gid)
+		if gid == "" {
+			continue
+		}
+		if _, exists := seen[gid]; exists {
+			continue
+		}
+		seen[gid] = struct{}{}
+		unique = append(unique, gid)
+	}
+	return unique
+}
+
+func fillRemovalTargetsFromTasks(tasks []rpc.Task, unresolved map[string]struct{}, targets map[string]removalTarget) {
+	for _, task := range tasks {
+		if _, ok := unresolved[task.GID]; !ok {
+			continue
+		}
+		target, ok := removalTargetFromTask(task)
+		if !ok {
+			continue
+		}
+		targets[task.GID] = target
+		delete(unresolved, task.GID)
 	}
 }
 
-// RemoveTask removes a task and optionally deletes the file
-func (a *App) RemoveTask(gid string, deleteFile bool) {
-	var targetPath string
-	var targetDir string
-
-	// 1. Find the file path
-	active, _ := rpc.TellActive()
-	waiting, _ := rpc.TellWaiting(0, 1000)
-	stopped, _ := rpc.TellStopped(0, 1000)
-	all := append(active, append(waiting, stopped...)...)
-	for _, t := range all {
-		if t.GID == gid && len(t.Files) > 0 && t.Files[0].Path != "" {
-			targetPath = t.Files[0].Path
-			targetDir = t.Dir
-			break
+func unresolvedRemovalGIDs(order []string, unresolved map[string]struct{}) []string {
+	gids := make([]string, 0, len(unresolved))
+	for _, gid := range order {
+		if _, ok := unresolved[gid]; ok {
+			gids = append(gids, gid)
 		}
 	}
+	return gids
+}
 
-	// Fallback: some tasks may not include file metadata in TellActive/TellWaiting
-	if targetPath == "" {
-		if t, err := rpc.TellStatus(gid); err == nil && t != nil && len(t.Files) > 0 && t.Files[0].Path != "" {
-			targetPath = t.Files[0].Path
-			targetDir = t.Dir
-		}
+func resolveRemovalTargetsBatch(gids []string) map[string]removalTarget {
+	uniqueGIDs := normalizeRemovalGIDs(gids)
+	targets := make(map[string]removalTarget, len(uniqueGIDs))
+	if len(uniqueGIDs) == 0 {
+		return targets
 	}
 
-	// Fallback: tasks restored from history may not exist in Aria2 lists after restart
-	if targetPath == "" {
-		for _, h := range history.GetAll() {
-			if h.GID == gid && h.Path != "" {
-				targetPath = h.Path
-				targetDir = h.Dir
-				break
-			}
-		}
+	unresolved := make(map[string]struct{}, len(uniqueGIDs))
+	for _, gid := range uniqueGIDs {
+		unresolved[gid] = struct{}{}
 	}
 
-	// 2. Remove from Aria2 memory and result list
+	fillRemovalTargetsFromTasks(monitor.Cache.GetActive(), unresolved, targets)
+	fillRemovalTargetsFromTasks(monitor.Cache.GetWaiting(), unresolved, targets)
+	fillRemovalTargetsFromTasks(monitor.Cache.GetStopped(), unresolved, targets)
+
+	for _, gid := range uniqueGIDs {
+		if _, ok := unresolved[gid]; !ok {
+			continue
+		}
+		target, ok := removalTargetFromMetadata(monitor.Cache.GetMetadata(gid))
+		if !ok {
+			continue
+		}
+		targets[gid] = target
+		delete(unresolved, gid)
+	}
+
+	for _, gid := range uniqueGIDs {
+		if _, ok := unresolved[gid]; !ok {
+			continue
+		}
+		entry, ok := history.Get(gid)
+		if !ok {
+			continue
+		}
+		target, ok := removalTargetFromHistory(entry)
+		if !ok {
+			continue
+		}
+		targets[gid] = target
+		delete(unresolved, gid)
+	}
+
+	fallbackGIDs := unresolvedRemovalGIDs(uniqueGIDs, unresolved)
+	if len(fallbackGIDs) == 0 {
+		return targets
+	}
+
+	tasks, err := rpc.TellStatusMulti(fallbackGIDs)
+	if err != nil {
+		return targets
+	}
+
+	for _, task := range tasks {
+		if task == nil {
+			continue
+		}
+		target, ok := removalTargetFromTask(*task)
+		if !ok {
+			continue
+		}
+		targets[task.GID] = target
+	}
+
+	return targets
+}
+
+func resolveRemovalTarget(gid string) removalTarget {
+	return resolveRemovalTargetsBatch([]string{gid})[strings.TrimSpace(gid)]
+}
+
+func (a *App) removeTaskWithTarget(gid string, target removalTarget, deleteFile bool) {
+	// 1. Remove from Aria2 memory and result list
 	rpc.Remove(gid)
 
-	// 3. Remove from history
+	// 2. Remove from history
 	history.Remove(gid)
 
-	// 4. Clean up from Tracker
+	// 3. Clean up from Tracker
 	if tracker := monitor.State.GetTracker(); tracker != nil {
 		tracker.RemoveTask(gid)
 	}
 
-	// 5. Invalidate cache and emit remove event
+	// 4. Invalidate cache and emit remove event
 	// 这确保 lastStopped 缓存和元数据缓存被清理，防止幽灵任务
 	if mon := monitor.State.GetMonitor(); mon != nil {
 		mon.InvalidateTask(gid)
 	}
 
-	// 4. Physical cleanup
-	if targetPath != "" {
-		go func(p string, dir string) {
-			// Give Aria2 enough time to release file handle
-			time.Sleep(1 * time.Second)
+	// 5. Physical cleanup
+	if target.path == "" {
+		return
+	}
 
-			cleanP := filepath.Clean(filepath.FromSlash(p))
-			absPath := cleanP
-			if !filepath.IsAbs(cleanP) {
-				baseDir := dir
-				if baseDir == "" {
-					baseDir = config.Current.DownloadDir
-				}
-				absPath = filepath.Clean(filepath.Join(filepath.FromSlash(baseDir), cleanP))
+	go func(p string, dir string) {
+		// Give Aria2 enough time to release file handle
+		time.Sleep(1 * time.Second)
+
+		cleanP := filepath.Clean(filepath.FromSlash(p))
+		absPath := cleanP
+		if !filepath.IsAbs(cleanP) {
+			baseDir := dir
+			if baseDir == "" {
+				baseDir = config.Current.DownloadDir
 			}
+			absPath = filepath.Clean(filepath.Join(filepath.FromSlash(baseDir), cleanP))
+		}
 
-			// If user checked delete file
-			if deleteFile {
-				if fi, err := os.Stat(absPath); err == nil && fi.IsDir() {
-					_ = os.RemoveAll(absPath)
-				} else {
-					_ = os.Remove(absPath)
-				}
-			}
-
-			// Always remove .aria2 control file when task is removed from UI
-			_ = os.Remove(absPath + ".aria2")
-
-			// For some BT tasks, path might be a directory
-			if strings.HasSuffix(absPath, ".torrent") {
+		// If user checked delete file
+		if deleteFile {
+			if fi, err := os.Stat(absPath); err == nil && fi.IsDir() {
+				_ = os.RemoveAll(absPath)
+			} else {
 				_ = os.Remove(absPath)
 			}
-		}(targetPath, targetDir)
+		}
+
+		// Always remove .aria2 control file when task is removed from UI
+		_ = os.Remove(absPath + ".aria2")
+
+		// For some BT tasks, path might be a directory
+		if strings.HasSuffix(absPath, ".torrent") {
+			_ = os.Remove(absPath)
+		}
+	}(target.path, target.dir)
+}
+
+// BatchRemove removes multiple tasks
+func (a *App) BatchRemove(gids []string, deleteFiles bool) {
+	uniqueGIDs := normalizeRemovalGIDs(gids)
+	if len(uniqueGIDs) == 0 {
+		return
 	}
+
+	targets := resolveRemovalTargetsBatch(uniqueGIDs)
+	for _, gid := range uniqueGIDs {
+		a.removeTaskWithTarget(gid, targets[gid], deleteFiles)
+	}
+}
+
+// RemoveTask removes a task and optionally deletes the file
+func (a *App) RemoveTask(gid string, deleteFile bool) {
+	gid = strings.TrimSpace(gid)
+	if gid == "" {
+		return
+	}
+
+	target := resolveRemovalTarget(gid)
+	a.removeTaskWithTarget(gid, target, deleteFile)
 }
