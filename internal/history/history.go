@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,15 +23,19 @@ type HistoryEntry struct {
 }
 
 var (
-	entries          []HistoryEntry
-	gidIndex         map[string]int
-	mu               sync.RWMutex
-	historyPath      string
-	saveChan         = make(chan struct{}, 1)
-	debounceInterval = 500 * time.Millisecond
-	saverOnce        sync.Once
-	SaveEnabled      = true
+	entries       []HistoryEntry
+	gidIndex      map[string]int
+	mu            sync.RWMutex
+	historyPath   string
+	saveChan      = make(chan struct{}, 1)
+	debounceNanos atomic.Int64
+	saverOnce     sync.Once
+	SaveEnabled   = true
 )
+
+func init() {
+	debounceNanos.Store(int64(500 * time.Millisecond))
+}
 
 // SetHistoryPath overrides the default history file path.
 // This is primarily used for testing to isolate test data.
@@ -41,7 +46,15 @@ func SetHistoryPath(path string) {
 // SetDebounceDuration configures the debounce interval for batch saving.
 // Default is 500ms. This is primarily used for testing.
 func SetDebounceDuration(d time.Duration) {
-	debounceInterval = d
+	debounceNanos.Store(int64(d))
+}
+
+// SetSaveEnabled sets the SaveEnabled flag under the write lock.
+// Use this instead of writing SaveEnabled directly from external packages.
+func SetSaveEnabled(v bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	SaveEnabled = v
 }
 
 // DisableSaveForTest disables disk persistence for testing.
@@ -196,7 +209,7 @@ func triggerSave() {
 func saveLoop() {
 	for {
 		<-saveChan
-		time.Sleep(debounceInterval)
+		time.Sleep(time.Duration(debounceNanos.Load()))
 		// drain extra signals
 		select {
 		case <-saveChan:

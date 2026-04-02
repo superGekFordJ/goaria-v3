@@ -118,7 +118,7 @@ func setupAppTaskRemoveTest(t *testing.T, handler func(req appTaskRPCRequest, co
 	t.Cleanup(func() {
 		server.Close()
 		history.Clear()
-		history.SaveEnabled = originalSaveEnabled
+		history.SetSaveEnabled(originalSaveEnabled)
 		monitor.Cache = originalCache
 		monitor.State.SetTracker(originalTracker)
 		monitor.State.SetMonitor(originalMonitor)
