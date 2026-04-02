@@ -31,6 +31,22 @@ export function setupState() {
     return activeTasks.value.length + waitingTasks.value.length + stoppedTasks.value.length
   })
 
+  const allUris = computed(() => {
+    const uris = new Set<string>()
+    for (const list of [activeTasks.value, waitingTasks.value, stoppedTasks.value]) {
+      for (const t of list) {
+        if (!t.files) continue
+        for (const f of t.files) {
+          if (!f.uris) continue
+          for (const u of f.uris) {
+            if (u?.uri) uris.add(u.uri)
+          }
+        }
+      }
+    }
+    return uris
+  })
+
   // Selection Getters
   const selectedCount = computed(() => selectedGids.value.size)
   const isSelected = (gid: string) => selectedGids.value.has(gid)
@@ -98,6 +114,7 @@ export function setupState() {
     waitingTasks,
     stoppedTasks,
     allTasksCount,
+    allUris,
     selectedCount,
     isSelected,
     getSelectedGids,

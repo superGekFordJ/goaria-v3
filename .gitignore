@@ -41,3 +41,4 @@ frontend/i18n-report.txt
 
 # --- 发布临时文件 ---
 release_notes.md
+count.ps1

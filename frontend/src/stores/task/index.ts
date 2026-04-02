@@ -44,6 +44,7 @@ export const useTaskStore = defineStore('task', () => {
     waitingTasks: state.waitingTasks,
     stoppedTasks: state.stoppedTasks,
     allTasksCount: state.allTasksCount,
+    allUris: state.allUris,
     selectedCount: state.selectedCount,
     isSelected: state.isSelected,
     getSelectedGids: state.getSelectedGids,
