@@ -1,1 +1,69 @@
 * text=auto eol=lf
+
+# ==========================================
+# 1. 核心业务代码与通用配置 (强制 LF)
+# ==========================================
+# Go 后端
+*.go text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
+
+# 前端 (Svelte/Vue 等) 与样式
+*.ts text eol=lf
+*.js text eol=lf
+*.vue text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+
+# 配置文件与文档
+*.json text eol=lf
+.prettierrc text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+.editorconfig text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
+
+# ==========================================
+# 2. 自动化脚本 (区分跨平台与纯 Windows)
+# ==========================================
+# Unix Shell 与现代 PowerShell 脚本 (使用 LF 保证跨平台一致性)
+*.sh text eol=lf
+*.ps1 text eol=lf
+
+# 纯 Windows 批处理 (必须 CRLF 否则 CMD 运行报错)
+*.bat text eol=crlf
+
+# ==========================================
+# 3. Wails Build 目录：各平台原生构建工程与工具
+# ==========================================
+# Apple (macOS/iOS) 原生文件
+*.m text eol=lf
+*.pbxproj text eol=lf
+*.plist text eol=lf
+*.storyboard text eol=lf
+
+# Java/Android 与常规跨平台构建文件
+*.java text eol=lf
+*.gradle text eol=lf
+*.properties text eol=lf
+*.pro text eol=lf
+*.xml text eol=lf
+*.cross text eol=lf
+
+# Windows 构建配置 (Manifest 与 NSIS 安装包脚本)
+# NSIS 编译工具在 Windows 上对 CRLF 的兼容性更好，为防止打包失败，建议分配为 CRLF
+*.manifest text eol=crlf
+*.nsi text eol=crlf
+*.nsh text eol=crlf
+
+# ==========================================
+# 4. 二进制与媒体资产 (绝对禁止 Git 触碰)
+# ==========================================
+*.png binary
+*.ico binary
+*.icns binary
+*.woff2 binary
+*.jar binary
