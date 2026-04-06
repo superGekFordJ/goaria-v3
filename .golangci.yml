@@ -1,0 +1,56 @@
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+  tests: true
+  skip-dirs:
+    - frontend
+    - build
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - errorlint
+    - bodyclose
+    - bidichk
+    - asciicheck
+    - gocheckcompilerdirectives
+    - nolintlint
+    - misspell
+    - copyloopvar
+    - durationcheck
+    - nosprintfhostport
+    - errchkjson
+    - canonicalheader
+    - rowserrcheck
+    - sqlclosecheck
+    - nilerr
+    - nilnesserr
+    - unconvert
+    - gocritic
+  settings:
+    copyloopvar:
+      check-alias: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofumpt
+    - gci
+  settings:
+    gofumpt:
+      module-path: goaria-v3
+    gci:
+      custom-order: true
+      sections:
+        - standard
+        - prefix(goaria-v3)
+        - default
