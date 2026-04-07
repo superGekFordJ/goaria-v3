@@ -42,10 +42,10 @@ tasks:
 
   # Code quality
   lint:go:
-    summary: Run gofmt + go vet
+    summary: Run golangci-lint fmt (gofumpt+gci) + golangci-lint run
     cmds:
-      - gofmt -w .
-      - go vet ./...
+      - golangci-lint fmt ./...
+      - golangci-lint run ./...
 
   lint:frontend:
     summary: Run frontend lint (pnpm run lint)
