@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+var benchmarkSourceFound bool
+
 func BenchmarkAdd_Update(b *testing.B) {
 	DisableSaveForTest()
 	// Setup: fill entries with N items
@@ -61,9 +63,7 @@ func BenchmarkGetAll_Scan(b *testing.B) {
 				break
 			}
 		}
-		if found {
-			// just to use the variable
-		}
+		benchmarkSourceFound = found
 	}
 }
 
@@ -74,13 +74,16 @@ func BenchmarkContainsSource(b *testing.B) {
 	mu.Lock()
 	entries = make([]HistoryEntry, n)
 	gidIndex = make(map[string]int)
+	sourceIndex = make(map[string]int)
 	for i := 0; i < n; i++ {
 		gid := fmt.Sprintf("gid-%d", i)
+		source := fmt.Sprintf("http://example.com/file-%d.zip", i)
 		entries[i] = HistoryEntry{
 			GID:    gid,
-			Source: fmt.Sprintf("http://example.com/file-%d.zip", i),
+			Source: source,
 		}
 		gidIndex[gid] = i
+		sourceIndex[source]++
 	}
 	mu.Unlock()
 

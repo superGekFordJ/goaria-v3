@@ -4,12 +4,13 @@ import (
 	"bytes"
 	_ "embed"
 	"fmt"
-	"goaria-v3/internal/config"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"goaria-v3/internal/config"
 )
 
 //go:embed aria2c.exe
@@ -39,7 +40,7 @@ func StartAria2(cfg *config.AppConfig) error {
 
 	home, _ := os.UserHomeDir()
 	appDataDir := filepath.Join(home, ".goaria")
-	os.MkdirAll(appDataDir, 0755)
+	os.MkdirAll(appDataDir, 0o755)
 
 	aria2Path := filepath.Join(appDataDir, "aria2c.exe")
 	if runtime.GOOS != "windows" {
@@ -51,7 +52,7 @@ func StartAria2(cfg *config.AppConfig) error {
 	cleanDir := filepath.Clean(cfg.DownloadDir)
 	sessionPath := filepath.Join(appDataDir, "aria2.session")
 	if _, err := os.Stat(sessionPath); os.IsNotExist(err) {
-		_ = os.WriteFile(sessionPath, []byte(""), 0644)
+		_ = os.WriteFile(sessionPath, []byte(""), 0o644)
 	}
 
 	args := []string{
@@ -85,7 +86,7 @@ func StartAria2(cfg *config.AppConfig) error {
 	}
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("启动失败: %v", err)
+		return fmt.Errorf("启动失败: %w", err)
 	}
 
 	aria2Cmd = cmd
@@ -108,5 +109,5 @@ func extractAria2Binary(path string) error {
 			return nil
 		}
 	}
-	return os.WriteFile(path, aria2cBin, 0755)
+	return os.WriteFile(path, aria2cBin, 0o755)
 }

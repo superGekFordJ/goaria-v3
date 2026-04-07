@@ -8,9 +8,9 @@ import (
 
 func TestSemVerComparison(t *testing.T) {
 	tests := []struct {
-		name     string
-		current  string
-		remote   string
+		name      string
+		current   string
+		remote    string
 		wantNewer bool // remote > current
 	}{
 		{

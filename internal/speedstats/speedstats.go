@@ -58,7 +58,7 @@ func getStatsPath() string {
 	}
 	home, _ := os.UserHomeDir()
 	dir := filepath.Join(home, ".goaria")
-	_ = os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(dir, 0o755)
 	return filepath.Join(dir, "speed_stats.json")
 }
 
@@ -89,7 +89,7 @@ func Save() error {
 func writeToDisk(data []byte) error {
 	saveFileMu.Lock()
 	defer saveFileMu.Unlock()
-	return os.WriteFile(getStatsPath(), data, 0644)
+	return os.WriteFile(getStatsPath(), data, 0o644)
 }
 
 // AddRecord 添加一条新的速度记录

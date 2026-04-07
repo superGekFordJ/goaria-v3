@@ -39,10 +39,7 @@ func (s *AppState) HasWindow() bool {
 }
 
 func (s *AppState) UpdateTrayState(hasActive, hasPaused, hasError bool, activeCount, waitingCount int) bool {
-	changed := false
-	if s.hasActive.Swap(hasActive) != hasActive {
-		changed = true
-	}
+	changed := s.hasActive.Swap(hasActive) != hasActive
 	if s.hasPaused.Swap(hasPaused) != hasPaused {
 		changed = true
 	}

@@ -22,9 +22,7 @@ func setupTest(t *testing.T) string {
 func TestRaceCondition(t *testing.T) {
 	historyFile := setupTest(t)
 	// Enable save for this test
-	mu.Lock()
-	SaveEnabled = true
-	mu.Unlock()
+	SetSaveEnabled(true)
 	defer DisableSaveForTest()
 
 	gid := "test-gid"
@@ -138,13 +136,12 @@ func TestRemove(t *testing.T) {
 
 func TestLoad(t *testing.T) {
 	historyFile := setupTest(t)
-	mu.Lock()
-	SaveEnabled = true
-	mu.Unlock()
+	SetSaveEnabled(true)
 	defer DisableSaveForTest()
 
 	Clear()
-	Add(HistoryEntry{GID: "1", Title: "Persisted"})
+	entry := HistoryEntry{GID: "1", Title: "Persisted", Source: "https://example.com/file.iso"}
+	Add(entry)
 
 	// Wait for file to be created (debounced save)
 	time.Sleep(50 * time.Millisecond)
@@ -155,7 +152,9 @@ func TestLoad(t *testing.T) {
 
 	bytes, _ := os.ReadFile(historyFile)
 	var fromDisk []HistoryEntry
-	json.Unmarshal(bytes, &fromDisk)
+	if err := json.Unmarshal(bytes, &fromDisk); err != nil {
+		t.Fatalf("Failed to unmarshal history from disk: %v", err)
+	}
 	if len(fromDisk) != 1 || fromDisk[0].GID != "1" {
 		t.Errorf("File content incorrect: %v", fromDisk)
 	}
@@ -164,11 +163,62 @@ func TestLoad(t *testing.T) {
 	mu.Lock()
 	entries = []HistoryEntry{}
 	gidIndex = make(map[string]int)
+	sourceIndex = make(map[string]int)
 	mu.Unlock()
 
 	Load()
 	all := GetAll()
 	if len(all) != 1 || all[0].GID != "1" {
 		t.Errorf("Load failed to restore entries. Got %v", all)
+	}
+	if !ContainsSource(entry.Source) {
+		t.Errorf("Load failed to rebuild source index for %q", entry.Source)
+	}
+}
+
+func TestContainsSource(t *testing.T) {
+	setupTest(t)
+
+	source1 := "http://example.com/1"
+	source2 := "http://example.com/2"
+
+	Add(HistoryEntry{GID: "1", Source: source1})
+	Add(HistoryEntry{GID: "2", Source: source1}) // Same source, different GID
+	Add(HistoryEntry{GID: "3", Source: source2})
+
+	if !ContainsSource(source1) {
+		t.Errorf("Expected to contain source1")
+	}
+	if !ContainsSource(source2) {
+		t.Errorf("Expected to contain source2")
+	}
+	if ContainsSource("http://non-existent") {
+		t.Errorf("Did not expect to contain non-existent source")
+	}
+
+	// Remove one entry with source1
+	Remove("1")
+	if !ContainsSource(source1) {
+		t.Errorf("Expected to still contain source1 after one removal")
+	}
+
+	// Remove other entry with source1
+	Remove("2")
+	if ContainsSource(source1) {
+		t.Errorf("Expected to not contain source1 after all removals")
+	}
+
+	// Test update
+	Add(HistoryEntry{GID: "3", Source: source1}) // Change GID 3 from source2 to source1
+	if ContainsSource(source2) {
+		t.Errorf("Expected to not contain source2 after update")
+	}
+	if !ContainsSource(source1) {
+		t.Errorf("Expected to contain source1 after update")
+	}
+
+	Clear()
+	if ContainsSource(source1) {
+		t.Errorf("Expected to not contain source1 after Clear")
 	}
 }

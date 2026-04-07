@@ -88,8 +88,11 @@ func (n *Notifier) connect() error {
 	defer n.mu.Unlock()
 
 	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
-	conn, _, err := dialer.Dial(n.url, nil)
+	conn, resp, err := dialer.Dial(n.url, nil)
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
 		return err
 	}
 	n.conn = conn

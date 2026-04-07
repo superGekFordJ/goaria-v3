@@ -2,13 +2,14 @@ package monitor
 
 import (
 	"encoding/json"
-	"goaria-v3/internal/rpc"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"goaria-v3/internal/rpc"
 )
 
 // mockAria2Server handles RPC requests with simulated latency

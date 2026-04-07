@@ -266,6 +266,7 @@ func TellActive() ([]Task, error) { return getTasks("aria2.tellActive", nil, nil
 func TellWaiting(offset, num int) ([]Task, error) {
 	return getTasks("aria2.tellWaiting", []any{offset, num}, nil)
 }
+
 func TellStopped(offset, num int) ([]Task, error) {
 	return getTasks("aria2.tellStopped", []any{offset, num}, nil)
 }
@@ -274,10 +275,12 @@ func TellActiveLite() ([]Task, error) {
 	keys := []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "errorCode", "errorMessage", "dir"}
 	return getTasks("aria2.tellActive", nil, keys)
 }
+
 func TellWaitingLite(offset, num int) ([]Task, error) {
 	keys := []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "errorCode", "errorMessage", "dir"}
 	return getTasks("aria2.tellWaiting", []any{offset, num}, keys)
 }
+
 func TellStoppedLite(offset, num int) ([]Task, error) {
 	keys := []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "errorCode", "errorMessage", "dir"}
 	return getTasks("aria2.tellStopped", []any{offset, num}, keys)

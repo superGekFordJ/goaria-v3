@@ -233,7 +233,7 @@ func TestTaskTracker_ThreadInfoPersistence(t *testing.T) {
 	tracker.Update(active, nil, nil)
 
 	// 验证：最终信息正确
-	threadCount, isExploration, ok = tracker.GetThreadInfo(gid)
+	threadCount, _, ok = tracker.GetThreadInfo(gid)
 	if !ok {
 		t.Fatal("Task info missing after appearing in active list")
 	}

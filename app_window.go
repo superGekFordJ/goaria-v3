@@ -137,13 +137,14 @@ func (a *App) ToggleWindow() {
 		a.windowMu.Unlock()
 	}()
 
-	if !hasWindow {
+	switch {
+	case !hasWindow:
 		// 无窗口，创建新窗口
 		a.CreateWindow()
-	} else if isVisible {
+	case isVisible:
 		// 窗口可见，销毁窗口（真无头模式）
 		a.DestroyWindow()
-	} else {
+	default:
 		// 窗口存在但隐藏，显示窗口
 		a.windowMu.Lock()
 		if a.window != nil {
@@ -228,13 +229,14 @@ func (a *App) getWindowConfig() (
 // UpdateTrayState updates the tray icon based on download state
 func (a *App) UpdateTrayState(hasActive, hasPaused, hasError bool) {
 	var newState tray.TrayState
-	if hasError {
+	switch {
+	case hasError:
 		newState = tray.StateError
-	} else if hasActive {
+	case hasActive:
 		newState = tray.StateActive
-	} else if hasPaused {
+	case hasPaused:
 		newState = tray.StatePaused
-	} else {
+	default:
 		newState = tray.StateIdle
 	}
 

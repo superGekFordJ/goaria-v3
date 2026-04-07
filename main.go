@@ -3,6 +3,12 @@ package main
 import (
 	"embed"
 	"flag"
+	"io/fs"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/history"
@@ -12,11 +18,6 @@ import (
 	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/tray"
 	"goaria-v3/internal/update"
-	"io/fs"
-	"log"
-	"net/http"
-	"os"
-	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )

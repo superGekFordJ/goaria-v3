@@ -29,7 +29,7 @@ var (
 func GetConfigPath() string {
 	home, _ := os.UserHomeDir()
 	dir := filepath.Join(home, ".goaria")
-	_ = os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(dir, 0o755)
 	return filepath.Join(dir, "config.json")
 }
 
@@ -61,7 +61,7 @@ func Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(GetConfigPath(), data, 0644)
+	return os.WriteFile(GetConfigPath(), data, 0o644)
 }
 
 func getDefaultDownloadDir() string {

@@ -40,6 +40,22 @@ function createMockState(): TaskState {
     stopped: [],
   })
   const selectedGids = ref<Set<string>>(new Set())
+  const activeTasks = computed(() => tasks.value.active || [])
+  const waitingTasks = computed(() => tasks.value.waiting || [])
+  const stoppedTasks = computed(() => tasks.value.stopped || [])
+  const allUris = computed(() => {
+    const uris = new Set<string>()
+    for (const list of [activeTasks.value, waitingTasks.value, stoppedTasks.value]) {
+      for (const task of list) {
+        for (const file of task.files || []) {
+          for (const uri of file.uris || []) {
+            if (uri?.uri) uris.add(uri.uri)
+          }
+        }
+      }
+    }
+    return uris
+  })
 
   return {
     tasks,
@@ -50,10 +66,11 @@ function createMockState(): TaskState {
     isWindowVisible: ref(true),
     preferredInterval: ref(1000),
     consecutiveErrors: ref(0),
-    activeTasks: computed(() => []),
-    waitingTasks: computed(() => []),
-    stoppedTasks: computed(() => []),
-    allTasksCount: computed(() => 0),
+    activeTasks,
+    waitingTasks,
+    stoppedTasks,
+    allTasksCount: computed(() => activeTasks.value.length + waitingTasks.value.length + stoppedTasks.value.length),
+    allUris,
     selectedCount: computed(() => 0),
     isSelected: () => false,
     getSelectedGids: computed(() => []),
@@ -249,8 +266,8 @@ describe('setupEvents', () => {
       })
       state.tasks.value.active = [task]
 
-      await events.handleTaskDelta({ 
-        type: 'complete', 
+      await events.handleTaskDelta({
+        type: 'complete',
         gid: 'gid-c2',
         payload: {
           completedLength: '100',

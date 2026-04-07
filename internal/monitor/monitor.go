@@ -504,13 +504,14 @@ func (m *Monitor) updateTrayIcon() {
 	hasActive, hasPaused, hasError, activeCount, waitingCount := State.GetTrayState()
 
 	var state tray.TrayState
-	if hasError {
+	switch {
+	case hasError:
 		state = tray.StateError
-	} else if hasActive {
+	case hasActive:
 		state = tray.StateActive
-	} else if hasPaused {
+	case hasPaused:
 		state = tray.StatePaused
-	} else {
+	default:
 		state = tray.StateIdle
 	}
 
@@ -524,11 +525,12 @@ func (m *Monitor) updateTrayIcon() {
 		// 2. 仅等待/暂停：GoAria - 2 个任务等待中
 		// 3. 空闲：GoAria - Download Manager
 		var tooltip string
-		if activeCount > 0 {
+		switch {
+		case activeCount > 0:
 			tooltip = fmt.Sprintf("GoAria - %d 个任务下载中", activeCount)
-		} else if waitingCount > 0 {
+		case waitingCount > 0:
 			tooltip = fmt.Sprintf("GoAria - %d 个任务等待中", waitingCount)
-		} else {
+		default:
 			tooltip = "GoAria - Download Manager"
 		}
 		m.systray.SetTooltip(tooltip)

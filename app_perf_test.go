@@ -9,6 +9,8 @@ import (
 	"goaria-v3/internal/rpc"
 )
 
+var benchmarkURLFound bool
+
 func BenchmarkSliceConcatenation(b *testing.B) {
 	// Create large slices
 	size := 1000
@@ -26,12 +28,16 @@ func BenchmarkSliceConcatenation(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// Simulate the inefficient code
-		allTasks := append(active, append(waiting, stopped...)...)
+		allTasks := append([]rpc.Task{}, active...)
+		allTasks = append(allTasks, waiting...)
+		allTasks = append(allTasks, stopped...)
 
+		benchmarkURLFound = false
 		for _, t := range allTasks {
 			for _, f := range t.Files {
 				for _, u := range f.Uris {
 					if strings.TrimSpace(u.Uri) == normalizedUrl {
+						benchmarkURLFound = true
 						break
 					}
 				}
@@ -69,9 +75,7 @@ func BenchmarkSeparateLoops(b *testing.B) {
 			}
 			return false
 		}
-		if check(active) || check(waiting) || check(stopped) {
-			// found
-		}
+		benchmarkURLFound = check(active) || check(waiting) || check(stopped)
 	}
 }
 

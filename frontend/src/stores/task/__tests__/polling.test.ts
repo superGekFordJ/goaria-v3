@@ -28,6 +28,10 @@ function createMockState(): TaskState {
     waiting: [],
     stopped: [],
   })
+  const activeTasks = computed(() => tasks.value.active || [])
+  const waitingTasks = computed(() => tasks.value.waiting || [])
+  const stoppedTasks = computed(() => tasks.value.stopped || [])
+  const allUris = computed(() => new Set<string>())
 
   return {
     tasks,
@@ -39,10 +43,11 @@ function createMockState(): TaskState {
     isWindowVisible: ref(true),
     preferredInterval: ref(1000),
     consecutiveErrors: ref(0),
-    activeTasks: computed(() => []),
-    waitingTasks: computed(() => []),
-    stoppedTasks: computed(() => []),
-    allTasksCount: computed(() => 0),
+    activeTasks,
+    waitingTasks,
+    stoppedTasks,
+    allTasksCount: computed(() => activeTasks.value.length + waitingTasks.value.length + stoppedTasks.value.length),
+    allUris,
     selectedCount: computed(() => 0),
     isSelected: () => false,
     getSelectedGids: computed(() => []),

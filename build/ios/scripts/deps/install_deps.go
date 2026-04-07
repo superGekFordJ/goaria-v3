@@ -209,10 +209,11 @@ func main() {
 		hasErrors = true
 	} else {
 		out, err := exec.Command("xcrun", "simctl", "list", "devices").Output()
-		if err != nil {
+		switch {
+		case err != nil:
 			fmt.Println("❌ Failed to list simulator devices")
 			hasErrors = true
-		} else if !strings.Contains(string(out), "iPhone") {
+		case !strings.Contains(string(out), "iPhone"):
 			fmt.Println("⚠️  No iPhone simulator devices found")
 			fmt.Println()
 
@@ -255,7 +256,7 @@ func main() {
 					}
 				}
 			}
-		} else {
+		default:
 			// Count iPhone devices
 			count := 0
 			lines := strings.Split(string(out), "\n")

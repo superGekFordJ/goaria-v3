@@ -25,6 +25,7 @@ type HistoryEntry struct {
 var (
 	entries       []HistoryEntry
 	gidIndex      map[string]int
+	sourceIndex   map[string]int
 	mu            sync.RWMutex
 	historyPath   string
 	saveChan      = make(chan struct{}, 1)
@@ -72,7 +73,7 @@ func GetHistoryPath() string {
 	}
 	home, _ := os.UserHomeDir()
 	dir := filepath.Join(home, ".goaria")
-	_ = os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(dir, 0o755)
 	return filepath.Join(dir, "history.json")
 }
 
@@ -83,11 +84,15 @@ func Load() {
 
 	entries = []HistoryEntry{}
 	gidIndex = make(map[string]int)
+	sourceIndex = make(map[string]int)
 	data, err := os.ReadFile(GetHistoryPath())
 	if err == nil {
 		_ = json.Unmarshal(data, &entries)
 		for i, e := range entries {
 			gidIndex[e.GID] = i
+			if e.Source != "" {
+				sourceIndex[e.Source]++
+			}
 		}
 	}
 }
@@ -101,7 +106,7 @@ func Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(GetHistoryPath(), data, 0644)
+	return os.WriteFile(GetHistoryPath(), data, 0o644)
 }
 
 // Add adds a new entry to history (deduplicates by GID)
@@ -112,9 +117,26 @@ func Add(entry HistoryEntry) {
 	if gidIndex == nil {
 		gidIndex = make(map[string]int)
 	}
+	if sourceIndex == nil {
+		sourceIndex = make(map[string]int)
+	}
 
 	// Check if already exists
 	if i, ok := gidIndex[entry.GID]; ok {
+		// Update sourceIndex if source changes
+		oldSource := entries[i].Source
+		if oldSource != entry.Source {
+			if oldSource != "" {
+				sourceIndex[oldSource]--
+				if sourceIndex[oldSource] <= 0 {
+					delete(sourceIndex, oldSource)
+				}
+			}
+			if entry.Source != "" {
+				sourceIndex[entry.Source]++
+			}
+		}
+
 		// Update existing entry
 		entries[i] = entry
 		triggerSave()
@@ -125,6 +147,9 @@ func Add(entry HistoryEntry) {
 	entry.CompletedAt = time.Now().Unix()
 	entries = append(entries, entry)
 	gidIndex[entry.GID] = len(entries) - 1
+	if entry.Source != "" {
+		sourceIndex[entry.Source]++
+	}
 	triggerSave()
 }
 
@@ -138,6 +163,15 @@ func Remove(gid string) {
 	}
 
 	if i, ok := gidIndex[gid]; ok {
+		// Update sourceIndex
+		oldSource := entries[i].Source
+		if oldSource != "" {
+			sourceIndex[oldSource]--
+			if sourceIndex[oldSource] <= 0 {
+				delete(sourceIndex, oldSource)
+			}
+		}
+
 		entries = append(entries[:i], entries[i+1:]...)
 		delete(gidIndex, gid)
 		// Update indices for shifted elements
@@ -164,12 +198,10 @@ func ContainsSource(source string) bool {
 	mu.RLock()
 	defer mu.RUnlock()
 
-	for _, e := range entries {
-		if e.Source == source {
-			return true
-		}
+	if sourceIndex == nil {
+		return false
 	}
-	return false
+	return sourceIndex[source] > 0
 }
 
 // Get returns a single history entry by GID (O(1) lookup)
@@ -193,6 +225,7 @@ func Clear() {
 
 	entries = []HistoryEntry{}
 	gidIndex = make(map[string]int)
+	sourceIndex = make(map[string]int)
 	triggerSave()
 }
 
@@ -235,7 +268,7 @@ func doSave() {
 		return
 	}
 
-	if err := os.WriteFile(GetHistoryPath(), data, 0644); err != nil {
+	if err := os.WriteFile(GetHistoryPath(), data, 0o644); err != nil {
 		log.Printf("[history] Failed to write file: %v", err)
 	}
 }
