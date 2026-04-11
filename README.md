@@ -76,7 +76,7 @@ graph TD
 
 - **Frontend**: 负责极致的 UI/UX 呈现。
 - **Backend**: 处理业务逻辑，作为 Aria2 与 UI 的桥梁，确保持久化与系统集成。
-- **Daemon**: 内置 Aria2 二进制，开箱即用，无需额外配置。
+- **Daemon**: 发布产物内置 Aria2 二进制，开箱即用，无需额外配置。
 
 ## 💻 开发指南
 
@@ -112,8 +112,13 @@ wails3 task deps:update:go
 wails3 dev
 
 # 构建生产版本
-wails3 build
+wails3 task build
+
+# 如需打包产物
+wails3 task package
 ```
+
+> Linux / macOS 构建说明：发布产物仍然保持“内置 Aria2、开箱即用”的契约，但本地构建/打包现在会在构建前强制准备可嵌入的 `aria2c`。原生构建器可直接安装系统 `aria2c` 后运行 `wails3 task linux:prepare:aria2` 或 `wails3 task darwin:prepare:aria2`；若无法原生解析目标二进制，可显式设置 `ARIA2_BUNDLED_PATH=/path/to/aria2c` 作为开发期覆盖。未能准备该二进制时，Linux/macOS 的 `build` / `package` 会直接失败，而不会产出缺失运行时依赖的伪成功构建。
 
 ## 📄 许可证
 

@@ -7,6 +7,44 @@ tasks:
     cmds:
       - go mod tidy
 
+  prepare:aria2:stage:
+    summary: Stages a bundled aria2 binary
+    internal: true
+    cmds:
+      - |
+        set -euo pipefail
+        target_os="{{.TARGET_OS}}"
+        target_arch="{{.TARGET_ARCH}}"
+        target_path="{{.TARGET_PATH}}"
+        override_path="{{.ARIA2_BUNDLED_PATH}}"
+        host_os="{{OS}}"
+        host_arch="$(GOOS= GOARCH= go env GOARCH)"
+
+        if [ -n "$override_path" ]; then
+          source_path="$override_path"
+          if [ ! -f "$source_path" ]; then
+            echo "bundled aria2 missing for ${target_os}/${target_arch}: ARIA2_BUNDLED_PATH '$source_path' does not exist" >&2
+            exit 1
+          fi
+        elif [ "$host_os" = "$target_os" ] && [ "$host_arch" = "$target_arch" ]; then
+          source_path="$(command -v aria2c || true)"
+          if [ -z "$source_path" ]; then
+            echo "bundled aria2 missing for ${target_os}/${target_arch}: install aria2c on this native builder or set ARIA2_BUNDLED_PATH to a target-compatible binary" >&2
+            exit 1
+          fi
+        elif [ "$host_os" = "$target_os" ]; then
+          echo "bundled aria2 missing for ${target_os}/${target_arch}: host architecture ${host_arch} does not match target ${target_arch}; set ARIA2_BUNDLED_PATH to a target-compatible binary" >&2
+          exit 1
+        else
+          echo "bundled aria2 missing for ${target_os}/${target_arch}: host ${host_os}/${host_arch} cannot auto-stage this target; set ARIA2_BUNDLED_PATH to a target-compatible binary" >&2
+          exit 1
+        fi
+
+        mkdir -p "$(dirname "$target_path")"
+        cp "$source_path" "$target_path"
+        chmod +x "$target_path"
+        echo "Staged bundled aria2 for ${target_os}/${target_arch}: $source_path -> $target_path"
+
   install:frontend:deps:
     summary: Install frontend dependencies
     dir: frontend

@@ -54,7 +54,9 @@ func main() {
 	history.Load()
 	speedstats.Load()
 	rpc.Init(config.Current.RPCPort, config.Current.RPCSecret)
-	_ = process.StartAria2(config.Current)
+	if err := process.StartAria2(config.Current); err != nil {
+		log.Fatalf("failed to start bundled aria2: %v", err)
+	}
 
 	// Create the App service for bindings
 	appService := NewApp()

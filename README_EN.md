@@ -77,7 +77,7 @@ graph TD
 
 - **Frontend**: Responsible for ultimate UI/UX presentation.
 - **Backend**: Handles business logic, acts as a bridge between Aria2 and UI, ensuring persistence and system integration.
-- **Daemon**: Built-in Aria2 binary, works out of the box with no extra configuration needed.
+- **Daemon**: Release artifacts ship with a built-in Aria2 binary and work out of the box.
 
 ## 💻 Development Guide
 
@@ -112,8 +112,13 @@ wails3 task deps:update:go
 wails3 dev
 
 # Build production version
-wails3 build
+wails3 task build
+
+# Package distributable artifacts when needed
+wails3 task package
 ```
+
+> Linux / macOS build note: shipped artifacts still keep the “built-in Aria2 / works out of the box” contract, but local build/package flows now require a bundleable `aria2c` before compilation proceeds. On native builders, install `aria2c` and run `wails3 task linux:prepare:aria2` or `wails3 task darwin:prepare:aria2`; for unusual environments, `ARIA2_BUNDLED_PATH=/path/to/aria2c` is available as an explicit development-only override. If the bundled core cannot be prepared, Linux/macOS `build` / `package` now fail closed instead of producing an artifact that falls back to an undocumented runtime dependency.
 
 ## 📄 License
 

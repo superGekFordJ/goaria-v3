@@ -13,6 +13,15 @@ vars:
   CROSS_IMAGE: wails-cross
 
 tasks:
+  prepare:aria2:
+    summary: Stages the macOS bundled aria2 binary
+    cmds:
+      - task: common:prepare:aria2:stage
+        vars:
+          TARGET_OS: darwin
+          TARGET_ARCH: '{{.ARCH | default ARCH}}'
+          TARGET_PATH: internal/process/bundled/darwin/aria2c
+
   build:
     summary: Builds the application
     cmds:
@@ -28,7 +37,10 @@ tasks:
   build:native:
     summary: Builds the application natively on macOS
     internal: true
-    deps:
+    cmds:
+      - task: prepare:aria2
+        vars:
+          ARCH: '{{.ARCH}}'
       - task: common:go:mod:tidy
       - task: common:build:frontend
         vars:
@@ -37,7 +49,6 @@ tasks:
           DEV:
             ref: .DEV
       - task: common:generate:icons
-    cmds:
       - go build {{.BUILD_FLAGS}} -o {{.OUTPUT}}
     vars:
       BUILD_FLAGS: '{{if eq .DEV "true"}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production -trimpath -buildvcs=false -ldflags="-w -s"{{end}}'
@@ -54,9 +65,6 @@ tasks:
   build:docker:
     summary: Cross-compiles for macOS using Docker (for Linux/Windows hosts)
     internal: true
-    deps:
-      - task: common:build:frontend
-      - task: common:generate:icons
     preconditions:
       - sh: docker info > /dev/null 2>&1
         msg: "Docker is required for cross-compilation. Please install Docker."
@@ -65,6 +73,11 @@ tasks:
           Docker image '{{.CROSS_IMAGE}}' not found.
           Build it first: wails3 task setup:docker
     cmds:
+      - task: prepare:aria2
+        vars:
+          ARCH: '{{.ARCH}}'
+      - task: common:build:frontend
+      - task: common:generate:icons
       - docker run --rm -v "{{.ROOT_DIR}}:/app" {{.GO_CACHE_MOUNT}} {{.REPLACE_MOUNTS}} -e APP_NAME={{.APP_NAME}} {{.CROSS_IMAGE}} darwin {{.DOCKER_ARCH}}
       - docker run --rm -v "{{.ROOT_DIR}}:/app" alpine chown -R $(id -u):$(id -g) /app/bin
       - mkdir -p {{.BIN_DIR}}
@@ -93,18 +106,11 @@ tasks:
           done | tr '\n' ' '
 
   build:universal:
-    summary: Builds darwin universal binary (arm64 + amd64)
-    deps:
-      - task: build
-        vars:
-          ARCH: amd64
-          OUTPUT: "{{.BIN_DIR}}/{{.APP_NAME}}-amd64"
-      - task: build
-        vars:
-          ARCH: arm64
-          OUTPUT: "{{.BIN_DIR}}/{{.APP_NAME}}-arm64"
+    summary: Fails because bundled aria2 universal staging is unsupported
     cmds:
-      - task: '{{if eq OS "darwin"}}build:universal:lipo:native{{else}}build:universal:lipo:go{{end}}'
+      - |
+        echo "darwin universal build is unsupported in this slice: bundled aria2 staging is platform/arch-specific and no safe universal bundled-core workflow is defined" >&2
+        exit 1
 
   build:universal:lipo:native:
     summary: Creates universal binary using native lipo (macOS)
@@ -124,15 +130,17 @@ tasks:
     summary: Packages the application into a `.app` bundle
     deps:
       - task: build
+        vars:
+          ARCH: '{{.ARCH}}'
     cmds:
       - task: create:app:bundle
 
   package:universal:
-    summary: Packages darwin universal binary (arm64 + amd64)
-    deps:
-      - task: build:universal
+    summary: Fails because bundled aria2 universal packaging is unsupported
     cmds:
-      - task: create:app:bundle
+      - |
+        echo "darwin universal packaging is unsupported in this slice: build a single-arch app bundle with matching bundled aria2 instead" >&2
+        exit 1
 
 
   create:app:bundle:

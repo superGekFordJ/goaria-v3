@@ -14,6 +14,15 @@ vars:
   CROSS_IMAGE: wails-cross
 
 tasks:
+  prepare:aria2:
+    summary: Stages the Linux bundled aria2 binary
+    cmds:
+      - task: common:prepare:aria2:stage
+        vars:
+          TARGET_OS: linux
+          TARGET_ARCH: '{{.ARCH | default ARCH}}'
+          TARGET_PATH: internal/process/bundled/linux/aria2c
+
   build:
     summary: Builds the application for Linux
     cmds:
@@ -33,7 +42,10 @@ tasks:
   build:native:
     summary: Builds the application natively on Linux
     internal: true
-    deps:
+    cmds:
+      - task: prepare:aria2
+        vars:
+          ARCH: '{{.ARCH}}'
       - task: common:go:mod:tidy
       - task: common:build:frontend
         vars:
@@ -43,7 +55,6 @@ tasks:
             ref: .DEV
       - task: common:generate:icons
       - task: generate:dotdesktop
-    cmds:
       - go build {{.BUILD_FLAGS}} -o {{.OUTPUT}}
     vars:
       BUILD_FLAGS: '{{if eq .DEV "true"}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production -trimpath -buildvcs=false -ldflags="-w -s"{{end}}'
@@ -57,10 +68,6 @@ tasks:
   build:docker:
     summary: Cross-compiles for Linux using Docker with Zig (for macOS/Windows hosts)
     internal: true
-    deps:
-      - task: common:build:frontend
-      - task: common:generate:icons
-      - task: generate:dotdesktop
     preconditions:
       - sh: docker info > /dev/null 2>&1
         msg: "Docker is required for cross-compilation to Linux. Please install Docker."
@@ -69,6 +76,12 @@ tasks:
           Docker image '{{.CROSS_IMAGE}}' not found.
           Build it first: wails3 task setup:docker
     cmds:
+      - task: prepare:aria2
+        vars:
+          ARCH: '{{.ARCH}}'
+      - task: common:build:frontend
+      - task: common:generate:icons
+      - task: generate:dotdesktop
       - docker run --rm -v "{{.ROOT_DIR}}:/app" {{.GO_CACHE_MOUNT}} {{.REPLACE_MOUNTS}} -e APP_NAME={{.APP_NAME}} {{.CROSS_IMAGE}} linux {{.DOCKER_ARCH}}
       - docker run --rm -v "{{.ROOT_DIR}}:/app" alpine chown -R $(id -u):$(id -g) /app/bin
       - mkdir -p {{.BIN_DIR}}
@@ -99,6 +112,8 @@ tasks:
     summary: Packages the application for Linux
     deps:
       - task: build
+        vars:
+          ARCH: '{{.ARCH}}'
     cmds:
       - task: create:appimage
       - task: create:deb
@@ -110,6 +125,8 @@ tasks:
     dir: build/linux/appimage
     deps:
       - task: build
+        vars:
+          ARCH: '{{.ARCH}}'
       - task: generate:dotdesktop
     cmds:
       - cp {{.APP_BINARY}} {{.APP_NAME}}
@@ -126,6 +143,8 @@ tasks:
     summary: Creates a deb package
     deps:
       - task: build
+        vars:
+          ARCH: '{{.ARCH}}'
     cmds:
       - task: generate:dotdesktop
       - task: generate:deb
@@ -134,6 +153,8 @@ tasks:
     summary: Creates a rpm package
     deps:
       - task: build
+        vars:
+          ARCH: '{{.ARCH}}'
     cmds:
       - task: generate:dotdesktop
       - task: generate:rpm
@@ -142,6 +163,8 @@ tasks:
     summary: Creates a arch linux packager package
     deps:
       - task: build
+        vars:
+          ARCH: '{{.ARCH}}'
     cmds:
       - task: generate:dotdesktop
       - task: generate:aur

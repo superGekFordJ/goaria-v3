@@ -88,14 +88,14 @@ tasks:
   clean:dist:
     summary: Remove frontend build artifacts
     cmds:
-      - powershell -Command "Remove-Item -Recurse -Force frontend/dist -ErrorAction SilentlyContinue"
+      - powershell -Command "if (Test-Path 'frontend/dist') { Remove-Item -Recurse -Force 'frontend/dist' }"
 
   clean:all:
     summary: Remove frontend dist and binaries (non-destructive to cache)
     cmds:
-      - powershell -Command "Remove-Item -Recurse -Force frontend/dist -ErrorAction SilentlyContinue"
-      - powershell -Command "Remove-Item -Recurse -Force bin -ErrorAction SilentlyContinue"
-      - powershell -Command "Remove-Item -Recurse -Force frontend/bindings -ErrorAction SilentlyContinue"
+      - powershell -Command "if (Test-Path 'frontend/dist') { Remove-Item -Recurse -Force 'frontend/dist' }"
+      - powershell -Command "if (Test-Path 'bin') { Remove-Item -Recurse -Force 'bin' }"
+      - powershell -Command "if (Test-Path 'frontend/bindings') { Remove-Item -Recurse -Force 'frontend/bindings' }"
 
   setup:docker:
     summary: Builds Docker image for cross-compilation (~800MB download)

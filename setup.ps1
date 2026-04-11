@@ -7,7 +7,7 @@
     此脚本用于自动准备开发环境：
     1. 检查并安装 Wails 3 CLI 工具
     2. 检查 pnpm 是否已安装
-    3. 下载并部署 aria2c 二进制文件到 internal/process 目录
+    3. 下载并部署 aria2c 二进制文件到 internal/process\bundled\windows 目录
 
 .NOTES
     File Name      : setup.ps1
@@ -22,6 +22,17 @@ function Write-Color([string]$text, [ConsoleColor]$color) {
 
 function Test-Command([string]$command) {
     return (Get-Command $command -ErrorAction SilentlyContinue) -ne $null
+}
+
+function Get-FileSHA256([string]$path) {
+    return (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Test-Aria2Hash([string]$path, [string]$expectedHash, [string]$label) {
+    $actualHash = Get-FileSHA256 $path
+    if ($actualHash -ne $expectedHash.ToLowerInvariant()) {
+        throw "$label SHA256 mismatch. Expected $expectedHash but got $actualHash"
+    }
 }
 
 Write-Color "`n🚀 GoAria v3 Development Setup Initiated..." Cyan
@@ -66,22 +77,44 @@ if (Test-Command "wails3") {
 # -------------------------------------------------------------------------
 # 3. Download & Install Aria2c
 # -------------------------------------------------------------------------
-$targetDir = Join-Path $PSScriptRoot "internal\process"
+$targetDir = Join-Path $PSScriptRoot "internal\process\bundled\windows"
 $aria2Exe = Join-Path $targetDir "aria2c.exe"
 $aria2Version = "1.37.0"
+$expectedHashes = @{
+    "win-64bit" = @{
+        Zip = "67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288"
+        Exe = "be2099c214f63a3cb4954b09a0becd6e2e34660b886d4c898d260febfe9d70c2"
+    }
+    "win-32bit" = @{
+        Zip = "35f6514cc5dd7e98a87b3c4c2d25a0754b9b063dbe59bc0f22d483464f61e5b6"
+        Exe = "b9cd71b275af11b63c33457b0f43f2f2675937070c563e195f223efd7fa4c74b"
+    }
+}
 
 # Determine Architecture
 $arch = "win-64bit"
 if ($env:PROCESSOR_ARCHITECTURE -eq "x86") { $arch = "win-32bit" }
 
 $downloadUrl = "https://github.com/aria2/aria2/releases/download/release-$aria2Version/aria2-$aria2Version-$arch-build1.zip"
+$expectedArchiveRoot = "aria2-$aria2Version-$arch-build1"
+$expectedArchiveExe = Join-Path $expectedArchiveRoot "aria2c.exe"
+$expectedHash = $expectedHashes[$arch]
 
 Write-Host "Checking aria2c binary..." -NoNewline
 
 if (Test-Path $aria2Exe) {
-    Write-Color " [OK]" Green
-    Write-Color "   Found at: $aria2Exe" Gray
-} else {
+    try {
+        Test-Aria2Hash -Path $aria2Exe -ExpectedHash $expectedHash.Exe -Label "Existing aria2c.exe"
+        Write-Color " [OK]" Green
+        Write-Color "   Found and verified at: $aria2Exe" Gray
+    } catch {
+        Write-Color " [INVALID]" Yellow
+        Write-Color "   Existing bundled aria2c.exe failed integrity verification and will be replaced." Yellow
+        Remove-Item $aria2Exe -Force
+    }
+}
+
+if (-not (Test-Path $aria2Exe)) {
     Write-Color " [MISSING]" Yellow
     Write-Color "⬇️  Downloading aria2c v$aria2Version ($arch)..." Cyan
     Write-Color "   Source: $downloadUrl" Gray
@@ -93,28 +126,30 @@ if (Test-Path $aria2Exe) {
     try {
         # Download
         Invoke-WebRequest -Uri $downloadUrl -OutFile $tempZip -UseBasicParsing
+        Test-Aria2Hash -Path $tempZip -ExpectedHash $expectedHash.Zip -Label "Downloaded aria2 archive"
 
         # Extract
         Write-Color "📦 Extracting..." Cyan
         Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force
 
-        # Locate exe (it's inside a folder in the zip)
-        $foundExe = Get-ChildItem -Path $tempExtract -Recurse -Filter "aria2c.exe" | Select-Object -First 1
+        # Use the exact expected archive path
+        $foundExe = Join-Path $tempExtract $expectedArchiveExe
 
-        if ($foundExe) {
+        if (Test-Path $foundExe) {
+            Test-Aria2Hash -Path $foundExe -ExpectedHash $expectedHash.Exe -Label "Extracted aria2c.exe"
             # Ensure target directory exists
             if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir | Out-Null }
 
             # Move
-            Move-Item -Path $foundExe.FullName -Destination $aria2Exe -Force
-            Write-Color "✅ aria2c.exe installed to internal/process/" Green
+            Move-Item -Path $foundExe -Destination $aria2Exe -Force
+            Write-Color "✅ aria2c.exe installed to internal/process\bundled\windows/" Green
         } else {
-            throw "aria2c.exe not found in the downloaded archive."
+            throw "aria2c.exe not found at expected archive path '$expectedArchiveExe'."
         }
     } catch {
         Write-Color "❌ Failed to download or install aria2c." Red
         Write-Color "   Error: $_" Red
-        Write-Color "   Please manually download the release from GitHub and place aria2c.exe in internal/process/" Yellow
+        Write-Color "   Please manually download the release from GitHub and place aria2c.exe in internal/process\bundled\windows/" Yellow
         exit 1
     } finally {
         # Cleanup

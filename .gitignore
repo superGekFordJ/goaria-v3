@@ -23,6 +23,9 @@ aria2.session
 config.json
 *.aria2
 /downloads/
+internal/process/bundled/windows/aria2c.exe
+internal/process/bundled/linux/aria2c
+internal/process/bundled/darwin/aria2c
 
 # --- IDE 相关 ---
 .vscode/

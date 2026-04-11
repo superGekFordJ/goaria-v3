@@ -9,6 +9,7 @@ require (
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef
 	github.com/wailsapp/wails/v3 v3.0.0-alpha.57
+	golang.org/x/sys v0.33.0
 )
 
 require (
@@ -48,7 +49,6 @@ require (
 	golang.org/x/crypto v0.36.0 // indirect
 	golang.org/x/image v0.24.0 // indirect
 	golang.org/x/net v0.37.0 // indirect
-	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/text v0.23.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 )

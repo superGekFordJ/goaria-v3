@@ -1,0 +1,246 @@
+name: build
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  linux-package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install Linux system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev xvfb
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+
+      - name: Add Go bin to PATH
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Negative check - default Linux resolver fails closed without aria2c
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ubuntu-latest pre-installs aria2c at /usr/bin; temporarily hide the
+          # binary instead of filtering PATH (which would also remove grep, etc.)
+          ARIA2C_PATH="$(command -v aria2c || true)"
+          if [ -n "$ARIA2C_PATH" ]; then
+            sudo mv "$ARIA2C_PATH" "${ARIA2C_PATH}.hidden"
+            trap 'sudo mv "${ARIA2C_PATH}.hidden" "$ARIA2C_PATH"' EXIT
+          fi
+          if command -v aria2c >/dev/null 2>&1; then
+            echo "aria2c unexpectedly present after hiding" >&2
+            exit 1
+          fi
+          if wails3 task linux:prepare:aria2 >linux-prepare-fail.log 2>&1; then
+            echo "linux:prepare:aria2 unexpectedly succeeded" >&2
+            cat linux-prepare-fail.log >&2
+            exit 1
+          fi
+          grep -qi "bundled aria2 missing" linux-prepare-fail.log
+
+      - name: Install Linux bundled aria2 source
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2
+
+      - name: Package Linux artifact
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: wails3 task linux:package
+
+      - name: Smoke test bundled Linux runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$(mktemp -d)"
+          xvfb-run -a ./bin/goaria-v3 --hidden >linux-smoke.log 2>&1 &
+          pid=$!
+          sleep 3
+          test -x "$HOME/.goaria/aria2c"
+          if ! kill -0 "$pid" 2>/dev/null; then
+            cat linux-smoke.log >&2
+            exit 1
+          fi
+          kill "$pid" || true
+          wait "$pid" || true
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            bin/goaria-v3
+            bin/*.AppImage
+            bin/*.deb
+            bin/*.rpm
+            bin/*.pkg.tar.zst
+
+      - name: Upload Linux release assets
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for f in bin/*.AppImage bin/*.deb bin/*.rpm bin/*.pkg.tar.zst; do
+            [ -f "$f" ] && gh release upload "${{ github.event.release.tag_name }}" "$f" --clobber || true
+          done
+
+  darwin-package:
+    runs-on: macos-latest
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+
+      - name: Add Go bin to PATH
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Negative check - default macOS resolver fails closed without aria2c
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Defensively hide aria2c if the runner happens to have it pre-installed
+          ARIA2C_PATH="$(command -v aria2c || true)"
+          if [ -n "$ARIA2C_PATH" ]; then
+            sudo mv "$ARIA2C_PATH" "${ARIA2C_PATH}.hidden"
+            trap 'sudo mv "${ARIA2C_PATH}.hidden" "$ARIA2C_PATH"' EXIT
+          fi
+          if command -v aria2c >/dev/null 2>&1; then
+            echo "aria2c unexpectedly present after hiding" >&2
+            exit 1
+          fi
+          if wails3 task darwin:prepare:aria2 >darwin-prepare-fail.log 2>&1; then
+            echo "darwin:prepare:aria2 unexpectedly succeeded" >&2
+            cat darwin-prepare-fail.log >&2
+            exit 1
+          fi
+          grep -qi "bundled aria2 missing" darwin-prepare-fail.log
+
+      - name: Install macOS bundled aria2 source
+        run: brew install aria2
+
+      - name: Package macOS artifact
+        run: wails3 task darwin:package
+
+      - name: Smoke test bundled macOS runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$(mktemp -d)"
+          ./bin/goaria-v3.app/Contents/MacOS/goaria-v3 --hidden >darwin-smoke.log 2>&1 &
+          pid=$!
+          sleep 3
+          test -x "$HOME/.goaria/aria2c"
+          if ! kill -0 "$pid" 2>/dev/null; then
+            cat darwin-smoke.log >&2
+            exit 1
+          fi
+          kill "$pid" || true
+          wait "$pid" || true
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-package
+          path: bin/goaria-v3.app
+
+      - name: Upload macOS release assets
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd bin
+          version=$(awk -F'"' '/^\s+version:/ {print $2; exit}' ../build/config.yml)
+          arch=$(uname -m); case "$arch" in x86_64) arch=amd64;; aarch64) arch=arm64;; esac
+          zipname="goaria-v${version}-darwin-${arch}.zip"
+          zip -r "$zipname" goaria-v3.app
+          gh release upload "${{ github.event.release.tag_name }}" "$zipname" --clobber
+
+  windows-package:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+
+      - name: Stage bundled aria2c
+        run: .\setup.ps1
+
+      - name: Build and package
+        run: .\build.ps1
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          path: bin/*.zip
+
+      - name: Upload Windows release assets
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Get-ChildItem -Path bin -Filter "*.zip" | ForEach-Object {
+            gh release upload "${{ github.event.release.tag_name }}" $_.FullName --clobber
+          }
