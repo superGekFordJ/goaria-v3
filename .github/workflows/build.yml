@@ -105,8 +105,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for f in bin/*.AppImage bin/*.deb bin/*.rpm bin/*.pkg.tar.zst; do
-            [ -f "$f" ] && gh release upload "${{ github.event.release.tag_name }}" "$f" --clobber || true
+          set -euo pipefail
+          version=$(awk -F'"' '/^[[:space:]]+version:/ {print $2; exit}' build/config.yml)
+          arch=$(uname -m); case "$arch" in x86_64) arch=amd64;; aarch64) arch=arm64;; esac
+          cd bin
+          for ext in AppImage deb rpm; do
+            for f in *.$ext; do
+              [ -f "$f" ] || continue
+              newname="goaria-v${version}-linux-${arch}.${ext}"
+              mv "$f" "$newname"
+              gh release upload "${{ github.event.release.tag_name }}" "$newname" --clobber
+            done
+          done
+          for f in *.pkg.tar.zst; do
+            [ -f "$f" ] || continue
+            newname="goaria-v${version}-linux-${arch}.pkg.tar.zst"
+            mv "$f" "$newname"
+            gh release upload "${{ github.event.release.tag_name }}" "$newname" --clobber
           done
 
   darwin-package:
