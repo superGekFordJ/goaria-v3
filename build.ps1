@@ -2,10 +2,7 @@
 
 # 1. 从 build/config.yml 获取版本号
 $configPath = Join-Path $PSScriptRoot "build/config.yml"
-$version = (Select-String -Path $configPath -Pattern 'version: "(.*)"').Matches.Groups[1].Value
-if (-not $version) {
-    $version = (Select-String -Path $configPath -Pattern "version: '(.*)'").Matches.Groups[1].Value
-}
+$version = (Select-String -Path $configPath -Pattern '^\s+version: "([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
 
 Write-Host "Detected Version: $version" -ForegroundColor Cyan
 

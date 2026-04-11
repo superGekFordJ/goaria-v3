@@ -194,7 +194,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd bin
-          version=$(awk -F'"' '/^\s+version:/ {print $2; exit}' ../build/config.yml)
+          version=$(awk -F'"' '/^[[:space:]]+version:/ {print $2; exit}' ../build/config.yml)
           arch=$(uname -m); case "$arch" in x86_64) arch=amd64;; aarch64) arch=arm64;; esac
           zipname="goaria-v${version}-darwin-${arch}.zip"
           zip -r "$zipname" goaria-v3.app
