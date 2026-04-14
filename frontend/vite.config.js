@@ -31,17 +31,16 @@ export default defineConfig({
     // Optimize chunk splitting
     rollupOptions: {
       output: {
-        manualChunks: {
-          // Separate vendor chunks
-          vue: ['vue', 'pinia'],
-          icons: ['lucide-vue-next'],
-          scroller: ['vue-virtual-scroller'],
+        manualChunks: (id) => {
+          if (id.includes('node_modules/vue') || id.includes('node_modules/pinia')) return 'vue'
+          if (id.includes('node_modules/lucide-vue-next')) return 'icons'
+          if (id.includes('node_modules/vue-virtual-scroller')) return 'scroller'
         },
       },
     },
 
     // Minification settings
-    minify: 'esbuild',
+    minify: true,
     cssMinify: true,
 
     // Enable source maps for debugging (disable in production if needed)
