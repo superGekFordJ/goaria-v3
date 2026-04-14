@@ -14,7 +14,7 @@
     !define INFO_PRODUCTNAME "GoAria"
 !endif
 !ifndef INFO_PRODUCTVERSION
-    !define INFO_PRODUCTVERSION "1.7.0"
+    !define INFO_PRODUCTVERSION "1.7.1"
 !endif
 !ifndef INFO_COPYRIGHT
     !define INFO_COPYRIGHT "(c) 2026, GoAria"
