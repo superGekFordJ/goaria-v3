@@ -2,11 +2,23 @@ package rpc
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+type testRPCRequest struct {
+	Method string            `json:"method"`
+	Params []json.RawMessage `json:"params"`
+}
+
+type testMulticallCall struct {
+	MethodName string `json:"methodName"`
+	Params     []any  `json:"params"`
+}
 
 func countMethodCalls(methods []string, target string) int {
 	count := 0
@@ -16,6 +28,33 @@ func countMethodCalls(methods []string, target string) int {
 		}
 	}
 	return count
+}
+
+func decodeTestRPCRequest(r *http.Request) (testRPCRequest, error) {
+	var req testRPCRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	return req, err
+}
+
+func decodeTestMulticallCalls(params []json.RawMessage) ([]testMulticallCall, error) {
+	if len(params) != 1 {
+		return nil, fmt.Errorf("unexpected top-level params: %d", len(params))
+	}
+
+	var calls []testMulticallCall
+	if err := json.Unmarshal(params[0], &calls); err != nil {
+		return nil, err
+	}
+
+	return calls, nil
+}
+
+func stringsToAny(values []string) []any {
+	result := make([]any, len(values))
+	for i, value := range values {
+		result[i] = value
+	}
+	return result
 }
 
 func TestGetGlobalStat(t *testing.T) {
@@ -166,126 +205,128 @@ func TestTellActiveError(t *testing.T) {
 }
 
 func TestTellStatusMulti(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Method string            `json:"method"`
-			Params []json.RawMessage `json:"params"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+	gids := []string{"gid-1", "gid-2"}
+	keys := []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "errorCode", "errorMessage", "files", "dir"}
+	keysAny := stringsToAny(keys)
 
-		if req.Method != "system.multicall" {
-			http.Error(w, "unexpected method", http.StatusBadRequest)
-			return
-		}
-
-		if len(req.Params) != 1 {
-			http.Error(w, "unexpected top-level params", http.StatusBadRequest)
-			return
-		}
-
-		var calls []struct {
-			MethodName string            `json:"methodName"`
-			Params     []json.RawMessage `json:"params"`
-		}
-		if err := json.Unmarshal(req.Params[0], &calls); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		if len(calls) != 2 {
-			http.Error(w, "unexpected call count", http.StatusBadRequest)
-			return
-		}
-
-		for i, call := range calls {
-			if call.MethodName != "aria2.tellStatus" {
-				http.Error(w, "unexpected nested method", http.StatusBadRequest)
-				return
-			}
-			if len(call.Params) != 3 {
-				http.Error(w, "unexpected nested param count", http.StatusBadRequest)
-				return
-			}
-
-			var token string
-			if err := json.Unmarshal(call.Params[0], &token); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			if token != "token:secret" {
-				http.Error(w, "unexpected nested token", http.StatusBadRequest)
-				return
-			}
-
-			var gid string
-			if err := json.Unmarshal(call.Params[1], &gid); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			if gid != []string{"gid-1", "gid-2"}[i] {
-				http.Error(w, "unexpected gid", http.StatusBadRequest)
-				return
-			}
-		}
-
-		response := map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      "goaria",
-			"result": []interface{}{
-				[]interface{}{map[string]interface{}{
-					"gid":             "gid-1",
-					"status":          "active",
-					"totalLength":     "100",
-					"completedLength": "10",
-					"downloadSpeed":   "1",
-					"errorCode":       "",
-					"errorMessage":    "",
-					"files": []interface{}{map[string]interface{}{
-						"path": "D:/Downloads/a.zip",
-						"uris": []interface{}{map[string]interface{}{"uri": "https://example.com/a.zip"}},
-					}},
-					"dir": "D:/Downloads",
-				}},
-				[]interface{}{map[string]interface{}{
-					"gid":             "gid-2",
-					"status":          "waiting",
-					"totalLength":     "200",
-					"completedLength": "20",
-					"downloadSpeed":   "2",
-					"errorCode":       "",
-					"errorMessage":    "",
-					"files": []interface{}{map[string]interface{}{
-						"path": "D:/Downloads/b.zip",
-						"uris": []interface{}{map[string]interface{}{"uri": "https://example.com/b.zip"}},
-					}},
-					"dir": "D:/Downloads",
-				}},
+	tests := []struct {
+		name           string
+		secret         string
+		expectedParams [][]any
+	}{
+		{
+			name:   "WithSecret",
+			secret: "secret",
+			expectedParams: [][]any{
+				{"token:secret", "gid-1", keysAny},
+				{"token:secret", "gid-2", keysAny},
 			},
-		}
-		json.NewEncoder(w).Encode(response)
-	}))
-	defer server.Close()
-
-	parts := strings.Split(server.URL, ":")
-	port := parts[len(parts)-1]
-
-	Init(port, "secret")
-
-	tasks, err := TellStatusMulti([]string{"gid-1", "gid-2"})
-	if err != nil {
-		t.Fatalf("Expected no error, got %v", err)
+		},
+		{
+			name:   "NoSecret",
+			secret: "",
+			expectedParams: [][]any{
+				{"gid-1", keysAny},
+				{"gid-2", keysAny},
+			},
+		},
 	}
-	if len(tasks) != 2 {
-		t.Fatalf("Expected 2 tasks, got %d", len(tasks))
-	}
-	if tasks[0].GID != "gid-1" || tasks[1].GID != "gid-2" {
-		t.Fatalf("Unexpected gids returned: %v %v", tasks[0].GID, tasks[1].GID)
-	}
-	if len(tasks[0].Files) != 1 || tasks[0].Files[0].Path != "D:/Downloads/a.zip" {
-		t.Fatalf("Unexpected first task files: %+v", tasks[0].Files)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var requests []testRPCRequest
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				req, err := decodeTestRPCRequest(r)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+
+				requests = append(requests, req)
+
+				response := map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      "goaria",
+					"result": []interface{}{
+						[]interface{}{map[string]interface{}{
+							"gid":             "gid-1",
+							"status":          "active",
+							"totalLength":     "100",
+							"completedLength": "10",
+							"downloadSpeed":   "1",
+							"errorCode":       "",
+							"errorMessage":    "",
+							"files": []interface{}{map[string]interface{}{
+								"path": "D:/Downloads/a.zip",
+								"uris": []interface{}{map[string]interface{}{"uri": "https://example.com/a.zip"}},
+							}},
+							"dir": "D:/Downloads",
+						}},
+						[]interface{}{map[string]interface{}{
+							"gid":             "gid-2",
+							"status":          "waiting",
+							"totalLength":     "200",
+							"completedLength": "20",
+							"downloadSpeed":   "2",
+							"errorCode":       "",
+							"errorMessage":    "",
+							"files": []interface{}{map[string]interface{}{
+								"path": "D:/Downloads/b.zip",
+								"uris": []interface{}{map[string]interface{}{"uri": "https://example.com/b.zip"}},
+							}},
+							"dir": "D:/Downloads",
+						}},
+					},
+				}
+				json.NewEncoder(w).Encode(response)
+			}))
+			defer server.Close()
+
+			parts := strings.Split(server.URL, ":")
+			port := parts[len(parts)-1]
+
+			Init(port, tt.secret)
+
+			tasks, err := TellStatusMulti(gids)
+			if err != nil {
+				t.Fatalf("Expected no error, got %v", err)
+			}
+
+			if len(requests) != 1 {
+				t.Fatalf("Expected 1 request, got %d", len(requests))
+			}
+			if requests[0].Method != "system.multicall" {
+				t.Fatalf("Expected system.multicall, got %s", requests[0].Method)
+			}
+
+			calls, err := decodeTestMulticallCalls(requests[0].Params)
+			if err != nil {
+				t.Fatalf("Expected multicall params to decode, got %v", err)
+			}
+			if len(calls) != len(gids) {
+				t.Fatalf("Expected %d nested calls, got %d", len(gids), len(calls))
+			}
+
+			for i, call := range calls {
+				if call.MethodName != "aria2.tellStatus" {
+					t.Fatalf("Expected nested method aria2.tellStatus, got %s", call.MethodName)
+				}
+				if !reflect.DeepEqual(call.Params, tt.expectedParams[i]) {
+					t.Fatalf("Unexpected nested params for %s call %d: got %#v want %#v", tt.name, i, call.Params, tt.expectedParams[i])
+				}
+			}
+
+			if len(tasks) != 2 {
+				t.Fatalf("Expected 2 tasks, got %d", len(tasks))
+			}
+			if tasks[0].GID != "gid-1" || tasks[1].GID != "gid-2" {
+				t.Fatalf("Unexpected gids returned: %v %v", tasks[0].GID, tasks[1].GID)
+			}
+			if len(tasks[0].Files) != 1 || tasks[0].Files[0].Path != "D:/Downloads/a.zip" {
+				t.Fatalf("Unexpected first task files: %+v", tasks[0].Files)
+			}
+		})
 	}
 }
 
@@ -317,221 +358,267 @@ func TestTellStatusMultiError(t *testing.T) {
 	}
 }
 
-func TestPauseMulti(t *testing.T) {
-	var topLevelMethods []string
-
+func TestTellStatusMultiEmpty(t *testing.T) {
+	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Method string            `json:"method"`
-			Params []json.RawMessage `json:"params"`
+		requests++
+		response := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "goaria",
+			"result":  "OK",
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
 
-		topLevelMethods = append(topLevelMethods, req.Method)
+	parts := strings.Split(server.URL, ":")
+	port := parts[len(parts)-1]
 
-		switch req.Method {
-		case "system.multicall":
-			if len(req.Params) != 1 {
-				http.Error(w, "unexpected top-level params", http.StatusBadRequest)
-				return
+	Init(port, "secret")
+
+	tasks, err := TellStatusMulti(nil)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if tasks != nil {
+		t.Fatalf("Expected nil tasks, got %+v", tasks)
+	}
+	if requests != 0 {
+		t.Fatalf("Expected no requests for empty input, got %d", requests)
+	}
+}
+
+func TestPauseMulti(t *testing.T) {
+	gids := []string{"gid-1", "gid-2"}
+	tests := []struct {
+		name           string
+		secret         string
+		expectedParams [][]any
+	}{
+		{
+			name:   "WithSecret",
+			secret: "secret",
+			expectedParams: [][]any{
+				{"token:secret", "gid-1"},
+				{"token:secret", "gid-2"},
+			},
+		},
+		{
+			name:   "NoSecret",
+			secret: "",
+			expectedParams: [][]any{
+				{"gid-1"},
+				{"gid-2"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var requests []testRPCRequest
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				req, err := decodeTestRPCRequest(r)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+
+				requests = append(requests, req)
+
+				switch req.Method {
+				case "system.multicall":
+					response := map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      "goaria",
+						"result": []interface{}{
+							[]interface{}{"OK"},
+							[]interface{}{"OK"},
+						},
+					}
+					json.NewEncoder(w).Encode(response)
+				case "aria2.saveSession":
+					response := map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      "goaria",
+						"result":  "OK",
+					}
+					json.NewEncoder(w).Encode(response)
+				default:
+					http.Error(w, "unexpected method", http.StatusBadRequest)
+				}
+			}))
+			defer server.Close()
+
+			parts := strings.Split(server.URL, ":")
+			port := parts[len(parts)-1]
+
+			Init(port, tt.secret)
+
+			if err := PauseMulti(gids); err != nil {
+				t.Fatalf("Expected no error, got %v", err)
 			}
 
-			var calls []struct {
-				MethodName string            `json:"methodName"`
-				Params     []json.RawMessage `json:"params"`
-			}
-			if err := json.Unmarshal(req.Params[0], &calls); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
+			topLevelMethods := make([]string, 0, len(requests))
+			for _, req := range requests {
+				topLevelMethods = append(topLevelMethods, req.Method)
 			}
 
-			if len(calls) != 2 {
-				http.Error(w, "unexpected call count", http.StatusBadRequest)
-				return
+			if count := countMethodCalls(topLevelMethods, "system.multicall"); count != 1 {
+				t.Fatalf("Expected exactly 1 multicall request, got %d (%v)", count, topLevelMethods)
+			}
+			if count := countMethodCalls(topLevelMethods, "aria2.pause"); count != 0 {
+				t.Fatalf("Expected no top-level aria2.pause requests, got %d (%v)", count, topLevelMethods)
+			}
+			if count := countMethodCalls(topLevelMethods, "aria2.saveSession"); count != 1 {
+				t.Fatalf("Expected exactly 1 saveSession request, got %d (%v)", count, topLevelMethods)
+			}
+
+			var multicallRequest *testRPCRequest
+			for i := range requests {
+				if requests[i].Method == "system.multicall" {
+					multicallRequest = &requests[i]
+					break
+				}
+			}
+			if multicallRequest == nil {
+				t.Fatal("Expected system.multicall request to be recorded")
+			}
+
+			calls, err := decodeTestMulticallCalls(multicallRequest.Params)
+			if err != nil {
+				t.Fatalf("Expected multicall params to decode, got %v", err)
+			}
+			if len(calls) != len(gids) {
+				t.Fatalf("Expected %d nested calls, got %d", len(gids), len(calls))
 			}
 
 			for i, call := range calls {
 				if call.MethodName != "aria2.pause" {
-					http.Error(w, "unexpected nested method", http.StatusBadRequest)
-					return
+					t.Fatalf("Expected nested method aria2.pause, got %s", call.MethodName)
 				}
-				if len(call.Params) != 2 {
-					http.Error(w, "unexpected nested param count", http.StatusBadRequest)
-					return
-				}
-
-				var token string
-				if err := json.Unmarshal(call.Params[0], &token); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				if token != "token:secret" {
-					http.Error(w, "unexpected nested token", http.StatusBadRequest)
-					return
-				}
-
-				var gid string
-				if err := json.Unmarshal(call.Params[1], &gid); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				if gid != []string{"gid-1", "gid-2"}[i] {
-					http.Error(w, "unexpected gid", http.StatusBadRequest)
-					return
+				if !reflect.DeepEqual(call.Params, tt.expectedParams[i]) {
+					t.Fatalf("Unexpected nested params for %s call %d: got %#v want %#v", tt.name, i, call.Params, tt.expectedParams[i])
 				}
 			}
-
-			response := map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      "goaria",
-				"result": []interface{}{
-					[]interface{}{"OK"},
-					[]interface{}{"OK"},
-				},
-			}
-			json.NewEncoder(w).Encode(response)
-		case "aria2.saveSession":
-			response := map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      "goaria",
-				"result":  "OK",
-			}
-			json.NewEncoder(w).Encode(response)
-		default:
-			http.Error(w, "unexpected method", http.StatusBadRequest)
-		}
-	}))
-	defer server.Close()
-
-	parts := strings.Split(server.URL, ":")
-	port := parts[len(parts)-1]
-
-	Init(port, "secret")
-
-	if err := PauseMulti([]string{"gid-1", "gid-2"}); err != nil {
-		t.Fatalf("Expected no error, got %v", err)
-	}
-
-	if count := countMethodCalls(topLevelMethods, "system.multicall"); count != 1 {
-		t.Fatalf("Expected exactly 1 multicall request, got %d (%v)", count, topLevelMethods)
-	}
-	if count := countMethodCalls(topLevelMethods, "aria2.pause"); count != 0 {
-		t.Fatalf("Expected no top-level aria2.pause requests, got %d (%v)", count, topLevelMethods)
-	}
-	if count := countMethodCalls(topLevelMethods, "aria2.saveSession"); count != 1 {
-		t.Fatalf("Expected exactly 1 saveSession request, got %d (%v)", count, topLevelMethods)
+		})
 	}
 }
 
 func TestUnpauseMulti(t *testing.T) {
-	var topLevelMethods []string
+	gids := []string{"gid-1", "gid-2"}
+	tests := []struct {
+		name           string
+		secret         string
+		expectedParams [][]any
+	}{
+		{
+			name:   "WithSecret",
+			secret: "secret",
+			expectedParams: [][]any{
+				{"token:secret", "gid-1"},
+				{"token:secret", "gid-2"},
+			},
+		},
+		{
+			name:   "NoSecret",
+			secret: "",
+			expectedParams: [][]any{
+				{"gid-1"},
+				{"gid-2"},
+			},
+		},
+	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Method string            `json:"method"`
-			Params []json.RawMessage `json:"params"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var requests []testRPCRequest
 
-		topLevelMethods = append(topLevelMethods, req.Method)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				req, err := decodeTestRPCRequest(r)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
 
-		switch req.Method {
-		case "system.multicall":
-			if len(req.Params) != 1 {
-				http.Error(w, "unexpected top-level params", http.StatusBadRequest)
-				return
+				requests = append(requests, req)
+
+				switch req.Method {
+				case "system.multicall":
+					response := map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      "goaria",
+						"result": []interface{}{
+							[]interface{}{"OK"},
+							[]interface{}{"OK"},
+						},
+					}
+					json.NewEncoder(w).Encode(response)
+				case "aria2.saveSession":
+					response := map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      "goaria",
+						"result":  "OK",
+					}
+					json.NewEncoder(w).Encode(response)
+				default:
+					http.Error(w, "unexpected method", http.StatusBadRequest)
+				}
+			}))
+			defer server.Close()
+
+			parts := strings.Split(server.URL, ":")
+			port := parts[len(parts)-1]
+
+			Init(port, tt.secret)
+
+			if err := UnpauseMulti(gids); err != nil {
+				t.Fatalf("Expected no error, got %v", err)
 			}
 
-			var calls []struct {
-				MethodName string            `json:"methodName"`
-				Params     []json.RawMessage `json:"params"`
-			}
-			if err := json.Unmarshal(req.Params[0], &calls); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
+			topLevelMethods := make([]string, 0, len(requests))
+			for _, req := range requests {
+				topLevelMethods = append(topLevelMethods, req.Method)
 			}
 
-			if len(calls) != 2 {
-				http.Error(w, "unexpected call count", http.StatusBadRequest)
-				return
+			if count := countMethodCalls(topLevelMethods, "system.multicall"); count != 1 {
+				t.Fatalf("Expected exactly 1 multicall request, got %d (%v)", count, topLevelMethods)
+			}
+			if count := countMethodCalls(topLevelMethods, "aria2.unpause"); count != 0 {
+				t.Fatalf("Expected no top-level aria2.unpause requests, got %d (%v)", count, topLevelMethods)
+			}
+			if count := countMethodCalls(topLevelMethods, "aria2.saveSession"); count != 1 {
+				t.Fatalf("Expected exactly 1 saveSession request, got %d (%v)", count, topLevelMethods)
+			}
+
+			var multicallRequest *testRPCRequest
+			for i := range requests {
+				if requests[i].Method == "system.multicall" {
+					multicallRequest = &requests[i]
+					break
+				}
+			}
+			if multicallRequest == nil {
+				t.Fatal("Expected system.multicall request to be recorded")
+			}
+
+			calls, err := decodeTestMulticallCalls(multicallRequest.Params)
+			if err != nil {
+				t.Fatalf("Expected multicall params to decode, got %v", err)
+			}
+			if len(calls) != len(gids) {
+				t.Fatalf("Expected %d nested calls, got %d", len(gids), len(calls))
 			}
 
 			for i, call := range calls {
 				if call.MethodName != "aria2.unpause" {
-					http.Error(w, "unexpected nested method", http.StatusBadRequest)
-					return
+					t.Fatalf("Expected nested method aria2.unpause, got %s", call.MethodName)
 				}
-				if len(call.Params) != 2 {
-					http.Error(w, "unexpected nested param count", http.StatusBadRequest)
-					return
-				}
-
-				var token string
-				if err := json.Unmarshal(call.Params[0], &token); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				if token != "token:secret" {
-					http.Error(w, "unexpected nested token", http.StatusBadRequest)
-					return
-				}
-
-				var gid string
-				if err := json.Unmarshal(call.Params[1], &gid); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				if gid != []string{"gid-1", "gid-2"}[i] {
-					http.Error(w, "unexpected gid", http.StatusBadRequest)
-					return
+				if !reflect.DeepEqual(call.Params, tt.expectedParams[i]) {
+					t.Fatalf("Unexpected nested params for %s call %d: got %#v want %#v", tt.name, i, call.Params, tt.expectedParams[i])
 				}
 			}
-
-			response := map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      "goaria",
-				"result": []interface{}{
-					[]interface{}{"OK"},
-					[]interface{}{"OK"},
-				},
-			}
-			json.NewEncoder(w).Encode(response)
-		case "aria2.saveSession":
-			response := map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      "goaria",
-				"result":  "OK",
-			}
-			json.NewEncoder(w).Encode(response)
-		default:
-			http.Error(w, "unexpected method", http.StatusBadRequest)
-		}
-	}))
-	defer server.Close()
-
-	parts := strings.Split(server.URL, ":")
-	port := parts[len(parts)-1]
-
-	Init(port, "secret")
-
-	if err := UnpauseMulti([]string{"gid-1", "gid-2"}); err != nil {
-		t.Fatalf("Expected no error, got %v", err)
-	}
-
-	if count := countMethodCalls(topLevelMethods, "system.multicall"); count != 1 {
-		t.Fatalf("Expected exactly 1 multicall request, got %d (%v)", count, topLevelMethods)
-	}
-	if count := countMethodCalls(topLevelMethods, "aria2.unpause"); count != 0 {
-		t.Fatalf("Expected no top-level aria2.unpause requests, got %d (%v)", count, topLevelMethods)
-	}
-	if count := countMethodCalls(topLevelMethods, "aria2.saveSession"); count != 1 {
-		t.Fatalf("Expected exactly 1 saveSession request, got %d (%v)", count, topLevelMethods)
+		})
 	}
 }
 

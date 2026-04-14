@@ -199,12 +199,21 @@ func TellStatusMulti(gids []string) ([]*Task, error) {
 		return nil, nil
 	}
 
+	secret := currentSecret
+	hasSecret := secret != ""
+	token := ""
+	numParams := 2
+	if hasSecret {
+		token = "token:" + secret
+		numParams = 3
+	}
+
 	keys := []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "errorCode", "errorMessage", "files", "dir"}
 	calls := make([]any, 0, len(gids))
 	for _, gid := range gids {
-		params := make([]any, 0, 3)
-		if currentSecret != "" {
-			params = append(params, "token:"+currentSecret)
+		params := make([]any, 0, numParams)
+		if hasSecret {
+			params = append(params, token)
 		}
 		params = append(params, gid, keys)
 
@@ -406,11 +415,20 @@ func PauseMulti(gids []string) error {
 		return nil
 	}
 
+	secret := currentSecret
+	hasSecret := secret != ""
+	token := ""
+	numParams := 1
+	if hasSecret {
+		token = "token:" + secret
+		numParams = 2
+	}
+
 	calls := make([]any, 0, len(gids))
 	for _, gid := range gids {
-		params := make([]any, 0, 2)
-		if currentSecret != "" {
-			params = append(params, "token:"+currentSecret)
+		params := make([]any, 0, numParams)
+		if hasSecret {
+			params = append(params, token)
 		}
 		params = append(params, gid)
 
@@ -430,11 +448,20 @@ func UnpauseMulti(gids []string) error {
 		return nil
 	}
 
+	secret := currentSecret
+	hasSecret := secret != ""
+	token := ""
+	numParams := 1
+	if hasSecret {
+		token = "token:" + secret
+		numParams = 2
+	}
+
 	calls := make([]any, 0, len(gids))
 	for _, gid := range gids {
-		params := make([]any, 0, 2)
-		if currentSecret != "" {
-			params = append(params, "token:"+currentSecret)
+		params := make([]any, 0, numParams)
+		if hasSecret {
+			params = append(params, token)
 		}
 		params = append(params, gid)
 
