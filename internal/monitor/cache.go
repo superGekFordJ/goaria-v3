@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,22 @@ type TaskMetadata struct {
 	FetchedAt   time.Time
 }
 
+func metadataPathValid(path string) bool {
+	return strings.TrimSpace(path) != ""
+}
+
+func metadataHasValidPath(meta *TaskMetadata) bool {
+	if meta == nil {
+		return false
+	}
+	for _, path := range meta.Files {
+		if metadataPathValid(path) {
+			return true
+		}
+	}
+	return false
+}
+
 // Cache 全局缓存实例
 var Cache = &TaskCache{
 	metadata: make(map[string]*TaskMetadata),
@@ -60,13 +77,22 @@ func (c *TaskCache) UpdateFromAria2(active, waiting, stopped []rpc.Task) {
 // ensureMetadata 确保任务元数据已缓存（预取）
 // 注意：仅当任务包含有效的文件信息时才缓存，避免 Lite 任务污染缓存
 func (c *TaskCache) ensureMetadata(task rpc.Task) {
-	if _, exists := c.metadata[task.GID]; exists {
+	if metadataHasValidPath(c.metadata[task.GID]) {
 		return
 	}
 
-	// 关键检查：如果 Files 为空，说明是 Lite 任务或元数据不完整
+	// 关键检查：如果 Files 为空或只有空路径，说明是 Lite 任务或元数据不完整
 	// 此时不应缓存，避免污染 metadata cache
 	if len(task.Files) == 0 {
+		return
+	}
+	validFiles := make([]rpc.File, 0, len(task.Files))
+	for _, f := range task.Files {
+		if metadataPathValid(f.Path) {
+			validFiles = append(validFiles, f)
+		}
+	}
+	if len(validFiles) == 0 {
 		return
 	}
 
@@ -77,12 +103,12 @@ func (c *TaskCache) ensureMetadata(task rpc.Task) {
 		FetchedAt:   time.Now(),
 	}
 
-	meta.Title = filepath.Base(task.Files[0].Path)
-	for _, f := range task.Files {
+	meta.Title = filepath.Base(validFiles[0].Path)
+	for _, f := range validFiles {
 		meta.Files = append(meta.Files, f.Path)
 	}
-	if len(task.Files[0].Uris) > 0 {
-		meta.SourceURL = task.Files[0].Uris[0].Uri
+	if len(validFiles[0].Uris) > 0 {
+		meta.SourceURL = validFiles[0].Uris[0].Uri
 	}
 
 	c.metadata[task.GID] = meta
@@ -124,13 +150,23 @@ func (c *TaskCache) EnrichTasks(tasks []rpc.Task) {
 
 	for i := range tasks {
 		meta := c.metadata[tasks[i].GID]
-		if meta != nil {
+		if metadataHasValidPath(meta) {
 			tasks[i].Title = meta.Title
 			// 构造一个包含首个文件信息的 Files 列表，满足前端和 Tracker 的基本需求
 			if len(meta.Files) > 0 {
+				path := ""
+				for _, candidate := range meta.Files {
+					if metadataPathValid(candidate) {
+						path = candidate
+						break
+					}
+				}
+				if path == "" {
+					continue
+				}
 				tasks[i].Files = []rpc.File{
 					{
-						Path: meta.Files[0],
+						Path: path,
 						Uris: []rpc.Uri{{Uri: meta.SourceURL}},
 					},
 				}
@@ -144,8 +180,7 @@ func (c *TaskCache) EnrichTasks(tasks []rpc.Task) {
 func (c *TaskCache) HasValidMetadata(gid string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	meta := c.metadata[gid]
-	return meta != nil && len(meta.Files) > 0
+	return metadataHasValidPath(c.metadata[gid])
 }
 
 // InvalidateMetadata 删除指定任务的元数据（用于强制重新获取）

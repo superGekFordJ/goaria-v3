@@ -172,6 +172,130 @@ func assertHistoryBackfillBehavior(t *testing.T, fetchStopped func(*App) []rpc.T
 	}
 }
 
+func assertRichCachePreservationBehavior(t *testing.T, fetchStopped func(*App) []rpc.Task) {
+	t.Helper()
+
+	testCases := []struct {
+		name          string
+		cacheTask     rpc.Task
+		historyEntry  history.HistoryEntry
+		wantPath      string
+		wantSource    string
+		wantTotal     string
+		wantCompleted string
+		wantStatus    string
+	}{
+		{
+			name: "different history metadata and non-zero lengths",
+			cacheTask: rpc.Task{
+				GID:             "gid-rich-different",
+				Status:          "error",
+				TotalLength:     "123",
+				CompletedLength: "45",
+				Dir:             filepath.Join("cache", "rich"),
+				Files: []rpc.File{{
+					Path: filepath.Join("cache", "rich", "cache.bin"),
+					Uris: []rpc.Uri{{Uri: "https://cache.example/cache.bin"}},
+				}},
+			},
+			historyEntry: history.HistoryEntry{
+				GID:             "gid-rich-different",
+				Dir:             filepath.Join("history", "rich"),
+				Path:            filepath.Join("history", "rich", "different.bin"),
+				Source:          "https://history.example/different.bin",
+				TotalLength:     "999",
+				CompletedLength: "888",
+			},
+			wantPath:      filepath.Join("cache", "rich", "cache.bin"),
+			wantSource:    "https://cache.example/cache.bin",
+			wantTotal:     "123",
+			wantCompleted: "45",
+			wantStatus:    "error",
+		},
+		{
+			name: "empty history metadata and blank lengths",
+			cacheTask: rpc.Task{
+				GID:             "gid-rich-empty",
+				Status:          "removed",
+				TotalLength:     "0",
+				CompletedLength: "0",
+				Dir:             filepath.Join("cache", "empty"),
+				Files: []rpc.File{{
+					Path: filepath.Join("cache", "empty", "cache.bin"),
+					Uris: []rpc.Uri{{Uri: "https://cache.example/empty.bin"}},
+				}},
+			},
+			historyEntry: history.HistoryEntry{
+				GID:             "gid-rich-empty",
+				Dir:             filepath.Join("history", "empty"),
+				Path:            "",
+				Source:          "",
+				TotalLength:     "",
+				CompletedLength: "",
+			},
+			wantPath:      filepath.Join("cache", "empty", "cache.bin"),
+			wantSource:    "https://cache.example/empty.bin",
+			wantTotal:     "0",
+			wantCompleted: "0",
+			wantStatus:    "removed",
+		},
+		{
+			name: "zero history lengths",
+			cacheTask: rpc.Task{
+				GID:             "gid-rich-zero",
+				Status:          "complete",
+				TotalLength:     "0",
+				CompletedLength: "0",
+				Dir:             filepath.Join("cache", "zero"),
+				Files: []rpc.File{{
+					Path: filepath.Join("cache", "zero", "cache.bin"),
+					Uris: []rpc.Uri{{Uri: "https://cache.example/zero.bin"}},
+				}},
+			},
+			historyEntry: history.HistoryEntry{
+				GID:             "gid-rich-zero",
+				Dir:             filepath.Join("history", "zero"),
+				Path:            filepath.Join("history", "zero", "zero.bin"),
+				Source:          "https://history.example/zero.bin",
+				TotalLength:     "0",
+				CompletedLength: "0",
+			},
+			wantPath:      filepath.Join("cache", "zero", "cache.bin"),
+			wantSource:    "https://cache.example/zero.bin",
+			wantTotal:     "0",
+			wantCompleted: "0",
+			wantStatus:    "complete",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := setupAppTaskHistoryTest(t)
+
+			monitor.Cache.UpdateFromAria2(nil, nil, []rpc.Task{tc.cacheTask})
+			history.Add(tc.historyEntry)
+
+			stopped := fetchStopped(app)
+			if got := countTasksByGID(stopped, tc.cacheTask.GID); got != 1 {
+				t.Fatalf("expected gid %q once in stopped slice, got %d", tc.cacheTask.GID, got)
+			}
+
+			task := mustFindTaskByGID(t, stopped, tc.cacheTask.GID)
+			assertTaskPathAndSource(t, task, tc.wantPath, tc.wantSource)
+
+			if task.TotalLength != tc.wantTotal {
+				t.Fatalf("expected total length %q, got %q", tc.wantTotal, task.TotalLength)
+			}
+			if task.CompletedLength != tc.wantCompleted {
+				t.Fatalf("expected completed length %q, got %q", tc.wantCompleted, task.CompletedLength)
+			}
+			if task.Status != tc.wantStatus {
+				t.Fatalf("expected status %q to be preserved, got %q", tc.wantStatus, task.Status)
+			}
+		})
+	}
+}
+
 func assertHistoryOnlyStoppedTask(t *testing.T, task rpc.Task, entry history.HistoryEntry) {
 	t.Helper()
 
@@ -201,6 +325,108 @@ func TestGetStoppedTasks_BackfillsHistoryMetadataAndLengths(t *testing.T) {
 
 func TestGetTasks_BackfillsHistoryMetadataAndLengths(t *testing.T) {
 	assertHistoryBackfillBehavior(t, stoppedTasksFromGetTasks)
+}
+
+func TestGetStoppedTasks_RespectsShowHistoryDisabled(t *testing.T) {
+	app := setupAppTaskHistoryTest(t)
+	config.Current.ShowHistory = false
+
+	cacheTask := rpc.Task{
+		GID:             "gid-disabled-cache",
+		Status:          "complete",
+		TotalLength:     "1",
+		CompletedLength: "1",
+		Files: []rpc.File{{
+			Path: filepath.Join("cache", "disabled.bin"),
+			Uris: []rpc.Uri{{Uri: "https://example.com/cache-disabled.bin"}},
+		}},
+	}
+	historyEntry := history.HistoryEntry{
+		GID:             "gid-disabled-history",
+		Dir:             filepath.Join("history", "disabled"),
+		Path:            filepath.Join("history", "disabled", "history.bin"),
+		Source:          "https://example.com/history-disabled.bin",
+		TotalLength:     "2",
+		CompletedLength: "2",
+	}
+
+	monitor.Cache.UpdateFromAria2(nil, nil, []rpc.Task{cacheTask})
+	history.Add(historyEntry)
+
+	if stopped := app.GetStoppedTasks(); len(stopped) != 0 {
+		t.Fatalf("expected no stopped tasks when history is disabled, got %#v", stopped)
+	}
+}
+
+func TestGetTasks_RespectsShowHistoryDisabledAndKeepsActiveWaiting(t *testing.T) {
+	app := setupAppTaskHistoryTest(t)
+	config.Current.ShowHistory = false
+
+	activeTask := rpc.Task{
+		GID:             "gid-disabled-active",
+		Status:          "active",
+		TotalLength:     "10",
+		CompletedLength: "1",
+		Dir:             filepath.Join("active", "disabled"),
+		Files: []rpc.File{{
+			Path: filepath.Join("active", "disabled", "active.bin"),
+			Uris: []rpc.Uri{{Uri: "https://example.com/active-disabled.bin"}},
+		}},
+	}
+	waitingTask := rpc.Task{
+		GID:             "gid-disabled-waiting",
+		Status:          "waiting",
+		TotalLength:     "20",
+		CompletedLength: "2",
+		Dir:             filepath.Join("waiting", "disabled"),
+		Files: []rpc.File{{
+			Path: filepath.Join("waiting", "disabled", "waiting.bin"),
+			Uris: []rpc.Uri{{Uri: "https://example.com/waiting-disabled.bin"}},
+		}},
+	}
+	stoppedTask := rpc.Task{
+		GID:             "gid-disabled-stopped",
+		Status:          "complete",
+		TotalLength:     "30",
+		CompletedLength: "30",
+		Dir:             filepath.Join("stopped", "disabled"),
+		Files: []rpc.File{{
+			Path: filepath.Join("stopped", "disabled", "stopped.bin"),
+			Uris: []rpc.Uri{{Uri: "https://example.com/stopped-disabled.bin"}},
+		}},
+	}
+	historyEntry := history.HistoryEntry{
+		GID:             "gid-disabled-history-all",
+		Dir:             filepath.Join("history", "disabled-all"),
+		Path:            filepath.Join("history", "disabled-all", "history.bin"),
+		Source:          "https://example.com/history-disabled-all.bin",
+		TotalLength:     "40",
+		CompletedLength: "40",
+	}
+
+	monitor.Cache.UpdateFromAria2([]rpc.Task{activeTask}, []rpc.Task{waitingTask}, []rpc.Task{stoppedTask})
+	history.Add(historyEntry)
+
+	tasks := app.GetTasks()
+	if !reflect.DeepEqual(tasks["active"], []rpc.Task{activeTask}) {
+		t.Fatalf("expected active tasks unchanged, got %#v", tasks["active"])
+	}
+	if !reflect.DeepEqual(tasks["waiting"], []rpc.Task{waitingTask}) {
+		t.Fatalf("expected waiting tasks unchanged, got %#v", tasks["waiting"])
+	}
+	if stopped := tasks["stopped"]; len(stopped) != 0 {
+		t.Fatalf("expected no stopped tasks when history is disabled, got %#v", stopped)
+	}
+}
+
+func TestGetStoppedTasks_PreservesRichCacheData(t *testing.T) {
+	assertRichCachePreservationBehavior(t, func(app *App) []rpc.Task {
+		return app.GetStoppedTasks()
+	})
+}
+
+func TestGetTasks_PreservesRichCacheData(t *testing.T) {
+	assertRichCachePreservationBehavior(t, stoppedTasksFromGetTasks)
 }
 
 func TestGetStoppedTasks_AppendsHistoryOnlyStoppedTasks(t *testing.T) {
