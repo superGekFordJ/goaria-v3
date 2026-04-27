@@ -66,6 +66,151 @@ export function setupActions(state: TaskState) {
     }
   }
 
+  function hasValidFiles(task?: Partial<Task>): boolean {
+    const path = task?.files?.[0]?.path
+    return typeof path === 'string' && path.trim().length > 0
+  }
+
+  function isNonEmptyString(value: unknown): value is string {
+    return typeof value === 'string' && value.trim().length > 0
+  }
+
+  function isNonZeroLength(value: unknown): boolean {
+    if (typeof value === 'number') return Number.isFinite(value) && value !== 0
+    if (typeof value !== 'string') return false
+    const trimmed = value.trim()
+    if (!trimmed) return false
+    if (/^0+(?:\.0+)?$/.test(trimmed)) return false
+    const numeric = Number(trimmed)
+    return !Number.isNaN(numeric)
+  }
+
+  function isEmptyLength(value: unknown): boolean {
+    return (
+      value === undefined || value === null || (typeof value === 'string' && value.trim() === '')
+    )
+  }
+
+  function isNumericZero(value: unknown): boolean {
+    if (typeof value === 'number') return Number.isFinite(value) && value === 0
+    if (typeof value !== 'string') return false
+    const trimmed = value.trim()
+    if (!trimmed) return false
+    if (/^0+(?:\.0+)?$/.test(trimmed)) return true
+    const numeric = Number(trimmed)
+    return Number.isFinite(numeric) && numeric === 0
+  }
+
+  function preserveNonZeroValue(
+    existing: string | undefined,
+    incoming: unknown,
+    fallback = '0',
+  ): string {
+    const existingValue = existing ?? fallback
+    if (isEmptyLength(incoming)) return existingValue
+    if (isNumericZero(incoming) && isNonZeroLength(existingValue)) return existingValue
+    return String(incoming)
+  }
+
+  function mergeRecoveredMetadata(existing: Task, meta: Task): Task {
+    const merged = { ...existing }
+
+    if (isNonEmptyString(meta.title)) merged.title = meta.title
+    if (hasValidFiles(meta)) merged.files = meta.files
+    if (isNonEmptyString(meta.dir)) merged.dir = meta.dir
+
+    merged.totalLength = preserveNonZeroValue(existing.totalLength, meta.totalLength)
+    merged.completedLength = preserveNonZeroValue(existing.completedLength, meta.completedLength)
+    merged.downloadSpeed = preserveNonZeroValue(existing.downloadSpeed, meta.downloadSpeed)
+
+    if (meta.errorCode !== undefined) merged.errorCode = meta.errorCode
+    if (meta.errorMessage !== undefined) merged.errorMessage = meta.errorMessage
+
+    return merged
+  }
+
+  function applyRecoveredMetadata(metadata: Record<string, Task | undefined>) {
+    let newActive = tasks.value.active
+    let newWaiting = tasks.value.waiting
+    let activeChanged = false
+    let waitingChanged = false
+
+    for (const gid of Object.keys(metadata)) {
+      const meta = metadata[gid]
+      if (!meta || !hasValidFiles(meta)) continue
+      cacheMetadata(meta)
+
+      const activeIdx = newActive.findIndex(t => t.gid === gid)
+      if (activeIdx !== -1) {
+        const existing = newActive[activeIdx]
+        if (!existing) continue
+        if (!activeChanged) {
+          newActive = [...newActive]
+          activeChanged = true
+        }
+        newActive[activeIdx] = mergeRecoveredMetadata(existing, meta)
+      }
+
+      const waitingIdx = newWaiting.findIndex(t => t.gid === gid)
+      if (waitingIdx !== -1) {
+        const existing = newWaiting[waitingIdx]
+        if (!existing) continue
+        if (!waitingChanged) {
+          newWaiting = [...newWaiting]
+          waitingChanged = true
+        }
+        newWaiting[waitingIdx] = mergeRecoveredMetadata(existing, meta)
+      }
+    }
+
+    if (activeChanged || waitingChanged) {
+      tasks.value = {
+        ...tasks.value,
+        active: newActive,
+        waiting: newWaiting,
+      }
+    }
+  }
+
+  function drainMetadataRecovery() {
+    if (metadataInFlight || metadataPending.size === 0) return
+
+    metadataInFlight = true
+    const batch = Array.from(metadataPending)
+    metadataPending.clear()
+
+    void GetTaskMetadata(batch)
+      .then((metadata: Record<string, Task | undefined>) => {
+        if (!metadata) return
+        applyRecoveredMetadata(metadata)
+      })
+      .catch(err => {
+        console.warn('Failed to recover task metadata:', err)
+      })
+      .finally(() => {
+        metadataInFlight = false
+        if (metadataPending.size > 0) drainMetadataRecovery()
+      })
+  }
+
+  function queueMetadataRecovery(gids: string[] | string) {
+    const batch = Array.isArray(gids) ? gids : [gids]
+    for (const gid of batch) {
+      if (gid) metadataPending.add(gid)
+    }
+    drainMetadataRecovery()
+  }
+
+  function queueMissingMetadataFromLists(...lists: Task[][]) {
+    const gids: string[] = []
+    for (const list of lists) {
+      for (const task of list) {
+        if (task.gid && !hasValidFiles(task)) gids.push(task.gid)
+      }
+    }
+    if (gids.length > 0) queueMetadataRecovery(gids)
+  }
+
   async function fetchActiveTasks(): Promise<{ hasActiveTasks: boolean; taskCompleted: boolean }> {
     try {
       const res = await GetActiveTasks()
@@ -93,66 +238,13 @@ export function setupActions(state: TaskState) {
       _waitingGidSet.clear()
       for (const t of res.waiting || []) {
         const gid = t?.gid
-        if (!gid || _activeGidSet.has(gid) || _stoppedGidSet.has(gid) || _waitingGidSet.has(gid)) continue
+        if (!gid || _activeGidSet.has(gid) || _stoppedGidSet.has(gid) || _waitingGidSet.has(gid))
+          continue
         _waitingGidSet.add(gid)
         waiting.push(t)
       }
 
       for (const t of [...active, ...waiting]) cacheMetadata(t)
-
-      // Fetch missing metadata
-      const tasksNeedingMetadata: string[] = []
-      for (const t of active) if (!t.files?.[0]?.path) tasksNeedingMetadata.push(t.gid)
-      for (const t of waiting) if (!t.files?.[0]?.path) tasksNeedingMetadata.push(t.gid)
-
-      if (tasksNeedingMetadata.length > 0 && !metadataInFlight) {
-        for (const gid of tasksNeedingMetadata) metadataPending.add(gid)
-        metadataInFlight = true
-        const batch = Array.from(metadataPending)
-        metadataPending.clear()
-
-        GetTaskMetadata(batch)
-          .then((metadata: Record<string, Task | undefined>) => {
-            if (!metadata) return
-            let newActive = tasks.value.active
-            let newWaiting = tasks.value.waiting
-            let activeChanged = false
-            let waitingChanged = false
-
-            for (const gid of Object.keys(metadata)) {
-              const meta = metadata[gid]
-              if (!meta?.files?.[0]?.path) continue
-              cacheMetadata(meta)
-
-              const activeIdx = newActive.findIndex(t => t.gid === gid)
-              if (activeIdx !== -1) {
-                if (!activeChanged) {
-                  newActive = [...newActive]
-                  activeChanged = true
-                }
-                newActive[activeIdx] = { ...newActive[activeIdx], ...meta }
-              }
-
-              const waitingIdx = newWaiting.findIndex(t => t.gid === gid)
-              if (waitingIdx !== -1) {
-                if (!waitingChanged) {
-                  newWaiting = [...newWaiting]
-                  waitingChanged = true
-                }
-                newWaiting[waitingIdx] = { ...newWaiting[waitingIdx], ...meta }
-              }
-            }
-
-            if (activeChanged || waitingChanged) {
-              tasks.value = {
-                ...tasks.value,
-                active: newActive,
-                waiting: newWaiting,
-              }
-            }
-          })
-          .finally(() => (metadataInFlight = false))
-      }
 
       const oldCount = tasks.value.active.length + tasks.value.waiting.length
       const newCount = active.length + waiting.length
@@ -168,6 +260,8 @@ export function setupActions(state: TaskState) {
           stopped: tasks.value.stopped,
         }
       }
+
+      queueMissingMetadataFromLists(activeResult.merged, waitingResult.merged)
 
       throttledUpdateTrayIcon()
       return { hasActiveTasks: active.length > 0 || waiting.length > 0, taskCompleted }
@@ -228,7 +322,8 @@ export function setupActions(state: TaskState) {
       _stoppedGidSet.clear()
       for (const t of res.stopped || []) {
         const gid = t?.gid
-        if (!gid || _activeGidSet.has(gid) || _waitingGidSet.has(gid) || _stoppedGidSet.has(gid)) continue
+        if (!gid || _activeGidSet.has(gid) || _waitingGidSet.has(gid) || _stoppedGidSet.has(gid))
+          continue
         _stoppedGidSet.add(gid)
         stopped.push(t)
       }
@@ -239,66 +334,17 @@ export function setupActions(state: TaskState) {
       const waitingWithMeta = waiting.map(applyMetadataFromCache)
       const stoppedWithMeta = stopped.map(applyMetadataFromCache)
 
-      const newTasks = { active: activeWithMeta, waiting: waitingWithMeta, stopped: stoppedWithMeta }
+      const newTasks = {
+        active: activeWithMeta,
+        waiting: waitingWithMeta,
+        stopped: stoppedWithMeta,
+      }
 
       // Assign tasks FIRST so the async metadata callback operates on current state
       tasks.value = newTasks
       lastStoppedTasksRef = newTasks.stopped
 
-      // Metadata fetching logic similar to fetchActiveTasks...
-      const tasksNeedingMetadata: string[] = []
-      for (const t of newTasks.active) if (!t.files?.[0]?.path) tasksNeedingMetadata.push(t.gid)
-      for (const t of newTasks.waiting) if (!t.files?.[0]?.path) tasksNeedingMetadata.push(t.gid)
-
-      if (tasksNeedingMetadata.length > 0) {
-         for (const gid of tasksNeedingMetadata) metadataPending.add(gid)
-         if (!metadataInFlight) {
-            metadataInFlight = true
-            const batch = Array.from(metadataPending)
-            metadataPending.clear()
-            GetTaskMetadata(batch)
-              .then((metadata: Record<string, Task | undefined>) => {
-                if (!metadata) return
-                let newActive = tasks.value.active
-                let newWaiting = tasks.value.waiting
-                let activeChanged = false
-                let waitingChanged = false
-
-                for (const gid of Object.keys(metadata)) {
-                  const meta = metadata[gid]
-                  if (!meta?.files?.[0]?.path) continue
-                  cacheMetadata(meta)
-
-                  const activeIdx = newActive.findIndex(t => t.gid === gid)
-                  if (activeIdx !== -1) {
-                    if (!activeChanged) {
-                      newActive = [...newActive]
-                      activeChanged = true
-                    }
-                    newActive[activeIdx] = { ...newActive[activeIdx], ...meta }
-                  }
-
-                  const waitingIdx = newWaiting.findIndex(t => t.gid === gid)
-                  if (waitingIdx !== -1) {
-                    if (!waitingChanged) {
-                      newWaiting = [...newWaiting]
-                      waitingChanged = true
-                    }
-                    newWaiting[waitingIdx] = { ...newWaiting[waitingIdx], ...meta }
-                  }
-                }
-
-                if (activeChanged || waitingChanged) {
-                  tasks.value = {
-                    ...tasks.value,
-                    active: newActive,
-                    waiting: newWaiting,
-                  }
-                }
-              })
-              .finally(() => (metadataInFlight = false))
-         }
-      }
+      queueMissingMetadataFromLists(newTasks.active, newTasks.waiting)
       immediateUpdateTrayIcon()
     } catch (err) {
       handleFetchError(err)
@@ -313,7 +359,12 @@ export function setupActions(state: TaskState) {
       await fetchTasks()
       immediateUpdateTrayIcon()
 
-      if (pollingContextEnabled.value && isWindowVisible.value && _restartPollingCallback && _stopPollingCallback) {
+      if (
+        pollingContextEnabled.value &&
+        isWindowVisible.value &&
+        _restartPollingCallback &&
+        _stopPollingCallback
+      ) {
         _stopPollingCallback(false)
         _restartPollingCallback()
       }
@@ -329,7 +380,12 @@ export function setupActions(state: TaskState) {
       const res = await BatchAddUri(uris)
       await fetchTasks()
       immediateUpdateTrayIcon()
-      if (pollingContextEnabled.value && isWindowVisible.value && _restartPollingCallback && _stopPollingCallback) {
+      if (
+        pollingContextEnabled.value &&
+        isWindowVisible.value &&
+        _restartPollingCallback &&
+        _stopPollingCallback
+      ) {
         _stopPollingCallback(false)
         _restartPollingCallback()
       }
@@ -493,6 +549,7 @@ export function setupActions(state: TaskState) {
     metadataPending, // Shared with events
     metadataInFlight: () => metadataInFlight, // Getter
     setMetadataInFlight: (val: boolean) => (metadataInFlight = val),
+    queueMetadataRecovery,
     getLastStoppedFetchTime: () => lastStoppedFetchTime,
   }
 }

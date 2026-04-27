@@ -2,6 +2,78 @@ import { ref, computed } from 'vue'
 import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 import { UpdateTrayState } from '../../../bindings/goaria-v3/app.js'
 
+type UriLookup = Iterable<string> & {
+  readonly size: number
+  has(value: string): boolean
+  forEach(callbackfn: (value: string, value2: string, set: UriLookup) => void, thisArg?: unknown): void
+  entries(): IterableIterator<[string, string]>
+  keys(): IterableIterator<string>
+  values(): IterableIterator<string>
+}
+
+function collectTaskUris(list: Task[]): Set<string> {
+  const uris = new Set<string>()
+  for (const task of list) {
+    if (!task.files) continue
+    for (const file of task.files) {
+      if (!file.uris) continue
+      for (const uri of file.uris) {
+        if (uri?.uri) uris.add(uri.uri)
+      }
+    }
+  }
+  return uris
+}
+
+class CombinedUriSet implements UriLookup {
+  readonly [Symbol.toStringTag] = 'Set'
+
+  constructor(private readonly sets: readonly ReadonlySet<string>[]) {}
+
+  get size(): number {
+    const uniqueUris = new Set<string>()
+    for (const set of this.sets) {
+      for (const uri of set) uniqueUris.add(uri)
+    }
+    return uniqueUris.size
+  }
+
+  has(value: string): boolean {
+    return this.sets.some(set => set.has(value))
+  }
+
+  forEach(callbackfn: (value: string, value2: string, set: UriLookup) => void, thisArg?: unknown): void {
+    for (const value of this) {
+      callbackfn.call(thisArg, value, value, this)
+    }
+  }
+
+  *entries(): IterableIterator<[string, string]> {
+    for (const value of this) {
+      yield [value, value]
+    }
+  }
+
+  keys(): IterableIterator<string> {
+    return this.values()
+  }
+
+  *values(): IterableIterator<string> {
+    const emitted = new Set<string>()
+    for (const set of this.sets) {
+      for (const uri of set) {
+        if (emitted.has(uri)) continue
+        emitted.add(uri)
+        yield uri
+      }
+    }
+  }
+
+  [Symbol.iterator](): IterableIterator<string> {
+    return this.values()
+  }
+}
+
 export function setupState() {
   // State
   const tasks = ref<Record<string, Task[]>>({
@@ -31,21 +103,12 @@ export function setupState() {
     return activeTasks.value.length + waitingTasks.value.length + stoppedTasks.value.length
   })
 
-  const allUris = computed(() => {
-    const uris = new Set<string>()
-    for (const list of [activeTasks.value, waitingTasks.value, stoppedTasks.value]) {
-      for (const t of list) {
-        if (!t.files) continue
-        for (const f of t.files) {
-          if (!f.uris) continue
-          for (const u of f.uris) {
-            if (u?.uri) uris.add(u.uri)
-          }
-        }
-      }
-    }
-    return uris
-  })
+  const activeUris = computed(() => collectTaskUris(activeTasks.value))
+  const waitingUris = computed(() => collectTaskUris(waitingTasks.value))
+  const stoppedUris = computed(() => collectTaskUris(stoppedTasks.value))
+  const allUris = computed<UriLookup>(
+    () => new CombinedUriSet([activeUris.value, waitingUris.value, stoppedUris.value]),
+  )
 
   // Selection Getters
   const selectedCount = computed(() => selectedGids.value.size)
