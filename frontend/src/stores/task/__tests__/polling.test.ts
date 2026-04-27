@@ -46,7 +46,9 @@ function createMockState(): TaskState {
     activeTasks,
     waitingTasks,
     stoppedTasks,
-    allTasksCount: computed(() => activeTasks.value.length + waitingTasks.value.length + stoppedTasks.value.length),
+    allTasksCount: computed(
+      () => activeTasks.value.length + waitingTasks.value.length + stoppedTasks.value.length,
+    ),
     allUris,
     selectedCount: computed(() => 0),
     isSelected: () => false,
@@ -78,6 +80,7 @@ function createMockActions(): TaskActions {
     metadataPending: new Set<string>(),
     metadataInFlight: vi.fn().mockReturnValue(false),
     setMetadataInFlight: vi.fn(),
+    queueMetadataRecovery: vi.fn(),
     getLastStoppedFetchTime: vi.fn().mockReturnValue(0),
   } as unknown as TaskActions
 }
@@ -367,7 +370,9 @@ describe('setupPolling', () => {
 
       // fetchActiveTasks should only have been called for: first start + second start
       // Not for the old timer's subsequent ticks
-      expect((actions.fetchActiveTasks as Mock).mock.calls.length).toBeGreaterThanOrEqual(firstCallCount + 1)
+      expect((actions.fetchActiveTasks as Mock).mock.calls.length).toBeGreaterThanOrEqual(
+        firstCallCount + 1,
+      )
     })
   })
 })

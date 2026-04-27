@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import type { CancellablePromise } from '@wailsio/runtime'
 import { setupState } from '../state'
 import { setupActions } from '../actions'
 import { clearMetadataCache } from '../metadata'
@@ -28,12 +29,14 @@ import {
   GetActiveTasks,
   GetStoppedTasks,
   GetTaskMetadata,
+  AddUri,
 } from '../../../../bindings/goaria-v3/app.js'
 
 const mockGetActiveTasks = vi.mocked(GetActiveTasks)
 const mockGetStoppedTasks = vi.mocked(GetStoppedTasks)
 const mockGetTasks = vi.mocked(GetTasks)
 const mockGetTaskMetadata = vi.mocked(GetTaskMetadata)
+const mockAddUri = vi.mocked(AddUri)
 
 // --- Helpers ---
 
@@ -50,6 +53,27 @@ function mockTask(gid: string, overrides: Partial<Task> = {}): Task {
     dir: '/downloads',
     ...overrides,
   } as Task
+}
+
+function flushPromises() {
+  return new Promise<void>(resolve => setTimeout(resolve, 0))
+}
+
+function createControlledPromise<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+  return { promise, resolve, reject }
+}
+
+function asCancellable<T>(promise: Promise<T>): CancellablePromise<T> {
+  return Object.assign(promise, {
+    cancel: vi.fn().mockResolvedValue(undefined),
+    cancelOn: vi.fn().mockReturnValue(promise),
+  }) as unknown as CancellablePromise<T>
 }
 
 // --- Tests ---
@@ -69,7 +93,9 @@ describe('setupActions — integration', () => {
     // Wire up polling callbacks
     actions.setPollingCallbacks(
       () => {}, // restart
-      (_disableContext: boolean) => { stopPollingCalled = true }, // stop
+      (_disableContext: boolean) => {
+        stopPollingCalled = true
+      }, // stop
     )
   })
 
@@ -118,6 +144,41 @@ describe('setupActions — integration', () => {
       expect(mockGetTaskMetadata).toHaveBeenCalled()
     })
 
+    it('should drain metadata recovery queued while an empty response is in flight', async () => {
+      const firstMetadata = createControlledPromise<Record<string, Task | undefined>>()
+      mockGetActiveTasks.mockResolvedValue({
+        active: [mockTask('a-drain', { files: [], dir: '', totalLength: '0' })],
+        waiting: [],
+      } as unknown as { active: Task[]; waiting: Task[] })
+      mockGetTaskMetadata
+        .mockReturnValueOnce(asCancellable(firstMetadata.promise))
+        .mockResolvedValueOnce({
+          'a-drain': mockTask('a-drain', {
+            files: [{ path: '/downloads/drained.zip', uris: [] }],
+            dir: '/downloads',
+            totalLength: '2048',
+          }),
+        } as Record<string, Task>)
+
+      await actions.fetchActiveTasks()
+      expect(mockGetTaskMetadata).toHaveBeenCalledTimes(1)
+      expect(mockGetTaskMetadata).toHaveBeenNthCalledWith(1, ['a-drain'])
+
+      actions.queueMetadataRecovery('a-drain')
+      expect(mockGetTaskMetadata).toHaveBeenCalledTimes(1)
+
+      firstMetadata.resolve({})
+      await flushPromises()
+
+      expect(mockGetTaskMetadata).toHaveBeenCalledTimes(2)
+      expect(mockGetTaskMetadata).toHaveBeenNthCalledWith(2, ['a-drain'])
+      await flushPromises()
+
+      expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/drained.zip')
+      expect(state.tasks.value.active[0].dir).toBe('/downloads')
+      expect(state.tasks.value.active[0].totalLength).toBe('2048')
+    })
+
     it('should handle errors and increment consecutiveErrors', async () => {
       mockGetActiveTasks.mockRejectedValue(new Error('Network error'))
 
@@ -129,7 +190,10 @@ describe('setupActions — integration', () => {
 
     it('should reset consecutiveErrors on success', async () => {
       state.consecutiveErrors.value = 2
-      mockGetActiveTasks.mockResolvedValue({ active: [], waiting: [] } as unknown as { active: Task[]; waiting: Task[] })
+      mockGetActiveTasks.mockResolvedValue({ active: [], waiting: [] } as unknown as {
+        active: Task[]
+        waiting: Task[]
+      })
 
       await actions.fetchActiveTasks()
 
@@ -208,6 +272,52 @@ describe('setupActions — integration', () => {
       await actions.fetchTasks()
 
       expect(state.consecutiveErrors.value).toBe(0)
+    })
+  })
+
+  // =====================================================
+  // addUri startup-first-add metadata recovery
+  // =====================================================
+  describe('addUri metadata recovery', () => {
+    it('should recover first frontend add Lite metadata without tab switch', async () => {
+      mockAddUri.mockResolvedValue('gid-first-add')
+      mockGetTasks.mockResolvedValue({
+        active: [
+          mockTask('gid-first-add', {
+            files: [],
+            dir: '',
+            totalLength: '0',
+            completedLength: '0',
+            downloadSpeed: '0',
+          }),
+        ],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      mockGetTaskMetadata
+        .mockResolvedValueOnce({ 'gid-first-add': undefined } as Record<string, Task | undefined>)
+        .mockResolvedValueOnce({
+          'gid-first-add': mockTask('gid-first-add', {
+            files: [{ path: '/downloads/first-add.zip', uris: [] }],
+            dir: '/downloads',
+            totalLength: '4096',
+            completedLength: '128',
+          }),
+        } as Record<string, Task>)
+
+      await actions.addUri('https://example.com/first-add.zip')
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0].files).toHaveLength(0)
+      expect(mockGetTaskMetadata).toHaveBeenCalledTimes(1)
+
+      await flushPromises()
+      actions.queueMetadataRecovery('gid-first-add')
+      await flushPromises()
+
+      expect(mockGetTaskMetadata).toHaveBeenCalledTimes(2)
+      expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/first-add.zip')
+      expect(state.tasks.value.active[0].dir).toBe('/downloads')
+      expect(state.tasks.value.active[0].totalLength).toBe('4096')
     })
   })
 

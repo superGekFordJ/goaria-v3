@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { ref, computed, onMounted, onUnmounted, watch, toRaw } from 'vue'
+  import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { RecycleScroller } from 'vue-virtual-scroller'
   import { useTaskStore } from '../../stores/task'
@@ -36,8 +36,8 @@
     // 仅当有 waiting 任务时才合并，否则直接返回 active 避免创建新数组
     if (waiting.length === 0) return active
     if (active.length === 0) return waiting
-    // 性能优化：使用 toRaw 和 concat 避免 reactive proxy 迭代开销
-    return toRaw(active).concat(toRaw(waiting))
+    // 保留 task 对象的响应式代理，确保 TaskCard 字段 watcher 持续更新
+    return active.concat(waiting)
   })
 
   const displayTasks = computed(() => {
@@ -337,17 +337,14 @@
 
       <RecycleScroller
         v-else-if="displayTasks.length > 0"
-        v-slot="{ item, index }"
+        v-slot="{ item }"
         class="h-full px-5 py-4"
         :items="displayTasks"
         :item-size="176"
         key-field="gid"
         :buffer="200"
       >
-        <div
-          class="py-2 animate-spring-in"
-          :style="{ animationDelay: `${Math.min(index * 50, 300)}ms` }"
-        >
+        <div class="py-2 task-list-virtual-row">
           <TaskCard :task="item" @confirm-delete="confirmDelete" />
         </div>
       </RecycleScroller>

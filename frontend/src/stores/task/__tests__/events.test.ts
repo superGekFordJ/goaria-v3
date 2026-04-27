@@ -9,12 +9,8 @@ import type { TaskPolling } from '../polling'
 
 // Mock Wails bindings
 vi.mock('../../../../bindings/goaria-v3/app.js', () => ({
-  GetTaskMetadata: vi.fn(),
   UpdateTrayState: vi.fn(),
 }))
-
-import { GetTaskMetadata } from '../../../../bindings/goaria-v3/app.js'
-const mockGetTaskMetadata = vi.mocked(GetTaskMetadata)
 
 // --- Helpers ---
 
@@ -69,7 +65,9 @@ function createMockState(): TaskState {
     activeTasks,
     waitingTasks,
     stoppedTasks,
-    allTasksCount: computed(() => activeTasks.value.length + waitingTasks.value.length + stoppedTasks.value.length),
+    allTasksCount: computed(
+      () => activeTasks.value.length + waitingTasks.value.length + stoppedTasks.value.length,
+    ),
     allUris,
     selectedCount: computed(() => 0),
     isSelected: () => false,
@@ -80,7 +78,6 @@ function createMockState(): TaskState {
 }
 
 function createMockActions(): TaskActions {
-  const metadataPending = new Set<string>()
   return {
     fetchActiveTasks: vi.fn().mockResolvedValue({ hasActiveTasks: false, taskCompleted: false }),
     fetchStoppedTasks: vi.fn(),
@@ -99,9 +96,9 @@ function createMockActions(): TaskActions {
     syncFromSnapshot: vi.fn(),
     minimizeToTray: vi.fn(),
     setPollingCallbacks: vi.fn(),
-    metadataPending,
     metadataInFlight: vi.fn().mockReturnValue(false),
     setMetadataInFlight: vi.fn(),
+    queueMetadataRecovery: vi.fn(),
     getLastStoppedFetchTime: vi.fn().mockReturnValue(0),
   } as unknown as TaskActions
 }
@@ -126,7 +123,11 @@ describe('setupEvents', () => {
   // =====================================================
   describe('handleTaskDelta — progress', () => {
     it('should update completedLength, downloadSpeed, totalLength for an active task', async () => {
-      const task = mockTask('gid-1', { completedLength: '100', downloadSpeed: '50', totalLength: '1000' })
+      const task = mockTask('gid-1', {
+        completedLength: '100',
+        downloadSpeed: '50',
+        totalLength: '1000',
+      })
       state.tasks.value.active = [task]
 
       await events.handleTaskDelta({
@@ -159,18 +160,13 @@ describe('setupEvents', () => {
       const task = mockTask('gid-1', { files: [] })
       state.tasks.value.active = [task]
 
-      mockGetTaskMetadata.mockResolvedValue({
-        'gid-1': mockTask('gid-1', { files: [{ path: '/downloads/resolved.zip', uris: [] }] }),
-      } as Record<string, Task>)
-
       await events.handleTaskDelta({
         type: 'progress',
         gid: 'gid-1',
         payload: { completedLength: '200' },
       })
 
-      // metadataPending should have been populated
-      expect((actions.metadataPending as Set<string>).has('gid-1') || mockGetTaskMetadata.mock.calls.length >= 0).toBe(true)
+      expect(actions.queueMetadataRecovery).toHaveBeenCalledWith('gid-1')
     })
   })
 
@@ -183,7 +179,11 @@ describe('setupEvents', () => {
         files: [{ path: '/downloads/newfile.zip', uris: [] }],
       })
 
-      await events.handleTaskDelta({ type: 'add', gid: 'gid-new', payload: newTask as unknown as Record<string, unknown> })
+      await events.handleTaskDelta({
+        type: 'add',
+        gid: 'gid-new',
+        payload: newTask as unknown as Record<string, unknown>,
+      })
 
       expect(state.tasks.value.active.length).toBe(1)
       expect(state.tasks.value.active[0].gid).toBe('gid-new')
@@ -199,7 +199,11 @@ describe('setupEvents', () => {
     it('should fallback to fetchTasks when payload has no file path', async () => {
       const incompleteTask = mockTask('gid-new', { files: [] })
 
-      await events.handleTaskDelta({ type: 'add', gid: 'gid-new', payload: incompleteTask as unknown as Record<string, unknown> })
+      await events.handleTaskDelta({
+        type: 'add',
+        gid: 'gid-new',
+        payload: incompleteTask as unknown as Record<string, unknown>,
+      })
 
       expect(actions.fetchTasks).toHaveBeenCalled()
     })
@@ -236,10 +240,143 @@ describe('setupEvents', () => {
         files: [{ path: '/downloads/file.zip', uris: [] }],
       })
 
-      await events.handleTaskDelta({ type: 'add', gid: 'gid-w', payload: newTask as unknown as Record<string, unknown> })
+      await events.handleTaskDelta({
+        type: 'add',
+        gid: 'gid-w',
+        payload: newTask as unknown as Record<string, unknown>,
+      })
 
       expect(state.tasks.value.active.length).toBe(1)
       expect(state.tasks.value.waiting.length).toBe(0)
+    })
+
+    it('should enrich an existing Lite active task from a later full add payload', async () => {
+      state.tasks.value.active = [
+        mockTask('gid-lite-active', {
+          files: [],
+          dir: '',
+          totalLength: '0',
+          completedLength: '0',
+          downloadSpeed: '0',
+        }),
+      ]
+
+      await events.handleTaskDelta({
+        type: 'add',
+        gid: 'gid-lite-active',
+        payload: mockTask('gid-lite-active', {
+          files: [{ path: '/downloads/resolved-active.zip', uris: [] }],
+          dir: '/downloads',
+          totalLength: '4096',
+          completedLength: '1024',
+          downloadSpeed: '256',
+        }) as unknown as Record<string, unknown>,
+      })
+
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/resolved-active.zip')
+      expect(state.tasks.value.active[0].dir).toBe('/downloads')
+      expect(state.tasks.value.active[0].totalLength).toBe('4096')
+      expect(state.tasks.value.active[0].completedLength).toBe('1024')
+      expect(state.tasks.value.active[0].downloadSpeed).toBe('256')
+      expect(actions.fetchTasks).not.toHaveBeenCalled()
+    })
+
+    it('should enrich an existing waiting task and move it to active without duplicates', async () => {
+      state.tasks.value.waiting = [
+        mockTask('gid-lite-waiting', {
+          status: 'waiting',
+          files: [],
+          dir: '',
+          totalLength: '0',
+          completedLength: '0',
+          downloadSpeed: '0',
+        }),
+      ]
+
+      await events.handleTaskDelta({
+        type: 'add',
+        gid: 'gid-lite-waiting',
+        payload: mockTask('gid-lite-waiting', {
+          status: 'active',
+          files: [{ path: '/downloads/resolved-waiting.zip', uris: [] }],
+          dir: '/downloads',
+          totalLength: '8192',
+          completedLength: '2048',
+          downloadSpeed: '512',
+        }) as unknown as Record<string, unknown>,
+      })
+
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.active[0].gid).toBe('gid-lite-waiting')
+      expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/resolved-waiting.zip')
+      expect(actions.fetchTasks).not.toHaveBeenCalled()
+    })
+
+    it('should not let a sparse add payload overwrite richer existing metadata or speed', async () => {
+      state.tasks.value.active = [
+        mockTask('gid-rich', {
+          files: [{ path: '/downloads/rich.iso', uris: [] }],
+          dir: '/downloads/rich',
+          totalLength: '9000',
+          completedLength: '3000',
+          downloadSpeed: '333',
+        }),
+      ]
+
+      await events.handleTaskDelta({
+        type: 'add',
+        gid: 'gid-rich',
+        payload: {
+          gid: 'gid-rich',
+          status: 'active',
+          files: [],
+          dir: '',
+          totalLength: '0',
+          completedLength: '0',
+          downloadSpeed: '0',
+        },
+      })
+
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/rich.iso')
+      expect(state.tasks.value.active[0].dir).toBe('/downloads/rich')
+      expect(state.tasks.value.active[0].totalLength).toBe('9000')
+      expect(state.tasks.value.active[0].completedLength).toBe('3000')
+      expect(state.tasks.value.active[0].downloadSpeed).toBe('333')
+      expect(actions.fetchTasks).not.toHaveBeenCalled()
+    })
+
+    it('should queue metadata recovery for a sparse add payload targeting an existing Lite active task', async () => {
+      state.tasks.value.active = [
+        mockTask('gid-lite-sparse', {
+          files: [],
+          dir: '',
+          totalLength: '0',
+          completedLength: '0',
+          downloadSpeed: '0',
+        }),
+      ]
+
+      await events.handleTaskDelta({
+        type: 'add',
+        gid: 'gid-lite-sparse',
+        payload: {
+          gid: 'gid-lite-sparse',
+          status: 'active',
+          files: [],
+          dir: '',
+          totalLength: '0',
+          completedLength: '0',
+          downloadSpeed: '0',
+        },
+      })
+
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0].gid).toBe('gid-lite-sparse')
+      expect(actions.fetchTasks).not.toHaveBeenCalled()
+      expect(actions.queueMetadataRecovery).toHaveBeenCalledWith('gid-lite-sparse')
     })
   })
 
@@ -272,8 +409,8 @@ describe('setupEvents', () => {
         payload: {
           completedLength: '100',
           totalLength: '100',
-          downloadSpeed: '0'
-        }
+          downloadSpeed: '0',
+        },
       })
 
       expect(state.tasks.value.active.length).toBe(0)
@@ -324,11 +461,13 @@ describe('setupEvents', () => {
     })
 
     it('should apply payload updates to already-stopped task (Pusher dedup supplement)', async () => {
-      state.tasks.value.stopped = [mockTask('gid-s', {
-        status: 'complete',
-        completedLength: '0',
-        totalLength: '0',
-      })]
+      state.tasks.value.stopped = [
+        mockTask('gid-s', {
+          status: 'complete',
+          completedLength: '0',
+          totalLength: '0',
+        }),
+      ]
 
       await events.handleTaskDelta({
         type: 'complete',
@@ -343,7 +482,6 @@ describe('setupEvents', () => {
       expect(state.tasks.value.stopped[0].completedLength).toBe('1024')
       expect(state.tasks.value.stopped[0].totalLength).toBe('1024')
     })
-
   })
 
   // =====================================================
@@ -361,7 +499,9 @@ describe('setupEvents', () => {
     })
 
     it('should apply payload error info to existing task before moving to stopped', async () => {
-      state.tasks.value.active = [mockTask('gid-e2', { status: 'active', errorCode: '', errorMessage: '' })]
+      state.tasks.value.active = [
+        mockTask('gid-e2', { status: 'active', errorCode: '', errorMessage: '' }),
+      ]
 
       await events.handleTaskDelta({
         type: 'error',
@@ -532,6 +672,113 @@ describe('setupEvents', () => {
         task: fullTask as unknown as Record<string, unknown>,
       })
 
+      expect(getMetadataCacheSize()).toBe(1)
+    })
+
+    it('should preserve richer data when a resume move payload is sparse or stale', () => {
+      state.tasks.value.waiting = [
+        mockTask('gid-resume', {
+          status: 'waiting',
+          files: [{ path: '/downloads/resume.iso', uris: [] }],
+          dir: '/downloads/resume',
+          totalLength: '9000',
+          completedLength: '4500',
+          downloadSpeed: '888',
+        }),
+      ]
+
+      events.handleTaskMove({
+        gid: 'gid-resume',
+        from: 'waiting',
+        to: 'active',
+        task: {
+          gid: 'gid-resume',
+          status: 'active',
+          files: [],
+          dir: '',
+          totalLength: '0',
+          completedLength: '0',
+          downloadSpeed: '0',
+        },
+      })
+
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/resume.iso')
+      expect(state.tasks.value.active[0].dir).toBe('/downloads/resume')
+      expect(state.tasks.value.active[0].totalLength).toBe('9000')
+      expect(state.tasks.value.active[0].completedLength).toBe('4500')
+      expect(state.tasks.value.active[0].downloadSpeed).toBe('888')
+    })
+
+    it('should preserve richer metadata when a pause move payload is sparse', () => {
+      state.tasks.value.active = [
+        mockTask('gid-pause', {
+          status: 'active',
+          files: [{ path: '/downloads/pause.iso', uris: [] }],
+          dir: '/downloads/pause',
+          totalLength: '7000',
+          completedLength: '3500',
+          downloadSpeed: '444',
+        }),
+      ]
+
+      events.handleTaskMove({
+        gid: 'gid-pause',
+        from: 'active',
+        to: 'waiting',
+        task: {
+          gid: 'gid-pause',
+          status: 'paused',
+          files: [],
+          dir: '',
+          totalLength: '0',
+          completedLength: '0',
+          downloadSpeed: '0',
+        },
+      })
+
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(state.tasks.value.waiting).toHaveLength(1)
+      expect(state.tasks.value.waiting[0].files[0].path).toBe('/downloads/pause.iso')
+      expect(state.tasks.value.waiting[0].dir).toBe('/downloads/pause')
+      expect(state.tasks.value.waiting[0].totalLength).toBe('7000')
+      expect(state.tasks.value.waiting[0].completedLength).toBe('3500')
+    })
+
+    it('should accept genuinely richer payload metadata for a moved Lite task', () => {
+      clearMetadataCache()
+      state.tasks.value.waiting = [
+        mockTask('gid-rich-move', {
+          status: 'waiting',
+          files: [],
+          dir: '',
+          totalLength: '0',
+          completedLength: '0',
+          downloadSpeed: '0',
+        }),
+      ]
+
+      events.handleTaskMove({
+        gid: 'gid-rich-move',
+        from: 'waiting',
+        to: 'active',
+        task: mockTask('gid-rich-move', {
+          status: 'active',
+          files: [{ path: '/downloads/rich-move.zip', uris: [] }],
+          dir: '/downloads',
+          totalLength: '777',
+          completedLength: '123',
+          downloadSpeed: '456',
+        }) as unknown as Record<string, unknown>,
+      })
+
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/rich-move.zip')
+      expect(state.tasks.value.active[0].dir).toBe('/downloads')
+      expect(state.tasks.value.active[0].totalLength).toBe('777')
+      expect(state.tasks.value.active[0].completedLength).toBe('123')
+      expect(state.tasks.value.active[0].downloadSpeed).toBe('456')
       expect(getMetadataCacheSize()).toBe(1)
     })
   })

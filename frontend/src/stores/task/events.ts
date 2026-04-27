@@ -1,15 +1,107 @@
 import { TaskState } from './state'
 import { TaskActions } from './actions'
 import { TaskPolling } from './polling'
-import { GetTaskMetadata } from '../../../bindings/goaria-v3/app.js'
 import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 import { cacheMetadata, applyMetadataFromCache, removeMetadata } from './metadata'
 import { TaskMove, TaskDelta } from '../events'
 
+function hasValidFiles(task?: Partial<Task>): boolean {
+  const path = task?.files?.[0]?.path
+  return typeof path === 'string' && path.trim().length > 0
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function isNonZeroLength(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isFinite(value) && value !== 0
+  if (typeof value !== 'string') return false
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  if (/^0+(?:\.0+)?$/.test(trimmed)) return false
+  const numeric = Number(trimmed)
+  return !Number.isNaN(numeric)
+}
+
+function isEmptyLength(value: unknown): boolean {
+  return value === undefined || value === null || (typeof value === 'string' && value.trim() === '')
+}
+
+function isNumericZero(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isFinite(value) && value === 0
+  if (typeof value !== 'string') return false
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  if (/^0+(?:\.0+)?$/.test(trimmed)) return true
+  const numeric = Number(trimmed)
+  return Number.isFinite(numeric) && numeric === 0
+}
+
+function preserveNonZeroValue(
+  existing: string | undefined,
+  incoming: unknown,
+  fallback = '0',
+): string {
+  const existingValue = existing ?? fallback
+  if (isEmptyLength(incoming)) return existingValue
+  if (isNumericZero(incoming) && isNonZeroLength(existingValue)) return existingValue
+  return String(incoming)
+}
+
+function toTask(task: Partial<Task> | undefined): Task {
+  const result: Task = {
+    gid: task?.gid ?? '',
+    status: task?.status ?? '',
+    totalLength: task?.totalLength ?? '0',
+    completedLength: task?.completedLength ?? '0',
+    downloadSpeed: task?.downloadSpeed ?? '0',
+    errorCode: task?.errorCode ?? '',
+    errorMessage: task?.errorMessage ?? '',
+    dir: task?.dir ?? '',
+    files: task?.files ?? [],
+  }
+  if (task?.title !== undefined) result.title = task.title
+  return result
+}
+
+function mergeTaskPreservingRichData(
+  existing: Task | undefined,
+  incoming: Partial<Task> | undefined,
+): Task {
+  const merged = toTask(existing ?? incoming)
+
+  if (!incoming) return merged
+
+  if (incoming.gid !== undefined) merged.gid = incoming.gid
+  if (incoming.status !== undefined) merged.status = incoming.status
+  if (isNonEmptyString(incoming.title)) merged.title = incoming.title
+
+  if (hasValidFiles(incoming)) {
+    merged.files = incoming.files ?? []
+  } else if (existing?.files?.length) {
+    merged.files = existing.files
+  }
+
+  if (isNonEmptyString(incoming.dir)) {
+    merged.dir = incoming.dir
+  } else if (existing?.dir) {
+    merged.dir = existing.dir
+  }
+
+  merged.totalLength = preserveNonZeroValue(existing?.totalLength, incoming.totalLength)
+  merged.completedLength = preserveNonZeroValue(existing?.completedLength, incoming.completedLength)
+  merged.downloadSpeed = preserveNonZeroValue(existing?.downloadSpeed, incoming.downloadSpeed)
+
+  if (incoming.errorCode !== undefined) merged.errorCode = incoming.errorCode
+  if (incoming.errorMessage !== undefined) merged.errorMessage = incoming.errorMessage
+
+  return merged
+}
+
 export function setupEvents(state: TaskState, actions: TaskActions, _polling: TaskPolling) {
   const { tasks, selectedGids, throttledUpdateTrayIcon, immediateUpdateTrayIcon } = state
   const { fetchTasks } = actions
-  const { metadataPending } = actions // Shared state from actions
 
   function moveTaskToStopped(gid: string) {
     const activeIdx = tasks.value.active.findIndex(t => t.gid === gid)
@@ -83,11 +175,17 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
           const task = tasks.value.active.find(t => t.gid === delta.gid)
           if (task) {
             let hasUpdate = false
-            if (payload.completedLength !== undefined && task.completedLength !== payload.completedLength) {
+            if (
+              payload.completedLength !== undefined &&
+              task.completedLength !== payload.completedLength
+            ) {
               task.completedLength = payload.completedLength
               hasUpdate = true
             }
-            if (payload.downloadSpeed !== undefined && task.downloadSpeed !== payload.downloadSpeed) {
+            if (
+              payload.downloadSpeed !== undefined &&
+              task.downloadSpeed !== payload.downloadSpeed
+            ) {
               task.downloadSpeed = payload.downloadSpeed
               hasUpdate = true
             }
@@ -100,34 +198,8 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
 
             if (hasUpdate) tasks.value = { ...tasks.value }
 
-            // Metadata self-healing
-            if (!task.files?.[0]?.path && !metadataPending.has(delta.gid)) {
-               metadataPending.add(delta.gid)
-               // Access metadataInFlight via getter? No, we need to check shared state.
-               // Since `metadataInFlight` is a let variable in actions scope, we need the getter/setter exposed.
-               if (!actions.metadataInFlight()) {
-                 actions.setMetadataInFlight(true)
-                 setTimeout(() => {
-                   const batch = Array.from(metadataPending)
-                   metadataPending.clear()
-                   GetTaskMetadata(batch).then((metadata: Record<string, Task | undefined>) => {
-                      if (!metadata) return
-                      let updated = false
-                      for (const gid of Object.keys(metadata)) {
-                        const meta = metadata[gid]
-                        if (!meta?.files?.[0]?.path) continue
-                        cacheMetadata(meta)
-                        const t = tasks.value.active.find(x => x.gid === gid) || tasks.value.waiting.find(x => x.gid === gid)
-                        if (t) {
-                           t.files = meta.files
-                           t.dir = meta.dir
-                           updated = true
-                        }
-                      }
-                      if (updated) tasks.value = { ...tasks.value }
-                   }).finally(() => actions.setMetadataInFlight(false))
-                 }, 50)
-               }
+            if (!hasValidFiles(task)) {
+              actions.queueMetadataRecovery(delta.gid)
             }
           }
         }
@@ -135,23 +207,56 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       }
 
       case 'add': {
-        const payload = delta.payload as Task | undefined
+        const payload = delta.payload as Partial<Task> | undefined
+        const incoming = payload ? { ...payload, gid: payload.gid || delta.gid } : undefined
 
-        if (payload?.files?.[0]?.path) {
-          cacheMetadata(payload)
-          const existsInActive = tasks.value.active.some(t => t.gid === delta.gid)
-          const existsInStopped = tasks.value.stopped.some(t => t.gid === delta.gid)
-          if (!existsInActive && !existsInStopped) {
-            const taskToAdd = applyMetadataFromCache(payload)
-            tasks.value = {
-              ...tasks.value,
-              active: [taskToAdd, ...tasks.value.active],
-              waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
-            }
+        if (hasValidFiles(incoming)) {
+          cacheMetadata(toTask(incoming))
+        }
+
+        const activeIdx = tasks.value.active.findIndex(t => t.gid === delta.gid)
+        const waitingIdx = tasks.value.waiting.findIndex(t => t.gid === delta.gid)
+        const existsInStopped = tasks.value.stopped.some(t => t.gid === delta.gid)
+
+        if (activeIdx !== -1) {
+          const merged = applyMetadataFromCache(
+            mergeTaskPreservingRichData(tasks.value.active[activeIdx], incoming),
+          )
+          const nextActive = [...tasks.value.active]
+          nextActive[activeIdx] = merged
+          tasks.value = {
+            ...tasks.value,
+            active: nextActive,
+            waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
+          }
+          if (!hasValidFiles(merged)) actions.queueMetadataRecovery(delta.gid)
+        } else if (waitingIdx !== -1) {
+          const merged = applyMetadataFromCache(
+            mergeTaskPreservingRichData(tasks.value.waiting[waitingIdx], incoming),
+          )
+          const shouldMoveToActive = merged.status === 'active' || incoming?.status === 'active'
+          tasks.value = {
+            ...tasks.value,
+            active: shouldMoveToActive ? [merged, ...tasks.value.active] : tasks.value.active,
+            waiting: shouldMoveToActive
+              ? tasks.value.waiting.filter(t => t.gid !== delta.gid)
+              : tasks.value.waiting.map((t, index) => (index === waitingIdx ? merged : t)),
+          }
+          if (!hasValidFiles(merged)) actions.queueMetadataRecovery(delta.gid)
+        } else if (existsInStopped) {
+          // Keep stopped duplicate suppression semantics unchanged.
+        } else if (hasValidFiles(incoming)) {
+          const taskToAdd = applyMetadataFromCache(mergeTaskPreservingRichData(undefined, incoming))
+          tasks.value = {
+            ...tasks.value,
+            active: [taskToAdd, ...tasks.value.active],
+            waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
           }
         } else {
           if (import.meta.env.DEV) {
-            console.debug(`[Events] add: payload incomplete for ${delta.gid}, falling back to fetchTasks`)
+            console.debug(
+              `[Events] add: payload incomplete for ${delta.gid}, falling back to fetchTasks`,
+            )
           }
           await fetchTasks()
         }
@@ -165,15 +270,24 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
         const stoppedTask = tasks.value.stopped.find(t => t.gid === delta.gid)
         if (stoppedTask && payload) {
           let updated = false
-          if (payload.completedLength !== undefined && stoppedTask.completedLength !== payload.completedLength) {
+          if (
+            payload.completedLength !== undefined &&
+            stoppedTask.completedLength !== payload.completedLength
+          ) {
             stoppedTask.completedLength = payload.completedLength
             updated = true
           }
-          if (payload.totalLength !== undefined && stoppedTask.totalLength !== payload.totalLength) {
+          if (
+            payload.totalLength !== undefined &&
+            stoppedTask.totalLength !== payload.totalLength
+          ) {
             stoppedTask.totalLength = payload.totalLength
             updated = true
           }
-          if (payload.downloadSpeed !== undefined && stoppedTask.downloadSpeed !== payload.downloadSpeed) {
+          if (
+            payload.downloadSpeed !== undefined &&
+            stoppedTask.downloadSpeed !== payload.downloadSpeed
+          ) {
             stoppedTask.downloadSpeed = payload.downloadSpeed
             updated = true
           }
@@ -182,15 +296,18 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
         }
 
         // 尝试在 active/waiting 中找到任务
-        const existingTask = tasks.value.active.find(t => t.gid === delta.gid) ??
-                             tasks.value.waiting.find(t => t.gid === delta.gid)
+        const existingTask =
+          tasks.value.active.find(t => t.gid === delta.gid) ??
+          tasks.value.waiting.find(t => t.gid === delta.gid)
 
         if (existingTask) {
           // 正常路径：任务已在列表中，应用 payload 后移到 stopped
           if (payload) {
-            if (payload.completedLength !== undefined) existingTask.completedLength = payload.completedLength
+            if (payload.completedLength !== undefined)
+              existingTask.completedLength = payload.completedLength
             if (payload.totalLength !== undefined) existingTask.totalLength = payload.totalLength
-            if (payload.downloadSpeed !== undefined) existingTask.downloadSpeed = payload.downloadSpeed
+            if (payload.downloadSpeed !== undefined)
+              existingTask.downloadSpeed = payload.downloadSpeed
           }
           moveTaskToStopped(delta.gid)
         } else if (!tasks.value.stopped.some(t => t.gid === delta.gid)) {
@@ -206,7 +323,9 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
             }
           } else {
             if (import.meta.env.DEV) {
-              console.debug(`[Events] complete: payload incomplete for ${delta.gid}, falling back to fetchTasks`)
+              console.debug(
+                `[Events] complete: payload incomplete for ${delta.gid}, falling back to fetchTasks`,
+              )
             }
             await fetchTasks()
           }
@@ -224,16 +343,20 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
         const errorPayload = delta.payload as Task | undefined
 
         // 尝试在 active/waiting 中找到任务
-        const errorTask = tasks.value.active.find(t => t.gid === delta.gid) ??
-                          tasks.value.waiting.find(t => t.gid === delta.gid)
+        const errorTask =
+          tasks.value.active.find(t => t.gid === delta.gid) ??
+          tasks.value.waiting.find(t => t.gid === delta.gid)
 
         if (errorTask) {
           // 正常路径：任务在列表中，应用 payload 后移到 stopped
           if (errorPayload) {
-            if (errorPayload.completedLength !== undefined) errorTask.completedLength = errorPayload.completedLength
-            if (errorPayload.totalLength !== undefined) errorTask.totalLength = errorPayload.totalLength
+            if (errorPayload.completedLength !== undefined)
+              errorTask.completedLength = errorPayload.completedLength
+            if (errorPayload.totalLength !== undefined)
+              errorTask.totalLength = errorPayload.totalLength
             if (errorPayload.errorCode !== undefined) errorTask.errorCode = errorPayload.errorCode
-            if (errorPayload.errorMessage !== undefined) errorTask.errorMessage = errorPayload.errorMessage
+            if (errorPayload.errorMessage !== undefined)
+              errorTask.errorMessage = errorPayload.errorMessage
           }
           patchTaskStatus(delta.gid, 'error')
           moveTaskToStopped(delta.gid)
@@ -250,7 +373,9 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
             }
           } else {
             if (import.meta.env.DEV) {
-              console.debug(`[Events] error: payload incomplete for ${delta.gid}, falling back to fetchTasks`)
+              console.debug(
+                `[Events] error: payload incomplete for ${delta.gid}, falling back to fetchTasks`,
+              )
             }
             await fetchTasks()
           }
@@ -269,9 +394,10 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
 
   function handleTaskMove(move: TaskMove) {
     const { gid, from, to, task: taskData } = move
-    const fullTask = taskData as unknown as Task | undefined
-    if (fullTask?.files?.length) {
-      cacheMetadata(fullTask)
+    const payload = taskData as Partial<Task> | undefined
+    const incoming = payload ? { ...payload, gid: payload.gid || gid } : undefined
+    if (hasValidFiles(incoming)) {
+      cacheMetadata(toTask(incoming))
     }
 
     let movedTask: Task | undefined
@@ -286,14 +412,9 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       tasks.value.stopped = tasks.value.stopped.filter(t => t.gid !== gid)
     }
 
-    let taskToAdd: Task
-    if (fullTask?.gid) {
-      taskToAdd = applyMetadataFromCache(fullTask)
-    } else if (movedTask) {
-      taskToAdd = movedTask
-    } else {
-      taskToAdd = applyMetadataFromCache({ gid } as Task)
-    }
+    const taskToAdd = applyMetadataFromCache(
+      mergeTaskPreservingRichData(movedTask, incoming ?? { gid }),
+    )
 
     if (to === 'active' && !tasks.value.active.some(t => t.gid === gid)) {
       tasks.value.active = [taskToAdd, ...tasks.value.active]
