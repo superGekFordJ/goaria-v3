@@ -280,6 +280,49 @@ func TestBatchRemove_FallsBackWithSingleTellStatusMultiForUnresolvedTargets(t *t
 	}
 }
 
+func TestBatchRemove_RemovesUniqueHistoryEntries(t *testing.T) {
+	counter := setupAppTaskRemoveTest(t, func(req appTaskRPCRequest, counter *appTaskRPCCounter) map[string]any {
+		switch req.Method {
+		case "aria2.remove", "aria2.removeDownloadResult", "aria2.saveSession":
+			return appTaskSuccessResponse("OK")
+		case "aria2.tellActive", "aria2.tellWaiting", "aria2.tellStopped", "aria2.tellStatus", "system.multicall":
+			return appTaskSuccessResponse([]any{})
+		default:
+			return appTaskSuccessResponse("OK")
+		}
+	})
+
+	baseDir := t.TempDir()
+	history.Add(history.HistoryEntry{GID: "gid-1", Dir: baseDir, Path: filepath.Join(baseDir, "one.bin"), Source: "https://example.com/one"})
+	history.Add(history.HistoryEntry{GID: "gid-2", Dir: baseDir, Path: filepath.Join(baseDir, "two.bin"), Source: "https://example.com/two"})
+	history.Add(history.HistoryEntry{GID: "gid-keep", Dir: baseDir, Path: filepath.Join(baseDir, "keep.bin"), Source: "https://example.com/keep"})
+
+	app := NewApp()
+	app.BatchRemove([]string{"gid-1", "gid-2", "gid-1", "", "gid-missing"}, false)
+
+	if _, ok := history.Get("gid-1"); ok {
+		t.Fatalf("expected gid-1 history entry to be removed")
+	}
+	if _, ok := history.Get("gid-2"); ok {
+		t.Fatalf("expected gid-2 history entry to be removed")
+	}
+	if _, ok := history.Get("gid-keep"); !ok {
+		t.Fatalf("expected unrelated history entry to remain")
+	}
+	if got := counter.count("aria2.remove"); got != 3 {
+		t.Fatalf("expected one remove call per unique requested gid including missing, got %d", got)
+	}
+	if got := counter.count("aria2.tellActive"); got != 0 {
+		t.Fatalf("expected no tellActive calls, got %d", got)
+	}
+	if got := counter.count("aria2.tellWaiting"); got != 0 {
+		t.Fatalf("expected no tellWaiting calls, got %d", got)
+	}
+	if got := counter.count("aria2.tellStopped"); got != 0 {
+		t.Fatalf("expected no tellStopped calls, got %d", got)
+	}
+}
+
 func TestRemoveTask_PrefersHistoryBeforeRPCFallback(t *testing.T) {
 	gid := "gid-history"
 	counter := setupAppTaskRemoveTest(t, func(req appTaskRPCRequest, counter *appTaskRPCCounter) map[string]any {

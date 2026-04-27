@@ -23,15 +23,16 @@ type HistoryEntry struct {
 }
 
 var (
-	entries       []HistoryEntry
-	gidIndex      map[string]int
-	sourceIndex   map[string]int
-	mu            sync.RWMutex
-	historyPath   string
-	saveChan      = make(chan struct{}, 1)
-	debounceNanos atomic.Int64
-	saverOnce     sync.Once
-	SaveEnabled   = true
+	entries          []HistoryEntry
+	gidIndex         map[string]int
+	sourceIndex      map[string]int
+	mu               sync.RWMutex
+	historyPath      string
+	saveChan         = make(chan struct{}, 1)
+	debounceNanos    atomic.Int64
+	saveTriggerCount atomic.Int64
+	saverOnce        sync.Once
+	SaveEnabled      = true
 )
 
 func init() {
@@ -182,6 +183,69 @@ func Remove(gid string) {
 	}
 }
 
+// RemoveMany removes history entries for the given GIDs in one compaction pass.
+func RemoveMany(gids []string) {
+	if len(gids) == 0 {
+		return
+	}
+
+	removeSet := make(map[string]struct{}, len(gids))
+	for _, gid := range gids {
+		if gid == "" {
+			continue
+		}
+		removeSet[gid] = struct{}{}
+	}
+	if len(removeSet) == 0 {
+		return
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(entries) == 0 || len(gidIndex) == 0 {
+		return
+	}
+
+	hasRemoval := false
+	for gid := range removeSet {
+		if _, ok := gidIndex[gid]; ok {
+			hasRemoval = true
+			break
+		}
+	}
+	if !hasRemoval {
+		return
+	}
+
+	removed := 0
+	compacted := entries[:0]
+	for _, entry := range entries {
+		if _, ok := removeSet[entry.GID]; ok {
+			removed++
+			continue
+		}
+		compacted = append(compacted, entry)
+	}
+	if removed == 0 {
+		return
+	}
+
+	for i := len(compacted); i < len(entries); i++ {
+		entries[i] = HistoryEntry{}
+	}
+	entries = compacted
+	gidIndex = make(map[string]int, len(entries))
+	sourceIndex = make(map[string]int, len(entries))
+	for i, entry := range entries {
+		gidIndex[entry.GID] = i
+		if entry.Source != "" {
+			sourceIndex[entry.Source]++
+		}
+	}
+	triggerSave()
+}
+
 // GetAll returns all history entries
 func GetAll() []HistoryEntry {
 	mu.RLock()
@@ -189,6 +253,21 @@ func GetAll() []HistoryEntry {
 
 	result := make([]HistoryEntry, len(entries))
 	copy(result, entries)
+	return result
+}
+
+// GetMissingByGID returns history entries whose GIDs are absent from existingGIDs.
+func GetMissingByGID(existingGIDs map[string]struct{}) []HistoryEntry {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	result := make([]HistoryEntry, 0)
+	for _, entry := range entries {
+		if _, exists := existingGIDs[entry.GID]; exists {
+			continue
+		}
+		result = append(result, entry)
+	}
 	return result
 }
 
@@ -202,6 +281,27 @@ func ContainsSource(source string) bool {
 		return false
 	}
 	return sourceIndex[source] > 0
+}
+
+// ContainsSources returns the queried sources currently present in history.
+func ContainsSources(sources []string) map[string]bool {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	result := make(map[string]bool)
+	if len(sources) == 0 || sourceIndex == nil {
+		return result
+	}
+
+	for _, source := range sources {
+		if source == "" {
+			continue
+		}
+		if sourceIndex[source] > 0 {
+			result[source] = true
+		}
+	}
+	return result
 }
 
 // Get returns a single history entry by GID (O(1) lookup)
@@ -230,6 +330,7 @@ func Clear() {
 }
 
 func triggerSave() {
+	saveTriggerCount.Add(1)
 	saverOnce.Do(func() {
 		go saveLoop()
 	})

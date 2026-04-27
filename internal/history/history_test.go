@@ -111,6 +111,70 @@ func TestAddAndGetAll(t *testing.T) {
 	}
 }
 
+func TestGetMissingByGID(t *testing.T) {
+	setupTest(t)
+
+	Add(HistoryEntry{GID: "gid-1", Title: "Task 1"})
+	Add(HistoryEntry{GID: "gid-2", Title: "Task 2"})
+	Add(HistoryEntry{GID: "gid-3", Title: "Task 3"})
+
+	missing := GetMissingByGID(map[string]struct{}{"gid-2": {}})
+	if len(missing) != 2 {
+		t.Fatalf("expected 2 missing entries, got %d", len(missing))
+	}
+	if missing[0].GID != "gid-1" || missing[1].GID != "gid-3" {
+		t.Fatalf("expected storage order gid-1,gid-3, got %#v", missing)
+	}
+}
+
+func TestGetMissingByGID_EmptyExistingReturnsAll(t *testing.T) {
+	setupTest(t)
+
+	Add(HistoryEntry{GID: "gid-1", Title: "Task 1"})
+	Add(HistoryEntry{GID: "gid-2", Title: "Task 2"})
+
+	for _, existing := range []map[string]struct{}{nil, {}} {
+		missing := GetMissingByGID(existing)
+		if len(missing) != 2 {
+			t.Fatalf("expected all entries for empty existing map, got %d", len(missing))
+		}
+		if missing[0].GID != "gid-1" || missing[1].GID != "gid-2" {
+			t.Fatalf("expected all entries in storage order, got %#v", missing)
+		}
+	}
+}
+
+func TestGetMissingByGID_ReturnsCopies(t *testing.T) {
+	setupTest(t)
+
+	Add(HistoryEntry{GID: "gid-1", Title: "Task 1"})
+	Add(HistoryEntry{GID: "gid-2", Title: "Task 2"})
+
+	missing := GetMissingByGID(nil)
+	if len(missing) != 2 {
+		t.Fatalf("expected 2 missing entries, got %d", len(missing))
+	}
+
+	missing[0] = HistoryEntry{GID: "mutated", Title: "Mutated"}
+	missing[1].Title = "Mutated Task 2"
+
+	entry, ok := Get("gid-1")
+	if !ok {
+		t.Fatalf("expected gid-1 to remain in history")
+	}
+	if entry.Title != "Task 1" {
+		t.Fatalf("expected gid-1 title to remain unchanged, got %q", entry.Title)
+	}
+
+	all := GetAll()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 stored entries, got %d", len(all))
+	}
+	if all[1].Title != "Task 2" {
+		t.Fatalf("expected gid-2 title to remain unchanged, got %q", all[1].Title)
+	}
+}
+
 func TestRemove(t *testing.T) {
 	setupTest(t)
 
@@ -131,6 +195,121 @@ func TestRemove(t *testing.T) {
 	Remove("999")
 	if len(GetAll()) != 2 {
 		t.Errorf("Count changed after removing non-existent")
+	}
+}
+
+func TestRemoveMany(t *testing.T) {
+	setupTest(t)
+
+	Add(HistoryEntry{GID: "gid-1", Source: "source-a"})
+	Add(HistoryEntry{GID: "gid-2", Source: "source-shared"})
+	Add(HistoryEntry{GID: "gid-3", Source: "source-b"})
+	Add(HistoryEntry{GID: "gid-4", Source: "source-shared"})
+	Add(HistoryEntry{GID: "gid-5", Source: "source-c"})
+
+	RemoveMany([]string{"gid-1", "gid-3", "gid-5"})
+
+	all := GetAll()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 entries after RemoveMany, got %d", len(all))
+	}
+	if all[0].GID != "gid-2" || all[1].GID != "gid-4" {
+		t.Fatalf("expected survivors to preserve order gid-2,gid-4, got %#v", all)
+	}
+	if gidIndex["gid-2"] != 0 || gidIndex["gid-4"] != 1 {
+		t.Fatalf("unexpected gidIndex after RemoveMany: %#v", gidIndex)
+	}
+	if _, ok := gidIndex["gid-1"]; ok {
+		t.Fatalf("expected gid-1 to be removed from gidIndex")
+	}
+	if !ContainsSource("source-shared") {
+		t.Fatalf("expected shared source to remain present")
+	}
+	if ContainsSource("source-a") || ContainsSource("source-b") || ContainsSource("source-c") {
+		t.Fatalf("expected removed sources to be absent, got %#v", sourceIndex)
+	}
+}
+
+func TestRemoveMany_IdempotentDuplicateEmptyMissing(t *testing.T) {
+	setupTest(t)
+
+	Add(HistoryEntry{GID: "gid-1", Source: "source-a"})
+	Add(HistoryEntry{GID: "gid-2", Source: "source-a"})
+	Add(HistoryEntry{GID: "gid-3", Source: "source-b"})
+
+	RemoveMany([]string{"", "gid-missing", "gid-1", "gid-1", "gid-3", "gid-3"})
+
+	all := GetAll()
+	if len(all) != 1 || all[0].GID != "gid-2" {
+		t.Fatalf("expected only gid-2 to remain, got %#v", all)
+	}
+	if got := sourceIndex["source-a"]; got != 1 {
+		t.Fatalf("expected source-a count 1 after removing one shared-source entry, got %d", got)
+	}
+	if _, ok := sourceIndex["source-b"]; ok {
+		t.Fatalf("expected source-b to be removed from sourceIndex")
+	}
+
+	RemoveMany([]string{"gid-1", "gid-3", "gid-missing", ""})
+	all = GetAll()
+	if len(all) != 1 || all[0].GID != "gid-2" {
+		t.Fatalf("expected no mutation after idempotent second remove, got %#v", all)
+	}
+	if got := sourceIndex["source-a"]; got != 1 {
+		t.Fatalf("expected source-a count to remain 1, got %d", got)
+	}
+}
+
+func TestRemoveMany_NoOpDoesNotMutateIndexesOrSave(t *testing.T) {
+	setupTest(t)
+
+	Add(HistoryEntry{GID: "gid-1", Source: "source-a"})
+	Add(HistoryEntry{GID: "gid-2", Source: "source-b"})
+	before := GetAll()
+	beforeGIDIndex := map[string]int{"gid-1": gidIndex["gid-1"], "gid-2": gidIndex["gid-2"]}
+	beforeSourceIndex := map[string]int{"source-a": sourceIndex["source-a"], "source-b": sourceIndex["source-b"]}
+
+	beforeSaveTriggers := saveTriggerCount.Load()
+
+	RemoveMany(nil)
+	RemoveMany([]string{"", "gid-missing"})
+
+	if got := saveTriggerCount.Load() - beforeSaveTriggers; got != 0 {
+		t.Fatalf("expected no save triggers for no-op RemoveMany calls, got %d", got)
+	}
+	after := GetAll()
+	if len(after) != len(before) || after[0] != before[0] || after[1] != before[1] {
+		t.Fatalf("expected entries to remain unchanged, got %#v", after)
+	}
+	for gid, want := range beforeGIDIndex {
+		if got := gidIndex[gid]; got != want {
+			t.Fatalf("expected gidIndex[%q]=%d, got %d", gid, want, got)
+		}
+	}
+	for source, want := range beforeSourceIndex {
+		if got := sourceIndex[source]; got != want {
+			t.Fatalf("expected sourceIndex[%q]=%d, got %d", source, want, got)
+		}
+	}
+}
+
+func TestRemoveMany_TriggersSaveOnceForActualDeletion(t *testing.T) {
+	setupTest(t)
+
+	Add(HistoryEntry{GID: "gid-1"})
+	Add(HistoryEntry{GID: "gid-2"})
+	Add(HistoryEntry{GID: "gid-3"})
+
+	beforeSaveTriggers := saveTriggerCount.Load()
+
+	RemoveMany([]string{"gid-1", "gid-3", "gid-3", "gid-missing"})
+
+	if got := saveTriggerCount.Load() - beforeSaveTriggers; got != 1 {
+		t.Fatalf("expected one save trigger for actual RemoveMany deletion, got %d", got)
+	}
+	all := GetAll()
+	if len(all) != 1 || all[0].GID != "gid-2" {
+		t.Fatalf("expected only gid-2 to remain, got %#v", all)
 	}
 }
 
@@ -220,5 +399,62 @@ func TestContainsSource(t *testing.T) {
 	Clear()
 	if ContainsSource(source1) {
 		t.Errorf("Expected to not contain source1 after Clear")
+	}
+}
+
+func TestContainsSources(t *testing.T) {
+	setupTest(t)
+
+	sharedSource := "https://example.com/shared.iso"
+	otherSource := "https://example.com/other.iso"
+	missingSource := "https://example.com/missing.iso"
+
+	Add(HistoryEntry{GID: "gid-shared-1", Source: sharedSource})
+	Add(HistoryEntry{GID: "gid-shared-2", Source: sharedSource})
+	Add(HistoryEntry{GID: "gid-other", Source: otherSource})
+	Add(HistoryEntry{GID: "gid-empty", Source: ""})
+
+	got := ContainsSources([]string{sharedSource, otherSource, sharedSource, "", missingSource})
+	if len(got) != 2 {
+		t.Fatalf("expected two present sources, got %#v", got)
+	}
+	if !got[sharedSource] {
+		t.Fatalf("expected shared source to be present")
+	}
+	if !got[otherSource] {
+		t.Fatalf("expected other source to be present")
+	}
+	if got[""] {
+		t.Fatalf("expected empty source to be absent")
+	}
+	if got[missingSource] {
+		t.Fatalf("expected missing source to be absent")
+	}
+
+	Remove("gid-shared-1")
+	got = ContainsSources([]string{sharedSource, otherSource})
+	if !got[sharedSource] {
+		t.Fatalf("expected shared source to remain present after one removal")
+	}
+	if !got[otherSource] {
+		t.Fatalf("expected other source to remain present")
+	}
+
+	Remove("gid-shared-2")
+	got = ContainsSources([]string{sharedSource, otherSource})
+	if got[sharedSource] {
+		t.Fatalf("expected shared source to be absent after all removals")
+	}
+	if !got[otherSource] {
+		t.Fatalf("expected other source to remain present after shared removals")
+	}
+
+	Clear()
+	got = ContainsSources([]string{sharedSource, otherSource})
+	if len(got) != 0 {
+		t.Fatalf("expected no sources after Clear, got %#v", got)
+	}
+	if got := ContainsSources(nil); len(got) != 0 {
+		t.Fatalf("expected nil input to return empty map, got %#v", got)
 	}
 }

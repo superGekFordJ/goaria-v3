@@ -99,10 +99,16 @@ func (a *App) BatchAddUri(urls []string) BatchAddResult {
 	collectTaskSourceURLs(existingUrls, waiting)
 	collectTaskSourceURLs(existingUrls, stopped)
 
-	// History dedup
-	for _, h := range history.GetAll() {
-		existingUrls[h.Source] = true
+	// History dedup for only the capped, normalized batch candidates.
+	normalizedSources := make([]string, 0, len(urls))
+	for _, rawUrl := range urls {
+		normalized := strings.TrimSpace(rawUrl)
+		if normalized == "" {
+			continue
+		}
+		normalizedSources = append(normalizedSources, normalized)
 	}
+	historyDuplicates := history.ContainsSources(normalizedSources)
 
 	// Batch-internal dedup
 	seen := make(map[string]bool)
@@ -121,7 +127,7 @@ func (a *App) BatchAddUri(urls []string) BatchAddResult {
 		seen[normalized] = true
 
 		// Existing task/history dedup
-		if existingUrls[normalized] {
+		if existingUrls[normalized] || historyDuplicates[normalized] {
 			result.Duplicates = append(result.Duplicates, normalized)
 			continue
 		}
@@ -190,45 +196,66 @@ func (a *App) GetStoppedTasks() []rpc.Task {
 		return []rpc.Task{}
 	}
 
-	stopped := monitor.Cache.GetStopped()
+	return stoppedTasksWithHistory(monitor.Cache.GetStopped())
+}
 
-	// 用历史记录补全缺失的文件信息
-	// 场景：Lite RPC 返回的任务没有文件信息，但历史记录有
-	gidSet := make(map[string]bool)
+func stoppedTasksWithHistory(stopped []rpc.Task) []rpc.Task {
+	existingGIDs := make(map[string]struct{}, len(stopped))
 	for i := range stopped {
-		gidSet[stopped[i].GID] = true
-		// 如果缓存任务缺少文件或大小信息(小文件竞态)，尝试从历史记录补全
-		if h, ok := history.Get(stopped[i].GID); ok {
-			if (len(stopped[i].Files) == 0 || stopped[i].Files[0].Path == "") && h.Path != "" {
-				stopped[i].Files = []rpc.File{{Path: h.Path, Uris: []rpc.Uri{{Uri: h.Source}}}}
-			} else if len(stopped[i].Files) > 0 && len(stopped[i].Files[0].Uris) == 0 && h.Source != "" {
-				stopped[i].Files[0].Uris = []rpc.Uri{{Uri: h.Source}}
-			}
-
-			if stopped[i].TotalLength == "0" && h.TotalLength != "0" {
-				stopped[i].TotalLength = h.TotalLength
-			}
-			if stopped[i].CompletedLength == "0" && h.CompletedLength != "0" {
-				stopped[i].CompletedLength = h.CompletedLength
-			}
+		existingGIDs[stopped[i].GID] = struct{}{}
+		if entry, ok := history.Get(stopped[i].GID); ok {
+			backfillStoppedTaskFromHistory(&stopped[i], entry)
 		}
 	}
 
-	// 添加仅存在于历史记录中的任务（Aria2 重启后丢失的）
-	for _, h := range history.GetAll() {
-		if !gidSet[h.GID] {
-			stopped = append(stopped, rpc.Task{
-				GID:             h.GID,
-				Status:          "complete",
-				TotalLength:     h.TotalLength,
-				CompletedLength: h.CompletedLength,
-				Dir:             h.Dir,
-				Files:           []rpc.File{{Path: h.Path, Uris: []rpc.Uri{{Uri: h.Source}}}},
-			})
-		}
+	for _, entry := range history.GetMissingByGID(existingGIDs) {
+		stopped = append(stopped, historyEntryToStoppedTask(entry))
 	}
-
 	return stopped
+}
+
+func backfillStoppedTaskFromHistory(task *rpc.Task, entry history.HistoryEntry) {
+	if entry.Path != "" && (len(task.Files) == 0 || task.Files[0].Path == "") {
+		var uris []rpc.Uri
+		if len(task.Files) > 0 && len(task.Files[0].Uris) > 0 {
+			uris = task.Files[0].Uris
+		} else {
+			uris = historySourceURIs(entry.Source)
+		}
+		task.Files = []rpc.File{{Path: entry.Path, Uris: uris}}
+	}
+	if len(task.Files) > 0 && len(task.Files[0].Uris) == 0 && entry.Source != "" {
+		task.Files[0].Uris = []rpc.Uri{{Uri: entry.Source}}
+	}
+
+	if task.TotalLength == "0" && isNonZeroLength(entry.TotalLength) {
+		task.TotalLength = entry.TotalLength
+	}
+	if task.CompletedLength == "0" && isNonZeroLength(entry.CompletedLength) {
+		task.CompletedLength = entry.CompletedLength
+	}
+}
+
+func historyEntryToStoppedTask(entry history.HistoryEntry) rpc.Task {
+	return rpc.Task{
+		GID:             entry.GID,
+		Status:          "complete",
+		TotalLength:     entry.TotalLength,
+		CompletedLength: entry.CompletedLength,
+		Dir:             entry.Dir,
+		Files:           []rpc.File{{Path: entry.Path, Uris: historySourceURIs(entry.Source)}},
+	}
+}
+
+func historySourceURIs(source string) []rpc.Uri {
+	if source == "" {
+		return []rpc.Uri{}
+	}
+	return []rpc.Uri{{Uri: source}}
+}
+
+func isNonZeroLength(value string) bool {
+	return value != "" && value != "0"
 }
 
 // GetTasks returns all tasks grouped by status
@@ -239,41 +266,7 @@ func (a *App) GetTasks() map[string][]rpc.Task {
 	waiting := monitor.Cache.GetWaiting()
 	var stopped []rpc.Task
 	if config.Current.ShowHistory {
-		stopped = monitor.Cache.GetStopped()
-
-		// 用历史记录补全缺失的文件信息和大小(小文件竞态)
-		gidSet := make(map[string]bool)
-		for i := range stopped {
-			gidSet[stopped[i].GID] = true
-			if h, ok := history.Get(stopped[i].GID); ok {
-				if (len(stopped[i].Files) == 0 || stopped[i].Files[0].Path == "") && h.Path != "" {
-					stopped[i].Files = []rpc.File{{Path: h.Path, Uris: []rpc.Uri{{Uri: h.Source}}}}
-				} else if len(stopped[i].Files) > 0 && len(stopped[i].Files[0].Uris) == 0 && h.Source != "" {
-					stopped[i].Files[0].Uris = []rpc.Uri{{Uri: h.Source}}
-				}
-
-				if stopped[i].TotalLength == "0" && h.TotalLength != "0" {
-					stopped[i].TotalLength = h.TotalLength
-				}
-				if stopped[i].CompletedLength == "0" && h.CompletedLength != "0" {
-					stopped[i].CompletedLength = h.CompletedLength
-				}
-			}
-		}
-
-		// 添加仅存在于历史记录中的任务
-		for _, h := range history.GetAll() {
-			if !gidSet[h.GID] {
-				stopped = append(stopped, rpc.Task{
-					GID:             h.GID,
-					Status:          "complete",
-					TotalLength:     h.TotalLength,
-					CompletedLength: h.CompletedLength,
-					Dir:             h.Dir,
-					Files:           []rpc.File{{Path: h.Path, Uris: []rpc.Uri{{Uri: h.Source}}}},
-				})
-			}
-		}
+		stopped = stoppedTasksWithHistory(monitor.Cache.GetStopped())
 	}
 	return map[string][]rpc.Task{"active": active, "waiting": waiting, "stopped": stopped}
 }
@@ -462,6 +455,10 @@ func (a *App) removeTaskWithTarget(gid string, target removalTarget, deleteFile 
 	// 2. Remove from history
 	history.Remove(gid)
 
+	a.cleanupRemovedTask(gid, target, deleteFile)
+}
+
+func (a *App) cleanupRemovedTask(gid string, target removalTarget, deleteFile bool) {
 	// 3. Clean up from Tracker
 	if tracker := monitor.State.GetTracker(); tracker != nil {
 		tracker.RemoveTask(gid)
@@ -520,7 +517,11 @@ func (a *App) BatchRemove(gids []string, deleteFiles bool) {
 
 	targets := resolveRemovalTargetsBatch(uniqueGIDs)
 	for _, gid := range uniqueGIDs {
-		a.removeTaskWithTarget(gid, targets[gid], deleteFiles)
+		rpc.Remove(gid)
+	}
+	history.RemoveMany(uniqueGIDs)
+	for _, gid := range uniqueGIDs {
+		a.cleanupRemovedTask(gid, targets[gid], deleteFiles)
 	}
 }
 
