@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "packs": [
+    {
+      "pack_id": "fixture-pack",
+      "pack_version": "0.1.0-fixture",
+      "asset_path": "fixture.pack.zip",
+      "asset_sha256": "ffe7c789e1a9a59aeda69ae01a9f75dafd25fcacab4c93850879583ed2ec2c5f",
+      "public_keys": [
+        "5e212c0980e4b39fc09721134aa02109374edfd260c0d3d03cb501c8d65457a9"
+      ],
+      "manifest_sha256": "d6a1fbcae4bebbf80b485b92791cf9b5ce04e21d8a0d850bdc9c0574e1c64b13",
+      "payload_sha256": "4733d406ecaf93a44329a5465c11c6507f9ebc31650ac2bbc5ad138e93c8710a",
+      "signature_sha256": "0eadadd7381166a1c0eb5e8876b757cb37a648f844069b23944905eff766b3e1"
+    }
+  ]
+}

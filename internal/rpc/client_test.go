@@ -57,6 +57,275 @@ func stringsToAny(values []string) []any {
 	return result
 }
 
+func initTestRPCServer(t *testing.T, serverURL string, secret string) {
+	t.Helper()
+
+	parts := strings.Split(serverURL, ":")
+	port := parts[len(parts)-1]
+	Init(port, secret)
+}
+
+func findTestRPCRequest(t *testing.T, requests []testRPCRequest, method string) testRPCRequest {
+	t.Helper()
+
+	for _, req := range requests {
+		if req.Method == method {
+			return req
+		}
+	}
+	t.Fatalf("expected request for method %s in %#v", method, requests)
+	return testRPCRequest{}
+}
+
+func decodeAddURIParams(t *testing.T, req testRPCRequest, hasSecret bool) ([]string, map[string]any) {
+	t.Helper()
+
+	params := req.Params
+	if hasSecret {
+		if len(params) != 3 {
+			t.Fatalf("expected 3 params with secret, got %d", len(params))
+		}
+		var token string
+		if err := json.Unmarshal(params[0], &token); err != nil {
+			t.Fatalf("expected secret token param to decode: %v", err)
+		}
+		if token != "token:secret" {
+			t.Fatalf("expected token:secret, got %q", token)
+		}
+		params = params[1:]
+	} else if len(params) != 2 {
+		t.Fatalf("expected 2 params without secret, got %d", len(params))
+	}
+
+	var uris []string
+	if err := json.Unmarshal(params[0], &uris); err != nil {
+		t.Fatalf("expected uri list to decode: %v", err)
+	}
+	var options map[string]any
+	if err := json.Unmarshal(params[1], &options); err != nil {
+		t.Fatalf("expected options to decode: %v", err)
+	}
+
+	return uris, options
+}
+
+func TestAddUriWithAria2OptionsSerializesHeadersOutAndSmartThreadOptions(t *testing.T) {
+	directURL := "https://files.example.com/downloads/file.bin"
+	var requests []testRPCRequest
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, err := decodeTestRPCRequest(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		requests = append(requests, req)
+
+		switch req.Method {
+		case "aria2.addUri":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": "goaria", "result": "gid-test"})
+		case "aria2.saveSession":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": "goaria", "result": "OK"})
+		default:
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	initTestRPCServer(t, server.URL, "secret")
+
+	gid, err := AddUriWithAria2Options(directURL, AddURIOptions{
+		Dir:          "D:/Downloads",
+		Out:          "file.bin",
+		Headers:      []string{"Authorization: Bearer test-token", "User-Agent: GoAria-Test"},
+		Split:        8,
+		MinSplitSize: 1_048_576,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if gid != "gid-test" {
+		t.Fatalf("expected gid-test, got %q", gid)
+	}
+
+	addReq := findTestRPCRequest(t, requests, "aria2.addUri")
+	uris, options := decodeAddURIParams(t, addReq, true)
+	if !reflect.DeepEqual(uris, []string{directURL}) {
+		t.Fatalf("expected uri list %#v, got %#v", []string{directURL}, uris)
+	}
+	expectedScalars := map[string]string{
+		"dir":                       "D:/Downloads",
+		"out":                       "file.bin",
+		"split":                     "8",
+		"max-connection-per-server": "8",
+		"min-split-size":            "1048576",
+	}
+	for key, want := range expectedScalars {
+		if got, ok := options[key].(string); !ok || got != want {
+			t.Fatalf("expected option %s=%q, got %#v", key, want, options[key])
+		}
+	}
+	if got := options["header"]; !reflect.DeepEqual(got, []any{"Authorization: Bearer test-token", "User-Agent: GoAria-Test"}) {
+		t.Fatalf("expected ordered header list, got %#v", got)
+	}
+
+	methods := make([]string, 0, len(requests))
+	for _, req := range requests {
+		methods = append(methods, req.Method)
+	}
+	if count := countMethodCalls(methods, "aria2.saveSession"); count != 1 {
+		t.Fatalf("expected one saveSession call, got %d (%v)", count, methods)
+	}
+}
+
+func TestAddUriWithAria2OptionsRejectsUnsafeHeaders(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": "goaria", "result": "unexpected"})
+	}))
+	defer server.Close()
+	initTestRPCServer(t, server.URL, "")
+
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{name: "CRLF", header: "X-Test: value\r\nX-Evil: value"},
+		{name: "NoColon", header: "X-Test value"},
+		{name: "EmptyName", header: " : value"},
+		{name: "EmptyAfterTrim", header: "   "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := AddUriWithAria2Options("https://example.com/file.zip", AddURIOptions{
+				Dir:     "D:/Downloads",
+				Headers: []string{tt.header},
+			})
+			if err == nil {
+				t.Fatal("expected unsafe header error, got nil")
+			}
+		})
+	}
+	if requests != 0 {
+		t.Fatalf("expected no RPC requests for unsafe headers, got %d", requests)
+	}
+}
+
+func TestAddUriWithAria2OptionsTreatsEmptyMessageRPCErrorAsFailure(t *testing.T) {
+	var requests []testRPCRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, err := decodeTestRPCRequest(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		requests = append(requests, req)
+
+		switch req.Method {
+		case "aria2.addUri":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      "goaria",
+				"error": map[string]any{
+					"code":    1,
+					"message": "",
+				},
+			})
+		case "aria2.saveSession":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": "goaria", "result": "OK"})
+		default:
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	initTestRPCServer(t, server.URL, "")
+
+	if _, err := AddUriWithAria2Options("https://example.com/file.zip", AddURIOptions{Dir: "D:/Downloads"}); err == nil {
+		t.Fatal("expected JSON-RPC error object to fail even with empty message")
+	}
+	if count := countMethodCalls(methodsFromRequests(requests), "aria2.saveSession"); count != 0 {
+		t.Fatalf("expected no saveSession after addUri RPC error, got %d", count)
+	}
+}
+
+func TestAddUriAndAddUriWithOptionsRemainCompatible(t *testing.T) {
+	directURL := "https://example.com/file.zip"
+	downloadDir := "D:/Downloads"
+	var requests []testRPCRequest
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, err := decodeTestRPCRequest(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		requests = append(requests, req)
+
+		switch req.Method {
+		case "aria2.addUri":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": "goaria", "result": fmt.Sprintf("gid-%d", countMethodCalls(methodsFromRequests(requests), "aria2.addUri"))})
+		case "aria2.saveSession":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": "goaria", "result": "OK"})
+		default:
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	initTestRPCServer(t, server.URL, "")
+
+	if err := AddUri(directURL, downloadDir); err != nil {
+		t.Fatalf("AddUri returned error: %v", err)
+	}
+	gid, err := AddUriWithOptions(directURL, downloadDir, 4, 2_097_152)
+	if err != nil {
+		t.Fatalf("AddUriWithOptions returned error: %v", err)
+	}
+	if gid != "gid-2" {
+		t.Fatalf("expected gid-2 from second add, got %q", gid)
+	}
+
+	var addRequests []testRPCRequest
+	for _, req := range requests {
+		if req.Method == "aria2.addUri" {
+			addRequests = append(addRequests, req)
+		}
+	}
+	if len(addRequests) != 2 {
+		t.Fatalf("expected two addUri requests, got %d", len(addRequests))
+	}
+
+	uris, options := decodeAddURIParams(t, addRequests[0], false)
+	if !reflect.DeepEqual(uris, []string{directURL}) || !reflect.DeepEqual(options, map[string]any{"dir": downloadDir}) {
+		t.Fatalf("unexpected AddUri params: uris=%#v options=%#v", uris, options)
+	}
+
+	uris, options = decodeAddURIParams(t, addRequests[1], false)
+	if !reflect.DeepEqual(uris, []string{directURL}) {
+		t.Fatalf("unexpected AddUriWithOptions uris: %#v", uris)
+	}
+	expectedOptions := map[string]any{
+		"dir":                       downloadDir,
+		"split":                     "4",
+		"max-connection-per-server": "4",
+		"min-split-size":            "2097152",
+	}
+	if !reflect.DeepEqual(options, expectedOptions) {
+		t.Fatalf("unexpected AddUriWithOptions params: got %#v want %#v", options, expectedOptions)
+	}
+	if count := countMethodCalls(methodsFromRequests(requests), "aria2.saveSession"); count != 2 {
+		t.Fatalf("expected two saveSession calls, got %d", count)
+	}
+}
+
+func methodsFromRequests(requests []testRPCRequest) []string {
+	methods := make([]string, len(requests))
+	for i, req := range requests {
+		methods[i] = req.Method
+	}
+	return methods
+}
+
 func TestGetGlobalStat(t *testing.T) {
 	// Mock Aria2 server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -30,11 +30,19 @@ internal/process/bundled/darwin/aria2c
 # --- IDE 相关 ---
 .vscode/
 .idea/
-/docs/
+docs/*
+docs/temp/
 .windsurf
 
 # --- 构建产物 ---
 *.zip
+!internal/extractor/testdata/supplychain/fixture.pack.zip
+
+# --- Extractor pack generated outputs ---
+internal/extractor/embedded_packs_release_gen.go
+build/extractor/verified_packs.provenance.json
+build/extractor/cache/
+build/extractor/*.tmp
 
 # --- 测试脚本 ---
 scripts/gen_history.go

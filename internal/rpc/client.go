@@ -7,10 +7,16 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"goaria-v3/internal/config"
+)
+
+const (
+	maxAddURIHeaders        = 64
+	maxAddURIHeaderLineSize = 8 * 1024
 )
 
 var (
@@ -66,6 +72,14 @@ type TaskProgress struct {
 	DownloadSpeed   string `json:"downloadSpeed"`
 }
 
+type AddURIOptions struct {
+	Dir          string
+	Out          string
+	Headers      []string
+	Split        int
+	MinSplitSize int64
+}
+
 func (t Task) GetTitle() string {
 	if len(t.Files) > 0 && t.Files[0].Path != "" {
 		return filepath.Base(t.Files[0].Path)
@@ -95,47 +109,122 @@ func Remove(gid string) error {
 }
 
 func AddUri(url string, downloadDir string) error {
-	params := []any{
-		[]string{url},
-		map[string]string{"dir": downloadDir},
-	}
-	_, err := sendRequest("aria2.addUri", params)
-	if err == nil {
-		ForceSaveSession()
-	}
+	_, err := AddUriWithAria2Options(url, AddURIOptions{Dir: downloadDir})
 	return err
 }
 
 // AddUriWithOptions 添加下载任务，支持动态线程参数
 // 返回 (gid, error)
 func AddUriWithOptions(url string, downloadDir string, split int, minSplitSize int64) (string, error) {
-	options := map[string]string{"dir": downloadDir}
-	if split > 0 {
-		options["split"] = strconv.Itoa(split)
-		options["max-connection-per-server"] = strconv.Itoa(split)
-	}
-	if minSplitSize > 0 {
-		options["min-split-size"] = strconv.FormatInt(minSplitSize, 10)
+	return AddUriWithAria2Options(url, AddURIOptions{
+		Dir:          downloadDir,
+		Split:        split,
+		MinSplitSize: minSplitSize,
+	})
+}
+
+func AddUriWithAria2Options(url string, options AddURIOptions) (string, error) {
+	aria2Options, err := buildAddURIOptions(options)
+	if err != nil {
+		return "", err
 	}
 	params := []any{
 		[]string{url},
-		options,
+		aria2Options,
 	}
 	resp, err := sendRequest("aria2.addUri", params)
 	if err != nil {
 		return "", err
 	}
+	gid, err := parseAddURIResponse(resp)
+	if err != nil {
+		return "", err
+	}
 	ForceSaveSession()
 
+	return gid, nil
+}
+
+func buildAddURIOptions(options AddURIOptions) (map[string]any, error) {
+	if err := validateAddURIHeaders(options.Headers); err != nil {
+		return nil, err
+	}
+
+	aria2Options := map[string]any{"dir": options.Dir}
+	if options.Out != "" {
+		aria2Options["out"] = options.Out
+	}
+	if len(options.Headers) > 0 {
+		headers := make([]string, len(options.Headers))
+		copy(headers, options.Headers)
+		aria2Options["header"] = headers
+	}
+	if options.Split > 0 {
+		split := strconv.Itoa(options.Split)
+		aria2Options["split"] = split
+		aria2Options["max-connection-per-server"] = split
+	}
+	if options.MinSplitSize > 0 {
+		aria2Options["min-split-size"] = strconv.FormatInt(options.MinSplitSize, 10)
+	}
+
+	return aria2Options, nil
+}
+
+func validateAddURIHeaders(headers []string) error {
+	if len(headers) > maxAddURIHeaders {
+		return fmt.Errorf("aria2 header count exceeds %d", maxAddURIHeaders)
+	}
+
+	for _, header := range headers {
+		line := strings.TrimSpace(header)
+		if line == "" {
+			return fmt.Errorf("aria2 header line must be non-empty")
+		}
+		if line != header {
+			return fmt.Errorf("aria2 header line must be trimmed")
+		}
+		if len(line) > maxAddURIHeaderLineSize {
+			return fmt.Errorf("aria2 header line exceeds %d bytes", maxAddURIHeaderLineSize)
+		}
+		if strings.ContainsAny(line, "\r\n") {
+			return fmt.Errorf("aria2 header line must not contain CR/LF")
+		}
+		name, value, ok := strings.Cut(line, ":")
+		if !ok || strings.TrimSpace(name) == "" || strings.TrimSpace(value) == "" {
+			return fmt.Errorf("aria2 header line must be in name: value form")
+		}
+		if strings.TrimSpace(name) != name {
+			return fmt.Errorf("aria2 header name must be trimmed")
+		}
+		for _, r := range name {
+			if r <= 0x20 || r >= 0x7f || strings.ContainsRune("()<>@,;:\\\"/[]?={}", r) {
+				return fmt.Errorf("aria2 header name contains invalid characters")
+			}
+		}
+	}
+
+	return nil
+}
+
+func parseAddURIResponse(resp []byte) (string, error) {
 	var result struct {
 		Result any `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(resp, &result); err != nil {
 		return "", err
 	}
+	if result.Error != nil {
+		return "", fmt.Errorf("aria2.addUri: rpc error %d: %s", result.Error.Code, result.Error.Message)
+	}
 	if gid, ok := result.Result.(string); ok {
 		return gid, nil
 	}
+
 	return "", nil
 }
 

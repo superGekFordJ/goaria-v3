@@ -71,6 +71,28 @@ tasks:
       - task: test:go
       - task: test:frontend
 
+  # Extractor release pack supply-chain checks
+  extractor:packs:verify:
+    summary: Verify optional extractor release packs and generate embedded pack code when configured
+    cmds:
+      - go run ./scripts/extractorpacks verify --lock build/extractor/packs.lock.json --out internal/extractor/embedded_packs_release_gen.go --provenance-out build/extractor/verified_packs.provenance.json
+
+  extractor:packs:verify:required:
+    summary: Verify required extractor release packs for release packaging
+    cmds:
+      - go run ./scripts/extractorpacks verify --lock build/extractor/packs.lock.json --out internal/extractor/embedded_packs_release_gen.go --provenance-out build/extractor/verified_packs.provenance.json --required
+
+  extractor:packs:fixture:
+    summary: Verify the public extractor pack supply-chain fixture
+    cmds:
+      - go run ./scripts/extractorpacks verify --lock internal/extractor/testdata/supplychain/fixture.lock.json --out build/extractor/cache/fixture_embedded_packs_release_gen.go --provenance-out build/extractor/cache/fixture_verified_packs.provenance.json --allow-file --cleanup
+
+  extractor:pack-sdk:fixture:
+    summary: Build, sign, and verify the extractor pack SDK host-call fixture
+    cmds:
+      - go run ./tools/extractorpack hostcall-fixture --out-dir build/extractor/cache/pack_sdk --lock-out build/extractor/cache/pack_sdk/hostcall_fixture.lock.json
+      - go run ./scripts/extractorpacks verify --lock build/extractor/cache/pack_sdk/hostcall_fixture.lock.json --out build/extractor/cache/pack_sdk/hostcall_fixture_embedded_packs_release_gen.go --provenance-out build/extractor/cache/pack_sdk/hostcall_fixture_verified_packs.provenance.json --allow-file --cleanup
+
   # Dependency helpers
   deps:update:frontend:
     summary: Update frontend deps (respecting lockfile)

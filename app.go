@@ -27,6 +27,8 @@ type App struct {
 	updater   *update.Updater
 	trayState tray.TrayState
 
+	extractorDispatcher extractorAddTaskDispatcher
+
 	windowMu       sync.Mutex // 保护窗口操作
 	lastToggleTime time.Time  // 上次切换窗口时间，用于全局防抖
 	isToggling     bool       // 防止重入标志
@@ -62,4 +64,8 @@ func (a *App) SetWindow(w *application.WebviewWindow) {
 // SetSystemTray stores the system tray reference
 func (a *App) SetSystemTray(st *application.SystemTray) {
 	a.systray = st
+}
+
+func (a *App) setExtractorDispatcher(dispatcher extractorAddTaskDispatcher) {
+	a.extractorDispatcher = dispatcher
 }

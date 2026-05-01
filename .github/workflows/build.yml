@@ -41,6 +41,17 @@ jobs:
       - name: Add Go bin to PATH
         run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      - name: Verify extractor pack supply-chain fixture
+        run: wails3 task extractor:packs:fixture
+
+      - name: Verify and embed extractor release packs
+        if: github.event_name == 'release'
+        run: wails3 task extractor:packs:verify:required
+
+      - name: Prepare optional extractor packs
+        if: github.event_name != 'release'
+        run: wails3 task extractor:packs:verify
+
       - name: Negative check - default Linux resolver fails closed without aria2c
         shell: bash
         run: |
@@ -100,6 +111,13 @@ jobs:
             bin/*.rpm
             bin/*.pkg.tar.zst
 
+      - name: Upload extractor pack provenance
+        if: hashFiles('build/extractor/verified_packs.provenance.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: extractor-pack-provenance-linux
+          path: build/extractor/verified_packs.provenance.json
+
       - name: Upload Linux release assets
         if: github.event_name == 'release'
         env:
@@ -153,6 +171,17 @@ jobs:
       - name: Add Go bin to PATH
         run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      - name: Verify extractor pack supply-chain fixture
+        run: wails3 task extractor:packs:fixture
+
+      - name: Verify and embed extractor release packs
+        if: github.event_name == 'release'
+        run: wails3 task extractor:packs:verify:required
+
+      - name: Prepare optional extractor packs
+        if: github.event_name != 'release'
+        run: wails3 task extractor:packs:verify
+
       - name: Negative check - default macOS resolver fails closed without aria2c
         shell: bash
         run: |
@@ -202,6 +231,13 @@ jobs:
           name: macos-package
           path: bin/goaria-v3.app
 
+      - name: Upload extractor pack provenance
+        if: hashFiles('build/extractor/verified_packs.provenance.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: extractor-pack-provenance-macos
+          path: build/extractor/verified_packs.provenance.json
+
       - name: Upload macOS release assets
         if: github.event_name == 'release'
         shell: bash
@@ -239,6 +275,20 @@ jobs:
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
 
+      - name: Add Go bin to PATH
+        run: echo "$(go env GOPATH)/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Verify extractor pack supply-chain fixture
+        run: wails3 task extractor:packs:fixture
+
+      - name: Verify and embed extractor release packs
+        if: github.event_name == 'release'
+        run: wails3 task extractor:packs:verify:required
+
+      - name: Prepare optional extractor packs
+        if: github.event_name != 'release'
+        run: wails3 task extractor:packs:verify
+
       - name: Stage bundled aria2c
         run: .\setup.ps1
 
@@ -250,6 +300,13 @@ jobs:
         with:
           name: windows-packages
           path: bin/*.zip
+
+      - name: Upload extractor pack provenance
+        if: hashFiles('build/extractor/verified_packs.provenance.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: extractor-pack-provenance-windows
+          path: build/extractor/verified_packs.provenance.json
 
       - name: Upload Windows release assets
         if: github.event_name == 'release'

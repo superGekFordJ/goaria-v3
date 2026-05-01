@@ -11,6 +11,7 @@ import (
 
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/events"
+	"goaria-v3/internal/extractor"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/process"
@@ -39,7 +40,7 @@ var appIcon []byte
 func main() {
 	flag.Parse()
 
-	// Initialize config, history, speedstats, and Aria2
+	// Initialize config, history, speedstats, and embedded extractor packs.
 	config.Load()
 
 	// Clean up old binary from previous update
@@ -53,13 +54,16 @@ func main() {
 
 	history.Load()
 	speedstats.Load()
+
+	// Create the App service for bindings and fail closed on invalid required embedded packs
+	// before starting aria2, so extractor startup failure cannot leave the daemon running.
+	appService := NewApp()
+	configureEmbeddedExtractorDispatcher(appService)
+
 	rpc.Init(config.Current.RPCPort, config.Current.RPCSecret)
 	if err := process.StartAria2(config.Current); err != nil {
 		log.Fatalf("failed to start bundled aria2: %v", err)
 	}
-
-	// Create the App service for bindings
-	appService := NewApp()
 
 	// Get the frontend/dist subdirectory
 	frontendFS, err := fs.Sub(assets, "frontend/dist")
@@ -154,5 +158,36 @@ func main() {
 	// Run the application
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func configureEmbeddedExtractorDispatcher(appService *App) {
+	if appService == nil {
+		return
+	}
+	if !extractor.HasEmbeddedReleasePacks() && !extractor.EmbeddedReleaseRequired() {
+		return
+	}
+
+	var store extractor.AuthProfileResolver
+	if extractor.HasEmbeddedReleasePacks() {
+		storePath, err := extractor.DefaultAuthProfileStorePath()
+		if err != nil {
+			log.Fatalf("failed to locate extractor auth profile store: %v", extractor.RedactSensitive(err.Error()))
+		}
+		fileStore, err := extractor.NewFileAuthProfileStore(storePath)
+		if err != nil {
+			log.Fatalf("failed to load extractor auth profile store: %v", extractor.RedactSensitive(err.Error()))
+		}
+		store = fileStore
+	}
+	dispatcher, err := extractor.NewEmbeddedReleaseAddTaskDispatcher(extractor.EmbeddedReleaseDispatcherConfig{
+		AuthResolver: store,
+	})
+	if err != nil {
+		log.Fatalf("failed to verify embedded extractor release packs: %v", extractor.RedactSensitive(err.Error()))
+	}
+	if dispatcher != nil {
+		appService.setExtractorDispatcher(dispatcher)
 	}
 }

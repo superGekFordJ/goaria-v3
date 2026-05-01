@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/config"
+	"goaria-v3/internal/extractor"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
@@ -30,17 +32,26 @@ type BatchAddResult struct {
 	Errors     map[string]string `json:"errors"`
 }
 
-func containsTaskSourceURL(tasks []rpc.Task, normalizedURL string) bool {
-	for _, task := range tasks {
-		for _, file := range task.Files {
-			for _, uri := range file.Uris {
-				if strings.TrimSpace(uri.Uri) == normalizedURL {
-					return true
-				}
-			}
-		}
-	}
-	return false
+type extractorAddTaskDispatcher interface {
+	Resolve(ctx context.Context, rawURL string) (extractor.AddTaskResolution, error)
+	BuildAria2Headers(ctx context.Context, item extractor.ResolvedAddItem) ([]string, error)
+}
+
+type addTaskCandidate struct {
+	sourceURL  string
+	url        string
+	out        string
+	sizeBytes  int64
+	extracted  bool
+	protected  bool
+	displayKey string
+	item       extractor.ResolvedAddItem
+}
+
+type addTaskSummary struct {
+	succeeded  []string
+	duplicates []string
+	errors     map[string]string
 }
 
 func collectTaskSourceURLs(existingURLs map[string]bool, tasks []rpc.Task) {
@@ -53,6 +64,15 @@ func collectTaskSourceURLs(existingURLs map[string]bool, tasks []rpc.Task) {
 	}
 }
 
+func collectExistingTaskSourceURLs(active, waiting, stopped []rpc.Task) map[string]bool {
+	existingURLs := make(map[string]bool)
+	collectTaskSourceURLs(existingURLs, active)
+	collectTaskSourceURLs(existingURLs, waiting)
+	collectTaskSourceURLs(existingURLs, stopped)
+
+	return existingURLs
+}
+
 // AddUri adds a new download task
 // Returns "success" on success, "duplicate" if task already exists, or error message
 func (a *App) AddUri(url string) string {
@@ -60,8 +80,9 @@ func (a *App) AddUri(url string) string {
 	active, _ := rpc.TellActive()
 	waiting, _ := rpc.TellWaiting(0, 1000)
 	stopped, _ := rpc.TellStopped(0, 1000)
+	existingURLs := collectExistingTaskSourceURLs(active, waiting, stopped)
 
-	if containsTaskSourceURL(active, normalizedUrl) || containsTaskSourceURL(waiting, normalizedUrl) || containsTaskSourceURL(stopped, normalizedUrl) {
+	if existingURLs[normalizedUrl] {
 		return "duplicate"
 	}
 
@@ -69,9 +90,23 @@ func (a *App) AddUri(url string) string {
 		return "duplicate"
 	}
 
-	if err := a.addSingleTask(normalizedUrl); err != nil {
-		return err.Error()
+	summary := addTaskSummary{errors: make(map[string]string)}
+	candidateSeen := make(map[string]bool)
+	a.addNormalizedInput(context.Background(), normalizedUrl, existingURLs, nil, candidateSeen, &summary)
+
+	if len(summary.succeeded) == 0 {
+		if len(summary.errors) > 0 {
+			return firstErrorString(summary.errors)
+		}
+		if len(summary.duplicates) > 0 {
+			return "duplicate"
+		}
+		return "success"
 	}
+	if len(summary.errors) > 0 {
+		return "partial success: " + firstErrorString(summary.errors)
+	}
+
 	return "success"
 }
 
@@ -94,10 +129,7 @@ func (a *App) BatchAddUri(urls []string) BatchAddResult {
 	stopped, _ := rpc.TellStopped(0, 1000)
 
 	// Build existing URL set for O(1) lookup
-	existingUrls := make(map[string]bool)
-	collectTaskSourceURLs(existingUrls, active)
-	collectTaskSourceURLs(existingUrls, waiting)
-	collectTaskSourceURLs(existingUrls, stopped)
+	existingUrls := collectExistingTaskSourceURLs(active, waiting, stopped)
 
 	// History dedup for only the capped, normalized batch candidates.
 	normalizedSources := make([]string, 0, len(urls))
@@ -111,7 +143,8 @@ func (a *App) BatchAddUri(urls []string) BatchAddResult {
 	historyDuplicates := history.ContainsSources(normalizedSources)
 
 	// Batch-internal dedup
-	seen := make(map[string]bool)
+	seenRaw := make(map[string]bool)
+	seenCandidates := make(map[string]bool)
 
 	for _, rawUrl := range urls {
 		normalized := strings.TrimSpace(rawUrl)
@@ -120,11 +153,11 @@ func (a *App) BatchAddUri(urls []string) BatchAddResult {
 		}
 
 		// Batch-internal dedup
-		if seen[normalized] {
+		if seenRaw[normalized] {
 			result.Duplicates = append(result.Duplicates, normalized)
 			continue
 		}
-		seen[normalized] = true
+		seenRaw[normalized] = true
 
 		// Existing task/history dedup
 		if existingUrls[normalized] || historyDuplicates[normalized] {
@@ -132,28 +165,145 @@ func (a *App) BatchAddUri(urls []string) BatchAddResult {
 			continue
 		}
 
-		if err := a.addSingleTask(normalized); err != nil {
-			result.Errors[normalized] = err.Error()
-		} else {
-			result.Succeeded = append(result.Succeeded, normalized)
+		summary := addTaskSummary{errors: make(map[string]string)}
+		a.addNormalizedInput(context.Background(), normalized, existingUrls, historyDuplicates, seenCandidates, &summary)
+		result.Succeeded = append(result.Succeeded, summary.succeeded...)
+		result.Duplicates = append(result.Duplicates, summary.duplicates...)
+		for key, value := range summary.errors {
+			result.Errors[key] = value
 		}
 	}
 
 	return result
 }
 
-// addSingleTask handles the SmartThread + AddUri logic for a single normalized URL.
-func (a *App) addSingleTask(normalizedUrl string) error {
+func (a *App) addNormalizedInput(ctx context.Context, normalizedURL string, existingURLs map[string]bool, historyDuplicates map[string]bool, candidateSeen map[string]bool, summary *addTaskSummary) {
+	candidates, err := a.resolveAddCandidates(ctx, normalizedURL)
+	if err != nil {
+		summary.errors[normalizedURL] = redactAddTaskError(err)
+		return
+	}
+
+	for _, candidate := range candidates {
+		displayKey := candidateDisplayKey(candidate)
+		if isDuplicateAddCandidate(candidate, existingURLs, historyDuplicates, candidateSeen) {
+			summary.duplicates = append(summary.duplicates, displayKey)
+			continue
+		}
+
+		if err := a.addTaskCandidate(ctx, candidate); err != nil {
+			summary.errors[displayKey] = redactAddTaskError(err)
+			continue
+		}
+
+		summary.succeeded = append(summary.succeeded, displayKey)
+		existingURLs[candidate.url] = true
+		candidateSeen[candidate.url] = true
+	}
+}
+
+func (a *App) resolveAddCandidates(ctx context.Context, normalizedURL string) ([]addTaskCandidate, error) {
+	if a == nil || a.extractorDispatcher == nil {
+		return []addTaskCandidate{directAddTaskCandidate(normalizedURL)}, nil
+	}
+
+	resolution, err := a.extractorDispatcher.Resolve(ctx, normalizedURL)
+	if err != nil {
+		return nil, err
+	}
+	if !resolution.Matched {
+		return []addTaskCandidate{directAddTaskCandidate(normalizedURL)}, nil
+	}
+
+	candidates := make([]addTaskCandidate, 0, len(resolution.Items))
+	for _, item := range resolution.Items {
+		candidates = append(candidates, extractorAddTaskCandidate(item))
+	}
+
+	return candidates, nil
+}
+
+func directAddTaskCandidate(normalizedURL string) addTaskCandidate {
+	return addTaskCandidate{
+		sourceURL:  normalizedURL,
+		url:        normalizedURL,
+		displayKey: normalizedURL,
+	}
+}
+
+func extractorAddTaskCandidate(item extractor.ResolvedAddItem) addTaskCandidate {
+	displayKey := item.URL
+	if displayKey == "" && item.ID != "" {
+		displayKey = item.SourceURL + "#" + item.ID
+	}
+
+	return addTaskCandidate{
+		sourceURL:  item.SourceURL,
+		url:        item.URL,
+		out:        item.Filename,
+		sizeBytes:  item.SizeBytes,
+		extracted:  true,
+		protected:  item.AuthProfileRef != "" || item.HeaderProfileRef != "",
+		displayKey: displayKey,
+		item:       item,
+	}
+}
+
+func candidateDisplayKey(candidate addTaskCandidate) string {
+	if candidate.displayKey != "" {
+		return candidate.displayKey
+	}
+	if candidate.url != "" {
+		return candidate.url
+	}
+	return candidate.sourceURL
+}
+
+func isDuplicateAddCandidate(candidate addTaskCandidate, existingURLs map[string]bool, historyDuplicates map[string]bool, candidateSeen map[string]bool) bool {
+	if existingURLs[candidate.url] || candidateSeen[candidate.url] {
+		return true
+	}
+	if historyDuplicates != nil && historyDuplicates[candidate.url] {
+		return true
+	}
+
+	return history.ContainsSource(candidate.url)
+}
+
+func (a *App) addTaskCandidate(ctx context.Context, candidate addTaskCandidate) error {
+	out := ""
+	if candidate.out != "" {
+		safeOut, err := extractor.SafeAria2OutFilename(candidate.out)
+		if err != nil {
+			return err
+		}
+		out = safeOut
+	}
+
+	headers, err := a.buildCandidateHeaders(ctx, candidate)
+	if err != nil {
+		return err
+	}
+
 	if config.Current.SmartThreadMode {
-		fileSize := rpc.HeadContentLength(normalizedUrl, 3*time.Second)
+		fileSize := candidate.sizeBytes
+		if !candidate.extracted && !candidate.protected && len(headers) == 0 {
+			fileSize = rpc.HeadContentLength(candidate.url, 3*time.Second)
+		}
 
 		maxConn, _ := strconv.Atoi(config.Current.MaxConnections)
 		if maxConn <= 0 {
 			maxConn = 16
 		}
 
-		params := smartthread.Calculate(fileSize, maxConn, normalizedUrl)
-		gid, err := rpc.AddUriWithOptions(normalizedUrl, config.Current.DownloadDir, params.Split, params.MinSize)
+		params := smartthread.Calculate(fileSize, maxConn, candidate.url)
+		gid, err := rpc.AddUriWithAria2Options(candidate.url, rpc.AddURIOptions{
+			Dir:          config.Current.DownloadDir,
+			Out:          out,
+			Headers:      headers,
+			Split:        params.Split,
+			MinSplitSize: params.MinSize,
+		})
 		if err != nil {
 			return err
 		}
@@ -166,7 +316,75 @@ func (a *App) addSingleTask(normalizedUrl string) error {
 		return nil
 	}
 
-	return rpc.AddUri(normalizedUrl, config.Current.DownloadDir)
+	if !candidate.extracted && out == "" && len(headers) == 0 {
+		return rpc.AddUri(candidate.url, config.Current.DownloadDir)
+	}
+	_, err = rpc.AddUriWithAria2Options(candidate.url, rpc.AddURIOptions{
+		Dir:     config.Current.DownloadDir,
+		Out:     out,
+		Headers: headers,
+	})
+
+	return err
+}
+
+func (a *App) buildCandidateHeaders(ctx context.Context, candidate addTaskCandidate) ([]string, error) {
+	if !candidate.extracted || a == nil || a.extractorDispatcher == nil {
+		return nil, nil
+	}
+
+	return a.extractorDispatcher.BuildAria2Headers(ctx, candidate.item)
+}
+
+func firstErrorString(errors map[string]string) string {
+	for _, err := range errors {
+		return err
+	}
+
+	return ""
+}
+
+func redactAddTaskError(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	return redactAssignmentValues(extractor.RedactSensitive(err.Error()))
+}
+
+func redactAssignmentValues(input string) string {
+	markers := []string{"token=", "secret=", "auth=", "key="}
+	var builder strings.Builder
+	lower := strings.ToLower(input)
+	for offset := 0; offset < len(input); {
+		match := -1
+		marker := ""
+		for _, candidate := range markers {
+			if idx := strings.Index(lower[offset:], candidate); idx >= 0 && (match < 0 || idx < match) {
+				match = idx
+				marker = candidate
+			}
+		}
+		if match < 0 {
+			builder.WriteString(input[offset:])
+			break
+		}
+
+		start := offset + match
+		valueStart := start + len(marker)
+		valueEnd := valueStart
+		for valueEnd < len(input) && !strings.ContainsRune(" \t\r\n&;,'\"`,)", rune(input[valueEnd])) {
+			valueEnd++
+		}
+
+		builder.WriteString(input[offset:valueStart])
+		if valueEnd > valueStart {
+			builder.WriteString("[REDACTED]")
+		}
+		offset = valueEnd
+	}
+
+	return builder.String()
 }
 
 // GetActiveTasks returns only active and waiting tasks (high-frequency channel)
