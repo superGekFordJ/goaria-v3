@@ -252,6 +252,9 @@ func (m *Monitor) tick() {
 	Cache.EnrichTasks(active)
 	Cache.EnrichTasks(waiting)
 	Cache.EnrichTasks(stopped)
+	HydrateTaskGroups(active)
+	HydrateTaskGroups(waiting)
+	HydrateTaskGroups(stopped)
 
 	// 更新 lastStopped 缓存（包含已丰富的文件信息）
 	// 这确保下次 tick 使用缓存时，任务已有正确的文件名
@@ -370,6 +373,7 @@ func (m *Monitor) tick() {
 				CompletedLength: fmt.Sprintf("%d", task.CompletedLength),
 				DownloadSpeed:   "0",
 				Dir:             task.Dir,
+				DownloadGroup:   copyDownloadGroup(task.DownloadGroup),
 			}
 			if task.FilePath != "" {
 				fullTask.Files = []rpc.File{{
@@ -402,7 +406,16 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 			if meta.SourceURL != "" {
 				task.SourceURL = meta.SourceURL
 			}
+			if task.DownloadGroup == nil && meta.DownloadGroup != nil {
+				task.DownloadGroup = copyDownloadGroup(meta.DownloadGroup)
+			}
 			log.Printf("[Monitor] Recovered file info from cache for task: %s -> %s", task.GID, task.FilePath)
+		}
+	}
+	if task.DownloadGroup == nil {
+		task.DownloadGroup = Cache.GetTaskGroup(task.GID)
+		if task.DownloadGroup == nil {
+			task.DownloadGroup = GetStoredTaskGroup(task.GID)
 		}
 	}
 
@@ -413,6 +426,9 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 			task.Dir = t.Dir
 			if len(t.Files[0].Uris) > 0 {
 				task.SourceURL = t.Files[0].Uris[0].Uri
+			}
+			if task.DownloadGroup == nil && t.DownloadGroup != nil {
+				task.DownloadGroup = copyDownloadGroup(t.DownloadGroup)
 			}
 			log.Printf("[Monitor] Recovered file info from RPC for task: %s -> %s", task.GID, task.FilePath)
 		}
@@ -460,7 +476,11 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 		TotalLength:     fmt.Sprintf("%d", task.TotalLength),
 		CompletedLength: fmt.Sprintf("%d", task.CompletedLength),
 		Source:          task.SourceURL,
+		DownloadGroup:   copyDownloadGroup(task.DownloadGroup),
 	})
+	if task.DownloadGroup != nil {
+		RemoveTaskGroup(task.GID)
+	}
 	log.Printf("[Monitor] History recorded: %s", task.GID)
 }
 
@@ -542,6 +562,7 @@ func (m *Monitor) updateTrayIcon() {
 func (m *Monitor) InvalidateTask(gid string) {
 	// 1. 清理元数据缓存
 	Cache.InvalidateMetadata(gid)
+	RemoveTaskGroup(gid)
 
 	// 2. 从 lastStopped 缓存中移除
 	m.mu.Lock()

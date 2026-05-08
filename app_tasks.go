@@ -27,9 +27,10 @@ func (a *App) RecordTaskSpeed(gid string, speed int64, cl int64) {
 
 // BatchAddResult holds the result of a batch add operation
 type BatchAddResult struct {
-	Succeeded  []string          `json:"succeeded"`
-	Duplicates []string          `json:"duplicates"`
-	Errors     map[string]string `json:"errors"`
+	Succeeded  []string            `json:"succeeded"`
+	Duplicates []string            `json:"duplicates"`
+	Errors     map[string]string   `json:"errors"`
+	Groups     []rpc.DownloadGroup `json:"groups,omitempty"`
 }
 
 type extractorAddTaskDispatcher interface {
@@ -38,20 +39,23 @@ type extractorAddTaskDispatcher interface {
 }
 
 type addTaskCandidate struct {
-	sourceURL  string
-	url        string
-	out        string
-	sizeBytes  int64
-	extracted  bool
-	protected  bool
-	displayKey string
-	item       extractor.ResolvedAddItem
+	sourceURL     string
+	url           string
+	out           string
+	sizeBytes     int64
+	extracted     bool
+	protected     bool
+	displayKey    string
+	item          extractor.ResolvedAddItem
+	downloadGroup *downloadGroupPlan
 }
 
 type addTaskSummary struct {
 	succeeded  []string
 	duplicates []string
 	errors     map[string]string
+	groups     []rpc.DownloadGroup
+	groupIDs   map[string]struct{}
 }
 
 func collectTaskSourceURLs(existingURLs map[string]bool, tasks []rpc.Task) {
@@ -142,9 +146,12 @@ func (a *App) BatchAddUri(urls []string) BatchAddResult {
 	}
 	historyDuplicates := history.ContainsSources(normalizedSources)
 
-	// Batch-internal dedup
 	seenRaw := make(map[string]bool)
 	seenCandidates := make(map[string]bool)
+	pendingCandidates := make([]addTaskCandidate, 0, len(urls))
+	batchThresholdSeen := make(map[string]struct{}, len(urls))
+	batchGroupCount := 0
+	summary := addTaskSummary{errors: result.Errors}
 
 	for _, rawUrl := range urls {
 		normalized := strings.TrimSpace(rawUrl)
@@ -152,27 +159,58 @@ func (a *App) BatchAddUri(urls []string) BatchAddResult {
 			continue
 		}
 
-		// Batch-internal dedup
 		if seenRaw[normalized] {
 			result.Duplicates = append(result.Duplicates, normalized)
 			continue
 		}
 		seenRaw[normalized] = true
 
-		// Existing task/history dedup
 		if existingUrls[normalized] || historyDuplicates[normalized] {
 			result.Duplicates = append(result.Duplicates, normalized)
 			continue
 		}
 
-		summary := addTaskSummary{errors: make(map[string]string)}
-		a.addNormalizedInput(context.Background(), normalized, existingUrls, historyDuplicates, seenCandidates, &summary)
-		result.Succeeded = append(result.Succeeded, summary.succeeded...)
-		result.Duplicates = append(result.Duplicates, summary.duplicates...)
-		for key, value := range summary.errors {
-			result.Errors[key] = value
+		candidates, err := a.resolveAddCandidates(context.Background(), normalized)
+		if err != nil {
+			result.Errors[normalized] = redactAddTaskError(err)
+			continue
+		}
+
+		pendingCandidates = append(pendingCandidates, candidates...)
+		for _, candidate := range candidates {
+			if candidate.downloadGroup != nil {
+				continue
+			}
+			if existingUrls[candidate.url] || historyDuplicates[candidate.url] || history.ContainsSource(candidate.url) {
+				continue
+			}
+			if _, exists := batchThresholdSeen[candidate.url]; exists {
+				continue
+			}
+			batchThresholdSeen[candidate.url] = struct{}{}
+			batchGroupCount++
 		}
 	}
+
+	if batchGroupCount >= 5 {
+		batchGroup, err := newDownloadGroupPlan(downloadGroupKindBatch, batchGroupCount, time.Now())
+		if err != nil {
+			result.Errors["batch"] = redactAddTaskError(err)
+			return result
+		}
+		for i := range pendingCandidates {
+			if pendingCandidates[i].downloadGroup == nil {
+				pendingCandidates[i].downloadGroup = batchGroup
+			}
+		}
+	}
+
+	for _, candidate := range pendingCandidates {
+		a.submitAddCandidate(context.Background(), candidate, existingUrls, historyDuplicates, seenCandidates, &summary)
+	}
+	result.Succeeded = append(result.Succeeded, summary.succeeded...)
+	result.Duplicates = append(result.Duplicates, summary.duplicates...)
+	result.Groups = append(result.Groups, summary.groups...)
 
 	return result
 }
@@ -185,21 +223,42 @@ func (a *App) addNormalizedInput(ctx context.Context, normalizedURL string, exis
 	}
 
 	for _, candidate := range candidates {
-		displayKey := candidateDisplayKey(candidate)
-		if isDuplicateAddCandidate(candidate, existingURLs, historyDuplicates, candidateSeen) {
-			summary.duplicates = append(summary.duplicates, displayKey)
-			continue
-		}
-
-		if err := a.addTaskCandidate(ctx, candidate); err != nil {
-			summary.errors[displayKey] = redactAddTaskError(err)
-			continue
-		}
-
-		summary.succeeded = append(summary.succeeded, displayKey)
-		existingURLs[candidate.url] = true
-		candidateSeen[candidate.url] = true
+		a.submitAddCandidate(ctx, candidate, existingURLs, historyDuplicates, candidateSeen, summary)
 	}
+}
+
+func (a *App) submitAddCandidate(ctx context.Context, candidate addTaskCandidate, existingURLs map[string]bool, historyDuplicates map[string]bool, candidateSeen map[string]bool, summary *addTaskSummary) {
+	displayKey := candidateDisplayKey(candidate)
+	if isDuplicateAddCandidate(candidate, existingURLs, historyDuplicates, candidateSeen) {
+		summary.duplicates = append(summary.duplicates, displayKey)
+		return
+	}
+
+	if _, err := a.addTaskCandidate(ctx, candidate); err != nil {
+		summary.errors[displayKey] = redactAddTaskError(err)
+		return
+	}
+
+	summary.succeeded = append(summary.succeeded, displayKey)
+	existingURLs[candidate.url] = true
+	candidateSeen[candidate.url] = true
+	if candidate.downloadGroup != nil {
+		summary.addGroup(candidate.downloadGroup.groupCopy())
+	}
+}
+
+func (s *addTaskSummary) addGroup(group rpc.DownloadGroup) {
+	if group.ID == "" {
+		return
+	}
+	if s.groupIDs == nil {
+		s.groupIDs = make(map[string]struct{})
+	}
+	if _, exists := s.groupIDs[group.ID]; exists {
+		return
+	}
+	s.groupIDs[group.ID] = struct{}{}
+	s.groups = append(s.groups, group)
 }
 
 func (a *App) resolveAddCandidates(ctx context.Context, normalizedURL string) ([]addTaskCandidate, error) {
@@ -215,9 +274,28 @@ func (a *App) resolveAddCandidates(ctx context.Context, normalizedURL string) ([
 		return []addTaskCandidate{directAddTaskCandidate(normalizedURL)}, nil
 	}
 
+	return addCandidatesFromResolution(normalizedURL, resolution)
+}
+
+func addCandidatesFromResolution(normalizedURL string, resolution extractor.AddTaskResolution) ([]addTaskCandidate, error) {
+	if !resolution.Matched {
+		return []addTaskCandidate{directAddTaskCandidate(normalizedURL)}, nil
+	}
+
+	var group *downloadGroupPlan
+	if len(resolution.Items) >= 2 {
+		var err error
+		group, err = newDownloadGroupPlan(downloadGroupKindCollection, len(resolution.Items), time.Now())
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	candidates := make([]addTaskCandidate, 0, len(resolution.Items))
 	for _, item := range resolution.Items {
-		candidates = append(candidates, extractorAddTaskCandidate(item))
+		candidate := extractorAddTaskCandidate(item)
+		candidate.downloadGroup = group
+		candidates = append(candidates, candidate)
 	}
 
 	return candidates, nil
@@ -270,20 +348,45 @@ func isDuplicateAddCandidate(candidate addTaskCandidate, existingURLs map[string
 	return history.ContainsSource(candidate.url)
 }
 
-func (a *App) addTaskCandidate(ctx context.Context, candidate addTaskCandidate) error {
+func (a *App) addTaskCandidate(ctx context.Context, candidate addTaskCandidate) (string, error) {
 	out := ""
 	if candidate.out != "" {
 		safeOut, err := extractor.SafeAria2OutFilename(candidate.out)
 		if err != nil {
-			return err
+			return "", err
 		}
 		out = safeOut
 	}
 
 	headers, err := a.buildCandidateHeaders(ctx, candidate)
 	if err != nil {
-		return err
+		return "", err
 	}
+	registerGroup := func(gid string) error {
+		if candidate.downloadGroup == nil || gid == "" {
+			return nil
+		}
+		group := candidate.downloadGroup.groupCopy()
+		monitor.Cache.RegisterTaskGroup(gid, group)
+		if tracker := monitor.State.GetTracker(); tracker != nil {
+			tracker.SetTaskGroup(gid, group)
+		}
+		return nil
+	}
+
+	dir := config.Current.DownloadDir
+	if candidate.downloadGroup != nil {
+		if err := candidate.downloadGroup.ensureDir(); err != nil {
+			return "", err
+		}
+		group := candidate.downloadGroup.groupCopy()
+		dir = group.Dir
+	}
+	if candidate.downloadGroup != nil {
+		defer candidate.downloadGroup.cleanupIfUnused()
+	}
+
+	var gid string
 
 	if config.Current.SmartThreadMode {
 		fileSize := candidate.sizeBytes
@@ -297,15 +400,15 @@ func (a *App) addTaskCandidate(ctx context.Context, candidate addTaskCandidate) 
 		}
 
 		params := smartthread.Calculate(fileSize, maxConn, candidate.url)
-		gid, err := rpc.AddUriWithAria2Options(candidate.url, rpc.AddURIOptions{
-			Dir:          config.Current.DownloadDir,
+		gid, err = rpc.AddUriWithAria2OptionsHook(candidate.url, rpc.AddURIOptions{
+			Dir:          dir,
 			Out:          out,
 			Headers:      headers,
 			Split:        params.Split,
 			MinSplitSize: params.MinSize,
-		})
+		}, registerGroup)
 		if err != nil {
-			return err
+			return "", err
 		}
 
 		if gid != "" && params.Split > 0 {
@@ -313,19 +416,22 @@ func (a *App) addTaskCandidate(ctx context.Context, candidate addTaskCandidate) 
 				tracker.SetThreadInfo(gid, params.Split, params.IsExploration)
 			}
 		}
-		return nil
+	} else {
+		gid, err = rpc.AddUriWithAria2OptionsHook(candidate.url, rpc.AddURIOptions{
+			Dir:     dir,
+			Out:     out,
+			Headers: headers,
+		}, registerGroup)
+		if err != nil {
+			return "", err
+		}
 	}
 
-	if !candidate.extracted && out == "" && len(headers) == 0 {
-		return rpc.AddUri(candidate.url, config.Current.DownloadDir)
+	if candidate.downloadGroup != nil {
+		candidate.downloadGroup.recordSuccess()
 	}
-	_, err = rpc.AddUriWithAria2Options(candidate.url, rpc.AddURIOptions{
-		Dir:     config.Current.DownloadDir,
-		Out:     out,
-		Headers: headers,
-	})
 
-	return err
+	return gid, nil
 }
 
 func (a *App) buildCandidateHeaders(ctx context.Context, candidate addTaskCandidate) ([]string, error) {
@@ -391,9 +497,13 @@ func redactAssignmentValues(input string) string {
 // This endpoint is optimized for frequent polling (every 1000ms)
 // 优化：从后端 Cache 读取，避免重复调用 Aria2 RPC
 func (a *App) GetActiveTasks() map[string][]rpc.Task {
+	active := monitor.Cache.GetActive()
+	waiting := monitor.Cache.GetWaiting()
+	monitor.HydrateTaskGroups(active)
+	monitor.HydrateTaskGroups(waiting)
 	return map[string][]rpc.Task{
-		"active":  monitor.Cache.GetActive(),
-		"waiting": monitor.Cache.GetWaiting(),
+		"active":  active,
+		"waiting": waiting,
 	}
 }
 
@@ -421,6 +531,12 @@ func stoppedTasksWithHistory(stopped []rpc.Task) []rpc.Task {
 	existingGIDs := make(map[string]struct{}, len(stopped))
 	for i := range stopped {
 		existingGIDs[stopped[i].GID] = struct{}{}
+		if stopped[i].DownloadGroup == nil {
+			stopped[i].DownloadGroup = monitor.Cache.GetTaskGroup(stopped[i].GID)
+			if stopped[i].DownloadGroup == nil {
+				stopped[i].DownloadGroup = monitor.GetStoredTaskGroup(stopped[i].GID)
+			}
+		}
 		if entry, ok := history.Get(stopped[i].GID); ok {
 			backfillStoppedTaskFromHistory(&stopped[i], entry)
 		}
@@ -428,11 +544,17 @@ func stoppedTasksWithHistory(stopped []rpc.Task) []rpc.Task {
 
 	for _, entry := range history.GetMissingByGID(existingGIDs) {
 		stopped = append(stopped, historyEntryToStoppedTask(entry))
+		if entry.DownloadGroup != nil {
+			monitor.RemoveTaskGroup(entry.GID)
+		}
 	}
 	return stopped
 }
 
 func backfillStoppedTaskFromHistory(task *rpc.Task, entry history.HistoryEntry) {
+	if task.DownloadGroup == nil && entry.DownloadGroup != nil {
+		task.DownloadGroup = copyDownloadGroup(entry.DownloadGroup)
+	}
 	if entry.Path != "" && (len(task.Files) == 0 || task.Files[0].Path == "") {
 		var uris []rpc.Uri
 		if len(task.Files) > 0 && len(task.Files[0].Uris) > 0 {
@@ -462,6 +584,7 @@ func historyEntryToStoppedTask(entry history.HistoryEntry) rpc.Task {
 		CompletedLength: entry.CompletedLength,
 		Dir:             entry.Dir,
 		Files:           []rpc.File{{Path: entry.Path, Uris: historySourceURIs(entry.Source)}},
+		DownloadGroup:   copyDownloadGroup(entry.DownloadGroup),
 	}
 }
 
@@ -482,6 +605,8 @@ func isNonZeroLength(value string) bool {
 func (a *App) GetTasks() map[string][]rpc.Task {
 	active := monitor.Cache.GetActive()
 	waiting := monitor.Cache.GetWaiting()
+	monitor.HydrateTaskGroups(active)
+	monitor.HydrateTaskGroups(waiting)
 	var stopped []rpc.Task
 	if config.Current.ShowHistory {
 		stopped = stoppedTasksWithHistory(monitor.Cache.GetStopped())
@@ -500,6 +625,12 @@ func (a *App) GetTaskMetadata(gids []string) map[string]rpc.Task {
 	if err == nil {
 		for _, task := range tasks {
 			if task != nil {
+				if task.DownloadGroup == nil {
+					task.DownloadGroup = monitor.Cache.GetTaskGroup(task.GID)
+					if task.DownloadGroup == nil {
+						task.DownloadGroup = monitor.GetStoredTaskGroup(task.GID)
+					}
+				}
 				result[task.GID] = *task
 			}
 		}
@@ -686,6 +817,8 @@ func (a *App) cleanupRemovedTask(gid string, target removalTarget, deleteFile bo
 	// 这确保 lastStopped 缓存和元数据缓存被清理，防止幽灵任务
 	if mon := monitor.State.GetMonitor(); mon != nil {
 		mon.InvalidateTask(gid)
+	} else {
+		monitor.Cache.InvalidateMetadata(gid)
 	}
 
 	// 5. Physical cleanup

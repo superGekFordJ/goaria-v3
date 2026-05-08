@@ -87,3 +87,83 @@ func TestTaskCache_EnsureMetadataReplacesPollutedEmptyPath(t *testing.T) {
 		t.Fatalf("expected total length %d, got %d", want, got)
 	}
 }
+
+func testDownloadGroup(id string) rpc.DownloadGroup {
+	return rpc.DownloadGroup{
+		ID:         id,
+		Kind:       "batch",
+		Name:       "Batch 2026-05-07 15-04-05",
+		FolderName: "Batch 2026-05-07 15-04-05 " + id,
+		Dir:        "/downloads/" + id,
+		ItemCount:  5,
+		CreatedAt:  1778166245,
+	}
+}
+
+func TestTaskCache_SetTaskGroupEnrichesLiteTaskWithoutValidPath(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	group := testDownloadGroup("dg-cache-lite")
+	cache.SetTaskGroup("gid-group", group)
+
+	if cache.HasValidMetadata("gid-group") {
+		t.Fatal("group-only metadata should not count as valid file metadata")
+	}
+
+	tasks := []rpc.Task{{GID: "gid-group", Status: "active"}}
+	cache.EnrichTasks(tasks)
+
+	if tasks[0].DownloadGroup == nil || tasks[0].DownloadGroup.ID != group.ID {
+		t.Fatalf("expected lite task to receive group metadata, got %#v", tasks[0].DownloadGroup)
+	}
+}
+
+func TestTaskCache_GroupPreservedWhenFullMetadataArrivesWithoutGroup(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	group := testDownloadGroup("dg-cache-full")
+	cache.SetTaskGroup("gid-group", group)
+
+	cache.ensureMetadata(rpc.Task{
+		GID:         "gid-group",
+		Dir:         "/downloads/dg-cache-full",
+		TotalLength: "2048",
+		Files: []rpc.File{{
+			Path: "/downloads/dg-cache-full/file.bin",
+			Uris: []rpc.Uri{{Uri: "https://example.com/file.bin"}},
+		}},
+	})
+
+	meta := cache.GetMetadata("gid-group")
+	if meta == nil || meta.DownloadGroup == nil || meta.DownloadGroup.ID != group.ID {
+		t.Fatalf("expected full metadata to preserve group, got %#v", meta)
+	}
+	if !cache.HasValidMetadata("gid-group") {
+		t.Fatal("expected valid file metadata after full payload")
+	}
+
+	tasks := []rpc.Task{{GID: "gid-group", Status: "active", Dir: "/downloads/dg-cache-full"}}
+	cache.EnrichTasks(tasks)
+	if tasks[0].DownloadGroup == nil || tasks[0].DownloadGroup.ID != group.ID {
+		t.Fatalf("expected enriched task group, got %#v", tasks[0].DownloadGroup)
+	}
+	if len(tasks[0].Files) == 0 || tasks[0].Files[0].Path == "" {
+		t.Fatalf("expected enriched files, got %#v", tasks[0].Files)
+	}
+}
+
+func TestTaskCache_EnsureMetadataStoresIncomingGroupAndInvalidateRemovesIt(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	group := testDownloadGroup("dg-cache-incoming")
+	cache.ensureMetadata(rpc.Task{GID: "gid-incoming", DownloadGroup: &group})
+
+	if cache.HasValidMetadata("gid-incoming") {
+		t.Fatal("incoming group without files should not count as valid file metadata")
+	}
+	if got := cache.GetTaskGroup("gid-incoming"); got == nil || got.ID != group.ID {
+		t.Fatalf("expected incoming group to be cached, got %#v", got)
+	}
+
+	cache.InvalidateMetadata("gid-incoming")
+	if got := cache.GetTaskGroup("gid-incoming"); got != nil {
+		t.Fatalf("expected group to be invalidated with metadata, got %#v", got)
+	}
+}

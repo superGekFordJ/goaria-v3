@@ -8,31 +8,38 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"goaria-v3/internal/rpc"
 )
 
 // HistoryEntry represents a completed download task
 type HistoryEntry struct {
-	GID             string `json:"gid"`
-	Title           string `json:"title"`
-	Dir             string `json:"dir"`
-	Path            string `json:"path"`
-	TotalLength     string `json:"totalLength"`
-	CompletedLength string `json:"completedLength"`
-	CompletedAt     int64  `json:"completedAt"`
-	Source          string `json:"source,omitempty"` // magnet/http
+	GID             string             `json:"gid"`
+	Title           string             `json:"title"`
+	Dir             string             `json:"dir"`
+	Path            string             `json:"path"`
+	TotalLength     string             `json:"totalLength"`
+	CompletedLength string             `json:"completedLength"`
+	CompletedAt     int64              `json:"completedAt"`
+	Source          string             `json:"source,omitempty"` // magnet/http
+	DownloadGroup   *rpc.DownloadGroup `json:"download_group,omitempty"`
 }
 
 var (
-	entries          []HistoryEntry
-	gidIndex         map[string]int
-	sourceIndex      map[string]int
-	mu               sync.RWMutex
-	historyPath      string
-	saveChan         = make(chan struct{}, 1)
-	debounceNanos    atomic.Int64
-	saveTriggerCount atomic.Int64
-	saverOnce        sync.Once
-	SaveEnabled      = true
+	entries             []HistoryEntry
+	gidIndex            map[string]int
+	sourceIndex         map[string]int
+	mu                  sync.RWMutex
+	historyPath         string
+	saveChan            = make(chan struct{}, 1)
+	debounceNanos       atomic.Int64
+	saveTriggerCount    atomic.Int64
+	saverOnce           sync.Once
+	SaveEnabled         = true
+	hooksMu             sync.RWMutex
+	groupRemoveHook     func(string)
+	groupRemoveManyHook func([]string)
+	groupClearHook      func()
 )
 
 func init() {
@@ -57,6 +64,45 @@ func SetSaveEnabled(v bool) {
 	mu.Lock()
 	defer mu.Unlock()
 	SaveEnabled = v
+}
+
+func SetGroupCleanupHooks(remove func(string), removeMany func([]string), clear func()) {
+	hooksMu.Lock()
+	defer hooksMu.Unlock()
+	groupRemoveHook = remove
+	groupRemoveManyHook = removeMany
+	groupClearHook = clear
+}
+
+func notifyGroupRemove(gid string) {
+	hooksMu.RLock()
+	remove := groupRemoveHook
+	hooksMu.RUnlock()
+	if remove != nil {
+		remove(gid)
+	}
+}
+
+func notifyGroupRemoveMany(gids []string) {
+	hooksMu.RLock()
+	removeMany := groupRemoveManyHook
+	hooksMu.RUnlock()
+	if removeMany != nil {
+		removeMany(gids)
+		return
+	}
+	for _, gid := range gids {
+		notifyGroupRemove(gid)
+	}
+}
+
+func notifyGroupClear() {
+	hooksMu.RLock()
+	clear := groupClearHook
+	hooksMu.RUnlock()
+	if clear != nil {
+		clear()
+	}
 }
 
 // DisableSaveForTest disables disk persistence for testing.
@@ -124,6 +170,9 @@ func Add(entry HistoryEntry) {
 
 	// Check if already exists
 	if i, ok := gidIndex[entry.GID]; ok {
+		if entry.DownloadGroup == nil && entries[i].DownloadGroup != nil {
+			entry.DownloadGroup = entries[i].DownloadGroup
+		}
 		// Update sourceIndex if source changes
 		oldSource := entries[i].Source
 		if oldSource != entry.Source {
@@ -164,6 +213,7 @@ func Remove(gid string) {
 	}
 
 	if i, ok := gidIndex[gid]; ok {
+		notifyGroupRemove(gid)
 		// Update sourceIndex
 		oldSource := entries[i].Source
 		if oldSource != "" {
@@ -219,9 +269,11 @@ func RemoveMany(gids []string) {
 	}
 
 	removed := 0
+	removedGIDs := make([]string, 0, len(removeSet))
 	compacted := entries[:0]
 	for _, entry := range entries {
 		if _, ok := removeSet[entry.GID]; ok {
+			removedGIDs = append(removedGIDs, entry.GID)
 			removed++
 			continue
 		}
@@ -230,6 +282,7 @@ func RemoveMany(gids []string) {
 	if removed == 0 {
 		return
 	}
+	notifyGroupRemoveMany(removedGIDs)
 
 	for i := len(compacted); i < len(entries); i++ {
 		entries[i] = HistoryEntry{}
@@ -326,6 +379,7 @@ func Clear() {
 	entries = []HistoryEntry{}
 	gidIndex = make(map[string]int)
 	sourceIndex = make(map[string]int)
+	notifyGroupClear()
 	triggerSave()
 }
 

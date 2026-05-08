@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -17,6 +19,7 @@ import (
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/extractor"
 	"goaria-v3/internal/history"
+	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
 )
 
@@ -54,12 +57,13 @@ func (d *fakeAddTaskDispatcher) BuildAria2Headers(ctx context.Context, item extr
 }
 
 type extractorRPCRecorder struct {
-	mu       sync.Mutex
-	methods  map[string]int
-	addURIs  []string
-	options  []map[string]any
-	requests []batchAddRPCRequest
-	failURIs map[string]bool
+	mu              sync.Mutex
+	methods         map[string]int
+	addURIs         []string
+	options         []map[string]any
+	requests        []batchAddRPCRequest
+	failURIs        map[string]bool
+	saveSessionHook func()
 }
 
 func newExtractorRPCRecorder() *extractorRPCRecorder {
@@ -111,6 +115,7 @@ func setupAppTaskExtractorTestWithRecorder(t *testing.T, snapshots batchAddRPCSn
 	originalSaveEnabled := history.SaveEnabled
 	history.DisableSaveForTest()
 	history.Clear()
+	monitor.ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
 	config.Current = &config.AppConfig{
 		DownloadDir:            t.TempDir(),
 		SmartThreadMode:        false,
@@ -144,6 +149,9 @@ func setupAppTaskExtractorTestWithRecorder(t *testing.T, snapshots batchAddRPCSn
 			}
 			_ = json.NewEncoder(w).Encode(batchAddSuccessResponse(fmt.Sprintf("gid-%d", recorder.count("aria2.addUri"))))
 		case "aria2.saveSession":
+			if recorder.saveSessionHook != nil {
+				recorder.saveSessionHook()
+			}
 			_ = json.NewEncoder(w).Encode(batchAddSuccessResponse("OK"))
 		default:
 			_ = json.NewEncoder(w).Encode(batchAddSuccessResponse("OK"))
@@ -165,6 +173,7 @@ func setupAppTaskExtractorTestWithRecorder(t *testing.T, snapshots batchAddRPCSn
 	t.Cleanup(func() {
 		server.Close()
 		history.Clear()
+		monitor.ResetTaskGroupStoreForTest("", true)
 		history.SetSaveEnabled(originalSaveEnabled)
 		config.Current = originalConfig
 	})
@@ -244,6 +253,78 @@ func TestAddUri_ExtractorSubmitsResolvedItemWithOutAndHeaders(t *testing.T) {
 	}
 	if got := options["header"]; !reflect.DeepEqual(got, []any{"Authorization: Bearer test-token", "User-Agent: GoAria-Test"}) {
 		t.Fatalf("expected header list, got %#v", got)
+	}
+}
+
+func TestAddUri_MultiItemExtractorCreatesCollectionGroupFolder(t *testing.T) {
+	shareURL := "https://fixture.invalid/d/collection-secret?token=synthetic"
+	directOne := "https://download.fixture.invalid/one.bin"
+	directTwo := "https://download.fixture.invalid/two.bin"
+	items := []extractor.ResolvedAddItem{
+		{SourceURL: shareURL, PackID: "fixturepack", URL: directOne, Filename: "one.bin", ID: "one"},
+		{SourceURL: shareURL, PackID: "fixturepack", URL: directTwo, Filename: "two.bin", ID: "two"},
+	}
+	dispatcher := &fakeAddTaskDispatcher{
+		resolutions: map[string]extractor.AddTaskResolution{shareURL: {Matched: true, SourceURL: shareURL, PackID: "fixturepack", Items: items}},
+	}
+	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+	baseDir := config.Current.DownloadDir
+
+	result := app.AddUri(shareURL)
+
+	if result != "success" {
+		t.Fatalf("AddUri() = %q, want success", result)
+	}
+	if got := recorder.addURIsSnapshot(); !reflect.DeepEqual(got, []string{directOne, directTwo}) {
+		t.Fatalf("expected resolved direct URL adds, got %#v", got)
+	}
+	options := recorder.optionsSnapshot()
+	if len(options) != 2 {
+		t.Fatalf("expected two options, got %#v", options)
+	}
+	groupDir, ok := options[0]["dir"].(string)
+	if !ok || groupDir == "" || groupDir == baseDir {
+		t.Fatalf("expected grouped dir under %q, got %#v", baseDir, options[0]["dir"])
+	}
+	if options[1]["dir"] != groupDir {
+		t.Fatalf("expected same group dir, got %#v", options)
+	}
+	if filepath.Dir(groupDir) != baseDir {
+		t.Fatalf("expected group dir under %q, got %q", baseDir, groupDir)
+	}
+	if info, err := os.Stat(groupDir); err != nil || !info.IsDir() {
+		t.Fatalf("expected group dir to exist, info=%#v err=%v", info, err)
+	}
+	if options[0]["out"] != "one.bin" || options[1]["out"] != "two.bin" {
+		t.Fatalf("expected basename-only out options, got %#v", options)
+	}
+	assertNoPathOut(t, options[0]["out"])
+	assertGroupPathGeneric(t, groupDir)
+}
+
+func TestAddUri_GroupPersistsBeforeSaveSessionForFastCompleteRace(t *testing.T) {
+	shareURL := "https://fixture.invalid/d/fast-complete"
+	directOne := "https://download.fixture.invalid/fast-one.bin"
+	directTwo := "https://download.fixture.invalid/fast-two.bin"
+	items := []extractor.ResolvedAddItem{
+		{SourceURL: shareURL, PackID: "fixturepack", URL: directOne, Filename: "one.bin", ID: "one"},
+		{SourceURL: shareURL, PackID: "fixturepack", URL: directTwo, Filename: "two.bin", ID: "two"},
+	}
+	dispatcher := &fakeAddTaskDispatcher{resolutions: map[string]extractor.AddTaskResolution{shareURL: {Matched: true, SourceURL: shareURL, PackID: "fixturepack", Items: items}}}
+	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+	recorder.saveSessionHook = func() {
+		if got := monitor.GetStoredTaskGroup("gid-1"); got == nil {
+			t.Fatalf("expected group persisted before first saveSession")
+		}
+	}
+
+	result := app.AddUri(shareURL)
+
+	if result != "success" {
+		t.Fatalf("AddUri() = %q, want success", result)
+	}
+	if got := monitor.GetStoredTaskGroup("gid-1"); got == nil || got.Kind != "collection" {
+		t.Fatalf("expected persisted collection group, got %#v", got)
 	}
 }
 
@@ -344,6 +425,84 @@ func TestBatchAddUri_ExtractorFailedAddDoesNotPoisonResolvedSeenSet(t *testing.T
 	}
 }
 
+func TestBatchAddUri_SingleItemExtractorCanUseAdHocBatchGroup(t *testing.T) {
+	shareURL := "https://fixture.invalid/d/single"
+	directURLs := []string{
+		"https://download.fixture.invalid/single.bin",
+		"https://example.com/a.bin",
+		"https://example.com/b.bin",
+		"https://example.com/c.bin",
+		"https://example.com/d.bin",
+	}
+	dispatcher := &fakeAddTaskDispatcher{resolutions: map[string]extractor.AddTaskResolution{shareURL: singleItemResolution(shareURL, directURLs[0])}}
+	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+	baseDir := config.Current.DownloadDir
+
+	result := app.BatchAddUri([]string{shareURL, directURLs[1], directURLs[2], directURLs[3], directURLs[4]})
+
+	assertBatchAddStrings(t, "succeeded", result.Succeeded, directURLs)
+	if len(result.Groups) != 1 || result.Groups[0].Kind != "batch" {
+		t.Fatalf("expected one batch group, got %#v", result.Groups)
+	}
+	options := recorder.optionsSnapshot()
+	if len(options) != 5 {
+		t.Fatalf("expected five add options, got %#v", options)
+	}
+	groupDir := result.Groups[0].Dir
+	if filepath.Dir(groupDir) != baseDir {
+		t.Fatalf("expected group dir under %q, got %q", baseDir, groupDir)
+	}
+	for _, option := range options {
+		if option["dir"] != groupDir {
+			t.Fatalf("expected all candidates in batch group dir %q, got %#v", groupDir, options)
+		}
+	}
+}
+
+func TestBatchAddUri_MixedCollectionAndBatchGroupsDoNotPollute(t *testing.T) {
+	collectionShare := "https://fixture.invalid/d/collection"
+	directOne := "https://download.fixture.invalid/collection-one.bin"
+	directTwo := "https://download.fixture.invalid/collection-two.bin"
+	directInputs := []string{
+		"https://example.com/a.bin",
+		"https://example.com/b.bin",
+		"https://example.com/c.bin",
+		"https://example.com/d.bin",
+		"https://example.com/e.bin",
+	}
+	items := []extractor.ResolvedAddItem{
+		{SourceURL: collectionShare, PackID: "fixturepack", URL: directOne, Filename: "one.bin", ID: "one"},
+		{SourceURL: collectionShare, PackID: "fixturepack", URL: directTwo, Filename: "two.bin", ID: "two"},
+	}
+	dispatcher := &fakeAddTaskDispatcher{resolutions: map[string]extractor.AddTaskResolution{collectionShare: {Matched: true, SourceURL: collectionShare, PackID: "fixturepack", Items: items}}}
+	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+
+	input := append([]string{collectionShare}, directInputs...)
+	result := app.BatchAddUri(input)
+
+	if len(result.Groups) != 2 {
+		t.Fatalf("expected collection and batch groups, got %#v", result.Groups)
+	}
+	groupsByKind := map[string]rpc.DownloadGroup{}
+	for _, group := range result.Groups {
+		groupsByKind[group.Kind] = group
+	}
+	collectionGroup := groupsByKind["collection"]
+	batchGroup := groupsByKind["batch"]
+	if collectionGroup.Dir == "" || batchGroup.Dir == "" || collectionGroup.Dir == batchGroup.Dir {
+		t.Fatalf("expected distinct collection/batch groups, got %#v", result.Groups)
+	}
+	options := recorder.optionsSnapshot()
+	if options[0]["dir"] != collectionGroup.Dir || options[1]["dir"] != collectionGroup.Dir {
+		t.Fatalf("expected collection items in collection dir, got %#v", options[:2])
+	}
+	for _, option := range options[2:] {
+		if option["dir"] != batchGroup.Dir {
+			t.Fatalf("expected direct items in batch dir %q, got %#v", batchGroup.Dir, options)
+		}
+	}
+}
+
 func TestAddUri_ExtractorSmartThreadDoesNotUnauthenticatedHEADHeaderedItem(t *testing.T) {
 	headRequests := 0
 	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -387,3 +546,25 @@ func TestAddUri_ExtractorSmartThreadDoesNotUnauthenticatedHEADHeaderedItem(t *te
 }
 
 var _ extractorAddTaskDispatcher = (*fakeAddTaskDispatcher)(nil)
+
+func assertNoPathOut(t *testing.T, value any) {
+	t.Helper()
+	out, ok := value.(string)
+	if !ok || out == "" {
+		t.Fatalf("expected non-empty string out, got %#v", value)
+	}
+	if out != filepath.Base(out) || strings.Contains(out, "..") || filepath.IsAbs(out) || strings.ContainsAny(out, `/\\`) {
+		t.Fatalf("expected basename-only out, got %q", out)
+	}
+}
+
+func assertGroupPathGeneric(t *testing.T, dir string) {
+	t.Helper()
+	name := filepath.Base(dir)
+	lower := strings.ToLower(name)
+	for _, forbidden := range []string{"gofile", "ibb", "collection-secret", "token", "synthetic", "cdn", "example"} {
+		if strings.Contains(lower, forbidden) {
+			t.Fatalf("group folder %q contains forbidden marker %q", name, forbidden)
+		}
+	}
+}

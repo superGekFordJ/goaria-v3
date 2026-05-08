@@ -425,3 +425,47 @@ func TestTaskTracker_EmptyPathNotOverwritten(t *testing.T) {
 			tracked.FilePath, originalPath)
 	}
 }
+
+func TestTaskTracker_GroupPreservedAcrossLiteAndStoppedTransitions(t *testing.T) {
+	tracker := NewTaskTracker()
+	group := testDownloadGroup("dg-tracker")
+	active := createEnrichedTask("gid-group", "active")
+	active.DownloadGroup = &group
+
+	tracker.Update([]rpc.Task{active}, nil, nil)
+	tracked := tracker.tasks["gid-group"]
+	if tracked == nil || tracked.DownloadGroup == nil || tracked.DownloadGroup.ID != group.ID {
+		t.Fatalf("expected active group to be tracked, got %#v", tracked)
+	}
+
+	lite := createLiteTask("gid-group", "active")
+	tracker.Update([]rpc.Task{lite}, nil, nil)
+	if tracked.DownloadGroup == nil || tracked.DownloadGroup.ID != group.ID {
+		t.Fatalf("expected lite task not to clear group, got %#v", tracked.DownloadGroup)
+	}
+
+	liteStopped := createLiteTask("gid-group", "complete")
+	completed := tracker.Update(nil, nil, []rpc.Task{liteStopped})
+	if len(completed) != 1 {
+		t.Fatalf("expected one completed task, got %d", len(completed))
+	}
+	if completed[0].DownloadGroup == nil || completed[0].DownloadGroup.ID != group.ID {
+		t.Fatalf("expected completed task to preserve group, got %#v", completed[0].DownloadGroup)
+	}
+}
+
+func TestTaskTracker_SetTaskGroupBeforeTaskAppears(t *testing.T) {
+	tracker := NewTaskTracker()
+	group := testDownloadGroup("dg-tracker-placeholder")
+	tracker.SetTaskGroup("gid-placeholder", group)
+
+	if got := tracker.GetTaskGroup("gid-placeholder"); got == nil || got.ID != group.ID {
+		t.Fatalf("expected placeholder group, got %#v", got)
+	}
+
+	active := createLiteTask("gid-placeholder", "active")
+	tracker.Update([]rpc.Task{active}, nil, nil)
+	if got := tracker.GetTaskGroup("gid-placeholder"); got == nil || got.ID != group.ID {
+		t.Fatalf("expected group to survive lite update, got %#v", got)
+	}
+}

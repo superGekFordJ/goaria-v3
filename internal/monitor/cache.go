@@ -31,13 +31,14 @@ type TaskCache struct {
 
 // TaskMetadata 任务元数据（预取缓存）
 type TaskMetadata struct {
-	GID         string
-	Title       string   // 文件名
-	Dir         string   // 下载目录
-	TotalLength int64    // 总大小
-	Files       []string // 文件路径列表
-	SourceURL   string   // 来源 URL
-	FetchedAt   time.Time
+	GID           string
+	Title         string   // 文件名
+	Dir           string   // 下载目录
+	TotalLength   int64    // 总大小
+	Files         []string // 文件路径列表
+	SourceURL     string   // 来源 URL
+	DownloadGroup *rpc.DownloadGroup
+	FetchedAt     time.Time
 }
 
 func metadataPathValid(path string) bool {
@@ -54,6 +55,14 @@ func metadataHasValidPath(meta *TaskMetadata) bool {
 		}
 	}
 	return false
+}
+
+func copyDownloadGroup(group *rpc.DownloadGroup) *rpc.DownloadGroup {
+	if group == nil {
+		return nil
+	}
+	copy := *group
+	return &copy
 }
 
 // Cache 全局缓存实例
@@ -77,7 +86,21 @@ func (c *TaskCache) UpdateFromAria2(active, waiting, stopped []rpc.Task) {
 // ensureMetadata 确保任务元数据已缓存（预取）
 // 注意：仅当任务包含有效的文件信息时才缓存，避免 Lite 任务污染缓存
 func (c *TaskCache) ensureMetadata(task rpc.Task) {
-	if metadataHasValidPath(c.metadata[task.GID]) {
+	if c.metadata == nil {
+		c.metadata = make(map[string]*TaskMetadata)
+	}
+	meta := c.metadata[task.GID]
+	if task.DownloadGroup != nil {
+		if meta == nil {
+			meta = &TaskMetadata{GID: task.GID, FetchedAt: time.Now()}
+			c.metadata[task.GID] = meta
+		}
+		meta.DownloadGroup = copyDownloadGroup(task.DownloadGroup)
+		if meta.FetchedAt.IsZero() {
+			meta.FetchedAt = time.Now()
+		}
+	}
+	if metadataHasValidPath(meta) {
 		return
 	}
 
@@ -96,11 +119,17 @@ func (c *TaskCache) ensureMetadata(task rpc.Task) {
 		return
 	}
 
-	meta := &TaskMetadata{
-		GID:         task.GID,
-		Dir:         task.Dir,
-		TotalLength: parseInt64(task.TotalLength),
-		FetchedAt:   time.Now(),
+	group := copyDownloadGroup(task.DownloadGroup)
+	if group == nil && meta != nil {
+		group = copyDownloadGroup(meta.DownloadGroup)
+	}
+
+	meta = &TaskMetadata{
+		GID:           task.GID,
+		Dir:           task.Dir,
+		TotalLength:   parseInt64(task.TotalLength),
+		DownloadGroup: group,
+		FetchedAt:     time.Now(),
 	}
 
 	meta.Title = filepath.Base(validFiles[0].Path)
@@ -150,6 +179,11 @@ func (c *TaskCache) EnrichTasks(tasks []rpc.Task) {
 
 	for i := range tasks {
 		meta := c.metadata[tasks[i].GID]
+		if meta != nil && meta.DownloadGroup != nil {
+			tasks[i].DownloadGroup = copyDownloadGroup(meta.DownloadGroup)
+		} else if tasks[i].DownloadGroup == nil {
+			tasks[i].DownloadGroup = GetStoredTaskGroup(tasks[i].GID)
+		}
 		if metadataHasValidPath(meta) {
 			tasks[i].Title = meta.Title
 			// 构造一个包含首个文件信息的 Files 列表，满足前端和 Tracker 的基本需求
@@ -175,6 +209,39 @@ func (c *TaskCache) EnrichTasks(tasks []rpc.Task) {
 	}
 }
 
+func (c *TaskCache) SetTaskGroup(gid string, group rpc.DownloadGroup) {
+	gid = strings.TrimSpace(gid)
+	if gid == "" || group.ID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.metadata == nil {
+		c.metadata = make(map[string]*TaskMetadata)
+	}
+	meta := c.metadata[gid]
+	if meta == nil {
+		meta = &TaskMetadata{GID: gid, FetchedAt: time.Now()}
+		c.metadata[gid] = meta
+	}
+	meta.DownloadGroup = copyDownloadGroup(&group)
+}
+
+func (c *TaskCache) RegisterTaskGroup(gid string, group rpc.DownloadGroup) {
+	c.SetTaskGroup(gid, group)
+	RegisterTaskGroup(gid, group)
+}
+
+func (c *TaskCache) GetTaskGroup(gid string) *rpc.DownloadGroup {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	meta := c.metadata[gid]
+	if meta == nil || meta.DownloadGroup == nil {
+		return nil
+	}
+	return copyDownloadGroup(meta.DownloadGroup)
+}
+
 // HasValidMetadata 检查任务是否有有效的元数据（包含文件信息）
 // 用于检测被污染的缓存条目并触发重试
 func (c *TaskCache) HasValidMetadata(gid string) bool {
@@ -188,6 +255,7 @@ func (c *TaskCache) InvalidateMetadata(gid string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.metadata, gid)
+	RemoveTaskGroup(gid)
 }
 
 func (c *TaskCache) PrefetchMetadataMulti(gids []string) {
@@ -244,6 +312,7 @@ func (c *TaskCache) CleanupMetadata(activeGids map[string]bool) {
 	for gid := range c.metadata {
 		if !activeGids[gid] {
 			delete(c.metadata, gid)
+			RemoveTaskGroup(gid)
 		}
 	}
 }

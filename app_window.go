@@ -267,17 +267,16 @@ type FullSnapshot struct {
 func (a *App) GetFullSnapshot() FullSnapshot {
 	snapshot := FullSnapshot{}
 
-	// 获取任务列表
-	active, _ := rpc.TellActive()
-	waiting, _ := rpc.TellWaiting(0, 50)
-
-	snapshot.Tasks.Active = active
-	snapshot.Tasks.Waiting = waiting
+	// 获取任务列表（fresh RPC reads keep headless -> window restore current while backend still hydrates download_group）
+	snapshot.Tasks.Active, _ = rpc.TellActive()
+	snapshot.Tasks.Waiting, _ = rpc.TellWaiting(0, 50)
+	monitor.HydrateTaskGroups(snapshot.Tasks.Active)
+	monitor.HydrateTaskGroups(snapshot.Tasks.Waiting)
 
 	// 仅在显示历史时获取 stopped
 	if config.Current.ShowHistory {
 		stopped, _ := rpc.TellStopped(0, 50)
-		snapshot.Tasks.Stopped = stopped
+		snapshot.Tasks.Stopped = stoppedTasksWithHistory(stopped)
 	}
 
 	// 获取托盘状态

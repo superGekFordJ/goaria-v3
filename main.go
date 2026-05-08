@@ -54,6 +54,7 @@ func main() {
 
 	history.Load()
 	speedstats.Load()
+	monitor.LoadTaskGroups()
 
 	// Create the App service for bindings and fail closed on invalid required embedded packs
 	// before starting aria2, so extractor startup failure cannot leave the daemon running.

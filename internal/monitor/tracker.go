@@ -26,9 +26,10 @@ type TrackedTask struct {
 	IsExploration bool
 
 	// 文件信息（用于历史记录）
-	FilePath  string
-	Dir       string
-	SourceURL string
+	FilePath      string
+	Dir           string
+	SourceURL     string
+	DownloadGroup *rpc.DownloadGroup
 }
 
 // TaskTracker 后端任务追踪器
@@ -135,6 +136,9 @@ func (t *TaskTracker) updateActiveTask(task rpc.Task) {
 			tracked.SourceURL = task.Files[0].Uris[0].Uri
 		}
 	}
+	if task.DownloadGroup != nil {
+		tracked.DownloadGroup = copyDownloadGroup(task.DownloadGroup)
+	}
 
 	// 速度采样（仅 >50MB 文件）
 	speed := parseInt64(task.DownloadSpeed)
@@ -181,6 +185,7 @@ func (t *TaskTracker) createTrackedTask(task rpc.Task) *TrackedTask {
 		TotalLength:     parseInt64(task.TotalLength),
 		CompletedLength: parseInt64(task.CompletedLength),
 		Dir:             task.Dir,
+		DownloadGroup:   copyDownloadGroup(task.DownloadGroup),
 		CreatedAt:       time.Now(),
 	}
 
@@ -201,6 +206,9 @@ func (t *TaskTracker) fillTaskInfo(tracked *TrackedTask, task rpc.Task) {
 	tracked.TotalLength = parseInt64(task.TotalLength)
 	tracked.CompletedLength = parseInt64(task.CompletedLength)
 	tracked.Dir = task.Dir
+	if task.DownloadGroup != nil {
+		tracked.DownloadGroup = copyDownloadGroup(task.DownloadGroup)
+	}
 
 	// 仅当新信息有效时才覆盖（避免用空值覆盖已有值）
 	if len(task.Files) > 0 && task.Files[0].Path != "" {
@@ -250,6 +258,27 @@ func (t *TaskTracker) GetThreadInfo(gid string) (threadCount int, isExploration 
 		return tracked.ThreadCount, tracked.IsExploration, true
 	}
 	return 0, false, false
+}
+
+func (t *TaskTracker) SetTaskGroup(gid string, group rpc.DownloadGroup) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	tracked := t.tasks[gid]
+	if tracked == nil {
+		tracked = &TrackedTask{GID: gid, CreatedAt: time.Now()}
+		t.tasks[gid] = tracked
+	}
+	tracked.DownloadGroup = copyDownloadGroup(&group)
+}
+
+func (t *TaskTracker) GetTaskGroup(gid string) *rpc.DownloadGroup {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	tracked := t.tasks[gid]
+	if tracked == nil {
+		return nil
+	}
+	return copyDownloadGroup(tracked.DownloadGroup)
 }
 
 // RemoveTask 从追踪器中移除任务

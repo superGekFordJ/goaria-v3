@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"goaria-v3/internal/rpc"
 )
 
 func setupTest(t *testing.T) string {
@@ -456,5 +458,94 @@ func TestContainsSources(t *testing.T) {
 	}
 	if got := ContainsSources(nil); len(got) != 0 {
 		t.Fatalf("expected nil input to return empty map, got %#v", got)
+	}
+}
+
+func historyTestDownloadGroup(id string) *rpc.DownloadGroup {
+	return &rpc.DownloadGroup{
+		ID:         id,
+		Kind:       "collection",
+		Name:       "Collection 2026-05-07 15-04-05",
+		FolderName: "Collection 2026-05-07 15-04-05 " + id,
+		Dir:        filepath.Join("downloads", id),
+		ItemCount:  2,
+		CreatedAt:  1778166245,
+	}
+}
+
+func TestHistoryDownloadGroupAddLoadUpdateAndRemoveMany(t *testing.T) {
+	historyFile := setupTest(t)
+	SetSaveEnabled(true)
+	defer DisableSaveForTest()
+
+	group := historyTestDownloadGroup("dg-history")
+	Add(HistoryEntry{GID: "gid-group", Title: "Grouped", Source: "https://example.com/group.bin", DownloadGroup: group})
+	Add(HistoryEntry{GID: "gid-other", Title: "Other", Source: "https://example.com/other.bin"})
+
+	if entry, ok := Get("gid-group"); !ok || entry.DownloadGroup == nil || entry.DownloadGroup.ID != group.ID {
+		t.Fatalf("expected group after Add, got %#v ok=%v", entry, ok)
+	}
+
+	Add(HistoryEntry{GID: "gid-group", Title: "Grouped Updated", Source: "https://example.com/group-updated.bin"})
+	entry, ok := Get("gid-group")
+	if !ok || entry.DownloadGroup == nil || entry.DownloadGroup.ID != group.ID {
+		t.Fatalf("expected update without group to preserve existing group, got %#v ok=%v", entry, ok)
+	}
+	if ContainsSource("https://example.com/group.bin") || !ContainsSource("https://example.com/group-updated.bin") {
+		t.Fatalf("sourceIndex not updated correctly after grouped update: %#v", sourceIndex)
+	}
+
+	if err := Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	mu.Lock()
+	entries = nil
+	gidIndex = nil
+	sourceIndex = nil
+	mu.Unlock()
+	Load()
+	entry, ok = Get("gid-group")
+	if !ok || entry.DownloadGroup == nil || entry.DownloadGroup.ID != group.ID {
+		t.Fatalf("expected group after Load, got %#v ok=%v", entry, ok)
+	}
+
+	RemoveMany([]string{"gid-group"})
+	if _, ok := Get("gid-group"); ok {
+		t.Fatal("expected grouped entry removed")
+	}
+	if ContainsSource("https://example.com/group-updated.bin") {
+		t.Fatal("expected grouped source removed from sourceIndex")
+	}
+	if !ContainsSource("https://example.com/other.bin") {
+		t.Fatal("expected unrelated source to remain")
+	}
+
+	if _, err := os.Stat(historyFile); err != nil {
+		t.Fatalf("expected history file to remain readable: %v", err)
+	}
+
+	Clear()
+	if len(GetAll()) != 0 || len(sourceIndex) != 0 {
+		t.Fatalf("expected Clear to remove entries and sourceIndex, entries=%#v sourceIndex=%#v", GetAll(), sourceIndex)
+	}
+}
+
+func TestHistoryLoadOldEntriesWithoutDownloadGroup(t *testing.T) {
+	historyFile := setupTest(t)
+	oldJSON := `[{"gid":"old-gid","title":"Old","source":"https://example.com/old.bin"}]`
+	if err := os.WriteFile(historyFile, []byte(oldJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	Load()
+	entry, ok := Get("old-gid")
+	if !ok {
+		t.Fatal("expected old entry to load")
+	}
+	if entry.DownloadGroup != nil {
+		t.Fatalf("expected old entry group nil, got %#v", entry.DownloadGroup)
+	}
+	if !ContainsSource("https://example.com/old.bin") {
+		t.Fatal("expected sourceIndex rebuilt for old entry")
 	}
 }

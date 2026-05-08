@@ -53,17 +53,28 @@ type File struct {
 	Uris []Uri  `json:"uris"`
 }
 
+type DownloadGroup struct {
+	ID         string `json:"id"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	FolderName string `json:"folder_name"`
+	Dir        string `json:"dir"`
+	ItemCount  int    `json:"item_count"`
+	CreatedAt  int64  `json:"created_at"`
+}
+
 type Task struct {
-	GID             string `json:"gid"`
-	Title           string `json:"title,omitempty"`
-	Status          string `json:"status"`
-	TotalLength     string `json:"totalLength"`
-	CompletedLength string `json:"completedLength"`
-	DownloadSpeed   string `json:"downloadSpeed"`
-	ErrorCode       string `json:"errorCode"`
-	ErrorMessage    string `json:"errorMessage"`
-	Dir             string `json:"dir"`
-	Files           []File `json:"files"`
+	GID             string         `json:"gid"`
+	Title           string         `json:"title,omitempty"`
+	Status          string         `json:"status"`
+	TotalLength     string         `json:"totalLength"`
+	CompletedLength string         `json:"completedLength"`
+	DownloadSpeed   string         `json:"downloadSpeed"`
+	ErrorCode       string         `json:"errorCode"`
+	ErrorMessage    string         `json:"errorMessage"`
+	Dir             string         `json:"dir"`
+	Files           []File         `json:"files"`
+	DownloadGroup   *DownloadGroup `json:"download_group,omitempty"`
 }
 
 type TaskProgress struct {
@@ -79,6 +90,8 @@ type AddURIOptions struct {
 	Split        int
 	MinSplitSize int64
 }
+
+type AddURIHook func(gid string) error
 
 func (t Task) GetTitle() string {
 	if len(t.Files) > 0 && t.Files[0].Path != "" {
@@ -124,6 +137,10 @@ func AddUriWithOptions(url string, downloadDir string, split int, minSplitSize i
 }
 
 func AddUriWithAria2Options(url string, options AddURIOptions) (string, error) {
+	return AddUriWithAria2OptionsHook(url, options, nil)
+}
+
+func AddUriWithAria2OptionsHook(url string, options AddURIOptions, beforeSave AddURIHook) (string, error) {
 	aria2Options, err := buildAddURIOptions(options)
 	if err != nil {
 		return "", err
@@ -139,6 +156,11 @@ func AddUriWithAria2Options(url string, options AddURIOptions) (string, error) {
 	gid, err := parseAddURIResponse(resp)
 	if err != nil {
 		return "", err
+	}
+	if beforeSave != nil && gid != "" {
+		if err := beforeSave(gid); err != nil {
+			return "", err
+		}
 	}
 	ForceSaveSession()
 

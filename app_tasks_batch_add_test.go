@@ -7,12 +7,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/history"
+	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
 )
 
@@ -31,6 +35,8 @@ type batchAddRPCCounter struct {
 	mu      sync.Mutex
 	methods map[string]int
 	addURIs []string
+	options []map[string]any
+	failAll bool
 }
 
 func newBatchAddRPCCounter() *batchAddRPCCounter {
@@ -52,6 +58,12 @@ func (c *batchAddRPCCounter) recordAddURI(uri string) {
 	c.addURIs = append(c.addURIs, uri)
 }
 
+func (c *batchAddRPCCounter) recordOptions(options map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.options = append(c.options, options)
+}
+
 func (c *batchAddRPCCounter) count(method string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -69,6 +81,14 @@ func (c *batchAddRPCCounter) addURIsSnapshot() []string {
 	defer c.mu.Unlock()
 	result := make([]string, len(c.addURIs))
 	copy(result, c.addURIs)
+	return result
+}
+
+func (c *batchAddRPCCounter) optionsSnapshot() []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	result := make([]map[string]any, len(c.options))
+	copy(result, c.options)
 	return result
 }
 
@@ -93,6 +113,7 @@ func setupAppTaskBatchAddTest(t *testing.T, snapshots batchAddRPCSnapshots) (*Ap
 	originalConfig := config.Current
 	originalSaveEnabled := history.SaveEnabled
 
+	monitor.ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
 	history.DisableSaveForTest()
 	history.Clear()
 	config.Current = &config.AppConfig{
@@ -119,7 +140,13 @@ func setupAppTaskBatchAddTest(t *testing.T, snapshots batchAddRPCSnapshots) (*Ap
 		case "aria2.tellStopped":
 			_ = json.NewEncoder(w).Encode(batchAddSuccessResponse(batchAddTaskListResult(snapshots.stopped)))
 		case "aria2.addUri":
-			counter.recordAddURI(batchAddURLParam(req.Params))
+			uri, options := batchAddParams(req.Params)
+			counter.recordAddURI(uri)
+			counter.recordOptions(options)
+			if counter.failAll {
+				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": "goaria", "error": map[string]any{"code": 1, "message": "mock add failure"}})
+				return
+			}
 			_ = json.NewEncoder(w).Encode(batchAddSuccessResponse(fmt.Sprintf("gid-%d", counter.addURICount())))
 		case "aria2.saveSession":
 			_ = json.NewEncoder(w).Encode(batchAddSuccessResponse("OK"))
@@ -143,6 +170,7 @@ func setupAppTaskBatchAddTest(t *testing.T, snapshots batchAddRPCSnapshots) (*Ap
 	t.Cleanup(func() {
 		server.Close()
 		history.Clear()
+		monitor.ResetTaskGroupStoreForTest("", true)
 		history.SetSaveEnabled(originalSaveEnabled)
 		config.Current = originalConfig
 	})
@@ -150,14 +178,18 @@ func setupAppTaskBatchAddTest(t *testing.T, snapshots batchAddRPCSnapshots) (*Ap
 	return NewApp(), counter
 }
 
-func batchAddURLParam(params []json.RawMessage) string {
+func batchAddParams(params []json.RawMessage) (string, map[string]any) {
 	for _, param := range params {
 		var urls []string
 		if err := json.Unmarshal(param, &urls); err == nil && len(urls) > 0 {
-			return urls[0]
+			options := map[string]any{}
+			if len(params) > 0 {
+				_ = json.Unmarshal(params[len(params)-1], &options)
+			}
+			return urls[0], options
 		}
 	}
-	return ""
+	return "", nil
 }
 
 func taskWithSourceURL(gid string, source string) rpc.Task {
@@ -183,6 +215,18 @@ func containsString(values []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func assertGroupNameIsGeneric(t *testing.T, group rpc.DownloadGroup) {
+	t.Helper()
+	for _, value := range []string{group.ID, group.Name, group.FolderName} {
+		lower := strings.ToLower(value)
+		for _, forbidden := range []string{"gofile", "ibb", "example.com", "token", "share", "?", "http://", "https://"} {
+			if strings.Contains(lower, forbidden) {
+				t.Fatalf("group metadata %q contains forbidden marker %q: %#v", value, forbidden, group)
+			}
+		}
+	}
 }
 
 func TestBatchAddUri_DeduplicatesHistorySourceWithoutAddUri(t *testing.T) {
@@ -264,5 +308,183 @@ func TestBatchAddUri_TruncatesAt100BeforeProcessing(t *testing.T) {
 	}
 	if _, ok := result.Errors[urls[100]]; ok {
 		t.Fatalf("expected 101st URL %q to be absent from errors", urls[100])
+	}
+}
+
+func TestBatchAddUri_FourUniqueAddableDirectURLsDoNotCreateGroup(t *testing.T) {
+	app, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	baseDir := config.Current.DownloadDir
+	urls := []string{
+		"https://example.com/one.bin",
+		"https://example.com/two.bin",
+		"https://example.com/three.bin",
+		"https://example.com/four.bin",
+	}
+
+	result := app.BatchAddUri(urls)
+
+	assertBatchAddStrings(t, "succeeded", result.Succeeded, urls)
+	if len(result.Groups) != 0 {
+		t.Fatalf("expected no groups, got %#v", result.Groups)
+	}
+	for _, options := range counter.optionsSnapshot() {
+		if options["dir"] != baseDir {
+			t.Fatalf("expected direct dir %q, got %#v", baseDir, options["dir"])
+		}
+	}
+}
+
+func TestBatchAddUri_FiveUniqueAddableDirectURLsCreateBatchGroupFolder(t *testing.T) {
+	app, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	baseDir := config.Current.DownloadDir
+	urls := []string{
+		"https://example.com/one.bin",
+		"https://example.com/two.bin",
+		"https://example.com/three.bin",
+		"https://example.com/four.bin",
+		"https://example.com/five.bin",
+	}
+
+	result := app.BatchAddUri(urls)
+
+	assertBatchAddStrings(t, "succeeded", result.Succeeded, urls)
+	if len(result.Groups) != 1 {
+		t.Fatalf("expected one batch group, got %#v", result.Groups)
+	}
+	group := result.Groups[0]
+	if group.Kind != "batch" || group.ItemCount != 5 {
+		t.Fatalf("unexpected group metadata: %#v", group)
+	}
+	if filepath.Dir(group.Dir) != baseDir {
+		t.Fatalf("expected group under base dir %q, got %q", baseDir, group.Dir)
+	}
+	if info, err := os.Stat(group.Dir); err != nil || !info.IsDir() {
+		t.Fatalf("expected group dir to exist, info=%#v err=%v", info, err)
+	}
+	assertGroupNameIsGeneric(t, group)
+	for _, options := range counter.optionsSnapshot() {
+		if options["dir"] != group.Dir {
+			t.Fatalf("expected grouped dir %q, got %#v", group.Dir, options["dir"])
+		}
+	}
+}
+
+func TestBatchAddUri_DuplicatesDoNotCountTowardBatchGroupThreshold(t *testing.T) {
+	activeURL := "https://example.com/active.bin"
+	historyURL := "https://example.com/history.bin"
+	duplicateURL := "https://example.com/duplicate.bin"
+	newOne := "https://example.com/new-one.bin"
+	newTwo := "https://example.com/new-two.bin"
+	newThree := "https://example.com/new-three.bin"
+	app, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{active: []rpc.Task{taskWithSourceURL("gid-active", activeURL)}})
+	history.Add(history.HistoryEntry{GID: "gid-history", Source: historyURL})
+	baseDir := config.Current.DownloadDir
+
+	result := app.BatchAddUri([]string{activeURL, historyURL, duplicateURL, duplicateURL, newOne, newTwo, newThree})
+
+	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{duplicateURL, newOne, newTwo, newThree})
+	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{activeURL, historyURL, duplicateURL})
+	if len(result.Groups) != 0 {
+		t.Fatalf("expected no group when unique addable non-duplicates below threshold, got %#v", result.Groups)
+	}
+	for _, options := range counter.optionsSnapshot() {
+		if options["dir"] != baseDir {
+			t.Fatalf("expected direct dir %q, got %#v", baseDir, options["dir"])
+		}
+	}
+}
+
+func TestBatchAddUri_DuplicateOnlyBatchDoesNotCreateFolder(t *testing.T) {
+	historyURL := "https://example.com/history-only.bin"
+	app, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	baseDir := config.Current.DownloadDir
+	history.Add(history.HistoryEntry{GID: "gid-history", Source: historyURL})
+
+	result := app.BatchAddUri([]string{historyURL, " " + historyURL + " "})
+
+	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{})
+	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{historyURL, historyURL})
+	if len(result.Groups) != 0 {
+		t.Fatalf("expected no groups, got %#v", result.Groups)
+	}
+	if got := counter.addURICount(); got != 0 {
+		t.Fatalf("expected no addUri calls, got %d", got)
+	}
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q) error = %v", baseDir, err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no group folders, got %#v", entries)
+	}
+}
+
+func TestBatchAddUri_AllGroupedAddsFailCleansEmptyGroupFolderAndStore(t *testing.T) {
+	app, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	counter.failAll = true
+	urls := []string{
+		"https://example.com/fail-one.bin",
+		"https://example.com/fail-two.bin",
+		"https://example.com/fail-three.bin",
+		"https://example.com/fail-four.bin",
+		"https://example.com/fail-five.bin",
+	}
+	baseDir := config.Current.DownloadDir
+
+	result := app.BatchAddUri(urls)
+
+	if len(result.Succeeded) != 0 || len(result.Groups) != 0 {
+		t.Fatalf("expected no successes/groups, got %#v", result)
+	}
+	if len(result.Errors) != len(urls) {
+		t.Fatalf("expected one error per URL, got %#v", result.Errors)
+	}
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q) error = %v", baseDir, err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected failed group folder cleanup, got %#v", entries)
+	}
+	for i := 1; i <= len(urls); i++ {
+		if got := monitor.GetStoredTaskGroup(fmt.Sprintf("gid-%d", i)); got != nil {
+			t.Fatalf("expected no persisted group for failed gid-%d, got %#v", i, got)
+		}
+	}
+}
+
+func TestDownloadGroupPathSafetyCollisionAndInvalidBase(t *testing.T) {
+	originalConfig := config.Current
+	t.Cleanup(func() { config.Current = originalConfig })
+	baseDir := t.TempDir()
+	config.Current = &config.AppConfig{DownloadDir: baseDir}
+
+	name, err := safeDownloadGroupFolderName("collection", "2026-05-07 15:04:05", "dg-a/b\\c?token")
+	if err != nil {
+		t.Fatalf("safeDownloadGroupFolderName() error = %v", err)
+	}
+	if strings.ContainsAny(name, `<>:"/\|?*`) {
+		t.Fatalf("unsafe folder name after sanitization: %q", name)
+	}
+	if _, err := resolveDownloadGroupDir(baseDir, "..\\escape"); err != nil {
+		t.Fatalf("sanitized traversal-like name should remain contained, got %v", err)
+	}
+	if _, err := resolveDownloadGroupDir("", "Batch 2026 dg-a1b2c3"); err == nil {
+		t.Fatal("expected invalid empty base dir error")
+	}
+
+	group := rpc.DownloadGroup{FolderName: "Batch 2026-05-07 15-04-05 dg-collision"}
+	firstDir := filepath.Join(baseDir, group.FolderName)
+	if err := os.MkdirAll(firstDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll collision dir error = %v", err)
+	}
+	if err := ensureDownloadGroupDir(baseDir, &group); err != nil {
+		t.Fatalf("ensureDownloadGroupDir() error = %v", err)
+	}
+	if group.FolderName != "Batch 2026-05-07 15-04-05 dg-collision-02" {
+		t.Fatalf("expected deterministic -02 collision suffix, got %q", group.FolderName)
+	}
+	if filepath.Dir(group.Dir) != baseDir {
+		t.Fatalf("expected collision dir under base %q, got %q", baseDir, group.Dir)
 	}
 }

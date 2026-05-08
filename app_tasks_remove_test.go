@@ -77,6 +77,7 @@ func setupAppTaskRemoveTest(t *testing.T, handler func(req appTaskRPCRequest, co
 	originalMonitor := monitor.State.GetMonitor()
 	originalSaveEnabled := history.SaveEnabled
 
+	monitor.ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
 	monitor.Cache = &monitor.TaskCache{}
 	monitor.State.SetTracker(nil)
 	monitor.State.SetMonitor(nil)
@@ -118,6 +119,7 @@ func setupAppTaskRemoveTest(t *testing.T, handler func(req appTaskRPCRequest, co
 	t.Cleanup(func() {
 		server.Close()
 		history.Clear()
+		monitor.ResetTaskGroupStoreForTest("", true)
 		history.SetSaveEnabled(originalSaveEnabled)
 		monitor.Cache = originalCache
 		monitor.State.SetTracker(originalTracker)
@@ -167,6 +169,38 @@ func TestBatchRemove_UsesCachedSnapshotsWithoutLiveListRPC(t *testing.T) {
 	}
 	if got := counter.count("aria2.remove"); got != len(gids) {
 		t.Fatalf("expected %d remove calls, got %d", len(gids), got)
+	}
+}
+
+func TestRemoveTask_CleansPersistedDownloadGroupWithoutMonitor(t *testing.T) {
+	setupAppTaskRemoveTest(t, func(req appTaskRPCRequest, counter *appTaskRPCCounter) map[string]any {
+		return appTaskSuccessResponse("OK")
+	})
+	group := rpc.DownloadGroup{ID: "dg-remove", Kind: "batch", Name: "Batch", FolderName: "Batch dg-remove", Dir: t.TempDir(), ItemCount: 5, CreatedAt: 1}
+	monitor.RegisterTaskGroup("gid-remove", group)
+
+	NewApp().RemoveTask("gid-remove", false)
+
+	if got := monitor.GetStoredTaskGroup("gid-remove"); got != nil {
+		t.Fatalf("expected persisted group removed, got %#v", got)
+	}
+}
+
+func TestBatchRemove_CleansPersistedDownloadGroups(t *testing.T) {
+	setupAppTaskRemoveTest(t, func(req appTaskRPCRequest, counter *appTaskRPCCounter) map[string]any {
+		return appTaskSuccessResponse("OK")
+	})
+	group := rpc.DownloadGroup{ID: "dg-batch-remove", Kind: "batch", Name: "Batch", FolderName: "Batch dg-batch-remove", Dir: t.TempDir(), ItemCount: 5, CreatedAt: 1}
+	monitor.RegisterTaskGroup("gid-one", group)
+	monitor.RegisterTaskGroup("gid-two", group)
+
+	NewApp().BatchRemove([]string{"gid-one", "gid-two"}, false)
+
+	if got := monitor.GetStoredTaskGroup("gid-one"); got != nil {
+		t.Fatalf("expected gid-one group removed, got %#v", got)
+	}
+	if got := monitor.GetStoredTaskGroup("gid-two"); got != nil {
+		t.Fatalf("expected gid-two group removed, got %#v", got)
 	}
 }
 
