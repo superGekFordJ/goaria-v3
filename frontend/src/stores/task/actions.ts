@@ -17,8 +17,10 @@ import {
   MinimizeToTray,
 } from '../../../bindings/goaria-v3/app.js'
 import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
+import type { BatchAddResult } from '../../../bindings/goaria-v3/models'
 import { cacheMetadata, applyMetadataFromCache } from './metadata'
 import { mergeTasks, dedupByGid } from './utils'
+import { cloneTaskDownloadGroup, mergeTaskGroupMetadata } from './grouping'
 
 export function setupActions(state: TaskState) {
   // Reuse sets to avoid GC - scoped to setupActions for better encapsulation
@@ -118,6 +120,7 @@ export function setupActions(state: TaskState) {
     if (isNonEmptyString(meta.title)) merged.title = meta.title
     if (hasValidFiles(meta)) merged.files = meta.files
     if (isNonEmptyString(meta.dir)) merged.dir = meta.dir
+    Object.assign(merged, mergeTaskGroupMetadata(existing, meta))
 
     merged.totalLength = preserveNonZeroValue(existing.totalLength, meta.totalLength)
     merged.completedLength = preserveNonZeroValue(existing.completedLength, meta.completedLength)
@@ -137,7 +140,7 @@ export function setupActions(state: TaskState) {
 
     for (const gid of Object.keys(metadata)) {
       const meta = metadata[gid]
-      if (!meta || !hasValidFiles(meta)) continue
+      if (!meta || (!hasValidFiles(meta) && !cloneTaskDownloadGroup(meta))) continue
       cacheMetadata(meta)
 
       const activeIdx = newActive.findIndex(t => t.gid === gid)
@@ -375,7 +378,7 @@ export function setupActions(state: TaskState) {
     }
   }
 
-  async function batchAddUri(uris: string[]) {
+  async function batchAddUri(uris: string[]): Promise<BatchAddResult> {
     try {
       const res = await BatchAddUri(uris)
       await fetchTasks()
@@ -508,10 +511,20 @@ export function setupActions(state: TaskState) {
   async function syncFromSnapshot() {
     try {
       const snapshot = await GetFullSnapshot()
+      for (const task of [...tasks.value.active, ...tasks.value.waiting, ...tasks.value.stopped]) {
+        cacheMetadata(task)
+      }
+      for (const task of [
+        ...(snapshot.tasks.active || []),
+        ...(snapshot.tasks.waiting || []),
+        ...(snapshot.tasks.stopped || []),
+      ]) {
+        cacheMetadata(task)
+      }
       tasks.value = {
-        active: snapshot.tasks.active || [],
-        waiting: snapshot.tasks.waiting || [],
-        stopped: snapshot.tasks.stopped || [],
+        active: (snapshot.tasks.active || []).map(applyMetadataFromCache),
+        waiting: (snapshot.tasks.waiting || []).map(applyMetadataFromCache),
+        stopped: (snapshot.tasks.stopped || []).map(applyMetadataFromCache),
       }
       if (!pollingEnabled.value && _restartPollingCallback) {
         _restartPollingCallback() // This is actually startPolling

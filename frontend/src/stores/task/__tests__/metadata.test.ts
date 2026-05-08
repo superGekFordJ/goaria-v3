@@ -2,6 +2,16 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { cacheMetadata, applyMetadataFromCache, removeMetadata, getMetadataCacheSize, clearMetadataCache } from '../metadata'
 import type { Task } from '../../../../bindings/goaria-v3/internal/rpc/models'
 
+const mockGroup = {
+  id: 'dg-meta',
+  kind: 'batch',
+  name: 'Batch 2026-05-07 dg-meta',
+  folder_name: 'Batch 2026-05-07 dg-meta',
+  dir: '/downloads/Batch 2026-05-07 dg-meta',
+  item_count: 5,
+  created_at: 1770000000,
+}
+
 const mockTask = (gid: string, overrides: Partial<Task> = {}): Task => ({
   gid,
   title: 'test-title',
@@ -32,10 +42,16 @@ describe('Task Metadata Cache', () => {
     expect(getMetadataCacheSize()).toBe(1)
   })
 
-  it('should not cache metadata when files are missing', () => {
+  it('should not cache metadata when files and group metadata are missing', () => {
     const task = mockTask('1', { files: [] }) // Lite task
     cacheMetadata(task)
     expect(getMetadataCacheSize()).toBe(0)
+  })
+
+  it('should cache group metadata even when files are missing', () => {
+    const task = mockTask('1', { files: [], download_group: mockGroup })
+    cacheMetadata(task)
+    expect(getMetadataCacheSize()).toBe(1)
   })
 
   it('should apply cached metadata to a lite task', () => {
@@ -64,5 +80,22 @@ describe('Task Metadata Cache', () => {
 
     removeMetadata('1')
     expect(getMetadataCacheSize()).toBe(0)
+  })
+
+  it('should apply cached group metadata to a lite task', () => {
+    cacheMetadata(
+      mockTask('1', {
+        files: [{ path: '/downloads/file1', uris: [] }],
+        dir: '/downloads',
+        download_group: mockGroup,
+      }),
+    )
+
+    const enrichedTask = applyMetadataFromCache(
+      mockTask('1', { files: [], download_group: undefined }),
+    )
+
+    expect(enrichedTask.download_group?.id).toBe('dg-meta')
+    expect(enrichedTask.files[0].path).toBe('/downloads/file1')
   })
 })

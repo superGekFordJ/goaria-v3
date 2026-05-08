@@ -3,6 +3,16 @@ import { mergeTasks, isTaskEqual, dedupByGid } from '../utils'
 import { clearMetadataCache, cacheMetadata } from '../metadata'
 import type { Task } from '../../../../bindings/goaria-v3/internal/rpc/models'
 
+const mockGroup = {
+  id: 'dg-utils',
+  kind: 'batch',
+  name: 'Batch 2026-05-07 dg-utils',
+  folder_name: 'Batch 2026-05-07 dg-utils',
+  dir: '/downloads/Batch 2026-05-07 dg-utils',
+  item_count: 5,
+  created_at: 1770000000,
+}
+
 const mockTask = (gid: string, overrides: Partial<Task> = {}): Task => ({
   gid,
   title: 'test-title',
@@ -36,6 +46,12 @@ describe('Task Utils', () => {
         const t2 = mockTask('1', { files: [{ path: '/a', uris: [] }] })
         // isTaskEqual doesn't check files
         expect(isTaskEqual(t1, t2)).toBe(true)
+    })
+
+    it('should treat download_group changes as meaningful', () => {
+      const t1 = mockTask('1')
+      const t2 = mockTask('1', { download_group: mockGroup })
+      expect(isTaskEqual(t1, t2)).toBe(false)
     })
   })
 
@@ -98,6 +114,17 @@ describe('Task Utils', () => {
         expect(result.changed).toBe(true)
         expect(result.merged[0].files![0].path).toBe('/real.iso')
         expect(result.merged[0]).not.toBe(oldTask) // Should be new object
+    })
+
+    it('should preserve richer download_group metadata on sparse incoming task', () => {
+      const oldTask = mockTask('4', { download_group: mockGroup, files: [] })
+      const newTask = mockTask('4', { download_group: undefined, files: [] })
+
+      const result = mergeTasks([oldTask], [newTask])
+
+      expect(result.changed).toBe(false)
+      expect(result.merged[0]).toBe(oldTask)
+      expect(result.merged[0].download_group?.id).toBe('dg-utils')
     })
   })
 })

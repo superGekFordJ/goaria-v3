@@ -3,6 +3,7 @@ import { mount } from '@vue/test-utils'
 import { defineComponent, h, nextTick, reactive, type PropType } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Task } from '../../../bindings/goaria-v3/internal/rpc/models'
+import type { TaskGroupHint } from '../../stores/task/grouping'
 import TaskList from './TaskList.vue'
 
 type TaskStoreMock = {
@@ -60,6 +61,11 @@ const TaskCardStub = defineComponent({
     task: {
       type: Object as PropType<Task>,
       required: true,
+    },
+    groupHint: {
+      type: Object as PropType<TaskGroupHint | undefined>,
+      required: false,
+      default: undefined,
     },
   },
   emits: ['confirm-delete'],

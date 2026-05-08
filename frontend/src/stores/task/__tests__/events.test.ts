@@ -7,6 +7,16 @@ import type { TaskState } from '../state'
 import type { TaskActions } from '../actions'
 import type { TaskPolling } from '../polling'
 
+const mockGroup = {
+  id: 'dg-events',
+  kind: 'batch',
+  name: 'Batch 2026-05-07 dg-events',
+  folder_name: 'Batch 2026-05-07 dg-events',
+  dir: '/downloads/Batch 2026-05-07 dg-events',
+  item_count: 5,
+  created_at: 1770000000,
+}
+
 // Mock Wails bindings
 vi.mock('../../../../bindings/goaria-v3/app.js', () => ({
   UpdateTrayState: vi.fn(),
@@ -208,6 +218,23 @@ describe('setupEvents', () => {
       expect(actions.fetchTasks).toHaveBeenCalled()
     })
 
+    it('should fallback to fetchTasks for a new group-only add payload without cached files', async () => {
+      await events.handleTaskDelta({
+        type: 'add',
+        gid: 'gid-group-only-add',
+        payload: {
+          gid: 'gid-group-only-add',
+          status: 'active',
+          files: [],
+          dir: '',
+          download_group: mockGroup,
+        },
+      })
+
+      expect(actions.fetchTasks).toHaveBeenCalled()
+      expect(state.tasks.value.active).toHaveLength(0)
+    })
+
     it('should not duplicate task if GID already exists in active', async () => {
       state.tasks.value.active = [mockTask('gid-dup')]
 
@@ -322,6 +349,7 @@ describe('setupEvents', () => {
           totalLength: '9000',
           completedLength: '3000',
           downloadSpeed: '333',
+          download_group: mockGroup,
         }),
       ]
 
@@ -345,6 +373,7 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active[0].totalLength).toBe('9000')
       expect(state.tasks.value.active[0].completedLength).toBe('3000')
       expect(state.tasks.value.active[0].downloadSpeed).toBe('333')
+      expect(state.tasks.value.active[0].download_group?.id).toBe('dg-events')
       expect(actions.fetchTasks).not.toHaveBeenCalled()
     })
 
@@ -482,6 +511,44 @@ describe('setupEvents', () => {
       expect(state.tasks.value.stopped[0].completedLength).toBe('1024')
       expect(state.tasks.value.stopped[0].totalLength).toBe('1024')
     })
+
+    it('should merge group metadata from already-stopped complete supplement payload', async () => {
+      state.tasks.value.stopped = [
+        mockTask('gid-stopped-group', {
+          status: 'complete',
+          download_group: undefined,
+        }),
+      ]
+
+      await events.handleTaskDelta({
+        type: 'complete',
+        gid: 'gid-stopped-group',
+        payload: mockTask('gid-stopped-group', {
+          status: 'complete',
+          download_group: mockGroup,
+        }) as unknown as Record<string, unknown>,
+      })
+
+      expect(state.tasks.value.stopped).toHaveLength(1)
+      expect(state.tasks.value.stopped[0].download_group?.id).toBe('dg-events')
+    })
+
+    it('should fallback to fetchTasks for group-only complete payload when task is missing everywhere', async () => {
+      await events.handleTaskDelta({
+        type: 'complete',
+        gid: 'gid-group-only-complete',
+        payload: {
+          gid: 'gid-group-only-complete',
+          status: 'complete',
+          files: [],
+          dir: '',
+          download_group: mockGroup,
+        } as unknown as Record<string, unknown>,
+      })
+
+      expect(actions.fetchTasks).toHaveBeenCalled()
+      expect(state.tasks.value.stopped).toHaveLength(0)
+    })
   })
 
   // =====================================================
@@ -567,6 +634,48 @@ describe('setupEvents', () => {
       })
 
       expect(state.tasks.value.stopped.length).toBe(1)
+    })
+
+    it('should merge group metadata from already-stopped error supplement payload', async () => {
+      state.tasks.value.stopped = [
+        mockTask('gid-error-group', {
+          status: 'error',
+          download_group: undefined,
+        }),
+      ]
+
+      await events.handleTaskDelta({
+        type: 'error',
+        gid: 'gid-error-group',
+        payload: mockTask('gid-error-group', {
+          status: 'error',
+          errorCode: '1',
+          errorMessage: 'Network error',
+          download_group: mockGroup,
+        }) as unknown as Record<string, unknown>,
+      })
+
+      expect(state.tasks.value.stopped).toHaveLength(1)
+      expect(state.tasks.value.stopped[0].download_group?.id).toBe('dg-events')
+    })
+
+    it('should fallback to fetchTasks for group-only error payload when task is missing everywhere', async () => {
+      await events.handleTaskDelta({
+        type: 'error',
+        gid: 'gid-group-only-error',
+        payload: {
+          gid: 'gid-group-only-error',
+          status: 'error',
+          files: [],
+          dir: '',
+          errorCode: '1',
+          errorMessage: 'Network error',
+          download_group: mockGroup,
+        } as unknown as Record<string, unknown>,
+      })
+
+      expect(actions.fetchTasks).toHaveBeenCalled()
+      expect(state.tasks.value.stopped).toHaveLength(0)
     })
   })
 
@@ -684,6 +793,7 @@ describe('setupEvents', () => {
           totalLength: '9000',
           completedLength: '4500',
           downloadSpeed: '888',
+          download_group: mockGroup,
         }),
       ]
 
@@ -709,6 +819,7 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active[0].totalLength).toBe('9000')
       expect(state.tasks.value.active[0].completedLength).toBe('4500')
       expect(state.tasks.value.active[0].downloadSpeed).toBe('888')
+      expect(state.tasks.value.active[0].download_group?.id).toBe('dg-events')
     })
 
     it('should preserve richer metadata when a pause move payload is sparse', () => {

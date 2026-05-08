@@ -1,5 +1,6 @@
 import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 import { cacheMetadata, applyMetadataFromCache } from './metadata'
+import { isTaskGroupEqual, mergeTaskGroupMetadata } from './grouping'
 
 /**
  * 浅比对两个任务是否相等（仅比较高频变化字段）
@@ -14,7 +15,8 @@ export function isTaskEqual(a: Task, b: Task): boolean {
     a.completedLength === b.completedLength &&
     a.downloadSpeed === b.downloadSpeed &&
     a.totalLength === b.totalLength &&
-    a.errorCode === b.errorCode
+    a.errorCode === b.errorCode &&
+    isTaskGroupEqual(a.download_group, b.download_group)
   )
 }
 
@@ -70,17 +72,20 @@ export function mergeTasks(oldList: Task[], newList: Task[]): { merged: Task[]; 
     // Always cache valid metadata from new data
     cacheMetadata(newTask)
 
-    // Apply cached metadata if new task is missing files - DO THIS EARLY
-    if (!newTask.files?.length || !newTask.files[0]?.path) {
-      newTask = applyMetadataFromCache(newTask)
-    }
+    newTask = applyMetadataFromCache(newTask)
 
     const oldTask = _mergeOldMap.get(newTask.gid)
     if (oldTask) {
-      // Check if we gained metadata (files appeared)
-      const gainedMetadata = (!oldTask.files?.length || !oldTask.files[0]?.path) && (newTask.files?.length && newTask.files[0]?.path)
+      Object.assign(newTask, mergeTaskGroupMetadata(oldTask, newTask))
 
-      if (isTaskEqual(oldTask, newTask) && !gainedMetadata) {
+      // Check if we gained metadata (files appeared)
+      const gainedFilesMetadata =
+        (!oldTask.files?.length || !oldTask.files[0]?.path) &&
+        Boolean(newTask.files?.length && newTask.files[0]?.path)
+      const gainedGroupMetadata =
+        !oldTask.download_group && Boolean(newTask.download_group)
+
+      if (isTaskEqual(oldTask, newTask) && !gainedFilesMetadata && !gainedGroupMetadata) {
         return oldTask // 保持原引用
       }
 

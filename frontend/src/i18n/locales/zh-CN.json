@@ -126,6 +126,9 @@
     "resume": "继续",
     "openFolder": "打开文件夹",
     "delete": "删除任务",
+    "groupHintLabel": "已分组",
+    "groupFolder": "文件夹：{folder}",
+    "groupItems": "{count} 项",
     "progress": "进度",
     "done": "完成",
     "remaining": "剩余",
@@ -153,6 +156,10 @@
     "batchSucceeded": "已添加 {count} 个任务",
     "batchDuplicates": "{count} 个重复已跳过",
     "batchErrors": "{count} 个失败",
+    "batchGroupCreated": "已创建分组",
+    "batchGroupsCreated": "已创建 {count} 个分组",
+    "batchGroupFolder": "文件夹：{folder}",
+    "batchGroupItems": "{count} 项",
     "batchTruncated": "已截断至 100 条"
   },
   "taskSearch": {

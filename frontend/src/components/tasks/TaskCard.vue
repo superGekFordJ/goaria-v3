@@ -2,14 +2,16 @@
   import { computed, watch } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
+  import type { TaskGroupHint } from '../../stores/task/grouping'
   import { useTaskStore } from '../../stores/task'
-  import { Pause, Play, FolderOpen, Trash2, FileDown, Clock, Zap } from 'lucide-vue-next'
+  import { Pause, Play, FolderOpen, Trash2, FileDown, Clock, Zap, Layers3 } from 'lucide-vue-next'
   import { useSmoothProgress } from '../../composables/useSmoothProgress'
 
   const { t } = useI18n()
 
   const props = defineProps<{
     task: Task
+    groupHint?: TaskGroupHint | null
   }>()
 
   const emit = defineEmits<{
@@ -173,6 +175,19 @@
 
   // Selection state from store
   const isSelected = computed(() => taskStore.isSelected(props.task.gid))
+
+  const groupHintTitle = computed(() => {
+    if (!props.groupHint) return undefined
+
+    const parts = [t('taskCard.groupHintLabel')]
+    if (props.groupHint.folderLabel) {
+      parts.push(t('taskCard.groupFolder', { folder: props.groupHint.folderLabel }))
+    }
+    if (props.groupHint.itemCount) {
+      parts.push(t('taskCard.groupItems', { count: props.groupHint.itemCount }))
+    }
+    return parts.join(' · ')
+  })
 </script>
 
 <template>
@@ -221,17 +236,31 @@
               {{ fileName }}
             </h3>
             <!-- Status Badge -->
-            <div class="flex items-center gap-2">
-              <div class="status-dot" :class="statusConfig.dotClass"></div>
-              <span
-                class="text-[10px] font-bold uppercase tracking-widest"
-                :class="statusConfig.labelClass"
-              >
-                {{ statusConfig.label }}
-              </span>
-            </div>
-          </div>
-        </div>
+             <div class="flex items-center gap-2">
+               <div class="status-dot" :class="statusConfig.dotClass"></div>
+               <span
+                 class="text-[10px] font-bold uppercase tracking-widest"
+                 :class="statusConfig.labelClass"
+               >
+                 {{ statusConfig.label }}
+               </span>
+               <span
+                 v-if="groupHint"
+                 class="download-group-chip"
+                 :title="groupHintTitle"
+                 :aria-label="groupHintTitle"
+               >
+                 <Layers3 :size="11" class="download-group-icon" />
+                 <span class="download-group-folder">
+                   {{ groupHint.folderLabel || t('taskCard.groupHintLabel') }}
+                 </span>
+                 <span v-if="groupHint.itemCount" class="download-group-items font-mono-data">
+                   {{ t('taskCard.groupItems', { count: groupHint.itemCount }) }}
+                 </span>
+               </span>
+             </div>
+           </div>
+         </div>
       </div>
 
       <!-- Action Buttons (Hover Reveal) -->
@@ -393,5 +422,37 @@
 
   .task-card .progress-bar-fill.opacity-50::after {
     display: none;
+  }
+
+  .download-group-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    min-width: 0;
+    max-width: min(18rem, 46vw);
+    padding: 0.125rem 0.4375rem;
+    border-radius: var(--radius-squircle-sm);
+    border: 1px solid color-mix(in srgb, var(--glass-border) 70%, transparent);
+    background: color-mix(in srgb, var(--btn-glass-bg) 82%, transparent);
+    color: var(--app-text-muted);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--glass-highlight) 16%, transparent);
+    min-height: 1.25rem;
+  }
+
+  .download-group-icon {
+    flex: 0 0 auto;
+    color: color-mix(in srgb, var(--neon-primary) 64%, var(--app-text));
+  }
+
+  .download-group-folder {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .download-group-items {
+    flex: 0 0 auto;
+    color: color-mix(in srgb, var(--neon-primary) 72%, var(--app-text-muted));
   }
 </style>
