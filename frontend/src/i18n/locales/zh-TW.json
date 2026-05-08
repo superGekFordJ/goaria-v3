@@ -126,6 +126,9 @@
     "resume": "繼續",
     "openFolder": "開啟資料夾",
     "delete": "刪除任務",
+    "groupHintLabel": "已分組",
+    "groupFolder": "資料夾：{folder}",
+    "groupItems": "{count} 項",
     "progress": "進度",
     "done": "完成",
     "remaining": "剩餘",
@@ -153,6 +156,10 @@
     "batchSucceeded": "已新增 {count} 個任務",
     "batchDuplicates": "{count} 個重複已略過",
     "batchErrors": "{count} 個失敗",
+    "batchGroupCreated": "已建立分組",
+    "batchGroupsCreated": "已建立 {count} 個分組",
+    "batchGroupFolder": "資料夾：{folder}",
+    "batchGroupItems": "{count} 項",
     "batchTruncated": "已截斷至 100 條"
   },
   "taskSearch": {

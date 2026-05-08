@@ -126,6 +126,9 @@
     "resume": "Reanudar",
     "openFolder": "Abrir carpeta",
     "delete": "Eliminar tarea",
+    "groupHintLabel": "Agrupado",
+    "groupFolder": "Carpeta: {folder}",
+    "groupItems": "{count} elementos",
     "progress": "Progreso",
     "done": "Hecho",
     "remaining": "Restante",
@@ -153,6 +156,10 @@
     "batchSucceeded": "{count} tareas añadidas",
     "batchDuplicates": "{count} duplicados omitidos",
     "batchErrors": "{count} fallidos",
+    "batchGroupCreated": "Grupo creado",
+    "batchGroupsCreated": "{count} grupos creados",
+    "batchGroupFolder": "Carpeta: {folder}",
+    "batchGroupItems": "{count} elementos",
     "batchTruncated": "Truncado a 100 elementos"
   },
   "taskSearch": {

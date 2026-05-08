@@ -126,6 +126,9 @@
     "resume": "Resume",
     "openFolder": "Open Folder",
     "delete": "Delete Task",
+    "groupHintLabel": "Grouped",
+    "groupFolder": "Folder: {folder}",
+    "groupItems": "{count} items",
     "progress": "Progress",
     "done": "Done",
     "remaining": "Remaining",
@@ -153,6 +156,10 @@
     "batchSucceeded": "{count} tasks added",
     "batchDuplicates": "{count} duplicates skipped",
     "batchErrors": "{count} failed",
+    "batchGroupCreated": "Group created",
+    "batchGroupsCreated": "{count} groups created",
+    "batchGroupFolder": "Folder: {folder}",
+    "batchGroupItems": "{count} items",
     "batchTruncated": "Truncated to 100 items"
   },
   "taskSearch": {

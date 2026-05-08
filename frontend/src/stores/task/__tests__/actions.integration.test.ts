@@ -2,8 +2,18 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { CancellablePromise } from '@wailsio/runtime'
 import { setupState } from '../state'
 import { setupActions } from '../actions'
-import { clearMetadataCache } from '../metadata'
+import { clearMetadataCache, getMetadataCacheSize } from '../metadata'
 import type { Task } from '../../../../bindings/goaria-v3/internal/rpc/models'
+
+const mockGroup = {
+  id: 'dg-actions',
+  kind: 'batch',
+  name: 'Batch 2026-05-07 dg-actions',
+  folder_name: 'Batch 2026-05-07 dg-actions',
+  dir: '/downloads/Batch 2026-05-07 dg-actions',
+  item_count: 5,
+  created_at: 1770000000,
+}
 
 // Mock Wails bindings
 vi.mock('../../../../bindings/goaria-v3/app.js', () => ({
@@ -12,6 +22,7 @@ vi.mock('../../../../bindings/goaria-v3/app.js', () => ({
   GetStoppedTasks: vi.fn(),
   GetTaskMetadata: vi.fn(),
   AddUri: vi.fn(),
+  BatchAddUri: vi.fn(),
   PauseTask: vi.fn(),
   ResumeTask: vi.fn(),
   RemoveTask: vi.fn(),
@@ -30,6 +41,7 @@ import {
   GetStoppedTasks,
   GetTaskMetadata,
   AddUri,
+  GetFullSnapshot,
 } from '../../../../bindings/goaria-v3/app.js'
 
 const mockGetActiveTasks = vi.mocked(GetActiveTasks)
@@ -37,6 +49,7 @@ const mockGetStoppedTasks = vi.mocked(GetStoppedTasks)
 const mockGetTasks = vi.mocked(GetTasks)
 const mockGetTaskMetadata = vi.mocked(GetTaskMetadata)
 const mockAddUri = vi.mocked(AddUri)
+const mockGetFullSnapshot = vi.mocked(GetFullSnapshot)
 
 // --- Helpers ---
 
@@ -157,6 +170,7 @@ describe('setupActions — integration', () => {
             files: [{ path: '/downloads/drained.zip', uris: [] }],
             dir: '/downloads',
             totalLength: '2048',
+            download_group: mockGroup,
           }),
         } as Record<string, Task>)
 
@@ -177,6 +191,7 @@ describe('setupActions — integration', () => {
       expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/drained.zip')
       expect(state.tasks.value.active[0].dir).toBe('/downloads')
       expect(state.tasks.value.active[0].totalLength).toBe('2048')
+      expect(state.tasks.value.active[0].download_group?.id).toBe('dg-actions')
     })
 
     it('should handle errors and increment consecutiveErrors', async () => {
@@ -272,6 +287,83 @@ describe('setupActions — integration', () => {
       await actions.fetchTasks()
 
       expect(state.consecutiveErrors.value).toBe(0)
+    })
+  })
+
+  // =====================================================
+  // syncFromSnapshot
+  // =====================================================
+  describe('syncFromSnapshot', () => {
+    it('should preserve grouped metadata and files during snapshot restore via cache hydration', async () => {
+      state.tasks.value.active = [
+        mockTask('gid-snapshot', {
+          files: [{ path: '/downloads/snapshot.bin', uris: [] }],
+          dir: '/downloads',
+          download_group: mockGroup,
+        }),
+      ]
+
+      mockGetFullSnapshot.mockResolvedValue({
+        tasks: {
+          active: [
+            mockTask('gid-snapshot', {
+              files: [],
+              dir: '',
+              totalLength: '0',
+              completedLength: '0',
+              downloadSpeed: '0',
+              download_group: undefined,
+            }),
+          ],
+          waiting: [],
+          stopped: [],
+        },
+        trayState: {
+          hasActive: true,
+          hasPaused: false,
+          hasError: false,
+        },
+      } as never)
+
+      await actions.syncFromSnapshot()
+
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/snapshot.bin')
+      expect(state.tasks.value.active[0].download_group?.id).toBe('dg-actions')
+    })
+
+    it('should restore grouped snapshot metadata on a fresh window with empty state and cache', async () => {
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.stopped).toHaveLength(0)
+      expect(getMetadataCacheSize()).toBe(0)
+
+      mockGetFullSnapshot.mockResolvedValue({
+        tasks: {
+          active: [
+            mockTask('gid-fresh-window', {
+              files: [{ path: '/downloads/fresh-window.bin', uris: [] }],
+              dir: '/downloads',
+              download_group: mockGroup,
+            }),
+          ],
+          waiting: [],
+          stopped: [],
+        },
+        trayState: {
+          hasActive: true,
+          hasPaused: false,
+          hasError: false,
+        },
+      } as never)
+
+      await actions.syncFromSnapshot()
+
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0].gid).toBe('gid-fresh-window')
+      expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/fresh-window.bin')
+      expect(state.tasks.value.active[0].download_group?.id).toBe('dg-actions')
+      expect(state.tasks.value.active[0].download_group?.folder_name).toBe(mockGroup.folder_name)
     })
   })
 

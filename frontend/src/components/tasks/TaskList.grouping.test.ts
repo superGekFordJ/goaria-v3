@@ -19,10 +19,6 @@ type TaskStoreMock = {
   fetchStoppedTasks: ReturnType<typeof vi.fn>
 }
 
-type UIStoreMock = {
-  activeTab: 'downloads' | 'stopped'
-}
-
 const storeMocks = vi.hoisted(() => ({
   taskStore: {
     activeTasks: [],
@@ -37,8 +33,8 @@ const storeMocks = vi.hoisted(() => ({
     fetchStoppedTasks: vi.fn(),
   } as TaskStoreMock,
   uiStore: {
-    activeTab: 'downloads',
-  } as UIStoreMock,
+    activeTab: 'downloads' as 'downloads' | 'stopped',
+  },
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -69,19 +65,11 @@ const TaskCardStub = defineComponent({
     },
   },
   emits: ['confirm-delete'],
-  template: '<article class="task-card-stub" :data-card-gid="task.gid"></article>',
+  template: `<article class="task-card-stub" :data-card-gid="task.gid" :data-group-key="groupHint?.groupKey || ''" :data-item-count="groupHint?.itemCount || ''"></article>`,
 })
 
-const TaskHeaderStub = defineComponent({
-  name: 'TaskHeader',
-  template: '<header data-test="task-header-stub"></header>',
-})
-
-const TaskSearchStub = defineComponent({
-  name: 'TaskSearch',
-  template: '<div data-test="task-search-stub"></div>',
-})
-
+const TaskHeaderStub = defineComponent({ name: 'TaskHeader', template: '<header />' })
+const TaskSearchStub = defineComponent({ name: 'TaskSearch', template: '<div />' })
 const BatchActionBarStub = defineComponent({
   name: 'BatchActionBar',
   emits: ['confirm-batch-delete'],
@@ -91,32 +79,30 @@ const BatchActionBarStub = defineComponent({
 const RecycleScrollerStub = defineComponent({
   name: 'RecycleScroller',
   props: {
-    items: {
-      type: Array as PropType<Task[]>,
-      required: true,
-    },
-    itemSize: {
-      type: Number,
-      required: true,
-    },
-    keyField: {
-      type: String,
-      required: true,
-    },
-    buffer: {
-      type: Number,
-      required: true,
-    },
+    items: { type: Array as PropType<Task[]>, required: true },
+    itemSize: { type: Number, required: true },
+    keyField: { type: String, required: true },
+    buffer: { type: Number, required: true },
   },
   setup(props, { attrs, slots }) {
     return () => {
       const children = props.items.flatMap((item, index) => slots.default?.({ item, index }) ?? [])
-      return h('div', { ...attrs, 'data-test': 'recycle-scroller-stub' }, children)
+      return h('div', { ...attrs, 'data-test': 'recycle-scroller-stub', 'data-key-field': props.keyField }, children)
     }
   },
 })
 
-function createTask(index: number): Task {
+const group = {
+  id: 'dg-visible',
+  kind: 'batch',
+  name: 'Batch 2026-05-07 dg-visible',
+  folder_name: 'Batch 2026-05-07 dg-visible',
+  dir: '/downloads/Batch 2026-05-07 dg-visible',
+  item_count: 6,
+  created_at: 1770000000,
+}
+
+function createTask(index: number, grouped = false): Task {
   return {
     gid: `gid-${index.toString().padStart(2, '0')}`,
     status: 'active',
@@ -126,26 +112,18 @@ function createTask(index: number): Task {
     errorCode: '',
     errorMessage: '',
     dir: '/downloads',
-    files: [
-      {
-        path: `/downloads/file-${index}.bin`,
-        uris: [{ uri: `https://example.com/file-${index}.bin`, status: 'used' }],
-      },
-    ],
+    files: [{ path: `/downloads/file-${index}.bin`, uris: [] }],
+    ...(grouped ? { download_group: group } : {}),
   } as Task
 }
 
-function createTasks(count: number): Task[] {
-  return Array.from({ length: count }, (_, index) => createTask(index))
-}
-
-function mountTaskList(tasks: Task[]) {
+function mountList(tasks: Task[]) {
   storeMocks.taskStore.activeTasks = tasks
   storeMocks.taskStore.waitingTasks = []
   storeMocks.taskStore.stoppedTasks = []
   storeMocks.uiStore.activeTab = 'downloads'
-
   return mount(TaskList, {
+    attachTo: document.body,
     global: {
       stubs: {
         TaskCard: TaskCardStub,
@@ -158,46 +136,46 @@ function mountTaskList(tasks: Task[]) {
   })
 }
 
-describe('TaskList virtualized row motion', () => {
+describe('TaskList visible group hints', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    storeMocks.taskStore.activeTasks = []
-    storeMocks.taskStore.waitingTasks = []
-    storeMocks.taskStore.stoppedTasks = []
     storeMocks.taskStore.selectedCount = 0
     storeMocks.taskStore.getSelectedGids = []
-    storeMocks.uiStore.activeTab = 'downloads'
   })
 
-  it('uses the 16-task virtual branch without spring class or stagger delay', () => {
-    const wrapper = mountTaskList(createTasks(16))
+  it('passes grouped hints in the non-virtual branch while keeping the list flat', () => {
+    const wrapper = mountList([createTask(1, true), createTask(2, false), createTask(3, true)])
 
-    const scroller = wrapper.find('[data-test="recycle-scroller-stub"]')
-    expect(scroller.exists()).toBe(true)
-
-    const virtualRows = wrapper.findAll('.task-list-virtual-row')
-    expect(virtualRows).toHaveLength(16)
-    expect(wrapper.findAll('.task-list-virtual-row.animate-spring-in')).toHaveLength(0)
-
-    for (const row of virtualRows) {
-      expect(row.classes()).not.toContain('animate-spring-in')
-      expect(row.classes()).not.toContain('spring-in')
-      expect(row.classes()).not.toContain('spring-out')
-      expect(row.attributes('style') ?? '').not.toMatch(/animation-?delay/i)
-    }
+    const cards = wrapper.findAll('.task-card-stub')
+    expect(cards).toHaveLength(3)
+    expect(wrapper.find('[data-card-gid="gid-01"]').attributes('data-group-key')).toBe('dg-visible')
+    expect(wrapper.find('[data-card-gid="gid-03"]').attributes('data-item-count')).toBe('6')
+    expect(wrapper.find('[data-card-gid="gid-02"]').attributes('data-group-key')).toBe('')
 
     wrapper.unmount()
   })
 
-  it('keeps the 15-task small-list branch animated with stagger delay', () => {
-    const wrapper = mountTaskList(createTasks(15))
+  it('passes grouped hints in the virtual branch without changing key-field', () => {
+    const tasks = Array.from({ length: 16 }, (_, index) => createTask(index, index < 3))
+    const wrapper = mountList(tasks)
 
-    expect(wrapper.find('[data-test="recycle-scroller-stub"]').exists()).toBe(false)
-    expect(wrapper.find('.task-list-virtual-row').exists()).toBe(false)
+    const scroller = wrapper.find('[data-test="recycle-scroller-stub"]')
+    expect(scroller.exists()).toBe(true)
+    expect(scroller.attributes('data-key-field')).toBe('gid')
+    expect(wrapper.find('[data-card-gid="gid-00"]').attributes('data-group-key')).toBe('dg-visible')
+    expect(wrapper.find('[data-card-gid="gid-15"]').attributes('data-group-key')).toBe('')
 
-    const animatedRows = wrapper.findAll('.animate-spring-in')
-    expect(animatedRows).toHaveLength(15)
-    expect(animatedRows[1].attributes('style') ?? '').toContain('animation-delay: 50ms')
+    wrapper.unmount()
+  })
+
+  it('keeps selection semantics GID-based for Ctrl+A', async () => {
+    const wrapper = mountList([createTask(1, true), createTask(2, true)])
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, bubbles: true }))
+    await wrapper.vm.$nextTick()
+
+    expect(storeMocks.taskStore.selectAll).toHaveBeenCalledWith(['gid-01', 'gid-02'])
+    expect(storeMocks.taskStore.selectAll).not.toHaveBeenCalledWith(['dg-visible'])
 
     wrapper.unmount()
   })

@@ -126,6 +126,9 @@
     "resume": "再開",
     "openFolder": "フォルダーを開く",
     "delete": "タスクを削除",
+    "groupHintLabel": "グループ済み",
+    "groupFolder": "フォルダー: {folder}",
+    "groupItems": "{count} 件",
     "progress": "進捗",
     "done": "完了",
     "remaining": "残り",
@@ -153,6 +156,10 @@
     "batchSucceeded": "{count} 件のタスクを追加",
     "batchDuplicates": "{count} 件の重複をスキップ",
     "batchErrors": "{count} 件失敗",
+    "batchGroupCreated": "グループを作成しました",
+    "batchGroupsCreated": "{count} 個のグループを作成しました",
+    "batchGroupFolder": "フォルダー: {folder}",
+    "batchGroupItems": "{count} 件",
     "batchTruncated": "100件に制限しました"
   },
   "taskSearch": {

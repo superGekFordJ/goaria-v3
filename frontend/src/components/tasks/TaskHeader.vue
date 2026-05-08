@@ -4,7 +4,8 @@
   import { useTaskStore } from '../../stores/task'
   import { useUIStore } from '../../stores/ui'
   import { isValidUrl, isDuplicateUri } from '../../utils/url'
-  import { Link, Plus, Loader2, ChevronUp } from 'lucide-vue-next'
+  import { buildBatchGroupSummaries, type BatchGroupSummary } from '../../stores/task/grouping'
+  import { Link, Plus, Loader2, ChevronUp, Layers3 } from 'lucide-vue-next'
 
   const { t } = useI18n()
   const taskStore = useTaskStore()
@@ -24,7 +25,12 @@
   const textareaEl = ref<HTMLTextAreaElement | null>(null)
   const submitting = ref(false)
   const parsedStats = ref({ valid: 0, duplicate: 0, invalid: 0, urls: [] as string[] })
-  const batchResult = ref<{ succeeded: number; duplicates: number; errors: number } | null>(null)
+  const batchResult = ref<{
+    succeeded: number
+    duplicates: number
+    errors: number
+    groups: BatchGroupSummary[]
+  } | null>(null)
 
   // Debounced textarea parsing
   let parseTimer: ReturnType<typeof setTimeout> | null = null
@@ -76,6 +82,8 @@
     }
     return t('taskHeader.startDownload')
   })
+
+  const batchGroups = computed(() => batchResult.value?.groups ?? [])
 
   // Watch pendingPasteUri (single URL — existing behavior)
   watch(
@@ -157,8 +165,9 @@
       const succeeded = res.succeeded?.length || 0
       const duplicates = res.duplicates?.length || 0
       const errors = Object.keys(res.errors || {}).length
+      const groups = buildBatchGroupSummaries(res.groups)
 
-      batchResult.value = { succeeded, duplicates, errors }
+      batchResult.value = { succeeded, duplicates, errors, groups }
 
       if (errors > 0) {
         // Keep only failed URLs in textarea
@@ -303,7 +312,7 @@
         <div
           v-if="batchResult"
           key="result"
-          class="flex items-center gap-3 text-[11px] font-medium"
+          class="flex flex-wrap items-center gap-3 text-[11px] font-medium"
         >
           <span class="text-[var(--status-complete)]">
             {{ t('taskHeader.batchSucceeded', { count: batchResult.succeeded }) }}
@@ -313,6 +322,36 @@
           </span>
           <span v-if="batchResult.errors > 0" class="text-[var(--status-error)]">
             {{ t('taskHeader.batchErrors', { count: batchResult.errors }) }}
+          </span>
+          <span
+            v-if="batchGroups.length === 1"
+            class="download-group-batch-result"
+            :title="batchGroups[0].folderLabel"
+          >
+            <Layers3 :size="12" />
+            <span>
+              {{ t('taskHeader.batchGroupCreated') }}
+            </span>
+            <span v-if="batchGroups[0].folderLabel" class="download-group-batch-folder">
+              {{ t('taskHeader.batchGroupFolder', { folder: batchGroups[0].folderLabel }) }}
+            </span>
+            <span v-if="batchGroups[0].itemCount" class="font-mono-data">
+              {{ t('taskHeader.batchGroupItems', { count: batchGroups[0].itemCount ?? 0 }) }}
+            </span>
+          </span>
+          <span v-else-if="batchGroups.length > 1" class="download-group-batch-result">
+            <Layers3 :size="12" />
+            <span>
+              {{ t('taskHeader.batchGroupsCreated', { count: batchGroups.length }) }}
+            </span>
+            <span class="download-group-batch-labels">
+              {{
+                batchGroups
+                  .map(group => group.folderLabel)
+                  .filter((label): label is string => Boolean(label))
+                  .join(' · ')
+              }}
+            </span>
           </span>
         </div>
 
@@ -412,6 +451,29 @@
   /* Keyboard shortcut styling */
   kbd {
     font-family: var(--font-family-mono);
+  }
+
+  .download-group-batch-result {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    min-width: 0;
+    max-width: min(36rem, 70vw);
+    padding: 0.125rem 0.5rem;
+    border-radius: var(--radius-squircle-sm);
+    border: 1px solid color-mix(in srgb, var(--glass-border) 70%, transparent);
+    background: color-mix(in srgb, var(--btn-glass-bg) 84%, transparent);
+    color: var(--app-text-muted);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--glass-highlight) 16%, transparent);
+  }
+
+  .download-group-batch-folder,
+  .download-group-batch-labels {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--app-text);
   }
 
   /* Fade transition for error message */

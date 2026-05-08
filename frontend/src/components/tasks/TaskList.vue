@@ -10,6 +10,7 @@
   import BatchActionBar from './BatchActionBar.vue'
   import { Trash2, HardDrive, Download, CheckCircle2, AlertCircle, SearchX } from 'lucide-vue-next'
   import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
+  import { buildVisibleTaskGroupHints } from '../../stores/task/grouping'
 
   const { t } = useI18n()
   const taskStore = useTaskStore()
@@ -68,6 +69,7 @@
   })
 
   const useVirtualList = computed(() => displayTasks.value.length > 15)
+  const groupHintsByGid = computed(() => buildVisibleTaskGroupHints(displayTasks.value))
 
   // Empty state configuration
   const emptyStateConfig = computed(() => {
@@ -330,7 +332,11 @@
             class="animate-spring-in"
             :style="{ animationDelay: `${Math.min(index * 50, 300)}ms` }"
           >
-            <TaskCard :task="item" @confirm-delete="confirmDelete" />
+            <TaskCard
+              :task="item"
+              :group-hint="groupHintsByGid.get(item.gid)"
+              @confirm-delete="confirmDelete"
+            />
           </div>
         </TransitionGroup>
       </div>
@@ -345,7 +351,11 @@
         :buffer="200"
       >
         <div class="py-2 task-list-virtual-row">
-          <TaskCard :task="item" @confirm-delete="confirmDelete" />
+          <TaskCard
+            :task="item"
+            :group-hint="groupHintsByGid.get(item.gid)"
+            @confirm-delete="confirmDelete"
+          />
         </div>
       </RecycleScroller>
     </div>
