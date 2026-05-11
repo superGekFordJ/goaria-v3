@@ -13,9 +13,10 @@ var (
 )
 
 type EmbeddedReleaseDispatcherConfig struct {
-	AuthResolver   AuthProfileResolver
-	HeaderResolver HeaderProfileResolver
-	Required       *bool
+	AuthResolver       AuthProfileResolver
+	HeaderResolver     HeaderProfileResolver
+	HostPolicyResolver HostPolicyResolver
+	Required           *bool
 }
 
 func EmbeddedReleasePackCount() int {
@@ -41,6 +42,7 @@ func EmbeddedReleasePacks() []EmbeddedPack {
 			ManifestJSON: cloneBytes(pack.ManifestJSON),
 			Payload:      cloneBytes(pack.Payload),
 			Signature:    cloneBytes(pack.Signature),
+			AssetSHA256:  pack.AssetSHA256,
 		}
 	}
 
@@ -77,7 +79,7 @@ func NewEmbeddedReleaseAddTaskDispatcher(config EmbeddedReleaseDispatcherConfig)
 
 	policy := DefaultTrustPolicy()
 	policy.TrustedPublicKeys = EmbeddedReleaseTrustedPublicKeys()
-	registry, rejections := NewRegistry(packs, policy)
+	registry, rejections := NewRegistryWithHostPolicyResolver(packs, policy, config.HostPolicyResolver)
 	if required && len(rejections) > 0 {
 		return nil, redactedError(fmt.Errorf("embedded extractor release pack verification rejected configured packs: %s", summarizePackRejections(rejections)))
 	}

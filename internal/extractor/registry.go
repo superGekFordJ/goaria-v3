@@ -1,6 +1,7 @@
 package extractor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -9,7 +10,8 @@ import (
 )
 
 type Registry struct {
-	packs []VerifiedPack
+	packs              []VerifiedPack
+	hostPolicyResolver HostPolicyResolver
 }
 
 type PackRejection struct {
@@ -18,7 +20,11 @@ type PackRejection struct {
 }
 
 func NewRegistry(embedded []EmbeddedPack, policy TrustPolicy) (*Registry, []PackRejection) {
-	registry := &Registry{}
+	return NewRegistryWithHostPolicyResolver(embedded, policy, nil)
+}
+
+func NewRegistryWithHostPolicyResolver(embedded []EmbeddedPack, policy TrustPolicy, resolver HostPolicyResolver) (*Registry, []PackRejection) {
+	registry := &Registry{hostPolicyResolver: resolver}
 	if len(embedded) == 0 {
 		return registry, nil
 	}
@@ -54,6 +60,10 @@ func (r *Registry) Packs() []VerifiedPack {
 }
 
 func (r *Registry) FindByURL(rawURL string) []VerifiedPack {
+	return r.FindByURLWithContext(context.Background(), rawURL)
+}
+
+func (r *Registry) FindByURLWithContext(ctx context.Context, rawURL string) []VerifiedPack {
 	if r == nil || len(r.packs) == 0 {
 		return nil
 	}
@@ -66,6 +76,17 @@ func (r *Registry) FindByURL(rawURL string) []VerifiedPack {
 	matches := make([]VerifiedPack, 0)
 	for _, pack := range r.packs {
 		if manifestMatchesHost(pack.Manifest, host) {
+			matches = append(matches, cloneVerifiedPack(pack))
+			continue
+		}
+		if !isAliasManifest(pack.Manifest) {
+			continue
+		}
+		policy, err := resolveAliasHostPolicy(ctx, r.hostPolicyResolver, pack.Identity, pack.Manifest)
+		if err != nil {
+			continue
+		}
+		if policyIngressMatchesHost(policy, host) {
 			matches = append(matches, cloneVerifiedPack(pack))
 		}
 	}

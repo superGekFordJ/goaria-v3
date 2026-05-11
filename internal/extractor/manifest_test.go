@@ -13,6 +13,167 @@ func TestValidateManifestAcceptsValidManifest(t *testing.T) {
 	}
 }
 
+func TestValidateManifestAcceptsAliasManifest(t *testing.T) {
+	tests := []struct {
+		name     string
+		manifest Manifest
+	}{
+		{
+			name: "parse only alias",
+			manifest: validAliasTestManifest(func(manifest *Manifest) {
+				manifest.Capabilities = []Capability{CapabilityParseWASM}
+				manifest.BrokerPolicyRefs = nil
+			}),
+		},
+		{
+			name: "http alias with broker refs",
+			manifest: validAliasTestManifest(func(manifest *Manifest) {
+				manifest.Capabilities = []Capability{CapabilityParseWASM, CapabilityHTTPFetch}
+			}),
+		},
+		{
+			name: "auth alias with broker refs",
+			manifest: validAliasTestManifest(func(manifest *Manifest) {
+				manifest.Capabilities = []Capability{CapabilityParseWASM, CapabilityAuthProfile}
+			}),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ValidateManifest(tt.manifest, DefaultTrustPolicy()); err != nil {
+				t.Fatalf("ValidateManifest() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateManifestRejectsAliasModeFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Manifest)
+	}{
+		{
+			name: "nil domains with refs",
+			mutate: func(manifest *Manifest) {
+				manifest.Domains = nil
+			},
+		},
+		{
+			name: "empty domains without refs",
+			mutate: func(manifest *Manifest) {
+				manifest.DomainPolicyRefs = nil
+				manifest.BrokerPolicyRefs = nil
+				manifest.Capabilities = []Capability{CapabilityParseWASM}
+			},
+		},
+		{
+			name: "mixed concrete domains and domain refs",
+			mutate: func(manifest *Manifest) {
+				manifest.Domains = []DomainRule{{Host: "share.alpha.test"}}
+			},
+		},
+		{
+			name: "mixed concrete domains and broker refs",
+			mutate: func(manifest *Manifest) {
+				manifest.Domains = []DomainRule{{Host: "share.alpha.test"}}
+				manifest.DomainPolicyRefs = nil
+			},
+		},
+		{
+			name: "http alias without broker refs",
+			mutate: func(manifest *Manifest) {
+				manifest.Capabilities = []Capability{CapabilityParseWASM, CapabilityHTTPFetch}
+				manifest.BrokerPolicyRefs = nil
+			},
+		},
+		{
+			name: "auth alias without broker refs",
+			mutate: func(manifest *Manifest) {
+				manifest.Capabilities = []Capability{CapabilityParseWASM, CapabilityAuthProfile}
+				manifest.BrokerPolicyRefs = nil
+			},
+		},
+		{
+			name: "broker refs without brokered capability",
+			mutate: func(manifest *Manifest) {
+				manifest.Capabilities = []Capability{CapabilityParseWASM}
+			},
+		},
+		{
+			name: "duplicate domain refs",
+			mutate: func(manifest *Manifest) {
+				manifest.DomainPolicyRefs = []string{"dpr-alpha001", "dpr-alpha001"}
+			},
+		},
+		{
+			name: "duplicate broker refs",
+			mutate: func(manifest *Manifest) {
+				manifest.BrokerPolicyRefs = []string{"bpr-alpha001", "bpr-alpha001"}
+			},
+		},
+		{
+			name: "uppercase ref",
+			mutate: func(manifest *Manifest) {
+				manifest.DomainPolicyRefs = []string{"Dpr-alpha001"}
+			},
+		},
+		{
+			name: "dotted ref",
+			mutate: func(manifest *Manifest) {
+				manifest.DomainPolicyRefs = []string{"share.alpha"}
+			},
+		},
+		{
+			name: "url looking ref",
+			mutate: func(manifest *Manifest) {
+				manifest.DomainPolicyRefs = []string{"https://alpha"}
+			},
+		},
+		{
+			name: "path looking ref",
+			mutate: func(manifest *Manifest) {
+				manifest.DomainPolicyRefs = []string{"alpha/path"}
+			},
+		},
+		{
+			name: "wildcard ref",
+			mutate: func(manifest *Manifest) {
+				manifest.DomainPolicyRefs = []string{"alpha-*"}
+			},
+		},
+		{
+			name: "underscore ref",
+			mutate: func(manifest *Manifest) {
+				manifest.DomainPolicyRefs = []string{"dpr_alpha001"}
+			},
+		},
+		{
+			name: "too short ref",
+			mutate: func(manifest *Manifest) {
+				manifest.DomainPolicyRefs = []string{"aa"}
+			},
+		},
+		{
+			name: "too long ref",
+			mutate: func(manifest *Manifest) {
+				manifest.DomainPolicyRefs = []string{strings.Repeat("a", 65)}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest := validAliasTestManifest(nil)
+			tt.mutate(&manifest)
+
+			if err := ValidateManifest(manifest, DefaultTrustPolicy()); err == nil {
+				t.Fatal("ValidateManifest() error = nil, want error")
+			}
+		})
+	}
+}
+
 func TestValidateManifestRejectsRequiredFieldFailures(t *testing.T) {
 	validHash := strings.Repeat("0123456789abcdef", 4)
 
@@ -299,4 +460,17 @@ func validTestManifest() Manifest {
 		},
 		PayloadSHA256: strings.Repeat("0123456789abcdef", 4),
 	}
+}
+
+func validAliasTestManifest(mutate func(*Manifest)) Manifest {
+	manifest := validTestManifest()
+	manifest.PackID = "xpk-alpha001"
+	manifest.Domains = []DomainRule{}
+	manifest.DomainPolicyRefs = []string{"dpr-alpha001"}
+	manifest.BrokerPolicyRefs = []string{"bpr-alpha001"}
+	if mutate != nil {
+		mutate(&manifest)
+	}
+
+	return manifest
 }

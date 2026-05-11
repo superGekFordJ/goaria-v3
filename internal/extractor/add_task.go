@@ -68,7 +68,7 @@ func (d *AddTaskDispatcher) Resolve(ctx context.Context, rawURL string) (AddTask
 		return resolution, nil
 	}
 
-	candidates := d.registry.FindByURL(rawURL)
+	candidates := d.registry.FindByURLWithContext(ctx, rawURL)
 	if len(candidates) == 0 {
 		return resolution, nil
 	}

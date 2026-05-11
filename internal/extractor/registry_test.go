@@ -108,6 +108,73 @@ func TestRegistryExactDomainDoesNotMatchSubdomainWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestRegistryLoadsAliasPacksButNoResolverYieldsNoMatch(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(21)
+	pack := signedAliasTestPack(t, privateKey, []byte("alias payload"), nil)
+	registry, rejections := NewRegistry([]EmbeddedPack{pack}, policyWithKeys(publicKey))
+	if len(rejections) != 0 {
+		t.Fatalf("NewRegistry() rejections = %#v, want none", rejections)
+	}
+	if packs := registry.Packs(); len(packs) != 1 || !isAliasManifest(packs[0].Manifest) {
+		t.Fatalf("registry packs = %#v, want one alias pack", packs)
+	}
+	if matches := registry.FindByURL("https://share.alpha.test/path"); len(matches) != 0 {
+		t.Fatalf("registry.FindByURL() = %d matches, want no resolver no-match", len(matches))
+	}
+}
+
+func TestRegistryFindByURLUsesResolverBackedAliasIngress(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(22)
+	pack := signedAliasTestPack(t, privateKey, []byte("alias payload"), nil)
+	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
+	if err != nil {
+		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
+	}
+	resolver := &fakeHostPolicyResolver{policy: validResolvedHostPolicy(verified.Identity, verified.Manifest)}
+	registry, rejections := NewRegistryWithHostPolicyResolver([]EmbeddedPack{pack}, policyWithKeys(publicKey), resolver)
+	if len(rejections) != 0 {
+		t.Fatalf("NewRegistryWithHostPolicyResolver() rejections = %#v, want none", rejections)
+	}
+
+	matches := registry.FindByURL("https://share.alpha.test/path")
+	if len(matches) != 1 {
+		t.Fatalf("registry.FindByURL() = %d matches, want resolver-backed alias match", len(matches))
+	}
+	if matches[0].Identity != verified.Identity || matches[0].Manifest.DomainPolicyRefs[0] != "dpr-alpha001" {
+		t.Fatalf("matched pack identity/refs = %#v %#v", matches[0].Identity, matches[0].Manifest.DomainPolicyRefs)
+	}
+	if noMatches := registry.FindByURL("https://outside.alpha.test/path"); len(noMatches) != 0 {
+		t.Fatalf("registry.FindByURL(outside) = %d matches, want 0", len(noMatches))
+	}
+
+	matches[0].Manifest.DomainPolicyRefs[0] = "dpr-mutated"
+	matches[0].Manifest.BrokerPolicyRefs[0] = "bpr-mutated"
+	matches[0].Payload[0] = 'X'
+	fresh := registry.FindByURL("https://share.alpha.test/path")
+	if fresh[0].Manifest.DomainPolicyRefs[0] != "dpr-alpha001" || fresh[0].Manifest.BrokerPolicyRefs[0] != "bpr-alpha001" || string(fresh[0].Payload) != "alias payload" {
+		t.Fatalf("registry alias match was not defensively copied: %#v", fresh[0])
+	}
+}
+
+func TestRegistryAliasResolverMismatchYieldsNoMatch(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(23)
+	pack := signedAliasTestPack(t, privateKey, []byte("alias payload"), nil)
+	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
+	if err != nil {
+		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
+	}
+	mismatchedPolicy := validResolvedHostPolicy(verified.Identity, verified.Manifest)
+	mismatchedPolicy.DomainPolicyRefs = []string{"dpr-alpha002"}
+	registry, rejections := NewRegistryWithHostPolicyResolver([]EmbeddedPack{pack}, policyWithKeys(publicKey), &fakeHostPolicyResolver{policy: mismatchedPolicy})
+	if len(rejections) != 0 {
+		t.Fatalf("NewRegistryWithHostPolicyResolver() rejections = %#v, want none", rejections)
+	}
+
+	if matches := registry.FindByURL("https://share.alpha.test/path"); len(matches) != 0 {
+		t.Fatalf("registry.FindByURL() = %d matches, want resolver mismatch no-match", len(matches))
+	}
+}
+
 func TestRegistryReturnsDefensiveCopies(t *testing.T) {
 	publicKey, privateKey := deterministicKeyPair(1)
 	pack := signedTestPack(t, privateKey, []byte("payload"), nil)
@@ -155,6 +222,18 @@ func signedTestPack(t *testing.T, privateKey ed25519.PrivateKey, payload []byte,
 	t.Helper()
 
 	manifestJSON := mustManifestJSON(t, payload, mutate)
+
+	return EmbeddedPack{
+		ManifestJSON: manifestJSON,
+		Payload:      payload,
+		Signature:    ed25519.Sign(privateKey, manifestJSON),
+	}
+}
+
+func signedAliasTestPack(t *testing.T, privateKey ed25519.PrivateKey, payload []byte, mutate func(map[string]any)) EmbeddedPack {
+	t.Helper()
+
+	manifestJSON := mustAliasManifestJSON(t, payload, mutate)
 
 	return EmbeddedPack{
 		ManifestJSON: manifestJSON,

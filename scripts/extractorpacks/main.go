@@ -260,6 +260,7 @@ func verifyPackAsset(opts verifyOptions, lockDir string, entry packLockEntry) (v
 		ManifestJSON: parts.ManifestJSON,
 		Payload:      parts.Payload,
 		Signature:    parts.Signature,
+		AssetSHA256:  assetSHA,
 	}, policy)
 	if err != nil {
 		return verifiedAsset{}, fmt.Errorf("verify signed manifest/payload: %w", err)
@@ -577,6 +578,7 @@ func generateEmbeddedPacksCode(verified []verifiedAsset, required bool) ([]byte,
 		builder.WriteString("\t\tSignature: ")
 		builder.WriteString(byteSliceLiteral(asset.Parts.Signature, "\t\t"))
 		builder.WriteString(",\n")
+		fmt.Fprintf(&builder, "\t\tAssetSHA256: %q,\n", asset.AssetSHA256)
 		builder.WriteString("\t})\n")
 	}
 

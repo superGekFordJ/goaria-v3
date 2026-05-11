@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -13,12 +14,14 @@ func TestVerifyEmbeddedPackAcceptsValidFixture(t *testing.T) {
 	payload := []byte("fixture wasm bytes")
 	manifestJSON := mustManifestJSON(t, payload, nil)
 	signature := ed25519.Sign(privateKey, manifestJSON)
+	assetSHA := strings.Repeat("a", 64)
 	policy := policyWithKeys(publicKey)
 
 	verified, err := VerifyEmbeddedPack(EmbeddedPack{
 		ManifestJSON: manifestJSON,
 		Payload:      payload,
 		Signature:    signature,
+		AssetSHA256:  assetSHA,
 	}, policy)
 	if err != nil {
 		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
@@ -28,6 +31,60 @@ func TestVerifyEmbeddedPackAcceptsValidFixture(t *testing.T) {
 	}
 	if string(verified.Payload) != string(payload) {
 		t.Fatalf("verified payload = %q, want %q", verified.Payload, payload)
+	}
+	if verified.Identity.PackID != verified.Manifest.PackID || verified.Identity.PackVersion != verified.Manifest.PackVersion {
+		t.Fatalf("verified identity pack fields = %#v, manifest = %#v", verified.Identity, verified.Manifest)
+	}
+	if verified.Identity.AssetSHA256 != assetSHA {
+		t.Fatalf("verified asset sha = %q, want %q", verified.Identity.AssetSHA256, assetSHA)
+	}
+	if verified.Identity.ManifestSHA256 != sha256Hex(manifestJSON) || verified.Identity.PayloadSHA256 != sha256Hex(payload) || verified.Identity.SignatureSHA256 != sha256Hex(signature) || verified.Identity.PublicKeySHA256 != sha256Hex(publicKey) {
+		t.Fatalf("verified identity hashes = %#v", verified.Identity)
+	}
+}
+
+func TestVerifyEmbeddedPackAcceptsSignedAliasManifestAndDefensiveRefs(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(11)
+	payload := []byte("alias fixture wasm bytes")
+	manifestJSON := mustAliasManifestJSON(t, payload, nil)
+	signature := ed25519.Sign(privateKey, manifestJSON)
+	verified, err := VerifyEmbeddedPack(EmbeddedPack{
+		ManifestJSON: manifestJSON,
+		Payload:      payload,
+		Signature:    signature,
+		AssetSHA256:  strings.Repeat("b", 64),
+	}, policyWithKeys(publicKey))
+	if err != nil {
+		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
+	}
+	if verified.Manifest.PackID != "xpk-alpha001" || verified.Identity.PackID != "xpk-alpha001" {
+		t.Fatalf("verified alias identity = %#v manifest=%#v", verified.Identity, verified.Manifest)
+	}
+	if len(verified.Manifest.DomainPolicyRefs) != 1 || verified.Manifest.DomainPolicyRefs[0] != "dpr-alpha001" {
+		t.Fatalf("verified domain refs = %#v", verified.Manifest.DomainPolicyRefs)
+	}
+
+	cloned := cloneVerifiedPack(verified)
+	cloned.Manifest.DomainPolicyRefs[0] = "dpr-mutated"
+	cloned.Manifest.BrokerPolicyRefs[0] = "bpr-mutated"
+	cloned.Payload[0] = 'X'
+	if verified.Manifest.DomainPolicyRefs[0] != "dpr-alpha001" || verified.Manifest.BrokerPolicyRefs[0] != "bpr-alpha001" || string(verified.Payload) != string(payload) {
+		t.Fatalf("verified alias pack was mutated through clone: %#v", verified.Manifest)
+	}
+}
+
+func TestVerifyEmbeddedPackRejectsInvalidAssetSHA(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(12)
+	payload := []byte("fixture wasm bytes")
+	manifestJSON := mustManifestJSON(t, payload, nil)
+
+	if _, err := VerifyEmbeddedPack(EmbeddedPack{
+		ManifestJSON: manifestJSON,
+		Payload:      payload,
+		Signature:    ed25519.Sign(privateKey, manifestJSON),
+		AssetSHA256:  strings.ToUpper(strings.Repeat("a", 64)),
+	}, policyWithKeys(publicKey)); err == nil {
+		t.Fatal("VerifyEmbeddedPack() error = nil, want invalid asset hash error")
 	}
 }
 
@@ -73,6 +130,24 @@ func TestVerifyEmbeddedPackRejectsTamperedManifest(t *testing.T) {
 		Signature:    signature,
 	}, policyWithKeys(publicKey)); err == nil {
 		t.Fatal("VerifyEmbeddedPack() error = nil, want error")
+	}
+}
+
+func TestVerifyEmbeddedPackRejectsTamperedSignedAliasRefs(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(13)
+	payload := []byte("alias fixture wasm bytes")
+	manifestJSON := mustAliasManifestJSON(t, payload, nil)
+	signature := ed25519.Sign(privateKey, manifestJSON)
+	tamperedManifest := mustAliasManifestJSON(t, payload, func(values map[string]any) {
+		values["domain_policy_refs"] = []string{"dpr-alpha002"}
+	})
+
+	if _, err := VerifyEmbeddedPack(EmbeddedPack{
+		ManifestJSON: tamperedManifest,
+		Payload:      payload,
+		Signature:    signature,
+	}, policyWithKeys(publicKey)); err == nil {
+		t.Fatal("VerifyEmbeddedPack() error = nil, want alias ref tamper failure")
 	}
 }
 
@@ -227,4 +302,18 @@ func mustManifestJSON(t *testing.T, payload []byte, mutate func(map[string]any))
 	}
 
 	return manifestJSON
+}
+
+func mustAliasManifestJSON(t *testing.T, payload []byte, mutate func(map[string]any)) []byte {
+	t.Helper()
+
+	return mustManifestJSON(t, payload, func(values map[string]any) {
+		values["pack_id"] = "xpk-alpha001"
+		values["domains"] = []map[string]any{}
+		values["domain_policy_refs"] = []string{"dpr-alpha001"}
+		values["broker_policy_refs"] = []string{"bpr-alpha001"}
+		if mutate != nil {
+			mutate(values)
+		}
+	})
 }
