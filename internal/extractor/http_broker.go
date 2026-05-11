@@ -76,6 +76,35 @@ type HTTPFetchRequest struct {
 	MaxResponseBytes int64
 }
 
+type HTTPFetchRefRequest struct {
+	PackID           string
+	Manifest         Manifest
+	PackIdentity     VerifiedPackIdentity
+	HostPolicy       ResolvedHostPolicy
+	BrokerPolicyRef  string
+	EndpointRef      string
+	Params           map[string]string
+	Method           string
+	Headers          map[string]string
+	AuthProfileID    AuthProfileID
+	Timeout          time.Duration
+	MaxResponseBytes int64
+}
+
+type httpFetchExecutionRequest struct {
+	PackID              string
+	Manifest            Manifest
+	Method              string
+	URL                 string
+	Headers             map[string]string
+	AuthProfileID       AuthProfileID
+	Timeout             time.Duration
+	MaxResponseBytes    int64
+	FinalURLRedacted    bool
+	AllowedURL          func(string) (*url.URL, error)
+	ValidateAuthProfile func(AuthProfileID, string) error
+}
+
 type HTTPFetchResponse struct {
 	StatusCode int
 	FinalURL   string
@@ -126,6 +155,46 @@ func (b *HTTPBroker) Fetch(ctx context.Context, request HTTPFetchRequest) (HTTPF
 	return response, nil
 }
 
+func (b *HTTPBroker) FetchRef(ctx context.Context, request HTTPFetchRefRequest) (HTTPFetchResponse, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if b == nil {
+		return HTTPFetchResponse{}, errors.New("http broker is nil")
+	}
+	knownSecrets := make([]string, 0, 2)
+	response, err := b.fetchRef(ctx, request, &knownSecrets)
+	if err != nil {
+		return HTTPFetchResponse{}, sanitizeRefModeFetchError(err, knownSecrets...)
+	}
+
+	return response, nil
+}
+
+func sanitizeRefModeFetchError(err error, knownSecrets ...string) error {
+	if err == nil {
+		return nil
+	}
+	redacted := RedactSensitive(err.Error(), knownSecrets...)
+	for _, allowed := range []string{
+		"unknown endpoint ref",
+		"invalid endpoint params",
+		"host policy denied",
+		"auth profile denied",
+		"request timeout is invalid",
+		"response body cap must be positive",
+	} {
+		if redacted == allowed {
+			return errors.New(allowed)
+		}
+	}
+	if strings.HasPrefix(redacted, "http method ") || strings.HasPrefix(redacted, "unsupported http method") || strings.HasPrefix(redacted, "request header ") || strings.HasPrefix(redacted, "too many request headers") || strings.HasPrefix(redacted, "invalid request header") {
+		return errors.New(redacted)
+	}
+
+	return errors.New("ref-mode fetch failed")
+}
+
 func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownSecrets *[]string) (HTTPFetchResponse, error) {
 	if err := ValidateCapabilityURL(CapabilityContext{
 		PackID:     request.PackID,
@@ -142,8 +211,126 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		}, request.URL); err != nil {
 			return HTTPFetchResponse{}, err
 		}
+		if err := validateAuthProfileID(request.AuthProfileID); err != nil {
+			return HTTPFetchResponse{}, err
+		}
 	}
 
+	return b.fetchExpanded(ctx, httpFetchExecutionRequest{
+		PackID:           request.PackID,
+		Manifest:         request.Manifest,
+		Method:           request.Method,
+		URL:              request.URL,
+		Headers:          request.Headers,
+		AuthProfileID:    request.AuthProfileID,
+		Timeout:          request.Timeout,
+		MaxResponseBytes: request.MaxResponseBytes,
+		AllowedURL: func(rawURL string) (*url.URL, error) {
+			return allowedHTTPURLForManifest(request.Manifest, rawURL)
+		},
+	}, knownSecrets)
+}
+
+func (b *HTTPBroker) fetchRef(ctx context.Context, request HTTPFetchRefRequest, knownSecrets *[]string) (HTTPFetchResponse, error) {
+	if err := validatePackID(request.PackID); err != nil {
+		return HTTPFetchResponse{}, errors.New("invalid ref-mode request")
+	}
+	if request.Manifest.PackID != request.PackID {
+		return HTTPFetchResponse{}, errors.New("invalid ref-mode request")
+	}
+	if !isAliasManifest(request.Manifest) {
+		return HTTPFetchResponse{}, errors.New("ref-mode fetch requires alias manifest")
+	}
+	if request.PackIdentity.PackID != request.PackID || request.PackIdentity != request.HostPolicy.PackIdentity {
+		return HTTPFetchResponse{}, errors.New("host policy denied")
+	}
+	if err := validateResolvedHostPolicyBinding(request.PackIdentity, request.Manifest, request.HostPolicy); err != nil {
+		return HTTPFetchResponse{}, errors.New("host policy denied")
+	}
+	if !manifestHasCapability(request.Manifest, CapabilityHTTPFetch) || !policyAllowsCapability(request.HostPolicy, CapabilityHTTPFetch) {
+		return HTTPFetchResponse{}, errors.New("host policy denied")
+	}
+	if err := validateHostImportRefs(request.BrokerPolicyRef, request.EndpointRef); err != nil {
+		return HTTPFetchResponse{}, errors.New("host policy denied")
+	}
+	endpoint, ok := findBrokerEndpoint(request.HostPolicy, request.BrokerPolicyRef, request.EndpointRef)
+	if !ok {
+		return HTTPFetchResponse{}, errors.New("unknown endpoint ref")
+	}
+	if _, err := b.validateMethod(request.Method); err != nil {
+		return HTTPFetchResponse{}, err
+	}
+	if _, err := b.validatePackHeaders(request.Headers); err != nil {
+		return HTTPFetchResponse{}, err
+	}
+	if request.Timeout < 0 {
+		return HTTPFetchResponse{}, errors.New("request timeout is invalid")
+	}
+	if request.MaxResponseBytes < 0 {
+		return HTTPFetchResponse{}, errors.New("response body cap must be positive")
+	}
+	timeout := b.effectiveTimeout(HTTPFetchRequest{Manifest: request.Manifest, Timeout: request.Timeout})
+	if timeout <= 0 {
+		return HTTPFetchResponse{}, errors.New("request timeout is invalid")
+	}
+	if bodyCap := b.effectiveBodyCap(HTTPFetchRequest{Manifest: request.Manifest, MaxResponseBytes: request.MaxResponseBytes}); bodyCap <= 0 {
+		return HTTPFetchResponse{}, errors.New("response body cap must be positive")
+	}
+	targetURL, err := expandBrokerEndpointURL(request.HostPolicy, endpoint, request.Params)
+	if err != nil {
+		return HTTPFetchResponse{}, err
+	}
+	allowedURL := func(rawURL string) (*url.URL, error) {
+		parsed, host, err := parseSafeHTTPURL(rawURL)
+		if err != nil {
+			return nil, errors.New("broker url denied")
+		}
+		if !policyBrokerMatchesHost(request.HostPolicy, host) {
+			return nil, errors.New("broker url denied")
+		}
+
+		return parsed, nil
+	}
+	authValidator := func(profileID AuthProfileID, rawURL string) error {
+		if profileID == "" {
+			return nil
+		}
+		if !manifestHasCapability(request.Manifest, CapabilityAuthProfile) || !policyAllowsCapability(request.HostPolicy, CapabilityAuthProfile) {
+			return errors.New("auth profile denied")
+		}
+		if err := validateAuthProfileID(profileID); err != nil {
+			return errors.New("auth profile denied")
+		}
+		if !endpointAllowsAuthProfile(endpoint, profileID) {
+			return errors.New("auth profile denied")
+		}
+		parsed, _, err := parseSafeHTTPURL(rawURL)
+		if err != nil || parsed.Scheme != "https" {
+			return errors.New("auth profile denied")
+		}
+		if b.authResolver == nil {
+			return errors.New("auth profile denied")
+		}
+
+		return nil
+	}
+
+	return b.fetchExpanded(ctx, httpFetchExecutionRequest{
+		PackID:              request.PackID,
+		Manifest:            request.Manifest,
+		Method:              request.Method,
+		URL:                 targetURL,
+		Headers:             request.Headers,
+		AuthProfileID:       request.AuthProfileID,
+		Timeout:             timeout,
+		MaxResponseBytes:    request.MaxResponseBytes,
+		FinalURLRedacted:    true,
+		AllowedURL:          allowedURL,
+		ValidateAuthProfile: authValidator,
+	}, knownSecrets)
+}
+
+func (b *HTTPBroker) fetchExpanded(ctx context.Context, request httpFetchExecutionRequest, knownSecrets *[]string) (HTTPFetchResponse, error) {
 	method, err := b.validateMethod(request.Method)
 	if err != nil {
 		return HTTPFetchResponse{}, err
@@ -152,12 +339,22 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 	if err != nil {
 		return HTTPFetchResponse{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, b.effectiveTimeout(request))
+	if request.AuthProfileID != "" {
+		if request.ValidateAuthProfile != nil {
+			if err := request.ValidateAuthProfile(request.AuthProfileID, request.URL); err != nil {
+				return HTTPFetchResponse{}, err
+			}
+		}
+		if b.authResolver == nil {
+			return HTTPFetchResponse{}, fmt.Errorf("auth profile %q requested but no auth resolver is configured", request.AuthProfileID)
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, b.effectiveTimeout(HTTPFetchRequest{Manifest: request.Manifest, Timeout: request.Timeout}))
 	defer cancel()
 
 	currentURL := request.URL
 	for redirects := 0; ; redirects++ {
-		parsed, err := allowedHTTPURLForManifest(request.Manifest, currentURL)
+		parsed, err := request.AllowedURL(currentURL)
 		if err != nil {
 			return HTTPFetchResponse{}, err
 		}
@@ -172,7 +369,16 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		}
 
 		if request.AuthProfileID != "" {
-			if err := b.injectAuth(ctx, httpRequest, request, currentURL, knownSecrets); err != nil {
+			if request.ValidateAuthProfile != nil {
+				if err := request.ValidateAuthProfile(request.AuthProfileID, currentURL); err != nil {
+					return HTTPFetchResponse{}, err
+				}
+			}
+			if err := b.injectAuth(ctx, httpRequest, HTTPFetchRequest{
+				PackID:        request.PackID,
+				Manifest:      request.Manifest,
+				AuthProfileID: request.AuthProfileID,
+			}, currentURL, knownSecrets); err != nil {
 				return HTTPFetchResponse{}, err
 			}
 		}
@@ -183,6 +389,9 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		}
 		if response == nil {
 			return HTTPFetchResponse{}, fmt.Errorf("http fetch failed for %s: empty response", currentURL)
+		}
+		if response.Body == nil {
+			response.Body = io.NopCloser(strings.NewReader(""))
 		}
 
 		if isRedirectStatus(response.StatusCode) {
@@ -197,7 +406,7 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 			if err != nil {
 				return HTTPFetchResponse{}, err
 			}
-			parsedNext, err := allowedHTTPURLForManifest(request.Manifest, nextURL)
+			parsedNext, err := request.AllowedURL(nextURL)
 			if err != nil {
 				return HTTPFetchResponse{}, fmt.Errorf("redirect denied: %w", err)
 			}
@@ -208,7 +417,7 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 			continue
 		}
 
-		body, err := readCappedBody(response.Body, b.effectiveBodyCap(request))
+		body, err := readCappedBody(response.Body, b.effectiveBodyCap(HTTPFetchRequest{Manifest: request.Manifest, MaxResponseBytes: request.MaxResponseBytes}))
 		if err != nil {
 			return HTTPFetchResponse{}, err
 		}
@@ -219,9 +428,14 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 			}
 		}
 
+		finalURL := RedactSensitive(currentURL, *knownSecrets...)
+		if request.FinalURLRedacted {
+			finalURL = ""
+		}
+
 		return HTTPFetchResponse{
 			StatusCode: response.StatusCode,
-			FinalURL:   RedactSensitive(currentURL, *knownSecrets...),
+			FinalURL:   finalURL,
 			Headers:    safeHeaders,
 			Body:       body,
 		}, nil
@@ -281,6 +495,9 @@ func (b *HTTPBroker) injectAuth(ctx context.Context, httpRequest *http.Request, 
 	}
 	if b.authResolver == nil {
 		return fmt.Errorf("auth profile %q requested but no auth resolver is configured", request.AuthProfileID)
+	}
+	if err := validateAuthProfileID(request.AuthProfileID); err != nil {
+		return err
 	}
 	resolved, err := b.authResolver.ResolveAuthProfile(ctx, request.PackID, request.AuthProfileID, targetURL)
 	if err != nil {

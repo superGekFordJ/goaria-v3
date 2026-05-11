@@ -96,8 +96,9 @@ func NewEmbeddedReleaseAddTaskDispatcher(config EmbeddedReleaseDispatcherConfig)
 	return NewAddTaskDispatcher(AddTaskDispatcherConfig{
 		Registry: registry,
 		Runner: NewRunnerWithConfig(RunnerConfig{
-			HTTPBroker:   NewHTTPBroker(HTTPBrokerConfig{AuthResolver: config.AuthResolver}),
-			AuthResolver: config.AuthResolver,
+			HTTPBroker:         NewHTTPBroker(HTTPBrokerConfig{AuthResolver: config.AuthResolver}),
+			AuthResolver:       config.AuthResolver,
+			HostPolicyResolver: config.HostPolicyResolver,
 		}),
 		AuthResolver:   config.AuthResolver,
 		HeaderResolver: config.HeaderResolver,

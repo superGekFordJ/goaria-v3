@@ -326,17 +326,18 @@ func buildExportSection(missing map[string]bool, indexes functionIndexes) []byte
 }
 
 func buildCodeSection(config wasmFixtureConfig, matchLength uint32, indexes functionIndexes) []byte {
-	bodies := [][]byte{
-		functionBody(i32ConstInstructions(config.abiVersion)),
-		functionBody(i32ConstInstructions(fixtureInputPtr)),
-		functionBody(nil),
-		functionBody(matchInstructions(config, matchLength)),
-		functionBody(extractInstructions(config, indexes)),
+	bodies := []wasmFunctionBody{
+		{instructions: i32ConstInstructions(config.abiVersion)},
+		{instructions: i32ConstInstructions(fixtureInputPtr)},
+		{},
+		{instructions: matchInstructions(config, matchLength)},
+		{instructions: extractInstructions(config, indexes)},
 	}
 
 	var section []byte
 	section = appendU32(section, uint32(len(bodies)))
-	for _, body := range bodies {
+	for _, bodyConfig := range bodies {
+		body := functionBody(bodyConfig)
 		section = appendU32(section, uint32(len(body)))
 		section = append(section, body...)
 	}
@@ -357,7 +358,8 @@ func extractInstructions(config wasmFixtureConfig, indexes functionIndexes) []by
 		}
 		for i := uint32(0); i < count; i++ {
 			instructions = append(instructions, i32ConstInstructions(fixtureHostReqPtr)...)
-			instructions = append(instructions, i32ConstInstructions(uint32(len(call.Request)))...)
+			instructions = append(instructions, wasmOpI32Const)
+			instructions = appendS32(instructions, int32(len(call.Request)))
 			instructions = append(instructions, wasmOpCall)
 			instructions = appendU32(instructions, fnIndex)
 			instructions = append(instructions, wasmOpDrop)
@@ -384,9 +386,13 @@ func matchInstructions(config wasmFixtureConfig, matchLength uint32) []byte {
 	return i64ConstInstructions(packABIResult(fixtureMatchPtr, matchLength))
 }
 
-func functionBody(instructions []byte) []byte {
+type wasmFunctionBody struct {
+	instructions []byte
+}
+
+func functionBody(config wasmFunctionBody) []byte {
 	body := []byte{0x00}
-	body = append(body, instructions...)
+	body = append(body, config.instructions...)
 	body = append(body, wasmOpEnd)
 
 	return body
@@ -462,11 +468,29 @@ func appendU32(buffer []byte, value uint32) []byte {
 	}
 }
 
+func appendS32(buffer []byte, value int32) []byte {
+	for {
+		b := byte(value & 0x7f)
+		value >>= 7
+		signBitSet := b&0x40 != 0
+		done := (value == 0 && !signBitSet) || (value == -1 && signBitSet)
+		if !done {
+			buffer = append(buffer, b|0x80)
+			continue
+		}
+
+		buffer = append(buffer, b)
+		return buffer
+	}
+}
+
 func appendU64(buffer []byte, value uint64) []byte {
 	for {
 		b := byte(value & 0x7f)
 		value >>= 7
-		if value != 0 {
+		signBitSet := b&0x40 != 0
+		more := (value != 0 || signBitSet) && (value != ^uint64(0) || !signBitSet)
+		if more {
 			buffer = append(buffer, b|0x80)
 			continue
 		}

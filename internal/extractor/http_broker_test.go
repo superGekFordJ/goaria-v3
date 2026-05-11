@@ -530,6 +530,191 @@ func TestHTTPBrokerRejectsAuthenticatedRedirectDowngrade(t *testing.T) {
 	}
 }
 
+func TestHTTPBrokerFetchRefExpandsEndpointAndRedactsFinalURL(t *testing.T) {
+	manifest := httpBrokerAliasManifest()
+	identity := syntheticVerifiedPackIdentity(manifest)
+	policy := validResolvedHostPolicy(identity, manifest)
+	transport := &hostImportRecordingTransport{statusCode: http.StatusAccepted, body: "ref ok"}
+	broker := testHTTPBroker(transport, nil)
+
+	resp, err := broker.FetchRef(context.Background(), HTTPFetchRefRequest{
+		PackID:          manifest.PackID,
+		Manifest:        manifest,
+		PackIdentity:    identity,
+		HostPolicy:      policy,
+		BrokerPolicyRef: "bpr-alpha001",
+		EndpointRef:     "epr-alpha001",
+		Params:          map[string]string{"id": "item 001"},
+		Method:          http.MethodGet,
+		Headers:         map[string]string{"Accept": "application/json"},
+	})
+	if err != nil {
+		t.Fatalf("FetchRef() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusAccepted || resp.FinalURL != "" || string(resp.Body) != "ref ok" {
+		t.Fatalf("FetchRef() response = %#v, body=%q", resp, resp.Body)
+	}
+	if transport.Count() != 1 {
+		t.Fatalf("transport calls = %d, want 1", transport.Count())
+	}
+	if got := transport.LastRequest().URL.String(); got != "https://api.alpha.test/resource/item%20001" {
+		t.Fatalf("transport URL = %q, want private expanded URL", got)
+	}
+	if got := transport.LastRequest().Header.Get("Accept"); got != "application/json" {
+		t.Fatalf("Accept header = %q, want safe guest header", got)
+	}
+}
+
+func TestHTTPBrokerFetchRefDeniesBeforeTransport(t *testing.T) {
+	manifest := httpBrokerAliasManifest()
+	identity := syntheticVerifiedPackIdentity(manifest)
+	policy := validResolvedHostPolicy(identity, manifest)
+	baseRequest := func() HTTPFetchRefRequest {
+		return HTTPFetchRefRequest{
+			PackID:          manifest.PackID,
+			Manifest:        manifest,
+			PackIdentity:    identity,
+			HostPolicy:      policy,
+			BrokerPolicyRef: "bpr-alpha001",
+			EndpointRef:     "epr-alpha001",
+			Params:          map[string]string{"id": "item-001"},
+			Method:          http.MethodGet,
+		}
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*HTTPFetchRefRequest)
+	}{
+		{name: "mismatched policy", mutate: func(req *HTTPFetchRefRequest) { req.HostPolicy.PackIdentity.PackID = "xpk-alpha002" }},
+		{name: "undeclared broker ref", mutate: func(req *HTTPFetchRefRequest) { req.BrokerPolicyRef = "bpr-alpha002" }},
+		{name: "undeclared endpoint ref", mutate: func(req *HTTPFetchRefRequest) { req.EndpointRef = "epr-alpha002" }},
+		{name: "malformed broker ref", mutate: func(req *HTTPFetchRefRequest) { req.BrokerPolicyRef = "broker.alpha" }},
+		{name: "malformed params", mutate: func(req *HTTPFetchRefRequest) { req.Params = map[string]string{"token": "value"} }},
+		{name: "missing http fetch capability", mutate: func(req *HTTPFetchRefRequest) {
+			req.Manifest.Capabilities = []Capability{CapabilityParseWASM, CapabilityAuthProfile}
+			req.HostPolicy.AllowedCapabilities = []Capability{CapabilityParseWASM, CapabilityAuthProfile}
+		}},
+		{name: "unsafe method", mutate: func(req *HTTPFetchRefRequest) { req.Method = http.MethodPost }},
+		{name: "forbidden header", mutate: func(req *HTTPFetchRefRequest) { req.Headers = map[string]string{"Authorization": "Bearer raw-token"} }},
+		{name: "bad body cap", mutate: func(req *HTTPFetchRefRequest) { req.MaxResponseBytes = -1 }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := baseRequest()
+			tt.mutate(&req)
+			transport := &recordingTransport{}
+			broker := testHTTPBroker(transport, nil)
+			_, err := broker.FetchRef(context.Background(), req)
+			if err == nil {
+				t.Fatal("FetchRef() error = nil, want error")
+			}
+			if transport.Count() != 0 {
+				t.Fatalf("transport calls = %d, want 0", transport.Count())
+			}
+			if strings.Contains(err.Error(), "raw-token") || strings.Contains(err.Error(), "https://api.alpha.test/resource") {
+				t.Fatalf("FetchRef() error leaked private/secret text: %v", err)
+			}
+		})
+	}
+}
+
+func TestHTTPBrokerFetchRefAuthScopeCheckedBeforeResolverOrTransport(t *testing.T) {
+	manifest := httpBrokerAliasManifest()
+	identity := syntheticVerifiedPackIdentity(manifest)
+	policy := validResolvedHostPolicy(identity, manifest)
+	transport := &recordingTransport{}
+	resolver := &recordingAuthResolver{secret: ResolvedAuthSecret{HeaderName: "Authorization", HeaderValue: "Bearer raw-token"}}
+	broker := testHTTPBroker(transport, resolver)
+
+	_, err := broker.FetchRef(context.Background(), HTTPFetchRefRequest{
+		PackID:          manifest.PackID,
+		Manifest:        manifest,
+		PackIdentity:    identity,
+		HostPolicy:      policy,
+		BrokerPolicyRef: "bpr-alpha001",
+		EndpointRef:     "epr-alpha001",
+		Params:          map[string]string{"id": "item-001"},
+		Method:          http.MethodGet,
+		AuthProfileID:   "apr-alpha002",
+	})
+	if err == nil {
+		t.Fatal("FetchRef() error = nil, want auth scope denial")
+	}
+	if resolver.Count() != 0 {
+		t.Fatalf("resolver calls = %d, want 0", resolver.Count())
+	}
+	if transport.Count() != 0 {
+		t.Fatalf("transport calls = %d, want 0", transport.Count())
+	}
+}
+
+func TestHTTPBrokerFetchRefRedirectPolicy(t *testing.T) {
+	manifest := httpBrokerAliasManifest()
+	identity := syntheticVerifiedPackIdentity(manifest)
+	policy := validResolvedHostPolicy(identity, manifest)
+
+	t.Run("allows same broker domain redirect", func(t *testing.T) {
+		calls := 0
+		broker := testHTTPBroker(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if calls == 1 {
+				return redirectResponse("https://api.alpha.test/next"), nil
+			}
+			if req.URL.String() != "https://api.alpha.test/next" {
+				t.Fatalf("redirect URL = %q", req.URL.String())
+			}
+			return textResponse(http.StatusOK, "done"), nil
+		}), nil)
+
+		resp, err := broker.FetchRef(context.Background(), HTTPFetchRefRequest{
+			PackID:          manifest.PackID,
+			Manifest:        manifest,
+			PackIdentity:    identity,
+			HostPolicy:      policy,
+			BrokerPolicyRef: "bpr-alpha001",
+			EndpointRef:     "epr-alpha001",
+			Params:          map[string]string{"id": "item-001"},
+		})
+		if err != nil {
+			t.Fatalf("FetchRef() error = %v", err)
+		}
+		if calls != 2 || resp.FinalURL != "" {
+			t.Fatalf("calls=%d finalURL=%q, want 2 and empty final URL", calls, resp.FinalURL)
+		}
+	})
+
+	for _, location := range []string{"https://cdn.alpha.test/next", "ftp://api.alpha.test/next"} {
+		t.Run("reject "+location, func(t *testing.T) {
+			calls := 0
+			broker := testHTTPBroker(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				return redirectResponse(location), nil
+			}), nil)
+
+			_, err := broker.FetchRef(context.Background(), HTTPFetchRefRequest{
+				PackID:          manifest.PackID,
+				Manifest:        manifest,
+				PackIdentity:    identity,
+				HostPolicy:      policy,
+				BrokerPolicyRef: "bpr-alpha001",
+				EndpointRef:     "epr-alpha001",
+				Params:          map[string]string{"id": "item-001"},
+			})
+			if err == nil {
+				t.Fatal("FetchRef() error = nil, want redirect denial")
+			}
+			if calls != 1 {
+				t.Fatalf("transport calls = %d, want only initial", calls)
+			}
+			if strings.Contains(err.Error(), location) {
+				t.Fatalf("FetchRef() error leaked redirect target: %v", err)
+			}
+		})
+	}
+}
+
 func TestHTTPBrokerRejectsUnsafeResolvedIPsAndBypassesProxy(t *testing.T) {
 	resolver := fakeIPResolver{ips: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
 	dialed := false
@@ -722,6 +907,15 @@ func testHTTPPolicy() HTTPBrokerPolicy {
 
 func httpBrokerManifest() Manifest {
 	manifest := validCapabilityManifest()
+	manifest.ResourceLimits.TimeoutMillis = 100
+	manifest.ResourceLimits.MaxResponseBytes = 1024
+
+	return manifest
+}
+
+func httpBrokerAliasManifest() Manifest {
+	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = []Capability{CapabilityParseWASM, CapabilityHTTPFetch, CapabilityAuthProfile}
 	manifest.ResourceLimits.TimeoutMillis = 100
 	manifest.ResourceLimits.MaxResponseBytes = 1024
 

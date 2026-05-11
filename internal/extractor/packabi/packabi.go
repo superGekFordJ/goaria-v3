@@ -62,7 +62,10 @@ type ExtractedItemRef struct {
 
 type HostHTTPFetchRequest struct {
 	Method           string            `json:"method,omitempty"`
-	URL              string            `json:"url"`
+	URL              string            `json:"url,omitempty"`
+	BrokerPolicyRef  string            `json:"broker_policy_ref,omitempty"`
+	EndpointRef      string            `json:"endpoint_ref,omitempty"`
+	Params           map[string]string `json:"params,omitempty"`
 	Headers          map[string]string `json:"headers,omitempty"`
 	AuthProfileRef   string            `json:"auth_profile_ref,omitempty"`
 	TimeoutMillis    int               `json:"timeout_millis,omitempty"`
@@ -80,8 +83,11 @@ type HostHTTPFetchResponse struct {
 }
 
 type HostAuthProfileStatusRequest struct {
-	AuthProfileRef string `json:"auth_profile_ref"`
-	URL            string `json:"url"`
+	AuthProfileRef  string            `json:"auth_profile_ref,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	BrokerPolicyRef string            `json:"broker_policy_ref,omitempty"`
+	EndpointRef     string            `json:"endpoint_ref,omitempty"`
+	Params          map[string]string `json:"params,omitempty"`
 }
 
 type HostAuthProfileStatusResponse struct {

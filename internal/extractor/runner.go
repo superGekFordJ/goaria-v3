@@ -36,7 +36,12 @@ func NewRunner() *Runner {
 }
 
 func NewRunnerWithConfig(config RunnerConfig) *Runner {
-	return &Runner{hostImports: HostImportConfig(config)}
+	hostImports := HostImportConfig{}
+	hostImports.HTTPBroker = config.HTTPBroker
+	hostImports.AuthResolver = config.AuthResolver
+	hostImports.HostPolicyResolver = config.HostPolicyResolver
+
+	return &Runner{hostImports: hostImports}
 }
 
 func (r *Runner) Match(ctx context.Context, pack VerifiedPack, input MatchInput) (MatchOutput, error) {
@@ -119,7 +124,7 @@ func (r *Runner) runOperation(ctx context.Context, pack VerifiedPack, operation 
 	if err != nil {
 		return nil, err
 	}
-	bridge := newHostImportBridge(pack.Manifest, budget, r.hostImports)
+	bridge := newHostImportBridge(pack.Manifest, pack.Identity, budget, r.hostImports)
 	if err := bridge.instantiateHostImports(execCtx, runtime); err != nil {
 		return nil, fmt.Errorf("instantiate host imports: %w", err)
 	}

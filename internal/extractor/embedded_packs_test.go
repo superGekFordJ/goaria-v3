@@ -116,6 +116,9 @@ func TestNewEmbeddedReleaseDispatcherAcceptsHostPolicyResolver(t *testing.T) {
 	if matches := dispatcher.registry.FindByURL("https://share.alpha.test/path"); len(matches) != 1 {
 		t.Fatalf("dispatcher registry resolver matches = %d, want 1", len(matches))
 	}
+	if dispatcher.runner == nil || dispatcher.runner.hostImports.HostPolicyResolver == nil {
+		t.Fatalf("dispatcher runner did not retain host policy resolver")
+	}
 }
 
 func TestNewEmbeddedReleaseDispatcherAliasWithoutResolverNoMatch(t *testing.T) {
