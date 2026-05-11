@@ -169,6 +169,10 @@ func configureEmbeddedExtractorDispatcher(appService *App) {
 	if !extractor.HasEmbeddedReleasePacks() && !extractor.EmbeddedReleaseRequired() {
 		return
 	}
+	hostPolicyResolver, err := extractor.LoadPrivatePolicyBundleResolverFromRuntimeSources()
+	if err != nil {
+		log.Fatalf("failed to load extractor host policy: %v", extractor.RedactSensitive(err.Error()))
+	}
 
 	var store extractor.AuthProfileResolver
 	if extractor.HasEmbeddedReleasePacks() {
@@ -183,7 +187,8 @@ func configureEmbeddedExtractorDispatcher(appService *App) {
 		store = fileStore
 	}
 	dispatcher, err := extractor.NewEmbeddedReleaseAddTaskDispatcher(extractor.EmbeddedReleaseDispatcherConfig{
-		AuthResolver: store,
+		AuthResolver:       store,
+		HostPolicyResolver: hostPolicyResolver,
 	})
 	if err != nil {
 		log.Fatalf("failed to verify embedded extractor release packs: %v", extractor.RedactSensitive(err.Error()))

@@ -99,6 +99,7 @@ func TestNewEmbeddedReleaseDispatcherLoadsVerifiedPacks(t *testing.T) {
 func TestNewEmbeddedReleaseDispatcherAcceptsHostPolicyResolver(t *testing.T) {
 	publicKey, privateKey := deterministicKeyPair(37)
 	pack := signedAliasTestPack(t, privateKey, []byte("alias release payload"), nil)
+	pack.AssetSHA256 = strings.Repeat("a", 64)
 	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
 	if err != nil {
 		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
@@ -124,7 +125,8 @@ func TestNewEmbeddedReleaseDispatcherAcceptsHostPolicyResolver(t *testing.T) {
 func TestNewEmbeddedReleaseDispatcherAliasWithoutResolverNoMatch(t *testing.T) {
 	publicKey, privateKey := deterministicKeyPair(38)
 	pack := signedAliasTestPack(t, privateKey, []byte("alias release payload"), nil)
-	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
+	pack.AssetSHA256 = strings.Repeat("a", 64)
+	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, false)
 
 	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{})
 	if err != nil {
@@ -135,6 +137,88 @@ func TestNewEmbeddedReleaseDispatcherAliasWithoutResolverNoMatch(t *testing.T) {
 	}
 	if matches := dispatcher.registry.FindByURL("https://share.alpha.test/path"); len(matches) != 0 {
 		t.Fatalf("dispatcher registry alias matches = %d, want no resolver no-match", len(matches))
+	}
+}
+
+func TestNewEmbeddedReleaseDispatcherFailsClosedWhenRequiredAliasMissingPolicy(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(39)
+	pack := signedAliasTestPack(t, privateKey, []byte("alias release payload"), nil)
+	pack.AssetSHA256 = strings.Repeat("a", 64)
+	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
+
+	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{})
+	if err == nil {
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = nil, want required alias host-policy error")
+	}
+	if dispatcher != nil {
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() returned dispatcher for missing required alias policy")
+	}
+	if err.Error() != "required embedded alias extractor host policy is not configured" {
+		t.Fatalf("error = %q, want generic required alias policy error", err.Error())
+	}
+}
+
+func TestNewEmbeddedReleaseDispatcherFailsClosedWhenRequiredAliasPolicyMismatches(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(40)
+	pack := signedAliasTestPack(t, privateKey, []byte("alias release payload"), nil)
+	pack.AssetSHA256 = strings.Repeat("a", 64)
+	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
+	if err != nil {
+		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
+	}
+	mismatchedPolicy := validResolvedHostPolicy(verified.Identity, verified.Manifest)
+	mismatchedPolicy.DomainPolicyRefs = []string{"dpr-alpha002"}
+	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
+
+	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{HostPolicyResolver: &fakeHostPolicyResolver{policy: mismatchedPolicy}})
+	if err == nil {
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = nil, want mismatched required alias policy error")
+	}
+	if dispatcher != nil {
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() returned dispatcher for mismatched required alias policy")
+	}
+	if err.Error() != "required embedded alias extractor host policy is not configured" {
+		t.Fatalf("error = %q, want generic required alias policy error", err.Error())
+	}
+}
+
+func TestNewEmbeddedReleaseDispatcherAcceptsMatchingPrivateBundleResolver(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(41)
+	pack := signedAliasTestPack(t, privateKey, []byte("alias release payload"), nil)
+	pack.AssetSHA256 = strings.Repeat("a", 64)
+	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
+	if err != nil {
+		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
+	}
+	resolver, err := NewPrivatePolicyBundleResolver(privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{Identity: verified.Identity, Manifest: verified.Manifest}}, nil), PrivatePolicyBundleLoadOptions{})
+	if err != nil {
+		t.Fatalf("NewPrivatePolicyBundleResolver() error = %v", err)
+	}
+	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
+
+	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{HostPolicyResolver: resolver})
+	if err != nil {
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = %v", err)
+	}
+	if dispatcher == nil {
+		t.Fatal("NewEmbeddedReleaseAddTaskDispatcher() dispatcher = nil")
+	}
+	if matches := dispatcher.registry.FindByURL("https://share.alpha.test/path"); len(matches) != 1 {
+		t.Fatalf("dispatcher registry resolver matches = %d, want 1", len(matches))
+	}
+}
+
+func TestNewEmbeddedReleaseDispatcherRequiredLegacyPackDoesNotRequireHostPolicy(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(42)
+	pack := signedTestPack(t, privateKey, []byte("legacy release payload"), nil)
+	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
+
+	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{})
+	if err != nil {
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = %v", err)
+	}
+	if dispatcher == nil {
+		t.Fatal("NewEmbeddedReleaseAddTaskDispatcher() dispatcher = nil")
 	}
 }
 

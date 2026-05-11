@@ -40,6 +40,7 @@ docs/temp/
 
 # --- Extractor pack generated outputs ---
 internal/extractor/embedded_packs_release_gen.go
+internal/extractor/private_policy_bundle_release_gen.go
 build/extractor/verified_packs.provenance.json
 build/extractor/cache/
 build/extractor/*.tmp
