@@ -78,6 +78,73 @@ func TestRunnerHostImportBudgetIsPerOperation(t *testing.T) {
 	}
 }
 
+func TestRunnerHostImportAliasRefModeUsesVerifiedIdentity(t *testing.T) {
+	request := string(mustHostImportJSON(t, HostHTTPFetchRequest{
+		Method:          http.MethodGet,
+		BrokerPolicyRef: "bpr-alpha001",
+		EndpointRef:     "epr-alpha001",
+		Params:          map[string]string{"id": "item-001"},
+	}))
+	pack := verifiedRunnerPack(t, httpFetchImportFixtureWASM(request), func(values map[string]any) {
+		values["pack_id"] = "xpk-alpha001"
+		values["pack_version"] = "1.0.0-alpha"
+		values["capabilities"] = []string{string(CapabilityParseWASM), string(CapabilityHTTPFetch), string(CapabilityAuthProfile)}
+		values["domains"] = []any{}
+		values["domain_policy_refs"] = []string{"dpr-alpha001"}
+		values["broker_policy_refs"] = []string{"bpr-alpha001"}
+	})
+	transport := &hostImportRecordingTransport{statusCode: http.StatusOK, body: "alias runner ok"}
+	resolver := &capturingRunnerHostPolicyResolver{policy: validResolvedHostPolicy(pack.Identity, pack.Manifest)}
+	runner := NewRunnerWithConfig(RunnerConfig{
+		HTTPBroker:         NewHTTPBroker(HTTPBrokerConfig{Policy: testHTTPPolicy(), Transport: transport}),
+		HostPolicyResolver: resolver,
+	})
+
+	if _, err := runner.Extract(context.Background(), pack, ExtractInput{URL: "https://share.alpha.test/item"}); err != nil {
+		t.Fatalf("Runner.Extract() error = %v", err)
+	}
+	if transport.Count() != 1 {
+		t.Fatalf("transport calls = %d, want 1", transport.Count())
+	}
+	if got := transport.LastRequest().URL.String(); got != "https://api.alpha.test/resource/item-001" {
+		t.Fatalf("transport URL = %q, want expanded ref-mode endpoint", got)
+	}
+	if resolver.calls != 1 {
+		t.Fatalf("resolver calls = %d, want 1", resolver.calls)
+	}
+	if resolver.last.PackIdentity != pack.Identity {
+		t.Fatalf("resolver identity = %#v, want pack identity %#v", resolver.last.PackIdentity, pack.Identity)
+	}
+}
+
+func TestRunnerHostImportAliasRawURLFailsClosed(t *testing.T) {
+	request := string(mustHostImportJSON(t, HostHTTPFetchRequest{URL: "https://api.alpha.test/resource/item-001"}))
+	pack := verifiedRunnerPack(t, httpFetchImportFixtureWASM(request), func(values map[string]any) {
+		values["pack_id"] = "xpk-alpha001"
+		values["pack_version"] = "1.0.0-alpha"
+		values["capabilities"] = []string{string(CapabilityParseWASM), string(CapabilityHTTPFetch), string(CapabilityAuthProfile)}
+		values["domains"] = []any{}
+		values["domain_policy_refs"] = []string{"dpr-alpha001"}
+		values["broker_policy_refs"] = []string{"bpr-alpha001"}
+	})
+	transport := &hostImportRecordingTransport{statusCode: http.StatusOK, body: "should not call"}
+	resolver := &capturingRunnerHostPolicyResolver{policy: validResolvedHostPolicy(pack.Identity, pack.Manifest)}
+	runner := NewRunnerWithConfig(RunnerConfig{
+		HTTPBroker:         NewHTTPBroker(HTTPBrokerConfig{Policy: testHTTPPolicy(), Transport: transport}),
+		HostPolicyResolver: resolver,
+	})
+
+	if _, err := runner.Extract(context.Background(), pack, ExtractInput{URL: "https://share.alpha.test/item"}); err != nil {
+		t.Fatalf("Runner.Extract() error = %v", err)
+	}
+	if transport.Count() != 0 {
+		t.Fatalf("transport calls = %d, want 0", transport.Count())
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("resolver calls = %d, want 0", resolver.calls)
+	}
+}
+
 func TestRunnerNoImportFixturesStillPass(t *testing.T) {
 	pack := verifiedRunnerPack(t, validRunnerFixtureWASM(), nil)
 	runner := NewRunnerWithConfig(RunnerConfig{})
@@ -96,4 +163,17 @@ func TestRunnerNoImportFixturesStillPass(t *testing.T) {
 	if len(extract.Items) != 1 {
 		t.Fatalf("Runner.Extract() items = %d, want no-import fixture item", len(extract.Items))
 	}
+}
+
+type capturingRunnerHostPolicyResolver struct {
+	policy ResolvedHostPolicy
+	last   HostPolicyRequest
+	calls  int
+}
+
+func (r *capturingRunnerHostPolicyResolver) ResolveHostPolicy(_ context.Context, request HostPolicyRequest) (ResolvedHostPolicy, error) {
+	r.calls++
+	r.last = request
+
+	return cloneResolvedHostPolicy(r.policy), nil
 }

@@ -89,6 +89,13 @@ func TestCapabilityGuardDoesNotTreatAliasRefsAsDomains(t *testing.T) {
 	}, "https://dpr-alpha001/path"); err == nil {
 		t.Fatal("ValidateCapabilityURL() error = nil, want alias ref not treated as domain")
 	}
+	if err := ValidateCapabilityURL(CapabilityContext{
+		PackID:     manifest.PackID,
+		Manifest:   manifest,
+		Capability: CapabilityHTTPFetch,
+	}, "bpr-alpha001"); err == nil {
+		t.Fatal("ValidateCapabilityURL() error = nil, want opaque broker ref not treated as URL/domain")
+	}
 }
 
 func TestRedactSensitiveRemovesTokensCookiesAndQuerySecrets(t *testing.T) {

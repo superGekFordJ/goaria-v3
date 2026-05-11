@@ -3,6 +3,7 @@ package extractor
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -47,11 +48,12 @@ func TestHostPolicyResolverAcceptsMatchingPolicy(t *testing.T) {
 	policy.BrokerPolicyRefs[0] = "bpr-mutated"
 	policy.AllowedCapabilities[0] = Capability("cap.changed")
 	policy.IngressDomains[0].Host = "mutated.alpha.test"
+	policy.BrokerEndpoints[0].AuthProfileRefs[0] = "apr-mutated"
 	fresh, err := resolveAliasHostPolicy(context.Background(), resolver, identity, manifest)
 	if err != nil {
 		t.Fatalf("resolveAliasHostPolicy() fresh error = %v", err)
 	}
-	if fresh.DomainPolicyRefs[0] != "dpr-alpha001" || fresh.BrokerPolicyRefs[0] != "bpr-alpha001" || fresh.IngressDomains[0].Host != "share.alpha.test" {
+	if fresh.DomainPolicyRefs[0] != "dpr-alpha001" || fresh.BrokerPolicyRefs[0] != "bpr-alpha001" || fresh.IngressDomains[0].Host != "share.alpha.test" || fresh.BrokerEndpoints[0].AuthProfileRefs[0] != "apr-alpha001" {
 		t.Fatalf("resolved host policy was not defensively copied: %#v", fresh)
 	}
 }
@@ -76,6 +78,20 @@ func TestHostPolicyResolverRejectsInvalidPolicies(t *testing.T) {
 		}},
 		{name: "invalid ingress domains", mutate: func(policy *ResolvedHostPolicy) { policy.IngressDomains = []DomainRule{{Host: "*.alpha.test"}} }},
 		{name: "invalid broker domains", mutate: func(policy *ResolvedHostPolicy) { policy.BrokerDomains = []DomainRule{{Host: "api.alpha.test:443"}} }},
+		{name: "missing broker domains", mutate: func(policy *ResolvedHostPolicy) { policy.BrokerDomains = nil }},
+		{name: "missing broker endpoints", mutate: func(policy *ResolvedHostPolicy) { policy.BrokerEndpoints = nil }},
+		{name: "malformed endpoint ref", mutate: func(policy *ResolvedHostPolicy) { policy.BrokerEndpoints[0].EndpointRef = "endpoint.alpha" }},
+		{name: "duplicate endpoint", mutate: func(policy *ResolvedHostPolicy) {
+			policy.BrokerEndpoints = append(policy.BrokerEndpoints, policy.BrokerEndpoints[0])
+		}},
+		{name: "undeclared endpoint broker ref", mutate: func(policy *ResolvedHostPolicy) { policy.BrokerEndpoints[0].BrokerPolicyRef = "bpr-alpha002" }},
+		{name: "invalid endpoint template", mutate: func(policy *ResolvedHostPolicy) {
+			policy.BrokerEndpoints[0].URLTemplate = "https://user:pass@api.alpha.test/resource/{id}"
+		}},
+		{name: "invalid endpoint auth profile ref", mutate: func(policy *ResolvedHostPolicy) { policy.BrokerEndpoints[0].AuthProfileRefs = []string{"Invalid"} }},
+		{name: "duplicate endpoint auth profile ref", mutate: func(policy *ResolvedHostPolicy) {
+			policy.BrokerEndpoints[0].AuthProfileRefs = []string{"apr-alpha001", "apr-alpha001"}
+		}},
 	}
 
 	for _, tt := range tests {
@@ -85,6 +101,157 @@ func TestHostPolicyResolverRejectsInvalidPolicies(t *testing.T) {
 
 			if _, err := resolveAliasHostPolicy(context.Background(), &fakeHostPolicyResolver{policy: policy}, identity, manifest); err == nil {
 				t.Fatal("resolveAliasHostPolicy() error = nil, want error")
+			}
+		})
+	}
+}
+
+func TestHostPolicyBrokerEndpointExpansion(t *testing.T) {
+	manifest := validAliasTestManifest(nil)
+	identity := syntheticVerifiedPackIdentity(manifest)
+	policy := validResolvedHostPolicy(identity, manifest)
+	endpoint, ok := findBrokerEndpoint(policy, "bpr-alpha001", "epr-alpha001")
+	if !ok {
+		t.Fatal("findBrokerEndpoint() ok = false")
+	}
+
+	expanded, err := expandBrokerEndpointURL(policy, endpoint, map[string]string{"id": "item 001"})
+	if err != nil {
+		t.Fatalf("expandBrokerEndpointURL() error = %v", err)
+	}
+	if expanded != "https://api.alpha.test/resource/item%20001" {
+		t.Fatalf("expanded URL = %q, want escaped synthetic URL", expanded)
+	}
+	if !endpointAllowsAuthProfile(endpoint, "apr-alpha001") || endpointAllowsAuthProfile(endpoint, "apr-alpha002") {
+		t.Fatalf("endpoint auth scope mismatch: %#v", endpoint.AuthProfileRefs)
+	}
+	if !policyAllowsCapability(policy, CapabilityHTTPFetch) || policyAllowsCapability(policy, Capability("cap.missing")) {
+		t.Fatalf("policyAllowsCapability mismatch: %#v", policy.AllowedCapabilities)
+	}
+
+	for _, tt := range []struct {
+		name   string
+		params map[string]string
+	}{
+		{name: "missing param", params: map[string]string{}},
+		{name: "extra param", params: map[string]string{"id": "item", "extra": "value"}},
+		{name: "secret-shaped key", params: map[string]string{"token": "value"}},
+		{name: "url-like value", params: map[string]string{"id": "https://api.alpha.test/value"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := expandBrokerEndpointURL(policy, endpoint, tt.params); err == nil {
+				t.Fatal("expandBrokerEndpointURL() error = nil, want error")
+			}
+		})
+	}
+
+	badPolicy := cloneResolvedHostPolicy(policy)
+	badPolicy.BrokerDomains = []DomainRule{{Host: "cdn.alpha.test"}}
+	if _, err := expandBrokerEndpointURL(badPolicy, endpoint, map[string]string{"id": "item"}); err == nil {
+		t.Fatal("expandBrokerEndpointURL() error = nil for broker-domain mismatch")
+	}
+}
+
+func TestHostPolicyBrokerEndpointExpansionRejectsStructuralParamInjection(t *testing.T) {
+	manifest := validAliasTestManifest(nil)
+	identity := syntheticVerifiedPackIdentity(manifest)
+	policy := validResolvedHostPolicy(identity, manifest)
+	endpoint, ok := findBrokerEndpoint(policy, "bpr-alpha001", "epr-alpha001")
+	if !ok {
+		t.Fatal("findBrokerEndpoint() ok = false")
+	}
+
+	for _, tt := range []struct {
+		name  string
+		value string
+	}{
+		{name: "dot segment", value: "."},
+		{name: "dot dot segment", value: ".."},
+		{name: "slash", value: "item/child"},
+		{name: "backslash", value: `item\child`},
+		{name: "reserved delimiter", value: "item?next=value"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := expandBrokerEndpointURL(policy, endpoint, map[string]string{"id": tt.value}); err == nil {
+				t.Fatal("expandBrokerEndpointURL() error = nil, want structural param denial")
+			}
+		})
+	}
+}
+
+func TestHostPolicyBrokerEndpointExpansionAllowsSafePathAndQueryParams(t *testing.T) {
+	manifest := validAliasTestManifest(nil)
+	identity := syntheticVerifiedPackIdentity(manifest)
+	policy := validResolvedHostPolicy(identity, manifest)
+	endpoint := HostPolicyBrokerEndpoint{
+		BrokerPolicyRef: "bpr-alpha001",
+		EndpointRef:     "epr-alpha001",
+		URLTemplate:     "https://api.alpha.test/resource/{id}?filter={filter}&fixed=alpha",
+	}
+
+	expanded, err := expandBrokerEndpointURL(policy, endpoint, map[string]string{
+		"id":     "item-001",
+		"filter": "type alpha",
+	})
+	if err != nil {
+		t.Fatalf("expandBrokerEndpointURL() error = %v", err)
+	}
+	if expanded != "https://api.alpha.test/resource/item-001?filter=type+alpha&fixed=alpha" {
+		t.Fatalf("expanded URL = %q, want safe path/query expansion", expanded)
+	}
+}
+
+func TestHostPolicyBrokerEndpointExpansionRejectsQueryDelimiterInjection(t *testing.T) {
+	manifest := validAliasTestManifest(nil)
+	identity := syntheticVerifiedPackIdentity(manifest)
+	policy := validResolvedHostPolicy(identity, manifest)
+	endpoint := HostPolicyBrokerEndpoint{
+		BrokerPolicyRef: "bpr-alpha001",
+		EndpointRef:     "epr-alpha001",
+		URLTemplate:     "https://api.alpha.test/resource/{id}?filter={filter}",
+	}
+	expanded, err := expandBrokerEndpointURL(policy, endpoint, map[string]string{
+		"id":     "item-001",
+		"filter": "alpha&extra=beta",
+	})
+	if err != nil {
+		t.Fatalf("expandBrokerEndpointURL() error = %v", err)
+	}
+	if expanded != "https://api.alpha.test/resource/item-001?filter=alpha%26extra%3Dbeta" {
+		t.Fatalf("expanded URL = %q, want escaped query delimiter value", expanded)
+	}
+	parsed, err := url.Parse(expanded)
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	if parsed.Query().Get("extra") != "" || parsed.Query().Get("filter") != "alpha&extra=beta" {
+		t.Fatalf("query injection was not confined: raw_query=%q parsed=%#v", parsed.RawQuery, parsed.Query())
+	}
+}
+
+func TestHostPolicyBrokerEndpointValidationRejectsUnsafePlaceholderLocations(t *testing.T) {
+	manifest := validAliasTestManifest(nil)
+	identity := syntheticVerifiedPackIdentity(manifest)
+	basePolicy := validResolvedHostPolicy(identity, manifest)
+
+	for _, tt := range []struct {
+		name     string
+		template string
+	}{
+		{name: "scheme", template: "{scheme}://api.alpha.test/resource"},
+		{name: "host", template: "https://{host}.alpha.test/resource"},
+		{name: "fragment", template: "https://api.alpha.test/resource/{id}#{frag}"},
+		{name: "partial path segment", template: "https://api.alpha.test/resource/id-{id}"},
+		{name: "partial query value", template: "https://api.alpha.test/resource/{id}?filter=a-{filter}"},
+		{name: "query key", template: "https://api.alpha.test/resource/{id}?{key}=value"},
+		{name: "token query key", template: "https://api.alpha.test/resource/{id}?token={filter}"},
+		{name: "signature query key", template: "https://api.alpha.test/resource/{id}?signature={filter}"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := cloneResolvedHostPolicy(basePolicy)
+			policy.BrokerEndpoints[0].URLTemplate = tt.template
+			if _, err := resolveAliasHostPolicy(context.Background(), &fakeHostPolicyResolver{policy: policy}, identity, manifest); err == nil {
+				t.Fatal("resolveAliasHostPolicy() error = nil, want invalid template denial")
 			}
 		})
 	}
@@ -125,6 +292,12 @@ func validResolvedHostPolicy(identity VerifiedPackIdentity, manifest Manifest) R
 			{Host: "files.alpha.test", IncludeSubdomains: true},
 		},
 		BrokerDomains: []DomainRule{{Host: "api.alpha.test"}},
+		BrokerEndpoints: []HostPolicyBrokerEndpoint{{
+			BrokerPolicyRef: "bpr-alpha001",
+			EndpointRef:     "epr-alpha001",
+			URLTemplate:     "https://api.alpha.test/resource/{id}",
+			AuthProfileRefs: []string{"apr-alpha001"},
+		}},
 	}
 }
 

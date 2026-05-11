@@ -61,6 +61,13 @@ func TestPackABIJSONShapesUseStableSnakeCase(t *testing.T) {
 		TimeoutMillis:    100,
 		MaxResponseBytes: 512,
 	}, []string{`"method"`, `"url"`, `"headers"`, `"auth_profile_ref"`, `"timeout_millis"`, `"max_response_bytes"`})
+	assertJSON(t, HostHTTPFetchRequest{
+		Method:          "GET",
+		BrokerPolicyRef: "bpr-alpha001",
+		EndpointRef:     "epr-alpha001",
+		Params:          map[string]string{"id": "item-001"},
+		AuthProfileRef:  "apr-alpha001",
+	}, []string{`"method"`, `"broker_policy_ref"`, `"endpoint_ref"`, `"params"`, `"auth_profile_ref"`})
 	assertJSON(t, HostHTTPFetchResponse{
 		OK:         true,
 		StatusCode: 200,
@@ -69,6 +76,12 @@ func TestPackABIJSONShapesUseStableSnakeCase(t *testing.T) {
 		BodyBase64: "e30=",
 	}, []string{`"ok"`, `"status_code"`, `"final_url"`, `"headers"`, `"body_base64"`})
 	assertJSON(t, HostAuthProfileStatusRequest{AuthProfileRef: "fixture-auth", URL: "https://api.fixture.invalid/path"}, []string{`"auth_profile_ref"`, `"url"`})
+	assertJSON(t, HostAuthProfileStatusRequest{
+		AuthProfileRef:  "apr-alpha001",
+		BrokerPolicyRef: "bpr-alpha001",
+		EndpointRef:     "epr-alpha001",
+		Params:          map[string]string{"id": "item-001"},
+	}, []string{`"auth_profile_ref"`, `"broker_policy_ref"`, `"endpoint_ref"`, `"params"`})
 	assertJSON(t, HostAuthProfileStatusResponse{OK: true, Available: true, Kind: AuthSecretKindBearer, RedactedDisplay: "fi…re"}, []string{`"ok"`, `"available"`, `"kind"`, `"redacted_display"`})
 }
 

@@ -220,6 +220,35 @@ func TestHostImportHTTPFetchInjectsAuthWithoutReturningSecret(t *testing.T) {
 	}
 }
 
+func TestHostImportHTTPFetchUsesBrokerAuthWhenBridgeResolverNil(t *testing.T) {
+	const rawToken = "raw-bridge-nil-token"
+	transport := &hostImportRecordingTransport{statusCode: http.StatusOK, body: "authenticated ok"}
+	resolver := hostImportAuthResolver{secret: ResolvedAuthSecret{
+		HeaderName:      "Authorization",
+		HeaderValue:     "Bearer " + rawToken,
+		Kind:            AuthSecretKindBearer,
+		RedactedDisplay: "ra…en",
+	}}
+	bridge := newTestHostImportBridge(t, hostImportManifest(), testHTTPBroker(transport, resolver), nil, 4)
+
+	raw := bridge.executeHTTPFetch(context.Background(), mustHostImportJSON(t, HostHTTPFetchRequest{
+		URL:            "https://api.fixture.invalid/path",
+		AuthProfileRef: "default",
+	}))
+	var response HostHTTPFetchResponse
+	decodeHostImportTestResponse(t, raw, &response)
+
+	if !response.OK {
+		t.Fatalf("executeHTTPFetch() OK = false, response = %#v", response)
+	}
+	if got := transport.LastRequest().Header.Get("Authorization"); got != "Bearer "+rawToken {
+		t.Fatalf("Authorization header = %q, want broker-injected bearer", got)
+	}
+	if strings.Contains(string(raw), rawToken) || strings.Contains(string(raw), "Bearer "+rawToken) {
+		t.Fatalf("executeHTTPFetch() leaked broker auth token in %s", raw)
+	}
+}
+
 func TestHostImportHTTPFetchAuthResolverErrorIsGeneric(t *testing.T) {
 	const rawSecret = "raw-http-fetch-auth-secret"
 	transport := &hostImportRecordingTransport{err: errors.New("transport must not be called")}
@@ -399,6 +428,225 @@ func TestHostImportBudgetExhaustionStopsPrivilegedWork(t *testing.T) {
 	}
 }
 
+func TestHostImportHTTPFetchAliasRefMode(t *testing.T) {
+	t.Run("success redacts final url", func(t *testing.T) {
+		manifest := hostImportAliasManifest()
+		transport := &hostImportRecordingTransport{statusCode: http.StatusOK, body: "alias ok"}
+		bridge := newTestHostImportBridge(t, manifest, testHTTPBroker(transport, nil), nil, 4)
+
+		raw := bridge.executeHTTPFetch(context.Background(), mustHostImportJSON(t, HostHTTPFetchRequest{
+			Method:          http.MethodGet,
+			BrokerPolicyRef: "bpr-alpha001",
+			EndpointRef:     "epr-alpha001",
+			Params:          map[string]string{"id": "item-001"},
+		}))
+		var response HostHTTPFetchResponse
+		decodeHostImportTestResponse(t, raw, &response)
+
+		if !response.OK || response.FinalURL != "" || response.StatusCode != http.StatusOK {
+			t.Fatalf("executeHTTPFetch() response = %#v", response)
+		}
+		if transport.Count() != 1 {
+			t.Fatalf("transport calls = %d, want 1", transport.Count())
+		}
+		if got := transport.LastRequest().URL.String(); got != "https://api.alpha.test/resource/item-001" {
+			t.Fatalf("transport URL = %q, want expanded private URL", got)
+		}
+		if strings.Contains(string(raw), "api.alpha.test") || strings.Contains(string(raw), "item-001") {
+			t.Fatalf("alias ref-mode response leaked private URL/param: %s", raw)
+		}
+	})
+
+	tests := []struct {
+		name              string
+		manifest          Manifest
+		request           HostHTTPFetchRequest
+		resolver          HostPolicyResolver
+		wantResolverCalls int
+	}{
+		{
+			name:     "alias raw url denied before resolver",
+			manifest: hostImportAliasManifest(),
+			request:  HostHTTPFetchRequest{URL: "https://api.alpha.test/resource/item-001"},
+		},
+		{
+			name:     "alias mixed mode denied before resolver",
+			manifest: hostImportAliasManifest(),
+			request: HostHTTPFetchRequest{
+				URL:             "https://api.alpha.test/resource/item-001",
+				BrokerPolicyRef: "bpr-alpha001",
+				EndpointRef:     "epr-alpha001",
+			},
+		},
+		{
+			name:     "legacy ref mode denied before resolver",
+			manifest: hostImportManifest(),
+			request: HostHTTPFetchRequest{
+				BrokerPolicyRef: "bpr-alpha001",
+				EndpointRef:     "epr-alpha001",
+				Params:          map[string]string{"id": "item-001"},
+			},
+		},
+		{
+			name:     "alias resolver error no transport",
+			manifest: hostImportAliasManifest(),
+			request: HostHTTPFetchRequest{
+				BrokerPolicyRef: "bpr-alpha001",
+				EndpointRef:     "epr-alpha001",
+				Params:          map[string]string{"id": "item-001"},
+			},
+			resolver:          &recordingHostPolicyResolver{err: errors.New("private endpoint template https://api.alpha.test/resource/{id}")},
+			wantResolverCalls: 1,
+		},
+		{
+			name:     "alias malformed params before resolver",
+			manifest: hostImportAliasManifest(),
+			request: HostHTTPFetchRequest{
+				BrokerPolicyRef: "bpr-alpha001",
+				EndpointRef:     "epr-alpha001",
+				Params:          map[string]string{"token": "secret-value"},
+			},
+		},
+		{
+			name:     "alias unknown endpoint with auth stays policy denied",
+			manifest: hostImportAliasManifest(),
+			request: HostHTTPFetchRequest{
+				BrokerPolicyRef: "bpr-alpha001",
+				EndpointRef:     "epr-alpha002",
+				Params:          map[string]string{"id": "item-001"},
+				AuthProfileRef:  "apr-alpha001",
+			},
+			wantResolverCalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := &hostImportRecordingTransport{err: errors.New("unexpected transport call")}
+			resolver := tt.resolver
+			if resolver == nil {
+				resolver = &recordingHostPolicyResolver{policy: validResolvedHostPolicy(syntheticVerifiedPackIdentity(tt.manifest), tt.manifest)}
+			}
+			bridge := newTestHostImportBridgeWithPolicy(t, tt.manifest, testHTTPBroker(transport, nil), nil, resolver, 4)
+			raw := bridge.executeHTTPFetch(context.Background(), mustHostImportJSON(t, tt.request))
+			var response HostHTTPFetchResponse
+			decodeHostImportTestResponse(t, raw, &response)
+			if response.OK {
+				t.Fatalf("executeHTTPFetch() OK = true, want false: %#v", response)
+			}
+			if transport.Count() != 0 {
+				t.Fatalf("transport calls = %d, want 0", transport.Count())
+			}
+			if recorder, ok := resolver.(*recordingHostPolicyResolver); ok && recorder.Count() != tt.wantResolverCalls {
+				t.Fatalf("host policy resolver calls = %d, want %d", recorder.Count(), tt.wantResolverCalls)
+			}
+			for _, forbidden := range []string{"https://api.alpha.test/resource", "secret-value"} {
+				if strings.Contains(string(raw), forbidden) {
+					t.Fatalf("executeHTTPFetch() leaked %q in %s", forbidden, raw)
+				}
+			}
+			if strings.Contains(string(raw), "auth resolver is not configured") || response.ErrorCode == "not_configured" {
+				t.Fatalf("executeHTTPFetch() exposed auth resolver configuration before policy denial: %s", raw)
+			}
+		})
+	}
+}
+
+func TestHostImportAuthProfileStatusAliasRefMode(t *testing.T) {
+	const rawToken = "raw-alias-status-token"
+	manifest := hostImportAliasManifest()
+	resolver := &recordingHostImportAuthResolver{secret: ResolvedAuthSecret{
+		HeaderName:      "Authorization",
+		HeaderValue:     "Bearer " + rawToken,
+		Kind:            AuthSecretKindBearer,
+		RedactedDisplay: "ra…en",
+	}}
+	bridge := newTestHostImportBridge(t, manifest, nil, resolver, 4)
+
+	raw := bridge.executeAuthProfileStatus(context.Background(), mustHostImportJSON(t, HostAuthProfileStatusRequest{
+		AuthProfileRef:  "apr-alpha001",
+		BrokerPolicyRef: "bpr-alpha001",
+		EndpointRef:     "epr-alpha001",
+		Params:          map[string]string{"id": "item-001"},
+	}))
+	var response HostAuthProfileStatusResponse
+	decodeHostImportTestResponse(t, raw, &response)
+	if !response.OK || !response.Available || response.Kind != AuthSecretKindBearer || response.RedactedDisplay != "ra…en" {
+		t.Fatalf("executeAuthProfileStatus() response = %#v", response)
+	}
+	if resolver.Count() != 1 {
+		t.Fatalf("auth resolver calls = %d, want 1", resolver.Count())
+	}
+	for _, forbidden := range []string{rawToken, "Authorization", "api.alpha.test", "item-001"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("auth status response leaked %q in %s", forbidden, raw)
+		}
+	}
+
+	t.Run("raw url denied before resolver", func(t *testing.T) {
+		resolver := &recordingHostImportAuthResolver{}
+		policyResolver := &recordingHostPolicyResolver{policy: validResolvedHostPolicy(syntheticVerifiedPackIdentity(manifest), manifest)}
+		bridge := newTestHostImportBridgeWithPolicy(t, manifest, nil, resolver, policyResolver, 4)
+		raw := bridge.executeAuthProfileStatus(context.Background(), mustHostImportJSON(t, HostAuthProfileStatusRequest{
+			AuthProfileRef: "apr-alpha001",
+			URL:            "https://api.alpha.test/resource/item-001",
+		}))
+		var response HostAuthProfileStatusResponse
+		decodeHostImportTestResponse(t, raw, &response)
+		if response.OK {
+			t.Fatalf("executeAuthProfileStatus() OK = true, want false: %#v", response)
+		}
+		if resolver.Count() != 0 || policyResolver.Count() != 0 {
+			t.Fatalf("resolver calls auth=%d policy=%d, want 0/0", resolver.Count(), policyResolver.Count())
+		}
+	})
+
+	t.Run("auth scope denied before auth resolver", func(t *testing.T) {
+		resolver := &recordingHostImportAuthResolver{}
+		bridge := newTestHostImportBridge(t, manifest, nil, resolver, 4)
+		raw := bridge.executeAuthProfileStatus(context.Background(), mustHostImportJSON(t, HostAuthProfileStatusRequest{
+			AuthProfileRef:  "apr-alpha002",
+			BrokerPolicyRef: "bpr-alpha001",
+			EndpointRef:     "epr-alpha001",
+			Params:          map[string]string{"id": "item-001"},
+		}))
+		var response HostAuthProfileStatusResponse
+		decodeHostImportTestResponse(t, raw, &response)
+		if response.OK {
+			t.Fatalf("executeAuthProfileStatus() OK = true, want false: %#v", response)
+		}
+		if resolver.Count() != 0 {
+			t.Fatalf("auth resolver calls = %d, want 0", resolver.Count())
+		}
+	})
+}
+
+func TestHostImportAliasBudgetExhaustionSkipsPolicyResolver(t *testing.T) {
+	manifest := hostImportAliasManifest()
+	transport := &hostImportRecordingTransport{err: errors.New("unexpected transport call")}
+	policyResolver := &recordingHostPolicyResolver{policy: validResolvedHostPolicy(syntheticVerifiedPackIdentity(manifest), manifest)}
+	bridge := newTestHostImportBridgeWithPolicy(t, manifest, testHTTPBroker(transport, nil), nil, policyResolver, 1)
+	request := mustHostImportJSON(t, HostHTTPFetchRequest{
+		BrokerPolicyRef: "bpr-alpha001",
+		EndpointRef:     "epr-alpha001",
+		Params:          map[string]string{"token": "secret-value"},
+	})
+
+	var first HostHTTPFetchResponse
+	decodeHostImportTestResponse(t, bridge.executeHTTPFetch(context.Background(), request), &first)
+	if first.OK {
+		t.Fatalf("first executeHTTPFetch() OK = true, want malformed params failure")
+	}
+	var second HostHTTPFetchResponse
+	decodeHostImportTestResponse(t, bridge.executeHTTPFetch(context.Background(), request), &second)
+	if second.OK || second.ErrorCode != "budget_exhausted" {
+		t.Fatalf("second executeHTTPFetch() = %#v, want budget exhausted", second)
+	}
+	if policyResolver.Count() != 0 || transport.Count() != 0 {
+		t.Fatalf("policy resolver/transport calls = %d/%d, want 0/0", policyResolver.Count(), transport.Count())
+	}
+}
+
 func TestHostImportStrictDecodeRejectsTrailingOrUnknownFields(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -526,6 +774,33 @@ type recordingHostImportAuthResolver struct {
 	calls  int
 }
 
+type recordingHostPolicyResolver struct {
+	mu     sync.Mutex
+	policy ResolvedHostPolicy
+	err    error
+	calls  int
+}
+
+func (r *recordingHostPolicyResolver) ResolveHostPolicy(context.Context, HostPolicyRequest) (ResolvedHostPolicy, error) {
+	r.mu.Lock()
+	r.calls++
+	policy := cloneResolvedHostPolicy(r.policy)
+	err := r.err
+	r.mu.Unlock()
+	if err != nil {
+		return ResolvedHostPolicy{}, err
+	}
+
+	return policy, nil
+}
+
+func (r *recordingHostPolicyResolver) Count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.calls
+}
+
 func (r *recordingHostImportAuthResolver) ResolveAuthProfile(context.Context, string, AuthProfileID, string) (ResolvedAuthSecret, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -546,20 +821,42 @@ func (r *recordingHostImportAuthResolver) Count() int {
 
 func newTestHostImportBridge(t *testing.T, manifest Manifest, broker *HTTPBroker, resolver AuthProfileResolver, maxHostCalls uint32) *hostImportBridge {
 	t.Helper()
+	identity := syntheticVerifiedPackIdentity(manifest)
+	var policyResolver HostPolicyResolver
+	if isAliasManifest(manifest) {
+		policyResolver = &recordingHostPolicyResolver{policy: validResolvedHostPolicy(identity, manifest)}
+	}
+
+	return newTestHostImportBridgeWithPolicy(t, manifest, broker, resolver, policyResolver, maxHostCalls)
+}
+
+func newTestHostImportBridgeWithPolicy(t *testing.T, manifest Manifest, broker *HTTPBroker, resolver AuthProfileResolver, policyResolver HostPolicyResolver, maxHostCalls uint32) *hostImportBridge {
+	t.Helper()
 	budget, err := NewHostCallBudget(maxHostCalls)
 	if err != nil {
 		t.Fatalf("NewHostCallBudget() error = %v", err)
 	}
-
-	return newHostImportBridge(manifest, budget, HostImportConfig{
-		HTTPBroker:   broker,
-		AuthResolver: resolver,
+	identity := syntheticVerifiedPackIdentity(manifest)
+	return newHostImportBridge(manifest, identity, budget, HostImportConfig{
+		HTTPBroker:         broker,
+		AuthResolver:       resolver,
+		HostPolicyResolver: policyResolver,
 	})
 }
 
 func hostImportManifest() Manifest {
 	manifest := validCapabilityManifest()
 	manifest.Capabilities = []Capability{CapabilityHTTPFetch, CapabilityAuthProfile}
+	manifest.ResourceLimits.TimeoutMillis = 100
+	manifest.ResourceLimits.MaxResponseBytes = 1024
+	manifest.ResourceLimits.MaxHostCalls = 8
+
+	return manifest
+}
+
+func hostImportAliasManifest() Manifest {
+	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = []Capability{CapabilityParseWASM, CapabilityHTTPFetch, CapabilityAuthProfile}
 	manifest.ResourceLimits.TimeoutMillis = 100
 	manifest.ResourceLimits.MaxResponseBytes = 1024
 	manifest.ResourceLimits.MaxHostCalls = 8
