@@ -11,14 +11,16 @@ const (
 )
 
 type Manifest struct {
-	PackID         string         `json:"pack_id"`
-	PackVersion    string         `json:"pack_version"`
-	ABIVersion     uint32         `json:"abi_version"`
-	Capabilities   []Capability   `json:"capabilities"`
-	Domains        []DomainRule   `json:"domains"`
-	ResourceLimits ResourceLimits `json:"resource_limits"`
-	PayloadSHA256  string         `json:"payload_sha256"`
-	Description    string         `json:"description,omitempty"`
+	PackID           string         `json:"pack_id"`
+	PackVersion      string         `json:"pack_version"`
+	ABIVersion       uint32         `json:"abi_version"`
+	Capabilities     []Capability   `json:"capabilities"`
+	Domains          []DomainRule   `json:"domains"`
+	DomainPolicyRefs []string       `json:"domain_policy_refs,omitempty"`
+	BrokerPolicyRefs []string       `json:"broker_policy_refs,omitempty"`
+	ResourceLimits   ResourceLimits `json:"resource_limits"`
+	PayloadSHA256    string         `json:"payload_sha256"`
+	Description      string         `json:"description,omitempty"`
 }
 
 type DomainRule struct {

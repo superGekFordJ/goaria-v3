@@ -40,6 +40,7 @@ func TestVerifyPackAssetValidFixtureGeneratesEmbed(t *testing.T) {
 	for _, want := range []string{
 		"package extractor",
 		"EmbeddedPack",
+		"AssetSHA256:",
 		"pack_id: fixture-pack",
 		"pack_version: 0.1.0-fixture",
 		"public_key_hex: 5e212c0980e4b39fc09721134aa02109374edfd260c0d3d03cb501c8d65457a9",
@@ -60,6 +61,46 @@ func TestVerifyPackAssetValidFixtureGeneratesEmbed(t *testing.T) {
 	}
 	if !strings.Contains(string(provenance), "fixture-pack") || strings.Contains(string(provenance), "manifest.sig") {
 		t.Fatalf("unexpected provenance contents: %s", provenance)
+	}
+	if strings.Contains(string(provenance), "domain_policy_refs") || strings.Contains(string(provenance), "broker_policy_refs") {
+		t.Fatalf("provenance must not include alias ref fields in SPEC-081: %s", provenance)
+	}
+}
+
+func TestVerifyPackAssetAliasFixtureGeneratesNoNameEmbed(t *testing.T) {
+	asset := validAliasTestAsset(t)
+	entry := asset.lockEntry()
+	entry.PackID = "xpk-alpha001"
+	lockPath := writeLockWithAsset(t, asset.bytes, entry)
+	outDir := t.TempDir()
+	outPath := filepath.Join(outDir, "embedded.go")
+	provenancePath := filepath.Join(outDir, "provenance.json")
+
+	if err := verifyPacks(verifyOptions{LockPath: lockPath, OutPath: outPath, ProvenanceOut: provenancePath, AllowFile: true}); err != nil {
+		t.Fatalf("verifyPacks() error = %v", err)
+	}
+	generatedBytes, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read generated output: %v", err)
+	}
+	generated := string(generatedBytes)
+	for _, want := range []string{"xpk-alpha001", "AssetSHA256:", entry.AssetSHA256} {
+		if !strings.Contains(generated, want) {
+			t.Fatalf("generated alias code missing %q\n%s", want, generated)
+		}
+	}
+	for _, forbidden := range []string{"domain_policy_refs", "broker_policy_refs", "provider", "private"} {
+		if strings.Contains(generated, forbidden) {
+			t.Fatalf("generated alias code contains forbidden public surface %q", forbidden)
+		}
+	}
+	provenanceBytes, err := os.ReadFile(provenancePath)
+	if err != nil {
+		t.Fatalf("read provenance: %v", err)
+	}
+	provenance := string(provenanceBytes)
+	if strings.Contains(provenance, "domain_policy_refs") || strings.Contains(provenance, "broker_policy_refs") {
+		t.Fatalf("alias provenance must defer ref fields: %s", provenance)
 	}
 }
 
@@ -320,7 +361,33 @@ func validTestAsset(t *testing.T) testAsset {
 	return testAsset{bytes: zipBytesForParts(t, parts, nil), parts: parts, publicKey: publicKey}
 }
 
+func validAliasTestAsset(t *testing.T) testAsset {
+	t.Helper()
+	publicKey, privateKey := deterministicTestKeyPair(78)
+	payload := []byte("public alias fixture payload")
+	manifestJSON := manifestJSONForPayloadWithMutate(t, payload, func(values map[string]any) {
+		values["pack_id"] = "xpk-alpha001"
+		values["capabilities"] = []string{string(extractor.CapabilityParseWASM), string(extractor.CapabilityHTTPFetch)}
+		values["domains"] = []map[string]any{}
+		values["domain_policy_refs"] = []string{"dpr-alpha001"}
+		values["broker_policy_refs"] = []string{"bpr-alpha001"}
+	})
+	parts := packParts{
+		ManifestJSON: manifestJSON,
+		Payload:      payload,
+		Signature:    ed25519.Sign(privateKey, manifestJSON),
+	}
+
+	return testAsset{bytes: zipBytesForParts(t, parts, nil), parts: parts, publicKey: publicKey}
+}
+
 func manifestJSONForPayload(t *testing.T, payload []byte) []byte {
+	t.Helper()
+
+	return manifestJSONForPayloadWithMutate(t, payload, nil)
+}
+
+func manifestJSONForPayloadWithMutate(t *testing.T, payload []byte, mutate func(map[string]any)) []byte {
 	t.Helper()
 	payloadHash := sha256.Sum256(payload)
 	values := map[string]any{
@@ -338,6 +405,9 @@ func manifestJSONForPayload(t *testing.T, payload []byte) []byte {
 			"max_output_bytes":   1024,
 		},
 		"payload_sha256": hex.EncodeToString(payloadHash[:]),
+	}
+	if mutate != nil {
+		mutate(values)
 	}
 	manifestJSON, err := json.Marshal(values)
 	if err != nil {

@@ -46,6 +46,7 @@ func TestNewEmbeddedReleaseDispatcherFailsClosedWhenRequiredNoPacks(t *testing.T
 func TestEmbeddedReleasePacksDefensiveCopies(t *testing.T) {
 	publicKey, privateKey := deterministicKeyPair(32)
 	pack := signedTestPack(t, privateKey, []byte("fixture wasm bytes"), nil)
+	pack.AssetSHA256 = strings.Repeat("a", 64)
 	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, false)
 
 	packs := EmbeddedReleasePacks()
@@ -56,6 +57,7 @@ func TestEmbeddedReleasePacksDefensiveCopies(t *testing.T) {
 	packs[0].ManifestJSON[0] = '{' + 1
 	packs[0].Payload[0] = 'X'
 	packs[0].Signature[0] ^= 0xff
+	packs[0].AssetSHA256 = strings.Repeat("b", 64)
 	keys[0][0] ^= 0xff
 
 	freshPacks := EmbeddedReleasePacks()
@@ -68,6 +70,9 @@ func TestEmbeddedReleasePacksDefensiveCopies(t *testing.T) {
 	}
 	if freshPacks[0].Signature[0] != pack.Signature[0] {
 		t.Fatalf("embedded signature bytes were mutated")
+	}
+	if freshPacks[0].AssetSHA256 != pack.AssetSHA256 {
+		t.Fatalf("embedded asset sha was mutated")
 	}
 	if freshKeys[0][0] != publicKey[0] {
 		t.Fatalf("embedded public key bytes were mutated")
@@ -88,6 +93,45 @@ func TestNewEmbeddedReleaseDispatcherLoadsVerifiedPacks(t *testing.T) {
 	}
 	if dispatcher == nil {
 		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() returned nil dispatcher")
+	}
+}
+
+func TestNewEmbeddedReleaseDispatcherAcceptsHostPolicyResolver(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(37)
+	pack := signedAliasTestPack(t, privateKey, []byte("alias release payload"), nil)
+	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
+	if err != nil {
+		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
+	}
+	resolver := &fakeHostPolicyResolver{policy: validResolvedHostPolicy(verified.Identity, verified.Manifest)}
+	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
+
+	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{HostPolicyResolver: resolver})
+	if err != nil {
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = %v", err)
+	}
+	if dispatcher == nil {
+		t.Fatal("NewEmbeddedReleaseAddTaskDispatcher() dispatcher = nil")
+	}
+	if matches := dispatcher.registry.FindByURL("https://share.alpha.test/path"); len(matches) != 1 {
+		t.Fatalf("dispatcher registry resolver matches = %d, want 1", len(matches))
+	}
+}
+
+func TestNewEmbeddedReleaseDispatcherAliasWithoutResolverNoMatch(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(38)
+	pack := signedAliasTestPack(t, privateKey, []byte("alias release payload"), nil)
+	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
+
+	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{})
+	if err != nil {
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = %v", err)
+	}
+	if dispatcher == nil {
+		t.Fatal("NewEmbeddedReleaseAddTaskDispatcher() dispatcher = nil")
+	}
+	if matches := dispatcher.registry.FindByURL("https://share.alpha.test/path"); len(matches) != 0 {
+		t.Fatalf("dispatcher registry alias matches = %d, want no resolver no-match", len(matches))
 	}
 }
 

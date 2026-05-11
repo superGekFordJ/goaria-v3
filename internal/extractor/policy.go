@@ -53,7 +53,7 @@ func ValidateManifest(manifest Manifest, policy TrustPolicy) error {
 	if err := validateCapabilities(manifest.Capabilities, policy.AllowedCapabilities); err != nil {
 		return err
 	}
-	if err := validateDomainRules(manifest.Domains); err != nil {
+	if err := validateManifestDomainMode(manifest); err != nil {
 		return err
 	}
 	if err := validateResourceLimits(manifest.ResourceLimits, policy.MaxResourceLimits); err != nil {
@@ -66,6 +66,8 @@ func ValidateManifest(manifest Manifest, policy TrustPolicy) error {
 func normalizeManifest(manifest Manifest) Manifest {
 	manifest.Capabilities = append([]Capability(nil), manifest.Capabilities...)
 	manifest.Domains = cloneDomainRules(manifest.Domains)
+	manifest.DomainPolicyRefs = cloneStringSlice(manifest.DomainPolicyRefs)
+	manifest.BrokerPolicyRefs = cloneStringSlice(manifest.BrokerPolicyRefs)
 	for i := range manifest.Domains {
 		manifest.Domains[i].Host = strings.ToLower(manifest.Domains[i].Host)
 	}
@@ -111,12 +113,16 @@ func validatePackVersion(version string) error {
 }
 
 func validatePayloadSHA256(hash string) error {
+	return validateSHA256Hex("payload_sha256", hash)
+}
+
+func validateSHA256Hex(field string, hash string) error {
 	if len(hash) != 64 {
-		return fmt.Errorf("payload_sha256 must be 64 lowercase hex characters")
+		return fmt.Errorf("%s must be 64 lowercase hex characters", field)
 	}
 	for _, r := range hash {
 		if !isLowerHex(r) {
-			return fmt.Errorf("payload_sha256 contains invalid character %q", r)
+			return fmt.Errorf("%s contains invalid character %q", field, r)
 		}
 	}
 
@@ -148,6 +154,80 @@ func validateCapabilities(capabilities []Capability, allowed map[Capability]stru
 		if _, ok := allowed[capability]; !ok {
 			return fmt.Errorf("capability %q is not allowed", capability)
 		}
+	}
+
+	return nil
+}
+
+func validateManifestDomainMode(manifest Manifest) error {
+	hasDomains := len(manifest.Domains) > 0
+	hasDomainRefs := len(manifest.DomainPolicyRefs) > 0
+	hasBrokerRefs := len(manifest.BrokerPolicyRefs) > 0
+
+	if hasDomains {
+		if hasDomainRefs || hasBrokerRefs {
+			return errors.New("manifest must not mix concrete domains with policy refs")
+		}
+
+		return validateDomainRules(manifest.Domains)
+	}
+
+	if !hasDomainRefs && !hasBrokerRefs {
+		return errors.New("manifest must declare concrete domains or explicit alias policy refs")
+	}
+	if manifest.Domains == nil {
+		return errors.New("alias manifest must declare explicit empty domains")
+	}
+	if !hasDomainRefs {
+		return errors.New("alias manifest must declare domain policy refs")
+	}
+	if err := validateOpaquePolicyRefs("domain_policy_refs", manifest.DomainPolicyRefs); err != nil {
+		return err
+	}
+	if err := validateOpaquePolicyRefs("broker_policy_refs", manifest.BrokerPolicyRefs); err != nil {
+		return err
+	}
+
+	needsBrokerRefs := ManifestHasCapability(manifest, CapabilityHTTPFetch) || ManifestHasCapability(manifest, CapabilityAuthProfile)
+	if needsBrokerRefs && !hasBrokerRefs {
+		return errors.New("alias manifest with brokered capabilities must declare broker policy refs")
+	}
+	if !needsBrokerRefs && hasBrokerRefs {
+		return errors.New("alias manifest must not declare broker policy refs without brokered capabilities")
+	}
+
+	return nil
+}
+
+func validateOpaquePolicyRefs(field string, refs []string) error {
+	seen := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if err := validateOpaquePolicyRef(field, ref); err != nil {
+			return err
+		}
+		if _, ok := seen[ref]; ok {
+			return fmt.Errorf("%s contains duplicate refs", field)
+		}
+		seen[ref] = struct{}{}
+	}
+
+	return nil
+}
+
+func validateOpaquePolicyRef(field string, ref string) error {
+	if len(ref) < 3 || len(ref) > 64 {
+		return fmt.Errorf("%s refs must be between 3 and 64 bytes", field)
+	}
+	if !isLowerSlugEdge(ref[0]) || !isLowerSlugEdge(ref[len(ref)-1]) {
+		return fmt.Errorf("%s refs must start and end with a lowercase letter or digit", field)
+	}
+	for i := 1; i < len(ref)-1; i++ {
+		c := ref[i]
+		if isLowerSlugEdge(c) || c == '-' {
+			continue
+		}
+
+		return fmt.Errorf("%s refs contain invalid characters", field)
 	}
 
 	return nil
@@ -300,6 +380,17 @@ func cloneDomainRules(rules []DomainRule) []DomainRule {
 
 	cloned := make([]DomainRule, len(rules))
 	copy(cloned, rules)
+
+	return cloned
+}
+
+func cloneStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+
+	cloned := make([]string, len(values))
+	copy(cloned, values)
 
 	return cloned
 }

@@ -79,6 +79,18 @@ func TestCapabilityGuardRejectsUnsafeURLs(t *testing.T) {
 	}
 }
 
+func TestCapabilityGuardDoesNotTreatAliasRefsAsDomains(t *testing.T) {
+	manifest := validAliasTestManifest(nil)
+
+	if err := ValidateCapabilityURL(CapabilityContext{
+		PackID:     manifest.PackID,
+		Manifest:   manifest,
+		Capability: CapabilityHTTPFetch,
+	}, "https://dpr-alpha001/path"); err == nil {
+		t.Fatal("ValidateCapabilityURL() error = nil, want alias ref not treated as domain")
+	}
+}
+
 func TestRedactSensitiveRemovesTokensCookiesAndQuerySecrets(t *testing.T) {
 	knownBearer := "bearer-raw-token-123"
 	knownCookie := "sessionid=raw-cookie-value"
