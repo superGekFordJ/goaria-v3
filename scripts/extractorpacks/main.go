@@ -3,8 +3,10 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -36,6 +38,20 @@ const (
 	maxSignatureBytes  = 64 * 1024
 	defaultHTTPTimeout = 30 * time.Second
 	fullPackCount      = 2
+
+	workflowVariantGenericNoPack = "generic-no-pack"
+	workflowVariantFullPack      = "full-pack"
+
+	envExtractorReleaseVariant     = "EXTRACTOR_RELEASE_VARIANT"
+	envFullPackMetadataB64         = "EXTRACTOR_FULL_PACK_METADATA_B64"
+	envPrivatePolicyBundleB64      = "EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64"
+	envPrivatePolicyExpectedSHA256 = "EXTRACTOR_PRIVATE_POLICY_SHA256"
+	defaultWorkflowMetadataPath    = "build/extractor/cache/full_pack_assets.json"
+	defaultWorkflowTempLockPath    = "build/extractor/cache/full_pack.lock.json"
+	defaultWorkflowPackEmbedPath   = "internal/extractor/embedded_packs_release_gen.go"
+	defaultWorkflowPolicyEmbedPath = "internal/extractor/private_policy_bundle_release_gen.go"
+	defaultWorkflowProvenancePath  = "build/extractor/verified_packs.provenance.json"
+	defaultWorkflowEvidenceSummary = "build/extractor/extractor_build_evidence.summary.json"
 )
 
 type lockFile struct {
@@ -83,6 +99,7 @@ type verifyOptions struct {
 	CleanOutputs  bool
 	HTTPClient    *http.Client
 	SameOrigin    bool
+	VerifiedOut   *[]verifiedAsset
 }
 
 type renderLockOptions struct {
@@ -98,6 +115,45 @@ type fullPackVerifyOptions struct {
 	CleanOutputs  bool
 	HTTPClient    *http.Client
 	NoNameAudit   func(string, []byte) error
+	VerifiedOut   *[]verifiedAsset
+}
+
+type workflowPaths struct {
+	MetadataPath  string
+	TempLockPath  string
+	PackEmbedPath string
+	PolicyOutPath string
+	ProvenanceOut string
+	SummaryOut    string
+}
+
+type workflowPrepareOptions struct {
+	Mode              string
+	MetadataB64       string
+	MetadataInputPath string
+	PolicyB64         string
+	PolicyInputPath   string
+	PolicySHA256      string
+	Paths             workflowPaths
+	HTTPClient        *http.Client
+	NoNameAudit       func(string, []byte) error
+}
+
+type workflowCleanupOptions struct {
+	Paths workflowPaths
+}
+
+type workflowEvidenceSummary struct {
+	SchemaVersion            int      `json:"schema_version"`
+	Variant                  string   `json:"variant"`
+	PackAssetCount           int      `json:"pack_asset_count"`
+	HostPolicyBundleInjected bool     `json:"host_policy_bundle_injected"`
+	PackVerificationRequired bool     `json:"pack_verification_required"`
+	GeneratedPackEmbed       bool     `json:"generated_pack_embed"`
+	PublicProvenanceWritten  bool     `json:"public_provenance_written"`
+	PublicEvidenceOnly       bool     `json:"public_evidence_only"`
+	CustodyInputCategories   []string `json:"custody_input_categories,omitempty"`
+	EvidenceOutputLabels     []string `json:"evidence_output_labels"`
 }
 
 type packParts struct {
@@ -109,6 +165,8 @@ type packParts struct {
 type verifiedAsset struct {
 	Entry                 packLockEntry
 	Parts                 packParts
+	Manifest              extractor.Manifest
+	Identity              extractor.VerifiedPackIdentity
 	PublicKeys            []ed25519.PublicKey
 	PublicKeyHex          []string
 	PublicKeyFingerprints []string
@@ -153,7 +211,7 @@ func main() {
 
 func runCLI(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: extractorpacks verify [--lock path] [--out path] [--provenance-out path] [--required] [--allow-file] | render-lock --metadata path --out-lock path | verify-full-pack --metadata path --temp-lock path --out path [--provenance-out path] [--cleanup]")
+		return errors.New("usage: extractorpacks verify [--lock path] [--out path] [--provenance-out path] [--required] [--allow-file] | render-lock --metadata path --out-lock path | verify-full-pack --metadata path --temp-lock path --out path [--provenance-out path] [--cleanup] | prepare-workflow [--mode variant] | cleanup-workflow")
 	}
 
 	switch args[0] {
@@ -197,9 +255,55 @@ func runCLI(args []string) error {
 		}
 
 		return verifyFullPack(opts)
+	case "prepare-workflow":
+		flags := flag.NewFlagSet("prepare-workflow", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		opts := workflowPrepareOptions{Paths: defaultWorkflowPaths()}
+		flags.StringVar(&opts.Mode, "mode", os.Getenv(envExtractorReleaseVariant), "workflow extractor package variant")
+		flags.StringVar(&opts.MetadataB64, "metadata-b64", os.Getenv(envFullPackMetadataB64), "base64 encoded full-pack metadata")
+		flags.StringVar(&opts.MetadataInputPath, "metadata-input", "", "test-only full-pack metadata input path")
+		flags.StringVar(&opts.PolicyB64, "policy-b64", os.Getenv(envPrivatePolicyBundleB64), "base64 encoded host policy bundle")
+		flags.StringVar(&opts.PolicyInputPath, "policy-input", "", "test-only host policy bundle input path")
+		flags.StringVar(&opts.PolicySHA256, "policy-sha256", os.Getenv(envPrivatePolicyExpectedSHA256), "optional expected host policy bundle sha256")
+		registerWorkflowPathFlags(flags, &opts.Paths)
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+
+		return prepareWorkflow(opts)
+	case "cleanup-workflow":
+		flags := flag.NewFlagSet("cleanup-workflow", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		opts := workflowCleanupOptions{Paths: defaultWorkflowPaths()}
+		registerWorkflowPathFlags(flags, &opts.Paths)
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+
+		return cleanupWorkflow(opts)
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
+}
+
+func defaultWorkflowPaths() workflowPaths {
+	return workflowPaths{
+		MetadataPath:  defaultWorkflowMetadataPath,
+		TempLockPath:  defaultWorkflowTempLockPath,
+		PackEmbedPath: defaultWorkflowPackEmbedPath,
+		PolicyOutPath: defaultWorkflowPolicyEmbedPath,
+		ProvenanceOut: defaultWorkflowProvenancePath,
+		SummaryOut:    defaultWorkflowEvidenceSummary,
+	}
+}
+
+func registerWorkflowPathFlags(flags *flag.FlagSet, paths *workflowPaths) {
+	flags.StringVar(&paths.MetadataPath, "metadata-cache", paths.MetadataPath, "workflow metadata cache output")
+	flags.StringVar(&paths.TempLockPath, "temp-lock", paths.TempLockPath, "workflow temporary lock output")
+	flags.StringVar(&paths.PackEmbedPath, "pack-out", paths.PackEmbedPath, "workflow generated pack embed output")
+	flags.StringVar(&paths.PolicyOutPath, "policy-out", paths.PolicyOutPath, "workflow generated host policy embed output")
+	flags.StringVar(&paths.ProvenanceOut, "provenance-out", paths.ProvenanceOut, "workflow public provenance output")
+	flags.StringVar(&paths.SummaryOut, "summary-out", paths.SummaryOut, "workflow public evidence summary output")
 }
 
 func renderFullPackLockCommand(opts renderLockOptions) error {
@@ -278,6 +382,7 @@ func verifyFullPack(opts fullPackVerifyOptions) (err error) {
 		Required:      true,
 		HTTPClient:    opts.HTTPClient,
 		SameOrigin:    true,
+		VerifiedOut:   opts.VerifiedOut,
 	}
 	if err := verifyPacks(verifyOpts); err != nil {
 		return sanitizeFullPackVerifyError(err)
@@ -343,6 +448,362 @@ func auditFullPackGeneratedOutputs(outPath string, provenanceOut string, audit f
 	return nil
 }
 
+func prepareWorkflow(opts workflowPrepareOptions) (err error) {
+	mode := strings.TrimSpace(opts.Mode)
+	if mode == "" {
+		mode = workflowVariantGenericNoPack
+	}
+	if err := validateWorkflowVariant(mode); err != nil {
+		return err
+	}
+	if err := validateWorkflowPaths(opts.Paths); err != nil {
+		return err
+	}
+
+	if mode == workflowVariantGenericNoPack {
+		if err := cleanupWorkflow(workflowCleanupOptions{Paths: opts.Paths}); err != nil {
+			return err
+		}
+
+		return writeWorkflowEvidenceSummary(opts.Paths.SummaryOut, workflowEvidenceSummary{
+			SchemaVersion:            lockSchemaVersion,
+			Variant:                  workflowVariantGenericNoPack,
+			PackAssetCount:           0,
+			HostPolicyBundleInjected: false,
+			PackVerificationRequired: false,
+			GeneratedPackEmbed:       false,
+			PublicProvenanceWritten:  false,
+			PublicEvidenceOnly:       true,
+			EvidenceOutputLabels:     []string{"extractor_build_evidence.summary.json"},
+		})
+	}
+
+	defer func() {
+		if err != nil {
+			_ = cleanupWorkflow(workflowCleanupOptions{Paths: opts.Paths})
+		}
+	}()
+
+	metadataRaw, err := workflowCustodyInput(workflowCustodyInputOptions{
+		B64:       opts.MetadataB64,
+		InputPath: opts.MetadataInputPath,
+		Label:     "full-pack metadata",
+	})
+	if err != nil {
+		return err
+	}
+	if err := auditNoNameBytes("metadata", metadataRaw); err != nil {
+		return err
+	}
+	if err := writeFileAtomic(opts.Paths.MetadataPath, append([]byte(nil), metadataRaw...), 0o600); err != nil {
+		return errors.New("write workflow metadata failed")
+	}
+
+	policyRaw, err := workflowCustodyInput(workflowCustodyInputOptions{
+		B64:       opts.PolicyB64,
+		InputPath: opts.PolicyInputPath,
+		Label:     "host policy bundle",
+	})
+	if err != nil {
+		return err
+	}
+
+	verified := make([]verifiedAsset, 0, fullPackCount)
+	if err := verifyFullPack(fullPackVerifyOptions{
+		MetadataPath:  opts.Paths.MetadataPath,
+		TempLockPath:  opts.Paths.TempLockPath,
+		OutPath:       opts.Paths.PackEmbedPath,
+		ProvenanceOut: opts.Paths.ProvenanceOut,
+		HTTPClient:    opts.HTTPClient,
+		NoNameAudit:   opts.NoNameAudit,
+		VerifiedOut:   &verified,
+	}); err != nil {
+		return err
+	}
+	if len(verified) != fullPackCount {
+		return errors.New("full-pack workflow preparation failed")
+	}
+	if err := validatePrivatePolicyForVerifiedAssets(policyRaw, opts.PolicySHA256, verified); err != nil {
+		return err
+	}
+	if err := writePrivatePolicyEmbed(opts.Paths.PolicyOutPath, policyRaw, opts.PolicySHA256); err != nil {
+		return err
+	}
+
+	return writeWorkflowEvidenceSummary(opts.Paths.SummaryOut, workflowEvidenceSummary{
+		SchemaVersion:            lockSchemaVersion,
+		Variant:                  workflowVariantFullPack,
+		PackAssetCount:           len(verified),
+		HostPolicyBundleInjected: true,
+		PackVerificationRequired: true,
+		GeneratedPackEmbed:       true,
+		PublicProvenanceWritten:  false,
+		PublicEvidenceOnly:       true,
+		CustodyInputCategories:   []string{"full_pack_metadata", "host_policy_bundle"},
+		EvidenceOutputLabels:     []string{"extractor_build_evidence.summary.json"},
+	})
+}
+
+func cleanupWorkflow(opts workflowCleanupOptions) error {
+	if err := validateWorkflowPaths(opts.Paths); err != nil {
+		return err
+	}
+	files := []string{
+		opts.Paths.PackEmbedPath,
+		opts.Paths.PolicyOutPath,
+		opts.Paths.ProvenanceOut,
+		opts.Paths.TempLockPath,
+		opts.Paths.MetadataPath,
+		opts.Paths.SummaryOut,
+	}
+	var errs []error
+	for _, filePath := range files {
+		if strings.TrimSpace(filePath) == "" {
+			continue
+		}
+		if err := os.Remove(filePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, errors.New("workflow cleanup failed"))
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+func validateWorkflowVariant(mode string) error {
+	switch mode {
+	case workflowVariantGenericNoPack, workflowVariantFullPack:
+		return nil
+	default:
+		return errors.New("workflow extractor variant is invalid")
+	}
+}
+
+func validateWorkflowPaths(paths workflowPaths) error {
+	for _, filePath := range []string{paths.MetadataPath, paths.TempLockPath, paths.PackEmbedPath, paths.PolicyOutPath, paths.ProvenanceOut, paths.SummaryOut} {
+		if strings.TrimSpace(filePath) == "" {
+			return errors.New("workflow output path is invalid")
+		}
+		if err := rejectDangerousWorkflowPath(filePath); err != nil {
+			return err
+		}
+		if err := rejectProductionLockOutput(filePath); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func rejectDangerousWorkflowPath(filePath string) error {
+	if strings.TrimSpace(filePath) == "" {
+		return errors.New("workflow output path is invalid")
+	}
+	cleaned := guardComparablePath(filePath)
+	volume := strings.TrimRight(strings.ToLower(filepath.VolumeName(filePath)), ":")
+	if cleaned == "." || cleaned == "/" || cleaned == "" || volume != "" && cleaned == volume+":" {
+		return errors.New("workflow output path is invalid")
+	}
+	base := filepath.Base(filepath.Clean(filePath))
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		return errors.New("workflow output path is invalid")
+	}
+
+	return nil
+}
+
+type workflowCustodyInputOptions struct {
+	B64       string
+	InputPath string
+	Label     string
+}
+
+func workflowCustodyInput(opts workflowCustodyInputOptions) ([]byte, error) {
+	hasB64 := strings.TrimSpace(opts.B64) != ""
+	hasPath := strings.TrimSpace(opts.InputPath) != ""
+	if hasB64 == hasPath {
+		return nil, fmt.Errorf("%s custody input is required", opts.Label)
+	}
+	if hasPath {
+		raw, err := os.ReadFile(opts.InputPath)
+		if err != nil || len(raw) == 0 {
+			return nil, fmt.Errorf("%s custody input is invalid", opts.Label)
+		}
+
+		return raw, nil
+	}
+
+	decoded, err := base64.StdEncoding.Strict().DecodeString(opts.B64)
+	if err != nil || len(decoded) == 0 {
+		return nil, fmt.Errorf("%s custody input is invalid", opts.Label)
+	}
+
+	return decoded, nil
+}
+
+func validatePrivatePolicyForVerifiedAssets(raw []byte, expectedSHA string, verified []verifiedAsset) error {
+	resolver, err := extractor.NewPrivatePolicyBundleResolver(raw, extractor.PrivatePolicyBundleLoadOptions{ExpectedPolicyPrivateSHA256: expectedSHA})
+	if err != nil {
+		return errors.New("host policy bundle is invalid")
+	}
+	if len(verified) != fullPackCount {
+		return errors.New("host policy bundle is invalid")
+	}
+	if err := validatePrivatePolicyIdentitySet(raw, verified); err != nil {
+		return err
+	}
+	for _, asset := range verified {
+		if _, err := resolver.ResolveHostPolicy(context.Background(), extractor.HostPolicyRequest{PackIdentity: asset.Identity, Manifest: asset.Manifest}); err != nil {
+			return errors.New("host policy bundle is invalid")
+		}
+	}
+
+	return nil
+}
+
+type workflowPolicyEnvelope struct {
+	Policy json.RawMessage `json:"policy"`
+}
+
+type workflowPolicyFile struct {
+	Packs []workflowPolicyPack `json:"packs"`
+}
+
+type workflowPolicyPack struct {
+	VerifiedPackIdentity workflowPolicyIdentity `json:"verified_pack_identity"`
+}
+
+type workflowPolicyIdentity struct {
+	PackID          string `json:"pack_id"`
+	PackVersion     string `json:"pack_version"`
+	AssetSHA256     string `json:"asset_sha256"`
+	ManifestSHA256  string `json:"manifest_sha256"`
+	PayloadSHA256   string `json:"payload_sha256"`
+	SignatureSHA256 string `json:"signature_sha256"`
+	PublicKeySHA256 string `json:"public_key_sha256"`
+}
+
+func validatePrivatePolicyIdentitySet(raw []byte, verified []verifiedAsset) error {
+	var envelope workflowPolicyEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil || len(envelope.Policy) == 0 {
+		return errors.New("host policy bundle is invalid")
+	}
+	var policy workflowPolicyFile
+	if err := json.Unmarshal(envelope.Policy, &policy); err != nil {
+		return errors.New("host policy bundle is invalid")
+	}
+	if len(policy.Packs) != len(verified) {
+		return errors.New("host policy bundle is invalid")
+	}
+	policyIdentities := make(map[extractor.VerifiedPackIdentity]struct{}, len(policy.Packs))
+	for _, pack := range policy.Packs {
+		identity := pack.VerifiedPackIdentity.identity()
+		if _, ok := policyIdentities[identity]; ok {
+			return errors.New("host policy bundle is invalid")
+		}
+		policyIdentities[identity] = struct{}{}
+	}
+	for _, asset := range verified {
+		if _, ok := policyIdentities[asset.Identity]; !ok {
+			return errors.New("host policy bundle is invalid")
+		}
+	}
+
+	return nil
+}
+
+func (identity workflowPolicyIdentity) identity() extractor.VerifiedPackIdentity {
+	return extractor.VerifiedPackIdentity{
+		PackID:          identity.PackID,
+		PackVersion:     identity.PackVersion,
+		AssetSHA256:     identity.AssetSHA256,
+		ManifestSHA256:  identity.ManifestSHA256,
+		PayloadSHA256:   identity.PayloadSHA256,
+		SignatureSHA256: identity.SignatureSHA256,
+		PublicKeySHA256: identity.PublicKeySHA256,
+	}
+}
+
+func writePrivatePolicyEmbed(outPath string, raw []byte, expectedSHA string) error {
+	embedSHA, err := privatePolicyExpectedSHAForEmbed(raw, expectedSHA)
+	if err != nil {
+		return err
+	}
+
+	var builder strings.Builder
+	builder.WriteString("// Code generated by go run ./scripts/extractorpacks prepare-workflow; DO NOT EDIT.\n\n")
+	builder.WriteString("package extractor\n\n")
+	builder.WriteString("func init() {\n")
+	builder.WriteString("\tembeddedPrivatePolicyBundleJSON = ")
+	builder.WriteString(byteSliceLiteral(raw, "\t"))
+	builder.WriteString("\n")
+	if embedSHA != "" {
+		fmt.Fprintf(&builder, "\tembeddedPrivatePolicyBundleSHA256 = %q\n", embedSHA)
+	}
+	builder.WriteString("}\n")
+
+	formatted, err := format.Source([]byte(builder.String()))
+	if err != nil {
+		return errors.New("generate host policy bundle failed")
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "private_policy_bundle_release_gen.go", formatted, parser.AllErrors); err != nil {
+		return errors.New("generate host policy bundle failed")
+	}
+
+	return writeFileAtomic(outPath, formatted, 0o600)
+}
+
+func privatePolicyExpectedSHAForEmbed(raw []byte, expectedSHA string) (string, error) {
+	if strings.TrimSpace(expectedSHA) != "" {
+		return expectedSHA, nil
+	}
+	var envelope struct {
+		PolicyPrivateSHA256 string `json:"policy_private_sha256"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return "", errors.New("host policy bundle is invalid")
+	}
+	if envelope.PolicyPrivateSHA256 == "" {
+		return "", errors.New("host policy bundle is invalid")
+	}
+
+	return envelope.PolicyPrivateSHA256, nil
+}
+
+func writeWorkflowEvidenceSummary(outPath string, summary workflowEvidenceSummary) error {
+	raw, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		return err
+	}
+	raw = append(raw, '\n')
+	if err := auditNoNameBytes("evidence", raw); err != nil {
+		return err
+	}
+
+	return writeFileAtomic(outPath, raw, 0o644)
+}
+
+func cloneVerifiedAssets(assets []verifiedAsset) []verifiedAsset {
+	if assets == nil {
+		return nil
+	}
+	cloned := make([]verifiedAsset, len(assets))
+	for i, asset := range assets {
+		cloned[i] = asset
+		cloned[i].Entry.PublicKeys = append([]string(nil), asset.Entry.PublicKeys...)
+		cloned[i].Parts.ManifestJSON = append([]byte(nil), asset.Parts.ManifestJSON...)
+		cloned[i].Parts.Payload = append([]byte(nil), asset.Parts.Payload...)
+		cloned[i].Parts.Signature = append([]byte(nil), asset.Parts.Signature...)
+		cloned[i].PublicKeys = append([]ed25519.PublicKey(nil), asset.PublicKeys...)
+		for j := range cloned[i].PublicKeys {
+			cloned[i].PublicKeys[j] = append(ed25519.PublicKey(nil), asset.PublicKeys[j]...)
+		}
+		cloned[i].PublicKeyHex = append([]string(nil), asset.PublicKeyHex...)
+		cloned[i].PublicKeyFingerprints = append([]string(nil), asset.PublicKeyFingerprints...)
+	}
+
+	return cloned
+}
+
 func verifyPacks(opts verifyOptions) (err error) {
 	if strings.TrimSpace(opts.LockPath) == "" {
 		return errors.New("--lock must be non-empty")
@@ -384,6 +845,9 @@ func verifyPacks(opts verifyOptions) (err error) {
 			return fmt.Errorf("verify pack %d (%s): %w", i, safePackID(entry.PackID), err)
 		}
 		verified = append(verified, asset)
+	}
+	if opts.VerifiedOut != nil {
+		*opts.VerifiedOut = cloneVerifiedAssets(verified)
 	}
 
 	code, err := generateEmbeddedPacksCode(verified, opts.Required)
@@ -1022,6 +1486,8 @@ func verifyPackAsset(opts verifyOptions, lockDir string, entry packLockEntry) (v
 	return verifiedAsset{
 		Entry:                 entry,
 		Parts:                 parts,
+		Manifest:              verified.Manifest,
+		Identity:              verified.Identity,
 		PublicKeys:            publicKeys,
 		PublicKeyHex:          keyHex,
 		PublicKeyFingerprints: fingerprints,
