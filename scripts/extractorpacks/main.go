@@ -14,11 +14,13 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +35,7 @@ const (
 	maxPayloadBytes    = 32 * 1024 * 1024
 	maxSignatureBytes  = 64 * 1024
 	defaultHTTPTimeout = 30 * time.Second
+	fullPackCount      = 2
 )
 
 type lockFile struct {
@@ -52,6 +55,25 @@ type packLockEntry struct {
 	SignatureSHA256 string   `json:"signature_sha256,omitempty"`
 }
 
+type fullPackMetadataFile struct {
+	SchemaVersion    int                     `json:"schema_version"`
+	ReleaseTag       string                  `json:"release_tag"`
+	BaseAssetURL     string                  `json:"base_asset_url,omitempty"`
+	AssetURLTemplate string                  `json:"asset_url_template,omitempty"`
+	Packs            []fullPackMetadataEntry `json:"packs"`
+}
+
+type fullPackMetadataEntry struct {
+	AssetName       string   `json:"asset_name"`
+	PackID          string   `json:"pack_id"`
+	PackVersion     string   `json:"pack_version"`
+	AssetSHA256     string   `json:"asset_sha256"`
+	PublicKeys      []string `json:"public_keys"`
+	ManifestSHA256  string   `json:"manifest_sha256,omitempty"`
+	PayloadSHA256   string   `json:"payload_sha256,omitempty"`
+	SignatureSHA256 string   `json:"signature_sha256,omitempty"`
+}
+
 type verifyOptions struct {
 	LockPath      string
 	OutPath       string
@@ -60,6 +82,22 @@ type verifyOptions struct {
 	AllowFile     bool
 	CleanOutputs  bool
 	HTTPClient    *http.Client
+	SameOrigin    bool
+}
+
+type renderLockOptions struct {
+	MetadataPath string
+	OutLockPath  string
+}
+
+type fullPackVerifyOptions struct {
+	MetadataPath  string
+	TempLockPath  string
+	OutPath       string
+	ProvenanceOut string
+	CleanOutputs  bool
+	HTTPClient    *http.Client
+	NoNameAudit   func(string, []byte) error
 }
 
 type packParts struct {
@@ -98,6 +136,14 @@ type provenanceEntry struct {
 	PublicKeyFingerprints []string `json:"public_key_fingerprints"`
 }
 
+var (
+	opaqueAssetNamePattern  = regexp.MustCompile(`^asset-[a-z0-9][a-z0-9-]{2,48}\.pack\.zip$`)
+	opaquePackIDPattern     = regexp.MustCompile(`^xpk-[a-z0-9][a-z0-9-]{2,48}$`)
+	opaquePackVersionRegexp = regexp.MustCompile(`^opaque-[a-z0-9][a-z0-9-]{0,48}$`)
+	opaqueReleaseTagPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
+	assetURLTemplateKey     = regexp.MustCompile(`"asset_url_template"\s*:`)
+)
+
 func main() {
 	if err := runCLI(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -107,7 +153,7 @@ func main() {
 
 func runCLI(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: extractorpacks verify [--lock path] [--out path] [--provenance-out path] [--required] [--allow-file]")
+		return errors.New("usage: extractorpacks verify [--lock path] [--out path] [--provenance-out path] [--required] [--allow-file] | render-lock --metadata path --out-lock path | verify-full-pack --metadata path --temp-lock path --out path [--provenance-out path] [--cleanup]")
 	}
 
 	switch args[0] {
@@ -126,9 +172,175 @@ func runCLI(args []string) error {
 		}
 
 		return verifyPacks(opts)
+	case "render-lock":
+		flags := flag.NewFlagSet("render-lock", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		opts := renderLockOptions{}
+		flags.StringVar(&opts.MetadataPath, "metadata", "", "full-pack metadata file")
+		flags.StringVar(&opts.OutLockPath, "out-lock", "", "temporary generated lock output")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+
+		return renderFullPackLockCommand(opts)
+	case "verify-full-pack":
+		flags := flag.NewFlagSet("verify-full-pack", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		opts := fullPackVerifyOptions{}
+		flags.StringVar(&opts.MetadataPath, "metadata", "", "full-pack metadata file")
+		flags.StringVar(&opts.TempLockPath, "temp-lock", "", "temporary generated lock output")
+		flags.StringVar(&opts.OutPath, "out", "", "generated Go embed output")
+		flags.StringVar(&opts.ProvenanceOut, "provenance-out", filepath.Join("build", "extractor", "verified_packs.provenance.json"), "generated public provenance output")
+		flags.BoolVar(&opts.CleanOutputs, "cleanup", false, "remove generated outputs and temporary lock after successful verification")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+
+		return verifyFullPack(opts)
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
+}
+
+func renderFullPackLockCommand(opts renderLockOptions) error {
+	if strings.TrimSpace(opts.MetadataPath) == "" {
+		return errors.New("--metadata must be non-empty")
+	}
+	if strings.TrimSpace(opts.OutLockPath) == "" {
+		return errors.New("--out-lock must be non-empty")
+	}
+	if err := rejectProductionLockOutput(opts.OutLockPath); err != nil {
+		return err
+	}
+
+	metadata, err := readFullPackMetadata(opts.MetadataPath)
+	if err != nil {
+		return err
+	}
+	lock, err := renderFullPackLock(metadata)
+	if err != nil {
+		return err
+	}
+	lockBytes, err := marshalRenderedFullPackLock(lock)
+	if err != nil {
+		return err
+	}
+	if err := auditNoNameBytes("rendered lock", lockBytes); err != nil {
+		return err
+	}
+
+	return writeFileAtomic(opts.OutLockPath, lockBytes, 0o644)
+}
+
+func verifyFullPack(opts fullPackVerifyOptions) (err error) {
+	if strings.TrimSpace(opts.MetadataPath) == "" {
+		return errors.New("--metadata must be non-empty")
+	}
+	if strings.TrimSpace(opts.TempLockPath) == "" {
+		return errors.New("--temp-lock must be non-empty")
+	}
+	if strings.TrimSpace(opts.OutPath) == "" {
+		return errors.New("--out must be non-empty")
+	}
+	if err := rejectFullPackOutputPaths(opts.TempLockPath, opts.OutPath, opts.ProvenanceOut); err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = removeGeneratedOutputs(verifyOptions{OutPath: opts.OutPath, ProvenanceOut: opts.ProvenanceOut})
+			_ = os.Remove(opts.TempLockPath)
+		}
+	}()
+
+	metadata, err := readFullPackMetadata(opts.MetadataPath)
+	if err != nil {
+		return err
+	}
+	lock, err := renderFullPackLock(metadata)
+	if err != nil {
+		return err
+	}
+	lockBytes, err := marshalRenderedFullPackLock(lock)
+	if err != nil {
+		return err
+	}
+	if err := auditNoNameBytes("rendered lock", lockBytes); err != nil {
+		return err
+	}
+	if err := writeFileAtomic(opts.TempLockPath, lockBytes, 0o644); err != nil {
+		return fmt.Errorf("write temporary lock: %w", err)
+	}
+
+	verifyOpts := verifyOptions{
+		LockPath:      opts.TempLockPath,
+		OutPath:       opts.OutPath,
+		ProvenanceOut: opts.ProvenanceOut,
+		Required:      true,
+		HTTPClient:    opts.HTTPClient,
+		SameOrigin:    true,
+	}
+	if err := verifyPacks(verifyOpts); err != nil {
+		return sanitizeFullPackVerifyError(err)
+	}
+
+	audit := opts.NoNameAudit
+	if audit == nil {
+		audit = auditNoNameBytes
+	}
+	if err := auditFullPackGeneratedOutputs(opts.OutPath, opts.ProvenanceOut, audit); err != nil {
+		return err
+	}
+
+	if opts.CleanOutputs {
+		if err := removeGeneratedOutputs(verifyOpts); err != nil {
+			return err
+		}
+		if err := os.Remove(opts.TempLockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if err := auditNoNameBytes("command output", []byte("full-pack verification completed\n")); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func rejectFullPackOutputPaths(paths ...string) error {
+	for _, path := range paths {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		if err := rejectProductionLockOutput(path); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func auditFullPackGeneratedOutputs(outPath string, provenanceOut string, audit func(string, []byte) error) error {
+	generated, err := os.ReadFile(outPath)
+	if err != nil {
+		return fmt.Errorf("read generated embed code for audit: %w", err)
+	}
+	if audit == nil {
+		audit = auditNoNameBytes
+	}
+	if err := audit("generated embed", generated); err != nil {
+		return err
+	}
+	if provenanceOut != "" {
+		provenance, err := os.ReadFile(provenanceOut)
+		if err != nil {
+			return fmt.Errorf("read generated provenance for audit: %w", err)
+		}
+		if err := audit("generated provenance", provenance); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func verifyPacks(opts verifyOptions) (err error) {
@@ -216,6 +428,541 @@ func readLock(lockPath string) (lockFile, string, error) {
 	}
 
 	return lock, filepath.Dir(lockPath), nil
+}
+
+func readFullPackMetadata(metadataPath string) (fullPackMetadataFile, error) {
+	raw, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return fullPackMetadataFile{}, fmt.Errorf("read full-pack metadata: %w", err)
+	}
+
+	return decodeFullPackMetadata(raw)
+}
+
+func decodeFullPackMetadata(raw []byte) (fullPackMetadataFile, error) {
+	if err := auditNoNameBytes("metadata", raw); err != nil {
+		return fullPackMetadataFile{}, err
+	}
+	if err := auditDecodedFullPackMetadataJSON(raw); err != nil {
+		return fullPackMetadataFile{}, err
+	}
+
+	var metadata fullPackMetadataFile
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&metadata); err != nil {
+		return fullPackMetadataFile{}, sanitizeFullPackMetadataDecodeError(err)
+	}
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fullPackMetadataFile{}, errors.New("decode full-pack metadata: trailing JSON data")
+	}
+	if err := validateFullPackMetadata(metadata); err != nil {
+		return fullPackMetadataFile{}, err
+	}
+
+	return metadata, nil
+}
+
+func sanitizeFullPackMetadataDecodeError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return errors.New("decode full-pack metadata failed")
+}
+
+func auditDecodedFullPackMetadataJSON(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil
+	}
+
+	if auditDecodedJSONValue(value) {
+		return errors.New("metadata no-name audit failed")
+	}
+
+	return nil
+}
+
+func auditDecodedJSONValue(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, nested := range typed {
+			if key != "asset_url_template" && containsForbiddenNoNameTerm(key) || auditDecodedJSONValue(nested) {
+				return true
+			}
+		}
+	case []any:
+		for _, nested := range typed {
+			if auditDecodedJSONValue(nested) {
+				return true
+			}
+		}
+	case string:
+		return containsForbiddenNoNameTerm(typed)
+	}
+
+	return false
+}
+
+func validateFullPackMetadata(metadata fullPackMetadataFile) error {
+	if metadata.SchemaVersion != lockSchemaVersion {
+		return fmt.Errorf("full-pack metadata schema_version %d is unsupported", metadata.SchemaVersion)
+	}
+	if err := validateOpaqueReleaseTag(metadata.ReleaseTag); err != nil {
+		return err
+	}
+	if (strings.TrimSpace(metadata.BaseAssetURL) == "") == (strings.TrimSpace(metadata.AssetURLTemplate) == "") {
+		return errors.New("full-pack metadata must declare exactly one of base_asset_url or asset_url_template")
+	}
+	if metadata.BaseAssetURL != "" {
+		if err := validateBaseAssetURL(metadata.BaseAssetURL); err != nil {
+			return err
+		}
+	}
+	if metadata.AssetURLTemplate != "" {
+		if err := validateAssetURLTemplate(metadata.AssetURLTemplate); err != nil {
+			return err
+		}
+	}
+	if len(metadata.Packs) != fullPackCount {
+		return fmt.Errorf("full-pack metadata must contain exactly %d packs", fullPackCount)
+	}
+
+	seenPackIDs := make(map[string]struct{}, len(metadata.Packs))
+	seenAssetNames := make(map[string]struct{}, len(metadata.Packs))
+	for i, pack := range metadata.Packs {
+		if err := validateOpaqueAssetName(pack.AssetName); err != nil {
+			return fmt.Errorf("pack %d asset_name: %w", i, err)
+		}
+		if err := validateOpaquePackID(pack.PackID); err != nil {
+			return fmt.Errorf("pack %d pack_id: %w", i, err)
+		}
+		if err := validateOpaquePackVersion(pack.PackVersion); err != nil {
+			return fmt.Errorf("pack %d pack_version: %w", i, err)
+		}
+		if _, ok := seenPackIDs[pack.PackID]; ok {
+			return errors.New("full-pack metadata contains duplicate pack_id")
+		}
+		seenPackIDs[pack.PackID] = struct{}{}
+		if _, ok := seenAssetNames[pack.AssetName]; ok {
+			return errors.New("full-pack metadata contains duplicate asset_name")
+		}
+		seenAssetNames[pack.AssetName] = struct{}{}
+
+		if err := validateLowerHexSHA256("asset_sha256", pack.AssetSHA256); err != nil {
+			return err
+		}
+		if err := validateOptionalFullPackSHA256("manifest_sha256", pack.ManifestSHA256); err != nil {
+			return err
+		}
+		if err := validateOptionalFullPackSHA256("payload_sha256", pack.PayloadSHA256); err != nil {
+			return err
+		}
+		if err := validateOptionalFullPackSHA256("signature_sha256", pack.SignatureSHA256); err != nil {
+			return err
+		}
+		if _, _, _, err := decodePublicKeys(pack.PublicKeys); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func sanitizeFullPackVerifyError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return errors.New("full-pack verification failed")
+}
+
+func validateOptionalFullPackSHA256(field string, value string) error {
+	if value == "" {
+		return nil
+	}
+
+	return validateLowerHexSHA256(field, value)
+}
+
+func validateOpaqueReleaseTag(value string) error {
+	if strings.TrimSpace(value) != value || value == "" {
+		return errors.New("release_tag must be non-empty and trimmed")
+	}
+	if !opaqueReleaseTagPattern.MatchString(value) || strings.Contains(value, "..") {
+		return errors.New("release_tag must be an opaque lowercase release label")
+	}
+	if hasUnsafePublicToken(value) || containsForbiddenNoNameTerm(value) {
+		return errors.New("release_tag must be an opaque lowercase release label")
+	}
+
+	return nil
+}
+
+func validateOpaqueAssetName(value string) error {
+	if strings.TrimSpace(value) != value || value == "" {
+		return errors.New("asset_name must be non-empty and trimmed")
+	}
+	if !opaqueAssetNamePattern.MatchString(value) || strings.Count(value, ".") != 2 || strings.Contains(value, "..") {
+		return errors.New("asset_name must be an opaque pack filename")
+	}
+	if hasUnsafePublicToken(value) || containsForbiddenNoNameTerm(value) {
+		return errors.New("asset_name must be an opaque pack filename")
+	}
+
+	return nil
+}
+
+func validateOpaquePackID(value string) error {
+	if strings.TrimSpace(value) != value || value == "" {
+		return errors.New("pack_id must be non-empty and trimmed")
+	}
+	if !opaquePackIDPattern.MatchString(value) {
+		return errors.New("pack_id must be opaque lowercase")
+	}
+	if hasUnsafePublicToken(value) || containsForbiddenNoNameTerm(value) || strings.Contains(value, ".") {
+		return errors.New("pack_id must be opaque lowercase")
+	}
+
+	return nil
+}
+
+func validateOpaquePackVersion(value string) error {
+	if strings.TrimSpace(value) != value || value == "" {
+		return errors.New("pack_version must be non-empty and trimmed")
+	}
+	if !opaquePackVersionRegexp.MatchString(value) {
+		return errors.New("pack_version must be opaque lowercase")
+	}
+	if hasUnsafePublicToken(value) || containsForbiddenNoNameTerm(value) || strings.Contains(value, ".") {
+		return errors.New("pack_version must be opaque lowercase")
+	}
+
+	return nil
+}
+
+func hasUnsafePublicToken(value string) bool {
+	if strings.ContainsAny(value, "\\/:?#@&=+%\r\n\t ") {
+		return true
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+
+	return false
+}
+
+func validateBaseAssetURL(rawURL string) error {
+	if strings.TrimSpace(rawURL) != rawURL || rawURL == "" {
+		return errors.New("base_asset_url must be non-empty and trimmed")
+	}
+	if containsURLUnsafeText(rawURL) || containsForbiddenNoNameTerm(rawURL) {
+		return errors.New("base_asset_url must be a safe public HTTPS asset URL base")
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return errors.New("base_asset_url is malformed")
+	}
+	if err := validateProductionAssetURL(parsed); err != nil {
+		return err
+	}
+	if err := validateFullPackAssetURL(parsed); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateAssetURLTemplate(template string) error {
+	if strings.TrimSpace(template) != template || template == "" {
+		return errors.New("asset_url_template must be non-empty and trimmed")
+	}
+	if containsURLUnsafeText(template) || containsForbiddenNoNameTerm(template) {
+		return errors.New("asset_url_template must be a safe public HTTPS asset URL template")
+	}
+	if strings.Count(template, "{release_tag}") != 1 || strings.Count(template, "{asset_name}") != 1 {
+		return errors.New("asset_url_template must contain release_tag and asset_name placeholders")
+	}
+	if strings.Count(template, "{") != 2 || strings.Count(template, "}") != 2 {
+		return errors.New("asset_url_template contains unsupported placeholders")
+	}
+	probe := strings.ReplaceAll(template, "{release_tag}", "v0.0.0-alpha")
+	probe = strings.ReplaceAll(probe, "{asset_name}", "asset-alpha001.pack.zip")
+	parsed, err := url.Parse(probe)
+	if err != nil {
+		return errors.New("asset_url_template is malformed")
+	}
+	if err := validateProductionAssetURL(parsed); err != nil {
+		return err
+	}
+
+	return validateFullPackAssetURL(parsed)
+}
+
+func renderFullPackLock(metadata fullPackMetadataFile) (lockFile, error) {
+	if err := validateFullPackMetadata(metadata); err != nil {
+		return lockFile{}, err
+	}
+
+	lock := lockFile{SchemaVersion: lockSchemaVersion, Packs: make([]packLockEntry, 0, len(metadata.Packs))}
+	for _, pack := range metadata.Packs {
+		assetURL, err := releaseAssetURL(metadata, pack.AssetName)
+		if err != nil {
+			return lockFile{}, err
+		}
+		lock.Packs = append(lock.Packs, packLockEntry{
+			PackID:          pack.PackID,
+			PackVersion:     pack.PackVersion,
+			AssetURL:        assetURL,
+			AssetSHA256:     pack.AssetSHA256,
+			PublicKeys:      append([]string(nil), pack.PublicKeys...),
+			ManifestSHA256:  pack.ManifestSHA256,
+			PayloadSHA256:   pack.PayloadSHA256,
+			SignatureSHA256: pack.SignatureSHA256,
+		})
+	}
+
+	return lock, nil
+}
+
+func releaseAssetURL(metadata fullPackMetadataFile, assetName string) (string, error) {
+	var rawURL string
+	if metadata.BaseAssetURL != "" {
+		parsed, err := url.Parse(metadata.BaseAssetURL)
+		if err != nil {
+			return "", errors.New("base_asset_url is malformed")
+		}
+		appendAssetNameToURLPath(parsed, assetName)
+		rawURL = parsed.String()
+	} else {
+		rawURL = strings.ReplaceAll(metadata.AssetURLTemplate, "{release_tag}", metadata.ReleaseTag)
+		rawURL = strings.ReplaceAll(rawURL, "{asset_name}", url.PathEscape(assetName))
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", errors.New("rendered asset_url is malformed")
+	}
+	if err := validateProductionAssetURL(parsed); err != nil {
+		return "", err
+	}
+	if err := validateFullPackAssetURL(parsed); err != nil {
+		return "", err
+	}
+
+	return parsed.String(), nil
+}
+
+func appendAssetNameToURLPath(parsed *url.URL, assetName string) {
+	escapedAsset := url.PathEscape(assetName)
+	if parsed.EscapedPath() == "" || parsed.EscapedPath() == "/" {
+		parsed.RawPath = ""
+		parsed.Path = "/" + assetName
+
+		return
+	}
+
+	escapedPath := strings.TrimRight(parsed.EscapedPath(), "/") + "/" + escapedAsset
+	parsed.RawPath = escapedPath
+	unescaped, err := url.PathUnescape(escapedPath)
+	if err != nil {
+		parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + assetName
+
+		return
+	}
+	parsed.Path = unescaped
+}
+
+func validateFullPackAssetURL(parsed *url.URL) error {
+	if hasUnsafeURLPath(parsed.EscapedPath()) || hasUnsafeURLPath(parsed.Path) {
+		return errors.New("full-pack asset URL path must be safe")
+	}
+	if err := validateFullPackHost(parsed); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func hasUnsafeURLPath(urlPath string) bool {
+	if urlPath == "" {
+		return false
+	}
+	if strings.Contains(urlPath, "\\") {
+		return true
+	}
+	segments := strings.Split(urlPath, "/")
+	for _, segment := range segments {
+		if segment == "." || segment == ".." {
+			return true
+		}
+		decoded := segment
+		for i := 0; i < 2; i++ {
+			value, err := url.PathUnescape(decoded)
+			if err != nil {
+				return true
+			}
+			if value == decoded {
+				break
+			}
+			decoded = value
+		}
+		if decoded == "." || decoded == ".." || strings.Contains(decoded, "/") || strings.Contains(decoded, "\\") {
+			return true
+		}
+	}
+
+	return false
+}
+
+func validateFullPackHost(parsed *url.URL) error {
+	host := parsed.Hostname()
+	if host == "" {
+		return errors.New("full-pack asset URL host must be safe")
+	}
+	if strings.EqualFold(host, "localhost") {
+		return errors.New("full-pack asset URL host must not be localhost")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return errors.New("full-pack asset URL host must not be an IP literal")
+	}
+
+	return nil
+}
+
+func marshalRenderedFullPackLock(lock lockFile) ([]byte, error) {
+	bytes, err := json.MarshalIndent(lock, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode rendered lock: %w", err)
+	}
+
+	return append(bytes, '\n'), nil
+}
+
+func rejectProductionLockOutput(lockPath string) error {
+	if strings.TrimSpace(lockPath) == "" {
+		return errors.New("temporary lock path is invalid")
+	}
+	protectedDir := filepath.Join("build", "extractor")
+	cleanSlash := strings.ToLower(strings.ReplaceAll(filepath.ToSlash(filepath.Clean(lockPath)), "\\", "/"))
+	if cleanSlash == "build/extractor/packs.lock.json" || strings.HasSuffix(cleanSlash, "/build/extractor/packs.lock.json") || strings.HasSuffix(cleanSlash, "\\build\\extractor\\packs.lock.json") {
+		return errors.New("full-pack commands refuse to write the tracked production lock")
+	}
+	cleaned, err := canonicalPathForGuard(lockPath)
+	if err != nil {
+		return errors.New("temporary lock path is invalid")
+	}
+	production, err := canonicalPathForGuard(filepath.Join(protectedDir, "packs.lock.json"))
+	if err != nil {
+		return errors.New("temporary lock path is invalid")
+	}
+	protected, err := canonicalPathForGuard(protectedDir)
+	if err != nil {
+		return errors.New("temporary lock path is invalid")
+	}
+	if sameGuardPath(cleaned, production) || isPathUnderGuardDir(cleaned, protected) && guardComparablePath(filepath.Base(cleaned)) == "packs.lock.json" {
+		return errors.New("full-pack commands refuse to write the tracked production lock")
+	}
+	if resolved, err := filepath.EvalSymlinks(lockPath); err == nil {
+		resolvedCanonical, err := canonicalPathForGuard(resolved)
+		if err != nil {
+			return errors.New("temporary lock path is invalid")
+		}
+		if sameGuardPath(resolvedCanonical, production) || isPathUnderGuardDir(resolvedCanonical, protected) && guardComparablePath(filepath.Base(resolvedCanonical)) == "packs.lock.json" {
+			return errors.New("full-pack commands refuse to write the tracked production lock")
+		}
+	}
+
+	return nil
+}
+
+func canonicalPathForGuard(filePath string) (string, error) {
+	absolute, err := filepath.Abs(filepath.Clean(filePath))
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Clean(absolute), nil
+}
+
+func sameGuardPath(a string, b string) bool {
+	return guardComparablePath(a) == guardComparablePath(b)
+}
+
+func isPathUnderGuardDir(filePath string, dir string) bool {
+	fileComparable := guardComparablePath(filePath)
+	dirComparable := guardComparablePath(dir)
+
+	return fileComparable == dirComparable || strings.HasPrefix(fileComparable, dirComparable+"/")
+}
+
+func guardComparablePath(filePath string) string {
+	cleaned := filepath.Clean(filePath)
+	cleaned = filepath.ToSlash(cleaned)
+	cleaned = strings.ReplaceAll(cleaned, "\\", "/")
+	components := strings.Split(cleaned, "/")
+	for i, component := range components {
+		components[i] = strings.TrimRight(component, ". ")
+	}
+	cleaned = strings.Join(components, "/")
+
+	return strings.TrimRight(strings.ToLower(cleaned), "/")
+}
+
+func auditNoNameBytes(surface string, data []byte) error {
+	if containsForbiddenNoNameTerm(string(data)) {
+		return fmt.Errorf("%s no-name audit failed", surface)
+	}
+
+	return nil
+}
+
+func containsForbiddenNoNameTerm(value string) bool {
+	normalized := strings.ToLower(value)
+	normalized = assetURLTemplateKey.ReplaceAllString(normalized, `"":`)
+	for _, term := range []string{
+		"policy_private_sha256",
+		"private_policy",
+		"domain_policy_refs",
+		"broker_policy_refs",
+		"url_template",
+		"auth_profile",
+		"auth_scope",
+		"supported_site",
+		"provider",
+		"private",
+		"secret",
+		"token",
+		"cookie",
+		"authorization",
+		"protected-root-marker",
+		"protected-temp-root",
+	} {
+		if strings.Contains(normalized, term) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func containsURLUnsafeText(value string) bool {
+	if strings.ContainsAny(value, "\r\n\t ") {
+		return true
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+
+	return false
 }
 
 func verifyPackAsset(opts verifyOptions, lockDir string, entry packLockEntry) (verifiedAsset, error) {
@@ -313,7 +1060,7 @@ func readAsset(opts verifyOptions, lockDir string, entry packLockEntry) ([]byte,
 		return nil, err
 	}
 
-	return fetchHTTPSAsset(opts.HTTPClient, parsed.String())
+	return fetchHTTPSAsset(opts.HTTPClient, parsed.String(), opts.SameOrigin)
 }
 
 func readLocalAssetPath(lockDir string, assetPath string) ([]byte, error) {
@@ -364,11 +1111,11 @@ func validateProductionAssetURL(parsed *url.URL) error {
 	return nil
 }
 
-func fetchHTTPSAsset(client *http.Client, rawURL string) ([]byte, error) {
+func fetchHTTPSAsset(client *http.Client, rawURL string, sameOrigin bool) ([]byte, error) {
 	if client == nil {
 		client = &http.Client{Timeout: defaultHTTPTimeout}
 	}
-	client = cloneHTTPClientWithRedirectCheck(client)
+	client = cloneHTTPClientWithRedirectCheck(client, sameOrigin)
 
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -388,10 +1135,13 @@ func fetchHTTPSAsset(client *http.Client, rawURL string) ([]byte, error) {
 	return readLimited(resp.Body, maxAssetBytes, "asset")
 }
 
-func cloneHTTPClientWithRedirectCheck(client *http.Client) *http.Client {
+func cloneHTTPClientWithRedirectCheck(client *http.Client, sameOrigin bool) *http.Client {
 	cloned := *client
 	cloned.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if err := validateProductionAssetURL(req.URL); err != nil {
+			return errUnsafeAssetRedirect
+		}
+		if sameOrigin && len(via) > 0 && via[0] != nil && !sameURLOrigin(via[0].URL, req.URL) {
 			return errUnsafeAssetRedirect
 		}
 
@@ -402,6 +1152,14 @@ func cloneHTTPClientWithRedirectCheck(client *http.Client) *http.Client {
 	}
 
 	return &cloned
+}
+
+func sameURLOrigin(a *url.URL, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
 }
 
 var errUnsafeAssetRedirect = errors.New("asset redirect target is not an allowed public HTTPS URL")

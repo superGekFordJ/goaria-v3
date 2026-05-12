@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -308,7 +310,7 @@ func TestFetchHTTPSAssetRedirectErrorDoesNotLeakCredentialURL(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := fetchHTTPSAsset(server.Client(), server.URL+"/fixture.pack.zip")
+	_, err := fetchHTTPSAsset(server.Client(), server.URL+"/fixture.pack.zip", false)
 	if err == nil {
 		t.Fatalf("fetchHTTPSAsset() error = nil, want redirect rejection")
 	}
@@ -324,6 +326,717 @@ func TestFetchHTTPSAssetRedirectErrorDoesNotLeakCredentialURL(t *testing.T) {
 	for _, forbidden := range []string{"X-Amz-Signature", "X-Amz-Credential", "sig=", "policy=", "raw-user:raw-password", "#fragment"} {
 		if strings.Contains(errorText, forbidden) {
 			t.Fatalf("fetchHTTPSAsset() error leaks raw redirect URL component %q: %q", forbidden, errorText)
+		}
+	}
+}
+
+func TestFullPackMetadataRenderLockValidTwoPackOpaque(t *testing.T) {
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	metadata := validFullPackMetadata(assetOne, assetTwo)
+
+	lock, err := renderFullPackLock(metadata)
+	if err != nil {
+		t.Fatalf("renderFullPackLock() error = %v", err)
+	}
+	if lock.SchemaVersion != lockSchemaVersion || len(lock.Packs) != 2 {
+		t.Fatalf("unexpected rendered lock shape: %+v", lock)
+	}
+	for i, entry := range lock.Packs {
+		if entry.AssetPath != "" {
+			t.Fatalf("rendered lock pack %d has fixture asset_path: %+v", i, entry)
+		}
+		if !strings.HasPrefix(entry.AssetURL, metadata.BaseAssetURL+"/") {
+			t.Fatalf("rendered lock pack %d asset_url = %q", i, entry.AssetURL)
+		}
+		if !strings.Contains(entry.AssetURL, metadata.Packs[i].AssetName) {
+			t.Fatalf("rendered lock pack %d missing asset name in URL: %q", i, entry.AssetURL)
+		}
+	}
+
+	lockBytes, err := marshalRenderedFullPackLock(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockText := string(lockBytes)
+	for _, want := range []string{"schema_version", "asset_url", "xpk-alpha001", "xpk-alpha002", "opaque-1", "opaque-2"} {
+		if !strings.Contains(lockText, want) {
+			t.Fatalf("rendered lock missing %q: %s", want, lockText)
+		}
+	}
+	for _, forbidden := range []string{"asset_name", "release_tag", "asset_url_template", "asset_path", "policy_private_sha256", "domain_policy_refs", "broker_policy_refs"} {
+		if strings.Contains(lockText, forbidden) {
+			t.Fatalf("rendered lock contains forbidden field %q: %s", forbidden, lockText)
+		}
+	}
+	if err := auditNoNameBytes("rendered lock", lockBytes); err != nil {
+		t.Fatalf("auditNoNameBytes() error = %v", err)
+	}
+}
+
+func TestFullPackMetadataTemplateRender(t *testing.T) {
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	metadata := validFullPackMetadata(assetOne, assetTwo)
+	metadata.BaseAssetURL = ""
+	metadata.AssetURLTemplate = "https://release.example.test/assets/{release_tag}/{asset_name}"
+
+	lock, err := renderFullPackLock(metadata)
+	if err != nil {
+		t.Fatalf("renderFullPackLock() error = %v", err)
+	}
+	if got, want := lock.Packs[0].AssetURL, "https://release.example.test/assets/v0.0.0-alpha/asset-alpha001.pack.zip"; got != want {
+		t.Fatalf("rendered template URL = %q, want %q", got, want)
+	}
+}
+
+func TestFullPackURLSafetyRejectsTraversalAndEscapedSegments(t *testing.T) {
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	tests := []struct {
+		name   string
+		mutate func(*fullPackMetadataFile)
+	}{
+		{name: "base dot segment", mutate: func(metadata *fullPackMetadataFile) {
+			metadata.BaseAssetURL = "https://release.example.test/assets/../v0.0.0-alpha"
+		}},
+		{name: "base encoded dot", mutate: func(metadata *fullPackMetadataFile) {
+			metadata.BaseAssetURL = "https://release.example.test/assets/%2e%2e/v0.0.0-alpha"
+		}},
+		{name: "base encoded slash", mutate: func(metadata *fullPackMetadataFile) {
+			metadata.BaseAssetURL = "https://release.example.test/assets%2fv0.0.0-alpha"
+		}},
+		{name: "template dot segment", mutate: func(metadata *fullPackMetadataFile) {
+			metadata.BaseAssetURL = ""
+			metadata.AssetURLTemplate = "https://release.example.test/assets/../{release_tag}/{asset_name}"
+		}},
+		{name: "template encoded dot", mutate: func(metadata *fullPackMetadataFile) {
+			metadata.BaseAssetURL = ""
+			metadata.AssetURLTemplate = "https://release.example.test/assets/%2e%2e/{release_tag}/{asset_name}"
+		}},
+		{name: "template encoded slash", mutate: func(metadata *fullPackMetadataFile) {
+			metadata.BaseAssetURL = ""
+			metadata.AssetURLTemplate = "https://release.example.test/assets%2f{release_tag}/{asset_name}"
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			metadata := validFullPackMetadata(assetOne, assetTwo)
+			tc.mutate(&metadata)
+			if _, err := renderFullPackLock(metadata); err == nil {
+				t.Fatalf("renderFullPackLock() error = nil, want unsafe URL rejection")
+			}
+		})
+	}
+}
+
+func TestFullPackBaseURLAppendDoesNotNormalizePath(t *testing.T) {
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	metadata := validFullPackMetadata(assetOne, assetTwo)
+	metadata.BaseAssetURL = "https://release.example.test/assets/v0.0.0-alpha/"
+
+	lock, err := renderFullPackLock(metadata)
+	if err != nil {
+		t.Fatalf("renderFullPackLock() error = %v", err)
+	}
+	if got, want := lock.Packs[0].AssetURL, "https://release.example.test/assets/v0.0.0-alpha/asset-alpha001.pack.zip"; got != want {
+		t.Fatalf("rendered base URL = %q, want %q", got, want)
+	}
+}
+
+func TestFullPackVerifyUsesRenderedLockAndAuditsSurfaces(t *testing.T) {
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	server := twoPackTLSServer(t, map[string][]byte{
+		"/assets/v0.0.0-alpha/asset-alpha001.pack.zip": assetOne.bytes,
+		"/assets/v0.0.0-alpha/asset-alpha002.pack.zip": assetTwo.bytes,
+	})
+	client := rewriteHostClient(t, server, "release.example.test")
+	metadata := validFullPackMetadata(assetOne, assetTwo)
+	metadata.BaseAssetURL = "https://release.example.test/assets/v0.0.0-alpha"
+	metadataPath := writeFullPackMetadata(t, metadata)
+	outDir := t.TempDir()
+	tempLockPath := filepath.Join(outDir, "full_pack.lock.json")
+	outPath := filepath.Join(outDir, "embedded.go")
+	provenancePath := filepath.Join(outDir, "provenance.json")
+
+	if err := verifyFullPack(fullPackVerifyOptions{
+		MetadataPath:  metadataPath,
+		TempLockPath:  tempLockPath,
+		OutPath:       outPath,
+		ProvenanceOut: provenancePath,
+		HTTPClient:    client,
+	}); err != nil {
+		t.Fatalf("verifyFullPack() error = %v", err)
+	}
+
+	lockBytes, err := os.ReadFile(tempLockPath)
+	if err != nil {
+		t.Fatalf("read temp lock: %v", err)
+	}
+	if !strings.Contains(string(lockBytes), metadata.BaseAssetURL) || strings.Contains(string(lockBytes), "asset_name") {
+		t.Fatalf("unexpected temp lock contents: %s", lockBytes)
+	}
+	generated := readTextFile(t, outPath)
+	for _, want := range []string{"EmbeddedPack", "AssetSHA256:", "public_key_hex:", "public_key_sha256:", "xpk-alpha001", "xpk-alpha002", assetOne.lockEntry().AssetSHA256, assetTwo.lockEntry().AssetSHA256} {
+		if !strings.Contains(generated, want) {
+			t.Fatalf("generated full-pack embed missing %q", want)
+		}
+	}
+	provenance := readTextFile(t, provenancePath)
+	for _, want := range []string{"xpk-alpha001", "xpk-alpha002", "public_key_fingerprints", metadata.BaseAssetURL} {
+		if !strings.Contains(provenance, want) {
+			t.Fatalf("full-pack provenance missing %q", want)
+		}
+	}
+	for _, surface := range []string{generated, provenance} {
+		for _, forbidden := range []string{"policy_private_sha256", "private_policy", "domain_policy_refs", "broker_policy_refs", "provider", "secret", "token", "cookie", "authorization"} {
+			if strings.Contains(surface, forbidden) {
+				t.Fatalf("full-pack surface contains forbidden term %q: %s", forbidden, surface)
+			}
+		}
+	}
+}
+
+func TestFullPackMetadataRejectsLocalhostAndIPLiteral(t *testing.T) {
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	for _, baseURL := range []string{
+		"https://localhost/assets/v0.0.0-alpha",
+		"https://127.0.0.1/assets/v0.0.0-alpha",
+		"https://[::1]/assets/v0.0.0-alpha",
+	} {
+		t.Run(baseURL, func(t *testing.T) {
+			metadata := validFullPackMetadata(assetOne, assetTwo)
+			metadata.BaseAssetURL = baseURL
+			if _, err := renderFullPackLock(metadata); err == nil {
+				t.Fatalf("renderFullPackLock() error = nil, want host rejection")
+			}
+		})
+	}
+}
+
+func TestFullPackVerifyRejectsCrossOriginRedirect(t *testing.T) {
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(assetOne.bytes)
+	}))
+	defer target.Close()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/assets/v0.0.0-alpha/asset-alpha001.pack.zip":
+			http.Redirect(w, r, "https://asset-alt.example.test/asset-alpha001.pack.zip", http.StatusFound)
+		case "/assets/v0.0.0-alpha/asset-alpha002.pack.zip":
+			_, _ = w.Write(assetTwo.bytes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := rewriteMultiHostClient(t, map[string]*httptest.Server{
+		"release.example.test":   server,
+		"asset-alt.example.test": target,
+	})
+	metadata := validFullPackMetadata(assetOne, assetTwo)
+	metadata.BaseAssetURL = "https://release.example.test/assets/v0.0.0-alpha"
+	outDir := t.TempDir()
+
+	err := verifyFullPack(fullPackVerifyOptions{
+		MetadataPath:  writeFullPackMetadata(t, metadata),
+		TempLockPath:  filepath.Join(outDir, "full_pack.lock.json"),
+		OutPath:       filepath.Join(outDir, "embedded.go"),
+		ProvenanceOut: filepath.Join(outDir, "provenance.json"),
+		HTTPClient:    client,
+	})
+	if err == nil || err.Error() != "full-pack verification failed" {
+		t.Fatalf("verifyFullPack() error = %v, want sanitized full-pack redirect failure", err)
+	}
+	if strings.Contains(err.Error(), "asset-alt.example.test") || strings.Contains(err.Error(), "release.example.test") {
+		t.Fatalf("verifyFullPack() error leaks redirect URL: %v", err)
+	}
+}
+
+func TestFullPackVerifyCleanupRemovesTempAndGeneratedOutputs(t *testing.T) {
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	server := twoPackTLSServer(t, map[string][]byte{
+		"/assets/v0.0.0-alpha/asset-alpha001.pack.zip": assetOne.bytes,
+		"/assets/v0.0.0-alpha/asset-alpha002.pack.zip": assetTwo.bytes,
+	})
+	client := rewriteHostClient(t, server, "release.example.test")
+	metadata := validFullPackMetadata(assetOne, assetTwo)
+	metadata.BaseAssetURL = "https://release.example.test/assets/v0.0.0-alpha"
+	outDir := t.TempDir()
+	tempLockPath := filepath.Join(outDir, "full_pack.lock.json")
+	outPath := filepath.Join(outDir, "embedded.go")
+	provenancePath := filepath.Join(outDir, "provenance.json")
+
+	if err := verifyFullPack(fullPackVerifyOptions{
+		MetadataPath:  writeFullPackMetadata(t, metadata),
+		TempLockPath:  tempLockPath,
+		OutPath:       outPath,
+		ProvenanceOut: provenancePath,
+		CleanOutputs:  true,
+		HTTPClient:    client,
+	}); err != nil {
+		t.Fatalf("verifyFullPack() error = %v", err)
+	}
+	assertFileMissing(t, tempLockPath)
+	assertFileMissing(t, outPath)
+	assertFileMissing(t, provenancePath)
+}
+
+func TestFullPackVerifyFailsClosedForAssetProblems(t *testing.T) {
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	tamperedPayloadAsset := assetTwo
+	tamperedPayloadParts := tamperedPayloadAsset.parts
+	tamperedPayloadParts.Payload = append([]byte(nil), tamperedPayloadParts.Payload...)
+	tamperedPayloadParts.Payload[0] ^= 0xff
+	tamperedPayloadAsset.bytes = zipBytesForParts(t, tamperedPayloadParts, nil)
+	tamperedSignatureAsset := assetTwo
+	tamperedSignatureParts := tamperedSignatureAsset.parts
+	tamperedSignatureParts.Signature = append([]byte(nil), tamperedSignatureParts.Signature...)
+	tamperedSignatureParts.Signature[0] ^= 0xff
+	tamperedSignatureAsset.bytes = zipBytesForParts(t, tamperedSignatureParts, nil)
+	tests := []struct {
+		name       string
+		assetOne   testAsset
+		assetTwo   testAsset
+		routes     map[string][]byte
+		mutateMeta func(*fullPackMetadataFile)
+	}{
+		{
+			name:     "missing asset",
+			assetOne: assetOne,
+			assetTwo: assetTwo,
+			routes: map[string][]byte{
+				"/assets/v0.0.0-alpha/asset-alpha001.pack.zip": assetOne.bytes,
+			},
+		},
+		{
+			name:     "wrong asset hash",
+			assetOne: assetOne,
+			assetTwo: assetTwo,
+			routes: map[string][]byte{
+				"/assets/v0.0.0-alpha/asset-alpha001.pack.zip": assetOne.bytes,
+				"/assets/v0.0.0-alpha/asset-alpha002.pack.zip": assetTwo.bytes,
+			},
+			mutateMeta: func(metadata *fullPackMetadataFile) {
+				metadata.Packs[1].AssetSHA256 = strings.Repeat("0", 64)
+			},
+		},
+		{
+			name:     "wrong optional payload hash",
+			assetOne: assetOne,
+			assetTwo: assetTwo,
+			routes: map[string][]byte{
+				"/assets/v0.0.0-alpha/asset-alpha001.pack.zip": assetOne.bytes,
+				"/assets/v0.0.0-alpha/asset-alpha002.pack.zip": assetTwo.bytes,
+			},
+			mutateMeta: func(metadata *fullPackMetadataFile) {
+				metadata.Packs[0].PayloadSHA256 = strings.Repeat("0", 64)
+			},
+		},
+		{
+			name:     "wrong optional manifest hash",
+			assetOne: assetOne,
+			assetTwo: assetTwo,
+			routes: map[string][]byte{
+				"/assets/v0.0.0-alpha/asset-alpha001.pack.zip": assetOne.bytes,
+				"/assets/v0.0.0-alpha/asset-alpha002.pack.zip": assetTwo.bytes,
+			},
+			mutateMeta: func(metadata *fullPackMetadataFile) {
+				metadata.Packs[0].ManifestSHA256 = strings.Repeat("0", 64)
+			},
+		},
+		{
+			name:     "wrong optional signature hash",
+			assetOne: assetOne,
+			assetTwo: assetTwo,
+			routes: map[string][]byte{
+				"/assets/v0.0.0-alpha/asset-alpha001.pack.zip": assetOne.bytes,
+				"/assets/v0.0.0-alpha/asset-alpha002.pack.zip": assetTwo.bytes,
+			},
+			mutateMeta: func(metadata *fullPackMetadataFile) {
+				metadata.Packs[0].SignatureSHA256 = strings.Repeat("0", 64)
+			},
+		},
+		{
+			name:     "tampered payload",
+			assetOne: assetOne,
+			assetTwo: tamperedPayloadAsset,
+			routes: map[string][]byte{
+				"/assets/v0.0.0-alpha/asset-alpha001.pack.zip": assetOne.bytes,
+				"/assets/v0.0.0-alpha/asset-alpha002.pack.zip": tamperedPayloadAsset.bytes,
+			},
+			mutateMeta: func(metadata *fullPackMetadataFile) {
+				metadata.Packs[1].AssetSHA256 = sha256Hex(tamperedPayloadAsset.bytes)
+				metadata.Packs[1].PayloadSHA256 = ""
+				metadata.Packs[1].SignatureSHA256 = ""
+			},
+		},
+		{
+			name:     "tampered signature",
+			assetOne: assetOne,
+			assetTwo: tamperedSignatureAsset,
+			routes: map[string][]byte{
+				"/assets/v0.0.0-alpha/asset-alpha001.pack.zip": assetOne.bytes,
+				"/assets/v0.0.0-alpha/asset-alpha002.pack.zip": tamperedSignatureAsset.bytes,
+			},
+			mutateMeta: func(metadata *fullPackMetadataFile) {
+				metadata.Packs[1].AssetSHA256 = sha256Hex(tamperedSignatureAsset.bytes)
+				metadata.Packs[1].SignatureSHA256 = ""
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			routes := make(map[string][]byte, len(tc.routes)+1)
+			for k, v := range tc.routes {
+				routes[k] = v
+			}
+			if _, ok := routes["/assets/v0.0.0-alpha/asset-alpha002.pack.zip"]; !ok && tc.name != "missing asset" {
+				routes["/assets/v0.0.0-alpha/asset-alpha002.pack.zip"] = tc.assetTwo.bytes
+			}
+			server := twoPackTLSServer(t, routes)
+			client := rewriteHostClient(t, server, "release.example.test")
+			metadata := validFullPackMetadata(tc.assetOne, tc.assetTwo)
+			metadata.BaseAssetURL = "https://release.example.test/assets/v0.0.0-alpha"
+			if tc.mutateMeta != nil {
+				tc.mutateMeta(&metadata)
+			}
+			outDir := t.TempDir()
+			err := verifyFullPack(fullPackVerifyOptions{
+				MetadataPath:  writeFullPackMetadata(t, metadata),
+				TempLockPath:  filepath.Join(outDir, "full_pack.lock.json"),
+				OutPath:       filepath.Join(outDir, "embedded.go"),
+				ProvenanceOut: filepath.Join(outDir, "provenance.json"),
+				HTTPClient:    client,
+			})
+			if err == nil {
+				t.Fatalf("verifyFullPack() error = nil, want fail-closed")
+			}
+			assertFileMissing(t, filepath.Join(outDir, "embedded.go"))
+			assertFileMissing(t, filepath.Join(outDir, "provenance.json"))
+		})
+	}
+}
+
+func TestFullPackVerifyGeneratedSurfaceAuditFailureCleansOutputs(t *testing.T) {
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	server := twoPackTLSServer(t, map[string][]byte{
+		"/assets/v0.0.0-alpha/asset-alpha001.pack.zip": assetOne.bytes,
+		"/assets/v0.0.0-alpha/asset-alpha002.pack.zip": assetTwo.bytes,
+	})
+	client := rewriteHostClient(t, server, "release.example.test")
+	metadata := validFullPackMetadata(assetOne, assetTwo)
+	metadata.BaseAssetURL = "https://release.example.test/assets/v0.0.0-alpha"
+	outDir := t.TempDir()
+	outPath := filepath.Join(outDir, "embedded.go")
+	provenancePath := filepath.Join(outDir, "provenance.json")
+	err := verifyFullPack(fullPackVerifyOptions{
+		MetadataPath:  writeFullPackMetadata(t, metadata),
+		TempLockPath:  filepath.Join(outDir, "full_pack.lock.json"),
+		OutPath:       outPath,
+		ProvenanceOut: provenancePath,
+		HTTPClient:    client,
+		NoNameAudit: func(surface string, data []byte) error {
+			if surface == "generated embed" {
+				return auditNoNameBytes(surface, append(data, []byte("private_policy")...))
+			}
+
+			return auditNoNameBytes(surface, data)
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "generated embed no-name audit failed") {
+		t.Fatalf("verifyFullPack() error = %v, want generated embed audit failure", err)
+	}
+	if strings.Contains(err.Error(), "private_policy") {
+		t.Fatalf("audit error leaks matched forbidden value: %v", err)
+	}
+	assertFileMissing(t, outPath)
+	assertFileMissing(t, provenancePath)
+}
+
+func TestRenderLockCommandRejectsProductionLockPath(t *testing.T) {
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	metadataPath := writeFullPackMetadata(t, validFullPackMetadata(assetOne, assetTwo))
+
+	err := runCLI([]string{"render-lock", "--metadata", metadataPath, "--out-lock", filepath.Join("build", "extractor", "packs.lock.json")})
+	if err == nil || !strings.Contains(err.Error(), "tracked production lock") {
+		t.Fatalf("render-lock error = %v, want production lock guard", err)
+	}
+}
+
+func TestRejectProductionLockOutputHardening(t *testing.T) {
+	protected := filepath.Join("build", "extractor", "packs.lock.json")
+	absProtected, err := filepath.Abs(protected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caseVariant := strings.ToUpper(filepath.ToSlash(protected))
+	winVariant := strings.ReplaceAll(caseVariant, "/", "\\")
+	for _, candidate := range []string{
+		protected,
+		filepath.Join(".", "build", "extractor", "..", "extractor", "packs.lock.json"),
+		absProtected,
+		caseVariant,
+		winVariant,
+		protected + ".",
+		protected + " ",
+		filepath.Join("build.", "extractor ", "packs.lock.json."),
+	} {
+		t.Run(candidate, func(t *testing.T) {
+			if err := rejectProductionLockOutput(candidate); err == nil {
+				t.Fatalf("rejectProductionLockOutput(%q) error = nil, want rejection", candidate)
+			}
+		})
+	}
+}
+
+func TestRejectProductionLockOutputRejectsExistingSymlinkTarget(t *testing.T) {
+	if _, err := os.Lstat(filepath.Join("build", "extractor")); err != nil {
+		t.Skip("protected public build/extractor directory is unavailable")
+	}
+	linkPath := filepath.Join(t.TempDir(), "packs.lock.json")
+	protected, err := filepath.Abs(filepath.Join("build", "extractor", "packs.lock.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(protected, linkPath); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	if err := rejectProductionLockOutput(linkPath); err == nil {
+		t.Fatalf("rejectProductionLockOutput() error = nil, want symlink target rejection")
+	}
+}
+
+func TestVerifyFullPackRejectsProtectedOutputPaths(t *testing.T) {
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	metadataPath := writeFullPackMetadata(t, validFullPackMetadata(assetOne, assetTwo))
+	protected := filepath.Join("build", "extractor", "packs.lock.json")
+	caseVariant := strings.ToUpper(filepath.ToSlash(protected))
+	tests := []struct {
+		name          string
+		outPath       string
+		provenanceOut string
+	}{
+		{name: "out protected", outPath: protected, provenanceOut: filepath.Join(t.TempDir(), "provenance.json")},
+		{name: "out case variant", outPath: caseVariant, provenanceOut: filepath.Join(t.TempDir(), "provenance.json")},
+		{name: "provenance protected", outPath: filepath.Join(t.TempDir(), "embedded.go"), provenanceOut: protected},
+		{name: "provenance relative variant", outPath: filepath.Join(t.TempDir(), "embedded.go"), provenanceOut: filepath.Join(".", "build", "extractor", "..", "extractor", "packs.lock.json")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tempLockPath := filepath.Join(t.TempDir(), "full_pack.lock.json")
+			if err := os.WriteFile(tempLockPath, []byte("sentinel"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := verifyFullPack(fullPackVerifyOptions{
+				MetadataPath:  metadataPath,
+				TempLockPath:  tempLockPath,
+				OutPath:       tc.outPath,
+				ProvenanceOut: tc.provenanceOut,
+			})
+			if err == nil || !strings.Contains(err.Error(), "tracked production lock") {
+				t.Fatalf("verifyFullPack() error = %v, want protected path rejection", err)
+			}
+			if got := readTextFile(t, tempLockPath); got != "sentinel" {
+				t.Fatalf("temp lock was modified/removed: %q", got)
+			}
+		})
+	}
+}
+
+func TestVerifyFullPackRejectsTrailingDotSpaceProtectedPathAliases(t *testing.T) {
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	metadataPath := writeFullPackMetadata(t, validFullPackMetadata(assetOne, assetTwo))
+	protected := filepath.Join("build", "extractor", "packs.lock.json")
+	tests := []struct {
+		name          string
+		tempLockPath  string
+		outPath       string
+		provenanceOut string
+		sentinelPath  string
+	}{
+		{name: "temp trailing dot", tempLockPath: protected + ".", outPath: filepath.Join(t.TempDir(), "embedded.go"), provenanceOut: filepath.Join(t.TempDir(), "provenance.json")},
+		{name: "temp trailing space", tempLockPath: protected + " ", outPath: filepath.Join(t.TempDir(), "embedded.go"), provenanceOut: filepath.Join(t.TempDir(), "provenance.json")},
+		{name: "out trailing dot", tempLockPath: filepath.Join(t.TempDir(), "full_pack.lock.json"), outPath: protected + ".", provenanceOut: filepath.Join(t.TempDir(), "provenance.json"), sentinelPath: "temp"},
+		{name: "out trailing space", tempLockPath: filepath.Join(t.TempDir(), "full_pack.lock.json"), outPath: protected + " ", provenanceOut: filepath.Join(t.TempDir(), "provenance.json"), sentinelPath: "temp"},
+		{name: "provenance trailing dot", tempLockPath: filepath.Join(t.TempDir(), "full_pack.lock.json"), outPath: filepath.Join(t.TempDir(), "embedded.go"), provenanceOut: protected + ".", sentinelPath: "temp"},
+		{name: "provenance trailing space", tempLockPath: filepath.Join(t.TempDir(), "full_pack.lock.json"), outPath: filepath.Join(t.TempDir(), "embedded.go"), provenanceOut: protected + " ", sentinelPath: "temp"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.sentinelPath == "temp" {
+				if err := os.WriteFile(tc.tempLockPath, []byte("sentinel"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := verifyFullPack(fullPackVerifyOptions{
+				MetadataPath:  metadataPath,
+				TempLockPath:  tc.tempLockPath,
+				OutPath:       tc.outPath,
+				ProvenanceOut: tc.provenanceOut,
+			})
+			if err == nil || !strings.Contains(err.Error(), "tracked production lock") {
+				t.Fatalf("verifyFullPack() error = %v, want trailing alias rejection", err)
+			}
+			if tc.sentinelPath == "temp" {
+				if got := readTextFile(t, tc.tempLockPath); got != "sentinel" {
+					t.Fatalf("temp lock was modified/removed: %q", got)
+				}
+			}
+		})
+	}
+}
+
+func TestFullPackMetadataValidationRejectsMalformedInputs(t *testing.T) {
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	valid := validFullPackMetadata(assetOne, assetTwo)
+	tests := []struct {
+		name   string
+		raw    []byte
+		mutate func(*fullPackMetadataFile)
+	}{
+		{name: "zero packs", mutate: func(metadata *fullPackMetadataFile) { metadata.Packs = nil }},
+		{name: "one pack", mutate: func(metadata *fullPackMetadataFile) { metadata.Packs = metadata.Packs[:1] }},
+		{name: "three packs", mutate: func(metadata *fullPackMetadataFile) { metadata.Packs = append(metadata.Packs, metadata.Packs[0]) }},
+		{name: "duplicate pack id", mutate: func(metadata *fullPackMetadataFile) { metadata.Packs[1].PackID = metadata.Packs[0].PackID }},
+		{name: "duplicate asset name", mutate: func(metadata *fullPackMetadataFile) { metadata.Packs[1].AssetName = metadata.Packs[0].AssetName }},
+		{name: "malformed json", raw: []byte(`{"schema_version":`)},
+		{name: "unknown field", raw: bytes.Replace(fullPackMetadataJSON(t, valid), []byte("\n}"), []byte(",\n  \"extra\": true\n}"), 1)},
+		{name: "trailing json", raw: append(fullPackMetadataJSON(t, valid), []byte(` {}`)...)},
+		{name: "malformed asset hash", mutate: func(metadata *fullPackMetadataFile) { metadata.Packs[0].AssetSHA256 = "ABC" }},
+		{name: "malformed optional hash", mutate: func(metadata *fullPackMetadataFile) { metadata.Packs[0].ManifestSHA256 = "abc" }},
+		{name: "empty public keys", mutate: func(metadata *fullPackMetadataFile) { metadata.Packs[0].PublicKeys = nil }},
+		{name: "invalid public key", mutate: func(metadata *fullPackMetadataFile) { metadata.Packs[0].PublicKeys = []string{"abc"} }},
+		{name: "missing url mode", mutate: func(metadata *fullPackMetadataFile) { metadata.BaseAssetURL = "" }},
+		{name: "both url modes", mutate: func(metadata *fullPackMetadataFile) {
+			metadata.AssetURLTemplate = "https://release.example.test/assets/{release_tag}/{asset_name}"
+		}},
+		{name: "non https base", mutate: func(metadata *fullPackMetadataFile) {
+			metadata.BaseAssetURL = "http://release.example.test/assets/v0.0.0-alpha"
+		}},
+		{name: "credential base", mutate: func(metadata *fullPackMetadataFile) {
+			metadata.BaseAssetURL = "https://user:pass@release.example.test/assets/v0.0.0-alpha"
+		}},
+		{name: "query base", mutate: func(metadata *fullPackMetadataFile) {
+			metadata.BaseAssetURL = "https://release.example.test/assets/v0.0.0-alpha?x=1"
+		}},
+		{name: "fragment base", mutate: func(metadata *fullPackMetadataFile) {
+			metadata.BaseAssetURL = "https://release.example.test/assets/v0.0.0-alpha#x"
+		}},
+		{name: "unsafe asset name uppercase", mutate: func(metadata *fullPackMetadataFile) { metadata.Packs[0].AssetName = "asset-Alpha001.pack.zip" }},
+		{name: "unsafe asset name traversal", mutate: func(metadata *fullPackMetadataFile) { metadata.Packs[0].AssetName = "asset-alpha001../pack.zip" }},
+		{name: "unsafe pack id", mutate: func(metadata *fullPackMetadataFile) {
+			metadata.Packs[0].PackID = "https://release.example.test/xpk-alpha001"
+		}},
+		{name: "unsafe pack version", mutate: func(metadata *fullPackMetadataFile) { metadata.Packs[0].PackVersion = "opaque 1" }},
+		{name: "unsafe release tag", mutate: func(metadata *fullPackMetadataFile) { metadata.ReleaseTag = "v0.0.0/alpha" }},
+		{name: "forbidden field marker", raw: []byte(`{"schema_version":1,"release_tag":"v0.0.0-alpha","base_asset_url":"https://release.example.test/assets/v0.0.0-alpha","policy_private_sha256":"0000","packs":[]}`)},
+		{name: "escaped forbidden field marker", raw: []byte(`{"schema_version":1,"release_tag":"v0.0.0-alpha","base_asset_url":"https://release.example.test/assets/v0.0.0-alpha","policy_\u0070rivate_sha256":"0000","packs":[]}`)},
+		{name: "escaped forbidden string marker", raw: []byte(`{"schema_version":1,"release_tag":"v0.0.0-alpha","base_asset_url":"https://release.example.test/assets/v0.0.0-alpha","packs":[{"asset_name":"asset-alpha001.pack.zip","pack_id":"xpk-alpha001","pack_version":"opaque-1","asset_sha256":"` + strings.Repeat("0", 64) + `","public_keys":["` + strings.Repeat("a", 64) + `"],"note":"priv\u0061te_policy"},{"asset_name":"asset-alpha002.pack.zip","pack_id":"xpk-alpha002","pack_version":"opaque-2","asset_sha256":"` + strings.Repeat("0", 64) + `","public_keys":["` + strings.Repeat("b", 64) + `"]}]}`)},
+		{name: "forbidden string marker", mutate: func(metadata *fullPackMetadataFile) { metadata.Packs[0].PackID = "xpk-provider001" }},
+		{name: "bad template placeholder", mutate: func(metadata *fullPackMetadataFile) {
+			metadata.BaseAssetURL = ""
+			metadata.AssetURLTemplate = "https://release.example.test/assets/{asset_name}"
+		}},
+		{name: "template query", mutate: func(metadata *fullPackMetadataFile) {
+			metadata.BaseAssetURL = ""
+			metadata.AssetURLTemplate = "https://release.example.test/assets/{release_tag}/{asset_name}?x=1"
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := tc.raw
+			if raw == nil {
+				metadata := valid
+				metadata.Packs = append([]fullPackMetadataEntry(nil), valid.Packs...)
+				tc.mutate(&metadata)
+				raw = fullPackMetadataJSON(t, metadata)
+			}
+			_, err := decodeFullPackMetadata(raw)
+			if err == nil {
+				t.Fatalf("decodeFullPackMetadata() error = nil, want rejection")
+			}
+			for _, forbidden := range []string{"policy_private_sha256", "secret-value", "protected-root-marker"} {
+				if strings.Contains(err.Error(), forbidden) {
+					t.Fatalf("error leaks forbidden value %q: %v", forbidden, err)
+				}
+			}
+		})
+	}
+}
+
+func TestNoNameAuditRejectsForbiddenSurfaceWithoutMatchedValue(t *testing.T) {
+	err := auditNoNameBytes("metadata", []byte(`{"private_policy":"secret-value"}`))
+	if err == nil || err.Error() != "metadata no-name audit failed" {
+		t.Fatalf("auditNoNameBytes() error = %v, want category-only audit failure", err)
+	}
+	if strings.Contains(err.Error(), "private_policy") || strings.Contains(err.Error(), "secret-value") {
+		t.Fatalf("audit error leaks matched value: %v", err)
+	}
+
+	allowed := []byte(`{"schema_version":1,"release_tag":"v0.0.0-alpha","asset_url_template":"https://release.example.test/assets/{release_tag}/{asset_name}","packs":[{"asset_name":"asset-alpha001.pack.zip","pack_id":"xpk-alpha001","pack_version":"opaque-1","asset_sha256":"` + strings.Repeat("0", 64) + `","public_keys":["` + strings.Repeat("a", 64) + `"]}]}`)
+	if err := auditNoNameBytes("metadata", allowed); err != nil {
+		t.Fatalf("auditNoNameBytes() allowed synthetic surface error = %v", err)
+	}
+}
+
+func TestFullPackVerifySanitizesManifestIdentityMismatch(t *testing.T) {
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	server := twoPackTLSServer(t, map[string][]byte{
+		"/assets/v0.0.0-alpha/asset-alpha001.pack.zip": assetOne.bytes,
+		"/assets/v0.0.0-alpha/asset-alpha002.pack.zip": assetTwo.bytes,
+	})
+	client := rewriteHostClient(t, server, "release.example.test")
+	metadata := validFullPackMetadata(assetOne, assetTwo)
+	metadata.BaseAssetURL = "https://release.example.test/assets/v0.0.0-alpha"
+	metadata.Packs[0].PackID = "xpk-alpha003"
+	outDir := t.TempDir()
+
+	err := verifyFullPack(fullPackVerifyOptions{
+		MetadataPath:  writeFullPackMetadata(t, metadata),
+		TempLockPath:  filepath.Join(outDir, "full_pack.lock.json"),
+		OutPath:       filepath.Join(outDir, "embedded.go"),
+		ProvenanceOut: filepath.Join(outDir, "provenance.json"),
+		HTTPClient:    client,
+	})
+	if err == nil || err.Error() != "full-pack verification failed" {
+		t.Fatalf("verifyFullPack() error = %v, want sanitized identity mismatch", err)
+	}
+	for _, forbidden := range []string{"xpk-alpha001", "xpk-alpha003", "manifest pack_id"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("verifyFullPack() error leaks %q: %v", forbidden, err)
+		}
+	}
+}
+
+func TestNewFullPackTestsDoNotContainProtectedPathLiterals(t *testing.T) {
+	data, err := os.ReadFile("main_test.go")
+	if err != nil {
+		t.Fatalf("read main_test.go: %v", err)
+	}
+	start := bytes.Index(data, []byte("func TestFullPackMetadataRenderLockValidTwoPackOpaque"))
+	if start < 0 {
+		t.Fatalf("new full-pack test section not found")
+	}
+	section := string(data[start:])
+	for _, forbidden := range []string{"D:/" + "coder", `D:\` + "coder", "GoAria-" + "Wails3"} {
+		if strings.Contains(section, forbidden) {
+			t.Fatalf("new full-pack tests contain protected literal %q", forbidden)
 		}
 	}
 }
@@ -379,6 +1092,187 @@ func validAliasTestAsset(t *testing.T) testAsset {
 	}
 
 	return testAsset{bytes: zipBytesForParts(t, parts, nil), parts: parts, publicKey: publicKey}
+}
+
+func validOpaqueTestAsset(t *testing.T, packID string, packVersion string, seedByte byte) testAsset {
+	t.Helper()
+	publicKey, privateKey := deterministicTestKeyPair(seedByte)
+	payload := []byte("public opaque fixture payload " + packID)
+	manifestJSON := manifestJSONForPayloadWithMutate(t, payload, func(values map[string]any) {
+		values["pack_id"] = packID
+		values["pack_version"] = packVersion
+		values["capabilities"] = []string{string(extractor.CapabilityParseWASM), string(extractor.CapabilityHTTPFetch)}
+		values["domains"] = []map[string]any{}
+		values["domain_policy_refs"] = []string{"dpr-" + strings.TrimPrefix(packID, "xpk-")}
+		values["broker_policy_refs"] = []string{"bpr-" + strings.TrimPrefix(packID, "xpk-")}
+	})
+	parts := packParts{
+		ManifestJSON: manifestJSON,
+		Payload:      payload,
+		Signature:    ed25519.Sign(privateKey, manifestJSON),
+	}
+
+	return testAsset{bytes: zipBytesForParts(t, parts, nil), parts: parts, publicKey: publicKey}
+}
+
+func validFullPackMetadata(assetOne testAsset, assetTwo testAsset) fullPackMetadataFile {
+	entryOne := assetOne.lockEntry()
+	entryTwo := assetTwo.lockEntry()
+
+	return fullPackMetadataFile{
+		SchemaVersion: lockSchemaVersion,
+		ReleaseTag:    "v0.0.0-alpha",
+		BaseAssetURL:  "https://release.example.test/assets/v0.0.0-alpha",
+		Packs: []fullPackMetadataEntry{
+			{
+				AssetName:       "asset-alpha001.pack.zip",
+				PackID:          "xpk-alpha001",
+				PackVersion:     "opaque-1",
+				AssetSHA256:     entryOne.AssetSHA256,
+				PublicKeys:      entryOne.PublicKeys,
+				ManifestSHA256:  entryOne.ManifestSHA256,
+				PayloadSHA256:   entryOne.PayloadSHA256,
+				SignatureSHA256: entryOne.SignatureSHA256,
+			},
+			{
+				AssetName:       "asset-alpha002.pack.zip",
+				PackID:          "xpk-alpha002",
+				PackVersion:     "opaque-2",
+				AssetSHA256:     entryTwo.AssetSHA256,
+				PublicKeys:      entryTwo.PublicKeys,
+				ManifestSHA256:  entryTwo.ManifestSHA256,
+				PayloadSHA256:   entryTwo.PayloadSHA256,
+				SignatureSHA256: entryTwo.SignatureSHA256,
+			},
+		},
+	}
+}
+
+func fullPackMetadataJSON(t *testing.T, metadata fullPackMetadataFile) []byte {
+	t.Helper()
+	bytes, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return append(bytes, '\n')
+}
+
+func writeFullPackMetadata(t *testing.T, metadata fullPackMetadataFile) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "full_pack_assets.json")
+	if err := os.WriteFile(path, fullPackMetadataJSON(t, metadata), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	return path
+}
+
+func twoPackTLSServer(t *testing.T, routes map[string][]byte) *httptest.Server {
+	t.Helper()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asset, ok := routes[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+
+			return
+		}
+		_, _ = w.Write(asset)
+	}))
+	t.Cleanup(server.Close)
+
+	return server
+}
+
+func readTextFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	return string(data)
+}
+
+func rewriteHostClient(t *testing.T, server *httptest.Server, host string) *http.Client {
+	t.Helper()
+
+	return rewriteMultiHostClient(t, map[string]*httptest.Server{host: server})
+}
+
+func rewriteMultiHostClient(t *testing.T, hosts map[string]*httptest.Server) *http.Client {
+	t.Helper()
+	base := firstTLSServer(t, hosts)
+	client := base.Client()
+	client.Transport = rewriteHostTransport{base: trustAllTLSServerTransport(t, mapServers(hosts)...), hosts: hosts}
+
+	return client
+}
+
+type rewriteHostTransport struct {
+	base  http.RoundTripper
+	hosts map[string]*httptest.Server
+}
+
+func (t rewriteHostTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	server, ok := t.hosts[req.URL.Hostname()]
+	if !ok {
+		return t.base.RoundTrip(req)
+	}
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		return nil, err
+	}
+	cloned := req.Clone(req.Context())
+	cloned.URL = cloneURL(req.URL)
+	cloned.URL.Scheme = serverURL.Scheme
+	cloned.URL.Host = serverURL.Host
+
+	return t.base.RoundTrip(cloned)
+}
+
+func cloneURL(value *url.URL) *url.URL {
+	cloned := *value
+
+	return &cloned
+}
+
+func firstTLSServer(t *testing.T, hosts map[string]*httptest.Server) *httptest.Server {
+	t.Helper()
+	for _, server := range hosts {
+		return server
+	}
+	t.Fatal("rewriteMultiHostClient requires at least one server")
+
+	return nil
+}
+
+func mapServers(hosts map[string]*httptest.Server) []*httptest.Server {
+	servers := make([]*httptest.Server, 0, len(hosts))
+	for _, server := range hosts {
+		servers = append(servers, server)
+	}
+
+	return servers
+}
+
+func trustAllTLSServerTransport(t *testing.T, servers ...*httptest.Server) http.RoundTripper {
+	t.Helper()
+	if len(servers) == 0 {
+		t.Fatal("trustAllTLSServerTransport requires at least one server")
+	}
+	transportConfig := servers[0].Client().Transport.(*http.Transport).TLSClientConfig
+	pool := transportConfig.RootCAs
+	if pool == nil {
+		t.Fatal("test TLS server root pool is nil")
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	for _, server := range servers[1:] {
+		pool.AddCert(server.Certificate())
+	}
+
+	return transport
 }
 
 func manifestJSONForPayload(t *testing.T, payload []byte) []byte {
