@@ -2,6 +2,15 @@ name: build
 
 on:
   workflow_dispatch:
+    inputs:
+      extractor_variant:
+        description: Extractor package variant
+        type: choice
+        required: true
+        default: generic-no-pack
+        options:
+          - generic-no-pack
+          - full-pack
   release:
     types: [published]
 
@@ -9,8 +18,43 @@ permissions:
   contents: write
 
 jobs:
+  resolve-package-variant:
+    runs-on: ubuntu-latest
+    outputs:
+      extractor_variant: ${{ steps.resolve.outputs.extractor_variant }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+    steps:
+      - name: Resolve extractor package variant
+        id: resolve
+        shell: bash
+        env:
+          REQUESTED_VARIANT: ${{ github.event_name == 'workflow_dispatch' && inputs.extractor_variant || '' }}
+          RELEASE_VARIANT: ${{ vars.EXTRACTOR_RELEASE_VARIANT }}
+          RELEASE_GATE: ${{ vars.EXTRACTOR_FULL_PACK_RELEASE_GATE }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        run: |
+          set -euo pipefail
+          variant="generic-no-pack"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            variant="${REQUESTED_VARIANT:-generic-no-pack}"
+          elif [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            if [ "${RELEASE_VARIANT}" = "full-pack" ] && [ "${RELEASE_GATE}" = "enabled" ]; then
+              variant="full-pack"
+            fi
+          fi
+          case "$variant" in
+            generic-no-pack|full-pack) ;;
+            *) echo "invalid extractor package variant" >&2; exit 1 ;;
+          esac
+          printf 'extractor_variant=%s\n' "$variant" >> "$GITHUB_OUTPUT"
+          printf 'release_tag=%s\n' "${RELEASE_TAG:-}" >> "$GITHUB_OUTPUT"
+          printf 'Resolved extractor package variant: %s\n' "$variant"
+
   linux-package:
     runs-on: ubuntu-latest
+    needs: resolve-package-variant
+    env:
+      EXTRACTOR_RELEASE_VARIANT: ${{ needs.resolve-package-variant.outputs.extractor_variant }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,13 +88,17 @@ jobs:
       - name: Verify extractor pack supply-chain fixture
         run: wails3 task extractor:packs:fixture
 
-      - name: Verify and embed extractor release packs
-        if: github.event_name == 'release'
-        run: wails3 task extractor:packs:verify:required
+      - name: Prepare generic extractor package variant
+        if: env.EXTRACTOR_RELEASE_VARIANT == 'generic-no-pack'
+        run: wails3 task extractor:workflow:prepare
 
-      - name: Prepare optional extractor packs
-        if: github.event_name != 'release'
-        run: wails3 task extractor:packs:verify
+      - name: Prepare full-pack extractor package variant
+        if: env.EXTRACTOR_RELEASE_VARIANT == 'full-pack'
+        env:
+          EXTRACTOR_FULL_PACK_METADATA_B64: ${{ secrets.EXTRACTOR_FULL_PACK_METADATA_B64 }}
+          EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64: ${{ secrets.EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64 }}
+          EXTRACTOR_PRIVATE_POLICY_SHA256: ${{ secrets.EXTRACTOR_PRIVATE_POLICY_SHA256 }}
+        run: wails3 task extractor:workflow:prepare
 
       - name: Negative check - default Linux resolver fails closed without aria2c
         shell: bash
@@ -103,7 +151,7 @@ jobs:
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-packages
+          name: linux-packages-${{ needs.resolve-package-variant.outputs.extractor_variant }}
           path: |
             bin/goaria-v3
             bin/*.AppImage
@@ -111,12 +159,16 @@ jobs:
             bin/*.rpm
             bin/*.pkg.tar.zst
 
-      - name: Upload extractor pack provenance
-        if: hashFiles('build/extractor/verified_packs.provenance.json') != ''
+      - name: Upload extractor build evidence
+        if: hashFiles('build/extractor/extractor_build_evidence.summary.json') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: extractor-pack-provenance-linux
-          path: build/extractor/verified_packs.provenance.json
+          name: extractor-build-evidence-${{ needs.resolve-package-variant.outputs.extractor_variant }}-linux
+          path: build/extractor/extractor_build_evidence.summary.json
+
+      - name: Cleanup extractor workflow outputs
+        if: always()
+        run: wails3 task extractor:workflow:cleanup
 
       - name: Upload Linux release assets
         if: github.event_name == 'release'
@@ -144,8 +196,10 @@ jobs:
 
   darwin-package:
     runs-on: macos-latest
+    needs: resolve-package-variant
     env:
       HOMEBREW_NO_AUTO_UPDATE: '1'
+      EXTRACTOR_RELEASE_VARIANT: ${{ needs.resolve-package-variant.outputs.extractor_variant }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -174,13 +228,17 @@ jobs:
       - name: Verify extractor pack supply-chain fixture
         run: wails3 task extractor:packs:fixture
 
-      - name: Verify and embed extractor release packs
-        if: github.event_name == 'release'
-        run: wails3 task extractor:packs:verify:required
+      - name: Prepare generic extractor package variant
+        if: env.EXTRACTOR_RELEASE_VARIANT == 'generic-no-pack'
+        run: wails3 task extractor:workflow:prepare
 
-      - name: Prepare optional extractor packs
-        if: github.event_name != 'release'
-        run: wails3 task extractor:packs:verify
+      - name: Prepare full-pack extractor package variant
+        if: env.EXTRACTOR_RELEASE_VARIANT == 'full-pack'
+        env:
+          EXTRACTOR_FULL_PACK_METADATA_B64: ${{ secrets.EXTRACTOR_FULL_PACK_METADATA_B64 }}
+          EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64: ${{ secrets.EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64 }}
+          EXTRACTOR_PRIVATE_POLICY_SHA256: ${{ secrets.EXTRACTOR_PRIVATE_POLICY_SHA256 }}
+        run: wails3 task extractor:workflow:prepare
 
       - name: Negative check - default macOS resolver fails closed without aria2c
         shell: bash
@@ -228,15 +286,19 @@ jobs:
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macos-package
+          name: macos-package-${{ needs.resolve-package-variant.outputs.extractor_variant }}
           path: bin/goaria-v3.app
 
-      - name: Upload extractor pack provenance
-        if: hashFiles('build/extractor/verified_packs.provenance.json') != ''
+      - name: Upload extractor build evidence
+        if: hashFiles('build/extractor/extractor_build_evidence.summary.json') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: extractor-pack-provenance-macos
-          path: build/extractor/verified_packs.provenance.json
+          name: extractor-build-evidence-${{ needs.resolve-package-variant.outputs.extractor_variant }}-macos
+          path: build/extractor/extractor_build_evidence.summary.json
+
+      - name: Cleanup extractor workflow outputs
+        if: always()
+        run: wails3 task extractor:workflow:cleanup
 
       - name: Upload macOS release assets
         if: github.event_name == 'release'
@@ -253,6 +315,9 @@ jobs:
 
   windows-package:
     runs-on: windows-latest
+    needs: resolve-package-variant
+    env:
+      EXTRACTOR_RELEASE_VARIANT: ${{ needs.resolve-package-variant.outputs.extractor_variant }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -281,13 +346,17 @@ jobs:
       - name: Verify extractor pack supply-chain fixture
         run: wails3 task extractor:packs:fixture
 
-      - name: Verify and embed extractor release packs
-        if: github.event_name == 'release'
-        run: wails3 task extractor:packs:verify:required
+      - name: Prepare generic extractor package variant
+        if: env.EXTRACTOR_RELEASE_VARIANT == 'generic-no-pack'
+        run: wails3 task extractor:workflow:prepare
 
-      - name: Prepare optional extractor packs
-        if: github.event_name != 'release'
-        run: wails3 task extractor:packs:verify
+      - name: Prepare full-pack extractor package variant
+        if: env.EXTRACTOR_RELEASE_VARIANT == 'full-pack'
+        env:
+          EXTRACTOR_FULL_PACK_METADATA_B64: ${{ secrets.EXTRACTOR_FULL_PACK_METADATA_B64 }}
+          EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64: ${{ secrets.EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64 }}
+          EXTRACTOR_PRIVATE_POLICY_SHA256: ${{ secrets.EXTRACTOR_PRIVATE_POLICY_SHA256 }}
+        run: wails3 task extractor:workflow:prepare
 
       - name: Stage bundled aria2c
         run: .\setup.ps1
@@ -298,15 +367,19 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-packages
+          name: windows-packages-${{ needs.resolve-package-variant.outputs.extractor_variant }}
           path: bin/*.zip
 
-      - name: Upload extractor pack provenance
-        if: hashFiles('build/extractor/verified_packs.provenance.json') != ''
+      - name: Upload extractor build evidence
+        if: hashFiles('build/extractor/extractor_build_evidence.summary.json') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: extractor-pack-provenance-windows
-          path: build/extractor/verified_packs.provenance.json
+          name: extractor-build-evidence-${{ needs.resolve-package-variant.outputs.extractor_variant }}-windows
+          path: build/extractor/extractor_build_evidence.summary.json
+
+      - name: Cleanup extractor workflow outputs
+        if: always()
+        run: wails3 task extractor:workflow:cleanup
 
       - name: Upload Windows release assets
         if: github.event_name == 'release'

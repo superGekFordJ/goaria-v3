@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -980,17 +981,245 @@ func TestFullPackMetadataValidationRejectsMalformedInputs(t *testing.T) {
 }
 
 func TestNoNameAuditRejectsForbiddenSurfaceWithoutMatchedValue(t *testing.T) {
-	err := auditNoNameBytes("metadata", []byte(`{"private_policy":"secret-value"}`))
-	if err == nil || err.Error() != "metadata no-name audit failed" {
-		t.Fatalf("auditNoNameBytes() error = %v, want category-only audit failure", err)
-	}
-	if strings.Contains(err.Error(), "private_policy") || strings.Contains(err.Error(), "secret-value") {
-		t.Fatalf("audit error leaks matched value: %v", err)
+	for _, tc := range []struct {
+		surface string
+		data    []byte
+	}{
+		{surface: "metadata", data: []byte(`{"private_policy":"secret-value"}`)},
+		{surface: "provenance", data: []byte(`{"pack_id":"xpk-alpha001","note":"private"}`)},
+		{surface: "evidence", data: []byte(`{"variant":"generic-no-pack","note":"private"}`)},
+	} {
+		t.Run(tc.surface, func(t *testing.T) {
+			err := auditNoNameBytes(tc.surface, tc.data)
+			if err == nil || err.Error() != tc.surface+" no-name audit failed" {
+				t.Fatalf("auditNoNameBytes() error = %v, want category-only audit failure", err)
+			}
+			for _, forbidden := range []string{"private_policy", "secret-value", "private"} {
+				if strings.Contains(err.Error(), forbidden) {
+					t.Fatalf("audit error leaks matched value %q: %v", forbidden, err)
+				}
+			}
+		})
 	}
 
 	allowed := []byte(`{"schema_version":1,"release_tag":"v0.0.0-alpha","asset_url_template":"https://release.example.test/assets/{release_tag}/{asset_name}","packs":[{"asset_name":"asset-alpha001.pack.zip","pack_id":"xpk-alpha001","pack_version":"opaque-1","asset_sha256":"` + strings.Repeat("0", 64) + `","public_keys":["` + strings.Repeat("a", 64) + `"]}]}`)
 	if err := auditNoNameBytes("metadata", allowed); err != nil {
 		t.Fatalf("auditNoNameBytes() allowed synthetic surface error = %v", err)
+	}
+}
+
+func TestWorkflowPrepareGenericNoPackCleansStaleOutputsAndWritesSummary(t *testing.T) {
+	paths := testWorkflowPaths(t)
+	for _, filePath := range []string{paths.MetadataPath, paths.TempLockPath, paths.PackEmbedPath, paths.PolicyOutPath, paths.ProvenanceOut, paths.SummaryOut} {
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filePath, []byte("stale"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := prepareWorkflow(workflowPrepareOptions{Mode: workflowVariantGenericNoPack, Paths: paths}); err != nil {
+		t.Fatalf("prepareWorkflow() generic error = %v", err)
+	}
+	for _, filePath := range []string{paths.MetadataPath, paths.TempLockPath, paths.PackEmbedPath, paths.PolicyOutPath, paths.ProvenanceOut} {
+		assertFileMissing(t, filePath)
+	}
+	summary := readWorkflowSummary(t, paths.SummaryOut)
+	if summary.Variant != workflowVariantGenericNoPack || summary.PackAssetCount != 0 || summary.HostPolicyBundleInjected || summary.PackVerificationRequired {
+		t.Fatalf("unexpected generic summary: %+v", summary)
+	}
+}
+
+func TestWorkflowPrepareFullPackSyntheticSuccessAndCleanup(t *testing.T) {
+	fixture := validWorkflowFullPackFixture(t)
+	paths := testWorkflowPaths(t)
+
+	if err := prepareWorkflow(workflowPrepareOptions{
+		Mode:        workflowVariantFullPack,
+		MetadataB64: base64.StdEncoding.EncodeToString(fullPackMetadataJSON(t, fixture.metadata)),
+		PolicyB64:   base64.StdEncoding.EncodeToString(fixture.policyRaw),
+		Paths:       paths,
+		HTTPClient:  fixture.client,
+	}); err != nil {
+		t.Fatalf("prepareWorkflow() full-pack error = %v", err)
+	}
+
+	for _, filePath := range []string{paths.MetadataPath, paths.TempLockPath, paths.PackEmbedPath, paths.PolicyOutPath, paths.ProvenanceOut, paths.SummaryOut} {
+		if _, err := os.Stat(filePath); err != nil {
+			t.Fatalf("expected workflow output %s: %v", filePath, err)
+		}
+	}
+	summary := readWorkflowSummary(t, paths.SummaryOut)
+	if summary.Variant != workflowVariantFullPack || summary.PackAssetCount != fullPackCount || !summary.HostPolicyBundleInjected || !summary.GeneratedPackEmbed || summary.PublicProvenanceWritten {
+		t.Fatalf("unexpected full-pack summary: %+v", summary)
+	}
+	summaryText := readTextFile(t, paths.SummaryOut)
+	for _, forbidden := range []string{"policy_private_sha256", privatePolicyHashFromRaw(t, fixture.policyRaw), "private_policy", "private", "secret", "token", "authorization", "asset_url", "asset_path", "release.example.test", "https://", "/assets/"} {
+		if strings.Contains(summaryText, forbidden) {
+			t.Fatalf("summary leaks forbidden value %q: %s", forbidden, summaryText)
+		}
+	}
+	for _, label := range summary.EvidenceOutputLabels {
+		if label != "extractor_build_evidence.summary.json" {
+			t.Fatalf("workflow evidence label should not include provenance or paths: %+v", summary.EvidenceOutputLabels)
+		}
+	}
+	policyEmbed := readTextFile(t, paths.PolicyOutPath)
+	if !strings.Contains(policyEmbed, "embeddedPrivatePolicyBundleJSON") || !strings.Contains(policyEmbed, "embeddedPrivatePolicyBundleSHA256") {
+		t.Fatalf("host policy embed missing expected seam variables: %s", policyEmbed)
+	}
+	if err := auditNoNameBytes("policy embed", []byte(policyEmbed)); err == nil {
+		t.Fatalf("private generated policy file must remain excluded from public no-name audit")
+	}
+
+	if err := cleanupWorkflow(workflowCleanupOptions{Paths: paths}); err != nil {
+		t.Fatalf("cleanupWorkflow() error = %v", err)
+	}
+	for _, filePath := range []string{paths.MetadataPath, paths.TempLockPath, paths.PackEmbedPath, paths.PolicyOutPath, paths.ProvenanceOut, paths.SummaryOut} {
+		assertFileMissing(t, filePath)
+	}
+}
+
+func TestWorkflowPrepareFullPackFailsClosedForMissingInputsAndBadChecksum(t *testing.T) {
+	fixture := validWorkflowFullPackFixture(t)
+
+	t.Run("missing metadata", func(t *testing.T) {
+		paths := testWorkflowPaths(t)
+		err := prepareWorkflow(workflowPrepareOptions{
+			Mode:      workflowVariantFullPack,
+			PolicyB64: base64.StdEncoding.EncodeToString(fixture.policyRaw),
+			Paths:     paths,
+		})
+		if err == nil {
+			t.Fatal("prepareWorkflow() error = nil, want missing metadata failure")
+		}
+		assertWorkflowOutputsMissing(t, paths)
+	})
+
+	t.Run("missing policy", func(t *testing.T) {
+		paths := testWorkflowPaths(t)
+		err := prepareWorkflow(workflowPrepareOptions{
+			Mode:        workflowVariantFullPack,
+			MetadataB64: base64.StdEncoding.EncodeToString(fullPackMetadataJSON(t, fixture.metadata)),
+			Paths:       paths,
+		})
+		if err == nil {
+			t.Fatal("prepareWorkflow() error = nil, want missing policy failure")
+		}
+		assertWorkflowOutputsMissing(t, paths)
+	})
+
+	t.Run("wrong checksum", func(t *testing.T) {
+		paths := testWorkflowPaths(t)
+		metadata := fixture.metadata
+		metadata.Packs = append([]fullPackMetadataEntry(nil), fixture.metadata.Packs...)
+		metadata.Packs[0].AssetSHA256 = strings.Repeat("0", 64)
+		err := prepareWorkflow(workflowPrepareOptions{
+			Mode:        workflowVariantFullPack,
+			MetadataB64: base64.StdEncoding.EncodeToString(fullPackMetadataJSON(t, metadata)),
+			PolicyB64:   base64.StdEncoding.EncodeToString(fixture.policyRaw),
+			Paths:       paths,
+			HTTPClient:  fixture.client,
+		})
+		if err == nil || err.Error() != "full-pack verification failed" {
+			t.Fatalf("prepareWorkflow() error = %v, want sanitized verification failure", err)
+		}
+		assertWorkflowOutputsMissing(t, paths)
+	})
+}
+
+func TestWorkflowPrepareFullPackNoNameAuditFailureCleansOutputs(t *testing.T) {
+	fixture := validWorkflowFullPackFixture(t)
+	paths := testWorkflowPaths(t)
+	err := prepareWorkflow(workflowPrepareOptions{
+		Mode:        workflowVariantFullPack,
+		MetadataB64: base64.StdEncoding.EncodeToString(fullPackMetadataJSON(t, fixture.metadata)),
+		PolicyB64:   base64.StdEncoding.EncodeToString(fixture.policyRaw),
+		Paths:       paths,
+		HTTPClient:  fixture.client,
+		NoNameAudit: func(surface string, data []byte) error {
+			if surface == "generated provenance" {
+				return auditNoNameBytes(surface, append(data, []byte("protected-root-marker")...))
+			}
+
+			return auditNoNameBytes(surface, data)
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "generated provenance no-name audit failed") {
+		t.Fatalf("prepareWorkflow() error = %v, want no-name audit failure", err)
+	}
+	if strings.Contains(err.Error(), "protected-root-marker") {
+		t.Fatalf("audit error leaks forbidden marker: %v", err)
+	}
+	assertWorkflowOutputsMissing(t, paths)
+}
+
+func TestWorkflowSurfacesUseGenericVariantsAndEvidenceArtifacts(t *testing.T) {
+	workflow := readTextFile(t, filepath.Join("..", "..", ".github", "workflows", "build.yml"))
+	for _, want := range []string{
+		"extractor_variant:",
+		"generic-no-pack",
+		"full-pack",
+		"resolve-package-variant",
+		"EXTRACTOR_RELEASE_VARIANT",
+		"EXTRACTOR_FULL_PACK_METADATA_B64",
+		"EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64",
+		"extractor-build-evidence-${{ needs.resolve-package-variant.outputs.extractor_variant }}-linux",
+		"linux-packages-${{ needs.resolve-package-variant.outputs.extractor_variant }}",
+		"wails3 task extractor:workflow:prepare",
+		"wails3 task extractor:workflow:cleanup",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("workflow missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"protected-root-marker", "endpoint-template-marker", "raw-secret-marker", "supported_site"} {
+		if strings.Contains(workflow, forbidden) {
+			t.Fatalf("workflow contains forbidden marker %q", forbidden)
+		}
+	}
+	if strings.Contains(workflow, "build/extractor/verified_packs.provenance.json") {
+		t.Fatalf("workflow must not upload URL/path-bearing pack provenance as public evidence")
+	}
+	if strings.Contains(workflow, defaultWorkflowPolicyEmbedPath) {
+		t.Fatalf("workflow must not upload generated host policy code as public evidence")
+	}
+
+	taskfile := readTextFile(t, filepath.Join("..", "..", "Taskfile.yml"))
+	for _, want := range []string{"extractor:workflow:prepare", "extractor:workflow:cleanup", "go run ./scripts/extractorpacks prepare-workflow", "go run ./scripts/extractorpacks cleanup-workflow"} {
+		if !strings.Contains(taskfile, want) {
+			t.Fatalf("Taskfile missing %q", want)
+		}
+	}
+}
+
+func TestWorkflowPrivatePolicyGeneratedPathIsIgnored(t *testing.T) {
+	gitignore := readTextFile(t, filepath.Join("..", "..", ".gitignore"))
+	for _, ignored := range []string{defaultWorkflowPolicyEmbedPath, defaultWorkflowEvidenceSummary} {
+		if !strings.Contains(gitignore, ignored) {
+			t.Fatalf(".gitignore does not cover %s", ignored)
+		}
+	}
+}
+
+func TestWorkflowErrorTextDoesNotEchoCustodyValues(t *testing.T) {
+	paths := testWorkflowPaths(t)
+	secretMetadata := "raw-secret-marker-metadata"
+	secretPolicy := "raw-secret-marker-policy"
+	err := prepareWorkflow(workflowPrepareOptions{
+		Mode:        workflowVariantFullPack,
+		MetadataB64: secretMetadata,
+		PolicyB64:   secretPolicy,
+		Paths:       paths,
+	})
+	if err == nil {
+		t.Fatal("prepareWorkflow() error = nil, want malformed custody failure")
+	}
+	for _, forbidden := range []string{secretMetadata, secretPolicy, "raw-secret-marker"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("error leaks custody value %q: %v", forbidden, err)
+		}
 	}
 }
 
@@ -1045,6 +1274,12 @@ type testAsset struct {
 	bytes     []byte
 	parts     packParts
 	publicKey ed25519.PublicKey
+}
+
+type workflowFullPackFixture struct {
+	metadata  fullPackMetadataFile
+	policyRaw []byte
+	client    *http.Client
 }
 
 func (a testAsset) lockEntry() packLockEntry {
@@ -1145,6 +1380,157 @@ func validFullPackMetadata(assetOne testAsset, assetTwo testAsset) fullPackMetad
 				SignatureSHA256: entryTwo.SignatureSHA256,
 			},
 		},
+	}
+}
+
+func validWorkflowFullPackFixture(t *testing.T) workflowFullPackFixture {
+	t.Helper()
+	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
+	server := twoPackTLSServer(t, map[string][]byte{
+		"/assets/v0.0.0-alpha/asset-alpha001.pack.zip": assetOne.bytes,
+		"/assets/v0.0.0-alpha/asset-alpha002.pack.zip": assetTwo.bytes,
+	})
+	metadata := validFullPackMetadata(assetOne, assetTwo)
+	metadata.BaseAssetURL = "https://release.example.test/assets/v0.0.0-alpha"
+	lock, err := renderFullPackLock(metadata)
+	if err != nil {
+		t.Fatalf("renderFullPackLock() error = %v", err)
+	}
+	assets := []testAsset{assetOne, assetTwo}
+	fixtures := make([]privatePolicyBundlePackFixtureForScript, 0, len(lock.Packs))
+	for i, entry := range lock.Packs {
+		fixtures = append(fixtures, privatePolicyBundlePackFixtureForScript{
+			Identity: identityForScriptAsset(entry, assets[i]),
+			Manifest: manifestForScriptAsset(t, assets[i]),
+		})
+	}
+
+	return workflowFullPackFixture{
+		metadata:  metadata,
+		policyRaw: privatePolicyBundleRawForScript(t, fixtures),
+		client:    rewriteHostClient(t, server, "release.example.test"),
+	}
+}
+
+type privatePolicyBundlePackFixtureForScript struct {
+	Identity extractor.VerifiedPackIdentity
+	Manifest extractor.Manifest
+}
+
+func identityForScriptAsset(entry packLockEntry, asset testAsset) extractor.VerifiedPackIdentity {
+	return extractor.VerifiedPackIdentity{
+		PackID:          entry.PackID,
+		PackVersion:     entry.PackVersion,
+		AssetSHA256:     entry.AssetSHA256,
+		ManifestSHA256:  entry.ManifestSHA256,
+		PayloadSHA256:   entry.PayloadSHA256,
+		SignatureSHA256: entry.SignatureSHA256,
+		PublicKeySHA256: sha256Hex(asset.publicKey),
+	}
+}
+
+func manifestForScriptAsset(t *testing.T, asset testAsset) extractor.Manifest {
+	t.Helper()
+	var manifest extractor.Manifest
+	if err := json.Unmarshal(asset.parts.ManifestJSON, &manifest); err != nil {
+		t.Fatalf("json.Unmarshal(manifest) error = %v", err)
+	}
+
+	return manifest
+}
+
+func privatePolicyBundleRawForScript(t *testing.T, fixtures []privatePolicyBundlePackFixtureForScript) []byte {
+	t.Helper()
+	packEntries := make([]map[string]any, 0, len(fixtures))
+	for _, fixture := range fixtures {
+		packEntries = append(packEntries, map[string]any{
+			"verified_pack_identity": map[string]any{
+				"pack_id":           fixture.Identity.PackID,
+				"pack_version":      fixture.Identity.PackVersion,
+				"asset_sha256":      fixture.Identity.AssetSHA256,
+				"manifest_sha256":   fixture.Identity.ManifestSHA256,
+				"payload_sha256":    fixture.Identity.PayloadSHA256,
+				"signature_sha256":  fixture.Identity.SignatureSHA256,
+				"public_key_sha256": fixture.Identity.PublicKeySHA256,
+			},
+			"domain_policy_refs":   append([]string(nil), fixture.Manifest.DomainPolicyRefs...),
+			"broker_policy_refs":   append([]string(nil), fixture.Manifest.BrokerPolicyRefs...),
+			"allowed_capabilities": append([]extractor.Capability(nil), fixture.Manifest.Capabilities...),
+			"ingress_domain_rules": []extractor.DomainRule{{Host: "share.alpha.test"}},
+			"broker_domain_rules":  []extractor.DomainRule{{Host: "api.alpha.test"}},
+			"broker_endpoints": []map[string]any{{
+				"broker_policy_ref": fixture.Manifest.BrokerPolicyRefs[0],
+				"endpoint_ref":      "epr-alpha001",
+				"url_template":      "https://api.alpha.test/resource/{id}",
+				"auth_profile_refs": []string{"apr-alpha001"},
+			}},
+		})
+	}
+	policy := map[string]any{"packs": packEntries}
+	policyRaw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatalf("json.Marshal(policy) error = %v", err)
+	}
+	bundle := map[string]any{
+		"schema_version":        1,
+		"bundle_id":             "hpb-alpha001",
+		"bundle_version":        "opaque-1",
+		"policy_private_sha256": sha256Hex(policyRaw),
+		"policy":                json.RawMessage(policyRaw),
+	}
+	raw, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatalf("json.Marshal(bundle) error = %v", err)
+	}
+
+	return raw
+}
+
+func privatePolicyHashFromRaw(t *testing.T, raw []byte) string {
+	t.Helper()
+	var envelope struct {
+		Policy json.RawMessage `json:"policy"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("json.Unmarshal(policy envelope) error = %v", err)
+	}
+
+	return sha256Hex(envelope.Policy)
+}
+
+func testWorkflowPaths(t *testing.T) workflowPaths {
+	t.Helper()
+	root := t.TempDir()
+
+	return workflowPaths{
+		MetadataPath:  filepath.Join(root, "build", "extractor", "cache", "full_pack_assets.json"),
+		TempLockPath:  filepath.Join(root, "build", "extractor", "cache", "full_pack.lock.json"),
+		PackEmbedPath: filepath.Join(root, "internal", "extractor", "embedded_packs_release_gen.go"),
+		PolicyOutPath: filepath.Join(root, "internal", "extractor", "private_policy_bundle_release_gen.go"),
+		ProvenanceOut: filepath.Join(root, "build", "extractor", "verified_packs.provenance.json"),
+		SummaryOut:    filepath.Join(root, "build", "extractor", "extractor_build_evidence.summary.json"),
+	}
+}
+
+func readWorkflowSummary(t *testing.T, path string) workflowEvidenceSummary {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read workflow summary: %v", err)
+	}
+	var summary workflowEvidenceSummary
+	if err := json.Unmarshal(raw, &summary); err != nil {
+		t.Fatalf("json.Unmarshal(summary) error = %v", err)
+	}
+
+	return summary
+}
+
+func assertWorkflowOutputsMissing(t *testing.T, paths workflowPaths) {
+	t.Helper()
+	for _, filePath := range []string{paths.MetadataPath, paths.TempLockPath, paths.PackEmbedPath, paths.PolicyOutPath, paths.ProvenanceOut, paths.SummaryOut} {
+		assertFileMissing(t, filePath)
 	}
 }
 

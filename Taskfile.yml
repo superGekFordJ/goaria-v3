@@ -93,6 +93,16 @@ tasks:
       - go run ./tools/extractorpack hostcall-fixture --out-dir build/extractor/cache/pack_sdk --lock-out build/extractor/cache/pack_sdk/hostcall_fixture.lock.json
       - go run ./scripts/extractorpacks verify --lock build/extractor/cache/pack_sdk/hostcall_fixture.lock.json --out build/extractor/cache/pack_sdk/hostcall_fixture_embedded_packs_release_gen.go --provenance-out build/extractor/cache/pack_sdk/hostcall_fixture_verified_packs.provenance.json --allow-file --cleanup
 
+  extractor:workflow:prepare:
+    summary: Prepare extractor generated files for the selected workflow package variant
+    cmds:
+      - go run ./scripts/extractorpacks prepare-workflow
+
+  extractor:workflow:cleanup:
+    summary: Remove workflow-generated extractor pack and policy outputs
+    cmds:
+      - go run ./scripts/extractorpacks cleanup-workflow
+
   # Dependency helpers
   deps:update:frontend:
     summary: Update frontend deps (respecting lockfile)
