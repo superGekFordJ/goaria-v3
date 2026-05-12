@@ -46,6 +46,7 @@ const (
 	envFullPackMetadataB64         = "EXTRACTOR_FULL_PACK_METADATA_B64"
 	envPrivatePolicyBundleB64      = "EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64"
 	envPrivatePolicyExpectedSHA256 = "EXTRACTOR_PRIVATE_POLICY_SHA256"
+	envFullPackLocalAssetDir       = "EXTRACTOR_FULL_PACK_LOCAL_ASSET_DIR"
 	defaultWorkflowMetadataPath    = "build/extractor/cache/full_pack_assets.json"
 	defaultWorkflowTempLockPath    = "build/extractor/cache/full_pack.lock.json"
 	defaultWorkflowPackEmbedPath   = "internal/extractor/embedded_packs_release_gen.go"
@@ -112,6 +113,7 @@ type fullPackVerifyOptions struct {
 	TempLockPath  string
 	OutPath       string
 	ProvenanceOut string
+	LocalAssetDir string
 	CleanOutputs  bool
 	HTTPClient    *http.Client
 	NoNameAudit   func(string, []byte) error
@@ -134,6 +136,7 @@ type workflowPrepareOptions struct {
 	PolicyB64         string
 	PolicyInputPath   string
 	PolicySHA256      string
+	LocalAssetDir     string
 	Paths             workflowPaths
 	HTTPClient        *http.Client
 	NoNameAudit       func(string, []byte) error
@@ -265,6 +268,7 @@ func runCLI(args []string) error {
 		flags.StringVar(&opts.PolicyB64, "policy-b64", os.Getenv(envPrivatePolicyBundleB64), "base64 encoded host policy bundle")
 		flags.StringVar(&opts.PolicyInputPath, "policy-input", "", "test-only host policy bundle input path")
 		flags.StringVar(&opts.PolicySHA256, "policy-sha256", os.Getenv(envPrivatePolicyExpectedSHA256), "optional expected host policy bundle sha256")
+		flags.StringVar(&opts.LocalAssetDir, "local-asset-dir", os.Getenv(envFullPackLocalAssetDir), "workflow local full-pack asset directory")
 		registerWorkflowPathFlags(flags, &opts.Paths)
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
@@ -360,7 +364,7 @@ func verifyFullPack(opts fullPackVerifyOptions) (err error) {
 	if err != nil {
 		return err
 	}
-	lock, err := renderFullPackLock(metadata)
+	lock, err := renderedFullPackLockForVerification(metadata, opts.TempLockPath, opts.LocalAssetDir)
 	if err != nil {
 		return err
 	}
@@ -375,13 +379,15 @@ func verifyFullPack(opts fullPackVerifyOptions) (err error) {
 		return fmt.Errorf("write temporary lock: %w", err)
 	}
 
+	useLocalAssets := strings.TrimSpace(opts.LocalAssetDir) != ""
 	verifyOpts := verifyOptions{
 		LockPath:      opts.TempLockPath,
 		OutPath:       opts.OutPath,
 		ProvenanceOut: opts.ProvenanceOut,
 		Required:      true,
+		AllowFile:     useLocalAssets,
 		HTTPClient:    opts.HTTPClient,
-		SameOrigin:    true,
+		SameOrigin:    !useLocalAssets,
 		VerifiedOut:   opts.VerifiedOut,
 	}
 	if err := verifyPacks(verifyOpts); err != nil {
@@ -514,6 +520,7 @@ func prepareWorkflow(opts workflowPrepareOptions) (err error) {
 		TempLockPath:  opts.Paths.TempLockPath,
 		OutPath:       opts.Paths.PackEmbedPath,
 		ProvenanceOut: opts.Paths.ProvenanceOut,
+		LocalAssetDir: opts.LocalAssetDir,
 		HTTPClient:    opts.HTTPClient,
 		NoNameAudit:   opts.NoNameAudit,
 		VerifiedOut:   &verified,
@@ -1193,6 +1200,72 @@ func renderFullPackLock(metadata fullPackMetadataFile) (lockFile, error) {
 	}
 
 	return lock, nil
+}
+
+func renderedFullPackLockForVerification(metadata fullPackMetadataFile, tempLockPath string, localAssetDir string) (lockFile, error) {
+	if strings.TrimSpace(localAssetDir) == "" {
+		return renderFullPackLock(metadata)
+	}
+
+	return renderLocalFullPackLock(metadata, tempLockPath, localAssetDir)
+}
+
+func renderLocalFullPackLock(metadata fullPackMetadataFile, tempLockPath string, localAssetDir string) (lockFile, error) {
+	if err := validateFullPackMetadata(metadata); err != nil {
+		return lockFile{}, err
+	}
+	assetPaths, err := resolveLocalFullPackAssetPaths(tempLockPath, localAssetDir, metadata.Packs)
+	if err != nil {
+		return lockFile{}, err
+	}
+
+	lock := lockFile{SchemaVersion: lockSchemaVersion, Packs: make([]packLockEntry, 0, len(metadata.Packs))}
+	for i, pack := range metadata.Packs {
+		lock.Packs = append(lock.Packs, packLockEntry{
+			PackID:          pack.PackID,
+			PackVersion:     pack.PackVersion,
+			AssetPath:       assetPaths[i],
+			AssetSHA256:     pack.AssetSHA256,
+			PublicKeys:      append([]string(nil), pack.PublicKeys...),
+			ManifestSHA256:  pack.ManifestSHA256,
+			PayloadSHA256:   pack.PayloadSHA256,
+			SignatureSHA256: pack.SignatureSHA256,
+		})
+	}
+
+	return lock, nil
+}
+
+func resolveLocalFullPackAssetPaths(tempLockPath string, localAssetDir string, packs []fullPackMetadataEntry) ([]string, error) {
+	if strings.TrimSpace(localAssetDir) != localAssetDir || localAssetDir == "" {
+		return nil, errors.New("local full-pack asset directory is invalid")
+	}
+	lockDir, err := canonicalPathForGuard(filepath.Dir(tempLockPath))
+	if err != nil {
+		return nil, errors.New("local full-pack asset directory is invalid")
+	}
+	assetDir, err := canonicalPathForGuard(localAssetDir)
+	if err != nil {
+		return nil, errors.New("local full-pack asset directory is invalid")
+	}
+	if !isPathUnderGuardDir(assetDir, lockDir) {
+		return nil, errors.New("local full-pack asset directory is invalid")
+	}
+
+	resolved := make([]string, 0, len(packs))
+	for _, pack := range packs {
+		assetPath := filepath.Join(assetDir, pack.AssetName)
+		if !isPathUnderGuardDir(assetPath, assetDir) {
+			return nil, errors.New("local full-pack asset directory is invalid")
+		}
+		rel, err := filepath.Rel(lockDir, assetPath)
+		if err != nil || rel == "" || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, errors.New("local full-pack asset directory is invalid")
+		}
+		resolved = append(resolved, filepath.ToSlash(rel))
+	}
+
+	return resolved, nil
 }
 
 func releaseAssetURL(metadata fullPackMetadataFile, assetName string) (string, error) {

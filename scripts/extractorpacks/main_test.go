@@ -589,6 +589,29 @@ func TestFullPackVerifyCleanupRemovesTempAndGeneratedOutputs(t *testing.T) {
 	assertFileMissing(t, provenancePath)
 }
 
+func TestFullPackVerifyUsesLocalAssetDirWithoutHTTPFetch(t *testing.T) {
+	fixture := validWorkflowFullPackFixture(t)
+	outDir := t.TempDir()
+	tempLockPath := filepath.Join(outDir, "full_pack.lock.json")
+	outPath := filepath.Join(outDir, "embedded.go")
+	provenancePath := filepath.Join(outDir, "provenance.json")
+	assetDir := writeLocalFullPackAssetDir(t, outDir, fixture.metadata, fixture.assets)
+
+	if err := verifyFullPack(fullPackVerifyOptions{
+		MetadataPath:  writeFullPackMetadata(t, fixture.metadata),
+		TempLockPath:  tempLockPath,
+		OutPath:       outPath,
+		ProvenanceOut: provenancePath,
+		LocalAssetDir: assetDir,
+	}); err != nil {
+		t.Fatalf("verifyFullPack() error = %v", err)
+	}
+	lockText := readTextFile(t, tempLockPath)
+	if !strings.Contains(lockText, `"asset_path"`) || strings.Contains(lockText, `"asset_url"`) {
+		t.Fatalf("full-pack local lock should use asset_path only: %s", lockText)
+	}
+}
+
 func TestFullPackVerifyFailsClosedForAssetProblems(t *testing.T) {
 	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
 	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
@@ -1081,6 +1104,30 @@ func TestWorkflowPrepareFullPackSyntheticSuccessAndCleanup(t *testing.T) {
 	}
 }
 
+func TestWorkflowPrepareFullPackUsesLocalAssetDir(t *testing.T) {
+	fixture := validWorkflowFullPackFixture(t)
+	paths := testWorkflowPaths(t)
+	assetDir := writeLocalFullPackAssetDir(t, filepath.Dir(paths.TempLockPath), fixture.metadata, fixture.assets)
+
+	if err := prepareWorkflow(workflowPrepareOptions{
+		Mode:          workflowVariantFullPack,
+		MetadataB64:   base64.StdEncoding.EncodeToString(fullPackMetadataJSON(t, fixture.metadata)),
+		PolicyB64:     base64.StdEncoding.EncodeToString(fixture.policyRaw),
+		LocalAssetDir: assetDir,
+		Paths:         paths,
+	}); err != nil {
+		t.Fatalf("prepareWorkflow() local full-pack error = %v", err)
+	}
+	lockText := readTextFile(t, paths.TempLockPath)
+	if !strings.Contains(lockText, `"asset_path"`) || strings.Contains(lockText, `"asset_url"`) {
+		t.Fatalf("workflow local lock should use asset_path only: %s", lockText)
+	}
+	if err := cleanupWorkflow(workflowCleanupOptions{Paths: paths}); err != nil {
+		t.Fatalf("cleanupWorkflow() error = %v", err)
+	}
+	assertWorkflowOutputsMissing(t, paths)
+}
+
 func TestWorkflowPrepareFullPackFailsClosedForMissingInputsAndBadChecksum(t *testing.T) {
 	fixture := validWorkflowFullPackFixture(t)
 
@@ -1165,6 +1212,9 @@ func TestWorkflowSurfacesUseGenericVariantsAndEvidenceArtifacts(t *testing.T) {
 		"EXTRACTOR_RELEASE_VARIANT",
 		"EXTRACTOR_FULL_PACK_METADATA_B64",
 		"EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64",
+		"EXTRACTOR_FULL_PACK_LOCAL_ASSET_DIR",
+		"gh release download",
+		"asset-*.pack.zip",
 		"extractor-build-evidence-${{ needs.resolve-package-variant.outputs.extractor_variant }}-linux",
 		"linux-packages-${{ needs.resolve-package-variant.outputs.extractor_variant }}",
 		"wails3 task extractor:workflow:prepare",
@@ -1280,6 +1330,7 @@ type workflowFullPackFixture struct {
 	metadata  fullPackMetadataFile
 	policyRaw []byte
 	client    *http.Client
+	assets    []testAsset
 }
 
 func (a testAsset) lockEntry() packLockEntry {
@@ -1410,6 +1461,7 @@ func validWorkflowFullPackFixture(t *testing.T) workflowFullPackFixture {
 		metadata:  metadata,
 		policyRaw: privatePolicyBundleRawForScript(t, fixtures),
 		client:    rewriteHostClient(t, server, "release.example.test"),
+		assets:    []testAsset{assetOne, assetTwo},
 	}
 }
 
@@ -1532,6 +1584,24 @@ func assertWorkflowOutputsMissing(t *testing.T, paths workflowPaths) {
 	for _, filePath := range []string{paths.MetadataPath, paths.TempLockPath, paths.PackEmbedPath, paths.PolicyOutPath, paths.ProvenanceOut, paths.SummaryOut} {
 		assertFileMissing(t, filePath)
 	}
+}
+
+func writeLocalFullPackAssetDir(t *testing.T, root string, metadata fullPackMetadataFile, assets []testAsset) string {
+	t.Helper()
+	if len(metadata.Packs) != len(assets) {
+		t.Fatalf("metadata packs/assets length mismatch: %d/%d", len(metadata.Packs), len(assets))
+	}
+	assetDir := filepath.Join(root, "release_assets")
+	if err := os.MkdirAll(assetDir, 0o755); err != nil {
+		t.Fatalf("mkdir asset dir: %v", err)
+	}
+	for i, pack := range metadata.Packs {
+		if err := os.WriteFile(filepath.Join(assetDir, pack.AssetName), assets[i].bytes, 0o644); err != nil {
+			t.Fatalf("write local asset %s: %v", pack.AssetName, err)
+		}
+	}
+
+	return assetDir
 }
 
 func fullPackMetadataJSON(t *testing.T, metadata fullPackMetadataFile) []byte {
