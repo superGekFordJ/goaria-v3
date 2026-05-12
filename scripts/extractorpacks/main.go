@@ -941,7 +941,7 @@ func auditDecodedFullPackMetadataJSON(raw []byte) error {
 	decoder.UseNumber()
 	var value any
 	if err := decoder.Decode(&value); err != nil {
-		return nil
+		return sanitizeFullPackMetadataDecodeError(err)
 	}
 
 	if auditDecodedJSONValue(value) {
@@ -1266,18 +1266,17 @@ func hasUnsafeURLPath(urlPath string) bool {
 		if segment == "." || segment == ".." {
 			return true
 		}
-		decoded := segment
 		for i := 0; i < 2; i++ {
-			value, err := url.PathUnescape(decoded)
+			value, err := url.PathUnescape(segment)
 			if err != nil {
 				return true
 			}
-			if value == decoded {
+			if value == segment {
 				break
 			}
-			decoded = value
+			segment = value
 		}
-		if decoded == "." || decoded == ".." || strings.Contains(decoded, "/") || strings.Contains(decoded, "\\") {
+		if segment == "." || segment == ".." || strings.Contains(segment, "/") || strings.Contains(segment, "\\") {
 			return true
 		}
 	}
