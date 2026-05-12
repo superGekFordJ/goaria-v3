@@ -92,8 +92,34 @@ jobs:
         if: env.EXTRACTOR_RELEASE_VARIANT == 'generic-no-pack'
         run: wails3 task extractor:workflow:prepare
 
-      - name: Prepare full-pack extractor package variant
-        if: env.EXTRACTOR_RELEASE_VARIANT == 'full-pack'
+      - name: Download full-pack release assets
+        if: env.EXTRACTOR_RELEASE_VARIANT == 'full-pack' && github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/extractor/cache/release_assets
+          mkdir -p build/extractor/cache/release_assets
+          gh release download "${{ github.event.release.tag_name }}" --pattern 'asset-*.pack.zip' --dir build/extractor/cache/release_assets
+          count=$(find build/extractor/cache/release_assets -maxdepth 1 -type f -name 'asset-*.pack.zip' | wc -l | tr -d '[:space:]')
+          if [ "$count" -ne 2 ]; then
+            find build/extractor/cache/release_assets -maxdepth 1 -type f -print >&2 || true
+            echo "expected exactly 2 full-pack assets, found $count" >&2
+            exit 1
+          fi
+
+      - name: Prepare full-pack extractor package variant from release assets
+        if: env.EXTRACTOR_RELEASE_VARIANT == 'full-pack' && github.event_name == 'release'
+        env:
+          EXTRACTOR_FULL_PACK_METADATA_B64: ${{ secrets.EXTRACTOR_FULL_PACK_METADATA_B64 }}
+          EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64: ${{ secrets.EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64 }}
+          EXTRACTOR_PRIVATE_POLICY_SHA256: ${{ secrets.EXTRACTOR_PRIVATE_POLICY_SHA256 }}
+          EXTRACTOR_FULL_PACK_LOCAL_ASSET_DIR: build/extractor/cache/release_assets
+        run: wails3 task extractor:workflow:prepare
+
+      - name: Prepare full-pack extractor package variant from public asset URLs
+        if: env.EXTRACTOR_RELEASE_VARIANT == 'full-pack' && github.event_name != 'release'
         env:
           EXTRACTOR_FULL_PACK_METADATA_B64: ${{ secrets.EXTRACTOR_FULL_PACK_METADATA_B64 }}
           EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64: ${{ secrets.EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64 }}
@@ -129,7 +155,7 @@ jobs:
 
       - name: Package Linux artifact
         env:
-          APPIMAGE_EXTRACT_AND_RUN: '1'
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         run: wails3 task linux:package
 
       - name: Smoke test bundled Linux runtime
@@ -198,7 +224,7 @@ jobs:
     runs-on: macos-latest
     needs: resolve-package-variant
     env:
-      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_AUTO_UPDATE: "1"
       EXTRACTOR_RELEASE_VARIANT: ${{ needs.resolve-package-variant.outputs.extractor_variant }}
     steps:
       - name: Checkout
@@ -232,8 +258,34 @@ jobs:
         if: env.EXTRACTOR_RELEASE_VARIANT == 'generic-no-pack'
         run: wails3 task extractor:workflow:prepare
 
-      - name: Prepare full-pack extractor package variant
-        if: env.EXTRACTOR_RELEASE_VARIANT == 'full-pack'
+      - name: Download full-pack release assets
+        if: env.EXTRACTOR_RELEASE_VARIANT == 'full-pack' && github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/extractor/cache/release_assets
+          mkdir -p build/extractor/cache/release_assets
+          gh release download "${{ github.event.release.tag_name }}" --pattern 'asset-*.pack.zip' --dir build/extractor/cache/release_assets
+          count=$(find build/extractor/cache/release_assets -maxdepth 1 -type f -name 'asset-*.pack.zip' | wc -l | tr -d '[:space:]')
+          if [ "$count" -ne 2 ]; then
+            find build/extractor/cache/release_assets -maxdepth 1 -type f -print >&2 || true
+            echo "expected exactly 2 full-pack assets, found $count" >&2
+            exit 1
+          fi
+
+      - name: Prepare full-pack extractor package variant from release assets
+        if: env.EXTRACTOR_RELEASE_VARIANT == 'full-pack' && github.event_name == 'release'
+        env:
+          EXTRACTOR_FULL_PACK_METADATA_B64: ${{ secrets.EXTRACTOR_FULL_PACK_METADATA_B64 }}
+          EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64: ${{ secrets.EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64 }}
+          EXTRACTOR_PRIVATE_POLICY_SHA256: ${{ secrets.EXTRACTOR_PRIVATE_POLICY_SHA256 }}
+          EXTRACTOR_FULL_PACK_LOCAL_ASSET_DIR: build/extractor/cache/release_assets
+        run: wails3 task extractor:workflow:prepare
+
+      - name: Prepare full-pack extractor package variant from public asset URLs
+        if: env.EXTRACTOR_RELEASE_VARIANT == 'full-pack' && github.event_name != 'release'
         env:
           EXTRACTOR_FULL_PACK_METADATA_B64: ${{ secrets.EXTRACTOR_FULL_PACK_METADATA_B64 }}
           EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64: ${{ secrets.EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64 }}
@@ -350,8 +402,34 @@ jobs:
         if: env.EXTRACTOR_RELEASE_VARIANT == 'generic-no-pack'
         run: wails3 task extractor:workflow:prepare
 
-      - name: Prepare full-pack extractor package variant
-        if: env.EXTRACTOR_RELEASE_VARIANT == 'full-pack'
+      - name: Download full-pack release assets
+        if: env.EXTRACTOR_RELEASE_VARIANT == 'full-pack' && github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          if (Test-Path 'build/extractor/cache/release_assets') {
+            Remove-Item -Recurse -Force 'build/extractor/cache/release_assets'
+          }
+          New-Item -ItemType Directory -Force -Path 'build/extractor/cache/release_assets' | Out-Null
+          gh release download "${{ github.event.release.tag_name }}" --pattern 'asset-*.pack.zip' --dir 'build/extractor/cache/release_assets'
+          $files = Get-ChildItem -Path 'build/extractor/cache/release_assets' -Filter 'asset-*.pack.zip' -File
+          if ($files.Count -ne 2) {
+            $files | ForEach-Object { Write-Error $_.FullName }
+            throw "expected exactly 2 full-pack assets, found $($files.Count)"
+          }
+
+      - name: Prepare full-pack extractor package variant from release assets
+        if: env.EXTRACTOR_RELEASE_VARIANT == 'full-pack' && github.event_name == 'release'
+        env:
+          EXTRACTOR_FULL_PACK_METADATA_B64: ${{ secrets.EXTRACTOR_FULL_PACK_METADATA_B64 }}
+          EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64: ${{ secrets.EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64 }}
+          EXTRACTOR_PRIVATE_POLICY_SHA256: ${{ secrets.EXTRACTOR_PRIVATE_POLICY_SHA256 }}
+          EXTRACTOR_FULL_PACK_LOCAL_ASSET_DIR: build/extractor/cache/release_assets
+        run: wails3 task extractor:workflow:prepare
+
+      - name: Prepare full-pack extractor package variant from public asset URLs
+        if: env.EXTRACTOR_RELEASE_VARIANT == 'full-pack' && github.event_name != 'release'
         env:
           EXTRACTOR_FULL_PACK_METADATA_B64: ${{ secrets.EXTRACTOR_FULL_PACK_METADATA_B64 }}
           EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64: ${{ secrets.EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64 }}
