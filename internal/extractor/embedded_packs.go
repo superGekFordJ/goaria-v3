@@ -18,6 +18,7 @@ type EmbeddedReleaseDispatcherConfig struct {
 	AuthResolver       AuthProfileResolver
 	HeaderResolver     HeaderProfileResolver
 	HostPolicyResolver HostPolicyResolver
+	AuthRuntimeBundle  *PrivateAuthRuntimeBundle
 	Required           *bool
 }
 
@@ -98,6 +99,9 @@ func NewEmbeddedReleaseAddTaskDispatcher(config EmbeddedReleaseDispatcherConfig)
 		if err := validateRequiredEmbeddedAliasHostPolicies(verified, config.HostPolicyResolver); err != nil {
 			return nil, err
 		}
+		if err := validateRequiredEmbeddedAuthRuntime(verified, config.AuthRuntimeBundle); err != nil {
+			return nil, err
+		}
 	}
 
 	return NewAddTaskDispatcher(AddTaskDispatcherConfig{
@@ -122,6 +126,48 @@ func validateRequiredEmbeddedAliasHostPolicies(packs []VerifiedPack, resolver Ho
 		}
 		if _, err := resolveAliasHostPolicy(context.Background(), resolver, pack.Identity, pack.Manifest); err != nil {
 			return errors.New("required embedded alias extractor host policy is not configured")
+		}
+	}
+
+	return nil
+}
+
+func validateRequiredEmbeddedAuthRuntime(packs []VerifiedPack, bundle *PrivateAuthRuntimeBundle) error {
+	requiredIdentities := make(map[VerifiedPackIdentity]struct{})
+	for _, pack := range packs {
+		if !ManifestHasCapability(pack.Manifest, CapabilityAuthProfile) {
+			continue
+		}
+		requiredIdentities[pack.Identity] = struct{}{}
+	}
+	if len(requiredIdentities) == 0 {
+		return nil
+	}
+	if bundle == nil || bundle.PackCount() == 0 {
+		return errors.New("required embedded authenticated extractor auth runtime is not configured")
+	}
+
+	seenRuntime := make(map[VerifiedPackIdentity]struct{}, bundle.PackCount())
+	for _, identity := range bundle.PackIdentities() {
+		if _, duplicate := seenRuntime[identity]; duplicate {
+			return errors.New("required embedded authenticated extractor auth runtime is not configured")
+		}
+		seenRuntime[identity] = struct{}{}
+		if _, ok := requiredIdentities[identity]; !ok {
+			return errors.New("required embedded authenticated extractor auth runtime is not configured")
+		}
+		pack, ok := bundle.PackRuntime(identity)
+		if !ok || len(pack.StoreBinding.ProfileRefs) == 0 || len(pack.Materialization.ProfileRefs) == 0 {
+			return errors.New("required embedded authenticated extractor auth runtime is not configured")
+		}
+	}
+
+	if len(seenRuntime) != len(requiredIdentities) {
+		return errors.New("required embedded authenticated extractor auth runtime is not configured")
+	}
+	for identity := range requiredIdentities {
+		if _, ok := seenRuntime[identity]; !ok {
+			return errors.New("required embedded authenticated extractor auth runtime is not configured")
 		}
 	}
 

@@ -98,6 +98,10 @@ func (a *App) authProfileStoreForTest() extractor.AuthProfileStore {
 }
 
 func (a *App) hostAuthRuntimeForTest() *extractor.HostAuthRuntime {
+	return a.hostAuthRuntimeForTaskFlow()
+}
+
+func (a *App) hostAuthRuntimeForTaskFlow() *extractor.HostAuthRuntime {
 	if a == nil {
 		return nil
 	}

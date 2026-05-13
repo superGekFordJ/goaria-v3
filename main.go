@@ -263,6 +263,7 @@ func configureEmbeddedExtractorDispatcherWithDeps(appService *App, deps embedded
 	dispatcher, err := deps.newEmbeddedReleaseAddTaskDispatcher(extractor.EmbeddedReleaseDispatcherConfig{
 		AuthResolver:       authResolver,
 		HostPolicyResolver: hostPolicyResolver,
+		AuthRuntimeBundle:  authBundle,
 	})
 	if err != nil {
 		return sanitizedEmbeddedExtractorConfigError("create embedded extractor dispatcher", err)

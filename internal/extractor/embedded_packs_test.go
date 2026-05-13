@@ -222,6 +222,80 @@ func TestNewEmbeddedReleaseDispatcherRequiredLegacyPackDoesNotRequireHostPolicy(
 	}
 }
 
+func TestNewEmbeddedReleaseDispatcherRequiredAuthCapablePackRequiresAuthRuntime(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(43)
+	pack := signedAuthCapableTestPack(t, privateKey, []byte("auth release payload"), nil)
+	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
+
+	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{})
+	if err == nil {
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = nil, dispatcher=%#v", dispatcher)
+	}
+	if dispatcher != nil {
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() returned dispatcher for missing auth runtime")
+	}
+	if err.Error() != "required embedded authenticated extractor auth runtime is not configured" {
+		t.Fatalf("error = %q, want generic auth runtime error", err.Error())
+	}
+}
+
+func TestNewEmbeddedReleaseDispatcherRequiredAuthCapablePackRejectsMismatchedAuthRuntime(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(44)
+	pack := signedAuthCapableTestPack(t, privateKey, []byte("auth release payload"), nil)
+	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
+	if err != nil {
+		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
+	}
+	mismatchedIdentity := verified.Identity
+	mismatchedIdentity.PackID = "xpk-beta001"
+	bundle := newPrivateAuthRuntimeBundleForTest(t, mismatchedIdentity)
+	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
+
+	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{AuthRuntimeBundle: bundle})
+	if err == nil {
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = nil, dispatcher=%#v", dispatcher)
+	}
+	if dispatcher != nil {
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() returned dispatcher for mismatched auth runtime")
+	}
+	if err.Error() != "required embedded authenticated extractor auth runtime is not configured" {
+		t.Fatalf("error = %q, want generic auth runtime error", err.Error())
+	}
+}
+
+func TestNewEmbeddedReleaseDispatcherRequiredAuthCapablePackAcceptsMatchingAuthRuntime(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(45)
+	pack := signedAuthCapableTestPack(t, privateKey, []byte("auth release payload"), nil)
+	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
+	if err != nil {
+		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
+	}
+	bundle := newPrivateAuthRuntimeBundleForTest(t, verified.Identity)
+	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
+
+	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{AuthRuntimeBundle: bundle})
+	if err != nil {
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = %v", err)
+	}
+	if dispatcher == nil {
+		t.Fatal("NewEmbeddedReleaseAddTaskDispatcher() dispatcher = nil")
+	}
+}
+
+func TestNewEmbeddedReleaseDispatcherRequiredNonAuthPackDoesNotRequireAuthRuntime(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(46)
+	pack := signedTestPack(t, privateKey, []byte("non auth release payload"), nil)
+	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
+
+	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{})
+	if err != nil {
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = %v", err)
+	}
+	if dispatcher == nil {
+		t.Fatal("NewEmbeddedReleaseAddTaskDispatcher() dispatcher = nil")
+	}
+}
+
 func TestNewEmbeddedReleaseDispatcherFailsClosedWhenAnyPackRejectedRequired(t *testing.T) {
 	publicKey, privateKey := deterministicKeyPair(36)
 	validPack := signedTestPack(t, privateKey, []byte("verified payload"), nil)
@@ -279,4 +353,31 @@ func withEmbeddedReleaseState(t *testing.T, packs []EmbeddedPack, keys []ed25519
 		embeddedReleaseTrustedPublicKeys = oldKeys
 		embeddedReleaseRequired = oldRequired
 	})
+}
+
+func signedAuthCapableTestPack(t *testing.T, privateKey ed25519.PrivateKey, payload []byte, mutate func(map[string]any)) EmbeddedPack {
+	t.Helper()
+
+	pack := signedTestPack(t, privateKey, payload, func(values map[string]any) {
+		values["pack_id"] = "xpk-alpha001"
+		values["capabilities"] = []string{string(CapabilityParseWASM), string(CapabilityHTTPFetch), string(CapabilityAuthProfile)}
+		if mutate != nil {
+			mutate(values)
+		}
+	})
+	pack.AssetSHA256 = strings.Repeat("a", 64)
+
+	return pack
+}
+
+func newPrivateAuthRuntimeBundleForTest(t *testing.T, identity VerifiedPackIdentity) *PrivateAuthRuntimeBundle {
+	t.Helper()
+
+	raw := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{{Identity: identity, ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://fixture.invalid/login"}}, nil)
+	bundle, err := NewPrivateAuthRuntimeBundle(raw, PrivateAuthRuntimeBundleLoadOptions{})
+	if err != nil {
+		t.Fatalf("NewPrivateAuthRuntimeBundle() error = %v", err)
+	}
+
+	return bundle
 }

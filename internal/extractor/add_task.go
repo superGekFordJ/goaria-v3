@@ -20,6 +20,10 @@ type HeaderProfileResolver interface {
 	ResolveHeaderProfile(ctx context.Context, packID string, profileRef string, rawURL string) ([]string, error)
 }
 
+type authProfileMaterializer interface {
+	MaterializeAuthProfile(ctx context.Context, request HostAuthRuntimeRequest) (MaterializedAuthSecret, error)
+}
+
 type AddTaskDispatcherConfig struct {
 	Registry       *Registry
 	Runner         *Runner
@@ -44,6 +48,8 @@ type AddTaskResolution struct {
 type ResolvedAddItem struct {
 	SourceURL        string
 	PackID           string
+	PackIdentity     VerifiedPackIdentity
+	Manifest         Manifest
 	ID               string
 	URL              string
 	Filename         string
@@ -60,6 +66,37 @@ func NewAddTaskDispatcher(config AddTaskDispatcherConfig) *AddTaskDispatcher {
 		authResolver:   config.AuthResolver,
 		headerResolver: config.HeaderResolver,
 	}
+}
+
+func (d *AddTaskDispatcher) AuthRuntimeRequestsForSource(ctx context.Context, rawURL string) ([]HostAuthRuntimeRequest, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, redactedError(err)
+	}
+	if d == nil || d.registry == nil {
+		return nil, nil
+	}
+
+	matches := d.registry.FindByURLWithContext(ctx, rawURL)
+	if err := ctx.Err(); err != nil {
+		return nil, redactedError(err)
+	}
+	if len(matches) == 0 {
+		return nil, nil
+	}
+
+	requests := make([]HostAuthRuntimeRequest, 0, len(matches))
+	for _, pack := range matches {
+		requests = append(requests, HostAuthRuntimeRequest{
+			PackIdentity: pack.Identity,
+			Manifest:     cloneManifest(pack.Manifest),
+			SourceURL:    rawURL,
+		})
+	}
+
+	return requests, nil
 }
 
 func (d *AddTaskDispatcher) Resolve(ctx context.Context, rawURL string) (AddTaskResolution, error) {
@@ -97,7 +134,7 @@ func (d *AddTaskDispatcher) Resolve(ctx context.Context, rawURL string) (AddTask
 			continue
 		}
 
-		items, err := resolvedItemsFromExtractOutput(rawURL, packID, extracted)
+		items, err := resolvedItemsFromExtractOutput(rawURL, pack, extracted)
 		if err != nil {
 			return AddTaskResolution{}, redactedError(fmt.Errorf("extractor pack %q returned invalid add item: %w", packID, err))
 		}
@@ -125,6 +162,14 @@ func (d *AddTaskDispatcher) Resolve(ctx context.Context, rawURL string) (AddTask
 	return resolution, nil
 }
 
+func IsGenericAuthResolutionError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	return err.Error() == emptyExtractOutputError
+}
+
 func (d *AddTaskDispatcher) BuildAria2Headers(ctx context.Context, item ResolvedAddItem) ([]string, error) {
 	if d == nil {
 		d = &AddTaskDispatcher{}
@@ -136,17 +181,35 @@ func (d *AddTaskDispatcher) BuildAria2Headers(ctx context.Context, item Resolved
 		if d.authResolver == nil {
 			return nil, redactErrorf("auth profile resolver is not configured for ref %q", item.AuthProfileRef)
 		}
-
-		secret, err := d.authResolver.ResolveAuthProfile(ctx, item.PackID, AuthProfileID(item.AuthProfileRef), item.URL)
-		if err != nil {
-			return nil, redactedError(fmt.Errorf("resolve auth profile %q: %w", item.AuthProfileRef, err), knownSecrets...)
+		if materializer, ok := d.authResolver.(authProfileMaterializer); ok && item.PackIdentity.PackID != "" && item.Manifest.PackID != "" {
+			material, err := materializer.MaterializeAuthProfile(ctx, HostAuthRuntimeRequest{
+				PackIdentity: item.PackIdentity,
+				Manifest:     item.Manifest,
+				SourceURL:    item.SourceURL,
+				TargetURL:    item.URL,
+				ProfileRef:   AuthProfileID(item.AuthProfileRef),
+			})
+			if err != nil {
+				return nil, redactedError(fmt.Errorf("resolve auth profile %q: %w", item.AuthProfileRef, err), knownSecrets...)
+			}
+			line := material.HeaderName + ": " + material.HeaderValue()
+			if err := ValidateAria2HeaderLine(line); err != nil {
+				return nil, redactedError(fmt.Errorf("resolve auth profile %q: %w", item.AuthProfileRef, err), appendNonEmptySecrets(knownSecrets, material.HeaderValue())...)
+			}
+			headers = append(headers, line)
+			knownSecrets = appendNonEmptySecrets(knownSecrets, material.HeaderValue())
+		} else {
+			secret, err := d.authResolver.ResolveAuthProfile(ctx, item.PackID, AuthProfileID(item.AuthProfileRef), item.URL)
+			if err != nil {
+				return nil, redactedError(fmt.Errorf("resolve auth profile %q: %w", item.AuthProfileRef, err), knownSecrets...)
+			}
+			line := secret.HeaderName + ": " + secret.HeaderValue
+			if err := ValidateAria2HeaderLine(line); err != nil {
+				return nil, redactedError(fmt.Errorf("resolve auth profile %q: %w", item.AuthProfileRef, err), appendNonEmptySecrets(knownSecrets, secret.HeaderValue)...)
+			}
+			headers = append(headers, line)
+			knownSecrets = appendNonEmptySecrets(knownSecrets, secret.HeaderValue)
 		}
-		line := secret.HeaderName + ": " + secret.HeaderValue
-		if err := ValidateAria2HeaderLine(line); err != nil {
-			return nil, redactedError(fmt.Errorf("resolve auth profile %q: %w", item.AuthProfileRef, err), appendNonEmptySecrets(knownSecrets, secret.HeaderValue)...)
-		}
-		headers = append(headers, line)
-		knownSecrets = appendNonEmptySecrets(knownSecrets, secret.HeaderValue)
 	}
 
 	if item.HeaderProfileRef != "" {
@@ -176,7 +239,9 @@ func (d *AddTaskDispatcher) BuildAria2Headers(ctx context.Context, item Resolved
 	return dedupeStringsPreserveOrder(headers), nil
 }
 
-func resolvedItemsFromExtractOutput(sourceURL string, packID string, output ExtractOutput) ([]ResolvedAddItem, error) {
+func resolvedItemsFromExtractOutput(sourceURL string, pack VerifiedPack, output ExtractOutput) ([]ResolvedAddItem, error) {
+	packID := pack.Manifest.PackID
+	manifest := cloneManifest(pack.Manifest)
 	items := make([]ResolvedAddItem, 0, len(output.Items))
 	for i, ref := range output.Items {
 		if err := validateABIURL(ref.URL, "item url"); err != nil {
@@ -200,6 +265,8 @@ func resolvedItemsFromExtractOutput(sourceURL string, packID string, output Extr
 		items = append(items, ResolvedAddItem{
 			SourceURL:        sourceURL,
 			PackID:           packID,
+			PackIdentity:     pack.Identity,
+			Manifest:         cloneManifest(manifest),
 			ID:               ref.ID,
 			URL:              ref.URL,
 			Filename:         filename,
