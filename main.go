@@ -2,7 +2,9 @@ package main
 
 import (
 	"embed"
+	"errors"
 	"flag"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -163,37 +165,145 @@ func main() {
 }
 
 func configureEmbeddedExtractorDispatcher(appService *App) {
+	if err := configureEmbeddedExtractorDispatcherWithDeps(appService, defaultEmbeddedExtractorConfigDeps()); err != nil {
+		log.Fatalf("failed to configure embedded extractor runtime: %v", extractor.RedactSensitive(err.Error()))
+	}
+}
+
+type embeddedExtractorConfigDeps struct {
+	hasEmbeddedReleasePacks             func() bool
+	embeddedReleaseRequired             func() bool
+	loadHostPolicyResolver              func() (extractor.HostPolicyResolver, error)
+	loadAuthRuntimeBundle               func() (*extractor.PrivateAuthRuntimeBundle, error)
+	defaultAuthProfileStorePath         func() (string, error)
+	newFileAuthProfileStore             func(string) (extractor.AuthProfileStore, error)
+	newAuthWebViewDriver                func(*App) extractor.AuthWebViewDriver
+	newEmbeddedReleaseAddTaskDispatcher func(extractor.EmbeddedReleaseDispatcherConfig) (extractorAddTaskDispatcher, error)
+}
+
+func defaultEmbeddedExtractorConfigDeps() embeddedExtractorConfigDeps {
+	return embeddedExtractorConfigDeps{
+		hasEmbeddedReleasePacks:     extractor.HasEmbeddedReleasePacks,
+		embeddedReleaseRequired:     extractor.EmbeddedReleaseRequired,
+		loadHostPolicyResolver:      extractor.LoadPrivatePolicyBundleResolverFromRuntimeSources,
+		loadAuthRuntimeBundle:       extractor.LoadPrivateAuthRuntimeBundleFromRuntimeSources,
+		defaultAuthProfileStorePath: extractor.DefaultAuthProfileStorePath,
+		newFileAuthProfileStore: func(path string) (extractor.AuthProfileStore, error) {
+			return extractor.NewFileAuthProfileStore(path)
+		},
+		newAuthWebViewDriver: func(appService *App) extractor.AuthWebViewDriver {
+			return newAppHostAuthDriver(appService)
+		},
+		newEmbeddedReleaseAddTaskDispatcher: func(config extractor.EmbeddedReleaseDispatcherConfig) (extractorAddTaskDispatcher, error) {
+			return extractor.NewEmbeddedReleaseAddTaskDispatcher(config)
+		},
+	}
+}
+
+func configureEmbeddedExtractorDispatcherWithDeps(appService *App, deps embeddedExtractorConfigDeps) error {
 	if appService == nil {
-		return
+		return nil
 	}
-	if !extractor.HasEmbeddedReleasePacks() && !extractor.EmbeddedReleaseRequired() {
-		return
-	}
-	hostPolicyResolver, err := extractor.LoadPrivatePolicyBundleResolverFromRuntimeSources()
+	deps = normalizeEmbeddedExtractorConfigDeps(deps)
+
+	hasPacks := deps.hasEmbeddedReleasePacks()
+	required := deps.embeddedReleaseRequired()
+	authBundle, err := deps.loadAuthRuntimeBundle()
 	if err != nil {
-		log.Fatalf("failed to load extractor host policy: %v", extractor.RedactSensitive(err.Error()))
+		return sanitizedEmbeddedExtractorConfigError("load auth runtime bundle", err)
+	}
+	hasAuthRuntime := authBundle != nil && authBundle.PackCount() > 0
+	if !hasPacks && !required && !hasAuthRuntime {
+		return nil
 	}
 
-	var store extractor.AuthProfileResolver
-	if extractor.HasEmbeddedReleasePacks() {
-		storePath, err := extractor.DefaultAuthProfileStorePath()
+	var hostPolicyResolver extractor.HostPolicyResolver
+	if hasPacks || required {
+		hostPolicyResolver, err = deps.loadHostPolicyResolver()
 		if err != nil {
-			log.Fatalf("failed to locate extractor auth profile store: %v", extractor.RedactSensitive(err.Error()))
+			return sanitizedEmbeddedExtractorConfigError("load host policy resolver", err)
 		}
-		fileStore, err := extractor.NewFileAuthProfileStore(storePath)
-		if err != nil {
-			log.Fatalf("failed to load extractor auth profile store: %v", extractor.RedactSensitive(err.Error()))
-		}
-		store = fileStore
 	}
-	dispatcher, err := extractor.NewEmbeddedReleaseAddTaskDispatcher(extractor.EmbeddedReleaseDispatcherConfig{
-		AuthResolver:       store,
+
+	var store extractor.AuthProfileStore
+	if hasPacks || hasAuthRuntime {
+		storePath, err := deps.defaultAuthProfileStorePath()
+		if err != nil {
+			return sanitizedEmbeddedExtractorConfigError("locate auth profile store", err)
+		}
+		store, err = deps.newFileAuthProfileStore(storePath)
+		if err != nil {
+			return sanitizedEmbeddedExtractorConfigError("load auth profile store", err)
+		}
+		if store == nil {
+			return sanitizedEmbeddedExtractorConfigError("load auth profile store", errors.New("auth profile store is nil"))
+		}
+	}
+
+	var authResolver extractor.AuthProfileResolver
+	var hostRuntime *extractor.HostAuthRuntime
+	var driver extractor.AuthWebViewDriver
+	if hasAuthRuntime {
+		driver = deps.newAuthWebViewDriver(appService)
+		if driver == nil {
+			return sanitizedEmbeddedExtractorConfigError("create auth webview driver", errors.New("auth webview driver is nil"))
+		}
+		coordinator := extractor.NewWebViewAuthCoordinator(store, driver)
+		hostRuntime = extractor.NewHostAuthRuntime(extractor.HostAuthRuntimeConfig{
+			Bundle:      authBundle,
+			Store:       store,
+			Coordinator: coordinator,
+		})
+		authResolver = hostRuntime
+	} else if store != nil {
+		authResolver = store
+	}
+	appService.setHostAuthState(store, hostRuntime, driver)
+
+	dispatcher, err := deps.newEmbeddedReleaseAddTaskDispatcher(extractor.EmbeddedReleaseDispatcherConfig{
+		AuthResolver:       authResolver,
 		HostPolicyResolver: hostPolicyResolver,
 	})
 	if err != nil {
-		log.Fatalf("failed to verify embedded extractor release packs: %v", extractor.RedactSensitive(err.Error()))
+		return sanitizedEmbeddedExtractorConfigError("create embedded extractor dispatcher", err)
 	}
 	if dispatcher != nil {
 		appService.setExtractorDispatcher(dispatcher)
 	}
+
+	return nil
+}
+
+func normalizeEmbeddedExtractorConfigDeps(deps embeddedExtractorConfigDeps) embeddedExtractorConfigDeps {
+	defaults := defaultEmbeddedExtractorConfigDeps()
+	if deps.hasEmbeddedReleasePacks == nil {
+		deps.hasEmbeddedReleasePacks = defaults.hasEmbeddedReleasePacks
+	}
+	if deps.embeddedReleaseRequired == nil {
+		deps.embeddedReleaseRequired = defaults.embeddedReleaseRequired
+	}
+	if deps.loadHostPolicyResolver == nil {
+		deps.loadHostPolicyResolver = defaults.loadHostPolicyResolver
+	}
+	if deps.loadAuthRuntimeBundle == nil {
+		deps.loadAuthRuntimeBundle = defaults.loadAuthRuntimeBundle
+	}
+	if deps.defaultAuthProfileStorePath == nil {
+		deps.defaultAuthProfileStorePath = defaults.defaultAuthProfileStorePath
+	}
+	if deps.newFileAuthProfileStore == nil {
+		deps.newFileAuthProfileStore = defaults.newFileAuthProfileStore
+	}
+	if deps.newAuthWebViewDriver == nil {
+		deps.newAuthWebViewDriver = defaults.newAuthWebViewDriver
+	}
+	if deps.newEmbeddedReleaseAddTaskDispatcher == nil {
+		deps.newEmbeddedReleaseAddTaskDispatcher = defaults.newEmbeddedReleaseAddTaskDispatcher
+	}
+
+	return deps
+}
+
+func sanitizedEmbeddedExtractorConfigError(action string, err error) error {
+	return fmt.Errorf("%s failed", action)
 }
