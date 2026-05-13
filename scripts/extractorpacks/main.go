@@ -42,17 +42,20 @@ const (
 	workflowVariantGenericNoPack = "generic-no-pack"
 	workflowVariantFullPack      = "full-pack"
 
-	envExtractorReleaseVariant     = "EXTRACTOR_RELEASE_VARIANT"
-	envFullPackMetadataB64         = "EXTRACTOR_FULL_PACK_METADATA_B64"
-	envPrivatePolicyBundleB64      = "EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64"
-	envPrivatePolicyExpectedSHA256 = "EXTRACTOR_PRIVATE_POLICY_SHA256"
-	envFullPackLocalAssetDir       = "EXTRACTOR_FULL_PACK_LOCAL_ASSET_DIR"
-	defaultWorkflowMetadataPath    = "build/extractor/cache/full_pack_assets.json"
-	defaultWorkflowTempLockPath    = "build/extractor/cache/full_pack.lock.json"
-	defaultWorkflowPackEmbedPath   = "internal/extractor/embedded_packs_release_gen.go"
-	defaultWorkflowPolicyEmbedPath = "internal/extractor/private_policy_bundle_release_gen.go"
-	defaultWorkflowProvenancePath  = "build/extractor/verified_packs.provenance.json"
-	defaultWorkflowEvidenceSummary = "build/extractor/extractor_build_evidence.summary.json"
+	envExtractorReleaseVariant          = "EXTRACTOR_RELEASE_VARIANT"
+	envFullPackMetadataB64              = "EXTRACTOR_FULL_PACK_METADATA_B64"
+	envPrivatePolicyBundleB64           = "EXTRACTOR_PRIVATE_POLICY_BUNDLE_B64"
+	envPrivatePolicyExpectedSHA256      = "EXTRACTOR_PRIVATE_POLICY_SHA256"
+	envPrivateAuthRuntimeBundleB64      = "EXTRACTOR_PRIVATE_AUTH_RUNTIME_BUNDLE_B64"
+	envPrivateAuthRuntimeExpectedSHA256 = "EXTRACTOR_PRIVATE_AUTH_RUNTIME_SHA256"
+	envFullPackLocalAssetDir            = "EXTRACTOR_FULL_PACK_LOCAL_ASSET_DIR"
+	defaultWorkflowMetadataPath         = "build/extractor/cache/full_pack_assets.json"
+	defaultWorkflowTempLockPath         = "build/extractor/cache/full_pack.lock.json"
+	defaultWorkflowPackEmbedPath        = "internal/extractor/embedded_packs_release_gen.go"
+	defaultWorkflowPolicyEmbedPath      = "internal/extractor/private_policy_bundle_release_gen.go"
+	defaultWorkflowAuthRuntimeEmbedPath = "internal/extractor/private_auth_runtime_release_gen.go"
+	defaultWorkflowProvenancePath       = "build/extractor/verified_packs.provenance.json"
+	defaultWorkflowEvidenceSummary      = "build/extractor/extractor_build_evidence.summary.json"
 )
 
 type lockFile struct {
@@ -121,25 +124,29 @@ type fullPackVerifyOptions struct {
 }
 
 type workflowPaths struct {
-	MetadataPath  string
-	TempLockPath  string
-	PackEmbedPath string
-	PolicyOutPath string
-	ProvenanceOut string
-	SummaryOut    string
+	MetadataPath       string
+	TempLockPath       string
+	PackEmbedPath      string
+	PolicyOutPath      string
+	AuthRuntimeOutPath string
+	ProvenanceOut      string
+	SummaryOut         string
 }
 
 type workflowPrepareOptions struct {
-	Mode              string
-	MetadataB64       string
-	MetadataInputPath string
-	PolicyB64         string
-	PolicyInputPath   string
-	PolicySHA256      string
-	LocalAssetDir     string
-	Paths             workflowPaths
-	HTTPClient        *http.Client
-	NoNameAudit       func(string, []byte) error
+	Mode                 string
+	MetadataB64          string
+	MetadataInputPath    string
+	PolicyB64            string
+	PolicyInputPath      string
+	PolicySHA256         string
+	AuthRuntimeB64       string
+	AuthRuntimeInputPath string
+	AuthRuntimeSHA256    string
+	LocalAssetDir        string
+	Paths                workflowPaths
+	HTTPClient           *http.Client
+	NoNameAudit          func(string, []byte) error
 }
 
 type workflowCleanupOptions struct {
@@ -147,16 +154,17 @@ type workflowCleanupOptions struct {
 }
 
 type workflowEvidenceSummary struct {
-	SchemaVersion            int      `json:"schema_version"`
-	Variant                  string   `json:"variant"`
-	PackAssetCount           int      `json:"pack_asset_count"`
-	HostPolicyBundleInjected bool     `json:"host_policy_bundle_injected"`
-	PackVerificationRequired bool     `json:"pack_verification_required"`
-	GeneratedPackEmbed       bool     `json:"generated_pack_embed"`
-	PublicProvenanceWritten  bool     `json:"public_provenance_written"`
-	PublicEvidenceOnly       bool     `json:"public_evidence_only"`
-	CustodyInputCategories   []string `json:"custody_input_categories,omitempty"`
-	EvidenceOutputLabels     []string `json:"evidence_output_labels"`
+	SchemaVersion             int      `json:"schema_version"`
+	Variant                   string   `json:"variant"`
+	PackAssetCount            int      `json:"pack_asset_count"`
+	HostPolicyBundleInjected  bool     `json:"host_policy_bundle_injected"`
+	AuthRuntimeBundleInjected bool     `json:"auth_runtime_bundle_injected"`
+	PackVerificationRequired  bool     `json:"pack_verification_required"`
+	GeneratedPackEmbed        bool     `json:"generated_pack_embed"`
+	PublicProvenanceWritten   bool     `json:"public_provenance_written"`
+	PublicEvidenceOnly        bool     `json:"public_evidence_only"`
+	CustodyInputCategories    []string `json:"custody_input_categories,omitempty"`
+	EvidenceOutputLabels      []string `json:"evidence_output_labels"`
 }
 
 type packParts struct {
@@ -268,6 +276,9 @@ func runCLI(args []string) error {
 		flags.StringVar(&opts.PolicyB64, "policy-b64", os.Getenv(envPrivatePolicyBundleB64), "base64 encoded host policy bundle")
 		flags.StringVar(&opts.PolicyInputPath, "policy-input", "", "test-only host policy bundle input path")
 		flags.StringVar(&opts.PolicySHA256, "policy-sha256", os.Getenv(envPrivatePolicyExpectedSHA256), "optional expected host policy bundle sha256")
+		flags.StringVar(&opts.AuthRuntimeB64, "auth-runtime-b64", os.Getenv(envPrivateAuthRuntimeBundleB64), "base64 encoded auth runtime bundle")
+		flags.StringVar(&opts.AuthRuntimeInputPath, "auth-runtime-input", "", "test-only auth runtime bundle input path")
+		flags.StringVar(&opts.AuthRuntimeSHA256, "auth-runtime-sha256", os.Getenv(envPrivateAuthRuntimeExpectedSHA256), "optional expected auth runtime bundle sha256")
 		flags.StringVar(&opts.LocalAssetDir, "local-asset-dir", os.Getenv(envFullPackLocalAssetDir), "workflow local full-pack asset directory")
 		registerWorkflowPathFlags(flags, &opts.Paths)
 		if err := flags.Parse(args[1:]); err != nil {
@@ -292,12 +303,13 @@ func runCLI(args []string) error {
 
 func defaultWorkflowPaths() workflowPaths {
 	return workflowPaths{
-		MetadataPath:  defaultWorkflowMetadataPath,
-		TempLockPath:  defaultWorkflowTempLockPath,
-		PackEmbedPath: defaultWorkflowPackEmbedPath,
-		PolicyOutPath: defaultWorkflowPolicyEmbedPath,
-		ProvenanceOut: defaultWorkflowProvenancePath,
-		SummaryOut:    defaultWorkflowEvidenceSummary,
+		MetadataPath:       defaultWorkflowMetadataPath,
+		TempLockPath:       defaultWorkflowTempLockPath,
+		PackEmbedPath:      defaultWorkflowPackEmbedPath,
+		PolicyOutPath:      defaultWorkflowPolicyEmbedPath,
+		AuthRuntimeOutPath: defaultWorkflowAuthRuntimeEmbedPath,
+		ProvenanceOut:      defaultWorkflowProvenancePath,
+		SummaryOut:         defaultWorkflowEvidenceSummary,
 	}
 }
 
@@ -306,6 +318,7 @@ func registerWorkflowPathFlags(flags *flag.FlagSet, paths *workflowPaths) {
 	flags.StringVar(&paths.TempLockPath, "temp-lock", paths.TempLockPath, "workflow temporary lock output")
 	flags.StringVar(&paths.PackEmbedPath, "pack-out", paths.PackEmbedPath, "workflow generated pack embed output")
 	flags.StringVar(&paths.PolicyOutPath, "policy-out", paths.PolicyOutPath, "workflow generated host policy embed output")
+	flags.StringVar(&paths.AuthRuntimeOutPath, "auth-runtime-out", paths.AuthRuntimeOutPath, "workflow generated auth runtime embed output")
 	flags.StringVar(&paths.ProvenanceOut, "provenance-out", paths.ProvenanceOut, "workflow public provenance output")
 	flags.StringVar(&paths.SummaryOut, "summary-out", paths.SummaryOut, "workflow public evidence summary output")
 }
@@ -472,15 +485,16 @@ func prepareWorkflow(opts workflowPrepareOptions) (err error) {
 		}
 
 		return writeWorkflowEvidenceSummary(opts.Paths.SummaryOut, workflowEvidenceSummary{
-			SchemaVersion:            lockSchemaVersion,
-			Variant:                  workflowVariantGenericNoPack,
-			PackAssetCount:           0,
-			HostPolicyBundleInjected: false,
-			PackVerificationRequired: false,
-			GeneratedPackEmbed:       false,
-			PublicProvenanceWritten:  false,
-			PublicEvidenceOnly:       true,
-			EvidenceOutputLabels:     []string{"extractor_build_evidence.summary.json"},
+			SchemaVersion:             lockSchemaVersion,
+			Variant:                   workflowVariantGenericNoPack,
+			PackAssetCount:            0,
+			HostPolicyBundleInjected:  false,
+			AuthRuntimeBundleInjected: false,
+			PackVerificationRequired:  false,
+			GeneratedPackEmbed:        false,
+			PublicProvenanceWritten:   false,
+			PublicEvidenceOnly:        true,
+			EvidenceOutputLabels:      []string{"extractor_build_evidence.summary.json"},
 		})
 	}
 
@@ -513,7 +527,6 @@ func prepareWorkflow(opts workflowPrepareOptions) (err error) {
 	if err != nil {
 		return err
 	}
-
 	verified := make([]verifiedAsset, 0, fullPackCount)
 	if err := verifyFullPack(fullPackVerifyOptions{
 		MetadataPath:  opts.Paths.MetadataPath,
@@ -530,24 +543,39 @@ func prepareWorkflow(opts workflowPrepareOptions) (err error) {
 	if len(verified) != fullPackCount {
 		return errors.New("full-pack workflow preparation failed")
 	}
+	authRuntimeRaw, err := workflowCustodyInput(workflowCustodyInputOptions{
+		B64:       opts.AuthRuntimeB64,
+		InputPath: opts.AuthRuntimeInputPath,
+		Label:     "auth runtime bundle",
+	})
+	if err != nil {
+		return err
+	}
 	if err := validatePrivatePolicyForVerifiedAssets(policyRaw, opts.PolicySHA256, verified); err != nil {
+		return err
+	}
+	if err := validatePrivateAuthRuntimeForVerifiedAssets(authRuntimeRaw, opts.AuthRuntimeSHA256, verified); err != nil {
 		return err
 	}
 	if err := writePrivatePolicyEmbed(opts.Paths.PolicyOutPath, policyRaw, opts.PolicySHA256); err != nil {
 		return err
 	}
+	if err := writePrivateAuthRuntimeEmbed(opts.Paths.AuthRuntimeOutPath, authRuntimeRaw, opts.AuthRuntimeSHA256); err != nil {
+		return err
+	}
 
 	return writeWorkflowEvidenceSummary(opts.Paths.SummaryOut, workflowEvidenceSummary{
-		SchemaVersion:            lockSchemaVersion,
-		Variant:                  workflowVariantFullPack,
-		PackAssetCount:           len(verified),
-		HostPolicyBundleInjected: true,
-		PackVerificationRequired: true,
-		GeneratedPackEmbed:       true,
-		PublicProvenanceWritten:  false,
-		PublicEvidenceOnly:       true,
-		CustodyInputCategories:   []string{"full_pack_metadata", "host_policy_bundle"},
-		EvidenceOutputLabels:     []string{"extractor_build_evidence.summary.json"},
+		SchemaVersion:             lockSchemaVersion,
+		Variant:                   workflowVariantFullPack,
+		PackAssetCount:            len(verified),
+		HostPolicyBundleInjected:  true,
+		AuthRuntimeBundleInjected: true,
+		PackVerificationRequired:  true,
+		GeneratedPackEmbed:        true,
+		PublicProvenanceWritten:   false,
+		PublicEvidenceOnly:        true,
+		CustodyInputCategories:    []string{"full_pack_metadata", "host_policy_bundle", "runtime_bundle"},
+		EvidenceOutputLabels:      []string{"extractor_build_evidence.summary.json"},
 	})
 }
 
@@ -558,6 +586,7 @@ func cleanupWorkflow(opts workflowCleanupOptions) error {
 	files := []string{
 		opts.Paths.PackEmbedPath,
 		opts.Paths.PolicyOutPath,
+		opts.Paths.AuthRuntimeOutPath,
 		opts.Paths.ProvenanceOut,
 		opts.Paths.TempLockPath,
 		opts.Paths.MetadataPath,
@@ -586,7 +615,7 @@ func validateWorkflowVariant(mode string) error {
 }
 
 func validateWorkflowPaths(paths workflowPaths) error {
-	for _, filePath := range []string{paths.MetadataPath, paths.TempLockPath, paths.PackEmbedPath, paths.PolicyOutPath, paths.ProvenanceOut, paths.SummaryOut} {
+	for _, filePath := range []string{paths.MetadataPath, paths.TempLockPath, paths.PackEmbedPath, paths.PolicyOutPath, paths.AuthRuntimeOutPath, paths.ProvenanceOut, paths.SummaryOut} {
 		if strings.TrimSpace(filePath) == "" {
 			return errors.New("workflow output path is invalid")
 		}
@@ -661,6 +690,34 @@ func validatePrivatePolicyForVerifiedAssets(raw []byte, expectedSHA string, veri
 	for _, asset := range verified {
 		if _, err := resolver.ResolveHostPolicy(context.Background(), extractor.HostPolicyRequest{PackIdentity: asset.Identity, Manifest: asset.Manifest}); err != nil {
 			return errors.New("host policy bundle is invalid")
+		}
+	}
+
+	return nil
+}
+
+func validatePrivateAuthRuntimeForVerifiedAssets(raw []byte, expectedSHA string, verified []verifiedAsset) error {
+	bundle, err := extractor.NewPrivateAuthRuntimeBundle(raw, extractor.PrivateAuthRuntimeBundleLoadOptions{ExpectedAuthRuntimePrivateSHA256: expectedSHA})
+	if err != nil {
+		return errors.New("auth runtime bundle is invalid")
+	}
+	if len(verified) != fullPackCount {
+		return errors.New("auth runtime bundle is invalid")
+	}
+	identities := bundle.PackIdentities()
+	if len(identities) != len(verified) {
+		return errors.New("auth runtime bundle is invalid")
+	}
+	bundleIdentities := make(map[extractor.VerifiedPackIdentity]struct{}, len(identities))
+	for _, identity := range identities {
+		if _, ok := bundleIdentities[identity]; ok {
+			return errors.New("auth runtime bundle is invalid")
+		}
+		bundleIdentities[identity] = struct{}{}
+	}
+	for _, asset := range verified {
+		if _, ok := bundleIdentities[asset.Identity]; !ok {
+			return errors.New("auth runtime bundle is invalid")
 		}
 	}
 
@@ -759,6 +816,35 @@ func writePrivatePolicyEmbed(outPath string, raw []byte, expectedSHA string) err
 	return writeFileAtomic(outPath, formatted, 0o600)
 }
 
+func writePrivateAuthRuntimeEmbed(outPath string, raw []byte, expectedSHA string) error {
+	embedSHA, err := privateAuthRuntimeExpectedSHAForEmbed(raw, expectedSHA)
+	if err != nil {
+		return err
+	}
+
+	var builder strings.Builder
+	builder.WriteString("// Code generated by go run ./scripts/extractorpacks prepare-workflow; DO NOT EDIT.\n\n")
+	builder.WriteString("package extractor\n\n")
+	builder.WriteString("func init() {\n")
+	builder.WriteString("\tembeddedPrivateAuthRuntimeBundleJSON = ")
+	builder.WriteString(byteSliceLiteral(raw, "\t"))
+	builder.WriteString("\n")
+	if embedSHA != "" {
+		fmt.Fprintf(&builder, "\tembeddedPrivateAuthRuntimeBundleSHA256 = %q\n", embedSHA)
+	}
+	builder.WriteString("}\n")
+
+	formatted, err := format.Source([]byte(builder.String()))
+	if err != nil {
+		return errors.New("generate auth runtime bundle failed")
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "private_auth_runtime_release_gen.go", formatted, parser.AllErrors); err != nil {
+		return errors.New("generate auth runtime bundle failed")
+	}
+
+	return writeFileAtomic(outPath, formatted, 0o600)
+}
+
 func privatePolicyExpectedSHAForEmbed(raw []byte, expectedSHA string) (string, error) {
 	if strings.TrimSpace(expectedSHA) != "" {
 		return expectedSHA, nil
@@ -774,6 +860,28 @@ func privatePolicyExpectedSHAForEmbed(raw []byte, expectedSHA string) (string, e
 	}
 
 	return envelope.PolicyPrivateSHA256, nil
+}
+
+func privateAuthRuntimeExpectedSHAForEmbed(raw []byte, expectedSHA string) (string, error) {
+	if strings.TrimSpace(expectedSHA) != "" {
+		if _, err := extractor.NewPrivateAuthRuntimeBundle(raw, extractor.PrivateAuthRuntimeBundleLoadOptions{ExpectedAuthRuntimePrivateSHA256: expectedSHA}); err != nil {
+			return "", errors.New("auth runtime bundle is invalid")
+		}
+
+		return expectedSHA, nil
+	}
+	bundle, err := extractor.NewPrivateAuthRuntimeBundle(raw, extractor.PrivateAuthRuntimeBundleLoadOptions{})
+	if err != nil || bundle == nil {
+		return "", errors.New("auth runtime bundle is invalid")
+	}
+	var envelope struct {
+		AuthRuntimePrivateSHA256 string `json:"auth_runtime_private_sha256"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil || envelope.AuthRuntimePrivateSHA256 == "" {
+		return "", errors.New("auth runtime bundle is invalid")
+	}
+
+	return envelope.AuthRuntimePrivateSHA256, nil
 }
 
 func writeWorkflowEvidenceSummary(outPath string, summary workflowEvidenceSummary) error {
