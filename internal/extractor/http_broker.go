@@ -113,15 +113,17 @@ type HTTPFetchResponse struct {
 }
 
 type HTTPBrokerConfig struct {
-	Policy       HTTPBrokerPolicy
-	Transport    http.RoundTripper
-	AuthResolver AuthProfileResolver
+	Policy           HTTPBrokerPolicy
+	Transport        http.RoundTripper
+	AuthResolver     AuthProfileResolver
+	AuthMaterializer AuthMaterializer
 }
 
 type HTTPBroker struct {
-	policy       HTTPBrokerPolicy
-	transport    http.RoundTripper
-	authResolver AuthProfileResolver
+	policy           HTTPBrokerPolicy
+	transport        http.RoundTripper
+	authResolver     AuthProfileResolver
+	authMaterializer AuthMaterializer
 }
 
 func NewHTTPBroker(config HTTPBrokerConfig) *HTTPBroker {
@@ -130,11 +132,16 @@ func NewHTTPBroker(config HTTPBrokerConfig) *HTTPBroker {
 	if transport == nil {
 		transport = defaultSecureHTTPTransport()
 	}
+	materializer := config.AuthMaterializer
+	if materializer == nil {
+		materializer = NewDefaultAuthMaterializer()
+	}
 
 	return &HTTPBroker{
-		policy:       policy,
-		transport:    transport,
-		authResolver: config.AuthResolver,
+		policy:           policy,
+		transport:        transport,
+		authResolver:     config.AuthResolver,
+		authMaterializer: materializer,
 	}
 }
 
@@ -503,40 +510,18 @@ func (b *HTTPBroker) injectAuth(ctx context.Context, httpRequest *http.Request, 
 	if err != nil {
 		return err
 	}
-	if resolved.HeaderName == "" || resolved.HeaderValue == "" {
-		return fmt.Errorf("auth profile %q resolved without a usable secret", request.AuthProfileID)
+	materializer := b.authMaterializer
+	if materializer == nil {
+		materializer = NewDefaultAuthMaterializer()
 	}
-	canonical := http.CanonicalHeaderKey(resolved.HeaderName)
-	if canonical != "Authorization" && canonical != "Cookie" {
-		return fmt.Errorf("auth profile %q resolved unsupported secret header %q", request.AuthProfileID, canonical)
+	material, err := materializer.MaterializeAuth(resolved)
+	if err != nil {
+		return redactedError(fmt.Errorf("auth profile %q resolved unusable auth material: %w", request.AuthProfileID, err), authSecretForms(resolved.HeaderName, resolved.HeaderValue)...)
 	}
-	*knownSecrets = appendNonEmptySecrets(*knownSecrets, authSecretForms(canonical, resolved.HeaderValue)...)
-	httpRequest.Header.Set(canonical, resolved.HeaderValue)
+	*knownSecrets = appendNonEmptySecrets(*knownSecrets, material.SensitiveValues()...)
+	material.ApplyTo(httpRequest.Header)
 
 	return nil
-}
-
-func authSecretForms(headerName string, headerValue string) []string {
-	forms := []string{headerValue}
-	if headerName == "Authorization" {
-		if _, ok := strings.CutPrefix(strings.ToLower(headerValue), "bearer "); ok {
-			forms = append(forms, strings.TrimSpace(headerValue[len("bearer "):]))
-		}
-	}
-	if headerName == "Cookie" {
-		for _, part := range strings.Split(headerValue, ";") {
-			part = strings.TrimSpace(part)
-			if part == "" {
-				continue
-			}
-			forms = append(forms, part)
-			if _, value, ok := strings.Cut(part, "="); ok {
-				forms = append(forms, strings.TrimSpace(value))
-			}
-		}
-	}
-
-	return compactUniqueNonEmpty(forms)
 }
 
 func (b *HTTPBroker) effectiveTimeout(request HTTPFetchRequest) time.Duration {

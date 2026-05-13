@@ -356,6 +356,162 @@ func TestHTTPBrokerAuthProfileInjectionIsHostOnly(t *testing.T) {
 	}
 }
 
+func TestHTTPBrokerAuthInjectionUsesMaterializer(t *testing.T) {
+	const resolverSecret = "resolver-token-value"
+	const materializedSecret = "materialized-token-value"
+	materializer := &recordingAuthMaterializer{material: MaterializedAuthSecret{
+		HeaderName:      "Authorization",
+		Kind:            AuthSecretKindBearer,
+		RedactedDisplay: "safe bearer",
+		headerValue:     "Bearer " + materializedSecret,
+		sensitiveValues: []string{"Bearer " + materializedSecret, materializedSecret, "Bearer " + resolverSecret, resolverSecret},
+	}}
+	broker := NewHTTPBroker(HTTPBrokerConfig{
+		Policy: testHTTPPolicy(),
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if got := req.Header.Values("Authorization"); len(got) != 1 || got[0] != "Bearer "+materializedSecret {
+				t.Fatal("Authorization values did not contain exactly the materialized bearer")
+			}
+			if got := req.Header.Get("Cookie"); got != "" {
+				t.Fatal("Cookie header was not removed before transport")
+			}
+
+			return textResponse(http.StatusOK, "ok"), nil
+		}),
+		AuthResolver: fakeAuthResolver{secret: ResolvedAuthSecret{
+			Kind:        AuthSecretKindBearer,
+			HeaderName:  "Authorization",
+			HeaderValue: "Bearer " + resolverSecret,
+		}},
+		AuthMaterializer: materializer,
+	})
+
+	resp, err := broker.Fetch(context.Background(), HTTPFetchRequest{
+		PackID:        "fixturepack",
+		Manifest:      httpBrokerManifest(),
+		Method:        http.MethodGet,
+		URL:           "https://fixture.invalid/d/abc",
+		AuthProfileID: "default",
+	})
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if materializer.Count() != 1 {
+		t.Fatalf("materializer calls = %d, want 1", materializer.Count())
+	}
+	last := materializer.LastSecret()
+	if last.HeaderValue != "Bearer "+resolverSecret || last.Kind != AuthSecretKindBearer {
+		t.Fatal("materializer did not receive the resolver material")
+	}
+	responseText := resp.FinalURL + string(resp.Body) + resp.Headers.Get("Content-Type")
+	assertNoForbiddenSubstrings(t, responseText, resolverSecret, "Bearer "+resolverSecret, materializedSecret, "Bearer "+materializedSecret)
+}
+
+func TestHTTPBrokerRejectsInvalidMaterializedAuthBeforeTransport(t *testing.T) {
+	tests := []struct {
+		name      string
+		secret    ResolvedAuthSecret
+		forbidden []string
+	}{
+		{
+			name:      "unsupported header",
+			secret:    ResolvedAuthSecret{Kind: AuthSecretKindBearer, HeaderName: "X-Api-Key", HeaderValue: "raw-api-secret"},
+			forbidden: []string{"raw-api-secret"},
+		},
+		{
+			name:      "unsupported kind",
+			secret:    ResolvedAuthSecret{Kind: AuthSecretKind("basic"), HeaderName: "Authorization", HeaderValue: "Basic raw-basic-secret"},
+			forbidden: []string{"raw-basic-secret", "Basic raw-basic-secret"},
+		},
+		{
+			name:      "kind header mismatch",
+			secret:    ResolvedAuthSecret{Kind: AuthSecretKindCookie, HeaderName: "Authorization", HeaderValue: "Bearer raw-mismatch-secret"},
+			forbidden: []string{"raw-mismatch-secret", "Bearer raw-mismatch-secret"},
+		},
+		{
+			name:   "empty value",
+			secret: ResolvedAuthSecret{Kind: AuthSecretKindBearer, HeaderName: "Authorization", HeaderValue: ""},
+		},
+		{
+			name:      "crlf value",
+			secret:    ResolvedAuthSecret{Kind: AuthSecretKindBearer, HeaderName: "Authorization", HeaderValue: "Bearer raw-crlf-secret\r\nX-Bad: bad"},
+			forbidden: []string{"raw-crlf-secret", "Bearer raw-crlf-secret"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := &recordingTransport{}
+			broker := testHTTPBroker(transport, fakeAuthResolver{secret: tt.secret})
+			_, err := broker.Fetch(context.Background(), HTTPFetchRequest{
+				PackID:        "fixturepack",
+				Manifest:      httpBrokerManifest(),
+				Method:        http.MethodGet,
+				URL:           "https://fixture.invalid/d/abc",
+				AuthProfileID: "default",
+			})
+			if err == nil {
+				t.Fatal("Fetch() error = nil, want error")
+			}
+			if transport.Count() != 0 {
+				t.Fatalf("transport invoked %d times, want 0", transport.Count())
+			}
+			assertNoForbiddenSubstrings(t, err.Error(), tt.forbidden...)
+		})
+	}
+}
+
+func TestHTTPBrokerInjectAuthOverwritesAndRemovesStaleAuthHeaders(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		secret        ResolvedAuthSecret
+		wantHeader    string
+		wantValue     string
+		removedHeader string
+	}{
+		{
+			name:          "bearer",
+			secret:        ResolvedAuthSecret{Kind: AuthSecretKindBearer, HeaderName: "Authorization", HeaderValue: "Bearer fresh-token"},
+			wantHeader:    "Authorization",
+			wantValue:     "Bearer fresh-token",
+			removedHeader: "Cookie",
+		},
+		{
+			name:          "cookie",
+			secret:        ResolvedAuthSecret{Kind: AuthSecretKindCookie, HeaderName: "Cookie", HeaderValue: "sid=fresh-cookie"},
+			wantHeader:    "Cookie",
+			wantValue:     "sid=fresh-cookie",
+			removedHeader: "Authorization",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			broker := testHTTPBroker(nil, fakeAuthResolver{secret: tt.secret})
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://fixture.invalid/d/abc", nil)
+			if err != nil {
+				t.Fatalf("NewRequestWithContext() error = %v", err)
+			}
+			req.Header.Add("Authorization", "Bearer stale-token")
+			req.Header.Add("Cookie", "sid=stale-cookie")
+			req.Header.Set("Accept", "application/json")
+			knownSecrets := make([]string, 0)
+
+			if err := broker.injectAuth(context.Background(), req, HTTPFetchRequest{PackID: "fixturepack", AuthProfileID: "default"}, req.URL.String(), &knownSecrets); err != nil {
+				t.Fatalf("injectAuth() error = %v", err)
+			}
+			if got := req.Header.Values(tt.wantHeader); len(got) != 1 || got[0] != tt.wantValue {
+				t.Fatalf("%s values did not contain exactly the materialized auth value", tt.wantHeader)
+			}
+			if got := req.Header.Get(tt.removedHeader); got != "" {
+				t.Fatalf("%s header was not removed", tt.removedHeader)
+			}
+			if got := req.Header.Get("Accept"); got != "application/json" {
+				t.Fatalf("Accept = %q, want preserved", got)
+			}
+			assertStringSetContains(t, knownSecrets, tt.wantValue)
+		})
+	}
+}
+
 func TestHTTPBrokerRejectsAuthenticatedBodySecretReflection(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
@@ -848,6 +1004,14 @@ type recordingAuthResolver struct {
 	calls  int
 }
 
+type recordingAuthMaterializer struct {
+	mu       sync.Mutex
+	material MaterializedAuthSecret
+	err      error
+	secret   ResolvedAuthSecret
+	calls    int
+}
+
 func (r *recordingAuthResolver) ResolveAuthProfile(context.Context, string, AuthProfileID, string) (ResolvedAuthSecret, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -864,6 +1028,32 @@ func (r *recordingAuthResolver) Count() int {
 	defer r.mu.Unlock()
 
 	return r.calls
+}
+
+func (m *recordingAuthMaterializer) MaterializeAuth(secret ResolvedAuthSecret) (MaterializedAuthSecret, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	m.secret = secret
+	if m.err != nil {
+		return MaterializedAuthSecret{}, m.err
+	}
+
+	return m.material, nil
+}
+
+func (m *recordingAuthMaterializer) Count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.calls
+}
+
+func (m *recordingAuthMaterializer) LastSecret() ResolvedAuthSecret {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.secret
 }
 
 type fakeIPResolver struct {
