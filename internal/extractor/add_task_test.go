@@ -97,6 +97,52 @@ func TestAddTaskDispatcherRunsVerifiedFixturePack(t *testing.T) {
 	if item.AuthProfileRef != "fixturepack-default" || item.HeaderProfileRef != "fixturepack-download" {
 		t.Fatalf("item refs = auth:%q header:%q", item.AuthProfileRef, item.HeaderProfileRef)
 	}
+	if item.PackIdentity.PackID != resolution.PackID || item.PackIdentity.PackVersion != item.Manifest.PackVersion {
+		t.Fatalf("item identity/manifest not propagated: identity=%#v manifest=%#v", item.PackIdentity, item.Manifest)
+	}
+	if item.Manifest.PackID != resolution.PackID || len(item.Manifest.Domains) == 0 || item.Manifest.Domains[0].Host != "fixture.invalid" {
+		t.Fatalf("item manifest = %#v, want verified pack manifest", item.Manifest)
+	}
+}
+
+func TestAddTaskDispatcherAuthRuntimeRequestsForSourceUsesVerifiedMatches(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(86)
+	pack := signedTestPack(t, privateKey, []byte("auth planning payload"), func(values map[string]any) {
+		values["pack_id"] = "xpk-alpha001"
+		values["capabilities"] = []string{string(CapabilityParseWASM), string(CapabilityHTTPFetch), string(CapabilityAuthProfile)}
+	})
+	registry, rejections := NewRegistry([]EmbeddedPack{pack}, policyWithKeys(publicKey))
+	if len(rejections) != 0 {
+		t.Fatalf("NewRegistry() rejections = %#v", rejections)
+	}
+	dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{Registry: registry})
+
+	requests, err := dispatcher.AuthRuntimeRequestsForSource(context.Background(), "https://fixture.invalid/d/abc")
+	if err != nil {
+		t.Fatalf("AuthRuntimeRequestsForSource() error = %v", err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("AuthRuntimeRequestsForSource() returned %d requests, want 1", len(requests))
+	}
+	verified := registry.Packs()[0]
+	request := requests[0]
+	if request.PackIdentity != verified.Identity {
+		t.Fatalf("request identity = %#v, want %#v", request.PackIdentity, verified.Identity)
+	}
+	if request.Manifest.PackID != verified.Manifest.PackID || request.Manifest.PackVersion != verified.Manifest.PackVersion || !ManifestHasCapability(request.Manifest, CapabilityAuthProfile) {
+		t.Fatalf("request manifest = %#v, want verified auth-capable manifest", request.Manifest)
+	}
+	if request.SourceURL != "https://fixture.invalid/d/abc" || request.TargetURL != "" || request.ProfileRef != "" {
+		t.Fatalf("request source/target/profile = %#v", request)
+	}
+
+	noMatch, err := dispatcher.AuthRuntimeRequestsForSource(context.Background(), "https://example.test/file.bin")
+	if err != nil {
+		t.Fatalf("AuthRuntimeRequestsForSource() no-match error = %v", err)
+	}
+	if len(noMatch) != 0 {
+		t.Fatalf("AuthRuntimeRequestsForSource() no-match returned %#v", noMatch)
+	}
 }
 
 func TestAddTaskDispatcherRejectsInvalidExtractedItems(t *testing.T) {
@@ -163,6 +209,9 @@ func TestAddTaskDispatcherMatchedEmptyExtractOutputReturnsGenericFailure(t *test
 	if !strings.Contains(err.Error(), "could not resolve this link") {
 		t.Fatalf("Resolve() error = %q, want generic resolver failure", err.Error())
 	}
+	if !IsGenericAuthResolutionError(err) {
+		t.Fatalf("IsGenericAuthResolutionError(%q) = false, want true", err.Error())
+	}
 }
 
 func TestAddTaskDispatcherInvalidNonEmptyItemRemainsHardFailure(t *testing.T) {
@@ -179,6 +228,23 @@ func TestAddTaskDispatcherInvalidNonEmptyItemRemainsHardFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid add item") || !strings.Contains(err.Error(), "item 0 url") {
 		t.Fatalf("Resolve() error = %q, want hard invalid-item failure", err.Error())
+	}
+	if IsGenericAuthResolutionError(err) {
+		t.Fatalf("IsGenericAuthResolutionError(%q) = true, want false", err.Error())
+	}
+}
+
+func TestIsGenericAuthResolutionErrorRejectsHardFailures(t *testing.T) {
+	for _, err := range []error{
+		errors.New("extractor pack \"fixturepack\" returned invalid add item: item 0 url: item url must use http or https"),
+		errors.New("item 0 filename: filename must not contain path separators"),
+		errors.New("embedded pack signature verification failed"),
+		errors.New("runner failed"),
+		nil,
+	} {
+		if IsGenericAuthResolutionError(err) {
+			t.Fatalf("IsGenericAuthResolutionError(%v) = true, want false", err)
+		}
 	}
 }
 
@@ -263,6 +329,48 @@ func TestAddTaskAria2HeaderExpansionUsesHostResolversOnly(t *testing.T) {
 	if strings.Contains(err.Error(), "raw-token-123") {
 		t.Fatalf("BuildAria2Headers() leaked secret: %q", err.Error())
 	}
+}
+
+func TestAddTaskAria2HeaderExpansionUsesIdentityAwareMaterializer(t *testing.T) {
+	identity := privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1")
+	manifest := hostAuthRuntimeManifest(identity)
+	store := newTempAuthProfileStore(t)
+	setHostAuthProfile(t, store, identity.PackID, "apr-alpha001", AuthSecretKindBearer, "identity-aware-token", []DomainRule{{Host: "fixture.invalid"}}, nil)
+	runtime := NewHostAuthRuntime(HostAuthRuntimeConfig{
+		Bundle: newHostAuthRuntimeBundle(t, identity, nil, nil),
+		Store:  store,
+	})
+	dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{AuthResolver: runtime})
+
+	headers, err := dispatcher.BuildAria2Headers(context.Background(), ResolvedAddItem{
+		SourceURL:      "https://fixture.invalid/source",
+		PackID:         identity.PackID,
+		PackIdentity:   identity,
+		Manifest:       manifest,
+		URL:            "https://fixture.invalid/file.bin?token=query-secret",
+		AuthProfileRef: "apr-alpha001",
+	})
+	if err != nil {
+		t.Fatalf("BuildAria2Headers() error = %v", err)
+	}
+	if strings.Join(headers, "\n") != "Authorization: Bearer identity-aware-token" {
+		t.Fatalf("headers = %#v, want identity-aware bearer header", headers)
+	}
+
+	badIdentity := identity
+	badIdentity.PackVersion = "opaque-2"
+	_, err = dispatcher.BuildAria2Headers(context.Background(), ResolvedAddItem{
+		SourceURL:      "https://fixture.invalid/source",
+		PackID:         identity.PackID,
+		PackIdentity:   badIdentity,
+		Manifest:       manifest,
+		URL:            "https://fixture.invalid/file.bin?token=query-secret",
+		AuthProfileRef: "apr-alpha001",
+	})
+	if err == nil {
+		t.Fatal("BuildAria2Headers() mismatched identity error = nil, want fail-closed")
+	}
+	assertNoForbiddenSubstrings(t, err.Error(), "identity-aware-token", "query-secret", "Authorization")
 }
 
 func newFixtureAddTaskDispatcher(t *testing.T, payload []byte, mutate func(map[string]any)) *AddTaskDispatcher {

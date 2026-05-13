@@ -331,6 +331,9 @@ func TestConfigureEmbeddedExtractorDispatcherWiresHostAuthRuntimeState(t *testin
 	if captured.AuthResolver != runtime {
 		t.Fatalf("captured AuthResolver = %#v, want App runtime %#v", captured.AuthResolver, runtime)
 	}
+	if captured.AuthRuntimeBundle != bundle {
+		t.Fatalf("captured AuthRuntimeBundle = %#v, want loaded bundle %#v", captured.AuthRuntimeBundle, bundle)
+	}
 	if captured.HostPolicyResolver != policyResolver {
 		t.Fatalf("captured HostPolicyResolver = %#v, want shared resolver", captured.HostPolicyResolver)
 	}
