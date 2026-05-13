@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/events"
+	"goaria-v3/internal/extractor"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/tray"
 	"goaria-v3/internal/update"
@@ -28,6 +29,10 @@ type App struct {
 	trayState tray.TrayState
 
 	extractorDispatcher extractorAddTaskDispatcher
+	authMu              sync.RWMutex
+	authProfileStore    extractor.AuthProfileStore
+	hostAuthRuntime     *extractor.HostAuthRuntime
+	authWebViewDriver   extractor.AuthWebViewDriver
 
 	windowMu       sync.Mutex // 保护窗口操作
 	lastToggleTime time.Time  // 上次切换窗口时间，用于全局防抖
@@ -58,6 +63,8 @@ func (a *App) SetWindow(w *application.WebviewWindow) {
 	a.window = w
 	if w != nil {
 		monitor.State.SetWindowExists(true)
+	} else {
+		monitor.State.SetWindowExists(false)
 	}
 }
 
@@ -68,4 +75,42 @@ func (a *App) SetSystemTray(st *application.SystemTray) {
 
 func (a *App) setExtractorDispatcher(dispatcher extractorAddTaskDispatcher) {
 	a.extractorDispatcher = dispatcher
+}
+
+func (a *App) setHostAuthState(store extractor.AuthProfileStore, runtime *extractor.HostAuthRuntime, driver extractor.AuthWebViewDriver) {
+	if a == nil {
+		return
+	}
+	a.authMu.Lock()
+	defer a.authMu.Unlock()
+	a.authProfileStore = store
+	a.hostAuthRuntime = runtime
+	a.authWebViewDriver = driver
+}
+
+func (a *App) authProfileStoreForTest() extractor.AuthProfileStore {
+	if a == nil {
+		return nil
+	}
+	a.authMu.RLock()
+	defer a.authMu.RUnlock()
+	return a.authProfileStore
+}
+
+func (a *App) hostAuthRuntimeForTest() *extractor.HostAuthRuntime {
+	if a == nil {
+		return nil
+	}
+	a.authMu.RLock()
+	defer a.authMu.RUnlock()
+	return a.hostAuthRuntime
+}
+
+func (a *App) authWebViewDriverForTest() extractor.AuthWebViewDriver {
+	if a == nil {
+		return nil
+	}
+	a.authMu.RLock()
+	defer a.authMu.RUnlock()
+	return a.authWebViewDriver
 }
