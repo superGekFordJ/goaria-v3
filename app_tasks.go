@@ -68,8 +68,8 @@ type addTaskAuthBatchState struct {
 	refreshGuard *extractor.HostAuthRuntimeBatchGuard
 
 	mu        sync.Mutex
-	ensured   map[string]struct{}
 	refreshed map[string]struct{}
+	stale     map[string]struct{}
 }
 
 type addTaskAuthSourcePlan struct {
@@ -490,26 +490,9 @@ func (a *App) buildCandidateHeaders(ctx context.Context, candidate addTaskCandid
 func newAddTaskAuthBatchState() *addTaskAuthBatchState {
 	return &addTaskAuthBatchState{
 		refreshGuard: extractor.NewHostAuthRuntimeBatchGuard(),
-		ensured:      make(map[string]struct{}),
 		refreshed:    make(map[string]struct{}),
+		stale:        make(map[string]struct{}),
 	}
-}
-
-func (s *addTaskAuthBatchState) markEnsured(key string) bool {
-	if s == nil {
-		return true
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.ensured == nil {
-		s.ensured = make(map[string]struct{})
-	}
-	if _, ok := s.ensured[key]; ok {
-		return false
-	}
-	s.ensured[key] = struct{}{}
-
-	return true
 }
 
 func (s *addTaskAuthBatchState) markRefreshed(key string) bool {
@@ -525,6 +508,23 @@ func (s *addTaskAuthBatchState) markRefreshed(key string) bool {
 		return false
 	}
 	s.refreshed[key] = struct{}{}
+
+	return true
+}
+
+func (s *addTaskAuthBatchState) markStaleRefresh(key string) bool {
+	if s == nil {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stale == nil {
+		s.stale = make(map[string]struct{})
+	}
+	if _, ok := s.stale[key]; ok {
+		return false
+	}
+	s.stale[key] = struct{}{}
 
 	return true
 }
@@ -565,11 +565,19 @@ func (a *App) preflightSourceAuth(ctx context.Context, normalizedURL string, run
 		if !preflight.Refreshable {
 			return nil, addTaskAuthUnavailableError()
 		}
-		if authState != nil && !authState.markEnsured(key) {
+		if authState != nil && !authState.markStaleRefresh(key) {
 			return nil, addTaskAuthUnavailableError()
 		}
-		ensured, err := runtime.Ensure(ctx, request)
-		if err != nil || !ensured.Available {
+		var guard *extractor.HostAuthRuntimeBatchGuard
+		if authState != nil {
+			guard = authState.refreshGuard
+		}
+		refreshed, err := runtime.RefreshOnRecoverablePreflightFailure(ctx, request, guard)
+		if err != nil || !refreshed.Available || !addTaskAuthProfilesAvailable(refreshed) {
+			return nil, addTaskAuthUnavailableError()
+		}
+		postRefresh, err := runtime.Preflight(ctx, request)
+		if err != nil || !postRefresh.Available || !addTaskAuthProfilesAvailable(postRefresh) {
 			return nil, addTaskAuthUnavailableError()
 		}
 	}
@@ -625,6 +633,9 @@ func (a *App) preflightCandidateAuth(ctx context.Context, candidate addTaskCandi
 	if candidate.item.PackIdentity.PackID == "" || candidate.item.Manifest.PackID == "" {
 		return addTaskAuthUnavailableError()
 	}
+	if err := extractor.ValidateResolvedAddItemAuthPolicy(candidate.item); err != nil {
+		return addTaskAuthUnavailableError()
+	}
 
 	request := extractor.HostAuthRuntimeRequest{
 		PackIdentity: candidate.item.PackIdentity,
@@ -646,16 +657,20 @@ func (a *App) preflightCandidateAuth(ctx context.Context, candidate addTaskCandi
 	if !preflight.Refreshable {
 		return addTaskAuthUnavailableError()
 	}
-	key := addTaskAuthRuntimeKey(request)
-	shouldEnsure := authState == nil || authState.markEnsured(key)
-	if shouldEnsure {
-		ensured, err := runtime.Ensure(ctx, request)
-		if err != nil || !ensured.Available {
-			return addTaskAuthUnavailableError()
-		}
+	key := addTaskAuthRuntimePreflightKey(request)
+	if authState != nil && !authState.markStaleRefresh(key) {
+		return addTaskAuthUnavailableError()
+	}
+	var guard *extractor.HostAuthRuntimeBatchGuard
+	if authState != nil {
+		guard = authState.refreshGuard
+	}
+	refreshed, err := runtime.RefreshOnRecoverablePreflightFailure(ctx, request, guard)
+	if err != nil || !refreshed.Available || !addTaskAuthProfilesAvailable(refreshed) {
+		return addTaskAuthUnavailableError()
 	}
 	ensured, err := runtime.Preflight(ctx, request)
-	if err != nil || !ensured.Available {
+	if err != nil || !ensured.Available || !addTaskAuthProfilesAvailable(ensured) {
 		return addTaskAuthUnavailableError()
 	}
 
@@ -692,6 +707,20 @@ func addTaskAuthRuntimeKey(request extractor.HostAuthRuntimeRequest) string {
 	}
 
 	return strings.Join(parts, "\x00")
+}
+
+func addTaskAuthRuntimePreflightKey(request extractor.HostAuthRuntimeRequest) string {
+	return addTaskAuthRuntimeKey(request) + "\x00" + authTaskHashString(request.SourceURL) + "\x00" + authTaskHashString(request.TargetURL)
+}
+
+func authTaskHashString(value string) string {
+	var hash uint64 = 14695981039346656037
+	for i := 0; i < len(value); i++ {
+		hash ^= uint64(value[i])
+		hash *= 1099511628211
+	}
+
+	return strconv.FormatUint(hash, 16)
 }
 
 func addTaskAuthUnavailableError() error {

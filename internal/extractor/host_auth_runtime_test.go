@@ -109,9 +109,34 @@ func TestHostAuthRuntimePreflightStatusesAvailableMissingExpiredUnavailable(t *t
 	if !statuses["apr-missing001"].Refreshable || !statuses["apr-expired001"].Refreshable {
 		t.Fatalf("missing/expired profiles should be refreshable: %#v", result.ProfileStatuses)
 	}
-	if statuses["apr-kind001"].Refreshable || statuses["apr-domain001"].Refreshable {
-		t.Fatalf("unavailable profiles should not be refreshable: %#v", result.ProfileStatuses)
+	if !statuses["apr-kind001"].Refreshable || !statuses["apr-domain001"].Refreshable {
+		t.Fatalf("recoverable stale unavailable profiles should be refreshable: %#v", result.ProfileStatuses)
 	}
+}
+
+func TestHostAuthRuntimeStoredProfileIdentityMismatchIsInvisible(t *testing.T) {
+	identity := privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1")
+	bundle := newHostAuthRuntimeBundle(t, identity, []hostAuthRuntimeProfileFixture{{ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer}}, nil)
+	store := newTempAuthProfileStore(t)
+	setHostAuthProfile(t, store, "xpk-alpha002", "apr-alpha001", AuthSecretKindBearer, "wrong-pack-token", []DomainRule{{Host: "fixture.invalid"}}, nil)
+	setHostAuthProfile(t, store, identity.PackID, "apr-alpha002", AuthSecretKindBearer, "wrong-profile-token", []DomainRule{{Host: "fixture.invalid"}}, nil)
+	runtime := NewHostAuthRuntime(HostAuthRuntimeConfig{Bundle: bundle, Store: store})
+	request := hostAuthRuntimeRequest(identity)
+	request.ProfileRef = "apr-alpha001"
+
+	result, err := runtime.Preflight(context.Background(), request)
+	if err != nil {
+		t.Fatalf("store_identity_mismatch: Preflight() error = %v", err)
+	}
+	if !result.Matched || result.Available || len(result.ProfileStatuses) != 1 || result.ProfileStatuses[0].Status != HostAuthRuntimeProfileMissing {
+		t.Fatalf("store_identity_mismatch: result = %#v", result)
+	}
+	_, err = runtime.MaterializeAuthProfile(context.Background(), request)
+	if err == nil {
+		t.Fatal("store_identity_mismatch: MaterializeAuthProfile() error = nil")
+	}
+	formatted := fmt.Sprintf("%#v %v", result, err)
+	assertNoForbiddenSubstrings(t, formatted, "wrong-pack-token", "wrong-profile-token")
 }
 
 func TestHostAuthRuntimeEnforcesStoreBindingAndMaterializationRefs(t *testing.T) {
@@ -257,6 +282,134 @@ func TestHostAuthRuntimeEnsureProvisionsViaWebViewCoordinator(t *testing.T) {
 	if resolved.HeaderValue != "Bearer captured-runtime-token" {
 		t.Fatalf("resolved HeaderValue = %q, want captured token", resolved.HeaderValue)
 	}
+}
+
+func TestHostAuthRuntimeRecoverableUnavailableClearsBeforeProvision(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		kind       AuthSecretKind
+		secret     string
+		domains    []DomainRule
+		wantStatus HostAuthRuntimeProfileStatus
+	}{
+		{
+			name:       "wrong kind",
+			kind:       AuthSecretKindCookie,
+			secret:     "sid=stale-kind-secret",
+			domains:    []DomainRule{{Host: "fixture.invalid"}},
+			wantStatus: HostAuthRuntimeProfileUnavailable,
+		},
+		{
+			name:       "domain mismatch",
+			kind:       AuthSecretKindBearer,
+			secret:     "stale-domain-secret",
+			domains:    []DomainRule{{Host: "api.fixture.invalid"}},
+			wantStatus: HostAuthRuntimeProfileUnavailable,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			identity := privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1")
+			bundle := newHostAuthRuntimeBundle(t, identity, []hostAuthRuntimeProfileFixture{{ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer}}, nil)
+			store := newTempAuthProfileStore(t)
+			setHostAuthProfile(t, store, identity.PackID, "apr-alpha001", tt.kind, tt.secret, tt.domains, nil)
+			driver := newHostAuthRecordingDriver(AuthWebViewToken{Kind: AuthSecretKindBearer, Secret: "fresh-recoverable-secret", RedactedDisplay: "fresh bearer"})
+			runtime := NewHostAuthRuntime(HostAuthRuntimeConfig{
+				Bundle:      bundle,
+				Store:       store,
+				Coordinator: NewWebViewAuthCoordinator(store, driver),
+			})
+			request := hostAuthRuntimeRequest(identity)
+			request.ProfileRef = "apr-alpha001"
+
+			preflight, err := runtime.Preflight(context.Background(), request)
+			if err != nil {
+				t.Fatalf("Preflight() error = %v", err)
+			}
+			if preflight.Available || !preflight.Refreshable || len(preflight.ProfileStatuses) != 1 || preflight.ProfileStatuses[0].Status != tt.wantStatus || !preflight.ProfileStatuses[0].Refreshable {
+				t.Fatalf("Preflight() = %#v, want refreshable stale unavailable", preflight)
+			}
+
+			result, err := runtime.RefreshOnRecoverablePreflightFailure(context.Background(), request, NewHostAuthRuntimeBatchGuard())
+			if err != nil {
+				t.Fatalf("RefreshOnRecoverablePreflightFailure() error = %v", err)
+			}
+			if !result.Provisioned || !result.Available || driver.OpenCount() != 1 {
+				t.Fatalf("refresh result=%#v opens=%d, want single provisioned refresh", result, driver.OpenCount())
+			}
+			post, err := runtime.Preflight(context.Background(), request)
+			if err != nil || !post.Available {
+				t.Fatalf("post Preflight() = %#v err=%v, want available", post, err)
+			}
+			material, err := runtime.MaterializeAuthProfile(context.Background(), request)
+			if err != nil {
+				t.Fatalf("MaterializeAuthProfile() error = %v", err)
+			}
+			if material.Kind != AuthSecretKindBearer || material.HeaderName != "Authorization" || material.RedactedDisplay == "" {
+				t.Fatalf("materialized public-safe shape = %#v", material)
+			}
+			resolved, err := store.ResolveAuthProfile(context.Background(), identity.PackID, "apr-alpha001", request.TargetURL)
+			if err != nil {
+				t.Fatalf("ResolveAuthProfile() after refresh error = %v", err)
+			}
+			if resolved.Kind != AuthSecretKindBearer || resolved.HeaderValue != "Bearer fresh-recoverable-secret" {
+				t.Fatalf("resolved = %#v, want fresh bearer", resolved)
+			}
+			formatted := fmt.Sprintf("%#v %#v %#v", preflight, result, material)
+			assertNoForbiddenSubstrings(t, formatted, tt.secret, "fresh-recoverable-secret", "Bearer fresh-recoverable-secret")
+		})
+	}
+}
+
+func TestHostAuthRuntimeAliasProvisioningPolicyDeniedBeforeDriverOpenClassifiesBoundary(t *testing.T) {
+	identity := privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1")
+	manifest := hostAuthRuntimeAliasManifest(identity)
+	bundle := newHostAuthRuntimeBundle(t, identity, []hostAuthRuntimeProfileFixture{{ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://api.alpha.test/login"}}, nil)
+	store := newTempAuthProfileStore(t)
+	driver := newHostAuthRecordingDriver(AuthWebViewToken{Kind: AuthSecretKindBearer, Secret: "must-not-store"})
+	resolver := &hostAuthRuntimePolicyResolver{policy: hostAuthRuntimeAliasPolicy(identity, func(policy *ResolvedHostPolicy) {
+		policy.AuthProfiles = []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "files.alpha.test"}}}}
+	})}
+	runtime := NewHostAuthRuntime(HostAuthRuntimeConfig{
+		Bundle:             bundle,
+		Store:              store,
+		Coordinator:        NewWebViewAuthCoordinator(store, driver),
+		HostPolicyResolver: resolver,
+	})
+	request := HostAuthRuntimeRequest{
+		PackIdentity: identity,
+		Manifest:     manifest,
+		SourceURL:    "https://share.alpha.test/source",
+		TargetURL:    "https://api.alpha.test/files/fixture-item",
+		ProfileRef:   "apr-alpha001",
+	}
+
+	preflight, err := runtime.Preflight(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Preflight() error = %v", err)
+	}
+	if preflight.Available || preflight.Refreshable || len(preflight.ProfileStatuses) != 1 || preflight.ProfileStatuses[0].Refreshable {
+		t.Fatalf("Preflight() = %#v, want policy-denied non-refreshable unavailable", preflight)
+	}
+	if driver.OpenCount() != 0 {
+		t.Fatalf("driver opened %d sessions during preflight, want 0", driver.OpenCount())
+	}
+
+	result, err := runtime.Provision(context.Background(), request)
+	if err == nil {
+		t.Fatalf("Provision() error = nil, result=%#v", result)
+	}
+	if result.Message != hostAuthRuntimeProvisionUnavailableMessage || result.Available || result.Provisioned {
+		t.Fatalf("Provision() = %#v, want provisioning unavailable fail closed", result)
+	}
+	if resolver.calls == 0 {
+		t.Fatal("resolver calls = 0, want alias policy gate reached")
+	}
+	if driver.OpenCount() != 0 {
+		t.Fatalf("driver opened %d sessions, want policy deny before driver", driver.OpenCount())
+	}
+	assertNoStoredAuthProfile(t, store, identity.PackID, "apr-alpha001")
+	formatted := fmt.Sprintf("%#v %v", result, err)
+	assertNoForbiddenSubstrings(t, formatted, "must-not-store", "https://api.alpha.test/login", "Authorization", "Bearer", "Cookie")
 }
 
 func TestHostAuthRuntimeProvisionCancelTimeoutOrUnavailableIsGeneric(t *testing.T) {
@@ -539,6 +692,68 @@ func hostAuthRuntimeManifest(identity VerifiedPackIdentity) Manifest {
 			TimeoutMillis: 60000,
 		},
 	}
+}
+
+func hostAuthRuntimeAliasManifest(identity VerifiedPackIdentity) Manifest {
+	return Manifest{
+		PackID:           identity.PackID,
+		PackVersion:      identity.PackVersion,
+		Capabilities:     []Capability{CapabilityHTTPFetch, CapabilityAuthProfile},
+		DomainPolicyRefs: []string{"dpr-alpha001"},
+		BrokerPolicyRefs: []string{"bpr-alpha001"},
+		ResourceLimits: ResourceLimits{
+			TimeoutMillis:    60000,
+			MaxMemoryPages:   64,
+			MaxHostCalls:     16,
+			MaxResponseBytes: 1 << 20,
+			MaxOutputItems:   16,
+			MaxOutputBytes:   1 << 16,
+		},
+		PayloadSHA256: identity.PayloadSHA256,
+	}
+}
+
+func hostAuthRuntimeAliasPolicy(identity VerifiedPackIdentity, mutate func(*ResolvedHostPolicy)) ResolvedHostPolicy {
+	policy := ResolvedHostPolicy{
+		PolicyID:            "pol-alpha001",
+		PolicyVersion:       "2026.05.15-alpha",
+		PolicySHA256:        strings.Repeat("c", 64),
+		PackIdentity:        identity,
+		DomainPolicyRefs:    []string{"dpr-alpha001"},
+		BrokerPolicyRefs:    []string{"bpr-alpha001"},
+		AllowedCapabilities: []Capability{CapabilityHTTPFetch, CapabilityAuthProfile},
+		IngressDomains:      []DomainRule{{Host: "share.alpha.test"}},
+		BrokerDomains:       []DomainRule{{Host: "api.alpha.test"}},
+		OutputDomains:       []HostPolicyOutputRule{{Host: "api.alpha.test", PathPrefixes: []string{"/"}}},
+		AuthProfiles:        []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "api.alpha.test"}}}},
+		BrokerEndpoints: []HostPolicyBrokerEndpoint{{
+			BrokerPolicyRef: "bpr-alpha001",
+			EndpointRef:     "epr-alpha001",
+			URLTemplate:     "https://api.alpha.test/resource/{id}",
+			Methods:         []string{"GET"},
+			AuthProfileRefs: []string{"apr-alpha001"},
+		}},
+	}
+	if mutate != nil {
+		mutate(&policy)
+	}
+
+	return policy
+}
+
+type hostAuthRuntimePolicyResolver struct {
+	policy ResolvedHostPolicy
+	err    error
+	calls  int
+}
+
+func (r *hostAuthRuntimePolicyResolver) ResolveHostPolicy(context.Context, HostPolicyRequest) (ResolvedHostPolicy, error) {
+	r.calls++
+	if r.err != nil {
+		return ResolvedHostPolicy{}, r.err
+	}
+
+	return cloneResolvedHostPolicy(r.policy), nil
 }
 
 func setHostAuthProfile(t *testing.T, store AuthProfileStore, packID string, profileID AuthProfileID, kind AuthSecretKind, secret string, domains []DomainRule, expiresAt *time.Time) {

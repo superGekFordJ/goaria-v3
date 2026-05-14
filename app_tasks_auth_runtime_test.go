@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"goaria-v3/internal/extractor"
 )
@@ -28,6 +29,7 @@ type authRuntimeTaskDriver struct {
 	mu       sync.Mutex
 	events   *authRuntimeTaskEventLog
 	openErr  error
+	status   extractor.WebViewAuthStatus
 	tokens   []extractor.AuthWebViewToken
 	requests []extractor.WebViewAuthRequest
 }
@@ -77,6 +79,58 @@ func TestAddUri_AuthRuntimePreflightsSourceBeforeExtractorResolve(t *testing.T) 
 	}
 }
 
+func TestAddUri_AuthRuntimeSourceMissingExpiredOpenWebViewBeforeResolve(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		seed func(t *testing.T, store extractor.AuthProfileStore, packID string, targetURL string)
+	}{
+		{name: "missing profile"},
+		{name: "expired profile", seed: func(t *testing.T, store extractor.AuthProfileStore, packID string, targetURL string) {
+			past := time.Now().Add(-time.Hour)
+			setAuthRuntimeTaskProfileWithOptions(t, store, packID, extractor.AuthSecretKindBearer, "expired-source-token", []extractor.DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}}, &past)
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			bundle := syntheticRootPrivateAuthRuntimeBundle(t)
+			identity := authRuntimeTaskIdentity(t, bundle)
+			manifest := authRuntimeTaskManifest(identity)
+			sourceURL := "https://fixture.invalid/d/source-refresh-" + strings.ReplaceAll(tt.name, " ", "-")
+			targetURL := "https://fixture.invalid/file-source-refresh.bin"
+			events := &authRuntimeTaskEventLog{}
+			dispatcher := &authRuntimeTaskDispatcher{
+				events: events,
+				plans: map[string][]extractor.HostAuthRuntimeRequest{
+					sourceURL: {authRuntimeTaskSourceRequest(identity, manifest, sourceURL)},
+				},
+				resolutions: map[string][]extractor.AddTaskResolution{
+					sourceURL: {authRuntimeTaskResolution(sourceURL, targetURL, identity, manifest, true)},
+				},
+			}
+			driver := &authRuntimeTaskDriver{events: events}
+			app, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+			if tt.seed != nil {
+				tt.seed(t, store, identity.PackID, targetURL)
+			}
+
+			result := app.AddUri(sourceURL)
+
+			if result != "success" {
+				t.Fatalf("AddUri() = %q, want success", result)
+			}
+			if got := recorder.addURIsSnapshot(); !reflect.DeepEqual(got, []string{targetURL}) {
+				t.Fatalf("add URIs = %#v, want %#v", got, []string{targetURL})
+			}
+			if driver.openCount() != 1 {
+				t.Fatalf("auth sessions = %d, want one source preflight refresh", driver.openCount())
+			}
+			assertAuthRuntimeTaskEventPrefix(t, events.snapshot(), []string{"plan:" + sourceURL, "auth:apr-alpha001", "resolve:" + sourceURL})
+			if _, err := store.ResolveAuthProfile(context.Background(), identity.PackID, "apr-alpha001", targetURL); err != nil {
+				t.Fatalf("ResolveAuthProfile() after source refresh error = %v", err)
+			}
+		})
+	}
+}
+
 func TestAddUri_AuthRuntimeTargetPreflightBeforeHeaders(t *testing.T) {
 	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
 	identity := authRuntimeTaskIdentity(t, bundle)
@@ -103,6 +157,59 @@ func TestAddUri_AuthRuntimeTargetPreflightBeforeHeaders(t *testing.T) {
 	}
 	if got := events.snapshot(); !reflect.DeepEqual(got[:4], []string{"plan:" + sourceURL, "resolve:" + sourceURL, "auth:apr-alpha001", "build:" + targetURL}) {
 		t.Fatalf("event order = %#v, want target auth before headers", got)
+	}
+}
+
+func TestAddUri_AuthRuntimeTargetStaleUnavailableClearsOpensWebViewAndBuildsHeaders(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		seed func(t *testing.T, store extractor.AuthProfileStore, packID string)
+	}{
+		{name: "target domain mismatch", seed: func(t *testing.T, store extractor.AuthProfileStore, packID string) {
+			setAuthRuntimeTaskProfileWithOptions(t, store, packID, extractor.AuthSecretKindBearer, "target-domain-token", []extractor.DomainRule{{Host: "other.fixture.invalid"}}, nil)
+		}},
+		{name: "target kind mismatch", seed: func(t *testing.T, store extractor.AuthProfileStore, packID string) {
+			setAuthRuntimeTaskProfileWithOptions(t, store, packID, extractor.AuthSecretKindCookie, "sid=target-kind-token", []extractor.DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}}, nil)
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			bundle := syntheticRootPrivateAuthRuntimeBundle(t)
+			identity := authRuntimeTaskIdentity(t, bundle)
+			manifest := authRuntimeTaskManifest(identity)
+			sourceURL := "https://fixture.invalid/d/target-unavailable-" + strings.ReplaceAll(tt.name, " ", "-")
+			targetURL := "https://fixture.invalid/file-target-unavailable.bin"
+			events := &authRuntimeTaskEventLog{}
+			dispatcher := &authRuntimeTaskDispatcher{
+				events: events,
+				resolutions: map[string][]extractor.AddTaskResolution{
+					sourceURL: {authRuntimeTaskResolution(sourceURL, targetURL, identity, manifest, true)},
+				},
+			}
+			driver := &authRuntimeTaskDriver{events: events}
+			app, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+			tt.seed(t, store, identity.PackID)
+
+			result := app.AddUri(sourceURL)
+
+			if result != "success" {
+				t.Fatalf("AddUri() = %q, want success", result)
+			}
+			if driver.openCount() != 1 {
+				t.Fatalf("auth sessions = %d, want one target stale refresh", driver.openCount())
+			}
+			if got := recorder.addURIsSnapshot(); !reflect.DeepEqual(got, []string{targetURL}) {
+				t.Fatalf("add URIs = %#v, want %#v", got, []string{targetURL})
+			}
+			if dispatcher.resolveCount(sourceURL) != 1 {
+				t.Fatalf("Resolve() count = %d, want 1", dispatcher.resolveCount(sourceURL))
+			}
+			gotEvents := events.snapshot()
+			wantPrefix := []string{"plan:" + sourceURL, "resolve:" + sourceURL, "auth:apr-alpha001", "build:" + targetURL}
+			assertAuthRuntimeTaskEventPrefix(t, gotEvents, wantPrefix)
+			if _, err := store.ResolveAuthProfile(context.Background(), identity.PackID, "apr-alpha001", targetURL); err != nil {
+				t.Fatalf("ResolveAuthProfile() after target stale refresh error = %v", err)
+			}
+		})
 	}
 }
 
@@ -133,6 +240,86 @@ func TestAddUri_AuthRuntimeProvisioningUnavailableFailsBeforeResolve(t *testing.
 		t.Fatalf("aria2.addUri count = %d, want 0", got)
 	}
 	assertRootNoSecretText(t, result, "raw-secret", "raw-token", "Authorization")
+}
+
+func TestAddUri_AuthRuntimeTargetPolicyDeniedDoesNotOpenWebViewOrBuildHeaders(t *testing.T) {
+	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
+	identity := authRuntimeTaskIdentity(t, bundle)
+	manifest := authRuntimeTaskManifest(identity)
+	sourceURL := "https://fixture.invalid/d/policy-denied"
+	targetURL := "https://fixture.invalid/file-policy-denied.bin"
+	events := &authRuntimeTaskEventLog{}
+	policy := extractor.ResolvedHostPolicy{
+		AuthProfiles: []extractor.HostPolicyAuthProfileScope{{
+			ProfileID: "apr-alpha001",
+			Domains:   []extractor.DomainRule{{Host: "other.fixture.invalid"}},
+		}},
+	}
+	resolution := authRuntimeTaskResolution(sourceURL, targetURL, identity, manifest, true)
+	resolution.Items[0].HostPolicy = &policy
+	dispatcher := &authRuntimeTaskDispatcher{
+		events: events,
+		resolutions: map[string][]extractor.AddTaskResolution{
+			sourceURL: {resolution},
+		},
+	}
+	driver := &authRuntimeTaskDriver{events: events}
+	app, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	setAuthRuntimeTaskProfileWithOptions(t, store, identity.PackID, extractor.AuthSecretKindCookie, "sid=policy-denied-stale", []extractor.DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}}, nil)
+
+	result := app.AddUri(sourceURL)
+
+	if result != "auth profile unavailable" {
+		t.Fatalf("AddUri() = %q, want generic auth unavailable", result)
+	}
+	if driver.openCount() != 0 {
+		t.Fatalf("auth sessions = %d, want policy denial before WebView", driver.openCount())
+	}
+	if got := recorder.count("aria2.addUri"); got != 0 {
+		t.Fatalf("aria2.addUri count = %d, want 0", got)
+	}
+	gotEvents := events.snapshot()
+	if !reflect.DeepEqual(gotEvents, []string{"plan:" + sourceURL, "resolve:" + sourceURL}) {
+		t.Fatalf("event order = %#v, want policy denial before auth/build", gotEvents)
+	}
+	assertAuthRuntimeTaskEventAbsent(t, gotEvents, "auth:apr-alpha001", "build:"+targetURL)
+}
+
+func TestAddUri_AuthRuntimeTargetRefreshCancelDoesNotLoopOrSubmit(t *testing.T) {
+	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
+	identity := authRuntimeTaskIdentity(t, bundle)
+	manifest := authRuntimeTaskManifest(identity)
+	sourceURL := "https://fixture.invalid/d/target-cancel"
+	targetURL := "https://fixture.invalid/file-target-cancel.bin"
+	events := &authRuntimeTaskEventLog{}
+	dispatcher := &authRuntimeTaskDispatcher{
+		events: events,
+		resolutions: map[string][]extractor.AddTaskResolution{
+			sourceURL: {authRuntimeTaskResolution(sourceURL, targetURL, identity, manifest, true)},
+		},
+	}
+	driver := &authRuntimeTaskDriver{events: events, status: extractor.WebViewAuthStatusCanceled}
+	app, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	setAuthRuntimeTaskProfileWithOptions(t, store, identity.PackID, extractor.AuthSecretKindCookie, "sid=cancel-stale-secret", []extractor.DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}}, nil)
+
+	result := app.AddUri(sourceURL)
+
+	if result != "auth profile unavailable" {
+		t.Fatalf("AddUri() = %q, want generic auth unavailable", result)
+	}
+	if driver.openCount() != 1 {
+		t.Fatalf("auth sessions = %d, want one bounded refresh attempt", driver.openCount())
+	}
+	if got := dispatcher.resolveCount(sourceURL); got != 1 {
+		t.Fatalf("Resolve() count = %d, want no target resolve retry", got)
+	}
+	if got := recorder.count("aria2.addUri"); got != 0 {
+		t.Fatalf("aria2.addUri count = %d, want 0", got)
+	}
+	gotEvents := events.snapshot()
+	assertAuthRuntimeTaskEventPrefix(t, gotEvents, []string{"plan:" + sourceURL, "resolve:" + sourceURL, "auth:apr-alpha001"})
+	assertAuthRuntimeTaskEventAbsent(t, gotEvents, "build:"+targetURL)
+	assertRootNoSecretText(t, result, "cancel-stale-secret", "callback-secret", "Authorization")
 }
 
 func TestAddUri_AuthRuntimeGenericEmptyOutputRefreshesOnceAndRetries(t *testing.T) {
@@ -168,6 +355,78 @@ func TestAddUri_AuthRuntimeGenericEmptyOutputRefreshesOnceAndRetries(t *testing.
 	}
 	if driver.openCount() != 1 {
 		t.Fatalf("auth sessions = %d, want one refresh", driver.openCount())
+	}
+}
+
+func TestAddUri_AuthRuntimeStaleUnavailableSourceProfileClearsOpensWebViewBeforeResolve(t *testing.T) {
+	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
+	identity := authRuntimeTaskIdentity(t, bundle)
+	manifest := authRuntimeTaskManifest(identity)
+	sourceURL := "https://fixture.invalid/d/stale-source"
+	targetURL := "https://fixture.invalid/file-stale-source.bin"
+	events := &authRuntimeTaskEventLog{}
+	dispatcher := &authRuntimeTaskDispatcher{
+		events: events,
+		plans: map[string][]extractor.HostAuthRuntimeRequest{
+			sourceURL: {authRuntimeTaskSourceRequest(identity, manifest, sourceURL)},
+		},
+		resolutions: map[string][]extractor.AddTaskResolution{
+			sourceURL: {authRuntimeTaskResolution(sourceURL, targetURL, identity, manifest, true)},
+		},
+	}
+	driver := &authRuntimeTaskDriver{events: events}
+	app, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	setAuthRuntimeTaskProfileWithOptions(t, store, identity.PackID, extractor.AuthSecretKindCookie, "sid=stale-source-token", []extractor.DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}}, nil)
+
+	result := app.AddUri(sourceURL)
+
+	if result != "success" {
+		t.Fatalf("AddUri() = %q, want success", result)
+	}
+	if dispatcher.resolveCount(sourceURL) != 1 {
+		t.Fatalf("Resolve() count = %d, want source resolve once after refresh", dispatcher.resolveCount(sourceURL))
+	}
+	if driver.openCount() != 1 {
+		t.Fatalf("auth sessions = %d, want stale unavailable source WebView", driver.openCount())
+	}
+	if got := recorder.addURIsSnapshot(); !reflect.DeepEqual(got, []string{targetURL}) {
+		t.Fatalf("add URIs = %#v, want %#v", got, []string{targetURL})
+	}
+	gotEvents := events.snapshot()
+	assertAuthRuntimeTaskEventPrefix(t, gotEvents, []string{"plan:" + sourceURL, "auth:apr-alpha001", "resolve:" + sourceURL})
+	resolved, err := store.ResolveAuthProfile(context.Background(), identity.PackID, "apr-alpha001", targetURL)
+	if err != nil {
+		t.Fatalf("ResolveAuthProfile() after source stale refresh error = %v", err)
+	}
+	if resolved.Kind != extractor.AuthSecretKindBearer {
+		t.Fatalf("resolved.Kind = %q, want bearer", resolved.Kind)
+	}
+}
+
+func TestAddUri_AuthRuntimeGenericEmptyOutputWithoutLocalSourceAuthDoesNotRetry(t *testing.T) {
+	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
+	sourceURL := "https://fixture.invalid/d/no-local-auth"
+	dispatcher := &authRuntimeTaskDispatcher{
+		resolveErrors: map[string][]error{
+			sourceURL: {errors.New(addTaskGenericAuthResolutionError)},
+		},
+	}
+	driver := &authRuntimeTaskDriver{}
+	app, recorder, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+
+	result := app.AddUri(sourceURL)
+
+	if !strings.Contains(result, "could not resolve this link") {
+		t.Fatalf("AddUri() = %q, want generic resolver failure", result)
+	}
+	if dispatcher.resolveCount(sourceURL) != 1 {
+		t.Fatalf("Resolve() count = %d, want 1", dispatcher.resolveCount(sourceURL))
+	}
+	if driver.openCount() != 0 {
+		t.Fatalf("auth sessions = %d, want no refresh", driver.openCount())
+	}
+	if got := recorder.count("aria2.addUri"); got != 0 {
+		t.Fatalf("aria2.addUri count = %d, want 0", got)
 	}
 }
 
@@ -409,19 +668,24 @@ func authRuntimeTaskResolution(sourceURL string, targetURL string, identity extr
 
 func setAuthRuntimeTaskProfile(t *testing.T, store extractor.AuthProfileStore, packID string, secret string, targetURL string) {
 	t.Helper()
+	setAuthRuntimeTaskProfileWithOptions(t, store, packID, extractor.AuthSecretKindBearer, secret, []extractor.DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}}, nil)
+	if _, err := store.ResolveAuthProfile(context.Background(), packID, "apr-alpha001", targetURL); err != nil {
+		t.Fatalf("ResolveAuthProfile() seeded profile error = %v", err)
+	}
+}
+
+func setAuthRuntimeTaskProfileWithOptions(t *testing.T, store extractor.AuthProfileStore, packID string, kind extractor.AuthSecretKind, secret string, domains []extractor.DomainRule, expiresAt *time.Time) {
+	t.Helper()
 	_, err := store.SetAuthProfile(context.Background(), extractor.AuthProfileUpdate{
 		PackID:         packID,
 		ProfileID:      "apr-alpha001",
-		Kind:           extractor.AuthSecretKindBearer,
+		Kind:           kind,
 		Secret:         secret,
-		AllowedDomains: []extractor.DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}},
-		ExpiresAt:      nil,
+		AllowedDomains: domains,
+		ExpiresAt:      expiresAt,
 	})
 	if err != nil {
 		t.Fatalf("SetAuthProfile() error = %v", err)
-	}
-	if _, err := store.ResolveAuthProfile(context.Background(), packID, "apr-alpha001", targetURL); err != nil {
-		t.Fatalf("ResolveAuthProfile() seeded profile error = %v", err)
 	}
 }
 
@@ -494,13 +758,33 @@ func (d *authRuntimeTaskDriver) OpenAuthSession(ctx context.Context, request ext
 	if index < len(d.tokens) {
 		token = d.tokens[index]
 	}
+	status := d.status
+	if status == "" {
+		status = extractor.WebViewAuthStatusSuccess
+	}
 	events := d.events
 	d.mu.Unlock()
 	if events != nil {
 		events.add("auth:" + string(request.ProfileID))
 	}
-	if sink.OnSuccess != nil {
-		sink.OnSuccess(token)
+	switch status {
+	case extractor.WebViewAuthStatusSuccess:
+		if sink.OnSuccess != nil {
+			sink.OnSuccess(token)
+		}
+	case extractor.WebViewAuthStatusCanceled:
+		if sink.OnCancel != nil {
+			sink.OnCancel()
+		}
+	case extractor.WebViewAuthStatusError:
+		if sink.OnError != nil {
+			sink.OnError(errors.New("auth webview failed with Authorization: Bearer callback-secret"))
+		}
+	case extractor.WebViewAuthStatusTimeout:
+	default:
+		if sink.OnSuccess != nil {
+			sink.OnSuccess(token)
+		}
 	}
 
 	return authRuntimeTaskSession{}, nil
@@ -526,6 +810,24 @@ func (l *authRuntimeTaskEventLog) snapshot() []string {
 	defer l.mu.Unlock()
 
 	return append([]string(nil), l.events...)
+}
+
+func assertAuthRuntimeTaskEventPrefix(t *testing.T, got []string, want []string) {
+	t.Helper()
+	if len(got) < len(want) || !reflect.DeepEqual(got[:len(want)], want) {
+		t.Fatalf("event order = %#v, want prefix %#v", got, want)
+	}
+}
+
+func assertAuthRuntimeTaskEventAbsent(t *testing.T, got []string, forbidden ...string) {
+	t.Helper()
+	for _, event := range got {
+		for _, deny := range forbidden {
+			if event == deny {
+				t.Fatalf("event order = %#v, should not contain %q", got, deny)
+			}
+		}
+	}
 }
 
 var (

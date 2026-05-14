@@ -253,6 +253,10 @@ func (d *AddTaskDispatcher) BuildAria2Headers(ctx context.Context, item Resolved
 	return dedupeStringsPreserveOrder(headers), nil
 }
 
+func ValidateResolvedAddItemAuthPolicy(item ResolvedAddItem) error {
+	return validateResolvedAddItemAuthPolicy(item)
+}
+
 func validateResolvedAddItemAuthPolicy(item ResolvedAddItem) error {
 	if item.HostPolicy == nil {
 		if isAliasManifest(item.Manifest) {
