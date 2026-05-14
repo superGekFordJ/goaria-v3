@@ -25,6 +25,7 @@ func (r *fakeHostPolicyResolver) ResolveHostPolicy(ctx context.Context, request 
 
 func TestHostPolicyResolverAcceptsMatchingPolicy(t *testing.T) {
 	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
 	identity := syntheticVerifiedPackIdentity(manifest)
 	resolver := &fakeHostPolicyResolver{policy: validResolvedHostPolicy(identity, manifest)}
 
@@ -48,18 +49,22 @@ func TestHostPolicyResolverAcceptsMatchingPolicy(t *testing.T) {
 	policy.BrokerPolicyRefs[0] = "bpr-mutated"
 	policy.AllowedCapabilities[0] = Capability("cap.changed")
 	policy.IngressDomains[0].Host = "mutated.alpha.test"
+	policy.OutputDomains[0].PathPrefixes[0] = "/mutated/"
+	policy.AuthProfiles[0].Domains[0].Host = "mutated.alpha.test"
+	policy.BrokerEndpoints[0].Methods[0] = "POST"
 	policy.BrokerEndpoints[0].AuthProfileRefs[0] = "apr-mutated"
 	fresh, err := resolveAliasHostPolicy(context.Background(), resolver, identity, manifest)
 	if err != nil {
 		t.Fatalf("resolveAliasHostPolicy() fresh error = %v", err)
 	}
-	if fresh.DomainPolicyRefs[0] != "dpr-alpha001" || fresh.BrokerPolicyRefs[0] != "bpr-alpha001" || fresh.IngressDomains[0].Host != "share.alpha.test" || fresh.BrokerEndpoints[0].AuthProfileRefs[0] != "apr-alpha001" {
+	if fresh.DomainPolicyRefs[0] != "dpr-alpha001" || fresh.BrokerPolicyRefs[0] != "bpr-alpha001" || fresh.IngressDomains[0].Host != "share.alpha.test" || fresh.OutputDomains[0].PathPrefixes[0] != "/downloads/" || fresh.AuthProfiles[0].Domains[0].Host != "api.alpha.test" || fresh.BrokerEndpoints[0].Methods[0] != "GET" || fresh.BrokerEndpoints[0].AuthProfileRefs[0] != "apr-alpha001" {
 		t.Fatalf("resolved host policy was not defensively copied: %#v", fresh)
 	}
 }
 
 func TestHostPolicyResolverRejectsInvalidPolicies(t *testing.T) {
 	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
 	identity := syntheticVerifiedPackIdentity(manifest)
 	basePolicy := validResolvedHostPolicy(identity, manifest)
 
@@ -78,6 +83,12 @@ func TestHostPolicyResolverRejectsInvalidPolicies(t *testing.T) {
 		}},
 		{name: "invalid ingress domains", mutate: func(policy *ResolvedHostPolicy) { policy.IngressDomains = []DomainRule{{Host: "*.alpha.test"}} }},
 		{name: "invalid broker domains", mutate: func(policy *ResolvedHostPolicy) { policy.BrokerDomains = []DomainRule{{Host: "api.alpha.test:443"}} }},
+		{name: "invalid output domain", mutate: func(policy *ResolvedHostPolicy) { policy.OutputDomains[0].Host = "files.alpha.test/path" }},
+		{name: "invalid output path prefix", mutate: func(policy *ResolvedHostPolicy) { policy.OutputDomains[0].PathPrefixes = []string{"downloads"} }},
+		{name: "invalid auth profile", mutate: func(policy *ResolvedHostPolicy) { policy.AuthProfiles[0].ProfileID = "Invalid" }},
+		{name: "invalid auth profile domain", mutate: func(policy *ResolvedHostPolicy) {
+			policy.AuthProfiles[0].Domains = []DomainRule{{Host: "api.alpha.test/path"}}
+		}},
 		{name: "missing broker domains", mutate: func(policy *ResolvedHostPolicy) { policy.BrokerDomains = nil }},
 		{name: "missing broker endpoints", mutate: func(policy *ResolvedHostPolicy) { policy.BrokerEndpoints = nil }},
 		{name: "malformed endpoint ref", mutate: func(policy *ResolvedHostPolicy) { policy.BrokerEndpoints[0].EndpointRef = "endpoint.alpha" }},
@@ -89,8 +100,12 @@ func TestHostPolicyResolverRejectsInvalidPolicies(t *testing.T) {
 			policy.BrokerEndpoints[0].URLTemplate = "https://user:pass@api.alpha.test/resource/{id}"
 		}},
 		{name: "invalid endpoint auth profile ref", mutate: func(policy *ResolvedHostPolicy) { policy.BrokerEndpoints[0].AuthProfileRefs = []string{"Invalid"} }},
+		{name: "undeclared endpoint auth profile ref", mutate: func(policy *ResolvedHostPolicy) { policy.BrokerEndpoints[0].AuthProfileRefs = []string{"apr-alpha002"} }},
 		{name: "duplicate endpoint auth profile ref", mutate: func(policy *ResolvedHostPolicy) {
 			policy.BrokerEndpoints[0].AuthProfileRefs = []string{"apr-alpha001", "apr-alpha001"}
+		}},
+		{name: "duplicate endpoint method", mutate: func(policy *ResolvedHostPolicy) {
+			policy.BrokerEndpoints[0].Methods = []string{"GET", "GET"}
 		}},
 	}
 
@@ -108,6 +123,7 @@ func TestHostPolicyResolverRejectsInvalidPolicies(t *testing.T) {
 
 func TestHostPolicyBrokerEndpointExpansion(t *testing.T) {
 	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
 	identity := syntheticVerifiedPackIdentity(manifest)
 	policy := validResolvedHostPolicy(identity, manifest)
 	endpoint, ok := findBrokerEndpoint(policy, "bpr-alpha001", "epr-alpha001")
@@ -124,6 +140,15 @@ func TestHostPolicyBrokerEndpointExpansion(t *testing.T) {
 	}
 	if !endpointAllowsAuthProfile(endpoint, "apr-alpha001") || endpointAllowsAuthProfile(endpoint, "apr-alpha002") {
 		t.Fatalf("endpoint auth scope mismatch: %#v", endpoint.AuthProfileRefs)
+	}
+	if !policyAuthProfileMatchesHost(policy, "apr-alpha001", "api.alpha.test") || policyAuthProfileMatchesHost(policy, "apr-alpha001", "files.alpha.test") {
+		t.Fatalf("policy auth scope mismatch: %#v", policy.AuthProfiles)
+	}
+	if err := policyAllowsOutputURL(policy, "https://files.alpha.test/downloads/item.bin"); err != nil {
+		t.Fatalf("policyAllowsOutputURL() error = %v", err)
+	}
+	if err := policyAllowsOutputURL(policy, "https://files.alpha.test/private/item.bin"); err == nil {
+		t.Fatal("policyAllowsOutputURL() error = nil for disallowed output")
 	}
 	if !policyAllowsCapability(policy, CapabilityHTTPFetch) || policyAllowsCapability(policy, Capability("cap.missing")) {
 		t.Fatalf("policyAllowsCapability mismatch: %#v", policy.AllowedCapabilities)
@@ -154,6 +179,7 @@ func TestHostPolicyBrokerEndpointExpansion(t *testing.T) {
 
 func TestHostPolicyBrokerEndpointExpansionRejectsStructuralParamInjection(t *testing.T) {
 	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
 	identity := syntheticVerifiedPackIdentity(manifest)
 	policy := validResolvedHostPolicy(identity, manifest)
 	endpoint, ok := findBrokerEndpoint(policy, "bpr-alpha001", "epr-alpha001")
@@ -181,6 +207,7 @@ func TestHostPolicyBrokerEndpointExpansionRejectsStructuralParamInjection(t *tes
 
 func TestHostPolicyBrokerEndpointExpansionAllowsSafePathAndQueryParams(t *testing.T) {
 	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
 	identity := syntheticVerifiedPackIdentity(manifest)
 	policy := validResolvedHostPolicy(identity, manifest)
 	endpoint := HostPolicyBrokerEndpoint{
@@ -203,6 +230,7 @@ func TestHostPolicyBrokerEndpointExpansionAllowsSafePathAndQueryParams(t *testin
 
 func TestHostPolicyBrokerEndpointExpansionRejectsQueryDelimiterInjection(t *testing.T) {
 	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
 	identity := syntheticVerifiedPackIdentity(manifest)
 	policy := validResolvedHostPolicy(identity, manifest)
 	endpoint := HostPolicyBrokerEndpoint{
@@ -231,6 +259,7 @@ func TestHostPolicyBrokerEndpointExpansionRejectsQueryDelimiterInjection(t *test
 
 func TestHostPolicyBrokerEndpointValidationRejectsUnsafePlaceholderLocations(t *testing.T) {
 	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
 	identity := syntheticVerifiedPackIdentity(manifest)
 	basePolicy := validResolvedHostPolicy(identity, manifest)
 
@@ -279,24 +308,46 @@ func TestHostPolicyResolverFailsClosedForResolverErrors(t *testing.T) {
 }
 
 func validResolvedHostPolicy(identity VerifiedPackIdentity, manifest Manifest) ResolvedHostPolicy {
+	capabilities := append([]Capability(nil), manifest.Capabilities...)
+	brokerRefs := cloneStringSlice(manifest.BrokerPolicyRefs)
+	if len(brokerRefs) == 0 {
+		brokerRefs = []string{"bpr-alpha001"}
+		manifest.BrokerPolicyRefs = cloneStringSlice(brokerRefs)
+	}
+	domainRefs := cloneStringSlice(manifest.DomainPolicyRefs)
+	if len(domainRefs) == 0 {
+		domainRefs = []string{"dpr-alpha001"}
+		manifest.DomainPolicyRefs = cloneStringSlice(domainRefs)
+	}
+	var authProfiles []HostPolicyAuthProfileScope
+	var endpointAuthRefs []string
+	if manifestHasCapability(manifest, CapabilityAuthProfile) {
+		authProfiles = []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "api.alpha.test"}}}}
+		endpointAuthRefs = []string{"apr-alpha001"}
+	}
 	return ResolvedHostPolicy{
 		PolicyID:            "pol-alpha001",
 		PolicyVersion:       "2026.05.11-alpha",
 		PolicySHA256:        strings.Repeat("c", 64),
 		PackIdentity:        identity,
-		DomainPolicyRefs:    cloneStringSlice(manifest.DomainPolicyRefs),
-		BrokerPolicyRefs:    cloneStringSlice(manifest.BrokerPolicyRefs),
-		AllowedCapabilities: append([]Capability(nil), manifest.Capabilities...),
+		DomainPolicyRefs:    domainRefs,
+		BrokerPolicyRefs:    brokerRefs,
+		AllowedCapabilities: capabilities,
 		IngressDomains: []DomainRule{
 			{Host: "share.alpha.test"},
 			{Host: "files.alpha.test", IncludeSubdomains: true},
 		},
 		BrokerDomains: []DomainRule{{Host: "api.alpha.test"}},
+		OutputDomains: []HostPolicyOutputRule{{Host: "files.alpha.test", IncludeSubdomains: true, PathPrefixes: []string{"/downloads/"}}},
+		AuthProfiles:  authProfiles,
 		BrokerEndpoints: []HostPolicyBrokerEndpoint{{
-			BrokerPolicyRef: "bpr-alpha001",
-			EndpointRef:     "epr-alpha001",
-			URLTemplate:     "https://api.alpha.test/resource/{id}",
-			AuthProfileRefs: []string{"apr-alpha001"},
+			BrokerPolicyRef:  "bpr-alpha001",
+			EndpointRef:      "epr-alpha001",
+			URLTemplate:      "https://api.alpha.test/resource/{id}",
+			Methods:          []string{"GET", "HEAD"},
+			AuthProfileRefs:  endpointAuthRefs,
+			TimeoutMillis:    100,
+			MaxResponseBytes: 512,
 		}},
 	}
 }

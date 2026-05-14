@@ -50,6 +50,7 @@ type ResolvedAddItem struct {
 	PackID           string
 	PackIdentity     VerifiedPackIdentity
 	Manifest         Manifest
+	HostPolicy       *ResolvedHostPolicy
 	ID               string
 	URL              string
 	Filename         string
@@ -134,7 +135,17 @@ func (d *AddTaskDispatcher) Resolve(ctx context.Context, rawURL string) (AddTask
 			continue
 		}
 
-		items, err := resolvedItemsFromExtractOutput(rawURL, pack, extracted)
+		var hostPolicy *ResolvedHostPolicy
+		if isAliasManifest(pack.Manifest) {
+			policy, err := resolveAliasHostPolicy(ctx, d.registry.hostPolicyResolver, pack.Identity, pack.Manifest)
+			if err != nil {
+				errorsByPack = append(errorsByPack, safePackError(packID, err))
+				continue
+			}
+			hostPolicy = &policy
+		}
+
+		items, err := resolvedItemsFromExtractOutput(rawURL, pack, hostPolicy, extracted)
 		if err != nil {
 			return AddTaskResolution{}, redactedError(fmt.Errorf("extractor pack %q returned invalid add item: %w", packID, err))
 		}
@@ -178,6 +189,9 @@ func (d *AddTaskDispatcher) BuildAria2Headers(ctx context.Context, item Resolved
 	knownSecrets := querySecretValues(item.URL)
 	headers := make([]string, 0, 2)
 	if item.AuthProfileRef != "" {
+		if err := validateResolvedAddItemAuthPolicy(item); err != nil {
+			return nil, err
+		}
 		if d.authResolver == nil {
 			return nil, redactErrorf("auth profile resolver is not configured for ref %q", item.AuthProfileRef)
 		}
@@ -239,13 +253,41 @@ func (d *AddTaskDispatcher) BuildAria2Headers(ctx context.Context, item Resolved
 	return dedupeStringsPreserveOrder(headers), nil
 }
 
-func resolvedItemsFromExtractOutput(sourceURL string, pack VerifiedPack, output ExtractOutput) ([]ResolvedAddItem, error) {
+func validateResolvedAddItemAuthPolicy(item ResolvedAddItem) error {
+	if item.HostPolicy == nil {
+		if isAliasManifest(item.Manifest) {
+			return redactErrorf("alias host policy is required for auth profile expansion")
+		}
+
+		return nil
+	}
+	profileID := AuthProfileID(item.AuthProfileRef)
+	if err := validateAuthProfileID(profileID); err != nil {
+		return redactedError(err)
+	}
+	_, host, err := parseSafeHTTPURL(item.URL)
+	if err != nil {
+		return err
+	}
+	if !policyAuthProfileMatchesHost(*item.HostPolicy, profileID, host) {
+		return redactErrorf("auth profile is not allowed by alias host policy")
+	}
+
+	return nil
+}
+
+func resolvedItemsFromExtractOutput(sourceURL string, pack VerifiedPack, hostPolicy *ResolvedHostPolicy, output ExtractOutput) ([]ResolvedAddItem, error) {
 	packID := pack.Manifest.PackID
 	manifest := cloneManifest(pack.Manifest)
 	items := make([]ResolvedAddItem, 0, len(output.Items))
 	for i, ref := range output.Items {
 		if err := validateABIURL(ref.URL, "item url"); err != nil {
 			return nil, fmt.Errorf("item %d url: %w", i, err)
+		}
+		if hostPolicy != nil {
+			if err := policyAllowsOutputURL(*hostPolicy, ref.URL); err != nil {
+				return nil, fmt.Errorf("item %d url: %w", i, err)
+			}
 		}
 
 		filename := ""
@@ -267,6 +309,7 @@ func resolvedItemsFromExtractOutput(sourceURL string, pack VerifiedPack, output 
 			PackID:           packID,
 			PackIdentity:     pack.Identity,
 			Manifest:         cloneManifest(manifest),
+			HostPolicy:       cloneResolvedHostPolicyPtr(hostPolicy),
 			ID:               ref.ID,
 			URL:              ref.URL,
 			Filename:         filename,
@@ -278,6 +321,15 @@ func resolvedItemsFromExtractOutput(sourceURL string, pack VerifiedPack, output 
 	}
 
 	return items, nil
+}
+
+func cloneResolvedHostPolicyPtr(policy *ResolvedHostPolicy) *ResolvedHostPolicy {
+	if policy == nil {
+		return nil
+	}
+	cloned := cloneResolvedHostPolicy(*policy)
+
+	return &cloned
 }
 
 func SafeAria2OutFilename(filename string) (string, error) {
