@@ -33,6 +33,7 @@ type App struct {
 	authProfileStore    extractor.AuthProfileStore
 	hostAuthRuntime     *extractor.HostAuthRuntime
 	authWebViewDriver   extractor.AuthWebViewDriver
+	hostAuthCallbacks   *appHostAuthCallbackRegistry
 
 	windowMu       sync.Mutex // 保护窗口操作
 	lastToggleTime time.Time  // 上次切换窗口时间，用于全局防抖

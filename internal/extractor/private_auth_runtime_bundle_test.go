@@ -45,9 +45,17 @@ func TestPrivateAuthRuntimeBundleLoadsAndReturnsCopies(t *testing.T) {
 	if pack.Profiles[0].ProfileRef != AuthProfileID("apr-alpha001") || pack.Profiles[0].Kind != AuthSecretKindBearer || pack.Profiles[0].Login.URL != "https://fixture.invalid/login" {
 		t.Fatalf("PackRuntime() returned unexpected profile: %#v", pack.Profiles[0])
 	}
+	if pack.Profiles[0].Login.CallbackTransport.Mode != privateAuthRuntimeCallbackTransportMode || pack.Profiles[0].Login.CallbackTransport.MaxBodyBytes != 16384 {
+		t.Fatalf("PackRuntime() callback transport = %#v", pack.Profiles[0].Login.CallbackTransport)
+	}
+	if pack.Profiles[0].Login.CollectorJS == "" || len(pack.Profiles[0].Login.Capture.SecretCandidates) != 2 {
+		t.Fatalf("PackRuntime() callback/capture missing: %#v", pack.Profiles[0].Login)
+	}
 	pack.StoreBinding.ProfileRefs[0] = "apr-mutated"
 	pack.Profiles[0].ProfileRef = "apr-mutated"
 	pack.Profiles[0].Login.AllowedDomains[0].Host = "mutated.example.test"
+	pack.Profiles[0].Login.CallbackTransport.ContentTypes[0] = "mutated"
+	pack.Profiles[0].Login.Capture.SecretCandidates[0] = "mutated"
 	pack.Provisioning.ProfileRefs[0] = "apr-mutated"
 	pack.Materialization.ProfileRefs[0] = "apr-mutated"
 
@@ -55,7 +63,7 @@ func TestPrivateAuthRuntimeBundleLoadsAndReturnsCopies(t *testing.T) {
 	if !ok {
 		t.Fatal("PackRuntime() fresh ok = false")
 	}
-	if fresh.StoreBinding.ProfileRefs[0] != "apr-alpha001" || fresh.Profiles[0].ProfileRef != "apr-alpha001" || fresh.Profiles[0].Login.AllowedDomains[0].Host != "fixture.invalid" || fresh.Provisioning.ProfileRefs[0] != "apr-alpha001" || fresh.Materialization.ProfileRefs[0] != "apr-alpha001" {
+	if fresh.StoreBinding.ProfileRefs[0] != "apr-alpha001" || fresh.Profiles[0].ProfileRef != "apr-alpha001" || fresh.Profiles[0].Login.AllowedDomains[0].Host != "fixture.invalid" || fresh.Profiles[0].Login.CallbackTransport.ContentTypes[0] != "application/json" || fresh.Profiles[0].Login.Capture.SecretCandidates[0] != "secret" || fresh.Provisioning.ProfileRefs[0] != "apr-alpha001" || fresh.Materialization.ProfileRefs[0] != "apr-alpha001" {
 		t.Fatalf("PackRuntime() did not return defensive copies: %#v", fresh)
 	}
 }
@@ -144,6 +152,51 @@ func TestPrivateAuthRuntimeBundleRejectsMalformedBundles(t *testing.T) {
 		})},
 		{name: "provisioning missing login", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["url"] = ""
+		})},
+		{name: "missing callback transport", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			delete(packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any), "callback_transport")
+		})},
+		{name: "unsupported callback transport mode", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["mode"] = "manual"
+		})},
+		{name: "empty callback content types", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["content_types"] = []string{}
+		})},
+		{name: "disallowed callback content type", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["content_types"] = []string{"text/plain"}
+		})},
+		{name: "zero callback body limit", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["max_body_bytes"] = int64(0)
+		})},
+		{name: "oversized callback body limit", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["max_body_bytes"] = int64(privateAuthRuntimeMaxCallbackBodyBytes + 1)
+		})},
+		{name: "empty collector source", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["collector_js"] = "  "
+		})},
+		{name: "oversized collector source", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["collector_js"] = strings.Repeat("a", privateAuthRuntimeMaxCollectorJSBytes+1)
+		})},
+		{name: "nul collector source", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["collector_js"] = "(() => {})();\x00"
+		})},
+		{name: "missing capture contract", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			delete(packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any), "capture")
+		})},
+		{name: "unsupported capture format", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["format"] = "text"
+		})},
+		{name: "empty capture candidates", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["secret_candidates"] = []string{}
+		})},
+		{name: "duplicate capture candidates", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["secret_candidates"] = []string{"secret", "secret"}
+		})},
+		{name: "invalid capture candidate path", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["secret_candidates"] = []string{"capture[0].secret"}
+		})},
+		{name: "invalid capture optional path", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["kind_field"] = "bad path"
 		})},
 		{name: "invalid materialization ref", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["materialization"].(map[string]any)["profile_refs"] = []string{"apr-missing001"}
@@ -442,6 +495,19 @@ func privateAuthRuntimeProfileMap(profileRef string, kind AuthSecretKind, loginU
 			"url":             loginURL,
 			"allowed_domains": []map[string]any{{"host": "fixture.invalid"}},
 			"timeout_millis":  30000,
+			"callback_transport": map[string]any{
+				"mode":           "local_post",
+				"content_types":  []string{"application/json"},
+				"max_body_bytes": int64(16384),
+			},
+			"collector_js": "(() => { return function(ctx, postCapture) { return ctx && postCapture; }; })();",
+			"capture": map[string]any{
+				"format":                 "json",
+				"secret_candidates":      []string{"secret", "capture.secret"},
+				"kind_field":             "kind",
+				"expires_at_field":       "expires_at",
+				"redacted_display_field": "redacted_display",
+			},
 		},
 	}
 }

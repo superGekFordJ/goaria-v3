@@ -244,6 +244,12 @@ func TestHostAuthRuntimeEnsureProvisionsViaWebViewCoordinator(t *testing.T) {
 	if len(opened.AllowedDomains) != 1 || opened.AllowedDomains[0].Host != "fixture.invalid" || opened.Timeout != 45*time.Second {
 		t.Fatalf("opened request domain/timeout = %#v", opened)
 	}
+	if opened.CallbackTransport.Mode != "local_post" || opened.CallbackTransport.MaxBodyBytes != 16384 || len(opened.CallbackTransport.ContentTypes) != 1 || opened.CollectorJS == "" {
+		t.Fatalf("opened request callback metadata = %#v collector=%q", opened.CallbackTransport, opened.CollectorJS)
+	}
+	if opened.Capture.Format != "json" || len(opened.Capture.SecretCandidates) != 2 || !opened.Capture.TrimSpace || !opened.Capture.RejectCRLF {
+		t.Fatalf("opened request capture metadata = %#v", opened.Capture)
+	}
 	resolved, err := store.ResolveAuthProfile(context.Background(), identity.PackID, "apr-alpha001", "https://fixture.invalid/file")
 	if err != nil {
 		t.Fatalf("ResolveAuthProfile() after Ensure error = %v", err)
@@ -327,6 +333,18 @@ func TestHostAuthRuntimeProvisionCancelTimeoutOrUnavailableIsGeneric(t *testing.
 			t.Fatalf("Provision(none) result=%#v error=%v opens=%d", result, err, driver.OpenCount())
 		}
 	})
+}
+
+func TestHostAuthRuntimeCallbackMetadataMissingFailsClosed(t *testing.T) {
+	identity := privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1")
+	raw := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{{Identity: identity, ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://fixture.invalid/login"}}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+		delete(packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any), "collector_js")
+	})
+	_, err := NewPrivateAuthRuntimeBundle(raw, PrivateAuthRuntimeBundleLoadOptions{})
+	if err == nil {
+		t.Fatal("NewPrivateAuthRuntimeBundle() error = nil, want fail-closed missing callback metadata")
+	}
+	assertGenericPrivateAuthRuntimeBundleError(t, err)
 }
 
 func TestHostAuthRuntimeClearAndRefreshOnGenericFailureOnce(t *testing.T) {
@@ -645,6 +663,8 @@ func (hostAuthRecordingSession) Close() error { return nil }
 func cloneWebViewAuthRequestForTest(request WebViewAuthRequest) WebViewAuthRequest {
 	request.Manifest = cloneManifest(request.Manifest)
 	request.AllowedDomains = cloneDomainRules(request.AllowedDomains)
+	request.CallbackTransport.ContentTypes = cloneStringSlice(request.CallbackTransport.ContentTypes)
+	request.Capture.SecretCandidates = cloneStringSlice(request.Capture.SecretCandidates)
 
 	return request
 }
