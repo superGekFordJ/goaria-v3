@@ -1208,6 +1208,9 @@ func TestWorkflowPrepareFullPackFailsClosedForMissingInputsAndBadChecksum(t *tes
 
 func TestWorkflowPrepareFullPackAuthRuntimeValidationFailures(t *testing.T) {
 	fixture := validWorkflowFullPackFixture(t)
+	if got, want := len(authCapableWorkflowFixtures(fixture.fixtures)), 1; got != want {
+		t.Fatalf("workflow fixture auth-capable pack count = %d, want %d", got, want)
+	}
 
 	t.Run("expected sha mismatch", func(t *testing.T) {
 		paths := testWorkflowPaths(t)
@@ -1231,25 +1234,48 @@ func TestWorkflowPrepareFullPackAuthRuntimeValidationFailures(t *testing.T) {
 		assertWorkflowOutputsMissing(t, paths)
 	})
 
-	t.Run("identity set mismatch", func(t *testing.T) {
+	t.Run("missing auth capable identity", func(t *testing.T) {
 		paths := testWorkflowPaths(t)
-		mismatchedRaw := privateAuthRuntimeBundleRawForScript(t, []privatePolicyBundlePackFixtureForScript{{
+		missingRaw := privateAuthRuntimeBundleRawForScript(t, []privatePolicyBundlePackFixtureForScript{{
 			Identity: mutateScriptIdentity(identityForScriptAsset(renderedLockEntryForFixture(t, fixture, 0), fixture.assets[0]), func(id *extractor.VerifiedPackIdentity) {
 				id.ManifestSHA256 = strings.Repeat("e", 64)
 			}),
+			Manifest: fixture.fixtures[0].Manifest,
 		}})
 		err := prepareWorkflow(workflowPrepareOptions{
 			Mode:           workflowVariantFullPack,
 			MetadataB64:    base64.StdEncoding.EncodeToString(fullPackMetadataJSON(t, fixture.metadata)),
 			PolicyB64:      base64.StdEncoding.EncodeToString(fixture.policyRaw),
-			AuthRuntimeB64: base64.StdEncoding.EncodeToString(mismatchedRaw),
+			AuthRuntimeB64: base64.StdEncoding.EncodeToString(missingRaw),
 			Paths:          paths,
 			HTTPClient:     fixture.client,
 		})
 		if err == nil || err.Error() != "auth runtime bundle is invalid" {
-			t.Fatalf("prepareWorkflow() error = %v, want auth runtime identity mismatch", err)
+			t.Fatalf("prepareWorkflow() error = %v, want missing auth-capable identity mismatch", err)
 		}
-		for _, forbidden := range []string{string(mismatchedRaw), privateAuthRuntimeHashFromRaw(t, mismatchedRaw), "apr-alpha001", "fixture.invalid"} {
+		for _, forbidden := range []string{string(missingRaw), privateAuthRuntimeHashFromRaw(t, missingRaw), "apr-alpha001", "fixture.invalid"} {
+			if strings.Contains(err.Error(), forbidden) {
+				t.Fatalf("auth runtime error leaks %q: %v", forbidden, err)
+			}
+		}
+		assertWorkflowOutputsMissing(t, paths)
+	})
+
+	t.Run("extra non auth identity", func(t *testing.T) {
+		paths := testWorkflowPaths(t)
+		extraRaw := privateAuthRuntimeBundleRawForScript(t, fixture.fixtures)
+		err := prepareWorkflow(workflowPrepareOptions{
+			Mode:           workflowVariantFullPack,
+			MetadataB64:    base64.StdEncoding.EncodeToString(fullPackMetadataJSON(t, fixture.metadata)),
+			PolicyB64:      base64.StdEncoding.EncodeToString(fixture.policyRaw),
+			AuthRuntimeB64: base64.StdEncoding.EncodeToString(extraRaw),
+			Paths:          paths,
+			HTTPClient:     fixture.client,
+		})
+		if err == nil || err.Error() != "auth runtime bundle is invalid" {
+			t.Fatalf("prepareWorkflow() error = %v, want extra non-auth identity rejection", err)
+		}
+		for _, forbidden := range []string{string(extraRaw), privateAuthRuntimeHashFromRaw(t, extraRaw), "apr-alpha002", "example.test"} {
 			if strings.Contains(err.Error(), forbidden) {
 				t.Fatalf("auth runtime error leaks %q: %v", forbidden, err)
 			}
@@ -1431,6 +1457,7 @@ type workflowFullPackFixture struct {
 	authRuntimeRaw []byte
 	client         *http.Client
 	assets         []testAsset
+	fixtures       []privatePolicyBundlePackFixtureForScript
 }
 
 func (a testAsset) lockEntry() packLockEntry {
@@ -1501,6 +1528,25 @@ func validOpaqueTestAsset(t *testing.T, packID string, packVersion string, seedB
 	return testAsset{bytes: zipBytesForParts(t, parts, nil), parts: parts, publicKey: publicKey}
 }
 
+func validAuthCapableOpaqueTestAsset(t *testing.T, packID string, packVersion string, seedByte byte) testAsset {
+	t.Helper()
+	asset := validOpaqueTestAsset(t, packID, packVersion, seedByte)
+	manifestJSON := manifestJSONForPayloadWithMutate(t, asset.parts.Payload, func(values map[string]any) {
+		values["pack_id"] = packID
+		values["pack_version"] = packVersion
+		values["capabilities"] = []string{string(extractor.CapabilityParseWASM), string(extractor.CapabilityHTTPFetch), string(extractor.CapabilityAuthProfile)}
+		values["domains"] = []map[string]any{}
+		values["domain_policy_refs"] = []string{"dpr-" + strings.TrimPrefix(packID, "xpk-")}
+		values["broker_policy_refs"] = []string{"bpr-" + strings.TrimPrefix(packID, "xpk-")}
+	})
+	asset.parts.ManifestJSON = manifestJSON
+	_, privateKey := deterministicTestKeyPair(seedByte)
+	asset.parts.Signature = ed25519.Sign(privateKey, manifestJSON)
+	asset.bytes = zipBytesForParts(t, asset.parts, nil)
+
+	return asset
+}
+
 func validFullPackMetadata(assetOne testAsset, assetTwo testAsset) fullPackMetadataFile {
 	entryOne := assetOne.lockEntry()
 	entryTwo := assetTwo.lockEntry()
@@ -1536,7 +1582,7 @@ func validFullPackMetadata(assetOne testAsset, assetTwo testAsset) fullPackMetad
 
 func validWorkflowFullPackFixture(t *testing.T) workflowFullPackFixture {
 	t.Helper()
-	assetOne := validOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
+	assetOne := validAuthCapableOpaqueTestAsset(t, "xpk-alpha001", "opaque-1", 81)
 	assetTwo := validOpaqueTestAsset(t, "xpk-alpha002", "opaque-2", 82)
 	server := twoPackTLSServer(t, map[string][]byte{
 		"/assets/v0.0.0-alpha/asset-alpha001.pack.zip": assetOne.bytes,
@@ -1560,9 +1606,10 @@ func validWorkflowFullPackFixture(t *testing.T) workflowFullPackFixture {
 	return workflowFullPackFixture{
 		metadata:       metadata,
 		policyRaw:      privatePolicyBundleRawForScript(t, fixtures),
-		authRuntimeRaw: privateAuthRuntimeBundleRawForScript(t, fixtures),
+		authRuntimeRaw: privateAuthRuntimeBundleRawForScript(t, authCapableWorkflowFixtures(fixtures)),
 		client:         rewriteHostClient(t, server, "release.example.test"),
 		assets:         []testAsset{assetOne, assetTwo},
+		fixtures:       fixtures,
 	}
 }
 
@@ -1725,6 +1772,17 @@ func privateAuthRuntimeBundleRawForScript(t *testing.T, fixtures []privatePolicy
 	}
 
 	return raw
+}
+
+func authCapableWorkflowFixtures(fixtures []privatePolicyBundlePackFixtureForScript) []privatePolicyBundlePackFixtureForScript {
+	filtered := make([]privatePolicyBundlePackFixtureForScript, 0, len(fixtures))
+	for _, fixture := range fixtures {
+		if extractor.ManifestHasCapability(fixture.Manifest, extractor.CapabilityAuthProfile) {
+			filtered = append(filtered, fixture)
+		}
+	}
+
+	return filtered
 }
 
 func privatePolicyHashFromRaw(t *testing.T, raw []byte) string {

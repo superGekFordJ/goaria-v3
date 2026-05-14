@@ -5,7 +5,7 @@ set -e
 APP_NAME="goaria-v3"
 BUNDLE_ID=""
 VERSION="2.0.0"
-BUILD_NUMBER="2.0.0.2"
+BUILD_NUMBER="2.0.0.3"
 BUILD_DIR="build/ios"
 TARGET="simulator"
 
