@@ -15,7 +15,12 @@ const (
 	privateAuthRuntimeBundlePathEnv           = "GOARIA_EXTRACTOR_PRIVATE_AUTH_RUNTIME_BUNDLE"
 	privateAuthRuntimeBundleExpectedSHA256Env = "GOARIA_EXTRACTOR_PRIVATE_AUTH_RUNTIME_SHA256"
 
-	privateAuthRuntimeMaxLoginTimeoutMillis = 10 * 60 * 1000
+	privateAuthRuntimeMaxLoginTimeoutMillis   = 10 * 60 * 1000
+	privateAuthRuntimeMaxCallbackBodyBytes    = 64 * 1024
+	privateAuthRuntimeMaxCollectorJSBytes     = 64 * 1024
+	privateAuthRuntimeCallbackTransportMode   = "local_post"
+	privateAuthRuntimeCallbackContentTypeJSON = "application/json"
+	privateAuthRuntimeCaptureFormatJSON       = "json"
 )
 
 var (
@@ -75,9 +80,29 @@ type PrivateAuthRuntimeNormalizationPolicy struct {
 }
 
 type PrivateAuthRuntimeLoginDescriptor struct {
-	URL            string
-	AllowedDomains []DomainRule
-	TimeoutMillis  int
+	URL                 string
+	AllowedDomains      []DomainRule
+	TimeoutMillis       int
+	CallbackTransport   PrivateAuthRuntimeCallbackTransport
+	CollectorJS         string
+	Capture             PrivateAuthRuntimeCaptureContract
+	callbackConfigured  bool
+	collectorConfigured bool
+	captureConfigured   bool
+}
+
+type PrivateAuthRuntimeCallbackTransport struct {
+	Mode         string
+	ContentTypes []string
+	MaxBodyBytes int64
+}
+
+type PrivateAuthRuntimeCaptureContract struct {
+	Format               string
+	SecretCandidates     []string
+	KindField            string
+	ExpiresAtField       string
+	RedactedDisplayField string
 }
 
 type privateAuthRuntimeBundleEnvelopeDTO struct {
@@ -135,9 +160,26 @@ type privateAuthRuntimeNormalizationPolicyDTO struct {
 }
 
 type privateAuthRuntimeLoginDescriptorDTO struct {
-	URL            string        `json:"url"`
-	AllowedDomains *[]DomainRule `json:"allowed_domains"`
-	TimeoutMillis  *int          `json:"timeout_millis"`
+	URL               string                                  `json:"url"`
+	AllowedDomains    *[]DomainRule                           `json:"allowed_domains"`
+	TimeoutMillis     *int                                    `json:"timeout_millis"`
+	CallbackTransport *privateAuthRuntimeCallbackTransportDTO `json:"callback_transport"`
+	CollectorJS       *string                                 `json:"collector_js"`
+	Capture           *privateAuthRuntimeCaptureContractDTO   `json:"capture"`
+}
+
+type privateAuthRuntimeCallbackTransportDTO struct {
+	Mode         string   `json:"mode"`
+	ContentTypes []string `json:"content_types"`
+	MaxBodyBytes int64    `json:"max_body_bytes"`
+}
+
+type privateAuthRuntimeCaptureContractDTO struct {
+	Format               string   `json:"format"`
+	SecretCandidates     []string `json:"secret_candidates"`
+	KindField            string   `json:"kind_field,omitempty"`
+	ExpiresAtField       string   `json:"expires_at_field,omitempty"`
+	RedactedDisplayField string   `json:"redacted_display_field,omitempty"`
 }
 
 func NewPrivateAuthRuntimeBundle(raw []byte, opts PrivateAuthRuntimeBundleLoadOptions) (*PrivateAuthRuntimeBundle, error) {
@@ -427,12 +469,164 @@ func privateAuthRuntimeLoginFromDTO(dto privateAuthRuntimeLoginDescriptorDTO) (P
 		}
 		timeoutMillis = *dto.TimeoutMillis
 	}
+	var callbackTransport PrivateAuthRuntimeCallbackTransport
+	callbackConfigured := false
+	if dto.CallbackTransport != nil {
+		var err error
+		callbackTransport, err = privateAuthRuntimeCallbackTransportFromDTO(*dto.CallbackTransport)
+		if err != nil {
+			return PrivateAuthRuntimeLoginDescriptor{}, err
+		}
+		callbackConfigured = true
+	}
+	collectorJS := ""
+	collectorConfigured := false
+	if dto.CollectorJS != nil {
+		var err error
+		collectorJS, err = validatePrivateAuthRuntimeCollectorJS(*dto.CollectorJS)
+		if err != nil {
+			return PrivateAuthRuntimeLoginDescriptor{}, err
+		}
+		collectorConfigured = true
+	}
+	var capture PrivateAuthRuntimeCaptureContract
+	captureConfigured := false
+	if dto.Capture != nil {
+		var err error
+		capture, err = privateAuthRuntimeCaptureFromDTO(*dto.Capture)
+		if err != nil {
+			return PrivateAuthRuntimeLoginDescriptor{}, err
+		}
+		captureConfigured = true
+	}
 
 	return PrivateAuthRuntimeLoginDescriptor{
-		URL:            dto.URL,
-		AllowedDomains: allowedDomains,
-		TimeoutMillis:  timeoutMillis,
+		URL:                 dto.URL,
+		AllowedDomains:      allowedDomains,
+		TimeoutMillis:       timeoutMillis,
+		CallbackTransport:   callbackTransport,
+		CollectorJS:         collectorJS,
+		Capture:             capture,
+		callbackConfigured:  callbackConfigured,
+		collectorConfigured: collectorConfigured,
+		captureConfigured:   captureConfigured,
 	}, nil
+}
+
+func privateAuthRuntimeCallbackTransportFromDTO(dto privateAuthRuntimeCallbackTransportDTO) (PrivateAuthRuntimeCallbackTransport, error) {
+	if dto.Mode != privateAuthRuntimeCallbackTransportMode {
+		return PrivateAuthRuntimeCallbackTransport{}, errors.New("private auth runtime callback transport mode is invalid")
+	}
+	if dto.MaxBodyBytes <= 0 || dto.MaxBodyBytes > privateAuthRuntimeMaxCallbackBodyBytes {
+		return PrivateAuthRuntimeCallbackTransport{}, errors.New("private auth runtime callback body limit is invalid")
+	}
+	if len(dto.ContentTypes) == 0 {
+		return PrivateAuthRuntimeCallbackTransport{}, errors.New("private auth runtime callback content types are required")
+	}
+	contentTypes := make([]string, 0, len(dto.ContentTypes))
+	seen := make(map[string]struct{}, len(dto.ContentTypes))
+	for _, contentType := range dto.ContentTypes {
+		if contentType != privateAuthRuntimeCallbackContentTypeJSON {
+			return PrivateAuthRuntimeCallbackTransport{}, errors.New("private auth runtime callback content type is invalid")
+		}
+		if _, ok := seen[contentType]; ok {
+			return PrivateAuthRuntimeCallbackTransport{}, errors.New("private auth runtime callback content types contain duplicates")
+		}
+		seen[contentType] = struct{}{}
+		contentTypes = append(contentTypes, contentType)
+	}
+
+	return PrivateAuthRuntimeCallbackTransport{Mode: dto.Mode, ContentTypes: contentTypes, MaxBodyBytes: dto.MaxBodyBytes}, nil
+}
+
+func validatePrivateAuthRuntimeCollectorJS(source string) (string, error) {
+	if strings.TrimSpace(source) == "" {
+		return "", errors.New("private auth runtime collector source is required")
+	}
+	if len([]byte(source)) > privateAuthRuntimeMaxCollectorJSBytes || strings.ContainsRune(source, '\x00') {
+		return "", errors.New("private auth runtime collector source is invalid")
+	}
+
+	return source, nil
+}
+
+func privateAuthRuntimeCaptureFromDTO(dto privateAuthRuntimeCaptureContractDTO) (PrivateAuthRuntimeCaptureContract, error) {
+	if dto.Format != privateAuthRuntimeCaptureFormatJSON {
+		return PrivateAuthRuntimeCaptureContract{}, errors.New("private auth runtime capture format is invalid")
+	}
+	if len(dto.SecretCandidates) == 0 {
+		return PrivateAuthRuntimeCaptureContract{}, errors.New("private auth runtime capture candidates are required")
+	}
+	secretCandidates := make([]string, 0, len(dto.SecretCandidates))
+	seen := make(map[string]struct{}, len(dto.SecretCandidates))
+	for _, candidate := range dto.SecretCandidates {
+		if err := validatePrivateAuthRuntimeCaptureFieldPath(candidate); err != nil {
+			return PrivateAuthRuntimeCaptureContract{}, err
+		}
+		if _, ok := seen[candidate]; ok {
+			return PrivateAuthRuntimeCaptureContract{}, errors.New("private auth runtime capture candidates contain duplicates")
+		}
+		seen[candidate] = struct{}{}
+		secretCandidates = append(secretCandidates, candidate)
+	}
+	for _, optional := range []string{dto.KindField, dto.ExpiresAtField, dto.RedactedDisplayField} {
+		if optional == "" {
+			continue
+		}
+		if err := validatePrivateAuthRuntimeCaptureFieldPath(optional); err != nil {
+			return PrivateAuthRuntimeCaptureContract{}, err
+		}
+	}
+
+	return PrivateAuthRuntimeCaptureContract{
+		Format:               dto.Format,
+		SecretCandidates:     secretCandidates,
+		KindField:            dto.KindField,
+		ExpiresAtField:       dto.ExpiresAtField,
+		RedactedDisplayField: dto.RedactedDisplayField,
+	}, nil
+}
+
+func validatePrivateAuthRuntimeCaptureFieldPath(path string) error {
+	if path == "" || len(path) > 128 || strings.ContainsAny(path, " \t\r\n\x00*[]") || strings.Contains(path, "..") {
+		return errors.New("private auth runtime capture field path is invalid")
+	}
+	parts := strings.Split(path, ".")
+	if len(parts) > 8 {
+		return errors.New("private auth runtime capture field path is invalid")
+	}
+	for _, part := range parts {
+		if !isPrivateAuthRuntimeCaptureIdentifier(part) {
+			return errors.New("private auth runtime capture field path is invalid")
+		}
+	}
+
+	return nil
+}
+
+func isPrivateAuthRuntimeCaptureIdentifier(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9':
+			if i == 0 {
+				return false
+			}
+		case c == '_':
+			if i == 0 || i == len(value)-1 || value[i-1] == '_' {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	last := value[len(value)-1]
+
+	return last >= 'a' && last <= 'z' || last >= '0' && last <= '9'
 }
 
 func validatePrivateAuthRuntimeLoginURL(rawURL string) error {
@@ -519,8 +713,12 @@ func privateAuthRuntimeProvisioningFromDTO(dto privateAuthRuntimeProvisioningPol
 			return PrivateAuthRuntimeProvisioningPolicy{}, nil, err
 		}
 		for _, ref := range refs {
-			if profiles[ref].Login.URL == "" {
+			login := profiles[ref].Login
+			if login.URL == "" {
 				return PrivateAuthRuntimeProvisioningPolicy{}, nil, errors.New("private auth runtime provisioning login url is required")
+			}
+			if !login.callbackConfigured || !login.collectorConfigured || !login.captureConfigured {
+				return PrivateAuthRuntimeProvisioningPolicy{}, nil, errors.New("private auth runtime callback metadata is required")
 			}
 		}
 
@@ -622,6 +820,8 @@ func clonePrivateAuthRuntimeProfiles(profiles []PrivateAuthRuntimeProfile) []Pri
 
 func clonePrivateAuthRuntimeProfile(profile PrivateAuthRuntimeProfile) PrivateAuthRuntimeProfile {
 	profile.Login.AllowedDomains = cloneDomainRules(profile.Login.AllowedDomains)
+	profile.Login.CallbackTransport.ContentTypes = cloneStringSlice(profile.Login.CallbackTransport.ContentTypes)
+	profile.Login.Capture.SecretCandidates = cloneStringSlice(profile.Login.Capture.SecretCandidates)
 
 	return profile
 }

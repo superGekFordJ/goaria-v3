@@ -83,7 +83,8 @@ func main() {
 			application.NewService(appService),
 		},
 		Assets: application.AssetOptions{
-			Handler: http.FileServer(http.FS(frontendFS)),
+			Handler:    http.FileServer(http.FS(frontendFS)),
+			Middleware: appService.hostAuthCallbackMiddleware,
 		},
 		SingleInstance: &application.SingleInstanceOptions{
 			UniqueID: "singleinstance-goaria-cf3e88a7f3c5",

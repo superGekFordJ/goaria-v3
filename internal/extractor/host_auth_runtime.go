@@ -348,13 +348,16 @@ func (r *HostAuthRuntime) Provision(ctx context.Context, request HostAuthRuntime
 	for _, ref := range bound.selectedRefs {
 		profile := r.profiles[bound.pack.PackIdentity][ref]
 		webViewResult, err := r.coordinator.Start(ctx, WebViewAuthRequest{
-			PackID:         bound.pack.PackIdentity.PackID,
-			Manifest:       cloneManifest(request.Manifest),
-			ProfileID:      ref,
-			LoginURL:       profile.Login.URL,
-			AllowedDomains: cloneDomainRules(profile.Login.AllowedDomains),
-			Timeout:        time.Duration(profile.Login.TimeoutMillis) * time.Millisecond,
-			Kind:           profile.Kind,
+			PackID:            bound.pack.PackIdentity.PackID,
+			Manifest:          cloneManifest(request.Manifest),
+			ProfileID:         ref,
+			LoginURL:          profile.Login.URL,
+			AllowedDomains:    cloneDomainRules(profile.Login.AllowedDomains),
+			Timeout:           time.Duration(profile.Login.TimeoutMillis) * time.Millisecond,
+			Kind:              profile.Kind,
+			CallbackTransport: webViewAuthCallbackTransportFromRuntime(profile.Login.CallbackTransport),
+			CollectorJS:       profile.Login.CollectorJS,
+			Capture:           webViewAuthCaptureFromRuntime(profile.Login.Capture, bound.pack.Normalization),
 		})
 		if err != nil {
 			return r.provisionUnavailableResult(bound), errors.New(hostAuthRuntimeProvisionUnavailableMessage)
@@ -615,9 +618,38 @@ func (r *HostAuthRuntime) validateProvisionable(bound hostAuthRuntimeBoundReques
 		if profile.Login.URL == "" {
 			return errors.New(hostAuthRuntimeProvisionUnavailableMessage)
 		}
+		if err := validateWebViewAuthCallbackTransport(webViewAuthCallbackTransportFromRuntime(profile.Login.CallbackTransport)); err != nil {
+			return errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+		}
+		if err := validateWebViewAuthCollectorJS(profile.Login.CollectorJS); err != nil {
+			return errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+		}
+		if err := validateWebViewAuthCaptureContract(webViewAuthCaptureFromRuntime(profile.Login.Capture, bound.pack.Normalization)); err != nil {
+			return errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+		}
 	}
 
 	return nil
+}
+
+func webViewAuthCallbackTransportFromRuntime(transport PrivateAuthRuntimeCallbackTransport) WebViewAuthCallbackTransport {
+	return WebViewAuthCallbackTransport{
+		Mode:         transport.Mode,
+		ContentTypes: cloneStringSlice(transport.ContentTypes),
+		MaxBodyBytes: transport.MaxBodyBytes,
+	}
+}
+
+func webViewAuthCaptureFromRuntime(capture PrivateAuthRuntimeCaptureContract, normalization PrivateAuthRuntimeNormalizationPolicy) WebViewAuthCaptureContract {
+	return WebViewAuthCaptureContract{
+		Format:               capture.Format,
+		SecretCandidates:     cloneStringSlice(capture.SecretCandidates),
+		KindField:            capture.KindField,
+		ExpiresAtField:       capture.ExpiresAtField,
+		RedactedDisplayField: capture.RedactedDisplayField,
+		TrimSpace:            normalization.TrimSpace,
+		RejectCRLF:           normalization.RejectCRLF,
+	}
 }
 
 func (r *HostAuthRuntime) unavailableResult(bound hostAuthRuntimeBoundRequest) HostAuthRuntimeResult {

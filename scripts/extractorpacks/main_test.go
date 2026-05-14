@@ -1673,6 +1673,19 @@ func privateAuthRuntimeBundleRawForScript(t *testing.T, fixtures []privatePolicy
 					"url":             loginURL,
 					"allowed_domains": []map[string]any{{"host": loginHost}},
 					"timeout_millis":  30000,
+					"callback_transport": map[string]any{
+						"mode":           "local_post",
+						"content_types":  []string{"application/json"},
+						"max_body_bytes": int64(16384),
+					},
+					"collector_js": "(() => { return function(ctx, postCapture) { return ctx && postCapture; }; })();",
+					"capture": map[string]any{
+						"format":                 "json",
+						"secret_candidates":      []string{"secret", "capture.secret"},
+						"kind_field":             "kind",
+						"expires_at_field":       "expires_at",
+						"redacted_display_field": "redacted_display",
+					},
 				},
 			}},
 			"preflight": map[string]any{

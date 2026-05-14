@@ -236,10 +236,13 @@ func TestAppHostAuthDriverBuildsGenericSessionRequest(t *testing.T) {
 		t.Fatalf("AllowedDomains = %#v, want fixture.invalid", got.AllowedDomains)
 	}
 	formatted := fmt.Sprintf("%#v", got)
-	for _, forbidden := range []string{"collector", "script", "provider", "cookieName", "login step"} {
+	for _, forbidden := range []string{"provider", "cookieName", "login step"} {
 		if strings.Contains(strings.ToLower(formatted), strings.ToLower(forbidden)) {
 			t.Fatalf("generic request contains forbidden marker %q: %s", forbidden, formatted)
 		}
+	}
+	if got.CallbackPath == "" || got.CallbackURL == "" || got.SessionToken == "" || got.CollectorJS == "" || got.CallbackTransport.Mode != "local_post" || len(got.Capture.SecretCandidates) == 0 {
+		t.Fatalf("generic callback request metadata missing: %#v", got)
 	}
 }
 
@@ -630,6 +633,21 @@ func appHostAuthWebViewRequest(timeout time.Duration) extractor.WebViewAuthReque
 		AllowedDomains: []extractor.DomainRule{{Host: "fixture.invalid"}},
 		Timeout:        timeout,
 		Kind:           extractor.AuthSecretKindBearer,
+		CallbackTransport: extractor.WebViewAuthCallbackTransport{
+			Mode:         "local_post",
+			ContentTypes: []string{"application/json"},
+			MaxBodyBytes: 16384,
+		},
+		CollectorJS: "(() => { return function(ctx, postCapture) { return ctx && postCapture; }; })();",
+		Capture: extractor.WebViewAuthCaptureContract{
+			Format:               "json",
+			SecretCandidates:     []string{"secret", "capture.secret"},
+			KindField:            "kind",
+			ExpiresAtField:       "expires_at",
+			RedactedDisplayField: "redacted_display",
+			TrimSpace:            true,
+			RejectCRLF:           true,
+		},
 	}
 }
 
@@ -673,7 +691,7 @@ func assertRootNoSecretText(t *testing.T, text string, forbidden ...string) {
 
 func syntheticRootPrivateAuthRuntimeBundle(t *testing.T) *extractor.PrivateAuthRuntimeBundle {
 	t.Helper()
-	runtimeRaw := []byte(`{"packs":[{"verified_pack_identity":{"pack_id":"xpk-alpha001","pack_version":"opaque-1","asset_sha256":"` + strings.Repeat("1", 64) + `","manifest_sha256":"` + strings.Repeat("2", 64) + `","payload_sha256":"` + strings.Repeat("3", 64) + `","signature_sha256":"` + strings.Repeat("4", 64) + `","public_key_sha256":"` + strings.Repeat("5", 64) + `"},"store_binding":{"scope":"pack","profile_refs":["apr-alpha001"]},"profiles":[{"profile_ref":"apr-alpha001","kind":"bearer","login":{"url":"https://fixture.invalid/login","allowed_domains":[{"host":"fixture.invalid"}],"timeout_millis":30000}}],"preflight":{"mode":"required","missing":"refresh","expired":"refresh"},"provisioning":{"mode":"webview","profile_refs":["apr-alpha001"]},"materialization":{"profile_refs":["apr-alpha001"]},"normalization":{"reject_crlf":true,"trim_space":true}}]}`)
+	runtimeRaw := []byte(`{"packs":[{"verified_pack_identity":{"pack_id":"xpk-alpha001","pack_version":"opaque-1","asset_sha256":"` + strings.Repeat("1", 64) + `","manifest_sha256":"` + strings.Repeat("2", 64) + `","payload_sha256":"` + strings.Repeat("3", 64) + `","signature_sha256":"` + strings.Repeat("4", 64) + `","public_key_sha256":"` + strings.Repeat("5", 64) + `"},"store_binding":{"scope":"pack","profile_refs":["apr-alpha001"]},"profiles":[{"profile_ref":"apr-alpha001","kind":"bearer","login":{"url":"https://fixture.invalid/login","allowed_domains":[{"host":"fixture.invalid"}],"timeout_millis":30000,"callback_transport":{"mode":"local_post","content_types":["application/json"],"max_body_bytes":16384},"collector_js":"(() => { return function(ctx, postCapture) { return ctx && postCapture; }; })();","capture":{"format":"json","secret_candidates":["secret","capture.secret"],"kind_field":"kind","expires_at_field":"expires_at","redacted_display_field":"redacted_display"}}}],"preflight":{"mode":"required","missing":"refresh","expired":"refresh"},"provisioning":{"mode":"webview","profile_refs":["apr-alpha001"]},"materialization":{"profile_refs":["apr-alpha001"]},"normalization":{"reject_crlf":true,"trim_space":true}}]}`)
 	envelope := []byte(`{"schema_version":1,"bundle_id":"arb-alpha001","bundle_version":"opaque-1","auth_runtime_private_sha256":"` + sha256HexForAppHostAuthTest(runtimeRaw) + `","runtime":` + string(runtimeRaw) + `}`)
 	bundle, err := extractor.NewPrivateAuthRuntimeBundle(envelope, extractor.PrivateAuthRuntimeBundleLoadOptions{})
 	if err != nil {
