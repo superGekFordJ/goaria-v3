@@ -1,6 +1,7 @@
 package extractor
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -26,9 +27,11 @@ var tokenLikeQueryKeys = map[string]struct{}{
 var sensitiveHeaderStartPattern = regexp.MustCompile(`(?i)\b(authorization|cookie|set-cookie|proxy-authorization|x-[a-z0-9-]*(?:api[-_]?key|auth|token|secret)[a-z0-9-]*)\s*[:=]\s*`)
 
 type CapabilityContext struct {
-	PackID     string
-	Manifest   Manifest
-	Capability Capability
+	PackID             string
+	Manifest           Manifest
+	Capability         Capability
+	PackIdentity       VerifiedPackIdentity
+	HostPolicyResolver HostPolicyResolver
 }
 
 func ManifestHasCapability(manifest Manifest, capability Capability) bool {
@@ -51,11 +54,38 @@ func ValidateCapabilityURL(ctx CapabilityContext, rawURL string) error {
 	if !ManifestHasCapability(ctx.Manifest, ctx.Capability) {
 		return redactErrorf("pack %q missing required capability %q", ctx.PackID, ctx.Capability)
 	}
-	if _, err := allowedHTTPURLForManifest(ctx.Manifest, rawURL); err != nil {
+	if _, err := allowedHTTPURLForCapability(ctx, rawURL); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func allowedHTTPURLForCapability(ctx CapabilityContext, rawURL string) (*url.URL, error) {
+	if isAliasManifest(ctx.Manifest) {
+		return allowedHTTPURLForAliasPolicy(context.Background(), ctx.Manifest, ctx.PackIdentity, ctx.HostPolicyResolver, ctx.Capability, rawURL)
+	}
+
+	return allowedHTTPURLForManifest(ctx.Manifest, rawURL)
+}
+
+func allowedHTTPURLForAliasPolicy(ctx context.Context, manifest Manifest, identity VerifiedPackIdentity, resolver HostPolicyResolver, capability Capability, rawURL string) (*url.URL, error) {
+	parsed, host, err := parseSafeHTTPURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	policy, err := resolveAliasHostPolicy(ctx, resolver, identity, manifest)
+	if err != nil {
+		return nil, redactErrorf("alias host policy denied url")
+	}
+	if !policyAllowsCapability(policy, capability) {
+		return nil, redactErrorf("alias host policy does not allow requested capability")
+	}
+	if !policyBrokerMatchesHost(policy, host) {
+		return nil, redactErrorf("url is not allowed by alias broker policy")
+	}
+
+	return parsed, nil
 }
 
 func allowedHTTPURLForManifest(manifest Manifest, rawURL string) (*url.URL, error) {

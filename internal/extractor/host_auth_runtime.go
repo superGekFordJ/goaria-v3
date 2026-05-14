@@ -17,19 +17,21 @@ const (
 )
 
 type HostAuthRuntimeConfig struct {
-	Bundle       *PrivateAuthRuntimeBundle
-	Store        AuthProfileStore
-	Coordinator  *WebViewAuthCoordinator
-	Materializer AuthMaterializer
-	Now          func() time.Time
+	Bundle             *PrivateAuthRuntimeBundle
+	Store              AuthProfileStore
+	Coordinator        *WebViewAuthCoordinator
+	Materializer       AuthMaterializer
+	HostPolicyResolver HostPolicyResolver
+	Now                func() time.Time
 }
 
 type HostAuthRuntime struct {
-	bundle       *PrivateAuthRuntimeBundle
-	store        AuthProfileStore
-	coordinator  *WebViewAuthCoordinator
-	materializer AuthMaterializer
-	now          func() time.Time
+	bundle             *PrivateAuthRuntimeBundle
+	store              AuthProfileStore
+	coordinator        *WebViewAuthCoordinator
+	materializer       AuthMaterializer
+	hostPolicyResolver HostPolicyResolver
+	now                func() time.Time
 
 	identityIndex map[VerifiedPackIdentity]PrivateAuthRuntimePack
 	packIDIndex   map[string][]VerifiedPackIdentity
@@ -94,6 +96,22 @@ type hostAuthRuntimeBoundRequest struct {
 	targetHost   string
 }
 
+type hostAuthRuntimeProfileSnapshotClass string
+
+const (
+	hostAuthRuntimeProfileSnapshotAvailable           hostAuthRuntimeProfileSnapshotClass = "available"
+	hostAuthRuntimeProfileSnapshotMissing             hostAuthRuntimeProfileSnapshotClass = "missing"
+	hostAuthRuntimeProfileSnapshotExpired             hostAuthRuntimeProfileSnapshotClass = "expired"
+	hostAuthRuntimeProfileSnapshotStaleKindMismatch   hostAuthRuntimeProfileSnapshotClass = "stale_kind_mismatch"
+	hostAuthRuntimeProfileSnapshotStaleEmptyDomains   hostAuthRuntimeProfileSnapshotClass = "stale_empty_domains"
+	hostAuthRuntimeProfileSnapshotStaleDomainMismatch hostAuthRuntimeProfileSnapshotClass = "stale_domain_mismatch"
+)
+
+type hostAuthRuntimeProvisionPlan struct {
+	profile PrivateAuthRuntimeProfile
+	request WebViewAuthRequest
+}
+
 func NewHostAuthRuntime(config HostAuthRuntimeConfig) *HostAuthRuntime {
 	materializer := config.Materializer
 	if materializer == nil {
@@ -105,17 +123,18 @@ func NewHostAuthRuntime(config HostAuthRuntimeConfig) *HostAuthRuntime {
 	}
 
 	runtime := &HostAuthRuntime{
-		bundle:        config.Bundle,
-		store:         config.Store,
-		coordinator:   config.Coordinator,
-		materializer:  materializer,
-		now:           now,
-		identityIndex: make(map[VerifiedPackIdentity]PrivateAuthRuntimePack),
-		packIDIndex:   make(map[string][]VerifiedPackIdentity),
-		profiles:      make(map[VerifiedPackIdentity]map[AuthProfileID]PrivateAuthRuntimeProfile),
-		storeRefs:     make(map[VerifiedPackIdentity]map[AuthProfileID]struct{}),
-		materialRefs:  make(map[VerifiedPackIdentity]map[AuthProfileID]struct{}),
-		provisionRefs: make(map[VerifiedPackIdentity]map[AuthProfileID]struct{}),
+		bundle:             config.Bundle,
+		store:              config.Store,
+		coordinator:        config.Coordinator,
+		materializer:       materializer,
+		hostPolicyResolver: config.HostPolicyResolver,
+		now:                now,
+		identityIndex:      make(map[VerifiedPackIdentity]PrivateAuthRuntimePack),
+		packIDIndex:        make(map[string][]VerifiedPackIdentity),
+		profiles:           make(map[VerifiedPackIdentity]map[AuthProfileID]PrivateAuthRuntimeProfile),
+		storeRefs:          make(map[VerifiedPackIdentity]map[AuthProfileID]struct{}),
+		materialRefs:       make(map[VerifiedPackIdentity]map[AuthProfileID]struct{}),
+		provisionRefs:      make(map[VerifiedPackIdentity]map[AuthProfileID]struct{}),
 	}
 	if config.Bundle == nil || config.Bundle.PackCount() == 0 {
 		return runtime
@@ -160,6 +179,12 @@ func (r *HostAuthRuntime) Preflight(ctx context.Context, request HostAuthRuntime
 		result.Available = !result.Required && bound.pack.Preflight.Mode == "optional"
 		result.ProfileStatuses = hostAuthRuntimeUnavailableStatuses(bound)
 		result.Message = hostAuthRuntimeProfileUnavailableMessage
+		if bound.pack.Preflight.Mode == "optional" {
+			result.Required = false
+			result.Available = true
+			result.Refreshable = false
+			result.Message = ""
+		}
 		return cloneHostAuthRuntimeResult(result), nil
 	}
 
@@ -183,12 +208,14 @@ func (r *HostAuthRuntime) Preflight(ctx context.Context, request HostAuthRuntime
 			Kind:       profile.Kind,
 			Status:     HostAuthRuntimeProfileMissing,
 		}
+		class := hostAuthRuntimeProfileSnapshotMissing
 		if snapshot, ok := snapshotByProfile[ref]; ok {
 			statusResult.Snapshot = cloneAuthProfileSnapshot(snapshot)
 			statusResult.RedactedDisplay = snapshot.RedactedDisplay
-			statusResult.Status = hostAuthRuntimeSnapshotStatus(snapshot, profile, bound.targetHost, r.effectiveNow())
+			class = hostAuthRuntimeClassifySnapshot(snapshot, profile, bound.targetHost, r.effectiveNow())
+			statusResult.Status = class.status()
 		}
-		statusResult.Refreshable = r.profileRefreshable(bound.pack, ref, statusResult.Status)
+		statusResult.Refreshable = r.profileRefreshable(ctx, bound, ref, class)
 		if bound.pack.Preflight.Mode == "optional" {
 			statusResult.Refreshable = false
 		}
@@ -303,30 +330,39 @@ func (r *HostAuthRuntime) Ensure(ctx context.Context, request HostAuthRuntimeReq
 		return cloneHostAuthRuntimeResult(preflight), nil
 	}
 
-	provisioned := false
-	for _, ref := range refs {
-		nextRequest := request
-		nextRequest.ProfileRef = ref
-		result, err := r.Provision(ctx, nextRequest)
-		if err != nil {
-			return result, err
-		}
-		if !result.Provisioned || !result.Available {
-			return result, nil
-		}
-		provisioned = true
-	}
-
-	result, err := r.Preflight(ctx, request)
+	bound, result, done, err := r.bindRequest(request, hostAuthRuntimeBindOptions{strictProfileBinding: true})
 	if err != nil {
 		return result, err
 	}
-	result.Provisioned = provisioned
-	if provisioned && result.Message == "" {
-		result.Message = "auth profile available"
+	if done {
+		return cloneHostAuthRuntimeResult(result), nil
 	}
 
-	return cloneHostAuthRuntimeResult(result), nil
+	return r.provisionAndPreflight(ctx, bound, refs)
+}
+
+func (r *HostAuthRuntime) RefreshOnRecoverablePreflightFailure(ctx context.Context, request HostAuthRuntimeRequest, guard *HostAuthRuntimeBatchGuard) (HostAuthRuntimeResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	preflight, err := r.Preflight(ctx, request)
+	if err != nil || !preflight.Matched || !preflight.Required || preflight.Available {
+		return preflight, err
+	}
+	if !preflight.Refreshable || !hostAuthRuntimeNonAvailableProfilesRefreshable(preflight) {
+		preflight.Message = hostAuthRuntimeProfileUnavailableMessage
+		return cloneHostAuthRuntimeResult(preflight), nil
+	}
+
+	bound, result, done, err := r.bindRequest(request, hostAuthRuntimeBindOptions{strictProfileBinding: true})
+	if err != nil {
+		return result, err
+	}
+	if done {
+		return cloneHostAuthRuntimeResult(result), nil
+	}
+	refs := hostAuthRuntimeRefreshableRefs(preflight)
+	return r.clearProvisionAndPreflight(ctx, bound, refs, guard)
 }
 
 func (r *HostAuthRuntime) Provision(ctx context.Context, request HostAuthRuntimeRequest) (HostAuthRuntimeResult, error) {
@@ -340,25 +376,14 @@ func (r *HostAuthRuntime) Provision(ctx context.Context, request HostAuthRuntime
 	if done {
 		return cloneHostAuthRuntimeResult(result), nil
 	}
-	if err := r.validateProvisionable(bound); err != nil {
+	plans, err := r.provisionPlans(ctx, bound)
+	if err != nil {
 		result = r.provisionUnavailableResult(bound)
 		return result, err
 	}
 
-	for _, ref := range bound.selectedRefs {
-		profile := r.profiles[bound.pack.PackIdentity][ref]
-		webViewResult, err := r.coordinator.Start(ctx, WebViewAuthRequest{
-			PackID:            bound.pack.PackIdentity.PackID,
-			Manifest:          cloneManifest(request.Manifest),
-			ProfileID:         ref,
-			LoginURL:          profile.Login.URL,
-			AllowedDomains:    cloneDomainRules(profile.Login.AllowedDomains),
-			Timeout:           time.Duration(profile.Login.TimeoutMillis) * time.Millisecond,
-			Kind:              profile.Kind,
-			CallbackTransport: webViewAuthCallbackTransportFromRuntime(profile.Login.CallbackTransport),
-			CollectorJS:       profile.Login.CollectorJS,
-			Capture:           webViewAuthCaptureFromRuntime(profile.Login.Capture, bound.pack.Normalization),
-		})
+	for _, plan := range plans {
+		webViewResult, err := r.startProvisioningWebView(ctx, plan.request)
 		if err != nil {
 			return r.provisionUnavailableResult(bound), errors.New(hostAuthRuntimeProvisionUnavailableMessage)
 		}
@@ -377,6 +402,60 @@ func (r *HostAuthRuntime) Provision(ctx context.Context, request HostAuthRuntime
 	}
 
 	return cloneHostAuthRuntimeResult(result), nil
+}
+
+func (r *HostAuthRuntime) startProvisioningWebView(ctx context.Context, request WebViewAuthRequest) (WebViewAuthResult, error) {
+	return r.coordinator.startValidated(ctx, request)
+}
+
+func (r *HostAuthRuntime) validateAliasWebViewAuthRequest(ctx context.Context, bound hostAuthRuntimeBoundRequest, profile PrivateAuthRuntimeProfile, request WebViewAuthRequest) (WebViewAuthRequest, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if r == nil || r.hostPolicyResolver == nil || bound.pack.PackIdentity == (VerifiedPackIdentity{}) {
+		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+	}
+	if request.Manifest.PackID != bound.pack.PackIdentity.PackID || request.Manifest.PackVersion != bound.pack.PackIdentity.PackVersion || request.PackID != bound.pack.PackIdentity.PackID {
+		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+	}
+	if profile.ProfileRef != request.ProfileID {
+		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+	}
+	if _, ok := r.provisionRefs[bound.pack.PackIdentity][request.ProfileID]; !ok {
+		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+	}
+	if _, ok := r.boundMaterializedProfile(bound.pack.PackIdentity, request.ProfileID); !ok {
+		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+	}
+
+	policy, err := resolveAliasHostPolicy(ctx, r.hostPolicyResolver, bound.pack.PackIdentity, request.Manifest)
+	if err != nil {
+		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+	}
+	if !ManifestHasCapability(request.Manifest, CapabilityAuthProfile) || !policyAllowsCapability(policy, CapabilityAuthProfile) {
+		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+	}
+	if err := ValidateCapabilityURL(CapabilityContext{
+		PackID:             request.PackID,
+		Manifest:           request.Manifest,
+		Capability:         CapabilityAuthProfile,
+		PackIdentity:       bound.pack.PackIdentity,
+		HostPolicyResolver: r.hostPolicyResolver,
+	}, request.LoginURL); err != nil {
+		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+	}
+
+	validatedRequest, err := validateWebViewAuthRequestBase(request)
+	if err != nil {
+		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+	}
+	for _, rule := range validatedRequest.AllowedDomains {
+		if !policyAuthProfileMatchesHost(policy, request.ProfileID, rule.Host) {
+			return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+		}
+	}
+
+	return validatedRequest, nil
 }
 
 func (r *HostAuthRuntime) Clear(ctx context.Context, request HostAuthRuntimeRequest) (HostAuthRuntimeResult, error) {
@@ -425,26 +504,16 @@ func (r *HostAuthRuntime) RefreshOnGenericFailure(ctx context.Context, request H
 	if done {
 		return cloneHostAuthRuntimeResult(result), nil
 	}
-	if !r.isProvisionable(bound) {
-		preflight.Message = hostAuthRuntimeProvisionUnavailableMessage
-		return cloneHostAuthRuntimeResult(preflight), nil
+	refs := hostAuthRuntimeAvailableProfileRefs(preflight)
+	if len(refs) == 0 && preflight.Available {
+		refs = cloneAuthProfileIDSlice(bound.selectedRefs)
 	}
-	if guard != nil && !guard.mark(hostAuthRuntimeGuardKey(bound)) {
-		preflight.RefreshSkipped = true
-		preflight.Message = "auth refresh skipped"
-		return cloneHostAuthRuntimeResult(preflight), nil
-	}
-	if r.store == nil {
+	if len(refs) == 0 {
 		preflight.Message = hostAuthRuntimeProfileUnavailableMessage
 		return cloneHostAuthRuntimeResult(preflight), nil
 	}
-	for _, ref := range bound.selectedRefs {
-		if err := r.store.ClearAuthProfile(ctx, bound.pack.PackIdentity.PackID, ref); err != nil {
-			return r.unavailableResult(bound), errors.New(hostAuthRuntimeProfileUnavailableMessage)
-		}
-	}
 
-	return r.Provision(ctx, request)
+	return r.clearProvisionAndPreflight(ctx, bound, refs, guard)
 }
 
 func (r HostAuthRuntimeResult) String() string {
@@ -461,6 +530,109 @@ func (r HostAuthRuntimeProfileResult) String() string {
 
 func (r HostAuthRuntimeProfileResult) GoString() string {
 	return r.String()
+}
+
+func (r *HostAuthRuntime) clearProvisionAndPreflight(ctx context.Context, bound hostAuthRuntimeBoundRequest, refs []AuthProfileID, guard *HostAuthRuntimeBatchGuard) (HostAuthRuntimeResult, error) {
+	if len(refs) == 0 {
+		return r.unavailableResult(bound), nil
+	}
+	refreshBound := bound
+	refreshBound.selectedRefs = cloneAuthProfileIDSlice(refs)
+	plans, err := r.provisionPlans(ctx, refreshBound)
+	if err != nil {
+		return r.provisionUnavailableResult(refreshBound), err
+	}
+	if guard != nil && !guard.mark(hostAuthRuntimeGuardKey(refreshBound)) {
+		result := r.unavailableResult(refreshBound)
+		result.RefreshSkipped = true
+		result.Message = "auth refresh skipped"
+		return cloneHostAuthRuntimeResult(result), nil
+	}
+	if r.store == nil {
+		return r.unavailableResult(refreshBound), nil
+	}
+	for _, ref := range refs {
+		if err := r.store.ClearAuthProfile(ctx, refreshBound.pack.PackIdentity.PackID, ref); err != nil {
+			return r.unavailableResult(refreshBound), errors.New(hostAuthRuntimeProfileUnavailableMessage)
+		}
+	}
+
+	return r.runProvisionPlansAndPreflight(ctx, refreshBound, bound.request, plans)
+}
+
+func (r *HostAuthRuntime) provisionAndPreflight(ctx context.Context, bound hostAuthRuntimeBoundRequest, refs []AuthProfileID) (HostAuthRuntimeResult, error) {
+	if len(refs) == 0 {
+		return r.unavailableResult(bound), nil
+	}
+	provisionBound := bound
+	provisionBound.selectedRefs = cloneAuthProfileIDSlice(refs)
+	plans, err := r.provisionPlans(ctx, provisionBound)
+	if err != nil {
+		return r.provisionUnavailableResult(provisionBound), err
+	}
+
+	return r.runProvisionPlansAndPreflight(ctx, provisionBound, bound.request, plans)
+}
+
+func (r *HostAuthRuntime) runProvisionPlansAndPreflight(ctx context.Context, bound hostAuthRuntimeBoundRequest, finalRequest HostAuthRuntimeRequest, plans []hostAuthRuntimeProvisionPlan) (HostAuthRuntimeResult, error) {
+	for _, plan := range plans {
+		webViewResult, err := r.startProvisioningWebView(ctx, plan.request)
+		if err != nil {
+			return r.provisionUnavailableResult(bound), errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+		}
+		if webViewResult.Status != WebViewAuthStatusSuccess {
+			return r.provisionUnavailableResult(bound), nil
+		}
+	}
+
+	result, err := r.Preflight(ctx, finalRequest)
+	if err != nil {
+		return result, err
+	}
+	result.Provisioned = true
+	if result.Message == "" {
+		result.Message = "auth profile available"
+	}
+
+	return cloneHostAuthRuntimeResult(result), nil
+}
+
+func (r *HostAuthRuntime) provisionPlans(ctx context.Context, bound hostAuthRuntimeBoundRequest) ([]hostAuthRuntimeProvisionPlan, error) {
+	if err := r.validateProvisionable(bound); err != nil {
+		return nil, err
+	}
+	plans := make([]hostAuthRuntimeProvisionPlan, 0, len(bound.selectedRefs))
+	for _, ref := range bound.selectedRefs {
+		profile := r.profiles[bound.pack.PackIdentity][ref]
+		webViewRequest := WebViewAuthRequest{
+			PackID:            bound.pack.PackIdentity.PackID,
+			Manifest:          cloneManifest(bound.request.Manifest),
+			ProfileID:         ref,
+			LoginURL:          profile.Login.URL,
+			AllowedDomains:    cloneDomainRules(profile.Login.AllowedDomains),
+			Timeout:           time.Duration(profile.Login.TimeoutMillis) * time.Millisecond,
+			Kind:              profile.Kind,
+			CallbackTransport: webViewAuthCallbackTransportFromRuntime(profile.Login.CallbackTransport),
+			CollectorJS:       profile.Login.CollectorJS,
+			Capture:           webViewAuthCaptureFromRuntime(profile.Login.Capture, bound.pack.Normalization),
+		}
+		if isAliasManifest(webViewRequest.Manifest) {
+			validatedRequest, err := r.validateAliasWebViewAuthRequest(ctx, bound, profile, webViewRequest)
+			if err != nil {
+				return nil, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+			}
+			webViewRequest = validatedRequest
+		} else {
+			validatedRequest, err := validateWebViewAuthRequest(webViewRequest)
+			if err != nil {
+				return nil, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+			}
+			webViewRequest = validatedRequest
+		}
+		plans = append(plans, hostAuthRuntimeProvisionPlan{profile: profile, request: webViewRequest})
+	}
+
+	return plans, nil
 }
 
 func (g *HostAuthRuntimeBatchGuard) mark(key string) bool {
@@ -582,29 +754,36 @@ func (r *HostAuthRuntime) boundMaterializedProfile(identity VerifiedPackIdentity
 	return clonePrivateAuthRuntimeProfile(profile), true
 }
 
-func (r *HostAuthRuntime) profileRefreshable(pack PrivateAuthRuntimePack, ref AuthProfileID, status HostAuthRuntimeProfileStatus) bool {
-	if r == nil || r.coordinator == nil || pack.Provisioning.Mode != "webview" {
+func (r *HostAuthRuntime) profileRefreshable(ctx context.Context, bound hostAuthRuntimeBoundRequest, ref AuthProfileID, class hostAuthRuntimeProfileSnapshotClass) bool {
+	if r == nil || bound.pack.Provisioning.Mode != "webview" {
 		return false
 	}
-	if _, ok := r.provisionRefs[pack.PackIdentity][ref]; !ok {
+	if _, ok := r.provisionRefs[bound.pack.PackIdentity][ref]; !ok {
 		return false
 	}
-	switch status {
-	case HostAuthRuntimeProfileMissing:
-		return pack.Preflight.Missing == "refresh"
-	case HostAuthRuntimeProfileExpired:
-		return pack.Preflight.Expired == "refresh"
+	allowed := false
+	switch class {
+	case hostAuthRuntimeProfileSnapshotMissing:
+		allowed = bound.pack.Preflight.Missing == "refresh"
+	case hostAuthRuntimeProfileSnapshotExpired:
+		allowed = bound.pack.Preflight.Expired == "refresh"
+	case hostAuthRuntimeProfileSnapshotStaleKindMismatch, hostAuthRuntimeProfileSnapshotStaleEmptyDomains, hostAuthRuntimeProfileSnapshotStaleDomainMismatch:
+		allowed = true
 	default:
 		return false
 	}
-}
+	if !allowed {
+		return false
+	}
+	refreshBound := bound
+	refreshBound.selectedRefs = []AuthProfileID{ref}
+	_, err := r.provisionPlans(ctx, refreshBound)
 
-func (r *HostAuthRuntime) isProvisionable(bound hostAuthRuntimeBoundRequest) bool {
-	return r.validateProvisionable(bound) == nil
+	return err == nil
 }
 
 func (r *HostAuthRuntime) validateProvisionable(bound hostAuthRuntimeBoundRequest) error {
-	if r == nil || r.coordinator == nil || bound.pack.Provisioning.Mode != "webview" {
+	if r == nil || r.coordinator == nil || r.coordinator.store == nil || r.coordinator.driver == nil || bound.pack.Provisioning.Mode != "webview" {
 		return errors.New(hostAuthRuntimeProvisionUnavailableMessage)
 	}
 	for _, ref := range bound.selectedRefs {
@@ -689,27 +868,77 @@ func hostAuthRuntimeUnavailableStatuses(bound hostAuthRuntimeBoundRequest) []Hos
 	return statuses
 }
 
-func hostAuthRuntimeSnapshotStatus(snapshot AuthProfileSnapshot, profile PrivateAuthRuntimeProfile, targetHost string, now time.Time) HostAuthRuntimeProfileStatus {
+func hostAuthRuntimeClassifySnapshot(snapshot AuthProfileSnapshot, profile PrivateAuthRuntimeProfile, targetHost string, now time.Time) hostAuthRuntimeProfileSnapshotClass {
 	if !snapshot.HasSecret {
-		return HostAuthRuntimeProfileMissing
+		return hostAuthRuntimeProfileSnapshotMissing
 	}
 	if snapshot.Kind != profile.Kind {
-		return HostAuthRuntimeProfileUnavailable
+		return hostAuthRuntimeProfileSnapshotStaleKindMismatch
 	}
 	if snapshot.ExpiresAt != nil && now.After(*snapshot.ExpiresAt) {
-		return HostAuthRuntimeProfileExpired
+		return hostAuthRuntimeProfileSnapshotExpired
 	}
 	if targetHost == "" {
-		return HostAuthRuntimeProfileAvailable
+		return hostAuthRuntimeProfileSnapshotAvailable
 	}
 	if len(snapshot.AllowedDomains) == 0 {
-		return HostAuthRuntimeProfileUnavailable
+		return hostAuthRuntimeProfileSnapshotStaleEmptyDomains
 	}
 	if targetHost != "" && !domainRulesMatchHost(snapshot.AllowedDomains, targetHost) {
-		return HostAuthRuntimeProfileUnavailable
+		return hostAuthRuntimeProfileSnapshotStaleDomainMismatch
 	}
 
-	return HostAuthRuntimeProfileAvailable
+	return hostAuthRuntimeProfileSnapshotAvailable
+}
+
+func (c hostAuthRuntimeProfileSnapshotClass) status() HostAuthRuntimeProfileStatus {
+	switch c {
+	case hostAuthRuntimeProfileSnapshotAvailable:
+		return HostAuthRuntimeProfileAvailable
+	case hostAuthRuntimeProfileSnapshotMissing:
+		return HostAuthRuntimeProfileMissing
+	case hostAuthRuntimeProfileSnapshotExpired:
+		return HostAuthRuntimeProfileExpired
+	default:
+		return HostAuthRuntimeProfileUnavailable
+	}
+}
+
+func hostAuthRuntimeNonAvailableProfilesRefreshable(result HostAuthRuntimeResult) bool {
+	foundNonAvailable := false
+	for _, status := range result.ProfileStatuses {
+		if status.Status == HostAuthRuntimeProfileAvailable {
+			continue
+		}
+		foundNonAvailable = true
+		if !status.Refreshable {
+			return false
+		}
+	}
+
+	return foundNonAvailable
+}
+
+func hostAuthRuntimeRefreshableRefs(result HostAuthRuntimeResult) []AuthProfileID {
+	refs := make([]AuthProfileID, 0, len(result.ProfileStatuses))
+	for _, status := range result.ProfileStatuses {
+		if status.Status != HostAuthRuntimeProfileAvailable && status.Refreshable {
+			refs = append(refs, status.ProfileRef)
+		}
+	}
+
+	return refs
+}
+
+func hostAuthRuntimeAvailableProfileRefs(result HostAuthRuntimeResult) []AuthProfileID {
+	refs := make([]AuthProfileID, 0, len(result.ProfileStatuses))
+	for _, status := range result.ProfileStatuses {
+		if status.Status == HostAuthRuntimeProfileAvailable {
+			refs = append(refs, status.ProfileRef)
+		}
+	}
+
+	return refs
 }
 
 func hostAuthRuntimeNoRuntimeResult() HostAuthRuntimeResult {

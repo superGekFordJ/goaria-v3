@@ -78,6 +78,48 @@ func TestWebViewAuthSuccessStoresProfileAndReturnsRedactedResult(t *testing.T) {
 	}
 }
 
+func TestWebViewAuthSuccessStoreIsDefaultMaterializerCompatible(t *testing.T) {
+	store := newTempAuthProfileStore(t)
+	driver := newFakeAuthWebViewDriver()
+	coordinator := NewWebViewAuthCoordinator(store, driver)
+	secret := "materializer-compatible-token"
+	packID := "xpk-webview001"
+	profileID := AuthProfileID("apr-webview001")
+	targetURL := "https://fixture.test/d/abc"
+
+	resultCh := make(chan webViewAuthOutcome, 1)
+	go func() {
+		result, err := coordinator.Start(context.Background(), webViewAuthRequestForTest(func(request *WebViewAuthRequest) {
+			request.PackID = packID
+			request.Manifest.PackID = packID
+			request.Manifest.Domains = []DomainRule{{Host: "fixture.test"}}
+			request.ProfileID = profileID
+			request.LoginURL = "https://fixture.test/login"
+			request.AllowedDomains = []DomainRule{{Host: "fixture.test"}}
+		}))
+		resultCh <- webViewAuthOutcome{result: result, err: err}
+	}()
+	driver.WaitForOpen(t)
+	driver.Succeed(AuthWebViewToken{Kind: AuthSecretKindBearer, Secret: secret, RedactedDisplay: "captured bearer"})
+
+	outcome := receiveWebViewOutcome(t, resultCh)
+	if outcome.err != nil {
+		t.Fatalf("Start() error = %v", outcome.err)
+	}
+	resolved, err := store.ResolveAuthProfile(context.Background(), packID, profileID, targetURL)
+	if err != nil {
+		t.Fatalf("ResolveAuthProfile() error = %v", err)
+	}
+	material, err := NewDefaultAuthMaterializer().MaterializeAuth(resolved)
+	if err != nil {
+		t.Fatalf("MaterializeAuth() error = %v", err)
+	}
+	if material.Kind != AuthSecretKindBearer || material.HeaderName != "Authorization" || material.RedactedDisplay == "" {
+		t.Fatalf("materialized public-safe shape = %#v", material)
+	}
+	assertNoForbiddenSubstrings(t, material.String(), secret, "Bearer "+secret)
+}
+
 func TestWebViewAuthSuccessPersistsWhenCallerContextCanceledAfterSuccessWins(t *testing.T) {
 	store := newTempAuthProfileStore(t)
 	driver := newFakeAuthWebViewDriver()

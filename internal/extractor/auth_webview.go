@@ -121,6 +121,23 @@ func (c *WebViewAuthCoordinator) Start(ctx context.Context, request WebViewAuthR
 		return WebViewAuthResult{}, err
 	}
 
+	return c.startValidated(ctx, validatedRequest)
+}
+
+func (c *WebViewAuthCoordinator) startValidated(ctx context.Context, validatedRequest WebViewAuthRequest) (WebViewAuthResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if c == nil {
+		return WebViewAuthResult{}, errors.New("webview auth coordinator is nil")
+	}
+	if c.store == nil {
+		return WebViewAuthResult{}, errors.New("webview auth coordinator requires an auth profile store")
+	}
+	if c.driver == nil {
+		return WebViewAuthResult{}, errors.New("webview auth coordinator requires a driver")
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, effectiveWebViewTimeout(validatedRequest))
 	defer cancel()
 
@@ -148,31 +165,30 @@ func (c *WebViewAuthCoordinator) Start(ctx context.Context, request WebViewAuthR
 }
 
 func validateWebViewAuthRequest(request WebViewAuthRequest) (WebViewAuthRequest, error) {
-	if err := ValidateCapabilityURL(CapabilityContext{
-		PackID:     request.PackID,
-		Manifest:   request.Manifest,
-		Capability: CapabilityAuthProfile,
-	}, request.LoginURL); err != nil {
+	validated, err := validateWebViewAuthRequestBase(request)
+	if err != nil {
 		return WebViewAuthRequest{}, err
 	}
+	if err := ValidateCapabilityURL(CapabilityContext{
+		PackID:     validated.PackID,
+		Manifest:   validated.Manifest,
+		Capability: CapabilityAuthProfile,
+	}, validated.LoginURL); err != nil {
+		return WebViewAuthRequest{}, err
+	}
+	if err := validateWebViewAllowedDomainsManifestScope(validated); err != nil {
+		return WebViewAuthRequest{}, err
+	}
+
+	return validated, nil
+}
+
+func validateWebViewAuthRequestBase(request WebViewAuthRequest) (WebViewAuthRequest, error) {
 	if err := validateAuthProfileID(request.ProfileID); err != nil {
 		return WebViewAuthRequest{}, redactedError(err)
 	}
 	if err := validateAuthSecretKind(request.Kind); err != nil {
 		return WebViewAuthRequest{}, redactedError(err)
-	}
-	if len(request.AllowedDomains) == 0 {
-		loginRule, err := loginOriginDomainRule(request.LoginURL)
-		if err != nil {
-			return WebViewAuthRequest{}, err
-		}
-		request.AllowedDomains = []DomainRule{loginRule}
-	}
-	if err := validateDomainRules(request.AllowedDomains); err != nil {
-		return WebViewAuthRequest{}, redactedError(err)
-	}
-	if err := validateWebViewAllowedDomainsScope(request); err != nil {
-		return WebViewAuthRequest{}, err
 	}
 	if err := validateWebViewAuthCallbackTransport(request.CallbackTransport); err != nil {
 		return WebViewAuthRequest{}, err
@@ -183,8 +199,21 @@ func validateWebViewAuthRequest(request WebViewAuthRequest) (WebViewAuthRequest,
 	if err := validateWebViewAuthCaptureContract(request.Capture); err != nil {
 		return WebViewAuthRequest{}, err
 	}
-	request.AllowedDomains = cloneDomainRules(request.AllowedDomains)
 	request.CallbackTransport.ContentTypes = cloneStringSlice(request.CallbackTransport.ContentTypes)
+	loginRule, err := loginOriginDomainRule(request.LoginURL)
+	if err != nil {
+		return WebViewAuthRequest{}, err
+	}
+	if len(request.AllowedDomains) == 0 {
+		request.AllowedDomains = []DomainRule{loginRule}
+	}
+	if err := validateDomainRules(request.AllowedDomains); err != nil {
+		return WebViewAuthRequest{}, redactedError(err)
+	}
+	if err := validateWebViewAllowedDomainsLoginScope(request, loginRule); err != nil {
+		return WebViewAuthRequest{}, err
+	}
+	request.AllowedDomains = cloneDomainRules(request.AllowedDomains)
 	request.Capture.SecretCandidates = cloneStringSlice(request.Capture.SecretCandidates)
 
 	return request, nil
@@ -458,11 +487,7 @@ func loginOriginDomainRule(rawURL string) (DomainRule, error) {
 	return DomainRule{Host: host}, nil
 }
 
-func validateWebViewAllowedDomainsScope(request WebViewAuthRequest) error {
-	loginRule, err := loginOriginDomainRule(request.LoginURL)
-	if err != nil {
-		return err
-	}
+func validateWebViewAllowedDomainsLoginScope(request WebViewAuthRequest, loginRule DomainRule) error {
 	loginHost := loginRule.Host
 	for _, rule := range request.AllowedDomains {
 		ruleHost := rule.Host
@@ -472,6 +497,14 @@ func validateWebViewAllowedDomainsScope(request WebViewAuthRequest) error {
 		if rule.IncludeSubdomains && ruleHost == loginHost {
 			return redactErrorf("auth profile domain %q may not expand beyond login origin", ruleHost)
 		}
+	}
+
+	return nil
+}
+
+func validateWebViewAllowedDomainsManifestScope(request WebViewAuthRequest) error {
+	for _, rule := range request.AllowedDomains {
+		ruleHost := rule.Host
 		if !manifestMatchesHost(request.Manifest, ruleHost) {
 			return redactErrorf("auth profile domain %q is outside manifest allowlist", ruleHost)
 		}

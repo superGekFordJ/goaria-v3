@@ -51,6 +51,17 @@ type fakeHostPolicyResolverForAppAuth struct{}
 
 type fakeNoopAuthWebViewDriver struct{}
 
+type appHostAuthAutoSuccessDriver struct {
+	mu    sync.Mutex
+	opens int
+}
+
+type appHostAuthAliasResolver struct {
+	mu       sync.Mutex
+	identity extractor.VerifiedPackIdentity
+	calls    int
+}
+
 var rootWailsTestAppMu sync.Mutex
 
 func TestAppHostAuthDriverAllowsOneInflightSession(t *testing.T) {
@@ -475,6 +486,56 @@ func TestConfigureEmbeddedExtractorDispatcherSharesHostPolicyResolver(t *testing
 	}
 }
 
+func TestConfigureEmbeddedExtractorDispatcherPassesHostPolicyResolverToRuntime(t *testing.T) {
+	app := NewApp()
+	store := newRootTempAuthProfileStore(t)
+	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
+	identity := authRuntimeTaskIdentity(t, bundle)
+	driver := &appHostAuthAutoSuccessDriver{}
+	resolver := &appHostAuthAliasResolver{identity: identity}
+	manifest := appHostAuthAliasManifest(identity)
+	runtime := extractor.NewHostAuthRuntime(extractor.HostAuthRuntimeConfig{
+		Bundle:             bundle,
+		Store:              store,
+		Coordinator:        extractor.NewWebViewAuthCoordinator(store, driver),
+		HostPolicyResolver: resolver,
+	})
+	err := configureEmbeddedExtractorDispatcherWithDeps(app, embeddedExtractorConfigDeps{
+		hasEmbeddedReleasePacks:     func() bool { return true },
+		embeddedReleaseRequired:     func() bool { return false },
+		loadHostPolicyResolver:      func() (extractor.HostPolicyResolver, error) { return resolver, nil },
+		loadAuthRuntimeBundle:       func() (*extractor.PrivateAuthRuntimeBundle, error) { return bundle, nil },
+		defaultAuthProfileStorePath: func() (string, error) { return filepath.Join(t.TempDir(), "auth.json"), nil },
+		newFileAuthProfileStore:     func(string) (extractor.AuthProfileStore, error) { return store, nil },
+		newAuthWebViewDriver:        func(*App) extractor.AuthWebViewDriver { return driver },
+		newEmbeddedReleaseAddTaskDispatcher: func(extractor.EmbeddedReleaseDispatcherConfig) (extractorAddTaskDispatcher, error) {
+			return fakeExtractorDispatcher{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("configure helper error = %v", err)
+	}
+	if app.hostAuthRuntimeForTest() == nil {
+		t.Fatal("App HostAuthRuntime = nil")
+	}
+	result, err := runtime.Provision(context.Background(), extractor.HostAuthRuntimeRequest{
+		PackIdentity: identity,
+		Manifest:     manifest,
+		SourceURL:    "https://share.alpha.test/source",
+		TargetURL:    "https://fixture.invalid/file",
+		ProfileRef:   "apr-alpha001",
+	})
+	if err != nil {
+		t.Fatalf("runtime.Provision(alias) error = %v", err)
+	}
+	if !result.Provisioned || !result.Available {
+		t.Fatalf("runtime.Provision(alias) = %#v, want provisioned available", result)
+	}
+	if resolver.callCount() == 0 || driver.openCount() == 0 {
+		t.Fatalf("resolver calls=%d driver opens=%d, want both used", resolver.callCount(), driver.openCount())
+	}
+}
+
 func (f *fakeHostAuthSessionWindowFactory) OpenHostAuthSession(_ context.Context, request appHostAuthSessionRequest, callbacks appHostAuthSessionCallbacks) (hostAuthSessionWindow, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -701,6 +762,25 @@ func syntheticRootPrivateAuthRuntimeBundle(t *testing.T) *extractor.PrivateAuthR
 	return bundle
 }
 
+func appHostAuthAliasManifest(identity extractor.VerifiedPackIdentity) extractor.Manifest {
+	return extractor.Manifest{
+		PackID:           identity.PackID,
+		PackVersion:      identity.PackVersion,
+		Capabilities:     []extractor.Capability{extractor.CapabilityParseWASM, extractor.CapabilityHTTPFetch, extractor.CapabilityAuthProfile},
+		DomainPolicyRefs: []string{"dpr-alpha001"},
+		BrokerPolicyRefs: []string{"bpr-alpha001"},
+		ResourceLimits: extractor.ResourceLimits{
+			TimeoutMillis:    60000,
+			MaxMemoryPages:   64,
+			MaxHostCalls:     16,
+			MaxResponseBytes: 1 << 20,
+			MaxOutputItems:   16,
+			MaxOutputBytes:   1 << 16,
+		},
+		PayloadSHA256: identity.PayloadSHA256,
+	}
+}
+
 func sha256HexForAppHostAuthTest(raw []byte) string {
 	hash := sha256.Sum256(raw)
 
@@ -722,6 +802,66 @@ func (fakeHostPolicyResolverForAppAuth) ResolveHostPolicy(context.Context, extra
 func (fakeNoopAuthWebViewDriver) OpenAuthSession(context.Context, extractor.WebViewAuthRequest, extractor.AuthWebViewSink) (extractor.AuthWebViewSession, error) {
 	return nil, errors.New("not used")
 }
+
+func (d *appHostAuthAutoSuccessDriver) OpenAuthSession(_ context.Context, request extractor.WebViewAuthRequest, sink extractor.AuthWebViewSink) (extractor.AuthWebViewSession, error) {
+	d.mu.Lock()
+	d.opens++
+	d.mu.Unlock()
+	if sink.OnSuccess != nil {
+		sink.OnSuccess(extractor.AuthWebViewToken{Kind: request.Kind, Secret: "alias-captured-token", RedactedDisplay: "captured bearer"})
+	}
+
+	return appHostAuthAutoSuccessSession{}, nil
+}
+
+func (d *appHostAuthAutoSuccessDriver) openCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.opens
+}
+
+func (r *appHostAuthAliasResolver) ResolveHostPolicy(context.Context, extractor.HostPolicyRequest) (extractor.ResolvedHostPolicy, error) {
+	r.mu.Lock()
+	r.calls++
+	r.mu.Unlock()
+	identity := r.identity
+
+	return extractor.ResolvedHostPolicy{
+		PolicyID:            "pol-alpha001",
+		PolicyVersion:       "2026.05.15-alpha",
+		PolicySHA256:        strings.Repeat("c", 64),
+		PackIdentity:        identity,
+		DomainPolicyRefs:    []string{"dpr-alpha001"},
+		BrokerPolicyRefs:    []string{"bpr-alpha001"},
+		AllowedCapabilities: []extractor.Capability{extractor.CapabilityParseWASM, extractor.CapabilityHTTPFetch, extractor.CapabilityAuthProfile},
+		IngressDomains:      []extractor.DomainRule{{Host: "share.alpha.test"}},
+		BrokerDomains:       []extractor.DomainRule{{Host: "fixture.invalid"}},
+		OutputDomains:       []extractor.HostPolicyOutputRule{{Host: "fixture.invalid", PathPrefixes: []string{"/"}}},
+		AuthProfiles: []extractor.HostPolicyAuthProfileScope{{
+			ProfileID: "apr-alpha001",
+			Domains:   []extractor.DomainRule{{Host: "fixture.invalid"}},
+		}},
+		BrokerEndpoints: []extractor.HostPolicyBrokerEndpoint{{
+			BrokerPolicyRef: "bpr-alpha001",
+			EndpointRef:     "epr-alpha001",
+			URLTemplate:     "https://fixture.invalid/resource/{id}",
+			Methods:         []string{"GET"},
+			AuthProfileRefs: []string{"apr-alpha001"},
+		}},
+	}, nil
+}
+
+func (r *appHostAuthAliasResolver) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.calls
+}
+
+type appHostAuthAutoSuccessSession struct{}
+
+func (appHostAuthAutoSuccessSession) Close() error { return nil }
 
 type noopWailsTransport struct{}
 

@@ -251,9 +251,10 @@ func configureEmbeddedExtractorDispatcherWithDeps(appService *App, deps embedded
 		}
 		coordinator := extractor.NewWebViewAuthCoordinator(store, driver)
 		hostRuntime = extractor.NewHostAuthRuntime(extractor.HostAuthRuntimeConfig{
-			Bundle:      authBundle,
-			Store:       store,
-			Coordinator: coordinator,
+			Bundle:             authBundle,
+			Store:              store,
+			Coordinator:        coordinator,
+			HostPolicyResolver: hostPolicyResolver,
 		})
 		authResolver = hostRuntime
 	} else if store != nil {
