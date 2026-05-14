@@ -1,11 +1,9 @@
 package extractor
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"strings"
 	"unicode"
@@ -48,7 +46,9 @@ type privatePolicyBundlePackDTO struct {
 	AllowedCapabilities  []Capability                           `json:"allowed_capabilities"`
 	IngressDomainRules   []DomainRule                           `json:"ingress_domain_rules"`
 	BrokerDomainRules    []DomainRule                           `json:"broker_domain_rules"`
-	BrokerEndpoints      []privatePolicyBundleBrokerEndpointDTO `json:"broker_endpoints"`
+	OutputDomainRules    []privatePolicyBundleOutputRuleDTO     `json:"output_domain_rules"`
+	AuthProfileScopes    []privatePolicyBundleAuthScopeDTO      `json:"auth_profile_scopes"`
+	Endpoints            []privatePolicyBundleBrokerEndpointDTO `json:"endpoints"`
 }
 
 type privatePolicyBundleIdentityDTO struct {
@@ -61,11 +61,25 @@ type privatePolicyBundleIdentityDTO struct {
 	PublicKeySHA256 string `json:"public_key_sha256"`
 }
 
+type privatePolicyBundleOutputRuleDTO struct {
+	Host              string   `json:"host"`
+	IncludeSubdomains bool     `json:"include_subdomains"`
+	PathPrefixes      []string `json:"path_prefixes"`
+}
+
+type privatePolicyBundleAuthScopeDTO struct {
+	ProfileID   string       `json:"profile_id"`
+	DomainRules []DomainRule `json:"domain_rules"`
+}
+
 type privatePolicyBundleBrokerEndpointDTO struct {
-	BrokerPolicyRef string   `json:"broker_policy_ref"`
-	EndpointRef     string   `json:"endpoint_ref"`
-	URLTemplate     string   `json:"url_template"`
-	AuthProfileRefs []string `json:"auth_profile_refs"`
+	BrokerPolicyRef  string   `json:"broker_policy_ref"`
+	EndpointRef      string   `json:"endpoint_ref"`
+	URLTemplate      string   `json:"url_template"`
+	Methods          []string `json:"methods"`
+	AuthProfileRefs  []string `json:"auth_profile_refs"`
+	TimeoutMillis    int      `json:"timeout_millis"`
+	MaxResponseBytes int64    `json:"max_response_bytes"`
 }
 
 type privatePolicyBundleResolver struct {
@@ -147,7 +161,7 @@ func newPrivatePolicyBundleResolver(raw []byte, opts PrivatePolicyBundleLoadOpti
 			return nil, errors.New("private policy bundle contains duplicate pack identity")
 		}
 
-		policies[identity] = cloneResolvedHostPolicy(ResolvedHostPolicy{
+		policy := ResolvedHostPolicy{
 			PolicyID:            envelope.BundleID,
 			PolicyVersion:       envelope.BundleVersion,
 			PolicySHA256:        envelope.PolicyPrivateSHA256,
@@ -157,8 +171,14 @@ func newPrivatePolicyBundleResolver(raw []byte, opts PrivatePolicyBundleLoadOpti
 			AllowedCapabilities: append([]Capability(nil), pack.AllowedCapabilities...),
 			IngressDomains:      cloneDomainRules(pack.IngressDomainRules),
 			BrokerDomains:       cloneDomainRules(pack.BrokerDomainRules),
-			BrokerEndpoints:     privatePolicyBundleBrokerEndpoints(pack.BrokerEndpoints),
-		})
+			OutputDomains:       privatePolicyBundleOutputRules(pack.OutputDomainRules),
+			AuthProfiles:        privatePolicyBundleAuthScopes(pack.AuthProfileScopes),
+			BrokerEndpoints:     privatePolicyBundleBrokerEndpoints(pack.Endpoints),
+		}
+		if err := validatePrivatePolicyBundlePolicy(policy); err != nil {
+			return nil, err
+		}
+		policies[identity] = cloneResolvedHostPolicy(policy)
 	}
 
 	return &privatePolicyBundleResolver{policies: policies}, nil
@@ -190,17 +210,39 @@ func (r *privatePolicyBundleResolver) ResolveHostPolicy(ctx context.Context, req
 }
 
 func decodePrivatePolicyBundleJSON(raw []byte, target any) error {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
+	return decodeStrictJSON(raw, target)
+}
+
+func validatePrivatePolicyBundlePolicy(policy ResolvedHostPolicy) error {
+	manifest := privatePolicyBundleSyntheticManifest(policy)
+	if err := validateResolvedHostPolicy(policy.PackIdentity, manifest, policy); err != nil {
 		return err
 	}
-	var trailing struct{}
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return errors.New("private policy bundle contains trailing JSON data")
+	for _, endpoint := range policy.BrokerEndpoints {
+		if err := validateBrokerEndpointResourceCaps(endpoint, privatePolicyBundleMaxManifest(), DefaultHTTPBrokerPolicy()); err != nil {
+			return err
+		}
 	}
 
 	return nil
+}
+
+func privatePolicyBundleSyntheticManifest(policy ResolvedHostPolicy) Manifest {
+	return Manifest{
+		PackID:           policy.PackIdentity.PackID,
+		PackVersion:      policy.PackIdentity.PackVersion,
+		ABIVersion:       CurrentABIVersion,
+		Capabilities:     append([]Capability(nil), policy.AllowedCapabilities...),
+		Domains:          []DomainRule{},
+		DomainPolicyRefs: cloneStringSlice(policy.DomainPolicyRefs),
+		BrokerPolicyRefs: cloneStringSlice(policy.BrokerPolicyRefs),
+		ResourceLimits:   privatePolicyBundleMaxManifest().ResourceLimits,
+		PayloadSHA256:    policy.PackIdentity.PayloadSHA256,
+	}
+}
+
+func privatePolicyBundleMaxManifest() Manifest {
+	return Manifest{ResourceLimits: DefaultTrustPolicy().MaxResourceLimits}
 }
 
 func validatePrivatePolicyBundleEnvelope(envelope privatePolicyBundleEnvelopeDTO, opts PrivatePolicyBundleLoadOptions) error {
@@ -314,6 +356,37 @@ func (dto privatePolicyBundleIdentityDTO) verifiedPackIdentity() VerifiedPackIde
 	return VerifiedPackIdentity(dto)
 }
 
+func privatePolicyBundleOutputRules(rules []privatePolicyBundleOutputRuleDTO) []HostPolicyOutputRule {
+	if rules == nil {
+		return nil
+	}
+	converted := make([]HostPolicyOutputRule, len(rules))
+	for i, rule := range rules {
+		converted[i] = HostPolicyOutputRule{
+			Host:              rule.Host,
+			IncludeSubdomains: rule.IncludeSubdomains,
+			PathPrefixes:      cloneStringSlice(rule.PathPrefixes),
+		}
+	}
+
+	return converted
+}
+
+func privatePolicyBundleAuthScopes(scopes []privatePolicyBundleAuthScopeDTO) []HostPolicyAuthProfileScope {
+	if scopes == nil {
+		return nil
+	}
+	converted := make([]HostPolicyAuthProfileScope, len(scopes))
+	for i, scope := range scopes {
+		converted[i] = HostPolicyAuthProfileScope{
+			ProfileID: AuthProfileID(scope.ProfileID),
+			Domains:   cloneDomainRules(scope.DomainRules),
+		}
+	}
+
+	return converted
+}
+
 func privatePolicyBundleBrokerEndpoints(endpoints []privatePolicyBundleBrokerEndpointDTO) []HostPolicyBrokerEndpoint {
 	if endpoints == nil {
 		return nil
@@ -321,10 +394,13 @@ func privatePolicyBundleBrokerEndpoints(endpoints []privatePolicyBundleBrokerEnd
 	converted := make([]HostPolicyBrokerEndpoint, len(endpoints))
 	for i, endpoint := range endpoints {
 		converted[i] = HostPolicyBrokerEndpoint{
-			BrokerPolicyRef: endpoint.BrokerPolicyRef,
-			EndpointRef:     endpoint.EndpointRef,
-			URLTemplate:     endpoint.URLTemplate,
-			AuthProfileRefs: cloneStringSlice(endpoint.AuthProfileRefs),
+			BrokerPolicyRef:  endpoint.BrokerPolicyRef,
+			EndpointRef:      endpoint.EndpointRef,
+			URLTemplate:      endpoint.URLTemplate,
+			Methods:          cloneStringSlice(endpoint.Methods),
+			AuthProfileRefs:  cloneStringSlice(endpoint.AuthProfileRefs),
+			TimeoutMillis:    endpoint.TimeoutMillis,
+			MaxResponseBytes: endpoint.MaxResponseBytes,
 		}
 	}
 

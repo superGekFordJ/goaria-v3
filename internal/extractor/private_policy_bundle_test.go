@@ -11,6 +11,7 @@ import (
 
 func TestPrivatePolicyBundleLoadsAndResolves(t *testing.T) {
 	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
 	identity := syntheticVerifiedPackIdentity(manifest)
 	raw := privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{Identity: identity, Manifest: manifest}}, nil)
 
@@ -35,6 +36,7 @@ func TestPrivatePolicyBundleLoadsAndResolves(t *testing.T) {
 
 func TestPrivatePolicyBundleReturnsDefensiveCopies(t *testing.T) {
 	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
 	identity := syntheticVerifiedPackIdentity(manifest)
 	raw := privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{Identity: identity, Manifest: manifest}}, nil)
 
@@ -53,19 +55,23 @@ func TestPrivatePolicyBundleReturnsDefensiveCopies(t *testing.T) {
 	policy.BrokerPolicyRefs[0] = "bpr-mutated"
 	policy.AllowedCapabilities[0] = Capability("cap.changed")
 	policy.IngressDomains[0].Host = "mutated.alpha.test"
+	policy.OutputDomains[0].PathPrefixes[0] = "/mutated/"
+	policy.AuthProfiles[0].Domains[0].Host = "mutated.alpha.test"
+	policy.BrokerEndpoints[0].Methods[0] = "POST"
 	policy.BrokerEndpoints[0].AuthProfileRefs[0] = "apr-mutated"
 
 	fresh, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: identity, Manifest: manifest})
 	if err != nil {
 		t.Fatalf("ResolveHostPolicy() fresh error = %v", err)
 	}
-	if fresh.DomainPolicyRefs[0] != "dpr-alpha001" || fresh.BrokerPolicyRefs[0] != "bpr-alpha001" || fresh.AllowedCapabilities[0] != CapabilityParseWASM || fresh.IngressDomains[0].Host != "share.alpha.test" || fresh.BrokerEndpoints[0].AuthProfileRefs[0] != "apr-alpha001" {
+	if fresh.DomainPolicyRefs[0] != "dpr-alpha001" || fresh.BrokerPolicyRefs[0] != "bpr-alpha001" || fresh.AllowedCapabilities[0] != CapabilityParseWASM || fresh.IngressDomains[0].Host != "share.alpha.test" || fresh.OutputDomains[0].PathPrefixes[0] != "/downloads/" || fresh.AuthProfiles[0].Domains[0].Host != "api.alpha.test" || fresh.BrokerEndpoints[0].Methods[0] != "GET" || fresh.BrokerEndpoints[0].AuthProfileRefs[0] != "apr-alpha001" {
 		t.Fatalf("resolved policy was not defensively copied: %#v", fresh)
 	}
 }
 
 func TestPrivatePolicyBundleResolverDeniesMismatches(t *testing.T) {
 	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
 	identity := syntheticVerifiedPackIdentity(manifest)
 	raw := privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{Identity: identity, Manifest: manifest}}, nil)
 	resolver, err := NewPrivatePolicyBundleResolver(raw, PrivatePolicyBundleLoadOptions{})
@@ -78,13 +84,13 @@ func TestPrivatePolicyBundleResolverDeniesMismatches(t *testing.T) {
 		identity VerifiedPackIdentity
 		manifest Manifest
 	}{
-		{name: "missing bundle identity", identity: syntheticVerifiedPackIdentity(validAliasTestManifest(func(m *Manifest) { m.PackID = "xpk-alpha002" })), manifest: validAliasTestManifest(func(m *Manifest) { m.PackID = "xpk-alpha002" })},
+		{name: "missing bundle identity", identity: syntheticVerifiedPackIdentity(validAliasAuthTestManifest(func(m *Manifest) { m.PackID = "xpk-alpha002" })), manifest: validAliasAuthTestManifest(func(m *Manifest) { m.PackID = "xpk-alpha002" })},
 		{name: "mismatched asset", identity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.AssetSHA256 = strings.Repeat("1", 64) }), manifest: manifest},
 		{name: "mismatched manifest hash", identity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.ManifestSHA256 = strings.Repeat("2", 64) }), manifest: manifest},
 		{name: "mismatched payload hash", identity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.PayloadSHA256 = strings.Repeat("3", 64) }), manifest: manifest},
 		{name: "mismatched signature hash", identity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.SignatureSHA256 = strings.Repeat("4", 64) }), manifest: manifest},
 		{name: "mismatched public key hash", identity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.PublicKeySHA256 = strings.Repeat("5", 64) }), manifest: manifest},
-		{name: "mismatched domain refs", identity: identity, manifest: validAliasTestManifest(func(m *Manifest) { m.DomainPolicyRefs = []string{"dpr-alpha002"} })},
+		{name: "mismatched domain refs", identity: identity, manifest: validAliasAuthTestManifest(func(m *Manifest) { m.DomainPolicyRefs = []string{"dpr-alpha002"} })},
 		{name: "capability mismatch", identity: identity, manifest: validAliasTestManifest(func(m *Manifest) { m.Capabilities = []Capability{CapabilityParseWASM} })},
 		{name: "legacy manifest", identity: syntheticVerifiedPackIdentity(validTestManifest()), manifest: validTestManifest()},
 		{name: "incomplete request identity", identity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.AssetSHA256 = "" }), manifest: manifest},
@@ -105,6 +111,7 @@ func TestPrivatePolicyBundleResolverDeniesMismatches(t *testing.T) {
 
 func TestPrivatePolicyBundleRejectsMalformedBundles(t *testing.T) {
 	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
 	identity := syntheticVerifiedPackIdentity(manifest)
 	basePack := privatePolicyBundlePackFixture{Identity: identity, Manifest: manifest}
 	validRaw := privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, nil)
@@ -122,8 +129,14 @@ func TestPrivatePolicyBundleRejectsMalformedBundles(t *testing.T) {
 		{name: "unknown identity field", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["verified_pack_identity"].(map[string]any)["unknown"] = true
 		})},
+		{name: "unknown output rule field", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["output_domain_rules"].([]map[string]any)[0]["unknown"] = true
+		})},
+		{name: "unknown auth scope field", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["auth_profile_scopes"].([]map[string]any)[0]["unknown"] = true
+		})},
 		{name: "unknown endpoint field", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["broker_endpoints"].([]map[string]any)[0]["unknown"] = true
+			packs[0]["endpoints"].([]map[string]any)[0]["unknown"] = true
 		})},
 		{name: "trailing json", raw: append(cloneBytes(validRaw), []byte(` {}`)...)},
 		{name: "unsupported schema", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(bundle map[string]any, _ map[string]any, _ []map[string]any) { bundle["schema_version"] = 2 })},
@@ -176,6 +189,7 @@ func TestPrivatePolicyBundleRejectsMalformedBundles(t *testing.T) {
 
 func TestPrivatePolicyBundleInvalidPoliciesFailAtLookup(t *testing.T) {
 	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
 	identity := syntheticVerifiedPackIdentity(manifest)
 
 	tests := []struct {
@@ -184,12 +198,28 @@ func TestPrivatePolicyBundleInvalidPoliciesFailAtLookup(t *testing.T) {
 	}{
 		{name: "invalid ingress domain", mutate: func(f *privatePolicyBundlePackFixture) { f.IngressDomains = []DomainRule{{Host: "*.alpha.test"}} }},
 		{name: "invalid broker domain", mutate: func(f *privatePolicyBundlePackFixture) { f.BrokerDomains = []DomainRule{{Host: "api.alpha.test:443"}} }},
+		{name: "invalid output rule", mutate: func(f *privatePolicyBundlePackFixture) { f.OutputDomains[0].Host = "files.alpha.test/path" }},
+		{name: "invalid output path prefix", mutate: func(f *privatePolicyBundlePackFixture) { f.OutputDomains[0].PathPrefixes = []string{"downloads"} }},
+		{name: "invalid auth profile scope", mutate: func(f *privatePolicyBundlePackFixture) { f.AuthProfiles[0].ProfileID = "Invalid" }},
+		{name: "invalid auth profile scope domain", mutate: func(f *privatePolicyBundlePackFixture) {
+			f.AuthProfiles[0].Domains = []DomainRule{{Host: "api.alpha.test/path"}}
+		}},
 		{name: "invalid endpoint ref", mutate: func(f *privatePolicyBundlePackFixture) { f.BrokerEndpoints[0].EndpointRef = "endpoint.alpha" }},
 		{name: "invalid endpoint template", mutate: func(f *privatePolicyBundlePackFixture) {
 			f.BrokerEndpoints[0].URLTemplate = "https://user:pass@api.alpha.test/resource/{id}"
 		}},
+		{name: "invalid endpoint method", mutate: func(f *privatePolicyBundlePackFixture) { f.BrokerEndpoints[0].Methods = []string{"GET", "GET"} }},
 		{name: "invalid auth profile ref", mutate: func(f *privatePolicyBundlePackFixture) { f.BrokerEndpoints[0].AuthProfileRefs = []string{"Invalid"} }},
+		{name: "undeclared auth profile ref", mutate: func(f *privatePolicyBundlePackFixture) {
+			f.BrokerEndpoints[0].AuthProfileRefs = []string{"apr-alpha002"}
+		}},
 		{name: "undeclared broker ref", mutate: func(f *privatePolicyBundlePackFixture) { f.BrokerEndpoints[0].BrokerPolicyRef = "bpr-alpha002" }},
+		{name: "endpoint timeout exceeds limit", mutate: func(f *privatePolicyBundlePackFixture) {
+			f.BrokerEndpoints[0].TimeoutMillis = DefaultTrustPolicy().MaxResourceLimits.TimeoutMillis + 1
+		}},
+		{name: "endpoint response exceeds limit", mutate: func(f *privatePolicyBundlePackFixture) {
+			f.BrokerEndpoints[0].MaxResponseBytes = DefaultTrustPolicy().MaxResourceLimits.MaxResponseBytes + 1
+		}},
 		{name: "duplicate endpoint ref", mutate: func(f *privatePolicyBundlePackFixture) {
 			f.BrokerEndpoints = append(f.BrokerEndpoints, f.BrokerEndpoints[0])
 		}},
@@ -197,16 +227,23 @@ func TestPrivatePolicyBundleInvalidPoliciesFailAtLookup(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fixture := privatePolicyBundlePackFixture{Identity: identity, Manifest: manifest, BrokerEndpoints: []HostPolicyBrokerEndpoint{{
-				BrokerPolicyRef: "bpr-alpha001",
-				EndpointRef:     "epr-alpha001",
-				URLTemplate:     "https://api.alpha.test/resource/{id}",
-				AuthProfileRefs: []string{"apr-alpha001"},
-			}}}
+			fixture := privatePolicyBundlePackFixture{Identity: identity, Manifest: manifest,
+				OutputDomains: []HostPolicyOutputRule{{Host: "files.alpha.test", IncludeSubdomains: true, PathPrefixes: []string{"/downloads/"}}},
+				AuthProfiles:  []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "api.alpha.test"}}}},
+				BrokerEndpoints: []HostPolicyBrokerEndpoint{{
+					BrokerPolicyRef:  "bpr-alpha001",
+					EndpointRef:      "epr-alpha001",
+					URLTemplate:      "https://api.alpha.test/resource/{id}",
+					Methods:          []string{"GET", "HEAD"},
+					AuthProfileRefs:  []string{"apr-alpha001"},
+					TimeoutMillis:    100,
+					MaxResponseBytes: 512,
+				}}}
 			tt.mutate(&fixture)
 			resolver, err := NewPrivatePolicyBundleResolver(privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{fixture}, nil), PrivatePolicyBundleLoadOptions{})
 			if err != nil {
-				t.Fatalf("NewPrivatePolicyBundleResolver() error = %v", err)
+				assertGenericPrivateBundleError(t, err)
+				return
 			}
 			_, err = resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: identity, Manifest: manifest})
 			if err == nil {
@@ -221,6 +258,7 @@ func TestPrivatePolicyBundleInvalidPoliciesFailAtLookup(t *testing.T) {
 
 func TestPrivatePolicyBundleErrorsAreGeneric(t *testing.T) {
 	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
 	identity := syntheticVerifiedPackIdentity(manifest)
 	raw := privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{Identity: identity, Manifest: manifest}}, nil)
 	privateHash := privatePolicyHash(t, raw)
@@ -257,6 +295,7 @@ func TestPrivatePolicyRuntimeSource(t *testing.T) {
 	}
 
 	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
 	identity := syntheticVerifiedPackIdentity(manifest)
 	raw := privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{Identity: identity, Manifest: manifest}}, nil)
 	policyHash := privatePolicyHash(t, raw)
@@ -337,6 +376,8 @@ type privatePolicyBundlePackFixture struct {
 	AllowedCapabilities []Capability
 	IngressDomains      []DomainRule
 	BrokerDomains       []DomainRule
+	OutputDomains       []HostPolicyOutputRule
+	AuthProfiles        []HostPolicyAuthProfileScope
 	BrokerEndpoints     []HostPolicyBrokerEndpoint
 }
 
@@ -396,13 +437,30 @@ func privatePolicyBundlePackMap(fixture privatePolicyBundlePackFixture) map[stri
 	if brokerDomains == nil {
 		brokerDomains = []DomainRule{{Host: "api.alpha.test"}}
 	}
+	outputDomains := fixture.OutputDomains
+	if outputDomains == nil {
+		outputDomains = []HostPolicyOutputRule{{Host: "files.alpha.test", IncludeSubdomains: true, PathPrefixes: []string{"/downloads/"}}}
+	}
+	authProfiles := fixture.AuthProfiles
+	if authProfiles == nil {
+		if manifestHasCapability(manifest, CapabilityAuthProfile) {
+			authProfiles = []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "api.alpha.test"}}}}
+		}
+	}
 	brokerEndpoints := fixture.BrokerEndpoints
 	if brokerEndpoints == nil {
+		authProfileRefs := []string(nil)
+		if manifestHasCapability(manifest, CapabilityAuthProfile) {
+			authProfileRefs = []string{"apr-alpha001"}
+		}
 		brokerEndpoints = []HostPolicyBrokerEndpoint{{
-			BrokerPolicyRef: "bpr-alpha001",
-			EndpointRef:     "epr-alpha001",
-			URLTemplate:     "https://api.alpha.test/resource/{id}",
-			AuthProfileRefs: []string{"apr-alpha001"},
+			BrokerPolicyRef:  "bpr-alpha001",
+			EndpointRef:      "epr-alpha001",
+			URLTemplate:      "https://api.alpha.test/resource/{id}",
+			Methods:          []string{"GET", "HEAD"},
+			AuthProfileRefs:  authProfileRefs,
+			TimeoutMillis:    100,
+			MaxResponseBytes: 512,
 		}}
 	}
 
@@ -421,8 +479,53 @@ func privatePolicyBundlePackMap(fixture privatePolicyBundlePackFixture) map[stri
 		"allowed_capabilities": append([]Capability(nil), capabilities...),
 		"ingress_domain_rules": cloneDomainRules(ingressDomains),
 		"broker_domain_rules":  cloneDomainRules(brokerDomains),
-		"broker_endpoints":     privatePolicyBundleEndpointMaps(brokerEndpoints),
+		"output_domain_rules":  privatePolicyBundleOutputRuleMaps(outputDomains),
+		"auth_profile_scopes":  privatePolicyBundleAuthScopeMaps(authProfiles),
+		"endpoints":            privatePolicyBundleEndpointMaps(brokerEndpoints),
 	}
+}
+
+func validAliasAuthTestManifest(mutate func(*Manifest)) Manifest {
+	manifest := validAliasTestManifest(nil)
+	if !manifestHasCapability(manifest, CapabilityAuthProfile) {
+		manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
+	}
+	if mutate != nil {
+		mutate(&manifest)
+	}
+
+	return manifest
+}
+
+func privatePolicyBundleOutputRuleMaps(rules []HostPolicyOutputRule) []map[string]any {
+	if rules == nil {
+		return nil
+	}
+	mapped := make([]map[string]any, len(rules))
+	for i, rule := range rules {
+		mapped[i] = map[string]any{
+			"host":               rule.Host,
+			"include_subdomains": rule.IncludeSubdomains,
+			"path_prefixes":      cloneStringSlice(rule.PathPrefixes),
+		}
+	}
+
+	return mapped
+}
+
+func privatePolicyBundleAuthScopeMaps(scopes []HostPolicyAuthProfileScope) []map[string]any {
+	if scopes == nil {
+		return nil
+	}
+	mapped := make([]map[string]any, len(scopes))
+	for i, scope := range scopes {
+		mapped[i] = map[string]any{
+			"profile_id":   string(scope.ProfileID),
+			"domain_rules": cloneDomainRules(scope.Domains),
+		}
+	}
+
+	return mapped
 }
 
 func privatePolicyBundleEndpointMaps(endpoints []HostPolicyBrokerEndpoint) []map[string]any {
@@ -432,10 +535,13 @@ func privatePolicyBundleEndpointMaps(endpoints []HostPolicyBrokerEndpoint) []map
 	mapped := make([]map[string]any, len(endpoints))
 	for i, endpoint := range endpoints {
 		mapped[i] = map[string]any{
-			"broker_policy_ref": endpoint.BrokerPolicyRef,
-			"endpoint_ref":      endpoint.EndpointRef,
-			"url_template":      endpoint.URLTemplate,
-			"auth_profile_refs": cloneStringSlice(endpoint.AuthProfileRefs),
+			"broker_policy_ref":  endpoint.BrokerPolicyRef,
+			"endpoint_ref":       endpoint.EndpointRef,
+			"url_template":       endpoint.URLTemplate,
+			"methods":            cloneStringSlice(endpoint.Methods),
+			"auth_profile_refs":  cloneStringSlice(endpoint.AuthProfileRefs),
+			"timeout_millis":     endpoint.TimeoutMillis,
+			"max_response_bytes": endpoint.MaxResponseBytes,
 		}
 	}
 

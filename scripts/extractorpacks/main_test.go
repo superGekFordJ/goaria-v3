@@ -1644,6 +1644,15 @@ func privatePolicyBundleRawForScript(t *testing.T, fixtures []privatePolicyBundl
 	t.Helper()
 	packEntries := make([]map[string]any, 0, len(fixtures))
 	for _, fixture := range fixtures {
+		var authProfileScopes []map[string]any
+		var authProfileRefs []string
+		if extractor.ManifestHasCapability(fixture.Manifest, extractor.CapabilityAuthProfile) {
+			authProfileScopes = []map[string]any{{
+				"profile_id":   "apr-alpha001",
+				"domain_rules": []extractor.DomainRule{{Host: "api.alpha.test"}},
+			}}
+			authProfileRefs = []string{"apr-alpha001"}
+		}
 		packEntries = append(packEntries, map[string]any{
 			"verified_pack_identity": map[string]any{
 				"pack_id":           fixture.Identity.PackID,
@@ -1659,11 +1668,20 @@ func privatePolicyBundleRawForScript(t *testing.T, fixtures []privatePolicyBundl
 			"allowed_capabilities": append([]extractor.Capability(nil), fixture.Manifest.Capabilities...),
 			"ingress_domain_rules": []extractor.DomainRule{{Host: "share.alpha.test"}},
 			"broker_domain_rules":  []extractor.DomainRule{{Host: "api.alpha.test"}},
-			"broker_endpoints": []map[string]any{{
-				"broker_policy_ref": fixture.Manifest.BrokerPolicyRefs[0],
-				"endpoint_ref":      "epr-alpha001",
-				"url_template":      "https://api.alpha.test/resource/{id}",
-				"auth_profile_refs": []string{"apr-alpha001"},
+			"output_domain_rules": []map[string]any{{
+				"host":               "files.alpha.test",
+				"include_subdomains": true,
+				"path_prefixes":      []string{"/"},
+			}},
+			"auth_profile_scopes": authProfileScopes,
+			"endpoints": []map[string]any{{
+				"broker_policy_ref":  fixture.Manifest.BrokerPolicyRefs[0],
+				"endpoint_ref":       "epr-alpha001",
+				"url_template":       "https://api.alpha.test/resource/{id}",
+				"methods":            []string{"GET", "HEAD"},
+				"auth_profile_refs":  authProfileRefs,
+				"timeout_millis":     100,
+				"max_response_bytes": 512,
 			}},
 		})
 	}
@@ -1673,11 +1691,12 @@ func privatePolicyBundleRawForScript(t *testing.T, fixtures []privatePolicyBundl
 		t.Fatalf("json.Marshal(policy) error = %v", err)
 	}
 	bundle := map[string]any{
-		"schema_version":        1,
-		"bundle_id":             "hpb-alpha001",
-		"bundle_version":        "opaque-1",
-		"policy_private_sha256": sha256Hex(policyRaw),
-		"policy":                json.RawMessage(policyRaw),
+		"schema_version":            1,
+		"bundle_id":                 "hpb-alpha001",
+		"bundle_version":            "opaque-1",
+		"policy_private_sha256":     sha256Hex(policyRaw),
+		"policy_public_fingerprint": strings.Repeat("a", 64),
+		"policy":                    json.RawMessage(policyRaw),
 	}
 	raw, err := json.Marshal(bundle)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var brokerEndpointParamPattern = regexp.MustCompile(`\{([a-zA-Z0-9_-]+)\}`)
@@ -29,14 +30,30 @@ type ResolvedHostPolicy struct {
 	AllowedCapabilities []Capability
 	IngressDomains      []DomainRule
 	BrokerDomains       []DomainRule
+	OutputDomains       []HostPolicyOutputRule
+	AuthProfiles        []HostPolicyAuthProfileScope
 	BrokerEndpoints     []HostPolicyBrokerEndpoint
 }
 
+type HostPolicyOutputRule struct {
+	Host              string
+	IncludeSubdomains bool
+	PathPrefixes      []string
+}
+
+type HostPolicyAuthProfileScope struct {
+	ProfileID AuthProfileID
+	Domains   []DomainRule
+}
+
 type HostPolicyBrokerEndpoint struct {
-	BrokerPolicyRef string
-	EndpointRef     string
-	URLTemplate     string
-	AuthProfileRefs []string
+	BrokerPolicyRef  string
+	EndpointRef      string
+	URLTemplate      string
+	Methods          []string
+	AuthProfileRefs  []string
+	TimeoutMillis    int
+	MaxResponseBytes int64
 }
 
 func isAliasManifest(manifest Manifest) bool {
@@ -97,10 +114,19 @@ func validateResolvedHostPolicy(identity VerifiedPackIdentity, manifest Manifest
 	if err := validateDomainRules(policy.IngressDomains); err != nil {
 		return errors.New("host policy ingress domains are invalid")
 	}
+	if len(policy.OutputDomains) == 0 {
+		return errors.New("host policy output domains are required")
+	}
+	if err := validateHostPolicyOutputDomains(policy.OutputDomains); err != nil {
+		return err
+	}
 	if len(policy.BrokerDomains) > 0 {
 		if err := validateDomainRules(policy.BrokerDomains); err != nil {
 			return errors.New("host policy broker domains are invalid")
 		}
+	}
+	if err := validateHostPolicyAuthProfiles(policy.AuthProfiles, policy.AllowedCapabilities); err != nil {
+		return err
 	}
 	needsBrokerEndpoints := manifestHasCapability(manifest, CapabilityHTTPFetch) || manifestHasCapability(manifest, CapabilityAuthProfile)
 	if needsBrokerEndpoints {
@@ -113,6 +139,73 @@ func validateResolvedHostPolicy(identity VerifiedPackIdentity, manifest Manifest
 	}
 	if err := validateHostPolicyBrokerEndpoints(manifest, policy); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func validateHostPolicyOutputDomains(rules []HostPolicyOutputRule) error {
+	for _, rule := range rules {
+		if err := validateDomainRule(DomainRule{Host: rule.Host, IncludeSubdomains: rule.IncludeSubdomains}); err != nil {
+			return errors.New("host policy output domain is invalid")
+		}
+		if len(rule.PathPrefixes) == 0 {
+			return errors.New("host policy output path prefixes are required")
+		}
+		seen := make(map[string]struct{}, len(rule.PathPrefixes))
+		for _, prefix := range rule.PathPrefixes {
+			if err := validateHostPolicyOutputPathPrefix(prefix); err != nil {
+				return err
+			}
+			if _, ok := seen[prefix]; ok {
+				return errors.New("host policy output path prefixes contain duplicates")
+			}
+			seen[prefix] = struct{}{}
+		}
+	}
+
+	return nil
+}
+
+func validateHostPolicyOutputPathPrefix(prefix string) error {
+	if prefix == "" || strings.TrimSpace(prefix) != prefix {
+		return errors.New("host policy output path prefix is invalid")
+	}
+	if !strings.HasPrefix(prefix, "/") {
+		return errors.New("host policy output path prefix is invalid")
+	}
+	if prefix != "/" && !strings.HasSuffix(prefix, "/") {
+		return errors.New("host policy output path prefix is invalid")
+	}
+	if strings.ContainsAny(prefix, "\\?#%") || containsControl(prefix) {
+		return errors.New("host policy output path prefix is invalid")
+	}
+	if strings.Contains(prefix, "//") || strings.Contains(prefix, "/./") || strings.Contains(prefix, "/../") || strings.Contains(prefix, "..") {
+		return errors.New("host policy output path prefix is invalid")
+	}
+
+	return nil
+}
+
+func validateHostPolicyAuthProfiles(scopes []HostPolicyAuthProfileScope, capabilities []Capability) error {
+	if len(scopes) == 0 {
+		return nil
+	}
+	if !capabilityListContains(capabilities, CapabilityAuthProfile) {
+		return errors.New("host policy auth profile scopes require auth capability")
+	}
+	seen := make(map[AuthProfileID]struct{}, len(scopes))
+	for _, scope := range scopes {
+		if err := validateAuthProfileID(scope.ProfileID); err != nil {
+			return errors.New("host policy auth profile scope is invalid")
+		}
+		if _, ok := seen[scope.ProfileID]; ok {
+			return errors.New("host policy auth profile scopes contain duplicates")
+		}
+		seen[scope.ProfileID] = struct{}{}
+		if err := validateDomainRules(scope.Domains); err != nil {
+			return errors.New("host policy auth profile domain rules are invalid")
+		}
 	}
 
 	return nil
@@ -144,6 +237,10 @@ func validateHostPolicyBrokerEndpoints(manifest Manifest, policy ResolvedHostPol
 	}
 	manifestBrokerRefs := makeStringSet(manifest.BrokerPolicyRefs)
 	policyBrokerRefs := makeStringSet(policy.BrokerPolicyRefs)
+	declaredAuthProfiles := make(map[string]struct{}, len(policy.AuthProfiles))
+	for _, scope := range policy.AuthProfiles {
+		declaredAuthProfiles[string(scope.ProfileID)] = struct{}{}
+	}
 	seenEndpoints := make(map[string]struct{}, len(policy.BrokerEndpoints))
 	for _, endpoint := range policy.BrokerEndpoints {
 		if err := validateOpaquePolicyRef("broker_policy_ref", endpoint.BrokerPolicyRef); err != nil {
@@ -166,8 +263,78 @@ func validateHostPolicyBrokerEndpoints(manifest Manifest, policy ResolvedHostPol
 		if err := validateBrokerEndpointURLTemplate(endpoint.URLTemplate); err != nil {
 			return err
 		}
+		if _, err := normalizeBrokerEndpointMethods(endpoint.Methods, DefaultHTTPBrokerPolicy()); err != nil {
+			return err
+		}
 		if err := validateBrokerEndpointAuthProfileRefs(endpoint.AuthProfileRefs); err != nil {
 			return err
+		}
+		for _, ref := range endpoint.AuthProfileRefs {
+			if !manifestHasCapability(manifest, CapabilityAuthProfile) || !policyAllowsCapability(policy, CapabilityAuthProfile) {
+				return errors.New("host policy broker endpoint auth profile refs require auth capability")
+			}
+			if _, ok := declaredAuthProfiles[ref]; !ok {
+				return errors.New("host policy broker endpoint auth profile ref is not declared")
+			}
+		}
+		if err := validateBrokerEndpointResourceCaps(endpoint, manifest, DefaultHTTPBrokerPolicy()); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func normalizeBrokerEndpointMethods(methods []string, policy HTTPBrokerPolicy) ([]string, error) {
+	if len(methods) == 0 {
+		return nil, nil
+	}
+	allowed := policy.AllowedMethods
+	if len(allowed) == 0 {
+		allowed = DefaultHTTPBrokerPolicy().AllowedMethods
+	}
+	seen := make(map[string]struct{}, len(methods))
+	normalized := make([]string, 0, len(methods))
+	for _, method := range methods {
+		method = strings.ToUpper(strings.TrimSpace(method))
+		if method == "" || strings.ContainsAny(method, " \t\r\n") {
+			return nil, errors.New("host policy broker endpoint method is invalid")
+		}
+		if _, ok := seen[method]; ok {
+			return nil, errors.New("host policy broker endpoint methods contain duplicates")
+		}
+		if _, ok := allowed[method]; !ok {
+			return nil, errors.New("host policy broker endpoint method is not allowed")
+		}
+		seen[method] = struct{}{}
+		normalized = append(normalized, method)
+	}
+
+	return normalized, nil
+}
+
+func validateBrokerEndpointResourceCaps(endpoint HostPolicyBrokerEndpoint, manifest Manifest, policy HTTPBrokerPolicy) error {
+	if endpoint.TimeoutMillis < 0 {
+		return errors.New("host policy broker endpoint timeout is invalid")
+	}
+	if endpoint.TimeoutMillis > 0 {
+		brokerMaxMillis := int(policy.MaxTimeout / time.Millisecond)
+		if manifest.ResourceLimits.TimeoutMillis > 0 && endpoint.TimeoutMillis > manifest.ResourceLimits.TimeoutMillis {
+			return errors.New("host policy broker endpoint timeout exceeds manifest limit")
+		}
+		if brokerMaxMillis > 0 && endpoint.TimeoutMillis > brokerMaxMillis {
+			return errors.New("host policy broker endpoint timeout exceeds broker limit")
+		}
+	}
+	if endpoint.MaxResponseBytes < 0 {
+		return errors.New("host policy broker endpoint response cap is invalid")
+	}
+	if endpoint.MaxResponseBytes > 0 {
+		if manifest.ResourceLimits.MaxResponseBytes > 0 && endpoint.MaxResponseBytes > manifest.ResourceLimits.MaxResponseBytes {
+			return errors.New("host policy broker endpoint response cap exceeds manifest limit")
+		}
+		if policy.MaxResponseBytes > 0 && endpoint.MaxResponseBytes > policy.MaxResponseBytes {
+			return errors.New("host policy broker endpoint response cap exceeds broker limit")
 		}
 	}
 
@@ -268,6 +435,45 @@ func expandBrokerEndpointURL(policy ResolvedHostPolicy, endpoint HostPolicyBroke
 	}
 
 	return parsed.String(), nil
+}
+
+func policyAllowsOutputURL(policy ResolvedHostPolicy, rawURL string) error {
+	parsed, host, err := parseSafeHTTPURL(rawURL)
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme != "https" {
+		return redactErrorf("output url must use https")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawFragment != "" {
+		return redactErrorf("output url must not include query or fragment")
+	}
+	path := parsed.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	for _, rule := range policy.OutputDomains {
+		if !matchesDomainRule(host, DomainRule{Host: rule.Host, IncludeSubdomains: rule.IncludeSubdomains}) {
+			continue
+		}
+		for _, prefix := range rule.PathPrefixes {
+			if prefix == "/" || strings.HasPrefix(path, prefix) {
+				return nil
+			}
+		}
+	}
+
+	return redactErrorf("url is not allowed by alias output policy")
+}
+
+func policyAuthProfileMatchesHost(policy ResolvedHostPolicy, profileID AuthProfileID, host string) bool {
+	for _, scope := range policy.AuthProfiles {
+		if scope.ProfileID == profileID {
+			return domainRulesMatchHost(scope.Domains, host)
+		}
+	}
+
+	return false
 }
 
 func validateBrokerEndpointTemplatePlaceholders(parsed *url.URL) error {
@@ -479,6 +685,26 @@ func isTokenShapedEndpointQueryKey(key string) bool {
 	return false
 }
 
+func capabilityListContains(capabilities []Capability, capability Capability) bool {
+	for _, candidate := range capabilities {
+		if candidate == capability {
+			return true
+		}
+	}
+
+	return false
+}
+
+func containsControl(value string) bool {
+	for _, r := range value {
+		if r == 0 || r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+
+	return false
+}
+
 func validateResolvedHostPolicyBinding(identity VerifiedPackIdentity, manifest Manifest, policy ResolvedHostPolicy) error {
 	if !isAliasManifest(manifest) {
 		return errors.New("host policy requires alias manifest")
@@ -547,9 +773,35 @@ func cloneResolvedHostPolicy(policy ResolvedHostPolicy) ResolvedHostPolicy {
 	policy.AllowedCapabilities = append([]Capability(nil), policy.AllowedCapabilities...)
 	policy.IngressDomains = cloneDomainRules(policy.IngressDomains)
 	policy.BrokerDomains = cloneDomainRules(policy.BrokerDomains)
+	policy.OutputDomains = cloneHostPolicyOutputRules(policy.OutputDomains)
+	policy.AuthProfiles = cloneHostPolicyAuthProfileScopes(policy.AuthProfiles)
 	policy.BrokerEndpoints = cloneHostPolicyBrokerEndpoints(policy.BrokerEndpoints)
 
 	return policy
+}
+
+func cloneHostPolicyOutputRules(rules []HostPolicyOutputRule) []HostPolicyOutputRule {
+	if rules == nil {
+		return nil
+	}
+	cloned := append([]HostPolicyOutputRule(nil), rules...)
+	for i := range cloned {
+		cloned[i].PathPrefixes = cloneStringSlice(cloned[i].PathPrefixes)
+	}
+
+	return cloned
+}
+
+func cloneHostPolicyAuthProfileScopes(scopes []HostPolicyAuthProfileScope) []HostPolicyAuthProfileScope {
+	if scopes == nil {
+		return nil
+	}
+	cloned := append([]HostPolicyAuthProfileScope(nil), scopes...)
+	for i := range cloned {
+		cloned[i].Domains = cloneDomainRules(cloned[i].Domains)
+	}
+
+	return cloned
 }
 
 func cloneHostPolicyBrokerEndpoints(endpoints []HostPolicyBrokerEndpoint) []HostPolicyBrokerEndpoint {
@@ -565,6 +817,7 @@ func cloneHostPolicyBrokerEndpoints(endpoints []HostPolicyBrokerEndpoint) []Host
 }
 
 func cloneHostPolicyBrokerEndpoint(endpoint HostPolicyBrokerEndpoint) HostPolicyBrokerEndpoint {
+	endpoint.Methods = cloneStringSlice(endpoint.Methods)
 	endpoint.AuthProfileRefs = cloneStringSlice(endpoint.AuthProfileRefs)
 
 	return endpoint
