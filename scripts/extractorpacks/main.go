@@ -704,8 +704,15 @@ func validatePrivateAuthRuntimeForVerifiedAssets(raw []byte, expectedSHA string,
 	if len(verified) != fullPackCount {
 		return errors.New("auth runtime bundle is invalid")
 	}
+	requiredIdentities := make(map[extractor.VerifiedPackIdentity]struct{}, len(verified))
+	for _, asset := range verified {
+		if !extractor.ManifestHasCapability(asset.Manifest, extractor.CapabilityAuthProfile) {
+			continue
+		}
+		requiredIdentities[asset.Identity] = struct{}{}
+	}
 	identities := bundle.PackIdentities()
-	if len(identities) != len(verified) {
+	if len(identities) != len(requiredIdentities) {
 		return errors.New("auth runtime bundle is invalid")
 	}
 	bundleIdentities := make(map[extractor.VerifiedPackIdentity]struct{}, len(identities))
@@ -714,9 +721,12 @@ func validatePrivateAuthRuntimeForVerifiedAssets(raw []byte, expectedSHA string,
 			return errors.New("auth runtime bundle is invalid")
 		}
 		bundleIdentities[identity] = struct{}{}
+		if _, ok := requiredIdentities[identity]; !ok {
+			return errors.New("auth runtime bundle is invalid")
+		}
 	}
-	for _, asset := range verified {
-		if _, ok := bundleIdentities[asset.Identity]; !ok {
+	for identity := range requiredIdentities {
+		if _, ok := bundleIdentities[identity]; !ok {
 			return errors.New("auth runtime bundle is invalid")
 		}
 	}
