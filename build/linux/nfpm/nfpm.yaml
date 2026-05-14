@@ -6,7 +6,7 @@
 name: "goaria-v3"
 arch: ${GOARCH}
 platform: "linux"
-version: "2.0.0-alpha.4"
+version: "2.0.0-alpha.5"
 section: "default"
 priority: "extra"
 maintainer: ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>
