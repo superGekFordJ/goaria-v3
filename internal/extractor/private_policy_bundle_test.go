@@ -34,6 +34,50 @@ func TestPrivatePolicyBundleLoadsAndResolves(t *testing.T) {
 	}
 }
 
+func TestPrivatePolicyBundlePreservesOutputAndAuthPolicyScopes(t *testing.T) {
+	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
+	identity := syntheticVerifiedPackIdentity(manifest)
+	outputDomains := []HostPolicyOutputRule{{Host: "assets.alpha.test", IncludeSubdomains: true, PathPrefixes: []string{"/public/", "/"}}}
+	authProfiles := []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "api.alpha.test", IncludeSubdomains: true}}}}
+	endpoints := []HostPolicyBrokerEndpoint{{
+		BrokerPolicyRef: "bpr-alpha001",
+		EndpointRef:     "epr-alpha001",
+		URLTemplate:     "https://api.alpha.test/resource/{id}",
+		Methods:         []string{"GET"},
+		AuthProfileRefs: []string{"apr-alpha001"},
+	}}
+	raw := privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{
+		Identity:        identity,
+		Manifest:        manifest,
+		OutputDomains:   outputDomains,
+		AuthProfiles:    authProfiles,
+		BrokerEndpoints: endpoints,
+	}}, nil)
+
+	resolver, err := NewPrivatePolicyBundleResolver(raw, PrivatePolicyBundleLoadOptions{})
+	if err != nil {
+		t.Fatalf("NewPrivatePolicyBundleResolver() error = %v", err)
+	}
+	policy, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: identity, Manifest: manifest})
+	if err != nil {
+		t.Fatalf("ResolveHostPolicy() error = %v", err)
+	}
+	if len(policy.OutputDomains) != 1 || policy.OutputDomains[0].Host != "assets.alpha.test" || !policy.OutputDomains[0].IncludeSubdomains || strings.Join(policy.OutputDomains[0].PathPrefixes, ",") != "/public/,/" {
+		t.Fatalf("output domains were not preserved: %#v", policy.OutputDomains)
+	}
+	if err := policyAllowsOutputURL(policy, "https://cdn.assets.alpha.test/public/item.bin"); err != nil {
+		t.Fatalf("policyAllowsOutputURL() subdomain output error = %v", err)
+	}
+	if !policyAuthProfileMatchesHost(policy, "apr-alpha001", "sub.api.alpha.test") || policyAuthProfileMatchesHost(policy, "apr-alpha001", "assets.alpha.test") {
+		t.Fatalf("auth profile scope mismatch: %#v", policy.AuthProfiles)
+	}
+	endpoint, ok := findBrokerEndpoint(policy, "bpr-alpha001", "epr-alpha001")
+	if !ok || !endpointAllowsAuthProfile(endpoint, "apr-alpha001") || endpointAllowsAuthProfile(endpoint, "apr-alpha002") {
+		t.Fatalf("endpoint auth refs mismatch: %#v ok=%t", endpoint, ok)
+	}
+}
+
 func TestPrivatePolicyBundleReturnsDefensiveCopies(t *testing.T) {
 	manifest := validAliasTestManifest(nil)
 	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)

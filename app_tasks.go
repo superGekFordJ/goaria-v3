@@ -626,15 +626,15 @@ func (a *App) preflightCandidateAuth(ctx context.Context, candidate addTaskCandi
 	if !candidate.extracted || candidate.item.AuthProfileRef == "" {
 		return nil
 	}
-	runtime := a.hostAuthRuntimeForTaskFlow()
-	if runtime == nil {
-		return nil
-	}
 	if candidate.item.PackIdentity.PackID == "" || candidate.item.Manifest.PackID == "" {
 		return addTaskAuthUnavailableError()
 	}
 	if err := extractor.ValidateResolvedAddItemAuthPolicy(candidate.item); err != nil {
 		return addTaskAuthUnavailableError()
+	}
+	runtime := a.hostAuthRuntimeForTaskFlow()
+	if runtime == nil {
+		return nil
 	}
 
 	request := extractor.HostAuthRuntimeRequest{

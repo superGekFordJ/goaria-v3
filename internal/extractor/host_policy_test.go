@@ -177,6 +177,109 @@ func TestHostPolicyBrokerEndpointExpansion(t *testing.T) {
 	}
 }
 
+func TestHostPolicyOutputURLBoundary(t *testing.T) {
+	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
+	identity := syntheticVerifiedPackIdentity(manifest)
+	policy := validResolvedHostPolicy(identity, manifest)
+	policy.OutputDomains = append(policy.OutputDomains, HostPolicyOutputRule{
+		Host:              "assets.alpha.test",
+		IncludeSubdomains: false,
+		PathPrefixes:      []string{"/"},
+	})
+
+	accepted := []string{
+		"https://files.alpha.test/downloads/item.bin",
+		"https://files.alpha.test/downloads/safe%20file.bin",
+		"https://cdn.files.alpha.test/downloads/item.bin",
+		"https://assets.alpha.test/any/path.bin",
+	}
+	for _, rawURL := range accepted {
+		t.Run("accept "+rawURL, func(t *testing.T) {
+			if err := policyAllowsOutputURL(policy, rawURL); err != nil {
+				t.Fatalf("policyAllowsOutputURL() error = %v", err)
+			}
+		})
+	}
+
+	rejected := []struct {
+		name string
+		raw  string
+	}{
+		{name: "http scheme", raw: "http://files.alpha.test/downloads/item.bin"},
+		{name: "query", raw: "https://files.alpha.test/downloads/item.bin?token=query-secret"},
+		{name: "fragment", raw: "https://files.alpha.test/downloads/item.bin#secret-fragment"},
+		{name: "userinfo", raw: "https://user:pass@files.alpha.test/downloads/item.bin"},
+		{name: "malformed port", raw: "https://files.alpha.test:bad/downloads/item.bin"},
+		{name: "host suffix", raw: "https://files.alpha.test.evil.test/downloads/item.bin"},
+		{name: "subdomain disabled", raw: "https://cdn.assets.alpha.test/any/path.bin"},
+		{name: "prefix sibling", raw: "https://files.alpha.test/downloads-sibling/item.bin"},
+		{name: "encoded slash", raw: "https://files.alpha.test/downloads%2fitem.bin"},
+		{name: "encoded dot", raw: "https://files.alpha.test/downloads/%2e/item.bin"},
+		{name: "encoded dot dot", raw: "https://files.alpha.test/downloads/%2e%2e/item.bin"},
+		{name: "encoded backslash", raw: "https://files.alpha.test/downloads/%5citem.bin"},
+		{name: "double encoded slash", raw: "https://files.alpha.test/downloads%252fitem.bin"},
+		{name: "double encoded backslash", raw: "https://files.alpha.test/downloads/%255citem.bin"},
+		{name: "double encoded dot", raw: "https://files.alpha.test/downloads/%252e/item.bin"},
+		{name: "double encoded dot dot", raw: "https://files.alpha.test/downloads/%252e%252e/item.bin"},
+		{name: "double encoded nul", raw: "https://files.alpha.test/downloads/safe%2500name.bin"},
+		{name: "double encoded newline", raw: "https://files.alpha.test/downloads/safe%250aname.bin"},
+		{name: "double encoded delete", raw: "https://files.alpha.test/downloads/safe%257fname.bin"},
+	}
+	for _, tt := range rejected {
+		t.Run(tt.name, func(t *testing.T) {
+			err := policyAllowsOutputURL(policy, tt.raw)
+			if err == nil {
+				t.Fatal("policyAllowsOutputURL() error = nil, want denial")
+			}
+			assertNoForbiddenSubstrings(t, err.Error(), "query-secret", "secret-fragment", "user:pass")
+		})
+	}
+}
+
+func TestHostPolicyOutputPathPrefixValidationRejectsUnsafeRules(t *testing.T) {
+	manifest := validAliasTestManifest(nil)
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
+	identity := syntheticVerifiedPackIdentity(manifest)
+	basePolicy := validResolvedHostPolicy(identity, manifest)
+
+	tests := []struct {
+		name     string
+		prefixes []string
+	}{
+		{name: "empty", prefixes: []string{""}},
+		{name: "untrimmed", prefixes: []string{" /downloads/"}},
+		{name: "relative", prefixes: []string{"downloads/"}},
+		{name: "missing trailing slash", prefixes: []string{"/downloads"}},
+		{name: "duplicate", prefixes: []string{"/downloads/", "/downloads/"}},
+		{name: "dot segment", prefixes: []string{"/downloads/./"}},
+		{name: "dot dot segment", prefixes: []string{"/downloads/../"}},
+		{name: "dot dot substring", prefixes: []string{"/downloads..safe/"}},
+		{name: "double slash", prefixes: []string{"/downloads//"}},
+		{name: "query like", prefixes: []string{"/downloads/?"}},
+		{name: "fragment like", prefixes: []string{"/downloads/#"}},
+		{name: "escaped", prefixes: []string{"/downloads/%2f"}},
+		{name: "backslash", prefixes: []string{`/downloads\`}},
+		{name: "control", prefixes: []string{"/downloads/\x1f"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := cloneResolvedHostPolicy(basePolicy)
+			policy.OutputDomains[0].PathPrefixes = tt.prefixes
+			if _, err := resolveAliasHostPolicy(context.Background(), &fakeHostPolicyResolver{policy: policy}, identity, manifest); err == nil {
+				t.Fatal("resolveAliasHostPolicy() error = nil, want output prefix denial")
+			}
+		})
+	}
+
+	policy := cloneResolvedHostPolicy(basePolicy)
+	policy.OutputDomains[0].PathPrefixes = []string{"/"}
+	if _, err := resolveAliasHostPolicy(context.Background(), &fakeHostPolicyResolver{policy: policy}, identity, manifest); err != nil {
+		t.Fatalf("resolveAliasHostPolicy() root prefix error = %v", err)
+	}
+}
+
 func TestHostPolicyBrokerEndpointExpansionRejectsStructuralParamInjection(t *testing.T) {
 	manifest := validAliasTestManifest(nil)
 	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
