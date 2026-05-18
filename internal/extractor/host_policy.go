@@ -470,11 +470,10 @@ func policyAllowsOutputURL(policy ResolvedHostPolicy, rawURL string) error {
 }
 
 func validateOutputURLPath(escapedPath string) error {
-	for _, segment := range strings.Split(escapedPath, "/") {
-		if segment == "" {
+	for _, current := range strings.Split(escapedPath, "/") {
+		if current == "" {
 			continue
 		}
-		current := segment
 		for depth := 0; ; depth++ {
 			if outputURLPathSegmentUnsafe(current) {
 				return redactErrorf("output url path is invalid")
