@@ -79,6 +79,55 @@ func TestAppHostAuthCallbackMiddlewareSuccessStoresProfile(t *testing.T) {
 	}
 }
 
+func TestAppHostAuthDiagnosticCallbackCategories(t *testing.T) {
+	diagnostics := &recordingAppHostAuthDiagnosticObserver{}
+	store := newRootTempAuthProfileStore(t)
+	factory := &fakeHostAuthSessionWindowFactory{}
+	app := newWindowedAuthApp(t)
+	coordinator := extractor.NewWebViewAuthCoordinator(store, newAppHostAuthDriverWithFactoryAndDiagnostics(app, factory, diagnostics))
+	resultCh := make(chan appHostAuthOutcome, 1)
+
+	go func() {
+		result, err := coordinator.Start(context.Background(), appHostAuthWebViewRequest(time.Second))
+		resultCh <- appHostAuthOutcome{result: result, err: err}
+	}()
+	factory.waitForOpen(t)
+	request := factory.request(0)
+
+	if status := preflightHostAuthCallback(t, app, request, request.AuthPageOrigin, http.MethodPost, "content-type, x-goaria-auth-session"); status != http.StatusNoContent {
+		t.Fatalf("accepted preflight status = %d, want no content", status)
+	}
+	if status := preflightHostAuthCallback(t, app, request, "https://example.test", http.MethodPost, "content-type, x-goaria-auth-session"); status != http.StatusForbidden {
+		t.Fatalf("rejected preflight status = %d, want forbidden", status)
+	}
+	if status := callHostAuthCallback(t, app, request, http.MethodGet, `{"kind":"bearer","secret":"not-used"}`, request.SessionToken, "application/json", request.AuthPageOrigin); status != http.StatusMethodNotAllowed {
+		t.Fatalf("rejected POST status = %d, want method not allowed", status)
+	}
+	if status := postHostAuthCallback(t, app, request, `{"kind":"bearer","secret":"middleware-captured-secret","redacted_display":"synthetic captured auth"}`, request.SessionToken, "application/json"); status != http.StatusAccepted {
+		t.Fatalf("accepted POST status = %d, want accepted", status)
+	}
+	outcome := receiveAppHostAuthOutcome(t, resultCh)
+	if outcome.err != nil || outcome.result.Status != extractor.WebViewAuthStatusSuccess {
+		t.Fatalf("coordinator.Start() outcome = %#v err=%v", outcome.result, outcome.err)
+	}
+
+	categories := diagnostics.categories()
+	for _, want := range []string{
+		appHostAuthDiagnosticPreflightAccepted,
+		appHostAuthDiagnosticPreflightOriginRejected,
+		appHostAuthDiagnosticPostMethodRejected,
+		appHostAuthDiagnosticPostAccepted,
+		appHostAuthDiagnosticTerminalSuccess,
+	} {
+		if !stringSliceContains(categories, want) {
+			t.Fatalf("categories missing %q: %#v", want, categories)
+		}
+	}
+	assertAppHostAuthDiagnosticEventsCategoryOnly(t, diagnostics.eventsSnapshot())
+	encoded := diagnostics.encodedEvents(t)
+	assertRootNoSecretText(t, encoded, "middleware-captured-secret", "not-used", "example.test", "fixture.invalid", request.SessionToken, request.CallbackPath, "xpk-alpha001", "apr-alpha001", "Authorization", "Cookie")
+}
+
 func TestAppHostAuthCallbackMiddlewareRejectsInvalidRequests(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
