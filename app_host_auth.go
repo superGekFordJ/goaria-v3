@@ -12,6 +12,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -32,16 +33,78 @@ const (
 	appHostAuthSessionHeader         = "X-Goaria-Auth-Session"
 	appHostAuthInitialURL            = "/"
 	appHostAuthCORSAllowedHeaders    = "content-type, x-goaria-auth-session"
+
+	appHostAuthDiagnosticsEnv    = "GOARIA_WEBVIEW_AUTH_DIAGNOSTICS"
+	appHostAuthDiagnosticsOutEnv = "GOARIA_WEBVIEW_AUTH_DIAGNOSTICS_OUT"
+
+	appHostAuthDiagnosticSessionOpened             = "session_opened"
+	appHostAuthDiagnosticSessionUnavailable        = "session_unavailable"
+	appHostAuthDiagnosticSessionBusy               = "session_busy"
+	appHostAuthDiagnosticWindowOpenFailed          = "window_open_failed"
+	appHostAuthDiagnosticPreflightAccepted         = "preflight_accepted"
+	appHostAuthDiagnosticPreflightOriginRejected   = "preflight_origin_rejected"
+	appHostAuthDiagnosticPreflightMethodRejected   = "preflight_method_rejected"
+	appHostAuthDiagnosticPreflightHeaderRejected   = "preflight_header_rejected"
+	appHostAuthDiagnosticPostOriginRejected        = "post_origin_rejected"
+	appHostAuthDiagnosticPostMethodRejected        = "post_method_rejected"
+	appHostAuthDiagnosticPostContentTypeRejected   = "post_content_type_rejected"
+	appHostAuthDiagnosticPostSessionHeaderRejected = "post_session_header_rejected"
+	appHostAuthDiagnosticPostBodyRejected          = "post_body_rejected"
+	appHostAuthDiagnosticPostPayloadRejected       = "post_payload_rejected"
+	appHostAuthDiagnosticPostAccepted              = "post_accepted"
+	appHostAuthDiagnosticPostExpired               = "post_expired"
+	appHostAuthDiagnosticTerminalSuccess           = "terminal_success"
+	appHostAuthDiagnosticTerminalCancel            = "terminal_cancel"
+	appHostAuthDiagnosticTerminalError             = "terminal_error"
+	appHostAuthDiagnosticSessionClosed             = "session_closed"
 )
 
 var _ extractor.AuthWebViewDriver = (*appHostAuthDriver)(nil)
 
+var appHostAuthDiagnosticCategories = map[string]struct{}{
+	appHostAuthDiagnosticSessionOpened:             {},
+	appHostAuthDiagnosticSessionUnavailable:        {},
+	appHostAuthDiagnosticSessionBusy:               {},
+	appHostAuthDiagnosticWindowOpenFailed:          {},
+	appHostAuthDiagnosticPreflightAccepted:         {},
+	appHostAuthDiagnosticPreflightOriginRejected:   {},
+	appHostAuthDiagnosticPreflightMethodRejected:   {},
+	appHostAuthDiagnosticPreflightHeaderRejected:   {},
+	appHostAuthDiagnosticPostOriginRejected:        {},
+	appHostAuthDiagnosticPostMethodRejected:        {},
+	appHostAuthDiagnosticPostContentTypeRejected:   {},
+	appHostAuthDiagnosticPostSessionHeaderRejected: {},
+	appHostAuthDiagnosticPostBodyRejected:          {},
+	appHostAuthDiagnosticPostPayloadRejected:       {},
+	appHostAuthDiagnosticPostAccepted:              {},
+	appHostAuthDiagnosticPostExpired:               {},
+	appHostAuthDiagnosticTerminalSuccess:           {},
+	appHostAuthDiagnosticTerminalCancel:            {},
+	appHostAuthDiagnosticTerminalError:             {},
+	appHostAuthDiagnosticSessionClosed:             {},
+}
+
 type appHostAuthDriver struct {
-	app     *App
-	factory hostAuthSessionWindowFactory
+	app         *App
+	factory     hostAuthSessionWindowFactory
+	diagnostics appHostAuthDiagnosticObserver
 
 	mu       sync.Mutex
 	inflight *appHostAuthSession
+}
+
+type appHostAuthDiagnosticObserver interface {
+	observeAppHostAuthDiagnostic(appHostAuthDiagnosticEvent)
+}
+
+type appHostAuthDiagnosticEvent struct {
+	Category string `json:"category"`
+}
+
+type appHostAuthJSONLDiagnosticObserver struct {
+	mu     sync.Mutex
+	writer io.Writer
+	path   string
 }
 
 type hostAuthSessionWindowFactory interface {
@@ -140,11 +203,81 @@ func newAppHostAuthDriver(app *App) *appHostAuthDriver {
 }
 
 func newAppHostAuthDriverWithFactory(app *App, factory hostAuthSessionWindowFactory) *appHostAuthDriver {
+	return newAppHostAuthDriverWithFactoryAndDiagnostics(app, factory, newAppHostAuthDiagnosticObserverFromEnv())
+}
+
+func newAppHostAuthDriverWithFactoryAndDiagnostics(app *App, factory hostAuthSessionWindowFactory, observer appHostAuthDiagnosticObserver) *appHostAuthDriver {
 	if factory == nil {
 		factory = &wailsHostAuthSessionWindowFactory{app: app}
 	}
 
-	return &appHostAuthDriver{app: app, factory: factory}
+	return &appHostAuthDriver{app: app, factory: factory, diagnostics: observer}
+}
+
+func newAppHostAuthDiagnosticObserverFromEnv() appHostAuthDiagnosticObserver {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(appHostAuthDiagnosticsEnv))) {
+	case "1", "true", "category", "categories":
+	default:
+		return nil
+	}
+	if outPath := strings.TrimSpace(os.Getenv(appHostAuthDiagnosticsOutEnv)); outPath != "" {
+		file, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return nil
+		}
+		_ = file.Close()
+
+		return &appHostAuthJSONLDiagnosticObserver{path: outPath}
+	}
+
+	return &appHostAuthJSONLDiagnosticObserver{writer: os.Stderr}
+}
+
+func (o *appHostAuthJSONLDiagnosticObserver) observeAppHostAuthDiagnostic(event appHostAuthDiagnosticEvent) {
+	if o == nil || o.writer == nil && o.path == "" || !appHostAuthDiagnosticCategoryAllowed(event.Category) {
+		return
+	}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	raw = append(raw, '\n')
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.path != "" {
+		file, err := os.OpenFile(o.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return
+		}
+		defer file.Close()
+		_, _ = file.Write(raw)
+		return
+	}
+	_, _ = o.writer.Write(raw)
+}
+
+func (d *appHostAuthDriver) observe(category string) {
+	if d == nil || d.diagnostics == nil || !appHostAuthDiagnosticCategoryAllowed(category) {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	d.diagnostics.observeAppHostAuthDiagnostic(appHostAuthDiagnosticEvent{Category: category})
+}
+
+func (h *appHostAuthCallbackHandler) observe(category string) {
+	if h == nil || h.session == nil || h.session.driver == nil {
+		return
+	}
+	h.session.driver.observe(category)
+}
+
+func appHostAuthDiagnosticCategoryAllowed(category string) bool {
+	_, ok := appHostAuthDiagnosticCategories[category]
+
+	return ok
 }
 
 func (d *appHostAuthDriver) OpenAuthSession(ctx context.Context, request extractor.WebViewAuthRequest, sink extractor.AuthWebViewSink) (extractor.AuthWebViewSession, error) {
@@ -152,17 +285,23 @@ func (d *appHostAuthDriver) OpenAuthSession(ctx context.Context, request extract
 		ctx = context.Background()
 	}
 	if d == nil || d.app == nil || d.factory == nil {
+		if d != nil {
+			d.observe(appHostAuthDiagnosticSessionUnavailable)
+		}
 		return nil, errors.New(appHostAuthUnavailableMessage)
 	}
 	if err := d.app.hostAuthSessionAvailable(); err != nil {
+		d.observe(appHostAuthDiagnosticSessionUnavailable)
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
+		d.observe(appHostAuthDiagnosticSessionUnavailable)
 		return nil, errors.New(appHostAuthUnavailableMessage)
 	}
 
 	callbackPath, callbackToken, err := d.app.registerHostAuthCallbackSession(request)
 	if err != nil {
+		d.observe(appHostAuthDiagnosticSessionUnavailable)
 		return nil, errors.New(appHostAuthUnavailableMessage)
 	}
 	cleanup := sync.OnceFunc(func() {
@@ -172,10 +311,16 @@ func (d *appHostAuthDriver) OpenAuthSession(ctx context.Context, request extract
 	session := &appHostAuthSession{driver: d, sink: sink, kind: request.Kind, cleanup: cleanup, request: request}
 	if !d.app.hostAuthCallbackRegistry().bind(callbackPath, session) {
 		cleanup()
+		d.observe(appHostAuthDiagnosticSessionUnavailable)
 		return nil, errors.New(appHostAuthUnavailableMessage)
 	}
 	if err := d.setInflight(session); err != nil {
 		cleanup()
+		if err.Error() == appHostAuthInProgressMessage {
+			d.observe(appHostAuthDiagnosticSessionBusy)
+		} else {
+			d.observe(appHostAuthDiagnosticSessionUnavailable)
+		}
 		return nil, err
 	}
 
@@ -186,13 +331,16 @@ func (d *appHostAuthDriver) OpenAuthSession(ctx context.Context, request extract
 	})
 	if err != nil {
 		session.release()
+		d.observe(appHostAuthDiagnosticWindowOpenFailed)
 		return nil, errors.New(appHostAuthUnavailableMessage)
 	}
 	if window == nil {
 		session.release()
+		d.observe(appHostAuthDiagnosticWindowOpenFailed)
 		return nil, errors.New(appHostAuthUnavailableMessage)
 	}
 	session.setWindow(window)
+	d.observe(appHostAuthDiagnosticSessionOpened)
 
 	return session, nil
 }
@@ -231,6 +379,9 @@ func (s *appHostAuthSession) succeed(payload appHostAuthSessionPayload) bool {
 		token, err := appHostAuthTokenFromPayload(s.kind, payload)
 		if err != nil {
 			s.release()
+			if s.driver != nil {
+				s.driver.observe(appHostAuthDiagnosticTerminalError)
+			}
 			if s.sink.OnError != nil {
 				s.sink.OnError(err)
 			}
@@ -239,6 +390,9 @@ func (s *appHostAuthSession) succeed(payload appHostAuthSessionPayload) bool {
 		}
 
 		s.release()
+		if s.driver != nil {
+			s.driver.observe(appHostAuthDiagnosticTerminalSuccess)
+		}
 		if s.sink.OnSuccess != nil {
 			s.sink.OnSuccess(token)
 		}
@@ -252,6 +406,9 @@ func (s *appHostAuthSession) cancel() bool {
 	won := false
 	s.terminalOnce.Do(func() {
 		s.release()
+		if s.driver != nil {
+			s.driver.observe(appHostAuthDiagnosticTerminalCancel)
+		}
 		if s.sink.OnCancel != nil {
 			s.sink.OnCancel()
 		}
@@ -265,6 +422,9 @@ func (s *appHostAuthSession) fail(err error) bool {
 	won := false
 	s.terminalOnce.Do(func() {
 		s.release()
+		if s.driver != nil {
+			s.driver.observe(appHostAuthDiagnosticTerminalError)
+		}
 		if s.sink.OnError != nil {
 			s.sink.OnError(appHostAuthSanitizedCallbackError(err))
 		}
@@ -302,6 +462,9 @@ func (s *appHostAuthSession) Close() error {
 		s.mu.Unlock()
 		if window != nil {
 			closeErr = window.Close()
+		}
+		if s.driver != nil {
+			s.driver.observe(appHostAuthDiagnosticSessionClosed)
 		}
 	})
 
@@ -523,63 +686,73 @@ func (h *appHostAuthCallbackHandler) serveHTTP(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if r.Method != http.MethodPost {
+		h.observe(appHostAuthDiagnosticPostMethodRejected)
 		http.Error(w, "invalid", http.StatusMethodNotAllowed)
 		return
 	}
 	if !h.validateOrigin(r.Header.Get("Origin")) {
+		h.observe(appHostAuthDiagnosticPostOriginRejected)
 		http.Error(w, "invalid", http.StatusForbidden)
 		return
 	}
 	writeAppHostAuthCORSHeaders(w, r.Header.Get("Origin"))
 	if !appHostAuthContentTypeAllowed(r.Header.Get("Content-Type"), h.request.CallbackTransport.ContentTypes) {
-		h.fail(w)
+		h.fail(w, appHostAuthDiagnosticPostContentTypeRejected)
 		return
 	}
 	if !appHostAuthTokenMatches(r.Header.Get(appHostAuthSessionHeader), h.token) {
-		h.fail(w)
+		h.fail(w, appHostAuthDiagnosticPostSessionHeaderRejected)
 		return
 	}
 	raw, err := appHostAuthReadBoundedBody(r.Body, h.request.CallbackTransport.MaxBodyBytes)
 	if err != nil {
-		h.fail(w)
+		h.fail(w, appHostAuthDiagnosticPostBodyRejected)
 		return
 	}
 	token, err := extractor.ParseWebViewAuthCallbackPayload(h.request, raw)
 	if err != nil {
-		h.fail(w)
+		h.fail(w, appHostAuthDiagnosticPostPayloadRejected)
 		return
 	}
 	if !h.session.succeed(appHostAuthSessionPayload{Kind: token.Kind, Secret: token.Secret, ExpiresAt: token.ExpiresAt, RedactedDisplay: token.RedactedDisplay}) {
+		h.observe(appHostAuthDiagnosticPostExpired)
 		http.Error(w, "expired", http.StatusConflict)
 		return
 	}
+	h.observe(appHostAuthDiagnosticPostAccepted)
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = io.WriteString(w, "accepted")
 }
 
-func (h *appHostAuthCallbackHandler) fail(w http.ResponseWriter) {
+func (h *appHostAuthCallbackHandler) fail(w http.ResponseWriter, category string) {
 	if !h.session.fail(errors.New(appHostAuthInvalidPayloadMessage)) {
+		h.observe(appHostAuthDiagnosticPostExpired)
 		http.Error(w, "expired", http.StatusConflict)
 		return
 	}
+	h.observe(category)
 	http.Error(w, "invalid", http.StatusBadRequest)
 }
 
 func (h *appHostAuthCallbackHandler) handlePreflight(w http.ResponseWriter, r *http.Request) {
 	origin := r.Header.Get("Origin")
 	if !h.validateOrigin(origin) {
+		h.observe(appHostAuthDiagnosticPreflightOriginRejected)
 		http.Error(w, "invalid", http.StatusForbidden)
 		return
 	}
 	if !strings.EqualFold(r.Header.Get("Access-Control-Request-Method"), http.MethodPost) {
+		h.observe(appHostAuthDiagnosticPreflightMethodRejected)
 		http.Error(w, "invalid", http.StatusMethodNotAllowed)
 		return
 	}
 	if !appHostAuthCORSHeadersAllowed(r.Header.Values("Access-Control-Request-Headers")) {
+		h.observe(appHostAuthDiagnosticPreflightHeaderRejected)
 		http.Error(w, "invalid", http.StatusForbidden)
 		return
 	}
 	writeAppHostAuthCORSHeaders(w, origin)
+	h.observe(appHostAuthDiagnosticPreflightAccepted)
 	w.WriteHeader(http.StatusNoContent)
 }
 
