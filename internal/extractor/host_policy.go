@@ -440,7 +440,7 @@ func expandBrokerEndpointURL(policy ResolvedHostPolicy, endpoint HostPolicyBroke
 func policyAllowsOutputURL(policy ResolvedHostPolicy, rawURL string) error {
 	parsed, host, err := parseSafeHTTPURL(rawURL)
 	if err != nil {
-		return err
+		return redactErrorf("output url is invalid")
 	}
 	if parsed.Scheme != "https" {
 		return redactErrorf("output url must use https")
@@ -451,6 +451,9 @@ func policyAllowsOutputURL(policy ResolvedHostPolicy, rawURL string) error {
 	path := parsed.EscapedPath()
 	if path == "" {
 		path = "/"
+	}
+	if err := validateOutputURLPath(path); err != nil {
+		return err
 	}
 	for _, rule := range policy.OutputDomains {
 		if !matchesDomainRule(host, DomainRule{Host: rule.Host, IncludeSubdomains: rule.IncludeSubdomains}) {
@@ -464,6 +467,51 @@ func policyAllowsOutputURL(policy ResolvedHostPolicy, rawURL string) error {
 	}
 
 	return redactErrorf("url is not allowed by alias output policy")
+}
+
+func validateOutputURLPath(escapedPath string) error {
+	for _, segment := range strings.Split(escapedPath, "/") {
+		if segment == "" {
+			continue
+		}
+		current := segment
+		for depth := 0; ; depth++ {
+			if outputURLPathSegmentUnsafe(current) {
+				return redactErrorf("output url path is invalid")
+			}
+			if !containsPercentEscape(current) {
+				break
+			}
+			if depth >= 8 {
+				return redactErrorf("output url path is invalid")
+			}
+			decoded, err := url.PathUnescape(current)
+			if err != nil {
+				return redactErrorf("output url path is invalid")
+			}
+			current = decoded
+		}
+	}
+
+	return nil
+}
+
+func outputURLPathSegmentUnsafe(segment string) bool {
+	return segment == "." || segment == ".." || strings.Contains(segment, "/") || strings.Contains(segment, `\`) || containsControl(segment)
+}
+
+func containsPercentEscape(value string) bool {
+	for i := 0; i+2 < len(value); i++ {
+		if value[i] == '%' && isASCIIHex(value[i+1]) && isASCIIHex(value[i+2]) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isASCIIHex(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 }
 
 func policyAuthProfileMatchesHost(policy ResolvedHostPolicy, profileID AuthProfileID, host string) bool {

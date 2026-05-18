@@ -285,6 +285,40 @@ func TestAddUri_AuthRuntimeTargetPolicyDeniedDoesNotOpenWebViewOrBuildHeaders(t 
 	assertAuthRuntimeTaskEventAbsent(t, gotEvents, "auth:apr-alpha001", "build:"+targetURL)
 }
 
+func TestAddUri_AuthRuntimeTargetPolicyDeniedDoesNotSubmitWithoutRuntime(t *testing.T) {
+	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
+	identity := authRuntimeTaskIdentity(t, bundle)
+	manifest := authRuntimeTaskManifest(identity)
+	sourceURL := "https://fixture.invalid/d/policy-denied-no-runtime"
+	targetURL := "https://fixture.invalid/file-policy-denied-no-runtime.bin"
+	policy := extractor.ResolvedHostPolicy{
+		AuthProfiles: []extractor.HostPolicyAuthProfileScope{{
+			ProfileID: "apr-alpha001",
+			Domains:   []extractor.DomainRule{{Host: "other.fixture.invalid"}},
+		}},
+	}
+	resolution := authRuntimeTaskResolution(sourceURL, targetURL, identity, manifest, true)
+	resolution.Items[0].HostPolicy = &policy
+	dispatcher := &authRuntimeTaskDispatcher{
+		resolutions: map[string][]extractor.AddTaskResolution{
+			sourceURL: {resolution},
+		},
+	}
+	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+
+	result := app.AddUri(sourceURL)
+
+	if result != "auth profile unavailable" {
+		t.Fatalf("AddUri() = %q, want generic auth unavailable", result)
+	}
+	if got := recorder.count("aria2.addUri"); got != 0 {
+		t.Fatalf("aria2.addUri count = %d, want 0", got)
+	}
+	if got := dispatcher.resolveCount(sourceURL); got != 1 {
+		t.Fatalf("Resolve() count = %d, want 1", got)
+	}
+}
+
 func TestAddUri_AuthRuntimeTargetRefreshCancelDoesNotLoopOrSubmit(t *testing.T) {
 	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
 	identity := authRuntimeTaskIdentity(t, bundle)
