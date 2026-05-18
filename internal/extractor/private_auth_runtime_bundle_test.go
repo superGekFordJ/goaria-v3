@@ -165,6 +165,9 @@ func TestPrivateAuthRuntimeBundleRejectsMalformedBundles(t *testing.T) {
 		{name: "disallowed callback content type", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["content_types"] = []string{"text/plain"}
 		})},
+		{name: "duplicate callback content types", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["content_types"] = []string{"application/json", "application/json"}
+		})},
 		{name: "zero callback body limit", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["max_body_bytes"] = int64(0)
 		})},
@@ -194,6 +197,15 @@ func TestPrivateAuthRuntimeBundleRejectsMalformedBundles(t *testing.T) {
 		})},
 		{name: "invalid capture candidate path", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["secret_candidates"] = []string{"capture[0].secret"}
+		})},
+		{name: "uppercase capture candidate path", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["secret_candidates"] = []string{"Capture.secret"}
+		})},
+		{name: "double underscore capture candidate path", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["secret_candidates"] = []string{"capture.secret__value"}
+		})},
+		{name: "over deep capture candidate path", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["secret_candidates"] = []string{"a.b.c.d.e.f.g.h.i"}
 		})},
 		{name: "invalid capture optional path", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["kind_field"] = "bad path"
