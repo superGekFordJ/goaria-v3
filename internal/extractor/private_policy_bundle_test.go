@@ -227,7 +227,8 @@ func TestPrivatePolicyBundleInvalidPoliciesFailAtLookup(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fixture := privatePolicyBundlePackFixture{Identity: identity, Manifest: manifest,
+			fixture := privatePolicyBundlePackFixture{
+				Identity: identity, Manifest: manifest,
 				OutputDomains: []HostPolicyOutputRule{{Host: "files.alpha.test", IncludeSubdomains: true, PathPrefixes: []string{"/downloads/"}}},
 				AuthProfiles:  []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "api.alpha.test"}}}},
 				BrokerEndpoints: []HostPolicyBrokerEndpoint{{
@@ -238,7 +239,8 @@ func TestPrivatePolicyBundleInvalidPoliciesFailAtLookup(t *testing.T) {
 					AuthProfileRefs:  []string{"apr-alpha001"},
 					TimeoutMillis:    100,
 					MaxResponseBytes: 512,
-				}}}
+				}},
+			}
 			tt.mutate(&fixture)
 			resolver, err := NewPrivatePolicyBundleResolver(privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{fixture}, nil), PrivatePolicyBundleLoadOptions{})
 			if err != nil {
