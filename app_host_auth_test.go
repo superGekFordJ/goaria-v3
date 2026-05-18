@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -38,6 +40,11 @@ type recordingAuthWebViewSink struct {
 	errors   []error
 	terminal chan struct{}
 	once     sync.Once
+}
+
+type recordingAppHostAuthDiagnosticObserver struct {
+	mu     sync.Mutex
+	events []appHostAuthDiagnosticEvent
 }
 
 type appHostAuthOutcome struct {
@@ -225,6 +232,159 @@ func TestAppHostAuthDriverReportsCallbackSuccessCancelTimeoutInvalidPayload(t *t
 			})
 		}
 	})
+}
+
+func TestAppHostAuthDiagnosticDisabledByDefaultPreservesSuccessStore(t *testing.T) {
+	t.Setenv(appHostAuthDiagnosticsEnv, "")
+	t.Setenv(appHostAuthDiagnosticsOutEnv, "")
+	store := newRootTempAuthProfileStore(t)
+	factory := &fakeHostAuthSessionWindowFactory{}
+	driver := newAppHostAuthDriverWithFactory(newWindowedAuthApp(t), factory)
+	if driver.diagnostics != nil {
+		t.Fatalf("default diagnostics = %#v, want nil", driver.diagnostics)
+	}
+	coordinator := extractor.NewWebViewAuthCoordinator(store, driver)
+	resultCh := make(chan appHostAuthOutcome, 1)
+
+	go func() {
+		result, err := coordinator.Start(context.Background(), appHostAuthWebViewRequest(time.Second))
+		resultCh <- appHostAuthOutcome{result: result, err: err}
+	}()
+	factory.waitForOpen(t)
+	factory.callback(0).Success(appHostAuthSessionPayload{Kind: extractor.AuthSecretKindBearer, Secret: "captured-token-secret", RedactedDisplay: "captured bearer"})
+
+	outcome := receiveAppHostAuthOutcome(t, resultCh)
+	if outcome.err != nil {
+		t.Fatalf("coordinator.Start() error = %v", outcome.err)
+	}
+	if outcome.result.Status != extractor.WebViewAuthStatusSuccess || !outcome.result.Snapshot.HasSecret {
+		t.Fatalf("coordinator.Start() result = %#v", outcome.result)
+	}
+	resolved, err := store.ResolveAuthProfile(context.Background(), "xpk-alpha001", "apr-alpha001", "https://fixture.invalid/item")
+	if err != nil {
+		t.Fatalf("ResolveAuthProfile() error = %v", err)
+	}
+	if resolved.HeaderValue != "Bearer captured-token-secret" {
+		t.Fatalf("HeaderValue = %q, want captured bearer", resolved.HeaderValue)
+	}
+}
+
+func TestAppHostAuthDiagnosticTerminalCategoriesOnceAndCategoryOnly(t *testing.T) {
+	cases := []struct {
+		name      string
+		trigger   func(appHostAuthSessionCallbacks)
+		want      string
+		wantError bool
+	}{
+		{
+			name: "success",
+			trigger: func(callbacks appHostAuthSessionCallbacks) {
+				callbacks.Success(appHostAuthSessionPayload{Kind: extractor.AuthSecretKindBearer, Secret: "captured-token-secret", RedactedDisplay: "captured bearer"})
+				callbacks.Cancel()
+				callbacks.Error(errors.New("Authorization: Bearer raw-token"))
+			},
+			want: appHostAuthDiagnosticTerminalSuccess,
+		},
+		{
+			name: "cancel",
+			trigger: func(callbacks appHostAuthSessionCallbacks) {
+				callbacks.Cancel()
+				callbacks.Success(appHostAuthSessionPayload{Kind: extractor.AuthSecretKindBearer, Secret: "late-token"})
+				callbacks.Error(errors.New("Cookie: sid=raw-cookie"))
+			},
+			want: appHostAuthDiagnosticTerminalCancel,
+		},
+		{
+			name: "error",
+			trigger: func(callbacks appHostAuthSessionCallbacks) {
+				callbacks.Error(errors.New("Authorization: Bearer raw-token"))
+				callbacks.Cancel()
+				callbacks.Success(appHostAuthSessionPayload{Kind: extractor.AuthSecretKindBearer, Secret: "late-token"})
+			},
+			want:      appHostAuthDiagnosticTerminalError,
+			wantError: true,
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			factory := &fakeHostAuthSessionWindowFactory{}
+			diagnostics := &recordingAppHostAuthDiagnosticObserver{}
+			driver := newAppHostAuthDriverWithFactoryAndDiagnostics(newWindowedAuthApp(t), factory, diagnostics)
+			recorder := newRecordingAuthWebViewSink()
+			session, err := driver.OpenAuthSession(context.Background(), appHostAuthWebViewRequest(time.Second), recorder.sink())
+			if err != nil {
+				t.Fatalf("OpenAuthSession() error = %v", err)
+			}
+			callbacks := factory.callback(0)
+			tt.trigger(callbacks)
+			recorder.wait(t)
+			if err := session.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+
+			categories := diagnostics.categories()
+			if got := countString(categories, tt.want); got != 1 {
+				t.Fatalf("category %q count = %d, events=%#v", tt.want, got, categories)
+			}
+			for _, other := range []string{appHostAuthDiagnosticTerminalSuccess, appHostAuthDiagnosticTerminalCancel, appHostAuthDiagnosticTerminalError} {
+				if other == tt.want {
+					continue
+				}
+				if got := countString(categories, other); got != 0 {
+					t.Fatalf("unexpected terminal category %q count = %d, events=%#v", other, got, categories)
+				}
+			}
+			assertAppHostAuthDiagnosticEventsCategoryOnly(t, diagnostics.eventsSnapshot())
+			encoded := diagnostics.encodedEvents(t)
+			assertRootNoSecretText(t, encoded, "captured-token-secret", "late-token", "raw-token", "raw-cookie", "Authorization", "Cookie", "fixture.invalid", "apr-alpha001", "xpk-alpha001")
+			if tt.wantError && !strings.Contains(recorder.errorString(), appHostAuthCallbackErrorMessage) {
+				t.Fatalf("error callback = %q, want sanitized callback error", recorder.errorString())
+			}
+		})
+	}
+}
+
+func TestAppHostAuthDiagnosticEnvOutputJSONLCategoryOnly(t *testing.T) {
+	outPath := filepath.Join(t.TempDir(), "diagnostics.jsonl")
+	t.Setenv(appHostAuthDiagnosticsEnv, "categories")
+	t.Setenv(appHostAuthDiagnosticsOutEnv, outPath)
+	factory := &fakeHostAuthSessionWindowFactory{}
+	driver := newAppHostAuthDriverWithFactory(newWindowedAuthApp(t), factory)
+	recorder := newRecordingAuthWebViewSink()
+	session, err := driver.OpenAuthSession(context.Background(), appHostAuthWebViewRequest(time.Second), recorder.sink())
+	if err != nil {
+		t.Fatalf("OpenAuthSession() error = %v", err)
+	}
+	factory.callback(0).Cancel()
+	recorder.wait(t)
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	raw, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) == 0 {
+		t.Fatal("diagnostic output is empty")
+	}
+	for _, line := range lines {
+		var event map[string]string
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("diagnostic line is not JSON: %v", err)
+		}
+		if len(event) != 1 || event["category"] == "" {
+			t.Fatalf("diagnostic event = %#v, want category-only", event)
+		}
+		if !appHostAuthDiagnosticCategoryAllowed(event["category"]) {
+			t.Fatalf("category %q is not whitelisted", event["category"])
+		}
+		assertRootNoSecretText(t, line, "fixture.invalid", "apr-alpha001", "xpk-alpha001", "raw-token", "Cookie", "Authorization")
+	}
+	if !stringSliceContains(diagnosticCategoriesFromJSONLLines(t, lines), appHostAuthDiagnosticSessionClosed) {
+		t.Fatalf("diagnostic output missing close category: %q", string(raw))
+	}
 }
 
 func TestAppHostAuthDriverBuildsGenericSessionRequest(t *testing.T) {
@@ -748,6 +908,90 @@ func assertRootNoSecretText(t *testing.T, text string, forbidden ...string) {
 			t.Fatalf("text leaked %q: %s", value, text)
 		}
 	}
+}
+
+func (o *recordingAppHostAuthDiagnosticObserver) observeAppHostAuthDiagnostic(event appHostAuthDiagnosticEvent) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.events = append(o.events, event)
+}
+
+func (o *recordingAppHostAuthDiagnosticObserver) eventsSnapshot() []appHostAuthDiagnosticEvent {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]appHostAuthDiagnosticEvent(nil), o.events...)
+}
+
+func (o *recordingAppHostAuthDiagnosticObserver) categories() []string {
+	events := o.eventsSnapshot()
+	categories := make([]string, 0, len(events))
+	for _, event := range events {
+		categories = append(categories, event.Category)
+	}
+
+	return categories
+}
+
+func (o *recordingAppHostAuthDiagnosticObserver) encodedEvents(t *testing.T) string {
+	t.Helper()
+	raw, err := json.Marshal(o.eventsSnapshot())
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	return string(raw)
+}
+
+func assertAppHostAuthDiagnosticEventsCategoryOnly(t *testing.T, events []appHostAuthDiagnosticEvent) {
+	t.Helper()
+	if len(events) == 0 {
+		t.Fatal("diagnostic events are empty")
+	}
+	for _, event := range events {
+		raw, err := json.Marshal(event)
+		if err != nil {
+			t.Fatalf("Marshal() error = %v", err)
+		}
+		var decoded map[string]string
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("Unmarshal() error = %v", err)
+		}
+		if len(decoded) != 1 || decoded["category"] == "" {
+			t.Fatalf("diagnostic event = %#v, encoded=%s", event, string(raw))
+		}
+		if !appHostAuthDiagnosticCategoryAllowed(decoded["category"]) {
+			t.Fatalf("category %q is not whitelisted", decoded["category"])
+		}
+	}
+}
+
+func countString(values []string, want string) int {
+	count := 0
+	for _, value := range values {
+		if value == want {
+			count++
+		}
+	}
+
+	return count
+}
+
+func stringSliceContains(values []string, want string) bool {
+	return countString(values, want) > 0
+}
+
+func diagnosticCategoriesFromJSONLLines(t *testing.T, lines []string) []string {
+	t.Helper()
+	categories := make([]string, 0, len(lines))
+	for _, line := range lines {
+		var event map[string]string
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("Unmarshal() error = %v", err)
+		}
+		categories = append(categories, event["category"])
+	}
+
+	return categories
 }
 
 func syntheticRootPrivateAuthRuntimeBundle(t *testing.T) *extractor.PrivateAuthRuntimeBundle {
