@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -267,6 +268,37 @@ func TestAppHostAuthDiagnosticDisabledByDefaultPreservesSuccessStore(t *testing.
 	if resolved.HeaderValue != "Bearer captured-token-secret" {
 		t.Fatalf("HeaderValue = %q, want captured bearer", resolved.HeaderValue)
 	}
+}
+
+func TestAppHostAuthDiagnosticDropsUnknownCategoryAndEncodesCategoryOnly(t *testing.T) {
+	diagnostics := &recordingAppHostAuthDiagnosticObserver{}
+	driver := &appHostAuthDriver{diagnostics: diagnostics}
+	driver.observe(appHostAuthDiagnosticPostAccepted)
+	driver.observe("not_allowed")
+
+	events := diagnostics.eventsSnapshot()
+	if len(events) != 1 || events[0].Category != appHostAuthDiagnosticPostAccepted {
+		t.Fatalf("diagnostic events = %#v, want only allowed category", events)
+	}
+	assertAppHostAuthDiagnosticEventsCategoryOnly(t, events)
+
+	var output bytes.Buffer
+	jsonl := &appHostAuthJSONLDiagnosticObserver{writer: &output}
+	jsonl.observeAppHostAuthDiagnostic(appHostAuthDiagnosticEvent{Category: "not_allowed"})
+	jsonl.observeAppHostAuthDiagnostic(appHostAuthDiagnosticEvent{Category: appHostAuthDiagnosticSessionClosed})
+
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("JSONL lines = %#v, want only one allowed diagnostic", lines)
+	}
+	var decoded map[string]string
+	if err := json.Unmarshal([]byte(lines[0]), &decoded); err != nil {
+		t.Fatalf("diagnostic line is not JSON: %v", err)
+	}
+	if len(decoded) != 1 || decoded["category"] != appHostAuthDiagnosticSessionClosed {
+		t.Fatalf("diagnostic event = %#v, want category-only close event", decoded)
+	}
+	assertRootNoSecretText(t, output.String(), "not_allowed", "fixture.invalid", "raw-token", "Authorization", "Cookie")
 }
 
 func TestAppHostAuthDiagnosticTerminalCategoriesOnceAndCategoryOnly(t *testing.T) {
