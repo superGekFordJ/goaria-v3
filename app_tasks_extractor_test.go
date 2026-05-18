@@ -562,7 +562,7 @@ func assertGroupPathGeneric(t *testing.T, dir string) {
 	t.Helper()
 	name := filepath.Base(dir)
 	lower := strings.ToLower(name)
-	for _, forbidden := range []string{"gofile", "ibb", "collection-secret", "token", "synthetic", "cdn", "example"} {
+	for _, forbidden := range []string{"provider", "private", "collection-secret", "token", "synthetic", "cdn", "example"} {
 		if strings.Contains(lower, forbidden) {
 			t.Fatalf("group folder %q contains forbidden marker %q", name, forbidden)
 		}
