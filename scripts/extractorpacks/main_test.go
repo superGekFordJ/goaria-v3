@@ -258,6 +258,53 @@ func TestVerifyPackAssetRejectsUnsafeZipShape(t *testing.T) {
 	})
 }
 
+func TestFullPackStrictPackZipRejectsDirectorySymlinkAndMissingEntries(t *testing.T) {
+	base := validTestAsset(t)
+	tests := []struct {
+		name  string
+		parts packParts
+		extra map[string][]byte
+	}{
+		{name: "missing payload", parts: packParts{ManifestJSON: base.parts.ManifestJSON, Signature: base.parts.Signature}},
+		{name: "missing signature", parts: packParts{ManifestJSON: base.parts.ManifestJSON, Payload: base.parts.Payload}},
+		{name: "directory entry", parts: base.parts, extra: map[string][]byte{"nested/": []byte{}}},
+		{name: "nested traversal", parts: base.parts, extra: map[string][]byte{"nested/../manifest.json": []byte("x")}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := extractStrictPackZip(zipBytesForParts(t, tc.parts, tc.extra))
+			if err == nil {
+				t.Fatalf("extractStrictPackZip() error = nil, want %s rejection", tc.name)
+			}
+		})
+	}
+
+	t.Run("symlink entry", func(t *testing.T) {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		add := func(name string, data []byte, mode os.FileMode) {
+			header := &zip.FileHeader{Name: name, Method: zip.Store}
+			header.SetMode(mode)
+			writer, err := zw.CreateHeader(header)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writer.Write(data); err != nil {
+				t.Fatal(err)
+			}
+		}
+		add("manifest.json", []byte("payload.wasm"), os.ModeSymlink|0o777)
+		add("payload.wasm", base.parts.Payload, 0o644)
+		add("manifest.sig", base.parts.Signature, 0o644)
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := extractStrictPackZip(buf.Bytes()); err == nil {
+			t.Fatalf("extractStrictPackZip() error = nil, want symlink rejection")
+		}
+	})
+}
+
 func TestVerifyPackAssetOptionalNoPackRemovesStaleGeneratedFile(t *testing.T) {
 	dir := t.TempDir()
 	lockPath := writeLock(t, dir)

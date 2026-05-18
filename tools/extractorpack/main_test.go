@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -26,6 +27,16 @@ func TestHostcallFixtureCommandWritesVerifiableOutputs(t *testing.T) {
 	if !strings.Contains(stdoutText, "hostcall-fixture.pack.zip") || !strings.Contains(stdoutText, "asset_sha256:") {
 		t.Fatalf("stdout = %q, missing output summary", stdoutText)
 	}
+	stdoutLines := strings.Split(strings.TrimSpace(stdoutText), "\n")
+	wantPrefixes := []string{"hostcall fixture pack: ", "hostcall fixture lock: ", "asset_sha256: ", "public_key: "}
+	if len(stdoutLines) != len(wantPrefixes) {
+		t.Fatalf("stdout lines = %d, want summary-only lines %d: %q", len(stdoutLines), len(wantPrefixes), stdoutText)
+	}
+	for i, prefix := range wantPrefixes {
+		if !strings.HasPrefix(stdoutLines[i], prefix) {
+			t.Fatalf("stdout line %d = %q, want prefix %q", i, stdoutLines[i], prefix)
+		}
+	}
 	for _, forbidden := range []string{"private", "seed", "secret", "raw-token", "manifest.sig:"} {
 		if strings.Contains(strings.ToLower(stdoutText), forbidden) {
 			t.Fatalf("stdout leaked forbidden marker %q: %s", forbidden, stdoutText)
@@ -37,6 +48,18 @@ func TestHostcallFixtureCommandWritesVerifiableOutputs(t *testing.T) {
 	signature := readFile(t, filepath.Join(outDir, "manifest.sig"))
 	zipBytes := readFile(t, filepath.Join(outDir, packbuilder.HostCallFixtureAssetName))
 	lockJSON := readFile(t, lockPath)
+	for _, forbidden := range []string{
+		hex.EncodeToString(manifestJSON),
+		hex.EncodeToString(payload),
+		hex.EncodeToString(signature),
+		packbuilder.SHA256Hex(manifestJSON),
+		packbuilder.SHA256Hex(payload),
+		packbuilder.SHA256Hex(signature),
+	} {
+		if forbidden != "" && strings.Contains(stdoutText, forbidden) {
+			t.Fatalf("stdout leaked generated detail %q: %s", forbidden, stdoutText)
+		}
+	}
 
 	entries := zipEntryBytes(t, zipBytes)
 	if len(entries) != 3 || !bytes.Equal(entries["manifest.json"], manifestJSON) || !bytes.Equal(entries["payload.wasm"], payload) || !bytes.Equal(entries["manifest.sig"], signature) {
