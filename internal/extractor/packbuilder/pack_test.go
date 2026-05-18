@@ -90,6 +90,24 @@ func TestFixtureManifestDefaultsArePublicSafe(t *testing.T) {
 	if len(manifest.Domains) != 1 || manifest.Domains[0].Host != "fixture.invalid" || !manifest.Domains[0].IncludeSubdomains {
 		t.Fatalf("manifest domains = %#v", manifest.Domains)
 	}
+	if manifest.PayloadSHA256 != SHA256Hex(assets.Payload) {
+		t.Fatalf("manifest payload_sha256 = %s, want %s", manifest.PayloadSHA256, SHA256Hex(assets.Payload))
+	}
+	wantLimits := extractor.ResourceLimits{
+		TimeoutMillis:    1_000,
+		MaxMemoryPages:   1,
+		MaxHostCalls:     4,
+		MaxResponseBytes: 4 * 1024,
+		MaxOutputItems:   4,
+		MaxOutputBytes:   8 * 1024,
+	}
+	if manifest.ResourceLimits != wantLimits {
+		t.Fatalf("manifest resource limits = %#v, want %#v", manifest.ResourceLimits, wantLimits)
+	}
+	description := strings.ToLower(manifest.Description)
+	if !strings.Contains(description, "public-safe") || !strings.Contains(description, "fixture") || strings.Contains(description, "provider") || strings.Contains(description, "private") {
+		t.Fatalf("manifest description is not synthetic/public-safe: %q", manifest.Description)
+	}
 	if err := extractor.ValidateManifest(manifest, extractor.DefaultTrustPolicy()); err != nil {
 		t.Fatalf("ValidateManifest() error = %v", err)
 	}
