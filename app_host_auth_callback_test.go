@@ -128,6 +128,138 @@ func TestAppHostAuthDiagnosticCallbackCategories(t *testing.T) {
 	assertRootNoSecretText(t, encoded, "middleware-captured-secret", "not-used", "example.test", "fixture.invalid", request.SessionToken, request.CallbackPath, "xpk-alpha001", "apr-alpha001", "Authorization", "Cookie")
 }
 
+func TestAppHostAuthDiagnosticCallbackRejectedCategoryOnly(t *testing.T) {
+	cases := []struct {
+		name           string
+		trigger        func(t *testing.T, app *App, request appHostAuthSessionRequest) int
+		wantCategory   string
+		wantStatus     int
+		completesAuth  bool
+		forbiddenTexts []string
+	}{
+		{
+			name: "preflight method rejected",
+			trigger: func(t *testing.T, app *App, request appHostAuthSessionRequest) int {
+				return preflightHostAuthCallback(t, app, request, request.AuthPageOrigin, http.MethodGet, "content-type, x-goaria-auth-session")
+			},
+			wantCategory:  appHostAuthDiagnosticPreflightMethodRejected,
+			wantStatus:    http.StatusMethodNotAllowed,
+			completesAuth: false,
+		},
+		{
+			name: "preflight header rejected",
+			trigger: func(t *testing.T, app *App, request appHostAuthSessionRequest) int {
+				return preflightHostAuthCallback(t, app, request, request.AuthPageOrigin, http.MethodPost, "content-type, x-goaria-auth-session, authorization")
+			},
+			wantCategory:  appHostAuthDiagnosticPreflightHeaderRejected,
+			wantStatus:    http.StatusForbidden,
+			completesAuth: false,
+			forbiddenTexts: []string{
+				"authorization",
+			},
+		},
+		{
+			name: "post origin rejected",
+			trigger: func(t *testing.T, app *App, request appHostAuthSessionRequest) int {
+				return callHostAuthCallback(t, app, request, http.MethodPost, `{"kind":"bearer","secret":"body-secret"}`, request.SessionToken, "application/json", "https://example.test")
+			},
+			wantCategory:  appHostAuthDiagnosticPostOriginRejected,
+			wantStatus:    http.StatusForbidden,
+			completesAuth: false,
+			forbiddenTexts: []string{
+				"body-secret", "example.test",
+			},
+		},
+		{
+			name: "post content type rejected",
+			trigger: func(t *testing.T, app *App, request appHostAuthSessionRequest) int {
+				return postHostAuthCallback(t, app, request, `{"kind":"bearer","secret":"body-secret"}`, request.SessionToken, "text/plain")
+			},
+			wantCategory:  appHostAuthDiagnosticPostContentTypeRejected,
+			wantStatus:    http.StatusBadRequest,
+			completesAuth: true,
+			forbiddenTexts: []string{
+				"body-secret",
+			},
+		},
+		{
+			name: "post session rejected",
+			trigger: func(t *testing.T, app *App, request appHostAuthSessionRequest) int {
+				return postHostAuthCallback(t, app, request, `{"kind":"bearer","secret":"body-secret"}`, "synthetic-session-token", "application/json")
+			},
+			wantCategory:  appHostAuthDiagnosticPostSessionHeaderRejected,
+			wantStatus:    http.StatusBadRequest,
+			completesAuth: true,
+			forbiddenTexts: []string{
+				"body-secret", "synthetic-session-token",
+			},
+		},
+		{
+			name: "post body rejected",
+			trigger: func(t *testing.T, app *App, request appHostAuthSessionRequest) int {
+				return postHostAuthCallback(t, app, request, `{"secret":"`+strings.Repeat("x", 17000)+`"}`, request.SessionToken, "application/json")
+			},
+			wantCategory:  appHostAuthDiagnosticPostBodyRejected,
+			wantStatus:    http.StatusBadRequest,
+			completesAuth: true,
+			forbiddenTexts: []string{
+				strings.Repeat("x", 32),
+			},
+		},
+		{
+			name: "post payload rejected",
+			trigger: func(t *testing.T, app *App, request appHostAuthSessionRequest) int {
+				return postHostAuthCallback(t, app, request, `{"kind":"cookie","secret":"body-secret"}`, request.SessionToken, "application/json")
+			},
+			wantCategory:  appHostAuthDiagnosticPostPayloadRejected,
+			wantStatus:    http.StatusBadRequest,
+			completesAuth: true,
+			forbiddenTexts: []string{
+				"body-secret",
+			},
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			diagnostics := &recordingAppHostAuthDiagnosticObserver{}
+			store := newRootTempAuthProfileStore(t)
+			factory := &fakeHostAuthSessionWindowFactory{}
+			app := newWindowedAuthApp(t)
+			coordinator := extractor.NewWebViewAuthCoordinator(store, newAppHostAuthDriverWithFactoryAndDiagnostics(app, factory, diagnostics))
+			resultCh := make(chan appHostAuthOutcome, 1)
+			go func() {
+				result, err := coordinator.Start(context.Background(), appHostAuthWebViewRequest(time.Second))
+				resultCh <- appHostAuthOutcome{result: result, err: err}
+			}()
+			factory.waitForOpen(t)
+			request := factory.request(0)
+
+			if status := tt.trigger(t, app, request); status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", status, tt.wantStatus)
+			}
+			if tt.completesAuth {
+				outcome := receiveAppHostAuthOutcome(t, resultCh)
+				if outcome.err == nil {
+					t.Fatalf("coordinator.Start() error = nil, result=%#v", outcome.result)
+				}
+			} else {
+				factory.callback(0).Cancel()
+				_ = receiveAppHostAuthOutcome(t, resultCh)
+			}
+
+			categories := diagnostics.categories()
+			if !stringSliceContains(categories, tt.wantCategory) {
+				t.Fatalf("categories missing %q: %#v", tt.wantCategory, categories)
+			}
+			assertAppHostAuthDiagnosticEventsCategoryOnly(t, diagnostics.eventsSnapshot())
+			encoded := diagnostics.encodedEvents(t)
+			forbidden := append([]string{request.SessionToken, request.CallbackPath, "fixture.invalid", "xpk-alpha001", "apr-alpha001", "Authorization", "Cookie"}, tt.forbiddenTexts...)
+			assertRootNoSecretText(t, encoded, forbidden...)
+		})
+	}
+}
+
 func TestAppHostAuthCallbackMiddlewareRejectsInvalidRequests(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
