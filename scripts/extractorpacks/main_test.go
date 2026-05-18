@@ -267,7 +267,7 @@ func TestFullPackStrictPackZipRejectsDirectorySymlinkAndMissingEntries(t *testin
 	}{
 		{name: "missing payload", parts: packParts{ManifestJSON: base.parts.ManifestJSON, Signature: base.parts.Signature}},
 		{name: "missing signature", parts: packParts{ManifestJSON: base.parts.ManifestJSON, Payload: base.parts.Payload}},
-		{name: "directory entry", parts: base.parts, extra: map[string][]byte{"nested/": []byte{}}},
+		{name: "directory entry", parts: base.parts, extra: map[string][]byte{"nested/": {}}},
 		{name: "nested traversal", parts: base.parts, extra: map[string][]byte{"nested/../manifest.json": []byte("x")}},
 	}
 	for _, tc := range tests {
