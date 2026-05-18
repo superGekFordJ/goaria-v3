@@ -1088,6 +1088,9 @@ func TestWorkflowPrepareFullPackSyntheticSuccessAndCleanup(t *testing.T) {
 		if label != "extractor_build_evidence.summary.json" {
 			t.Fatalf("workflow evidence label should not include provenance or paths: %+v", summary.EvidenceOutputLabels)
 		}
+		if filepath.Base(label) != label || strings.ContainsAny(label, `/\`) || strings.Contains(label, defaultWorkflowPolicyEmbedPath) || strings.Contains(label, defaultWorkflowAuthRuntimeEmbedPath) || strings.Contains(label, defaultWorkflowProvenancePath) {
+			t.Fatalf("workflow evidence label is not basename-only public evidence: %q", label)
+		}
 	}
 	policyEmbed := readTextFile(t, paths.PolicyOutPath)
 	if !strings.Contains(policyEmbed, "embeddedPrivatePolicyBundleJSON") || !strings.Contains(policyEmbed, "embeddedPrivatePolicyBundleSHA256") {
@@ -1133,6 +1136,29 @@ func TestWorkflowPrepareFullPackUsesLocalAssetDir(t *testing.T) {
 	}
 	if err := cleanupWorkflow(workflowCleanupOptions{Paths: paths}); err != nil {
 		t.Fatalf("cleanupWorkflow() error = %v", err)
+	}
+	assertWorkflowOutputsMissing(t, paths)
+}
+
+func TestWorkflowLocalAssetDirRejectsOutsideTempLockRoot(t *testing.T) {
+	fixture := validWorkflowFullPackFixture(t)
+	paths := testWorkflowPaths(t)
+	outsideRoot := t.TempDir()
+	assetDir := writeLocalFullPackAssetDir(t, outsideRoot, fixture.metadata, fixture.assets)
+
+	err := prepareWorkflow(workflowPrepareOptions{
+		Mode:           workflowVariantFullPack,
+		MetadataB64:    base64.StdEncoding.EncodeToString(fullPackMetadataJSON(t, fixture.metadata)),
+		PolicyB64:      base64.StdEncoding.EncodeToString(fixture.policyRaw),
+		AuthRuntimeB64: base64.StdEncoding.EncodeToString(fixture.authRuntimeRaw),
+		LocalAssetDir:  assetDir,
+		Paths:          paths,
+	})
+	if err == nil {
+		t.Fatal("prepareWorkflow() local outside asset dir error = nil")
+	}
+	if strings.Contains(err.Error(), assetDir) || strings.Contains(err.Error(), outsideRoot) {
+		t.Fatalf("prepareWorkflow() error leaks outside asset path: %v", err)
 	}
 	assertWorkflowOutputsMissing(t, paths)
 }
