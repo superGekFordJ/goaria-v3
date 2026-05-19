@@ -72,7 +72,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10
+          package_json_file: frontend/package.json
 
       - name: Install Linux system libraries
         run: |
@@ -80,7 +80,11 @@ jobs:
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev xvfb
 
       - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+        shell: bash
+        run: |
+          wails_version=$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)
+          echo "Installing wails3 CLI at $wails_version"
+          go install "github.com/wailsapp/wails/v3/cmd/wails3@$wails_version"
 
       - name: Add Go bin to PATH
         run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
@@ -247,10 +251,14 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10
+          package_json_file: frontend/package.json
 
       - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+        shell: bash
+        run: |
+          wails_version=$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)
+          echo "Installing wails3 CLI at $wails_version"
+          go install "github.com/wailsapp/wails/v3/cmd/wails3@$wails_version"
 
       - name: Add Go bin to PATH
         run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
@@ -395,10 +403,14 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10
+          package_json_file: frontend/package.json
 
       - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+        shell: bash
+        run: |
+          wails_version=$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)
+          echo "Installing wails3 CLI at $wails_version"
+          go install "github.com/wailsapp/wails/v3/cmd/wails3@$wails_version"
 
       - name: Add Go bin to PATH
         run: echo "$(go env GOPATH)/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append

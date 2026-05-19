@@ -11,7 +11,7 @@ info:
   description: "A light-weight aria2 GUI" # The application description
   copyright: "(c) 2026, GoAria" # Copyright text
   comments: "GoAria backend service" # Comments
-  version: "2.0.0-alpha.6" # The application version
+  version: "2.0.0-alpha.7" # The application version
 
 # iOS build configuration (uncomment to customise iOS project generation)
 # Note: Keys under `ios` OVERRIDE values under `info` when set.
