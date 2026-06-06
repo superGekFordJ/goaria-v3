@@ -33,6 +33,14 @@ vi.mock('../../stores/ui', () => ({
   useUIStore: () => storeMocks.uiStore,
 }))
 
+vi.mock('../../stores/downloadGroups', () => ({
+  useDownloadGroupStore: () => ({
+    groups: [],
+    fetchGroups: vi.fn(),
+    addPlaceholdersFromDownloadGroups: vi.fn(),
+  }),
+}))
+
 function mountHeader() {
   return mount(TaskHeader, { attachTo: document.body })
 }
@@ -133,9 +141,8 @@ describe('TaskHeader batch group result UI', () => {
     await wrapper.vm.$nextTick()
 
     const text = wrapper.text()
-    expect(text).toContain('taskHeader.batchGroupCreated')
+    expect(text).toContain('taskHeader.batchGroupCreated {"count":5}')
     expect(text).toContain('taskHeader.batchGroupFolder {"folder":"Batch 2026-05-07 dg-header"}')
-    expect(text).toContain('taskHeader.batchGroupItems {"count":5}')
     expect((wrapper.find('textarea').element as HTMLTextAreaElement).value).toBe(
       'https://example.invalid/fail',
     )

@@ -45,7 +45,8 @@ function mockTask(overrides: Partial<Task> = {}): Task {
 const groupHint: TaskGroupHint = {
   groupKey: 'dg-card',
   folderLabel: 'Batch 2026-05-07 dg-card',
-  itemCount: 5,
+  totalCount: 5,
+  isAutoFoldered: false,
 }
 
 describe('TaskCard group hint chip', () => {
@@ -61,7 +62,7 @@ describe('TaskCard group hint chip', () => {
     const chip = wrapper.find('.download-group-chip')
     expect(chip.exists()).toBe(true)
     expect(chip.text()).toContain('Batch 2026-05-07 dg-card')
-    expect(chip.text()).toContain('taskCard.groupItems {"count":5}')
+    expect(chip.text()).toContain('taskCard.groupItemCount {"count":5}')
     expect(chip.attributes('aria-label')).toContain('taskCard.groupHintLabel')
     expect(chip.find('.font-mono-data').exists()).toBe(true)
 

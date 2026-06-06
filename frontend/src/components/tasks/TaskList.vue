@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+  import { ref, computed, onMounted, onUnmounted, watch, onActivated, onDeactivated } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { RecycleScroller } from 'vue-virtual-scroller'
   import { useTaskStore } from '../../stores/task'
@@ -8,13 +8,47 @@
   import TaskHeader from './TaskHeader.vue'
   import TaskSearch from './TaskSearch.vue'
   import BatchActionBar from './BatchActionBar.vue'
-  import { Trash2, HardDrive, Download, CheckCircle2, AlertCircle, SearchX } from 'lucide-vue-next'
+  import DownloadGroupCard from '../groups/DownloadGroupCard.vue'
+  import DownloadGroupOperationNotice from '../groups/DownloadGroupOperationNotice.vue'
+  import DownloadGroupRemoveDialog from '../groups/DownloadGroupRemoveDialog.vue'
+  import {
+    Trash2,
+    HardDrive,
+    Download,
+    CheckCircle2,
+    AlertCircle,
+    SearchX,
+    Layers3,
+  } from 'lucide-vue-next'
   import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
   import { buildVisibleTaskGroupHints } from '../../stores/task/grouping'
+  import {
+    buildInlineTaskListEntries,
+    getDownloadGroupMasterItemDisplayName,
+    type DownloadGroupOperationAction,
+    type InlineTaskListEntry,
+  } from '../../stores/downloadGroups'
+  import { useDownloadGroupStore } from '../../stores/downloadGroups'
 
   const { t } = useI18n()
   const taskStore = useTaskStore()
   const uiStore = useUIStore()
+  const downloadGroupStore = useDownloadGroupStore()
+
+  const props = withDefaults(
+    defineProps<{
+      mode?: 'tab' | 'group-detail'
+      detailTasks?: { active: Task[]; waiting: Task[]; stopped: Task[] }
+      detailKey?: string
+    }>(),
+    {
+      mode: 'tab',
+      detailTasks: () => ({ active: [], waiting: [], stopped: [] }),
+      detailKey: '',
+    },
+  )
+
+  const isGroupDetailMode = computed(() => props.mode === 'group-detail')
 
   // Modal State
   const showDelModal = ref(false)
@@ -25,6 +59,10 @@
   // Batch Delete Modal State
   const showBatchDelModal = ref(false)
   const isBatchDeleting = ref(false)
+  const inlineRemoveTarget = ref<{
+    groupKey: string
+    displayName: string
+  } | null>(null)
 
   // Search State
   const searchQuery = ref('')
@@ -41,38 +79,70 @@
     return active.concat(waiting)
   })
 
-  const displayTasks = computed(() => {
-    const base =
-      uiStore.activeTab === 'downloads' ? combinedDownloads.value : taskStore.stoppedTasks
-    if (uiStore.activeTab !== 'stopped' || !searchQuery.value.trim()) {
-      return base
+  const detailDisplayTasks = computed(() => {
+    if (isGroupDetailMode.value) {
+      return [
+        ...(props.detailTasks?.active ?? []),
+        ...(props.detailTasks?.waiting ?? []),
+        ...(props.detailTasks?.stopped ?? []),
+      ]
     }
-    const q = searchQuery.value.toLowerCase()
-    return base.filter(t => {
-      const path = t.files?.[0]?.path
-      if (!path) return false
+    return []
+  })
 
-      const lastSlashIndex = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
-      const filename = lastSlashIndex >= 0 ? path.slice(lastSlashIndex + 1) : path
+  const displayEntries = computed<InlineTaskListEntry[]>(() => {
+    if (isGroupDetailMode.value) {
+      return detailDisplayTasks.value.map(task => ({
+        type: 'task',
+        key: `task:${task.gid}`,
+        task,
+      }))
+    }
 
-      return filename.toLowerCase().includes(q)
+    if (uiStore.activeTab === 'downloads') {
+      return buildInlineTaskListEntries({
+        tab: 'downloads',
+        tasks: combinedDownloads.value,
+        groupItems: downloadGroupStore.masterItems,
+      })
+    }
+
+    return buildInlineTaskListEntries({
+      tab: 'stopped',
+      tasks: taskStore.stoppedTasks,
+      groupItems: downloadGroupStore.masterItems,
+      searchQuery: searchQuery.value,
     })
   })
+
+  const displayTasks = computed(() =>
+    displayEntries.value.flatMap(entry => (entry.type === 'task' ? [entry.task] : [])),
+  )
 
   // Check if search returned no results
   const isSearchEmpty = computed(() => {
     return (
+      !isGroupDetailMode.value &&
       uiStore.activeTab === 'stopped' &&
       searchQuery.value.trim() !== '' &&
-      displayTasks.value.length === 0
+      displayEntries.value.length === 0
     )
   })
 
-  const useVirtualList = computed(() => displayTasks.value.length > 15)
+  const useVirtualList = computed(() => displayEntries.value.length > 15)
   const groupHintsByGid = computed(() => buildVisibleTaskGroupHints(displayTasks.value))
 
   // Empty state configuration
   const emptyStateConfig = computed(() => {
+    if (isGroupDetailMode.value) {
+      return {
+        icon: Layers3,
+        title: t('downloadGroups.emptyTitle'),
+        description: t('downloadGroups.detailNotFoundDescription'),
+        accent: 'var(--neon-primary)',
+      }
+    }
+
     if (uiStore.activeTab === 'downloads') {
       return {
         icon: Download,
@@ -144,25 +214,36 @@
     el.scrollIntoView({ behavior: 'smooth', block })
   }
 
+  const scrollToEntry = (
+    entryKey: string,
+    block: 'start' | 'center' | 'end' | 'nearest' = 'center',
+  ) => {
+    const container = listContainer.value
+    if (!container) return
+    const el = container.querySelector<HTMLElement>(`[data-entry-key="${entryKey}"]`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block })
+  }
+
   watch(
-    displayTasks,
+    displayEntries,
     (newList, oldList) => {
       if (useVirtualList.value || !oldList) {
         prevOrderByGid.clear()
-        newList.forEach((t, i) => prevOrderByGid.set(t.gid, i))
+        newList.forEach((entry, i) => prevOrderByGid.set(entry.key, i))
         return
       }
 
       // Find any task that moved significantly (index changed by >= 2)
-      let movedGid: string | null = null
+      let movedKey: string | null = null
       let movedDirection: 'up' | 'down' = 'up'
 
-      for (const [gid, oldIdx] of prevOrderByGid) {
-        const newIdx = newList.findIndex(t => t.gid === gid)
+      for (const [key, oldIdx] of prevOrderByGid) {
+        const newIdx = newList.findIndex(entry => entry.key === key)
         if (newIdx === -1) continue // task removed
         const delta = newIdx - oldIdx
         if (Math.abs(delta) >= 2) {
-          movedGid = gid
+          movedKey = key
           movedDirection = delta < 0 ? 'up' : 'down'
           break
         }
@@ -170,13 +251,17 @@
 
       // Update order tracking
       prevOrderByGid.clear()
-      newList.forEach((t, i) => prevOrderByGid.set(t.gid, i))
+      newList.forEach((entry, i) => prevOrderByGid.set(entry.key, i))
 
-      if (!movedGid) return
+      if (!movedKey) return
 
       // Wait for TransitionGroup animation to complete (500ms is the animation duration)
       setTimeout(() => {
-        scrollToTask(movedGid!, movedDirection === 'up' ? 'start' : 'end')
+        if (movedKey?.startsWith('task:')) {
+          scrollToTask(movedKey.slice('task:'.length), movedDirection === 'up' ? 'start' : 'end')
+        } else if (movedKey) {
+          scrollToEntry(movedKey, movedDirection === 'up' ? 'start' : 'end')
+        }
       }, 550)
     },
     { flush: 'post' },
@@ -196,7 +281,40 @@
   }
 
   // Keyboard shortcuts handler
+  const isKeydownActive = ref(false)
+
+  const shouldHandleKeydown = computed(() => {
+    if (isGroupDetailMode.value) {
+      return uiStore.activeTab === 'downloads' || uiStore.activeTab === 'stopped'
+    }
+    return uiStore.activeTab === 'downloads' || uiStore.activeTab === 'stopped'
+  })
+
+  const activateKeydown = () => {
+    if (isKeydownActive.value || !shouldHandleKeydown.value) return
+    window.addEventListener('keydown', handleKeydown)
+    isKeydownActive.value = true
+  }
+
+  const deactivateKeydown = () => {
+    if (!isKeydownActive.value) return
+    window.removeEventListener('keydown', handleKeydown)
+    isKeydownActive.value = false
+  }
+
+  const clearGroupDetailSelection = () => {
+    if (isGroupDetailMode.value) {
+      taskStore.clearSelection()
+    }
+  }
+
+  const clearSelectionForMode = () => {
+    taskStore.clearSelection()
+  }
+
   const handleKeydown = (e: KeyboardEvent) => {
+    if (!shouldHandleKeydown.value) return
+
     // Escape: Close modal or clear selection
     if (e.key === 'Escape') {
       if (showDelModal.value) {
@@ -220,9 +338,58 @@
       if (showDelModal.value || showBatchDelModal.value) return
 
       e.preventDefault()
-      const allGids = displayTasks.value.map(t => t.gid)
-      taskStore.selectAll(allGids)
+      const allGids = displayEntries.value.flatMap(entry =>
+        entry.type === 'task' ? [entry.task.gid] : [],
+      )
+      const allGroupKeys = isGroupDetailMode.value
+        ? []
+        : displayEntries.value.flatMap(entry =>
+            entry.type === 'group' && entry.item.type === 'backend' ? [entry.group_key] : [],
+          )
+      taskStore.selectAll(allGids, allGroupKeys)
     }
+  }
+
+  function openInlineGroupDetail(groupKey: string) {
+    uiStore.openDownloadGroupDetail(groupKey)
+  }
+
+  function pauseInlineGroup(groupKey: string) {
+    void downloadGroupStore.pauseGroup(groupKey)
+  }
+
+  function resumeInlineGroup(groupKey: string) {
+    void downloadGroupStore.resumeGroup(groupKey)
+  }
+
+  function openInlineGroupFolder(groupKey: string) {
+    void downloadGroupStore.openGroupFolder(groupKey)
+  }
+
+  function inlineActionBusy(
+    groupKey: string,
+  ): Partial<Record<DownloadGroupOperationAction, boolean>> {
+    return {
+      pause: downloadGroupStore.isGroupOperationBusy(groupKey, 'pause'),
+      resume: downloadGroupStore.isGroupOperationBusy(groupKey, 'resume'),
+      remove: downloadGroupStore.isGroupOperationBusy(groupKey, 'remove'),
+      open_folder: downloadGroupStore.isGroupOperationBusy(groupKey, 'open_folder'),
+    }
+  }
+
+  function openInlineRemoveDialog(groupKey: string) {
+    const item = downloadGroupStore.masterItems.find(entry => entry.group_key === groupKey)
+    inlineRemoveTarget.value = {
+      groupKey,
+      displayName: item ? getDownloadGroupMasterItemDisplayName(item) : groupKey,
+    }
+  }
+
+  async function confirmInlineRemoveGroup(deleteFiles: boolean) {
+    const target = inlineRemoveTarget.value
+    if (!target) return
+    await downloadGroupStore.removeGroup(target.groupKey, deleteFiles)
+    inlineRemoveTarget.value = null
   }
 
   // Batch delete handlers
@@ -238,9 +405,17 @@
 
   const handleBatchDelete = async () => {
     if (isBatchDeleting.value) return
+    const selectedTaskGids = [...taskStore.getSelectedGids]
+    const selectedGroupKeys = [...(taskStore.getSelectedGroupKeys ?? [])]
     isBatchDeleting.value = true
     try {
-      await taskStore.batchRemove(taskStore.getSelectedGids, deleteLocalFile.value)
+      if (selectedTaskGids.length > 0) {
+        await taskStore.batchRemove(selectedTaskGids, deleteLocalFile.value)
+      }
+      for (const groupKey of selectedGroupKeys) {
+        await downloadGroupStore.removeGroup(groupKey, deleteLocalFile.value)
+      }
+      taskStore.clearSelection()
     } finally {
       isBatchDeleting.value = false
       showBatchDelModal.value = false
@@ -252,6 +427,24 @@
   watch(
     () => uiStore.activeTab,
     newTab => {
+      if (isGroupDetailMode.value) {
+        if (newTab !== 'downloads' && newTab !== 'stopped') {
+          taskStore.clearSelection()
+          deactivateKeydown()
+        } else {
+          activateKeydown()
+        }
+        return
+      }
+
+      if (newTab !== 'downloads' && newTab !== 'stopped') {
+        taskStore.clearSelection()
+        deactivateKeydown()
+        return
+      }
+
+      activateKeydown()
+
       taskStore.clearSelection()
 
       // 切换到"已完成"时立即拉取 stopped 任务
@@ -261,29 +454,52 @@
     },
   )
 
+  watch(
+    () => [props.mode, props.detailKey] as const,
+    () => {
+      clearSelectionForMode()
+    },
+    { immediate: true },
+  )
+
   onMounted(() => {
-    window.addEventListener('keydown', handleKeydown)
+    clearSelectionForMode()
+    activateKeydown()
+  })
+
+  onActivated(() => {
+    clearSelectionForMode()
+    activateKeydown()
+  })
+
+  onDeactivated(() => {
+    deactivateKeydown()
+    clearGroupDetailSelection()
   })
 
   onUnmounted(() => {
-    window.removeEventListener('keydown', handleKeydown)
+    deactivateKeydown()
+    clearGroupDetailSelection()
   })
 </script>
 
 <template>
   <div class="flex-1 flex flex-col min-h-0">
     <!-- Task Addition Header (only in downloads tab) -->
-    <TaskHeader v-if="uiStore.activeTab === 'downloads'" />
+    <TaskHeader v-if="!isGroupDetailMode && uiStore.activeTab === 'downloads'" />
 
     <!-- Search Box (only in stopped tab) -->
-    <TaskSearch v-if="uiStore.activeTab === 'stopped'" v-model="searchQuery" />
+    <TaskSearch
+      v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped'"
+      v-model="searchQuery"
+    />
 
     <!-- Task List Container -->
     <div class="flex-1 min-h-0 relative">
       <!-- Empty State -->
       <Transition name="fade">
         <div
-          v-if="displayTasks.length === 0"
+          v-if="displayEntries.length === 0"
           class="absolute inset-0 flex flex-col items-center justify-center p-8"
         >
           <div class="empty-state animate-fade-in-up">
@@ -319,49 +535,92 @@
 
       <!-- Virtual Scrolling Task List -->
       <div
-        v-if="displayTasks.length > 0 && !useVirtualList"
+        v-if="displayEntries.length > 0 && !useVirtualList"
         ref="listContainer"
-        :key="uiStore.activeTab"
+        :key="isGroupDetailMode ? `group-detail:${props.detailKey}` : uiStore.activeTab"
         class="h-full overflow-y-auto px-5 py-4"
       >
         <TransitionGroup name="task-list" tag="div" class="flex flex-col gap-4">
           <div
-            v-for="(item, index) in displayTasks"
-            :key="item.gid"
-            :data-gid="item.gid"
+            v-for="(entry, index) in displayEntries"
+            :key="entry.key"
+            :data-gid="entry.type === 'task' ? entry.task.gid : undefined"
+            :data-entry-key="entry.key"
             class="animate-spring-in"
             :style="{ animationDelay: `${Math.min(index * 50, 300)}ms` }"
           >
             <TaskCard
-              :task="item"
-              :group-hint="groupHintsByGid.get(item.gid)"
+              v-if="entry.type === 'task'"
+              :task="entry.task"
+              :group-hint="groupHintsByGid.get(entry.task.gid)"
               @confirm-delete="confirmDelete"
+            />
+            <DownloadGroupCard
+              v-else
+              :item="entry.item"
+              :operation-busy="inlineActionBusy(entry.group_key)"
+              @open="openInlineGroupDetail"
+              @pause="pauseInlineGroup"
+              @resume="resumeInlineGroup"
+              @open-folder="openInlineGroupFolder"
+              @remove="openInlineRemoveDialog"
             />
           </div>
         </TransitionGroup>
       </div>
 
       <RecycleScroller
-        v-else-if="displayTasks.length > 0"
+        v-else-if="displayEntries.length > 0"
         v-slot="{ item }"
         class="h-full px-5 py-4"
-        :items="displayTasks"
-        :item-size="176"
-        key-field="gid"
+        :items="displayEntries"
+        :item-size="208"
+        key-field="key"
         :buffer="200"
       >
-        <div class="py-2 task-list-virtual-row">
+        <div class="py-2 task-list-virtual-row" :data-entry-key="item.key">
           <TaskCard
-            :task="item"
-            :group-hint="groupHintsByGid.get(item.gid)"
+            v-if="item.type === 'task'"
+            :task="item.task"
+            :group-hint="groupHintsByGid.get(item.task.gid)"
             @confirm-delete="confirmDelete"
+          />
+          <DownloadGroupCard
+            v-else
+            :item="item.item"
+            :operation-busy="inlineActionBusy(item.group_key)"
+            @open="openInlineGroupDetail"
+            @pause="pauseInlineGroup"
+            @resume="resumeInlineGroup"
+            @open-folder="openInlineGroupFolder"
+            @remove="openInlineRemoveDialog"
           />
         </div>
       </RecycleScroller>
     </div>
 
+    <DownloadGroupOperationNotice
+      v-if="!isGroupDetailMode && downloadGroupStore.operationNotice"
+      class="mx-5 mb-3"
+      :notice="downloadGroupStore.operationNotice"
+      @dismiss="downloadGroupStore.clearOperationNotice()"
+    />
+
     <!-- Batch Action Bar -->
     <BatchActionBar @confirm-batch-delete="confirmBatchDelete" />
+
+    <DownloadGroupRemoveDialog
+      :open="Boolean(inlineRemoveTarget)"
+      :group-key="inlineRemoveTarget?.groupKey || ''"
+      :display-name="inlineRemoveTarget?.displayName || ''"
+      :busy="
+        inlineRemoveTarget
+          ? downloadGroupStore.isGroupOperationBusy(inlineRemoveTarget.groupKey, 'remove')
+          : false
+      "
+      @cancel="inlineRemoveTarget = null"
+      @confirm="confirmInlineRemoveGroup"
+    />
 
     <!-- Delete Confirmation Modal -->
     <Teleport to="body">

@@ -5,7 +5,7 @@
   import type { TaskGroupHint } from '../../stores/task/grouping'
   import { useTaskStore } from '../../stores/task'
   import { Pause, Play, FolderOpen, Trash2, FileDown, Clock, Zap, Layers3 } from 'lucide-vue-next'
-  import { useSmoothProgress } from '../../composables/useSmoothProgress'
+  import { TASK_PROGRESS_CONFIG, useSmoothProgress } from '../../composables/useSmoothProgress'
 
   const { t } = useI18n()
 
@@ -20,33 +20,26 @@
 
   const taskStore = useTaskStore()
 
-  // 新后端的事件推送经过了防抖和批处理 (Monitor -> Pusher)
-  // 导致前端接收进度的频率变低，因此需要更激进的平滑参数来快速跟上实际进度，防止视觉滞后
-  const TASK_PROGRESS_CONFIG = {
-    emaAlpha: 0.1,         // 更快地追踪最新速度
-    smoothingFactor: 0.1,  // 提高显示值向目标值靠拢的速度
-    deviationDecay: 0.07,    // 强力修正预测偏差
-    maxScaleDelta: 0.009,    // 每帧允许最大 0.9% 的跳跃（解决极快下载时的卡顿感）
-  } as const
-
   const { displayDownloaded, totalBytes, updateStats } = useSmoothProgress(TASK_PROGRESS_CONFIG)
 
   // Sync with prop updates - optimized to watch specific fields
   watch(
     [
-        () => props.task.completedLength,
-        () => props.task.downloadSpeed,
-        () => props.task.totalLength,
-        () => props.task.status
+      () => props.task.completedLength,
+      () => props.task.downloadSpeed,
+      () => props.task.totalLength,
+      () => props.task.status,
     ],
     ([downloaded, speed, total, status]) => {
-    updateStats({
-      downloaded: Number(downloaded),
-      speed: Number(speed),
-      total: Number(total),
-      status: status as string
-    })
-  }, { immediate: true })
+      updateStats({
+        downloaded: Number(downloaded),
+        speed: Number(speed),
+        total: Number(total),
+        status: status as string,
+      })
+    },
+    { immediate: true },
+  )
 
   // Extract filename from path
   const fileName = computed(() => {
@@ -176,17 +169,24 @@
   // Selection state from store
   const isSelected = computed(() => taskStore.isSelected(props.task.gid))
 
-  const groupHintTitle = computed(() => {
+  const groupChipTitle = computed(() => {
     if (!props.groupHint) return undefined
+    const count = props.groupHint.totalCount || props.groupHint.visibleCount || 0
+    const label = t('taskCard.groupHintLabel', { count })
+    if (!props.groupHint.folderPath) return label
+    return `${label} · ${props.groupHint.folderPath}`
+  })
 
-    const parts = [t('taskCard.groupHintLabel')]
-    if (props.groupHint.folderLabel) {
-      parts.push(t('taskCard.groupFolder', { folder: props.groupHint.folderLabel }))
-    }
-    if (props.groupHint.itemCount) {
-      parts.push(t('taskCard.groupItems', { count: props.groupHint.itemCount }))
-    }
-    return parts.join(' · ')
+  const groupCountText = computed(() => {
+    const hint = props.groupHint
+    if (!hint) return ''
+    if (hint.ordinal && hint.totalCount)
+      return t('taskCard.groupOrdinal', { index: hint.ordinal, count: hint.totalCount })
+    if (hint.ordinal && hint.visibleCount)
+      return t('taskCard.groupOrdinal', { index: hint.ordinal, count: hint.visibleCount })
+    if (hint.totalCount) return t('taskCard.groupItemCount', { count: hint.totalCount })
+    if (hint.visibleCount) return t('taskCard.groupItemCount', { count: hint.visibleCount })
+    return ''
   })
 </script>
 
@@ -236,31 +236,35 @@
               {{ fileName }}
             </h3>
             <!-- Status Badge -->
-             <div class="flex items-center gap-2">
-               <div class="status-dot" :class="statusConfig.dotClass"></div>
-               <span
-                 class="text-[10px] font-bold uppercase tracking-widest"
-                 :class="statusConfig.labelClass"
-               >
-                 {{ statusConfig.label }}
-               </span>
-               <span
-                 v-if="groupHint"
-                 class="download-group-chip"
-                 :title="groupHintTitle"
-                 :aria-label="groupHintTitle"
-               >
-                 <Layers3 :size="11" class="download-group-icon" />
-                 <span class="download-group-folder">
-                   {{ groupHint.folderLabel || t('taskCard.groupHintLabel') }}
-                 </span>
-                 <span v-if="groupHint.itemCount" class="download-group-items font-mono-data">
-                   {{ t('taskCard.groupItems', { count: groupHint.itemCount }) }}
-                 </span>
-               </span>
-             </div>
-           </div>
-         </div>
+            <div class="flex items-center gap-2">
+              <div class="status-dot" :class="statusConfig.dotClass"></div>
+              <span
+                class="text-[10px] font-bold uppercase tracking-widest"
+                :class="statusConfig.labelClass"
+              >
+                {{ statusConfig.label }}
+              </span>
+              <span
+                v-if="groupHint"
+                class="download-group-chip"
+                :title="groupChipTitle"
+                :aria-label="groupChipTitle"
+              >
+                <span class="download-group-chip-dot"></span>
+                <Layers3 :size="11" class="download-group-chip-icon" />
+                <span v-if="groupHint.folderLabel" class="download-group-chip-folder">
+                  {{ t('taskCard.groupFolder', { folder: groupHint.folderLabel }) }}
+                </span>
+                <span v-else class="download-group-chip-label">
+                  {{ t('taskCard.groupStack') }}
+                </span>
+                <span v-if="groupCountText" class="download-group-chip-count font-mono-data">
+                  {{ groupCountText }}
+                </span>
+              </span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Action Buttons (Hover Reveal) -->
@@ -416,7 +420,7 @@
     background: linear-gradient(
       90deg,
       var(--status-paused),
-      color-mix(in srgb, var(--status-paused) 80%, #000)
+      color-mix(in srgb, var(--status-paused) 80%, var(--app-bg))
     );
   }
 
@@ -427,32 +431,46 @@
   .download-group-chip {
     display: inline-flex;
     align-items: center;
-    gap: 0.3125rem;
+    gap: 0.25rem;
     min-width: 0;
     max-width: min(18rem, 46vw);
     padding: 0.125rem 0.4375rem;
+    border: 1px solid color-mix(in srgb, var(--neon-primary) 18%, transparent);
     border-radius: var(--radius-squircle-sm);
-    border: 1px solid color-mix(in srgb, var(--glass-border) 70%, transparent);
-    background: color-mix(in srgb, var(--btn-glass-bg) 82%, transparent);
-    color: var(--app-text-muted);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--glass-highlight) 16%, transparent);
-    min-height: 1.25rem;
+    background: color-mix(in srgb, var(--neon-primary) 6%, transparent);
+    color: color-mix(in srgb, var(--app-text-muted) 88%, var(--neon-primary));
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--glass-highlight) 14%, transparent),
+      0 0 14px color-mix(in srgb, var(--neon-primary) 6%, transparent);
+    font-size: 0.625rem;
+    font-weight: 700;
+    line-height: 1.1;
   }
 
-  .download-group-icon {
+  .download-group-chip-dot {
+    width: 0.3125rem;
+    height: 0.3125rem;
     flex: 0 0 auto;
-    color: color-mix(in srgb, var(--neon-primary) 64%, var(--app-text));
+    border-radius: 999px;
+    background: var(--neon-primary);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--neon-primary) 36%, transparent);
   }
 
-  .download-group-folder {
+  .download-group-chip-icon {
+    flex: 0 0 auto;
+    color: color-mix(in srgb, var(--neon-primary) 70%, var(--app-text));
+  }
+
+  .download-group-chip-folder,
+  .download-group-chip-label {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .download-group-items {
+  .download-group-chip-count {
     flex: 0 0 auto;
-    color: color-mix(in srgb, var(--neon-primary) 72%, var(--app-text-muted));
+    color: color-mix(in srgb, var(--neon-primary) 78%, var(--app-text));
   }
 </style>
