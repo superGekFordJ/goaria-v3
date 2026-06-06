@@ -7,7 +7,7 @@ export type TaskDelta = {
 }
 
 type DeltaHandler = (delta: TaskDelta) => void
-type FullSyncHandler = () => void
+type FullSyncHandler = () => void | Promise<void>
 type ConnectionHandler = (connected: boolean) => void
 
 let deltaUnsubscribe: (() => void) | null = null
@@ -76,7 +76,7 @@ export function unsubscribeFromTaskEvents() {
 // Window lifecycle event subscriptions
 let windowCreatedUnsubscribe: (() => void) | null = null
 
-export function subscribeToWindowEvents(onWindowCreated: () => void) {
+export function subscribeToWindowEvents(onWindowCreated: () => void | Promise<void>) {
   if (windowCreatedUnsubscribe) return
 
   windowCreatedUnsubscribe = Events.On('window:created', () => {

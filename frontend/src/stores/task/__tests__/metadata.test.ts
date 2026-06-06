@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { cacheMetadata, applyMetadataFromCache, removeMetadata, getMetadataCacheSize, clearMetadataCache } from '../metadata'
+import {
+  cacheMetadata,
+  applyMetadataFromCache,
+  removeMetadata,
+  getMetadataCacheSize,
+  clearMetadataCache,
+} from '../metadata'
 import type { Task } from '../../../../bindings/goaria-v3/internal/rpc/models'
 
 const mockGroup = {
@@ -35,7 +41,7 @@ describe('Task Metadata Cache', () => {
     const task = mockTask('1', {
       files: [{ path: '/downloads/file1', uris: [] }],
       dir: '/downloads',
-      totalLength: '1000'
+      totalLength: '1000',
     })
 
     cacheMetadata(task)
@@ -58,7 +64,7 @@ describe('Task Metadata Cache', () => {
     // Cache first
     const fullTask = mockTask('1', {
       files: [{ path: '/downloads/file1', uris: [] }],
-      dir: '/downloads'
+      dir: '/downloads',
     })
     cacheMetadata(fullTask)
 
@@ -73,7 +79,7 @@ describe('Task Metadata Cache', () => {
   it('should remove metadata', () => {
     const task = mockTask('1', {
       files: [{ path: '/downloads/file1', uris: [] }],
-      dir: '/downloads'
+      dir: '/downloads',
     })
     cacheMetadata(task)
     expect(getMetadataCacheSize()).toBe(1)

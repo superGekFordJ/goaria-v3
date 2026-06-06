@@ -21,7 +21,7 @@ export const useTaskStore = defineStore('task', () => {
   // Actions need to restart polling
   actions.setPollingCallbacks(
     polling.startPolling, // restart
-    polling.stopPolling   // stop
+    polling.stopPolling, // stop
   )
 
   // Events (if setupEvents needed polling, which it doesn't currently, but type says so in plan)
@@ -31,6 +31,7 @@ export const useTaskStore = defineStore('task', () => {
     // State
     tasks: state.tasks,
     selectedGids: state.selectedGids,
+    selectedGroupKeys: state.selectedGroupKeys,
     syncMode: state.syncMode,
     pollingEnabled: state.pollingEnabled,
     pollingContextEnabled: state.pollingContextEnabled,
@@ -45,9 +46,13 @@ export const useTaskStore = defineStore('task', () => {
     stoppedTasks: state.stoppedTasks,
     allTasksCount: state.allTasksCount,
     allUris: state.allUris,
+    selectedTaskCount: state.selectedTaskCount,
+    selectedGroupCount: state.selectedGroupCount,
     selectedCount: state.selectedCount,
     isSelected: state.isSelected,
+    isGroupSelected: state.isGroupSelected,
     getSelectedGids: state.getSelectedGids,
+    getSelectedGroupKeys: state.getSelectedGroupKeys,
 
     // Actions
     fetchActiveTasks: actions.fetchActiveTasks,
@@ -62,6 +67,8 @@ export const useTaskStore = defineStore('task', () => {
 
     // Selection Actions
     toggleSelect: actions.toggleSelect,
+    toggleSelectGroup: actions.toggleSelectGroup,
+    clearSelectedGroup: actions.clearSelectedGroup,
     selectAll: actions.selectAll,
     clearSelection: actions.clearSelection,
 

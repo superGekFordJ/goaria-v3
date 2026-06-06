@@ -31,11 +31,14 @@ function createMockState(): TaskState {
   const activeTasks = computed(() => tasks.value.active || [])
   const waitingTasks = computed(() => tasks.value.waiting || [])
   const stoppedTasks = computed(() => tasks.value.stopped || [])
+  const selectedGids = ref<Set<string>>(new Set())
+  const selectedGroupKeys = ref<Set<string>>(new Set())
   const allUris = computed(() => new Set<string>())
 
   return {
     tasks,
-    selectedGids: ref<Set<string>>(new Set()),
+    selectedGids,
+    selectedGroupKeys,
     syncMode: ref<'polling' | 'event-driven'>('polling'),
     pollingEnabled: ref(false),
     pollingContextEnabled: ref(false),
@@ -50,9 +53,13 @@ function createMockState(): TaskState {
       () => activeTasks.value.length + waitingTasks.value.length + stoppedTasks.value.length,
     ),
     allUris,
-    selectedCount: computed(() => 0),
+    selectedTaskCount: computed(() => selectedGids.value.size),
+    selectedGroupCount: computed(() => selectedGroupKeys.value.size),
+    selectedCount: computed(() => selectedGids.value.size + selectedGroupKeys.value.size),
     isSelected: () => false,
+    isGroupSelected: () => false,
     getSelectedGids: computed(() => []),
+    getSelectedGroupKeys: computed(() => []),
     throttledUpdateTrayIcon: vi.fn(),
     immediateUpdateTrayIcon: vi.fn(),
   } as unknown as TaskState

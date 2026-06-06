@@ -32,11 +32,11 @@ describe('Performance Benchmark: fetchActiveTasks Optimization', () => {
     let lastStoppedTasksRef: Task[] | null = null
     // Reset set for fairness, though irrelevant
     _stoppedGidSet.clear()
-    
+
     const startOptimized = performance.now()
     for (let i = 0; i < iterations; i++) {
         // In the loop, we simulate that stoppedTasks reference doesn't change most of the time
-        // But we should also simulate it changing sometimes? 
+        // But we should also simulate it changing sometimes?
         // The optimization target is the case where it DOESN'T change.
         // So we keep it constant here.
         if (stoppedTasks !== lastStoppedTasksRef) {
