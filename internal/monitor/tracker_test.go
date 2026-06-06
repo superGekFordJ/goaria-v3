@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -454,6 +455,63 @@ func TestTaskTracker_GroupPreservedAcrossLiteAndStoppedTransitions(t *testing.T)
 	}
 }
 
+func TestTaskTracker_CompletedTaskSnapshotDoesNotExposeInternalGroupPointer(t *testing.T) {
+	tracker := NewTaskTracker()
+	group := testDownloadGroup("dg-tracker-complete-snapshot")
+	active := createEnrichedTask("gid-complete-snapshot", "active")
+	active.DownloadGroup = &group
+	tracker.Update([]rpc.Task{active}, nil, nil)
+
+	completed := tracker.Update(nil, nil, []rpc.Task{createLiteTask("gid-complete-snapshot", "complete")})
+	if len(completed) != 1 || completed[0].DownloadGroup == nil {
+		t.Fatalf("expected completed snapshot with group, got %#v", completed)
+	}
+	snapshotGroup := completed[0].DownloadGroup
+	internalGroup := tracker.tasks["gid-complete-snapshot"].DownloadGroup
+	if snapshotGroup == internalGroup {
+		t.Fatal("expected completed task to carry defensive group copy, not tracker internal pointer")
+	}
+
+	tracker.UpdateTaskGroupName(group.ID, "Project Alpha", rpc.DownloadGroupNameStatusStable)
+	if snapshotGroup.Name == "Project Alpha" || snapshotGroup.NameStatus == rpc.DownloadGroupNameStatusStable {
+		t.Fatalf("expected completed snapshot group not to be mutated by later tracker updates, got %#v", snapshotGroup)
+	}
+	if got := tracker.GetTaskGroup("gid-complete-snapshot"); got == nil || got.Name != "Project Alpha" || got.NameStatus != rpc.DownloadGroupNameStatusStable {
+		t.Fatalf("expected internal tracker group updated, got %#v", got)
+	}
+}
+
+func TestTaskTracker_CompletedTaskSnapshotSafeWhileGroupNameUpdates(t *testing.T) {
+	tracker := NewTaskTracker()
+	group := testDownloadGroup("dg-tracker-complete-race")
+	active := createEnrichedTask("gid-complete-race", "active")
+	active.DownloadGroup = &group
+	tracker.Update([]rpc.Task{active}, nil, nil)
+	completed := tracker.Update(nil, nil, []rpc.Task{createLiteTask("gid-complete-race", "complete")})
+	if len(completed) != 1 || completed[0].DownloadGroup == nil {
+		t.Fatalf("expected completed snapshot with group, got %#v", completed)
+	}
+	snapshot := completed[0]
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			_ = snapshot.DownloadGroup.Name
+			_ = snapshot.DownloadGroup.NameStatus
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			tracker.UpdateTaskGroupName(group.ID, "Project Alpha", rpc.DownloadGroupNameStatusStable)
+			tracker.UpdateTaskGroupName(group.ID, group.Name, rpc.DownloadGroupNameStatusFallback)
+		}
+	}()
+	wg.Wait()
+}
+
 func TestTaskTracker_SetTaskGroupBeforeTaskAppears(t *testing.T) {
 	tracker := NewTaskTracker()
 	group := testDownloadGroup("dg-tracker-placeholder")
@@ -467,5 +525,24 @@ func TestTaskTracker_SetTaskGroupBeforeTaskAppears(t *testing.T) {
 	tracker.Update([]rpc.Task{active}, nil, nil)
 	if got := tracker.GetTaskGroup("gid-placeholder"); got == nil || got.ID != group.ID {
 		t.Fatalf("expected group to survive lite update, got %#v", got)
+	}
+}
+
+func TestTaskTracker_UpdateTaskGroupNamePreservesFolderMetadata(t *testing.T) {
+	tracker := NewTaskTracker()
+	group := testDownloadGroup("dg-tracker-name")
+	tracker.SetTaskGroup("gid-name", group)
+
+	changed := tracker.UpdateTaskGroupName(group.ID, "Project Alpha", rpc.DownloadGroupNameStatusStable)
+
+	if changed != 1 {
+		t.Fatalf("expected one changed tracked group, got %d", changed)
+	}
+	got := tracker.GetTaskGroup("gid-name")
+	if got == nil || got.Name != "Project Alpha" || got.NameStatus != rpc.DownloadGroupNameStatusStable {
+		t.Fatalf("expected updated tracked group, got %#v", got)
+	}
+	if got.FolderName != group.FolderName || got.Dir != group.Dir {
+		t.Fatalf("expected folder metadata preserved, got %#v want folder=%q dir=%q", got, group.FolderName, group.Dir)
 	}
 }

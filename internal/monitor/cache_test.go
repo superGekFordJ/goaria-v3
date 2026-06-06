@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"sync"
 	"testing"
 
 	"goaria-v3/internal/rpc"
@@ -23,6 +24,27 @@ func TestTaskCache_HasValidMetadataRequiresNonEmptyPath(t *testing.T) {
 	cache.metadata[gid] = &TaskMetadata{GID: gid, Files: []string{"/downloads/file.zip"}}
 	if !cache.HasValidMetadata(gid) {
 		t.Fatal("expected metadata with a non-empty path to be valid")
+	}
+}
+
+func TestTaskCache_GettersReturnDefensiveGroupCopies(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	group := testDownloadGroup("dg-cache-defensive")
+	task := rpc.Task{GID: "gid-defensive", Status: "active", DownloadGroup: &group}
+	cache.UpdateFromAria2([]rpc.Task{task}, nil, nil)
+	cache.SetTaskGroup("gid-defensive", group)
+
+	active := cache.GetActive()
+	active[0].DownloadGroup.Name = "mutated outside cache"
+	active[0].DownloadGroup.NameStatus = rpc.DownloadGroupNameStatusStable
+	if got := cache.GetActive()[0].DownloadGroup; got == nil || got.Name == "mutated outside cache" || got.NameStatus == rpc.DownloadGroupNameStatusStable {
+		t.Fatalf("expected cache active group defensive copy, got %#v", got)
+	}
+
+	meta := cache.GetMetadata("gid-defensive")
+	meta.DownloadGroup.Name = "mutated metadata"
+	if got := cache.GetMetadata("gid-defensive"); got == nil || got.DownloadGroup == nil || got.DownloadGroup.Name == "mutated metadata" {
+		t.Fatalf("expected metadata defensive copy, got %#v", got)
 	}
 }
 
@@ -166,4 +188,75 @@ func TestTaskCache_EnsureMetadataStoresIncomingGroupAndInvalidateRemovesIt(t *te
 	if got := cache.GetTaskGroup("gid-incoming"); got != nil {
 		t.Fatalf("expected group to be invalidated with metadata, got %#v", got)
 	}
+}
+
+func TestTaskCache_UpdateTaskGroupNamePreservesFileMetadata(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	group := testDownloadGroup("dg-cache-name")
+	cache.SetTaskGroup("gid-group", group)
+	cache.ensureMetadata(rpc.Task{
+		GID:         "gid-group",
+		Dir:         "/downloads/dg-cache-name",
+		TotalLength: "2048",
+		Files: []rpc.File{{
+			Path: "/downloads/dg-cache-name/file.bin",
+			Uris: []rpc.Uri{{Uri: "https://example.com/file.bin"}},
+		}},
+	})
+
+	changed := cache.UpdateTaskGroupName(group.ID, "Project Alpha", rpc.DownloadGroupNameStatusStable)
+
+	if changed == 0 {
+		t.Fatal("expected group name update to change cache")
+	}
+	meta := cache.GetMetadata("gid-group")
+	if meta == nil || meta.DownloadGroup == nil || meta.DownloadGroup.Name != "Project Alpha" || meta.DownloadGroup.NameStatus != rpc.DownloadGroupNameStatusStable {
+		t.Fatalf("expected updated group name/status, got %#v", meta)
+	}
+	if !cache.HasValidMetadata("gid-group") || len(meta.Files) == 0 || meta.Files[0] != "/downloads/dg-cache-name/file.bin" {
+		t.Fatalf("expected file metadata preserved, got %#v", meta)
+	}
+}
+
+func TestTaskCache_UpdateTaskGroupNameReplacesSharedGroupPointers(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	group := testDownloadGroup("dg-cache-replace")
+	cache.UpdateFromAria2([]rpc.Task{{GID: "gid-one", Status: "active", DownloadGroup: &group}}, nil, nil)
+	before := cache.GetActive()[0].DownloadGroup
+
+	cache.UpdateTaskGroupName(group.ID, "Project Alpha", rpc.DownloadGroupNameStatusStable)
+	after := cache.GetActive()[0].DownloadGroup
+
+	if before == nil || after == nil {
+		t.Fatalf("expected group pointers before/after, before=%#v after=%#v", before, after)
+	}
+	if before == after {
+		t.Fatal("expected update to replace cached group pointer instead of mutating it in place")
+	}
+	if before.Name == "Project Alpha" || before.NameStatus == rpc.DownloadGroupNameStatusStable {
+		t.Fatalf("expected old snapshot pointer unchanged, got %#v", before)
+	}
+	if after.Name != "Project Alpha" || after.NameStatus != rpc.DownloadGroupNameStatusStable {
+		t.Fatalf("expected new snapshot pointer updated, got %#v", after)
+	}
+}
+
+func TestTaskCache_UpdateTaskGroupNameConcurrentReaders(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	group := testDownloadGroup("dg-cache-race")
+	cache.UpdateFromAria2([]rpc.Task{{GID: "gid-race", Status: "active", DownloadGroup: &group}}, nil, nil)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_ = cache.GetActive()
+				cache.UpdateTaskGroupName(group.ID, "Project Alpha", rpc.DownloadGroupNameStatusStable)
+				cache.UpdateTaskGroupName(group.ID, group.Name, rpc.DownloadGroupNameStatusFallback)
+			}
+		}()
+	}
+	wg.Wait()
 }

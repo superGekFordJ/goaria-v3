@@ -109,7 +109,7 @@ func decodeAddURIParams(t *testing.T, req testRPCRequest, hasSecret bool) ([]str
 	return uris, options
 }
 
-func TestAddUriWithAria2OptionsSerializesGroupDirBasenameOutHeadersAndSplit(t *testing.T) {
+func TestAddUriWithAria2OptionsSerializesHeadersOutAndSmartThreadOptions(t *testing.T) {
 	directURL := "https://files.example.com/downloads/file.bin"
 	var requests []testRPCRequest
 
@@ -133,9 +133,8 @@ func TestAddUriWithAria2OptionsSerializesGroupDirBasenameOutHeadersAndSplit(t *t
 	defer server.Close()
 	initTestRPCServer(t, server.URL, "secret")
 
-	groupDir := "D:/Downloads/Batch 2026-05-07 15-04-05 dg-abc123"
 	gid, err := AddUriWithAria2Options(directURL, AddURIOptions{
-		Dir:          groupDir,
+		Dir:          "D:/Downloads",
 		Out:          "file.bin",
 		Headers:      []string{"Authorization: Bearer test-token", "User-Agent: GoAria-Test"},
 		Split:        8,
@@ -154,7 +153,7 @@ func TestAddUriWithAria2OptionsSerializesGroupDirBasenameOutHeadersAndSplit(t *t
 		t.Fatalf("expected uri list %#v, got %#v", []string{directURL}, uris)
 	}
 	expectedScalars := map[string]string{
-		"dir":                       groupDir,
+		"dir":                       "D:/Downloads",
 		"out":                       "file.bin",
 		"split":                     "8",
 		"max-connection-per-server": "8",
@@ -175,6 +174,55 @@ func TestAddUriWithAria2OptionsSerializesGroupDirBasenameOutHeadersAndSplit(t *t
 	}
 	if count := countMethodCalls(methods, "aria2.saveSession"); count != 1 {
 		t.Fatalf("expected one saveSession call, got %d (%v)", count, methods)
+	}
+}
+
+func TestAddUriWithAria2OptionsSerializesGroupDirBasenameOutHeadersAndSplit(t *testing.T) {
+	directURL := "https://files.example.com/downloads/file.bin"
+	groupDir := `D:\Downloads\Batch 2026-05-07 15-04-05 dg-a1b2c3`
+	var requests []testRPCRequest
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, err := decodeTestRPCRequest(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		requests = append(requests, req)
+		switch req.Method {
+		case "aria2.addUri":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": "goaria", "result": "gid-group"})
+		case "aria2.saveSession":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": "goaria", "result": "OK"})
+		default:
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	initTestRPCServer(t, server.URL, "")
+
+	if _, err := AddUriWithAria2Options(directURL, AddURIOptions{
+		Dir:          groupDir,
+		Out:          "file.bin",
+		Headers:      []string{"Authorization: Bearer test-token"},
+		Split:        4,
+		MinSplitSize: 1024,
+	}); err != nil {
+		t.Fatalf("AddUriWithAria2Options() error = %v", err)
+	}
+
+	_, options := decodeAddURIParams(t, findTestRPCRequest(t, requests, "aria2.addUri"), false)
+	if options["dir"] != groupDir {
+		t.Fatalf("expected group dir option %q, got %#v", groupDir, options["dir"])
+	}
+	if options["out"] != "file.bin" || strings.Contains(fmt.Sprint(options["out"]), "Batch") {
+		t.Fatalf("expected basename-only out, got %#v", options["out"])
+	}
+	if got := options["header"]; !reflect.DeepEqual(got, []any{"Authorization: Bearer test-token"}) {
+		t.Fatalf("expected header list preserved, got %#v", got)
+	}
+	if options["split"] != "4" || options["min-split-size"] != "1024" {
+		t.Fatalf("expected smartthread options preserved, got %#v", options)
 	}
 }
 
@@ -1050,6 +1098,171 @@ func TestUnpauseMultiEmpty(t *testing.T) {
 	}
 	if requests != 0 {
 		t.Fatalf("Expected no requests for empty input, got %d", requests)
+	}
+}
+
+func TestPauseMultiResults_SecretLayoutOrderAndSaveSession(t *testing.T) {
+	assertPauseResumeMultiResultsLayoutAndSaveSession(t, "aria2.pause", PauseMultiResults)
+}
+
+func TestUnpauseMultiResults_SecretLayoutOrderAndSaveSession(t *testing.T) {
+	assertPauseResumeMultiResultsLayoutAndSaveSession(t, "aria2.unpause", UnpauseMultiResults)
+}
+
+func assertPauseResumeMultiResultsLayoutAndSaveSession(t *testing.T, nestedMethod string, call func([]string) ([]MultiCallItemResult, error)) {
+	t.Helper()
+	gids := []string{"gid-1", "gid-2", "gid-3"}
+	var requests []testRPCRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, err := decodeTestRPCRequest(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		requests = append(requests, req)
+		switch req.Method {
+		case "system.multicall":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": "goaria", "result": []any{[]any{"OK"}, []any{"OK"}, []any{"OK"}}})
+		case "aria2.saveSession":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": "goaria", "result": "OK"})
+		default:
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	initTestRPCServer(t, server.URL, "secret")
+
+	results, err := call(gids)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(results) != len(gids) {
+		t.Fatalf("expected %d results, got %#v", len(gids), results)
+	}
+	for i, result := range results {
+		if result.GID != gids[i] || !result.OK || result.Error != "" {
+			t.Fatalf("unexpected result %d: %#v", i, result)
+		}
+	}
+
+	methods := methodsFromRequests(requests)
+	if count := countMethodCalls(methods, "system.multicall"); count != 1 {
+		t.Fatalf("expected one multicall, got %d (%v)", count, methods)
+	}
+	if count := countMethodCalls(methods, nestedMethod); count != 0 {
+		t.Fatalf("expected no top-level %s, got %d (%v)", nestedMethod, count, methods)
+	}
+	if count := countMethodCalls(methods, "aria2.saveSession"); count != 1 {
+		t.Fatalf("expected one saveSession, got %d (%v)", count, methods)
+	}
+
+	multicall := findTestRPCRequest(t, requests, "system.multicall")
+	calls, err := decodeTestMulticallCalls(multicall.Params)
+	if err != nil {
+		t.Fatalf("failed to decode multicall: %v", err)
+	}
+	if len(calls) != len(gids) {
+		t.Fatalf("expected %d nested calls, got %d", len(gids), len(calls))
+	}
+	for i, nested := range calls {
+		if nested.MethodName != nestedMethod {
+			t.Fatalf("expected nested method %q, got %q", nestedMethod, nested.MethodName)
+		}
+		want := []any{"token:secret", gids[i]}
+		if !reflect.DeepEqual(nested.Params, want) {
+			t.Fatalf("unexpected nested params %d: got %#v want %#v", i, nested.Params, want)
+		}
+	}
+}
+
+func TestPauseMultiResults_PartialNestedErrors(t *testing.T) {
+	assertPauseResumeMultiResultsPartialNestedErrors(t, "aria2.pause", PauseMultiResults)
+}
+
+func TestUnpauseMultiResults_PartialNestedErrors(t *testing.T) {
+	assertPauseResumeMultiResultsPartialNestedErrors(t, "aria2.unpause", UnpauseMultiResults)
+}
+
+func assertPauseResumeMultiResultsPartialNestedErrors(t *testing.T, nestedMethod string, call func([]string) ([]MultiCallItemResult, error)) {
+	t.Helper()
+	gids := []string{"gid-ok", "gid-jsonrpc-fault", "gid-multicall-fault", "gid-ok-2"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, err := decodeTestRPCRequest(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		switch req.Method {
+		case "system.multicall":
+			calls, err := decodeTestMulticallCalls(req.Params)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if len(calls) != len(gids) {
+				t.Fatalf("expected %d calls, got %d", len(gids), len(calls))
+			}
+			for _, nested := range calls {
+				if nested.MethodName != nestedMethod {
+					t.Fatalf("expected nested method %q, got %q", nestedMethod, nested.MethodName)
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      "goaria",
+				"result": []any{
+					[]any{"OK"},
+					[]any{map[string]any{"code": 1, "message": "cannot pause gid-jsonrpc-fault"}},
+					map[string]any{"faultCode": 2, "faultString": "cannot pause gid-multicall-fault"},
+					[]any{"OK"},
+				},
+			})
+		case "aria2.saveSession":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": "goaria", "result": "OK"})
+		default:
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	initTestRPCServer(t, server.URL, "")
+
+	results, err := call(gids)
+	if err != nil {
+		t.Fatalf("expected partial nested failures not to fail whole helper, got %v", err)
+	}
+	want := []MultiCallItemResult{
+		{GID: "gid-ok", OK: true},
+		{GID: "gid-jsonrpc-fault", OK: false, Error: "cannot pause gid-jsonrpc-fault"},
+		{GID: "gid-multicall-fault", OK: false, Error: "cannot pause gid-multicall-fault"},
+		{GID: "gid-ok-2", OK: true},
+	}
+	if !reflect.DeepEqual(results, want) {
+		t.Fatalf("unexpected results:\n got %#v\nwant %#v", results, want)
+	}
+}
+
+func TestPauseUnpauseMultiResults_EmptyInputShortCircuits(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": "goaria", "result": "OK"})
+	}))
+	defer server.Close()
+	initTestRPCServer(t, server.URL, "secret")
+
+	pauseResults, err := PauseMultiResults(nil)
+	if err != nil {
+		t.Fatalf("PauseMultiResults(nil) error = %v", err)
+	}
+	unpauseResults, err := UnpauseMultiResults([]string{})
+	if err != nil {
+		t.Fatalf("UnpauseMultiResults(empty) error = %v", err)
+	}
+	if len(pauseResults) != 0 || len(unpauseResults) != 0 {
+		t.Fatalf("expected empty result slices, got pause=%#v unpause=%#v", pauseResults, unpauseResults)
+	}
+	if requests != 0 {
+		t.Fatalf("expected no RPC requests for empty input, got %d", requests)
 	}
 }
 

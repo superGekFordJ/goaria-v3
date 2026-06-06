@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +24,19 @@ type HistoryEntry struct {
 	CompletedAt     int64              `json:"completedAt"`
 	Source          string             `json:"source,omitempty"` // magnet/http
 	DownloadGroup   *rpc.DownloadGroup `json:"download_group,omitempty"`
+}
+
+func copyDownloadGroup(group *rpc.DownloadGroup) *rpc.DownloadGroup {
+	if group == nil {
+		return nil
+	}
+	copy := *group
+	return &copy
+}
+
+func copyHistoryEntry(entry HistoryEntry) HistoryEntry {
+	entry.DownloadGroup = copyDownloadGroup(entry.DownloadGroup)
+	return entry
 }
 
 var (
@@ -171,7 +185,7 @@ func Add(entry HistoryEntry) {
 	// Check if already exists
 	if i, ok := gidIndex[entry.GID]; ok {
 		if entry.DownloadGroup == nil && entries[i].DownloadGroup != nil {
-			entry.DownloadGroup = entries[i].DownloadGroup
+			entry.DownloadGroup = copyDownloadGroup(entries[i].DownloadGroup)
 		}
 		// Update sourceIndex if source changes
 		oldSource := entries[i].Source
@@ -188,19 +202,19 @@ func Add(entry HistoryEntry) {
 		}
 
 		// Update existing entry
-		entries[i] = entry
-		triggerSave()
+		entries[i] = copyHistoryEntry(entry)
+		triggerSaveLocked()
 		return
 	}
 
 	// Add new entry
 	entry.CompletedAt = time.Now().Unix()
-	entries = append(entries, entry)
+	entries = append(entries, copyHistoryEntry(entry))
 	gidIndex[entry.GID] = len(entries) - 1
 	if entry.Source != "" {
 		sourceIndex[entry.Source]++
 	}
-	triggerSave()
+	triggerSaveLocked()
 }
 
 // Remove removes an entry by GID
@@ -229,7 +243,7 @@ func Remove(gid string) {
 		for j := i; j < len(entries); j++ {
 			gidIndex[entries[j].GID] = j
 		}
-		triggerSave()
+		triggerSaveLocked()
 	}
 }
 
@@ -296,7 +310,7 @@ func RemoveMany(gids []string) {
 			sourceIndex[entry.Source]++
 		}
 	}
-	triggerSave()
+	triggerSaveLocked()
 }
 
 // GetAll returns all history entries
@@ -305,7 +319,9 @@ func GetAll() []HistoryEntry {
 	defer mu.RUnlock()
 
 	result := make([]HistoryEntry, len(entries))
-	copy(result, entries)
+	for i, entry := range entries {
+		result[i] = copyHistoryEntry(entry)
+	}
 	return result
 }
 
@@ -319,7 +335,7 @@ func GetMissingByGID(existingGIDs map[string]struct{}) []HistoryEntry {
 		if _, exists := existingGIDs[entry.GID]; exists {
 			continue
 		}
-		result = append(result, entry)
+		result = append(result, copyHistoryEntry(entry))
 	}
 	return result
 }
@@ -366,9 +382,41 @@ func Get(gid string) (HistoryEntry, bool) {
 		return HistoryEntry{}, false
 	}
 	if i, ok := gidIndex[gid]; ok {
-		return entries[i], true
+		return copyHistoryEntry(entries[i]), true
 	}
 	return HistoryEntry{}, false
+}
+
+func UpdateDownloadGroupName(groupKey, name, status string) int {
+	groupKey = strings.TrimSpace(groupKey)
+	name = strings.TrimSpace(name)
+	status = strings.TrimSpace(status)
+	if groupKey == "" || name == "" || !rpc.IsDownloadGroupNameStatus(status) {
+		return 0
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	changed := 0
+	for i := range entries {
+		group := entries[i].DownloadGroup
+		if group == nil || group.ID != groupKey {
+			continue
+		}
+		if group.Name == name && group.NameStatus == status {
+			continue
+		}
+		updated := *group
+		updated.Name = name
+		updated.NameStatus = status
+		entries[i].DownloadGroup = &updated
+		changed++
+	}
+	if changed > 0 {
+		triggerSaveLocked()
+	}
+	return changed
 }
 
 // Clear removes all history entries
@@ -380,10 +428,10 @@ func Clear() {
 	gidIndex = make(map[string]int)
 	sourceIndex = make(map[string]int)
 	notifyGroupClear()
-	triggerSave()
+	triggerSaveLocked()
 }
 
-func triggerSave() {
+func triggerSaveLocked() {
 	saveTriggerCount.Add(1)
 	saverOnce.Do(func() {
 		go saveLoop()

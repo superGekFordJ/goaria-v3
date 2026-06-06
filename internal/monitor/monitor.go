@@ -480,6 +480,7 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 	})
 	if task.DownloadGroup != nil {
 		RemoveTaskGroup(task.GID)
+		QueueDownloadGroupName(task.DownloadGroup.ID)
 	}
 	log.Printf("[Monitor] History recorded: %s", task.GID)
 }

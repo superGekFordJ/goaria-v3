@@ -65,6 +65,44 @@ func copyDownloadGroup(group *rpc.DownloadGroup) *rpc.DownloadGroup {
 	return &copy
 }
 
+func copyTaskMetadata(meta *TaskMetadata) *TaskMetadata {
+	if meta == nil {
+		return nil
+	}
+	copy := *meta
+	if len(meta.Files) > 0 {
+		copy.Files = append([]string(nil), meta.Files...)
+	}
+	copy.DownloadGroup = copyDownloadGroup(meta.DownloadGroup)
+	return &copy
+}
+
+func copyTaskSlice(tasks []rpc.Task) []rpc.Task {
+	if len(tasks) == 0 {
+		return []rpc.Task{}
+	}
+	copy := make([]rpc.Task, len(tasks))
+	for i := range tasks {
+		copy[i] = copyTask(tasks[i])
+	}
+	return copy
+}
+
+func copyTask(task rpc.Task) rpc.Task {
+	copy := task
+	copy.DownloadGroup = copyDownloadGroup(task.DownloadGroup)
+	if len(task.Files) > 0 {
+		copy.Files = make([]rpc.File, len(task.Files))
+		for i, file := range task.Files {
+			copy.Files[i] = file
+			if len(file.Uris) > 0 {
+				copy.Files[i].Uris = append([]rpc.Uri(nil), file.Uris...)
+			}
+		}
+	}
+	return copy
+}
+
 // Cache 全局缓存实例
 var Cache = &TaskCache{
 	metadata: make(map[string]*TaskMetadata),
@@ -77,37 +115,39 @@ func (c *TaskCache) UpdateFromAria2(active, waiting, stopped []rpc.Task) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.active = active
-	c.waiting = waiting
-	c.stopped = stopped
+	c.active = copyTaskSlice(active)
+	c.waiting = copyTaskSlice(waiting)
+	c.stopped = copyTaskSlice(stopped)
 	c.lastUpdate = time.Now()
 }
 
 // ensureMetadata 确保任务元数据已缓存（预取）
 // 注意：仅当任务包含有效的文件信息时才缓存，避免 Lite 任务污染缓存
-func (c *TaskCache) ensureMetadata(task rpc.Task) {
-	if c.metadata == nil {
-		c.metadata = make(map[string]*TaskMetadata)
-	}
+func (c *TaskCache) ensureMetadata(task rpc.Task) string {
 	meta := c.metadata[task.GID]
+	metadataWasValid := metadataHasValidPath(meta)
+	groupKey := ""
 	if task.DownloadGroup != nil {
 		if meta == nil {
 			meta = &TaskMetadata{GID: task.GID, FetchedAt: time.Now()}
 			c.metadata[task.GID] = meta
 		}
 		meta.DownloadGroup = copyDownloadGroup(task.DownloadGroup)
+		groupKey = strings.TrimSpace(task.DownloadGroup.ID)
 		if meta.FetchedAt.IsZero() {
 			meta.FetchedAt = time.Now()
 		}
+	} else if meta != nil && meta.DownloadGroup != nil {
+		groupKey = strings.TrimSpace(meta.DownloadGroup.ID)
 	}
-	if metadataHasValidPath(meta) {
-		return
+	if metadataWasValid {
+		return ""
 	}
 
 	// 关键检查：如果 Files 为空或只有空路径，说明是 Lite 任务或元数据不完整
 	// 此时不应缓存，避免污染 metadata cache
 	if len(task.Files) == 0 {
-		return
+		return ""
 	}
 	validFiles := make([]rpc.File, 0, len(task.Files))
 	for _, f := range task.Files {
@@ -116,14 +156,13 @@ func (c *TaskCache) ensureMetadata(task rpc.Task) {
 		}
 	}
 	if len(validFiles) == 0 {
-		return
+		return ""
 	}
 
 	group := copyDownloadGroup(task.DownloadGroup)
 	if group == nil && meta != nil {
 		group = copyDownloadGroup(meta.DownloadGroup)
 	}
-
 	meta = &TaskMetadata{
 		GID:           task.GID,
 		Dir:           task.Dir,
@@ -141,34 +180,38 @@ func (c *TaskCache) ensureMetadata(task rpc.Task) {
 	}
 
 	c.metadata[task.GID] = meta
+	if groupKey == "" && meta.DownloadGroup != nil {
+		groupKey = strings.TrimSpace(meta.DownloadGroup.ID)
+	}
+	return groupKey
 }
 
 // GetActive 获取活跃任务（从缓存）
 func (c *TaskCache) GetActive() []rpc.Task {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.active
+	return copyTaskSlice(c.active)
 }
 
 // GetWaiting 获取等待任务（从缓存）
 func (c *TaskCache) GetWaiting() []rpc.Task {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.waiting
+	return copyTaskSlice(c.waiting)
 }
 
 // GetStopped 获取已停止任务（从缓存）
 func (c *TaskCache) GetStopped() []rpc.Task {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.stopped
+	return copyTaskSlice(c.stopped)
 }
 
 // GetMetadata 获取任务元数据（用于 UI 展示）
 func (c *TaskCache) GetMetadata(gid string) *TaskMetadata {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.metadata[gid]
+	return copyTaskMetadata(c.metadata[gid])
 }
 
 // EnrichTasks 批量丰富任务信息（使用缓存的元数据）
@@ -216,9 +259,6 @@ func (c *TaskCache) SetTaskGroup(gid string, group rpc.DownloadGroup) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.metadata == nil {
-		c.metadata = make(map[string]*TaskMetadata)
-	}
 	meta := c.metadata[gid]
 	if meta == nil {
 		meta = &TaskMetadata{GID: gid, FetchedAt: time.Now()}
@@ -240,6 +280,62 @@ func (c *TaskCache) GetTaskGroup(gid string) *rpc.DownloadGroup {
 		return nil
 	}
 	return copyDownloadGroup(meta.DownloadGroup)
+}
+
+func (c *TaskCache) UpdateTaskGroupName(groupKey, name, status string) int {
+	groupKey = strings.TrimSpace(groupKey)
+	name = strings.TrimSpace(name)
+	status = strings.TrimSpace(status)
+	if groupKey == "" || name == "" || !rpc.IsDownloadGroupNameStatus(status) {
+		return 0
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	changed := 0
+	updateGroup := func(group *rpc.DownloadGroup) (*rpc.DownloadGroup, bool) {
+		if group == nil || group.ID != groupKey {
+			return group, false
+		}
+		if group.Name == name && group.NameStatus == status {
+			return group, false
+		}
+		updated := *group
+		updated.Name = name
+		updated.NameStatus = status
+		return &updated, true
+	}
+
+	for _, meta := range c.metadata {
+		if meta == nil {
+			continue
+		}
+		if updated, ok := updateGroup(meta.DownloadGroup); ok {
+			meta.DownloadGroup = updated
+			changed++
+		}
+	}
+	for i := range c.active {
+		if updated, ok := updateGroup(c.active[i].DownloadGroup); ok {
+			c.active[i].DownloadGroup = updated
+			changed++
+		}
+	}
+	for i := range c.waiting {
+		if updated, ok := updateGroup(c.waiting[i].DownloadGroup); ok {
+			c.waiting[i].DownloadGroup = updated
+			changed++
+		}
+	}
+	for i := range c.stopped {
+		if updated, ok := updateGroup(c.stopped[i].DownloadGroup); ok {
+			c.stopped[i].DownloadGroup = updated
+			changed++
+		}
+	}
+
+	return changed
 }
 
 // HasValidMetadata 检查任务是否有有效的元数据（包含文件信息）
@@ -282,11 +378,17 @@ func (c *TaskCache) PrefetchMetadataMulti(gids []string) {
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	queuedGroupKeys := make([]string, 0, len(tasks))
 	for _, task := range tasks {
 		if task != nil {
-			c.ensureMetadata(*task)
+			if groupKey := c.ensureMetadata(*task); groupKey != "" {
+				queuedGroupKeys = append(queuedGroupKeys, groupKey)
+			}
 		}
+	}
+	c.mu.Unlock()
+	for _, groupKey := range queuedGroupKeys {
+		queueDownloadGroupNameRefresh(groupKey)
 	}
 }
 
@@ -300,8 +402,11 @@ func (c *TaskCache) PrefetchMetadata(gid string) {
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.ensureMetadata(*task)
+	groupKey := c.ensureMetadata(*task)
+	c.mu.Unlock()
+	if groupKey != "" {
+		queueDownloadGroupNameRefresh(groupKey)
+	}
 }
 
 // CleanupMetadata 清理已移除任务的元数据
@@ -312,7 +417,6 @@ func (c *TaskCache) CleanupMetadata(activeGids map[string]bool) {
 	for gid := range c.metadata {
 		if !activeGids[gid] {
 			delete(c.metadata, gid)
-			RemoveTaskGroup(gid)
 		}
 	}
 }
