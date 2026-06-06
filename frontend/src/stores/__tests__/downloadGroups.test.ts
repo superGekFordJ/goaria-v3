@@ -61,6 +61,8 @@ const taskStoreMock = vi.hoisted(() => ({
   },
   fetchTasks: vi.fn().mockResolvedValue(undefined),
   clearSelection: vi.fn(),
+  clearSelectedGroup: vi.fn(),
+  selectedGids: new Set<string>(),
   getSelectedGids: ['gid-selected-one', 'gid-selected-two'],
 }))
 
@@ -193,6 +195,8 @@ describe('download group store', () => {
     vi.clearAllMocks()
     taskStoreMock.fetchTasks.mockResolvedValue(undefined)
     taskStoreMock.clearSelection.mockClear()
+    taskStoreMock.clearSelectedGroup.mockClear()
+    taskStoreMock.selectedGids = new Set(['gid-selected-one', 'gid-selected-two'])
     taskStoreMock.getSelectedGids = ['gid-selected-one', 'gid-selected-two']
     taskStoreMock.__state = reactive({ activeTasks: [], waitingTasks: [], stoppedTasks: [] })
   })
@@ -832,6 +836,28 @@ describe('download group store', () => {
     expect(store.currentDetailKey).toBeNull()
     expect(store.currentDetail).toBeNull()
     expect(store.operationNotice?.action).toBe('remove')
+  })
+
+  it('removeGroup clears group key and group member tasks from selection in taskStore', async () => {
+    const store = useDownloadGroupStore()
+    bindingMocks.RemoveDownloadGroup.mockResolvedValueOnce(
+      operationResult({
+        group_key: 'dg-remove',
+        action: 'remove',
+        refresh: { tasks: true, groups: true, detail: true },
+      }),
+    )
+    bindingMocks.GetDownloadGroups.mockResolvedValueOnce(envelope([]))
+
+    const memberTask = groupedTask('gid-selected-one', 'dg-remove')
+    taskStoreMock.activeTasks = [memberTask]
+    taskStoreMock.selectedGids = new Set(['gid-selected-one', 'gid-selected-two'])
+
+    await store.removeGroup('dg-remove', true)
+
+    expect(taskStoreMock.clearSelectedGroup).toHaveBeenCalledWith('dg-remove')
+    expect(taskStoreMock.selectedGids.has('gid-selected-one')).toBe(false)
+    expect(taskStoreMock.selectedGids.has('gid-selected-two')).toBe(true)
   })
 
   it('openGroupFolder handles redacted failure results without task-level IPC', async () => {

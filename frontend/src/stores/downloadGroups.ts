@@ -1178,6 +1178,27 @@ export const useDownloadGroupStore = defineStore('downloadGroups', () => {
       recordOperationNotice(action, normalizedKey, result)
       if (action === 'remove') {
         clearCurrentDetailForGroup(normalizedKey)
+        const taskStore = useTaskStore()
+        taskStore.clearSelectedGroup(normalizedKey)
+
+        const gidsToRemove = [
+          ...taskStore.activeTasks,
+          ...taskStore.waitingTasks,
+          ...taskStore.stoppedTasks,
+        ]
+          .filter(t => getTaskDownloadGroupId(t) === normalizedKey)
+          .map(t => t.gid)
+
+        let changed = false
+        for (const gid of gidsToRemove) {
+          if (taskStore.selectedGids.has(gid)) {
+            taskStore.selectedGids.delete(gid)
+            changed = true
+          }
+        }
+        if (changed) {
+          taskStore.selectedGids = new Set(taskStore.selectedGids)
+        }
       }
       await applyOperationRefreshHints(normalizedKey, result)
       return result
