@@ -10,6 +10,8 @@ import (
 
 func TestAnalyzeValidJSONLReturnsCountOnlySummary(t *testing.T) {
 	input := strings.NewReader(strings.Join([]string{
+		`{"category":"script_running"}`,
+		`{"category":"origin_check_passed"}`,
 		`{"category":"session_opened"}`,
 		`{"category":"preflight_accepted"}`,
 		`{"category":"post_accepted"}`,
@@ -31,10 +33,25 @@ func TestAnalyzeValidJSONLReturnsCountOnlySummary(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &summary); err != nil {
 		t.Fatalf("summary is not JSON: %v", err)
 	}
-	if summary.SchemaVersion != probeSummarySchemaVersion || summary.EventsTotal != 6 || summary.Categories["post_accepted"] != 2 || summary.Categories["terminal_success"] != 1 {
+	if summary.SchemaVersion != probeSummarySchemaVersion || summary.EventsTotal != 8 || summary.Categories["post_accepted"] != 2 || summary.Categories["terminal_success"] != 1 || summary.Categories["script_running"] != 1 || summary.Categories["origin_check_passed"] != 1 {
 		t.Fatalf("summary = %#v", summary)
 	}
 	assertNoProbeRawText(t, output.String(), "fixture.invalid", "apr-alpha001", "xpk-alpha001", "authorization", "cookie", "raw-token", "secret")
+}
+
+func TestAnalyzeAcceptsNarrowBootstrapCategories(t *testing.T) {
+	input := strings.NewReader(strings.Join([]string{
+		`{"category":"script_running"}`,
+		`{"category":"origin_check_passed"}`,
+	}, "\n"))
+
+	summary, err := analyze(input)
+	if err != nil {
+		t.Fatalf("analyze() error = %v", err)
+	}
+	if summary.EventsTotal != 2 || summary.Categories["script_running"] != 1 || summary.Categories["origin_check_passed"] != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
 }
 
 func TestAnalyzeAcceptsAllAllowedCategories(t *testing.T) {

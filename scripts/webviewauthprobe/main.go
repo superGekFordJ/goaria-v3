@@ -16,6 +16,8 @@ import (
 const probeSummarySchemaVersion = 1
 
 var probeCategories = map[string]struct{}{
+	"script_running":               {},
+	"origin_check_passed":          {},
 	"session_opened":               {},
 	"session_unavailable":          {},
 	"session_busy":                 {},

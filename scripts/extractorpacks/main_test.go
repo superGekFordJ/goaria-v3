@@ -1431,6 +1431,73 @@ func TestWorkflowSurfacesUseGenericVariantsAndEvidenceArtifacts(t *testing.T) {
 	}
 }
 
+func TestWorkflowSurfacesHardenLinuxSmokeAndAppImageRuntime(t *testing.T) {
+	workflow := readTextFile(t, filepath.Join("..", "..", ".github", "workflows", "build.yml"))
+	linuxTaskfile := readTextFile(t, filepath.Join("..", "..", "build", "linux", "Taskfile.yml"))
+	appimageBuild := readTextFile(t, filepath.Join("..", "..", "build", "linux", "appimage", "build.sh"))
+
+	linuxWorkflowSection := mustContainSection(t, workflow, "linux-package:", "  darwin-package:")
+	if strings.Contains(linuxWorkflowSection, "sleep 3") {
+		t.Fatalf("linux workflow must not use fixed sleep smoke gate: %s", linuxWorkflowSection)
+	}
+	for _, want := range []string{
+		"Prepare local AppImage runtime file",
+		"APPIMAGE_RUNTIME_FILE=",
+		"wails3 task linux:prepare:appimage:runtime",
+		"wails3 task linux:package",
+		"wails3 task linux:smoke",
+	} {
+		if !strings.Contains(linuxWorkflowSection, want) {
+			t.Fatalf("linux workflow missing %q", want)
+		}
+	}
+
+	for _, want := range []string{
+		"prepare:appimage:runtime:",
+		"smoke:",
+		"APPIMAGE_RUNTIME_FILE",
+		"runtime-{{.APPIMAGE_RUNTIME_ARCH}}",
+		"type2-runtime/releases/download/continuous/runtime-{{.APPIMAGE_RUNTIME_ARCH}}",
+		"curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors",
+		"aria2_path=\"$HOME/.goaria/aria2c\"",
+		"sleep \"$smoke_poll_interval_seconds\"",
+		"bundled Linux runtime smoke test timed out waiting for $aria2_path",
+		"bundled Linux runtime smoke test failed before aria2 extraction completed",
+		"bash ./build.sh",
+	} {
+		if !strings.Contains(linuxTaskfile, want) {
+			t.Fatalf("linux Taskfile missing %q", want)
+		}
+	}
+	if strings.Contains(linuxTaskfile, "wails3 generate appimage") {
+		t.Fatalf("linux Taskfile should route AppImage packaging through the checked-in helper")
+	}
+
+	for _, want := range []string{
+		"APPIMAGE_RUNTIME_FILE is required",
+		"local AppImage runtime file is missing",
+		"LDAI_RUNTIME_FILE=\"${APPIMAGE_RUNTIME_FILE}\"",
+		"${APP_DIR}/${APP_NAME}.png",
+		"${APP_DIR}/.DirIcon",
+		"--output appimage",
+	} {
+		if !strings.Contains(appimageBuild, want) {
+			t.Fatalf("AppImage helper missing %q", want)
+		}
+	}
+	if strings.Contains(appimageBuild, "runtime-x86_64") || strings.Contains(appimageBuild, "runtime-aarch64") {
+		t.Fatalf("AppImage helper must not fetch runtime implicitly: %s", appimageBuild)
+	}
+
+	for _, surface := range []string{linuxWorkflowSection, linuxTaskfile, appimageBuild} {
+		for _, forbidden := range []string{"protected-root-marker", "endpoint-template-marker", "raw-secret-marker", "supported_site"} {
+			if strings.Contains(surface, forbidden) {
+				t.Fatalf("linux hardening surface contains forbidden marker %q", forbidden)
+			}
+		}
+	}
+}
+
 func TestWorkflowPrivateGeneratedPathsAreIgnored(t *testing.T) {
 	gitignore := readTextFile(t, filepath.Join("..", "..", ".gitignore"))
 	for _, ignored := range []string{defaultWorkflowPolicyEmbedPath, defaultWorkflowAuthRuntimeEmbedPath, defaultWorkflowEvidenceSummary} {
@@ -2019,6 +2086,24 @@ func readTextFile(t *testing.T, path string) string {
 	}
 
 	return string(data)
+}
+
+func mustContainSection(t *testing.T, text string, start string, end string) string {
+	t.Helper()
+	startIndex := strings.Index(text, start)
+	if startIndex < 0 {
+		t.Fatalf("section start %q not found", start)
+	}
+	endIndex := len(text)
+	if end != "" {
+		relativeEndIndex := strings.Index(text[startIndex:], end)
+		if relativeEndIndex < 0 {
+			t.Fatalf("section end %q not found", end)
+		}
+		endIndex = startIndex + relativeEndIndex
+	}
+
+	return text[startIndex:endIndex]
 }
 
 func rewriteHostClient(t *testing.T, server *httptest.Server, host string) *http.Client {
