@@ -199,8 +199,8 @@ tasks:
 
         trap 'cleanup' EXIT
 
-        xvfb-run -a ./bin/{{.APP_NAME}} --hidden >"$log_path" 2>&1 &
-        pid=$!
+        bash -c 'xvfb-run -a ./bin/{{.APP_NAME}} --hidden >"'"$log_path"'" 2>&1 & echo $! > "'"$HOME"'/xvfb.pid"'
+        pid=$(cat "$HOME/xvfb.pid")
         deadline=$(( $(date +%s) + smoke_timeout_seconds ))
 
         while true; do
