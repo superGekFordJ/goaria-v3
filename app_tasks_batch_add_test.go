@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/history"
@@ -112,6 +113,8 @@ func setupAppTaskBatchAddTest(t *testing.T, snapshots batchAddRPCSnapshots) (*Ap
 
 	originalConfig := config.Current
 	originalSaveEnabled := history.SaveEnabled
+	monitor.ResetDownloadGroupNamerForTest()
+	restoreNamer := monitor.ConfigureDownloadGroupNamerForTest(10*time.Second, 10*time.Second, 1)
 
 	monitor.ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
 	history.DisableSaveForTest()
@@ -168,6 +171,8 @@ func setupAppTaskBatchAddTest(t *testing.T, snapshots batchAddRPCSnapshots) (*Ap
 	rpc.Init(port, "secret")
 
 	t.Cleanup(func() {
+		monitor.ResetDownloadGroupNamerForTest()
+		restoreNamer()
 		server.Close()
 		history.Clear()
 		monitor.ResetTaskGroupStoreForTest("", true)
@@ -450,6 +455,27 @@ func TestBatchAddUri_AllGroupedAddsFailCleansEmptyGroupFolderAndStore(t *testing
 		if got := monitor.GetStoredTaskGroup(fmt.Sprintf("gid-%d", i)); got != nil {
 			t.Fatalf("expected no persisted group for failed gid-%d, got %#v", i, got)
 		}
+	}
+}
+
+func TestBatchAddUri_GroupNameEnqueueDoesNotBlockAddPath(t *testing.T) {
+	app, _ := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	urls := []string{
+		"https://example.com/nonblock-one.bin",
+		"https://example.com/nonblock-two.bin",
+		"https://example.com/nonblock-three.bin",
+		"https://example.com/nonblock-four.bin",
+		"https://example.com/nonblock-five.bin",
+	}
+
+	result := app.BatchAddUri(urls)
+
+	assertBatchAddStrings(t, "succeeded", result.Succeeded, urls)
+	if len(result.Groups) != 1 {
+		t.Fatalf("expected one group, got %#v", result.Groups)
+	}
+	if got := monitor.PendingDownloadGroupNameJobCountForTest(); got != 1 {
+		t.Fatalf("expected grouped add to enqueue one coalesced naming job without blocking, got %d", got)
 	}
 }
 

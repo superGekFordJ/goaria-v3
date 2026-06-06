@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"os"
 	"os/exec"
@@ -17,6 +18,19 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
+type openFolderLaunchTarget struct {
+	OpenDir    string
+	SelectFile string
+}
+
+type openFolderCommandSpec struct {
+	Name string
+	Args []string
+	Wait bool
+}
+
+var openFolderLauncher = launchOpenFolderTarget
+
 // --- System Operations ---
 
 // OpenFolder opens the folder containing the downloaded file
@@ -31,6 +45,17 @@ func (a *App) OpenFolder(task rpc.Task) {
 	target := task.Dir
 	if len(task.Files) > 0 && task.Files[0].Path != "" {
 		target = task.Files[0].Path
+	}
+	if launchTarget, ok := resolveOpenFolderLaunchTarget(target, config.Current.DownloadDir, true); ok {
+		_ = openFolderLauncher(launchTarget)
+	}
+}
+
+func resolveOpenFolderLaunchTarget(target string, downloadDir string, allowFallback bool) (openFolderLaunchTarget, bool) {
+	target = strings.TrimSpace(target)
+	downloadDir = strings.TrimSpace(downloadDir)
+	if target == "" && downloadDir == "" && !allowFallback {
+		return openFolderLaunchTarget{}, false
 	}
 
 	resolveExistingDir := func(dir string) string {
@@ -58,7 +83,7 @@ func (a *App) OpenFolder(task rpc.Task) {
 		cleanTarget = filepath.Clean(filepath.FromSlash(trimmed))
 	}
 
-	baseDir := strings.TrimSpace(config.Current.DownloadDir)
+	baseDir := strings.TrimSpace(downloadDir)
 	if baseDir != "" {
 		baseDir = filepath.Clean(filepath.FromSlash(baseDir))
 	}
@@ -122,32 +147,57 @@ func (a *App) OpenFolder(task rpc.Task) {
 			openDir = resolveExistingDir(home)
 		}
 	}
-
-	if runtime.GOOS == "windows" {
-		if selectFile != "" {
-			_ = exec.Command("explorer.exe", "/select,", selectFile).Run()
-			return
-		}
-		if openDir != "" {
-			_ = exec.Command("explorer.exe", openDir).Run()
-		}
-		return
+	if openDir == "" {
+		return openFolderLaunchTarget{}, false
 	}
 
-	if runtime.GOOS == "darwin" {
-		if selectFile != "" {
-			_ = exec.Command("open", "-R", selectFile).Run()
-			return
+	return openFolderLaunchTarget{OpenDir: openDir, SelectFile: selectFile}, true
+}
+
+func launchOpenFolderTarget(target openFolderLaunchTarget) error {
+	if target.OpenDir == "" && target.SelectFile == "" {
+		return errors.New("folder unavailable")
+	}
+	spec, ok := openFolderCommandSpecForGOOS(runtime.GOOS, target)
+	if !ok {
+		return errors.New("folder unavailable")
+	}
+	cmd := exec.Command(spec.Name, spec.Args...)
+	if spec.Wait {
+		return cmd.Run()
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	_ = cmd.Process.Release()
+	return nil
+}
+
+func openFolderCommandSpecForGOOS(goos string, target openFolderLaunchTarget) (openFolderCommandSpec, bool) {
+	if goos == "windows" {
+		if target.SelectFile != "" {
+			return openFolderCommandSpec{Name: "explorer.exe", Args: []string{"/select,", target.SelectFile}, Wait: false}, true
 		}
-		if openDir != "" {
-			_ = exec.Command("open", openDir).Run()
+		if target.OpenDir != "" {
+			return openFolderCommandSpec{Name: "explorer.exe", Args: []string{target.OpenDir}, Wait: false}, true
 		}
-		return
+		return openFolderCommandSpec{}, false
 	}
 
-	if openDir != "" {
-		_ = exec.Command("xdg-open", openDir).Run()
+	if goos == "darwin" {
+		if target.SelectFile != "" {
+			return openFolderCommandSpec{Name: "open", Args: []string{"-R", target.SelectFile}, Wait: true}, true
+		}
+		if target.OpenDir != "" {
+			return openFolderCommandSpec{Name: "open", Args: []string{target.OpenDir}, Wait: true}, true
+		}
+		return openFolderCommandSpec{}, false
 	}
+
+	if target.OpenDir != "" {
+		return openFolderCommandSpec{Name: "xdg-open", Args: []string{target.OpenDir}, Wait: true}, true
+	}
+	return openFolderCommandSpec{}, false
 }
 
 // --- Configuration ---
