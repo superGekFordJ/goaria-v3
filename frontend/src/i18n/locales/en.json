@@ -126,14 +126,16 @@
     "resume": "Resume",
     "openFolder": "Open Folder",
     "delete": "Delete Task",
-    "groupHintLabel": "Grouped",
-    "groupFolder": "Folder: {folder}",
-    "groupItems": "{count} items",
     "progress": "Progress",
     "done": "Done",
     "remaining": "Remaining",
     "speed": "Speed",
-    "downloadComplete": "Download Complete"
+    "downloadComplete": "Download Complete",
+    "groupStack": "Stack",
+    "groupFolder": "Folder {folder}",
+    "groupItemCount": "{count} items",
+    "groupOrdinal": "{index}/{count}",
+    "groupHintLabel": "Download stack, {count} items"
   },
   "taskHeader": {
     "clipboardFilled": "Link filled from clipboard",
@@ -156,11 +158,166 @@
     "batchSucceeded": "{count} tasks added",
     "batchDuplicates": "{count} duplicates skipped",
     "batchErrors": "{count} failed",
-    "batchGroupCreated": "Group created",
-    "batchGroupsCreated": "{count} groups created",
-    "batchGroupFolder": "Folder: {folder}",
-    "batchGroupItems": "{count} items",
-    "batchTruncated": "Truncated to 100 items"
+    "batchTruncated": "Truncated to 100 items",
+    "autoFolderHint": "Auto folder stack ready",
+    "autoFolderHintWithCount": "{count} links can be auto organized into a stack folder",
+    "batchGroupCreated": "Stack folder created for {count} items",
+    "batchGroupFolder": "Folder {folder}"
+  },
+  "downloadGroups": {
+    "title": "Download group detail",
+    "description": "Group cards are shown inline in Downloads and Completed.",
+    "detailDescription": "Backend-owned group detail and actions",
+    "refresh": "Refresh",
+    "refreshing": "Refreshing...",
+    "backToDownloads": "Back to Downloads",
+    "backToCompleted": "Back to Completed",
+    "backToList": "Back to list",
+    "emptyTitle": "No files in this group",
+    "emptyDescription": "Group cards appear inline in the task lists when backend data is ready.",
+    "loading": "Loading groups...",
+    "errorRefresh": "Group data could not be refreshed. Existing data is kept.",
+    "detailLoading": "Loading group detail...",
+    "detailNotFoundTitle": "Group not found",
+    "detailNotFoundDescription": "This group is stale or unavailable. Go back to the current list and refresh if needed.",
+    "detailErrorTitle": "Unable to load group",
+    "detailErrorDescription": "The previous group detail is kept when possible. Try refreshing again.",
+    "placeholderTitle": "Pending group",
+    "placeholderDescription": "A temporary card from the recent batch add. Backend data will replace it when ready.",
+    "pendingCard": "Pending",
+    "degraded": "Needs refresh",
+    "readOnlyActions": "Group actions are read-only in this version",
+    "actionsComingSoon": "Actions coming soon",
+    "memberCount": "Members",
+    "activeCount": "Active",
+    "waitingCount": "Waiting",
+    "completeCount": "Complete",
+    "errorCount": "Errors",
+    "progress": "Progress",
+    "percent": "{value}%",
+    "byteSize": "{value} {unit}",
+    "byteSpeed": "{size}/s",
+    "totalSize": "Total size",
+    "downloadSpeed": "Speed",
+    "folderLabel": "Folder {folder}",
+    "status": {
+      "active": "Active",
+      "paused": "Paused",
+      "waiting": "Waiting",
+      "error": "Error",
+      "complete": "Complete",
+      "unknown": "Unknown"
+    },
+    "nameStatus": {
+      "stable": "Stable name",
+      "pending": "Name pending",
+      "fallback": "Fallback name",
+      "degraded": "Name degraded"
+    },
+    "action": {
+      "pause": "Pause group",
+      "resume": "Resume group",
+      "openFolder": "Open group folder",
+      "remove": "Remove group",
+      "groupActions": "Group actions",
+      "busy": "Working...",
+      "placeholderDisabled": "Pending backend data"
+    },
+    "warning": {
+      "badge": "Warnings {count}",
+      "tooltip": "{label}: {description} ({count})",
+      "code": {
+        "mixed_status": {
+          "label": "Mixed state",
+          "description": "Members are currently in different states."
+        },
+        "partial_error": {
+          "label": "Partial error",
+          "description": "Some members have failed while others are available."
+        },
+        "missing_members": {
+          "label": "Missing members",
+          "description": "The backend expected more members than it can currently resolve."
+        },
+        "missing_metadata": {
+          "label": "Missing metadata",
+          "description": "Some members are missing file or path metadata."
+        },
+        "history_only": {
+          "label": "History only",
+          "description": "This group is represented only by history data."
+        },
+        "stale_group": {
+          "label": "Stale group",
+          "description": "Stored group metadata no longer resolves cleanly."
+        },
+        "name_pending": {
+          "label": "Name pending",
+          "description": "The backend is still preparing the display name."
+        },
+        "name_degraded": {
+          "label": "Name degraded",
+          "description": "The backend fell back to a safe generic name."
+        },
+        "group_not_found": {
+          "label": "Group not found",
+          "description": "The selected group key no longer resolves."
+        }
+      }
+    },
+    "operation": {
+      "noticeTitle": "Group operation",
+      "dismiss": "Dismiss notice",
+      "success": "Completed",
+      "info": "No action needed",
+      "warning": "Completed with warnings",
+      "error": "Failed",
+      "partialFailure": "Completed with warnings",
+      "failed": "Failed",
+      "noop": "No action needed",
+      "counts": "Result counts",
+      "succeeded": "Succeeded",
+      "skipped": "Skipped",
+      "failedCount": "Failed",
+      "code": {
+        "group_not_found": "Group not found",
+        "empty_group": "Empty group",
+        "no_actionable_members": "No actionable members",
+        "stale_member": "Stale member",
+        "missing_member": "Missing member",
+        "partial_failure": "Partial failure",
+        "rpc_error": "RPC error",
+        "paused": "Paused",
+        "already_paused": "Already paused",
+        "terminal_state": "Terminal state",
+        "history_only": "History only",
+        "resumed": "Resumed",
+        "already_active": "Already active",
+        "not_paused": "Not paused",
+        "removed": "Removed",
+        "removed_stale_metadata": "Stale metadata removed",
+        "remove_accepted": "Remove accepted",
+        "opened": "Opened",
+        "folder_unavailable": "Folder unavailable",
+        "folder_unsafe": "Folder unavailable",
+        "open_failed": "Open failed",
+        "mixed_status": "Mixed state",
+        "partial_error": "Partial error",
+        "missing_members": "Missing members",
+        "missing_metadata": "Missing metadata",
+        "stale_group": "Stale group",
+        "name_pending": "Name pending",
+        "name_degraded": "Name degraded"
+      }
+    },
+    "removeDialog": {
+      "title": "Remove group?",
+      "description": "Remove {name} from the download list.",
+      "deleteFiles": "Also delete local files",
+      "cancel": "Cancel",
+      "confirm": "Remove",
+      "removing": "Removing..."
+    }
   },
   "taskSearch": {
     "placeholder": "Search completed tasks...",
