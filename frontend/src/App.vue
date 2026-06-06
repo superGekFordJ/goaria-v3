@@ -1,12 +1,14 @@
 <script setup lang="ts">
-  import { onMounted, onUnmounted, ref, watch, defineAsyncComponent } from 'vue'
+  import { computed, onMounted, onUnmounted, ref, watch, defineAsyncComponent } from 'vue'
   import Sidebar from './components/layout/Sidebar.vue'
   import TitleBar from './components/layout/TitleBar.vue'
   import TaskList from './components/tasks/TaskList.vue'
+  import DownloadGroupShell from './components/groups/DownloadGroupShell.vue'
   import SettingsPanel from './components/settings/SettingsPanel.vue'
   import { useUIStore } from './stores/ui'
   import { useConfigStore } from './stores/config'
   import { useTaskStore } from './stores/task'
+  import { useDownloadGroupStore } from './stores/downloadGroups'
   import { subscribeToWindowEvents, unsubscribeFromWindowEvents } from './stores/events'
   import { Events } from '@wailsio/runtime'
   import { useSmartInput } from './composables/useSmartInput'
@@ -24,12 +26,25 @@
   const uiStore = useUIStore()
   const configStore = useConfigStore()
   const taskStore = useTaskStore()
+  const downloadGroupStore = useDownloadGroupStore()
   const { t } = useI18n()
   const isReady = ref(false)
   const showTestSimulator = ref(window.location.hash.includes('test-simulator'))
   const unsubs: Array<() => void> = []
 
   const { isDragging, initSmartInput, cleanupSmartInput } = useSmartInput()
+
+  const isDownloadGroupDetailVisible = computed(
+    () =>
+      Boolean(uiStore.selectedDownloadGroupKey) &&
+      (uiStore.activeTab === 'downloads' || uiStore.activeTab === 'stopped'),
+  )
+
+  const activeContent = computed(() => {
+    if (uiStore.activeTab === 'settings') return SettingsPanel
+    if (isDownloadGroupDetailVisible.value) return DownloadGroupShell
+    return TaskList
+  })
 
   const getWindowTransparency = (): string => {
     const s = configStore.settings as unknown as { window_transparency?: string }
@@ -78,9 +93,10 @@
     unsubs.push(Events.On('common:WindowRestore', () => taskStore.setWindowVisibility(true)))
 
     // Listen for window creation events (for recovery from headless mode)
-    subscribeToWindowEvents(() => {
+    subscribeToWindowEvents(async () => {
       // Window just created, sync state from backend snapshot
-      taskStore.syncFromSnapshot()
+      await taskStore.syncFromSnapshot()
+      await downloadGroupStore.syncAfterSnapshot(uiStore.selectedDownloadGroupKey)
     })
 
     // Init Smart Input (Clipboard & Drag-Drop logic)
@@ -95,6 +111,9 @@
 
     // Start global polling for task status (required for Sidebar and Tray syncing)
     taskStore.startPolling(1000)
+    downloadGroupStore.startAutoSync()
+
+    void downloadGroupStore.fetchGroups()
   })
 
   onUnmounted(() => {
@@ -110,6 +129,7 @@
       stopWindowTransparencyWatch = null
     }
 
+    downloadGroupStore.stopAutoSync()
     taskStore.stopPolling(true)
   })
 
@@ -164,7 +184,7 @@
           <!-- Content Area with KeepAlive to prevent remount on tab switch -->
           <KeepAlive>
             <component
-              :is="uiStore.activeTab === 'settings' ? SettingsPanel : TaskList"
+              :is="activeContent"
               :tab="uiStore.activeTab"
             />
           </KeepAlive>

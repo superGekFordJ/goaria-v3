@@ -3,13 +3,15 @@
   import { useI18n } from 'vue-i18n'
   import { useTaskStore } from '../../stores/task'
   import { useUIStore } from '../../stores/ui'
+  import { useDownloadGroupStore } from '../../stores/downloadGroups'
   import { isValidUrl, isDuplicateUri } from '../../utils/url'
-  import { buildBatchGroupSummaries, type BatchGroupSummary } from '../../stores/task/grouping'
+  import { buildBatchGroupResultHints, type TaskGroupHint } from '../../stores/task/grouping'
   import { Link, Plus, Loader2, ChevronUp, Layers3 } from 'lucide-vue-next'
 
   const { t } = useI18n()
   const taskStore = useTaskStore()
   const uiStore = useUIStore()
+  const downloadGroupStore = useDownloadGroupStore()
 
   // Single-line state
   const urlInput = ref('')
@@ -24,13 +26,20 @@
   const textareaValue = ref('')
   const textareaEl = ref<HTMLTextAreaElement | null>(null)
   const submitting = ref(false)
-  const parsedStats = ref({ valid: 0, duplicate: 0, invalid: 0, urls: [] as string[] })
+  const parsedStats = ref({
+    valid: 0,
+    duplicate: 0,
+    invalid: 0,
+    uniqueAddable: 0,
+    urls: [] as string[],
+  })
   const batchResult = ref<{
     succeeded: number
     duplicates: number
     errors: number
-    groups: BatchGroupSummary[]
+    groupHints: TaskGroupHint[]
   } | null>(null)
+  const BATCH_AUTO_FOLDER_THRESHOLD = 5
 
   // Debounced textarea parsing
   let parseTimer: ReturnType<typeof setTimeout> | null = null
@@ -44,6 +53,7 @@
     let duplicate = 0
     let invalid = 0
     const validUrls: string[] = []
+    const uniqueAddableUrls = new Set<string>()
 
     for (const line of lines) {
       if (isValidUrl(line)) {
@@ -51,6 +61,7 @@
           duplicate++
         } else {
           valid++
+          uniqueAddableUrls.add(line)
         }
         // Push ALL valid URLs to array! Backend BatchAddUri is the authority for deduplication.
         validUrls.push(line)
@@ -59,7 +70,13 @@
       }
     }
 
-    parsedStats.value = { valid, duplicate, invalid, urls: validUrls }
+    parsedStats.value = {
+      valid,
+      duplicate,
+      invalid,
+      uniqueAddable: uniqueAddableUrls.size,
+      urls: validUrls,
+    }
   }
 
   watch(textareaValue, val => {
@@ -83,7 +100,16 @@
     return t('taskHeader.startDownload')
   })
 
-  const batchGroups = computed(() => batchResult.value?.groups ?? [])
+  const preSubmitGroupHint = computed(() => {
+    if (!isMultiline.value || parsedStats.value.uniqueAddable < BATCH_AUTO_FOLDER_THRESHOLD)
+      return null
+    return {
+      count: parsedStats.value.uniqueAddable,
+      label: t('taskHeader.autoFolderHintWithCount', { count: parsedStats.value.uniqueAddable }),
+    }
+  })
+
+  const primaryBatchGroupHint = computed(() => batchResult.value?.groupHints[0] ?? null)
 
   // Watch pendingPasteUri (single URL — existing behavior)
   watch(
@@ -133,6 +159,7 @@
       const res = await taskStore.addUri(url)
       if (res === 'success') {
         urlInput.value = ''
+        void downloadGroupStore.fetchGroups()
       } else if (res === 'duplicate') {
         errorMessage.value = t('taskHeader.duplicateTask')
         setTimeout(() => {
@@ -165,9 +192,12 @@
       const succeeded = res.succeeded?.length || 0
       const duplicates = res.duplicates?.length || 0
       const errors = Object.keys(res.errors || {}).length
-      const groups = buildBatchGroupSummaries(res.groups)
 
-      batchResult.value = { succeeded, duplicates, errors, groups }
+      const groupHints = buildBatchGroupResultHints(res.groups)
+      downloadGroupStore.addPlaceholdersFromDownloadGroups(res.groups, 'batch-add')
+      void downloadGroupStore.fetchGroups()
+
+      batchResult.value = { succeeded, duplicates, errors, groupHints }
 
       if (errors > 0) {
         // Keep only failed URLs in textarea
@@ -207,7 +237,7 @@
   const collapseToSingleLine = () => {
     isMultiline.value = false
     textareaValue.value = ''
-    parsedStats.value = { valid: 0, duplicate: 0, invalid: 0, urls: [] }
+    parsedStats.value = { valid: 0, duplicate: 0, invalid: 0, uniqueAddable: 0, urls: [] }
   }
 </script>
 
@@ -312,7 +342,7 @@
         <div
           v-if="batchResult"
           key="result"
-          class="flex flex-wrap items-center gap-3 text-[11px] font-medium"
+          class="flex items-center gap-3 text-[11px] font-medium"
         >
           <span class="text-[var(--status-complete)]">
             {{ t('taskHeader.batchSucceeded', { count: batchResult.succeeded }) }}
@@ -324,33 +354,25 @@
             {{ t('taskHeader.batchErrors', { count: batchResult.errors }) }}
           </span>
           <span
-            v-if="batchGroups.length === 1"
-            class="download-group-batch-result"
-            :title="batchGroups[0].folderLabel"
+            v-if="primaryBatchGroupHint"
+            class="task-header-group-hint"
+            :title="
+              primaryBatchGroupHint.folderPath || primaryBatchGroupHint.folderLabel || undefined
+            "
           >
             <Layers3 :size="12" />
             <span>
-              {{ t('taskHeader.batchGroupCreated') }}
-            </span>
-            <span v-if="batchGroups[0].folderLabel" class="download-group-batch-folder">
-              {{ t('taskHeader.batchGroupFolder', { folder: batchGroups[0].folderLabel }) }}
-            </span>
-            <span v-if="batchGroups[0].itemCount" class="font-mono-data">
-              {{ t('taskHeader.batchGroupItems', { count: batchGroups[0].itemCount ?? 0 }) }}
-            </span>
-          </span>
-          <span v-else-if="batchGroups.length > 1" class="download-group-batch-result">
-            <Layers3 :size="12" />
-            <span>
-              {{ t('taskHeader.batchGroupsCreated', { count: batchGroups.length }) }}
-            </span>
-            <span class="download-group-batch-labels">
               {{
-                batchGroups
-                  .map(group => group.folderLabel)
-                  .filter((label): label is string => Boolean(label))
-                  .join(' · ')
+                t('taskHeader.batchGroupCreated', {
+                  count:
+                    primaryBatchGroupHint.totalCount ||
+                    primaryBatchGroupHint.visibleCount ||
+                    batchResult.succeeded,
+                })
               }}
+            </span>
+            <span v-if="primaryBatchGroupHint.folderLabel" class="task-header-group-folder">
+              {{ t('taskHeader.batchGroupFolder', { folder: primaryBatchGroupHint.folderLabel }) }}
             </span>
           </span>
         </div>
@@ -369,6 +391,10 @@
           </span>
           <span v-if="parsedStats.invalid > 0" class="text-[var(--app-text-subtle)]">
             {{ t('taskHeader.invalidLinks', { count: parsedStats.invalid }) }}
+          </span>
+          <span v-if="preSubmitGroupHint" class="task-header-group-hint">
+            <Layers3 :size="12" />
+            <span>{{ preSubmitGroupHint.label }}</span>
           </span>
           <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)] ml-auto">
             <kbd
@@ -453,27 +479,25 @@
     font-family: var(--font-family-mono);
   }
 
-  .download-group-batch-result {
+  .task-header-group-hint {
     display: inline-flex;
     align-items: center;
     gap: 0.375rem;
-    min-width: 0;
-    max-width: min(36rem, 70vw);
+    max-width: min(28rem, 52vw);
     padding: 0.125rem 0.5rem;
+    border: 1px solid color-mix(in srgb, var(--neon-primary) 18%, transparent);
     border-radius: var(--radius-squircle-sm);
-    border: 1px solid color-mix(in srgb, var(--glass-border) 70%, transparent);
-    background: color-mix(in srgb, var(--btn-glass-bg) 84%, transparent);
-    color: var(--app-text-muted);
+    background: color-mix(in srgb, var(--neon-primary) 7%, transparent);
+    color: color-mix(in srgb, var(--neon-primary) 74%, var(--app-text));
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--glass-highlight) 16%, transparent);
   }
 
-  .download-group-batch-folder,
-  .download-group-batch-labels {
+  .task-header-group-folder {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--app-text);
+    color: var(--app-text-muted);
   }
 
   /* Fade transition for error message */

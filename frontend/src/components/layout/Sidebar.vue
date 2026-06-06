@@ -4,6 +4,7 @@
   import { useUIStore } from '../../stores/ui'
   import { useConfigStore } from '../../stores/config'
   import { useTaskStore } from '../../stores/task'
+  import { useDownloadGroupStore } from '../../stores/downloadGroups'
   import { Download, CheckCircle, Settings as SettingsIcon, Activity } from 'lucide-vue-next'
   import ThemeIcon from '../common/ThemeIcon.vue'
 
@@ -11,6 +12,7 @@
   const uiStore = useUIStore()
   const configStore = useConfigStore()
   const taskStore = useTaskStore()
+  const downloadGroupStore = useDownloadGroupStore()
 
   // Navigation items with dynamic counts
   const navItems = computed(() => [
@@ -18,17 +20,21 @@
       id: 'downloads',
       name: t('sidebar.inProgress'),
       icon: Download,
-      count: taskStore.activeTasks.length + taskStore.waitingTasks.length,
+      count: downloadGroupStore.inlineDownloadsCount,
       accent: 'cyan',
     },
     {
       id: 'stopped',
       name: t('sidebar.completed'),
       icon: CheckCircle,
-      count: taskStore.stoppedTasks.length,
+      count: downloadGroupStore.inlineCompletedCount,
       accent: 'green',
     },
   ])
+
+  function handleNavClick(itemId: string) {
+    uiStore.setActiveTab(itemId)
+  }
 
   // Calculate total download speed
   const totalSpeed = computed(() => {
@@ -90,7 +96,7 @@
             ? 'bg-[var(--sidebar-active)] border border-[var(--card-border)]'
             : 'hover:bg-[var(--sidebar-hover)] border border-transparent',
         ]"
-        @click="uiStore.setActiveTab(item.id)"
+        @click="handleNavClick(item.id)"
       >
         <div class="flex items-center gap-3">
           <!-- Icon with conditional neon glow -->

@@ -2,10 +2,12 @@
   import { computed } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { useTaskStore } from '../../stores/task'
+  import { useDownloadGroupStore } from '../../stores/downloadGroups'
   import { Pause, Play, Trash2, X, CheckSquare } from 'lucide-vue-next'
 
   const { t } = useI18n()
   const taskStore = useTaskStore()
+  const downloadGroupStore = useDownloadGroupStore()
 
   const emit = defineEmits<{
     (e: 'confirm-batch-delete'): void
@@ -13,12 +15,26 @@
 
   const selectedCount = computed(() => taskStore.selectedCount)
 
-  const handleBatchPause = () => {
-    taskStore.batchPause(taskStore.getSelectedGids)
+  const handleBatchPause = async () => {
+    const selectedTaskGids = [...taskStore.getSelectedGids]
+    const selectedGroupKeys = [...(taskStore.getSelectedGroupKeys ?? [])]
+    if (selectedTaskGids.length > 0) {
+      await taskStore.batchPause(selectedTaskGids)
+    }
+    for (const groupKey of selectedGroupKeys) {
+      await downloadGroupStore.pauseGroup(groupKey)
+    }
   }
 
-  const handleBatchResume = () => {
-    taskStore.batchResume(taskStore.getSelectedGids)
+  const handleBatchResume = async () => {
+    const selectedTaskGids = [...taskStore.getSelectedGids]
+    const selectedGroupKeys = [...(taskStore.getSelectedGroupKeys ?? [])]
+    if (selectedTaskGids.length > 0) {
+      await taskStore.batchResume(selectedTaskGids)
+    }
+    for (const groupKey of selectedGroupKeys) {
+      await downloadGroupStore.resumeGroup(groupKey)
+    }
   }
 </script>
 
@@ -52,7 +68,11 @@
         </div>
 
         <!-- Clear Selection -->
-        <button class="batch-clear-btn" :title="t('batch.clearSelection')" @click="taskStore.clearSelection">
+        <button
+          class="batch-clear-btn"
+          :title="t('batch.clearSelection')"
+          @click="taskStore.clearSelection"
+        >
           <X :size="16" />
         </button>
       </div>

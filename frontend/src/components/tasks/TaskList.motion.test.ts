@@ -3,8 +3,8 @@ import { mount } from '@vue/test-utils'
 import { defineComponent, h, type PropType } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Task } from '../../../bindings/goaria-v3/internal/rpc/models'
-import type { TaskGroupHint } from '../../stores/task/grouping'
 import TaskList from './TaskList.vue'
+import type { DownloadGroupMasterItem } from '../../stores/downloadGroups'
 
 type TaskStoreMock = {
   activeTasks: Task[]
@@ -12,6 +12,7 @@ type TaskStoreMock = {
   stoppedTasks: Task[]
   selectedCount: number
   getSelectedGids: string[]
+  getSelectedGroupKeys: string[]
   clearSelection: ReturnType<typeof vi.fn>
   selectAll: ReturnType<typeof vi.fn>
   remove: ReturnType<typeof vi.fn>
@@ -30,12 +31,23 @@ const storeMocks = vi.hoisted(() => ({
     stoppedTasks: [],
     selectedCount: 0,
     getSelectedGids: [],
+    getSelectedGroupKeys: [],
     clearSelection: vi.fn(),
     selectAll: vi.fn(),
     remove: vi.fn(),
     batchRemove: vi.fn(),
     fetchStoppedTasks: vi.fn(),
   } as TaskStoreMock,
+  downloadGroupStore: {
+    masterItems: [] as DownloadGroupMasterItem[],
+    operationNotice: null,
+    clearOperationNotice: vi.fn(),
+    isGroupOperationBusy: vi.fn(() => false),
+    pauseGroup: vi.fn(),
+    resumeGroup: vi.fn(),
+    openGroupFolder: vi.fn(),
+    removeGroup: vi.fn(),
+  },
   uiStore: {
     activeTab: 'downloads',
   } as UIStoreMock,
@@ -55,6 +67,14 @@ vi.mock('../../stores/ui', () => ({
   useUIStore: () => storeMocks.uiStore,
 }))
 
+vi.mock('../../stores/downloadGroups', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../stores/downloadGroups')>()
+  return {
+    ...actual,
+    useDownloadGroupStore: () => storeMocks.downloadGroupStore,
+  }
+})
+
 const TaskCardStub = defineComponent({
   name: 'TaskCard',
   props: {
@@ -63,7 +83,7 @@ const TaskCardStub = defineComponent({
       required: true,
     },
     groupHint: {
-      type: Object as PropType<TaskGroupHint | undefined>,
+      type: Object,
       required: false,
       default: undefined,
     },
@@ -152,6 +172,7 @@ function mountTaskList(tasks: Task[]) {
         TaskHeader: TaskHeaderStub,
         TaskSearch: TaskSearchStub,
         BatchActionBar: BatchActionBarStub,
+        DownloadGroupCard: defineComponent({ name: 'DownloadGroupCard', template: '<article />' }),
         RecycleScroller: RecycleScrollerStub,
       },
     },
@@ -166,6 +187,8 @@ describe('TaskList virtualized row motion', () => {
     storeMocks.taskStore.stoppedTasks = []
     storeMocks.taskStore.selectedCount = 0
     storeMocks.taskStore.getSelectedGids = []
+    storeMocks.taskStore.getSelectedGroupKeys = []
+    storeMocks.downloadGroupStore.masterItems = []
     storeMocks.uiStore.activeTab = 'downloads'
   })
 

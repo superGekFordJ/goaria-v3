@@ -1,165 +1,173 @@
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue'
 
 export interface DownloadStats {
-  downloaded: number;
-  speed: number;
-  total: number;
-  status?: string; // Add status to detect pauses immediately
+  downloaded: number
+  speed: number
+  total: number
+  status?: string // Add status to detect pauses immediately
 }
 
 export interface SmoothProgressConfig {
-  emaAlpha: number;
-  smoothingFactor: number;
-  deviationDecay: number;
-  maxScaleDelta: number;
-  prematureCap: number;
+  emaAlpha: number
+  smoothingFactor: number
+  deviationDecay: number
+  maxScaleDelta: number
+  prematureCap: number
 }
 
+// 新后端的事件推送经过了防抖和批处理 (Monitor -> Pusher)，任务卡片和组卡片共享这组更激进的视觉平滑参数。
+export const TASK_PROGRESS_CONFIG = {
+  emaAlpha: 0.1,
+  smoothingFactor: 0.1,
+  deviationDecay: 0.07,
+  maxScaleDelta: 0.009,
+} as const satisfies Partial<SmoothProgressConfig>
+
 const DEFAULT_CONFIG: SmoothProgressConfig = {
-  emaAlpha: 0.1,        // Speed smoothing factor (lower = smoother)
+  emaAlpha: 0.1, // Speed smoothing factor (lower = smoother)
   smoothingFactor: 0.1, // Display value tracking factor (LERP)
   deviationDecay: 0.05, // Deviation compensation decay rate (lower = gentler correction)
   maxScaleDelta: 0.005, // Max scale change per frame (0.5%)
-  prematureCap: 0.999,  // Cap at 99.9% if not truly finished
-};
+  prematureCap: 0.999, // Cap at 99.9% if not truly finished
+}
 
 export function useSmoothProgress(configOverrides: Partial<SmoothProgressConfig> = {}) {
   const config: SmoothProgressConfig = {
     ...DEFAULT_CONFIG,
     ...configOverrides,
-  };
+  }
 
   // ... (state vars remain same) ...
   // Core state
-  const displayDownloaded = ref(0); // Visually displayed progress (bytes)
-  const realDownloaded = ref(0);    // Real progress from backend (bytes)
-  const totalBytes = ref(1);        // Total size (initialized to 1 to prevent division by zero)
+  const displayDownloaded = ref(0) // Visually displayed progress (bytes)
+  const realDownloaded = ref(0) // Real progress from backend (bytes)
+  const totalBytes = ref(1) // Total size (initialized to 1 to prevent division by zero)
 
   // Smoothing state
-  const smoothSpeed = ref(0);       // EMA-smoothed speed
-  let deviation = 0;                // Accumulated prediction deviation
-  let lastUpdateTimestamp = 0;      // Timestamp of last backend update
-  let rafId = 0;                    // Initialize safely
+  const smoothSpeed = ref(0) // EMA-smoothed speed
+  let deviation = 0 // Accumulated prediction deviation
+  let lastUpdateTimestamp = 0 // Timestamp of last backend update
+  let rafId = 0 // Initialize safely
 
   // ... (updateLoop remains same) ...
   // Render loop (60FPS)
   const updateLoop = () => {
-    const now = performance.now();
+    const now = performance.now()
 
     if (smoothSpeed.value > 0) {
       // 1. Calculate Delta Time
-      const elapsedSeconds = (now - lastUpdateTimestamp) / 1000;
+      const elapsedSeconds = (now - lastUpdateTimestamp) / 1000
 
       // 2. Prediction using smoothed speed
-      const predictedBytes = realDownloaded.value + (smoothSpeed.value * elapsedSeconds);
+      const predictedBytes = realDownloaded.value + smoothSpeed.value * elapsedSeconds
 
       // 3. Deviation compensation
-      const deviationCompensation = deviation * config.deviationDecay;
-      const targetBytes = predictedBytes - deviationCompensation;
+      const deviationCompensation = deviation * config.deviationDecay
+      const targetBytes = predictedBytes - deviationCompensation
 
       // 4. Max delta clamping
-      const maxDelta = totalBytes.value * config.maxScaleDelta;
-      const rawDelta = targetBytes - displayDownloaded.value;
-      
+      const maxDelta = totalBytes.value * config.maxScaleDelta
+      const rawDelta = targetBytes - displayDownloaded.value
+
       // Enforce Monotonicity: clampedDelta cannot be negative when downloading
       // This prevents "bounce back" even if we overshot. We just pause.
-      const clampedDelta = Math.max(0, Math.min(rawDelta, maxDelta));
+      const clampedDelta = Math.max(0, Math.min(rawDelta, maxDelta))
 
       // 5. Apply smoothed delta
-      displayDownloaded.value += clampedDelta * config.smoothingFactor;
+      displayDownloaded.value += clampedDelta * config.smoothingFactor
     } else {
       // If speed is 0, allow backward movement only if correcting a large error
       // But generally we still prefer syncing smoothly without jumping back
-      const maxDelta = totalBytes.value * config.maxScaleDelta;
-      const rawDelta = realDownloaded.value - displayDownloaded.value;
-      const clampedDelta = Math.max(-maxDelta, Math.min(rawDelta, maxDelta));
-      displayDownloaded.value += clampedDelta * config.smoothingFactor;
+      const maxDelta = totalBytes.value * config.maxScaleDelta
+      const rawDelta = realDownloaded.value - displayDownloaded.value
+      const clampedDelta = Math.max(-maxDelta, Math.min(rawDelta, maxDelta))
+      displayDownloaded.value += clampedDelta * config.smoothingFactor
     }
 
     // Ensure display never exceeds 100% (or 99.9% if incomplete)
-    let maxAllowed = totalBytes.value;
+    let maxAllowed = totalBytes.value
     if (realDownloaded.value < totalBytes.value) {
-        maxAllowed = totalBytes.value * config.prematureCap;
+      maxAllowed = totalBytes.value * config.prematureCap
     }
-    displayDownloaded.value = Math.min(displayDownloaded.value, maxAllowed);
+    displayDownloaded.value = Math.min(displayDownloaded.value, maxAllowed)
 
-    rafId = requestAnimationFrame(updateLoop);
-  };
+    rafId = requestAnimationFrame(updateLoop)
+  }
 
   // Update function exposed to external components
   const updateStats = (stats: DownloadStats) => {
-    const prevSpeed = smoothSpeed.value;
-    const prevReal = realDownloaded.value;
+    const prevSpeed = smoothSpeed.value
+    const prevReal = realDownloaded.value
 
     // Sanitize inputs
-    const newDownloaded = Number(stats.downloaded) || 0;
-    let newSpeed = Number(stats.speed) || 0;
-    const newTotal = Math.max(Number(stats.total) || 0, 1); // Prevent zero total
+    const newDownloaded = Number(stats.downloaded) || 0
+    let newSpeed = Number(stats.speed) || 0
+    const newTotal = Math.max(Number(stats.total) || 0, 1) // Prevent zero total
 
     // STATUS OVERRIDE: If not active, force speed to 0 immediately
     // This fixes the lag between "pause" event and "speed=0" data
     if (stats.status && stats.status !== 'active') {
-        newSpeed = 0;
+      newSpeed = 0
     }
 
     // Update real values
-    realDownloaded.value = newDownloaded;
-    totalBytes.value = newTotal;
+    realDownloaded.value = newDownloaded
+    totalBytes.value = newTotal
 
     // Detect significant backward jumps (restart/reset)
     // If new downloaded is significantly less than previous (e.g. < 50%), immediate reset
     if (newDownloaded < prevReal * 0.5) {
-        displayDownloaded.value = newDownloaded;
-        deviation = 0;
-        smoothSpeed.value = 0; // Reset speed smoothing
+      displayDownloaded.value = newDownloaded
+      deviation = 0
+      smoothSpeed.value = 0 // Reset speed smoothing
     }
 
     // EMA speed smoothing
     if (newSpeed === 0) {
-        // Immediate cutoff if speed is 0 (paused/completed)
-        // This prevents "ghost prediction" where prediction continues based on residual EMA speed
-        smoothSpeed.value = 0;
+      // Immediate cutoff if speed is 0 (paused/completed)
+      // This prevents "ghost prediction" where prediction continues based on residual EMA speed
+      smoothSpeed.value = 0
     } else if (prevSpeed === 0 || newDownloaded < prevReal) {
       // Cold start or reset: use new speed directly
-      smoothSpeed.value = newSpeed;
+      smoothSpeed.value = newSpeed
     } else {
       // Exponential Moving Average
-      smoothSpeed.value = config.emaAlpha * newSpeed + (1 - config.emaAlpha) * prevSpeed;
+      smoothSpeed.value = config.emaAlpha * newSpeed + (1 - config.emaAlpha) * prevSpeed
     }
 
     // Calculate deviation (actual progress vs expected progress)
-    const elapsed = (performance.now() - lastUpdateTimestamp) / 1000;
+    const elapsed = (performance.now() - lastUpdateTimestamp) / 1000
     if (elapsed > 0 && prevReal > 0 && newDownloaded >= prevReal) {
-      const expectedProgress = prevSpeed * elapsed;
-      const actualProgress = newDownloaded - prevReal;
-      deviation = actualProgress - expectedProgress;
+      const expectedProgress = prevSpeed * elapsed
+      const actualProgress = newDownloaded - prevReal
+      deviation = actualProgress - expectedProgress
     }
 
     // Update tracking state
-    lastUpdateTimestamp = performance.now();
+    lastUpdateTimestamp = performance.now()
 
     // Initialize display if this is the first update or reset
     if (displayDownloaded.value === 0 && newDownloaded > 0) {
-      displayDownloaded.value = newDownloaded;
-      deviation = 0; // No deviation on first update
+      displayDownloaded.value = newDownloaded
+      deviation = 0 // No deviation on first update
     }
-  };
+  }
 
   onMounted(() => {
-    lastUpdateTimestamp = performance.now();
-    rafId = requestAnimationFrame(updateLoop);
-  });
+    lastUpdateTimestamp = performance.now()
+    rafId = requestAnimationFrame(updateLoop)
+  })
 
   onUnmounted(() => {
     if (rafId) {
-      cancelAnimationFrame(rafId);
+      cancelAnimationFrame(rafId)
     }
-  });
+  })
 
   return {
     displayDownloaded,
     totalBytes,
     smoothSpeed, // Exposed for debugging
-    updateStats
-  };
+    updateStats,
+  }
 }
