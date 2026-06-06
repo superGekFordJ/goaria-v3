@@ -66,6 +66,7 @@ func newDownloadGroupPlan(kind string, itemCount int, now time.Time) (*downloadG
 			ID:         fmt.Sprintf("dg-%d-%s", now.Unix(), suffix),
 			Kind:       kind,
 			Name:       fmt.Sprintf("%s %s", label, timestamp),
+			NameStatus: rpc.DownloadGroupNameStatusFallback,
 			FolderName: folderName,
 			Dir:        dir,
 			ItemCount:  itemCount,
