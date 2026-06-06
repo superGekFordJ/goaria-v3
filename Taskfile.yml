@@ -144,3 +144,5 @@ tasks:
       - wails3 version
       - node --version
       - pnpm --version
+
+
