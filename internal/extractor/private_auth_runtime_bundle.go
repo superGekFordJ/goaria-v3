@@ -119,13 +119,23 @@ type privateAuthRuntimeDTO struct {
 }
 
 type privateAuthRuntimePackDTO struct {
-	VerifiedPackIdentity privatePolicyBundleIdentityDTO             `json:"verified_pack_identity"`
+	VerifiedPackIdentity privateAuthRuntimeIdentityDTO              `json:"verified_pack_identity"`
 	StoreBinding         privateAuthRuntimeStoreBindingDTO          `json:"store_binding"`
 	Profiles             []privateAuthRuntimeProfileDTO             `json:"profiles"`
 	Preflight            privateAuthRuntimePreflightPolicyDTO       `json:"preflight"`
 	Provisioning         privateAuthRuntimeProvisioningPolicyDTO    `json:"provisioning"`
 	Materialization      privateAuthRuntimeMaterializationPolicyDTO `json:"materialization"`
 	Normalization        privateAuthRuntimeNormalizationPolicyDTO   `json:"normalization"`
+}
+
+type privateAuthRuntimeIdentityDTO struct {
+	PackID          string `json:"pack_id"`
+	PackVersion     string `json:"pack_version"`
+	AssetSHA256     string `json:"asset_sha256"`
+	ManifestSHA256  string `json:"manifest_sha256"`
+	PayloadSHA256   string `json:"payload_sha256"`
+	SignatureSHA256 string `json:"signature_sha256"`
+	PublicKeySHA256 string `json:"public_key_sha256"`
 }
 
 type privateAuthRuntimeProfileDTO struct {
@@ -279,7 +289,7 @@ func newPrivateAuthRuntimeBundle(raw []byte, opts PrivateAuthRuntimeBundleLoadOp
 	packOrder := make([]VerifiedPackIdentity, 0, len(runtime.Packs))
 	for _, packDTO := range runtime.Packs {
 		identity := packDTO.VerifiedPackIdentity.verifiedPackIdentity()
-		if err := validatePrivatePolicyBundleIdentity(identity); err != nil {
+		if err := validatePrivateAuthRuntimeBundleIdentity(identity); err != nil {
 			return nil, err
 		}
 		if _, ok := packs[identity]; ok {
@@ -377,6 +387,32 @@ func validateExpectedAuthRuntimePublicFingerprint(expected string, actual string
 	}
 
 	return nil
+}
+
+func validatePrivateAuthRuntimeBundleIdentity(identity VerifiedPackIdentity) error {
+	if err := validatePackID(identity.PackID); err != nil {
+		return err
+	}
+	if err := validatePackVersion(identity.PackVersion); err != nil {
+		return err
+	}
+	for field, value := range map[string]string{
+		"asset_sha256":      identity.AssetSHA256,
+		"manifest_sha256":   identity.ManifestSHA256,
+		"payload_sha256":    identity.PayloadSHA256,
+		"signature_sha256":  identity.SignatureSHA256,
+		"public_key_sha256": identity.PublicKeySHA256,
+	} {
+		if err := validateSHA256Hex(field, value); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (dto privateAuthRuntimeIdentityDTO) verifiedPackIdentity() VerifiedPackIdentity {
+	return VerifiedPackIdentity(dto)
 }
 
 func privateAuthRuntimePackFromDTO(identity VerifiedPackIdentity, dto privateAuthRuntimePackDTO) (PrivateAuthRuntimePack, error) {

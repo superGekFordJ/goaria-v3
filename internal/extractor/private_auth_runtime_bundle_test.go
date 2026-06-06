@@ -30,16 +30,17 @@ func TestPrivateAuthRuntimeBundleLoadsAndReturnsCopies(t *testing.T) {
 	if len(identities) != 2 || identities[0] != identityOne || identities[1] != identityTwo {
 		t.Fatalf("PackIdentities() = %#v", identities)
 	}
+	exactIdentity := identities[0]
 	identities[0] = privateAuthRuntimeIdentity("xpk-mutated001", "opaque-1", "3")
 	if fresh := bundle.PackIdentities(); fresh[0] != identityOne {
 		t.Fatalf("PackIdentities() returned mutable backing data: %#v", fresh)
 	}
 
-	pack, ok := bundle.PackRuntime(identityOne)
+	pack, ok := bundle.PackRuntime(exactIdentity)
 	if !ok {
 		t.Fatal("PackRuntime() ok = false")
 	}
-	if pack.PackIdentity != identityOne || pack.StoreBinding.Scope != "pack" || len(pack.Profiles) != 1 {
+	if pack.PackIdentity != exactIdentity || pack.StoreBinding.Scope != "pack" || len(pack.Profiles) != 1 {
 		t.Fatalf("PackRuntime() returned unexpected pack: %#v", pack)
 	}
 	if pack.Profiles[0].ProfileRef != AuthProfileID("apr-alpha001") || pack.Profiles[0].Kind != AuthSecretKindBearer || pack.Profiles[0].Login.URL != "https://fixture.invalid/login" {
@@ -59,12 +60,22 @@ func TestPrivateAuthRuntimeBundleLoadsAndReturnsCopies(t *testing.T) {
 	pack.Provisioning.ProfileRefs[0] = "apr-mutated"
 	pack.Materialization.ProfileRefs[0] = "apr-mutated"
 
-	fresh, ok := bundle.PackRuntime(identityOne)
+	fresh, ok := bundle.PackRuntime(exactIdentity)
 	if !ok {
 		t.Fatal("PackRuntime() fresh ok = false")
 	}
 	if fresh.StoreBinding.ProfileRefs[0] != "apr-alpha001" || fresh.Profiles[0].ProfileRef != "apr-alpha001" || fresh.Profiles[0].Login.AllowedDomains[0].Host != "fixture.invalid" || fresh.Profiles[0].Login.CallbackTransport.ContentTypes[0] != "application/json" || fresh.Profiles[0].Login.Capture.SecretCandidates[0] != "secret" || fresh.Provisioning.ProfileRefs[0] != "apr-alpha001" || fresh.Materialization.ProfileRefs[0] != "apr-alpha001" {
 		t.Fatalf("PackRuntime() did not return defensive copies: %#v", fresh)
+	}
+	if _, ok := bundle.PackRuntime(mutateIdentity(exactIdentity, func(id *VerifiedPackIdentity) {
+		id.AssetSHA256 = strings.Repeat("9", 64)
+	})); ok {
+		t.Fatal("PackRuntime() matched mutated hash identity")
+	}
+	if _, ok := bundle.PackRuntime(mutateIdentity(exactIdentity, func(id *VerifiedPackIdentity) {
+		id.PackVersion = "opaque-9"
+	})); ok {
+		t.Fatal("PackRuntime() matched mutated version identity")
 	}
 }
 
@@ -83,6 +94,9 @@ func TestPrivateAuthRuntimeBundleRejectsMalformedBundles(t *testing.T) {
 		{name: "unknown envelope field", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(bundle map[string]any, _ map[string]any, _ []map[string]any) { bundle["unknown"] = true })},
 		{name: "unknown runtime field", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, runtime map[string]any, _ []map[string]any) { runtime["unknown"] = true })},
 		{name: "unknown pack field", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) { packs[0]["unknown"] = true })},
+		{name: "unknown identity field", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["verified_pack_identity"].(map[string]any)["unknown"] = true
+		})},
 		{name: "unknown nested section field", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["store_binding"].(map[string]any)["unknown"] = true
 		})},
@@ -249,6 +263,13 @@ func TestPrivateAuthRuntimeBundleRejectsMalformedBundles(t *testing.T) {
 	if _, err := NewPrivateAuthRuntimeBundle(validRaw, PrivateAuthRuntimeBundleLoadOptions{ExpectedAuthRuntimePrivateSHA256: validHash}); err != nil {
 		t.Fatalf("NewPrivateAuthRuntimeBundle() expected sha match error = %v", err)
 	}
+	publicFingerprint := strings.Repeat("3", 64)
+	withFingerprint := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(bundle map[string]any, _ map[string]any, _ []map[string]any) {
+		bundle["auth_runtime_public_fingerprint"] = publicFingerprint
+	})
+	if _, err := NewPrivateAuthRuntimeBundle(withFingerprint, PrivateAuthRuntimeBundleLoadOptions{ExpectedAuthRuntimePublicFingerprint: publicFingerprint}); err != nil {
+		t.Fatalf("NewPrivateAuthRuntimeBundle() expected public fingerprint match error = %v", err)
+	}
 }
 
 func TestPrivateAuthRuntimeBundleKeepsAuthSecretKindClosed(t *testing.T) {
@@ -339,6 +360,22 @@ func TestPrivateAuthRuntimeSourceLoading(t *testing.T) {
 		}
 		assertGenericPrivateAuthRuntimeBundleError(t, err)
 		assertNoPrivateBundleLeak(t, err.Error(), path, runtimeHash, string(raw), "fixture.invalid")
+	})
+
+	t.Run("env invalid does not fall back to embedded", func(t *testing.T) {
+		invalidPath := filepath.Join(t.TempDir(), "invalid-runtime.json")
+		if err := os.WriteFile(invalidPath, []byte(`{"schema_version":`), 0o600); err != nil {
+			t.Fatalf("WriteFile() invalid runtime error = %v", err)
+		}
+		withPrivateAuthRuntimeEnv(t, invalidPath, "")
+		withEmbeddedPrivateAuthRuntimeBundleState(t, raw, runtimeHash)
+
+		bundle, err := LoadPrivateAuthRuntimeBundleFromRuntimeSources()
+		if err == nil {
+			t.Fatalf("LoadPrivateAuthRuntimeBundleFromRuntimeSources() error = nil, bundle=%#v", bundle)
+		}
+		assertGenericPrivateAuthRuntimeBundleError(t, err)
+		assertNoPrivateBundleLeak(t, err.Error(), invalidPath, runtimeHash, string(raw), "fixture.invalid")
 	})
 
 	t.Run("missing file path is redacted", func(t *testing.T) {
