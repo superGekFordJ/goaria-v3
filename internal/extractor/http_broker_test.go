@@ -730,7 +730,7 @@ func TestHTTPBrokerFetchRefDeniesBeforeTransport(t *testing.T) {
 			PackID:          manifest.PackID,
 			Manifest:        manifest,
 			PackIdentity:    identity,
-			HostPolicy:      policy,
+			HostPolicy:      cloneResolvedHostPolicy(policy),
 			BrokerPolicyRef: "bpr-alpha001",
 			EndpointRef:     "epr-alpha001",
 			Params:          map[string]string{"id": "item-001"},
@@ -751,8 +751,13 @@ func TestHTTPBrokerFetchRefDeniesBeforeTransport(t *testing.T) {
 			req.Manifest.Capabilities = []Capability{CapabilityParseWASM, CapabilityAuthProfile}
 			req.HostPolicy.AllowedCapabilities = []Capability{CapabilityParseWASM, CapabilityAuthProfile}
 		}},
+		{name: "endpoint method denied", mutate: func(req *HTTPFetchRefRequest) {
+			req.Method = http.MethodHead
+			req.HostPolicy.BrokerEndpoints[0].Methods = []string{http.MethodGet}
+		}},
 		{name: "unsafe method", mutate: func(req *HTTPFetchRefRequest) { req.Method = http.MethodPost }},
 		{name: "forbidden header", mutate: func(req *HTTPFetchRefRequest) { req.Headers = map[string]string{"Authorization": "Bearer raw-token"} }},
+		{name: "bad timeout", mutate: func(req *HTTPFetchRefRequest) { req.Timeout = -1 }},
 		{name: "bad body cap", mutate: func(req *HTTPFetchRefRequest) { req.MaxResponseBytes = -1 }},
 	}
 
@@ -776,34 +781,141 @@ func TestHTTPBrokerFetchRefDeniesBeforeTransport(t *testing.T) {
 	}
 }
 
+func TestHTTPBrokerFetchRefEnforcesEndpointResourceCaps(t *testing.T) {
+	manifest := httpBrokerAliasManifest()
+	identity := syntheticVerifiedPackIdentity(manifest)
+
+	t.Run("timeout uses stricter endpoint ceiling", func(t *testing.T) {
+		policy := validResolvedHostPolicy(identity, manifest)
+		policy.BrokerEndpoints[0].TimeoutMillis = 20
+		var remaining time.Duration
+		var sawDeadline bool
+		broker := testHTTPBroker(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			deadline, ok := req.Context().Deadline()
+			if !ok {
+				t.Fatal("request context deadline was not set")
+			}
+			sawDeadline = true
+			remaining = time.Until(deadline)
+
+			return nil, errors.New("synthetic transport failure")
+		}), nil)
+
+		_, err := broker.FetchRef(context.Background(), HTTPFetchRefRequest{
+			PackID:           manifest.PackID,
+			Manifest:         manifest,
+			PackIdentity:     identity,
+			HostPolicy:       policy,
+			BrokerPolicyRef:  "bpr-alpha001",
+			EndpointRef:      "epr-alpha001",
+			Params:           map[string]string{"id": "item-001"},
+			Method:           http.MethodGet,
+			Timeout:          80 * time.Millisecond,
+			MaxResponseBytes: 64,
+		})
+		if err == nil {
+			t.Fatal("FetchRef() error = nil, want timeout-bounded failure")
+		}
+		if !sawDeadline {
+			t.Fatal("transport did not observe request deadline")
+		}
+		if remaining <= 0 || remaining > 60*time.Millisecond {
+			t.Fatalf("request deadline remaining = %v, want endpoint-bounded timeout", remaining)
+		}
+		if err.Error() != "ref-mode fetch failed" {
+			t.Fatalf("FetchRef() error = %q, want generic ref-mode fetch failure", err.Error())
+		}
+		assertNoForbiddenSubstrings(t, err.Error(), "api.alpha.test", "item-001")
+	})
+
+	t.Run("response body cap uses stricter endpoint ceiling", func(t *testing.T) {
+		policy := validResolvedHostPolicy(identity, manifest)
+		policy.BrokerEndpoints[0].MaxResponseBytes = 4
+		transport := &hostImportRecordingTransport{statusCode: http.StatusOK, body: "abcdefgh"}
+		broker := testHTTPBroker(transport, nil)
+
+		_, err := broker.FetchRef(context.Background(), HTTPFetchRefRequest{
+			PackID:           manifest.PackID,
+			Manifest:         manifest,
+			PackIdentity:     identity,
+			HostPolicy:       policy,
+			BrokerPolicyRef:  "bpr-alpha001",
+			EndpointRef:      "epr-alpha001",
+			Params:           map[string]string{"id": "item-001"},
+			Method:           http.MethodGet,
+			MaxResponseBytes: 64,
+		})
+		if err == nil {
+			t.Fatal("FetchRef() error = nil, want capped-body failure")
+		}
+		if transport.Count() != 1 {
+			t.Fatalf("transport calls = %d, want 1", transport.Count())
+		}
+		if err.Error() != "ref-mode fetch failed" {
+			t.Fatalf("FetchRef() error = %q, want generic ref-mode fetch failure", err.Error())
+		}
+		assertNoForbiddenSubstrings(t, err.Error(), "api.alpha.test", "item-001")
+	})
+}
+
 func TestHTTPBrokerFetchRefAuthScopeCheckedBeforeResolverOrTransport(t *testing.T) {
 	manifest := httpBrokerAliasManifest()
 	identity := syntheticVerifiedPackIdentity(manifest)
 	policy := validResolvedHostPolicy(identity, manifest)
-	transport := &recordingTransport{}
-	resolver := &recordingAuthResolver{secret: ResolvedAuthSecret{HeaderName: "Authorization", HeaderValue: "Bearer raw-token"}}
-	broker := testHTTPBroker(transport, resolver)
 
-	_, err := broker.FetchRef(context.Background(), HTTPFetchRefRequest{
-		PackID:          manifest.PackID,
-		Manifest:        manifest,
-		PackIdentity:    identity,
-		HostPolicy:      policy,
-		BrokerPolicyRef: "bpr-alpha001",
-		EndpointRef:     "epr-alpha001",
-		Params:          map[string]string{"id": "item-001"},
-		Method:          http.MethodGet,
-		AuthProfileID:   "apr-alpha002",
+	t.Run("scope denied before resolver or transport", func(t *testing.T) {
+		transport := &recordingTransport{}
+		resolver := &recordingAuthResolver{secret: ResolvedAuthSecret{HeaderName: "Authorization", HeaderValue: "Bearer raw-token"}}
+		broker := testHTTPBroker(transport, resolver)
+
+		_, err := broker.FetchRef(context.Background(), HTTPFetchRefRequest{
+			PackID:          manifest.PackID,
+			Manifest:        manifest,
+			PackIdentity:    identity,
+			HostPolicy:      policy,
+			BrokerPolicyRef: "bpr-alpha001",
+			EndpointRef:     "epr-alpha001",
+			Params:          map[string]string{"id": "item-001"},
+			Method:          http.MethodGet,
+			AuthProfileID:   "apr-alpha002",
+		})
+		if err == nil {
+			t.Fatal("FetchRef() error = nil, want auth scope denial")
+		}
+		if resolver.Count() != 0 {
+			t.Fatalf("resolver calls = %d, want 0", resolver.Count())
+		}
+		if transport.Count() != 0 {
+			t.Fatalf("transport calls = %d, want 0", transport.Count())
+		}
 	})
-	if err == nil {
-		t.Fatal("FetchRef() error = nil, want auth scope denial")
-	}
-	if resolver.Count() != 0 {
-		t.Fatalf("resolver calls = %d, want 0", resolver.Count())
-	}
-	if transport.Count() != 0 {
-		t.Fatalf("transport calls = %d, want 0", transport.Count())
-	}
+
+	t.Run("allowed auth without resolver stays generic", func(t *testing.T) {
+		transport := &recordingTransport{}
+		broker := testHTTPBroker(transport, nil)
+
+		_, err := broker.FetchRef(context.Background(), HTTPFetchRefRequest{
+			PackID:          manifest.PackID,
+			Manifest:        manifest,
+			PackIdentity:    identity,
+			HostPolicy:      policy,
+			BrokerPolicyRef: "bpr-alpha001",
+			EndpointRef:     "epr-alpha001",
+			Params:          map[string]string{"id": "item-001"},
+			Method:          http.MethodGet,
+			AuthProfileID:   "apr-alpha001",
+		})
+		if err == nil {
+			t.Fatal("FetchRef() error = nil, want generic auth failure")
+		}
+		if transport.Count() != 0 {
+			t.Fatalf("transport calls = %d, want 0", transport.Count())
+		}
+		if err.Error() != "auth profile denied" {
+			t.Fatalf("FetchRef() error = %q, want generic auth profile denial", err.Error())
+		}
+		assertNoForbiddenSubstrings(t, err.Error(), "resolver", "api.alpha.test", "item-001")
+	})
 }
 
 func TestHTTPBrokerFetchRefRedirectPolicy(t *testing.T) {
@@ -869,6 +981,57 @@ func TestHTTPBrokerFetchRefRedirectPolicy(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("rejects authenticated redirect downgrade without leak", func(t *testing.T) {
+		resolver := &recordingAuthResolver{secret: ResolvedAuthSecret{HeaderName: "Authorization", HeaderValue: "Bearer raw-token"}}
+		calls := 0
+		broker := testHTTPBroker(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			return redirectResponse("http://api.alpha.test/downgrade?token=query-secret"), nil
+		}), resolver)
+
+		_, err := broker.FetchRef(context.Background(), HTTPFetchRefRequest{
+			PackID:          manifest.PackID,
+			Manifest:        manifest,
+			PackIdentity:    identity,
+			HostPolicy:      policy,
+			BrokerPolicyRef: "bpr-alpha001",
+			EndpointRef:     "epr-alpha001",
+			Params:          map[string]string{"id": "item-001"},
+			Method:          http.MethodGet,
+			AuthProfileID:   "apr-alpha001",
+		})
+		if err == nil {
+			t.Fatal("FetchRef() error = nil, want downgrade denial")
+		}
+		if calls != 1 {
+			t.Fatalf("transport calls = %d, want only initial request", calls)
+		}
+		if resolver.Count() != 1 {
+			t.Fatalf("resolver calls = %d, want 1", resolver.Count())
+		}
+		if err.Error() != "ref-mode fetch failed" {
+			t.Fatalf("FetchRef() error = %q, want generic ref-mode failure", err.Error())
+		}
+		assertNoForbiddenSubstrings(t, err.Error(), "api.alpha.test", "query-secret", "raw-token", "item-001")
+	})
+}
+
+func TestSanitizeRefModeFetchError(t *testing.T) {
+	t.Run("keeps allowlisted categories stable", func(t *testing.T) {
+		err := sanitizeRefModeFetchError(errors.New("unknown endpoint ref"))
+		if err == nil || err.Error() != "unknown endpoint ref" {
+			t.Fatalf("sanitizeRefModeFetchError() = %v, want unknown endpoint ref", err)
+		}
+	})
+
+	t.Run("collapses url-bearing internal failures", func(t *testing.T) {
+		err := sanitizeRefModeFetchError(errors.New("http fetch failed for https://api.alpha.test/resource/item-001?token=query-secret: boom"), "query-secret")
+		if err == nil || err.Error() != "ref-mode fetch failed" {
+			t.Fatalf("sanitizeRefModeFetchError() = %v, want generic ref-mode fetch failed", err)
+		}
+		assertNoForbiddenSubstrings(t, err.Error(), "api.alpha.test", "item-001", "query-secret")
+	})
 }
 
 func TestHTTPBrokerRejectsUnsafeResolvedIPsAndBypassesProxy(t *testing.T) {

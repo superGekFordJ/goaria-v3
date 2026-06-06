@@ -14,6 +14,8 @@ var (
 	embeddedReleaseRequired          bool
 )
 
+const requiredEmbeddedAuthRuntimeNotConfiguredError = "required embedded authenticated extractor auth runtime is not configured"
+
 type EmbeddedReleaseDispatcherConfig struct {
 	AuthResolver       AuthProfileResolver
 	HeaderResolver     HeaderProfileResolver
@@ -144,30 +146,35 @@ func validateRequiredEmbeddedAuthRuntime(packs []VerifiedPack, bundle *PrivateAu
 		return nil
 	}
 	if bundle == nil || bundle.PackCount() == 0 {
-		return errors.New("required embedded authenticated extractor auth runtime is not configured")
+		return errors.New(requiredEmbeddedAuthRuntimeNotConfiguredError)
 	}
 
-	seenRuntime := make(map[VerifiedPackIdentity]struct{}, bundle.PackCount())
-	for _, identity := range bundle.PackIdentities() {
+	runtimeIdentities := bundle.PackIdentities()
+	if len(runtimeIdentities) != bundle.PackCount() {
+		return errors.New(requiredEmbeddedAuthRuntimeNotConfiguredError)
+	}
+
+	seenRuntime := make(map[VerifiedPackIdentity]struct{}, len(runtimeIdentities))
+	for _, identity := range runtimeIdentities {
 		if _, duplicate := seenRuntime[identity]; duplicate {
-			return errors.New("required embedded authenticated extractor auth runtime is not configured")
+			return errors.New(requiredEmbeddedAuthRuntimeNotConfiguredError)
 		}
 		seenRuntime[identity] = struct{}{}
 		if _, ok := requiredIdentities[identity]; !ok {
-			return errors.New("required embedded authenticated extractor auth runtime is not configured")
+			return errors.New(requiredEmbeddedAuthRuntimeNotConfiguredError)
 		}
 		pack, ok := bundle.PackRuntime(identity)
-		if !ok || len(pack.StoreBinding.ProfileRefs) == 0 || len(pack.Materialization.ProfileRefs) == 0 {
-			return errors.New("required embedded authenticated extractor auth runtime is not configured")
+		if !ok || pack.PackIdentity != identity || len(pack.StoreBinding.ProfileRefs) == 0 || len(pack.Materialization.ProfileRefs) == 0 {
+			return errors.New(requiredEmbeddedAuthRuntimeNotConfiguredError)
 		}
 	}
 
 	if len(seenRuntime) != len(requiredIdentities) {
-		return errors.New("required embedded authenticated extractor auth runtime is not configured")
+		return errors.New(requiredEmbeddedAuthRuntimeNotConfiguredError)
 	}
 	for identity := range requiredIdentities {
 		if _, ok := seenRuntime[identity]; !ok {
-			return errors.New("required embedded authenticated extractor auth runtime is not configured")
+			return errors.New(requiredEmbeddedAuthRuntimeNotConfiguredError)
 		}
 	}
 

@@ -264,7 +264,11 @@ func (b *HTTPBroker) fetchRef(ctx context.Context, request HTTPFetchRefRequest, 
 	if !ok {
 		return HTTPFetchResponse{}, errors.New("unknown endpoint ref")
 	}
-	if _, err := b.validateMethod(request.Method); err != nil {
+	method, err := b.validateMethod(request.Method)
+	if err != nil {
+		return HTTPFetchResponse{}, err
+	}
+	if err := b.validateEndpointMethod(method, endpoint); err != nil {
 		return HTTPFetchResponse{}, err
 	}
 	if _, err := b.validatePackHeaders(request.Headers); err != nil {
@@ -276,11 +280,12 @@ func (b *HTTPBroker) fetchRef(ctx context.Context, request HTTPFetchRefRequest, 
 	if request.MaxResponseBytes < 0 {
 		return HTTPFetchResponse{}, errors.New("response body cap must be positive")
 	}
-	timeout := b.effectiveTimeout(HTTPFetchRequest{Manifest: request.Manifest, Timeout: request.Timeout})
+	timeout := b.effectiveTimeout(HTTPFetchRequest{Manifest: request.Manifest, Timeout: request.Timeout}, endpoint.TimeoutMillis)
 	if timeout <= 0 {
 		return HTTPFetchResponse{}, errors.New("request timeout is invalid")
 	}
-	if bodyCap := b.effectiveBodyCap(HTTPFetchRequest{Manifest: request.Manifest, MaxResponseBytes: request.MaxResponseBytes}); bodyCap <= 0 {
+	bodyCap := b.effectiveBodyCap(HTTPFetchRequest{Manifest: request.Manifest, MaxResponseBytes: request.MaxResponseBytes}, endpoint.MaxResponseBytes)
+	if bodyCap <= 0 {
 		return HTTPFetchResponse{}, errors.New("response body cap must be positive")
 	}
 	targetURL, err := expandBrokerEndpointURL(request.HostPolicy, endpoint, request.Params)
@@ -325,12 +330,12 @@ func (b *HTTPBroker) fetchRef(ctx context.Context, request HTTPFetchRefRequest, 
 	return b.fetchExpanded(ctx, httpFetchExecutionRequest{
 		PackID:              request.PackID,
 		Manifest:            request.Manifest,
-		Method:              request.Method,
+		Method:              method,
 		URL:                 targetURL,
 		Headers:             request.Headers,
 		AuthProfileID:       request.AuthProfileID,
 		Timeout:             timeout,
-		MaxResponseBytes:    request.MaxResponseBytes,
+		MaxResponseBytes:    bodyCap,
 		FinalURLRedacted:    true,
 		AllowedURL:          allowedURL,
 		ValidateAuthProfile: authValidator,
@@ -464,6 +469,19 @@ func (b *HTTPBroker) validateMethod(method string) (string, error) {
 	return method, nil
 }
 
+func (b *HTTPBroker) validateEndpointMethod(method string, endpoint HostPolicyBrokerEndpoint) error {
+	if len(endpoint.Methods) == 0 {
+		return nil
+	}
+	for _, allowed := range endpoint.Methods {
+		if strings.ToUpper(strings.TrimSpace(allowed)) == method {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("http method %q is not allowed", method)
+}
+
 func (b *HTTPBroker) validatePackHeaders(headers map[string]string) (http.Header, error) {
 	if len(headers) == 0 {
 		return nil, nil
@@ -524,7 +542,7 @@ func (b *HTTPBroker) injectAuth(ctx context.Context, httpRequest *http.Request, 
 	return nil
 }
 
-func (b *HTTPBroker) effectiveTimeout(request HTTPFetchRequest) time.Duration {
+func (b *HTTPBroker) effectiveTimeout(request HTTPFetchRequest, extraLimits ...int) time.Duration {
 	requestMillis := 0
 	if request.Timeout > 0 {
 		requestMillis = int(request.Timeout / time.Millisecond)
@@ -532,7 +550,9 @@ func (b *HTTPBroker) effectiveTimeout(request HTTPFetchRequest) time.Duration {
 	policyDefaultMillis := int(b.policy.DefaultTimeout / time.Millisecond)
 	policyMaxMillis := int(b.policy.MaxTimeout / time.Millisecond)
 	manifestMillis := request.Manifest.ResourceLimits.TimeoutMillis
-	effectiveMillis := minPositiveDurationMillis(requestMillis, manifestMillis, policyMaxMillis)
+	limitValues := []int{requestMillis, manifestMillis, policyMaxMillis}
+	limitValues = append(limitValues, extraLimits...)
+	effectiveMillis := minPositiveDurationMillis(limitValues...)
 	if effectiveMillis == 0 {
 		effectiveMillis = policyDefaultMillis
 	}
@@ -543,8 +563,10 @@ func (b *HTTPBroker) effectiveTimeout(request HTTPFetchRequest) time.Duration {
 	return time.Duration(effectiveMillis) * time.Millisecond
 }
 
-func (b *HTTPBroker) effectiveBodyCap(request HTTPFetchRequest) int64 {
-	effective := minPositiveInt64(request.MaxResponseBytes, request.Manifest.ResourceLimits.MaxResponseBytes, b.policy.MaxResponseBytes)
+func (b *HTTPBroker) effectiveBodyCap(request HTTPFetchRequest, extraCaps ...int64) int64 {
+	capValues := []int64{request.MaxResponseBytes, request.Manifest.ResourceLimits.MaxResponseBytes, b.policy.MaxResponseBytes}
+	capValues = append(capValues, extraCaps...)
+	effective := minPositiveInt64(capValues...)
 	if effective <= 0 {
 		return b.policy.MaxResponseBytes
 	}

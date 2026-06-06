@@ -400,6 +400,13 @@ func TestHostAuthRuntimeAliasWebViewProvisionAllowsLoginDomainOutsideTargetAuthP
 	if opened.LoginURL != "https://api.alpha.test/login" || len(opened.AllowedDomains) != 1 || opened.AllowedDomains[0].Host != "api.alpha.test" {
 		t.Fatalf("opened request login scope = %#v", opened)
 	}
+	material, err := runtime.MaterializeAuthProfile(context.Background(), request)
+	if err != nil {
+		t.Fatalf("MaterializeAuthProfile(target) error = %v", err)
+	}
+	if material.HeaderName != "Authorization" || material.HeaderValue() != "Bearer captured-alias-token" || material.Kind != AuthSecretKindBearer {
+		t.Fatalf("MaterializeAuthProfile(target) = %#v", material)
+	}
 	resolved, err := runtime.ResolveAuthProfile(context.Background(), identity.PackID, "apr-alpha001", "https://files.alpha.test/files/fixture-item")
 	if err != nil {
 		t.Fatalf("ResolveAuthProfile(target) error = %v", err)
@@ -412,6 +419,277 @@ func TestHostAuthRuntimeAliasWebViewProvisionAllowsLoginDomainOutsideTargetAuthP
 	}
 	formatted := fmt.Sprintf("%#v", result)
 	assertNoForbiddenSubstrings(t, formatted, "captured-alias-token", "Bearer captured-alias-token", "Authorization", "Cookie")
+}
+
+func TestHostAuthRuntimeAliasStoredTargetScopedProfileRemainsAvailableWithoutWebView(t *testing.T) {
+	identity := privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1")
+	manifest := hostAuthRuntimeAliasManifest(identity)
+	bundle := newHostAuthRuntimeBundle(t, identity, []hostAuthRuntimeProfileFixture{{ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://api.alpha.test/login"}}, func(pack map[string]any) {
+		pack["profiles"].([]map[string]any)[0]["login"].(map[string]any)["allowed_domains"] = []map[string]any{{"host": "api.alpha.test"}}
+	})
+	store := newTempAuthProfileStore(t)
+	setHostAuthProfile(t, store, identity.PackID, "apr-alpha001", AuthSecretKindBearer, "stored-alias-target-token", []DomainRule{{Host: "files.alpha.test"}}, nil)
+	driver := newHostAuthRecordingDriver(AuthWebViewToken{Kind: AuthSecretKindBearer, Secret: "must-not-open"})
+	resolver := &hostAuthRuntimePolicyResolver{policy: hostAuthRuntimeAliasPolicy(identity, func(policy *ResolvedHostPolicy) {
+		policy.OutputDomains = []HostPolicyOutputRule{{Host: "files.alpha.test", PathPrefixes: []string{"/files/"}}}
+		policy.AuthProfiles = []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "files.alpha.test"}}}}
+	})}
+	runtime := NewHostAuthRuntime(HostAuthRuntimeConfig{
+		Bundle:             bundle,
+		Store:              store,
+		Coordinator:        NewWebViewAuthCoordinator(store, driver),
+		HostPolicyResolver: resolver,
+	})
+	request := HostAuthRuntimeRequest{
+		PackIdentity: identity,
+		Manifest:     manifest,
+		SourceURL:    "https://share.alpha.test/source",
+		TargetURL:    "https://files.alpha.test/files/stored-item",
+		ProfileRef:   "apr-alpha001",
+	}
+
+	preflight, err := runtime.Preflight(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Preflight() error = %v", err)
+	}
+	if !preflight.Matched || !preflight.Required || !preflight.Available || preflight.Refreshable {
+		t.Fatalf("Preflight() = %#v, want available stored alias auth", preflight)
+	}
+	if len(preflight.ProfileStatuses) != 1 || preflight.ProfileStatuses[0].Status != HostAuthRuntimeProfileAvailable {
+		t.Fatalf("ProfileStatuses = %#v, want available", preflight.ProfileStatuses)
+	}
+	material, err := runtime.MaterializeAuthProfile(context.Background(), request)
+	if err != nil {
+		t.Fatalf("MaterializeAuthProfile() error = %v", err)
+	}
+	if material.HeaderName != "Authorization" || material.HeaderValue() != "Bearer stored-alias-target-token" || material.Kind != AuthSecretKindBearer {
+		t.Fatalf("MaterializeAuthProfile() = %#v", material)
+	}
+	if driver.OpenCount() != 0 {
+		t.Fatalf("driver opened %d sessions, want stored-auth no-op", driver.OpenCount())
+	}
+	if _, err := runtime.ResolveAuthProfile(context.Background(), identity.PackID, "apr-alpha001", request.TargetURL); err != nil {
+		t.Fatalf("ResolveAuthProfile(target) error = %v", err)
+	}
+	if _, err := runtime.ResolveAuthProfile(context.Background(), identity.PackID, "apr-alpha001", "https://api.alpha.test/login"); err == nil {
+		t.Fatal("ResolveAuthProfile(login host) error = nil, want target-scoped stored auth only")
+	}
+}
+
+func TestHostAuthRuntimeAliasMissingTargetScopedProfileRemainsRefreshableWhenPolicyAllows(t *testing.T) {
+	identity := privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1")
+	manifest := hostAuthRuntimeAliasManifest(identity)
+	bundle := newHostAuthRuntimeBundle(t, identity, []hostAuthRuntimeProfileFixture{{ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://api.alpha.test/login"}}, func(pack map[string]any) {
+		pack["profiles"].([]map[string]any)[0]["login"].(map[string]any)["allowed_domains"] = []map[string]any{{"host": "api.alpha.test"}}
+	})
+	store := newTempAuthProfileStore(t)
+	driver := newHostAuthRecordingDriver(AuthWebViewToken{Kind: AuthSecretKindBearer, Secret: "captured-refreshable-alias-token"})
+	resolver := &hostAuthRuntimePolicyResolver{policy: hostAuthRuntimeAliasPolicy(identity, func(policy *ResolvedHostPolicy) {
+		policy.OutputDomains = []HostPolicyOutputRule{{Host: "files.alpha.test", PathPrefixes: []string{"/files/"}}}
+		policy.AuthProfiles = []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "files.alpha.test"}}}}
+	})}
+	runtime := NewHostAuthRuntime(HostAuthRuntimeConfig{
+		Bundle:             bundle,
+		Store:              store,
+		Coordinator:        NewWebViewAuthCoordinator(store, driver),
+		HostPolicyResolver: resolver,
+	})
+	request := HostAuthRuntimeRequest{
+		PackIdentity: identity,
+		Manifest:     manifest,
+		SourceURL:    "https://share.alpha.test/source",
+		TargetURL:    "https://files.alpha.test/files/refreshable-item",
+		ProfileRef:   "apr-alpha001",
+	}
+
+	preflight, err := runtime.Preflight(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Preflight() error = %v", err)
+	}
+	if preflight.Available || !preflight.Refreshable || len(preflight.ProfileStatuses) != 1 {
+		t.Fatalf("Preflight() = %#v, want refreshable unavailable alias profile", preflight)
+	}
+	if preflight.ProfileStatuses[0].Status != HostAuthRuntimeProfileMissing || !preflight.ProfileStatuses[0].Refreshable {
+		t.Fatalf("ProfileStatuses = %#v, want missing refreshable", preflight.ProfileStatuses)
+	}
+	if driver.OpenCount() != 0 {
+		t.Fatalf("driver opened %d sessions during preflight, want 0", driver.OpenCount())
+	}
+
+	result, err := runtime.RefreshOnRecoverablePreflightFailure(context.Background(), request, NewHostAuthRuntimeBatchGuard())
+	if err != nil {
+		t.Fatalf("RefreshOnRecoverablePreflightFailure() error = %v", err)
+	}
+	if !result.Provisioned || !result.Available {
+		t.Fatalf("RefreshOnRecoverablePreflightFailure() = %#v, want provisioned available", result)
+	}
+	if driver.OpenCount() != 1 {
+		t.Fatalf("driver opened %d sessions, want one alias refresh", driver.OpenCount())
+	}
+	requests := driver.Requests()
+	if len(requests) != 1 || len(requests[0].AllowedDomains) != 1 || requests[0].AllowedDomains[0].Host != "api.alpha.test" {
+		t.Fatalf("driver requests = %#v, want login-host-only allowed domains", requests)
+	}
+	if _, err := runtime.ResolveAuthProfile(context.Background(), identity.PackID, "apr-alpha001", request.TargetURL); err != nil {
+		t.Fatalf("ResolveAuthProfile(target) error = %v", err)
+	}
+	if _, err := runtime.ResolveAuthProfile(context.Background(), identity.PackID, "apr-alpha001", "https://api.alpha.test/login"); err == nil {
+		t.Fatal("ResolveAuthProfile(login host) error = nil, want target scope only after refresh")
+	}
+}
+
+func TestHostAuthRuntimeAliasProvisionPlansDriveRefreshabilityAndFailClosedDenials(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		mutateManifest  func(*Manifest)
+		mutatePack      func(map[string]any)
+		buildResolver   func(VerifiedPackIdentity) *hostAuthRuntimePolicyResolver
+		wantRefreshable bool
+		wantPlanError   bool
+		forbidden       []string
+	}{
+		{
+			name: "policy valid",
+			buildResolver: func(identity VerifiedPackIdentity) *hostAuthRuntimePolicyResolver {
+				return &hostAuthRuntimePolicyResolver{policy: hostAuthRuntimeAliasPolicy(identity, func(policy *ResolvedHostPolicy) {
+					policy.OutputDomains = []HostPolicyOutputRule{{Host: "files.alpha.test", PathPrefixes: []string{"/files/"}}}
+					policy.AuthProfiles = []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "files.alpha.test"}}}}
+				})}
+			},
+			wantRefreshable: true,
+		},
+		{
+			name: "resolver failure",
+			buildResolver: func(VerifiedPackIdentity) *hostAuthRuntimePolicyResolver {
+				return &hostAuthRuntimePolicyResolver{err: errors.New("resolver failed token=resolver-secret https://api.alpha.test/login?token=resolver-secret")}
+			},
+			wantPlanError: true,
+			forbidden: []string{
+				"resolver-secret",
+				"https://api.alpha.test/login?token=resolver-secret",
+				"Authorization",
+				"Bearer",
+			},
+		},
+		{
+			name: "login url outside broker scope",
+			mutatePack: func(pack map[string]any) {
+				login := pack["profiles"].([]map[string]any)[0]["login"].(map[string]any)
+				login["url"] = "https://outside.alpha.test/login?token=login-secret"
+				login["allowed_domains"] = []map[string]any{{"host": "outside.alpha.test"}}
+			},
+			buildResolver: func(identity VerifiedPackIdentity) *hostAuthRuntimePolicyResolver {
+				return &hostAuthRuntimePolicyResolver{policy: hostAuthRuntimeAliasPolicy(identity, func(policy *ResolvedHostPolicy) {
+					policy.OutputDomains = []HostPolicyOutputRule{{Host: "files.alpha.test", PathPrefixes: []string{"/files/"}}}
+					policy.AuthProfiles = []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "files.alpha.test"}}}}
+				})}
+			},
+			wantPlanError: true,
+			forbidden: []string{
+				"outside.alpha.test",
+				"login-secret",
+				"https://outside.alpha.test/login?token=login-secret",
+				"Authorization",
+				"Bearer",
+			},
+		},
+		{
+			name: "missing auth capability",
+			mutateManifest: func(manifest *Manifest) {
+				manifest.Capabilities = []Capability{CapabilityHTTPFetch}
+			},
+			buildResolver: func(identity VerifiedPackIdentity) *hostAuthRuntimePolicyResolver {
+				return &hostAuthRuntimePolicyResolver{policy: hostAuthRuntimeAliasPolicy(identity, func(policy *ResolvedHostPolicy) {
+					policy.OutputDomains = []HostPolicyOutputRule{{Host: "files.alpha.test", PathPrefixes: []string{"/files/"}}}
+					policy.AuthProfiles = []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "files.alpha.test"}}}}
+				})}
+			},
+			wantPlanError: true,
+			forbidden: []string{
+				"https://api.alpha.test/login",
+				"Authorization",
+				"Bearer",
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			identity := privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1")
+			manifest := hostAuthRuntimeAliasManifest(identity)
+			if tt.mutateManifest != nil {
+				tt.mutateManifest(&manifest)
+			}
+			bundle := newHostAuthRuntimeBundle(t, identity, []hostAuthRuntimeProfileFixture{{ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://api.alpha.test/login"}}, func(pack map[string]any) {
+				pack["profiles"].([]map[string]any)[0]["login"].(map[string]any)["allowed_domains"] = []map[string]any{{"host": "api.alpha.test"}}
+				if tt.mutatePack != nil {
+					tt.mutatePack(pack)
+				}
+			})
+			store := newTempAuthProfileStore(t)
+			driver := newHostAuthRecordingDriver(AuthWebViewToken{Kind: AuthSecretKindBearer, Secret: "must-not-store"})
+			resolver := tt.buildResolver(identity)
+			runtime := NewHostAuthRuntime(HostAuthRuntimeConfig{
+				Bundle:             bundle,
+				Store:              store,
+				Coordinator:        NewWebViewAuthCoordinator(store, driver),
+				HostPolicyResolver: resolver,
+			})
+			request := HostAuthRuntimeRequest{
+				PackIdentity: identity,
+				Manifest:     manifest,
+				SourceURL:    "https://share.alpha.test/source",
+				TargetURL:    "https://files.alpha.test/files/fixture-item",
+				ProfileRef:   "apr-alpha001",
+			}
+
+			preflight, err := runtime.Preflight(context.Background(), request)
+			if err != nil {
+				t.Fatalf("Preflight() error = %v", err)
+			}
+			if preflight.Available || len(preflight.ProfileStatuses) != 1 || preflight.ProfileStatuses[0].Status != HostAuthRuntimeProfileMissing {
+				t.Fatalf("Preflight() = %#v, want missing unavailable alias profile", preflight)
+			}
+			if preflight.Refreshable != tt.wantRefreshable || preflight.ProfileStatuses[0].Refreshable != tt.wantRefreshable {
+				t.Fatalf("Preflight() refreshability = %#v, want %t", preflight, tt.wantRefreshable)
+			}
+
+			bound, result, done, err := runtime.bindRequest(request, hostAuthRuntimeBindOptions{strictProfileBinding: true})
+			if err != nil || done {
+				t.Fatalf("bindRequest() bound=%#v result=%#v done=%t err=%v", bound, result, done, err)
+			}
+			plans, err := runtime.provisionPlans(context.Background(), bound)
+			if tt.wantPlanError {
+				if err == nil {
+					t.Fatal("provisionPlans() error = nil, want fail-closed denial")
+				}
+				if len(plans) != 0 {
+					t.Fatalf("provisionPlans() len = %d, want 0 on denial", len(plans))
+				}
+				provisionResult, err := runtime.Provision(context.Background(), request)
+				if err == nil {
+					t.Fatalf("Provision() error = nil, result=%#v", provisionResult)
+				}
+				if provisionResult.Message != hostAuthRuntimeProvisionUnavailableMessage || provisionResult.Available || provisionResult.Provisioned {
+					t.Fatalf("Provision() = %#v, want generic provisioning unavailable", provisionResult)
+				}
+				if driver.OpenCount() != 0 {
+					t.Fatalf("driver opened %d sessions, want deny before driver", driver.OpenCount())
+				}
+				assertNoStoredAuthProfile(t, store, identity.PackID, "apr-alpha001")
+				formatted := fmt.Sprintf("%#v %v", provisionResult, err)
+				assertNoForbiddenSubstrings(t, formatted, append([]string{"must-not-store"}, tt.forbidden...)...)
+				return
+			}
+			if err != nil {
+				t.Fatalf("provisionPlans() error = %v", err)
+			}
+			if len(plans) != 1 {
+				t.Fatalf("provisionPlans() len = %d, want 1", len(plans))
+			}
+			if driver.OpenCount() != 0 {
+				t.Fatalf("driver opened %d sessions before provision, want 0", driver.OpenCount())
+			}
+		})
+	}
 }
 
 func TestHostAuthRuntimeAliasWebViewProvisionRejectsLoginAllowedDomainOutsideLoginURLHost(t *testing.T) {
