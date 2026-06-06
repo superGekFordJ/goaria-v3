@@ -5,7 +5,7 @@ import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 import { cacheMetadata, applyMetadataFromCache, removeMetadata } from './metadata'
 import { TaskMove, TaskDelta } from '../events'
 import {
-  cloneTaskDownloadGroup,
+  cloneTaskGroupMetadata,
   hasTaskGroupMetadata,
   isTaskGroupEqual,
   mergeTaskGroupMetadata,
@@ -68,7 +68,7 @@ function toTask(task: Partial<Task> | undefined): Task {
     files: task?.files ?? [],
   }
   if (task?.title !== undefined) result.title = task.title
-  const group = cloneTaskDownloadGroup(task)
+  const group = cloneTaskGroupMetadata(task)
   if (group) result.download_group = group
   return result
 }
@@ -106,13 +106,6 @@ function mergeTaskPreservingRichData(
   Object.assign(merged, mergeTaskGroupMetadata(existing, incoming))
 
   return merged
-}
-
-function hydrateTaskForInsertion(incoming: Partial<Task> | undefined): Task | null {
-  if (!incoming) return null
-
-  const hydrated = applyMetadataFromCache(mergeTaskPreservingRichData(undefined, incoming))
-  return hasValidFiles(hydrated) ? hydrated : null
 }
 
 export function setupEvents(state: TaskState, actions: TaskActions, _polling: TaskPolling) {
@@ -211,14 +204,6 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
             }
             if (payload.errorCode !== undefined) task.errorCode = payload.errorCode
             if (payload.errorMessage !== undefined) task.errorMessage = payload.errorMessage
-            if (hasTaskGroupMetadata(payload)) {
-              const beforeGroup = cloneTaskDownloadGroup(task)
-              Object.assign(task, mergeTaskGroupMetadata(task, payload))
-              if (!isTaskGroupEqual(beforeGroup, cloneTaskDownloadGroup(task))) {
-                cacheMetadata(task)
-                hasUpdate = true
-              }
-            }
 
             if (hasUpdate) tasks.value = { ...tasks.value }
 
@@ -269,41 +254,33 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
           if (!hasValidFiles(merged)) actions.queueMetadataRecovery(delta.gid)
         } else if (existsInStopped) {
           // Keep stopped duplicate suppression semantics unchanged.
-        } else {
-          const taskToAdd = hydrateTaskForInsertion(incoming)
-
-          if (taskToAdd) {
-            cacheMetadata(taskToAdd)
-            tasks.value = {
-              ...tasks.value,
-              active: [taskToAdd, ...tasks.value.active],
-              waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
-            }
-          } else {
-            if (import.meta.env.DEV) {
-              console.debug(
-                `[Events] add: payload incomplete for ${delta.gid}, falling back to fetchTasks`,
-              )
-            }
-            await fetchTasks()
+        } else if (hasValidFiles(incoming)) {
+          const taskToAdd = applyMetadataFromCache(mergeTaskPreservingRichData(undefined, incoming))
+          tasks.value = {
+            ...tasks.value,
+            active: [taskToAdd, ...tasks.value.active],
+            waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
           }
+        } else {
+          if (import.meta.env.DEV) {
+            console.debug(
+              `[Events] add: payload incomplete for ${delta.gid}, falling back to fetchTasks`,
+            )
+          }
+          await fetchTasks()
         }
         break
       }
 
       case 'complete': {
         const payload = delta.payload as Task | undefined
-        const incomingPayload = payload ? { ...payload, gid: payload.gid || delta.gid } : undefined
-
-        if (incomingPayload && (hasValidFiles(incomingPayload) || hasTaskGroupMetadata(incomingPayload))) {
-          cacheMetadata(toTask(incomingPayload))
-        }
 
         // 对于已经进入 stopped 的任务，应用随后到来的带精确 payload 的 Pusher 推送
         const stoppedTask = tasks.value.stopped.find(t => t.gid === delta.gid)
         if (stoppedTask && payload) {
           let updated = false
-          const beforeGroup = cloneTaskDownloadGroup(stoppedTask)
+          const beforeGroup = cloneTaskGroupMetadata(stoppedTask)
+          const incomingPayload = { ...payload, gid: payload.gid || delta.gid }
           if (
             payload.completedLength !== undefined &&
             stoppedTask.completedLength !== payload.completedLength
@@ -326,9 +303,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
             updated = true
           }
           Object.assign(stoppedTask, mergeTaskGroupMetadata(stoppedTask, incomingPayload))
-          if (!isTaskGroupEqual(beforeGroup, cloneTaskDownloadGroup(stoppedTask))) {
-            updated = true
-          }
+          if (!isTaskGroupEqual(beforeGroup, cloneTaskGroupMetadata(stoppedTask))) updated = true
           if (hasValidFiles(incomingPayload) || hasTaskGroupMetadata(incomingPayload)) {
             cacheMetadata(toTask(incomingPayload))
           }
@@ -356,10 +331,9 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
           moveTaskToStopped(delta.gid)
         } else if (!tasks.value.stopped.some(t => t.gid === delta.gid)) {
           // 小文件竞态路径：任务不在任何列表中，直接从 payload 构建 stopped 任务
-          const taskToAdd = hydrateTaskForInsertion(incomingPayload)
-
-          if (taskToAdd) {
-            cacheMetadata(taskToAdd)
+          if (payload && (payload.files?.[0]?.path || hasTaskGroupMetadata(payload))) {
+            cacheMetadata(payload)
+            const taskToAdd = applyMetadataFromCache(payload)
             taskToAdd.status = 'complete'
             tasks.value = {
               active: tasks.value.active.filter(t => t.gid !== delta.gid),
@@ -386,13 +360,6 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
 
       case 'error': {
         const errorPayload = delta.payload as Task | undefined
-        const incomingPayload = errorPayload
-          ? { ...errorPayload, gid: errorPayload.gid || delta.gid }
-          : undefined
-
-        if (incomingPayload && (hasValidFiles(incomingPayload) || hasTaskGroupMetadata(incomingPayload))) {
-          cacheMetadata(toTask(incomingPayload))
-        }
 
         // 尝试在 active/waiting 中找到任务
         const errorTask =
@@ -415,10 +382,12 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
           moveTaskToStopped(delta.gid)
         } else if (!tasks.value.stopped.some(t => t.gid === delta.gid)) {
           // 小文件竞态路径：任务不在任何列表中，直接从 payload 构建 stopped 任务
-          const taskToAdd = hydrateTaskForInsertion(incomingPayload)
-
-          if (taskToAdd) {
-            cacheMetadata(taskToAdd)
+          if (
+            errorPayload &&
+            (errorPayload.files?.[0]?.path || hasTaskGroupMetadata(errorPayload))
+          ) {
+            cacheMetadata(errorPayload)
+            const taskToAdd = applyMetadataFromCache(errorPayload)
             taskToAdd.status = 'error'
             tasks.value = {
               active: tasks.value.active.filter(t => t.gid !== delta.gid),
@@ -436,16 +405,16 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
         } else {
           const stoppedTask = tasks.value.stopped.find(t => t.gid === delta.gid)
           if (stoppedTask && errorPayload) {
-            const beforeGroup = cloneTaskDownloadGroup(stoppedTask)
+            const beforeGroup = cloneTaskGroupMetadata(stoppedTask)
+            const incomingPayload = { ...errorPayload, gid: errorPayload.gid || delta.gid }
             Object.assign(stoppedTask, mergeTaskGroupMetadata(stoppedTask, incomingPayload))
             if (errorPayload.errorCode !== undefined) stoppedTask.errorCode = errorPayload.errorCode
-            if (errorPayload.errorMessage !== undefined) {
+            if (errorPayload.errorMessage !== undefined)
               stoppedTask.errorMessage = errorPayload.errorMessage
-            }
             if (hasValidFiles(incomingPayload) || hasTaskGroupMetadata(incomingPayload)) {
               cacheMetadata(toTask(incomingPayload))
             }
-            if (!isTaskGroupEqual(beforeGroup, cloneTaskDownloadGroup(stoppedTask))) {
+            if (!isTaskGroupEqual(beforeGroup, cloneTaskGroupMetadata(stoppedTask))) {
               tasks.value = { ...tasks.value }
             }
           }

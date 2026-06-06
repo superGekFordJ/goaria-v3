@@ -1,105 +1,102 @@
-import type { DownloadGroup, Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
+import type { DownloadGroup, Task } from '../../../bindings/goaria-v3/internal/rpc/models'
 
 export type TaskGroupHint = {
   groupKey: string
   folderLabel?: string
-  itemCount?: number
+  folderPath?: string
+  totalCount?: number
+  visibleCount?: number
+  ordinal?: number
+  isAutoFoldered: boolean
 }
 
-export type BatchGroupSummary = {
+export type GroupSummary = {
   groupKey: string
   folderLabel?: string
-  itemCount?: number
+  folderPath?: string
+  totalCount?: number
+  visibleCount: number
+  isAutoFoldered: boolean
 }
 
-function asGroupRecord(group: unknown): Partial<DownloadGroup> | undefined {
-  if (!group || typeof group !== 'object') return undefined
-  return group as Partial<DownloadGroup>
-}
+const secretSegmentPattern = /(?:token|secret|bearer|cookie|auth|account|password|key)[^\\/]*/i
+const uriOrQueryPattern = /(?:https?:|ftp:|sftp:|magnet:|[?#&])/i
 
-function normalizeText(value: unknown): string | undefined {
+function cleanText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
-  return trimmed ? trimmed : undefined
+  return trimmed.length > 0 ? trimmed : undefined
 }
 
-function normalizeCount(value: unknown): number | undefined {
-  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value
-  return undefined
+function positiveNumber(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined
+  return value
 }
 
-function normalizeTimestamp(value: unknown): number {
-  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value
-  return 0
+function basename(value: string): string {
+  const normalized = value.replace(/\\+$/, '')
+  const index = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
+  return index >= 0 ? normalized.slice(index + 1) : normalized
 }
 
-export function cloneDownloadGroup(group?: DownloadGroup | null): DownloadGroup | undefined {
-  const source = asGroupRecord(group)
-  const id = normalizeText(source?.id)
+function isSafeFolderPathHint(path: string): boolean {
+  if (uriOrQueryPattern.test(path)) return false
+  return !path.split(/[\\/]+/).some(segment => secretSegmentPattern.test(segment))
+}
+
+export function cloneTaskGroupMetadata(task?: Partial<Task>): DownloadGroup | undefined {
+  const group = task?.download_group
+  if (!group) return undefined
+  const id = cleanText(group.id)
   if (!id) return undefined
 
   return {
     id,
-    kind: normalizeText(source?.kind) ?? '',
-    name: normalizeText(source?.name) ?? '',
-    folder_name: normalizeText(source?.folder_name) ?? '',
-    dir: normalizeText(source?.dir) ?? '',
-    item_count: normalizeCount(source?.item_count) ?? 0,
-    created_at: normalizeTimestamp(source?.created_at),
+    kind: cleanText(group.kind) ?? '',
+    name: cleanText(group.name) ?? '',
+    name_status: cleanText(group.name_status),
+    folder_name: cleanText(group.folder_name) ?? '',
+    dir: cleanText(group.dir) ?? '',
+    item_count: positiveNumber(group.item_count) ?? 0,
+    created_at:
+      typeof group.created_at === 'number' && Number.isFinite(group.created_at)
+        ? group.created_at
+        : 0,
   }
-}
-
-export function cloneTaskDownloadGroup(task?: Partial<Task>): DownloadGroup | undefined {
-  return cloneDownloadGroup((task as { download_group?: DownloadGroup | null } | undefined)?.download_group)
 }
 
 export function hasTaskGroupMetadata(task?: Partial<Task>): boolean {
-  return cloneTaskDownloadGroup(task) !== undefined
+  return cloneTaskGroupMetadata(task) !== undefined
 }
 
-export function mergeDownloadGroups(
-  existing?: DownloadGroup | null,
-  incoming?: DownloadGroup | null,
-): DownloadGroup | undefined {
-  const current = cloneDownloadGroup(existing)
-  const next = cloneDownloadGroup(incoming)
+export function mergeTaskGroupMetadata(
+  existing?: Partial<Task>,
+  incoming?: Partial<Task>,
+): Partial<Task> {
+  const incomingGroup = cloneTaskGroupMetadata(incoming)
+  if (incomingGroup) return { download_group: incomingGroup }
 
-  if (!next) return current
-  if (!current) return next
-  if (current.id !== next.id) return next
+  const existingGroup = cloneTaskGroupMetadata(existing)
+  if (existingGroup) return { download_group: existingGroup }
 
-  return {
-    id: next.id,
-    kind: next.kind || current.kind,
-    name: next.name || current.name,
-    folder_name: next.folder_name || current.folder_name,
-    dir: next.dir || current.dir,
-    item_count: next.item_count || current.item_count,
-    created_at: next.created_at || current.created_at,
-  }
-}
-
-export function mergeTaskGroupMetadata(existing?: Partial<Task>, incoming?: Partial<Task>): Partial<Task> {
-  const merged = mergeDownloadGroups(cloneTaskDownloadGroup(existing), cloneTaskDownloadGroup(incoming))
-  return merged ? { download_group: merged } : {}
+  return {}
 }
 
 export function applyTaskGroupMetadata<T extends Partial<Task>>(task: T, group?: DownloadGroup): T {
   if (!group) return task
-  return { ...task, download_group: cloneDownloadGroup(group) ?? group } as T
+  return { ...task, download_group: { ...group } as Task['download_group'] }
 }
 
 export function isTaskGroupEqual(a?: DownloadGroup | null, b?: DownloadGroup | null): boolean {
-  const left = cloneDownloadGroup(a)
-  const right = cloneDownloadGroup(b)
-
+  const left = cloneTaskGroupMetadata({ download_group: a ?? undefined })
+  const right = cloneTaskGroupMetadata({ download_group: b ?? undefined })
   if (!left && !right) return true
   if (!left || !right) return false
-
   return (
     left.id === right.id &&
     left.kind === right.kind &&
     left.name === right.name &&
+    (left.name_status ?? '') === (right.name_status ?? '') &&
     left.folder_name === right.folder_name &&
     left.dir === right.dir &&
     left.item_count === right.item_count &&
@@ -107,61 +104,88 @@ export function isTaskGroupEqual(a?: DownloadGroup | null, b?: DownloadGroup | n
   )
 }
 
-function toGroupSummary(group?: DownloadGroup | null): BatchGroupSummary | undefined {
-  const normalized = cloneDownloadGroup(group)
-  if (!normalized) return undefined
+export function getDownloadGroupHint(group?: DownloadGroup | null): TaskGroupHint | null {
+  const cloned = cloneTaskGroupMetadata({ download_group: group ?? undefined })
+  if (!cloned) return null
+
+  const folderName = cleanText(cloned.folder_name)
+  const dir = cleanText(cloned.dir)
+  const folderLabel = folderName ?? (dir ? basename(dir) : cleanText(cloned.name))
+  const safeFolderPath = dir && isSafeFolderPathHint(dir) ? dir : undefined
 
   return {
-    groupKey: normalized.id,
-    folderLabel: normalized.folder_name || normalized.name || undefined,
-    itemCount: normalizeCount(normalized.item_count),
+    groupKey: cloned.id,
+    folderLabel,
+    folderPath: safeFolderPath,
+    totalCount: positiveNumber(cloned.item_count),
+    isAutoFoldered: Boolean(folderName || dir),
   }
 }
 
 export function getTaskGroupHint(task: Task): TaskGroupHint | null {
-  const summary = toGroupSummary(cloneTaskDownloadGroup(task))
-  return summary ? { ...summary } : null
+  return getDownloadGroupHint(task.download_group)
 }
 
-export function buildBatchGroupSummaries(groups?: DownloadGroup[] | null): BatchGroupSummary[] {
+export function buildBatchGroupResultHints(groups?: DownloadGroup[]): TaskGroupHint[] {
   if (!groups?.length) return []
 
-  const summariesByKey = new Map<string, BatchGroupSummary>()
+  const hints: TaskGroupHint[] = []
+  const seen = new Set<string>()
   for (const group of groups) {
-    const summary = toGroupSummary(group)
-    if (!summary) continue
-
-    const existing = summariesByKey.get(summary.groupKey)
-    if (!existing) {
-      summariesByKey.set(summary.groupKey, summary)
-      continue
-    }
-
-    existing.folderLabel = existing.folderLabel || summary.folderLabel
-    existing.itemCount = existing.itemCount || summary.itemCount
+    const hint = getDownloadGroupHint(group)
+    if (!hint || seen.has(hint.groupKey)) continue
+    seen.add(hint.groupKey)
+    hints.push(hint)
   }
-
-  return Array.from(summariesByKey.values())
+  return hints
 }
 
 export function buildVisibleTaskGroupHints(tasks: Task[]): Map<string, TaskGroupHint> {
-  const summariesByKey = new Map<string, TaskGroupHint>()
-  const hintsByGid = new Map<string, TaskGroupHint>()
+  const summaries = new Map<string, GroupSummary>()
+  const baseHintsByGid = new Map<string, TaskGroupHint>()
 
   for (const task of tasks) {
-    const summary = getTaskGroupHint(task)
-    if (!summary) continue
+    const hint = getTaskGroupHint(task)
+    if (!hint) continue
 
-    const existing = summariesByKey.get(summary.groupKey)
-    if (existing) {
-      existing.folderLabel = existing.folderLabel || summary.folderLabel
-      existing.itemCount = existing.itemCount || summary.itemCount
-      hintsByGid.set(task.gid, existing)
-      continue
+    baseHintsByGid.set(task.gid, hint)
+
+    const summary = summaries.get(hint.groupKey)
+    if (summary) {
+      summary.visibleCount += 1
+      if (!summary.folderLabel && hint.folderLabel) summary.folderLabel = hint.folderLabel
+      if (!summary.folderPath && hint.folderPath) summary.folderPath = hint.folderPath
+      if (!summary.totalCount && hint.totalCount) summary.totalCount = hint.totalCount
+      summary.isAutoFoldered = summary.isAutoFoldered || hint.isAutoFoldered
+    } else {
+      summaries.set(hint.groupKey, {
+        groupKey: hint.groupKey,
+        folderLabel: hint.folderLabel,
+        folderPath: hint.folderPath,
+        totalCount: hint.totalCount,
+        visibleCount: 1,
+        isAutoFoldered: hint.isAutoFoldered,
+      })
     }
+  }
 
-    summariesByKey.set(summary.groupKey, summary)
-    hintsByGid.set(task.gid, summary)
+  const ordinalByGroup = new Map<string, number>()
+  const hintsByGid = new Map<string, TaskGroupHint>()
+
+  for (const [gid, hint] of baseHintsByGid) {
+    const summary = summaries.get(hint.groupKey)
+    if (!summary) continue
+    const ordinal = (ordinalByGroup.get(hint.groupKey) ?? 0) + 1
+    ordinalByGroup.set(hint.groupKey, ordinal)
+    hintsByGid.set(gid, {
+      groupKey: hint.groupKey,
+      folderLabel: summary.folderLabel,
+      folderPath: summary.folderPath,
+      totalCount: summary.totalCount,
+      visibleCount: summary.visibleCount,
+      ordinal,
+      isAutoFoldered: summary.isAutoFoldered,
+    })
   }
 
   return hintsByGid

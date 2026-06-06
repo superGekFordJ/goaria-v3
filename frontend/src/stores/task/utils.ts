@@ -72,30 +72,35 @@ export function mergeTasks(oldList: Task[], newList: Task[]): { merged: Task[]; 
     // Always cache valid metadata from new data
     cacheMetadata(newTask)
 
-    newTask = applyMetadataFromCache(newTask)
+    // Apply cached metadata if new task is missing files - DO THIS EARLY
+    if (!newTask.files?.length || !newTask.files[0]?.path) {
+      newTask = applyMetadataFromCache(newTask)
+    }
 
     const oldTask = _mergeOldMap.get(newTask.gid)
     if (oldTask) {
-      Object.assign(newTask, mergeTaskGroupMetadata(oldTask, newTask))
-
       // Check if we gained metadata (files appeared)
-      const gainedFilesMetadata =
+      const gainedMetadata =
         (!oldTask.files?.length || !oldTask.files[0]?.path) &&
-        Boolean(newTask.files?.length && newTask.files[0]?.path)
-      const gainedGroupMetadata =
-        !oldTask.download_group && Boolean(newTask.download_group)
+        newTask.files?.length &&
+        newTask.files[0]?.path
 
-      if (isTaskEqual(oldTask, newTask) && !gainedFilesMetadata && !gainedGroupMetadata) {
+      if (isTaskEqual(oldTask, newTask) && !gainedMetadata) {
         return oldTask // 保持原引用
       }
 
       // Preserve old task's metadata if still missing in new task (and cache didn't help)
-      if ((!newTask.files || newTask.files.length === 0) && oldTask.files && oldTask.files.length > 0) {
+      if (
+        (!newTask.files || newTask.files.length === 0) &&
+        oldTask.files &&
+        oldTask.files.length > 0
+      ) {
         newTask.files = oldTask.files
       }
       if (!newTask.dir && oldTask.dir) {
         newTask.dir = oldTask.dir
       }
+      Object.assign(newTask, mergeTaskGroupMetadata(oldTask, newTask))
     } else {
       // New task - already applied cache above
     }

@@ -20,7 +20,7 @@ import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 import type { BatchAddResult } from '../../../bindings/goaria-v3/models'
 import { cacheMetadata, applyMetadataFromCache } from './metadata'
 import { mergeTasks, dedupByGid } from './utils'
-import { cloneTaskDownloadGroup, mergeTaskGroupMetadata } from './grouping'
+import { cloneTaskGroupMetadata, mergeTaskGroupMetadata } from './grouping'
 
 export function setupActions(state: TaskState) {
   // Reuse sets to avoid GC - scoped to setupActions for better encapsulation
@@ -33,6 +33,7 @@ export function setupActions(state: TaskState) {
   const {
     tasks,
     selectedGids,
+    selectedGroupKeys,
     consecutiveErrors,
     pollingContextEnabled,
     isWindowVisible,
@@ -140,7 +141,7 @@ export function setupActions(state: TaskState) {
 
     for (const gid of Object.keys(metadata)) {
       const meta = metadata[gid]
-      if (!meta || (!hasValidFiles(meta) && !cloneTaskDownloadGroup(meta))) continue
+      if (!meta || (!hasValidFiles(meta) && !cloneTaskGroupMetadata(meta))) continue
       cacheMetadata(meta)
 
       const activeIdx = newActive.findIndex(t => t.gid === gid)
@@ -460,12 +461,32 @@ export function setupActions(state: TaskState) {
     selectedGids.value = new Set(selectedGids.value)
   }
 
-  function selectAll(gids: string[]) {
-    selectedGids.value = new Set(gids)
+  function toggleSelectGroup(groupKey: string) {
+    const normalizedKey = groupKey.trim()
+    if (!normalizedKey) return
+    if (selectedGroupKeys.value.has(normalizedKey)) {
+      selectedGroupKeys.value.delete(normalizedKey)
+    } else {
+      selectedGroupKeys.value.add(normalizedKey)
+    }
+    selectedGroupKeys.value = new Set(selectedGroupKeys.value)
+  }
+
+  function clearSelectedGroup(groupKey: string) {
+    const normalizedKey = groupKey.trim()
+    if (!normalizedKey || !selectedGroupKeys.value.has(normalizedKey)) return
+    selectedGroupKeys.value.delete(normalizedKey)
+    selectedGroupKeys.value = new Set(selectedGroupKeys.value)
+  }
+
+  function selectAll(gids: string[], groupKeys: string[] = []) {
+    selectedGids.value = new Set(gids.map(gid => gid.trim()).filter(Boolean))
+    selectedGroupKeys.value = new Set(groupKeys.map(key => key.trim()).filter(Boolean))
   }
 
   function clearSelection() {
     selectedGids.value = new Set()
+    selectedGroupKeys.value = new Set()
   }
 
   async function batchPause(gids: string[]) {
@@ -495,7 +516,7 @@ export function setupActions(state: TaskState) {
       waiting: tasks.value.waiting.filter(t => !gidSet.has(t.gid)),
       stopped: tasks.value.stopped.filter(t => !gidSet.has(t.gid)),
     }
-    clearSelection()
+    selectedGids.value = new Set()
     immediateUpdateTrayIcon()
 
     try {
@@ -511,15 +532,12 @@ export function setupActions(state: TaskState) {
   async function syncFromSnapshot() {
     try {
       const snapshot = await GetFullSnapshot()
-      for (const task of [...tasks.value.active, ...tasks.value.waiting, ...tasks.value.stopped]) {
-        cacheMetadata(task)
-      }
-      for (const task of [
+      for (const t of [
         ...(snapshot.tasks.active || []),
         ...(snapshot.tasks.waiting || []),
         ...(snapshot.tasks.stopped || []),
       ]) {
-        cacheMetadata(task)
+        cacheMetadata(t)
       }
       tasks.value = {
         active: (snapshot.tasks.active || []).map(applyMetadataFromCache),
@@ -551,6 +569,8 @@ export function setupActions(state: TaskState) {
     remove,
     openTaskFolder,
     toggleSelect,
+    toggleSelectGroup,
+    clearSelectedGroup,
     selectAll,
     clearSelection,
     batchPause,

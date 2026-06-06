@@ -8,6 +8,7 @@ export type ThemeMode = 'system' | 'light' | 'dark'
 export type { SkinId } from '../utils/skinCatalog'
 export type Density = 'compact' | 'comfortable'
 export type Effects = 'full' | 'reduced'
+export type ActiveTab = 'downloads' | 'stopped' | 'settings'
 
 let systemThemeMedia: MediaQueryList | null = null
 let detachSystemThemeListener: (() => void) | null = null
@@ -16,7 +17,8 @@ export const useUIStore = defineStore(
   'ui',
   () => {
     // State
-    const activeTab = ref('downloads')
+    const activeTab = ref<ActiveTab>('downloads')
+    const selectedDownloadGroupKey = ref<string | null>(null)
     const locale = ref<LocalePreference>('auto')
     const themeMode = ref<ThemeMode>('system')
     const skinId = ref<SkinId>(DEFAULT_SKIN_ID)
@@ -26,8 +28,48 @@ export const useUIStore = defineStore(
     const pendingPasteUris = ref<string[]>([])
 
     // Actions
+    function normalizeActiveTab(tab: unknown): ActiveTab {
+      if (tab === 'stopped' || tab === 'settings') return tab
+      return 'downloads'
+    }
+
+    function normalizeSelectedDownloadGroupKey() {
+      const normalizedKey = selectedDownloadGroupKey.value?.trim() || ''
+      selectedDownloadGroupKey.value = normalizedKey || null
+    }
+
+    function normalizeNavigationState() {
+      const persistedTab = activeTab.value as string
+      const normalizedTab = normalizeActiveTab(persistedTab)
+      activeTab.value = normalizedTab
+      normalizeSelectedDownloadGroupKey()
+
+      if (persistedTab !== 'groups') return
+      if (!selectedDownloadGroupKey.value) {
+        selectedDownloadGroupKey.value = null
+      }
+    }
+
     function setActiveTab(tab: string) {
-      activeTab.value = tab
+      activeTab.value = normalizeActiveTab(tab)
+      selectedDownloadGroupKey.value = null
+    }
+
+    function openDownloadGroupDetail(groupKey: string) {
+      const normalizedKey = groupKey.trim()
+      if (!normalizedKey) return
+      if (activeTab.value !== 'downloads' && activeTab.value !== 'stopped') {
+        activeTab.value = 'downloads'
+      }
+      selectedDownloadGroupKey.value = normalizedKey
+    }
+
+    function closeDownloadGroupDetail() {
+      selectedDownloadGroupKey.value = null
+    }
+
+    function clearDownloadGroupSelection() {
+      selectedDownloadGroupKey.value = null
     }
 
     function setPendingPasteUri(uri: string) {
@@ -125,6 +167,7 @@ export const useUIStore = defineStore(
      * Should be called in App.vue onMounted
      */
     function initTheme() {
+      normalizeNavigationState()
       // Defensive: normalise persisted skinId in case it was set to an unknown value
       skinId.value = normaliseSkinId(skinId.value)
       applyTheme()
@@ -136,6 +179,7 @@ export const useUIStore = defineStore(
     return {
       // State
       activeTab,
+      selectedDownloadGroupKey,
       themeMode,
       skinId,
       density,
@@ -144,6 +188,10 @@ export const useUIStore = defineStore(
       pendingPasteUris,
       // Actions
       setActiveTab,
+      normalizeNavigationState,
+      openDownloadGroupDetail,
+      closeDownloadGroupDetail,
+      clearDownloadGroupSelection,
       setPendingPasteUri,
       consumePendingPasteUri,
       setPendingPasteUris,
@@ -161,7 +209,15 @@ export const useUIStore = defineStore(
   },
   {
     persist: {
-      pick: ['activeTab', 'locale', 'themeMode', 'skinId', 'density', 'effects'],
+      pick: [
+        'activeTab',
+        'selectedDownloadGroupKey',
+        'locale',
+        'themeMode',
+        'skinId',
+        'density',
+        'effects',
+      ],
     },
   },
 )

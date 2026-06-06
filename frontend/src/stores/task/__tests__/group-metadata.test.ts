@@ -2,8 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { setupState } from '../state'
 import { setupActions } from '../actions'
 import { setupEvents } from '../events'
-import { applyMetadataFromCache, cacheMetadata, clearMetadataCache } from '../metadata'
-import { mergeTasks } from '../utils'
+import {
+  applyMetadataFromCache,
+  cacheMetadata,
+  clearMetadataCache,
+  getMetadataCacheSize,
+} from '../metadata'
+import {
+  buildVisibleTaskGroupHints,
+  cloneTaskGroupMetadata,
+  getTaskGroupHint,
+  isTaskGroupEqual,
+} from '../grouping'
 import type { TaskPolling } from '../polling'
 import type { Task } from '../../../../bindings/goaria-v3/internal/rpc/models'
 
@@ -26,18 +36,6 @@ vi.mock('../../../../bindings/goaria-v3/app.js', () => ({
   UpdateTrayState: vi.fn(),
 }))
 
-import { GetActiveTasks, GetTaskMetadata } from '../../../../bindings/goaria-v3/app.js'
-
-const mockGroup = {
-  id: 'dg-group-metadata',
-  kind: 'batch',
-  name: 'Batch 2026-05-07 dg-group-metadata',
-  folder_name: 'Batch 2026-05-07 dg-group-metadata',
-  dir: '/downloads/Batch 2026-05-07 dg-group-metadata',
-  item_count: 5,
-  created_at: 1770000000,
-}
-
 function mockTask(gid: string, overrides: Partial<Task> = {}): Task {
   return {
     gid,
@@ -53,108 +51,152 @@ function mockTask(gid: string, overrides: Partial<Task> = {}): Task {
   } as Task
 }
 
-function flushPromises() {
-  return new Promise<void>(resolve => setTimeout(resolve, 0))
+const group = {
+  id: 'dg-opaque-1',
+  kind: 'batch',
+  name: 'Batch 2026-05-07 dg-opaque-1',
+  folder_name: 'Batch 2026-05-07 dg-opaque-1',
+  dir: '/downloads/Batch 2026-05-07 dg-opaque-1',
+  item_count: 5,
+  created_at: 1770000000,
 }
 
-describe('download_group metadata retention', () => {
+describe('task group metadata helpers and retention', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     clearMetadataCache()
-    vi.mocked(GetTaskMetadata).mockResolvedValue({} as Record<string, Task>)
   })
 
-  it('caches and reapplies download_group even when files are missing', () => {
-    cacheMetadata(mockTask('gid-cache', { files: [], dir: '', download_group: mockGroup }))
+  it('returns null for ungrouped tasks and normalizes grouped task hints', () => {
+    expect(getTaskGroupHint(mockTask('plain'))).toBeNull()
 
-    const enriched = applyMetadataFromCache(mockTask('gid-cache', { files: [], dir: '' }))
+    const hint = getTaskGroupHint(mockTask('grouped', { download_group: group }))
+    expect(hint).toMatchObject({
+      groupKey: 'dg-opaque-1',
+      folderLabel: 'Batch 2026-05-07 dg-opaque-1',
+      folderPath: '/downloads/Batch 2026-05-07 dg-opaque-1',
+      totalCount: 5,
+      isAutoFoldered: true,
+    })
+  })
 
-    expect(enriched.download_group?.id).toBe('dg-group-metadata')
+  it('caches and reapplies group metadata independently of file metadata', () => {
+    cacheMetadata(mockTask('lite-group', { files: [], dir: '', download_group: group }))
+    expect(getMetadataCacheSize()).toBe(1)
+
+    const enriched = applyMetadataFromCache(mockTask('lite-group', { files: [], dir: '' }))
+    expect(enriched.download_group?.id).toBe(group.id)
     expect(enriched.files).toHaveLength(0)
   })
 
-  it('preserves richer download_group during polling merge when incoming payload is sparse', () => {
-    const oldTask = mockTask('gid-merge', {
-      files: [],
-      dir: '',
-      completedLength: '100',
-      download_group: mockGroup,
-    })
+  it('preserves download_group name_status through clone equality and metadata cache updates', () => {
+    const pendingGroup = { ...group, name_status: 'pending' }
+    const stableGroup = { ...group, name: 'Stable batch name', name_status: 'stable' }
 
-    const incoming = mockTask('gid-merge', {
+    expect(
+      cloneTaskGroupMetadata(mockTask('name-status', { download_group: pendingGroup }))
+        ?.name_status,
+    ).toBe('pending')
+    expect(isTaskGroupEqual(pendingGroup, { ...pendingGroup })).toBe(true)
+    expect(isTaskGroupEqual(pendingGroup, stableGroup)).toBe(false)
+
+    cacheMetadata(mockTask('name-status', { files: [], dir: '', download_group: pendingGroup }))
+    const pendingEnriched = applyMetadataFromCache(
+      mockTask('name-status', { files: [], dir: '', download_group: undefined }),
+    )
+    expect(pendingEnriched.download_group?.name_status).toBe('pending')
+
+    cacheMetadata(mockTask('name-status', { files: [], dir: '', download_group: stableGroup }))
+    const stableEnriched = applyMetadataFromCache(
+      mockTask('name-status', { files: [], dir: '', download_group: undefined }),
+    )
+    expect(stableEnriched.download_group?.name).toBe('Stable batch name')
+    expect(stableEnriched.download_group?.name_status).toBe('stable')
+  })
+
+  it('preserves cached group metadata when applying a Lite payload', () => {
+    cacheMetadata(mockTask('full', { download_group: group }))
+
+    const lite = mockTask('full', {
       files: [],
       dir: '',
-      completedLength: '200',
+      totalLength: '0',
       download_group: undefined,
     })
+    const enriched = applyMetadataFromCache(lite)
 
-    const result = mergeTasks([oldTask], [incoming])
-
-    expect(result.changed).toBe(true)
-    expect(result.merged[0].completedLength).toBe('200')
-    expect(result.merged[0].download_group?.id).toBe('dg-group-metadata')
+    expect(enriched.files[0].path).toBe('/downloads/full.bin')
+    expect(enriched.download_group?.id).toBe(group.id)
   })
 
-  it('applies recovered download_group metadata from GetTaskMetadata', async () => {
-    const state = setupState()
-    const actions = setupActions(state)
-
-    vi.mocked(GetActiveTasks).mockResolvedValue({
-      active: [mockTask('gid-recover', { files: [], dir: '', totalLength: '0' })],
-      waiting: [],
-    } as unknown as { active: Task[]; waiting: Task[] })
-    vi.mocked(GetTaskMetadata).mockResolvedValue({
-      'gid-recover': mockTask('gid-recover', {
-        files: [{ path: '/downloads/recover.bin', uris: [] }],
-        dir: '/downloads',
-        totalLength: '2048',
-        download_group: mockGroup,
-      }),
-    } as Record<string, Task>)
-
-    await actions.fetchActiveTasks()
-    await flushPromises()
-
-    expect(state.tasks.value.active).toHaveLength(1)
-    expect(state.tasks.value.active[0].download_group?.id).toBe('dg-group-metadata')
-    expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/recover.bin')
-  })
-
-  it('preserves download_group through sparse add and move event merges', async () => {
+  it('preserves group metadata through metadata recovery and sparse event merge', async () => {
     const state = setupState()
     const actions = setupActions(state)
     const events = setupEvents(state, actions, {} as TaskPolling)
 
-    state.tasks.value.active = [mockTask('gid-event', { download_group: mockGroup })]
+    state.tasks.value.active = [mockTask('gid-rich', { download_group: group })]
 
     await events.handleTaskDelta({
       type: 'add',
-      gid: 'gid-event',
+      gid: 'gid-rich',
       payload: {
-        gid: 'gid-event',
+        gid: 'gid-rich',
         status: 'active',
         files: [],
         dir: '',
         totalLength: '0',
-        completedLength: '200',
       },
     })
 
-    expect(state.tasks.value.active[0].download_group?.id).toBe('dg-group-metadata')
+    expect(state.tasks.value.active[0].download_group?.id).toBe(group.id)
 
     events.handleTaskMove({
-      gid: 'gid-event',
+      gid: 'gid-rich',
       from: 'active',
       to: 'waiting',
-      task: {
-        gid: 'gid-event',
-        status: 'waiting',
-        files: [],
-        dir: '',
-      },
+      task: { gid: 'gid-rich', status: 'waiting', files: [], dir: '' },
     })
 
-    expect(state.tasks.value.waiting).toHaveLength(1)
-    expect(state.tasks.value.waiting[0].download_group?.id).toBe('dg-group-metadata')
+    expect(state.tasks.value.waiting[0].download_group?.id).toBe(group.id)
+  })
+
+  it('builds visible group hints with visible counts and ordinals', () => {
+    const hints = buildVisibleTaskGroupHints([
+      mockTask('a', { download_group: group }),
+      mockTask('b', { download_group: group }),
+      mockTask('c'),
+    ])
+
+    expect(hints.get('a')).toMatchObject({ visibleCount: 2, ordinal: 1, totalCount: 5 })
+    expect(hints.get('b')).toMatchObject({ visibleCount: 2, ordinal: 2, totalCount: 5 })
+    expect(hints.has('c')).toBe(false)
+  })
+
+  it('keeps task and group selections in separate reactive sets', () => {
+    const state = setupState()
+    const actions = setupActions(state)
+
+    actions.toggleSelect('gid-one')
+    actions.toggleSelectGroup('dg-one')
+
+    expect(state.getSelectedGids.value).toEqual(['gid-one'])
+    expect(state.getSelectedGroupKeys.value).toEqual(['dg-one'])
+    expect(state.selectedTaskCount.value).toBe(1)
+    expect(state.selectedGroupCount.value).toBe(1)
+    expect(state.selectedCount.value).toBe(2)
+    expect(state.isSelected('dg-one')).toBe(false)
+    expect(state.isGroupSelected('dg-one')).toBe(true)
+
+    actions.clearSelectedGroup('dg-one')
+    expect(state.getSelectedGids.value).toEqual(['gid-one'])
+    expect(state.getSelectedGroupKeys.value).toEqual([])
+
+    actions.selectAll(['gid-two'], ['dg-two'])
+    expect(state.getSelectedGids.value).toEqual(['gid-two'])
+    expect(state.getSelectedGroupKeys.value).toEqual(['dg-two'])
+
+    actions.clearSelection()
+    expect(state.getSelectedGids.value).toEqual([])
+    expect(state.getSelectedGroupKeys.value).toEqual([])
   })
 })

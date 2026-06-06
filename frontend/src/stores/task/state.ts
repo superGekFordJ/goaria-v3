@@ -5,7 +5,10 @@ import { UpdateTrayState } from '../../../bindings/goaria-v3/app.js'
 type UriLookup = Iterable<string> & {
   readonly size: number
   has(value: string): boolean
-  forEach(callbackfn: (value: string, value2: string, set: UriLookup) => void, thisArg?: unknown): void
+  forEach(
+    callbackfn: (value: string, value2: string, set: UriLookup) => void,
+    thisArg?: unknown,
+  ): void
   entries(): IterableIterator<[string, string]>
   keys(): IterableIterator<string>
   values(): IterableIterator<string>
@@ -42,7 +45,10 @@ class CombinedUriSet implements UriLookup {
     return this.sets.some(set => set.has(value))
   }
 
-  forEach(callbackfn: (value: string, value2: string, set: UriLookup) => void, thisArg?: unknown): void {
+  forEach(
+    callbackfn: (value: string, value2: string, set: UriLookup) => void,
+    thisArg?: unknown,
+  ): void {
     for (const value of this) {
       callbackfn.call(thisArg, value, value, this)
     }
@@ -84,6 +90,7 @@ export function setupState() {
 
   // Selection State for batch operations
   const selectedGids = ref<Set<string>>(new Set())
+  const selectedGroupKeys = ref<Set<string>>(new Set())
 
   // Polling & App Flags
   const syncMode = ref<'polling' | 'event-driven'>('event-driven')
@@ -111,9 +118,13 @@ export function setupState() {
   )
 
   // Selection Getters
-  const selectedCount = computed(() => selectedGids.value.size)
+  const selectedTaskCount = computed(() => selectedGids.value.size)
+  const selectedGroupCount = computed(() => selectedGroupKeys.value.size)
+  const selectedCount = computed(() => selectedTaskCount.value + selectedGroupCount.value)
   const isSelected = (gid: string) => selectedGids.value.has(gid)
+  const isGroupSelected = (groupKey: string) => selectedGroupKeys.value.has(groupKey.trim())
   const getSelectedGids = computed(() => Array.from(selectedGids.value))
+  const getSelectedGroupKeys = computed(() => Array.from(selectedGroupKeys.value))
 
   // Tray State (UI Logic related to state)
   let lastTrayState = { hasActive: false, hasPaused: false, hasError: false }
@@ -166,6 +177,7 @@ export function setupState() {
   return {
     tasks,
     selectedGids,
+    selectedGroupKeys,
     syncMode,
     pollingEnabled,
     pollingContextEnabled,
@@ -178,9 +190,13 @@ export function setupState() {
     stoppedTasks,
     allTasksCount,
     allUris,
+    selectedTaskCount,
+    selectedGroupCount,
     selectedCount,
     isSelected,
+    isGroupSelected,
     getSelectedGids,
+    getSelectedGroupKeys,
     throttledUpdateTrayIcon,
     immediateUpdateTrayIcon,
   }
