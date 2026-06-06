@@ -13,6 +13,26 @@ vars:
   # Docker image for cross-compilation (used when building on non-Linux or no CC available)
   CROSS_IMAGE: wails-cross
 
+  APPIMAGE_RUNTIME_ARCH:
+    sh: |
+      target_arch="{{.ARCH | default ARCH}}"
+      case "$target_arch" in
+        amd64|x86_64) printf 'x86_64' ;;
+        arm64|aarch64) printf 'aarch64' ;;
+        *) echo "unsupported AppImage runtime architecture: $target_arch" >&2; exit 1 ;;
+      esac
+
+  APPIMAGE_RUNTIME_FILE:
+    sh: |
+      if [ -n "${APPIMAGE_RUNTIME_FILE:-}" ]; then
+        case "${APPIMAGE_RUNTIME_FILE}" in
+          /*) printf '%s' "${APPIMAGE_RUNTIME_FILE}" ;;
+          *) printf '%s/%s' "{{.ROOT_DIR}}" "${APPIMAGE_RUNTIME_FILE}" ;;
+        esac
+      else
+        printf '%s/build/extractor/cache/appimage/runtime-%s' "{{.ROOT_DIR}}" "{{.APPIMAGE_RUNTIME_ARCH}}"
+      fi
+
 tasks:
   prepare:aria2:
     summary: Stages the Linux bundled aria2 binary
@@ -22,6 +42,34 @@ tasks:
           TARGET_OS: linux
           TARGET_ARCH: '{{.ARCH | default ARCH}}'
           TARGET_PATH: internal/process/bundled/linux/aria2c
+
+  prepare:appimage:runtime:
+    summary: Caches the AppImage runtime locally
+    cmds:
+      - |
+        set -euo pipefail
+        runtime_path="{{.APPIMAGE_RUNTIME_FILE}}"
+        runtime_url="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-{{.APPIMAGE_RUNTIME_ARCH}}"
+        mkdir -p "$(dirname "$runtime_path")"
+        if [ -s "$runtime_path" ]; then
+          echo "Using cached AppImage runtime at $runtime_path"
+          exit 0
+        fi
+        tmp_path="${runtime_path}.tmp"
+        rm -f "$tmp_path"
+        if ! curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors -o "$tmp_path" "$runtime_url"; then
+          rm -f "$tmp_path"
+          echo "failed to prepare local AppImage runtime file" >&2
+          exit 1
+        fi
+        if [ ! -s "$tmp_path" ]; then
+          rm -f "$tmp_path"
+          echo "failed to prepare local AppImage runtime file" >&2
+          exit 1
+        fi
+        mv "$tmp_path" "$runtime_path"
+        chmod 0644 "$runtime_path"
+        echo "Prepared local AppImage runtime at $runtime_path"
 
   build:
     summary: Builds the application for Linux
@@ -120,6 +168,63 @@ tasks:
       - task: create:rpm
       - task: create:aur
 
+  smoke:
+    summary: Smoke tests bundled Linux runtime extraction
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - |
+        set -euo pipefail
+        smoke_timeout_seconds="{{.SMOKE_TIMEOUT_SECONDS | default "30"}}"
+        smoke_poll_interval_seconds="{{.SMOKE_POLL_INTERVAL_SECONDS | default "1"}}"
+        export HOME="$(mktemp -d)"
+        log_path="$HOME/linux-smoke.log"
+        aria2_path="$HOME/.goaria/aria2c"
+        pid=""
+
+        stop_process() {
+          if [ -z "$pid" ]; then
+            return 0
+          fi
+          if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+          fi
+          wait "$pid" || true
+          pid=""
+        }
+
+        cleanup() {
+          stop_process
+          rm -rf "$HOME"
+        }
+
+        trap 'cleanup' EXIT
+
+        xvfb-run -a ./bin/{{.APP_NAME}} --hidden >"$log_path" 2>&1 &
+        pid=$!
+        deadline=$(( $(date +%s) + smoke_timeout_seconds ))
+
+        while true; do
+          if [ -x "$aria2_path" ]; then
+            stop_process
+            trap - EXIT
+            cleanup
+            echo "Bundled Linux runtime smoke test passed"
+            exit 0
+          fi
+          if ! kill -0 "$pid" 2>/dev/null; then
+            wait "$pid" || true
+            cat "$log_path" >&2
+            echo "bundled Linux runtime smoke test failed before aria2 extraction completed" >&2
+            exit 1
+          fi
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            cat "$log_path" >&2
+            echo "bundled Linux runtime smoke test timed out waiting for $aria2_path" >&2
+            exit 1
+          fi
+          sleep "$smoke_poll_interval_seconds"
+        done
+
   create:appimage:
     summary: Creates an AppImage
     dir: build/linux/appimage
@@ -128,14 +233,18 @@ tasks:
         vars:
           ARCH: '{{.ARCH}}'
       - task: generate:dotdesktop
+      - task: prepare:appimage:runtime
+        vars:
+          ARCH: '{{.ARCH}}'
+    preconditions:
+      - sh: '[ -s "{{.APPIMAGE_RUNTIME_FILE}}" ]'
+        msg: 'local AppImage runtime file is required. Run: wails3 task linux:prepare:appimage:runtime'
     cmds:
-      - cp {{.APP_BINARY}} {{.APP_NAME}}
-      - cp ../../appicon.png {{.APP_NAME}}.png
-      - wails3 generate appimage -binary {{.APP_NAME}} -icon {{.ICON}} -desktopfile {{.DESKTOP_FILE}} -outputdir {{.OUTPUT_DIR}} -builddir {{.ROOT_DIR}}/build/linux/appimage/build
+      - APP_NAME="{{.APP_NAME}}" APP_BINARY="{{.APP_BINARY}}" ICON_PATH="{{.ICON_PATH}}" DESKTOP_FILE="{{.DESKTOP_FILE}}" OUTPUT_DIR="{{.OUTPUT_DIR}}" APPIMAGE_RUNTIME_FILE="{{.APPIMAGE_RUNTIME_FILE}}" bash ./build.sh
     vars:
       APP_NAME: '{{.APP_NAME}}'
       APP_BINARY: '../../../bin/{{.APP_NAME}}'
-      ICON: '{{.APP_NAME}}.png'
+      ICON_PATH: '../../appicon.png'
       DESKTOP_FILE: '../{{.APP_NAME}}.desktop'
       OUTPUT_DIR: '../../../bin'
 

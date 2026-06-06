@@ -161,26 +161,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y aria2
 
+      - name: Prepare local AppImage runtime file
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64|aarch64) ;;
+            *) echo "unsupported AppImage runtime architecture: $arch" >&2; exit 1 ;;
+          esac
+          runtime_path="build/extractor/cache/appimage/runtime-${arch}"
+          printf 'APPIMAGE_RUNTIME_FILE=%s\n' "$runtime_path" >> "$GITHUB_ENV"
+          APPIMAGE_RUNTIME_FILE="$runtime_path" wails3 task linux:prepare:appimage:runtime
+
       - name: Package Linux artifact
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: wails3 task linux:package
 
       - name: Smoke test bundled Linux runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          export HOME="$(mktemp -d)"
-          xvfb-run -a ./bin/goaria-v3 --hidden >linux-smoke.log 2>&1 &
-          pid=$!
-          sleep 3
-          test -x "$HOME/.goaria/aria2c"
-          if ! kill -0 "$pid" 2>/dev/null; then
-            cat linux-smoke.log >&2
-            exit 1
-          fi
-          kill "$pid" || true
-          wait "$pid" || true
+        run: wails3 task linux:smoke
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
