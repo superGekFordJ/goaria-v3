@@ -32,7 +32,12 @@ const (
 	appHostAuthCallbackPrefix        = "/_goaria/auth/callback/"
 	appHostAuthSessionHeader         = "X-Goaria-Auth-Session"
 	appHostAuthInitialURL            = "/"
+	appHostAuthInitialHTML           = `<!doctype html><html><head><meta charset="utf-8"><title>GoAria Auth</title></head><body></body></html>`
 	appHostAuthCORSAllowedHeaders    = "content-type, x-goaria-auth-session"
+	appHostAuthRawMessagePrefix      = "goaria-auth-diag:"
+	appHostAuthRawMessageStage       = "injection"
+	appHostAuthRawMessageScriptRun   = "script_running"
+	appHostAuthRawMessageOriginPass  = "origin_check_passed"
 
 	appHostAuthDiagnosticsEnv    = "GOARIA_WEBVIEW_AUTH_DIAGNOSTICS"
 	appHostAuthDiagnosticsOutEnv = "GOARIA_WEBVIEW_AUTH_DIAGNOSTICS_OUT"
@@ -78,11 +83,15 @@ var appHostAuthDiagnosticCategories = map[string]struct{}{
 	appHostAuthDiagnosticPostPayloadRejected:       {},
 	appHostAuthDiagnosticPostAccepted:              {},
 	appHostAuthDiagnosticPostExpired:               {},
+	appHostAuthRawMessageScriptRun:                 {},
+	appHostAuthRawMessageOriginPass:                {},
 	appHostAuthDiagnosticTerminalSuccess:           {},
 	appHostAuthDiagnosticTerminalCancel:            {},
 	appHostAuthDiagnosticTerminalError:             {},
 	appHostAuthDiagnosticSessionClosed:             {},
 }
+
+var appHostAuthRawMessageSink = appHostAuthObserveRawMessageCategory
 
 type appHostAuthDriver struct {
 	app         *App
@@ -214,10 +223,17 @@ func newAppHostAuthDriverWithFactoryAndDiagnostics(app *App, factory hostAuthSes
 	return &appHostAuthDriver{app: app, factory: factory, diagnostics: observer}
 }
 
-func newAppHostAuthDiagnosticObserverFromEnv() appHostAuthDiagnosticObserver {
+func appHostAuthDiagnosticsEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(appHostAuthDiagnosticsEnv))) {
 	case "1", "true", "category", "categories":
+		return true
 	default:
+		return false
+	}
+}
+
+func newAppHostAuthDiagnosticObserverFromEnv() appHostAuthDiagnosticObserver {
+	if !appHostAuthDiagnosticsEnabled() {
 		return nil
 	}
 	if outPath := strings.TrimSpace(os.Getenv(appHostAuthDiagnosticsOutEnv)); outPath != "" {
@@ -278,6 +294,53 @@ func appHostAuthDiagnosticCategoryAllowed(category string) bool {
 	_, ok := appHostAuthDiagnosticCategories[category]
 
 	return ok
+}
+
+func appHostAuthRawMessageHandler(_ application.Window, message string, _ *application.OriginInfo) {
+	category, ok := appHostAuthRawMessageCategory(message)
+	if !ok || appHostAuthRawMessageSink == nil {
+		return
+	}
+	appHostAuthRawMessageSink(category)
+}
+
+func appHostAuthRawMessageCategory(message string) (string, bool) {
+	if !strings.HasPrefix(message, appHostAuthRawMessagePrefix) {
+		return "", false
+	}
+	payload := strings.TrimPrefix(message, appHostAuthRawMessagePrefix)
+	stage, category, ok := strings.Cut(payload, ":")
+	if !ok || !appHostAuthRawMessageAllowed(stage, category) {
+		return "", false
+	}
+
+	return category, true
+}
+
+func appHostAuthRawMessageAllowed(stage string, category string) bool {
+	if stage != appHostAuthRawMessageStage {
+		return false
+	}
+	switch category {
+	case appHostAuthRawMessageScriptRun, appHostAuthRawMessageOriginPass:
+		return true
+	default:
+		return false
+	}
+}
+
+func appHostAuthObserveRawMessageCategory(category string) {
+	if !appHostAuthDiagnosticCategoryAllowed(category) {
+		return
+	}
+	observer := newAppHostAuthDiagnosticObserverFromEnv()
+	if observer == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	observer.observeAppHostAuthDiagnostic(appHostAuthDiagnosticEvent{Category: category})
 }
 
 func (d *appHostAuthDriver) OpenAuthSession(ctx context.Context, request extractor.WebViewAuthRequest, sink extractor.AuthWebViewSink) (extractor.AuthWebViewSession, error) {
@@ -897,10 +960,21 @@ func openWailsHostAuthSessionWindow(creator appHostAuthWindowCreator, request ap
 	if creator == nil {
 		return nil, errors.New(appHostAuthUnavailableMessage)
 	}
-	window := creator.NewWithOptions(application.WebviewWindowOptions{
+	window := creator.NewWithOptions(appHostAuthSessionWindowOptions(request))
+	if window == nil {
+		return nil, errors.New(appHostAuthUnavailableMessage)
+	}
+
+	return setupWailsHostAuthSessionWindow(&wailsHostAuthSessionWindowWrapper{window: window}, request, callbacks), nil
+}
+
+func appHostAuthSessionWindowOptions(request appHostAuthSessionRequest) application.WebviewWindowOptions {
+	return application.WebviewWindowOptions{
 		Name:             appHostAuthSessionWindowName(request),
 		Title:            "GoAria Auth Session",
 		URL:              appHostAuthInitialURL,
+		HTML:             appHostAuthInitialHTML,
+		JS:               renderAppHostAuthCollectorJS(request),
 		Width:            720,
 		Height:           760,
 		MinWidth:         480,
@@ -909,12 +983,7 @@ func openWailsHostAuthSessionWindow(creator appHostAuthWindowCreator, request ap
 		Hidden:           false,
 		BackgroundType:   application.BackgroundTypeSolid,
 		BackgroundColour: application.NewRGBA(12, 12, 15, 255),
-	})
-	if window == nil {
-		return nil, errors.New(appHostAuthUnavailableMessage)
 	}
-
-	return setupWailsHostAuthSessionWindow(&wailsHostAuthSessionWindowWrapper{window: window}, request, callbacks), nil
 }
 
 func setupWailsHostAuthSessionWindow(window appHostAuthWebviewWindow, request appHostAuthSessionRequest, callbacks appHostAuthSessionCallbacks) hostAuthSessionWindow {
@@ -1013,7 +1082,7 @@ func renderAppHostAuthCollectorJS(request appHostAuthSessionRequest) string {
 	}
 	contextJSON := appHostAuthJSON(contextPayload)
 	collectorJSON := appHostAuthJSON(request.CollectorJS)
-	return `(function(){"use strict";var context=` + contextJSON + `;if(window.location.origin!==context.auth_page_origin){return;}var marker="__goariaHostAuthCollectorExecuted";if(window[marker]){return;}window[marker]=true;var collectorSource=` + collectorJSON + `;var postCapture=function(payload){return fetch(context.callback_url,{method:"POST",headers:{"Content-Type":context.content_type,[context.session_header]:context.session_token},body:JSON.stringify(payload)});};var collector=(0,eval)(collectorSource);if(typeof collector==="function"){collector(context,postCapture);}})();`
+	return `(function(){"use strict";var postRaw=function(category){try{var w=(typeof window!=="undefined"?window:null);if(w&&w.chrome&&w.chrome.webview&&typeof w.chrome.webview.postMessage==="function"){w.chrome.webview.postMessage("` + appHostAuthRawMessagePrefix + appHostAuthRawMessageStage + `:"+category);}}catch(_){}};postRaw("` + appHostAuthRawMessageScriptRun + `");var context=` + contextJSON + `;if(window.location.origin!==context.auth_page_origin){return;}postRaw("` + appHostAuthRawMessageOriginPass + `");var marker="__goariaHostAuthCollectorExecuted";if(window[marker]){return;}window[marker]=true;var collectorSource=` + collectorJSON + `;var postCapture=function(payload){return fetch(context.callback_url,{method:"POST",headers:{"Content-Type":context.content_type,[context.session_header]:context.session_token},body:JSON.stringify(payload)});};var collector=(0,eval)(collectorSource);if(typeof collector==="function"){collector(context,postCapture);}})();`
 }
 
 func appHostAuthJSON(value any) string {

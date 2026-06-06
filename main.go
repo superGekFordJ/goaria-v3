@@ -98,6 +98,7 @@ func main() {
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: false,
 		},
+		RawMessageHandler: appHostAuthRawMessageHandler,
 	})
 
 	// Initialize Event Hub (after app is created)

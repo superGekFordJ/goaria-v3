@@ -415,10 +415,47 @@ func TestAppHostAuthCallbackCORSPreflight(t *testing.T) {
 	}
 }
 
+func TestAppHostAuthSessionWindowOptionsBootstrap(t *testing.T) {
+	request := appHostAuthWebViewRequest(time.Second)
+	sessionRequest := appHostAuthSessionRequestFromWebView(request, "/_goaria/auth/callback/synthetic", "http://wails.localhost/_goaria/auth/callback/synthetic", "synthetic-session-token")
+	options := appHostAuthSessionWindowOptions(sessionRequest)
+
+	if options.HTML == "" {
+		t.Fatal("auth window HTML bootstrap is empty")
+	}
+	if !strings.Contains(strings.ToLower(options.HTML), "<!doctype html>") {
+		t.Fatalf("auth window HTML bootstrap = %q, want minimal blank document", options.HTML)
+	}
+	if options.URL != appHostAuthInitialURL {
+		t.Fatalf("auth window initial URL = %q, want %q", options.URL, appHostAuthInitialURL)
+	}
+	if options.JS == "" {
+		t.Fatal("auth window bootstrap JS is empty")
+	}
+	assertAppHostAuthCollectorScriptJSSideGated(t, options.JS, sessionRequest.AuthPageOrigin)
+	for _, want := range []string{"callback_url", "session_token", appHostAuthRawMessagePrefix + appHostAuthRawMessageStage + ":", appHostAuthRawMessageScriptRun, appHostAuthRawMessageOriginPass} {
+		if !strings.Contains(options.JS, want) {
+			t.Fatalf("auth window bootstrap JS missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{sessionRequest.CallbackURL, sessionRequest.CallbackPath, sessionRequest.SessionToken, sessionRequest.PackID, string(sessionRequest.ProfileID)} {
+		if strings.Contains(options.HTML, forbidden) {
+			t.Fatalf("auth window HTML bootstrap leaked %q: %q", forbidden, options.HTML)
+		}
+	}
+	if options.Title != "GoAria Auth Session" || options.Name == "" || options.Width != 720 || options.Height != 760 || options.MinWidth != 480 || options.MinHeight != 560 || !options.AlwaysOnTop || options.Hidden {
+		t.Fatalf("auth window options changed unexpectedly: %#v", options)
+	}
+}
+
 func TestAppHostAuthCollectorInjectionHookOrder(t *testing.T) {
 	window := newFakeHostAuthWebviewWindow()
 	request := appHostAuthWebViewRequest(time.Second)
 	sessionRequest := appHostAuthSessionRequestFromWebView(request, "/_goaria/auth/callback/synthetic", "http://wails.localhost/_goaria/auth/callback/synthetic", "synthetic-session-token")
+	options := appHostAuthSessionWindowOptions(sessionRequest)
+	if options.HTML == "" || options.JS == "" {
+		t.Fatalf("auth window bootstrap options missing initial HTML/JS: %#v", options)
+	}
 	session := setupWailsHostAuthSessionWindow(window, sessionRequest, appHostAuthSessionCallbacks{})
 	defer func() { _ = session.Close() }()
 
@@ -471,6 +508,39 @@ func TestAppHostAuthCollectorInjectionHookOrder(t *testing.T) {
 	assertAppHostAuthCollectorScriptJSSideGated(t, repeatedScripts[3], sessionRequest.AuthPageOrigin)
 	if runs := window.collectorRunCount(); runs != 1 {
 		t.Fatalf("repeated auth hook collector runs = %d, want 1", runs)
+	}
+}
+
+func TestAppHostAuthRawMessageHandlerAllowList(t *testing.T) {
+	originalSink := appHostAuthRawMessageSink
+	defer func() {
+		appHostAuthRawMessageSink = originalSink
+	}()
+
+	var categories []string
+	appHostAuthRawMessageSink = func(category string) {
+		categories = append(categories, category)
+	}
+
+	acceptedMessages := []string{
+		appHostAuthRawMessagePrefix + appHostAuthRawMessageStage + ":" + appHostAuthRawMessageScriptRun,
+		appHostAuthRawMessagePrefix + appHostAuthRawMessageStage + ":" + appHostAuthRawMessageOriginPass,
+	}
+	rejectedMessages := []string{
+		"ignored-untrusted-message",
+		appHostAuthRawMessagePrefix + "collector_probe:post_capture_suppressed",
+		appHostAuthRawMessagePrefix + "parser:accepted",
+		appHostAuthRawMessagePrefix + "store:set_succeeded",
+		appHostAuthRawMessagePrefix + appHostAuthRawMessageStage + ":unknown",
+		appHostAuthRawMessagePrefix + appHostAuthRawMessageStage,
+	}
+
+	for _, message := range append(acceptedMessages, rejectedMessages...) {
+		appHostAuthRawMessageHandler(nil, message, &application.OriginInfo{Origin: "https://example.test"})
+	}
+
+	if !reflect.DeepEqual(categories, []string{appHostAuthRawMessageScriptRun, appHostAuthRawMessageOriginPass}) {
+		t.Fatalf("raw message categories = %#v, want only narrow bootstrap allow-list", categories)
 	}
 }
 

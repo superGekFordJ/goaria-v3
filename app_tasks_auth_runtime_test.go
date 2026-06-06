@@ -160,6 +160,59 @@ func TestAddUri_AuthRuntimeTargetPreflightBeforeHeaders(t *testing.T) {
 	}
 }
 
+func TestAddUri_AuthRuntimeAliasStoredAuthReuseSkipsWebViewWhenLoginAndTargetHostsDiffer(t *testing.T) {
+	bundle := syntheticRootAliasAuthRuntimeBundle(t)
+	identity := authRuntimeTaskIdentity(t, bundle)
+	manifest := authRuntimeTaskAliasManifest(identity)
+	sourceURL := "https://share.alpha.test/d/alias-stored"
+	targetURL := "https://files.alpha.test/files/alias-stored.bin"
+	events := &authRuntimeTaskEventLog{}
+	resolution := authRuntimeTaskResolution(sourceURL, targetURL, identity, manifest, true)
+	resolution.Items[0].HostPolicy = authRuntimeTaskAliasHostPolicy(identity)
+	dispatcher := &authRuntimeTaskDispatcher{
+		events: events,
+		plans: map[string][]extractor.HostAuthRuntimeRequest{
+			sourceURL: {authRuntimeTaskSourceRequest(identity, manifest, sourceURL)},
+		},
+		resolutions: map[string][]extractor.AddTaskResolution{
+			sourceURL: {resolution},
+		},
+	}
+	driver := &authRuntimeTaskDriver{events: events}
+	app, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	setAuthRuntimeTaskAliasProfile(t, store, identity.PackID, extractor.AuthSecretKindBearer, "stored-alias-task-token", []extractor.DomainRule{{Host: "files.alpha.test"}}, nil)
+
+	result := app.AddUri(sourceURL)
+
+	if result != "success" {
+		t.Fatalf("AddUri() = %q, want success", result)
+	}
+	if got := events.snapshot(); !reflect.DeepEqual(got, []string{"plan:" + sourceURL, "resolve:" + sourceURL, "build:" + targetURL}) {
+		t.Fatalf("event order = %#v, want resolve/build without auth open", got)
+	}
+	if got := recorder.addURIsSnapshot(); !reflect.DeepEqual(got, []string{targetURL}) {
+		t.Fatalf("add URIs = %#v, want %#v", got, []string{targetURL})
+	}
+	if got := recorder.count("aria2.addUri"); got != 1 {
+		t.Fatalf("aria2.addUri count = %d, want 1", got)
+	}
+	if driver.openCount() != 0 {
+		t.Fatalf("auth sessions = %d, want 0 for stored alias auth reuse", driver.openCount())
+	}
+	resolved, err := store.ResolveAuthProfile(context.Background(), identity.PackID, "apr-alpha001", targetURL)
+	if err != nil {
+		t.Fatalf("ResolveAuthProfile(target) error = %v", err)
+	}
+	if resolved.HeaderValue != "Bearer stored-alias-task-token" {
+		t.Fatalf("ResolveAuthProfile(target) HeaderValue = %q", resolved.HeaderValue)
+	}
+	if _, err := store.ResolveAuthProfile(context.Background(), identity.PackID, "apr-alpha001", "https://api.alpha.test/login"); err == nil {
+		t.Fatal("ResolveAuthProfile(login host) error = nil, want target-scoped stored auth only")
+	}
+	assertAuthRuntimeTaskEventAbsent(t, events.snapshot(), "auth:apr-alpha001")
+	assertRootNoSecretText(t, fmt.Sprintf("%#v %#v", result, events.snapshot()), "stored-alias-task-token", "Bearer stored-alias-task-token")
+}
+
 func TestAddUri_AuthRuntimeTargetStaleUnavailableClearsOpensWebViewAndBuildsHeaders(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -709,6 +762,81 @@ func setAuthRuntimeTaskProfile(t *testing.T, store extractor.AuthProfileStore, p
 }
 
 func setAuthRuntimeTaskProfileWithOptions(t *testing.T, store extractor.AuthProfileStore, packID string, kind extractor.AuthSecretKind, secret string, domains []extractor.DomainRule, expiresAt *time.Time) {
+	t.Helper()
+	_, err := store.SetAuthProfile(context.Background(), extractor.AuthProfileUpdate{
+		PackID:         packID,
+		ProfileID:      "apr-alpha001",
+		Kind:           kind,
+		Secret:         secret,
+		AllowedDomains: domains,
+		ExpiresAt:      expiresAt,
+	})
+	if err != nil {
+		t.Fatalf("SetAuthProfile() error = %v", err)
+	}
+}
+
+func syntheticRootAliasAuthRuntimeBundle(t *testing.T) *extractor.PrivateAuthRuntimeBundle {
+	t.Helper()
+	runtimeRaw := []byte(`{"packs":[{"verified_pack_identity":{"pack_id":"xpk-alpha001","pack_version":"opaque-1","asset_sha256":"` + strings.Repeat("1", 64) + `","manifest_sha256":"` + strings.Repeat("2", 64) + `","payload_sha256":"` + strings.Repeat("3", 64) + `","signature_sha256":"` + strings.Repeat("4", 64) + `","public_key_sha256":"` + strings.Repeat("5", 64) + `"},"store_binding":{"scope":"pack","profile_refs":["apr-alpha001"]},"profiles":[{"profile_ref":"apr-alpha001","kind":"bearer","login":{"url":"https://api.alpha.test/login","allowed_domains":[{"host":"api.alpha.test"}],"timeout_millis":30000,"callback_transport":{"mode":"local_post","content_types":["application/json"],"max_body_bytes":16384},"collector_js":"(() => { return function(ctx, postCapture) { return ctx && postCapture; }; })();","capture":{"format":"json","secret_candidates":["secret","capture.secret"],"kind_field":"kind","expires_at_field":"expires_at","redacted_display_field":"redacted_display"}}}],"preflight":{"mode":"required","missing":"refresh","expired":"refresh"},"provisioning":{"mode":"webview","profile_refs":["apr-alpha001"]},"materialization":{"profile_refs":["apr-alpha001"]},"normalization":{"reject_crlf":true,"trim_space":true}}]}`)
+	envelope := []byte(`{"schema_version":1,"bundle_id":"arb-alpha001","bundle_version":"opaque-1","auth_runtime_private_sha256":"` + sha256HexForAppHostAuthTest(runtimeRaw) + `","runtime":` + string(runtimeRaw) + `}`)
+	bundle, err := extractor.NewPrivateAuthRuntimeBundle(envelope, extractor.PrivateAuthRuntimeBundleLoadOptions{})
+	if err != nil {
+		t.Fatalf("NewPrivateAuthRuntimeBundle() error = %v", err)
+	}
+
+	return bundle
+}
+
+func authRuntimeTaskAliasManifest(identity extractor.VerifiedPackIdentity) extractor.Manifest {
+	return extractor.Manifest{
+		PackID:           identity.PackID,
+		PackVersion:      identity.PackVersion,
+		ABIVersion:       extractor.CurrentABIVersion,
+		Capabilities:     []extractor.Capability{extractor.CapabilityHTTPFetch, extractor.CapabilityAuthProfile},
+		DomainPolicyRefs: []string{"dpr-alpha001"},
+		BrokerPolicyRefs: []string{"bpr-alpha001"},
+		ResourceLimits: extractor.ResourceLimits{
+			TimeoutMillis:    60000,
+			MaxMemoryPages:   64,
+			MaxHostCalls:     16,
+			MaxResponseBytes: 1 << 20,
+			MaxOutputItems:   16,
+			MaxOutputBytes:   1 << 16,
+		},
+		PayloadSHA256: identity.PayloadSHA256,
+	}
+}
+
+func authRuntimeTaskAliasHostPolicy(identity extractor.VerifiedPackIdentity) *extractor.ResolvedHostPolicy {
+	policy := extractor.ResolvedHostPolicy{
+		PolicyID:            "pol-alpha001",
+		PolicyVersion:       "2026.05.15-alpha",
+		PolicySHA256:        strings.Repeat("c", 64),
+		PackIdentity:        identity,
+		DomainPolicyRefs:    []string{"dpr-alpha001"},
+		BrokerPolicyRefs:    []string{"bpr-alpha001"},
+		AllowedCapabilities: []extractor.Capability{extractor.CapabilityHTTPFetch, extractor.CapabilityAuthProfile},
+		IngressDomains:      []extractor.DomainRule{{Host: "share.alpha.test"}},
+		BrokerDomains:       []extractor.DomainRule{{Host: "api.alpha.test"}},
+		OutputDomains:       []extractor.HostPolicyOutputRule{{Host: "files.alpha.test", PathPrefixes: []string{"/files/"}}},
+		AuthProfiles: []extractor.HostPolicyAuthProfileScope{{
+			ProfileID: "apr-alpha001",
+			Domains:   []extractor.DomainRule{{Host: "files.alpha.test"}},
+		}},
+		BrokerEndpoints: []extractor.HostPolicyBrokerEndpoint{{
+			BrokerPolicyRef: "bpr-alpha001",
+			EndpointRef:     "epr-alpha001",
+			URLTemplate:     "https://api.alpha.test/resource/{id}",
+			Methods:         []string{"GET"},
+			AuthProfileRefs: []string{"apr-alpha001"},
+		}},
+	}
+
+	return &policy
+}
+
+func setAuthRuntimeTaskAliasProfile(t *testing.T, store extractor.AuthProfileStore, packID string, kind extractor.AuthSecretKind, secret string, domains []extractor.DomainRule, expiresAt *time.Time) {
 	t.Helper()
 	_, err := store.SetAuthProfile(context.Background(), extractor.AuthProfileUpdate{
 		PackID:         packID,
