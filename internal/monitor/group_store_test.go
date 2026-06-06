@@ -54,3 +54,33 @@ func TestTaskGroupStore_RemovesAndClearsGroups(t *testing.T) {
 		t.Fatalf("expected all groups cleared, got %#v", got)
 	}
 }
+
+func TestTaskGroupStore_ListStoredTaskGroupsReturnsDefensiveCopy(t *testing.T) {
+	setupTaskGroupStoreTest(t)
+	group := testDownloadGroup("dg-list")
+	RegisterTaskGroup("gid-list", group)
+
+	snapshot := ListStoredTaskGroups()
+	if got := snapshot["gid-list"]; got.ID != group.ID {
+		t.Fatalf("expected stored group copy, got %#v", got)
+	}
+
+	mutated := snapshot["gid-list"]
+	mutated.ID = "dg-mutated"
+	snapshot["gid-list"] = mutated
+	snapshot["gid-extra"] = testDownloadGroup("dg-extra")
+	delete(snapshot, "gid-list")
+
+	stored := GetStoredTaskGroup("gid-list")
+	if stored == nil || stored.ID != group.ID {
+		t.Fatalf("expected store to retain original group, got %#v", stored)
+	}
+	if extra := GetStoredTaskGroup("gid-extra"); extra != nil {
+		t.Fatalf("expected snapshot map mutation not to add store entry, got %#v", extra)
+	}
+
+	second := ListStoredTaskGroups()
+	if got := second["gid-list"]; got.ID != group.ID {
+		t.Fatalf("expected later snapshot to retain original group, got %#v", got)
+	}
+}

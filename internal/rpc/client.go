@@ -17,6 +17,11 @@ import (
 const (
 	maxAddURIHeaders        = 64
 	maxAddURIHeaderLineSize = 8 * 1024
+
+	DownloadGroupNameStatusStable   = "stable"
+	DownloadGroupNameStatusPending  = "pending"
+	DownloadGroupNameStatusFallback = "fallback"
+	DownloadGroupNameStatusDegraded = "degraded"
 )
 
 var (
@@ -57,10 +62,23 @@ type DownloadGroup struct {
 	ID         string `json:"id"`
 	Kind       string `json:"kind"`
 	Name       string `json:"name"`
+	NameStatus string `json:"name_status,omitempty"`
 	FolderName string `json:"folder_name"`
 	Dir        string `json:"dir"`
 	ItemCount  int    `json:"item_count"`
 	CreatedAt  int64  `json:"created_at"`
+}
+
+func IsDownloadGroupNameStatus(status string) bool {
+	switch status {
+	case DownloadGroupNameStatusStable,
+		DownloadGroupNameStatusPending,
+		DownloadGroupNameStatusFallback,
+		DownloadGroupNameStatusDegraded:
+		return true
+	default:
+		return false
+	}
 }
 
 type Task struct {
@@ -81,6 +99,12 @@ type TaskProgress struct {
 	GID             string `json:"gid"`
 	CompletedLength string `json:"completedLength"`
 	DownloadSpeed   string `json:"downloadSpeed"`
+}
+
+type MultiCallItemResult struct {
+	GID   string
+	OK    bool
+	Error string
 }
 
 type AddURIOptions struct {
@@ -522,41 +546,26 @@ func WaitForReady(timeout time.Duration) error {
 }
 
 func PauseMulti(gids []string) error {
-	if len(gids) == 0 {
-		return nil
-	}
-
-	secret := currentSecret
-	hasSecret := secret != ""
-	token := ""
-	numParams := 1
-	if hasSecret {
-		token = "token:" + secret
-		numParams = 2
-	}
-
-	calls := make([]any, 0, len(gids))
-	for _, gid := range gids {
-		params := make([]any, 0, numParams)
-		if hasSecret {
-			params = append(params, token)
-		}
-		params = append(params, gid)
-
-		calls = append(calls, map[string]any{
-			"methodName": "aria2.pause",
-			"params":     params,
-		})
-	}
-
-	_, err := sendRequestInternal("system.multicall", []any{calls}, false)
-	ForceSaveSession()
+	_, err := PauseMultiResults(gids)
 	return err
 }
 
 func UnpauseMulti(gids []string) error {
+	_, err := UnpauseMultiResults(gids)
+	return err
+}
+
+func PauseMultiResults(gids []string) ([]MultiCallItemResult, error) {
+	return pauseResumeMultiResults("aria2.pause", gids)
+}
+
+func UnpauseMultiResults(gids []string) ([]MultiCallItemResult, error) {
+	return pauseResumeMultiResults("aria2.unpause", gids)
+}
+
+func pauseResumeMultiResults(method string, gids []string) ([]MultiCallItemResult, error) {
 	if len(gids) == 0 {
-		return nil
+		return []MultiCallItemResult{}, nil
 	}
 
 	secret := currentSecret
@@ -577,12 +586,100 @@ func UnpauseMulti(gids []string) error {
 		params = append(params, gid)
 
 		calls = append(calls, map[string]any{
-			"methodName": "aria2.unpause",
+			"methodName": method,
 			"params":     params,
 		})
 	}
 
-	_, err := sendRequestInternal("system.multicall", []any{calls}, false)
+	resp, err := sendRequestInternal("system.multicall", []any{calls}, false)
 	ForceSaveSession()
-	return err
+	if err != nil {
+		return nil, err
+	}
+
+	return parseMultiCallItemResults(gids, resp)
+}
+
+func parseMultiCallItemResults(gids []string, resp []byte) ([]MultiCallItemResult, error) {
+	var result struct {
+		Result []json.RawMessage `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, err
+	}
+	if result.Error != nil {
+		return nil, fmt.Errorf("system.multicall: rpc error %d: %s", result.Error.Code, result.Error.Message)
+	}
+	if result.Result == nil {
+		return nil, fmt.Errorf("system.multicall: missing result")
+	}
+
+	items := make([]MultiCallItemResult, 0, len(gids))
+	for i, gid := range gids {
+		item := MultiCallItemResult{GID: gid}
+		if i >= len(result.Result) {
+			item.Error = "missing multicall result"
+			items = append(items, item)
+			continue
+		}
+		ok, message := parseMultiCallNestedResult(result.Result[i])
+		item.OK = ok
+		if !ok {
+			item.Error = message
+		}
+		items = append(items, item)
+	}
+
+	return items, nil
+}
+
+func parseMultiCallNestedResult(raw json.RawMessage) (bool, string) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false, "empty multicall result"
+	}
+	if message, ok := parseMultiCallFault(raw); ok {
+		return false, message
+	}
+
+	var batch []json.RawMessage
+	if err := json.Unmarshal(raw, &batch); err == nil {
+		if len(batch) == 0 {
+			return false, "empty multicall result"
+		}
+		if message, ok := parseMultiCallFault(batch[0]); ok {
+			return false, message
+		}
+		return true, ""
+	}
+
+	return true, ""
+}
+
+func parseMultiCallFault(raw json.RawMessage) (string, bool) {
+	var fault struct {
+		Code        *int   `json:"code"`
+		Message     string `json:"message"`
+		FaultCode   *int   `json:"faultCode"`
+		FaultString string `json:"faultString"`
+	}
+	if err := json.Unmarshal(raw, &fault); err != nil {
+		return "", false
+	}
+	if fault.Code != nil || fault.Message != "" {
+		if fault.Message != "" {
+			return fault.Message, true
+		}
+		return "rpc error", true
+	}
+	if fault.FaultCode != nil || fault.FaultString != "" {
+		if fault.FaultString != "" {
+			return fault.FaultString, true
+		}
+		return "rpc fault", true
+	}
+	return "", false
 }

@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"goaria-v3/internal/history"
@@ -78,13 +79,16 @@ func LoadTaskGroups() {
 }
 
 func RegisterTaskGroup(gid string, group rpc.DownloadGroup) {
+	gid = strings.TrimSpace(gid)
+	group.ID = strings.TrimSpace(group.ID)
 	if gid == "" || group.ID == "" {
 		return
 	}
 	groupStore.mu.Lock()
-	defer groupStore.mu.Unlock()
 	groupStore.groups[gid] = group
 	groupStore.saveLocked()
+	groupStore.mu.Unlock()
+	queueDownloadGroupNameRefresh(group.ID)
 }
 
 func GetStoredTaskGroup(gid string) *rpc.DownloadGroup {
@@ -95,6 +99,46 @@ func GetStoredTaskGroup(gid string) *rpc.DownloadGroup {
 		return nil
 	}
 	return copyDownloadGroup(&group)
+}
+
+func ListStoredTaskGroups() map[string]rpc.DownloadGroup {
+	groupStore.mu.RLock()
+	defer groupStore.mu.RUnlock()
+	groups := make(map[string]rpc.DownloadGroup, len(groupStore.groups))
+	for gid, group := range groupStore.groups {
+		groups[gid] = group
+	}
+	return groups
+}
+
+func UpdateStoredTaskGroupName(groupKey, name, status string) int {
+	groupKey = strings.TrimSpace(groupKey)
+	name = strings.TrimSpace(name)
+	status = strings.TrimSpace(status)
+	if groupKey == "" || name == "" || !rpc.IsDownloadGroupNameStatus(status) {
+		return 0
+	}
+
+	groupStore.mu.Lock()
+	defer groupStore.mu.Unlock()
+
+	changed := 0
+	for gid, group := range groupStore.groups {
+		if group.ID != groupKey {
+			continue
+		}
+		if group.Name == name && group.NameStatus == status {
+			continue
+		}
+		group.Name = name
+		group.NameStatus = status
+		groupStore.groups[gid] = group
+		changed++
+	}
+	if changed > 0 {
+		groupStore.saveLocked()
+	}
+	return changed
 }
 
 func RemoveTaskGroup(gid string) {

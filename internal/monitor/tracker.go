@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,7 +85,7 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 					// 状态变为完成，触发完成处理
 					tracked.Status = task.Status
 					t.fillTaskInfo(tracked, task)
-					completed = append(completed, tracked)
+					completed = append(completed, copyTrackedTask(tracked))
 					t.processedComplete[task.GID] = true
 				}
 			} else {
@@ -92,7 +93,7 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 				tracked = t.createTrackedTask(task)
 				tracked.Status = task.Status
 				t.tasks[task.GID] = tracked
-				completed = append(completed, tracked)
+				completed = append(completed, copyTrackedTask(tracked))
 				t.processedComplete[task.GID] = true
 			}
 		}
@@ -200,6 +201,15 @@ func (t *TaskTracker) createTrackedTask(task rpc.Task) *TrackedTask {
 	return tracked
 }
 
+func copyTrackedTask(task *TrackedTask) *TrackedTask {
+	if task == nil {
+		return nil
+	}
+	copy := *task
+	copy.DownloadGroup = copyDownloadGroup(task.DownloadGroup)
+	return &copy
+}
+
 // fillTaskInfo 填充任务完整信息（从 stopped 任务）
 // 注意：task 应该已经被 enrichTasks() 丰富过，包含文件信息
 func (t *TaskTracker) fillTaskInfo(tracked *TrackedTask, task rpc.Task) {
@@ -279,6 +289,34 @@ func (t *TaskTracker) GetTaskGroup(gid string) *rpc.DownloadGroup {
 		return nil
 	}
 	return copyDownloadGroup(tracked.DownloadGroup)
+}
+
+func (t *TaskTracker) UpdateTaskGroupName(groupKey, name, status string) int {
+	groupKey = strings.TrimSpace(groupKey)
+	name = strings.TrimSpace(name)
+	status = strings.TrimSpace(status)
+	if groupKey == "" || name == "" || !rpc.IsDownloadGroupNameStatus(status) {
+		return 0
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	changed := 0
+	for _, tracked := range t.tasks {
+		if tracked == nil || tracked.DownloadGroup == nil || tracked.DownloadGroup.ID != groupKey {
+			continue
+		}
+		if tracked.DownloadGroup.Name == name && tracked.DownloadGroup.NameStatus == status {
+			continue
+		}
+		updated := *tracked.DownloadGroup
+		updated.Name = name
+		updated.NameStatus = status
+		tracked.DownloadGroup = &updated
+		changed++
+	}
+	return changed
 }
 
 // RemoveTask 从追踪器中移除任务

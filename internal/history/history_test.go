@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -528,6 +529,95 @@ func TestHistoryDownloadGroupAddLoadUpdateAndRemoveMany(t *testing.T) {
 	if len(GetAll()) != 0 || len(sourceIndex) != 0 {
 		t.Fatalf("expected Clear to remove entries and sourceIndex, entries=%#v sourceIndex=%#v", GetAll(), sourceIndex)
 	}
+}
+
+func TestHistoryDownloadGroupNameStatusUpdatePreservesSourceIndex(t *testing.T) {
+	setupTest(t)
+	beforeSaveTriggers := saveTriggerCount.Load()
+	group := historyTestDownloadGroup("dg-history-name")
+	Add(HistoryEntry{GID: "gid-name", Title: "Grouped", Source: "https://example.com/group.bin", DownloadGroup: group})
+	afterAddTriggers := saveTriggerCount.Load()
+
+	changed := UpdateDownloadGroupName(group.ID, "Project Alpha", rpc.DownloadGroupNameStatusStable)
+
+	if changed != 1 {
+		t.Fatalf("expected one updated history entry, got %d", changed)
+	}
+	entry, ok := Get("gid-name")
+	if !ok || entry.DownloadGroup == nil || entry.DownloadGroup.Name != "Project Alpha" || entry.DownloadGroup.NameStatus != rpc.DownloadGroupNameStatusStable {
+		t.Fatalf("expected updated history group, got %#v ok=%v", entry, ok)
+	}
+	if !ContainsSource("https://example.com/group.bin") {
+		t.Fatal("expected sourceIndex preserved after name update")
+	}
+	if got := saveTriggerCount.Load() - afterAddTriggers; got != 1 {
+		t.Fatalf("expected one save trigger for changed name/status, got %d (before setup delta %d)", got, afterAddTriggers-beforeSaveTriggers)
+	}
+	if noop := UpdateDownloadGroupName(group.ID, "Project Alpha", rpc.DownloadGroupNameStatusStable); noop != 0 {
+		t.Fatalf("expected no-op update count 0, got %d", noop)
+	}
+}
+
+func TestHistoryDownloadGroupSnapshotsAreDefensiveCopies(t *testing.T) {
+	setupTest(t)
+	group := historyTestDownloadGroup("dg-history-defensive")
+	Add(HistoryEntry{GID: "gid-defensive", Title: "Grouped", Source: "https://example.com/group.bin", DownloadGroup: group})
+
+	all := GetAll()
+	all[0].DownloadGroup.Name = "mutated outside history"
+	entry, ok := Get("gid-defensive")
+	if !ok || entry.DownloadGroup == nil || entry.DownloadGroup.Name == "mutated outside history" {
+		t.Fatalf("expected GetAll to return defensive group copy, got entry=%#v ok=%v", entry, ok)
+	}
+
+	entry.DownloadGroup.Name = "mutated get"
+	again, ok := Get("gid-defensive")
+	if !ok || again.DownloadGroup == nil || again.DownloadGroup.Name == "mutated get" {
+		t.Fatalf("expected Get to return defensive group copy, got entry=%#v ok=%v", again, ok)
+	}
+}
+
+func TestHistoryDownloadGroupNameUpdateReplacesSharedPointers(t *testing.T) {
+	setupTest(t)
+	group := historyTestDownloadGroup("dg-history-replace")
+	Add(HistoryEntry{GID: "gid-replace", Title: "Grouped", Source: "https://example.com/group.bin", DownloadGroup: group})
+	before := GetAll()[0].DownloadGroup
+
+	UpdateDownloadGroupName(group.ID, "Project Alpha", rpc.DownloadGroupNameStatusStable)
+	after := GetAll()[0].DownloadGroup
+
+	if before == nil || after == nil {
+		t.Fatalf("expected group pointers before/after, before=%#v after=%#v", before, after)
+	}
+	if before == after {
+		t.Fatal("expected history name update to replace pointer instead of mutating it in place")
+	}
+	if before.Name == "Project Alpha" || before.NameStatus == rpc.DownloadGroupNameStatusStable {
+		t.Fatalf("expected old history snapshot pointer unchanged, got %#v", before)
+	}
+	if after.Name != "Project Alpha" || after.NameStatus != rpc.DownloadGroupNameStatusStable {
+		t.Fatalf("expected updated history pointer, got %#v", after)
+	}
+}
+
+func TestHistoryDownloadGroupNameUpdateConcurrentReaders(t *testing.T) {
+	setupTest(t)
+	group := historyTestDownloadGroup("dg-history-race")
+	Add(HistoryEntry{GID: "gid-race", Title: "Grouped", Source: "https://example.com/group.bin", DownloadGroup: group})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_ = GetAll()
+				UpdateDownloadGroupName(group.ID, "Project Alpha", rpc.DownloadGroupNameStatusStable)
+				UpdateDownloadGroupName(group.ID, group.Name, rpc.DownloadGroupNameStatusFallback)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestHistoryLoadOldEntriesWithoutDownloadGroup(t *testing.T) {
