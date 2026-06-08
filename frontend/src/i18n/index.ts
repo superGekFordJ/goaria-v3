@@ -42,8 +42,8 @@ export const i18n = createI18n({
     en: en,
     ja: ja,
     es: es,
-    de: de
-  }
+    de: de,
+  },
 })
 
 export function setI18nLocale(locale: string) {

@@ -63,7 +63,8 @@ describe('Task Array Creation Benchmark', () => {
     const waiting: Task[] = []
     for (const t of res.waiting || []) {
       const gid = t?.gid
-      if (!gid || _activeGidSet.has(gid) || _stoppedGidSet.has(gid) || _waitingGidSet.has(gid)) continue
+      if (!gid || _activeGidSet.has(gid) || _stoppedGidSet.has(gid) || _waitingGidSet.has(gid))
+        continue
       _waitingGidSet.add(gid)
       waiting.push(t)
     }

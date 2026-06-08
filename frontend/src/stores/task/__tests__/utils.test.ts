@@ -32,10 +32,10 @@ describe('Task Utils', () => {
     })
 
     it('should ignore non-critical fields', () => {
-        const t1 = mockTask('1', { files: [] })
-        const t2 = mockTask('1', { files: [{ path: '/a', uris: [] }] })
-        // isTaskEqual doesn't check files
-        expect(isTaskEqual(t1, t2)).toBe(true)
+      const t1 = mockTask('1', { files: [] })
+      const t2 = mockTask('1', { files: [{ path: '/a', uris: [] }] })
+      // isTaskEqual doesn't check files
+      expect(isTaskEqual(t1, t2)).toBe(true)
     })
   })
 
@@ -50,21 +50,21 @@ describe('Task Utils', () => {
 
   describe('mergeTasks', () => {
     beforeEach(() => {
-        clearMetadataCache()
+      clearMetadataCache()
     })
 
     it('should preserve metadata when updating from Lite task', () => {
       // Initial state: Task HAS metadata (e.g. from previous fetch or cache)
       const oldTask = mockTask('1', {
-          files: [{ path: '/downloads/video.mp4', uris: [] }],
-          dir: '/downloads'
+        files: [{ path: '/downloads/video.mp4', uris: [] }],
+        dir: '/downloads',
       })
       const oldList = [oldTask]
 
       // New state: Task is "Lite" (no files), but progress updated
       const newTaskLite = mockTask('1', {
-          completedLength: '600', // Progress changed
-          files: [] // Missing files
+        completedLength: '600', // Progress changed
+        files: [], // Missing files
       })
       const newList = [newTaskLite]
 
@@ -78,7 +78,10 @@ describe('Task Utils', () => {
 
     it('should apply cached metadata to new Lite task', () => {
       // Pre-cache metadata
-      const fullTask = mockTask('2', { files: [{ path: '/cached/file.mkv', uris: [] }], dir: '/cached' })
+      const fullTask = mockTask('2', {
+        files: [{ path: '/cached/file.mkv', uris: [] }],
+        dir: '/cached',
+      })
       cacheMetadata(fullTask)
 
       const oldList: Task[] = []
@@ -90,14 +93,14 @@ describe('Task Utils', () => {
     })
 
     it('should NOT return old task if metadata was gained', () => {
-        const oldTask = mockTask('3', { files: [] }) // "Parsing..."
-        const newTask = mockTask('3', { files: [{ path: '/real.iso', uris: [] }] }) // Resolved
+      const oldTask = mockTask('3', { files: [] }) // "Parsing..."
+      const newTask = mockTask('3', { files: [{ path: '/real.iso', uris: [] }] }) // Resolved
 
-        const result = mergeTasks([oldTask], [newTask])
+      const result = mergeTasks([oldTask], [newTask])
 
-        expect(result.changed).toBe(true)
-        expect(result.merged[0].files![0].path).toBe('/real.iso')
-        expect(result.merged[0]).not.toBe(oldTask) // Should be new object
+      expect(result.changed).toBe(true)
+      expect(result.merged[0].files![0].path).toBe('/real.iso')
+      expect(result.merged[0]).not.toBe(oldTask) // Should be new object
     })
   })
 })

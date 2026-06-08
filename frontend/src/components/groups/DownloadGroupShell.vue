@@ -85,7 +85,9 @@
   const operationNotice = computed(() => downloadGroupStore.operationNotice)
 
   const backLabelKey = computed(() =>
-    uiStore.activeTab === 'stopped' ? 'downloadGroups.backToCompleted' : 'downloadGroups.backToDownloads',
+    uiStore.activeTab === 'stopped'
+      ? 'downloadGroups.backToCompleted'
+      : 'downloadGroups.backToDownloads',
   )
 
   async function refreshGroups() {
@@ -156,14 +158,11 @@
     removeDialog.value = null
   }
 
-  watch(
-    selectedKey,
-    key => {
-      if (!key && removeDialog.value?.fromDetail) {
-        removeDialog.value = null
-      }
-    },
-  )
+  watch(selectedKey, key => {
+    if (!key && removeDialog.value?.fromDetail) {
+      removeDialog.value = null
+    }
+  })
 
   onMounted(() => {
     void refreshGroups()
@@ -241,7 +240,10 @@
               <Layers3 :size="15" />
               {{ t('downloadGroups.detailLoading') }}
             </div>
-            <div v-else-if="downloadGroupStore.detailError" class="download-group-detail-state error">
+            <div
+              v-else-if="downloadGroupStore.detailError"
+              class="download-group-detail-state error"
+            >
               <AlertTriangle :size="15" />
               <strong>{{ t('downloadGroups.detailErrorTitle') }}</strong>
               <span>{{ t('downloadGroups.detailErrorDescription') }}</span>
@@ -328,7 +330,9 @@
       </div>
 
       <div v-else class="h-full flex items-center justify-center p-8">
-        <div class="download-group-detail-state degraded glass-panel-subtle rounded-[var(--radius-squircle-xl)] p-6">
+        <div
+          class="download-group-detail-state degraded glass-panel-subtle rounded-[var(--radius-squircle-xl)] p-6"
+        >
           <AlertTriangle :size="15" />
           <strong>{{ t('downloadGroups.detailNotFoundTitle') }}</strong>
           <span>{{ t('downloadGroups.detailNotFoundDescription') }}</span>
@@ -341,7 +345,9 @@
       :group-key="removeDialog?.groupKey || ''"
       :display-name="removeDialog?.displayName || ''"
       :busy="
-        removeDialog ? downloadGroupStore.isGroupOperationBusy(removeDialog.groupKey, 'remove') : false
+        removeDialog
+          ? downloadGroupStore.isGroupOperationBusy(removeDialog.groupKey, 'remove')
+          : false
       "
       @cancel="cancelRemoveGroup"
       @confirm="confirmRemoveGroup"
@@ -464,5 +470,4 @@
   .download-group-detail-state.degraded {
     color: color-mix(in srgb, var(--status-paused) 76%, var(--app-text));
   }
-
 </style>

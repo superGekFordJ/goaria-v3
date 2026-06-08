@@ -52,7 +52,9 @@ export function subscribeToTaskEvents(
   if (onConnectionChange) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     connectionUnsubscribe = Events.On('aria2:connection', (ev: any) => {
-      const data = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as { connected: boolean }
+      const data = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as {
+        connected: boolean
+      }
       if (import.meta.env.DEV) {
         console.debug('[Events] aria2:connection', data.connected)
       }

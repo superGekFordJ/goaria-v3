@@ -12,7 +12,7 @@ import { TaskEvents } from './events'
 export function setupPolling(
   state: TaskState,
   actions: TaskActions,
-  getEvents: () => TaskEvents | undefined // Lazy resolution to avoid circular dependency
+  getEvents: () => TaskEvents | undefined, // Lazy resolution to avoid circular dependency
 ) {
   const {
     pollingEnabled,
@@ -25,12 +25,7 @@ export function setupPolling(
     throttledUpdateTrayIcon,
   } = state
 
-  const {
-    fetchActiveTasks,
-    fetchStoppedTasks,
-    fetchTasks,
-    getLastStoppedFetchTime,
-  } = actions
+  const { fetchActiveTasks, fetchStoppedTasks, fetchTasks, getLastStoppedFetchTime } = actions
 
   // Polling State
   const pollingTimer = { value: null as ReturnType<typeof setTimeout> | null }
@@ -49,7 +44,9 @@ export function setupPolling(
 
     subscribeToTaskEvents(
       events.handleTaskDelta,
-      () => { fetchTasks() },
+      () => {
+        fetchTasks()
+      },
       connected => {
         if (import.meta.env.DEV) console.debug('[Events] Aria2 connection:', connected)
         if (connected) fetchTasks()
@@ -57,7 +54,7 @@ export function setupPolling(
     )
 
     subscribeToTaskMoveEvent((move: TaskMove) => {
-        events.handleTaskMove(move)
+      events.handleTaskMove(move)
     })
 
     eventsSubscribed = true

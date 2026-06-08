@@ -397,9 +397,9 @@
   --skin-accent-from: #5eead4;
   --skin-accent-to: #2dd4bf;
   --skin-surface-tint: rgba(94, 234, 212, 0.04);
-  --skin-surface-border: rgba(94, 234, 212, 0.10);
+  --skin-surface-border: rgba(94, 234, 212, 0.1);
   --skin-focus-beam: #5eead4;
-  --skin-ambient-glow: rgba(94, 234, 212, 0.20);
+  --skin-ambient-glow: rgba(94, 234, 212, 0.2);
 
   --selection-bg: var(--neon-primary);
   --focus-ring: var(--neon-primary);
@@ -425,7 +425,7 @@
   --skin-surface-tint: rgba(13, 148, 136, 0.05);
   --skin-surface-border: rgba(13, 148, 136, 0.12);
   --skin-focus-beam: #0d9488;
-  --skin-ambient-glow: rgba(13, 148, 136, 0.10);
+  --skin-ambient-glow: rgba(13, 148, 136, 0.1);
 
   --selection-bg: var(--neon-primary);
   --focus-ring: var(--neon-primary);
@@ -439,7 +439,7 @@
 [data-skin='aurora']:not([data-theme='light']) {
   --neon-primary: #818cf8;
   --neon-secondary: #38bdf8;
-  --neon-glow: rgba(129, 140, 248, 0.30);
+  --neon-glow: rgba(129, 140, 248, 0.3);
   --neon-btn-text: #0c0c0f;
 
   --status-active: #34d399;
@@ -494,7 +494,7 @@
 [data-skin='ember']:not([data-theme='light']) {
   --neon-primary: #f59e0b;
   --neon-secondary: #ef4444;
-  --neon-glow: rgba(245, 158, 11, 0.30);
+  --neon-glow: rgba(245, 158, 11, 0.3);
   --neon-btn-text: #0c0c0f;
 
   --status-active: #34d399;
@@ -535,7 +535,7 @@
   --skin-surface-tint: rgba(180, 83, 9, 0.05);
   --skin-surface-border: rgba(180, 83, 9, 0.12);
   --skin-focus-beam: #b45309;
-  --skin-ambient-glow: rgba(180, 83, 9, 0.10);
+  --skin-ambient-glow: rgba(180, 83, 9, 0.1);
 
   --selection-bg: var(--neon-primary);
   --focus-ring: var(--neon-primary);
@@ -1209,19 +1209,35 @@ select {
 
 /* Status-specific hover glows - use !important to override default */
 .task-card-active::before {
-  background: linear-gradient(135deg, color-mix(in srgb, var(--glow-active-secondary) 5%, transparent) 0%, transparent 50%) !important;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--glow-active-secondary) 5%, transparent) 0%,
+    transparent 50%
+  ) !important;
 }
 
 .task-card-paused::before {
-  background: linear-gradient(135deg, color-mix(in srgb, var(--glow-paused) 5%, transparent) 0%, transparent 50%) !important;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--glow-paused) 5%, transparent) 0%,
+    transparent 50%
+  ) !important;
 }
 
 .task-card-error::before {
-  background: linear-gradient(135deg, color-mix(in srgb, var(--glow-error) 5%, transparent) 0%, transparent 50%) !important;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--glow-error) 5%, transparent) 0%,
+    transparent 50%
+  ) !important;
 }
 
 .task-card-complete::before {
-  background: linear-gradient(135deg, color-mix(in srgb, var(--glow-complete) 3%, transparent) 0%, transparent 50%) !important;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--glow-complete) 3%, transparent) 0%,
+    transparent 50%
+  ) !important;
 }
 
 /* === Status-Based Card Glow (Light is Status) === */
@@ -1492,7 +1508,12 @@ select {
 /* === Divider Line === */
 .divider-glow {
   height: 1px;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--divider-glow) 30%, transparent), transparent);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--divider-glow) 30%, transparent),
+    transparent
+  );
 }
 
 /* === Empty State === */

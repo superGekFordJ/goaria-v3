@@ -144,8 +144,8 @@ describe('Status Preservation Tests', () => {
      */
 
     it.each([
-      ['cancelled', 'complete'],  // 目前会被设为 complete
-      ['timeout', 'complete'],    // 目前会被设为 complete
+      ['cancelled', 'complete'], // 目前会被设为 complete
+      ['timeout', 'complete'], // 目前会被设为 complete
       ['quota_exceeded', 'complete'], // 目前会被设为 complete
     ])('status %s -> %s (current behavior)', (inputStatus, expectedStatus) => {
       const store = createMockStore()

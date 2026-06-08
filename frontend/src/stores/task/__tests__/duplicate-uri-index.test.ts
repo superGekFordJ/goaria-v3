@@ -41,9 +41,7 @@ function task(gid: string, status: string, uri?: string, overrides: Partial<Task
     errorCode: '',
     errorMessage: '',
     dir: '/downloads',
-    files: uri
-      ? [{ path: `/downloads/${gid}.bin`, uris: [{ uri, status: 'used' }] }]
-      : [],
+    files: uri ? [{ path: `/downloads/${gid}.bin`, uris: [{ uri, status: 'used' }] }] : [],
     ...overrides,
   } as Task
 }

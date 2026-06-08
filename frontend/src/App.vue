@@ -183,10 +183,7 @@
         >
           <!-- Content Area with KeepAlive to prevent remount on tab switch -->
           <KeepAlive>
-            <component
-              :is="activeContent"
-              :tab="uiStore.activeTab"
-            />
+            <component :is="activeContent" :tab="uiStore.activeTab" />
           </KeepAlive>
         </div>
       </main>
