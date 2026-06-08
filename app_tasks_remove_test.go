@@ -72,6 +72,7 @@ func appTaskSuccessResponse(result any) map[string]any {
 func setupAppTaskRemoveTest(t *testing.T, handler func(req appTaskRPCRequest, counter *appTaskRPCCounter) map[string]any) *appTaskRPCCounter {
 	t.Helper()
 
+	monitor.ResetDownloadGroupNamerForTest()
 	originalCache := monitor.Cache
 	originalTracker := monitor.State.GetTracker()
 	originalMonitor := monitor.State.GetMonitor()
@@ -120,6 +121,7 @@ func setupAppTaskRemoveTest(t *testing.T, handler func(req appTaskRPCRequest, co
 		server.Close()
 		history.Clear()
 		monitor.ResetTaskGroupStoreForTest("", true)
+		monitor.ResetDownloadGroupNamerForTest()
 		history.SetSaveEnabled(originalSaveEnabled)
 		monitor.Cache = originalCache
 		monitor.State.SetTracker(originalTracker)
