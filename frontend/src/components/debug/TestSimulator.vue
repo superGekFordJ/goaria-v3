@@ -1,123 +1,123 @@
 <script setup lang="ts">
-/**
- * TestSimulator - In-App WebView 性能测试工具
- * 在 wails3 dev 模式下通过 URL hash #test-simulator 激活
- * 用于测试真实 WebView 环境下的渲染性能和内存消耗
- */
-import { ref, computed } from 'vue'
-import { useTaskStore } from '@/stores/task'
-import type { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
+  /**
+   * TestSimulator - In-App WebView 性能测试工具
+   * 在 wails3 dev 模式下通过 URL hash #test-simulator 激活
+   * 用于测试真实 WebView 环境下的渲染性能和内存消耗
+   */
+  import { ref, computed } from 'vue'
+  import { useTaskStore } from '@/stores/task'
+  import type { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 
-const taskStore = useTaskStore()
-const renderTime = ref(0)
-const memoryBefore = ref(0)
-const memoryAfter = ref(0)
-const lastOperation = ref('')
-const isRunning = ref(false)
+  const taskStore = useTaskStore()
+  const renderTime = ref(0)
+  const memoryBefore = ref(0)
+  const memoryAfter = ref(0)
+  const lastOperation = ref('')
+  const isRunning = ref(false)
 
-const memoryDelta = computed(() => {
-  if (!memoryAfter.value || !memoryBefore.value) return 0
-  return ((memoryAfter.value - memoryBefore.value) / 1024 / 1024).toFixed(2)
-})
+  const memoryDelta = computed(() => {
+    if (!memoryAfter.value || !memoryBefore.value) return 0
+    return ((memoryAfter.value - memoryBefore.value) / 1024 / 1024).toFixed(2)
+  })
 
-const currentMemory = computed(() => {
-  if (!memoryAfter.value) return 0
-  return (memoryAfter.value / 1024 / 1024).toFixed(2)
-})
+  const currentMemory = computed(() => {
+    if (!memoryAfter.value) return 0
+    return (memoryAfter.value / 1024 / 1024).toFixed(2)
+  })
 
-function createMockTask(index: number, status: string = 'complete'): Task {
-  return {
-    gid: `sim-${Date.now()}-${index.toString().padStart(6, '0')}`,
-    title: `sim-task-${index}`,
-    status,
-    totalLength: `${Math.floor(Math.random() * 1000000000) + 100000}`,
-    completedLength: `${Math.floor(Math.random() * 1000000000) + 100000}`,
-    downloadSpeed: '0',
-    dir: 'D:\\Downloads',
-    errorCode: '',
-    errorMessage: '',
-    files: [
-      {
-        path: `D:\\Downloads\\simulated-file-${index}.zip`,
-        uris: [{ uri: `https://example.com/file-${index}.zip`, status: 'used' }],
-      },
-    ],
-  }
-}
-
-interface PerformanceMemory {
-  usedJSHeapSize: number
-}
-
-function getMemoryUsage(): number {
-  const perf = performance as typeof performance & { memory?: PerformanceMemory }
-  return perf.memory?.usedJSHeapSize || 0
-}
-
-async function injectTasks(count: number) {
-  if (isRunning.value) return
-  isRunning.value = true
-  lastOperation.value = `注入 ${count} 个任务...`
-
-  // 记录初始内存
-  memoryBefore.value = getMemoryUsage()
-
-  // 生成任务
-  const newTasks: Task[] = []
-  for (let i = 0; i < count; i++) {
-    // 混合状态
-    const status = i % 10 === 0 ? 'error' : 'complete'
-    newTasks.push(createMockTask(i, status))
+  function createMockTask(index: number, status: string = 'complete'): Task {
+    return {
+      gid: `sim-${Date.now()}-${index.toString().padStart(6, '0')}`,
+      title: `sim-task-${index}`,
+      status,
+      totalLength: `${Math.floor(Math.random() * 1000000000) + 100000}`,
+      completedLength: `${Math.floor(Math.random() * 1000000000) + 100000}`,
+      downloadSpeed: '0',
+      dir: 'D:\\Downloads',
+      errorCode: '',
+      errorMessage: '',
+      files: [
+        {
+          path: `D:\\Downloads\\simulated-file-${index}.zip`,
+          uris: [{ uri: `https://example.com/file-${index}.zip`, status: 'used' }],
+        },
+      ],
+    }
   }
 
-  // 测量渲染时间
-  const startTime = performance.now()
-
-  // 注入到 store
-  taskStore.tasks = {
-    active: taskStore.tasks.active,
-    waiting: taskStore.tasks.waiting,
-    stopped: [...newTasks, ...taskStore.tasks.stopped],
+  interface PerformanceMemory {
+    usedJSHeapSize: number
   }
 
-  // 等待 Vue 响应式更新和 DOM 渲染
-  await new Promise(resolve => requestAnimationFrame(resolve))
-  await new Promise(resolve => setTimeout(resolve, 100))
-
-  renderTime.value = Math.round(performance.now() - startTime)
-  memoryAfter.value = getMemoryUsage()
-  lastOperation.value = `完成注入 ${count} 个任务`
-  isRunning.value = false
-}
-
-function clearSimulatedTasks() {
-  memoryBefore.value = getMemoryUsage()
-
-  const startTime = performance.now()
-
-  // 清除所有 sim- 开头的任务
-  taskStore.tasks = {
-    active: taskStore.tasks.active,
-    waiting: taskStore.tasks.waiting,
-    stopped: taskStore.tasks.stopped.filter(t => !t.gid.startsWith('sim-')),
+  function getMemoryUsage(): number {
+    const perf = performance as typeof performance & { memory?: PerformanceMemory }
+    return perf.memory?.usedJSHeapSize || 0
   }
 
-  renderTime.value = Math.round(performance.now() - startTime)
-  memoryAfter.value = getMemoryUsage()
-  lastOperation.value = '清除模拟任务'
-}
+  async function injectTasks(count: number) {
+    if (isRunning.value) return
+    isRunning.value = true
+    lastOperation.value = `注入 ${count} 个任务...`
 
-declare const gc: (() => void) | undefined
+    // 记录初始内存
+    memoryBefore.value = getMemoryUsage()
 
-function runGC() {
-  if (typeof gc === 'function') {
-    gc()
+    // 生成任务
+    const newTasks: Task[] = []
+    for (let i = 0; i < count; i++) {
+      // 混合状态
+      const status = i % 10 === 0 ? 'error' : 'complete'
+      newTasks.push(createMockTask(i, status))
+    }
+
+    // 测量渲染时间
+    const startTime = performance.now()
+
+    // 注入到 store
+    taskStore.tasks = {
+      active: taskStore.tasks.active,
+      waiting: taskStore.tasks.waiting,
+      stopped: [...newTasks, ...taskStore.tasks.stopped],
+    }
+
+    // 等待 Vue 响应式更新和 DOM 渲染
+    await new Promise(resolve => requestAnimationFrame(resolve))
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    renderTime.value = Math.round(performance.now() - startTime)
     memoryAfter.value = getMemoryUsage()
-    lastOperation.value = '已触发 GC'
-  } else {
-    lastOperation.value = 'GC 不可用 (需要 --expose-gc 标志)'
+    lastOperation.value = `完成注入 ${count} 个任务`
+    isRunning.value = false
   }
-}
+
+  function clearSimulatedTasks() {
+    memoryBefore.value = getMemoryUsage()
+
+    const startTime = performance.now()
+
+    // 清除所有 sim- 开头的任务
+    taskStore.tasks = {
+      active: taskStore.tasks.active,
+      waiting: taskStore.tasks.waiting,
+      stopped: taskStore.tasks.stopped.filter(t => !t.gid.startsWith('sim-')),
+    }
+
+    renderTime.value = Math.round(performance.now() - startTime)
+    memoryAfter.value = getMemoryUsage()
+    lastOperation.value = '清除模拟任务'
+  }
+
+  declare const gc: (() => void) | undefined
+
+  function runGC() {
+    if (typeof gc === 'function') {
+      gc()
+      memoryAfter.value = getMemoryUsage()
+      lastOperation.value = '已触发 GC'
+    } else {
+      lastOperation.value = 'GC 不可用 (需要 --expose-gc 标志)'
+    }
+  }
 </script>
 
 <template>
@@ -174,113 +174,116 @@ function runGC() {
 </template>
 
 <style scoped>
-.test-simulator {
-  position: fixed;
-  bottom: 80px;
-  right: 16px;
-  background: rgba(30, 30, 40, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
-  padding: 16px;
-  min-width: 280px;
-  z-index: 9999;
-  backdrop-filter: blur(10px);
-  font-family: system-ui, -apple-system, sans-serif;
-}
+  .test-simulator {
+    position: fixed;
+    bottom: 80px;
+    right: 16px;
+    background: rgba(30, 30, 40, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    padding: 16px;
+    min-width: 280px;
+    z-index: 9999;
+    backdrop-filter: blur(10px);
+    font-family:
+      system-ui,
+      -apple-system,
+      sans-serif;
+  }
 
-.header {
-  display: flex;
-  flex-direction: column;
-  margin-bottom: 12px;
-}
+  .header {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 12px;
+  }
 
-.title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #fff;
-}
+  .title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #fff;
+  }
 
-.subtitle {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.5);
-}
+  .subtitle {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.5);
+  }
 
-.actions {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-  flex-wrap: wrap;
-}
+  .actions {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
 
-.btn {
-  padding: 6px 12px;
-  border: none;
-  border-radius: 6px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
+  .btn {
+    padding: 6px 12px;
+    border: none;
+    border-radius: 6px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
 
-.btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-}
+  .btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  }
 
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
 
-.btn-secondary {
-  background: rgba(255, 255, 255, 0.1);
-}
+  .btn-secondary {
+    background: rgba(255, 255, 255, 0.1);
+  }
 
-.btn-danger {
-  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-}
+  .btn-danger {
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  }
 
-.metrics {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-bottom: 12px;
-}
+  .metrics {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
 
-.metric {
-  background: rgba(255, 255, 255, 0.05);
-  padding: 8px;
-  border-radius: 6px;
-}
+  .metric {
+    background: rgba(255, 255, 255, 0.05);
+    padding: 8px;
+    border-radius: 6px;
+  }
 
-.label {
-  display: block;
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.5);
-  margin-bottom: 2px;
-}
+  .label {
+    display: block;
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.5);
+    margin-bottom: 2px;
+  }
 
-.value {
-  font-size: 14px;
-  font-weight: 600;
-  color: #4ade80;
-}
+  .value {
+    font-size: 14px;
+    font-weight: 600;
+    color: #4ade80;
+  }
 
-.value.warning {
-  color: #fbbf24;
-}
+  .value.warning {
+    color: #fbbf24;
+  }
 
-.value.danger {
-  color: #f87171;
-}
+  .value.danger {
+    color: #f87171;
+  }
 
-.status {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.7);
-  text-align: center;
-  padding: 8px;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 6px;
-}
+  .status {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.7);
+    text-align: center;
+    padding: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 6px;
+  }
 </style>

@@ -101,7 +101,10 @@ function measureInvalidatedDuplicateBatch(stoppedCount: number) {
     const start = performance.now()
     let duplicates = 0
     for (const candidate of candidates) {
-      if (isValidUrl(candidate.trim()) && isDuplicateUri(candidate, { allUris: state.allUris.value } as TaskStoreLike)) {
+      if (
+        isValidUrl(candidate.trim()) &&
+        isDuplicateUri(candidate, { allUris: state.allUris.value } as TaskStoreLike)
+      ) {
         duplicates++
       }
     }
@@ -122,7 +125,10 @@ function measureInvalidatedDuplicateBatch(stoppedCount: number) {
 
 describe('duplicate URI index measurement', () => {
   it('characterizes first duplicate-check batch after active/waiting invalidation', () => {
-    const results = [measureInvalidatedDuplicateBatch(1_000), measureInvalidatedDuplicateBatch(10_000)]
+    const results = [
+      measureInvalidatedDuplicateBatch(1_000),
+      measureInvalidatedDuplicateBatch(10_000),
+    ]
 
     for (const result of results) {
       expect(result.timings).toHaveLength(REPEATS)

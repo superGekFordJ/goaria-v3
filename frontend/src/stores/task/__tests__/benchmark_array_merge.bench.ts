@@ -8,7 +8,7 @@ describe('Array Merge Benchmark', () => {
 
   const tasks = ref({
     active: activeRaw,
-    waiting: waitingRaw
+    waiting: waitingRaw,
   })
 
   // Access via computed to simulate store

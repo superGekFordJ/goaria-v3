@@ -72,10 +72,7 @@
 
     <!-- Live Stats Card -->
     <div class="px-4 mb-4">
-      <StaticGlassPanel
-        class="p-4"
-        radius="rounded-[var(--radius-squircle-md)]"
-      >
+      <StaticGlassPanel class="p-4" radius="rounded-[var(--radius-squircle-md)]">
         <div class="flex flex-col space-y-3 relative z-10">
           <div class="flex items-center gap-2">
             <Activity :size="12" class="text-[var(--neon-primary)]/60" />
@@ -193,10 +190,7 @@
 
     <!-- Connection Status Footer -->
     <div class="p-4 mt-auto">
-      <StaticGlassPanel
-        class="p-4"
-        radius="rounded-[var(--radius-squircle-md)]"
-      >
+      <StaticGlassPanel class="p-4" radius="rounded-[var(--radius-squircle-md)]">
         <div class="flex flex-col space-y-2 relative z-10">
           <div class="flex items-center gap-2">
             <!-- Status indicator dot with glow -->

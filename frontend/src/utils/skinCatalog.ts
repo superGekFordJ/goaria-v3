@@ -59,11 +59,11 @@ export type SkinId = (typeof skinCatalog)[number]['id']
 export const DEFAULT_SKIN_ID: SkinId = 'obsidian'
 
 /** Set of all valid skin IDs for quick validation. */
-export const validSkinIds = new Set<string>(skinCatalog.map((s) => s.id))
+export const validSkinIds = new Set<string>(skinCatalog.map(s => s.id))
 
 /** Look up a catalog entry by ID. */
 export function getSkinMeta(id: SkinId) {
-  return skinCatalog.find((s) => s.id === id)
+  return skinCatalog.find(s => s.id === id)
 }
 
 /** Validate and normalise a persisted skin ID, falling back to default. */
