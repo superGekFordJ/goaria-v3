@@ -52,7 +52,10 @@
       }
     },
     "language": "Idioma",
-    "auto": "Auto"
+    "auto": "Auto",
+    "advancedMaterials": "Materiales Avanzados",
+    "advancedMaterialsTitle": "Materiales Avanzados",
+    "advancedMaterialsDesc": "Habilite el vidrio líquido panorámico y los bordes especulares físicos. Deshabilítelo para mejorar el rendimiento en dispositivos de gama baja."
   },
   "download": {
     "title": "Directorio de Descargas",

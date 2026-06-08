@@ -52,7 +52,10 @@
       }
     },
     "language": "Language",
-    "auto": "Auto"
+    "auto": "Auto",
+    "advancedMaterials": "Advanced Materials",
+    "advancedMaterialsTitle": "Advanced Materials",
+    "advancedMaterialsDesc": "Enable panoramic liquid glass and physical specular edges. Disable to improve performance on low-end devices."
   },
   "download": {
     "title": "Download Directory",

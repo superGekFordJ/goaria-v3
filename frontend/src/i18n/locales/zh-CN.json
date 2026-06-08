@@ -52,7 +52,10 @@
       }
     },
     "language": "语言",
-    "auto": "自动"
+    "auto": "自动",
+    "advancedMaterials": "高级材质",
+    "advancedMaterialsTitle": "高级材质",
+    "advancedMaterialsDesc": "开启全景液态玻璃与物理高光边缘。关闭以提升低配设备的性能。"
   },
   "download": {
     "title": "下载目录",

@@ -1,9 +1,21 @@
 <script setup lang="ts">
   import { ref, computed, onMounted, onUnmounted } from 'vue'
   import { useI18n } from 'vue-i18n'
-  import { Loader2, RefreshCw, Download, RotateCcw, AlertCircle, CheckCircle } from 'lucide-vue-next'
+  import {
+    Loader2,
+    RefreshCw,
+    Download,
+    RotateCcw,
+    AlertCircle,
+    CheckCircle,
+  } from 'lucide-vue-next'
   import ThemeIcon from '../../common/ThemeIcon.vue'
-  import { GetAppVersion, CheckForUpdate, ApplyUpdate, RestartApp } from '../../../../bindings/goaria-v3/app.js'
+  import {
+    GetAppVersion,
+    CheckForUpdate,
+    ApplyUpdate,
+    RestartApp,
+  } from '../../../../bindings/goaria-v3/app.js'
   import { Events } from '@wailsio/runtime'
   import { useSmoothProgress } from '../../../composables/useSmoothProgress'
   import StaticGlassPanel from '../../common/StaticGlassPanel.vue'
@@ -43,36 +55,40 @@
 
     // Listen for update status events
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    unsubs.push(Events.On('update:status', (ev: any) => {
-      const data = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as {
-        status: string
-        payload: unknown
-      }
-      if (data.status === 'downloading') {
-        status.value = 'downloading'
-      } else if (data.status === 'ready') {
-        status.value = 'ready'
-      } else if (data.status === 'error') {
-        status.value = 'error'
-        errorMsg.value = typeof data.payload === 'string' ? data.payload : t('update.error')
-      }
-    }))
+    unsubs.push(
+      Events.On('update:status', (ev: any) => {
+        const data = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as {
+          status: string
+          payload: unknown
+        }
+        if (data.status === 'downloading') {
+          status.value = 'downloading'
+        } else if (data.status === 'ready') {
+          status.value = 'ready'
+        } else if (data.status === 'error') {
+          status.value = 'error'
+          errorMsg.value = typeof data.payload === 'string' ? data.payload : t('update.error')
+        }
+      }),
+    )
 
     // Listen for update progress events (bytes-level data for smooth algorithm)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    unsubs.push(Events.On('update:progress', (ev: any) => {
-      const data = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as {
-        downloaded: number
-        total: number
-        speed: number
-      }
-      updateStats({
-        downloaded: data.downloaded,
-        total: data.total,
-        speed: data.speed,
-        status: 'active',
-      })
-    }))
+    unsubs.push(
+      Events.On('update:progress', (ev: any) => {
+        const data = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as {
+          downloaded: number
+          total: number
+          speed: number
+        }
+        updateStats({
+          downloaded: data.downloaded,
+          total: data.total,
+          speed: data.speed,
+          status: 'active',
+        })
+      }),
+    )
   })
 
   onUnmounted(() => {
@@ -131,6 +147,7 @@
   <StaticGlassPanel
     class="p-5 mt-6"
     radius="rounded-[var(--radius-squircle-lg)]"
+    fallbackClass="glass-panel-subtle"
   >
     <div class="flex items-center justify-between relative z-10">
       <!-- Left: App identity -->
@@ -159,7 +176,9 @@
 
         <!-- up to date -->
         <template v-else-if="status === 'idle' && upToDate">
-          <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20">
+          <div
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
+          >
             <CheckCircle :size="12" class="text-[var(--status-complete)]" />
             <span class="text-[10px] font-mono-data text-[var(--status-complete)]">
               {{ t('update.upToDate') }}
@@ -230,7 +249,9 @@
         <template v-else-if="status === 'error'">
           <div class="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-[var(--status-error)]/10">
             <AlertCircle :size="12" class="text-[var(--status-error)]" />
-            <span class="text-[10px] font-mono-data text-[var(--status-error)] max-w-[120px] truncate">
+            <span
+              class="text-[10px] font-mono-data text-[var(--status-error)] max-w-[120px] truncate"
+            >
               {{ errorMsg || t('update.error') }}
             </span>
           </div>

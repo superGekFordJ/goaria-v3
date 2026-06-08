@@ -102,20 +102,44 @@
           class="absolute z-50 top-full left-0 right-0 mt-2 p-1 rounded-xl bg-[var(--glass-bg)] border border-[var(--glass-border)] backdrop-blur-xl shadow-2xl origin-top"
         >
           <button
-            v-for="localeOption in ['auto', 'zh-CN', 'zh-TW', 'en', 'ja', 'es', 'de'] as LocalePreference[]"
+            v-for="localeOption in [
+              'auto',
+              'zh-CN',
+              'zh-TW',
+              'en',
+              'ja',
+              'es',
+              'de',
+            ] as LocalePreference[]"
             :key="localeOption"
             type="button"
             class="w-full flex items-center justify-between p-3 rounded-lg transition-all duration-200 group"
             :class="[
               uiStore.locale === localeOption
                 ? 'bg-[var(--neon-primary)]/10 text-[var(--neon-primary)]'
-                : 'text-[var(--app-text)] hover:bg-[var(--app-text)]/5'
+                : 'text-[var(--app-text)] hover:bg-[var(--app-text)]/5',
             ]"
             @click="selectLocale(localeOption)"
           >
             <div class="flex items-center gap-3">
-              <Monitor v-if="localeOption === 'auto'" :size="16" :class="uiStore.locale === localeOption ? 'text-[var(--neon-primary)]' : 'text-[var(--app-text-subtle)]'" />
-              <Languages v-else :size="16" :class="uiStore.locale === localeOption ? 'text-[var(--neon-primary)]' : 'text-[var(--app-text-subtle)]'" />
+              <Monitor
+                v-if="localeOption === 'auto'"
+                :size="16"
+                :class="
+                  uiStore.locale === localeOption
+                    ? 'text-[var(--neon-primary)]'
+                    : 'text-[var(--app-text-subtle)]'
+                "
+              />
+              <Languages
+                v-else
+                :size="16"
+                :class="
+                  uiStore.locale === localeOption
+                    ? 'text-[var(--neon-primary)]'
+                    : 'text-[var(--app-text-subtle)]'
+                "
+              />
               <span class="text-xs font-medium">
                 {{
                   localeOption === 'auto'
@@ -176,7 +200,7 @@
     </div>
 
     <!-- Skin Selector -->
-    <div>
+    <div class="mb-6">
       <label
         class="text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-3 block"
       >
@@ -221,18 +245,55 @@
         </button>
       </div>
     </div>
+
+    <!-- Advanced Materials (Effects) -->
+    <div>
+      <label
+        class="text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-3 block"
+      >
+        {{ t('appearance.advancedMaterials') }}
+      </label>
+      <button
+        type="button"
+        class="w-full flex items-center justify-between p-4 rounded-xl border bg-[var(--btn-glass-bg)] border-[var(--glass-border)] text-[var(--app-text)] hover:border-[var(--neon-primary)]/30 transition-all duration-200"
+        @click="uiStore.setEffects(uiStore.effects === 'full' ? 'reduced' : 'full')"
+      >
+        <div class="text-left">
+          <span class="text-sm font-medium block">
+            {{ t('appearance.advancedMaterialsTitle') }}
+          </span>
+          <span class="text-[10px] text-[var(--app-text-subtle)] block mt-1">
+            {{ t('appearance.advancedMaterialsDesc') }}
+          </span>
+        </div>
+        <!-- Toggle Switch -->
+        <div
+          :class="[
+            'w-12 h-7 rounded-full relative transition-all duration-300 cursor-pointer shrink-0 ml-4',
+            uiStore.effects === 'full' ? 'bg-[var(--neon-primary)]' : 'bg-[var(--btn-glass-bg)]',
+          ]"
+        >
+          <div
+            :class="[
+              'absolute top-1 w-5 h-5 rounded-full bg-[var(--card-bg)] shadow-lg ring-1 ring-[var(--glass-border)] transition-all duration-300',
+              uiStore.effects === 'full' ? 'left-6' : 'left-1',
+            ]"
+          ></div>
+        </div>
+      </button>
+    </div>
   </SectionCard>
 </template>
 
 <style scoped>
-.slide-fade-enter-active,
-.slide-fade-leave-active {
-  transition: all 0.2s ease;
-}
+  .slide-fade-enter-active,
+  .slide-fade-leave-active {
+    transition: all 0.2s ease;
+  }
 
-.slide-fade-enter-from,
-.slide-fade-leave-to {
-  opacity: 0;
-  transform: translateY(-8px) scale(0.98);
-}
+  .slide-fade-enter-from,
+  .slide-fade-leave-to {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
 </style>

@@ -52,7 +52,10 @@
       }
     },
     "language": "言語",
-    "auto": "自動"
+    "auto": "自動",
+    "advancedMaterials": "高度なマテリアル",
+    "advancedMaterialsTitle": "高度なマテリアル",
+    "advancedMaterialsDesc": "パノラマリキッドガラスと物理的なスペキュラーエッジを有効にします。パフォーマンスを向上させるには無効にしてください。"
   },
   "download": {
     "title": "ダウンロード先",
