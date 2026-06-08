@@ -6,6 +6,7 @@
   import { GetAppVersion, CheckForUpdate, ApplyUpdate, RestartApp } from '../../../../bindings/goaria-v3/app.js'
   import { Events } from '@wailsio/runtime'
   import { useSmoothProgress } from '../../../composables/useSmoothProgress'
+  import StaticGlassPanel from '../../common/StaticGlassPanel.vue'
 
   const { t } = useI18n()
 
@@ -127,8 +128,11 @@
 </script>
 
 <template>
-  <div class="glass-panel-subtle rounded-[var(--radius-squircle-lg)] p-5 mt-6">
-    <div class="flex items-center justify-between">
+  <StaticGlassPanel
+    class="p-5 mt-6"
+    radius="rounded-[var(--radius-squircle-lg)]"
+  >
+    <div class="flex items-center justify-between relative z-10">
       <!-- Left: App identity -->
       <div class="flex items-center gap-3">
         <ThemeIcon :size="32" />
@@ -240,5 +244,5 @@
         </template>
       </div>
     </div>
-  </div>
+  </StaticGlassPanel>
 </template>
