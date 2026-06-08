@@ -7,6 +7,8 @@
   import { useDownloadGroupStore } from '../../stores/downloadGroups'
   import { Download, CheckCircle, Settings as SettingsIcon, Activity } from 'lucide-vue-next'
   import ThemeIcon from '../common/ThemeIcon.vue'
+  import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
+  import StaticGlassPanel from '../common/StaticGlassPanel.vue'
 
   const { t } = useI18n()
   const uiStore = useUIStore()
@@ -70,71 +72,81 @@
 
     <!-- Live Stats Card -->
     <div class="px-4 mb-4">
-      <div class="glass-panel-subtle rounded-[var(--radius-squircle-md)] p-4 space-y-3">
-        <div class="flex items-center gap-2">
-          <Activity :size="12" class="text-[var(--neon-primary)]/60" />
-          <span
-            class="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--app-text-subtle)]"
-          >
-            {{ t('sidebar.liveSpeed') }}
-          </span>
+      <StaticGlassPanel
+        class="p-4"
+        radius="rounded-[var(--radius-squircle-md)]"
+      >
+        <div class="flex flex-col space-y-3 relative z-10">
+          <div class="flex items-center gap-2">
+            <Activity :size="12" class="text-[var(--neon-primary)]/60" />
+            <span
+              class="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--app-text-subtle)]"
+            >
+              {{ t('sidebar.liveSpeed') }}
+            </span>
+          </div>
+          <div class="font-mono-data text-xl font-bold text-neon leading-none">
+            {{ totalSpeed }}
+          </div>
         </div>
-        <div class="font-mono-data text-xl font-bold text-neon leading-none">
-          {{ totalSpeed }}
-        </div>
-      </div>
+      </StaticGlassPanel>
     </div>
 
     <!-- Navigation -->
     <nav class="flex-1 px-3 space-y-1">
-      <button
+      <LiquidGlassPanel
         v-for="item in navItems"
         :key="item.id"
+        as="button"
+        :active="uiStore.activeTab === item.id"
+        :interactive="true"
         :class="[
-          'w-full flex items-center justify-between px-4 py-3 rounded-[var(--radius-squircle-md)] transition-all duration-300 group',
+          'w-full transition-all duration-300 group',
           uiStore.activeTab === item.id
-            ? 'bg-[var(--sidebar-active)] border border-[var(--card-border)]'
+            ? 'border border-[var(--card-border)]'
             : 'hover:bg-[var(--sidebar-hover)] border border-transparent',
         ]"
         @click="handleNavClick(item.id)"
       >
-        <div class="flex items-center gap-3">
-          <!-- Icon with conditional neon glow -->
-          <div
-            :class="[
-              'w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-300',
-              uiStore.activeTab === item.id
-                ? 'bg-[var(--neon-primary)]/10 text-[var(--neon-primary)]'
-                : 'bg-[var(--btn-glass-bg)] text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]/60',
-            ]"
-          >
-            <component :is="item.icon" :size="16" />
+        <div class="w-full h-full flex items-center justify-between px-4 py-3">
+          <div class="flex items-center gap-3">
+            <!-- Icon with conditional neon glow -->
+            <div
+              :class="[
+                'w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-300',
+                uiStore.activeTab === item.id
+                  ? 'bg-[var(--neon-primary)]/10 text-[var(--neon-primary)]'
+                  : 'bg-[var(--btn-glass-bg)] text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]/60',
+              ]"
+            >
+              <component :is="item.icon" :size="16" />
+            </div>
+            <span
+              :class="[
+                'text-sm font-semibold transition-colors duration-300',
+                uiStore.activeTab === item.id
+                  ? 'text-[var(--app-text)]/90'
+                  : 'text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]/60',
+              ]"
+            >
+              {{ item.name }}
+            </span>
           </div>
-          <span
+
+          <!-- Task count badge -->
+          <div
+            v-if="item.count > 0"
             :class="[
-              'text-sm font-semibold transition-colors duration-300',
+              'min-w-[24px] h-6 px-2 rounded-lg flex items-center justify-center font-mono-data text-xs font-bold transition-all duration-300',
               uiStore.activeTab === item.id
-                ? 'text-[var(--app-text)]/90'
-                : 'text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]/60',
+                ? 'bg-[var(--neon-primary)]/20 text-[var(--neon-primary)]'
+                : 'bg-[var(--btn-glass-bg)] text-[var(--app-text-subtle)]',
             ]"
           >
-            {{ item.name }}
-          </span>
+            {{ item.count }}
+          </div>
         </div>
-
-        <!-- Task count badge -->
-        <div
-          v-if="item.count > 0"
-          :class="[
-            'min-w-[24px] h-6 px-2 rounded-lg flex items-center justify-center font-mono-data text-xs font-bold transition-all duration-300',
-            uiStore.activeTab === item.id
-              ? 'bg-[var(--neon-primary)]/20 text-[var(--neon-primary)]'
-              : 'bg-[var(--btn-glass-bg)] text-[var(--app-text-subtle)]',
-          ]"
-        >
-          {{ item.count }}
-        </div>
-      </button>
+      </LiquidGlassPanel>
 
       <!-- Divider -->
       <div class="py-3 px-2">
@@ -142,65 +154,75 @@
       </div>
 
       <!-- Settings Button -->
-      <button
+      <LiquidGlassPanel
+        as="button"
+        :active="uiStore.activeTab === 'settings'"
+        :interactive="true"
         :class="[
-          'w-full flex items-center gap-3 px-4 py-3 rounded-[var(--radius-squircle-md)] transition-all duration-300 group',
+          'w-full transition-all duration-300 group',
           uiStore.activeTab === 'settings'
-            ? 'bg-[var(--sidebar-active)] border border-[var(--card-border)]'
+            ? 'border border-[var(--card-border)]'
             : 'hover:bg-[var(--sidebar-hover)] border border-transparent',
         ]"
         @click="uiStore.setActiveTab('settings')"
       >
-        <div
-          :class="[
-            'w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-300',
-            uiStore.activeTab === 'settings'
-              ? 'bg-[var(--btn-glass-hover)] text-[var(--app-text)]/80'
-              : 'bg-[var(--btn-glass-bg)] text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]/60',
-          ]"
-        >
-          <SettingsIcon :size="16" />
+        <div class="w-full h-full flex items-center gap-3 px-4 py-3">
+          <div
+            :class="[
+              'w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-300',
+              uiStore.activeTab === 'settings'
+                ? 'bg-[var(--btn-glass-hover)] text-[var(--app-text)]/80'
+                : 'bg-[var(--btn-glass-bg)] text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]/60',
+            ]"
+          >
+            <SettingsIcon :size="16" />
+          </div>
+          <span
+            :class="[
+              'text-sm font-semibold transition-colors duration-300',
+              uiStore.activeTab === 'settings'
+                ? 'text-[var(--app-text)]/80'
+                : 'text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]/60',
+            ]"
+          >
+            {{ t('sidebar.settings') }}
+          </span>
         </div>
-        <span
-          :class="[
-            'text-sm font-semibold transition-colors duration-300',
-            uiStore.activeTab === 'settings'
-              ? 'text-[var(--app-text)]/80'
-              : 'text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]/60',
-          ]"
-        >
-          {{ t('sidebar.settings') }}
-        </span>
-      </button>
+      </LiquidGlassPanel>
     </nav>
 
     <!-- Connection Status Footer -->
     <div class="p-4 mt-auto">
-      <div class="glass-panel-subtle rounded-[var(--radius-squircle-md)] p-4 space-y-2">
-        <div class="flex items-center gap-2">
-          <!-- Status indicator dot with glow -->
-          <div class="relative">
-            <div
-              :class="[
-                'w-2 h-2 rounded-full transition-colors',
-                isConnected ? 'bg-[var(--status-active)]' : 'bg-[var(--status-error)]',
-              ]"
-            ></div>
-            <div
-              v-if="isConnected"
-              class="absolute inset-0 w-2 h-2 rounded-full bg-[var(--status-active)] animate-ping opacity-50"
-            ></div>
+      <StaticGlassPanel
+        class="p-4"
+        radius="rounded-[var(--radius-squircle-md)]"
+      >
+        <div class="flex flex-col space-y-2 relative z-10">
+          <div class="flex items-center gap-2">
+            <!-- Status indicator dot with glow -->
+            <div class="relative">
+              <div
+                :class="[
+                  'w-2 h-2 rounded-full transition-colors',
+                  isConnected ? 'bg-[var(--status-active)]' : 'bg-[var(--status-error)]',
+                ]"
+              ></div>
+              <div
+                v-if="isConnected"
+                class="absolute inset-0 w-2 h-2 rounded-full bg-[var(--status-active)] animate-ping opacity-50"
+              ></div>
+            </div>
+            <span
+              class="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--app-text-subtle)]"
+            >
+              {{ isConnected ? t('sidebar.aria2Online') : t('sidebar.aria2Offline') }}
+            </span>
           </div>
-          <span
-            class="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--app-text-subtle)]"
-          >
-            {{ isConnected ? t('sidebar.aria2Online') : t('sidebar.aria2Offline') }}
-          </span>
+          <div class="font-mono-data text-[10px] text-[var(--app-text-subtle)] truncate">
+            127.0.0.1:{{ configStore.settings.rpc_port }}
+          </div>
         </div>
-        <div class="font-mono-data text-[10px] text-[var(--app-text-subtle)] truncate">
-          127.0.0.1:{{ configStore.settings.rpc_port }}
-        </div>
-      </div>
+      </StaticGlassPanel>
     </div>
   </aside>
 </template>
