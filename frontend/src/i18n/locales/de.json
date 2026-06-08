@@ -52,7 +52,10 @@
       }
     },
     "language": "Sprache",
-    "auto": "Auto"
+    "auto": "Auto",
+    "advancedMaterials": "Erweiterte Materialien",
+    "advancedMaterialsTitle": "Erweiterte Materialien",
+    "advancedMaterialsDesc": "Aktivieren Sie das flüssige Panoramaglas und die physischen spiegelnden Kanten. Deaktivieren Sie diese Option, um die Leistung zu verbessern."
   },
   "download": {
     "title": "Download-Verzeichnis",

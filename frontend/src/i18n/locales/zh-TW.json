@@ -52,7 +52,10 @@
       }
     },
     "language": "語言",
-    "auto": "自動"
+    "auto": "自動",
+    "advancedMaterials": "進階材質",
+    "advancedMaterialsTitle": "進階材質",
+    "advancedMaterialsDesc": "開啟全景液態玻璃與物理高光邊緣。關閉以提升低階設備的效能。"
   },
   "download": {
     "title": "下載目錄",
