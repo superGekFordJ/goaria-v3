@@ -84,8 +84,7 @@
     <!-- History Toggle Card -->
     <StaticGlassPanel
       radius="rounded-[var(--radius-squircle-lg)]"
-      :interactive="true"
-      class="p-6 transition-all duration-300 hover:border-[var(--neon-primary)]/20"
+      class="p-6 cursor-pointer transition-all duration-300 hover:border-[var(--neon-primary)]/20"
       fallback-class="glass-panel"
       @click="toggleHistory"
     >
