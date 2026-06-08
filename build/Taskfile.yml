@@ -50,12 +50,12 @@ tasks:
     dir: frontend
     sources:
       - package.json
-      - package-lock.json
+      - pnpm-lock.yaml
     generates:
       - node_modules
     preconditions:
       - sh: pnpm --version
-        msg: "Looks like pnpm isn't installed. See https://pnpm.io/installation"
+        msg: "Looks like pnpm isn't installed. Pnpm is required for the frontend."
     cmds:
       - pnpm install
 
