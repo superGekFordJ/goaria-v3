@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"goaria-v3/internal/extractor"
-	"goaria-v3/internal/tasks"
 )
 
 const addTaskGenericAuthResolutionError = "could not resolve this link; authentication may be required or the link is unsupported"
@@ -692,7 +691,7 @@ func TestAddUri_AuthRuntimeErrorsAreRedacted(t *testing.T) {
 	assertRootNoSecretText(t, batch.Errors[sourceURL], "raw-secret", "raw-cookie", "raw-token", "query-secret", "Authorization", "Cookie", "C:/private/path")
 }
 
-func setupAuthRuntimeTaskApp(t *testing.T, dispatcher tasks.ExtractorAddTaskDispatcher, bundle *extractor.PrivateAuthRuntimeBundle, driver *authRuntimeTaskDriver) (*App, *extractorRPCRecorder, *extractor.FileAuthProfileStore) {
+func setupAuthRuntimeTaskApp(t *testing.T, dispatcher extractorAddTaskDispatcher, bundle *extractor.PrivateAuthRuntimeBundle, driver *authRuntimeTaskDriver) (*App, *extractorRPCRecorder, *extractor.FileAuthProfileStore) {
 	t.Helper()
 	store := newRootTempAuthProfileStore(t)
 	coordinator := extractor.NewWebViewAuthCoordinator(store, driver)
@@ -703,107 +702,6 @@ func setupAuthRuntimeTaskApp(t *testing.T, dispatcher tasks.ExtractorAddTaskDisp
 	return app, recorder, store
 }
 
-func setupAuthRuntimeAliasTaskApp(t *testing.T, dispatcher tasks.ExtractorAddTaskDispatcher, bundle *extractor.PrivateAuthRuntimeBundle, driver *authRuntimeTaskDriver, resolver extractor.HostPolicyResolver) (*App, *extractorRPCRecorder, *extractor.FileAuthProfileStore) {
-	t.Helper()
-	store := newRootTempAuthProfileStore(t)
-	coordinator := extractor.NewWebViewAuthCoordinator(store, driver)
-	runtime := extractor.NewHostAuthRuntime(extractor.HostAuthRuntimeConfig{Bundle: bundle, Store: store, Coordinator: coordinator, HostPolicyResolver: resolver})
-	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
-	app.setHostAuthState(store, runtime, driver)
-
-	return app, recorder, store
-}
-
-func syntheticAuthRuntimeAliasTaskBundle(t *testing.T, identity extractor.VerifiedPackIdentity, mutate func(map[string]any)) *extractor.PrivateAuthRuntimeBundle {
-	t.Helper()
-	runtimeRaw := []byte(`{"packs":[{"verified_pack_identity":{"pack_id":"` + identity.PackID + `","pack_version":"` + identity.PackVersion + `","asset_sha256":"` + identity.AssetSHA256 + `","manifest_sha256":"` + identity.ManifestSHA256 + `","payload_sha256":"` + identity.PayloadSHA256 + `","signature_sha256":"` + identity.SignatureSHA256 + `","public_key_sha256":"` + identity.PublicKeySHA256 + `"},"store_binding":{"scope":"pack","profile_refs":["apr-alpha001"]},"profiles":[{"profile_ref":"apr-alpha001","kind":"bearer","login":{"url":"https://login.alpha.test/login","allowed_domains":[{"host":"login.alpha.test"}],"timeout_millis":30000,` + appHostAuthRuntimeCallbackJSONForTest() + `}}],"preflight":{"mode":"required","missing":"refresh","expired":"refresh"},"provisioning":{"mode":"webview","profile_refs":["apr-alpha001"]},"materialization":{"profile_refs":["apr-alpha001"]},"normalization":{"reject_crlf":true,"trim_space":true}}]}`)
-	if mutate != nil {
-		var runtime struct {
-			Packs []map[string]any `json:"packs"`
-		}
-		if err := json.Unmarshal(runtimeRaw, &runtime); err != nil || len(runtime.Packs) != 1 {
-			t.Fatalf("alias auth runtime fixture invalid")
-		}
-		mutate(runtime.Packs[0])
-		var err error
-		runtimeRaw, err = json.Marshal(runtime)
-		if err != nil {
-			t.Fatalf("alias auth runtime fixture invalid")
-		}
-	}
-	hash := sha256.Sum256(runtimeRaw)
-	envelope := []byte(`{"schema_version":1,"bundle_id":"arb-alpha001","bundle_version":"opaque-1","auth_runtime_private_sha256":"` + fmt.Sprintf("%x", hash[:]) + `","runtime":` + string(runtimeRaw) + `}`)
-	bundle, err := extractor.NewPrivateAuthRuntimeBundle(envelope, extractor.PrivateAuthRuntimeBundleLoadOptions{})
-	if err != nil {
-		t.Fatalf("NewPrivateAuthRuntimeBundle(alias task) error = %v", err)
-	}
-
-	return bundle
-}
-
-func authRuntimeAliasTaskIdentity() extractor.VerifiedPackIdentity {
-	return extractor.VerifiedPackIdentity{
-		PackID:          "xpk-alpha001",
-		PackVersion:     "opaque-1",
-		AssetSHA256:     strings.Repeat("1", 64),
-		ManifestSHA256:  strings.Repeat("2", 64),
-		PayloadSHA256:   strings.Repeat("3", 64),
-		SignatureSHA256: strings.Repeat("4", 64),
-		PublicKeySHA256: strings.Repeat("5", 64),
-	}
-}
-
-func authRuntimeAliasTaskManifest(identity extractor.VerifiedPackIdentity) extractor.Manifest {
-	return extractor.Manifest{
-		PackID:           identity.PackID,
-		PackVersion:      identity.PackVersion,
-		ABIVersion:       extractor.CurrentABIVersion,
-		Capabilities:     []extractor.Capability{extractor.CapabilityHTTPFetch, extractor.CapabilityAuthProfile},
-		DomainPolicyRefs: []string{"dpr-alpha001"},
-		BrokerPolicyRefs: []string{"bpr-alpha001"},
-		ResourceLimits: extractor.ResourceLimits{
-			TimeoutMillis:    60000,
-			MaxMemoryPages:   64,
-			MaxHostCalls:     16,
-			MaxResponseBytes: 1 << 20,
-			MaxOutputItems:   16,
-			MaxOutputBytes:   1 << 16,
-		},
-		PayloadSHA256: identity.PayloadSHA256,
-	}
-}
-
-func authRuntimeAliasTaskHostPolicy(identity extractor.VerifiedPackIdentity) *extractor.ResolvedHostPolicy {
-	policy := authRuntimeAliasTaskHostPolicyValue(identity)
-
-	return &policy
-}
-
-func authRuntimeAliasTaskHostPolicyValue(identity extractor.VerifiedPackIdentity) extractor.ResolvedHostPolicy {
-	return extractor.ResolvedHostPolicy{
-		PolicyID:            "hpr-alpha001",
-		PolicyVersion:       "opaque-1",
-		PolicySHA256:        strings.Repeat("6", 64),
-		PackIdentity:        identity,
-		DomainPolicyRefs:    []string{"dpr-alpha001"},
-		BrokerPolicyRefs:    []string{"bpr-alpha001"},
-		AllowedCapabilities: []extractor.Capability{extractor.CapabilityHTTPFetch, extractor.CapabilityAuthProfile},
-		IngressDomains:      []extractor.DomainRule{{Host: "source.alpha.test"}},
-		BrokerDomains:       []extractor.DomainRule{{Host: "login.alpha.test"}},
-		OutputDomains:       []extractor.HostPolicyOutputRule{{Host: "target.alpha.test", PathPrefixes: []string{"/files/"}}},
-		AuthProfiles:        []extractor.HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []extractor.DomainRule{{Host: "target.alpha.test"}}}},
-		Endpoints:           []extractor.HostPolicyEndpoint{{BrokerPolicyRef: "bpr-alpha001", EndpointRef: "ep-alpha001", URLTemplate: "https://login.alpha.test/session/{id}", Methods: []string{"GET"}, AuthProfileRefs: []extractor.AuthProfileID{"apr-alpha001"}, TimeoutMillis: 3000, MaxResponseBytes: 65536}},
-	}
-}
-
-func authRuntimeAliasTaskHostPolicyResolver(identity extractor.VerifiedPackIdentity, mutate func(*extractor.ResolvedHostPolicy)) *authRuntimeTaskHostPolicyResolver {
-	policy := authRuntimeAliasTaskHostPolicyValue(identity)
-	if mutate != nil {
-		mutate(&policy)
-	}
-
-	return &authRuntimeTaskHostPolicyResolver{identity: identity, policy: policy}
-}
 func authRuntimeTaskIdentity(t *testing.T, bundle *extractor.PrivateAuthRuntimeBundle) extractor.VerifiedPackIdentity {
 	t.Helper()
 	identities := bundle.PackIdentities()
@@ -1095,8 +993,8 @@ func assertAuthRuntimeTaskEventAbsent(t *testing.T, got []string, forbidden ...s
 }
 
 var (
-	_ tasks.ExtractorAddTaskDispatcher        = (*authRuntimeTaskDispatcher)(nil)
-	_ tasks.ExtractorAuthRuntimeSourcePlanner = (*authRuntimeTaskDispatcher)(nil)
-	_ extractor.AuthWebViewDriver             = (*authRuntimeTaskDriver)(nil)
-	_ extractor.AuthWebViewSession            = authRuntimeTaskSession{}
+	_ extractorAddTaskDispatcher        = (*authRuntimeTaskDispatcher)(nil)
+	_ extractorAuthRuntimeSourcePlanner = (*authRuntimeTaskDispatcher)(nil)
+	_ extractor.AuthWebViewDriver       = (*authRuntimeTaskDriver)(nil)
+	_ extractor.AuthWebViewSession      = authRuntimeTaskSession{}
 )

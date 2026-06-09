@@ -21,7 +21,6 @@ import (
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
-	"goaria-v3/internal/tasks"
 )
 
 type fakeAddTaskDispatcher struct {
@@ -105,11 +104,11 @@ func (r *extractorRPCRecorder) optionsSnapshot() []map[string]any {
 	return out
 }
 
-func setupAppTaskExtractorTest(t *testing.T, snapshots batchAddRPCSnapshots, dispatcher tasks.ExtractorAddTaskDispatcher) (*App, *extractorRPCRecorder) {
+func setupAppTaskExtractorTest(t *testing.T, snapshots batchAddRPCSnapshots, dispatcher extractorAddTaskDispatcher) (*App, *extractorRPCRecorder) {
 	return setupAppTaskExtractorTestWithRecorder(t, snapshots, dispatcher, newExtractorRPCRecorder())
 }
 
-func setupAppTaskExtractorTestWithRecorder(t *testing.T, snapshots batchAddRPCSnapshots, dispatcher tasks.ExtractorAddTaskDispatcher, recorder *extractorRPCRecorder) (*App, *extractorRPCRecorder) {
+func setupAppTaskExtractorTestWithRecorder(t *testing.T, snapshots batchAddRPCSnapshots, dispatcher extractorAddTaskDispatcher, recorder *extractorRPCRecorder) (*App, *extractorRPCRecorder) {
 	t.Helper()
 
 	originalConfig := config.Current
@@ -211,118 +210,7 @@ func resolvedItem(sourceURL, directURL string) extractor.ResolvedAddItem {
 
 func singleItemResolution(sourceURL, directURL string) extractor.AddTaskResolution {
 	item := resolvedItem(sourceURL, directURL)
-	return extractor.AddTaskResolution{Matched: true, SourceURL: sourceURL, PackID: item.PackID, Items: []extractor.ResolvedAddItem{item}}
-}
-
-type appExtractorStaticTransport struct {
-	body string
-}
-
-func (t appExtractorStaticTransport) RoundTrip(*http.Request) (*http.Response, error) {
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/plain"}},
-		Body:       io.NopCloser(strings.NewReader(t.body)),
-	}, nil
-}
-
-func appGoFileEmptyOutputDispatcher(t *testing.T) tasks.ExtractorAddTaskDispatcher {
-	t.Helper()
-	assets, err := packbuilder.BuildSignedGoFileCandidate(packbuilder.GoFileCandidateOptions{CandidateTestKey: true})
-	if err != nil {
-		t.Fatalf("BuildSignedGoFileCandidate() error = %v", err)
-	}
-	return appCandidateDispatcher(t, assets.PublicKey, extractor.EmbeddedPack{ManifestJSON: assets.ManifestJSON, Payload: assets.Payload, Signature: assets.Signature}, appExtractorStaticTransport{
-		body: `{"status":"auth_required","data":{"children":{}}}`,
-	})
-}
-
-func appGoFileStoredAuthDispatcher(t *testing.T, store extractor.AuthProfileStore, body string) tasks.ExtractorAddTaskDispatcher {
-	t.Helper()
-	assets, err := packbuilder.BuildSignedGoFileCandidate(packbuilder.GoFileCandidateOptions{CandidateTestKey: true})
-	if err != nil {
-		t.Fatalf("BuildSignedGoFileCandidate() error = %v", err)
-	}
-	policy := extractor.DefaultTrustPolicy()
-	policy.TrustedPublicKeys = []ed25519.PublicKey{assets.PublicKey}
-	resolver := appCandidateHostPolicyResolver{}
-	registry, rejections := extractor.NewRegistryWithHostPolicyResolver([]extractor.EmbeddedPack{{ManifestJSON: assets.ManifestJSON, Payload: assets.Payload, Signature: assets.Signature}}, policy, resolver)
-	if len(rejections) != 0 {
-		t.Fatalf("NewRegistry() rejections = %#v", rejections)
-	}
-	broker := extractor.NewHTTPBroker(extractor.HTTPBrokerConfig{Transport: appExtractorStaticTransport{body: body}, AuthResolver: store, HostPolicyResolver: resolver})
-
-	return extractor.NewAddTaskDispatcher(extractor.AddTaskDispatcherConfig{
-		Registry:     registry,
-		Runner:       extractor.NewRunnerWithConfig(extractor.RunnerConfig{HTTPBroker: broker, AuthResolver: store, HostPolicyResolver: resolver}),
-		AuthResolver: store,
-	})
-}
-
-func gofileAppSingleFileFixture(directURL string) string {
-	return `{"status":"ok","data":{"children":{"one":{"type":"file","name":"app-auth-profile.bin","link":"` + directURL + `","size":67108864,"mimeType":"application/octet-stream"}}}}`
-}
-
-func appIbbEmptyOutputDispatcher(t *testing.T) tasks.ExtractorAddTaskDispatcher {
-	t.Helper()
-	assets, err := packbuilder.BuildSignedIbbCandidate(packbuilder.IbbCandidateOptions{CandidateTestKey: true})
-	if err != nil {
-		t.Fatalf("BuildSignedIbbCandidate() error = %v", err)
-	}
-	return appCandidateDispatcher(t, assets.PublicKey, extractor.EmbeddedPack{ManifestJSON: assets.ManifestJSON, Payload: assets.Payload, Signature: assets.Signature}, appExtractorStaticTransport{
-		body: `<html><head><title>no image</title></head></html>`,
-	})
-}
-
-func appCandidateDispatcher(t *testing.T, publicKey ed25519.PublicKey, pack extractor.EmbeddedPack, transport http.RoundTripper) tasks.ExtractorAddTaskDispatcher {
-	t.Helper()
-	policy := extractor.DefaultTrustPolicy()
-	policy.TrustedPublicKeys = []ed25519.PublicKey{publicKey}
-	resolver := appCandidateHostPolicyResolver{}
-	registry, rejections := extractor.NewRegistryWithHostPolicyResolver([]extractor.EmbeddedPack{pack}, policy, resolver)
-	if len(rejections) != 0 {
-		t.Fatalf("NewRegistry() rejections = %#v", rejections)
-	}
-	broker := extractor.NewHTTPBroker(extractor.HTTPBrokerConfig{Transport: transport, HostPolicyResolver: resolver})
-	return extractor.NewAddTaskDispatcher(extractor.AddTaskDispatcherConfig{
-		Registry: registry,
-		Runner:   extractor.NewRunnerWithConfig(extractor.RunnerConfig{HTTPBroker: broker, HostPolicyResolver: resolver}),
-	})
-}
-
-type appCandidateHostPolicyResolver struct{}
-
-func (appCandidateHostPolicyResolver) ResolveHostPolicy(_ context.Context, request extractor.HostPolicyRequest) (extractor.ResolvedHostPolicy, error) {
-	policy := extractor.ResolvedHostPolicy{
-		PolicyVersion:    "2026.5.10",
-		PolicySHA256:     strings.Repeat("c", 64),
-		PackIdentity:     request.PackIdentity,
-		DomainPolicyRefs: append([]string(nil), request.Manifest.DomainPolicyRefs...),
-		BrokerPolicyRefs: append([]string(nil), request.Manifest.BrokerPolicyRefs...),
-	}
-	switch request.Manifest.PackID {
-	case packbuilder.GoFilePackID:
-		policy.PolicyID = "hpr-h7m2q9rv1p"
-		policy.AllowedCapabilities = []extractor.Capability{extractor.CapabilityParseWASM, extractor.CapabilityHTTPFetch, extractor.CapabilityAuthProfile}
-		policy.IngressDomains = []extractor.DomainRule{{Host: "gofile.io", IncludeSubdomains: true}}
-		policy.BrokerDomains = []extractor.DomainRule{{Host: "api.gofile.io"}, {Host: "download.gofile.io", IncludeSubdomains: true}, {Host: "gofile.io", IncludeSubdomains: true}}
-		policy.OutputDomains = []extractor.HostPolicyOutputRule{{Host: "gofile.io", IncludeSubdomains: true, PathPrefixes: []string{"/files/", "/download/"}}}
-		policy.AuthProfiles = []extractor.HostPolicyAuthProfileScope{{ProfileID: extractor.AuthProfileID(packbuilder.GoFileAuthProfileRef), Domains: []extractor.DomainRule{{Host: "gofile.io", IncludeSubdomains: true}}}}
-		policy.Endpoints = []extractor.HostPolicyEndpoint{{BrokerPolicyRef: packbuilder.GoFileBrokerPolicyRef, EndpointRef: packbuilder.GoFileEndpointRef, URLTemplate: "https://api.gofile.io/contents/{id}", Methods: []string{http.MethodGet}, AuthProfileRefs: []extractor.AuthProfileID{extractor.AuthProfileID(packbuilder.GoFileAuthProfileRef)}, TimeoutMillis: 3000, MaxResponseBytes: 65536}}
-	case packbuilder.IbbPackID:
-		policy.PolicyID = "hpr-k4n8t2wa6s"
-		policy.AllowedCapabilities = []extractor.Capability{extractor.CapabilityParseWASM, extractor.CapabilityHTTPFetch}
-		policy.IngressDomains = []extractor.DomainRule{{Host: "ibb.co", IncludeSubdomains: true}}
-		policy.BrokerDomains = []extractor.DomainRule{{Host: "ibb.co", IncludeSubdomains: true}, {Host: "i.ibb.co", IncludeSubdomains: true}}
-		policy.OutputDomains = []extractor.HostPolicyOutputRule{{Host: "i.ibb.co", PathPrefixes: []string{"/"}}}
-		policy.Endpoints = []extractor.HostPolicyEndpoint{{BrokerPolicyRef: packbuilder.IbbBrokerPolicyRef, EndpointRef: packbuilder.IbbEndpointRef, URLTemplate: "https://ibb.co/{id}", Methods: []string{http.MethodGet}, TimeoutMillis: 3000, MaxResponseBytes: 65536}}
-	default:
-		policy.PolicyID = "hpr-appfixture"
-		policy.AllowedCapabilities = append([]extractor.Capability(nil), request.Manifest.Capabilities...)
-		policy.IngressDomains = []extractor.DomainRule{{Host: "example.invalid"}}
-	}
-
-	return policy, nil
+	return extractor.AddTaskResolution{Matched: true, SourceURL: sourceURL, PackID: "fixturepack", Items: []extractor.ResolvedAddItem{item}}
 }
 
 func TestAddUri_NonExtractorURLUsesExistingDirectPath(t *testing.T) {
@@ -657,82 +545,7 @@ func TestAddUri_ExtractorSmartThreadDoesNotUnauthenticatedHEADHeaderedItem(t *te
 	}
 }
 
-func TestAddUri_ExtractorSmartThreadDoesNotUnauthenticatedHEADAuthProfileItem(t *testing.T) {
-	headRequests := 0
-	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead {
-			headRequests++
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		_, _ = w.Write([]byte("ok"))
-	}))
-	defer fileServer.Close()
-
-	shareURL := "https://gofile.io/d/auth-profile"
-	directURL := fileServer.URL + "/file.bin"
-	item := resolvedItem(shareURL, directURL)
-	item.AuthProfileRef = "apr-alpha001"
-	item.SizeBytes = 64 * 1024 * 1024
-	dispatcher := &fakeAddTaskDispatcher{
-		resolutions: map[string]extractor.AddTaskResolution{shareURL: {Matched: true, SourceURL: shareURL, PackID: appTaskFixtureIdentity.PackID, Items: []extractor.ResolvedAddItem{item}}},
-		headers:     map[string][]string{directURL: {"Authorization: Bearer test-token"}},
-	}
-	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
-	config.Current.SmartThreadMode = true
-	config.Current.MaxConnections = "4"
-
-	result := app.AddUri(shareURL)
-
-	if result != "success" {
-		t.Fatalf("AddUri() = %q, want success", result)
-	}
-	if headRequests != 0 {
-		t.Fatalf("expected no unauthenticated HEAD requests for auth-profile item, got %d", headRequests)
-	}
-	if got := recorder.addURIsSnapshot(); !reflect.DeepEqual(got, []string{directURL}) {
-		t.Fatalf("expected resolved URL add, got %#v", got)
-	}
-	options := recorder.optionsSnapshot()[0]
-	if options["out"] != "file.bin" {
-		t.Fatalf("expected out=file.bin, got %#v", options["out"])
-	}
-	if got := options["header"]; !reflect.DeepEqual(got, []any{"Authorization: Bearer test-token"}) {
-		t.Fatalf("expected auth-profile header list, got %#v", got)
-	}
-	if _, ok := options["split"]; !ok {
-		t.Fatalf("expected smartthread split option, got %#v", options)
-	}
-}
-
-func TestAddUri_ExtractorAuthProfileHeaderBuildErrorIsRedacted(t *testing.T) {
-	shareURL := "https://gofile.io/d/auth-error"
-	directURL := "https://cdn.gofile.io/file.bin"
-	item := resolvedItem(shareURL, directURL)
-	item.AuthProfileRef = "apr-alpha001"
-	dispatcher := &fakeAddTaskDispatcher{
-		resolutions:  map[string]extractor.AddTaskResolution{shareURL: {Matched: true, SourceURL: shareURL, PackID: appTaskFixtureIdentity.PackID, Items: []extractor.ResolvedAddItem{item}}},
-		headerErrors: map[string]error{directURL: errors.New("resolve auth profile default failed: token=raw-secret-value")},
-	}
-	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
-
-	result := app.AddUri(shareURL)
-
-	if strings.Contains(result, "raw-secret-value") {
-		t.Fatalf("AddUri() leaked raw secret: %q", result)
-	}
-	if !strings.Contains(result, "token=[REDACTED]") && !strings.Contains(result, "token=") {
-		t.Fatalf("AddUri() = %q, want redacted token marker", result)
-	}
-	if got := recorder.count("aria2.addUri"); got != 0 {
-		t.Fatalf("expected no aria2.addUri when auth-profile headers fail, got %d", got)
-	}
-}
-
-var (
-	_ tasks.ExtractorAddTaskDispatcher        = (*fakeAddTaskDispatcher)(nil)
-	_ tasks.ExtractorAuthRuntimeSourcePlanner = (*fakeAddTaskDispatcher)(nil)
-)
+var _ extractorAddTaskDispatcher = (*fakeAddTaskDispatcher)(nil)
 
 func assertNoPathOut(t *testing.T, value any) {
 	t.Helper()

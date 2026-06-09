@@ -174,11 +174,9 @@ func configureEmbeddedExtractorDispatcher(appService *App) {
 }
 
 type embeddedExtractorConfigDeps struct {
-	hasEmbeddedReleasePacks              func() bool
-	embeddedReleaseRequired              func() bool
-	privatePolicyRuntimeSourceState      func() extractor.RuntimeSourceState
-	privateAuthRuntimeRuntimeSourceState func() extractor.RuntimeSourceState
-	loadHostPolicyResolver               func() (extractor.HostPolicyResolver, error)
+	hasEmbeddedReleasePacks             func() bool
+	embeddedReleaseRequired             func() bool
+	loadHostPolicyResolver              func() (extractor.HostPolicyResolver, error)
 	loadAuthRuntimeBundle                func() (*extractor.PrivateAuthRuntimeBundle, error)
 	defaultAuthProfileStorePath          func() (string, error)
 	newFileAuthProfileStore              func(string) (extractor.AuthProfileStore, error)
