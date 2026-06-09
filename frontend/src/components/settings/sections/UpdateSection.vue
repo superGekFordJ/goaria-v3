@@ -54,7 +54,7 @@
     }
 
     // Listen for update status events
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     unsubs.push(
       Events.On('update:status', (ev: any) => {
         const data = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as {
@@ -73,7 +73,7 @@
     )
 
     // Listen for update progress events (bytes-level data for smooth algorithm)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     unsubs.push(
       Events.On('update:progress', (ev: any) => {
         const data = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as {
@@ -147,7 +147,7 @@
   <StaticGlassPanel
     class="p-5 mt-6"
     radius="rounded-[var(--radius-squircle-lg)]"
-    fallbackClass="glass-panel-subtle"
+    fallback-class="glass-panel-subtle"
   >
     <div class="flex items-center justify-between relative z-10">
       <!-- Left: App identity -->

@@ -49,8 +49,8 @@
         :class="[
           radius,
           active
-            ? 'bg-white/10 dark:bg-black/20 opacity-100'
-            : 'bg-transparent opacity-0 group-hover:bg-white/5 dark:group-hover:bg-black/20',
+            ? 'bg-[var(--app-liquid-glass-bg)] opacity-100'
+            : 'bg-transparent opacity-0 group-hover:bg-[var(--app-liquid-glass-hover)]',
         ]"
         :style="active ? { backdropFilter: 'url(#liquid-glass-filter)' } : {}"
       ></div>
@@ -62,8 +62,8 @@
         :class="[
           radius,
           active
-            ? 'bg-white/10 dark:bg-black/20 opacity-100 border border-[var(--glass-border)]'
-            : 'bg-transparent opacity-0 group-hover:bg-white/5 dark:group-hover:bg-black/20',
+            ? 'bg-[var(--app-liquid-glass-bg)] opacity-100 border border-[var(--glass-border)]'
+            : 'bg-transparent opacity-0 group-hover:bg-[var(--app-liquid-glass-hover)]',
         ]"
       ></div>
     </template>
@@ -75,7 +75,7 @@
       <slot />
     </div>
 
-    <!-- Global SVG Filter Definition (Advanced Apple Switcher Mask) -->
+    <!-- Global SVG Filter Definition (Advanced Switcher Mask) -->
     <svg v-if="uiStore.effects === 'full'" class="hidden absolute w-0 h-0">
       <defs>
         <filter
