@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"goaria-v3/internal/downloadgroups"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
@@ -60,7 +61,15 @@ func groupReadHistoryEntry(gid string, group *rpc.DownloadGroup, total string, c
 	}
 }
 
-func findDownloadGroupCard(t *testing.T, cards []DownloadGroupCard, groupKey string) DownloadGroupCard {
+func copyDownloadGroup(group *rpc.DownloadGroup) *rpc.DownloadGroup {
+	if group == nil {
+		return nil
+	}
+	copy := *group
+	return &copy
+}
+
+func findDownloadGroupCard(t *testing.T, cards []downloadgroups.DownloadGroupCard, groupKey string) downloadgroups.DownloadGroupCard {
 	t.Helper()
 	for _, card := range cards {
 		if card.GroupKey == groupKey {
@@ -68,19 +77,19 @@ func findDownloadGroupCard(t *testing.T, cards []DownloadGroupCard, groupKey str
 		}
 	}
 	t.Fatalf("expected card %q in %#v", groupKey, cards)
-	return DownloadGroupCard{}
+	return downloadgroups.DownloadGroupCard{}
 }
 
-func warningByCode(warnings []DownloadGroupWarning, code string) (DownloadGroupWarning, bool) {
+func warningByCode(warnings []downloadgroups.DownloadGroupWarning, code string) (downloadgroups.DownloadGroupWarning, bool) {
 	for _, warning := range warnings {
 		if warning.Code == code {
 			return warning, true
 		}
 	}
-	return DownloadGroupWarning{}, false
+	return downloadgroups.DownloadGroupWarning{}, false
 }
 
-func requireDownloadGroupWarning(t *testing.T, warnings []DownloadGroupWarning, code string) DownloadGroupWarning {
+func requireDownloadGroupWarning(t *testing.T, warnings []downloadgroups.DownloadGroupWarning, code string) downloadgroups.DownloadGroupWarning {
 	t.Helper()
 	warning, ok := warningByCode(warnings, code)
 	if !ok {
@@ -89,7 +98,7 @@ func requireDownloadGroupWarning(t *testing.T, warnings []DownloadGroupWarning, 
 	return warning
 }
 
-func requireNoDownloadGroupWarning(t *testing.T, warnings []DownloadGroupWarning, code string) {
+func requireNoDownloadGroupWarning(t *testing.T, warnings []downloadgroups.DownloadGroupWarning, code string) {
 	t.Helper()
 	if warning, ok := warningByCode(warnings, code); ok {
 		t.Fatalf("expected no warning %q, got %#v", code, warning)
@@ -129,10 +138,10 @@ func TestGetDownloadGroups_BuildsAggregateCardsFromCacheStoreAndHistory(t *testi
 	if card.DownloadGroup == nil || card.DownloadGroup.ID != group.ID {
 		t.Fatalf("expected embedded download_group %q, got %#v", group.ID, card.DownloadGroup)
 	}
-	if card.DisplayName != group.Name || card.NameStatus != downloadGroupNameStatusFallback || card.FallbackName == "" {
+	if card.DisplayName != group.Name || card.NameStatus != downloadgroups.DownloadGroupNameStatusFallback || card.FallbackName == "" {
 		t.Fatalf("expected generic name fields, got display=%q fallback=%q status=%q", card.DisplayName, card.FallbackName, card.NameStatus)
 	}
-	if card.Status != downloadGroupStatusActive {
+	if card.Status != downloadgroups.DownloadGroupStatusActive {
 		t.Fatalf("expected active status, got %q", card.Status)
 	}
 	if card.Counts.Expected != 4 || card.Counts.Resolved != 4 || card.Counts.Missing != 0 {
@@ -145,9 +154,9 @@ func TestGetDownloadGroups_BuildsAggregateCardsFromCacheStoreAndHistory(t *testi
 		t.Fatalf("unexpected byte sums: total=%s completed=%s speed=%s", card.TotalLength, card.CompletedLength, card.DownloadSpeed)
 	}
 	assertDownloadGroupProgress(t, card.Progress, 0.725)
-	requireDownloadGroupWarning(t, card.Warnings, downloadGroupWarningMixedStatus)
-	requireNoDownloadGroupWarning(t, card.Warnings, downloadGroupWarningMissingMembers)
-	requireNoDownloadGroupWarning(t, card.Warnings, downloadGroupWarningMissingMetadata)
+	requireDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningMixedStatus)
+	requireNoDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningMissingMembers)
+	requireNoDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningMissingMetadata)
 }
 
 func TestGetDownloadGroups_StatusWarningMatrix(t *testing.T) {
@@ -164,43 +173,43 @@ func TestGetDownloadGroups_StatusWarningMatrix(t *testing.T) {
 			name:         "active priority",
 			active:       []string{"active"},
 			stopped:      []string{"error"},
-			wantStatus:   downloadGroupStatusActive,
-			wantWarnings: []string{downloadGroupWarningMixedStatus, downloadGroupWarningPartialError},
+			wantStatus:   downloadgroups.DownloadGroupStatusActive,
+			wantWarnings: []string{downloadgroups.DownloadGroupWarningMixedStatus, downloadgroups.DownloadGroupWarningPartialError},
 		},
 		{
 			name:       "paused fallback",
 			waiting:    []string{"paused", "complete"},
-			wantStatus: downloadGroupStatusPaused,
+			wantStatus: downloadgroups.DownloadGroupStatusPaused,
 		},
 		{
 			name:         "waiting fallback",
 			waiting:      []string{"waiting"},
 			stopped:      []string{"complete"},
-			wantStatus:   downloadGroupStatusWaiting,
-			wantWarnings: []string{downloadGroupWarningMixedStatus},
+			wantStatus:   downloadgroups.DownloadGroupStatusWaiting,
+			wantWarnings: []string{downloadgroups.DownloadGroupWarningMixedStatus},
 		},
 		{
 			name:       "all complete",
 			stopped:    []string{"complete", "complete"},
-			wantStatus: downloadGroupStatusComplete,
+			wantStatus: downloadgroups.DownloadGroupStatusComplete,
 		},
 		{
 			name:       "all error",
 			stopped:    []string{"error", "error"},
-			wantStatus: downloadGroupStatusError,
+			wantStatus: downloadgroups.DownloadGroupStatusError,
 		},
 		{
 			name:         "mixed complete error partial",
 			stopped:      []string{"complete", "error"},
-			wantStatus:   downloadGroupStatusError,
-			wantWarnings: []string{downloadGroupWarningMixedStatus, downloadGroupWarningPartialError},
+			wantStatus:   downloadgroups.DownloadGroupStatusError,
+			wantWarnings: []string{downloadgroups.DownloadGroupWarningMixedStatus, downloadgroups.DownloadGroupWarningPartialError},
 		},
 		{
 			name:         "live terminal mixed",
 			active:       []string{"active"},
 			stopped:      []string{"complete"},
-			wantStatus:   downloadGroupStatusActive,
-			wantWarnings: []string{downloadGroupWarningMixedStatus},
+			wantStatus:   downloadgroups.DownloadGroupStatusActive,
+			wantWarnings: []string{downloadgroups.DownloadGroupWarningMixedStatus},
 		},
 	}
 
@@ -244,11 +253,11 @@ func TestGetDownloadGroups_DegradesMissingMembersAndStaleStoredGroups(t *testing
 	if card.Counts.Expected != 4 || card.Counts.Resolved != 1 || card.Counts.Missing != 3 {
 		t.Fatalf("unexpected degraded counts: %#v", card.Counts)
 	}
-	missing := requireDownloadGroupWarning(t, card.Warnings, downloadGroupWarningMissingMembers)
+	missing := requireDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningMissingMembers)
 	if missing.Severity != "warning" || missing.Count != 3 {
 		t.Fatalf("unexpected missing_members warning: %#v", missing)
 	}
-	stale := requireDownloadGroupWarning(t, card.Warnings, downloadGroupWarningStaleGroup)
+	stale := requireDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningStaleGroup)
 	if stale.Severity != "warning" || stale.Count != 1 {
 		t.Fatalf("unexpected stale_group warning: %#v", stale)
 	}
@@ -261,13 +270,13 @@ func TestGetDownloadGroups_HistoryOnlyResidueWarnsWithoutInventingMembership(t *
 	history.Add(groupReadHistoryEntry("gid-history-two", &group, "200", "200"))
 
 	card := findDownloadGroupCard(t, app.GetDownloadGroups().Groups, group.ID)
-	if card.Status != downloadGroupStatusComplete {
+	if card.Status != downloadgroups.DownloadGroupStatusComplete {
 		t.Fatalf("expected complete history-only status, got %q", card.Status)
 	}
 	if card.Counts.Resolved != 2 || card.Counts.HistoryOnly != 2 || card.Counts.Missing != 0 {
 		t.Fatalf("unexpected history-only counts: %#v", card.Counts)
 	}
-	warning := requireDownloadGroupWarning(t, card.Warnings, downloadGroupWarningHistoryOnly)
+	warning := requireDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningHistoryOnly)
 	if warning.Severity != "info" || warning.Count != 2 {
 		t.Fatalf("unexpected history_only warning: %#v", warning)
 	}
@@ -320,11 +329,11 @@ func TestGetDownloadGroupDetail_UnknownGroupReturnsDegradedEnvelope(t *testing.T
 	if len(detail.Tasks.Active) != 0 || len(detail.Tasks.Waiting) != 0 || len(detail.Tasks.Stopped) != 0 {
 		t.Fatalf("expected empty split lists, got %#v", detail.Tasks)
 	}
-	warning := requireDownloadGroupWarning(t, detail.Warnings, downloadGroupWarningGroupNotFound)
+	warning := requireDownloadGroupWarning(t, detail.Warnings, downloadgroups.DownloadGroupWarningGroupNotFound)
 	if warning.Severity != "warning" {
 		t.Fatalf("unexpected group_not_found warning: %#v", warning)
 	}
-	requireDownloadGroupWarning(t, detail.Group.Warnings, downloadGroupWarningGroupNotFound)
+	requireDownloadGroupWarning(t, detail.Group.Warnings, downloadgroups.DownloadGroupWarningGroupNotFound)
 }
 
 func TestGetDownloadGroups_AfterFullSnapshotRefetchHydratesGroupsForWindowRestore(t *testing.T) {
@@ -389,7 +398,7 @@ func TestGetDownloadGroups_AfterFullSnapshotRefetchHydratesGroupsForWindowRestor
 	}
 
 	card := findDownloadGroupCard(t, app.GetDownloadGroups().Groups, group.ID)
-	if card.GroupKey != group.ID || card.Counts.Resolved != 2 || card.Status != downloadGroupStatusActive {
+	if card.GroupKey != group.ID || card.Counts.Resolved != 2 || card.Status != downloadgroups.DownloadGroupStatusActive {
 		t.Fatalf("expected post-snapshot group refetch to define master data, got %#v", card)
 	}
 }
@@ -441,7 +450,7 @@ func TestGetDownloadGroups_MapsNamePendingAndDegradedWarnings(t *testing.T) {
 			status:       rpc.DownloadGroupNameStatusPending,
 			groupName:    "Batch 2026-05-18 10-00-00",
 			wantStatus:   rpc.DownloadGroupNameStatusPending,
-			wantWarning:  downloadGroupWarningNamePending,
+			wantWarning:  downloadgroups.DownloadGroupWarningNamePending,
 			wantSeverity: "info",
 		},
 		{
@@ -449,7 +458,7 @@ func TestGetDownloadGroups_MapsNamePendingAndDegradedWarnings(t *testing.T) {
 			status:       rpc.DownloadGroupNameStatusDegraded,
 			groupName:    "Batch 2026-05-18 10-00-00",
 			wantStatus:   rpc.DownloadGroupNameStatusDegraded,
-			wantWarning:  downloadGroupWarningNameDegraded,
+			wantWarning:  downloadgroups.DownloadGroupWarningNameDegraded,
 			wantSeverity: "warning",
 			wantDegraded: true,
 		},
@@ -458,7 +467,7 @@ func TestGetDownloadGroups_MapsNamePendingAndDegradedWarnings(t *testing.T) {
 			status:       "mystery",
 			groupName:    "Batch 2026-05-18 10-00-00",
 			wantStatus:   rpc.DownloadGroupNameStatusDegraded,
-			wantWarning:  downloadGroupWarningNameDegraded,
+			wantWarning:  downloadgroups.DownloadGroupWarningNameDegraded,
 			wantSeverity: "warning",
 			wantDegraded: true,
 		},
@@ -467,7 +476,7 @@ func TestGetDownloadGroups_MapsNamePendingAndDegradedWarnings(t *testing.T) {
 			status:       rpc.DownloadGroupNameStatusStable,
 			groupName:    "https://example.invalid/file?token=secret",
 			wantStatus:   rpc.DownloadGroupNameStatusDegraded,
-			wantWarning:  downloadGroupWarningNameDegraded,
+			wantWarning:  downloadgroups.DownloadGroupWarningNameDegraded,
 			wantSeverity: "warning",
 			wantDegraded: true,
 		},
@@ -513,8 +522,8 @@ func TestGetDownloadGroups_UsesStableSmartNameFromBackendMetadata(t *testing.T) 
 	if card.DisplayName != "Project Alpha" || card.NameStatus != rpc.DownloadGroupNameStatusStable {
 		t.Fatalf("expected stable smart display name, got display=%q status=%q", card.DisplayName, card.NameStatus)
 	}
-	requireNoDownloadGroupWarning(t, card.Warnings, downloadGroupWarningNamePending)
-	requireNoDownloadGroupWarning(t, card.Warnings, downloadGroupWarningNameDegraded)
+	requireNoDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningNamePending)
+	requireNoDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningNameDegraded)
 }
 
 func TestGetDownloadGroups_DoesNotUseDisplayNameAsFolderLabel(t *testing.T) {

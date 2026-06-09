@@ -230,3 +230,22 @@ func buildRemovalTargetLookup(active, waiting, stopped []rpc.Task, historyMap ma
 
 	return lookup
 }
+
+type removalTarget struct {
+	path string
+	dir  string
+}
+
+func removalTargetFromTask(task rpc.Task) (removalTarget, bool) {
+	if len(task.Files) == 0 || task.Files[0].Path == "" {
+		return removalTarget{}, false
+	}
+	return removalTarget{path: task.Files[0].Path, dir: task.Dir}, true
+}
+
+func removalTargetFromHistory(entry history.HistoryEntry) (removalTarget, bool) {
+	if entry.Path == "" {
+		return removalTarget{}, false
+	}
+	return removalTarget{path: entry.Path, dir: entry.Dir}, true
+}

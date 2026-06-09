@@ -4,9 +4,11 @@ import (
 	"sync"
 	"time"
 
+	"goaria-v3/internal/downloadgroups"
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/extractor"
 	"goaria-v3/internal/monitor"
+	"goaria-v3/internal/tasks"
 	"goaria-v3/internal/tray"
 	"goaria-v3/internal/update"
 
@@ -28,7 +30,7 @@ type App struct {
 	updater   *update.Updater
 	trayState tray.TrayState
 
-	extractorDispatcher extractorAddTaskDispatcher
+	extractorDispatcher tasks.ExtractorAddTaskDispatcher
 	authMu              sync.RWMutex
 	authProfileStore    extractor.AuthProfileStore
 	hostAuthRuntime     *extractor.HostAuthRuntime
@@ -42,6 +44,9 @@ type App struct {
 
 // NewApp creates a new App instance
 func NewApp() *App {
+	downloadgroups.OpenFolderLauncher = func(dir string) error {
+		return openFolderLauncher(openFolderLaunchTarget{OpenDir: dir})
+	}
 	return &App{
 		trayState: tray.StateIdle,
 	}
@@ -74,7 +79,7 @@ func (a *App) SetSystemTray(st *application.SystemTray) {
 	a.systray = st
 }
 
-func (a *App) setExtractorDispatcher(dispatcher extractorAddTaskDispatcher) {
+func (a *App) setExtractorDispatcher(dispatcher tasks.ExtractorAddTaskDispatcher) {
 	a.extractorDispatcher = dispatcher
 }
 

@@ -19,6 +19,7 @@ import (
 	"goaria-v3/internal/process"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/speedstats"
+	"goaria-v3/internal/tasks"
 	"goaria-v3/internal/tray"
 	"goaria-v3/internal/update"
 
@@ -173,14 +174,16 @@ func configureEmbeddedExtractorDispatcher(appService *App) {
 }
 
 type embeddedExtractorConfigDeps struct {
-	hasEmbeddedReleasePacks             func() bool
-	embeddedReleaseRequired             func() bool
-	loadHostPolicyResolver              func() (extractor.HostPolicyResolver, error)
-	loadAuthRuntimeBundle               func() (*extractor.PrivateAuthRuntimeBundle, error)
-	defaultAuthProfileStorePath         func() (string, error)
-	newFileAuthProfileStore             func(string) (extractor.AuthProfileStore, error)
-	newAuthWebViewDriver                func(*App) extractor.AuthWebViewDriver
-	newEmbeddedReleaseAddTaskDispatcher func(extractor.EmbeddedReleaseDispatcherConfig) (extractorAddTaskDispatcher, error)
+	hasEmbeddedReleasePacks              func() bool
+	embeddedReleaseRequired              func() bool
+	privatePolicyRuntimeSourceState      func() extractor.RuntimeSourceState
+	privateAuthRuntimeRuntimeSourceState func() extractor.RuntimeSourceState
+	loadHostPolicyResolver               func() (extractor.HostPolicyResolver, error)
+	loadAuthRuntimeBundle                func() (*extractor.PrivateAuthRuntimeBundle, error)
+	defaultAuthProfileStorePath          func() (string, error)
+	newFileAuthProfileStore              func(string) (extractor.AuthProfileStore, error)
+	newAuthWebViewDriver                 func(*App) extractor.AuthWebViewDriver
+	newEmbeddedReleaseAddTaskDispatcher  func(extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error)
 }
 
 func defaultEmbeddedExtractorConfigDeps() embeddedExtractorConfigDeps {
@@ -196,7 +199,7 @@ func defaultEmbeddedExtractorConfigDeps() embeddedExtractorConfigDeps {
 		newAuthWebViewDriver: func(appService *App) extractor.AuthWebViewDriver {
 			return newAppHostAuthDriver(appService)
 		},
-		newEmbeddedReleaseAddTaskDispatcher: func(config extractor.EmbeddedReleaseDispatcherConfig) (extractorAddTaskDispatcher, error) {
+		newEmbeddedReleaseAddTaskDispatcher: func(config extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
 			return extractor.NewEmbeddedReleaseAddTaskDispatcher(config)
 		},
 	}

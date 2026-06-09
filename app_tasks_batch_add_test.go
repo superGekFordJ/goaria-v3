@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/config"
+	"goaria-v3/internal/downloadgroups"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
@@ -485,17 +486,17 @@ func TestDownloadGroupPathSafetyCollisionAndInvalidBase(t *testing.T) {
 	baseDir := t.TempDir()
 	config.Current = &config.AppConfig{DownloadDir: baseDir}
 
-	name, err := safeDownloadGroupFolderName("collection", "2026-05-07 15:04:05", "dg-a/b\\c?token")
+	name, err := downloadgroups.SafeDownloadGroupFolderName("collection", "2026-05-07 15:04:05", "dg-a/b\\c?token")
 	if err != nil {
 		t.Fatalf("safeDownloadGroupFolderName() error = %v", err)
 	}
 	if strings.ContainsAny(name, `<>:"/\|?*`) {
 		t.Fatalf("unsafe folder name after sanitization: %q", name)
 	}
-	if _, err := resolveDownloadGroupDir(baseDir, "..\\escape"); err != nil {
+	if _, err := downloadgroups.ResolveDownloadGroupDir(baseDir, "..\\escape"); err != nil {
 		t.Fatalf("sanitized traversal-like name should remain contained, got %v", err)
 	}
-	if _, err := resolveDownloadGroupDir("", "Batch 2026 dg-a1b2c3"); err == nil {
+	if _, err := downloadgroups.ResolveDownloadGroupDir("", "Batch 2026 dg-a1b2c3"); err == nil {
 		t.Fatal("expected invalid empty base dir error")
 	}
 
@@ -504,7 +505,7 @@ func TestDownloadGroupPathSafetyCollisionAndInvalidBase(t *testing.T) {
 	if err := os.MkdirAll(firstDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll collision dir error = %v", err)
 	}
-	if err := ensureDownloadGroupDir(baseDir, &group); err != nil {
+	if err := downloadgroups.EnsureDownloadGroupDir(baseDir, &group); err != nil {
 		t.Fatalf("ensureDownloadGroupDir() error = %v", err)
 	}
 	if group.FolderName != "Batch 2026-05-07 15-04-05 dg-collision-02" {
