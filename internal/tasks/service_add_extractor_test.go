@@ -1,4 +1,4 @@
-package main
+package tasks
 
 import (
 	"context"
@@ -25,6 +25,7 @@ import (
 
 type fakeAddTaskDispatcher struct {
 	mu             sync.Mutex
+	plans          map[string][]extractor.HostAuthRuntimeRequest
 	resolutions    map[string]extractor.AddTaskResolution
 	resolveErrors  map[string]error
 	headers        map[string][]string
@@ -41,6 +42,12 @@ func (d *fakeAddTaskDispatcher) Resolve(ctx context.Context, rawURL string) (ext
 	}
 	resolution := d.resolutions[rawURL]
 	return resolution, nil
+}
+
+func (d *fakeAddTaskDispatcher) AuthRuntimeRequestsForSource(ctx context.Context, rawURL string) ([]extractor.HostAuthRuntimeRequest, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]extractor.HostAuthRuntimeRequest(nil), d.plans[rawURL]...), nil
 }
 
 func (d *fakeAddTaskDispatcher) BuildAria2Headers(ctx context.Context, item extractor.ResolvedAddItem) ([]string, error) {
@@ -104,11 +111,11 @@ func (r *extractorRPCRecorder) optionsSnapshot() []map[string]any {
 	return out
 }
 
-func setupAppTaskExtractorTest(t *testing.T, snapshots batchAddRPCSnapshots, dispatcher extractorAddTaskDispatcher) (*App, *extractorRPCRecorder) {
+func setupAppTaskExtractorTest(t *testing.T, snapshots batchAddRPCSnapshots, dispatcher ExtractorAddTaskDispatcher) (*Service, *extractorRPCRecorder) {
 	return setupAppTaskExtractorTestWithRecorder(t, snapshots, dispatcher, newExtractorRPCRecorder())
 }
 
-func setupAppTaskExtractorTestWithRecorder(t *testing.T, snapshots batchAddRPCSnapshots, dispatcher extractorAddTaskDispatcher, recorder *extractorRPCRecorder) (*App, *extractorRPCRecorder) {
+func setupAppTaskExtractorTestWithRecorder(t *testing.T, snapshots batchAddRPCSnapshots, dispatcher ExtractorAddTaskDispatcher, recorder *extractorRPCRecorder) (*Service, *extractorRPCRecorder) {
 	t.Helper()
 
 	originalConfig := config.Current
@@ -178,9 +185,10 @@ func setupAppTaskExtractorTestWithRecorder(t *testing.T, snapshots batchAddRPCSn
 		config.Current = originalConfig
 	})
 
-	app := NewApp()
-	app.extractorDispatcher = dispatcher
-	return app, recorder
+	svc := &Service{
+		Dispatcher: dispatcher,
+	}
+	return svc, recorder
 }
 
 func decodeExtractorAddParams(params []json.RawMessage) (string, map[string]any) {
@@ -199,25 +207,58 @@ func decodeExtractorAddParams(params []json.RawMessage) (string, map[string]any)
 
 func resolvedItem(sourceURL, directURL string) extractor.ResolvedAddItem {
 	return extractor.ResolvedAddItem{
-		SourceURL: sourceURL,
-		PackID:    "fixturepack",
-		URL:       directURL,
-		Filename:  "file.bin",
-		SizeBytes: 10 * 1024 * 1024,
-		ID:        "item-1",
+		SourceURL:    sourceURL,
+		PackID:       appTaskFixtureIdentity.PackID,
+		PackIdentity: appTaskFixtureIdentity,
+		Manifest:     appTaskFixtureManifest(),
+		URL:          directURL,
+		Filename:     "file.bin",
+		SizeBytes:    10 * 1024 * 1024,
+		ID:           "item-1",
+	}
+}
+
+func appTaskFixtureManifest() extractor.Manifest {
+	return extractor.Manifest{
+		PackID:       appTaskFixtureIdentity.PackID,
+		PackVersion:  appTaskFixtureIdentity.PackVersion,
+		ABIVersion:   extractor.CurrentABIVersion,
+		Capabilities: []extractor.Capability{extractor.CapabilityHTTPFetch, extractor.CapabilityAuthProfile},
+		Domains:      []extractor.DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}, {Host: "download.fixture.invalid", IncludeSubdomains: true}},
+		ResourceLimits: extractor.ResourceLimits{
+			TimeoutMillis:    60000,
+			MaxMemoryPages:   64,
+			MaxHostCalls:     16,
+			MaxResponseBytes: 1 << 20,
+			MaxOutputItems:   16,
+			MaxOutputBytes:   1 << 16,
+		},
+		PayloadSHA256: appTaskFixtureIdentity.PayloadSHA256,
 	}
 }
 
 func singleItemResolution(sourceURL, directURL string) extractor.AddTaskResolution {
 	item := resolvedItem(sourceURL, directURL)
-	return extractor.AddTaskResolution{Matched: true, SourceURL: sourceURL, PackID: "fixturepack", Items: []extractor.ResolvedAddItem{item}}
+	return extractor.AddTaskResolution{Matched: true, SourceURL: sourceURL, PackID: item.PackID, Items: []extractor.ResolvedAddItem{item}}
 }
 
+var appTaskFixtureIdentity = extractor.VerifiedPackIdentity{
+	PackID:          "xpk-alpha001",
+	PackVersion:     "opaque-1",
+	AssetSHA256:     strings.Repeat("1", 64),
+	ManifestSHA256:  strings.Repeat("2", 64),
+	PayloadSHA256:   strings.Repeat("3", 64),
+	SignatureSHA256: strings.Repeat("4", 64),
+	PublicKeySHA256: strings.Repeat("5", 64),
+}
+
+
+
 func TestAddUri_NonExtractorURLUsesExistingDirectPath(t *testing.T) {
-	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, &fakeAddTaskDispatcher{})
+	service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, &fakeAddTaskDispatcher{})
 	directURL := "https://example.com/file.zip"
 
-	result := app.AddUri(" " + directURL + " ")
+	result := service.AddUri(" " + directURL + " ")
 
 	if result != "success" {
 		t.Fatalf("AddUri() = %q, want success", result)
@@ -237,9 +278,9 @@ func TestAddUri_ExtractorSubmitsResolvedItemWithOutAndHeaders(t *testing.T) {
 		resolutions: map[string]extractor.AddTaskResolution{shareURL: singleItemResolution(shareURL, directURL)},
 		headers:     map[string][]string{directURL: {"Authorization: Bearer test-token", "User-Agent: GoAria-Test"}},
 	}
-	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+	service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
 
-	result := app.AddUri(shareURL)
+	result := service.AddUri(shareURL)
 
 	if result != "success" {
 		t.Fatalf("AddUri() = %q, want success", result)
@@ -256,6 +297,7 @@ func TestAddUri_ExtractorSubmitsResolvedItemWithOutAndHeaders(t *testing.T) {
 	}
 }
 
+
 func TestAddUri_MultiItemExtractorCreatesCollectionGroupFolder(t *testing.T) {
 	shareURL := "https://fixture.invalid/d/collection-secret?token=synthetic"
 	directOne := "https://download.fixture.invalid/one.bin"
@@ -267,10 +309,10 @@ func TestAddUri_MultiItemExtractorCreatesCollectionGroupFolder(t *testing.T) {
 	dispatcher := &fakeAddTaskDispatcher{
 		resolutions: map[string]extractor.AddTaskResolution{shareURL: {Matched: true, SourceURL: shareURL, PackID: "fixturepack", Items: items}},
 	}
-	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+	service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
 	baseDir := config.Current.DownloadDir
 
-	result := app.AddUri(shareURL)
+	result := service.AddUri(shareURL)
 
 	if result != "success" {
 		t.Fatalf("AddUri() = %q, want success", result)
@@ -310,15 +352,19 @@ func TestAddUri_GroupPersistsBeforeSaveSessionForFastCompleteRace(t *testing.T) 
 		{SourceURL: shareURL, PackID: "fixturepack", URL: directOne, Filename: "one.bin", ID: "one"},
 		{SourceURL: shareURL, PackID: "fixturepack", URL: directTwo, Filename: "two.bin", ID: "two"},
 	}
-	dispatcher := &fakeAddTaskDispatcher{resolutions: map[string]extractor.AddTaskResolution{shareURL: {Matched: true, SourceURL: shareURL, PackID: "fixturepack", Items: items}}}
-	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+	items[0].ID = "one"
+	items[0].Filename = "one.bin"
+	items[1].ID = "two"
+	items[1].Filename = "two.bin"
+	dispatcher := &fakeAddTaskDispatcher{resolutions: map[string]extractor.AddTaskResolution{shareURL: {Matched: true, SourceURL: shareURL, PackID: appTaskFixtureIdentity.PackID, Items: items}}}
+	service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
 	recorder.saveSessionHook = func() {
 		if got := monitor.GetStoredTaskGroup("gid-1"); got == nil {
 			t.Fatalf("expected group persisted before first saveSession")
 		}
 	}
 
-	result := app.AddUri(shareURL)
+	result := service.AddUri(shareURL)
 
 	if result != "success" {
 		t.Fatalf("AddUri() = %q, want success", result)
@@ -328,14 +374,15 @@ func TestAddUri_GroupPersistsBeforeSaveSessionForFastCompleteRace(t *testing.T) 
 	}
 }
 
+
 func TestBatchAddUri_ExtractorDeduplicatesResolvedDirectURLAgainstHistory(t *testing.T) {
 	shareURL := "https://fixture.invalid/d/abc"
 	directURL := "https://download.fixture.invalid/file.bin"
 	dispatcher := &fakeAddTaskDispatcher{resolutions: map[string]extractor.AddTaskResolution{shareURL: singleItemResolution(shareURL, directURL)}}
-	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+	service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
 	history.Add(history.HistoryEntry{GID: "gid-history", Source: directURL})
 
-	result := app.BatchAddUri([]string{shareURL})
+	result := service.BatchAddUri([]string{shareURL})
 
 	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{directURL})
 	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{})
@@ -347,6 +394,7 @@ func TestBatchAddUri_ExtractorDeduplicatesResolvedDirectURLAgainstHistory(t *tes
 	}
 }
 
+
 func TestBatchAddUri_ExtractorDeduplicatesDirectAndShareWithinBatch(t *testing.T) {
 	shareURL := "https://fixture.invalid/d/abc"
 	directURL := "https://download.fixture.invalid/file.bin"
@@ -354,9 +402,9 @@ func TestBatchAddUri_ExtractorDeduplicatesDirectAndShareWithinBatch(t *testing.T
 	for _, urls := range [][]string{{directURL, shareURL}, {shareURL, directURL}} {
 		t.Run(strings.Join(urls, ","), func(t *testing.T) {
 			dispatcher := &fakeAddTaskDispatcher{resolutions: map[string]extractor.AddTaskResolution{shareURL: singleItemResolution(shareURL, directURL)}}
-			app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+			service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
 
-			result := app.BatchAddUri(urls)
+			result := service.BatchAddUri(urls)
 
 			assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{directURL})
 			assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{directURL})
@@ -370,60 +418,6 @@ func TestBatchAddUri_ExtractorDeduplicatesDirectAndShareWithinBatch(t *testing.T
 	}
 }
 
-func TestBatchAddUri_ExtractorPartialSuccessAndErrorAreExplicit(t *testing.T) {
-	shareURL := "https://fixture.invalid/d/abc"
-	successURL := "https://download.fixture.invalid/success.bin"
-	failURL := "https://download.fixture.invalid/fail.bin"
-	items := []extractor.ResolvedAddItem{
-		{SourceURL: shareURL, PackID: "fixturepack", URL: successURL, Filename: "success.bin", ID: "ok"},
-		{SourceURL: shareURL, PackID: "fixturepack", URL: failURL, Filename: "fail.bin", HeaderProfileRef: "fail", ID: "bad"},
-	}
-	dispatcher := &fakeAddTaskDispatcher{
-		resolutions:  map[string]extractor.AddTaskResolution{shareURL: {Matched: true, SourceURL: shareURL, PackID: "fixturepack", Items: items}},
-		headerErrors: map[string]error{"fail": errors.New("profile token=raw-secret failed")},
-	}
-	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
-
-	result := app.BatchAddUri([]string{shareURL})
-
-	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{successURL})
-	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{})
-	if _, ok := result.Errors[failURL]; !ok {
-		t.Fatalf("expected per-item error keyed by %q, got %#v", failURL, result.Errors)
-	}
-	if strings.Contains(result.Errors[failURL], "raw-secret") {
-		t.Fatalf("error leaked secret: %q", result.Errors[failURL])
-	}
-	if got := recorder.addURIsSnapshot(); !reflect.DeepEqual(got, []string{successURL}) {
-		t.Fatalf("expected only successful item add, got %#v", got)
-	}
-}
-
-func TestBatchAddUri_ExtractorFailedAddDoesNotPoisonResolvedSeenSet(t *testing.T) {
-	shareURL := "https://fixture.invalid/d/abc"
-	directURL := "https://download.fixture.invalid/retry.bin"
-	items := []extractor.ResolvedAddItem{
-		{SourceURL: shareURL, PackID: "fixturepack", URL: directURL, Filename: "retry-a.bin", ID: "first"},
-		{SourceURL: shareURL, PackID: "fixturepack", URL: directURL, Filename: "retry-b.bin", ID: "second"},
-	}
-	dispatcher := &fakeAddTaskDispatcher{
-		resolutions: map[string]extractor.AddTaskResolution{shareURL: {Matched: true, SourceURL: shareURL, PackID: "fixturepack", Items: items}},
-	}
-	recorder := newExtractorRPCRecorder()
-	recorder.failURIs = map[string]bool{directURL: true}
-	app, recorder := setupAppTaskExtractorTestWithRecorder(t, batchAddRPCSnapshots{}, dispatcher, recorder)
-
-	result := app.BatchAddUri([]string{shareURL})
-
-	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{})
-	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{})
-	if len(result.Errors) != 1 {
-		t.Fatalf("expected one per-item error key for repeated failed direct URL, got %#v", result.Errors)
-	}
-	if got := recorder.addURIsSnapshot(); !reflect.DeepEqual(got, []string{directURL, directURL}) {
-		t.Fatalf("expected second candidate to retry after first add failure, got %#v", got)
-	}
-}
 
 func TestBatchAddUri_SingleItemExtractorCanUseAdHocBatchGroup(t *testing.T) {
 	shareURL := "https://fixture.invalid/d/single"
@@ -435,10 +429,10 @@ func TestBatchAddUri_SingleItemExtractorCanUseAdHocBatchGroup(t *testing.T) {
 		"https://example.com/d.bin",
 	}
 	dispatcher := &fakeAddTaskDispatcher{resolutions: map[string]extractor.AddTaskResolution{shareURL: singleItemResolution(shareURL, directURLs[0])}}
-	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+	service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
 	baseDir := config.Current.DownloadDir
 
-	result := app.BatchAddUri([]string{shareURL, directURLs[1], directURLs[2], directURLs[3], directURLs[4]})
+	result := service.BatchAddUri([]string{shareURL, directURLs[1], directURLs[2], directURLs[3], directURLs[4]})
 
 	assertBatchAddStrings(t, "succeeded", result.Succeeded, directURLs)
 	if len(result.Groups) != 1 || result.Groups[0].Kind != "batch" {
@@ -474,11 +468,15 @@ func TestBatchAddUri_MixedCollectionAndBatchGroupsDoNotPollute(t *testing.T) {
 		{SourceURL: collectionShare, PackID: "fixturepack", URL: directOne, Filename: "one.bin", ID: "one"},
 		{SourceURL: collectionShare, PackID: "fixturepack", URL: directTwo, Filename: "two.bin", ID: "two"},
 	}
-	dispatcher := &fakeAddTaskDispatcher{resolutions: map[string]extractor.AddTaskResolution{collectionShare: {Matched: true, SourceURL: collectionShare, PackID: "fixturepack", Items: items}}}
-	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+	items[0].ID = "one"
+	items[0].Filename = "one.bin"
+	items[1].ID = "two"
+	items[1].Filename = "two.bin"
+	dispatcher := &fakeAddTaskDispatcher{resolutions: map[string]extractor.AddTaskResolution{collectionShare: {Matched: true, SourceURL: collectionShare, PackID: appTaskFixtureIdentity.PackID, Items: items}}}
+	service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
 
 	input := append([]string{collectionShare}, directInputs...)
-	result := app.BatchAddUri(input)
+	result := service.BatchAddUri(input)
 
 	if len(result.Groups) != 2 {
 		t.Fatalf("expected collection and batch groups, got %#v", result.Groups)
@@ -503,6 +501,70 @@ func TestBatchAddUri_MixedCollectionAndBatchGroupsDoNotPollute(t *testing.T) {
 	}
 }
 
+func TestBatchAddUri_ExtractorPartialSuccessAndErrorAreExplicit(t *testing.T) {
+	shareURL := "https://fixture.invalid/d/abc"
+	successURL := "https://download.fixture.invalid/success.bin"
+	failURL := "https://download.fixture.invalid/fail.bin"
+	items := []extractor.ResolvedAddItem{
+		resolvedItem(shareURL, successURL),
+		resolvedItem(shareURL, failURL),
+	}
+	items[0].Filename = "success.bin"
+	items[0].ID = "ok"
+	items[1].Filename = "fail.bin"
+	items[1].HeaderProfileRef = "fail"
+	items[1].ID = "bad"
+	dispatcher := &fakeAddTaskDispatcher{
+		resolutions:  map[string]extractor.AddTaskResolution{shareURL: {Matched: true, SourceURL: shareURL, PackID: appTaskFixtureIdentity.PackID, Items: items}},
+		headerErrors: map[string]error{"fail": errors.New("profile token=raw-secret failed")},
+	}
+	service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+
+	result := service.BatchAddUri([]string{shareURL})
+
+	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{successURL})
+	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{})
+	if _, ok := result.Errors[failURL]; !ok {
+		t.Fatalf("expected per-item error keyed by %q, got %#v", failURL, result.Errors)
+	}
+	if strings.Contains(result.Errors[failURL], "raw-secret") {
+		t.Fatalf("error leaked secret: %q", result.Errors[failURL])
+	}
+	if got := recorder.addURIsSnapshot(); !reflect.DeepEqual(got, []string{successURL}) {
+		t.Fatalf("expected only successful item add, got %#v", got)
+	}
+}
+
+func TestBatchAddUri_ExtractorFailedAddDoesNotPoisonResolvedSeenSet(t *testing.T) {
+	shareURL := "https://fixture.invalid/d/abc"
+	directURL := "https://download.fixture.invalid/retry.bin"
+	items := []extractor.ResolvedAddItem{
+		resolvedItem(shareURL, directURL),
+		resolvedItem(shareURL, directURL),
+	}
+	items[0].Filename = "retry-a.bin"
+	items[0].ID = "first"
+	items[1].Filename = "retry-b.bin"
+	items[1].ID = "second"
+	dispatcher := &fakeAddTaskDispatcher{
+		resolutions: map[string]extractor.AddTaskResolution{shareURL: {Matched: true, SourceURL: shareURL, PackID: appTaskFixtureIdentity.PackID, Items: items}},
+	}
+	recorder := newExtractorRPCRecorder()
+	recorder.failURIs = map[string]bool{directURL: true}
+	service, recorder := setupAppTaskExtractorTestWithRecorder(t, batchAddRPCSnapshots{}, dispatcher, recorder)
+
+	result := service.BatchAddUri([]string{shareURL})
+
+	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{})
+	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{})
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected one per-item error key for repeated failed direct URL, got %#v", result.Errors)
+	}
+	if got := recorder.addURIsSnapshot(); !reflect.DeepEqual(got, []string{directURL, directURL}) {
+		t.Fatalf("expected second candidate to retry after first add failure, got %#v", got)
+	}
+}
+
 func TestAddUri_ExtractorSmartThreadDoesNotUnauthenticatedHEADHeaderedItem(t *testing.T) {
 	headRequests := 0
 	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -521,14 +583,14 @@ func TestAddUri_ExtractorSmartThreadDoesNotUnauthenticatedHEADHeaderedItem(t *te
 	item.HeaderProfileRef = "download"
 	item.SizeBytes = 64 * 1024 * 1024
 	dispatcher := &fakeAddTaskDispatcher{
-		resolutions: map[string]extractor.AddTaskResolution{shareURL: {Matched: true, SourceURL: shareURL, PackID: "fixturepack", Items: []extractor.ResolvedAddItem{item}}},
+		resolutions: map[string]extractor.AddTaskResolution{shareURL: {Matched: true, SourceURL: shareURL, PackID: appTaskFixtureIdentity.PackID, Items: []extractor.ResolvedAddItem{item}}},
 		headers:     map[string][]string{"download": {"Authorization: Bearer test-token"}},
 	}
-	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+	service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
 	config.Current.SmartThreadMode = true
 	config.Current.MaxConnections = "4"
 
-	result := app.AddUri(shareURL)
+	result := service.AddUri(shareURL)
 
 	if result != "success" {
 		t.Fatalf("AddUri() = %q, want success", result)
@@ -545,7 +607,10 @@ func TestAddUri_ExtractorSmartThreadDoesNotUnauthenticatedHEADHeaderedItem(t *te
 	}
 }
 
-var _ extractorAddTaskDispatcher = (*fakeAddTaskDispatcher)(nil)
+var (
+	_ ExtractorAddTaskDispatcher        = (*fakeAddTaskDispatcher)(nil)
+	_ ExtractorAuthRuntimeSourcePlanner = (*fakeAddTaskDispatcher)(nil)
+)
 
 func assertNoPathOut(t *testing.T, value any) {
 	t.Helper()

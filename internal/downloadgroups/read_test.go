@@ -1,20 +1,55 @@
-package main
+package downloadgroups
 
 import (
-	"encoding/json"
 	"math"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
-	"goaria-v3/internal/downloadgroups"
+	"goaria-v3/internal/config"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
 )
+
+func setupDownloadGroupsTest(t *testing.T) {
+	t.Helper()
+
+	originalCache := monitor.Cache
+	originalSaveEnabled := history.SaveEnabled
+	originalConfig := config.Current
+
+	monitor.ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
+	monitor.Cache = &monitor.TaskCache{}
+	history.DisableSaveForTest()
+	history.Clear()
+	config.Current = &config.AppConfig{ShowHistory: true}
+
+	t.Cleanup(func() {
+		history.Clear()
+		monitor.ResetTaskGroupStoreForTest("", true)
+		history.SetSaveEnabled(originalSaveEnabled)
+		monitor.Cache = originalCache
+		config.Current = originalConfig
+	})
+}
+
+type fullSnapshotForTest struct {
+	Tasks struct {
+		Active  []rpc.Task
+		Waiting []rpc.Task
+	}
+}
+
+func getFullSnapshotForTest() fullSnapshotForTest {
+	snapshot := fullSnapshotForTest{}
+	snapshot.Tasks.Active = monitor.Cache.GetActive()
+	snapshot.Tasks.Waiting = monitor.Cache.GetWaiting()
+	monitor.HydrateTaskGroups(snapshot.Tasks.Active)
+	monitor.HydrateTaskGroups(snapshot.Tasks.Waiting)
+	return snapshot
+}
 
 func groupReadTestGroup(id string, itemCount int) rpc.DownloadGroup {
 	return rpc.DownloadGroup{
@@ -69,7 +104,7 @@ func copyDownloadGroup(group *rpc.DownloadGroup) *rpc.DownloadGroup {
 	return &copy
 }
 
-func findDownloadGroupCard(t *testing.T, cards []downloadgroups.DownloadGroupCard, groupKey string) downloadgroups.DownloadGroupCard {
+func findDownloadGroupCard(t *testing.T, cards []DownloadGroupCard, groupKey string) DownloadGroupCard {
 	t.Helper()
 	for _, card := range cards {
 		if card.GroupKey == groupKey {
@@ -77,19 +112,19 @@ func findDownloadGroupCard(t *testing.T, cards []downloadgroups.DownloadGroupCar
 		}
 	}
 	t.Fatalf("expected card %q in %#v", groupKey, cards)
-	return downloadgroups.DownloadGroupCard{}
+	return DownloadGroupCard{}
 }
 
-func warningByCode(warnings []downloadgroups.DownloadGroupWarning, code string) (downloadgroups.DownloadGroupWarning, bool) {
+func warningByCode(warnings []DownloadGroupWarning, code string) (DownloadGroupWarning, bool) {
 	for _, warning := range warnings {
 		if warning.Code == code {
 			return warning, true
 		}
 	}
-	return downloadgroups.DownloadGroupWarning{}, false
+	return DownloadGroupWarning{}, false
 }
 
-func requireDownloadGroupWarning(t *testing.T, warnings []downloadgroups.DownloadGroupWarning, code string) downloadgroups.DownloadGroupWarning {
+func requireDownloadGroupWarning(t *testing.T, warnings []DownloadGroupWarning, code string) DownloadGroupWarning {
 	t.Helper()
 	warning, ok := warningByCode(warnings, code)
 	if !ok {
@@ -98,7 +133,7 @@ func requireDownloadGroupWarning(t *testing.T, warnings []downloadgroups.Downloa
 	return warning
 }
 
-func requireNoDownloadGroupWarning(t *testing.T, warnings []downloadgroups.DownloadGroupWarning, code string) {
+func requireNoDownloadGroupWarning(t *testing.T, warnings []DownloadGroupWarning, code string) {
 	t.Helper()
 	if warning, ok := warningByCode(warnings, code); ok {
 		t.Fatalf("expected no warning %q, got %#v", code, warning)
@@ -113,7 +148,7 @@ func assertDownloadGroupProgress(t *testing.T, got float64, want float64) {
 }
 
 func TestGetDownloadGroups_BuildsAggregateCardsFromCacheStoreAndHistory(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupDownloadGroupsTest(t)
 	group := groupReadTestGroup("dg-aggregate", 4)
 
 	active := groupReadTask("gid-active", "active", nil, "100", "25", "10")
@@ -124,7 +159,7 @@ func TestGetDownloadGroups_BuildsAggregateCardsFromCacheStoreAndHistory(t *testi
 	monitor.Cache.UpdateFromAria2([]rpc.Task{active}, []rpc.Task{waiting}, []rpc.Task{stopped})
 	history.Add(groupReadHistoryEntry("gid-history-only", &group, "400", "400"))
 
-	envelope := app.GetDownloadGroups()
+	envelope := GetDownloadGroups()
 	if envelope.Degraded {
 		t.Fatalf("expected aggregate envelope not to be degraded: %#v", envelope)
 	}
@@ -138,10 +173,10 @@ func TestGetDownloadGroups_BuildsAggregateCardsFromCacheStoreAndHistory(t *testi
 	if card.DownloadGroup == nil || card.DownloadGroup.ID != group.ID {
 		t.Fatalf("expected embedded download_group %q, got %#v", group.ID, card.DownloadGroup)
 	}
-	if card.DisplayName != group.Name || card.NameStatus != downloadgroups.DownloadGroupNameStatusFallback || card.FallbackName == "" {
+	if card.DisplayName != group.Name || card.NameStatus != DownloadGroupNameStatusFallback || card.FallbackName == "" {
 		t.Fatalf("expected generic name fields, got display=%q fallback=%q status=%q", card.DisplayName, card.FallbackName, card.NameStatus)
 	}
-	if card.Status != downloadgroups.DownloadGroupStatusActive {
+	if card.Status != DownloadGroupStatusActive {
 		t.Fatalf("expected active status, got %q", card.Status)
 	}
 	if card.Counts.Expected != 4 || card.Counts.Resolved != 4 || card.Counts.Missing != 0 {
@@ -154,9 +189,9 @@ func TestGetDownloadGroups_BuildsAggregateCardsFromCacheStoreAndHistory(t *testi
 		t.Fatalf("unexpected byte sums: total=%s completed=%s speed=%s", card.TotalLength, card.CompletedLength, card.DownloadSpeed)
 	}
 	assertDownloadGroupProgress(t, card.Progress, 0.725)
-	requireDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningMixedStatus)
-	requireNoDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningMissingMembers)
-	requireNoDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningMissingMetadata)
+	requireDownloadGroupWarning(t, card.Warnings, DownloadGroupWarningMixedStatus)
+	requireNoDownloadGroupWarning(t, card.Warnings, DownloadGroupWarningMissingMembers)
+	requireNoDownloadGroupWarning(t, card.Warnings, DownloadGroupWarningMissingMetadata)
 }
 
 func TestGetDownloadGroups_StatusWarningMatrix(t *testing.T) {
@@ -173,49 +208,49 @@ func TestGetDownloadGroups_StatusWarningMatrix(t *testing.T) {
 			name:         "active priority",
 			active:       []string{"active"},
 			stopped:      []string{"error"},
-			wantStatus:   downloadgroups.DownloadGroupStatusActive,
-			wantWarnings: []string{downloadgroups.DownloadGroupWarningMixedStatus, downloadgroups.DownloadGroupWarningPartialError},
+			wantStatus:   DownloadGroupStatusActive,
+			wantWarnings: []string{DownloadGroupWarningMixedStatus, DownloadGroupWarningPartialError},
 		},
 		{
 			name:       "paused fallback",
 			waiting:    []string{"paused", "complete"},
-			wantStatus: downloadgroups.DownloadGroupStatusPaused,
+			wantStatus: DownloadGroupStatusPaused,
 		},
 		{
 			name:         "waiting fallback",
 			waiting:      []string{"waiting"},
 			stopped:      []string{"complete"},
-			wantStatus:   downloadgroups.DownloadGroupStatusWaiting,
-			wantWarnings: []string{downloadgroups.DownloadGroupWarningMixedStatus},
+			wantStatus:   DownloadGroupStatusWaiting,
+			wantWarnings: []string{DownloadGroupWarningMixedStatus},
 		},
 		{
 			name:       "all complete",
 			stopped:    []string{"complete", "complete"},
-			wantStatus: downloadgroups.DownloadGroupStatusComplete,
+			wantStatus: DownloadGroupStatusComplete,
 		},
 		{
 			name:       "all error",
 			stopped:    []string{"error", "error"},
-			wantStatus: downloadgroups.DownloadGroupStatusError,
+			wantStatus: DownloadGroupStatusError,
 		},
 		{
 			name:         "mixed complete error partial",
 			stopped:      []string{"complete", "error"},
-			wantStatus:   downloadgroups.DownloadGroupStatusError,
-			wantWarnings: []string{downloadgroups.DownloadGroupWarningMixedStatus, downloadgroups.DownloadGroupWarningPartialError},
+			wantStatus:   DownloadGroupStatusError,
+			wantWarnings: []string{DownloadGroupWarningMixedStatus, DownloadGroupWarningPartialError},
 		},
 		{
 			name:         "live terminal mixed",
 			active:       []string{"active"},
 			stopped:      []string{"complete"},
-			wantStatus:   downloadgroups.DownloadGroupStatusActive,
-			wantWarnings: []string{downloadgroups.DownloadGroupWarningMixedStatus},
+			wantStatus:   DownloadGroupStatusActive,
+			wantWarnings: []string{DownloadGroupWarningMixedStatus},
 		},
 	}
 
 	for index, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			app := setupAppTaskHistoryTest(t)
+			setupDownloadGroupsTest(t)
 			group := groupReadTestGroup("dg-matrix-"+strings.ReplaceAll(tc.name, " ", "-"), 2)
 			makeTasks := func(statuses []string, prefix string) []rpc.Task {
 				tasks := make([]rpc.Task, 0, len(statuses))
@@ -226,7 +261,7 @@ func TestGetDownloadGroups_StatusWarningMatrix(t *testing.T) {
 			}
 			monitor.Cache.UpdateFromAria2(makeTasks(tc.active, "active"), makeTasks(tc.waiting, "waiting"), makeTasks(tc.stopped, "stopped"))
 
-			card := findDownloadGroupCard(t, app.GetDownloadGroups().Groups, group.ID)
+			card := findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
 			if card.Status != tc.wantStatus {
 				t.Fatalf("expected status %q, got %q", tc.wantStatus, card.Status)
 			}
@@ -241,42 +276,42 @@ func TestGetDownloadGroups_StatusWarningMatrix(t *testing.T) {
 }
 
 func TestGetDownloadGroups_DegradesMissingMembersAndStaleStoredGroups(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupDownloadGroupsTest(t)
 	group := groupReadTestGroup("dg-degraded", 4)
 	monitor.Cache.UpdateFromAria2([]rpc.Task{groupReadTask("gid-resolved", "active", &group, "100", "50", "5")}, nil, nil)
 	monitor.RegisterTaskGroup("gid-stale", group)
 
-	card := findDownloadGroupCard(t, app.GetDownloadGroups().Groups, group.ID)
+	card := findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
 	if !card.Degraded {
 		t.Fatalf("expected degraded card, got %#v", card)
 	}
 	if card.Counts.Expected != 4 || card.Counts.Resolved != 1 || card.Counts.Missing != 3 {
 		t.Fatalf("unexpected degraded counts: %#v", card.Counts)
 	}
-	missing := requireDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningMissingMembers)
+	missing := requireDownloadGroupWarning(t, card.Warnings, DownloadGroupWarningMissingMembers)
 	if missing.Severity != "warning" || missing.Count != 3 {
 		t.Fatalf("unexpected missing_members warning: %#v", missing)
 	}
-	stale := requireDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningStaleGroup)
+	stale := requireDownloadGroupWarning(t, card.Warnings, DownloadGroupWarningStaleGroup)
 	if stale.Severity != "warning" || stale.Count != 1 {
 		t.Fatalf("unexpected stale_group warning: %#v", stale)
 	}
 }
 
 func TestGetDownloadGroups_HistoryOnlyResidueWarnsWithoutInventingMembership(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupDownloadGroupsTest(t)
 	group := groupReadTestGroup("dg-history-only-residue", 2)
 	history.Add(groupReadHistoryEntry("gid-history-one", &group, "100", "100"))
 	history.Add(groupReadHistoryEntry("gid-history-two", &group, "200", "200"))
 
-	card := findDownloadGroupCard(t, app.GetDownloadGroups().Groups, group.ID)
-	if card.Status != downloadgroups.DownloadGroupStatusComplete {
+	card := findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
+	if card.Status != DownloadGroupStatusComplete {
 		t.Fatalf("expected complete history-only status, got %q", card.Status)
 	}
 	if card.Counts.Resolved != 2 || card.Counts.HistoryOnly != 2 || card.Counts.Missing != 0 {
 		t.Fatalf("unexpected history-only counts: %#v", card.Counts)
 	}
-	warning := requireDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningHistoryOnly)
+	warning := requireDownloadGroupWarning(t, card.Warnings, DownloadGroupWarningHistoryOnly)
 	if warning.Severity != "info" || warning.Count != 2 {
 		t.Fatalf("unexpected history_only warning: %#v", warning)
 	}
@@ -286,7 +321,7 @@ func TestGetDownloadGroups_HistoryOnlyResidueWarnsWithoutInventingMembership(t *
 }
 
 func TestGetDownloadGroupDetail_ReturnsBackendResolvedSplitEnvelope(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupDownloadGroupsTest(t)
 	group := groupReadTestGroup("dg-detail", 4)
 	active := groupReadTask("gid-detail-active", "active", &group, "100", "20", "5")
 	waiting := groupReadTask("gid-detail-waiting", "waiting", &group, "100", "0", "0")
@@ -294,7 +329,7 @@ func TestGetDownloadGroupDetail_ReturnsBackendResolvedSplitEnvelope(t *testing.T
 	monitor.Cache.UpdateFromAria2([]rpc.Task{active}, []rpc.Task{waiting}, []rpc.Task{stopped})
 	history.Add(groupReadHistoryEntry("gid-detail-history", &group, "100", "100"))
 
-	detail := app.GetDownloadGroupDetail("  " + group.ID + "  ")
+	detail := GetDownloadGroupDetail("  " + group.ID + "  ")
 	if !detail.Found || detail.GroupKey != group.ID || detail.Group.GroupKey != group.ID {
 		t.Fatalf("expected found detail for %q, got %#v", group.ID, detail)
 	}
@@ -314,9 +349,9 @@ func TestGetDownloadGroupDetail_ReturnsBackendResolvedSplitEnvelope(t *testing.T
 }
 
 func TestGetDownloadGroupDetail_UnknownGroupReturnsDegradedEnvelope(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupDownloadGroupsTest(t)
 
-	detail := app.GetDownloadGroupDetail("  missing-group  ")
+	detail := GetDownloadGroupDetail("  missing-group  ")
 	if detail.Found {
 		t.Fatalf("expected unknown group not found, got %#v", detail)
 	}
@@ -329,15 +364,15 @@ func TestGetDownloadGroupDetail_UnknownGroupReturnsDegradedEnvelope(t *testing.T
 	if len(detail.Tasks.Active) != 0 || len(detail.Tasks.Waiting) != 0 || len(detail.Tasks.Stopped) != 0 {
 		t.Fatalf("expected empty split lists, got %#v", detail.Tasks)
 	}
-	warning := requireDownloadGroupWarning(t, detail.Warnings, downloadgroups.DownloadGroupWarningGroupNotFound)
+	warning := requireDownloadGroupWarning(t, detail.Warnings, DownloadGroupWarningGroupNotFound)
 	if warning.Severity != "warning" {
 		t.Fatalf("unexpected group_not_found warning: %#v", warning)
 	}
-	requireDownloadGroupWarning(t, detail.Group.Warnings, downloadgroups.DownloadGroupWarningGroupNotFound)
+	requireDownloadGroupWarning(t, detail.Group.Warnings, DownloadGroupWarningGroupNotFound)
 }
 
 func TestGetDownloadGroups_AfterFullSnapshotRefetchHydratesGroupsForWindowRestore(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupDownloadGroupsTest(t)
 	group := groupReadTestGroup("dg-window-restore", 2)
 	active := groupReadTask("gid-window-active", "active", nil, "100", "10", "1")
 	waiting := groupReadTask("gid-window-waiting", "waiting", nil, "100", "0", "0")
@@ -345,66 +380,19 @@ func TestGetDownloadGroups_AfterFullSnapshotRefetchHydratesGroupsForWindowRestor
 	monitor.RegisterTaskGroup(waiting.GID, group)
 	monitor.Cache.UpdateFromAria2([]rpc.Task{active}, []rpc.Task{waiting}, nil)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
-
-		var req struct {
-			Method string `json:"method"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		switch req.Method {
-		case "aria2.tellActive":
-			_ = json.NewEncoder(w).Encode(snapshotRPCResponse([]map[string]any{{
-				"gid":             "gid-window-active",
-				"status":          "active",
-				"totalLength":     "100",
-				"completedLength": "10",
-				"downloadSpeed":   "1",
-				"dir":             active.Dir,
-				"files": []map[string]any{{
-					"path": active.Files[0].Path,
-					"uris": []map[string]any{{"uri": active.Files[0].Uris[0].Uri}},
-				}},
-			}}))
-		case "aria2.tellWaiting":
-			_ = json.NewEncoder(w).Encode(snapshotRPCResponse([]map[string]any{{
-				"gid":             "gid-window-waiting",
-				"status":          "waiting",
-				"totalLength":     "100",
-				"completedLength": "0",
-				"downloadSpeed":   "0",
-				"dir":             waiting.Dir,
-				"files": []map[string]any{{
-					"path": waiting.Files[0].Path,
-					"uris": []map[string]any{{"uri": waiting.Files[0].Uris[0].Uri}},
-				}},
-			}}))
-		default:
-			_ = json.NewEncoder(w).Encode(snapshotRPCResponse([]any{}))
-		}
-	}))
-	defer server.Close()
-
-	parts := strings.Split(server.URL, ":")
-	rpc.Init(parts[len(parts)-1], "secret")
-
-	snapshot := app.GetFullSnapshot()
+	snapshot := getFullSnapshotForTest()
 	if len(snapshot.Tasks.Active) != 1 || len(snapshot.Tasks.Waiting) != 1 {
 		t.Fatalf("expected full task snapshot before group refetch, got %#v", snapshot.Tasks)
 	}
 
-	card := findDownloadGroupCard(t, app.GetDownloadGroups().Groups, group.ID)
-	if card.GroupKey != group.ID || card.Counts.Resolved != 2 || card.Status != downloadgroups.DownloadGroupStatusActive {
+	card := findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
+	if card.GroupKey != group.ID || card.Counts.Resolved != 2 || card.Status != DownloadGroupStatusActive {
 		t.Fatalf("expected post-snapshot group refetch to define master data, got %#v", card)
 	}
 }
 
 func TestGetDownloadGroups_UsesOpaqueGroupKeyAndSuppressesUnsafeFolderHints(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupDownloadGroupsTest(t)
 	group := groupReadTestGroup("opaque-dg-12345", 2)
 	group.Name = ""
 	group.FolderName = "Safe Folder"
@@ -417,7 +405,7 @@ func TestGetDownloadGroups_UsesOpaqueGroupKeyAndSuppressesUnsafeFolderHints(t *t
 	taskTwo := groupReadTask("gid-opaque-two", "waiting", &group, "100", "0", "0")
 	monitor.Cache.UpdateFromAria2([]rpc.Task{taskOne}, []rpc.Task{taskTwo}, nil)
 
-	card := findDownloadGroupCard(t, app.GetDownloadGroups().Groups, group.ID)
+	card := findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
 	if card.GroupKey != group.ID {
 		t.Fatalf("expected opaque group key to equal download_group.id %q, got %q", group.ID, card.GroupKey)
 	}
@@ -450,7 +438,7 @@ func TestGetDownloadGroups_MapsNamePendingAndDegradedWarnings(t *testing.T) {
 			status:       rpc.DownloadGroupNameStatusPending,
 			groupName:    "Batch 2026-05-18 10-00-00",
 			wantStatus:   rpc.DownloadGroupNameStatusPending,
-			wantWarning:  downloadgroups.DownloadGroupWarningNamePending,
+			wantWarning:  DownloadGroupWarningNamePending,
 			wantSeverity: "info",
 		},
 		{
@@ -458,7 +446,7 @@ func TestGetDownloadGroups_MapsNamePendingAndDegradedWarnings(t *testing.T) {
 			status:       rpc.DownloadGroupNameStatusDegraded,
 			groupName:    "Batch 2026-05-18 10-00-00",
 			wantStatus:   rpc.DownloadGroupNameStatusDegraded,
-			wantWarning:  downloadgroups.DownloadGroupWarningNameDegraded,
+			wantWarning:  DownloadGroupWarningNameDegraded,
 			wantSeverity: "warning",
 			wantDegraded: true,
 		},
@@ -467,7 +455,7 @@ func TestGetDownloadGroups_MapsNamePendingAndDegradedWarnings(t *testing.T) {
 			status:       "mystery",
 			groupName:    "Batch 2026-05-18 10-00-00",
 			wantStatus:   rpc.DownloadGroupNameStatusDegraded,
-			wantWarning:  downloadgroups.DownloadGroupWarningNameDegraded,
+			wantWarning:  DownloadGroupWarningNameDegraded,
 			wantSeverity: "warning",
 			wantDegraded: true,
 		},
@@ -476,7 +464,7 @@ func TestGetDownloadGroups_MapsNamePendingAndDegradedWarnings(t *testing.T) {
 			status:       rpc.DownloadGroupNameStatusStable,
 			groupName:    "https://example.invalid/file?token=secret",
 			wantStatus:   rpc.DownloadGroupNameStatusDegraded,
-			wantWarning:  downloadgroups.DownloadGroupWarningNameDegraded,
+			wantWarning:  DownloadGroupWarningNameDegraded,
 			wantSeverity: "warning",
 			wantDegraded: true,
 		},
@@ -484,7 +472,7 @@ func TestGetDownloadGroups_MapsNamePendingAndDegradedWarnings(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			app := setupAppTaskHistoryTest(t)
+			setupDownloadGroupsTest(t)
 			group := groupReadTestGroup("dg-name-"+strings.ReplaceAll(tc.name, " ", "-"), 2)
 			group.Name = tc.groupName
 			group.NameStatus = tc.status
@@ -493,7 +481,7 @@ func TestGetDownloadGroups_MapsNamePendingAndDegradedWarnings(t *testing.T) {
 				groupReadTask("gid-two", "waiting", &group, "100", "0", "0"),
 			}, nil, nil)
 
-			card := findDownloadGroupCard(t, app.GetDownloadGroups().Groups, group.ID)
+			card := findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
 			if card.NameStatus != tc.wantStatus {
 				t.Fatalf("expected name_status %q, got %q", tc.wantStatus, card.NameStatus)
 			}
@@ -509,7 +497,7 @@ func TestGetDownloadGroups_MapsNamePendingAndDegradedWarnings(t *testing.T) {
 }
 
 func TestGetDownloadGroups_UsesStableSmartNameFromBackendMetadata(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupDownloadGroupsTest(t)
 	group := groupReadTestGroup("dg-smart-name", 2)
 	group.Name = "Project Alpha"
 	group.NameStatus = rpc.DownloadGroupNameStatusStable
@@ -518,16 +506,16 @@ func TestGetDownloadGroups_UsesStableSmartNameFromBackendMetadata(t *testing.T) 
 		groupReadTask("gid-stable-two", "waiting", &group, "100", "0", "0"),
 	}, nil, nil)
 
-	card := findDownloadGroupCard(t, app.GetDownloadGroups().Groups, group.ID)
+	card := findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
 	if card.DisplayName != "Project Alpha" || card.NameStatus != rpc.DownloadGroupNameStatusStable {
 		t.Fatalf("expected stable smart display name, got display=%q status=%q", card.DisplayName, card.NameStatus)
 	}
-	requireNoDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningNamePending)
-	requireNoDownloadGroupWarning(t, card.Warnings, downloadgroups.DownloadGroupWarningNameDegraded)
+	requireNoDownloadGroupWarning(t, card.Warnings, DownloadGroupWarningNamePending)
+	requireNoDownloadGroupWarning(t, card.Warnings, DownloadGroupWarningNameDegraded)
 }
 
 func TestGetDownloadGroups_DoesNotUseDisplayNameAsFolderLabel(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupDownloadGroupsTest(t)
 	group := groupReadTestGroup("dg-display-folder-separation", 2)
 	group.Name = "Project Display Name"
 	group.NameStatus = rpc.DownloadGroupNameStatusStable
@@ -538,7 +526,7 @@ func TestGetDownloadGroups_DoesNotUseDisplayNameAsFolderLabel(t *testing.T) {
 		groupReadTask("gid-display-folder-two", "waiting", &group, "100", "0", "0"),
 	}, nil, nil)
 
-	card := findDownloadGroupCard(t, app.GetDownloadGroups().Groups, group.ID)
+	card := findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
 	if card.DisplayName != "Project Display Name" {
 		t.Fatalf("expected stable display name, got %q", card.DisplayName)
 	}

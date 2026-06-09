@@ -1,4 +1,4 @@
-package main
+package tasks
 
 import (
 	"encoding/json"
@@ -109,7 +109,7 @@ func batchAddTaskListResult(tasks []rpc.Task) []rpc.Task {
 	return tasks
 }
 
-func setupAppTaskBatchAddTest(t *testing.T, snapshots batchAddRPCSnapshots) (*App, *batchAddRPCCounter) {
+func setupAppTaskBatchAddTest(t *testing.T, snapshots batchAddRPCSnapshots) (*Service, *batchAddRPCCounter) {
 	t.Helper()
 
 	originalConfig := config.Current
@@ -181,7 +181,7 @@ func setupAppTaskBatchAddTest(t *testing.T, snapshots batchAddRPCSnapshots) (*Ap
 		config.Current = originalConfig
 	})
 
-	return NewApp(), counter
+	return &Service{}, counter
 }
 
 func batchAddParams(params []json.RawMessage) (string, map[string]any) {
@@ -236,11 +236,11 @@ func assertGroupNameIsGeneric(t *testing.T, group rpc.DownloadGroup) {
 }
 
 func TestBatchAddUri_DeduplicatesHistorySourceWithoutAddUri(t *testing.T) {
-	app, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
 	historyURL := "https://example.com/history.iso"
 	history.Add(history.HistoryEntry{GID: "gid-history", Source: historyURL})
 
-	result := app.BatchAddUri([]string{" " + historyURL + " "})
+	result := service.BatchAddUri([]string{" " + historyURL + " "})
 
 	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{historyURL})
 	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{})
@@ -259,14 +259,14 @@ func TestBatchAddUri_PreservesExistingAndBatchDuplicateOrder(t *testing.T) {
 	historyURL := "https://example.com/history.iso"
 	newURL := "https://example.com/new.iso"
 
-	app, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{
+	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{
 		active:  []rpc.Task{taskWithSourceURL("gid-active", " "+activeURL+" ")},
 		waiting: []rpc.Task{taskWithSourceURL("gid-waiting", waitingURL)},
 		stopped: []rpc.Task{taskWithSourceURL("gid-stopped", stoppedURL)},
 	})
 	history.Add(history.HistoryEntry{GID: "gid-history", Source: historyURL})
 
-	result := app.BatchAddUri([]string{
+	result := service.BatchAddUri([]string{
 		" " + activeURL + " ",
 		"\t" + waitingURL + "\n",
 		" " + historyURL + " ",
@@ -290,13 +290,13 @@ func TestBatchAddUri_PreservesExistingAndBatchDuplicateOrder(t *testing.T) {
 }
 
 func TestBatchAddUri_TruncatesAt100BeforeProcessing(t *testing.T) {
-	app, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
 	urls := make([]string, 101)
 	for i := range urls {
 		urls[i] = fmt.Sprintf("https://example.com/%03d.iso", i)
 	}
 
-	result := app.BatchAddUri(urls)
+	result := service.BatchAddUri(urls)
 
 	assertBatchAddStrings(t, "succeeded", result.Succeeded, urls[:100])
 	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{})
@@ -318,7 +318,7 @@ func TestBatchAddUri_TruncatesAt100BeforeProcessing(t *testing.T) {
 }
 
 func TestBatchAddUri_FourUniqueAddableDirectURLsDoNotCreateGroup(t *testing.T) {
-	app, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
 	baseDir := config.Current.DownloadDir
 	urls := []string{
 		"https://example.com/one.bin",
@@ -327,7 +327,7 @@ func TestBatchAddUri_FourUniqueAddableDirectURLsDoNotCreateGroup(t *testing.T) {
 		"https://example.com/four.bin",
 	}
 
-	result := app.BatchAddUri(urls)
+	result := service.BatchAddUri(urls)
 
 	assertBatchAddStrings(t, "succeeded", result.Succeeded, urls)
 	if len(result.Groups) != 0 {
@@ -341,7 +341,7 @@ func TestBatchAddUri_FourUniqueAddableDirectURLsDoNotCreateGroup(t *testing.T) {
 }
 
 func TestBatchAddUri_FiveUniqueAddableDirectURLsCreateBatchGroupFolder(t *testing.T) {
-	app, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
 	baseDir := config.Current.DownloadDir
 	urls := []string{
 		"https://example.com/one.bin",
@@ -351,7 +351,7 @@ func TestBatchAddUri_FiveUniqueAddableDirectURLsCreateBatchGroupFolder(t *testin
 		"https://example.com/five.bin",
 	}
 
-	result := app.BatchAddUri(urls)
+	result := service.BatchAddUri(urls)
 
 	assertBatchAddStrings(t, "succeeded", result.Succeeded, urls)
 	if len(result.Groups) != 1 {
@@ -382,11 +382,11 @@ func TestBatchAddUri_DuplicatesDoNotCountTowardBatchGroupThreshold(t *testing.T)
 	newOne := "https://example.com/new-one.bin"
 	newTwo := "https://example.com/new-two.bin"
 	newThree := "https://example.com/new-three.bin"
-	app, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{active: []rpc.Task{taskWithSourceURL("gid-active", activeURL)}})
+	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{active: []rpc.Task{taskWithSourceURL("gid-active", activeURL)}})
 	history.Add(history.HistoryEntry{GID: "gid-history", Source: historyURL})
 	baseDir := config.Current.DownloadDir
 
-	result := app.BatchAddUri([]string{activeURL, historyURL, duplicateURL, duplicateURL, newOne, newTwo, newThree})
+	result := service.BatchAddUri([]string{activeURL, historyURL, duplicateURL, duplicateURL, newOne, newTwo, newThree})
 
 	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{duplicateURL, newOne, newTwo, newThree})
 	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{activeURL, historyURL, duplicateURL})
@@ -402,11 +402,11 @@ func TestBatchAddUri_DuplicatesDoNotCountTowardBatchGroupThreshold(t *testing.T)
 
 func TestBatchAddUri_DuplicateOnlyBatchDoesNotCreateFolder(t *testing.T) {
 	historyURL := "https://example.com/history-only.bin"
-	app, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
 	baseDir := config.Current.DownloadDir
 	history.Add(history.HistoryEntry{GID: "gid-history", Source: historyURL})
 
-	result := app.BatchAddUri([]string{historyURL, " " + historyURL + " "})
+	result := service.BatchAddUri([]string{historyURL, " " + historyURL + " "})
 
 	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{})
 	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{historyURL, historyURL})
@@ -426,7 +426,7 @@ func TestBatchAddUri_DuplicateOnlyBatchDoesNotCreateFolder(t *testing.T) {
 }
 
 func TestBatchAddUri_AllGroupedAddsFailCleansEmptyGroupFolderAndStore(t *testing.T) {
-	app, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
 	counter.failAll = true
 	urls := []string{
 		"https://example.com/fail-one.bin",
@@ -437,7 +437,7 @@ func TestBatchAddUri_AllGroupedAddsFailCleansEmptyGroupFolderAndStore(t *testing
 	}
 	baseDir := config.Current.DownloadDir
 
-	result := app.BatchAddUri(urls)
+	result := service.BatchAddUri(urls)
 
 	if len(result.Succeeded) != 0 || len(result.Groups) != 0 {
 		t.Fatalf("expected no successes/groups, got %#v", result)
@@ -460,7 +460,7 @@ func TestBatchAddUri_AllGroupedAddsFailCleansEmptyGroupFolderAndStore(t *testing
 }
 
 func TestBatchAddUri_GroupNameEnqueueDoesNotBlockAddPath(t *testing.T) {
-	app, _ := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	service, _ := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
 	urls := []string{
 		"https://example.com/nonblock-one.bin",
 		"https://example.com/nonblock-two.bin",
@@ -469,7 +469,7 @@ func TestBatchAddUri_GroupNameEnqueueDoesNotBlockAddPath(t *testing.T) {
 		"https://example.com/nonblock-five.bin",
 	}
 
-	result := app.BatchAddUri(urls)
+	result := service.BatchAddUri(urls)
 
 	assertBatchAddStrings(t, "succeeded", result.Succeeded, urls)
 	if len(result.Groups) != 1 {

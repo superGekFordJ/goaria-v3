@@ -1,12 +1,8 @@
-package main
+package tasks
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"goaria-v3/internal/config"
@@ -15,7 +11,7 @@ import (
 	"goaria-v3/internal/rpc"
 )
 
-func setupAppTaskHistoryTest(t *testing.T) *App {
+func setupAppTaskHistoryTest(t *testing.T) {
 	t.Helper()
 
 	originalCache := monitor.Cache
@@ -35,12 +31,10 @@ func setupAppTaskHistoryTest(t *testing.T) *App {
 		monitor.Cache = originalCache
 		config.Current = originalConfig
 	})
-
-	return NewApp()
 }
 
-func stoppedTasksFromGetTasks(app *App) []rpc.Task {
-	return app.GetTasks()["stopped"]
+func stoppedTasksFromGetTasks() []rpc.Task {
+	return GetTasks()["stopped"]
 }
 
 func mustFindTaskByGID(t *testing.T, tasks []rpc.Task, gid string) rpc.Task {
@@ -83,7 +77,7 @@ func assertTaskPathAndSource(t *testing.T, task rpc.Task, wantPath string, wantS
 	}
 }
 
-func assertHistoryBackfillBehavior(t *testing.T, fetchStopped func(*App) []rpc.Task) {
+func assertHistoryBackfillBehavior(t *testing.T, fetchStopped func() []rpc.Task) {
 	t.Helper()
 
 	testCases := []struct {
@@ -152,12 +146,12 @@ func assertHistoryBackfillBehavior(t *testing.T, fetchStopped func(*App) []rpc.T
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			app := setupAppTaskHistoryTest(t)
+			setupAppTaskHistoryTest(t)
 
 			monitor.Cache.UpdateFromAria2(nil, nil, []rpc.Task{tc.cacheTask})
 			history.Add(tc.historyEntry)
 
-			stopped := fetchStopped(app)
+			stopped := fetchStopped()
 			if got := countTasksByGID(stopped, tc.cacheTask.GID); got != 1 {
 				t.Fatalf("expected gid %q once in stopped slice, got %d", tc.cacheTask.GID, got)
 			}
@@ -178,7 +172,7 @@ func assertHistoryBackfillBehavior(t *testing.T, fetchStopped func(*App) []rpc.T
 	}
 }
 
-func assertRichCachePreservationBehavior(t *testing.T, fetchStopped func(*App) []rpc.Task) {
+func assertRichCachePreservationBehavior(t *testing.T, fetchStopped func() []rpc.Task) {
 	t.Helper()
 
 	testCases := []struct {
@@ -276,12 +270,12 @@ func assertRichCachePreservationBehavior(t *testing.T, fetchStopped func(*App) [
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			app := setupAppTaskHistoryTest(t)
+			setupAppTaskHistoryTest(t)
 
 			monitor.Cache.UpdateFromAria2(nil, nil, []rpc.Task{tc.cacheTask})
 			history.Add(tc.historyEntry)
 
-			stopped := fetchStopped(app)
+			stopped := fetchStopped()
 			if got := countTasksByGID(stopped, tc.cacheTask.GID); got != 1 {
 				t.Fatalf("expected gid %q once in stopped slice, got %d", tc.cacheTask.GID, got)
 			}
@@ -335,18 +329,10 @@ func appHistoryTestDownloadGroup(id string) *rpc.DownloadGroup {
 	}
 }
 
-func snapshotRPCResponse(result any) map[string]any {
-	return map[string]any{
-		"jsonrpc": "2.0",
-		"id":      "goaria",
-		"result":  result,
-	}
-}
+
 
 func TestGetStoppedTasks_BackfillsHistoryMetadataAndLengths(t *testing.T) {
-	assertHistoryBackfillBehavior(t, func(app *App) []rpc.Task {
-		return app.GetStoppedTasks()
-	})
+	assertHistoryBackfillBehavior(t, GetStoppedTasks)
 }
 
 func TestGetTasks_BackfillsHistoryMetadataAndLengths(t *testing.T) {
@@ -354,7 +340,7 @@ func TestGetTasks_BackfillsHistoryMetadataAndLengths(t *testing.T) {
 }
 
 func TestGetStoppedTasks_RespectsShowHistoryDisabled(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupAppTaskHistoryTest(t)
 	config.Current.ShowHistory = false
 
 	cacheTask := rpc.Task{
@@ -379,13 +365,13 @@ func TestGetStoppedTasks_RespectsShowHistoryDisabled(t *testing.T) {
 	monitor.Cache.UpdateFromAria2(nil, nil, []rpc.Task{cacheTask})
 	history.Add(historyEntry)
 
-	if stopped := app.GetStoppedTasks(); len(stopped) != 0 {
+	if stopped := GetStoppedTasks(); len(stopped) != 0 {
 		t.Fatalf("expected no stopped tasks when history is disabled, got %#v", stopped)
 	}
 }
 
 func TestGetTasks_RespectsShowHistoryDisabledAndKeepsActiveWaiting(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupAppTaskHistoryTest(t)
 	config.Current.ShowHistory = false
 
 	activeTask := rpc.Task{
@@ -433,7 +419,7 @@ func TestGetTasks_RespectsShowHistoryDisabledAndKeepsActiveWaiting(t *testing.T)
 	monitor.Cache.UpdateFromAria2([]rpc.Task{activeTask}, []rpc.Task{waitingTask}, []rpc.Task{stoppedTask})
 	history.Add(historyEntry)
 
-	tasks := app.GetTasks()
+	tasks := GetTasks()
 	if !reflect.DeepEqual(tasks["active"], []rpc.Task{activeTask}) {
 		t.Fatalf("expected active tasks unchanged, got %#v", tasks["active"])
 	}
@@ -446,9 +432,7 @@ func TestGetTasks_RespectsShowHistoryDisabledAndKeepsActiveWaiting(t *testing.T)
 }
 
 func TestGetStoppedTasks_PreservesRichCacheData(t *testing.T) {
-	assertRichCachePreservationBehavior(t, func(app *App) []rpc.Task {
-		return app.GetStoppedTasks()
-	})
+	assertRichCachePreservationBehavior(t, GetStoppedTasks)
 }
 
 func TestGetTasks_PreservesRichCacheData(t *testing.T) {
@@ -456,7 +440,7 @@ func TestGetTasks_PreservesRichCacheData(t *testing.T) {
 }
 
 func TestGetStoppedTasks_AppendsHistoryOnlyStoppedTasks(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupAppTaskHistoryTest(t)
 	entry := history.HistoryEntry{
 		GID:             "gid-history-only-stopped",
 		Dir:             filepath.Join("history", "only"),
@@ -469,7 +453,7 @@ func TestGetStoppedTasks_AppendsHistoryOnlyStoppedTasks(t *testing.T) {
 	monitor.Cache.UpdateFromAria2(nil, nil, nil)
 	history.Add(entry)
 
-	stopped := app.GetStoppedTasks()
+	stopped := GetStoppedTasks()
 	if got := countTasksByGID(stopped, entry.GID); got != 1 {
 		t.Fatalf("expected gid %q once in stopped slice, got %d", entry.GID, got)
 	}
@@ -479,7 +463,7 @@ func TestGetStoppedTasks_AppendsHistoryOnlyStoppedTasks(t *testing.T) {
 }
 
 func TestGetTasks_AppendsHistoryOnlyStoppedTasks(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupAppTaskHistoryTest(t)
 	activeTask := rpc.Task{
 		GID:             "gid-active",
 		Status:          "active",
@@ -508,7 +492,7 @@ func TestGetTasks_AppendsHistoryOnlyStoppedTasks(t *testing.T) {
 	monitor.Cache.UpdateFromAria2([]rpc.Task{activeTask}, []rpc.Task{waitingTask}, nil)
 	history.Add(entry)
 
-	tasks := app.GetTasks()
+	tasks := GetTasks()
 	if !reflect.DeepEqual(tasks["active"], []rpc.Task{activeTask}) {
 		t.Fatalf("expected active tasks unchanged, got %#v", tasks["active"])
 	}
@@ -524,7 +508,7 @@ func TestGetTasks_AppendsHistoryOnlyStoppedTasks(t *testing.T) {
 }
 
 func TestGetStoppedTasks_BackfillsDownloadGroupFromHistory(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupAppTaskHistoryTest(t)
 	group := appHistoryTestDownloadGroup("dg-history-backfill")
 	cacheTask := rpc.Task{GID: "gid-group-backfill", Status: "complete", TotalLength: "0", CompletedLength: "0"}
 	entry := history.HistoryEntry{
@@ -540,14 +524,14 @@ func TestGetStoppedTasks_BackfillsDownloadGroupFromHistory(t *testing.T) {
 	monitor.Cache.UpdateFromAria2(nil, nil, []rpc.Task{cacheTask})
 	history.Add(entry)
 
-	task := mustFindTaskByGID(t, app.GetStoppedTasks(), cacheTask.GID)
+	task := mustFindTaskByGID(t, GetStoppedTasks(), cacheTask.GID)
 	if task.DownloadGroup == nil || task.DownloadGroup.ID != group.ID {
 		t.Fatalf("expected history group backfill, got %#v", task.DownloadGroup)
 	}
 }
 
 func TestGetTasks_HistoryOnlySyntheticTaskIncludesDownloadGroup(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupAppTaskHistoryTest(t)
 	group := appHistoryTestDownloadGroup("dg-history-only")
 	entry := history.HistoryEntry{
 		GID:             "gid-history-only-group",
@@ -560,7 +544,7 @@ func TestGetTasks_HistoryOnlySyntheticTaskIncludesDownloadGroup(t *testing.T) {
 	}
 	history.Add(entry)
 
-	task := mustFindTaskByGID(t, app.GetTasks()["stopped"], entry.GID)
+	task := mustFindTaskByGID(t, GetTasks()["stopped"], entry.GID)
 	assertHistoryOnlyStoppedTask(t, task, entry)
 	if task.DownloadGroup == nil || task.DownloadGroup.ID != group.ID {
 		t.Fatalf("expected synthetic task group, got %#v", task.DownloadGroup)
@@ -568,7 +552,7 @@ func TestGetTasks_HistoryOnlySyntheticTaskIncludesDownloadGroup(t *testing.T) {
 }
 
 func TestGetTasks_ReloadsPersistedDownloadGroupForActiveTaskAfterRestart(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupAppTaskHistoryTest(t)
 	group := appHistoryTestDownloadGroup("dg-restart")
 	monitor.RegisterTaskGroup("gid-restart", *group)
 
@@ -576,152 +560,15 @@ func TestGetTasks_ReloadsPersistedDownloadGroupForActiveTaskAfterRestart(t *test
 	monitor.LoadTaskGroups()
 	monitor.Cache.UpdateFromAria2([]rpc.Task{{GID: "gid-restart", Status: "active", Dir: group.Dir}}, nil, nil)
 
-	tasks := app.GetTasks()
+	tasks := GetTasks()
 	active := mustFindTaskByGID(t, tasks["active"], "gid-restart")
 	if active.DownloadGroup == nil || active.DownloadGroup.ID != group.ID {
 		t.Fatalf("expected active task to hydrate persisted group after restart, got %#v", active.DownloadGroup)
 	}
 }
 
-func TestGetFullSnapshot_UsesFreshRPCStateAndHydratesDownloadGroupsForWindowRestore(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
-	activeGroup := appHistoryTestDownloadGroup("dg-snapshot-fresh-active")
-	waitingGroup := appHistoryTestDownloadGroup("dg-snapshot-fresh-waiting")
-	stoppedGroup := appHistoryTestDownloadGroup("dg-snapshot-fresh-stopped")
-
-	monitor.RegisterTaskGroup("gid-fresh-active", *activeGroup)
-	monitor.RegisterTaskGroup("gid-fresh-waiting", *waitingGroup)
-	monitor.Cache.UpdateFromAria2(
-		[]rpc.Task{{
-			GID:             "gid-stale-active",
-			Status:          "active",
-			TotalLength:     "999",
-			CompletedLength: "111",
-			DownloadSpeed:   "333",
-			Dir:             activeGroup.Dir,
-		}},
-		[]rpc.Task{{
-			GID:             "gid-stale-waiting",
-			Status:          "waiting",
-			TotalLength:     "888",
-			CompletedLength: "222",
-			DownloadSpeed:   "444",
-			Dir:             waitingGroup.Dir,
-		}},
-		[]rpc.Task{{
-			GID:             "gid-fresh-stopped",
-			Status:          "complete",
-			TotalLength:     "0",
-			CompletedLength: "0",
-		}},
-	)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
-
-		var req struct {
-			Method string `json:"method"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		switch req.Method {
-		case "aria2.tellActive":
-			_ = json.NewEncoder(w).Encode(snapshotRPCResponse([]map[string]any{{
-				"gid":             "gid-fresh-active",
-				"status":          "active",
-				"totalLength":     "100",
-				"completedLength": "25",
-				"downloadSpeed":   "555",
-				"errorCode":       "",
-				"errorMessage":    "",
-				"dir":             activeGroup.Dir,
-				"files": []map[string]any{{
-					"path": filepath.ToSlash(filepath.Join(activeGroup.Dir, "active.bin")),
-					"uris": []map[string]any{{"uri": "https://example.com/fresh-active.bin"}},
-				}},
-			}}))
-		case "aria2.tellWaiting":
-			_ = json.NewEncoder(w).Encode(snapshotRPCResponse([]map[string]any{{
-				"gid":             "gid-fresh-waiting",
-				"status":          "waiting",
-				"totalLength":     "200",
-				"completedLength": "40",
-				"downloadSpeed":   "0",
-				"errorCode":       "",
-				"errorMessage":    "",
-				"dir":             waitingGroup.Dir,
-				"files": []map[string]any{{
-					"path": filepath.ToSlash(filepath.Join(waitingGroup.Dir, "waiting.bin")),
-					"uris": []map[string]any{{"uri": "https://example.com/fresh-waiting.bin"}},
-				}},
-			}}))
-		case "aria2.tellStopped":
-			_ = json.NewEncoder(w).Encode(snapshotRPCResponse([]map[string]any{{
-				"gid":             "gid-fresh-stopped",
-				"status":          "complete",
-				"totalLength":     "0",
-				"completedLength": "0",
-				"downloadSpeed":   "0",
-				"errorCode":       "",
-				"errorMessage":    "",
-				"dir":             stoppedGroup.Dir,
-				"files":           []map[string]any{},
-			}}))
-		default:
-			_ = json.NewEncoder(w).Encode(snapshotRPCResponse([]any{}))
-		}
-	}))
-	defer server.Close()
-
-	parts := strings.Split(server.URL, ":")
-	rpc.Init(parts[len(parts)-1], "secret")
-
-	history.Add(history.HistoryEntry{
-		GID:             "gid-fresh-stopped",
-		Dir:             stoppedGroup.Dir,
-		Path:            filepath.Join(stoppedGroup.Dir, "stopped.bin"),
-		Source:          "https://example.com/snapshot-stopped.bin",
-		TotalLength:     "300",
-		CompletedLength: "300",
-		DownloadGroup:   stoppedGroup,
-	})
-
-	snapshot := app.GetFullSnapshot()
-
-	active := mustFindTaskByGID(t, snapshot.Tasks.Active, "gid-fresh-active")
-	if active.DownloadGroup == nil || active.DownloadGroup.ID != activeGroup.ID {
-		t.Fatalf("expected active snapshot task to hydrate group, got %#v", active.DownloadGroup)
-	}
-	if active.CompletedLength != "25" || active.DownloadSpeed != "555" {
-		t.Fatalf("expected active snapshot to prefer fresh RPC values, got completed=%q speed=%q", active.CompletedLength, active.DownloadSpeed)
-	}
-	if countTasksByGID(snapshot.Tasks.Active, "gid-stale-active") != 0 {
-		t.Fatalf("expected stale active cache task excluded from snapshot, got %#v", snapshot.Tasks.Active)
-	}
-
-	waiting := mustFindTaskByGID(t, snapshot.Tasks.Waiting, "gid-fresh-waiting")
-	if waiting.DownloadGroup == nil || waiting.DownloadGroup.ID != waitingGroup.ID {
-		t.Fatalf("expected waiting snapshot task to hydrate group, got %#v", waiting.DownloadGroup)
-	}
-	if waiting.CompletedLength != "40" {
-		t.Fatalf("expected waiting snapshot to prefer fresh RPC values, got completed=%q", waiting.CompletedLength)
-	}
-	if countTasksByGID(snapshot.Tasks.Waiting, "gid-stale-waiting") != 0 {
-		t.Fatalf("expected stale waiting cache task excluded from snapshot, got %#v", snapshot.Tasks.Waiting)
-	}
-
-	stopped := mustFindTaskByGID(t, snapshot.Tasks.Stopped, "gid-fresh-stopped")
-	if stopped.DownloadGroup == nil || stopped.DownloadGroup.ID != stoppedGroup.ID {
-		t.Fatalf("expected stopped snapshot task to backfill group, got %#v", stopped.DownloadGroup)
-	}
-	assertTaskPathAndSource(t, stopped, filepath.Join(stoppedGroup.Dir, "stopped.bin"), "https://example.com/snapshot-stopped.bin")
-}
-
 func TestGetTasks_HistoryBackfillRemovesCompletedGroupFromDurableStore(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
+	setupAppTaskHistoryTest(t)
 	group := appHistoryTestDownloadGroup("dg-history-cleanup")
 	monitor.RegisterTaskGroup("gid-completed", *group)
 	history.Add(history.HistoryEntry{
@@ -734,7 +581,7 @@ func TestGetTasks_HistoryBackfillRemovesCompletedGroupFromDurableStore(t *testin
 		DownloadGroup:   group,
 	})
 
-	_ = app.GetTasks()
+	_ = GetTasks()
 	if got := monitor.GetStoredTaskGroup("gid-completed"); got != nil {
 		t.Fatalf("expected completed history group removed from durable store, got %#v", got)
 	}

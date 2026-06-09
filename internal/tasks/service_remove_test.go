@@ -1,4 +1,4 @@
-package main
+package tasks
 
 import (
 	"encoding/json"
@@ -151,8 +151,7 @@ func TestBatchRemove_UsesCachedSnapshotsWithoutLiveListRPC(t *testing.T) {
 		[]rpc.Task{{GID: gids[2], Status: "complete", Dir: baseDir, Files: []rpc.File{{Path: filepath.Join(baseDir, "stopped.bin")}}}},
 	)
 
-	app := NewApp()
-	app.BatchRemove(gids, false)
+	BatchRemove(gids, false)
 
 	if got := counter.count("aria2.tellActive"); got != 0 {
 		t.Fatalf("expected no tellActive calls, got %d", got)
@@ -181,7 +180,7 @@ func TestRemoveTask_CleansPersistedDownloadGroupWithoutMonitor(t *testing.T) {
 	group := rpc.DownloadGroup{ID: "dg-remove", Kind: "batch", Name: "Batch", FolderName: "Batch dg-remove", Dir: t.TempDir(), ItemCount: 5, CreatedAt: 1}
 	monitor.RegisterTaskGroup("gid-remove", group)
 
-	NewApp().RemoveTask("gid-remove", false)
+	RemoveTask("gid-remove", false)
 
 	if got := monitor.GetStoredTaskGroup("gid-remove"); got != nil {
 		t.Fatalf("expected persisted group removed, got %#v", got)
@@ -196,7 +195,7 @@ func TestBatchRemove_CleansPersistedDownloadGroups(t *testing.T) {
 	monitor.RegisterTaskGroup("gid-one", group)
 	monitor.RegisterTaskGroup("gid-two", group)
 
-	NewApp().BatchRemove([]string{"gid-one", "gid-two"}, false)
+	BatchRemove([]string{"gid-one", "gid-two"}, false)
 
 	if got := monitor.GetStoredTaskGroup("gid-one"); got != nil {
 		t.Fatalf("expected gid-one group removed, got %#v", got)
@@ -226,7 +225,7 @@ func TestBatchRemove_FallsBackWithSingleTellStatusMultiForUnresolvedTargets(t *t
 			result := make([]any, 0, len(calls))
 			for _, call := range calls {
 				if call.MethodName != "aria2.tellStatus" {
-					t.Fatalf("unexpected multicall method %q", call.MethodName)
+					t.Fatalf("unexpected nested method %q in multicall", call.MethodName)
 				}
 
 				var token string
@@ -293,8 +292,7 @@ func TestBatchRemove_FallsBackWithSingleTellStatusMultiForUnresolvedTargets(t *t
 		[]rpc.Task{{GID: gids[2], Status: "complete"}},
 	)
 
-	app := NewApp()
-	app.BatchRemove(gids, false)
+	BatchRemove(gids, false)
 
 	if got := counter.count("aria2.tellActive"); got != 0 {
 		t.Fatalf("expected no tellActive calls, got %d", got)
@@ -333,8 +331,7 @@ func TestBatchRemove_RemovesUniqueHistoryEntries(t *testing.T) {
 	history.Add(history.HistoryEntry{GID: "gid-2", Dir: baseDir, Path: filepath.Join(baseDir, "two.bin"), Source: "https://example.com/two"})
 	history.Add(history.HistoryEntry{GID: "gid-keep", Dir: baseDir, Path: filepath.Join(baseDir, "keep.bin"), Source: "https://example.com/keep"})
 
-	app := NewApp()
-	app.BatchRemove([]string{"gid-1", "gid-2", "gid-1", "", "gid-missing"}, false)
+	BatchRemove([]string{"gid-1", "gid-2", "gid-1", "", "gid-missing"}, false)
 
 	if _, ok := history.Get("gid-1"); ok {
 		t.Fatalf("expected gid-1 history entry to be removed")
@@ -396,8 +393,7 @@ func TestRemoveTask_PrefersHistoryBeforeRPCFallback(t *testing.T) {
 		CompletedLength: "100",
 	})
 
-	app := NewApp()
-	app.RemoveTask(gid, false)
+	RemoveTask(gid, false)
 
 	if got := counter.count("aria2.tellActive"); got != 0 {
 		t.Fatalf("expected no tellActive calls, got %d", got)
