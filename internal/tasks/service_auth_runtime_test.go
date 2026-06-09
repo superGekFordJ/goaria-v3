@@ -1,9 +1,12 @@
-package main
+package tasks
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -39,6 +42,14 @@ type authRuntimeTaskEventLog struct {
 	events []string
 }
 
+type authRuntimeTaskHostPolicyResolver struct {
+	mu       sync.Mutex
+	calls    int
+	identity extractor.VerifiedPackIdentity
+	policy   extractor.ResolvedHostPolicy
+	err      error
+}
+
 type authRuntimeTaskSession struct{}
 
 func TestAddUri_AuthRuntimePreflightsSourceBeforeExtractorResolve(t *testing.T) {
@@ -58,9 +69,9 @@ func TestAddUri_AuthRuntimePreflightsSourceBeforeExtractorResolve(t *testing.T) 
 		},
 	}
 	driver := &authRuntimeTaskDriver{events: events}
-	app, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	service, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 
-	result := app.AddUri(sourceURL)
+	result := service.AddUri(sourceURL)
 
 	if result != "success" {
 		t.Fatalf("AddUri() = %q, want success", result)
@@ -107,12 +118,12 @@ func TestAddUri_AuthRuntimeSourceMissingExpiredOpenWebViewBeforeResolve(t *testi
 				},
 			}
 			driver := &authRuntimeTaskDriver{events: events}
-			app, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+			service, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 			if tt.seed != nil {
 				tt.seed(t, store, identity.PackID, targetURL)
 			}
 
-			result := app.AddUri(sourceURL)
+			result := service.AddUri(sourceURL)
 
 			if result != "success" {
 				t.Fatalf("AddUri() = %q, want success", result)
@@ -145,9 +156,9 @@ func TestAddUri_AuthRuntimeTargetPreflightBeforeHeaders(t *testing.T) {
 		},
 	}
 	driver := &authRuntimeTaskDriver{events: events}
-	app, _, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	service, _, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 
-	result := app.AddUri(sourceURL)
+	result := service.AddUri(sourceURL)
 
 	if result != "success" {
 		t.Fatalf("AddUri() = %q, want success", result)
@@ -179,10 +190,10 @@ func TestAddUri_AuthRuntimeAliasStoredAuthReuseSkipsWebViewWhenLoginAndTargetHos
 		},
 	}
 	driver := &authRuntimeTaskDriver{events: events}
-	app, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	service, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 	setAuthRuntimeTaskAliasProfile(t, store, identity.PackID, extractor.AuthSecretKindBearer, "stored-alias-task-token", []extractor.DomainRule{{Host: "files.alpha.test"}}, nil)
 
-	result := app.AddUri(sourceURL)
+	result := service.AddUri(sourceURL)
 
 	if result != "success" {
 		t.Fatalf("AddUri() = %q, want success", result)
@@ -213,6 +224,37 @@ func TestAddUri_AuthRuntimeAliasStoredAuthReuseSkipsWebViewWhenLoginAndTargetHos
 	assertRootNoSecretText(t, fmt.Sprintf("%#v %#v", result, events.snapshot()), "stored-alias-task-token", "Bearer stored-alias-task-token")
 }
 
+func TestAddUri_AuthRuntimeTargetPreflightFailureStopsBeforeHeaders(t *testing.T) {
+	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
+	identity := authRuntimeTaskIdentity(t, bundle)
+	manifest := authRuntimeTaskManifest(identity)
+	sourceURL := "https://fixture.invalid/d/target-failure"
+	targetURL := "https://fixture.invalid/file-target-failure.bin"
+	events := &authRuntimeTaskEventLog{}
+	dispatcher := &authRuntimeTaskDispatcher{
+		events: events,
+		resolutions: map[string][]extractor.AddTaskResolution{
+			sourceURL: {authRuntimeTaskResolution(sourceURL, targetURL, identity, manifest, true)},
+		},
+	}
+	driver := &authRuntimeTaskDriver{events: events, openErr: errors.New("target preflight unavailable Authorization: Bearer target-secret token=target-token")}
+	service, recorder, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+
+	result := service.AddUri(sourceURL)
+
+	if result != "auth profile unavailable" {
+		t.Fatalf("AddUri() = %q, want generic auth unavailable", result)
+	}
+	if got := recorder.count("aria2.addUri"); got != 0 {
+		t.Fatalf("aria2.addUri count = %d, want 0", got)
+	}
+	gotEvents := events.snapshot()
+	if !reflect.DeepEqual(gotEvents, []string{"plan:" + sourceURL, "resolve:" + sourceURL}) {
+		t.Fatalf("event order = %#v, want target auth failure before header build", gotEvents)
+	}
+	assertRootNoSecretText(t, result, "target-secret", "target-token", "Authorization")
+}
+
 func TestAddUri_AuthRuntimeTargetStaleUnavailableClearsOpensWebViewAndBuildsHeaders(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -239,10 +281,10 @@ func TestAddUri_AuthRuntimeTargetStaleUnavailableClearsOpensWebViewAndBuildsHead
 				},
 			}
 			driver := &authRuntimeTaskDriver{events: events}
-			app, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+			service, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 			tt.seed(t, store, identity.PackID)
 
-			result := app.AddUri(sourceURL)
+			result := service.AddUri(sourceURL)
 
 			if result != "success" {
 				t.Fatalf("AddUri() = %q, want success", result)
@@ -279,9 +321,9 @@ func TestAddUri_AuthRuntimeProvisioningUnavailableFailsBeforeResolve(t *testing.
 		},
 	}
 	driver := &authRuntimeTaskDriver{events: events, openErr: errors.New("Authorization: Bearer raw-secret token=raw-token")}
-	app, recorder, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	service, recorder, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 
-	result := app.AddUri(sourceURL)
+	result := service.AddUri(sourceURL)
 
 	if result != "auth profile unavailable" {
 		t.Fatalf("AddUri() = %q, want generic auth unavailable", result)
@@ -317,10 +359,10 @@ func TestAddUri_AuthRuntimeTargetPolicyDeniedDoesNotOpenWebViewOrBuildHeaders(t 
 		},
 	}
 	driver := &authRuntimeTaskDriver{events: events}
-	app, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	service, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 	setAuthRuntimeTaskProfileWithOptions(t, store, identity.PackID, extractor.AuthSecretKindCookie, "sid=policy-denied-stale", []extractor.DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}}, nil)
 
-	result := app.AddUri(sourceURL)
+	result := service.AddUri(sourceURL)
 
 	if result != "auth profile unavailable" {
 		t.Fatalf("AddUri() = %q, want generic auth unavailable", result)
@@ -386,10 +428,10 @@ func TestAddUri_AuthRuntimeTargetRefreshCancelDoesNotLoopOrSubmit(t *testing.T) 
 		},
 	}
 	driver := &authRuntimeTaskDriver{events: events, status: extractor.WebViewAuthStatusCanceled}
-	app, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	service, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 	setAuthRuntimeTaskProfileWithOptions(t, store, identity.PackID, extractor.AuthSecretKindCookie, "sid=cancel-stale-secret", []extractor.DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}}, nil)
 
-	result := app.AddUri(sourceURL)
+	result := service.AddUri(sourceURL)
 
 	if result != "auth profile unavailable" {
 		t.Fatalf("AddUri() = %q, want generic auth unavailable", result)
@@ -409,6 +451,93 @@ func TestAddUri_AuthRuntimeTargetRefreshCancelDoesNotLoopOrSubmit(t *testing.T) 
 	assertRootNoSecretText(t, result, "cancel-stale-secret", "callback-secret", "Authorization")
 }
 
+func TestAddUri_AuthRuntimeMissingProfileWithLoginDomainOutsideTargetAuthScopeOpensWebViewAndStores(t *testing.T) {
+	identity := authRuntimeAliasTaskIdentity()
+	bundle := syntheticAuthRuntimeAliasTaskBundle(t, identity, nil)
+	manifest := authRuntimeAliasTaskManifest(identity)
+	sourceURL := "https://source.alpha.test/d/login-scope"
+	targetURL := "https://target.alpha.test/files/login-scope.bin"
+	events := &authRuntimeTaskEventLog{}
+	resolution := authRuntimeTaskResolution(sourceURL, targetURL, identity, manifest, true)
+	resolution.Items[0].HostPolicy = authRuntimeAliasTaskHostPolicy(identity)
+	dispatcher := &authRuntimeTaskDispatcher{
+		events: events,
+		plans: map[string][]extractor.HostAuthRuntimeRequest{
+			sourceURL: {authRuntimeTaskSourceRequest(identity, manifest, sourceURL)},
+		},
+		resolutions: map[string][]extractor.AddTaskResolution{
+			sourceURL: {resolution},
+		},
+	}
+	driver := &authRuntimeTaskDriver{events: events}
+	service, recorder, store := setupAuthRuntimeAliasTaskApp(t, dispatcher, bundle, driver, authRuntimeAliasTaskHostPolicyResolver(identity, nil))
+
+	result := service.AddUri(sourceURL)
+
+	if result != "success" {
+		t.Fatalf("AddUri() = %q, want success", result)
+	}
+	if got := recorder.addURIsSnapshot(); !reflect.DeepEqual(got, []string{targetURL}) {
+		t.Fatalf("add URIs = %#v, want %#v", got, []string{targetURL})
+	}
+	if driver.openCount() != 1 {
+		t.Fatalf("auth sessions = %d, want one source provisioning", driver.openCount())
+	}
+	assertAuthRuntimeTaskEventPrefix(t, events.snapshot(), []string{"plan:" + sourceURL, "auth:apr-alpha001", "resolve:" + sourceURL, "build:" + targetURL})
+	resolved, err := store.ResolveAuthProfile(context.Background(), identity.PackID, "apr-alpha001", targetURL)
+	if err != nil {
+		t.Fatalf("ResolveAuthProfile() after alias App flow error = %v", err)
+	}
+	if resolved.Kind != extractor.AuthSecretKindBearer || !strings.HasPrefix(resolved.HeaderValue, "Bearer ") {
+		t.Fatalf("resolved public-safe shape mismatch")
+	}
+	assertRootNoSecretText(t, strings.Join(events.snapshot(), "\n"), "captured-token", "Bearer", "Cookie")
+}
+
+func TestAddUri_AuthRuntimeAliasLoginAllowedDomainOutsideLoginURLHostRejectedBeforeDriverOpen(t *testing.T) {
+	identity := authRuntimeAliasTaskIdentity()
+	bundle := syntheticAuthRuntimeAliasTaskBundle(t, identity, func(pack map[string]any) {
+		profiles := pack["profiles"].([]any)
+		profile := profiles[0].(map[string]any)
+		profile["login"].(map[string]any)["allowed_domains"] = []map[string]any{{"host": "target.alpha.test"}}
+	})
+	manifest := authRuntimeAliasTaskManifest(identity)
+	sourceURL := "https://source.alpha.test/d/login-scope-deny"
+	targetURL := "https://target.alpha.test/files/login-scope-deny.bin"
+	events := &authRuntimeTaskEventLog{}
+	dispatcher := &authRuntimeTaskDispatcher{
+		events: events,
+		plans: map[string][]extractor.HostAuthRuntimeRequest{
+			sourceURL: {authRuntimeTaskSourceRequest(identity, manifest, sourceURL)},
+		},
+		resolutions: map[string][]extractor.AddTaskResolution{
+			sourceURL: {authRuntimeTaskResolution(sourceURL, targetURL, identity, manifest, true)},
+		},
+	}
+	driver := &authRuntimeTaskDriver{events: events}
+	service, recorder, store := setupAuthRuntimeAliasTaskApp(t, dispatcher, bundle, driver, authRuntimeAliasTaskHostPolicyResolver(identity, nil))
+
+	result := service.AddUri(sourceURL)
+
+	if result != "auth profile unavailable" {
+		t.Fatalf("AddUri() = %q, want generic auth unavailable", result)
+	}
+	if got := recorder.addURIsSnapshot(); len(got) != 0 {
+		t.Fatalf("add URIs = %#v, want none", got)
+	}
+	if driver.openCount() != 0 {
+		t.Fatalf("auth sessions = %d, want login-scope deny before driver", driver.openCount())
+	}
+	gotEvents := events.snapshot()
+	if !reflect.DeepEqual(gotEvents, []string{"plan:" + sourceURL}) {
+		t.Fatalf("event order = %#v, want stop at source preflight", gotEvents)
+	}
+	assertAuthRuntimeTaskEventAbsent(t, gotEvents, "auth:apr-alpha001", "build:"+targetURL)
+	if _, err := store.ResolveAuthProfile(context.Background(), identity.PackID, "apr-alpha001", targetURL); err == nil {
+		t.Fatal("ResolveAuthProfile() error = nil, want no stored profile")
+	}
+	assertRootNoSecretText(t, result+"\n"+strings.Join(gotEvents, "\n"), "captured-token", "Authorization", "Bearer", "Cookie", "https://login.alpha.test/login")
+}
 func TestAddUri_AuthRuntimeGenericEmptyOutputRefreshesOnceAndRetries(t *testing.T) {
 	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
 	identity := authRuntimeTaskIdentity(t, bundle)
@@ -429,10 +558,10 @@ func TestAddUri_AuthRuntimeGenericEmptyOutputRefreshesOnceAndRetries(t *testing.
 		},
 	}
 	driver := &authRuntimeTaskDriver{events: events}
-	app, _, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	service, _, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 	setAuthRuntimeTaskProfile(t, store, identity.PackID, "stale-token-secret", targetURL)
 
-	result := app.AddUri(sourceURL)
+	result := service.AddUri(sourceURL)
 
 	if result != "success" {
 		t.Fatalf("AddUri() = %q, want success", result)
@@ -462,10 +591,10 @@ func TestAddUri_AuthRuntimeStaleUnavailableSourceProfileClearsOpensWebViewBefore
 		},
 	}
 	driver := &authRuntimeTaskDriver{events: events}
-	app, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	service, recorder, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 	setAuthRuntimeTaskProfileWithOptions(t, store, identity.PackID, extractor.AuthSecretKindCookie, "sid=stale-source-token", []extractor.DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}}, nil)
 
-	result := app.AddUri(sourceURL)
+	result := service.AddUri(sourceURL)
 
 	if result != "success" {
 		t.Fatalf("AddUri() = %q, want success", result)
@@ -499,9 +628,9 @@ func TestAddUri_AuthRuntimeGenericEmptyOutputWithoutLocalSourceAuthDoesNotRetry(
 		},
 	}
 	driver := &authRuntimeTaskDriver{}
-	app, recorder, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	service, recorder, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 
-	result := app.AddUri(sourceURL)
+	result := service.AddUri(sourceURL)
 
 	if !strings.Contains(result, "could not resolve this link") {
 		t.Fatalf("AddUri() = %q, want generic resolver failure", result)
@@ -532,10 +661,10 @@ func TestAddUri_AuthRuntimeDoesNotRefreshHardExtractorErrors(t *testing.T) {
 		},
 	}
 	driver := &authRuntimeTaskDriver{}
-	app, _, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	service, _, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 	setAuthRuntimeTaskProfile(t, store, identity.PackID, "stale-token-secret", targetURL)
 
-	result := app.AddUri(sourceURL)
+	result := service.AddUri(sourceURL)
 
 	if !strings.Contains(result, "invalid add item") {
 		t.Fatalf("AddUri() = %q, want hard extractor error", result)
@@ -560,9 +689,9 @@ func TestBatchAddUri_AuthRuntimeProvisionsOncePerRuntimeEntry(t *testing.T) {
 		dispatcher.resolutions[source] = []extractor.AddTaskResolution{authRuntimeTaskResolution(source, targets[i], identity, manifest, true)}
 	}
 	driver := &authRuntimeTaskDriver{}
-	app, _, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	service, _, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 
-	result := app.BatchAddUri(sources)
+	result := service.BatchAddUri(sources)
 
 	assertBatchAddStrings(t, "succeeded", result.Succeeded, targets)
 	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{})
@@ -595,10 +724,10 @@ func TestBatchAddUri_AuthRuntimeRefreshesOncePerRuntimeEntry(t *testing.T) {
 		},
 	}
 	driver := &authRuntimeTaskDriver{}
-	app, _, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	service, _, store := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 	setAuthRuntimeTaskProfile(t, store, identity.PackID, "stale-token-secret", firstTarget)
 
-	result := app.BatchAddUri([]string{firstSource, secondSource})
+	result := service.BatchAddUri([]string{firstSource, secondSource})
 
 	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{firstTarget})
 	if _, ok := result.Errors[secondSource]; !ok {
@@ -624,9 +753,9 @@ func TestBatchAddUri_AuthRuntimePartialFailureDoesNotBlockNonAuthCandidates(t *t
 		},
 	}
 	driver := &authRuntimeTaskDriver{openErr: errors.New("Cookie: sid=raw-cookie token=raw-token")}
-	app, recorder, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	service, recorder, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 
-	result := app.BatchAddUri([]string{authSource, directURL})
+	result := service.BatchAddUri([]string{authSource, directURL})
 
 	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{directURL})
 	if _, ok := result.Errors[authSource]; !ok {
@@ -650,9 +779,9 @@ func TestBatchAddUri_NonAuthenticatedCandidatesUnaffectedByAuthRuntime(t *testin
 		},
 	}
 	driver := &authRuntimeTaskDriver{}
-	app, recorder, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	service, recorder, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 
-	result := app.BatchAddUri([]string{shareURL, targetURL})
+	result := service.BatchAddUri([]string{shareURL, targetURL})
 
 	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{targetURL})
 	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{targetURL})
@@ -679,27 +808,147 @@ func TestAddUri_AuthRuntimeErrorsAreRedacted(t *testing.T) {
 		},
 	}
 	driver := &authRuntimeTaskDriver{openErr: errors.New("Authorization: Bearer raw-secret Cookie: sid=raw-cookie token=raw-token C:/private/path")}
-	app, _, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
+	service, _, _ := setupAuthRuntimeTaskApp(t, dispatcher, bundle, driver)
 
-	result := app.AddUri(sourceURL)
+	result := service.AddUri(sourceURL)
 	assertRootNoSecretText(t, result, "raw-secret", "raw-cookie", "raw-token", "query-secret", "Authorization", "Cookie", "C:/private/path")
 
-	batch := app.BatchAddUri([]string{sourceURL, directURL})
+	batch := service.BatchAddUri([]string{sourceURL, directURL})
 	if _, ok := batch.Errors[sourceURL]; !ok {
 		t.Fatalf("expected auth source error, got %#v", batch.Errors)
 	}
 	assertRootNoSecretText(t, batch.Errors[sourceURL], "raw-secret", "raw-cookie", "raw-token", "query-secret", "Authorization", "Cookie", "C:/private/path")
 }
 
-func setupAuthRuntimeTaskApp(t *testing.T, dispatcher extractorAddTaskDispatcher, bundle *extractor.PrivateAuthRuntimeBundle, driver *authRuntimeTaskDriver) (*App, *extractorRPCRecorder, *extractor.FileAuthProfileStore) {
+func setupAuthRuntimeTaskApp(t *testing.T, dispatcher ExtractorAddTaskDispatcher, bundle *extractor.PrivateAuthRuntimeBundle, driver *authRuntimeTaskDriver) (*Service, *extractorRPCRecorder, *extractor.FileAuthProfileStore) {
 	t.Helper()
 	store := newRootTempAuthProfileStore(t)
 	coordinator := extractor.NewWebViewAuthCoordinator(store, driver)
 	runtime := extractor.NewHostAuthRuntime(extractor.HostAuthRuntimeConfig{Bundle: bundle, Store: store, Coordinator: coordinator})
-	app, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
-	app.setHostAuthState(store, runtime, driver)
+	service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+	service.Runtime = runtime
 
-	return app, recorder, store
+	return service, recorder, store
+}
+
+func setupAuthRuntimeAliasTaskApp(t *testing.T, dispatcher ExtractorAddTaskDispatcher, bundle *extractor.PrivateAuthRuntimeBundle, driver *authRuntimeTaskDriver, resolver extractor.HostPolicyResolver) (*Service, *extractorRPCRecorder, *extractor.FileAuthProfileStore) {
+	t.Helper()
+	store := newRootTempAuthProfileStore(t)
+	coordinator := extractor.NewWebViewAuthCoordinator(store, driver)
+	runtime := extractor.NewHostAuthRuntime(extractor.HostAuthRuntimeConfig{Bundle: bundle, Store: store, Coordinator: coordinator, HostPolicyResolver: resolver})
+	service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
+	service.Runtime = runtime
+
+	return service, recorder, store
+}
+
+func newRootTempAuthProfileStore(t *testing.T) *extractor.FileAuthProfileStore {
+	t.Helper()
+	store, err := extractor.NewFileAuthProfileStore(filepath.Join(t.TempDir(), "auth.json"))
+	if err != nil {
+		t.Fatalf("NewFileAuthProfileStore() error = %v", err)
+	}
+
+	return store
+}
+
+func syntheticAuthRuntimeAliasTaskBundle(t *testing.T, identity extractor.VerifiedPackIdentity, mutate func(map[string]any)) *extractor.PrivateAuthRuntimeBundle {
+	t.Helper()
+	runtimeRaw := []byte(`{"packs":[{"verified_pack_identity":{"pack_id":"` + identity.PackID + `","pack_version":"` + identity.PackVersion + `","asset_sha256":"` + identity.AssetSHA256 + `","manifest_sha256":"` + identity.ManifestSHA256 + `","payload_sha256":"` + identity.PayloadSHA256 + `","signature_sha256":"` + identity.SignatureSHA256 + `","public_key_sha256":"` + identity.PublicKeySHA256 + `"},"store_binding":{"scope":"pack","profile_refs":["apr-alpha001"]},"profiles":[{"profile_ref":"apr-alpha001","kind":"bearer","login":{"url":"https://login.alpha.test/login","allowed_domains":[{"host":"login.alpha.test"}],"timeout_millis":30000,` + appHostAuthRuntimeCallbackJSONForTest() + `}}],"preflight":{"mode":"required","missing":"refresh","expired":"refresh"},"provisioning":{"mode":"webview","profile_refs":["apr-alpha001"]},"materialization":{"profile_refs":["apr-alpha001"]},"normalization":{"reject_crlf":true,"trim_space":true}}]}`)
+	if mutate != nil {
+		var runtime struct {
+			Packs []map[string]any `json:"packs"`
+		}
+		if err := json.Unmarshal(runtimeRaw, &runtime); err != nil || len(runtime.Packs) != 1 {
+			t.Fatalf("alias auth runtime fixture invalid")
+		}
+		mutate(runtime.Packs[0])
+		var err error
+		runtimeRaw, err = json.Marshal(runtime)
+		if err != nil {
+			t.Fatalf("alias auth runtime fixture invalid")
+		}
+	}
+	hash := sha256.Sum256(runtimeRaw)
+	envelope := []byte(`{"schema_version":1,"bundle_id":"arb-alpha001","bundle_version":"opaque-1","auth_runtime_private_sha256":"` + fmt.Sprintf("%x", hash[:]) + `","runtime":` + string(runtimeRaw) + `}`)
+	bundle, err := extractor.NewPrivateAuthRuntimeBundle(envelope, extractor.PrivateAuthRuntimeBundleLoadOptions{})
+	if err != nil {
+		t.Fatalf("NewPrivateAuthRuntimeBundle(alias task) error = %v", err)
+	}
+
+	return bundle
+}
+
+func authRuntimeAliasTaskIdentity() extractor.VerifiedPackIdentity {
+	return extractor.VerifiedPackIdentity{
+		PackID:          "xpk-alpha001",
+		PackVersion:     "opaque-1",
+		AssetSHA256:     strings.Repeat("1", 64),
+		ManifestSHA256:  strings.Repeat("2", 64),
+		PayloadSHA256:   strings.Repeat("3", 64),
+		SignatureSHA256: strings.Repeat("4", 64),
+		PublicKeySHA256: strings.Repeat("5", 64),
+	}
+}
+
+func authRuntimeAliasTaskManifest(identity extractor.VerifiedPackIdentity) extractor.Manifest {
+	return extractor.Manifest{
+		PackID:           identity.PackID,
+		PackVersion:      identity.PackVersion,
+		ABIVersion:       extractor.CurrentABIVersion,
+		Capabilities:     []extractor.Capability{extractor.CapabilityHTTPFetch, extractor.CapabilityAuthProfile},
+		DomainPolicyRefs: []string{"dpr-alpha001"},
+		BrokerPolicyRefs: []string{"bpr-alpha001"},
+		ResourceLimits: extractor.ResourceLimits{
+			TimeoutMillis:    60000,
+			MaxMemoryPages:   64,
+			MaxHostCalls:     16,
+			MaxResponseBytes: 1 << 20,
+			MaxOutputItems:   16,
+			MaxOutputBytes:   1 << 16,
+		},
+		PayloadSHA256: identity.PayloadSHA256,
+	}
+}
+
+func authRuntimeAliasTaskHostPolicy(identity extractor.VerifiedPackIdentity) *extractor.ResolvedHostPolicy {
+	policy := authRuntimeAliasTaskHostPolicyValue(identity)
+
+	return &policy
+}
+
+func authRuntimeAliasTaskHostPolicyValue(identity extractor.VerifiedPackIdentity) extractor.ResolvedHostPolicy {
+	return extractor.ResolvedHostPolicy{
+		PolicyID:            "hpr-alpha001",
+		PolicyVersion:       "opaque-1",
+		PolicySHA256:        strings.Repeat("6", 64),
+		PackIdentity:        identity,
+		DomainPolicyRefs:    []string{"dpr-alpha001"},
+		BrokerPolicyRefs:    []string{"bpr-alpha001"},
+		AllowedCapabilities: []extractor.Capability{extractor.CapabilityHTTPFetch, extractor.CapabilityAuthProfile},
+		IngressDomains:      []extractor.DomainRule{{Host: "source.alpha.test"}},
+		BrokerDomains:       []extractor.DomainRule{{Host: "login.alpha.test"}},
+		OutputDomains:       []extractor.HostPolicyOutputRule{{Host: "target.alpha.test", PathPrefixes: []string{"/files/"}}},
+		AuthProfiles:        []extractor.HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []extractor.DomainRule{{Host: "target.alpha.test"}}}},
+		BrokerEndpoints: []extractor.HostPolicyBrokerEndpoint{{
+			BrokerPolicyRef:  "bpr-alpha001",
+			EndpointRef:      "epr-alpha001",
+			URLTemplate:      "https://login.alpha.test/session/{id}",
+			Methods:          []string{"GET"},
+			AuthProfileRefs:  []string{"apr-alpha001"},
+			TimeoutMillis:    3000,
+			MaxResponseBytes: 65536,
+		}},
+	}
+}
+
+func authRuntimeAliasTaskHostPolicyResolver(identity extractor.VerifiedPackIdentity, mutate func(*extractor.ResolvedHostPolicy)) *authRuntimeTaskHostPolicyResolver {
+	policy := authRuntimeAliasTaskHostPolicyValue(identity)
+	if mutate != nil {
+		mutate(&policy)
+	}
+
+	return &authRuntimeTaskHostPolicyResolver{identity: identity, policy: policy}
 }
 
 func authRuntimeTaskIdentity(t *testing.T, bundle *extractor.PrivateAuthRuntimeBundle) extractor.VerifiedPackIdentity {
@@ -992,9 +1241,40 @@ func assertAuthRuntimeTaskEventAbsent(t *testing.T, got []string, forbidden ...s
 	}
 }
 
+func appHostAuthRuntimeCallbackJSONForTest() string {
+	return `"callback_transport":{"mode":"local_post","content_types":["application/json"],"max_body_bytes":16384},"collector_js":"(() => { return function(ctx, postCapture) { return ctx && postCapture; }; })();","capture":{"format":"json","secret_candidates":["secret","capture.secret"],"kind_field":"kind","expires_at_field":"expires_at","redacted_display_field":"redacted_display"}`
+}
+
+func assertRootNoSecretText(t *testing.T, text string, forbidden ...string) {
+	t.Helper()
+	for _, value := range forbidden {
+		if value != "" && strings.Contains(text, value) {
+			t.Fatalf("text leaked %q: %s", value, text)
+		}
+	}
+}
+
+func (r *authRuntimeTaskHostPolicyResolver) ResolveHostPolicy(_ context.Context, request extractor.HostPolicyRequest) (extractor.ResolvedHostPolicy, error) {
+	r.mu.Lock()
+	r.calls++
+	r.mu.Unlock()
+	if r.err != nil {
+		return extractor.ResolvedHostPolicy{}, r.err
+	}
+	policy := r.policy
+	if policy.PackIdentity == (extractor.VerifiedPackIdentity{}) {
+		policy = authRuntimeAliasTaskHostPolicyValue(r.identity)
+	}
+	policy.PackIdentity = request.PackIdentity
+	policy.DomainPolicyRefs = append([]string(nil), request.Manifest.DomainPolicyRefs...)
+	policy.BrokerPolicyRefs = append([]string(nil), request.Manifest.BrokerPolicyRefs...)
+
+	return policy, nil
+}
+
 var (
-	_ extractorAddTaskDispatcher        = (*authRuntimeTaskDispatcher)(nil)
-	_ extractorAuthRuntimeSourcePlanner = (*authRuntimeTaskDispatcher)(nil)
+	_ ExtractorAddTaskDispatcher        = (*authRuntimeTaskDispatcher)(nil)
+	_ ExtractorAuthRuntimeSourcePlanner = (*authRuntimeTaskDispatcher)(nil)
 	_ extractor.AuthWebViewDriver       = (*authRuntimeTaskDriver)(nil)
 	_ extractor.AuthWebViewSession      = authRuntimeTaskSession{}
 )

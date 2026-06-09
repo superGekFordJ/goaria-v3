@@ -7,14 +7,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
+	"goaria-v3/internal/config"
 	"goaria-v3/internal/extractor"
+	"goaria-v3/internal/history"
+	"goaria-v3/internal/monitor"
+	"goaria-v3/internal/rpc"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -1144,3 +1149,234 @@ type noopWailsTransport struct{}
 func (noopWailsTransport) Start(context.Context, *application.MessageProcessor) error { return nil }
 func (noopWailsTransport) JSClient() []byte                                           { return nil }
 func (noopWailsTransport) Stop() error                                                { return nil }
+
+func authRuntimeTaskIdentity(t *testing.T, bundle *extractor.PrivateAuthRuntimeBundle) extractor.VerifiedPackIdentity {
+	t.Helper()
+	identities := bundle.PackIdentities()
+	if len(identities) != 1 {
+		t.Fatalf("bundle identities = %#v, want one", identities)
+	}
+
+	return identities[0]
+}
+
+func setupAppTaskHistoryTest(t *testing.T) *App {
+	t.Helper()
+
+	originalCache := monitor.Cache
+	originalSaveEnabled := history.SaveEnabled
+	originalConfig := config.Current
+
+	monitor.ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
+	monitor.Cache = &monitor.TaskCache{}
+	history.DisableSaveForTest()
+	history.Clear()
+	config.Current = &config.AppConfig{ShowHistory: true}
+
+	t.Cleanup(func() {
+		history.Clear()
+		monitor.ResetTaskGroupStoreForTest("", true)
+		history.SetSaveEnabled(originalSaveEnabled)
+		monitor.Cache = originalCache
+		config.Current = originalConfig
+	})
+
+	return NewApp()
+}
+
+func appHistoryTestDownloadGroup(id string) *rpc.DownloadGroup {
+	return &rpc.DownloadGroup{
+		ID:         id,
+		Kind:       "batch",
+		Name:       "Batch 2026-05-07 15-04-05",
+		FolderName: "Batch 2026-05-07 15-04-05 " + id,
+		Dir:        filepath.Join("history", id),
+		ItemCount:  5,
+		CreatedAt:  1778166245,
+	}
+}
+
+func snapshotRPCResponse(result any) map[string]any {
+	return map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "goaria",
+		"result":  result,
+	}
+}
+
+func mustFindTaskByGID(t *testing.T, tasks []rpc.Task, gid string) rpc.Task {
+	t.Helper()
+
+	for _, task := range tasks {
+		if task.GID == gid {
+			return task
+		}
+	}
+
+	t.Fatalf("expected task %q in stopped slice", gid)
+	return rpc.Task{}
+}
+
+func countTasksByGID(tasks []rpc.Task, gid string) int {
+	count := 0
+	for _, task := range tasks {
+		if task.GID == gid {
+			count++
+		}
+	}
+	return count
+}
+
+func assertTaskPathAndSource(t *testing.T, task rpc.Task, wantPath string, wantSource string) {
+	t.Helper()
+
+	if len(task.Files) == 0 {
+		t.Fatalf("expected task %q to include files", task.GID)
+	}
+	if task.Files[0].Path != wantPath {
+		t.Fatalf("expected task %q path %q, got %q", task.GID, wantPath, task.Files[0].Path)
+	}
+	if len(task.Files[0].Uris) == 0 {
+		t.Fatalf("expected task %q to include source uris", task.GID)
+	}
+	if task.Files[0].Uris[0].Uri != wantSource {
+		t.Fatalf("expected task %q source %q, got %q", task.GID, wantSource, task.Files[0].Uris[0].Uri)
+	}
+}
+
+func TestGetFullSnapshot_UsesFreshRPCStateAndHydratesDownloadGroupsForWindowRestore(t *testing.T) {
+	app := setupAppTaskHistoryTest(t)
+	activeGroup := appHistoryTestDownloadGroup("dg-snapshot-fresh-active")
+	waitingGroup := appHistoryTestDownloadGroup("dg-snapshot-fresh-waiting")
+	stoppedGroup := appHistoryTestDownloadGroup("dg-snapshot-fresh-stopped")
+
+	monitor.RegisterTaskGroup("gid-fresh-active", *activeGroup)
+	monitor.RegisterTaskGroup("gid-fresh-waiting", *waitingGroup)
+	monitor.Cache.UpdateFromAria2(
+		[]rpc.Task{{
+			GID:             "gid-stale-active",
+			Status:          "active",
+			TotalLength:     "999",
+			CompletedLength: "111",
+			DownloadSpeed:   "333",
+			Dir:             activeGroup.Dir,
+		}},
+		[]rpc.Task{{
+			GID:             "gid-stale-waiting",
+			Status:          "waiting",
+			TotalLength:     "888",
+			CompletedLength: "222",
+			DownloadSpeed:   "444",
+			Dir:             waitingGroup.Dir,
+		}},
+		[]rpc.Task{{
+			GID:             "gid-fresh-stopped",
+			Status:          "complete",
+			TotalLength:     "0",
+			CompletedLength: "0",
+		}},
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+
+		var req struct {
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		switch req.Method {
+		case "aria2.tellActive":
+			_ = json.NewEncoder(w).Encode(snapshotRPCResponse([]map[string]any{{
+				"gid":             "gid-fresh-active",
+				"status":          "active",
+				"totalLength":     "100",
+				"completedLength": "25",
+				"downloadSpeed":   "555",
+				"errorCode":       "",
+				"errorMessage":    "",
+				"dir":             activeGroup.Dir,
+				"files": []map[string]any{{
+					"path": filepath.ToSlash(filepath.Join(activeGroup.Dir, "active.bin")),
+					"uris": []map[string]any{{"uri": "https://example.com/fresh-active.bin"}},
+				}},
+			}}))
+		case "aria2.tellWaiting":
+			_ = json.NewEncoder(w).Encode(snapshotRPCResponse([]map[string]any{{
+				"gid":             "gid-fresh-waiting",
+				"status":          "waiting",
+				"totalLength":     "200",
+				"completedLength": "40",
+				"downloadSpeed":   "0",
+				"errorCode":       "",
+				"errorMessage":    "",
+				"dir":             waitingGroup.Dir,
+				"files": []map[string]any{{
+					"path": filepath.ToSlash(filepath.Join(waitingGroup.Dir, "waiting.bin")),
+					"uris": []map[string]any{{"uri": "https://example.com/fresh-waiting.bin"}},
+				}},
+			}}))
+		case "aria2.tellStopped":
+			_ = json.NewEncoder(w).Encode(snapshotRPCResponse([]map[string]any{{
+				"gid":             "gid-fresh-stopped",
+				"status":          "complete",
+				"totalLength":     "0",
+				"completedLength": "0",
+				"downloadSpeed":   "0",
+				"errorCode":       "",
+				"errorMessage":    "",
+				"dir":             stoppedGroup.Dir,
+				"files":           []map[string]any{},
+			}}))
+		default:
+			_ = json.NewEncoder(w).Encode(snapshotRPCResponse([]any{}))
+		}
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	rpc.Init(parts[len(parts)-1], "secret")
+
+	history.Add(history.HistoryEntry{
+		GID:             "gid-fresh-stopped",
+		Dir:             stoppedGroup.Dir,
+		Path:            filepath.Join(stoppedGroup.Dir, "stopped.bin"),
+		Source:          "https://example.com/snapshot-stopped.bin",
+		TotalLength:     "300",
+		CompletedLength: "300",
+		DownloadGroup:   stoppedGroup,
+	})
+
+	snapshot := app.GetFullSnapshot()
+
+	active := mustFindTaskByGID(t, snapshot.Tasks.Active, "gid-fresh-active")
+	if active.DownloadGroup == nil || active.DownloadGroup.ID != activeGroup.ID {
+		t.Fatalf("expected active snapshot task to hydrate group, got %#v", active.DownloadGroup)
+	}
+	if active.CompletedLength != "25" || active.DownloadSpeed != "555" {
+		t.Fatalf("expected active snapshot to prefer fresh RPC values, got completed=%q speed=%q", active.CompletedLength, active.DownloadSpeed)
+	}
+	if countTasksByGID(snapshot.Tasks.Active, "gid-stale-active") != 0 {
+		t.Fatalf("expected stale active cache task excluded from snapshot, got %#v", snapshot.Tasks.Active)
+	}
+
+	waiting := mustFindTaskByGID(t, snapshot.Tasks.Waiting, "gid-fresh-waiting")
+	if waiting.DownloadGroup == nil || waiting.DownloadGroup.ID != waitingGroup.ID {
+		t.Fatalf("expected waiting snapshot task to hydrate group, got %#v", waiting.DownloadGroup)
+	}
+	if waiting.CompletedLength != "40" {
+		t.Fatalf("expected waiting snapshot to prefer fresh RPC values, got completed=%q", waiting.CompletedLength)
+	}
+	if countTasksByGID(snapshot.Tasks.Waiting, "gid-stale-waiting") != 0 {
+		t.Fatalf("expected stale waiting cache task excluded from snapshot, got %#v", snapshot.Tasks.Waiting)
+	}
+
+	stopped := mustFindTaskByGID(t, snapshot.Tasks.Stopped, "gid-fresh-stopped")
+	if stopped.DownloadGroup == nil || stopped.DownloadGroup.ID != stoppedGroup.ID {
+		t.Fatalf("expected stopped snapshot task to backfill group, got %#v", stopped.DownloadGroup)
+	}
+	assertTaskPathAndSource(t, stopped, filepath.Join(stoppedGroup.Dir, "stopped.bin"), "https://example.com/snapshot-stopped.bin")
+}

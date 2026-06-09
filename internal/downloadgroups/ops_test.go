@@ -1,4 +1,4 @@
-package main
+package downloadgroups
 
 import (
 	"encoding/json"
@@ -10,19 +10,62 @@ import (
 	"strings"
 	"testing"
 
-	"goaria-v3/internal/downloadgroups"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
 )
 
+type appTaskRPCRequest struct {
+	Method string            `json:"method"`
+	Params []json.RawMessage `json:"params"`
+}
+
+type appTaskMulticall struct {
+	MethodName string            `json:"methodName"`
+	Params     []json.RawMessage `json:"params"`
+}
+
 type groupOpsRPCRecorder struct {
 	requests []appTaskRPCRequest
 }
 
-func setupGroupOpsRPCTest(t *testing.T, handler func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any) (*App, *groupOpsRPCRecorder) {
+func mockBatchRemove(gids []string, deleteFiles bool) {
+	seen := make(map[string]struct{}, len(gids))
+	uniqueGIDs := make([]string, 0, len(gids))
+	for _, gid := range gids {
+		gid = strings.TrimSpace(gid)
+		if gid == "" {
+			continue
+		}
+		if _, exists := seen[gid]; exists {
+			continue
+		}
+		seen[gid] = struct{}{}
+		uniqueGIDs = append(uniqueGIDs, gid)
+	}
+	if len(uniqueGIDs) == 0 {
+		return
+	}
+
+	for _, gid := range uniqueGIDs {
+		rpc.Remove(gid)
+	}
+	history.RemoveMany(uniqueGIDs)
+	for _, gid := range uniqueGIDs {
+		if tracker := monitor.State.GetTracker(); tracker != nil {
+			tracker.RemoveTask(gid)
+		}
+		if mon := monitor.State.GetMonitor(); mon != nil {
+			mon.InvalidateTask(gid)
+		} else {
+			monitor.Cache.InvalidateMetadata(gid)
+		}
+	}
+}
+
+func setupGroupOpsRPCTest(t *testing.T, handler func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any) *groupOpsRPCRecorder {
 	t.Helper()
-	app := setupAppTaskHistoryTest(t)
+	setupDownloadGroupsTest(t)
 	recorder := &groupOpsRPCRecorder{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
@@ -41,7 +84,15 @@ func setupGroupOpsRPCTest(t *testing.T, handler func(req appTaskRPCRequest, reco
 	parts := strings.Split(server.URL, ":")
 	rpc.Init(parts[len(parts)-1], "secret")
 	t.Cleanup(server.Close)
-	return app, recorder
+	return recorder
+}
+
+func appTaskSuccessResponse(result any) map[string]any {
+	return map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "goaria",
+		"result":  result,
+	}
 }
 
 func (r *groupOpsRPCRecorder) count(method string) int {
@@ -84,7 +135,7 @@ func (r *groupOpsRPCRecorder) multicallGIDs(t *testing.T, method string) []strin
 	return nil
 }
 
-func findOperationItem(t *testing.T, result downloadgroups.DownloadGroupOperationResult, gid string) downloadgroups.DownloadGroupOperationItemResult {
+func findOperationItem(t *testing.T, result DownloadGroupOperationResult, gid string) DownloadGroupOperationItemResult {
 	t.Helper()
 	for _, item := range result.Items {
 		if item.GID == gid {
@@ -92,10 +143,10 @@ func findOperationItem(t *testing.T, result downloadgroups.DownloadGroupOperatio
 		}
 	}
 	t.Fatalf("expected item for gid %q in %#v", gid, result.Items)
-	return downloadgroups.DownloadGroupOperationItemResult{}
+	return DownloadGroupOperationItemResult{}
 }
 
-func requireOperationWarning(t *testing.T, warnings []downloadgroups.DownloadGroupWarning, code string) downloadgroups.DownloadGroupWarning {
+func requireOperationWarning(t *testing.T, warnings []DownloadGroupWarning, code string) DownloadGroupWarning {
 	t.Helper()
 	for _, warning := range warnings {
 		if warning.Code == code {
@@ -103,10 +154,10 @@ func requireOperationWarning(t *testing.T, warnings []downloadgroups.DownloadGro
 		}
 	}
 	t.Fatalf("expected warning %q in %#v", code, warnings)
-	return downloadgroups.DownloadGroupWarning{}
+	return DownloadGroupWarning{}
 }
 
-func assertNoOperationResultLeak(t *testing.T, result downloadgroups.DownloadGroupOperationResult, disallowed ...string) {
+func assertNoOperationResultLeak(t *testing.T, result DownloadGroupOperationResult, disallowed ...string) {
 	t.Helper()
 	data, err := json.Marshal(result)
 	if err != nil {
@@ -122,7 +173,7 @@ func assertNoOperationResultLeak(t *testing.T, result downloadgroups.DownloadGro
 }
 
 func TestPauseDownloadGroup_ResolvesGroupKeyTargetsAndUsesMulticall(t *testing.T) {
-	app, recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
+	recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
 		switch req.Method {
 		case "system.multicall":
 			return appTaskSuccessResponse([]any{[]any{"OK"}, []any{"OK"}})
@@ -140,7 +191,7 @@ func TestPauseDownloadGroup_ResolvesGroupKeyTargetsAndUsesMulticall(t *testing.T
 	monitor.Cache.UpdateFromAria2([]rpc.Task{activeOne, activeTwo}, []rpc.Task{waitingPaused}, []rpc.Task{stopped})
 	monitor.RegisterTaskGroup("gid-stale", group)
 
-	result := app.PauseDownloadGroup(group.ID)
+	result := PauseDownloadGroup(group.ID)
 	if !result.OK || !result.Found || result.Noop || result.Succeeded != 2 || result.Skipped != 3 || result.Failed != 0 || result.TotalTargets != 2 {
 		t.Fatalf("unexpected pause result: %#v", result)
 	}
@@ -150,20 +201,20 @@ func TestPauseDownloadGroup_ResolvesGroupKeyTargetsAndUsesMulticall(t *testing.T
 	if recorder.count("aria2.pause") != 0 || recorder.count("aria2.saveSession") != 1 {
 		t.Fatalf("expected nested pause only and one saveSession, requests=%#v", recorder.requests)
 	}
-	if item := findOperationItem(t, result, "gid-waiting-paused"); item.Status != downloadgroups.DownloadGroupOperationItemSkipped || item.Code != downloadgroups.DownloadGroupOperationCodeAlreadyPaused {
+	if item := findOperationItem(t, result, "gid-waiting-paused"); item.Status != DownloadGroupOperationItemSkipped || item.Code != DownloadGroupOperationCodeAlreadyPaused {
 		t.Fatalf("unexpected paused skip: %#v", item)
 	}
-	if item := findOperationItem(t, result, "gid-stopped"); item.Code != downloadgroups.DownloadGroupOperationCodeTerminalState {
+	if item := findOperationItem(t, result, "gid-stopped"); item.Code != DownloadGroupOperationCodeTerminalState {
 		t.Fatalf("unexpected stopped skip: %#v", item)
 	}
-	if item := findOperationItem(t, result, "gid-stale"); item.Code != downloadgroups.DownloadGroupOperationCodeStaleMember {
+	if item := findOperationItem(t, result, "gid-stale"); item.Code != DownloadGroupOperationCodeStaleMember {
 		t.Fatalf("unexpected stale skip: %#v", item)
 	}
-	requireOperationWarning(t, result.Warnings, downloadgroups.DownloadGroupWarningStaleGroup)
+	requireOperationWarning(t, result.Warnings, DownloadGroupWarningStaleGroup)
 }
 
 func TestResumeDownloadGroup_SkipsNonPausedAndReportsPartialFailures(t *testing.T) {
-	app, recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
+	recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
 		switch req.Method {
 		case "system.multicall":
 			return appTaskSuccessResponse([]any{[]any{"OK"}, []any{map[string]any{"code": 1, "message": "token=secret path D:/private failed"}}})
@@ -181,24 +232,24 @@ func TestResumeDownloadGroup_SkipsNonPausedAndReportsPartialFailures(t *testing.
 	stopped := groupReadTask("gid-terminal", "complete", &group, "100", "100", "0")
 	monitor.Cache.UpdateFromAria2([]rpc.Task{active}, []rpc.Task{pausedOK, queued, pausedFail}, []rpc.Task{stopped})
 
-	result := app.ResumeDownloadGroup(group.ID)
+	result := ResumeDownloadGroup(group.ID)
 	if result.OK || !result.Found || result.Noop || result.Succeeded != 1 || result.Skipped != 3 || result.Failed != 1 || result.TotalTargets != 2 {
 		t.Fatalf("unexpected resume result: %#v", result)
 	}
 	if got := recorder.multicallGIDs(t, "aria2.unpause"); strings.Join(got, ",") != "gid-paused-ok,gid-paused-fail" {
 		t.Fatalf("unexpected resume multicall gids: %#v", got)
 	}
-	if item := findOperationItem(t, result, "gid-paused-ok"); item.Status != downloadgroups.DownloadGroupOperationItemSucceeded || item.Code != downloadgroups.DownloadGroupOperationCodeResumed {
+	if item := findOperationItem(t, result, "gid-paused-ok"); item.Status != DownloadGroupOperationItemSucceeded || item.Code != DownloadGroupOperationCodeResumed {
 		t.Fatalf("unexpected success item: %#v", item)
 	}
 	failed := findOperationItem(t, result, "gid-paused-fail")
-	if failed.Status != downloadgroups.DownloadGroupOperationItemFailed || failed.Code != downloadgroups.DownloadGroupOperationCodeRPCError || failed.Message != "operation failed" {
+	if failed.Status != DownloadGroupOperationItemFailed || failed.Code != DownloadGroupOperationCodeRPCError || failed.Message != "operation failed" {
 		t.Fatalf("unexpected failed item: %#v", failed)
 	}
-	if item := findOperationItem(t, result, "gid-active"); item.Code != downloadgroups.DownloadGroupOperationCodeAlreadyActive {
+	if item := findOperationItem(t, result, "gid-active"); item.Code != DownloadGroupOperationCodeAlreadyActive {
 		t.Fatalf("unexpected active skip: %#v", item)
 	}
-	if item := findOperationItem(t, result, "gid-queued"); item.Code != downloadgroups.DownloadGroupOperationCodeNotPaused {
+	if item := findOperationItem(t, result, "gid-queued"); item.Code != DownloadGroupOperationCodeNotPaused {
 		t.Fatalf("unexpected queued skip: %#v", item)
 	}
 	if !result.Refresh.Tasks || !result.Refresh.Groups || !result.Refresh.Detail {
@@ -208,15 +259,20 @@ func TestResumeDownloadGroup_SkipsNonPausedAndReportsPartialFailures(t *testing.
 }
 
 func TestDownloadGroupOperation_UnknownAndEmptyGroupKeyAreNoopWarnings(t *testing.T) {
-	app, recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
+	recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
 		return appTaskSuccessResponse("OK")
 	})
 
-	for _, result := range []downloadgroups.DownloadGroupOperationResult{app.PauseDownloadGroup("   "), app.ResumeDownloadGroup("missing"), app.RemoveDownloadGroup("missing", false), app.OpenDownloadGroupFolder("missing")} {
+	for _, result := range []DownloadGroupOperationResult{
+		PauseDownloadGroup("   "),
+		ResumeDownloadGroup("missing"),
+		RemoveDownloadGroup("missing", false, mockBatchRemove),
+		OpenDownloadGroupFolder("missing"),
+	} {
 		if !result.OK || result.Found || !result.Noop || result.TotalTargets != 0 || !result.Refresh.Groups {
 			t.Fatalf("unexpected unknown/empty result: %#v", result)
 		}
-		requireOperationWarning(t, result.Warnings, downloadgroups.DownloadGroupOperationCodeGroupNotFound)
+		requireOperationWarning(t, result.Warnings, DownloadGroupOperationCodeGroupNotFound)
 	}
 	if len(recorder.requests) != 0 {
 		t.Fatalf("expected no RPC for unknown/empty group keys, got %#v", recorder.requests)
@@ -224,7 +280,7 @@ func TestDownloadGroupOperation_UnknownAndEmptyGroupKeyAreNoopWarnings(t *testin
 }
 
 func TestDownloadGroupOperation_NoActionablePauseResumeIsNoopSuccess(t *testing.T) {
-	app, recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
+	recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
 		if req.Method == "system.multicall" {
 			return appTaskSuccessResponse([]any{[]any{"OK"}, []any{"OK"}})
 		}
@@ -237,27 +293,27 @@ func TestDownloadGroupOperation_NoActionablePauseResumeIsNoopSuccess(t *testing.
 		[]rpc.Task{groupReadTask("gid-terminal-one", "complete", &terminalGroup, "100", "100", "0"), groupReadTask("gid-terminal-two", "error", &terminalGroup, "100", "50", "0")},
 	)
 
-	resumePaused := app.ResumeDownloadGroup(pausedGroup.ID)
+	resumePaused := ResumeDownloadGroup(pausedGroup.ID)
 	if resumePaused.Noop || !resumePaused.OK || resumePaused.Succeeded != 2 {
 		t.Fatalf("expected paused group to be actionable for resume, got %#v", resumePaused)
 	}
-	pausedNoop := app.PauseDownloadGroup(pausedGroup.ID)
+	pausedNoop := PauseDownloadGroup(pausedGroup.ID)
 	if !pausedNoop.OK || !pausedNoop.Noop || pausedNoop.Skipped != 2 || pausedNoop.TotalTargets != 0 {
 		t.Fatalf("unexpected all-paused pause noop: %#v", pausedNoop)
 	}
-	requireOperationWarning(t, pausedNoop.Warnings, downloadgroups.DownloadGroupOperationCodeNoActionableMembers)
-	terminalNoop := app.ResumeDownloadGroup(terminalGroup.ID)
+	requireOperationWarning(t, pausedNoop.Warnings, DownloadGroupOperationCodeNoActionableMembers)
+	terminalNoop := ResumeDownloadGroup(terminalGroup.ID)
 	if !terminalNoop.OK || !terminalNoop.Noop || terminalNoop.Skipped != 2 || terminalNoop.TotalTargets != 0 {
 		t.Fatalf("unexpected terminal resume noop: %#v", terminalNoop)
 	}
-	requireOperationWarning(t, terminalNoop.Warnings, downloadgroups.DownloadGroupOperationCodeNoActionableMembers)
+	requireOperationWarning(t, terminalNoop.Warnings, DownloadGroupOperationCodeNoActionableMembers)
 	if recorder.count("system.multicall") != 1 {
 		t.Fatalf("expected only resume paused group to call multicall once, requests=%#v", recorder.requests)
 	}
 }
 
 func TestRemoveDownloadGroup_UsesBackendResolvedMembersAndCleansHistoryStoreCache(t *testing.T) {
-	app, recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
+	recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
 		return appTaskSuccessResponse("OK")
 	})
 	group := groupReadTestGroup("dg-remove", 3)
@@ -275,7 +331,7 @@ func TestRemoveDownloadGroup_UsesBackendResolvedMembersAndCleansHistoryStoreCach
 	keepHistoryDir := t.TempDir()
 	history.Add(history.HistoryEntry{GID: "gid-history-keep", Dir: keepHistoryDir, Path: filepath.Join(keepHistoryDir, "keep.bin"), Source: "https://example.invalid/keep", TotalLength: "1", CompletedLength: "1"})
 
-	result := app.RemoveDownloadGroup(group.ID, false)
+	result := RemoveDownloadGroup(group.ID, false, mockBatchRemove)
 	if !result.OK || !result.Found || result.Noop || result.Succeeded != 3 || result.TotalTargets != 3 {
 		t.Fatalf("unexpected remove result: %#v", result)
 	}
@@ -299,20 +355,20 @@ func TestRemoveDownloadGroup_UsesBackendResolvedMembersAndCleansHistoryStoreCach
 }
 
 func TestRemoveDownloadGroup_RemovesStaleStoredMembersWithoutFrontendGIDs(t *testing.T) {
-	app, recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
+	recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
 		return appTaskSuccessResponse("OK")
 	})
 	group := groupReadTestGroup("dg-stale-only", 2)
 	monitor.RegisterTaskGroup("gid-stale-one", group)
 	monitor.RegisterTaskGroup("gid-stale-two", group)
 
-	result := app.RemoveDownloadGroup(group.ID, false)
+	result := RemoveDownloadGroup(group.ID, false, mockBatchRemove)
 	if !result.OK || !result.Found || result.Noop || result.Succeeded != 2 || result.TotalTargets != 2 {
 		t.Fatalf("unexpected stale remove result: %#v", result)
 	}
 	for _, gid := range []string{"gid-stale-one", "gid-stale-two"} {
 		item := findOperationItem(t, result, gid)
-		if item.Code != downloadgroups.DownloadGroupOperationCodeRemovedStale {
+		if item.Code != DownloadGroupOperationCodeRemovedStale {
 			t.Fatalf("expected stale metadata removal for %s, got %#v", gid, item)
 		}
 		if got := monitor.GetStoredTaskGroup(gid); got != nil {
@@ -325,33 +381,31 @@ func TestRemoveDownloadGroup_RemovesStaleStoredMembersWithoutFrontendGIDs(t *tes
 }
 
 func TestOpenDownloadGroupFolder_UsesSafeGroupDirAndLauncherSeam(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
-	safeDir := t.TempDir()
+	physicalDir := t.TempDir()
 	group := groupReadTestGroup("dg-open", 2)
-	group.Dir = safeDir
-	group.FolderName = filepath.Base(safeDir)
+	group.Dir = physicalDir
+	group.FolderName = filepath.Base(physicalDir)
 	monitor.Cache.UpdateFromAria2([]rpc.Task{groupReadTask("gid-open-one", "active", &group, "100", "10", "1")}, []rpc.Task{groupReadTask("gid-open-two", "waiting", &group, "100", "0", "0")}, nil)
 
-	originalLauncher := openFolderLauncher
-	var launched []openFolderLaunchTarget
-	openFolderLauncher = func(target openFolderLaunchTarget) error {
-		launched = append(launched, target)
+	originalLauncher := OpenFolderLauncher
+	var launched []string
+	OpenFolderLauncher = func(dir string) error {
+		launched = append(launched, dir)
 		return nil
 	}
-	t.Cleanup(func() { openFolderLauncher = originalLauncher })
+	t.Cleanup(func() { OpenFolderLauncher = originalLauncher })
 
-	result := app.OpenDownloadGroupFolder(group.ID)
+	result := OpenDownloadGroupFolder(group.ID)
 	if !result.OK || !result.Found || result.Noop || result.Succeeded != 1 || len(launched) != 1 {
 		t.Fatalf("unexpected open folder result=%#v launched=%#v", result, launched)
 	}
-	if launched[0].OpenDir != filepath.Clean(safeDir) || launched[0].SelectFile != "" {
+	if launched[0] != filepath.Clean(physicalDir) {
 		t.Fatalf("expected exact group dir launch, got %#v", launched[0])
 	}
-	assertNoOperationResultLeak(t, result, safeDir)
+	assertNoOperationResultLeak(t, result, physicalDir)
 }
 
 func TestOpenDownloadGroupFolder_UsesImmutableDirWhenDisplayNameDiffersFromFolderName(t *testing.T) {
-	app := setupAppTaskHistoryTest(t)
 	physicalDir := t.TempDir()
 	group := groupReadTestGroup("dg-immutable-dir", 2)
 	group.Name = "Smart Display Name"
@@ -364,46 +418,25 @@ func TestOpenDownloadGroupFolder_UsesImmutableDirWhenDisplayNameDiffersFromFolde
 		nil,
 	)
 
-	originalLauncher := openFolderLauncher
-	var launched []openFolderLaunchTarget
-	openFolderLauncher = func(target openFolderLaunchTarget) error {
-		launched = append(launched, target)
+	originalLauncher := OpenFolderLauncher
+	var launched []string
+	OpenFolderLauncher = func(dir string) error {
+		launched = append(launched, dir)
 		return nil
 	}
-	t.Cleanup(func() { openFolderLauncher = originalLauncher })
+	t.Cleanup(func() { OpenFolderLauncher = originalLauncher })
 
-	result := app.OpenDownloadGroupFolder(group.ID)
+	result := OpenDownloadGroupFolder(group.ID)
 	if !result.OK || result.Succeeded != 1 || len(launched) != 1 {
 		t.Fatalf("unexpected open result=%#v launched=%#v", result, launched)
 	}
-	if launched[0].OpenDir != filepath.Clean(physicalDir) || launched[0].SelectFile != "" {
+	if launched[0] != filepath.Clean(physicalDir) {
 		t.Fatalf("expected immutable physical dir launch, got %#v", launched[0])
 	}
 	if group.FolderName != filepath.Base(physicalDir) || group.Dir != physicalDir || group.FolderName == group.Name {
 		t.Fatalf("unexpected physical/display name coupling: group=%#v", group)
 	}
 	assertNoOperationResultLeak(t, result, physicalDir, "Smart Display Name")
-}
-
-func TestOpenFolderCommandSpec_WindowsExplorerStartsWithoutWaiting(t *testing.T) {
-	spec, ok := openFolderCommandSpecForGOOS("windows", openFolderLaunchTarget{OpenDir: `C:\Downloads\Batch 1`})
-	if !ok {
-		t.Fatalf("expected Windows folder command spec")
-	}
-	if spec.Name != "explorer.exe" || spec.Wait {
-		t.Fatalf("expected explorer start semantics without wait, got %#v", spec)
-	}
-	if len(spec.Args) != 1 || spec.Args[0] != `C:\Downloads\Batch 1` {
-		t.Fatalf("unexpected explorer args: %#v", spec.Args)
-	}
-
-	selectSpec, ok := openFolderCommandSpecForGOOS("windows", openFolderLaunchTarget{SelectFile: `C:\Downloads\Batch 1\file.bin`})
-	if !ok || selectSpec.Name != "explorer.exe" || selectSpec.Wait {
-		t.Fatalf("expected Windows select command to start without waiting, got ok=%v spec=%#v", ok, selectSpec)
-	}
-	if strings.Join(selectSpec.Args, "|") != `/select,|C:\Downloads\Batch 1\file.bin` {
-		t.Fatalf("unexpected select args: %#v", selectSpec.Args)
-	}
 }
 
 func TestOpenDownloadGroupFolder_RedactsUnsafeMissingAndLauncherErrors(t *testing.T) {
@@ -416,44 +449,43 @@ func TestOpenDownloadGroupFolder_RedactsUnsafeMissingAndLauncherErrors(t *testin
 		name       string
 		dir        string
 		wantCode   string
-		launcher   func(openFolderLaunchTarget) error
+		launcher   func(string) error
 		disallowed []string
 	}{
-		{name: "unsafe uri", dir: "https://source.example.invalid/file?token=secret", wantCode: downloadgroups.DownloadGroupOperationCodeFolderUnsafe, disallowed: []string{"source.example", "token=secret"}},
-		{name: "missing", dir: "", wantCode: downloadgroups.DownloadGroupOperationCodeFolderUnavailable},
-		{name: "secret segment", dir: secretPath, wantCode: downloadgroups.DownloadGroupOperationCodeFolderUnsafe, disallowed: []string{secretPath, "token-secret-folder"}},
-		{name: "launcher error", dir: launcherErrPath, wantCode: downloadgroups.DownloadGroupOperationCodeOpenFailed, launcher: func(openFolderLaunchTarget) error {
+		{name: "unsafe uri", dir: "https://source.example.invalid/file?token=secret", wantCode: DownloadGroupOperationCodeFolderUnsafe, disallowed: []string{"source.example", "token=secret"}},
+		{name: "missing", dir: "", wantCode: DownloadGroupOperationCodeFolderUnavailable},
+		{name: "secret segment", dir: secretPath, wantCode: DownloadGroupOperationCodeFolderUnsafe, disallowed: []string{secretPath, "token-secret-folder"}},
+		{name: "launcher error", dir: launcherErrPath, wantCode: DownloadGroupOperationCodeOpenFailed, launcher: func(dir string) error {
 			return errors.New("cannot open " + launcherErrPath + "?token=secret")
 		}, disallowed: []string{launcherErrPath, "token=secret"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			app := setupAppTaskHistoryTest(t)
 			group := groupReadTestGroup("dg-open-redact-"+strings.ReplaceAll(tt.name, " ", "-"), 2)
 			group.Dir = tt.dir
 			monitor.Cache.UpdateFromAria2([]rpc.Task{groupReadTask("gid-redact-one", "active", &group, "100", "0", "0")}, []rpc.Task{groupReadTask("gid-redact-two", "waiting", &group, "100", "0", "0")}, nil)
-			originalLauncher := openFolderLauncher
+			originalLauncher := OpenFolderLauncher
 			launcherCalls := 0
-			openFolderLauncher = func(target openFolderLaunchTarget) error {
+			OpenFolderLauncher = func(dir string) error {
 				launcherCalls++
 				if tt.launcher != nil {
-					return tt.launcher(target)
+					return tt.launcher(dir)
 				}
 				return nil
 			}
-			t.Cleanup(func() { openFolderLauncher = originalLauncher })
+			t.Cleanup(func() { OpenFolderLauncher = originalLauncher })
 
-			result := app.OpenDownloadGroupFolder(group.ID)
+			result := OpenDownloadGroupFolder(group.ID)
 			if result.OK || !result.Found || result.Failed != 1 || result.Succeeded != 0 {
 				t.Fatalf("unexpected open failure result: %#v", result)
 			}
 			if result.Items[0].Code != tt.wantCode || result.Items[0].Message == "" {
 				t.Fatalf("unexpected failure item: %#v", result.Items[0])
 			}
-			if tt.wantCode != downloadgroups.DownloadGroupOperationCodeOpenFailed && launcherCalls != 0 {
+			if tt.wantCode != DownloadGroupOperationCodeOpenFailed && launcherCalls != 0 {
 				t.Fatalf("expected no launcher calls for preflight failure, got %d", launcherCalls)
 			}
-			if tt.wantCode == downloadgroups.DownloadGroupOperationCodeOpenFailed && launcherCalls != 1 {
+			if tt.wantCode == DownloadGroupOperationCodeOpenFailed && launcherCalls != 1 {
 				t.Fatalf("expected one launcher call, got %d", launcherCalls)
 			}
 			assertNoOperationResultLeak(t, result, append(tt.disallowed, tt.dir)...)
