@@ -1,6 +1,7 @@
 package main
 
 import (
+	"goaria-v3/internal/downloadgroups"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/tasks"
 )
@@ -90,4 +91,34 @@ func (a *App) BatchRemove(gids []string, deleteFiles bool) {
 // RemoveTask removes a task and optionally deletes the file
 func (a *App) RemoveTask(gid string, deleteFile bool) {
 	tasks.RemoveTask(gid, deleteFile)
+}
+
+// GetDownloadGroups returns all download groups (aggregated list)
+func (a *App) GetDownloadGroups() downloadgroups.DownloadGroupListEnvelope {
+	return downloadgroups.GetDownloadGroups()
+}
+
+// GetDownloadGroupDetail returns detailed split tasks and card information for a single group
+func (a *App) GetDownloadGroupDetail(groupKey string) downloadgroups.DownloadGroupDetailEnvelope {
+	return downloadgroups.GetDownloadGroupDetail(groupKey)
+}
+
+// PauseDownloadGroup pauses all active members of the specified group
+func (a *App) PauseDownloadGroup(groupKey string) downloadgroups.DownloadGroupOperationResult {
+	return downloadgroups.PauseDownloadGroup(groupKey)
+}
+
+// ResumeDownloadGroup resumes all paused members of the specified group
+func (a *App) ResumeDownloadGroup(groupKey string) downloadgroups.DownloadGroupOperationResult {
+	return downloadgroups.ResumeDownloadGroup(groupKey)
+}
+
+// RemoveDownloadGroup removes the group and its member tasks, and optionally deletes files
+func (a *App) RemoveDownloadGroup(groupKey string, deleteFiles bool) downloadgroups.DownloadGroupOperationResult {
+	return downloadgroups.RemoveDownloadGroup(groupKey, deleteFiles, a.BatchRemove)
+}
+
+// OpenDownloadGroupFolder opens the local directory of the specified group
+func (a *App) OpenDownloadGroupFolder(groupKey string) downloadgroups.DownloadGroupOperationResult {
+	return downloadgroups.OpenDownloadGroupFolder(groupKey)
 }
