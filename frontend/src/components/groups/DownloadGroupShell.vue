@@ -21,7 +21,7 @@
   import DownloadGroupOperationNotice from './DownloadGroupOperationNotice.vue'
   import DownloadGroupRemoveDialog from './DownloadGroupRemoveDialog.vue'
   import TaskList from '../tasks/TaskList.vue'
-  import type { DownloadGroupCard as BackendDownloadGroupCard } from '../../../bindings/goaria-v3/models'
+  import type { DownloadGroupCard as BackendDownloadGroupCard } from '../../../bindings/goaria-v3/internal/downloadgroups/models'
 
   const { t } = useI18n()
   const uiStore = useUIStore()

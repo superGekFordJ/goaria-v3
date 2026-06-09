@@ -2,7 +2,7 @@ import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DownloadGroupCard from './DownloadGroupCard.vue'
 import type { DownloadGroupMasterItem } from '../../stores/downloadGroups'
-import type { DownloadGroupCard as BackendCard } from '../../../bindings/goaria-v3/models'
+import type { DownloadGroupCard as BackendCard } from '../../../bindings/goaria-v3/internal/downloadgroups/models'
 
 const taskStoreMock = vi.hoisted(() => ({
   isGroupSelected: vi.fn(() => false),

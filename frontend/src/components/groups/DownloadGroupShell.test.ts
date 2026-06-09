@@ -5,7 +5,7 @@ import DownloadGroupShell from './DownloadGroupShell.vue'
 import type {
   DownloadGroupCard,
   DownloadGroupDetailEnvelope,
-} from '../../../bindings/goaria-v3/models'
+} from '../../../bindings/goaria-v3/internal/downloadgroups/models'
 import type { Task } from '../../../bindings/goaria-v3/internal/rpc/models'
 
 const rawStoreMocks = vi.hoisted(() => ({

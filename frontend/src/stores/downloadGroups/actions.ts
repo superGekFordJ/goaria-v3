@@ -1,5 +1,5 @@
 import type { DownloadGroup } from '../../../bindings/goaria-v3/internal/rpc/models'
-import type { DownloadGroupOperationResult } from '../../../bindings/goaria-v3/models'
+import type { DownloadGroupOperationResult } from '../../../bindings/goaria-v3/internal/downloadgroups/models'
 import type { DownloadGroupState } from './state'
 import {
   cleanKey,

@@ -18,7 +18,7 @@ import type {
   DownloadGroupDetailEnvelope,
   DownloadGroupListEnvelope,
   DownloadGroupOperationResult,
-} from '../../../bindings/goaria-v3/models'
+} from '../../../bindings/goaria-v3/internal/downloadgroups/models'
 import type { DownloadGroup, Task } from '../../../bindings/goaria-v3/internal/rpc/models'
 
 const bindingMocks = vi.hoisted(() => ({

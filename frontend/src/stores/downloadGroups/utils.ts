@@ -6,7 +6,7 @@ import type {
   DownloadGroupOperationRefreshHint,
   DownloadGroupOperationResult,
   DownloadGroupWarning,
-} from '../../../bindings/goaria-v3/models'
+} from '../../../bindings/goaria-v3/internal/downloadgroups/models'
 import type { DownloadGroup, Task } from '../../../bindings/goaria-v3/internal/rpc/models'
 
 export const DOWNLOAD_GROUP_PLACEHOLDER_TTL_MS = 15_000

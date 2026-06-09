@@ -9,7 +9,7 @@
     type DownloadGroupOperationAction,
   } from '../../stores/downloadGroups'
   import { useTaskStore } from '../../stores/task'
-  import type { DownloadGroupCard } from '../../../bindings/goaria-v3/models'
+  import type { DownloadGroupCard } from '../../../bindings/goaria-v3/internal/downloadgroups/models'
   import type { DownloadGroup } from '../../../bindings/goaria-v3/internal/rpc/models'
 
   const props = defineProps<{
