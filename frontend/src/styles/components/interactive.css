@@ -1,0 +1,138 @@
+/* === Input & Form Styling === */
+input,
+textarea,
+select {
+  font-family: inherit;
+  color: inherit;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--input-placeholder);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--neon-primary) 40%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--neon-primary) 10%, transparent);
+}
+
+/* Custom checkbox styling */
+input[type='checkbox'] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  cursor: pointer;
+  position: relative;
+  transition: all 0.2s ease;
+}
+
+input[type='checkbox']:checked {
+  background: var(--neon-primary);
+  border-color: var(--neon-primary);
+}
+
+input[type='checkbox']:checked::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 3px;
+  width: 5px;
+  height: 10px;
+  border: solid var(--neon-btn-text);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+/* Custom select arrow - theme aware */
+select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
+}
+
+@media (prefers-color-scheme: light) {
+  select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23555' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  }
+}
+
+/* === Button Base Styles === */
+.btn-glass {
+  background: var(--btn-glass-bg);
+  border: 1px solid var(--btn-glass-border);
+  backdrop-filter: blur(8px);
+  transition: all 0.2s ease;
+}
+
+.btn-glass:hover {
+  background: var(--btn-glass-hover);
+  border-color: var(--glass-border);
+  transform: translateY(-1px);
+}
+
+.btn-glass:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.btn-neon {
+  background: linear-gradient(135deg, var(--skin-accent-from), var(--skin-accent-to));
+  color: var(--neon-btn-text);
+  font-weight: 700;
+  border: none;
+  box-shadow:
+    0 0 20px var(--neon-glow),
+    0 4px 15px rgba(0, 0, 0, 0.2);
+  transition: all 0.2s ease;
+}
+
+.btn-neon:hover {
+  box-shadow:
+    0 0 30px var(--neon-glow),
+    0 6px 20px rgba(0, 0, 0, 0.3);
+  transform: translateY(-2px);
+  filter: brightness(1.1);
+}
+
+.btn-neon:active {
+  transform: translateY(0) scale(0.98);
+}
+
+/* === Window Controls Area (macOS-style) === */
+.window-controls {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+}
+
+.window-control-btn {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.window-control-btn:hover {
+  filter: brightness(1.2);
+}
+
+.window-control-close {
+  background: #ff5f57;
+}
+
+.window-control-minimize {
+  background: #febc2e;
+}
+
+.window-control-maximize {
+  background: #28c840;
+}

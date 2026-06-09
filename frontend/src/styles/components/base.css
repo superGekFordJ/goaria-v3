@@ -1,0 +1,79 @@
+/* === Font Faces (local) === */
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('../../assets/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('../../assets/fonts/JetBrainsMono-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'Sarasa UI SC';
+  src: url('../../assets/fonts/SarasaUiSC-Regular.subset.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+}
+
+/* === Base Resets === */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background-color: var(--app-bg);
+  color: var(--app-text);
+  overflow: hidden;
+  /* Prevent text selection during drag */
+  user-select: none;
+}
+
+#app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* === Custom Frameless Window Drag Region === */
+.drag-region {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* === Scrollbar Styling === */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 10px;
+  transition: background 0.2s;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

@@ -3,7 +3,7 @@ import { createPinia } from 'pinia'
 import piniaPluginPersistedstate from 'pinia-plugin-persistedstate'
 import { i18n } from './i18n'
 import App from './App.vue'
-import './style.css'
+import './styles/main.css'
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
 
 const app = createApp(App)

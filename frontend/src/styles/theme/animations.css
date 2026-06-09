@@ -1,0 +1,175 @@
+/* === Animations === */
+
+/* Spring-physics inspired easing */
+@keyframes spring-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.9) translateY(10px);
+  }
+  50% {
+    transform: scale(1.02) translateY(-2px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes spring-out {
+  0% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.95) translateY(10px);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes zoom-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes progress-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0;
+    transform: scale(1.5);
+  }
+}
+
+@keyframes glow-pulse {
+  0%,
+  100% {
+    filter: brightness(1);
+    box-shadow: 0 0 10px currentColor;
+  }
+  50% {
+    filter: brightness(1.2);
+    box-shadow: 0 0 20px currentColor;
+  }
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+/* Animation utility classes */
+.animate-spring-in {
+  animation: spring-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.animate-spring-out {
+  animation: spring-out 0.3s ease-out both;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out both;
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-zoom-in {
+  animation: zoom-in 0.2s ease-out both;
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite;
+}
+
+.animate-glow-pulse {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+/* Staggered animation delays */
+.delay-75 {
+  animation-delay: 75ms;
+}
+.delay-100 {
+  animation-delay: 100ms;
+}
+.delay-150 {
+  animation-delay: 150ms;
+}
+.delay-200 {
+  animation-delay: 200ms;
+}
+.delay-300 {
+  animation-delay: 300ms;
+}
