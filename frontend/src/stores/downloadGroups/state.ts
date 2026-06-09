@@ -4,7 +4,7 @@ import type {
   DownloadGroupDetailEnvelope,
   DownloadGroupOperationResult,
   DownloadGroupWarning,
-} from '../../../bindings/goaria-v3/models'
+} from '../../../bindings/goaria-v3/internal/downloadgroups/models'
 import { useTaskStore } from '../task'
 import {
   isDownloadGroupItemEligibleForTab,

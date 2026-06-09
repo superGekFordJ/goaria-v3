@@ -4,7 +4,7 @@ import {
   RemoveDownloadGroup,
   ResumeDownloadGroup,
 } from '../../../bindings/goaria-v3/app.js'
-import type { DownloadGroupOperationResult } from '../../../bindings/goaria-v3/models'
+import type { DownloadGroupOperationResult } from '../../../bindings/goaria-v3/internal/downloadgroups/models'
 import { useTaskStore } from '../task'
 import type { DownloadGroupActions } from './actions'
 import type { DownloadGroupState } from './state'

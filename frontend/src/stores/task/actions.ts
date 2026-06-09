@@ -17,7 +17,7 @@ import {
   MinimizeToTray,
 } from '../../../bindings/goaria-v3/app.js'
 import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
-import type { BatchAddResult } from '../../../bindings/goaria-v3/models'
+import type { BatchAddResult } from '../../../bindings/goaria-v3/internal/tasks/models'
 import { cacheMetadata, applyMetadataFromCache } from './metadata'
 import { mergeTasks, dedupByGid } from './utils'
 import { cloneTaskGroupMetadata, mergeTaskGroupMetadata } from './grouping'

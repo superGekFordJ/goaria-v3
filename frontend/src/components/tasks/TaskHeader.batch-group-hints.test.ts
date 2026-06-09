@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TaskHeader from './TaskHeader.vue'
-import type { BatchAddResult } from '../../../bindings/goaria-v3/models'
+import type { BatchAddResult } from '../../../bindings/goaria-v3/internal/tasks/models'
 
 const storeMocks = vi.hoisted(() => ({
   taskStore: {
