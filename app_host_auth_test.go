@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"goaria-v3/internal/extractor"
-	"goaria-v3/internal/tasks"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -510,16 +509,14 @@ func TestConfigureEmbeddedExtractorDispatcherWiresHostAuthRuntimeState(t *testin
 	var captured extractor.EmbeddedReleaseDispatcherConfig
 
 	err := configureEmbeddedExtractorDispatcherWithDeps(app, embeddedExtractorConfigDeps{
-		hasEmbeddedReleasePacks: func() bool { return true },
-		embeddedReleaseRequired: func() bool { return false },
-		loadHostPolicyResolver:  func() (extractor.HostPolicyResolver, error) { return policyResolver, nil },
-		loadAuthRuntimeBundle:   func() (*extractor.PrivateAuthRuntimeBundle, error) { return bundle, nil },
-		defaultAuthProfileStorePath: func() (string, error) {
-			return filepath.Join(t.TempDir(), "auth.json"), nil
-		},
-		newFileAuthProfileStore: func(string) (extractor.AuthProfileStore, error) { return store, nil },
-		newAuthWebViewDriver:    func(*App) extractor.AuthWebViewDriver { return driver },
-		newEmbeddedReleaseAddTaskDispatcher: func(config extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
+		hasEmbeddedReleasePacks:     func() bool { return true },
+		embeddedReleaseRequired:     func() bool { return false },
+		loadHostPolicyResolver:      func() (extractor.HostPolicyResolver, error) { return policyResolver, nil },
+		loadAuthRuntimeBundle:       func() (*extractor.PrivateAuthRuntimeBundle, error) { return bundle, nil },
+		defaultAuthProfileStorePath: func() (string, error) { return filepath.Join(t.TempDir(), "auth.json"), nil },
+		newFileAuthProfileStore:     func(string) (extractor.AuthProfileStore, error) { return store, nil },
+		newAuthWebViewDriver:        func(*App) extractor.AuthWebViewDriver { return driver },
+		newEmbeddedReleaseAddTaskDispatcher: func(config extractor.EmbeddedReleaseDispatcherConfig) (extractorAddTaskDispatcher, error) {
 			captured = config
 			return fakeExtractorDispatcher{}, nil
 		},
@@ -551,220 +548,19 @@ func TestConfigureEmbeddedExtractorDispatcherWiresHostAuthRuntimeState(t *testin
 	}
 }
 
-}
-
-func TestConfigureEmbeddedExtractorDispatcherPassesHostPolicyResolverToRuntime(t *testing.T) {
-	app := NewApp()
-	store := newRootTempAuthProfileStore(t)
-	identity := appHostAuthAliasIdentity()
-	bundle := syntheticRootAliasPrivateAuthRuntimeBundle(t, identity)
-	driver := &appHostAuthAutoSuccessDriver{}
-	resolver := &appHostAuthAliasResolver{identity: identity}
-
-	err := configureEmbeddedExtractorDispatcherWithDeps(app, embeddedExtractorConfigDeps{
-		hasEmbeddedReleasePacks: func() bool { return true },
-		embeddedReleaseRequired: func() bool { return false },
-		loadHostPolicyResolver:  func() (extractor.HostPolicyResolver, error) { return resolver, nil },
-		loadAuthRuntimeBundle:   func() (*extractor.PrivateAuthRuntimeBundle, error) { return bundle, nil },
-		defaultAuthProfileStorePath: func() (string, error) {
-			return filepath.Join(t.TempDir(), "auth.json"), nil
-		},
-		newFileAuthProfileStore: func(string) (extractor.AuthProfileStore, error) { return store, nil },
-		newAuthWebViewDriver:    func(*App) extractor.AuthWebViewDriver { return driver },
-		newEmbeddedReleaseAddTaskDispatcher: func(extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
-			return fakeExtractorDispatcher{}, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("configure helper error = %v", err)
-	}
-	runtime := app.hostAuthRuntimeForTest()
-	if runtime == nil {
-		t.Fatal("App HostAuthRuntime = nil")
-	}
-	manifest := appHostAuthAliasManifest(identity)
-	result, err := runtime.Provision(context.Background(), extractor.HostAuthRuntimeRequest{
-		PackIdentity: identity,
-		Manifest:     manifest,
-		SourceURL:    "https://share.alpha.test/source",
-		TargetURL:    "https://auth.alpha.test/file",
-		ProfileRef:   "apr-alpha001",
-	})
-	if err != nil {
-		t.Fatalf("runtime.Provision(alias) error = %v", err)
-	}
-	if !result.Provisioned || !result.Available {
-		t.Fatalf("runtime.Provision(alias) = %#v, want provisioned available", result)
-	}
-	if resolver.callCount() == 0 || driver.openCount() == 0 {
-		t.Fatalf("resolver calls=%d driver opens=%d, want both used", resolver.callCount(), driver.openCount())
-	}
-}
-
-func TestConfigureEmbeddedExtractorDispatcherActualCallbackUsesSharedStore(t *testing.T) {
-	app := newWindowedAuthApp(t)
-	store := newRecordingRootAuthProfileStore(t)
-	factory := &fakeHostAuthSessionWindowFactory{}
-	identity := appHostAuthAliasIdentity()
-	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
-	storePath := filepath.Join(t.TempDir(), "auth.json")
-
-	err := configureEmbeddedExtractorDispatcherWithDeps(app, embeddedExtractorConfigDeps{
-		hasEmbeddedReleasePacks: func() bool { return true },
-		embeddedReleaseRequired: func() bool { return false },
-		loadHostPolicyResolver:  func() (extractor.HostPolicyResolver, error) { return nil, nil },
-		loadAuthRuntimeBundle:   func() (*extractor.PrivateAuthRuntimeBundle, error) { return bundle, nil },
-		defaultAuthProfileStorePath: func() (string, error) {
-			return storePath, nil
-		},
-		newFileAuthProfileStore: func(path string) (extractor.AuthProfileStore, error) {
-			if path != storePath {
-				t.Fatalf("store path mismatch")
-			}
-			return store, nil
-		},
-		newAuthWebViewDriver: func(appService *App) extractor.AuthWebViewDriver {
-			return newAppHostAuthDriverWithFactory(appService, factory)
-		},
-		newEmbeddedReleaseAddTaskDispatcher: func(extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
-			return fakeExtractorDispatcher{}, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("configure helper error = %v", err)
-	}
-	if app.authProfileStoreForTest() != store {
-		t.Fatal("configured App store is not the shared test store")
-	}
-	runtime := app.hostAuthRuntimeForTest()
-	if runtime == nil {
-		t.Fatal("App HostAuthRuntime = nil")
-	}
-	request := extractor.HostAuthRuntimeRequest{
-		PackIdentity: identity,
-		Manifest:     appHostAuthWebViewRequest(time.Second).Manifest,
-		SourceURL:    "https://fixture.invalid/source",
-		TargetURL:    "https://fixture.invalid/item",
-		ProfileRef:   "apr-alpha001",
-	}
-	resultCh := make(chan appHostAuthRuntimeOutcome, 1)
-
-	go func() {
-		result, err := runtime.Provision(context.Background(), request)
-		resultCh <- appHostAuthRuntimeOutcome{result: result, err: err}
-	}()
-	factory.waitForOpen(t)
-	opened := factory.request(0)
-	status := postHostAuthCallback(t, app, opened, `{"kind":"bearer","secret":"configured-callback-secret","redacted_display":"synthetic captured auth"}`, opened.SessionToken, "application/json")
-	if status != http.StatusAccepted {
-		t.Fatalf("callback status = %d, want accepted", status)
-	}
-	outcome := receiveAppHostAuthRuntimeOutcome(t, resultCh)
-	if outcome.err != nil {
-		t.Fatalf("runtime.Provision() error = %v", outcome.err)
-	}
-	if !outcome.result.Provisioned || !outcome.result.Available {
-		t.Fatalf("runtime.Provision() = %#v, want provisioned available", outcome.result)
-	}
-	if calls := store.SetCalls(); calls != 1 {
-		t.Fatalf("store set calls = %d, want 1", calls)
-	}
-	if _, err := store.ResolveAuthProfile(context.Background(), identity.PackID, "apr-alpha001", request.TargetURL); err != nil {
-		t.Fatalf("ResolveAuthProfile() error = %v", err)
-	}
-	if _, err := runtime.MaterializeAuthProfile(context.Background(), request); err != nil {
-		t.Fatalf("MaterializeAuthProfile() error = %v", err)
-	}
-}
-
-func TestConfigureEmbeddedExtractorDispatcherDiagnosticStoreWrapperRecordsBuckets(t *testing.T) {
-	t.Setenv(appHostAuthDiagnosticEnv, "1")
-	logPath := filepath.Join(t.TempDir(), "diagnostic.jsonl")
-	t.Setenv(appHostAuthDiagnosticLogEnv, logPath)
-	app := newWindowedAuthApp(t)
-	store := newRecordingRootAuthProfileStore(t)
-	factory := &fakeHostAuthSessionWindowFactory{}
-	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
-
-	err := configureEmbeddedExtractorDispatcherWithDeps(app, embeddedExtractorConfigDeps{
-		hasEmbeddedReleasePacks: func() bool { return true },
-		embeddedReleaseRequired: func() bool { return false },
-		loadHostPolicyResolver:  func() (extractor.HostPolicyResolver, error) { return nil, nil },
-		loadAuthRuntimeBundle:   func() (*extractor.PrivateAuthRuntimeBundle, error) { return bundle, nil },
-		defaultAuthProfileStorePath: func() (string, error) {
-			return filepath.Join(t.TempDir(), "auth.json"), nil
-		},
-		newFileAuthProfileStore: func(string) (extractor.AuthProfileStore, error) { return store, nil },
-		newAuthWebViewDriver: func(appService *App) extractor.AuthWebViewDriver {
-			return newAppHostAuthDriverWithFactory(appService, factory)
-		},
-		newEmbeddedReleaseAddTaskDispatcher: func(extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
-			return fakeExtractorDispatcher{}, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("configure helper error = %v", err)
-	}
-	if app.authProfileStoreForTest() == store {
-		t.Fatalf("diagnostic store wrapper was not installed")
-	}
-	if _, err := app.authProfileStoreForTest().AuthProfileSnapshots(context.Background(), "xpk-alpha001"); err != nil {
-		t.Fatalf("snapshot bucket check error = %v", err)
-	}
-	runtime := app.hostAuthRuntimeForTest()
-	if runtime == nil {
-		t.Fatal("App HostAuthRuntime = nil")
-	}
-	request := extractor.HostAuthRuntimeRequest{
-		PackIdentity: appHostAuthAliasIdentity(),
-		Manifest:     appHostAuthWebViewRequest(time.Second).Manifest,
-		SourceURL:    "https://fixture.invalid/source",
-		TargetURL:    "https://fixture.invalid/item",
-		ProfileRef:   "apr-alpha001",
-	}
-	resultCh := make(chan appHostAuthRuntimeOutcome, 1)
-	go func() {
-		result, err := runtime.Provision(context.Background(), request)
-		resultCh <- appHostAuthRuntimeOutcome{result: result, err: err}
-	}()
-	factory.waitForOpen(t)
-	opened := factory.request(0)
-	status := postHostAuthCallback(t, app, opened, `{"kind":"bearer","secret":"diagnostic-wrapper-secret"}`, opened.SessionToken, "application/json")
-	if status != http.StatusAccepted {
-		t.Fatalf("callback status = %d, want accepted", status)
-	}
-	outcome := receiveAppHostAuthRuntimeOutcome(t, resultCh)
-	if outcome.err != nil || !outcome.result.Available {
-		t.Fatalf("runtime.Provision() = %#v err=%v, want available", outcome.result, outcome.err)
-	}
-	_, _ = app.authProfileStoreForTest().AuthProfileSnapshots(context.Background(), request.PackIdentity.PackID)
-	text := string(mustReadAppHostAuthTestFile(t, logPath))
-	for _, want := range []string{`"stage":"store","category":"snapshot_bucket_zero"`, `"stage":"store","category":"set_attempted"`, `"stage":"store","category":"set_succeeded"`, `"stage":"store","category":"snapshot_bucket_nonzero"`} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("diagnostic store log missing category marker")
-		}
-	}
-	for _, forbidden := range []string{"diagnostic-wrapper-secret", "fixture.invalid", "apr-alpha001", request.PackIdentity.PackID} {
-		if strings.Contains(text, forbidden) {
-			t.Fatalf("diagnostic store log leaks forbidden value")
-		}
-	}
-}
 func TestConfigureEmbeddedExtractorDispatcherFallsBackToSharedStoreWithoutRuntimeBundle(t *testing.T) {
 	app := NewApp()
 	store := newRootTempAuthProfileStore(t)
 	var captured extractor.EmbeddedReleaseDispatcherConfig
 
 	err := configureEmbeddedExtractorDispatcherWithDeps(app, embeddedExtractorConfigDeps{
-		hasEmbeddedReleasePacks: func() bool { return true },
-		embeddedReleaseRequired: func() bool { return false },
-		loadHostPolicyResolver:  func() (extractor.HostPolicyResolver, error) { return nil, nil },
-		loadAuthRuntimeBundle:   func() (*extractor.PrivateAuthRuntimeBundle, error) { return nil, nil },
-		defaultAuthProfileStorePath: func() (string, error) {
-			return filepath.Join(t.TempDir(), "auth.json"), nil
-		},
-		newFileAuthProfileStore: func(string) (extractor.AuthProfileStore, error) { return store, nil },
-		newEmbeddedReleaseAddTaskDispatcher: func(config extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
+		hasEmbeddedReleasePacks:     func() bool { return true },
+		embeddedReleaseRequired:     func() bool { return false },
+		loadHostPolicyResolver:      func() (extractor.HostPolicyResolver, error) { return nil, nil },
+		loadAuthRuntimeBundle:       func() (*extractor.PrivateAuthRuntimeBundle, error) { return nil, nil },
+		defaultAuthProfileStorePath: func() (string, error) { return filepath.Join(t.TempDir(), "auth.json"), nil },
+		newFileAuthProfileStore:     func(string) (extractor.AuthProfileStore, error) { return store, nil },
+		newEmbeddedReleaseAddTaskDispatcher: func(config extractor.EmbeddedReleaseDispatcherConfig) (extractorAddTaskDispatcher, error) {
 			captured = config
 			return fakeExtractorDispatcher{}, nil
 		},
@@ -796,7 +592,7 @@ func TestConfigureEmbeddedExtractorDispatcherNoPackNoRuntimeIsNoop(t *testing.T)
 			storeCreated = true
 			return newRootTempAuthProfileStore(t), nil
 		},
-		newEmbeddedReleaseAddTaskDispatcher: func(extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
+		newEmbeddedReleaseAddTaskDispatcher: func(extractor.EmbeddedReleaseDispatcherConfig) (extractorAddTaskDispatcher, error) {
 			dispatcherCreated = true
 			return fakeExtractorDispatcher{}, nil
 		},
@@ -807,154 +603,6 @@ func TestConfigureEmbeddedExtractorDispatcherNoPackNoRuntimeIsNoop(t *testing.T)
 	if storeCreated || dispatcherCreated || app.extractorDispatcher != nil || app.authProfileStoreForTest() != nil || app.hostAuthRuntimeForTest() != nil {
 		t.Fatalf("no-op path created state: store=%t dispatcher=%t app=%#v", storeCreated, dispatcherCreated, app)
 	}
-}
-
-}
-
-func TestConfigureEmbeddedExtractorDispatcherStartupNoRuntimeInputs(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "startup.jsonl")
-	t.Setenv(extractorStartupDiagnosticEnv, "1")
-	t.Setenv(extractorStartupDiagnosticLogEnv, logPath)
-	app := NewApp()
-	storeCreated := false
-	dispatcherCreated := false
-
-	err := configureEmbeddedExtractorDispatcherWithDeps(app, embeddedExtractorConfigDeps{
-		hasEmbeddedReleasePacks:              func() bool { return false },
-		embeddedReleaseRequired:              func() bool { return false },
-		privatePolicyRuntimeSourceState:      func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateNone },
-		privateAuthRuntimeRuntimeSourceState: func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateNone },
-		loadAuthRuntimeBundle:                func() (*extractor.PrivateAuthRuntimeBundle, error) { return nil, nil },
-		newFileAuthProfileStore: func(string) (extractor.AuthProfileStore, error) {
-			storeCreated = true
-			return newRootTempAuthProfileStore(t), nil
-		},
-		newEmbeddedReleaseAddTaskDispatcher: func(extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
-			dispatcherCreated = true
-			return fakeExtractorDispatcher{}, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("configure helper error = %v", err)
-	}
-	if storeCreated || dispatcherCreated || app.extractorDispatcher != nil || app.authProfileStoreForTest() != nil || app.hostAuthRuntimeForTest() != nil {
-		t.Fatalf("startup no-runtime path created state: store=%t dispatcher=%t app=%#v", storeCreated, dispatcherCreated, app)
-	}
-	text := string(mustReadAppHostAuthTestFile(t, logPath))
-	assertStartupDiagnosticCategories(t, text,
-		`"stage":"embedded_pack","category":"absent"`,
-		`"stage":"embedded_release","category":"optional"`,
-		`"stage":"policy_source","category":"none"`,
-		`"stage":"auth_runtime_source","category":"none"`,
-		`"stage":"policy_load","category":"skipped"`,
-		`"stage":"auth_store","category":"skipped"`,
-		`"stage":"host_auth_runtime","category":"skipped"`,
-		`"stage":"driver","category":"skipped"`,
-		`"stage":"dispatcher","category":"skipped"`,
-		`"stage":"startup_activation","category":"no_runtime_inputs"`,
-	)
-	assertRootNoSecretText(t, text, "raw-token", "fixture.invalid")
-}
-
-func TestConfigureEmbeddedExtractorDispatcherStartupActivationProved(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "startup.jsonl")
-	t.Setenv(extractorStartupDiagnosticEnv, "1")
-	t.Setenv(extractorStartupDiagnosticLogEnv, logPath)
-	app := NewApp()
-	store := newRootTempAuthProfileStore(t)
-	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
-	storePath := filepath.Join(t.TempDir(), "auth.json")
-
-	err := configureEmbeddedExtractorDispatcherWithDeps(app, embeddedExtractorConfigDeps{
-		hasEmbeddedReleasePacks:              func() bool { return true },
-		embeddedReleaseRequired:              func() bool { return false },
-		privatePolicyRuntimeSourceState:      func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateEmbedded },
-		privateAuthRuntimeRuntimeSourceState: func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateEmbedded },
-		loadHostPolicyResolver:               func() (extractor.HostPolicyResolver, error) { return fakeHostPolicyResolverForAppAuth{}, nil },
-		loadAuthRuntimeBundle:                func() (*extractor.PrivateAuthRuntimeBundle, error) { return bundle, nil },
-		defaultAuthProfileStorePath: func() (string, error) {
-			return storePath, nil
-		},
-		newFileAuthProfileStore: func(path string) (extractor.AuthProfileStore, error) {
-			if path != storePath {
-				t.Fatalf("store path mismatch")
-			}
-			return store, nil
-		},
-		newAuthWebViewDriver: func(*App) extractor.AuthWebViewDriver { return fakeNoopAuthWebViewDriver{} },
-		newEmbeddedReleaseAddTaskDispatcher: func(extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
-			return fakeExtractorDispatcher{}, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("configure helper error = %v", err)
-	}
-	if app.authProfileStoreForTest() != store {
-		t.Fatalf("App store = %#v, want shared store", app.authProfileStoreForTest())
-	}
-	if app.hostAuthRuntimeForTest() == nil || app.authWebViewDriverForTest() == nil || app.extractorDispatcher == nil {
-		t.Fatalf("startup activation proved path not fully configured: runtime=%#v driver=%#v dispatcher=%#v", app.hostAuthRuntimeForTest(), app.authWebViewDriverForTest(), app.extractorDispatcher)
-	}
-	text := string(mustReadAppHostAuthTestFile(t, logPath))
-	assertStartupDiagnosticCategories(t, text,
-		`"stage":"embedded_pack","category":"present"`,
-		`"stage":"embedded_release","category":"optional"`,
-		`"stage":"policy_source","category":"embedded"`,
-		`"stage":"policy_load","category":"loaded"`,
-		`"stage":"auth_runtime_source","category":"embedded"`,
-		`"stage":"auth_runtime_load","category":"loaded_nonzero"`,
-		`"stage":"auth_store","category":"configured"`,
-		`"stage":"host_auth_runtime","category":"configured"`,
-		`"stage":"driver","category":"configured"`,
-		`"stage":"dispatcher","category":"configured"`,
-		`"stage":"startup_activation","category":"activation_proved"`,
-	)
-	assertRootNoSecretText(t, text, storePath, "xpk-alpha001", "apr-alpha001", "fixture.invalid")
-}
-
-func TestConfigureEmbeddedExtractorDispatcherStartupActivationMissingOrSkipped(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "startup.jsonl")
-	t.Setenv(extractorStartupDiagnosticEnv, "1")
-	t.Setenv(extractorStartupDiagnosticLogEnv, logPath)
-	app := NewApp()
-	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
-
-	err := configureEmbeddedExtractorDispatcherWithDeps(app, embeddedExtractorConfigDeps{
-		hasEmbeddedReleasePacks:              func() bool { return true },
-		embeddedReleaseRequired:              func() bool { return false },
-		privatePolicyRuntimeSourceState:      func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateEmbedded },
-		privateAuthRuntimeRuntimeSourceState: func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateEmbedded },
-		loadHostPolicyResolver:               func() (extractor.HostPolicyResolver, error) { return fakeHostPolicyResolverForAppAuth{}, nil },
-		loadAuthRuntimeBundle:                func() (*extractor.PrivateAuthRuntimeBundle, error) { return bundle, nil },
-		defaultAuthProfileStorePath: func() (string, error) {
-			return filepath.Join(t.TempDir(), "auth.json"), nil
-		},
-		newFileAuthProfileStore: func(string) (extractor.AuthProfileStore, error) {
-			return newRootTempAuthProfileStore(t), nil
-		},
-		newAuthWebViewDriver: func(*App) extractor.AuthWebViewDriver { return fakeNoopAuthWebViewDriver{} },
-		newEmbeddedReleaseAddTaskDispatcher: func(extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
-			return nil, errors.New("dispatcher failed Authorization: Bearer raw-secret token=raw-token")
-		},
-	})
-	if err == nil {
-		t.Fatal("configure helper error = nil, want sanitized dispatcher failure")
-	}
-	assertRootNoSecretText(t, err.Error(), "raw-secret", "raw-token", "Authorization")
-	text := string(mustReadAppHostAuthTestFile(t, logPath))
-	assertStartupDiagnosticCategories(t, text,
-		`"stage":"embedded_pack","category":"present"`,
-		`"stage":"policy_source","category":"embedded"`,
-		`"stage":"policy_load","category":"loaded"`,
-		`"stage":"auth_runtime_source","category":"embedded"`,
-		`"stage":"auth_runtime_load","category":"loaded_nonzero"`,
-		`"stage":"auth_store","category":"configured"`,
-		`"stage":"host_auth_runtime","category":"configured"`,
-		`"stage":"driver","category":"configured"`,
-		`"stage":"dispatcher","category":"failed"`,
-		`"stage":"startup_activation","category":"activation_missing_or_skipped"`,
-	)
-	assertRootNoSecretText(t, text, "raw-secret", "raw-token", "Authorization")
 }
 
 func TestConfigureEmbeddedExtractorDispatcherSanitizesLoaderAndStoreErrors(t *testing.T) {
