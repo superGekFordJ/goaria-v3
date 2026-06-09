@@ -535,20 +535,20 @@ func (s *Service) preflightCandidateAuth(ctx context.Context, candidate addTaskC
 	if !candidate.extracted || candidate.item.AuthProfileRef == "" {
 		return nil
 	}
-	runtime := s.Runtime
-	if runtime == nil {
-		return nil
-	}
-	if candidate.item.PackIdentity.PackID == "" || candidate.item.PackManifest.PackID == "" {
+	if candidate.item.PackIdentity.PackID == "" || candidate.item.Manifest.PackID == "" {
 		return addTaskAuthUnavailableError()
 	}
 	if err := extractor.ValidateResolvedAddItemAuthPolicy(candidate.item); err != nil {
 		return addTaskAuthUnavailableError()
 	}
+	runtime := s.Runtime
+	if runtime == nil {
+		return nil
+	}
 
 	request := extractor.HostAuthRuntimeRequest{
 		PackIdentity: candidate.item.PackIdentity,
-		Manifest:     candidate.item.PackManifest,
+		Manifest:     candidate.item.Manifest,
 		SourceURL:    candidate.item.SourceURL,
 		TargetURL:    candidate.item.URL,
 		ProfileRef:   extractor.AuthProfileID(candidate.item.AuthProfileRef),
