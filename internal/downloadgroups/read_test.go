@@ -20,6 +20,7 @@ func setupDownloadGroupsTest(t *testing.T) {
 	originalSaveEnabled := history.SaveEnabled
 	originalConfig := config.Current
 
+	monitor.ResetDownloadGroupNamerForTest()
 	monitor.ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
 	monitor.Cache = &monitor.TaskCache{}
 	history.DisableSaveForTest()
@@ -27,6 +28,7 @@ func setupDownloadGroupsTest(t *testing.T) {
 	config.Current = &config.AppConfig{ShowHistory: true}
 
 	t.Cleanup(func() {
+		monitor.ResetDownloadGroupNamerForTest()
 		history.Clear()
 		monitor.ResetTaskGroupStoreForTest("", true)
 		history.SetSaveEnabled(originalSaveEnabled)
