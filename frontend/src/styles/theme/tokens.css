@@ -1,0 +1,418 @@
+/* === Tailwind Theme Extensions === */
+@theme {
+  /* Core App Colors - Cyber Deep Slate */
+  --color-app-bg: var(--app-bg);
+  --color-app-text: var(--app-text);
+  --color-card-bg: var(--card-bg);
+  --color-card-border: var(--card-border);
+
+  /* Glass Panel Colors */
+  --color-glass-bg: var(--glass-bg);
+  --color-glass-border: var(--glass-border);
+  --color-glass-hover: var(--glass-hover);
+
+  /* Sidebar Muted Colors */
+  --color-sidebar-bg: var(--sidebar-bg);
+  --color-sidebar-text: var(--sidebar-text);
+  --color-sidebar-hover: var(--sidebar-hover);
+
+  /* Neon Accent Colors */
+  --color-neon-cyan: var(--neon-primary);
+  --color-neon-green: var(--neon-secondary);
+  --color-neon-blue: var(--neon-blue);
+  --color-neon-purple: #a855f7;
+
+  /* Status Indicators */
+  --color-status-active: var(--status-active);
+  --color-status-paused: var(--status-paused);
+  --color-status-complete: var(--status-complete);
+  --color-status-error: var(--status-error);
+
+  /* Typography */
+  --font-family-ui: 'Sarasa UI SC', 'Inter', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-family-mono: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
+
+  /* Squircle Radii */
+  --radius-squircle-sm: 1rem;
+  --radius-squircle-md: 1.5rem;
+  --radius-squircle-lg: 2rem;
+  --radius-squircle-xl: 2.5rem;
+  --radius-squircle-2xl: 3rem;
+}
+
+/* === Theme Variables === */
+:root {
+  /* Base Typography - Always applied */
+  font-family: var(--font-family-ui);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+/* === Dark Theme (Default) - Obsidian Glass === */
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* Deep Slate Base - Not pure black */
+  --app-bg: #0c0c0f;
+  --app-text: #e4e4e7;
+  --app-text-muted: rgba(228, 228, 231, 0.5);
+  --app-text-subtle: rgba(228, 228, 231, 0.3);
+
+  /* Card Colors - Solid enough for readability */
+  --card-bg: rgba(24, 24, 30, 0.85);
+  --card-border: rgba(255, 255, 255, 0.08);
+  --card-hover: rgba(255, 255, 255, 0.06);
+
+  /* Glass Effects - Dark mode: More opaque for readability */
+  --glass-bg: rgba(20, 20, 26, 0.9);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-border-highlight: rgba(255, 255, 255, 0.12);
+  --glass-hover: rgba(255, 255, 255, 0.04);
+  --glass-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.4);
+  --app-liquid-glass-bg: rgba(0, 0, 0, 0.2);
+  --app-liquid-glass-hover: rgba(0, 0, 0, 0.2);
+
+  /* Sidebar - Fused with background, more transparent */
+  --sidebar-bg: transparent;
+  --sidebar-text: rgba(228, 228, 231, 0.7);
+  --sidebar-hover: rgba(255, 255, 255, 0.05);
+  --sidebar-active: rgba(255, 255, 255, 0.08);
+
+  /* Input Elements */
+  --input-bg: rgba(0, 0, 0, 0.3);
+  --input-border: rgba(255, 255, 255, 0.08);
+  --input-focus: color-mix(in srgb, var(--neon-primary) 30%, transparent);
+  --input-placeholder: rgba(255, 255, 255, 0.2);
+
+  /* Button Colors */
+  --btn-glass-bg: rgba(255, 255, 255, 0.06);
+  --btn-glass-border: rgba(255, 255, 255, 0.08);
+  --btn-glass-hover: rgba(255, 255, 255, 0.1);
+
+  /* Neon Colors - Theme aware */
+  --neon-primary: #06ffd5;
+  --neon-secondary: #22ff88;
+  --neon-glow: rgba(6, 255, 213, 0.4);
+
+  /* Neon Button Text - Must remain solid for readability */
+  --neon-btn-text: #0c0c0f;
+
+  /* Status Colors */
+  --status-active: #22ff88;
+  --status-paused: #fbbf24;
+  --status-complete: #06ffd5;
+  --status-error: #ef4444;
+
+  /* Neon Blue */
+  --neon-blue: #3b82f6;
+
+  /* Glow Colors - Derived from status colors for skin-level override */
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-paused: var(--status-paused);
+  --glow-error: var(--status-error);
+  --glow-complete: var(--neon-primary);
+
+  /* Selection & Focus */
+  --selection-bg: var(--neon-primary);
+  --focus-ring: var(--neon-primary);
+
+  /* Divider */
+  --divider-glow: var(--neon-primary);
+
+  /* Overlay */
+  --overlay-bg: rgba(0, 0, 0, 0.7);
+
+  /* Scrollbar */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.1);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
+
+  /* Modal/Dialog */
+  --modal-text: #e4e4e7;
+  --modal-text-muted: rgba(228, 228, 231, 0.6);
+  --modal-text-subtle: rgba(228, 228, 231, 0.4);
+
+  /* Keyboard Shortcuts */
+  --kbd-bg: rgba(255, 255, 255, 0.05);
+  --kbd-border: rgba(255, 255, 255, 0.1);
+  --kbd-text: rgba(255, 255, 255, 0.3);
+
+  /* Skin-Detail Tokens (defaults = obsidian baseline) */
+  --skin-accent-from: #06ffd5;
+  --skin-accent-to: #22ff88;
+  --skin-surface-tint: rgba(6, 255, 213, 0.04);
+  --skin-surface-border: rgba(6, 255, 213, 0.12);
+  --skin-focus-beam: #06ffd5;
+  --skin-ambient-glow: rgba(6, 255, 213, 0.25);
+}
+
+/* === Light Theme === */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    color-scheme: light;
+
+    /* Light Background */
+    --app-bg: #f5f5f7;
+    --app-text: #1a1a1c;
+    --app-text-muted: rgba(26, 26, 28, 0.6);
+    --app-text-subtle: rgba(26, 26, 28, 0.4);
+
+    /* Card Colors */
+    --card-bg: rgba(255, 255, 255, 0.85);
+    --card-border: rgba(0, 0, 0, 0.06);
+    --card-hover: rgba(0, 0, 0, 0.04);
+
+    /* Glass Effects - Lighter */
+    --glass-bg: rgba(255, 255, 255, 0.9);
+    --glass-border: rgba(0, 0, 0, 0.08);
+    --glass-hover: rgba(0, 0, 0, 0.03);
+    --app-liquid-glass-bg: rgba(0, 0, 0, 0.04);
+    --app-liquid-glass-hover: rgba(0, 0, 0, 0.025);
+
+    /* Sidebar */
+    --sidebar-bg: rgba(245, 245, 248, 0.7);
+    --sidebar-text: rgba(26, 26, 28, 0.5);
+    --sidebar-hover: rgba(0, 0, 0, 0.04);
+    --sidebar-active: rgba(0, 0, 0, 0.06);
+
+    /* Input Elements */
+    --input-bg: rgba(0, 0, 0, 0.04);
+    --input-border: rgba(0, 0, 0, 0.1);
+    --input-focus: color-mix(in srgb, var(--neon-primary) 30%, transparent);
+    --input-placeholder: rgba(0, 0, 0, 0.3);
+
+    /* Button Colors */
+    --btn-glass-bg: rgba(0, 0, 0, 0.04);
+    --btn-glass-border: rgba(0, 0, 0, 0.08);
+    --btn-glass-hover: rgba(0, 0, 0, 0.08);
+
+    /* Neon Colors - Adjusted for light mode (less vibrant) */
+    --neon-primary: #00b8a0;
+    --neon-secondary: #10b981;
+    --neon-glow: rgba(0, 184, 160, 0.3);
+
+    /* Status Colors - Slightly adjusted for visibility */
+    --status-active: #10b981;
+    --status-paused: #f59e0b;
+    --status-complete: #00b8a0;
+    --status-error: #ef4444;
+
+    /* Neon Blue */
+    --neon-blue: #3b82f6;
+
+    /* Glow Colors */
+    --glow-active: var(--status-active);
+    --glow-active-secondary: var(--neon-primary);
+    --glow-paused: var(--status-paused);
+    --glow-error: var(--status-error);
+    --glow-complete: var(--neon-primary);
+
+    /* Selection & Focus */
+    --selection-bg: var(--neon-primary);
+    --focus-ring: var(--neon-primary);
+
+    /* Divider */
+    --divider-glow: var(--neon-primary);
+
+    /* Overlay */
+    --overlay-bg: rgba(0, 0, 0, 0.4);
+
+    /* Scrollbar */
+    --scrollbar-thumb: rgba(0, 0, 0, 0.15);
+    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.25);
+
+    /* Modal/Dialog */
+    --modal-text: #1a1a1c;
+    --modal-text-muted: rgba(26, 26, 28, 0.7);
+    --modal-text-subtle: rgba(26, 26, 28, 0.5);
+
+    /* Keyboard Shortcuts */
+    --kbd-bg: rgba(0, 0, 0, 0.06);
+    --kbd-border: rgba(0, 0, 0, 0.12);
+    --kbd-text: rgba(0, 0, 0, 0.4);
+
+    /* Skin-Detail Tokens (light defaults = obsidian baseline) */
+    --skin-accent-from: #00b8a0;
+    --skin-accent-to: #10b981;
+    --skin-surface-tint: rgba(0, 184, 160, 0.05);
+    --skin-surface-border: rgba(0, 184, 160, 0.15);
+    --skin-focus-beam: #00b8a0;
+    --skin-ambient-glow: rgba(0, 184, 160, 0.15);
+  }
+}
+
+/* Force dark theme class */
+[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+/* Force light theme class - Frosted Ceramic */
+[data-theme='light'] {
+  color-scheme: light;
+
+  /* Ceramic White Base - Slightly warmer */
+  --app-bg: #f8f8fa;
+  --app-text: #1f1f23;
+  --app-text-muted: rgba(31, 31, 35, 0.7);
+  --app-text-subtle: rgba(31, 31, 35, 0.5);
+
+  /* Card - More opaque for text readability */
+  --card-bg: rgba(255, 255, 255, 0.92);
+  --card-border: rgba(0, 0, 0, 0.08);
+  --card-hover: rgba(0, 0, 0, 0.04);
+
+  /* Glass - Frosted Ceramic: True glass effect with blur */
+  --glass-bg: rgba(255, 255, 255, 0.6);
+  --glass-border: rgba(0, 0, 0, 0.06);
+  --glass-border-highlight: rgba(255, 255, 255, 0.8);
+  --glass-hover: rgba(0, 0, 0, 0.02);
+  --glass-shadow: 0 8px 32px -8px rgba(0, 0, 0, 0.12);
+  --app-liquid-glass-bg: rgba(0, 0, 0, 0.04);
+  --app-liquid-glass-hover: rgba(0, 0, 0, 0.025);
+
+  /* Sidebar - Subtle separation with better text contrast */
+  --sidebar-bg: transparent;
+  --sidebar-text: rgba(31, 31, 35, 0.85);
+  --sidebar-hover: rgba(0, 0, 0, 0.06);
+  --sidebar-active: rgba(13, 148, 136, 0.12);
+
+  /* Light mode text needs higher contrast */
+  --app-text-muted: rgba(31, 31, 35, 0.75);
+  --app-text-subtle: rgba(31, 31, 35, 0.6);
+
+  /* Input Elements - Better contrast */
+  --input-bg: rgba(0, 0, 0, 0.04);
+  --input-border: rgba(0, 0, 0, 0.12);
+  --input-focus: color-mix(in srgb, var(--neon-primary) 30%, transparent);
+  --input-placeholder: rgba(0, 0, 0, 0.4);
+
+  /* Button Colors */
+  --btn-glass-bg: rgba(0, 0, 0, 0.05);
+  --btn-glass-border: rgba(0, 0, 0, 0.1);
+  --btn-glass-hover: rgba(0, 0, 0, 0.08);
+
+  /* Gem Colors - Darker for better contrast on white */
+  --neon-primary: #0f766e; /* Teal-700 */
+  --neon-secondary: #047857; /* Emerald-700 */
+  --neon-glow: rgba(15, 118, 110, 0.15);
+
+  /* Neon Button Text - Must remain solid for readability */
+  --neon-btn-text: #ffffff;
+
+  /* Status Colors - Darker gem tones for readability */
+  --status-active: #047857; /* Emerald-700 */
+  --status-paused: #b45309; /* Amber-700 */
+  --status-complete: #0f766e; /* Teal-700 */
+  --status-error: #b91c1c; /* Red-700 */
+
+  /* Neon Blue */
+  --neon-blue: #3b82f6;
+
+  /* Glow Colors */
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-paused: var(--status-paused);
+  --glow-error: var(--status-error);
+  --glow-complete: var(--neon-primary);
+
+  /* Selection & Focus */
+  --selection-bg: var(--neon-primary);
+  --focus-ring: var(--neon-primary);
+
+  /* Divider */
+  --divider-glow: var(--neon-primary);
+
+  /* Overlay */
+  --overlay-bg: rgba(0, 0, 0, 0.4);
+
+  /* Scrollbar */
+  --scrollbar-thumb: rgba(0, 0, 0, 0.15);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.25);
+
+  /* Modal/Dialog */
+  --modal-text: #1f1f23;
+  --modal-text-muted: rgba(31, 31, 35, 0.7);
+  --modal-text-subtle: rgba(31, 31, 35, 0.5);
+
+  /* Keyboard Shortcuts */
+  --kbd-bg: rgba(0, 0, 0, 0.05);
+  --kbd-border: rgba(0, 0, 0, 0.1);
+  --kbd-text: rgba(0, 0, 0, 0.4);
+
+  /* Skin-Detail Tokens (explicit light = obsidian baseline) */
+  --skin-accent-from: #0f766e;
+  --skin-accent-to: #047857;
+  --skin-surface-tint: rgba(15, 118, 110, 0.05);
+  --skin-surface-border: rgba(15, 118, 110, 0.15);
+  --skin-focus-beam: #0f766e;
+  --skin-ambient-glow: rgba(15, 118, 110, 0.12);
+}
+
+/* === Window Transparency (Acrylic / Mica / Tabbed) === */
+/* When enabled, the window background must be transparent so the OS backdrop is visible. */
+:root[data-window-transparency='acrylic'],
+:root[data-window-transparency='mica'],
+:root[data-window-transparency='tabbed'] {
+  --app-bg: transparent;
+}
+
+:root[data-window-transparency='acrylic'][data-theme='dark'],
+:root[data-window-transparency='mica'][data-theme='dark'],
+:root[data-window-transparency='tabbed'][data-theme='dark'] {
+  --glass-bg: rgba(20, 20, 26, 0.55);
+  --card-bg: rgba(24, 24, 30, 0.6);
+  --sidebar-bg: transparent;
+
+  /* Enhanced text contrast for transparency mode */
+  --neon-text-glow: 0 1px 2px rgba(0, 0, 0, 0.8), 0 0 8px rgba(0, 0, 0, 0.4);
+}
+
+:root[data-window-transparency='acrylic'][data-theme='light'],
+:root[data-window-transparency='mica'][data-theme='light'],
+:root[data-window-transparency='tabbed'][data-theme='light'] {
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --card-bg: rgba(255, 255, 255, 0.6);
+  --sidebar-bg: transparent;
+
+  /* Enhanced text contrast for transparency mode */
+  --neon-text-glow: 0 1px 2px rgba(255, 255, 255, 0.9), 0 0 8px rgba(255, 255, 255, 0.5);
+}
+
+/* === Sidebar Transparency Mode Styling === */
+/* In transparency mode, sidebar becomes transparent with internal glass panels */
+:root[data-window-transparency='acrylic'] .sidebar-container,
+:root[data-window-transparency='mica'] .sidebar-container,
+:root[data-window-transparency='tabbed'] .sidebar-container {
+  border-right-color: transparent;
+}
+
+/* === Neon Text Contrast Enhancement for Transparency Mode === */
+/* Ensure fluorescent text remains readable against variable OS backgrounds */
+:root[data-window-transparency='acrylic'] .text-neon,
+:root[data-window-transparency='mica'] .text-neon,
+:root[data-window-transparency='tabbed'] .text-neon {
+  text-shadow: var(--neon-text-glow, none);
+}
+
+:root[data-window-transparency='acrylic'] .text-neon-green,
+:root[data-window-transparency='mica'] .text-neon-green,
+:root[data-window-transparency='tabbed'] .text-neon-green {
+  text-shadow: var(--neon-text-glow, none);
+}
+
+/* Enhanced contrast for brand text in transparency mode */
+:root[data-window-transparency='acrylic'] .sidebar-brand-text,
+:root[data-window-transparency='mica'] .sidebar-brand-text,
+:root[data-window-transparency='tabbed'] .sidebar-brand-text {
+  text-shadow: var(--neon-text-glow, none);
+}
+
+/* Neon button text shadow for better legibility */
+:root[data-window-transparency='acrylic'] .btn-neon,
+:root[data-window-transparency='mica'] .btn-neon,
+:root[data-window-transparency='tabbed'] .btn-neon {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
