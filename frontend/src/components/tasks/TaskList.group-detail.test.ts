@@ -103,6 +103,7 @@ const RecycleScrollerStub = defineComponent({
   name: 'RecycleScroller',
   props: {
     items: { type: Array as PropType<Task[]>, required: true },
+    itemSize: { type: [Number, Object] as PropType<number | null>, required: false, default: null },
     keyField: { type: String, required: true },
   },
   setup(props, { attrs, slots }) {
