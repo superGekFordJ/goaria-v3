@@ -14,10 +14,7 @@
 
 <template>
   <Transition name="fade">
-    <div
-      v-if="show"
-      class="absolute inset-0 flex flex-col items-center justify-center p-8"
-    >
+    <div v-if="show" class="absolute inset-0 flex flex-col items-center justify-center p-8">
       <div class="empty-state animate-fade-in-up">
         <!-- Animated Icon Container -->
         <div

@@ -11,12 +11,7 @@
   import DownloadGroupCard from '../groups/DownloadGroupCard.vue'
   import DownloadGroupOperationNotice from '../groups/DownloadGroupOperationNotice.vue'
   import DownloadGroupRemoveDialog from '../groups/DownloadGroupRemoveDialog.vue'
-  import {
-    Download,
-    CheckCircle2,
-    SearchX,
-    Layers3,
-  } from 'lucide-vue-next'
+  import { Download, CheckCircle2, SearchX, Layers3 } from 'lucide-vue-next'
   import { useTaskKeyboard } from '../../composables/useTaskKeyboard'
   import TaskListEmptyState from './TaskListEmptyState.vue'
   import TaskListDeleteModal from './TaskListDeleteModal.vue'
@@ -90,28 +85,47 @@
     return []
   })
 
-  const displayEntries = computed<InlineTaskListEntry[]>(() => {
+  type DisplayEntry = InlineTaskListEntry & { size: number }
+
+  const displayEntries = computed<DisplayEntry[]>(() => {
+    let rawEntries: InlineTaskListEntry[] = []
     if (isGroupDetailMode.value) {
-      return detailDisplayTasks.value.map(task => ({
+      rawEntries = detailDisplayTasks.value.map(task => ({
         type: 'task',
         key: `task:${task.gid}`,
         task,
       }))
-    }
-
-    if (uiStore.activeTab === 'downloads') {
-      return buildInlineTaskListEntries({
+    } else if (uiStore.activeTab === 'downloads') {
+      rawEntries = buildInlineTaskListEntries({
         tab: 'downloads',
         tasks: combinedDownloads.value,
         groupItems: downloadGroupStore.masterItems,
       })
+    } else {
+      rawEntries = buildInlineTaskListEntries({
+        tab: 'stopped',
+        tasks: taskStore.stoppedTasks,
+        groupItems: downloadGroupStore.masterItems,
+        searchQuery: searchQuery.value,
+      })
     }
 
-    return buildInlineTaskListEntries({
-      tab: 'stopped',
-      tasks: taskStore.stoppedTasks,
-      groupItems: downloadGroupStore.masterItems,
-      searchQuery: searchQuery.value,
+    return rawEntries.map(entry => {
+      let size = 150 // completed / error / unknown tasks size
+      if (entry.type === 'group') {
+        size = 268 // DownloadGroupCard size
+      } else {
+        const status = entry.task.status
+        if (status === 'active') {
+          size = 198 // TaskCard with active progress size (has speed/ETA)
+        } else if (status === 'paused' || status === 'waiting') {
+          size = 180 // TaskCard with inactive progress size (no speed/ETA)
+        }
+      }
+      return {
+        ...entry,
+        size,
+      }
     })
   })
 
@@ -452,10 +466,7 @@
     <!-- Task List Container -->
     <div class="flex-1 min-h-0 relative">
       <!-- Empty State -->
-      <TaskListEmptyState
-        :show="displayEntries.length === 0"
-        :config="emptyStateConfig"
-      />
+      <TaskListEmptyState :show="displayEntries.length === 0" :config="emptyStateConfig" />
 
       <!-- Virtual Scrolling Task List -->
       <div
@@ -498,11 +509,12 @@
         v-slot="{ item }"
         class="h-full px-5 py-4"
         :items="displayEntries"
-        :item-size="208"
+        :item-size="null"
+        size-field="size"
         key-field="key"
         :buffer="200"
       >
-        <div class="py-2 task-list-virtual-row" :data-entry-key="item.key">
+        <div class="task-list-virtual-row" :data-entry-key="item.key">
           <TaskCard
             v-if="item.type === 'task'"
             :task="item.task"

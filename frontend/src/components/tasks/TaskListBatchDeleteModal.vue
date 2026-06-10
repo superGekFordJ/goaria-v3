@@ -21,11 +21,11 @@
   // Reset deleteLocalFile when show becomes true
   watch(
     () => props.show,
-    (newVal) => {
+    newVal => {
       if (newVal) {
         deleteLocalFile.value = false
       }
-    }
+    },
   )
 
   const handleCancel = () => {
