@@ -1,5 +1,6 @@
 <script setup lang="ts">
-  import { Cpu } from 'lucide-vue-next'
+  import { ref, onMounted, onUnmounted } from 'vue'
+  import { Cpu, ChevronDown, Check } from 'lucide-vue-next'
   import { useI18n } from 'vue-i18n'
   import SectionCard from './SectionCard.vue'
 
@@ -24,10 +25,31 @@
     emit('change')
   }
 
-  const updateConnections = (event: Event) => {
-    const value = (event.target as HTMLSelectElement).value
+  const showConnectionsDropdown = ref(false)
+  const connectionsDropdownRef = ref<HTMLElement | null>(null)
+
+  const handleClickOutsideConnections = (event: MouseEvent) => {
+    if (
+      showConnectionsDropdown.value &&
+      connectionsDropdownRef.value &&
+      !connectionsDropdownRef.value.contains(event.target as Node)
+    ) {
+      showConnectionsDropdown.value = false
+    }
+  }
+
+  onMounted(() => {
+    document.addEventListener('click', handleClickOutsideConnections)
+  })
+
+  onUnmounted(() => {
+    document.removeEventListener('click', handleClickOutsideConnections)
+  })
+
+  const selectConnections = (value: string) => {
     emit('update:connections', value)
     emit('change')
+    showConnectionsDropdown.value = false
   }
 
   const updateConcurrentDownloads = (event: Event) => {
@@ -39,6 +61,7 @@
 
 <template>
   <SectionCard
+    class="relative z-[60]"
     :title="t('performance.title')"
     :description="t('performance.description')"
     :icon="Cpu"
@@ -81,34 +104,45 @@
         >
           {{ t('performance.maxConnections') }}
         </label>
-        <div class="relative">
-          <select
-            :value="connections"
-            class="w-full bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl px-4 py-3 text-sm font-mono-data text-[var(--app-text)]/80 outline-none appearance-none cursor-pointer transition-all duration-200 focus:border-[var(--neon-primary)]/40 focus:shadow-[0_0_0_3px_var(--input-focus)]"
-            @change="updateConnections"
+        <div ref="connectionsDropdownRef" class="relative z-50">
+          <button
+            type="button"
+            class="w-full flex items-center justify-between bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl px-4 py-3 text-sm font-mono-data text-[var(--app-text)]/80 outline-none cursor-pointer transition-all duration-200 hover:border-[var(--neon-primary)]/30"
+            @click="showConnectionsDropdown = !showConnectionsDropdown"
           >
-            <option v-for="n in connectionOptions" :key="n" :value="n">
-              {{ n }} {{ t('performance.threads') }}
-            </option>
-          </select>
-          <!-- Custom dropdown arrow -->
-          <div class="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
-            <svg
-              width="10"
-              height="6"
-              viewBox="0 0 10 6"
-              fill="none"
-              class="text-[var(--app-text-subtle)]"
+            <span>{{ connections }} {{ t('performance.threads') }}</span>
+            <ChevronDown
+              :size="16"
+              class="text-[var(--app-text-subtle)] transition-transform duration-200"
+              :class="{ 'rotate-180': showConnectionsDropdown }"
+            />
+          </button>
+
+          <!-- Dropdown Menu -->
+          <Transition name="slide-fade">
+            <div
+              v-if="showConnectionsDropdown"
+              class="absolute z-50 top-full left-0 right-0 mt-2 p-1 rounded-xl bg-white dark:bg-[#18181b] border border-[var(--glass-border)] shadow-2xl origin-top max-h-48 overflow-y-auto"
             >
-              <path
-                d="M1 1L5 5L9 1"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-          </div>
+              <button
+                v-for="n in connectionOptions"
+                :key="n"
+                type="button"
+                class="w-full flex items-center justify-between p-3 rounded-lg transition-all duration-200 group"
+                :class="[
+                  connections === n
+                    ? 'bg-[var(--neon-primary)]/10 text-[var(--neon-primary)]'
+                    : 'text-[var(--app-text)] hover:bg-[var(--app-text)]/5',
+                ]"
+                @click="selectConnections(n)"
+              >
+                <span class="text-sm font-mono-data font-medium">
+                  {{ n }} {{ t('performance.threads') }}
+                </span>
+                <Check v-if="connections === n" :size="14" />
+              </button>
+            </div>
+          </Transition>
         </div>
       </div>
 
@@ -133,11 +167,14 @@
 </template>
 
 <style scoped>
-  /* Select option styling (limited support) */
-  select option {
-    background: var(--glass-bg);
-    color: var(--app-text);
-    padding: 8px;
+  .slide-fade-enter-active,
+  .slide-fade-leave-active {
+    transition: all 0.2s ease;
+  }
+  .slide-fade-enter-from,
+  .slide-fade-leave-to {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
   }
 
   /* Hide number input spinners */

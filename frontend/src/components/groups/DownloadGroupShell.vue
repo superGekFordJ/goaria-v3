@@ -291,6 +291,7 @@
               <LiquidGlassPanel
                 as="button"
                 :interactive="true"
+                hover-effect="all"
                 base-color-class="bg-[var(--btn-glass-bg)]"
                 fallback-class="btn-glass"
                 type="button"
@@ -306,6 +307,7 @@
               <LiquidGlassPanel
                 as="button"
                 :interactive="true"
+                hover-effect="all"
                 base-color-class="bg-[var(--btn-glass-bg)]"
                 fallback-class="btn-glass"
                 type="button"

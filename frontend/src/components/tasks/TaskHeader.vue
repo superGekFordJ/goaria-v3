@@ -322,6 +322,7 @@
       <LiquidGlassPanel
         as="button"
         :interactive="true"
+        hover-effect="all"
         :disabled="isMultiline ? !parsedStats.valid || submitting : !urlInput.trim() || isAdding"
         :base-color-class="(isMultiline ? parsedStats.valid > 0 && !submitting : urlInput.trim() && !isAdding) ? 'bg-neon-glass' : 'bg-[var(--btn-glass-bg)]'"
         :fallback-class="(isMultiline ? parsedStats.valid > 0 && !submitting : urlInput.trim() && !isAdding) ? 'btn-neon' : 'btn-glass'"
