@@ -31,7 +31,11 @@
     class="relative isolate transition-all duration-300 overflow-visible group/liquid"
     :class="[
       interactive ? 'cursor-pointer' : '',
-      interactive && uiStore.effects === 'full' && (hoverEffect === 'all' || hoverEffect === 'scale') ? 'hover:scale-[1.02] active:scale-[0.98]' : '',
+      interactive &&
+      uiStore.effects === 'full' &&
+      (hoverEffect === 'all' || hoverEffect === 'scale')
+        ? 'hover:scale-[1.02] active:scale-[0.98]'
+        : '',
       radius,
       uiStore.effects === 'reduced' ? fallbackClass : '',
     ]"
