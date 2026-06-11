@@ -54,9 +54,8 @@
     }
 
     // Listen for update status events
-
     unsubs.push(
-      Events.On('update:status', (ev: any) => {
+      Events.On('update:status', ev => {
         const data = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as {
           status: string
           payload: unknown
@@ -73,9 +72,8 @@
     )
 
     // Listen for update progress events (bytes-level data for smooth algorithm)
-
     unsubs.push(
-      Events.On('update:progress', (ev: any) => {
+      Events.On('update:progress', ev => {
         const data = (ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev) as {
           downloaded: number
           total: number

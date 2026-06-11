@@ -125,7 +125,9 @@
               class="flex-1 py-4 rounded-[var(--radius-squircle-md)] text-[var(--modal-text-muted)] font-semibold text-sm transition-all duration-200 hover:text-[var(--modal-text)] active:scale-[0.98]"
               @click="handleCancel"
             >
-              <span class="flex items-center justify-center w-full h-full">{{ t('taskList.cancel') }}</span>
+              <span class="flex items-center justify-center w-full h-full">{{
+                t('taskList.cancel')
+              }}</span>
             </LiquidGlassPanel>
             <button
               :disabled="isBatchDeleting"

@@ -23,44 +23,44 @@
       ]"
     >
       <div class="flex items-center gap-3 p-2 w-full h-full">
-      <!-- Search Icon -->
-      <div
-        class="pl-3 transition-colors duration-300"
-        :class="inputFocused ? 'text-[var(--neon-primary)]/60' : 'text-[var(--app-text-subtle)]'"
-      >
-        <Search :size="16" />
-      </div>
+        <!-- Search Icon -->
+        <div
+          class="pl-3 transition-colors duration-300"
+          :class="inputFocused ? 'text-[var(--neon-primary)]/60' : 'text-[var(--app-text-subtle)]'"
+        >
+          <Search :size="16" />
+        </div>
 
-      <!-- Input Field -->
-      <input
-        v-model="searchQuery"
-        type="text"
-        :placeholder="t('taskSearch.placeholder')"
-        :aria-label="t('taskSearch.placeholder')"
-        class="flex-1 bg-transparent py-3 text-sm text-[var(--app-text)] font-medium focus:outline-none placeholder:text-[var(--input-placeholder)] placeholder:font-normal select-text"
-        @focus="inputFocused = true"
-        @blur="inputFocused = false"
-      />
+        <!-- Input Field -->
+        <input
+          v-model="searchQuery"
+          type="text"
+          :placeholder="t('taskSearch.placeholder')"
+          :aria-label="t('taskSearch.placeholder')"
+          class="flex-1 bg-transparent py-3 text-sm text-[var(--app-text)] font-medium focus:outline-none placeholder:text-[var(--input-placeholder)] placeholder:font-normal select-text"
+          @focus="inputFocused = true"
+          @blur="inputFocused = false"
+        />
 
-      <!-- Clear Button -->
-      <button
-        v-if="searchQuery"
-        class="p-2 mr-1 rounded-lg text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--btn-glass-bg)] transition-all duration-200"
-        :aria-label="t('taskSearch.clear')"
-        @click="clearSearch"
-      >
-        <X :size="14" />
-      </button>
+        <!-- Clear Button -->
+        <button
+          v-if="searchQuery"
+          class="p-2 mr-1 rounded-lg text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--btn-glass-bg)] transition-all duration-200"
+          :aria-label="t('taskSearch.clear')"
+          @click="clearSearch"
+        >
+          <X :size="14" />
+        </button>
 
-      <!-- Subtle glow line at bottom when focused -->
-      <div
-        :class="[
-          'absolute bottom-0 left-4 right-4 h-px transition-all duration-500',
-          inputFocused
-            ? 'bg-gradient-to-r from-transparent via-[var(--skin-focus-beam)]/40 to-transparent'
-            : 'bg-transparent',
-        ]"
-      ></div>
+        <!-- Subtle glow line at bottom when focused -->
+        <div
+          :class="[
+            'absolute bottom-0 left-4 right-4 h-px transition-all duration-500',
+            inputFocused
+              ? 'bg-gradient-to-r from-transparent via-[var(--skin-focus-beam)]/40 to-transparent'
+              : 'bg-transparent',
+          ]"
+        ></div>
       </div>
     </StaticGlassPanel>
   </div>

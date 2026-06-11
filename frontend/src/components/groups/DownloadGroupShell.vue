@@ -234,7 +234,11 @@
     <main class="flex-1 min-h-0 overflow-hidden">
       <div v-if="selectedKey" class="h-full flex flex-col min-h-0">
         <div class="download-group-detail-summary px-5 pb-3">
-          <StaticGlassPanel radius="rounded-[var(--radius-squircle-lg)]" class="p-4" fallback-class="glass-panel-subtle">
+          <StaticGlassPanel
+            radius="rounded-[var(--radius-squircle-lg)]"
+            class="p-4"
+            fallback-class="glass-panel-subtle"
+          >
             <div
               v-if="downloadGroupStore.isDetailLoading && !currentDetail"
               class="download-group-detail-state"

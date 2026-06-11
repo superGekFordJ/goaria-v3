@@ -128,7 +128,11 @@ select {
 }
 
 .bg-neon-glass {
-  background: linear-gradient(135deg, color-mix(in srgb, var(--skin-accent-from) 60%, transparent), color-mix(in srgb, var(--skin-accent-to) 60%, transparent));
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--skin-accent-from) 60%, transparent),
+    color-mix(in srgb, var(--skin-accent-to) 60%, transparent)
+  );
 }
 
 /* === Window Controls Area (macOS-style) === */
