@@ -22,7 +22,7 @@
 <template>
   <component
     :is="as"
-    class="relative isolate transition-all duration-300 w-full overflow-visible group"
+    class="relative isolate transition-all duration-300 overflow-visible group"
     :class="[
       interactive ? 'cursor-pointer hover:scale-[1.01] active:scale-[0.99]' : '',
       radius,

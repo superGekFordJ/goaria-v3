@@ -7,6 +7,7 @@
   import { isValidUrl, isDuplicateUri } from '../../utils/url'
   import { buildBatchGroupResultHints, type TaskGroupHint } from '../../stores/task/grouping'
   import { Link, Plus, Loader2, ChevronUp, Layers3 } from 'lucide-vue-next'
+  import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
 
   const { t } = useI18n()
   const taskStore = useTaskStore()
@@ -246,7 +247,7 @@
     <div
       :class="[
         'flex gap-3 p-2 rounded-[var(--radius-squircle-lg)] transition-all duration-300',
-        'bg-[var(--input-bg)] backdrop-blur-md',
+        'bg-[var(--input-bg)]',
         'border border-[var(--input-border)]',
         inputFocused ? 'input-container-focused' : '',
       ]"
@@ -318,21 +319,25 @@
       </div>
 
       <!-- Add Button -->
-      <button
+      <LiquidGlassPanel
+        as="button"
+        :interactive="true"
         :disabled="isMultiline ? !parsedStats.valid || submitting : !urlInput.trim() || isAdding"
+        :base-color-class="(isMultiline ? parsedStats.valid > 0 && !submitting : urlInput.trim() && !isAdding) ? 'bg-neon-glass' : 'bg-[var(--btn-glass-bg)]'"
+        :fallback-class="(isMultiline ? parsedStats.valid > 0 && !submitting : urlInput.trim() && !isAdding) ? 'btn-neon' : 'btn-glass'"
         :class="[
           'px-6 py-3 rounded-[var(--radius-squircle-md)] font-bold text-sm transition-all duration-300 flex items-center gap-2 self-start',
           'disabled:opacity-30 disabled:cursor-not-allowed disabled:transform-none',
           (isMultiline ? parsedStats.valid > 0 && !submitting : urlInput.trim() && !isAdding)
-            ? 'btn-neon'
-            : 'bg-[var(--btn-glass-bg)] text-[var(--app-text-subtle)] border border-[var(--glass-border)]',
+            ? 'btn-neon-glass'
+            : 'text-[var(--app-text-subtle)] border border-[var(--glass-border)]',
         ]"
         @click="isMultiline ? handleBatchAdd() : handleAdd()"
       >
         <Loader2 v-if="isAdding || submitting" :size="16" class="animate-spin" />
         <Plus v-else :size="16" />
         <span>{{ buttonLabel }}</span>
-      </button>
+      </LiquidGlassPanel>
     </div>
 
     <!-- Stats / Error / Clipboard Hint / Quick Tips -->

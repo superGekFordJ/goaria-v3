@@ -2,7 +2,7 @@
   import { ref } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { Search, X } from 'lucide-vue-next'
-
+  import StaticGlassPanel from '../common/StaticGlassPanel.vue'
   const { t } = useI18n()
   const searchQuery = defineModel<string>({ default: '' })
   const inputFocused = ref(false)
@@ -14,14 +14,15 @@
 
 <template>
   <div class="p-5 pb-2 shrink-0">
-    <div
+    <StaticGlassPanel
+      radius="rounded-[var(--radius-squircle-lg)]"
       :class="[
-        'flex items-center gap-3 p-2 rounded-[var(--radius-squircle-lg)] transition-all duration-300',
-        'bg-[var(--input-bg)] backdrop-blur-md',
+        'transition-all duration-300',
         'border border-[var(--input-border)]',
         inputFocused ? 'search-container-focused' : '',
       ]"
     >
+      <div class="flex items-center gap-3 p-2 w-full h-full">
       <!-- Search Icon -->
       <div
         class="pl-3 transition-colors duration-300"
@@ -60,7 +61,8 @@
             : 'bg-transparent',
         ]"
       ></div>
-    </div>
+      </div>
+    </StaticGlassPanel>
   </div>
 </template>
 

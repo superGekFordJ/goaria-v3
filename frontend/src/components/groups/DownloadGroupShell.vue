@@ -22,6 +22,8 @@
   import DownloadGroupRemoveDialog from './DownloadGroupRemoveDialog.vue'
   import TaskList from '../tasks/TaskList.vue'
   import type { DownloadGroupCard as BackendDownloadGroupCard } from '../../../bindings/goaria-v3/internal/downloadgroups/models'
+  import StaticGlassPanel from '../common/StaticGlassPanel.vue'
+  import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
 
   const { t } = useI18n()
   const uiStore = useUIStore()
@@ -232,7 +234,7 @@
     <main class="flex-1 min-h-0 overflow-hidden">
       <div v-if="selectedKey" class="h-full flex flex-col min-h-0">
         <div class="download-group-detail-summary px-5 pb-3">
-          <div class="glass-panel-subtle rounded-[var(--radius-squircle-lg)] p-4">
+          <StaticGlassPanel radius="rounded-[var(--radius-squircle-lg)]" class="p-4" fallback-class="glass-panel-subtle">
             <div
               v-if="downloadGroupStore.isDetailLoading && !currentDetail"
               class="download-group-detail-state"
@@ -286,24 +288,36 @@
             </div>
 
             <div v-if="detailCard" class="download-group-detail-actions">
-              <button
+              <LiquidGlassPanel
+                as="button"
+                :interactive="true"
+                base-color-class="bg-[var(--btn-glass-bg)]"
+                fallback-class="btn-glass"
                 type="button"
-                class="btn-glass download-group-detail-action rounded-[var(--radius-squircle-sm)]"
+                class="download-group-detail-action rounded-[var(--radius-squircle-sm)] transition-colors hover:text-[var(--app-text)] disabled:opacity-50 disabled:cursor-not-allowed"
                 :disabled="!canPause(detailCard)"
                 @click="pauseGroup(detailCard.group_key)"
               >
-                <Pause :size="14" />
-                <span>{{ t('downloadGroups.action.pause') }}</span>
-              </button>
-              <button
+                <span class="flex items-center justify-center gap-1.5 w-full h-full">
+                  <Pause :size="14" />
+                  <span>{{ t('downloadGroups.action.pause') }}</span>
+                </span>
+              </LiquidGlassPanel>
+              <LiquidGlassPanel
+                as="button"
+                :interactive="true"
+                base-color-class="bg-[var(--btn-glass-bg)]"
+                fallback-class="btn-glass"
                 type="button"
-                class="btn-glass download-group-detail-action rounded-[var(--radius-squircle-sm)]"
+                class="download-group-detail-action rounded-[var(--radius-squircle-sm)] transition-colors hover:text-[var(--app-text)] disabled:opacity-50 disabled:cursor-not-allowed"
                 :disabled="!canResume(detailCard)"
                 @click="resumeGroup(detailCard.group_key)"
               >
-                <Play :size="14" />
-                <span>{{ t('downloadGroups.action.resume') }}</span>
-              </button>
+                <span class="flex items-center justify-center gap-1.5 w-full h-full">
+                  <Play :size="14" />
+                  <span>{{ t('downloadGroups.action.resume') }}</span>
+                </span>
+              </LiquidGlassPanel>
               <button
                 type="button"
                 class="btn-glass download-group-detail-action rounded-[var(--radius-squircle-sm)]"
@@ -323,7 +337,7 @@
                 <span>{{ t('downloadGroups.action.remove') }}</span>
               </button>
             </div>
-          </div>
+          </StaticGlassPanel>
         </div>
 
         <TaskList mode="group-detail" :detail-tasks="detailTasks" :detail-key="selectedKey || ''" />

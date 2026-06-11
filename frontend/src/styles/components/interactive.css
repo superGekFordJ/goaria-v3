@@ -105,6 +105,32 @@ select {
   transform: translateY(0) scale(0.98);
 }
 
+.btn-neon-glass {
+  color: var(--neon-btn-text);
+  font-weight: 700;
+  border: none;
+  box-shadow:
+    0 0 20px var(--neon-glow),
+    0 4px 15px rgba(0, 0, 0, 0.2);
+  transition: all 0.2s ease;
+}
+
+.btn-neon-glass:hover {
+  box-shadow:
+    0 0 30px var(--neon-glow),
+    0 6px 20px rgba(0, 0, 0, 0.3);
+  transform: translateY(-2px);
+  filter: brightness(1.1);
+}
+
+.btn-neon-glass:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.bg-neon-glass {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--skin-accent-from) 60%, transparent), color-mix(in srgb, var(--skin-accent-to) 60%, transparent));
+}
+
 /* === Window Controls Area (macOS-style) === */
 .window-controls {
   display: flex;
