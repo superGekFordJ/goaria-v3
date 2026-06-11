@@ -1,7 +1,8 @@
 <script setup lang="ts">
+  import { useAttrs, computed } from 'vue'
   import { useUIStore } from '../../stores/ui'
 
-  withDefaults(
+  const props = withDefaults(
     defineProps<{
       as?: string
       active?: boolean
@@ -23,6 +24,15 @@
   )
 
   const uiStore = useUIStore()
+  const attrs = useAttrs()
+
+  const isDisabled = computed(() => {
+    return attrs.disabled !== undefined && attrs.disabled !== false && attrs.disabled !== 'false'
+  })
+
+  const isInteractive = computed(() => {
+    return props.interactive && !isDisabled.value
+  })
 </script>
 
 <template>
@@ -30,8 +40,8 @@
     :is="as"
     class="relative isolate transition-all duration-300 overflow-visible group/liquid"
     :class="[
-      interactive ? 'cursor-pointer' : '',
-      interactive &&
+      isInteractive ? 'cursor-pointer' : '',
+      isInteractive &&
       uiStore.effects === 'full' &&
       (hoverEffect === 'all' || hoverEffect === 'scale')
         ? 'hover:scale-[1.02] active:scale-[0.98]'
@@ -59,13 +69,15 @@
           radius,
           active
             ? `${baseColorClass} opacity-100`
-            : 'bg-transparent opacity-0 group-hover:bg-[var(--app-liquid-glass-hover)]',
+            : isInteractive
+              ? 'bg-transparent opacity-0 group-hover:bg-[var(--app-liquid-glass-hover)]'
+              : 'bg-transparent opacity-0',
         ]"
         :style="active ? { backdropFilter: 'url(#liquid-glass-filter)' } : {}"
       >
         <!-- Interactive Hover Glow -->
         <div
-          v-if="interactive && active && (hoverEffect === 'all' || hoverEffect === 'glow')"
+          v-if="isInteractive && active && (hoverEffect === 'all' || hoverEffect === 'glow')"
           class="absolute inset-0 bg-gradient-to-t from-transparent to-white/20 dark:to-white/10 opacity-0 group-hover/liquid:opacity-100 transition-opacity duration-300 pointer-events-none"
         ></div>
       </div>
@@ -73,12 +85,14 @@
     <template v-else-if="!fallbackClass">
       <!-- Lightweight fallback for reduced mode -->
       <div
-        class="absolute top-0 left-0 -z-10 h-full w-full overflow-hidden transition-all duration-300 pointer-events-none"
+        class="absolute top-0 left-0 -z-10 h-full w-full overflow-hidden transition-all duration-300 pointer-events-none backdrop-blur-md"
         :class="[
           radius,
           active
             ? `${baseColorClass} opacity-100 border border-[var(--glass-border)]`
-            : 'bg-transparent opacity-0 group-hover:bg-[var(--app-liquid-glass-hover)]',
+            : isInteractive
+              ? 'bg-transparent opacity-0 group-hover:bg-[var(--app-liquid-glass-hover)]'
+              : 'bg-transparent opacity-0',
         ]"
       ></div>
     </template>
