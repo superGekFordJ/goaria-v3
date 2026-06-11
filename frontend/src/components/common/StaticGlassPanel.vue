@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { useAttrs, computed } from 'vue'
+  import { computed } from 'vue'
   import { useUIStore } from '../../stores/ui'
 
   const props = withDefaults(
@@ -9,6 +9,7 @@
       radius?: string
       fallbackClass?: string
       baseColorClass?: string
+      disabled?: boolean
     }>(),
     {
       as: 'div',
@@ -16,24 +17,21 @@
       radius: 'rounded-full',
       fallbackClass: '',
       baseColorClass: 'bg-white/20 dark:bg-black/20',
+      disabled: false,
     },
   )
 
   const uiStore = useUIStore()
-  const attrs = useAttrs()
-
-  const isDisabled = computed(() => {
-    return attrs.disabled !== undefined && attrs.disabled !== false && attrs.disabled !== 'false'
-  })
 
   const isInteractive = computed(() => {
-    return props.interactive && !isDisabled.value
+    return props.interactive && !props.disabled
   })
 </script>
 
 <template>
   <component
     :is="as"
+    :disabled="props.disabled ? true : undefined"
     class="relative isolate transition-all duration-300 overflow-visible group"
     :class="[
       isInteractive ? 'cursor-pointer hover:scale-[1.01] active:scale-[0.99]' : '',
