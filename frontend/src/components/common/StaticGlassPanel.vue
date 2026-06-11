@@ -50,7 +50,7 @@
     <template v-else-if="!fallbackClass">
       <!-- Lightweight fallback -->
       <div
-        class="absolute inset-0 -z-10 pointer-events-none transition-all duration-300 backdrop-blur-md bg-white/10 dark:bg-black/10 border border-[var(--glass-border)]"
+        class="absolute inset-0 -z-10 pointer-events-none transition-all duration-300 bg-white/15 dark:bg-black/25 border border-[var(--glass-border)]"
         :class="[radius]"
       ></div>
     </template>

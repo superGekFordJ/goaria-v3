@@ -13,7 +13,8 @@
 
 :root[data-window-transparency='acrylic'] .glass-panel,
 :root[data-window-transparency='mica'] .glass-panel,
-:root[data-window-transparency='tabbed'] .glass-panel {
+:root[data-window-transparency='tabbed'] .glass-panel,
+:root[data-effects='reduced'] .glass-panel {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
@@ -33,7 +34,8 @@
 
 :root[data-window-transparency='acrylic'] .glass-panel-floating,
 :root[data-window-transparency='mica'] .glass-panel-floating,
-:root[data-window-transparency='tabbed'] .glass-panel-floating {
+:root[data-window-transparency='tabbed'] .glass-panel-floating,
+:root[data-effects='reduced'] .glass-panel-floating {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
@@ -47,7 +49,8 @@
 
 :root[data-window-transparency='acrylic'] .glass-panel-subtle,
 :root[data-window-transparency='mica'] .glass-panel-subtle,
-:root[data-window-transparency='tabbed'] .glass-panel-subtle {
+:root[data-window-transparency='tabbed'] .glass-panel-subtle,
+:root[data-effects='reduced'] .glass-panel-subtle {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
@@ -55,21 +58,29 @@
 /* === Neon Glow Effects === */
 .neon-glow-cyan {
   box-shadow:
-    0 0 10px var(--neon-glow),
-    0 0 20px color-mix(in srgb, var(--neon-primary) 30%, transparent),
-    0 0 40px color-mix(in srgb, var(--neon-primary) 15%, transparent);
+    0 0 calc(10px * var(--effects-glow-intensity, 1)) var(--neon-glow),
+    0 0 calc(20px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-primary) 30%, transparent),
+    0 0 calc(40px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-primary) 15%, transparent);
 }
 
 .neon-glow-green {
   box-shadow:
-    0 0 10px color-mix(in srgb, var(--neon-secondary) 40%, transparent),
-    0 0 20px color-mix(in srgb, var(--neon-secondary) 20%, transparent),
-    0 0 40px color-mix(in srgb, var(--neon-secondary) 10%, transparent);
+    0 0 calc(10px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-secondary) 40%, transparent),
+    0 0 calc(20px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-secondary) 20%, transparent),
+    0 0 calc(40px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-secondary) 10%, transparent);
 }
 
 .neon-glow-blue {
   box-shadow:
-    0 0 10px color-mix(in srgb, var(--neon-blue) 40%, transparent),
-    0 0 20px color-mix(in srgb, var(--neon-blue) 20%, transparent),
-    0 0 40px color-mix(in srgb, var(--neon-blue) 10%, transparent);
+    0 0 calc(10px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-blue) 40%, transparent),
+    0 0 calc(20px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-blue) 20%, transparent),
+    0 0 calc(40px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-blue) 10%, transparent);
 }
