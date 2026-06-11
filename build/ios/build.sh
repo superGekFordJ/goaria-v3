@@ -4,8 +4,8 @@ set -e
 # Build configuration
 APP_NAME="goaria-v3"
 BUNDLE_ID=""
-VERSION="2.0.0-beta.3"
-BUILD_NUMBER="2.0.0-beta.3"
+VERSION="2.0.0-beta.4"
+BUILD_NUMBER="2.0.0-beta.4"
 BUILD_DIR="build/ios"
 TARGET="simulator"
 
