@@ -55,6 +55,7 @@
         <StaticGlassPanel
           radius="rounded-[var(--radius-squircle-2xl)]"
           fallback-class="glass-panel"
+          base-color-class="bg-white/50 dark:bg-black/60"
           class="relative w-full max-w-md p-8 animate-spring-in"
         >
           <!-- Warning Icon -->
@@ -122,6 +123,7 @@
             <LiquidGlassPanel
               as="button"
               :interactive="true"
+              hover-effect="glow"
               base-color-class="bg-[var(--btn-glass-bg)]"
               fallback-class="btn-glass"
               class="flex-1 py-4 rounded-[var(--radius-squircle-md)] text-[var(--modal-text-muted)] font-semibold text-sm transition-all duration-200 hover:text-[var(--modal-text)] active:scale-[0.98]"

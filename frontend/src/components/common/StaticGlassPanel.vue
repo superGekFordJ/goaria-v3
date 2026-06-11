@@ -7,12 +7,14 @@
       interactive?: boolean
       radius?: string
       fallbackClass?: string
+      baseColorClass?: string
     }>(),
     {
       as: 'div',
       interactive: false,
       radius: 'rounded-full',
       fallbackClass: '',
+      baseColorClass: 'bg-white/20 dark:bg-black/20',
     },
   )
 
@@ -32,8 +34,8 @@
     <template v-if="uiStore.effects === 'full'">
       <!-- Background layer with blur -->
       <div
-        class="absolute inset-0 -z-10 pointer-events-none transition-all duration-300 backdrop-blur-2xl dark:backdrop-blur-xl bg-white/20 dark:bg-black/20"
-        :class="[radius]"
+        class="absolute inset-0 -z-10 pointer-events-none transition-all duration-300 backdrop-blur-2xl dark:backdrop-blur-xl"
+        :class="[radius, baseColorClass]"
       ></div>
 
       <!-- Soft Glass Edge & Shadow Layer -->

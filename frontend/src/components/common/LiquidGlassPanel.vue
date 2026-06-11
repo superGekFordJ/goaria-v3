@@ -6,6 +6,7 @@
       as?: string
       active?: boolean
       interactive?: boolean
+      hoverEffect?: 'none' | 'glow' | 'scale' | 'all'
       radius?: string
       fallbackClass?: string
       baseColorClass?: string
@@ -14,6 +15,7 @@
       as: 'div',
       active: true,
       interactive: false,
+      hoverEffect: 'none',
       radius: 'rounded-[var(--radius-squircle-md)]',
       fallbackClass: '',
       baseColorClass: 'bg-[var(--app-liquid-glass-bg)]',
@@ -26,9 +28,10 @@
 <template>
   <component
     :is="as"
-    class="relative isolate transition-all duration-300 overflow-visible"
+    class="relative isolate transition-all duration-300 overflow-visible group/liquid"
     :class="[
       interactive ? 'cursor-pointer' : '',
+      interactive && uiStore.effects === 'full' && (hoverEffect === 'all' || hoverEffect === 'scale') ? 'hover:scale-[1.02] active:scale-[0.98]' : '',
       radius,
       uiStore.effects === 'reduced' ? fallbackClass : '',
     ]"
@@ -55,7 +58,13 @@
             : 'bg-transparent opacity-0 group-hover:bg-[var(--app-liquid-glass-hover)]',
         ]"
         :style="active ? { backdropFilter: 'url(#liquid-glass-filter)' } : {}"
-      ></div>
+      >
+        <!-- Interactive Hover Glow -->
+        <div
+          v-if="interactive && active && (hoverEffect === 'all' || hoverEffect === 'glow')"
+          class="absolute inset-0 bg-gradient-to-t from-transparent to-white/20 dark:to-white/10 opacity-0 group-hover/liquid:opacity-100 transition-opacity duration-300 pointer-events-none"
+        ></div>
+      </div>
     </template>
     <template v-else-if="!fallbackClass">
       <!-- Lightweight fallback for reduced mode -->
