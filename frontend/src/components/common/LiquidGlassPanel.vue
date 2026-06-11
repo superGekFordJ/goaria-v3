@@ -73,7 +73,7 @@
     <template v-else-if="!fallbackClass">
       <!-- Lightweight fallback for reduced mode -->
       <div
-        class="absolute top-0 left-0 -z-10 h-full w-full overflow-hidden transition-all duration-300 pointer-events-none backdrop-blur-md"
+        class="absolute top-0 left-0 -z-10 h-full w-full overflow-hidden transition-all duration-300 pointer-events-none"
         :class="[
           radius,
           active
