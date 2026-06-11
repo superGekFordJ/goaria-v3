@@ -22,6 +22,7 @@ const taskStore = reactive(storeMocks.taskStore)
 const downloadGroupStore = reactive(storeMocks.downloadGroupStore)
 
 vi.mock('vue-i18n', () => ({
+  createI18n: () => ({}),
   useI18n: () => ({
     t: (key: string, params?: Record<string, unknown>) => {
       const suffix = params ? ` ${JSON.stringify(params)}` : ''
@@ -36,6 +37,12 @@ vi.mock('../../stores/task', () => ({
 
 vi.mock('../../stores/downloadGroups', () => ({
   useDownloadGroupStore: () => downloadGroupStore,
+}))
+
+vi.mock('../../stores/ui', () => ({
+  useUIStore: () => ({
+    effects: 'full',
+  }),
 }))
 
 describe('BatchActionBar group selection', () => {
