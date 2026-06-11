@@ -8,6 +8,7 @@
       interactive?: boolean
       radius?: string
       fallbackClass?: string
+      baseColorClass?: string
     }>(),
     {
       as: 'div',
@@ -15,6 +16,7 @@
       interactive: false,
       radius: 'rounded-[var(--radius-squircle-md)]',
       fallbackClass: '',
+      baseColorClass: 'bg-[var(--app-liquid-glass-bg)]',
     },
   )
 
@@ -24,7 +26,7 @@
 <template>
   <component
     :is="as"
-    class="relative isolate transition-all duration-300 w-full overflow-visible"
+    class="relative isolate transition-all duration-300 overflow-visible"
     :class="[
       interactive ? 'cursor-pointer' : '',
       radius,
@@ -49,7 +51,7 @@
         :class="[
           radius,
           active
-            ? 'bg-[var(--app-liquid-glass-bg)] opacity-100'
+            ? `${baseColorClass} opacity-100`
             : 'bg-transparent opacity-0 group-hover:bg-[var(--app-liquid-glass-hover)]',
         ]"
         :style="active ? { backdropFilter: 'url(#liquid-glass-filter)' } : {}"
@@ -62,7 +64,7 @@
         :class="[
           radius,
           active
-            ? 'bg-[var(--app-liquid-glass-bg)] opacity-100 border border-[var(--glass-border)]'
+            ? `${baseColorClass} opacity-100 border border-[var(--glass-border)]`
             : 'bg-transparent opacity-0 group-hover:bg-[var(--app-liquid-glass-hover)]',
         ]"
       ></div>

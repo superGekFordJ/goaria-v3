@@ -2,6 +2,8 @@
   import { ref, watch } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { Trash2, HardDrive, AlertCircle } from 'lucide-vue-next'
+  import StaticGlassPanel from '../common/StaticGlassPanel.vue'
+  import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
 
   const props = defineProps<{
     show: boolean
@@ -50,8 +52,10 @@
         <div class="absolute inset-0 modal-backdrop animate-fade-in"></div>
 
         <!-- Modal Content -->
-        <div
-          class="relative glass-panel rounded-[var(--radius-squircle-2xl)] w-full max-w-md p-8 animate-spring-in"
+        <StaticGlassPanel
+          radius="rounded-[var(--radius-squircle-2xl)]"
+          fallback-class="glass-panel"
+          class="relative w-full max-w-md p-8 animate-spring-in"
         >
           <!-- Warning Icon -->
           <div class="flex justify-center mb-6">
@@ -114,12 +118,17 @@
 
           <!-- Action Buttons -->
           <div class="flex gap-3">
-            <button
-              class="flex-1 py-4 rounded-[var(--radius-squircle-md)] bg-[var(--btn-glass-bg)] border border-[var(--btn-glass-border)] text-[var(--modal-text-muted)] font-semibold text-sm transition-all duration-200 hover:bg-[var(--btn-glass-hover)] hover:text-[var(--modal-text)] active:scale-[0.98]"
+            <!-- Cancel Button -->
+            <LiquidGlassPanel
+              as="button"
+              :interactive="true"
+              base-color-class="bg-[var(--btn-glass-bg)]"
+              fallback-class="btn-glass"
+              class="flex-1 py-4 rounded-[var(--radius-squircle-md)] text-[var(--modal-text-muted)] font-semibold text-sm transition-all duration-200 hover:text-[var(--modal-text)] active:scale-[0.98]"
               @click="handleCancel"
             >
-              {{ t('taskList.cancel') }}
-            </button>
+              <span class="flex items-center justify-center w-full h-full">{{ t('taskList.cancel') }}</span>
+            </LiquidGlassPanel>
             <button
               :disabled="isDeleting"
               class="flex-1 py-4 rounded-[var(--radius-squircle-md)] bg-[var(--status-error)] border border-red-400/20 text-white font-bold text-sm transition-all duration-200 hover:bg-red-400 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-red-500/20"
@@ -144,7 +153,7 @@
               <span>{{ t('taskList.cancel') }}</span>
             </div>
           </div>
-        </div>
+        </StaticGlassPanel>
       </div>
     </Transition>
   </Teleport>
