@@ -1113,19 +1113,21 @@ func RemoveDownloadGroup(groupKey string, deleteFiles bool, removeTasks func(gid
 	result.Refresh = downloadGroupRefreshHint(true, true, true, DownloadGroupOperationActionRemove)
 	result.finalizeOperationResult()
 
-	if resolution.card.DownloadGroup != nil && resolution.card.DownloadGroup.Dir != "" {
+	if deleteFiles && resolution.card.DownloadGroup != nil && resolution.card.DownloadGroup.Dir != "" {
 		dir := filepath.Clean(resolution.card.DownloadGroup.Dir)
-		if config.Current != nil && isSafeDownloadGroupFolderPathHint(dir) {
+		go func(dir string) {
+			time.Sleep(1500 * time.Millisecond)
+			if config.Current == nil || !isSafeDownloadGroupFolderPathHint(dir) {
+				return
+			}
 			absBase, err1 := filepath.Abs(config.Current.DownloadDir)
 			absGroup, err2 := filepath.Abs(dir)
 			if err1 == nil && err2 == nil && DownloadGroupPathContained(absBase, absGroup) {
-				if deleteFiles {
-					_ = os.RemoveAll(dir)
-				} else if isDirEmpty(dir) {
+				if isDirEmpty(dir) {
 					_ = os.Remove(dir)
 				}
 			}
-		}
+		}(dir)
 	}
 
 	return result
