@@ -78,9 +78,11 @@ func Calculate(fileSize int64, maxConnections int, url string) ThreadParams {
 	var minSize int64
 	if fileSize > 0 && nFinal > 0 {
 		minSize = int64(float64(fileSize) / float64(nFinal) * 0.99)
-		// 确保 minSize 至少为 1MB
+		// 确保 minSize 至少为 1MB，且最大不能超过 1024MB (1GB)，避免 aria2 报错
 		if minSize < 1024*1024 {
 			minSize = 1024 * 1024
+		} else if minSize > 1024*1024*1024 {
+			minSize = 1024 * 1024 * 1024
 		}
 	}
 
