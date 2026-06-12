@@ -113,7 +113,8 @@
     return rawEntries.map(entry => {
       let size = 150 // completed / error / unknown tasks size
       if (entry.type === 'group') {
-        size = 268 // DownloadGroupCard size
+        const isComplete = entry.item.type === 'backend' && entry.item.card.status === 'complete'
+        size = isComplete ? 250 : 268 // DownloadGroupCard size
       } else {
         const status = entry.task.status
         if (status === 'active') {

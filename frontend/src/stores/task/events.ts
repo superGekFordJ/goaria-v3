@@ -1,3 +1,5 @@
+import { getActivePinia } from 'pinia'
+import { useDownloadGroupStore } from '../downloadGroups'
 import { TaskState } from './state'
 import { TaskActions } from './actions'
 import { TaskPolling } from './polling'
@@ -218,6 +220,11 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       case 'add': {
         const payload = delta.payload as Partial<Task> | undefined
         const incoming = payload ? { ...payload, gid: payload.gid || delta.gid } : undefined
+
+        if (incoming?.download_group && getActivePinia()) {
+          const downloadGroupStore = useDownloadGroupStore()
+          downloadGroupStore.addPlaceholdersFromDownloadGroups([incoming.download_group], 'websocket')
+        }
 
         if (hasValidFiles(incoming) || hasTaskGroupMetadata(incoming)) {
           cacheMetadata(toTask(incoming))

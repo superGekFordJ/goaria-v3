@@ -835,7 +835,7 @@ describe('download group store', () => {
     expect(bindingMocks.RemoveDownloadGroup).toHaveBeenCalledWith('dg-remove', true)
     expect(store.currentDetailKey).toBeNull()
     expect(store.currentDetail).toBeNull()
-    expect(store.operationNotice?.action).toBe('remove')
+    expect(store.operationNotice).toBeNull()
   })
 
   it('removeGroup clears group key and group member tasks from selection in taskStore', async () => {

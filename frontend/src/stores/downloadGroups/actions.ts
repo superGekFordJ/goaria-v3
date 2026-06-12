@@ -83,11 +83,16 @@ export function useDownloadGroupActions(state: DownloadGroupState) {
     result: DownloadGroupOperationResult,
   ) {
     lastOperationResult.value = result
+    const severity = operationNoticeSeverity(result)
+    if (severity === 'success') {
+      operationNotice.value = null
+      return
+    }
     operationNotice.value = {
       id: ++operationNoticeSeq,
       group_key: groupKey,
       action,
-      severity: operationNoticeSeverity(result),
+      severity,
       code: primaryOperationCode(result),
       succeeded: result.succeeded ?? 0,
       skipped: result.skipped ?? 0,
