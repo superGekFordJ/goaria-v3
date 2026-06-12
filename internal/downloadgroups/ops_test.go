@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"goaria-v3/internal/config"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
@@ -491,4 +492,89 @@ func TestOpenDownloadGroupFolder_RedactsUnsafeMissingAndLauncherErrors(t *testin
 			assertNoOperationResultLeak(t, result, append(tt.disallowed, tt.dir)...)
 		})
 	}
+}
+
+func TestRemoveDownloadGroup_CleansUpFolder(t *testing.T) {
+	tempBaseDir := t.TempDir()
+	config.Current = &config.AppConfig{
+		DownloadDir: tempBaseDir,
+	}
+	defer func() {
+		config.Current = nil
+	}()
+
+	group := groupReadTestGroup("dg-cleanup-test", 2)
+	group.Dir = filepath.Join(tempBaseDir, "dg-cleanup-test-dir")
+	group.FolderName = "dg-cleanup-test-dir"
+
+	monitor.Cache.UpdateFromAria2(nil, nil, nil)
+	task := groupReadTask("gid-cleanup-task", "complete", &group, "100", "100", "0")
+	monitor.Cache.UpdateFromAria2(nil, nil, []rpc.Task{task})
+	monitor.RegisterTaskGroup(task.GID, group)
+
+	t.Run("empty directory, deleteFiles=false", func(t *testing.T) {
+		err := os.MkdirAll(group.Dir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(group.Dir); os.IsNotExist(err) {
+			t.Fatal("expected directory to exist")
+		}
+
+		result := RemoveDownloadGroup(group.ID, false, mockBatchRemove)
+		if !result.OK {
+			t.Fatalf("RemoveDownloadGroup failed: %#v", result)
+		}
+
+		if _, err := os.Stat(group.Dir); !os.IsNotExist(err) {
+			t.Fatal("expected empty directory to be cleaned up")
+		}
+	})
+
+	t.Run("non-empty directory, deleteFiles=false", func(t *testing.T) {
+		err := os.MkdirAll(group.Dir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dummyFile := filepath.Join(group.Dir, "dummy.txt")
+		err = os.WriteFile(dummyFile, []byte("hello"), 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		monitor.RegisterTaskGroup(task.GID, group)
+
+		result := RemoveDownloadGroup(group.ID, false, mockBatchRemove)
+		if !result.OK {
+			t.Fatalf("RemoveDownloadGroup failed: %#v", result)
+		}
+
+		if _, err := os.Stat(group.Dir); os.IsNotExist(err) {
+			t.Fatal("expected non-empty directory to be kept when deleteFiles=false")
+		}
+		_ = os.RemoveAll(group.Dir)
+	})
+
+	t.Run("non-empty directory, deleteFiles=true", func(t *testing.T) {
+		err := os.MkdirAll(group.Dir, 0o755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dummyFile := filepath.Join(group.Dir, "dummy.txt")
+		err = os.WriteFile(dummyFile, []byte("hello"), 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		monitor.RegisterTaskGroup(task.GID, group)
+
+		result := RemoveDownloadGroup(group.ID, true, mockBatchRemove)
+		if !result.OK {
+			t.Fatalf("RemoveDownloadGroup failed: %#v", result)
+		}
+
+		if _, err := os.Stat(group.Dir); !os.IsNotExist(err) {
+			t.Fatal("expected directory to be deleted completely when deleteFiles=true")
+		}
+	})
 }

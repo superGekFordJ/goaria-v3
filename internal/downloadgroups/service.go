@@ -645,7 +645,9 @@ func (b *downloadGroupBucket) memberStats() (DownloadGroupMemberCounts, uint64, 
 		}
 		total += parseDownloadGroupByteString(task.TotalLength)
 		completed += parseDownloadGroupByteString(task.CompletedLength)
-		speed += parseDownloadGroupByteString(task.DownloadSpeed)
+		if status == DownloadGroupStatusActive {
+			speed += parseDownloadGroupByteString(task.DownloadSpeed)
+		}
 		if member.completedAt > updatedAt {
 			updatedAt = member.completedAt
 		}
@@ -1110,6 +1112,22 @@ func RemoveDownloadGroup(groupKey string, deleteFiles bool, removeTasks func(gid
 	result.markAttempted()
 	result.Refresh = downloadGroupRefreshHint(true, true, true, DownloadGroupOperationActionRemove)
 	result.finalizeOperationResult()
+
+	if resolution.card.DownloadGroup != nil && resolution.card.DownloadGroup.Dir != "" {
+		dir := filepath.Clean(resolution.card.DownloadGroup.Dir)
+		if config.Current != nil && isSafeDownloadGroupFolderPathHint(dir) {
+			absBase, err1 := filepath.Abs(config.Current.DownloadDir)
+			absGroup, err2 := filepath.Abs(dir)
+			if err1 == nil && err2 == nil && DownloadGroupPathContained(absBase, absGroup) {
+				if deleteFiles {
+					_ = os.RemoveAll(dir)
+				} else if isDirEmpty(dir) {
+					_ = os.Remove(dir)
+				}
+			}
+		}
+	}
+
 	return result
 }
 
@@ -1415,4 +1433,12 @@ func resolveExactGroupFolderLaunchTarget(path string) (string, bool) {
 		return cleaned, true
 	}
 	return "", false
+}
+
+func isDirEmpty(name string) bool {
+	entries, err := os.ReadDir(name)
+	if err != nil {
+		return false
+	}
+	return len(entries) == 0
 }
