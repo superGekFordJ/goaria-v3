@@ -217,11 +217,14 @@ describe('TaskHeader batch group hints', () => {
         created_at: 1770000000,
       },
     ]
-    storeMocks.taskStore.batchAddUri.mockResolvedValue({
-      succeeded: ['https://example.invalid/1'],
-      duplicates: [],
-      errors: {},
-      groups,
+    storeMocks.taskStore.batchAddUri.mockImplementation(async () => {
+      storeMocks.downloadGroupStore.addPlaceholdersFromDownloadGroups(groups, 'batch-add')
+      return {
+        succeeded: ['https://example.invalid/1'],
+        duplicates: [],
+        errors: {},
+        groups,
+      }
     })
     const wrapper = mountHeader()
 

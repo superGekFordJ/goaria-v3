@@ -21,6 +21,7 @@ import type { BatchAddResult } from '../../../bindings/goaria-v3/internal/tasks/
 import { cacheMetadata, applyMetadataFromCache } from './metadata'
 import { mergeTasks, dedupByGid } from './utils'
 import { cloneTaskGroupMetadata, mergeTaskGroupMetadata } from './grouping'
+import { useDownloadGroupStore } from '../downloadGroups'
 
 export function setupActions(state: TaskState) {
   // Reuse sets to avoid GC - scoped to setupActions for better encapsulation
@@ -382,6 +383,8 @@ export function setupActions(state: TaskState) {
   async function batchAddUri(uris: string[]): Promise<BatchAddResult> {
     try {
       const res = await BatchAddUri(uris)
+      const downloadGroupStore = useDownloadGroupStore()
+      downloadGroupStore.addPlaceholdersFromDownloadGroups(res.groups, 'batch-add')
       await fetchTasks()
       immediateUpdateTrayIcon()
       if (

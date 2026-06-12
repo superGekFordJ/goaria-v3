@@ -357,7 +357,7 @@
         </template>
       </div>
 
-      <div v-if="!isPlaceholder" class="download-group-progress">
+      <div v-if="!isPlaceholder && statusKey !== 'complete'" class="download-group-progress">
         <div class="progress-bar-container mt-2">
           <div
             class="progress-bar-fill"

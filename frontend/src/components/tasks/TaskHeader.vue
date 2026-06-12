@@ -195,7 +195,8 @@
       const errors = Object.keys(res.errors || {}).length
 
       const groupHints = buildBatchGroupResultHints(res.groups)
-      downloadGroupStore.addPlaceholdersFromDownloadGroups(res.groups, 'batch-add')
+      // Redundant placeholder registration is now handled inside taskStore.batchAddUri before fetchTasks
+      // downloadGroupStore.addPlaceholdersFromDownloadGroups(res.groups, 'batch-add')
       void downloadGroupStore.fetchGroups()
 
       batchResult.value = { succeeded, duplicates, errors, groupHints }
