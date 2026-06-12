@@ -34,6 +34,7 @@ type downloadGroupNamer struct {
 	mu       sync.Mutex
 	timers   map[string]*time.Timer
 	attempts map[string]int
+	wg       sync.WaitGroup
 
 	debounceDelay time.Duration
 	retryDelay    time.Duration
@@ -107,14 +108,18 @@ func ConfigureDownloadGroupNamerForTest(debounceDelay, retryDelay time.Duration,
 
 func ResetDownloadGroupNamerForTest() {
 	defaultDownloadGroupNamer.mu.Lock()
-	defer defaultDownloadGroupNamer.mu.Unlock()
 	for key, timer := range defaultDownloadGroupNamer.timers {
 		if timer != nil {
-			timer.Stop()
+			if timer.Stop() {
+				defaultDownloadGroupNamer.wg.Done()
+			}
 		}
 		delete(defaultDownloadGroupNamer.timers, key)
 	}
 	defaultDownloadGroupNamer.attempts = make(map[string]int)
+	defaultDownloadGroupNamer.mu.Unlock()
+
+	defaultDownloadGroupNamer.wg.Wait()
 }
 
 func PendingDownloadGroupNameJobCountForTest() int {
@@ -135,10 +140,14 @@ func (n *downloadGroupNamer) queue(groupKey string, delay time.Duration) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if timer := n.timers[groupKey]; timer != nil {
-		timer.Reset(delay)
+		if !timer.Reset(delay) {
+			n.wg.Add(1)
+		}
 		return
 	}
+	n.wg.Add(1)
 	n.timers[groupKey] = time.AfterFunc(delay, func() {
+		defer n.wg.Done()
 		n.mu.Lock()
 		delete(n.timers, groupKey)
 		n.mu.Unlock()

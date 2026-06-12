@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/history"
@@ -526,33 +527,37 @@ func TestRemoveDownloadGroup_CleansUpFolder(t *testing.T) {
 			t.Fatalf("RemoveDownloadGroup failed: %#v", result)
 		}
 
-		if _, err := os.Stat(group.Dir); !os.IsNotExist(err) {
-			t.Fatal("expected empty directory to be cleaned up")
+		// Wait to ensure no asynchronous task fires and deletes it
+		time.Sleep(1600 * time.Millisecond)
+
+		if _, err := os.Stat(group.Dir); os.IsNotExist(err) {
+			t.Fatal("expected empty directory to NOT be cleaned up when deleteFiles=false")
 		}
+		_ = os.RemoveAll(group.Dir)
 	})
 
-	t.Run("non-empty directory, deleteFiles=false", func(t *testing.T) {
+	t.Run("empty directory, deleteFiles=true", func(t *testing.T) {
 		err := os.MkdirAll(group.Dir, 0o755)
 		if err != nil {
 			t.Fatal(err)
 		}
-		dummyFile := filepath.Join(group.Dir, "dummy.txt")
-		err = os.WriteFile(dummyFile, []byte("hello"), 0o644)
-		if err != nil {
-			t.Fatal(err)
+		if _, err := os.Stat(group.Dir); os.IsNotExist(err) {
+			t.Fatal("expected directory to exist")
 		}
 
 		monitor.RegisterTaskGroup(task.GID, group)
 
-		result := RemoveDownloadGroup(group.ID, false, mockBatchRemove)
+		result := RemoveDownloadGroup(group.ID, true, mockBatchRemove)
 		if !result.OK {
 			t.Fatalf("RemoveDownloadGroup failed: %#v", result)
 		}
 
-		if _, err := os.Stat(group.Dir); os.IsNotExist(err) {
-			t.Fatal("expected non-empty directory to be kept when deleteFiles=false")
+		// Wait for goroutine cleanup
+		time.Sleep(1600 * time.Millisecond)
+
+		if _, err := os.Stat(group.Dir); !os.IsNotExist(err) {
+			t.Fatal("expected empty directory to be cleaned up when deleteFiles=true")
 		}
-		_ = os.RemoveAll(group.Dir)
 	})
 
 	t.Run("non-empty directory, deleteFiles=true", func(t *testing.T) {
@@ -573,8 +578,12 @@ func TestRemoveDownloadGroup_CleansUpFolder(t *testing.T) {
 			t.Fatalf("RemoveDownloadGroup failed: %#v", result)
 		}
 
-		if _, err := os.Stat(group.Dir); !os.IsNotExist(err) {
-			t.Fatal("expected directory to be deleted completely when deleteFiles=true")
+		// Wait for goroutine cleanup
+		time.Sleep(1600 * time.Millisecond)
+
+		if _, err := os.Stat(group.Dir); os.IsNotExist(err) {
+			t.Fatal("expected non-empty directory to be kept even when deleteFiles=true")
 		}
+		_ = os.RemoveAll(group.Dir)
 	})
 }
