@@ -321,6 +321,8 @@
     "retry": "再試行",
     "download": "更新をダウンロード",
     "restart": "アプリを再起動",
-    "currentVersion": "現在のバージョン"
+    "currentVersion": "現在のバージョン",
+    "includePreRelease": "開発版 (Beta) を含める",
+    "beta": "ベータ"
   }
 }

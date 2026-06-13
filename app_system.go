@@ -234,12 +234,12 @@ func (a *App) GetAppVersion() string {
 }
 
 // CheckForUpdate checks GitHub Releases for a newer version
-func (a *App) CheckForUpdate() update.UpdateResult {
+func (a *App) CheckForUpdate(includePreRelease bool) update.UpdateResult {
 	if a.eventHub != nil {
 		a.eventHub.EmitUpdateStatus(update.StatusChecking, nil)
 	}
 
-	result, err := update.Check(version)
+	result, err := update.Check(version, includePreRelease)
 	if err != nil {
 		errResult := update.UpdateResult{
 			Current: version,

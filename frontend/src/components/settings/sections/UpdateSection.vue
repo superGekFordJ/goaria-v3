@@ -19,6 +19,16 @@
   import { Events } from '@wailsio/runtime'
   import { useSmoothProgress } from '../../../composables/useSmoothProgress'
 
+  interface ReleaseInfo {
+    tag_name: string
+    name: string
+    body: string
+    html_url: string
+    asset_url: string
+    asset_size: number
+    prerelease: boolean
+  }
+
   const { t } = useI18n()
 
   const currentVersion = ref('...')
@@ -28,6 +38,9 @@
   const assetSize = ref(0)
   const errorMsg = ref('')
   const upToDate = ref(false)
+  const includePreRelease = ref(false)
+  const availableReleases = ref<ReleaseInfo[]>([])
+  const downloadingAssetURL = ref('')
 
   // Keep smoothing for update download, but tune it to be more responsive than task cards
   const UPDATE_PROGRESS_CONFIG = {
@@ -96,9 +109,10 @@
     status.value = 'checking'
     upToDate.value = false
     errorMsg.value = ''
+    availableReleases.value = []
 
     try {
-      const result = await CheckForUpdate()
+      const result = await CheckForUpdate(includePreRelease.value)
 
       if (result.error) {
         status.value = 'error'
@@ -106,11 +120,10 @@
         return
       }
 
-      if (result.available && result.releaseInfo) {
+      if (result.available && result.releases && result.releases.length > 0) {
         status.value = 'available'
+        availableReleases.value = result.releases as ReleaseInfo[]
         latestVersion.value = result.latest
-        assetURL.value = result.releaseInfo.asset_url
-        assetSize.value = result.releaseInfo.asset_size
       } else {
         status.value = 'idle'
         upToDate.value = true
@@ -121,10 +134,13 @@
     }
   }
 
-  const applyUpdate = async () => {
+  const startUpdate = async (release: ReleaseInfo) => {
     status.value = 'downloading'
+    downloadingAssetURL.value = release.asset_url
+    assetURL.value = release.asset_url
+    assetSize.value = release.asset_size
     try {
-      await ApplyUpdate(assetURL.value, assetSize.value)
+      await ApplyUpdate(release.asset_url, release.asset_size)
     } catch {
       status.value = 'error'
       errorMsg.value = t('update.error')
@@ -141,9 +157,8 @@
 </script>
 
 <template>
-  <div
-    class="etched-panel p-5 mt-6"
-  >
+  <div class="etched-panel p-5 mt-6 relative overflow-hidden">
+    <!-- Top Row: App Identity & Global Actions/Status -->
     <div class="flex items-center justify-between relative z-10">
       <!-- Left: App identity -->
       <div class="flex items-center gap-3">
@@ -156,10 +171,39 @@
         </div>
       </div>
 
-      <!-- Right: Status-dependent content -->
-      <div class="flex items-center gap-2">
-        <!-- idle -->
-        <template v-if="status === 'idle' && !upToDate">
+      <!-- Right: Toggle & Check / Status -->
+      <div class="flex items-center gap-4">
+        <!-- Pre-release Toggle Switch (only show when not checking, downloading, or ready to restart) -->
+        <div
+          v-if="status === 'idle' || status === 'error' || status === 'available'"
+          class="flex items-center gap-2"
+        >
+          <span class="text-[10px] font-mono-data text-[var(--app-text-muted)]">
+            {{ t('update.includePreRelease') }}
+          </span>
+          <div
+            class="w-9 h-5 rounded-full relative transition-all duration-300 cursor-pointer shrink-0"
+            :class="[
+              includePreRelease ? 'bg-[var(--neon-primary)]' : 'bg-[var(--btn-glass-bg)] border border-[var(--glass-border)]',
+            ]"
+            role="switch"
+            tabindex="0"
+            :aria-checked="includePreRelease"
+            @click="includePreRelease = !includePreRelease"
+            @keydown.enter.prevent="includePreRelease = !includePreRelease"
+            @keydown.space.prevent="includePreRelease = !includePreRelease"
+          >
+            <div
+              class="absolute top-[3px] w-3.5 h-3.5 rounded-full bg-[var(--card-bg)] shadow-md transition-all duration-300"
+              :class="[
+                includePreRelease ? 'left-5' : 'left-0.5',
+              ]"
+            ></div>
+          </div>
+        </div>
+
+        <!-- Check Button (Idle / Error) -->
+        <template v-if="(status === 'idle' || status === 'error') && !upToDate">
           <button
             class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:border-[var(--neon-primary)]/30 transition-all duration-200 text-[10px] font-mono-data text-[var(--app-text-muted)] hover:text-[var(--neon-primary)]"
             @click="checkUpdate"
@@ -169,11 +213,9 @@
           </button>
         </template>
 
-        <!-- up to date -->
+        <!-- Up to Date Status -->
         <template v-else-if="status === 'idle' && upToDate">
-          <div
-            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
-          >
+          <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20">
             <CheckCircle :size="12" class="text-[var(--status-complete)]" />
             <span class="text-[10px] font-mono-data text-[var(--status-complete)]">
               {{ t('update.upToDate') }}
@@ -187,7 +229,7 @@
           </button>
         </template>
 
-        <!-- checking -->
+        <!-- Checking Status -->
         <template v-else-if="status === 'checking'">
           <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]">
             <Loader2 :size="12" class="animate-spin text-[var(--neon-primary)]" />
@@ -197,56 +239,11 @@
           </div>
         </template>
 
-        <!-- available -->
-        <template v-else-if="status === 'available'">
-          <span class="text-[10px] font-mono-data text-[var(--neon-primary)]">
-            {{ t('update.available', { version: latestVersion }) }}
-          </span>
-          <button
-            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--neon-primary)]/10 border border-[var(--neon-primary)]/30 hover:bg-[var(--neon-primary)]/20 transition-all duration-200 text-[10px] font-mono-data text-[var(--neon-primary)]"
-            @click="applyUpdate"
-          >
-            <Download :size="12" />
-            {{ t('update.download') }}
-          </button>
-        </template>
-
-        <!-- downloading -->
-        <template v-else-if="status === 'downloading'">
-          <div class="flex items-center gap-3">
-            <span class="text-[10px] font-mono-data text-[var(--app-text-muted)]">
-              {{ t('update.downloading') }}
-            </span>
-            <div class="w-32 h-1.5 rounded-full bg-[var(--btn-glass-bg)] overflow-hidden">
-              <div
-                class="h-full rounded-full bg-[var(--neon-primary)]"
-                :style="{ transform: `scaleX(${progressScale})`, transformOrigin: 'left' }"
-              ></div>
-            </div>
-            <span class="text-[10px] font-mono-data text-[var(--neon-primary)]">
-              {{ progressPercent }}%
-            </span>
-          </div>
-        </template>
-
-        <!-- ready -->
-        <template v-else-if="status === 'ready'">
-          <button
-            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/30 hover:bg-[var(--status-complete)]/20 transition-all duration-200 text-[10px] font-mono-data text-[var(--status-complete)]"
-            @click="restartApp"
-          >
-            <RotateCcw :size="12" />
-            {{ t('update.restart') }}
-          </button>
-        </template>
-
-        <!-- error -->
-        <template v-else-if="status === 'error'">
+        <!-- Error Status (when not showing release list) -->
+        <template v-else-if="status === 'error' && availableReleases.length === 0">
           <div class="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-[var(--status-error)]/10">
             <AlertCircle :size="12" class="text-[var(--status-error)]" />
-            <span
-              class="text-[10px] font-mono-data text-[var(--status-error)] max-w-[120px] truncate"
-            >
+            <span class="text-[10px] font-mono-data text-[var(--status-error)] max-w-[120px] truncate">
               {{ errorMsg || t('update.error') }}
             </span>
           </div>
@@ -258,6 +255,103 @@
             {{ t('update.retry') }}
           </button>
         </template>
+
+        <!-- Recheck button when updates are already listed -->
+        <template v-else-if="status === 'available'">
+          <button
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:border-[var(--neon-primary)]/30 transition-all duration-200 text-[10px] font-mono-data text-[var(--app-text-subtle)] hover:text-[var(--neon-primary)]"
+            @click="checkUpdate"
+          >
+            <RefreshCw :size="12" />
+            {{ t('update.checkUpdate') }}
+          </button>
+        </template>
+      </div>
+    </div>
+
+    <!-- Error notice under the top row if listing releases is active but an operation failed -->
+    <div
+      v-if="status === 'error' && availableReleases.length > 0"
+      class="mt-4 p-3 rounded-lg bg-[var(--status-error)]/10 border border-[var(--status-error)]/20 flex items-center gap-2 relative z-10"
+    >
+      <AlertCircle :size="14" class="text-[var(--status-error)] shrink-0" />
+      <span class="text-[10px] font-mono-data text-[var(--status-error)]">
+        {{ errorMsg || t('update.error') }}
+      </span>
+    </div>
+
+    <!-- Releases List (shown when availableReleases has items) -->
+    <div
+      v-if="availableReleases.length > 0"
+      class="mt-5 border-t border-[var(--glass-border)] pt-4 relative z-10"
+    >
+      <div class="flex flex-col gap-3">
+        <div
+          v-for="release in availableReleases"
+          :key="release.tag_name"
+          class="flex items-center justify-between p-3 rounded-xl bg-[var(--btn-glass-bg)]/30 border border-[var(--glass-border)]/50 hover:bg-[var(--btn-glass-bg)]/50 transition-all duration-200"
+        >
+          <!-- Left: Version info and Beta badge -->
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-bold font-mono-data text-[var(--app-text)]">
+              {{ release.tag_name }}
+            </span>
+            <span
+              v-if="release.prerelease"
+              class="px-1.5 py-0.5 rounded text-[8px] font-extrabold uppercase tracking-wider bg-[var(--neon-primary)]/10 text-[var(--neon-primary)] border border-[var(--neon-primary)]/20 font-mono-data"
+            >
+              {{ t('update.beta') }}
+            </span>
+          </div>
+
+          <!-- Right: Actions / Download progress / Ready to restart -->
+          <div class="flex items-center gap-3">
+            <!-- Downloading Progress for this specific release -->
+            <div
+              v-if="status === 'downloading' && downloadingAssetURL === release.asset_url"
+              class="flex items-center gap-3"
+            >
+              <span class="text-[10px] font-mono-data text-[var(--app-text-muted)]">
+                {{ t('update.downloading') }}
+              </span>
+              <div class="w-24 h-1.5 rounded-full bg-[var(--btn-glass-bg)] overflow-hidden">
+                <div
+                  class="h-full rounded-full bg-[var(--neon-primary)]"
+                  :style="{ transform: `scaleX(${progressScale})`, transformOrigin: 'left' }"
+                ></div>
+              </div>
+              <span class="text-[10px] font-mono-data text-[var(--neon-primary)]">
+                {{ progressPercent }}%
+              </span>
+            </div>
+
+            <!-- Ready / Restart for this specific release -->
+            <button
+              v-else-if="status === 'ready' && downloadingAssetURL === release.asset_url"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/30 hover:bg-[var(--status-complete)]/20 transition-all duration-200 text-[10px] font-mono-data text-[var(--status-complete)]"
+              @click="restartApp"
+            >
+              <RotateCcw :size="12" />
+              {{ t('update.restart') }}
+            </button>
+
+            <!-- Update button (disabled for other releases when downloading/ready/checking) -->
+            <button
+              v-else
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all duration-200 text-[10px] font-mono-data"
+              :class="[
+                status === 'downloading' || status === 'ready' || status === 'checking'
+                  ? 'bg-transparent border border-[var(--glass-border)] text-[var(--app-text-muted)] opacity-50 cursor-not-allowed'
+                  : 'bg-[var(--neon-primary)]/10 border border-[var(--neon-primary)]/30 hover:bg-[var(--neon-primary)]/20 text-[var(--neon-primary)]'
+              ]"
+              :disabled="status === 'downloading' || status === 'ready' || status === 'checking'"
+              @click="startUpdate(release)"
+            >
+              <Download :size="12" />
+              {{ t('update.download') }}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   </div>

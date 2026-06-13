@@ -14,6 +14,11 @@ import (
 // GitHubRepo is the owner/repo for GitHub Releases API
 const GitHubRepo = "superGekFordJ/goaria-v3"
 
+var (
+	apiBaseURL = "https://api.github.com"
+	httpClient = &http.Client{Timeout: 10 * time.Second}
+)
+
 // githubAsset represents a single asset in a GitHub Release
 type githubAsset struct {
 	Name               string `json:"name"`
@@ -33,7 +38,7 @@ type githubRelease struct {
 
 // Check queries GitHub Releases API and compares versions.
 // Returns UpdateResult with availability info. Non-nil error only for unexpected failures.
-func Check(currentVersion string) (*UpdateResult, error) {
+func Check(currentVersion string, includePreRelease bool) (*UpdateResult, error) {
 	result := &UpdateResult{
 		Current: currentVersion,
 	}
@@ -53,9 +58,8 @@ func Check(currentVersion string) (*UpdateResult, error) {
 		return result, nil
 	}
 
-	// Fetch latest release from GitHub
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", GitHubRepo)
-	client := &http.Client{Timeout: 10 * time.Second}
+	// Fetch up to 30 releases from GitHub
+	url := fmt.Sprintf("%s/repos/%s/releases?per_page=30", apiBaseURL, GitHubRepo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		result.Error = err.Error()
@@ -64,7 +68,7 @@ func Check(currentVersion string) (*UpdateResult, error) {
 	req.Header.Set("User-Agent", "GoAria/"+currentVersion)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		result.Error = "network error: " + err.Error()
 		return result, nil
@@ -72,35 +76,50 @@ func Check(currentVersion string) (*UpdateResult, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		result.Error = fmt.Sprintf("GitHub API returned %d", resp.StatusCode)
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+			result.Error = "GitHub API rate limit exceeded, please try again later"
+		} else {
+			result.Error = fmt.Sprintf("GitHub API returned %d", resp.StatusCode)
+		}
 		return result, nil
 	}
 
-	var release githubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+	var releases []githubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
 		result.Error = "failed to parse response: " + err.Error()
 		return result, nil
 	}
 
-	// Parse remote version (strip leading 'v')
-	remoteTag := strings.TrimPrefix(release.TagName, "v")
-	remote, err := semver.NewVersion(remoteTag)
-	if err != nil {
-		result.Error = "invalid remote version: " + release.TagName
-		return result, nil
-	}
+	arch := runtime.GOARCH
+	var matchedReleases []ReleaseInfo
 
-	result.Latest = remoteTag
+	for _, release := range releases {
+		// Skip prerelease if not included
+		if release.PreRelease && !includePreRelease {
+			continue
+		}
 
-	// Compare versions
-	if remote.GreaterThan(current) {
-		result.Available = true
+		// Parse remote version (strip leading 'v')
+		remoteTag := strings.TrimPrefix(release.TagName, "v")
+		remote, err := semver.NewVersion(remoteTag)
+		if err != nil {
+			// Skip releases with invalid tag name formatting rather than failing the whole check
+			continue
+		}
 
-		// Find matching asset
-		arch := runtime.GOARCH
+		// Only look for versions strictly newer than current
+		if !remote.GreaterThan(current) {
+			continue
+		}
+
+		// Find matching windows asset
 		assetURL, assetSize := matchAsset(release.Assets, arch)
+		if assetURL == "" {
+			// Skip if no matching windows installer asset is found
+			continue
+		}
 
-		result.ReleaseInfo = &ReleaseInfo{
+		matchedReleases = append(matchedReleases, ReleaseInfo{
 			TagName:    release.TagName,
 			Name:       release.Name,
 			Body:       release.Body,
@@ -108,7 +127,16 @@ func Check(currentVersion string) (*UpdateResult, error) {
 			AssetURL:   assetURL,
 			AssetSize:  assetSize,
 			PreRelease: release.PreRelease,
-		}
+		})
+	}
+
+	result.Releases = matchedReleases
+	result.Available = len(matchedReleases) > 0
+
+	if len(matchedReleases) > 0 {
+		result.Latest = strings.TrimPrefix(matchedReleases[0].TagName, "v")
+	} else {
+		result.Latest = currentVersion
 	}
 
 	return result, nil
