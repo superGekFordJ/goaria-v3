@@ -15,7 +15,7 @@ export const DOWNLOAD_GROUP_PENDING_NAME_REFETCH_MS = 1500
 export const DOWNLOAD_GROUP_PENDING_NAME_MAX_REFETCHES = 5
 export const PLACEHOLDER_TIMER_FLOOR_MS = 1
 
-export type DownloadGroupPlaceholderSource = 'batch-add'
+export type DownloadGroupPlaceholderSource = 'batch-add' | 'websocket'
 
 export type DownloadGroupOperationAction = 'pause' | 'resume' | 'remove' | 'open_folder'
 export type DownloadGroupOperationNoticeSeverity = 'success' | 'info' | 'warning' | 'error'

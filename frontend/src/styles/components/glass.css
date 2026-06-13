@@ -73,3 +73,75 @@
     0 0 calc(20px * var(--effects-glow-intensity, 1)) color-mix(in srgb, var(--neon-blue) 20%, transparent),
     0 0 calc(40px * var(--effects-glow-intensity, 1)) color-mix(in srgb, var(--neon-blue) 10%, transparent);
 }
+
+/* === Etched Micro-Glass Panel (Recessed Groove & Matte Grain) === */
+.etched-panel {
+  position: relative;
+  border-radius: var(--radius-squircle-lg);
+  background: color-mix(in srgb, var(--app-bg) 60%, transparent);
+  border: 1px solid rgba(0, 0, 0, 0.45);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+  border-right-color: rgba(255, 255, 255, 0.08);
+  box-shadow:
+    inset 1px 1px 3px 0 rgba(0, 0, 0, 0.55),
+    inset -1px -1px 2px 0 rgba(255, 255, 255, 0.04),
+    0 1px 0 0 rgba(255, 255, 255, 0.03);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+/* Local noise overlay simulating physical micro-pitted matte/frosted texture */
+.etched-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  opacity: 0.025; /* Very subtle matte grain in dark mode */
+  mix-blend-mode: overlay;
+  z-index: 0;
+}
+
+/* Ensure contents sit above the noise overlay */
+.etched-panel > * {
+  position: relative;
+  z-index: 1;
+}
+
+.etched-panel:hover {
+  border-color: rgba(0, 0, 0, 0.55);
+  border-bottom-color: color-mix(in srgb, var(--skin-surface-border) 40%, transparent);
+  border-right-color: color-mix(in srgb, var(--skin-surface-border) 40%, transparent);
+  box-shadow:
+    inset 1px 1px 4px 0 rgba(0, 0, 0, 0.65),
+    inset -1px -1px 3px 0 color-mix(in srgb, var(--skin-surface-border) 25%, transparent),
+    0 1px 2px 0 color-mix(in srgb, var(--skin-ambient-glow) 15%, transparent);
+}
+
+/* Ceramic (Light Theme) Overrides */
+:root[data-theme='light'] .etched-panel {
+  background: color-mix(in srgb, var(--app-bg) 70%, transparent);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-bottom-color: rgba(255, 255, 255, 0.85);
+  border-right-color: rgba(255, 255, 255, 0.85);
+  box-shadow:
+    inset 1px 1px 3px 0 rgba(0, 0, 0, 0.05),
+    inset -1px -1px 2px 0 rgba(255, 255, 255, 0.7),
+    0 1px 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+:root[data-theme='light'] .etched-panel::before {
+  opacity: 0.04; /* Slightly higher opacity in light mode for visible grain */
+  mix-blend-mode: multiply;
+}
+
+:root[data-theme='light'] .etched-panel:hover {
+  border-color: rgba(0, 0, 0, 0.08);
+  border-bottom-color: color-mix(in srgb, var(--skin-surface-border) 80%, transparent);
+  border-right-color: color-mix(in srgb, var(--skin-surface-border) 80%, transparent);
+  box-shadow:
+    inset 1px 1px 4px 0 rgba(0, 0, 0, 0.08),
+    inset -1px -1px 3px 0 color-mix(in srgb, var(--skin-surface-border) 50%, transparent),
+    0 1px 2px 0 color-mix(in srgb, var(--skin-ambient-glow) 20%, transparent);
+}
+

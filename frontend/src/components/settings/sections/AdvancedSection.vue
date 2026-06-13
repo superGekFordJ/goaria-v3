@@ -2,7 +2,6 @@
   import { Layers, History } from 'lucide-vue-next'
   import { useI18n } from 'vue-i18n'
   import SectionCard from './SectionCard.vue'
-  import StaticGlassPanel from '../../common/StaticGlassPanel.vue'
 
   const { t } = useI18n()
 
@@ -82,10 +81,8 @@
     </SectionCard>
 
     <!-- History Toggle Card -->
-    <StaticGlassPanel
-      radius="rounded-[var(--radius-squircle-lg)]"
-      class="p-6 cursor-pointer transition-all duration-300 hover:border-[var(--neon-primary)]/20"
-      fallback-class="glass-panel"
+    <div
+      class="etched-panel p-6 cursor-pointer"
       @click="toggleHistory"
     >
       <div class="flex items-center justify-between relative z-10">
@@ -126,6 +123,6 @@
           ></div>
         </div>
       </div>
-    </StaticGlassPanel>
+    </div>
   </div>
 </template>

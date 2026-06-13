@@ -1,6 +1,5 @@
 <script setup lang="ts">
   import type { Component } from 'vue'
-  import StaticGlassPanel from '../../common/StaticGlassPanel.vue'
 
   defineProps<{
     title: string
@@ -11,11 +10,7 @@
 </script>
 
 <template>
-  <StaticGlassPanel
-    radius="rounded-[var(--radius-squircle-lg)]"
-    class="p-6"
-    fallback-class="glass-panel"
-  >
+  <div class="etched-panel p-6">
     <div class="flex items-center justify-between mb-4">
       <div class="flex items-center gap-3">
         <div
@@ -34,5 +29,5 @@
       <slot name="header-extra"></slot>
     </div>
     <slot></slot>
-  </StaticGlassPanel>
+  </div>
 </template>
