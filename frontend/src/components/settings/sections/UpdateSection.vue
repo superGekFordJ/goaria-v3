@@ -18,7 +18,6 @@
   } from '../../../../bindings/goaria-v3/app.js'
   import { Events } from '@wailsio/runtime'
   import { useSmoothProgress } from '../../../composables/useSmoothProgress'
-  import StaticGlassPanel from '../../common/StaticGlassPanel.vue'
 
   const { t } = useI18n()
 
@@ -142,10 +141,8 @@
 </script>
 
 <template>
-  <StaticGlassPanel
-    class="p-5 mt-6"
-    radius="rounded-[var(--radius-squircle-lg)]"
-    fallback-class="glass-panel-subtle"
+  <div
+    class="etched-panel p-5 mt-6"
   >
     <div class="flex items-center justify-between relative z-10">
       <!-- Left: App identity -->
@@ -263,5 +260,5 @@
         </template>
       </div>
     </div>
-  </StaticGlassPanel>
+  </div>
 </template>
