@@ -13,11 +13,11 @@ type ReleaseInfo struct {
 
 // UpdateResult is returned to the frontend via Wails binding
 type UpdateResult struct {
-	Available   bool         `json:"available"`
-	Current     string       `json:"current"`
-	Latest      string       `json:"latest"`
-	ReleaseInfo *ReleaseInfo `json:"releaseInfo,omitempty"`
-	Error       string       `json:"error,omitempty"`
+	Available bool          `json:"available"`
+	Current   string        `json:"current"`
+	Latest    string        `json:"latest"`
+	Releases  []ReleaseInfo `json:"releases,omitempty"`
+	Error     string        `json:"error,omitempty"`
 }
 
 // UpdateStatus constants for event emission

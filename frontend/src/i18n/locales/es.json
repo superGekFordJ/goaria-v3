@@ -321,6 +321,8 @@
     "retry": "Reintentar",
     "download": "Descargar Actualización",
     "restart": "Reiniciar App",
-    "currentVersion": "Versión Actual"
+    "currentVersion": "Versión Actual",
+    "includePreRelease": "Incluir versiones inestables (Beta)",
+    "beta": "Beta"
   }
 }

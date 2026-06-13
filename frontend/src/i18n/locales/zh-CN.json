@@ -321,6 +321,8 @@
     "retry": "重试",
     "download": "下载更新",
     "restart": "重启应用",
-    "currentVersion": "当前版本"
+    "currentVersion": "当前版本",
+    "includePreRelease": "包含不稳定版本 (Beta)",
+    "beta": "测试版"
   }
 }
