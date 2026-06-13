@@ -182,9 +182,9 @@
             {{ t('update.includePreRelease') }}
           </span>
           <div
-            class="w-9 h-5 rounded-full relative transition-all duration-300 cursor-pointer shrink-0"
+            class="w-9 h-5 rounded-full relative transition-all duration-300 cursor-pointer shrink-0 border"
             :class="[
-              includePreRelease ? 'bg-[var(--neon-primary)]' : 'bg-[var(--btn-glass-bg)] border border-[var(--glass-border)]',
+              includePreRelease ? 'bg-[var(--neon-primary)] border-transparent' : 'bg-[var(--btn-glass-bg)] border-[var(--glass-border)]',
             ]"
             role="switch"
             tabindex="0"
@@ -194,9 +194,9 @@
             @keydown.space.prevent="includePreRelease = !includePreRelease"
           >
             <div
-              class="absolute top-[3px] w-3.5 h-3.5 rounded-full bg-[var(--card-bg)] shadow-md transition-all duration-300"
+              class="absolute top-[2px] w-3.5 h-3.5 rounded-full bg-[var(--card-bg)] shadow-md transition-all duration-300"
               :class="[
-                includePreRelease ? 'left-5' : 'left-0.5',
+                includePreRelease ? 'left-[18px]' : 'left-[2px]',
               ]"
             ></div>
           </div>
