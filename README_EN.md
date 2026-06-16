@@ -50,6 +50,7 @@ Unlike feature-heavy download managers, GoAria's philosophy is rooted in **Pragm
 - **Streamlined Core**: Exclusively handles HTTP/HTTPS/FTP/SFTP links. No bloat from magnet or torrent modules, keeping the functionality pure.
 - **Spotlight Interaction**: A system-level search inspired header design with automatic link recognition for one-click task initiation.
 - **Smart Thread**: Automatically calculates the optimal number of threads based on file size to avoid resource waste.
+- **Smart Grouping**: Batch downloads are automatically grouped into dedicated folders and condensed into a single "Group Card" for one-click management and background cleanup.
 
 ### 🚀 Extreme Lightweight
 
@@ -61,6 +62,7 @@ Unlike feature-heavy download managers, GoAria's philosophy is rooted in **Pragm
 ### 🎨 Zero-Interference Aesthetics
 
 - **Native Immersion**: Seamlessly integrates with Windows 11 Mica / Acrylic materials, blending into your desktop environment.
+- **Liquid Glass Visuals**: Premium unified "Liquid Glass" components for dynamic interaction feedback, with smart support for "reduced motion" mode for energy efficiency.
 - **Intuitive Feedback**: Moves away from verbose text labels, using elegant breathing light effects and color transitions to communicate task status.
 - **Fluid Performance**: Leverages Virtual Scroller technology to maintain 60FPS scrolling even with thousands of tasks.
 
