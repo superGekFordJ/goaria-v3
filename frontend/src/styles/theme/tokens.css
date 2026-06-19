@@ -362,7 +362,7 @@
 :root[data-window-transparency='acrylic'][data-theme='dark'],
 :root[data-window-transparency='mica'][data-theme='dark'],
 :root[data-window-transparency='tabbed'][data-theme='dark'] {
-  --glass-bg: rgba(20, 20, 26, 0.55);
+  --glass-bg: color-mix(in srgb, var(--skin-surface-tint) 8%, rgba(20, 20, 26, 0.55));
   --card-bg: rgba(24, 24, 30, 0.6);
   --sidebar-bg: transparent;
 
@@ -373,7 +373,7 @@
 :root[data-window-transparency='acrylic'][data-theme='light'],
 :root[data-window-transparency='mica'][data-theme='light'],
 :root[data-window-transparency='tabbed'][data-theme='light'] {
-  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-bg: color-mix(in srgb, var(--skin-surface-tint) 8%, rgba(255, 255, 255, 0.55));
   --card-bg: rgba(255, 255, 255, 0.6);
   --sidebar-bg: transparent;
 
