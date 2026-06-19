@@ -1,28 +1,28 @@
 /* === Glass Panel Effects - Micro-Glass Aesthetic === */
 .glass-panel {
   background: var(--glass-bg);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 1px solid var(--glass-border);
-  border-top-color: var(--glass-border-highlight);
-  border-left-color: var(--glass-border-highlight);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid rgba(255, 255, 255, 0.05); /* 降低外边框粗糙感，避免与高光叠加发灰 */
   box-shadow:
-    inset 0 1px 0 0 var(--glass-border-highlight),
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.18),   /* 改为 0 模糊半径的硬边高光，形成极细的 1px 锐利反光线，彻底解决发灰色带问题 */
+    inset -1px -1px 2px 0 rgba(0, 0, 0, 0.4),
     var(--glass-shadow);
 }
 
-:root[data-window-transparency='acrylic'] .glass-panel,
-:root[data-window-transparency='mica'] .glass-panel,
-:root[data-window-transparency='tabbed'] .glass-panel {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+:root[data-theme='light'] .glass-panel {
+  border: 1px solid rgba(0, 0, 0, 0.06); /* 浅色模式保持中性灰色 */
+  box-shadow:
+    inset 1px 1px 1.5px 0 rgba(255, 255, 255, 0.8),
+    inset -1px -1px 2px 0 rgba(0, 0, 0, 0.04),
+    var(--glass-shadow);
 }
 
 /* Floating panel with gap from edges */
 .glass-panel-floating {
   background: var(--glass-bg);
-  backdrop-filter: blur(24px) saturate(200%);
-  -webkit-backdrop-filter: blur(24px) saturate(200%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   border: 1px solid var(--glass-border);
   border-top-color: var(--glass-border-highlight);
   box-shadow:
@@ -31,25 +31,11 @@
     var(--glass-shadow);
 }
 
-:root[data-window-transparency='acrylic'] .glass-panel-floating,
-:root[data-window-transparency='mica'] .glass-panel-floating,
-:root[data-window-transparency='tabbed'] .glass-panel-floating {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
 .glass-panel-subtle {
   background: var(--btn-glass-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--glass-border);
-}
-
-:root[data-window-transparency='acrylic'] .glass-panel-subtle,
-:root[data-window-transparency='mica'] .glass-panel-subtle,
-:root[data-window-transparency='tabbed'] .glass-panel-subtle {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+  border: 1px solid var(--glass-border);
 }
 
 /* === Neon Glow Effects === */
