@@ -311,6 +311,22 @@ func (e *SurgeEngine) ChangeGlobalOption(options map[string]string) error {
 	return nil
 }
 
+func (e *SurgeEngine) TellActiveLite() ([]Task, error) {
+	return e.TellActive()
+}
+
+func (e *SurgeEngine) TellWaitingLite(offset, num int) ([]Task, error) {
+	return e.TellWaiting(offset, num)
+}
+
+func (e *SurgeEngine) TellStoppedLite(offset, num int) ([]Task, error) {
+	return e.TellStopped(offset, num)
+}
+
+func (e *SurgeEngine) StreamEvents(ctx context.Context) (<-chan any, func(), error) {
+	return e.service.StreamEvents(ctx)
+}
+
 func (e *SurgeEngine) Close() {
 	if e.cleanup != nil {
 		e.cleanup()

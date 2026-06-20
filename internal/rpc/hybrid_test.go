@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -83,6 +84,10 @@ func (m *mockEngine) TellActive() ([]Task, error) {
 	return m.activeResult, m.activeErr
 }
 
+func (m *mockEngine) TellActiveLite() ([]Task, error) {
+	return m.activeResult, m.activeErr
+}
+
 func (m *mockEngine) TellActiveProgress() ([]TaskProgress, error) {
 	return m.activeProgressRes, m.activeProgressErr
 }
@@ -91,7 +96,15 @@ func (m *mockEngine) TellWaiting(offset, num int) ([]Task, error) {
 	return m.waitingResult, m.waitingErr
 }
 
+func (m *mockEngine) TellWaitingLite(offset, num int) ([]Task, error) {
+	return m.waitingResult, m.waitingErr
+}
+
 func (m *mockEngine) TellStopped(offset, num int) ([]Task, error) {
+	return m.stoppedResult, m.stoppedErr
+}
+
+func (m *mockEngine) TellStoppedLite(offset, num int) ([]Task, error) {
 	return m.stoppedResult, m.stoppedErr
 }
 
@@ -107,6 +120,10 @@ func (m *mockEngine) SaveSession() error {
 func (m *mockEngine) ChangeGlobalOption(options map[string]string) error {
 	m.changeGlobalCalls = append(m.changeGlobalCalls, options)
 	return nil
+}
+
+func (m *mockEngine) StreamEvents(ctx context.Context) (<-chan any, func(), error) {
+	return nil, func() {}, nil
 }
 
 func (m *mockEngine) Close() {

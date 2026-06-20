@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
+	surgeEvents "goaria-v3/internal/surge/engine/events"
 	"goaria-v3/internal/tray"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -33,6 +35,7 @@ type Monitor struct {
 	app     *application.App
 	hub     *events.Hub
 	systray *application.SystemTray
+	engine  rpc.DownloadEngine
 	tracker *TaskTracker
 	pusher  *Pusher
 
@@ -54,11 +57,12 @@ type Monitor struct {
 	prevWaitingGids map[string]bool
 }
 
-func New(app *application.App, hub *events.Hub, systray *application.SystemTray) *Monitor {
+func New(app *application.App, hub *events.Hub, systray *application.SystemTray, engine rpc.DownloadEngine) *Monitor {
 	m := &Monitor{
 		app:                app,
 		hub:                hub,
 		systray:            systray,
+		engine:             engine,
 		stopChan:           make(chan struct{}),
 		forceTickChan:      make(chan struct{}, 1),
 		headlessInterval:   5 * time.Second, // 无头模式：5秒
@@ -67,6 +71,8 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray)
 		prevActiveGids:     make(map[string]bool),
 		prevWaitingGids:    make(map[string]bool),
 	}
+
+	Cache.engine = engine
 
 	// 订阅任务变更事件，触发即时刷新
 	hub.SubscribeTaskDelta(func(delta events.TaskDelta) {
@@ -102,6 +108,9 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray)
 
 	// 注册到全局状态
 	State.SetTracker(m.tracker)
+
+	// 启动 Surge 事件监听桥接
+	m.startSurgeEventBridge()
 
 	return m
 }
@@ -161,11 +170,11 @@ func (m *Monitor) tick() {
 	go func() {
 		defer wg.Done()
 		var err error
-		active, err = rpc.TellActiveLite()
+		active, err = m.engine.TellActiveLite()
 		if err != nil {
 			log.Printf("[Monitor] TellActiveLite error: %v, retrying with full request", err)
 			// Fallback: 尝试获取完整信息（兜底策略）
-			active, err = rpc.TellActive()
+			active, err = m.engine.TellActive()
 			if err != nil {
 				log.Printf("[Monitor] TellActive fallback error: %v", err)
 				activeErr = err
@@ -178,10 +187,10 @@ func (m *Monitor) tick() {
 	go func() {
 		defer wg.Done()
 		var err error
-		waiting, err = rpc.TellWaitingLite(0, 100)
+		waiting, err = m.engine.TellWaitingLite(0, 100)
 		if err != nil {
 			log.Printf("[Monitor] TellWaitingLite error: %v, retrying with full request", err)
-			waiting, _ = rpc.TellWaiting(0, 100)
+			waiting, _ = m.engine.TellWaiting(0, 100)
 		}
 	}()
 
@@ -196,10 +205,10 @@ func (m *Monitor) tick() {
 			defer wg.Done()
 			var err error
 			// 优化：使用 Lite 接口减少数据量
-			stopped, err = rpc.TellStoppedLite(0, 100)
+			stopped, err = m.engine.TellStoppedLite(0, 100)
 			if err != nil {
 				log.Printf("[Monitor] TellStoppedLite error: %v, retrying with full request", err)
-				stopped, err = rpc.TellStopped(0, 100)
+				stopped, err = m.engine.TellStopped(0, 100)
 				if err != nil {
 					log.Printf("[Monitor] TellStopped fallback error: %v", err)
 					m.mu.Lock()
@@ -351,7 +360,7 @@ func (m *Monitor) tick() {
 			// 关键修复：快速完成的小文件，通过 Tracker 拿到的 TotalLength 可能仍为 0
 			// 必须在压入 Pusher 前利用 TellStatus 获取真正的数据负载，防止 0B 覆盖前端
 			if (task.Status == "complete" || task.Status == "error") && (task.TotalLength == 0 || task.CompletedLength == 0) {
-				if statusTask, err := rpc.TellStatus(task.GID); err == nil && statusTask != nil {
+				if statusTask, err := m.engine.TellStatus(task.GID, nil); err == nil {
 					if task.TotalLength == 0 {
 						task.TotalLength = parseInt64(statusTask.TotalLength)
 					}
@@ -421,7 +430,7 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 
 	// 如果仍然为空，尝试直接调用 RPC 获取
 	if task.FilePath == "" {
-		if t, err := rpc.TellStatus(task.GID); err == nil && t != nil && len(t.Files) > 0 && t.Files[0].Path != "" {
+		if t, err := m.engine.TellStatus(task.GID, nil); err == nil && len(t.Files) > 0 && t.Files[0].Path != "" {
 			task.FilePath = t.Files[0].Path
 			task.Dir = t.Dir
 			if len(t.Files[0].Uris) > 0 {
@@ -652,4 +661,63 @@ func (m *Monitor) updatePrevGids(active, waiting []rpc.Task) {
 	for _, t := range waiting {
 		m.prevWaitingGids[t.GID] = true
 	}
+}
+
+func (m *Monitor) startSurgeEventBridge() {
+	stream, cleanup, err := m.engine.StreamEvents(context.Background())
+	if err != nil {
+		log.Printf("[Monitor] Failed to subscribe to Surge event stream: %v", err)
+		return
+	}
+	if stream == nil {
+		return
+	}
+	go func() {
+		defer cleanup()
+		for {
+			select {
+			case <-m.stopChan:
+				return
+			case rawEvt, ok := <-stream:
+				if !ok {
+					return
+				}
+				m.handleSurgeEvent(rawEvt)
+			}
+		}
+	}()
+}
+
+func (m *Monitor) handleSurgeEvent(rawEvt any) {
+	var deltaType string
+	var gid string
+
+	switch ev := rawEvt.(type) {
+	case surgeEvents.DownloadQueuedMsg:
+		deltaType = "add"
+		gid = "sg_" + ev.DownloadID
+	case surgeEvents.DownloadStartedMsg:
+		deltaType = "add"
+		gid = "sg_" + ev.DownloadID
+	case surgeEvents.DownloadResumedMsg:
+		deltaType = "resume"
+		gid = "sg_" + ev.DownloadID
+	case surgeEvents.DownloadPausedMsg:
+		deltaType = "pause"
+		gid = "sg_" + ev.DownloadID
+	case surgeEvents.DownloadCompleteMsg:
+		deltaType = "complete"
+		gid = "sg_" + ev.DownloadID
+	case surgeEvents.DownloadErrorMsg:
+		deltaType = "error"
+		gid = "sg_" + ev.DownloadID
+	case surgeEvents.DownloadRemovedMsg:
+		deltaType = "remove"
+		gid = "sg_" + ev.DownloadID
+	default:
+		return
+	}
+
+	m.hub.NotifyInternal(events.TaskDelta{Type: deltaType, GID: gid})
+	log.Printf("[Monitor] Surge Event: %s -> %s (gid: %s)", deltaType, gid, gid)
 }

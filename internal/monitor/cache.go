@@ -17,6 +17,8 @@ import (
 type TaskCache struct {
 	mu sync.RWMutex
 
+	engine rpc.DownloadEngine
+
 	// 完整任务缓存（包含元数据）
 	active  []rpc.Task
 	waiting []rpc.Task
@@ -372,7 +374,7 @@ func (c *TaskCache) PrefetchMetadataMulti(gids []string) {
 		uniqueGids = append(uniqueGids, gid)
 	}
 
-	tasks, err := rpc.TellStatusMulti(uniqueGids)
+	tasks, err := c.engine.TellStatusMulti(uniqueGids, nil)
 	if err != nil || len(tasks) == 0 {
 		return
 	}
@@ -380,10 +382,8 @@ func (c *TaskCache) PrefetchMetadataMulti(gids []string) {
 	c.mu.Lock()
 	queuedGroupKeys := make([]string, 0, len(tasks))
 	for _, task := range tasks {
-		if task != nil {
-			if groupKey := c.ensureMetadata(*task); groupKey != "" {
-				queuedGroupKeys = append(queuedGroupKeys, groupKey)
-			}
+		if groupKey := c.ensureMetadata(task); groupKey != "" {
+			queuedGroupKeys = append(queuedGroupKeys, groupKey)
 		}
 	}
 	c.mu.Unlock()
@@ -395,14 +395,14 @@ func (c *TaskCache) PrefetchMetadataMulti(gids []string) {
 // PrefetchMetadata 强制预取指定任务的元数据
 // 用于任务添加后立即获取完整信息
 func (c *TaskCache) PrefetchMetadata(gid string) {
-	// 从 Aria2 获取单个任务的完整信息
-	task, err := rpc.TellStatus(gid)
-	if err != nil || task == nil {
+	// 从 engine 获取单个任务的完整信息
+	task, err := c.engine.TellStatus(gid, nil)
+	if err != nil {
 		return
 	}
 
 	c.mu.Lock()
-	groupKey := c.ensureMetadata(*task)
+	groupKey := c.ensureMetadata(task)
 	c.mu.Unlock()
 	if groupKey != "" {
 		queueDownloadGroupNameRefresh(groupKey)

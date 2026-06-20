@@ -129,7 +129,7 @@ func main() {
 	systray.SetTooltip("GoAria - Download Manager")
 
 	// Start backend monitor loop
-	mon := monitor.New(app, eventHub, systray)
+	mon := monitor.New(app, eventHub, systray, appService.downloadEngine)
 	monitor.State.SetMonitor(mon) // 注册到全局状态，供 RemoveTask 调用
 	mon.Start()
 

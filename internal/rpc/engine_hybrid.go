@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"context"
 	"log"
 	"strconv"
 	"strings"
@@ -326,6 +327,93 @@ func (h *HybridEngine) ChangeGlobalOption(options map[string]string) error {
 		return err1
 	}
 	return err2
+}
+
+func (h *HybridEngine) TellActiveLite() ([]Task, error) {
+	sgList, err := h.surgeEngine.TellActiveLite()
+	if err != nil {
+		return nil, err
+	}
+	arList, err := h.aria2Engine.TellActiveLite()
+	if err != nil {
+		return nil, err
+	}
+	var merged []Task
+	for _, t := range sgList {
+		t.GID = "sg_" + t.GID
+		merged = append(merged, t)
+	}
+	for _, t := range arList {
+		t.GID = "ar_" + t.GID
+		merged = append(merged, t)
+	}
+	return merged, nil
+}
+
+func (h *HybridEngine) TellWaitingLite(offset, num int) ([]Task, error) {
+	sgList, err := h.surgeEngine.TellWaitingLite(0, offset+num)
+	if err != nil {
+		return nil, err
+	}
+	arList, err := h.aria2Engine.TellWaitingLite(0, offset+num)
+	if err != nil {
+		return nil, err
+	}
+	var merged []Task
+	for _, t := range sgList {
+		t.GID = "sg_" + t.GID
+		merged = append(merged, t)
+	}
+	for _, t := range arList {
+		t.GID = "ar_" + t.GID
+		merged = append(merged, t)
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(merged) {
+		return []Task{}, nil
+	}
+	end := offset + num
+	if end > len(merged) || num <= 0 {
+		end = len(merged)
+	}
+	return merged[offset:end], nil
+}
+
+func (h *HybridEngine) TellStoppedLite(offset, num int) ([]Task, error) {
+	sgList, err := h.surgeEngine.TellStoppedLite(0, offset+num)
+	if err != nil {
+		return nil, err
+	}
+	arList, err := h.aria2Engine.TellStoppedLite(0, offset+num)
+	if err != nil {
+		return nil, err
+	}
+	var merged []Task
+	for _, t := range sgList {
+		t.GID = "sg_" + t.GID
+		merged = append(merged, t)
+	}
+	for _, t := range arList {
+		t.GID = "ar_" + t.GID
+		merged = append(merged, t)
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(merged) {
+		return []Task{}, nil
+	}
+	end := offset + num
+	if end > len(merged) || num <= 0 {
+		end = len(merged)
+	}
+	return merged[offset:end], nil
+}
+
+func (h *HybridEngine) StreamEvents(ctx context.Context) (<-chan any, func(), error) {
+	return h.surgeEngine.StreamEvents(ctx)
 }
 
 func (h *HybridEngine) Close() {
