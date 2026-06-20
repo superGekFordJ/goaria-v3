@@ -42,7 +42,7 @@
     if (!key) return false
     const check = (tasks: Task[]) =>
       tasks.some(t => t.download_group?.id === key && t.gid.startsWith('sg_'))
-    return check(taskStore.activeTasks) || check(taskStore.waitingTasks)
+    return check(taskStore.activeTasks ?? []) || check(taskStore.waitingTasks ?? [])
   })()
 
   const { displayDownloaded, totalBytes, updateStats } = useSmoothProgress(
