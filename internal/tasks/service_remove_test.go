@@ -414,3 +414,13 @@ func TestRemoveTask_PrefersHistoryBeforeRPCFallback(t *testing.T) {
 		t.Fatalf("expected history entry %q to be removed", gid)
 	}
 }
+
+func RemoveTask(gid string, deleteFile bool) {
+	svc := &Service{Engine: &rpc.Aria2Engine{}}
+	svc.RemoveTask(gid, deleteFile)
+}
+
+func BatchRemove(gids []string, deleteFiles bool) {
+	svc := &Service{Engine: &rpc.Aria2Engine{}}
+	svc.BatchRemove(gids, deleteFiles)
+}

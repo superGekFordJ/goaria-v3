@@ -8,7 +8,6 @@ import (
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
-	"goaria-v3/internal/tasks"
 	"goaria-v3/internal/tray"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -276,7 +275,7 @@ func (a *App) GetFullSnapshot() FullSnapshot {
 
 	// 仅在显示历史时获取 stopped
 	if config.Current.ShowHistory {
-		snapshot.Tasks.Stopped = tasks.StoppedTasksWithHistory(monitor.Cache.GetStopped())
+		snapshot.Tasks.Stopped = a.taskService().StoppedTasksWithHistory(monitor.Cache.GetStopped())
 	}
 
 	// 获取托盘状态

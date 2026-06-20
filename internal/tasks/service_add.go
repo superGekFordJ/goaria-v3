@@ -18,9 +18,9 @@ import (
 
 func (s *Service) AddUri(url string) string {
 	normalizedUrl := strings.TrimSpace(url)
-	active, _ := rpc.TellActive()
-	waiting, _ := rpc.TellWaiting(0, 1000)
-	stopped, _ := rpc.TellStopped(0, 1000)
+	active, _ := s.Engine.TellActive()
+	waiting, _ := s.Engine.TellWaiting(0, 1000)
+	stopped, _ := s.Engine.TellStopped(0, 1000)
 	existingURLs := collectExistingTaskSourceURLs(active, waiting, stopped)
 
 	if existingURLs[normalizedUrl] {
@@ -63,9 +63,9 @@ func (s *Service) BatchAddUri(urls []string) BatchAddResult {
 		urls = urls[:100]
 	}
 
-	active, _ := rpc.TellActive()
-	waiting, _ := rpc.TellWaiting(0, 1000)
-	stopped, _ := rpc.TellStopped(0, 1000)
+	active, _ := s.Engine.TellActive()
+	waiting, _ := s.Engine.TellWaiting(0, 1000)
+	stopped, _ := s.Engine.TellStopped(0, 1000)
 
 	existingUrls := collectExistingTaskSourceURLs(active, waiting, stopped)
 
@@ -353,29 +353,33 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 
 		params := smartthread.Calculate(fileSize, maxConn, candidate.url)
 		var err error
-		gid, err = rpc.AddUriWithAria2OptionsHook(candidate.url, rpc.AddURIOptions{
+		gid, err = s.Engine.AddUri(candidate.url, rpc.AddURIOptions{
 			Dir:          dir,
 			Out:          out,
 			Headers:      headers,
 			Split:        params.Split,
 			MinSplitSize: params.MinSize,
-		}, registerGroup)
+			BeforeSave:   registerGroup,
+		})
 		if err != nil {
 			return "", err
 		}
 
-		if gid != "" && params.Split > 0 {
-			if tracker := monitor.State.GetTracker(); tracker != nil {
-				tracker.SetThreadInfo(gid, params.Split, params.IsExploration)
+		if gid != "" {
+			if params.Split > 0 {
+				if tracker := monitor.State.GetTracker(); tracker != nil {
+					tracker.SetThreadInfo(gid, params.Split, params.IsExploration)
+				}
 			}
 		}
 	} else {
 		var err error
-		gid, err = rpc.AddUriWithAria2OptionsHook(candidate.url, rpc.AddURIOptions{
-			Dir:     dir,
-			Out:     out,
-			Headers: headers,
-		}, registerGroup)
+		gid, err = s.Engine.AddUri(candidate.url, rpc.AddURIOptions{
+			Dir:        dir,
+			Out:        out,
+			Headers:    headers,
+			BeforeSave: registerGroup,
+		})
 		if err != nil {
 			return "", err
 		}

@@ -586,3 +586,13 @@ func TestGetTasks_HistoryBackfillRemovesCompletedGroupFromDurableStore(t *testin
 		t.Fatalf("expected completed history group removed from durable store, got %#v", got)
 	}
 }
+
+func GetTasks() map[string][]rpc.Task {
+	svc := &Service{Engine: &rpc.Aria2Engine{}}
+	return svc.GetTasks()
+}
+
+func GetStoppedTasks() []rpc.Task {
+	svc := &Service{Engine: &rpc.Aria2Engine{}}
+	return svc.GetStoppedTasks()
+}

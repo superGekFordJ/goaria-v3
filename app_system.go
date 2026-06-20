@@ -218,7 +218,7 @@ func (a *App) SaveConfig(newCfg config.AppConfig) string {
 	}
 	rpc.Init(config.Current.RPCPort, config.Current.RPCSecret)
 	_ = rpc.WaitForReady(4 * time.Second)
-	_ = rpc.ChangeGlobalOption(map[string]string{
+	_ = a.downloadEngine.ChangeGlobalOption(map[string]string{
 		"max-concurrent-downloads":  config.Current.MaxConcurrentDownloads,
 		"max-connection-per-server": config.Current.MaxConnections,
 		"user-agent":                config.Current.UserAgent,

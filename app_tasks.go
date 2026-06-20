@@ -16,32 +16,32 @@ func (a *App) RecordTaskSpeed(gid string, speed int64, cl int64) {
 	// 此方法保留以兼容前端，但不执行任何操作
 }
 
+func (a *App) taskService() *tasks.Service {
+	return &tasks.Service{
+		Dispatcher: a.extractorDispatcher,
+		Runtime:    a.hostAuthRuntimeForTaskFlow(),
+		Engine:     a.downloadEngine,
+	}
+}
+
 // AddUri adds a new download task
 // Returns "success" on success, "duplicate" if task already exists, or error message
 func (a *App) AddUri(url string) string {
-	svc := &tasks.Service{
-		Dispatcher: a.extractorDispatcher,
-		Runtime:    a.hostAuthRuntimeForTaskFlow(),
-	}
-	return svc.AddUri(url)
+	return a.taskService().AddUri(url)
 }
 
 // BatchAddUri adds multiple download URLs in one batch.
 func (a *App) BatchAddUri(urls []string) tasks.BatchAddResult {
-	svc := &tasks.Service{
-		Dispatcher: a.extractorDispatcher,
-		Runtime:    a.hostAuthRuntimeForTaskFlow(),
-	}
-	return svc.BatchAddUri(urls)
+	return a.taskService().BatchAddUri(urls)
 }
 
 // GetActiveTasks returns only active and waiting tasks (high-frequency channel)
 func (a *App) GetActiveTasks() map[string][]rpc.Task {
-	return tasks.GetActiveTasks()
+	return a.taskService().GetActiveTasks()
 }
 
 func (a *App) GetActiveProgress() []rpc.TaskProgress {
-	progress, err := rpc.TellActiveProgress()
+	progress, err := a.downloadEngine.TellActiveProgress()
 	if err != nil {
 		return []rpc.TaskProgress{}
 	}
@@ -50,47 +50,47 @@ func (a *App) GetActiveProgress() []rpc.TaskProgress {
 
 // GetStoppedTasks returns stopped tasks with history (low-frequency channel)
 func (a *App) GetStoppedTasks() []rpc.Task {
-	return tasks.GetStoppedTasks()
+	return a.taskService().GetStoppedTasks()
 }
 
 // GetTasks returns all tasks grouped by status
 func (a *App) GetTasks() map[string][]rpc.Task {
-	return tasks.GetTasks()
+	return a.taskService().GetTasks()
 }
 
 // GetTaskMetadata fetches detailed metadata for tasks with missing file paths
 func (a *App) GetTaskMetadata(gids []string) map[string]rpc.Task {
-	return tasks.GetTaskMetadata(gids)
+	return a.taskService().GetTaskMetadata(gids)
 }
 
 // PauseTask pauses a download task
 func (a *App) PauseTask(gid string) {
-	rpc.Pause(gid)
+	_ = a.downloadEngine.Pause(gid)
 }
 
 // ResumeTask resumes a paused task
 func (a *App) ResumeTask(gid string) {
-	rpc.Unpause(gid)
+	_ = a.downloadEngine.Resume(gid)
 }
 
 // BatchPause pauses multiple tasks
 func (a *App) BatchPause(gids []string) {
-	_ = rpc.PauseMulti(gids)
+	_ = a.downloadEngine.PauseMulti(gids)
 }
 
 // BatchResume resumes multiple paused tasks
 func (a *App) BatchResume(gids []string) {
-	_ = rpc.UnpauseMulti(gids)
+	_ = a.downloadEngine.ResumeMulti(gids)
 }
 
 // BatchRemove removes multiple tasks
 func (a *App) BatchRemove(gids []string, deleteFiles bool) {
-	tasks.BatchRemove(gids, deleteFiles)
+	a.taskService().BatchRemove(gids, deleteFiles)
 }
 
 // RemoveTask removes a task and optionally deletes the file
 func (a *App) RemoveTask(gid string, deleteFile bool) {
-	tasks.RemoveTask(gid, deleteFile)
+	a.taskService().RemoveTask(gid, deleteFile)
 }
 
 // GetDownloadGroups returns all download groups (aggregated list)

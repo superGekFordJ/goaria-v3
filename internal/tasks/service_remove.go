@@ -79,7 +79,7 @@ func unresolvedRemovalGIDs(order []string, unresolved map[string]struct{}) []str
 	return gids
 }
 
-func resolveRemovalTargetsBatch(gids []string) map[string]removalTarget {
+func (s *Service) resolveRemovalTargetsBatch(gids []string) map[string]removalTarget {
 	uniqueGIDs := normalizeRemovalGIDs(gids)
 	targets := make(map[string]removalTarget, len(uniqueGIDs))
 	if len(uniqueGIDs) == 0 {
@@ -128,16 +128,13 @@ func resolveRemovalTargetsBatch(gids []string) map[string]removalTarget {
 		return targets
 	}
 
-	tasks, err := rpc.TellStatusMulti(fallbackGIDs)
+	tasks, err := s.Engine.TellStatusMulti(fallbackGIDs, nil)
 	if err != nil {
 		return targets
 	}
 
 	for _, task := range tasks {
-		if task == nil {
-			continue
-		}
-		target, ok := removalTargetFromTask(*task)
+		target, ok := removalTargetFromTask(task)
 		if !ok {
 			continue
 		}
@@ -147,12 +144,12 @@ func resolveRemovalTargetsBatch(gids []string) map[string]removalTarget {
 	return targets
 }
 
-func resolveRemovalTarget(gid string) removalTarget {
-	return resolveRemovalTargetsBatch([]string{gid})[strings.TrimSpace(gid)]
+func (s *Service) resolveRemovalTarget(gid string) removalTarget {
+	return s.resolveRemovalTargetsBatch([]string{gid})[strings.TrimSpace(gid)]
 }
 
-func removeTaskWithTarget(gid string, target removalTarget, deleteFile bool) {
-	rpc.Remove(gid)
+func (s *Service) removeTaskWithTarget(gid string, target removalTarget, deleteFile bool) {
+	_ = s.Engine.Remove(gid, deleteFile)
 	history.Remove(gid)
 	cleanupRemovedTask(gid, target, deleteFile)
 }
@@ -201,15 +198,15 @@ func cleanupRemovedTask(gid string, target removalTarget, deleteFile bool) {
 	}(target.path, target.dir)
 }
 
-func BatchRemove(gids []string, deleteFiles bool) {
+func (s *Service) BatchRemove(gids []string, deleteFiles bool) {
 	uniqueGIDs := normalizeRemovalGIDs(gids)
 	if len(uniqueGIDs) == 0 {
 		return
 	}
 
-	targets := resolveRemovalTargetsBatch(uniqueGIDs)
+	targets := s.resolveRemovalTargetsBatch(uniqueGIDs)
 	for _, gid := range uniqueGIDs {
-		rpc.Remove(gid)
+		_ = s.Engine.Remove(gid, deleteFiles)
 	}
 	history.RemoveMany(uniqueGIDs)
 	for _, gid := range uniqueGIDs {
@@ -217,12 +214,12 @@ func BatchRemove(gids []string, deleteFiles bool) {
 	}
 }
 
-func RemoveTask(gid string, deleteFile bool) {
+func (s *Service) RemoveTask(gid string, deleteFile bool) {
 	gid = strings.TrimSpace(gid)
 	if gid == "" {
 		return
 	}
 
-	target := resolveRemovalTarget(gid)
-	removeTaskWithTarget(gid, target, deleteFile)
+	target := s.resolveRemovalTarget(gid)
+	s.removeTaskWithTarget(gid, target, deleteFile)
 }

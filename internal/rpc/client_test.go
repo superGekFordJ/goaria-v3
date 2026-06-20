@@ -462,12 +462,12 @@ func TestGetGlobalStat(t *testing.T) {
 
 	Init(port, "secret")
 
-	speed, err := GetGlobalStat()
+	stat, err := GetGlobalStat()
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
-	if speed != "1024" {
-		t.Errorf("Expected speed 1024, got %s", speed)
+	if stat.DownloadSpeed != "1024" {
+		t.Errorf("Expected speed 1024, got %s", stat.DownloadSpeed)
 	}
 }
 

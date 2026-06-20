@@ -181,7 +181,9 @@ func setupAppTaskBatchAddTest(t *testing.T, snapshots batchAddRPCSnapshots) (*Se
 		config.Current = originalConfig
 	})
 
-	return &Service{}, counter
+	return &Service{
+		Engine: &rpc.Aria2Engine{},
+	}, counter
 }
 
 func batchAddParams(params []json.RawMessage) (string, map[string]any) {

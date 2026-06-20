@@ -101,6 +101,10 @@ type TaskProgress struct {
 	DownloadSpeed   string `json:"downloadSpeed"`
 }
 
+type GlobalStat struct {
+	DownloadSpeed string `json:"downloadSpeed"`
+}
+
 type MultiCallItemResult struct {
 	GID   string
 	OK    bool
@@ -113,6 +117,7 @@ type AddURIOptions struct {
 	Headers      []string
 	Split        int
 	MinSplitSize int64
+	BeforeSave   AddURIHook
 }
 
 type AddURIHook func(gid string) error
@@ -480,18 +485,18 @@ func getTasks(method string, extraParams []any, keys []string) ([]Task, error) {
 	return result.Result, nil
 }
 
-func GetGlobalStat() (string, error) {
+func GetGlobalStat() (GlobalStat, error) {
 	resp, err := sendRequest("aria2.getGlobalStat", nil)
 	if err != nil {
-		return "0", err
+		return GlobalStat{DownloadSpeed: "0"}, err
 	}
 	var res struct {
-		Result struct {
-			Speed string `json:"downloadSpeed"`
-		} `json:"result" `
+		Result GlobalStat `json:"result"`
 	}
-	json.Unmarshal(resp, &res)
-	return res.Result.Speed, nil
+	if err := json.Unmarshal(resp, &res); err != nil {
+		return GlobalStat{DownloadSpeed: "0"}, err
+	}
+	return res.Result, nil
 }
 
 func sendRequest(method string, params []any) ([]byte, error) {

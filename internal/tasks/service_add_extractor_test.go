@@ -187,6 +187,7 @@ func setupAppTaskExtractorTestWithRecorder(t *testing.T, snapshots batchAddRPCSn
 
 	svc := &Service{
 		Dispatcher: dispatcher,
+		Engine:     &rpc.Aria2Engine{},
 	}
 	return svc, recorder
 }

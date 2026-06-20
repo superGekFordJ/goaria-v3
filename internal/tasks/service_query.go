@@ -8,7 +8,7 @@ import (
 	"goaria-v3/internal/rpc"
 )
 
-func GetActiveTasks() map[string][]rpc.Task {
+func (s *Service) GetActiveTasks() map[string][]rpc.Task {
 	active := monitor.Cache.GetActive()
 	waiting := monitor.Cache.GetWaiting()
 	monitor.HydrateTaskGroups(active)
@@ -19,15 +19,15 @@ func GetActiveTasks() map[string][]rpc.Task {
 	}
 }
 
-func GetStoppedTasks() []rpc.Task {
+func (s *Service) GetStoppedTasks() []rpc.Task {
 	if !config.Current.ShowHistory {
 		return []rpc.Task{}
 	}
 
-	return StoppedTasksWithHistory(monitor.Cache.GetStopped())
+	return s.StoppedTasksWithHistory(monitor.Cache.GetStopped())
 }
 
-func StoppedTasksWithHistory(stopped []rpc.Task) []rpc.Task {
+func (s *Service) StoppedTasksWithHistory(stopped []rpc.Task) []rpc.Task {
 	existingGIDs := make(map[string]struct{}, len(stopped))
 	for i := range stopped {
 		existingGIDs[stopped[i].GID] = struct{}{}
@@ -38,7 +38,7 @@ func StoppedTasksWithHistory(stopped []rpc.Task) []rpc.Task {
 			}
 		}
 		if entry, ok := history.Get(stopped[i].GID); ok {
-			backfillStoppedTaskFromHistory(&stopped[i], entry)
+			s.backfillStoppedTaskFromHistory(&stopped[i], entry)
 		}
 	}
 
@@ -51,7 +51,7 @@ func StoppedTasksWithHistory(stopped []rpc.Task) []rpc.Task {
 	return stopped
 }
 
-func backfillStoppedTaskFromHistory(task *rpc.Task, entry history.HistoryEntry) {
+func (s *Service) backfillStoppedTaskFromHistory(task *rpc.Task, entry history.HistoryEntry) {
 	if task.DownloadGroup == nil && entry.DownloadGroup != nil {
 		task.DownloadGroup = downloadgroups.CopyDownloadGroup(entry.DownloadGroup)
 	}
@@ -99,36 +99,34 @@ func isNonZeroLength(value string) bool {
 	return value != "" && value != "0"
 }
 
-func GetTasks() map[string][]rpc.Task {
+func (s *Service) GetTasks() map[string][]rpc.Task {
 	active := monitor.Cache.GetActive()
 	waiting := monitor.Cache.GetWaiting()
 	monitor.HydrateTaskGroups(active)
 	monitor.HydrateTaskGroups(waiting)
 	var stopped []rpc.Task
 	if config.Current.ShowHistory {
-		stopped = StoppedTasksWithHistory(monitor.Cache.GetStopped())
+		stopped = s.StoppedTasksWithHistory(monitor.Cache.GetStopped())
 	}
 	return map[string][]rpc.Task{"active": active, "waiting": waiting, "stopped": stopped}
 }
 
-func GetTaskMetadata(gids []string) map[string]rpc.Task {
+func (s *Service) GetTaskMetadata(gids []string) map[string]rpc.Task {
 	result := make(map[string]rpc.Task)
 	if len(gids) == 0 {
 		return result
 	}
 
-	tasks, err := rpc.TellStatusMulti(gids)
+	tasks, err := s.Engine.TellStatusMulti(gids, nil)
 	if err == nil {
 		for _, task := range tasks {
-			if task != nil {
+			if task.DownloadGroup == nil {
+				task.DownloadGroup = monitor.Cache.GetTaskGroup(task.GID)
 				if task.DownloadGroup == nil {
-					task.DownloadGroup = monitor.Cache.GetTaskGroup(task.GID)
-					if task.DownloadGroup == nil {
-						task.DownloadGroup = monitor.GetStoredTaskGroup(task.GID)
-					}
+					task.DownloadGroup = monitor.GetStoredTaskGroup(task.GID)
 				}
-				result[task.GID] = *task
 			}
+			result[task.GID] = task
 		}
 	}
 	return result

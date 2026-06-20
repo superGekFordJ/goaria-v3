@@ -8,6 +8,7 @@ import (
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/extractor"
 	"goaria-v3/internal/monitor"
+	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/tasks"
 	"goaria-v3/internal/tray"
 	"goaria-v3/internal/update"
@@ -40,6 +41,8 @@ type App struct {
 	windowMu       sync.Mutex // 保护窗口操作
 	lastToggleTime time.Time  // 上次切换窗口时间，用于全局防抖
 	isToggling     bool       // 防止重入标志
+
+	downloadEngine rpc.DownloadEngine
 }
 
 // NewApp creates a new App instance
