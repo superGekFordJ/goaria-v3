@@ -159,6 +159,9 @@ func cleanupRemovedTask(gid string, target removalTarget, deleteFile bool) {
 		tracker.RemoveTask(gid)
 	}
 
+	// 立即从缓存中移除任务，防止查询接口读取到脏数据导致 UI 重现
+	monitor.Cache.RemoveTask(gid)
+
 	if mon := monitor.State.GetMonitor(); mon != nil {
 		mon.InvalidateTask(gid)
 	} else {

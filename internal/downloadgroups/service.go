@@ -1032,6 +1032,10 @@ var OpenFolderLauncher func(dir string) error = func(dir string) error {
 	return errors.New("open folder launcher not initialized")
 }
 
+var PauseMultiResults func(gids []string) ([]rpc.MultiCallItemResult, error) = rpc.PauseMultiResults
+
+var ResumeMultiResults func(gids []string) ([]rpc.MultiCallItemResult, error) = rpc.UnpauseMultiResults
+
 type downloadGroupOperationTarget struct {
 	gid         string
 	task        rpc.Task
@@ -1388,9 +1392,9 @@ func downloadGroupPauseResumeSkipCode(action string, target downloadGroupOperati
 
 func callDownloadGroupPauseResumeRPC(action string, gids []string) ([]rpc.MultiCallItemResult, error) {
 	if action == DownloadGroupOperationActionResume {
-		return rpc.UnpauseMultiResults(gids)
+		return ResumeMultiResults(gids)
 	}
-	return rpc.PauseMultiResults(gids)
+	return PauseMultiResults(gids)
 }
 
 func downloadGroupRefreshHint(tasks, groups, detail bool, reason string) DownloadGroupOperationRefreshHint {

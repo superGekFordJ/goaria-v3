@@ -57,6 +57,9 @@ func NewApp() *App {
 		rpc.NewSurgeEngine(),
 	)
 
+	downloadgroups.PauseMultiResults = hybrid.PauseMultiResults
+	downloadgroups.ResumeMultiResults = hybrid.ResumeMultiResults
+
 	return &App{
 		trayState:      tray.StateIdle,
 		downloadEngine: hybrid,

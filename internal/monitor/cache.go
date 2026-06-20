@@ -356,6 +356,28 @@ func (c *TaskCache) InvalidateMetadata(gid string) {
 	RemoveTaskGroup(gid)
 }
 
+// RemoveTask 从缓存的活跃、等待和停止列表中删除指定任务并清理元数据
+func (c *TaskCache) RemoveTask(gid string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	filter := func(tasks []rpc.Task) []rpc.Task {
+		res := make([]rpc.Task, 0, len(tasks))
+		for _, t := range tasks {
+			if t.GID != gid {
+				res = append(res, t)
+			}
+		}
+		return res
+	}
+
+	c.active = filter(c.active)
+	c.waiting = filter(c.waiting)
+	c.stopped = filter(c.stopped)
+	delete(c.metadata, gid)
+	RemoveTaskGroup(gid)
+}
+
 func (c *TaskCache) PrefetchMetadataMulti(gids []string) {
 	if len(gids) == 0 {
 		return

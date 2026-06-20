@@ -2,7 +2,11 @@ package rpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -333,5 +337,72 @@ func TestHybridEngine_BeforeSaveHook(t *testing.T) {
 	}
 	if hookGid != "ar_aria2_raw" {
 		t.Errorf("expected hook to be called with ar_aria2_raw, got %s", hookGid)
+	}
+}
+
+func TestHybridEngine_PauseResumeMultiResults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		response := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      "goaria",
+			"result":  []any{[]any{"OK"}},
+		}
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	parts := strings.Split(server.URL, ":")
+	Init(parts[len(parts)-1], "secret")
+
+	aria2 := &mockEngine{}
+	surge := &mockEngine{}
+	hybrid := NewHybridEngine(aria2, surge)
+
+	gids := []string{"sg_uuid123", "ar_hex456"}
+
+	// Test PauseMultiResults
+	results, err := hybrid.PauseMultiResults(gids)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	if len(surge.pausedGids) != 1 || surge.pausedGids[0] != "uuid123" {
+		t.Errorf("expected Surge paused with uuid123, got %v", surge.pausedGids)
+	}
+
+	foundSg := false
+	foundAr := false
+	for _, res := range results {
+		if res.GID == "sg_uuid123" {
+			foundSg = true
+			if !res.OK {
+				t.Errorf("expected sg_uuid123 to be OK")
+			}
+		}
+		if res.GID == "ar_hex456" {
+			foundAr = true
+			if !res.OK {
+				t.Errorf("expected ar_hex456 to be OK")
+			}
+		}
+	}
+
+	if !foundSg || !foundAr {
+		t.Errorf("missing expected prefixed GID in results: %v", results)
+	}
+
+	// Test ResumeMultiResults
+	_, err = hybrid.ResumeMultiResults(gids)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(surge.resumedGids) != 1 || surge.resumedGids[0] != "uuid123" {
+		t.Errorf("expected Surge resumed with uuid123, got %v", surge.resumedGids)
 	}
 }

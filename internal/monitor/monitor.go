@@ -6,6 +6,7 @@ import (
 	"log"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,9 +49,16 @@ type Monitor struct {
 	windowInterval   time.Duration
 
 	// RPC polling optimization
-	mu                 sync.Mutex
-	shouldFetchStopped bool
-	lastStopped        []rpc.Task
+	mu                   sync.Mutex
+	shouldFetchStopped   bool
+	lastStopped          []rpc.Task
+	lastStoppedFetchTime time.Time
+
+	// Recently deleted tasks to filter out during engine/cache synchronization races
+	deletedGids map[string]time.Time
+
+	// Completed tasks reported by event bridge or ws that are pending verification in stopped list
+	pendingCompleteGids map[string]time.Time
 
 	// Previous tick state for transition detection
 	prevActiveGids  map[string]bool
@@ -59,17 +67,20 @@ type Monitor struct {
 
 func New(app *application.App, hub *events.Hub, systray *application.SystemTray, engine rpc.DownloadEngine) *Monitor {
 	m := &Monitor{
-		app:                app,
-		hub:                hub,
-		systray:            systray,
-		engine:             engine,
-		stopChan:           make(chan struct{}),
-		forceTickChan:      make(chan struct{}, 1),
-		headlessInterval:   5 * time.Second, // 无头模式：5秒
-		windowInterval:     1 * time.Second, // 窗口模式：1秒（由前端主导）
-		shouldFetchStopped: true,            // 初始时获取一次 stopped 任务
-		prevActiveGids:     make(map[string]bool),
-		prevWaitingGids:    make(map[string]bool),
+		app:                  app,
+		hub:                  hub,
+		systray:              systray,
+		engine:               engine,
+		stopChan:             make(chan struct{}),
+		forceTickChan:        make(chan struct{}, 1),
+		headlessInterval:     5 * time.Second, // 无头模式：5秒
+		windowInterval:       1 * time.Second, // 窗口模式：1秒（由前端主导）
+		shouldFetchStopped:   true,            // 初始时获取一次 stopped 任务
+		lastStoppedFetchTime: time.Now(),
+		deletedGids:          make(map[string]time.Time),
+		pendingCompleteGids:  make(map[string]time.Time),
+		prevActiveGids:       make(map[string]bool),
+		prevWaitingGids:      make(map[string]bool),
 	}
 
 	Cache.engine = engine
@@ -91,6 +102,9 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 		case "remove", "complete", "error":
 			m.mu.Lock()
 			m.shouldFetchStopped = true
+			if delta.GID != "" {
+				m.pendingCompleteGids[delta.GID] = time.Now()
+			}
 			m.mu.Unlock()
 			select {
 			case m.forceTickChan <- struct{}{}:
@@ -165,6 +179,16 @@ func (m *Monitor) tick() {
 		wg        sync.WaitGroup
 	)
 
+	// 清理过期的待完成任务（超过 10 秒）
+	m.mu.Lock()
+	now := time.Now()
+	for gid, t := range m.pendingCompleteGids {
+		if now.Sub(t) > 10*time.Second {
+			delete(m.pendingCompleteGids, gid)
+		}
+	}
+	m.mu.Unlock()
+
 	// 1. 获取 Active 任务
 	wg.Add(1)
 	go func() {
@@ -194,9 +218,9 @@ func (m *Monitor) tick() {
 		}
 	}()
 
-	// 3. 获取 Stopped 任务 (仅在需要时或首次启动时)
+	// 3. 获取 Stopped 任务 (仅在需要时、有待确认完成的任务、或定期兜底刷新时)
 	m.mu.Lock()
-	fetchStopped := m.shouldFetchStopped
+	fetchStopped := m.shouldFetchStopped || len(m.pendingCompleteGids) > 0 || time.Since(m.lastStoppedFetchTime) > 10*time.Second
 	m.mu.Unlock()
 
 	if fetchStopped {
@@ -229,6 +253,11 @@ func (m *Monitor) tick() {
 	if activeErr != nil {
 		return
 	}
+
+	// 过滤掉最近被删除的任务，防止网络或进程通信竞态导致已删除任务被再次缓存或上报
+	active = m.filterDeletedTasks(active)
+	waiting = m.filterDeletedTasks(waiting)
+	stopped = m.filterDeletedTasks(stopped)
 
 	// 1. 检查并补充元数据（如果缺少）
 	allTasks := make([]*rpc.Task, 0, len(active)+len(waiting)+len(stopped))
@@ -271,6 +300,7 @@ func (m *Monitor) tick() {
 		m.mu.Lock()
 		m.lastStopped = stopped
 		m.shouldFetchStopped = false
+		m.lastStoppedFetchTime = time.Now()
 		m.mu.Unlock()
 	}
 
@@ -322,6 +352,15 @@ func (m *Monitor) tick() {
 	// 处理已完成任务（写入历史和速度统计）
 	for _, task := range completedTasks {
 		m.handleTaskComplete(task)
+		// 任务已成功确认移至已完成列表，从待处理集合中移除
+		m.mu.Lock()
+		delete(m.pendingCompleteGids, task.GID)
+		if strings.HasPrefix(task.GID, "ar_") {
+			delete(m.pendingCompleteGids, task.GID[3:])
+		} else if strings.HasPrefix(task.GID, "sg_") {
+			delete(m.pendingCompleteGids, task.GID[3:])
+		}
+		m.mu.Unlock()
 	}
 
 	// 构建托盘快照
@@ -576,6 +615,9 @@ func (m *Monitor) InvalidateTask(gid string) {
 
 	// 2. 从 lastStopped 缓存中移除
 	m.mu.Lock()
+	m.deletedGids[gid] = time.Now()
+	delete(m.pendingCompleteGids, gid)
+
 	newStopped := make([]rpc.Task, 0, len(m.lastStopped))
 	for _, t := range m.lastStopped {
 		if t.GID != gid {
@@ -720,4 +762,29 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 
 	m.hub.NotifyInternal(events.TaskDelta{Type: deltaType, GID: gid})
 	log.Printf("[Monitor] Surge Event: %s -> %s (gid: %s)", deltaType, gid, gid)
+}
+
+func (m *Monitor) filterDeletedTasks(tasks []rpc.Task) []rpc.Task {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 清理已过期的删除过滤（超过 5 秒）
+	now := time.Now()
+	for g, t := range m.deletedGids {
+		if now.Sub(t) > 5*time.Second {
+			delete(m.deletedGids, g)
+		}
+	}
+
+	if len(m.deletedGids) == 0 {
+		return tasks
+	}
+
+	filtered := make([]rpc.Task, 0, len(tasks))
+	for _, t := range tasks {
+		if _, deleted := m.deletedGids[t.GID]; !deleted {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
 }

@@ -125,6 +125,85 @@ func (h *HybridEngine) ResumeMulti(gids []string) error {
 	return nil
 }
 
+func (h *HybridEngine) PauseMultiResults(gids []string) ([]MultiCallItemResult, error) {
+	return h.pauseResumeMultiResults(gids, true)
+}
+
+func (h *HybridEngine) ResumeMultiResults(gids []string) ([]MultiCallItemResult, error) {
+	return h.pauseResumeMultiResults(gids, false)
+}
+
+func (h *HybridEngine) pauseResumeMultiResults(gids []string, isPause bool) ([]MultiCallItemResult, error) {
+	var sgGids, arGids []string
+	originalGIDs := make(map[string]string)
+
+	for _, gid := range gids {
+		engine, rawGid := h.splitGid(gid)
+		originalGIDs[rawGid] = gid
+		if engine == "sg" {
+			sgGids = append(sgGids, rawGid)
+		} else {
+			arGids = append(arGids, rawGid)
+		}
+	}
+
+	results := make([]MultiCallItemResult, 0, len(gids))
+
+	// Handle Surge GIDs
+	for _, rawGid := range sgGids {
+		var err error
+		if isPause {
+			err = h.surgeEngine.Pause(rawGid)
+		} else {
+			err = h.surgeEngine.Resume(rawGid)
+		}
+		origGID := originalGIDs[rawGid]
+		itemRes := MultiCallItemResult{
+			GID: origGID,
+			OK:  err == nil,
+		}
+		if err != nil {
+			itemRes.Error = err.Error()
+		}
+		results = append(results, itemRes)
+	}
+
+	// Handle Aria2 GIDs
+	if len(arGids) > 0 {
+		var arResults []MultiCallItemResult
+		var err error
+		if isPause {
+			arResults, err = PauseMultiResults(arGids)
+		} else {
+			arResults, err = UnpauseMultiResults(arGids)
+		}
+		if err != nil {
+			for _, rawGid := range arGids {
+				origGID := originalGIDs[rawGid]
+				results = append(results, MultiCallItemResult{
+					GID:   origGID,
+					OK:    false,
+					Error: err.Error(),
+				})
+			}
+		} else {
+			for _, res := range arResults {
+				origGID := originalGIDs[res.GID]
+				if origGID == "" {
+					origGID = "ar_" + res.GID
+				}
+				results = append(results, MultiCallItemResult{
+					GID:   origGID,
+					OK:    res.OK,
+					Error: res.Error,
+				})
+			}
+		}
+	}
+
+	return results, nil
+}
+
 func (h *HybridEngine) Remove(gid string, deleteFile bool) error {
 	engine, rawGid := h.splitGid(gid)
 	if engine == "sg" {

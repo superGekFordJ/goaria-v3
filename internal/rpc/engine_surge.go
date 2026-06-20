@@ -89,7 +89,9 @@ func mapStatus(s string) string {
 	switch s {
 	case "downloading", "pausing":
 		return "active"
-	case "queued", "paused":
+	case "paused":
+		return "paused"
+	case "queued":
 		return "waiting"
 	case "completed":
 		return "complete"
@@ -240,7 +242,7 @@ func (e *SurgeEngine) TellWaiting(offset, num int) ([]Task, error) {
 	var res []Task
 	for _, s := range list {
 		t := convertTask(s)
-		if t.Status == "waiting" {
+		if t.Status == "waiting" || t.Status == "paused" {
 			res = append(res, t)
 		}
 	}
