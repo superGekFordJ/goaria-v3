@@ -161,6 +161,13 @@ func (m *Monitor) runLoop() {
 }
 
 func (m *Monitor) currentTickInterval() time.Duration {
+	// 有待确认完成任务时，用短间隔快速检测 SQLite 落盘
+	m.mu.Lock()
+	hasPending := len(m.pendingCompleteGids) > 0
+	m.mu.Unlock()
+	if hasPending {
+		return m.windowInterval
+	}
 	if State.HasWindow() && !m.engine.IsSurgeActive() {
 		return m.windowInterval
 	}
@@ -218,7 +225,18 @@ func (m *Monitor) tick() {
 	// 3. 获取 Stopped 任务 (仅在需要时、有待确认完成的任务、或定期兜底刷新时)
 	m.mu.Lock()
 	fetchStopped := m.shouldFetchStopped || len(m.pendingCompleteGids) > 0 || time.Since(m.lastStoppedFetchTime) > 10*time.Second
+	pendingCount := len(m.pendingCompleteGids)
 	m.mu.Unlock()
+
+	// 当有待确认完成任务时，每次 tick 都失效 Surge 缓存，确保从 service.List() 拉最新数据。
+	// 否则首次 tick 缓存的空 stopped 列表会被后续 tick 反复使用，永远看不到已完成任务。
+	if pendingCount > 0 {
+		if hybrid, ok := m.engine.(*rpc.HybridEngine); ok {
+			if se, ok := hybrid.SurgeEngineRef(); ok {
+				se.InvalidateCache()
+			}
+		}
+	}
 
 	if fetchStopped {
 		wg.Add(1)
@@ -246,6 +264,17 @@ func (m *Monitor) tick() {
 	}
 
 	wg.Wait()
+
+	m.mu.Lock()
+	pendingCount = len(m.pendingCompleteGids)
+	m.mu.Unlock()
+	log.Printf("[DEBUG-TICK] active=%d waiting=%d stopped=%d pendingComplete=%d", len(active), len(waiting), len(stopped), pendingCount)
+	for _, t := range stopped {
+		log.Printf("[DEBUG-TICK] stopped task: gid=%s status=%s total=%s completed=%s", t.GID, t.Status, t.TotalLength, t.CompletedLength)
+	}
+	for _, t := range active {
+		log.Printf("[DEBUG-TICK] active task: gid=%s status=%s total=%s completed=%s", t.GID, t.Status, t.TotalLength, t.CompletedLength)
+	}
 
 	if activeErr != nil {
 		return
@@ -808,6 +837,7 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 	m.hub.NotifyInternal(events.TaskDelta{Type: deltaType, GID: gid})
 
 	log.Printf("[Monitor] Surge Event: %s -> %s (gid: %s)", deltaType, gid, gid)
+	log.Printf("[DEBUG-EVT-MON] handleSurgeEvent done: type=%s gid=%s", deltaType, gid)
 }
 
 func (m *Monitor) filterDeletedTasks(tasks []rpc.Task) []rpc.Task {

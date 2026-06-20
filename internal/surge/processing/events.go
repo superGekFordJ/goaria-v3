@@ -294,7 +294,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan interface{}) {
 			}); err != nil {
 				utils.Debug("Lifecycle: Failed to persist completed download: %v", err)
 			}
-			if err := state.DeleteTasks(m.DownloadID); err != nil {
+				if err := state.DeleteTasks(m.DownloadID); err != nil {
 				utils.Debug("Lifecycle: Failed to delete completed tasks: %v", err)
 			}
 			if settings := mgr.GetSettings(); settings != nil && config.Resolve[bool](settings.General.DownloadCompleteNotification) {
