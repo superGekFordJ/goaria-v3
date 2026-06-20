@@ -58,3 +58,7 @@ formatters:
         - standard
         - prefix(goaria-v3)
         - default
+  exclusions:
+    paths:
+      - internal/surge
+      - third_party
