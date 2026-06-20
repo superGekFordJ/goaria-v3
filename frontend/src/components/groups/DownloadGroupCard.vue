@@ -2,7 +2,11 @@
   import { computed, watch } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { AlertTriangle, Folder, Layers3, Pause, Play, Trash2, FolderOpen } from 'lucide-vue-next'
-  import { TASK_PROGRESS_CONFIG, useSmoothProgress } from '../../composables/useSmoothProgress'
+  import {
+    TASK_PROGRESS_CONFIG,
+    SURGE_TASK_PROGRESS_CONFIG,
+    useSmoothProgress,
+  } from '../../composables/useSmoothProgress'
   import {
     normalizeDownloadGroupWarningSummaries,
     type DownloadGroupMasterItem,
@@ -10,7 +14,7 @@
   } from '../../stores/downloadGroups'
   import { useTaskStore } from '../../stores/task'
   import type { DownloadGroupCard } from '../../../bindings/goaria-v3/internal/downloadgroups/models'
-  import type { DownloadGroup } from '../../../bindings/goaria-v3/internal/rpc/models'
+  import type { DownloadGroup, Task } from '../../../bindings/goaria-v3/internal/rpc/models'
 
   const props = defineProps<{
     item: DownloadGroupMasterItem
@@ -28,7 +32,25 @@
 
   const { t } = useI18n()
   const taskStore = useTaskStore()
-  const { displayDownloaded, totalBytes, updateStats } = useSmoothProgress(TASK_PROGRESS_CONFIG)
+
+  const groupKey = computed(() => props.item.group_key)
+
+  // Detect Surge group: check if any task in the store belonging to this group has sg_ prefix
+  const isSurgeGroup = computed(() => {
+    const key = groupKey.value
+    if (!key) return false
+    const check = (tasks: Task[]) =>
+      tasks.some(t => t.download_group?.id === key && t.gid.startsWith('sg_'))
+    return (
+      check(taskStore.activeTasks) ||
+      check(taskStore.waitingTasks) ||
+      check(taskStore.stoppedTasks)
+    )
+  })
+
+  const { displayDownloaded, totalBytes, updateStats } = useSmoothProgress(
+    isSurgeGroup.value ? SURGE_TASK_PROGRESS_CONFIG : TASK_PROGRESS_CONFIG,
+  )
 
   const isPlaceholder = computed(() => props.item.type === 'placeholder')
   const card = computed<DownloadGroupCard | null>(() =>
@@ -38,7 +60,6 @@
     props.item.type === 'placeholder' ? props.item.placeholder.download_group : null,
   )
 
-  const groupKey = computed(() => props.item.group_key)
   const isBackendCard = computed(() => props.item.type === 'backend' && Boolean(groupKey.value))
   const canSelect = computed(() => isBackendCard.value)
   const isSelected = computed(
