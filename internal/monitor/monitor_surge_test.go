@@ -164,7 +164,7 @@ func TestHandleSurgeEvent_RemoveEvent_InvalidatesCache(t *testing.T) {
 	}
 }
 
-func TestHandleSurgeEvent_AddEvent_InvalidatesCache(t *testing.T) {
+func TestHandleSurgeEvent_AddEvent_DoesNotInvalidateCache(t *testing.T) {
 	hub := events.NewHub(nil)
 	se := &rpc.SurgeEngine{}
 	se.SetCacheValid(true)
@@ -175,12 +175,12 @@ func TestHandleSurgeEvent_AddEvent_InvalidatesCache(t *testing.T) {
 		DownloadID: "test-add",
 	})
 
-	if se.IsCacheValid() {
-		t.Error("expected cacheValid to be false after add event")
+	if !se.IsCacheValid() {
+		t.Error("expected cacheValid to remain true after add event (Enqueue already invalidates)")
 	}
 }
 
-func TestHandleSurgeEvent_PauseEvent_InvalidatesCache(t *testing.T) {
+func TestHandleSurgeEvent_PauseEvent_DoesNotInvalidateCache(t *testing.T) {
 	hub := events.NewHub(nil)
 	se := &rpc.SurgeEngine{}
 	se.SetCacheValid(true)
@@ -191,8 +191,8 @@ func TestHandleSurgeEvent_PauseEvent_InvalidatesCache(t *testing.T) {
 		DownloadID: "test-pause",
 	})
 
-	if se.IsCacheValid() {
-		t.Error("expected cacheValid to be false after pause event")
+	if !se.IsCacheValid() {
+		t.Error("expected cacheValid to remain true after pause event (Pause already invalidates)")
 	}
 }
 

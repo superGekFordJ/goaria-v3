@@ -769,33 +769,39 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 	switch ev := rawEvt.(type) {
 	case surgeEvents.ProgressMsg:
 		gid = "sg_" + ev.DownloadID
-		payload := map[string]interface{}{
-			"completedLength": strconv.FormatInt(ev.Downloaded, 10),
-			"downloadSpeed":   strconv.FormatInt(int64(ev.Speed), 10),
-			"totalLength":     strconv.FormatInt(ev.Total, 10),
-		}
+		completedStr := strconv.FormatInt(ev.Downloaded, 10)
+		speedStr := strconv.FormatInt(int64(ev.Speed), 10)
+		totalStr := strconv.FormatInt(ev.Total, 10)
+		Cache.PatchTaskProgress(gid, completedStr, speedStr, totalStr)
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{
 				Type:    "progress",
 				GID:     gid,
-				Payload: payload,
+				Payload: map[string]interface{}{
+					"completedLength": completedStr,
+					"downloadSpeed":   speedStr,
+					"totalLength":     totalStr,
+				},
 			})
 		}
 		return
 
 	case surgeEvents.BatchProgressMsg:
-		if State.HasWindow() {
-			for _, p := range ev {
-				pgid := "sg_" + p.DownloadID
-				payload := map[string]interface{}{
-					"completedLength": strconv.FormatInt(p.Downloaded, 10),
-					"downloadSpeed":   strconv.FormatInt(int64(p.Speed), 10),
-					"totalLength":     strconv.FormatInt(p.Total, 10),
-				}
+		for _, p := range ev {
+			pgid := "sg_" + p.DownloadID
+			completedStr := strconv.FormatInt(p.Downloaded, 10)
+			speedStr := strconv.FormatInt(int64(p.Speed), 10)
+			totalStr := strconv.FormatInt(p.Total, 10)
+			Cache.PatchTaskProgress(pgid, completedStr, speedStr, totalStr)
+			if State.HasWindow() {
 				m.pusher.Queue(events.TaskDelta{
 					Type:    "progress",
 					GID:     pgid,
-					Payload: payload,
+					Payload: map[string]interface{}{
+						"completedLength": completedStr,
+						"downloadSpeed":   speedStr,
+						"totalLength":     totalStr,
+					},
 				})
 			}
 		}

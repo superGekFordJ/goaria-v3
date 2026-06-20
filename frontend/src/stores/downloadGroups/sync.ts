@@ -239,7 +239,7 @@ export function useDownloadGroupSync(state: DownloadGroupState, actions: Downloa
 
   function scheduleAutoSync(reason = 'task-signature') {
     if (!isAutoSyncActive.value) return
-    clearAutoSyncTimer()
+    if (autoSyncTimer) return
     autoSyncTimer = setTimeout(() => {
       autoSyncTimer = null
       void runAutoSync(reason)

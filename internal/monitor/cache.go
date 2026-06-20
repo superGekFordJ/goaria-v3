@@ -188,6 +188,24 @@ func (c *TaskCache) ensureMetadata(task rpc.Task) string {
 	return groupKey
 }
 
+// PatchTaskProgress updates a single active task's progress fields in cache.
+// Called from handleSurgeEvent progress push path to keep cache fresh between
+// 5s ticks, so backend-side reads (e.g. download group aggregation) see
+// current speed/completed/total values.
+func (c *TaskCache) PatchTaskProgress(gid, completedLength, downloadSpeed, totalLength string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.active {
+		if c.active[i].GID == gid {
+			c.active[i].CompletedLength = completedLength
+			c.active[i].DownloadSpeed = downloadSpeed
+			c.active[i].TotalLength = totalLength
+			c.lastUpdate = time.Now()
+			return
+		}
+	}
+}
+
 // GetActive 获取活跃任务（从缓存）
 func (c *TaskCache) GetActive() []rpc.Task {
 	c.mu.RLock()
