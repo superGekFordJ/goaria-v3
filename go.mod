@@ -14,7 +14,6 @@ require (
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef
 	github.com/stretchr/testify v1.11.1
 	github.com/tetratelabs/wazero v1.11.0
-	github.com/vfaronov/httpheader v0.1.0
 	github.com/wailsapp/wails/v3 v3.0.0-alpha.98
 	golang.org/x/sys v0.43.0
 	modernc.org/sqlite v1.44.3

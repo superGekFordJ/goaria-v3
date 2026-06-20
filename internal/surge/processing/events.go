@@ -294,7 +294,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan interface{}) {
 			}); err != nil {
 				utils.Debug("Lifecycle: Failed to persist completed download: %v", err)
 			}
-				if err := state.DeleteTasks(m.DownloadID); err != nil {
+			if err := state.DeleteTasks(m.DownloadID); err != nil {
 				utils.Debug("Lifecycle: Failed to delete completed tasks: %v", err)
 			}
 			if settings := mgr.GetSettings(); settings != nil && config.Resolve[bool](settings.General.DownloadCompleteNotification) {
@@ -333,7 +333,6 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan interface{}) {
 					utils.Debug("Lifecycle: Failed to remove incomplete file after error: %v", err)
 				}
 			}
-			triggerGC()
 			if settings := mgr.GetSettings(); settings != nil && config.Resolve[bool](settings.General.DownloadCompleteNotification) {
 
 				filename := m.Filename
@@ -351,6 +350,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan interface{}) {
 
 				notify(fmt.Sprintf("Download failed: %s", filename), msg)
 			}
+			triggerGC()
 
 		case events.DownloadRemovedMsg:
 			// Remove resume metadata before touching files so a deleted download does not
