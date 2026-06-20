@@ -71,6 +71,11 @@ tasks:
       - task: test:go
       - task: test:frontend
 
+  vendor:surge:
+    summary: Vendor Surge download engine core files
+    cmds:
+      - go run ./scripts/vendor_surge.go
+
   # Extractor release pack supply-chain checks
   extractor:packs:verify:
     summary: Verify optional extractor release packs and generate embedded pack code when configured

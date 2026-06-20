@@ -20,6 +20,7 @@ import (
 	"goaria-v3/internal/process"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/speedstats"
+	"goaria-v3/internal/surge"
 	"goaria-v3/internal/tasks"
 	"goaria-v3/internal/tray"
 	"goaria-v3/internal/update"
@@ -59,6 +60,9 @@ func main() {
 	history.Load()
 	speedstats.Load()
 	monitor.LoadTaskGroups()
+
+	// Initialize Surge DB & Session Self-Healing
+	surge.Initialize(filepath.Dir(config.GetConfigPath()))
 
 	// Create the App service for bindings and fail closed on invalid required embedded packs
 	// before starting aria2, so extractor startup failure cannot leave the daemon running.

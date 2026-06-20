@@ -7,6 +7,7 @@ run:
   skip-dirs:
     - frontend
     - build
+    - internal/surge
 
 linters:
   default: none
@@ -36,6 +37,9 @@ linters:
   settings:
     copyloopvar:
       check-alias: true
+  exclusions:
+    paths:
+      - internal/surge
 
 issues:
   max-issues-per-linter: 0
