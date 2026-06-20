@@ -720,6 +720,19 @@ describe('setupEvents', () => {
   })
 
   // =====================================================
+  // handleTaskDelta — resume event
+  // =====================================================
+  describe('handleTaskDelta — resume', () => {
+    it('should patch task status to active', async () => {
+      state.tasks.value.waiting = [mockTask('gid-r', { status: 'paused' })]
+
+      await events.handleTaskDelta({ type: 'resume', gid: 'gid-r' })
+
+      expect(state.tasks.value.waiting[0].status).toBe('active')
+    })
+  })
+
+  // =====================================================
   // handleTaskDelta — remove event
   // =====================================================
   describe('handleTaskDelta — remove', () => {

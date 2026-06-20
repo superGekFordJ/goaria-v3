@@ -1,7 +1,7 @@
 import { Events } from '@wailsio/runtime'
 
 export type TaskDelta = {
-  type: 'add' | 'update' | 'remove' | 'complete' | 'error' | 'pause' | 'progress'
+  type: 'add' | 'update' | 'remove' | 'complete' | 'error' | 'pause' | 'resume' | 'progress'
   gid: string
   payload?: Record<string, unknown>
 }

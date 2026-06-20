@@ -365,6 +365,11 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
         break
       }
 
+      case 'resume': {
+        patchTaskStatus(delta.gid, 'active')
+        break
+      }
+
       case 'error': {
         const errorPayload = delta.payload as Task | undefined
 

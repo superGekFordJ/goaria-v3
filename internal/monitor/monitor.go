@@ -840,6 +840,23 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		}
 	}
 
+	// For pause/resume, patch the cache status immediately so that
+	// GetTasks() returns the correct status before the next tick runs.
+	// Also queue the delta via pusher for direct frontend delivery (~50ms),
+	// eliminating the gap between progress stopping (immediate from event
+	// stream) and the status badge/card style changing (was waiting for tick).
+	if deltaType == "pause" {
+		Cache.PatchTaskStatus(gid, "paused")
+		if State.HasWindow() {
+			m.pusher.Queue(events.TaskDelta{Type: "pause", GID: gid})
+		}
+	} else if deltaType == "resume" {
+		Cache.PatchTaskStatus(gid, "active")
+		if State.HasWindow() {
+			m.pusher.Queue(events.TaskDelta{Type: "resume", GID: gid})
+		}
+	}
+
 	m.hub.NotifyInternal(events.TaskDelta{Type: deltaType, GID: gid})
 
 	log.Printf("[Monitor] Surge Event: %s -> %s (gid: %s)", deltaType, gid, gid)

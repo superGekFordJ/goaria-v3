@@ -196,6 +196,107 @@ func TestHandleSurgeEvent_PauseEvent_DoesNotInvalidateCache(t *testing.T) {
 	}
 }
 
+func TestHandleSurgeEvent_PauseEvent_QueuesPauseDeltaAndPatchesCache(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	se := &rpc.SurgeEngine{}
+	hybrid := rpc.NewHybridEngine(nil, se)
+	m := &Monitor{hub: hub, pusher: pusher, engine: hybrid}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	// Seed cache with an active task
+	Cache.active = []rpc.Task{{GID: "sg_test-pause", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.active = nil }()
+
+	m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{
+		DownloadID: "test-pause",
+	})
+
+	// Verify pusher queued a pause delta
+	pusher.mu.Lock()
+	found := false
+	for _, d := range pusher.pending {
+		if d.Type == "pause" && d.GID == "sg_test-pause" {
+			found = true
+			break
+		}
+	}
+	pusher.mu.Unlock()
+	if !found {
+		t.Error("expected pause delta in pusher pending queue")
+	}
+
+	// Verify cache status was patched
+	Cache.mu.RLock()
+	status := ""
+	speed := ""
+	for _, task := range Cache.active {
+		if task.GID == "sg_test-pause" {
+			status = task.Status
+			speed = task.DownloadSpeed
+			break
+		}
+	}
+	Cache.mu.RUnlock()
+	if status != "paused" {
+		t.Errorf("expected cache status 'paused', got %q", status)
+	}
+	if speed != "0" {
+		t.Errorf("expected cache DownloadSpeed '0', got %q", speed)
+	}
+}
+
+func TestHandleSurgeEvent_ResumeEvent_QueuesResumeDeltaAndPatchesCache(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	se := &rpc.SurgeEngine{}
+	hybrid := rpc.NewHybridEngine(nil, se)
+	m := &Monitor{hub: hub, pusher: pusher, engine: hybrid}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	// Seed cache with a paused task in waiting list
+	Cache.waiting = []rpc.Task{{GID: "sg_test-resume", Status: "paused"}}
+	defer func() { Cache.waiting = nil }()
+
+	m.handleSurgeEvent(surgeEvents.DownloadResumedMsg{
+		DownloadID: "test-resume",
+	})
+
+	// Verify pusher queued a resume delta
+	pusher.mu.Lock()
+	found := false
+	for _, d := range pusher.pending {
+		if d.Type == "resume" && d.GID == "sg_test-resume" {
+			found = true
+			break
+		}
+	}
+	pusher.mu.Unlock()
+	if !found {
+		t.Error("expected resume delta in pusher pending queue")
+	}
+
+	// Verify cache status was patched
+	Cache.mu.RLock()
+	status := ""
+	for _, task := range Cache.waiting {
+		if task.GID == "sg_test-resume" {
+			status = task.Status
+			break
+		}
+	}
+	Cache.mu.RUnlock()
+	if status != "active" {
+		t.Errorf("expected cache status 'active', got %q", status)
+	}
+}
+
 func TestCurrentTickInterval_PendingComplete_UsesWindow(t *testing.T) {
 	m := &Monitor{
 		pendingCompleteGids: map[string]time.Time{"sg_test": time.Now()},
