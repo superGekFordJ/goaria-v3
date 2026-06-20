@@ -36,16 +36,27 @@ func main() {
 		filepath.Join("utils", "notify_stub.go"): true,
 	}
 
-	// Phase 1: Collect all source files and determine what needs to change
+	// Phase 1: Read source files, replace imports, and write pre-fmt content
+	// to a temp directory. We format the temp dir before comparing so that
+	// the comparison is post-fmt vs post-fmt (existing destination files were
+	// formatted in previous vendor runs). Without this, whitespace differences
+	// between pre-fmt and post-fmt would cause false-positive MODIFIED reports.
 	type fileAction struct {
 		relPath   string
-		content   []byte
+		content   []byte // formatted content (after golangci-lint fmt)
 		exists    bool
 		identical bool
 	}
 
 	var actions []fileAction
 	vendoredPaths := make(map[string]bool) // tracks all valid destination paths
+
+	tmpDir, err := os.MkdirTemp("", "surge-vendor-")
+	if err != nil {
+		fmt.Printf("Error creating temp dir: %v\n", err)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(tmpDir)
 
 	for _, subDir := range dirsToCopy {
 		srcPath := filepath.Join(srcBase, subDir)
@@ -77,26 +88,21 @@ func main() {
 			newImport := []byte("goaria-v3/internal/surge/")
 			modifiedContent := bytes.ReplaceAll(content, oldImport, newImport)
 
-			dstPath := filepath.Join(dstBase, relPath)
 			vendoredPaths[relPath] = true
 
-			existing, err := os.ReadFile(dstPath)
-			if err == nil {
-				identical := bytes.Equal(existing, modifiedContent)
-				actions = append(actions, fileAction{
-					relPath:   relPath,
-					content:   modifiedContent,
-					exists:    true,
-					identical: identical,
-				})
-			} else {
-				actions = append(actions, fileAction{
-					relPath:   relPath,
-					content:   modifiedContent,
-					exists:    false,
-					identical: false,
-				})
+			// Write pre-fmt content to temp dir for formatting
+			tmpPath := filepath.Join(tmpDir, relPath)
+			if err := os.MkdirAll(filepath.Dir(tmpPath), 0o755); err != nil {
+				return fmt.Errorf("error creating temp dir for %s: %w", relPath, err)
 			}
+			if err := os.WriteFile(tmpPath, modifiedContent, 0o644); err != nil {
+				return fmt.Errorf("error writing temp %s: %w", relPath, err)
+			}
+
+			actions = append(actions, fileAction{
+				relPath: relPath,
+				exists:  false, // will be determined after fmt + comparison
+			})
 
 			return nil
 		})
@@ -106,7 +112,68 @@ func main() {
 		}
 	}
 
-	// Phase 2: Detect stale files in destination that no longer exist in source
+	// Phase 2: Run golangci-lint fmt on the temp directory.
+	// This formats all pre-fmt content so comparisons are accurate.
+	fmt.Println("Running golangci-lint fmt on temp vendor dir...")
+
+	tmpConfig, err := os.CreateTemp(".", ".golangci-vendor-*.yml")
+	if err != nil {
+		fmt.Printf("Warning: could not create temp config: %v\n", err)
+	} else {
+		defer os.Remove(tmpConfig.Name())
+		overrideConfig := `version: "2"
+formatters:
+  enable:
+    - gofumpt
+    - gci
+  settings:
+    gofumpt:
+      module-path: goaria-v3
+    gci:
+      custom-order: true
+      sections:
+        - standard
+        - prefix(goaria-v3)
+        - default
+`
+		if _, err := tmpConfig.WriteString(overrideConfig); err != nil {
+			fmt.Printf("Warning: could not write temp config: %v\n", err)
+		}
+		tmpConfig.Close()
+
+		fmtCmd := exec.Command("golangci-lint", "fmt", "-c", tmpConfig.Name(), tmpDir+"/")
+		fmtCmd.Stdout = os.Stdout
+		fmtCmd.Stderr = os.Stderr
+		if err := fmtCmd.Run(); err != nil {
+			fmt.Printf("Warning: golangci-lint fmt failed: %v\n", err)
+		} else {
+			fmt.Println("Temp formatting complete.")
+		}
+	}
+
+	// Phase 3: Read back formatted content from temp dir and compare against
+	// existing destination files.
+	for i := range actions {
+		tmpPath := filepath.Join(tmpDir, actions[i].relPath)
+		formatted, err := os.ReadFile(tmpPath)
+		if err != nil {
+			fmt.Printf("Error reading formatted temp %s: %v\n", actions[i].relPath, err)
+			os.Exit(1)
+		}
+		actions[i].content = formatted
+
+		dstPath := filepath.Join(dstBase, actions[i].relPath)
+		existing, err := os.ReadFile(dstPath)
+		if err == nil {
+			actions[i].exists = true
+			actions[i].identical = bytes.Equal(existing, formatted)
+		} else {
+			actions[i].exists = false
+			actions[i].identical = false
+		}
+	}
+
+	// Phase 4: Detect stale files in destination that no longer exist in source
 	var staleFiles []string
 	for _, subDir := range dirsToCopy {
 		dstDir := filepath.Join(dstBase, subDir)
@@ -134,7 +201,7 @@ func main() {
 		}
 	}
 
-	// Phase 3: Report
+	// Phase 5: Report
 	var toWrite, toSkip, toDelete int
 	for _, a := range actions {
 		if a.exists && a.identical && !*force {
@@ -169,7 +236,7 @@ func main() {
 		return
 	}
 
-	// Phase 4: Execute writes
+	// Phase 6: Execute writes (formatted content)
 	written := 0
 	for _, a := range actions {
 		if a.exists && a.identical && !*force {
@@ -187,7 +254,7 @@ func main() {
 		written++
 	}
 
-	// Phase 5: Delete stale files
+	// Phase 7: Delete stale files
 	deleted := 0
 	for _, sf := range staleFiles {
 		dstPath := filepath.Join(dstBase, sf)
@@ -199,47 +266,5 @@ func main() {
 	}
 
 	fmt.Printf("Vendored: %d files written, %d stale files removed.\n", written, deleted)
-
-	// Run golangci-lint fmt on vendored files to match project formatting.
-	// The main .golangci.yml excludes internal/surge from formatters (to avoid
-	// touching upstream code during normal fmt runs), so we use a temporary
-	// override config that removes the exclusion for this one-off vendor fmt.
-	fmt.Println("Running golangci-lint fmt on internal/surge...")
-
-	tmpConfig, err := os.CreateTemp(".", ".golangci-vendor-*.yml")
-	if err != nil {
-		fmt.Printf("Warning: could not create temp config: %v\n", err)
-	} else {
-		defer os.Remove(tmpConfig.Name())
-		overrideConfig := `version: "2"
-formatters:
-  enable:
-    - gofumpt
-    - gci
-  settings:
-    gofumpt:
-      module-path: goaria-v3
-    gci:
-      custom-order: true
-      sections:
-        - standard
-        - prefix(goaria-v3)
-        - default
-`
-		if _, err := tmpConfig.WriteString(overrideConfig); err != nil {
-			fmt.Printf("Warning: could not write temp config: %v\n", err)
-		}
-		tmpConfig.Close()
-
-		fmtCmd := exec.Command("golangci-lint", "fmt", "-c", tmpConfig.Name(), "internal/surge/")
-		fmtCmd.Stdout = os.Stdout
-		fmtCmd.Stderr = os.Stderr
-		if err := fmtCmd.Run(); err != nil {
-			fmt.Printf("Warning: golangci-lint fmt failed: %v\n", err)
-		} else {
-			fmt.Println("Formatting complete.")
-		}
-	}
-
 	fmt.Println("Surge core packages successfully vended and import paths rewritten.")
 }

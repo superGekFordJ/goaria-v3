@@ -7,6 +7,7 @@ import (
 
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/utils"
 )
 
 type Setting struct {
@@ -56,6 +57,8 @@ type NetworkSettings struct {
 	MinChunkSize              *Setting
 	WorkerBufferSize          *Setting
 	DialHedgeCount            *Setting
+	GlobalRateLimit           *Setting
+	DefaultDownloadRateLimit  *Setting
 }
 
 type PerformanceSettings struct {
@@ -120,6 +123,8 @@ func DefaultSettings() *Settings {
 			MinChunkSize:              &Setting{Key: "min_chunk_size", Type: "int64", DefaultValue: int64(2 * 1024 * 1024), Value: int64(2 * 1024 * 1024)},
 			WorkerBufferSize:          &Setting{Key: "worker_buffer_size", Type: "int", DefaultValue: 512 * 1024, Value: 512 * 1024},
 			DialHedgeCount:            &Setting{Key: "dial_hedge_count", Type: "int", DefaultValue: 4, Value: 4},
+			GlobalRateLimit:           &Setting{Key: "global_rate_limit", Type: "string", DefaultValue: "0", Value: "0"},
+			DefaultDownloadRateLimit:  &Setting{Key: "default_download_rate_limit", Type: "string", DefaultValue: "0", Value: "0"},
 		},
 		Performance: PerformanceSettings{
 			MaxTaskRetries:        &Setting{Key: "max_task_retries", Type: "int", DefaultValue: 3},
@@ -230,20 +235,37 @@ func Resolve[T any](s *Setting) T {
 }
 
 func (s *Settings) ToRuntimeConfig() *types.RuntimeConfig {
+	var globalRate, defaultRate int64
+	if s.Network.GlobalRateLimit != nil {
+		var err error
+		globalRate, err = utils.ParseRateLimitValue(s.Network.GlobalRateLimit.Value)
+		if err != nil {
+			globalRate, _ = utils.ParseRateLimitValue(s.Network.GlobalRateLimit.DefaultValue)
+		}
+	}
+	if s.Network.DefaultDownloadRateLimit != nil {
+		var err error
+		defaultRate, err = utils.ParseRateLimitValue(s.Network.DefaultDownloadRateLimit.Value)
+		if err != nil {
+			defaultRate, _ = utils.ParseRateLimitValue(s.Network.DefaultDownloadRateLimit.DefaultValue)
+		}
+	}
 	return &types.RuntimeConfig{
-		MaxConnectionsPerDownload: Resolve[int](s.Network.MaxConnectionsPerDownload),
-		UserAgent:                 Resolve[string](s.Network.UserAgent),
-		ProxyURL:                  Resolve[string](s.Network.ProxyURL),
-		CustomDNS:                 Resolve[string](s.Network.CustomDNS),
-		SequentialDownload:        Resolve[bool](s.Network.SequentialDownload),
-		MinChunkSize:              Resolve[int64](s.Network.MinChunkSize),
-		WorkerBufferSize:          Resolve[int](s.Network.WorkerBufferSize),
-		DialHedgeCount:            Resolve[int](s.Network.DialHedgeCount),
-		MaxTaskRetries:            Resolve[int](s.Performance.MaxTaskRetries),
-		SlowWorkerThreshold:       Resolve[float64](s.Performance.SlowWorkerThreshold),
-		SlowWorkerGracePeriod:     Resolve[time.Duration](s.Performance.SlowWorkerGracePeriod),
-		StallTimeout:              Resolve[time.Duration](s.Performance.StallTimeout),
-		SpeedEmaAlpha:             Resolve[float64](s.Performance.SpeedEmaAlpha),
+		MaxConnectionsPerDownload:   Resolve[int](s.Network.MaxConnectionsPerDownload),
+		UserAgent:                   Resolve[string](s.Network.UserAgent),
+		ProxyURL:                    Resolve[string](s.Network.ProxyURL),
+		CustomDNS:                   Resolve[string](s.Network.CustomDNS),
+		SequentialDownload:          Resolve[bool](s.Network.SequentialDownload),
+		MinChunkSize:                Resolve[int64](s.Network.MinChunkSize),
+		GlobalRateLimitBps:          globalRate,
+		DefaultDownloadRateLimitBps: defaultRate,
+		WorkerBufferSize:            Resolve[int](s.Network.WorkerBufferSize),
+		DialHedgeCount:              Resolve[int](s.Network.DialHedgeCount),
+		MaxTaskRetries:              Resolve[int](s.Performance.MaxTaskRetries),
+		SlowWorkerThreshold:         Resolve[float64](s.Performance.SlowWorkerThreshold),
+		SlowWorkerGracePeriod:       Resolve[time.Duration](s.Performance.SlowWorkerGracePeriod),
+		StallTimeout:                Resolve[time.Duration](s.Performance.StallTimeout),
+		SpeedEmaAlpha:               Resolve[float64](s.Performance.SpeedEmaAlpha),
 	}
 }
 
