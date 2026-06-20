@@ -50,8 +50,16 @@ func NewApp() *App {
 	downloadgroups.OpenFolderLauncher = func(dir string) error {
 		return openFolderLauncher(openFolderLaunchTarget{OpenDir: dir})
 	}
+
+	// Instantiate the hybrid routing engine
+	hybrid := rpc.NewHybridEngine(
+		&rpc.Aria2Engine{},
+		rpc.NewSurgeEngine(),
+	)
+
 	return &App{
-		trayState: tray.StateIdle,
+		trayState:      tray.StateIdle,
+		downloadEngine: hybrid,
 	}
 }
 

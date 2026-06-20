@@ -138,6 +138,12 @@ func main() {
 		mon.Stop()
 		rpc.StopNotifier()
 		rpc.ForceSaveSession()
+
+		// Gracefully clean up Surge engine background workers
+		if closer, ok := appService.downloadEngine.(interface{ Close() }); ok {
+			closer.Close()
+		}
+
 		time.Sleep(500 * time.Millisecond)
 		process.StopAria2()
 	})
