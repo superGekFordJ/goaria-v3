@@ -15,12 +15,22 @@ export interface SmoothProgressConfig {
   prematureCap: number
 }
 
-// 新后端的事件推送经过了防抖和批处理 (Monitor -> Pusher)，任务卡片和组卡片共享这组更激进的视觉平滑参数。
+// Aria2 路径：事件推送频率 ~1s（轮询 + Pusher 防抖），需要较保守的平滑参数来掩盖低频抖动。
 export const TASK_PROGRESS_CONFIG = {
   emaAlpha: 0.1,
   smoothingFactor: 0.1,
   deviationDecay: 0.07,
   maxScaleDelta: 0.009,
+} as const satisfies Partial<SmoothProgressConfig>
+
+// Surge 路径：事件推送频率 ~200ms（150ms 事件 + 50ms 防抖），
+// 预测误差极小，偏差补偿不再需要；大幅提高 smoothingFactor 和 maxScaleDelta
+// 让显示值快速追踪真实进度——200ms 间隔下修正力度大也不会被肉眼察觉。
+export const SURGE_TASK_PROGRESS_CONFIG = {
+  emaAlpha: 0.2,
+  smoothingFactor: 0.6,
+  deviationDecay: 0.0,
+  maxScaleDelta: 0.008,
 } as const satisfies Partial<SmoothProgressConfig>
 
 const DEFAULT_CONFIG: SmoothProgressConfig = {

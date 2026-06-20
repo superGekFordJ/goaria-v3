@@ -5,7 +5,11 @@
   import type { TaskGroupHint } from '../../stores/task/grouping'
   import { useTaskStore } from '../../stores/task'
   import { Pause, Play, FolderOpen, Trash2, FileDown, Clock, Zap, Layers3 } from 'lucide-vue-next'
-  import { TASK_PROGRESS_CONFIG, useSmoothProgress } from '../../composables/useSmoothProgress'
+  import {
+    TASK_PROGRESS_CONFIG,
+    SURGE_TASK_PROGRESS_CONFIG,
+    useSmoothProgress,
+  } from '../../composables/useSmoothProgress'
 
   const { t } = useI18n()
 
@@ -20,7 +24,10 @@
 
   const taskStore = useTaskStore()
 
-  const { displayDownloaded, totalBytes, updateStats } = useSmoothProgress(TASK_PROGRESS_CONFIG)
+  const isSurgeTask = props.task.gid.startsWith('sg_')
+  const { displayDownloaded, totalBytes, updateStats } = useSmoothProgress(
+    isSurgeTask ? SURGE_TASK_PROGRESS_CONFIG : TASK_PROGRESS_CONFIG,
+  )
 
   // Sync with prop updates - optimized to watch specific fields
   watch(

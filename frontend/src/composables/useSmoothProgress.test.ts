@@ -13,7 +13,7 @@ vi.mock('vue', async importOriginal => {
   }
 })
 
-import { useSmoothProgress } from './useSmoothProgress'
+import { useSmoothProgress, SURGE_TASK_PROGRESS_CONFIG } from './useSmoothProgress'
 
 describe('useSmoothProgress', () => {
   let requestAnimationFrameMock: ReturnType<typeof vi.fn>
@@ -254,5 +254,42 @@ describe('useSmoothProgress', () => {
 
     // 3. Expect immediate kill
     expect(smoothSpeed.value).toBe(0)
+  })
+
+  it('SURGE_TASK_PROGRESS_CONFIG: deviationDecay=0 disables deviation compensation', () => {
+    const { displayDownloaded, updateStats } = useSmoothProgress(SURGE_TASK_PROGRESS_CONFIG)
+
+    // Start downloading
+    updateStats({ downloaded: 100, speed: 100, total: 1000 })
+    expect(displayDownloaded.value).toBe(100)
+
+    // Advance 200ms (typical Surge event interval)
+    advanceFrame(200)
+
+    // With deviationDecay=0, target = predictedBytes (no subtraction)
+    // predicted = 100 + 100 * 0.2 = 120
+    // maxDelta = 1000 * 0.008 = 8
+    // rawDelta = 120 - 100 = 20, clamped to 8
+    // displayDownloaded += 8 * 0.6 = 4.8
+    expect(displayDownloaded.value).toBeCloseTo(104.8, 5)
+  })
+
+  it('SURGE_TASK_PROGRESS_CONFIG: higher smoothingFactor produces less lag than default', () => {
+    // Test sequentially because the RAF mock only stores one callback
+    const surgeResult = useSmoothProgress(SURGE_TASK_PROGRESS_CONFIG)
+    surgeResult.updateStats({ downloaded: 500, speed: 100, total: 1000 })
+    advanceFrame(200)
+    const surgeValue = surgeResult.displayDownloaded.value
+    cleanupCallbacks.forEach(cb => cb())
+    cleanupCallbacks.length = 0
+
+    const defaultResult = useSmoothProgress()
+    defaultResult.updateStats({ downloaded: 500, speed: 100, total: 1000 })
+    advanceFrame(200)
+    const defaultValue = defaultResult.displayDownloaded.value
+
+    // Surge config with smoothingFactor=0.4 should track closer to target
+    // than default with smoothingFactor=0.1
+    expect(surgeValue).toBeGreaterThan(defaultValue)
   })
 })
