@@ -130,6 +130,10 @@ func (m *mockEngine) StreamEvents(ctx context.Context) (<-chan any, func(), erro
 	return nil, func() {}, nil
 }
 
+func (m *mockEngine) IsSurgeActive() bool {
+	return false
+}
+
 func (m *mockEngine) Close() {
 	m.closeCalls++
 }

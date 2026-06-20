@@ -26,6 +26,7 @@ type DownloadEngine interface {
 	SaveSession() error
 	ChangeGlobalOption(options map[string]string) error
 	StreamEvents(ctx context.Context) (<-chan any, func(), error)
+	IsSurgeActive() bool
 }
 
 // Aria2Engine implements DownloadEngine by forwarding to the aria2 client package functions.
@@ -133,4 +134,8 @@ func (e *Aria2Engine) ChangeGlobalOption(options map[string]string) error {
 
 func (e *Aria2Engine) StreamEvents(ctx context.Context) (<-chan any, func(), error) {
 	return nil, func() {}, nil
+}
+
+func (e *Aria2Engine) IsSurgeActive() bool {
+	return false
 }

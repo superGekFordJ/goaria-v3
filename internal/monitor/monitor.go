@@ -140,7 +140,7 @@ func (m *Monitor) Stop() {
 }
 
 func (m *Monitor) runLoop() {
-	ticker := time.NewTicker(m.headlessInterval)
+	ticker := time.NewTicker(m.currentTickInterval())
 	defer ticker.Stop()
 
 	// 启动时立即执行一次
@@ -152,22 +152,19 @@ func (m *Monitor) runLoop() {
 			return
 		case <-ticker.C:
 			m.tick()
-			// 根据窗口状态动态调整间隔
-			if State.HasWindow() {
-				ticker.Reset(m.windowInterval)
-			} else {
-				ticker.Reset(m.headlessInterval)
-			}
+			ticker.Reset(m.currentTickInterval())
 		case <-m.forceTickChan:
 			m.tick()
-			// 重置定时器，避免立即再次轮询
-			if State.HasWindow() {
-				ticker.Reset(m.windowInterval)
-			} else {
-				ticker.Reset(m.headlessInterval)
-			}
+			ticker.Reset(m.currentTickInterval())
 		}
 	}
+}
+
+func (m *Monitor) currentTickInterval() time.Duration {
+	if State.HasWindow() && !m.engine.IsSurgeActive() {
+		return m.windowInterval
+	}
+	return m.headlessInterval
 }
 
 func (m *Monitor) tick() {
@@ -741,6 +738,40 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 	var gid string
 
 	switch ev := rawEvt.(type) {
+	case surgeEvents.ProgressMsg:
+		gid = "sg_" + ev.DownloadID
+		payload := map[string]interface{}{
+			"completedLength": strconv.FormatInt(ev.Downloaded, 10),
+			"downloadSpeed":   strconv.FormatInt(int64(ev.Speed), 10),
+			"totalLength":     strconv.FormatInt(ev.Total, 10),
+		}
+		if State.HasWindow() {
+			m.pusher.Queue(events.TaskDelta{
+				Type:    "progress",
+				GID:     gid,
+				Payload: payload,
+			})
+		}
+		return
+
+	case surgeEvents.BatchProgressMsg:
+		if State.HasWindow() {
+			for _, p := range ev {
+				pgid := "sg_" + p.DownloadID
+				payload := map[string]interface{}{
+					"completedLength": strconv.FormatInt(p.Downloaded, 10),
+					"downloadSpeed":   strconv.FormatInt(int64(p.Speed), 10),
+					"totalLength":     strconv.FormatInt(p.Total, 10),
+				}
+				m.pusher.Queue(events.TaskDelta{
+					Type:    "progress",
+					GID:     pgid,
+					Payload: payload,
+				})
+			}
+		}
+		return
+
 	case surgeEvents.DownloadQueuedMsg:
 		deltaType = "add"
 		gid = "sg_" + ev.DownloadID
@@ -766,13 +797,15 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		return
 	}
 
-	// 引入小延迟并使用 goroutine 异步触发，确保 SQLite 事务优先落盘，且不会阻塞 Surge 事件流通道
-	go func(dt string, g string) {
-		if dt == "complete" || dt == "error" || dt == "remove" || dt == "pause" {
-			time.Sleep(150 * time.Millisecond)
+	if deltaType == "complete" || deltaType == "error" || deltaType == "remove" {
+		if hybrid, ok := m.engine.(*rpc.HybridEngine); ok {
+			if se, ok := hybrid.SurgeEngineRef(); ok {
+				se.InvalidateCache()
+			}
 		}
-		m.hub.NotifyInternal(events.TaskDelta{Type: dt, GID: g})
-	}(deltaType, gid)
+	}
+
+	m.hub.NotifyInternal(events.TaskDelta{Type: deltaType, GID: gid})
 
 	log.Printf("[Monitor] Surge Event: %s -> %s (gid: %s)", deltaType, gid, gid)
 }

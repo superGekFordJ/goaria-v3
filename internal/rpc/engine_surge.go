@@ -130,6 +130,26 @@ func (e *SurgeEngine) invalidateCache() {
 	e.cacheMu.Unlock()
 }
 
+func (e *SurgeEngine) InvalidateCache() {
+	e.invalidateCache()
+}
+
+func (e *SurgeEngine) IsSurgeActive() bool {
+	return e.service != nil
+}
+
+func (e *SurgeEngine) IsCacheValid() bool {
+	e.cacheMu.RLock()
+	defer e.cacheMu.RUnlock()
+	return e.cacheValid
+}
+
+func (e *SurgeEngine) SetCacheValid(valid bool) {
+	e.cacheMu.Lock()
+	e.cacheValid = valid
+	e.cacheMu.Unlock()
+}
+
 func (e *SurgeEngine) getDownloadList() ([]types.DownloadStatus, error) {
 	e.cacheMu.RLock()
 	if e.cacheValid {

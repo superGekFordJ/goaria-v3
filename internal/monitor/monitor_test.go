@@ -68,24 +68,16 @@ func TestMonitor_HandleSurgeEvent_CompleteEventDispatches(t *testing.T) {
 	}
 
 	var receivedDelta *events.TaskDelta
-	done := make(chan struct{})
 	hub.SubscribeTaskDelta(func(delta events.TaskDelta) {
 		receivedDelta = &delta
-		close(done)
 	})
 
 	m.handleSurgeEvent(surgeEvents.DownloadCompleteMsg{
 		DownloadID: "test-123",
 	})
 
-	select {
-	case <-done:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("timed out waiting for TaskDelta dispatch")
-	}
-
 	if receivedDelta == nil {
-		t.Fatal("expected non-nil TaskDelta")
+		t.Fatal("expected non-nil TaskDelta dispatched synchronously")
 	}
 	if receivedDelta.Type != "complete" {
 		t.Errorf("delta type = %q, want complete", receivedDelta.Type)

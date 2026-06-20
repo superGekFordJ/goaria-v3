@@ -495,6 +495,18 @@ func (h *HybridEngine) StreamEvents(ctx context.Context) (<-chan any, func(), er
 	return h.surgeEngine.StreamEvents(ctx)
 }
 
+func (h *HybridEngine) IsSurgeActive() bool {
+	if h.surgeEngine == nil {
+		return false
+	}
+	return h.surgeEngine.IsSurgeActive()
+}
+
+func (h *HybridEngine) SurgeEngineRef() (*SurgeEngine, bool) {
+	se, ok := h.surgeEngine.(*SurgeEngine)
+	return se, ok
+}
+
 func (h *HybridEngine) Close() {
 	if closer, ok := h.surgeEngine.(interface{ Close() }); ok {
 		closer.Close()
