@@ -157,6 +157,8 @@ func (s *Service) removeTaskWithTarget(gid string, target removalTarget, deleteF
 	cleanupRemovedTask(gid, target, deleteFile)
 }
 
+// FORK-PATCH: Added debounced GC trigger on task removal for memory reclamation.
+// Called after file deletion and path-missing cleanup paths.
 var (
 	gcTimer   *time.Timer
 	gcTimerMu sync.Mutex

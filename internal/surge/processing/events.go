@@ -23,6 +23,8 @@ var (
 	notify              = utils.Notify
 )
 
+// FORK-PATCH: Added debounced runtime.GC() + debug.FreeOSMemory() for Windows memory reclamation.
+// Called after download complete, error, and removal events.
 var (
 	gcTimer   *time.Timer
 	gcTimerMu sync.Mutex

@@ -197,6 +197,8 @@ func (s *LocalDownloadService) reportProgressLoop() {
 			continue
 		}
 
+		// FORK-PATCH: Added idle backoff to reduce CPU when no active downloads.
+		// Clears cached speed histories and sleeps 250ms instead of busy-looping on ticker.
 		if s.Pool.ActiveCount() == 0 {
 			// Clear cached speed histories to prevent memory accumulation when idle
 			for k := range lastSpeeds {

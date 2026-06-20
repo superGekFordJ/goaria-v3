@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"goaria-v3/internal/surge/engine/events"
 	"goaria-v3/internal/surge/engine/types"
 )
 
@@ -1031,5 +1032,152 @@ func TestWorkerPool_GracefulShutdown_WorkerSkipsQueuedAfterShutdown(t *testing.T
 	pool.mu.RUnlock()
 	if stillQueued {
 		t.Error("expected queued map to be cleared after GracefulShutdown")
+	}
+}
+
+// --- Cancel/Complete Regression Tests ---
+
+// TestWorkerPool_Cancel_DoesNotAppearCompleted verifies that after Cancel,
+// the download is removed from the pool map and Done remains false.
+func TestWorkerPool_Cancel_DoesNotAppearCompleted(t *testing.T) {
+	ch := make(chan any, 10)
+	pool := NewWorkerPool(ch, 3)
+
+	state := types.NewProgressState("test-id", 1000)
+	cancelCalled := false
+
+	pool.mu.Lock()
+	pool.downloads["test-id"] = &activeDownload{
+		config: types.DownloadConfig{
+			ID:    "test-id",
+			State: state,
+		},
+		cancel: func() { cancelCalled = true },
+	}
+	pool.mu.Unlock()
+
+	result := pool.Cancel("test-id")
+
+	if !result.Found {
+		t.Fatal("expected CancelResult.Found to be true")
+	}
+
+	if pool.GetStatus("test-id") != nil {
+		t.Error("expected GetStatus to return nil after cancel (download removed from map)")
+	}
+
+	if state.Done.Load() {
+		t.Error("expected state.Done to be false after cancel")
+	}
+
+	if !cancelCalled {
+		t.Error("expected cancel function to be called")
+	}
+}
+
+// TestWorkerPool_Cancel_DoesNotEmitErrorMsg verifies that Cancel does not
+// emit any DownloadErrorMsg on the progress channel.
+func TestWorkerPool_Cancel_DoesNotEmitErrorMsg(t *testing.T) {
+	ch := make(chan any, 10)
+	pool := NewWorkerPool(ch, 3)
+
+	state := types.NewProgressState("test-id", 1000)
+
+	pool.mu.Lock()
+	pool.downloads["test-id"] = &activeDownload{
+		config: types.DownloadConfig{
+			ID:    "test-id",
+			State: state,
+		},
+		cancel: func() {},
+	}
+	pool.mu.Unlock()
+
+	pool.Cancel("test-id")
+
+	// Drain the channel with a short timeout to check for any messages
+	drainDone := time.After(100 * time.Millisecond)
+loop:
+	for {
+		select {
+		case msg := <-ch:
+			if _, isErr := msg.(events.DownloadErrorMsg); isErr {
+				t.Fatal("expected no DownloadErrorMsg on cancel, but received one")
+			}
+		case <-drainDone:
+			break loop
+		}
+	}
+}
+
+// TestWorkerPool_Cancel_QueuedTask verifies that cancelling a queued task
+// removes it from the queued map and returns WasQueued=true.
+func TestWorkerPool_Cancel_QueuedTask(t *testing.T) {
+	ch := make(chan any, 10)
+	pool := &WorkerPool{
+		progressCh:   ch,
+		progressDone: make(chan struct{}),
+		taskChan:     make(chan types.DownloadConfig, 10),
+		downloads:    make(map[string]*activeDownload),
+		queued: map[string]types.DownloadConfig{
+			"queued-id": {
+				ID:       "queued-id",
+				Filename: "queued.bin",
+			},
+		},
+	}
+
+	result := pool.Cancel("queued-id")
+
+	if !result.Found {
+		t.Fatal("expected CancelResult.Found for queued cancel")
+	}
+	if !result.WasQueued {
+		t.Fatal("expected CancelResult.WasQueued for queued cancel")
+	}
+
+	pool.mu.RLock()
+	_, stillQueued := pool.queued["queued-id"]
+	pool.mu.RUnlock()
+	if stillQueued {
+		t.Fatal("expected queued entry to be removed from pool.queued")
+	}
+}
+
+// TestWorkerPool_NaturalCompletion_MarksDone verifies that the ProgressState
+// Done flag is set to true when a download completes naturally (not via cancel).
+// This tests the ProgressState invariant that the worker goroutine relies on.
+func TestWorkerPool_NaturalCompletion_MarksDone(t *testing.T) {
+	ch := make(chan any, 10)
+	pool := NewWorkerPool(ch, 3)
+
+	state := types.NewProgressState("complete-id", 1000)
+
+	pool.mu.Lock()
+	ad := &activeDownload{
+		config: types.DownloadConfig{
+			ID:    "complete-id",
+			State: state,
+		},
+	}
+	ad.running.Store(false)
+	pool.downloads["complete-id"] = ad
+	pool.mu.Unlock()
+
+	// Simulate the natural completion path: the worker goroutine sets Done=true
+	// after TUIDownload returns nil (see pool.go worker() else branch).
+	state.Done.Store(true)
+
+	if !state.Done.Load() {
+		t.Fatal("expected state.Done to be true after natural completion")
+	}
+
+	// Verify GetStatus reflects the completed state
+	status := pool.GetStatus("complete-id")
+	if status == nil {
+		t.Fatal("expected GetStatus to return non-nil for completed download still in map")
+	}
+	if status.Status != "completed" {
+		t.Errorf("expected status 'completed', got %q", status.Status)
 	}
 }

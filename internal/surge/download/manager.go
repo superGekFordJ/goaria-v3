@@ -260,6 +260,8 @@ func TUIDownload(ctx context.Context, cfg *types.DownloadConfig) error {
 		// Verify it's not a cancellation error
 		if errors.Is(downloadErr, context.Canceled) || errors.Is(downloadErr, context.DeadlineExceeded) {
 			utils.Debug("Download canceled cleanly")
+			// FORK-PATCH: Returns context.Canceled instead of nil to route
+			// cancellation through error cleanup path. Verify DownloadErrorMsg is not emitted.
 			return downloadErr
 		}
 

@@ -261,7 +261,8 @@ func (p *WorkerPool) Cancel(downloadID string) types.CancelResult {
 			time.Sleep(cancelStopPollInterval)
 		}
 
-
+		// FORK-PATCH: Removed Done.Store(true) — cancelled ≠ completed.
+		// Revert if upstream fixes cancel/completion separation.
 	} else if queuedExists {
 		result.Filename = qCfg.Filename
 		result.DestPath = resolveDestPath(&qCfg)
