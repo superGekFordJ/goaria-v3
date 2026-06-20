@@ -146,11 +146,14 @@ export function useSmoothProgress(configOverrides: Partial<SmoothProgressConfig>
     }
 
     // Calculate deviation (actual progress vs expected progress)
-    const elapsed = (performance.now() - lastUpdateTimestamp) / 1000
-    if (elapsed > 0 && prevReal > 0 && newDownloaded >= prevReal) {
-      const expectedProgress = prevSpeed * elapsed
-      const actualProgress = newDownloaded - prevReal
-      deviation = actualProgress - expectedProgress
+    // Skip when deviationDecay=0 — deviation is never consumed
+    if (config.deviationDecay > 0) {
+      const elapsed = (performance.now() - lastUpdateTimestamp) / 1000
+      if (elapsed > 0 && prevReal > 0 && newDownloaded >= prevReal) {
+        const expectedProgress = prevSpeed * elapsed
+        const actualProgress = newDownloaded - prevReal
+        deviation = actualProgress - expectedProgress
+      }
     }
 
     // Update tracking state

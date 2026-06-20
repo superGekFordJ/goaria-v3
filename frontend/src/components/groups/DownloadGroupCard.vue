@@ -35,21 +35,18 @@
 
   const groupKey = computed(() => props.item.group_key)
 
-  // Detect Surge group: check if any task in the store belonging to this group has sg_ prefix
-  const isSurgeGroup = computed(() => {
-    const key = groupKey.value
+  // Detect Surge group: check if any active/waiting task belonging to this group has sg_ prefix.
+  // Evaluated once at setup time — config is fixed for the component's lifetime (same as TaskCard).
+  const isSurgeGroup = (() => {
+    const key = props.item.group_key
     if (!key) return false
     const check = (tasks: Task[]) =>
       tasks.some(t => t.download_group?.id === key && t.gid.startsWith('sg_'))
-    return (
-      check(taskStore.activeTasks) ||
-      check(taskStore.waitingTasks) ||
-      check(taskStore.stoppedTasks)
-    )
-  })
+    return check(taskStore.activeTasks) || check(taskStore.waitingTasks)
+  })()
 
   const { displayDownloaded, totalBytes, updateStats } = useSmoothProgress(
-    isSurgeGroup.value ? SURGE_TASK_PROGRESS_CONFIG : TASK_PROGRESS_CONFIG,
+    isSurgeGroup ? SURGE_TASK_PROGRESS_CONFIG : TASK_PROGRESS_CONFIG,
   )
 
   const isPlaceholder = computed(() => props.item.type === 'placeholder')

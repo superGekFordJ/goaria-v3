@@ -288,7 +288,7 @@ describe('useSmoothProgress', () => {
     advanceFrame(200)
     const defaultValue = defaultResult.displayDownloaded.value
 
-    // Surge config with smoothingFactor=0.4 should track closer to target
+    // Surge config with smoothingFactor=0.6 should track closer to target
     // than default with smoothingFactor=0.1
     expect(surgeValue).toBeGreaterThan(defaultValue)
   })
