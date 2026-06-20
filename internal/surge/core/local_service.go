@@ -196,6 +196,23 @@ func (s *LocalDownloadService) reportProgressLoop() {
 		if s.Pool == nil {
 			continue
 		}
+
+		if s.Pool.ActiveCount() == 0 {
+			// Clear cached speed histories to prevent memory accumulation when idle
+			for k := range lastSpeeds {
+				delete(lastSpeeds, k)
+			}
+			for k := range lastChunkSnapshot {
+				delete(lastChunkSnapshot, k)
+			}
+
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-time.After(250 * time.Millisecond):
+				continue
+			}
+		}
 		alpha := s.getSpeedEmaAlpha()
 
 		var batch events.BatchProgressMsg

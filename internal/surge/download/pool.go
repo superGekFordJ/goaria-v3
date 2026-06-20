@@ -261,10 +261,7 @@ func (p *WorkerPool) Cancel(downloadID string) types.CancelResult {
 			time.Sleep(cancelStopPollInterval)
 		}
 
-		// Mark as done to stop polling
-		if ad.config.State != nil {
-			ad.config.State.Done.Store(true)
-		}
+
 	} else if queuedExists {
 		result.Filename = qCfg.Filename
 		result.DestPath = resolveDestPath(&qCfg)

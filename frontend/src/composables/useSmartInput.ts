@@ -12,7 +12,6 @@ export function useSmartInput() {
   let unsubs: Array<() => void> = []
 
   let lastClipboardCandidate = ''
-  let lastTasksRefreshAt = 0
   let dragCounter = 0
 
   const processDroppedText = (text: string) => {
@@ -53,12 +52,6 @@ export function useSmartInput() {
       const validUrls = lines.filter(isValidUrl)
 
       if (validUrls.length === 0) return
-
-      const now = Date.now()
-      if (now - lastTasksRefreshAt > 1500) {
-        lastTasksRefreshAt = now
-        await taskStore.fetchTasks()
-      }
 
       // Check for duplicates - exactly matching the original logic but supporting batch iteration
       const newUrls = validUrls.filter(u => !isDuplicateUri(u, taskStore))

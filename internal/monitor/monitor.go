@@ -179,11 +179,11 @@ func (m *Monitor) tick() {
 		wg        sync.WaitGroup
 	)
 
-	// 清理过期的待完成任务（超过 10 秒）
+	// 清理过期的待完成任务（超过 30 秒）
 	m.mu.Lock()
 	now := time.Now()
 	for gid, t := range m.pendingCompleteGids {
-		if now.Sub(t) > 10*time.Second {
+		if now.Sub(t) > 30*time.Second {
 			delete(m.pendingCompleteGids, gid)
 		}
 	}
@@ -706,7 +706,13 @@ func (m *Monitor) updatePrevGids(active, waiting []rpc.Task) {
 }
 
 func (m *Monitor) startSurgeEventBridge() {
-	stream, cleanup, err := m.engine.StreamEvents(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-m.stopChan
+		cancel()
+	}()
+
+	stream, cleanup, err := m.engine.StreamEvents(ctx)
 	if err != nil {
 		log.Printf("[Monitor] Failed to subscribe to Surge event stream: %v", err)
 		return
@@ -718,7 +724,7 @@ func (m *Monitor) startSurgeEventBridge() {
 		defer cleanup()
 		for {
 			select {
-			case <-m.stopChan:
+			case <-ctx.Done():
 				return
 			case rawEvt, ok := <-stream:
 				if !ok {
@@ -760,7 +766,14 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		return
 	}
 
-	m.hub.NotifyInternal(events.TaskDelta{Type: deltaType, GID: gid})
+	// 引入小延迟并使用 goroutine 异步触发，确保 SQLite 事务优先落盘，且不会阻塞 Surge 事件流通道
+	go func(dt string, g string) {
+		if dt == "complete" || dt == "error" || dt == "remove" || dt == "pause" {
+			time.Sleep(150 * time.Millisecond)
+		}
+		m.hub.NotifyInternal(events.TaskDelta{Type: dt, GID: g})
+	}(deltaType, gid)
+
 	log.Printf("[Monitor] Surge Event: %s -> %s (gid: %s)", deltaType, gid, gid)
 }
 
@@ -768,10 +781,10 @@ func (m *Monitor) filterDeletedTasks(tasks []rpc.Task) []rpc.Task {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// 清理已过期的删除过滤（超过 5 秒）
+	// 清理已过期的删除过滤（超过 15 秒）
 	now := time.Now()
 	for g, t := range m.deletedGids {
-		if now.Sub(t) > 5*time.Second {
+		if now.Sub(t) > 15*time.Second {
 			delete(m.deletedGids, g)
 		}
 	}
@@ -788,3 +801,4 @@ func (m *Monitor) filterDeletedTasks(tasks []rpc.Task) []rpc.Task {
 	}
 	return filtered
 }
+

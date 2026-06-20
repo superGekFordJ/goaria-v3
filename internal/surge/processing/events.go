@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
+	"runtime/debug"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +22,25 @@ var (
 	copyCompletedFile   = utils.CopyFile
 	notify              = utils.Notify
 )
+
+var (
+	gcTimer   *time.Timer
+	gcTimerMu sync.Mutex
+)
+
+func triggerGC() {
+	gcTimerMu.Lock()
+	defer gcTimerMu.Unlock()
+
+	if gcTimer != nil {
+		gcTimer.Stop()
+	}
+
+	gcTimer = time.AfterFunc(2*time.Second, func() {
+		runtime.GC()
+		debug.FreeOSMemory()
+	})
+}
 
 // advanceRemainingTasks keeps saved chunk boundaries aligned when pause
 // recovery only knows aggregate downloaded bytes, not per-task progress.
@@ -251,6 +273,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan interface{}) {
 				if settings := mgr.GetSettings(); settings != nil && config.Resolve[bool](settings.General.DownloadCompleteNotification) {
 					notify(fmt.Sprintf("Download failed: %s", filename), msg)
 				}
+				triggerGC()
 				break
 			}
 
@@ -289,6 +312,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan interface{}) {
 					notify(title, fmt.Sprintf("Download complete in %s (%.2f MB/s)", m.Elapsed.Truncate(time.Second), avgSpeed/float64(types.MB)))
 				}
 			}
+			triggerGC()
 
 		case events.DownloadErrorMsg:
 			existing, _ := state.GetDownload(m.DownloadID)
@@ -307,6 +331,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan interface{}) {
 					utils.Debug("Lifecycle: Failed to remove incomplete file after error: %v", err)
 				}
 			}
+			triggerGC()
 			if settings := mgr.GetSettings(); settings != nil && config.Resolve[bool](settings.General.DownloadCompleteNotification) {
 
 				filename := m.Filename
@@ -342,6 +367,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan interface{}) {
 					utils.Debug("Lifecycle: Failed to remove incomplete file: %v", err)
 				}
 			}
+			triggerGC()
 
 		case events.DownloadQueuedMsg:
 			// Queue persistence is what lets downloads survive shutdown before any worker

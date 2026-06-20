@@ -347,7 +347,7 @@ func TestWorkerPool_Cancel_CallsCancelFunc(t *testing.T) {
 	}
 }
 
-func TestWorkerPool_Cancel_MarksDone(t *testing.T) {
+func TestWorkerPool_Cancel_DoesNotMarkDone(t *testing.T) {
 	ch := make(chan any, 10)
 	pool := NewWorkerPool(ch, 3)
 
@@ -367,8 +367,8 @@ func TestWorkerPool_Cancel_MarksDone(t *testing.T) {
 		t.Error("Expected CancelResult.Found")
 	}
 
-	if !state.Done.Load() {
-		t.Error("Expected state.Done to be true after cancel")
+	if state.Done.Load() {
+		t.Error("Expected state.Done to be false after cancel")
 	}
 }
 

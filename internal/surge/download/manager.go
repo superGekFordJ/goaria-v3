@@ -260,7 +260,7 @@ func TUIDownload(ctx context.Context, cfg *types.DownloadConfig) error {
 		// Verify it's not a cancellation error
 		if errors.Is(downloadErr, context.Canceled) || errors.Is(downloadErr, context.DeadlineExceeded) {
 			utils.Debug("Download canceled cleanly")
-			return nil
+			return downloadErr
 		}
 
 		// Send error event

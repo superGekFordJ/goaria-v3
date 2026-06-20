@@ -3,7 +3,10 @@ package tasks
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"goaria-v3/internal/config"
@@ -154,6 +157,25 @@ func (s *Service) removeTaskWithTarget(gid string, target removalTarget, deleteF
 	cleanupRemovedTask(gid, target, deleteFile)
 }
 
+var (
+	gcTimer   *time.Timer
+	gcTimerMu sync.Mutex
+)
+
+func triggerDebouncedGC() {
+	gcTimerMu.Lock()
+	defer gcTimerMu.Unlock()
+
+	if gcTimer != nil {
+		gcTimer.Stop()
+	}
+
+	gcTimer = time.AfterFunc(2*time.Second, func() {
+		runtime.GC()
+		debug.FreeOSMemory()
+	})
+}
+
 func cleanupRemovedTask(gid string, target removalTarget, deleteFile bool) {
 	if tracker := monitor.State.GetTracker(); tracker != nil {
 		tracker.RemoveTask(gid)
@@ -169,6 +191,8 @@ func cleanupRemovedTask(gid string, target removalTarget, deleteFile bool) {
 	}
 
 	if target.path == "" {
+		// Even if file path is missing, trigger memory reclamation
+		triggerDebouncedGC()
 		return
 	}
 
@@ -198,6 +222,9 @@ func cleanupRemovedTask(gid string, target removalTarget, deleteFile bool) {
 		if strings.HasSuffix(absPath, ".torrent") {
 			_ = os.Remove(absPath)
 		}
+
+		// Trigger memory reclamation after file deletion processes are completed
+		triggerDebouncedGC()
 	}(target.path, target.dir)
 }
 

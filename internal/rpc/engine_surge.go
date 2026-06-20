@@ -12,6 +12,7 @@ import (
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/surge/core"
 	"goaria-v3/internal/surge/download"
+	surgeEvents "goaria-v3/internal/surge/engine/events"
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/processing"
 )
@@ -20,6 +21,12 @@ type SurgeEngine struct {
 	service *core.LocalDownloadService
 	manager *processing.LifecycleManager
 	cleanup func()
+
+	cacheMu      sync.RWMutex
+	cachedList   []types.DownloadStatus
+	cacheValid   bool
+	engineCtx    context.Context
+	engineCancel context.CancelFunc
 }
 
 func NewSurgeEngine() *SurgeEngine {
@@ -34,7 +41,10 @@ func NewSurgeEngine() *SurgeEngine {
 	svc := core.NewLocalDownloadServiceWithInput(pool, progressCh)
 
 	mgr := processing.NewLifecycleManager(svc.Add, svc.AddWithID)
-	stream, eventCleanup, err := svc.StreamEvents(context.Background())
+
+	engineCtx, engineCancel := context.WithCancel(context.Background())
+
+	stream, eventCleanup, err := svc.StreamEvents(engineCtx)
 	if err != nil {
 		log.Printf("[Surge] Failed to stream events: %v", err)
 	}
@@ -69,6 +79,7 @@ func NewSurgeEngine() *SurgeEngine {
 	})
 
 	cleanup := func() {
+		engineCancel()
 		if eventCleanup != nil {
 			eventCleanup()
 		}
@@ -78,11 +89,75 @@ func NewSurgeEngine() *SurgeEngine {
 		}
 	}
 
-	return &SurgeEngine{
-		service: svc,
-		manager: mgr,
-		cleanup: cleanup,
+	engine := &SurgeEngine{
+		service:      svc,
+		manager:      mgr,
+		cleanup:      cleanup,
+		engineCtx:    engineCtx,
+		engineCancel: engineCancel,
 	}
+
+	// Subscribe to internal events to invalidate the cache
+	internalStream, internalCleanup, err := svc.StreamEvents(engineCtx)
+	if err == nil && internalStream != nil {
+		go func() {
+			defer internalCleanup()
+			for {
+				select {
+				case <-engineCtx.Done():
+					return
+				case rawEvt, ok := <-internalStream:
+					if !ok {
+						return
+					}
+					switch rawEvt.(type) {
+					case surgeEvents.ProgressMsg, surgeEvents.BatchProgressMsg:
+						// ignore progress updates
+					default:
+						engine.invalidateCache()
+					}
+				}
+			}
+		}()
+	}
+
+	return engine
+}
+
+func (e *SurgeEngine) invalidateCache() {
+	e.cacheMu.Lock()
+	e.cacheValid = false
+	e.cacheMu.Unlock()
+}
+
+func (e *SurgeEngine) getDownloadList() ([]types.DownloadStatus, error) {
+	e.cacheMu.RLock()
+	if e.cacheValid {
+		defer e.cacheMu.RUnlock()
+		res := make([]types.DownloadStatus, len(e.cachedList))
+		copy(res, e.cachedList)
+		return res, nil
+	}
+	e.cacheMu.RUnlock()
+
+	e.cacheMu.Lock()
+	defer e.cacheMu.Unlock()
+	if e.cacheValid {
+		res := make([]types.DownloadStatus, len(e.cachedList))
+		copy(res, e.cachedList)
+		return res, nil
+	}
+
+	list, err := e.service.List()
+	if err != nil {
+		return nil, err
+	}
+	e.cachedList = list
+	e.cacheValid = true
+
+	res := make([]types.DownloadStatus, len(e.cachedList))
+	copy(res, e.cachedList)
+	return res, nil
 }
 
 func mapStatus(s string) string {
@@ -142,15 +217,26 @@ func (e *SurgeEngine) AddUri(url string, options AddURIOptions) (string, error) 
 		Headers:  headersMap,
 	}
 	gid, _, err := e.manager.Enqueue(context.Background(), req)
+	if err == nil {
+		e.invalidateCache()
+	}
 	return gid, err
 }
 
 func (e *SurgeEngine) Pause(gid string) error {
-	return e.service.Pause(gid)
+	err := e.service.Pause(gid)
+	if err == nil {
+		e.invalidateCache()
+	}
+	return err
 }
 
 func (e *SurgeEngine) Resume(gid string) error {
-	return e.service.Resume(gid)
+	err := e.service.Resume(gid)
+	if err == nil {
+		e.invalidateCache()
+	}
+	return err
 }
 
 func (e *SurgeEngine) PauseMulti(gids []string) error {
@@ -159,6 +245,7 @@ func (e *SurgeEngine) PauseMulti(gids []string) error {
 			return err
 		}
 	}
+	e.invalidateCache()
 	return nil
 }
 
@@ -168,14 +255,21 @@ func (e *SurgeEngine) ResumeMulti(gids []string) error {
 			return err
 		}
 	}
+	e.invalidateCache()
 	return nil
 }
 
 func (e *SurgeEngine) Remove(gid string, deleteFile bool) error {
+	var err error
 	if deleteFile {
-		return e.service.Purge(gid)
+		err = e.service.Purge(gid)
+	} else {
+		err = e.service.Delete(gid)
 	}
-	return e.service.Delete(gid)
+	if err == nil {
+		e.invalidateCache()
+	}
+	return err
 }
 
 func (e *SurgeEngine) TellStatus(gid string, keys []string) (Task, error) {
@@ -201,29 +295,24 @@ func (e *SurgeEngine) TellStatusMulti(gids []string, keys []string) ([]Task, err
 }
 
 func (e *SurgeEngine) TellActive() ([]Task, error) {
-	list, err := e.service.List()
-	if err != nil {
-		return nil, err
-	}
+	configs := e.service.Pool.GetAll()
 	var res []Task
-	for _, s := range list {
-		t := convertTask(s)
-		if t.Status == "active" {
-			res = append(res, t)
+	for _, cfg := range configs {
+		status := e.service.Pool.GetStatus(cfg.ID)
+		if status != nil && mapStatus(status.Status) == "active" {
+			res = append(res, convertTask(*status))
 		}
 	}
 	return res, nil
 }
 
 func (e *SurgeEngine) TellActiveProgress() ([]TaskProgress, error) {
-	list, err := e.service.List()
-	if err != nil {
-		return nil, err
-	}
+	configs := e.service.Pool.GetAll()
 	var res []TaskProgress
-	for _, s := range list {
-		t := convertTask(s)
-		if t.Status == "active" {
+	for _, cfg := range configs {
+		status := e.service.Pool.GetStatus(cfg.ID)
+		if status != nil && mapStatus(status.Status) == "active" {
+			t := convertTask(*status)
 			res = append(res, TaskProgress{
 				GID:             t.GID,
 				CompletedLength: t.CompletedLength,
@@ -235,7 +324,7 @@ func (e *SurgeEngine) TellActiveProgress() ([]TaskProgress, error) {
 }
 
 func (e *SurgeEngine) TellWaiting(offset, num int) ([]Task, error) {
-	list, err := e.service.List()
+	list, err := e.getDownloadList()
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +349,7 @@ func (e *SurgeEngine) TellWaiting(offset, num int) ([]Task, error) {
 }
 
 func (e *SurgeEngine) TellStopped(offset, num int) ([]Task, error) {
-	list, err := e.service.List()
+	list, err := e.getDownloadList()
 	if err != nil {
 		return nil, err
 	}
@@ -285,19 +374,14 @@ func (e *SurgeEngine) TellStopped(offset, num int) ([]Task, error) {
 }
 
 func (e *SurgeEngine) GetGlobalStat() (GlobalStat, error) {
-	list, err := e.service.List()
+	active, err := e.TellActive()
 	if err != nil {
 		return GlobalStat{}, err
 	}
 	var totalSpeed int64
-	for _, s := range list {
-		t := convertTask(s)
-		if t.Status == "active" {
-			var sp int64
-			if parsed, err := strconv.ParseInt(t.DownloadSpeed, 10, 64); err == nil {
-				sp = parsed
-			}
-			totalSpeed += sp
+	for _, t := range active {
+		if parsed, err := strconv.ParseInt(t.DownloadSpeed, 10, 64); err == nil {
+			totalSpeed += parsed
 		}
 	}
 	return GlobalStat{
