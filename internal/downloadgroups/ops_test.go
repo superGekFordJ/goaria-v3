@@ -299,6 +299,10 @@ func TestDownloadGroupOperation_NoActionablePauseResumeIsNoopSuccess(t *testing.
 	if resumePaused.Noop || !resumePaused.OK || resumePaused.Succeeded != 2 {
 		t.Fatalf("expected paused group to be actionable for resume, got %#v", resumePaused)
 	}
+	monitor.Cache.UpdateFromAria2(nil,
+		[]rpc.Task{groupReadTask("gid-paused-one", "paused", &pausedGroup, "100", "0", "0"), groupReadTask("gid-paused-two", "paused", &pausedGroup, "100", "0", "0")},
+		[]rpc.Task{groupReadTask("gid-terminal-one", "complete", &terminalGroup, "100", "100", "0"), groupReadTask("gid-terminal-two", "error", &terminalGroup, "100", "50", "0")},
+	)
 	pausedNoop := PauseDownloadGroup(pausedGroup.ID)
 	if !pausedNoop.OK || !pausedNoop.Noop || pausedNoop.Skipped != 2 || pausedNoop.TotalTargets != 0 {
 		t.Fatalf("unexpected all-paused pause noop: %#v", pausedNoop)
@@ -586,4 +590,118 @@ func TestRemoveDownloadGroup_CleansUpFolder(t *testing.T) {
 		}
 		_ = os.RemoveAll(group.Dir)
 	})
+}
+
+func TestPauseDownloadGroup_PatchesActiveSliceCounts(t *testing.T) {
+	recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
+		if req.Method == "system.multicall" {
+			return appTaskSuccessResponse([]any{[]any{"OK"}, []any{"OK"}})
+		}
+		return appTaskSuccessResponse("OK")
+	})
+	group := groupReadTestGroup("dg-active-pause", 2)
+	monitor.Cache.UpdateFromAria2(
+		[]rpc.Task{
+			groupReadTask("gid-active-one", "active", &group, "100", "10", "1"),
+			groupReadTask("gid-active-two", "active", &group, "100", "20", "2"),
+		},
+		nil, nil,
+	)
+	monitor.RegisterTaskGroup("gid-active-one", group)
+	monitor.RegisterTaskGroup("gid-active-two", group)
+
+	card := findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
+	if card.Counts.Active != 2 || card.Counts.Paused != 0 {
+		t.Fatalf("pre-pause: expected 2 active 0 paused, got active=%d paused=%d", card.Counts.Active, card.Counts.Paused)
+	}
+
+	pauseResult := PauseDownloadGroup(group.ID)
+	if !pauseResult.OK || pauseResult.Succeeded != 2 {
+		t.Fatalf("pause failed: %#v", pauseResult)
+	}
+	if recorder.count("system.multicall") != 1 {
+		t.Fatalf("expected 1 multicall, got %d", recorder.count("system.multicall"))
+	}
+
+	card = findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
+	if card.Counts.Active != 0 || card.Counts.Paused != 2 {
+		t.Fatalf("post-pause: expected 0 active 2 paused, got active=%d paused=%d", card.Counts.Active, card.Counts.Paused)
+	}
+}
+
+func TestResumeDownloadGroup_PatchesWaitingSliceCounts(t *testing.T) {
+	recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
+		if req.Method == "system.multicall" {
+			return appTaskSuccessResponse([]any{[]any{"OK"}, []any{"OK"}})
+		}
+		return appTaskSuccessResponse("OK")
+	})
+	group := groupReadTestGroup("dg-paused-resume", 2)
+	monitor.Cache.UpdateFromAria2(nil,
+		[]rpc.Task{
+			groupReadTask("gid-paused-one", "paused", &group, "100", "10", "0"),
+			groupReadTask("gid-paused-two", "paused", &group, "100", "20", "0"),
+		},
+		nil,
+	)
+	monitor.RegisterTaskGroup("gid-paused-one", group)
+	monitor.RegisterTaskGroup("gid-paused-two", group)
+
+	card := findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
+	if card.Counts.Paused != 2 || card.Counts.Active != 0 {
+		t.Fatalf("pre-resume: expected 0 active 2 paused, got active=%d paused=%d", card.Counts.Active, card.Counts.Paused)
+	}
+
+	resumeResult := ResumeDownloadGroup(group.ID)
+	if !resumeResult.OK || resumeResult.Succeeded != 2 {
+		t.Fatalf("resume failed: %#v", resumeResult)
+	}
+	if recorder.count("system.multicall") != 1 {
+		t.Fatalf("expected 1 multicall, got %d", recorder.count("system.multicall"))
+	}
+
+	card = findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
+	if card.Counts.Active != 2 || card.Counts.Paused != 0 {
+		t.Fatalf("post-resume: expected 2 active 0 paused, got active=%d paused=%d", card.Counts.Active, card.Counts.Paused)
+	}
+}
+
+func TestPauseThenResume_ActiveSliceRoundTrip(t *testing.T) {
+	recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
+		if req.Method == "system.multicall" {
+			return appTaskSuccessResponse([]any{[]any{"OK"}, []any{"OK"}})
+		}
+		return appTaskSuccessResponse("OK")
+	})
+	group := groupReadTestGroup("dg-roundtrip", 2)
+	monitor.Cache.UpdateFromAria2(
+		[]rpc.Task{
+			groupReadTask("gid-rt-one", "active", &group, "100", "10", "1"),
+			groupReadTask("gid-rt-two", "active", &group, "100", "20", "2"),
+		},
+		nil, nil,
+	)
+	monitor.RegisterTaskGroup("gid-rt-one", group)
+	monitor.RegisterTaskGroup("gid-rt-two", group)
+
+	pauseResult := PauseDownloadGroup(group.ID)
+	if !pauseResult.OK || pauseResult.Succeeded != 2 {
+		t.Fatalf("pause failed: %#v", pauseResult)
+	}
+	card := findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
+	if card.Counts.Active != 0 || card.Counts.Paused != 2 {
+		t.Fatalf("post-pause: expected 0 active 2 paused, got active=%d paused=%d", card.Counts.Active, card.Counts.Paused)
+	}
+
+	resumeResult := ResumeDownloadGroup(group.ID)
+	if !resumeResult.OK || resumeResult.Succeeded != 2 {
+		t.Fatalf("resume after pause should succeed, not be skipped: %#v", resumeResult)
+	}
+	if recorder.count("system.multicall") != 2 {
+		t.Fatalf("expected 2 multicalls (pause+resume), got %d", recorder.count("system.multicall"))
+	}
+	card = findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
+	if card.Counts.Active != 2 || card.Counts.Paused != 0 {
+		t.Fatalf("post-resume: expected 2 active 0 paused, got active=%d paused=%d", card.Counts.Active, card.Counts.Paused)
+	}
 }

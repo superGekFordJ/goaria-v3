@@ -620,12 +620,12 @@ func (b *downloadGroupBucket) memberStats() (DownloadGroupMemberCounts, uint64, 
 		task := member.task
 		status := strings.TrimSpace(task.Status)
 		switch {
-		case member.source == "active" || status == DownloadGroupStatusActive:
-			counts.Active++
-			statusBuckets[DownloadGroupStatusActive] = struct{}{}
 		case status == DownloadGroupStatusPaused:
 			counts.Paused++
 			statusBuckets[DownloadGroupStatusPaused] = struct{}{}
+		case member.source == "active" || status == DownloadGroupStatusActive:
+			counts.Active++
+			statusBuckets[DownloadGroupStatusActive] = struct{}{}
 		case member.source == "waiting" || status == DownloadGroupStatusWaiting:
 			counts.Waiting++
 			statusBuckets[DownloadGroupStatusWaiting] = struct{}{}
@@ -1234,13 +1234,16 @@ func pauseResumeDownloadGroup(groupKey string, action string) DownloadGroupOpera
 		multiByGID[item.GID] = item
 	}
 	successCode := DownloadGroupOperationCodePaused
+	patchStatus := DownloadGroupStatusPaused
 	if action == DownloadGroupOperationActionResume {
 		successCode = DownloadGroupOperationCodeResumed
+		patchStatus = DownloadGroupStatusActive
 	}
 	for _, target := range actionable {
 		item, ok := multiByGID[target.gid]
 		if ok && item.OK {
 			result.addItem(DownloadGroupOperationItemResult{GID: target.gid, Status: DownloadGroupOperationItemSucceeded, Code: successCode})
+			monitor.Cache.PatchTaskStatus(target.gid, patchStatus)
 			continue
 		}
 		result.addItem(DownloadGroupOperationItemResult{GID: target.gid, Status: DownloadGroupOperationItemFailed, Code: DownloadGroupOperationCodeRPCError, Message: downloadGroupOperationMessage(DownloadGroupOperationCodeRPCError)})
@@ -1378,11 +1381,11 @@ func downloadGroupPauseResumeSkipCode(action string, target downloadGroupOperati
 		}
 		return DownloadGroupOperationCodeTerminalState, true
 	}
+	if target.status == DownloadGroupStatusPaused {
+		return "", false
+	}
 	if target.source == "active" {
 		return DownloadGroupOperationCodeAlreadyActive, true
-	}
-	if target.source == "waiting" && target.status == DownloadGroupStatusPaused {
-		return "", false
 	}
 	if target.source == "waiting" {
 		return DownloadGroupOperationCodeNotPaused, true
