@@ -18,6 +18,7 @@ import (
 
 type SurgeEngine struct {
 	service *core.LocalDownloadService
+	manager *processing.LifecycleManager
 	cleanup func()
 }
 
@@ -39,11 +40,15 @@ func NewSurgeEngine() *SurgeEngine {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		mgr.StartEventWorker(stream)
-	}()
+	var spawned bool
+	if err == nil && stream != nil {
+		wg.Add(1)
+		spawned = true
+		go func() {
+			defer wg.Done()
+			mgr.StartEventWorker(stream)
+		}()
+	}
 
 	svc.SetLifecycleHooks(core.LifecycleHooks{
 		Pause:       mgr.Pause,
@@ -64,13 +69,18 @@ func NewSurgeEngine() *SurgeEngine {
 	})
 
 	cleanup := func() {
-		eventCleanup()
+		if eventCleanup != nil {
+			eventCleanup()
+		}
 		_ = svc.Shutdown()
-		wg.Wait()
+		if spawned {
+			wg.Wait()
+		}
 	}
 
 	return &SurgeEngine{
 		service: svc,
+		manager: mgr,
 		cleanup: cleanup,
 	}
 }
@@ -123,7 +133,14 @@ func (e *SurgeEngine) AddUri(url string, options AddURIOptions) (string, error) 
 			headersMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 		}
 	}
-	return e.service.Add(url, options.Dir, options.Out, nil, headersMap, false, 0, false)
+	req := &processing.DownloadRequest{
+		URL:      url,
+		Path:     options.Dir,
+		Filename: options.Out,
+		Headers:  headersMap,
+	}
+	gid, _, err := e.manager.Enqueue(context.Background(), req)
+	return gid, err
 }
 
 func (e *SurgeEngine) Pause(gid string) error {
