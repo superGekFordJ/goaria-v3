@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"goaria-v3/internal/surge/engine"
 	"goaria-v3/internal/surge/engine/events"
 	"goaria-v3/internal/surge/engine/types"
 )
@@ -285,6 +286,9 @@ func TestWorkerPool_Cancel_RemovesFromMap(t *testing.T) {
 	ad.running.Store(true)
 	pool.downloads["test-id"] = ad
 	pool.mu.Unlock()
+	pool.mu.Lock()
+	pool.downloadLimiters["test-id"] = pool.globalLimiter
+	pool.mu.Unlock()
 
 	result := pool.Cancel("test-id")
 
@@ -306,6 +310,13 @@ func TestWorkerPool_Cancel_RemovesFromMap(t *testing.T) {
 
 	if exists {
 		t.Error("Expected download to be removed from map after cancel")
+	}
+
+	pool.mu.Lock()
+	_, limiterExists := pool.downloadLimiters["test-id"]
+	pool.mu.Unlock()
+	if limiterExists {
+		t.Error("Expected download limiter to be removed after cancel")
 	}
 }
 
@@ -739,6 +750,7 @@ func TestWorkerPool_ExtractPausedConfig_Success(t *testing.T) {
 	state.Paused.Store(true)
 	state.SetDestPath("/tmp/final.bin")
 	state.SetFilename("final.bin")
+	staleLimiter := engine.NewMultiLimiter(pool.globalLimiter, engine.NewRateLimiter(1024, rateLimiterBurst(1024)))
 
 	pool.mu.Lock()
 	pool.downloads["test-id"] = &activeDownload{
@@ -747,8 +759,12 @@ func TestWorkerPool_ExtractPausedConfig_Success(t *testing.T) {
 			URL:      "http://example.com/file.zip",
 			Filename: "stale.bin",
 			State:    state,
+			Limiter:  staleLimiter,
 		},
 	}
+	pool.mu.Unlock()
+	pool.mu.Lock()
+	pool.downloadLimiters["test-id"] = pool.globalLimiter
 	pool.mu.Unlock()
 
 	cfg := pool.ExtractPausedConfig("test-id")
@@ -763,6 +779,9 @@ func TestWorkerPool_ExtractPausedConfig_Success(t *testing.T) {
 	if cfg.DestPath != "/tmp/final.bin" {
 		t.Errorf("DestPath = %q, want /tmp/final.bin", cfg.DestPath)
 	}
+	if cfg.Limiter != nil {
+		t.Error("Expected limiter to be cleared so resume installs a fresh tracked limiter")
+	}
 
 	// Download must be removed from pool
 	pool.mu.RLock()
@@ -770,6 +789,13 @@ func TestWorkerPool_ExtractPausedConfig_Success(t *testing.T) {
 	pool.mu.RUnlock()
 	if exists {
 		t.Error("Expected download to be removed from pool after extract")
+	}
+
+	pool.mu.Lock()
+	_, limiterExists := pool.downloadLimiters["test-id"]
+	pool.mu.Unlock()
+	if limiterExists {
+		t.Error("Expected download limiter to be removed from pool after extract")
 	}
 
 	// Pause state should be cleared
@@ -923,7 +949,7 @@ func TestWorkerPool_GracefulShutdown_ClearsQueuedMap(t *testing.T) {
 	pool := &WorkerPool{
 		progressCh:   ch,
 		progressDone: make(chan struct{}),
-		taskChan:     make(chan types.DownloadConfig, 10),
+		taskChan:     make(chan string, 10),
 		downloads:    make(map[string]*activeDownload),
 		queued:       make(map[string]types.DownloadConfig),
 		maxDownloads: 0,
@@ -965,7 +991,7 @@ func TestWorkerPool_GracefulShutdown_DrainsTaskChan(t *testing.T) {
 	pool := &WorkerPool{
 		progressCh:   ch,
 		progressDone: make(chan struct{}),
-		taskChan:     make(chan types.DownloadConfig, 10),
+		taskChan:     make(chan string, 10),
 		downloads:    make(map[string]*activeDownload),
 		queued:       make(map[string]types.DownloadConfig),
 		maxDownloads: 0,
@@ -1117,7 +1143,7 @@ func TestWorkerPool_Cancel_QueuedTask(t *testing.T) {
 	pool := &WorkerPool{
 		progressCh:   ch,
 		progressDone: make(chan struct{}),
-		taskChan:     make(chan types.DownloadConfig, 10),
+		taskChan:     make(chan string, 10),
 		downloads:    make(map[string]*activeDownload),
 		queued: map[string]types.DownloadConfig{
 			"queued-id": {

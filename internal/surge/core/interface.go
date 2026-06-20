@@ -53,4 +53,10 @@ type DownloadService interface {
 
 	// Shutdown handles graceful shutdown of the service
 	Shutdown() error
+
+	// SetRateLimit sets the speed limit for a specific download
+	SetRateLimit(id string, rate int64) error
+
+	// ClearRateLimit removes a download's rate limit override so it inherits the default.
+	ClearRateLimit(id string) error
 }
