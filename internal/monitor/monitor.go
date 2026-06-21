@@ -160,6 +160,20 @@ func (m *Monitor) runLoop() {
 	}
 }
 
+func (m *Monitor) hasAria2Tasks() bool {
+	for gid := range m.prevActiveGids {
+		if strings.HasPrefix(gid, "ar_") {
+			return true
+		}
+	}
+	for gid := range m.prevWaitingGids {
+		if strings.HasPrefix(gid, "ar_") {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Monitor) currentTickInterval() time.Duration {
 	// 有待确认完成任务时，用短间隔快速检测 SQLite 落盘
 	m.mu.Lock()
@@ -168,7 +182,7 @@ func (m *Monitor) currentTickInterval() time.Duration {
 	if hasPending {
 		return m.windowInterval
 	}
-	if State.HasWindow() && !m.engine.IsSurgeActive() {
+	if State.HasWindow() && (!m.engine.IsSurgeActive() || m.hasAria2Tasks()) {
 		return m.windowInterval
 	}
 	return m.headlessInterval
