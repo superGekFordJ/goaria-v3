@@ -241,11 +241,11 @@ func TestCurrentTickInterval_SurgeOnly_UsesHeadless(t *testing.T) {
 	hybrid := rpc.NewHybridEngine(nil, se)
 
 	m := &Monitor{
-		windowInterval:      1 * time.Second,
-		headlessInterval:   5 * time.Second,
-		prevActiveGids:      map[string]bool{},
-		prevWaitingGids:     map[string]bool{},
-		engine:             hybrid,
+		windowInterval:   1 * time.Second,
+		headlessInterval: 5 * time.Second,
+		prevActiveGids:   map[string]bool{},
+		prevWaitingGids:  map[string]bool{},
+		engine:           hybrid,
 	}
 
 	// With nil service, IsSurgeActive()=false, so it uses windowInterval
@@ -263,11 +263,11 @@ func TestCurrentTickInterval_HasAria2Tasks_UsesWindow(t *testing.T) {
 	hybrid := rpc.NewHybridEngine(nil, se)
 
 	m := &Monitor{
-		windowInterval:      1 * time.Second,
-		headlessInterval:   5 * time.Second,
-		prevActiveGids:      map[string]bool{"ar_123": true},
-		prevWaitingGids:     map[string]bool{},
-		engine:             hybrid,
+		windowInterval:   1 * time.Second,
+		headlessInterval: 5 * time.Second,
+		prevActiveGids:   map[string]bool{"ar_123": true},
+		prevWaitingGids:  map[string]bool{},
+		engine:           hybrid,
 	}
 
 	if d := m.currentTickInterval(); d != 1*time.Second {
@@ -284,11 +284,11 @@ func TestCurrentTickInterval_Aria2InWaiting_UsesWindow(t *testing.T) {
 	hybrid := rpc.NewHybridEngine(nil, se)
 
 	m := &Monitor{
-		windowInterval:      1 * time.Second,
-		headlessInterval:   5 * time.Second,
-		prevActiveGids:      map[string]bool{},
-		prevWaitingGids:     map[string]bool{"ar_456": true},
-		engine:             hybrid,
+		windowInterval:   1 * time.Second,
+		headlessInterval: 5 * time.Second,
+		prevActiveGids:   map[string]bool{},
+		prevWaitingGids:  map[string]bool{"ar_456": true},
+		engine:           hybrid,
 	}
 
 	if d := m.currentTickInterval(); d != 1*time.Second {
@@ -305,11 +305,11 @@ func TestCurrentTickInterval_NoWindow_UsesHeadless(t *testing.T) {
 	hybrid := rpc.NewHybridEngine(nil, se)
 
 	m := &Monitor{
-		windowInterval:      1 * time.Second,
-		headlessInterval:   5 * time.Second,
-		prevActiveGids:      map[string]bool{"ar_123": true},
-		prevWaitingGids:     map[string]bool{},
-		engine:             hybrid,
+		windowInterval:   1 * time.Second,
+		headlessInterval: 5 * time.Second,
+		prevActiveGids:   map[string]bool{"ar_123": true},
+		prevWaitingGids:  map[string]bool{},
+		engine:           hybrid,
 	}
 
 	if d := m.currentTickInterval(); d != 5*time.Second {
@@ -534,11 +534,11 @@ func TestCurrentTickInterval_SurgeActiveWithAria2Tasks_Active_UsesWindow(t *test
 	engine := &mockSurgeActiveEngine{}
 
 	m := &Monitor{
-		windowInterval:      1 * time.Second,
-		headlessInterval:   5 * time.Second,
-		prevActiveGids:      map[string]bool{"ar_123": true},
-		prevWaitingGids:     map[string]bool{},
-		engine:              engine,
+		windowInterval:   1 * time.Second,
+		headlessInterval: 5 * time.Second,
+		prevActiveGids:   map[string]bool{"ar_123": true},
+		prevWaitingGids:  map[string]bool{},
+		engine:           engine,
 	}
 
 	if d := m.currentTickInterval(); d != 1*time.Second {
@@ -554,11 +554,11 @@ func TestCurrentTickInterval_SurgeActiveWithAria2Tasks_Waiting_UsesWindow(t *tes
 	engine := &mockSurgeActiveEngine{}
 
 	m := &Monitor{
-		windowInterval:      1 * time.Second,
-		headlessInterval:   5 * time.Second,
-		prevActiveGids:      map[string]bool{},
-		prevWaitingGids:     map[string]bool{"ar_456": true},
-		engine:              engine,
+		windowInterval:   1 * time.Second,
+		headlessInterval: 5 * time.Second,
+		prevActiveGids:   map[string]bool{},
+		prevWaitingGids:  map[string]bool{"ar_456": true},
+		engine:           engine,
 	}
 
 	if d := m.currentTickInterval(); d != 1*time.Second {
@@ -574,11 +574,11 @@ func TestCurrentTickInterval_SurgeActiveOnlySurgeTasks_UsesHeadless(t *testing.T
 	engine := &mockSurgeActiveEngine{}
 
 	m := &Monitor{
-		windowInterval:      1 * time.Second,
-		headlessInterval:   5 * time.Second,
-		prevActiveGids:      map[string]bool{"sg_001": true},
-		prevWaitingGids:     map[string]bool{},
-		engine:              engine,
+		windowInterval:   1 * time.Second,
+		headlessInterval: 5 * time.Second,
+		prevActiveGids:   map[string]bool{"sg_001": true},
+		prevWaitingGids:  map[string]bool{},
+		engine:           engine,
 	}
 
 	if d := m.currentTickInterval(); d != 5*time.Second {
@@ -594,10 +594,10 @@ func TestCurrentTickInterval_NoPendingComplete_SurgeOnly_Headless(t *testing.T) 
 	engine := &mockSurgeActiveEngine{}
 
 	m := &Monitor{
-		windowInterval:    1 * time.Second,
+		windowInterval:   1 * time.Second,
 		headlessInterval: 5 * time.Second,
-		prevActiveGids:    map[string]bool{"sg_001": true},
-		prevWaitingGids:   map[string]bool{},
+		prevActiveGids:   map[string]bool{"sg_001": true},
+		prevWaitingGids:  map[string]bool{},
 		engine:           engine,
 	}
 
@@ -614,11 +614,11 @@ func TestCurrentTickInterval_ShouldFetchStoppedUntil_UsesWindow(t *testing.T) {
 	engine := &mockSurgeActiveEngine{}
 
 	m := &Monitor{
-		windowInterval:        1 * time.Second,
-		headlessInterval:      5 * time.Second,
-		prevActiveGids:        map[string]bool{"sg_001": true},
-		prevWaitingGids:       map[string]bool{},
-		engine:                engine,
+		windowInterval:          1 * time.Second,
+		headlessInterval:        5 * time.Second,
+		prevActiveGids:          map[string]bool{"sg_001": true},
+		prevWaitingGids:         map[string]bool{},
+		engine:                  engine,
 		shouldFetchStoppedUntil: time.Now().Add(10 * time.Second),
 	}
 
@@ -635,11 +635,11 @@ func TestCurrentTickInterval_ShouldFetchStoppedExpired_UsesHeadless(t *testing.T
 	engine := &mockSurgeActiveEngine{}
 
 	m := &Monitor{
-		windowInterval:        1 * time.Second,
-		headlessInterval:      5 * time.Second,
-		prevActiveGids:        map[string]bool{"sg_001": true},
-		prevWaitingGids:       map[string]bool{},
-		engine:                engine,
+		windowInterval:          1 * time.Second,
+		headlessInterval:        5 * time.Second,
+		prevActiveGids:          map[string]bool{"sg_001": true},
+		prevWaitingGids:         map[string]bool{},
+		engine:                  engine,
 		shouldFetchStoppedUntil: time.Now().Add(-1 * time.Second), // expired
 	}
 
@@ -656,12 +656,12 @@ func TestCurrentTickInterval_ShouldFetchStoppedUntil_LifecycleTransition(t *test
 	engine := &mockSurgeActiveEngine{}
 
 	m := &Monitor{
-		windowInterval:    1 * time.Second,
-		headlessInterval:  5 * time.Second,
-		prevActiveGids:    map[string]bool{"sg_001": true},
-		prevWaitingGids:   map[string]bool{},
-		engine:            engine,
-		mu:                sync.Mutex{},
+		windowInterval:   1 * time.Second,
+		headlessInterval: 5 * time.Second,
+		prevActiveGids:   map[string]bool{"sg_001": true},
+		prevWaitingGids:  map[string]bool{},
+		engine:           engine,
+		mu:               sync.Mutex{},
 	}
 
 	// Phase 1: Before any complete event — 5s headless
