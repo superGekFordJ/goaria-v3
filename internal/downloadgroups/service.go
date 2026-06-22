@@ -1235,15 +1235,17 @@ func pauseResumeDownloadGroup(groupKey string, action string) DownloadGroupOpera
 	}
 	successCode := DownloadGroupOperationCodePaused
 	patchStatus := DownloadGroupStatusPaused
+	moveFunc := monitor.Cache.MoveTaskToWaiting
 	if action == DownloadGroupOperationActionResume {
 		successCode = DownloadGroupOperationCodeResumed
 		patchStatus = DownloadGroupStatusActive
+		moveFunc = monitor.Cache.MoveTaskToActive
 	}
 	for _, target := range actionable {
 		item, ok := multiByGID[target.gid]
 		if ok && item.OK {
 			result.addItem(DownloadGroupOperationItemResult{GID: target.gid, Status: DownloadGroupOperationItemSucceeded, Code: successCode})
-			monitor.Cache.PatchTaskStatus(target.gid, patchStatus)
+			moveFunc(target.gid, patchStatus)
 			continue
 		}
 		result.addItem(DownloadGroupOperationItemResult{GID: target.gid, Status: DownloadGroupOperationItemFailed, Code: DownloadGroupOperationCodeRPCError, Message: downloadGroupOperationMessage(DownloadGroupOperationCodeRPCError)})

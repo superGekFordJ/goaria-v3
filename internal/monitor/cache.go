@@ -235,6 +235,75 @@ func (c *TaskCache) PatchTaskStatus(gid, status string) {
 	}
 }
 
+// MoveTaskToStopped moves a task from active or waiting to the stopped list,
+// setting its status. Called from handleSurgeEvent for complete/error events
+// so that GetStopped() returns the task immediately, before the next tick
+// populates it from the engine.
+func (c *TaskCache) MoveTaskToStopped(gid, status string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.active {
+		if c.active[i].GID == gid {
+			task := c.active[i]
+			task.Status = status
+			task.DownloadSpeed = "0"
+			c.stopped = append(c.stopped, task)
+			c.active = append(c.active[:i], c.active[i+1:]...)
+			c.lastUpdate = time.Now()
+			return
+		}
+	}
+	for i := range c.waiting {
+		if c.waiting[i].GID == gid {
+			task := c.waiting[i]
+			task.Status = status
+			task.DownloadSpeed = "0"
+			c.stopped = append(c.stopped, task)
+			c.waiting = append(c.waiting[:i], c.waiting[i+1:]...)
+			c.lastUpdate = time.Now()
+			return
+		}
+	}
+}
+
+// MoveTaskToWaiting moves a task from active to the waiting list, setting its
+// status. Called from handleSurgeEvent for pause events so that the task
+// appears in GetWaiting() immediately, matching engine TellWaiting behavior.
+func (c *TaskCache) MoveTaskToWaiting(gid, status string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.active {
+		if c.active[i].GID == gid {
+			task := c.active[i]
+			task.Status = status
+			task.DownloadSpeed = "0"
+			c.waiting = append(c.waiting, task)
+			c.active = append(c.active[:i], c.active[i+1:]...)
+			c.lastUpdate = time.Now()
+			return
+		}
+	}
+}
+
+// MoveTaskToActive moves a task from waiting to the active list, setting its
+// status. Called from handleSurgeEvent for resume events so that the task
+// appears in GetActive() immediately, matching engine TellActive behavior.
+func (c *TaskCache) MoveTaskToActive(gid, status string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.waiting {
+		if c.waiting[i].GID == gid {
+			task := c.waiting[i]
+			task.Status = status
+			task.DownloadSpeed = "0"
+			c.active = append(c.active, task)
+			c.waiting = append(c.waiting[:i], c.waiting[i+1:]...)
+			c.lastUpdate = time.Now()
+			return
+		}
+	}
+}
+
 // GetActive 获取活跃任务（从缓存）
 func (c *TaskCache) GetActive() []rpc.Task {
 	c.mu.RLock()

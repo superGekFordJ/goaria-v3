@@ -260,3 +260,103 @@ func TestTaskCache_UpdateTaskGroupNameConcurrentReaders(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestTaskCache_MoveTaskToStopped_FromActive(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(
+		[]rpc.Task{{GID: "sg_1", Status: "active", Title: "file.zip"}},
+		nil, nil,
+	)
+
+	cache.MoveTaskToStopped("sg_1", "complete")
+
+	if len(cache.GetActive()) != 0 {
+		t.Fatalf("expected active empty, got %d", len(cache.GetActive()))
+	}
+	stopped := cache.GetStopped()
+	if len(stopped) != 1 || stopped[0].GID != "sg_1" || stopped[0].Status != "complete" {
+		t.Fatalf("expected stopped=[sg_1 complete], got %#v", stopped)
+	}
+	if stopped[0].DownloadSpeed != "0" {
+		t.Errorf("expected DownloadSpeed=0, got %s", stopped[0].DownloadSpeed)
+	}
+}
+
+func TestTaskCache_MoveTaskToStopped_FromWaiting(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(
+		nil,
+		[]rpc.Task{{GID: "sg_2", Status: "waiting"}},
+		nil,
+	)
+
+	cache.MoveTaskToStopped("sg_2", "error")
+
+	if len(cache.GetWaiting()) != 0 {
+		t.Fatalf("expected waiting empty, got %d", len(cache.GetWaiting()))
+	}
+	stopped := cache.GetStopped()
+	if len(stopped) != 1 || stopped[0].GID != "sg_2" || stopped[0].Status != "error" {
+		t.Fatalf("expected stopped=[sg_2 error], got %#v", stopped)
+	}
+}
+
+func TestTaskCache_MoveTaskToStopped_NotFound(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(
+		[]rpc.Task{{GID: "sg_1", Status: "active"}},
+		nil, nil,
+	)
+
+	cache.MoveTaskToStopped("sg_nonexistent", "complete")
+
+	if len(cache.GetActive()) != 1 {
+		t.Fatalf("expected active unchanged, got %d", len(cache.GetActive()))
+	}
+	if len(cache.GetStopped()) != 0 {
+		t.Fatalf("expected stopped empty, got %d", len(cache.GetStopped()))
+	}
+}
+
+func TestTaskCache_MoveTaskToWaiting_FromActive(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(
+		[]rpc.Task{{GID: "sg_3", Status: "active", DownloadSpeed: "1000"}},
+		nil, nil,
+	)
+
+	cache.MoveTaskToWaiting("sg_3", "paused")
+
+	if len(cache.GetActive()) != 0 {
+		t.Fatalf("expected active empty, got %d", len(cache.GetActive()))
+	}
+	waiting := cache.GetWaiting()
+	if len(waiting) != 1 || waiting[0].GID != "sg_3" || waiting[0].Status != "paused" {
+		t.Fatalf("expected waiting=[sg_3 paused], got %#v", waiting)
+	}
+	if waiting[0].DownloadSpeed != "0" {
+		t.Errorf("expected DownloadSpeed=0, got %s", waiting[0].DownloadSpeed)
+	}
+}
+
+func TestTaskCache_MoveTaskToActive_FromWaiting(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(
+		nil,
+		[]rpc.Task{{GID: "sg_4", Status: "paused"}},
+		nil,
+	)
+
+	cache.MoveTaskToActive("sg_4", "active")
+
+	if len(cache.GetWaiting()) != 0 {
+		t.Fatalf("expected waiting empty, got %d", len(cache.GetWaiting()))
+	}
+	active := cache.GetActive()
+	if len(active) != 1 || active[0].GID != "sg_4" || active[0].Status != "active" {
+		t.Fatalf("expected active=[sg_4 active], got %#v", active)
+	}
+	if active[0].DownloadSpeed != "0" {
+		t.Errorf("expected DownloadSpeed=0, got %s", active[0].DownloadSpeed)
+	}
+}

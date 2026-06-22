@@ -112,90 +112,6 @@ func TestHandleSurgeEvent_CompleteEvent_NoDelay(t *testing.T) {
 	}
 }
 
-func TestHandleSurgeEvent_CompleteEvent_InvalidatesCache(t *testing.T) {
-	hub := events.NewHub(nil)
-	se := &rpc.SurgeEngine{}
-	se.SetCacheValid(true)
-	hybrid := rpc.NewHybridEngine(nil, se)
-	m := &Monitor{hub: hub, engine: hybrid}
-
-	if !se.IsCacheValid() {
-		t.Fatal("precondition: cache should be valid before event")
-	}
-
-	m.handleSurgeEvent(surgeEvents.DownloadCompleteMsg{
-		DownloadID: "test-3",
-	})
-
-	if se.IsCacheValid() {
-		t.Error("expected cacheValid to be false after complete event")
-	}
-}
-
-func TestHandleSurgeEvent_ErrorEvent_InvalidatesCache(t *testing.T) {
-	hub := events.NewHub(nil)
-	se := &rpc.SurgeEngine{}
-	se.SetCacheValid(true)
-	hybrid := rpc.NewHybridEngine(nil, se)
-	m := &Monitor{hub: hub, engine: hybrid}
-
-	m.handleSurgeEvent(surgeEvents.DownloadErrorMsg{
-		DownloadID: "test-err",
-	})
-
-	if se.IsCacheValid() {
-		t.Error("expected cacheValid to be false after error event")
-	}
-}
-
-func TestHandleSurgeEvent_RemoveEvent_InvalidatesCache(t *testing.T) {
-	hub := events.NewHub(nil)
-	se := &rpc.SurgeEngine{}
-	se.SetCacheValid(true)
-	hybrid := rpc.NewHybridEngine(nil, se)
-	m := &Monitor{hub: hub, engine: hybrid}
-
-	m.handleSurgeEvent(surgeEvents.DownloadRemovedMsg{
-		DownloadID: "test-rm",
-	})
-
-	if se.IsCacheValid() {
-		t.Error("expected cacheValid to be false after remove event")
-	}
-}
-
-func TestHandleSurgeEvent_AddEvent_DoesNotInvalidateCache(t *testing.T) {
-	hub := events.NewHub(nil)
-	se := &rpc.SurgeEngine{}
-	se.SetCacheValid(true)
-	hybrid := rpc.NewHybridEngine(nil, se)
-	m := &Monitor{hub: hub, engine: hybrid}
-
-	m.handleSurgeEvent(surgeEvents.DownloadStartedMsg{
-		DownloadID: "test-add",
-	})
-
-	if !se.IsCacheValid() {
-		t.Error("expected cacheValid to remain true after add event (Enqueue already invalidates)")
-	}
-}
-
-func TestHandleSurgeEvent_PauseEvent_DoesNotInvalidateCache(t *testing.T) {
-	hub := events.NewHub(nil)
-	se := &rpc.SurgeEngine{}
-	se.SetCacheValid(true)
-	hybrid := rpc.NewHybridEngine(nil, se)
-	m := &Monitor{hub: hub, engine: hybrid}
-
-	m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{
-		DownloadID: "test-pause",
-	})
-
-	if !se.IsCacheValid() {
-		t.Error("expected cacheValid to remain true after pause event (Pause already invalidates)")
-	}
-}
-
 func TestHandleSurgeEvent_PauseEvent_QueuesPauseDeltaAndPatchesCache(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
@@ -229,23 +145,30 @@ func TestHandleSurgeEvent_PauseEvent_QueuesPauseDeltaAndPatchesCache(t *testing.
 		t.Error("expected pause delta in pusher pending queue")
 	}
 
-	// Verify cache status was patched
+	// Verify task was moved from active to waiting with status=paused
 	Cache.mu.RLock()
-	status := ""
-	speed := ""
 	for _, task := range Cache.active {
 		if task.GID == "sg_test-pause" {
-			status = task.Status
-			speed = task.DownloadSpeed
+			Cache.mu.RUnlock()
+			t.Fatal("expected task removed from active list")
+		}
+	}
+	foundInWaiting := false
+	for _, task := range Cache.waiting {
+		if task.GID == "sg_test-pause" {
+			if task.Status != "paused" {
+				t.Errorf("expected status 'paused', got %q", task.Status)
+			}
+			if task.DownloadSpeed != "0" {
+				t.Errorf("expected DownloadSpeed '0', got %q", task.DownloadSpeed)
+			}
+			foundInWaiting = true
 			break
 		}
 	}
 	Cache.mu.RUnlock()
-	if status != "paused" {
-		t.Errorf("expected cache status 'paused', got %q", status)
-	}
-	if speed != "0" {
-		t.Errorf("expected cache DownloadSpeed '0', got %q", speed)
+	if !foundInWaiting {
+		t.Error("expected task in waiting list after pause")
 	}
 }
 
@@ -282,30 +205,27 @@ func TestHandleSurgeEvent_ResumeEvent_QueuesResumeDeltaAndPatchesCache(t *testin
 		t.Error("expected resume delta in pusher pending queue")
 	}
 
-	// Verify cache status was patched
+	// Verify task was moved from waiting to active with status=active
 	Cache.mu.RLock()
-	status := ""
 	for _, task := range Cache.waiting {
 		if task.GID == "sg_test-resume" {
-			status = task.Status
+			Cache.mu.RUnlock()
+			t.Fatal("expected task removed from waiting list")
+		}
+	}
+	foundInActive := false
+	for _, task := range Cache.active {
+		if task.GID == "sg_test-resume" {
+			if task.Status != "active" {
+				t.Errorf("expected status 'active', got %q", task.Status)
+			}
+			foundInActive = true
 			break
 		}
 	}
 	Cache.mu.RUnlock()
-	if status != "active" {
-		t.Errorf("expected cache status 'active', got %q", status)
-	}
-}
-
-func TestCurrentTickInterval_PendingComplete_UsesWindow(t *testing.T) {
-	m := &Monitor{
-		pendingCompleteGids: map[string]time.Time{"sg_test": time.Now()},
-		windowInterval:      1 * time.Second,
-		headlessInterval:   5 * time.Second,
-	}
-
-	if d := m.currentTickInterval(); d != 1*time.Second {
-		t.Errorf("expected 1s with pending complete, got %v", d)
+	if !foundInActive {
+		t.Error("expected task in active list after resume")
 	}
 }
 
@@ -320,7 +240,6 @@ func TestCurrentTickInterval_SurgeOnly_UsesHeadless(t *testing.T) {
 	hybrid := rpc.NewHybridEngine(nil, se)
 
 	m := &Monitor{
-		pendingCompleteGids: map[string]time.Time{},
 		windowInterval:      1 * time.Second,
 		headlessInterval:   5 * time.Second,
 		prevActiveGids:      map[string]bool{},
@@ -343,7 +262,6 @@ func TestCurrentTickInterval_HasAria2Tasks_UsesWindow(t *testing.T) {
 	hybrid := rpc.NewHybridEngine(nil, se)
 
 	m := &Monitor{
-		pendingCompleteGids: map[string]time.Time{},
 		windowInterval:      1 * time.Second,
 		headlessInterval:   5 * time.Second,
 		prevActiveGids:      map[string]bool{"ar_123": true},
@@ -365,7 +283,6 @@ func TestCurrentTickInterval_Aria2InWaiting_UsesWindow(t *testing.T) {
 	hybrid := rpc.NewHybridEngine(nil, se)
 
 	m := &Monitor{
-		pendingCompleteGids: map[string]time.Time{},
 		windowInterval:      1 * time.Second,
 		headlessInterval:   5 * time.Second,
 		prevActiveGids:      map[string]bool{},
@@ -387,7 +304,6 @@ func TestCurrentTickInterval_NoWindow_UsesHeadless(t *testing.T) {
 	hybrid := rpc.NewHybridEngine(nil, se)
 
 	m := &Monitor{
-		pendingCompleteGids: map[string]time.Time{},
 		windowInterval:      1 * time.Second,
 		headlessInterval:   5 * time.Second,
 		prevActiveGids:      map[string]bool{"ar_123": true},
@@ -404,10 +320,9 @@ func TestHandleSurgeEvent_CompleteEvent_QueuesToFrontend(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
 	m := &Monitor{
-		hub:                 hub,
-		pusher:              pusher,
-		pendingCompleteGids: make(map[string]time.Time),
-		forceTickChan:       make(chan struct{}, 1),
+		hub:           hub,
+		pusher:        pusher,
+		forceTickChan: make(chan struct{}, 1),
 	}
 
 	// Register the same internal handler that NewMonitor sets up
@@ -416,9 +331,7 @@ func TestHandleSurgeEvent_CompleteEvent_QueuesToFrontend(t *testing.T) {
 		case "remove", "complete", "error":
 			m.mu.Lock()
 			m.shouldFetchStopped = true
-			if delta.GID != "" {
-				m.pendingCompleteGids[delta.GID] = time.Now()
-			}
+			m.shouldFetchStoppedUntil = time.Now().Add(15 * time.Second)
 			m.mu.Unlock()
 		}
 	})
@@ -432,14 +345,173 @@ func TestHandleSurgeEvent_CompleteEvent_QueuesToFrontend(t *testing.T) {
 	})
 
 	m.mu.Lock()
-	pendingCount := len(m.pendingCompleteGids)
+	shouldFetch := m.shouldFetchStopped
+	until := m.shouldFetchStoppedUntil
 	m.mu.Unlock()
 
-	if pendingCount != 1 {
-		t.Fatalf("expected 1 pending complete gid, got %d", pendingCount)
+	if !shouldFetch {
+		t.Error("expected shouldFetchStopped to be true after complete event")
 	}
-	if _, ok := m.pendingCompleteGids["sg_test-push"]; !ok {
-		t.Error("expected sg_test-push in pendingCompleteGids")
+	if !time.Now().Before(until) {
+		t.Error("expected shouldFetchStoppedUntil to be in the future")
+	}
+}
+
+func TestHandleSurgeEvent_CompleteEvent_NoCacheNeeded_StoppedVisibleNextTick(t *testing.T) {
+	hub := events.NewHub(nil)
+	m := &Monitor{
+		hub:           hub,
+		stopChan:      make(chan struct{}),
+		forceTickChan: make(chan struct{}, 1),
+	}
+
+	// Register the same internal handler that NewMonitor sets up
+	hub.SubscribeTaskDelta(func(delta events.TaskDelta) {
+		switch delta.Type {
+		case "remove", "complete", "error":
+			m.mu.Lock()
+			m.shouldFetchStopped = true
+			m.shouldFetchStoppedUntil = time.Now().Add(15 * time.Second)
+			m.mu.Unlock()
+		}
+	})
+
+	m.mu.Lock()
+	m.shouldFetchStopped = false
+	m.mu.Unlock()
+
+	m.handleSurgeEvent(surgeEvents.DownloadCompleteMsg{
+		DownloadID: "test-nocache",
+	})
+
+	m.mu.Lock()
+	shouldFetch := m.shouldFetchStopped
+	m.mu.Unlock()
+
+	if !shouldFetch {
+		t.Error("expected shouldFetchStopped=true after complete event (no cache needed)")
+	}
+}
+
+func TestHandleSurgeEvent_CompleteEvent_PushesDeltaToFrontend(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	m := &Monitor{
+		hub:           hub,
+		pusher:        pusher,
+		forceTickChan: make(chan struct{}, 1),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	// Seed cache with an active task
+	Cache.active = []rpc.Task{{GID: "sg_test-direct-push", Status: "active"}}
+	defer func() { Cache.active = nil; Cache.stopped = nil }()
+
+	var receivedDelta *events.TaskDelta
+	hub.SubscribeTaskDelta(func(delta events.TaskDelta) {
+		if delta.Type == "complete" {
+			receivedDelta = &delta
+		}
+	})
+
+	m.handleSurgeEvent(surgeEvents.DownloadCompleteMsg{
+		DownloadID: "test-direct-push",
+	})
+
+	pusher.FlushNow()
+
+	if receivedDelta == nil {
+		t.Fatal("expected to receive complete delta via direct push")
+	}
+	if receivedDelta.GID != "sg_test-direct-push" {
+		t.Errorf("expected GID sg_test-direct-push, got %s", receivedDelta.GID)
+	}
+
+	// Verify task was moved from active to stopped
+	Cache.mu.RLock()
+	for _, task := range Cache.active {
+		if task.GID == "sg_test-direct-push" {
+			Cache.mu.RUnlock()
+			t.Fatal("expected task removed from active list")
+		}
+	}
+	foundInStopped := false
+	for _, task := range Cache.stopped {
+		if task.GID == "sg_test-direct-push" {
+			if task.Status != "complete" {
+				t.Errorf("expected status 'complete', got %q", task.Status)
+			}
+			foundInStopped = true
+			break
+		}
+	}
+	Cache.mu.RUnlock()
+	if !foundInStopped {
+		t.Error("expected task in stopped list after complete event")
+	}
+}
+
+func TestHandleSurgeEvent_ErrorEvent_PushesDeltaToFrontend(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	m := &Monitor{
+		hub:           hub,
+		pusher:        pusher,
+		forceTickChan: make(chan struct{}, 1),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	// Seed cache with an active task
+	Cache.active = []rpc.Task{{GID: "sg_test-err-push", Status: "active"}}
+	defer func() { Cache.active = nil; Cache.stopped = nil }()
+
+	var receivedDelta *events.TaskDelta
+	hub.SubscribeTaskDelta(func(delta events.TaskDelta) {
+		if delta.Type == "error" {
+			receivedDelta = &delta
+		}
+	})
+
+	m.handleSurgeEvent(surgeEvents.DownloadErrorMsg{
+		DownloadID: "test-err-push",
+	})
+
+	pusher.FlushNow()
+
+	if receivedDelta == nil {
+		t.Fatal("expected to receive error delta via direct push")
+	}
+	if receivedDelta.GID != "sg_test-err-push" {
+		t.Errorf("expected GID sg_test-err-push, got %s", receivedDelta.GID)
+	}
+
+	// Verify task was moved from active to stopped with error status
+	Cache.mu.RLock()
+	for _, task := range Cache.active {
+		if task.GID == "sg_test-err-push" {
+			Cache.mu.RUnlock()
+			t.Fatal("expected task removed from active list")
+		}
+	}
+	foundInStopped := false
+	for _, task := range Cache.stopped {
+		if task.GID == "sg_test-err-push" {
+			if task.Status != "error" {
+				t.Errorf("expected status 'error', got %q", task.Status)
+			}
+			foundInStopped = true
+			break
+		}
+	}
+	Cache.mu.RUnlock()
+	if !foundInStopped {
+		t.Error("expected task in stopped list after error event")
 	}
 }
 
@@ -461,7 +533,6 @@ func TestCurrentTickInterval_SurgeActiveWithAria2Tasks_Active_UsesWindow(t *test
 	engine := &mockSurgeActiveEngine{}
 
 	m := &Monitor{
-		pendingCompleteGids: map[string]time.Time{},
 		windowInterval:      1 * time.Second,
 		headlessInterval:   5 * time.Second,
 		prevActiveGids:      map[string]bool{"ar_123": true},
@@ -482,7 +553,6 @@ func TestCurrentTickInterval_SurgeActiveWithAria2Tasks_Waiting_UsesWindow(t *tes
 	engine := &mockSurgeActiveEngine{}
 
 	m := &Monitor{
-		pendingCompleteGids: map[string]time.Time{},
 		windowInterval:      1 * time.Second,
 		headlessInterval:   5 * time.Second,
 		prevActiveGids:      map[string]bool{},
@@ -503,7 +573,6 @@ func TestCurrentTickInterval_SurgeActiveOnlySurgeTasks_UsesHeadless(t *testing.T
 	engine := &mockSurgeActiveEngine{}
 
 	m := &Monitor{
-		pendingCompleteGids: map[string]time.Time{},
 		windowInterval:      1 * time.Second,
 		headlessInterval:   5 * time.Second,
 		prevActiveGids:      map[string]bool{"sg_001": true},
@@ -513,6 +582,68 @@ func TestCurrentTickInterval_SurgeActiveOnlySurgeTasks_UsesHeadless(t *testing.T
 
 	if d := m.currentTickInterval(); d != 5*time.Second {
 		t.Errorf("expected 5s with only Surge tasks, got %v", d)
+	}
+}
+
+func TestCurrentTickInterval_NoPendingComplete_SurgeOnly_Headless(t *testing.T) {
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	engine := &mockSurgeActiveEngine{}
+
+	m := &Monitor{
+		windowInterval:    1 * time.Second,
+		headlessInterval: 5 * time.Second,
+		prevActiveGids:    map[string]bool{"sg_001": true},
+		prevWaitingGids:   map[string]bool{},
+		engine:           engine,
+	}
+
+	if d := m.currentTickInterval(); d != 5*time.Second {
+		t.Errorf("expected 5s with only Surge tasks (no pending complete), got %v", d)
+	}
+}
+
+func TestCurrentTickInterval_ShouldFetchStoppedUntil_UsesWindow(t *testing.T) {
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	engine := &mockSurgeActiveEngine{}
+
+	m := &Monitor{
+		windowInterval:        1 * time.Second,
+		headlessInterval:      5 * time.Second,
+		prevActiveGids:        map[string]bool{"sg_001": true},
+		prevWaitingGids:       map[string]bool{},
+		engine:                engine,
+		shouldFetchStoppedUntil: time.Now().Add(10 * time.Second),
+	}
+
+	if d := m.currentTickInterval(); d != 1*time.Second {
+		t.Errorf("expected 1s during shouldFetchStoppedUntil window, got %v", d)
+	}
+}
+
+func TestCurrentTickInterval_ShouldFetchStoppedExpired_UsesHeadless(t *testing.T) {
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	engine := &mockSurgeActiveEngine{}
+
+	m := &Monitor{
+		windowInterval:        1 * time.Second,
+		headlessInterval:      5 * time.Second,
+		prevActiveGids:        map[string]bool{"sg_001": true},
+		prevWaitingGids:       map[string]bool{},
+		engine:                engine,
+		shouldFetchStoppedUntil: time.Now().Add(-1 * time.Second), // expired
+	}
+
+	if d := m.currentTickInterval(); d != 5*time.Second {
+		t.Errorf("expected 5s after shouldFetchStoppedUntil expired, got %v", d)
 	}
 }
 

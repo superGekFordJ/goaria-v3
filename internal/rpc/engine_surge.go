@@ -8,11 +8,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/surge/core"
 	"goaria-v3/internal/surge/download"
-	surgeEvents "goaria-v3/internal/surge/engine/events"
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/processing"
 )
@@ -22,11 +22,9 @@ type SurgeEngine struct {
 	manager *processing.LifecycleManager
 	cleanup func()
 
-	cacheMu      sync.RWMutex
-	cachedList   []types.DownloadStatus
-	cacheValid   bool
-	engineCtx    context.Context
-	engineCancel context.CancelFunc
+	listCacheMu sync.Mutex
+	listCache   []types.DownloadStatus
+	listCacheAt time.Time
 }
 
 func NewSurgeEngine() *SurgeEngine {
@@ -89,95 +87,36 @@ func NewSurgeEngine() *SurgeEngine {
 		}
 	}
 
-	engine := &SurgeEngine{
-		service:      svc,
-		manager:      mgr,
-		cleanup:      cleanup,
-		engineCtx:    engineCtx,
-		engineCancel: engineCancel,
+	return &SurgeEngine{
+		service: svc,
+		manager: mgr,
+		cleanup: cleanup,
 	}
-
-	// Subscribe to internal events to invalidate the cache
-	internalStream, internalCleanup, err := svc.StreamEvents(engineCtx)
-	if err == nil && internalStream != nil {
-		go func() {
-			defer internalCleanup()
-			for {
-				select {
-				case <-engineCtx.Done():
-					return
-				case rawEvt, ok := <-internalStream:
-					if !ok {
-						return
-					}
-					switch rawEvt.(type) {
-					case surgeEvents.ProgressMsg, surgeEvents.BatchProgressMsg:
-						// ignore progress updates
-					default:
-						engine.invalidateCache()
-					}
-				}
-			}
-		}()
-	}
-
-	return engine
-}
-
-func (e *SurgeEngine) invalidateCache() {
-	e.cacheMu.Lock()
-	e.cacheValid = false
-	e.cacheMu.Unlock()
-}
-
-func (e *SurgeEngine) InvalidateCache() {
-	e.invalidateCache()
 }
 
 func (e *SurgeEngine) IsSurgeActive() bool {
 	return e.service != nil
 }
 
-func (e *SurgeEngine) IsCacheValid() bool {
-	e.cacheMu.RLock()
-	defer e.cacheMu.RUnlock()
-	return e.cacheValid
-}
-
-func (e *SurgeEngine) SetCacheValid(valid bool) {
-	e.cacheMu.Lock()
-	e.cacheValid = valid
-	e.cacheMu.Unlock()
-}
-
 func (e *SurgeEngine) getDownloadList() ([]types.DownloadStatus, error) {
-	e.cacheMu.RLock()
-	if e.cacheValid {
-		defer e.cacheMu.RUnlock()
-		res := make([]types.DownloadStatus, len(e.cachedList))
-		copy(res, e.cachedList)
-		return res, nil
+	e.listCacheMu.Lock()
+	if time.Since(e.listCacheAt) < 1*time.Second && e.listCache != nil {
+		cached := e.listCache
+		e.listCacheMu.Unlock()
+		return cached, nil
 	}
-	e.cacheMu.RUnlock()
-
-	e.cacheMu.Lock()
-	defer e.cacheMu.Unlock()
-	if e.cacheValid {
-		res := make([]types.DownloadStatus, len(e.cachedList))
-		copy(res, e.cachedList)
-		return res, nil
-	}
+	e.listCacheMu.Unlock()
 
 	list, err := e.service.List()
 	if err != nil {
 		return nil, err
 	}
-	e.cachedList = list
-	e.cacheValid = true
 
-	res := make([]types.DownloadStatus, len(e.cachedList))
-	copy(res, e.cachedList)
-	return res, nil
+	e.listCacheMu.Lock()
+	e.listCache = list
+	e.listCacheAt = time.Now()
+	e.listCacheMu.Unlock()
+	return list, nil
 }
 
 func mapStatus(s string) string {
@@ -239,26 +178,15 @@ func (e *SurgeEngine) AddUri(url string, options AddURIOptions) (string, error) 
 		MinChunkSize: options.MinSplitSize,
 	}
 	gid, _, err := e.manager.Enqueue(context.Background(), req)
-	if err == nil {
-		e.invalidateCache()
-	}
 	return gid, err
 }
 
 func (e *SurgeEngine) Pause(gid string) error {
-	err := e.service.Pause(gid)
-	if err == nil {
-		e.invalidateCache()
-	}
-	return err
+	return e.service.Pause(gid)
 }
 
 func (e *SurgeEngine) Resume(gid string) error {
-	err := e.service.Resume(gid)
-	if err == nil {
-		e.invalidateCache()
-	}
-	return err
+	return e.service.Resume(gid)
 }
 
 func (e *SurgeEngine) PauseMulti(gids []string) error {
@@ -267,7 +195,6 @@ func (e *SurgeEngine) PauseMulti(gids []string) error {
 			return err
 		}
 	}
-	e.invalidateCache()
 	return nil
 }
 
@@ -277,21 +204,14 @@ func (e *SurgeEngine) ResumeMulti(gids []string) error {
 			return err
 		}
 	}
-	e.invalidateCache()
 	return nil
 }
 
 func (e *SurgeEngine) Remove(gid string, deleteFile bool) error {
-	var err error
 	if deleteFile {
-		err = e.service.Purge(gid)
-	} else {
-		err = e.service.Delete(gid)
+		return e.service.Purge(gid)
 	}
-	if err == nil {
-		e.invalidateCache()
-	}
-	return err
+	return e.service.Delete(gid)
 }
 
 func (e *SurgeEngine) TellStatus(gid string, keys []string) (Task, error) {

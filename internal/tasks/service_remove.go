@@ -172,7 +172,7 @@ func triggerDebouncedGC() {
 		gcTimer.Stop()
 	}
 
-	gcTimer = time.AfterFunc(2*time.Second, func() {
+	gcTimer = time.AfterFunc(5*time.Second, func() {
 		runtime.GC()
 		debug.FreeOSMemory()
 	})

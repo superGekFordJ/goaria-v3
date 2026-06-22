@@ -49,16 +49,14 @@ type Monitor struct {
 	windowInterval   time.Duration
 
 	// RPC polling optimization
-	mu                   sync.Mutex
-	shouldFetchStopped   bool
-	lastStopped          []rpc.Task
-	lastStoppedFetchTime time.Time
+	mu                       sync.Mutex
+	shouldFetchStopped       bool
+	shouldFetchStoppedUntil  time.Time
+	lastStopped              []rpc.Task
+	lastStoppedFetchTime     time.Time
 
 	// Recently deleted tasks to filter out during engine/cache synchronization races
 	deletedGids map[string]time.Time
-
-	// Completed tasks reported by event bridge or ws that are pending verification in stopped list
-	pendingCompleteGids map[string]time.Time
 
 	// Previous tick state for transition detection
 	prevActiveGids  map[string]bool
@@ -78,7 +76,6 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 		shouldFetchStopped:   true,            // 初始时获取一次 stopped 任务
 		lastStoppedFetchTime: time.Now(),
 		deletedGids:          make(map[string]time.Time),
-		pendingCompleteGids:  make(map[string]time.Time),
 		prevActiveGids:       make(map[string]bool),
 		prevWaitingGids:      make(map[string]bool),
 	}
@@ -102,9 +99,7 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 		case "remove", "complete", "error":
 			m.mu.Lock()
 			m.shouldFetchStopped = true
-			if delta.GID != "" {
-				m.pendingCompleteGids[delta.GID] = time.Now()
-			}
+			m.shouldFetchStoppedUntil = time.Now().Add(15 * time.Second)
 			m.mu.Unlock()
 			select {
 			case m.forceTickChan <- struct{}{}:
@@ -175,14 +170,13 @@ func (m *Monitor) hasAria2Tasks() bool {
 }
 
 func (m *Monitor) currentTickInterval() time.Duration {
-	// 有待确认完成任务时，用短间隔快速检测 SQLite 落盘
-	m.mu.Lock()
-	hasPending := len(m.pendingCompleteGids) > 0
-	m.mu.Unlock()
-	if hasPending {
+	if State.HasWindow() && (!m.engine.IsSurgeActive() || m.hasAria2Tasks()) {
 		return m.windowInterval
 	}
-	if State.HasWindow() && (!m.engine.IsSurgeActive() || m.hasAria2Tasks()) {
+	m.mu.Lock()
+	fastRetry := time.Now().Before(m.shouldFetchStoppedUntil)
+	m.mu.Unlock()
+	if fastRetry {
 		return m.windowInterval
 	}
 	return m.headlessInterval
@@ -196,16 +190,6 @@ func (m *Monitor) tick() {
 		activeErr error
 		wg        sync.WaitGroup
 	)
-
-	// 清理过期的待完成任务（超过 30 秒）
-	m.mu.Lock()
-	now := time.Now()
-	for gid, t := range m.pendingCompleteGids {
-		if now.Sub(t) > 30*time.Second {
-			delete(m.pendingCompleteGids, gid)
-		}
-	}
-	m.mu.Unlock()
 
 	// 1. 获取 Active 任务
 	wg.Add(1)
@@ -236,21 +220,10 @@ func (m *Monitor) tick() {
 		}
 	}()
 
-	// 3. 获取 Stopped 任务 (仅在需要时、有待确认完成的任务、或定期兜底刷新时)
+	// 3. 获取 Stopped 任务 (仅在需要时或定期兜底刷新时)
 	m.mu.Lock()
-	fetchStopped := m.shouldFetchStopped || len(m.pendingCompleteGids) > 0 || time.Since(m.lastStoppedFetchTime) > 10*time.Second
-	pendingCount := len(m.pendingCompleteGids)
+	fetchStopped := m.shouldFetchStopped || time.Since(m.lastStoppedFetchTime) > 10*time.Second || time.Now().Before(m.shouldFetchStoppedUntil)
 	m.mu.Unlock()
-
-	// 当有待确认完成任务时，每次 tick 都失效 Surge 缓存，确保从 service.List() 拉最新数据。
-	// 否则首次 tick 缓存的空 stopped 列表会被后续 tick 反复使用，永远看不到已完成任务。
-	if pendingCount > 0 {
-		if hybrid, ok := m.engine.(*rpc.HybridEngine); ok {
-			if se, ok := hybrid.SurgeEngineRef(); ok {
-				se.InvalidateCache()
-			}
-		}
-	}
 
 	if fetchStopped {
 		wg.Add(1)
@@ -279,10 +252,7 @@ func (m *Monitor) tick() {
 
 	wg.Wait()
 
-	m.mu.Lock()
-	pendingCount = len(m.pendingCompleteGids)
-	m.mu.Unlock()
-	log.Printf("[DEBUG-TICK] active=%d waiting=%d stopped=%d pendingComplete=%d", len(active), len(waiting), len(stopped), pendingCount)
+	log.Printf("[DEBUG-TICK] active=%d waiting=%d stopped=%d", len(active), len(waiting), len(stopped))
 	for _, t := range stopped {
 		log.Printf("[DEBUG-TICK] stopped task: gid=%s status=%s total=%s completed=%s", t.GID, t.Status, t.TotalLength, t.CompletedLength)
 	}
@@ -383,6 +353,25 @@ func (m *Monitor) tick() {
 	// 更新前一次的 GID 集合（用于下次检测）
 	m.updatePrevGids(active, waiting)
 
+	// 在 shouldFetchStoppedUntil 窗口内，保留 MoveTaskToStopped 放入的任务，
+	// 避免 engine Gob 写入竞态导致 UpdateFromAria2 用空 stopped 覆盖。
+	if fetchStopped {
+		m.mu.Lock()
+		fastRetry := time.Now().Before(m.shouldFetchStoppedUntil)
+		m.mu.Unlock()
+		if fastRetry {
+			existingGids := make(map[string]struct{}, len(stopped))
+			for _, t := range stopped {
+				existingGids[t.GID] = struct{}{}
+			}
+			for _, t := range Cache.GetStopped() {
+				if _, ok := existingGids[t.GID]; !ok {
+					stopped = append(stopped, t)
+				}
+			}
+		}
+	}
+
 	// 更新缓存
 	Cache.UpdateFromAria2(active, waiting, stopped)
 
@@ -392,15 +381,6 @@ func (m *Monitor) tick() {
 	// 处理已完成任务（写入历史和速度统计）
 	for _, task := range completedTasks {
 		m.handleTaskComplete(task)
-		// 任务已成功确认移至已完成列表，从待处理集合中移除
-		m.mu.Lock()
-		delete(m.pendingCompleteGids, task.GID)
-		if strings.HasPrefix(task.GID, "ar_") {
-			delete(m.pendingCompleteGids, task.GID[3:])
-		} else if strings.HasPrefix(task.GID, "sg_") {
-			delete(m.pendingCompleteGids, task.GID[3:])
-		}
-		m.mu.Unlock()
 	}
 
 	// 构建托盘快照
@@ -656,7 +636,6 @@ func (m *Monitor) InvalidateTask(gid string) {
 	// 2. 从 lastStopped 缓存中移除
 	m.mu.Lock()
 	m.deletedGids[gid] = time.Now()
-	delete(m.pendingCompleteGids, gid)
 
 	newStopped := make([]rpc.Task, 0, len(m.lastStopped))
 	for _, t := range m.lastStopped {
@@ -846,28 +825,25 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		return
 	}
 
-	if deltaType == "complete" || deltaType == "error" || deltaType == "remove" {
-		if hybrid, ok := m.engine.(*rpc.HybridEngine); ok {
-			if se, ok := hybrid.SurgeEngineRef(); ok {
-				se.InvalidateCache()
-			}
-		}
-	}
-
 	// For pause/resume, patch the cache status immediately so that
 	// GetTasks() returns the correct status before the next tick runs.
 	// Also queue the delta via pusher for direct frontend delivery (~50ms),
 	// eliminating the gap between progress stopping (immediate from event
 	// stream) and the status badge/card style changing (was waiting for tick).
 	if deltaType == "pause" {
-		Cache.PatchTaskStatus(gid, "paused")
+		Cache.MoveTaskToWaiting(gid, "paused")
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{Type: "pause", GID: gid})
 		}
 	} else if deltaType == "resume" {
-		Cache.PatchTaskStatus(gid, "active")
+		Cache.MoveTaskToActive(gid, "active")
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{Type: "resume", GID: gid})
+		}
+	} else if deltaType == "complete" || deltaType == "error" {
+		Cache.MoveTaskToStopped(gid, deltaType)
+		if State.HasWindow() {
+			m.pusher.Queue(events.TaskDelta{Type: deltaType, GID: gid})
 		}
 	}
 
