@@ -45,6 +45,11 @@ func TestToRuntimeConfig_AllFieldsExplicit(t *testing.T) {
 		if !field.IsExported() {
 			continue
 		}
+		// Workers is a per-task override field; 0 = "use √size heuristic" is the
+		// correct global default, so it is intentionally zero-valued here.
+		if field.Name == "Workers" {
+			continue
+		}
 		if rcVal.Field(i).IsZero() {
 			t.Errorf("RuntimeConfig field %q is zero-valued after ToRuntimeConfig() "+
 				"with all settings set to non-default values; the adapter layer "+
@@ -87,7 +92,7 @@ func TestToRuntimeConfig_RateLimitParsed(t *testing.T) {
 // count and ensure ToRuntimeConfig assigns it.
 func TestRuntimeConfig_FieldCount(t *testing.T) {
 	rcType := reflect.TypeOf(types.RuntimeConfig{})
-	expected := 15
+	expected := 16
 	if got := rcType.NumField(); got != expected {
 		t.Errorf("RuntimeConfig has %d fields, expected %d; if upstream added a field, "+
 			"update this count and ToRuntimeConfig()", got, expected)

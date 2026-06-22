@@ -231,10 +231,12 @@ func (e *SurgeEngine) AddUri(url string, options AddURIOptions) (string, error) 
 		}
 	}
 	req := &processing.DownloadRequest{
-		URL:      url,
-		Path:     options.Dir,
-		Filename: options.Out,
-		Headers:  headersMap,
+		URL:          url,
+		Path:         options.Dir,
+		Filename:     options.Out,
+		Headers:      headersMap,
+		Workers:      options.Split,
+		MinChunkSize: options.MinSplitSize,
 	}
 	gid, _, err := e.manager.Enqueue(context.Background(), req)
 	if err == nil {
