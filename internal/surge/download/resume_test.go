@@ -26,7 +26,7 @@ func TestIntegration_PauseResume(t *testing.T) {
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	// Set XDG_CONFIG_HOME to tmpDir so state.GetDB() creates DB there
+	// Set XDG_CONFIG_HOME to tmpDir so state.Configure() uses it as the state directory
 	// The config package uses "surge" subdirectory
 	configDir := tmpDir // XDG_CONFIG_HOME usually contains the app dir
 	t.Setenv("XDG_CONFIG_HOME", configDir)
@@ -37,9 +37,6 @@ func TestIntegration_PauseResume(t *testing.T) {
 	// Force DB init
 	dbPath := filepath.Join(tmpDir, "surge.db")
 	state.Configure(dbPath)
-	if _, err := state.GetDB(); err != nil {
-		t.Fatalf("Failed to init DB: %v", err)
-	}
 	defer state.CloseDB()
 
 	// 2. Setup Mock Server (500MB file)

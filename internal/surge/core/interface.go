@@ -54,6 +54,12 @@ type DownloadService interface {
 	// Shutdown handles graceful shutdown of the service
 	Shutdown() error
 
+	// Clear completed downloads from surge
+	ClearCompleted() (int64, error)
+
+	// Clear failed downloads from surge
+	ClearFailed() (int64, error)
+
 	// SetRateLimit sets the speed limit for a specific download
 	SetRateLimit(id string, rate int64) error
 

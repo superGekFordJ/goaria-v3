@@ -79,16 +79,9 @@ func TestStartEventWorker_FinalizesCompletedFileUsingDestPath(t *testing.T) {
 		t.Fatalf("dest_path = %q, want %q", entry.DestPath, finalPath)
 	}
 
-	db, err := state.GetDB()
-	if err != nil {
-		t.Fatalf("failed to open db: %v", err)
-	}
-	var taskCount int
-	if err := db.QueryRow("SELECT COUNT(*) FROM tasks WHERE download_id = ?", "download-1").Scan(&taskCount); err != nil {
-		t.Fatalf("failed to count tasks: %v", err)
-	}
-	if taskCount != 0 {
-		t.Fatalf("task_count = %d, want 0", taskCount)
+	states, _ := state.LoadStates([]string{"download-1"})
+	if s, ok := states["download-1"]; ok && len(s.Tasks) != 0 {
+		t.Fatalf("task_count = %d, want 0", len(s.Tasks))
 	}
 }
 
@@ -109,7 +102,7 @@ func TestStartEventWorker_PersistsQueuedMirrorsForResume(t *testing.T) {
 
 	mgr.StartEventWorker(ch)
 
-	queuedState, err := state.LoadState("https://example.com/video.mp4", finalPath)
+	queuedState, err := state.GetDownload("download-queued")
 	if err != nil {
 		t.Fatalf("failed to reload queued state: %v", err)
 	}

@@ -2,16 +2,22 @@ package surge
 
 import (
 	"log"
+	"os"
 	"path/filepath"
 
 	"goaria-v3/internal/surge/engine/state"
 )
 
-// Initialize configures the Surge database file path and runs startup self-healing
+// Initialize configures the Surge state directory and runs startup self-healing
 func Initialize(dataDir string) {
 	dbPath := filepath.Join(dataDir, "surge.db")
-	log.Printf("[Surge] Initializing session database at %s", dbPath)
+	log.Printf("[Surge] Initializing state directory at %s", dataDir)
 	state.Configure(dbPath)
+
+	// Gob migration: remove legacy SQLite database (upstream no longer reads it)
+	if err := os.Remove(dbPath); err == nil {
+		log.Printf("[Surge] Removed legacy SQLite database (paused tasks from previous versions need to be re-added)")
+	}
 
 	// 1. Normalize stale "downloading" status tasks left from sudden crash/kill
 	if n, err := state.NormalizeStaleDownloads(); err != nil {
@@ -20,10 +26,10 @@ func Initialize(dataDir string) {
 		log.Printf("[Surge] Normalized %d stale downloading tasks to paused state", n)
 	}
 
-	// 2. Validate database/file integrity
+	// 2. Validate state/file integrity
 	if n, err := state.ValidateIntegrity(); err != nil {
-		log.Printf("[Surge] Failed to validate download database integrity: %v", err)
+		log.Printf("[Surge] Failed to validate state integrity: %v", err)
 	} else if n > 0 {
-		log.Printf("[Surge] Cleaned up %d orphaned database entries or invalid files during integrity check", n)
+		log.Printf("[Surge] Cleaned up %d orphaned state entries or invalid files during integrity check", n)
 	}
 }
