@@ -79,6 +79,8 @@ func TestStartEventWorker_FinalizesCompletedFileUsingDestPath(t *testing.T) {
 		t.Fatalf("dest_path = %q, want %q", entry.DestPath, finalPath)
 	}
 
+	// FORK-FIX: LoadState skips completed status, making the old assertion a tautology.
+	// Use LoadStates to load detail gob directly and verify task cleanup.
 	states, _ := state.LoadStates([]string{"download-1"})
 	if s, ok := states["download-1"]; ok && len(s.Tasks) != 0 {
 		t.Fatalf("task_count = %d, want 0", len(s.Tasks))

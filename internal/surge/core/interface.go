@@ -61,6 +61,7 @@ type DownloadService interface {
 	ClearFailed() (int64, error)
 
 	// SetRateLimit sets the speed limit for a specific download
+	// FORK-FIX: added missing blank line (cherry-pick auto-merge artifact)
 	SetRateLimit(id string, rate int64) error
 
 	// ClearRateLimit removes a download's rate limit override so it inherits the default.

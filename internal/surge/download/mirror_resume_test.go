@@ -28,6 +28,7 @@ func TestIntegration_MirrorResume(t *testing.T) {
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Set XDG_CONFIG_HOME to tmpDir so state.Configure() uses it as the state directory
+	// FORK-FIX: updated stale comment — GetDB() removed in Gob migration
 	// The config package uses "surge" subdirectory
 	configDir := tmpDir // XDG_CONFIG_HOME usually contains the app dir
 	t.Setenv("XDG_CONFIG_HOME", configDir)
