@@ -778,6 +778,14 @@ func (s *LocalDownloadService) History() ([]types.DownloadEntry, error) {
 	return state.LoadCompletedDownloads()
 }
 
+func (s *LocalDownloadService) ClearCompleted() (int64, error) {
+	return state.RemoveCompletedDownloads()
+}
+
+func (s *LocalDownloadService) ClearFailed() (int64, error) {
+	return state.RemoveFailedDownloads()
+}
+
 // SetRateLimit sets the speed limit for a specific download
 func (s *LocalDownloadService) SetRateLimit(id string, rate int64) error {
 	if rate < 0 {

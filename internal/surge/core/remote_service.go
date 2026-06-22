@@ -441,3 +441,31 @@ func (s *RemoteDownloadService) connectSSE(ctx context.Context, ch chan interfac
 		}
 	}
 }
+
+func (s *RemoteDownloadService) ClearCompleted() (int64, error) {
+	return s.doClearDownloads("/clear-completed")
+}
+
+func (s *RemoteDownloadService) ClearFailed() (int64, error) {
+	return s.doClearDownloads("/clear-failed")
+}
+
+func (s *RemoteDownloadService) doClearDownloads(endpoint string) (int64, error) {
+	resp, err := s.doRequest("POST", endpoint, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+
+	var result struct {
+		Deleted int64 `json:"deleted"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, err
+	}
+
+	return result.Deleted, nil
+}
