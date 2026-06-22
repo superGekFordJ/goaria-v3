@@ -14,7 +14,11 @@ import (
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/smartthread"
+	"goaria-v3/internal/speedstats"
 )
+
+// scopeClassifier is a package-level scope classifier with host caching.
+var scopeClassifier = speedstats.NewScopeClassifier()
 
 func (s *Service) AddUri(url string) string {
 	normalizedUrl := strings.TrimSpace(url)
@@ -342,8 +346,21 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 
 	if config.Current.SmartThreadMode {
 		fileSize := candidate.sizeBytes
+		var ttfbMs int64
+		var remoteIP string
+
 		if !candidate.extracted && !candidate.protected && len(headers) == 0 {
-			fileSize = rpc.HeadContentLength(candidate.url, 3*time.Second)
+			probe := rpc.HeadProbe(candidate.url, 3*time.Second)
+			fileSize = probe.ContentLength
+			ttfbMs = probe.TTFBMs
+			remoteIP = probe.RemoteIP
+		}
+
+		var scope, domain string
+		if remoteIP != "" {
+			scope, domain = scopeClassifier.ClassifyByURLAndIP(candidate.url, remoteIP)
+		} else {
+			scope, domain = scopeClassifier.ClassifyByURL(candidate.url)
 		}
 
 		maxConn, _ := strconv.Atoi(config.Current.MaxConnections)
@@ -371,6 +388,9 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 					tracker.SetThreadInfo(gid, params.Split, params.IsExploration)
 				}
 			}
+			if tracker := monitor.State.GetTracker(); tracker != nil {
+				tracker.SetScope(gid, scope, ttfbMs, domain)
+			}
 		}
 	} else {
 		var err error
@@ -382,6 +402,12 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 		})
 		if err != nil {
 			return "", err
+		}
+		if gid != "" {
+			scope, domain := scopeClassifier.ClassifyByURL(candidate.url)
+			if tracker := monitor.State.GetTracker(); tracker != nil {
+				tracker.SetScope(gid, scope, 0, domain)
+			}
 		}
 	}
 

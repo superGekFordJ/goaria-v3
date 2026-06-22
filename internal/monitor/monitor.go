@@ -49,11 +49,11 @@ type Monitor struct {
 	windowInterval   time.Duration
 
 	// RPC polling optimization
-	mu                       sync.Mutex
-	shouldFetchStopped       bool
-	shouldFetchStoppedUntil  time.Time
-	lastStopped              []rpc.Task
-	lastStoppedFetchTime     time.Time
+	mu                      sync.Mutex
+	shouldFetchStopped      bool
+	shouldFetchStoppedUntil time.Time
+	lastStopped             []rpc.Task
+	lastStoppedFetchTime    time.Time
 
 	// Recently deleted tasks to filter out during engine/cache synchronization races
 	deletedGids map[string]time.Time
@@ -502,15 +502,8 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 		}
 	}
 
-	if task.FilePath == "" {
-		log.Printf("[Monitor] Task %s completed but no file path available, skipping history", task.GID)
-		return
-	}
-
-	log.Printf("[Monitor] Task completed: %s, peak speed: %d B/s", task.GID, task.PeakSpeed)
-
-	// 1. 记录速度统计（仅 >50MB 文件）
-	if task.TotalLength > 50*1024*1024 && task.PeakSpeed > 0 {
+	// 1. 记录速度统计（仅 >50MB 文件）— 不依赖 FilePath，先于 history 执行
+	if task.TotalLength > speedstats.MinFileSize && task.PeakSpeed > 0 {
 		threadCount := task.ThreadCount
 		isExploration := task.IsExploration
 
@@ -530,10 +523,17 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 			}
 		}
 
-		speedstats.AddRecord(task.PeakSpeed, threadCount, task.TotalLength, isExploration)
-		log.Printf("[Monitor] Speed stats recorded: peak=%d, threads=%d, exploration=%v",
-			task.PeakSpeed, threadCount, isExploration)
+		speedstats.AddRecordV2(task.PeakSpeed, threadCount, task.TotalLength, isExploration, task.TTFBMs, task.Domain, task.Scope)
+		log.Printf("[Monitor] Speed stats recorded: peak=%d, threads=%d, exploration=%v, scope=%s, domain=%s, ttfb=%d",
+			task.PeakSpeed, threadCount, isExploration, task.Scope, task.Domain, task.TTFBMs)
 	}
+
+	if task.FilePath == "" {
+		log.Printf("[Monitor] Task %s completed but no file path available, skipping history", task.GID)
+		return
+	}
+
+	log.Printf("[Monitor] Task completed: %s, peak speed: %d B/s", task.GID, task.PeakSpeed)
 
 	// 2. 写入历史记录
 	history.Add(history.HistoryEntry{
@@ -758,6 +758,8 @@ func (m *Monitor) startSurgeEventBridge() {
 func (m *Monitor) handleSurgeEvent(rawEvt any) {
 	var deltaType string
 	var gid string
+	var completeTotal int64
+	var completeAvgSpeed float64
 
 	switch ev := rawEvt.(type) {
 	case surgeEvents.ProgressMsg:
@@ -766,10 +768,13 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		speedStr := strconv.FormatInt(int64(ev.Speed), 10)
 		totalStr := strconv.FormatInt(ev.Total, 10)
 		Cache.PatchTaskProgress(gid, completedStr, speedStr, totalStr)
+		if m.tracker != nil {
+			m.tracker.SampleSpeedFromEvent(gid, int64(ev.Speed), ev.Total, ev.Downloaded)
+		}
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{
-				Type:    "progress",
-				GID:     gid,
+				Type: "progress",
+				GID:  gid,
 				Payload: map[string]interface{}{
 					"completedLength": completedStr,
 					"downloadSpeed":   speedStr,
@@ -786,10 +791,13 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 			speedStr := strconv.FormatInt(int64(p.Speed), 10)
 			totalStr := strconv.FormatInt(p.Total, 10)
 			Cache.PatchTaskProgress(pgid, completedStr, speedStr, totalStr)
+			if m.tracker != nil {
+				m.tracker.SampleSpeedFromEvent(pgid, int64(p.Speed), p.Total, p.Downloaded)
+			}
 			if State.HasWindow() {
 				m.pusher.Queue(events.TaskDelta{
-					Type:    "progress",
-					GID:     pgid,
+					Type: "progress",
+					GID:  pgid,
 					Payload: map[string]interface{}{
 						"completedLength": completedStr,
 						"downloadSpeed":   speedStr,
@@ -803,9 +811,15 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 	case surgeEvents.DownloadQueuedMsg:
 		deltaType = "add"
 		gid = "sg_" + ev.DownloadID
+		if m.tracker != nil {
+			m.tracker.EnsureTrackedFromEvent(gid, 0, ev.URL, ev.Workers)
+		}
 	case surgeEvents.DownloadStartedMsg:
 		deltaType = "add"
 		gid = "sg_" + ev.DownloadID
+		if m.tracker != nil {
+			m.tracker.EnsureTrackedFromEvent(gid, ev.Total, ev.URL, ev.Workers)
+		}
 	case surgeEvents.DownloadResumedMsg:
 		deltaType = "resume"
 		gid = "sg_" + ev.DownloadID
@@ -815,6 +829,8 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 	case surgeEvents.DownloadCompleteMsg:
 		deltaType = "complete"
 		gid = "sg_" + ev.DownloadID
+		completeTotal = ev.Total
+		completeAvgSpeed = ev.AvgSpeed
 	case surgeEvents.DownloadErrorMsg:
 		deltaType = "error"
 		gid = "sg_" + ev.DownloadID
@@ -830,20 +846,32 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 	// Also queue the delta via pusher for direct frontend delivery (~50ms),
 	// eliminating the gap between progress stopping (immediate from event
 	// stream) and the status badge/card style changing (was waiting for tick).
-	if deltaType == "pause" {
+	switch deltaType {
+	case "pause":
 		Cache.MoveTaskToWaiting(gid, "paused")
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{Type: "pause", GID: gid})
 		}
-	} else if deltaType == "resume" {
+	case "resume":
 		Cache.MoveTaskToActive(gid, "active")
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{Type: "resume", GID: gid})
 		}
-	} else if deltaType == "complete" || deltaType == "error" {
+	case "complete", "error":
 		Cache.MoveTaskToStopped(gid, deltaType)
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{Type: deltaType, GID: gid})
+		}
+		if m.tracker != nil {
+			if completeTotal > 0 {
+				m.tracker.EnsureTrackedFromEvent(gid, completeTotal, "", 0)
+			}
+			if completed := m.tracker.MarkCompleteFromEvent(gid, deltaType); completed != nil {
+				if completed.PeakSpeed == 0 && completeAvgSpeed > 0 {
+					completed.PeakSpeed = int64(completeAvgSpeed)
+				}
+				m.handleTaskComplete(completed)
+			}
 		}
 	}
 
@@ -877,4 +905,3 @@ func (m *Monitor) filterDeletedTasks(tasks []rpc.Task) []rpc.Task {
 	}
 	return filtered
 }
-

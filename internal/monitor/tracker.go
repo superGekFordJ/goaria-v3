@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/rpc"
+	"goaria-v3/internal/speedstats"
 )
 
 // TrackedTask 追踪单个任务的状态
@@ -31,6 +32,11 @@ type TrackedTask struct {
 	Dir           string
 	SourceURL     string
 	DownloadGroup *rpc.DownloadGroup
+
+	// Scope/TTFB/Domain（speedstats 扩展）
+	Scope  string
+	TTFBMs int64
+	Domain string
 }
 
 // TaskTracker 后端任务追踪器
@@ -143,14 +149,24 @@ func (t *TaskTracker) updateActiveTask(task rpc.Task) {
 
 	// 速度采样（仅 >50MB 文件）
 	speed := parseInt64(task.DownloadSpeed)
-	if speed > 0 && tracked.TotalLength > 50*1024*1024 {
+	if speed > 0 && tracked.TotalLength > speedstats.MinFileSize {
 		t.sampleSpeed(tracked, speed)
 	}
 }
 
-// sampleSpeed 采样速度并更新峰值
+// sampleSpeed 采样速度并更新峰值（tick 路径）
 func (t *TaskTracker) sampleSpeed(task *TrackedTask, speed int64) {
-	// 稳定性检测：误差在 15% 以内视为平稳
+	threshold := 3
+	if !State.HasWindow() {
+		threshold = 1
+	}
+	t.sampleSpeedInternal(task, speed, threshold)
+}
+
+// sampleSpeedInternal 共享稳定性检测和峰值速度逻辑
+// 临时桥接：事件路径的 SampleSpeedFromEvent 依赖此方法，SPEC-169 将用
+// DownloadCompleteMsg 携带的 peak speed 替代实时采样，届时可移除事件路径调用
+func (t *TaskTracker) sampleSpeedInternal(task *TrackedTask, speed int64, threshold int) {
 	if task.SustainedSpeed > 0 {
 		diff := float64(speed-task.SustainedSpeed) / float64(task.SustainedSpeed)
 		if diff > -0.15 && diff < 0.15 {
@@ -164,13 +180,7 @@ func (t *TaskTracker) sampleSpeed(task *TrackedTask, speed int64) {
 		task.SustainedCount = 1
 	}
 
-	// 分模式阈值：窗口模式 3 次（约 3 秒），无头模式 1 次（约 5 秒）
-	threshold := 3
-	if !State.HasWindow() {
-		threshold = 1
-	}
-
-	if task.SustainedCount >= threshold && task.CompletedLength > 50*1024*1024 {
+	if task.SustainedCount >= threshold && task.CompletedLength > speedstats.MinFileSize {
 		if speed > task.PeakSpeed {
 			task.PeakSpeed = speed
 		}
@@ -317,6 +327,106 @@ func (t *TaskTracker) UpdateTaskGroupName(groupKey, name, status string) int {
 		changed++
 	}
 	return changed
+}
+
+// EnsureTrackedFromEvent 从 Surge 事件创建或更新 tracker 条目
+// 用于 DownloadStartedMsg / DownloadQueuedMsg，不等 tick
+func (t *TaskTracker) EnsureTrackedFromEvent(gid string, totalLength int64, sourceURL string, threadCount int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	tracked := t.tasks[gid]
+	if tracked != nil {
+		if totalLength > 0 {
+			tracked.TotalLength = totalLength
+		}
+		if sourceURL != "" && tracked.SourceURL == "" {
+			tracked.SourceURL = sourceURL
+		}
+		if threadCount > 0 && tracked.ThreadCount == 0 {
+			tracked.ThreadCount = threadCount
+		}
+		return
+	}
+
+	t.tasks[gid] = &TrackedTask{
+		GID:         gid,
+		Status:      "active",
+		TotalLength: totalLength,
+		SourceURL:   sourceURL,
+		ThreadCount: threadCount,
+		CreatedAt:   time.Now(),
+	}
+}
+
+// SampleSpeedFromEvent 从 Surge ProgressMsg 事件采样速度
+// 事件路径阈值：窗口模式 2 次（~0.4s @ 200ms），无头模式 1 次
+// 临时桥接：SPEC-169 将用 DownloadCompleteMsg 携带的 peak speed 替代此方法
+func (t *TaskTracker) SampleSpeedFromEvent(gid string, speed int64, totalLength int64, completedLength int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	tracked := t.tasks[gid]
+	if tracked == nil {
+		return
+	}
+
+	if totalLength > 0 {
+		tracked.TotalLength = totalLength
+	}
+	if completedLength > 0 {
+		tracked.CompletedLength = completedLength
+	}
+
+	if totalLength > 0 && totalLength <= speedstats.MinFileSize {
+		return
+	}
+
+	threshold := 2
+	if !State.HasWindow() {
+		threshold = 1
+	}
+	t.sampleSpeedInternal(tracked, speed, threshold)
+}
+
+// MarkCompleteFromEvent 从 Surge complete/error 事件标记完成
+// 返回副本供 handleTaskComplete 使用，已处理则返回 nil
+func (t *TaskTracker) MarkCompleteFromEvent(gid string, status string) *TrackedTask {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	tracked := t.tasks[gid]
+	if tracked == nil {
+		return nil
+	}
+	if t.processedComplete[gid] {
+		return nil
+	}
+
+	tracked.Status = status
+	t.processedComplete[gid] = true
+	return copyTrackedTask(tracked)
+}
+
+// SetScope 设置任务的 scope/TTFB/domain 信息（由 AddUri 调用）
+func (t *TaskTracker) SetScope(gid string, scope string, ttfbMs int64, domain string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	tracked := t.tasks[gid]
+	if tracked != nil {
+		tracked.Scope = scope
+		tracked.TTFBMs = ttfbMs
+		tracked.Domain = domain
+	} else {
+		t.tasks[gid] = &TrackedTask{
+			GID:       gid,
+			Scope:     scope,
+			TTFBMs:    ttfbMs,
+			Domain:    domain,
+			CreatedAt: time.Now(),
+		}
+	}
 }
 
 // RemoveTask 从追踪器中移除任务
