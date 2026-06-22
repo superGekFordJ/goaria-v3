@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -644,6 +645,46 @@ func TestCurrentTickInterval_ShouldFetchStoppedExpired_UsesHeadless(t *testing.T
 
 	if d := m.currentTickInterval(); d != 5*time.Second {
 		t.Errorf("expected 5s after shouldFetchStoppedUntil expired, got %v", d)
+	}
+}
+
+func TestCurrentTickInterval_ShouldFetchStoppedUntil_LifecycleTransition(t *testing.T) {
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	engine := &mockSurgeActiveEngine{}
+
+	m := &Monitor{
+		windowInterval:    1 * time.Second,
+		headlessInterval:  5 * time.Second,
+		prevActiveGids:    map[string]bool{"sg_001": true},
+		prevWaitingGids:   map[string]bool{},
+		engine:            engine,
+		mu:                sync.Mutex{},
+	}
+
+	// Phase 1: Before any complete event — 5s headless
+	if d := m.currentTickInterval(); d != 5*time.Second {
+		t.Fatalf("phase 1: expected 5s (no shouldFetchStoppedUntil), got %v", d)
+	}
+
+	// Phase 2: Simulate complete event setting shouldFetchStoppedUntil
+	m.mu.Lock()
+	m.shouldFetchStoppedUntil = time.Now().Add(15 * time.Second)
+	m.mu.Unlock()
+
+	if d := m.currentTickInterval(); d != 1*time.Second {
+		t.Fatalf("phase 2: expected 1s (shouldFetchStoppedUntil active), got %v", d)
+	}
+
+	// Phase 3: Simulate window expiry
+	m.mu.Lock()
+	m.shouldFetchStoppedUntil = time.Now().Add(-1 * time.Millisecond)
+	m.mu.Unlock()
+
+	if d := m.currentTickInterval(); d != 5*time.Second {
+		t.Fatalf("phase 3: expected 5s (shouldFetchStoppedUntil expired), got %v", d)
 	}
 }
 

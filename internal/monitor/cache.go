@@ -206,35 +206,6 @@ func (c *TaskCache) PatchTaskProgress(gid, completedLength, downloadSpeed, total
 	}
 }
 
-// PatchTaskStatus updates the status field of a task in the cache without
-// waiting for the next tick. Called from handleSurgeEvent for pause/resume
-// events so that GetTasks() (and thus frontend fetchTasks()) returns the
-// correct status immediately, and so backend-side reads see current state.
-func (c *TaskCache) PatchTaskStatus(gid, status string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for i := range c.active {
-		if c.active[i].GID == gid {
-			c.active[i].Status = status
-			if status == "paused" {
-				c.active[i].DownloadSpeed = "0"
-			}
-			c.lastUpdate = time.Now()
-			return
-		}
-	}
-	for i := range c.waiting {
-		if c.waiting[i].GID == gid {
-			c.waiting[i].Status = status
-			if status == "active" {
-				c.waiting[i].DownloadSpeed = "0"
-			}
-			c.lastUpdate = time.Now()
-			return
-		}
-	}
-}
-
 // MoveTaskToStopped moves a task from active or waiting to the stopped list,
 // setting its status. Called from handleSurgeEvent for complete/error events
 // so that GetStopped() returns the task immediately, before the next tick

@@ -98,6 +98,11 @@ func (e *SurgeEngine) IsSurgeActive() bool {
 	return e.service != nil
 }
 
+// getDownloadList returns the Surge download list with a 1s TTL request-scoped
+// cache. This avoids duplicate service.List() (Gob deserialization) when
+// TellWaiting and TellStopped are called concurrently within the same tick.
+// This is distinct from the removed SQLite-era cachedList/cacheValid which
+// cached across ticks and caused stale data bugs.
 func (e *SurgeEngine) getDownloadList() ([]types.DownloadStatus, error) {
 	e.listCacheMu.Lock()
 	if time.Since(e.listCacheAt) < 1*time.Second && e.listCache != nil {
