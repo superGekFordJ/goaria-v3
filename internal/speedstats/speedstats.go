@@ -273,14 +273,16 @@ func GetRTprop(domain string) (int64, bool) {
 	var minTTFB int64
 	found := false
 
-	// 先尝试 domain 匹配
-	for i := range records {
-		if records[i].Domain != domain || records[i].TTFBMs <= 0 {
-			continue
-		}
-		if !found || records[i].TTFBMs < minTTFB {
-			minTTFB = records[i].TTFBMs
-			found = true
+	// 先尝试 domain 匹配（空 domain 跳过，直接走全局回退）
+	if domain != "" {
+		for i := range records {
+			if records[i].Domain != domain || records[i].TTFBMs <= 0 {
+				continue
+			}
+			if !found || records[i].TTFBMs < minTTFB {
+				minTTFB = records[i].TTFBMs
+				found = true
+			}
 		}
 	}
 	if found {

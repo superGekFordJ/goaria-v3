@@ -166,6 +166,10 @@ func (t *TaskTracker) sampleSpeed(task *TrackedTask, speed int64) {
 // sampleSpeedInternal 共享稳定性检测和峰值速度逻辑
 // 临时桥接：事件路径的 SampleSpeedFromEvent 依赖此方法，SPEC-169 将用
 // DownloadCompleteMsg 携带的 peak speed 替代实时采样，届时可移除事件路径调用
+//
+// SustainedCount 在 tick 和事件路径间共享：若 tick 样本（5s 间隔）与事件样本
+// （200ms 间隔）速度差异 >15%，tick 会重置 SustainedCount=1。事件路径在 ~0.4s
+// （2 个 200ms 事件）内即可恢复，对 PeakSpeed 取最大值语义无害。
 func (t *TaskTracker) sampleSpeedInternal(task *TrackedTask, speed int64, threshold int) {
 	if task.SustainedSpeed > 0 {
 		diff := float64(speed-task.SustainedSpeed) / float64(task.SustainedSpeed)

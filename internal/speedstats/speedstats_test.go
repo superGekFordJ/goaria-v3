@@ -281,6 +281,29 @@ func TestGetRTprop_NoTTFBRecords(t *testing.T) {
 	}
 }
 
+func TestGetRTprop_EmptyDomain_SkipsToGlobalFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	SetStatsPath(filepath.Join(tmpDir, "speed_stats.gob"))
+	SetSaveInterval(1 * time.Hour)
+
+	mu.Lock()
+	records = []SpeedRecord{
+		{Timestamp: 1000, TTFBMs: 0, Domain: ""},        // empty domain, TTFB=0 → should be skipped
+		{Timestamp: 2000, TTFBMs: 300, Domain: "x.com"}, // non-empty domain, TTFB=300
+		{Timestamp: 3000, TTFBMs: 100, Domain: "y.com"}, // non-empty domain, TTFB=100
+	}
+	mu.Unlock()
+
+	// GetRTprop("") should skip domain matching entirely and return global min TTFB
+	rtt, ok := GetRTprop("")
+	if !ok {
+		t.Fatal("Expected ok=true (global fallback)")
+	}
+	if rtt != 100 {
+		t.Errorf("GetRTprop(\"\") = %d, want 100 (global min, not matching Domain=\"\")", rtt)
+	}
+}
+
 func TestGetRecentPeakByScope(t *testing.T) {
 	tmpDir := t.TempDir()
 	SetStatsPath(filepath.Join(tmpDir, "speed_stats.gob"))

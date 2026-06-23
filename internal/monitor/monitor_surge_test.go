@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -526,6 +527,16 @@ func (e *mockSurgeActiveEngine) IsSurgeActive() bool {
 	return true
 }
 
+// mockSafeEngine returns errors from TellStatus without panicking,
+// for tests that trigger handleTaskComplete but don't need real RPC.
+type mockSafeEngine struct {
+	mockSurgeActiveEngine
+}
+
+func (e *mockSafeEngine) TellStatus(gid string, keys []string) (rpc.Task, error) {
+	return rpc.Task{}, fmt.Errorf("mock: no engine")
+}
+
 func TestCurrentTickInterval_SurgeActiveWithAria2Tasks_Active_UsesWindow(t *testing.T) {
 	prevWindow := State.HasWindow()
 	State.SetWindowExists(true)
@@ -710,5 +721,95 @@ func TestHandleSurgeEvent_ProgressMsg_NoWindow_DoesNotPush(t *testing.T) {
 
 	if count != 0 {
 		t.Errorf("expected 0 pending deltas when window is hidden, got %d", count)
+	}
+}
+
+// TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback verifies that when a task
+// completes without reaching the stable sample threshold (PeakSpeed==0),
+// DownloadCompleteMsg.AvgSpeed is used as a fallback.
+func TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	se := &mockSafeEngine{}
+	hybrid := rpc.NewHybridEngine(nil, se)
+	m := &Monitor{hub: hub, pusher: pusher, tracker: tracker, engine: hybrid}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	// 1. Create tracked task via DownloadStartedMsg (no progress events → PeakSpeed stays 0)
+	m.handleSurgeEvent(surgeEvents.DownloadStartedMsg{
+		DownloadID: "avg-fallback",
+		Total:      100000000, // >50MB
+		URL:        "https://example.com/large.zip",
+		Workers:    8,
+	})
+
+	// 2. Complete without any ProgressMsg — PeakSpeed should be 0
+	m.handleSurgeEvent(surgeEvents.DownloadCompleteMsg{
+		DownloadID: "avg-fallback",
+		Total:      100000000,
+		AvgSpeed:   5000000, // 5MB/s average
+	})
+
+	// 3. Verify the tracker's internal PeakSpeed is still 0 (fallback only on copy)
+	tracked := tracker.tasks["sg_avg-fallback"]
+	if tracked == nil {
+		t.Fatal("Expected tracked task to exist")
+	}
+	if tracked.PeakSpeed != 0 {
+		t.Errorf("Internal PeakSpeed = %d, want 0 (fallback only on copy)", tracked.PeakSpeed)
+	}
+	if tracked.TotalLength != 100000000 {
+		t.Errorf("TotalLength = %d, want 100000000 (from DownloadCompleteMsg.Total)", tracked.TotalLength)
+	}
+
+	// 4. Verify processedComplete was set
+	if !tracker.processedComplete["sg_avg-fallback"] {
+		t.Error("Expected processedComplete to be set")
+	}
+}
+
+// TestHandleSurgeEvent_CompleteMsg_TotalEnrichesTrackedTask verifies that
+// DownloadCompleteMsg.Total fills TotalLength when it was 0 from DownloadQueuedMsg.
+func TestHandleSurgeEvent_CompleteMsg_TotalEnrichesTrackedTask(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	se := &mockSafeEngine{}
+	hybrid := rpc.NewHybridEngine(nil, se)
+	m := &Monitor{hub: hub, pusher: pusher, tracker: tracker, engine: hybrid}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	// 1. Queue with Total=0 (DownloadQueuedMsg typically has no size)
+	m.handleSurgeEvent(surgeEvents.DownloadQueuedMsg{
+		DownloadID: "total-enrich",
+		URL:        "https://example.com/queued.zip",
+		Workers:    4,
+	})
+
+	tracked := tracker.tasks["sg_total-enrich"]
+	if tracked == nil {
+		t.Fatal("Expected tracked task after DownloadQueuedMsg")
+	}
+	if tracked.TotalLength != 0 {
+		t.Errorf("TotalLength before complete = %d, want 0", tracked.TotalLength)
+	}
+
+	// 2. Complete with Total — should enrich TotalLength via EnsureTrackedFromEvent
+	m.handleSurgeEvent(surgeEvents.DownloadCompleteMsg{
+		DownloadID: "total-enrich",
+		Total:      200000000, // 200MB
+		AvgSpeed:   10000000,  // 10MB/s
+	})
+
+	tracked = tracker.tasks["sg_total-enrich"]
+	if tracked.TotalLength != 200000000 {
+		t.Errorf("TotalLength after complete = %d, want 200000000", tracked.TotalLength)
 	}
 }
