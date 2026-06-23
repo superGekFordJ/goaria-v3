@@ -30,9 +30,18 @@ type SingleDownloader struct {
 
 var bufPool = sync.Pool{
 	New: func() any {
-		b := make([]byte, 32*types.KB)
+		b := make([]byte, 256*types.KB) // FORK-PATCH: 32KB → 256KB to reduce write syscall frequency
 		return &b
 	},
+}
+
+// FORK-PATCH: putBufferSafe returns a buffer to the pool, discarding
+// oversized buffers to prevent memory leaks (Go Issue #23199).
+func putBufferSafe(pool *sync.Pool, bufPtr *[]byte) {
+	if cap(*bufPtr) > types.MaxPoolBufferCap {
+		return
+	}
+	pool.Put(bufPtr)
 }
 
 // NewSingleDownloader creates a new single-threaded downloader with all required parameters
@@ -148,7 +157,7 @@ func (d *SingleDownloader) Download(ctx context.Context, rawurl, destPath string
 
 	bufPtr := bufPool.Get().(*[]byte)
 	buf := *bufPtr
-	defer bufPool.Put(bufPtr)
+	defer putBufferSafe(&bufPool, bufPtr) // FORK-PATCH: cap-filtered put
 
 	reader := io.Reader(resp.Body)
 	if d.Limiter != nil {

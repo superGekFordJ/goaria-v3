@@ -15,9 +15,12 @@ import (
 
 // worker downloads tasks from the queue
 func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []string, file *os.File, queue *TaskQueue, totalSize int64, client *http.Client) error {
-	// Get pooled buffer
-	bufPtr := d.bufPool.Get().(*[]byte)
-	defer d.bufPool.Put(bufPtr)
+	// FORK-PATCH: Get pooled buffer from tiered pool
+	initialTier := TierForBufferSize(d.Runtime.GetWorkerBufferSize())
+	bufPtr := d.bufPool.Get(initialTier)
+	defer func() {
+		d.bufPool.Put(bufPtr)
+	}()
 	buf := *bufPtr
 
 	utils.Debug("Worker %d started", id)
@@ -40,6 +43,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 		}
 
 		var lastErr error
+		var lastSpeed float64 // FORK-PATCH: track speed for tier adjustment
 		maxRetries := d.Runtime.GetMaxTaskRetries()
 		for attempt := 0; attempt < maxRetries; attempt++ {
 			if attempt > 0 {
@@ -96,6 +100,8 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 
 			taskStart := time.Now()
 			lastErr = d.downloadTask(taskCtx, currentURL, file, activeTask, buf, client, totalSize)
+			// FORK-PATCH: Capture speed for dynamic tier adjustment
+			lastSpeed = activeTask.GetSpeed()
 
 			// CRITICAL: Capture external cancellation state BEFORE calling taskCancel()
 			// If we call taskCancel() first, taskCtx.Err() will always be non-nil
@@ -166,6 +172,17 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			current := activeTask.CurrentOffset.Load()
 			if current > task.Offset {
 				task = types.Task{Offset: current, Length: task.Offset + task.Length - current}
+			}
+		}
+
+		// FORK-PATCH: Dynamically adjust buffer tier based on observed speed.
+		if lastSpeed > 0 {
+			desiredTier := TierForSpeed(lastSpeed)
+			currentTier, ok := TierForCap(cap(*bufPtr))
+			if ok && desiredTier != currentTier {
+				d.bufPool.Put(bufPtr)
+				bufPtr = d.bufPool.Get(desiredTier)
+				buf = *bufPtr
 			}
 		}
 

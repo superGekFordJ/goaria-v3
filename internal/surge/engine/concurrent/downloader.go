@@ -35,7 +35,7 @@ type ConcurrentDownloader struct {
 	RateLimitBps int64
 	RateLimitSet bool
 	TotalSize    int64
-	bufPool      sync.Pool
+	bufPool      *TieredBufferPool // FORK-PATCH: tiered buffer pool with cap filter
 	Headers      map[string]string // Custom HTTP headers from browser (cookies, auth, etc.)
 }
 
@@ -51,14 +51,7 @@ func NewConcurrentDownloader(id string, progressCh chan<- any, progState *types.
 		State:        progState,
 		activeTasks:  make(map[int]*ActiveTask),
 		Runtime:      runtime,
-		bufPool: sync.Pool{
-			New: func() any {
-				// Use configured buffer size
-				size := runtime.GetWorkerBufferSize()
-				buf := make([]byte, size)
-				return &buf
-			},
-		},
+		bufPool:      NewTieredBufferPool(), // FORK-PATCH: tiered buffer pool replaces fixed sync.Pool
 	}
 }
 

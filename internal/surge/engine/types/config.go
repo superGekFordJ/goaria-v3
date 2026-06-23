@@ -18,6 +18,12 @@ const (
 	AlignSize    = 4 * KB
 	WorkerBuffer = 512 * KB
 
+	// FORK-PATCH: MaxPoolBufferCap is the maximum capacity (4MB) allowed for
+	// buffer pool entries. Buffers whose capacity exceeds this threshold are
+	// discarded rather than returned to the pool, preventing memory leaks from
+	// oversized pinned slices (Go Issue #23199).
+	MaxPoolBufferCap = 4 * MB
+
 	WorkerBatchSize     = 1 * MB
 	WorkerBatchInterval = 200 * time.Millisecond
 
