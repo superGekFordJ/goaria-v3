@@ -53,6 +53,11 @@ const (
 	SpeedEMAAlpha       = 0.3
 
 	ProgressChannelBuffer = 100
+
+	// FORK-PATCH: End-game hedge configuration 
+	BalancerTickInterval = 200 * time.Millisecond // normal balancer tick interval
+	HedgeErrorThreshold  = 3                      // consecutive 4xx/5xx before disabling hedge
+	EndGameTickInterval  = 50 * time.Millisecond  // balancer tick during end-game phase
 )
 
 type DownloadConfig struct {

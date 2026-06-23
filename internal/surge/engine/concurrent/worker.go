@@ -246,6 +246,8 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 
 	// Handle rate limiting explicitly
 	if resp.StatusCode == http.StatusTooManyRequests {
+		// FORK-PATCH: Poison defense — track 4xx/5xx for hedge disabling 
+		d.recordHedgeError()
 		return fmt.Errorf("rate limited (429)")
 	}
 
@@ -257,8 +259,15 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 			return fmt.Errorf("server indicated success (200) but ignored range request (expected 206)")
 		}
 	} else if resp.StatusCode != http.StatusPartialContent {
+		// FORK-PATCH: Poison defense — track 4xx/5xx for hedge disabling 
+		if resp.StatusCode >= 400 {
+			d.recordHedgeError()
+		}
 		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
+
+	// FORK-PATCH: Reset hedge poison counter on valid response 
+	d.recordHedgeSuccess()
 
 	// Batching State
 	var pendingBytes int64
@@ -525,6 +534,10 @@ func (d *ConcurrentDownloader) StealWork(queue *TaskQueue) bool {
 // so the file is always correct. Whichever finishes first wins; the other exits
 // naturally when the queue closes or its next read returns data already counted.
 func (d *ConcurrentDownloader) HedgeWork(queue *TaskQueue) bool {
+	// FORK-PATCH: Check poison defense flag before hedging 
+	if d.hedgeDisabled.Load() {
+		return false
+	}
 	d.activeMu.Lock()
 	defer d.activeMu.Unlock()
 

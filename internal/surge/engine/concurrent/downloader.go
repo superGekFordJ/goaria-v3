@@ -50,6 +50,10 @@ type ConcurrentDownloader struct {
 	workerTotalSize int64           // cached for ScaleWorkers spawn
 	workerClient    *http.Client    // cached for ScaleWorkers spawn
 	workerWg        sync.WaitGroup  // tracks all spawned workers (initial + scaled)
+
+	// FORK-PATCH: End-game hedge and poison defense 
+	consecutiveHedgeErrors atomic.Int32 // consecutive 4xx/5xx counter for poison defense
+	hedgeDisabled          atomic.Bool  // true when hedge is disabled due to poison detection
 }
 
 // NewConcurrentDownloader creates a new concurrent downloader with all required parameters
@@ -439,8 +443,101 @@ func (d *ConcurrentDownloader) startHelpers(ctx context.Context, wg *sync.WaitGr
 	}()
 }
 
+// recordHedgeError increments the consecutive 4xx/5xx counter and disables
+// hedging when the threshold is reached.
+// FORK-PATCH: Poison defense for end-game hedge .
+func (d *ConcurrentDownloader) recordHedgeError() {
+	count := d.consecutiveHedgeErrors.Add(1)
+	if count >= int32(types.HedgeErrorThreshold) && !d.hedgeDisabled.Load() {
+		d.hedgeDisabled.Store(true)
+		utils.Debug("Hedge: disabled due to %d consecutive 4xx/5xx errors", count)
+	}
+}
+
+// recordHedgeSuccess resets the consecutive error counter and re-enables
+// hedging if it was previously disabled.
+// FORK-PATCH: Poison defense recovery .
+func (d *ConcurrentDownloader) recordHedgeSuccess() {
+	d.consecutiveHedgeErrors.Store(0)
+	if d.hedgeDisabled.Load() {
+		d.hedgeDisabled.Store(false)
+		utils.Debug("Hedge: re-enabled after successful response")
+	}
+}
+
+// isEndGame returns true when all tasks have been dispatched (queue is empty)
+// but some workers are still active and idle workers are available for hedging.
+// FORK-PATCH: End-game detection for proactive hedge .
+func (d *ConcurrentDownloader) isEndGame(queue *TaskQueue) bool {
+	if queue.Len() > 0 {
+		return false
+	}
+	if queue.IdleWorkers() == 0 {
+		return false
+	}
+	d.activeMu.Lock()
+	count := len(d.activeTasks)
+	d.activeMu.Unlock()
+	return count > 0
+}
+
+// HedgeAll creates duplicate tasks for ALL un-hedged active tasks that still
+// have remaining work. Intended for the end-game phase where all original tasks
+// have been dispatched and idle workers should race every remaining chunk.
+// Returns the number of tasks hedged.
+// FORK-PATCH: End-game proactive hedge .
+func (d *ConcurrentDownloader) HedgeAll(queue *TaskQueue) int {
+	if d.hedgeDisabled.Load() {
+		return 0
+	}
+	d.activeMu.Lock()
+	defer d.activeMu.Unlock()
+
+	if len(d.activeTasks) == 0 {
+		return 0
+	}
+
+	hedged := 0
+	for _, active := range d.activeTasks {
+		if active.Hedged.Load() != 0 {
+			continue
+		}
+		remaining := active.RemainingBytes()
+		if remaining <= 0 {
+			continue
+		}
+		if !active.Hedged.CompareAndSwap(0, 1) {
+			continue
+		}
+		current := active.CurrentOffset.Load()
+		stopAt := active.StopAt.Load()
+		if current >= stopAt {
+			continue
+		}
+		active.SharedMaxOffsetMu.Lock()
+		if active.SharedMaxOffset == nil {
+			maxOff := &atomic.Int64{}
+			maxOff.Store(current)
+			active.SharedMaxOffset = maxOff
+		}
+		hedgedTask := types.Task{
+			Offset:          current,
+			Length:          stopAt - current,
+			SharedMaxOffset: active.SharedMaxOffset,
+		}
+		active.SharedMaxOffsetMu.Unlock()
+		queue.Push(hedgedTask)
+		hedged++
+		utils.Debug("EndGame: hedged %s (range: %d-%d)",
+			utils.ConvertBytesToHumanReadable(hedgedTask.Length),
+			hedgedTask.Offset, hedgedTask.Offset+hedgedTask.Length)
+	}
+	return hedged
+}
+
 func (d *ConcurrentDownloader) runBalancer(ctx context.Context, queue *TaskQueue) {
-	ticker := time.NewTicker(200 * time.Millisecond)
+	// FORK-PATCH: Variable tick interval — fast in end-game, normal otherwise 
+	ticker := time.NewTicker(types.BalancerTickInterval)
 	defer ticker.Stop()
 
 	for {
@@ -448,6 +545,14 @@ func (d *ConcurrentDownloader) runBalancer(ctx context.Context, queue *TaskQueue
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// FORK-PATCH: End-game detection and proactive hedge 
+			if d.isEndGame(queue) {
+				ticker.Reset(types.EndGameTickInterval)
+				d.HedgeAll(queue)
+			} else {
+				ticker.Reset(types.BalancerTickInterval)
+			}
+
 			for queue.IdleWorkers() > 0 {
 				didWork := false
 				if queue.Len() == 0 {
