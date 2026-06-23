@@ -365,3 +365,20 @@ func (e *SurgeEngine) Close() {
 		e.cleanup()
 	}
 }
+
+// GetWorkerStats returns per-worker telemetry snapshots for the given download ID.
+// Returns nil if the download is not active or has no telemetry data.
+func (e *SurgeEngine) GetWorkerStats(gid string) []types.WorkerSnapshot {
+	if e.service == nil || e.service.Pool == nil {
+		return nil
+	}
+	return e.service.Pool.GetWorkerStats(gid)
+}
+
+// NewSurgeEngineForTesting creates a SurgeEngine with a pre-configured pool for testing.
+// This is used by monitor-side telemetry collection tests.
+func NewSurgeEngineForTesting(pool *download.WorkerPool) *SurgeEngine {
+	return &SurgeEngine{
+		service: &core.LocalDownloadService{Pool: pool},
+	}
+}

@@ -748,6 +748,32 @@ func (p *WorkerPool) GetStatus(id string) *types.DownloadStatus {
 	return status
 }
 
+// FORK-PATCH: GetWorkerStats returns per-worker telemetry snapshots for the given download ID  
+func (p *WorkerPool) GetWorkerStats(id string) []types.WorkerSnapshot {
+	p.mu.RLock()
+	ad, exists := p.downloads[id]
+	p.mu.RUnlock()
+
+	if !exists || ad == nil || ad.config.State == nil {
+		return nil
+	}
+
+	return ad.config.State.GetWorkerStats()
+}
+
+// FORK-PATCH: Test helper for monitor-side telemetry collection tests  .
+// NewWorkerPoolForTesting creates a WorkerPool with pre-populated downloads map.
+// configs is a map of download ID → DownloadConfig with State pre-set.
+func NewWorkerPoolForTesting(configs map[string]types.DownloadConfig) *WorkerPool {
+	downloads := make(map[string]*activeDownload, len(configs))
+	for id, cfg := range configs {
+		downloads[id] = &activeDownload{config: cfg}
+	}
+	return &WorkerPool{
+		downloads: downloads,
+	}
+}
+
 // GracefulShutdown pauses all downloads and waits for them to save state
 func (p *WorkerPool) GracefulShutdown() {
 	p.PauseAll()

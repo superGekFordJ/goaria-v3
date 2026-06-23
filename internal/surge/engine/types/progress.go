@@ -38,6 +38,10 @@ type ProgressState struct {
 	BitmapWidth     int
 
 	mu sync.Mutex // Protects TotalSize, StartTime, SessionStartBytes, SavedElapsed, Mirrors
+
+	// FORK-PATCH: Per-worker telemetry storage  
+	workerStatsMu sync.RWMutex
+	workerStats   []WorkerSnapshot
 }
 
 type MirrorStatus struct {
@@ -262,6 +266,11 @@ func (ps *ProgressState) SessionReset() {
 		ps.ChunkBitmap = make([]byte, len(ps.ChunkBitmap))
 		ps.ChunkProgress = make([]int64, ps.BitmapWidth)
 	}
+
+	// FORK-PATCH: Clear per-worker telemetry on session reset  
+	ps.workerStatsMu.Lock()
+	ps.workerStats = nil
+	ps.workerStatsMu.Unlock()
 }
 
 // FinalizePauseSession finalizes the current session for a pause transition.
@@ -277,6 +286,25 @@ func (ps *ProgressState) SetMirrors(mirrors []MirrorStatus) {
 	// Deep copy to prevent race conditions if caller modifies the slice
 	ps.Mirrors = make([]MirrorStatus, len(mirrors))
 	copy(ps.Mirrors, mirrors)
+}
+
+// FORK-PATCH: SetWorkerStats stores per-worker telemetry snapshots  
+func (ps *ProgressState) SetWorkerStats(stats []WorkerSnapshot) {
+	ps.workerStatsMu.Lock()
+	defer ps.workerStatsMu.Unlock()
+	ps.workerStats = stats
+}
+
+// FORK-PATCH: GetWorkerStats returns a copy of per-worker telemetry snapshots  
+func (ps *ProgressState) GetWorkerStats() []WorkerSnapshot {
+	ps.workerStatsMu.RLock()
+	defer ps.workerStatsMu.RUnlock()
+	if len(ps.workerStats) == 0 {
+		return nil
+	}
+	result := make([]WorkerSnapshot, len(ps.workerStats))
+	copy(result, ps.workerStats)
+	return result
 }
 
 func (ps *ProgressState) GetMirrors() []MirrorStatus {

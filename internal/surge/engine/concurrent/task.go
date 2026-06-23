@@ -34,6 +34,9 @@ type ActiveTask struct {
 	SharedMaxOffset   *atomic.Int64
 	// Set while blocked on rate limiter so health monitor doesn't treat it as stalled
 	WaitingOnLimiter atomic.Bool
+
+	// FORK-PATCH: Per-worker retry count for telemetry  
+	RetryCount atomic.Int32
 }
 
 // RemainingBytes returns the number of bytes left for this task

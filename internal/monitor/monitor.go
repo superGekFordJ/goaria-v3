@@ -61,6 +61,9 @@ type Monitor struct {
 	// Previous tick state for transition detection
 	prevActiveGids  map[string]bool
 	prevWaitingGids map[string]bool
+
+	// Per-worker telemetry cache  
+	telemetry *TelemetryCache
 }
 
 func New(app *application.App, hub *events.Hub, systray *application.SystemTray, engine rpc.DownloadEngine) *Monitor {
@@ -78,6 +81,7 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 		deletedGids:          make(map[string]time.Time),
 		prevActiveGids:       make(map[string]bool),
 		prevWaitingGids:      make(map[string]bool),
+		telemetry:            NewTelemetryCache(),
 	}
 
 	Cache.engine = engine
@@ -372,6 +376,9 @@ func (m *Monitor) tick() {
 		}
 	}
 
+	// Collect per-worker telemetry from Surge engine  
+	m.collectTelemetry(active)
+
 	// 更新缓存
 	Cache.UpdateFromAria2(active, waiting, stopped)
 
@@ -655,6 +662,11 @@ func (m *Monitor) InvalidateTask(gid string) {
 		})
 	}
 
+	// 4. 清理遥测缓存  
+	if m.telemetry != nil {
+		m.telemetry.Remove(gid)
+	}
+
 	log.Printf("[Monitor] Task invalidated: %s", gid)
 }
 
@@ -879,6 +891,49 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 
 	log.Printf("[Monitor] Surge Event: %s -> %s (gid: %s)", deltaType, gid, gid)
 	log.Printf("[DEBUG-EVT-MON] handleSurgeEvent done: type=%s gid=%s", deltaType, gid)
+}
+
+// collectTelemetry gathers per-worker telemetry from the Surge engine for active Surge tasks.
+// Non-Surge GIDs and non-HybridEngine setups are silently skipped (no-op).
+func (m *Monitor) collectTelemetry(active []rpc.Task) {
+	if m.telemetry == nil {
+		return
+	}
+
+	// Try to get the underlying SurgeEngine from HybridEngine
+	he, ok := m.engine.(*rpc.HybridEngine)
+	if !ok {
+		return
+	}
+	se, ok := he.SurgeEngineRef()
+	if !ok || se == nil {
+		return
+	}
+
+	activeGids := make(map[string]bool)
+	for _, task := range active {
+		if !strings.HasPrefix(task.GID, "sg_") {
+			continue
+		}
+		rawGid := task.GID[3:]
+		stats := se.GetWorkerStats(rawGid)
+		if stats != nil {
+			m.telemetry.Set(task.GID, stats)
+			activeGids[task.GID] = true
+		}
+	}
+
+	// Remove telemetry for GIDs that are no longer active
+	for _, gid := range m.telemetry.ActiveGIDs() {
+		if !activeGids[gid] {
+			m.telemetry.Remove(gid)
+		}
+	}
+}
+
+// GetTelemetry returns the telemetry cache for external consumers  .
+func (m *Monitor) GetTelemetry() *TelemetryCache {
+	return m.telemetry
 }
 
 func (m *Monitor) filterDeletedTasks(tasks []rpc.Task) []rpc.Task {

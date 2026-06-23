@@ -12,6 +12,30 @@ func (d *ConcurrentDownloader) checkWorkerHealth() {
 	d.activeMu.Lock()
 	defer d.activeMu.Unlock()
 
+	// FORK-PATCH: Publish per-worker telemetry snapshots  
+	// Build copy-on-read snapshots under activeMu for concurrency safety.
+	if d.State != nil {
+		if len(d.activeTasks) == 0 {
+			d.State.SetWorkerStats(nil)
+		} else {
+			snapshots := make([]types.WorkerSnapshot, 0, len(d.activeTasks))
+			for workerID, active := range d.activeTasks {
+				snapshots = append(snapshots, types.WorkerSnapshot{
+					WorkerID:         workerID,
+					EMASpeed:         active.GetSpeed(),
+					LastActivityUnix: active.LastActivity.Load(),
+					RetryCount:       active.RetryCount.Load(),
+					ChunkStart:       active.Task.Offset,
+					ChunkOffset:      active.CurrentOffset.Load(),
+					ChunkLength:      max(0, active.StopAt.Load()-active.Task.Offset),
+					WaitingOnLimiter: active.WaitingOnLimiter.Load(),
+					Hedged:           active.Hedged.Load() != 0,
+				})
+			}
+			d.State.SetWorkerStats(snapshots)
+		}
+	}
+
 	if len(d.activeTasks) == 0 {
 		return
 	}
