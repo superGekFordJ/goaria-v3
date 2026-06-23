@@ -37,6 +37,15 @@ type ActiveTask struct {
 
 	// FORK-PATCH: Per-worker retry count for telemetry
 	RetryCount atomic.Int32
+
+	// FORK-PATCH: Drain flag for lightweight worker exit .
+	// When true, the worker finishes the current chunk and exits without
+	// popping new tasks from the queue, allowing the underlying TCP
+	// connection to return to the Transport idle pool for reuse.
+	// Mirrors the drainingWorkers sync.Map entry; used by ScaleWorkers
+	// to skip already-draining candidates under activeMu without
+	// querying the sync.Map.
+	Draining atomic.Bool
 }
 
 // RemainingBytes returns the number of bytes left for this task

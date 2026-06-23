@@ -25,11 +25,20 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 
 	utils.Debug("Worker %d started", id)
 	defer utils.Debug("Worker %d finished", id)
+	// FORK-PATCH: Clean up drain marker on exit .
+	defer d.drainingWorkers.Delete(id)
 
 	// Initial mirror assignment: Round Robin based on ID
 	currentMirrorIdx := id % len(mirrors)
 
 	for {
+		// FORK-PATCH: Check drain flag before picking up new work .
+		// If draining, exit gracefully — the current chunk is already complete,
+		// and the underlying TCP connection returns to the Transport idle pool.
+		if _, draining := d.drainingWorkers.Load(id); draining {
+			return nil
+		}
+
 		// Get next task
 		task, ok := queue.Pop()
 

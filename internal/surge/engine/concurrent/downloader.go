@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"goaria-v3/internal/surge/engine"
@@ -37,6 +39,17 @@ type ConcurrentDownloader struct {
 	TotalSize    int64
 	bufPool      *TieredBufferPool // FORK-PATCH: tiered buffer pool with cap filter
 	Headers      map[string]string // Custom HTTP headers from browser (cookies, auth, etc.)
+
+	// FORK-PATCH: Drain/scale infrastructure
+	nextWorkerID    atomic.Int64    // dynamic worker ID allocation
+	drainingWorkers sync.Map        // workerID -> struct{}{}; checked before queue.Pop()
+	workerCtx       context.Context // set by executeWorkers, used by ScaleWorkers
+	workerMirrors   []string        // cached for ScaleWorkers spawn
+	workerFile      *os.File        // cached for ScaleWorkers spawn
+	workerQueue     *TaskQueue      // cached for ScaleWorkers spawn
+	workerTotalSize int64           // cached for ScaleWorkers spawn
+	workerClient    *http.Client    // cached for ScaleWorkers spawn
+	workerWg        sync.WaitGroup  // tracks all spawned workers (initial + scaled)
 }
 
 // NewConcurrentDownloader creates a new concurrent downloader with all required parameters
@@ -495,24 +508,41 @@ func (d *ConcurrentDownloader) runHealthMonitor(ctx context.Context) {
 }
 
 func (d *ConcurrentDownloader) executeWorkers(ctx context.Context, client *http.Client, outFile *os.File, queue *TaskQueue, fileSize int64, workerMirrors []string, numConns int) error {
-	var wg sync.WaitGroup
+	// FORK-PATCH: Store worker dependencies for ScaleWorkers .
+	// TODO(SPEC-174): These fields are written here and read by ScaleWorkers
+	// without synchronization. Currently safe because ScaleWorkers is only
+	// called after executeWorkers sets them. When SPEC-174 introduces
+	// cross-goroutine ScaleWorkers calls (convergence tick), these must be
+	// protected with atomic.Pointer[workerDeps] or a mutex.
+	// CRITICAL: workerWg.Add() after workerWg.Wait() returns will panic
+	// (WaitGroup reuse). Must guard with workersActive atomic.Bool or
+	// a dedicated mutex before allowing concurrent ScaleWorkers calls.
+	d.workerCtx = ctx
+	d.workerMirrors = workerMirrors
+	d.workerFile = outFile
+	d.workerQueue = queue
+	d.workerTotalSize = fileSize
+	d.workerClient = client
+
 	workerErrors := make(chan error, numConns)
 
 	// Start workers
 	for i := 0; i < numConns; i++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-			err := d.worker(ctx, workerID, workerMirrors, outFile, queue, fileSize, client)
+		// FORK-PATCH: Use nextWorkerID for dynamic ID allocation .
+		workerID := int(d.nextWorkerID.Add(1)) - 1
+		d.workerWg.Add(1)
+		go func(wid int) {
+			defer d.workerWg.Done()
+			err := d.worker(ctx, wid, workerMirrors, outFile, queue, fileSize, client)
 			if err != nil && err != context.Canceled {
 				workerErrors <- err
 			}
-		}(i)
+		}(workerID)
 	}
 
 	// Wait for all workers to complete
 	go func() {
-		wg.Wait()
+		d.workerWg.Wait()
 		close(workerErrors)
 		queue.Close()
 	}()
@@ -530,6 +560,82 @@ func (d *ConcurrentDownloader) executeWorkers(ctx context.Context, client *http.
 		}
 	}
 	return downloadErr
+}
+
+// DrainWorker marks a worker as draining. The worker will finish its current
+// chunk and exit without picking up new work, preserving the TCP connection
+// in the Transport idle pool.
+// FORK-PATCH: Lightweight drain mechanism .
+func (d *ConcurrentDownloader) DrainWorker(id int) bool {
+	d.drainingWorkers.Store(id, struct{}{})
+	d.activeMu.Lock()
+	if at, exists := d.activeTasks[id]; exists {
+		at.Draining.Store(true)
+	}
+	d.activeMu.Unlock()
+	return true
+}
+
+// activeWorkerIDs returns IDs of all workers currently in activeTasks.
+// FORK-PATCH: Used by ScaleWorkers to find drain candidates .
+func (d *ConcurrentDownloader) activeWorkerIDs() []int {
+	d.activeMu.Lock()
+	defer d.activeMu.Unlock()
+	ids := make([]int, 0, len(d.activeTasks))
+	for id := range d.activeTasks {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// ScaleWorkers adjusts the number of running workers by delta.
+// Positive delta spawns new workers (reusing idle connections from the
+// Transport pool). Negative delta drains the slowest |delta| workers.
+// Returns the number of workers actually added (positive) or drained (negative).
+// FORK-PATCH: Runtime scale up/down API .
+func (d *ConcurrentDownloader) ScaleWorkers(delta int) int {
+	if delta == 0 || d.workerCtx == nil || d.workerCtx.Err() != nil {
+		return 0
+	}
+	if delta > 0 {
+		for i := 0; i < delta; i++ {
+			id := int(d.nextWorkerID.Add(1)) - 1
+			d.workerWg.Add(1)
+			go func(workerID int) {
+				defer d.workerWg.Done()
+				if err := d.worker(d.workerCtx, workerID, d.workerMirrors, d.workerFile, d.workerQueue, d.workerTotalSize, d.workerClient); err != nil && err != context.Canceled {
+					utils.Debug("Scaled worker %d error: %v", workerID, err)
+				}
+			}(id)
+		}
+		return delta
+	}
+
+	toDrain := -delta
+	type workerSpeed struct {
+		id    int
+		speed float64
+	}
+	candidates := make([]workerSpeed, 0, len(d.activeTasks))
+	d.activeMu.Lock()
+	for id, at := range d.activeTasks {
+		if at.Draining.Load() {
+			continue
+		}
+		candidates = append(candidates, workerSpeed{id, at.GetSpeed()})
+	}
+	d.activeMu.Unlock()
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].speed < candidates[j].speed
+	})
+
+	drained := 0
+	for i := 0; i < toDrain && i < len(candidates); i++ {
+		d.DrainWorker(candidates[i].id)
+		drained++
+	}
+	return -drained
 }
 
 func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queue *TaskQueue, candidateMirrors []string) error {

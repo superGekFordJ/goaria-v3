@@ -94,7 +94,10 @@ func (d *ConcurrentDownloader) checkWorkerHealth() {
 		}
 
 		// Check for absolute stall: no data received for StallTimeout
-		// This catches dead connections that the relative speed check misses
+		// This catches dead connections that the relative speed check misses.
+		// FORK-PATCH: Stall detection is NOT protected by volume grace —
+		// a worker that connected but never received data must still be
+		// cancelled .
 		lastActivity := active.LastActivity.Load()
 		if stallTimeout > 0 && lastActivity > 0 {
 			timeSinceData := now.Sub(time.Unix(0, lastActivity))
@@ -106,6 +109,17 @@ func (d *ConcurrentDownloader) checkWorkerHealth() {
 				}
 				continue // Already cancelled, skip speed check
 			}
+		}
+
+		// FORK-PATCH: Volume grace — skip slow speed check if downloaded
+		// less than 1MB (TCP slow start may not have ramped up yet) .
+		// Only protects the slow speed check below, NOT stall detection above.
+		downloadedBytes := active.CurrentOffset.Load() - active.Task.Offset
+		if downloadedBytes < 0 {
+			downloadedBytes = 0
+		}
+		if downloadedBytes < int64(types.MB) {
+			continue
 		}
 
 		// Check for slow worker (relative speed)

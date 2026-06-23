@@ -35,10 +35,12 @@ func TestHealth_LastManStanding(t *testing.T) {
 	state.StartTime = now.Add(-10 * time.Second)
 
 	active := &ActiveTask{
+		Task:      types.Task{Offset: 0, Length: 10 * 1024 * 1024},
 		StartTime: now.Add(-10 * time.Second), // Started long ago
 		Speed:     1 * 1024 * 1024,            // 1 MB/s
 		Cancel:    cancel,
 	}
+	active.CurrentOffset.Store(2 * 1024 * 1024) // >1MB, past volume grace
 
 	d.activeTasks[0] = active
 
@@ -78,8 +80,11 @@ func TestHealth_MultipleWorkers(t *testing.T) {
 	w2Ctx, w2Cancel := context.WithCancel(ctx)
 
 	d.activeTasks[0] = &ActiveTask{StartTime: now.Add(-10 * time.Second), Speed: 10 * 1024 * 1024, Cancel: w0Cancel}
+	d.activeTasks[0].CurrentOffset.Store(2 * 1024 * 1024) // >1MB, past volume grace
 	d.activeTasks[1] = &ActiveTask{StartTime: now.Add(-10 * time.Second), Speed: 10 * 1024 * 1024, Cancel: w1Cancel}
+	d.activeTasks[1].CurrentOffset.Store(2 * 1024 * 1024) // >1MB, past volume grace
 	d.activeTasks[2] = &ActiveTask{StartTime: now.Add(-10 * time.Second), Speed: 1 * 1024 * 1024, Cancel: w2Cancel}
+	d.activeTasks[2].CurrentOffset.Store(2 * 1024 * 1024) // >1MB, past volume grace
 
 	d.checkWorkerHealth()
 
@@ -125,6 +130,7 @@ func TestHealth_GracePeriod(t *testing.T) {
 	w1Ctx, w1Cancel := context.WithCancel(ctx)
 
 	d.activeTasks[0] = &ActiveTask{StartTime: now.Add(-10 * time.Second), Speed: 10 * 1024 * 1024, Cancel: w0Cancel}
+	d.activeTasks[0].CurrentOffset.Store(2 * 1024 * 1024) // >1MB, past volume grace
 	d.activeTasks[1] = &ActiveTask{StartTime: now.Add(-1 * time.Second), Speed: 100 * 1024, Cancel: w1Cancel}
 
 	d.checkWorkerHealth()
@@ -164,11 +170,13 @@ func TestHealth_StallDetection(t *testing.T) {
 	// Worker with last activity 2 seconds ago (exceeds 1s StallTimeout)
 	stalledCtx, stalledCancel := context.WithCancel(ctx)
 	active := &ActiveTask{
+		Task:      types.Task{Offset: 0, Length: 10 * 1024 * 1024},
 		StartTime: now.Add(-10 * time.Second),
 		Cancel:    stalledCancel,
 	}
 	active.LastActivity.Store(now.Add(-2 * time.Second).UnixNano()) // Stalled for 2s
 	active.Speed = 5 * 1024 * 1024                                  // 5 MB/s (fast speed, but stalled)
+	active.CurrentOffset.Store(2 * 1024 * 1024)                     // >1MB, past volume grace
 	d.activeTasks[0] = active
 
 	d.checkWorkerHealth()
@@ -203,6 +211,7 @@ func TestHealth_ZeroStallTimeoutDisablesStallDetection(t *testing.T) {
 	}
 	active.LastActivity.Store(now.Add(-2 * time.Second).UnixNano()) // Stalled for 2s
 	active.Speed = 5 * 1024 * 1024
+	active.CurrentOffset.Store(2 * 1024 * 1024) // >1MB, past volume grace
 	d.activeTasks[0] = active
 
 	d.checkWorkerHealth()
@@ -233,7 +242,9 @@ func TestHealth_ZeroSlowWorkerThresholdDisablesSlowCheck(t *testing.T) {
 	w1Ctx, w1Cancel := context.WithCancel(ctx)
 
 	d.activeTasks[0] = &ActiveTask{StartTime: now.Add(-10 * time.Second), Speed: 10 * 1024 * 1024, Cancel: w0Cancel}
+	d.activeTasks[0].CurrentOffset.Store(2 * 1024 * 1024) // >1MB, past volume grace
 	d.activeTasks[1] = &ActiveTask{StartTime: now.Add(-10 * time.Second), Speed: 1 * 1024 * 1024, Cancel: w1Cancel}
+	d.activeTasks[1].CurrentOffset.Store(2 * 1024 * 1024) // >1MB, past volume grace
 
 	d.checkWorkerHealth()
 
