@@ -12,7 +12,7 @@ func (d *ConcurrentDownloader) checkWorkerHealth() {
 	d.activeMu.Lock()
 	defer d.activeMu.Unlock()
 
-	// FORK-PATCH: Publish per-worker telemetry snapshots  
+	// FORK-PATCH: Publish per-worker telemetry snapshots
 	// Build copy-on-read snapshots under activeMu for concurrency safety.
 	if d.State != nil {
 		if len(d.activeTasks) == 0 {

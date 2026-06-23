@@ -68,7 +68,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 				Cancel:      taskCancel,
 				WindowStart: now, // Initialize sliding window
 			}
-			// FORK-PATCH: Record retry attempt count for telemetry  
+			// FORK-PATCH: Record retry attempt count for telemetry
 			activeTask.RetryCount.Store(int32(attempt))
 			// If the incoming Task carried a shared pointer, copy it into the active task
 			if task.SharedMaxOffset != nil {

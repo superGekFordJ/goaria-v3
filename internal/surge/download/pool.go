@@ -748,7 +748,7 @@ func (p *WorkerPool) GetStatus(id string) *types.DownloadStatus {
 	return status
 }
 
-// FORK-PATCH: GetWorkerStats returns per-worker telemetry snapshots for the given download ID  
+// FORK-PATCH: GetWorkerStats returns per-worker telemetry snapshots for the given download ID
 func (p *WorkerPool) GetWorkerStats(id string) []types.WorkerSnapshot {
 	p.mu.RLock()
 	ad, exists := p.downloads[id]
@@ -761,7 +761,7 @@ func (p *WorkerPool) GetWorkerStats(id string) []types.WorkerSnapshot {
 	return ad.config.State.GetWorkerStats()
 }
 
-// FORK-PATCH: Test helper for monitor-side telemetry collection tests  .
+// FORK-PATCH: Test helper for monitor-side telemetry collection tests.
 // NewWorkerPoolForTesting creates a WorkerPool with pre-populated downloads map.
 // configs is a map of download ID → DownloadConfig with State pre-set.
 func NewWorkerPoolForTesting(configs map[string]types.DownloadConfig) *WorkerPool {

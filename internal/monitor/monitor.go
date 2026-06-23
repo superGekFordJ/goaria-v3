@@ -915,11 +915,11 @@ func (m *Monitor) collectTelemetry(active []rpc.Task) {
 		if !strings.HasPrefix(task.GID, "sg_") {
 			continue
 		}
+		activeGids[task.GID] = true
 		rawGid := task.GID[3:]
 		stats := se.GetWorkerStats(rawGid)
 		if stats != nil {
 			m.telemetry.Set(task.GID, stats)
-			activeGids[task.GID] = true
 		}
 	}
 
@@ -931,7 +931,7 @@ func (m *Monitor) collectTelemetry(active []rpc.Task) {
 	}
 }
 
-// GetTelemetry returns the telemetry cache for external consumers  .
+// GetTelemetry returns the telemetry cache for external consumers.
 func (m *Monitor) GetTelemetry() *TelemetryCache {
 	return m.telemetry
 }

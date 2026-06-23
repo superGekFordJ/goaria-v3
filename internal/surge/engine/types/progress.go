@@ -39,7 +39,7 @@ type ProgressState struct {
 
 	mu sync.Mutex // Protects TotalSize, StartTime, SessionStartBytes, SavedElapsed, Mirrors
 
-	// FORK-PATCH: Per-worker telemetry storage  
+	// FORK-PATCH: Per-worker telemetry storage
 	workerStatsMu sync.RWMutex
 	workerStats   []WorkerSnapshot
 }
@@ -267,7 +267,7 @@ func (ps *ProgressState) SessionReset() {
 		ps.ChunkProgress = make([]int64, ps.BitmapWidth)
 	}
 
-	// FORK-PATCH: Clear per-worker telemetry on session reset  
+	// FORK-PATCH: Clear per-worker telemetry on session reset
 	ps.workerStatsMu.Lock()
 	ps.workerStats = nil
 	ps.workerStatsMu.Unlock()
@@ -288,14 +288,14 @@ func (ps *ProgressState) SetMirrors(mirrors []MirrorStatus) {
 	copy(ps.Mirrors, mirrors)
 }
 
-// FORK-PATCH: SetWorkerStats stores per-worker telemetry snapshots  
+// FORK-PATCH: SetWorkerStats stores per-worker telemetry snapshots
 func (ps *ProgressState) SetWorkerStats(stats []WorkerSnapshot) {
 	ps.workerStatsMu.Lock()
 	defer ps.workerStatsMu.Unlock()
 	ps.workerStats = stats
 }
 
-// FORK-PATCH: GetWorkerStats returns a copy of per-worker telemetry snapshots  
+// FORK-PATCH: GetWorkerStats returns a copy of per-worker telemetry snapshots
 func (ps *ProgressState) GetWorkerStats() []WorkerSnapshot {
 	ps.workerStatsMu.RLock()
 	defer ps.workerStatsMu.RUnlock()

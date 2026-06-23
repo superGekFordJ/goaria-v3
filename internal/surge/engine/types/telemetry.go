@@ -4,8 +4,8 @@ package types
 // worker's runtime state. Built by ConcurrentDownloader.checkWorkerHealth()
 // under activeMu, then published to ProgressState for external consumption.
 //
-// FORK-PATCH: GoAria-specific telemetry type for runtime feedback loops
-//  . Upstream Surge does not expose per-worker statistics.
+// FORK-PATCH: GoAria-specific telemetry type for runtime feedback loops.
+// Upstream Surge does not expose per-worker statistics.
 type WorkerSnapshot struct {
 	WorkerID         int
 	EMASpeed         float64 // bytes/sec, EMA-smoothed with decay (from ActiveTask.GetSpeed())

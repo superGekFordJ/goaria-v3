@@ -250,6 +250,37 @@ func TestCollectTelemetry_RemovesStaleEntries(t *testing.T) {
 	}
 }
 
+// TestCollectTelemetry_ActiveButNilStats_NotRemoved is a regression test for the
+// stale-removal bug: an active Surge GID whose GetWorkerStats returns nil (e.g.,
+// download not yet registered in pool, or SessionReset just cleared telemetry)
+// must NOT be removed from the telemetry cache.
+func TestCollectTelemetry_ActiveButNilStats_NotRemoved(t *testing.T) {
+	// Pool has no download for "ghost" GID → GetWorkerStats returns nil
+	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{})
+
+	se := rpc.NewSurgeEngineForTesting(pool)
+	he := rpc.NewHybridEngine(&rpc.Aria2Engine{}, se)
+
+	m := &Monitor{
+		engine:    he,
+		telemetry: NewTelemetryCache(),
+	}
+
+	// Pre-populate telemetry for sg_ghost
+	m.telemetry.Set("sg_ghost", []types.WorkerSnapshot{{WorkerID: 0, EMASpeed: 500}})
+
+	active := []rpc.Task{
+		{GID: "sg_ghost", Status: "active"},
+	}
+
+	m.collectTelemetry(active)
+
+	// sg_ghost is active but has nil stats → should NOT be removed
+	if g := m.telemetry.Get("sg_ghost"); g == nil {
+		t.Error("expected telemetry for active sg_ghost to be retained despite nil stats, got nil")
+	}
+}
+
 // TestCollectTelemetry_ConcurrentWithRemove exercises concurrent collectTelemetry
 // (Set/ActiveGIDs/Remove) and direct telemetry Remove (as InvalidateTask does)
 // to verify no data race under -race.

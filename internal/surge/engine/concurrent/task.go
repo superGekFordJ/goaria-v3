@@ -35,7 +35,7 @@ type ActiveTask struct {
 	// Set while blocked on rate limiter so health monitor doesn't treat it as stalled
 	WaitingOnLimiter atomic.Bool
 
-	// FORK-PATCH: Per-worker retry count for telemetry  
+	// FORK-PATCH: Per-worker retry count for telemetry
 	RetryCount atomic.Int32
 }
 
