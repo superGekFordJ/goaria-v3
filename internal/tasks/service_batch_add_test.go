@@ -482,6 +482,58 @@ func TestBatchAddUri_GroupNameEnqueueDoesNotBlockAddPath(t *testing.T) {
 	}
 }
 
+func TestBatchAddUri_SmartThreadOffPassesMaxConnectionsAsSplit(t *testing.T) {
+	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	config.Current.SmartThreadMode = false
+	config.Current.MaxConnections = "16"
+
+	urls := []string{
+		"https://example.com/one.bin",
+		"https://example.com/two.bin",
+	}
+
+	result := service.BatchAddUri(urls)
+
+	assertBatchAddStrings(t, "succeeded", result.Succeeded, urls)
+	if got := counter.addURICount(); got != len(urls) {
+		t.Fatalf("expected %d addUri calls, got %d", len(urls), got)
+	}
+	for i, options := range counter.optionsSnapshot() {
+		split, ok := options["split"]
+		if !ok {
+			t.Fatalf("addUri[%d]: expected split option, got %#v", i, options)
+		}
+		if split != "16" {
+			t.Fatalf("addUri[%d]: expected split=16, got %v", i, split)
+		}
+		maxConnPerServer, ok := options["max-connection-per-server"]
+		if !ok {
+			t.Fatalf("addUri[%d]: expected max-connection-per-server option, got %#v", i, options)
+		}
+		if maxConnPerServer != "16" {
+			t.Fatalf("addUri[%d]: expected max-connection-per-server=16, got %v", i, maxConnPerServer)
+		}
+	}
+}
+
+func TestBatchAddUri_SmartThreadOffFallsBackToDefaultWhenMaxConnectionsInvalid(t *testing.T) {
+	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	config.Current.SmartThreadMode = false
+	config.Current.MaxConnections = "not-a-number"
+
+	url := "https://example.com/fallback.bin"
+	result := service.BatchAddUri([]string{url})
+
+	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{url})
+	if got := counter.addURICount(); got != 1 {
+		t.Fatalf("expected 1 addUri call, got %d", got)
+	}
+	options := counter.optionsSnapshot()[0]
+	if options["split"] != "8" {
+		t.Fatalf("expected default split=8 for invalid MaxConnections, got %v", options["split"])
+	}
+}
+
 func TestDownloadGroupPathSafetyCollisionAndInvalidBase(t *testing.T) {
 	originalConfig := config.Current
 	t.Cleanup(func() { config.Current = originalConfig })

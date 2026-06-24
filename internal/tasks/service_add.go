@@ -402,17 +402,25 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			}
 		}
 	} else {
+		maxConn, _ := strconv.Atoi(config.Current.MaxConnections)
+		if maxConn <= 0 {
+			maxConn = 8
+		}
 		var err error
 		gid, err = s.Engine.AddUri(candidate.url, rpc.AddURIOptions{
 			Dir:        dir,
 			Out:        out,
 			Headers:    headers,
+			Split:      maxConn,
 			BeforeSave: registerGroup,
 		})
 		if err != nil {
 			return "", err
 		}
 		if gid != "" {
+			if tracker := monitor.State.GetTracker(); tracker != nil {
+				tracker.SetThreadInfo(gid, maxConn, false)
+			}
 			scope, domain := scopeClassifier.ClassifyByURL(candidate.url)
 			if tracker := monitor.State.GetTracker(); tracker != nil {
 				tracker.SetScope(gid, scope, 0, domain)
