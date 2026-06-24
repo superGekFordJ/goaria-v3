@@ -238,7 +238,7 @@ func TestRecordHedgeError_BelowThreshold(t *testing.T) {
 	}
 }
 
-func TestRecordHedgeSuccess_ResetsCounter(t *testing.T) {
+func TestRecordHedgeSuccess_DecaysNotZeros(t *testing.T) {
 	d := &ConcurrentDownloader{
 		activeTasks: make(map[int]*ActiveTask),
 		Runtime:     &types.RuntimeConfig{},
@@ -252,14 +252,30 @@ func TestRecordHedgeSuccess_ResetsCounter(t *testing.T) {
 		t.Fatal("hedgeDisabled should be true after threshold errors")
 	}
 
+	// One success should decay by 1, not zero the counter
 	d.recordHedgeSuccess()
 
+	if d.consecutiveHedgeErrors.Load() != int32(types.HedgeErrorThreshold)-1 {
+		t.Errorf("consecutiveHedgeErrors should be %d after one success, got %d",
+			int32(types.HedgeErrorThreshold)-1, d.consecutiveHedgeErrors.Load())
+	}
+
+	if !d.hedgeDisabled.Load() {
+		t.Error("hedgeDisabled should still be true after one success")
+	}
+
+	// Sustained successes to clear the poison
+	for i := 0; i < types.HedgeErrorThreshold-1; i++ {
+		d.recordHedgeSuccess()
+	}
+
 	if d.consecutiveHedgeErrors.Load() != 0 {
-		t.Error("consecutiveHedgeErrors should be 0 after success")
+		t.Errorf("consecutiveHedgeErrors should be 0 after sustained successes, got %d",
+			d.consecutiveHedgeErrors.Load())
 	}
 
 	if d.hedgeDisabled.Load() {
-		t.Error("hedgeDisabled should be false after success")
+		t.Error("hedgeDisabled should be false after counter decays to 0")
 	}
 }
 

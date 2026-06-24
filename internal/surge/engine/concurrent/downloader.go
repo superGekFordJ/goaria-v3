@@ -51,7 +51,7 @@ type ConcurrentDownloader struct {
 	workerClient    *http.Client    // cached for ScaleWorkers spawn
 	workerWg        sync.WaitGroup  // tracks all spawned workers (initial + scaled)
 
-	// FORK-PATCH: End-game hedge and poison defense 
+	// FORK-PATCH: End-game hedge and poison defense.
 	consecutiveHedgeErrors atomic.Int32 // consecutive 4xx/5xx counter for poison defense
 	hedgeDisabled          atomic.Bool  // true when hedge is disabled due to poison detection
 }
@@ -447,21 +447,34 @@ func (d *ConcurrentDownloader) startHelpers(ctx context.Context, wg *sync.WaitGr
 // hedging when the threshold is reached.
 // FORK-PATCH: Poison defense for end-game hedge .
 func (d *ConcurrentDownloader) recordHedgeError() {
+	if d.hedgeDisabled.Load() {
+		return
+	}
 	count := d.consecutiveHedgeErrors.Add(1)
-	if count >= int32(types.HedgeErrorThreshold) && !d.hedgeDisabled.Load() {
+	if count >= int32(types.HedgeErrorThreshold) {
 		d.hedgeDisabled.Store(true)
 		utils.Debug("Hedge: disabled due to %d consecutive 4xx/5xx errors", count)
 	}
 }
 
-// recordHedgeSuccess resets the consecutive error counter and re-enables
-// hedging if it was previously disabled.
-// FORK-PATCH: Poison defense recovery .
+// recordHedgeSuccess decrements the consecutive error counter (decay reset)
+// rather than zeroing it entirely. This requires sustained successes to clear
+// the poison state, preventing a single success from masking ongoing errors
+// in mixed success/failure scenarios.
+// FORK-PATCH: Poison defense recovery — decay reset (SPEC-172).
 func (d *ConcurrentDownloader) recordHedgeSuccess() {
-	d.consecutiveHedgeErrors.Store(0)
-	if d.hedgeDisabled.Load() {
+	for {
+		val := d.consecutiveHedgeErrors.Load()
+		if val <= 0 {
+			break
+		}
+		if d.consecutiveHedgeErrors.CompareAndSwap(val, val-1) {
+			break
+		}
+	}
+	if d.hedgeDisabled.Load() && d.consecutiveHedgeErrors.Load() == 0 {
 		d.hedgeDisabled.Store(false)
-		utils.Debug("Hedge: re-enabled after successful response")
+		utils.Debug("Hedge: re-enabled after sustained successful responses")
 	}
 }
 
@@ -502,16 +515,12 @@ func (d *ConcurrentDownloader) HedgeAll(queue *TaskQueue) int {
 		if active.Hedged.Load() != 0 {
 			continue
 		}
-		remaining := active.RemainingBytes()
-		if remaining <= 0 {
-			continue
-		}
-		if !active.Hedged.CompareAndSwap(0, 1) {
-			continue
-		}
 		current := active.CurrentOffset.Load()
 		stopAt := active.StopAt.Load()
 		if current >= stopAt {
+			continue
+		}
+		if !active.Hedged.CompareAndSwap(0, 1) {
 			continue
 		}
 		active.SharedMaxOffsetMu.Lock()
@@ -536,7 +545,7 @@ func (d *ConcurrentDownloader) HedgeAll(queue *TaskQueue) int {
 }
 
 func (d *ConcurrentDownloader) runBalancer(ctx context.Context, queue *TaskQueue) {
-	// FORK-PATCH: Variable tick interval — fast in end-game, normal otherwise 
+	// FORK-PATCH: Variable tick interval — fast in end-game, normal otherwise.
 	ticker := time.NewTicker(types.BalancerTickInterval)
 	defer ticker.Stop()
 
@@ -545,7 +554,7 @@ func (d *ConcurrentDownloader) runBalancer(ctx context.Context, queue *TaskQueue
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// FORK-PATCH: End-game detection and proactive hedge 
+			// FORK-PATCH: End-game detection and proactive hedge.
 			if d.isEndGame(queue) {
 				ticker.Reset(types.EndGameTickInterval)
 				d.HedgeAll(queue)
