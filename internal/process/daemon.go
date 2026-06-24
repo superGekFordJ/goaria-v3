@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -227,6 +228,14 @@ func startPreparedAria2(cfg *config.AppConfig, prepared preparedBundledAria2Bina
 		}
 	}
 
+	// aria2c hard-codes max-connection-per-server to 16; values above 16
+	// are only meaningful for the Surge engine. Clamp here to prevent
+	// aria2c from rejecting the config and breaking all RPC requests.
+	aria2MaxConn := 16
+	if n, err := strconv.Atoi(cfg.MaxConnections); err == nil && n > 0 && n < 16 {
+		aria2MaxConn = n
+	}
+
 	args := []string{
 		"--enable-rpc",
 		"--rpc-allow-origin-all",
@@ -236,7 +245,7 @@ func startPreparedAria2(cfg *config.AppConfig, prepared preparedBundledAria2Bina
 		"--auto-file-renaming=true",
 		"--allow-overwrite=false",
 		fmt.Sprintf("--max-concurrent-downloads=%s", cfg.MaxConcurrentDownloads),
-		fmt.Sprintf("--max-connection-per-server=%s", cfg.MaxConnections),
+		fmt.Sprintf("--max-connection-per-server=%d", aria2MaxConn),
 		fmt.Sprintf("--user-agent=%s", cfg.UserAgent),
 		"--continue=true",
 		"--seed-time=0",            // 下载完立即停止做种

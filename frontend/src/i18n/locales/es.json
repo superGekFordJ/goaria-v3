@@ -78,7 +78,8 @@
     "smartThreadDesc": "Ajustar hilos automáticamente según la red",
     "maxConnections": "Conexiones máx. por tarea",
     "threads": "Hilos",
-    "maxConcurrent": "Tareas concurrentes máx."
+    "maxConcurrent": "Tareas concurrentes máx.",
+    "surgeExclusiveTooltip": "Para más de 16 hilos, nuestro sistema enruta automáticamente de forma inteligente, mientras Aria2 sigue trabajando a la perfección."
   },
   "ua": {
     "description": "User-Agent Personalizado",
@@ -230,15 +231,42 @@
       "badge": "Avisos {count}",
       "tooltip": "{label}: {description} ({count})",
       "code": {
-        "mixed_status": { "label": "Estado mixto", "description": "Los miembros están en estados diferentes." },
-        "partial_error": { "label": "Error parcial", "description": "Algunos miembros fallaron y otros siguen disponibles." },
-        "missing_members": { "label": "Miembros faltantes", "description": "El backend esperaba más miembros de los que puede resolver ahora." },
-        "missing_metadata": { "label": "Metadatos faltantes", "description": "A algunos miembros les faltan metadatos de archivo o ruta." },
-        "history_only": { "label": "Solo historial", "description": "Este grupo está representado solo por datos de historial." },
-        "stale_group": { "label": "Grupo obsoleto", "description": "Los metadatos guardados del grupo ya no se resuelven limpiamente." },
-        "name_pending": { "label": "Nombre pendiente", "description": "El backend aún prepara el nombre mostrado." },
-        "name_degraded": { "label": "Nombre degradado", "description": "El backend usó un nombre genérico seguro." },
-        "group_not_found": { "label": "Grupo no encontrado", "description": "La clave seleccionada ya no se puede resolver." }
+        "mixed_status": {
+          "label": "Estado mixto",
+          "description": "Los miembros están en estados diferentes."
+        },
+        "partial_error": {
+          "label": "Error parcial",
+          "description": "Algunos miembros fallaron y otros siguen disponibles."
+        },
+        "missing_members": {
+          "label": "Miembros faltantes",
+          "description": "El backend esperaba más miembros de los que puede resolver ahora."
+        },
+        "missing_metadata": {
+          "label": "Metadatos faltantes",
+          "description": "A algunos miembros les faltan metadatos de archivo o ruta."
+        },
+        "history_only": {
+          "label": "Solo historial",
+          "description": "Este grupo está representado solo por datos de historial."
+        },
+        "stale_group": {
+          "label": "Grupo obsoleto",
+          "description": "Los metadatos guardados del grupo ya no se resuelven limpiamente."
+        },
+        "name_pending": {
+          "label": "Nombre pendiente",
+          "description": "El backend aún prepara el nombre mostrado."
+        },
+        "name_degraded": {
+          "label": "Nombre degradado",
+          "description": "El backend usó un nombre genérico seguro."
+        },
+        "group_not_found": {
+          "label": "Grupo no encontrado",
+          "description": "La clave seleccionada ya no se puede resolver."
+        }
       }
     },
     "operation": {

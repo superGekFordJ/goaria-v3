@@ -102,7 +102,7 @@
   })
 
   // Connection options
-  const connectionOptions = ['1', '4', '8', '16']
+  const connectionOptions = ['1', '4', '8', '16', '24', '32']
 </script>
 
 <template>

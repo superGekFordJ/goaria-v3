@@ -78,7 +78,8 @@
     "smartThreadDesc": "Automatically adjust threads based on network",
     "maxConnections": "Max Connections per Task",
     "threads": "Threads",
-    "maxConcurrent": "Max Concurrent Tasks"
+    "maxConcurrent": "Max Concurrent Tasks",
+    "surgeExclusiveTooltip": "For more than 16 threads, our system seamlessly routes to the Surge engine, delivering maximum performance while Aria2 works flawlessly alongside."
   },
   "ua": {
     "description": "Custom User Agent",

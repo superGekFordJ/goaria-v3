@@ -78,7 +78,8 @@
     "smartThreadDesc": "根据网络状况自动调整线程数",
     "maxConnections": "单任务最大连接数",
     "threads": "线程",
-    "maxConcurrent": "最大并发任务"
+    "maxConcurrent": "最大并发任务",
+    "surgeExclusiveTooltip": "大于16线程时我们的系统会自动进行路由，Aria2 也会正常工作。"
   },
   "ua": {
     "description": "自定义浏览器标识",
@@ -230,15 +231,42 @@
       "badge": "警告 {count}",
       "tooltip": "{label}：{description}（{count}）",
       "code": {
-        "mixed_status": { "label": "混合状态", "description": "成员当前处于不同状态。" },
-        "partial_error": { "label": "部分错误", "description": "部分成员失败，其他成员仍可用。" },
-        "missing_members": { "label": "成员缺失", "description": "后端预期成员数多于当前可解析成员。" },
-        "missing_metadata": { "label": "元数据缺失", "description": "部分成员缺少文件或路径元数据。" },
-        "history_only": { "label": "仅历史记录", "description": "此下载组仅由历史记录表示。" },
-        "stale_group": { "label": "过期下载组", "description": "已存储的下载组元数据无法完整解析。" },
-        "name_pending": { "label": "名称待定", "description": "后端仍在准备显示名称。" },
-        "name_degraded": { "label": "名称降级", "description": "后端已回退到安全通用名称。" },
-        "group_not_found": { "label": "下载组未找到", "description": "选中的下载组键已无法解析。" }
+        "mixed_status": {
+          "label": "混合状态",
+          "description": "成员当前处于不同状态。"
+        },
+        "partial_error": {
+          "label": "部分错误",
+          "description": "部分成员失败，其他成员仍可用。"
+        },
+        "missing_members": {
+          "label": "成员缺失",
+          "description": "后端预期成员数多于当前可解析成员。"
+        },
+        "missing_metadata": {
+          "label": "元数据缺失",
+          "description": "部分成员缺少文件或路径元数据。"
+        },
+        "history_only": {
+          "label": "仅历史记录",
+          "description": "此下载组仅由历史记录表示。"
+        },
+        "stale_group": {
+          "label": "过期下载组",
+          "description": "已存储的下载组元数据无法完整解析。"
+        },
+        "name_pending": {
+          "label": "名称待定",
+          "description": "后端仍在准备显示名称。"
+        },
+        "name_degraded": {
+          "label": "名称降级",
+          "description": "后端已回退到安全通用名称。"
+        },
+        "group_not_found": {
+          "label": "下载组未找到",
+          "description": "选中的下载组键已无法解析。"
+        }
       }
     },
     "operation": {

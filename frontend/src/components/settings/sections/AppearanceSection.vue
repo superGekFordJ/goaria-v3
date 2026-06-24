@@ -119,7 +119,7 @@
       <Transition name="slide-fade">
         <div
           v-if="showLanguageDropdown"
-          class="absolute z-50 top-full left-0 right-0 mt-2 p-1 rounded-xl bg-white dark:bg-[#18181b] border border-[var(--glass-border)] shadow-2xl origin-top"
+          class="absolute z-50 top-full left-0 right-0 mt-2 p-1 rounded-xl glass-panel-solid origin-top"
         >
           <button
             v-for="localeOption in [

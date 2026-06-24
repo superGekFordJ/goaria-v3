@@ -78,7 +78,8 @@
     "smartThreadDesc": "根據網路狀況自動調整執行緒數量",
     "maxConnections": "單任務最大連線數",
     "threads": "執行緒",
-    "maxConcurrent": "最大同時下載任務數"
+    "maxConcurrent": "最大同時下載任務數",
+    "surgeExclusiveTooltip": "大於16執行緒時我們的系統會自動進行路由，Aria2 也會正常工作。"
   },
   "ua": {
     "description": "自訂瀏覽器識別 (User-Agent)",
@@ -230,15 +231,42 @@
       "badge": "警告 {count}",
       "tooltip": "{label}：{description}（{count}）",
       "code": {
-        "mixed_status": { "label": "混合狀態", "description": "成員目前處於不同狀態。" },
-        "partial_error": { "label": "部分錯誤", "description": "部分成員失敗，其他成員仍可用。" },
-        "missing_members": { "label": "成員缺失", "description": "後端預期成員數多於目前可解析成員。" },
-        "missing_metadata": { "label": "中繼資料缺失", "description": "部分成員缺少檔案或路徑中繼資料。" },
-        "history_only": { "label": "僅歷史記錄", "description": "此群組僅由歷史記錄表示。" },
-        "stale_group": { "label": "過期群組", "description": "已儲存的群組中繼資料無法完整解析。" },
-        "name_pending": { "label": "名稱待定", "description": "後端仍在準備顯示名稱。" },
-        "name_degraded": { "label": "名稱降級", "description": "後端已回退到安全通用名稱。" },
-        "group_not_found": { "label": "找不到群組", "description": "選取的群組鍵已無法解析。" }
+        "mixed_status": {
+          "label": "混合狀態",
+          "description": "成員目前處於不同狀態。"
+        },
+        "partial_error": {
+          "label": "部分錯誤",
+          "description": "部分成員失敗，其他成員仍可用。"
+        },
+        "missing_members": {
+          "label": "成員缺失",
+          "description": "後端預期成員數多於目前可解析成員。"
+        },
+        "missing_metadata": {
+          "label": "中繼資料缺失",
+          "description": "部分成員缺少檔案或路徑中繼資料。"
+        },
+        "history_only": {
+          "label": "僅歷史記錄",
+          "description": "此群組僅由歷史記錄表示。"
+        },
+        "stale_group": {
+          "label": "過期群組",
+          "description": "已儲存的群組中繼資料無法完整解析。"
+        },
+        "name_pending": {
+          "label": "名稱待定",
+          "description": "後端仍在準備顯示名稱。"
+        },
+        "name_degraded": {
+          "label": "名稱降級",
+          "description": "後端已回退到安全通用名稱。"
+        },
+        "group_not_found": {
+          "label": "找不到群組",
+          "description": "選取的群組鍵已無法解析。"
+        }
       }
     },
     "operation": {

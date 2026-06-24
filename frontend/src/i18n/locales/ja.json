@@ -78,7 +78,8 @@
     "smartThreadDesc": "ネットワーク状況に応じてスレッド数を自動調整",
     "maxConnections": "タスクごとの最大接続数",
     "threads": "スレッド",
-    "maxConcurrent": "最大同時タスク数"
+    "maxConcurrent": "最大同時タスク数",
+    "surgeExclusiveTooltip": "16スレッド以上をご指定の場合、システムがSurgeエンジンへ自動的にルーティングし、Aria2も並行して正常に稼働いたしますのでご安心ください。"
   },
   "ua": {
     "description": "カスタム User-Agent",
@@ -230,15 +231,42 @@
       "badge": "警告 {count}",
       "tooltip": "{label}: {description} ({count})",
       "code": {
-        "mixed_status": { "label": "混在状態", "description": "メンバーが異なる状態にあります。" },
-        "partial_error": { "label": "一部エラー", "description": "一部のメンバーが失敗し、他は利用可能です。" },
-        "missing_members": { "label": "メンバー不足", "description": "バックエンドが期待する数より解決済みメンバーが少ない状態です。" },
-        "missing_metadata": { "label": "メタデータ不足", "description": "一部メンバーにファイルまたはパスメタデータがありません。" },
-        "history_only": { "label": "履歴のみ", "description": "このグループは履歴データのみで表されています。" },
-        "stale_group": { "label": "古いグループ", "description": "保存済みグループメタデータを完全に解決できません。" },
-        "name_pending": { "label": "名前保留中", "description": "バックエンドが表示名を準備中です。" },
-        "name_degraded": { "label": "名前低下", "description": "安全な汎用名にフォールバックしました。" },
-        "group_not_found": { "label": "グループなし", "description": "選択されたグループキーを解決できません。" }
+        "mixed_status": {
+          "label": "混在状態",
+          "description": "メンバーが異なる状態にあります。"
+        },
+        "partial_error": {
+          "label": "一部エラー",
+          "description": "一部のメンバーが失敗し、他は利用可能です。"
+        },
+        "missing_members": {
+          "label": "メンバー不足",
+          "description": "バックエンドが期待する数より解決済みメンバーが少ない状態です。"
+        },
+        "missing_metadata": {
+          "label": "メタデータ不足",
+          "description": "一部メンバーにファイルまたはパスメタデータがありません。"
+        },
+        "history_only": {
+          "label": "履歴のみ",
+          "description": "このグループは履歴データのみで表されています。"
+        },
+        "stale_group": {
+          "label": "古いグループ",
+          "description": "保存済みグループメタデータを完全に解決できません。"
+        },
+        "name_pending": {
+          "label": "名前保留中",
+          "description": "バックエンドが表示名を準備中です。"
+        },
+        "name_degraded": {
+          "label": "名前低下",
+          "description": "安全な汎用名にフォールバックしました。"
+        },
+        "group_not_found": {
+          "label": "グループなし",
+          "description": "選択されたグループキーを解決できません。"
+        }
       }
     },
     "operation": {

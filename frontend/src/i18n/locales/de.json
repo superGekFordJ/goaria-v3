@@ -78,7 +78,8 @@
     "smartThreadDesc": "Threads automatisch an Netzwerk anpassen",
     "maxConnections": "Max. Verbindungen pro Task",
     "threads": "Threads",
-    "maxConcurrent": "Max. gleichzeitige Tasks"
+    "maxConcurrent": "Max. gleichzeitige Tasks",
+    "surgeExclusiveTooltip": "Bei mehr als 16 Threads leitet unser System automatisch intelligent weiter, während Aria2 reibungslos weiterläuft."
   },
   "ua": {
     "description": "Benutzerdefinierter User-Agent",
@@ -230,15 +231,42 @@
       "badge": "Warnungen {count}",
       "tooltip": "{label}: {description} ({count})",
       "code": {
-        "mixed_status": { "label": "Gemischter Status", "description": "Mitglieder befinden sich in unterschiedlichen Zuständen." },
-        "partial_error": { "label": "Teilfehler", "description": "Einige Mitglieder sind fehlgeschlagen, andere bleiben verfügbar." },
-        "missing_members": { "label": "Fehlende Mitglieder", "description": "Das Backend erwartete mehr Mitglieder, als es aktuell auflösen kann." },
-        "missing_metadata": { "label": "Fehlende Metadaten", "description": "Einigen Mitgliedern fehlen Datei- oder Pfadmetadaten." },
-        "history_only": { "label": "Nur Verlauf", "description": "Diese Gruppe wird nur durch Verlaufsdaten dargestellt." },
-        "stale_group": { "label": "Veraltete Gruppe", "description": "Gespeicherte Gruppenmetadaten lassen sich nicht mehr sauber auflösen." },
-        "name_pending": { "label": "Name ausstehend", "description": "Das Backend bereitet den Anzeigenamen noch vor." },
-        "name_degraded": { "label": "Name eingeschränkt", "description": "Das Backend nutzt einen sicheren generischen Namen." },
-        "group_not_found": { "label": "Gruppe nicht gefunden", "description": "Der ausgewählte Gruppenschlüssel lässt sich nicht mehr auflösen." }
+        "mixed_status": {
+          "label": "Gemischter Status",
+          "description": "Mitglieder befinden sich in unterschiedlichen Zuständen."
+        },
+        "partial_error": {
+          "label": "Teilfehler",
+          "description": "Einige Mitglieder sind fehlgeschlagen, andere bleiben verfügbar."
+        },
+        "missing_members": {
+          "label": "Fehlende Mitglieder",
+          "description": "Das Backend erwartete mehr Mitglieder, als es aktuell auflösen kann."
+        },
+        "missing_metadata": {
+          "label": "Fehlende Metadaten",
+          "description": "Einigen Mitgliedern fehlen Datei- oder Pfadmetadaten."
+        },
+        "history_only": {
+          "label": "Nur Verlauf",
+          "description": "Diese Gruppe wird nur durch Verlaufsdaten dargestellt."
+        },
+        "stale_group": {
+          "label": "Veraltete Gruppe",
+          "description": "Gespeicherte Gruppenmetadaten lassen sich nicht mehr sauber auflösen."
+        },
+        "name_pending": {
+          "label": "Name ausstehend",
+          "description": "Das Backend bereitet den Anzeigenamen noch vor."
+        },
+        "name_degraded": {
+          "label": "Name eingeschränkt",
+          "description": "Das Backend nutzt einen sicheren generischen Namen."
+        },
+        "group_not_found": {
+          "label": "Gruppe nicht gefunden",
+          "description": "Der ausgewählte Gruppenschlüssel lässt sich nicht mehr auflösen."
+        }
       }
     },
     "operation": {

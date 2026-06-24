@@ -1,6 +1,6 @@
 <script setup lang="ts">
   import { ref, onMounted, onUnmounted } from 'vue'
-  import { Cpu, ChevronDown, Check } from 'lucide-vue-next'
+  import { Cpu, ChevronDown, Check, Info } from 'lucide-vue-next'
   import { useI18n } from 'vue-i18n'
   import SectionCard from './SectionCard.vue'
 
@@ -61,7 +61,7 @@
 
 <template>
   <SectionCard
-    class="relative z-[60]"
+    class="relative z-[80]"
     :title="t('performance.title')"
     :description="t('performance.description')"
     :icon="Cpu"
@@ -100,9 +100,17 @@
       <!-- Max Connections Per Server -->
       <div class="space-y-2">
         <label
-          class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)]"
+          class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)]"
         >
           {{ t('performance.maxConnections') }}
+          <div class="group relative flex items-center">
+            <Info :size="12" class="cursor-help hover:text-[var(--app-text)] transition-colors" />
+            <!-- Tooltip Popup -->
+            <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 rounded-lg glass-panel-solid opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[100] text-center text-[10px] font-medium normal-case tracking-normal pointer-events-none">
+              {{ t('performance.surgeExclusiveTooltip') }}
+              <div class="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 glass-panel-solid-arrow transform rotate-45"></div>
+            </div>
+          </div>
         </label>
         <div ref="connectionsDropdownRef" class="relative z-50">
           <button
@@ -122,7 +130,7 @@
           <Transition name="slide-fade">
             <div
               v-if="showConnectionsDropdown"
-              class="absolute z-50 top-full left-0 right-0 mt-2 p-1 rounded-xl bg-white dark:bg-[#18181b] border border-[var(--glass-border)] shadow-2xl origin-top max-h-48 overflow-y-auto"
+              class="absolute z-50 top-full left-0 right-0 mt-2 p-1 rounded-xl glass-panel-solid origin-top max-h-72 overflow-y-auto"
             >
               <button
                 v-for="n in connectionOptions"
@@ -136,9 +144,14 @@
                 ]"
                 @click="selectConnections(n)"
               >
-                <span class="text-sm font-mono-data font-medium">
-                  {{ n }} {{ t('performance.threads') }}
-                </span>
+                <div class="flex items-center gap-2">
+                  <span class="text-sm font-mono-data font-medium">
+                    {{ n }} {{ t('performance.threads') }}
+                  </span>
+                  <span v-if="n === '24' || n === '32'" class="flex items-center gap-1 text-[9px] font-bold text-[var(--neon-primary)] bg-[var(--neon-primary)]/10 px-1.5 py-0.5 rounded uppercase tracking-wider">
+                    Surge
+                  </span>
+                </div>
                 <Check v-if="connections === n" :size="14" />
               </button>
             </div>

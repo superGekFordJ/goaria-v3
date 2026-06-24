@@ -126,3 +126,31 @@
     0 1px 2px 0 color-mix(in srgb, var(--skin-ambient-glow) 20%, transparent);
 }
 
+/* === Solid Glass Panel / High-Opacity Popups (Dropdowns, Tooltips) === */
+.glass-panel-solid {
+  background: rgba(24, 24, 27, 0.95); /* #18181b/95 */
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  color: rgba(228, 228, 231, 0.9);
+}
+
+.glass-panel-solid-arrow {
+  background: rgba(24, 24, 27, 0.95);
+  border-bottom: 1px solid var(--glass-border);
+  border-right: 1px solid var(--glass-border);
+}
+
+:root[data-theme='light'] .glass-panel-solid {
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  color: rgba(31, 31, 35, 0.9);
+}
+
+:root[data-theme='light'] .glass-panel-solid-arrow {
+  background: rgba(255, 255, 255, 0.95);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  border-right: 1px solid rgba(0, 0, 0, 0.08);
+}
+
