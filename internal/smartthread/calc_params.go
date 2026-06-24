@@ -27,6 +27,8 @@ const (
 	throughputStableRatio    = 0.8
 	scaleDownStableCycles    = 3
 	scaleUpStableCycles      = 3
+	bandwidthReleaseCycles   = 1               // bandwidth release degraded filter (deterministic event)
+	connErrorThreshold       = 3               // consecutive conn errors before N_max fuse triggers
 )
 
 // CalcParams holds the inputs for BBR-aware thread calculation.

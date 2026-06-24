@@ -175,14 +175,24 @@ func TestConvergenceTicker_RemoveTask(t *testing.T) {
 	if !exists {
 		t.Fatal("expected convergence state to exist after tick")
 	}
+	ct.mu.Lock()
+	_, prevExists := ct.prevActiveGids[gid]
+	ct.mu.Unlock()
+	if !prevExists {
+		t.Fatal("expected prevActiveGids to contain gid after tick")
+	}
 
 	ct.RemoveTask(gid)
 
 	ct.mu.Lock()
 	_, exists = ct.states[gid]
+	_, prevExists = ct.prevActiveGids[gid]
 	ct.mu.Unlock()
 	if exists {
 		t.Error("expected convergence state to be removed")
+	}
+	if prevExists {
+		t.Error("expected prevActiveGids to be cleaned by RemoveTask")
 	}
 }
 
@@ -260,5 +270,229 @@ func TestConvergenceTicker_SelfCleanupStaleStates(t *testing.T) {
 	ct.mu.Unlock()
 	if exists {
 		t.Error("expected stale convergence state to be cleaned up by self-cleanup")
+	}
+}
+
+func TestConvergenceTicker_ScaleUpLaggedFiltering(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+
+	gid := "sg_scaleup_test"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true},
+		},
+	}
+	// High EMASpeed → throughputRatio >= throughputStableRatio
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid: {{WorkerID: 0, EMASpeed: 2 * 1024 * 1024}},
+		},
+	}
+
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+
+	ct := NewConvergenceTicker(he, tracker, telemetry)
+	defer ct.Stop()
+
+	// Tick scaleUpStableCycles-1 times → should NOT trigger ScaleUp
+	for i := 0; i < scaleUpStableCycles-1; i++ {
+		ct.tick()
+	}
+	ct.mu.Lock()
+	s := ct.states[gid]
+	ct.mu.Unlock()
+	if s == nil {
+		t.Fatal("expected convergence state to exist")
+	}
+	if s.scaleUpCycles != scaleUpStableCycles-1 {
+		t.Errorf("expected scaleUpCycles=%d before trigger, got %d", scaleUpStableCycles-1, s.scaleUpCycles)
+	}
+
+	// One more tick → should trigger ScaleUp and reset counter
+	ct.tick()
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s.scaleUpCycles != 0 {
+		t.Errorf("expected scaleUpCycles=0 after trigger, got %d", s.scaleUpCycles)
+	}
+}
+
+func TestConvergenceTicker_BandwidthBorrowing(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+
+	completedGid := "sg_completed"
+	keepAliveGid := "sg_keepalive"
+
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: completedGid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false},
+			{GID: keepAliveGid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			completedGid:  {{WorkerID: 0, EMASpeed: 100 * 1024}},
+			keepAliveGid:  {{WorkerID: 0, EMASpeed: 100 * 1024}},
+		},
+	}
+
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+
+	ct := NewConvergenceTicker(he, tracker, telemetry)
+	defer ct.Stop()
+
+	// First tick: both tasks active, prevActiveGids populated
+	ct.tick()
+
+	// Remove completed task — simulate it finishing
+	tracker.tasks = []TrackedTaskInfo{
+		{GID: keepAliveGid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true},
+	}
+	telemetry.data = map[string][]types.WorkerSnapshot{
+		keepAliveGid: {{WorkerID: 0, EMASpeed: 100 * 1024}},
+	}
+
+	// Second tick: completedGid disappeared → bandwidth borrowing should trigger
+	ct.tick()
+
+	ct.mu.Lock()
+	s := ct.states[keepAliveGid]
+	ct.mu.Unlock()
+	if s == nil {
+		t.Fatal("expected convergence state for keep-alive task")
+	}
+	// releaseCycles should be reset to 0 after triggering bandwidth borrow
+	if s.releaseCycles != 0 {
+		t.Errorf("expected releaseCycles=0 after bandwidth borrow trigger, got %d", s.releaseCycles)
+	}
+}
+
+func TestConvergenceTicker_NoDoubleScaleUp(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+
+	completedGid := "sg_completed_n1"
+	keepAliveGid := "sg_keepalive_n1"
+
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: completedGid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false},
+			{GID: keepAliveGid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true},
+		},
+	}
+	// High EMASpeed for keepAlive → throughputRatio >= throughputStableRatio → ScaleUp after 3 cycles
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			completedGid: {{WorkerID: 0, EMASpeed: 100 * 1024}},
+			keepAliveGid: {{WorkerID: 0, EMASpeed: 2 * 1024 * 1024}},
+		},
+	}
+
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+
+	ct := NewConvergenceTicker(he, tracker, telemetry)
+	defer ct.Stop()
+
+	// Run scaleUpStableCycles-1 ticks with both tasks active.
+	// keepAliveGid's scaleUpCycles reaches scaleUpStableCycles-1.
+	for i := 0; i < scaleUpStableCycles-1; i++ {
+		ct.tick()
+	}
+
+	ct.mu.Lock()
+	s := ct.states[keepAliveGid]
+	ct.mu.Unlock()
+	if s == nil {
+		t.Fatal("expected convergence state for keep-alive task")
+	}
+	if s.scaleUpCycles != scaleUpStableCycles-1 {
+		t.Fatalf("expected scaleUpCycles=%d before trigger, got %d", scaleUpStableCycles-1, s.scaleUpCycles)
+	}
+
+	// Pre-set releaseCycles to 1 so we can detect if bandwidth borrowing touches it.
+	ct.mu.Lock()
+	s.releaseCycles = 1
+	ct.mu.Unlock()
+
+	// Remove completedGid — simulate it finishing.
+	tracker.tasks = []TrackedTaskInfo{
+		{GID: keepAliveGid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true},
+	}
+	telemetry.data = map[string][]types.WorkerSnapshot{
+		keepAliveGid: {{WorkerID: 0, EMASpeed: 2 * 1024 * 1024}},
+	}
+
+	// Triggering tick: processTask generates ScaleUp for keepAliveGid.
+	// Bandwidth borrowing detects completedGid disappeared but must skip keepAliveGid
+	// because it's already in pendingGids.
+	ct.tick()
+
+	ct.mu.Lock()
+	s = ct.states[keepAliveGid]
+	ct.mu.Unlock()
+	if s == nil {
+		t.Fatal("expected convergence state to persist")
+	}
+	// processTask triggered ScaleUp → scaleUpCycles reset to 0
+	if s.scaleUpCycles != 0 {
+		t.Errorf("expected scaleUpCycles=0 after processTask trigger, got %d", s.scaleUpCycles)
+	}
+	// Bandwidth borrowing was skipped → releaseCycles stays at 1 (not incremented/reset)
+	if s.releaseCycles != 1 {
+		t.Errorf("expected releaseCycles=1 (bandwidth borrowing skipped), got %d — double ScaleUp not prevented", s.releaseCycles)
+	}
+}
+
+func TestConvergenceTicker_ServerLimitFuse(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+
+	gid := "sg_fuse_test"
+	domain := "example.com"
+
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: domain, IsKeepAlive: true},
+		},
+	}
+	// RetryCount sum = 3 >= connErrorThreshold → should trigger SetNMax
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid: {
+				{WorkerID: 0, EMASpeed: 2 * 1024 * 1024, RetryCount: 1},
+				{WorkerID: 1, EMASpeed: 2 * 1024 * 1024, RetryCount: 1},
+				{WorkerID: 2, EMASpeed: 2 * 1024 * 1024, RetryCount: 1},
+			},
+		},
+	}
+
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+
+	ct := NewConvergenceTicker(he, tracker, telemetry)
+	defer ct.Stop()
+
+	// Clear any pre-existing limit for this domain
+	ct.limits.Clear(domain)
+
+	ct.tick()
+
+	// N_max should be locked to currentWorkers (3)
+	nMax, ok := ct.limits.GetNMax(domain)
+	if !ok {
+		t.Fatal("expected N_max to be set after conn error threshold exceeded")
+	}
+	if nMax != 3 {
+		t.Errorf("expected N_max=3, got %d", nMax)
 	}
 }

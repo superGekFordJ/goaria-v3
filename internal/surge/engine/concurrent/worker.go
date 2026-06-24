@@ -173,10 +173,12 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 					// We were stopped early this is expected success for the partial work
 					// The stolen part is already in the queue
 					utils.Debug("Worker stopped early due to stealing")
-				}
-				// FORK-PATCH: Decrement conn error counter on successful chunk
-				if d.State != nil {
-					d.State.DecrConnErrors()
+				} else {
+					// FORK-PATCH: Decrement conn error counter on successful chunk completion
+					// (not on stealing — the chunk was not fully completed)
+					if d.State != nil {
+						d.State.DecrConnErrors()
+					}
 				}
 				break
 			}

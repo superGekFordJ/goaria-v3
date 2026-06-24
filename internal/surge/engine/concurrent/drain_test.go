@@ -618,7 +618,7 @@ func TestScaleWorkers_WaitGroupReuseProtection(t *testing.T) {
 }
 
 // TestIsConnLimitError verifies detection of server connection limit errors.
-// FORK-PATCH: SPEC-174
+// FORK-PATCH
 func TestIsConnLimitError(t *testing.T) {
 	tests := []struct {
 		err  error
@@ -641,9 +641,83 @@ func TestIsConnLimitError(t *testing.T) {
 	}
 }
 
+// TestConnErrorDetection_503 verifies that a 503 response from the server
+// increments consecutiveConnErrors on ProgressState.
+// FORK-PATCH
+func TestConnErrorDetection_503(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(1 * types.MB)
+	server := testutil.NewMockServerT(t,
+		testutil.WithHandler(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}),
+	)
+	defer server.Close()
+
+	destPath := filepath.Join(tmpDir, "conn_503.bin")
+	workingPath := destPath + types.IncompleteSuffix
+
+	if f, err := os.Create(workingPath); err == nil {
+		_ = f.Close()
+	}
+
+	state := types.NewProgressState("conn-503-test", fileSize)
+	runtime := &types.RuntimeConfig{MaxConnectionsPerDownload: 1}
+
+	d := NewConcurrentDownloader("conn-503-test", nil, state, runtime)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	_ = d.Download(ctx, server.URL(), nil, nil, destPath, fileSize)
+
+	if got := state.GetConnErrors(); got == 0 {
+		t.Error("expected consecutiveConnErrors > 0 after 503 responses, got 0")
+	}
+}
+
+// TestConnErrorDetection_429 verifies that a 429 response from the server
+// increments consecutiveConnErrors on ProgressState.
+// FORK-PATCH
+func TestConnErrorDetection_429(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(1 * types.MB)
+	server := testutil.NewMockServerT(t,
+		testutil.WithHandler(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusTooManyRequests)
+		}),
+	)
+	defer server.Close()
+
+	destPath := filepath.Join(tmpDir, "conn_429.bin")
+	workingPath := destPath + types.IncompleteSuffix
+
+	if f, err := os.Create(workingPath); err == nil {
+		_ = f.Close()
+	}
+
+	state := types.NewProgressState("conn-429-test", fileSize)
+	runtime := &types.RuntimeConfig{MaxConnectionsPerDownload: 1}
+
+	d := NewConcurrentDownloader("conn-429-test", nil, state, runtime)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	_ = d.Download(ctx, server.URL(), nil, nil, destPath, fileSize)
+
+	if got := state.GetConnErrors(); got == 0 {
+		t.Error("expected consecutiveConnErrors > 0 after 429 responses, got 0")
+	}
+}
+
 // TestScaleWorkers_ConcurrentScaleUp verifies that concurrent ScaleWorkers
 // calls with workersActive=true are race-free.
-// FORK-PATCH: SPEC-174
+// FORK-PATCH
 func TestScaleWorkers_ConcurrentScaleUp(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()

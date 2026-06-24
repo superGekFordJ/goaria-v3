@@ -44,20 +44,22 @@ type ConvergenceTicker struct {
 	telemetry TelemetryProvider
 	limits    *ServerLimitStore
 
-	mu       sync.Mutex
-	states   map[string]*convergenceState
-	stopChan chan struct{}
-	stopOnce sync.Once
+	mu             sync.Mutex
+	states         map[string]*convergenceState
+	prevActiveGids map[string]string // gid → scope, for bandwidth borrowing diff
+	stopChan       chan struct{}
+	stopOnce       sync.Once
 }
 
 func NewConvergenceTicker(engine *rpc.HybridEngine, tracker TrackerProvider, telemetry TelemetryProvider) *ConvergenceTicker {
 	return &ConvergenceTicker{
-		engine:    engine,
-		tracker:   tracker,
-		telemetry: telemetry,
-		limits:    GetDefaultServerLimits(),
-		states:    make(map[string]*convergenceState),
-		stopChan:  make(chan struct{}),
+		engine:         engine,
+		tracker:        tracker,
+		telemetry:      telemetry,
+		limits:         GetDefaultServerLimits(),
+		states:         make(map[string]*convergenceState),
+		prevActiveGids: make(map[string]string),
+		stopChan:       make(chan struct{}),
 	}
 }
 
@@ -105,26 +107,64 @@ func (c *ConvergenceTicker) tick() {
 	}
 
 	activeTasks := c.tracker.GetActiveTrackedTasks()
-	activeGids := make(map[string]bool)
+	activeGids := make(map[string]string) // gid → scope
 	var pending []pendingScale
+	pendingGids := make(map[string]bool) // GIDs already scaled this tick
 
 	for _, task := range activeTasks {
 		if !strings.HasPrefix(task.GID, "sg_") {
 			continue
 		}
-		activeGids[task.GID] = true
+		activeGids[task.GID] = task.Scope
 		if ps, ok := c.processTask(task); ok {
 			pending = append(pending, ps)
+			pendingGids[ps.gid] = true
 		}
 	}
+
+	// Bandwidth borrowing: detect tasks that disappeared since last tick.
+	// For each completed task, find same-scope keep-alive tasks and trigger
+	// ScaleUp with degraded filter (bandwidthReleaseCycles = 1).
+	// Skip GIDs already scaled by processTask to prevent double ScaleUp.
+	c.mu.Lock()
+	for gid, scope := range c.prevActiveGids {
+		if activeGids[gid] != "" {
+			continue // still active
+		}
+		// Task disappeared — look for same-scope keep-alive tasks to benefit
+		for _, t := range activeTasks {
+			if !strings.HasPrefix(t.GID, "sg_") || !t.IsKeepAlive {
+				continue
+			}
+			if t.Scope != scope {
+				continue
+			}
+			if pendingGids[t.GID] {
+				continue // already scaled by processTask this tick
+			}
+			s := c.getOrCreateState(t.GID)
+			s.releaseCycles++
+			if s.releaseCycles >= bandwidthReleaseCycles {
+				pending = append(pending, pendingScale{gid: t.GID, delta: 1})
+				pendingGids[t.GID] = true
+				log.Printf("[convergence] bandwidth-borrow: gid=%s scope=%s released by completed gid=%s",
+					t.GID, scope, gid)
+				s.releaseCycles = 0
+				s.scaleUpCycles = 0
+			}
+		}
+	}
+	c.mu.Unlock()
 
 	// Self-cleanup: remove states for GIDs no longer active
 	c.mu.Lock()
 	for gid := range c.states {
-		if !activeGids[gid] {
+		if activeGids[gid] == "" {
 			delete(c.states, gid)
 		}
 	}
+	// Update prevActiveGids for next tick's bandwidth borrowing diff
+	c.prevActiveGids = activeGids
 	c.mu.Unlock()
 
 	// Batch: execute all pending scale operations after processing all tasks
@@ -143,8 +183,10 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo) (pendingScale, boo
 	}
 
 	var aggregateSpeed float64
+	var retryCountSum int32
 	for _, ws := range stats {
 		aggregateSpeed += ws.EMASpeed
+		retryCountSum += ws.RetryCount
 	}
 	currentWorkers := len(stats)
 
@@ -162,6 +204,18 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo) (pendingScale, boo
 
 	_, domain, _ := c.tracker.GetScope(gid)
 
+	// C1: Server connection hard-limit fuse — detect conn errors and lock N_max.
+	// Uses RetryCount sum from telemetry (per-worker current chunk retries) rather than
+	// ProgressState.consecutiveConnErrors, which is maintained as a backup mechanism in the
+	// engine but not read here. RetryCount directly reflects concurrent server rejections.
+	if retryCountSum >= int32(connErrorThreshold) {
+		if _, hasLimit := c.limits.GetNMax(domain); !hasLimit {
+			c.limits.SetNMax(domain, currentWorkers)
+			log.Printf("[convergence] server-limit-fuse: domain=%s N_max=%d locked (retryCountSum=%d)",
+				domain, currentWorkers, retryCountSum)
+		}
+	}
+
 	nMax, hasLimit := c.limits.GetNMax(domain)
 	if hasLimit && currentWorkers >= nMax {
 		c.mu.Lock()
@@ -169,6 +223,15 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo) (pendingScale, boo
 		s.scaleUpCycles = 0
 		c.mu.Unlock()
 		return pendingScale{}, false
+	}
+
+	// M1: V_available check — only ScaleUp if global bandwidth has room.
+	vAvailable := false
+	if globalPeak, ok := speedstats.GetGlobalPeak(task.Scope); ok && globalPeak > 0 {
+		activeBw := activeBandwidthProvider(task.Scope)
+		vAvailable = globalPeak-activeBw >= vThreadAvg
+	} else {
+		vAvailable = true // no data yet — don't block ScaleUp
 	}
 
 	c.mu.Lock()
@@ -195,11 +258,11 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo) (pendingScale, boo
 	case throughputRatio >= throughputStableRatio:
 		s.scaleUpCycles++
 		s.scaleDownCycles = 0
-		if s.scaleUpCycles >= scaleUpStableCycles && task.IsKeepAlive {
+		if s.scaleUpCycles >= scaleUpStableCycles && task.IsKeepAlive && vAvailable {
 			result = pendingScale{gid: gid, delta: 1}
 			hasResult = true
-			log.Printf("[convergence] scale-up: gid=%s workers=%d ratio=%.2f keepAlive=true",
-					gid, currentWorkers, throughputRatio)
+			log.Printf("[convergence] scale-up: gid=%s workers=%d ratio=%.2f keepAlive=true vAvailable=%v",
+				gid, currentWorkers, throughputRatio, vAvailable)
 			s.scaleUpCycles = 0
 		}
 
@@ -224,5 +287,6 @@ func (c *ConvergenceTicker) getOrCreateState(gid string) *convergenceState {
 func (c *ConvergenceTicker) RemoveTask(gid string) {
 	c.mu.Lock()
 	delete(c.states, gid)
+	delete(c.prevActiveGids, gid)
 	c.mu.Unlock()
 }

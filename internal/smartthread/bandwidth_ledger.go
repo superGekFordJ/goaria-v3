@@ -11,6 +11,11 @@ type ActiveBandwidthFunc func(scope string) int64
 func noActiveBandwidth(scope string) int64 { return 0 }
 
 var (
+	// activeBandwidthProvider is read by the convergence tick without a lock.
+	// This is safe only because sync.Once guarantees a single write (via
+	// SetActiveBandwidthProvider) that happens-before all subsequent reads.
+	// If this is ever changed to support hot-swapping, it must become atomic
+	// or mutex-guarded.
 	activeBandwidthProvider     ActiveBandwidthFunc = noActiveBandwidth
 	activeBandwidthProviderOnce sync.Once
 )
@@ -39,6 +44,10 @@ func SetActiveBandwidthProvider(fn ActiveBandwidthFunc) {
 //	    params := Calculate(CalcParams{..., ReservedBandwidth: reserved})
 //	    ledger.Reserve(scope, params.TargetBandwidth)
 //	}
+// BandwidthLedger is accessed during batch-add (single goroutine) but its
+// Reserved/Reserve methods are also safe for concurrent use — the mutex was
+// added to guard against the convergence tick reading
+// activeBandwidthProvider while a batch add is in progress.
 type BandwidthLedger struct {
 	mu       sync.Mutex
 	reserved map[string]int64
