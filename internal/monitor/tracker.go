@@ -114,7 +114,7 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 			}
 
 			delete(t.tasks, gid)
-			delete(t.processedComplete, gid)
+			// 不要在此处清理 processedComplete — 防止引擎瞬时故障期间重复处理完成事件
 		}
 	}
 

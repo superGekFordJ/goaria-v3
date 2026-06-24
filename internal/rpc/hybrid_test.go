@@ -85,35 +85,59 @@ func (m *mockEngine) TellStatusMulti(gids []string, keys []string) ([]Task, erro
 }
 
 func (m *mockEngine) TellActive() ([]Task, error) {
-	return m.activeResult, m.activeErr
+	if m.activeErr != nil {
+		return nil, m.activeErr
+	}
+	return m.activeResult, nil
 }
 
 func (m *mockEngine) TellActiveLite() ([]Task, error) {
-	return m.activeResult, m.activeErr
+	if m.activeErr != nil {
+		return nil, m.activeErr
+	}
+	return m.activeResult, nil
 }
 
 func (m *mockEngine) TellActiveProgress() ([]TaskProgress, error) {
-	return m.activeProgressRes, m.activeProgressErr
+	if m.activeProgressErr != nil {
+		return nil, m.activeProgressErr
+	}
+	return m.activeProgressRes, nil
 }
 
 func (m *mockEngine) TellWaiting(offset, num int) ([]Task, error) {
-	return m.waitingResult, m.waitingErr
+	if m.waitingErr != nil {
+		return nil, m.waitingErr
+	}
+	return m.waitingResult, nil
 }
 
 func (m *mockEngine) TellWaitingLite(offset, num int) ([]Task, error) {
-	return m.waitingResult, m.waitingErr
+	if m.waitingErr != nil {
+		return nil, m.waitingErr
+	}
+	return m.waitingResult, nil
 }
 
 func (m *mockEngine) TellStopped(offset, num int) ([]Task, error) {
-	return m.stoppedResult, m.stoppedErr
+	if m.stoppedErr != nil {
+		return nil, m.stoppedErr
+	}
+	return m.stoppedResult, nil
 }
 
 func (m *mockEngine) TellStoppedLite(offset, num int) ([]Task, error) {
-	return m.stoppedResult, m.stoppedErr
+	if m.stoppedErr != nil {
+		return nil, m.stoppedErr
+	}
+	return m.stoppedResult, nil
 }
 
 func (m *mockEngine) GetGlobalStat() (GlobalStat, error) {
-	return m.globalStatRes, m.globalStatErr
+	if m.globalStatErr != nil {
+		return GlobalStat{}, m.globalStatErr
+	}
+	return m.globalStatRes, nil
 }
 
 func (m *mockEngine) SaveSession() error {
@@ -408,5 +432,212 @@ func TestHybridEngine_PauseResumeMultiResults(t *testing.T) {
 
 	if len(surge.resumedGids) != 1 || surge.resumedGids[0] != "uuid123" {
 		t.Errorf("expected Surge resumed with uuid123, got %v", surge.resumedGids)
+	}
+}
+
+func TestHybridEngine_PartialFailure_Lists(t *testing.T) {
+	surgeTasks := []Task{{GID: "sg1", Status: "paused"}}
+	aria2Tasks := []Task{{GID: "ar1", Status: "active"}}
+	surgeProgress := []TaskProgress{{GID: "sg1", CompletedLength: "100"}}
+	aria2Progress := []TaskProgress{{GID: "ar1", CompletedLength: "200"}}
+
+	tests := []struct {
+		name      string
+		surgeErr  error
+		aria2Err  error
+		wantErr   bool
+		wantCount int
+		wantGID   string
+	}{
+		{"Aria2 fails, Surge succeeds", nil, errors.New("aria2 not ready"), false, 1, "sg_sg1"},
+		{"Surge fails, Aria2 succeeds", errors.New("surge error"), nil, false, 1, "ar_ar1"},
+		{"Both fail", errors.New("surge error"), errors.New("aria2 error"), true, 0, ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			surge := &mockEngine{
+				activeResult:      surgeTasks,
+				waitingResult:     surgeTasks,
+				stoppedResult:     surgeTasks,
+				activeProgressRes: surgeProgress,
+				activeErr:         tc.surgeErr,
+				waitingErr:        tc.surgeErr,
+				stoppedErr:        tc.surgeErr,
+				activeProgressErr: tc.surgeErr,
+			}
+			aria2 := &mockEngine{
+				activeResult:      aria2Tasks,
+				waitingResult:     aria2Tasks,
+				stoppedResult:     aria2Tasks,
+				activeProgressRes: aria2Progress,
+				activeErr:         tc.aria2Err,
+				waitingErr:        tc.aria2Err,
+				stoppedErr:        tc.aria2Err,
+				activeProgressErr: tc.aria2Err,
+			}
+			hybrid := NewHybridEngine(aria2, surge)
+
+			// TellActive
+			t.Run("TellActive", func(t *testing.T) {
+				result, err := hybrid.TellActive()
+				if tc.wantErr {
+					if err == nil {
+						t.Fatal("expected error, got nil")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if len(result) != tc.wantCount || (len(result) > 0 && result[0].GID != tc.wantGID) {
+					t.Errorf("expected %d tasks with GID %s, got %d tasks: %v", tc.wantCount, tc.wantGID, len(result), result)
+				}
+			})
+
+			// TellActiveLite
+			t.Run("TellActiveLite", func(t *testing.T) {
+				result, err := hybrid.TellActiveLite()
+				if tc.wantErr {
+					if err == nil {
+						t.Fatal("expected error, got nil")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if len(result) != tc.wantCount || (len(result) > 0 && result[0].GID != tc.wantGID) {
+					t.Errorf("expected %d tasks with GID %s, got %d tasks: %v", tc.wantCount, tc.wantGID, len(result), result)
+				}
+			})
+
+			// TellWaiting
+			t.Run("TellWaiting", func(t *testing.T) {
+				result, err := hybrid.TellWaiting(0, 100)
+				if tc.wantErr {
+					if err == nil {
+						t.Fatal("expected error, got nil")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if len(result) != tc.wantCount || (len(result) > 0 && result[0].GID != tc.wantGID) {
+					t.Errorf("expected %d tasks with GID %s, got %d tasks: %v", tc.wantCount, tc.wantGID, len(result), result)
+				}
+			})
+
+			// TellWaitingLite
+			t.Run("TellWaitingLite", func(t *testing.T) {
+				result, err := hybrid.TellWaitingLite(0, 100)
+				if tc.wantErr {
+					if err == nil {
+						t.Fatal("expected error, got nil")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if len(result) != tc.wantCount || (len(result) > 0 && result[0].GID != tc.wantGID) {
+					t.Errorf("expected %d tasks with GID %s, got %d tasks: %v", tc.wantCount, tc.wantGID, len(result), result)
+				}
+			})
+
+			// TellStopped
+			t.Run("TellStopped", func(t *testing.T) {
+				result, err := hybrid.TellStopped(0, 100)
+				if tc.wantErr {
+					if err == nil {
+						t.Fatal("expected error, got nil")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if len(result) != tc.wantCount || (len(result) > 0 && result[0].GID != tc.wantGID) {
+					t.Errorf("expected %d tasks with GID %s, got %d tasks: %v", tc.wantCount, tc.wantGID, len(result), result)
+				}
+			})
+
+			// TellStoppedLite
+			t.Run("TellStoppedLite", func(t *testing.T) {
+				result, err := hybrid.TellStoppedLite(0, 100)
+				if tc.wantErr {
+					if err == nil {
+						t.Fatal("expected error, got nil")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if len(result) != tc.wantCount || (len(result) > 0 && result[0].GID != tc.wantGID) {
+					t.Errorf("expected %d tasks with GID %s, got %d tasks: %v", tc.wantCount, tc.wantGID, len(result), result)
+				}
+			})
+
+			// TellActiveProgress
+			t.Run("TellActiveProgress", func(t *testing.T) {
+				result, err := hybrid.TellActiveProgress()
+				if tc.wantErr {
+					if err == nil {
+						t.Fatal("expected error, got nil")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if len(result) != tc.wantCount || (len(result) > 0 && result[0].GID != tc.wantGID) {
+					t.Errorf("expected %d progress entries with GID %s, got %d: %v", tc.wantCount, tc.wantGID, len(result), result)
+				}
+			})
+		})
+	}
+}
+
+func TestHybridEngine_PartialFailure_GetGlobalStat(t *testing.T) {
+	// Aria2 fails, Surge succeeds
+	surge := &mockEngine{
+		globalStatRes: GlobalStat{DownloadSpeed: "1000"},
+	}
+	aria2 := &mockEngine{
+		globalStatErr: errors.New("aria2 not ready"),
+	}
+	hybrid := NewHybridEngine(aria2, surge)
+
+	stat, err := hybrid.GetGlobalStat()
+	if err != nil {
+		t.Fatalf("unexpected error when one engine fails: %v", err)
+	}
+	if stat.DownloadSpeed != "1000" {
+		t.Errorf("expected Surge-only speed '1000', got '%s'", stat.DownloadSpeed)
+	}
+
+	// Surge fails, Aria2 succeeds
+	surge2 := &mockEngine{globalStatErr: errors.New("surge error")}
+	aria2ok := &mockEngine{globalStatRes: GlobalStat{DownloadSpeed: "3000"}}
+	hybrid2 := NewHybridEngine(aria2ok, surge2)
+
+	stat2, err2 := hybrid2.GetGlobalStat()
+	if err2 != nil {
+		t.Fatalf("unexpected error when Surge fails: %v", err2)
+	}
+	if stat2.DownloadSpeed != "3000" {
+		t.Errorf("expected Aria2-only speed '3000', got '%s'", stat2.DownloadSpeed)
+	}
+
+	// Both fail
+	surge3 := &mockEngine{globalStatErr: errors.New("surge error")}
+	aria2Err := &mockEngine{globalStatErr: errors.New("aria2 error")}
+	hybrid3 := NewHybridEngine(aria2Err, surge3)
+
+	_, err3 := hybrid3.GetGlobalStat()
+	if err3 == nil {
+		t.Fatal("expected error when both engines fail, got nil")
 	}
 }
