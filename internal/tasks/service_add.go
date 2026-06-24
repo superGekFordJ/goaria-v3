@@ -143,8 +143,9 @@ func (s *Service) BatchAddUri(urls []string) BatchAddResult {
 		}
 	}
 
+	ledger := smartthread.NewBandwidthLedger()
 	for _, candidate := range pendingCandidates {
-		s.submitAddCandidate(context.Background(), candidate, existingUrls, historyDuplicates, seenCandidates, authState, &summary)
+		s.submitAddCandidate(context.Background(), candidate, existingUrls, historyDuplicates, seenCandidates, authState, &summary, ledger)
 	}
 	result.Succeeded = append(result.Succeeded, summary.succeeded...)
 	result.Duplicates = append(result.Duplicates, summary.duplicates...)
@@ -160,19 +161,20 @@ func (s *Service) addNormalizedInput(ctx context.Context, normalizedURL string, 
 		return
 	}
 
+	ledger := smartthread.NewBandwidthLedger()
 	for _, candidate := range candidates {
-		s.submitAddCandidate(ctx, candidate, existingURLs, historyDuplicates, candidateSeen, authState, summary)
+		s.submitAddCandidate(ctx, candidate, existingURLs, historyDuplicates, candidateSeen, authState, summary, ledger)
 	}
 }
 
-func (s *Service) submitAddCandidate(ctx context.Context, candidate addTaskCandidate, existingURLs map[string]bool, historyDuplicates map[string]bool, candidateSeen map[string]bool, authState *addTaskAuthBatchState, summary *addTaskSummary) {
+func (s *Service) submitAddCandidate(ctx context.Context, candidate addTaskCandidate, existingURLs map[string]bool, historyDuplicates map[string]bool, candidateSeen map[string]bool, authState *addTaskAuthBatchState, summary *addTaskSummary, ledger *smartthread.BandwidthLedger) {
 	displayKey := candidateDisplayKey(candidate)
 	if isDuplicateAddCandidate(candidate, existingURLs, historyDuplicates, candidateSeen) {
 		summary.duplicates = append(summary.duplicates, displayKey)
 		return
 	}
 
-	if _, err := s.addTaskCandidate(ctx, candidate, authState); err != nil {
+	if _, err := s.addTaskCandidate(ctx, candidate, authState, ledger); err != nil {
 		summary.errors[displayKey] = redactAddTaskError(err)
 		return
 	}
@@ -300,7 +302,7 @@ func isDuplicateAddCandidate(candidate addTaskCandidate, existingURLs map[string
 	return history.ContainsSource(candidate.url)
 }
 
-func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandidate, authState *addTaskAuthBatchState) (string, error) {
+func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandidate, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) (string, error) {
 	out := ""
 	if candidate.out != "" {
 		safeOut, err := extractor.SafeAria2OutFilename(candidate.out)
@@ -365,10 +367,17 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 
 		maxConn, _ := strconv.Atoi(config.Current.MaxConnections)
 		if maxConn <= 0 {
-			maxConn = 16
+			maxConn = 8
 		}
 
-		params := smartthread.Calculate(fileSize, maxConn, candidate.url)
+		params := smartthread.Calculate(smartthread.CalcParams{
+			FileSize:          fileSize,
+			MaxConnections:    maxConn,
+			Scope:             scope,
+			Domain:            domain,
+			ReservedBandwidth: ledger.Reserved(scope),
+		})
+		ledger.Reserve(scope, params.TargetBandwidth)
 		var err error
 		gid, err = s.Engine.AddUri(candidate.url, rpc.AddURIOptions{
 			Dir:          dir,

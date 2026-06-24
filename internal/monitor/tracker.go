@@ -433,6 +433,18 @@ func (t *TaskTracker) SetScope(gid string, scope string, ttfbMs int64, domain st
 	}
 }
 
+// GetScope 返回任务的 scope/domain 信息
+func (t *TaskTracker) GetScope(gid string) (scope, domain string, ok bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	tracked := t.tasks[gid]
+	if tracked == nil || tracked.Scope == "" {
+		return "", "", false
+	}
+	return tracked.Scope, tracked.Domain, true
+}
+
 // RemoveTask 从追踪器中移除任务
 func (t *TaskTracker) RemoveTask(gid string) {
 	t.mu.Lock()

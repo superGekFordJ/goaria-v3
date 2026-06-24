@@ -806,3 +806,44 @@ func TestEventAndTickPath_TickCompletesFirst(t *testing.T) {
 		t.Error("Expected nil from event-path MarkCompleteFromEvent (already processed by tick)")
 	}
 }
+
+func TestTaskTracker_GetScope(t *testing.T) {
+	tracker := NewTaskTracker()
+
+	// Before SetScope, GetScope returns ok=false
+	_, _, ok := tracker.GetScope("gid-scope-001")
+	if ok {
+		t.Error("Expected ok=false before SetScope")
+	}
+
+	tracker.SetScope("gid-scope-001", "wan", 120, "example.com")
+
+	scope, domain, ok := tracker.GetScope("gid-scope-001")
+	if !ok {
+		t.Fatal("Expected ok=true after SetScope")
+	}
+	if scope != "wan" {
+		t.Errorf("scope = %s, want wan", scope)
+	}
+	if domain != "example.com" {
+		t.Errorf("domain = %s, want example.com", domain)
+	}
+
+	// Unknown gid
+	_, _, ok = tracker.GetScope("nonexistent")
+	if ok {
+		t.Error("Expected ok=false for nonexistent gid")
+	}
+}
+
+func TestTaskTracker_GetScope_EmptyScope(t *testing.T) {
+	tracker := NewTaskTracker()
+
+	// SetThreadInfo creates a tracked task with empty Scope
+	tracker.SetThreadInfo("gid-empty-scope", 4, false)
+
+	_, _, ok := tracker.GetScope("gid-empty-scope")
+	if ok {
+		t.Error("Expected ok=false when Scope is empty")
+	}
+}

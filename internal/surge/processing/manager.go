@@ -128,6 +128,12 @@ func (mgr *LifecycleManager) getEngineHooks() EngineHooks {
 	return mgr.engineHooks
 }
 
+// FORK-PATCH:Public accessor for read-modify-write of EngineHooks.
+// Used by GoAria's SetResumeParamsHook to preserve existing hooks when updating.
+func (mgr *LifecycleManager) GetEngineHooks() EngineHooks {
+	return mgr.getEngineHooks()
+}
+
 // GetSettings reloads disk-backed routing rules opportunistically so a long-lived
 // lifecycle manager picks up saved settings changes without a restart.
 func (m *LifecycleManager) GetSettings() *config.Settings {

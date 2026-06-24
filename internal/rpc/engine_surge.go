@@ -102,6 +102,19 @@ func (e *SurgeEngine) IsSurgeActive() bool {
 	return e.service != nil
 }
 
+// SetResumeParamsHook injects the RecomputeResumeParams callback into the
+// LifecycleManager's EngineHooks. This allows GoAria to recompute Workers
+// and MinChunkSize on resume using current BBR/bandwidth state.
+// Uses read-modify-write to preserve any other hooks set by callers.
+func (e *SurgeEngine) SetResumeParamsHook(fn func(cfg *types.DownloadConfig)) {
+	if e.manager == nil {
+		return
+	}
+	hooks := e.manager.GetEngineHooks()
+	hooks.RecomputeResumeParams = fn
+	e.manager.SetEngineHooks(hooks)
+}
+
 // getDownloadList returns the Surge download list with a 1s TTL request-scoped
 // cache. This avoids duplicate service.List() (Gob deserialization) when
 // TellWaiting and TellStopped are called concurrently within the same tick.

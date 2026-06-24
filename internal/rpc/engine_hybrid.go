@@ -51,6 +51,12 @@ func (h *HybridEngine) AddUri(url string, options AddURIOptions) (string, error)
 		log.Printf("[Hybrid] Surge failed to add URI %s: %v, falling back to Aria2", url, err)
 	}
 
+	// Aria2 hard limit: max-connection-per-server = 16.
+	// Surge allows up to 32 (PerDownloadMax), so only clamp on the Aria2 path.
+	if subOpts.Split > 16 {
+		subOpts.Split = 16
+	}
+
 	gid, err := h.aria2Engine.AddUri(url, subOpts)
 	if err != nil {
 		return "", err

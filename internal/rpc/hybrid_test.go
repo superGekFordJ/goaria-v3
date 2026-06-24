@@ -641,3 +641,56 @@ func TestHybridEngine_PartialFailure_GetGlobalStat(t *testing.T) {
 		t.Fatal("expected error when both engines fail, got nil")
 	}
 }
+
+func TestHybridEngine_Aria2SplitClamp(t *testing.T) {
+	aria2 := &mockEngine{addResultGid: "ar_clamped"}
+	surge := &mockEngine{addResultErr: errors.New("surge unavailable")}
+	hybrid := NewHybridEngine(aria2, surge)
+
+	// Split=32 should be clamped to 16 on the Aria2 path
+	_, err := hybrid.AddUri("http://example.com/file.zip", AddURIOptions{Split: 32})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(aria2.addedOptions) != 1 {
+		t.Fatalf("expected 1 Aria2 add, got %d", len(aria2.addedOptions))
+	}
+	if aria2.addedOptions[0].Split != 16 {
+		t.Errorf("Aria2 Split = %d, want 16 (clamped from 32)", aria2.addedOptions[0].Split)
+	}
+}
+
+func TestHybridEngine_SurgeSplitNotClamped(t *testing.T) {
+	aria2 := &mockEngine{}
+	surge := &mockEngine{addResultGid: "sg_noclamp"}
+	hybrid := NewHybridEngine(aria2, surge)
+
+	// Split=32 should pass through to Surge unchanged
+	_, err := hybrid.AddUri("http://example.com/file.zip", AddURIOptions{Split: 32})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(surge.addedOptions) != 1 {
+		t.Fatalf("expected 1 Surge add, got %d", len(surge.addedOptions))
+	}
+	if surge.addedOptions[0].Split != 32 {
+		t.Errorf("Surge Split = %d, want 32 (not clamped)", surge.addedOptions[0].Split)
+	}
+	if len(aria2.addedUrls) != 0 {
+		t.Errorf("Aria2 should not have been called")
+	}
+}
+
+func TestHybridEngine_Aria2SplitUnder16NotClamped(t *testing.T) {
+	aria2 := &mockEngine{addResultGid: "ar_ok"}
+	surge := &mockEngine{addResultErr: errors.New("surge unavailable")}
+	hybrid := NewHybridEngine(aria2, surge)
+
+	_, err := hybrid.AddUri("http://example.com/file.zip", AddURIOptions{Split: 8})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if aria2.addedOptions[0].Split != 8 {
+		t.Errorf("Aria2 Split = %d, want 8 (unchanged)", aria2.addedOptions[0].Split)
+	}
+}

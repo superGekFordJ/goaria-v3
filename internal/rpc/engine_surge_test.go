@@ -114,3 +114,47 @@ func findSurgeConfigByID(e *SurgeEngine, id string) *types.DownloadConfig {
 	}
 	return nil
 }
+
+func TestSurgeEngine_SetResumeParamsHook(t *testing.T) {
+	engine := NewSurgeEngine()
+	defer engine.Close()
+
+	var called bool
+	var gotWorkers int
+	var gotMinChunk int64
+
+	engine.SetResumeParamsHook(func(cfg *types.DownloadConfig) {
+		called = true
+		gotWorkers = cfg.Runtime.Workers
+		gotMinChunk = cfg.Runtime.MinChunkSize
+		cfg.Runtime.Workers = 12
+		cfg.Runtime.MinChunkSize = 8 * 1024 * 1024
+	})
+
+	hooks := engine.manager.GetEngineHooks()
+	if hooks.RecomputeResumeParams == nil {
+		t.Fatal("RecomputeResumeParams hook not set")
+	}
+
+	cfg := &types.DownloadConfig{
+		ID:      "test-resume",
+		Runtime: &types.RuntimeConfig{Workers: 4, MinChunkSize: 1024},
+	}
+	hooks.RecomputeResumeParams(cfg)
+
+	if !called {
+		t.Fatal("hook was not called")
+	}
+	if gotWorkers != 4 {
+		t.Errorf("hook received Workers=%d, want 4", gotWorkers)
+	}
+	if gotMinChunk != 1024 {
+		t.Errorf("hook received MinChunkSize=%d, want 1024", gotMinChunk)
+	}
+	if cfg.Runtime.Workers != 12 {
+		t.Errorf("after hook Workers=%d, want 12", cfg.Runtime.Workers)
+	}
+	if cfg.Runtime.MinChunkSize != 8*1024*1024 {
+		t.Errorf("after hook MinChunkSize=%d, want 8MB", cfg.Runtime.MinChunkSize)
+	}
+}

@@ -16,9 +16,9 @@ func init() {
 }
 
 const (
-	maxRecords  = 100              // 最多保留记录数
+	maxRecords  = 10000            // 最多保留记录数（网卡隔离需更多历史）
 	MinFileSize = 50 * 1024 * 1024 // 仅记录 >50MB 的下载
-	recentDays  = 3                // GetRecentPeak 只看最近 3 天
+	recentDays  = 365              // 跨季节数据，配合网卡隔离（SPEC-176）
 )
 
 // SpeedRecord 记录单次大文件下载的峰值数据
@@ -137,7 +137,7 @@ func AddRecordV2(peakSpeed int64, threadCount int, fileSize int64, isExploration
 }
 
 // GetRecentPeak 获取最近有效峰值（采用单线程开发效率中位数 + 标杆优先逻辑）
-// 返回最近 3 天内的单线程能力评估值 (bytes/s)
+// 返回最近 recentDays 天内的单线程能力评估值 (bytes/s)
 func GetRecentPeak() (vSingleEst int64, ok bool) {
 	return GetRecentPeakByScope("")
 }
@@ -154,7 +154,7 @@ func GetRecentPeakByScope(scope string) (vSingleEst int64, ok bool) {
 
 	cutoff := time.Now().Add(-time.Duration(recentDays) * 24 * time.Hour).Unix()
 
-	// 找出最近 3 天的记录并计算单线程效率 V
+	// 找出最近 recentDays 天的记录并计算单线程效率 V
 	var vValues []int64
 
 	for i := range records {
@@ -171,54 +171,18 @@ func GetRecentPeakByScope(scope string) (vSingleEst int64, ok bool) {
 		return 0, false
 	}
 
-	// 限制样本量为最近 10 条
-	if len(vValues) > 10 {
-		vValues = vValues[len(vValues)-10:]
+	// 限制样本量为最近 100 条
+	if len(vValues) > 100 {
+		vValues = vValues[len(vValues)-100:]
 	}
 
-	// 1. 计算中位数基准 (Baseline)
+	// 计算中位数基准 (Baseline)
 	sort.Slice(vValues, func(i, j int) bool {
 		return vValues[i] < vValues[j]
 	})
 	medianV := vValues[len(vValues)/2]
 
-	// 2. 科学验证机制 (Scientific Validation)
-	// 不再盲目信任所有高分，只有当"探索任务"显著超越基准时，才采纳为新标杆
-	// 验证阈值：探索效率 >= 基准 * 1.5
-	var verifiedBenchmark int64
-
-	// 重新遍历所有记录寻找成功的探索任务（按 scope 过滤）
-	// records 上限 100 条，全量遍历开销可接受
-	for i := range records {
-		if scope != "" && records[i].Scope != scope {
-			continue
-		}
-		r := records[i]
-		if r.Timestamp < cutoff {
-			continue
-		}
-		if r.IsExploration && r.ThreadCount > 0 {
-			eff := r.PeakSpeed / int64(r.ThreadCount)
-			// 只有显著超越中位数的探索才算成功
-			if eff >= medianV*3/2 { // eff >= median * 1.5
-				if eff > verifiedBenchmark {
-					verifiedBenchmark = eff
-				}
-			}
-		}
-	}
-
-	// 决策：如果有验证成功的标杆，使用标杆（打九折以防万一）；否则坚持中位数
-	finalV := medianV
-	if verifiedBenchmark > 0 {
-		// 采用成功探索的值，保留 10% 安全余量
-		candidate := verifiedBenchmark * 9 / 10
-		if candidate > finalV {
-			finalV = candidate
-		}
-	}
-
-	return finalV, true
+	return medianV, true
 }
 
 // GetGlobalPeak 返回最近 recentDays 内指定 scope 的总峰值速度 (bytes/s)
@@ -245,15 +209,19 @@ func GetGlobalPeak(scope string) (int64, bool) {
 	return peak, found
 }
 
-// GetDomainPeak 返回指定 domain 的历史最高峰值速度 (bytes/s)
+// GetDomainPeak 返回最近 recentDays 内指定 domain 的历史最高峰值速度 (bytes/s)
 func GetDomainPeak(domain string) (int64, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
 
+	cutoff := time.Now().Add(-time.Duration(recentDays) * 24 * time.Hour).Unix()
 	var peak int64
 	found := false
 	for i := range records {
-		if records[i].Domain != domain {
+		if records[i].Timestamp < cutoff {
+			continue
+		}
+		if domain == "" || records[i].Domain != domain {
 			continue
 		}
 		if records[i].PeakSpeed > peak {
@@ -264,18 +232,22 @@ func GetDomainPeak(domain string) (int64, bool) {
 	return peak, found
 }
 
-// GetRTprop 返回指定 domain 的 TTFB 最小值 (ms)
+// GetRTprop 返回最近 recentDays 内指定 domain 的 TTFB 最小值 (ms)
 // 跳过 TTFBMs=0 的记录；无 domain 匹配时返回全局 TTFB 最小值
 func GetRTprop(domain string) (int64, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
 
+	cutoff := time.Now().Add(-time.Duration(recentDays) * 24 * time.Hour).Unix()
 	var minTTFB int64
 	found := false
 
 	// 先尝试 domain 匹配（空 domain 跳过，直接走全局回退）
 	if domain != "" {
 		for i := range records {
+			if records[i].Timestamp < cutoff {
+				continue
+			}
 			if records[i].Domain != domain || records[i].TTFBMs <= 0 {
 				continue
 			}
@@ -291,6 +263,9 @@ func GetRTprop(domain string) (int64, bool) {
 
 	// 回退到全局 TTFB 最小值
 	for i := range records {
+		if records[i].Timestamp < cutoff {
+			continue
+		}
 		if records[i].TTFBMs <= 0 {
 			continue
 		}
@@ -300,6 +275,29 @@ func GetRTprop(domain string) (int64, bool) {
 		}
 	}
 	return minTTFB, found
+}
+
+// HasDomainScopeRecord returns true if at least one record exists within
+// recentDays matching the given domain and scope. Used by the exploration
+// mechanism to determine if a domain+scope combination is "known".
+func HasDomainScopeRecord(domain, scope string) bool {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	cutoff := time.Now().Add(-time.Duration(recentDays) * 24 * time.Hour).Unix()
+	for i := range records {
+		if records[i].Timestamp < cutoff {
+			continue
+		}
+		if domain != "" && records[i].Domain != domain {
+			continue
+		}
+		if scope != "" && records[i].Scope != scope {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // CleanExpired 清理过期数据

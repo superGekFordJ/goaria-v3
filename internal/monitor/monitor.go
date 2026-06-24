@@ -14,7 +14,6 @@ import (
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/rpc"
-	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
 	surgeEvents "goaria-v3/internal/surge/engine/events"
 	"goaria-v3/internal/tray"
@@ -64,7 +63,7 @@ type Monitor struct {
 	prevActiveGids  map[string]bool
 	prevWaitingGids map[string]bool
 
-	// Per-worker telemetry cache  
+	// Per-worker telemetry cache
 	telemetry *TelemetryCache
 }
 
@@ -378,7 +377,7 @@ func (m *Monitor) tick() {
 		}
 	}
 
-	// Collect per-worker telemetry from Surge engine  
+	// Collect per-worker telemetry from Surge engine
 	m.collectTelemetry(active)
 
 	// 更新缓存
@@ -520,15 +519,7 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 		if threadCount <= 0 {
 			threadCount, _ = strconv.Atoi(config.Current.MaxConnections)
 			if threadCount <= 0 {
-				threadCount = 16
-			}
-			// 尝试判断是否为探索任务
-			isExploration = smartthread.ShouldExplore(task.SourceURL)
-			if isExploration && threadCount > 1 {
-				threadCount = (threadCount + 1) / 2
-				if threadCount < 1 {
-					threadCount = 1
-				}
+				threadCount = 8
 			}
 		}
 
@@ -539,6 +530,8 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 			task.Scope = scope
 			task.Domain = domain
 		}
+
+		// isExploration 直接从 tracker 记录取值，不再重新计算或减半
 
 		// Skip recording if we still have no domain — a record without domain is useless
 		// for BBR (GetDomainPeak/GetRTprop can't match) and would only pollute V_global_peak.
@@ -678,7 +671,7 @@ func (m *Monitor) InvalidateTask(gid string) {
 		})
 	}
 
-	// 4. 清理遥测缓存  
+	// 4. 清理遥测缓存
 	if m.telemetry != nil {
 		m.telemetry.Remove(gid)
 	}

@@ -211,11 +211,13 @@ func TestGetDomainPeak(t *testing.T) {
 	SetStatsPath(filepath.Join(tmpDir, "speed_stats.gob"))
 	SetSaveInterval(1 * time.Hour)
 
+	now := time.Now().Unix()
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: 1000, PeakSpeed: 10000000, Domain: "example.com"},
-		{Timestamp: 2000, PeakSpeed: 30000000, Domain: "example.com"},
-		{Timestamp: 3000, PeakSpeed: 5000000, Domain: "other.com"},
+		{Timestamp: now - 100, PeakSpeed: 10000000, Domain: "example.com"},
+		{Timestamp: now - 50, PeakSpeed: 30000000, Domain: "example.com"},
+		{Timestamp: now - 30, PeakSpeed: 5000000, Domain: "other.com"},
+		{Timestamp: now - 400*24*3600, PeakSpeed: 99999999, Domain: "stale.com"},
 	}
 	mu.Unlock()
 
@@ -231,6 +233,11 @@ func TestGetDomainPeak(t *testing.T) {
 	if ok {
 		t.Error("Expected ok=false for nonexistent domain")
 	}
+
+	_, ok = GetDomainPeak("stale.com")
+	if ok {
+		t.Error("Expected ok=false for stale domain (400-day-old record, 365-day window)")
+	}
 }
 
 func TestGetRTprop(t *testing.T) {
@@ -238,12 +245,14 @@ func TestGetRTprop(t *testing.T) {
 	SetStatsPath(filepath.Join(tmpDir, "speed_stats.gob"))
 	SetSaveInterval(1 * time.Hour)
 
+	now := time.Now().Unix()
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: 1000, TTFBMs: 200, Domain: "example.com"},
-		{Timestamp: 2000, TTFBMs: 100, Domain: "example.com"},
-		{Timestamp: 3000, TTFBMs: 0, Domain: "example.com"},
-		{Timestamp: 4000, TTFBMs: 50, Domain: "other.com"},
+		{Timestamp: now - 100, TTFBMs: 200, Domain: "example.com"},
+		{Timestamp: now - 50, TTFBMs: 100, Domain: "example.com"},
+		{Timestamp: now - 40, TTFBMs: 0, Domain: "example.com"},
+		{Timestamp: now - 30, TTFBMs: 50, Domain: "other.com"},
+		{Timestamp: now - 400*24*3600, TTFBMs: 10, Domain: "stale.com"},
 	}
 	mu.Unlock()
 
@@ -262,6 +271,14 @@ func TestGetRTprop(t *testing.T) {
 	if rtt != 50 {
 		t.Errorf("GetRTprop(nomatch.com) global fallback = %d, want 50", rtt)
 	}
+
+	rtt, ok = GetRTprop("stale.com")
+	if !ok {
+		t.Fatal("Expected ok=true (global fallback for stale domain)")
+	}
+	if rtt != 50 {
+		t.Errorf("GetRTprop(stale.com) global fallback = %d, want 50 (stale record excluded)", rtt)
+	}
 }
 
 func TestGetRTprop_NoTTFBRecords(t *testing.T) {
@@ -269,9 +286,10 @@ func TestGetRTprop_NoTTFBRecords(t *testing.T) {
 	SetStatsPath(filepath.Join(tmpDir, "speed_stats.gob"))
 	SetSaveInterval(1 * time.Hour)
 
+	now := time.Now().Unix()
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: 1000, TTFBMs: 0, Domain: "a.com"},
+		{Timestamp: now - 100, TTFBMs: 0, Domain: "a.com"},
 	}
 	mu.Unlock()
 
@@ -286,11 +304,12 @@ func TestGetRTprop_EmptyDomain_SkipsToGlobalFallback(t *testing.T) {
 	SetStatsPath(filepath.Join(tmpDir, "speed_stats.gob"))
 	SetSaveInterval(1 * time.Hour)
 
+	now := time.Now().Unix()
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: 1000, TTFBMs: 0, Domain: ""},        // empty domain, TTFB=0 → should be skipped
-		{Timestamp: 2000, TTFBMs: 300, Domain: "x.com"}, // non-empty domain, TTFB=300
-		{Timestamp: 3000, TTFBMs: 100, Domain: "y.com"}, // non-empty domain, TTFB=100
+		{Timestamp: now - 100, TTFBMs: 0, Domain: ""},        // empty domain, TTFB=0 → should be skipped
+		{Timestamp: now - 50, TTFBMs: 300, Domain: "x.com"},  // non-empty domain, TTFB=300
+		{Timestamp: now - 30, TTFBMs: 100, Domain: "y.com"},  // non-empty domain, TTFB=100
 	}
 	mu.Unlock()
 
@@ -301,6 +320,43 @@ func TestGetRTprop_EmptyDomain_SkipsToGlobalFallback(t *testing.T) {
 	}
 	if rtt != 100 {
 		t.Errorf("GetRTprop(\"\") = %d, want 100 (global min, not matching Domain=\"\")", rtt)
+	}
+}
+
+func TestGetRecentPeakByScope_365DayWindow(t *testing.T) {
+	tmpDir := t.TempDir()
+	SetStatsPath(filepath.Join(tmpDir, "speed_stats.gob"))
+	SetSaveInterval(1 * time.Hour)
+
+	// A record 4 days old should still be included with a 365-day window
+	fourDaysAgo := time.Now().Add(-4 * 24 * time.Hour).Unix()
+
+	mu.Lock()
+	records = []SpeedRecord{
+		{Timestamp: fourDaysAgo, PeakSpeed: 6000000, ThreadCount: 6, Scope: "wan"},
+	}
+	mu.Unlock()
+
+	v, ok := GetRecentPeakByScope("wan")
+	if !ok {
+		t.Fatal("Expected ok=true for 4-day-old record with 365-day window")
+	}
+	if v != 1000000 {
+		t.Errorf("GetRecentPeakByScope(wan) = %d, want 1000000 (6000000/6)", v)
+	}
+
+	// A record 400 days old should be excluded
+	fourHundredDaysAgo := time.Now().Add(-400 * 24 * time.Hour).Unix()
+
+	mu.Lock()
+	records = []SpeedRecord{
+		{Timestamp: fourHundredDaysAgo, PeakSpeed: 6000000, ThreadCount: 6, Scope: "wan"},
+	}
+	mu.Unlock()
+
+	_, ok = GetRecentPeakByScope("wan")
+	if ok {
+		t.Error("Expected ok=false for 400-day-old record with 365-day window")
 	}
 }
 

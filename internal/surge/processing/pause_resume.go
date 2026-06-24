@@ -31,6 +31,11 @@ type EngineHooks struct {
 	UpdateURL func(id, newURL string) error
 	// PublishEvent sends an event into the service's broadcast channel.
 	PublishEvent func(msg interface{}) error
+	// FORK-PATCH:Optional resume recompute hook.
+	// RecomputeResumeParams is set by GoAria to recompute Workers and MinChunkSize
+	// for a resume based on current BBR/bandwidth state. If nil, the original saved
+	// values are used (backward-compatible).
+	RecomputeResumeParams func(cfg *types.DownloadConfig)
 }
 
 // Pause pauses an active download.
@@ -102,6 +107,10 @@ func (mgr *LifecycleManager) Resume(id string) error {
 		if cfg := hooks.ExtractPausedConfig(id); cfg != nil {
 			hydrateConfigFromDisk(cfg)
 			cfg.IsResume = true
+			// FORK-PATCH:recompute resume params before re-enqueueing.
+			if hooks.RecomputeResumeParams != nil {
+				hooks.RecomputeResumeParams(cfg)
+			}
 			if hooks.AddConfig != nil {
 				hooks.AddConfig(*cfg)
 			}
@@ -138,6 +147,11 @@ func (mgr *LifecycleManager) Resume(id string) error {
 	}
 
 	cfg := buildResumeConfig(id, outputPath, entry, savedState, settings)
+
+	// FORK-PATCH:recompute resume params before re-enqueueing.
+	if hooks.RecomputeResumeParams != nil {
+		hooks.RecomputeResumeParams(&cfg)
+	}
 
 	if hooks.AddConfig != nil {
 		hooks.AddConfig(cfg)
@@ -180,6 +194,10 @@ func (mgr *LifecycleManager) ResumeBatch(ids []string) []error {
 			if cfg := hooks.ExtractPausedConfig(id); cfg != nil {
 				hydrateConfigFromDisk(cfg)
 				cfg.IsResume = true
+				// FORK-PATCH:recompute resume params before re-enqueueing.
+				if hooks.RecomputeResumeParams != nil {
+					hooks.RecomputeResumeParams(cfg)
+				}
 				if hooks.AddConfig != nil {
 					hooks.AddConfig(*cfg)
 				}
@@ -221,6 +239,10 @@ func (mgr *LifecycleManager) ResumeBatch(ids []string) []error {
 		}
 
 		cfg := buildResumeConfig(id, outputPath, nil, savedState, settings)
+		// FORK-PATCH:recompute resume params before re-enqueueing.
+		if hooks.RecomputeResumeParams != nil {
+			hooks.RecomputeResumeParams(&cfg)
+		}
 		if hooks.AddConfig != nil {
 			hooks.AddConfig(cfg)
 		}

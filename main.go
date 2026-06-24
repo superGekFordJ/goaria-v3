@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"goaria-v3/internal/config"
@@ -19,8 +20,10 @@ import (
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/process"
 	"goaria-v3/internal/rpc"
+	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/surge"
+	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/tasks"
 	"goaria-v3/internal/tray"
 	"goaria-v3/internal/update"
@@ -133,6 +136,55 @@ func main() {
 	monitor.State.SetMonitor(mon) // 注册到全局状态，供 RemoveTask 调用
 	mon.Start()
 
+	smartthread.SetActiveBandwidthProvider(monitor.ActiveBandwidthByScope)
+
+	if hybrid, ok := appService.downloadEngine.(*rpc.HybridEngine); ok {
+		if surgeEng, ok := hybrid.SurgeEngineRef(); ok {
+			surgeEng.SetResumeParamsHook(func(cfg *types.DownloadConfig) {
+				if !config.Current.SmartThreadMode {
+					return
+				}
+
+				gid := "sg_" + cfg.ID
+				tracker := monitor.State.GetTracker()
+				if tracker == nil {
+					return
+				}
+				scope, domain, ok := tracker.GetScope(gid)
+				if !ok {
+					scope, domain = speedstats.NewScopeClassifier().ClassifyByURL(cfg.URL)
+				}
+
+				remaining := cfg.TotalSize
+				if cfg.State != nil {
+					downloaded := cfg.State.Downloaded.Load()
+					if cfg.TotalSize > 0 && downloaded < cfg.TotalSize {
+						remaining = cfg.TotalSize - downloaded
+					}
+				}
+
+				maxConn, _ := strconv.Atoi(config.Current.MaxConnections)
+				if maxConn <= 0 {
+					maxConn = 8
+				}
+
+				params := smartthread.Calculate(smartthread.CalcParams{
+					FileSize:          remaining,
+					MaxConnections:    maxConn,
+					Scope:             scope,
+					Domain:            domain,
+					ReservedBandwidth: monitor.ActiveBandwidthByScope(scope),
+				})
+				if params.Split > 0 {
+					cfg.Runtime.Workers = params.Split
+				}
+				if params.MinSize > 0 {
+					cfg.Runtime.MinChunkSize = params.MinSize
+				}
+			})
+		}
+	}
+
 	// Update shutdown handler to stop monitor
 	app.OnShutdown(func() {
 		mon.Stop()
@@ -188,11 +240,11 @@ type embeddedExtractorConfigDeps struct {
 	hasEmbeddedReleasePacks             func() bool
 	embeddedReleaseRequired             func() bool
 	loadHostPolicyResolver              func() (extractor.HostPolicyResolver, error)
-	loadAuthRuntimeBundle                func() (*extractor.PrivateAuthRuntimeBundle, error)
-	defaultAuthProfileStorePath          func() (string, error)
-	newFileAuthProfileStore              func(string) (extractor.AuthProfileStore, error)
-	newAuthWebViewDriver                 func(*App) extractor.AuthWebViewDriver
-	newEmbeddedReleaseAddTaskDispatcher  func(extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error)
+	loadAuthRuntimeBundle               func() (*extractor.PrivateAuthRuntimeBundle, error)
+	defaultAuthProfileStorePath         func() (string, error)
+	newFileAuthProfileStore             func(string) (extractor.AuthProfileStore, error)
+	newAuthWebViewDriver                func(*App) extractor.AuthWebViewDriver
+	newEmbeddedReleaseAddTaskDispatcher func(extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error)
 }
 
 func defaultEmbeddedExtractorConfigDeps() embeddedExtractorConfigDeps {
