@@ -158,3 +158,31 @@ func TestSurgeEngine_SetResumeParamsHook(t *testing.T) {
 		t.Errorf("after hook MinChunkSize=%d, want 8MB", cfg.Runtime.MinChunkSize)
 	}
 }
+
+func TestSurgeEngine_SetResumeParamsHook_NilHook_PreservesValues(t *testing.T) {
+	engine := NewSurgeEngine()
+	defer engine.Close()
+
+	// Without setting any hook, RecomputeResumeParams should be nil
+	hooks := engine.manager.GetEngineHooks()
+	if hooks.RecomputeResumeParams != nil {
+		t.Fatal("RecomputeResumeParams should be nil when no hook set")
+	}
+
+	// Simulate what the engine does: if hook is nil, skip (preserve saved values)
+	cfg := &types.DownloadConfig{
+		ID:      "test-resume-no-hook",
+		Runtime: &types.RuntimeConfig{Workers: 6, MinChunkSize: 4 * 1024 * 1024},
+	}
+	if hooks.RecomputeResumeParams != nil {
+		hooks.RecomputeResumeParams(cfg)
+	}
+
+	// Values should be unchanged
+	if cfg.Runtime.Workers != 6 {
+		t.Errorf("Workers = %d, want 6 (preserved, no hook)", cfg.Runtime.Workers)
+	}
+	if cfg.Runtime.MinChunkSize != 4*1024*1024 {
+		t.Errorf("MinChunkSize = %d, want 4MB (preserved, no hook)", cfg.Runtime.MinChunkSize)
+	}
+}

@@ -39,6 +39,7 @@ var (
 	flagHidden = flag.Bool("hidden", false, "Start in headless mode (tray only, no window)")
 )
 
+var resumeScopeClassifier = speedstats.NewScopeClassifier()
 //go:embed all:frontend/dist
 var assets embed.FS
 
@@ -152,7 +153,7 @@ func main() {
 				}
 				scope, domain, ok := tracker.GetScope(gid)
 				if !ok {
-					scope, domain = speedstats.NewScopeClassifier().ClassifyByURL(cfg.URL)
+					scope, domain = resumeScopeClassifier.ClassifyByURL(cfg.URL)
 				}
 
 				remaining := cfg.TotalSize
@@ -161,6 +162,10 @@ func main() {
 					if cfg.TotalSize > 0 && downloaded < cfg.TotalSize {
 						remaining = cfg.TotalSize - downloaded
 					}
+				}
+
+				if remaining <= 0 {
+					return
 				}
 
 				maxConn, _ := strconv.Atoi(config.Current.MaxConnections)

@@ -229,3 +229,85 @@ func TestCalculate_Resume_RemainingSize(t *testing.T) {
 		t.Errorf("MinSize = %d, want >= 1MB", params.MinSize)
 	}
 }
+
+func TestCalculate_DirtySampleClamp(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	// Single dirty sample: PeakSpeed=50KB/s with 8 threads → V_thread_avg = 6.25KB/s
+	// This is well below the 100KB/s clamp threshold (minThreadEfficiency).
+	// With only this record, GetRecentPeakByScope returns median = 6.25KB/s,
+	// GetGlobalPeak returns 50KB/s, GetDomainPeak returns 50KB/s.
+	speedstats.AddRecordV2(50000, 8, 200*1024*1024, false, 100, "example.com", "wan")
+
+	params := Calculate(CalcParams{
+		FileSize:       1 * 1024 * 1024 * 1024, // 1GB
+		MaxConnections: 8,
+		Scope:          "wan",
+		Domain:         "example.com",
+	})
+
+	// V_thread_avg = 6.25KB/s → clamped to 100KB/s (minThreadEfficiency).
+	// V_global_peak = 50KB/s, V_domain_peak = 50KB/s
+	// V_available = 50KB/s - 0 = 50KB/s
+	// V_target = min(50KB/s, 50KB/s) = 50KB/s
+	// N_sat = ceil(50KB / 100KB) + 1 = 1 + 1 = 2
+	// N_tmin = ceil(1GB / (100KB * 5)) = ceil(1GB / 500KB) = 2099, clamped to 8
+	// N_final = min(2, 8, 8) = 2
+	// Without clamp: V_thread_avg = 6.25KB/s → N_sat = ceil(50KB/6.25KB)+1 = 9, clamped to 8
+	//   N_tmin = ceil(1GB/(6.25KB*5)) = huge, clamped to 8 → N_final = 8
+	// With clamp: N_final = 2 (because N_sat = 2 after clamp)
+	// Key: clamp reduces N_sat from 9→2, proving the clamp is active.
+	if params.Split != 2 {
+		t.Errorf("Split = %d, want 2 (dirty sample clamped to 100KB/s → N_sat=2)", params.Split)
+	}
+}
+
+func TestCalculate_BatchDegradation(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	// Seed: V_thread_avg = 2MB/s, V_global_peak = 8MB/s, V_domain_peak = 8MB/s
+	speedstats.AddRecordV2(8000000, 4, 200*1024*1024, false, 100, "example.com", "wan")
+
+	// Simulate batch of 3 tasks on same scope using BandwidthLedger
+	orig := activeBandwidthProvider
+	t.Cleanup(func() { activeBandwidthProvider = orig })
+	activeBandwidthProvider = noActiveBandwidth
+
+	ledger := NewBandwidthLedger()
+	fileSize := int64(1 * 1024 * 1024 * 1024) // 1GB each
+
+	var splits []int
+	for i := 0; i < 3; i++ {
+		reserved := ledger.Reserved("wan")
+		params := Calculate(CalcParams{
+			FileSize:          fileSize,
+			MaxConnections:    8,
+			Scope:             "wan",
+			Domain:            "example.com",
+			ReservedBandwidth: reserved,
+		})
+		splits = append(splits, params.Split)
+		ledger.Reserve("wan", params.TargetBandwidth)
+	}
+
+	// First task should get the most threads (full bandwidth available).
+	// Later tasks should get fewer or equal as reserved bandwidth accumulates.
+	if splits[0] < 1 {
+		t.Fatalf("First task Split = %d, want >= 1", splits[0])
+	}
+	// Batch degradation: later tasks should not get more than the first
+	for i := 1; i < len(splits); i++ {
+		if splits[i] > splits[0] {
+			t.Errorf("Task %d Split = %d > first task Split = %d (expected degradation)", i, splits[i], splits[0])
+		}
+	}
+	// At least the last task should have fewer threads than the first
+	// (V_available shrinks as we reserve, so N_sat should decrease)
+	if splits[len(splits)-1] >= splits[0] {
+		t.Errorf("Last task Split = %d, first = %d (expected last < first due to bandwidth reservation)", splits[len(splits)-1], splits[0])
+	}
+}

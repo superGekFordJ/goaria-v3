@@ -1,5 +1,7 @@
 package smartthread
 
+import "sync"
+
 // ActiveBandwidthFunc returns the current total download speed for a given scope.
 // This is injected from outside (monitor.ActiveBandwidthByScope) to avoid an
 // import cycle between smartthread and monitor.
@@ -8,15 +10,20 @@ type ActiveBandwidthFunc func(scope string) int64
 // noActiveBandwidth is the default when no injector is set.
 func noActiveBandwidth(scope string) int64 { return 0 }
 
-var activeBandwidthProvider ActiveBandwidthFunc = noActiveBandwidth
+var (
+	activeBandwidthProvider     ActiveBandwidthFunc = noActiveBandwidth
+	activeBandwidthProviderOnce sync.Once
+)
 
 // SetActiveBandwidthProvider injects the real bandwidth query function.
 // Called once at startup from app initialization (after monitor is ready).
 func SetActiveBandwidthProvider(fn ActiveBandwidthFunc) {
-	if fn == nil {
-		fn = noActiveBandwidth
-	}
-	activeBandwidthProvider = fn
+	activeBandwidthProviderOnce.Do(func() {
+		if fn == nil {
+			fn = noActiveBandwidth
+		}
+		activeBandwidthProvider = fn
+	})
 }
 
 // BandwidthLedger tracks per-scope reserved bandwidth within a batch add session.
