@@ -392,6 +392,15 @@ func (e *SurgeEngine) GetWorkerStats(gid string) []types.WorkerSnapshot {
 	return e.service.Pool.GetWorkerStats(gid)
 }
 
+// ScaleWorkers adjusts the worker count for a Surge download.
+// Returns the number of workers actually added (positive) or drained (negative).
+func (e *SurgeEngine) ScaleWorkers(gid string, delta int) int {
+	if e.service == nil || e.service.Pool == nil {
+		return 0
+	}
+	return e.service.Pool.ScaleWorkers(gid, delta)
+}
+
 // NewSurgeEngineForTesting creates a SurgeEngine with a pre-configured pool for testing.
 // This is used by monitor-side telemetry collection tests.
 func NewSurgeEngineForTesting(pool *download.WorkerPool) *SurgeEngine {

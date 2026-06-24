@@ -19,6 +19,7 @@ type AppConfig struct {
 	SmartThreadMode        bool   `json:"smart_thread_mode"`   // 智能线程模式开关
 	MinThreadLife          int    `json:"min_thread_life"`     // T_min: 线程最小生存时间(秒), 默认 5
 	CloseToTray            bool   `json:"close_to_tray"`       // 关闭窗口时最小化到托盘（true）还是退出应用（false）
+	ConvergenceInterval    int    `json:"convergence_interval"` // 收敛tick间隔(秒), 0=默认5秒
 }
 
 var (

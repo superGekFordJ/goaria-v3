@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -173,6 +174,10 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 					// The stolen part is already in the queue
 					utils.Debug("Worker stopped early due to stealing")
 				}
+				// FORK-PATCH: Decrement conn error counter on successful chunk
+				if d.State != nil {
+					d.State.DecrConnErrors()
+				}
 				break
 			}
 
@@ -201,6 +206,10 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 		}
 
 		if lastErr != nil {
+			// FORK-PATCH: Increment conn error counter on server connection limit errors
+			if d.State != nil && isConnLimitError(lastErr) {
+				d.State.IncrConnErrors()
+			}
 			// Log failed task but continue with next task
 			// If we modified StopAt we should probably reset it or push the remaining part?
 			// TODO: Could optimize by pushing only remaining part if we track that.
@@ -208,6 +217,18 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			utils.Debug("task at offset %d failed after %d retries: %v", task.Offset, maxRetries, lastErr)
 		}
 	}
+}
+
+// FORK-PATCH: isConnLimitError checks for server connection hard limit errors
+func isConnLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "503") ||
+		strings.Contains(s, "429") ||
+		strings.Contains(s, "connection refused") ||
+		strings.Contains(s, "connection reset by peer")
 }
 
 // downloadTask downloads a single byte range and writes to file at offset

@@ -538,6 +538,19 @@ func (h *HybridEngine) SurgeEngineRef() (*SurgeEngine, bool) {
 	return se, ok
 }
 
+// ScaleWorkers adjusts the worker count for a download.
+// Routes to SurgeEngine for sg_ prefixed GIDs; returns 0 for others.
+func (h *HybridEngine) ScaleWorkers(gid string, delta int) int {
+	engine, rawGid := h.splitGid(gid)
+	if engine != "sg" {
+		return 0
+	}
+	if se, ok := h.surgeEngine.(*SurgeEngine); ok {
+		return se.ScaleWorkers(rawGid, delta)
+	}
+	return 0
+}
+
 func (h *HybridEngine) Close() {
 	if closer, ok := h.surgeEngine.(interface{ Close() }); ok {
 		closer.Close()

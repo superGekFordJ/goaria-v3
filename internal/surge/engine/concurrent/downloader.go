@@ -41,19 +41,26 @@ type ConcurrentDownloader struct {
 	Headers      map[string]string // Custom HTTP headers from browser (cookies, auth, etc.)
 
 	// FORK-PATCH: Drain/scale infrastructure
-	nextWorkerID    atomic.Int64    // dynamic worker ID allocation
-	drainingWorkers sync.Map        // workerID -> struct{}{}; checked before queue.Pop()
-	workerCtx       context.Context // set by executeWorkers, used by ScaleWorkers
-	workerMirrors   []string        // cached for ScaleWorkers spawn
-	workerFile      *os.File        // cached for ScaleWorkers spawn
-	workerQueue     *TaskQueue      // cached for ScaleWorkers spawn
-	workerTotalSize int64           // cached for ScaleWorkers spawn
-	workerClient    *http.Client    // cached for ScaleWorkers spawn
-	workerWg        sync.WaitGroup  // tracks all spawned workers (initial + scaled)
+	nextWorkerID    atomic.Int64               // dynamic worker ID allocation
+	drainingWorkers sync.Map                   // workerID -> struct{}{}; checked before queue.Pop()
+	workerDepsPtr   atomic.Pointer[workerDeps] // FORK-PATCH: atomized worker deps
+	workerWg        sync.WaitGroup             // tracks all spawned workers (initial + scaled)
+	workersActive   atomic.Bool                // FORK-PATCH: guards WaitGroup reuse
+	workersMu       sync.Mutex                 // FORK-PATCH: guards Add/Done around Wait
 
 	// FORK-PATCH: End-game hedge and poison defense.
 	consecutiveHedgeErrors atomic.Int32 // consecutive 4xx/5xx counter for poison defense
 	hedgeDisabled          atomic.Bool  // true when hedge is disabled due to poison detection
+}
+
+// FORK-PATCH: workerDeps bundles worker dependencies for atomic access via ScaleWorkers
+type workerDeps struct {
+	ctx       context.Context
+	mirrors   []string
+	file      *os.File
+	queue     *TaskQueue
+	totalSize int64
+	client    *http.Client
 }
 
 // NewConcurrentDownloader creates a new concurrent downloader with all required parameters
@@ -622,21 +629,17 @@ func (d *ConcurrentDownloader) runHealthMonitor(ctx context.Context) {
 }
 
 func (d *ConcurrentDownloader) executeWorkers(ctx context.Context, client *http.Client, outFile *os.File, queue *TaskQueue, fileSize int64, workerMirrors []string, numConns int) error {
-	// FORK-PATCH: Store worker dependencies for ScaleWorkers .
-	// TODO(SPEC-174): These fields are written here and read by ScaleWorkers
-	// without synchronization. Currently safe because ScaleWorkers is only
-	// called after executeWorkers sets them. When SPEC-174 introduces
-	// cross-goroutine ScaleWorkers calls (convergence tick), these must be
-	// protected with atomic.Pointer[workerDeps] or a mutex.
-	// CRITICAL: workerWg.Add() after workerWg.Wait() returns will panic
-	// (WaitGroup reuse). Must guard with workersActive atomic.Bool or
-	// a dedicated mutex before allowing concurrent ScaleWorkers calls.
-	d.workerCtx = ctx
-	d.workerMirrors = workerMirrors
-	d.workerFile = outFile
-	d.workerQueue = queue
-	d.workerTotalSize = fileSize
-	d.workerClient = client
+	// FORK-PATCH: Atomically store worker deps for ScaleWorkers
+	deps := &workerDeps{
+		ctx:       ctx,
+		mirrors:   workerMirrors,
+		file:      outFile,
+		queue:     queue,
+		totalSize: fileSize,
+		client:    client,
+	}
+	d.workerDepsPtr.Store(deps)
+	d.workersActive.Store(true)
 
 	workerErrors := make(chan error, numConns)
 
@@ -656,6 +659,11 @@ func (d *ConcurrentDownloader) executeWorkers(ctx context.Context, client *http.
 
 	// Wait for all workers to complete
 	go func() {
+		// FORK-PATCH: Guard WaitGroup reuse — set workersActive=false under lock
+		// before Wait(), so ScaleWorkers cannot Add() after Wait() begins
+		d.workersMu.Lock()
+		d.workersActive.Store(false)
+		d.workersMu.Unlock()
 		d.workerWg.Wait()
 		close(workerErrors)
 		queue.Close()
@@ -706,23 +714,34 @@ func (d *ConcurrentDownloader) activeWorkerIDs() []int {
 // Positive delta spawns new workers (reusing idle connections from the
 // Transport pool). Negative delta drains the slowest |delta| workers.
 // Returns the number of workers actually added (positive) or drained (negative).
-// FORK-PATCH: Runtime scale up/down API .
+// FORK-PATCH: Runtime scale up/down API (WaitGroup reuse protection + workerDeps atomization)
 func (d *ConcurrentDownloader) ScaleWorkers(delta int) int {
-	if delta == 0 || d.workerCtx == nil || d.workerCtx.Err() != nil {
+	deps := d.workerDepsPtr.Load()
+	if delta == 0 || deps == nil || deps.ctx.Err() != nil {
 		return 0
 	}
 	if delta > 0 {
+		added := 0
 		for i := 0; i < delta; i++ {
+			// FORK-PATCH: Guard WaitGroup reuse — check workersActive under lock before Add
+			d.workersMu.Lock()
+			if !d.workersActive.Load() {
+				d.workersMu.Unlock()
+				break
+			}
 			id := int(d.nextWorkerID.Add(1)) - 1
 			d.workerWg.Add(1)
+			d.workersMu.Unlock()
+
 			go func(workerID int) {
 				defer d.workerWg.Done()
-				if err := d.worker(d.workerCtx, workerID, d.workerMirrors, d.workerFile, d.workerQueue, d.workerTotalSize, d.workerClient); err != nil && err != context.Canceled {
+				if err := d.worker(deps.ctx, workerID, deps.mirrors, deps.file, deps.queue, deps.totalSize, deps.client); err != nil && err != context.Canceled {
 					utils.Debug("Scaled worker %d error: %v", workerID, err)
 				}
 			}(id)
+			added++
 		}
-		return delta
+		return added
 	}
 
 	toDrain := -delta

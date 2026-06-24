@@ -250,11 +250,11 @@ func TestCollectTelemetry_RemovesStaleEntries(t *testing.T) {
 	}
 }
 
-// TestCollectTelemetry_ActiveButNilStats_NotRemoved is a regression test for the
-// stale-removal bug: an active Surge GID whose GetWorkerStats returns nil (e.g.,
-// download not yet registered in pool, or SessionReset just cleared telemetry)
-// must NOT be removed from the telemetry cache.
-func TestCollectTelemetry_ActiveButNilStats_NotRemoved(t *testing.T) {
+// TestCollectTelemetry_ActiveButNilStats_StaleRemoved verifies that an active
+// Surge GID whose GetWorkerStats returns nil (e.g., single-thread fallback after
+// SessionReset) has its stale telemetry cleared to prevent the convergence ticker
+// from acting on outdated worker snapshots.
+func TestCollectTelemetry_ActiveButNilStats_StaleRemoved(t *testing.T) {
 	// Pool has no download for "ghost" GID → GetWorkerStats returns nil
 	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{})
 
@@ -266,7 +266,7 @@ func TestCollectTelemetry_ActiveButNilStats_NotRemoved(t *testing.T) {
 		telemetry: NewTelemetryCache(),
 	}
 
-	// Pre-populate telemetry for sg_ghost
+	// Pre-populate telemetry for sg_ghost (simulates stale data from concurrent phase)
 	m.telemetry.Set("sg_ghost", []types.WorkerSnapshot{{WorkerID: 0, EMASpeed: 500}})
 
 	active := []rpc.Task{
@@ -275,9 +275,9 @@ func TestCollectTelemetry_ActiveButNilStats_NotRemoved(t *testing.T) {
 
 	m.collectTelemetry(active)
 
-	// sg_ghost is active but has nil stats → should NOT be removed
-	if g := m.telemetry.Get("sg_ghost"); g == nil {
-		t.Error("expected telemetry for active sg_ghost to be retained despite nil stats, got nil")
+	// sg_ghost is active but has nil stats → stale telemetry should be removed
+	if g := m.telemetry.Get("sg_ghost"); g != nil {
+		t.Error("expected stale telemetry for active sg_ghost to be removed when stats are nil, got data")
 	}
 }
 

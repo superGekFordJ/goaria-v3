@@ -37,6 +37,9 @@ type TrackedTask struct {
 	Scope  string
 	TTFBMs int64
 	Domain string
+
+	// KeepAlive flag — true when initial split < nSat
+	IsKeepAlive bool
 }
 
 // TaskTracker 后端任务追踪器
@@ -451,6 +454,29 @@ func (t *TaskTracker) RemoveTask(gid string) {
 	defer t.mu.Unlock()
 	delete(t.tasks, gid)
 	delete(t.processedComplete, gid)
+}
+
+// SetKeepAlive sets the IsKeepAlive flag for a tracked task.
+func (t *TaskTracker) SetKeepAlive(gid string, keepAlive bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	tracked := t.tasks[gid]
+	if tracked != nil {
+		tracked.IsKeepAlive = keepAlive
+	}
+}
+
+// GetActiveTrackedTasks returns copies of all tracked tasks with status "active".
+func (t *TaskTracker) GetActiveTrackedTasks() []TrackedTask {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	result := make([]TrackedTask, 0, len(t.tasks))
+	for _, tt := range t.tasks {
+		if tt.Status == "active" {
+			result = append(result, *tt)
+		}
+	}
+	return result
 }
 
 // parseInt64 解析字符串为 int64

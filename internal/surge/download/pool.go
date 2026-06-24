@@ -761,6 +761,17 @@ func (p *WorkerPool) GetWorkerStats(id string) []types.WorkerSnapshot {
 	return ad.config.State.GetWorkerStats()
 }
 
+// FORK-PATCH: ScaleWorkers adjusts the worker count for a download
+func (p *WorkerPool) ScaleWorkers(id string, delta int) int {
+	p.mu.RLock()
+	ad, exists := p.downloads[id]
+	p.mu.RUnlock()
+	if !exists || ad == nil || ad.config.State == nil {
+		return 0
+	}
+	return ad.config.State.ScaleWorkers(delta)
+}
+
 // FORK-PATCH: Test helper for monitor-side telemetry collection tests.
 // NewWorkerPoolForTesting creates a WorkerPool with pre-populated downloads map.
 // configs is a map of download ID → DownloadConfig with State pre-set.

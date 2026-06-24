@@ -15,6 +15,7 @@ type ThreadParams struct {
 	MinSize         int64 // -k 参数：最小切分大小 (bytes)
 	IsExploration   bool  // 是否触发了探索模式
 	TargetBandwidth int64 // 预计占用带宽，供批次账本 Reserve
+	NSat            int   // BBR saturation concurrency (for IsKeepAlive detection)
 }
 
 // Calculate 根据 BBR 带宽感知公式计算最优线程参数。
@@ -35,6 +36,7 @@ func Calculate(p CalcParams) ThreadParams {
 			MinSize:         0,
 			IsExploration:   false,
 			TargetBandwidth: 0,
+			NSat:            maxConn,
 		}
 	}
 
@@ -135,6 +137,7 @@ func Calculate(p CalcParams) ThreadParams {
 		MinSize:         minChunk,
 		IsExploration:   isExploration,
 		TargetBandwidth: targetBandwidth,
+		NSat:            nSat,
 	}
 }
 
@@ -173,6 +176,7 @@ func calculateLegacy(fileSize int64, maxConnections int, domain, scope string, t
 		MinSize:         minSize,
 		IsExploration:   isExploration,
 		TargetBandwidth: vSingleEst * int64(nFinal),
+		NSat:            int(nLimit),
 	}
 }
 

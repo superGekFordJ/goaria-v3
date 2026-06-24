@@ -40,6 +40,7 @@ func SetActiveBandwidthProvider(fn ActiveBandwidthFunc) {
 //	    ledger.Reserve(scope, params.TargetBandwidth)
 //	}
 type BandwidthLedger struct {
+	mu       sync.Mutex
 	reserved map[string]int64
 }
 
@@ -64,6 +65,8 @@ func (l *BandwidthLedger) Reserved(scope string) int64 {
 	if scope == "" {
 		scope = "wan"
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	return l.reserved[scope]
 }
 
@@ -75,5 +78,7 @@ func (l *BandwidthLedger) Reserve(scope string, bandwidth int64) {
 	if scope == "" {
 		scope = "wan"
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.reserved[scope] += bandwidth
 }

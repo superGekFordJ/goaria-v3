@@ -1,5 +1,7 @@
 package smartthread
 
+import "time"
+
 const (
 	// gamma is the safety margin added to the saturation concurrency.
 	gamma = 1
@@ -18,6 +20,13 @@ const (
 
 	// maxChunkSize is the maximum chunk size (1GB).
 	maxChunkSize = 1024 * 1024 * 1024
+
+	// Convergence tick constants
+	convergenceInterval      = 5 * time.Second
+	throughputFloorRatio     = 0.5
+	throughputStableRatio    = 0.8
+	scaleDownStableCycles    = 3
+	scaleUpStableCycles      = 3
 )
 
 // CalcParams holds the inputs for BBR-aware thread calculation.

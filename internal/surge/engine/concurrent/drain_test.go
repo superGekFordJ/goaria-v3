@@ -2,6 +2,7 @@ package concurrent
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -416,12 +417,16 @@ func TestScaleWorkers_Up(t *testing.T) {
 	defer cancel()
 
 	queue := NewTaskQueue()
-	d.workerCtx = ctx
-	d.workerMirrors = []string{server.URL()}
-	d.workerFile = f
-	d.workerQueue = queue
-	d.workerTotalSize = fileSize
-	d.workerClient = &http.Client{}
+	// FORK-PATCH: Use workerDepsPtr instead of individual fields
+	d.workerDepsPtr.Store(&workerDeps{
+		ctx:       ctx,
+		mirrors:   []string{server.URL()},
+		file:      f,
+		queue:     queue,
+		totalSize: fileSize,
+		client:    &http.Client{},
+	})
+	d.workersActive.Store(true)
 
 	beforeID := d.nextWorkerID.Load()
 
@@ -486,7 +491,8 @@ func TestScaleWorkers_Down(t *testing.T) {
 	}
 	d.activeTasks[2].Speed = 100 * 1024 // 100 KB/s (slowest)
 
-	d.workerCtx = ctx
+	d.workerDepsPtr.Store(&workerDeps{ctx: ctx})
+	d.workersActive.Store(true)
 
 	result := d.ScaleWorkers(-1)
 
@@ -518,7 +524,8 @@ func TestScaleWorkers_Down(t *testing.T) {
 // TestScaleWorkers_Zero verifies that ScaleWorkers(0) is a no-op.
 func TestScaleWorkers_Zero(t *testing.T) {
 	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{})
-	d.workerCtx = context.Background()
+	d.workerDepsPtr.Store(&workerDeps{ctx: context.Background()})
+	d.workersActive.Store(true)
 
 	result := d.ScaleWorkers(0)
 	if result != 0 {
@@ -530,6 +537,7 @@ func TestScaleWorkers_Zero(t *testing.T) {
 // when workerCtx is nil (no download in progress).
 func TestScaleWorkers_NilContext(t *testing.T) {
 	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{})
+	// workerDepsPtr is nil (not stored), so ScaleWorkers should return 0
 
 	result := d.ScaleWorkers(1)
 	if result != 0 {
@@ -556,7 +564,8 @@ func TestDrain_ConcurrentAccess(t *testing.T) {
 		d.activeTasks[i].Speed = float64(1000 * (i + 1))
 	}
 
-	d.workerCtx = ctx
+	d.workerDepsPtr.Store(&workerDeps{ctx: ctx})
+	d.workersActive.Store(true)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
@@ -588,4 +597,114 @@ func waitForActiveTask(t *testing.T, d *ConcurrentDownloader, workerID int, time
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("Worker %d did not appear in activeTasks within %v", workerID, timeout)
+}
+
+// TestScaleWorkers_WaitGroupReuseProtection verifies that ScaleWorkers
+// returns 0 (no Add) after workersActive is set to false (post-Wait).
+// FORK-PATCH: WaitGroup reuse protection
+func TestScaleWorkers_WaitGroupReuseProtection(t *testing.T) {
+	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	d.workerDepsPtr.Store(&workerDeps{ctx: ctx})
+	d.workersActive.Store(false) // Simulate post-Wait state
+
+	result := d.ScaleWorkers(1)
+	if result != 0 {
+		t.Errorf("ScaleWorkers(1) after workersActive=false returned %d, want 0", result)
+	}
+}
+
+// TestIsConnLimitError verifies detection of server connection limit errors.
+// FORK-PATCH: SPEC-174
+func TestIsConnLimitError(t *testing.T) {
+	tests := []struct {
+		err  error
+		want bool
+	}{
+		{fmt.Errorf("server returned 503"), true},
+		{fmt.Errorf("rate limited (429)"), true},
+		{fmt.Errorf("connection refused"), true},
+		{fmt.Errorf("connection reset by peer"), true},
+		{fmt.Errorf("unexpected status: 404"), false},
+		{fmt.Errorf("i/o timeout"), false},
+		{nil, false},
+	}
+
+	for _, tt := range tests {
+		got := isConnLimitError(tt.err)
+		if got != tt.want {
+			t.Errorf("isConnLimitError(%v) = %v, want %v", tt.err, got, tt.want)
+		}
+	}
+}
+
+// TestScaleWorkers_ConcurrentScaleUp verifies that concurrent ScaleWorkers
+// calls with workersActive=true are race-free.
+// FORK-PATCH: SPEC-174
+func TestScaleWorkers_ConcurrentScaleUp(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(1 * types.MB)
+	server := testutil.NewMockServerT(t,
+		testutil.WithFileSize(fileSize),
+		testutil.WithRangeSupport(true),
+	)
+	defer server.Close()
+
+	destPath := filepath.Join(tmpDir, "concurrent_scale.bin")
+	workingPath := destPath + types.IncompleteSuffix
+
+	f, err := os.Create(workingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{
+		WorkerBufferSize: 32 * types.KB,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	queue := NewTaskQueue()
+	d.workerDepsPtr.Store(&workerDeps{
+		ctx:       ctx,
+		mirrors:   []string{server.URL()},
+		file:      f,
+		queue:     queue,
+		totalSize: fileSize,
+		client:    &http.Client{},
+	})
+	d.workersActive.Store(true)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.ScaleWorkers(1)
+		}()
+	}
+	wg.Wait()
+
+	// Close queue so workers exit
+	queue.Close()
+
+	done := make(chan struct{})
+	go func() {
+		d.workerWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		cancel()
+		t.Fatal("Workers did not exit after queue close")
+	}
 }

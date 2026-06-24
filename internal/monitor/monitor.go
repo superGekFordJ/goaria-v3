@@ -14,6 +14,7 @@ import (
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/rpc"
+	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
 	surgeEvents "goaria-v3/internal/surge/engine/events"
 	"goaria-v3/internal/tray"
@@ -65,6 +66,9 @@ type Monitor struct {
 
 	// Per-worker telemetry cache
 	telemetry *TelemetryCache
+
+	// Convergence tick for runtime scale up/down
+	convergence *smartthread.ConvergenceTicker
 }
 
 func New(app *application.App, hub *events.Hub, systray *application.SystemTray, engine rpc.DownloadEngine) *Monitor {
@@ -130,10 +134,18 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 }
 
 func (m *Monitor) Start() {
+	// Start convergence tick if engine is HybridEngine
+	if he, ok := m.engine.(*rpc.HybridEngine); ok {
+		m.convergence = smartthread.NewConvergenceTicker(he, &trackerAdapter{m.tracker}, m.telemetry)
+		m.convergence.Start()
+	}
 	go m.runLoop()
 }
 
 func (m *Monitor) Stop() {
+	if m.convergence != nil {
+		m.convergence.Stop()
+	}
 	m.stopOnce.Do(func() {
 		close(m.stopChan)
 	})
@@ -473,6 +485,11 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 		return
 	}
 
+	// 清理 convergence state（无论后续路径如何，都应清理）
+	if m.convergence != nil {
+		m.convergence.RemoveTask(task.GID)
+	}
+
 	// 如果 FilePath 为空，尝试从元数据缓存获取
 	// 场景：快速完成的任务可能在 Tracker 更新前已完成，导致 FilePath 未被填充
 	if task.FilePath == "" {
@@ -566,6 +583,7 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 		RemoveTaskGroup(task.GID)
 		QueueDownloadGroupName(task.DownloadGroup.ID)
 	}
+
 	log.Printf("[Monitor] History recorded: %s", task.GID)
 }
 
@@ -674,6 +692,11 @@ func (m *Monitor) InvalidateTask(gid string) {
 	// 4. 清理遥测缓存
 	if m.telemetry != nil {
 		m.telemetry.Remove(gid)
+	}
+
+	// 5. 清理 convergence state
+	if m.convergence != nil {
+		m.convergence.RemoveTask(gid)
 	}
 
 	log.Printf("[Monitor] Task invalidated: %s", gid)
@@ -929,6 +952,10 @@ func (m *Monitor) collectTelemetry(active []rpc.Task) {
 		stats := se.GetWorkerStats(rawGid)
 		if stats != nil {
 			m.telemetry.Set(task.GID, stats)
+		} else {
+			// Active GID but no worker stats (e.g., single-thread fallback after SessionReset).
+			// Clear stale telemetry to prevent convergence ticker from acting on outdated snapshots.
+			m.telemetry.Remove(task.GID)
 		}
 	}
 
@@ -968,4 +995,24 @@ func (m *Monitor) filterDeletedTasks(tasks []rpc.Task) []rpc.Task {
 		}
 	}
 	return filtered
+}
+
+// trackerAdapter wraps TaskTracker to satisfy smartthread.TrackerProvider
+type trackerAdapter struct {
+	*TaskTracker
+}
+
+func (a *trackerAdapter) GetActiveTrackedTasks() []smartthread.TrackedTaskInfo {
+	tasks := a.TaskTracker.GetActiveTrackedTasks()
+	result := make([]smartthread.TrackedTaskInfo, len(tasks))
+	for i, t := range tasks {
+		result[i] = smartthread.TrackedTaskInfo{
+			GID:         t.GID,
+			Status:      t.Status,
+			Scope:       t.Scope,
+			Domain:      t.Domain,
+			IsKeepAlive: t.IsKeepAlive,
+		}
+	}
+	return result
 }

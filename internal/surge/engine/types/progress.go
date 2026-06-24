@@ -42,6 +42,13 @@ type ProgressState struct {
 	// FORK-PATCH: Per-worker telemetry storage
 	workerStatsMu sync.RWMutex
 	workerStats   []WorkerSnapshot
+
+	// FORK-PATCH: ScaleWorkers function pointer bridge
+	scaleWorkersMu sync.Mutex
+	scaleWorkersFn func(int) int
+
+	// FORK-PATCH: Server connection error counter for N_max fuse
+	consecutiveConnErrors atomic.Int32
 }
 
 type MirrorStatus struct {
@@ -271,6 +278,14 @@ func (ps *ProgressState) SessionReset() {
 	ps.workerStatsMu.Lock()
 	ps.workerStats = nil
 	ps.workerStatsMu.Unlock()
+
+	// FORK-PATCH: Clear ScaleWorkers function pointer
+	ps.scaleWorkersMu.Lock()
+	ps.scaleWorkersFn = nil
+	ps.scaleWorkersMu.Unlock()
+
+	// FORK-PATCH: Reset connection error counter
+	ps.consecutiveConnErrors.Store(0)
 }
 
 // FinalizePauseSession finalizes the current session for a pause transition.
@@ -305,6 +320,49 @@ func (ps *ProgressState) GetWorkerStats() []WorkerSnapshot {
 	result := make([]WorkerSnapshot, len(ps.workerStats))
 	copy(result, ps.workerStats)
 	return result
+}
+
+// FORK-PATCH: SetScaleWorkersFn registers the ScaleWorkers method value from
+// ConcurrentDownloader, enabling WorkerPool to call ScaleWorkers via ProgressState.
+func (ps *ProgressState) SetScaleWorkersFn(fn func(int) int) {
+	ps.scaleWorkersMu.Lock()
+	defer ps.scaleWorkersMu.Unlock()
+	ps.scaleWorkersFn = fn
+}
+
+// FORK-PATCH: ScaleWorkers calls the registered function pointer to adjust
+// the worker count. Returns 0 if no function is registered.
+func (ps *ProgressState) ScaleWorkers(delta int) int {
+	ps.scaleWorkersMu.Lock()
+	fn := ps.scaleWorkersFn
+	ps.scaleWorkersMu.Unlock()
+	if fn == nil {
+		return 0
+	}
+	return fn(delta)
+}
+
+// FORK-PATCH: IncrConnErrors increments the server connection error counter.
+func (ps *ProgressState) IncrConnErrors() {
+	ps.consecutiveConnErrors.Add(1)
+}
+
+// FORK-PATCH: DecrConnErrors decrements the server connection error counter (floor 0).
+func (ps *ProgressState) DecrConnErrors() {
+	for {
+		val := ps.consecutiveConnErrors.Load()
+		if val <= 0 {
+			return
+		}
+		if ps.consecutiveConnErrors.CompareAndSwap(val, val-1) {
+			return
+		}
+	}
+}
+
+// FORK-PATCH: GetConnErrors returns the current server connection error count.
+func (ps *ProgressState) GetConnErrors() int32 {
+	return ps.consecutiveConnErrors.Load()
 }
 
 func (ps *ProgressState) GetMirrors() []MirrorStatus {

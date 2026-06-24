@@ -202,9 +202,18 @@ func TUIDownload(ctx context.Context, cfg *types.DownloadConfig) error {
 		d.Limiter = cfg.Limiter
 		d.RateLimitBps = cfg.RateLimitBps
 		d.RateLimitSet = cfg.RateLimitSet
+		// FORK-PATCH: Register ScaleWorkers function pointer for convergence tick
+		if cfg.State != nil {
+			fn := d.ScaleWorkers
+			cfg.State.SetScaleWorkersFn(fn)
+		}
 		utils.Debug("Calling Download with mirrors: %v", mirrors)
 		// Pass effectiveTotalSize to avoid unnecessary bootstrap if state already knows the size
 		downloadErr = d.Download(ctx, cfg.URL, mirrors, activeMirrors, finalDestPath, effectiveTotalSize)
+		// FORK-PATCH: Clear ScaleWorkers function pointer after download completes
+		if cfg.State != nil {
+			cfg.State.SetScaleWorkersFn(nil)
+		}
 		if d.TotalSize > 0 {
 			effectiveTotalSize = d.TotalSize
 		}
