@@ -22,6 +22,8 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
+var scopeClassifier = speedstats.NewScopeClassifier()
+
 // TraySnapshot 托盘模式下的最小数据结构
 type TraySnapshot struct {
 	ActiveCount  int  `json:"activeCount"`
@@ -530,9 +532,23 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 			}
 		}
 
-		speedstats.AddRecordV2(task.PeakSpeed, threadCount, task.TotalLength, isExploration, task.TTFBMs, task.Domain, task.Scope)
-		log.Printf("[Monitor] Speed stats recorded: peak=%d, threads=%d, exploration=%v, scope=%s, domain=%s, ttfb=%d",
-			task.PeakSpeed, threadCount, isExploration, task.Scope, task.Domain, task.TTFBMs)
+		// Fallback: tasks that bypassed service_add.go (external RPC, resume after restart)
+		// have empty Domain/Scope. Classify from SourceURL to prevent polluting the wan pool.
+		if task.Domain == "" && task.SourceURL != "" {
+			scope, domain := scopeClassifier.ClassifyByURL(task.SourceURL)
+			task.Scope = scope
+			task.Domain = domain
+		}
+
+		// Skip recording if we still have no domain — a record without domain is useless
+		// for BBR (GetDomainPeak/GetRTprop can't match) and would only pollute V_global_peak.
+		if task.Domain == "" {
+			log.Printf("[Monitor] Skipping speed stats for task %s: no domain/URL available", task.GID)
+		} else {
+			speedstats.AddRecordV2(task.PeakSpeed, threadCount, task.TotalLength, isExploration, task.TTFBMs, task.Domain, task.Scope)
+			log.Printf("[Monitor] Speed stats recorded: peak=%d, threads=%d, exploration=%v, scope=%s, domain=%s, ttfb=%d",
+				task.PeakSpeed, threadCount, isExploration, task.Scope, task.Domain, task.TTFBMs)
+		}
 	}
 
 	if task.FilePath == "" {
