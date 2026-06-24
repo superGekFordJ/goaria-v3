@@ -77,11 +77,15 @@ func NewSurgeEngine() *SurgeEngine {
 	})
 
 	cleanup := func() {
+		// Shutdown first: PauseAll + wait for pause events to be published,
+		// then close InputCh which drains the broadcaster and closes listener
+		// channels, allowing the event worker to process final pause events
+		// before the stream goroutine exits.
+		_ = svc.Shutdown()
 		engineCancel()
 		if eventCleanup != nil {
 			eventCleanup()
 		}
-		_ = svc.Shutdown()
 		if spawned {
 			wg.Wait()
 		}
