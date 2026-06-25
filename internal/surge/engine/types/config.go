@@ -58,6 +58,11 @@ const (
 	BalancerTickInterval = 200 * time.Millisecond // normal balancer tick interval
 	HedgeErrorThreshold  = 3                      // consecutive 4xx/5xx before disabling hedge
 	EndGameTickInterval  = 50 * time.Millisecond  // balancer tick during end-game phase
+
+	// FORK-PATCH: Minimum chunk floor for tail-end adaptive degradation.
+	// When total remaining < activeWorkers × MinChunk, the dynamic floor allows
+	// work stealing to split smaller chunks, utilizing idle workers in the tail phase.
+	MinChunkDynamicFloor = 256 * KB
 )
 
 type DownloadConfig struct {

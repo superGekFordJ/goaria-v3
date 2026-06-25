@@ -96,8 +96,14 @@ func (at *ActiveTask) GetSpeed() float64 {
 // alignedSplitSize calculates a split size that is half of remaining, aligned to AlignSize
 // Returns 0 if the split would be smaller than MinChunk
 func alignedSplitSize(remaining int64) int64 {
+	return alignedSplitSizeWithMin(remaining, types.MinChunk)
+}
+
+// FORK-PATCH: alignedSplitSizeWithMin allows a dynamic minimum chunk size
+// for tail-end adaptive chunk degradation.
+func alignedSplitSizeWithMin(remaining, minChunk int64) int64 {
 	half := (remaining / 2 / types.AlignSize) * types.AlignSize
-	if half < types.MinChunk {
+	if half < minChunk {
 		return 0
 	}
 	return half

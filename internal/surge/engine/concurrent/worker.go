@@ -485,6 +485,27 @@ func (d *ConcurrentDownloader) StealWork(queue *TaskQueue) bool {
 	d.activeMu.Lock()
 	defer d.activeMu.Unlock()
 
+	// FORK-PATCH: Tail-end adaptive chunk degradation.
+	// When total remaining < activeWorkers × defaultMinChunk, dynamically lower
+	// the minimum chunk threshold to allow work stealing in the tail phase.
+	defaultMinChunk := d.Runtime.GetMinChunkSize()
+	dynamicMinChunk := defaultMinChunk
+
+	activeWorkers := len(d.activeTasks)
+	var totalRemaining int64
+	for _, active := range d.activeTasks {
+		totalRemaining += active.RemainingBytes()
+	}
+	if activeWorkers > 0 && totalRemaining < int64(activeWorkers)*defaultMinChunk {
+		totalWorkers := int64(activeWorkers) + queue.IdleWorkers()
+		if totalWorkers > 0 {
+			dynamicMinChunk = totalRemaining / totalWorkers
+		}
+		if dynamicMinChunk < types.MinChunkDynamicFloor {
+			dynamicMinChunk = types.MinChunkDynamicFloor
+		}
+	}
+
 	bestID := -1
 	var maxRemaining int64 = 0
 	var bestActive *ActiveTask
@@ -492,7 +513,7 @@ func (d *ConcurrentDownloader) StealWork(queue *TaskQueue) bool {
 	// Find the worker with the MOST remaining work
 	for id, active := range d.activeTasks {
 		remaining := active.RemainingBytes()
-		if remaining > types.MinChunk && remaining > maxRemaining {
+		if remaining > dynamicMinChunk && remaining > maxRemaining {
 			maxRemaining = remaining
 			bestID = id
 			bestActive = active
@@ -508,7 +529,7 @@ func (d *ConcurrentDownloader) StealWork(queue *TaskQueue) bool {
 	active := bestActive
 
 	// Split in half, aligned to AlignSize
-	splitSize := alignedSplitSize(remaining)
+	splitSize := alignedSplitSizeWithMin(remaining, dynamicMinChunk)
 	if splitSize == 0 {
 		return false
 	}
