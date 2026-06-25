@@ -402,7 +402,7 @@ func (e *SurgeEngine) ScaleWorkers(gid string, delta int) int {
 }
 
 // GetRateLimit returns the effective per-download rate limit (bps) and whether
-// an explicit or effectively-capping rate limit is active. Returns (0, false) if no limit.
+// an explicit rate limit is active. Returns (0, false) if no explicit limit.
 func (e *SurgeEngine) GetRateLimit(gid string) (int64, bool) {
 	if e.service == nil || e.service.Pool == nil {
 		return 0, false
@@ -413,12 +413,6 @@ func (e *SurgeEngine) GetRateLimit(gid string) (int64, bool) {
 	}
 	if status.RateLimitSet {
 		return status.RateLimit, true
-	}
-	if status.RateLimit > 0 {
-		currentBps := int64(status.Speed * float64(types.MB))
-		if currentBps >= int64(float64(status.RateLimit)*0.95) {
-			return status.RateLimit, true
-		}
 	}
 	return status.RateLimit, false
 }

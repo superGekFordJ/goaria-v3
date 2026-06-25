@@ -366,18 +366,14 @@ func TestCalculate_NewDomainFallback_Penalty(t *testing.T) {
 		Domain:         "unknown.com", // no domain record → fallback to scope with 0.5x penalty
 	})
 
-	// With 0.5x penalty: V_thread_avg = 2MB/s / 2 = 1MB/s
-	// V_global_peak = 8MB/s, V_domain_peak = not found
-	// V_available = 8MB/s, V_target = V_available = 8MB/s
-	// N_sat = ceil(8MB / 1MB) + 1 = 9 → clamped to 8
-	// N_final = 8, targetBandwidth = 1MB/s * 8 = 8MB/s
-	// Without penalty: V_thread_avg = 2MB/s → N_sat = 5, targetBandwidth = 10MB/s
-	if params.Split != 8 {
-		t.Errorf("Split = %d, want 8 (0.5x penalized V_thread_avg=1MB/s → N_sat=9→8)", params.Split)
+	// V_thread_avg 经过 0.5x 惩罚变为 1MB/s，理论 N_sat = 9
+	// 但因无 domain 记录（新域名），触发冷启动保守防护（exploreLimit=4）
+	// N_final 强行截断至 4，TargetBandwidth = 1MB/s * 4 = 4MB/s
+	if params.Split != 4 {
+		t.Errorf("Split = %d, want 4 (Conservative exploration clamp: max(8/4, 4) = 4)", params.Split)
 	}
-	if params.TargetBandwidth != 8*1024*1024 {
-		t.Errorf("TargetBandwidth = %d, want %d (0.5x penalty applied: 1MB/s * 8 = 8MB/s, not 2MB/s * 5 = 10MB/s)",
-			params.TargetBandwidth, 8*1024*1024)
+	if params.TargetBandwidth != 4*1024*1024 {
+		t.Errorf("TargetBandwidth = %d, want %d (1MB/s * 4 = 4MB/s)", params.TargetBandwidth, 4*1024*1024)
 	}
 }
 

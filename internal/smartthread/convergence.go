@@ -436,7 +436,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	// --- active probing state machine ---
 	// Skip probe/ratchet when window invalidated or rate-limited.
 	if windowInvalidated || rateLimited {
-		// Still update prevCompleted so next tick has a baseline
+		s.sustainCount = 0
 		s.prevCompleted = task.CompletedLength
 		s.prevSampleAt = time.Now()
 		return pendingScale{}, false
@@ -569,41 +569,43 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	}
 
 	// D4 step 5: Initiate next probe (phase==stable, currentWorkers > probeFloor).
-	probeFloor := c.computeProbeFloor(domain, task.Scope)
 	// Before the first ratchet adoption (peakWorkers==0), require
 	// peakSustainCycles stable samples so probeBaseline is not based on a
 	// single potentially-transient measurement.
-	if s.phase == phaseStable && currentWorkers > probeFloor && (s.peakWorkers > 0 || s.sustainCount >= peakSustainCycles) {
-		shouldProbe := false
-		if s.probeMomentum && s.probeCooldown == 0 {
-			shouldProbe = true
-		} else if !s.probeMomentum {
-			if s.probeCooldown > 0 {
-				s.probeCooldown--
-			}
-			if s.probeCooldown == 0 {
+	if s.phase == phaseStable {
+		probeFloor := c.computeProbeFloor(domain, task.Scope)
+		if currentWorkers > probeFloor && (s.peakWorkers > 0 || s.sustainCount >= peakSustainCycles) {
+			shouldProbe := false
+			if s.probeMomentum && s.probeCooldown == 0 {
 				shouldProbe = true
+			} else {
+				if s.probeCooldown > 0 {
+					s.probeCooldown--
+				}
+				if s.probeCooldown == 0 {
+					shouldProbe = true
+				}
 			}
-		}
 
-		if shouldProbe {
-			step := currentWorkers / 8
-			if step < 1 {
-				step = 1
-			}
-			// Don't cross probeFloor
-			if currentWorkers-step < probeFloor {
-				step = currentWorkers - probeFloor
-			}
-			if step > 0 {
-				s.lastStep = step
-				s.probeBaseline = rawBps
-				s.phase = phaseSettling
-				s.prevCompleted = task.CompletedLength
-				s.prevSampleAt = now
-				log.Printf("[convergence] probe-down: gid=%s workers=%d step=%d baseline=%d momentum=%v",
-					gid, currentWorkers, step, rawBps, s.probeMomentum)
-				return pendingScale{gid: gid, delta: -step}, true
+			if shouldProbe {
+				step := currentWorkers / 8
+				if step < 1 {
+					step = 1
+				}
+				// Don't cross probeFloor
+				if currentWorkers-step < probeFloor {
+					step = currentWorkers - probeFloor
+				}
+				if step > 0 {
+					s.lastStep = step
+					s.probeBaseline = rawBps
+					s.phase = phaseSettling
+					s.prevCompleted = task.CompletedLength
+					s.prevSampleAt = now
+					log.Printf("[convergence] probe-down: gid=%s workers=%d step=%d baseline=%d momentum=%v",
+						gid, currentWorkers, step, rawBps, s.probeMomentum)
+					return pendingScale{gid: gid, delta: -step}, true
+				}
 			}
 		}
 	}

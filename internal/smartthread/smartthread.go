@@ -116,10 +116,19 @@ func Calculate(p CalcParams) ThreadParams {
 		nFinal = 1
 	}
 
-	// --- 探索标记（纯诊断，不减半） ---
-	// BBR 公式 + 降级矩阵已完整覆盖新域名处理；减半是多余防守。
-	// IsExploration 仅用于 speedstats 记录分类，不影响线程数。
+	// --- 探索标记（重新引入冷启动保守防护） ---
+	// 初见新域名时缺乏 BBR 历史指纹，为获取纯净的单线程效率（V_thread_avg）样本，
+	// 强制限制初始线程数：最高不超过 1/4 MaxConnections，且不低于 4 线程。
 	isExploration := !speedstats.HasDomainScopeRecord(p.Domain, p.Scope)
+	if isExploration {
+		exploreLimit := maxConn / 4
+		if exploreLimit < 4 {
+			exploreLimit = 4
+		}
+		if nFinal > exploreLimit {
+			nFinal = exploreLimit
+		}
+	}
 
 	// --- 初始切分（蓝图 §2.1） ---
 	// MinChunk = clamp(V_thread_avg * T_target_chunk, 1MB, 1GB)
@@ -169,8 +178,17 @@ func calculateLegacy(fileSize int64, maxConnections int, domain, scope string, t
 		nFinal = maxConnections
 	}
 
-	// 探索标记（纯诊断，不减半）
+	// --- 探索标记（重新引入冷启动保守防护） ---
 	isExploration := !speedstats.HasDomainScopeRecord(domain, scope)
+	if isExploration {
+		exploreLimit := maxConnections / 4
+		if exploreLimit < 4 {
+			exploreLimit = 4
+		}
+		if nFinal > exploreLimit {
+			nFinal = exploreLimit
+		}
+	}
 
 	var minSize int64
 	if nFinal > 0 {

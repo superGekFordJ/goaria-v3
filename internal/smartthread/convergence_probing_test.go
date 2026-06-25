@@ -493,7 +493,7 @@ func TestConvergence_C3_SustainCountResetOnSettling(t *testing.T) {
 	s := ct.getOrCreateState(gid)
 	s.phase = phaseSettling
 	s.probeBaseline = 40 * 1024 * 1024
-	s.lastStep = -1
+	s.lastStep = 1
 	s.sustainCount = 10 // accumulated — should reset on settling→stable transition
 	s.prevCompleted = 10 * 1024 * 1024
 	setPrevSampleAgoState(s, 5*time.Second)
@@ -602,7 +602,7 @@ func TestConvergence_m2_InvalidationResetsLastStepAndPhase(t *testing.T) {
 			s.prevCompleted = 10 * 1024 * 1024
 			setPrevSampleAgoState(s, 5*time.Second)
 			s.phase = phaseSettling
-			s.lastStep = -1
+			s.lastStep = 1
 			s.probeBaseline = 40 * 1024 * 1024
 		}
 	}
@@ -787,5 +787,151 @@ func TestConvergence_S2_ColdStartProbeDelay(t *testing.T) {
 	}
 	if s.peakSpeed == 0 {
 		t.Error("expected peakSpeed>0 after tick 3 (ratchet should record peak)")
+	}
+}
+
+// TestConvergence_E2E_MomentumChain verifies the SPEC's headline acceptance
+// criterion end-to-end: the momentum chain drives multiple consecutive
+// probe-down steps, each 2 ticks apart (settling + evaluation), without any
+// manual state injection. Uses processTask directly to bypass ScaleWorkers
+// (which returns 0 with nil pool, triggering D5 rollback in tick()).
+//
+// Flow: stable → probe-down → settling → eval(success) → momentum → probe-down → settling → eval(success) → momentum
+func TestConvergence_E2E_MomentumChain(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	gid := "sg_e2e_momentum"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid: makeWorkers(8, 2*1024*1024),
+		},
+	}
+
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	recorder := &mockPeakRecorder{}
+	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{})
+	defer ct.Stop()
+
+	// Helper: call processTask directly, simulating successful scale by
+	// adjusting telemetry worker count after a probe-down.
+	process := func(completedLen int64, workerCount int) (pendingScale, bool) {
+		tracker.tasks[0].CompletedLength = completedLen
+		telemetry.data[gid] = makeWorkers(workerCount, 2*1024*1024)
+		ct.mu.Lock()
+		if s, ok := ct.states[gid]; ok {
+			setPrevSampleAgoState(s, 5*time.Second)
+		}
+		ct.mu.Unlock()
+		return ct.processTask(tracker.tasks[0], false)
+	}
+
+	// Tick 1: first sample — stores baseline, no decision
+	ps, ok := process(10*1024*1024, 8)
+	if ok {
+		t.Fatalf("tick 1: expected no scale, got delta=%d", ps.delta)
+	}
+
+	// Tick 2: stable throughput, sustainCount=1, peakWorkers=0 → S2 gate blocks
+	// (need peakSustainCycles=2 or peakWorkers>0)
+	ps, ok = process(60*1024*1024, 8) // 50MB in 5s = 10MB/s
+	if ok {
+		t.Fatalf("tick 2: expected no scale (S2 gate), got delta=%d", ps.delta)
+	}
+
+	// Tick 3: sustainCount=2, clean=true → ratchet adopts (peakWorkers>0)
+	// S2 gate passes → probe-down issued (delta=-1, step=8/8=1)
+	ps, ok = process(110*1024*1024, 8) // 50MB in 5s = 10MB/s
+	if !ok || ps.delta >= 0 {
+		t.Fatalf("tick 3: expected probe-down (delta<0), got ok=%v delta=%d", ok, ps.delta)
+	}
+	ct.mu.Lock()
+	s := ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase != phaseSettling {
+		t.Fatalf("tick 3: expected phase=settling, got %d", s.phase)
+	}
+	if s.lastStep <= 0 {
+		t.Fatalf("tick 3: expected lastStep>0, got %d", s.lastStep)
+	}
+	step1 := s.lastStep
+
+	// Simulate successful scale-down: reduce worker count
+	newWorkers := 8 - step1
+	if newWorkers < 1 {
+		newWorkers = 1
+	}
+
+	// Tick 4: settling → refresh baseline, transition to stable, no decision
+	ps, ok = process(160*1024*1024, newWorkers) // 50MB in 5s = 10MB/s
+	if ok {
+		t.Fatalf("tick 4: expected no scale (settling), got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase != phaseStable {
+		t.Fatalf("tick 4: expected phase=stable after settling, got %d", s.phase)
+	}
+
+	// Tick 5: evaluate last probe — throughput maintained (10MB/s vs 10MB/s baseline)
+	// drop=0% ≤ 10% → success → momentum=true, probeCooldown=0
+	// Then immediately initiate next probe (momentum + cooldown==0)
+	ps, ok = process(210*1024*1024, newWorkers) // 50MB in 5s = 10MB/s
+	if !ok || ps.delta >= 0 {
+		t.Fatalf("tick 5: expected momentum probe-down (delta<0), got ok=%v delta=%d", ok, ps.delta)
+	}
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if !s.probeMomentum {
+		t.Fatal("tick 5: expected probeMomentum=true after successful probe")
+	}
+	if s.phase != phaseSettling {
+		t.Fatalf("tick 5: expected phase=settling (momentum re-probe), got %d", s.phase)
+	}
+	step2 := s.lastStep
+
+	// Simulate successful second scale-down
+	newWorkers2 := newWorkers - step2
+	if newWorkers2 < 1 {
+		newWorkers2 = 1
+	}
+
+	// Tick 6: settling → refresh baseline, transition to stable
+	ps, ok = process(260*1024*1024, newWorkers2)
+	if ok {
+		t.Fatalf("tick 6: expected no scale (settling), got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase != phaseStable {
+		t.Fatalf("tick 6: expected phase=stable after settling, got %d", s.phase)
+	}
+
+	// Tick 7: evaluate second probe — throughput still maintained
+	// → momentum continues, another probe-down
+	ps, ok = process(310*1024*1024, newWorkers2)
+	if !ok || ps.delta >= 0 {
+		t.Fatalf("tick 7: expected second momentum probe-down, got ok=%v delta=%d", ok, ps.delta)
+	}
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if !s.probeMomentum {
+		t.Fatal("tick 7: expected probeMomentum still true")
+	}
+
+	// Verify peak was recorded during the chain
+	if len(recorder.records) == 0 {
+		t.Error("expected peak efficiency recorded during momentum chain")
 	}
 }
