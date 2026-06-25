@@ -307,9 +307,9 @@ func TestGetRTprop_EmptyDomain_SkipsToGlobalFallback(t *testing.T) {
 	now := time.Now().Unix()
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: now - 100, TTFBMs: 0, Domain: "", Scope: "wan"},        // empty domain, TTFB=0 → should be skipped
-		{Timestamp: now - 50, TTFBMs: 300, Domain: "x.com", Scope: "wan"},  // non-empty domain, TTFB=300
-		{Timestamp: now - 30, TTFBMs: 100, Domain: "y.com", Scope: "wan"},  // non-empty domain, TTFB=100
+		{Timestamp: now - 100, TTFBMs: 0, Domain: "", Scope: "wan"},       // empty domain, TTFB=0 → should be skipped
+		{Timestamp: now - 50, TTFBMs: 300, Domain: "x.com", Scope: "wan"}, // non-empty domain, TTFB=300
+		{Timestamp: now - 30, TTFBMs: 100, Domain: "y.com", Scope: "wan"}, // non-empty domain, TTFB=100
 	}
 	mu.Unlock()
 

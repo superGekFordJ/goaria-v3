@@ -44,6 +44,7 @@ func SetActiveBandwidthProvider(fn ActiveBandwidthFunc) {
 //	    params := Calculate(CalcParams{..., ReservedBandwidth: reserved})
 //	    ledger.Reserve(scope, params.TargetBandwidth)
 //	}
+//
 // BandwidthLedger is accessed during batch-add (single goroutine) but its
 // Reserved/Reserve methods are also safe for concurrent use — the mutex was
 // added to guard against the convergence tick reading
