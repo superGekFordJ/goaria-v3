@@ -22,13 +22,23 @@ const (
 	maxChunkSize = 1024 * 1024 * 1024
 
 	// Convergence tick constants
-	convergenceInterval      = 5 * time.Second
-	throughputFloorRatio     = 0.5
-	throughputStableRatio    = 0.8
-	scaleDownStableCycles    = 3
-	scaleUpStableCycles      = 3
-	bandwidthReleaseCycles   = 1               // bandwidth release degraded filter (deterministic event)
-	connErrorThreshold       = 3               // consecutive conn errors before N_max fuse triggers
+	convergenceInterval    = 5 * time.Second
+	throughputFloorRatio   = 0.5
+	throughputStableRatio  = 0.8
+	scaleDownStableCycles  = 3
+	scaleUpStableCycles    = 3
+	bandwidthReleaseCycles = 1 // bandwidth release degraded filter (deterministic event)
+	connErrorThreshold     = 3 // consecutive conn errors before N_max fuse triggers
+
+	// Peak-efficiency active-probing convergence tunables
+	peakRaiseBand            = 1.05 // noise gate: only bump peak when raw beats it by >5%
+	efficiencyGuardBand      = 0.85 // D3: adopt higher-N only if single-thread eff within 15% of bestEff
+	acceptableEfficiencyBand = 0.90 // D4: probe-down throughput drop ≤10% → success + ignite momentum
+	recoverBand              = 0.75 // D4: probe-down throughput drop >25% → knee crossed, recover
+	probeIntervalCycles      = 3    // COLD cadence between probes (momentum off); ~15s @ 5s
+	peakSustainCycles        = 2    // consecutive stable raw samples before ratchet records
+	frozenCooldownCycles     = 12   // ~60s @ 5s interval; must be < IdleConnTimeout(90s)/interval
+	probeFloorWorkers        = 2    // hard lower bound for probing (aligns with congestionFloor)
 )
 
 // CalcParams holds the inputs for BBR-aware thread calculation.

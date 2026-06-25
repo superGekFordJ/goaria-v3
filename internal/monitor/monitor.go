@@ -136,7 +136,8 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 func (m *Monitor) Start() {
 	// Start convergence tick if engine is HybridEngine
 	if he, ok := m.engine.(*rpc.HybridEngine); ok {
-		m.convergence = smartthread.NewConvergenceTicker(he, &trackerAdapter{m.tracker}, m.telemetry)
+		adapter := &trackerAdapter{TaskTracker: m.tracker, engine: he}
+		m.convergence = smartthread.NewConvergenceTicker(he, adapter, m.telemetry, adapter, adapter)
 		m.convergence.Start()
 	}
 	go m.runLoop()
@@ -529,16 +530,21 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 
 	// 1. 记录速度统计（仅 >50MB 文件）— 不依赖 FilePath，先于 history 执行
 	if task.TotalLength > speedstats.MinFileSize && task.PeakSpeed > 0 {
-		threadCount := task.ThreadCount
-		isExploration := task.IsExploration
-
-		// 如果没有追踪到线程数，使用全局配置
+		// Fallback chain: PeakThreadCount (convergence-recorded) → ThreadCount (initial) → config
+		threadCount := task.PeakThreadCount
+		threadSource := "peakThreadCount"
+		if threadCount <= 0 {
+			threadCount = task.ThreadCount
+			threadSource = "threadCount"
+		}
 		if threadCount <= 0 {
 			threadCount, _ = strconv.Atoi(config.Current.MaxConnections)
 			if threadCount <= 0 {
 				threadCount = 8
 			}
+			threadSource = "config"
 		}
+		isExploration := task.IsExploration
 
 		// Fallback: tasks that bypassed service_add.go (external RPC, resume after restart)
 		// have empty Domain/Scope. Classify from SourceURL to prevent polluting the wan pool.
@@ -554,10 +560,20 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 		// for BBR (GetDomainPeak/GetRTprop can't match) and would only pollute V_global_peak.
 		if task.Domain == "" {
 			log.Printf("[Monitor] Skipping speed stats for task %s: no domain/URL available", task.GID)
+		} else if he, ok := m.engine.(*rpc.HybridEngine); ok {
+			if _, rateLimited := he.GetRateLimit(task.GID); rateLimited {
+				// Rate limit guard: skip AddRecordV2 to avoid polluting speedstats with
+				// rate-limited throughput (which doesn't reflect server capacity for BBR).
+				log.Printf("[Monitor] Skipping speed stats for task %s: rate-limited (would pollute BBR)", task.GID)
+			} else {
+				speedstats.AddRecordV2(task.PeakSpeed, threadCount, task.TotalLength, isExploration, task.TTFBMs, task.Domain, task.Scope)
+				log.Printf("[Monitor] Speed stats recorded: peak=%d, threads=%d (source=%s), exploration=%v, scope=%s, domain=%s, ttfb=%d",
+					task.PeakSpeed, threadCount, threadSource, isExploration, task.Scope, task.Domain, task.TTFBMs)
+			}
 		} else {
 			speedstats.AddRecordV2(task.PeakSpeed, threadCount, task.TotalLength, isExploration, task.TTFBMs, task.Domain, task.Scope)
-			log.Printf("[Monitor] Speed stats recorded: peak=%d, threads=%d, exploration=%v, scope=%s, domain=%s, ttfb=%d",
-				task.PeakSpeed, threadCount, isExploration, task.Scope, task.Domain, task.TTFBMs)
+			log.Printf("[Monitor] Speed stats recorded: peak=%d, threads=%d (source=%s), exploration=%v, scope=%s, domain=%s, ttfb=%d",
+				task.PeakSpeed, threadCount, threadSource, isExploration, task.Scope, task.Domain, task.TTFBMs)
 		}
 	}
 
@@ -997,9 +1013,11 @@ func (m *Monitor) filterDeletedTasks(tasks []rpc.Task) []rpc.Task {
 	return filtered
 }
 
-// trackerAdapter wraps TaskTracker to satisfy smartthread.TrackerProvider
+// trackerAdapter wraps TaskTracker to satisfy smartthread.TrackerProvider,
+// PeakEfficiencyRecorder, and RateLimitChecker interfaces.
 type trackerAdapter struct {
 	*TaskTracker
+	engine *rpc.HybridEngine
 }
 
 func (a *trackerAdapter) GetActiveTrackedTasks() []smartthread.TrackedTaskInfo {
@@ -1007,12 +1025,21 @@ func (a *trackerAdapter) GetActiveTrackedTasks() []smartthread.TrackedTaskInfo {
 	result := make([]smartthread.TrackedTaskInfo, len(tasks))
 	for i, t := range tasks {
 		result[i] = smartthread.TrackedTaskInfo{
-			GID:         t.GID,
-			Status:      t.Status,
-			Scope:       t.Scope,
-			Domain:      t.Domain,
-			IsKeepAlive: t.IsKeepAlive,
+			GID:             t.GID,
+			Status:          t.Status,
+			Scope:           t.Scope,
+			Domain:          t.Domain,
+			IsKeepAlive:     t.IsKeepAlive,
+			CompletedLength: t.CompletedLength,
 		}
 	}
 	return result
+}
+
+// GetRateLimit implements RateLimitChecker by delegating to the HybridEngine.
+func (a *trackerAdapter) GetRateLimit(gid string) (int64, bool) {
+	if a.engine == nil {
+		return 0, false
+	}
+	return a.engine.GetRateLimit(gid)
 }

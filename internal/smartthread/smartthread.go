@@ -55,7 +55,7 @@ func Calculate(p CalcParams) ThreadParams {
 	if !threadAvgOK {
 		vThreadAvg, threadAvgOK = speedstats.GetRecentPeakByScope(p.Scope)
 		if threadAvgOK {
-			vThreadAvg = vThreadAvg / 2
+			vThreadAvg /= 2
 		}
 	}
 

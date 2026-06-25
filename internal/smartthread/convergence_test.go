@@ -62,7 +62,7 @@ func TestConvergenceTicker_ScaleDownOnLowThroughput(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 
-	ct := NewConvergenceTicker(he, tracker, telemetry)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
 	for i := 0; i < scaleDownStableCycles; i++ {
@@ -98,7 +98,7 @@ func TestConvergenceTicker_NoTelemetryNoOp(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 
-	ct := NewConvergenceTicker(he, tracker, telemetry)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
 	ct.tick()
@@ -128,7 +128,7 @@ func TestConvergenceTicker_NonSurgeGidSkipped(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 
-	ct := NewConvergenceTicker(he, tracker, telemetry)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
 	ct.tick()
@@ -164,7 +164,7 @@ func TestConvergenceTicker_RemoveTask(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 
-	ct := NewConvergenceTicker(he, tracker, telemetry)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
 	ct.tick()
@@ -204,7 +204,7 @@ func TestConvergenceTicker_StartStop(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 
-	ct := NewConvergenceTicker(he, tracker, telemetry)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
 
 	ct.Start()
 	time.Sleep(10 * time.Millisecond)
@@ -247,7 +247,7 @@ func TestConvergenceTicker_SelfCleanupStaleStates(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 
-	ct := NewConvergenceTicker(he, tracker, telemetry)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
 	// First tick: creates a state entry for gid
@@ -294,7 +294,7 @@ func TestConvergenceTicker_ScaleUpLaggedFiltering(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 
-	ct := NewConvergenceTicker(he, tracker, telemetry)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
 	// Tick scaleUpStableCycles-1 times → should NOT trigger ScaleUp
@@ -336,8 +336,8 @@ func TestConvergenceTicker_BandwidthBorrowing(t *testing.T) {
 	}
 	telemetry := &mockTelemetry{
 		data: map[string][]types.WorkerSnapshot{
-			completedGid:  {{WorkerID: 0, EMASpeed: 100 * 1024}},
-			keepAliveGid:  {{WorkerID: 0, EMASpeed: 100 * 1024}},
+			completedGid: {{WorkerID: 0, EMASpeed: 100 * 1024}},
+			keepAliveGid: {{WorkerID: 0, EMASpeed: 100 * 1024}},
 		},
 	}
 
@@ -345,7 +345,7 @@ func TestConvergenceTicker_BandwidthBorrowing(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 
-	ct := NewConvergenceTicker(he, tracker, telemetry)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
 	// First tick: both tasks active, prevActiveGids populated
@@ -399,7 +399,7 @@ func TestConvergenceTicker_NoDoubleScaleUp(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 
-	ct := NewConvergenceTicker(he, tracker, telemetry)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
 	// Run scaleUpStableCycles-1 ticks with both tasks active.
@@ -479,7 +479,7 @@ func TestConvergenceTicker_ServerLimitFuse(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 
-	ct := NewConvergenceTicker(he, tracker, telemetry)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
 	// Clear any pre-existing limit for this domain
@@ -536,7 +536,7 @@ func TestConvergence_DomainIsolation_NoPollution(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 
-	ct := NewConvergenceTicker(he, tracker, telemetry)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
 	for i := 0; i < scaleDownStableCycles; i++ {
@@ -591,7 +591,7 @@ func TestConvergence_NewDomain_FallbackPenalty(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 
-	ct := NewConvergenceTicker(he, tracker, telemetry)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
 	ct.tick()
@@ -649,7 +649,7 @@ func TestConvergence_CrossScopeIsolation(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 
-	ct := NewConvergenceTicker(he, tracker, telemetry)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
 	// Clear any pre-existing N_max from shared ServerLimitStore (e.g. from ServerLimitFuse test)

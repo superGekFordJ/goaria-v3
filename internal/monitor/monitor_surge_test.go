@@ -6,9 +6,13 @@ import (
 	"testing"
 	"time"
 
+	"goaria-v3/internal/config"
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/rpc"
+	"goaria-v3/internal/speedstats"
+	"goaria-v3/internal/surge/download"
 	surgeEvents "goaria-v3/internal/surge/engine/events"
+	"goaria-v3/internal/surge/engine/types"
 )
 
 func TestHandleSurgeEvent_ProgressMsg_QueuesProgressDelta(t *testing.T) {
@@ -811,5 +815,254 @@ func TestHandleSurgeEvent_CompleteMsg_TotalEnrichesTrackedTask(t *testing.T) {
 	tracked = tracker.tasks["sg_total-enrich"]
 	if tracked.TotalLength != 200000000 {
 		t.Errorf("TotalLength after complete = %d, want 200000000", tracked.TotalLength)
+	}
+}
+
+// ==================== handleTaskComplete fallback chain + rate limit tests====================
+
+// speedstatsRecordCount returns the number of in-memory speedstats records.
+func speedstatsRecordCount() int {
+	return len(speedstats.GetAllRecords())
+}
+
+// findRecordByDomain returns the most recent speedstats record matching the given domain.
+func findRecordByDomain(domain string) *speedstats.SpeedRecord {
+	records := speedstats.GetAllRecords()
+	for i := len(records) - 1; i >= 0; i-- {
+		if records[i].Domain == domain {
+			return &records[i]
+		}
+	}
+	return nil
+}
+
+// TestHandleTaskComplete_PeakThreadCountFallback verifies that handleTaskComplete
+// uses PeakThreadCount (from convergence) as the primary source for speedstats ThreadCount.
+func TestHandleTaskComplete_PeakThreadCountFallback(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(nil, surge)
+
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_peak-tc", 200000000, "https://example.com/large.zip", 32)
+
+	// Simulate convergence recording a peak at 22 workers
+	tracker.RecordPeakEfficiency("sg_peak-tc", 50*1024*1024, 22)
+
+	m := &Monitor{engine: he, tracker: tracker}
+
+	task := tracker.tasks["sg_peak-tc"]
+	task.Status = "complete"
+	task.PeakSpeed = 50 * 1024 * 1024
+	task.Domain = "example.com"
+	task.Scope = "wan"
+	task.FilePath = "D:\\Downloads\\large.zip"
+
+	before := speedstatsRecordCount()
+	m.handleTaskComplete(task)
+	after := speedstatsRecordCount()
+
+	if after != before+1 {
+		t.Fatalf("expected 1 new speedstats record, got %d (before=%d, after=%d)", after-before, before, after)
+	}
+
+	rec := findRecordByDomain("example.com")
+	if rec == nil {
+		t.Fatal("expected to find speedstats record for example.com")
+	}
+	if rec.ThreadCount != 22 {
+		t.Errorf("ThreadCount = %d, want 22 (from PeakThreadCount)", rec.ThreadCount)
+	}
+	if rec.PeakSpeed != 50*1024*1024 {
+		t.Errorf("PeakSpeed = %d, want %d", rec.PeakSpeed, 50*1024*1024)
+	}
+}
+
+// TestHandleTaskComplete_ThreadCountFallback verifies that when PeakThreadCount is 0,
+// handleTaskComplete falls back to ThreadCount.
+func TestHandleTaskComplete_ThreadCountFallback(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(nil, surge)
+
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_tc-fallback", 200000000, "https://example.com/medium.zip", 16)
+
+	m := &Monitor{engine: he, tracker: tracker}
+
+	task := tracker.tasks["sg_tc-fallback"]
+	task.Status = "complete"
+	task.PeakSpeed = 30 * 1024 * 1024
+	task.ThreadCount = 16
+	task.PeakThreadCount = 0 // Not set by convergence
+	task.Domain = "example.com"
+	task.Scope = "wan"
+	task.FilePath = "D:\\Downloads\\medium.zip"
+
+	before := speedstatsRecordCount()
+	m.handleTaskComplete(task)
+	after := speedstatsRecordCount()
+
+	if after != before+1 {
+		t.Fatalf("expected 1 new speedstats record, got %d", after-before)
+	}
+
+	rec := findRecordByDomain("example.com")
+	if rec == nil {
+		t.Fatal("expected to find speedstats record")
+	}
+	if rec.ThreadCount != 16 {
+		t.Errorf("ThreadCount = %d, want 16 (from ThreadCount fallback)", rec.ThreadCount)
+	}
+}
+
+// TestHandleTaskComplete_ConfigFallback verifies that when both PeakThreadCount and
+// ThreadCount are 0, handleTaskComplete falls back to config.MaxConnections (default 8).
+func TestHandleTaskComplete_ConfigFallback(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	// Ensure config is set with a known MaxConnections
+	origConfig := config.Current
+	config.Current = &config.AppConfig{MaxConnections: "12"}
+	defer func() { config.Current = origConfig }()
+
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(nil, surge)
+
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_cfg-fallback", 200000000, "https://example.com/config.zip", 0)
+
+	m := &Monitor{engine: he, tracker: tracker}
+
+	task := tracker.tasks["sg_cfg-fallback"]
+	task.Status = "complete"
+	task.PeakSpeed = 20 * 1024 * 1024
+	task.ThreadCount = 0
+	task.PeakThreadCount = 0
+	task.Domain = "example.com"
+	task.Scope = "wan"
+	task.FilePath = "D:\\Downloads\\config.zip"
+
+	before := speedstatsRecordCount()
+	m.handleTaskComplete(task)
+	after := speedstatsRecordCount()
+
+	if after != before+1 {
+		t.Fatalf("expected 1 new speedstats record, got %d", after-before)
+	}
+
+	rec := findRecordByDomain("example.com")
+	if rec == nil {
+		t.Fatal("expected to find speedstats record")
+	}
+	if rec.ThreadCount != 12 {
+		t.Errorf("ThreadCount = %d, want 12 (from config.MaxConnections)", rec.ThreadCount)
+	}
+}
+
+// TestHandleTaskComplete_RateLimitSkip verifies that rate-limited tasks skip
+// AddRecordV2 to avoid polluting speedstats with throttled throughput.
+func TestHandleTaskComplete_RateLimitSkip(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	// Create a WorkerPool with a rate-limited download entry
+	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{
+		"ratelimited": {
+			URL:          "https://example.com/limited.zip",
+			ID:           "ratelimited",
+			RateLimitBps: 1_000_000, // 1MB/s rate limit
+			RateLimitSet: true,
+			State:        types.NewProgressState("ratelimited", 200000000),
+		},
+	})
+	surge := rpc.NewSurgeEngineForTesting(pool)
+	he := rpc.NewHybridEngine(nil, surge)
+
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_ratelimited", 200000000, "https://example.com/limited.zip", 8)
+
+	m := &Monitor{engine: he, tracker: tracker}
+
+	task := tracker.tasks["sg_ratelimited"]
+	task.Status = "complete"
+	task.PeakSpeed = 1 * 1024 * 1024 // 1MB/s (rate-limited)
+	task.ThreadCount = 8
+	task.Domain = "example.com"
+	task.Scope = "wan"
+	task.FilePath = "D:\\Downloads\\limited.zip"
+
+	before := speedstatsRecordCount()
+	m.handleTaskComplete(task)
+	after := speedstatsRecordCount()
+
+	if after != before {
+		t.Errorf("expected no new speedstats record when rate-limited, got %d new records", after-before)
+	}
+}
+
+// TestHandleTaskComplete_RateLimitNotSet_RecordsNormally verifies that when no rate
+// limit is active, AddRecordV2 proceeds normally.
+func TestHandleTaskComplete_RateLimitNotSet_RecordsNormally(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	// Create a WorkerPool with a non-rate-limited download entry
+	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{
+		"unlimited": {
+			URL:          "https://example.com/fast.zip",
+			ID:           "unlimited",
+			RateLimitBps: 0, // No rate limit
+			RateLimitSet: false,
+			State:        types.NewProgressState("unlimited", 200000000),
+		},
+	})
+	surge := rpc.NewSurgeEngineForTesting(pool)
+	he := rpc.NewHybridEngine(nil, surge)
+
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_unlimited", 200000000, "https://example.com/fast.zip", 8)
+
+	m := &Monitor{engine: he, tracker: tracker}
+
+	task := tracker.tasks["sg_unlimited"]
+	task.Status = "complete"
+	task.PeakSpeed = 50 * 1024 * 1024 // 50MB/s (not rate-limited)
+	task.ThreadCount = 8
+	task.Domain = "example.com"
+	task.Scope = "wan"
+	task.FilePath = "D:\\Downloads\\fast.zip"
+
+	before := speedstatsRecordCount()
+	m.handleTaskComplete(task)
+	after := speedstatsRecordCount()
+
+	if after != before+1 {
+		t.Errorf("expected 1 new speedstats record when not rate-limited, got %d", after-before)
 	}
 }

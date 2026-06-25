@@ -23,6 +23,15 @@ type TrackedTask struct {
 	SustainedSpeed int64
 	SustainedCount int
 
+	// PeakThreadCount records the worker count at the time PeakSpeed was achieved.
+	// Written by RecordPeakEfficiency (convergence layer); read by handleTaskComplete
+	// to write accurate ThreadCount into speedstats.
+	PeakThreadCount int
+
+	// BestEff is the session-anchored best single-thread efficiency (only increases).
+	// Used by RecordPeakEfficiency as the D3 guard anchor to prevent N creep.
+	BestEff int64
+
 	// 线程信息
 	ThreadCount   int
 	IsExploration bool
@@ -477,6 +486,54 @@ func (t *TaskTracker) GetActiveTrackedTasks() []TrackedTask {
 		}
 	}
 	return result
+}
+
+// RecordPeakEfficiency updates PeakSpeed and PeakThreadCount for the given gid
+// using the D3 efficiency-guarded ratchet with bestEff anchoring (Edge Case 14).
+// Only accepts the incoming pair when it represents a more optimal working point.
+// Rejects bloated N where absolute speed marginally increases but per-thread
+// efficiency crashes below the bestEff-anchored guard.
+// This is the convergence layer's paired write entry — it does not touch
+// sampleSpeedInternal's existing PeakSpeed logic.
+func (t *TaskTracker) RecordPeakEfficiency(gid string, peakSpeed int64, peakWorkers int) {
+	if peakWorkers <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	tt, ok := t.tasks[gid]
+	if !ok {
+		return
+	}
+
+	newEff := peakSpeed / int64(peakWorkers)
+	if newEff > tt.BestEff {
+		tt.BestEff = newEff
+	}
+
+	if tt.PeakThreadCount == 0 {
+		tt.PeakSpeed = peakSpeed
+		tt.PeakThreadCount = peakWorkers
+		return
+	}
+
+	// D3 ratchet with bestEff-anchored guard (Edge Case 14: anchor on session
+	// best efficiency, not current record efficiency, to prevent N creep).
+	guardEff := int64(float64(tt.BestEff) * 0.85) // efficiencyGuardBand
+	if newEff >= guardEff {
+		// Efficiency within 15% of best — accept if throughput improved ≥5%
+		// (peakRaiseBand noise gate) or workers reduced at comparable throughput.
+		if float64(peakSpeed) > float64(tt.PeakSpeed)*1.05 || peakWorkers < tt.PeakThreadCount {
+			if peakSpeed > tt.PeakSpeed {
+				tt.PeakSpeed = peakSpeed
+			}
+			tt.PeakThreadCount = peakWorkers
+		}
+	} else if float64(peakSpeed) > float64(tt.PeakSpeed)*1.05 {
+		// Absolute throughput up ≥5% but efficiency below guard — only update
+		// PeakSpeed (for V_target/BtlBw), keep efficient PeakThreadCount unchanged.
+		tt.PeakSpeed = peakSpeed
+	}
 }
 
 // parseInt64 解析字符串为 int64

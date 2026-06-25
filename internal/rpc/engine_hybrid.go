@@ -551,6 +551,19 @@ func (h *HybridEngine) ScaleWorkers(gid string, delta int) int {
 	return 0
 }
 
+// GetRateLimit returns the effective rate limit (bps) and whether a limit is active.
+// Routes to SurgeEngine for sg_ prefixed GIDs; returns (0, false) for others.
+func (h *HybridEngine) GetRateLimit(gid string) (int64, bool) {
+	engine, rawGid := h.splitGid(gid)
+	if engine != "sg" {
+		return 0, false
+	}
+	if se, ok := h.surgeEngine.(*SurgeEngine); ok {
+		return se.GetRateLimit(rawGid)
+	}
+	return 0, false
+}
+
 func (h *HybridEngine) Close() {
 	if closer, ok := h.surgeEngine.(interface{ Close() }); ok {
 		closer.Close()
