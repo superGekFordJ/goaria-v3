@@ -190,9 +190,24 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo) (pendingScale, boo
 	}
 	currentWorkers := len(stats)
 
-	vThreadAvg, ok := speedstats.GetRecentPeakByScope(task.Scope)
+	// Domain-isolated V_thread_avg with 0.5x scope fallback.
+	// Empty domain → GetRecentPeakByDomain returns false → falls back to scope
+	// with 0.5x penalty (more conservative than pre-hotfix behavior, but safer).
+	vThreadAvg, ok := speedstats.GetRecentPeakByDomain(task.Domain, task.Scope)
+	if !ok {
+		vThreadAvg, ok = speedstats.GetRecentPeakByScope(task.Scope)
+		if ok {
+			vThreadAvg = vThreadAvg / 2
+		}
+	}
 	if !ok || vThreadAvg <= 0 {
 		return pendingScale{}, false
+	}
+
+	// Clamp to minThreadEfficiency to prevent degenerate expectedThroughput
+	// after 0.5x penalty on a already-low scope median.
+	if vThreadAvg < minThreadEfficiency {
+		vThreadAvg = minThreadEfficiency
 	}
 
 	expectedThroughput := float64(vThreadAvg) * float64(currentWorkers)

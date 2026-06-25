@@ -468,7 +468,7 @@ func (d *ConcurrentDownloader) recordHedgeError() {
 // rather than zeroing it entirely. This requires sustained successes to clear
 // the poison state, preventing a single success from masking ongoing errors
 // in mixed success/failure scenarios.
-// FORK-PATCH: Poison defense recovery — decay reset (SPEC-172).
+// FORK-PATCH: Poison defense recovery — decay reset.
 func (d *ConcurrentDownloader) recordHedgeSuccess() {
 	for {
 		val := d.consecutiveHedgeErrors.Load()

@@ -36,6 +36,6 @@ type CalcParams struct {
 	FileSize          int64  // 新任务=总大小；Resume=剩余大小(total-downloaded)
 	MaxConnections    int    // 用户硬上限 W_max（来自 config.MaxConnections）
 	Scope             string // "wan"/"lan"
-	Domain            string // 用于 GetDomainPeak/GetRTprop
+	Domain            string // 用于 GetDomainPeak/GetRTprop（配合 Scope 做 domain+scope 联合过滤）
 	ReservedBandwidth int64  // 同 scope 活跃任务实时速度之和 + 本批次已预留
 }

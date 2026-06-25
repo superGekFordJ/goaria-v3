@@ -311,3 +311,176 @@ func TestCalculate_BatchDegradation(t *testing.T) {
 		t.Errorf("Last task Split = %d, first = %d (expected last < first due to bandwidth reservation)", splits[len(splits)-1], splits[0])
 	}
 }
+
+func TestCalculate_DomainIsolation_NoPollution(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	orig := activeBandwidthProvider
+	t.Cleanup(func() { activeBandwidthProvider = orig })
+	activeBandwidthProvider = noActiveBandwidth
+
+	// 3 slow.com records: 1MB/s, 1 thread → V_thread = 1MB/s each
+	// 1 fast.com record: 67MB/s, 4 threads → V_thread = 16.75MB/s
+	// Scope median (polluted): [1MB, 1MB, 1MB, 16.75MB] → median = 1MB/s
+	// Domain median for fast.com: 16.75MB/s (not polluted)
+	for i := 0; i < 3; i++ {
+		speedstats.AddRecordV2(1*1024*1024, 1, 200*1024*1024, false, 100, "slow.com", "wan")
+	}
+	speedstats.AddRecordV2(67*1024*1024, 4, 200*1024*1024, false, 100, "fast.com", "wan")
+
+	params := Calculate(CalcParams{
+		FileSize:       1 * 1024 * 1024 * 1024, // 1GB
+		MaxConnections: 8,
+		Scope:          "wan",
+		Domain:         "fast.com",
+	})
+
+	// With domain isolation: V_thread_avg = 16.75MB/s
+	// V_target = min(67MB, 67MB) = 67MB
+	// N_sat = ceil(67MB / 16.75MB) + 1 = 5
+	// N_final = 5
+	// Without isolation (scope median = 1MB/s): N_sat = ceil(67MB / 1MB) + 1 = 68 → clamped to 8
+	if params.Split != 5 {
+		t.Errorf("Split = %d, want 5 (domain-isolated V_thread_avg=16.75MB/s; would be 8 if polluted by scope median=1MB/s)", params.Split)
+	}
+}
+
+func TestCalculate_NewDomainFallback_Penalty(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	orig := activeBandwidthProvider
+	t.Cleanup(func() { activeBandwidthProvider = orig })
+	activeBandwidthProvider = noActiveBandwidth
+
+	// known.com: 8MB/s, 4 threads → V_thread = 2MB/s (scope median)
+	speedstats.AddRecordV2(8*1024*1024, 4, 200*1024*1024, false, 100, "known.com", "wan")
+
+	params := Calculate(CalcParams{
+		FileSize:       500 * 1024 * 1024, // 500MB
+		MaxConnections: 8,
+		Scope:          "wan",
+		Domain:         "unknown.com", // no domain record → fallback to scope with 0.5x penalty
+	})
+
+	// With 0.5x penalty: V_thread_avg = 2MB/s / 2 = 1MB/s
+	// V_global_peak = 8MB/s, V_domain_peak = not found
+	// V_available = 8MB/s, V_target = V_available = 8MB/s
+	// N_sat = ceil(8MB / 1MB) + 1 = 9 → clamped to 8
+	// N_final = 8, targetBandwidth = 1MB/s * 8 = 8MB/s
+	// Without penalty: V_thread_avg = 2MB/s → N_sat = 5, targetBandwidth = 10MB/s
+	if params.Split != 8 {
+		t.Errorf("Split = %d, want 8 (0.5x penalized V_thread_avg=1MB/s → N_sat=9→8)", params.Split)
+	}
+	if params.TargetBandwidth != 8*1024*1024 {
+		t.Errorf("TargetBandwidth = %d, want %d (0.5x penalty applied: 1MB/s * 8 = 8MB/s, not 2MB/s * 5 = 10MB/s)",
+			params.TargetBandwidth, 8*1024*1024)
+	}
+}
+
+func TestCalculate_BatchMixedDomains(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	orig := activeBandwidthProvider
+	t.Cleanup(func() { activeBandwidthProvider = orig })
+	activeBandwidthProvider = noActiveBandwidth
+
+	// known.com: 8MB/s, 4 threads → V_thread = 2MB/s (domain and scope median)
+	speedstats.AddRecordV2(8*1024*1024, 4, 200*1024*1024, false, 100, "known.com", "wan")
+
+	ledger := NewBandwidthLedger()
+	fileSize := int64(100 * 1024 * 1024) // 100MB each
+
+	domains := []string{"known.com", "unknown1.com", "unknown2.com"}
+	var splits []int
+	var bandwidths []int64
+
+	for _, domain := range domains {
+		reserved := ledger.Reserved("wan")
+		params := Calculate(CalcParams{
+			FileSize:          fileSize,
+			MaxConnections:    8,
+			Scope:             "wan",
+			Domain:            domain,
+			ReservedBandwidth: reserved,
+		})
+		splits = append(splits, params.Split)
+		bandwidths = append(bandwidths, params.TargetBandwidth)
+		ledger.Reserve("wan", params.TargetBandwidth)
+	}
+
+	// Task 0 (known.com): V_thread_avg = 2MB/s (domain-specific)
+	// V_available = 8MB/s, V_target = min(8MB, 8MB) = 8MB/s
+	// N_sat = ceil(8MB / 2MB) + 1 = 5, N_final = 5
+	// targetBandwidth = 2MB/s * 5 = 10MB/s
+	if splits[0] != 5 {
+		t.Errorf("known.com Split = %d, want 5 (domain-specific V_thread_avg=2MB/s)", splits[0])
+	}
+	if bandwidths[0] != 10*1024*1024 {
+		t.Errorf("known.com TargetBandwidth = %d, want %d", bandwidths[0], 10*1024*1024)
+	}
+
+	// Task 1 (unknown1.com): V_thread_avg = 1MB/s (0.5x penalized scope fallback)
+	// V_available = 8MB/s - 10MB/s = 0 → floor = 2
+	// N_final = 2, targetBandwidth = 1MB/s * 2 = 2MB/s
+	if splits[1] != 2 {
+		t.Errorf("unknown1.com Split = %d, want 2 (0.5x penalized fallback, congestion floor)", splits[1])
+	}
+	if bandwidths[1] != 2*1024*1024 {
+		t.Errorf("unknown1.com TargetBandwidth = %d, want %d", bandwidths[1], 2*1024*1024)
+	}
+
+	// Task 2 (unknown2.com): same as task 1, V_available still 0
+	if splits[2] != 2 {
+		t.Errorf("unknown2.com Split = %d, want 2", splits[2])
+	}
+	if bandwidths[2] != 2*1024*1024 {
+		t.Errorf("unknown2.com TargetBandwidth = %d, want %d", bandwidths[2], 2*1024*1024)
+	}
+
+	// Ledger per-scope accumulation: 10MB + 2MB + 2MB = 14MB
+	totalReserved := ledger.Reserved("wan")
+	expected := int64(14 * 1024 * 1024)
+	if totalReserved != expected {
+		t.Errorf("ledger reserved(wan) = %d, want %d (10MB + 2MB + 2MB)", totalReserved, expected)
+	}
+}
+
+func TestCalculate_CrossScopeIsolation(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	orig := activeBandwidthProvider
+	t.Cleanup(func() { activeBandwidthProvider = orig })
+	activeBandwidthProvider = noActiveBandwidth
+
+	// Same domain example.com, two scopes:
+	// wan: 2MB/s, 1 thread → V_thread = 2MB/s
+	// lan: 20MB/s, 1 thread → V_thread = 20MB/s
+	speedstats.AddRecordV2(2*1024*1024, 1, 200*1024*1024, false, 100, "example.com", "wan")
+	speedstats.AddRecordV2(20*1024*1024, 1, 200*1024*1024, false, 100, "example.com", "lan")
+
+	params := Calculate(CalcParams{
+		FileSize:       1 * 1024 * 1024 * 1024, // 1GB
+		MaxConnections: 8,
+		Scope:          "wan",
+		Domain:         "example.com",
+	})
+
+	// With cross-scope isolation: V_thread_avg = 2MB/s (wan only, not polluted by lan 20MB/s)
+	// V_global_peak(wan) = 2MB/s, V_domain_peak(wan) = 2MB/s
+	// V_available = 2MB/s, V_target = min(2MB, 2MB) = 2MB/s
+	// N_sat = ceil(2MB / 2MB) + 1 = 2
+	// N_tmin = ceil(1GB / (2MB * 5)) = 103 → clamped to 8
+	// N_final = min(2, 8, 8) = 2
+	// If polluted by lan: V_thread_avg = 20MB/s → N_sat = ceil(2MB/20MB)+1 = 1 → N_final = 1
+	if params.Split != 2 {
+		t.Errorf("Split = %d, want 2 (wan V_thread_avg=2MB/s; would be 1 if polluted by lan 20MB/s)", params.Split)
+	}
+}

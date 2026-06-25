@@ -47,8 +47,19 @@ func Calculate(p CalcParams) ThreadParams {
 	}
 
 	// --- 数据采集 ---
-	vThreadAvg, threadAvgOK := speedstats.GetRecentPeakByScope(p.Scope)
-	vSinglePeak, singlePeakOK := speedstats.GetDomainPeak(p.Domain)
+	// Tier 1: Domain-specific median (preferred — no cross-CDN pollution)
+	vThreadAvg, threadAvgOK := speedstats.GetRecentPeakByDomain(p.Domain, p.Scope)
+
+	// Tier 2: Fallback to scope-wide median with 0.5x conservative penalty
+	// for unknown domains (avoids over-allocation from polluted scope data)
+	if !threadAvgOK {
+		vThreadAvg, threadAvgOK = speedstats.GetRecentPeakByScope(p.Scope)
+		if threadAvgOK {
+			vThreadAvg = vThreadAvg / 2
+		}
+	}
+
+	vSinglePeak, singlePeakOK := speedstats.GetDomainPeak(p.Domain, p.Scope)
 	vGlobalPeak, globalPeakOK := speedstats.GetGlobalPeak(p.Scope)
 
 	// --- 冷启动 / 缺数据降级 ---

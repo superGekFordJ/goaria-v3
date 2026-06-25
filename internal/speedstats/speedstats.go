@@ -185,6 +185,54 @@ func GetRecentPeakByScope(scope string) (vSingleEst int64, ok bool) {
 	return medianV, true
 }
 
+// GetRecentPeakByDomain 与 GetRecentPeakByScope 逻辑相同但按 domain+scope 联合过滤
+// domain 为空时直接返回 0, false（空域名无意义，应走回退路径）
+// scope 为空时不过滤 scope（向后兼容），与 HasDomainScopeRecord 的 scope 语义一致
+func GetRecentPeakByDomain(domain, scope string) (vSingleEst int64, ok bool) {
+	if domain == "" {
+		return 0, false
+	}
+
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if len(records) == 0 {
+		return 0, false
+	}
+
+	cutoff := time.Now().Add(-time.Duration(recentDays) * 24 * time.Hour).Unix()
+
+	var vValues []int64
+
+	for i := range records {
+		if records[i].Domain != domain {
+			continue
+		}
+		if scope != "" && records[i].Scope != scope {
+			continue
+		}
+		if records[i].Timestamp >= cutoff && records[i].ThreadCount > 0 {
+			eff := records[i].PeakSpeed / int64(records[i].ThreadCount)
+			vValues = append(vValues, eff)
+		}
+	}
+
+	if len(vValues) == 0 {
+		return 0, false
+	}
+
+	if len(vValues) > 100 {
+		vValues = vValues[len(vValues)-100:]
+	}
+
+	sort.Slice(vValues, func(i, j int) bool {
+		return vValues[i] < vValues[j]
+	})
+	medianV := vValues[len(vValues)/2]
+
+	return medianV, true
+}
+
 // GetGlobalPeak 返回最近 recentDays 内指定 scope 的总峰值速度 (bytes/s)
 // scope 为空时不过滤
 func GetGlobalPeak(scope string) (int64, bool) {
@@ -209,8 +257,9 @@ func GetGlobalPeak(scope string) (int64, bool) {
 	return peak, found
 }
 
-// GetDomainPeak 返回最近 recentDays 内指定 domain 的历史最高峰值速度 (bytes/s)
-func GetDomainPeak(domain string) (int64, bool) {
+// GetDomainPeak 返回最近 recentDays 内指定 domain+scope 的历史最高峰值速度 (bytes/s)
+// scope 为空时不过滤 scope
+func GetDomainPeak(domain, scope string) (int64, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
 
@@ -224,6 +273,9 @@ func GetDomainPeak(domain string) (int64, bool) {
 		if domain == "" || records[i].Domain != domain {
 			continue
 		}
+		if scope != "" && records[i].Scope != scope {
+			continue
+		}
 		if records[i].PeakSpeed > peak {
 			peak = records[i].PeakSpeed
 			found = true
@@ -232,9 +284,10 @@ func GetDomainPeak(domain string) (int64, bool) {
 	return peak, found
 }
 
-// GetRTprop 返回最近 recentDays 内指定 domain 的 TTFB 最小值 (ms)
-// 跳过 TTFBMs=0 的记录；无 domain 匹配时返回全局 TTFB 最小值
-func GetRTprop(domain string) (int64, bool) {
+// GetRTprop 返回最近 recentDays 内指定 domain+scope 的 TTFB 最小值 (ms)
+// 跳过 TTFBMs=0 的记录；无 domain 匹配时返回同 scope 的 TTFB 最小值
+// scope 为空时回退到全局 TTFB 最小值（不过滤 scope）
+func GetRTprop(domain, scope string) (int64, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
 
@@ -242,13 +295,16 @@ func GetRTprop(domain string) (int64, bool) {
 	var minTTFB int64
 	found := false
 
-	// 先尝试 domain 匹配（空 domain 跳过，直接走全局回退）
+	// 先尝试 domain+scope 匹配（空 domain 跳过，直接走回退）
 	if domain != "" {
 		for i := range records {
 			if records[i].Timestamp < cutoff {
 				continue
 			}
 			if records[i].Domain != domain || records[i].TTFBMs <= 0 {
+				continue
+			}
+			if scope != "" && records[i].Scope != scope {
 				continue
 			}
 			if !found || records[i].TTFBMs < minTTFB {
@@ -261,12 +317,15 @@ func GetRTprop(domain string) (int64, bool) {
 		return minTTFB, true
 	}
 
-	// 回退到全局 TTFB 最小值
+	// 回退到同 scope 的 TTFB 最小值
 	for i := range records {
 		if records[i].Timestamp < cutoff {
 			continue
 		}
 		if records[i].TTFBMs <= 0 {
+			continue
+		}
+		if scope != "" && records[i].Scope != scope {
 			continue
 		}
 		if !found || records[i].TTFBMs < minTTFB {
