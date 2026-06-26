@@ -257,10 +257,6 @@ func TestConvergenceTicker_BandwidthBorrowing(t *testing.T) {
 	if s == nil {
 		t.Fatal("expected convergence state for keep-alive task")
 	}
-	// releaseCycles should be reset to 0 after triggering bandwidth borrow
-	if s.releaseCycles != 0 {
-		t.Errorf("expected releaseCycles=0 after bandwidth borrow trigger, got %d", s.releaseCycles)
-	}
 }
 
 func TestConvergenceTicker_ServerLimitFuse(t *testing.T) {
@@ -402,7 +398,7 @@ func TestConvergenceTicker_PendingGidsPreventsBandwidthReleaseScaleUp(t *testing
 		completedGid: {Domain: "example.com", Scope: "wan"},
 		keepAliveGid: {Domain: "example.com", Scope: "wan"},
 	}
-	// Pre-create state so we can inspect releaseCycles after the skip.
+	// Pre-create state so we can inspect after the skip.
 	ct.getOrCreateState(keepAliveGid)
 	ct.mu.Unlock()
 
@@ -411,7 +407,7 @@ func TestConvergenceTicker_PendingGidsPreventsBandwidthReleaseScaleUp(t *testing
 	}
 
 	// Scenario 1: pendingGids contains keepAliveGid (processTask already scaled it).
-	// bandwidthRelease must skip it — no ScaleUp issued, releaseCycles untouched.
+	// bandwidthRelease must skip it — no ScaleUp issued.
 	pendingGids := map[string]bool{keepAliveGid: true}
 	releases := ct.bandwidthRelease(tracker.tasks, activeGids, pendingGids, nil)
 	if len(releases) != 0 {
@@ -422,9 +418,6 @@ func TestConvergenceTicker_PendingGidsPreventsBandwidthReleaseScaleUp(t *testing
 	ct.mu.Unlock()
 	if s == nil {
 		t.Fatal("expected state for keepAliveGid")
-	}
-	if s.releaseCycles != 0 {
-		t.Errorf("expected releaseCycles=0 (skipped by pendingGids), got %d", s.releaseCycles)
 	}
 
 	// Scenario 2 (control): pendingGids is empty — bandwidthRelease should issue ScaleUp.

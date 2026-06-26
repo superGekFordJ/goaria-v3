@@ -3,6 +3,7 @@ package smartthread
 import (
 	"log"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -66,9 +67,6 @@ const (
 )
 
 type convergenceState struct {
-	// Bandwidth borrowing state
-	releaseCycles int
-
 	// Active probing state machine
 	phase                int
 	probeCooldown        int
@@ -97,8 +95,9 @@ type convergenceState struct {
 	floorMemory   int64 // rawBps at FloorHit moment
 	floorHitCount int   // consecutive ticks rawBps < floorMemory*0.90
 
-	// bandwidthRelease delay compensation
-	lastRawBps int64 // last known rawBps; assignment deferred to later phase
+	// bandwidthRelease delay compensation: last known rawBps, set after
+	// rawBps is computed in processTask.
+	lastRawBps int64
 
 	// tail blackout zone: permanently suppresses all macro decisions when
 	// totalRemaining < activeWorkers × effectiveMinChunk. Not reset on
@@ -114,11 +113,13 @@ type ConvergenceTicker struct {
 	rateChecker  RateLimitChecker
 	limits       *ServerLimitStore
 
-	mu             sync.Mutex
-	states         map[string]*convergenceState
-	prevActiveGids map[string]gidInfo // gid → gidInfo, for bandwidth borrowing diff
-	stopChan       chan struct{}
-	stopOnce       sync.Once
+	mu               sync.Mutex
+	states           map[string]*convergenceState
+	prevActiveGids   map[string]gidInfo // gid → gidInfo, for bandwidth borrowing diff
+	rotationCounter  int                // fair rotation for beneficiary election
+	prevActiveSpeeds map[string]int64   // gid → last known rawBps, for delay compensation
+	stopChan         chan struct{}
+	stopOnce         sync.Once
 }
 
 func NewConvergenceTicker(
@@ -129,15 +130,16 @@ func NewConvergenceTicker(
 	rateChecker RateLimitChecker,
 ) *ConvergenceTicker {
 	return &ConvergenceTicker{
-		engine:         engine,
-		tracker:        tracker,
-		telemetry:      telemetry,
-		peakRecorder:   peakRecorder,
-		rateChecker:    rateChecker,
-		limits:         GetDefaultServerLimits(),
-		states:         make(map[string]*convergenceState),
-		prevActiveGids: make(map[string]gidInfo),
-		stopChan:       make(chan struct{}),
+		engine:           engine,
+		tracker:          tracker,
+		telemetry:        telemetry,
+		peakRecorder:     peakRecorder,
+		rateChecker:      rateChecker,
+		limits:           GetDefaultServerLimits(),
+		states:           make(map[string]*convergenceState),
+		prevActiveGids:   make(map[string]gidInfo),
+		prevActiveSpeeds: make(map[string]int64),
+		stopChan:         make(chan struct{}),
 	}
 }
 
@@ -243,9 +245,20 @@ func (c *ConvergenceTicker) tick() {
 		}
 	}
 
+	// Update prevActiveSpeeds for bandwidthRelease delay compensation.
+	c.mu.Lock()
+	for _, task := range activeTasks {
+		if !strings.HasPrefix(task.GID, "sg_") {
+			continue
+		}
+		if s, ok := c.states[task.GID]; ok && s.lastRawBps > 0 {
+			c.prevActiveSpeeds[task.GID] = s.lastRawBps
+		}
+	}
+	c.mu.Unlock()
+
 	// Bandwidth borrowing: detect tasks that disappeared since last tick.
-	// For each completed task, find same-scope tasks and trigger
-	// ScaleUp with degraded filter (bandwidthReleaseCycles = 1).
+	// For each completed task, elect a single same-domain+scope beneficiary.
 	// Skip GIDs already scaled by processTask to prevent double ScaleUp.
 	pending = append(pending, c.bandwidthRelease(activeTasks, activeGids, pendingGids, approvedDelta)...)
 
@@ -254,6 +267,7 @@ func (c *ConvergenceTicker) tick() {
 	for gid := range c.states {
 		if _, ok := activeGids[gid]; !ok {
 			delete(c.states, gid)
+			delete(c.prevActiveSpeeds, gid)
 		}
 	}
 	// Update prevActiveGids for next tick's bandwidth borrowing diff
@@ -291,9 +305,11 @@ func (c *ConvergenceTicker) tick() {
 	}
 }
 
-// bandwidthRelease detects tasks that disappeared since last tick and distributes
-// their freed bandwidth to same-scope tasks. GIDs already scaled by
-// processTask this tick (present in pendingGids) are skipped to prevent double ScaleUp.
+// bandwidthRelease detects tasks that disappeared since last tick and elects a
+// single same-domain+scope beneficiary per disappearance event (lowest
+// currentWorkers, fair rotation on tie) to prevent thundering-herd ScaleUp.
+// GIDs already scaled by processTask this tick (present in pendingGids) are
+// skipped to prevent double ScaleUp.
 func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, activeGids map[string]gidInfo, pendingGids map[string]bool, approvedDelta map[string]int) []pendingScale {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -303,36 +319,69 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 		if _, ok := activeGids[gid]; ok {
 			continue // still active
 		}
-		// Task disappeared — look for same-scope tasks to benefit
+
+		type candidate struct {
+			gid            string
+			scope          string
+			domain         string
+			currentWorkers int
+		}
+		var candidates []candidate
 		for _, t := range activeTasks {
 			if !strings.HasPrefix(t.GID, "sg_") {
 				continue
 			}
-			if t.Scope != info.Scope {
+			domainMatch := t.Domain == info.Domain
+			if info.Domain == "" {
+				domainMatch = true
+			}
+			if !domainMatch || t.Scope != info.Scope {
 				continue
 			}
 			if pendingGids[t.GID] {
-				continue // already scaled by processTask this tick
+				continue
 			}
 			s := c.getOrCreateState(t.GID)
 			if s.kneeFrozen || s.phase == phaseCeilingHit || s.blackout {
-				continue // knee frozen, ceiling hit, or blackout — suppress ScaleUp
+				continue
 			}
-			if !c.checkVAvailable(t.Scope, t.Domain, approvedDelta) {
-				continue // insufficient V_available — suppress ScaleUp
-			}
-			s.releaseCycles++
-			if s.releaseCycles >= bandwidthReleaseCycles {
-				releases = append(releases, pendingScale{gid: t.GID, scope: t.Scope, delta: 1})
-				pendingGids[t.GID] = true
-				if approvedDelta != nil {
-					approvedDelta[t.Scope]++
-				}
-				log.Printf("[convergence] bandwidth-borrow: gid=%s scope=%s released by completed gid=%s",
-					t.GID, info.Scope, gid)
-				s.releaseCycles = 0
-			}
+			cw := len(c.telemetry.Get(t.GID))
+			candidates = append(candidates, candidate{
+				gid:            t.GID,
+				scope:          t.Scope,
+				domain:         t.Domain,
+				currentWorkers: cw,
+			})
 		}
+
+		if len(candidates) == 0 {
+			continue
+		}
+
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].currentWorkers < candidates[j].currentWorkers
+		})
+		minWorkers := candidates[0].currentWorkers
+		tiedCount := 0
+		for tiedCount < len(candidates) && candidates[tiedCount].currentWorkers == minWorkers {
+			tiedCount++
+		}
+		electedIdx := c.rotationCounter % tiedCount
+		c.rotationCounter++
+		elected := candidates[electedIdx]
+
+		disappearedSpeed := c.prevActiveSpeeds[gid]
+		if !c.checkVAvailableWithCompensation(elected.scope, elected.domain, approvedDelta, disappearedSpeed) {
+			continue
+		}
+
+		releases = append(releases, pendingScale{gid: elected.gid, scope: elected.scope, delta: 1})
+		pendingGids[elected.gid] = true
+		if approvedDelta != nil {
+			approvedDelta[elected.scope]++
+		}
+		log.Printf("[convergence] bandwidth-borrow: gid=%s scope=%s domain=%s released by completed gid=%s (elected, %d candidates)",
+			elected.gid, elected.scope, elected.domain, gid, len(candidates))
 	}
 	return releases
 }
@@ -410,6 +459,25 @@ func (c *ConvergenceTicker) checkVAvailable(scope, domain string, approvedDelta 
 	vThreadAvg := c.computeVThreadAvg(domain, scope)
 	effectiveBw := activeBw + int64(approvedDelta[scope])*vThreadAvg
 	return globalPeak-effectiveBw >= vThreadAvg
+}
+
+// checkVAvailableWithCompensation is like checkVAvailable but subtracts
+// disappearedSpeed from effectiveBw to compensate for activeBandwidthProvider
+// cache lag (a disappeared task's bandwidth may still be counted for 1-5s).
+// When disappearedSpeed is 0, this degrades to checkVAvailable.
+func (c *ConvergenceTicker) checkVAvailableWithCompensation(scope, domain string, approvedDelta map[string]int, disappearedSpeed int64) bool {
+	globalPeak, ok := speedstats.GetGlobalPeak(scope)
+	if !ok || globalPeak <= 0 {
+		return true
+	}
+	activeBw := activeBandwidthProvider(scope)
+	vThreadAvg := c.computeVThreadAvg(domain, scope)
+	effectiveBw := activeBw + int64(approvedDelta[scope])*vThreadAvg
+	compensatedBw := effectiveBw - disappearedSpeed
+	if compensatedBw < 0 {
+		compensatedBw = 0
+	}
+	return globalPeak-compensatedBw >= vThreadAvg
 }
 
 // processTask evaluates a single task and returns a pending scale operation if one is needed.
@@ -536,6 +604,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	if rawBps < 0 {
 		rawBps = 0
 	}
+	s.lastRawBps = rawBps
 
 	// D2: Settling — transition to stable, no decision this tick.
 	// Do NOT overwrite probeBaseline — it must retain the pre-probe throughput
@@ -879,5 +948,6 @@ func (c *ConvergenceTicker) RemoveTask(gid string) {
 	c.mu.Lock()
 	delete(c.states, gid)
 	delete(c.prevActiveGids, gid)
+	delete(c.prevActiveSpeeds, gid)
 	c.mu.Unlock()
 }

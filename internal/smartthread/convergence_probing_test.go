@@ -2282,13 +2282,6 @@ func TestConvergence_BandwidthRelease_SkipsCeilingHit(t *testing.T) {
 			t.Fatal("expected bandwidthRelease to skip phaseCeilingHit task")
 		}
 	}
-	// releaseCycles must stay 0 — the skip happens before the increment.
-	ct.mu.Lock()
-	s = ct.states[gid]
-	ct.mu.Unlock()
-	if s.releaseCycles != 0 {
-		t.Fatalf("expected releaseCycles=0 (skipped before increment), got %d", s.releaseCycles)
-	}
 }
 
 // TestConvergence_ProbeUp_BlockedByVAvailable verifies that when
@@ -2711,12 +2704,6 @@ func TestConvergence_BandwidthRelease_SkipsBlackout(t *testing.T) {
 			t.Fatal("expected bandwidthRelease to skip blackout task")
 		}
 	}
-	ct.mu.Lock()
-	s = ct.states[gid]
-	ct.mu.Unlock()
-	if s.releaseCycles != 0 {
-		t.Fatalf("expected releaseCycles=0 (skipped before increment), got %d", s.releaseCycles)
-	}
 }
 
 // TestConvergence_BandwidthRelease_NonKeepAliveTaskBenefits verifies that
@@ -2769,12 +2756,6 @@ func TestConvergence_BandwidthRelease_NonKeepAliveTaskBenefits(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected non-keep-alive task to receive bandwidth-release ScaleUp")
-	}
-	ct.mu.Lock()
-	s = ct.states[beneficiaryGid]
-	ct.mu.Unlock()
-	if s.releaseCycles != 0 {
-		t.Fatalf("expected releaseCycles=0 (reset after trigger), got %d", s.releaseCycles)
 	}
 	if approvedDelta["wan"] != 1 {
 		t.Fatalf("expected approvedDelta[wan]=1, got %d", approvedDelta["wan"])
@@ -2922,10 +2903,412 @@ func TestConvergence_BandwidthRelease_BlockedByVAvailable(t *testing.T) {
 			t.Fatal("expected bandwidthRelease to skip task when V_available insufficient")
 		}
 	}
+}
+
+func TestConvergence_BandwidthRelease_DomainScopeMatching(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	gidA := "sg_domain_a"
+	gidB := "sg_domain_b"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gidA, Status: "active", Scope: "wan", Domain: "a.com", CompletedLength: 100 * 1024 * 1024},
+			{GID: gidB, Status: "active", Scope: "wan", Domain: "b.com", CompletedLength: 100 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gidA: makeWorkers(4, 2*1024*1024),
+			gidB: makeWorkers(4, 2*1024*1024),
+		},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+
+	for _, gid := range []string{gidA, gidB} {
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		s.phase = phaseStable
+		s.kneeFrozen = false
+		s.blackout = false
+		ct.mu.Unlock()
+	}
+
+	completedGid := "sg_completed_domain_a"
 	ct.mu.Lock()
-	s = ct.states[beneficiaryGid]
+	ct.prevActiveGids = map[string]gidInfo{
+		completedGid: {Domain: "a.com", Scope: "wan"},
+	}
 	ct.mu.Unlock()
-	if s.releaseCycles != 0 {
-		t.Fatalf("expected releaseCycles=0 (V_available skip before increment), got %d", s.releaseCycles)
+
+	releases := ct.bandwidthRelease(
+		tracker.tasks,
+		map[string]gidInfo{gidA: {Domain: "a.com", Scope: "wan"}, gidB: {Domain: "b.com", Scope: "wan"}},
+		map[string]bool{},
+		nil,
+	)
+	if len(releases) != 1 {
+		t.Fatalf("expected 1 release (same-domain only), got %d: %+v", len(releases), releases)
+	}
+	if releases[0].gid != gidA {
+		t.Errorf("expected release for gidA (same domain), got %s", releases[0].gid)
+	}
+}
+
+func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	gidA := "sg_empty_domain"
+	gidB := "sg_known_domain"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gidA, Status: "active", Scope: "wan", Domain: "", CompletedLength: 100 * 1024 * 1024},
+			{GID: gidB, Status: "active", Scope: "wan", Domain: "b.com", CompletedLength: 100 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gidA: makeWorkers(4, 2*1024*1024),
+			gidB: makeWorkers(4, 2*1024*1024),
+		},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+
+	for _, gid := range []string{gidA, gidB} {
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		s.phase = phaseStable
+		s.kneeFrozen = false
+		s.blackout = false
+		ct.mu.Unlock()
+	}
+
+	completedGid := "sg_completed_empty"
+	ct.mu.Lock()
+	ct.prevActiveGids = map[string]gidInfo{
+		completedGid: {Domain: "", Scope: "wan"},
+	}
+	ct.mu.Unlock()
+
+	releases := ct.bandwidthRelease(
+		tracker.tasks,
+		map[string]gidInfo{gidA: {Domain: "", Scope: "wan"}, gidB: {Domain: "b.com", Scope: "wan"}},
+		map[string]bool{},
+		nil,
+	)
+	if len(releases) != 1 {
+		t.Fatalf("expected 1 release (empty-domain fallback), got %d: %+v", len(releases), releases)
+	}
+	if releases[0].gid != gidA {
+		t.Errorf("expected release for gidA (empty domain fallback), got %s", releases[0].gid)
+	}
+}
+
+func TestConvergence_BandwidthRelease_SingleBeneficiaryElection(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	gid1 := "sg_elect_1"
+	gid2 := "sg_elect_2"
+	gid3 := "sg_elect_3"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid1, Status: "active", Scope: "wan", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
+			{GID: gid2, Status: "active", Scope: "wan", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
+			{GID: gid3, Status: "active", Scope: "wan", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid1: makeWorkers(4, 2*1024*1024),
+			gid2: makeWorkers(2, 2*1024*1024),
+			gid3: makeWorkers(2, 2*1024*1024),
+		},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+
+	for _, gid := range []string{gid1, gid2, gid3} {
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		s.phase = phaseStable
+		s.kneeFrozen = false
+		s.blackout = false
+		ct.mu.Unlock()
+	}
+
+	completedGid := "sg_completed_elect"
+	ct.mu.Lock()
+	ct.prevActiveGids = map[string]gidInfo{
+		completedGid: {Domain: "example.com", Scope: "wan"},
+	}
+	ct.mu.Unlock()
+
+	releases := ct.bandwidthRelease(
+		tracker.tasks,
+		map[string]gidInfo{gid1: {Domain: "example.com", Scope: "wan"}, gid2: {Domain: "example.com", Scope: "wan"}, gid3: {Domain: "example.com", Scope: "wan"}},
+		map[string]bool{},
+		nil,
+	)
+	if len(releases) != 1 {
+		t.Fatalf("expected exactly 1 release (single beneficiary), got %d: %+v", len(releases), releases)
+	}
+	elected := releases[0].gid
+	if elected != gid2 && elected != gid3 {
+		t.Errorf("expected beneficiary to be gid2 or gid3 (lowest workers), got %s", elected)
+	}
+	ct.mu.Lock()
+	rc := ct.rotationCounter
+	ct.mu.Unlock()
+	if rc != 1 {
+		t.Errorf("expected rotationCounter=1 after one election, got %d", rc)
+	}
+}
+
+func TestConvergence_BandwidthRelease_FairRotation(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	gid1 := "sg_rotate_1"
+	gid2 := "sg_rotate_2"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid1, Status: "active", Scope: "wan", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
+			{GID: gid2, Status: "active", Scope: "wan", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid1: makeWorkers(2, 2*1024*1024),
+			gid2: makeWorkers(2, 2*1024*1024),
+		},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+
+	for _, gid := range []string{gid1, gid2} {
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		s.phase = phaseStable
+		s.kneeFrozen = false
+		s.blackout = false
+		ct.mu.Unlock()
+	}
+
+	activeGids := map[string]gidInfo{
+		gid1: {Domain: "example.com", Scope: "wan"},
+		gid2: {Domain: "example.com", Scope: "wan"},
+	}
+
+	completedGid1 := "sg_completed_rotate_1"
+	ct.mu.Lock()
+	ct.prevActiveGids = map[string]gidInfo{
+		completedGid1: {Domain: "example.com", Scope: "wan"},
+	}
+	ct.rotationCounter = 0
+	ct.mu.Unlock()
+
+	releases1 := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil)
+	if len(releases1) != 1 {
+		t.Fatalf("expected 1 release on first call, got %d", len(releases1))
+	}
+	firstElected := releases1[0].gid
+
+	completedGid2 := "sg_completed_rotate_2"
+	ct.mu.Lock()
+	ct.prevActiveGids = map[string]gidInfo{
+		completedGid2: {Domain: "example.com", Scope: "wan"},
+	}
+	ct.mu.Unlock()
+
+	releases2 := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil)
+	if len(releases2) != 1 {
+		t.Fatalf("expected 1 release on second call, got %d", len(releases2))
+	}
+	secondElected := releases2[0].gid
+
+	if firstElected == secondElected {
+		t.Errorf("expected fair rotation to elect different beneficiaries, got %s twice", firstElected)
+	}
+}
+
+func TestConvergence_BandwidthRelease_DelayCompensation(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	// globalPeak = 10 MB/s, vThreadAvg = 10 MB/s.
+	// activeBw = 10 MB/s (cache lag: disappeared task still counted).
+	// disappearedSpeed = 10 MB/s → compensatedBw = 0 → headroom = 10 MB >= 10 MB → pass.
+	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+
+	orig := activeBandwidthProvider
+	t.Cleanup(func() { activeBandwidthProvider = orig })
+	activeBandwidthProvider = func(scope string) int64 { return 10 * 1024 * 1024 }
+
+	beneficiaryGid := "sg_delay_comp_beneficiary"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: beneficiaryGid, Status: "active", Scope: "wan", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{beneficiaryGid: makeWorkers(8, 2*1024*1024)},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+
+	ct.mu.Lock()
+	s := ct.getOrCreateState(beneficiaryGid)
+	s.phase = phaseStable
+	s.kneeFrozen = false
+	s.blackout = false
+	ct.mu.Unlock()
+
+	completedGid := "sg_delay_comp_completed"
+	ct.mu.Lock()
+	ct.prevActiveGids = map[string]gidInfo{
+		completedGid: {Domain: "example.com", Scope: "wan"},
+	}
+	ct.prevActiveSpeeds = map[string]int64{
+		completedGid: 10 * 1024 * 1024,
+	}
+	ct.mu.Unlock()
+
+	releases := ct.bandwidthRelease(
+		[]TrackedTaskInfo{tracker.tasks[0]},
+		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan"}},
+		map[string]bool{},
+		nil,
+	)
+	found := false
+	for _, r := range releases {
+		if r.gid == beneficiaryGid {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected delay compensation to allow ScaleUp despite cache lag")
+	}
+}
+
+func TestConvergence_BandwidthRelease_NoCompensationWhenSpeedZero(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	// globalPeak = 10 MB/s, vThreadAvg = 10 MB/s.
+	// activeBw = 10 MB/s, disappearedSpeed = 0 → no compensation → blocked.
+	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+
+	orig := activeBandwidthProvider
+	t.Cleanup(func() { activeBandwidthProvider = orig })
+	activeBandwidthProvider = func(scope string) int64 { return 10 * 1024 * 1024 }
+
+	beneficiaryGid := "sg_no_comp_beneficiary"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: beneficiaryGid, Status: "active", Scope: "wan", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{beneficiaryGid: makeWorkers(8, 2*1024*1024)},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+
+	ct.mu.Lock()
+	s := ct.getOrCreateState(beneficiaryGid)
+	s.phase = phaseStable
+	s.kneeFrozen = false
+	s.blackout = false
+	ct.mu.Unlock()
+
+	completedGid := "sg_no_comp_completed"
+	ct.mu.Lock()
+	ct.prevActiveGids = map[string]gidInfo{
+		completedGid: {Domain: "example.com", Scope: "wan"},
+	}
+	// prevActiveSpeeds has no entry for completedGid → disappearedSpeed = 0
+	ct.mu.Unlock()
+
+	releases := ct.bandwidthRelease(
+		[]TrackedTaskInfo{tracker.tasks[0]},
+		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan"}},
+		map[string]bool{},
+		nil,
+	)
+	for _, r := range releases {
+		if r.gid == beneficiaryGid {
+			t.Fatal("expected no ScaleUp when disappearedSpeed=0 and V_available insufficient")
+		}
+	}
+}
+
+func TestConvergence_LastRawBps_SetAfterSecondTick(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	gid := "sg_lastrawbps"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", CompletedLength: 10 * 1024 * 1024, MinChunk: 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid: makeChunkWorkers(4, 2*1024*1024, []int64{10 * 1024 * 1024, 10 * 1024 * 1024, 10 * 1024 * 1024, 10 * 1024 * 1024}),
+		},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
+	defer ct.Stop()
+
+	// First tick: establishes baseline, lastRawBps should stay 0.
+	ct.tick()
+
+	ct.mu.Lock()
+	s := ct.states[gid]
+	ct.mu.Unlock()
+	if s == nil {
+		t.Fatal("expected state after first tick")
+	}
+	if s.lastRawBps != 0 {
+		t.Errorf("expected lastRawBps=0 after first sample, got %d", s.lastRawBps)
+	}
+
+	// Second tick: CompletedLength increases → rawBps computed → lastRawBps set.
+	tracker.tasks[0].CompletedLength = 60 * 1024 * 1024
+	ct.mu.Lock()
+	if s, ok := ct.states[gid]; ok {
+		setPrevSampleAgoState(s, 5*time.Second)
+	}
+	ct.mu.Unlock()
+
+	ct.tick()
+
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s == nil {
+		t.Fatal("expected state after second tick")
+	}
+	if s.lastRawBps <= 0 {
+		t.Errorf("expected lastRawBps > 0 after second tick, got %d", s.lastRawBps)
 	}
 }

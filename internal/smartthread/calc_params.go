@@ -22,9 +22,8 @@ const (
 	maxChunkSize = 1024 * 1024 * 1024
 
 	// Convergence tick constants
-	convergenceInterval    = 5 * time.Second
-	bandwidthReleaseCycles = 1 // bandwidth release degraded filter (deterministic event)
-	connErrorThreshold     = 3 // consecutive conn errors before N_max fuse triggers
+	convergenceInterval = 5 * time.Second
+	connErrorThreshold  = 3 // consecutive conn errors before N_max fuse triggers
 
 	// Peak-efficiency active-probing convergence tunables
 	peakRaiseBand         = 1.05 // noise gate: only bump peak when raw beats it by >5%
