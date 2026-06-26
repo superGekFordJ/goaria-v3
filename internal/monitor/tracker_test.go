@@ -760,6 +760,26 @@ func TestTaskTracker_SetMinChunk_NewTask(t *testing.T) {
 	}
 }
 
+func TestTrackerAdapter_GetActiveTrackedTasks_PassesMinChunkThrough(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg-minchunk-pass", 0, "", 4)
+
+	minChunk := int64(8 * 1024 * 1024)
+	tracker.SetMinChunk("sg-minchunk-pass", minChunk)
+
+	adapter := &trackerAdapter{TaskTracker: tracker}
+	infos := adapter.GetActiveTrackedTasks()
+	if len(infos) != 1 {
+		t.Fatalf("got %d active tracked tasks, want 1", len(infos))
+	}
+	if infos[0].GID != "sg-minchunk-pass" {
+		t.Errorf("GID = %s, want sg-minchunk-pass", infos[0].GID)
+	}
+	if infos[0].MinChunk != minChunk {
+		t.Errorf("MinChunk = %d, want %d", infos[0].MinChunk, minChunk)
+	}
+}
+
 func TestTaskTracker_SampleSpeedFromEvent_UpdatesTotalAndCompleted(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.EnsureTrackedFromEvent("sg-evt-011", 0, "https://example.com/file.zip", 8)
