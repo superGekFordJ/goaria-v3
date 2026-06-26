@@ -2508,6 +2508,10 @@ func TestConvergence_Blackout_SuppressesAllDecisions(t *testing.T) {
 	s.bestEff = 2 * 1024 * 1024
 	s.peakWorkers = 8
 	s.sustainCount = peakSustainCycles
+	// Seed non-default values so the post-tick assertions verify the probe
+	// state machine was never reached, rather than checking defaults.
+	s.phase = phaseSettling
+	s.lastStep = -1
 	ct.mu.Unlock()
 
 	ct.tick()
@@ -2518,11 +2522,11 @@ func TestConvergence_Blackout_SuppressesAllDecisions(t *testing.T) {
 	if !s.blackout {
 		t.Fatal("expected blackout=true")
 	}
-	if s.phase == phaseSettling {
-		t.Error("expected blackout to suppress Probe-Down (phase should not be settling)")
+	if s.phase != phaseSettling {
+		t.Error("expected blackout to suppress Probe-Down (phase should be unmodified)")
 	}
-	if s.lastStep != 0 {
-		t.Error("expected blackout to suppress Probe-Down (lastStep should be 0)")
+	if s.lastStep != -1 {
+		t.Error("expected blackout to suppress Probe-Down (lastStep should be unmodified)")
 	}
 }
 
@@ -2678,6 +2682,7 @@ func TestConvergence_BandwidthRelease_SkipsBlackout(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	defer ct.Stop()
 
 	ct.mu.Lock()
 	s := ct.getOrCreateState(gid)

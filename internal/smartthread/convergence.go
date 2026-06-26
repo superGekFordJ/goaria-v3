@@ -417,12 +417,16 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	}
 
 	// Only evaluate blackout when chunk telemetry is populated. Workers
-	// without chunk data (ChunkLength==0) haven't received assignments yet.
+	// without chunk data (ChunkLength==0) haven't received assignments yet,
+	// so they're excluded from the threshold — counting them would inflate
+	// the bar and risk a permanent false trigger during mixed-state startup.
 	hasChunkData := false
+	chunkWorkers := 0
 	totalRemaining := int64(0)
 	for _, ws := range stats {
 		if ws.ChunkLength > 0 {
 			hasChunkData = true
+			chunkWorkers++
 		}
 		remaining := (ws.ChunkStart + ws.ChunkLength) - ws.ChunkOffset
 		if remaining > 0 {
@@ -434,10 +438,10 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 		if effectiveMinChunk <= 0 {
 			effectiveMinChunk = minChunkSize
 		}
-		if totalRemaining < int64(currentWorkers)*effectiveMinChunk {
+		if totalRemaining < int64(chunkWorkers)*effectiveMinChunk {
 			s.blackout = true
-			log.Printf("[convergence] blackout-triggered: gid=%s totalRemaining=%d workers=%d minChunk=%d",
-				gid, totalRemaining, currentWorkers, effectiveMinChunk)
+			log.Printf("[convergence] blackout-triggered: gid=%s totalRemaining=%d chunkWorkers=%d minChunk=%d",
+				gid, totalRemaining, chunkWorkers, effectiveMinChunk)
 
 			// Final RecordPeakEfficiency before permanent sleep — blackout
 			// early-return is before D3 ratchet, so ratchet is permanently
