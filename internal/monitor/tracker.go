@@ -51,7 +51,7 @@ type TrackedTask struct {
 	IsKeepAlive bool
 
 	// MinChunk is the per-task minimum chunk size (bytes), captured from
-	// ThreadParams.MinSize at task-add time. 0 means unknown/un captured
+	// ThreadParams.MinSize at task-add time. 0 means unknown/uncaptured
 	// (non-Surge path, event-created, or restart recovery).
 	MinChunk int64
 }
