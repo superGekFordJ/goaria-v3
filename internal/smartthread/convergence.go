@@ -244,7 +244,7 @@ func (c *ConvergenceTicker) tick() {
 	}
 
 	// Bandwidth borrowing: detect tasks that disappeared since last tick.
-	// For each completed task, find same-scope keep-alive tasks and trigger
+	// For each completed task, find same-scope tasks and trigger
 	// ScaleUp with degraded filter (bandwidthReleaseCycles = 1).
 	// Skip GIDs already scaled by processTask to prevent double ScaleUp.
 	pending = append(pending, c.bandwidthRelease(activeTasks, activeGids, pendingGids, approvedDelta)...)
