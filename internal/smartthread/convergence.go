@@ -301,8 +301,8 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 				continue // already scaled by processTask this tick
 			}
 			s := c.getOrCreateState(t.GID)
-			if s.kneeFrozen {
-				continue // knee frozen — suppress ScaleUp (D4 step 7)
+			if s.kneeFrozen || s.phase == phaseCeilingHit {
+				continue // knee frozen or ceiling hit — suppress ScaleUp
 			}
 			s.releaseCycles++
 			if s.releaseCycles >= bandwidthReleaseCycles {
@@ -489,6 +489,42 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 		}
 	}
 
+	// Probe-Up evaluation: assess last Tick's +1 using GainRatio.
+	// GainRatio = ActualGain / ExpectedGain; success falls through to the
+	// Probe-Up trigger, failure rebounds -1 and enters the CeilingHit lock.
+	if s.phase == phaseProbingUp && s.probeUpBaseline > 0 && s.probeUpBaselineWorkers > 0 {
+		actualGain := float64(rawBps-s.probeUpBaseline) / float64(s.probeUpBaseline)
+		if actualGain < 0 {
+			actualGain = 0
+		}
+		expectedGain := 1.0 / float64(s.probeUpBaselineWorkers)
+		gainRatio := actualGain / expectedGain
+
+		if gainRatio >= gainRatioThreshold {
+			// Up-probe success — return to stable, fall through to Probe-Up trigger for next +1
+			s.phase = phaseStable
+			log.Printf("[convergence] probe-up-success: gid=%s raw=%d baseline=%d gainRatio=%.2f",
+				gid, rawBps, s.probeUpBaseline, gainRatio)
+			// Fall through to Probe-Up trigger below
+		} else {
+			// Ceiling hit — rebound -1 + CeilingHit lock
+			if c.peakRecorder != nil && rawBps > 0 && currentWorkers > 0 {
+				c.peakRecorder.RecordPeakEfficiency(gid, rawBps, currentWorkers)
+			}
+			s.ceilingMemory = rawBps
+			s.ceilingHitCount = 0
+			s.phase = phaseCeilingHit
+			s.frozenCooldown = ceilingHitCooldownCycles
+			log.Printf("[convergence] ceiling-hit: gid=%s raw=%d baseline=%d gainRatio=%.2f rebound=-1",
+				gid, rawBps, s.probeUpBaseline, gainRatio)
+			s.probeUpBaseline = 0
+			s.probeUpBaselineWorkers = 0
+			s.prevCompleted = task.CompletedLength
+			s.prevSampleAt = now
+			return pendingScale{gid: gid, delta: -1}, true
+		}
+	}
+
 	// D4 step 4: Evaluate last probe using Marginal Drop Ratio.
 	// ExpectedDrop = lastStep / probeBaselineWorkers (if threads are equally productive,
 	// cutting lastStep out of N should drop speed proportionally).
@@ -518,16 +554,93 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			}
 			s.kneeFrozen = true
 			s.probeMomentum = false
-			s.phase = phaseFrozen
-			s.frozenCooldown = frozenCooldownCycles
+			s.phase = phaseFloorHit
+			s.frozenCooldown = floorHitCooldownCycles
+			s.floorMemory = rawBps
+			s.floorHitCount = 0
+			if c.peakRecorder != nil && rawBps > 0 && currentWorkers > 0 {
+				c.peakRecorder.RecordPeakEfficiency(gid, rawBps, currentWorkers)
+			}
 			s.prevCompleted = task.CompletedLength
 			s.prevSampleAt = now
 			s.lastStep = 0
-			log.Printf("[convergence] knee-crossed: gid=%s raw=%d baseline=%d dropRatio=%.2f rebound=+%d frozen",
+			log.Printf("[convergence] knee-crossed: gid=%s raw=%d baseline=%d dropRatio=%.2f rebound=+%d floorHit",
 				gid, rawBps, s.probeBaseline, dropRatio, rebound)
 			return pendingScale{gid: gid, delta: rebound}, true
 		}
 		s.lastStep = 0
+	}
+
+	// CeilingHit processing: smart unlock debounce + cooldown countdown.
+	// Smart unlock: consecutive >= lockUnlockConfirmTicks ticks with
+	// rawBps > ceilingMemory*ceilingUnlockRatio → server sped up → unlock.
+	// Cooldown expiry: no speedup detected → return to stable, allow Probe-Down.
+	if s.phase == phaseCeilingHit {
+		if s.ceilingMemory > 0 && float64(rawBps) > float64(s.ceilingMemory)*ceilingUnlockRatio {
+			s.ceilingHitCount++
+			if s.ceilingHitCount >= lockUnlockConfirmTicks {
+				s.phase = phaseStable
+				s.ceilingHitCount = 0
+				s.sustainCount = 0
+				s.kneeFrozen = false
+				log.Printf("[convergence] ceiling-unlocked: gid=%s raw=%d ceiling=%d (server sped up)",
+					gid, rawBps, s.ceilingMemory)
+				s.ceilingMemory = 0
+				s.frozenCooldown = 0
+				s.prevCompleted = task.CompletedLength
+				s.prevSampleAt = now
+				return pendingScale{}, false
+			}
+		} else {
+			s.ceilingHitCount = 0
+		}
+		s.frozenCooldown--
+		if s.frozenCooldown <= 0 {
+			s.phase = phaseStable
+			s.sustainCount = 0
+			s.kneeFrozen = false
+			log.Printf("[convergence] ceiling-cooldown-expired: gid=%s allowing probe-down", gid)
+			s.ceilingMemory = 0
+		}
+		s.prevCompleted = task.CompletedLength
+		s.prevSampleAt = now
+		return pendingScale{}, false
+	}
+
+	// FloorHit processing: smart unlock debounce + cooldown countdown.
+	// Smart unlock: consecutive >= lockUnlockConfirmTicks ticks with
+	// rawBps < floorMemory*floorUnlockRatio → network congested → reactivate down-probing.
+	// Cooldown expiry: no slowdown detected → return to stable, allow Probe-Up.
+	if s.phase == phaseFloorHit {
+		if s.floorMemory > 0 && float64(rawBps) < float64(s.floorMemory)*floorUnlockRatio {
+			s.floorHitCount++
+			if s.floorHitCount >= lockUnlockConfirmTicks {
+				s.phase = phaseStable
+				s.floorHitCount = 0
+				s.sustainCount = 0
+				s.kneeFrozen = false
+				log.Printf("[convergence] floor-unlocked: gid=%s raw=%d floor=%d (network congested)",
+					gid, rawBps, s.floorMemory)
+				s.floorMemory = 0
+				s.frozenCooldown = 0
+				s.prevCompleted = task.CompletedLength
+				s.prevSampleAt = now
+				return pendingScale{}, false
+			}
+		} else {
+			s.floorHitCount = 0
+		}
+		s.frozenCooldown--
+		if s.frozenCooldown <= 0 {
+			s.phase = phaseStable
+			s.sustainCount = 0
+			s.kneeFrozen = false
+			log.Printf("[convergence] floor-cooldown-expired: gid=%s allowing probe-up", gid)
+			s.floorMemory = 0
+		}
+		s.prevCompleted = task.CompletedLength
+		s.prevSampleAt = now
+		return pendingScale{}, false
 	}
 
 	// D4 step 6: Frozen cooldown
@@ -550,6 +663,56 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	// Before the first ratchet adoption (peakWorkers==0), require
 	// peakSustainCycles stable samples so probeBaseline is not based on a
 	// single potentially-transient measurement.
+
+	// Probe-Up trigger: when stable, preheated, bestEff established, and
+	// current efficiency near best → +1 up-probe. Trigger conditions:
+	//   1. phase == phaseStable
+	//   2. bestEff > 0 (prevents premature probing before efficiency baseline)
+	//   3. newEff >= bestEff*probeUpEffThreshold (current efficiency within 5% of best)
+	//   4. preheated: peakWorkers > 0 || (sustainCount >= peakSustainCycles && bestEff > 0)
+	//   5. N_max not exceeded: !(hasLimit && currentWorkers >= nMax)
+	//   6. V_available sufficient: globalPeak - activeBw >= vThreadAvg (or no globalPeak data → allow)
+	//   7. !rateLimited
+	if s.phase == phaseStable && s.bestEff > 0 {
+		newEff := rawBps / int64(currentWorkers)
+		preheated := s.peakWorkers > 0 || (s.sustainCount >= peakSustainCycles && s.bestEff > 0)
+		if newEff >= int64(float64(s.bestEff)*probeUpEffThreshold) && preheated {
+			// N_max check — C1 fuse only SETS N_max; suppression is here.
+			nMax, hasLimit := c.limits.GetNMax(domain)
+			if !(hasLimit && currentWorkers >= nMax) {
+				// V_available check — compute vThreadAvg inline (not a local in processTask)
+				vAvailable := true
+				if globalPeak, ok := speedstats.GetGlobalPeak(task.Scope); ok && globalPeak > 0 {
+					activeBw := activeBandwidthProvider(task.Scope)
+					vThreadAvg, threadAvgOK := speedstats.GetRecentPeakByDomain(domain, task.Scope)
+					if !threadAvgOK {
+						vThreadAvg, threadAvgOK = speedstats.GetRecentPeakByScope(task.Scope)
+						if threadAvgOK {
+							vThreadAvg /= 2
+						}
+					}
+					if !threadAvgOK || vThreadAvg < minThreadEfficiency {
+						vThreadAvg = minThreadEfficiency
+					}
+					vAvailable = globalPeak-activeBw >= vThreadAvg
+				}
+				if vAvailable && !rateLimited {
+					if c.peakRecorder != nil && rawBps > 0 && currentWorkers > 0 {
+						c.peakRecorder.RecordPeakEfficiency(gid, rawBps, currentWorkers)
+					}
+					s.probeUpBaseline = rawBps
+					s.probeUpBaselineWorkers = currentWorkers
+					s.phase = phaseProbingUp
+					s.prevCompleted = task.CompletedLength
+					s.prevSampleAt = now
+					log.Printf("[convergence] probe-up: gid=%s workers=%d baseline=%d",
+						gid, currentWorkers, rawBps)
+					return pendingScale{gid: gid, delta: 1}, true
+				}
+			}
+		}
+	}
+
 	if s.phase == phaseStable {
 		probeFloor := c.computeProbeFloor(domain, task.Scope)
 		if currentWorkers > probeFloor && (s.peakWorkers > 0 || s.sustainCount >= peakSustainCycles) {
@@ -583,6 +746,9 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 					s.prevSampleAt = now
 					log.Printf("[convergence] probe-down: gid=%s workers=%d step=%d baseline=%d momentum=%v",
 						gid, currentWorkers, step, rawBps, s.probeMomentum)
+					if c.peakRecorder != nil && rawBps > 0 && currentWorkers > 0 {
+						c.peakRecorder.RecordPeakEfficiency(gid, rawBps, currentWorkers)
+					}
 					return pendingScale{gid: gid, delta: -step}, true
 				}
 			}

@@ -825,9 +825,12 @@ func TestConvergence_E2E_MomentumChain(t *testing.T) {
 
 	// Helper: call processTask directly, simulating successful scale by
 	// adjusting telemetry worker count after a probe-down.
+	// N_max is pinned to workerCount to suppress Probe-Up (+1) so the
+	// probe-down momentum chain can be exercised in isolation.
 	process := func(completedLen int64, workerCount int) (pendingScale, bool) {
 		tracker.tasks[0].CompletedLength = completedLen
 		telemetry.data[gid] = makeWorkers(workerCount, 2*1024*1024)
+		ct.limits.SetNMax("example.com", workerCount)
 		ct.mu.Lock()
 		if s, ok := ct.states[gid]; ok {
 			setPrevSampleAgoState(s, 5*time.Second)
@@ -1093,9 +1096,12 @@ func TestConvergence_E2E_LinearZoneKneeViaSettling(t *testing.T) {
 	// Helper: call processTask directly, simulating successful scale by
 	// adjusting telemetry worker count after a probe-down.
 	// throughput = perThreadSpeed * workerCount (linear zone: proportional)
+	// N_max is pinned to workerCount to suppress Probe-Up (+1) so the
+	// probe-down knee-crossing path can be exercised in isolation.
 	process := func(completedLen int64, workerCount int) (pendingScale, bool) {
 		tracker.tasks[0].CompletedLength = completedLen
 		telemetry.data[gid] = makeWorkers(workerCount, 2*1024*1024)
+		ct.limits.SetNMax("example.com", workerCount)
 		ct.mu.Lock()
 		if s, ok := ct.states[gid]; ok {
 			setPrevSampleAgoState(s, 5*time.Second)
@@ -1180,7 +1186,943 @@ func TestConvergence_E2E_LinearZoneKneeViaSettling(t *testing.T) {
 	if s.probeMomentum {
 		t.Fatal("tick 5: expected probeMomentum=false after knee crossing")
 	}
-	if s.phase != phaseFrozen {
-		t.Fatalf("tick 5: expected phase=frozen, got %d", s.phase)
+	if s.phase != phaseFloorHit {
+		t.Fatalf("tick 5: expected phase=phaseFloorHit, got %d", s.phase)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Probe-Up tests (Task 10)
+// ---------------------------------------------------------------------------
+
+// setupProbeUpState creates a ticker and state primed for Probe-Up evaluation.
+// bestEff and peakWorkers are set so the Probe-Up trigger can fire.
+func setupProbeUpState(t *testing.T, gid string, bestEff int64, peakWorkers int) (*ConvergenceTicker, *mockTracker, *mockTelemetry, *mockPeakRecorder) {
+	t.Helper()
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid: makeWorkers(8, 2*1024*1024),
+		},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	recorder := &mockPeakRecorder{}
+	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{})
+
+	// Clear any leftover N_max from previous tests (global singleton).
+	ct.limits.Clear("example.com")
+
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.phase = phaseStable
+	s.bestEff = bestEff
+	s.peakWorkers = peakWorkers
+	s.prevCompleted = 10 * 1024 * 1024
+	setPrevSampleAgoState(s, 5*time.Second)
+	ct.mu.Unlock()
+
+	return ct, tracker, telemetry, recorder
+}
+
+// probeUpProcess is a helper that sets completed length and worker count, then
+// calls processTask directly. Unlike the probe-down process helper, it does NOT
+// pin N_max so Probe-Up can fire.
+func probeUpProcess(ct *ConvergenceTicker, tracker *mockTracker, telemetry *mockTelemetry, gid string, completedLen int64, workerCount int) (pendingScale, bool) {
+	tracker.tasks[0].CompletedLength = completedLen
+	telemetry.data[gid] = makeWorkers(workerCount, 2*1024*1024)
+	ct.mu.Lock()
+	if s, ok := ct.states[gid]; ok {
+		setPrevSampleAgoState(s, 5*time.Second)
+	}
+	ct.mu.Unlock()
+	return ct.processTask(tracker.tasks[0], false)
+}
+
+// TestConvergence_ProbeUp_TriggersWhenStableAndEfficient verifies that
+// phase==phaseStable, bestEff>0, newEff >= bestEff*0.95, and preheated triggers
+// a +1 up-probe with phase set to phaseProbingUp and baseline saved.
+func TestConvergence_ProbeUp_TriggersWhenStableAndEfficient(t *testing.T) {
+	gid := "sg_probe_up_trigger"
+	// bestEff = 1.25 MB/s per worker; 8 workers at 10 MB/s → newEff = 1.25 MB/s = bestEff
+	ct, tracker, telemetry, _ := setupProbeUpState(t, gid, 1_310_720, 8)
+
+	// rawBps = 10 MB/s = 10*1024*1024; delta over 5s = 50 MB
+	ps, ok := probeUpProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
+	if !ok || ps.delta != 1 {
+		t.Fatalf("expected probe-up +1, got ok=%v delta=%d", ok, ps.delta)
+	}
+	ct.mu.Lock()
+	s := ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase != phaseProbingUp {
+		t.Fatalf("expected phase=phaseProbingUp, got %d", s.phase)
+	}
+	if s.probeUpBaseline != 10*1024*1024 {
+		t.Fatalf("expected probeUpBaseline=10MB/s, got %d", s.probeUpBaseline)
+	}
+	if s.probeUpBaselineWorkers != 8 {
+		t.Fatalf("expected probeUpBaselineWorkers=8, got %d", s.probeUpBaselineWorkers)
+	}
+}
+
+// TestConvergence_ProbeUp_BlockedByBestEffZero verifies bestEff=0 blocks Probe-Up.
+// With rawBps=0, D3 ratchet keeps bestEff=0 (0 > 0 is false), so the bestEff > 0
+// gate in the Probe-Up trigger prevents premature up-probing during warmup.
+func TestConvergence_ProbeUp_BlockedByBestEffZero(t *testing.T) {
+	gid := "sg_probe_up_nobesteff"
+	ct, tracker, telemetry, _ := setupProbeUpState(t, gid, 0, 8)
+
+	// No progress → rawBps=0 → D3 keeps bestEff=0 → Probe-Up blocked
+	ps, ok := probeUpProcess(ct, tracker, telemetry, gid, 10*1024*1024, 8)
+	if ok && ps.delta > 0 {
+		t.Fatalf("expected no probe-up when bestEff=0, got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s := ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase == phaseProbingUp {
+		t.Fatal("expected phase != phaseProbingUp when bestEff=0")
+	}
+}
+
+// TestConvergence_ProbeUp_BlockedByNMax verifies currentWorkers >= nMax blocks Probe-Up.
+func TestConvergence_ProbeUp_BlockedByNMax(t *testing.T) {
+	gid := "sg_probe_up_nmax"
+	ct, tracker, telemetry, _ := setupProbeUpState(t, gid, 1_310_720, 8)
+	ct.limits.SetNMax("example.com", 8) // currentWorkers=8 >= nMax=8
+
+	ps, ok := probeUpProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
+	if ok && ps.delta > 0 {
+		t.Fatalf("expected no probe-up when currentWorkers >= nMax, got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s := ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase == phaseProbingUp {
+		t.Fatal("expected phase != phaseProbingUp when N_max exceeded")
+	}
+}
+
+// TestConvergence_ProbeUp_BlockedByRateLimit verifies rateLimited blocks Probe-Up.
+func TestConvergence_ProbeUp_BlockedByRateLimit(t *testing.T) {
+	gid := "sg_probe_up_ratelimit"
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{gid: makeWorkers(8, 2*1024*1024)},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	rateChecker := &mockRateChecker{limited: map[string]bool{gid: true}}
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, rateChecker)
+
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.phase = phaseStable
+	s.bestEff = 1_310_720
+	s.peakWorkers = 8
+	s.prevCompleted = 10 * 1024 * 1024
+	setPrevSampleAgoState(s, 5*time.Second)
+	ct.mu.Unlock()
+
+	ps, ok := probeUpProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
+	if ok && ps.delta > 0 {
+		t.Fatalf("expected no probe-up when rate-limited, got delta=%d", ps.delta)
+	}
+}
+
+// TestConvergence_ProbeUp_SuccessContinuesChain verifies that after a successful
+// Probe-Up evaluation (GainRatio >= 0.5), the code falls through to the Probe-Up
+// trigger and issues another +1.
+func TestConvergence_ProbeUp_SuccessContinuesChain(t *testing.T) {
+	gid := "sg_probe_up_chain"
+	ct, tracker, telemetry, _ := setupProbeUpState(t, gid, 1_310_720, 8)
+
+	// First tick: trigger initial Probe-Up
+	ps, ok := probeUpProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
+	if !ok || ps.delta != 1 {
+		t.Fatalf("expected initial probe-up +1, got ok=%v delta=%d", ok, ps.delta)
+	}
+	ct.mu.Lock()
+	s := ct.states[gid]
+	if s.phase != phaseProbingUp {
+		t.Fatalf("expected phase=phaseProbingUp, got %d", s.phase)
+	}
+	baseline := s.probeUpBaseline
+	baselineWorkers := s.probeUpBaselineWorkers
+	ct.mu.Unlock()
+
+	// Simulate +1 worker (8 → 9) with throughput gain >= 50% of expected.
+	// ExpectedGain = 1/8 = 0.125 (12.5%). Need actualGain >= 0.0625 (6.25%).
+	// rawBps was 10MB/s. Need rawBps >= 10MB * 1.0625 = 10.625MB/s. Use 12MB/s.
+	// actualGain = (12-10)/10 = 0.20. gainRatio = 0.20/0.125 = 1.6 >= 0.5 → success.
+	// delta = 12MB * 5 = 60MB. prevCompleted = 60MB. CompletedLength = 120MB.
+	newCompleted := int64(120 * 1024 * 1024)
+	tracker.tasks[0].CompletedLength = newCompleted
+	telemetry.data[gid] = makeWorkers(9, 2*1024*1024)
+	ct.mu.Lock()
+	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
+	ct.mu.Unlock()
+
+	ps, ok = ct.processTask(tracker.tasks[0], false)
+	if !ok || ps.delta != 1 {
+		t.Fatalf("expected chain probe-up +1 after success, got ok=%v delta=%d", ok, ps.delta)
+	}
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	// After success, phase should be phaseProbingUp again (fell through to trigger)
+	if s.phase != phaseProbingUp {
+		t.Fatalf("expected phase=phaseProbingUp after chain, got %d", s.phase)
+	}
+	// Baseline should be updated to the new rawBps
+	if s.probeUpBaseline == baseline {
+		t.Fatal("expected probeUpBaseline to be updated after chain probe-up")
+	}
+	if s.probeUpBaselineWorkers != 9 {
+		t.Fatalf("expected probeUpBaselineWorkers=9, got %d", s.probeUpBaselineWorkers)
+	}
+	_ = baselineWorkers
+}
+
+// TestConvergence_ProbeUp_GainRatioZeroRawBps verifies that probeUpBaseline > 0
+// but rawBps=0 gives GainRatio=0 < 0.5 → CeilingHit rebound -1.
+func TestConvergence_ProbeUp_GainRatioZeroRawBps(t *testing.T) {
+	gid := "sg_probe_up_zero"
+	ct, tracker, telemetry, _ := setupProbeUpState(t, gid, 1_310_720, 8)
+
+	// First tick: trigger initial Probe-Up
+	ps, ok := probeUpProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
+	if !ok || ps.delta != 1 {
+		t.Fatalf("expected initial probe-up +1, got ok=%v delta=%d", ok, ps.delta)
+	}
+
+	// Now simulate rawBps=0 (no progress). GainRatio=0 < 0.5 → CeilingHit.
+	// CompletedLength stays the same (no progress), delta=0 → rawBps=0.
+	tracker.tasks[0].CompletedLength = 60 * 1024 * 1024 // same as before → delta=0
+	telemetry.data[gid] = makeWorkers(9, 2*1024*1024)
+	ct.mu.Lock()
+	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
+	ct.mu.Unlock()
+
+	ps, ok = ct.processTask(tracker.tasks[0], false)
+	if !ok || ps.delta != -1 {
+		t.Fatalf("expected ceiling-hit rebound -1, got ok=%v delta=%d", ok, ps.delta)
+	}
+	ct.mu.Lock()
+	s := ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase != phaseCeilingHit {
+		t.Fatalf("expected phase=phaseCeilingHit, got %d", s.phase)
+	}
+	if s.ceilingMemory != 0 {
+		t.Fatalf("expected ceilingMemory=0 (rawBps was 0), got %d", s.ceilingMemory)
+	}
+	if s.frozenCooldown != ceilingHitCooldownCycles {
+		t.Fatalf("expected frozenCooldown=%d, got %d", ceilingHitCooldownCycles, s.frozenCooldown)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CeilingHit tests (Task 11)
+// ---------------------------------------------------------------------------
+
+// setupCeilingHitState creates a ticker with state primed in phaseCeilingHit.
+func setupCeilingHitState(t *testing.T, gid string, ceilingMemory int64, cooldown int) *ConvergenceTicker {
+	t.Helper()
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{gid: makeWorkers(8, 2*1024*1024)},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.phase = phaseCeilingHit
+	s.ceilingMemory = ceilingMemory
+	s.ceilingHitCount = 0
+	s.frozenCooldown = cooldown
+	s.prevCompleted = 10 * 1024 * 1024
+	setPrevSampleAgoState(s, 5*time.Second)
+	ct.mu.Unlock()
+
+	return ct
+}
+
+// ceilingHitProcess calls processTask with the given completed length and worker count.
+func ceilingHitProcess(ct *ConvergenceTicker, tracker *mockTracker, telemetry *mockTelemetry, gid string, completedLen int64, workerCount int) (pendingScale, bool) {
+	tracker.tasks[0].CompletedLength = completedLen
+	telemetry.data[gid] = makeWorkers(workerCount, 2*1024*1024)
+	ct.mu.Lock()
+	if s, ok := ct.states[gid]; ok {
+		setPrevSampleAgoState(s, 5*time.Second)
+	}
+	ct.mu.Unlock()
+	return ct.processTask(tracker.tasks[0], false)
+}
+
+// TestConvergence_CeilingHit_SmartUnlock verifies consecutive 2 ticks with
+// rawBps > ceilingMemory*1.05 → ceiling-unlocked, phase back to phaseStable.
+func TestConvergence_CeilingHit_SmartUnlock(t *testing.T) {
+	gid := "sg_ceiling_unlock"
+	ceilingMem := int64(10 * 1024 * 1024) // 10 MB/s
+	ct := setupCeilingHitState(t, gid, ceilingMem, ceilingHitCooldownCycles)
+	tracker := ct.tracker.(*mockTracker)
+	telemetry := ct.telemetry.(*mockTelemetry)
+
+	// Tick 1: rawBps = 11 MB/s > 10*1.05 = 10.5 MB/s → ceilingHitCount=1 (not yet 2)
+	// delta = 11MB * 5 = 55MB. prevCompleted=10MB. CompletedLength=65MB.
+	ps, ok := ceilingHitProcess(ct, tracker, telemetry, gid, 65*1024*1024, 8)
+	if ok {
+		t.Fatalf("expected no scale during ceiling-hit, got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s := ct.states[gid]
+	ct.mu.Unlock()
+	if s.ceilingHitCount != 1 {
+		t.Fatalf("expected ceilingHitCount=1 after tick 1, got %d", s.ceilingHitCount)
+	}
+	if s.phase != phaseCeilingHit {
+		t.Fatalf("expected still phaseCeilingHit after tick 1, got %d", s.phase)
+	}
+
+	// Tick 2: rawBps = 12 MB/s > 10.5 MB/s → ceilingHitCount=2 → unlock
+	// prevCompleted now = 65MB. delta = 12MB*5 = 60MB. CompletedLength = 125MB.
+	ps, ok = ceilingHitProcess(ct, tracker, telemetry, gid, 125*1024*1024, 8)
+	if ok {
+		t.Fatalf("expected no scale on unlock, got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase != phaseStable {
+		t.Fatalf("expected phase=phaseStable after unlock, got %d", s.phase)
+	}
+	if s.ceilingMemory != 0 {
+		t.Fatalf("expected ceilingMemory=0 after unlock, got %d", s.ceilingMemory)
+	}
+	if s.kneeFrozen {
+		t.Error("expected kneeFrozen=false after ceiling unlock")
+	}
+}
+
+// TestConvergence_CeilingHit_SingleFluctuationNoUnlock verifies a single
+// high-rawBps tick followed by a normal tick does not unlock.
+func TestConvergence_CeilingHit_SingleFluctuationNoUnlock(t *testing.T) {
+	gid := "sg_ceiling_fluctuation"
+	ceilingMem := int64(10 * 1024 * 1024)
+	ct := setupCeilingHitState(t, gid, ceilingMem, ceilingHitCooldownCycles)
+	tracker := ct.tracker.(*mockTracker)
+	telemetry := ct.telemetry.(*mockTelemetry)
+
+	// Tick 1: rawBps = 12 MB/s > 10.5 → ceilingHitCount=1
+	ps, ok := ceilingHitProcess(ct, tracker, telemetry, gid, 70*1024*1024, 8)
+	if ok {
+		t.Fatalf("expected no scale, got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s := ct.states[gid]
+	ct.mu.Unlock()
+	if s.ceilingHitCount != 1 {
+		t.Fatalf("expected ceilingHitCount=1, got %d", s.ceilingHitCount)
+	}
+
+	// Tick 2: rawBps = 9 MB/s < 10.5 → ceilingHitCount resets to 0
+	ps, ok = ceilingHitProcess(ct, tracker, telemetry, gid, 115*1024*1024, 8)
+	if ok {
+		t.Fatalf("expected no scale, got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s.ceilingHitCount != 0 {
+		t.Fatalf("expected ceilingHitCount=0 after fluctuation, got %d", s.ceilingHitCount)
+	}
+	if s.phase != phaseCeilingHit {
+		t.Fatalf("expected still phaseCeilingHit, got %d", s.phase)
+	}
+}
+
+// TestConvergence_CeilingHit_CooldownExpired verifies frozenCooldown countdown
+// reaches 0 without speedup → ceiling-cooldown-expired, phase back to phaseStable.
+func TestConvergence_CeilingHit_CooldownExpired(t *testing.T) {
+	gid := "sg_ceiling_cooldown"
+	ceilingMem := int64(10 * 1024 * 1024)
+	ct := setupCeilingHitState(t, gid, ceilingMem, 1) // cooldown=1 → expires next tick
+	tracker := ct.tracker.(*mockTracker)
+	telemetry := ct.telemetry.(*mockTelemetry)
+
+	// Tick: rawBps = 10 MB/s (not > 10.5) → no unlock. cooldown 1→0 → expired.
+	ps, ok := ceilingHitProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
+	if ok {
+		t.Fatalf("expected no scale on cooldown expiry, got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s := ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase != phaseStable {
+		t.Fatalf("expected phase=phaseStable after cooldown expiry, got %d", s.phase)
+	}
+	if s.ceilingMemory != 0 {
+		t.Fatalf("expected ceilingMemory=0 after cooldown expiry, got %d", s.ceilingMemory)
+	}
+}
+
+// TestConvergence_CeilingHit_EarlyReturnNoProbe verifies phase==phaseCeilingHit
+// causes processTask to early-return without triggering Probe-Up or Probe-Down.
+func TestConvergence_CeilingHit_EarlyReturnNoProbe(t *testing.T) {
+	gid := "sg_ceiling_earlyreturn"
+	ceilingMem := int64(10 * 1024 * 1024)
+	ct := setupCeilingHitState(t, gid, ceilingMem, ceilingHitCooldownCycles)
+	tracker := ct.tracker.(*mockTracker)
+	telemetry := ct.telemetry.(*mockTelemetry)
+
+	// Even with high efficiency (would trigger Probe-Up if stable), CeilingHit
+	// early-returns. Set bestEff > 0 and peakWorkers > 0 to make Probe-Up conditions
+	// otherwise satisfiable.
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.bestEff = 1_310_720
+	s.peakWorkers = 8
+	ct.mu.Unlock()
+
+	// rawBps = 10 MB/s, 8 workers → newEff = 1.25 MB/s >= bestEff*0.95
+	ps, ok := ceilingHitProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
+	if ok {
+		t.Fatalf("expected no scale during ceiling-hit early return, got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase != phaseCeilingHit {
+		t.Fatalf("expected phase=phaseCeilingHit (early return preserves phase), got %d", s.phase)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FloorHit tests (Task 12)
+// ---------------------------------------------------------------------------
+
+// setupFloorHitState creates a ticker with state primed in phaseFloorHit.
+func setupFloorHitState(t *testing.T, gid string, floorMemory int64, cooldown int) *ConvergenceTicker {
+	t.Helper()
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{gid: makeWorkers(8, 2*1024*1024)},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.phase = phaseFloorHit
+	s.floorMemory = floorMemory
+	s.floorHitCount = 0
+	s.frozenCooldown = cooldown
+	s.kneeFrozen = true
+	s.prevCompleted = 10 * 1024 * 1024
+	setPrevSampleAgoState(s, 5*time.Second)
+	ct.mu.Unlock()
+
+	return ct
+}
+
+func floorHitProcess(ct *ConvergenceTicker, tracker *mockTracker, telemetry *mockTelemetry, gid string, completedLen int64, workerCount int) (pendingScale, bool) {
+	tracker.tasks[0].CompletedLength = completedLen
+	telemetry.data[gid] = makeWorkers(workerCount, 2*1024*1024)
+	ct.mu.Lock()
+	if s, ok := ct.states[gid]; ok {
+		setPrevSampleAgoState(s, 5*time.Second)
+	}
+	ct.mu.Unlock()
+	return ct.processTask(tracker.tasks[0], false)
+}
+
+// TestConvergence_FloorHit_SmartUnlock verifies consecutive 2 ticks with
+// rawBps < floorMemory*0.90 → floor-unlocked, phase back to phaseStable,
+// kneeFrozen=false, floorMemory cleared.
+func TestConvergence_FloorHit_SmartUnlock(t *testing.T) {
+	gid := "sg_floor_unlock"
+	floorMem := int64(10 * 1024 * 1024) // 10 MB/s
+	ct := setupFloorHitState(t, gid, floorMem, floorHitCooldownCycles)
+	tracker := ct.tracker.(*mockTracker)
+	telemetry := ct.telemetry.(*mockTelemetry)
+
+	// Tick 1: rawBps = 8 MB/s < 10*0.90 = 9 MB/s → floorHitCount=1
+	// delta = 8MB*5 = 40MB. prevCompleted=10MB. CompletedLength=50MB.
+	ps, ok := floorHitProcess(ct, tracker, telemetry, gid, 50*1024*1024, 8)
+	if ok {
+		t.Fatalf("expected no scale during floor-hit, got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s := ct.states[gid]
+	ct.mu.Unlock()
+	if s.floorHitCount != 1 {
+		t.Fatalf("expected floorHitCount=1, got %d", s.floorHitCount)
+	}
+
+	// Tick 2: rawBps = 8 MB/s < 9 MB/s → floorHitCount=2 → unlock
+	// prevCompleted=50MB. delta=40MB. CompletedLength=90MB.
+	ps, ok = floorHitProcess(ct, tracker, telemetry, gid, 90*1024*1024, 8)
+	if ok {
+		t.Fatalf("expected no scale on unlock, got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase != phaseStable {
+		t.Fatalf("expected phase=phaseStable after unlock, got %d", s.phase)
+	}
+	if s.floorMemory != 0 {
+		t.Fatalf("expected floorMemory=0 after unlock, got %d", s.floorMemory)
+	}
+	if s.kneeFrozen {
+		t.Error("expected kneeFrozen=false after floor unlock")
+	}
+}
+
+// TestConvergence_FloorHit_SingleFluctuationNoUnlock verifies a single
+// low-rawBps tick followed by a normal tick does not unlock.
+func TestConvergence_FloorHit_SingleFluctuationNoUnlock(t *testing.T) {
+	gid := "sg_floor_fluctuation"
+	floorMem := int64(10 * 1024 * 1024)
+	ct := setupFloorHitState(t, gid, floorMem, floorHitCooldownCycles)
+	tracker := ct.tracker.(*mockTracker)
+	telemetry := ct.telemetry.(*mockTelemetry)
+
+	// Tick 1: rawBps = 8 MB/s < 9 → floorHitCount=1
+	ps, ok := floorHitProcess(ct, tracker, telemetry, gid, 50*1024*1024, 8)
+	if ok {
+		t.Fatalf("expected no scale, got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s := ct.states[gid]
+	ct.mu.Unlock()
+	if s.floorHitCount != 1 {
+		t.Fatalf("expected floorHitCount=1, got %d", s.floorHitCount)
+	}
+
+	// Tick 2: rawBps = 10 MB/s > 9 → floorHitCount resets to 0
+	// prevCompleted=50MB. delta=50MB. CompletedLength=100MB.
+	ps, ok = floorHitProcess(ct, tracker, telemetry, gid, 100*1024*1024, 8)
+	if ok {
+		t.Fatalf("expected no scale, got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s.floorHitCount != 0 {
+		t.Fatalf("expected floorHitCount=0 after fluctuation, got %d", s.floorHitCount)
+	}
+	if s.phase != phaseFloorHit {
+		t.Fatalf("expected still phaseFloorHit, got %d", s.phase)
+	}
+}
+
+// TestConvergence_FloorHit_CooldownExpired verifies frozenCooldown countdown
+// reaches 0 without slowdown → floor-cooldown-expired, phase back to phaseStable,
+// kneeFrozen=false.
+func TestConvergence_FloorHit_CooldownExpired(t *testing.T) {
+	gid := "sg_floor_cooldown"
+	floorMem := int64(10 * 1024 * 1024)
+	ct := setupFloorHitState(t, gid, floorMem, 1) // cooldown=1 → expires next tick
+	tracker := ct.tracker.(*mockTracker)
+	telemetry := ct.telemetry.(*mockTelemetry)
+
+	// Tick: rawBps = 10 MB/s (not < 9) → no unlock. cooldown 1→0 → expired.
+	ps, ok := floorHitProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
+	if ok {
+		t.Fatalf("expected no scale on cooldown expiry, got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s := ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase != phaseStable {
+		t.Fatalf("expected phase=phaseStable after cooldown expiry, got %d", s.phase)
+	}
+	if s.kneeFrozen {
+		t.Error("expected kneeFrozen=false after floor cooldown expiry")
+	}
+	if s.floorMemory != 0 {
+		t.Fatalf("expected floorMemory=0 after cooldown expiry, got %d", s.floorMemory)
+	}
+}
+
+// TestConvergence_FloorHit_EarlyReturnNoProbe verifies phase==phaseFloorHit
+// causes processTask to early-return without triggering Probe-Up or Probe-Down.
+func TestConvergence_FloorHit_EarlyReturnNoProbe(t *testing.T) {
+	gid := "sg_floor_earlyreturn"
+	floorMem := int64(10 * 1024 * 1024)
+	ct := setupFloorHitState(t, gid, floorMem, floorHitCooldownCycles)
+	tracker := ct.tracker.(*mockTracker)
+	telemetry := ct.telemetry.(*mockTelemetry)
+
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.bestEff = 1_310_720
+	s.peakWorkers = 8
+	ct.mu.Unlock()
+
+	ps, ok := floorHitProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
+	if ok {
+		t.Fatalf("expected no scale during floor-hit early return, got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase != phaseFloorHit {
+		t.Fatalf("expected phase=phaseFloorHit (early return preserves phase), got %d", s.phase)
+	}
+}
+
+// TestConvergence_FloorHit_KneeFrozenSet verifies the knee-crossed path sets
+// kneeFrozen=true and phase=phaseFloorHit, and bandwidthRelease skips that task.
+func TestConvergence_FloorHit_KneeFrozenSet(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	gid := "sg_floor_kneefrozen"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{gid: makeWorkers(8, 2*1024*1024)},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+
+	// Clear any leftover N_max from previous tests (global singleton).
+	ct.limits.Clear("example.com")
+
+	// Set up knee-crossed conditions: lastStep > 0, linear zone drop.
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.phase = phaseStable
+	s.lastStep = 4
+	s.probeBaseline = 32 * 1024 * 1024
+	s.probeBaselineWorkers = 32
+	s.probeMomentum = true
+	s.probeCooldown = 0
+	s.prevCompleted = 100 * 1024 * 1024
+	setPrevSampleAgoState(s, 5*time.Second)
+	ct.mu.Unlock()
+
+	// 28 workers, rawBps = 14MB/5s = 2.8MB/s. dropRatio > 0.5 → knee crossed.
+	telemetry.data[gid] = makeWorkers(28, 2*1024*1024)
+	tracker.tasks[0].CompletedLength = 114 * 1024 * 1024
+	ct.mu.Lock()
+	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
+	ct.mu.Unlock()
+
+	ps, ok := ct.processTask(tracker.tasks[0], false)
+	if !ok || ps.delta <= 0 {
+		t.Fatalf("expected rebound (delta>0) after knee crossing, got ok=%v delta=%d", ok, ps.delta)
+	}
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if !s.kneeFrozen {
+		t.Fatal("expected kneeFrozen=true after knee-crossed")
+	}
+	if s.phase != phaseFloorHit {
+		t.Fatalf("expected phase=phaseFloorHit after knee-crossed, got %d", s.phase)
+	}
+	if s.floorMemory == 0 {
+		t.Fatal("expected floorMemory > 0 after knee-crossed")
+	}
+
+	// Verify bandwidthRelease skips this task (kneeFrozen=true).
+	// Simulate a completed task in prevActiveGids to trigger bandwidthRelease.
+	completedGid := "sg_completed_task"
+	ct.mu.Lock()
+	ct.prevActiveGids = map[string]gidInfo{
+		completedGid: {Domain: "example.com", Scope: "wan"},
+	}
+	ct.mu.Unlock()
+
+	releases := ct.bandwidthRelease(
+		[]TrackedTaskInfo{tracker.tasks[0]},
+		map[string]gidInfo{gid: {Domain: "example.com", Scope: "wan"}},
+		map[string]bool{},
+	)
+	for _, r := range releases {
+		if r.gid == gid {
+			t.Fatal("expected bandwidthRelease to skip kneeFrozen task")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RecordPeakEfficiency pre-change snapshot tests (Task 13)
+// ---------------------------------------------------------------------------
+
+// monotonicMockPeakRecorder only accepts higher peak values, mirroring the real
+// tracker's monotonic ratchet semantics.
+type monotonicMockPeakRecorder struct {
+	records map[string]struct {
+		peak    int64
+		workers int
+	}
+}
+
+func (m *monotonicMockPeakRecorder) RecordPeakEfficiency(gid string, peak int64, workers int) {
+	if m.records == nil {
+		m.records = make(map[string]struct {
+			peak    int64
+			workers int
+		})
+	}
+	existing, ok := m.records[gid]
+	if !ok || peak > existing.peak {
+		m.records[gid] = struct {
+			peak    int64
+			workers int
+		}{peak, workers}
+	}
+}
+
+// TestConvergence_RecordPeakEfficiency_ProbeUpTrigger verifies RecordPeakEfficiency
+// is called before the Probe-Up +1 return.
+func TestConvergence_RecordPeakEfficiency_ProbeUpTrigger(t *testing.T) {
+	gid := "sg_rpe_probeup"
+	ct, tracker, telemetry, recorder := setupProbeUpState(t, gid, 1_310_720, 8)
+
+	ps, ok := probeUpProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
+	if !ok || ps.delta != 1 {
+		t.Fatalf("expected probe-up +1, got ok=%v delta=%d", ok, ps.delta)
+	}
+	rec, ok := recorder.records[gid]
+	if !ok {
+		t.Fatal("expected RecordPeakEfficiency called before probe-up return")
+	}
+	// rawBps = 10 MB/s = 10*1024*1024, currentWorkers = 8
+	expectedPeak := int64(10 * 1024 * 1024)
+	if rec.peak != expectedPeak {
+		t.Fatalf("expected recorded peak=%d, got %d", expectedPeak, rec.peak)
+	}
+	if rec.workers != 8 {
+		t.Fatalf("expected recorded workers=8, got %d", rec.workers)
+	}
+}
+
+// TestConvergence_RecordPeakEfficiency_CeilingHitRebound verifies RecordPeakEfficiency
+// is called before the CeilingHit -1 return (with non-zero rawBps).
+func TestConvergence_RecordPeakEfficiency_CeilingHitRebound(t *testing.T) {
+	gid := "sg_rpe_ceiling"
+	ct, tracker, telemetry, recorder := setupProbeUpState(t, gid, 1_310_720, 8)
+
+	// Trigger initial Probe-Up with rawBps = 10 MB/s
+	probeUpProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
+
+	// Reset recorder to isolate the ceiling-hit snapshot
+	recorder.records = nil
+
+	// Trigger CeilingHit: rawBps = 10.1 MB/s, but expectedGain = 1/8 = 12.5%.
+	// actualGain = (10.1-10)/10 = 0.01. gainRatio = 0.01/0.125 = 0.08 < 0.5 → ceiling hit.
+	// delta = 10.1MB*5 = 50.5MB. prevCompleted=60MB. CompletedLength=110.5MB.
+	tracker.tasks[0].CompletedLength = int64(110.5 * 1024 * 1024)
+	telemetry.data[gid] = makeWorkers(9, 2*1024*1024)
+	ct.mu.Lock()
+	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
+	ct.mu.Unlock()
+
+	ps, ok := ct.processTask(tracker.tasks[0], false)
+	if !ok || ps.delta != -1 {
+		t.Fatalf("expected ceiling-hit -1, got ok=%v delta=%d", ok, ps.delta)
+	}
+	rec, ok := recorder.records[gid]
+	if !ok {
+		t.Fatal("expected RecordPeakEfficiency called before ceiling-hit return")
+	}
+	if rec.workers != 9 {
+		t.Fatalf("expected recorded workers=9, got %d", rec.workers)
+	}
+}
+
+// TestConvergence_RecordPeakEfficiency_FloorHitRebound verifies RecordPeakEfficiency
+// is called before the FloorHit rebound return.
+func TestConvergence_RecordPeakEfficiency_FloorHitRebound(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	gid := "sg_rpe_floor"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 100 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{gid: makeWorkers(28, 2*1024*1024)},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	recorder := &mockPeakRecorder{}
+	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{})
+
+	// Clear any leftover N_max from previous tests (global singleton).
+	ct.limits.Clear("example.com")
+
+	// Set up knee-crossed conditions
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.phase = phaseStable
+	s.lastStep = 4
+	s.probeBaseline = 32 * 1024 * 1024
+	s.probeBaselineWorkers = 32
+	s.probeMomentum = true
+	s.probeCooldown = 0
+	s.prevCompleted = 100 * 1024 * 1024
+	setPrevSampleAgoState(s, 5*time.Second)
+	ct.mu.Unlock()
+
+	// Block Probe-Up via N_max so it doesn't interfere
+	ct.limits.SetNMax("example.com", 28)
+
+	// rawBps = 14MB/5s = 2.8MB/s. dropRatio > 0.5 → knee crossed → rebound.
+	tracker.tasks[0].CompletedLength = 114 * 1024 * 1024
+	ct.mu.Lock()
+	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
+	ct.mu.Unlock()
+
+	ps, ok := ct.processTask(tracker.tasks[0], false)
+	if !ok || ps.delta <= 0 {
+		t.Fatalf("expected rebound (delta>0), got ok=%v delta=%d", ok, ps.delta)
+	}
+	rec, ok := recorder.records[gid]
+	if !ok {
+		t.Fatal("expected RecordPeakEfficiency called before floor-hit return")
+	}
+	// rawBps = 2.8 MB/s = 2936012, currentWorkers = 28
+	if rec.workers != 28 {
+		t.Fatalf("expected recorded workers=28, got %d", rec.workers)
+	}
+}
+
+// TestConvergence_RecordPeakEfficiency_ProbeDownTrigger verifies RecordPeakEfficiency
+// is called before the Probe-Down -step return.
+func TestConvergence_RecordPeakEfficiency_ProbeDownTrigger(t *testing.T) {
+	gid := "sg_rpe_probedown"
+	ct, tracker, telemetry, recorder := setupProbeUpState(t, gid, 1_310_720, 8)
+
+	// Block Probe-Up via N_max so Probe-Down can fire
+	ct.limits.SetNMax("example.com", 8)
+
+	// rawBps = 10 MB/s, 8 workers. Probe-Down fires (step=1, delta=-1).
+	ps, ok := probeUpProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
+	if !ok || ps.delta >= 0 {
+		t.Fatalf("expected probe-down (delta<0), got ok=%v delta=%d", ok, ps.delta)
+	}
+	rec, ok := recorder.records[gid]
+	if !ok {
+		t.Fatal("expected RecordPeakEfficiency called before probe-down return")
+	}
+	expectedPeak := int64(10 * 1024 * 1024)
+	if rec.peak != expectedPeak {
+		t.Fatalf("expected recorded peak=%d, got %d", expectedPeak, rec.peak)
+	}
+	if rec.workers != 8 {
+		t.Fatalf("expected recorded workers=8, got %d", rec.workers)
+	}
+}
+
+// TestConvergence_RecordPeakEfficiency_MonotonicRatchet verifies that a lower
+// rawBps snapshot does not overwrite a previously recorded higher peak.
+func TestConvergence_RecordPeakEfficiency_MonotonicRatchet(t *testing.T) {
+	gid := "sg_rpe_monotonic"
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{gid: makeWorkers(8, 2*1024*1024)},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	recorder := &monotonicMockPeakRecorder{}
+	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{})
+
+	// Clear any leftover N_max from previous tests (global singleton).
+	ct.limits.Clear("example.com")
+
+	// Pre-record a high peak (100 MB/s, 8 workers)
+	recorder.RecordPeakEfficiency(gid, 100*1024*1024, 8)
+
+	// Set up state for Probe-Up trigger
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.phase = phaseStable
+	s.bestEff = 100 * 1024 * 1024 / 8 // 12.5 MB/s per worker
+	s.peakWorkers = 8
+	s.prevCompleted = 10 * 1024 * 1024
+	setPrevSampleAgoState(s, 5*time.Second)
+	ct.mu.Unlock()
+
+	// Trigger Probe-Up with rawBps = 10 MB/s (much lower than 100 MB/s peak)
+	// newEff = 10MB/8 = 1.25MB/s. bestEff = 12.5MB/s. bestEff*0.95 = 11.875MB.
+	// 1.25MB < 11.875MB → Probe-Up doesn't fire. Need higher rawBps.
+	// Use rawBps = 95 MB/s → newEff = 11.875 MB/s >= 11.875 → fires.
+	// delta = 95MB*5 = 475MB. prevCompleted=10MB. CompletedLength=485MB.
+	tracker.tasks[0].CompletedLength = 485 * 1024 * 1024
+	ct.mu.Lock()
+	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
+	ct.mu.Unlock()
+
+	ps, ok := ct.processTask(tracker.tasks[0], false)
+	if !ok || ps.delta != 1 {
+		t.Fatalf("expected probe-up +1, got ok=%v delta=%d", ok, ps.delta)
+	}
+
+	rec, ok := recorder.records[gid]
+	if !ok {
+		t.Fatal("expected RecordPeakEfficiency called")
+	}
+	// The monotonic mock should retain 100 MB/s, not overwrite with 95 MB/s
+	if rec.peak != 100*1024*1024 {
+		t.Fatalf("expected monotonic ratchet to retain 100MB/s peak, got %d", rec.peak)
 	}
 }

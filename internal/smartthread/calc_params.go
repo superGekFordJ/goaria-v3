@@ -35,6 +35,15 @@ const (
 	peakSustainCycles     = 2    // consecutive stable raw samples before ratchet records
 	frozenCooldownCycles  = 12   // ~60s @ 5s interval; must be < IdleConnTimeout(90s)/interval
 	probeFloorWorkers     = 2    // hard lower bound for probing (aligns with congestionFloor)
+
+	// Probe-Up / CeilingHit / FloorHit tunables
+	gainRatioThreshold       = 0.50 // GainRatio >= 0.5 → up-probe success; < 0.5 → ceiling hit rebound
+	ceilingUnlockRatio       = 1.05 // rawBps > ceilingMemory*1.05 → ceiling unlock candidate
+	floorUnlockRatio         = 0.90 // rawBps < floorMemory*0.90 → floor unlock candidate
+	lockUnlockConfirmTicks   = 2    // consecutive ticks to confirm unlock (debounce, ~10s @ 5s)
+	ceilingHitCooldownCycles = 12   // CeilingHit sleep duration (~60s @ 5s), aligned with frozenCooldownCycles
+	floorHitCooldownCycles   = 12   // FloorHit sleep duration (~60s @ 5s), aligned with frozenCooldownCycles
+	probeUpEffThreshold      = 0.95 // Probe-Up trigger: newEff >= bestEff*0.95 to allow up-probe
 )
 
 // CalcParams holds the inputs for BBR-aware thread calculation.
