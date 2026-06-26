@@ -176,6 +176,7 @@ func (c *ConvergenceTicker) currentInterval() time.Duration {
 // pendingScale collects batched scale operations to execute after all tasks are processed.
 type pendingScale struct {
 	gid   string
+	scope string
 	delta int
 }
 
@@ -187,7 +188,8 @@ func (c *ConvergenceTicker) tick() {
 	activeTasks := c.tracker.GetActiveTrackedTasks()
 	activeGids := make(map[string]gidInfo) // gid → gidInfo
 	var pending []pendingScale
-	pendingGids := make(map[string]bool) // GIDs already scaled this tick
+	pendingGids := make(map[string]bool)  // GIDs already scaled this tick
+	approvedDelta := make(map[string]int) // scope → accumulated positive delta this tick
 
 	for _, task := range activeTasks {
 		if !strings.HasPrefix(task.GID, "sg_") {
@@ -232,7 +234,10 @@ func (c *ConvergenceTicker) tick() {
 		if !strings.HasPrefix(task.GID, "sg_") {
 			continue
 		}
-		if ps, ok := c.processTask(task, windowInvalidated); ok {
+		if ps, ok := c.processTask(task, windowInvalidated, approvedDelta); ok {
+			if ps.delta > 0 {
+				approvedDelta[ps.scope] += ps.delta
+			}
 			pending = append(pending, ps)
 			pendingGids[ps.gid] = true
 		}
@@ -242,7 +247,7 @@ func (c *ConvergenceTicker) tick() {
 	// For each completed task, find same-scope keep-alive tasks and trigger
 	// ScaleUp with degraded filter (bandwidthReleaseCycles = 1).
 	// Skip GIDs already scaled by processTask to prevent double ScaleUp.
-	pending = append(pending, c.bandwidthRelease(activeTasks, activeGids, pendingGids)...)
+	pending = append(pending, c.bandwidthRelease(activeTasks, activeGids, pendingGids, approvedDelta)...)
 
 	// Self-cleanup: remove states for GIDs no longer active
 	c.mu.Lock()
@@ -287,9 +292,9 @@ func (c *ConvergenceTicker) tick() {
 }
 
 // bandwidthRelease detects tasks that disappeared since last tick and distributes
-// their freed bandwidth to same-scope keep-alive tasks. GIDs already scaled by
+// their freed bandwidth to same-scope tasks. GIDs already scaled by
 // processTask this tick (present in pendingGids) are skipped to prevent double ScaleUp.
-func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, activeGids map[string]gidInfo, pendingGids map[string]bool) []pendingScale {
+func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, activeGids map[string]gidInfo, pendingGids map[string]bool, approvedDelta map[string]int) []pendingScale {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -298,9 +303,9 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 		if _, ok := activeGids[gid]; ok {
 			continue // still active
 		}
-		// Task disappeared — look for same-scope keep-alive tasks to benefit
+		// Task disappeared — look for same-scope tasks to benefit
 		for _, t := range activeTasks {
-			if !strings.HasPrefix(t.GID, "sg_") || !t.IsKeepAlive {
+			if !strings.HasPrefix(t.GID, "sg_") {
 				continue
 			}
 			if t.Scope != info.Scope {
@@ -313,10 +318,16 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 			if s.kneeFrozen || s.phase == phaseCeilingHit || s.blackout {
 				continue // knee frozen, ceiling hit, or blackout — suppress ScaleUp
 			}
+			if !c.checkVAvailable(t.Scope, t.Domain, approvedDelta) {
+				continue // insufficient V_available — suppress ScaleUp
+			}
 			s.releaseCycles++
 			if s.releaseCycles >= bandwidthReleaseCycles {
-				releases = append(releases, pendingScale{gid: t.GID, delta: 1})
+				releases = append(releases, pendingScale{gid: t.GID, scope: t.Scope, delta: 1})
 				pendingGids[t.GID] = true
+				if approvedDelta != nil {
+					approvedDelta[t.Scope]++
+				}
 				log.Printf("[convergence] bandwidth-borrow: gid=%s scope=%s released by completed gid=%s",
 					t.GID, info.Scope, gid)
 				s.releaseCycles = 0
@@ -368,9 +379,42 @@ func (c *ConvergenceTicker) computeProbeFloor(domain, scope string) int {
 	return bbrFloor
 }
 
+// computeVThreadAvg returns the estimated per-thread average throughput for
+// V_available checks. Tries domain-specific median first, falls back to
+// scope-wide median with 0.5x penalty, then clamps to minThreadEfficiency.
+func (c *ConvergenceTicker) computeVThreadAvg(domain, scope string) int64 {
+	vThreadAvg, ok := speedstats.GetRecentPeakByDomain(domain, scope)
+	if !ok {
+		vThreadAvg, ok = speedstats.GetRecentPeakByScope(scope)
+		if ok {
+			vThreadAvg /= 2
+		}
+	}
+	if !ok || vThreadAvg < minThreadEfficiency {
+		vThreadAvg = minThreadEfficiency
+	}
+	return vThreadAvg
+}
+
+// checkVAvailable returns true if there is enough global bandwidth headroom
+// to add one more worker in the given scope. It accounts for delta already
+// approved this tick via approvedDelta to prevent same-tick oversell.
+// When globalPeak data is unavailable, returns true (allow — conservative
+// only when data exists).
+func (c *ConvergenceTicker) checkVAvailable(scope, domain string, approvedDelta map[string]int) bool {
+	globalPeak, ok := speedstats.GetGlobalPeak(scope)
+	if !ok || globalPeak <= 0 {
+		return true
+	}
+	activeBw := activeBandwidthProvider(scope)
+	vThreadAvg := c.computeVThreadAvg(domain, scope)
+	effectiveBw := activeBw + int64(approvedDelta[scope])*vThreadAvg
+	return globalPeak-effectiveBw >= vThreadAvg
+}
+
 // processTask evaluates a single task and returns a pending scale operation if one is needed.
 // windowInvalidated indicates the active set changed this tick — skip probe/ratchet decisions.
-func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated bool) (pendingScale, bool) {
+func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated bool, approvedDelta map[string]int) (pendingScale, bool) {
 	gid := task.GID
 
 	stats := c.telemetry.Get(gid)
@@ -588,7 +632,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			s.probeUpBaselineWorkers = 0
 			s.prevCompleted = task.CompletedLength
 			s.prevSampleAt = now
-			return pendingScale{gid: gid, delta: -1}, true
+			return pendingScale{gid: gid, scope: task.Scope, delta: -1}, true
 		}
 	}
 
@@ -633,7 +677,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			s.lastStep = 0
 			log.Printf("[convergence] knee-crossed: gid=%s raw=%d baseline=%d dropRatio=%.2f rebound=+%d floorHit",
 				gid, rawBps, s.probeBaseline, dropRatio, rebound)
-			return pendingScale{gid: gid, delta: rebound}, true
+			return pendingScale{gid: gid, scope: task.Scope, delta: rebound}, true
 		}
 		s.lastStep = 0
 	}
@@ -757,22 +801,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			// N_max check — C1 fuse only SETS N_max; suppression is here.
 			nMax, hasLimit := c.limits.GetNMax(domain)
 			if !(hasLimit && currentWorkers >= nMax) {
-				// V_available check — compute vThreadAvg inline (not a local in processTask)
-				vAvailable := true
-				if globalPeak, ok := speedstats.GetGlobalPeak(task.Scope); ok && globalPeak > 0 {
-					activeBw := activeBandwidthProvider(task.Scope)
-					vThreadAvg, threadAvgOK := speedstats.GetRecentPeakByDomain(domain, task.Scope)
-					if !threadAvgOK {
-						vThreadAvg, threadAvgOK = speedstats.GetRecentPeakByScope(task.Scope)
-						if threadAvgOK {
-							vThreadAvg /= 2
-						}
-					}
-					if !threadAvgOK || vThreadAvg < minThreadEfficiency {
-						vThreadAvg = minThreadEfficiency
-					}
-					vAvailable = globalPeak-activeBw >= vThreadAvg
-				}
+				vAvailable := c.checkVAvailable(task.Scope, domain, approvedDelta)
 				if vAvailable && !rateLimited {
 					if c.peakRecorder != nil && rawBps > 0 && currentWorkers > 0 {
 						c.peakRecorder.RecordPeakEfficiency(gid, rawBps, currentWorkers)
@@ -784,7 +813,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 					s.prevSampleAt = now
 					log.Printf("[convergence] probe-up: gid=%s workers=%d baseline=%d",
 						gid, currentWorkers, rawBps)
-					return pendingScale{gid: gid, delta: 1}, true
+					return pendingScale{gid: gid, scope: task.Scope, delta: 1}, true
 				}
 			}
 		}
@@ -826,7 +855,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 					if c.peakRecorder != nil && rawBps > 0 && currentWorkers > 0 {
 						c.peakRecorder.RecordPeakEfficiency(gid, rawBps, currentWorkers)
 					}
-					return pendingScale{gid: gid, delta: -step}, true
+					return pendingScale{gid: gid, scope: task.Scope, delta: -step}, true
 				}
 			}
 		}

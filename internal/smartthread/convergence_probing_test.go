@@ -858,7 +858,7 @@ func TestConvergence_E2E_MomentumChain(t *testing.T) {
 			setPrevSampleAgoState(s, 5*time.Second)
 		}
 		ct.mu.Unlock()
-		return ct.processTask(tracker.tasks[0], false)
+		return ct.processTask(tracker.tasks[0], false, nil)
 	}
 
 	// Tick 1: first sample — stores baseline, no decision
@@ -1129,7 +1129,7 @@ func TestConvergence_E2E_LinearZoneKneeViaSettling(t *testing.T) {
 			setPrevSampleAgoState(s, 5*time.Second)
 		}
 		ct.mu.Unlock()
-		return ct.processTask(tracker.tasks[0], false)
+		return ct.processTask(tracker.tasks[0], false, nil)
 	}
 
 	// Tick 1: first sample — stores baseline, no decision
@@ -1266,7 +1266,7 @@ func probeUpProcess(ct *ConvergenceTicker, tracker *mockTracker, telemetry *mock
 		setPrevSampleAgoState(s, 5*time.Second)
 	}
 	ct.mu.Unlock()
-	return ct.processTask(tracker.tasks[0], false)
+	return ct.processTask(tracker.tasks[0], false, nil)
 }
 
 // TestConvergence_ProbeUp_TriggersWhenStableAndEfficient verifies that
@@ -1411,7 +1411,7 @@ func TestConvergence_ProbeUp_SuccessContinuesChain(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok = ct.processTask(tracker.tasks[0], false)
+	ps, ok = ct.processTask(tracker.tasks[0], false, nil)
 	if !ok || ps.delta != 1 {
 		t.Fatalf("expected chain probe-up +1 after success, got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -1456,7 +1456,7 @@ func TestConvergence_ProbeUp_GainRatioZeroRawBps(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok = ct.processTask(tracker.tasks[0], false)
+	ps, ok = ct.processTask(tracker.tasks[0], false, nil)
 	if !ok || ps.delta != -1 {
 		t.Fatalf("expected ceiling-hit rebound -1, got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -1519,7 +1519,7 @@ func ceilingHitProcess(ct *ConvergenceTicker, tracker *mockTracker, telemetry *m
 		setPrevSampleAgoState(s, 5*time.Second)
 	}
 	ct.mu.Unlock()
-	return ct.processTask(tracker.tasks[0], false)
+	return ct.processTask(tracker.tasks[0], false, nil)
 }
 
 // TestConvergence_CeilingHit_SmartUnlock verifies consecutive 2 ticks with
@@ -1768,7 +1768,7 @@ func floorHitProcess(ct *ConvergenceTicker, tracker *mockTracker, telemetry *moc
 		setPrevSampleAgoState(s, 5*time.Second)
 	}
 	ct.mu.Unlock()
-	return ct.processTask(tracker.tasks[0], false)
+	return ct.processTask(tracker.tasks[0], false, nil)
 }
 
 // TestConvergence_FloorHit_SmartUnlock verifies consecutive 2 ticks with
@@ -1958,7 +1958,7 @@ func TestConvergence_FloorHit_KneeFrozenSet(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok := ct.processTask(tracker.tasks[0], false)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil)
 	if !ok || ps.delta <= 0 {
 		t.Fatalf("expected rebound (delta>0) after knee crossing, got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -1988,6 +1988,7 @@ func TestConvergence_FloorHit_KneeFrozenSet(t *testing.T) {
 		[]TrackedTaskInfo{tracker.tasks[0]},
 		map[string]gidInfo{gid: {Domain: "example.com", Scope: "wan"}},
 		map[string]bool{},
+		nil,
 	)
 	for _, r := range releases {
 		if r.gid == gid {
@@ -2070,7 +2071,7 @@ func TestConvergence_RecordPeakEfficiency_CeilingHitRebound(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok := ct.processTask(tracker.tasks[0], false)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil)
 	if !ok || ps.delta != -1 {
 		t.Fatalf("expected ceiling-hit -1, got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -2129,7 +2130,7 @@ func TestConvergence_RecordPeakEfficiency_FloorHitRebound(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok := ct.processTask(tracker.tasks[0], false)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil)
 	if !ok || ps.delta <= 0 {
 		t.Fatalf("expected rebound (delta>0), got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -2217,7 +2218,7 @@ func TestConvergence_RecordPeakEfficiency_MonotonicRatchet(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok := ct.processTask(tracker.tasks[0], false)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil)
 	if !ok || ps.delta != 1 {
 		t.Fatalf("expected probe-up +1, got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -2274,6 +2275,7 @@ func TestConvergence_BandwidthRelease_SkipsCeilingHit(t *testing.T) {
 		[]TrackedTaskInfo{tracker.tasks[0]},
 		map[string]gidInfo{gid: {Domain: "example.com", Scope: "wan"}},
 		map[string]bool{},
+		nil,
 	)
 	for _, r := range releases {
 		if r.gid == gid {
@@ -2702,6 +2704,7 @@ func TestConvergence_BandwidthRelease_SkipsBlackout(t *testing.T) {
 		[]TrackedTaskInfo{tracker.tasks[0]},
 		map[string]gidInfo{gid: {Domain: "example.com", Scope: "wan"}},
 		map[string]bool{},
+		nil,
 	)
 	for _, r := range releases {
 		if r.gid == gid {
@@ -2713,5 +2716,216 @@ func TestConvergence_BandwidthRelease_SkipsBlackout(t *testing.T) {
 	ct.mu.Unlock()
 	if s.releaseCycles != 0 {
 		t.Fatalf("expected releaseCycles=0 (skipped before increment), got %d", s.releaseCycles)
+	}
+}
+
+// TestConvergence_BandwidthRelease_NonKeepAliveTaskBenefits verifies that
+// after removing the IsKeepAlive hard gate, a non-keep-alive task in the same
+// scope as a completed task can receive a bandwidth-release ScaleUp.
+func TestConvergence_BandwidthRelease_NonKeepAliveTaskBenefits(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	beneficiaryGid := "sg_beneficiary_nonkeepalive"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: beneficiaryGid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 100 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{beneficiaryGid: makeWorkers(8, 2*1024*1024)},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+
+	ct.mu.Lock()
+	s := ct.getOrCreateState(beneficiaryGid)
+	s.phase = phaseStable
+	s.kneeFrozen = false
+	s.blackout = false
+	ct.mu.Unlock()
+
+	completedGid := "sg_completed_nonkeepalive"
+	ct.mu.Lock()
+	ct.prevActiveGids = map[string]gidInfo{
+		completedGid: {Domain: "example.com", Scope: "wan"},
+	}
+	ct.mu.Unlock()
+
+	approvedDelta := make(map[string]int)
+	releases := ct.bandwidthRelease(
+		[]TrackedTaskInfo{tracker.tasks[0]},
+		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan"}},
+		map[string]bool{},
+		approvedDelta,
+	)
+	found := false
+	for _, r := range releases {
+		if r.gid == beneficiaryGid {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected non-keep-alive task to receive bandwidth-release ScaleUp")
+	}
+	ct.mu.Lock()
+	s = ct.states[beneficiaryGid]
+	ct.mu.Unlock()
+	if s.releaseCycles != 0 {
+		t.Fatalf("expected releaseCycles=0 (reset after trigger), got %d", s.releaseCycles)
+	}
+	if approvedDelta["wan"] != 1 {
+		t.Fatalf("expected approvedDelta[wan]=1, got %d", approvedDelta["wan"])
+	}
+}
+
+// TestConvergence_ApprovedDelta_PreventsSameTickOversell verifies that the
+// tick-local approvedDelta accumulator prevents a second same-scope task from
+// passing the V_available check after the first task already consumed the
+// headroom in the same tick.
+func TestConvergence_ApprovedDelta_PreventsSameTickOversell(t *testing.T) {
+	gid1 := "sg_oversell_1"
+	gid2 := "sg_oversell_2"
+
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	// globalPeak = 10 MB/s, vThreadAvg = 10 MB/s (1 thread).
+	// activeBw = 0 → first +1: effectiveBw=0, headroom=10MB >= 10MB → pass.
+	// After approvedDelta["wan"]=1 → second +1: effectiveBw=10MB, headroom=0 < 10MB → blocked.
+	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+
+	orig := activeBandwidthProvider
+	t.Cleanup(func() { activeBandwidthProvider = orig })
+	activeBandwidthProvider = func(scope string) int64 { return 0 }
+
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid1, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
+			{GID: gid2, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid1: makeWorkers(8, 2*1024*1024),
+			gid2: makeWorkers(8, 2*1024*1024),
+		},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{})
+	ct.limits.Clear("example.com")
+
+	// Both tasks in Probe-Up-ready state.
+	for _, gid := range []string{gid1, gid2} {
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		s.phase = phaseStable
+		s.bestEff = 1_310_720
+		s.peakWorkers = 8
+		s.prevCompleted = 10 * 1024 * 1024
+		setPrevSampleAgoState(s, 5*time.Second)
+		ct.mu.Unlock()
+	}
+
+	approvedDelta := make(map[string]int)
+
+	// First task: rawBps = 10 MB/s, 8 workers → newEff = 1.25 MB/s >= bestEff*0.95.
+	tracker.tasks[0].CompletedLength = 60 * 1024 * 1024
+	telemetry.data[gid1] = makeWorkers(8, 2*1024*1024)
+	ct.mu.Lock()
+	if s, ok := ct.states[gid1]; ok {
+		setPrevSampleAgoState(s, 5*time.Second)
+	}
+	ct.mu.Unlock()
+	ps1, ok1 := ct.processTask(tracker.tasks[0], false, approvedDelta)
+	if !ok1 || ps1.delta != 1 {
+		t.Fatalf("expected first task probe-up +1, got ok=%v delta=%d", ok1, ps1.delta)
+	}
+	if ps1.delta > 0 {
+		approvedDelta[ps1.scope] += ps1.delta
+	}
+
+	// Second task: same scope, V_available headroom now consumed by first.
+	tracker.tasks[1].CompletedLength = 60 * 1024 * 1024
+	telemetry.data[gid2] = makeWorkers(8, 2*1024*1024)
+	ct.mu.Lock()
+	if s, ok := ct.states[gid2]; ok {
+		setPrevSampleAgoState(s, 5*time.Second)
+	}
+	ct.mu.Unlock()
+	ps2, ok2 := ct.processTask(tracker.tasks[1], false, approvedDelta)
+	if ok2 && ps2.delta > 0 {
+		t.Fatalf("expected second task blocked by approvedDelta, got delta=%d", ps2.delta)
+	}
+	ct.mu.Lock()
+	s2 := ct.states[gid2]
+	ct.mu.Unlock()
+	if s2.phase == phaseProbingUp {
+		t.Fatal("expected second task phase != phaseProbingUp (blocked by accumulator)")
+	}
+}
+
+// TestConvergence_BandwidthRelease_BlockedByVAvailable verifies that
+// bandwidthRelease suppresses ScaleUp when V_available is insufficient.
+func TestConvergence_BandwidthRelease_BlockedByVAvailable(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	// globalPeak = 10 MB/s, vThreadAvg = 10 MB/s.
+	// activeBw = 10 MB/s → headroom = 0 < 10 MB/s → blocked.
+	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+
+	orig := activeBandwidthProvider
+	t.Cleanup(func() { activeBandwidthProvider = orig })
+	activeBandwidthProvider = func(scope string) int64 { return 10 * 1024 * 1024 }
+
+	beneficiaryGid := "sg_bwrelease_vavail"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: beneficiaryGid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 100 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{beneficiaryGid: makeWorkers(8, 2*1024*1024)},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+
+	ct.mu.Lock()
+	s := ct.getOrCreateState(beneficiaryGid)
+	s.phase = phaseStable
+	s.kneeFrozen = false
+	s.blackout = false
+	ct.mu.Unlock()
+
+	completedGid := "sg_completed_vavail"
+	ct.mu.Lock()
+	ct.prevActiveGids = map[string]gidInfo{
+		completedGid: {Domain: "example.com", Scope: "wan"},
+	}
+	ct.mu.Unlock()
+
+	releases := ct.bandwidthRelease(
+		[]TrackedTaskInfo{tracker.tasks[0]},
+		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan"}},
+		map[string]bool{},
+		nil,
+	)
+	for _, r := range releases {
+		if r.gid == beneficiaryGid {
+			t.Fatal("expected bandwidthRelease to skip task when V_available insufficient")
+		}
+	}
+	ct.mu.Lock()
+	s = ct.states[beneficiaryGid]
+	ct.mu.Unlock()
+	if s.releaseCycles != 0 {
+		t.Fatalf("expected releaseCycles=0 (V_available skip before increment), got %d", s.releaseCycles)
 	}
 }
