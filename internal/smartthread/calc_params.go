@@ -23,10 +23,6 @@ const (
 
 	// Convergence tick constants
 	convergenceInterval    = 5 * time.Second
-	throughputFloorRatio   = 0.5
-	throughputStableRatio  = 0.8
-	scaleDownStableCycles  = 3
-	scaleUpStableCycles    = 3
 	bandwidthReleaseCycles = 1 // bandwidth release degraded filter (deterministic event)
 	connErrorThreshold     = 3 // consecutive conn errors before N_max fuse triggers
 

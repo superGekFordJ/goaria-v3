@@ -57,16 +57,17 @@ type RateLimitChecker interface {
 
 // Convergence state machine phases
 const (
-	phaseStable   = 0
-	phaseSettling = 1
-	phaseFrozen   = 2
+	phaseStable     = 0
+	phaseSettling   = 1
+	phaseFrozen     = 2
+	phaseProbingUp  = 3 // rising cycle (Probe-Up in progress)
+	phaseCeilingHit = 4 // rebound after failed up-probe, sleep lock
+	phaseFloorHit   = 5 // rebound after failed down-probe, sleep lock (symmetric kneeFrozen)
 )
 
 type convergenceState struct {
-	// Legacy fields (kept for ratio<0.5 Drain and bandwidth borrowing)
-	scaleDownCycles int
-	scaleUpCycles   int
-	releaseCycles   int
+	// Bandwidth borrowing state
+	releaseCycles int
 
 	// Active probing state machine
 	phase                int
@@ -85,6 +86,19 @@ type convergenceState struct {
 	// Shadow copies of tracker's PeakSpeed/PeakThreadCount for ratchet decisions
 	peakSpeed   int64
 	peakWorkers int
+
+	// Probe-Up state (defined here, logic filled by later spec)
+	probeUpBaseline        int64 // rawBps before +1
+	probeUpBaselineWorkers int   // worker count before +1
+	ceilingMemory          int64 // rawBps at CeilingHit moment
+	ceilingHitCount        int   // consecutive ticks rawBps > ceilingMemory*1.05
+
+	// FloorHit state (symmetric extension of kneeFrozen)
+	floorMemory   int64 // rawBps at FloorHit moment
+	floorHitCount int   // consecutive ticks rawBps < floorMemory*0.90
+
+	// bandwidthRelease delay compensation (later spec records rawBps here)
+	lastRawBps int64
 }
 
 type ConvergenceTicker struct {
@@ -197,6 +211,13 @@ func (c *ConvergenceTicker) tick() {
 				s.frozenCooldown = 0
 				s.probeMomentum = false
 				s.probeCooldown = probeIntervalCycles
+				s.probeUpBaseline = 0
+				s.probeUpBaselineWorkers = 0
+				s.ceilingMemory = 0
+				s.ceilingHitCount = 0
+				s.floorMemory = 0
+				s.floorHitCount = 0
+				s.lastRawBps = 0
 			}
 		}
 	}
@@ -243,7 +264,6 @@ func (c *ConvergenceTicker) tick() {
 				log.Printf("[convergence] bandwidth-borrow: gid=%s scope=%s released by completed gid=%s",
 					t.GID, info.Scope, gid)
 				s.releaseCycles = 0
-				s.scaleUpCycles = 0
 			}
 		}
 	}
@@ -339,28 +359,11 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 		return pendingScale{}, false
 	}
 
-	var aggregateSpeed float64
 	var retryCountSum int32
 	for _, ws := range stats {
-		aggregateSpeed += ws.EMASpeed
 		retryCountSum += ws.RetryCount
 	}
 	currentWorkers := len(stats)
-
-	// Domain-isolated V_thread_avg with 0.5x scope fallback (kept for ratio<0.5 Drain).
-	vThreadAvg, ok := speedstats.GetRecentPeakByDomain(task.Domain, task.Scope)
-	if !ok {
-		vThreadAvg, ok = speedstats.GetRecentPeakByScope(task.Scope)
-		if ok {
-			vThreadAvg /= 2
-		}
-	}
-	if !ok || vThreadAvg <= 0 {
-		vThreadAvg = minThreadEfficiency
-	}
-	if vThreadAvg < minThreadEfficiency {
-		vThreadAvg = minThreadEfficiency
-	}
 
 	_, domain, _ := c.tracker.GetScope(gid)
 
@@ -373,8 +376,6 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 		}
 	}
 
-	nMax, hasLimit := c.limits.GetNMax(domain)
-
 	// Rate limit guard (Edge Case 4): skip ratchet and probe when rate-limited.
 	rateLimited := false
 	if c.rateChecker != nil {
@@ -386,68 +387,6 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	c.mu.Lock()
 	s := c.getOrCreateState(gid)
 	defer c.mu.Unlock()
-
-	// N_max fuse: if at or above N_max, suppress ScaleUp
-	if hasLimit && currentWorkers >= nMax {
-		s.scaleUpCycles = 0
-		// Still allow probing down
-	} else {
-		// M1: V_available check — only ScaleUp if global bandwidth has room.
-		vAvailable := false
-		if globalPeak, ok := speedstats.GetGlobalPeak(task.Scope); ok && globalPeak > 0 {
-			activeBw := activeBandwidthProvider(task.Scope)
-			vAvailable = globalPeak-activeBw >= vThreadAvg
-		} else {
-			vAvailable = true
-		}
-
-		// Keep-alive ScaleUp (D4 step 7): suppress if kneeFrozen
-		if task.IsKeepAlive && vAvailable && !s.kneeFrozen && !rateLimited {
-			expectedThroughput := float64(vThreadAvg) * float64(currentWorkers)
-			if expectedThroughput > 0 {
-				ratio := aggregateSpeed / expectedThroughput
-				if ratio >= throughputStableRatio {
-					s.scaleUpCycles++
-					s.scaleDownCycles = 0
-					if s.scaleUpCycles >= scaleUpStableCycles {
-						result := pendingScale{gid: gid, delta: 1}
-						s.scaleUpCycles = 0
-						log.Printf("[convergence] scale-up: gid=%s workers=%d ratio=%.2f keepAlive=true vAvailable=%v",
-							gid, currentWorkers, ratio, vAvailable)
-						return result, true
-					}
-				} else {
-					s.scaleUpCycles = 0
-				}
-			}
-		}
-	}
-
-	// ratio<0.5 complementary Drain (D1): fast-path safety valve for clearly pathological states.
-	// Runs regardless of windowInvalidated (immediate safety).
-	expectedThroughput := float64(vThreadAvg) * float64(currentWorkers)
-	ratioHealthy := true
-	if expectedThroughput > 0 {
-		ratio := aggregateSpeed / expectedThroughput
-		if ratio < throughputFloorRatio {
-			ratioHealthy = false
-			s.scaleDownCycles++
-			s.scaleUpCycles = 0
-			if s.scaleDownCycles >= scaleDownStableCycles && currentWorkers > 1 {
-				s.scaleDownCycles = 0
-				s.releaseCycles++
-				log.Printf("[convergence] ratio-drain: gid=%s workers=%d ratio=%.2f",
-					gid, currentWorkers, ratio)
-				return pendingScale{gid: gid, delta: -1}, true
-			}
-			// Fall through to ratchet/probe — ratio is low but drain threshold not met yet.
-			// The ratchet uses raw throughput (not ratio), so it can still record peak efficiency.
-		}
-	}
-	// Reset drain counter when ratio is healthy
-	if ratioHealthy {
-		s.scaleDownCycles = 0
-	}
 
 	// --- active probing state machine ---
 	// Skip probe/ratchet when window invalidated or rate-limited.

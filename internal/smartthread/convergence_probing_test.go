@@ -380,7 +380,6 @@ func TestConvergence_M1_CongestionTrapEscape(t *testing.T) {
 	s.probeBaselineWorkers = 8         // 8 workers before probe-down
 	s.probeMomentum = false
 	s.probeCooldown = 0
-	s.scaleUpCycles = 0 // prevent scale-up from firing before D4 eval
 	s.prevCompleted = 60 * 1024 * 1024
 	setPrevSampleAgoState(s, 5*time.Second)
 	ct.mu.Unlock()
@@ -436,7 +435,6 @@ func TestConvergence_M2_M3_KneeCrossingReboundAndZeroScale(t *testing.T) {
 	s.probeBaselineWorkers = 8         // 8 workers before probe-down
 	s.probeMomentum = true
 	s.probeCooldown = 0
-	s.scaleUpCycles = 0 // prevent scale-up from firing before D4 eval
 	s.prevCompleted = 100 * 1024 * 1024
 	setPrevSampleAgoState(s, 5*time.Second)
 	ct.mu.Unlock()
@@ -977,7 +975,6 @@ func TestConvergence_LinearZone_KneeDetection(t *testing.T) {
 	s.probeBaselineWorkers = 32        // 32 workers before probe
 	s.probeMomentum = true             // was in momentum mode
 	s.probeCooldown = 0
-	s.scaleUpCycles = 0
 	s.prevCompleted = 100 * 1024 * 1024
 	setPrevSampleAgoState(s, 5*time.Second)
 	ct.mu.Unlock()
@@ -1037,7 +1034,6 @@ func TestConvergence_PlateauZone_MomentumContinues(t *testing.T) {
 	s.probeBaselineWorkers = 32        // 32 workers before probe
 	s.probeMomentum = false            // cold probe, not yet in momentum
 	s.probeCooldown = 0
-	s.scaleUpCycles = 0
 	s.prevCompleted = 100 * 1024 * 1024
 	setPrevSampleAgoState(s, 5*time.Second)
 	ct.mu.Unlock()
