@@ -31,10 +31,21 @@ func Calculate(p CalcParams) ThreadParams {
 
 	// 未知大小：保守策略，跳过 BDP/带宽约束
 	if p.FileSize <= 0 {
+		isExploration := !speedstats.HasDomainScopeRecord(p.Domain, p.Scope)
+		split := maxConn
+		if isExploration {
+			exploreLimit := maxConn / 4
+			if exploreLimit < 4 {
+				exploreLimit = 4
+			}
+			if split > exploreLimit {
+				split = exploreLimit
+			}
+		}
 		return ThreadParams{
-			Split:           maxConn,
+			Split:           split,
 			MinSize:         0,
-			IsExploration:   false,
+			IsExploration:   isExploration,
 			TargetBandwidth: 0,
 			NSat:            maxConn,
 		}

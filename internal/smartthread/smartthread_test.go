@@ -74,12 +74,13 @@ func TestCalculate_UnknownFileSize(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
+	// No domain/scope → HasDomainScopeRecord returns false → exploration clamp to 4
 	params := Calculate(CalcParams{
 		FileSize:       0,
 		MaxConnections: 8,
 	})
-	if params.Split != 8 {
-		t.Errorf("Split = %d, want 8 for unknown file size", params.Split)
+	if params.Split != 4 {
+		t.Errorf("Split = %d, want 4 (unknown size + new domain exploration clamp)", params.Split)
 	}
 	if params.MinSize != 0 {
 		t.Errorf("MinSize = %d, want 0 for unknown file size", params.MinSize)
@@ -95,12 +96,16 @@ func TestCalculate_ColdStart_LegacyFallback(t *testing.T) {
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	// No speed stats records → legacy fallback
+	// No domain/scope specified → HasDomainScopeRecord returns false → exploration clamp
 	params := Calculate(CalcParams{
 		FileSize:       100 * 1024 * 1024, // 100MB
 		MaxConnections: 8,
 	})
-	if params.Split < 1 || params.Split > 8 {
-		t.Errorf("Split = %d, want 1-8", params.Split)
+	if params.Split != 4 {
+		t.Errorf("Split = %d, want 4 (cold-start exploration clamp: max(8/4, 4) = 4)", params.Split)
+	}
+	if !params.IsExploration {
+		t.Errorf("IsExploration = false, want true (no domain record)")
 	}
 	if params.MinSize < 1024*1024 {
 		t.Errorf("MinSize = %d, want >= 1MB", params.MinSize)
@@ -180,9 +185,12 @@ func TestCalculate_BBR_NewDomain(t *testing.T) {
 	})
 
 	// V_single_peak missing → V_target = V_available = V_global_peak
-	// Should still produce valid params
-	if params.Split < 1 || params.Split > 8 {
-		t.Errorf("Split = %d, want 1-8", params.Split)
+	// newdomain.com has no domain record → exploration clamp to 4
+	if params.Split != 4 {
+		t.Errorf("Split = %d, want 4 (new domain exploration clamp: max(8/4, 4) = 4)", params.Split)
+	}
+	if !params.IsExploration {
+		t.Errorf("IsExploration = false, want true (new domain)")
 	}
 	if params.MinSize < 1024*1024 {
 		t.Errorf("MinSize = %d, want >= 1MB", params.MinSize)
