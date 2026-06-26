@@ -99,6 +99,11 @@ type convergenceState struct {
 
 	// bandwidthRelease delay compensation
 	lastRawBps int64 // last known rawBps; assignment deferred to later phase
+
+	// tail blackout zone: permanently suppresses all macro decisions when
+	// totalRemaining < activeWorkers × effectiveMinChunk. Not reset on
+	// active-set change — permanent until gid disappears from active list.
+	blackout bool
 }
 
 type ConvergenceTicker struct {
@@ -305,8 +310,8 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 				continue // already scaled by processTask this tick
 			}
 			s := c.getOrCreateState(t.GID)
-			if s.kneeFrozen || s.phase == phaseCeilingHit {
-				continue // knee frozen or ceiling hit — suppress ScaleUp
+			if s.kneeFrozen || s.phase == phaseCeilingHit || s.blackout {
+				continue // knee frozen, ceiling hit, or blackout — suppress ScaleUp
 			}
 			s.releaseCycles++
 			if s.releaseCycles >= bandwidthReleaseCycles {
@@ -401,6 +406,60 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	c.mu.Lock()
 	s := c.getOrCreateState(gid)
 	defer c.mu.Unlock()
+
+	// Tail blackout zone: per-gid permanent sleep when totalRemaining <
+	// activeWorkers × effectiveMinChunk. Runs before windowInvalidated/
+	// rateLimited early-return because blackout is permanent.
+	if s.blackout {
+		s.prevCompleted = task.CompletedLength
+		s.prevSampleAt = time.Now()
+		return pendingScale{}, false
+	}
+
+	// Only evaluate blackout when chunk telemetry is populated. Workers
+	// without chunk data (ChunkLength==0) haven't received assignments yet.
+	hasChunkData := false
+	totalRemaining := int64(0)
+	for _, ws := range stats {
+		if ws.ChunkLength > 0 {
+			hasChunkData = true
+		}
+		remaining := (ws.ChunkStart + ws.ChunkLength) - ws.ChunkOffset
+		if remaining > 0 {
+			totalRemaining += remaining
+		}
+	}
+	if hasChunkData {
+		effectiveMinChunk := task.MinChunk
+		if effectiveMinChunk <= 0 {
+			effectiveMinChunk = minChunkSize
+		}
+		if totalRemaining < int64(currentWorkers)*effectiveMinChunk {
+			s.blackout = true
+			log.Printf("[convergence] blackout-triggered: gid=%s totalRemaining=%d workers=%d minChunk=%d",
+				gid, totalRemaining, currentWorkers, effectiveMinChunk)
+
+			// Final RecordPeakEfficiency before permanent sleep — blackout
+			// early-return is before D3 ratchet, so ratchet is permanently
+			// skipped. Compute rawBps from last tick's baseline.
+			if s.prevCompleted > 0 && !s.prevSampleAt.IsZero() && c.peakRecorder != nil {
+				dt := time.Since(s.prevSampleAt)
+				if dt > 0 {
+					finalRawBps := int64(float64(task.CompletedLength-s.prevCompleted) / dt.Seconds())
+					if finalRawBps < 0 {
+						finalRawBps = 0
+					}
+					if finalRawBps > 0 && currentWorkers > 0 {
+						c.peakRecorder.RecordPeakEfficiency(gid, finalRawBps, currentWorkers)
+					}
+				}
+			}
+
+			s.prevCompleted = task.CompletedLength
+			s.prevSampleAt = time.Now()
+			return pendingScale{}, false
+		}
+	}
 
 	// --- active probing state machine ---
 	// Skip probe/ratchet when window invalidated or rate-limited.
