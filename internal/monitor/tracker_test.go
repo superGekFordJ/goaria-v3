@@ -1005,3 +1005,40 @@ func TestRecordPeakEfficiency_M6_BestEffCreepPrevention(t *testing.T) {
 		t.Errorf("BestEff = %d, want %d (should be session best efficiency)", tracked.BestEff, 5*1024*1024)
 	}
 }
+
+// TestRecordPeakEfficiency_RejectSewageMonster is the critical Bug 2 regression test:
+// Record [32MB/s @ 32 threads] (eff=1MB/s/thread), then attempt [4MB/s @ 4 threads]
+// (same eff=1MB/s/thread). The old code would adopt the smaller peakWorkers (4 < 32)
+// while keeping the old PeakSpeed (32MB/s), creating a physically impossible
+// "缝合怪" record: [32MB/s peak, 4 workers]. The new peakSpeedGuardBand (0.90)
+// requires incoming speed ≥ 90% of peak (28.8MB/s) — 4MB/s is way below, so rejected.
+func TestRecordPeakEfficiency_RejectSewageMonster(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg-peak-sewage", 100000000, "https://example.com/file.zip", 32)
+
+	// Record: 32MB/s @ 32 threads = 1MB/s/thread
+	tracker.RecordPeakEfficiency("sg-peak-sewage", 32*1024*1024, 32)
+
+	tracked := tracker.tasks["sg-peak-sewage"]
+	if tracked.PeakSpeed != 32*1024*1024 {
+		t.Fatalf("PeakSpeed = %d, want %d (initial record)", tracked.PeakSpeed, 32*1024*1024)
+	}
+	if tracked.PeakThreadCount != 32 {
+		t.Fatalf("PeakThreadCount = %d, want 32 (initial record)", tracked.PeakThreadCount)
+	}
+
+	// Attempt "缝合怪" adoption: 4MB/s @ 4 threads = 1MB/s/thread (same efficiency)
+	// But speed is only 12.5% of peak — far below 90% guard.
+	tracker.RecordPeakEfficiency("sg-peak-sewage", 4*1024*1024, 4)
+
+	tracked = tracker.tasks["sg-peak-sewage"]
+	// PeakThreadCount must NOT change — speed guard rejects fraction-of-peak speed
+	if tracked.PeakThreadCount != 32 {
+		t.Errorf("PeakThreadCount = %d, want 32 (peakSpeedGuardBand rejects 4MB/s < 32*0.9=28.8MB/s)",
+			tracked.PeakThreadCount)
+	}
+	// PeakSpeed should also NOT change (4 < 32, no update)
+	if tracked.PeakSpeed != 32*1024*1024 {
+		t.Errorf("PeakSpeed = %d, want %d (should not decrease)", tracked.PeakSpeed, 32*1024*1024)
+	}
+}

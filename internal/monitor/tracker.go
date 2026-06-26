@@ -264,6 +264,14 @@ func (t *TaskTracker) ensureTracked(task rpc.Task) {
 
 const TaskGracePeriod = 5 * time.Second
 
+// D3 ratchet thresholds — mirror internal/smartthread/calc_params.go.
+// Defined locally to avoid a dependency cycle on the smartthread package.
+const (
+	trackerEfficiencyGuardBand = 0.85 // efficiencyGuardBand: single-thread eff degradation guard
+	trackerPeakRaiseBand       = 1.05 // peakRaiseBand: noise gate for bumping peak
+	trackerPeakSpeedGuardBand  = 0.90 // peakSpeedGuardBand: absolute speed guard for fewer peakWorkers
+)
+
 // SetThreadInfo 设置任务的线程信息（由 AddUri 调用）
 func (t *TaskTracker) SetThreadInfo(gid string, threadCount int, isExploration bool) {
 	t.mu.Lock()
@@ -519,17 +527,26 @@ func (t *TaskTracker) RecordPeakEfficiency(gid string, peakSpeed int64, peakWork
 
 	// D3 ratchet with bestEff-anchored guard (Edge Case 14: anchor on session
 	// best efficiency, not current record efficiency, to prevent N creep).
-	guardEff := int64(float64(tt.BestEff) * 0.85) // efficiencyGuardBand
+	// Absolute speed guard (peakSpeedGuardBand=0.90): adopting fewer peakWorkers
+	// requires the incoming speed to be ≥ 90% of the recorded peak — prevents
+	// "缝合怪" records like [32MB/s peak, 4 workers] where the speed was achieved
+	// at a much higher worker count.
+	guardEff := int64(float64(tt.BestEff) * trackerEfficiencyGuardBand)
 	if newEff >= guardEff {
 		// Efficiency within 15% of best — accept if throughput improved ≥5%
-		// (peakRaiseBand noise gate) or workers reduced at comparable throughput.
-		if float64(peakSpeed) > float64(tt.PeakSpeed)*1.05 || peakWorkers < tt.PeakThreadCount {
+		// (peakRaiseBand noise gate) or workers reduced at comparable throughput (≥90% of peak).
+		if float64(peakSpeed) > float64(tt.PeakSpeed)*trackerPeakRaiseBand {
+			if peakSpeed > tt.PeakSpeed {
+				tt.PeakSpeed = peakSpeed
+			}
+			tt.PeakThreadCount = peakWorkers
+		} else if peakWorkers < tt.PeakThreadCount && float64(peakSpeed) >= float64(tt.PeakSpeed)*trackerPeakSpeedGuardBand {
 			if peakSpeed > tt.PeakSpeed {
 				tt.PeakSpeed = peakSpeed
 			}
 			tt.PeakThreadCount = peakWorkers
 		}
-	} else if float64(peakSpeed) > float64(tt.PeakSpeed)*1.05 {
+	} else if float64(peakSpeed) > float64(tt.PeakSpeed)*trackerPeakRaiseBand {
 		// Absolute throughput up ≥5% but efficiency below guard — only update
 		// PeakSpeed (for V_target/BtlBw), keep efficient PeakThreadCount unchanged.
 		tt.PeakSpeed = peakSpeed

@@ -61,17 +61,18 @@ type convergenceState struct {
 	releaseCycles   int
 
 	// Active probing state machine
-	phase          int
-	probeCooldown  int
-	probeMomentum  bool
-	probeBaseline  int64
-	lastStep       int
-	frozenCooldown int
-	kneeFrozen     bool
-	bestEff        int64
-	prevCompleted  int64
-	prevSampleAt   time.Time
-	sustainCount   int
+	phase                int
+	probeCooldown        int
+	probeMomentum        bool
+	probeBaseline        int64
+	probeBaselineWorkers int // worker count before probe-down (for Marginal Drop Ratio)
+	lastStep             int
+	frozenCooldown       int
+	kneeFrozen           bool
+	bestEff              int64
+	prevCompleted        int64
+	prevSampleAt         time.Time
+	sustainCount         int
 
 	// Shadow copies of tracker's PeakSpeed/PeakThreadCount for ratchet decisions
 	peakSpeed   int64
@@ -180,6 +181,7 @@ func (c *ConvergenceTicker) tick() {
 				s.prevCompleted = 0
 				s.prevSampleAt = time.Time{}
 				s.probeBaseline = 0
+				s.probeBaselineWorkers = 0
 				s.lastStep = 0
 				s.phase = phaseStable
 				s.sustainCount = 0
@@ -267,6 +269,7 @@ func (c *ConvergenceTicker) tick() {
 				} else {
 					s.phase = phaseStable
 					s.probeBaseline = 0
+					s.probeBaselineWorkers = 0
 					s.lastStep = 0
 				}
 			}
@@ -415,9 +418,11 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	// ratio<0.5 complementary Drain (D1): fast-path safety valve for clearly pathological states.
 	// Runs regardless of windowInvalidated (immediate safety).
 	expectedThroughput := float64(vThreadAvg) * float64(currentWorkers)
+	ratioHealthy := true
 	if expectedThroughput > 0 {
 		ratio := aggregateSpeed / expectedThroughput
 		if ratio < throughputFloorRatio {
+			ratioHealthy = false
 			s.scaleDownCycles++
 			s.scaleUpCycles = 0
 			if s.scaleDownCycles >= scaleDownStableCycles && currentWorkers > 1 {
@@ -427,11 +432,14 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 					gid, currentWorkers, ratio)
 				return pendingScale{gid: gid, delta: -1}, true
 			}
-			return pendingScale{}, false
+			// Fall through to ratchet/probe — ratio is low but drain threshold not met yet.
+			// The ratchet uses raw throughput (not ratio), so it can still record peak efficiency.
 		}
 	}
 	// Reset drain counter when ratio is healthy
-	s.scaleDownCycles = 0
+	if ratioHealthy {
+		s.scaleDownCycles = 0
+	}
 
 	// --- active probing state machine ---
 	// Skip probe/ratchet when window invalidated or rate-limited.
@@ -461,9 +469,10 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 		rawBps = 0
 	}
 
-	// D2: Settling — refresh baseline, transition to stable, no decision this tick.
+	// D2: Settling — transition to stable, no decision this tick.
+	// Do NOT overwrite probeBaseline — it must retain the pre-probe throughput
+	// for the marginal drop ratio evaluation in the next tick.
 	if s.phase == phaseSettling {
-		s.probeBaseline = rawBps
 		s.phase = phaseStable
 		s.sustainCount = 0 // C3: reset so peakSustainCycles stability is required after settling
 		s.prevCompleted = task.CompletedLength
@@ -492,7 +501,16 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			peakWorkers = int64(currentWorkers)
 			adopted = true
 		case newEff >= guardEff:
-			if float64(rawBps) > float64(peak)*peakRaiseBand || currentWorkers < int(peakWorkers) {
+			if float64(rawBps) > float64(peak)*peakRaiseBand {
+				// Higher throughput at acceptable efficiency — adopt
+				if rawBps > peak {
+					peak = rawBps
+				}
+				peakWorkers = int64(currentWorkers)
+				adopted = true
+			} else if currentWorkers < int(peakWorkers) && float64(rawBps) >= float64(peak)*peakSpeedGuardBand {
+				// Fewer workers at speed ≥ 90% of peak — adopt (prevents 缝合怪:
+				// never let a fraction-of-peak speed claim the peak's worker slot)
 				if rawBps > peak {
 					peak = rawBps
 				}
@@ -514,40 +532,43 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 		}
 	}
 
-	// D4 step 4: Evaluate last probe (just finished settling with lastStep > 0).
-	if s.lastStep > 0 && s.phase == phaseStable {
-		drop := 1.0 - float64(rawBps)/float64(s.probeBaseline)
-		if s.probeBaseline > 0 {
-			switch {
-			case float64(rawBps) >= float64(s.probeBaseline)*acceptableEfficiencyBand:
-				// Success — solidify + ignite momentum
-				s.probeMomentum = true
-				s.probeCooldown = 0
-				log.Printf("[convergence] probe-success: gid=%s raw=%d baseline=%d drop=%.1f%% momentum=true",
-					gid, rawBps, s.probeBaseline, drop*100)
-			case float64(rawBps) < float64(s.probeBaseline)*recoverBand:
-				// Knee crossed — asymmetric rebound
-				rebound := (s.lastStep + 1) / 2 // ceil(lastStep/2)
-				if rebound < 1 {
-					rebound = 1
-				}
-				s.kneeFrozen = true
-				s.probeMomentum = false
-				s.phase = phaseFrozen
-				s.frozenCooldown = frozenCooldownCycles
-				s.prevCompleted = task.CompletedLength
-				s.prevSampleAt = now
-				s.lastStep = 0
-				log.Printf("[convergence] knee-crossed: gid=%s raw=%d baseline=%d drop=%.1f%% rebound=+%d frozen",
-					gid, rawBps, s.probeBaseline, drop*100, rebound)
-				return pendingScale{gid: gid, delta: rebound}, true
-			default:
-				// Gray zone (10%-25%) — solidify but extinguish momentum
-				s.probeMomentum = false
-				s.probeCooldown = probeIntervalCycles
-				log.Printf("[convergence] probe-grayzone: gid=%s raw=%d baseline=%d drop=%.1f%% momentum=false cooldown=%d",
-					gid, rawBps, s.probeBaseline, drop*100, s.probeCooldown)
+	// D4 step 4: Evaluate last probe using Marginal Drop Ratio.
+	// ExpectedDrop = lastStep / probeBaselineWorkers (if threads are equally productive,
+	// cutting lastStep out of N should drop speed proportionally).
+	// ActualDrop = 1 - rawBps / probeBaseline.
+	// DropRatio = ActualDrop / ExpectedDrop.
+	// DropRatio ≤ 0.5 → actual drop far less than expected → plateau zone → success.
+	// DropRatio > 0.5 → actual drop matches/exceeds expected → linear zone → knee crossed.
+	if s.lastStep > 0 && s.phase == phaseStable && s.probeBaseline > 0 && s.probeBaselineWorkers > 0 {
+		actualDrop := 1.0 - float64(rawBps)/float64(s.probeBaseline)
+		if actualDrop < 0 {
+			actualDrop = 0 // speed increased — definitely plateau
+		}
+		expectedDrop := float64(s.lastStep) / float64(s.probeBaselineWorkers)
+		dropRatio := actualDrop / expectedDrop
+
+		if dropRatio <= marginalDropThreshold {
+			// Success — actual drop far less than expected, threads were redundant
+			s.probeMomentum = true
+			s.probeCooldown = 0
+			log.Printf("[convergence] probe-success: gid=%s raw=%d baseline=%d dropRatio=%.2f momentum=true",
+				gid, rawBps, s.probeBaseline, dropRatio)
+		} else {
+			// Knee crossed — actual drop matches/exceeds expected, threads were productive
+			rebound := (s.lastStep + 1) / 2 // ceil(lastStep/2)
+			if rebound < 1 {
+				rebound = 1
 			}
+			s.kneeFrozen = true
+			s.probeMomentum = false
+			s.phase = phaseFrozen
+			s.frozenCooldown = frozenCooldownCycles
+			s.prevCompleted = task.CompletedLength
+			s.prevSampleAt = now
+			s.lastStep = 0
+			log.Printf("[convergence] knee-crossed: gid=%s raw=%d baseline=%d dropRatio=%.2f rebound=+%d frozen",
+				gid, rawBps, s.probeBaseline, dropRatio, rebound)
+			return pendingScale{gid: gid, delta: rebound}, true
 		}
 		s.lastStep = 0
 	}
@@ -599,6 +620,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 				if step > 0 {
 					s.lastStep = step
 					s.probeBaseline = rawBps
+					s.probeBaselineWorkers = currentWorkers
 					s.phase = phaseSettling
 					s.prevCompleted = task.CompletedLength
 					s.prevSampleAt = now
