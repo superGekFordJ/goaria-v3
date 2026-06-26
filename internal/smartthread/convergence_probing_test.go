@@ -2964,51 +2964,105 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 
 	gidA := "sg_empty_domain"
 	gidB := "sg_known_domain"
-	tracker := &mockTracker{
-		tasks: []TrackedTaskInfo{
-			{GID: gidA, Status: "active", Scope: "wan", Domain: "", CompletedLength: 100 * 1024 * 1024},
-			{GID: gidB, Status: "active", Scope: "wan", Domain: "b.com", CompletedLength: 100 * 1024 * 1024},
-		},
-	}
-	telemetry := &mockTelemetry{
-		data: map[string][]types.WorkerSnapshot{
-			gidA: makeWorkers(4, 2*1024*1024),
-			gidB: makeWorkers(4, 2*1024*1024),
-		},
-	}
-	aria2 := &rpc.Aria2Engine{}
-	surge := rpc.NewSurgeEngineForTesting(nil)
-	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
 
-	for _, gid := range []string{gidA, gidB} {
+	// Scenario 1: both candidates present, gidA has fewer workers so it is
+	// elected deterministically (lowest currentWorkers wins). gidB has a
+	// non-empty domain but must still be a valid candidate under the
+	// empty-domain fallback.
+	t.Run("both_present_lowest_workers_elected", func(t *testing.T) {
+		tracker := &mockTracker{
+			tasks: []TrackedTaskInfo{
+				{GID: gidA, Status: "active", Scope: "wan", Domain: "", CompletedLength: 100 * 1024 * 1024},
+				{GID: gidB, Status: "active", Scope: "wan", Domain: "b.com", CompletedLength: 100 * 1024 * 1024},
+			},
+		}
+		telemetry := &mockTelemetry{
+			data: map[string][]types.WorkerSnapshot{
+				gidA: makeWorkers(2, 2*1024*1024),
+				gidB: makeWorkers(4, 2*1024*1024),
+			},
+		}
+		aria2 := &rpc.Aria2Engine{}
+		surge := rpc.NewSurgeEngineForTesting(nil)
+		he := rpc.NewHybridEngine(aria2, surge)
+		ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+
+		for _, gid := range []string{gidA, gidB} {
+			ct.mu.Lock()
+			s := ct.getOrCreateState(gid)
+			s.phase = phaseStable
+			s.kneeFrozen = false
+			s.blackout = false
+			ct.mu.Unlock()
+		}
+
+		completedGid := "sg_completed_empty"
 		ct.mu.Lock()
-		s := ct.getOrCreateState(gid)
+		ct.prevActiveGids = map[string]gidInfo{
+			completedGid: {Domain: "", Scope: "wan"},
+		}
+		ct.mu.Unlock()
+
+		releases := ct.bandwidthRelease(
+			tracker.tasks,
+			map[string]gidInfo{gidA: {Domain: "", Scope: "wan"}, gidB: {Domain: "b.com", Scope: "wan"}},
+			map[string]bool{},
+			nil,
+		)
+		if len(releases) != 1 {
+			t.Fatalf("expected 1 release, got %d: %+v", len(releases), releases)
+		}
+		if releases[0].gid != gidA {
+			t.Errorf("expected gidA elected (lowest workers), got %s", releases[0].gid)
+		}
+	})
+
+	// Scenario 2: only gidB (non-empty domain) present. If the empty-domain
+	// fallback correctly ignores domain, gidB is elected — proving it is a
+	// valid candidate when the disappeared task's domain is empty.
+	t.Run("only_nonempty_domain_candidate_elected", func(t *testing.T) {
+		tracker := &mockTracker{
+			tasks: []TrackedTaskInfo{
+				{GID: gidB, Status: "active", Scope: "wan", Domain: "b.com", CompletedLength: 100 * 1024 * 1024},
+			},
+		}
+		telemetry := &mockTelemetry{
+			data: map[string][]types.WorkerSnapshot{
+				gidB: makeWorkers(4, 2*1024*1024),
+			},
+		}
+		aria2 := &rpc.Aria2Engine{}
+		surge := rpc.NewSurgeEngineForTesting(nil)
+		he := rpc.NewHybridEngine(aria2, surge)
+		ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gidB)
 		s.phase = phaseStable
 		s.kneeFrozen = false
 		s.blackout = false
 		ct.mu.Unlock()
-	}
 
-	completedGid := "sg_completed_empty"
-	ct.mu.Lock()
-	ct.prevActiveGids = map[string]gidInfo{
-		completedGid: {Domain: "", Scope: "wan"},
-	}
-	ct.mu.Unlock()
+		completedGid := "sg_completed_empty"
+		ct.mu.Lock()
+		ct.prevActiveGids = map[string]gidInfo{
+			completedGid: {Domain: "", Scope: "wan"},
+		}
+		ct.mu.Unlock()
 
-	releases := ct.bandwidthRelease(
-		tracker.tasks,
-		map[string]gidInfo{gidA: {Domain: "", Scope: "wan"}, gidB: {Domain: "b.com", Scope: "wan"}},
-		map[string]bool{},
-		nil,
-	)
-	if len(releases) != 1 {
-		t.Fatalf("expected 1 release (empty-domain fallback), got %d: %+v", len(releases), releases)
-	}
-	if releases[0].gid != gidA {
-		t.Errorf("expected release for gidA (empty domain fallback), got %s", releases[0].gid)
-	}
+		releases := ct.bandwidthRelease(
+			tracker.tasks,
+			map[string]gidInfo{gidB: {Domain: "b.com", Scope: "wan"}},
+			map[string]bool{},
+			nil,
+		)
+		if len(releases) != 1 {
+			t.Fatalf("expected 1 release for gidB, got %d: %+v", len(releases), releases)
+		}
+		if releases[0].gid != gidB {
+			t.Errorf("expected gidB elected (non-empty domain still valid under empty-domain fallback), got %s", releases[0].gid)
+		}
+	})
 }
 
 func TestConvergence_BandwidthRelease_SingleBeneficiaryElection(t *testing.T) {
