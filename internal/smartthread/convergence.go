@@ -264,10 +264,14 @@ func (c *ConvergenceTicker) tick() {
 					// ScaleUp permanently suppressed, probe-down continues past knee.
 					s.phase = phaseFrozen
 					s.frozenCooldown = frozenCooldownCycles
+				} else if ps.delta < 0 && s.phase == phaseCeilingHit {
+					// CeilingHit rebound refused by engine — preserve lock, cooldown already set
 				} else {
 					s.phase = phaseStable
 					s.probeBaseline = 0
 					s.probeBaselineWorkers = 0
+					s.probeUpBaseline = 0
+					s.probeUpBaselineWorkers = 0
 					s.lastStep = 0
 				}
 			}
@@ -599,6 +603,8 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			s.phase = phaseStable
 			s.sustainCount = 0
 			s.kneeFrozen = false
+			s.probeMomentum = false
+			s.probeCooldown = probeIntervalCycles
 			log.Printf("[convergence] ceiling-cooldown-expired: gid=%s allowing probe-down", gid)
 			s.ceilingMemory = 0
 		}
@@ -635,6 +641,8 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			s.phase = phaseStable
 			s.sustainCount = 0
 			s.kneeFrozen = false
+			s.probeMomentum = false
+			s.probeCooldown = probeIntervalCycles
 			log.Printf("[convergence] floor-cooldown-expired: gid=%s allowing probe-up", gid)
 			s.floorMemory = 0
 		}

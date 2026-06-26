@@ -1197,7 +1197,7 @@ func TestConvergence_E2E_LinearZoneKneeViaSettling(t *testing.T) {
 
 // setupProbeUpState creates a ticker and state primed for Probe-Up evaluation.
 // bestEff and peakWorkers are set so the Probe-Up trigger can fire.
-func setupProbeUpState(t *testing.T, gid string, bestEff int64, peakWorkers int) (*ConvergenceTicker, *mockTracker, *mockTelemetry, *mockPeakRecorder) {
+func setupProbeUpState(t *testing.T, gid string, bestEff int64, peakWorkers int) (*ConvergenceTicker, *mockTracker, *mockTelemetry, *monotonicMockPeakRecorder) {
 	t.Helper()
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
@@ -1215,7 +1215,7 @@ func setupProbeUpState(t *testing.T, gid string, bestEff int64, peakWorkers int)
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	recorder := &mockPeakRecorder{}
+	recorder := &monotonicMockPeakRecorder{}
 	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{})
 
 	// Clear any leftover N_max from previous tests (global singleton).
@@ -1294,7 +1294,8 @@ func TestConvergence_ProbeUp_BlockedByBestEffZero(t *testing.T) {
 	}
 }
 
-// TestConvergence_ProbeUp_BlockedByNMax verifies currentWorkers >= nMax blocks Probe-Up.
+// TestConvergence_ProbeUp_BlockedByNMax verifies currentWorkers >= nMax blocks Probe-Up
+// while Probe-Down still fires (N_max only suppresses ScaleUp).
 func TestConvergence_ProbeUp_BlockedByNMax(t *testing.T) {
 	gid := "sg_probe_up_nmax"
 	ct, tracker, telemetry, _ := setupProbeUpState(t, gid, 1_310_720, 8)
@@ -1304,11 +1305,19 @@ func TestConvergence_ProbeUp_BlockedByNMax(t *testing.T) {
 	if ok && ps.delta > 0 {
 		t.Fatalf("expected no probe-up when currentWorkers >= nMax, got delta=%d", ps.delta)
 	}
+	// N_max only blocks Probe-Up; Probe-Down still fires when conditions met
+	// (currentWorkers=8 > probeFloor, probeCooldown==0, peakWorkers>0).
+	if !ok || ps.delta >= 0 {
+		t.Fatalf("expected probe-down (delta<0) after N_max blocks probe-up, got ok=%v delta=%d", ok, ps.delta)
+	}
 	ct.mu.Lock()
 	s := ct.states[gid]
 	ct.mu.Unlock()
 	if s.phase == phaseProbingUp {
 		t.Fatal("expected phase != phaseProbingUp when N_max exceeded")
+	}
+	if s.phase != phaseSettling {
+		t.Fatalf("expected phase=phaseSettling after probe-down, got %d", s.phase)
 	}
 }
 
@@ -1623,6 +1632,64 @@ func TestConvergence_CeilingHit_EarlyReturnNoProbe(t *testing.T) {
 	if s.phase != phaseCeilingHit {
 		t.Fatalf("expected phase=phaseCeilingHit (early return preserves phase), got %d", s.phase)
 	}
+	if s.frozenCooldown != ceilingHitCooldownCycles-1 {
+		t.Fatalf("expected frozenCooldown=%d after one tick, got %d", ceilingHitCooldownCycles-1, s.frozenCooldown)
+	}
+}
+
+// TestConvergence_CeilingHit_ReboundRefusedByEngine verifies that when a CeilingHit
+// rebound (-1) is refused by the engine (ScaleWorkers returns 0), the tick() no-op
+// path preserves phaseCeilingHit and the cooldown instead of resetting to phaseStable.
+func TestConvergence_CeilingHit_ReboundRefusedByEngine(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	gid := "sg_ceiling_rebound_refused"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid: makeWorkers(9, 2*1024*1024),
+		},
+	}
+
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
+	defer ct.Stop()
+
+	// Set up state: in phaseProbingUp with baseline, simulating a +1 already done.
+	// rawBps will be low so GainRatio < 0.5 → CeilingHit rebound -1.
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.phase = phaseProbingUp
+	s.probeUpBaseline = 10 * 1024 * 1024 // 10 MB/s before +1
+	s.probeUpBaselineWorkers = 8
+	s.bestEff = 1_310_720
+	s.peakWorkers = 8
+	s.prevCompleted = 100 * 1024 * 1024
+	setPrevSampleAgoState(s, 5*time.Second)
+	ct.mu.Unlock()
+
+	// rawBps = 10.1MB/5s ≈ 2MB/s. actualGain = (2-10)/10 < 0 → 0.
+	// gainRatio = 0 < 0.5 → CeilingHit, rebound -1.
+	// ScaleWorkers returns 0 (nil pool) → tick() no-op path must preserve phaseCeilingHit.
+	tracker.tasks[0].CompletedLength = 110 * 1024 * 1024 // +10MB in 5s = 2MB/s
+	ct.tick()
+
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase != phaseCeilingHit {
+		t.Fatalf("expected phase=phaseCeilingHit after rebound refused by engine, got %d", s.phase)
+	}
+	if s.frozenCooldown != ceilingHitCooldownCycles {
+		t.Fatalf("expected frozenCooldown=%d (preserved), got %d", ceilingHitCooldownCycles, s.frozenCooldown)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1807,6 +1874,9 @@ func TestConvergence_FloorHit_EarlyReturnNoProbe(t *testing.T) {
 	ct.mu.Unlock()
 	if s.phase != phaseFloorHit {
 		t.Fatalf("expected phase=phaseFloorHit (early return preserves phase), got %d", s.phase)
+	}
+	if s.frozenCooldown != floorHitCooldownCycles-1 {
+		t.Fatalf("expected frozenCooldown=%d after one tick, got %d", floorHitCooldownCycles-1, s.frozenCooldown)
 	}
 }
 
@@ -1996,7 +2066,7 @@ func TestConvergence_RecordPeakEfficiency_FloorHitRebound(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	recorder := &mockPeakRecorder{}
+	recorder := &monotonicMockPeakRecorder{}
 	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{})
 
 	// Clear any leftover N_max from previous tests (global singleton).
