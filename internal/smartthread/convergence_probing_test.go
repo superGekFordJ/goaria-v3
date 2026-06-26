@@ -1404,6 +1404,10 @@ func TestConvergence_ProbeUp_SuccessContinuesChain(t *testing.T) {
 	if s.probeUpBaseline == baseline {
 		t.Fatal("expected probeUpBaseline to be updated after chain probe-up")
 	}
+	// rawBps = (120MB - 60MB) / 5s = 12 MB/s = 12*1024*1024
+	if s.probeUpBaseline != 12*1024*1024 {
+		t.Fatalf("expected probeUpBaseline=12MB/s (current rawBps), got %d", s.probeUpBaseline)
+	}
 	if s.probeUpBaselineWorkers != 9 {
 		t.Fatalf("expected probeUpBaselineWorkers=9, got %d", s.probeUpBaselineWorkers)
 	}
@@ -1613,11 +1617,12 @@ func TestConvergence_CeilingHit_EarlyReturnNoProbe(t *testing.T) {
 	telemetry := ct.telemetry.(*mockTelemetry)
 
 	// Even with high efficiency (would trigger Probe-Up if stable), CeilingHit
-	// early-returns. Set bestEff > 0 and peakWorkers > 0 to make Probe-Up conditions
+	// early-returns. Set bestEff below the incoming newEff so the D3 ratchet
+	// update is observable, and peakWorkers > 0 to make Probe-Up conditions
 	// otherwise satisfiable.
 	ct.mu.Lock()
 	s := ct.getOrCreateState(gid)
-	s.bestEff = 1_310_720
+	s.bestEff = 500_000 // below newEff so D3 ratchet raises it
 	s.peakWorkers = 8
 	ct.mu.Unlock()
 
@@ -1634,6 +1639,10 @@ func TestConvergence_CeilingHit_EarlyReturnNoProbe(t *testing.T) {
 	}
 	if s.frozenCooldown != ceilingHitCooldownCycles-1 {
 		t.Fatalf("expected frozenCooldown=%d after one tick, got %d", ceilingHitCooldownCycles-1, s.frozenCooldown)
+	}
+	// D3 ratchet must run before the early-return: bestEff raised to newEff.
+	if s.bestEff != 1_310_720 {
+		t.Fatalf("expected bestEff=1310720 (D3 ratchet ran before early-return), got %d", s.bestEff)
 	}
 }
 
@@ -1861,7 +1870,7 @@ func TestConvergence_FloorHit_EarlyReturnNoProbe(t *testing.T) {
 
 	ct.mu.Lock()
 	s := ct.getOrCreateState(gid)
-	s.bestEff = 1_310_720
+	s.bestEff = 500_000 // below newEff so D3 ratchet raises it
 	s.peakWorkers = 8
 	ct.mu.Unlock()
 
@@ -1877,6 +1886,10 @@ func TestConvergence_FloorHit_EarlyReturnNoProbe(t *testing.T) {
 	}
 	if s.frozenCooldown != floorHitCooldownCycles-1 {
 		t.Fatalf("expected frozenCooldown=%d after one tick, got %d", floorHitCooldownCycles-1, s.frozenCooldown)
+	}
+	// D3 ratchet must run before the early-return: bestEff raised to newEff.
+	if s.bestEff != 1_310_720 {
+		t.Fatalf("expected bestEff=1310720 (D3 ratchet ran before early-return), got %d", s.bestEff)
 	}
 }
 
@@ -2194,5 +2207,100 @@ func TestConvergence_RecordPeakEfficiency_MonotonicRatchet(t *testing.T) {
 	// The monotonic mock should retain 100 MB/s, not overwrite with 95 MB/s
 	if rec.peak != 100*1024*1024 {
 		t.Fatalf("expected monotonic ratchet to retain 100MB/s peak, got %d", rec.peak)
+	}
+}
+
+// TestConvergence_BandwidthRelease_SkipsCeilingHit verifies that bandwidthRelease
+// suppresses ScaleUp for a task in phaseCeilingHit (with kneeFrozen=false), covering
+// the phaseCeilingHit branch of the suppression check.
+func TestConvergence_BandwidthRelease_SkipsCeilingHit(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	gid := "sg_ceiling_bwrelease"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{gid: makeWorkers(8, 2*1024*1024)},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+
+	// phaseCeilingHit with kneeFrozen=false isolates the ceiling-hit suppression.
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.phase = phaseCeilingHit
+	s.kneeFrozen = false
+	s.ceilingMemory = 10 * 1024 * 1024
+	s.frozenCooldown = ceilingHitCooldownCycles
+	ct.mu.Unlock()
+
+	// Simulate a completed task to trigger bandwidthRelease.
+	completedGid := "sg_completed_ceiling"
+	ct.mu.Lock()
+	ct.prevActiveGids = map[string]gidInfo{
+		completedGid: {Domain: "example.com", Scope: "wan"},
+	}
+	ct.mu.Unlock()
+
+	releases := ct.bandwidthRelease(
+		[]TrackedTaskInfo{tracker.tasks[0]},
+		map[string]gidInfo{gid: {Domain: "example.com", Scope: "wan"}},
+		map[string]bool{},
+	)
+	for _, r := range releases {
+		if r.gid == gid {
+			t.Fatal("expected bandwidthRelease to skip phaseCeilingHit task")
+		}
+	}
+	// releaseCycles must stay 0 — the skip happens before the increment.
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s.releaseCycles != 0 {
+		t.Fatalf("expected releaseCycles=0 (skipped before increment), got %d", s.releaseCycles)
+	}
+}
+
+// TestConvergence_ProbeUp_BlockedByVAvailable verifies that when
+// globalPeak - activeBw < vThreadAvg, the Probe-Up trigger does not fire.
+func TestConvergence_ProbeUp_BlockedByVAvailable(t *testing.T) {
+	gid := "sg_probe_up_vavail"
+	ct, tracker, telemetry, _ := setupProbeUpState(t, gid, 1_310_720, 8)
+
+	// Plant a global peak so GetGlobalPeak("wan") = 10 MB/s.
+	// GetRecentPeakByDomain("example.com", "wan") = 10MB/1 = 10 MB/s → vThreadAvg = 10 MB/s.
+	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+
+	// activeBw = 10 MB/s → globalPeak - activeBw = 0 < vThreadAvg(10MB) → blocked.
+	orig := activeBandwidthProvider
+	t.Cleanup(func() { activeBandwidthProvider = orig })
+	activeBandwidthProvider = func(scope string) int64 {
+		return 10 * 1024 * 1024
+	}
+
+	// Prevent Probe-Down so the test isolates the V_available check.
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.probeCooldown = probeIntervalCycles
+	s.probeMomentum = false
+	ct.mu.Unlock()
+
+	// rawBps = 10 MB/s, 8 workers → newEff = 1.25 MB/s >= bestEff*0.95.
+	// Without V_available block, Probe-Up would fire.
+	ps, ok := probeUpProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
+	if ok && ps.delta > 0 {
+		t.Fatalf("expected no probe-up when V_available insufficient, got delta=%d", ps.delta)
+	}
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase == phaseProbingUp {
+		t.Fatal("expected phase != phaseProbingUp when V_available insufficient")
 	}
 }

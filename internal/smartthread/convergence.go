@@ -587,6 +587,8 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 				s.ceilingHitCount = 0
 				s.sustainCount = 0
 				s.kneeFrozen = false
+				s.probeMomentum = false
+				s.probeCooldown = probeIntervalCycles
 				log.Printf("[convergence] ceiling-unlocked: gid=%s raw=%d ceiling=%d (server sped up)",
 					gid, rawBps, s.ceilingMemory)
 				s.ceilingMemory = 0
@@ -605,6 +607,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			s.kneeFrozen = false
 			s.probeMomentum = false
 			s.probeCooldown = probeIntervalCycles
+			s.ceilingHitCount = 0
 			log.Printf("[convergence] ceiling-cooldown-expired: gid=%s allowing probe-down", gid)
 			s.ceilingMemory = 0
 		}
@@ -625,6 +628,8 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 				s.floorHitCount = 0
 				s.sustainCount = 0
 				s.kneeFrozen = false
+				s.probeMomentum = false
+				s.probeCooldown = probeIntervalCycles
 				log.Printf("[convergence] floor-unlocked: gid=%s raw=%d floor=%d (network congested)",
 					gid, rawBps, s.floorMemory)
 				s.floorMemory = 0
@@ -643,6 +648,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			s.kneeFrozen = false
 			s.probeMomentum = false
 			s.probeCooldown = probeIntervalCycles
+			s.floorHitCount = 0
 			log.Printf("[convergence] floor-cooldown-expired: gid=%s allowing probe-up", gid)
 			s.floorMemory = 0
 		}
