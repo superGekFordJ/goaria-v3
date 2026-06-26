@@ -98,7 +98,7 @@ type convergenceState struct {
 	floorHitCount int   // consecutive ticks rawBps < floorMemory*0.90
 
 	// bandwidthRelease delay compensation
-	lastRawBps int64 // last known rawBps, recorded at end of each processTask tick
+	lastRawBps int64 // last known rawBps; assignment deferred to later phase
 }
 
 type ConvergenceTicker struct {
