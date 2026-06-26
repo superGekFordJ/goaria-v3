@@ -3705,11 +3705,11 @@ func TestConvergence_ProbeDown_ProceedsOnPositiveRawBps(t *testing.T) {
 	}
 }
 
-// TestConvergence_ProbeDown_ZeroRawBpsPreservesCooldown verifies that the
-// zero-rawBps guard (inside `if shouldProbe`) does not interfere with the
-// cooldown decrement (which runs before shouldProbe is evaluated). With
-// cooldown=2 and momentum=false, cooldown decrements to 1 and no probe fires.
-func TestConvergence_ProbeDown_ZeroRawBpsPreservesCooldown(t *testing.T) {
+// TestConvergence_ProbeDown_CooldownDecrementsWhenNotProbing verifies that the
+// cooldown decrement runs normally when shouldProbe is false. With cooldown=2
+// and momentum=false, the else branch decrements cooldown to 1 and no probe
+// fires, so the zero-rawBps guard (inside `if shouldProbe`) is never reached.
+func TestConvergence_ProbeDown_CooldownDecrementsWhenNotProbing(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
@@ -3763,5 +3763,72 @@ func TestConvergence_ProbeDown_ZeroRawBpsPreservesCooldown(t *testing.T) {
 	}
 	if s.lastStep != 0 {
 		t.Errorf("expected lastStep=0 (no probe-down), got %d", s.lastStep)
+	}
+}
+
+// TestConvergence_ProbeDown_ZeroRawBpsColdCycleSkip verifies the zero-rawBps
+// guard on the cold probe-down path (momentum=false, cooldown=0). Here the else
+// branch runs: cooldown is already 0 so it is not decremented, shouldProbe
+// becomes true, and the guard fires — skipping the probe-down to avoid the
+// probeBaseline=0 dead zone. This mirrors the production scenario where a task
+// dies long after momentum has expired, so the cold-cycle path is taken.
+func TestConvergence_ProbeDown_ZeroRawBpsColdCycleSkip(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	gid := "sg_zero_cold_cycle"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{
+				GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true,
+				CompletedLength: 500 * 1024 * 1024, TotalLength: 1024 * 1024 * 1024,
+			},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid: makeWorkers(6, 0),
+		},
+	}
+
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
+	defer ct.Stop()
+
+	// momentum=false, cooldown=0 → else branch: cooldown already 0 (no
+	// decrement), shouldProbe=true. rawBps=0 (prevCompleted == CompletedLength)
+	// so the zero-rawBps guard fires and skips the probe-down.
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.phase = phaseStable
+	s.probeMomentum = false
+	s.probeCooldown = 0
+	s.peakWorkers = 6
+	s.bestEff = 2 * 1024 * 1024
+	s.prevCompleted = 500 * 1024 * 1024
+	setPrevSampleAgoState(s, 5*time.Second)
+	ct.mu.Unlock()
+
+	ct.tick()
+
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s == nil {
+		t.Fatal("expected state to exist")
+	}
+	if s.phase != phaseStable {
+		t.Errorf("expected phase=phaseStable (zero-rawBps skip), got %d", s.phase)
+	}
+	if s.lastStep != 0 {
+		t.Errorf("expected lastStep=0 (no probe-down), got %d", s.lastStep)
+	}
+	if s.probeBaseline != 0 {
+		t.Errorf("expected probeBaseline=0 (not set to rawBps=0), got %d", s.probeBaseline)
+	}
+	if s.probeCooldown != 0 {
+		t.Errorf("expected probeCooldown=0 (unchanged), got %d", s.probeCooldown)
 	}
 }
