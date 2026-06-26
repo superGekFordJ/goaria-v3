@@ -97,8 +97,8 @@ type convergenceState struct {
 	floorMemory   int64 // rawBps at FloorHit moment
 	floorHitCount int   // consecutive ticks rawBps < floorMemory*0.90
 
-	// bandwidthRelease delay compensation (later spec records rawBps here)
-	lastRawBps int64
+	// bandwidthRelease delay compensation
+	lastRawBps int64 // last known rawBps, recorded at end of each processTask tick
 }
 
 type ConvergenceTicker struct {
@@ -237,37 +237,7 @@ func (c *ConvergenceTicker) tick() {
 	// For each completed task, find same-scope keep-alive tasks and trigger
 	// ScaleUp with degraded filter (bandwidthReleaseCycles = 1).
 	// Skip GIDs already scaled by processTask to prevent double ScaleUp.
-	c.mu.Lock()
-	for gid, info := range c.prevActiveGids {
-		if _, ok := activeGids[gid]; ok {
-			continue // still active
-		}
-		// Task disappeared — look for same-scope keep-alive tasks to benefit
-		for _, t := range activeTasks {
-			if !strings.HasPrefix(t.GID, "sg_") || !t.IsKeepAlive {
-				continue
-			}
-			if t.Scope != info.Scope {
-				continue
-			}
-			if pendingGids[t.GID] {
-				continue // already scaled by processTask this tick
-			}
-			s := c.getOrCreateState(t.GID)
-			if s.kneeFrozen {
-				continue // knee frozen — suppress ScaleUp (D4 step 7)
-			}
-			s.releaseCycles++
-			if s.releaseCycles >= bandwidthReleaseCycles {
-				pending = append(pending, pendingScale{gid: t.GID, delta: 1})
-				pendingGids[t.GID] = true
-				log.Printf("[convergence] bandwidth-borrow: gid=%s scope=%s released by completed gid=%s",
-					t.GID, info.Scope, gid)
-				s.releaseCycles = 0
-			}
-		}
-	}
-	c.mu.Unlock()
+	pending = append(pending, c.bandwidthRelease(activeTasks, activeGids, pendingGids)...)
 
 	// Self-cleanup: remove states for GIDs no longer active
 	c.mu.Lock()
@@ -305,6 +275,46 @@ func (c *ConvergenceTicker) tick() {
 			log.Printf("[convergence] scale-workers no-op: gid=%s delta=%d (engine returned 0)", ps.gid, ps.delta)
 		}
 	}
+}
+
+// bandwidthRelease detects tasks that disappeared since last tick and distributes
+// their freed bandwidth to same-scope keep-alive tasks. GIDs already scaled by
+// processTask this tick (present in pendingGids) are skipped to prevent double ScaleUp.
+func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, activeGids map[string]gidInfo, pendingGids map[string]bool) []pendingScale {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var releases []pendingScale
+	for gid, info := range c.prevActiveGids {
+		if _, ok := activeGids[gid]; ok {
+			continue // still active
+		}
+		// Task disappeared — look for same-scope keep-alive tasks to benefit
+		for _, t := range activeTasks {
+			if !strings.HasPrefix(t.GID, "sg_") || !t.IsKeepAlive {
+				continue
+			}
+			if t.Scope != info.Scope {
+				continue
+			}
+			if pendingGids[t.GID] {
+				continue // already scaled by processTask this tick
+			}
+			s := c.getOrCreateState(t.GID)
+			if s.kneeFrozen {
+				continue // knee frozen — suppress ScaleUp (D4 step 7)
+			}
+			s.releaseCycles++
+			if s.releaseCycles >= bandwidthReleaseCycles {
+				releases = append(releases, pendingScale{gid: t.GID, delta: 1})
+				pendingGids[t.GID] = true
+				log.Printf("[convergence] bandwidth-borrow: gid=%s scope=%s released by completed gid=%s",
+					t.GID, info.Scope, gid)
+				s.releaseCycles = 0
+			}
+		}
+	}
+	return releases
 }
 
 // sameActiveSet compares two gid→gidInfo maps by key set only.

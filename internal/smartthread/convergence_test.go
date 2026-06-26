@@ -362,3 +362,77 @@ func TestConvergenceTicker_PrevActiveGidsCarriesDomain(t *testing.T) {
 		t.Error("sameActiveSet should return false for different key sets")
 	}
 }
+
+// TestConvergenceTicker_PendingGidsPreventsBandwidthReleaseScaleUp verifies that the
+// pendingGids mechanism prevents bandwidthRelease from issuing a ScaleUp on a task
+// that processTask already scaled this tick.
+//
+// In the current architecture, when a task disappears (triggering bandwidthRelease),
+// window-invalidation suppresses all processTask scale decisions, so pendingGids is
+// naturally empty during bandwidthRelease. This test exercises the pendingGids skip
+// check directly via the extracted bandwidthRelease method to cover the defensive guard.
+func TestConvergenceTicker_PendingGidsPreventsBandwidthReleaseScaleUp(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+
+	completedGid := "sg_completed_pending"
+	keepAliveGid := "sg_keepalive_pending"
+
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: keepAliveGid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			keepAliveGid: {{WorkerID: 0, EMASpeed: 100 * 1024}},
+		},
+	}
+
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
+	defer ct.Stop()
+
+	// Simulate that the previous tick had both tasks active.
+	ct.mu.Lock()
+	ct.prevActiveGids = map[string]gidInfo{
+		completedGid: {Domain: "example.com", Scope: "wan"},
+		keepAliveGid: {Domain: "example.com", Scope: "wan"},
+	}
+	// Pre-create state so we can inspect releaseCycles after the skip.
+	ct.getOrCreateState(keepAliveGid)
+	ct.mu.Unlock()
+
+	activeGids := map[string]gidInfo{
+		keepAliveGid: {Domain: "example.com", Scope: "wan"},
+	}
+
+	// Scenario 1: pendingGids contains keepAliveGid (processTask already scaled it).
+	// bandwidthRelease must skip it — no ScaleUp issued, releaseCycles untouched.
+	pendingGids := map[string]bool{keepAliveGid: true}
+	releases := ct.bandwidthRelease(tracker.tasks, activeGids, pendingGids)
+	if len(releases) != 0 {
+		t.Errorf("expected 0 releases when pendingGids contains keepAliveGid, got %d: %+v", len(releases), releases)
+	}
+	ct.mu.Lock()
+	s := ct.states[keepAliveGid]
+	ct.mu.Unlock()
+	if s == nil {
+		t.Fatal("expected state for keepAliveGid")
+	}
+	if s.releaseCycles != 0 {
+		t.Errorf("expected releaseCycles=0 (skipped by pendingGids), got %d", s.releaseCycles)
+	}
+
+	// Scenario 2 (control): pendingGids is empty — bandwidthRelease should issue ScaleUp.
+	releases = ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{})
+	if len(releases) != 1 {
+		t.Fatalf("expected 1 release without pendingGids, got %d: %+v", len(releases), releases)
+	}
+	if releases[0].gid != keepAliveGid || releases[0].delta != 1 {
+		t.Errorf("expected release{gid=%s delta=1}, got %+v", keepAliveGid, releases[0])
+	}
+}
