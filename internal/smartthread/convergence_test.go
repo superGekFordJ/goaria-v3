@@ -673,3 +673,58 @@ func TestConvergence_CrossScopeIsolation(t *testing.T) {
 		t.Errorf("expected releaseCycles=1 after ScaleDown trigger, got %d", s.releaseCycles)
 	}
 }
+
+func TestConvergenceTicker_PrevActiveGidsCarriesDomain(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "a.com", "wan")
+	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "b.com", "wan")
+
+	gid1 := "sg_domain_a"
+	gid2 := "sg_domain_b"
+
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid1, Status: "active", Scope: "wan", Domain: "a.com", IsKeepAlive: true},
+			{GID: gid2, Status: "active", Scope: "wan", Domain: "b.com", IsKeepAlive: true},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid1: {{WorkerID: 0, EMASpeed: 100 * 1024}},
+			gid2: {{WorkerID: 0, EMASpeed: 100 * 1024}},
+		},
+	}
+
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
+	defer ct.Stop()
+
+	ct.tick()
+
+	ct.mu.Lock()
+	info1 := ct.prevActiveGids[gid1]
+	info2 := ct.prevActiveGids[gid2]
+	ct.mu.Unlock()
+
+	if info1.Domain != "a.com" || info1.Scope != "wan" {
+		t.Errorf("prevActiveGids[%s] = %+v, want {Domain:a.com Scope:wan}", gid1, info1)
+	}
+	if info2.Domain != "b.com" || info2.Scope != "wan" {
+		t.Errorf("prevActiveGids[%s] = %+v, want {Domain:b.com Scope:wan}", gid2, info2)
+	}
+
+	// sameActiveSet compares by key set only — same keys with different values must return true.
+	a := map[string]gidInfo{"g1": {Domain: "x.com", Scope: "wan"}, "g2": {Domain: "y.com", Scope: "lan"}}
+	b := map[string]gidInfo{"g1": {Domain: "z.com", Scope: "lan"}, "g2": {Domain: "w.com", Scope: "wan"}}
+	if !sameActiveSet(a, b) {
+		t.Error("sameActiveSet should return true for identical key sets regardless of values")
+	}
+	// Different key sets must return false.
+	c := map[string]gidInfo{"g1": {Domain: "x.com", Scope: "wan"}, "g3": {Domain: "y.com", Scope: "lan"}}
+	if sameActiveSet(a, c) {
+		t.Error("sameActiveSet should return false for different key sets")
+	}
+}

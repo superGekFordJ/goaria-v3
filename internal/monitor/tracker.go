@@ -49,6 +49,11 @@ type TrackedTask struct {
 
 	// KeepAlive flag — true when initial split < nSat
 	IsKeepAlive bool
+
+	// MinChunk is the per-task minimum chunk size (bytes), captured from
+	// ThreadParams.MinSize at task-add time. 0 means unknown/un captured
+	// (non-Surge path, event-created, or restart recovery).
+	MinChunk int64
 }
 
 // TaskTracker 后端任务追踪器
@@ -480,6 +485,23 @@ func (t *TaskTracker) SetKeepAlive(gid string, keepAlive bool) {
 	tracked := t.tasks[gid]
 	if tracked != nil {
 		tracked.IsKeepAlive = keepAlive
+	}
+}
+
+// SetMinChunk sets the per-task minimum chunk size (from ThreadParams.MinSize).
+// Called at task-add time (Surge path) by the tasks service.
+func (t *TaskTracker) SetMinChunk(gid string, minChunk int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	tracked := t.tasks[gid]
+	if tracked != nil {
+		tracked.MinChunk = minChunk
+	} else {
+		t.tasks[gid] = &TrackedTask{
+			GID:       gid,
+			MinChunk:  minChunk,
+			CreatedAt: time.Now(),
+		}
 	}
 }
 

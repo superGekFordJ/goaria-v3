@@ -730,6 +730,36 @@ func TestTaskTracker_SetScope_NewTask(t *testing.T) {
 	}
 }
 
+func TestTaskTracker_SetMinChunk_ExistingTask(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.SetThreadInfo("sg-minchunk-1", 4, false)
+
+	minChunk := int64(4 * 1024 * 1024)
+	tracker.SetMinChunk("sg-minchunk-1", minChunk)
+
+	tracked := tracker.tasks["sg-minchunk-1"]
+	if tracked == nil {
+		t.Fatal("expected tracked task to exist")
+	}
+	if tracked.MinChunk != minChunk {
+		t.Errorf("MinChunk = %d, want %d", tracked.MinChunk, minChunk)
+	}
+}
+
+func TestTaskTracker_SetMinChunk_NewTask(t *testing.T) {
+	tracker := NewTaskTracker()
+	minChunk := int64(2 * 1024 * 1024)
+	tracker.SetMinChunk("sg-minchunk-2", minChunk)
+
+	tracked := tracker.tasks["sg-minchunk-2"]
+	if tracked == nil {
+		t.Fatal("Expected task to be created by SetMinChunk")
+	}
+	if tracked.MinChunk != minChunk {
+		t.Errorf("MinChunk = %d, want %d", tracked.MinChunk, minChunk)
+	}
+}
+
 func TestTaskTracker_SampleSpeedFromEvent_UpdatesTotalAndCompleted(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.EnsureTrackedFromEvent("sg-evt-011", 0, "https://example.com/file.zip", 8)

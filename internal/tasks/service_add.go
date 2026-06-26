@@ -397,6 +397,7 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 					tracker.SetThreadInfo(gid, params.Split, params.IsExploration)
 					// Set IsKeepAlive when initial split < nSat
 					tracker.SetKeepAlive(gid, params.Split < params.NSat)
+					tracker.SetMinChunk(gid, params.MinSize)
 				}
 			}
 			if tracker := monitor.State.GetTracker(); tracker != nil {

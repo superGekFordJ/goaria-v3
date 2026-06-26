@@ -14,6 +14,13 @@ import (
 	"goaria-v3/internal/surge/engine/types"
 )
 
+// gidInfo records the domain and scope of a previously active gid,
+// for bandwidthRelease domain+scope matching.
+type gidInfo struct {
+	Domain string
+	Scope  string
+}
+
 // TrackedTaskInfo is a minimal view of monitor.TrackedTask for convergence.
 type TrackedTaskInfo struct {
 	GID             string
@@ -22,6 +29,7 @@ type TrackedTaskInfo struct {
 	Domain          string
 	IsKeepAlive     bool
 	CompletedLength int64
+	MinChunk        int64 // from ThreadParams.MinSize, for blackout zone detection
 }
 
 // TrackerProvider provides task tracking data to the convergence ticker.
@@ -89,7 +97,7 @@ type ConvergenceTicker struct {
 
 	mu             sync.Mutex
 	states         map[string]*convergenceState
-	prevActiveGids map[string]string // gid → scope, for bandwidth borrowing diff
+	prevActiveGids map[string]gidInfo // gid → gidInfo, for bandwidth borrowing diff
 	stopChan       chan struct{}
 	stopOnce       sync.Once
 }
@@ -109,7 +117,7 @@ func NewConvergenceTicker(
 		rateChecker:    rateChecker,
 		limits:         GetDefaultServerLimits(),
 		states:         make(map[string]*convergenceState),
-		prevActiveGids: make(map[string]string),
+		prevActiveGids: make(map[string]gidInfo),
 		stopChan:       make(chan struct{}),
 	}
 }
@@ -158,7 +166,7 @@ func (c *ConvergenceTicker) tick() {
 	}
 
 	activeTasks := c.tracker.GetActiveTrackedTasks()
-	activeGids := make(map[string]string) // gid → scope
+	activeGids := make(map[string]gidInfo) // gid → gidInfo
 	var pending []pendingScale
 	pendingGids := make(map[string]bool) // GIDs already scaled this tick
 
@@ -166,7 +174,7 @@ func (c *ConvergenceTicker) tick() {
 		if !strings.HasPrefix(task.GID, "sg_") {
 			continue
 		}
-		activeGids[task.GID] = task.Scope
+		activeGids[task.GID] = gidInfo{Domain: task.Domain, Scope: task.Scope}
 	}
 
 	// Detect active-set changes (Edge Case 3: multi-task bandwidth confusion).
@@ -209,8 +217,8 @@ func (c *ConvergenceTicker) tick() {
 	// ScaleUp with degraded filter (bandwidthReleaseCycles = 1).
 	// Skip GIDs already scaled by processTask to prevent double ScaleUp.
 	c.mu.Lock()
-	for gid, scope := range c.prevActiveGids {
-		if activeGids[gid] != "" {
+	for gid, info := range c.prevActiveGids {
+		if _, ok := activeGids[gid]; ok {
 			continue // still active
 		}
 		// Task disappeared — look for same-scope keep-alive tasks to benefit
@@ -218,7 +226,7 @@ func (c *ConvergenceTicker) tick() {
 			if !strings.HasPrefix(t.GID, "sg_") || !t.IsKeepAlive {
 				continue
 			}
-			if t.Scope != scope {
+			if t.Scope != info.Scope {
 				continue
 			}
 			if pendingGids[t.GID] {
@@ -233,7 +241,7 @@ func (c *ConvergenceTicker) tick() {
 				pending = append(pending, pendingScale{gid: t.GID, delta: 1})
 				pendingGids[t.GID] = true
 				log.Printf("[convergence] bandwidth-borrow: gid=%s scope=%s released by completed gid=%s",
-					t.GID, scope, gid)
+					t.GID, info.Scope, gid)
 				s.releaseCycles = 0
 				s.scaleUpCycles = 0
 			}
@@ -244,7 +252,7 @@ func (c *ConvergenceTicker) tick() {
 	// Self-cleanup: remove states for GIDs no longer active
 	c.mu.Lock()
 	for gid := range c.states {
-		if activeGids[gid] == "" {
+		if _, ok := activeGids[gid]; !ok {
 			delete(c.states, gid)
 		}
 	}
@@ -279,8 +287,8 @@ func (c *ConvergenceTicker) tick() {
 	}
 }
 
-// sameActiveSet compares two gid→scope maps by key set only.
-func sameActiveSet(a, b map[string]string) bool {
+// sameActiveSet compares two gid→gidInfo maps by key set only.
+func sameActiveSet(a, b map[string]gidInfo) bool {
 	if len(a) != len(b) {
 		return false
 	}
