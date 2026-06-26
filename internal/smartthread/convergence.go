@@ -31,6 +31,7 @@ type TrackedTaskInfo struct {
 	IsKeepAlive     bool
 	CompletedLength int64
 	MinChunk        int64 // from ThreadParams.MinSize, for blackout zone detection
+	TotalLength     int64 // from TrackedTask.TotalLength, for completed-task guard
 }
 
 // TrackerProvider provides task tracking data to the convergence ticker.
@@ -491,6 +492,13 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 		return pendingScale{}, false
 	}
 
+	// Completed-task guard: skip all convergence logic when the task has reached
+	// 100% completion but hasn't yet left the active list. TotalLength == 0 means
+	// unknown size — skip guard, fall through to normal logic.
+	if task.TotalLength > 0 && task.CompletedLength >= task.TotalLength {
+		return pendingScale{}, false
+	}
+
 	var retryCountSum int32
 	for _, ws := range stats {
 		retryCountSum += ws.RetryCount
@@ -905,6 +913,15 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			}
 
 			if shouldProbe {
+				// Skip probe-down when rawBps == 0: a zero-speed task is either
+				// dead or stalled. Killing workers won't help and causes a cold
+				// probe-down cycle (probeBaseline=0 dead zone).
+				if rawBps == 0 {
+					s.prevCompleted = task.CompletedLength
+					s.prevSampleAt = now
+					return pendingScale{}, false
+				}
+
 				step := currentWorkers / 8
 				if step < 1 {
 					step = 1

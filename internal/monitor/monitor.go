@@ -1032,6 +1032,7 @@ func (a *trackerAdapter) GetActiveTrackedTasks() []smartthread.TrackedTaskInfo {
 			IsKeepAlive:     t.IsKeepAlive,
 			CompletedLength: t.CompletedLength,
 			MinChunk:        t.MinChunk,
+			TotalLength:     t.TotalLength,
 		}
 	}
 	return result
