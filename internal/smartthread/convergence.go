@@ -282,15 +282,16 @@ func (c *ConvergenceTicker) tick() {
 			// Engine couldn't execute the scale — don't advance state
 			c.mu.Lock()
 			if s, ok := c.states[ps.gid]; ok {
-				if ps.delta > 0 && s.kneeFrozen {
+				switch {
+				case ps.delta > 0 && s.kneeFrozen:
 					// Rebound failed — preserve frozen state so cooldown can run
 					// and eventually clear kneeFrozen. Otherwise kneeFrozen orphans:
 					// ScaleUp permanently suppressed, probe-down continues past knee.
 					s.phase = phaseFrozen
 					s.frozenCooldown = frozenCooldownCycles
-				} else if ps.delta < 0 && s.phase == phaseCeilingHit {
+				case ps.delta < 0 && s.phase == phaseCeilingHit:
 					// CeilingHit rebound refused by engine — preserve lock, cooldown already set
-				} else {
+				default:
 					s.phase = phaseStable
 					s.probeBaseline = 0
 					s.probeBaselineWorkers = 0
@@ -869,7 +870,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 		if newEff >= int64(float64(s.bestEff)*probeUpEffThreshold) && preheated {
 			// N_max check — C1 fuse only SETS N_max; suppression is here.
 			nMax, hasLimit := c.limits.GetNMax(domain)
-			if !(hasLimit && currentWorkers >= nMax) {
+			if !hasLimit || currentWorkers < nMax {
 				vAvailable := c.checkVAvailable(task.Scope, domain, approvedDelta)
 				if vAvailable && !rateLimited {
 					if c.peakRecorder != nil && rawBps > 0 && currentWorkers > 0 {
