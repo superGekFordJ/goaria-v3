@@ -760,6 +760,28 @@ func TestTaskTracker_SetMinChunk_NewTask(t *testing.T) {
 	}
 }
 
+// 第二次调用应覆盖第一次设置的值，防止未来重构丢失无条件覆盖语义。
+func TestTaskTracker_SetMinChunk_OverwritesExistingValue(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.SetThreadInfo("sg-minchunk-ow", 4, false)
+
+	first := int64(4 * 1024 * 1024)
+	tracker.SetMinChunk("sg-minchunk-ow", first)
+	if tracked := tracker.tasks["sg-minchunk-ow"]; tracked == nil || tracked.MinChunk != first {
+		t.Fatalf("first SetMinChunk: got MinChunk %v, want %d", tracked, first)
+	}
+
+	second := int64(16 * 1024 * 1024)
+	tracker.SetMinChunk("sg-minchunk-ow", second)
+	tracked := tracker.tasks["sg-minchunk-ow"]
+	if tracked == nil {
+		t.Fatal("expected tracked task to exist after second SetMinChunk")
+	}
+	if tracked.MinChunk != second {
+		t.Errorf("MinChunk = %d, want %d (second call should overwrite first)", tracked.MinChunk, second)
+	}
+}
+
 func TestTrackerAdapter_GetActiveTrackedTasks_PassesMinChunkThrough(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.EnsureTrackedFromEvent("sg-minchunk-pass", 0, "", 4)
