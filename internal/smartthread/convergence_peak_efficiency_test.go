@@ -53,9 +53,9 @@ func TestConvergence_RecordPeakEfficiency_ProbeUpTrigger(t *testing.T) {
 		t.Fatal("expected RecordPeakEfficiency called before probe-up return")
 	}
 	// rawBps = 10 MB/s = 10*1024*1024, currentWorkers = 8
-	expectedPeak := int64(10 * 1024 * 1024)
-	if rec.peak != expectedPeak {
-		t.Fatalf("expected recorded peak=%d, got %d", expectedPeak, rec.peak)
+	// Tolerance: dt may be 5s + small epsilon from real time.Now() calls.
+	if rec.peak < 10_480_000 || rec.peak > 10*1024*1024 {
+		t.Fatalf("expected recorded peak≈10MB/s, got %d", rec.peak)
 	}
 	if rec.workers != 8 {
 		t.Fatalf("expected recorded workers=8, got %d", rec.workers)
@@ -174,9 +174,9 @@ func TestConvergence_RecordPeakEfficiency_ProbeDownTrigger(t *testing.T) {
 	if !ok {
 		t.Fatal("expected RecordPeakEfficiency called before probe-down return")
 	}
-	expectedPeak := int64(10 * 1024 * 1024)
-	if rec.peak != expectedPeak {
-		t.Fatalf("expected recorded peak=%d, got %d", expectedPeak, rec.peak)
+	// Tolerance: dt may be 5s + small epsilon from real time.Now() calls.
+	if rec.peak < 10_480_000 || rec.peak > 10*1024*1024 {
+		t.Fatalf("expected recorded peak≈10MB/s, got %d", rec.peak)
 	}
 	if rec.workers != 8 {
 		t.Fatalf("expected recorded workers=8, got %d", rec.workers)
@@ -220,12 +220,12 @@ func TestConvergence_RecordPeakEfficiency_MonotonicRatchet(t *testing.T) {
 	setPrevSampleAgoState(s, 5*time.Second)
 	ct.mu.Unlock()
 
-	// Trigger Probe-Up with rawBps = 10 MB/s (much lower than 100 MB/s peak)
-	// newEff = 10MB/8 = 1.25MB/s. bestEff = 12.5MB/s. bestEff*0.95 = 11.875MB.
-	// 1.25MB < 11.875MB → Probe-Up doesn't fire. Need higher rawBps.
-	// Use rawBps = 95 MB/s → newEff = 11.875 MB/s >= 11.875 → fires.
-	// delta = 95MB*5 = 475MB. prevCompleted=10MB. CompletedLength=485MB.
-	tracker.tasks[0].CompletedLength = 485 * 1024 * 1024
+	// Trigger Probe-Up with rawBps comfortably above the 0.95 threshold.
+	// bestEff = 12.5 MB/s per worker; bestEff*0.95 = 11.875 MB/s = 12,451,840.
+	// Use rawBps = 97 MB/s → newEff = 12.125 MB/s > 11.875 with ~2% headroom,
+	// robust against dt = 5s + small epsilon from real time.Now() calls.
+	// delta = 97MB*5 = 485MB. prevCompleted=10MB. CompletedLength=495MB.
+	tracker.tasks[0].CompletedLength = 495 * 1024 * 1024
 	ct.mu.Lock()
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
@@ -239,7 +239,7 @@ func TestConvergence_RecordPeakEfficiency_MonotonicRatchet(t *testing.T) {
 	if !ok {
 		t.Fatal("expected RecordPeakEfficiency called")
 	}
-	// The monotonic mock should retain 100 MB/s, not overwrite with 95 MB/s
+	// The monotonic mock should retain 100 MB/s, not overwrite with 97 MB/s
 	if rec.peak != 100*1024*1024 {
 		t.Fatalf("expected monotonic ratchet to retain 100MB/s peak, got %d", rec.peak)
 	}

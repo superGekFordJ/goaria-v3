@@ -398,6 +398,48 @@ func TestCDNDetector_WorkerStateEviction(t *testing.T) {
 	}
 }
 
+// TestCDNDetector_WorkerStateGraceOnSingleAbsent verifies that a worker absent
+// for a single tick is NOT pruned from workerState (mirroring EvictAbsent's
+// cdnWorkerEvictTicks grace), so a transiently-missing-but-still-alive worker
+// retains its heldSince/lastKill timers rather than being reset.
+func TestCDNDetector_WorkerStateGraceOnSingleAbsent(t *testing.T) {
+	ctrl := newMockCDNControl()
+	setStats(ctrl, matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206))
+	d, clock := newTestDetector(ctrl)
+	for i := 0; i < 3; i++ {
+		advanceTick(d, clock)
+	}
+	// Worker 2 vanishes for a single tick (still alive, just not sampled).
+	setStats(ctrl, matureWorker(1, 5*types.MB, 206))
+	advanceTick(d, clock)
+	d.mu.Lock()
+	ws := d.workerState["sg_test"]
+	has2 := false
+	if ws != nil {
+		_, has2 = ws[2]
+	}
+	d.mu.Unlock()
+	if !has2 {
+		t.Fatal("worker 2 state should survive a single absent tick (grace period)")
+	}
+	// Reappearing resets the absent counter so the grace window restarts.
+	setStats(ctrl, matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206))
+	advanceTick(d, clock)
+	// Now absent again for one tick — still within grace.
+	setStats(ctrl, matureWorker(1, 5*types.MB, 206))
+	advanceTick(d, clock)
+	d.mu.Lock()
+	ws = d.workerState["sg_test"]
+	has2 = false
+	if ws != nil {
+		_, has2 = ws[2]
+	}
+	d.mu.Unlock()
+	if !has2 {
+		t.Fatal("worker 2 state should survive a single absent tick after reappear (grace restart)")
+	}
+}
+
 // TestCDNDetector_PoisonExcludedFromHealthyMedian verifies a 4xx worker with
 // positive EMASpeed is not counted as a healthy peer.
 func TestCDNDetector_PoisonExcludedFromHealthyMedian(t *testing.T) {

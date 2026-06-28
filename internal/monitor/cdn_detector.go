@@ -36,8 +36,9 @@ type cdnSurgeControl interface {
 
 // cdnWorkerState tracks per-(gid, worker) debounce/cooldown state.
 type cdnWorkerState struct {
-	heldSince time.Time // when the current kill-verdict started being held
-	lastKill  time.Time // for cdnActionCooldown
+	heldSince   time.Time // when the current kill-verdict started being held
+	lastKill    time.Time // for cdnActionCooldown
+	absentTicks int       // consecutive ticks absent from stats (grace before prune)
 }
 
 // CDNDetector is a self-contained 1s ticker that samples per-worker telemetry,
@@ -133,12 +134,18 @@ func (d *CDNDetector) tick() {
 			presentIDs[s.WorkerID] = true
 		}
 		d.history.EvictAbsent(gid, presentIDs, cdnWorkerEvictTicks)
-		// Prune stale per-worker state (mirror EvictAbsent: workers gone from
-		// stats accumulate cdnWorkerState entries across ScaleWorkers cycles).
+		// Prune stale per-worker state, mirroring EvictAbsent's grace: a worker
+		// absent for more than cdnWorkerEvictTicks consecutive ticks is removed,
+		// so a single-absent-still-alive worker only resets its sustain/cooldown.
 		d.mu.Lock()
 		if gids, ok := d.workerState[gid]; ok {
-			for wid := range gids {
-				if !presentIDs[wid] {
+			for wid, ws := range gids {
+				if presentIDs[wid] {
+					ws.absentTicks = 0
+					continue
+				}
+				ws.absentTicks++
+				if ws.absentTicks > cdnWorkerEvictTicks {
 					delete(gids, wid)
 				}
 			}
