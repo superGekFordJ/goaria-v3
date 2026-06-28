@@ -3,8 +3,11 @@ package rpc
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
+	"goaria-v3/internal/surge/core"
+	"goaria-v3/internal/surge/download"
 	"goaria-v3/internal/surge/engine/types"
 )
 
@@ -185,4 +188,65 @@ func TestSurgeEngine_SetResumeParamsHook_NilHook_PreservesValues(t *testing.T) {
 	if cfg.Runtime.MinChunkSize != 4*1024*1024 {
 		t.Errorf("MinChunkSize = %d, want 4MB (preserved, no hook)", cfg.Runtime.MinChunkSize)
 	}
+}
+
+// TestSurgeEngine_KillWorker_Delegation verifies KillWorker delegates to the
+// pool and routes to the correct ProgressState. Returns false for unknown ids.
+func TestSurgeEngine_KillWorker_Delegation(t *testing.T) {
+	var mu sync.Mutex
+	var killedID int
+	state := types.NewProgressState("dl-x", 1000)
+	state.SetKillWorkerFn(func(workerID int) bool {
+		mu.Lock()
+		killedID = workerID
+		mu.Unlock()
+		return true
+	})
+
+	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{
+		"dl-x": {ID: "dl-x", State: state},
+	})
+	engine := &SurgeEngine{service: &core.LocalDownloadService{Pool: pool}}
+
+	if ok := engine.KillWorker("dl-x", 9); !ok {
+		t.Error("KillWorker(dl-x, 9) = false, want true")
+	}
+	mu.Lock()
+	got := killedID
+	mu.Unlock()
+	if got != 9 {
+		t.Errorf("delegated workerID = %d, want 9", got)
+	}
+	if ok := engine.KillWorker("unknown", 1); ok {
+		t.Error("KillWorker(unknown) = true, want false")
+	}
+}
+
+// TestSurgeEngine_SetSlowWorkerThreshold_Delegation verifies
+// SetSlowWorkerThreshold delegates to the pool and routes to the correct
+// ProgressState. No-op for unknown ids.
+func TestSurgeEngine_SetSlowWorkerThreshold_Delegation(t *testing.T) {
+	var mu sync.Mutex
+	var gotVal float64
+	state := types.NewProgressState("dl-y", 1000)
+	state.SetSetSlowThresholdFn(func(v float64) {
+		mu.Lock()
+		gotVal = v
+		mu.Unlock()
+	})
+
+	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{
+		"dl-y": {ID: "dl-y", State: state},
+	})
+	engine := &SurgeEngine{service: &core.LocalDownloadService{Pool: pool}}
+
+	engine.SetSlowWorkerThreshold("dl-y", 0.0)
+	mu.Lock()
+	got := gotVal
+	mu.Unlock()
+	if got != 0.0 {
+		t.Errorf("delegated threshold = %v, want 0", got)
+	}
+	// Unknown id must not panic.
+	engine.SetSlowWorkerThreshold("unknown", 0.5)
 }

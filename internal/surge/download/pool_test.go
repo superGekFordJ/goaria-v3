@@ -1207,3 +1207,72 @@ func TestWorkerPool_NaturalCompletion_MarksDone(t *testing.T) {
 		t.Errorf("expected status 'completed', got %q", status.Status)
 	}
 }
+
+// FORK-PATCH: TestWorkerPool_KillWorker_Routing verifies KillWorker routes to
+// the correct ProgressState by download id and returns false for unknown ids.
+func TestWorkerPool_KillWorker_Routing(t *testing.T) {
+	ch := make(chan any, 10)
+	pool := NewWorkerPool(ch, 3)
+
+	var killedMu sync.Mutex
+	var killedID int
+	state := types.NewProgressState("dl-a", 1000)
+	state.SetKillWorkerFn(func(workerID int) bool {
+		killedMu.Lock()
+		killedID = workerID
+		killedMu.Unlock()
+		return true
+	})
+
+	pool.mu.Lock()
+	pool.downloads["dl-a"] = &activeDownload{
+		config: types.DownloadConfig{ID: "dl-a", State: state},
+	}
+	pool.mu.Unlock()
+
+	if ok := pool.KillWorker("dl-a", 7); !ok {
+		t.Error("KillWorker(dl-a, 7) = false, want true")
+	}
+	killedMu.Lock()
+	got := killedID
+	killedMu.Unlock()
+	if got != 7 {
+		t.Errorf("routed workerID = %d, want 7", got)
+	}
+
+	// Unknown id returns false.
+	if ok := pool.KillWorker("nope", 1); ok {
+		t.Error("KillWorker(unknown) = true, want false")
+	}
+}
+
+// FORK-PATCH: TestWorkerPool_SetSlowWorkerThreshold_Routing verifies
+// SetSlowWorkerThreshold routes to the correct ProgressState and is a no-op for
+// unknown ids.
+func TestWorkerPool_SetSlowWorkerThreshold_Routing(t *testing.T) {
+	ch := make(chan any, 10)
+	pool := NewWorkerPool(ch, 3)
+
+	var gotVal float64
+	state := types.NewProgressState("dl-b", 1000)
+	state.SetSetSlowThresholdFn(func(v float64) {
+		gotVal = v
+	})
+
+	pool.mu.Lock()
+	pool.downloads["dl-b"] = &activeDownload{
+		config: types.DownloadConfig{ID: "dl-b", State: state},
+	}
+	pool.mu.Unlock()
+
+	pool.SetSlowWorkerThreshold("dl-b", 0.42)
+	if gotVal != 0.42 {
+		t.Errorf("routed threshold = %v, want 0.42", gotVal)
+	}
+
+	// Unknown id must not panic and must not change the recorded value.
+	pool.SetSlowWorkerThreshold("nope", 0.99)
+	if gotVal != 0.42 {
+		t.Errorf("threshold changed by unknown-id call = %v, want 0.42", gotVal)
+	}
+}

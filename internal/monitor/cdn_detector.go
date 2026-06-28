@@ -54,10 +54,10 @@ type CDNDetector struct {
 	now      func() time.Time
 
 	mu          sync.Mutex
-	takenOver   map[string]bool
 	workerState map[string]map[int]*cdnWorkerState
 
 	stopChan chan struct{}
+	stopOnce sync.Once
 	done     chan struct{}
 }
 
@@ -77,7 +77,6 @@ func NewCDNDetector(control cdnSurgeControl, history *WorkerHistory, getActiveGi
 		getActiveGids: getActiveGids,
 		interval:      cdnDetectorInterval,
 		now:           time.Now,
-		takenOver:     make(map[string]bool),
 		workerState:   make(map[string]map[int]*cdnWorkerState),
 	}
 }
@@ -90,16 +89,12 @@ func (d *CDNDetector) Start() {
 }
 
 // Stop signals the detector goroutine and waits for it to exit.
+// Safe to call concurrently; the close is guarded by sync.Once.
 func (d *CDNDetector) Stop() {
 	if d.stopChan == nil {
 		return
 	}
-	select {
-	case <-d.stopChan:
-		// already closed
-	default:
-		close(d.stopChan)
-	}
+	d.stopOnce.Do(func() { close(d.stopChan) })
 	<-d.done
 }
 
@@ -146,7 +141,6 @@ func (d *CDNDetector) tick() {
 		if !presentGids[gid] {
 			d.history.RemoveGID(gid)
 			d.mu.Lock()
-			delete(d.takenOver, gid)
 			delete(d.workerState, gid)
 			d.mu.Unlock()
 		}
@@ -160,17 +154,11 @@ func (d *CDNDetector) evaluateGid(gid, rawGid string, stats []types.WorkerSnapsh
 		return
 	}
 
-	// Threshold takeover: once we have >=2 workers, disable the engine's blind
-	// relative-slow cancel so the detector owns slow-worker disposal.
-	d.mu.Lock()
-	takeover := !d.takenOver[gid]
-	if takeover {
-		d.takenOver[gid] = true
-	}
-	d.mu.Unlock()
-	if takeover {
-		d.control.SetSlowWorkerThreshold(rawGid, 0)
-	}
+	// Threshold takeover: disable the engine's relative-slow cancel so the
+	// detector owns slow-worker disposal. Re-issued every tick (idempotent
+	// atomic store) so a fresh downloader recreated after pause/resume is
+	// re-armed even if the detector never observed the gap.
+	d.control.SetSlowWorkerThreshold(rawGid, 0)
 
 	// Deterministic iteration order.
 	ordered := make([]types.WorkerSnapshot, len(stats))

@@ -95,7 +95,8 @@ func matureWorker(id int, speed float64, status int32) types.WorkerSnapshot {
 }
 
 // TestCDNDetector_ThresholdTakeover verifies SetSlowWorkerThreshold(0) is
-// called once when a gid first reports >=2 workers.
+// issued when a gid reports >=2 workers. It is re-issued idempotently every
+// tick so a fresh downloader after pause/resume is re-armed.
 func TestCDNDetector_ThresholdTakeover(t *testing.T) {
 	ctrl := newMockCDNControl()
 	setStats(ctrl, matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206))
@@ -105,10 +106,10 @@ func TestCDNDetector_ThresholdTakeover(t *testing.T) {
 	if got := ctrl.thresholds["test"]; got != 0 {
 		t.Errorf("threshold after first tick = %v, want 0 (takeover)", got)
 	}
-	// Second tick must NOT re-issue the takeover.
+	// Subsequent ticks re-issue the same idempotent value (stays 0).
 	advanceTick(d, clock)
 	if got := ctrl.thresholds["test"]; got != 0 {
-		t.Errorf("threshold changed on second tick = %v, want 0 (already taken over)", got)
+		t.Errorf("threshold changed on second tick = %v, want 0", got)
 	}
 }
 
@@ -286,7 +287,9 @@ func TestCDNDetector_OneKillPerTick(t *testing.T) {
 }
 
 // TestCDNDetector_Cooldown verifies a killed worker is not killed again within
-// the cooldown window.
+// the cooldown window. The test isolates the cooldown path by advancing past
+// cdnSustainDuration (so the sustain check passes) while staying within
+// cdnActionCooldown, then advancing past the cooldown to confirm the re-kill.
 func TestCDNDetector_Cooldown(t *testing.T) {
 	ctrl := newMockCDNControl()
 	setStats(ctrl,
@@ -302,12 +305,20 @@ func TestCDNDetector_Cooldown(t *testing.T) {
 	if first == 0 {
 		t.Fatal("expected at least one kill before cooldown test")
 	}
-	// Continue within cooldown: the same worker should not be killed again.
-	for i := 0; i < 5; i++ {
+	// Advance past cdnSustainDuration so sustain is satisfied, but stay within
+	// cdnActionCooldown — the cooldown alone must block the re-kill.
+	for i := 0; i < 6; i++ {
 		advanceTick(d, clock)
 	}
 	if got := ctrl.killsCount(); got != first {
-		t.Errorf("kills increased within cooldown: %d -> %d, want %d", first, got, first)
+		t.Errorf("kills increased within cooldown (sustain satisfied): %d -> %d, want %d", first, got, first)
+	}
+	// Advance past cdnActionCooldown — the re-kill should now fire.
+	for i := 0; i < 6; i++ {
+		advanceTick(d, clock)
+	}
+	if got := ctrl.killsCount(); got == first {
+		t.Error("expected re-kill after cooldown expired, but kill count unchanged")
 	}
 }
 
@@ -317,8 +328,11 @@ func TestCDNDetector_GIDRemoved(t *testing.T) {
 	setStats(ctrl, matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206))
 	d, clock := newTestDetector(ctrl)
 	advanceTick(d, clock)
-	if !d.takenOver["sg_test"] {
-		t.Fatal("expected takeover flag set")
+	d.mu.Lock()
+	hasState := len(d.workerState["sg_test"]) > 0
+	d.mu.Unlock()
+	if !hasState {
+		t.Fatal("expected worker state populated")
 	}
 	// Make the gid disappear (no stats, not in active gids).
 	ctrl.mu.Lock()
@@ -326,7 +340,67 @@ func TestCDNDetector_GIDRemoved(t *testing.T) {
 	ctrl.mu.Unlock()
 	d.getActiveGids = func() []string { return nil }
 	advanceTick(d, clock)
-	if d.takenOver["sg_test"] {
-		t.Error("takeover flag should be cleared after gid disappears")
+	d.mu.Lock()
+	_, stillThere := d.workerState["sg_test"]
+	d.mu.Unlock()
+	if stillThere {
+		t.Error("worker state should be cleared after gid disappears")
+	}
+}
+
+// TestCDNDetector_ConcurrentStop verifies Stop is safe under concurrent calls
+// (sync.Once guards the channel close — no double-close panic).
+func TestCDNDetector_ConcurrentStop(t *testing.T) {
+	ctrl := newMockCDNControl()
+	setStats(ctrl, matureWorker(1, 5*types.MB, 206))
+	d, _ := newTestDetector(ctrl)
+	d.Start()
+	// Give the loop a moment to spin up.
+	time.Sleep(20 * time.Millisecond)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.Stop()
+		}()
+	}
+	wg.Wait()
+}
+
+// TestCDNDetector_ThresholdReissuedAfterGap simulates a pause/resume where the
+// gid briefly disappears then reappears (fresh downloader). The threshold
+// takeover must be re-issued on the reappearance tick.
+func TestCDNDetector_ThresholdReissuedAfterGap(t *testing.T) {
+	ctrl := newMockCDNControl()
+	setStats(ctrl, matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206))
+	d, clock := newTestDetector(ctrl)
+
+	// First tick: takeover issued.
+	advanceTick(d, clock)
+	if got := ctrl.thresholds["test"]; got != 0 {
+		t.Fatalf("threshold after first tick = %v, want 0", got)
+	}
+
+	// Simulate pause: gid disappears.
+	ctrl.mu.Lock()
+	delete(ctrl.stats, "test")
+	ctrl.mu.Unlock()
+	d.getActiveGids = func() []string { return nil }
+	advanceTick(d, clock)
+
+	// Simulate resume: gid reappears with a fresh downloader. Reset the mock
+	// threshold to a non-zero sentinel to prove the detector re-issues 0.
+	ctrl.mu.Lock()
+	ctrl.thresholds["test"] = 0.30
+	ctrl.stats["test"] = []types.WorkerSnapshot{
+		matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206),
+	}
+	ctrl.mu.Unlock()
+	d.getActiveGids = func() []string { return []string{"sg_test"} }
+	advanceTick(d, clock)
+	if got := ctrl.thresholds["test"]; got != 0 {
+		t.Errorf("threshold after resume = %v, want 0 (re-armed)", got)
 	}
 }
