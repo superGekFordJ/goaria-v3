@@ -51,6 +51,23 @@ type ConcurrentDownloader struct {
 	// FORK-PATCH: End-game hedge and poison defense.
 	consecutiveHedgeErrors atomic.Int32 // consecutive 4xx/5xx counter for poison defense
 	hedgeDisabled          atomic.Bool  // true when hedge is disabled due to poison detection
+
+	// FORK-PATCH: per-worker (connection) session tracking. Survives across
+	// chunks/retries, unlike ActiveTask which is rebuilt every chunk.
+	workerSessions sync.Map // workerID -> *workerSession
+
+	// FORK-PATCH: runtime override for the relative slow-worker threshold.
+	// When set (slowThresholdSet=true), checkWorkerHealth uses this instead of
+	// RuntimeConfig. A value of 0 disables the relative slow-speed cancel while
+	// leaving stall detection armed.
+	slowThresholdSet      atomic.Bool
+	slowThresholdOverride atomic.Uint64 // math.Float64bits(v)
+}
+
+// FORK-PATCH: per-worker (connection) session, survives across chunks.
+type workerSession struct {
+	startUnix    int64
+	sessionBytes atomic.Int64
 }
 
 // FORK-PATCH: workerDeps bundles worker dependencies for atomic access via ScaleWorkers
@@ -769,6 +786,37 @@ func (d *ConcurrentDownloader) ScaleWorkers(delta int) int {
 		drained++
 	}
 	return -drained
+}
+
+// FORK-PATCH: hard-interrupt a specific worker's current chunk. Cancels the
+// task-level context (not the parent), which forces http.Transport to close
+// the TCP socket and triggers the existing external-cancel requeue path: the
+// worker goroutine stays alive, requeues remaining bytes, and reconnects on a
+// fresh socket. Used for both dead and CDN-throttled workers. currentWorkers
+// is unchanged (in-place reconnect, no headcount loss).
+func (d *ConcurrentDownloader) KillWorker(id int) bool {
+	d.activeMu.Lock()
+	defer d.activeMu.Unlock()
+	if at, ok := d.activeTasks[id]; ok && at.Cancel != nil {
+		at.Cancel()
+		return true
+	}
+	return false
+}
+
+// FORK-PATCH: runtime override of the relative slow-worker threshold.
+func (d *ConcurrentDownloader) SetSlowWorkerThreshold(v float64) {
+	d.slowThresholdOverride.Store(math.Float64bits(v))
+	d.slowThresholdSet.Store(true)
+}
+
+// FORK-PATCH: slowThresholdOrDefault returns the runtime override when set,
+// otherwise the supplied default (e.g. RuntimeConfig.GetSlowWorkerThreshold()).
+func (d *ConcurrentDownloader) slowThresholdOrDefault(def float64) float64 {
+	if !d.slowThresholdSet.Load() {
+		return def
+	}
+	return math.Float64frombits(d.slowThresholdOverride.Load())
 }
 
 func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queue *TaskQueue, candidateMirrors []string) error {

@@ -47,6 +47,12 @@ type ProgressState struct {
 	scaleWorkersMu sync.Mutex
 	scaleWorkersFn func(int) int
 
+	// FORK-PATCH: per-worker Kill + slow-threshold override bridges
+	killWorkerMu       sync.Mutex
+	killWorkerFn       func(int) bool
+	setSlowThresholdMu sync.Mutex
+	setSlowThresholdFn func(float64)
+
 	// FORK-PATCH: Server connection error counter for N_max fuse
 	consecutiveConnErrors atomic.Int32
 }
@@ -284,6 +290,14 @@ func (ps *ProgressState) SessionReset() {
 	ps.scaleWorkersFn = nil
 	ps.scaleWorkersMu.Unlock()
 
+	// FORK-PATCH: Clear per-worker kill + slow-threshold bridges
+	ps.killWorkerMu.Lock()
+	ps.killWorkerFn = nil
+	ps.killWorkerMu.Unlock()
+	ps.setSlowThresholdMu.Lock()
+	ps.setSlowThresholdFn = nil
+	ps.setSlowThresholdMu.Unlock()
+
 	// FORK-PATCH: Reset connection error counter
 	ps.consecutiveConnErrors.Store(0)
 }
@@ -340,6 +354,42 @@ func (ps *ProgressState) ScaleWorkers(delta int) int {
 		return 0
 	}
 	return fn(delta)
+}
+
+// FORK-PATCH: SetKillWorkerFn registers the per-worker Kill bridge.
+func (ps *ProgressState) SetKillWorkerFn(fn func(int) bool) {
+	ps.killWorkerMu.Lock()
+	defer ps.killWorkerMu.Unlock()
+	ps.killWorkerFn = fn
+}
+
+// FORK-PATCH: KillWorker hard-interrupts a specific worker. Returns false if no
+// function is registered or the worker has no active task.
+func (ps *ProgressState) KillWorker(workerID int) bool {
+	ps.killWorkerMu.Lock()
+	fn := ps.killWorkerFn
+	ps.killWorkerMu.Unlock()
+	if fn == nil {
+		return false
+	}
+	return fn(workerID)
+}
+
+// FORK-PATCH: SetSetSlowThresholdFn registers the slow-threshold override bridge.
+func (ps *ProgressState) SetSetSlowThresholdFn(fn func(float64)) {
+	ps.setSlowThresholdMu.Lock()
+	defer ps.setSlowThresholdMu.Unlock()
+	ps.setSlowThresholdFn = fn
+}
+
+// FORK-PATCH: SetSlowWorkerThreshold applies a runtime threshold override.
+func (ps *ProgressState) SetSlowWorkerThreshold(v float64) {
+	ps.setSlowThresholdMu.Lock()
+	fn := ps.setSlowThresholdFn
+	ps.setSlowThresholdMu.Unlock()
+	if fn != nil {
+		fn(v)
+	}
 }
 
 // FORK-PATCH: IncrConnErrors increments the server connection error counter.

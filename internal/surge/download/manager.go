@@ -206,6 +206,9 @@ func TUIDownload(ctx context.Context, cfg *types.DownloadConfig) error {
 		if cfg.State != nil {
 			fn := d.ScaleWorkers
 			cfg.State.SetScaleWorkersFn(fn)
+			// FORK-PATCH: register per-worker kill + slow-threshold override bridges
+			cfg.State.SetKillWorkerFn(d.KillWorker)
+			cfg.State.SetSetSlowThresholdFn(d.SetSlowWorkerThreshold)
 		}
 		utils.Debug("Calling Download with mirrors: %v", mirrors)
 		// Pass effectiveTotalSize to avoid unnecessary bootstrap if state already knows the size
@@ -213,6 +216,8 @@ func TUIDownload(ctx context.Context, cfg *types.DownloadConfig) error {
 		// FORK-PATCH: Clear ScaleWorkers function pointer after download completes
 		if cfg.State != nil {
 			cfg.State.SetScaleWorkersFn(nil)
+			cfg.State.SetKillWorkerFn(nil)
+			cfg.State.SetSetSlowThresholdFn(nil)
 		}
 		if d.TotalSize > 0 {
 			effectiveTotalSize = d.TotalSize

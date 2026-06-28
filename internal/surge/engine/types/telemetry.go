@@ -16,4 +16,12 @@ type WorkerSnapshot struct {
 	ChunkLength      int64   // Effective chunk length (StopAt - ChunkStart, may shrink from work stealing)
 	WaitingOnLimiter bool    // True if worker is blocked on rate limiter
 	Hedged           bool    // True if this task is a hedged (racing) request
+
+	// FORK-PATCH: per-worker session inputs for CDN throttle fingerprinting.
+	// WorkerStartUnix/SessionBytes are connection-granularity (survive chunk
+	// switches), sourced from ConcurrentDownloader.workerSessions — NOT from
+	// ActiveTask, which is rebuilt every chunk.
+	WorkerStartUnix int64 // Unix nano when the worker goroutine (connection) started
+	SessionBytes    int64 // Cumulative bytes downloaded by this worker across all its chunks
+	HTTPStatus      int32 // Most recent HTTP response status code (0 if none yet)
 }

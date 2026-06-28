@@ -401,6 +401,25 @@ func (e *SurgeEngine) ScaleWorkers(gid string, delta int) int {
 	return e.service.Pool.ScaleWorkers(gid, delta)
 }
 
+// KillWorker hard-interrupts a specific worker of a Surge download, destroying
+// its TCP socket and triggering an in-place reconnect. Returns false if the
+// download is not active or the worker has no active task.
+func (e *SurgeEngine) KillWorker(gid string, workerID int) bool {
+	if e.service == nil || e.service.Pool == nil {
+		return false
+	}
+	return e.service.Pool.KillWorker(gid, workerID)
+}
+
+// SetSlowWorkerThreshold applies a runtime override of the relative slow-worker
+// threshold for a Surge download.
+func (e *SurgeEngine) SetSlowWorkerThreshold(gid string, v float64) {
+	if e.service == nil || e.service.Pool == nil {
+		return
+	}
+	e.service.Pool.SetSlowWorkerThreshold(gid, v)
+}
+
 // GetRateLimit returns the effective per-download rate limit (bps) and whether
 // an explicit rate limit is active. Returns (0, false) if no explicit limit.
 func (e *SurgeEngine) GetRateLimit(gid string) (int64, bool) {

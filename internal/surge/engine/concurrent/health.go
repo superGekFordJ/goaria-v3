@@ -20,6 +20,14 @@ func (d *ConcurrentDownloader) checkWorkerHealth() {
 		} else {
 			snapshots := make([]types.WorkerSnapshot, 0, len(d.activeTasks))
 			for workerID, active := range d.activeTasks {
+				// FORK-PATCH: pull connection-granularity session fields. Missing
+				// entry (worker exiting concurrently) yields zero values.
+				var startUnix, sessionBytes int64
+				if sess, ok := d.workerSessions.Load(workerID); ok {
+					s := sess.(*workerSession)
+					startUnix = s.startUnix
+					sessionBytes = s.sessionBytes.Load()
+				}
 				snapshots = append(snapshots, types.WorkerSnapshot{
 					WorkerID:         workerID,
 					EMASpeed:         active.GetSpeed(),
@@ -30,6 +38,9 @@ func (d *ConcurrentDownloader) checkWorkerHealth() {
 					ChunkLength:      max(0, active.StopAt.Load()-active.Task.Offset),
 					WaitingOnLimiter: active.WaitingOnLimiter.Load(),
 					Hedged:           active.Hedged.Load() != 0,
+					WorkerStartUnix:  startUnix,
+					SessionBytes:     sessionBytes,
+					HTTPStatus:       active.LastHTTPStatus.Load(),
 				})
 			}
 			d.State.SetWorkerStats(snapshots)
@@ -126,7 +137,10 @@ func (d *ConcurrentDownloader) checkWorkerHealth() {
 		// Only cancel if: below threshold
 		if meanSpeed > 0 {
 			workerSpeed := active.GetSpeed()
-			threshold := d.Runtime.GetSlowWorkerThreshold()
+			// FORK-PATCH: prefer runtime override (policy layer takeover) over
+			// the static RuntimeConfig value. Override 0 disables this cancel
+			// while stall detection above stays armed.
+			threshold := d.slowThresholdOrDefault(d.Runtime.GetSlowWorkerThreshold())
 			isBelowThreshold := threshold > 0 && workerSpeed > 0 && workerSpeed < threshold*meanSpeed
 
 			if isBelowThreshold {

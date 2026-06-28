@@ -772,6 +772,28 @@ func (p *WorkerPool) ScaleWorkers(id string, delta int) int {
 	return ad.config.State.ScaleWorkers(delta)
 }
 
+// FORK-PATCH: KillWorker hard-interrupts a specific worker of a download.
+func (p *WorkerPool) KillWorker(id string, workerID int) bool {
+	p.mu.RLock()
+	ad, exists := p.downloads[id]
+	p.mu.RUnlock()
+	if !exists || ad == nil || ad.config.State == nil {
+		return false
+	}
+	return ad.config.State.KillWorker(workerID)
+}
+
+// FORK-PATCH: SetSlowWorkerThreshold applies a runtime threshold override.
+func (p *WorkerPool) SetSlowWorkerThreshold(id string, v float64) {
+	p.mu.RLock()
+	ad, exists := p.downloads[id]
+	p.mu.RUnlock()
+	if !exists || ad == nil || ad.config.State == nil {
+		return
+	}
+	ad.config.State.SetSlowWorkerThreshold(v)
+}
+
 // FORK-PATCH: Test helper for monitor-side telemetry collection tests.
 // NewWorkerPoolForTesting creates a WorkerPool with pre-populated downloads map.
 // configs is a map of download ID → DownloadConfig with State pre-set.

@@ -69,6 +69,9 @@ type Monitor struct {
 
 	// Convergence tick for runtime scale up/down
 	convergence *smartthread.ConvergenceTicker
+
+	// CDN throttle fingerprint detector (self-contained 1s ticker)
+	cdnDetector *CDNDetector
 }
 
 func New(app *application.App, hub *events.Hub, systray *application.SystemTray, engine rpc.DownloadEngine) *Monitor {
@@ -139,11 +142,19 @@ func (m *Monitor) Start() {
 		adapter := &trackerAdapter{TaskTracker: m.tracker, engine: he}
 		m.convergence = smartthread.NewConvergenceTicker(he, adapter, m.telemetry, adapter, adapter)
 		m.convergence.Start()
+		// CDN throttle detector: only for HybridEngine (needs Surge control).
+		if se, ok := he.SurgeEngineRef(); ok && se != nil {
+			m.cdnDetector = NewCDNDetector(se, nil, func() []string { return m.telemetry.ActiveGIDs() })
+			m.cdnDetector.Start()
+		}
 	}
 	go m.runLoop()
 }
 
 func (m *Monitor) Stop() {
+	if m.cdnDetector != nil {
+		m.cdnDetector.Stop()
+	}
 	if m.convergence != nil {
 		m.convergence.Stop()
 	}

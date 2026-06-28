@@ -28,6 +28,9 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 	defer utils.Debug("Worker %d finished", id)
 	// FORK-PATCH: Clean up drain marker on exit .
 	defer d.drainingWorkers.Delete(id)
+	// FORK-PATCH: register per-worker (connection) session; cleaned up on exit.
+	d.workerSessions.Store(id, &workerSession{startUnix: time.Now().UnixNano()})
+	defer d.workerSessions.Delete(id)
 
 	// Initial mirror assignment: Round Robin based on ID
 	currentMirrorIdx := id % len(mirrors)
@@ -81,6 +84,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 				StartTime:   now,
 				Cancel:      taskCancel,
 				WindowStart: now, // Initialize sliding window
+				workerID:    id,
 			}
 			// FORK-PATCH: Record retry attempt count for telemetry
 			activeTask.RetryCount.Store(int32(attempt))
@@ -261,6 +265,8 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 	if err != nil {
 		return err
 	}
+	// FORK-PATCH: record response status for poison (4xx) detection downstream.
+	activeTask.LastHTTPStatus.Store(int32(resp.StatusCode))
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			utils.Debug("Error closing response body: %v", err)
@@ -432,6 +438,15 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 
 			activeTask.CurrentOffset.Store(offset)
 			activeTask.WindowBytes.Add(newlyWritten)
+			// FORK-PATCH: accumulate deduplicated write bytes into the per-worker
+			// session. newlyWritten is CAS-deduplicated against racing workers and
+			// counts only real new bytes, so retries re-entering a chunk don't
+			// double-count and chunk switches don't jump.
+			if newlyWritten > 0 {
+				if sess, ok := d.workerSessions.Load(activeTask.workerID); ok {
+					sess.(*workerSession).sessionBytes.Add(newlyWritten)
+				}
+			}
 			activeTask.LastActivity.Store(now.UnixNano())
 
 			// Calculate effective contribution

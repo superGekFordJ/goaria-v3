@@ -38,6 +38,15 @@ type ActiveTask struct {
 	// FORK-PATCH: Per-worker retry count for telemetry
 	RetryCount atomic.Int32
 
+	// FORK-PATCH: most recent HTTP response status code, for poison (4xx)
+	// detection in the CDN throttle decision layer. Per-task (per-chunk);
+	// snapshots read the current value.
+	LastHTTPStatus atomic.Int32
+
+	// FORK-PATCH: owning worker goroutine ID; set once at creation so
+	// downloadTask can locate the per-worker session for byte accounting.
+	workerID int
+
 	// FORK-PATCH: Drain flag for lightweight worker exit .
 	// When true, the worker finishes the current chunk and exits without
 	// popping new tasks from the queue, allowing the underlying TCP
