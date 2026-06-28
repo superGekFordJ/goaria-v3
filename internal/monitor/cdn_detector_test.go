@@ -348,6 +348,83 @@ func TestCDNDetector_GIDRemoved(t *testing.T) {
 	}
 }
 
+// TestCDNDetector_WorkerStateEviction verifies that per-worker state entries are
+// pruned when a worker disappears from stats (mirroring history EvictAbsent),
+// preventing unbounded growth across ScaleWorkers up/down cycles.
+func TestCDNDetector_WorkerStateEviction(t *testing.T) {
+	ctrl := newMockCDNControl()
+	setStats(ctrl, matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206), matureWorker(3, 5*types.MB, 206))
+	d, clock := newTestDetector(ctrl)
+	advanceTick(d, clock)
+	// Prime workerState for all three workers via the decision tree path.
+	for i := 0; i < 3; i++ {
+		advanceTick(d, clock)
+	}
+	d.mu.Lock()
+	ws := d.workerState["sg_test"]
+	has3 := false
+	if ws != nil {
+		_, has3 = ws[3]
+	}
+	d.mu.Unlock()
+	if !has3 {
+		t.Fatal("expected worker 3 state populated before eviction")
+	}
+	// Worker 3 disappears from stats; after enough ticks it must be pruned from
+	// both history and workerState.
+	setStats(ctrl, matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206))
+	for i := 0; i < cdnWorkerEvictTicks+1; i++ {
+		advanceTick(d, clock)
+	}
+	d.mu.Lock()
+	ws = d.workerState["sg_test"]
+	stillHas3 := false
+	if ws != nil {
+		_, stillHas3 = ws[3]
+	}
+	d.mu.Unlock()
+	if stillHas3 {
+		t.Error("worker 3 state should be evicted after disappearing from stats")
+	}
+	// History should also have evicted worker 3.
+	evicted := true
+	for _, wid := range d.history.WorkerIDs("sg_test") {
+		if wid == 3 {
+			evicted = false
+		}
+	}
+	if !evicted {
+		t.Error("worker 3 history should be evicted after disappearing from stats")
+	}
+}
+
+// TestCDNDetector_PoisonExcludedFromHealthyMedian verifies a 4xx worker with
+// positive EMASpeed is not counted as a healthy peer.
+func TestCDNDetector_PoisonExcludedFromHealthyMedian(t *testing.T) {
+	ctrl := newMockCDNControl()
+	// Worker 1: 403 poison but positive speed (the theoretical window).
+	// Worker 2: target (slow). Worker 3: genuine healthy peer.
+	setStats(ctrl,
+		matureWorker(1, 5*types.MB, 403),
+		matureWorker(2, 100*types.KB, 206),
+		matureWorker(3, 5*types.MB, 206),
+	)
+	d, _ := newTestDetector(ctrl)
+	median := d.healthyPeerMedian(
+		[]types.WorkerSnapshot{
+			matureWorker(1, 5*types.MB, 403),
+			matureWorker(2, 100*types.KB, 206),
+			matureWorker(3, 5*types.MB, 206),
+		},
+		2, // target = worker 2
+		time.Now(),
+	)
+	// Only worker 3 qualifies (worker 1 excluded by poison). Median = 5MB.
+	if median != 5*types.MB {
+		t.Errorf("healthyPeerMedian = %v, want %v (4xx excluded)", median, 5*types.MB)
+	}
+}
+
 // TestCDNDetector_ConcurrentStop verifies Stop is safe under concurrent calls
 // (sync.Once guards the channel close — no double-close panic).
 func TestCDNDetector_ConcurrentStop(t *testing.T) {

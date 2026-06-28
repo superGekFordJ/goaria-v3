@@ -133,6 +133,20 @@ func (d *CDNDetector) tick() {
 			presentIDs[s.WorkerID] = true
 		}
 		d.history.EvictAbsent(gid, presentIDs, cdnWorkerEvictTicks)
+		// Prune stale per-worker state (mirror EvictAbsent: workers gone from
+		// stats accumulate cdnWorkerState entries across ScaleWorkers cycles).
+		d.mu.Lock()
+		if gids, ok := d.workerState[gid]; ok {
+			for wid := range gids {
+				if !presentIDs[wid] {
+					delete(gids, wid)
+				}
+			}
+			if len(gids) == 0 {
+				delete(d.workerState, gid)
+			}
+		}
+		d.mu.Unlock()
 		d.evaluateGid(gid, rawGid, stats, now)
 	}
 
@@ -253,6 +267,9 @@ func (d *CDNDetector) healthyPeerMedian(stats []types.WorkerSnapshot, targetWid 
 			continue
 		}
 		if s.EMASpeed <= 0 {
+			continue
+		}
+		if isPoison(s.HTTPStatus) {
 			continue
 		}
 		speeds = append(speeds, s.EMASpeed)

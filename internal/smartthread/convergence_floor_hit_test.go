@@ -195,9 +195,10 @@ func TestConvergence_FloorHit_EarlyReturnNoProbe(t *testing.T) {
 	if s.frozenCooldown != floorHitCooldownCycles-1 {
 		t.Fatalf("expected frozenCooldown=%d after one tick, got %d", floorHitCooldownCycles-1, s.frozenCooldown)
 	}
-	// D3 ratchet must run before the early-return: bestEff raised to newEff.
-	if s.bestEff != 1_310_720 {
-		t.Fatalf("expected bestEff=1310720 (D3 ratchet ran before early-return), got %d", s.bestEff)
+	// D3 ratchet must run before the early-return: bestEff raised to ~newEff.
+	// Tolerance: dt may be 5s + small epsilon from real time.Now() calls.
+	if s.bestEff < 1_310_000 || s.bestEff > 1_310_720 {
+		t.Fatalf("expected bestEff≈1310720 (D3 ratchet ran before early-return), got %d", s.bestEff)
 	}
 }
 

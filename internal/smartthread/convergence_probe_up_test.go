@@ -84,8 +84,9 @@ func TestConvergence_ProbeUp_TriggersWhenStableAndEfficient(t *testing.T) {
 	if s.phase != phaseProbingUp {
 		t.Fatalf("expected phase=phaseProbingUp, got %d", s.phase)
 	}
-	if s.probeUpBaseline != 10*1024*1024 {
-		t.Fatalf("expected probeUpBaseline=10MB/s, got %d", s.probeUpBaseline)
+	// Tolerance: dt may be 5s + small epsilon from real time.Now() calls.
+	if s.probeUpBaseline < 10_480_000 || s.probeUpBaseline > 10*1024*1024 {
+		t.Fatalf("expected probeUpBaseline≈10MB/s, got %d", s.probeUpBaseline)
 	}
 	if s.probeUpBaselineWorkers != 8 {
 		t.Fatalf("expected probeUpBaselineWorkers=8, got %d", s.probeUpBaselineWorkers)
