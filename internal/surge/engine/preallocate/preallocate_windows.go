@@ -47,14 +47,11 @@ func preallocateWithValidData(file *os.File, size int64) error {
 		return err
 	}
 
-	// AdjustTokenPrivileges may return nil even when the privilege was not
-	// actually assigned (ERROR_NOT_ALL_ASSIGNED). Detect this edge case so
-	// the caller falls back to zero-fill instead of proceeding with an
-	// unprivileged SetFileValidData that will fail with access denied.
-	if lastErr := windows.GetLastError(); lastErr == windows.ERROR_NOT_ALL_ASSIGNED {
-		return lastErr
-	}
-
+	// Note: AdjustTokenPrivileges may return nil even when the privilege was
+	// not assigned (ERROR_NOT_ALL_ASSIGNED). GetLastError cannot detect this
+	// because Go's syscall wrapper clears LastErrorValue before every syscall,
+	// so it always reads ERROR_SUCCESS here. Rely on SetFileValidData failing
+	// naturally with ERROR_ACCESS_DENIED to trigger the zero-fill fallback.
 	// SetFileValidData requires nValidDataLength <= current EOF.
 	// Extend EOF first via Truncate (SetEndOfFile, sparse-instant), then set
 	// valid data length.
