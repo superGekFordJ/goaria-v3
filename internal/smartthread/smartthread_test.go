@@ -123,12 +123,13 @@ func TestCalculate_BBR_BandwidthAware(t *testing.T) {
 	// V_thread_avg = 2MB/s (8MB/s peak / 4 threads)
 	// V_global_peak = 8MB/s
 	// V_domain_peak = 8MB/s
-	speedstats.AddRecordV2(8000000, 4, 200*1024*1024, false, 100, "example.com", "wan")
+	speedstats.AddRecordV2(8000000, 4, 200*1024*1024, false, 100, "example.com", "wan", "testenv")
 
 	params := Calculate(CalcParams{
 		FileSize:       1 * 1024 * 1024 * 1024, // 1GB
 		MaxConnections: 8,
 		Scope:          "wan",
+		EnvKey:         "testenv",
 		Domain:         "example.com",
 	})
 
@@ -153,12 +154,13 @@ func TestCalculate_BBR_CongestionFloor(t *testing.T) {
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	// V_global_peak = 8MB/s, ReservedBandwidth = 8MB/s → V_available = 0
-	speedstats.AddRecordV2(8000000, 4, 200*1024*1024, false, 100, "example.com", "wan")
+	speedstats.AddRecordV2(8000000, 4, 200*1024*1024, false, 100, "example.com", "wan", "testenv")
 
 	params := Calculate(CalcParams{
 		FileSize:          1 * 1024 * 1024 * 1024, // 1GB
 		MaxConnections:    8,
 		Scope:             "wan",
+		EnvKey:            "testenv",
 		Domain:            "example.com",
 		ReservedBandwidth: 8000000, // fully saturated
 	})
@@ -175,12 +177,13 @@ func TestCalculate_BBR_NewDomain(t *testing.T) {
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	// Records for wan scope but different domain
-	speedstats.AddRecordV2(8000000, 4, 200*1024*1024, false, 100, "other.com", "wan")
+	speedstats.AddRecordV2(8000000, 4, 200*1024*1024, false, 100, "other.com", "wan", "testenv")
 
 	params := Calculate(CalcParams{
 		FileSize:       500 * 1024 * 1024, // 500MB
 		MaxConnections: 8,
 		Scope:          "wan",
+		EnvKey:         "testenv",
 		Domain:         "newdomain.com", // no domain peak
 	})
 
@@ -203,12 +206,13 @@ func TestCalculate_BBR_MinSizeCapped(t *testing.T) {
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	// High V_thread_avg → MinChunk would be huge, should be capped at 1GB
-	speedstats.AddRecordV2(8000000*1024, 1, 200*1024*1024, false, 100, "example.com", "wan")
+	speedstats.AddRecordV2(8000000*1024, 1, 200*1024*1024, false, 100, "example.com", "wan", "testenv")
 
 	params := Calculate(CalcParams{
 		FileSize:       100 * 1024 * 1024 * 1024, // 100GB
 		MaxConnections: 8,
 		Scope:          "wan",
+		EnvKey:         "testenv",
 		Domain:         "example.com",
 	})
 
@@ -247,12 +251,13 @@ func TestCalculate_DirtySampleClamp(t *testing.T) {
 	// This is well below the 100KB/s clamp threshold (minThreadEfficiency).
 	// With only this record, GetRecentPeakByScope returns median = 6.25KB/s,
 	// GetGlobalPeak returns 50KB/s, GetDomainPeak returns 50KB/s.
-	speedstats.AddRecordV2(50000, 8, 200*1024*1024, false, 100, "example.com", "wan")
+	speedstats.AddRecordV2(50000, 8, 200*1024*1024, false, 100, "example.com", "wan", "testenv")
 
 	params := Calculate(CalcParams{
 		FileSize:       1 * 1024 * 1024 * 1024, // 1GB
 		MaxConnections: 8,
 		Scope:          "wan",
+		EnvKey:         "testenv",
 		Domain:         "example.com",
 	})
 
@@ -278,28 +283,29 @@ func TestCalculate_BatchDegradation(t *testing.T) {
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	// Seed: V_thread_avg = 2MB/s, V_global_peak = 8MB/s, V_domain_peak = 8MB/s
-	speedstats.AddRecordV2(8000000, 4, 200*1024*1024, false, 100, "example.com", "wan")
+	speedstats.AddRecordV2(8000000, 4, 200*1024*1024, false, 100, "example.com", "wan", "testenv")
 
 	// Simulate batch of 3 tasks on same scope using BandwidthLedger
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
 	activeBandwidthProvider = noActiveBandwidth
 
-	ledger := NewBandwidthLedger()
+	ledger := NewBandwidthLedger(nil)
 	fileSize := int64(1 * 1024 * 1024 * 1024) // 1GB each
 
 	var splits []int
 	for i := 0; i < 3; i++ {
-		reserved := ledger.Reserved("wan")
+		reserved := ledger.Reserved("wan", "testenv")
 		params := Calculate(CalcParams{
 			FileSize:          fileSize,
 			MaxConnections:    8,
 			Scope:             "wan",
+			EnvKey:            "testenv",
 			Domain:            "example.com",
 			ReservedBandwidth: reserved,
 		})
 		splits = append(splits, params.Split)
-		ledger.Reserve("wan", params.TargetBandwidth)
+		ledger.Reserve("wan", "testenv", params.TargetBandwidth)
 	}
 
 	// First task should get the most threads (full bandwidth available).
@@ -334,14 +340,15 @@ func TestCalculate_DomainIsolation_NoPollution(t *testing.T) {
 	// Scope median (polluted): [1MB, 1MB, 1MB, 16.75MB] → median = 1MB/s
 	// Domain median for fast.com: 16.75MB/s (not polluted)
 	for i := 0; i < 3; i++ {
-		speedstats.AddRecordV2(1*1024*1024, 1, 200*1024*1024, false, 100, "slow.com", "wan")
+		speedstats.AddRecordV2(1*1024*1024, 1, 200*1024*1024, false, 100, "slow.com", "wan", "testenv")
 	}
-	speedstats.AddRecordV2(67*1024*1024, 4, 200*1024*1024, false, 100, "fast.com", "wan")
+	speedstats.AddRecordV2(67*1024*1024, 4, 200*1024*1024, false, 100, "fast.com", "wan", "testenv")
 
 	params := Calculate(CalcParams{
 		FileSize:       1 * 1024 * 1024 * 1024, // 1GB
 		MaxConnections: 8,
 		Scope:          "wan",
+		EnvKey:         "testenv",
 		Domain:         "fast.com",
 	})
 
@@ -365,12 +372,13 @@ func TestCalculate_NewDomainFallback_Penalty(t *testing.T) {
 	activeBandwidthProvider = noActiveBandwidth
 
 	// known.com: 8MB/s, 4 threads → V_thread = 2MB/s (scope median)
-	speedstats.AddRecordV2(8*1024*1024, 4, 200*1024*1024, false, 100, "known.com", "wan")
+	speedstats.AddRecordV2(8*1024*1024, 4, 200*1024*1024, false, 100, "known.com", "wan", "testenv")
 
 	params := Calculate(CalcParams{
 		FileSize:       500 * 1024 * 1024, // 500MB
 		MaxConnections: 8,
 		Scope:          "wan",
+		EnvKey:         "testenv",
 		Domain:         "unknown.com", // no domain record → fallback to scope with 0.5x penalty
 	})
 
@@ -395,9 +403,9 @@ func TestCalculate_BatchMixedDomains(t *testing.T) {
 	activeBandwidthProvider = noActiveBandwidth
 
 	// known.com: 8MB/s, 4 threads → V_thread = 2MB/s (domain and scope median)
-	speedstats.AddRecordV2(8*1024*1024, 4, 200*1024*1024, false, 100, "known.com", "wan")
+	speedstats.AddRecordV2(8*1024*1024, 4, 200*1024*1024, false, 100, "known.com", "wan", "testenv")
 
-	ledger := NewBandwidthLedger()
+	ledger := NewBandwidthLedger(nil)
 	fileSize := int64(100 * 1024 * 1024) // 100MB each
 
 	domains := []string{"known.com", "unknown1.com", "unknown2.com"}
@@ -405,17 +413,18 @@ func TestCalculate_BatchMixedDomains(t *testing.T) {
 	var bandwidths []int64
 
 	for _, domain := range domains {
-		reserved := ledger.Reserved("wan")
+		reserved := ledger.Reserved("wan", "testenv")
 		params := Calculate(CalcParams{
 			FileSize:          fileSize,
 			MaxConnections:    8,
 			Scope:             "wan",
+			EnvKey:            "testenv",
 			Domain:            domain,
 			ReservedBandwidth: reserved,
 		})
 		splits = append(splits, params.Split)
 		bandwidths = append(bandwidths, params.TargetBandwidth)
-		ledger.Reserve("wan", params.TargetBandwidth)
+		ledger.Reserve("wan", "testenv", params.TargetBandwidth)
 	}
 
 	// Task 0 (known.com): V_thread_avg = 2MB/s (domain-specific)
@@ -448,7 +457,7 @@ func TestCalculate_BatchMixedDomains(t *testing.T) {
 	}
 
 	// Ledger per-scope accumulation: 10MB + 2MB + 2MB = 14MB
-	totalReserved := ledger.Reserved("wan")
+	totalReserved := ledger.Reserved("wan", "testenv")
 	expected := int64(14 * 1024 * 1024)
 	if totalReserved != expected {
 		t.Errorf("ledger reserved(wan) = %d, want %d (10MB + 2MB + 2MB)", totalReserved, expected)
@@ -467,13 +476,14 @@ func TestCalculate_CrossScopeIsolation(t *testing.T) {
 	// Same domain example.com, two scopes:
 	// wan: 2MB/s, 1 thread → V_thread = 2MB/s
 	// lan: 20MB/s, 1 thread → V_thread = 20MB/s
-	speedstats.AddRecordV2(2*1024*1024, 1, 200*1024*1024, false, 100, "example.com", "wan")
-	speedstats.AddRecordV2(20*1024*1024, 1, 200*1024*1024, false, 100, "example.com", "lan")
+	speedstats.AddRecordV2(2*1024*1024, 1, 200*1024*1024, false, 100, "example.com", "wan", "testenv")
+	speedstats.AddRecordV2(20*1024*1024, 1, 200*1024*1024, false, 100, "example.com", "lan", "testenv")
 
 	params := Calculate(CalcParams{
 		FileSize:       1 * 1024 * 1024 * 1024, // 1GB
 		MaxConnections: 8,
 		Scope:          "wan",
+		EnvKey:         "testenv",
 		Domain:         "example.com",
 	})
 

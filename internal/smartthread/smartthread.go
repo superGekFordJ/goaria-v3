@@ -31,7 +31,7 @@ func Calculate(p CalcParams) ThreadParams {
 
 	// 未知大小：保守策略，跳过 BDP/带宽约束
 	if p.FileSize <= 0 {
-		isExploration := !speedstats.HasDomainScopeRecord(p.Domain, p.Scope)
+		isExploration := !speedstats.HasDomainScopeEnvRecord(p.Domain, p.Scope, p.EnvKey)
 		split := maxConn
 		if isExploration {
 			exploreLimit := maxConn / 4
@@ -59,24 +59,24 @@ func Calculate(p CalcParams) ThreadParams {
 
 	// --- 数据采集 ---
 	// Tier 1: Domain-specific median (preferred — no cross-CDN pollution)
-	vThreadAvg, threadAvgOK := speedstats.GetRecentPeakByDomain(p.Domain, p.Scope)
+	vThreadAvg, threadAvgOK := speedstats.GetRecentPeakByDomain(p.Domain, p.Scope, p.EnvKey)
 
 	// Tier 2: Fallback to scope-wide median with 0.5x conservative penalty
 	// for unknown domains (avoids over-allocation from polluted scope data)
 	if !threadAvgOK {
-		vThreadAvg, threadAvgOK = speedstats.GetRecentPeakByScope(p.Scope)
+		vThreadAvg, threadAvgOK = speedstats.GetRecentPeakByScope(p.Scope, p.EnvKey)
 		if threadAvgOK {
 			vThreadAvg /= 2
 		}
 	}
 
-	vSinglePeak, singlePeakOK := speedstats.GetDomainPeak(p.Domain, p.Scope)
-	vGlobalPeak, globalPeakOK := speedstats.GetGlobalPeak(p.Scope)
+	vSinglePeak, singlePeakOK := speedstats.GetDomainPeak(p.Domain, p.Scope, p.EnvKey)
+	vGlobalPeak, globalPeakOK := speedstats.GetGlobalPeak(p.Scope, p.EnvKey)
 
 	// --- 冷启动 / 缺数据降级 ---
 	// V_thread_avg 或 V_global_peak 无 → 退化为 legacy 启发式
 	if !threadAvgOK || !globalPeakOK {
-		return calculateLegacy(p.FileSize, maxConn, p.Domain, p.Scope, tMin)
+		return calculateLegacy(p.FileSize, maxConn, p.Domain, p.Scope, p.EnvKey, tMin)
 	}
 
 	// 钳 V_thread_avg 到下限
@@ -130,7 +130,7 @@ func Calculate(p CalcParams) ThreadParams {
 	// --- 探索标记（重新引入冷启动保守防护） ---
 	// 初见新域名时缺乏 BBR 历史指纹，为获取纯净的单线程效率（V_thread_avg）样本，
 	// 强制限制初始线程数：最高不超过 1/4 MaxConnections，且不低于 4 线程。
-	isExploration := !speedstats.HasDomainScopeRecord(p.Domain, p.Scope)
+	isExploration := !speedstats.HasDomainScopeEnvRecord(p.Domain, p.Scope, p.EnvKey)
 	if isExploration {
 		exploreLimit := maxConn / 4
 		if exploreLimit < 4 {
@@ -174,7 +174,7 @@ func Calculate(p CalcParams) ThreadParams {
 
 // calculateLegacy is the fallback when BBR data is unavailable (cold start).
 // Uses the old N_tmin-only heuristic without bandwidth floor.
-func calculateLegacy(fileSize int64, maxConnections int, domain, scope string, tMin int) ThreadParams {
+func calculateLegacy(fileSize int64, maxConnections int, domain, scope, envKey string, tMin int) ThreadParams {
 	vSingleEst := int64(2 * 1024 * 1024) // 默认 2MB/s
 	if vSingleEst < minThreadEfficiency {
 		vSingleEst = minThreadEfficiency
@@ -190,7 +190,7 @@ func calculateLegacy(fileSize int64, maxConnections int, domain, scope string, t
 	}
 
 	// --- 探索标记（重新引入冷启动保守防护） ---
-	isExploration := !speedstats.HasDomainScopeRecord(domain, scope)
+	isExploration := !speedstats.HasDomainScopeEnvRecord(domain, scope, envKey)
 	if isExploration {
 		exploreLimit := maxConnections / 4
 		if exploreLimit < 4 {

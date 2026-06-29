@@ -18,7 +18,7 @@ func init() {
 const (
 	maxRecords  = 10000            // 最多保留记录数（网卡隔离需更多历史）
 	MinFileSize = 50 * 1024 * 1024 // 仅记录 >50MB 的下载
-	recentDays  = 365              // 跨季节数据，配合网卡隔离（SPEC-176）
+	recentDays  = 365              // 跨季节数据，配合网卡隔离
 )
 
 // SpeedRecord 记录单次大文件下载的峰值数据
@@ -31,6 +31,7 @@ type SpeedRecord struct {
 	TTFBMs        int64  `json:"ttfb_ms"`        // 首字节时间 (ms)
 	Domain        string `json:"domain"`         // 下载域名
 	Scope         string `json:"scope"`          // wan/lan 分类
+	EnvKey        string `json:"env_key"`        // 网络环境指纹 (SHA-256 前 8 位 hex)
 }
 
 // 全局变量
@@ -69,7 +70,7 @@ func getStatsPath() string {
 	return filepath.Join(dir, "speed_stats.gob")
 }
 
-// Load reads speed stats from disk
+// Load reads speed stats from disk. Records with empty EnvKey (pre-upgrade) are silently dropped.
 func Load() {
 	mu.Lock()
 	defer mu.Unlock()
@@ -77,7 +78,14 @@ func Load() {
 	records = []SpeedRecord{}
 	data, err := os.ReadFile(getStatsPath())
 	if err == nil {
-		_ = gob.NewDecoder(bytes.NewReader(data)).Decode(&records)
+		var loaded []SpeedRecord
+		_ = gob.NewDecoder(bytes.NewReader(data)).Decode(&loaded)
+		for _, r := range loaded {
+			if r.EnvKey == "" {
+				continue // read-time scrubbing: drop pre-upgrade records
+			}
+			records = append(records, r)
+		}
 	}
 }
 
@@ -102,16 +110,19 @@ func writeToDisk(data []byte) error {
 
 // AddRecord 添加一条新的速度记录（向后兼容，委托 AddRecordV2）
 func AddRecord(peakSpeed int64, threadCount int, fileSize int64, isExploration bool) {
-	AddRecordV2(peakSpeed, threadCount, fileSize, isExploration, 0, "", "")
+	AddRecordV2(peakSpeed, threadCount, fileSize, isExploration, 0, "", "", "")
 }
 
-// AddRecordV2 添加一条新的速度记录（含 TTFB/domain/scope）
-func AddRecordV2(peakSpeed int64, threadCount int, fileSize int64, isExploration bool, ttfbMs int64, domain string, scope string) {
+// AddRecordV2 添加一条新的速度记录（含 TTFB/domain/scope/envKey）
+func AddRecordV2(peakSpeed int64, threadCount int, fileSize int64, isExploration bool, ttfbMs int64, domain string, scope string, envKey string) {
 	if peakSpeed <= 0 || threadCount <= 0 {
 		return
 	}
 	if scope == "" {
 		scope = "wan"
+	}
+	if envKey == "" {
+		return // empty envKey is a dirty-data signal — skip recording
 	}
 
 	mu.Lock()
@@ -126,6 +137,7 @@ func AddRecordV2(peakSpeed int64, threadCount int, fileSize int64, isExploration
 		TTFBMs:        ttfbMs,
 		Domain:        domain,
 		Scope:         scope,
+		EnvKey:        envKey,
 	})
 
 	// 超出限制时删除最旧的
@@ -139,12 +151,12 @@ func AddRecordV2(peakSpeed int64, threadCount int, fileSize int64, isExploration
 // GetRecentPeak 获取最近有效峰值（采用单线程开发效率中位数 + 标杆优先逻辑）
 // 返回最近 recentDays 天内的单线程能力评估值 (bytes/s)
 func GetRecentPeak() (vSingleEst int64, ok bool) {
-	return GetRecentPeakByScope("")
+	return GetRecentPeakByScope("", "")
 }
 
-// GetRecentPeakByScope 与 GetRecentPeak 逻辑相同但加 scope 过滤
-// scope 为空时不过滤（等价于 GetRecentPeak）
-func GetRecentPeakByScope(scope string) (vSingleEst int64, ok bool) {
+// GetRecentPeakByScope 与 GetRecentPeak 逻辑相同但加 scope+envKey 过滤
+// scope 为空时不过滤 scope；envKey 绝不跨 env 回退
+func GetRecentPeakByScope(scope string, envKey string) (vSingleEst int64, ok bool) {
 	mu.RLock()
 	defer mu.RUnlock()
 
@@ -159,6 +171,9 @@ func GetRecentPeakByScope(scope string) (vSingleEst int64, ok bool) {
 
 	for i := range records {
 		if scope != "" && records[i].Scope != scope {
+			continue
+		}
+		if records[i].EnvKey != envKey {
 			continue
 		}
 		if records[i].Timestamp >= cutoff && records[i].ThreadCount > 0 {
@@ -185,10 +200,10 @@ func GetRecentPeakByScope(scope string) (vSingleEst int64, ok bool) {
 	return medianV, true
 }
 
-// GetRecentPeakByDomain 与 GetRecentPeakByScope 逻辑相同但按 domain+scope 联合过滤
+// GetRecentPeakByDomain 与 GetRecentPeakByScope 逻辑相同但按 domain+scope+envKey 联合过滤
 // domain 为空时直接返回 0, false（空域名无意义，应走回退路径）
-// scope 为空时不过滤 scope（向后兼容），与 HasDomainScopeRecord 的 scope 语义一致
-func GetRecentPeakByDomain(domain, scope string) (vSingleEst int64, ok bool) {
+// scope 为空时不过滤 scope；envKey 绝不跨 env 回退
+func GetRecentPeakByDomain(domain, scope string, envKey string) (vSingleEst int64, ok bool) {
 	if domain == "" {
 		return 0, false
 	}
@@ -209,6 +224,9 @@ func GetRecentPeakByDomain(domain, scope string) (vSingleEst int64, ok bool) {
 			continue
 		}
 		if scope != "" && records[i].Scope != scope {
+			continue
+		}
+		if records[i].EnvKey != envKey {
 			continue
 		}
 		if records[i].Timestamp >= cutoff && records[i].ThreadCount > 0 {
@@ -233,9 +251,9 @@ func GetRecentPeakByDomain(domain, scope string) (vSingleEst int64, ok bool) {
 	return medianV, true
 }
 
-// GetGlobalPeak 返回最近 recentDays 内指定 scope 的总峰值速度 (bytes/s)
-// scope 为空时不过滤
-func GetGlobalPeak(scope string) (int64, bool) {
+// GetGlobalPeak 返回最近 recentDays 内指定 scope+envKey 的总峰值速度 (bytes/s)
+// scope 为空时不过滤；envKey 绝不跨 env 回退
+func GetGlobalPeak(scope string, envKey string) (int64, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
 
@@ -249,6 +267,9 @@ func GetGlobalPeak(scope string) (int64, bool) {
 		if scope != "" && records[i].Scope != scope {
 			continue
 		}
+		if records[i].EnvKey != envKey {
+			continue
+		}
 		if records[i].PeakSpeed > peak {
 			peak = records[i].PeakSpeed
 			found = true
@@ -258,14 +279,39 @@ func GetGlobalPeak(scope string) (int64, bool) {
 }
 
 // GetDomainPeak 返回最近 recentDays 内指定 domain+scope 的历史最高峰值速度 (bytes/s)
-// scope 为空时不过滤 scope
-func GetDomainPeak(domain, scope string) (int64, bool) {
+// scope 为空时不过滤 scope。
+// 此函数允许跨 env 回退到 scope-only：先按 domain+scope+envKey 过滤，无结果再按 domain+scope 聚合所有 env。
+// 这是唯一允许跨 env 回退的函数（服务器侧属性，被 V_available 安全拦截）。
+func GetDomainPeak(domain, scope string, envKey string) (int64, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
 
 	cutoff := time.Now().Add(-time.Duration(recentDays) * 24 * time.Hour).Unix()
 	var peak int64
 	found := false
+	for i := range records {
+		if records[i].Timestamp < cutoff {
+			continue
+		}
+		if domain == "" || records[i].Domain != domain {
+			continue
+		}
+		if scope != "" && records[i].Scope != scope {
+			continue
+		}
+		if records[i].EnvKey != envKey {
+			continue
+		}
+		if records[i].PeakSpeed > peak {
+			peak = records[i].PeakSpeed
+			found = true
+		}
+	}
+	if found {
+		return peak, true
+	}
+
+	// Fallback to scope-only (aggregate all envs) — only this function allows cross-env fallback
 	for i := range records {
 		if records[i].Timestamp < cutoff {
 			continue
@@ -284,10 +330,10 @@ func GetDomainPeak(domain, scope string) (int64, bool) {
 	return peak, found
 }
 
-// GetRTprop 返回最近 recentDays 内指定 domain+scope 的 TTFB 最小值 (ms)
-// 跳过 TTFBMs=0 的记录；无 domain 匹配时返回同 scope 的 TTFB 最小值
-// scope 为空时回退到全局 TTFB 最小值（不过滤 scope）
-func GetRTprop(domain, scope string) (int64, bool) {
+// GetRTprop 返回最近 recentDays 内指定 domain+scope+envKey 的 TTFB 最小值 (ms)
+// 跳过 TTFBMs=0 的记录；无 domain 匹配时返回同 scope+envKey 的 TTFB 最小值
+// scope 为空时回退到全局 TTFB 最小值；envKey 绝不跨 env 回退
+func GetRTprop(domain, scope string, envKey string) (int64, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
 
@@ -295,7 +341,7 @@ func GetRTprop(domain, scope string) (int64, bool) {
 	var minTTFB int64
 	found := false
 
-	// 先尝试 domain+scope 匹配（空 domain 跳过，直接走回退）
+	// 先尝试 domain+scope+envKey 匹配（空 domain 跳过，直接走回退）
 	if domain != "" {
 		for i := range records {
 			if records[i].Timestamp < cutoff {
@@ -305,6 +351,9 @@ func GetRTprop(domain, scope string) (int64, bool) {
 				continue
 			}
 			if scope != "" && records[i].Scope != scope {
+				continue
+			}
+			if records[i].EnvKey != envKey {
 				continue
 			}
 			if !found || records[i].TTFBMs < minTTFB {
@@ -317,7 +366,7 @@ func GetRTprop(domain, scope string) (int64, bool) {
 		return minTTFB, true
 	}
 
-	// 回退到同 scope 的 TTFB 最小值
+	// 回退到同 scope+envKey 的 TTFB 最小值
 	for i := range records {
 		if records[i].Timestamp < cutoff {
 			continue
@@ -328,6 +377,9 @@ func GetRTprop(domain, scope string) (int64, bool) {
 		if scope != "" && records[i].Scope != scope {
 			continue
 		}
+		if records[i].EnvKey != envKey {
+			continue
+		}
 		if !found || records[i].TTFBMs < minTTFB {
 			minTTFB = records[i].TTFBMs
 			found = true
@@ -336,10 +388,11 @@ func GetRTprop(domain, scope string) (int64, bool) {
 	return minTTFB, found
 }
 
-// HasDomainScopeRecord returns true if at least one record exists within
-// recentDays matching the given domain and scope. Used by the exploration
-// mechanism to determine if a domain+scope combination is "known".
-func HasDomainScopeRecord(domain, scope string) bool {
+// HasDomainScopeEnvRecord returns true if at least one record exists within
+// recentDays matching the given domain, scope, and envKey. Used by the exploration
+// mechanism to determine if a domain+scope+env combination is "known".
+// envKey 绝不跨 env 回退（无数据→isExploration=true）。
+func HasDomainScopeEnvRecord(domain, scope string, envKey string) bool {
 	mu.RLock()
 	defer mu.RUnlock()
 
@@ -354,9 +407,20 @@ func HasDomainScopeRecord(domain, scope string) bool {
 		if scope != "" && records[i].Scope != scope {
 			continue
 		}
+		if records[i].EnvKey != envKey {
+			continue
+		}
 		return true
 	}
 	return false
+}
+
+// HasDomainScopeRecord is a backward-compatible wrapper that delegates to
+// HasDomainScopeEnvRecord with an empty envKey. Pre-upgrade records with
+// empty EnvKey have been scrubbed on Load, so this always returns false
+// for the legacy call path.
+func HasDomainScopeRecord(domain, scope string) bool {
+	return HasDomainScopeEnvRecord(domain, scope, "")
 }
 
 // CleanExpired 清理过期数据

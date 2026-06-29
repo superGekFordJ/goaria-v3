@@ -24,6 +24,9 @@ type AppState struct {
 	// 任务追踪器（后端自洽核心）
 	tracker *TaskTracker
 
+	// 网络环境指纹缓存（MAC → envKey）
+	netEnv *NetEnvCache
+
 	// 监控器引用（用于任务删除时的缓存失效）
 	monitor *Monitor
 }
@@ -85,4 +88,18 @@ func (s *AppState) GetMonitor() *Monitor {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.monitor
+}
+
+// SetNetEnv sets the network environment cache.
+func (s *AppState) SetNetEnv(n *NetEnvCache) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.netEnv = n
+}
+
+// GetNetEnv returns the network environment cache.
+func (s *AppState) GetNetEnv() *NetEnvCache {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.netEnv
 }

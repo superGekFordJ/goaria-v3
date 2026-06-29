@@ -41,6 +41,7 @@ func TestEnsureScopeDomain_FallbackFromLANURL(t *testing.T) {
 		TotalLength: 100 * 1024 * 1024,
 		PeakSpeed:   5_000_000,
 		ThreadCount: 4,
+		PeakEnvKey:  "testenv",
 		SourceURL:   "http://192.168.1.1/file.zip",
 	}
 
@@ -76,6 +77,7 @@ func TestEnsureScopeDomain_FallbackFromWANURL(t *testing.T) {
 		TotalLength: 100 * 1024 * 1024,
 		PeakSpeed:   5_000_000,
 		ThreadCount: 4,
+		PeakEnvKey:  "testenv",
 		SourceURL:   "http://example.com/file.zip",
 	}
 
@@ -137,6 +139,7 @@ func TestEnsureScopeDomain_NoopWhenDomainSet(t *testing.T) {
 		TotalLength: 100 * 1024 * 1024,
 		PeakSpeed:   5_000_000,
 		ThreadCount: 4,
+		PeakEnvKey:  "testenv",
 		Domain:      "existing.com",
 		Scope:       speedstats.ScopeWAN,
 		SourceURL:   "http://other.com/file.zip",
@@ -194,6 +197,7 @@ func TestHandleTaskComplete_FallbackClassifiesAndRecords(t *testing.T) {
 		TotalLength: 100 * 1024 * 1024,
 		PeakSpeed:   5_000_000,
 		ThreadCount: 4,
+		PeakEnvKey:  "testenv",
 		Domain:      "",
 		SourceURL:   "http://example.com/file.zip",
 	}

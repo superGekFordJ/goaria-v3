@@ -2,13 +2,13 @@ package smartthread
 
 import "sync"
 
-// ActiveBandwidthFunc returns the current total download speed for a given scope.
+// ActiveBandwidthFunc returns the current total download speed for a given scope+envKey.
 // This is injected from outside (monitor.ActiveBandwidthByScope) to avoid an
 // import cycle between smartthread and monitor.
-type ActiveBandwidthFunc func(scope string) int64
+type ActiveBandwidthFunc func(scope, envKey string) int64
 
 // noActiveBandwidth is the default when no injector is set.
-func noActiveBandwidth(scope string) int64 { return 0 }
+func noActiveBandwidth(scope, envKey string) int64 { return 0 }
 
 var (
 	// activeBandwidthProvider is read by the convergence tick without a lock.
@@ -55,40 +55,52 @@ type BandwidthLedger struct {
 }
 
 // NewBandwidthLedger creates a ledger seeded with current active bandwidth
-// per scope. This ensures the first task in a batch sees the real-time
-// bandwidth pressure from already-running downloads.
-func NewBandwidthLedger() *BandwidthLedger {
-	return &BandwidthLedger{
-		reserved: map[string]int64{
-			"wan": activeBandwidthProvider("wan"),
-			"lan": activeBandwidthProvider("lan"),
-		},
+// per scope+envKey. The activeTasks parameter provides the set of currently
+// running tasks for pre-scan seeding (pre-scan, not lazy init).
+func NewBandwidthLedger(activeTasks []TrackedTaskInfo) *BandwidthLedger {
+	l := &BandwidthLedger{
+		reserved: make(map[string]int64),
 	}
+	seen := make(map[string]bool)
+	for _, t := range activeTasks {
+		if t.Scope == "" {
+			continue
+		}
+		key := t.Scope + t.EnvKey
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		l.reserved[key] = activeBandwidthProvider(t.Scope, t.EnvKey)
+	}
+	return l
 }
 
-// Reserved returns the total reserved bandwidth for the given scope
+// Reserved returns the total reserved bandwidth for the given scope+envKey
 // (active baseline + batch-accumulated reservations).
-func (l *BandwidthLedger) Reserved(scope string) int64 {
+func (l *BandwidthLedger) Reserved(scope, envKey string) int64 {
 	if l == nil {
 		return 0
 	}
 	if scope == "" {
 		scope = "wan"
 	}
+	key := scope + envKey
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.reserved[scope]
+	return l.reserved[key]
 }
 
-// Reserve adds bandwidth to the scope's running total.
-func (l *BandwidthLedger) Reserve(scope string, bandwidth int64) {
+// Reserve adds bandwidth to the scope+envKey running total.
+func (l *BandwidthLedger) Reserve(scope, envKey string, bandwidth int64) {
 	if l == nil || bandwidth <= 0 {
 		return
 	}
 	if scope == "" {
 		scope = "wan"
 	}
+	key := scope + envKey
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.reserved[scope] += bandwidth
+	l.reserved[key] += bandwidth
 }

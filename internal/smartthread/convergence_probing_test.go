@@ -110,7 +110,7 @@ func TestConvergence_ProbeDown_ProbesBelowInitialWorkers(t *testing.T) {
 	gid := "sg_probe_down"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 0},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 0},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -158,7 +158,7 @@ func TestConvergence_Settling_NoDecision(t *testing.T) {
 	gid := "sg_settling"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -210,8 +210,8 @@ func TestConvergence_MultiTask_WindowInvalidation(t *testing.T) {
 
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid1, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
-			{GID: gid2, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024},
+			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
+			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -242,7 +242,7 @@ func TestConvergence_MultiTask_WindowInvalidation(t *testing.T) {
 
 	// Remove gid2 — active set changes
 	tracker.tasks = []TrackedTaskInfo{
-		{GID: gid1, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 60 * 1024 * 1024},
+		{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 60 * 1024 * 1024},
 	}
 	telemetry.data = map[string][]types.WorkerSnapshot{
 		gid1: makeWorkers(4, 2*1024*1024),
@@ -275,7 +275,7 @@ func TestConvergence_RateLimitSkip(t *testing.T) {
 
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -321,7 +321,7 @@ func TestConvergence_ProbeFloor_StopsAtFloor(t *testing.T) {
 	gid := "sg_floor"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
 		},
 	}
 	// 2 workers — at probeFloor (default 2)
@@ -367,7 +367,7 @@ func TestConvergence_M1_CongestionTrapEscape(t *testing.T) {
 	gid := "sg_congestion"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 0},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 0},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -433,7 +433,7 @@ func TestConvergence_M2_M3_KneeCrossingReboundAndZeroScale(t *testing.T) {
 	gid := "sg_knee"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -496,7 +496,7 @@ func TestConvergence_C3_SustainCountResetOnSettling(t *testing.T) {
 	gid := "sg_sustain"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -547,7 +547,7 @@ func TestConvergence_C3_SustainCountResetOnFrozenExpiry(t *testing.T) {
 	gid := "sg_frozen_expiry"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -599,8 +599,8 @@ func TestConvergence_m2_InvalidationResetsLastStepAndPhase(t *testing.T) {
 
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid1, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
-			{GID: gid2, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024},
+			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
+			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -635,7 +635,7 @@ func TestConvergence_m2_InvalidationResetsLastStepAndPhase(t *testing.T) {
 
 	// Remove gid2 — active set changes, triggers window invalidation
 	tracker.tasks = []TrackedTaskInfo{
-		{GID: gid1, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 60 * 1024 * 1024},
+		{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 60 * 1024 * 1024},
 	}
 	telemetry.data = map[string][]types.WorkerSnapshot{
 		gid1: makeWorkers(4, 2*1024*1024),
@@ -667,8 +667,8 @@ func TestConvergence_C4_InvalidationResetsKneeFrozen(t *testing.T) {
 
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid1, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
-			{GID: gid2, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024},
+			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
+			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -701,7 +701,7 @@ func TestConvergence_C4_InvalidationResetsKneeFrozen(t *testing.T) {
 
 	// Remove gid2 — active set changes, triggers window invalidation
 	tracker.tasks = []TrackedTaskInfo{
-		{GID: gid1, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 60 * 1024 * 1024},
+		{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 60 * 1024 * 1024},
 	}
 	telemetry.data = map[string][]types.WorkerSnapshot{
 		gid1: makeWorkers(4, 2*1024*1024),
@@ -735,12 +735,12 @@ func TestConvergence_S2_ColdStartProbeDelay(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
-	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")
 
 	gid := "sg_s2_cold"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 10 * 1024 * 1024},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: false, CompletedLength: 10 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -829,7 +829,7 @@ func TestConvergence_E2E_MomentumChain(t *testing.T) {
 	gid := "sg_e2e_momentum"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -976,7 +976,7 @@ func TestConvergence_LinearZone_KneeDetection(t *testing.T) {
 	gid := "sg_linear_knee"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 100 * 1024 * 1024},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: false, CompletedLength: 100 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -1035,7 +1035,7 @@ func TestConvergence_PlateauZone_MomentumContinues(t *testing.T) {
 	gid := "sg_plateau_momentum"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 100 * 1024 * 1024},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: false, CompletedLength: 100 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -1099,7 +1099,7 @@ func TestConvergence_E2E_LinearZoneKneeViaSettling(t *testing.T) {
 
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
 		},
 	}
 	telemetry := &mockTelemetry{

@@ -863,6 +863,7 @@ func TestHandleTaskComplete_PeakThreadCountFallback(t *testing.T) {
 	task.Domain = "example.com"
 	task.Scope = "wan"
 	task.FilePath = "D:\\Downloads\\large.zip"
+	task.PeakEnvKey = "testenv"
 
 	before := speedstatsRecordCount()
 	m.handleTaskComplete(task)
@@ -910,6 +911,7 @@ func TestHandleTaskComplete_ThreadCountFallback(t *testing.T) {
 	task.Domain = "example.com"
 	task.Scope = "wan"
 	task.FilePath = "D:\\Downloads\\medium.zip"
+	task.PeakEnvKey = "testenv"
 
 	before := speedstatsRecordCount()
 	m.handleTaskComplete(task)
@@ -959,6 +961,7 @@ func TestHandleTaskComplete_ConfigFallback(t *testing.T) {
 	task.Domain = "example.com"
 	task.Scope = "wan"
 	task.FilePath = "D:\\Downloads\\config.zip"
+	task.PeakEnvKey = "testenv"
 
 	before := speedstatsRecordCount()
 	m.handleTaskComplete(task)
@@ -1057,6 +1060,7 @@ func TestHandleTaskComplete_RateLimitNotSet_RecordsNormally(t *testing.T) {
 	task.Domain = "example.com"
 	task.Scope = "wan"
 	task.FilePath = "D:\\Downloads\\fast.zip"
+	task.PeakEnvKey = "testenv"
 
 	before := speedstatsRecordCount()
 	m.handleTaskComplete(task)

@@ -11,10 +11,10 @@ func TestActiveBandwidthByScope_ScopeMatching(t *testing.T) {
 	tracker := NewTaskTracker()
 	State.SetTracker(tracker)
 
-	// Set scopes for two active tasks
-	tracker.SetScope("gid-bw-001", "wan", 100, "a.com")
-	tracker.SetScope("gid-bw-002", "wan", 120, "b.com")
-	tracker.SetScope("gid-bw-003", "lan", 80, "c.local")
+	// Set scopes+envKeys for two active tasks
+	tracker.SetScopeAndEnv("gid-bw-001", "wan", 100, "a.com", "env1")
+	tracker.SetScopeAndEnv("gid-bw-002", "wan", 120, "b.com", "env1")
+	tracker.SetScopeAndEnv("gid-bw-003", "lan", 80, "c.local", "env1")
 
 	// Inject active tasks into cache
 	Cache = &TaskCache{}
@@ -26,19 +26,25 @@ func TestActiveBandwidthByScope_ScopeMatching(t *testing.T) {
 	}
 	Cache.mu.Unlock()
 
-	wanBw := ActiveBandwidthByScope("wan")
+	wanBw := ActiveBandwidthByScope("wan", "env1")
 	if wanBw != 8000000 {
-		t.Errorf("ActiveBandwidthByScope(wan) = %d, want 8000000", wanBw)
+		t.Errorf("ActiveBandwidthByScope(wan, env1) = %d, want 8000000", wanBw)
 	}
 
-	lanBw := ActiveBandwidthByScope("lan")
+	lanBw := ActiveBandwidthByScope("lan", "env1")
 	if lanBw != 2000000 {
-		t.Errorf("ActiveBandwidthByScope(lan) = %d, want 2000000", lanBw)
+		t.Errorf("ActiveBandwidthByScope(lan, env1) = %d, want 2000000", lanBw)
 	}
 
-	unknownBw := ActiveBandwidthByScope("unknown")
+	unknownBw := ActiveBandwidthByScope("unknown", "env1")
 	if unknownBw != 0 {
-		t.Errorf("ActiveBandwidthByScope(unknown) = %d, want 0", unknownBw)
+		t.Errorf("ActiveBandwidthByScope(unknown, env1) = %d, want 0", unknownBw)
+	}
+
+	// Cross-env isolation: different envKey should not match
+	crossEnvBw := ActiveBandwidthByScope("wan", "env2")
+	if crossEnvBw != 0 {
+		t.Errorf("ActiveBandwidthByScope(wan, env2) = %d, want 0 (cross-env isolation)", crossEnvBw)
 	}
 }
 
@@ -56,9 +62,9 @@ func TestActiveBandwidthByScope_ScopeMissingSkipped(t *testing.T) {
 	}
 	Cache.mu.Unlock()
 
-	bw := ActiveBandwidthByScope("wan")
+	bw := ActiveBandwidthByScope("wan", "env1")
 	if bw != 0 {
-		t.Errorf("ActiveBandwidthByScope(wan) = %d, want 0 (scope missing task skipped)", bw)
+		t.Errorf("ActiveBandwidthByScope(wan, env1) = %d, want 0 (scope missing task skipped)", bw)
 	}
 }
 
@@ -75,7 +81,7 @@ func TestActiveBandwidthByScope_NilSafety(t *testing.T) {
 	State.SetTracker(nil)
 	Cache = nil
 
-	bw := ActiveBandwidthByScope("wan")
+	bw := ActiveBandwidthByScope("wan", "env1")
 	if bw != 0 {
 		t.Errorf("ActiveBandwidthByScope with nil tracker/cache = %d, want 0", bw)
 	}

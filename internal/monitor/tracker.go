@@ -42,10 +42,12 @@ type TrackedTask struct {
 	SourceURL     string
 	DownloadGroup *rpc.DownloadGroup
 
-	// Scope/TTFB/Domain（speedstats 扩展）
-	Scope  string
-	TTFBMs int64
-	Domain string
+	// Scope/TTFB/Domain/EnvKey（speedstats 扩展）
+	Scope         string
+	TTFBMs        int64
+	Domain        string
+	CurrentEnvKey string // current network environment fingerprint, updated on network change
+	PeakEnvKey    string // envKey at the time PeakSpeed was achieved, used by AddRecordV2
 
 	// KeepAlive flag — true when initial split < nSat
 	IsKeepAlive bool
@@ -181,7 +183,7 @@ func (t *TaskTracker) sampleSpeed(task *TrackedTask, speed int64) {
 }
 
 // sampleSpeedInternal 共享稳定性检测和峰值速度逻辑
-// 临时桥接：事件路径的 SampleSpeedFromEvent 依赖此方法，SPEC-169 将用
+// 临时桥接：事件路径的 SampleSpeedFromEvent 依赖此方法，将用
 // DownloadCompleteMsg 携带的 peak speed 替代实时采样，届时可移除事件路径调用
 //
 // SustainedCount 在 tick 和事件路径间共享：若 tick 样本（5s 间隔）与事件样本
@@ -204,6 +206,7 @@ func (t *TaskTracker) sampleSpeedInternal(task *TrackedTask, speed int64, thresh
 	if task.SustainedCount >= threshold && task.CompletedLength > speedstats.MinFileSize {
 		if speed > task.PeakSpeed {
 			task.PeakSpeed = speed
+			task.PeakEnvKey = task.CurrentEnvKey // peak attribution: record env at peak time
 		}
 	}
 }
@@ -390,7 +393,7 @@ func (t *TaskTracker) EnsureTrackedFromEvent(gid string, totalLength int64, sour
 
 // SampleSpeedFromEvent 从 Surge ProgressMsg 事件采样速度
 // 事件路径阈值：窗口模式 2 次（~0.4s @ 200ms），无头模式 1 次
-// 临时桥接：SPEC-169 将用 DownloadCompleteMsg 携带的 peak speed 替代此方法
+// 临时桥接：将用 DownloadCompleteMsg 携带的 peak speed 替代此方法
 func (t *TaskTracker) SampleSpeedFromEvent(gid string, speed int64, totalLength int64, completedLength int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -437,8 +440,13 @@ func (t *TaskTracker) MarkCompleteFromEvent(gid string, status string) *TrackedT
 	return copyTrackedTask(tracked)
 }
 
-// SetScope 设置任务的 scope/TTFB/domain 信息（由 AddUri 调用）
+// SetScope sets the task's scope/TTFB/domain info (backward-compatible wrapper).
 func (t *TaskTracker) SetScope(gid string, scope string, ttfbMs int64, domain string) {
+	t.SetScopeAndEnv(gid, scope, ttfbMs, domain, "")
+}
+
+// SetScopeAndEnv sets the task's scope/TTFB/domain/envKey info (called by AddUri).
+func (t *TaskTracker) SetScopeAndEnv(gid string, scope string, ttfbMs int64, domain string, envKey string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -447,27 +455,39 @@ func (t *TaskTracker) SetScope(gid string, scope string, ttfbMs int64, domain st
 		tracked.Scope = scope
 		tracked.TTFBMs = ttfbMs
 		tracked.Domain = domain
+		tracked.CurrentEnvKey = envKey
+		if tracked.PeakEnvKey == "" {
+			tracked.PeakEnvKey = envKey // initial value = CurrentEnvKey
+		}
 	} else {
 		t.tasks[gid] = &TrackedTask{
-			GID:       gid,
-			Scope:     scope,
-			TTFBMs:    ttfbMs,
-			Domain:    domain,
-			CreatedAt: time.Now(),
+			GID:           gid,
+			Scope:         scope,
+			TTFBMs:        ttfbMs,
+			Domain:        domain,
+			CurrentEnvKey: envKey,
+			PeakEnvKey:    envKey,
+			CreatedAt:     time.Now(),
 		}
 	}
 }
 
-// GetScope 返回任务的 scope/domain 信息
+// GetScope returns the task's scope/domain info (backward-compatible wrapper).
 func (t *TaskTracker) GetScope(gid string) (scope, domain string, ok bool) {
+	s, d, _, ok := t.GetScopeAndEnv(gid)
+	return s, d, ok
+}
+
+// GetScopeAndEnv returns the task's scope/domain/envKey info.
+func (t *TaskTracker) GetScopeAndEnv(gid string) (scope, domain, envKey string, ok bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
 	tracked := t.tasks[gid]
 	if tracked == nil || tracked.Scope == "" {
-		return "", "", false
+		return "", "", "", false
 	}
-	return tracked.Scope, tracked.Domain, true
+	return tracked.Scope, tracked.Domain, tracked.CurrentEnvKey, true
 }
 
 // RemoveTask 从追踪器中移除任务

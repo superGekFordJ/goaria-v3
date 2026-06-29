@@ -151,10 +151,14 @@ func main() {
 				if tracker == nil {
 					return
 				}
-				scope, domain, ok := tracker.GetScope(gid)
+				scope, domain, _, ok := tracker.GetScopeAndEnv(gid)
 				if !ok {
 					scope, domain = resumeScopeClassifier.ClassifyByURL(cfg.URL)
 				}
+
+				// Recompute envKey on resume — physical environment may have changed
+				// since the download was paused.
+				envKey := monitor.ComputeEnvKeyForDownload(cfg.URL, "")
 
 				remaining := cfg.TotalSize
 				if cfg.State != nil {
@@ -178,7 +182,8 @@ func main() {
 					MaxConnections:    maxConn,
 					Scope:             scope,
 					Domain:            domain,
-					ReservedBandwidth: monitor.ActiveBandwidthByScope(scope),
+					EnvKey:            envKey,
+					ReservedBandwidth: monitor.ActiveBandwidthByScope(scope, envKey),
 				})
 				if params.Split > 0 {
 					cfg.Runtime.Workers = params.Split
@@ -186,6 +191,8 @@ func main() {
 				if params.MinSize > 0 {
 					cfg.Runtime.MinChunkSize = params.MinSize
 				}
+				// Update CurrentEnvKey to the freshly computed value
+				tracker.SetScopeAndEnv(gid, scope, 0, domain, envKey)
 			})
 		}
 	}

@@ -20,6 +20,25 @@ import (
 // scopeClassifier is a package-level scope classifier with host caching.
 var scopeClassifier = speedstats.NewScopeClassifier()
 
+// collectActiveTaskInfos builds a TrackedTaskInfo slice from the current tracker state
+// for BandwidthLedger pre-scan seeding.
+func collectActiveTaskInfos() []smartthread.TrackedTaskInfo {
+	tr := monitor.State.GetTracker()
+	if tr == nil {
+		return nil
+	}
+	tasks := tr.GetActiveTrackedTasks()
+	result := make([]smartthread.TrackedTaskInfo, len(tasks))
+	for i, t := range tasks {
+		result[i] = smartthread.TrackedTaskInfo{
+			GID:    t.GID,
+			Scope:  t.Scope,
+			EnvKey: t.CurrentEnvKey,
+		}
+	}
+	return result
+}
+
 func (s *Service) AddUri(url string) string {
 	normalizedUrl := strings.TrimSpace(url)
 	active, _ := s.Engine.TellActive()
@@ -143,7 +162,7 @@ func (s *Service) BatchAddUri(urls []string) BatchAddResult {
 		}
 	}
 
-	ledger := smartthread.NewBandwidthLedger()
+	ledger := smartthread.NewBandwidthLedger(collectActiveTaskInfos())
 	for _, candidate := range pendingCandidates {
 		s.submitAddCandidate(context.Background(), candidate, existingUrls, historyDuplicates, seenCandidates, authState, &summary, ledger)
 	}
@@ -161,7 +180,7 @@ func (s *Service) addNormalizedInput(ctx context.Context, normalizedURL string, 
 		return
 	}
 
-	ledger := smartthread.NewBandwidthLedger()
+	ledger := smartthread.NewBandwidthLedger(collectActiveTaskInfos())
 	for _, candidate := range candidates {
 		s.submitAddCandidate(ctx, candidate, existingURLs, historyDuplicates, candidateSeen, authState, summary, ledger)
 	}
@@ -365,6 +384,8 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			scope, domain = scopeClassifier.ClassifyByURL(candidate.url)
 		}
 
+		envKey := monitor.ComputeEnvKeyForDownload(candidate.url, remoteIP)
+
 		maxConn, _ := strconv.Atoi(config.Current.MaxConnections)
 		if maxConn <= 0 {
 			maxConn = 8
@@ -375,9 +396,10 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			MaxConnections:    maxConn,
 			Scope:             scope,
 			Domain:            domain,
-			ReservedBandwidth: ledger.Reserved(scope),
+			EnvKey:            envKey,
+			ReservedBandwidth: ledger.Reserved(scope, envKey),
 		})
-		ledger.Reserve(scope, params.TargetBandwidth)
+		ledger.Reserve(scope, envKey, params.TargetBandwidth)
 		var err error
 		gid, err = s.Engine.AddUri(candidate.url, rpc.AddURIOptions{
 			Dir:          dir,
@@ -401,7 +423,7 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 				}
 			}
 			if tracker := monitor.State.GetTracker(); tracker != nil {
-				tracker.SetScope(gid, scope, ttfbMs, domain)
+				tracker.SetScopeAndEnv(gid, scope, ttfbMs, domain, envKey)
 			}
 		}
 	} else {
@@ -425,8 +447,9 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 				tracker.SetThreadInfo(gid, maxConn, false)
 			}
 			scope, domain := scopeClassifier.ClassifyByURL(candidate.url)
+			envKey := monitor.ComputeEnvKeyForDownload(candidate.url, "")
 			if tracker := monitor.State.GetTracker(); tracker != nil {
-				tracker.SetScope(gid, scope, 0, domain)
+				tracker.SetScopeAndEnv(gid, scope, 0, domain, envKey)
 			}
 		}
 	}

@@ -51,5 +51,6 @@ type CalcParams struct {
 	MaxConnections    int    // 用户硬上限 W_max（来自 config.MaxConnections）
 	Scope             string // "wan"/"lan"
 	Domain            string // 用于 GetDomainPeak/GetRTprop（配合 Scope 做 domain+scope 联合过滤）
-	ReservedBandwidth int64  // 同 scope 活跃任务实时速度之和 + 本批次已预留
+	EnvKey            string // 网络环境指纹 (SHA-256 前 8 位 hex)
+	ReservedBandwidth int64  // 同 scope+envKey 活跃任务实时速度之和 + 本批次已预留
 }

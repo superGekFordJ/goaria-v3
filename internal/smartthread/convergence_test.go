@@ -18,13 +18,13 @@ func (m *mockTracker) GetActiveTrackedTasks() []TrackedTaskInfo {
 	return m.tasks
 }
 
-func (m *mockTracker) GetScope(gid string) (scope, domain string, ok bool) {
+func (m *mockTracker) GetScopeAndEnv(gid string) (scope, domain, envKey string, ok bool) {
 	for _, t := range m.tasks {
 		if t.GID == gid {
-			return t.Scope, t.Domain, true
+			return t.Scope, t.Domain, t.EnvKey, true
 		}
 	}
-	return "", "", false
+	return "", "", "", false
 }
 
 // mockTelemetry implements TelemetryProvider for testing
@@ -40,7 +40,7 @@ func TestConvergenceTicker_NoTelemetryNoOp(t *testing.T) {
 	gid := "sg_notelemetry"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com"},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com"},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -68,7 +68,7 @@ func TestConvergenceTicker_NonSurgeGidSkipped(t *testing.T) {
 	gid := "ar_aria2task"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com"},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com"},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -96,12 +96,12 @@ func TestConvergenceTicker_NonSurgeGidSkipped(t *testing.T) {
 
 func TestConvergenceTicker_RemoveTask(t *testing.T) {
 	speedstats.ResetRecordsForTest()
-	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")
 
 	gid := "sg_remove"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com"},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com"},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -166,12 +166,12 @@ func TestConvergenceTicker_StartStop(t *testing.T) {
 
 func TestConvergenceTicker_SelfCleanupStaleStates(t *testing.T) {
 	speedstats.ResetRecordsForTest()
-	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")
 
 	gid := "sg_stale_test"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -212,15 +212,15 @@ func TestConvergenceTicker_SelfCleanupStaleStates(t *testing.T) {
 
 func TestConvergenceTicker_BandwidthBorrowing(t *testing.T) {
 	speedstats.ResetRecordsForTest()
-	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")
 
 	completedGid := "sg_completed"
 	keepAliveGid := "sg_keepalive"
 
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: completedGid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false},
-			{GID: keepAliveGid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true},
+			{GID: completedGid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: false},
+			{GID: keepAliveGid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -242,7 +242,7 @@ func TestConvergenceTicker_BandwidthBorrowing(t *testing.T) {
 
 	// Remove completed task — simulate it finishing
 	tracker.tasks = []TrackedTaskInfo{
-		{GID: keepAliveGid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true},
+		{GID: keepAliveGid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true},
 	}
 	telemetry.data = map[string][]types.WorkerSnapshot{
 		keepAliveGid: {{WorkerID: 0, EMASpeed: 100 * 1024}},
@@ -261,14 +261,14 @@ func TestConvergenceTicker_BandwidthBorrowing(t *testing.T) {
 
 func TestConvergenceTicker_ServerLimitFuse(t *testing.T) {
 	speedstats.ResetRecordsForTest()
-	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")
 
 	gid := "sg_fuse_test"
 	domain := "example.com"
 
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: domain, IsKeepAlive: true},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true},
 		},
 	}
 	// RetryCount sum = 3 >= connErrorThreshold → should trigger SetNMax
@@ -306,16 +306,16 @@ func TestConvergenceTicker_ServerLimitFuse(t *testing.T) {
 
 func TestConvergenceTicker_PrevActiveGidsCarriesDomain(t *testing.T) {
 	speedstats.ResetRecordsForTest()
-	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "a.com", "wan")
-	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "b.com", "wan")
+	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "a.com", "wan", "testenv")
+	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "b.com", "wan", "testenv")
 
 	gid1 := "sg_domain_a"
 	gid2 := "sg_domain_b"
 
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid1, Status: "active", Scope: "wan", Domain: "a.com", IsKeepAlive: true},
-			{GID: gid2, Status: "active", Scope: "wan", Domain: "b.com", IsKeepAlive: true},
+			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com", IsKeepAlive: true},
+			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "b.com", IsKeepAlive: true},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -369,14 +369,14 @@ func TestConvergenceTicker_PrevActiveGidsCarriesDomain(t *testing.T) {
 // check directly via the extracted bandwidthRelease method to cover the defensive guard.
 func TestConvergenceTicker_PendingGidsPreventsBandwidthReleaseScaleUp(t *testing.T) {
 	speedstats.ResetRecordsForTest()
-	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")
 
 	completedGid := "sg_completed_pending"
 	keepAliveGid := "sg_keepalive_pending"
 
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: keepAliveGid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true},
+			{GID: keepAliveGid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -395,15 +395,15 @@ func TestConvergenceTicker_PendingGidsPreventsBandwidthReleaseScaleUp(t *testing
 	// Simulate that the previous tick had both tasks active.
 	ct.mu.Lock()
 	ct.prevActiveGids = map[string]gidInfo{
-		completedGid: {Domain: "example.com", Scope: "wan"},
-		keepAliveGid: {Domain: "example.com", Scope: "wan"},
+		completedGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
+		keepAliveGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 	}
 	// Pre-create state so we can inspect after the skip.
 	ct.getOrCreateState(keepAliveGid)
 	ct.mu.Unlock()
 
 	activeGids := map[string]gidInfo{
-		keepAliveGid: {Domain: "example.com", Scope: "wan"},
+		keepAliveGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 	}
 
 	// Scenario 1: pendingGids contains keepAliveGid (processTask already scaled it).

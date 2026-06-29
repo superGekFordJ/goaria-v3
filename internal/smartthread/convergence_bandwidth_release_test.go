@@ -19,7 +19,7 @@ func TestConvergence_BandwidthRelease_SkipsCeilingHit(t *testing.T) {
 	gid := "sg_ceiling_bwrelease"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -43,13 +43,13 @@ func TestConvergence_BandwidthRelease_SkipsCeilingHit(t *testing.T) {
 	completedGid := "sg_completed_ceiling"
 	ct.mu.Lock()
 	ct.prevActiveGids = map[string]gidInfo{
-		completedGid: {Domain: "example.com", Scope: "wan"},
+		completedGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 	}
 	ct.mu.Unlock()
 
 	releases := ct.bandwidthRelease(
 		[]TrackedTaskInfo{tracker.tasks[0]},
-		map[string]gidInfo{gid: {Domain: "example.com", Scope: "wan"}},
+		map[string]gidInfo{gid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
 		nil,
 	)
@@ -68,7 +68,7 @@ func TestConvergence_BandwidthRelease_SkipsBlackout(t *testing.T) {
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{
-				GID: gid, Status: "active", Scope: "wan", Domain: "example.com",
+				GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
 				IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024,
 			},
 		},
@@ -92,13 +92,13 @@ func TestConvergence_BandwidthRelease_SkipsBlackout(t *testing.T) {
 	completedGid := "sg_completed_blackout"
 	ct.mu.Lock()
 	ct.prevActiveGids = map[string]gidInfo{
-		completedGid: {Domain: "example.com", Scope: "wan"},
+		completedGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 	}
 	ct.mu.Unlock()
 
 	releases := ct.bandwidthRelease(
 		[]TrackedTaskInfo{tracker.tasks[0]},
-		map[string]gidInfo{gid: {Domain: "example.com", Scope: "wan"}},
+		map[string]gidInfo{gid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
 		nil,
 	)
@@ -119,7 +119,7 @@ func TestConvergence_BandwidthRelease_NonKeepAliveTaskBenefits(t *testing.T) {
 	beneficiaryGid := "sg_beneficiary_nonkeepalive"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: beneficiaryGid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 100 * 1024 * 1024},
+			{GID: beneficiaryGid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: false, CompletedLength: 100 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -140,14 +140,14 @@ func TestConvergence_BandwidthRelease_NonKeepAliveTaskBenefits(t *testing.T) {
 	completedGid := "sg_completed_nonkeepalive"
 	ct.mu.Lock()
 	ct.prevActiveGids = map[string]gidInfo{
-		completedGid: {Domain: "example.com", Scope: "wan"},
+		completedGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 	}
 	ct.mu.Unlock()
 
 	approvedDelta := make(map[string]int)
 	releases := ct.bandwidthRelease(
 		[]TrackedTaskInfo{tracker.tasks[0]},
-		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan"}},
+		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
 		approvedDelta,
 	)
@@ -160,8 +160,8 @@ func TestConvergence_BandwidthRelease_NonKeepAliveTaskBenefits(t *testing.T) {
 	if !found {
 		t.Fatal("expected non-keep-alive task to receive bandwidth-release ScaleUp")
 	}
-	if approvedDelta["wan"] != 1 {
-		t.Fatalf("expected approvedDelta[wan]=1, got %d", approvedDelta["wan"])
+	if approvedDelta["wantestenv"] != 1 {
+		t.Fatalf("expected approvedDelta[wantestenv]=1, got %d", approvedDelta["wantestenv"])
 	}
 }
 
@@ -179,16 +179,16 @@ func TestConvergence_ApprovedDelta_PreventsSameTickOversell(t *testing.T) {
 	// globalPeak = 10 MB/s, vThreadAvg = 10 MB/s (1 thread).
 	// activeBw = 0 → first +1: effectiveBw=0, headroom=10MB >= 10MB → pass.
 	// After approvedDelta["wan"]=1 → second +1: effectiveBw=10MB, headroom=0 < 10MB → blocked.
-	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope string) int64 { return 0 }
+	activeBandwidthProvider = func(scope, envKey string) int64 { return 0 }
 
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid1, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
-			{GID: gid2, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
+			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
+			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -230,7 +230,7 @@ func TestConvergence_ApprovedDelta_PreventsSameTickOversell(t *testing.T) {
 		t.Fatalf("expected first task probe-up +1, got ok=%v delta=%d", ok1, ps1.delta)
 	}
 	if ps1.delta > 0 {
-		approvedDelta[ps1.scope] += ps1.delta
+		approvedDelta[ps1.scope+ps1.envKey] += ps1.delta
 	}
 
 	// Second task: same scope, V_available headroom now consumed by first.
@@ -261,16 +261,16 @@ func TestConvergence_BandwidthRelease_BlockedByVAvailable(t *testing.T) {
 
 	// globalPeak = 10 MB/s, vThreadAvg = 10 MB/s.
 	// activeBw = 10 MB/s → headroom = 0 < 10 MB/s → blocked.
-	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope string) int64 { return 10 * 1024 * 1024 }
+	activeBandwidthProvider = func(scope, envKey string) int64 { return 10 * 1024 * 1024 }
 
 	beneficiaryGid := "sg_bwrelease_vavail"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: beneficiaryGid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 100 * 1024 * 1024},
+			{GID: beneficiaryGid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: false, CompletedLength: 100 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -291,13 +291,13 @@ func TestConvergence_BandwidthRelease_BlockedByVAvailable(t *testing.T) {
 	completedGid := "sg_completed_vavail"
 	ct.mu.Lock()
 	ct.prevActiveGids = map[string]gidInfo{
-		completedGid: {Domain: "example.com", Scope: "wan"},
+		completedGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 	}
 	ct.mu.Unlock()
 
 	releases := ct.bandwidthRelease(
 		[]TrackedTaskInfo{tracker.tasks[0]},
-		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan"}},
+		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
 		nil,
 	)
@@ -316,8 +316,8 @@ func TestConvergence_BandwidthRelease_DomainScopeMatching(t *testing.T) {
 	gidB := "sg_domain_b"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gidA, Status: "active", Scope: "wan", Domain: "a.com", CompletedLength: 100 * 1024 * 1024},
-			{GID: gidB, Status: "active", Scope: "wan", Domain: "b.com", CompletedLength: 100 * 1024 * 1024},
+			{GID: gidA, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com", CompletedLength: 100 * 1024 * 1024},
+			{GID: gidB, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "b.com", CompletedLength: 100 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -343,13 +343,13 @@ func TestConvergence_BandwidthRelease_DomainScopeMatching(t *testing.T) {
 	completedGid := "sg_completed_domain_a"
 	ct.mu.Lock()
 	ct.prevActiveGids = map[string]gidInfo{
-		completedGid: {Domain: "a.com", Scope: "wan"},
+		completedGid: {Domain: "a.com", Scope: "wan", EnvKey: "testenv"},
 	}
 	ct.mu.Unlock()
 
 	releases := ct.bandwidthRelease(
 		tracker.tasks,
-		map[string]gidInfo{gidA: {Domain: "a.com", Scope: "wan"}, gidB: {Domain: "b.com", Scope: "wan"}},
+		map[string]gidInfo{gidA: {Domain: "a.com", Scope: "wan", EnvKey: "testenv"}, gidB: {Domain: "b.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
 		nil,
 	)
@@ -375,8 +375,8 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 	t.Run("both_present_lowest_workers_elected", func(t *testing.T) {
 		tracker := &mockTracker{
 			tasks: []TrackedTaskInfo{
-				{GID: gidA, Status: "active", Scope: "wan", Domain: "", CompletedLength: 100 * 1024 * 1024},
-				{GID: gidB, Status: "active", Scope: "wan", Domain: "b.com", CompletedLength: 100 * 1024 * 1024},
+				{GID: gidA, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "", CompletedLength: 100 * 1024 * 1024},
+				{GID: gidB, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "b.com", CompletedLength: 100 * 1024 * 1024},
 			},
 		}
 		telemetry := &mockTelemetry{
@@ -402,13 +402,13 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 		completedGid := "sg_completed_empty"
 		ct.mu.Lock()
 		ct.prevActiveGids = map[string]gidInfo{
-			completedGid: {Domain: "", Scope: "wan"},
+			completedGid: {Domain: "", Scope: "wan", EnvKey: "testenv"},
 		}
 		ct.mu.Unlock()
 
 		releases := ct.bandwidthRelease(
 			tracker.tasks,
-			map[string]gidInfo{gidA: {Domain: "", Scope: "wan"}, gidB: {Domain: "b.com", Scope: "wan"}},
+			map[string]gidInfo{gidA: {Domain: "", Scope: "wan", EnvKey: "testenv"}, gidB: {Domain: "b.com", Scope: "wan", EnvKey: "testenv"}},
 			map[string]bool{},
 			nil,
 		)
@@ -426,7 +426,7 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 	t.Run("only_nonempty_domain_candidate_elected", func(t *testing.T) {
 		tracker := &mockTracker{
 			tasks: []TrackedTaskInfo{
-				{GID: gidB, Status: "active", Scope: "wan", Domain: "b.com", CompletedLength: 100 * 1024 * 1024},
+				{GID: gidB, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "b.com", CompletedLength: 100 * 1024 * 1024},
 			},
 		}
 		telemetry := &mockTelemetry{
@@ -449,13 +449,13 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 		completedGid := "sg_completed_empty"
 		ct.mu.Lock()
 		ct.prevActiveGids = map[string]gidInfo{
-			completedGid: {Domain: "", Scope: "wan"},
+			completedGid: {Domain: "", Scope: "wan", EnvKey: "testenv"},
 		}
 		ct.mu.Unlock()
 
 		releases := ct.bandwidthRelease(
 			tracker.tasks,
-			map[string]gidInfo{gidB: {Domain: "b.com", Scope: "wan"}},
+			map[string]gidInfo{gidB: {Domain: "b.com", Scope: "wan", EnvKey: "testenv"}},
 			map[string]bool{},
 			nil,
 		)
@@ -477,9 +477,9 @@ func TestConvergence_BandwidthRelease_SingleBeneficiaryElection(t *testing.T) {
 	gid3 := "sg_elect_3"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid1, Status: "active", Scope: "wan", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
-			{GID: gid2, Status: "active", Scope: "wan", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
-			{GID: gid3, Status: "active", Scope: "wan", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
+			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
+			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
+			{GID: gid3, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -506,13 +506,13 @@ func TestConvergence_BandwidthRelease_SingleBeneficiaryElection(t *testing.T) {
 	completedGid := "sg_completed_elect"
 	ct.mu.Lock()
 	ct.prevActiveGids = map[string]gidInfo{
-		completedGid: {Domain: "example.com", Scope: "wan"},
+		completedGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 	}
 	ct.mu.Unlock()
 
 	releases := ct.bandwidthRelease(
 		tracker.tasks,
-		map[string]gidInfo{gid1: {Domain: "example.com", Scope: "wan"}, gid2: {Domain: "example.com", Scope: "wan"}, gid3: {Domain: "example.com", Scope: "wan"}},
+		map[string]gidInfo{gid1: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}, gid2: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}, gid3: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
 		nil,
 	)
@@ -539,8 +539,8 @@ func TestConvergence_BandwidthRelease_FairRotation(t *testing.T) {
 	gid2 := "sg_rotate_2"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid1, Status: "active", Scope: "wan", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
-			{GID: gid2, Status: "active", Scope: "wan", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
+			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
+			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -564,14 +564,14 @@ func TestConvergence_BandwidthRelease_FairRotation(t *testing.T) {
 	}
 
 	activeGids := map[string]gidInfo{
-		gid1: {Domain: "example.com", Scope: "wan"},
-		gid2: {Domain: "example.com", Scope: "wan"},
+		gid1: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
+		gid2: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 	}
 
 	completedGid1 := "sg_completed_rotate_1"
 	ct.mu.Lock()
 	ct.prevActiveGids = map[string]gidInfo{
-		completedGid1: {Domain: "example.com", Scope: "wan"},
+		completedGid1: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 	}
 	ct.rotationCounter = 0
 	ct.mu.Unlock()
@@ -585,7 +585,7 @@ func TestConvergence_BandwidthRelease_FairRotation(t *testing.T) {
 	completedGid2 := "sg_completed_rotate_2"
 	ct.mu.Lock()
 	ct.prevActiveGids = map[string]gidInfo{
-		completedGid2: {Domain: "example.com", Scope: "wan"},
+		completedGid2: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 	}
 	ct.mu.Unlock()
 
@@ -607,16 +607,16 @@ func TestConvergence_BandwidthRelease_DelayCompensation(t *testing.T) {
 	// globalPeak = 10 MB/s, vThreadAvg = 10 MB/s.
 	// activeBw = 10 MB/s (cache lag: disappeared task still counted).
 	// disappearedSpeed = 10 MB/s → compensatedBw = 0 → headroom = 10 MB >= 10 MB → pass.
-	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope string) int64 { return 10 * 1024 * 1024 }
+	activeBandwidthProvider = func(scope, envKey string) int64 { return 10 * 1024 * 1024 }
 
 	beneficiaryGid := "sg_delay_comp_beneficiary"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: beneficiaryGid, Status: "active", Scope: "wan", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
+			{GID: beneficiaryGid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -637,7 +637,7 @@ func TestConvergence_BandwidthRelease_DelayCompensation(t *testing.T) {
 	completedGid := "sg_delay_comp_completed"
 	ct.mu.Lock()
 	ct.prevActiveGids = map[string]gidInfo{
-		completedGid: {Domain: "example.com", Scope: "wan"},
+		completedGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 	}
 	ct.prevActiveSpeeds = map[string]int64{
 		completedGid: 10 * 1024 * 1024,
@@ -646,7 +646,7 @@ func TestConvergence_BandwidthRelease_DelayCompensation(t *testing.T) {
 
 	releases := ct.bandwidthRelease(
 		[]TrackedTaskInfo{tracker.tasks[0]},
-		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan"}},
+		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
 		nil,
 	)
@@ -667,16 +667,16 @@ func TestConvergence_BandwidthRelease_NoCompensationWhenSpeedZero(t *testing.T) 
 
 	// globalPeak = 10 MB/s, vThreadAvg = 10 MB/s.
 	// activeBw = 10 MB/s, disappearedSpeed = 0 → no compensation → blocked.
-	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope string) int64 { return 10 * 1024 * 1024 }
+	activeBandwidthProvider = func(scope, envKey string) int64 { return 10 * 1024 * 1024 }
 
 	beneficiaryGid := "sg_no_comp_beneficiary"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: beneficiaryGid, Status: "active", Scope: "wan", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
+			{GID: beneficiaryGid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -697,14 +697,14 @@ func TestConvergence_BandwidthRelease_NoCompensationWhenSpeedZero(t *testing.T) 
 	completedGid := "sg_no_comp_completed"
 	ct.mu.Lock()
 	ct.prevActiveGids = map[string]gidInfo{
-		completedGid: {Domain: "example.com", Scope: "wan"},
+		completedGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 	}
 	// prevActiveSpeeds has no entry for completedGid → disappearedSpeed = 0
 	ct.mu.Unlock()
 
 	releases := ct.bandwidthRelease(
 		[]TrackedTaskInfo{tracker.tasks[0]},
-		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan"}},
+		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
 		nil,
 	)

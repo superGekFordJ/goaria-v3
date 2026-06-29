@@ -21,7 +21,7 @@ func TestSaveAsyncCoalescing(t *testing.T) {
 	mu.Unlock()
 
 	for i := 0; i < 10; i++ {
-		AddRecord(1000, 1, 1000, false)
+		AddRecordV2(1000, 1, 1000, false, 0, "", "wan", "testenv1")
 	}
 
 	if _, err := os.Stat(statsPath); err == nil {
@@ -64,7 +64,7 @@ func TestAddRecordV2(t *testing.T) {
 	records = []SpeedRecord{}
 	mu.Unlock()
 
-	AddRecordV2(5000000, 8, 100000000, false, 120, "example.com", "wan")
+	AddRecordV2(5000000, 8, 100000000, false, 120, "example.com", "wan", "testenv1")
 
 	mu.RLock()
 	if len(records) != 1 {
@@ -82,6 +82,9 @@ func TestAddRecordV2(t *testing.T) {
 	if r.Scope != "wan" {
 		t.Errorf("Scope = %s, want wan", r.Scope)
 	}
+	if r.EnvKey != "testenv1" {
+		t.Errorf("EnvKey = %s, want testenv1", r.EnvKey)
+	}
 }
 
 func TestAddRecordV2_DefaultScope(t *testing.T) {
@@ -93,7 +96,7 @@ func TestAddRecordV2_DefaultScope(t *testing.T) {
 	records = []SpeedRecord{}
 	mu.Unlock()
 
-	AddRecordV2(5000000, 8, 100000000, false, 0, "test.com", "")
+	AddRecordV2(5000000, 8, 100000000, false, 0, "test.com", "", "testenv1")
 
 	mu.RLock()
 	r := records[0]
@@ -113,20 +116,16 @@ func TestAddRecord_BackwardCompat(t *testing.T) {
 	records = []SpeedRecord{}
 	mu.Unlock()
 
+	// AddRecord delegates to AddRecordV2 with empty envKey, which is now
+	// rejected (empty envKey = dirty-data signal). No record should be created.
 	AddRecord(5000000, 4, 100000000, true)
 
 	mu.RLock()
-	r := records[0]
+	count := len(records)
 	mu.RUnlock()
 
-	if r.TTFBMs != 0 {
-		t.Errorf("TTFBMs = %d, want 0 (backward compat)", r.TTFBMs)
-	}
-	if r.Domain != "" {
-		t.Errorf("Domain = %s, want empty (backward compat)", r.Domain)
-	}
-	if r.Scope != "wan" {
-		t.Errorf("Scope = %s, want wan (default)", r.Scope)
+	if count != 0 {
+		t.Errorf("Expected 0 records (empty envKey rejected), got %d", count)
 	}
 }
 
@@ -138,8 +137,8 @@ func TestGobRoundTrip(t *testing.T) {
 
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: 1000, PeakSpeed: 5000, ThreadCount: 8, FileSize: 100000000, IsExploration: false, TTFBMs: 150, Domain: "a.com", Scope: "wan"},
-		{Timestamp: 2000, PeakSpeed: 8000, ThreadCount: 16, FileSize: 200000000, IsExploration: true, TTFBMs: 80, Domain: "b.com", Scope: "lan"},
+		{Timestamp: 1000, PeakSpeed: 5000, ThreadCount: 8, FileSize: 100000000, IsExploration: false, TTFBMs: 150, Domain: "a.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: 2000, PeakSpeed: 8000, ThreadCount: 16, FileSize: 200000000, IsExploration: true, TTFBMs: 80, Domain: "b.com", Scope: "lan", EnvKey: "env2"},
 	}
 	mu.Unlock()
 
@@ -175,13 +174,13 @@ func TestGetGlobalPeak_ByScope(t *testing.T) {
 
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: time.Now().Unix(), PeakSpeed: 10000000, ThreadCount: 8, Scope: "wan", Domain: "a.com"},
-		{Timestamp: time.Now().Unix(), PeakSpeed: 5000000, ThreadCount: 4, Scope: "lan", Domain: "b.com"},
-		{Timestamp: time.Now().Unix(), PeakSpeed: 20000000, ThreadCount: 16, Scope: "wan", Domain: "c.com"},
+		{Timestamp: time.Now().Unix(), PeakSpeed: 10000000, ThreadCount: 8, Scope: "wan", Domain: "a.com", EnvKey: "env1"},
+		{Timestamp: time.Now().Unix(), PeakSpeed: 5000000, ThreadCount: 4, Scope: "lan", Domain: "b.com", EnvKey: "env1"},
+		{Timestamp: time.Now().Unix(), PeakSpeed: 20000000, ThreadCount: 16, Scope: "wan", Domain: "c.com", EnvKey: "env1"},
 	}
 	mu.Unlock()
 
-	peak, ok := GetGlobalPeak("wan")
+	peak, ok := GetGlobalPeak("wan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true")
 	}
@@ -189,7 +188,7 @@ func TestGetGlobalPeak_ByScope(t *testing.T) {
 		t.Errorf("GetGlobalPeak(wan) = %d, want 20000000", peak)
 	}
 
-	peak, ok = GetGlobalPeak("lan")
+	peak, ok = GetGlobalPeak("lan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true for lan")
 	}
@@ -197,7 +196,7 @@ func TestGetGlobalPeak_ByScope(t *testing.T) {
 		t.Errorf("GetGlobalPeak(lan) = %d, want 5000000", peak)
 	}
 
-	peak, ok = GetGlobalPeak("")
+	peak, ok = GetGlobalPeak("", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true for no scope")
 	}
@@ -214,14 +213,14 @@ func TestGetDomainPeak(t *testing.T) {
 	now := time.Now().Unix()
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: now - 100, PeakSpeed: 10000000, Domain: "example.com", Scope: "wan"},
-		{Timestamp: now - 50, PeakSpeed: 30000000, Domain: "example.com", Scope: "wan"},
-		{Timestamp: now - 30, PeakSpeed: 5000000, Domain: "other.com", Scope: "wan"},
-		{Timestamp: now - 400*24*3600, PeakSpeed: 99999999, Domain: "stale.com", Scope: "wan"},
+		{Timestamp: now - 100, PeakSpeed: 10000000, Domain: "example.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now - 50, PeakSpeed: 30000000, Domain: "example.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now - 30, PeakSpeed: 5000000, Domain: "other.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now - 400*24*3600, PeakSpeed: 99999999, Domain: "stale.com", Scope: "wan", EnvKey: "env1"},
 	}
 	mu.Unlock()
 
-	peak, ok := GetDomainPeak("example.com", "wan")
+	peak, ok := GetDomainPeak("example.com", "wan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true")
 	}
@@ -229,12 +228,12 @@ func TestGetDomainPeak(t *testing.T) {
 		t.Errorf("GetDomainPeak(example.com) = %d, want 30000000", peak)
 	}
 
-	_, ok = GetDomainPeak("nonexistent.com", "wan")
+	_, ok = GetDomainPeak("nonexistent.com", "wan", "env1")
 	if ok {
 		t.Error("Expected ok=false for nonexistent domain")
 	}
 
-	_, ok = GetDomainPeak("stale.com", "wan")
+	_, ok = GetDomainPeak("stale.com", "wan", "env1")
 	if ok {
 		t.Error("Expected ok=false for stale domain (400-day-old record, 365-day window)")
 	}
@@ -248,15 +247,15 @@ func TestGetRTprop(t *testing.T) {
 	now := time.Now().Unix()
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: now - 100, TTFBMs: 200, Domain: "example.com", Scope: "wan"},
-		{Timestamp: now - 50, TTFBMs: 100, Domain: "example.com", Scope: "wan"},
-		{Timestamp: now - 40, TTFBMs: 0, Domain: "example.com", Scope: "wan"},
-		{Timestamp: now - 30, TTFBMs: 50, Domain: "other.com", Scope: "wan"},
-		{Timestamp: now - 400*24*3600, TTFBMs: 10, Domain: "stale.com", Scope: "wan"},
+		{Timestamp: now - 100, TTFBMs: 200, Domain: "example.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now - 50, TTFBMs: 100, Domain: "example.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now - 40, TTFBMs: 0, Domain: "example.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now - 30, TTFBMs: 50, Domain: "other.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now - 400*24*3600, TTFBMs: 10, Domain: "stale.com", Scope: "wan", EnvKey: "env1"},
 	}
 	mu.Unlock()
 
-	rtt, ok := GetRTprop("example.com", "wan")
+	rtt, ok := GetRTprop("example.com", "wan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true")
 	}
@@ -264,7 +263,7 @@ func TestGetRTprop(t *testing.T) {
 		t.Errorf("GetRTprop(example.com) = %d, want 100 (min, skip 0)", rtt)
 	}
 
-	rtt, ok = GetRTprop("nomatch.com", "wan")
+	rtt, ok = GetRTprop("nomatch.com", "wan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true (same-scope fallback)")
 	}
@@ -272,7 +271,7 @@ func TestGetRTprop(t *testing.T) {
 		t.Errorf("GetRTprop(nomatch.com) same-scope fallback = %d, want 50", rtt)
 	}
 
-	rtt, ok = GetRTprop("stale.com", "wan")
+	rtt, ok = GetRTprop("stale.com", "wan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true (same-scope fallback for stale domain)")
 	}
@@ -289,11 +288,11 @@ func TestGetRTprop_NoTTFBRecords(t *testing.T) {
 	now := time.Now().Unix()
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: now - 100, TTFBMs: 0, Domain: "a.com", Scope: "wan"},
+		{Timestamp: now - 100, TTFBMs: 0, Domain: "a.com", Scope: "wan", EnvKey: "env1"},
 	}
 	mu.Unlock()
 
-	_, ok := GetRTprop("a.com", "wan")
+	_, ok := GetRTprop("a.com", "wan", "env1")
 	if ok {
 		t.Error("Expected ok=false when all TTFBMs=0")
 	}
@@ -307,14 +306,14 @@ func TestGetRTprop_EmptyDomain_SkipsToGlobalFallback(t *testing.T) {
 	now := time.Now().Unix()
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: now - 100, TTFBMs: 0, Domain: "", Scope: "wan"},       // empty domain, TTFB=0 → should be skipped
-		{Timestamp: now - 50, TTFBMs: 300, Domain: "x.com", Scope: "wan"}, // non-empty domain, TTFB=300
-		{Timestamp: now - 30, TTFBMs: 100, Domain: "y.com", Scope: "wan"}, // non-empty domain, TTFB=100
+		{Timestamp: now - 100, TTFBMs: 0, Domain: "", Scope: "wan", EnvKey: "env1"},       // empty domain, TTFB=0 → should be skipped
+		{Timestamp: now - 50, TTFBMs: 300, Domain: "x.com", Scope: "wan", EnvKey: "env1"}, // non-empty domain, TTFB=300
+		{Timestamp: now - 30, TTFBMs: 100, Domain: "y.com", Scope: "wan", EnvKey: "env1"}, // non-empty domain, TTFB=100
 	}
 	mu.Unlock()
 
 	// GetRTprop("") should skip domain matching entirely and return same-scope min TTFB
-	rtt, ok := GetRTprop("", "wan")
+	rtt, ok := GetRTprop("", "wan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true (same-scope fallback)")
 	}
@@ -333,11 +332,11 @@ func TestGetRecentPeakByScope_365DayWindow(t *testing.T) {
 
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: fourDaysAgo, PeakSpeed: 6000000, ThreadCount: 6, Scope: "wan"},
+		{Timestamp: fourDaysAgo, PeakSpeed: 6000000, ThreadCount: 6, Scope: "wan", EnvKey: "env1"},
 	}
 	mu.Unlock()
 
-	v, ok := GetRecentPeakByScope("wan")
+	v, ok := GetRecentPeakByScope("wan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true for 4-day-old record with 365-day window")
 	}
@@ -350,11 +349,11 @@ func TestGetRecentPeakByScope_365DayWindow(t *testing.T) {
 
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: fourHundredDaysAgo, PeakSpeed: 6000000, ThreadCount: 6, Scope: "wan"},
+		{Timestamp: fourHundredDaysAgo, PeakSpeed: 6000000, ThreadCount: 6, Scope: "wan", EnvKey: "env1"},
 	}
 	mu.Unlock()
 
-	_, ok = GetRecentPeakByScope("wan")
+	_, ok = GetRecentPeakByScope("wan", "env1")
 	if ok {
 		t.Error("Expected ok=false for 400-day-old record with 365-day window")
 	}
@@ -367,12 +366,12 @@ func TestGetRecentPeakByScope(t *testing.T) {
 
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: time.Now().Unix(), PeakSpeed: 8000000, ThreadCount: 8, Scope: "wan"},
-		{Timestamp: time.Now().Unix(), PeakSpeed: 4000000, ThreadCount: 4, Scope: "lan"},
+		{Timestamp: time.Now().Unix(), PeakSpeed: 8000000, ThreadCount: 8, Scope: "wan", EnvKey: "env1"},
+		{Timestamp: time.Now().Unix(), PeakSpeed: 4000000, ThreadCount: 4, Scope: "lan", EnvKey: "env1"},
 	}
 	mu.Unlock()
 
-	v, ok := GetRecentPeakByScope("wan")
+	v, ok := GetRecentPeakByScope("wan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true for wan")
 	}
@@ -380,7 +379,7 @@ func TestGetRecentPeakByScope(t *testing.T) {
 		t.Errorf("GetRecentPeakByScope(wan) = %d, want 1000000", v)
 	}
 
-	v, ok = GetRecentPeakByScope("lan")
+	v, ok = GetRecentPeakByScope("lan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true for lan")
 	}
@@ -388,7 +387,7 @@ func TestGetRecentPeakByScope(t *testing.T) {
 		t.Errorf("GetRecentPeakByScope(lan) = %d, want 1000000", v)
 	}
 
-	_, ok = GetRecentPeakByScope("")
+	_, ok = GetRecentPeakByScope("", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true for no scope")
 	}
@@ -402,12 +401,12 @@ func TestGetRecentPeakByDomain(t *testing.T) {
 	now := time.Now().Unix()
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: now, PeakSpeed: 8 * 1024 * 1024, ThreadCount: 8, Domain: "example.com", Scope: "wan"},
-		{Timestamp: now, PeakSpeed: 4 * 1024 * 1024, ThreadCount: 4, Domain: "other.com", Scope: "wan"},
+		{Timestamp: now, PeakSpeed: 8 * 1024 * 1024, ThreadCount: 8, Domain: "example.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now, PeakSpeed: 4 * 1024 * 1024, ThreadCount: 4, Domain: "other.com", Scope: "wan", EnvKey: "env1"},
 	}
 	mu.Unlock()
 
-	v, ok := GetRecentPeakByDomain("example.com", "wan")
+	v, ok := GetRecentPeakByDomain("example.com", "wan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true for example.com")
 	}
@@ -424,11 +423,11 @@ func TestGetRecentPeakByDomain_EmptyDomain(t *testing.T) {
 	now := time.Now().Unix()
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: now, PeakSpeed: 8 * 1024 * 1024, ThreadCount: 8, Domain: "example.com", Scope: "wan"},
+		{Timestamp: now, PeakSpeed: 8 * 1024 * 1024, ThreadCount: 8, Domain: "example.com", Scope: "wan", EnvKey: "env1"},
 	}
 	mu.Unlock()
 
-	_, ok := GetRecentPeakByDomain("", "wan")
+	_, ok := GetRecentPeakByDomain("", "wan", "env1")
 	if ok {
 		t.Error("Expected ok=false for empty domain")
 	}
@@ -442,11 +441,11 @@ func TestGetRecentPeakByDomain_NoMatch(t *testing.T) {
 	now := time.Now().Unix()
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: now, PeakSpeed: 8 * 1024 * 1024, ThreadCount: 8, Domain: "example.com", Scope: "wan"},
+		{Timestamp: now, PeakSpeed: 8 * 1024 * 1024, ThreadCount: 8, Domain: "example.com", Scope: "wan", EnvKey: "env1"},
 	}
 	mu.Unlock()
 
-	_, ok := GetRecentPeakByDomain("nonexistent.com", "wan")
+	_, ok := GetRecentPeakByDomain("nonexistent.com", "wan", "env1")
 	if ok {
 		t.Error("Expected ok=false for nonexistent domain")
 	}
@@ -461,13 +460,13 @@ func TestGetRecentPeakByDomain_CrossDomainIsolation(t *testing.T) {
 	mu.Lock()
 	records = []SpeedRecord{
 		// Slow domain: 50KB/s with 8 threads → 6.25KB/s per thread
-		{Timestamp: now, PeakSpeed: 50000, ThreadCount: 8, Domain: "slow.com", Scope: "wan"},
+		{Timestamp: now, PeakSpeed: 50000, ThreadCount: 8, Domain: "slow.com", Scope: "wan", EnvKey: "env1"},
 		// Fast domain: 8MB/s with 4 threads → 2MB/s per thread
-		{Timestamp: now, PeakSpeed: 8 * 1024 * 1024, ThreadCount: 4, Domain: "fast.com", Scope: "wan"},
+		{Timestamp: now, PeakSpeed: 8 * 1024 * 1024, ThreadCount: 4, Domain: "fast.com", Scope: "wan", EnvKey: "env1"},
 	}
 	mu.Unlock()
 
-	v, ok := GetRecentPeakByDomain("fast.com", "wan")
+	v, ok := GetRecentPeakByDomain("fast.com", "wan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true for fast.com")
 	}
@@ -475,7 +474,7 @@ func TestGetRecentPeakByDomain_CrossDomainIsolation(t *testing.T) {
 		t.Errorf("GetRecentPeakByDomain(fast.com) = %d, want %d (not polluted by slow.com)", v, 2*1024*1024)
 	}
 
-	v, ok = GetRecentPeakByDomain("slow.com", "wan")
+	v, ok = GetRecentPeakByDomain("slow.com", "wan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true for slow.com")
 	}
@@ -493,13 +492,13 @@ func TestGetRecentPeakByDomain_CrossScopeIsolation(t *testing.T) {
 	mu.Lock()
 	records = []SpeedRecord{
 		// wan: 8MB/s with 4 threads → 2MB/s per thread
-		{Timestamp: now, PeakSpeed: 8 * 1024 * 1024, ThreadCount: 4, Domain: "example.com", Scope: "wan"},
+		{Timestamp: now, PeakSpeed: 8 * 1024 * 1024, ThreadCount: 4, Domain: "example.com", Scope: "wan", EnvKey: "env1"},
 		// lan: 40MB/s with 4 threads → 10MB/s per thread
-		{Timestamp: now, PeakSpeed: 40 * 1024 * 1024, ThreadCount: 4, Domain: "example.com", Scope: "lan"},
+		{Timestamp: now, PeakSpeed: 40 * 1024 * 1024, ThreadCount: 4, Domain: "example.com", Scope: "lan", EnvKey: "env1"},
 	}
 	mu.Unlock()
 
-	v, ok := GetRecentPeakByDomain("example.com", "wan")
+	v, ok := GetRecentPeakByDomain("example.com", "wan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true for example.com+wan")
 	}
@@ -507,7 +506,7 @@ func TestGetRecentPeakByDomain_CrossScopeIsolation(t *testing.T) {
 		t.Errorf("GetRecentPeakByDomain(example.com, wan) = %d, want %d (not polluted by lan 10MB/s)", v, 2*1024*1024)
 	}
 
-	v, ok = GetRecentPeakByDomain("example.com", "lan")
+	v, ok = GetRecentPeakByDomain("example.com", "lan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true for example.com+lan")
 	}
@@ -524,12 +523,12 @@ func TestGetDomainPeak_CrossScopeIsolation(t *testing.T) {
 	now := time.Now().Unix()
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: now, PeakSpeed: 5 * 1024 * 1024, Domain: "example.com", Scope: "wan"},
-		{Timestamp: now, PeakSpeed: 50 * 1024 * 1024, Domain: "example.com", Scope: "lan"},
+		{Timestamp: now, PeakSpeed: 5 * 1024 * 1024, Domain: "example.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now, PeakSpeed: 50 * 1024 * 1024, Domain: "example.com", Scope: "lan", EnvKey: "env1"},
 	}
 	mu.Unlock()
 
-	peak, ok := GetDomainPeak("example.com", "wan")
+	peak, ok := GetDomainPeak("example.com", "wan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true for example.com+wan")
 	}
@@ -537,7 +536,7 @@ func TestGetDomainPeak_CrossScopeIsolation(t *testing.T) {
 		t.Errorf("GetDomainPeak(example.com, wan) = %d, want %d (not polluted by lan 50MB)", peak, 5*1024*1024)
 	}
 
-	peak, ok = GetDomainPeak("example.com", "lan")
+	peak, ok = GetDomainPeak("example.com", "lan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true for example.com+lan")
 	}
@@ -554,14 +553,14 @@ func TestGetRTprop_CrossScopeFallback(t *testing.T) {
 	now := time.Now().Unix()
 	mu.Lock()
 	records = []SpeedRecord{
-		{Timestamp: now - 100, TTFBMs: 100, Domain: "a.com", Scope: "wan"},
-		{Timestamp: now - 50, TTFBMs: 50, Domain: "other.com", Scope: "lan"},
+		{Timestamp: now - 100, TTFBMs: 100, Domain: "a.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now - 50, TTFBMs: 50, Domain: "other.com", Scope: "lan", EnvKey: "env1"},
 	}
 	mu.Unlock()
 
 	// No domain match for "nomatch.com" → should fall back to same-scope (wan) min TTFB
 	// wan scope only has a.com with TTFB=100ms, lan's 50ms should NOT pollute
-	rtt, ok := GetRTprop("nomatch.com", "wan")
+	rtt, ok := GetRTprop("nomatch.com", "wan", "env1")
 	if !ok {
 		t.Fatal("Expected ok=true (same-scope fallback)")
 	}

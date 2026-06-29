@@ -22,7 +22,7 @@ func setupProbeUpState(t *testing.T, gid string, bestEff int64, peakWorkers int)
 
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -148,7 +148,7 @@ func TestConvergence_ProbeUp_BlockedByRateLimit(t *testing.T) {
 
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -277,14 +277,14 @@ func TestConvergence_ProbeUp_BlockedByVAvailable(t *testing.T) {
 	gid := "sg_probe_up_vavail"
 	ct, tracker, telemetry, _ := setupProbeUpState(t, gid, 1_310_720, 8)
 
-	// Plant a global peak so GetGlobalPeak("wan") = 10 MB/s.
-	// GetRecentPeakByDomain("example.com", "wan") = 10MB/1 = 10 MB/s → vThreadAvg = 10 MB/s.
-	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan")
+	// Plant a global peak so GetGlobalPeak("wan", "testenv") = 10 MB/s.
+	// GetRecentPeakByDomain("example.com", "wan", "testenv") = 10MB/1 = 10 MB/s → vThreadAvg = 10 MB/s.
+	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")
 
 	// activeBw = 10 MB/s → globalPeak - activeBw = 0 < vThreadAvg(10MB) → blocked.
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope string) int64 {
+	activeBandwidthProvider = func(scope, envKey string) int64 {
 		return 10 * 1024 * 1024
 	}
 

@@ -72,6 +72,9 @@ type Monitor struct {
 
 	// CDN throttle fingerprint detector (self-contained 1s ticker)
 	cdnDetector *CDNDetector
+
+	// Network environment fingerprint cache (MAC → envKey)
+	netEnv *NetEnvCache
 }
 
 func New(app *application.App, hub *events.Hub, systray *application.SystemTray, engine rpc.DownloadEngine) *Monitor {
@@ -137,6 +140,11 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 }
 
 func (m *Monitor) Start() {
+	// Start network environment fingerprint cache (background MAC refresh)
+	m.netEnv = NewNetEnvCache()
+	State.SetNetEnv(m.netEnv)
+	m.netEnv.Start()
+
 	// Start convergence tick if engine is HybridEngine
 	if he, ok := m.engine.(*rpc.HybridEngine); ok {
 		adapter := &trackerAdapter{TaskTracker: m.tracker, engine: he}
@@ -152,6 +160,9 @@ func (m *Monitor) Start() {
 }
 
 func (m *Monitor) Stop() {
+	if m.netEnv != nil {
+		m.netEnv.Stop()
+	}
 	if m.cdnDetector != nil {
 		m.cdnDetector.Stop()
 	}
@@ -563,13 +574,18 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 			scope, domain := scopeClassifier.ClassifyByURL(task.SourceURL)
 			task.Scope = scope
 			task.Domain = domain
+			// PeakEnvKey stays empty — no netenv participation in fallback path.
 		}
 
 		// isExploration 直接从 tracker 记录取值，不再重新计算或减半
 
-		// Skip recording if we still have no domain — a record without domain is useless
-		// for BBR (GetDomainPeak/GetRTprop can't match) and would only pollute V_global_peak.
-		if task.Domain == "" {
+		// Skip recording if envKey is empty — external RPC/wake-up tasks have no
+		// envKey and would pollute env-aware history buckets.
+		if task.PeakEnvKey == "" {
+			log.Printf("[Monitor] Skipping speed stats for task %s: no envKey (external RPC or wake-up path)", task.GID)
+		} else if task.Domain == "" {
+			// Skip recording if we still have no domain — a record without domain is useless
+			// for BBR (GetDomainPeak/GetRTprop can't match) and would only pollute V_global_peak.
 			log.Printf("[Monitor] Skipping speed stats for task %s: no domain/URL available", task.GID)
 		} else if he, ok := m.engine.(*rpc.HybridEngine); ok {
 			if _, rateLimited := he.GetRateLimit(task.GID); rateLimited {
@@ -577,14 +593,14 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 				// rate-limited throughput (which doesn't reflect server capacity for BBR).
 				log.Printf("[Monitor] Skipping speed stats for task %s: rate-limited (would pollute BBR)", task.GID)
 			} else {
-				speedstats.AddRecordV2(task.PeakSpeed, threadCount, task.TotalLength, isExploration, task.TTFBMs, task.Domain, task.Scope)
-				log.Printf("[Monitor] Speed stats recorded: peak=%d, threads=%d (source=%s), exploration=%v, scope=%s, domain=%s, ttfb=%d",
-					task.PeakSpeed, threadCount, threadSource, isExploration, task.Scope, task.Domain, task.TTFBMs)
+				speedstats.AddRecordV2(task.PeakSpeed, threadCount, task.TotalLength, isExploration, task.TTFBMs, task.Domain, task.Scope, task.PeakEnvKey)
+				log.Printf("[Monitor] Speed stats recorded: peak=%d, threads=%d (source=%s), exploration=%v, scope=%s, envKey=%s, domain=%s, ttfb=%d",
+					task.PeakSpeed, threadCount, threadSource, isExploration, task.Scope, task.PeakEnvKey, task.Domain, task.TTFBMs)
 			}
 		} else {
-			speedstats.AddRecordV2(task.PeakSpeed, threadCount, task.TotalLength, isExploration, task.TTFBMs, task.Domain, task.Scope)
-			log.Printf("[Monitor] Speed stats recorded: peak=%d, threads=%d (source=%s), exploration=%v, scope=%s, domain=%s, ttfb=%d",
-				task.PeakSpeed, threadCount, threadSource, isExploration, task.Scope, task.Domain, task.TTFBMs)
+			speedstats.AddRecordV2(task.PeakSpeed, threadCount, task.TotalLength, isExploration, task.TTFBMs, task.Domain, task.Scope, task.PeakEnvKey)
+			log.Printf("[Monitor] Speed stats recorded: peak=%d, threads=%d (source=%s), exploration=%v, scope=%s, envKey=%s, domain=%s, ttfb=%d",
+				task.PeakSpeed, threadCount, threadSource, isExploration, task.Scope, task.PeakEnvKey, task.Domain, task.TTFBMs)
 		}
 	}
 
@@ -1040,6 +1056,7 @@ func (a *trackerAdapter) GetActiveTrackedTasks() []smartthread.TrackedTaskInfo {
 			Status:          t.Status,
 			Scope:           t.Scope,
 			Domain:          t.Domain,
+			EnvKey:          t.CurrentEnvKey,
 			IsKeepAlive:     t.IsKeepAlive,
 			CompletedLength: t.CompletedLength,
 			MinChunk:        t.MinChunk,
