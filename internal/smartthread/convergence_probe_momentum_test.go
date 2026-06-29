@@ -34,6 +34,16 @@ func TestProbeUp_BlockedDuringMomentum(t *testing.T) {
 	if s.phase == phaseProbingUp {
 		t.Fatal("expected phase != phaseProbingUp while probeMomentum=true")
 	}
+
+	// Momentum keeps the down-probe combo alive: with probeCooldown==0 and
+	// currentWorkers>probeFloor, the down-probe fires (delta<0, phase enters
+	// settling) instead of the blocked Probe-Up.
+	if ps.delta >= 0 {
+		t.Errorf("expected probe-down delta<0 during momentum, got delta=%d", ps.delta)
+	}
+	if s.phase != phaseSettling {
+		t.Errorf("expected phase=phaseSettling from probe-down, got %d", s.phase)
+	}
 }
 
 // TestProbeMomentum_ClearedOnFloorReached verifies that when a down-probe combo
@@ -86,6 +96,10 @@ func TestProbeMomentum_ClearedOnFloorReached(t *testing.T) {
 	}
 	if s.probeCooldown != probeIntervalCycles {
 		t.Errorf("expected probeCooldown=%d, got %d", probeIntervalCycles, s.probeCooldown)
+	}
+	// Clearing momentum on floor reached must not disturb the phase.
+	if s.phase != phaseStable {
+		t.Errorf("expected phase=phaseStable after floor clear, got %d", s.phase)
 	}
 }
 
