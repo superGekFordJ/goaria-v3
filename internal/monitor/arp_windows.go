@@ -35,17 +35,26 @@ func arpLookup(ifaceName string, gw net.IP) string {
 	return ""
 }
 
-// parseMACFromArpOutputWindows extracts the MAC from the line containing ipStr.
-// Only the line that mentions the target IP is considered; if no line matches,
-// empty string is returned (never fall back to an arbitrary host's MAC).
+// parseMACFromArpOutputWindows extracts the MAC from the line whose fields
+// include ipStr exactly. If no line matches, empty string is returned
+// (never fall back to an arbitrary host's MAC).
 // Windows uses dash-separated MACs (aa-bb-cc-dd-ee-ff).
 func parseMACFromArpOutputWindows(output string, ipStr string) string {
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
-		if !strings.Contains(line, ipStr) {
+		fields := strings.Fields(line)
+		// Exact field match avoids treating 192.168.1.1 as a
+		// substring of 192.168.1.10 in the full ARP table.
+		ipMatched := false
+		for _, f := range fields {
+			if f == ipStr {
+				ipMatched = true
+				break
+			}
+		}
+		if !ipMatched {
 			continue
 		}
-		fields := strings.Fields(line)
 		for _, f := range fields {
 			if isMACFieldWindows(f) {
 				return f
