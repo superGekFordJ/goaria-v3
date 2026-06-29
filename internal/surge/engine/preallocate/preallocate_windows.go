@@ -74,6 +74,11 @@ func preallocateWithValidData(file *os.File, size int64) error {
 
 // preallocateZeroFill writes zeroed 1MB buffers to physically allocate the file.
 func preallocateZeroFill(file *os.File, size int64) error {
+	// Seek to start first: a failed SetFileValidData fallback may leave the
+	// pointer at EOF after Truncate, which would double the file size.
+	if _, err := file.Seek(0, 0); err != nil {
+		return err
+	}
 	const chunkSize = 1024 * 1024 // 1MB
 	buf := make([]byte, chunkSize)
 	remaining := size
