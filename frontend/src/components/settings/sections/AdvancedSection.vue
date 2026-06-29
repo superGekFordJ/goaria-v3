@@ -81,10 +81,7 @@
     </SectionCard>
 
     <!-- History Toggle Card -->
-    <div
-      class="etched-panel p-6 cursor-pointer"
-      @click="toggleHistory"
-    >
+    <div class="etched-panel p-6">
       <div class="flex items-center justify-between relative z-10">
         <div class="flex items-center gap-3">
           <div
@@ -114,6 +111,7 @@
             'w-12 h-7 rounded-full relative transition-all duration-300 cursor-pointer',
             showHistory ? 'bg-[var(--neon-primary)]' : 'bg-[var(--btn-glass-bg)]',
           ]"
+          @click="toggleHistory"
         >
           <div
             :class="[

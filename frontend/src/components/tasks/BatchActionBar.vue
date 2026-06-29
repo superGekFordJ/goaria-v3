@@ -16,6 +16,15 @@
 
   const selectedCount = computed(() => taskStore.selectedCount)
 
+  const allSelectedCompleted = computed(() => {
+    const gids = taskStore.getSelectedGids
+    if (gids.length === 0) return false
+    const all = [...taskStore.activeTasks, ...taskStore.waitingTasks, ...taskStore.stoppedTasks]
+    const gidSet = new Set(gids)
+    const selected = all.filter(t => gidSet.has(t.gid))
+    return selected.length > 0 && selected.every(t => t.status === 'complete')
+  })
+
   const handleBatchPause = async () => {
     const selectedTaskGids = [...taskStore.getSelectedGids]
     const selectedGroupKeys = [...(taskStore.getSelectedGroupKeys ?? [])]
@@ -54,10 +63,20 @@
 
           <!-- Action Buttons (Icon-only) -->
           <div class="batch-actions">
-            <button class="batch-btn-icon" :title="t('batch.pauseAll')" @click="handleBatchPause">
+            <button
+              v-if="!allSelectedCompleted"
+              class="batch-btn-icon"
+              :title="t('batch.pauseAll')"
+              @click="handleBatchPause"
+            >
               <Pause :size="18" />
             </button>
-            <button class="batch-btn-icon" :title="t('batch.resumeAll')" @click="handleBatchResume">
+            <button
+              v-if="!allSelectedCompleted"
+              class="batch-btn-icon"
+              :title="t('batch.resumeAll')"
+              @click="handleBatchResume"
+            >
               <Play :size="18" />
             </button>
             <button
