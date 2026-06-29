@@ -1,6 +1,9 @@
 //go:build windows
 
-package single
+// FORK-PATCH: Windows SetFileValidData preallocation with
+// SeManageVolumePrivilege elevation. Falls back to chunked zero-fill on failure.
+
+package preallocate
 
 import (
 	"os"
@@ -8,14 +11,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// FORK-PATCH: Windows SetFileValidData preallocation with
-// SeManageVolumePrivilege elevation. Falls back to chunked zero-fill on failure.
-
-func preallocateFile(file *os.File, size int64) error {
-	if size <= 0 {
-		return nil
-	}
-
+func preallocate(file *os.File, size int64) error {
 	// Try SetFileValidData with SeManageVolumePrivilege elevation
 	if err := preallocateWithValidData(file, size); err == nil {
 		return nil
@@ -51,9 +47,17 @@ func preallocateWithValidData(file *os.File, size int64) error {
 		return err
 	}
 
+	// AdjustTokenPrivileges may return nil even when the privilege was not
+	// actually assigned (ERROR_NOT_ALL_ASSIGNED). Detect this edge case so
+	// the caller falls back to zero-fill instead of proceeding with an
+	// unprivileged SetFileValidData that will fail with access denied.
+	if lastErr := windows.GetLastError(); lastErr == windows.ERROR_NOT_ALL_ASSIGNED {
+		return lastErr
+	}
+
 	// SetFileValidData requires nValidDataLength <= current EOF.
-	// The file starts at size 0 (precreateWorkingFile), so extend EOF first
-	// via Truncate (SetEndOfFile, sparse-instant), then set valid data length.
+	// Extend EOF first via Truncate (SetEndOfFile, sparse-instant), then set
+	// valid data length.
 	if err := file.Truncate(size); err != nil {
 		return err
 	}
@@ -62,8 +66,8 @@ func preallocateWithValidData(file *os.File, size int64) error {
 		return err
 	}
 
-	// Truncate moves the file pointer to EOF; seek back so the sequential
-	// io.CopyBuffer in the single-thread downloader writes from offset 0.
+	// Truncate moves the file pointer to EOF; seek back so the downloader
+	// writes from offset 0.
 	_, err := file.Seek(0, 0)
 	return err
 }

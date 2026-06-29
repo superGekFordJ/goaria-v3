@@ -18,6 +18,7 @@ import (
 
 	"goaria-v3/internal/surge/engine"
 	"goaria-v3/internal/surge/engine/events"
+	"goaria-v3/internal/surge/engine/preallocate"
 	"goaria-v3/internal/surge/engine/state"
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/utils"
@@ -434,8 +435,8 @@ func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize i
 		return savedState.Tasks, nil
 	}
 
-	// FORK-PATCH: use unified preallocateFile instead of Truncate
-	if err := preallocateFile(outFile, fileSize); err != nil {
+	// FORK-PATCH: use unified preallocate.Preallocate instead of Truncate
+	if err := preallocate.Preallocate(outFile, fileSize); err != nil {
 		return nil, fmt.Errorf("failed to preallocate file: %w", err)
 	}
 	if d.State != nil {

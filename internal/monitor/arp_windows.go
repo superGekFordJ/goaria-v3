@@ -6,6 +6,7 @@ import (
 	"net"
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
 // arpLookup resolves the MAC address of the given gateway IP on Windows.
@@ -16,7 +17,9 @@ func arpLookup(ifaceName string, gw net.IP) string {
 	}
 	ipStr := gw.String()
 
-	out, err := exec.Command("arp", "-a", ipStr).Output()
+	cmd := exec.Command("arp", "-a", ipStr)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := cmd.Output()
 	if err == nil {
 		if mac := parseMACFromArpOutputWindows(string(out), ipStr); mac != "" {
 			return mac
@@ -25,7 +28,9 @@ func arpLookup(ifaceName string, gw net.IP) string {
 
 	// Fallback: "arp -a" full table — filter by target IP to avoid returning
 	// an unrelated host's MAC.
-	out, err = exec.Command("arp", "-a").Output()
+	cmdFallback := exec.Command("arp", "-a")
+	cmdFallback.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err = cmdFallback.Output()
 	if err == nil {
 		if mac := parseMACFromArpOutputWindows(string(out), ipStr); mac != "" {
 			return mac

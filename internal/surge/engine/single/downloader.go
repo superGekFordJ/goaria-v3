@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/surge/engine"
+	"goaria-v3/internal/surge/engine/preallocate"
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/utils"
 )
@@ -146,7 +147,7 @@ func (d *SingleDownloader) Download(ctx context.Context, rawurl, destPath string
 
 	preallocated := false
 	if fileSize > 0 {
-		if err := preallocateFile(outFile, fileSize); err != nil {
+		if err := preallocate.Preallocate(outFile, fileSize); err != nil {
 			return fmt.Errorf("failed to preallocate file: %w", err)
 		}
 		preallocated = true

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/surge/engine"
+	"goaria-v3/internal/surge/engine/preallocate"
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/testutil"
 	"goaria-v3/internal/surge/utils"
@@ -155,8 +156,8 @@ func TestPreallocateFile(t *testing.T) {
 	defer func() { _ = file.Close() }()
 
 	const size = int64(2 * types.MB)
-	if err := preallocateFile(file, size); err != nil {
-		t.Fatalf("preallocateFile failed: %v", err)
+	if err := preallocate.Preallocate(file, size); err != nil {
+		t.Fatalf("Preallocate failed: %v", err)
 	}
 
 	info, err := file.Stat()
@@ -676,7 +677,7 @@ func TestSingleDownloader_PreallocateFailure_ReleasesFileHandle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Cenário: criar o .surge como read-only para que preallocateFile (Truncate) falhe
+	// Cenário: criar o .surge como read-only para que Preallocate (Truncate) falhe
 	surgePath := destPath + types.IncompleteSuffix
 	f, err := os.Create(surgePath)
 	if err != nil {

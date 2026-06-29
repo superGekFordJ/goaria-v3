@@ -12,12 +12,14 @@ import (
 // Traffic through these is treated as proxy route.
 var virtualInterfacePrefixes = []string{
 	"utun", "tun", "tap", "tailscale", "zt", "docker", "veth", "br-",
+	"singbox", "clash", "mihomo", "wintun", "v2ray",
 }
 
 // skipInterfacePrefixes lists prefixes for non-physical or virtual interfaces
 // that should be excluded from gateway MAC enumeration.
 var skipInterfacePrefixes = []string{
 	"lo", "loopback", "utun", "tun", "tap", "tailscale", "zt", "docker", "veth", "br-",
+	"singbox", "clash", "mihomo", "wintun", "v2ray",
 }
 
 // NetEnvCache maintains a background-refreshed map of physical interface → gateway MAC.
