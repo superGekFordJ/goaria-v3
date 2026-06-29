@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -64,6 +65,8 @@ func (n *NetEnvCache) run() {
 }
 
 // refresh enumerates physical interfaces and populates the gateway MAC cache.
+// alpha: primaryIface is the first enumerated physical interface, not the
+// metric-lowest. Multi-homed + TUN scenarios may see primary drift.
 func (n *NetEnvCache) refresh() {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -87,6 +90,8 @@ func (n *NetEnvCache) refresh() {
 			if primaryCandidate == "" {
 				primaryCandidate = iface.Name
 			}
+		} else {
+			log.Printf("[netenv] gateway MAC lookup failed for iface=%s — envKey may degrade to empty-MAC bucket", iface.Name)
 		}
 	}
 
@@ -268,6 +273,7 @@ func udpDialAndGetIface(remoteIP string) (string, bool) {
 
 // ComputeEnvKeyForDownload derives the envKey for a download based on route and physical environment.
 // routeCode is determined by whether the traffic goes through a virtual/tunnel interface.
+// The url parameter is currently unused but reserved for future URL-based route判定.
 func ComputeEnvKeyForDownload(url string, remoteIP string) string {
 	netEnv := State.GetNetEnv()
 	if netEnv == nil {

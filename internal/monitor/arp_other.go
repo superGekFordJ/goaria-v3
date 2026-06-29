@@ -19,22 +19,23 @@ func arpLookup(ifaceName string, gw net.IP) string {
 	// Try "arp -n <ip>" first (macOS/BSD), then "ip neigh" (Linux)
 	out, err := exec.Command("arp", "-n", ipStr).Output()
 	if err == nil {
-		if mac := parseMACFromArpOutput(string(out)); mac != "" {
+		if mac := parseMACFromArpOutput(string(out), ipStr); mac != "" {
 			return mac
 		}
 	}
 
 	out, err = exec.Command("ip", "neigh", "show", ipStr).Output()
 	if err == nil {
-		if mac := parseMACFromArpOutput(string(out)); mac != "" {
+		if mac := parseMACFromArpOutput(string(out), ipStr); mac != "" {
 			return mac
 		}
 	}
 
-	// Fallback: "arp -a" and search for the IP
+	// Fallback: "arp -a" full table — filter by target IP to avoid returning
+	// an unrelated host's MAC.
 	out, err = exec.Command("arp", "-a").Output()
 	if err == nil {
-		if mac := parseMACFromArpOutput(string(out)); mac != "" {
+		if mac := parseMACFromArpOutput(string(out), ipStr); mac != "" {
 			return mac
 		}
 	}
@@ -42,11 +43,15 @@ func arpLookup(ifaceName string, gw net.IP) string {
 	return ""
 }
 
-// parseMACFromArpOutput extracts the first MAC address from arp command output.
-func parseMACFromArpOutput(output string) string {
+// parseMACFromArpOutput extracts the MAC address from the line containing ipStr.
+// Only the line that mentions the target IP is considered; if no line matches,
+// empty string is returned (never fall back to an arbitrary host's MAC).
+func parseMACFromArpOutput(output string, ipStr string) string {
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
-		// Look for MAC patterns: aa:bb:cc:dd:ee:ff or aa-bb-cc-dd-ee-ff
+		if !strings.Contains(line, ipStr) {
+			continue
+		}
 		fields := strings.Fields(line)
 		for _, f := range fields {
 			if isMACField(f) {

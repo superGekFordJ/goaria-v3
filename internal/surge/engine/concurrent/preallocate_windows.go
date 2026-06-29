@@ -48,7 +48,21 @@ func preallocateWithValidData(file *os.File, size int64) error {
 		return err
 	}
 
-	return windows.SetFileValidData(handle, size)
+	// SetFileValidData requires nValidDataLength <= current EOF.
+	// The file starts at size 0 (precreateWorkingFile), so extend EOF first
+	// via Truncate (SetEndOfFile, sparse-instant), then set valid data length.
+	if err := file.Truncate(size); err != nil {
+		return err
+	}
+
+	if err := windows.SetFileValidData(handle, size); err != nil {
+		return err
+	}
+
+	// Seek back to start — concurrent path uses WriteAt but seek is harmless
+	// and keeps the file pointer consistent across both engine implementations.
+	_, err := file.Seek(0, 0)
+	return err
 }
 
 func preallocateZeroFill(file *os.File, size int64) error {

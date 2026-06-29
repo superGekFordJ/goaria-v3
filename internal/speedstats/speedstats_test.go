@@ -568,3 +568,72 @@ func TestGetRTprop_CrossScopeFallback(t *testing.T) {
 		t.Errorf("GetRTprop(nomatch.com, wan) = %d, want 100 (same-scope wan min, not polluted by lan 50ms)", rtt)
 	}
 }
+
+func TestGobLoad_ScrubsEmptyEnvKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	statsPath := filepath.Join(tmpDir, "speed_stats.gob")
+	SetStatsPath(statsPath)
+	SetSaveInterval(1 * time.Hour)
+
+	// Write a gob file containing one pre-upgrade record (EnvKey="") and one
+	// valid record (EnvKey="env1"). The pre-upgrade record must be dropped on Load.
+	dirty := []SpeedRecord{
+		{Timestamp: time.Now().Unix(), PeakSpeed: 5000, ThreadCount: 4, Scope: "wan", Domain: "old.com", EnvKey: ""},
+		{Timestamp: time.Now().Unix(), PeakSpeed: 8000, ThreadCount: 8, Scope: "wan", Domain: "new.com", EnvKey: "env1"},
+	}
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(dirty); err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+	if err := os.WriteFile(statsPath, buf.Bytes(), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	Load()
+
+	mu.RLock()
+	loaded := records
+	mu.RUnlock()
+
+	if len(loaded) != 1 {
+		t.Fatalf("expected 1 record after scrubbing, got %d", len(loaded))
+	}
+	if loaded[0].Domain != "new.com" {
+		t.Errorf("surviving record Domain = %q, want new.com", loaded[0].Domain)
+	}
+	if loaded[0].EnvKey != "env1" {
+		t.Errorf("surviving record EnvKey = %q, want env1", loaded[0].EnvKey)
+	}
+}
+
+func TestGetDomainPeak_CrossEnvFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	SetStatsPath(filepath.Join(tmpDir, "speed_stats.gob"))
+	SetSaveInterval(1 * time.Hour)
+
+	now := time.Now().Unix()
+	mu.Lock()
+	records = []SpeedRecord{
+		{Timestamp: now, PeakSpeed: 5 * 1024 * 1024, Domain: "example.com", Scope: "wan", EnvKey: "envA"},
+		{Timestamp: now, PeakSpeed: 20 * 1024 * 1024, Domain: "example.com", Scope: "wan", EnvKey: "envB"},
+	}
+	mu.Unlock()
+
+	// Exact env match: returns envA's peak
+	peak, ok := GetDomainPeak("example.com", "wan", "envA")
+	if !ok {
+		t.Fatal("expected ok=true for envA")
+	}
+	if peak != 5*1024*1024 {
+		t.Errorf("GetDomainPeak(envA) = %d, want 5MB", peak)
+	}
+
+	// No exact env match (envC) → fallback to scope-only, aggregating envA+envB
+	peak, ok = GetDomainPeak("example.com", "wan", "envC")
+	if !ok {
+		t.Fatal("expected ok=true for cross-env fallback (envC)")
+	}
+	if peak != 20*1024*1024 {
+		t.Errorf("GetDomainPeak(envC) cross-env fallback = %d, want 20MB (max of envA+envB)", peak)
+	}
+}

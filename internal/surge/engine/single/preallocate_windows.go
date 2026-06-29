@@ -51,7 +51,21 @@ func preallocateWithValidData(file *os.File, size int64) error {
 		return err
 	}
 
-	return windows.SetFileValidData(handle, size)
+	// SetFileValidData requires nValidDataLength <= current EOF.
+	// The file starts at size 0 (precreateWorkingFile), so extend EOF first
+	// via Truncate (SetEndOfFile, sparse-instant), then set valid data length.
+	if err := file.Truncate(size); err != nil {
+		return err
+	}
+
+	if err := windows.SetFileValidData(handle, size); err != nil {
+		return err
+	}
+
+	// Truncate moves the file pointer to EOF; seek back so the sequential
+	// io.CopyBuffer in the single-thread downloader writes from offset 0.
+	_, err := file.Seek(0, 0)
+	return err
 }
 
 // preallocateZeroFill writes zeroed 1MB buffers to physically allocate the file.

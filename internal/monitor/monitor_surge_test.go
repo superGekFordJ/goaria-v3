@@ -1070,3 +1070,40 @@ func TestHandleTaskComplete_RateLimitNotSet_RecordsNormally(t *testing.T) {
 		t.Errorf("expected 1 new speedstats record when not rate-limited, got %d", after-before)
 	}
 }
+
+// TestHandleTaskComplete_EmptyEnvKeySkipsRecording verifies that a task with
+// PeakEnvKey="" (external RPC or wake-up path) does NOT produce a speedstats
+// record — empty envKey is a dirty-data signal that would pollute env-aware buckets.
+func TestHandleTaskComplete_EmptyEnvKeySkipsRecording(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(nil, surge)
+
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_no_envkey", 200000000, "https://example.com/large.zip", 8)
+
+	m := &Monitor{engine: he, tracker: tracker}
+
+	task := tracker.tasks["sg_no_envkey"]
+	task.Status = "complete"
+	task.PeakSpeed = 50 * 1024 * 1024
+	task.ThreadCount = 8
+	task.Domain = "example.com"
+	task.Scope = "wan"
+	task.FilePath = "D:\\Downloads\\large.zip"
+	task.PeakEnvKey = "" // no envKey — should skip AddRecordV2
+
+	before := speedstatsRecordCount()
+	m.handleTaskComplete(task)
+	after := speedstatsRecordCount()
+
+	if after != before {
+		t.Fatalf("expected 0 new speedstats records (empty envKey skipped), got %d (before=%d, after=%d)", after-before, before, after)
+	}
+}

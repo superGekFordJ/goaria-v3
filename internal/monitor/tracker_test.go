@@ -1114,3 +1114,65 @@ func TestRecordPeakEfficiency_RejectSewageMonster(t *testing.T) {
 		t.Errorf("PeakSpeed = %d, want %d (should not decrease)", tracked.PeakSpeed, 32*1024*1024)
 	}
 }
+
+// TestTaskTracker_PeakEnvKeyAttribution verifies that PeakEnvKey is set to the
+// CurrentEnvKey at the time PeakSpeed is achieved, and does NOT change when
+// CurrentEnvKey later changes (if the new speed doesn't exceed the peak).
+func TestTaskTracker_PeakEnvKeyAttribution(t *testing.T) {
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	tracker := NewTaskTracker()
+
+	// 1. Create task and set env=envA
+	gid := "sg-peak-env-attribution"
+	tracker.SetThreadInfo(gid, 8, false)
+	tracker.SetScopeAndEnv(gid, "wan", 50, "example.com", "envA")
+
+	tracked := tracker.tasks[gid]
+	if tracked == nil {
+		t.Fatal("expected task to be tracked")
+	}
+	// Set CompletedLength > MinFileSize (50MB) so sampleSpeedInternal updates PeakSpeed.
+	tracked.TotalLength = 100 * 1024 * 1024
+	tracked.CompletedLength = 60 * 1024 * 1024
+
+	// 2. Simulate speed sampling that achieves a new peak in envA.
+	//    sampleSpeedInternal with threshold=1 (headless) updates PeakSpeed+PeakEnvKey.
+	tracker.sampleSpeedInternal(tracked, 10*1024*1024, 1)
+
+	if tracked.PeakSpeed != 10*1024*1024 {
+		t.Fatalf("PeakSpeed = %d, want 10MB", tracked.PeakSpeed)
+	}
+	if tracked.PeakEnvKey != "envA" {
+		t.Fatalf("PeakEnvKey = %q, want envA (should match CurrentEnvKey at peak time)", tracked.PeakEnvKey)
+	}
+
+	// 3. Network changes → CurrentEnvKey switches to envB.
+	tracker.SetScopeAndEnv(gid, "wan", 50, "example.com", "envB")
+	if tracked.CurrentEnvKey != "envB" {
+		t.Fatalf("CurrentEnvKey = %q, want envB", tracked.CurrentEnvKey)
+	}
+
+	// 4. Simulate speed sampling that does NOT exceed the peak.
+	//    PeakEnvKey must remain envA (peak attribution is immutable unless exceeded).
+	tracker.sampleSpeedInternal(tracked, 5*1024*1024, 1)
+
+	if tracked.PeakSpeed != 10*1024*1024 {
+		t.Errorf("PeakSpeed = %d, want 10MB (unchanged)", tracked.PeakSpeed)
+	}
+	if tracked.PeakEnvKey != "envA" {
+		t.Errorf("PeakEnvKey = %q, want envA (peak attribution must not change when speed doesn't exceed peak)", tracked.PeakEnvKey)
+	}
+
+	// 5. Speed now exceeds peak in envB → PeakEnvKey should update to envB.
+	tracker.sampleSpeedInternal(tracked, 20*1024*1024, 1)
+
+	if tracked.PeakSpeed != 20*1024*1024 {
+		t.Errorf("PeakSpeed = %d, want 20MB (new peak)", tracked.PeakSpeed)
+	}
+	if tracked.PeakEnvKey != "envB" {
+		t.Errorf("PeakEnvKey = %q, want envB (should update to current env when peak exceeded)", tracked.PeakEnvKey)
+	}
+}

@@ -418,7 +418,7 @@ func HasDomainScopeEnvRecord(domain, scope string, envKey string) bool {
 // HasDomainScopeRecord is a backward-compatible wrapper that delegates to
 // HasDomainScopeEnvRecord with an empty envKey. Pre-upgrade records with
 // empty EnvKey have been scrubbed on Load, so this always returns false
-// for the legacy call path.
+// for the legacy call path. Prefer HasDomainScopeEnvRecord for new code.
 func HasDomainScopeRecord(domain, scope string) bool {
 	return HasDomainScopeEnvRecord(domain, scope, "")
 }

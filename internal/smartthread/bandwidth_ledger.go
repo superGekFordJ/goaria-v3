@@ -38,11 +38,11 @@ func SetActiveBandwidthProvider(fn ActiveBandwidthFunc) {
 //
 // Usage:
 //
-//	ledger := NewBandwidthLedger()
+//	ledger := NewBandwidthLedger(activeTasks)
 //	for _, candidate := range batch {
-//	    reserved := ledger.Reserved(scope)
+//	    reserved := ledger.Reserved(scope, envKey)
 //	    params := Calculate(CalcParams{..., ReservedBandwidth: reserved})
-//	    ledger.Reserve(scope, params.TargetBandwidth)
+//	    ledger.Reserve(scope, envKey, params.TargetBandwidth)
 //	}
 //
 // BandwidthLedger is accessed during batch-add (single goroutine) but its
