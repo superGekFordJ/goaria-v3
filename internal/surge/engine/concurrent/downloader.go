@@ -678,12 +678,13 @@ func (d *ConcurrentDownloader) executeWorkers(ctx context.Context, client *http.
 
 	// Wait for all workers to complete
 	go func() {
-		// FORK-PATCH: Guard WaitGroup reuse — set workersActive=false under lock
-		// before Wait(), so ScaleWorkers cannot Add() after Wait() begins
+		// FORK-PATCH: Guard WaitGroup reuse — wait for all workers to finish,
+		// THEN set workersActive=false under lock so ScaleWorkers can Add()
+		// during the wait (drain) window without being blocked.
+		d.workerWg.Wait()
 		d.workersMu.Lock()
 		d.workersActive.Store(false)
 		d.workersMu.Unlock()
-		d.workerWg.Wait()
 		close(workerErrors)
 		queue.Close()
 	}()

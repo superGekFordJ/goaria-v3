@@ -877,7 +877,8 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	//   5. N_max not exceeded: !(hasLimit && currentWorkers >= nMax)
 	//   6. V_available sufficient: globalPeak - activeBw >= vThreadAvg (or no globalPeak data → allow)
 	//   7. !rateLimited
-	if s.phase == phaseStable && s.bestEff > 0 {
+	//   8. !probeMomentum (don't interrupt an active down-probe combo)
+	if s.phase == phaseStable && s.bestEff > 0 && !s.probeMomentum {
 		newEff := rawBps / int64(currentWorkers)
 		preheated := s.peakWorkers > 0 || (s.sustainCount >= peakSustainCycles && s.bestEff > 0)
 		if newEff >= int64(float64(s.bestEff)*probeUpEffThreshold) && preheated {
@@ -950,6 +951,15 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 					return pendingScale{gid: gid, scope: task.Scope, envKey: task.EnvKey, delta: -step}, true
 				}
 			}
+		}
+
+		// Floor reached: down-probe combo hit the probe floor. Clear momentum
+		// so it doesn't linger as inert residue; Probe-Up may now explore upward.
+		if currentWorkers <= probeFloor && s.probeMomentum {
+			s.probeMomentum = false
+			s.probeCooldown = probeIntervalCycles
+			log.Printf("[convergence] probe-floor-reached: gid=%s workers=%d momentum cleared",
+				gid, currentWorkers)
 		}
 	}
 

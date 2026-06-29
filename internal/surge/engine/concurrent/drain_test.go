@@ -609,11 +609,86 @@ func TestScaleWorkers_WaitGroupReuseProtection(t *testing.T) {
 	defer cancel()
 
 	d.workerDepsPtr.Store(&workerDeps{ctx: ctx})
-	d.workersActive.Store(false) // Simulate post-Wait state
+	d.workersActive.Store(false) // Simulate post-Wait state (workersActive set after Wait() returns)
 
 	result := d.ScaleWorkers(1)
 	if result != 0 {
 		t.Errorf("ScaleWorkers(1) after workersActive=false returned %d, want 0", result)
+	}
+}
+
+// TestScaleWorkers_UpDuringActiveWorkers verifies the core fix: while workers
+// are still running (Wait() not yet returned), workersActive stays true and
+// ScaleWorkers(delta>0) can Add new workers instead of being blocked.
+// FORK-PATCH: workersActive must remain true until Wait() returns.
+func TestScaleWorkers_UpDuringActiveWorkers(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(1 * types.MB)
+	server := testutil.NewMockServerT(t,
+		testutil.WithFileSize(fileSize),
+		testutil.WithRangeSupport(true),
+	)
+	defer server.Close()
+
+	destPath := filepath.Join(tmpDir, "scale_up_active.bin")
+	workingPath := destPath + types.IncompleteSuffix
+
+	f, err := os.Create(workingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{
+		WorkerBufferSize: 32 * types.KB,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	queue := NewTaskQueue()
+	d.workerDepsPtr.Store(&workerDeps{
+		ctx:       ctx,
+		mirrors:   []string{server.URL()},
+		file:      f,
+		queue:     queue,
+		totalSize: fileSize,
+		client:    &http.Client{},
+	})
+
+	// Simulate executeWorkers start: workersActive=true.
+	d.workersActive.Store(true)
+
+	// Simulate a long-running worker still in flight (Wait() not returned).
+	d.workerWg.Add(1)
+	go func() {
+		defer d.workerWg.Done()
+		time.Sleep(200 * time.Millisecond)
+	}()
+
+	// While the worker is still running, ScaleUp must succeed (returns 1).
+	result := d.ScaleWorkers(1)
+	if result != 1 {
+		t.Fatalf("ScaleWorkers(1) during active workers returned %d, want 1", result)
+	}
+
+	// Close the queue so the ScaleWorkers-spawned worker exits cleanly.
+	queue.Close()
+
+	done := make(chan struct{})
+	go func() {
+		d.workerWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All workers exited without panic.
+	case <-time.After(10 * time.Second):
+		cancel()
+		t.Fatal("workers did not exit after queue close")
 	}
 }
 
