@@ -362,11 +362,13 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
 
       case 'pause': {
         patchTaskStatus(delta.gid, 'paused')
+        useDownloadGroupStore().scheduleAutoSyncImmediate('pause-delta')
         break
       }
 
       case 'resume': {
         patchTaskStatus(delta.gid, 'active')
+        useDownloadGroupStore().scheduleAutoSyncImmediate('resume-delta')
         break
       }
 

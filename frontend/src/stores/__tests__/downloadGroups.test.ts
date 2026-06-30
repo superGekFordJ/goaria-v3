@@ -1000,4 +1000,23 @@ describe('download group store', () => {
 
     expect(entries.map(entry => entry.key)).toEqual(['task:gid-plain-completed'])
   })
+
+  it('scheduleAutoSyncImmediate triggers fetchGroups within a microtask and coalesces rapid calls', async () => {
+    const firstCard = card('dg-immediate')
+    bindingMocks.GetDownloadGroups.mockResolvedValue(envelope([firstCard]))
+    const store = useDownloadGroupStore()
+    store.startAutoSync()
+
+    store.scheduleAutoSyncImmediate('pause-delta')
+    store.scheduleAutoSyncImmediate('resume-delta')
+    store.scheduleAutoSyncImmediate('pause-delta')
+
+    expect(bindingMocks.GetDownloadGroups).not.toHaveBeenCalled()
+
+    await Promise.resolve()
+
+    expect(bindingMocks.GetDownloadGroups).toHaveBeenCalledTimes(1)
+
+    store.stopAutoSync()
+  })
 })

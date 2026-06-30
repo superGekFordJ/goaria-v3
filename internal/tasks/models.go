@@ -38,6 +38,7 @@ type addTaskCandidate struct {
 }
 
 type addTaskSummary struct {
+	mu         sync.Mutex
 	succeeded  []string
 	duplicates []string
 	errors     map[string]string
@@ -57,4 +58,59 @@ type addTaskAuthSourcePlan struct {
 	request                       extractor.HostAuthRuntimeRequest
 	key                           string
 	locallyAvailableBeforeResolve bool
+}
+
+type addCandidateBatchState struct {
+	mu            sync.Mutex
+	existingUrls  map[string]bool
+	candidateSeen map[string]bool
+	summary       *addTaskSummary
+
+	inflightMu sync.Map // url -> *sync.Mutex
+}
+
+func (b *addCandidateBatchState) lockForUrl(url string) func() {
+	v, _ := b.inflightMu.LoadOrStore(url, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+func (b *addCandidateBatchState) checkAndMarkDuplicate(candidate addTaskCandidate, historyDuplicates map[string]bool) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if isDuplicateAddCandidate(candidate, b.existingUrls, historyDuplicates, b.candidateSeen) {
+		return true
+	}
+	b.existingUrls[candidate.url] = true
+	b.candidateSeen[candidate.url] = true
+	return false
+}
+
+func (b *addCandidateBatchState) unmarkSeen(url string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.existingUrls, url)
+	delete(b.candidateSeen, url)
+}
+
+func (b *addCandidateBatchState) recordSuccess(displayKey string, group *downloadgroups.DownloadGroupPlan) {
+	b.mu.Lock()
+	b.summary.succeeded = append(b.summary.succeeded, displayKey)
+	b.mu.Unlock()
+	if group != nil {
+		b.summary.addGroup(group.GroupCopy())
+	}
+}
+
+func (b *addCandidateBatchState) recordError(displayKey, errMsg string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.summary.errors[displayKey] = errMsg
+}
+
+func (b *addCandidateBatchState) recordDuplicate(displayKey string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.summary.duplicates = append(b.summary.duplicates, displayKey)
 }

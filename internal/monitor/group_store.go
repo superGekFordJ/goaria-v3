@@ -88,6 +88,7 @@ func RegisterTaskGroup(gid string, group rpc.DownloadGroup) {
 	groupStore.groups[gid] = group
 	groupStore.saveLocked()
 	groupStore.mu.Unlock()
+	Cache.markPendingStart(gid)
 	queueDownloadGroupNameRefresh(group.ID)
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"goaria-v3/internal/downloadgroups"
+	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/tasks"
 )
@@ -65,21 +66,37 @@ func (a *App) GetTaskMetadata(gids []string) map[string]rpc.Task {
 
 // PauseTask pauses a download task
 func (a *App) PauseTask(gid string) {
+	if mon := monitor.State.GetMonitor(); mon != nil {
+		mon.BumpPauseResumeIntention(gid, "pause")
+	}
 	_ = a.downloadEngine.Pause(gid)
 }
 
 // ResumeTask resumes a paused task
 func (a *App) ResumeTask(gid string) {
+	if mon := monitor.State.GetMonitor(); mon != nil {
+		mon.BumpPauseResumeIntention(gid, "resume")
+	}
 	_ = a.downloadEngine.Resume(gid)
 }
 
 // BatchPause pauses multiple tasks
 func (a *App) BatchPause(gids []string) {
+	if mon := monitor.State.GetMonitor(); mon != nil {
+		for _, gid := range gids {
+			mon.BumpPauseResumeIntention(gid, "pause")
+		}
+	}
 	_ = a.downloadEngine.PauseMulti(gids)
 }
 
 // BatchResume resumes multiple paused tasks
 func (a *App) BatchResume(gids []string) {
+	if mon := monitor.State.GetMonitor(); mon != nil {
+		for _, gid := range gids {
+			mon.BumpPauseResumeIntention(gid, "resume")
+		}
+	}
 	_ = a.downloadEngine.ResumeMulti(gids)
 }
 

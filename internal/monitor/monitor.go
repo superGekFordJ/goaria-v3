@@ -75,24 +75,31 @@ type Monitor struct {
 
 	// Network environment fingerprint cache (MAC → envKey)
 	netEnv *NetEnvCache
+
+	// Per-GID intention version for stale pause event defense.
+	pauseResumeVersions   map[string]int64
+	pauseResumeIntentions map[string]string
+	pauseResumeVersionMu  sync.RWMutex
 }
 
 func New(app *application.App, hub *events.Hub, systray *application.SystemTray, engine rpc.DownloadEngine) *Monitor {
 	m := &Monitor{
-		app:                  app,
-		hub:                  hub,
-		systray:              systray,
-		engine:               engine,
-		stopChan:             make(chan struct{}),
-		forceTickChan:        make(chan struct{}, 1),
-		headlessInterval:     5 * time.Second, // 无头模式：5秒
-		windowInterval:       1 * time.Second, // 窗口模式：1秒（由前端主导）
-		shouldFetchStopped:   true,            // 初始时获取一次 stopped 任务
-		lastStoppedFetchTime: time.Now(),
-		deletedGids:          make(map[string]time.Time),
-		prevActiveGids:       make(map[string]bool),
-		prevWaitingGids:      make(map[string]bool),
-		telemetry:            NewTelemetryCache(),
+		app:                   app,
+		hub:                   hub,
+		systray:               systray,
+		engine:                engine,
+		stopChan:              make(chan struct{}),
+		forceTickChan:         make(chan struct{}, 1),
+		headlessInterval:      5 * time.Second, // 无头模式：5秒
+		windowInterval:        1 * time.Second, // 窗口模式：1秒（由前端主导）
+		shouldFetchStopped:    true,            // 初始时获取一次 stopped 任务
+		lastStoppedFetchTime:  time.Now(),
+		deletedGids:           make(map[string]time.Time),
+		prevActiveGids:        make(map[string]bool),
+		prevWaitingGids:       make(map[string]bool),
+		telemetry:             NewTelemetryCache(),
+		pauseResumeVersions:   make(map[string]int64),
+		pauseResumeIntentions: make(map[string]string),
 	}
 
 	Cache.engine = engine
@@ -137,6 +144,38 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 	m.startSurgeEventBridge()
 
 	return m
+}
+
+func (m *Monitor) BumpPauseResumeIntention(gid string, action string) {
+	if m == nil || gid == "" {
+		return
+	}
+	m.pauseResumeVersionMu.Lock()
+	defer m.pauseResumeVersionMu.Unlock()
+	if m.pauseResumeVersions == nil {
+		m.pauseResumeVersions = make(map[string]int64)
+	}
+	if m.pauseResumeIntentions == nil {
+		m.pauseResumeIntentions = make(map[string]string)
+	}
+	m.pauseResumeVersions[gid]++
+	m.pauseResumeIntentions[gid] = action
+}
+
+func (m *Monitor) shouldDiscardStalePause(gid string) bool {
+	if m == nil || gid == "" {
+		return false
+	}
+	m.pauseResumeVersionMu.RLock()
+	defer m.pauseResumeVersionMu.RUnlock()
+	if m.pauseResumeIntentions == nil {
+		return false
+	}
+	intention, exists := m.pauseResumeIntentions[gid]
+	if !exists {
+		return false
+	}
+	return intention == "resume"
 }
 
 func (m *Monitor) Start() {
@@ -935,6 +974,10 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 	// stream) and the status badge/card style changing (was waiting for tick).
 	switch deltaType {
 	case "pause":
+		if m.shouldDiscardStalePause(gid) {
+			log.Printf("[Monitor] Discarding stale pause event for gid %s (superseded by resume)", gid)
+			return
+		}
 		Cache.MoveTaskToWaiting(gid, "paused")
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{Type: "pause", GID: gid})

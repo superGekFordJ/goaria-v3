@@ -22,6 +22,13 @@ vi.mock('../../../../bindings/goaria-v3/app.js', () => ({
   UpdateTrayState: vi.fn(),
 }))
 
+// Mock downloadGroups store to avoid Pinia setup in events tests
+vi.mock('../../downloadGroups', () => ({
+  useDownloadGroupStore: () => ({
+    scheduleAutoSyncImmediate: vi.fn(),
+  }),
+}))
+
 // --- Helpers ---
 
 function mockTask(gid: string, overrides: Partial<Task> = {}): Task {

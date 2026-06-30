@@ -27,6 +27,10 @@ type TaskCache struct {
 	// 元数据缓存（用于暂停任务的文件名等信息）
 	metadata map[string]*TaskMetadata
 
+	// pendingStartGids tracks GIDs registered with a download group but
+	// not yet seen in a cache tick. Covers the post-GID pre-cache window.
+	pendingStartGids map[string]time.Time
+
 	// 最后更新时间
 	lastUpdate time.Time
 }
@@ -107,7 +111,8 @@ func copyTask(task rpc.Task) rpc.Task {
 
 // Cache 全局缓存实例
 var Cache = &TaskCache{
-	metadata: make(map[string]*TaskMetadata),
+	metadata:         make(map[string]*TaskMetadata),
+	pendingStartGids: make(map[string]time.Time),
 }
 
 // UpdateFromAria2 从 Aria2 更新缓存（批量获取）
@@ -121,6 +126,25 @@ func (c *TaskCache) UpdateFromAria2(active, waiting, stopped []rpc.Task) {
 	c.waiting = copyTaskSlice(waiting)
 	c.stopped = copyTaskSlice(stopped)
 	c.lastUpdate = time.Now()
+
+	if c.pendingStartGids == nil {
+		return
+	}
+	for _, task := range active {
+		delete(c.pendingStartGids, task.GID)
+	}
+	for _, task := range waiting {
+		delete(c.pendingStartGids, task.GID)
+	}
+	for _, task := range stopped {
+		delete(c.pendingStartGids, task.GID)
+	}
+	now := time.Now()
+	for gid, markedAt := range c.pendingStartGids {
+		if now.Sub(markedAt) > 30*time.Second {
+			delete(c.pendingStartGids, gid)
+		}
+	}
 }
 
 // ensureMetadata 确保任务元数据已缓存（预取）
@@ -361,6 +385,33 @@ func (c *TaskCache) RegisterTaskGroup(gid string, group rpc.DownloadGroup) {
 	RegisterTaskGroup(gid, group)
 }
 
+func (c *TaskCache) markPendingStart(gid string) {
+	gid = strings.TrimSpace(gid)
+	if gid == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pendingStartGids == nil {
+		c.pendingStartGids = make(map[string]time.Time)
+	}
+	c.pendingStartGids[gid] = time.Now()
+}
+
+func (c *TaskCache) IsPendingStart(gid string) bool {
+	gid = strings.TrimSpace(gid)
+	if gid == "" {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.pendingStartGids == nil {
+		return false
+	}
+	_, ok := c.pendingStartGids[gid]
+	return ok
+}
+
 func (c *TaskCache) GetTaskGroup(gid string) *rpc.DownloadGroup {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -440,6 +491,9 @@ func (c *TaskCache) InvalidateMetadata(gid string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.metadata, gid)
+	if c.pendingStartGids != nil {
+		delete(c.pendingStartGids, gid)
+	}
 	RemoveTaskGroup(gid)
 }
 
@@ -462,6 +516,9 @@ func (c *TaskCache) RemoveTask(gid string) {
 	c.waiting = filter(c.waiting)
 	c.stopped = filter(c.stopped)
 	delete(c.metadata, gid)
+	if c.pendingStartGids != nil {
+		delete(c.pendingStartGids, gid)
+	}
 	RemoveTaskGroup(gid)
 }
 

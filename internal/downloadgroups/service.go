@@ -1037,12 +1037,13 @@ var PauseMultiResults func(gids []string) ([]rpc.MultiCallItemResult, error) = r
 var ResumeMultiResults func(gids []string) ([]rpc.MultiCallItemResult, error) = rpc.UnpauseMultiResults
 
 type downloadGroupOperationTarget struct {
-	gid         string
-	task        rpc.Task
-	source      string
-	status      string
-	historyOnly bool
-	stale       bool
+	gid          string
+	task         rpc.Task
+	source       string
+	status       string
+	historyOnly  bool
+	stale        bool
+	pendingStart bool
 }
 
 type downloadGroupOperationResolution struct {
@@ -1219,6 +1220,11 @@ func pauseResumeDownloadGroup(groupKey string, action string) DownloadGroupOpera
 		gids[i] = target.gid
 	}
 	result.markAttempted()
+	if mon := monitor.State.GetMonitor(); mon != nil {
+		for _, gid := range gids {
+			mon.BumpPauseResumeIntention(gid, action)
+		}
+	}
 	multiResults, err := callDownloadGroupPauseResumeRPC(action, gids)
 	if err != nil {
 		for _, target := range actionable {
@@ -1342,11 +1348,12 @@ func buildDownloadGroupOperationTargets(snapshot downloadGroupReadSnapshot, buck
 			}
 			status := strings.TrimSpace(member.task.Status)
 			targets = append(targets, downloadGroupOperationTarget{
-				gid:         member.task.GID,
-				task:        cloneDownloadGroupTask(member.task),
-				source:      member.source,
-				status:      status,
-				historyOnly: member.historyOnly,
+				gid:          member.task.GID,
+				task:         cloneDownloadGroupTask(member.task),
+				source:       member.source,
+				status:       status,
+				historyOnly:  member.historyOnly,
+				pendingStart: source == "stopped" && monitor.Cache.IsPendingStart(task.GID),
 			})
 		}
 	}
@@ -1359,12 +1366,28 @@ func buildDownloadGroupOperationTargets(snapshot downloadGroupReadSnapshot, buck
 	}
 	sort.Strings(stale)
 	for _, gid := range stale {
+		if monitor.Cache.IsPendingStart(gid) {
+			targets = append(targets, downloadGroupOperationTarget{
+				gid:          gid,
+				source:       "waiting",
+				status:       "waiting",
+				stale:        true,
+				pendingStart: true,
+			})
+			continue
+		}
 		targets = append(targets, downloadGroupOperationTarget{gid: gid, source: "stale", status: "stale", stale: true})
 	}
 	return targets
 }
 
 func downloadGroupPauseResumeSkipCode(action string, target downloadGroupOperationTarget) (string, bool) {
+	if target.pendingStart {
+		if action == DownloadGroupOperationActionPause {
+			return "", false
+		}
+		return DownloadGroupOperationCodeTerminalState, true
+	}
 	if target.stale {
 		return DownloadGroupOperationCodeStaleMember, true
 	}
@@ -1372,6 +1395,9 @@ func downloadGroupPauseResumeSkipCode(action string, target downloadGroupOperati
 		return DownloadGroupOperationCodeHistoryOnly, true
 	}
 	if target.source == "stopped" {
+		if target.pendingStart && action == DownloadGroupOperationActionPause {
+			return "", false
+		}
 		return DownloadGroupOperationCodeTerminalState, true
 	}
 	if action == DownloadGroupOperationActionPause {

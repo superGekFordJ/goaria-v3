@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +22,7 @@ import (
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
+	"goaria-v3/internal/smartthread"
 )
 
 type batchAddRPCRequest struct {
@@ -216,6 +219,17 @@ func assertBatchAddStrings(t *testing.T, name string, got []string, want []strin
 	}
 }
 
+func assertBatchAddStringsUnordered(t *testing.T, name string, got []string, want []string) {
+	t.Helper()
+	gotSorted := append([]string(nil), got...)
+	wantSorted := append([]string(nil), want...)
+	sort.Strings(gotSorted)
+	sort.Strings(wantSorted)
+	if !reflect.DeepEqual(gotSorted, wantSorted) {
+		t.Fatalf("expected %s %#v (sorted), got %#v (sorted)", name, wantSorted, gotSorted)
+	}
+}
+
 func containsString(values []string, needle string) bool {
 	for _, value := range values {
 		if value == needle {
@@ -300,7 +314,7 @@ func TestBatchAddUri_TruncatesAt100BeforeProcessing(t *testing.T) {
 
 	result := service.BatchAddUri(urls)
 
-	assertBatchAddStrings(t, "succeeded", result.Succeeded, urls[:100])
+	assertBatchAddStringsUnordered(t, "succeeded", result.Succeeded, urls[:100])
 	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{})
 	if len(result.Errors) != 0 {
 		t.Fatalf("expected no errors, got %#v", result.Errors)
@@ -331,7 +345,7 @@ func TestBatchAddUri_FourUniqueAddableDirectURLsDoNotCreateGroup(t *testing.T) {
 
 	result := service.BatchAddUri(urls)
 
-	assertBatchAddStrings(t, "succeeded", result.Succeeded, urls)
+	assertBatchAddStringsUnordered(t, "succeeded", result.Succeeded, urls)
 	if len(result.Groups) != 0 {
 		t.Fatalf("expected no groups, got %#v", result.Groups)
 	}
@@ -355,7 +369,7 @@ func TestBatchAddUri_FiveUniqueAddableDirectURLsCreateBatchGroupFolder(t *testin
 
 	result := service.BatchAddUri(urls)
 
-	assertBatchAddStrings(t, "succeeded", result.Succeeded, urls)
+	assertBatchAddStringsUnordered(t, "succeeded", result.Succeeded, urls)
 	if len(result.Groups) != 1 {
 		t.Fatalf("expected one batch group, got %#v", result.Groups)
 	}
@@ -390,7 +404,7 @@ func TestBatchAddUri_DuplicatesDoNotCountTowardBatchGroupThreshold(t *testing.T)
 
 	result := service.BatchAddUri([]string{activeURL, historyURL, duplicateURL, duplicateURL, newOne, newTwo, newThree})
 
-	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{duplicateURL, newOne, newTwo, newThree})
+	assertBatchAddStringsUnordered(t, "succeeded", result.Succeeded, []string{duplicateURL, newOne, newTwo, newThree})
 	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{activeURL, historyURL, duplicateURL})
 	if len(result.Groups) != 0 {
 		t.Fatalf("expected no group when unique addable non-duplicates below threshold, got %#v", result.Groups)
@@ -473,7 +487,7 @@ func TestBatchAddUri_GroupNameEnqueueDoesNotBlockAddPath(t *testing.T) {
 
 	result := service.BatchAddUri(urls)
 
-	assertBatchAddStrings(t, "succeeded", result.Succeeded, urls)
+	assertBatchAddStringsUnordered(t, "succeeded", result.Succeeded, urls)
 	if len(result.Groups) != 1 {
 		t.Fatalf("expected one group, got %#v", result.Groups)
 	}
@@ -494,7 +508,7 @@ func TestBatchAddUri_SmartThreadOffPassesMaxConnectionsAsSplit(t *testing.T) {
 
 	result := service.BatchAddUri(urls)
 
-	assertBatchAddStrings(t, "succeeded", result.Succeeded, urls)
+	assertBatchAddStringsUnordered(t, "succeeded", result.Succeeded, urls)
 	if got := counter.addURICount(); got != len(urls) {
 		t.Fatalf("expected %d addUri calls, got %d", len(urls), got)
 	}
@@ -567,5 +581,38 @@ func TestDownloadGroupPathSafetyCollisionAndInvalidBase(t *testing.T) {
 	}
 	if filepath.Dir(group.Dir) != baseDir {
 		t.Fatalf("expected collision dir under base %q, got %q", baseDir, group.Dir)
+	}
+}
+
+func TestSubmitCandidatesConcurrently_DedupRaceOnlyOneSucceeds(t *testing.T) {
+	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+
+	dupURL := "https://example.com/dedup-race.bin"
+	candidates := make([]addTaskCandidate, 20)
+	for i := range candidates {
+		candidates[i] = directAddTaskCandidate(dupURL)
+	}
+
+	existingUrls := make(map[string]bool)
+	candidateSeen := make(map[string]bool)
+	summary := &addTaskSummary{errors: make(map[string]string)}
+	batchState := &addCandidateBatchState{
+		existingUrls:  existingUrls,
+		candidateSeen: candidateSeen,
+		summary:       summary,
+	}
+	authState := newAddTaskAuthBatchState()
+	ledger := smartthread.NewBandwidthLedger(nil)
+
+	submitCandidatesConcurrently(service, context.Background(), candidates, batchState, nil, authState, ledger)
+
+	if len(summary.succeeded) != 1 {
+		t.Fatalf("expected exactly 1 success, got %d: %#v", len(summary.succeeded), summary.succeeded)
+	}
+	if len(summary.duplicates) != 19 {
+		t.Fatalf("expected 19 duplicates, got %d: %#v", len(summary.duplicates), summary.duplicates)
+	}
+	if counter.addURICount() != 1 {
+		t.Fatalf("expected exactly 1 aria2.addUri call, got %d", counter.addURICount())
 	}
 }

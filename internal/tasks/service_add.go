@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"goaria-v3/internal/config"
@@ -57,7 +58,12 @@ func (s *Service) AddUri(url string) string {
 	summary := addTaskSummary{errors: make(map[string]string)}
 	candidateSeen := make(map[string]bool)
 	authState := newAddTaskAuthBatchState()
-	s.addNormalizedInput(context.Background(), normalizedUrl, existingURLs, nil, candidateSeen, authState, &summary)
+	batchState := &addCandidateBatchState{
+		existingUrls:  existingURLs,
+		candidateSeen: candidateSeen,
+		summary:       &summary,
+	}
+	s.addNormalizedInput(context.Background(), normalizedUrl, batchState, nil, authState)
 
 	if len(summary.succeeded) == 0 {
 		if len(summary.errors) > 0 {
@@ -163,9 +169,12 @@ func (s *Service) BatchAddUri(urls []string) BatchAddResult {
 	}
 
 	ledger := smartthread.NewBandwidthLedger(collectActiveTaskInfos())
-	for _, candidate := range pendingCandidates {
-		s.submitAddCandidate(context.Background(), candidate, existingUrls, historyDuplicates, seenCandidates, authState, &summary, ledger)
+	batchState := &addCandidateBatchState{
+		existingUrls:  existingUrls,
+		candidateSeen: seenCandidates,
+		summary:       &summary,
 	}
+	submitCandidatesConcurrently(s, context.Background(), pendingCandidates, batchState, historyDuplicates, authState, ledger)
 	result.Succeeded = append(result.Succeeded, summary.succeeded...)
 	result.Duplicates = append(result.Duplicates, summary.duplicates...)
 	result.Groups = append(result.Groups, summary.groups...)
@@ -173,43 +182,71 @@ func (s *Service) BatchAddUri(urls []string) BatchAddResult {
 	return result
 }
 
-func (s *Service) addNormalizedInput(ctx context.Context, normalizedURL string, existingURLs map[string]bool, historyDuplicates map[string]bool, candidateSeen map[string]bool, authState *addTaskAuthBatchState, summary *addTaskSummary) {
+func (s *Service) addNormalizedInput(ctx context.Context, normalizedURL string, batchState *addCandidateBatchState, historyDuplicates map[string]bool, authState *addTaskAuthBatchState) {
 	candidates, err := s.resolveAddCandidates(ctx, normalizedURL, authState)
 	if err != nil {
-		summary.errors[normalizedURL] = redactAddTaskError(err)
+		batchState.recordError(normalizedURL, redactAddTaskError(err))
 		return
 	}
 
 	ledger := smartthread.NewBandwidthLedger(collectActiveTaskInfos())
-	for _, candidate := range candidates {
-		s.submitAddCandidate(ctx, candidate, existingURLs, historyDuplicates, candidateSeen, authState, summary, ledger)
+	if len(candidates) <= 1 {
+		for _, candidate := range candidates {
+			s.submitAddCandidate(ctx, candidate, batchState, historyDuplicates, authState, ledger)
+		}
+		return
 	}
+	submitCandidatesConcurrently(s, ctx, candidates, batchState, historyDuplicates, authState, ledger)
 }
 
-func (s *Service) submitAddCandidate(ctx context.Context, candidate addTaskCandidate, existingURLs map[string]bool, historyDuplicates map[string]bool, candidateSeen map[string]bool, authState *addTaskAuthBatchState, summary *addTaskSummary, ledger *smartthread.BandwidthLedger) {
+const addCandidateConcurrency = 12
+
+func submitCandidatesConcurrently(s *Service, ctx context.Context, candidates []addTaskCandidate, batchState *addCandidateBatchState, historyDuplicates map[string]bool, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) {
+	if len(candidates) <= 1 {
+		for _, candidate := range candidates {
+			s.submitAddCandidate(ctx, candidate, batchState, historyDuplicates, authState, ledger)
+		}
+		return
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, addCandidateConcurrency)
+	for _, candidate := range candidates {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(c addTaskCandidate) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			s.submitAddCandidate(ctx, c, batchState, historyDuplicates, authState, ledger)
+		}(candidate)
+	}
+	wg.Wait()
+}
+
+func (s *Service) submitAddCandidate(ctx context.Context, candidate addTaskCandidate, batchState *addCandidateBatchState, historyDuplicates map[string]bool, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) {
 	displayKey := candidateDisplayKey(candidate)
-	if isDuplicateAddCandidate(candidate, existingURLs, historyDuplicates, candidateSeen) {
-		summary.duplicates = append(summary.duplicates, displayKey)
+	unlock := batchState.lockForUrl(candidate.url)
+	defer unlock()
+
+	if batchState.checkAndMarkDuplicate(candidate, historyDuplicates) {
+		batchState.recordDuplicate(displayKey)
 		return
 	}
 
 	if _, err := s.addTaskCandidate(ctx, candidate, authState, ledger); err != nil {
-		summary.errors[displayKey] = redactAddTaskError(err)
+		batchState.unmarkSeen(candidate.url)
+		batchState.recordError(displayKey, redactAddTaskError(err))
 		return
 	}
 
-	summary.succeeded = append(summary.succeeded, displayKey)
-	existingURLs[candidate.url] = true
-	candidateSeen[candidate.url] = true
-	if candidate.downloadGroup != nil {
-		summary.addGroup(candidate.downloadGroup.GroupCopy())
-	}
+	batchState.recordSuccess(displayKey, candidate.downloadGroup)
 }
 
 func (s *addTaskSummary) addGroup(group rpc.DownloadGroup) {
 	if group.ID == "" {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.groupIDs == nil {
 		s.groupIDs = make(map[string]struct{})
 	}

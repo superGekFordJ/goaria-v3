@@ -90,6 +90,7 @@ export const useDownloadGroupStore = defineStore('downloadGroups', () => {
     syncAfterSnapshot: sync.syncAfterSnapshot,
     startAutoSync: sync.startAutoSync,
     stopAutoSync: sync.stopAutoSync,
+    scheduleAutoSyncImmediate: sync.scheduleAutoSyncImmediate,
     pruneExpiredPlaceholders: sync.pruneExpiredPlaceholders,
 
     // Actions

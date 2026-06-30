@@ -693,7 +693,7 @@ func TestBatchAddUri_AuthRuntimeProvisionsOncePerRuntimeEntry(t *testing.T) {
 
 	result := service.BatchAddUri(sources)
 
-	assertBatchAddStrings(t, "succeeded", result.Succeeded, targets)
+	assertBatchAddStringsUnordered(t, "succeeded", result.Succeeded, targets)
 	assertBatchAddStrings(t, "duplicates", result.Duplicates, []string{})
 	if len(result.Errors) != 0 {
 		t.Fatalf("expected no errors, got %#v", result.Errors)

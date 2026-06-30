@@ -178,7 +178,7 @@ func TestPauseDownloadGroup_ResolvesGroupKeyTargetsAndUsesMulticall(t *testing.T
 	recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
 		switch req.Method {
 		case "system.multicall":
-			return appTaskSuccessResponse([]any{[]any{"OK"}, []any{"OK"}})
+			return appTaskSuccessResponse([]any{[]any{"OK"}, []any{"OK"}, []any{"OK"}})
 		case "aria2.saveSession":
 			return appTaskSuccessResponse("OK")
 		default:
@@ -194,10 +194,10 @@ func TestPauseDownloadGroup_ResolvesGroupKeyTargetsAndUsesMulticall(t *testing.T
 	monitor.RegisterTaskGroup("gid-stale", group)
 
 	result := PauseDownloadGroup(group.ID)
-	if !result.OK || !result.Found || result.Noop || result.Succeeded != 2 || result.Skipped != 3 || result.Failed != 0 || result.TotalTargets != 2 {
+	if !result.OK || !result.Found || result.Noop || result.Succeeded != 3 || result.Skipped != 2 || result.Failed != 0 || result.TotalTargets != 3 {
 		t.Fatalf("unexpected pause result: %#v", result)
 	}
-	if got := recorder.multicallGIDs(t, "aria2.pause"); strings.Join(got, ",") != "gid-active-one,gid-active-two" {
+	if got := recorder.multicallGIDs(t, "aria2.pause"); strings.Join(got, ",") != "gid-active-one,gid-active-two,gid-stale" {
 		t.Fatalf("unexpected pause multicall gids: %#v", got)
 	}
 	if recorder.count("aria2.pause") != 0 || recorder.count("aria2.saveSession") != 1 {
@@ -209,8 +209,8 @@ func TestPauseDownloadGroup_ResolvesGroupKeyTargetsAndUsesMulticall(t *testing.T
 	if item := findOperationItem(t, result, "gid-stopped"); item.Code != DownloadGroupOperationCodeTerminalState {
 		t.Fatalf("unexpected stopped skip: %#v", item)
 	}
-	if item := findOperationItem(t, result, "gid-stale"); item.Code != DownloadGroupOperationCodeStaleMember {
-		t.Fatalf("unexpected stale skip: %#v", item)
+	if item := findOperationItem(t, result, "gid-stale"); item.Status != DownloadGroupOperationItemSucceeded || item.Code != DownloadGroupOperationCodePaused {
+		t.Fatalf("unexpected pending-start stale pause: %#v", item)
 	}
 	requireOperationWarning(t, result.Warnings, DownloadGroupWarningStaleGroup)
 }
@@ -703,5 +703,87 @@ func TestPauseThenResume_ActiveSliceRoundTrip(t *testing.T) {
 	card = findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
 	if card.Counts.Active != 2 || card.Counts.Paused != 0 {
 		t.Fatalf("post-resume: expected 2 active 0 paused, got active=%d paused=%d", card.Counts.Active, card.Counts.Paused)
+	}
+}
+
+func TestPauseDownloadGroup_IncludesPendingStartStaleMembers(t *testing.T) {
+	recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
+		switch req.Method {
+		case "system.multicall":
+			return appTaskSuccessResponse([]any{[]any{"OK"}, []any{"OK"}, []any{"OK"}})
+		case "aria2.saveSession":
+			return appTaskSuccessResponse("OK")
+		default:
+			return appTaskSuccessResponse("OK")
+		}
+	})
+	group := groupReadTestGroup("dg-pending-stale", 5)
+	active := groupReadTask("gid-pending-active", "active", &group, "100", "10", "1")
+	monitor.Cache.UpdateFromAria2([]rpc.Task{active}, nil, nil)
+	monitor.RegisterTaskGroup("gid-pending-stale-one", group)
+	monitor.RegisterTaskGroup("gid-pending-stale-two", group)
+
+	result := PauseDownloadGroup(group.ID)
+	if !result.OK || !result.Found || result.Noop || result.Succeeded != 3 || result.Failed != 0 || result.TotalTargets != 3 {
+		t.Fatalf("unexpected pause result: %#v", result)
+	}
+	pausedGIDs := recorder.multicallGIDs(t, "aria2.pause")
+	expected := map[string]bool{"gid-pending-active": false, "gid-pending-stale-one": false, "gid-pending-stale-two": false}
+	for _, gid := range pausedGIDs {
+		expected[gid] = true
+	}
+	for gid, found := range expected {
+		if !found {
+			t.Fatalf("expected gid %q in pause multicall, got %#v", gid, pausedGIDs)
+		}
+	}
+}
+
+func TestPauseDownloadGroup_IncludesPendingStartStoppedMembers(t *testing.T) {
+	recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
+		switch req.Method {
+		case "system.multicall":
+			return appTaskSuccessResponse([]any{[]any{"OK"}, []any{"OK"}})
+		case "aria2.saveSession":
+			return appTaskSuccessResponse("OK")
+		default:
+			return appTaskSuccessResponse("OK")
+		}
+	})
+	group := groupReadTestGroup("dg-pending-stopped", 3)
+	active := groupReadTask("gid-ps-active", "active", &group, "100", "10", "1")
+	stopped := groupReadTask("gid-ps-stopped", "complete", &group, "100", "100", "0")
+	monitor.Cache.UpdateFromAria2([]rpc.Task{active}, nil, []rpc.Task{stopped})
+	monitor.RegisterTaskGroup("gid-ps-stopped", group)
+
+	result := PauseDownloadGroup(group.ID)
+	if !result.OK || !result.Found || result.Noop || result.Succeeded != 2 || result.Failed != 0 || result.TotalTargets != 2 {
+		t.Fatalf("unexpected pause result: %#v", result)
+	}
+	pausedGIDs := recorder.multicallGIDs(t, "aria2.pause")
+	expected := map[string]bool{"gid-ps-active": false, "gid-ps-stopped": false}
+	for _, gid := range pausedGIDs {
+		expected[gid] = true
+	}
+	for gid, found := range expected {
+		if !found {
+			t.Fatalf("expected gid %q in pause multicall, got %#v", gid, pausedGIDs)
+		}
+	}
+}
+
+func TestPauseDownloadGroup_PendingStartClearedAfterCacheUpdate(t *testing.T) {
+	setupDownloadGroupsTest(t)
+	group := groupReadTestGroup("dg-pending-clear", 2)
+	monitor.RegisterTaskGroup("gid-pending-clear", group)
+	if !monitor.Cache.IsPendingStart("gid-pending-clear") {
+		t.Fatalf("expected gid to be pending-start after RegisterTaskGroup")
+	}
+	monitor.Cache.UpdateFromAria2(nil,
+		[]rpc.Task{groupReadTask("gid-pending-clear", "waiting", &group, "100", "0", "0")},
+		nil,
+	)
+	if monitor.Cache.IsPendingStart("gid-pending-clear") {
+		t.Fatalf("expected gid to no longer be pending-start after cache update")
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -318,7 +319,7 @@ func TestAddUri_MultiItemExtractorCreatesCollectionGroupFolder(t *testing.T) {
 	if result != "success" {
 		t.Fatalf("AddUri() = %q, want success", result)
 	}
-	if got := recorder.addURIsSnapshot(); !reflect.DeepEqual(got, []string{directOne, directTwo}) {
+	if got := recorder.addURIsSnapshot(); !sameElements(got, []string{directOne, directTwo}) {
 		t.Fatalf("expected resolved direct URL adds, got %#v", got)
 	}
 	options := recorder.optionsSnapshot()
@@ -338,7 +339,8 @@ func TestAddUri_MultiItemExtractorCreatesCollectionGroupFolder(t *testing.T) {
 	if info, err := os.Stat(groupDir); err != nil || !info.IsDir() {
 		t.Fatalf("expected group dir to exist, info=%#v err=%v", info, err)
 	}
-	if options[0]["out"] != "one.bin" || options[1]["out"] != "two.bin" {
+	outs := []string{options[0]["out"].(string), options[1]["out"].(string)}
+	if !sameElements(outs, []string{"one.bin", "two.bin"}) {
 		t.Fatalf("expected basename-only out options, got %#v", options)
 	}
 	assertNoPathOut(t, options[0]["out"])
@@ -435,7 +437,7 @@ func TestBatchAddUri_SingleItemExtractorCanUseAdHocBatchGroup(t *testing.T) {
 
 	result := service.BatchAddUri([]string{shareURL, directURLs[1], directURLs[2], directURLs[3], directURLs[4]})
 
-	assertBatchAddStrings(t, "succeeded", result.Succeeded, directURLs)
+	assertBatchAddStringsUnordered(t, "succeeded", result.Succeeded, directURLs)
 	if len(result.Groups) != 1 || result.Groups[0].Kind != "batch" {
 		t.Fatalf("expected one batch group, got %#v", result.Groups)
 	}
@@ -492,13 +494,22 @@ func TestBatchAddUri_MixedCollectionAndBatchGroupsDoNotPollute(t *testing.T) {
 		t.Fatalf("expected distinct collection/batch groups, got %#v", result.Groups)
 	}
 	options := recorder.optionsSnapshot()
-	if options[0]["dir"] != collectionGroup.Dir || options[1]["dir"] != collectionGroup.Dir {
-		t.Fatalf("expected collection items in collection dir, got %#v", options[:2])
-	}
-	for _, option := range options[2:] {
-		if option["dir"] != batchGroup.Dir {
-			t.Fatalf("expected direct items in batch dir %q, got %#v", batchGroup.Dir, options)
+	collectionCount := 0
+	batchCount := 0
+	for _, option := range options {
+		dir, _ := option["dir"].(string)
+		switch dir {
+		case collectionGroup.Dir:
+			collectionCount++
+		case batchGroup.Dir:
+			batchCount++
 		}
+	}
+	if collectionCount != 2 {
+		t.Fatalf("expected 2 collection items in collection dir, got %d: %#v", collectionCount, options)
+	}
+	if batchCount != 5 {
+		t.Fatalf("expected 5 direct items in batch dir, got %d: %#v", batchCount, options)
 	}
 }
 
@@ -622,6 +633,17 @@ func assertNoPathOut(t *testing.T, value any) {
 	if out != filepath.Base(out) || strings.Contains(out, "..") || filepath.IsAbs(out) || strings.ContainsAny(out, `/\\`) {
 		t.Fatalf("expected basename-only out, got %q", out)
 	}
+}
+
+func sameElements(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	gotSorted := append([]string(nil), got...)
+	wantSorted := append([]string(nil), want...)
+	sort.Strings(gotSorted)
+	sort.Strings(wantSorted)
+	return reflect.DeepEqual(gotSorted, wantSorted)
 }
 
 func assertGroupPathGeneric(t *testing.T, dir string) {

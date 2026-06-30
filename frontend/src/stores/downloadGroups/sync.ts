@@ -246,6 +246,19 @@ export function useDownloadGroupSync(state: DownloadGroupState, actions: Downloa
     }, DOWNLOAD_GROUP_AUTO_SYNC_DEBOUNCE_MS)
   }
 
+  let immediateFlushScheduled = false
+
+  function scheduleAutoSyncImmediate(reason = 'immediate') {
+    if (!isAutoSyncActive.value) return
+    clearAutoSyncTimer()
+    if (immediateFlushScheduled) return
+    immediateFlushScheduled = true
+    queueMicrotask(() => {
+      immediateFlushScheduled = false
+      void runAutoSync(reason)
+    })
+  }
+
   async function runAutoSync(reason = 'task-signature') {
     if (!isAutoSyncActive.value) return
 
@@ -412,6 +425,7 @@ export function useDownloadGroupSync(state: DownloadGroupState, actions: Downloa
     syncAfterSnapshot,
     startAutoSync,
     stopAutoSync,
+    scheduleAutoSyncImmediate,
   }
 }
 

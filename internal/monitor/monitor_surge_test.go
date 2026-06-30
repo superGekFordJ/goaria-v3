@@ -1107,3 +1107,190 @@ func TestHandleTaskComplete_EmptyEnvKeySkipsRecording(t *testing.T) {
 		t.Fatalf("expected 0 new speedstats records (empty envKey skipped), got %d (before=%d, after=%d)", after-before, before, after)
 	}
 }
+
+func TestHandleSurgeEvent_DiscardsStalePauseAfterResume(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	m := &Monitor{
+		hub:                   hub,
+		pusher:                pusher,
+		pauseResumeVersions:   make(map[string]int64),
+		pauseResumeIntentions: make(map[string]string),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	Cache.active = []rpc.Task{{GID: "sg_test-1", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.active = nil; Cache.waiting = nil }()
+
+	m.BumpPauseResumeIntention("sg_test-1", "pause")
+	m.BumpPauseResumeIntention("sg_test-1", "resume")
+
+	m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{DownloadID: "test-1"})
+
+	pusher.mu.Lock()
+	for _, d := range pusher.pending {
+		if d.Type == "pause" && d.GID == "sg_test-1" {
+			pusher.mu.Unlock()
+			t.Fatal("expected no pause delta for stale pause event")
+		}
+	}
+	pusher.mu.Unlock()
+
+	Cache.mu.RLock()
+	for _, task := range Cache.waiting {
+		if task.GID == "sg_test-1" {
+			Cache.mu.RUnlock()
+			t.Fatal("expected task NOT moved to waiting for stale pause")
+		}
+	}
+	Cache.mu.RUnlock()
+}
+
+func TestHandleSurgeEvent_AcceptsPauseWhenLastIntentionIsPause(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	m := &Monitor{
+		hub:                   hub,
+		pusher:                pusher,
+		pauseResumeVersions:   make(map[string]int64),
+		pauseResumeIntentions: make(map[string]string),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	Cache.active = []rpc.Task{{GID: "sg_test-2", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.active = nil; Cache.waiting = nil }()
+
+	m.BumpPauseResumeIntention("sg_test-2", "pause")
+
+	m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{DownloadID: "test-2"})
+
+	pusher.mu.Lock()
+	found := false
+	for _, d := range pusher.pending {
+		if d.Type == "pause" && d.GID == "sg_test-2" {
+			found = true
+			break
+		}
+	}
+	pusher.mu.Unlock()
+	if !found {
+		t.Fatal("expected pause delta when last intention is pause")
+	}
+
+	Cache.mu.RLock()
+	foundInWaiting := false
+	for _, task := range Cache.waiting {
+		if task.GID == "sg_test-2" {
+			foundInWaiting = true
+			break
+		}
+	}
+	Cache.mu.RUnlock()
+	if !foundInWaiting {
+		t.Fatal("expected task in waiting list when last intention is pause")
+	}
+}
+
+func TestHandleSurgeEvent_AcceptsPauseWithNoPriorIntention(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	m := &Monitor{
+		hub:                   hub,
+		pusher:                pusher,
+		pauseResumeVersions:   make(map[string]int64),
+		pauseResumeIntentions: make(map[string]string),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	Cache.active = []rpc.Task{{GID: "sg_test-3", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.active = nil; Cache.waiting = nil }()
+
+	m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{DownloadID: "test-3"})
+
+	pusher.mu.Lock()
+	found := false
+	for _, d := range pusher.pending {
+		if d.Type == "pause" && d.GID == "sg_test-3" {
+			found = true
+			break
+		}
+	}
+	pusher.mu.Unlock()
+	if !found {
+		t.Fatal("expected pause delta with no prior intention")
+	}
+}
+
+func TestHandleSurgeEvent_PauseResumePauseSequence(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	m := &Monitor{
+		hub:                   hub,
+		pusher:                pusher,
+		pauseResumeVersions:   make(map[string]int64),
+		pauseResumeIntentions: make(map[string]string),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	Cache.active = []rpc.Task{{GID: "sg_test-4", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.active = nil; Cache.waiting = nil }()
+
+	m.BumpPauseResumeIntention("sg_test-4", "pause")
+	m.BumpPauseResumeIntention("sg_test-4", "resume")
+	m.BumpPauseResumeIntention("sg_test-4", "pause")
+
+	m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{DownloadID: "test-4"})
+
+	pusher.mu.Lock()
+	found := false
+	for _, d := range pusher.pending {
+		if d.Type == "pause" && d.GID == "sg_test-4" {
+			found = true
+			break
+		}
+	}
+	pusher.mu.Unlock()
+	if !found {
+		t.Fatal("expected pause delta when last intention is pause in pause-resume-pause sequence")
+	}
+}
+
+func TestHandleSurgeEvent_NilMonitorIntentionMaps(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	m := &Monitor{hub: hub, pusher: pusher}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	Cache.active = []rpc.Task{{GID: "sg_test-5", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.active = nil; Cache.waiting = nil }()
+
+	m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{DownloadID: "test-5"})
+
+	pusher.mu.Lock()
+	found := false
+	for _, d := range pusher.pending {
+		if d.Type == "pause" && d.GID == "sg_test-5" {
+			found = true
+			break
+		}
+	}
+	pusher.mu.Unlock()
+	if !found {
+		t.Fatal("expected pause delta with nil intention maps (accept by default)")
+	}
+}
