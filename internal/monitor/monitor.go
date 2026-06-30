@@ -76,8 +76,7 @@ type Monitor struct {
 	// Network environment fingerprint cache (MAC → envKey)
 	netEnv *NetEnvCache
 
-	// Per-GID intention version for stale pause event defense.
-	pauseResumeVersions   map[string]int64
+	// Per-GID last intention for stale pause event defense (last-intention-wins).
 	pauseResumeIntentions map[string]string
 	pauseResumeVersionMu  sync.RWMutex
 }
@@ -98,7 +97,6 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 		prevActiveGids:        make(map[string]bool),
 		prevWaitingGids:       make(map[string]bool),
 		telemetry:             NewTelemetryCache(),
-		pauseResumeVersions:   make(map[string]int64),
 		pauseResumeIntentions: make(map[string]string),
 	}
 
@@ -146,19 +144,22 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 	return m
 }
 
+// Intention strings recorded by BumpPauseResumeIntention and checked by
+// shouldDiscardStalePause. Shared across packages to avoid stringly-typed drift.
+const (
+	PauseResumeIntentionPause  = "pause"
+	PauseResumeIntentionResume = "resume"
+)
+
 func (m *Monitor) BumpPauseResumeIntention(gid string, action string) {
 	if m == nil || gid == "" {
 		return
 	}
 	m.pauseResumeVersionMu.Lock()
 	defer m.pauseResumeVersionMu.Unlock()
-	if m.pauseResumeVersions == nil {
-		m.pauseResumeVersions = make(map[string]int64)
-	}
 	if m.pauseResumeIntentions == nil {
 		m.pauseResumeIntentions = make(map[string]string)
 	}
-	m.pauseResumeVersions[gid]++
 	m.pauseResumeIntentions[gid] = action
 }
 
@@ -175,7 +176,7 @@ func (m *Monitor) shouldDiscardStalePause(gid string) bool {
 	if !exists {
 		return false
 	}
-	return intention == "resume"
+	return intention == PauseResumeIntentionResume
 }
 
 func (m *Monitor) Start() {

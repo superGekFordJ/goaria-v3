@@ -241,12 +241,12 @@ func (s *Service) submitAddCandidate(ctx context.Context, candidate addTaskCandi
 	batchState.recordSuccess(displayKey, candidate.downloadGroup)
 }
 
-func (s *addTaskSummary) addGroup(group rpc.DownloadGroup) {
+// addGroupLocked appends a deduplicated group. Caller must hold the
+// addCandidateBatchState mutex that guards all summary fields.
+func (s *addTaskSummary) addGroupLocked(group rpc.DownloadGroup) {
 	if group.ID == "" {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.groupIDs == nil {
 		s.groupIDs = make(map[string]struct{})
 	}

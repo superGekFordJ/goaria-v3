@@ -38,7 +38,6 @@ type addTaskCandidate struct {
 }
 
 type addTaskSummary struct {
-	mu         sync.Mutex
 	succeeded  []string
 	duplicates []string
 	errors     map[string]string
@@ -96,10 +95,10 @@ func (b *addCandidateBatchState) unmarkSeen(url string) {
 
 func (b *addCandidateBatchState) recordSuccess(displayKey string, group *downloadgroups.DownloadGroupPlan) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.summary.succeeded = append(b.summary.succeeded, displayKey)
-	b.mu.Unlock()
 	if group != nil {
-		b.summary.addGroup(group.GroupCopy())
+		b.summary.addGroupLocked(group.GroupCopy())
 	}
 }
 

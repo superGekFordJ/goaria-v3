@@ -67,7 +67,7 @@ func (a *App) GetTaskMetadata(gids []string) map[string]rpc.Task {
 // PauseTask pauses a download task
 func (a *App) PauseTask(gid string) {
 	if mon := monitor.State.GetMonitor(); mon != nil {
-		mon.BumpPauseResumeIntention(gid, "pause")
+		mon.BumpPauseResumeIntention(gid, monitor.PauseResumeIntentionPause)
 	}
 	_ = a.downloadEngine.Pause(gid)
 }
@@ -75,7 +75,7 @@ func (a *App) PauseTask(gid string) {
 // ResumeTask resumes a paused task
 func (a *App) ResumeTask(gid string) {
 	if mon := monitor.State.GetMonitor(); mon != nil {
-		mon.BumpPauseResumeIntention(gid, "resume")
+		mon.BumpPauseResumeIntention(gid, monitor.PauseResumeIntentionResume)
 	}
 	_ = a.downloadEngine.Resume(gid)
 }
@@ -84,7 +84,7 @@ func (a *App) ResumeTask(gid string) {
 func (a *App) BatchPause(gids []string) {
 	if mon := monitor.State.GetMonitor(); mon != nil {
 		for _, gid := range gids {
-			mon.BumpPauseResumeIntention(gid, "pause")
+			mon.BumpPauseResumeIntention(gid, monitor.PauseResumeIntentionPause)
 		}
 	}
 	_ = a.downloadEngine.PauseMulti(gids)
@@ -94,7 +94,7 @@ func (a *App) BatchPause(gids []string) {
 func (a *App) BatchResume(gids []string) {
 	if mon := monitor.State.GetMonitor(); mon != nil {
 		for _, gid := range gids {
-			mon.BumpPauseResumeIntention(gid, "resume")
+			mon.BumpPauseResumeIntention(gid, monitor.PauseResumeIntentionResume)
 		}
 	}
 	_ = a.downloadEngine.ResumeMulti(gids)

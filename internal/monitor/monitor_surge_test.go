@@ -1114,7 +1114,6 @@ func TestHandleSurgeEvent_DiscardsStalePauseAfterResume(t *testing.T) {
 	m := &Monitor{
 		hub:                   hub,
 		pusher:                pusher,
-		pauseResumeVersions:   make(map[string]int64),
 		pauseResumeIntentions: make(map[string]string),
 	}
 
@@ -1125,8 +1124,8 @@ func TestHandleSurgeEvent_DiscardsStalePauseAfterResume(t *testing.T) {
 	Cache.active = []rpc.Task{{GID: "sg_test-1", Status: "active", DownloadSpeed: "100"}}
 	defer func() { Cache.active = nil; Cache.waiting = nil }()
 
-	m.BumpPauseResumeIntention("sg_test-1", "pause")
-	m.BumpPauseResumeIntention("sg_test-1", "resume")
+	m.BumpPauseResumeIntention("sg_test-1", PauseResumeIntentionPause)
+	m.BumpPauseResumeIntention("sg_test-1", PauseResumeIntentionResume)
 
 	m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{DownloadID: "test-1"})
 
@@ -1155,7 +1154,6 @@ func TestHandleSurgeEvent_AcceptsPauseWhenLastIntentionIsPause(t *testing.T) {
 	m := &Monitor{
 		hub:                   hub,
 		pusher:                pusher,
-		pauseResumeVersions:   make(map[string]int64),
 		pauseResumeIntentions: make(map[string]string),
 	}
 
@@ -1166,7 +1164,7 @@ func TestHandleSurgeEvent_AcceptsPauseWhenLastIntentionIsPause(t *testing.T) {
 	Cache.active = []rpc.Task{{GID: "sg_test-2", Status: "active", DownloadSpeed: "100"}}
 	defer func() { Cache.active = nil; Cache.waiting = nil }()
 
-	m.BumpPauseResumeIntention("sg_test-2", "pause")
+	m.BumpPauseResumeIntention("sg_test-2", PauseResumeIntentionPause)
 
 	m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{DownloadID: "test-2"})
 
@@ -1203,7 +1201,6 @@ func TestHandleSurgeEvent_AcceptsPauseWithNoPriorIntention(t *testing.T) {
 	m := &Monitor{
 		hub:                   hub,
 		pusher:                pusher,
-		pauseResumeVersions:   make(map[string]int64),
 		pauseResumeIntentions: make(map[string]string),
 	}
 
@@ -1236,7 +1233,6 @@ func TestHandleSurgeEvent_PauseResumePauseSequence(t *testing.T) {
 	m := &Monitor{
 		hub:                   hub,
 		pusher:                pusher,
-		pauseResumeVersions:   make(map[string]int64),
 		pauseResumeIntentions: make(map[string]string),
 	}
 
@@ -1247,9 +1243,9 @@ func TestHandleSurgeEvent_PauseResumePauseSequence(t *testing.T) {
 	Cache.active = []rpc.Task{{GID: "sg_test-4", Status: "active", DownloadSpeed: "100"}}
 	defer func() { Cache.active = nil; Cache.waiting = nil }()
 
-	m.BumpPauseResumeIntention("sg_test-4", "pause")
-	m.BumpPauseResumeIntention("sg_test-4", "resume")
-	m.BumpPauseResumeIntention("sg_test-4", "pause")
+	m.BumpPauseResumeIntention("sg_test-4", PauseResumeIntentionPause)
+	m.BumpPauseResumeIntention("sg_test-4", PauseResumeIntentionResume)
+	m.BumpPauseResumeIntention("sg_test-4", PauseResumeIntentionPause)
 
 	m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{DownloadID: "test-4"})
 

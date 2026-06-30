@@ -1221,8 +1221,15 @@ func pauseResumeDownloadGroup(groupKey string, action string) DownloadGroupOpera
 	}
 	result.markAttempted()
 	if mon := monitor.State.GetMonitor(); mon != nil {
+		intention := action
+		switch action {
+		case DownloadGroupOperationActionPause:
+			intention = monitor.PauseResumeIntentionPause
+		case DownloadGroupOperationActionResume:
+			intention = monitor.PauseResumeIntentionResume
+		}
 		for _, gid := range gids {
-			mon.BumpPauseResumeIntention(gid, action)
+			mon.BumpPauseResumeIntention(gid, intention)
 		}
 	}
 	multiResults, err := callDownloadGroupPauseResumeRPC(action, gids)
@@ -1395,9 +1402,6 @@ func downloadGroupPauseResumeSkipCode(action string, target downloadGroupOperati
 		return DownloadGroupOperationCodeHistoryOnly, true
 	}
 	if target.source == "stopped" {
-		if target.pendingStart && action == DownloadGroupOperationActionPause {
-			return "", false
-		}
 		return DownloadGroupOperationCodeTerminalState, true
 	}
 	if action == DownloadGroupOperationActionPause {
