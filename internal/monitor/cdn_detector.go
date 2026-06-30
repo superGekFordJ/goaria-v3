@@ -24,6 +24,7 @@ const (
 	cdnDeadFloorBps     = 2 * types.KB // ~0才算死，避免误杀低天花板下的公平分享者
 	cdnWorkerEvictTicks = 3
 	cdnActionCooldown   = 10 * time.Second
+	cdnMaxKillCount     = 3 // after 3 kills without improvement, drain instead of kill
 )
 
 // cdnSurgeControl is the per-download control surface the detector drives.
@@ -31,6 +32,7 @@ const (
 type cdnSurgeControl interface {
 	GetWorkerStats(gid string) []types.WorkerSnapshot
 	KillWorker(gid string, workerID int) bool
+	DrainWorker(gid string, workerID int) bool
 	SetSlowWorkerThreshold(gid string, v float64)
 }
 
@@ -39,6 +41,7 @@ type cdnWorkerState struct {
 	heldSince   time.Time // when the current kill-verdict started being held
 	lastKill    time.Time // for cdnActionCooldown
 	absentTicks int       // consecutive ticks absent from stats (grace before prune)
+	killCount   int       // consecutive kills without speed improvement
 }
 
 // CDNDetector is a self-contained 1s ticker that samples per-worker telemetry,
@@ -210,15 +213,24 @@ func (d *CDNDetector) evaluateGid(gid, rawGid string, stats []types.WorkerSnapsh
 		reason := d.classify(win, s, median)
 		if reason == "" {
 			d.resetHeld(gid, wid)
+			d.resetKillCount(gid, wid)
 			continue
 		}
 
 		// Debounce (sustain) + cooldown.
 		if d.shouldFire(gid, wid, now) {
-			if d.control.KillWorker(rawGid, wid) {
-				d.recordKill(gid, wid, now)
-				log.Printf("cdn-throttle-kill: gid=%s worker=%d reason=%s", gid, wid, reason)
-				return // at most one Kill per gid per tick
+			ws := d.getWorkerStateForFire(gid, wid)
+			if ws.killCount >= cdnMaxKillCount {
+				if d.control.DrainWorker(rawGid, wid) {
+					log.Printf("cdn-throttle-drain: gid=%s worker=%d killCount=%d reason=%s", gid, wid, ws.killCount, reason)
+					return
+				}
+			} else {
+				if d.control.KillWorker(rawGid, wid) {
+					d.recordKill(gid, wid, now)
+					log.Printf("cdn-throttle-kill: gid=%s worker=%d killCount=%d reason=%s", gid, wid, ws.killCount, reason)
+					return
+				}
 			}
 		}
 		// Verdict holds but not yet sustained/cooled: keep its timer, try next.
@@ -314,12 +326,27 @@ func (d *CDNDetector) resetHeld(gid string, wid int) {
 	ws.heldSince = time.Time{}
 }
 
+func (d *CDNDetector) resetKillCount(gid string, wid int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	ws := d.getWorkerStateLocked(gid, wid)
+	ws.killCount = 0
+}
+
+// getWorkerStateForFire returns the worker state under lock for kill/drain decision.
+func (d *CDNDetector) getWorkerStateForFire(gid string, wid int) *cdnWorkerState {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.getWorkerStateLocked(gid, wid)
+}
+
 func (d *CDNDetector) recordKill(gid string, wid int, now time.Time) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	ws := d.getWorkerStateLocked(gid, wid)
 	ws.lastKill = now
 	ws.heldSince = time.Time{}
+	ws.killCount++
 }
 
 func (d *CDNDetector) getWorkerStateLocked(gid string, wid int) *cdnWorkerState {

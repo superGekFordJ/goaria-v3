@@ -106,6 +106,10 @@ type convergenceState struct {
 	// totalRemaining < activeWorkers × effectiveMinChunk. Not reset on
 	// active-set change — permanent until gid disappears from active list.
 	blackout bool
+
+	// N_max fuse early-unlock: consecutive ticks with retryCountSum == 0
+	// while currentWorkers >= nMax. Reset on active-set change.
+	zeroRetryCount int
 }
 
 type ConvergenceTicker struct {
@@ -231,6 +235,7 @@ func (c *ConvergenceTicker) tick() {
 				s.floorMemory = 0
 				s.floorHitCount = 0
 				s.lastRawBps = 0
+				s.zeroRetryCount = 0
 			}
 		}
 	}
@@ -352,6 +357,10 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 				continue
 			}
 			cw := len(c.telemetry.Get(t.GID))
+			// N_max clamp: skip candidates already at or above N_max for their domain.
+			if nMax, hasLimit := c.limits.GetNMax(t.Domain); hasLimit && cw >= nMax {
+				continue
+			}
 			candidates = append(candidates, candidate{
 				gid:            t.GID,
 				scope:          t.Scope,
@@ -513,12 +522,47 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	_, domain, _, _ := c.tracker.GetScopeAndEnv(gid)
 
 	// C1: N_max fuse — detect conn errors and lock N_max (immediate safety, runs regardless of windowInvalidated).
-	if retryCountSum >= int32(connErrorThreshold) {
+	// Early unlock: when retryCountSum stays 0 for lockUnlockConfirmTicks consecutive
+	// ticks while currentWorkers >= nMax, the server limit has lifted — clear N_max.
+	switch {
+	case retryCountSum >= int32(connErrorThreshold):
 		if _, hasLimit := c.limits.GetNMax(domain); !hasLimit {
 			c.limits.SetNMax(domain, currentWorkers)
 			log.Printf("[convergence] server-limit-fuse: domain=%s N_max=%d locked (retryCountSum=%d)",
 				domain, currentWorkers, retryCountSum)
 		}
+		c.mu.Lock()
+		if s, ok := c.states[gid]; ok {
+			s.zeroRetryCount = 0
+		}
+		c.mu.Unlock()
+	case retryCountSum == 0:
+		nMax, hasLimit := c.limits.GetNMax(domain)
+		if hasLimit && currentWorkers >= nMax {
+			c.mu.Lock()
+			s := c.getOrCreateState(gid)
+			s.zeroRetryCount++
+			if s.zeroRetryCount >= lockUnlockConfirmTicks {
+				c.limits.Clear(domain)
+				s.zeroRetryCount = 0
+				log.Printf("[convergence] server-limit-unlock: domain=%s N_max=%d cleared (zero retries for %d ticks at %d workers)",
+					domain, nMax, lockUnlockConfirmTicks, currentWorkers)
+			}
+			c.mu.Unlock()
+		} else {
+			c.mu.Lock()
+			if s, ok := c.states[gid]; ok {
+				s.zeroRetryCount = 0
+			}
+			c.mu.Unlock()
+		}
+	default:
+		// Partial recovery (0 < retryCountSum < threshold) — reset unlock counter.
+		c.mu.Lock()
+		if s, ok := c.states[gid]; ok {
+			s.zeroRetryCount = 0
+		}
+		c.mu.Unlock()
 	}
 
 	// Rate limit guard (Edge Case 4): skip ratchet and probe when rate-limited.
@@ -746,6 +790,16 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			if rebound < 1 {
 				rebound = 1
 			}
+			// N_max clamp: rebound must not push currentWorkers above N_max.
+			nMax, hasLimit := c.limits.GetNMax(domain)
+			if hasLimit {
+				headroom := nMax - currentWorkers
+				if headroom <= 0 {
+					rebound = 0
+				} else if rebound > headroom {
+					rebound = headroom
+				}
+			}
 			s.kneeFrozen = true
 			s.probeMomentum = false
 			s.phase = phaseFloorHit
@@ -758,9 +812,14 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			s.prevCompleted = task.CompletedLength
 			s.prevSampleAt = now
 			s.lastStep = 0
-			log.Printf("[convergence] knee-crossed: gid=%s raw=%d baseline=%d dropRatio=%.2f rebound=+%d floorHit",
-				gid, rawBps, s.probeBaseline, dropRatio, rebound)
-			return pendingScale{gid: gid, scope: task.Scope, envKey: task.EnvKey, delta: rebound}, true
+			if rebound > 0 {
+				log.Printf("[convergence] knee-crossed: gid=%s raw=%d baseline=%d dropRatio=%.2f rebound=+%d floorHit",
+					gid, rawBps, s.probeBaseline, dropRatio, rebound)
+				return pendingScale{gid: gid, scope: task.Scope, envKey: task.EnvKey, delta: rebound}, true
+			}
+			log.Printf("[convergence] knee-crossed: gid=%s raw=%d baseline=%d dropRatio=%.2f rebound=0 (N_max=%d clamp) floorHit",
+				gid, rawBps, s.probeBaseline, dropRatio, nMax)
+			return pendingScale{}, false
 		}
 		s.lastStep = 0
 	}

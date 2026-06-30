@@ -13,6 +13,7 @@ type mockCDNControl struct {
 	mu         sync.Mutex
 	stats      map[string][]types.WorkerSnapshot
 	kills      []mockKill
+	drains     []mockKill
 	thresholds map[string]float64
 }
 
@@ -47,6 +48,13 @@ func (m *mockCDNControl) KillWorker(gid string, workerID int) bool {
 	return true
 }
 
+func (m *mockCDNControl) DrainWorker(gid string, workerID int) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.drains = append(m.drains, mockKill{gid, workerID})
+	return true
+}
+
 func (m *mockCDNControl) SetSlowWorkerThreshold(gid string, v float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -57,6 +65,12 @@ func (m *mockCDNControl) killsCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.kills)
+}
+
+func (m *mockCDNControl) drainsCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.drains)
 }
 
 // newTestDetector builds a detector wired to a mock control and a controllable

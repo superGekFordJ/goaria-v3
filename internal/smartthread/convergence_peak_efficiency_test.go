@@ -133,9 +133,6 @@ func TestConvergence_RecordPeakEfficiency_FloorHitRebound(t *testing.T) {
 	setPrevSampleAgoState(s, 5*time.Second)
 	ct.mu.Unlock()
 
-	// Block Probe-Up via N_max so it doesn't interfere
-	ct.limits.SetNMax("example.com", 28)
-
 	// rawBps = 14MB/5s = 2.8MB/s. dropRatio > 0.5 → knee crossed → rebound.
 	tracker.tasks[0].CompletedLength = 114 * 1024 * 1024
 	ct.mu.Lock()

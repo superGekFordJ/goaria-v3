@@ -794,6 +794,17 @@ func (p *WorkerPool) SetSlowWorkerThreshold(id string, v float64) {
 	ad.config.State.SetSlowWorkerThreshold(v)
 }
 
+// FORK-PATCH: DrainWorker marks a specific worker of a download as draining.
+func (p *WorkerPool) DrainWorker(id string, workerID int) bool {
+	p.mu.RLock()
+	ad, exists := p.downloads[id]
+	p.mu.RUnlock()
+	if !exists || ad == nil || ad.config.State == nil {
+		return false
+	}
+	return ad.config.State.DrainWorker(workerID)
+}
+
 // FORK-PATCH: Test helper for monitor-side telemetry collection tests.
 // NewWorkerPoolForTesting creates a WorkerPool with pre-populated downloads map.
 // configs is a map of download ID → DownloadConfig with State pre-set.

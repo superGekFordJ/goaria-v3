@@ -53,6 +53,10 @@ type ProgressState struct {
 	setSlowThresholdMu sync.Mutex
 	setSlowThresholdFn func(float64)
 
+	// FORK-PATCH: per-worker Drain bridge
+	drainWorkerMu sync.Mutex
+	drainWorkerFn func(int) bool
+
 	// FORK-PATCH: Server connection error counter for N_max fuse
 	consecutiveConnErrors atomic.Int32
 }
@@ -298,6 +302,11 @@ func (ps *ProgressState) SessionReset() {
 	ps.setSlowThresholdFn = nil
 	ps.setSlowThresholdMu.Unlock()
 
+	// FORK-PATCH: Clear per-worker drain bridge
+	ps.drainWorkerMu.Lock()
+	ps.drainWorkerFn = nil
+	ps.drainWorkerMu.Unlock()
+
 	// FORK-PATCH: Reset connection error counter
 	ps.consecutiveConnErrors.Store(0)
 }
@@ -390,6 +399,26 @@ func (ps *ProgressState) SetSlowWorkerThreshold(v float64) {
 	if fn != nil {
 		fn(v)
 	}
+}
+
+// FORK-PATCH: SetDrainWorkerFn registers the per-worker Drain bridge.
+func (ps *ProgressState) SetDrainWorkerFn(fn func(int) bool) {
+	ps.drainWorkerMu.Lock()
+	defer ps.drainWorkerMu.Unlock()
+	ps.drainWorkerFn = fn
+}
+
+// FORK-PATCH: DrainWorker marks a specific worker as draining. Returns false if
+// no function is registered. The worker finishes its current chunk and exits,
+// preserving the TCP connection in the Transport idle pool.
+func (ps *ProgressState) DrainWorker(workerID int) bool {
+	ps.drainWorkerMu.Lock()
+	fn := ps.drainWorkerFn
+	ps.drainWorkerMu.Unlock()
+	if fn == nil {
+		return false
+	}
+	return fn(workerID)
 }
 
 // FORK-PATCH: IncrConnErrors increments the server connection error counter.

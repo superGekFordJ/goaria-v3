@@ -991,6 +991,9 @@ func TestConvergence_LinearZone_KneeDetection(t *testing.T) {
 	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
+	// Clear any leftover N_max from previous tests (global singleton).
+	ct.limits.Clear("example.com")
+
 	// Set up state: probe-down of 4 threads from 32 just completed, settling done.
 	ct.mu.Lock()
 	s := ct.getOrCreateState(gid)
@@ -1118,14 +1121,16 @@ func TestConvergence_E2E_LinearZoneKneeViaSettling(t *testing.T) {
 	// Helper: call processTask directly, simulating successful scale by
 	// adjusting telemetry worker count after a probe-down.
 	// throughput = perThreadSpeed * workerCount (linear zone: proportional)
-	// N_max is pinned to workerCount to suppress Probe-Up (+1) so the
-	// probe-down knee-crossing path can be exercised in isolation.
+	// probeMomentum=true suppresses Probe-Up (+1) so the probe-down
+	// knee-crossing path can be exercised in isolation.
 	process := func(completedLen int64, workerCount int) (pendingScale, bool) {
 		tracker.tasks[0].CompletedLength = completedLen
 		telemetry.data[gid] = makeWorkers(workerCount, 2*1024*1024)
-		ct.limits.SetNMax("example.com", workerCount)
+		ct.limits.Clear("example.com")
 		ct.mu.Lock()
 		if s, ok := ct.states[gid]; ok {
+			s.probeMomentum = true
+			s.probeCooldown = 0
 			setPrevSampleAgoState(s, 5*time.Second)
 		}
 		ct.mu.Unlock()

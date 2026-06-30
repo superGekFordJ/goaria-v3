@@ -420,6 +420,17 @@ func (e *SurgeEngine) SetSlowWorkerThreshold(gid string, v float64) {
 	e.service.Pool.SetSlowWorkerThreshold(gid, v)
 }
 
+// DrainWorker marks a specific worker of a Surge download as draining. The
+// worker finishes its current chunk and exits gracefully, preserving the TCP
+// connection in the Transport idle pool. Returns false if the download is not
+// active.
+func (e *SurgeEngine) DrainWorker(gid string, workerID int) bool {
+	if e.service == nil || e.service.Pool == nil {
+		return false
+	}
+	return e.service.Pool.DrainWorker(gid, workerID)
+}
+
 // GetRateLimit returns the effective per-download rate limit (bps) and whether
 // an explicit rate limit is active. Returns (0, false) if no explicit limit.
 func (e *SurgeEngine) GetRateLimit(gid string) (int64, bool) {
