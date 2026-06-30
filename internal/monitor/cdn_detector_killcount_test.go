@@ -108,9 +108,11 @@ func TestCDNDetector_KillCountReset_OnRecovery(t *testing.T) {
 	}
 }
 
-// TestCDNDetector_KillCountReset_OnWarmup verifies that killCount resets when
-// a worker enters warmup (isWarmup → resetHeld → resetKillCount).
-func TestCDNDetector_KillCountReset_OnWarmup(t *testing.T) {
+// TestCDNDetector_KillCountNotReset_OnWarmup verifies that killCount is NOT
+// reset when a worker enters warmup. The warmup path only calls resetHeld,
+// not resetKillCount — this ensures a bad node that repeatedly cycles
+// kill→reconnect(warmup)→dead still degrades to Drain after cdnMaxKillCount.
+func TestCDNDetector_KillCountNotReset_OnWarmup(t *testing.T) {
 	ctrl := newMockCDNControl()
 	setStats(ctrl,
 		matureWorker(1, 100, 206),
@@ -118,12 +120,16 @@ func TestCDNDetector_KillCountReset_OnWarmup(t *testing.T) {
 	)
 	d, clock := newTestDetector(ctrl)
 
-	// Kill 2 times.
-	for i := 0; i < 2; i++ {
+	// Kill 3 times to reach killCount cap (cdnMaxKillCount=3).
+	for i := 0; i < cdnMaxKillCount; i++ {
 		fireAndKill(t, d, clock, ctrl)
+	}
+	if got := ctrl.killsCount(); got != cdnMaxKillCount {
+		t.Fatalf("expected %d kills, got %d", cdnMaxKillCount, got)
 	}
 
 	// Make worker 1 warmup (young connection, low bytes).
+	// Warmup exemption fires → resetHeld, but killCount is NOT reset.
 	warmup := matureWorker(1, 100, 206)
 	warmup.WorkerStartUnix = d.now().UnixNano()
 	warmup.SessionBytes = 0
@@ -132,7 +138,8 @@ func TestCDNDetector_KillCountReset_OnWarmup(t *testing.T) {
 		advanceTick(d, clock)
 	}
 
-	// Worker 1 matures and is dead again → killCount should be 0 (reset by warmup).
+	// Worker 1 matures and is dead again. killCount should still be 3
+	// (preserved through warmup), so the next fire should be a drain.
 	mature := matureWorker(1, 100, 206)
 	setStats(ctrl, mature, matureWorker(2, 5*types.MB, 206))
 
@@ -140,14 +147,19 @@ func TestCDNDetector_KillCountReset_OnWarmup(t *testing.T) {
 	prevDrains := ctrl.drainsCount()
 	for i := 0; i < 30; i++ {
 		advanceTick(d, clock)
-		if ctrl.killsCount() > prevKills {
+		if ctrl.drainsCount() > prevDrains {
 			break
 		}
 	}
 
-	if ctrl.killsCount() != prevKills+1 {
-		t.Fatalf("expected kill (not drain) after warmup reset, got kills=%d drains=%d",
-			ctrl.killsCount()-prevKills, ctrl.drainsCount()-prevDrains)
+	// Should be a drain (not kill) because killCount was preserved at 3 through warmup.
+	if ctrl.drainsCount() != prevDrains+1 {
+		t.Fatalf("expected 1 drain after warmup (killCount preserved), got drains=%d kills=%d",
+			ctrl.drainsCount()-prevDrains, ctrl.killsCount()-prevKills)
+	}
+	if ctrl.killsCount() != prevKills {
+		t.Fatalf("expected 0 kills after warmup (killCount preserved at cap), got %d kills",
+			ctrl.killsCount()-prevKills)
 	}
 }
 
