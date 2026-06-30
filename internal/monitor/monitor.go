@@ -782,6 +782,13 @@ func (m *Monitor) InvalidateTask(gid string) {
 		m.convergence.RemoveTask(gid)
 	}
 
+	// 6. 清理 pause/resume intention，避免长期运行内存泄漏
+	m.pauseResumeVersionMu.Lock()
+	if m.pauseResumeIntentions != nil {
+		delete(m.pauseResumeIntentions, gid)
+	}
+	m.pauseResumeVersionMu.Unlock()
+
 	log.Printf("[Monitor] Task invalidated: %s", gid)
 }
 
@@ -1004,6 +1011,19 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 				m.handleTaskComplete(completed)
 			}
 		}
+		// Terminal: clear intention to avoid unbounded map growth.
+		m.pauseResumeVersionMu.Lock()
+		if m.pauseResumeIntentions != nil {
+			delete(m.pauseResumeIntentions, gid)
+		}
+		m.pauseResumeVersionMu.Unlock()
+	case "remove":
+		// Terminal: clear intention to avoid unbounded map growth.
+		m.pauseResumeVersionMu.Lock()
+		if m.pauseResumeIntentions != nil {
+			delete(m.pauseResumeIntentions, gid)
+		}
+		m.pauseResumeVersionMu.Unlock()
 	}
 
 	m.hub.NotifyInternal(events.TaskDelta{Type: deltaType, GID: gid})

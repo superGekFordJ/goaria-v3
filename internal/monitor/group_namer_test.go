@@ -19,7 +19,10 @@ func setupDownloadGroupNamerTest(t *testing.T) *TaskTracker {
 	originalCache := Cache
 	originalTracker := State.GetTracker()
 	originalSaveEnabled := history.SaveEnabled
-	Cache = &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	Cache = &TaskCache{
+		metadata:         make(map[string]*TaskMetadata),
+		pendingStartGids: make(map[string]time.Time),
+	}
 	tracker := NewTaskTracker()
 	State.SetTracker(tracker)
 	ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
@@ -158,7 +161,10 @@ func TestDownloadGroupNamer_DeterministicAcrossMemberOrder(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		func(i int) {
 			ResetDownloadGroupNamerForTest()
-			Cache = &TaskCache{metadata: make(map[string]*TaskMetadata)}
+			Cache = &TaskCache{
+				metadata:         make(map[string]*TaskMetadata),
+				pendingStartGids: make(map[string]time.Time),
+			}
 			State.SetTracker(NewTaskTracker())
 			ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
 			history.Clear()

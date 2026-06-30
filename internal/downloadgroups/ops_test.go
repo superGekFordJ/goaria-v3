@@ -787,3 +787,36 @@ func TestPauseDownloadGroup_PendingStartClearedAfterCacheUpdate(t *testing.T) {
 		t.Fatalf("expected gid to no longer be pending-start after cache update")
 	}
 }
+
+// TestResumeDownloadGroup_SkipsPendingStartStoppedMembers verifies that
+// pending-start stopped members are skipped on resume (terminal-state), unlike
+// pause where they are included. Only the paused member should be resumed.
+func TestResumeDownloadGroup_SkipsPendingStartStoppedMembers(t *testing.T) {
+	recorder := setupGroupOpsRPCTest(t, func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any {
+		switch req.Method {
+		case "system.multicall":
+			return appTaskSuccessResponse([]any{[]any{"OK"}})
+		case "aria2.saveSession":
+			return appTaskSuccessResponse("OK")
+		default:
+			return appTaskSuccessResponse("OK")
+		}
+	})
+	group := groupReadTestGroup("dg-resume-pending-stopped", 3)
+	paused := groupReadTask("gid-rps-paused", "paused", &group, "100", "0", "0")
+	stopped := groupReadTask("gid-rps-stopped", "complete", &group, "100", "100", "0")
+	monitor.Cache.UpdateFromAria2(nil, []rpc.Task{paused}, []rpc.Task{stopped})
+	monitor.RegisterTaskGroup("gid-rps-stopped", group)
+
+	result := ResumeDownloadGroup(group.ID)
+	if !result.OK || !result.Found || result.Noop || result.Succeeded != 1 || result.Failed != 0 || result.TotalTargets != 1 {
+		t.Fatalf("unexpected resume result: %#v", result)
+	}
+	resumedGIDs := recorder.multicallGIDs(t, "aria2.unpause")
+	if len(resumedGIDs) != 1 || resumedGIDs[0] != "gid-rps-paused" {
+		t.Fatalf("expected only gid-rps-paused in resume multicall, got %#v", resumedGIDs)
+	}
+	if item := findOperationItem(t, result, "gid-rps-stopped"); item.Code != DownloadGroupOperationCodeTerminalState {
+		t.Fatalf("expected terminal_state skip for pending-start stopped member on resume, got %#v", item)
+	}
+}

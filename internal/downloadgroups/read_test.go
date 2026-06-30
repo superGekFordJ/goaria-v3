@@ -22,7 +22,7 @@ func setupDownloadGroupsTest(t *testing.T) {
 
 	monitor.ResetDownloadGroupNamerForTest()
 	monitor.ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
-	monitor.Cache = &monitor.TaskCache{}
+	monitor.Cache = monitor.NewTaskCacheForTest()
 	history.DisableSaveForTest()
 	history.Clear()
 	config.Current = &config.AppConfig{ShowHistory: true}

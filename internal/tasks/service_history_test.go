@@ -19,7 +19,7 @@ func setupAppTaskHistoryTest(t *testing.T) {
 	originalConfig := config.Current
 
 	monitor.ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
-	monitor.Cache = &monitor.TaskCache{}
+	monitor.Cache = monitor.NewTaskCacheForTest()
 	history.DisableSaveForTest()
 	history.Clear()
 	config.Current = &config.AppConfig{ShowHistory: true}
@@ -556,7 +556,7 @@ func TestGetTasks_ReloadsPersistedDownloadGroupForActiveTaskAfterRestart(t *test
 	group := appHistoryTestDownloadGroup("dg-restart")
 	monitor.RegisterTaskGroup("gid-restart", *group)
 
-	monitor.Cache = &monitor.TaskCache{}
+	monitor.Cache = monitor.NewTaskCacheForTest()
 	monitor.LoadTaskGroups()
 	monitor.Cache.UpdateFromAria2([]rpc.Task{{GID: "gid-restart", Status: "active", Dir: group.Dir}}, nil, nil)
 

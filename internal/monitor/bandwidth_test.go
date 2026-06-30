@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"testing"
+	"time"
 
 	"goaria-v3/internal/rpc"
 )
@@ -17,7 +18,10 @@ func TestActiveBandwidthByScope_ScopeMatching(t *testing.T) {
 	tracker.SetScopeAndEnv("gid-bw-003", "lan", 80, "c.local", "env1")
 
 	// Inject active tasks into cache
-	Cache = &TaskCache{}
+	Cache = &TaskCache{
+		metadata:         make(map[string]*TaskMetadata),
+		pendingStartGids: make(map[string]time.Time),
+	}
 	Cache.mu.Lock()
 	Cache.active = []rpc.Task{
 		{GID: "gid-bw-001", DownloadSpeed: "5000000"}, // 5MB/s
@@ -55,7 +59,10 @@ func TestActiveBandwidthByScope_ScopeMissingSkipped(t *testing.T) {
 	// Task without scope set should be skipped
 	tracker.SetThreadInfo("gid-no-scope", 4, false)
 
-	Cache = &TaskCache{}
+	Cache = &TaskCache{
+		metadata:         make(map[string]*TaskMetadata),
+		pendingStartGids: make(map[string]time.Time),
+	}
 	Cache.mu.Lock()
 	Cache.active = []rpc.Task{
 		{GID: "gid-no-scope", DownloadSpeed: "9999999"},

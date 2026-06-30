@@ -79,7 +79,7 @@ func setupAppTaskRemoveTest(t *testing.T, handler func(req appTaskRPCRequest, co
 	originalSaveEnabled := history.SaveEnabled
 
 	monitor.ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
-	monitor.Cache = &monitor.TaskCache{}
+	monitor.Cache = monitor.NewTaskCacheForTest()
 	monitor.State.SetTracker(nil)
 	monitor.State.SetMonitor(nil)
 	history.DisableSaveForTest()

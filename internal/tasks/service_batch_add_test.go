@@ -37,11 +37,12 @@ type batchAddRPCSnapshots struct {
 }
 
 type batchAddRPCCounter struct {
-	mu      sync.Mutex
-	methods map[string]int
-	addURIs []string
-	options []map[string]any
-	failAll bool
+	mu              sync.Mutex
+	methods         map[string]int
+	addURIs         []string
+	options         []map[string]any
+	failAll         bool
+	failFirstAddURI int
 }
 
 func newBatchAddRPCCounter() *batchAddRPCCounter {
@@ -79,6 +80,16 @@ func (c *batchAddRPCCounter) addURICount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.addURIs)
+}
+
+func (c *batchAddRPCCounter) shouldFailFirstAddURI() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.failFirstAddURI > 0 {
+		c.failFirstAddURI--
+		return true
+	}
+	return false
 }
 
 func (c *batchAddRPCCounter) addURIsSnapshot() []string {
@@ -150,7 +161,7 @@ func setupAppTaskBatchAddTest(t *testing.T, snapshots batchAddRPCSnapshots) (*Se
 			uri, options := batchAddParams(req.Params)
 			counter.recordAddURI(uri)
 			counter.recordOptions(options)
-			if counter.failAll {
+			if counter.failAll || counter.shouldFailFirstAddURI() {
 				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": "goaria", "error": map[string]any{"code": 1, "message": "mock add failure"}})
 				return
 			}
@@ -614,5 +625,46 @@ func TestSubmitCandidatesConcurrently_DedupRaceOnlyOneSucceeds(t *testing.T) {
 	}
 	if counter.addURICount() != 1 {
 		t.Fatalf("expected exactly 1 aria2.addUri call, got %d", counter.addURICount())
+	}
+}
+
+// TestSubmitCandidatesConcurrently_FailedCandidateAllowsRetry verifies that when a
+// candidate fails and unmarkSeen removes its URL, a subsequent same-URL candidate
+// is NOT treated as a duplicate and is allowed to retry.
+func TestSubmitCandidatesConcurrently_FailedCandidateAllowsRetry(t *testing.T) {
+	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	// Fail only the first aria2.addUri call; the second should succeed.
+	counter.failFirstAddURI = 1
+
+	retryURL := "https://example.com/retry-after-failure.bin"
+	candidates := []addTaskCandidate{
+		directAddTaskCandidate(retryURL),
+		directAddTaskCandidate(retryURL),
+	}
+
+	existingUrls := make(map[string]bool)
+	candidateSeen := make(map[string]bool)
+	summary := &addTaskSummary{errors: make(map[string]string)}
+	batchState := &addCandidateBatchState{
+		existingUrls:  existingUrls,
+		candidateSeen: candidateSeen,
+		summary:       summary,
+	}
+	authState := newAddTaskAuthBatchState()
+	ledger := smartthread.NewBandwidthLedger(nil)
+
+	submitCandidatesConcurrently(service, context.Background(), candidates, batchState, nil, authState, ledger)
+
+	if len(summary.duplicates) != 0 {
+		t.Fatalf("expected 0 duplicates (retry should not be deduped), got %d: %#v", len(summary.duplicates), summary.duplicates)
+	}
+	if len(summary.succeeded) != 1 {
+		t.Fatalf("expected 1 success (retry candidate), got %d: %#v", len(summary.succeeded), summary.succeeded)
+	}
+	if len(summary.errors) != 1 {
+		t.Fatalf("expected 1 error (first candidate), got %d: %#v", len(summary.errors), summary.errors)
+	}
+	if counter.addURICount() != 2 {
+		t.Fatalf("expected 2 aria2.addUri calls (fail + retry), got %d", counter.addURICount())
 	}
 }

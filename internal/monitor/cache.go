@@ -115,6 +115,15 @@ var Cache = &TaskCache{
 	pendingStartGids: make(map[string]time.Time),
 }
 
+// NewTaskCacheForTest returns a TaskCache with all internal maps initialized,
+// for use by cross-package test setups that cannot access unexported fields.
+func NewTaskCacheForTest() *TaskCache {
+	return &TaskCache{
+		metadata:         make(map[string]*TaskMetadata),
+		pendingStartGids: make(map[string]time.Time),
+	}
+}
+
 // UpdateFromAria2 从 Aria2 更新缓存（批量获取）
 // 注意：此方法仅更新任务列表，不再自动调用 ensureMetadata
 // 元数据预取由 Monitor.tick() 显式处理，避免 Lite 任务污染缓存
