@@ -144,15 +144,24 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 				utils.Debug("Worker %d: Health check cancelled task, rotating from mirror %s to %s", id, mirrors[(currentMirrorIdx+len(mirrors)-1)%len(mirrors)], mirrors[currentMirrorIdx])
 
 				if remaining := activeTask.RemainingTask(); remaining != nil {
-					// Clamp to original task end (don't go past original boundary)
-					originalEnd := task.Offset + task.Length
-					if remaining.Offset+remaining.Length > originalEnd {
-						remaining.Length = originalEnd - remaining.Offset
-					}
-					if remaining.Length > 0 {
-						queue.Push(*remaining)
-						utils.Debug("Worker %d: health-cancelled task requeued (remaining: %d bytes from offset %d)",
-							id, remaining.Length, remaining.Offset)
+					// FORK-PATCH: 100% requeue guard — skip requeue when all
+					// bytes are already downloaded. The hedge partner already
+					// wrote these bytes (WriteAt is idempotent); requeuing
+					// would cause a fresh worker to reconnect to the same
+					// tarpit server and re-stick.
+					if d.State != nil && d.State.Downloaded.Load() >= totalSize {
+						utils.Debug("Worker %d: skipping requeue — all bytes downloaded (100%% guard)", id)
+					} else {
+						// Clamp to original task end (don't go past original boundary)
+						originalEnd := task.Offset + task.Length
+						if remaining.Offset+remaining.Length > originalEnd {
+							remaining.Length = originalEnd - remaining.Offset
+						}
+						if remaining.Length > 0 {
+							queue.Push(*remaining)
+							utils.Debug("Worker %d: health-cancelled task requeued (remaining: %d bytes from offset %d)",
+								id, remaining.Length, remaining.Offset)
+						}
 					}
 				}
 				// Delete from active tasks and move to next task (don't retry from scratch)

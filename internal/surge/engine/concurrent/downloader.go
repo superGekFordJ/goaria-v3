@@ -426,6 +426,12 @@ func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize i
 			if len(savedState.ChunkBitmap) > 0 && savedState.ActualChunkSize > 0 {
 				d.State.RestoreBitmap(savedState.ChunkBitmap, savedState.ActualChunkSize)
 				d.State.RecalculateProgress(savedState.Tasks)
+				// FORK-PATCH: Prevent resume progress regression. Remaining
+				// tasks may contain hedged bytes already on disk; trust the
+				// saved Downloaded when RecalculateProgress undercounts.
+				if savedState.Downloaded > d.State.VerifiedProgress.Load() {
+					d.State.VerifiedProgress.Store(savedState.Downloaded)
+				}
 				d.State.Downloaded.Store(d.State.VerifiedProgress.Load())
 				d.State.SyncSessionStart()
 				utils.Debug("Restored chunk map: size %d", savedState.ActualChunkSize)
@@ -618,13 +624,21 @@ func (d *ConcurrentDownloader) runCompletionMonitor(ctx context.Context, queue *
 			queue.Close()
 			return
 		case <-ticker.C:
-			// Completion condition:
-			// 1. Queue is empty (no pending retries)
-			// AND
-			// 2. All workers are idle OR we've accounted for all bytes
-			// Ensure queue is empty (no pending retries) before considering byte count.
-			// This protects against cutting off active retries even if byte count seems high (due to overlaps etc).
-			isDone := queue.Len() == 0 && (int(queue.IdleWorkers()) == numConns || (d.State != nil && d.State.Downloaded.Load() >= fileSize))
+			// FORK-PATCH: When all bytes are accounted for, force-exit any
+			// workers still stuck in resp.Body.Read() (tarpit servers that
+			// hold/trickle connections after partial data). Closing the queue
+			// only unblocks queue.Pop() waiters; stuck readers need taskCtx
+			// cancellation. Requeued hedged tasks may leave queue.Len() > 0,
+			// so byte-count completion must NOT gate on an empty queue.
+			if d.State != nil && d.State.Downloaded.Load() >= fileSize {
+				for _, id := range d.activeWorkerIDs() {
+					d.KillWorker(id)
+				}
+				queue.Close()
+				return
+			}
+			// Normal completion: queue empty AND all workers idle.
+			isDone := queue.Len() == 0 && int(queue.IdleWorkers()) == numConns
 			if isDone {
 				queue.Close()
 				return
@@ -849,6 +863,14 @@ func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queu
 		return nil
 	}
 	computedDownloaded := fileSize - remainingBytes
+	// FORK-PATCH: Trust the chunk-level dedup counter over the recompute.
+	// remainingBytes may include hedged bytes already on disk (RemainingTask
+	// does not carry SharedMaxOffset), so the recompute can undercount.
+	if d.State != nil {
+		if vp := d.State.VerifiedProgress.Load(); vp > computedDownloaded {
+			computedDownloaded = vp
+		}
+	}
 
 	// Calculate total elapsed time
 	totalElapsed := d.State.FinalizePauseSession(computedDownloaded)
