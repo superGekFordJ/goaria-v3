@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -1477,4 +1478,175 @@ func TestHandleSurgeEvent_NoInvalidationOnProgress(t *testing.T) {
 	if cacheAtAfter.IsZero() {
 		t.Errorf("listCacheAt = zero, want %v (progress should not invalidate cache)", cacheAtBefore)
 	}
+}
+
+// mockStoppedEngine returns a fixed set of stopped tasks from TellStopped/
+// TellStoppedLite, allowing tick-level tests to simulate a Surge engine whose
+// DB still contains a completed task (the async DeleteState race window).
+type mockStoppedEngine struct {
+	mockSurgeActiveEngine
+	stopped []rpc.Task
+}
+
+func (e *mockStoppedEngine) TellStopped(offset, num int) ([]rpc.Task, error) {
+	return e.stopped, nil
+}
+
+func (e *mockStoppedEngine) TellStoppedLite(offset, num int) ([]rpc.Task, error) {
+	return e.stopped, nil
+}
+
+func (e *mockStoppedEngine) TellActive() ([]rpc.Task, error)     { return nil, nil }
+func (e *mockStoppedEngine) TellActiveLite() ([]rpc.Task, error) { return nil, nil }
+func (e *mockStoppedEngine) TellActiveProgress() ([]rpc.TaskProgress, error) {
+	return nil, nil
+}
+
+func (e *mockStoppedEngine) TellWaiting(offset, num int) ([]rpc.Task, error) {
+	return nil, nil
+}
+
+func (e *mockStoppedEngine) TellWaitingLite(offset, num int) ([]rpc.Task, error) {
+	return nil, nil
+}
+
+func (e *mockStoppedEngine) GetGlobalStat() (rpc.GlobalStat, error) {
+	return rpc.GlobalStat{}, nil
+}
+func (e *mockStoppedEngine) SaveSession() error { return nil }
+func (e *mockStoppedEngine) ChangeGlobalOption(map[string]string) error {
+	return nil
+}
+
+func (e *mockStoppedEngine) StreamEvents(ctx context.Context) (<-chan any, func(), error) {
+	ch := make(chan any)
+	cleanup := func() {}
+	return ch, cleanup, nil
+}
+
+func (e *mockStoppedEngine) TellStatus(gid string, keys []string) (rpc.Task, error) {
+	return rpc.Task{}, fmt.Errorf("mock: no engine")
+}
+
+func (e *mockStoppedEngine) TellStatusMulti(gids []string, keys []string) ([]rpc.Task, error) {
+	return nil, nil
+}
+
+// TempRepro_TestRemoveGroupCompletedTaskReappears reproduces the SPEC-189
+// regression where deleting a download group containing a completed task
+// causes the completed task to reappear in the stopped list.
+//
+// Root cause: InvalidateListCache() on the complete event causes the 1s TTL
+// list cache to be repopulated with the completed task. During the deletion
+// race (a tick fires between Cache.RemoveTask and InvalidateTask), TellStopped
+// returns the completed task from the fresh list cache. filterDeletedTasks
+// does not catch it (deletedGids not set yet). UpdateFromAria2 puts it back
+// into Cache.GetStopped(). On the next tick, filterDeletedTasks catches it,
+// but the shouldFetchStoppedUntil fast-retry preserve logic re-appends it from
+// Cache.GetStopped(), bypassing filterDeletedTasks. The task persists.
+func TestTempRepro_RemoveGroupCompletedTaskReappears(t *testing.T) {
+	completedGID := "sg_completed-1"
+	completedTask := rpc.Task{
+		GID:             completedGID,
+		Status:          "complete",
+		TotalLength:     "1000",
+		CompletedLength: "1000",
+		DownloadSpeed:   "0",
+	}
+
+	engine := &mockStoppedEngine{stopped: []rpc.Task{completedTask}}
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	m := &Monitor{
+		hub:              hub,
+		pusher:           pusher,
+		tracker:          tracker,
+		engine:           engine,
+		stopChan:         make(chan struct{}),
+		forceTickChan:    make(chan struct{}, 1),
+		headlessInterval: 5 * time.Second,
+		windowInterval:   1 * time.Second,
+		deletedGids:      make(map[string]time.Time),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+	defer func() {
+		Cache.active = nil
+		Cache.waiting = nil
+		Cache.stopped = nil
+		Cache.engine = nil
+	}()
+
+	// Wire the mock engine into Cache so PrefetchMetadataMulti doesn't panic.
+	Cache.engine = engine
+
+	// Phase 1: Simulate the complete event. MoveTaskToStopped puts the task
+	// into Cache.GetStopped(). shouldFetchStoppedUntil is set (15s window).
+	Cache.active = []rpc.Task{{GID: completedGID, Status: "active", TotalLength: "1000"}}
+	Cache.MoveTaskToStopped(completedGID, "complete")
+
+	m.mu.Lock()
+	m.shouldFetchStopped = true
+	m.shouldFetchStoppedUntil = time.Now().Add(15 * time.Second)
+	m.mu.Unlock()
+
+	// Phase 2: Run the complete event's force tick. TellStopped returns the
+	// completed task (from the fresh list cache after InvalidateListCache).
+	// filterDeletedTasks does not catch it (not deleted yet). UpdateFromAria2
+	// keeps the task in Cache.GetStopped().
+	m.tick()
+
+	if !taskInCacheStopped(completedGID) {
+		t.Fatal("Phase 2: expected completed task in cache stopped after complete-event tick")
+	}
+
+	// Phase 3: Simulate the deletion race. Cache.RemoveTask runs (from
+	// cleanupRemovedTask), then a tick fires BEFORE InvalidateTask sets
+	// deletedGids. The tick's TellStopped returns the task, filterDeletedTasks
+	// doesn't catch it, UpdateFromAria2 puts it back.
+	Cache.RemoveTask(completedGID)
+	if taskInCacheStopped(completedGID) {
+		t.Fatal("Phase 3a: expected task removed from cache after Cache.RemoveTask")
+	}
+
+	// Race tick: deletedGids NOT set yet (InvalidateTask hasn't run).
+	m.mu.Lock()
+	m.shouldFetchStopped = true
+	m.mu.Unlock()
+	m.tick()
+
+	// After the race tick, the task is back in cache (UpdateFromAria2 re-added it).
+	if !taskInCacheStopped(completedGID) {
+		t.Fatal("Phase 3b: expected task re-added to cache after race tick (this is the race)")
+	}
+
+	// Phase 4: InvalidateTask finally runs, setting deletedGids.
+	m.mu.Lock()
+	m.deletedGids[completedGID] = time.Now()
+	m.shouldFetchStopped = true
+	m.mu.Unlock()
+
+	// Phase 5: Run the next tick. filterDeletedTasks should catch the task.
+	// BUT the fast-retry preserve logic re-appends it from Cache.GetStopped(),
+	// bypassing filterDeletedTasks. The task persists — this is the bug.
+	m.tick()
+
+	if taskInCacheStopped(completedGID) {
+		t.Fatal("Phase 5: BUG REPRODUCED — completed task reappeared in cache stopped " +
+			"after deletion due to fast-retry preserve bypassing filterDeletedTasks")
+	}
+}
+
+func taskInCacheStopped(gid string) bool {
+	Cache.mu.RLock()
+	defer Cache.mu.RUnlock()
+	for _, task := range Cache.stopped {
+		if task.GID == gid {
+			return true
+		}
+	}
+	return false
 }
