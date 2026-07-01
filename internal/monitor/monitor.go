@@ -449,20 +449,19 @@ func (m *Monitor) tick() {
 			for _, t := range stopped {
 				existingGids[t.GID] = struct{}{}
 			}
-			for _, t := range Cache.GetStopped() {
+			cachedStopped := Cache.GetStopped()
+			m.mu.Lock()
+			// deletedGids expiry is pruned by filterDeletedTasks earlier in tick.
+			for _, t := range cachedStopped {
 				if _, ok := existingGids[t.GID]; ok {
 					continue
 				}
-				// Skip tasks marked as deleted; the preserve logic must not
-				// bypass filterDeletedTasks and resurrect removed tasks.
-				m.mu.Lock()
-				_, deleted := m.deletedGids[t.GID]
-				m.mu.Unlock()
-				if deleted {
+				if _, deleted := m.deletedGids[t.GID]; deleted {
 					continue
 				}
 				stopped = append(stopped, t)
 			}
+			m.mu.Unlock()
 		}
 	}
 

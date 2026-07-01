@@ -1532,7 +1532,7 @@ func (e *mockStoppedEngine) TellStatusMulti(gids []string, keys []string) ([]rpc
 	return nil, nil
 }
 
-// TempRepro_TestRemoveGroupCompletedTaskReappears reproduces the SPEC-189
+// TestRemoveGroupCompletedTaskReappears_NoResurrection reproduces the
 // regression where deleting a download group containing a completed task
 // causes the completed task to reappear in the stopped list.
 //
@@ -1544,7 +1544,7 @@ func (e *mockStoppedEngine) TellStatusMulti(gids []string, keys []string) ([]rpc
 // into Cache.GetStopped(). On the next tick, filterDeletedTasks catches it,
 // but the shouldFetchStoppedUntil fast-retry preserve logic re-appends it from
 // Cache.GetStopped(), bypassing filterDeletedTasks. The task persists.
-func TestTempRepro_RemoveGroupCompletedTaskReappears(t *testing.T) {
+func TestRemoveGroupCompletedTaskReappears_NoResurrection(t *testing.T) {
 	completedGID := "sg_completed-1"
 	completedTask := rpc.Task{
 		GID:             completedGID,
