@@ -148,6 +148,9 @@
     }
   })
 
+  const isActive = computed(() => statusKey.value === 'active')
+  const isPaused = computed(() => statusKey.value === 'paused' || statusKey.value === 'waiting')
+
   const folderLabel = computed(() => {
     if (card.value) return card.value.folder_label || ''
     const group = placeholderGroup.value
@@ -378,7 +381,11 @@
       <div v-if="!isPlaceholder && statusKey !== 'complete'" class="download-group-progress">
         <div class="progress-bar-container mt-2">
           <div
-            class="progress-bar-fill"
+            :class="[
+              'progress-bar-fill',
+              { 'opacity-50': isPaused },
+              { 'progress-bar-energy': isActive },
+            ]"
             :style="{ transform: `scaleX(${smoothProgressScale})` }"
           ></div>
         </div>

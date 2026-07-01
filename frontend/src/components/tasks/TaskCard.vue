@@ -253,19 +253,19 @@
               </span>
               <span
                 v-if="groupHint"
-                class="download-group-chip"
+                class="task-group-chip"
                 :title="groupChipTitle"
                 :aria-label="groupChipTitle"
               >
-                <span class="download-group-chip-dot"></span>
-                <Layers3 :size="11" class="download-group-chip-icon" />
-                <span v-if="groupHint.folderLabel" class="download-group-chip-folder">
+                <span class="task-group-chip-dot"></span>
+                <Layers3 :size="11" class="task-group-chip-icon" />
+                <span v-if="groupHint.folderLabel" class="task-group-chip-folder">
                   {{ t('taskCard.groupFolder', { folder: groupHint.folderLabel }) }}
                 </span>
-                <span v-else class="download-group-chip-label">
+                <span v-else class="task-group-chip-label">
                   {{ t('taskCard.groupStack') }}
                 </span>
-                <span v-if="groupCountText" class="download-group-chip-count font-mono-data">
+                <span v-if="groupCountText" class="task-group-chip-count font-mono-data">
                   {{ groupCountText }}
                 </span>
               </span>
@@ -421,21 +421,7 @@
     opacity: 1;
   }
 
-  /* Override progress bar for paused state */
-  .task-card .progress-bar-fill.opacity-50 {
-    box-shadow: none;
-    background: linear-gradient(
-      90deg,
-      var(--status-paused),
-      color-mix(in srgb, var(--status-paused) 80%, var(--app-bg))
-    );
-  }
-
-  .task-card .progress-bar-fill.opacity-50::after {
-    display: none;
-  }
-
-  .download-group-chip {
+  .task-group-chip {
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
@@ -454,7 +440,7 @@
     line-height: 1.1;
   }
 
-  .download-group-chip-dot {
+  .task-group-chip-dot {
     width: 0.3125rem;
     height: 0.3125rem;
     flex: 0 0 auto;
@@ -463,20 +449,20 @@
     box-shadow: 0 0 8px color-mix(in srgb, var(--neon-primary) 36%, transparent);
   }
 
-  .download-group-chip-icon {
+  .task-group-chip-icon {
     flex: 0 0 auto;
     color: color-mix(in srgb, var(--neon-primary) 70%, var(--app-text));
   }
 
-  .download-group-chip-folder,
-  .download-group-chip-label {
+  .task-group-chip-folder,
+  .task-group-chip-label {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .download-group-chip-count {
+  .task-group-chip-count {
     flex: 0 0 auto;
     color: color-mix(in srgb, var(--neon-primary) 78%, var(--app-text));
   }
