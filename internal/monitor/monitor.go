@@ -438,8 +438,10 @@ func (m *Monitor) tick() {
 	// 更新前一次的 GID 集合（用于下次检测）
 	m.updatePrevGids(active, waiting)
 
-	// 在 shouldFetchStoppedUntil 窗口内，保留 MoveTaskToStopped 放入的任务，
-	// 避免 engine Gob 写入竞态导致 UpdateFromAria2 用空 stopped 覆盖。
+	// 在 shouldFetchStoppedUntil 窗口内，保留 MoveTaskToStopped 放入的任务。
+	// handleSurgeEvent 的 InvalidateListCache 在 lifecycle worker 的
+	// AddToMasterList 之前调用，forceTick 的 TellStoppedLite 可能返回
+	// 尚未包含已完成任务的旧列表，导致 UpdateFromAria2 用空 stopped 覆盖 cache。
 	if fetchStopped {
 		m.mu.Lock()
 		fastRetry := time.Now().Before(m.shouldFetchStoppedUntil)
