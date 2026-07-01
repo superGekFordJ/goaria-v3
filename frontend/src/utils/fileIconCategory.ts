@@ -98,17 +98,17 @@ export function categorizeByFileName(fileName: string | null | undefined): FileI
   // No dot, or dot is the leading char (hidden file like ".gitignore") -> default.
   if (lastDot <= 0) return 'default'
 
-  const lower = base.slice(lastDot + 1).toLowerCase()
-  const direct = EXTENSION_TO_CATEGORY.get(lower)
-  if (direct) return direct
-
-  // Try compound "penultimate.last" segment.
+  // Compound "penultimate.last" segment takes precedence over single.
   const prevDot = base.lastIndexOf('.', lastDot - 1)
   if (prevDot >= 0) {
     const compound = base.slice(prevDot + 1).toLowerCase()
     const compoundHit = COMPOUND_EXTENSIONS.get(compound)
     if (compoundHit) return compoundHit
   }
+
+  const lower = base.slice(lastDot + 1).toLowerCase()
+  const direct = EXTENSION_TO_CATEGORY.get(lower)
+  if (direct) return direct
 
   return 'default'
 }
