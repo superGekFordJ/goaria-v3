@@ -11,7 +11,7 @@ import (
 func TestHealth_LastManStanding(t *testing.T) {
 	// 1. Setup mock state with high historical speed
 	// Say we downloaded 100MB in 10s => 10MB/s global average
-	state := types.NewProgressState("test", 1000)
+	state := types.NewProgressState("test", 200*1024*1024)
 	state.VerifiedProgress.Store(100 * 1024 * 1024)
 
 	runtime := &types.RuntimeConfig{

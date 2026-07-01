@@ -17,7 +17,7 @@ func TestSurgeEngine_MapStatus(t *testing.T) {
 		expected string
 	}{
 		{"downloading", "active"},
-		{"pausing", "active"},
+		{"pausing", "paused"},
 		{"paused", "paused"},
 		{"queued", "waiting"},
 		{"completed", "complete"},
@@ -249,4 +249,49 @@ func TestSurgeEngine_SetSlowWorkerThreshold_Delegation(t *testing.T) {
 	}
 	// Unknown id must not panic.
 	engine.SetSlowWorkerThreshold("unknown", 0.5)
+}
+
+func TestSurgeEngine_InvalidateListCache_ForcesFreshFetch(t *testing.T) {
+	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{
+		"dl-cache-1": {ID: "dl-cache-1"},
+	})
+	engine := &SurgeEngine{service: &core.LocalDownloadService{Pool: pool}}
+
+	// Populate the cache
+	first, err := engine.getDownloadList()
+	if err != nil {
+		t.Fatalf("first getDownloadList: %v", err)
+	}
+	if len(first) == 0 {
+		t.Fatal("expected at least one item in list")
+	}
+
+	// Cache hit: second call should return the same slice (same backing array)
+	cached, err := engine.getDownloadList()
+	if err != nil {
+		t.Fatalf("cached getDownloadList: %v", err)
+	}
+	if len(cached) != len(first) {
+		t.Errorf("cached len = %d, want %d (should return cached)", len(cached), len(first))
+	}
+
+	// Invalidate
+	engine.InvalidateListCache()
+
+	// After invalidation, the cache timestamp should be zero
+	engine.listCacheMu.Lock()
+	cacheAt := engine.listCacheAt
+	engine.listCacheMu.Unlock()
+	if !cacheAt.IsZero() {
+		t.Errorf("listCacheAt = %v, want zero time after invalidation", cacheAt)
+	}
+
+	// Next call should fetch fresh data (not panic, return same count)
+	fresh, err := engine.getDownloadList()
+	if err != nil {
+		t.Fatalf("fresh getDownloadList after invalidation: %v", err)
+	}
+	if len(fresh) != len(first) {
+		t.Errorf("fresh len = %d, want %d", len(fresh), len(first))
+	}
 }

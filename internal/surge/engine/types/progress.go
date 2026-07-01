@@ -184,6 +184,13 @@ func (ps *ProgressState) GetProgress() (downloaded int64, total int64, totalElap
 		totalElapsed = 0
 	}
 
+	// Safety net: clamp downloaded to TotalSize to prevent impossible progress
+	// values (>100%) from reaching the UI/speedstats. Only clamp when TotalSize
+	// is known (>0); unknown-size downloads (TotalSize==0) must not be clamped.
+	if total > 0 && downloaded > total {
+		downloaded = total
+	}
+
 	return
 }
 
@@ -738,6 +745,25 @@ func (ps *ProgressState) RecalculateProgress(remainingTasks []Task) {
 			if overlap > 0 {
 				ps.ChunkProgress[i] -= overlap
 				totalVerified -= overlap
+			}
+		}
+	}
+
+	// Trust the restored bitmap: chunks marked ChunkCompleted have their bytes
+	// fully on disk even if remainingTasks still cover them (hedged bytes
+	// re-queued by KillWorker). Restore ChunkProgress to full and add back to
+	// totalVerified so VP stays in sync with sum(ChunkProgress).
+	for i := 0; i < ps.BitmapWidth; i++ {
+		if ps.getChunkState(i) == ChunkCompleted {
+			chunkStart := int64(i) * ps.ActualChunkSize
+			chunkEnd := chunkStart + ps.ActualChunkSize
+			if chunkEnd > ps.TotalSize {
+				chunkEnd = ps.TotalSize
+			}
+			chunkSize := chunkEnd - chunkStart
+			if ps.ChunkProgress[i] < chunkSize {
+				totalVerified += chunkSize - ps.ChunkProgress[i]
+				ps.ChunkProgress[i] = chunkSize
 			}
 		}
 	}

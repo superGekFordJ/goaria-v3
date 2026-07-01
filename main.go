@@ -191,8 +191,16 @@ func main() {
 				if params.MinSize > 0 {
 					cfg.Runtime.MinChunkSize = params.MinSize
 				}
-				// Update CurrentEnvKey to the freshly computed value
-				tracker.SetScopeAndEnv(gid, scope, 0, domain, envKey)
+				// Re-probe TTFB on resume — physical network may have changed
+				// since pause. Use a shorter timeout (1s) than AddUri (3s) to
+				// minimize resume latency. On probe failure (TTFBMs=0),
+				// SetScopeAndEnv's defensive guard preserves the existing TTFB.
+				var resumeTTFB int64
+				if len(cfg.Headers) == 0 {
+					probe := rpc.HeadProbe(cfg.URL, 1*time.Second)
+					resumeTTFB = probe.TTFBMs
+				}
+				tracker.SetScopeAndEnv(gid, scope, resumeTTFB, domain, envKey)
 			})
 		}
 	}

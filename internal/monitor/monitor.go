@@ -895,6 +895,13 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 	var completeTotal int64
 	var completeAvgSpeed float64
 
+	var surgeEng *rpc.SurgeEngine
+	if he, ok := m.engine.(*rpc.HybridEngine); ok {
+		if se, ok := he.SurgeEngineRef(); ok {
+			surgeEng = se
+		}
+	}
+
 	switch ev := rawEvt.(type) {
 	case surgeEvents.ProgressMsg:
 		gid = "sg_" + ev.DownloadID
@@ -982,6 +989,9 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 	// stream) and the status badge/card style changing (was waiting for tick).
 	switch deltaType {
 	case "pause":
+		if surgeEng != nil {
+			surgeEng.InvalidateListCache()
+		}
 		if m.shouldDiscardStalePause(gid) {
 			log.Printf("[Monitor] Discarding stale pause event for gid %s (superseded by resume)", gid)
 			return
@@ -991,11 +1001,17 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 			m.pusher.Queue(events.TaskDelta{Type: "pause", GID: gid})
 		}
 	case "resume":
+		if surgeEng != nil {
+			surgeEng.InvalidateListCache()
+		}
 		Cache.MoveTaskToActive(gid, "active")
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{Type: "resume", GID: gid})
 		}
 	case "complete", "error":
+		if surgeEng != nil {
+			surgeEng.InvalidateListCache()
+		}
 		Cache.MoveTaskToStopped(gid, deltaType)
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{Type: deltaType, GID: gid})

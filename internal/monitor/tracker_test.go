@@ -1176,3 +1176,59 @@ func TestTaskTracker_PeakEnvKeyAttribution(t *testing.T) {
 		t.Errorf("PeakEnvKey = %q, want envB (should update to current env when peak exceeded)", tracked.PeakEnvKey)
 	}
 }
+
+func TestSetScopeAndEnv_ZeroTTFB_PreservesExistingTTFB(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.SetScopeAndEnv("sg-ttfb-001", "wan", 120, "example.com", "envA")
+
+	tracker.SetScopeAndEnv("sg-ttfb-001", "wan", 0, "example.com", "envB")
+
+	tracked := tracker.tasks["sg-ttfb-001"]
+	if tracked == nil {
+		t.Fatal("expected tracked task to exist")
+	}
+	if tracked.TTFBMs != 120 {
+		t.Errorf("TTFBMs = %d, want 120 (zero ttfbMs must not overwrite existing probe)", tracked.TTFBMs)
+	}
+	if tracked.CurrentEnvKey != "envB" {
+		t.Errorf("CurrentEnvKey = %q, want envB (envKey should still update)", tracked.CurrentEnvKey)
+	}
+}
+
+func TestSetScopeAndEnv_NegativeTTFB_PreservesExistingTTFB(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.SetScopeAndEnv("sg-ttfb-002", "wan", 120, "example.com", "envA")
+
+	tracker.SetScopeAndEnv("sg-ttfb-002", "wan", -1, "example.com", "envB")
+
+	tracked := tracker.tasks["sg-ttfb-002"]
+	if tracked.TTFBMs != 120 {
+		t.Errorf("TTFBMs = %d, want 120 (negative ttfbMs must not overwrite existing probe)", tracked.TTFBMs)
+	}
+}
+
+func TestSetScopeAndEnv_PositiveTTFB_OverwritesExisting(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.SetScopeAndEnv("sg-ttfb-003", "wan", 120, "example.com", "envA")
+
+	tracker.SetScopeAndEnv("sg-ttfb-003", "wan", 200, "example.com", "envB")
+
+	tracked := tracker.tasks["sg-ttfb-003"]
+	if tracked.TTFBMs != 200 {
+		t.Errorf("TTFBMs = %d, want 200 (positive ttfbMs should overwrite)", tracked.TTFBMs)
+	}
+}
+
+func TestSetScopeAndEnv_NewTask_ZeroTTFB_AcceptsZero(t *testing.T) {
+	tracker := NewTaskTracker()
+
+	tracker.SetScopeAndEnv("sg-ttfb-004", "wan", 0, "example.com", "envA")
+
+	tracked := tracker.tasks["sg-ttfb-004"]
+	if tracked == nil {
+		t.Fatal("expected new tracked task to be created")
+	}
+	if tracked.TTFBMs != 0 {
+		t.Errorf("TTFBMs = %d, want 0 (new task with no probe should start at 0)", tracked.TTFBMs)
+	}
+}

@@ -351,3 +351,151 @@ func TestProgressState_SessionReset(t *testing.T) {
 		}
 	}
 }
+
+// TestRecalculateProgress_BitmapTrust_RestoresHedgedChunks verifies that chunks
+// marked ChunkCompleted in the restored bitmap keep full ChunkProgress even when
+// remainingTasks still cover them (hedged bytes re-queued by KillWorker). This
+// restores the VP == sum(ChunkProgress) invariant.
+func TestRecalculateProgress_BitmapTrust_RestoresHedgedChunks(t *testing.T) {
+	totalSize := int64(80)
+	chunkSize := int64(20)
+	ps := NewProgressState("dl-hedge", totalSize)
+	ps.InitBitmap(totalSize, chunkSize)
+
+	// Mark chunks 0 and 1 as completed in the bitmap (hedged partner wrote them).
+	ps.SetChunkState(0, ChunkCompleted)
+	ps.SetChunkState(1, ChunkCompleted)
+
+	// remainingTasks covers ALL chunks (including the completed ones) — this
+	// simulates hedged bytes being re-queued after KillWorker.
+	remaining := []Task{
+		{Offset: 0, Length: 80},
+	}
+
+	ps.RecalculateProgress(remaining)
+
+	// VP should equal the real on-disk bytes: 2 completed chunks × 20 = 40.
+	// Without bitmap trust, the subtraction would zero all chunks (VP=0),
+	// causing the max guard to bump VP to savedState.Downloaded and break
+	// the VP == sum(ChunkProgress) invariant.
+	vp := ps.VerifiedProgress.Load()
+	if vp != 40 {
+		t.Errorf("VerifiedProgress = %d, want 40 (2 completed chunks)", vp)
+	}
+
+	// VP == sum(ChunkProgress) invariant
+	var sumProgress int64
+	for i := 0; i < ps.BitmapWidth; i++ {
+		sumProgress += ps.ChunkProgress[i]
+	}
+	if vp != sumProgress {
+		t.Errorf("VP=%d != sum(ChunkProgress)=%d (invariant broken)", vp, sumProgress)
+	}
+
+	// Completed chunks should have full ChunkProgress
+	if ps.ChunkProgress[0] != chunkSize {
+		t.Errorf("ChunkProgress[0] = %d, want %d (completed chunk should be full)", ps.ChunkProgress[0], chunkSize)
+	}
+	if ps.ChunkProgress[1] != chunkSize {
+		t.Errorf("ChunkProgress[1] = %d, want %d (completed chunk should be full)", ps.ChunkProgress[1], chunkSize)
+	}
+}
+
+// TestRecalculateProgress_BitmapTrust_NoOpForNonHedge verifies that for normal
+// resume (remaining tasks don't cover completed chunks), the bitmap trust step
+// is a no-op — ChunkProgress is already full for completed chunks.
+func TestRecalculateProgress_BitmapTrust_NoOpForNonHedge(t *testing.T) {
+	totalSize := int64(80)
+	chunkSize := int64(20)
+	ps := NewProgressState("dl-normal", totalSize)
+	ps.InitBitmap(totalSize, chunkSize)
+
+	// Chunks 0,1 completed; remaining tasks only cover chunks 2,3
+	ps.SetChunkState(0, ChunkCompleted)
+	ps.SetChunkState(1, ChunkCompleted)
+	remaining := []Task{
+		{Offset: 40, Length: 40},
+	}
+
+	ps.RecalculateProgress(remaining)
+
+	vp := ps.VerifiedProgress.Load()
+	// 2 completed chunks (40) + 0 from remaining (subtracted) = 40
+	if vp != 40 {
+		t.Errorf("VerifiedProgress = %d, want 40", vp)
+	}
+
+	var sumProgress int64
+	for i := 0; i < ps.BitmapWidth; i++ {
+		sumProgress += ps.ChunkProgress[i]
+	}
+	if vp != sumProgress {
+		t.Errorf("VP=%d != sum(ChunkProgress)=%d", vp, sumProgress)
+	}
+}
+
+// TestRecalculateProgress_BitmapTrust_PreventsOvershootOnReDownload simulates
+// the full bug: after RecalculateProgress with bitmap trust, a worker re-downloads
+// a hedged chunk. UpdateChunkStatus should add 0 (remainingSpace=0) because
+// ChunkProgress is already full, preventing VP from exceeding TotalSize.
+func TestRecalculateProgress_BitmapTrust_PreventsOvershootOnReDownload(t *testing.T) {
+	totalSize := int64(80)
+	chunkSize := int64(20)
+	ps := NewProgressState("dl-overshoot", totalSize)
+	ps.InitBitmap(totalSize, chunkSize)
+
+	// Chunk 0 completed via hedge, but remaining tasks cover it
+	ps.SetChunkState(0, ChunkCompleted)
+	remaining := []Task{
+		{Offset: 0, Length: 80},
+	}
+	ps.RecalculateProgress(remaining)
+
+	// Worker re-downloads chunk 0 (hedged range, WriteAt is idempotent)
+	ps.UpdateChunkStatus(0, 20, ChunkCompleted)
+
+	vp := ps.VerifiedProgress.Load()
+	if vp > totalSize {
+		t.Errorf("VerifiedProgress = %d > TotalSize = %d (overshoot not prevented)", vp, totalSize)
+	}
+}
+
+// TestGetProgress_ClampsWhenVPExceedsTotalSize verifies the safety net clamp.
+func TestGetProgress_ClampsWhenVPExceedsTotalSize(t *testing.T) {
+	ps := NewProgressState("dl-clamp", 1000)
+	ps.VerifiedProgress.Store(1200)
+
+	downloaded, total, _, _, _, _ := ps.GetProgress()
+	if total != 1000 {
+		t.Errorf("total = %d, want 1000", total)
+	}
+	if downloaded != 1000 {
+		t.Errorf("downloaded = %d, want 1000 (clamped to total)", downloaded)
+	}
+}
+
+// TestGetProgress_NoClampForUnknownSize verifies that TotalSize==0 (unknown size)
+// downloads are not clamped — downloaded should equal VerifiedProgress.
+func TestGetProgress_NoClampForUnknownSize(t *testing.T) {
+	ps := NewProgressState("dl-unknown", 0)
+	ps.VerifiedProgress.Store(500)
+
+	downloaded, total, _, _, _, _ := ps.GetProgress()
+	if total != 0 {
+		t.Errorf("total = %d, want 0", total)
+	}
+	if downloaded != 500 {
+		t.Errorf("downloaded = %d, want 500 (unknown size must not be clamped)", downloaded)
+	}
+}
+
+// TestGetProgress_NoClampWhenVPUnderTotal verifies normal case is unaffected.
+func TestGetProgress_NoClampWhenVPUnderTotal(t *testing.T) {
+	ps := NewProgressState("dl-normal-progress", 1000)
+	ps.VerifiedProgress.Store(500)
+
+	downloaded, _, _, _, _, _ := ps.GetProgress()
+	if downloaded != 500 {
+		t.Errorf("downloaded = %d, want 500 (no clamp when VP < total)", downloaded)
+	}
+}

@@ -141,11 +141,32 @@ func (e *SurgeEngine) getDownloadList() ([]types.DownloadStatus, error) {
 	return list, nil
 }
 
+// InvalidateListCache clears the 1s TTL list cache so the next getDownloadList
+// call fetches fresh data. Called on status-transition events (pause/resume/
+// complete/error) to prevent stale cache from causing list divergence between
+// TellActive (uncached) and TellWaiting/TellStopped (cached).
+func (e *SurgeEngine) InvalidateListCache() {
+	e.listCacheMu.Lock()
+	e.listCache = nil
+	e.listCacheAt = time.Time{}
+	e.listCacheMu.Unlock()
+}
+
+// ListCacheMuForTesting returns the list cache mutex for test inspection.
+func (e *SurgeEngine) ListCacheMuForTesting() *sync.Mutex {
+	return &e.listCacheMu
+}
+
+// ListCacheAtForTesting returns the list cache timestamp for test inspection.
+func (e *SurgeEngine) ListCacheAtForTesting() time.Time {
+	return e.listCacheAt
+}
+
 func mapStatus(s string) string {
 	switch s {
-	case "downloading", "pausing":
+	case "downloading":
 		return "active"
-	case "paused":
+	case "pausing", "paused":
 		return "paused"
 	case "queued":
 		return "waiting"

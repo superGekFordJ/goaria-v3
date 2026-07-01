@@ -453,7 +453,12 @@ func (t *TaskTracker) SetScopeAndEnv(gid string, scope string, ttfbMs int64, dom
 	tracked := t.tasks[gid]
 	if tracked != nil {
 		tracked.Scope = scope
-		tracked.TTFBMs = ttfbMs
+		// Don't overwrite an existing TTFB with a non-value (<=0). Resume hook
+		// passes ttfbMs=0 when it only wants to update scope/domain/envKey;
+		// zeroing here would discard the AddUri probe. New tasks accept raw value.
+		if ttfbMs > 0 {
+			tracked.TTFBMs = ttfbMs
+		}
 		tracked.Domain = domain
 		tracked.CurrentEnvKey = envKey
 		if tracked.PeakEnvKey == "" {

@@ -124,8 +124,11 @@ func TestRestoreBitmap_ShortBitmapRecoversWithoutPanic(t *testing.T) {
 
 	state.RecalculateProgress([]types.Task{{Offset: 0, Length: chunkSize}})
 
-	if got := state.GetChunkState(0); got != types.ChunkPending {
-		t.Fatalf("chunk 0 state after recalc = %v, want Pending", got)
+	// RecalculateProgress trusts the restored bitmap's ChunkCompleted chunks:
+	// chunk 0 stays Completed even though a remaining task covers it, because
+	// the bitmap indicates the bytes are already on disk (hedged-partner scenario).
+	if got := state.GetChunkState(0); got != types.ChunkCompleted {
+		t.Fatalf("chunk 0 state after recalc = %v, want Completed (bitmap trust)", got)
 	}
 	if got := state.GetChunkState(1); got != types.ChunkCompleted {
 		t.Fatalf("chunk 1 state after recalc = %v, want Completed", got)

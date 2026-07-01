@@ -1290,3 +1290,187 @@ func TestHandleSurgeEvent_NilMonitorIntentionMaps(t *testing.T) {
 		t.Fatal("expected pause delta with nil intention maps (accept by default)")
 	}
 }
+
+// TestHandleSurgeEvent_InvalidatesListCacheOnPause verifies that pause/resume/
+// complete/error events call SurgeEngine.InvalidateListCache, clearing the 1s
+// TTL list cache so TellWaiting/TellStopped fetch fresh data on the next tick.
+func TestHandleSurgeEvent_InvalidatesListCacheOnPause(t *testing.T) {
+	surgeEng := rpc.NewSurgeEngine()
+	defer surgeEng.Close()
+	hybrid := rpc.NewHybridEngine(nil, surgeEng)
+
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	m := &Monitor{
+		hub:                   hub,
+		pusher:                pusher,
+		engine:                hybrid,
+		pauseResumeIntentions: make(map[string]string),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+	Cache.active = []rpc.Task{{GID: "sg_inv-1", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.active = nil; Cache.waiting = nil; Cache.stopped = nil }()
+
+	// Populate the list cache by calling TellWaiting (which uses getDownloadList)
+	if _, err := surgeEng.TellWaiting(0, -1); err != nil {
+		t.Fatalf("TellWaiting to populate cache: %v", err)
+	}
+	surgeEng.ListCacheMuForTesting().Lock()
+	cacheAtBefore := surgeEng.ListCacheAtForTesting()
+	surgeEng.ListCacheMuForTesting().Unlock()
+	if cacheAtBefore.IsZero() {
+		t.Fatal("expected cache to be populated before event")
+	}
+
+	m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{DownloadID: "inv-1"})
+
+	surgeEng.ListCacheMuForTesting().Lock()
+	cacheAtAfter := surgeEng.ListCacheAtForTesting()
+	surgeEng.ListCacheMuForTesting().Unlock()
+	if !cacheAtAfter.IsZero() {
+		t.Errorf("listCacheAt = %v, want zero (cache should be invalidated on pause)", cacheAtAfter)
+	}
+}
+
+func TestHandleSurgeEvent_InvalidatesListCacheOnResume(t *testing.T) {
+	surgeEng := rpc.NewSurgeEngine()
+	defer surgeEng.Close()
+	hybrid := rpc.NewHybridEngine(nil, surgeEng)
+
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	m := &Monitor{
+		hub:    hub,
+		pusher: pusher,
+		engine: hybrid,
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+	Cache.waiting = []rpc.Task{{GID: "sg_inv-2", Status: "paused", DownloadSpeed: "0"}}
+	defer func() { Cache.active = nil; Cache.waiting = nil; Cache.stopped = nil }()
+
+	if _, err := surgeEng.TellWaiting(0, -1); err != nil {
+		t.Fatalf("TellWaiting to populate cache: %v", err)
+	}
+
+	m.handleSurgeEvent(surgeEvents.DownloadResumedMsg{DownloadID: "inv-2"})
+
+	surgeEng.ListCacheMuForTesting().Lock()
+	cacheAtAfter := surgeEng.ListCacheAtForTesting()
+	surgeEng.ListCacheMuForTesting().Unlock()
+	if !cacheAtAfter.IsZero() {
+		t.Errorf("listCacheAt = %v, want zero (cache should be invalidated on resume)", cacheAtAfter)
+	}
+}
+
+func TestHandleSurgeEvent_InvalidatesListCacheOnComplete(t *testing.T) {
+	surgeEng := rpc.NewSurgeEngine()
+	defer surgeEng.Close()
+	hybrid := rpc.NewHybridEngine(nil, surgeEng)
+
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	m := &Monitor{
+		hub:    hub,
+		pusher: pusher,
+		engine: hybrid,
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+	Cache.active = []rpc.Task{{GID: "sg_inv-3", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.active = nil; Cache.waiting = nil; Cache.stopped = nil }()
+
+	if _, err := surgeEng.TellWaiting(0, -1); err != nil {
+		t.Fatalf("TellWaiting to populate cache: %v", err)
+	}
+
+	m.handleSurgeEvent(surgeEvents.DownloadCompleteMsg{DownloadID: "inv-3", Total: 1000, AvgSpeed: 500})
+
+	surgeEng.ListCacheMuForTesting().Lock()
+	cacheAtAfter := surgeEng.ListCacheAtForTesting()
+	surgeEng.ListCacheMuForTesting().Unlock()
+	if !cacheAtAfter.IsZero() {
+		t.Errorf("listCacheAt = %v, want zero (cache should be invalidated on complete)", cacheAtAfter)
+	}
+}
+
+func TestHandleSurgeEvent_InvalidatesListCacheOnError(t *testing.T) {
+	surgeEng := rpc.NewSurgeEngine()
+	defer surgeEng.Close()
+	hybrid := rpc.NewHybridEngine(nil, surgeEng)
+
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	m := &Monitor{
+		hub:    hub,
+		pusher: pusher,
+		engine: hybrid,
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+	Cache.active = []rpc.Task{{GID: "sg_inv-4", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.active = nil; Cache.waiting = nil; Cache.stopped = nil }()
+
+	if _, err := surgeEng.TellWaiting(0, -1); err != nil {
+		t.Fatalf("TellWaiting to populate cache: %v", err)
+	}
+
+	m.handleSurgeEvent(surgeEvents.DownloadErrorMsg{DownloadID: "inv-4"})
+
+	surgeEng.ListCacheMuForTesting().Lock()
+	cacheAtAfter := surgeEng.ListCacheAtForTesting()
+	surgeEng.ListCacheMuForTesting().Unlock()
+	if !cacheAtAfter.IsZero() {
+		t.Errorf("listCacheAt = %v, want zero (cache should be invalidated on error)", cacheAtAfter)
+	}
+}
+
+// TestHandleSurgeEvent_NoInvalidationOnProgress verifies that ProgressMsg
+// (which returns early before the switch deltaType) does NOT invalidate the cache.
+func TestHandleSurgeEvent_NoInvalidationOnProgress(t *testing.T) {
+	surgeEng := rpc.NewSurgeEngine()
+	defer surgeEng.Close()
+	hybrid := rpc.NewHybridEngine(nil, surgeEng)
+
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	m := &Monitor{
+		hub:    hub,
+		pusher: pusher,
+		engine: hybrid,
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	if _, err := surgeEng.TellWaiting(0, -1); err != nil {
+		t.Fatalf("TellWaiting to populate cache: %v", err)
+	}
+	surgeEng.ListCacheMuForTesting().Lock()
+	cacheAtBefore := surgeEng.ListCacheAtForTesting()
+	surgeEng.ListCacheMuForTesting().Unlock()
+
+	m.handleSurgeEvent(surgeEvents.ProgressMsg{
+		DownloadID: "inv-5",
+		Downloaded: 100,
+		Total:      1000,
+		Speed:      50.0,
+	})
+
+	surgeEng.ListCacheMuForTesting().Lock()
+	cacheAtAfter := surgeEng.ListCacheAtForTesting()
+	surgeEng.ListCacheMuForTesting().Unlock()
+	if cacheAtAfter.IsZero() {
+		t.Errorf("listCacheAt = zero, want %v (progress should not invalidate cache)", cacheAtBefore)
+	}
+}
