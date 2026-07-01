@@ -4,7 +4,8 @@
   import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
   import type { TaskGroupHint } from '../../stores/task/grouping'
   import { useTaskStore } from '../../stores/task'
-  import { Pause, Play, FolderOpen, Trash2, FileDown, Clock, Zap, Layers3 } from 'lucide-vue-next'
+  import { Pause, Play, FolderOpen, Trash2, Clock, Zap, Layers3 } from 'lucide-vue-next'
+  import FileIcon from '../common/FileIcon.vue'
   import {
     TASK_PROGRESS_CONFIG,
     SURGE_TASK_PROGRESS_CONFIG,
@@ -231,7 +232,7 @@
                   : 'bg-[var(--btn-glass-bg)] text-[var(--app-text-subtle)]',
             ]"
           >
-            <FileDown :size="18" />
+            <FileIcon :file-name="fileName" :size="18" />
           </div>
 
           <!-- Filename -->

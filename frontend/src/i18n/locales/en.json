@@ -352,5 +352,15 @@
     "currentVersion": "Current Version",
     "includePreRelease": "Include unstable versions (Beta)",
     "beta": "Beta"
+  },
+  "fileIcon": {
+    "label": {
+      "default": "Unknown file",
+      "media": "Media file",
+      "archive": "Archive",
+      "executable": "Executable",
+      "document": "Document",
+      "disk": "Disk image"
+    }
   }
 }

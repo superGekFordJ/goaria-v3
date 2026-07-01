@@ -352,5 +352,15 @@
     "currentVersion": "目前版本",
     "includePreRelease": "包含不穩定版本 (Beta)",
     "beta": "測試版"
+  },
+  "fileIcon": {
+    "label": {
+      "default": "未知檔案",
+      "media": "媒體檔案",
+      "archive": "壓縮檔",
+      "executable": "可執行檔",
+      "document": "文件",
+      "disk": "磁碟映像檔"
+    }
   }
 }

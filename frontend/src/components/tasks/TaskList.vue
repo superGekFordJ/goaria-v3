@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { ref, computed, onMounted, onUnmounted, watch, onActivated, onDeactivated } from 'vue'
+  import { ref, computed, onMounted, onUnmounted, watch, onActivated, onDeactivated, markRaw } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { RecycleScroller } from 'vue-virtual-scroller'
   import { useTaskStore } from '../../stores/task'
@@ -11,7 +11,8 @@
   import DownloadGroupCard from '../groups/DownloadGroupCard.vue'
   import DownloadGroupOperationNotice from '../groups/DownloadGroupOperationNotice.vue'
   import DownloadGroupRemoveDialog from '../groups/DownloadGroupRemoveDialog.vue'
-  import { Download, CheckCircle2, SearchX, Layers3 } from 'lucide-vue-next'
+  import { CheckCircle2, SearchX, Layers3 } from 'lucide-vue-next'
+  import FileIcon from '../common/FileIcon.vue'
   import { useTaskKeyboard } from '../../composables/useTaskKeyboard'
   import TaskListEmptyState from './TaskListEmptyState.vue'
   import TaskListDeleteModal from './TaskListDeleteModal.vue'
@@ -160,7 +161,8 @@
 
     if (uiStore.activeTab === 'downloads') {
       return {
-        icon: Download,
+        icon: markRaw(FileIcon),
+        iconProps: { fileName: null, tier: 'chipped', size: 40 },
         title: t('taskList.noDownloads'),
         description: t('taskList.pasteLink'),
         accent: 'var(--neon-primary)',

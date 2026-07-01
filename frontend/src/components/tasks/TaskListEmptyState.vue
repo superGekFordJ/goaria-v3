@@ -5,6 +5,7 @@
     show: boolean
     config: {
       icon: Component
+      iconProps?: Record<string, unknown>
       title: string
       description: string
       accent: string
@@ -33,6 +34,7 @@
           <component
             :is="config.icon"
             :size="40"
+            v-bind="config.iconProps ?? {}"
             :style="{
               color: `color-mix(in srgb, ${config.accent} 38%, transparent)`,
             }"
