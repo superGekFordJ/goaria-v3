@@ -1305,6 +1305,7 @@ func TestHandleSurgeEvent_InvalidatesListCacheOnPause(t *testing.T) {
 		hub:                   hub,
 		pusher:                pusher,
 		engine:                hybrid,
+		surgeEng:              surgeEng,
 		pauseResumeIntentions: make(map[string]string),
 	}
 
@@ -1343,9 +1344,10 @@ func TestHandleSurgeEvent_InvalidatesListCacheOnResume(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
 	m := &Monitor{
-		hub:    hub,
-		pusher: pusher,
-		engine: hybrid,
+		hub:      hub,
+		pusher:   pusher,
+		engine:   hybrid,
+		surgeEng: surgeEng,
 	}
 
 	prevWindow := State.HasWindow()
@@ -1376,9 +1378,10 @@ func TestHandleSurgeEvent_InvalidatesListCacheOnComplete(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
 	m := &Monitor{
-		hub:    hub,
-		pusher: pusher,
-		engine: hybrid,
+		hub:      hub,
+		pusher:   pusher,
+		engine:   hybrid,
+		surgeEng: surgeEng,
 	}
 
 	prevWindow := State.HasWindow()
@@ -1409,9 +1412,10 @@ func TestHandleSurgeEvent_InvalidatesListCacheOnError(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
 	m := &Monitor{
-		hub:    hub,
-		pusher: pusher,
-		engine: hybrid,
+		hub:      hub,
+		pusher:   pusher,
+		engine:   hybrid,
+		surgeEng: surgeEng,
 	}
 
 	prevWindow := State.HasWindow()

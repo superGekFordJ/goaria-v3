@@ -73,6 +73,10 @@ type Monitor struct {
 	// CDN throttle fingerprint detector (self-contained 1s ticker)
 	cdnDetector *CDNDetector
 
+	// Cached SurgeEngine ref for HybridEngine (nil in Aria2-only mode); avoids
+	// re-acquiring it on every Surge event including high-frequency ProgressMsg.
+	surgeEng *rpc.SurgeEngine
+
 	// Network environment fingerprint cache (MAC → envKey)
 	netEnv *NetEnvCache
 
@@ -192,6 +196,7 @@ func (m *Monitor) Start() {
 		m.convergence.Start()
 		// CDN throttle detector: only for HybridEngine (needs Surge control).
 		if se, ok := he.SurgeEngineRef(); ok && se != nil {
+			m.surgeEng = se
 			m.cdnDetector = NewCDNDetector(se, nil, func() []string { return m.telemetry.ActiveGIDs() })
 			m.cdnDetector.Start()
 		}
@@ -895,12 +900,8 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 	var completeTotal int64
 	var completeAvgSpeed float64
 
-	var surgeEng *rpc.SurgeEngine
-	if he, ok := m.engine.(*rpc.HybridEngine); ok {
-		if se, ok := he.SurgeEngineRef(); ok {
-			surgeEng = se
-		}
-	}
+	// Reuse the cached SurgeEngine ref (set in Start); nil in Aria2-only mode.
+	surgeEng := m.surgeEng
 
 	switch ev := rawEvt.(type) {
 	case surgeEvents.ProgressMsg:

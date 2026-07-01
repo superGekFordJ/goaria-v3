@@ -188,6 +188,7 @@ func (ps *ProgressState) GetProgress() (downloaded int64, total int64, totalElap
 	// values (>100%) from reaching the UI/speedstats. Only clamp when TotalSize
 	// is known (>0); unknown-size downloads (TotalSize==0) must not be clamped.
 	if total > 0 && downloaded > total {
+		utils.Debug("GetProgress clamp: VP=%d > Total=%d for %s", downloaded, total, ps.ID)
 		downloaded = total
 	}
 
