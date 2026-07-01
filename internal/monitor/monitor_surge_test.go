@@ -3,6 +3,8 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"sync"
 	"testing"
 	"time"
@@ -1649,4 +1651,177 @@ func taskInCacheStopped(gid string) bool {
 		}
 	}
 	return false
+}
+
+// blockingStoppedEngine is a mockStoppedEngine whose TellStoppedLite/TellStopped
+// block on a release channel, letting tests control exactly when tick() proceeds
+// past the wg.Wait() barrier. A "called" channel signals that the engine method
+// was entered.
+type blockingStoppedEngine struct {
+	mockStoppedEngine
+	called  chan struct{}
+	release chan struct{}
+}
+
+func (e *blockingStoppedEngine) TellStoppedLite(offset, num int) ([]rpc.Task, error) {
+	e.called <- struct{}{}
+	<-e.release
+	return e.stopped, nil
+}
+
+func (e *blockingStoppedEngine) TellStopped(offset, num int) ([]rpc.Task, error) {
+	e.called <- struct{}{}
+	<-e.release
+	return e.stopped, nil
+}
+
+// TestRemoveGroupCompletedTaskReappears_ConcurrentInvalidateTask verifies that
+// per-iteration locking in the fast-retry preserve loop allows InvalidateTask to
+// set deletedGids between iterations, preventing resurrection of a concurrently
+// deleted task. With hoisted (whole-loop) locking, InvalidateTask is blocked for
+// the entire loop and the task is re-appended.
+//
+// The target task is placed LAST in Cache.GetStopped() behind many filler tasks
+// so the preserve loop runs long enough for InvalidateTask to contend on m.mu
+// mid-loop. A busy-wait delay (instead of time.Sleep) skips the enrich phase that
+// precedes the preserve loop, then signals InvalidateTask to start. With
+// per-task locking, InvalidateTask acquires m.mu between iterations and sets
+// deletedGids before the target is iterated. With hoisted locking, it is blocked
+// for the entire loop and the target is appended → resurrected.
+func TestRemoveGroupCompletedTaskReappears_ConcurrentInvalidateTask(t *testing.T) {
+	// Silence log output — tick's log.Printf calls are slow under test
+	// output capture (~25ms per call), which makes timing-based concurrency
+	// windows unreliable. With log discarded, the gap between wg.Wait and
+	// the preserve loop is < 1ms.
+	prevLogOut := log.Writer()
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(prevLogOut)
+
+	targetGID := "sg_concurrent-target"
+	targetTask := rpc.Task{
+		GID:             targetGID,
+		Status:          "complete",
+		TotalLength:     "1000",
+		CompletedLength: "1000",
+		DownloadSpeed:   "0",
+	}
+
+	// Filler tasks make the preserve loop run long enough for InvalidateTask
+	// to arrive during the loop. The target is placed last so InvalidateTask
+	// has time to set deletedGids before the target's iteration.
+	const numFillers = 50000
+	allStopped := make([]rpc.Task, 0, numFillers+1)
+	for i := 0; i < numFillers; i++ {
+		allStopped = append(allStopped, rpc.Task{
+			GID:             fmt.Sprintf("sg_filler-%d", i),
+			Status:          "complete",
+			TotalLength:     "100",
+			CompletedLength: "100",
+			DownloadSpeed:   "0",
+		})
+	}
+	allStopped = append(allStopped, targetTask)
+
+	engine := &blockingStoppedEngine{
+		mockStoppedEngine: mockStoppedEngine{stopped: nil}, // engine reports no stopped tasks
+		called:            make(chan struct{}, 1),
+		release:           make(chan struct{}),
+	}
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	m := &Monitor{
+		hub:              hub,
+		pusher:           pusher,
+		tracker:          tracker,
+		engine:           engine,
+		stopChan:         make(chan struct{}),
+		forceTickChan:    make(chan struct{}, 1),
+		headlessInterval: 5 * time.Second,
+		windowInterval:   1 * time.Second,
+		deletedGids:      make(map[string]time.Time),
+		prevActiveGids:   map[string]bool{},
+		prevWaitingGids:  map[string]bool{},
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+	defer func() {
+		Cache.active = nil
+		Cache.waiting = nil
+		Cache.stopped = nil
+		Cache.engine = nil
+	}()
+
+	Cache.engine = engine
+
+	// Pre-process fillers in the tracker so they are not returned as newly
+	// completed (avoids 50k handleTaskComplete calls during the test tick).
+	tracker.Update(nil, nil, allStopped[:numFillers])
+
+	// Seed Cache.stopped directly — simulates a prior tick's UpdateFromAria2
+	// having re-added the target after the engine deleted it.
+	Cache.stopped = copyTaskSlice(allStopped)
+
+	// Activate the fast-retry preserve window.
+	m.mu.Lock()
+	m.shouldFetchStopped = true
+	m.shouldFetchStoppedUntil = time.Now().Add(15 * time.Second)
+	m.mu.Unlock()
+
+	// Start tick() on a goroutine. TellStoppedLite blocks on the release channel.
+	tickDone := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				tickDone <- fmt.Errorf("tick panicked: %v", r)
+			}
+		}()
+		m.tick()
+		tickDone <- nil
+	}()
+
+	// Wait for TellStoppedLite to be called (tick is now in wg.Wait).
+	<-engine.called
+
+	// Prepare InvalidateTask on a separate goroutine, gated on a signal.
+	// The signal is sent after a busy-wait that skips the enrich phase.
+	invalidateStart := make(chan struct{})
+	invalidateDone := make(chan struct{})
+	go func() {
+		<-invalidateStart
+		m.InvalidateTask(targetGID)
+		close(invalidateDone)
+	}()
+
+	// Release TellStoppedLite — tick proceeds into filterDeletedTasks, enrich,
+	// then the preserve loop. With log output discarded, the enrich phase is
+	// < 1ms, so a short busy-wait reliably skips it.
+	close(engine.release)
+
+	// Busy-wait ~500µs to let tick pass the enrich phase and enter the
+	// preserve loop. A busy-wait (not time.Sleep) gives sub-millisecond
+	// precision on Windows.
+	busyStart := time.Now()
+	for time.Since(busyStart) < 500*time.Microsecond {
+	}
+
+	// Signal InvalidateTask. With per-task locking, it acquires m.mu between
+	// preserve iterations and sets deletedGids before the target (last entry)
+	// is iterated. With hoisted locking, it is blocked for the entire loop
+	// and the target is appended → resurrected.
+	close(invalidateStart)
+
+	// Wait for tick and InvalidateTask to finish.
+	if err := <-tickDone; err != nil {
+		t.Fatalf("tick failed: %v", err)
+	}
+	<-invalidateDone
+
+	if taskInCacheStopped(targetGID) {
+		t.Fatal("BUG: target task resurrected in cache stopped — " +
+			"concurrent InvalidateTask was blocked during the preserve loop " +
+			"(hoisted locking prevents deletedGids from being set mid-loop)")
+	}
 }

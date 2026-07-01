@@ -449,19 +449,20 @@ func (m *Monitor) tick() {
 			for _, t := range stopped {
 				existingGids[t.GID] = struct{}{}
 			}
-			cachedStopped := Cache.GetStopped()
-			m.mu.Lock()
-			// deletedGids expiry is pruned by filterDeletedTasks earlier in tick.
-			for _, t := range cachedStopped {
+			for _, t := range Cache.GetStopped() {
 				if _, ok := existingGids[t.GID]; ok {
 					continue
 				}
-				if _, deleted := m.deletedGids[t.GID]; deleted {
+				// Per-iteration lock lets InvalidateTask set deletedGids
+				// between iterations so later tasks are still caught.
+				m.mu.Lock()
+				_, deleted := m.deletedGids[t.GID]
+				m.mu.Unlock()
+				if deleted {
 					continue
 				}
 				stopped = append(stopped, t)
 			}
-			m.mu.Unlock()
 		}
 	}
 
