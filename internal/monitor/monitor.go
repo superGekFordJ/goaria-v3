@@ -150,6 +150,17 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 	return m
 }
 
+// NewMonitorForTest creates a Monitor with a hub and pusher for cross-package
+// tests that need to emit task:move / remove deltas via monitor.State.
+func NewMonitorForTest(hub *events.Hub) *Monitor {
+	return &Monitor{
+		hub:                   hub,
+		pusher:                NewPusher(hub),
+		deletedGids:           make(map[string]time.Time),
+		pauseResumeIntentions: make(map[string]string),
+	}
+}
+
 // Intention strings recorded by BumpPauseResumeIntention and checked by
 // shouldDiscardStalePause. Shared across packages to avoid stringly-typed drift.
 const (
@@ -474,6 +485,40 @@ func (m *Monitor) InvalidateTask(gid string) {
 	m.pauseResumeVersionMu.Unlock()
 
 	log.Printf("[Monitor] Task invalidated: %s", gid)
+}
+
+// EmitTaskMoveForGroupOp emits a task:move event for a group pause/resume
+// operation on a Surge GID. Called by downloadgroups.pauseResumeDownloadGroup
+// after Cache.MoveTaskTo* so the frontend list migration synchronizes with
+// Cache immediately, without waiting for the Surge event path's EmitTaskMove
+// (which is an idempotent no-op if the task has already moved).
+func (m *Monitor) EmitTaskMoveForGroupOp(gid, from, to string) {
+	if m == nil || m.hub == nil || gid == "" {
+		return
+	}
+	task := findTaskInCache(gid)
+	if task == nil {
+		return
+	}
+	m.hub.EmitTaskMove(events.TaskMove{
+		GID:  gid,
+		From: from,
+		To:   to,
+		Task: *task,
+	})
+}
+
+// PushRemoveDelta queues a remove delta for a group delete operation on a
+// Surge GID. Called by downloadgroups.RemoveDownloadGroup after
+// Cache.RemoveTask so the frontend removes the task immediately, without
+// waiting for the Surge event path's remove delta (idempotent if the task
+// is already removed from frontend state).
+func (m *Monitor) PushRemoveDelta(gid string) {
+	if m == nil || m.pusher == nil || gid == "" {
+		return
+	}
+	m.pusher.Queue(events.TaskDelta{Type: "remove", GID: gid})
+	m.pusher.FlushNow()
 }
 
 // collectTelemetry gathers per-worker telemetry from the Surge engine for active Surge tasks.

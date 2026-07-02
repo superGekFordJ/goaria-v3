@@ -51,6 +51,11 @@ func enginePrefix(gid string) string {
 	return "ar"
 }
 
+// IsSgGid reports whether the GID belongs to the Surge engine.
+func IsSgGid(gid string) bool {
+	return enginePrefix(gid) == "sg"
+}
+
 // TaskMetadata 任务元数据（预取缓存）
 type TaskMetadata struct {
 	GID           string

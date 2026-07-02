@@ -96,15 +96,15 @@ func (h *HybridEngine) PauseMulti(gids []string) error {
 			arGids = append(arGids, rawGid)
 		}
 	}
+	var sgErr, arErr error
 	if len(sgGids) > 0 {
-		if err := h.surgeEngine.PauseMulti(sgGids); err != nil {
-			return err
-		}
+		sgErr = h.surgeEngine.PauseMulti(sgGids)
 	}
 	if len(arGids) > 0 {
-		if err := h.aria2Engine.PauseMulti(arGids); err != nil {
-			return err
-		}
+		arErr = h.aria2Engine.PauseMulti(arGids)
+	}
+	if sgErr != nil && arErr != nil {
+		return fmt.Errorf("both engines failed: surge=%w, aria2=%w", sgErr, arErr)
 	}
 	return nil
 }
@@ -119,15 +119,15 @@ func (h *HybridEngine) ResumeMulti(gids []string) error {
 			arGids = append(arGids, rawGid)
 		}
 	}
+	var sgErr, arErr error
 	if len(sgGids) > 0 {
-		if err := h.surgeEngine.ResumeMulti(sgGids); err != nil {
-			return err
-		}
+		sgErr = h.surgeEngine.ResumeMulti(sgGids)
 	}
 	if len(arGids) > 0 {
-		if err := h.aria2Engine.ResumeMulti(arGids); err != nil {
-			return err
-		}
+		arErr = h.aria2Engine.ResumeMulti(arGids)
+	}
+	if sgErr != nil && arErr != nil {
+		return fmt.Errorf("both engines failed: surge=%w, aria2=%w", sgErr, arErr)
 	}
 	return nil
 }

@@ -512,6 +512,13 @@ export function setupActions(state: TaskState) {
     }
   }
 
+  // Optimistic removal for group delete: tasks are removed from UI state
+  // before the backend RPC completes. On failure, fetchTasks() re-syncs
+  // from Cache. For sg_ tasks, backend RemoveDownloadGroup now calls
+  // Cache.RemoveTask directly, so fetchTasks won't flash-back removed sg_
+  // tasks. For ar_ tasks, tombstone + tick filter handles delayed removal.
+  // This optimistic + fetch-recovery pattern is preserved per AGENTS.md
+  // high-sensitivity rule.
   async function batchRemove(gids: string[], deleteFiles: boolean) {
     const gidSet = new Set(gids)
     tasks.value = {

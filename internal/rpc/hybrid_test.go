@@ -17,6 +17,8 @@ type mockEngine struct {
 	addResultErr      error
 	pausedGids        []string
 	resumedGids       []string
+	pauseMultiErr     error
+	resumeMultiErr    error
 	removedGids       []string
 	removedDeleteFile []bool
 	statusGid         string
@@ -55,12 +57,12 @@ func (m *mockEngine) Resume(gid string) error {
 
 func (m *mockEngine) PauseMulti(gids []string) error {
 	m.pausedGids = append(m.pausedGids, gids...)
-	return nil
+	return m.pauseMultiErr
 }
 
 func (m *mockEngine) ResumeMulti(gids []string) error {
 	m.resumedGids = append(m.resumedGids, gids...)
-	return nil
+	return m.resumeMultiErr
 }
 
 func (m *mockEngine) Remove(gid string, deleteFile bool) error {
@@ -697,4 +699,85 @@ func TestHybridEngine_Aria2SplitUnder16NotClamped(t *testing.T) {
 	if aria2.addedOptions[0].Split != 8 {
 		t.Errorf("Aria2 Split = %d, want 8 (unchanged)", aria2.addedOptions[0].Split)
 	}
+}
+
+func TestHybridEngine_PauseMulti_PartialFailure(t *testing.T) {
+	t.Run("surge fails, aria2 succeeds", func(t *testing.T) {
+		aria2 := &mockEngine{}
+		surge := &mockEngine{pauseMultiErr: errors.New("surge unavailable")}
+		hybrid := NewHybridEngine(aria2, surge)
+
+		err := hybrid.PauseMulti([]string{"sg_uuid1", "ar_hex1"})
+		if err != nil {
+			t.Fatalf("expected nil (partial success), got %v", err)
+		}
+		if len(surge.pausedGids) != 1 || surge.pausedGids[0] != "uuid1" {
+			t.Errorf("expected Surge paused uuid1, got %v", surge.pausedGids)
+		}
+		if len(aria2.pausedGids) != 1 || aria2.pausedGids[0] != "hex1" {
+			t.Errorf("expected Aria2 paused hex1, got %v", aria2.pausedGids)
+		}
+	})
+
+	t.Run("both fail", func(t *testing.T) {
+		aria2 := &mockEngine{pauseMultiErr: errors.New("aria2 unavailable")}
+		surge := &mockEngine{pauseMultiErr: errors.New("surge unavailable")}
+		hybrid := NewHybridEngine(aria2, surge)
+
+		err := hybrid.PauseMulti([]string{"sg_uuid1", "ar_hex1"})
+		if err == nil {
+			t.Fatalf("expected error when both engines fail")
+		}
+	})
+
+	t.Run("resume surge fails, aria2 succeeds", func(t *testing.T) {
+		aria2 := &mockEngine{}
+		surge := &mockEngine{resumeMultiErr: errors.New("surge unavailable")}
+		hybrid := NewHybridEngine(aria2, surge)
+
+		err := hybrid.ResumeMulti([]string{"sg_uuid1", "ar_hex1"})
+		if err != nil {
+			t.Fatalf("expected nil (partial success), got %v", err)
+		}
+		if len(surge.resumedGids) != 1 || surge.resumedGids[0] != "uuid1" {
+			t.Errorf("expected Surge resumed uuid1, got %v", surge.resumedGids)
+		}
+		if len(aria2.resumedGids) != 1 || aria2.resumedGids[0] != "hex1" {
+			t.Errorf("expected Aria2 resumed hex1, got %v", aria2.resumedGids)
+		}
+	})
+
+	t.Run("pure sg group, aria2 gids empty", func(t *testing.T) {
+		aria2 := &mockEngine{}
+		surge := &mockEngine{}
+		hybrid := NewHybridEngine(aria2, surge)
+
+		err := hybrid.PauseMulti([]string{"sg_uuid1", "sg_uuid2"})
+		if err != nil {
+			t.Fatalf("expected nil, got %v", err)
+		}
+		if len(surge.pausedGids) != 2 {
+			t.Errorf("expected 2 Surge pauses, got %v", surge.pausedGids)
+		}
+		if len(aria2.pausedGids) != 0 {
+			t.Errorf("expected 0 Aria2 pauses, got %v", aria2.pausedGids)
+		}
+	})
+
+	t.Run("pure ar group, surge gids empty", func(t *testing.T) {
+		aria2 := &mockEngine{}
+		surge := &mockEngine{}
+		hybrid := NewHybridEngine(aria2, surge)
+
+		err := hybrid.PauseMulti([]string{"ar_hex1", "ar_hex2"})
+		if err != nil {
+			t.Fatalf("expected nil, got %v", err)
+		}
+		if len(aria2.pausedGids) != 2 {
+			t.Errorf("expected 2 Aria2 pauses, got %v", aria2.pausedGids)
+		}
+		if len(surge.pausedGids) != 0 {
+			t.Errorf("expected 0 Surge pauses, got %v", surge.pausedGids)
+		}
+	})
 }

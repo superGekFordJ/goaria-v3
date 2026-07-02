@@ -1046,6 +1046,19 @@ type downloadGroupOperationTarget struct {
 	pendingStart bool
 }
 
+// isMixedGroup reports whether the targets contain both sg_ and ar_ GIDs.
+func isMixedGroup(targets []downloadGroupOperationTarget) bool {
+	hasSg, hasAr := false, false
+	for _, t := range targets {
+		if monitor.IsSgGid(t.gid) {
+			hasSg = true
+		} else {
+			hasAr = true
+		}
+	}
+	return hasSg && hasAr
+}
+
 type downloadGroupOperationResolution struct {
 	groupKey  string
 	found     bool
@@ -1097,6 +1110,20 @@ func RemoveDownloadGroup(groupKey string, deleteFiles bool, removeTasks func(gid
 
 	// Remove tasks via the provided main delegate
 	removeTasks(uniqueGIDs, deleteFiles)
+
+	// Surge GIDs: the removeTasks delegate calls Engine.Remove which triggers
+	// an async remove event. Directly remove from Cache and push a remove
+	// delta here so the frontend syncs immediately without waiting for the
+	// event path (which is an idempotent no-op afterwards).
+	for _, gid := range uniqueGIDs {
+		if !monitor.IsSgGid(gid) {
+			continue
+		}
+		monitor.Cache.RemoveTask(gid)
+		if mon := monitor.State.GetMonitor(); mon != nil {
+			mon.PushRemoveDelta(gid)
+		}
+	}
 
 	for _, target := range resolution.targets {
 		if _, ok := seen[target.gid]; !ok {
@@ -1249,16 +1276,23 @@ func pauseResumeDownloadGroup(groupKey string, action string) DownloadGroupOpera
 	successCode := DownloadGroupOperationCodePaused
 	patchStatus := DownloadGroupStatusPaused
 	moveFunc := monitor.Cache.MoveTaskToWaiting
+	fromList, toList := "active", "waiting"
 	if action == DownloadGroupOperationActionResume {
 		successCode = DownloadGroupOperationCodeResumed
 		patchStatus = DownloadGroupStatusActive
 		moveFunc = monitor.Cache.MoveTaskToActive
+		fromList, toList = "waiting", "active"
 	}
 	for _, target := range actionable {
 		item, ok := multiByGID[target.gid]
 		if ok && item.OK {
 			result.addItem(DownloadGroupOperationItemResult{GID: target.gid, Status: DownloadGroupOperationItemSucceeded, Code: successCode})
 			moveFunc(target.gid, patchStatus)
+			if monitor.IsSgGid(target.gid) {
+				if mon := monitor.State.GetMonitor(); mon != nil {
+					mon.EmitTaskMoveForGroupOp(target.gid, fromList, toList)
+				}
+			}
 			continue
 		}
 		result.addItem(DownloadGroupOperationItemResult{GID: target.gid, Status: DownloadGroupOperationItemFailed, Code: DownloadGroupOperationCodeRPCError, Message: downloadGroupOperationMessage(DownloadGroupOperationCodeRPCError)})

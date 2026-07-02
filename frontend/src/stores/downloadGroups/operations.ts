@@ -58,6 +58,11 @@ export function useDownloadGroupOperations(
     }
   }
 
+  // Mixed-group coordination: group operations route to both engines via
+  // backend groupKey APIs. The refresh hint mechanism (applyOperationRefreshHints)
+  // handles cross-engine timing differences — fetchTasks/fetchGroups/fetchGroupDetail
+  // after operation completion naturally reconciles Surge (immediate) and aria2c
+  // (~1s delay) state updates. No frontend sg_/ar_ prefix branching needed.
   async function runGroupOperation(
     action: DownloadGroupOperationAction,
     groupKey: string,
