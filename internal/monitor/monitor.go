@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"goaria-v3/internal/config"
@@ -71,6 +72,13 @@ type Monitor struct {
 	// Per-GID last intention for stale pause event defense (last-intention-wins).
 	pauseResumeIntentions map[string]string
 	pauseResumeVersionMu  sync.RWMutex
+
+	// Surge polling fallback: periodic reconciliation + event stream reconnect.
+	surgePollInterval    time.Duration
+	surgeStreamConnected atomic.Bool
+	surgePollStopChan    chan struct{}
+	surgePollWg          sync.WaitGroup
+	surgePollReader      surgeListReader
 }
 
 func New(app *application.App, hub *events.Hub, systray *application.SystemTray, engine rpc.DownloadEngine) *Monitor {
@@ -90,6 +98,7 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 		prevWaitingGids:       make(map[string]bool),
 		telemetry:             NewTelemetryCache(),
 		pauseResumeIntentions: make(map[string]string),
+		surgePollInterval:     10 * time.Second,
 	}
 
 	Cache.engine = engine
@@ -129,9 +138,6 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 
 	// 注册到全局状态
 	State.SetTracker(m.tracker)
-
-	// 启动 Surge 事件监听桥接
-	m.startSurgeEventBridge()
 
 	return m
 }
@@ -185,10 +191,24 @@ func (m *Monitor) Start() {
 		// CDN throttle detector: only for HybridEngine (needs Surge control).
 		if se, ok := he.SurgeEngineRef(); ok && se != nil {
 			m.surgeEng = se
+			m.surgePollReader = se
 			m.cdnDetector = NewCDNDetector(se, nil, func() []string { return m.telemetry.ActiveGIDs() })
 			m.cdnDetector.Start()
 		}
 	}
+
+	// Start Surge event bridge (reconnect loop) and polling fallback goroutine.
+	// Both are Surge-only; skipped in Aria2-only mode (m.surgeEng == nil).
+	if m.surgeEng != nil {
+		m.startSurgeEventBridge()
+		m.surgePollStopChan = make(chan struct{})
+		m.surgePollWg.Add(1)
+		go func() {
+			defer m.surgePollWg.Done()
+			m.surgePollLoop()
+		}()
+	}
+
 	go m.runLoop()
 }
 
@@ -201,6 +221,10 @@ func (m *Monitor) Stop() {
 	}
 	if m.convergence != nil {
 		m.convergence.Stop()
+	}
+	if m.surgePollStopChan != nil {
+		close(m.surgePollStopChan)
+		m.surgePollWg.Wait()
 	}
 	m.stopOnce.Do(func() {
 		close(m.stopChan)

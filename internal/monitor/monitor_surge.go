@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"goaria-v3/internal/events"
@@ -13,35 +14,79 @@ import (
 	"goaria-v3/internal/surge/engine/types"
 )
 
-func (m *Monitor) startSurgeEventBridge() {
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		<-m.stopChan
-		cancel()
-	}()
+// surgeListReader abstracts the Surge engine list-read methods used by
+// reconcileSurgeCache, enabling test substitution without a full SurgeEngine.
+type surgeListReader interface {
+	TellActive() ([]rpc.Task, error)
+	TellWaiting(offset, num int) ([]rpc.Task, error)
+	TellStopped(offset, num int) ([]rpc.Task, error)
+}
 
-	stream, cleanup, err := m.engine.StreamEvents(ctx)
-	if err != nil {
-		log.Printf("[Monitor] Failed to subscribe to Surge event stream: %v", err)
+func (m *Monitor) startSurgeEventBridge() {
+	if m.surgeEng == nil {
 		return
 	}
-	if stream == nil {
-		return
-	}
-	go func() {
-		defer cleanup()
-		for {
+	go m.surgeEventBridgeLoop()
+}
+
+// surgeEventBridgeLoop maintains a reconnect loop around the Surge event
+// stream. On error or channel close it sets surgeStreamConnected=false and
+// retries after surgePollInterval; the polling fallback goroutine covers
+// state during the gap.
+func (m *Monitor) surgeEventBridgeLoop() {
+	for {
+		select {
+		case <-m.stopChan:
+			return
+		default:
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			<-m.stopChan
+			cancel()
+		}()
+
+		stream, cleanup, err := m.engine.StreamEvents(ctx)
+		if err != nil || stream == nil {
+			m.surgeStreamConnected.Store(false)
+			log.Printf("[Monitor] Surge event stream unavailable: %v, degrading to polling", err)
+			cancel()
+			select {
+			case <-m.stopChan:
+				return
+			case <-time.After(m.surgePollInterval):
+			}
+			continue
+		}
+
+		m.surgeStreamConnected.Store(true)
+		log.Printf("[Monitor] Surge event stream connected")
+
+		streamClosed := false
+		for !streamClosed {
 			select {
 			case <-ctx.Done():
-				return
+				cleanup()
+				m.surgeStreamConnected.Store(false)
+				streamClosed = true
 			case rawEvt, ok := <-stream:
 				if !ok {
-					return
+					m.surgeStreamConnected.Store(false)
+					cleanup()
+					streamClosed = true
+					break
 				}
 				m.handleSurgeEvent(rawEvt)
 			}
 		}
-	}()
+
+		select {
+		case <-m.stopChan:
+			return
+		case <-time.After(m.surgePollInterval):
+		}
+	}
 }
 
 func (m *Monitor) handleSurgeEvent(rawEvt any) {
@@ -405,4 +450,197 @@ func findTaskInCache(gid string) *rpc.Task {
 		}
 	}
 	return nil
+}
+
+// surgePollLoop runs the periodic reconciliation loop at surgePollInterval.
+// It executes reconcileSurgeCache immediately at startup (covering the
+// startup window before the first event arrives) and then on each tick.
+func (m *Monitor) surgePollLoop() {
+	ticker := time.NewTicker(m.surgePollInterval)
+	defer ticker.Stop()
+
+	m.reconcileSurgeCache()
+
+	for {
+		select {
+		case <-m.surgePollStopChan:
+			return
+		case <-ticker.C:
+			m.reconcileSurgeCache()
+		}
+	}
+}
+
+// reconcileSurgeCache compares the Surge engine's actual task lists against
+// the Cache sg_ slices and corrects discrepancies caused by dropped events.
+// Reads engine state via non-Lite TellActive/TellWaiting/TellStopped (which
+// read the masterCache mirror + Pool active — μs-level, no gob.Decode).
+// All corrections reuse the same Cache methods as handleSurgeEvent, and
+// processedComplete dedup prevents double-processing of completes.
+func (m *Monitor) reconcileSurgeCache() {
+	reader := m.surgePollReader
+	if reader == nil && m.surgeEng != nil {
+		reader = m.surgeEng
+	}
+	if reader == nil {
+		return
+	}
+
+	engineActive, err := reader.TellActive()
+	if err != nil {
+		log.Printf("[Monitor] Surge poll: TellActive error: %v", err)
+		return
+	}
+	engineWaiting, err := reader.TellWaiting(0, 10000)
+	if err != nil {
+		log.Printf("[Monitor] Surge poll: TellWaiting error: %v", err)
+		return
+	}
+	engineStopped, err := reader.TellStopped(0, 10000)
+	if err != nil {
+		log.Printf("[Monitor] Surge poll: TellStopped error: %v", err)
+		return
+	}
+
+	engineActive = prefixSgTasks(engineActive)
+	engineWaiting = prefixSgTasks(engineWaiting)
+	engineStopped = prefixSgTasks(engineStopped)
+
+	engineActiveMap := taskMapByGid(engineActive)
+	engineWaitingMap := taskMapByGid(engineWaiting)
+	engineStoppedMap := taskMapByGid(engineStopped)
+	engineAll := make(map[string]rpc.Task, len(engineActive)+len(engineWaiting)+len(engineStopped))
+	for gid, t := range engineActiveMap {
+		engineAll[gid] = t
+	}
+	for gid, t := range engineWaitingMap {
+		engineAll[gid] = t
+	}
+	for gid, t := range engineStoppedMap {
+		engineAll[gid] = t
+	}
+
+	cacheActive := filterSgOnly(Cache.GetActive())
+	cacheWaiting := filterSgOnly(Cache.GetWaiting())
+	cacheStopped := filterSgOnly(Cache.GetStopped())
+
+	cacheAll := make(map[string]string, len(cacheActive)+len(cacheWaiting)+len(cacheStopped))
+	for _, t := range cacheActive {
+		cacheAll[t.GID] = "active"
+	}
+	for _, t := range cacheWaiting {
+		cacheAll[t.GID] = "waiting"
+	}
+	for _, t := range cacheStopped {
+		cacheAll[t.GID] = "stopped"
+	}
+
+	for gid, cacheList := range cacheAll {
+		if _, exists := engineAll[gid]; exists {
+			continue
+		}
+		Cache.RemoveTask(gid)
+		if m.tracker != nil {
+			m.tracker.RemoveTask(gid)
+		}
+		if m.telemetry != nil {
+			m.telemetry.Remove(gid)
+		}
+		if m.convergence != nil {
+			m.convergence.RemoveTask(gid)
+		}
+		if State.HasWindow() {
+			m.pusher.Queue(events.TaskDelta{Type: "remove", GID: gid})
+		}
+		log.Printf("[Monitor] Surge poll: removed stale task %s (was in %s)", gid, cacheList)
+	}
+
+	for gid, engineTask := range engineAll {
+		cacheList, inCache := cacheAll[gid]
+		if !inCache {
+			list := engineListForStatus(engineTask.Status)
+			Cache.AddSgTask(engineTask, list)
+			if m.tracker != nil {
+				m.tracker.EnsureTrackedFromEvent(gid, parseInt64(engineTask.TotalLength), sourceURLFromTask(engineTask), 0)
+			}
+			Cache.PrefetchMetadata(gid)
+			log.Printf("[Monitor] Surge poll: added missing task %s to %s", gid, list)
+			continue
+		}
+
+		engineList := engineListForStatus(engineTask.Status)
+		if cacheList == engineList {
+			continue
+		}
+
+		switch engineList {
+		case "stopped":
+			status := "complete"
+			if engineTask.Status == "error" {
+				status = "error"
+			}
+			Cache.MoveTaskToStopped(gid, status)
+			if m.tracker != nil {
+				if completed := m.tracker.MarkCompleteFromEvent(gid, status); completed != nil {
+					m.handleTaskComplete(completed)
+				}
+			}
+			log.Printf("[Monitor] Surge poll: moved task %s from %s to stopped (missed %s)", gid, cacheList, status)
+		case "waiting":
+			Cache.MoveTaskToWaiting(gid, "paused")
+			log.Printf("[Monitor] Surge poll: moved task %s from %s to waiting (missed pause)", gid, cacheList)
+		case "active":
+			Cache.MoveTaskToActive(gid, "active")
+			log.Printf("[Monitor] Surge poll: moved task %s from %s to active (missed resume)", gid, cacheList)
+		}
+	}
+}
+
+func prefixSgTasks(tasks []rpc.Task) []rpc.Task {
+	out := make([]rpc.Task, len(tasks))
+	for i, t := range tasks {
+		out[i] = t
+		if !strings.HasPrefix(t.GID, "sg_") {
+			out[i].GID = "sg_" + t.GID
+		}
+	}
+	return out
+}
+
+func filterSgOnly(tasks []rpc.Task) []rpc.Task {
+	out := make([]rpc.Task, 0, len(tasks))
+	for _, t := range tasks {
+		if strings.HasPrefix(t.GID, "sg_") {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func taskMapByGid(tasks []rpc.Task) map[string]rpc.Task {
+	m := make(map[string]rpc.Task, len(tasks))
+	for _, t := range tasks {
+		m[t.GID] = t
+	}
+	return m
+}
+
+func engineListForStatus(status string) string {
+	switch status {
+	case "active", "downloading":
+		return "active"
+	case "waiting", "paused":
+		return "waiting"
+	case "complete", "error":
+		return "stopped"
+	default:
+		return "stopped"
+	}
+}
+
+func sourceURLFromTask(t rpc.Task) string {
+	if len(t.Files) > 0 && len(t.Files[0].Uris) > 0 {
+		return t.Files[0].Uris[0].Uri
+	}
+	return ""
 }
