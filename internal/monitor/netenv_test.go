@@ -84,3 +84,47 @@ func TestComputeEnvKey_KeyLength(t *testing.T) {
 		t.Errorf("envKey length = %d, want 8", len(k))
 	}
 }
+
+// TestComputeEnvKeyForDownload_EmptyRemoteIP_ProxyFallback locks the contract
+// that ComputeEnvKeyForDownload degrades to the proxy bucket when remoteIP is
+// empty. This is the root-cause path of the resume envKey misclassification
+// bug: the resume hook used to pass "" and got proxy even for LAN+direct
+// downloads. The resume hook now preserves the prior envKey instead of relying
+// on this fallback, but the fallback contract itself must stay stable.
+func TestComputeEnvKeyForDownload_EmptyRemoteIP_ProxyFallback(t *testing.T) {
+	// Save and restore global netEnv so this test is isolated.
+	prev := State.GetNetEnv()
+	defer State.SetNetEnv(prev)
+
+	const mac = "aa:bb:cc:dd:ee:ff"
+	ne := NewNetEnvCache()
+	ne.primaryIface = "eth0"
+	ne.ifaceToMAC = map[string]string{"eth0": mac}
+	State.SetNetEnv(ne)
+
+	got := ComputeEnvKeyForDownload("https://example.com/file", "")
+	wantProxy := ComputeEnvKey(routeCodeProxy, mac)
+	if got != wantProxy {
+		t.Fatalf("empty remoteIP: got %q, want proxy key %q", got, wantProxy)
+	}
+
+	// Empty remoteIP must NOT produce a direct key — that is the bug class.
+	directKey := ComputeEnvKey(routeCodeDirect, mac)
+	if got == directKey {
+		t.Fatalf("empty remoteIP produced direct key %q; must be proxy", got)
+	}
+}
+
+// TestComputeEnvKeyForDownload_NilNetEnv_ProxyFallback verifies the defensive
+// path when the netEnv cache has not been initialized yet.
+func TestComputeEnvKeyForDownload_NilNetEnv_ProxyFallback(t *testing.T) {
+	prev := State.GetNetEnv()
+	defer State.SetNetEnv(prev)
+	State.SetNetEnv(nil)
+
+	got := ComputeEnvKeyForDownload("https://example.com/file", "")
+	want := ComputeEnvKey(routeCodeProxy, "")
+	if got != want {
+		t.Fatalf("nil netEnv: got %q, want %q", got, want)
+	}
+}

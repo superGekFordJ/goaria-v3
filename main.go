@@ -151,14 +151,7 @@ func main() {
 				if tracker == nil {
 					return
 				}
-				scope, domain, _, ok := tracker.GetScopeAndEnv(gid)
-				if !ok {
-					scope, domain = resumeScopeClassifier.ClassifyByURL(cfg.URL)
-				}
-
-				// Recompute envKey on resume — physical environment may have changed
-				// since the download was paused.
-				envKey := monitor.ComputeEnvKeyForDownload(cfg.URL, "")
+				scope, domain, prevEnvKey, ok := tracker.GetScopeAndEnv(gid)
 
 				remaining := cfg.TotalSize
 				if cfg.State != nil {
@@ -167,9 +160,36 @@ func main() {
 						remaining = cfg.TotalSize - downloaded
 					}
 				}
-
 				if remaining <= 0 {
 					return
+				}
+
+				// Re-probe TTFB and remote IP on resume; 1s timeout trades
+				// accuracy for latency vs AddUri's 3s. Skipped for custom
+				// headers (extracted/protected) to mirror the AddUri path.
+				var resumeTTFB int64
+				var remoteIP string
+				if len(cfg.Headers) == 0 {
+					probe := rpc.HeadProbe(cfg.URL, 1*time.Second)
+					resumeTTFB = probe.TTFBMs
+					remoteIP = probe.RemoteIP
+				}
+
+				// Preserve existing scope to keep it consistent with PeakEnvKey;
+				// only classify on first-seen (restart recovery / external RPC).
+				if !ok {
+					if remoteIP != "" {
+						scope, domain = resumeScopeClassifier.ClassifyByURLAndIP(cfg.URL, remoteIP)
+					} else {
+						scope, domain = resumeScopeClassifier.ClassifyByURL(cfg.URL)
+					}
+				}
+
+				envKey := monitor.ComputeEnvKeyForDownload(cfg.URL, remoteIP)
+				// On probe skip/failure, keep the prior envKey instead of
+				// degrading to the proxy fallback — avoids cross-env pollution.
+				if remoteIP == "" && ok && prevEnvKey != "" {
+					envKey = prevEnvKey
 				}
 
 				maxConn, _ := strconv.Atoi(config.Current.MaxConnections)
@@ -190,15 +210,6 @@ func main() {
 				}
 				if params.MinSize > 0 {
 					cfg.Runtime.MinChunkSize = params.MinSize
-				}
-				// Re-probe TTFB on resume — physical network may have changed
-				// since pause. Use a shorter timeout (1s) than AddUri (3s) to
-				// minimize resume latency. On probe failure (TTFBMs=0),
-				// SetScopeAndEnv's defensive guard preserves the existing TTFB.
-				var resumeTTFB int64
-				if len(cfg.Headers) == 0 {
-					probe := rpc.HeadProbe(cfg.URL, 1*time.Second)
-					resumeTTFB = probe.TTFBMs
 				}
 				tracker.SetScopeAndEnv(gid, scope, resumeTTFB, domain, envKey)
 			})
