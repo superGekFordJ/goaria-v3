@@ -135,7 +135,11 @@ func (m *Monitor) tick() {
 
 	if activeErr != nil {
 		if m.aria2Recovered.Load() {
-			log.Printf("[Monitor] Aria2 engine became unavailable: %v", activeErr)
+			if !m.aria2UnavailableLogged.Swap(true) {
+				log.Printf("[Monitor] Aria2 engine became unavailable: %v", activeErr)
+			} else {
+				log.Printf("[DEBUG] Aria2 engine still unavailable: %v", activeErr)
+			}
 		} else {
 			log.Printf("[Monitor] Aria2 engine unavailable, will retry: %v", activeErr)
 		}

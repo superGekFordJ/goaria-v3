@@ -83,9 +83,10 @@ type Monitor struct {
 	// Startup recovery flags: set once after the first successful tick
 	// (aria2c) / reconcileSurgeCache (Surge) round. Used for recovery
 	// completion logging and fast-retry interval before first success.
-	aria2Recovered atomic.Bool
-	surgeRecovered atomic.Bool
-	recoveryLogged sync.Once
+	aria2Recovered         atomic.Bool
+	surgeRecovered         atomic.Bool
+	recoveryLogged         sync.Once
+	aria2UnavailableLogged atomic.Bool
 }
 
 func New(app *application.App, hub *events.Hub, systray *application.SystemTray, engine rpc.DownloadEngine) *Monitor {

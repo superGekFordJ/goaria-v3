@@ -1,8 +1,11 @@
 package monitor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -201,6 +204,7 @@ func TestStartupRecovery_Aria2NotRecoveredOnTickError(t *testing.T) {
 // surgeRecovered is set to true after the first successful reconcileSurgeCache.
 func TestStartupRecovery_SurgeRecoveredOnFirstSuccessfulReconcile(t *testing.T) {
 	m, reader, _, _ := newReconcileTestMonitor(t)
+	m.surgeEng = &rpc.SurgeEngine{}
 	resetCacheSg()
 
 	reader.setLists(
@@ -223,6 +227,7 @@ func TestStartupRecovery_SurgeRecoveredOnFirstSuccessfulReconcile(t *testing.T) 
 // surgeRecovered stays false when TellActive returns an error.
 func TestStartupRecovery_SurgeNotRecoveredOnReconcileError(t *testing.T) {
 	m, reader, _, _ := newReconcileTestMonitor(t)
+	m.surgeEng = &rpc.SurgeEngine{}
 	resetCacheSg()
 
 	reader.mu.Lock()
@@ -392,28 +397,106 @@ func TestStartupRecovery_Aria2BecameUnavailableLog(t *testing.T) {
 }
 
 // TestStartupRecovery_RecoveryLoggedOnce verifies that maybeLogRecoveryComplete
-// only logs once via sync.Once semantics.
+// only logs the recovery-complete message once via m.recoveryLogged, capturing
+// log output to assert the exact string appears exactly once.
 func TestStartupRecovery_RecoveryLoggedOnce(t *testing.T) {
+	originalOutput := log.Writer()
+	defer log.SetOutput(originalOutput)
+
+	// Dual-engine variant: both recovered → "aria2c + Surge" logged once.
+	t.Run("DualEngine", func(t *testing.T) {
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+
+		engine := &mockTickEngine{}
+		m := newTickRecoveryMonitor(t, engine)
+		m.surgeEng = &rpc.SurgeEngine{}
+		m.aria2Recovered.Store(true)
+		m.surgeRecovered.Store(true)
+
+		m.maybeLogRecoveryComplete()
+		m.maybeLogRecoveryComplete()
+		m.maybeLogRecoveryComplete()
+
+		out := buf.String()
+		if got := strings.Count(out, "Startup recovery complete (aria2c + Surge)"); got != 1 {
+			t.Errorf("dual-engine recovery log appeared %d times, want 1\noutput:\n%s", got, out)
+		}
+		if strings.Contains(out, "aria2c only") {
+			t.Errorf("dual-engine variant should not log aria2c-only message\noutput:\n%s", out)
+		}
+	})
+
+	// Aria2-only variant: surgeEng == nil → "aria2c only" logged once.
+	t.Run("Aria2Only", func(t *testing.T) {
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+
+		engine := &mockTickEngine{}
+		m := newTickRecoveryMonitor(t, engine)
+		m.aria2Recovered.Store(true)
+
+		m.maybeLogRecoveryComplete()
+		m.maybeLogRecoveryComplete()
+		m.maybeLogRecoveryComplete()
+
+		out := buf.String()
+		if got := strings.Count(out, "Startup recovery complete (aria2c only)"); got != 1 {
+			t.Errorf("aria2-only recovery log appeared %d times, want 1\noutput:\n%s", got, out)
+		}
+		if strings.Contains(out, "aria2c + Surge") {
+			t.Errorf("aria2-only variant should not log dual-engine message\noutput:\n%s", out)
+		}
+	})
+}
+
+// TestStartupRecovery_Aria2UnavailableLoggedOnce verifies that after aria2c
+// recovers then starts failing, the warn-level "became unavailable" message
+// fires only once; subsequent failures log at debug level (spam suppression).
+func TestStartupRecovery_Aria2UnavailableLoggedOnce(t *testing.T) {
+	originalOutput := log.Writer()
+	defer log.SetOutput(originalOutput)
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+
 	engine := &mockTickEngine{}
+	engine.setLists(
+		[]rpc.Task{{GID: "ar_task1", Status: "active", TotalLength: "1000"}},
+		nil, nil,
+	)
 	m := newTickRecoveryMonitor(t, engine)
-	// surgeEng is nil → Aria2-only mode.
-	m.aria2Recovered.Store(true)
 
-	// Call multiple times — sync.Once should ensure the Do func runs only once.
-	m.maybeLogRecoveryComplete()
-	m.maybeLogRecoveryComplete()
-	m.maybeLogRecoveryComplete()
-
-	// Verify sync.Once semantics with a tracked counter.
-	var count int64
-	trackedOnce := &sync.Once{}
-	for i := 0; i < 5; i++ {
-		trackedOnce.Do(func() {
-			count++
-		})
+	// First tick: success → aria2Recovered becomes true.
+	m.tick()
+	if !m.aria2Recovered.Load() {
+		t.Fatal("expected aria2Recovered=true after first successful tick")
 	}
-	if count != 1 {
-		t.Errorf("sync.Once Do ran %d times, want 1", count)
+	if m.aria2UnavailableLogged.Load() {
+		t.Fatal("expected aria2UnavailableLogged=false before any failure")
+	}
+
+	// Second tick: failure (engine became unavailable) → warn-level log.
+	engine.setActiveErr(fmt.Errorf("connection refused"))
+	m.tick()
+
+	if !m.aria2UnavailableLogged.Load() {
+		t.Fatal("expected aria2UnavailableLogged=true after first failure post-recovery")
+	}
+	out := buf.String()
+	if got := strings.Count(out, "Aria2 engine became unavailable"); got != 1 {
+		t.Errorf("warn-level 'became unavailable' log appeared %d times after first failure, want 1\noutput:\n%s", got, out)
+	}
+
+	// Third tick: another failure → debug-level log, no second warn-level.
+	m.tick()
+
+	out = buf.String()
+	if got := strings.Count(out, "Aria2 engine became unavailable"); got != 1 {
+		t.Errorf("warn-level 'became unavailable' log appeared %d times after second failure, want 1\noutput:\n%s", got, out)
+	}
+	if got := strings.Count(out, "Aria2 engine still unavailable"); got != 1 {
+		t.Errorf("debug-level 'still unavailable' log appeared %d times after second failure, want 1\noutput:\n%s", got, out)
 	}
 }
 
