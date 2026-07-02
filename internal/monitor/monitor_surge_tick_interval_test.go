@@ -25,6 +25,7 @@ func TestCurrentTickInterval_SurgeOnly_UsesHeadless(t *testing.T) {
 		prevWaitingGids:  map[string]bool{},
 		engine:           hybrid,
 	}
+	m.aria2Recovered.Store(true)
 
 	// With nil service, IsSurgeActive()=false, so it uses windowInterval
 	if d := m.currentTickInterval(); d != 1*time.Second {
@@ -47,6 +48,7 @@ func TestCurrentTickInterval_HasAria2Tasks_UsesWindow(t *testing.T) {
 		prevWaitingGids:  map[string]bool{},
 		engine:           hybrid,
 	}
+	m.aria2Recovered.Store(true)
 
 	if d := m.currentTickInterval(); d != 1*time.Second {
 		t.Errorf("expected 1s with Aria2 tasks, got %v", d)
@@ -68,6 +70,7 @@ func TestCurrentTickInterval_Aria2InWaiting_UsesWindow(t *testing.T) {
 		prevWaitingGids:  map[string]bool{"ar_456": true},
 		engine:           hybrid,
 	}
+	m.aria2Recovered.Store(true)
 
 	if d := m.currentTickInterval(); d != 1*time.Second {
 		t.Errorf("expected 1s with Aria2 waiting tasks, got %v", d)
@@ -89,6 +92,7 @@ func TestCurrentTickInterval_NoWindow_UsesHeadless(t *testing.T) {
 		prevWaitingGids:  map[string]bool{},
 		engine:           hybrid,
 	}
+	m.aria2Recovered.Store(true)
 
 	if d := m.currentTickInterval(); d != 5*time.Second {
 		t.Errorf("expected 5s no window, got %v", d)
@@ -109,6 +113,7 @@ func TestCurrentTickInterval_SurgeActiveWithAria2Tasks_Active_UsesWindow(t *test
 		prevWaitingGids:  map[string]bool{},
 		engine:           engine,
 	}
+	m.aria2Recovered.Store(true)
 
 	if d := m.currentTickInterval(); d != 1*time.Second {
 		t.Errorf("expected 1s with Aria2 active tasks even when surge is active, got %v", d)
@@ -129,6 +134,7 @@ func TestCurrentTickInterval_SurgeActiveWithAria2Tasks_Waiting_UsesWindow(t *tes
 		prevWaitingGids:  map[string]bool{"ar_456": true},
 		engine:           engine,
 	}
+	m.aria2Recovered.Store(true)
 
 	if d := m.currentTickInterval(); d != 1*time.Second {
 		t.Errorf("expected 1s with Aria2 waiting tasks even when surge is active, got %v", d)
@@ -149,6 +155,7 @@ func TestCurrentTickInterval_SurgeActiveOnlySurgeTasks_UsesHeadless(t *testing.T
 		prevWaitingGids:  map[string]bool{},
 		engine:           engine,
 	}
+	m.aria2Recovered.Store(true)
 
 	if d := m.currentTickInterval(); d != 5*time.Second {
 		t.Errorf("expected 5s with only Surge tasks, got %v", d)
@@ -169,6 +176,7 @@ func TestCurrentTickInterval_NoPendingComplete_SurgeOnly_Headless(t *testing.T) 
 		prevWaitingGids:  map[string]bool{},
 		engine:           engine,
 	}
+	m.aria2Recovered.Store(true)
 
 	if d := m.currentTickInterval(); d != 5*time.Second {
 		t.Errorf("expected 5s with only Surge tasks (no pending complete), got %v", d)
@@ -190,6 +198,7 @@ func TestCurrentTickInterval_ShouldFetchStoppedUntil_UsesWindow(t *testing.T) {
 		engine:                  engine,
 		shouldFetchStoppedUntil: time.Now().Add(10 * time.Second),
 	}
+	m.aria2Recovered.Store(true)
 
 	if d := m.currentTickInterval(); d != 1*time.Second {
 		t.Errorf("expected 1s during shouldFetchStoppedUntil window, got %v", d)
@@ -211,6 +220,7 @@ func TestCurrentTickInterval_ShouldFetchStoppedExpired_UsesHeadless(t *testing.T
 		engine:                  engine,
 		shouldFetchStoppedUntil: time.Now().Add(-1 * time.Second), // expired
 	}
+	m.aria2Recovered.Store(true)
 
 	if d := m.currentTickInterval(); d != 5*time.Second {
 		t.Errorf("expected 5s after shouldFetchStoppedUntil expired, got %v", d)
@@ -232,6 +242,7 @@ func TestCurrentTickInterval_ShouldFetchStoppedUntil_LifecycleTransition(t *test
 		engine:           engine,
 		mu:               sync.Mutex{},
 	}
+	m.aria2Recovered.Store(true)
 
 	// Phase 1: Before any complete event — 5s headless
 	if d := m.currentTickInterval(); d != 5*time.Second {

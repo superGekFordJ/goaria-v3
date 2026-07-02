@@ -518,6 +518,11 @@ func (m *Monitor) reconcileSurgeCache() {
 		return
 	}
 
+	if !m.surgeRecovered.Swap(true) {
+		log.Printf("[Monitor] Surge engine first recovery successful")
+	}
+	m.maybeLogRecoveryComplete()
+
 	engineActive = prefixSgTasks(engineActive)
 	engineWaiting = prefixSgTasks(engineWaiting)
 	engineStopped = prefixSgTasks(engineStopped)

@@ -26,6 +26,9 @@ func (m *Monitor) hasAria2Tasks() bool {
 }
 
 func (m *Monitor) currentTickInterval() time.Duration {
+	if !m.aria2Recovered.Load() {
+		return 1 * time.Second
+	}
 	if State.HasWindow() && (!m.engine.IsSurgeActive() || m.hasAria2Tasks()) {
 		return m.windowInterval
 	}
@@ -123,7 +126,19 @@ func (m *Monitor) tick() {
 		log.Printf("[DEBUG-TICK] active task: gid=%s status=%s total=%s completed=%s", t.GID, t.Status, t.TotalLength, t.CompletedLength)
 	}
 
+	if activeErr == nil {
+		if !m.aria2Recovered.Swap(true) {
+			log.Printf("[Monitor] Aria2 engine first recovery successful")
+		}
+		m.maybeLogRecoveryComplete()
+	}
+
 	if activeErr != nil {
+		if m.aria2Recovered.Load() {
+			log.Printf("[Monitor] Aria2 engine became unavailable: %v", activeErr)
+		} else {
+			log.Printf("[Monitor] Aria2 engine unavailable, will retry: %v", activeErr)
+		}
 		return
 	}
 

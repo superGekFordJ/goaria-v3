@@ -79,6 +79,13 @@ type Monitor struct {
 	surgePollStopChan    chan struct{}
 	surgePollWg          sync.WaitGroup
 	surgePollReader      surgeListReader
+
+	// Startup recovery flags: set once after the first successful tick
+	// (aria2c) / reconcileSurgeCache (Surge) round. Used for recovery
+	// completion logging and fast-retry interval before first success.
+	aria2Recovered atomic.Bool
+	surgeRecovered atomic.Bool
+	recoveryLogged sync.Once
 }
 
 func New(app *application.App, hub *events.Hub, systray *application.SystemTray, engine rpc.DownloadEngine) *Monitor {
@@ -175,6 +182,45 @@ func (m *Monitor) shouldDiscardStalePause(gid string) bool {
 		return false
 	}
 	return intention == PauseResumeIntentionResume
+}
+
+// RecoveryComplete reports whether at least one available engine has completed
+// its first successful recovery round. Non-blocking; used for diagnostics, not
+// for gating GetFullSnapshot. In Aria2-only mode (m.surgeEng == nil) only
+// aria2Recovered is checked. If both engines are present, returns true when
+// either has recovered — the unrecovered one keeps retrying independently.
+func (m *Monitor) RecoveryComplete() bool {
+	aria2OK := m.aria2Recovered.Load()
+	surgeOK := m.surgeRecovered.Load()
+	if m.surgeEng == nil {
+		return aria2OK
+	}
+	if aria2OK && surgeOK {
+		return true
+	}
+	return aria2OK || surgeOK
+}
+
+// maybeLogRecoveryComplete logs a one-time startup recovery complete message
+// when all available engines have completed their first successful recovery
+// round. Called from tick() and reconcileSurgeCache() after setting their
+// own recovered flags.
+func (m *Monitor) maybeLogRecoveryComplete() {
+	aria2OK := m.aria2Recovered.Load()
+	surgeOK := m.surgeRecovered.Load()
+	if m.surgeEng == nil {
+		if aria2OK {
+			m.recoveryLogged.Do(func() {
+				log.Printf("[Monitor] Startup recovery complete (aria2c only)")
+			})
+		}
+		return
+	}
+	if aria2OK && surgeOK {
+		m.recoveryLogged.Do(func() {
+			log.Printf("[Monitor] Startup recovery complete (aria2c + Surge)")
+		})
+	}
 }
 
 func (m *Monitor) Start() {
