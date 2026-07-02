@@ -124,6 +124,7 @@ func resetHistoryForTest(t *testing.T) {
 func TestReconcileSurgeCache_MissedComplete(t *testing.T) {
 	m, reader, pusher, tracker := newReconcileTestMonitor(t)
 	resetCacheSg()
+	resetHistoryForTest(t)
 
 	Cache.AddSgTask(rpc.Task{
 		GID:         "sg_task1",
