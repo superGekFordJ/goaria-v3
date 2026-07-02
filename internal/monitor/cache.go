@@ -797,6 +797,43 @@ func (c *TaskCache) PrefetchMetadata(gid string) {
 	if groupKey != "" {
 		queueDownloadGroupNameRefresh(groupKey)
 	}
+	c.enrichSgEntry(gid, task)
+}
+
+// enrichSgEntry writes fetched metadata fields (Dir/Files/Title/DownloadGroup)
+// from a full TellStatus result back into the matching sg slice entry, so that
+// cache getters return enriched sg tasks without per-call EnrichTasks calls.
+// Event-managed fields (Status/progress) are preserved.
+func (c *TaskCache) enrichSgEntry(gid string, full rpc.Task) {
+	if enginePrefix(gid) != "sg" {
+		return
+	}
+	c.sgMu.Lock()
+	defer c.sgMu.Unlock()
+	update := func(slice []rpc.Task) bool {
+		for i := range slice {
+			if slice[i].GID != gid {
+				continue
+			}
+			if full.Dir != "" {
+				slice[i].Dir = full.Dir
+			}
+			if len(full.Files) > 0 {
+				slice[i].Files = full.Files
+			}
+			if full.Title != "" {
+				slice[i].Title = full.Title
+			}
+			if full.DownloadGroup != nil {
+				slice[i].DownloadGroup = copyDownloadGroup(full.DownloadGroup)
+			}
+			return true
+		}
+		return false
+	}
+	if update(c.sgActive) || update(c.sgWaiting) || update(c.sgStopped) {
+		return
+	}
 }
 
 // CleanupMetadata 清理已移除任务的元数据

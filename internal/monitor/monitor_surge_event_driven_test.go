@@ -882,3 +882,239 @@ func TestEventDriven_RapidAddRemove(t *testing.T) {
 		}
 	}
 }
+
+// TestEventDriven_PrefetchMetadata_EnrichesSgSliceEntry verifies that after
+// handleSurgeEvent processes a DownloadStartedMsg, the sg slice entry is
+// enriched with full metadata (Files/Title/Dir) from the TellStatus result,
+// not just the minimal GID/Status/TotalLength fields. This ensures that
+// GetTasks/GetFullSnapshot return enriched sg tasks without per-call EnrichTasks.
+func TestEventDriven_PrefetchMetadata_EnrichesSgSliceEntry(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	se := &mockTellStatusEngine{
+		task: rpc.Task{
+			Title:       "file.zip",
+			Dir:         "/downloads",
+			Files:       []rpc.File{{Path: "/downloads/file.zip", Uris: []rpc.Uri{{Uri: "https://example.com/file.zip"}}}},
+			Status:      "active",
+			TotalLength: "1000",
+		},
+	}
+	hybrid := rpc.NewHybridEngine(nil, se)
+	m := &Monitor{hub: hub, pusher: pusher, tracker: tracker, engine: hybrid}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+	defer func() {
+		Cache.sgActive = nil
+		Cache.sgWaiting = nil
+		Cache.sgStopped = nil
+		Cache.engine = nil
+		Cache.metadata = make(map[string]*TaskMetadata)
+	}()
+
+	Cache.engine = hybrid
+
+	m.handleSurgeEvent(surgeEvents.DownloadStartedMsg{
+		DownloadID: "enrich-1",
+		Total:      1000,
+		URL:        "https://example.com/file.zip",
+		Workers:    4,
+	})
+
+	// Verify the sg slice entry itself is enriched (not just the add delta copy)
+	Cache.sgMu.RLock()
+	var found *rpc.Task
+	for i := range Cache.sgActive {
+		if Cache.sgActive[i].GID == "sg_enrich-1" {
+			t := Cache.sgActive[i]
+			found = &t
+			break
+		}
+	}
+	Cache.sgMu.RUnlock()
+	if found == nil {
+		t.Fatal("expected sg_enrich-1 in sgActive after DownloadStartedMsg")
+	}
+	if found.Title != "file.zip" {
+		t.Errorf("Title = %q, want file.zip", found.Title)
+	}
+	if found.Dir != "/downloads" {
+		t.Errorf("Dir = %q, want /downloads", found.Dir)
+	}
+	if len(found.Files) == 0 || found.Files[0].Path != "/downloads/file.zip" {
+		t.Errorf("Files not enriched, got %v", found.Files)
+	}
+
+	// Verify GetActive returns the enriched task without extra EnrichTasks
+	for _, task := range Cache.GetActive() {
+		if task.GID == "sg_enrich-1" {
+			if task.Title != "file.zip" {
+				t.Errorf("GetActive Title = %q, want file.zip", task.Title)
+			}
+			if task.Dir != "/downloads" {
+				t.Errorf("GetActive Dir = %q, want /downloads", task.Dir)
+			}
+			if len(task.Files) == 0 || task.Files[0].Path != "/downloads/file.zip" {
+				t.Errorf("GetActive Files not enriched, got %v", task.Files)
+			}
+		}
+	}
+}
+
+// TestPreserveLoop_OnlyArStopped verifies that the shouldFetchStoppedUntil
+// fast-retry preserve loop skips sg_ tasks, preserving only ar_ stopped tasks
+// that are not yet in the tick's stopped list. This exercises the preserve
+// loop body (which existing tests do not, since they never set
+// shouldFetchStoppedUntil).
+func TestPreserveLoop_OnlyArStopped(t *testing.T) {
+	engine := &mockStoppedEngine{
+		stopped: []rpc.Task{
+			{GID: "ar_tick-1", Status: "complete", TotalLength: "1000"},
+		},
+	}
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	m := &Monitor{
+		hub:              hub,
+		pusher:           pusher,
+		tracker:          tracker,
+		engine:           engine,
+		stopChan:         make(chan struct{}),
+		forceTickChan:    make(chan struct{}, 1),
+		headlessInterval: 5 * time.Second,
+		windowInterval:   1 * time.Second,
+		deletedGids:      make(map[string]time.Time),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+	defer func() {
+		Cache.sgActive = nil
+		Cache.sgWaiting = nil
+		Cache.sgStopped = nil
+		Cache.arActive = nil
+		Cache.arWaiting = nil
+		Cache.arStopped = nil
+		Cache.engine = nil
+	}()
+
+	Cache.engine = engine
+
+	// Pre-seed a sg_ stopped task and an ar_ stopped task in cache that
+	// the tick's engine result does NOT include. The preserve loop should
+	// keep the ar_ task but skip the sg_ task (sg_ maintained by event path).
+	Cache.AddSgTask(rpc.Task{GID: "sg_preserve-1", Status: "complete", TotalLength: "500"}, "stopped")
+	Cache.arMu.Lock()
+	Cache.arStopped = []rpc.Task{{GID: "ar_preserve-1", Status: "complete", TotalLength: "800"}}
+	Cache.arMu.Unlock()
+
+	// Pre-process the ar_tick-1 in tracker so it's not treated as newly completed
+	tracker.Update(nil, nil, []rpc.Task{{GID: "ar_tick-1", Status: "complete"}})
+
+	// Set shouldFetchStopped + shouldFetchStoppedUntil so the preserve loop runs
+	m.mu.Lock()
+	m.shouldFetchStopped = true
+	m.shouldFetchStoppedUntil = time.Now().Add(5 * time.Second)
+	m.mu.Unlock()
+
+	m.tick()
+
+	// ar_preserve-1 should be preserved (kept by the preserve loop)
+	foundArPreserve := false
+	for _, task := range Cache.GetStopped() {
+		if task.GID == "ar_preserve-1" {
+			foundArPreserve = true
+		}
+	}
+	if !foundArPreserve {
+		t.Fatal("expected ar_preserve-1 preserved in stopped after tick")
+	}
+
+	// sg_preserve-1 should still be in cache (event path maintains it,
+	// tick does not touch sg_ slices via UpdateFromAria2)
+	foundSgPreserve := false
+	for _, task := range Cache.GetStopped() {
+		if task.GID == "sg_preserve-1" {
+			foundSgPreserve = true
+		}
+	}
+	if !foundSgPreserve {
+		t.Fatal("expected sg_preserve-1 still in stopped (event-maintained, not cleared by tick)")
+	}
+
+	// ar_tick-1 from the engine should be in cache
+	foundArTick := false
+	for _, task := range Cache.GetStopped() {
+		if task.GID == "ar_tick-1" {
+			foundArTick = true
+		}
+	}
+	if !foundArTick {
+		t.Fatal("expected ar_tick-1 in stopped after tick")
+	}
+}
+
+// TestSurgeRemove_DirectCacheDelete_NoTombstone verifies that removing a sg_
+// task via DownloadRemovedMsg deletes it directly from the cache slices without
+// adding a tombstone entry to deletedGids. sg_ tasks use direct cache deletion
+// (Cache.RemoveTask), not the ar_ tombstone mechanism (deletedGids).
+func TestSurgeRemove_DirectCacheDelete_NoTombstone(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	se := &mockSafeEngine{}
+	hybrid := rpc.NewHybridEngine(nil, se)
+	m := &Monitor{
+		hub:         hub,
+		pusher:      pusher,
+		tracker:     tracker,
+		engine:      hybrid,
+		deletedGids: make(map[string]time.Time),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+	defer func() {
+		Cache.sgActive = nil
+		Cache.sgWaiting = nil
+		Cache.sgStopped = nil
+	}()
+
+	// Seed a sg_ task in cache
+	Cache.AddSgTask(rpc.Task{GID: "sg_tombstone-1", Status: "active"}, "active")
+
+	m.handleSurgeEvent(surgeEvents.DownloadRemovedMsg{
+		DownloadID: "tombstone-1",
+	})
+
+	// Verify task is gone from all cache slices
+	for _, task := range Cache.GetActive() {
+		if task.GID == "sg_tombstone-1" {
+			t.Fatal("expected sg_tombstone-1 NOT in active after remove")
+		}
+	}
+	for _, task := range Cache.GetWaiting() {
+		if task.GID == "sg_tombstone-1" {
+			t.Fatal("expected sg_tombstone-1 NOT in waiting after remove")
+		}
+	}
+	for _, task := range Cache.GetStopped() {
+		if task.GID == "sg_tombstone-1" {
+			t.Fatal("expected sg_tombstone-1 NOT in stopped after remove")
+		}
+	}
+
+	// Verify NO tombstone was set for the sg_ GID
+	m.mu.Lock()
+	_, hasTombstone := m.deletedGids["sg_tombstone-1"]
+	m.mu.Unlock()
+	if hasTombstone {
+		t.Fatal("expected sg_tombstone-1 NOT in deletedGids (sg_ uses direct cache delete, not tombstone)")
+	}
+}

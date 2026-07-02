@@ -31,6 +31,29 @@ func (e *mockSafeEngine) TellStatus(gid string, keys []string) (rpc.Task, error)
 	return rpc.Task{}, fmt.Errorf("mock: no engine")
 }
 
+// mockTellStatusEngine returns a full rpc.Task from TellStatus, simulating
+// a Surge engine that has complete file/path metadata for a task.
+type mockTellStatusEngine struct {
+	mockSurgeActiveEngine
+	task rpc.Task
+}
+
+func (e *mockTellStatusEngine) TellStatus(gid string, keys []string) (rpc.Task, error) {
+	t := e.task
+	t.GID = gid
+	return t, nil
+}
+
+func (e *mockTellStatusEngine) TellStatusMulti(gids []string, keys []string) ([]rpc.Task, error) {
+	res := make([]rpc.Task, 0, len(gids))
+	for _, gid := range gids {
+		t := e.task
+		t.GID = gid
+		res = append(res, t)
+	}
+	return res, nil
+}
+
 // speedstatsRecordCount returns the number of in-memory speedstats records.
 func speedstatsRecordCount() int {
 	return len(speedstats.GetAllRecords())
