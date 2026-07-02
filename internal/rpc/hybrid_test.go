@@ -448,10 +448,14 @@ func TestHybridEngine_PartialFailure_Lists(t *testing.T) {
 		wantErr   bool
 		wantCount int
 		wantGID   string
+		// Lite variants: Tell*Lite only calls aria2, so expectations differ.
+		wantErrLite   bool
+		wantCountLite int
+		wantGIDLite   string
 	}{
-		{"Aria2 fails, Surge succeeds", nil, errors.New("aria2 not ready"), false, 1, "sg_sg1"},
-		{"Surge fails, Aria2 succeeds", errors.New("surge error"), nil, false, 1, "ar_ar1"},
-		{"Both fail", errors.New("surge error"), errors.New("aria2 error"), true, 0, ""},
+		{"Aria2 fails, Surge succeeds", nil, errors.New("aria2 not ready"), false, 1, "sg_sg1", true, 0, ""},
+		{"Surge fails, Aria2 succeeds", errors.New("surge error"), nil, false, 1, "ar_ar1", false, 1, "ar_ar1"},
+		{"Both fail", errors.New("surge error"), errors.New("aria2 error"), true, 0, "", true, 0, ""},
 	}
 
 	for _, tc := range tests {
@@ -498,7 +502,7 @@ func TestHybridEngine_PartialFailure_Lists(t *testing.T) {
 			// TellActiveLite
 			t.Run("TellActiveLite", func(t *testing.T) {
 				result, err := hybrid.TellActiveLite()
-				if tc.wantErr {
+				if tc.wantErrLite {
 					if err == nil {
 						t.Fatal("expected error, got nil")
 					}
@@ -507,8 +511,8 @@ func TestHybridEngine_PartialFailure_Lists(t *testing.T) {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
-				if len(result) != tc.wantCount || (len(result) > 0 && result[0].GID != tc.wantGID) {
-					t.Errorf("expected %d tasks with GID %s, got %d tasks: %v", tc.wantCount, tc.wantGID, len(result), result)
+				if len(result) != tc.wantCountLite || (len(result) > 0 && result[0].GID != tc.wantGIDLite) {
+					t.Errorf("expected %d tasks with GID %s, got %d tasks: %v", tc.wantCountLite, tc.wantGIDLite, len(result), result)
 				}
 			})
 
@@ -532,7 +536,7 @@ func TestHybridEngine_PartialFailure_Lists(t *testing.T) {
 			// TellWaitingLite
 			t.Run("TellWaitingLite", func(t *testing.T) {
 				result, err := hybrid.TellWaitingLite(0, 100)
-				if tc.wantErr {
+				if tc.wantErrLite {
 					if err == nil {
 						t.Fatal("expected error, got nil")
 					}
@@ -541,8 +545,8 @@ func TestHybridEngine_PartialFailure_Lists(t *testing.T) {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
-				if len(result) != tc.wantCount || (len(result) > 0 && result[0].GID != tc.wantGID) {
-					t.Errorf("expected %d tasks with GID %s, got %d tasks: %v", tc.wantCount, tc.wantGID, len(result), result)
+				if len(result) != tc.wantCountLite || (len(result) > 0 && result[0].GID != tc.wantGIDLite) {
+					t.Errorf("expected %d tasks with GID %s, got %d tasks: %v", tc.wantCountLite, tc.wantGIDLite, len(result), result)
 				}
 			})
 
@@ -566,7 +570,7 @@ func TestHybridEngine_PartialFailure_Lists(t *testing.T) {
 			// TellStoppedLite
 			t.Run("TellStoppedLite", func(t *testing.T) {
 				result, err := hybrid.TellStoppedLite(0, 100)
-				if tc.wantErr {
+				if tc.wantErrLite {
 					if err == nil {
 						t.Fatal("expected error, got nil")
 					}
@@ -575,8 +579,8 @@ func TestHybridEngine_PartialFailure_Lists(t *testing.T) {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
-				if len(result) != tc.wantCount || (len(result) > 0 && result[0].GID != tc.wantGID) {
-					t.Errorf("expected %d tasks with GID %s, got %d tasks: %v", tc.wantCount, tc.wantGID, len(result), result)
+				if len(result) != tc.wantCountLite || (len(result) > 0 && result[0].GID != tc.wantGIDLite) {
+					t.Errorf("expected %d tasks with GID %s, got %d tasks: %v", tc.wantCountLite, tc.wantGIDLite, len(result), result)
 				}
 			})
 

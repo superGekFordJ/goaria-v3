@@ -431,95 +431,62 @@ func (h *HybridEngine) ChangeGlobalOption(options map[string]string) error {
 }
 
 func (h *HybridEngine) TellActiveLite() ([]Task, error) {
-	sgList, sgErr := h.surgeEngine.TellActiveLite()
-	if sgErr != nil {
-		log.Printf("[Hybrid] Surge TellActiveLite error: %v", sgErr)
+	arList, err := h.aria2Engine.TellActiveLite()
+	if err != nil {
+		return nil, err
 	}
-	arList, arErr := h.aria2Engine.TellActiveLite()
-	if arErr != nil {
-		log.Printf("[Hybrid] Aria2 TellActiveLite error: %v", arErr)
-	}
-	if sgErr != nil && arErr != nil {
-		return nil, fmt.Errorf("both engines failed: surge=%w, aria2=%w", sgErr, arErr)
-	}
-	var merged []Task
-	for _, t := range sgList {
-		t.GID = "sg_" + t.GID
-		merged = append(merged, t)
-	}
+	result := make([]Task, 0, len(arList))
 	for _, t := range arList {
 		t.GID = "ar_" + t.GID
-		merged = append(merged, t)
+		result = append(result, t)
 	}
-	return merged, nil
+	return result, nil
 }
 
 func (h *HybridEngine) TellWaitingLite(offset, num int) ([]Task, error) {
-	sgList, sgErr := h.surgeEngine.TellWaitingLite(0, offset+num)
-	if sgErr != nil {
-		log.Printf("[Hybrid] Surge TellWaitingLite error: %v", sgErr)
+	arList, err := h.aria2Engine.TellWaitingLite(0, offset+num)
+	if err != nil {
+		return nil, err
 	}
-	arList, arErr := h.aria2Engine.TellWaitingLite(0, offset+num)
-	if arErr != nil {
-		log.Printf("[Hybrid] Aria2 TellWaitingLite error: %v", arErr)
-	}
-	if sgErr != nil && arErr != nil {
-		return nil, fmt.Errorf("both engines failed: surge=%w, aria2=%w", sgErr, arErr)
-	}
-	var merged []Task
-	for _, t := range sgList {
-		t.GID = "sg_" + t.GID
-		merged = append(merged, t)
-	}
+	var result []Task
 	for _, t := range arList {
 		t.GID = "ar_" + t.GID
-		merged = append(merged, t)
+		result = append(result, t)
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	if offset >= len(merged) {
+	if offset >= len(result) {
 		return []Task{}, nil
 	}
 	end := offset + num
-	if end > len(merged) || num <= 0 {
-		end = len(merged)
+	if end > len(result) || num <= 0 {
+		end = len(result)
 	}
-	return merged[offset:end], nil
+	return result[offset:end], nil
 }
 
 func (h *HybridEngine) TellStoppedLite(offset, num int) ([]Task, error) {
-	sgList, sgErr := h.surgeEngine.TellStoppedLite(0, offset+num)
-	if sgErr != nil {
-		log.Printf("[Hybrid] Surge TellStoppedLite error: %v", sgErr)
+	arList, err := h.aria2Engine.TellStoppedLite(0, offset+num)
+	if err != nil {
+		return nil, err
 	}
-	arList, arErr := h.aria2Engine.TellStoppedLite(0, offset+num)
-	if arErr != nil {
-		log.Printf("[Hybrid] Aria2 TellStoppedLite error: %v", arErr)
-	}
-	if sgErr != nil && arErr != nil {
-		return nil, fmt.Errorf("both engines failed: surge=%w, aria2=%w", sgErr, arErr)
-	}
-	var merged []Task
-	for _, t := range sgList {
-		t.GID = "sg_" + t.GID
-		merged = append(merged, t)
-	}
+	var result []Task
 	for _, t := range arList {
 		t.GID = "ar_" + t.GID
-		merged = append(merged, t)
+		result = append(result, t)
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	if offset >= len(merged) {
+	if offset >= len(result) {
 		return []Task{}, nil
 	}
 	end := offset + num
-	if end > len(merged) || num <= 0 {
-		end = len(merged)
+	if end > len(result) || num <= 0 {
+		end = len(result)
 	}
-	return merged[offset:end], nil
+	return result[offset:end], nil
 }
 
 func (h *HybridEngine) StreamEvents(ctx context.Context) (<-chan any, func(), error) {

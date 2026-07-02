@@ -1232,3 +1232,94 @@ func TestSetScopeAndEnv_NewTask_ZeroTTFB_AcceptsZero(t *testing.T) {
 		t.Errorf("TTFBMs = %d, want 0 (new task with no probe should start at 0)", tracked.TTFBMs)
 	}
 }
+
+// TestTaskTracker_Update_DoesNotCleanSgTasks verifies that Tracker.Update
+// does not remove sg_ prefixed tasks from the tracker, even when they are
+// absent from the active/waiting/stopped lists. Surge tasks are maintained
+// by the event-driven path, not by tick polling.
+func TestTaskTracker_Update_DoesNotCleanSgTasks(t *testing.T) {
+	tracker := NewTaskTracker()
+
+	// Seed a sg_ task via EnsureTrackedFromEvent
+	tracker.EnsureTrackedFromEvent("sg_survive-1", 100000, "https://example.com", 4)
+	tracker.EnsureTrackedFromEvent("sg_survive-2", 200000, "https://example.com", 8)
+
+	// Also seed an ar_ task
+	active := []rpc.Task{createMockTask("ar_active-1", "active")}
+	tracker.Update(active, nil, nil)
+
+	// Set ar_active-1's CreatedAt beyond grace period so it can be cleaned up
+	tracker.mu.Lock()
+	if t := tracker.tasks["ar_active-1"]; t != nil {
+		t.CreatedAt = time.Now().Add(-TaskGracePeriod * 2)
+	}
+	tracker.mu.Unlock()
+
+	// Verify both exist
+	if tracker.tasks["sg_survive-1"] == nil {
+		t.Fatal("expected sg_survive-1 to exist before cleanup tick")
+	}
+	if tracker.tasks["sg_survive-2"] == nil {
+		t.Fatal("expected sg_survive-2 to exist before cleanup tick")
+	}
+	if tracker.tasks["ar_active-1"] == nil {
+		t.Fatal("expected ar_active-1 to exist before cleanup tick")
+	}
+
+	// Update with NO sg_ tasks and NO ar_active-1 — only ar_ tasks that are different
+	tracker.Update(
+		[]rpc.Task{createMockTask("ar_active-2", "active")},
+		nil, nil,
+	)
+
+	// sg_ tasks should survive (not cleaned up by tick)
+	if tracker.tasks["sg_survive-1"] == nil {
+		t.Fatal("expected sg_survive-1 to survive tick cleanup (sg_ prefix exempt)")
+	}
+	if tracker.tasks["sg_survive-2"] == nil {
+		t.Fatal("expected sg_survive-2 to survive tick cleanup (sg_ prefix exempt)")
+	}
+
+	// ar_active-1 should be cleaned up (not in current lists, past grace period)
+	if tracker.tasks["ar_active-1"] != nil {
+		t.Fatal("expected ar_active-1 to be cleaned up by tick (not in current lists)")
+	}
+}
+
+// TestTaskTracker_Update_CleansArTasks verifies that ar_ prefixed tasks
+// ARE cleaned up by Tracker.Update when absent from current lists.
+func TestTaskTracker_Update_CleansArTasks(t *testing.T) {
+	tracker := NewTaskTracker()
+
+	// Seed ar_ tasks
+	active := []rpc.Task{
+		createMockTask("ar_clean-1", "active"),
+		createMockTask("ar_clean-2", "active"),
+	}
+	tracker.Update(active, nil, nil)
+
+	// Set CreatedAt beyond grace period so they can be cleaned up
+	tracker.mu.Lock()
+	for _, gid := range []string{"ar_clean-1", "ar_clean-2"} {
+		if t := tracker.tasks[gid]; t != nil {
+			t.CreatedAt = time.Now().Add(-TaskGracePeriod * 2)
+		}
+	}
+	tracker.mu.Unlock()
+
+	// Update with only ar_clean-1 (ar_clean-2 is gone)
+	tracker.Update(
+		[]rpc.Task{createMockTask("ar_clean-1", "active")},
+		nil, nil,
+	)
+
+	// ar_clean-1 should survive
+	if tracker.tasks["ar_clean-1"] == nil {
+		t.Fatal("expected ar_clean-1 to survive (still in active list)")
+	}
+
+	// ar_clean-2 should be cleaned up
+	if tracker.tasks["ar_clean-2"] != nil {
+		t.Fatal("expected ar_clean-2 to be cleaned up (not in current lists)")
+	}
+}

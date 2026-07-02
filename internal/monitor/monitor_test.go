@@ -12,13 +12,13 @@ import (
 func TestMonitor_FilterDeletedTasks_TombstoneWindow(t *testing.T) {
 	m := &Monitor{
 		deletedGids: map[string]time.Time{
-			"sg_test": time.Now(),
+			"ar_test": time.Now(),
 		},
 	}
 
 	tasks := []rpc.Task{
-		{GID: "sg_test", Status: "active"},
-		{GID: "sg_other", Status: "active"},
+		{GID: "ar_test", Status: "active"},
+		{GID: "ar_other", Status: "active"},
 	}
 
 	filtered := m.filterDeletedTasks(tasks)
@@ -26,20 +26,20 @@ func TestMonitor_FilterDeletedTasks_TombstoneWindow(t *testing.T) {
 	if len(filtered) != 1 {
 		t.Fatalf("expected 1 task after filtering, got %d", len(filtered))
 	}
-	if filtered[0].GID != "sg_other" {
-		t.Errorf("expected sg_other to remain, got %s", filtered[0].GID)
+	if filtered[0].GID != "ar_other" {
+		t.Errorf("expected ar_other to remain, got %s", filtered[0].GID)
 	}
 }
 
 func TestMonitor_FilterDeletedTasks_ExpiredTombstone(t *testing.T) {
 	m := &Monitor{
 		deletedGids: map[string]time.Time{
-			"sg_expired": time.Now().Add(-20 * time.Second),
+			"ar_expired": time.Now().Add(-20 * time.Second),
 		},
 	}
 
 	tasks := []rpc.Task{
-		{GID: "sg_expired", Status: "complete"},
+		{GID: "ar_expired", Status: "complete"},
 	}
 
 	filtered := m.filterDeletedTasks(tasks)
@@ -47,12 +47,12 @@ func TestMonitor_FilterDeletedTasks_ExpiredTombstone(t *testing.T) {
 	if len(filtered) != 1 {
 		t.Fatalf("expected expired tombstone task to remain, got %d tasks", len(filtered))
 	}
-	if filtered[0].GID != "sg_expired" {
-		t.Errorf("expected sg_expired to remain, got %s", filtered[0].GID)
+	if filtered[0].GID != "ar_expired" {
+		t.Errorf("expected ar_expired to remain, got %s", filtered[0].GID)
 	}
 
 	m.mu.Lock()
-	_, stillPresent := m.deletedGids["sg_expired"]
+	_, stillPresent := m.deletedGids["ar_expired"]
 	m.mu.Unlock()
 	if stillPresent {
 		t.Error("expected expired tombstone to be cleaned up from deletedGids")

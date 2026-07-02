@@ -140,35 +140,20 @@ func NewTaskCacheForTest() *TaskCache {
 	}
 }
 
-// UpdateFromAria2 从引擎更新缓存（批量获取）
-// 按引擎前缀拆分传入切片，全量替换对应引擎切片（分段加锁不嵌套）。
-// 仅替换传入数据中包含任务的引擎切片——无 sg 任务时 sg 切片不受影响，反之亦然。
+// UpdateFromAria2 从引擎更新缓存（批量获取）。
+// 仅替换 aria2 (ar_) 切片；Surge (sg_) 切片由事件驱动路径维护
+// （AddSgTask/MoveTaskTo*/RemoveTask/PatchTaskProgress）。
 // 共享字段（pendingStartGids、lastUpdate）在 mu 下更新。
 func (c *TaskCache) UpdateFromAria2(active, waiting, stopped []rpc.Task) {
-	sgActive, arActive := splitByPrefix(active)
-	sgWaiting, arWaiting := splitByPrefix(waiting)
-	sgStopped, arStopped := splitByPrefix(stopped)
+	_, arActive := splitByPrefix(active)
+	_, arWaiting := splitByPrefix(waiting)
+	_, arStopped := splitByPrefix(stopped)
 
-	hasSg := len(sgActive) > 0 || len(sgWaiting) > 0 || len(sgStopped) > 0
-	hasAr := len(arActive) > 0 || len(arWaiting) > 0 || len(arStopped) > 0
-
-	// When only one engine has tasks, replace only that engine's slices.
-	// When neither has tasks (e.g. all filtered out), clear both.
-	if hasAr || !hasSg {
-		c.arMu.Lock()
-		c.arActive = copyTaskSlice(arActive)
-		c.arWaiting = copyTaskSlice(arWaiting)
-		c.arStopped = copyTaskSlice(arStopped)
-		c.arMu.Unlock()
-	}
-
-	if hasSg || !hasAr {
-		c.sgMu.Lock()
-		c.sgActive = copyTaskSlice(sgActive)
-		c.sgWaiting = copyTaskSlice(sgWaiting)
-		c.sgStopped = copyTaskSlice(sgStopped)
-		c.sgMu.Unlock()
-	}
+	c.arMu.Lock()
+	c.arActive = copyTaskSlice(arActive)
+	c.arWaiting = copyTaskSlice(arWaiting)
+	c.arStopped = copyTaskSlice(arStopped)
+	c.arMu.Unlock()
 
 	c.mu.Lock()
 	c.lastUpdate = time.Now()
@@ -416,6 +401,76 @@ func (c *TaskCache) MoveTaskToActive(gid, status string) {
 			c.arWaiting = append(c.arWaiting[:i], c.arWaiting[i+1:]...)
 			return
 		}
+	}
+}
+
+// AddSgTask inserts or updates a Surge task in the specified sg slice.
+// If the GID already exists in the target slice, fields are shallow-merged
+// (non-empty values in the new task overwrite the old). If the GID exists in
+// a different sg slice, it is moved to the target slice. list is "active",
+// "waiting", or "stopped".
+func (c *TaskCache) AddSgTask(task rpc.Task, list string) {
+	c.sgMu.Lock()
+	defer c.sgMu.Unlock()
+
+	var target *[]rpc.Task
+	removeFrom := func(slice []rpc.Task, gid string) []rpc.Task {
+		for i := range slice {
+			if slice[i].GID == gid {
+				return append(slice[:i], slice[i+1:]...)
+			}
+		}
+		return slice
+	}
+
+	switch list {
+	case "active":
+		target = &c.sgActive
+		c.sgWaiting = removeFrom(c.sgWaiting, task.GID)
+		c.sgStopped = removeFrom(c.sgStopped, task.GID)
+	case "waiting":
+		target = &c.sgWaiting
+		c.sgActive = removeFrom(c.sgActive, task.GID)
+		c.sgStopped = removeFrom(c.sgStopped, task.GID)
+	case "stopped":
+		target = &c.sgStopped
+		c.sgActive = removeFrom(c.sgActive, task.GID)
+		c.sgWaiting = removeFrom(c.sgWaiting, task.GID)
+	default:
+		return
+	}
+
+	for i := range *target {
+		if (*target)[i].GID == task.GID {
+			mergeTaskFields(&(*target)[i], task)
+			return
+		}
+	}
+	*target = append(*target, copyTask(task))
+}
+
+// mergeTaskFields shallow-merges non-empty fields from src into dst.
+func mergeTaskFields(dst *rpc.Task, src rpc.Task) {
+	if src.Status != "" {
+		dst.Status = src.Status
+	}
+	if src.TotalLength != "" {
+		dst.TotalLength = src.TotalLength
+	}
+	if src.CompletedLength != "" {
+		dst.CompletedLength = src.CompletedLength
+	}
+	if src.DownloadSpeed != "" {
+		dst.DownloadSpeed = src.DownloadSpeed
+	}
+	if src.Dir != "" {
+		dst.Dir = src.Dir
+	}
+	if len(src.Files) > 0 {
+		dst.Files = src.Files
+	}
+	if src.DownloadGroup != nil {
+		dst.DownloadGroup = copyDownloadGroup(src.DownloadGroup)
 	}
 }
 

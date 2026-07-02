@@ -126,6 +126,9 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 
 	// 清理已移除的任务
 	for gid, tracked := range t.tasks {
+		if strings.HasPrefix(gid, "sg_") {
+			continue
+		}
 		if !currentGids[gid] {
 			// 给新创建的任务 5 秒宽限期，避免 Aria2 尚未报告时的竞态条件
 			if time.Since(tracked.CreatedAt) < TaskGracePeriod {

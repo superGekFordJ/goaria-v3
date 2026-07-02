@@ -24,7 +24,7 @@ import (
 // but the shouldFetchStoppedUntil fast-retry preserve logic re-appends it from
 // Cache.GetStopped(), bypassing filterDeletedTasks. The task persists.
 func TestRemoveGroupCompletedTaskReappears_NoResurrection(t *testing.T) {
-	completedGID := "sg_completed-1"
+	completedGID := "ar_completed-1"
 	completedTask := rpc.Task{
 		GID:             completedGID,
 		Status:          "complete",
@@ -53,9 +53,9 @@ func TestRemoveGroupCompletedTaskReappears_NoResurrection(t *testing.T) {
 	State.SetWindowExists(true)
 	defer State.SetWindowExists(prevWindow)
 	defer func() {
-		Cache.sgActive = nil
-		Cache.sgWaiting = nil
-		Cache.sgStopped = nil
+		Cache.arActive = nil
+		Cache.arWaiting = nil
+		Cache.arStopped = nil
 		Cache.engine = nil
 	}()
 
@@ -64,7 +64,7 @@ func TestRemoveGroupCompletedTaskReappears_NoResurrection(t *testing.T) {
 
 	// Phase 1: Simulate the complete event. MoveTaskToStopped puts the task
 	// into Cache.GetStopped(). shouldFetchStoppedUntil is set (1.5s window).
-	Cache.sgActive = []rpc.Task{{GID: completedGID, Status: "active", TotalLength: "1000"}}
+	Cache.arActive = []rpc.Task{{GID: completedGID, Status: "active", TotalLength: "1000"}}
 	Cache.MoveTaskToStopped(completedGID, "complete")
 
 	m.mu.Lock()
@@ -73,9 +73,8 @@ func TestRemoveGroupCompletedTaskReappears_NoResurrection(t *testing.T) {
 	m.mu.Unlock()
 
 	// Phase 2: Run the complete event's force tick. TellStopped returns the
-	// completed task (from the fresh list cache after InvalidateListCache).
-	// filterDeletedTasks does not catch it (not deleted yet). UpdateFromAria2
-	// keeps the task in Cache.GetStopped().
+	// completed task. filterDeletedTasks does not catch it (not deleted yet).
+	// UpdateFromAria2 keeps the task in Cache.GetStopped().
 	m.tick()
 
 	if !taskInCacheStopped(completedGID) {
@@ -141,7 +140,7 @@ func TestRemoveGroupCompletedTaskReappears_ConcurrentInvalidateTask(t *testing.T
 	log.SetOutput(io.Discard)
 	defer log.SetOutput(prevLogOut)
 
-	targetGID := "sg_concurrent-target"
+	targetGID := "ar_concurrent-target"
 	targetTask := rpc.Task{
 		GID:             targetGID,
 		Status:          "complete",
@@ -157,7 +156,7 @@ func TestRemoveGroupCompletedTaskReappears_ConcurrentInvalidateTask(t *testing.T
 	allStopped := make([]rpc.Task, 0, numFillers+1)
 	for i := 0; i < numFillers; i++ {
 		allStopped = append(allStopped, rpc.Task{
-			GID:             fmt.Sprintf("sg_filler-%d", i),
+			GID:             fmt.Sprintf("ar_filler-%d", i),
 			Status:          "complete",
 			TotalLength:     "100",
 			CompletedLength: "100",
@@ -192,9 +191,9 @@ func TestRemoveGroupCompletedTaskReappears_ConcurrentInvalidateTask(t *testing.T
 	State.SetWindowExists(true)
 	defer State.SetWindowExists(prevWindow)
 	defer func() {
-		Cache.sgActive = nil
-		Cache.sgWaiting = nil
-		Cache.sgStopped = nil
+		Cache.arActive = nil
+		Cache.arWaiting = nil
+		Cache.arStopped = nil
 		Cache.engine = nil
 	}()
 
@@ -204,9 +203,9 @@ func TestRemoveGroupCompletedTaskReappears_ConcurrentInvalidateTask(t *testing.T
 	// completed (avoids 50k handleTaskComplete calls during the test tick).
 	tracker.Update(nil, nil, allStopped[:numFillers])
 
-	// Seed Cache.sgStopped directly — simulates a prior tick's UpdateFromAria2
+	// Seed Cache.arStopped directly — simulates a prior tick's UpdateFromAria2
 	// having re-added the target after the engine deleted it.
-	Cache.sgStopped = copyTaskSlice(allStopped)
+	Cache.arStopped = copyTaskSlice(allStopped)
 
 	// Activate the fast-retry preserve window.
 	m.mu.Lock()

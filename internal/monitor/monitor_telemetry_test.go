@@ -125,12 +125,8 @@ func TestCollectTelemetry_NonHybridEngine(t *testing.T) {
 		telemetry: NewTelemetryCache(),
 	}
 
-	active := []rpc.Task{
-		{GID: "sg_123", Status: "active"},
-	}
-
 	// Should not panic and should not populate telemetry
-	m.collectTelemetry(active)
+	m.collectTelemetry()
 
 	if got := m.telemetry.Get("sg_123"); got != nil {
 		t.Errorf("expected nil telemetry for non-HybridEngine, got %v", got)
@@ -147,12 +143,14 @@ func TestCollectTelemetry_NonSurgeGids(t *testing.T) {
 		telemetry: NewTelemetryCache(),
 	}
 
-	active := []rpc.Task{
+	// Seed Cache with ar_ tasks only (no sg_ tasks)
+	Cache.arActive = []rpc.Task{
 		{GID: "ar_123", Status: "active"},
 		{GID: "ar_456", Status: "active"},
 	}
+	defer func() { Cache.arActive = nil }()
 
-	m.collectTelemetry(active)
+	m.collectTelemetry()
 
 	// No sg_ GIDs → no telemetry entries
 	if gids := m.telemetry.ActiveGIDs(); len(gids) != 0 {
@@ -181,12 +179,16 @@ func TestCollectTelemetry_SurgeGidsPopulated(t *testing.T) {
 		telemetry: NewTelemetryCache(),
 	}
 
-	active := []rpc.Task{
+	// Seed Cache with sg_ and ar_ tasks
+	Cache.sgActive = []rpc.Task{
 		{GID: "sg_abc", Status: "active"},
+	}
+	Cache.arActive = []rpc.Task{
 		{GID: "ar_xyz", Status: "active"},
 	}
+	defer func() { Cache.sgActive = nil; Cache.arActive = nil }()
 
-	m.collectTelemetry(active)
+	m.collectTelemetry()
 
 	// sg_abc should have telemetry
 	got := m.telemetry.Get("sg_abc")
@@ -228,12 +230,13 @@ func TestCollectTelemetry_RemovesStaleEntries(t *testing.T) {
 	// Pre-populate with a stale entry that won't be in the active list
 	m.telemetry.Set("sg_stale", []types.WorkerSnapshot{{WorkerID: 0}})
 
-	// Active list includes sg_active but not sg_stale
-	active := []rpc.Task{
+	// Seed Cache with sg_active but not sg_stale
+	Cache.sgActive = []rpc.Task{
 		{GID: "sg_active", Status: "active"},
 	}
+	defer func() { Cache.sgActive = nil }()
 
-	m.collectTelemetry(active)
+	m.collectTelemetry()
 
 	// sg_stale should be removed
 	if g := m.telemetry.Get("sg_stale"); g != nil {
@@ -269,11 +272,13 @@ func TestCollectTelemetry_ActiveButNilStats_StaleRemoved(t *testing.T) {
 	// Pre-populate telemetry for sg_ghost (simulates stale data from concurrent phase)
 	m.telemetry.Set("sg_ghost", []types.WorkerSnapshot{{WorkerID: 0, EMASpeed: 500}})
 
-	active := []rpc.Task{
+	// Seed Cache with sg_ghost as active
+	Cache.sgActive = []rpc.Task{
 		{GID: "sg_ghost", Status: "active"},
 	}
+	defer func() { Cache.sgActive = nil }()
 
-	m.collectTelemetry(active)
+	m.collectTelemetry()
 
 	// sg_ghost is active but has nil stats → stale telemetry should be removed
 	if g := m.telemetry.Get("sg_ghost"); g != nil {
@@ -300,10 +305,12 @@ func TestCollectTelemetry_ConcurrentWithRemove(t *testing.T) {
 		telemetry: NewTelemetryCache(),
 	}
 
-	active := []rpc.Task{
+	// Seed Cache with sg_ tasks
+	Cache.sgActive = []rpc.Task{
 		{GID: "sg_race", Status: "active"},
 		{GID: "sg_other", Status: "active"},
 	}
+	defer func() { Cache.sgActive = nil }()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -312,7 +319,7 @@ func TestCollectTelemetry_ConcurrentWithRemove(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 300; i++ {
-			m.collectTelemetry(active)
+			m.collectTelemetry()
 		}
 	}()
 

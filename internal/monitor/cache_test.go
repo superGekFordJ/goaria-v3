@@ -264,10 +264,7 @@ func TestTaskCache_UpdateTaskGroupNameConcurrentReaders(t *testing.T) {
 
 func TestTaskCache_MoveTaskToStopped_FromActive(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
-	cache.UpdateFromAria2(
-		[]rpc.Task{{GID: "sg_1", Status: "active", Title: "file.zip"}},
-		nil, nil,
-	)
+	cache.AddSgTask(rpc.Task{GID: "sg_1", Status: "active", Title: "file.zip"}, "active")
 
 	cache.MoveTaskToStopped("sg_1", "complete")
 
@@ -285,11 +282,7 @@ func TestTaskCache_MoveTaskToStopped_FromActive(t *testing.T) {
 
 func TestTaskCache_MoveTaskToStopped_FromWaiting(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
-	cache.UpdateFromAria2(
-		nil,
-		[]rpc.Task{{GID: "sg_2", Status: "waiting"}},
-		nil,
-	)
+	cache.AddSgTask(rpc.Task{GID: "sg_2", Status: "waiting"}, "waiting")
 
 	cache.MoveTaskToStopped("sg_2", "error")
 
@@ -304,10 +297,7 @@ func TestTaskCache_MoveTaskToStopped_FromWaiting(t *testing.T) {
 
 func TestTaskCache_MoveTaskToStopped_NotFound(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
-	cache.UpdateFromAria2(
-		[]rpc.Task{{GID: "sg_1", Status: "active"}},
-		nil, nil,
-	)
+	cache.AddSgTask(rpc.Task{GID: "sg_1", Status: "active"}, "active")
 
 	cache.MoveTaskToStopped("sg_nonexistent", "complete")
 
@@ -321,10 +311,7 @@ func TestTaskCache_MoveTaskToStopped_NotFound(t *testing.T) {
 
 func TestTaskCache_MoveTaskToWaiting_FromActive(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
-	cache.UpdateFromAria2(
-		[]rpc.Task{{GID: "sg_3", Status: "active", DownloadSpeed: "1000"}},
-		nil, nil,
-	)
+	cache.AddSgTask(rpc.Task{GID: "sg_3", Status: "active", DownloadSpeed: "1000"}, "active")
 
 	cache.MoveTaskToWaiting("sg_3", "paused")
 
@@ -342,11 +329,7 @@ func TestTaskCache_MoveTaskToWaiting_FromActive(t *testing.T) {
 
 func TestTaskCache_MoveTaskToActive_FromWaiting(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
-	cache.UpdateFromAria2(
-		nil,
-		[]rpc.Task{{GID: "sg_4", Status: "paused"}},
-		nil,
-	)
+	cache.AddSgTask(rpc.Task{GID: "sg_4", Status: "paused"}, "waiting")
 
 	cache.MoveTaskToActive("sg_4", "active")
 
@@ -362,17 +345,17 @@ func TestTaskCache_MoveTaskToActive_FromWaiting(t *testing.T) {
 	}
 }
 
-// --- SPEC-192: prefix routing & concurrent write tests ---
+// --- prefix routing & concurrent write tests ---
 
 func TestTaskCache_ConcurrentSurgeEventAndAria2Tick(t *testing.T) {
 	cache := &TaskCache{
 		metadata:         make(map[string]*TaskMetadata),
 		pendingStartGids: make(map[string]time.Time),
 	}
+	cache.AddSgTask(rpc.Task{GID: "sg_a1", Status: "active", DownloadSpeed: "100"}, "active")
+	cache.AddSgTask(rpc.Task{GID: "sg_a2", Status: "active", DownloadSpeed: "200"}, "active")
 	cache.UpdateFromAria2(
 		[]rpc.Task{
-			{GID: "sg_a1", Status: "active", DownloadSpeed: "100"},
-			{GID: "sg_a2", Status: "active", DownloadSpeed: "200"},
 			{GID: "ar_a1", Status: "active", DownloadSpeed: "50"},
 		},
 		[]rpc.Task{{GID: "ar_w1", Status: "waiting"}},
@@ -431,19 +414,15 @@ func TestTaskCache_ConcurrentSurgeEventAndAria2Tick(t *testing.T) {
 
 func TestTaskCache_UpdateFromAria2_SplitsByEnginePrefix(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	// sg_ tasks are seeded via AddSgTask (event-driven path)
+	cache.AddSgTask(rpc.Task{GID: "sg_1", Status: "active"}, "active")
+	cache.AddSgTask(rpc.Task{GID: "sg_2", Status: "waiting"}, "waiting")
+	cache.AddSgTask(rpc.Task{GID: "sg_3", Status: "complete"}, "stopped")
+	// ar_ tasks are seeded via UpdateFromAria2 (tick polling path)
 	cache.UpdateFromAria2(
-		[]rpc.Task{
-			{GID: "sg_1", Status: "active"},
-			{GID: "ar_1", Status: "active"},
-		},
-		[]rpc.Task{
-			{GID: "sg_2", Status: "waiting"},
-			{GID: "ar_2", Status: "waiting"},
-		},
-		[]rpc.Task{
-			{GID: "sg_3", Status: "complete"},
-			{GID: "ar_3", Status: "complete"},
-		},
+		[]rpc.Task{{GID: "ar_1", Status: "active"}},
+		[]rpc.Task{{GID: "ar_2", Status: "waiting"}},
+		[]rpc.Task{{GID: "ar_3", Status: "complete"}},
 	)
 
 	active := cache.GetActive()
@@ -468,16 +447,17 @@ func TestTaskCache_UpdateFromAria2_SplitsByEnginePrefix(t *testing.T) {
 	}
 }
 
-func TestTaskCache_UpdateFromAria2_OnlyReplacesCorrespondingEngine(t *testing.T) {
+func TestTaskCache_UpdateFromAria2_OnlyReplacesArSlices(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	// Seed sg_ task via event path
+	cache.AddSgTask(rpc.Task{GID: "sg_1", Status: "active"}, "active")
+	// Seed ar_ task via UpdateFromAria2
 	cache.UpdateFromAria2(
-		[]rpc.Task{
-			{GID: "sg_1", Status: "active"},
-			{GID: "ar_1", Status: "active"},
-		},
+		[]rpc.Task{{GID: "ar_1", Status: "active"}},
 		nil, nil,
 	)
 
+	// Update ar_ slice — sg_ slice should be preserved
 	cache.UpdateFromAria2(
 		[]rpc.Task{{GID: "ar_2", Status: "active"}},
 		nil, nil,
@@ -489,7 +469,7 @@ func TestTaskCache_UpdateFromAria2_OnlyReplacesCorrespondingEngine(t *testing.T)
 	}
 	gids := gidsFromTasks(active)
 	if !containsGid(gids, "sg_1") {
-		t.Fatal("expected sg_1 preserved in active")
+		t.Fatal("expected sg_1 preserved in active (event-driven, not touched by UpdateFromAria2)")
 	}
 	if !containsGid(gids, "ar_2") {
 		t.Fatal("expected ar_2 in active")
@@ -501,11 +481,9 @@ func TestTaskCache_UpdateFromAria2_OnlyReplacesCorrespondingEngine(t *testing.T)
 
 func TestTaskCache_MoveTaskToStopped_RoutesByPrefix(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{GID: "sg_1", Status: "active"}, "active")
 	cache.UpdateFromAria2(
-		[]rpc.Task{
-			{GID: "sg_1", Status: "active"},
-			{GID: "ar_1", Status: "active"},
-		},
+		[]rpc.Task{{GID: "ar_1", Status: "active"}},
 		nil, nil,
 	)
 
@@ -533,11 +511,9 @@ func TestTaskCache_MoveTaskToStopped_RoutesByPrefix(t *testing.T) {
 
 func TestTaskCache_RemoveTask_RoutesByPrefix(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{GID: "sg_1", Status: "active"}, "active")
 	cache.UpdateFromAria2(
-		[]rpc.Task{
-			{GID: "sg_1", Status: "active"},
-			{GID: "ar_1", Status: "active"},
-		},
+		[]rpc.Task{{GID: "ar_1", Status: "active"}},
 		nil, nil,
 	)
 
@@ -557,11 +533,9 @@ func TestTaskCache_RemoveTask_RoutesByPrefix(t *testing.T) {
 
 func TestTaskCache_PatchTaskProgress_RoutesByPrefix(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{GID: "sg_1", Status: "active", CompletedLength: "0", DownloadSpeed: "0", TotalLength: "1000"}, "active")
 	cache.UpdateFromAria2(
-		[]rpc.Task{
-			{GID: "sg_1", Status: "active", CompletedLength: "0", DownloadSpeed: "0", TotalLength: "1000"},
-			{GID: "ar_1", Status: "active", CompletedLength: "0", DownloadSpeed: "0", TotalLength: "2000"},
-		},
+		[]rpc.Task{{GID: "ar_1", Status: "active", CompletedLength: "0", DownloadSpeed: "0", TotalLength: "2000"}},
 		nil, nil,
 	)
 
@@ -628,9 +602,9 @@ func TestTaskCache_DuplicateGidFilter(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
 	cache.UpdateFromAria2(
 		[]rpc.Task{
-			{GID: "sg_1", Status: "active"},
-			{GID: "sg_1", Status: "active"},
-			{GID: "sg_1", Status: "active"},
+			{GID: "ar_1", Status: "active"},
+			{GID: "ar_1", Status: "active"},
+			{GID: "ar_1", Status: "active"},
 		},
 		nil, nil,
 	)
@@ -640,8 +614,8 @@ func TestTaskCache_DuplicateGidFilter(t *testing.T) {
 		t.Fatalf("expected 3 entries (full replace, no dedup), got %d", len(active))
 	}
 	for _, task := range active {
-		if task.GID != "sg_1" {
-			t.Fatalf("expected all sg_1, got %s", task.GID)
+		if task.GID != "ar_1" {
+			t.Fatalf("expected all ar_1, got %s", task.GID)
 		}
 	}
 }
@@ -649,11 +623,9 @@ func TestTaskCache_DuplicateGidFilter(t *testing.T) {
 func TestTaskCache_EnrichTasks_WorksWithSplitSlices(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
 	group := testDownloadGroup("dg-split-enrich")
+	cache.AddSgTask(rpc.Task{GID: "sg_lite", Status: "active"}, "active")
 	cache.UpdateFromAria2(
-		[]rpc.Task{
-			{GID: "sg_lite", Status: "active"},
-			{GID: "ar_lite", Status: "active"},
-		},
+		[]rpc.Task{{GID: "ar_lite", Status: "active"}},
 		nil, nil,
 	)
 	cache.SetTaskGroup("sg_lite", group)
@@ -704,10 +676,7 @@ func TestTaskCache_LiteTaskNotOverwrittenByUpdateFromAria2(t *testing.T) {
 
 func TestTaskCache_CrossListMovePreservesMetadata(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
-	cache.UpdateFromAria2(
-		[]rpc.Task{{GID: "sg_move", Status: "active"}},
-		nil, nil,
-	)
+	cache.AddSgTask(rpc.Task{GID: "sg_move", Status: "active"}, "active")
 	cache.ensureMetadata(rpc.Task{
 		GID:         "sg_move",
 		Dir:         "/downloads",
@@ -748,4 +717,148 @@ func containsGid(gids []string, gid string) bool {
 		}
 	}
 	return false
+}
+
+// --- AddSgTask tests ---
+
+func TestTaskCache_AddSgTask_NewToActive(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{
+		GID:           "sg_new-1",
+		Status:        "active",
+		TotalLength:   "1000",
+		DownloadSpeed: "100",
+	}, "active")
+
+	active := cache.GetActive()
+	if !containsGid(gidsFromTasks(active), "sg_new-1") {
+		t.Fatalf("expected sg_new-1 in active, got %v", gidsFromTasks(active))
+	}
+}
+
+func TestTaskCache_AddSgTask_NewToWaiting(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{
+		GID:    "sg_wait-1",
+		Status: "waiting",
+	}, "waiting")
+
+	waiting := cache.GetWaiting()
+	if !containsGid(gidsFromTasks(waiting), "sg_wait-1") {
+		t.Fatalf("expected sg_wait-1 in waiting, got %v", gidsFromTasks(waiting))
+	}
+}
+
+func TestTaskCache_AddSgTask_NewToStopped(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{
+		GID:    "sg_stop-1",
+		Status: "complete",
+	}, "stopped")
+
+	stopped := cache.GetStopped()
+	if !containsGid(gidsFromTasks(stopped), "sg_stop-1") {
+		t.Fatalf("expected sg_stop-1 in stopped, got %v", gidsFromTasks(stopped))
+	}
+}
+
+func TestTaskCache_AddSgTask_UpdatesExistingInPlace(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{
+		GID:           "sg_upd-1",
+		Status:        "active",
+		TotalLength:   "1000",
+		DownloadSpeed: "100",
+	}, "active")
+
+	// Update with new speed
+	cache.AddSgTask(rpc.Task{
+		GID:           "sg_upd-1",
+		Status:        "active",
+		DownloadSpeed: "500",
+	}, "active")
+
+	active := cache.GetActive()
+	if len(active) != 1 {
+		t.Fatalf("expected 1 active task, got %d", len(active))
+	}
+	if active[0].DownloadSpeed != "500" {
+		t.Errorf("DownloadSpeed = %s, want 500", active[0].DownloadSpeed)
+	}
+	if active[0].TotalLength != "1000" {
+		t.Errorf("TotalLength = %s, want 1000 (preserved from prior)", active[0].TotalLength)
+	}
+}
+
+func TestTaskCache_AddSgTask_MovesBetweenSlices(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{
+		GID:    "sg_move-1",
+		Status: "active",
+	}, "active")
+
+	// Move to waiting
+	cache.AddSgTask(rpc.Task{
+		GID:    "sg_move-1",
+		Status: "paused",
+	}, "waiting")
+
+	active := cache.GetActive()
+	for _, task := range active {
+		if task.GID == "sg_move-1" {
+			t.Fatal("expected sg_move-1 NOT in active after move to waiting")
+		}
+	}
+	waiting := cache.GetWaiting()
+	if !containsGid(gidsFromTasks(waiting), "sg_move-1") {
+		t.Fatalf("expected sg_move-1 in waiting after move, got %v", gidsFromTasks(waiting))
+	}
+
+	// Move to stopped
+	cache.AddSgTask(rpc.Task{
+		GID:    "sg_move-1",
+		Status: "complete",
+	}, "stopped")
+
+	waiting = cache.GetWaiting()
+	for _, task := range waiting {
+		if task.GID == "sg_move-1" {
+			t.Fatal("expected sg_move-1 NOT in waiting after move to stopped")
+		}
+	}
+	stopped := cache.GetStopped()
+	if !containsGid(gidsFromTasks(stopped), "sg_move-1") {
+		t.Fatalf("expected sg_move-1 in stopped after move, got %v", gidsFromTasks(stopped))
+	}
+}
+
+func TestTaskCache_AddSgTask_DoesNotTouchAriaSlices(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(
+		[]rpc.Task{{GID: "ar_a1", Status: "active", DownloadSpeed: "50"}},
+		nil, nil,
+	)
+
+	cache.AddSgTask(rpc.Task{
+		GID:    "sg_new-1",
+		Status: "active",
+	}, "active")
+
+	active := cache.GetActive()
+	sgCount := 0
+	arCount := 0
+	for _, task := range active {
+		if task.GID == "sg_new-1" {
+			sgCount++
+		}
+		if task.GID == "ar_a1" {
+			arCount++
+		}
+	}
+	if sgCount != 1 {
+		t.Errorf("expected 1 sg_ task in active, got %d", sgCount)
+	}
+	if arCount != 1 {
+		t.Errorf("expected 1 ar_ task in active, got %d", arCount)
+	}
 }

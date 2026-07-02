@@ -363,6 +363,12 @@ func (m *Monitor) tick() {
 	waiting = m.filterDeletedTasks(waiting)
 	stopped = m.filterDeletedTasks(stopped)
 
+	// Defensive: filter out any Surge tasks that slipped through Tell*Lite.
+	// Surge tasks are maintained by the event-driven path, not tick polling.
+	active = filterSurgeTasks(active)
+	waiting = filterSurgeTasks(waiting)
+	stopped = filterSurgeTasks(stopped)
+
 	// 1. 检查并补充元数据（如果缺少）
 	allTasks := make([]*rpc.Task, 0, len(active)+len(waiting)+len(stopped))
 	for i := range active {
@@ -464,6 +470,10 @@ func (m *Monitor) tick() {
 				if _, ok := existingGids[t.GID]; ok {
 					continue
 				}
+				// Surge stopped tasks are maintained by the event path; skip.
+				if strings.HasPrefix(t.GID, "sg_") {
+					continue
+				}
 				// Per-iteration lock lets InvalidateTask set deletedGids
 				// between iterations so later tasks are still caught.
 				m.mu.Lock()
@@ -478,7 +488,7 @@ func (m *Monitor) tick() {
 	}
 
 	// Collect per-worker telemetry from Surge engine
-	m.collectTelemetry(active)
+	m.collectTelemetry()
 
 	// 更新缓存
 	Cache.UpdateFromAria2(active, waiting, stopped)
@@ -492,7 +502,7 @@ func (m *Monitor) tick() {
 	}
 
 	// 构建托盘快照
-	snapshot := m.buildTraySnapshot(active, waiting)
+	snapshot := m.buildTraySnapshot()
 
 	// 更新托盘状态（仅在变化时）
 	if State.UpdateTrayState(snapshot.HasActive, snapshot.HasPaused, snapshot.HasError, snapshot.ActiveCount, snapshot.WaitingCount) {
@@ -695,8 +705,11 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 	log.Printf("[Monitor] History recorded: %s", task.GID)
 }
 
-// buildTraySnapshot 构建托盘快照
-func (m *Monitor) buildTraySnapshot(active, waiting []rpc.Task) TraySnapshot {
+// buildTraySnapshot 构建托盘快照（从 Cache 读取合并切片）
+func (m *Monitor) buildTraySnapshot() TraySnapshot {
+	active := Cache.GetActive()
+	waiting := Cache.GetWaiting()
+
 	hasActive := len(active) > 0
 	hasPaused := false
 	hasError := false
@@ -828,10 +841,16 @@ func (m *Monitor) detectAndEmitTaskMoves(active, waiting []rpc.Task) {
 	waitingByGid := make(map[string]*rpc.Task)
 
 	for i := range active {
+		if strings.HasPrefix(active[i].GID, "sg_") {
+			continue
+		}
 		currentActiveGids[active[i].GID] = true
 		activeByGid[active[i].GID] = &active[i]
 	}
 	for i := range waiting {
+		if strings.HasPrefix(waiting[i].GID, "sg_") {
+			continue
+		}
 		currentWaitingGids[waiting[i].GID] = true
 		waitingByGid[waiting[i].GID] = &waiting[i]
 	}
@@ -876,9 +895,15 @@ func (m *Monitor) updatePrevGids(active, waiting []rpc.Task) {
 	m.prevWaitingGids = make(map[string]bool)
 
 	for _, t := range active {
+		if strings.HasPrefix(t.GID, "sg_") {
+			continue
+		}
 		m.prevActiveGids[t.GID] = true
 	}
 	for _, t := range waiting {
+		if strings.HasPrefix(t.GID, "sg_") {
+			continue
+		}
 		m.prevWaitingGids[t.GID] = true
 	}
 }
@@ -991,6 +1016,12 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 				MinChunkSize: ev.MinChunkSize,
 			})
 		}
+		Cache.AddSgTask(rpc.Task{
+			GID:           gid,
+			Status:        "waiting",
+			TotalLength:   "0",
+			DownloadSpeed: "0",
+		}, "waiting")
 	case surgeEvents.DownloadStartedMsg:
 		deltaType = "add"
 		gid = "sg_" + ev.DownloadID
@@ -1023,6 +1054,12 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 			}
 			surgeEng.UpsertMasterCacheEntry(entry)
 		}
+		Cache.AddSgTask(rpc.Task{
+			GID:           gid,
+			Status:        "active",
+			TotalLength:   strconv.FormatInt(ev.Total, 10),
+			DownloadSpeed: "0",
+		}, "active")
 	case surgeEvents.DownloadResumedMsg:
 		deltaType = "resume"
 		gid = "sg_" + ev.DownloadID
@@ -1128,6 +1165,7 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		if surgeEng != nil {
 			surgeEng.RemoveMasterCacheEntry(ev.DownloadID)
 		}
+		Cache.RemoveTask(gid)
 	default:
 		return
 	}
@@ -1138,6 +1176,17 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 	// eliminating the gap between progress stopping (immediate from event
 	// stream) and the status badge/card style changing (was waiting for tick).
 	switch deltaType {
+	case "add":
+		if State.HasWindow() {
+			task := findTaskInCache(gid)
+			if task != nil {
+				m.pusher.Queue(events.TaskDelta{
+					Type:    "add",
+					GID:     gid,
+					Payload: *task,
+				})
+			}
+		}
 	case "pause":
 		if surgeEng != nil {
 			surgeEng.InvalidateListCache()
@@ -1147,6 +1196,14 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 			return
 		}
 		Cache.MoveTaskToWaiting(gid, "paused")
+		if task := findTaskInCache(gid); task != nil {
+			m.hub.EmitTaskMove(events.TaskMove{
+				GID:  gid,
+				From: "active",
+				To:   "waiting",
+				Task: task,
+			})
+		}
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{Type: "pause", GID: gid})
 		}
@@ -1155,6 +1212,14 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 			surgeEng.InvalidateListCache()
 		}
 		Cache.MoveTaskToActive(gid, "active")
+		if task := findTaskInCache(gid); task != nil {
+			m.hub.EmitTaskMove(events.TaskMove{
+				GID:  gid,
+				From: "waiting",
+				To:   "active",
+				Task: task,
+			})
+		}
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{Type: "resume", GID: gid})
 		}
@@ -1184,6 +1249,18 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		}
 		m.pauseResumeVersionMu.Unlock()
 	case "remove":
+		if m.tracker != nil {
+			m.tracker.RemoveTask(gid)
+		}
+		if m.telemetry != nil {
+			m.telemetry.Remove(gid)
+		}
+		if m.convergence != nil {
+			m.convergence.RemoveTask(gid)
+		}
+		if State.HasWindow() {
+			m.pusher.Queue(events.TaskDelta{Type: "remove", GID: gid})
+		}
 		// Terminal: clear intention to avoid unbounded map growth.
 		m.pauseResumeVersionMu.Lock()
 		if m.pauseResumeIntentions != nil {
@@ -1198,9 +1275,32 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 	log.Printf("[DEBUG-EVT-MON] handleSurgeEvent done: type=%s gid=%s", deltaType, gid)
 }
 
+// findTaskInCache searches active+waiting+stopped cache slices for a task by GID.
+func findTaskInCache(gid string) *rpc.Task {
+	for _, task := range Cache.GetActive() {
+		if task.GID == gid {
+			t := task
+			return &t
+		}
+	}
+	for _, task := range Cache.GetWaiting() {
+		if task.GID == gid {
+			t := task
+			return &t
+		}
+	}
+	for _, task := range Cache.GetStopped() {
+		if task.GID == gid {
+			t := task
+			return &t
+		}
+	}
+	return nil
+}
+
 // collectTelemetry gathers per-worker telemetry from the Surge engine for active Surge tasks.
-// Non-Surge GIDs and non-HybridEngine setups are silently skipped (no-op).
-func (m *Monitor) collectTelemetry(active []rpc.Task) {
+// Reads from Cache.GetActive() so Surge tasks are covered even though tick no longer polls them.
+func (m *Monitor) collectTelemetry() {
 	if m.telemetry == nil {
 		return
 	}
@@ -1216,7 +1316,7 @@ func (m *Monitor) collectTelemetry(active []rpc.Task) {
 	}
 
 	activeGids := make(map[string]bool)
-	for _, task := range active {
+	for _, task := range Cache.GetActive() {
 		if !strings.HasPrefix(task.GID, "sg_") {
 			continue
 		}
@@ -1263,7 +1363,23 @@ func (m *Monitor) filterDeletedTasks(tasks []rpc.Task) []rpc.Task {
 
 	filtered := make([]rpc.Task, 0, len(tasks))
 	for _, t := range tasks {
+		// sg_ tasks are removed directly by Cache.RemoveTask, not via tombstone.
+		if strings.HasPrefix(t.GID, "sg_") {
+			filtered = append(filtered, t)
+			continue
+		}
 		if _, deleted := m.deletedGids[t.GID]; !deleted {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
+
+// filterSurgeTasks removes sg_ prefixed tasks from a slice (defensive).
+func filterSurgeTasks(tasks []rpc.Task) []rpc.Task {
+	filtered := make([]rpc.Task, 0, len(tasks))
+	for _, t := range tasks {
+		if !strings.HasPrefix(t.GID, "sg_") {
 			filtered = append(filtered, t)
 		}
 	}
