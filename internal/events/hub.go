@@ -25,12 +25,14 @@ type Hub struct {
 
 	// Listeners for internal events
 	deltaListeners []func(TaskDelta)
+	moveListeners  []func(TaskMove)
 }
 
 func NewHub(app *application.App) *Hub {
 	return &Hub{
 		app:            app,
 		deltaListeners: make([]func(TaskDelta), 0),
+		moveListeners:  make([]func(TaskMove), 0),
 	}
 }
 
@@ -38,6 +40,12 @@ func (h *Hub) SubscribeTaskDelta(fn func(TaskDelta)) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.deltaListeners = append(h.deltaListeners, fn)
+}
+
+func (h *Hub) SubscribeTaskMove(fn func(TaskMove)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.moveListeners = append(h.moveListeners, fn)
 }
 
 func (h *Hub) EmitTaskDelta(delta TaskDelta) {
@@ -122,6 +130,9 @@ func (h *Hub) EmitTaskDeltas(deltas []TaskDelta) {
 func (h *Hub) EmitTaskMove(move TaskMove) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	for _, fn := range h.moveListeners {
+		fn(move)
+	}
 	if h.app != nil && h.app.Event != nil {
 		h.app.Event.Emit("task:move", move)
 	}

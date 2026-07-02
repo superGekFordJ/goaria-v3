@@ -12,17 +12,16 @@ import (
 )
 
 // TestRemoveGroupCompletedTaskReappears_NoResurrection reproduces the
-// regression where deleting a download group containing a completed task
-// causes the completed task to reappear in the stopped list.
+// regression where deleting a download group containing a completed aria2c
+// task causes the completed task to reappear in the stopped list.
 //
-// Root cause: InvalidateListCache() on the complete event causes the 1s TTL
-// list cache to be repopulated with the completed task. During the deletion
-// race (a tick fires between Cache.RemoveTask and InvalidateTask), TellStopped
-// returns the completed task from the fresh list cache. filterDeletedTasks
-// does not catch it (deletedGids not set yet). UpdateFromAria2 puts it back
-// into Cache.GetStopped(). On the next tick, filterDeletedTasks catches it,
-// but the shouldFetchStoppedUntil fast-retry preserve logic re-appends it from
-// Cache.GetStopped(), bypassing filterDeletedTasks. The task persists.
+// Root cause: during the deletion race (a tick fires between Cache.RemoveTask
+// and InvalidateTask), TellStopped returns the completed task from the engine.
+// filterDeletedTasks does not catch it (deletedGids not set yet).
+// UpdateFromAria2 puts it back into Cache.GetStopped(). On the next tick,
+// filterDeletedTasks catches it, but the shouldFetchStoppedUntil fast-retry
+// preserve logic re-appends it from Cache.GetStopped(), bypassing
+// filterDeletedTasks. The task persists.
 func TestRemoveGroupCompletedTaskReappears_NoResurrection(t *testing.T) {
 	completedGID := "ar_completed-1"
 	completedTask := rpc.Task{

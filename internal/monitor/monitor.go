@@ -1022,6 +1022,7 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 			TotalLength:   "0",
 			DownloadSpeed: "0",
 		}, "waiting")
+		Cache.PrefetchMetadata(gid)
 	case surgeEvents.DownloadStartedMsg:
 		deltaType = "add"
 		gid = "sg_" + ev.DownloadID
@@ -1060,6 +1061,7 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 			TotalLength:   strconv.FormatInt(ev.Total, 10),
 			DownloadSpeed: "0",
 		}, "active")
+		Cache.PrefetchMetadata(gid)
 	case surgeEvents.DownloadResumedMsg:
 		deltaType = "resume"
 		gid = "sg_" + ev.DownloadID
@@ -1180,10 +1182,12 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		if State.HasWindow() {
 			task := findTaskInCache(gid)
 			if task != nil {
+				enriched := []rpc.Task{*task}
+				Cache.EnrichTasks(enriched)
 				m.pusher.Queue(events.TaskDelta{
 					Type:    "add",
 					GID:     gid,
-					Payload: *task,
+					Payload: enriched[0],
 				})
 			}
 		}

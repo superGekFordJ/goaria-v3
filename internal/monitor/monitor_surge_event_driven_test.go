@@ -192,7 +192,8 @@ func TestEventDriven_RemoveMsg_DeletesCacheAndPushesRemoveDelta(t *testing.T) {
 }
 
 // TestEventDriven_PauseMovesTaskToWaiting verifies that DownloadPausedMsg
-// moves the task from active to waiting in the cache (event-driven path).
+// moves the task from active to waiting in the cache (event-driven path)
+// and emits a task:move event with From=active, To=waiting.
 func TestEventDriven_PauseMovesTaskToWaiting(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
@@ -201,6 +202,12 @@ func TestEventDriven_PauseMovesTaskToWaiting(t *testing.T) {
 		pusher:                pusher,
 		pauseResumeIntentions: make(map[string]string),
 	}
+
+	var recordedMove *events.TaskMove
+	hub.SubscribeTaskMove(func(move events.TaskMove) {
+		rm := move
+		recordedMove = &rm
+	})
 
 	prevWindow := State.HasWindow()
 	State.SetWindowExists(true)
@@ -241,10 +248,24 @@ func TestEventDriven_PauseMovesTaskToWaiting(t *testing.T) {
 	if stillActive {
 		t.Fatal("expected sg_evt-pause-1 NOT in active after pause")
 	}
+
+	if recordedMove == nil {
+		t.Fatal("expected task:move event emitted for pause")
+	}
+	if recordedMove.GID != "sg_evt-pause-1" {
+		t.Errorf("move GID = %s, want sg_evt-pause-1", recordedMove.GID)
+	}
+	if recordedMove.From != "active" {
+		t.Errorf("move From = %s, want active", recordedMove.From)
+	}
+	if recordedMove.To != "waiting" {
+		t.Errorf("move To = %s, want waiting", recordedMove.To)
+	}
 }
 
 // TestEventDriven_ResumeMovesTaskToActive verifies that DownloadResumedMsg
-// moves the task from waiting to active in the cache (event-driven path).
+// moves the task from waiting to active in the cache (event-driven path)
+// and emits a task:move event with From=waiting, To=active.
 func TestEventDriven_ResumeMovesTaskToActive(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
@@ -252,6 +273,12 @@ func TestEventDriven_ResumeMovesTaskToActive(t *testing.T) {
 		hub:    hub,
 		pusher: pusher,
 	}
+
+	var recordedMove *events.TaskMove
+	hub.SubscribeTaskMove(func(move events.TaskMove) {
+		rm := move
+		recordedMove = &rm
+	})
 
 	prevWindow := State.HasWindow()
 	State.SetWindowExists(true)
@@ -291,6 +318,19 @@ func TestEventDriven_ResumeMovesTaskToActive(t *testing.T) {
 	}
 	if stillWaiting {
 		t.Fatal("expected sg_evt-resume-1 NOT in waiting after resume")
+	}
+
+	if recordedMove == nil {
+		t.Fatal("expected task:move event emitted for resume")
+	}
+	if recordedMove.GID != "sg_evt-resume-1" {
+		t.Errorf("move GID = %s, want sg_evt-resume-1", recordedMove.GID)
+	}
+	if recordedMove.From != "waiting" {
+		t.Errorf("move From = %s, want waiting", recordedMove.From)
+	}
+	if recordedMove.To != "active" {
+		t.Errorf("move To = %s, want active", recordedMove.To)
 	}
 }
 

@@ -744,7 +744,7 @@ func (c *TaskCache) RemoveTask(gid string) {
 }
 
 func (c *TaskCache) PrefetchMetadataMulti(gids []string) {
-	if len(gids) == 0 {
+	if len(gids) == 0 || c.engine == nil {
 		return
 	}
 
@@ -782,6 +782,9 @@ func (c *TaskCache) PrefetchMetadataMulti(gids []string) {
 // PrefetchMetadata 强制预取指定任务的元数据
 // 用于任务添加后立即获取完整信息
 func (c *TaskCache) PrefetchMetadata(gid string) {
+	if c.engine == nil {
+		return
+	}
 	// 从 engine 获取单个任务的完整信息
 	task, err := c.engine.TellStatus(gid, nil)
 	if err != nil {

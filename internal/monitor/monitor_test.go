@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +57,79 @@ func TestMonitor_FilterDeletedTasks_ExpiredTombstone(t *testing.T) {
 	m.mu.Unlock()
 	if stillPresent {
 		t.Error("expected expired tombstone to be cleaned up from deletedGids")
+	}
+}
+
+func TestMonitor_FilterDeletedTasks_OnlyFiltersArPrefix(t *testing.T) {
+	m := &Monitor{
+		deletedGids: map[string]time.Time{
+			"ar_deleted": time.Now(),
+			"sg_deleted": time.Now(),
+		},
+	}
+
+	tasks := []rpc.Task{
+		{GID: "ar_deleted", Status: "active"},
+		{GID: "ar_keep", Status: "active"},
+		{GID: "sg_deleted", Status: "active"},
+		{GID: "sg_keep", Status: "active"},
+	}
+
+	filtered := m.filterDeletedTasks(tasks)
+
+	got := make(map[string]bool, len(filtered))
+	for _, task := range filtered {
+		got[task.GID] = true
+	}
+
+	if got["ar_deleted"] {
+		t.Error("expected ar_deleted to be tombstone-filtered")
+	}
+	if !got["ar_keep"] {
+		t.Error("expected ar_keep to remain")
+	}
+	if !got["sg_deleted"] {
+		t.Error("expected sg_deleted to pass through (sg_ not tombstone-filtered)")
+	}
+	if !got["sg_keep"] {
+		t.Error("expected sg_keep to remain")
+	}
+}
+
+func TestMonitor_DetectAndEmitTaskMoves_OnlyArPrefix(t *testing.T) {
+	hub := events.NewHub(nil)
+	var moves []events.TaskMove
+	hub.SubscribeTaskMove(func(move events.TaskMove) {
+		moves = append(moves, move)
+	})
+
+	m := &Monitor{
+		hub:             hub,
+		prevActiveGids:  map[string]bool{},
+		prevWaitingGids: map[string]bool{"ar_prior": true, "sg_prior": true},
+	}
+
+	active := []rpc.Task{
+		{GID: "sg_prior", Status: "active"},
+		{GID: "ar_prior", Status: "active"},
+	}
+	waiting := []rpc.Task{}
+
+	m.detectAndEmitTaskMoves(active, waiting)
+
+	for _, move := range moves {
+		if strings.HasPrefix(move.GID, "sg_") {
+			t.Errorf("expected no task:move for sg_ task, got GID=%s", move.GID)
+		}
+	}
+	foundArMove := false
+	for _, move := range moves {
+		if move.GID == "ar_prior" && move.From == "waiting" && move.To == "active" {
+			foundArMove = true
+		}
+	}
+	if !foundArMove {
+		t.Error("expected task:move for ar_prior (waiting -> active)")
 	}
 }
 
