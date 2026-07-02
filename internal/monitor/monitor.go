@@ -17,6 +17,8 @@ import (
 	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
 	surgeEvents "goaria-v3/internal/surge/engine/events"
+	"goaria-v3/internal/surge/engine/state"
+	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/tray"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -123,7 +125,7 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 		case "remove", "complete", "error":
 			m.mu.Lock()
 			m.shouldFetchStopped = true
-			m.shouldFetchStoppedUntil = time.Now().Add(15 * time.Second)
+			m.shouldFetchStoppedUntil = time.Now().Add(1500 * time.Millisecond)
 			m.mu.Unlock()
 			select {
 			case m.forceTickChan <- struct{}{}:
@@ -310,6 +312,13 @@ func (m *Monitor) tick() {
 	fetchStopped := m.shouldFetchStopped || time.Since(m.lastStoppedFetchTime) > 10*time.Second || time.Now().Before(m.shouldFetchStoppedUntil)
 	m.mu.Unlock()
 
+	// Refresh the Surge master cache mirror only on the 10s periodic
+	// boundary, not on event-triggered fetches, to avoid high-frequency
+	// gob.Decode. This syncs non-event-driven master list writes.
+	if fetchStopped && m.surgeEng != nil && time.Since(m.lastStoppedFetchTime) > 10*time.Second {
+		m.surgeEng.RefreshMasterCache()
+	}
+
 	if fetchStopped {
 		wg.Add(1)
 		go func() {
@@ -438,10 +447,10 @@ func (m *Monitor) tick() {
 	// 更新前一次的 GID 集合（用于下次检测）
 	m.updatePrevGids(active, waiting)
 
-	// 在 shouldFetchStoppedUntil 窗口内，保留 MoveTaskToStopped 放入的任务。
-	// handleSurgeEvent 的 InvalidateListCache 在 lifecycle worker 的
-	// AddToMasterList 之前调用，forceTick 的 TellStoppedLite 可能返回
-	// 尚未包含已完成任务的旧列表，导致 UpdateFromAria2 用空 stopped 覆盖 cache。
+	// shouldFetchStoppedUntil 短暂过渡兜底窗口（1.5s）：handleSurgeEvent 已在
+	// 事件到达时同步更新 masterCache（内存操作领先于 lifecycle worker 的文件
+	// 持久化），Gob 竞态已消除。此窗口仅作为事件丢失等极端情况的兜底，保留
+	// MoveTaskToStopped 放入的任务不被 UpdateFromAria2 的空 stopped 覆盖。
 	if fetchStopped {
 		m.mu.Lock()
 		fastRetry := time.Now().Before(m.shouldFetchStoppedUntil)
@@ -967,29 +976,158 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		if m.tracker != nil {
 			m.tracker.EnsureTrackedFromEvent(gid, 0, ev.URL, ev.Workers)
 		}
+		if surgeEng != nil {
+			surgeEng.UpsertMasterCacheEntry(types.DownloadEntry{
+				ID:           ev.DownloadID,
+				URL:          ev.URL,
+				URLHash:      state.URLHash(ev.URL),
+				DestPath:     ev.DestPath,
+				Filename:     ev.Filename,
+				Mirrors:      append([]string(nil), ev.Mirrors...),
+				Status:       "queued",
+				RateLimit:    ev.RateLimit,
+				RateLimitSet: ev.RateLimitSet,
+				Workers:      ev.Workers,
+				MinChunkSize: ev.MinChunkSize,
+			})
+		}
 	case surgeEvents.DownloadStartedMsg:
 		deltaType = "add"
 		gid = "sg_" + ev.DownloadID
 		if m.tracker != nil {
 			m.tracker.EnsureTrackedFromEvent(gid, ev.Total, ev.URL, ev.Workers)
 		}
+		if surgeEng != nil {
+			entry := types.DownloadEntry{
+				ID:           ev.DownloadID,
+				URL:          ev.URL,
+				URLHash:      state.URLHash(ev.URL),
+				DestPath:     ev.DestPath,
+				Filename:     ev.Filename,
+				Status:       "downloading",
+				TotalSize:    ev.Total,
+				RateLimit:    ev.RateLimit,
+				RateLimitSet: ev.RateLimitSet,
+				Workers:      ev.Workers,
+				MinChunkSize: ev.MinChunkSize,
+			}
+			// Preserve Mirrors/Downloaded/TimeTaken from any prior queued entry.
+			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
+				entry.Mirrors = append([]string(nil), existing.Mirrors...)
+				if existing.Downloaded > 0 {
+					entry.Downloaded = existing.Downloaded
+				}
+				if existing.TimeTaken > 0 {
+					entry.TimeTaken = existing.TimeTaken
+				}
+			}
+			surgeEng.UpsertMasterCacheEntry(entry)
+		}
 	case surgeEvents.DownloadResumedMsg:
 		deltaType = "resume"
 		gid = "sg_" + ev.DownloadID
+		// ResumedMsg payload is minimal (ID+Filename); merge onto existing
+		// entry to avoid zeroing URL/DestPath/Mirrors/Workers.
+		if surgeEng != nil {
+			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
+				merged := existing
+				merged.Status = "downloading"
+				surgeEng.UpsertMasterCacheEntry(merged)
+			}
+		}
 	case surgeEvents.DownloadPausedMsg:
 		deltaType = "pause"
 		gid = "sg_" + ev.DownloadID
+		// PausedMsg lacks URL/DestPath/TotalSize; merge onto existing entry.
+		if surgeEng != nil {
+			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
+				merged := existing
+				merged.Status = "paused"
+				if ev.Downloaded > 0 {
+					merged.Downloaded = ev.Downloaded
+				}
+				merged.RateLimit = ev.RateLimit
+				merged.RateLimitSet = ev.RateLimitSet
+				merged.Workers = ev.Workers
+				merged.MinChunkSize = ev.MinChunkSize
+				surgeEng.UpsertMasterCacheEntry(merged)
+			} else {
+				surgeEng.UpsertMasterCacheEntry(types.DownloadEntry{
+					ID:           ev.DownloadID,
+					Filename:     ev.Filename,
+					Status:       "paused",
+					Downloaded:   ev.Downloaded,
+					RateLimit:    ev.RateLimit,
+					RateLimitSet: ev.RateLimitSet,
+					Workers:      ev.Workers,
+					MinChunkSize: ev.MinChunkSize,
+				})
+			}
+		}
 	case surgeEvents.DownloadCompleteMsg:
 		deltaType = "complete"
 		gid = "sg_" + ev.DownloadID
 		completeTotal = ev.Total
 		completeAvgSpeed = ev.AvgSpeed
+		// CompleteMsg lacks URL/DestPath/Mirrors/Workers; merge onto existing.
+		if surgeEng != nil {
+			var avgSpeed float64
+			if ev.Elapsed.Seconds() > 0 {
+				avgSpeed = float64(ev.Total) / ev.Elapsed.Seconds()
+			}
+			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
+				merged := existing
+				merged.Status = "completed"
+				merged.TotalSize = ev.Total
+				merged.Downloaded = ev.Total
+				merged.CompletedAt = time.Now().Unix()
+				merged.TimeTaken = ev.Elapsed.Milliseconds()
+				merged.AvgSpeed = avgSpeed
+				merged.RateLimit = ev.RateLimit
+				merged.RateLimitSet = ev.RateLimitSet
+				surgeEng.UpsertMasterCacheEntry(merged)
+			} else {
+				surgeEng.UpsertMasterCacheEntry(types.DownloadEntry{
+					ID:           ev.DownloadID,
+					Filename:     ev.Filename,
+					Status:       "completed",
+					TotalSize:    ev.Total,
+					Downloaded:   ev.Total,
+					CompletedAt:  time.Now().Unix(),
+					TimeTaken:    ev.Elapsed.Milliseconds(),
+					AvgSpeed:     avgSpeed,
+					RateLimit:    ev.RateLimit,
+					RateLimitSet: ev.RateLimitSet,
+				})
+			}
+		}
 	case surgeEvents.DownloadErrorMsg:
 		deltaType = "error"
 		gid = "sg_" + ev.DownloadID
+		// ErrorMsg is minimal; merge onto existing to preserve URL/Mirrors/etc.
+		if surgeEng != nil {
+			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
+				merged := existing
+				merged.Status = "error"
+				if ev.DestPath != "" {
+					merged.DestPath = ev.DestPath
+				}
+				surgeEng.UpsertMasterCacheEntry(merged)
+			} else {
+				surgeEng.UpsertMasterCacheEntry(types.DownloadEntry{
+					ID:       ev.DownloadID,
+					Filename: ev.Filename,
+					DestPath: ev.DestPath,
+					Status:   "error",
+				})
+			}
+		}
 	case surgeEvents.DownloadRemovedMsg:
 		deltaType = "remove"
 		gid = "sg_" + ev.DownloadID
+		if surgeEng != nil {
+			surgeEng.RemoveMasterCacheEntry(ev.DownloadID)
+		}
 	default:
 		return
 	}

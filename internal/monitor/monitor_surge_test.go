@@ -16,6 +16,7 @@ import (
 	"goaria-v3/internal/surge/download"
 	surgeEvents "goaria-v3/internal/surge/engine/events"
 	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/testutil"
 )
 
 func TestHandleSurgeEvent_ProgressMsg_QueuesProgressDelta(t *testing.T) {
@@ -340,7 +341,7 @@ func TestHandleSurgeEvent_CompleteEvent_QueuesToFrontend(t *testing.T) {
 		case "remove", "complete", "error":
 			m.mu.Lock()
 			m.shouldFetchStopped = true
-			m.shouldFetchStoppedUntil = time.Now().Add(15 * time.Second)
+			m.shouldFetchStoppedUntil = time.Now().Add(1500 * time.Millisecond)
 			m.mu.Unlock()
 		}
 	})
@@ -380,7 +381,7 @@ func TestHandleSurgeEvent_CompleteEvent_NoCacheNeeded_StoppedVisibleNextTick(t *
 		case "remove", "complete", "error":
 			m.mu.Lock()
 			m.shouldFetchStopped = true
-			m.shouldFetchStoppedUntil = time.Now().Add(15 * time.Second)
+			m.shouldFetchStoppedUntil = time.Now().Add(1500 * time.Millisecond)
 			m.mu.Unlock()
 		}
 	})
@@ -399,6 +400,78 @@ func TestHandleSurgeEvent_CompleteEvent_NoCacheNeeded_StoppedVisibleNextTick(t *
 
 	if !shouldFetch {
 		t.Error("expected shouldFetchStopped=true after complete event (no cache needed)")
+	}
+}
+
+// TestHandleSurgeEvent_CompleteEvent_UpdatesMasterCache verifies that
+// handleSurgeEvent upserts the completed entry into the SurgeEngine
+// masterCache on the complete event, so TellStoppedLite reads it from
+// cache (statistically ahead of the lifecycle worker's file persistence).
+func TestHandleSurgeEvent_CompleteEvent_UpdatesMasterCache(t *testing.T) {
+	testutil.SetupStateDB(t)
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+
+	se := rpc.NewSurgeEngineForTesting(download.NewWorkerPoolForTesting(nil))
+	se.SetMasterCacheForTesting([]types.DownloadEntry{
+		{ID: "dl-cache-timing", URL: "http://x/a", DestPath: "/out/a", Status: "downloading", TotalSize: 1000, Mirrors: []string{"http://m1"}, Workers: 4},
+	})
+
+	m := &Monitor{
+		hub:           hub,
+		pusher:        pusher,
+		surgeEng:      se,
+		stopChan:      make(chan struct{}),
+		forceTickChan: make(chan struct{}, 1),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	m.handleSurgeEvent(surgeEvents.DownloadCompleteMsg{
+		DownloadID: "dl-cache-timing",
+		Total:      1000,
+		Filename:   "a.bin",
+	})
+
+	got, ok := se.GetMasterCacheEntry("dl-cache-timing")
+	if !ok {
+		t.Fatal("expected completed entry in masterCache after complete event")
+	}
+	if got.Status != "completed" {
+		t.Errorf("status = %q, want completed", got.Status)
+	}
+	// Merge mode must preserve URL/DestPath/Mirrors/Workers from prior entry.
+	if got.URL != "http://x/a" {
+		t.Errorf("URL = %q, want preserved http://x/a", got.URL)
+	}
+	if got.DestPath != "/out/a" {
+		t.Errorf("DestPath = %q, want preserved /out/a", got.DestPath)
+	}
+	if len(got.Mirrors) != 1 || got.Mirrors[0] != "http://m1" {
+		t.Errorf("Mirrors = %v, want preserved [http://m1]", got.Mirrors)
+	}
+	if got.Workers != 4 {
+		t.Errorf("Workers = %d, want preserved 4", got.Workers)
+	}
+
+	// TellStoppedLite should return the completed task from cache.
+	tasks, err := se.TellStoppedLite(0, 100)
+	if err != nil {
+		t.Fatalf("TellStoppedLite: %v", err)
+	}
+	found := false
+	for _, task := range tasks {
+		if task.GID == "dl-cache-timing" {
+			found = true
+			if task.Status != "complete" {
+				t.Errorf("task status = %q, want complete", task.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected completed task in TellStoppedLite output from cache")
 	}
 }
 
@@ -689,7 +762,7 @@ func TestCurrentTickInterval_ShouldFetchStoppedUntil_LifecycleTransition(t *test
 
 	// Phase 2: Simulate complete event setting shouldFetchStoppedUntil
 	m.mu.Lock()
-	m.shouldFetchStoppedUntil = time.Now().Add(15 * time.Second)
+	m.shouldFetchStoppedUntil = time.Now().Add(1500 * time.Millisecond)
 	m.mu.Unlock()
 
 	if d := m.currentTickInterval(); d != 1*time.Second {
@@ -1586,13 +1659,13 @@ func TestRemoveGroupCompletedTaskReappears_NoResurrection(t *testing.T) {
 	Cache.engine = engine
 
 	// Phase 1: Simulate the complete event. MoveTaskToStopped puts the task
-	// into Cache.GetStopped(). shouldFetchStoppedUntil is set (15s window).
+	// into Cache.GetStopped(). shouldFetchStoppedUntil is set (1.5s window).
 	Cache.active = []rpc.Task{{GID: completedGID, Status: "active", TotalLength: "1000"}}
 	Cache.MoveTaskToStopped(completedGID, "complete")
 
 	m.mu.Lock()
 	m.shouldFetchStopped = true
-	m.shouldFetchStoppedUntil = time.Now().Add(15 * time.Second)
+	m.shouldFetchStoppedUntil = time.Now().Add(1500 * time.Millisecond)
 	m.mu.Unlock()
 
 	// Phase 2: Run the complete event's force tick. TellStopped returns the
@@ -1767,7 +1840,7 @@ func TestRemoveGroupCompletedTaskReappears_ConcurrentInvalidateTask(t *testing.T
 	// Activate the fast-retry preserve window.
 	m.mu.Lock()
 	m.shouldFetchStopped = true
-	m.shouldFetchStoppedUntil = time.Now().Add(15 * time.Second)
+	m.shouldFetchStoppedUntil = time.Now().Add(1500 * time.Millisecond)
 	m.mu.Unlock()
 
 	// Start tick() on a goroutine. TellStoppedLite blocks on the release channel.
