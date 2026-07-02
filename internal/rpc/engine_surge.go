@@ -311,6 +311,11 @@ func (e *SurgeEngine) MasterCacheForTesting() []types.DownloadEntry {
 	defer e.masterCacheMu.RUnlock()
 	out := make([]types.DownloadEntry, len(e.masterCache))
 	copy(out, e.masterCache)
+	for i := range out {
+		if out[i].Mirrors != nil {
+			out[i].Mirrors = append([]string(nil), out[i].Mirrors...)
+		}
+	}
 	return out
 }
 
@@ -347,6 +352,9 @@ func (e *SurgeEngine) GetMasterCacheEntry(id string) (types.DownloadEntry, bool)
 	defer e.masterCacheMu.RUnlock()
 	for _, existing := range e.masterCache {
 		if existing.ID == id {
+			if existing.Mirrors != nil {
+				existing.Mirrors = append([]string(nil), existing.Mirrors...)
+			}
 			return existing, true
 		}
 	}
