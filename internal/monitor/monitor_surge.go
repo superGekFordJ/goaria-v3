@@ -42,9 +42,14 @@ func (m *Monitor) surgeEventBridgeLoop() {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
+		// Exit the stop-watcher when the iteration ends (ctx cancelled) so
+		// reconnect cycles do not accumulate one goroutine per attempt.
 		go func() {
-			<-m.stopChan
-			cancel()
+			select {
+			case <-m.stopChan:
+				cancel()
+			case <-ctx.Done():
+			}
 		}()
 
 		stream, cleanup, err := m.engine.StreamEvents(ctx)
@@ -74,6 +79,7 @@ func (m *Monitor) surgeEventBridgeLoop() {
 				if !ok {
 					m.surgeStreamConnected.Store(false)
 					cleanup()
+					cancel()
 					streamClosed = true
 					break
 				}
@@ -486,6 +492,16 @@ func (m *Monitor) reconcileSurgeCache() {
 		return
 	}
 
+	// Sync the in-memory masterCache mirror from master.gob and clear the
+	// 1s TTL list cache before reading, so a dropped complete/error event
+	// (which leaves masterCache stale until the next 10s tick refresh) does
+	// not cause the task to vanish from all three engine lists and get
+	// removed instead of moved to stopped.
+	if m.surgeEng != nil {
+		m.surgeEng.RefreshMasterCache()
+		m.surgeEng.InvalidateListCache()
+	}
+
 	engineActive, err := reader.TellActive()
 	if err != nil {
 		log.Printf("[Monitor] Surge poll: TellActive error: %v", err)
@@ -564,6 +580,15 @@ func (m *Monitor) reconcileSurgeCache() {
 				m.tracker.EnsureTrackedFromEvent(gid, parseInt64(engineTask.TotalLength), sourceURLFromTask(engineTask), 0)
 			}
 			Cache.PrefetchMetadata(gid)
+			if list == "stopped" && m.tracker != nil {
+				status := "complete"
+				if engineTask.Status == "error" {
+					status = "error"
+				}
+				if completed := m.tracker.MarkCompleteFromEvent(gid, status); completed != nil {
+					m.handleTaskComplete(completed)
+				}
+			}
 			log.Printf("[Monitor] Surge poll: added missing task %s to %s", gid, list)
 			continue
 		}

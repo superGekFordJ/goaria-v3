@@ -105,6 +105,19 @@ func historyCount() int {
 	return len(entries)
 }
 
+// resetHistoryForTest clears global history and disables file saves for the
+// duration of a test so history-count assertions are independent of test order.
+func resetHistoryForTest(t *testing.T) {
+	t.Helper()
+	prevSave := history.SaveEnabled
+	history.DisableSaveForTest()
+	history.Clear()
+	t.Cleanup(func() {
+		history.Clear()
+		history.SetSaveEnabled(prevSave)
+	})
+}
+
 // TestReconcileSurgeCache_MissedComplete verifies that a task the engine
 // reports as complete but Cache still has active is moved to stopped and
 // handleTaskComplete runs (writing history). No complete delta is pushed.
@@ -307,6 +320,100 @@ func TestReconcileSurgeCache_MissedAdd(t *testing.T) {
 	pusher.mu.Unlock()
 }
 
+// TestReconcileSurgeCache_MissedAddWithComplete verifies that a task the engine
+// reports as complete but is absent from Cache (both add and complete events
+// dropped, or startup) is added to stopped AND has handleTaskComplete run so
+// history/speed stats are not permanently lost.
+func TestReconcileSurgeCache_MissedAddWithComplete(t *testing.T) {
+	m, reader, _, tracker := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+
+	Cache.metadata["sg_task1"] = &TaskMetadata{
+		GID:   "sg_task1",
+		Files: []string{"/downloads/file.zip"},
+		Dir:   "/downloads",
+	}
+
+	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
+
+	before := historyCount()
+	m.reconcileSurgeCache()
+
+	found := false
+	for _, task := range Cache.GetStopped() {
+		if task.GID == "sg_task1" {
+			found = true
+			if task.Status != "complete" {
+				t.Errorf("Status = %s, want complete", task.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected sg_task1 in stopped after missed-add-with-complete")
+	}
+
+	if got := historyCount(); got != before+1 {
+		t.Errorf("history count = %d, want %d (handleTaskComplete should run for missed complete)", got, before+1)
+	}
+	if !tracker.processedComplete["sg_task1"] {
+		t.Error("expected processedComplete[sg_task1] = true")
+	}
+}
+
+// TestReconcileSurgeCache_RapidStateChange verifies that when a task cycles
+// active→waiting→active→complete between polls, the poll reconciles to the
+// final state (stopped) and records history exactly once.
+func TestReconcileSurgeCache_RapidStateChange(t *testing.T) {
+	m, reader, _, tracker := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+
+	Cache.AddSgTask(rpc.Task{
+		GID:         "sg_task1",
+		Status:      "active",
+		TotalLength: "1000",
+	}, "active")
+	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4)
+	Cache.metadata["sg_task1"] = &TaskMetadata{
+		GID:   "sg_task1",
+		Files: []string{"/downloads/file.zip"},
+		Dir:   "/downloads",
+	}
+
+	// Simulate intermediate states the poll never observed; only the final
+	// engine state matters for reconciliation.
+	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
+
+	before := historyCount()
+	m.reconcileSurgeCache()
+
+	found := false
+	for _, task := range Cache.GetStopped() {
+		if task.GID == "sg_task1" {
+			found = true
+			if task.Status != "complete" {
+				t.Errorf("Status = %s, want complete", task.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected sg_task1 in stopped after rapid state change")
+	}
+	for _, task := range Cache.GetActive() {
+		if task.GID == "sg_task1" {
+			t.Fatal("expected sg_task1 NOT in active after reconcile")
+		}
+	}
+
+	if got := historyCount(); got != before+1 {
+		t.Errorf("history count = %d, want %d (final complete processed once)", got, before+1)
+	}
+	if !tracker.processedComplete["sg_task1"] {
+		t.Error("expected processedComplete[sg_task1] = true")
+	}
+}
+
 // TestReconcileSurgeCache_NoDiscrepancy verifies that when Cache and engine
 // agree, no corrections or deltas occur.
 func TestReconcileSurgeCache_NoDiscrepancy(t *testing.T) {
@@ -372,6 +479,7 @@ func TestReconcileSurgeCache_TellActiveError(t *testing.T) {
 func TestReconcileSurgeCache_ConcurrentWithEvent(t *testing.T) {
 	m, reader, _, tracker := newReconcileTestMonitor(t)
 	resetCacheSg()
+	resetHistoryForTest(t)
 
 	Cache.AddSgTask(rpc.Task{
 		GID:         "sg_task1",
@@ -386,6 +494,8 @@ func TestReconcileSurgeCache_ConcurrentWithEvent(t *testing.T) {
 	}
 
 	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
+
+	before := historyCount()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -407,6 +517,11 @@ func TestReconcileSurgeCache_ConcurrentWithEvent(t *testing.T) {
 
 	if !tracker.processedComplete["sg_task1"] {
 		t.Error("expected processedComplete[sg_task1] = true")
+	}
+
+	// Dedup must prevent double handleTaskComplete: exactly one history write.
+	if got := historyCount(); got != before+1 {
+		t.Errorf("history count = %d, want %d (complete should be processed exactly once)", got, before+1)
 	}
 }
 
