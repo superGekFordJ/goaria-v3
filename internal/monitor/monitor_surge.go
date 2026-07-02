@@ -409,6 +409,10 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		}
 		m.pauseResumeVersionMu.Unlock()
 	case "remove":
+		// Group delete operations on sg_ GIDs go through RemoveDownloadGroup
+		// -> BatchRemove -> cleanupRemovedTask, which already removed the task
+		// from Cache, tracker, and emitted a remove delta. The cleanup and
+		// pusher.Queue below are therefore idempotent no-ops for those GIDs.
 		if m.tracker != nil {
 			m.tracker.RemoveTask(gid)
 		}

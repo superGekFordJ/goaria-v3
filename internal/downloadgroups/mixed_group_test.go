@@ -145,6 +145,8 @@ func TestMixedGroup_Remove_CacheRemoveAndOptimisticUI(t *testing.T) {
 	hub, cleanup := mixedGroupTestMonitor(t)
 	defer cleanup()
 
+	// remove deltas arrive via the removeTasks delegate (mockBatchRemove ->
+	// InvalidateTask -> hub.EmitTaskDelta, singular -> deltaListeners).
 	var removeDeltas []events.TaskDelta
 	hub.SubscribeTaskDelta(func(delta events.TaskDelta) {
 		if delta.Type == "remove" {
@@ -166,9 +168,11 @@ func TestMixedGroup_Remove_CacheRemoveAndOptimisticUI(t *testing.T) {
 	arGids := []string{"ar_b1", "ar_b2"}
 	for _, gid := range sgGids {
 		if taskInCacheList(gid, "active") || taskInCacheList(gid, "waiting") || taskInCacheList(gid, "stopped") {
-			t.Errorf("expected sg_ gid %s removed from Cache directly", gid)
+			t.Errorf("expected sg_ gid %s removed from Cache by delegate", gid)
 		}
 	}
+	// The 2 sg_ remove deltas come from mockBatchRemove -> InvalidateTask
+	// (the production cleanupRemovedTask path), not a separate push.
 	sgRemoveDeltas := 0
 	for _, d := range removeDeltas {
 		if d.Type == "remove" && monitor.IsSgGid(d.GID) {
@@ -176,7 +180,7 @@ func TestMixedGroup_Remove_CacheRemoveAndOptimisticUI(t *testing.T) {
 		}
 	}
 	if sgRemoveDeltas != 2 {
-		t.Errorf("expected 2 sg_ remove deltas, got %d (deltas=%v)", sgRemoveDeltas, removeDeltas)
+		t.Errorf("expected 2 sg_ remove deltas from delegate, got %d (deltas=%v)", sgRemoveDeltas, removeDeltas)
 	}
 	for _, gid := range arGids {
 		if monitor.GetStoredTaskGroup(gid) != nil {

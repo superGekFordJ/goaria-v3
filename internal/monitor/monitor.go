@@ -508,19 +508,6 @@ func (m *Monitor) EmitTaskMoveForGroupOp(gid, from, to string) {
 	})
 }
 
-// PushRemoveDelta queues a remove delta for a group delete operation on a
-// Surge GID. Called by downloadgroups.RemoveDownloadGroup after
-// Cache.RemoveTask so the frontend removes the task immediately, without
-// waiting for the Surge event path's remove delta (idempotent if the task
-// is already removed from frontend state).
-func (m *Monitor) PushRemoveDelta(gid string) {
-	if m == nil || m.pusher == nil || gid == "" {
-		return
-	}
-	m.pusher.Queue(events.TaskDelta{Type: "remove", GID: gid})
-	m.pusher.FlushNow()
-}
-
 // collectTelemetry gathers per-worker telemetry from the Surge engine for active Surge tasks.
 // Reads from Cache.GetActive() so Surge tasks are covered even though tick no longer polls them.
 func (m *Monitor) collectTelemetry() {

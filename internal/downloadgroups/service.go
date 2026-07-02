@@ -1108,22 +1108,12 @@ func RemoveDownloadGroup(groupKey string, deleteFiles bool, removeTasks func(gid
 		return result
 	}
 
-	// Remove tasks via the provided main delegate
+	// Remove tasks via the provided main delegate. The production delegate
+	// (tasks.Service.BatchRemove -> cleanupRemovedTask) synchronously removes
+	// each task from Cache and emits a remove delta, so no extra Cache/delta
+	// work is needed here for sg_ GIDs; the later Surge event-path remove is
+	// an idempotent no-op.
 	removeTasks(uniqueGIDs, deleteFiles)
-
-	// Surge GIDs: the removeTasks delegate calls Engine.Remove which triggers
-	// an async remove event. Directly remove from Cache and push a remove
-	// delta here so the frontend syncs immediately without waiting for the
-	// event path (which is an idempotent no-op afterwards).
-	for _, gid := range uniqueGIDs {
-		if !monitor.IsSgGid(gid) {
-			continue
-		}
-		monitor.Cache.RemoveTask(gid)
-		if mon := monitor.State.GetMonitor(); mon != nil {
-			mon.PushRemoveDelta(gid)
-		}
-	}
 
 	for _, target := range resolution.targets {
 		if _, ok := seen[target.gid]; !ok {

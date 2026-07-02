@@ -57,6 +57,9 @@ func mockBatchRemove(gids []string, deleteFiles bool) {
 		if tracker := monitor.State.GetTracker(); tracker != nil {
 			tracker.RemoveTask(gid)
 		}
+		// Mirror production cleanupRemovedTask: remove from Cache before
+		// InvalidateTask so reads never see removed tasks.
+		monitor.Cache.RemoveTask(gid)
 		if mon := monitor.State.GetMonitor(); mon != nil {
 			mon.InvalidateTask(gid)
 		} else {
