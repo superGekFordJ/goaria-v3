@@ -122,9 +122,7 @@ func (e *mockStoppedEngine) TellStatusMulti(gids []string, keys []string) ([]rpc
 // Cache.GetStopped(), bypassing filterDeletedTasks. The task persists.
 
 func taskInCacheStopped(gid string) bool {
-	Cache.mu.RLock()
-	defer Cache.mu.RUnlock()
-	for _, task := range Cache.stopped {
+	for _, task := range Cache.GetStopped() {
 		if task.GID == gid {
 			return true
 		}

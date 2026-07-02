@@ -3,6 +3,7 @@ package monitor
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"goaria-v3/internal/rpc"
 )
@@ -359,4 +360,392 @@ func TestTaskCache_MoveTaskToActive_FromWaiting(t *testing.T) {
 	if active[0].DownloadSpeed != "0" {
 		t.Errorf("expected DownloadSpeed=0, got %s", active[0].DownloadSpeed)
 	}
+}
+
+// --- SPEC-192: prefix routing & concurrent write tests ---
+
+func TestTaskCache_ConcurrentSurgeEventAndAria2Tick(t *testing.T) {
+	cache := &TaskCache{
+		metadata:         make(map[string]*TaskMetadata),
+		pendingStartGids: make(map[string]time.Time),
+	}
+	cache.UpdateFromAria2(
+		[]rpc.Task{
+			{GID: "sg_a1", Status: "active", DownloadSpeed: "100"},
+			{GID: "sg_a2", Status: "active", DownloadSpeed: "200"},
+			{GID: "ar_a1", Status: "active", DownloadSpeed: "50"},
+		},
+		[]rpc.Task{{GID: "ar_w1", Status: "waiting"}},
+		nil,
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			cache.MoveTaskToStopped("sg_a1", "complete")
+			cache.MoveTaskToWaiting("sg_a2", "paused")
+			cache.MoveTaskToActive("sg_a2", "active")
+			cache.PatchTaskProgress("sg_a1", "100", "10", "1000")
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			cache.UpdateFromAria2(
+				[]rpc.Task{
+					{GID: "ar_a1", Status: "active", DownloadSpeed: "50"},
+					{GID: "ar_a2", Status: "active", DownloadSpeed: "60"},
+				},
+				[]rpc.Task{{GID: "ar_w1", Status: "waiting"}},
+				[]rpc.Task{{GID: "ar_s1", Status: "complete"}},
+			)
+		}
+	}()
+
+	wg.Wait()
+
+	active := cache.GetActive()
+	waiting := cache.GetWaiting()
+	stopped := cache.GetStopped()
+
+	for _, task := range active {
+		if task.GID == "" {
+			t.Fatal("expected non-empty GID in active")
+		}
+	}
+	for _, task := range waiting {
+		if task.GID == "" {
+			t.Fatal("expected non-empty GID in waiting")
+		}
+	}
+	for _, task := range stopped {
+		if task.GID == "" {
+			t.Fatal("expected non-empty GID in stopped")
+		}
+	}
+}
+
+func TestTaskCache_UpdateFromAria2_SplitsByEnginePrefix(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(
+		[]rpc.Task{
+			{GID: "sg_1", Status: "active"},
+			{GID: "ar_1", Status: "active"},
+		},
+		[]rpc.Task{
+			{GID: "sg_2", Status: "waiting"},
+			{GID: "ar_2", Status: "waiting"},
+		},
+		[]rpc.Task{
+			{GID: "sg_3", Status: "complete"},
+			{GID: "ar_3", Status: "complete"},
+		},
+	)
+
+	active := cache.GetActive()
+	waiting := cache.GetWaiting()
+	stopped := cache.GetStopped()
+
+	if len(active) != 2 || len(waiting) != 2 || len(stopped) != 2 {
+		t.Fatalf("expected 2/2/2, got %d/%d/%d", len(active), len(waiting), len(stopped))
+	}
+
+	activeGids := gidsFromTasks(active)
+	if !containsGid(activeGids, "sg_1") || !containsGid(activeGids, "ar_1") {
+		t.Fatalf("expected active to contain sg_1 and ar_1, got %v", activeGids)
+	}
+	waitingGids := gidsFromTasks(waiting)
+	if !containsGid(waitingGids, "sg_2") || !containsGid(waitingGids, "ar_2") {
+		t.Fatalf("expected waiting to contain sg_2 and ar_2, got %v", waitingGids)
+	}
+	stoppedGids := gidsFromTasks(stopped)
+	if !containsGid(stoppedGids, "sg_3") || !containsGid(stoppedGids, "ar_3") {
+		t.Fatalf("expected stopped to contain sg_3 and ar_3, got %v", stoppedGids)
+	}
+}
+
+func TestTaskCache_UpdateFromAria2_OnlyReplacesCorrespondingEngine(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(
+		[]rpc.Task{
+			{GID: "sg_1", Status: "active"},
+			{GID: "ar_1", Status: "active"},
+		},
+		nil, nil,
+	)
+
+	cache.UpdateFromAria2(
+		[]rpc.Task{{GID: "ar_2", Status: "active"}},
+		nil, nil,
+	)
+
+	active := cache.GetActive()
+	if len(active) != 2 {
+		t.Fatalf("expected 2 active (sg_1 + ar_2), got %d: %v", len(active), gidsFromTasks(active))
+	}
+	gids := gidsFromTasks(active)
+	if !containsGid(gids, "sg_1") {
+		t.Fatal("expected sg_1 preserved in active")
+	}
+	if !containsGid(gids, "ar_2") {
+		t.Fatal("expected ar_2 in active")
+	}
+	if containsGid(gids, "ar_1") {
+		t.Fatal("expected ar_1 replaced by ar_2")
+	}
+}
+
+func TestTaskCache_MoveTaskToStopped_RoutesByPrefix(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(
+		[]rpc.Task{
+			{GID: "sg_1", Status: "active"},
+			{GID: "ar_1", Status: "active"},
+		},
+		nil, nil,
+	)
+
+	cache.MoveTaskToStopped("sg_1", "complete")
+
+	active := cache.GetActive()
+	if len(active) != 1 || active[0].GID != "ar_1" {
+		t.Fatalf("expected only ar_1 in active, got %v", gidsFromTasks(active))
+	}
+	stopped := cache.GetStopped()
+	if len(stopped) != 1 || stopped[0].GID != "sg_1" || stopped[0].Status != "complete" {
+		t.Fatalf("expected sg_1 complete in stopped, got %v", stopped)
+	}
+
+	cache.MoveTaskToStopped("ar_1", "error")
+	active = cache.GetActive()
+	if len(active) != 0 {
+		t.Fatalf("expected active empty, got %v", gidsFromTasks(active))
+	}
+	stopped = cache.GetStopped()
+	if len(stopped) != 2 {
+		t.Fatalf("expected 2 stopped, got %d", len(stopped))
+	}
+}
+
+func TestTaskCache_RemoveTask_RoutesByPrefix(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(
+		[]rpc.Task{
+			{GID: "sg_1", Status: "active"},
+			{GID: "ar_1", Status: "active"},
+		},
+		nil, nil,
+	)
+
+	cache.RemoveTask("sg_1")
+
+	active := cache.GetActive()
+	if len(active) != 1 || active[0].GID != "ar_1" {
+		t.Fatalf("expected only ar_1 in active after sg_1 removal, got %v", gidsFromTasks(active))
+	}
+
+	cache.RemoveTask("ar_1")
+	active = cache.GetActive()
+	if len(active) != 0 {
+		t.Fatalf("expected active empty, got %v", gidsFromTasks(active))
+	}
+}
+
+func TestTaskCache_PatchTaskProgress_RoutesByPrefix(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(
+		[]rpc.Task{
+			{GID: "sg_1", Status: "active", CompletedLength: "0", DownloadSpeed: "0", TotalLength: "1000"},
+			{GID: "ar_1", Status: "active", CompletedLength: "0", DownloadSpeed: "0", TotalLength: "2000"},
+		},
+		nil, nil,
+	)
+
+	cache.PatchTaskProgress("sg_1", "500", "100", "1000")
+
+	sgFound := false
+	cache.sgMu.RLock()
+	for _, task := range cache.sgActive {
+		if task.GID == "sg_1" {
+			if task.CompletedLength != "500" || task.DownloadSpeed != "100" || task.TotalLength != "1000" {
+				t.Fatalf("expected sg_1 patched, got %#v", task)
+			}
+			sgFound = true
+		}
+	}
+	cache.sgMu.RUnlock()
+	if !sgFound {
+		t.Fatal("expected sg_1 in sgActive")
+	}
+
+	cache.arMu.RLock()
+	for _, task := range cache.arActive {
+		if task.GID == "ar_1" {
+			if task.CompletedLength != "0" {
+				t.Fatalf("expected ar_1 unpatched, got %#v", task)
+			}
+		}
+	}
+	cache.arMu.RUnlock()
+}
+
+func TestTaskCache_NoPrefixGidDefaultsToAr(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(
+		[]rpc.Task{{GID: "plain-1", Status: "active"}},
+		nil, nil,
+	)
+
+	cache.arMu.RLock()
+	if len(cache.arActive) != 1 || cache.arActive[0].GID != "plain-1" {
+		t.Fatalf("expected plain-1 in arActive, got %v", cache.arActive)
+	}
+	cache.arMu.RUnlock()
+
+	cache.sgMu.RLock()
+	if len(cache.sgActive) != 0 {
+		t.Fatalf("expected sgActive empty, got %v", cache.sgActive)
+	}
+	cache.sgMu.RUnlock()
+
+	cache.MoveTaskToStopped("plain-1", "complete")
+	stopped := cache.GetStopped()
+	if len(stopped) != 1 || stopped[0].GID != "plain-1" {
+		t.Fatalf("expected plain-1 in stopped, got %v", stopped)
+	}
+
+	cache.RemoveTask("plain-1")
+	if len(cache.GetStopped()) != 0 {
+		t.Fatal("expected stopped empty after remove")
+	}
+}
+
+func TestTaskCache_DuplicateGidFilter(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(
+		[]rpc.Task{
+			{GID: "sg_1", Status: "active"},
+			{GID: "sg_1", Status: "active"},
+			{GID: "sg_1", Status: "active"},
+		},
+		nil, nil,
+	)
+
+	active := cache.GetActive()
+	if len(active) != 3 {
+		t.Fatalf("expected 3 entries (full replace, no dedup), got %d", len(active))
+	}
+	for _, task := range active {
+		if task.GID != "sg_1" {
+			t.Fatalf("expected all sg_1, got %s", task.GID)
+		}
+	}
+}
+
+func TestTaskCache_EnrichTasks_WorksWithSplitSlices(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	group := testDownloadGroup("dg-split-enrich")
+	cache.UpdateFromAria2(
+		[]rpc.Task{
+			{GID: "sg_lite", Status: "active"},
+			{GID: "ar_lite", Status: "active"},
+		},
+		nil, nil,
+	)
+	cache.SetTaskGroup("sg_lite", group)
+	cache.SetTaskGroup("ar_lite", group)
+
+	tasks := cache.GetActive()
+	cache.EnrichTasks(tasks)
+
+	if tasks[0].DownloadGroup == nil || tasks[0].DownloadGroup.ID != group.ID {
+		t.Fatalf("expected sg_lite enriched with group, got %#v", tasks[0].DownloadGroup)
+	}
+	if tasks[1].DownloadGroup == nil || tasks[1].DownloadGroup.ID != group.ID {
+		t.Fatalf("expected ar_lite enriched with group, got %#v", tasks[1].DownloadGroup)
+	}
+}
+
+func TestTaskCache_LiteTaskNotOverwrittenByUpdateFromAria2(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.SetTaskGroup("sg_full", testDownloadGroup("dg-lite-update"))
+	cache.ensureMetadata(rpc.Task{
+		GID:         "sg_full",
+		Dir:         "/downloads",
+		TotalLength: "2048",
+		Files: []rpc.File{{
+			Path: "/downloads/file.bin",
+			Uris: []rpc.Uri{{Uri: "https://example.com/file.bin"}},
+		}},
+	})
+
+	if !cache.HasValidMetadata("sg_full") {
+		t.Fatal("expected valid metadata before UpdateFromAria2")
+	}
+
+	cache.UpdateFromAria2(
+		[]rpc.Task{{GID: "sg_full", Status: "active"}},
+		nil, nil,
+	)
+
+	if !cache.HasValidMetadata("sg_full") {
+		t.Fatal("expected valid metadata preserved after UpdateFromAria2")
+	}
+	tasks := []rpc.Task{{GID: "sg_full", Status: "active"}}
+	cache.EnrichTasks(tasks)
+	if len(tasks[0].Files) == 0 || tasks[0].Files[0].Path != "/downloads/file.bin" {
+		t.Fatalf("expected enriched files preserved, got %#v", tasks[0].Files)
+	}
+}
+
+func TestTaskCache_CrossListMovePreservesMetadata(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(
+		[]rpc.Task{{GID: "sg_move", Status: "active"}},
+		nil, nil,
+	)
+	cache.ensureMetadata(rpc.Task{
+		GID:         "sg_move",
+		Dir:         "/downloads",
+		TotalLength: "1024",
+		Files: []rpc.File{{
+			Path: "/downloads/move.bin",
+			Uris: []rpc.Uri{{Uri: "https://example.com/move.bin"}},
+		}},
+	})
+
+	if !cache.HasValidMetadata("sg_move") {
+		t.Fatal("expected valid metadata before move")
+	}
+
+	cache.MoveTaskToStopped("sg_move", "complete")
+
+	if !cache.HasValidMetadata("sg_move") {
+		t.Fatal("expected valid metadata preserved after MoveTaskToStopped")
+	}
+	meta := cache.GetMetadata("sg_move")
+	if meta == nil || len(meta.Files) == 0 || meta.Files[0] != "/downloads/move.bin" {
+		t.Fatalf("expected metadata preserved after cross-list move, got %#v", meta)
+	}
+}
+
+func gidsFromTasks(tasks []rpc.Task) []string {
+	gids := make([]string, len(tasks))
+	for i, task := range tasks {
+		gids[i] = task.GID
+	}
+	return gids
+}
+
+func containsGid(gids []string, gid string) bool {
+	for _, g := range gids {
+		if g == gid {
+			return true
+		}
+	}
+	return false
 }

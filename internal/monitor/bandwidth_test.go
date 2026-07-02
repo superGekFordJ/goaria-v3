@@ -22,13 +22,13 @@ func TestActiveBandwidthByScope_ScopeMatching(t *testing.T) {
 		metadata:         make(map[string]*TaskMetadata),
 		pendingStartGids: make(map[string]time.Time),
 	}
-	Cache.mu.Lock()
-	Cache.active = []rpc.Task{
+	Cache.arMu.Lock()
+	Cache.arActive = []rpc.Task{
 		{GID: "gid-bw-001", DownloadSpeed: "5000000"}, // 5MB/s
 		{GID: "gid-bw-002", DownloadSpeed: "3000000"}, // 3MB/s
 		{GID: "gid-bw-003", DownloadSpeed: "2000000"}, // 2MB/s (lan)
 	}
-	Cache.mu.Unlock()
+	Cache.arMu.Unlock()
 
 	wanBw := ActiveBandwidthByScope("wan", "env1")
 	if wanBw != 8000000 {
@@ -63,11 +63,11 @@ func TestActiveBandwidthByScope_ScopeMissingSkipped(t *testing.T) {
 		metadata:         make(map[string]*TaskMetadata),
 		pendingStartGids: make(map[string]time.Time),
 	}
-	Cache.mu.Lock()
-	Cache.active = []rpc.Task{
+	Cache.arMu.Lock()
+	Cache.arActive = []rpc.Task{
 		{GID: "gid-no-scope", DownloadSpeed: "9999999"},
 	}
-	Cache.mu.Unlock()
+	Cache.arMu.Unlock()
 
 	bw := ActiveBandwidthByScope("wan", "env1")
 	if bw != 0 {

@@ -14,15 +14,23 @@ import (
 // 1. 批量：一次 Aria2 轮询获取所有任务，缓存完整状态
 // 2. 去重：相同 GID 的任务只保留最新状态
 // 3. 预取：任务添加/暂停时立即获取完整元数据
+// 4. 按引擎前缀分离存储：sgMu/arMu 各保护对应引擎切片，mu 仅保护共享字段
 type TaskCache struct {
-	mu sync.RWMutex
+	sgMu sync.RWMutex
+	arMu sync.RWMutex
+	mu   sync.RWMutex
+
+	// Surge 引擎专用切片
+	sgActive  []rpc.Task
+	sgWaiting []rpc.Task
+	sgStopped []rpc.Task
+
+	// aria2c 引擎专用切片
+	arActive  []rpc.Task
+	arWaiting []rpc.Task
+	arStopped []rpc.Task
 
 	engine rpc.DownloadEngine
-
-	// 完整任务缓存（包含元数据）
-	active  []rpc.Task
-	waiting []rpc.Task
-	stopped []rpc.Task
 
 	// 元数据缓存（用于暂停任务的文件名等信息）
 	metadata map[string]*TaskMetadata
@@ -33,6 +41,14 @@ type TaskCache struct {
 
 	// 最后更新时间
 	lastUpdate time.Time
+}
+
+// enginePrefix 按 GID 前缀路由到对应引擎，无前缀默认 ar（兼容纯 aria2c 模式）
+func enginePrefix(gid string) string {
+	if strings.HasPrefix(gid, "sg_") {
+		return "sg"
+	}
+	return "ar"
 }
 
 // TaskMetadata 任务元数据（预取缓存）
@@ -124,36 +140,68 @@ func NewTaskCacheForTest() *TaskCache {
 	}
 }
 
-// UpdateFromAria2 从 Aria2 更新缓存（批量获取）
-// 注意：此方法仅更新任务列表，不再自动调用 ensureMetadata
-// 元数据预取由 Monitor.tick() 显式处理，避免 Lite 任务污染缓存
+// UpdateFromAria2 从引擎更新缓存（批量获取）
+// 按引擎前缀拆分传入切片，全量替换对应引擎切片（分段加锁不嵌套）。
+// 仅替换传入数据中包含任务的引擎切片——无 sg 任务时 sg 切片不受影响，反之亦然。
+// 共享字段（pendingStartGids、lastUpdate）在 mu 下更新。
 func (c *TaskCache) UpdateFromAria2(active, waiting, stopped []rpc.Task) {
+	sgActive, arActive := splitByPrefix(active)
+	sgWaiting, arWaiting := splitByPrefix(waiting)
+	sgStopped, arStopped := splitByPrefix(stopped)
+
+	hasSg := len(sgActive) > 0 || len(sgWaiting) > 0 || len(sgStopped) > 0
+	hasAr := len(arActive) > 0 || len(arWaiting) > 0 || len(arStopped) > 0
+
+	// When only one engine has tasks, replace only that engine's slices.
+	// When neither has tasks (e.g. all filtered out), clear both.
+	if hasAr || !hasSg {
+		c.arMu.Lock()
+		c.arActive = copyTaskSlice(arActive)
+		c.arWaiting = copyTaskSlice(arWaiting)
+		c.arStopped = copyTaskSlice(arStopped)
+		c.arMu.Unlock()
+	}
+
+	if hasSg || !hasAr {
+		c.sgMu.Lock()
+		c.sgActive = copyTaskSlice(sgActive)
+		c.sgWaiting = copyTaskSlice(sgWaiting)
+		c.sgStopped = copyTaskSlice(sgStopped)
+		c.sgMu.Unlock()
+	}
+
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.active = copyTaskSlice(active)
-	c.waiting = copyTaskSlice(waiting)
-	c.stopped = copyTaskSlice(stopped)
 	c.lastUpdate = time.Now()
-
-	if c.pendingStartGids == nil {
-		return
-	}
-	for _, task := range active {
-		delete(c.pendingStartGids, task.GID)
-	}
-	for _, task := range waiting {
-		delete(c.pendingStartGids, task.GID)
-	}
-	for _, task := range stopped {
-		delete(c.pendingStartGids, task.GID)
-	}
-	now := time.Now()
-	for gid, markedAt := range c.pendingStartGids {
-		if now.Sub(markedAt) > 30*time.Second {
-			delete(c.pendingStartGids, gid)
+	if c.pendingStartGids != nil {
+		for _, task := range active {
+			delete(c.pendingStartGids, task.GID)
+		}
+		for _, task := range waiting {
+			delete(c.pendingStartGids, task.GID)
+		}
+		for _, task := range stopped {
+			delete(c.pendingStartGids, task.GID)
+		}
+		now := time.Now()
+		for gid, markedAt := range c.pendingStartGids {
+			if now.Sub(markedAt) > 30*time.Second {
+				delete(c.pendingStartGids, gid)
+			}
 		}
 	}
+	c.mu.Unlock()
+}
+
+// splitByPrefix 按 GID 前缀将切片拆分为 sg/ar 两组
+func splitByPrefix(tasks []rpc.Task) (sg, ar []rpc.Task) {
+	for _, task := range tasks {
+		if enginePrefix(task.GID) == "sg" {
+			sg = append(sg, task)
+		} else {
+			ar = append(ar, task)
+		}
+	}
+	return sg, ar
 }
 
 // ensureMetadata 确保任务元数据已缓存（预取）
@@ -226,14 +274,26 @@ func (c *TaskCache) ensureMetadata(task rpc.Task) string {
 // 5s ticks, so backend-side reads (e.g. download group aggregation) see
 // current speed/completed/total values.
 func (c *TaskCache) PatchTaskProgress(gid, completedLength, downloadSpeed, totalLength string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for i := range c.active {
-		if c.active[i].GID == gid {
-			c.active[i].CompletedLength = completedLength
-			c.active[i].DownloadSpeed = downloadSpeed
-			c.active[i].TotalLength = totalLength
-			c.lastUpdate = time.Now()
+	if enginePrefix(gid) == "sg" {
+		c.sgMu.Lock()
+		defer c.sgMu.Unlock()
+		for i := range c.sgActive {
+			if c.sgActive[i].GID == gid {
+				c.sgActive[i].CompletedLength = completedLength
+				c.sgActive[i].DownloadSpeed = downloadSpeed
+				c.sgActive[i].TotalLength = totalLength
+				return
+			}
+		}
+		return
+	}
+	c.arMu.Lock()
+	defer c.arMu.Unlock()
+	for i := range c.arActive {
+		if c.arActive[i].GID == gid {
+			c.arActive[i].CompletedLength = completedLength
+			c.arActive[i].DownloadSpeed = downloadSpeed
+			c.arActive[i].TotalLength = totalLength
 			return
 		}
 	}
@@ -244,27 +304,50 @@ func (c *TaskCache) PatchTaskProgress(gid, completedLength, downloadSpeed, total
 // so that GetStopped() returns the task immediately, before the next tick
 // populates it from the engine.
 func (c *TaskCache) MoveTaskToStopped(gid, status string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for i := range c.active {
-		if c.active[i].GID == gid {
-			task := c.active[i]
+	if enginePrefix(gid) == "sg" {
+		c.sgMu.Lock()
+		defer c.sgMu.Unlock()
+		for i := range c.sgActive {
+			if c.sgActive[i].GID == gid {
+				task := c.sgActive[i]
+				task.Status = status
+				task.DownloadSpeed = "0"
+				c.sgStopped = append(c.sgStopped, task)
+				c.sgActive = append(c.sgActive[:i], c.sgActive[i+1:]...)
+				return
+			}
+		}
+		for i := range c.sgWaiting {
+			if c.sgWaiting[i].GID == gid {
+				task := c.sgWaiting[i]
+				task.Status = status
+				task.DownloadSpeed = "0"
+				c.sgStopped = append(c.sgStopped, task)
+				c.sgWaiting = append(c.sgWaiting[:i], c.sgWaiting[i+1:]...)
+				return
+			}
+		}
+		return
+	}
+	c.arMu.Lock()
+	defer c.arMu.Unlock()
+	for i := range c.arActive {
+		if c.arActive[i].GID == gid {
+			task := c.arActive[i]
 			task.Status = status
 			task.DownloadSpeed = "0"
-			c.stopped = append(c.stopped, task)
-			c.active = append(c.active[:i], c.active[i+1:]...)
-			c.lastUpdate = time.Now()
+			c.arStopped = append(c.arStopped, task)
+			c.arActive = append(c.arActive[:i], c.arActive[i+1:]...)
 			return
 		}
 	}
-	for i := range c.waiting {
-		if c.waiting[i].GID == gid {
-			task := c.waiting[i]
+	for i := range c.arWaiting {
+		if c.arWaiting[i].GID == gid {
+			task := c.arWaiting[i]
 			task.Status = status
 			task.DownloadSpeed = "0"
-			c.stopped = append(c.stopped, task)
-			c.waiting = append(c.waiting[:i], c.waiting[i+1:]...)
-			c.lastUpdate = time.Now()
+			c.arStopped = append(c.arStopped, task)
+			c.arWaiting = append(c.arWaiting[:i], c.arWaiting[i+1:]...)
 			return
 		}
 	}
@@ -274,16 +357,30 @@ func (c *TaskCache) MoveTaskToStopped(gid, status string) {
 // status. Called from handleSurgeEvent for pause events so that the task
 // appears in GetWaiting() immediately, matching engine TellWaiting behavior.
 func (c *TaskCache) MoveTaskToWaiting(gid, status string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for i := range c.active {
-		if c.active[i].GID == gid {
-			task := c.active[i]
+	if enginePrefix(gid) == "sg" {
+		c.sgMu.Lock()
+		defer c.sgMu.Unlock()
+		for i := range c.sgActive {
+			if c.sgActive[i].GID == gid {
+				task := c.sgActive[i]
+				task.Status = status
+				task.DownloadSpeed = "0"
+				c.sgWaiting = append(c.sgWaiting, task)
+				c.sgActive = append(c.sgActive[:i], c.sgActive[i+1:]...)
+				return
+			}
+		}
+		return
+	}
+	c.arMu.Lock()
+	defer c.arMu.Unlock()
+	for i := range c.arActive {
+		if c.arActive[i].GID == gid {
+			task := c.arActive[i]
 			task.Status = status
 			task.DownloadSpeed = "0"
-			c.waiting = append(c.waiting, task)
-			c.active = append(c.active[:i], c.active[i+1:]...)
-			c.lastUpdate = time.Now()
+			c.arWaiting = append(c.arWaiting, task)
+			c.arActive = append(c.arActive[:i], c.arActive[i+1:]...)
 			return
 		}
 	}
@@ -293,40 +390,66 @@ func (c *TaskCache) MoveTaskToWaiting(gid, status string) {
 // status. Called from handleSurgeEvent for resume events so that the task
 // appears in GetActive() immediately, matching engine TellActive behavior.
 func (c *TaskCache) MoveTaskToActive(gid, status string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for i := range c.waiting {
-		if c.waiting[i].GID == gid {
-			task := c.waiting[i]
+	if enginePrefix(gid) == "sg" {
+		c.sgMu.Lock()
+		defer c.sgMu.Unlock()
+		for i := range c.sgWaiting {
+			if c.sgWaiting[i].GID == gid {
+				task := c.sgWaiting[i]
+				task.Status = status
+				task.DownloadSpeed = "0"
+				c.sgActive = append(c.sgActive, task)
+				c.sgWaiting = append(c.sgWaiting[:i], c.sgWaiting[i+1:]...)
+				return
+			}
+		}
+		return
+	}
+	c.arMu.Lock()
+	defer c.arMu.Unlock()
+	for i := range c.arWaiting {
+		if c.arWaiting[i].GID == gid {
+			task := c.arWaiting[i]
 			task.Status = status
 			task.DownloadSpeed = "0"
-			c.active = append(c.active, task)
-			c.waiting = append(c.waiting[:i], c.waiting[i+1:]...)
-			c.lastUpdate = time.Now()
+			c.arActive = append(c.arActive, task)
+			c.arWaiting = append(c.arWaiting[:i], c.arWaiting[i+1:]...)
 			return
 		}
 	}
 }
 
-// GetActive 获取活跃任务（从缓存）
+// GetActive 获取活跃任务（合并 sg+ar 切片，防御性拷贝）
 func (c *TaskCache) GetActive() []rpc.Task {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return copyTaskSlice(c.active)
+	c.sgMu.RLock()
+	sg := copyTaskSlice(c.sgActive)
+	c.sgMu.RUnlock()
+	c.arMu.RLock()
+	ar := copyTaskSlice(c.arActive)
+	c.arMu.RUnlock()
+	return append(sg, ar...)
 }
 
-// GetWaiting 获取等待任务（从缓存）
+// GetWaiting 获取等待任务（合并 sg+ar 切片，防御性拷贝）
 func (c *TaskCache) GetWaiting() []rpc.Task {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return copyTaskSlice(c.waiting)
+	c.sgMu.RLock()
+	sg := copyTaskSlice(c.sgWaiting)
+	c.sgMu.RUnlock()
+	c.arMu.RLock()
+	ar := copyTaskSlice(c.arWaiting)
+	c.arMu.RUnlock()
+	return append(sg, ar...)
 }
 
-// GetStopped 获取已停止任务（从缓存）
+// GetStopped 获取已停止任务（合并 sg+ar 切片，防御性拷贝）
 func (c *TaskCache) GetStopped() []rpc.Task {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return copyTaskSlice(c.stopped)
+	c.sgMu.RLock()
+	sg := copyTaskSlice(c.sgStopped)
+	c.sgMu.RUnlock()
+	c.arMu.RLock()
+	ar := copyTaskSlice(c.arStopped)
+	c.arMu.RUnlock()
+	return append(sg, ar...)
 }
 
 // GetMetadata 获取任务元数据（用于 UI 展示）
@@ -439,10 +562,6 @@ func (c *TaskCache) UpdateTaskGroupName(groupKey, name, status string) int {
 		return 0
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	changed := 0
 	updateGroup := func(group *rpc.DownloadGroup) (*rpc.DownloadGroup, bool) {
 		if group == nil || group.ID != groupKey {
 			return group, false
@@ -456,6 +575,9 @@ func (c *TaskCache) UpdateTaskGroupName(groupKey, name, status string) int {
 		return &updated, true
 	}
 
+	changed := 0
+
+	c.mu.Lock()
 	for _, meta := range c.metadata {
 		if meta == nil {
 			continue
@@ -465,24 +587,49 @@ func (c *TaskCache) UpdateTaskGroupName(groupKey, name, status string) int {
 			changed++
 		}
 	}
-	for i := range c.active {
-		if updated, ok := updateGroup(c.active[i].DownloadGroup); ok {
-			c.active[i].DownloadGroup = updated
+	c.mu.Unlock()
+
+	c.sgMu.Lock()
+	for i := range c.sgActive {
+		if updated, ok := updateGroup(c.sgActive[i].DownloadGroup); ok {
+			c.sgActive[i].DownloadGroup = updated
 			changed++
 		}
 	}
-	for i := range c.waiting {
-		if updated, ok := updateGroup(c.waiting[i].DownloadGroup); ok {
-			c.waiting[i].DownloadGroup = updated
+	for i := range c.sgWaiting {
+		if updated, ok := updateGroup(c.sgWaiting[i].DownloadGroup); ok {
+			c.sgWaiting[i].DownloadGroup = updated
 			changed++
 		}
 	}
-	for i := range c.stopped {
-		if updated, ok := updateGroup(c.stopped[i].DownloadGroup); ok {
-			c.stopped[i].DownloadGroup = updated
+	for i := range c.sgStopped {
+		if updated, ok := updateGroup(c.sgStopped[i].DownloadGroup); ok {
+			c.sgStopped[i].DownloadGroup = updated
 			changed++
 		}
 	}
+	c.sgMu.Unlock()
+
+	c.arMu.Lock()
+	for i := range c.arActive {
+		if updated, ok := updateGroup(c.arActive[i].DownloadGroup); ok {
+			c.arActive[i].DownloadGroup = updated
+			changed++
+		}
+	}
+	for i := range c.arWaiting {
+		if updated, ok := updateGroup(c.arWaiting[i].DownloadGroup); ok {
+			c.arWaiting[i].DownloadGroup = updated
+			changed++
+		}
+	}
+	for i := range c.arStopped {
+		if updated, ok := updateGroup(c.arStopped[i].DownloadGroup); ok {
+			c.arStopped[i].DownloadGroup = updated
+			changed++
+		}
+	}
+	c.arMu.Unlock()
 
 	return changed
 }
@@ -508,9 +655,6 @@ func (c *TaskCache) InvalidateMetadata(gid string) {
 
 // RemoveTask 从缓存的活跃、等待和停止列表中删除指定任务并清理元数据
 func (c *TaskCache) RemoveTask(gid string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	filter := func(tasks []rpc.Task) []rpc.Task {
 		res := make([]rpc.Task, 0, len(tasks))
 		for _, t := range tasks {
@@ -521,13 +665,26 @@ func (c *TaskCache) RemoveTask(gid string) {
 		return res
 	}
 
-	c.active = filter(c.active)
-	c.waiting = filter(c.waiting)
-	c.stopped = filter(c.stopped)
+	if enginePrefix(gid) == "sg" {
+		c.sgMu.Lock()
+		c.sgActive = filter(c.sgActive)
+		c.sgWaiting = filter(c.sgWaiting)
+		c.sgStopped = filter(c.sgStopped)
+		c.sgMu.Unlock()
+	} else {
+		c.arMu.Lock()
+		c.arActive = filter(c.arActive)
+		c.arWaiting = filter(c.arWaiting)
+		c.arStopped = filter(c.arStopped)
+		c.arMu.Unlock()
+	}
+
+	c.mu.Lock()
 	delete(c.metadata, gid)
 	if c.pendingStartGids != nil {
 		delete(c.pendingStartGids, gid)
 	}
+	c.mu.Unlock()
 	RemoveTaskGroup(gid)
 }
 

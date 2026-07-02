@@ -127,8 +127,8 @@ func TestHandleSurgeEvent_PauseEvent_QueuesPauseDeltaAndPatchesCache(t *testing.
 	defer State.SetWindowExists(prevWindow)
 
 	// Seed cache with an active task
-	Cache.active = []rpc.Task{{GID: "sg_test-pause", Status: "active", DownloadSpeed: "100"}}
-	defer func() { Cache.active = nil }()
+	Cache.sgActive = []rpc.Task{{GID: "sg_test-pause", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.sgActive = nil }()
 
 	m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{
 		DownloadID: "test-pause",
@@ -149,15 +149,15 @@ func TestHandleSurgeEvent_PauseEvent_QueuesPauseDeltaAndPatchesCache(t *testing.
 	}
 
 	// Verify task was moved from active to waiting with status=paused
-	Cache.mu.RLock()
-	for _, task := range Cache.active {
+	Cache.sgMu.RLock()
+	for _, task := range Cache.sgActive {
 		if task.GID == "sg_test-pause" {
-			Cache.mu.RUnlock()
+			Cache.sgMu.RUnlock()
 			t.Fatal("expected task removed from active list")
 		}
 	}
 	foundInWaiting := false
-	for _, task := range Cache.waiting {
+	for _, task := range Cache.sgWaiting {
 		if task.GID == "sg_test-pause" {
 			if task.Status != "paused" {
 				t.Errorf("expected status 'paused', got %q", task.Status)
@@ -169,7 +169,7 @@ func TestHandleSurgeEvent_PauseEvent_QueuesPauseDeltaAndPatchesCache(t *testing.
 			break
 		}
 	}
-	Cache.mu.RUnlock()
+	Cache.sgMu.RUnlock()
 	if !foundInWaiting {
 		t.Error("expected task in waiting list after pause")
 	}
@@ -187,8 +187,8 @@ func TestHandleSurgeEvent_ResumeEvent_QueuesResumeDeltaAndPatchesCache(t *testin
 	defer State.SetWindowExists(prevWindow)
 
 	// Seed cache with a paused task in waiting list
-	Cache.waiting = []rpc.Task{{GID: "sg_test-resume", Status: "paused"}}
-	defer func() { Cache.waiting = nil }()
+	Cache.sgWaiting = []rpc.Task{{GID: "sg_test-resume", Status: "paused"}}
+	defer func() { Cache.sgWaiting = nil }()
 
 	m.handleSurgeEvent(surgeEvents.DownloadResumedMsg{
 		DownloadID: "test-resume",
@@ -209,15 +209,15 @@ func TestHandleSurgeEvent_ResumeEvent_QueuesResumeDeltaAndPatchesCache(t *testin
 	}
 
 	// Verify task was moved from waiting to active with status=active
-	Cache.mu.RLock()
-	for _, task := range Cache.waiting {
+	Cache.sgMu.RLock()
+	for _, task := range Cache.sgWaiting {
 		if task.GID == "sg_test-resume" {
-			Cache.mu.RUnlock()
+			Cache.sgMu.RUnlock()
 			t.Fatal("expected task removed from waiting list")
 		}
 	}
 	foundInActive := false
-	for _, task := range Cache.active {
+	for _, task := range Cache.sgActive {
 		if task.GID == "sg_test-resume" {
 			if task.Status != "active" {
 				t.Errorf("expected status 'active', got %q", task.Status)
@@ -226,7 +226,7 @@ func TestHandleSurgeEvent_ResumeEvent_QueuesResumeDeltaAndPatchesCache(t *testin
 			break
 		}
 	}
-	Cache.mu.RUnlock()
+	Cache.sgMu.RUnlock()
 	if !foundInActive {
 		t.Error("expected task in active list after resume")
 	}
@@ -400,8 +400,8 @@ func TestHandleSurgeEvent_CompleteEvent_PushesDeltaToFrontend(t *testing.T) {
 	defer State.SetWindowExists(prevWindow)
 
 	// Seed cache with an active task
-	Cache.active = []rpc.Task{{GID: "sg_test-direct-push", Status: "active"}}
-	defer func() { Cache.active = nil; Cache.stopped = nil }()
+	Cache.sgActive = []rpc.Task{{GID: "sg_test-direct-push", Status: "active"}}
+	defer func() { Cache.sgActive = nil; Cache.sgStopped = nil }()
 
 	var receivedDelta *events.TaskDelta
 	hub.SubscribeTaskDelta(func(delta events.TaskDelta) {
@@ -424,15 +424,15 @@ func TestHandleSurgeEvent_CompleteEvent_PushesDeltaToFrontend(t *testing.T) {
 	}
 
 	// Verify task was moved from active to stopped
-	Cache.mu.RLock()
-	for _, task := range Cache.active {
+	Cache.sgMu.RLock()
+	for _, task := range Cache.sgActive {
 		if task.GID == "sg_test-direct-push" {
-			Cache.mu.RUnlock()
+			Cache.sgMu.RUnlock()
 			t.Fatal("expected task removed from active list")
 		}
 	}
 	foundInStopped := false
-	for _, task := range Cache.stopped {
+	for _, task := range Cache.sgStopped {
 		if task.GID == "sg_test-direct-push" {
 			if task.Status != "complete" {
 				t.Errorf("expected status 'complete', got %q", task.Status)
@@ -441,7 +441,7 @@ func TestHandleSurgeEvent_CompleteEvent_PushesDeltaToFrontend(t *testing.T) {
 			break
 		}
 	}
-	Cache.mu.RUnlock()
+	Cache.sgMu.RUnlock()
 	if !foundInStopped {
 		t.Error("expected task in stopped list after complete event")
 	}
@@ -461,8 +461,8 @@ func TestHandleSurgeEvent_ErrorEvent_PushesDeltaToFrontend(t *testing.T) {
 	defer State.SetWindowExists(prevWindow)
 
 	// Seed cache with an active task
-	Cache.active = []rpc.Task{{GID: "sg_test-err-push", Status: "active"}}
-	defer func() { Cache.active = nil; Cache.stopped = nil }()
+	Cache.sgActive = []rpc.Task{{GID: "sg_test-err-push", Status: "active"}}
+	defer func() { Cache.sgActive = nil; Cache.sgStopped = nil }()
 
 	var receivedDelta *events.TaskDelta
 	hub.SubscribeTaskDelta(func(delta events.TaskDelta) {
@@ -485,15 +485,15 @@ func TestHandleSurgeEvent_ErrorEvent_PushesDeltaToFrontend(t *testing.T) {
 	}
 
 	// Verify task was moved from active to stopped with error status
-	Cache.mu.RLock()
-	for _, task := range Cache.active {
+	Cache.sgMu.RLock()
+	for _, task := range Cache.sgActive {
 		if task.GID == "sg_test-err-push" {
-			Cache.mu.RUnlock()
+			Cache.sgMu.RUnlock()
 			t.Fatal("expected task removed from active list")
 		}
 	}
 	foundInStopped := false
-	for _, task := range Cache.stopped {
+	for _, task := range Cache.sgStopped {
 		if task.GID == "sg_test-err-push" {
 			if task.Status != "error" {
 				t.Errorf("expected status 'error', got %q", task.Status)
@@ -502,7 +502,7 @@ func TestHandleSurgeEvent_ErrorEvent_PushesDeltaToFrontend(t *testing.T) {
 			break
 		}
 	}
-	Cache.mu.RUnlock()
+	Cache.sgMu.RUnlock()
 	if !foundInStopped {
 		t.Error("expected task in stopped list after error event")
 	}
@@ -650,8 +650,8 @@ func TestHandleSurgeEvent_DiscardsStalePauseAfterResume(t *testing.T) {
 	State.SetWindowExists(true)
 	defer State.SetWindowExists(prevWindow)
 
-	Cache.active = []rpc.Task{{GID: "sg_test-1", Status: "active", DownloadSpeed: "100"}}
-	defer func() { Cache.active = nil; Cache.waiting = nil }()
+	Cache.sgActive = []rpc.Task{{GID: "sg_test-1", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil }()
 
 	m.BumpPauseResumeIntention("sg_test-1", PauseResumeIntentionPause)
 	m.BumpPauseResumeIntention("sg_test-1", PauseResumeIntentionResume)
@@ -667,14 +667,14 @@ func TestHandleSurgeEvent_DiscardsStalePauseAfterResume(t *testing.T) {
 	}
 	pusher.mu.Unlock()
 
-	Cache.mu.RLock()
-	for _, task := range Cache.waiting {
+	Cache.sgMu.RLock()
+	for _, task := range Cache.sgWaiting {
 		if task.GID == "sg_test-1" {
-			Cache.mu.RUnlock()
+			Cache.sgMu.RUnlock()
 			t.Fatal("expected task NOT moved to waiting for stale pause")
 		}
 	}
-	Cache.mu.RUnlock()
+	Cache.sgMu.RUnlock()
 }
 
 func TestHandleSurgeEvent_AcceptsPauseWhenLastIntentionIsPause(t *testing.T) {
@@ -690,8 +690,8 @@ func TestHandleSurgeEvent_AcceptsPauseWhenLastIntentionIsPause(t *testing.T) {
 	State.SetWindowExists(true)
 	defer State.SetWindowExists(prevWindow)
 
-	Cache.active = []rpc.Task{{GID: "sg_test-2", Status: "active", DownloadSpeed: "100"}}
-	defer func() { Cache.active = nil; Cache.waiting = nil }()
+	Cache.sgActive = []rpc.Task{{GID: "sg_test-2", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil }()
 
 	m.BumpPauseResumeIntention("sg_test-2", PauseResumeIntentionPause)
 
@@ -710,15 +710,15 @@ func TestHandleSurgeEvent_AcceptsPauseWhenLastIntentionIsPause(t *testing.T) {
 		t.Fatal("expected pause delta when last intention is pause")
 	}
 
-	Cache.mu.RLock()
+	Cache.sgMu.RLock()
 	foundInWaiting := false
-	for _, task := range Cache.waiting {
+	for _, task := range Cache.sgWaiting {
 		if task.GID == "sg_test-2" {
 			foundInWaiting = true
 			break
 		}
 	}
-	Cache.mu.RUnlock()
+	Cache.sgMu.RUnlock()
 	if !foundInWaiting {
 		t.Fatal("expected task in waiting list when last intention is pause")
 	}
@@ -737,8 +737,8 @@ func TestHandleSurgeEvent_AcceptsPauseWithNoPriorIntention(t *testing.T) {
 	State.SetWindowExists(true)
 	defer State.SetWindowExists(prevWindow)
 
-	Cache.active = []rpc.Task{{GID: "sg_test-3", Status: "active", DownloadSpeed: "100"}}
-	defer func() { Cache.active = nil; Cache.waiting = nil }()
+	Cache.sgActive = []rpc.Task{{GID: "sg_test-3", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil }()
 
 	m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{DownloadID: "test-3"})
 
@@ -769,8 +769,8 @@ func TestHandleSurgeEvent_PauseResumePauseSequence(t *testing.T) {
 	State.SetWindowExists(true)
 	defer State.SetWindowExists(prevWindow)
 
-	Cache.active = []rpc.Task{{GID: "sg_test-4", Status: "active", DownloadSpeed: "100"}}
-	defer func() { Cache.active = nil; Cache.waiting = nil }()
+	Cache.sgActive = []rpc.Task{{GID: "sg_test-4", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil }()
 
 	m.BumpPauseResumeIntention("sg_test-4", PauseResumeIntentionPause)
 	m.BumpPauseResumeIntention("sg_test-4", PauseResumeIntentionResume)
@@ -801,8 +801,8 @@ func TestHandleSurgeEvent_NilMonitorIntentionMaps(t *testing.T) {
 	State.SetWindowExists(true)
 	defer State.SetWindowExists(prevWindow)
 
-	Cache.active = []rpc.Task{{GID: "sg_test-5", Status: "active", DownloadSpeed: "100"}}
-	defer func() { Cache.active = nil; Cache.waiting = nil }()
+	Cache.sgActive = []rpc.Task{{GID: "sg_test-5", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil }()
 
 	m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{DownloadID: "test-5"})
 
@@ -845,8 +845,8 @@ func TestHandleSurgeEvent_InvalidatesListCacheOnPause(t *testing.T) {
 	prevWindow := State.HasWindow()
 	State.SetWindowExists(true)
 	defer State.SetWindowExists(prevWindow)
-	Cache.active = []rpc.Task{{GID: "sg_inv-1", Status: "active", DownloadSpeed: "100"}}
-	defer func() { Cache.active = nil; Cache.waiting = nil; Cache.stopped = nil }()
+	Cache.sgActive = []rpc.Task{{GID: "sg_inv-1", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil; Cache.sgStopped = nil }()
 
 	// Populate the list cache by calling TellWaiting (which uses getDownloadList)
 	if _, err := surgeEng.TellWaiting(0, -1); err != nil {
@@ -886,8 +886,8 @@ func TestHandleSurgeEvent_InvalidatesListCacheOnResume(t *testing.T) {
 	prevWindow := State.HasWindow()
 	State.SetWindowExists(true)
 	defer State.SetWindowExists(prevWindow)
-	Cache.waiting = []rpc.Task{{GID: "sg_inv-2", Status: "paused", DownloadSpeed: "0"}}
-	defer func() { Cache.active = nil; Cache.waiting = nil; Cache.stopped = nil }()
+	Cache.sgWaiting = []rpc.Task{{GID: "sg_inv-2", Status: "paused", DownloadSpeed: "0"}}
+	defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil; Cache.sgStopped = nil }()
 
 	if _, err := surgeEng.TellWaiting(0, -1); err != nil {
 		t.Fatalf("TellWaiting to populate cache: %v", err)
@@ -920,8 +920,8 @@ func TestHandleSurgeEvent_InvalidatesListCacheOnComplete(t *testing.T) {
 	prevWindow := State.HasWindow()
 	State.SetWindowExists(true)
 	defer State.SetWindowExists(prevWindow)
-	Cache.active = []rpc.Task{{GID: "sg_inv-3", Status: "active", DownloadSpeed: "100"}}
-	defer func() { Cache.active = nil; Cache.waiting = nil; Cache.stopped = nil }()
+	Cache.sgActive = []rpc.Task{{GID: "sg_inv-3", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil; Cache.sgStopped = nil }()
 
 	if _, err := surgeEng.TellWaiting(0, -1); err != nil {
 		t.Fatalf("TellWaiting to populate cache: %v", err)
@@ -954,8 +954,8 @@ func TestHandleSurgeEvent_InvalidatesListCacheOnError(t *testing.T) {
 	prevWindow := State.HasWindow()
 	State.SetWindowExists(true)
 	defer State.SetWindowExists(prevWindow)
-	Cache.active = []rpc.Task{{GID: "sg_inv-4", Status: "active", DownloadSpeed: "100"}}
-	defer func() { Cache.active = nil; Cache.waiting = nil; Cache.stopped = nil }()
+	Cache.sgActive = []rpc.Task{{GID: "sg_inv-4", Status: "active", DownloadSpeed: "100"}}
+	defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil; Cache.sgStopped = nil }()
 
 	if _, err := surgeEng.TellWaiting(0, -1); err != nil {
 		t.Fatalf("TellWaiting to populate cache: %v", err)

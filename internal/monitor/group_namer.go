@@ -320,18 +320,21 @@ func downloadGroupNamerCacheSnapshot() ([]rpc.Task, map[string]TaskMetadata) {
 	if Cache == nil {
 		return nil, nil
 	}
+	active := Cache.GetActive()
+	waiting := Cache.GetWaiting()
+	stopped := Cache.GetStopped()
+	tasks := make([]rpc.Task, 0, len(active)+len(waiting)+len(stopped))
+	for _, task := range active {
+		tasks = append(tasks, copyDownloadGroupTaskForNamer(task))
+	}
+	for _, task := range waiting {
+		tasks = append(tasks, copyDownloadGroupTaskForNamer(task))
+	}
+	for _, task := range stopped {
+		tasks = append(tasks, copyDownloadGroupTaskForNamer(task))
+	}
+
 	Cache.mu.RLock()
-	defer Cache.mu.RUnlock()
-	tasks := make([]rpc.Task, 0, len(Cache.active)+len(Cache.waiting)+len(Cache.stopped))
-	for _, task := range Cache.active {
-		tasks = append(tasks, copyDownloadGroupTaskForNamer(task))
-	}
-	for _, task := range Cache.waiting {
-		tasks = append(tasks, copyDownloadGroupTaskForNamer(task))
-	}
-	for _, task := range Cache.stopped {
-		tasks = append(tasks, copyDownloadGroupTaskForNamer(task))
-	}
 	metadata := make(map[string]TaskMetadata, len(Cache.metadata))
 	for gid, meta := range Cache.metadata {
 		if meta == nil {
@@ -344,6 +347,7 @@ func downloadGroupNamerCacheSnapshot() ([]rpc.Task, map[string]TaskMetadata) {
 		copied.DownloadGroup = copyDownloadGroup(meta.DownloadGroup)
 		metadata[gid] = copied
 	}
+	Cache.mu.RUnlock()
 	return tasks, metadata
 }
 
