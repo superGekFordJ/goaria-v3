@@ -71,14 +71,12 @@ export const useExtensionStore = defineStore('extension', () => {
       }
     })
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     pairedUnsubscribe = Events.On('extension:paired', () => {
       paired.value = true
       status.value = 'paired'
       refreshStatus()
     })
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     unpairedUnsubscribe = Events.On('extension:unpaired', () => {
       paired.value = false
       status.value = 'listening'

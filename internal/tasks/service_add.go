@@ -54,13 +54,13 @@ func (s *Service) AddUriFromExtension(req extension.DownloadRequest) (string, er
 		return "", errors.New("empty url")
 	}
 
-	if err := rpc.ValidateAddURIHeaders(req.Headers); err != nil {
-		return "", err
-	}
-
 	headers := req.Headers
 	if req.DownloadPage != "" {
 		headers = ensureRefererHeader(headers, req.DownloadPage)
+	}
+
+	if err := rpc.ValidateAddURIHeaders(headers); err != nil {
+		return "", err
 	}
 
 	active, _ := s.Engine.TellActive()

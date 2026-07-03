@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"goaria-v3/internal/events"
 
@@ -25,6 +26,8 @@ type Server struct {
 	pairingService   *PairingService
 	connectedClients int
 	wsPort           int
+	paired           bool
+	activeConns      map[*websocket.Conn]struct{}
 }
 
 // NewServer creates a new extension WebSocket server.
@@ -38,6 +41,7 @@ func NewServer(eventHub *events.Hub, taskAdder TaskAdder, store *SecretStore) *S
 			CheckOrigin:  checkOrigin,
 			Subprotocols: []string{"goaria-extension"},
 		},
+		activeConns: make(map[*websocket.Conn]struct{}),
 	}
 }
 
@@ -46,6 +50,22 @@ func (s *Server) SetPairingService(ps *PairingService) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pairingService = ps
+}
+
+// StartPairing creates or reuses the pairing service and returns the pairing URL.
+// If an active pairing service already exists, returns its URL (boundary: double-click).
+func (s *Server) StartPairing() (string, error) {
+	s.mu.Lock()
+	ps := s.pairingService
+	s.mu.Unlock()
+	if ps != nil && ps.IsActive() {
+		return ps.Start()
+	}
+	ps = NewPairingService(s.store, s.eventHub)
+	s.mu.Lock()
+	s.pairingService = ps
+	s.mu.Unlock()
+	return ps.Start()
 }
 
 // GetStore returns the secret store (shared with the pairing service).
@@ -110,6 +130,7 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 	defer conn.Close()
 
 	s.mu.Lock()
+	s.activeConns[conn] = struct{}{}
 	s.connectedClients++
 	count := s.connectedClients
 	s.mu.Unlock()
@@ -117,6 +138,7 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 
 	defer func() {
 		s.mu.Lock()
+		delete(s.activeConns, conn)
 		s.connectedClients--
 		c := s.connectedClients
 		if c < 0 {
@@ -135,6 +157,9 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 		}
 		if auth.Secret != secret {
 			return
+		}
+		if s.markPaired() {
+			s.NotifyPaired()
 		}
 	}
 
@@ -184,6 +209,7 @@ func (s *Server) writeAck(conn *websocket.Conn, resp DownloadResponse) {
 	if err != nil {
 		return
 	}
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_ = conn.WriteMessage(websocket.TextMessage, data)
 }
 
@@ -195,19 +221,18 @@ func (s *Server) GetStatus() ExtensionStatus {
 	if s.listener != nil {
 		status = "listening"
 	}
-	paired := s.store.GetSecret() != ""
-	if paired {
+	if s.paired {
 		status = "paired"
 	}
 	return ExtensionStatus{
 		Status:           status,
 		WSPort:           s.wsPort,
 		ConnectedClients: s.connectedClients,
-		Paired:           paired,
+		Paired:           s.paired,
 	}
 }
 
-// Stop closes the listener and HTTP server.
+// Stop closes the listener, HTTP server, and all active WebSocket connections.
 func (s *Server) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -219,6 +244,10 @@ func (s *Server) Stop() {
 		_ = s.listener.Close()
 		s.listener = nil
 	}
+	for conn := range s.activeConns {
+		_ = conn.Close()
+		delete(s.activeConns, conn)
+	}
 }
 
 // emitStatus pushes extension:status to the frontend via EventHub.
@@ -229,8 +258,8 @@ func (s *Server) emitStatus(connectedClients int) {
 	s.mu.RLock()
 	port := s.wsPort
 	listening := s.listener != nil
+	paired := s.paired
 	s.mu.RUnlock()
-	paired := s.store.GetSecret() != ""
 	status := "disconnected"
 	if listening {
 		status = "listening"
@@ -246,6 +275,17 @@ func (s *Server) emitStatus(connectedClients int) {
 	})
 }
 
+// markPaired transitions paired to true; returns true only on the first transition.
+func (s *Server) markPaired() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.paired {
+		return false
+	}
+	s.paired = true
+	return true
+}
+
 // NotifyPaired emits extension:paired and shuts down the pairing service.
 func (s *Server) NotifyPaired() {
 	if s.eventHub != nil {
@@ -259,8 +299,14 @@ func (s *Server) NotifyPaired() {
 	}
 }
 
-// NotifyUnpaired emits extension:unpaired.
+// NotifyUnpaired clears the secret, emits extension:unpaired.
 func (s *Server) NotifyUnpaired() {
+	s.mu.Lock()
+	s.paired = false
+	s.mu.Unlock()
+	if s.store != nil {
+		s.store.ClearSecret()
+	}
 	if s.eventHub != nil {
 		s.eventHub.EmitExtensionUnpaired()
 	}

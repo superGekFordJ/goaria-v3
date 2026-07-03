@@ -311,3 +311,116 @@ func TestDownload_ForwardedToTaskService(t *testing.T) {
 		t.Fatalf("headers not forwarded: %v", adder.req.Headers)
 	}
 }
+
+// TestPairing_AutoShutdownAfterAuth verifies the pairing service shuts down
+// after the first successful WebSocket auth (即用即关).
+func TestPairing_AutoShutdownAfterAuth(t *testing.T) {
+	store := NewSecretStore()
+	srv := newTestServer(t, nil, store)
+	defer srv.Stop()
+	if err := srv.Start(0); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ps := NewPairingService(store, nil)
+	srv.SetPairingService(ps)
+	if _, err := ps.Start(); err != nil {
+		t.Fatalf("pairing Start: %v", err)
+	}
+	if !ps.IsActive() {
+		t.Fatal("pairing service should be active before auth")
+	}
+
+	// ps.Start() generated and stored a new secret; read it for auth.
+	secret := store.GetSecret()
+	if secret == "" {
+		t.Fatal("secret should be set after pairing Start")
+	}
+
+	conn := dialWS(t, srv.GetStatus().WSPort, "chrome-extension://abc")
+	defer conn.Close()
+
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	auth := AuthMessage{Type: MsgTypeAuth, Secret: secret}
+	_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, auth))
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !ps.IsActive() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if ps.IsActive() {
+		t.Fatal("pairing service should be inactive after successful WebSocket auth")
+	}
+}
+
+// TestSecret_DownloadBeforeAuth_Rejected verifies that sending a download
+// request as the first message (before auth) in production mode is rejected.
+func TestSecret_DownloadBeforeAuth_Rejected(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	adder := &fakeTaskAdder{gid: "should-not-reach"}
+	srv := newTestServer(t, adder, store)
+	defer srv.Stop()
+	if err := srv.Start(0); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	conn := dialWS(t, srv.GetStatus().WSPort, "chrome-extension://abc")
+	defer conn.Close()
+
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	req := DownloadRequest{Type: MsgTypeDownload, URL: "https://example.com/file.zip"}
+	_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, req))
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, err := conn.ReadMessage()
+	if err == nil {
+		t.Fatal("expected connection close when download sent before auth")
+	}
+	if adder.wasCalled() {
+		t.Fatal("TaskAdder must not be called for unauthenticated download")
+	}
+}
+
+// TestUnpair_ClearsSecret verifies that unpairing clears the stored secret.
+func TestUnpair_ClearsSecret(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("my-secret")
+	srv := newTestServer(t, nil, store)
+	defer srv.Stop()
+
+	if store.GetSecret() == "" {
+		t.Fatal("secret should be set before unpair")
+	}
+	srv.NotifyUnpaired()
+
+	if store.GetSecret() != "" {
+		t.Fatal("secret should be empty after unpair")
+	}
+	status := srv.GetStatus()
+	if status.Paired {
+		t.Fatal("status should show unpaired after unpair")
+	}
+}
+
+// TestStartPairing_ReusesActive verifies that repeated StartPairing calls
+// reuse the active pairing service instead of leaking a new one.
+func TestStartPairing_ReusesActive(t *testing.T) {
+	store := NewSecretStore()
+	srv := newTestServer(t, nil, store)
+	defer srv.Stop()
+
+	url1, err := srv.StartPairing()
+	if err != nil {
+		t.Fatalf("first StartPairing: %v", err)
+	}
+	url2, err := srv.StartPairing()
+	if err != nil {
+		t.Fatalf("second StartPairing: %v", err)
+	}
+	if url1 != url2 {
+		t.Fatalf("expected same URL on double-call, got %s vs %s", url1, url2)
+	}
+}

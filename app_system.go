@@ -382,10 +382,7 @@ func (a *App) PairExtension() (string, error) {
 	if a.extensionServer == nil {
 		return "", errors.New("extension server not initialized")
 	}
-	ps := extension.NewPairingService(a.extensionServer.GetStore(), a.eventHub)
-	a.extensionServer.SetPairingService(ps)
-
-	url, err := ps.Start()
+	url, err := a.extensionServer.StartPairing()
 	if err != nil {
 		return "", err
 	}
