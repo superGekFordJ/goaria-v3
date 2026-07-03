@@ -61,9 +61,15 @@ func (s *Server) StartPairing() (string, error) {
 	if ps != nil && ps.IsActive() {
 		return ps.Start()
 	}
+	// New pairing cycle: reset paired state so the next auth re-triggers NotifyPaired.
+	// Clear the old secret so the new cycle generates a fresh one.
+	if s.store != nil {
+		s.store.ClearSecret()
+	}
 	ps = NewPairingService(s.store, s.eventHub)
 	s.mu.Lock()
 	s.pairingService = ps
+	s.paired = false
 	s.mu.Unlock()
 	return ps.Start()
 }
@@ -287,8 +293,12 @@ func (s *Server) markPaired() bool {
 }
 
 // NotifyPaired emits extension:paired and shuts down the pairing service.
+// Re-checks paired under the lock to avoid emitting paired after a concurrent unpair.
 func (s *Server) NotifyPaired() {
-	if s.eventHub != nil {
+	s.mu.RLock()
+	paired := s.paired
+	s.mu.RUnlock()
+	if paired && s.eventHub != nil {
 		s.eventHub.EmitExtensionPaired()
 	}
 	s.mu.Lock()
