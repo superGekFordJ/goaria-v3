@@ -362,5 +362,21 @@
       "document": "Document",
       "disk": "Disk image"
     }
+  },
+  "extension": {
+    "title": "Browser Extension",
+    "pairHelp": "Click the button, then install the extension in your browser to complete pairing.",
+    "pair": "Pair Browser Extension",
+    "unpair": "Unpair",
+    "pairing": "Pairing...",
+    "pairUrl": "Pairing URL",
+    "paired": "Paired",
+    "wsPort": "WebSocket Port",
+    "connectedClients": "Connected Extensions",
+    "status": {
+      "listening": "Listening on port {port}",
+      "disconnected": "Not listening",
+      "paired": "Paired with {count} extension(s)"
+    }
   }
 }

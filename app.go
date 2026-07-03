@@ -6,6 +6,7 @@ import (
 
 	"goaria-v3/internal/downloadgroups"
 	"goaria-v3/internal/events"
+	"goaria-v3/internal/extension"
 	"goaria-v3/internal/extractor"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
@@ -42,7 +43,8 @@ type App struct {
 	lastToggleTime time.Time  // 上次切换窗口时间，用于全局防抖
 	isToggling     bool       // 防止重入标志
 
-	downloadEngine rpc.DownloadEngine
+	downloadEngine  rpc.DownloadEngine
+	extensionServer *extension.Server
 }
 
 // NewApp creates a new App instance
@@ -91,6 +93,11 @@ func (a *App) SetWindow(w *application.WebviewWindow) {
 // SetSystemTray stores the system tray reference
 func (a *App) SetSystemTray(st *application.SystemTray) {
 	a.systray = st
+}
+
+// SetExtensionServer stores the extension WebSocket server reference
+func (a *App) SetExtensionServer(s *extension.Server) {
+	a.extensionServer = s
 }
 
 func (a *App) setExtractorDispatcher(dispatcher tasks.ExtractorAddTaskDispatcher) {

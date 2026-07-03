@@ -20,6 +20,8 @@ type AppConfig struct {
 	MinThreadLife          int    `json:"min_thread_life"`      // T_min: 线程最小生存时间(秒), 默认 5
 	CloseToTray            bool   `json:"close_to_tray"`        // 关闭窗口时最小化到托盘（true）还是退出应用（false）
 	ConvergenceInterval    int    `json:"convergence_interval"` // 收敛tick间隔(秒), 0=默认5秒
+	ExtensionEnabled       bool   `json:"extension_enabled"`    // 浏览器扩展集成开关
+	ExtensionWSPort        int    `json:"extension_ws_port"`    // WebSocket 端口, 0=自动探测
 }
 
 var (
@@ -48,6 +50,8 @@ func Load() {
 		WindowTransparency:     "none",
 		SmartThreadMode:        true,
 		MinThreadLife:          5,
+		ExtensionEnabled:       true,
+		ExtensionWSPort:        16801,
 	}
 	data, err := os.ReadFile(GetConfigPath())
 	if err == nil {

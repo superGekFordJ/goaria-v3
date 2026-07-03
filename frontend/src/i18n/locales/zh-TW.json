@@ -362,5 +362,21 @@
       "document": "文件",
       "disk": "磁碟映像檔"
     }
+  },
+  "extension": {
+    "title": "瀏覽器擴充功能",
+    "pairHelp": "點擊按鈕後在瀏覽器中安裝擴充功能並完成配對。",
+    "pair": "綁定瀏覽器擴充功能",
+    "unpair": "解除綁定",
+    "pairing": "配對中...",
+    "pairUrl": "配對 URL",
+    "paired": "已配對",
+    "wsPort": "WebSocket 連接埠",
+    "connectedClients": "已連線擴充功能數",
+    "status": {
+      "listening": "正在監聽連接埠 {port}",
+      "disconnected": "未監聽",
+      "paired": "已配對 {count} 個擴充功能"
+    }
   }
 }

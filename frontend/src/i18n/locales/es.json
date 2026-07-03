@@ -362,5 +362,21 @@
       "document": "Documento",
       "disk": "Imagen de disco"
     }
+  },
+  "extension": {
+    "title": "Extensión del navegador",
+    "pairHelp": "Haga clic en el botón e instale la extensión en su navegador para completar el emparejamiento.",
+    "pair": "Emparejar extensión del navegador",
+    "unpair": "Desemparejar",
+    "pairing": "Emparejando...",
+    "pairUrl": "URL de emparejamiento",
+    "paired": "Emparejado",
+    "wsPort": "Puerto WebSocket",
+    "connectedClients": "Extensiones conectadas",
+    "status": {
+      "listening": "Escuchando en el puerto {port}",
+      "disconnected": "No escuchando",
+      "paired": "Emparejado con {count} extensión(es)"
+    }
   }
 }

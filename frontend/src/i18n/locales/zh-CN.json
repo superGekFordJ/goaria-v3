@@ -362,5 +362,21 @@
       "document": "文档",
       "disk": "磁盘映像"
     }
+  },
+  "extension": {
+    "title": "浏览器扩展",
+    "pairHelp": "点击按钮后在浏览器中安装扩展并完成配对。",
+    "pair": "绑定浏览器扩展",
+    "unpair": "解绑",
+    "pairing": "配对中...",
+    "pairUrl": "配对 URL",
+    "paired": "已配对",
+    "wsPort": "WebSocket 端口",
+    "connectedClients": "已连接扩展数",
+    "status": {
+      "listening": "正在监听端口 {port}",
+      "disconnected": "未监听",
+      "paired": "已配对 {count} 个扩展"
+    }
   }
 }

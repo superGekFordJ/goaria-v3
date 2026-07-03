@@ -15,6 +15,7 @@ import (
 
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/events"
+	"goaria-v3/internal/extension"
 	"goaria-v3/internal/extractor"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
@@ -126,6 +127,18 @@ func main() {
 	appService.SetEventHub(eventHub)
 	appService.updater = update.NewUpdater(eventHub)
 
+	// Initialize extension WebSocket server (downloads go through tasks.Service)
+	if config.Current.ExtensionEnabled {
+		extStore := extension.NewSecretStore()
+		extServer := extension.NewServer(eventHub, appService.taskService(), extStore)
+		appService.SetExtensionServer(extServer)
+		go func() {
+			if err := extServer.Start(config.Current.ExtensionWSPort); err != nil {
+				log.Printf("[Extension] WebSocket server failed to start: %v", err)
+			}
+		}()
+	}
+
 	// Create system tray (always created, even in headless mode)
 	systray := app.SystemTray.New()
 	appService.SetSystemTray(systray)
@@ -221,6 +234,11 @@ func main() {
 		mon.Stop()
 		rpc.StopNotifier()
 		rpc.ForceSaveSession()
+
+		// Best-effort: stop extension WebSocket server
+		if appService.extensionServer != nil {
+			appService.extensionServer.Stop()
+		}
 
 		// Gracefully clean up Surge engine background workers
 		if closer, ok := appService.downloadEngine.(interface{ Close() }); ok {

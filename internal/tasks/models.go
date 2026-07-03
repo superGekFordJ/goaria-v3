@@ -26,15 +26,19 @@ type ExtractorAuthRuntimeSourcePlanner interface {
 }
 
 type addTaskCandidate struct {
-	sourceURL     string
-	url           string
-	out           string
-	sizeBytes     int64
-	extracted     bool
-	protected     bool
-	displayKey    string
-	item          extractor.ResolvedAddItem
-	downloadGroup *downloadgroups.DownloadGroupPlan
+	sourceURL         string
+	url               string
+	out               string
+	sizeBytes         int64
+	extracted         bool
+	protected         bool
+	displayKey        string
+	item              extractor.ResolvedAddItem
+	downloadGroup     *downloadgroups.DownloadGroupPlan
+	externalHeaders   []string
+	externalSizeBytes int64
+	skipHeadProbe     bool
+	externalDedupKey  string
 }
 
 type addTaskSummary struct {

@@ -362,5 +362,21 @@
       "document": "ドキュメント",
       "disk": "ディスクイメージ"
     }
+  },
+  "extension": {
+    "title": "ブラウザ拡張機能",
+    "pairHelp": "ボタンをクリックし、ブラウザに拡張機能をインストールしてペアリングを完了します。",
+    "pair": "ブラウザ拡張機能をペアリング",
+    "unpair": "ペアリング解除",
+    "pairing": "ペアリング中...",
+    "pairUrl": "ペアリング URL",
+    "paired": "ペアリング済み",
+    "wsPort": "WebSocket ポート",
+    "connectedClients": "接続中の拡張機能",
+    "status": {
+      "listening": "ポート {port} でリッスン中",
+      "disconnected": "リッスンしていません",
+      "paired": "{count} 個の拡張機能とペアリング済み"
+    }
   }
 }

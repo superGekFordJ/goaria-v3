@@ -10,6 +10,7 @@ import (
 
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/downloadgroups"
+	"goaria-v3/internal/extension"
 	"goaria-v3/internal/extractor"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
@@ -17,6 +18,9 @@ import (
 	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
 )
+
+// Compile-time check: *Service satisfies the extension.TaskAdder interface.
+var _ extension.TaskAdder = (*Service)(nil)
 
 // scopeClassifier is a package-level scope classifier with host caching.
 var scopeClassifier = speedstats.NewScopeClassifier()
@@ -38,6 +42,71 @@ func collectActiveTaskInfos() []smartthread.TrackedTaskInfo {
 		}
 	}
 	return result
+}
+
+// AddUriFromExtension processes a download request from the browser extension.
+// It goes through the directAddTaskCandidate path (extracted=false, protected=false)
+// carrying extension metadata (headers/size/dedupKey) so the task benefits from the
+// full smartthread/BBR/ConvergenceTicker/CDN detector pipeline.
+func (s *Service) AddUriFromExtension(req extension.DownloadRequest) (string, error) {
+	normalizedUrl := strings.TrimSpace(req.URL)
+	if normalizedUrl == "" {
+		return "", errors.New("empty url")
+	}
+
+	if err := rpc.ValidateAddURIHeaders(req.Headers); err != nil {
+		return "", err
+	}
+
+	headers := req.Headers
+	if req.DownloadPage != "" {
+		headers = ensureRefererHeader(headers, req.DownloadPage)
+	}
+
+	active, _ := s.Engine.TellActive()
+	waiting, _ := s.Engine.TellWaiting(0, 1000)
+	stopped, _ := s.Engine.TellStopped(0, 1000)
+	existingURLs := collectExistingTaskSourceURLs(active, waiting, stopped)
+
+	dedupTarget := normalizedUrl
+	if req.DedupKey != "" {
+		dedupTarget = req.DedupKey
+	}
+	if existingURLs[dedupTarget] || history.ContainsSource(dedupTarget) {
+		return "", errors.New("duplicate")
+	}
+
+	candidate := directAddTaskCandidate(normalizedUrl)
+	candidate.externalHeaders = headers
+	candidate.externalSizeBytes = req.FileSize
+	candidate.skipHeadProbe = req.SkipHeadProbe
+	candidate.externalDedupKey = req.DedupKey
+	if req.Filename != "" {
+		candidate.out = req.Filename
+	}
+	if req.FileSize > 0 {
+		candidate.sizeBytes = req.FileSize
+	}
+
+	authState := newAddTaskAuthBatchState()
+	ledger := smartthread.NewBandwidthLedger(collectActiveTaskInfos())
+
+	gid, err := s.addTaskCandidate(context.Background(), candidate, authState, ledger)
+	if err != nil {
+		return "", err
+	}
+	return gid, nil
+}
+
+// ensureRefererHeader adds a Referer header from the download page URL if none is present.
+func ensureRefererHeader(headers []string, downloadPage string) []string {
+	for _, h := range headers {
+		name, _, ok := strings.Cut(h, ":")
+		if ok && strings.EqualFold(strings.TrimSpace(name), "Referer") {
+			return headers
+		}
+	}
+	return append(headers, "Referer: "+downloadPage)
 }
 
 func (s *Service) AddUri(url string) string {
@@ -407,8 +476,13 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 		var ttfbMs int64
 		var remoteIP string
 
-		if !candidate.extracted && !candidate.protected && len(headers) == 0 {
-			probe := rpc.HeadProbe(candidate.url, 3*time.Second)
+		if !candidate.extracted && !candidate.protected && !candidate.skipHeadProbe && candidate.externalSizeBytes == 0 {
+			var probe rpc.HeadProbeResult
+			if len(headers) > 0 {
+				probe = rpc.HeadProbeWithHeaders(candidate.url, 3*time.Second, headers)
+			} else {
+				probe = rpc.HeadProbe(candidate.url, 3*time.Second)
+			}
 			fileSize = probe.ContentLength
 			ttfbMs = probe.TTFBMs
 			remoteIP = probe.RemoteIP
@@ -499,11 +573,53 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 }
 
 func (s *Service) buildCandidateHeaders(ctx context.Context, candidate addTaskCandidate) ([]string, error) {
+	extractorHeaders, err := s.buildExtractorHeaders(ctx, candidate)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidate.externalHeaders) == 0 {
+		return extractorHeaders, nil
+	}
+	if len(extractorHeaders) == 0 {
+		return candidate.externalHeaders, nil
+	}
+	return mergeHeaders(candidate.externalHeaders, extractorHeaders), nil
+}
+
+func (s *Service) buildExtractorHeaders(ctx context.Context, candidate addTaskCandidate) ([]string, error) {
 	if !candidate.extracted || s == nil || s.Dispatcher == nil {
 		return nil, nil
 	}
 
 	return s.Dispatcher.BuildAria2Headers(ctx, candidate.item)
+}
+
+// mergeHeaders combines external (extension) headers with extractor headers,
+// deduplicating by header name (case-insensitive). externalHeaders take priority.
+func mergeHeaders(externalHeaders, extractorHeaders []string) []string {
+	seen := make(map[string]struct{}, len(externalHeaders)+len(extractorHeaders))
+	result := make([]string, 0, len(externalHeaders)+len(extractorHeaders))
+
+	addIfNew := func(line string) {
+		name, _, ok := strings.Cut(line, ":")
+		if !ok {
+			return
+		}
+		key := strings.ToLower(strings.TrimSpace(name))
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		result = append(result, line)
+	}
+
+	for _, h := range externalHeaders {
+		addIfNew(h)
+	}
+	for _, h := range extractorHeaders {
+		addIfNew(h)
+	}
+	return result
 }
 
 func newAddTaskAuthBatchState() *addTaskAuthBatchState {

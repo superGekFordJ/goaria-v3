@@ -362,5 +362,21 @@
       "document": "Dokument",
       "disk": "Datenträgerabbild"
     }
+  },
+  "extension": {
+    "title": "Browser-Erweiterung",
+    "pairHelp": "Klicken Sie auf die Schaltfläche und installieren Sie die Erweiterung in Ihrem Browser, um die Kopplung abzuschließen.",
+    "pair": "Browser-Erweiterung koppeln",
+    "unpair": "Entkoppeln",
+    "pairing": "Koppelung...",
+    "pairUrl": "Koppelungs-URL",
+    "paired": "Gekoppelt",
+    "wsPort": "WebSocket-Port",
+    "connectedClients": "Verbundene Erweiterungen",
+    "status": {
+      "listening": "Lauscht auf Port {port}",
+      "disconnected": "Nicht aktiv",
+      "paired": "Mit {count} Erweiterung(en) gekoppelt"
+    }
   }
 }

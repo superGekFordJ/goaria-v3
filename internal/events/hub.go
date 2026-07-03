@@ -162,3 +162,30 @@ func (h *Hub) EmitUpdateProgress(downloaded, total, speed int64) {
 		})
 	}
 }
+
+// EmitExtensionStatus pushes extension connection status to the frontend.
+func (h *Hub) EmitExtensionStatus(status interface{}) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.app != nil && h.app.Event != nil {
+		h.app.Event.Emit("extension:status", status)
+	}
+}
+
+// EmitExtensionPaired notifies the frontend that pairing completed.
+func (h *Hub) EmitExtensionPaired() {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.app != nil && h.app.Event != nil {
+		h.app.Event.Emit("extension:paired")
+	}
+}
+
+// EmitExtensionUnpaired notifies the frontend that the extension was unpaired.
+func (h *Hub) EmitExtensionUnpaired() {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.app != nil && h.app.Event != nil {
+		h.app.Event.Emit("extension:unpaired")
+	}
+}

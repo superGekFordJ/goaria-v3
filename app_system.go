@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/config"
+	"goaria-v3/internal/extension"
 	"goaria-v3/internal/process"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/update"
@@ -341,4 +342,62 @@ func (a *App) SelectDirectory() string {
 		return ""
 	}
 	return result
+}
+
+// --- Browser Extension ---
+
+// openURLInDefaultBrowser opens a URL in the system's default browser.
+func openURLInDefaultBrowser(url string) error {
+	var name string
+	var args []string
+	switch runtime.GOOS {
+	case "windows":
+		name = "cmd"
+		args = []string{"/c", "start", "", url}
+	case "darwin":
+		name = "open"
+		args = []string{url}
+	default:
+		name = "xdg-open"
+		args = []string{url}
+	}
+	cmd := exec.Command(name, args...)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	_ = cmd.Process.Release()
+	return nil
+}
+
+// GetExtensionStatus returns the extension server status for the frontend.
+func (a *App) GetExtensionStatus() extension.ExtensionStatus {
+	if a.extensionServer == nil {
+		return extension.ExtensionStatus{Status: "disconnected"}
+	}
+	return a.extensionServer.GetStatus()
+}
+
+// PairExtension starts the pairing flow and opens the pairing page in the default browser.
+func (a *App) PairExtension() (string, error) {
+	if a.extensionServer == nil {
+		return "", errors.New("extension server not initialized")
+	}
+	ps := extension.NewPairingService(a.extensionServer.GetStore(), a.eventHub)
+	a.extensionServer.SetPairingService(ps)
+
+	url, err := ps.Start()
+	if err != nil {
+		return "", err
+	}
+	_ = openURLInDefaultBrowser(url)
+	return url, nil
+}
+
+// UnpairExtension clears the secret and emits the unpaired event.
+func (a *App) UnpairExtension() error {
+	if a.extensionServer == nil {
+		return errors.New("extension server not initialized")
+	}
+	a.extensionServer.NotifyUnpaired()
+	return nil
 }

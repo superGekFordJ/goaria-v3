@@ -11,6 +11,7 @@
   import UASection from './sections/UASection.vue'
   import AppearanceSection from './sections/AppearanceSection.vue'
   import AdvancedSection from './sections/AdvancedSection.vue'
+  import ExtensionSection from './sections/ExtensionSection.vue'
   import UpdateSection from './sections/UpdateSection.vue'
 
   const { t } = useI18n()
@@ -193,6 +194,9 @@
           v-model:show-history="formData.show_history"
           @change="triggerSave"
         />
+
+        <!-- Browser Extension Pairing -->
+        <ExtensionSection />
 
         <!-- About / Version Info & Update -->
         <UpdateSection />
