@@ -71,7 +71,7 @@
     </div>
 
     <!-- Pairing URL Display -->
-    <div v-if="extensionStore.pairUrl && extensionStore.pairing" class="mb-4">
+    <div v-if="extensionStore.pairUrl" class="mb-4">
       <label class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-2">
         <Link2 :size="10" />
         {{ t('extension.pairUrl') }}

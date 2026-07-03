@@ -51,6 +51,7 @@ export const useExtensionStore = defineStore('extension', () => {
       await UnpairExtension()
       paired.value = false
       status.value = 'listening'
+      pairUrl.value = ''
       await refreshStatus()
     } catch (err) {
       console.error('Failed to unpair extension:', err)
@@ -74,12 +75,14 @@ export const useExtensionStore = defineStore('extension', () => {
     pairedUnsubscribe = Events.On('extension:paired', () => {
       paired.value = true
       status.value = 'paired'
+      pairUrl.value = ''
       refreshStatus()
     })
 
     unpairedUnsubscribe = Events.On('extension:unpaired', () => {
       paired.value = false
       status.value = 'listening'
+      pairUrl.value = ''
       refreshStatus()
     })
   }

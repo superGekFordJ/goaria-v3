@@ -85,6 +85,27 @@ func TestStart_PortFallback(t *testing.T) {
 	}
 }
 
+// TestStart_PreferredPortTaken_FallsBack verifies that when the preferred port
+// is occupied, Start falls back to the next available WSPortFallbacks entry.
+func TestStart_PreferredPortTaken_FallsBack(t *testing.T) {
+	blocker, err := net.Listen("tcp", "127.0.0.1:16801")
+	if err != nil {
+		t.Skipf("cannot occupy 16801: %v", err)
+	}
+	defer blocker.Close()
+
+	srv := newTestServer(t, nil, nil)
+	defer srv.Stop()
+
+	if err := srv.Start(16801); err != nil {
+		t.Fatalf("Start(16801) with 16801 occupied failed: %v", err)
+	}
+	status := srv.GetStatus()
+	if status.WSPort != 16802 {
+		t.Fatalf("expected fallback to 16802, got %d", status.WSPort)
+	}
+}
+
 func TestOrigin_AllowedChrome(t *testing.T) {
 	srv := newTestServer(t, nil, nil)
 	defer srv.Stop()
@@ -402,6 +423,53 @@ func TestUnpair_ClearsSecret(t *testing.T) {
 	status := srv.GetStatus()
 	if status.Paired {
 		t.Fatal("status should show unpaired after unpair")
+	}
+}
+
+// TestUnpair_DisconnectsAuthenticatedConnections verifies that unpairing
+// closes all active WebSocket connections, not just clears the secret.
+func TestUnpair_DisconnectsAuthenticatedConnections(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("pair-secret")
+	srv := newTestServer(t, nil, store)
+	defer srv.Stop()
+	if err := srv.Start(0); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	conn := dialWS(t, srv.GetStatus().WSPort, "chrome-extension://abc")
+	defer conn.Close()
+
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	auth := AuthMessage{Type: MsgTypeAuth, Secret: "pair-secret"}
+	_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, auth))
+
+	if status := srv.GetStatus(); status.ConnectedClients != 1 {
+		t.Fatalf("expected 1 connected client before unpair, got %d", status.ConnectedClients)
+	}
+
+	srv.NotifyUnpaired()
+
+	// Connection should be closed by NotifyUnpaired.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		_, _, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+	}
+
+	// Wait for the deferred cleanup to decrement connectedClients.
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if srv.GetStatus().ConnectedClients <= 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if status := srv.GetStatus(); status.ConnectedClients != 0 {
+		t.Fatalf("expected 0 connected clients after unpair, got %d", status.ConnectedClients)
 	}
 }
 

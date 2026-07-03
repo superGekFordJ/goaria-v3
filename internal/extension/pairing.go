@@ -2,6 +2,7 @@ package extension
 
 import (
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"sync"
@@ -46,10 +47,10 @@ func (p *PairingService) Start() (string, error) {
 		p.mu.Unlock()
 		return url, nil
 	}
-	p.mu.Unlock()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
+		p.mu.Unlock()
 		return "", fmt.Errorf("pairing listen: %w", err)
 	}
 
@@ -69,7 +70,6 @@ func (p *PairingService) Start() (string, error) {
 
 	srv := &http.Server{Handler: mux}
 
-	p.mu.Lock()
 	p.listener = listener
 	p.httpServer = srv
 	p.active = true
@@ -131,5 +131,5 @@ func pairPageHTML(secret string) string {
 <div id="cfg" data-secret="%s"></div>
 <p>Pairing in progress... / 正在绑定...</p>
 </body>
-</html>`, secret)
+</html>`, html.EscapeString(secret))
 }

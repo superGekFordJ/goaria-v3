@@ -79,12 +79,18 @@ func (s *Server) GetStore() *SecretStore {
 	return s.store
 }
 
-// Start binds to the first available port from WSPortFallbacks and begins accepting.
-// preferredPort > 0 overrides the fallback list. Non-blocking: accept loop runs in a goroutine.
+// Start binds to the first available port and begins accepting.
+// preferredPort > 0 is tried first, then WSPortFallbacks entries (excluding it).
+// Non-blocking: accept loop runs in a goroutine.
 func (s *Server) Start(preferredPort int) error {
 	ports := WSPortFallbacks
 	if preferredPort > 0 {
 		ports = []int{preferredPort}
+		for _, p := range WSPortFallbacks {
+			if p != preferredPort {
+				ports = append(ports, p)
+			}
+		}
 	}
 
 	var listener net.Listener
@@ -293,7 +299,8 @@ func (s *Server) markPaired() bool {
 }
 
 // NotifyPaired emits extension:paired and shuts down the pairing service.
-// Re-checks paired under the lock to avoid emitting paired after a concurrent unpair.
+// Re-checks paired under the lock to narrow the window; a concurrent unpair
+// could still flip paired between RUnlock and the emit (benign UI flicker).
 func (s *Server) NotifyPaired() {
 	s.mu.RLock()
 	paired := s.paired
@@ -309,11 +316,21 @@ func (s *Server) NotifyPaired() {
 	}
 }
 
-// NotifyUnpaired clears the secret, emits extension:unpaired.
+// NotifyUnpaired clears the secret, disconnects active connections, emits extension:unpaired.
 func (s *Server) NotifyUnpaired() {
 	s.mu.Lock()
 	s.paired = false
+	conns := make([]*websocket.Conn, 0, len(s.activeConns))
+	for conn := range s.activeConns {
+		conns = append(conns, conn)
+		delete(s.activeConns, conn)
+	}
 	s.mu.Unlock()
+
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+
 	if s.store != nil {
 		s.store.ClearSecret()
 	}
