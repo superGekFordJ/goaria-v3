@@ -28,9 +28,10 @@ type PendingRequest = {
   sentAt: number
 }
 
-// Auth-fail heuristic: if the socket closes very soon after we sent the auth
-// message, the backend rejected the secret and closed the connection. Without
-// this we would loop forever retrying the same bad secret.
+// Auth-fail heuristic: if the socket closes very soon after we sent a
+// non-empty-secret auth message, the backend rejected the secret and closed
+// the connection. Without this we would loop forever retrying the same bad
+// secret. Skipped in MVP mode (empty secret) where auth can't fail.
 const AUTH_FAIL_WINDOW_MS = 1500
 
 const AUTH_FAIL_ERROR =
@@ -39,7 +40,7 @@ const AUTH_FAIL_ERROR =
 /**
  * WebSocket client that probes the GoAria backend ports, authenticates with the
  * stored pairing secret, forwards download requests, and reconnects with
- * exponential backoff. Designed for Chrome MV3 service-worker lifecycle:
+ * linear backoff. Designed for Chrome MV3 service-worker lifecycle:
  * construction is cheap and connect() reads the secret from storage.local so
  * a restarted SW can recover transparently.
  */
@@ -51,6 +52,10 @@ export class WsClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private authSentAt = 0
   private authFailed = false
+  // Whether the last sendAuth used a non-empty secret. The auth-fail
+  // heuristic only applies when the secret was non-empty: in MVP mode (empty
+  // secret) the Go backend skips validation, so a quick close can't be auth.
+  private authSecretNonEmpty = false
   // Monotonic id used to correlate download_ack replies with pending promises.
   private nextRequestId = 1
   private pending = new Map<number, PendingRequest>()
@@ -65,6 +70,12 @@ export class WsClient {
     if (this.probing) return
     this.manuallyDisconnected = false
     this.authFailed = false
+    // A fresh connect() (SW startup or post-pairing reconnect) is a new
+    // starting point — clear the backoff counter so a long outage before
+    // pairing doesn't make the first post-pairing reconnect wait minutes.
+    // The auto-reconnect path goes through scheduleReconnect() directly,
+    // bypassing connect(), so this does not reset the counter mid-backoff.
+    this.reconnectAttempts = 0
     void this.probeAndConnect()
   }
 
@@ -156,7 +167,7 @@ export class WsClient {
         // Continue to next port.
       }
     }
-    // All ports failed: schedule exponential backoff.
+    // All ports failed: schedule linear backoff.
     this.currentPort = 0
     this.setStatus('connecting', lastError)
     this.scheduleReconnect()
@@ -234,6 +245,7 @@ export class WsClient {
     this.currentPort = port
     this.authSentAt = 0
     this.authFailed = false
+    this.authSecretNonEmpty = false
     this.setStatus('connecting', '')
 
     socket.onopen = () => {
@@ -262,6 +274,7 @@ export class WsClient {
     try {
       this.ws.send(JSON.stringify({ type: MSG_TYPE_AUTH, secret }))
       this.authSentAt = Date.now()
+      this.authSecretNonEmpty = secret !== ''
     } catch (err) {
       // Socket dropped between open and auth send; let onclose drive reconnect.
       this.setStatus('connecting', err instanceof Error ? err.message : String(err))
@@ -309,6 +322,7 @@ export class WsClient {
   private handleClose(): void {
     const wasAuthFail =
       this.authSentAt > 0 &&
+      this.authSecretNonEmpty &&
       Date.now() - this.authSentAt < AUTH_FAIL_WINDOW_MS &&
       !this.manuallyDisconnected
     this.teardownSocket()

@@ -45,9 +45,10 @@ async function pair(): Promise<void> {
 
   setStatus(TEXT_SUCCESS)
   // Some browsers block window.close() for non-script-opened tabs.
+  // Wait 3s for the success message to be visible, then attempt close;
+  // if the tab is still alive 200ms later, close was blocked.
   setTimeout(() => {
     window.close()
-    // If still here after 3.2s, close was blocked.
     setTimeout(() => setStatus(`${TEXT_SUCCESS}\n${TEXT_CLOSE_FALLBACK}`), 200)
   }, 3000)
 }
