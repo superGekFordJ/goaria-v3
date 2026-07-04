@@ -190,8 +190,7 @@ function decodeStarFilename(raw: string): string {
 }
 
 export function hasAttachmentDisposition(contentDisposition: string): boolean {
-  if (!contentDisposition) return false
-  return /attachment/i.test(contentDisposition)
+  return getDispositionType(contentDisposition) === 'attachment'
 }
 
 /** Extract the disposition type token (first token before ';'), lower-cased. */
