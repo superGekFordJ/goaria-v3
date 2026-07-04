@@ -78,6 +78,8 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
       fileSize: contentLength,
       filename: extractFilename(contentDisposition, details.url),
       referrer,
+      initiator: details.initiator,
+      originUrl: details.originUrl,
     }
   }
 }

@@ -119,6 +119,11 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
     const decision = this.shouldIntercept(ctx)
     if (decision !== 'intercept') return
 
+    // Small files: pause is ineffective and the download completes before the
+    // ack can cancel it, causing a duplicate download. Skip early when the size
+    // is known and below the threshold. Unknown size (0) still attempts takeover.
+    if (ctx.fileSize > 0 && ctx.fileSize < SMALL_FILE_THRESHOLD_BYTES) return
+
     // Persist the pending decision BEFORE pausing so a SW death between pause
     // and save doesn't leave the download stuck paused with no recovery state.
     const pendingDecision: PendingDecision = {

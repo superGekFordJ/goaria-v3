@@ -3,7 +3,7 @@
 // imports between the base class and the concrete interceptors.
 
 /** Outcome of the synchronous decision step. */
-export type InterceptionDecision = 'intercept' | 'pass' | 'too_small'
+export type InterceptionDecision = 'intercept' | 'pass'
 
 /**
  * Context describing a single candidate download. Populated by the
@@ -23,4 +23,12 @@ export type InterceptionContext = {
   filename: string
   /** Download page URL used as the Referer source. */
   referrer: string
+  /**
+   * Request initiator URL (Firefox webRequest). When the initiator is an
+   * extension page, the referrer field alone would mask the real originUrl;
+   * passing both separately lets getDownloadPageUrl check each independently.
+   */
+  initiator?: string
+  /** Origin URL (Firefox webRequest only), used as a Referer fallback. */
+  originUrl?: string
 }

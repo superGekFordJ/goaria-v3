@@ -78,7 +78,7 @@ export abstract class DownloadLinkInterceptor {
       return 'intercept'
     }
     // inline disposition is a page-embedded resource, not a download.
-    if (ctx.contentDisposition.toLowerCase().includes('inline')) return 'pass'
+    if (getDispositionType(ctx.contentDisposition) === 'inline') return 'pass'
 
     const mime = ctx.mimeType
     if (mime && NON_DOWNLOAD_MIME_TYPES.has(mime)) return 'pass'
@@ -97,7 +97,12 @@ export abstract class DownloadLinkInterceptor {
   ): Promise<DownloadHandoffMessage> {
     const [cookies, downloadPage] = await Promise.all([
       getCookiesForUrl(ctx.url),
-      getDownloadPageUrl({ tabId: ctx.tabId, referrer: ctx.referrer }),
+      getDownloadPageUrl({
+        tabId: ctx.tabId,
+        referrer: ctx.referrer,
+        initiator: ctx.initiator,
+        originUrl: ctx.originUrl,
+      }),
     ])
     // When the size is already known, skip the backend HEAD probe to avoid
     // burning a presigned-CDN signature on an extra request.
@@ -158,8 +163,8 @@ export function extractMimeType(contentType: string): string {
 
 export function extractFilename(contentDisposition: string, url: string): string {
   if (contentDisposition) {
-    // RFC 6266 filename* (RFC 5987) then plain filename.
-    const star = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(contentDisposition)
+    // RFC 6266 filename* (RFC 5987 ext-value: charset'language'value).
+    const star = /filename\*=(?:[^']*'[^']*')?([^;]+)/i.exec(contentDisposition)
     if (star?.[1]) {
       return decodeStarFilename(star[1].trim())
     }
@@ -187,6 +192,14 @@ function decodeStarFilename(raw: string): string {
 export function hasAttachmentDisposition(contentDisposition: string): boolean {
   if (!contentDisposition) return false
   return /attachment/i.test(contentDisposition)
+}
+
+/** Extract the disposition type token (first token before ';'), lower-cased. */
+export function getDispositionType(contentDisposition: string): string {
+  if (!contentDisposition) return ''
+  const semi = contentDisposition.indexOf(';')
+  const base = semi === -1 ? contentDisposition : contentDisposition.slice(0, semi)
+  return base.trim().toLowerCase()
 }
 
 export function isDownloadMimeType(mimeType: string): boolean {

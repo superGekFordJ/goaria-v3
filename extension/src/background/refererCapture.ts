@@ -18,7 +18,7 @@ export async function getDownloadPageUrl(params: {
   if (params.referrer && !isExtensionUrl(params.referrer)) return params.referrer
   if (params.initiator && !isExtensionUrl(params.initiator)) return params.initiator
   if (params.originUrl && !isExtensionUrl(params.originUrl)) return params.originUrl
-  if (params.tabId !== undefined) {
+  if (params.tabId !== undefined && params.tabId >= 0) {
     try {
       const tab = await browser.tabs.get(params.tabId)
       if (tab.url && !isExtensionUrl(tab.url)) return tab.url
