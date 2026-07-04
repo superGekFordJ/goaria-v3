@@ -9,7 +9,6 @@ export function getBaseManifest() {
     name: EXTENSION_NAME,
     description: EXTENSION_DESCRIPTION,
     version: EXTENSION_VERSION,
-    default_locale: 'en',
     manifest_version: 3,
     icons: {
       48: 'icons/icon-48.png',
@@ -24,7 +23,7 @@ export function getBaseManifest() {
     ],
     web_accessible_resources: [
       {
-        resources: ['icons/*', 'src/styles/*'],
+        resources: ['icons/*'],
         matches: ['*://*/*'],
       },
     ],

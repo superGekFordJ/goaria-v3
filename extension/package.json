@@ -12,7 +12,7 @@
     "build": "pnpm run build:chrome && pnpm run build:firefox",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint . --fix",
-    "format": "prettier --write \"src/**/*.{js,ts,svelte,css,html}\""
+    "format": "prettier --write \"*.{js,ts,json}\" \"src/**/*.{js,ts,svelte,css,html}\""
   },
   "dependencies": {
     "hls-parser": "0.16.1",
