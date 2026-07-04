@@ -20,6 +20,12 @@ export function getBaseManifest() {
         matches: ['*://*/*'],
         js: ['src/contentscripts/contentScript.ts'],
       },
+      {
+        // Omitting the port matches any port (manifest patterns can't pin a
+        // port). The unique /__goaria_pair__/ path narrows the attack surface.
+        matches: ['http://127.0.0.1/__goaria_pair__/pair.html'],
+        js: ['src/contentscripts/pair.ts'],
+      },
     ],
     web_accessible_resources: [
       {
