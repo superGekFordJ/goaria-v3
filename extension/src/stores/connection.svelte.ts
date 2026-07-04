@@ -1,4 +1,4 @@
-import { onMessage, sendMessage } from 'webext-bridge/window'
+import { onMessage, sendMessage } from 'webext-bridge/popup'
 import type { WsStatusMessage } from '../utils/messaging'
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected'

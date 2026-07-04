@@ -19,8 +19,9 @@ onMessage('pair:secret', async ({ data }: { data: PairSecretMessage }) => {
   try {
     await browser.storage.local.set({ [STORAGE_KEY_SECRET]: data.secret })
   } catch {
-    // storage write failure: still attempt reconnect with the in-memory secret
-    // by stashing it where sendAuth reads. Fallback path is best-effort.
+    // storage write failure (e.g. incognito split mode): cannot persist the
+    // secret, so reconnect would use a stale/empty secret. Surface the error
+    // to pair.ts so the user can retry from GoAria settings.
     return { ok: false }
   }
   wsClient.disconnect()

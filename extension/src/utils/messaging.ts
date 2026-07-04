@@ -3,7 +3,20 @@
 //   pair:secret   — content script (pair.ts) -> background, forwards pairing secret.
 //   ws:status     — background -> popup, pushes WS connection state changes.
 //   ws:getStatus  — popup -> background, one-shot query for current WS state.
-//   download:*    — reserved for future interception SPECs.
+//   download:*    — reserved for future interception features.
+
+import type { ProtocolWithReturn } from 'webext-bridge'
+
+// Type-safe protocol map: webext-bridge infers data/return types from these
+// declarations so sendMessage/onMessage callers get compile-time checks.
+declare module 'webext-bridge' {
+  export interface ProtocolMap {
+    ping: ProtocolWithReturn<PingMessage, PongMessage>
+    'pair:secret': ProtocolWithReturn<PairSecretMessage, PairResult>
+    'ws:status': WsStatusMessage
+    'ws:getStatus': ProtocolWithReturn<GetWsStatusMessage, WsStatusMessage>
+  }
+}
 
 export type PingMessage = { type: 'ping' }
 export type PongMessage = { pong: boolean }
@@ -23,6 +36,11 @@ export type DownloadHandoffMessage = {
 
 export type PairSecretMessage = {
   secret: string
+}
+
+// Result returned by the background's pair:secret handler.
+export type PairResult = {
+  ok: boolean
 }
 
 // Mirrors connection.svelte.ts ConnectionStatus.

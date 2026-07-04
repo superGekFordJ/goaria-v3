@@ -60,6 +60,9 @@ export class WsClient {
   /** Start port probing + auth. Safe to call multiple times. */
   connect(): void {
     if (this.ws?.readyState === WebSocket.OPEN) return
+    // A probe is already in flight; let it complete rather than spawning a
+    // second socket that would leak when the first resolves.
+    if (this.probing) return
     this.manuallyDisconnected = false
     this.authFailed = false
     void this.probeAndConnect()
@@ -281,7 +284,12 @@ export class WsClient {
       if (resp.success && !connectionState.paired) {
         connectionState.paired = true
       }
-      // Ack resolves the oldest pending request (single-flight per socket).
+      // Ack resolves the oldest pending request. This relies on a
+      // single-flight assumption: only one download request is in flight per
+      // socket at a time. The Go backend (server.go handleConn) does not echo
+      // a request id, so FIFO is the only correlation strategy. Concurrent
+      // requests would risk mismatched acks; future interceptors must
+      // serialize calls or add request-id support (requires Go changes).
       const entry = this.firstPending()
       if (!entry) return
       clearTimeout(entry.timer)
@@ -367,7 +375,7 @@ export class WsClient {
   private setStatus(status: WsStatusMessage['status'], lastError: string): void {
     connectionState.status = status
     connectionState.wsPort = this.currentPort
-    if (lastError !== undefined) connectionState.lastError = lastError
+    connectionState.lastError = lastError
     if (status === 'connected') {
       this.reconnectAttempts = 0
     }

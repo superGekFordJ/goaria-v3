@@ -28,10 +28,17 @@ async function pair(): Promise<void> {
     return
   }
 
+  let result: { ok: boolean } | undefined
   try {
-    await sendMessage('pair:secret', { secret } satisfies PairSecretMessage, 'background')
+    result = await sendMessage<{ ok: boolean }>('pair:secret', { secret } satisfies PairSecretMessage, 'background')
   } catch {
     // Background SW may not be ready yet, or the message round-trip failed.
+    setStatus(TEXT_RETRY)
+    return
+  }
+
+  if (!result?.ok) {
+    // Background rejected the secret (empty or storage write failure).
     setStatus(TEXT_RETRY)
     return
   }
