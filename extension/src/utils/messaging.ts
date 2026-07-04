@@ -2,7 +2,7 @@
 // Future plans add interception, pairing, and download-forwarding messages.
 
 export type PingMessage = { type: 'ping' }
-export type PongMessage = { type: 'pong'; value: boolean }
+export type PongMessage = { pong: boolean }
 
 // Internal fields use camelCase (idiomatic TS). The Go DownloadRequest
 // (protocol.go) uses snake_case JSON tags (file_size, skip_head_probe,
