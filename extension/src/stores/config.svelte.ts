@@ -9,7 +9,7 @@ export const MSG_TYPE_DOWNLOAD_ACK = 'download_ack'
 // Aligned with server.go upgrader.Subprotocols.
 export const WS_SUBPROTOCOL = 'goaria-extension'
 
-// Exponential backoff params (delay = base * attempt, capped attempts).
+// Linear backoff params (delay = base * attempt, capped attempts).
 export const RECONNECT_BASE_DELAY_MS = 5000
 export const RECONNECT_MAX_ATTEMPTS = 120
 
