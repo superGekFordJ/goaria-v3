@@ -13,6 +13,12 @@ class ConnectionState {
     return this.status === 'connected'
   }
 
+  // Interception only takes effect while the WS link is up; otherwise the
+  // browser download would be cancelled/paused with no backend to hand off to.
+  get interceptionEnabled() {
+    return this.status === 'connected'
+  }
+
   /** Apply a status snapshot pushed by the background (ws:status). */
   updateFromStatus(msg: WsStatusMessage): void {
     this.status = msg.status

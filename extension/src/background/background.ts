@@ -2,6 +2,9 @@ import browser from 'webextension-polyfill'
 import { onMessage } from 'webext-bridge/background'
 import { wsClient } from './wsClient'
 import { STORAGE_KEY_SECRET } from '../stores/config.svelte'
+import { isFirefox } from '../utils/extensionInfo'
+import { FirefoxBlockingInterceptor } from '../interceptors/FirefoxBlockingInterceptor'
+import { ChromeDownloadsApiInterceptor } from '../interceptors/ChromeDownloadsApiInterceptor'
 import type { PairSecretMessage, WsStatusMessage } from '../utils/messaging'
 
 // Channel-verification handler kept from the scaffold phase.
@@ -35,4 +38,17 @@ onMessage('pair:secret', async ({ data }: { data: PairSecretMessage }) => {
 // No chrome.alarms keep-alive: download/pairing events wake the SW.
 wsClient.connect()
 
-export { wsClient }
+// Download interception: fork by build target. Firefox MV3 uses
+// webRequestBlocking (synchronous cancel); Chrome MV3 uses the downloads API
+// path B (pause → handoff → cancel/resume). shouldIntercept checks the WS
+// connection state, so registering before the socket is up is safe — events
+// simply pass through until the link is established.
+const interceptor = isFirefox()
+  ? new FirefoxBlockingInterceptor()
+  : new ChromeDownloadsApiInterceptor()
+interceptor.register()
+// Chrome path B persists pending decisions in storage.session so a SW restart
+// can resume an in-flight cancel/resume. Firefox is a no-op here.
+void interceptor.recoverPendingDecisions()
+
+export { wsClient, interceptor }

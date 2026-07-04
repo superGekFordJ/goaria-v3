@@ -21,6 +21,18 @@ export const WS_CONNECT_TIMEOUT_MS = 3000
 // download_ack wait before rejecting a pending download request.
 export const DOWNLOAD_ACK_TIMEOUT_MS = 10000
 
+// Extension-only constants (no Go counterpart).
+
+// Chrome MV3 small-file threshold: downloads.pause is ineffective for <1MB
+// files. Files below this size are passed through in onDeterminingFilename.
+export const SMALL_FILE_THRESHOLD_BYTES = 100 * 1024 // 100KB
+
+// SW restart pending-decision TTL: stale pending records are cleaned up after this.
+export const PENDING_DECISION_TTL_MS = 30_000 // 30s
+
+// storage.session key prefix for pending download decisions (Chrome MV3 path B).
+export const STORAGE_KEY_PENDING_PREFIX = 'pending_'
+
 class ConfigState {
   autoCapture = $state(true)
   port = $state(DEFAULT_WS_PORT)

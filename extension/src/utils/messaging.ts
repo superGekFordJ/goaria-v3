@@ -1,9 +1,10 @@
 // webext-bridge message type declarations.
 // Message IDs follow a `namespace:action` convention:
-//   pair:secret   — content script (pair.ts) -> background, forwards pairing secret.
-//   ws:status     — background -> popup, pushes WS connection state changes.
-//   ws:getStatus  — popup -> background, one-shot query for current WS state.
-//   download:*    — reserved for future interception features.
+//   pair:secret          — content script (pair.ts) -> background, forwards pairing secret.
+//   ws:status            — background -> popup, pushes WS connection state changes.
+//   ws:getStatus         — popup -> background, one-shot query for current WS state.
+//   download:intercepted — background -> content script, notifies a download was
+//                          intercepted (consumed by the in-page Shadow DOM popup).
 
 import type { ProtocolWithReturn } from 'webext-bridge'
 
@@ -15,6 +16,7 @@ declare module 'webext-bridge' {
     'pair:secret': ProtocolWithReturn<PairSecretMessage, PairResult>
     'ws:status': WsStatusMessage
     'ws:getStatus': ProtocolWithReturn<GetWsStatusMessage, WsStatusMessage>
+    'download:intercepted': DownloadInterceptedMessage
   }
 }
 
@@ -61,5 +63,16 @@ export type DownloadResponse = {
   type: 'download_ack'
   success: boolean
   gid: string
+  error?: string
+}
+
+// One-way notification: background -> content script. Fired after the
+// background resolves a download interception so the in-page popup can show a
+// confirmation/failure toast. Content scripts may not be injected on every
+// page, so sendMessage failures are expected and silently ignored.
+export type DownloadInterceptedMessage = {
+  url: string
+  filename: string
+  success: boolean
   error?: string
 }
