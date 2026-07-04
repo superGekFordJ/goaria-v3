@@ -16,6 +16,8 @@ export type PendingDecision = {
   fileSize: number
   startTime: number
   status: 'pending' | 'canceling' | 'resuming'
+  /** Resolved download page URL; preserved for SW-restart Referer recovery. */
+  downloadPage?: string
 }
 
 function keyFor(downloadId: number): string {
@@ -44,6 +46,7 @@ function parseDecision(raw: unknown): PendingDecision | null {
     fileSize: obj.fileSize,
     startTime: obj.startTime,
     status: obj.status as PendingDecision['status'],
+    downloadPage: typeof obj.downloadPage === 'string' ? obj.downloadPage : undefined,
   }
 }
 
@@ -97,6 +100,16 @@ export async function updatePendingStatus(
   await savePendingDecision(downloadId, { ...decision, status })
 }
 
+/** Persist the resolved download page URL for SW-restart Referer recovery. */
+export async function updatePendingDownloadPage(
+  downloadId: number,
+  downloadPage: string,
+): Promise<void> {
+  const decision = await getPendingDecision(downloadId)
+  if (!decision) return
+  await savePendingDecision(downloadId, { ...decision, downloadPage })
+}
+
 /** Return all non-expired pending decisions, keyed by download id. */
 export async function getAllPendingDecisions(): Promise<
   Map<number, PendingDecision>
@@ -120,9 +133,4 @@ export async function getAllPendingDecisions(): Promise<
     // ignore — best-effort
   }
   return map
-}
-
-/** Remove all expired pending decisions. Called after SW restart recovery. */
-export async function cleanupExpiredDecisions(): Promise<void> {
-  await getAllPendingDecisions()
 }

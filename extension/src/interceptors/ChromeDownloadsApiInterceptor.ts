@@ -7,6 +7,7 @@ import {
   removePendingDecision,
   savePendingDecision,
   updatePendingStatus,
+  updatePendingDownloadPage,
   type PendingDecision,
 } from '../background/pendingDecisionStore'
 
@@ -57,6 +58,10 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
   // In-memory mirror of the persisted status so the synchronous filename
   // listener doesn't need to await storage.session.
   private statusMirror = new Map<number, PendingDecision['status']>()
+  // Suggest callbacks held by onDeterminingFilename (keyed by download id).
+  // Chrome requires suggest() to be called after returning true; we invoke it
+  // from the resume path to release the filename-finalization hold.
+  private suggestFns = new Map<number, SuggestFn>()
 
   private onCreatedListener = (item: browser.Downloads.DownloadItem): void => {
     void this.onDownloadCreated(item)
@@ -114,6 +119,17 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
     const decision = this.shouldIntercept(ctx)
     if (decision !== 'intercept') return
 
+    // Persist the pending decision BEFORE pausing so a SW death between pause
+    // and save doesn't leave the download stuck paused with no recovery state.
+    const pendingDecision: PendingDecision = {
+      url: ctx.url,
+      filename: ctx.filename,
+      fileSize: ctx.fileSize,
+      startTime: Date.now(),
+      status: 'pending',
+    }
+    await savePendingDecision(item.id, pendingDecision)
+
     try {
       await browser.downloads.pause(item.id)
     } catch {
@@ -121,8 +137,12 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       try {
         const fresh = await browser.downloads.search({ id: item.id })
         const state = fresh[0]?.state
-        if (state === 'complete' || state === 'interrupted') return
+        if (state === 'complete' || state === 'interrupted') {
+          await removePendingDecision(item.id)
+          return
+        }
       } catch {
+        await removePendingDecision(item.id)
         return
       }
       // Still in_progress despite pause error — onDeterminingFilename will
@@ -137,17 +157,16 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
     downloadId: number,
     ctx: InterceptionContext,
   ): Promise<void> {
-    const decision: PendingDecision = {
-      url: ctx.url,
-      filename: ctx.filename,
-      fileSize: ctx.fileSize,
-      startTime: Date.now(),
-      status: 'pending',
-    }
-    await savePendingDecision(downloadId, decision)
+    // Pending decision was already persisted by onDownloadCreated or
+    // recoverPendingDecisions before this point.
 
     try {
       const req = await this.constructDownloadRequest(ctx)
+      // Persist the resolved download page so SW-restart recovery can rebuild
+      // the Referer source (ctx.referrer is empty after recovery).
+      if (req.downloadPage) {
+        await updatePendingDownloadPage(downloadId, req.downloadPage)
+      }
       const resp = await this.requestAddDownload(req)
       if (resp.success) {
         this.statusMirror.set(downloadId, 'canceling')
@@ -159,6 +178,7 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       } else {
         this.statusMirror.set(downloadId, 'resuming')
         await updatePendingStatus(downloadId, 'resuming')
+        this.invokeSuggest(downloadId)
         await this.resumeDownload(downloadId)
         this.cleanupMemory(downloadId)
         await removePendingDecision(downloadId)
@@ -167,6 +187,7 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
     } catch (err) {
       // WS dropped or timeout — restore the browser download.
       this.statusMirror.set(downloadId, 'resuming')
+      this.invokeSuggest(downloadId)
       await this.resumeDownload(downloadId)
       this.cleanupMemory(downloadId)
       await removePendingDecision(downloadId)
@@ -198,7 +219,11 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       suggest()
       return
     }
-    // pending or canceling — hold suggest; cancel/resume will resolve the download.
+    // pending or canceling — hold suggest; cancel/resume will resolve it.
+    // Store the callback so the resume path can release it via invokeSuggest.
+    // The cancel path doesn't call suggest (the download is erased), but
+    // cleanupMemory removes the entry to avoid leaks.
+    this.suggestFns.set(item.id, suggest)
     return true
   }
 
@@ -226,6 +251,20 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
   private cleanupMemory(downloadId: number): void {
     this.pausedIds.delete(downloadId)
     this.statusMirror.delete(downloadId)
+    this.suggestFns.delete(downloadId)
+  }
+
+  /** Release a held suggest callback (resume path). No-op if none stored. */
+  private invokeSuggest(downloadId: number): void {
+    const suggest = this.suggestFns.get(downloadId)
+    if (suggest) {
+      this.suggestFns.delete(downloadId)
+      try {
+        suggest()
+      } catch {
+        // suggest may throw if the download is already gone — ignore.
+      }
+    }
   }
 
   private contextFromDecision(decision: PendingDecision): InterceptionContext {
@@ -236,7 +275,7 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       contentDisposition: '',
       fileSize: decision.fileSize,
       filename: decision.filename,
-      referrer: '',
+      referrer: decision.downloadPage ?? '',
     }
   }
 }

@@ -28,6 +28,26 @@ const NON_DOWNLOAD_MIME_TYPES = new Set([
 // URL schemes the backend cannot handle (non-HTTP). Interception is skipped.
 const NON_HTTP_SCHEMES = new Set(['data:', 'blob:', 'javascript:', 'ftp:', 'file:', 'about:'])
 
+// MIME types that are explicit download payloads (not page/resource content).
+// Hoisted to module level so each isDownloadMimeType call reuses one Set.
+const DOWNLOAD_MIME_TYPES = new Set([
+  'application/octet-stream',
+  'application/zip',
+  'application/x-gzip',
+  'application/gzip',
+  'application/pdf',
+  'application/x-rar-compressed',
+  'application/x-tar',
+  'application/x-7z-compressed',
+  'application/x-bzip2',
+  'application/x-xz',
+  'application/msword',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+])
+
 /**
  * Shared interception pipeline. Subclasses implement the browser-specific
  * event registration (Firefox webRequestBlocking / Chrome downloads API path B)
@@ -77,7 +97,7 @@ export abstract class DownloadLinkInterceptor {
   ): Promise<DownloadHandoffMessage> {
     const [cookies, downloadPage] = await Promise.all([
       getCookiesForUrl(ctx.url),
-      getDownloadPageUrl({ referrer: ctx.referrer }),
+      getDownloadPageUrl({ tabId: ctx.tabId, referrer: ctx.referrer }),
     ])
     // When the size is already known, skip the backend HEAD probe to avoid
     // burning a presigned-CDN signature on an extra request.
@@ -98,7 +118,7 @@ export abstract class DownloadLinkInterceptor {
     const next = this.sendChain.then(() => wsClient.sendDownloadRequest(req))
     // Keep the chain alive even if a request rejects, so a failure doesn't
     // block subsequent downloads in the queue.
-    this.sendChain = next.catch(() => undefined as unknown as DownloadResponse)
+    this.sendChain = next.catch(() => undefined)
     return next
   }
 
@@ -175,24 +195,7 @@ export function isDownloadMimeType(mimeType: string): boolean {
   if (mimeType.startsWith('video/')) return true
   if (mimeType.startsWith('audio/')) return true
   if (mimeType.startsWith('image/') && mimeType !== 'image/svg+xml') return true
-  const downloadTypes = new Set([
-    'application/octet-stream',
-    'application/zip',
-    'application/x-gzip',
-    'application/gzip',
-    'application/pdf',
-    'application/x-rar-compressed',
-    'application/x-tar',
-    'application/x-7z-compressed',
-    'application/x-bzip2',
-    'application/x-xz',
-    'application/msword',
-    'application/vnd.ms-excel',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  ])
-  return downloadTypes.has(mimeType)
+  return DOWNLOAD_MIME_TYPES.has(mimeType)
 }
 
 function matchesRegisteredFileTypes(url: string): boolean {
