@@ -402,6 +402,9 @@ func TestPairing_AutoShutdownAfterAuth(t *testing.T) {
 	auth := AuthMessage{Type: MsgTypeAuth, Secret: secret}
 	_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, auth))
 
+	// Consume auth_ack before polling pairing state.
+	readAuthAck(t, conn)
+
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if !ps.IsActive() {
@@ -480,6 +483,9 @@ func TestUnpair_DisconnectsAuthenticatedConnections(t *testing.T) {
 	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	auth := AuthMessage{Type: MsgTypeAuth, Secret: "pair-secret"}
 	_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, auth))
+
+	// Consume auth_ack before checking connected clients.
+	readAuthAck(t, conn)
 
 	if status := srv.GetStatus(); status.ConnectedClients != 1 {
 		t.Fatalf("expected 1 connected client before unpair, got %d", status.ConnectedClients)
@@ -578,6 +584,9 @@ func TestStartPairing_ResetsPairedState(t *testing.T) {
 	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	auth := AuthMessage{Type: MsgTypeAuth, Secret: secret}
 	_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, auth))
+
+	// Consume auth_ack before polling pairing state.
+	readAuthAck(t, conn)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
