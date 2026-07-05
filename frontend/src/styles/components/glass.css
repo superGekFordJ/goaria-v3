@@ -154,3 +154,73 @@
   border-right: 1px solid rgba(0, 0, 0, 0.08);
 }
 
+/* === Liquid Glass v2 — Physical Edge Refraction Layers === */
+
+/* Layer 2: Specular bevel — inner sheen + inset shadows + outer drop shadow */
+/* Dark mode (default): dim highlights, dark inset borders — matches original dark aesthetic */
+.lg-bevel {
+  background: linear-gradient(
+    115deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0) 34%,
+    rgba(255, 255, 255, 0) 76%,
+    rgba(255, 255, 255, 0.02) 100%
+  );
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.16),
+    inset 0 -10px 20px -12px rgba(10, 15, 40, 0.32),
+    0 1px 2px rgba(0, 0, 0, 0.2),
+    0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* Light mode: bright crisp highlights */
+:root[data-theme='light'] .lg-bevel {
+  background: linear-gradient(
+    115deg,
+    rgba(255, 255, 255, 0.5) 0%,
+    rgba(255, 255, 255, 0) 34%,
+    rgba(255, 255, 255, 0) 76%,
+    rgba(255, 255, 255, 0.3) 100%
+  );
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.16),
+    0 2px 4px rgba(0, 0, 0, 0.05),
+    0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+/* Layer 2b: Hairline specular ring — conic-gradient masked border */
+/* Dark mode (default): very subtle dim ring, not bright white */
+.lg-specular {
+  padding: 1.4px;
+  background: conic-gradient(
+    from 0deg,
+    rgba(255, 255, 255, 0.15) 0deg,
+    rgba(255, 255, 255, 0.04) 65deg,
+    rgba(255, 255, 255, 0.08) 135deg,
+    rgba(255, 255, 255, 0.02) 200deg,
+    rgba(255, 255, 255, 0.1) 280deg,
+    rgba(255, 255, 255, 0.15) 360deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+/* Light mode: bright crisp specular ring */
+:root[data-theme='light'] .lg-specular {
+  background: conic-gradient(
+    from 0deg,
+    rgba(255, 255, 255, 0.9) 0deg,
+    rgba(255, 255, 255, 0.18) 65deg,
+    rgba(255, 255, 255, 0.38) 135deg,
+    rgba(255, 255, 255, 0.08) 200deg,
+    rgba(255, 255, 255, 0.45) 280deg,
+    rgba(255, 255, 255, 0.9) 360deg
+  );
+}
+

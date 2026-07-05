@@ -10,6 +10,10 @@ vi.mock('../../stores/ui', () => ({
   useUIStore: () => uiStoreMock,
 }))
 
+vi.mock('../../composables/useLiquidGlass', () => ({
+  useLiquidGlass: () => ({ filterId: { value: 'lg-test' } }),
+}))
+
 describe('LiquidGlassPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()

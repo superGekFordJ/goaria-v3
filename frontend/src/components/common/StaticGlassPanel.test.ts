@@ -10,6 +10,10 @@ vi.mock('../../stores/ui', () => ({
   useUIStore: () => uiStoreMock,
 }))
 
+vi.mock('../../composables/useLiquidGlass', () => ({
+  getStaticGlassFilterId: () => 'static-glass-refraction',
+}))
+
 describe('StaticGlassPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()

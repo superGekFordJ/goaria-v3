@@ -1,6 +1,7 @@
 <script setup lang="ts">
   import { computed } from 'vue'
   import { useUIStore } from '../../stores/ui'
+  import { getStaticGlassFilterId } from '../../composables/useLiquidGlass'
 
   const props = withDefaults(
     defineProps<{
@@ -10,6 +11,7 @@
       fallbackClass?: string
       baseColorClass?: string
       disabled?: boolean
+      refraction?: boolean
     }>(),
     {
       as: 'div',
@@ -18,6 +20,7 @@
       fallbackClass: '',
       baseColorClass: 'bg-white/20 dark:bg-black/20',
       disabled: false,
+      refraction: false,
     },
   )
 
@@ -25,6 +28,11 @@
 
   const isInteractive = computed(() => {
     return props.interactive && !props.disabled
+  })
+
+  const refractionFilter = computed(() => {
+    if (!props.refraction || uiStore.effects !== 'full') return ''
+    return getStaticGlassFilterId()
   })
 </script>
 
@@ -40,10 +48,11 @@
     ]"
   >
     <template v-if="uiStore.effects === 'full'">
-      <!-- Background layer with blur -->
+      <!-- Background layer with blur (+ optional static refraction) -->
       <div
         class="absolute inset-0 -z-10 pointer-events-none transition-all duration-300 backdrop-blur-2xl dark:backdrop-blur-xl"
         :class="[radius, baseColorClass]"
+        :style="refractionFilter ? { backdropFilter: `blur(16px) url(#${refractionFilter})`, WebkitBackdropFilter: `blur(16px) url(#${refractionFilter})` } : {}"
       ></div>
 
       <!-- Soft Glass Edge & Shadow Layer -->
