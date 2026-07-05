@@ -15,15 +15,30 @@ export function getBaseManifest() {
       96: 'icons/icon-96.png',
       128: 'icons/icon-128.png',
     },
+    // Firefox MV3 upgrades ws:// to wss:// via the default CSP
+    // upgrade-insecure-requests directive (Bug 1676024); the GoAria backend
+    // has no TLS so the connection would fail. Explicit CSP keeps plain ws://
+    // by omitting upgrade-insecure-requests and allowing 127.0.0.1 in
+    // connect-src. If future extension pages need remote fetches, widen
+    // connect-src accordingly.
+    content_security_policy: {
+      extension_pages:
+        "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src ws://127.0.0.1:* http://127.0.0.1:*;",
+    },
     content_scripts: [
       {
         matches: ['*://*/*'],
         js: ['src/contentscripts/contentScript.ts'],
       },
       {
-        // Omitting the port matches any port (manifest patterns can't pin a
-        // port). The unique /__goaria_pair__/ path narrows the attack surface.
-        matches: ['http://127.0.0.1/__goaria_pair__/pair.html'],
+        // Firefox path matching includes the query string (?n=<nonce>), so a
+        // pattern without a trailing * won't match the pairing URL. Both
+        // Firefox and Chrome ignore the port in match patterns, so omitting
+        // the port still matches any port. The trailing * absorbs the query.
+        // pair.ts also self-filters by pathname as a defensive guard.
+        // If precise injection is found not to work in practice, fall back to
+        // a global match (*://*/*) with the pathname guard as the sole filter.
+        matches: ['http://127.0.0.1/__goaria_pair__/pair.html*'],
         js: ['src/contentscripts/pair.ts'],
       },
     ],

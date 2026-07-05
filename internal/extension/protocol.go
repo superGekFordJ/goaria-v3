@@ -5,11 +5,17 @@ const (
 	PairPathPrefix     = "/__goaria_pair__/"
 	PairPagePath       = "/__goaria_pair__/pair.html"
 	MsgTypeAuth        = "auth"
+	MsgTypeAuthAck     = "auth_ack"
 	MsgTypeDownload    = "download"
 	MsgTypeDownloadAck = "download_ack"
 )
 
 var WSPortFallbacks = []int{16801, 16802, 16803}
+
+// PairPortFallbacks are tried in order for the short-lived pairing HTTP server.
+// Fixed ports avoid OS-random :0 landing on a browser-banned port (e.g. 6000/X11);
+// 16810-16814 sit well above the Firefox/Chrome ceiling of 10080.
+var PairPortFallbacks = []int{16810, 16811, 16812, 16813, 16814}
 
 // AuthMessage is the first message an extension sends after connecting.
 // Empty secret = MVP (server skips validation); non-empty = production.

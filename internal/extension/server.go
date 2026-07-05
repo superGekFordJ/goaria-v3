@@ -175,6 +175,16 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 		}
 	}
 
+	// Confirm auth so the extension can transition to "connected" immediately,
+	// without waiting for the first download_ack (which would never arrive
+	// because interception stays disabled until connected — a deadlock).
+	authAck, err := json.Marshal(map[string]string{"type": MsgTypeAuthAck})
+	if err != nil {
+		return
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.WriteMessage(websocket.TextMessage, authAck)
+
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {

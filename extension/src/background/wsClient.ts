@@ -3,6 +3,7 @@ import browser from 'webextension-polyfill'
 import {
   DOWNLOAD_ACK_TIMEOUT_MS,
   MSG_TYPE_AUTH,
+  MSG_TYPE_AUTH_ACK,
   MSG_TYPE_DOWNLOAD,
   MSG_TYPE_DOWNLOAD_ACK,
   RECONNECT_BASE_DELAY_MS,
@@ -313,6 +314,12 @@ export class WsClient {
         entry.reject(new Error(resp.error || 'Download rejected by GoAria'))
       }
       // Mark connected on first ack: backend is fully responsive.
+      if (connectionState.status !== 'connected') {
+        this.setStatus('connected', '')
+      }
+    } else if (msg.type === MSG_TYPE_AUTH_ACK) {
+      // Backend confirms auth succeeded; transition to connected immediately
+      // so interception can start without waiting for the first download_ack.
       if (connectionState.status !== 'connected') {
         this.setStatus('connected', '')
       }

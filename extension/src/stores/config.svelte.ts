@@ -3,6 +3,7 @@ export const WS_PORT_FALLBACKS = [16801, 16802, 16803] as const
 export const DEFAULT_WS_PORT = 16801
 export const PAIR_PATH_PREFIX = '/__goaria_pair__/'
 export const MSG_TYPE_AUTH = 'auth'
+export const MSG_TYPE_AUTH_ACK = 'auth_ack'
 export const MSG_TYPE_DOWNLOAD = 'download'
 export const MSG_TYPE_DOWNLOAD_ACK = 'download_ack'
 

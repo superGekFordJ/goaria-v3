@@ -53,4 +53,11 @@ async function pair(): Promise<void> {
   }, 3000)
 }
 
-void pair()
+const PAIR_PATH = '/__goaria_pair__/pair.html'
+
+// Defensive self-filter: the manifest match uses a trailing * to absorb the
+// ?n=<nonce> query, but if the URL structure ever changes this guard prevents
+// side effects on unrelated pages.
+if (location.pathname === PAIR_PATH) {
+  void pair()
+}

@@ -118,14 +118,6 @@ func (m *Monitor) tick() {
 
 	wg.Wait()
 
-	log.Printf("[DEBUG-TICK] active=%d waiting=%d stopped=%d", len(active), len(waiting), len(stopped))
-	for _, t := range stopped {
-		log.Printf("[DEBUG-TICK] stopped task: gid=%s status=%s total=%s completed=%s", t.GID, t.Status, t.TotalLength, t.CompletedLength)
-	}
-	for _, t := range active {
-		log.Printf("[DEBUG-TICK] active task: gid=%s status=%s total=%s completed=%s", t.GID, t.Status, t.TotalLength, t.CompletedLength)
-	}
-
 	if activeErr == nil {
 		if !m.aria2Recovered.Swap(true) {
 			log.Printf("[Monitor] Aria2 engine first recovery successful")

@@ -65,6 +65,26 @@ func dialWS(t *testing.T, port int, origin string) *websocket.Conn {
 	return conn
 }
 
+// readAuthAck consumes the auth_ack the backend sends after successful (or
+// skipped) auth, before the read loop starts processing downloads.
+func readAuthAck(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read auth_ack: %v", err)
+	}
+	var msg struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal auth_ack: %v", err)
+	}
+	if msg.Type != MsgTypeAuthAck {
+		t.Fatalf("expected auth_ack, got %s", msg.Type)
+	}
+}
+
 func TestStart_PortFallback(t *testing.T) {
 	// Occupy 16801.
 	blocker, err := net.Listen("tcp", "127.0.0.1:16801")
@@ -211,6 +231,9 @@ func TestSecret_Empty_AllowsMVP(t *testing.T) {
 	}
 	_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, req))
 
+	// MVP mode still sends auth_ack before entering the read loop.
+	readAuthAck(t, conn)
+
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, raw, err := conn.ReadMessage()
 	if err != nil {
@@ -240,6 +263,9 @@ func TestSecret_Valid_Authenticates(t *testing.T) {
 	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	auth := AuthMessage{Type: MsgTypeAuth, Secret: "my-secret"}
 	_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, auth))
+
+	// Consume auth_ack before sending download.
+	readAuthAck(t, conn)
 
 	// Then send download.
 	req := DownloadRequest{Type: MsgTypeDownload, URL: "https://example.com/test.zip"}
@@ -275,10 +301,18 @@ func TestSecret_Invalid_Rejects(t *testing.T) {
 	auth := AuthMessage{Type: MsgTypeAuth, Secret: "wrong-secret"}
 	_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, auth))
 
-	// Server should close the connection.
+	// Server should close the connection without sending auth_ack (the secret
+	// mismatch returns before the auth_ack send). A read error is expected.
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, _, err := conn.ReadMessage()
+	_, raw, err := conn.ReadMessage()
 	if err == nil {
+		// If a message arrived, it must not be auth_ack.
+		var msg struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(raw, &msg) == nil && msg.Type == MsgTypeAuthAck {
+			t.Fatal("auth_ack must not be sent for invalid secret")
+		}
 		t.Fatal("expected connection close for invalid secret")
 	}
 }
@@ -305,6 +339,9 @@ func TestDownload_ForwardedToTaskService(t *testing.T) {
 		Headers:  []string{"Cookie: session=abc"},
 	}
 	_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, req))
+
+	// MVP mode: auth_ack is sent before the read loop processes the download.
+	readAuthAck(t, conn)
 
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, raw, err := conn.ReadMessage()

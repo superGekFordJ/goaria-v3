@@ -10,7 +10,7 @@ import (
 	"goaria-v3/internal/events"
 )
 
-// PairingService runs a short-lived HTTP server on a random port.
+// PairingService runs a short-lived HTTP server on a fixed pairing port.
 // The pairing page injects the secret into the DOM (data-secret) and shuts down after use.
 type PairingService struct {
 	mu           sync.Mutex
@@ -38,7 +38,7 @@ func (p *PairingService) IsActive() bool {
 	return p.active
 }
 
-// Start launches a temporary HTTP server on 127.0.0.1:0 (random port).
+// Start launches a temporary HTTP server on the first available pairing port.
 // If already active, returns the existing URL (boundary: concurrent double-click).
 func (p *PairingService) Start() (string, error) {
 	p.mu.Lock()
@@ -48,10 +48,18 @@ func (p *PairingService) Start() (string, error) {
 		return url, nil
 	}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
+	var listener net.Listener
+	for _, port := range PairPortFallbacks {
+		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue
+		}
+		listener = l
+		break
+	}
+	if listener == nil {
 		p.mu.Unlock()
-		return "", fmt.Errorf("pairing listen: %w", err)
+		return "", fmt.Errorf("all pairing ports %v are in use", PairPortFallbacks)
 	}
 
 	port := listener.Addr().(*net.TCPAddr).Port
