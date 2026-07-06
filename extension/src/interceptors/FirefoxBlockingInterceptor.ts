@@ -39,6 +39,12 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
     if (decision !== 'intercept') return {}
     // Cancel synchronously; the handoff runs after the callback returns.
     void this.handleInterception(ctx)
+    // Firefox does not auto-close a tab whose main_frame request is
+    // cancelled. Remove the leftover blank tab to avoid content-process
+    // accumulation. The tab may already be gone (user-closed), so swallow.
+    if (ctx.tabId >= 0) {
+      browser.tabs.remove(ctx.tabId).catch(() => undefined)
+    }
     return { cancel: true }
   }
 

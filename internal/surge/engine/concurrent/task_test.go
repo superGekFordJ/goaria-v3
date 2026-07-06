@@ -2,6 +2,7 @@ package concurrent
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -170,5 +171,27 @@ func TestActiveTask_GetSpeed_Decay(t *testing.T) {
 	speed = at.GetSpeed()
 	if speed < 99.0 || speed > 101.0 {
 		t.Errorf("Extreme decayed speed = %f, want ~100.0", speed)
+	}
+}
+
+func TestActiveTask_RemainingTaskCarriesSharedMaxOffset(t *testing.T) {
+	shared := &atomic.Int64{}
+	shared.Store(500)
+	at := &ActiveTask{
+		Task:            types.Task{Offset: 0, Length: 1000},
+		SharedMaxOffset: shared,
+	}
+	at.CurrentOffset.Store(300)
+	at.StopAt.Store(1000)
+
+	remaining := at.RemainingTask()
+	if remaining == nil {
+		t.Fatal("RemainingTask returned nil")
+	}
+	if remaining.SharedMaxOffset != shared {
+		t.Error("RemainingTask did not carry SharedMaxOffset pointer")
+	}
+	if remaining.SharedMaxOffset.Load() != 500 {
+		t.Errorf("SharedMaxOffset value = %d, want 500", remaining.SharedMaxOffset.Load())
 	}
 }

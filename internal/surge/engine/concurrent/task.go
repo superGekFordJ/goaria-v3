@@ -74,7 +74,7 @@ func (at *ActiveTask) RemainingTask() *types.Task {
 	if current >= stopAt {
 		return nil
 	}
-	return &types.Task{Offset: current, Length: stopAt - current}
+	return &types.Task{Offset: current, Length: stopAt - current, SharedMaxOffset: at.SharedMaxOffset}
 }
 
 // GetSpeed returns the current EMA-smoothed speed, decaying if stalled

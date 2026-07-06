@@ -341,8 +341,8 @@ func TestRunCompletionMonitor_KillWorkerAt100Percent(t *testing.T) {
 	active.StopAt.Store(500)
 	d.activeTasks[1] = active
 
-	// Mark all bytes as downloaded.
-	state.Downloaded.Store(fileSize)
+	// Mark all bytes as verified (completion monitor uses VerifiedProgress).
+	state.VerifiedProgress.Store(fileSize)
 
 	queue := NewTaskQueue()
 	// Queue is NOT empty (simulates requeued hedged task).

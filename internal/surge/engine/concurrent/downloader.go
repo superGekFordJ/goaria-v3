@@ -633,7 +633,7 @@ func (d *ConcurrentDownloader) runCompletionMonitor(ctx context.Context, queue *
 			// only unblocks queue.Pop() waiters; stuck readers need taskCtx
 			// cancellation. Requeued hedged tasks may leave queue.Len() > 0,
 			// so byte-count completion must NOT gate on an empty queue.
-			if d.State != nil && d.State.Downloaded.Load() >= fileSize {
+			if d.State != nil && d.State.VerifiedProgress.Load() >= fileSize {
 				for _, id := range d.activeWorkerIDs() {
 					d.KillWorker(id)
 				}

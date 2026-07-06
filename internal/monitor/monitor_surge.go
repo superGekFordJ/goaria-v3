@@ -387,9 +387,27 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		if surgeEng != nil {
 			surgeEng.InvalidateListCache()
 		}
+		// Sync progress before MoveTaskToStopped: PatchTaskProgress only
+		// scans sgActive, so it must run while the task is still active.
+		if deltaType == "complete" && completeTotal > 0 {
+			totalStr := strconv.FormatInt(completeTotal, 10)
+			Cache.PatchTaskProgress(gid, totalStr, "0", totalStr)
+		}
 		Cache.MoveTaskToStopped(gid, deltaType)
 		if State.HasWindow() {
-			m.pusher.Queue(events.TaskDelta{Type: deltaType, GID: gid})
+			if deltaType == "complete" && completeTotal > 0 {
+				totalStr := strconv.FormatInt(completeTotal, 10)
+				m.pusher.Queue(events.TaskDelta{
+					Type: deltaType, GID: gid,
+					Payload: map[string]interface{}{
+						"completedLength": totalStr,
+						"downloadSpeed":   "0",
+						"totalLength":     totalStr,
+					},
+				})
+			} else {
+				m.pusher.Queue(events.TaskDelta{Type: deltaType, GID: gid})
+			}
 		}
 		if m.tracker != nil {
 			if completeTotal > 0 {
@@ -612,6 +630,10 @@ func (m *Monitor) reconcileSurgeCache() {
 			status := "complete"
 			if engineTask.Status == "error" {
 				status = "error"
+			}
+			// Sync progress from engine data before moving to stopped.
+			if status == "complete" && engineTask.TotalLength != "" {
+				Cache.PatchTaskProgress(gid, engineTask.TotalLength, "0", engineTask.TotalLength)
 			}
 			Cache.MoveTaskToStopped(gid, status)
 			if m.tracker != nil {
