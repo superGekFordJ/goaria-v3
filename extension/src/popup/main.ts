@@ -1,7 +1,7 @@
 import { mount } from 'svelte'
 import Popup from './Popup.svelte'
 import '../styles/index.css'
-import { initStatusListener } from '../stores/connection.svelte'
+import { initStatusListener } from '../stores/connection-popup'
 
 // Subscribe to background WS status pushes and fetch the current snapshot
 // before mounting so the popup renders with fresh state.
