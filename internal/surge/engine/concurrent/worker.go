@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"goaria-v3/internal/surge/engine/events"
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/utils"
 )
@@ -275,6 +276,8 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 	// Range header is always set for partial downloads (overrides any browser Range header)
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", task.Offset, task.Offset+task.Length-1))
 
+	// FORK-PATCH: measure TTFB at first segment GET.
+	ttfbStart := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -311,6 +314,22 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 
 	// FORK-PATCH: Reset hedge poison counter on valid response.
 	d.recordHedgeSuccess()
+
+	// FORK-PATCH: send FirstByteMsg once — first non-hedged 206 only.
+	if !d.isResume.Load() && activeTask.Hedged.Load() == 0 {
+		if d.ttfbSent.CompareAndSwap(false, true) {
+			ttfbMs := time.Since(ttfbStart).Milliseconds()
+			if d.ProgressChan != nil {
+				func() {
+					defer func() { _ = recover() }()
+					d.ProgressChan <- events.FirstByteMsg{
+						DownloadID: d.ID,
+						TTFBMs:     ttfbMs,
+					}
+				}()
+			}
+		}
+	}
 
 	// Batching State
 	var pendingBytes int64

@@ -63,6 +63,11 @@ type ConcurrentDownloader struct {
 	// leaving stall detection armed.
 	slowThresholdSet      atomic.Bool
 	slowThresholdOverride atomic.Uint64 // math.Float64bits(v)
+
+	// FORK-PATCH: TTFB one-shot guard — only the first non-hedged 206 sends FirstByteMsg.
+	ttfbSent atomic.Bool
+	// FORK-PATCH: resume flag — suppresses FirstByteMsg on resume (resume has its own HeadProbe).
+	isResume atomic.Bool
 }
 
 // FORK-PATCH: per-worker (connection) session, survives across chunks.
@@ -415,6 +420,7 @@ func (d *ConcurrentDownloader) getWorkerMirrors(activeMirrors []string) []string
 func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize int64, outFile *os.File) ([]types.Task, error) {
 	savedState, err := state.LoadState(d.URL, destPath)
 	isResume := err == nil && savedState != nil && len(savedState.Tasks) > 0
+	d.isResume.Store(isResume) // FORK-PATCH: suppress FirstByteMsg on resume
 
 	if isResume {
 		if d.State != nil {

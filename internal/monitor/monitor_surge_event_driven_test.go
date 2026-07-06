@@ -1118,3 +1118,133 @@ func TestSurgeRemove_DirectCacheDelete_NoTombstone(t *testing.T) {
 		t.Fatal("expected sg_tombstone-1 NOT in deletedGids (sg_ uses direct cache delete, not tombstone)")
 	}
 }
+
+// TestHandleSurgeEvent_FirstByteMsg_SetsTTFB verifies that FirstByteMsg
+// writes TTFB into the tracker without clearing scope/domain/envKey.
+func TestHandleSurgeEvent_FirstByteMsg_SetsTTFB(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	se := &mockSafeEngine{}
+	hybrid := rpc.NewHybridEngine(nil, se)
+	m := &Monitor{hub: hub, pusher: pusher, tracker: tracker, engine: hybrid}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+	defer func() {
+		Cache.sgActive = nil
+		Cache.sgWaiting = nil
+		Cache.sgStopped = nil
+	}()
+
+	// Create the task via DownloadStartedMsg (TTFBMs=0 initially).
+	m.handleSurgeEvent(surgeEvents.DownloadStartedMsg{
+		DownloadID: "fb-1",
+		Total:      50000000,
+		URL:        "https://example.com/large.zip",
+		Workers:    8,
+	})
+	tracker.SetScopeAndEnv("sg_fb-1", "wan", 0, "example.com", "envA")
+
+	// Send FirstByteMsg with TTFB=80.
+	m.handleSurgeEvent(surgeEvents.FirstByteMsg{
+		DownloadID: "fb-1",
+		TTFBMs:     80,
+	})
+
+	tracked := tracker.tasks["sg_fb-1"]
+	if tracked == nil {
+		t.Fatal("expected tracked task sg_fb-1 to exist")
+	}
+	if tracked.TTFBMs != 80 {
+		t.Errorf("TTFBMs = %d, want 80", tracked.TTFBMs)
+	}
+	if tracked.Scope != "wan" || tracked.Domain != "example.com" || tracked.CurrentEnvKey != "envA" {
+		t.Errorf("scope/domain/envKey cleared: scope=%q domain=%q envKey=%q", tracked.Scope, tracked.Domain, tracked.CurrentEnvKey)
+	}
+}
+
+// TestHandleSurgeEvent_FirstByteMsg_NoDeltaPush verifies that FirstByteMsg
+// does not push any task:delta to the frontend.
+func TestHandleSurgeEvent_FirstByteMsg_NoDeltaPush(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	se := &mockSafeEngine{}
+	hybrid := rpc.NewHybridEngine(nil, se)
+	m := &Monitor{hub: hub, pusher: pusher, tracker: tracker, engine: hybrid}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+	defer func() {
+		Cache.sgActive = nil
+		Cache.sgWaiting = nil
+		Cache.sgStopped = nil
+	}()
+
+	tracker.EnsureTrackedFromEvent("sg_fb-2", 1000, "https://example.com", 4)
+
+	m.handleSurgeEvent(surgeEvents.FirstByteMsg{
+		DownloadID: "fb-2",
+		TTFBMs:     50,
+	})
+
+	pusher.mu.Lock()
+	for _, d := range pusher.pending {
+		if d.GID == "sg_fb-2" {
+			pusher.mu.Unlock()
+			t.Fatalf("expected no delta push for sg_fb-2, got type=%q", d.Type)
+		}
+	}
+	pusher.mu.Unlock()
+}
+
+// TestHandleSurgeEvent_FirstByteMsg_BeforeStarted_SilentSkip verifies that
+// a FirstByteMsg arriving before DownloadStartedMsg is silently skipped
+// (task does not exist yet), and the subsequent DownloadStartedMsg creates
+// the task with TTFBMs=0.
+func TestHandleSurgeEvent_FirstByteMsg_BeforeStarted_SilentSkip(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	se := &mockSafeEngine{}
+	hybrid := rpc.NewHybridEngine(nil, se)
+	m := &Monitor{hub: hub, pusher: pusher, tracker: tracker, engine: hybrid}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+	defer func() {
+		Cache.sgActive = nil
+		Cache.sgWaiting = nil
+		Cache.sgStopped = nil
+	}()
+
+	// FirstByteMsg before any DownloadStartedMsg — task does not exist.
+	m.handleSurgeEvent(surgeEvents.FirstByteMsg{
+		DownloadID: "fb-3",
+		TTFBMs:     90,
+	})
+
+	if tracker.tasks["sg_fb-3"] != nil {
+		t.Fatal("expected no tracker entry before DownloadStartedMsg")
+	}
+
+	// Now DownloadStartedMsg creates the task with TTFBMs=0.
+	m.handleSurgeEvent(surgeEvents.DownloadStartedMsg{
+		DownloadID: "fb-3",
+		Total:      1000,
+		URL:        "https://example.com/file.zip",
+		Workers:    4,
+	})
+
+	tracked := tracker.tasks["sg_fb-3"]
+	if tracked == nil {
+		t.Fatal("expected tracked task sg_fb-3 to exist after DownloadStartedMsg")
+	}
+	if tracked.TTFBMs != 0 {
+		t.Errorf("TTFBMs = %d, want 0 (FirstByteMsg before task creation should be skipped)", tracked.TTFBMs)
+	}
+}

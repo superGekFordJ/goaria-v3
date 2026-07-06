@@ -3,6 +3,8 @@ package tasks
 import (
 	"context"
 	"errors"
+	"net"
+	neturl "net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -495,6 +497,11 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			scope, domain = scopeClassifier.ClassifyByURL(candidate.url)
 		}
 
+		// DNS resolve to get remoteIP for envKey when HEAD probe was skipped.
+		if remoteIP == "" {
+			remoteIP = resolveHostIP(candidate.url)
+		}
+
 		envKey := monitor.ComputeEnvKeyForDownload(candidate.url, remoteIP)
 
 		maxConn, _ := strconv.Atoi(config.Current.MaxConnections)
@@ -558,7 +565,8 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 				tracker.SetThreadInfo(gid, maxConn, false)
 			}
 			scope, domain := scopeClassifier.ClassifyByURL(candidate.url)
-			envKey := monitor.ComputeEnvKeyForDownload(candidate.url, "")
+			resolvedIP := resolveHostIP(candidate.url)
+			envKey := monitor.ComputeEnvKeyForDownload(candidate.url, resolvedIP)
 			if tracker := monitor.State.GetTracker(); tracker != nil {
 				tracker.SetScopeAndEnv(gid, scope, 0, domain, envKey)
 			}
@@ -823,6 +831,27 @@ func addTaskAuthProfilesAvailable(result extractor.HostAuthRuntimeResult) bool {
 	}
 
 	return true
+}
+
+// resolveHostIP extracts the host from url and does a DNS lookup.
+// Returns "" on failure (caller falls back to proxy envKey).
+func resolveHostIP(rawurl string) string {
+	u, err := neturl.Parse(rawurl)
+	if err != nil {
+		return ""
+	}
+	host := u.Hostname()
+	if host == "" {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return host
+	}
+	ips, err := net.LookupHost(host)
+	if err != nil || len(ips) == 0 {
+		return ""
+	}
+	return ips[0]
 }
 
 func addTaskAuthRuntimeKey(request extractor.HostAuthRuntimeRequest) string {

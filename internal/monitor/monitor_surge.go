@@ -218,6 +218,12 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 			DownloadSpeed: "0",
 		}, "active")
 		Cache.PrefetchMetadata(gid)
+	case surgeEvents.FirstByteMsg:
+		gid = "sg_" + ev.DownloadID
+		if m.tracker != nil {
+			m.tracker.SetTTFB(gid, ev.TTFBMs)
+		}
+		return
 	case surgeEvents.DownloadResumedMsg:
 		deltaType = "resume"
 		gid = "sg_" + ev.DownloadID

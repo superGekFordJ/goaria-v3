@@ -480,6 +480,17 @@ func (t *TaskTracker) SetScopeAndEnv(gid string, scope string, ttfbMs int64, dom
 	}
 }
 
+// SetTTFB writes TTFB only, without touching scope/domain/envKey.
+// Called from FirstByteMsg handler to asynchronously update TTFB.
+func (t *TaskTracker) SetTTFB(gid string, ms int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	tracked := t.tasks[gid]
+	if tracked != nil && ms > 0 {
+		tracked.TTFBMs = ms
+	}
+}
+
 // GetScope returns the task's scope/domain info (backward-compatible wrapper).
 func (t *TaskTracker) GetScope(gid string) (scope, domain string, ok bool) {
 	s, d, _, ok := t.GetScopeAndEnv(gid)

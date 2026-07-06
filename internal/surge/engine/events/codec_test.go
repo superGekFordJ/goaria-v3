@@ -23,6 +23,7 @@ func TestEventTypeForMessage(t *testing.T) {
 		{name: "removed", msg: DownloadRemovedMsg{}, wantType: EventTypeRemoved, wantFound: true},
 		{name: "request", msg: DownloadRequestMsg{}, wantType: EventTypeRequest, wantFound: true},
 		{name: "system", msg: SystemLogMsg{}, wantType: EventTypeSystem, wantFound: true},
+		{name: "first_byte", msg: FirstByteMsg{DownloadID: "d1", TTFBMs: 80}, wantType: EventTypeFirstByte, wantFound: true},
 		{name: "unknown", msg: struct{}{}, wantType: "", wantFound: false},
 	}
 

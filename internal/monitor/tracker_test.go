@@ -1323,3 +1323,56 @@ func TestTaskTracker_Update_CleansArTasks(t *testing.T) {
 		t.Fatal("expected ar_clean-2 to be cleaned up (not in current lists)")
 	}
 }
+
+func TestSetTTFB_Positive_OverwritesZero(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.SetScopeAndEnv("sg-ttfb-set-1", "wan", 0, "example.com", "envA")
+
+	tracker.SetTTFB("sg-ttfb-set-1", 80)
+
+	tracked := tracker.tasks["sg-ttfb-set-1"]
+	if tracked == nil {
+		t.Fatal("expected tracked task to exist")
+	}
+	if tracked.TTFBMs != 80 {
+		t.Errorf("TTFBMs = %d, want 80", tracked.TTFBMs)
+	}
+	if tracked.Scope != "wan" || tracked.Domain != "example.com" || tracked.CurrentEnvKey != "envA" {
+		t.Errorf("scope/domain/envKey overwritten: scope=%q domain=%q envKey=%q", tracked.Scope, tracked.Domain, tracked.CurrentEnvKey)
+	}
+}
+
+func TestSetTTFB_Zero_DoesNotOverwrite(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.SetScopeAndEnv("sg-ttfb-set-2", "wan", 100, "example.com", "envA")
+
+	tracker.SetTTFB("sg-ttfb-set-2", 0)
+
+	tracked := tracker.tasks["sg-ttfb-set-2"]
+	if tracked.TTFBMs != 100 {
+		t.Errorf("TTFBMs = %d, want 100 (zero must not overwrite)", tracked.TTFBMs)
+	}
+}
+
+func TestSetTTFB_NonExistentTask_SilentSkip(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.SetTTFB("nonexistent", 80)
+}
+
+func TestSetTTFB_DoesNotOverwriteScopeDomainEnvKey(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.SetScopeAndEnv("sg-ttfb-set-3", "wan", 0, "example.com", "envA")
+
+	tracker.SetTTFB("sg-ttfb-set-3", 80)
+
+	tracked := tracker.tasks["sg-ttfb-set-3"]
+	if tracked.Scope != "wan" {
+		t.Errorf("Scope = %q, want wan", tracked.Scope)
+	}
+	if tracked.Domain != "example.com" {
+		t.Errorf("Domain = %q, want example.com", tracked.Domain)
+	}
+	if tracked.CurrentEnvKey != "envA" {
+		t.Errorf("CurrentEnvKey = %q, want envA", tracked.CurrentEnvKey)
+	}
+}

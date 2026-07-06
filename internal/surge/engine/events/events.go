@@ -112,6 +112,12 @@ type DownloadStartedMsg struct {
 	MinChunkSize int64
 }
 
+// FORK-PATCH: FirstByteMsg carries TTFB measured at the first segment GET.
+type FirstByteMsg struct {
+	DownloadID string
+	TTFBMs     int64
+}
+
 type DownloadPausedMsg struct {
 	DownloadID   string
 	Filename     string
@@ -187,6 +193,8 @@ const (
 	EventTypeRequest      = "request"
 	EventTypeBatchRequest = "batch_request"
 	EventTypeSystem       = "system"
+	// FORK-PATCH: first_byte event type for TTFB reporting.
+	EventTypeFirstByte = "first_byte"
 )
 
 // SSEMessage represents one server-sent event frame.
@@ -253,6 +261,9 @@ func EventTypeForMessage(msg interface{}) (string, bool) {
 		return EventTypeBatchRequest, true
 	case SystemLogMsg:
 		return EventTypeSystem, true
+	// FORK-PATCH: FirstByteMsg -> first_byte event type.
+	case FirstByteMsg:
+		return EventTypeFirstByte, true
 	default:
 		return "", false
 	}
@@ -325,6 +336,13 @@ func DecodeSSEMessage(eventType string, data []byte) (interface{}, bool, error) 
 		msg = m
 	case EventTypeSystem:
 		var m SystemLogMsg
+		if err := json.Unmarshal(data, &m); err != nil {
+			return nil, true, err
+		}
+		msg = m
+	// FORK-PATCH: decode first_byte event payload.
+	case EventTypeFirstByte:
+		var m FirstByteMsg
 		if err := json.Unmarshal(data, &m); err != nil {
 			return nil, true, err
 		}
