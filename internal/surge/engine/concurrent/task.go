@@ -74,7 +74,9 @@ func (at *ActiveTask) RemainingTask() *types.Task {
 	if current >= stopAt {
 		return nil
 	}
-	// Read pointer under RLock to avoid racing with hedger initialization
+	// FORK-PATCH: carry SharedMaxOffset so requeued tasks share write dedup
+	// with hedge partners. Read pointer under RLock to avoid racing with
+	// hedger initialization (matches worker.go read pattern).
 	at.SharedMaxOffsetMu.RLock()
 	ptr := at.SharedMaxOffset
 	at.SharedMaxOffsetMu.RUnlock()

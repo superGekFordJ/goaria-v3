@@ -11,6 +11,8 @@ import (
 func TestHealth_LastManStanding(t *testing.T) {
 	// 1. Setup mock state with high historical speed
 	// Say we downloaded 100MB in 10s => 10MB/s global average
+	// FORK-PATCH: use 200MB total so VP (100MB) < total, avoiding the
+	// GetProgress clamp safety net that would mask the speed check.
 	state := types.NewProgressState("test", 200*1024*1024)
 	state.VerifiedProgress.Store(100 * 1024 * 1024)
 

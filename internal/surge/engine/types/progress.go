@@ -184,9 +184,10 @@ func (ps *ProgressState) GetProgress() (downloaded int64, total int64, totalElap
 		totalElapsed = 0
 	}
 
-	// Safety net: clamp downloaded to TotalSize to prevent impossible progress
-	// values (>100%) from reaching the UI/speedstats. Only clamp when TotalSize
-	// is known (>0); unknown-size downloads (TotalSize==0) must not be clamped.
+	// FORK-PATCH: Safety net — clamp downloaded to TotalSize to prevent
+	// impossible progress values (>100%) from reaching the UI/speedstats.
+	// Only clamp when TotalSize is known (>0); unknown-size downloads
+	// (TotalSize==0) must not be clamped.
 	if total > 0 && downloaded > total {
 		utils.Debug("GetProgress clamp: VP=%d > Total=%d for %s", downloaded, total, ps.ID)
 		downloaded = total
@@ -750,10 +751,10 @@ func (ps *ProgressState) RecalculateProgress(remainingTasks []Task) {
 		}
 	}
 
-	// Trust the restored bitmap: chunks marked ChunkCompleted have their bytes
-	// fully on disk even if remainingTasks still cover them (hedged bytes
-	// re-queued by KillWorker). Restore ChunkProgress to full and add back to
-	// totalVerified so VP stays in sync with sum(ChunkProgress).
+	// FORK-PATCH: Trust the restored bitmap — chunks marked ChunkCompleted
+	// have their bytes fully on disk even if remainingTasks still cover them
+	// (hedged bytes re-queued by KillWorker). Restore ChunkProgress to full
+	// and add back to totalVerified so VP stays in sync with sum(ChunkProgress).
 	for i := 0; i < ps.BitmapWidth; i++ {
 		if ps.getChunkState(i) == ChunkCompleted {
 			chunkStart := int64(i) * ps.ActualChunkSize

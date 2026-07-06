@@ -266,14 +266,8 @@ func TestTarpitCompletion_RequeueGuard(t *testing.T) {
 		t.Fatalf("Download failed: %v", err)
 	}
 
-	if got := state.Downloaded.Load(); got < fileSize {
-		t.Errorf("Downloaded = %d, want >= %d (requeue guard should prevent regression)", got, fileSize)
-	}
-	// Downloaded may slightly overshoot fileSize due to deferred flushUpdates
-	// when workers are killed with pending bytes; the file itself is correct
-	// because WriteAt is idempotent. Verify the actual file size instead.
-	if err := testutil.VerifyFileSize(workingPath, fileSize); err != nil {
-		t.Error(err)
+	if got := state.Downloaded.Load(); got != fileSize {
+		t.Errorf("Downloaded = %d, want %d (requeue guard should prevent re-stick)", got, fileSize)
 	}
 }
 
@@ -341,7 +335,7 @@ func TestRunCompletionMonitor_KillWorkerAt100Percent(t *testing.T) {
 	active.StopAt.Store(500)
 	d.activeTasks[1] = active
 
-	// Mark all bytes as verified (completion monitor uses VerifiedProgress).
+	// FORK-PATCH: Mark all bytes as verified (completion monitor uses VerifiedProgress).
 	state.VerifiedProgress.Store(fileSize)
 
 	queue := NewTaskQueue()

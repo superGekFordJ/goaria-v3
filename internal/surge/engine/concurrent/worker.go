@@ -200,7 +200,12 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			// This prevents double-counting bytes on retry
 			current := activeTask.CurrentOffset.Load()
 			if current > task.Offset {
-				task = types.Task{Offset: current, Length: task.Offset + task.Length - current}
+				// FORK-PATCH: carry SharedMaxOffset so the retried task shares
+				// write dedup with hedge partners on the same byte range.
+				activeTask.SharedMaxOffsetMu.RLock()
+				sharedPtr := activeTask.SharedMaxOffset
+				activeTask.SharedMaxOffsetMu.RUnlock()
+				task = types.Task{Offset: current, Length: task.Offset + task.Length - current, SharedMaxOffset: sharedPtr}
 			}
 		}
 
@@ -584,9 +589,17 @@ func (d *ConcurrentDownloader) StealWork(queue *TaskQueue) bool {
 		return false
 	}
 
+	// FORK-PATCH: carry SharedMaxOffset so the stolen task shares write dedup
+	// with the original worker on the same byte range. Read under RLock to
+	// match the hedger initialization pattern.
+	active.SharedMaxOffsetMu.RLock()
+	sharedPtr := active.SharedMaxOffset
+	active.SharedMaxOffsetMu.RUnlock()
+
 	stolenTask := types.Task{
-		Offset: stolenStart,
-		Length: originalEnd - stolenStart,
+		Offset:          stolenStart,
+		Length:          originalEnd - stolenStart,
+		SharedMaxOffset: sharedPtr,
 	}
 
 	queue.Push(stolenTask)

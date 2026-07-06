@@ -34,6 +34,9 @@ func main() {
 	// These must not be deleted as "stale" during vendor sync.
 	preserveFiles := map[string]bool{
 		filepath.Join("utils", "notify_stub.go"): true,
+		// GoAria-only regression test for health-cancel requeue + SharedMaxOffset
+		// dedup. Not in upstream fork; must survive vendor sync.
+		filepath.Join("engine", "concurrent", "health_cancel_requeue_test.go"): true,
 	}
 
 	// Phase 1: Read source files, replace imports, and write pre-fmt content

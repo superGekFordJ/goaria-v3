@@ -426,12 +426,9 @@ func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize i
 			if len(savedState.ChunkBitmap) > 0 && savedState.ActualChunkSize > 0 {
 				d.State.RestoreBitmap(savedState.ChunkBitmap, savedState.ActualChunkSize)
 				d.State.RecalculateProgress(savedState.Tasks)
-				// FORK-PATCH: Safety net for resume progress regression.
-				// RecalculateProgress now trusts the restored bitmap's
-				// ChunkCompleted chunks, so hedged bytes are no longer
-				// undercounted and this guard should never trigger. Retained
-				// for edge cases (e.g., bitmap corruption or empty bitmap with
-				// savedState.Downloaded > 0).
+				// FORK-PATCH: Prevent resume progress regression. Remaining
+				// tasks may contain hedged bytes already on disk; trust the
+				// saved Downloaded when RecalculateProgress undercounts.
 				if savedState.Downloaded > d.State.VerifiedProgress.Load() {
 					d.State.VerifiedProgress.Store(savedState.Downloaded)
 				}
@@ -633,6 +630,8 @@ func (d *ConcurrentDownloader) runCompletionMonitor(ctx context.Context, queue *
 			// only unblocks queue.Pop() waiters; stuck readers need taskCtx
 			// cancellation. Requeued hedged tasks may leave queue.Len() > 0,
 			// so byte-count completion must NOT gate on an empty queue.
+			// FORK-PATCH: use VerifiedProgress (chunk-level dedup) instead of
+			// Downloaded, which can overcount when SharedMaxOffset is nil.
 			if d.State != nil && d.State.VerifiedProgress.Load() >= fileSize {
 				for _, id := range d.activeWorkerIDs() {
 					d.KillWorker(id)

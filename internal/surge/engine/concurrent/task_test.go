@@ -174,6 +174,7 @@ func TestActiveTask_GetSpeed_Decay(t *testing.T) {
 	}
 }
 
+// FORK-PATCH: verify RemainingTask carries SharedMaxOffset pointer.
 func TestActiveTask_RemainingTaskCarriesSharedMaxOffset(t *testing.T) {
 	shared := &atomic.Int64{}
 	shared.Store(500)
