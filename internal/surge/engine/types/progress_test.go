@@ -419,3 +419,81 @@ func TestRecalculateProgress_BitmapTrust_NoOpForNonHedge(t *testing.T) {
 		t.Errorf("VerifiedProgress = %d, want 40", vp)
 	}
 }
+
+// FORK-PATCH: GetProgress clamps downloaded to TotalSize when VP exceeds it,
+// preventing impossible >100% values from reaching the UI.
+func TestGetProgress_ClampsWhenVPExceedsTotalSize(t *testing.T) {
+	ps := NewProgressState("clamp-over", 1000)
+	ps.VerifiedProgress.Store(1200)
+
+	downloaded, total, _, _, _, _ := ps.GetProgress()
+
+	if downloaded != 1000 {
+		t.Errorf("downloaded = %d, want 1000 (clamped to total)", downloaded)
+	}
+	if total != 1000 {
+		t.Errorf("total = %d, want 1000", total)
+	}
+}
+
+// FORK-PATCH: GetProgress must not clamp when TotalSize is unknown (0).
+func TestGetProgress_NoClampForUnknownSize(t *testing.T) {
+	ps := NewProgressState("unknown-size", 0)
+	ps.VerifiedProgress.Store(500)
+
+	downloaded, total, _, _, _, _ := ps.GetProgress()
+
+	if downloaded != 500 {
+		t.Errorf("downloaded = %d, want 500 (no clamp for unknown size)", downloaded)
+	}
+	if total != 0 {
+		t.Errorf("total = %d, want 0", total)
+	}
+}
+
+// FORK-PATCH: GetProgress must not clamp when VP is under TotalSize.
+func TestGetProgress_NoClampWhenVPUnderTotal(t *testing.T) {
+	ps := NewProgressState("normal", 1000)
+	ps.VerifiedProgress.Store(300)
+
+	downloaded, total, _, _, _, _ := ps.GetProgress()
+
+	if downloaded != 300 {
+		t.Errorf("downloaded = %d, want 300 (no clamp needed)", downloaded)
+	}
+	if total != 1000 {
+		t.Errorf("total = %d, want 1000", total)
+	}
+}
+
+// FORK-PATCH: verify RecalculateProgress trusts the bitmap so that re-queued
+// hedged chunks don't cause VP to undershoot, which would let a re-download
+// overshoot TotalSize.
+func TestRecalculateProgress_BitmapTrust_PreventsOvershootOnReDownload(t *testing.T) {
+	totalSize := int64(80)
+	chunkSize := int64(20)
+	ps := NewProgressState("dl-overshoot", totalSize)
+	ps.InitBitmap(totalSize, chunkSize)
+
+	// All chunks completed (full file on disk).
+	for i := 0; i < 4; i++ {
+		ps.SetChunkState(i, ChunkCompleted)
+	}
+
+	// remainingTasks cover the entire file — simulates hedged bytes re-queued
+	// after KillWorker. Without bitmap trust VP would undershoot to 0, and a
+	// subsequent re-download would overshoot TotalSize.
+	remaining := []Task{
+		{Offset: 0, Length: 80},
+	}
+
+	ps.RecalculateProgress(remaining)
+
+	vp := ps.VerifiedProgress.Load()
+	if vp != totalSize {
+		t.Errorf("VerifiedProgress = %d, want %d (must equal TotalSize, no undershoot)", vp, totalSize)
+	}
+	if vp > totalSize {
+		t.Errorf("VerifiedProgress = %d overshoots TotalSize = %d", vp, totalSize)
+	}
+}

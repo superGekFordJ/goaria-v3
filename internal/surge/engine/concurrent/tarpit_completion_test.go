@@ -355,7 +355,7 @@ func TestRunCompletionMonitor_KillWorkerAt100Percent(t *testing.T) {
 	case <-done:
 		// Monitor returned — worker should have been killed (Cancel called).
 	case <-time.After(2 * time.Second):
-		t.Fatal("runCompletionMonitor did not return within 2s with Downloaded >= fileSize")
+		t.Fatal("runCompletionMonitor did not return within 2s with VerifiedProgress >= fileSize")
 	}
 
 	// Verify taskCtx was cancelled by KillWorker.
