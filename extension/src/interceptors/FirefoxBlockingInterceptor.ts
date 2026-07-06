@@ -41,8 +41,10 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
     void this.handleInterception(ctx)
     // Firefox does not auto-close a tab whose main_frame request is
     // cancelled. Remove the leftover blank tab to avoid content-process
-    // accumulation. The tab may already be gone (user-closed), so swallow.
-    if (ctx.tabId >= 0) {
+    // accumulation. Only do this for main_frame — a sub_frame interception
+    // (e.g. an iframe download link) must not close the parent tab.
+    // The tab may already be gone (user-closed), so swallow.
+    if (ctx.tabId >= 0 && details.type === 'main_frame') {
       browser.tabs.remove(ctx.tabId).catch(() => undefined)
     }
     return { cancel: true }

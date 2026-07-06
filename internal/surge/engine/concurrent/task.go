@@ -74,7 +74,11 @@ func (at *ActiveTask) RemainingTask() *types.Task {
 	if current >= stopAt {
 		return nil
 	}
-	return &types.Task{Offset: current, Length: stopAt - current, SharedMaxOffset: at.SharedMaxOffset}
+	// Read pointer under RLock to avoid racing with hedger initialization
+	at.SharedMaxOffsetMu.RLock()
+	ptr := at.SharedMaxOffset
+	at.SharedMaxOffsetMu.RUnlock()
+	return &types.Task{Offset: current, Length: stopAt - current, SharedMaxOffset: ptr}
 }
 
 // GetSpeed returns the current EMA-smoothed speed, decaying if stalled
