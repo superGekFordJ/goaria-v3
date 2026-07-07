@@ -109,6 +109,7 @@ export abstract class DownloadLinkInterceptor {
     const skipHeadProbe = ctx.fileSize > 0
     return {
       url: ctx.url,
+      finalUrl: ctx.finalUrl ?? '',
       headers: cookies,
       fileSize: ctx.fileSize,
       skipHeadProbe,

@@ -121,6 +121,7 @@ export class WsClient {
     const payload = {
       type: MSG_TYPE_DOWNLOAD,
       url: req.url,
+      final_url: req.finalUrl,
       headers: req.headers,
       file_size: req.fileSize,
       skip_head_probe: req.skipHeadProbe,

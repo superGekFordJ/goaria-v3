@@ -42,6 +42,12 @@ function getOnDeterminingFilename(): DownloadsDeterminingFilenameEvent | null {
   return downloads.onDeterminingFilename ?? null
 }
 
+// finalUrl is Chrome-specific and absent from @types/webextension-polyfill.
+// The polyfill forwards it at runtime; declare it for typed access.
+type DownloadItemWithFinalUrl = browser.Downloads.DownloadItem & {
+  finalUrl?: string
+}
+
 /**
  * Chrome MV3 interceptor — path B (IDM strategy). The browser starts the
  * download, we pause it, ask GoAria to accept the handoff, then either cancel
@@ -106,8 +112,10 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
     // Skip downloads triggered by other extensions (defensive — avoids loops).
     if (item.byExtensionId) return
 
+    const chromeItem = item as DownloadItemWithFinalUrl
     const ctx: InterceptionContext = {
       url: item.url,
+      finalUrl: chromeItem.finalUrl ?? '',
       tabId: -1,
       mimeType: item.mime ?? '',
       contentDisposition: '',
@@ -275,6 +283,7 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
   private contextFromDecision(decision: PendingDecision): InterceptionContext {
     return {
       url: decision.url,
+      finalUrl: '',
       tabId: -1,
       mimeType: '',
       contentDisposition: '',

@@ -28,6 +28,7 @@ export type PongMessage = { pong: boolean }
 // dedup_key, download_page). The background must convert when forwarding.
 export type DownloadHandoffMessage = {
   url: string
+  finalUrl: string
   headers: string[]
   fileSize: number
   skipHeadProbe: boolean

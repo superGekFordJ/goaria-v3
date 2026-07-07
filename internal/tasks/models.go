@@ -39,6 +39,7 @@ type addTaskCandidate struct {
 	externalSizeBytes int64
 	skipHeadProbe     bool
 	externalDedupKey  string
+	finalURL          string
 }
 
 type addTaskSummary struct {

@@ -83,6 +83,7 @@ func (s *Service) AddUriFromExtension(req extension.DownloadRequest) (string, er
 	candidate.externalSizeBytes = req.FileSize
 	candidate.skipHeadProbe = req.SkipHeadProbe
 	candidate.externalDedupKey = req.DedupKey
+	candidate.finalURL = req.FinalURL
 	if req.Filename != "" {
 		candidate.out = req.Filename
 	}
@@ -494,12 +495,15 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 		if remoteIP != "" {
 			scope, domain = scopeClassifier.ClassifyByURLAndIP(candidate.url, remoteIP)
 		} else {
-			scope, domain = scopeClassifier.ClassifyByURL(candidate.url)
-		}
-
-		// DNS resolve to get remoteIP for envKey when HEAD probe was skipped.
-		if remoteIP == "" {
-			remoteIP = resolveHostIP(candidate.url)
+			// Extension path: skipHeadProbe=true → remoteIP="".
+			// Resolve CDN IP from finalURL (post-redirect); fall back to original URL.
+			classificationURL := candidate.finalURL
+			if classificationURL == "" {
+				classificationURL = candidate.url
+			}
+			finalIP := resolveHostIP(classificationURL)
+			scope, domain = scopeClassifier.ClassifyByURLAndIP(candidate.url, finalIP)
+			remoteIP = finalIP
 		}
 
 		envKey := monitor.ComputeEnvKeyForDownload(candidate.url, remoteIP)
@@ -564,9 +568,13 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			if tracker := monitor.State.GetTracker(); tracker != nil {
 				tracker.SetThreadInfo(gid, maxConn, false)
 			}
-			scope, domain := scopeClassifier.ClassifyByURL(candidate.url)
-			resolvedIP := resolveHostIP(candidate.url)
-			envKey := monitor.ComputeEnvKeyForDownload(candidate.url, resolvedIP)
+			classificationURL := candidate.finalURL
+			if classificationURL == "" {
+				classificationURL = candidate.url
+			}
+			finalIP := resolveHostIP(classificationURL)
+			scope, domain := scopeClassifier.ClassifyByURLAndIP(candidate.url, finalIP)
+			envKey := monitor.ComputeEnvKeyForDownload(candidate.url, finalIP)
 			if tracker := monitor.State.GetTracker(); tracker != nil {
 				tracker.SetScopeAndEnv(gid, scope, 0, domain, envKey)
 			}

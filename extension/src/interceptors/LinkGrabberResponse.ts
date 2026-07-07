@@ -12,6 +12,8 @@ export type InterceptionDecision = 'intercept' | 'pass'
  */
 export type InterceptionContext = {
   url: string
+  /** Post-redirect absolute URL (Chrome item.finalUrl). Empty when not available. */
+  finalUrl?: string
   tabId: number
   /** Content-Type with parameters stripped, lower-cased (e.g. "text/html"). */
   mimeType: string

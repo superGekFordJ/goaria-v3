@@ -29,6 +29,7 @@ type AuthMessage struct {
 type DownloadRequest struct {
 	Type          string   `json:"type"`
 	URL           string   `json:"url"`
+	FinalURL      string   `json:"final_url"`
 	Headers       []string `json:"headers"`
 	FileSize      int64    `json:"file_size"`
 	SkipHeadProbe bool     `json:"skip_head_probe"`

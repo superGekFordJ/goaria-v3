@@ -80,6 +80,7 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
     const referrer = details.initiator ?? details.originUrl ?? ''
     return {
       url: details.url,
+      finalUrl: details.url,
       tabId: details.tabId,
       mimeType: extractMimeType(contentType),
       contentDisposition,
