@@ -14,7 +14,6 @@ declare module 'webext-bridge' {
   export interface ProtocolMap {
     ping: ProtocolWithReturn<PingMessage, PongMessage>
     'pair:secret': ProtocolWithReturn<PairSecretMessage, PairResult>
-    'pair:request': ProtocolWithReturn<PairRequestMessage, PairStatusMessage>
     'pair:status': PairStatusMessage
     'pair:unpair': ProtocolWithReturn<PairUnpairMessage, PairResult>
     'ws:status': WsStatusMessage
@@ -89,8 +88,6 @@ export type InterceptionToggleMessage = {
 export type InterceptionToggleResult = {
   ok: boolean
 }
-
-export type PairRequestMessage = Record<string, never>
 
 export type PairStatusMessage = {
   paired: boolean

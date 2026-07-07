@@ -1,8 +1,8 @@
 import { mount } from 'svelte'
-import { onMessage } from 'webext-bridge/content-script'
-import { sendMessage } from 'webext-bridge/content-script'
+import { onMessage, sendMessage } from 'webext-bridge/content-script'
 import ShadowDomPopup from './ShadowDomPopup.svelte'
 import { popupQueue } from '../stores/popupQueue.svelte'
+import { configState } from '../stores/config.svelte'
 import type { DownloadInterceptedMessage } from '../utils/messaging'
 import glassCss from '../styles/index.css?inline'
 
@@ -46,11 +46,14 @@ function createShadowHost(): ShadowRoot | null {
   return shadowRoot
 }
 
-const effects: 'full' | 'reduced' = 'full'
-
 const shadowRoot = createShadowHost()
 if (shadowRoot) {
-  mount(ShadowDomPopup, { target: shadowRoot, props: { effects } })
+  // Read the persisted effects setting before mounting so the Shadow DOM
+  // popup respects the user's "高级材质" toggle instead of always rendering
+  // full SVG refraction.
+  void configState.loadEffects().then(() => {
+    mount(ShadowDomPopup, { target: shadowRoot, props: { effects: configState.effects } })
+  })
 }
 
 onMessage('download:intercepted', ({ data }) => {

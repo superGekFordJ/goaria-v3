@@ -1,4 +1,7 @@
 /* Glass component styles extracted for popup + Shadow DOM shared consumption. */
+/* Known limitation: [data-theme] selectors target the shadow root, not the
+   host <html data-theme>, so light-mode variants are inert in the Shadow DOM
+   popup. Dark mode is the default and works everywhere. */
 
 /* === StaticGlassPanel === */
 .static-glass-root {

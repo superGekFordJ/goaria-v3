@@ -9,7 +9,6 @@ import { ChromeDownloadsApiInterceptor } from '../interceptors/ChromeDownloadsAp
 import type {
   InterceptionToggleMessage,
   PairSecretMessage,
-  PairStatusMessage,
   WsStatusMessage,
 } from '../utils/messaging'
 
@@ -45,13 +44,6 @@ onMessage('interception:toggle', async ({ data }: { data: InterceptionToggleMess
   return { ok: true }
 })
 
-// popup -> background: query current pairing status.
-onMessage('pair:request', () => ({
-  paired: connectionState.paired,
-  status: connectionState.status,
-  wsPort: wsClient.getStatus().wsPort,
-}) satisfies PairStatusMessage)
-
 // popup -> background: unpair — remove secret + disconnect WS.
 onMessage('pair:unpair', async () => {
   try {
@@ -65,27 +57,30 @@ onMessage('pair:unpair', async () => {
 })
 
 // SW startup: load persisted state before connecting so the interceptor
-// uses the user's saved autoCapture setting.
-void configState.loadEffects()
-void configState.loadAutoCapture()
+// uses the user's saved autoCapture setting. Awaited before connect() and
+// interceptor registration to close the race where a freshly restarted SW
+// reads the default autoCapture before storage.local resolves.
+void (async () => {
+  await Promise.all([configState.loadEffects(), configState.loadAutoCapture()])
 
-// SW startup: top-level code runs on every (re)start of the Chrome MV3
-// service worker. connect() reads the secret from storage.local and
-// authenticates, so a restarted SW transparently recovers the link.
-// No chrome.alarms keep-alive: download/pairing events wake the SW.
-wsClient.connect()
+  // top-level code runs on every (re)start of the Chrome MV3 service worker.
+  // connect() reads the secret from storage.local and authenticates, so a
+  // restarted SW transparently recovers the link. No chrome.alarms keep-alive:
+  // download/pairing events wake the SW.
+  wsClient.connect()
 
-// Download interception: fork by build target. Firefox MV3 uses
-// webRequestBlocking (synchronous cancel); Chrome MV3 uses the downloads API
-// path B (pause → handoff → cancel/resume). shouldIntercept checks the WS
-// connection state, so registering before the socket is up is safe — events
-// simply pass through until the link is established.
-const interceptor = isFirefox()
-  ? new FirefoxBlockingInterceptor()
-  : new ChromeDownloadsApiInterceptor()
-interceptor.register()
-// Chrome path B persists pending decisions in storage.session so a SW restart
-// can resume an in-flight cancel/resume. Firefox is a no-op here.
-void interceptor.recoverPendingDecisions()
+  // Download interception: fork by build target. Firefox MV3 uses
+  // webRequestBlocking (synchronous cancel); Chrome MV3 uses the downloads API
+  // path B (pause → handoff → cancel/resume). shouldIntercept checks the WS
+  // connection state, so registering before the socket is up is safe — events
+  // simply pass through until the link is established.
+  const interceptor = isFirefox()
+    ? new FirefoxBlockingInterceptor()
+    : new ChromeDownloadsApiInterceptor()
+  interceptor.register()
+  // Chrome path B persists pending decisions in storage.session so a SW restart
+  // can resume an in-flight cancel/resume. Firefox is a no-op here.
+  void interceptor.recoverPendingDecisions()
+})()
 
-export { wsClient, interceptor }
+export { wsClient }

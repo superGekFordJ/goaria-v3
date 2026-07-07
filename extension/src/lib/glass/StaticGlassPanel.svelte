@@ -7,7 +7,6 @@
     radius = '9999px',
     fallbackClass = '',
     baseColor = 'rgba(255,255,255,0.2)',
-    baseColorDark = 'rgba(0,0,0,0.2)',
     disabled = false,
     refraction = false,
     effects = 'full',
@@ -19,7 +18,6 @@
     radius?: string
     fallbackClass?: string
     baseColor?: string
-    baseColorDark?: string
     disabled?: boolean
     refraction?: boolean
     effects?: 'full' | 'reduced'
@@ -42,7 +40,8 @@
     if (refractionFilterId) {
       return `backdrop-filter: blur(16px) url(#${refractionFilterId}); -webkit-backdrop-filter: blur(16px) url(#${refractionFilterId})`
     }
-    return 'backdrop-filter: blur(40px); -webkit-backdrop-filter: blur(40px)'
+    // Firefox lacks url() backdrop-filter support; degrade with saturate.
+    return 'backdrop-filter: blur(16px) saturate(1.4); -webkit-backdrop-filter: blur(16px) saturate(1.4)'
   })
 </script>
 
@@ -55,7 +54,7 @@
     disabled={disabled}
   >
     {#if effects === 'full'}
-      <div class="static-glass-bg" style="{backdropStyle}; border-radius: {radius}; --base-color: {baseColor}; --base-color-dark: {baseColorDark}"></div>
+      <div class="static-glass-bg" style="{backdropStyle}; border-radius: {radius}; --base-color: {baseColor}"></div>
       <div class="static-glass-shadow" style="border-radius: {radius}"></div>
     {:else if !fallbackClass}
       <div class="static-glass-fallback" style="border-radius: {radius}"></div>
@@ -75,7 +74,7 @@
     style="border-radius: {radius}"
   >
     {#if effects === 'full'}
-      <div class="static-glass-bg" style="{backdropStyle}; border-radius: {radius}; --base-color: {baseColor}; --base-color-dark: {baseColorDark}"></div>
+      <div class="static-glass-bg" style="{backdropStyle}; border-radius: {radius}; --base-color: {baseColor}"></div>
       <div class="static-glass-shadow" style="border-radius: {radius}"></div>
     {:else if !fallbackClass}
       <div class="static-glass-fallback" style="border-radius: {radius}"></div>

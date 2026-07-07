@@ -17,6 +17,7 @@ import { connectionState } from '../stores/connection.svelte'
 import type {
   DownloadHandoffMessage,
   DownloadResponse,
+  PairStatusMessage,
   WsStatusMessage,
 } from '../utils/messaging'
 
@@ -299,7 +300,12 @@ export class WsClient {
       if (resp.success && !connectionState.paired) {
         connectionState.paired = true
         // Push pairing status change to the popup (if open).
-        void sendMessage('pair:status', this.getStatus(), 'popup').catch(() => {})
+        const pairStatus: PairStatusMessage = {
+          paired: connectionState.paired,
+          status: connectionState.status,
+          wsPort: this.currentPort,
+        }
+        void sendMessage('pair:status', pairStatus, 'popup').catch(() => {})
       }
       // Ack resolves the oldest pending request. This relies on a
       // single-flight assumption: only one download request is in flight per
