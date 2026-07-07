@@ -18,7 +18,7 @@ declare module 'webext-bridge' {
     'pair:unpair': ProtocolWithReturn<PairUnpairMessage, PairResult>
     'ws:status': WsStatusMessage
     'ws:getStatus': ProtocolWithReturn<GetWsStatusMessage, WsStatusMessage>
-    'download:intercepted': DownloadInterceptedMessage
+    'download:intercepted': ProtocolWithReturn<DownloadInterceptedMessage, InterceptedReply>
     'interception:toggle': ProtocolWithReturn<InterceptionToggleMessage, InterceptionToggleResult>
   }
 }
@@ -70,16 +70,21 @@ export type DownloadResponse = {
   error?: string
 }
 
-// One-way notification: background -> content script. Fired after the
-// background resolves a download interception so the in-page popup can show a
-// confirmation/failure toast. Content scripts may not be injected on every
-// page, so sendMessage failures are expected and silently ignored.
+// background -> content script: fired after a download interception resolves
+// so the in-page Shadow DOM popup can show a confirmation/failure toast. The
+// content script replies 'shown' or 'fallback'; on 'fallback' (or delivery
+// failure) the background degrades to browser.notifications.create.
 export type DownloadInterceptedMessage = {
   url: string
   filename: string
   success: boolean
   error?: string
 }
+
+// Reply from the content script: 'shown' when the in-page toast rendered,
+// 'fallback' when it could not (mount failed / not ready). The background
+// uses this to decide whether to degrade to a system notification.
+export type InterceptedReply = 'shown' | 'fallback'
 
 export type InterceptionToggleMessage = {
   enabled: boolean

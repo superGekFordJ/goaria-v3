@@ -1,4 +1,5 @@
 import { sendMessage } from 'webext-bridge/background'
+import browser from 'webextension-polyfill'
 import { configState } from '../stores/config.svelte'
 import { connectionState } from '../stores/connection.svelte'
 import { wsClient } from '../background/wsClient'
@@ -8,6 +9,7 @@ import type {
   DownloadHandoffMessage,
   DownloadInterceptedMessage,
   DownloadResponse,
+  InterceptedReply,
 } from '../utils/messaging'
 import type { InterceptionContext, InterceptionDecision } from './LinkGrabberResponse'
 
@@ -136,8 +138,47 @@ export abstract class DownloadLinkInterceptor {
       success,
       error,
     }
-    // Content script may not be injected on some pages; ignore send failures.
-    void sendMessage('download:intercepted', msg, 'content-script').catch(() => undefined)
+    void this.deliverIntercepted(ctx, msg)
+  }
+
+  /**
+   * Send the interception result to the in-page toast. webext-bridge requires
+   * a tabId when routing background -> content-script, so resolve the target
+   * tab (Chrome's downloads API omits it; fall back to the active tab). If the
+   * content script is absent or reports 'fallback', degrade to a system
+   * notification so the user always gets feedback.
+   */
+  private async deliverIntercepted(
+    ctx: InterceptionContext,
+    msg: DownloadInterceptedMessage,
+  ): Promise<void> {
+    const tabId = await this.resolveTabId(ctx)
+    if (tabId < 0) {
+      showInterceptedNotification(msg)
+      return
+    }
+    try {
+      const reply = (await sendMessage(
+        'download:intercepted',
+        msg,
+        `content-script@${tabId}`,
+      )) as InterceptedReply | undefined
+      if (reply !== 'shown') showInterceptedNotification(msg)
+    } catch {
+      // No content script in this tab (e.g. chrome:// pages) or it threw.
+      showInterceptedNotification(msg)
+    }
+  }
+
+  /** Resolve the tab to notify. Chrome's downloads API leaves tabId at -1. */
+  private async resolveTabId(ctx: InterceptionContext): Promise<number> {
+    if (ctx.tabId >= 0) return ctx.tabId
+    try {
+      const [tab] = await browser.tabs.query({ active: true, currentWindow: true })
+      return tab?.id ?? -1
+    } catch {
+      return -1
+    }
   }
 
   /** Register browser-specific event listeners. */
@@ -148,6 +189,21 @@ export abstract class DownloadLinkInterceptor {
 }
 
 // --- shared helpers ---
+
+// Degraded feedback when the in-page toast is unavailable. Runs in the
+// background where the notifications API is available.
+export function showInterceptedNotification(msg: DownloadInterceptedMessage): void {
+  try {
+    void browser.notifications.create({
+      type: 'basic',
+      iconUrl: browser.runtime.getURL('icons/icon-128.png'),
+      title: msg.success ? 'GoAria 已接管下载' : '接管失败',
+      message: msg.error ? `${msg.filename}\n${msg.error}` : msg.filename || msg.url,
+    })
+  } catch {
+    // notifications API unavailable; nothing more we can do.
+  }
+}
 
 export function getScheme(url: string): string {
   const idx = url.indexOf(':')

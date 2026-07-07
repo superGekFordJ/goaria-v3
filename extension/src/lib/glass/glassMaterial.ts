@@ -115,6 +115,12 @@ const defsMap = new WeakMap<Node, SVGDefsElement>()
 const registryMap = new WeakMap<Node, Map<string, GlassEntry>>()
 let uidCounter = 0
 
+// A Document node may only hold one element child (<html>); append SVG defs
+// to <body> instead. ShadowRoot and other nodes accept children directly.
+function appendTarget(root: Node): ParentNode {
+  return root.nodeType === Node.DOCUMENT_NODE ? (root as Document).body : (root as ParentNode)
+}
+
 export function ensureDefs(root: Node): SVGDefsElement {
   const existing = defsMap.get(root)
   if (existing && root.contains(existing)) return existing
@@ -125,7 +131,7 @@ export function ensureDefs(root: Node): SVGDefsElement {
   svg.setAttribute('aria-hidden', 'true')
   const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs')
   svg.appendChild(defs)
-  ;(root as ParentNode).appendChild(svg)
+  appendTarget(root).appendChild(svg)
   defsMap.set(root, defs)
   registryMap.set(root, new Map())
   return defs
@@ -251,7 +257,7 @@ export function getStaticGlassFilterId(root: Node): string {
   `
   defs.appendChild(filter)
   svg.appendChild(defs)
-  ;(root as ParentNode).appendChild(svg)
+  appendTarget(root).appendChild(svg)
 
   staticFilterMap.set(root, id)
   return id
