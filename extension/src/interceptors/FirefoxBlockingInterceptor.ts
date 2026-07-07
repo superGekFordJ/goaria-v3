@@ -16,14 +16,15 @@ import type { InterceptionContext } from './LinkGrabberResponse'
  * starting the download and the backend accepting the handoff. Cookie/referer
  * capture and the WS request happen after the callback returns.
  *
- * Original-URL capture: Firefox's onHeadersReceived fires at the FINAL response
- * after a 302 redirect chain, so details.url is the post-redirect CDN URL, not
- * the original openlist URL. To match Chrome's contract (url = original,
- * finalUrl = CDN), onBeforeRequest records the initial request URL keyed by
- * requestId at the start of the chain; onHeadersReceived looks it up and uses
- * it as ctx.url while details.url (CDN) becomes ctx.finalUrl. This preserves
- * Content-Length (still read at the final 200 response) so the skipHeadProbe
- * optimization stays intact — intercepting at the 302 would lose the body.
+ * Original-URL capture: Firefox's onHeadersReceived fires for every hop in
+ * a redirect chain, including 3xx responses (Mozilla bug 1448599). At the
+ * final 2xx, details.url is the post-redirect CDN URL, not the original
+ * openlist URL. To match Chrome's contract (url = original, finalUrl = CDN),
+ * onBeforeRequest records the initial request URL keyed by requestId at the
+ * start of the chain; onHeadersReceived looks it up and uses it as ctx.url
+ * while details.url (CDN) becomes ctx.finalUrl. Redirect hops are bypassed
+ * (a 3xx has no body), so interception only happens at the final 2xx where
+ * Content-Length is still read, keeping the skipHeadProbe optimization intact.
  */
 export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
   // requestId → original request URL captured at onBeforeRequest. Firefox's
@@ -102,6 +103,15 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
     // URL, overwriting the original. Cleanup is handled by
     // onCompleted/onErrorOccurred (cancel triggers onErrorOccurred).
     const originalUrl = this.originalUrls.get(details.requestId)
+    // Firefox fires onHeadersReceived for every hop in a redirect chain,
+    // including 3xx redirect responses (Mozilla bug 1448599 confirms the 302
+    // is delivered with statusCode 302). A 3xx is never the download body: it
+    // has no Content-Length and details.url is still the pre-redirect URL, so
+    // intercepting here (e.g. a rare 302 carrying Content-Disposition:
+    // attachment) would hand GoAria url=finalUrl=openlist — wrong IP scope —
+    // and lose the body size. Skip redirect hops; the final 2xx fires
+    // onHeadersReceived again with details.url = CDN and the real headers.
+    if (details.statusCode >= 300 && details.statusCode < 400) return {}
     const ctx = this.buildContext(details, originalUrl)
     const decision = this.shouldIntercept(ctx)
     if (decision !== 'intercept') return {}
