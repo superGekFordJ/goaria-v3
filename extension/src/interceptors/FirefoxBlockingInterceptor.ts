@@ -30,9 +30,11 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
   // requestId → original request URL captured at onBeforeRequest. Firefox's
   // requestId is stable across redirect hops for one logical request, so the
   // final onHeadersReceived can recover the pre-redirect URL. Entries are
-  // consumed in onHeadersReceived and cleaned up by onCompleted/onErrorOccurred
-  // as safety nets; a max-size cap guards against unbounded growth if a
-  // listener miss leaves entries stranded (e.g. SW restart mid-request).
+  // looked up (not deleted) in onHeadersReceived — because it fires per hop
+  // including 3xx, deleting at a redirect hop would let the next onBeforeRequest
+  // re-capture the CDN URL. Cleanup is handled by onCompleted/onErrorOccurred
+  // (cancel triggers onErrorOccurred); a max-size cap guards against unbounded
+  // growth if a listener miss leaves entries stranded (e.g. SW restart).
   private originalUrls = new Map<string, string>()
   private static readonly MAX_ORIGINAL_URLS = 512
 
