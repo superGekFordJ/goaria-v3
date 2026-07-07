@@ -1,4 +1,6 @@
 // Must stay in sync with internal/extension/protocol.go — change one, update both.
+import browser from 'webextension-polyfill'
+
 export const WS_PORT_FALLBACKS = [16801, 16802, 16803] as const
 export const DEFAULT_WS_PORT = 16801
 export const PAIR_PATH_PREFIX = '/__goaria_pair__/'
@@ -16,6 +18,10 @@ export const RECONNECT_MAX_ATTEMPTS = 120
 
 // Extension-only: persisted pairing secret. No Go counterpart.
 export const STORAGE_KEY_SECRET = 'goaria_secret'
+
+// Extension-only: persisted UI effects mode. No Go counterpart.
+export const STORAGE_KEY_EFFECTS = 'goaria_effects'
+export const STORAGE_KEY_AUTO_CAPTURE = 'goaria_auto_capture'
 
 // Per-port probe timeout before falling back to the next port.
 export const WS_CONNECT_TIMEOUT_MS = 3000
@@ -38,6 +44,44 @@ class ConfigState {
   autoCapture = $state(true)
   port = $state(DEFAULT_WS_PORT)
   registeredFileTypes = $state<string[]>([])
+  effects = $state<'full' | 'reduced'>('full')
+
+  async loadEffects(): Promise<void> {
+    try {
+      const result = await browser.storage.local.get(STORAGE_KEY_EFFECTS)
+      const val = result[STORAGE_KEY_EFFECTS] as string | undefined
+      if (val === 'full' || val === 'reduced') this.effects = val
+    } catch {
+      // storage read failure: keep default.
+    }
+  }
+
+  async persistEffects(): Promise<void> {
+    try {
+      await browser.storage.local.set({ [STORAGE_KEY_EFFECTS]: this.effects })
+    } catch {
+      // storage write failure: non-fatal.
+    }
+  }
+
+  async loadAutoCapture(): Promise<void> {
+    try {
+      const result = await browser.storage.local.get(STORAGE_KEY_AUTO_CAPTURE)
+      if (typeof result[STORAGE_KEY_AUTO_CAPTURE] === 'boolean') {
+        this.autoCapture = result[STORAGE_KEY_AUTO_CAPTURE] as boolean
+      }
+    } catch {
+      // storage read failure: keep default.
+    }
+  }
+
+  async persistAutoCapture(): Promise<void> {
+    try {
+      await browser.storage.local.set({ [STORAGE_KEY_AUTO_CAPTURE]: this.autoCapture })
+    } catch {
+      // storage write failure: non-fatal.
+    }
+  }
 }
 
 export const configState = new ConfigState()

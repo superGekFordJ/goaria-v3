@@ -298,6 +298,8 @@ export class WsClient {
       // the message loop after auth validation when a secret is set).
       if (resp.success && !connectionState.paired) {
         connectionState.paired = true
+        // Push pairing status change to the popup (if open).
+        void sendMessage('pair:status', this.getStatus(), 'popup').catch(() => {})
       }
       // Ack resolves the oldest pending request. This relies on a
       // single-flight assumption: only one download request is in flight per

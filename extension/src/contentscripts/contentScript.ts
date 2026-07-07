@@ -1,13 +1,58 @@
+import { mount } from 'svelte'
+import { onMessage } from 'webext-bridge/content-script'
 import { sendMessage } from 'webext-bridge/content-script'
+import ShadowDomPopup from './ShadowDomPopup.svelte'
+import { popupQueue } from '../stores/popupQueue.svelte'
+import type { DownloadInterceptedMessage } from '../utils/messaging'
+import glassCss from '../styles/index.css?inline'
 
-// Skeleton: future plans implement pairing pair.js (reads data-secret),
-// Shadow DOM popup, and download link capture.
-// pingBackground is a channel-verification helper kept for future use;
-// not auto-fired on load to avoid injecting pings into every tab.
+// Channel-verification helper kept from the scaffold phase.
 export async function pingBackground() {
   try {
     await sendMessage('ping', { type: 'ping' }, 'background')
   } catch {
-    // Background may not be ready yet during scaffold testing.
+    // Background may not be ready yet.
   }
 }
+
+function injectStylesIntoShadow(shadowRoot: ShadowRoot): boolean {
+  try {
+    const sheet = new CSSStyleSheet()
+    sheet.replaceSync(glassCss)
+    shadowRoot.adoptedStyleSheets = [sheet]
+    return true
+  } catch {
+    // Fallback: inject a <style> tag into the shadow root.
+    try {
+      const style = document.createElement('style')
+      style.textContent = glassCss
+      shadowRoot.appendChild(style)
+      return true
+    } catch {
+      return false
+    }
+  }
+}
+
+function createShadowHost(): ShadowRoot | null {
+  const host = document.createElement('div')
+  host.id = 'goaria-shadow-host'
+  host.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:2147483647;pointer-events:none'
+  document.documentElement.appendChild(host)
+  const shadowRoot = host.attachShadow({ mode: 'open' })
+  if (!injectStylesIntoShadow(shadowRoot)) {
+    // CSP blocked style injection; popup will render without glass CSS.
+  }
+  return shadowRoot
+}
+
+const effects: 'full' | 'reduced' = 'full'
+
+const shadowRoot = createShadowHost()
+if (shadowRoot) {
+  mount(ShadowDomPopup, { target: shadowRoot, props: { effects } })
+}
+
+onMessage('download:intercepted', ({ data }) => {
+  popupQueue.push(data as DownloadInterceptedMessage)
+})

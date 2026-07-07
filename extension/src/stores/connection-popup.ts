@@ -1,29 +1,44 @@
 // Popup-only: imports webext-bridge/popup, which must never load in the
 // background service worker — it creates a 'popup' message endpoint that
-// causes persistent high CPU in the SW context.
+// causes persistent high CPU in the Sw context.
 import { onMessage, sendMessage } from 'webext-bridge/popup'
 import { connectionState } from './connection.svelte'
-import type { WsStatusMessage } from '../utils/messaging'
+import type { WsStatusMessage, PairStatusMessage } from '../utils/messaging'
 
 let statusListenerBound = false
 
-/**
- * Register the ws:status listener and query the background for the current
- * state. Intended to run once when the popup opens. Idempotent so repeated
- * mounts don't stack handlers.
- */
+// Register ws:status + pair:status listeners and query the current state.
+// Idempotent so repeated popup mounts don't stack handlers.
 export async function initStatusListener(): Promise<void> {
   if (!statusListenerBound) {
     onMessage('ws:status', ({ data }) => {
       connectionState.updateFromStatus(data as WsStatusMessage)
     })
+    onMessage('pair:status', ({ data }) => {
+      const msg = data as PairStatusMessage
+      connectionState.paired = msg.paired
+      connectionState.status = msg.status
+      connectionState.wsPort = msg.wsPort
+    })
     statusListenerBound = true
   }
-  // One-shot query covers the gap between popup open and the next push.
   try {
     const status = await sendMessage<WsStatusMessage>('ws:getStatus', {}, 'background')
     connectionState.updateFromStatus(status)
   } catch {
     // Background may be mid-restart; the listener will catch the next push.
+  }
+}
+
+// Popup-only unpair: clears local state + tells background to remove secret
+// and disconnect the WebSocket. Must never be called from the background Sw.
+export async function unpairFromPopup(): Promise<void> {
+  connectionState.paired = false
+  connectionState.status = 'disconnected'
+  connectionState.lastError = 'Unpaired'
+  try {
+    await sendMessage('pair:unpair', {}, 'background')
+  } catch {
+    // Background may be mid-restart; local state is already cleared.
   }
 }

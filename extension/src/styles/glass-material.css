@@ -1,0 +1,480 @@
+/* Glass component styles extracted for popup + Shadow DOM shared consumption. */
+
+/* === StaticGlassPanel === */
+.static-glass-root {
+  position: relative;
+  isolation: isolate;
+  transition: all 0.3s ease;
+  overflow: visible;
+}
+
+.static-glass-bg {
+  position: absolute;
+  inset: 0;
+  z-index: -10;
+  pointer-events: none;
+  transition: all 0.3s ease;
+  background: var(--base-color, rgba(255, 255, 255, 0.2));
+}
+
+.static-glass-shadow {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  transition: all 0.3s ease;
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.05),
+    0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='light'] .static-glass-shadow {
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.static-glass-fallback {
+  position: absolute;
+  inset: 0;
+  z-index: -10;
+  pointer-events: none;
+  transition: all 0.3s ease;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
+}
+
+[data-theme='light'] .static-glass-fallback {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.static-glass-content {
+  position: relative;
+  z-index: 10;
+  width: 100%;
+  height: 100%;
+}
+
+/* === LiquidGlassPanel === */
+.liquid-glass-root {
+  position: relative;
+  isolation: isolate;
+  transition: all 0.3s ease;
+  overflow: visible;
+}
+
+.lg-interactive {
+  cursor: pointer;
+}
+
+.lg-scale:hover {
+  transform: scale(1.02);
+}
+
+.lg-scale:active {
+  transform: scale(0.98);
+}
+
+.liquid-glass-refraction {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: -10;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  transition: all 0.3s ease;
+  pointer-events: none;
+}
+
+.liquid-glass-glow {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, transparent, rgba(255, 255, 255, 0.2));
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+[data-theme='light'] .liquid-glass-glow {
+  background: linear-gradient(to top, transparent, rgba(255, 255, 255, 0.1));
+}
+
+.lg-group:hover > .liquid-glass-refraction > .liquid-glass-glow {
+  opacity: 1;
+}
+
+.liquid-glass-placeholder {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: -10;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  transition: all 0.3s ease;
+  pointer-events: none;
+  background: transparent;
+  opacity: 0;
+}
+
+.lg-group:hover > .liquid-glass-placeholder {
+  background: var(--app-liquid-glass-hover, rgba(255, 255, 255, 0.08));
+  opacity: 1;
+}
+
+.liquid-glass-fallback {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: -10;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  transition: all 0.3s ease;
+  pointer-events: none;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.lg-fallback-active {
+  opacity: 1;
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
+}
+
+.liquid-glass-content {
+  position: relative;
+  z-index: 10;
+  width: 100%;
+  height: 100%;
+}
+
+/* lg-bevel and lg-specular are in glass.css (imported via index.css) */
+/* But for Shadow DOM, they need to be here too since index.css is inlined */
+.lg-bevel {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  transition: all 0.3s ease;
+  background: linear-gradient(
+    115deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0) 34%,
+    rgba(255, 255, 255, 0) 76%,
+    rgba(255, 255, 255, 0.02) 100%
+  );
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.16),
+    inset 0 -10px 20px -12px rgba(10, 15, 40, 0.32),
+    0 1px 2px rgba(0, 0, 0, 0.2),
+    0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme='light'] .lg-bevel {
+  background: linear-gradient(
+    115deg,
+    rgba(255, 255, 255, 0.5) 0%,
+    rgba(255, 255, 255, 0) 34%,
+    rgba(255, 255, 255, 0) 76%,
+    rgba(255, 255, 255, 0.3) 100%
+  );
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.16),
+    0 2px 4px rgba(0, 0, 0, 0.05),
+    0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.lg-specular {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  transition: all 0.3s ease;
+  padding: 1.4px;
+  background: conic-gradient(
+    from 0deg,
+    rgba(255, 255, 255, 0.15) 0deg,
+    rgba(255, 255, 255, 0.04) 65deg,
+    rgba(255, 255, 255, 0.08) 135deg,
+    rgba(255, 255, 255, 0.02) 200deg,
+    rgba(255, 255, 255, 0.1) 280deg,
+    rgba(255, 255, 255, 0.15) 360deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+[data-theme='light'] .lg-specular {
+  background: conic-gradient(
+    from 0deg,
+    rgba(255, 255, 255, 0.9) 0deg,
+    rgba(255, 255, 255, 0.18) 65deg,
+    rgba(255, 255, 255, 0.38) 135deg,
+    rgba(255, 255, 255, 0.08) 200deg,
+    rgba(255, 255, 255, 0.45) 280deg,
+    rgba(255, 255, 255, 0.9) 360deg
+  );
+}
+
+/* === ShadowDomPopup === */
+.shadow-dom-popup-wrapper {
+  pointer-events: auto;
+  width: 320px;
+}
+
+.shadow-dom-popup {
+  width: 100%;
+}
+
+.popup-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  width: 100%;
+}
+
+.popup-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.popup-icon {
+  font-size: 18px;
+  font-weight: bold;
+}
+
+.popup-icon.success {
+  color: #4ade80;
+}
+
+.popup-icon.error {
+  color: #f87171;
+}
+
+.popup-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--app-text, #e4e4e7);
+}
+
+.popup-filename {
+  padding: 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.popup-url {
+  font-size: 11px;
+  opacity: 0.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.popup-error {
+  font-size: 12px;
+  color: #f87171;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.popup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.popup-btn {
+  padding: 6px 16px;
+  font-size: 13px;
+}
+
+.btn-inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  gap: 6px;
+}
+
+/* === Popup (toolbar) === */
+.popup-root {
+  width: 300px;
+  padding: 16px;
+  background: linear-gradient(
+    135deg,
+    var(--app-bg, #0c0c0f),
+    color-mix(in srgb, var(--app-bg, #0c0c0f) 80%, black)
+  );
+  color: var(--app-text, #e4e4e7);
+  font-family: var(--font-family-ui, system-ui, sans-serif);
+}
+
+.popup-header-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.popup-brand {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--neon-primary, #06ffd5);
+  margin: 0;
+}
+
+.popup-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.popup-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.popup-status-dot.connected {
+  background: #4ade80;
+  box-shadow: 0 0 6px #4ade80;
+}
+
+.popup-status-dot.connecting {
+  background: #fbbf24;
+  box-shadow: 0 0 6px #fbbf24;
+}
+
+.popup-status-dot.disconnected {
+  background: #6b7280;
+}
+
+.popup-status-text {
+  font-size: 14px;
+}
+
+.popup-port-row {
+  font-size: 12px;
+  opacity: 0.7;
+  margin-bottom: 12px;
+}
+
+.popup-section {
+  margin-bottom: 12px;
+}
+
+.popup-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.popup-toggle-label {
+  font-size: 13px;
+}
+
+.popup-toggle-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  min-width: 60px;
+}
+
+.popup-pair-btn {
+  padding: 6px 12px;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.popup-unpair-btn {
+  padding: 6px 12px;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.popup-guide {
+  font-size: 12px;
+  opacity: 0.7;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  margin-bottom: 8px;
+}
+
+.popup-settings-toggle {
+  padding: 6px 12px;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.popup-settings-panel {
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+.popup-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.popup-settings-row:last-child {
+  margin-bottom: 0;
+}
+
+.popup-settings-label {
+  font-size: 13px;
+}
+
+.popup-error-text {
+  font-size: 12px;
+  color: #f87171;
+  margin-bottom: 8px;
+}
+
+.popup-confirm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.popup-confirm-text {
+  font-size: 13px;
+  flex: 1;
+}
+
+.popup-confirm-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.popup-confirm-cancel {
+  padding: 4px 10px;
+  font-size: 12px;
+}

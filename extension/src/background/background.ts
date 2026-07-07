@@ -1,11 +1,17 @@
 import browser from 'webextension-polyfill'
 import { onMessage } from 'webext-bridge/background'
 import { wsClient } from './wsClient'
-import { STORAGE_KEY_SECRET } from '../stores/config.svelte'
+import { configState, STORAGE_KEY_SECRET } from '../stores/config.svelte'
+import { connectionState } from '../stores/connection.svelte'
 import { isFirefox } from '../utils/extensionInfo'
 import { FirefoxBlockingInterceptor } from '../interceptors/FirefoxBlockingInterceptor'
 import { ChromeDownloadsApiInterceptor } from '../interceptors/ChromeDownloadsApiInterceptor'
-import type { PairSecretMessage, WsStatusMessage } from '../utils/messaging'
+import type {
+  InterceptionToggleMessage,
+  PairSecretMessage,
+  PairStatusMessage,
+  WsStatusMessage,
+} from '../utils/messaging'
 
 // Channel-verification handler kept from the scaffold phase.
 onMessage('ping', () => ({ pong: true }))
@@ -31,6 +37,37 @@ onMessage('pair:secret', async ({ data }: { data: PairSecretMessage }) => {
   wsClient.connect()
   return { ok: true }
 })
+
+// popup -> background: toggle interception on/off + persist.
+onMessage('interception:toggle', async ({ data }: { data: InterceptionToggleMessage }) => {
+  configState.autoCapture = data.enabled
+  await configState.persistAutoCapture()
+  return { ok: true }
+})
+
+// popup -> background: query current pairing status.
+onMessage('pair:request', () => ({
+  paired: connectionState.paired,
+  status: connectionState.status,
+  wsPort: wsClient.getStatus().wsPort,
+}) satisfies PairStatusMessage)
+
+// popup -> background: unpair — remove secret + disconnect WS.
+onMessage('pair:unpair', async () => {
+  try {
+    await browser.storage.local.remove(STORAGE_KEY_SECRET)
+  } catch {
+    // storage failure: proceed to disconnect anyway.
+  }
+  wsClient.disconnect()
+  connectionState.paired = false
+  return { ok: true }
+})
+
+// SW startup: load persisted state before connecting so the interceptor
+// uses the user's saved autoCapture setting.
+void configState.loadEffects()
+void configState.loadAutoCapture()
 
 // SW startup: top-level code runs on every (re)start of the Chrome MV3
 // service worker. connect() reads the secret from storage.local and
