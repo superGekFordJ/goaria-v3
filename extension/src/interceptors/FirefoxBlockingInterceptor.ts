@@ -15,14 +15,73 @@ import type { InterceptionContext } from './LinkGrabberResponse'
  * The cancel decision is synchronous so there is no race between the browser
  * starting the download and the backend accepting the handoff. Cookie/referer
  * capture and the WS request happen after the callback returns.
+ *
+ * Original-URL capture: Firefox's onHeadersReceived fires at the FINAL response
+ * after a 302 redirect chain, so details.url is the post-redirect CDN URL, not
+ * the original openlist URL. To match Chrome's contract (url = original,
+ * finalUrl = CDN), onBeforeRequest records the initial request URL keyed by
+ * requestId at the start of the chain; onHeadersReceived looks it up and uses
+ * it as ctx.url while details.url (CDN) becomes ctx.finalUrl. This preserves
+ * Content-Length (still read at the final 200 response) so the skipHeadProbe
+ * optimization stays intact — intercepting at the 302 would lose the body.
  */
 export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
+  // requestId → original request URL captured at onBeforeRequest. Firefox's
+  // requestId is stable across redirect hops for one logical request, so the
+  // final onHeadersReceived can recover the pre-redirect URL. Entries are
+  // consumed in onHeadersReceived and cleaned up by onCompleted/onErrorOccurred
+  // as safety nets; a max-size cap guards against unbounded growth if a
+  // listener miss leaves entries stranded (e.g. SW restart mid-request).
+  private originalUrls = new Map<string, string>()
+  private static readonly MAX_ORIGINAL_URLS = 512
+
   register(): void {
+    browser.webRequest.onBeforeRequest.addListener(
+      this.onBeforeRequest,
+      { urls: ['<all_urls>'], types: ['main_frame', 'sub_frame'] },
+    )
     browser.webRequest.onHeadersReceived.addListener(
       this.onHeadersReceived,
       { urls: ['<all_urls>'], types: ['main_frame', 'sub_frame'] },
       ['blocking', 'responseHeaders'],
     )
+    // Safety-net cleanup: remove stranded entries when the request completes
+    // or errors without reaching onHeadersReceived (e.g. cancelled, aborted,
+    // or a non-download navigation that never triggers shouldIntercept).
+    browser.webRequest.onCompleted.addListener(this.onRequestFinished, {
+      urls: ['<all_urls>'],
+      types: ['main_frame', 'sub_frame'],
+    })
+    browser.webRequest.onErrorOccurred.addListener(this.onRequestFinished, {
+      urls: ['<all_urls>'],
+      types: ['main_frame', 'sub_frame'],
+    })
+  }
+
+  private onBeforeRequest = (
+    details: browser.WebRequest.OnBeforeRequestDetailsType,
+  ): void => {
+    // onBeforeRequest fires for every hop in a redirect chain (not just the
+    // initial request), but requestId stays constant. Only capture the FIRST
+    // URL — the pre-redirect original — so redirect targets don't overwrite it.
+    if (!this.originalUrls.has(details.requestId)) {
+      // Guard against unbounded growth if cleanup listeners miss (SW restart,
+      // listener race). Evicting the oldest entry keeps the map bounded; the
+      // evicted request simply falls back to details.url at onHeadersReceived.
+      // Done only when inserting a new entry, so an already-present requestId
+      // (redirect hop) does not evict an unrelated entry.
+      if (this.originalUrls.size >= FirefoxBlockingInterceptor.MAX_ORIGINAL_URLS) {
+        const firstKey = this.originalUrls.keys().next().value
+        if (firstKey !== undefined) this.originalUrls.delete(firstKey)
+      }
+      this.originalUrls.set(details.requestId, details.url)
+    }
+  }
+
+  private onRequestFinished = (
+    details: browser.WebRequest.OnCompletedDetailsType | browser.WebRequest.OnErrorOccurredDetailsType,
+  ): void => {
+    this.originalUrls.delete(details.requestId)
   }
 
   // Firefox webRequestBlocking path has no pause/cancel state machine, so
@@ -34,7 +93,16 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
   private onHeadersReceived = (
     details: browser.WebRequest.OnHeadersReceivedDetailsType,
   ): browser.WebRequest.BlockingResponse => {
-    const ctx = this.buildContext(details)
+    // Look up the captured original URL (pre-redirect openlist URL). If the
+    // entry is missing (SW restart mid-request, listener added late, or a
+    // request that bypassed onBeforeRequest), fall back to details.url — no
+    // worse than the pre-fix behavior. Do NOT delete here: onHeadersReceived
+    // fires once per hop in a redirect chain, and deleting at the 302 hop
+    // would let the next onBeforeRequest (for the CDN hop) re-capture the CDN
+    // URL, overwriting the original. Cleanup is handled by
+    // onCompleted/onErrorOccurred (cancel triggers onErrorOccurred).
+    const originalUrl = this.originalUrls.get(details.requestId)
+    const ctx = this.buildContext(details, originalUrl)
     const decision = this.shouldIntercept(ctx)
     if (decision !== 'intercept') return {}
     // Cancel synchronously; the handoff runs after the callback returns.
@@ -66,6 +134,7 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
 
   private buildContext(
     details: browser.WebRequest.OnHeadersReceivedDetailsType,
+    originalUrl?: string,
   ): InterceptionContext {
     const headers = details.responseHeaders ?? []
     let contentType = ''
@@ -78,14 +147,24 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
       else if (name === 'content-length') contentLength = parseContentLength(h.value)
     }
     const referrer = details.initiator ?? details.originUrl ?? ''
+    // url = the ORIGINAL request URL (openlist), captured at onBeforeRequest.
+    // finalUrl = the FINAL response URL (CDN) at onHeadersReceived, i.e.
+    // details.url after the redirect chain. This matches Chrome's contract
+    // (item.url = original, item.finalUrl = CDN) so GoAria downloads from the
+    // original URL (openlist → 302 → freshly-minted CDN token) instead of the
+    // stale post-redirect CDN URL whose presigned token is bound to the
+    // browser's redirect context. When no original was captured, fall back to
+    // details.url for both fields (pre-fix behavior).
+    const url = originalUrl ?? details.url
+    const finalUrl = details.url
     return {
-      url: details.url,
-      finalUrl: details.url,
+      url,
+      finalUrl,
       tabId: details.tabId,
       mimeType: extractMimeType(contentType),
       contentDisposition,
       fileSize: contentLength,
-      filename: extractFilename(contentDisposition, details.url),
+      filename: extractFilename(contentDisposition, url),
       referrer,
       initiator: details.initiator,
       originUrl: details.originUrl,
