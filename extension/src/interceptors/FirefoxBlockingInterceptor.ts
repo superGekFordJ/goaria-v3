@@ -39,10 +39,10 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
   private static readonly MAX_ORIGINAL_URLS = 512
 
   register(): void {
-    browser.webRequest.onBeforeRequest.addListener(
-      this.onBeforeRequest,
-      { urls: ['<all_urls>'], types: ['main_frame', 'sub_frame'] },
-    )
+    browser.webRequest.onBeforeRequest.addListener(this.onBeforeRequest, {
+      urls: ['<all_urls>'],
+      types: ['main_frame', 'sub_frame'],
+    })
     browser.webRequest.onHeadersReceived.addListener(
       this.onHeadersReceived,
       { urls: ['<all_urls>'], types: ['main_frame', 'sub_frame'] },
@@ -61,9 +61,7 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
     })
   }
 
-  private onBeforeRequest = (
-    details: browser.WebRequest.OnBeforeRequestDetailsType,
-  ): void => {
+  private onBeforeRequest = (details: browser.WebRequest.OnBeforeRequestDetailsType): void => {
     // onBeforeRequest fires for every hop in a redirect chain (not just the
     // initial request), but requestId stays constant. Only capture the FIRST
     // URL — the pre-redirect original — so redirect targets don't overwrite it.
@@ -82,7 +80,8 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
   }
 
   private onRequestFinished = (
-    details: browser.WebRequest.OnCompletedDetailsType | browser.WebRequest.OnErrorOccurredDetailsType,
+    details:
+      browser.WebRequest.OnCompletedDetailsType | browser.WebRequest.OnErrorOccurredDetailsType,
   ): void => {
     this.originalUrls.delete(details.requestId)
   }
@@ -125,7 +124,19 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
     // (e.g. an iframe download link) must not close the parent tab.
     // The tab may already be gone (user-closed), so swallow.
     if (ctx.tabId >= 0 && details.type === 'main_frame') {
-      browser.tabs.remove(ctx.tabId).catch(() => undefined)
+      const tabIdToClose = ctx.tabId
+      void (async () => {
+        try {
+          const tab = await browser.tabs.get(tabIdToClose)
+          const isBlank =
+            !tab.url || tab.url === 'about:blank' || tab.url === ctx.url || tab.url === ctx.finalUrl
+          if (isBlank) {
+            await browser.tabs.remove(tabIdToClose)
+          }
+        } catch {
+          // Tab already gone or access denied.
+        }
+      })()
     }
     return { cancel: true }
   }

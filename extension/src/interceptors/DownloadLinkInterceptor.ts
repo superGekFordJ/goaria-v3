@@ -94,9 +94,7 @@ export abstract class DownloadLinkInterceptor {
    * Build the DownloadHandoffMessage: capture cookies + download page URL and
    * assemble the camelCase message the WS client converts to snake_case JSON.
    */
-  async constructDownloadRequest(
-    ctx: InterceptionContext,
-  ): Promise<DownloadHandoffMessage> {
+  async constructDownloadRequest(ctx: InterceptionContext): Promise<DownloadHandoffMessage> {
     const [cookies, downloadPage] = await Promise.all([
       getCookiesForUrl(ctx.url),
       getDownloadPageUrl({
@@ -141,13 +139,6 @@ export abstract class DownloadLinkInterceptor {
     void this.deliverIntercepted(ctx, msg)
   }
 
-  /**
-   * Send the interception result to the in-page toast. webext-bridge requires
-   * a tabId when routing background -> content-script, so resolve the target
-   * tab (Chrome's downloads API omits it; fall back to the active tab). If the
-   * content script is absent or reports 'fallback', degrade to a system
-   * notification so the user always gets feedback.
-   */
   private async deliverIntercepted(
     ctx: InterceptionContext,
     msg: DownloadInterceptedMessage,
@@ -158,21 +149,35 @@ export abstract class DownloadLinkInterceptor {
       return
     }
     try {
-      const reply = (await sendMessage(
+      const sendPromise = sendMessage(
         'download:intercepted',
         msg,
         `content-script@${tabId}`,
-      )) as InterceptedReply | undefined
+      ) as Promise<InterceptedReply | undefined>
+
+      const reply = await Promise.race([
+        sendPromise,
+        new Promise<undefined>((_, reject) =>
+          setTimeout(() => reject(new Error('sendMessage timeout')), 1000),
+        ),
+      ])
       if (reply !== 'shown') showInterceptedNotification(msg)
     } catch {
-      // No content script in this tab (e.g. chrome:// pages) or it threw.
+      // No content script in this tab (e.g. chrome:// pages), timed out or it threw.
       showInterceptedNotification(msg)
     }
   }
 
   /** Resolve the tab to notify. Chrome's downloads API leaves tabId at -1. */
   private async resolveTabId(ctx: InterceptionContext): Promise<number> {
-    if (ctx.tabId >= 0) return ctx.tabId
+    if (ctx.tabId >= 0) {
+      try {
+        const tab = await browser.tabs.get(ctx.tabId)
+        if (tab) return ctx.tabId
+      } catch {
+        // Tab no longer exists.
+      }
+    }
     try {
       const [tab] = await browser.tabs.query({ active: true, currentWindow: true })
       return tab?.id ?? -1
@@ -272,7 +277,7 @@ function matchesRegisteredFileTypes(url: string): boolean {
   if (types.length === 0) return true
   const ext = getUrlExtension(url)
   if (!ext) return false
-  return types.some((t) => t.toLowerCase() === ext)
+  return types.some(t => t.toLowerCase() === ext)
 }
 
 function getUrlExtension(url: string): string {
