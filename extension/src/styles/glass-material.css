@@ -157,6 +157,15 @@
   height: 100%;
 }
 
+/* === Glass Material Base Definitions === */
+:host, :root, [data-theme='dark'] {
+  --app-text: #e4e4e7;
+}
+
+[data-theme='light'] {
+  --app-text: #27272a;
+}
+
 /* === Liquid Glass v2.1 Internal Engine === */
 .liquid-glass-root::before {
   content: '';
