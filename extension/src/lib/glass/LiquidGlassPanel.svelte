@@ -53,7 +53,7 @@
     style="border-radius: {radius}"
     class:lg-interactive={isInteractive}
     class:lg-scale={hasScale}
-    disabled={disabled}
+    {disabled}
     {onclick}
   >
     {#if effects === 'full' && active}
@@ -122,5 +122,3 @@
     </div>
   </div>
 {/if}
-
-

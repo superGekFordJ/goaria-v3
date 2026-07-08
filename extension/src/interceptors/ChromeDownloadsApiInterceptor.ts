@@ -110,7 +110,9 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
 
   private async onDownloadCreated(item: browser.Downloads.DownloadItem): Promise<void> {
     // Skip downloads triggered by other extensions (defensive — avoids loops).
-    if (item.byExtensionId) return
+    if (item.byExtensionId) {
+      return
+    }
 
     const chromeItem = item as DownloadItemWithFinalUrl
     const ctx: InterceptionContext = {
@@ -130,7 +132,15 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
     // Small files: pause is ineffective and the download completes before the
     // ack can cancel it, causing a duplicate download. Skip early when the size
     // is known and below the threshold. Unknown size (0) still attempts takeover.
-    if (ctx.fileSize > 0 && ctx.fileSize < SMALL_FILE_THRESHOLD_BYTES) return
+    if (ctx.fileSize > 0 && ctx.fileSize < SMALL_FILE_THRESHOLD_BYTES) {
+      return
+    }
+
+    // SYNCHRONOUSLY claim ownership before any awaits! 
+    // This prevents onDeterminingFilename from firing and escaping our hold
+    // while we are awaiting storage or pause APIs.
+    this.pausedIds.add(item.id)
+    this.statusMirror.set(item.id, 'pending')
 
     // Persist the pending decision BEFORE pausing so a SW death between pause
     // and save doesn't leave the download stuck paused with no recovery state.
@@ -145,24 +155,26 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
 
     try {
       await browser.downloads.pause(item.id)
-    } catch {
+    } catch (e) {
       // pause may fail for completed/interrupted/small-file downloads.
       try {
         const fresh = await browser.downloads.search({ id: item.id })
         const state = fresh[0]?.state
         if (state === 'complete' || state === 'interrupted') {
           await removePendingDecision(item.id)
+          this.invokeSuggest(item.id)
+          this.cleanupMemory(item.id)
           return
         }
       } catch {
         await removePendingDecision(item.id)
+        this.invokeSuggest(item.id)
+        this.cleanupMemory(item.id)
         return
       }
       // Still in_progress despite pause error — onDeterminingFilename will
       // delay completion; proceed with the handoff attempt.
     }
-    this.pausedIds.add(item.id)
-    this.statusMirror.set(item.id, 'pending')
     void this.handlePausedDownload(item.id, ctx)
   }
 
@@ -184,6 +196,7 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       if (resp.success) {
         this.statusMirror.set(downloadId, 'canceling')
         await updatePendingStatus(downloadId, 'canceling')
+        this.invokeSuggest(downloadId)
         await this.cancelAndErase(downloadId)
         this.cleanupMemory(downloadId)
         await removePendingDecision(downloadId)
@@ -243,12 +256,12 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
   private async cancelAndErase(downloadId: number): Promise<void> {
     try {
       await browser.downloads.cancel(downloadId)
-    } catch {
+    } catch (e) {
       // download may already be gone — ignore
     }
     try {
       await browser.downloads.erase({ id: downloadId })
-    } catch {
+    } catch (e) {
       // erase failure is non-fatal
     }
   }
@@ -274,7 +287,7 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       this.suggestFns.delete(downloadId)
       try {
         suggest()
-      } catch {
+      } catch (e) {
         // suggest may throw if the download is already gone — ignore.
       }
     }

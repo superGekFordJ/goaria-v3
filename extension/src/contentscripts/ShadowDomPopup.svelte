@@ -33,10 +33,7 @@
 </script>
 
 {#if message}
-  <div
-    class="shadow-dom-popup-wrapper"
-    transition:fly={{ x: 300, duration: 300 }}
-  >
+  <div class="shadow-dom-popup-wrapper" transition:fly={{ x: 300, duration: 300 }}>
     <StaticGlassPanel
       refraction={effects === 'full'}
       radius="var(--radius-squircle-lg, 2rem)"
@@ -54,10 +51,12 @@
         </div>
 
         <div class="etched-panel popup-filename">
-          {message.filename}
+          {message.filename || hostUrl}
         </div>
 
-        <div class="popup-url">{hostUrl}</div>
+        {#if message.filename}
+          <div class="popup-url">{hostUrl}</div>
+        {/if}
 
         {#if !message.success && message.error}
           <div class="popup-error">{message.error}</div>
@@ -92,5 +91,3 @@
     </StaticGlassPanel>
   </div>
 {/if}
-
-

@@ -115,15 +115,19 @@ const defsMap = new WeakMap<Node, SVGDefsElement>()
 const registryMap = new WeakMap<Node, Map<string, GlassEntry>>()
 let uidCounter = 0
 
-// A Document node may only hold one element child (<html>); append SVG defs
-// to <body> instead. ShadowRoot and other nodes accept children directly.
 function appendTarget(root: Node): ParentNode {
-  return root.nodeType === Node.DOCUMENT_NODE ? (root as Document).body : (root as ParentNode)
+  // Chromium Bug: backdrop-filter: url(#id) inside Shadow DOM cannot find SVG filters
+  // defined within the same Shadow DOM. They MUST be in the host document.
+  if (root.nodeType === Node.DOCUMENT_NODE) return (root as Document).body
+  const doc = root.ownerDocument
+  if (doc && doc.body) return doc.body
+  return root as ParentNode
 }
 
 export function ensureDefs(root: Node): SVGDefsElement {
   const existing = defsMap.get(root)
-  if (existing && root.contains(existing)) return existing
+  const target = appendTarget(root)
+  if (existing && target.contains(existing)) return existing
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
   svg.setAttribute('width', '0')
   svg.setAttribute('height', '0')
@@ -226,7 +230,8 @@ const staticFilterMap = new WeakMap<Node, string>()
 export function getStaticGlassFilterId(root: Node): string {
   const existing = staticFilterMap.get(root)
   if (existing) {
-    const el = (root as ParentNode).querySelector(`#${existing}`)
+    const target = appendTarget(root)
+    const el = target.querySelector(`#${existing}`)
     if (el) return existing
   }
 

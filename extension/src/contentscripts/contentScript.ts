@@ -18,14 +18,14 @@ export async function pingBackground() {
 function injectStylesIntoShadow(shadowRoot: ShadowRoot): boolean {
   try {
     const sheet = new CSSStyleSheet()
-    sheet.replaceSync(glassCss)
+    sheet.replaceSync(glassCss.replace(/:root/g, ':host'))
     shadowRoot.adoptedStyleSheets = [sheet]
     return true
   } catch {
     // Fallback: inject a <style> tag into the shadow root.
     try {
       const style = document.createElement('style')
-      style.textContent = glassCss
+      style.textContent = glassCss.replace(/:root/g, ':host')
       shadowRoot.appendChild(style)
       return true
     } catch {
