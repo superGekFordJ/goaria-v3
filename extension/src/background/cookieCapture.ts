@@ -16,7 +16,7 @@ export async function getCookiesForUrl(url: string): Promise<string[]> {
     // Sort by name for a stable cookie string so duplicate detection on the
     // backend is not confused by ordering variance.
     cookies.sort((a, b) => a.name.localeCompare(b.name))
-    const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join('; ')
+    const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ')
     return [`Cookie: ${cookieStr}`]
   } catch {
     // cookies.getAll may reject in incognito split mode or without the cookies

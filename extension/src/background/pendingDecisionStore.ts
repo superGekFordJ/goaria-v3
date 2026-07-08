@@ -1,8 +1,5 @@
 import browser from 'webextension-polyfill'
-import {
-  PENDING_DECISION_TTL_MS,
-  STORAGE_KEY_PENDING_PREFIX,
-} from '../stores/config.svelte'
+import { PENDING_DECISION_TTL_MS, STORAGE_KEY_PENDING_PREFIX } from '../stores/config.svelte'
 
 /**
  * Persisted state for a download whose cancel/resume decision is in flight.
@@ -64,9 +61,7 @@ export async function savePendingDecision(
 }
 
 /** Read a pending decision. Returns null when absent or expired (and cleans up). */
-export async function getPendingDecision(
-  downloadId: number,
-): Promise<PendingDecision | null> {
+export async function getPendingDecision(downloadId: number): Promise<PendingDecision | null> {
   try {
     const result = await browser.storage.session.get(keyFor(downloadId))
     const decision = parseDecision(result[keyFor(downloadId)])
@@ -111,9 +106,7 @@ export async function updatePendingDownloadPage(
 }
 
 /** Return all non-expired pending decisions, keyed by download id. */
-export async function getAllPendingDecisions(): Promise<
-  Map<number, PendingDecision>
-> {
+export async function getAllPendingDecisions(): Promise<Map<number, PendingDecision>> {
   const map = new Map<number, PendingDecision>()
   try {
     const all = await browser.storage.session.get(null)

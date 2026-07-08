@@ -51,10 +51,13 @@
     class="static-glass-root lg-group {extraClass}"
     class:lg-interactive={isInteractive}
     style="border-radius: {radius}"
-    disabled={disabled}
+    {disabled}
   >
     {#if effects === 'full'}
-      <div class="static-glass-bg" style="{backdropStyle}; border-radius: {radius}; --base-color: {baseColor}"></div>
+      <div
+        class="static-glass-bg"
+        style="{backdropStyle}; border-radius: {radius}; --base-color: {baseColor}"
+      ></div>
       <div class="static-glass-shadow" style="border-radius: {radius}"></div>
     {:else if !fallbackClass}
       <div class="static-glass-fallback" style="border-radius: {radius}"></div>
@@ -74,7 +77,10 @@
     style="border-radius: {radius}"
   >
     {#if effects === 'full'}
-      <div class="static-glass-bg" style="{backdropStyle}; border-radius: {radius}; --base-color: {baseColor}"></div>
+      <div
+        class="static-glass-bg"
+        style="{backdropStyle}; border-radius: {radius}; --base-color: {baseColor}"
+      ></div>
       <div class="static-glass-shadow" style="border-radius: {radius}"></div>
     {:else if !fallbackClass}
       <div class="static-glass-fallback" style="border-radius: {radius}"></div>
@@ -87,5 +93,3 @@
     </div>
   </div>
 {/if}
-
-

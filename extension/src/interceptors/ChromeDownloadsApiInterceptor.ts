@@ -136,7 +136,7 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       return
     }
 
-    // SYNCHRONOUSLY claim ownership before any awaits! 
+    // SYNCHRONOUSLY claim ownership before any awaits!
     // This prevents onDeterminingFilename from firing and escaping our hold
     // while we are awaiting storage or pause APIs.
     this.pausedIds.add(item.id)
@@ -178,10 +178,7 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
     void this.handlePausedDownload(item.id, ctx)
   }
 
-  private async handlePausedDownload(
-    downloadId: number,
-    ctx: InterceptionContext,
-  ): Promise<void> {
+  private async handlePausedDownload(downloadId: number, ctx: InterceptionContext): Promise<void> {
     // Pending decision was already persisted by onDownloadCreated or
     // recoverPendingDecisions before this point.
 
@@ -227,7 +224,10 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
    * callback alive (delaying filename finalization) when we intend to
    * cancel/resume the download ourselves.
    */
-  private onDeterminingFilename(item: OnDeterminingFilenameItem, suggest: SuggestFn): boolean | void {
+  private onDeterminingFilename(
+    item: OnDeterminingFilenameItem,
+    suggest: SuggestFn,
+  ): boolean | void {
     const size = item.fileSize > 0 ? item.fileSize : item.totalBytes
     // Small files: pause is ineffective and takeover adds little value.
     if (size > 0 && size < SMALL_FILE_THRESHOLD_BYTES) {

@@ -165,7 +165,10 @@ function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, be
   entry.dr.setAttribute('scale', (scale * (1 - params.ca)).toFixed(5))
   entry.dg.setAttribute('scale', scale.toFixed(5))
   entry.db.setAttribute('scale', (scale * (1 + params.ca)).toFixed(5))
-  entry.blur.setAttribute('stdDeviation', `${(params.blur / w).toFixed(5)} ${(params.blur / h).toFixed(5)}`)
+  entry.blur.setAttribute(
+    'stdDeviation',
+    `${(params.blur / w).toFixed(5)} ${(params.blur / h).toFixed(5)}`,
+  )
   entry.sat.setAttribute('values', params.sat.toFixed(2))
 }
 
@@ -274,7 +277,9 @@ let urlBackdropSupported: boolean | null = null
 export function supportsUrlBackdropFilter(): boolean {
   if (urlBackdropSupported !== null) return urlBackdropSupported
   try {
-    urlBackdropSupported = CSS.supports('backdrop-filter', 'url(#x)') || CSS.supports('-webkit-backdrop-filter', 'url(#x)')
+    urlBackdropSupported =
+      CSS.supports('backdrop-filter', 'url(#x)') ||
+      CSS.supports('-webkit-backdrop-filter', 'url(#x)')
   } catch {
     urlBackdropSupported = false
   }

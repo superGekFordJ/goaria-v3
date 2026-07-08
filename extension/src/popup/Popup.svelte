@@ -30,7 +30,11 @@
     const newVal = !configState.autoCapture
     configState.autoCapture = newVal
     try {
-      await sendMessage('interception:toggle', { enabled: newVal } satisfies InterceptionToggleMessage, 'background')
+      await sendMessage(
+        'interception:toggle',
+        { enabled: newVal } satisfies InterceptionToggleMessage,
+        'background',
+      )
     } catch {
       // Revert on failure.
       configState.autoCapture = !newVal

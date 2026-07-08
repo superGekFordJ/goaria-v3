@@ -36,8 +36,7 @@ type PendingRequest = {
 // secret. Skipped in MVP mode (empty secret) where auth can't fail.
 const AUTH_FAIL_WINDOW_MS = 1500
 
-const AUTH_FAIL_ERROR =
-  'Authentication failed. Please re-pair in GoAria settings.'
+const AUTH_FAIL_ERROR = 'Authentication failed. Please re-pair in GoAria settings.'
 
 /**
  * WebSocket client that probes the GoAria backend ports, authenticates with the
@@ -254,7 +253,7 @@ export class WsClient {
     socket.onopen = () => {
       // Re-entry is unexpected for an already-attached socket; no-op.
     }
-    socket.onmessage = (ev) => this.handleMessage(ev)
+    socket.onmessage = ev => this.handleMessage(ev)
     socket.onerror = () => {
       // Record error context; onclose will follow and drive reconnect.
       this.setStatus(connectionState.status, 'WebSocket error')

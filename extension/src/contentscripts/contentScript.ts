@@ -38,7 +38,8 @@ function createShadowHost(): ShadowRoot | null {
   try {
     const host = document.createElement('div')
     host.id = 'goaria-shadow-host'
-    host.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:2147483647;pointer-events:none'
+    host.style.cssText =
+      'position:fixed;bottom:20px;right:20px;z-index:2147483647;pointer-events:none'
     document.documentElement.appendChild(host)
     const shadowRoot = host.attachShadow({ mode: 'open' })
     if (!injectStylesIntoShadow(shadowRoot)) {

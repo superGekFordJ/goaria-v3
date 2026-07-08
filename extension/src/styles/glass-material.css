@@ -213,9 +213,13 @@
     rgba(255, 255, 255, 0.1) 280deg,
     rgba(255, 255, 255, 0.15) 360deg
   );
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
   mask-composite: exclude;
 }
 
@@ -320,7 +324,8 @@
 }
 
 /* === Popup (toolbar) === */
-html, body {
+html,
+body {
   min-width: 220px;
   min-height: 300px;
   margin: 0;
