@@ -114,6 +114,18 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       return
     }
 
+    let filename = item.filename || ''
+    if (!filename && item.url) {
+      try {
+        const parts = item.url.split('/')
+        const last = parts[parts.length - 1]
+        const clean = last.split('?')[0]
+        filename = decodeURIComponent(clean)
+      } catch {
+        // Safe fallback.
+      }
+    }
+
     const chromeItem = item as DownloadItemWithFinalUrl
     const ctx: InterceptionContext = {
       url: item.url,
@@ -122,7 +134,7 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       mimeType: item.mime ?? '',
       contentDisposition: '',
       fileSize: item.fileSize > 0 ? item.fileSize : item.totalBytes > 0 ? item.totalBytes : 0,
-      filename: item.filename || '',
+      filename,
       referrer: item.referrer ?? '',
     }
 
@@ -294,6 +306,18 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
   }
 
   private contextFromDecision(decision: PendingDecision): InterceptionContext {
+    let filename = decision.filename || ''
+    if (!filename && decision.url) {
+      try {
+        const parts = decision.url.split('/')
+        const last = parts[parts.length - 1]
+        const clean = last.split('?')[0]
+        filename = decodeURIComponent(clean)
+      } catch {
+        // Safe fallback.
+      }
+    }
+
     return {
       url: decision.url,
       finalUrl: '',
@@ -301,7 +325,7 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       mimeType: '',
       contentDisposition: '',
       fileSize: decision.fileSize,
-      filename: decision.filename,
+      filename,
       referrer: decision.downloadPage ?? '',
     }
   }

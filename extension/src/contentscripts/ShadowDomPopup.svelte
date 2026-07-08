@@ -34,9 +34,9 @@
 
 {#if message}
   <div class="shadow-dom-popup-wrapper" transition:fly={{ x: 300, duration: 300 }}>
-    <StaticGlassPanel
-      refraction={effects === 'full'}
+    <LiquidGlassPanel
       radius="var(--radius-squircle-lg, 2rem)"
+      baseColor="rgba(24, 24, 30, 0.6)"
       {effects}
       class="shadow-dom-popup"
     >
@@ -88,6 +88,6 @@
           {/if}
         </div>
       </div>
-    </StaticGlassPanel>
+    </LiquidGlassPanel>
   </div>
 {/if}

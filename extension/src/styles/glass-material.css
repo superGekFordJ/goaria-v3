@@ -157,31 +157,31 @@
   height: 100%;
 }
 
-/* lg-bevel and lg-specular are in glass.css (imported via index.css) */
-/* But for Shadow DOM, they need to be here too since index.css is inlined */
-.lg-bevel {
+/* === Liquid Glass v2.1 Internal Engine === */
+.liquid-glass-root::before {
+  content: '';
   position: absolute;
   inset: 0;
-  z-index: 0;
+  z-index: 1;
+  border-radius: inherit;
+  clip-path: var(--squircle, none);
   pointer-events: none;
-  transition: all 0.3s ease;
   background: linear-gradient(
     115deg,
-    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.09) 0%,
     rgba(255, 255, 255, 0) 34%,
     rgba(255, 255, 255, 0) 76%,
-    rgba(255, 255, 255, 0.02) 100%
+    rgba(255, 255, 255, 0.05) 100%
   );
   box-shadow:
-    inset 0 0 0 1px rgba(0, 0, 0, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.15),
-    inset 0 -1px 1px rgba(0, 0, 0, 0.16),
+    inset 0 1px 1px rgba(255, 255, 255, 0.4),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.1),
     inset 0 -10px 20px -12px rgba(10, 15, 40, 0.32),
-    0 1px 2px rgba(0, 0, 0, 0.2),
-    0 4px 12px rgba(0, 0, 0, 0.3);
+    inset 0 0 14px rgba(255, 255, 255, 0.03);
+  opacity: var(--spec, 1);
 }
 
-[data-theme='light'] .lg-bevel {
+[data-theme='light'] .liquid-glass-root::before {
   background: linear-gradient(
     115deg,
     rgba(255, 255, 255, 0.5) 0%,
@@ -190,49 +190,51 @@
     rgba(255, 255, 255, 0.3) 100%
   );
   box-shadow:
-    inset 0 0 0 1px rgba(0, 0, 0, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16),
+    inset 0 1px 1px rgba(255, 255, 255, 0.8),
     inset 0 -1px 1px rgba(0, 0, 0, 0.16),
     0 2px 4px rgba(0, 0, 0, 0.05),
     0 8px 24px rgba(0, 0, 0, 0.08);
 }
 
-.lg-specular {
+/* Micro noise for banding elimination and organic feel */
+.glass-noise {
   position: absolute;
   inset: 0;
   z-index: 1;
+  border-radius: inherit;
+  clip-path: var(--squircle, none);
   pointer-events: none;
-  transition: all 0.3s ease;
-  padding: 1.4px;
-  background: conic-gradient(
-    from 0deg,
-    rgba(255, 255, 255, 0.15) 0deg,
-    rgba(255, 255, 255, 0.04) 65deg,
-    rgba(255, 255, 255, 0.08) 135deg,
-    rgba(255, 255, 255, 0.02) 200deg,
-    rgba(255, 255, 255, 0.1) 280deg,
-    rgba(255, 255, 255, 0.15) 360deg
-  );
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  mask-composite: exclude;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+  opacity: 0.05;
 }
 
-[data-theme='light'] .lg-specular {
-  background: conic-gradient(
-    from 0deg,
-    rgba(255, 255, 255, 0.9) 0deg,
-    rgba(255, 255, 255, 0.18) 65deg,
-    rgba(255, 255, 255, 0.38) 135deg,
-    rgba(255, 255, 255, 0.08) 200deg,
-    rgba(255, 255, 255, 0.45) 280deg,
-    rgba(255, 255, 255, 0.9) 360deg
-  );
+/* Hairline rim highlight injected dynamically */
+.glass-rim {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+  opacity: calc(0.95 * var(--spec, 1));
+}
+
+[data-theme='dark'] .glass-rim,
+body:not([data-theme='light']) .glass-rim {
+  opacity: calc(0.55 * var(--spec, 1));
+}
+
+[data-theme='dark'] .glass-rim path,
+body:not([data-theme='light']) .glass-rim path {
+  stroke: url(#rim-dark);
+}
+
+[data-theme='dark'] .liquid-glass-root::before,
+body:not([data-theme='light']) .liquid-glass-root::before {
+  opacity: calc(0.45 * var(--spec, 1));
 }
 
 /* === ShadowDomPopup === */

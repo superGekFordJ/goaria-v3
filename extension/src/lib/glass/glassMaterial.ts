@@ -16,6 +16,8 @@ export const GLASS_PRESETS: Record<string, GlassParams> = {
 }
 
 // R encodes dx, G encodes dy; 0.5 (128) is neutral. Half amplitude encoding.
+const displacementMapCache = new Map<string, string>();
+
 export function buildDisplacementMap(
   w: number,
   h: number,
@@ -27,52 +29,92 @@ export function buildDisplacementMap(
   const H = Math.max(2, Math.round(h * dpr))
   const R = Math.min(radius * dpr, W / 2, H / 2)
   const B = Math.min(bezel * dpr, W / 2, H / 2)
-  const canvas = document.createElement('canvas')
-  canvas.width = W
-  canvas.height = H
-  const ctx = canvas.getContext('2d')!
-  const img = ctx.createImageData(W, H)
-  const data = img.data
-  const hw = W / 2
-  const hh = H / 2
+  
+  const cacheKey = `${W},${H},${R},${B}`
+  let mapDataUri = displacementMapCache.get(cacheKey)
+  if (!mapDataUri) {
+    const canvas = document.createElement('canvas')
+    canvas.width = W
+    canvas.height = H
+    const ctx = canvas.getContext('2d')!
+    const img = ctx.createImageData(W, H)
+    const data = img.data
+    const hw = W / 2
+    const hh = H / 2
 
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const px = x + 0.5 - hw
-      const py = y + 0.5 - hh
-      const qx = Math.abs(px) - (hw - R)
-      const qy = Math.abs(py) - (hh - R)
-      const ax = Math.max(qx, 0)
-      const ay = Math.max(qy, 0)
-      const sd = Math.hypot(ax, ay) + Math.min(Math.max(qx, qy), 0) - R
-      const d = -sd
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const px = x + 0.5 - hw
+        const py = y + 0.5 - hh
+        const qx = Math.abs(px) - (hw - R)
+        const qy = Math.abs(py) - (hh - R)
+        const ax = Math.max(qx, 0)
+        const ay = Math.max(qy, 0)
+        const sd = Math.hypot(ax, ay) + Math.min(Math.max(qx, qy), 0) - R
+        const d = -sd
 
-      let nx = 0
-      let ny = 0
-      let mag = 0
-      if (d >= 0 && d < B) {
-        if (qx > 0 && qy > 0) {
-          const len = Math.hypot(ax, ay) || 1
-          nx = (ax / len) * Math.sign(px)
-          ny = (ay / len) * Math.sign(py)
-        } else if (qx > qy) {
-          nx = Math.sign(px)
-        } else {
-          ny = Math.sign(py)
+        let nx = 0
+        let ny = 0
+        let mag = 0
+        if (d >= 0 && d < B) {
+          if (qx > 0 && qy > 0) {
+            const len = Math.hypot(ax, ay) || 1
+            nx = (ax / len) * Math.sign(px)
+            ny = (ay / len) * Math.sign(py)
+          } else if (qx > qy) {
+            nx = Math.sign(px)
+          } else {
+            ny = Math.sign(py)
+          }
+          const t = 1 - d / B
+          mag = 1 - Math.sqrt(Math.max(0, 1 - t * t))
         }
-        const t = 1 - d / B
-        mag = 1 - Math.sqrt(Math.max(0, 1 - t * t))
-      }
 
-      const i = (y * W + x) * 4
-      data[i] = Math.round(127.5 - 127.5 * nx * mag)
-      data[i + 1] = Math.round(127.5 - 127.5 * ny * mag)
-      data[i + 2] = 0
-      data[i + 3] = 255
+        const i = (y * W + x) * 4
+        data[i] = Math.round(127.5 - 127.5 * nx * mag)
+        data[i + 1] = Math.round(127.5 - 127.5 * ny * mag)
+        data[i + 2] = 0
+        data[i + 3] = 255
+      }
     }
+    ctx.putImageData(img, 0, 0)
+    mapDataUri = canvas.toDataURL()
+    displacementMapCache.set(cacheKey, mapDataUri)
+    if (displacementMapCache.size > 50) displacementMapCache.delete(displacementMapCache.keys().next().value!)
   }
-  ctx.putImageData(img, 0, 0)
-  return canvas.toDataURL()
+  return mapDataUri
+}
+
+export function buildFilterDataUri(w: number, h: number, radius: number, params: GlassParams, dispMul = 1, bezelMul = 1, dpr = 1): string {
+  const minDim = Math.min(w, h)
+  const bezel = Math.min(Math.max(2, params.bezel * bezelMul), minDim * 0.5)
+  const mapDataUri = buildDisplacementMap(w, h, radius, bezel, dpr)
+  const dispPx = Math.min(params.disp * dispMul, minDim * 0.35)
+  const diag = Math.sqrt((w * w + h * h) / 2)
+  const scale = (2 * dispPx) / diag
+  const scR = (scale * (1 - params.ca)).toFixed(5)
+  const scG = scale.toFixed(5)
+  const scB = (scale * (1 + params.ca)).toFixed(5)
+  const bx = (params.blur / w).toFixed(5)
+  const by = (params.blur / h).toFixed(5)
+  const sat = params.sat.toFixed(2)
+  
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg">
+  <filter id="f" x="0" y="0" width="100%" height="100%" primitiveUnits="objectBoundingBox" color-interpolation-filters="sRGB">
+    <feImage x="0" y="0" width="1" height="1" preserveAspectRatio="none" href="${mapDataUri}" result="map"/>
+    <feDisplacementMap in="SourceGraphic" in2="map" xChannelSelector="R" yChannelSelector="G" scale="${scR}" result="dr"/>
+    <feColorMatrix in="dr" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="chR"/>
+    <feDisplacementMap in="SourceGraphic" in2="map" xChannelSelector="R" yChannelSelector="G" scale="${scG}" result="dg"/>
+    <feColorMatrix in="dg" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="chG"/>
+    <feDisplacementMap in="SourceGraphic" in2="map" xChannelSelector="R" yChannelSelector="G" scale="${scB}" result="db"/>
+    <feColorMatrix in="db" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="chB"/>
+    <feComposite in="chR" in2="chG" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="rg"/>
+    <feComposite in="rg" in2="chB" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="rgb"/>
+    <feGaussianBlur in="rgb" stdDeviation="${bx} ${by}" result="soft"/>
+    <feColorMatrix in="soft" type="saturate" values="${sat}"/>
+  </filter>
+</svg>`
+  return `url('data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}#f')`
 }
 
 const FILTER_TEMPLATE = `
@@ -92,6 +134,7 @@ const FILTER_TEMPLATE = `
 export interface GlassFilterHandle {
   key: string
   filter: SVGFilterElement
+  onUrlChange?: (url: string) => void
   update(params: GlassParams, layer: HTMLElement, dispMul: number, bezelMul: number): void
   destroy(): void
 }
@@ -106,8 +149,13 @@ interface GlassEntry {
   db: SVGFEDisplacementMapElement
   blur: SVGFEGaussianBlurElement
   sat: SVGFEColorMatrixElement
+  host?: HTMLElement
+  noise?: HTMLElement
+  rimSvg?: SVGSVGElement
+  rimPath?: SVGPathElement
   geom: { w: number; h: number; bezel: number; radius: number; dpr: number }
   ro: ResizeObserver
+  onUrlChange?: (url: string) => void
 }
 
 // Per-root registries: each shadow root / document gets its own defs + registry.
@@ -134,11 +182,71 @@ export function ensureDefs(root: Node): SVGDefsElement {
   svg.style.cssText = 'position:absolute;pointer-events:none'
   svg.setAttribute('aria-hidden', 'true')
   const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs')
+  defs.innerHTML = `
+    <linearGradient id="rim-light" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".85"/>
+      <stop offset=".3" stop-color="#fff" stop-opacity=".20"/>
+      <stop offset=".65" stop-color="#fff" stop-opacity=".06"/>
+      <stop offset="1" stop-color="#fff" stop-opacity=".16"/>
+    </linearGradient>
+    <linearGradient id="rim-dark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".32"/>
+      <stop offset=".28" stop-color="#fff" stop-opacity=".05"/>
+      <stop offset=".6" stop-color="#000" stop-opacity=".18"/>
+      <stop offset="1" stop-color="#000" stop-opacity=".30"/>
+    </linearGradient>
+  `
   svg.appendChild(defs)
   appendTarget(root).appendChild(svg)
   defsMap.set(root, defs)
   registryMap.set(root, new Map())
   return defs
+}
+
+function cornerParams(r: number, s: number, minDim: number) {
+  r = Math.min(r, minDim / 2)
+  let p = (1 + s) * r
+  if (p > minDim / 2) {
+    p = minDim / 2
+    s = Math.max(0, p / r - 1)
+  }
+  const arcMeasure = 90 * (1 - s)
+  const arcLen = Math.sin(((arcMeasure / 2) * Math.PI) / 180) * r * Math.SQRT2
+  const angleAlpha = (90 - arcMeasure) / 2
+  const p34 = r * Math.tan(((angleAlpha / 2) * Math.PI) / 180)
+  const angleBeta = 45 * s
+  const c = p34 * Math.cos((angleBeta * Math.PI) / 180)
+  const d = c * Math.tan((angleBeta * Math.PI) / 180)
+  const b = Math.max(0, (p - arcLen - c - d) / 3)
+  return { r, p, a: 2 * b, b, c, d, arcLen }
+}
+
+function squirclePath(w: number, h: number, radius: number, smooth = 0.6, inset = 0): string {
+  w -= inset * 2
+  h -= inset * 2
+  const q = cornerParams(Math.max(0, radius - inset), smooth, Math.min(w, h))
+  const { r, p, a, b, c, d, arcLen } = q
+  const f = (n: number) => +n.toFixed(2)
+  const i = inset
+  return [
+    `M ${f(i + w - p)} ${f(i)}`,
+    `c ${f(a)} 0 ${f(a + b)} 0 ${f(a + b + c)} ${f(d)}`,
+    `a ${f(r)} ${f(r)} 0 0 1 ${f(arcLen)} ${f(arcLen)}`,
+    `c ${f(d)} ${f(c)} ${f(d)} ${f(b + c)} ${f(d)} ${f(a + b + c)}`,
+    `L ${f(i + w)} ${f(i + h - p)}`,
+    `c 0 ${f(a)} 0 ${f(a + b)} ${f(-d)} ${f(a + b + c)}`,
+    `a ${f(r)} ${f(r)} 0 0 1 ${f(-arcLen)} ${f(arcLen)}`,
+    `c ${f(-c)} ${f(d)} ${f(-(b + c))} ${f(d)} ${f(-(a + b + c))} ${f(d)}`,
+    `L ${f(i + p)} ${f(i + h)}`,
+    `c ${f(-a)} 0 ${f(-(a + b))} 0 ${f(-(a + b + c))} ${f(-d)}`,
+    `a ${f(r)} ${f(r)} 0 0 1 ${f(-arcLen)} ${f(-arcLen)}`,
+    `c ${f(-d)} ${f(-c)} ${f(-d)} ${f(-(b + c))} ${f(-d)} ${f(-(a + b + c))}`,
+    `L ${f(i)} ${f(i + p)}`,
+    `c 0 ${f(-a)} 0 ${f(-(a + b))} ${f(d)} ${f(-(a + b + c))}`,
+    `a ${f(r)} ${f(r)} 0 0 1 ${f(arcLen)} ${f(-arcLen)}`,
+    `c ${f(c)} ${f(-d)} ${f(b + c)} ${f(-d)} ${f(a + b + c)} ${f(-d)}`,
+    'Z',
+  ].join(' ')
 }
 
 function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, bezelMul: number) {
@@ -156,6 +264,13 @@ function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, be
   const g = entry.geom
   if (g.w !== w || g.h !== h || g.bezel !== bezel || g.radius !== radius || g.dpr !== dpr) {
     entry.map.setAttribute('href', buildDisplacementMap(w, h, radius, bezel, dpr))
+    if (entry.host) {
+      entry.host.style.setProperty('--squircle', `path('${squirclePath(w, h, radius)}')`)
+    }
+    if (entry.rimSvg && entry.rimPath) {
+      entry.rimSvg.setAttribute('viewBox', `0 0 ${w} ${h}`)
+      entry.rimPath.setAttribute('d', squirclePath(w, h, radius, 0.6, 0.6))
+    }
     entry.geom = { w, h, bezel, radius, dpr }
   }
 
@@ -170,6 +285,19 @@ function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, be
     `${(params.blur / w).toFixed(5)} ${(params.blur / h).toFixed(5)}`,
   )
   entry.sat.setAttribute('values', params.sat.toFixed(2))
+  if (entry.onUrlChange) { entry.onUrlChange(buildFilterDataUri(w, h, radius, params, dispMul, bezelMul, dpr)) }
+}
+
+function buildChrome(host: HTMLElement) {
+  const noise = document.createElement('div')
+  noise.className = 'glass-noise'
+  host.appendChild(noise)
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  svg.setAttribute('class', 'glass-rim')
+  svg.innerHTML = `<path fill="none" stroke="url(#rim-light)" stroke-width="1.2"/>`
+  host.appendChild(svg)
+  return { noise, rimSvg: svg, rimPath: svg.querySelector('path') as SVGPathElement }
 }
 
 export function createGlassFilter(
@@ -178,6 +306,7 @@ export function createGlassFilter(
   params: GlassParams,
   dispMul = 1,
   bezelMul = 1,
+  onUrlChange?: (url: string) => void
 ): GlassFilterHandle {
   const root = defs.getRootNode() as Node
   const registry = registryMap.get(root) ?? new Map()
@@ -193,10 +322,17 @@ export function createGlassFilter(
   filter.innerHTML = FILTER_TEMPLATE
   defs.appendChild(filter)
 
+  const host = layer.parentElement
+  const chrome = host ? buildChrome(host) : undefined
+
   const entry: GlassEntry = {
     key,
     layer,
     filter,
+    host: host || undefined,
+    noise: chrome?.noise,
+    rimSvg: chrome?.rimSvg,
+    rimPath: chrome?.rimPath,
     map: filter.querySelector('.f-map') as unknown as SVGFEImageElement,
     dr: filter.querySelector('.f-dr') as unknown as SVGFEDisplacementMapElement,
     dg: filter.querySelector('.f-dg') as unknown as SVGFEDisplacementMapElement,
@@ -205,6 +341,7 @@ export function createGlassFilter(
     sat: filter.querySelector('.f-sat') as unknown as SVGFEColorMatrixElement,
     geom: { w: 0, h: 0, bezel: 0, radius: 0, dpr: 0 },
     ro: new ResizeObserver(() => updateGlass(entry, params, dispMul, bezelMul)),
+    onUrlChange,
   }
 
   registry.set(key, entry)
@@ -222,6 +359,8 @@ export function createGlassFilter(
     destroy() {
       entry.ro.disconnect()
       entry.filter.remove()
+      if (entry.noise) entry.noise.remove()
+      if (entry.rimSvg) entry.rimSvg.remove()
       registry.delete(entry.key)
     },
   }

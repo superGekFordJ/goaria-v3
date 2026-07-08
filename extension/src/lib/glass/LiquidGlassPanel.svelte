@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { useLiquidGlass, supportsUrlBackdropFilter } from './useLiquidGlass.svelte'
+  import { useLiquidGlass, supportsUrlBackdropFilter, GLASS_PRESETS } from './useLiquidGlass.svelte'
 
   let {
     as = 'div',
     active = true,
     interactive = false,
     hoverEffect = 'none',
+    preset = 'auto',
     radius = 'var(--radius-squircle-md, 1.5rem)',
     fallbackClass = '',
     baseColor = 'var(--app-liquid-glass-bg, rgba(0,0,0,0.2))',
@@ -19,6 +20,7 @@
     active?: boolean
     interactive?: boolean
     hoverEffect?: 'none' | 'glow' | 'scale' | 'all'
+    preset?: 'auto' | 'dark' | 'clear'
     radius?: string
     fallbackClass?: string
     baseColor?: string
@@ -37,13 +39,33 @@
     isInteractive && effects === 'full' && (hoverEffect === 'all' || hoverEffect === 'scale'),
   )
 
-  const { filterId } = useLiquidGlass(() => layerEl)
+  let isSystemDark = $state(true)
+
+  $effect(() => {
+    if (preset !== 'auto') return
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    isSystemDark = mq.matches
+    const listener = (e: MediaQueryListEvent) => {
+      isSystemDark = e.matches
+    }
+    mq.addEventListener('change', listener)
+    return () => mq.removeEventListener('change', listener)
+  })
+
+  let activePreset = $derived(preset === 'auto' ? (isSystemDark ? 'dark' : 'clear') : preset)
+
+  const glassState = useLiquidGlass(() => layerEl, {
+    get params() {
+      return GLASS_PRESETS[activePreset]
+    }
+  })
 
   let backdropStyle = $derived.by(() => {
-    if (!filterId || !supportsUrlBackdropFilter()) {
+    if (!glassState.filterId || !supportsUrlBackdropFilter()) {
       return 'backdrop-filter: blur(2px) saturate(1.05); -webkit-backdrop-filter: blur(2px) saturate(1.05)'
     }
-    return `backdrop-filter: url(#${filterId}); -webkit-backdrop-filter: url(#${filterId})`
+    const filter = glassState.filterUrl || `url(#${glassState.filterId})`
+    return `backdrop-filter: ${filter}; -webkit-backdrop-filter: ${filter}`
   })
 </script>
 
@@ -76,11 +98,6 @@
       ></div>
     {/if}
 
-    {#if effects === 'full' && active}
-      <div class="lg-bevel" style="border-radius: {radius}"></div>
-      <div class="lg-specular" style="border-radius: {radius}"></div>
-    {/if}
-
     <div class="liquid-glass-content">
       {@render children?.()}
     </div>
@@ -110,11 +127,6 @@
         class:lg-fallback-active={active}
         style="border-radius: {radius}; background: {baseColor}"
       ></div>
-    {/if}
-
-    {#if effects === 'full' && active}
-      <div class="lg-bevel" style="border-radius: {radius}"></div>
-      <div class="lg-specular" style="border-radius: {radius}"></div>
     {/if}
 
     <div class="liquid-glass-content">

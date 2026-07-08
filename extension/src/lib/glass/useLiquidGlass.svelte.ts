@@ -24,25 +24,29 @@ export function useLiquidGlass(
   options: UseLiquidGlassOptions = {},
 ) {
   let filterId = $state('')
+  let filterUrl = $state('')
   let handle: GlassFilterHandle | null = null
-
-  const params = options.params ?? GLASS_PRESETS.clear
-  const dispMul = options.dispMul ?? 1
-  const bezelMul = options.bezelMul ?? 1
 
   $effect(() => {
     const layer = layerGetter()
     if (!layer) return
 
+    const params = options.params ?? GLASS_PRESETS.clear
+    const currentDispMul = options.dispMul ?? 1
+    const currentBezelMul = options.bezelMul ?? 1
+
     const rootNode = layer.getRootNode() as Node
     const defs = ensureDefs(rootNode)
-    handle = createGlassFilter(defs, layer, params, dispMul, bezelMul)
+    handle = createGlassFilter(defs, layer, params, currentDispMul, currentBezelMul, (url) => {
+      filterUrl = url
+    })
     filterId = handle.key
 
     return () => {
       handle?.destroy()
       handle = null
       filterId = ''
+      filterUrl = ''
     }
   })
 
@@ -50,6 +54,9 @@ export function useLiquidGlass(
     get filterId() {
       return filterId
     },
+    get filterUrl() {
+      return filterUrl
+    }
   }
 }
 
