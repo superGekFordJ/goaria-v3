@@ -20,7 +20,7 @@
   z-index: -10;
   pointer-events: none;
   transition: all 0.3s ease;
-  background: var(--base-color, rgba(255, 255, 255, 0.2));
+  background: var(--overlay-color, rgba(255, 255, 255, 0.2));
 }
 
 .static-glass-shadow {
@@ -239,10 +239,6 @@
 
 [data-theme='dark'] .glass-rim {
   opacity: calc(0.55 * var(--spec, 1));
-}
-
-[data-theme='dark'] .glass-rim path {
-  stroke: url(#rim-dark);
 }
 
 [data-theme='dark'] .liquid-glass-root::before {

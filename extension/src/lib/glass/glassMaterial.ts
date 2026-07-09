@@ -52,14 +52,17 @@ export function buildDisplacementMap(
   const H = Math.max(2, Math.round(h * dpr))
   const R = Math.min(radius * dpr, W / 2, H / 2)
   const B = Math.min(bezel * dpr, W / 2, H / 2)
-  
+
   const cacheKey = `${W},${H},${R},${B}`
   let mapDataUri = displacementMapCache.get(cacheKey)
   if (!mapDataUri) {
     const canvas = document.createElement('canvas')
     canvas.width = W
     canvas.height = H
-    const ctx = canvas.getContext('2d')!
+    const ctx = canvas.getContext('2d')
+    if (!ctx) {
+      throw new Error('Failed to get 2D canvas context')
+    }
     const img = ctx.createImageData(W, H)
     const data = img.data
     const hw = W / 2
@@ -108,7 +111,22 @@ export function buildDisplacementMap(
   return mapDataUri
 }
 
-export function buildFilterDataUri(w: number, h: number, radius: number, params: GlassParams, dispMul = 1, bezelMul = 1, dpr = 1): string {
+// Filter SVG cache excludes tint/tintColor/spec/dark because they don't affect the filter output.
+const filterDataUriCache = new Map<string, string>()
+
+export function buildFilterDataUri(
+  w: number,
+  h: number,
+  radius: number,
+  params: GlassParams,
+  dispMul = 1,
+  bezelMul = 1,
+  dpr = 1,
+): string {
+  const cacheKey = `${w},${h},${radius},${dpr},${params.blur},${params.disp},${params.bezel},${params.ca},${params.sat},${dispMul},${bezelMul}`
+  const cached = filterDataUriCache.get(cacheKey)
+  if (cached) return cached
+
   const minDim = Math.min(w, h)
   const bezel = Math.min(Math.max(2, params.bezel * bezelMul), minDim * 0.5)
   const mapDataUri = buildDisplacementMap(w, h, radius, bezel, dpr)
@@ -121,7 +139,7 @@ export function buildFilterDataUri(w: number, h: number, radius: number, params:
   const bx = (params.blur / w).toFixed(5)
   const by = (params.blur / h).toFixed(5)
   const sat = params.sat.toFixed(2)
-  
+
   const svg = `<svg xmlns="http://www.w3.org/2000/svg">
   <filter id="f" x="0" y="0" width="100%" height="100%" primitiveUnits="objectBoundingBox" color-interpolation-filters="sRGB">
     <feImage x="0" y="0" width="1" height="1" preserveAspectRatio="none" href="${mapDataUri}" result="map"/>
@@ -137,7 +155,10 @@ export function buildFilterDataUri(w: number, h: number, radius: number, params:
     <feColorMatrix in="soft" type="saturate" values="${sat}"/>
   </filter>
 </svg>`
-  return `url('data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}#f')`
+  const result = `url('data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}#f')`
+  filterDataUriCache.set(cacheKey, result)
+  if (filterDataUriCache.size > 50) filterDataUriCache.delete(filterDataUriCache.keys().next().value!)
+  return result
 }
 
 const FILTER_TEMPLATE = `
@@ -166,16 +187,19 @@ interface GlassEntry {
   key: string
   layer: HTMLElement
   filter: SVGFilterElement
-  map: SVGFEImageElement
-  dr: SVGFEDisplacementMapElement
-  dg: SVGFEDisplacementMapElement
-  db: SVGFEDisplacementMapElement
-  blur: SVGFEGaussianBlurElement
-  sat: SVGFEColorMatrixElement
+  map: SVGFEImageElement | null
+  dr: SVGFEDisplacementMapElement | null
+  dg: SVGFEDisplacementMapElement | null
+  db: SVGFEDisplacementMapElement | null
+  blur: SVGFEGaussianBlurElement | null
+  sat: SVGFEColorMatrixElement | null
   host?: HTMLElement
   noise?: HTMLElement
   rimSvg?: SVGSVGElement
   rimPath?: SVGPathElement
+  params: GlassParams
+  dispMul: number
+  bezelMul: number
   geom: { w: number; h: number; bezel: number; radius: number; dpr: number }
   ro: ResizeObserver
   onUrlChange?: (url: string) => void
@@ -259,6 +283,8 @@ function squirclePath(w: number, h: number, radius: number, smooth = 0.6, inset 
 }
 
 function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, bezelMul: number) {
+  if (!entry.map || !entry.dr || !entry.dg || !entry.db || !entry.blur || !entry.sat) return
+
   const rect = entry.layer.getBoundingClientRect()
   const w = Math.round(rect.width)
   const h = Math.round(rect.height)
@@ -283,6 +309,8 @@ function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, be
     entry.geom = { w, h, bezel, radius, dpr }
   }
 
+  entry.rimPath?.setAttribute('stroke', params.dark ? 'url(#rim-dark)' : 'url(#rim-light)')
+
   const dispPx = Math.min(params.disp * dispMul, minDim * 0.35)
   const diag = Math.sqrt((w * w + h * h) / 2)
   const scale = (2 * dispPx) / diag
@@ -294,7 +322,14 @@ function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, be
     `${(params.blur / w).toFixed(5)} ${(params.blur / h).toFixed(5)}`,
   )
   entry.sat.setAttribute('values', params.sat.toFixed(2))
-  if (entry.onUrlChange) { entry.onUrlChange(buildFilterDataUri(w, h, radius, params, dispMul, bezelMul, dpr)) }
+
+  if (entry.onUrlChange) {
+    try {
+      entry.onUrlChange(buildFilterDataUri(w, h, radius, params, dispMul, bezelMul, dpr))
+    } catch {
+      entry.onUrlChange('')
+    }
+  }
 }
 
 function buildChrome(host: HTMLElement) {
@@ -365,14 +400,17 @@ export function createGlassFilter(
     noise: chrome?.noise,
     rimSvg: chrome?.rimSvg,
     rimPath: chrome?.rimPath,
-    map: filter.querySelector('.f-map') as unknown as SVGFEImageElement,
-    dr: filter.querySelector('.f-dr') as unknown as SVGFEDisplacementMapElement,
-    dg: filter.querySelector('.f-dg') as unknown as SVGFEDisplacementMapElement,
-    db: filter.querySelector('.f-db') as unknown as SVGFEDisplacementMapElement,
-    blur: filter.querySelector('.f-blur') as unknown as SVGFEGaussianBlurElement,
-    sat: filter.querySelector('.f-sat') as unknown as SVGFEColorMatrixElement,
+    map: filter.querySelector('.f-map') as SVGFEImageElement | null,
+    dr: filter.querySelector('.f-dr') as SVGFEDisplacementMapElement | null,
+    dg: filter.querySelector('.f-dg') as SVGFEDisplacementMapElement | null,
+    db: filter.querySelector('.f-db') as SVGFEDisplacementMapElement | null,
+    blur: filter.querySelector('.f-blur') as SVGFEGaussianBlurElement | null,
+    sat: filter.querySelector('.f-sat') as SVGFEColorMatrixElement | null,
+    params,
+    dispMul,
+    bezelMul,
     geom: { w: 0, h: 0, bezel: 0, radius: 0, dpr: 0 },
-    ro: new ResizeObserver(() => updateGlass(entry, params, dispMul, bezelMul)),
+    ro: new ResizeObserver(() => updateGlass(entry, entry.params, entry.dispMul, entry.bezelMul)),
     onUrlChange,
   }
 
@@ -385,7 +423,10 @@ export function createGlassFilter(
     key,
     filter,
     update(p: GlassParams, l: HTMLElement, dm: number, bm: number) {
+      entry.params = p
       entry.layer = l
+      entry.dispMul = dm
+      entry.bezelMul = bm
       updateGlass(entry, p, dm, bm)
     },
     destroy() {
@@ -398,48 +439,23 @@ export function createGlassFilter(
   }
 }
 
-// Static shared refraction: one fixed 256x256 SDF map, zero ongoing JS cost.
-const staticFilterMap = new WeakMap<Node, string>()
+// Static shared refraction: one fixed 256x256 SDF map, returned as a self-contained SVG filter Data URI.
+let staticGlassFilterUrl: string | null = null
 
-export function getStaticGlassFilterId(root: Node): string {
-  const existing = staticFilterMap.get(root)
-  if (existing) {
-    const target = appendTarget(root)
-    const el = target.querySelector(`#${existing}`)
-    if (el) return existing
-  }
+export function getStaticGlassFilterUrl(): string {
+  if (staticGlassFilterUrl) return staticGlassFilterUrl
 
-  const id = 'static-glass-refraction'
-  const size = 256
-  const mapUrl = buildDisplacementMap(size, size, 64, 36, 1)
-
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-  svg.setAttribute('width', '0')
-  svg.setAttribute('height', '0')
-  svg.style.cssText = 'position:absolute;pointer-events:none'
-  svg.setAttribute('aria-hidden', 'true')
-
-  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs')
-  const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter')
-  filter.id = id
-  filter.setAttribute('x', '0%')
-  filter.setAttribute('y', '0%')
-  filter.setAttribute('width', '100%')
-  filter.setAttribute('height', '100%')
-  filter.setAttribute('primitiveUnits', 'objectBoundingBox')
-  filter.setAttribute('color-interpolation-filters', 'sRGB')
-  filter.innerHTML = `
-    <feImage x="0" y="0" width="1" height="1" result="map" preserveAspectRatio="none" href="${mapUrl}"/>
+  const mapUrl = buildDisplacementMap(256, 256, 64, 36, 1)
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg">
+  <filter id="static-glass-refraction" x="0%" y="0%" width="100%" height="100%" primitiveUnits="objectBoundingBox" color-interpolation-filters="sRGB">
+    <feImage x="0" y="0" width="1" height="1" preserveAspectRatio="none" href="${mapUrl}" result="map"/>
     <feDisplacementMap in="SourceGraphic" in2="map" xChannelSelector="R" yChannelSelector="G" scale="0.01" result="dr"/>
     <feGaussianBlur in="dr" stdDeviation="0.004" result="soft"/>
     <feColorMatrix in="soft" type="saturate" values="1.08"/>
-  `
-  defs.appendChild(filter)
-  svg.appendChild(defs)
-  appendTarget(root).appendChild(svg)
-
-  staticFilterMap.set(root, id)
-  return id
+  </filter>
+</svg>`
+  staticGlassFilterUrl = `url('data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}#static-glass-refraction')`
+  return staticGlassFilterUrl
 }
 
 // Feature-detect whether backdrop-filter supports url() references.

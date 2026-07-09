@@ -9,7 +9,7 @@
     preset = 'auto',
     radius = 'var(--radius-squircle-md, 1.5rem)',
     fallbackClass = '',
-    baseColor = '',
+    overlayColor = '',
     disabled = false,
     effects = 'full',
     children,
@@ -23,7 +23,7 @@
     preset?: 'auto' | 'dark' | 'clear'
     radius?: string
     fallbackClass?: string
-    baseColor?: string
+    overlayColor?: string
     disabled?: boolean
     effects?: 'full' | 'reduced'
     children?: import('svelte').Snippet
@@ -39,6 +39,12 @@
     const el = layerEl
     const themed = el?.closest('[data-theme]') as HTMLElement | null
     if (themed) return themed.dataset.theme === 'dark' ? 'dark' : 'clear'
+    const root = el?.getRootNode()
+    if (root instanceof ShadowRoot) {
+      const host = root.host as HTMLElement | null
+      const hostTheme = host?.dataset.theme
+      if (hostTheme === 'dark' || hostTheme === 'light') return hostTheme === 'dark' ? 'dark' : 'clear'
+    }
     const html = document.documentElement?.dataset.theme
     if (html === 'dark' || html === 'light') return html === 'dark' ? 'dark' : 'clear'
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'clear'
@@ -52,6 +58,11 @@
     const el = layerEl
     const themed = el?.closest('[data-theme]') as HTMLElement | null
     if (themed) observer.observe(themed, { attributes: true, attributeFilter: ['data-theme'] })
+    const root = el?.getRootNode()
+    if (root instanceof ShadowRoot) {
+      const host = root.host as HTMLElement | null
+      if (host) observer.observe(host, { attributes: true, attributeFilter: ['data-theme'] })
+    }
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
     mq.addEventListener('change', update)
     return () => {
@@ -74,6 +85,8 @@
     },
   })
 
+  let isFallback = $derived(!glassState.filterUrl || !supportsUrlBackdropFilter())
+
   let backdropStyle = $derived.by(() => {
     if (!glassState.filterUrl || !supportsUrlBackdropFilter()) {
       return `backdrop-filter: blur(${params.blur}px) saturate(${params.sat}); -webkit-backdrop-filter: blur(${params.blur}px) saturate(${params.sat})`
@@ -88,6 +101,7 @@
     style="border-radius: {radius}; --tint: {params.tint}; --tint-rgb: {params.tintColor}; --spec: {params.spec}"
     data-active={active}
     data-effects={effects}
+    data-fallback={isFallback}
     class:lg-interactive={isInteractive}
     class:lg-scale={hasScale}
     {disabled}
@@ -97,7 +111,7 @@
       <div
         bind:this={layerEl}
         class="liquid-glass-refraction"
-        style="{backdropStyle}; border-radius: {radius}; {baseColor ? `background: ${baseColor};` : ''}"
+        style="{backdropStyle}; border-radius: {radius}; {overlayColor ? `background: ${overlayColor};` : ''}"
       >
         {#if hasGlow}
           <div class="liquid-glass-glow"></div>
@@ -123,6 +137,7 @@
     style="border-radius: {radius}; --tint: {params.tint}; --tint-rgb: {params.tintColor}; --spec: {params.spec}"
     data-active={active}
     data-effects={effects}
+    data-fallback={isFallback}
     class:lg-interactive={isInteractive}
     class:lg-scale={hasScale}
   >
@@ -130,7 +145,7 @@
       <div
         bind:this={layerEl}
         class="liquid-glass-refraction"
-        style="{backdropStyle}; border-radius: {radius}; {baseColor ? `background: ${baseColor};` : ''}"
+        style="{backdropStyle}; border-radius: {radius}; {overlayColor ? `background: ${overlayColor};` : ''}"
       >
         {#if hasGlow}
           <div class="liquid-glass-glow"></div>

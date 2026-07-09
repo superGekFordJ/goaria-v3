@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { getStaticGlassFilterId, supportsUrlBackdropFilter } from './useLiquidGlass.svelte'
+  import { getStaticGlassFilterUrl, supportsUrlBackdropFilter } from './useLiquidGlass.svelte'
 
   let {
     as = 'div',
     interactive = false,
     radius = '9999px',
     fallbackClass = '',
-    baseColor = 'rgba(255,255,255,0.2)',
+    overlayColor = 'rgba(255,255,255,0.2)',
     disabled = false,
     refraction = false,
     effects = 'full',
@@ -17,7 +17,7 @@
     interactive?: boolean
     radius?: string
     fallbackClass?: string
-    baseColor?: string
+    overlayColor?: string
     disabled?: boolean
     refraction?: boolean
     effects?: 'full' | 'reduced'
@@ -26,27 +26,27 @@
   } = $props()
 
   let rootEl = $state<HTMLElement | null>(null)
-  let refractionFilterId = $state('')
+  let refractionFilterUrl = $state('')
 
   let isInteractive = $derived(interactive && !disabled)
 
   $effect(() => {
-    if (!refraction || effects !== 'full' || !rootEl) {
-      refractionFilterId = ''
+    if (!rootEl) return
+    if (!refraction || effects !== 'full') {
+      refractionFilterUrl = ''
       return
     }
     if (!supportsUrlBackdropFilter()) {
-      refractionFilterId = ''
+      refractionFilterUrl = ''
       return
     }
-    const rootNode = rootEl.getRootNode() as Node
-    refractionFilterId = getStaticGlassFilterId(rootNode)
-    return () => { refractionFilterId = '' }
+    refractionFilterUrl = getStaticGlassFilterUrl()
+    return () => { refractionFilterUrl = '' }
   })
 
   let backdropStyle = $derived.by(() => {
-    if (refractionFilterId) {
-      return `backdrop-filter: blur(16px) url(#${refractionFilterId}); -webkit-backdrop-filter: blur(16px) url(#${refractionFilterId})`
+    if (refractionFilterUrl) {
+      return `backdrop-filter: blur(16px) ${refractionFilterUrl}; -webkit-backdrop-filter: blur(16px) ${refractionFilterUrl}`
     }
     return 'backdrop-filter: blur(16px) saturate(1.4); -webkit-backdrop-filter: blur(16px) saturate(1.4)'
   })
@@ -63,7 +63,7 @@
     {#if effects === 'full'}
       <div
         class="static-glass-bg"
-        style="{backdropStyle}; border-radius: {radius}; --base-color: {baseColor}"
+        style="{backdropStyle}; border-radius: {radius}; --overlay-color: {overlayColor}"
       ></div>
       <div class="static-glass-shadow" style="border-radius: {radius}"></div>
     {:else if !fallbackClass}
@@ -86,7 +86,7 @@
     {#if effects === 'full'}
       <div
         class="static-glass-bg"
-        style="{backdropStyle}; border-radius: {radius}; --base-color: {baseColor}"
+        style="{backdropStyle}; border-radius: {radius}; --overlay-color: {overlayColor}"
       ></div>
       <div class="static-glass-shadow" style="border-radius: {radius}"></div>
     {:else if !fallbackClass}
