@@ -9,10 +9,33 @@ export interface GlassParams {
   ca: number
   sat: number
   spec: number
+  dark: boolean
+  tintColor: string
 }
 
-export const GLASS_PRESETS: Record<string, GlassParams> = {
-  clear: { blur: 2, tint: 0.03, disp: 44, bezel: 24, ca: 0.07, sat: 1.05, spec: 0.6 },
+export const GLASS_PRESETS: Record<'clear' | 'dark', GlassParams> = {
+  clear: {
+    blur: 2,
+    tint: 0.50,
+    disp: 44,
+    bezel: 24,
+    ca: 0.07,
+    sat: 1.05,
+    spec: 0.9,
+    dark: false,
+    tintColor: '255, 255, 255',
+  },
+  dark: {
+    blur: 2,
+    tint: 0.60,
+    disp: 44,
+    bezel: 24,
+    ca: 0.07,
+    sat: 1.05,
+    spec: 0.7,
+    dark: true,
+    tintColor: '24, 24, 30',
+  },
 }
 
 // R encodes dx, G encodes dy; 0.5 (128) is neutral. Half amplitude encoding.
@@ -182,20 +205,6 @@ export function ensureDefs(root: Node): SVGDefsElement {
   svg.style.cssText = 'position:absolute;pointer-events:none'
   svg.setAttribute('aria-hidden', 'true')
   const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs')
-  defs.innerHTML = `
-    <linearGradient id="rim-light" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#fff" stop-opacity=".85"/>
-      <stop offset=".3" stop-color="#fff" stop-opacity=".20"/>
-      <stop offset=".65" stop-color="#fff" stop-opacity=".06"/>
-      <stop offset="1" stop-color="#fff" stop-opacity=".16"/>
-    </linearGradient>
-    <linearGradient id="rim-dark" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#fff" stop-opacity=".32"/>
-      <stop offset=".28" stop-color="#fff" stop-opacity=".05"/>
-      <stop offset=".6" stop-color="#000" stop-opacity=".18"/>
-      <stop offset="1" stop-color="#000" stop-opacity=".30"/>
-    </linearGradient>
-  `
   svg.appendChild(defs)
   appendTarget(root).appendChild(svg)
   defsMap.set(root, defs)
@@ -295,9 +304,32 @@ function buildChrome(host: HTMLElement) {
 
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
   svg.setAttribute('class', 'glass-rim')
-  svg.innerHTML = `<path fill="none" stroke="url(#rim-light)" stroke-width="1.2"/>`
+
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs')
+  defs.innerHTML = `
+    <linearGradient id="rim-light" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".85"/>
+      <stop offset=".3" stop-color="#fff" stop-opacity=".20"/>
+      <stop offset=".65" stop-color="#fff" stop-opacity=".06"/>
+      <stop offset="1" stop-color="#fff" stop-opacity=".16"/>
+    </linearGradient>
+    <linearGradient id="rim-dark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".32"/>
+      <stop offset=".28" stop-color="#fff" stop-opacity=".05"/>
+      <stop offset=".6" stop-color="#000" stop-opacity=".18"/>
+      <stop offset="1" stop-color="#000" stop-opacity=".30"/>
+    </linearGradient>
+  `
+  svg.appendChild(defs)
+
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+  path.setAttribute('fill', 'none')
+  path.setAttribute('stroke', 'url(#rim-light)')
+  path.setAttribute('stroke-width', '1.2')
+  svg.appendChild(path)
+
   host.appendChild(svg)
-  return { noise, rimSvg: svg, rimPath: svg.querySelector('path') as SVGPathElement }
+  return { noise, rimSvg: svg, rimPath: path }
 }
 
 export function createGlassFilter(

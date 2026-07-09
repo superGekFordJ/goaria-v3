@@ -9,7 +9,7 @@
     preset = 'auto',
     radius = 'var(--radius-squircle-md, 1.5rem)',
     fallbackClass = '',
-    baseColor = 'var(--app-liquid-glass-bg, rgba(0,0,0,0.2))',
+    baseColor = '',
     disabled = false,
     effects = 'full',
     children,
@@ -32,6 +32,33 @@
   } = $props()
 
   let layerEl = $state<HTMLElement | null>(null)
+  let theme = $state<'dark' | 'clear'>('dark')
+
+  function resolveTheme(): 'dark' | 'clear' {
+    if (preset !== 'auto') return preset
+    const el = layerEl
+    const themed = el?.closest('[data-theme]') as HTMLElement | null
+    if (themed) return themed.dataset.theme === 'dark' ? 'dark' : 'clear'
+    const html = document.documentElement?.dataset.theme
+    if (html === 'dark' || html === 'light') return html === 'dark' ? 'dark' : 'clear'
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'clear'
+  }
+
+  $effect(() => {
+    theme = resolveTheme()
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const update = () => { theme = resolveTheme() }
+    const observer = new MutationObserver(update)
+    const el = layerEl
+    const themed = el?.closest('[data-theme]') as HTMLElement | null
+    if (themed) observer.observe(themed, { attributes: true, attributeFilter: ['data-theme'] })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    mq.addEventListener('change', update)
+    return () => {
+      observer.disconnect()
+      mq.removeEventListener('change', update)
+    }
+  })
 
   let isInteractive = $derived(interactive && !disabled)
   let hasGlow = $derived(isInteractive && (hoverEffect === 'all' || hoverEffect === 'glow'))
@@ -39,40 +66,28 @@
     isInteractive && effects === 'full' && (hoverEffect === 'all' || hoverEffect === 'scale'),
   )
 
-  let isSystemDark = $state(true)
-
-  $effect(() => {
-    if (preset !== 'auto') return
-    const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    isSystemDark = mq.matches
-    const listener = (e: MediaQueryListEvent) => {
-      isSystemDark = e.matches
-    }
-    mq.addEventListener('change', listener)
-    return () => mq.removeEventListener('change', listener)
-  })
-
-  let activePreset = $derived(preset === 'auto' ? (isSystemDark ? 'dark' : 'clear') : preset)
+  let params = $derived(GLASS_PRESETS[theme])
 
   const glassState = useLiquidGlass(() => layerEl, {
     get params() {
-      return GLASS_PRESETS[activePreset]
-    }
+      return params
+    },
   })
 
   let backdropStyle = $derived.by(() => {
-    if (!glassState.filterId || !supportsUrlBackdropFilter()) {
-      return 'backdrop-filter: blur(2px) saturate(1.05); -webkit-backdrop-filter: blur(2px) saturate(1.05)'
+    if (!glassState.filterUrl || !supportsUrlBackdropFilter()) {
+      return `backdrop-filter: blur(${params.blur}px) saturate(${params.sat}); -webkit-backdrop-filter: blur(${params.blur}px) saturate(${params.sat})`
     }
-    const filter = glassState.filterUrl || `url(#${glassState.filterId})`
-    return `backdrop-filter: ${filter}; -webkit-backdrop-filter: ${filter}`
+    return `backdrop-filter: ${glassState.filterUrl}; -webkit-backdrop-filter: ${glassState.filterUrl}`
   })
 </script>
 
 {#if as === 'button'}
   <button
     class="liquid-glass-root lg-group {extraClass}"
-    style="border-radius: {radius}"
+    style="border-radius: {radius}; --tint: {params.tint}; --tint-rgb: {params.tintColor}; --spec: {params.spec}"
+    data-active={active}
+    data-effects={effects}
     class:lg-interactive={isInteractive}
     class:lg-scale={hasScale}
     {disabled}
@@ -82,7 +97,7 @@
       <div
         bind:this={layerEl}
         class="liquid-glass-refraction"
-        style="{backdropStyle}; border-radius: {radius}; background: {baseColor}"
+        style="{backdropStyle}; border-radius: {radius}; {baseColor ? `background: ${baseColor};` : ''}"
       >
         {#if hasGlow}
           <div class="liquid-glass-glow"></div>
@@ -90,11 +105,11 @@
       </div>
     {:else if effects === 'full' && isInteractive}
       <div class="liquid-glass-placeholder" style="border-radius: {radius}"></div>
-    {:else if effects === 'reduced' && !fallbackClass}
+    {:else if effects === 'reduced'}
       <div
-        class="liquid-glass-fallback"
+        class="liquid-glass-fallback {fallbackClass}"
         class:lg-fallback-active={active}
-        style="border-radius: {radius}; background: {baseColor}"
+        style="border-radius: {radius}"
       ></div>
     {/if}
 
@@ -105,7 +120,9 @@
 {:else}
   <div
     class="liquid-glass-root lg-group {extraClass}"
-    style="border-radius: {radius}"
+    style="border-radius: {radius}; --tint: {params.tint}; --tint-rgb: {params.tintColor}; --spec: {params.spec}"
+    data-active={active}
+    data-effects={effects}
     class:lg-interactive={isInteractive}
     class:lg-scale={hasScale}
   >
@@ -113,7 +130,7 @@
       <div
         bind:this={layerEl}
         class="liquid-glass-refraction"
-        style="{backdropStyle}; border-radius: {radius}; background: {baseColor}"
+        style="{backdropStyle}; border-radius: {radius}; {baseColor ? `background: ${baseColor};` : ''}"
       >
         {#if hasGlow}
           <div class="liquid-glass-glow"></div>
@@ -121,11 +138,11 @@
       </div>
     {:else if effects === 'full' && isInteractive}
       <div class="liquid-glass-placeholder" style="border-radius: {radius}"></div>
-    {:else if effects === 'reduced' && !fallbackClass}
+    {:else if effects === 'reduced'}
       <div
-        class="liquid-glass-fallback"
+        class="liquid-glass-fallback {fallbackClass}"
         class:lg-fallback-active={active}
-        style="border-radius: {radius}; background: {baseColor}"
+        style="border-radius: {radius}"
       ></div>
     {/if}
 

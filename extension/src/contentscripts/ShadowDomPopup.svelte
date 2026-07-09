@@ -1,7 +1,6 @@
 <script lang="ts">
   import { fly } from 'svelte/transition'
   import { popupQueue } from '../stores/popupQueue.svelte'
-  import StaticGlassPanel from '../lib/glass/StaticGlassPanel.svelte'
   import LiquidGlassPanel from '../lib/glass/LiquidGlassPanel.svelte'
 
   let { effects = 'full' }: { effects?: 'full' | 'reduced' } = $props()
@@ -47,7 +46,6 @@
   <div class="shadow-dom-popup-wrapper" data-theme={isSystemDark ? 'dark' : 'light'} transition:fly={{ x: 300, duration: 300 }}>
     <LiquidGlassPanel
       radius="var(--radius-squircle-lg, 2rem)"
-      baseColor={isSystemDark ? "rgba(24, 24, 30, 0.6)" : "rgba(255, 255, 255, 0.5)"}
       {effects}
       class="shadow-dom-popup"
     >

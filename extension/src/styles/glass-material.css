@@ -1,7 +1,10 @@
+:host, :root {
+  --tint: 0.05;
+  --tint-rgb: 255, 255, 255;
+  --spec: 0.9;
+}
+
 /* Glass component styles extracted for popup + Shadow DOM shared consumption. */
-/* Known limitation: [data-theme] selectors target the shadow root, not the
-   host <html data-theme>, so light-mode variants are inert in the Shadow DOM
-   popup. Dark mode is the default and works everywhere. */
 
 /* === StaticGlassPanel === */
 .static-glass-root {
@@ -93,6 +96,7 @@
   overflow: hidden;
   transition: all 0.3s ease;
   pointer-events: none;
+  background: rgba(var(--tint-rgb), var(--tint));
 }
 
 .liquid-glass-glow {
@@ -141,8 +145,10 @@
   overflow: hidden;
   transition: all 0.3s ease;
   pointer-events: none;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  opacity: 0;
+  background: rgba(var(--tint-rgb), var(--tint));
+  backdrop-filter: blur(12px) saturate(1.4);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
 }
 
 .lg-fallback-active {
@@ -231,19 +237,21 @@
   opacity: calc(0.95 * var(--spec, 1));
 }
 
-[data-theme='dark'] .glass-rim,
-body:not([data-theme='light']) .glass-rim {
+[data-theme='dark'] .glass-rim {
   opacity: calc(0.55 * var(--spec, 1));
 }
 
-[data-theme='dark'] .glass-rim path,
-body:not([data-theme='light']) .glass-rim path {
+[data-theme='dark'] .glass-rim path {
   stroke: url(#rim-dark);
 }
 
-[data-theme='dark'] .liquid-glass-root::before,
-body:not([data-theme='light']) .liquid-glass-root::before {
+[data-theme='dark'] .liquid-glass-root::before {
   opacity: calc(0.45 * var(--spec, 1));
+}
+
+.liquid-glass-root[data-active='false']::before,
+.liquid-glass-root[data-effects='reduced']::before {
+  opacity: 0;
 }
 
 /* === ShadowDomPopup === */

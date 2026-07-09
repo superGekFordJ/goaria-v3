@@ -26,21 +26,28 @@
   } = $props()
 
   let rootEl = $state<HTMLElement | null>(null)
+  let refractionFilterId = $state('')
 
   let isInteractive = $derived(interactive && !disabled)
 
-  let refractionFilterId = $derived.by(() => {
-    if (!refraction || effects !== 'full' || !rootEl) return ''
-    if (!supportsUrlBackdropFilter()) return ''
+  $effect(() => {
+    if (!refraction || effects !== 'full' || !rootEl) {
+      refractionFilterId = ''
+      return
+    }
+    if (!supportsUrlBackdropFilter()) {
+      refractionFilterId = ''
+      return
+    }
     const rootNode = rootEl.getRootNode() as Node
-    return getStaticGlassFilterId(rootNode)
+    refractionFilterId = getStaticGlassFilterId(rootNode)
+    return () => { refractionFilterId = '' }
   })
 
   let backdropStyle = $derived.by(() => {
     if (refractionFilterId) {
       return `backdrop-filter: blur(16px) url(#${refractionFilterId}); -webkit-backdrop-filter: blur(16px) url(#${refractionFilterId})`
     }
-    // Firefox lacks url() backdrop-filter support; degrade with saturate.
     return 'backdrop-filter: blur(16px) saturate(1.4); -webkit-backdrop-filter: blur(16px) saturate(1.4)'
   })
 </script>
