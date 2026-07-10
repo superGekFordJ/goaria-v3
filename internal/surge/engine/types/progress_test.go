@@ -414,7 +414,7 @@ func TestRecalculateProgress_BitmapTrust_NoOpForNonHedge(t *testing.T) {
 	ps.RecalculateProgress(remaining)
 
 	vp := ps.VerifiedProgress.Load()
-	// 2 completed chunks (40) + 0 from remaining (subtracted) = 40
+	// VP=40 comes purely from the bitmap trust loop (chunks 0,1 marked complete).
 	if vp != 40 {
 		t.Errorf("VerifiedProgress = %d, want 40", vp)
 	}

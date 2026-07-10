@@ -691,7 +691,8 @@ func (ps *ProgressState) UpdateChunkStatus(offset, length int64, status ChunkSta
 	}
 }
 
-// RecalculateProgress reconstructs ChunkProgress from remaining tasks (for resume)
+// RecalculateProgress reconstructs ChunkProgress from the restored bitmap only.
+// The remainingTasks parameter is retained for signature compatibility but unused.
 func (ps *ProgressState) RecalculateProgress(remainingTasks []Task) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
