@@ -702,53 +702,15 @@ func (ps *ProgressState) RecalculateProgress(remainingTasks []Task) {
 
 	ps.ChunkProgress = make([]int64, ps.BitmapWidth)
 	var totalVerified int64
+	// FORK-PATCH: Initialize to 0 (not full). The bitmap trust loop below
+	// restores ChunkCompleted chunks to full. Previous code initialized all
+	// chunks to full then subtracted remaining task overlap — but if a chunk
+	// had no remaining task covering it (task lost) AND bitmap didn't mark it
+	// ChunkCompleted, ChunkProgress stayed full → falsely marked complete →
+	// zero-fill hole. With init=0 we skip the overlap subtraction entirely;
+	// only bitmap-verified chunks get nonzero progress.
 	for i := 0; i < ps.BitmapWidth; i++ {
-		chunkStart := int64(i) * ps.ActualChunkSize
-		chunkEnd := chunkStart + ps.ActualChunkSize
-		if chunkEnd > ps.TotalSize {
-			chunkEnd = ps.TotalSize
-		}
-		ps.ChunkProgress[i] = chunkEnd - chunkStart
-		totalVerified += ps.ChunkProgress[i]
-	}
-
-	for _, task := range remainingTasks {
-		offset := task.Offset
-		length := task.Length
-
-		startIdx := int(offset / ps.ActualChunkSize)
-		endIdx := int((offset + length - 1) / ps.ActualChunkSize)
-
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		if endIdx >= ps.BitmapWidth {
-			endIdx = ps.BitmapWidth - 1
-		}
-
-		for i := startIdx; i <= endIdx; i++ {
-			chunkStart := int64(i) * ps.ActualChunkSize
-			chunkEnd := chunkStart + ps.ActualChunkSize
-			if chunkEnd > ps.TotalSize {
-				chunkEnd = ps.TotalSize
-			}
-
-			taskStart := offset
-			if taskStart < chunkStart {
-				taskStart = chunkStart
-			}
-
-			taskEnd := offset + length
-			if taskEnd > chunkEnd {
-				taskEnd = chunkEnd
-			}
-
-			overlap := taskEnd - taskStart
-			if overlap > 0 {
-				ps.ChunkProgress[i] -= overlap
-				totalVerified -= overlap
-			}
-		}
+		ps.ChunkProgress[i] = 0
 	}
 
 	// FORK-PATCH: Trust the restored bitmap — chunks marked ChunkCompleted

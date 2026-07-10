@@ -376,10 +376,13 @@ func TestRunCompletionMonitor_NormalCompletionNoKill(t *testing.T) {
 		Runtime:     &types.RuntimeConfig{},
 	}
 
-	// No active tasks, Downloaded < fileSize.
+	// No active tasks, simulate all workers idle.
 	queue := NewTaskQueue()
-	// Simulate all workers idle.
 	queue.idleWorkers.Add(2)
+
+	// FORK-PATCH: VP guard requires VerifiedProgress >= fileSize for
+	// normal completion. Without this the monitor hangs (safety net).
+	state.VerifiedProgress.Store(fileSize)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

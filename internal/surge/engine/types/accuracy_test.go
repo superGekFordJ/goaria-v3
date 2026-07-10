@@ -127,15 +127,17 @@ func TestRestoreBitmap_ShortBitmapRecoversWithoutPanic(t *testing.T) {
 	// FORK-PATCH: RecalculateProgress trusts the restored bitmap's
 	// ChunkCompleted chunks: chunk 0 stays Completed even though a remaining
 	// task covers it, because the bitmap indicates the bytes are already
-	// on disk (hedged-partner scenario).
+	// on disk (hedged-partner scenario). With init=0, only bitmap-verified
+	// chunks are Completed; all others are Pending regardless of remaining
+	// task coverage (defense-in-depth: don't assume complete without proof).
 	if got := state.GetChunkState(0); got != types.ChunkCompleted {
 		t.Fatalf("chunk 0 state after recalc = %v, want Completed (bitmap trust)", got)
 	}
-	if got := state.GetChunkState(1); got != types.ChunkCompleted {
-		t.Fatalf("chunk 1 state after recalc = %v, want Completed", got)
+	if got := state.GetChunkState(1); got != types.ChunkPending {
+		t.Fatalf("chunk 1 state after recalc = %v, want Pending (not in bitmap)", got)
 	}
-	if got := state.GetChunkState(99); got != types.ChunkCompleted {
-		t.Fatalf("chunk 99 state after recalc = %v, want Completed", got)
+	if got := state.GetChunkState(99); got != types.ChunkPending {
+		t.Fatalf("chunk 99 state after recalc = %v, want Pending (not in bitmap)", got)
 	}
 }
 
@@ -157,16 +159,22 @@ func TestRecalculateProgress(t *testing.T) {
 
 	state.RecalculateProgress(tasks)
 
-	// Verify Chunk 0 (Partial -> Downloading)
-	if state.GetChunkState(0) != types.ChunkDownloading {
-		t.Errorf("Expected Chunk 0 to be Downloading (Partial), got %v", state.GetChunkState(0))
+	// FORK-PATCH: With init=0, RecalculateProgress only trusts the bitmap.
+	// Fresh InitBitmap creates all-pending bitmap, so all chunks are Pending
+	// regardless of remaining task coverage. Previously, chunks not covered
+	// by remaining tasks were assumed complete (init=full) — this caused
+	// zero-fill holes when tasks were lost. Defense-in-depth: only bitmap-
+	// verified chunks are considered complete.
+	// Verify Chunk 0 (Pending — no bitmap entry, init=0)
+	if state.GetChunkState(0) != types.ChunkPending {
+		t.Errorf("Expected Chunk 0 to be Pending (init=0, no bitmap), got %v", state.GetChunkState(0))
 	}
-	// Verify Chunk 1 (Empty -> Pending)
+	// Verify Chunk 1 (Pending — fully covered by remaining task)
 	if state.GetChunkState(1) != types.ChunkPending {
 		t.Errorf("Expected Chunk 1 to be Pending (Empty), got %v", state.GetChunkState(1))
 	}
-	// Verify Chunk 2 (Full -> Completed)
-	if state.GetChunkState(2) != types.ChunkCompleted {
-		t.Errorf("Expected Chunk 2 to be Completed (Full), got %v", state.GetChunkState(2))
+	// Verify Chunk 2 (Pending — not covered but no bitmap proof of completion)
+	if state.GetChunkState(2) != types.ChunkPending {
+		t.Errorf("Expected Chunk 2 to be Pending (no bitmap proof), got %v", state.GetChunkState(2))
 	}
 }

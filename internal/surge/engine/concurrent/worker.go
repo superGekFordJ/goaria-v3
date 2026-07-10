@@ -146,12 +146,13 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 
 				if remaining := activeTask.RemainingTask(); remaining != nil {
 					// FORK-PATCH: 100% requeue guard — skip requeue when all
-					// bytes are already downloaded. The hedge partner already
-					// wrote these bytes (WriteAt is idempotent); requeuing
-					// would cause a fresh worker to reconnect to the same
-					// tarpit server and re-stick.
-					if d.State != nil && d.State.Downloaded.Load() >= totalSize {
-						utils.Debug("Worker %d: skipping requeue — all bytes downloaded (100%% guard)", id)
+					// bytes are verified on disk. Use VerifiedProgress (chunk-
+					// level dedup, immune to SharedMaxOffset loss) instead of
+					// Downloaded (overcounts when SharedMaxOffset is nil after
+					// resume). Downloaded overcount caused the guard to skip
+					// requeue of genuinely incomplete tasks → task loss.
+					if d.State != nil && d.State.VerifiedProgress.Load() >= totalSize {
+						utils.Debug("Worker %d: skipping requeue — all bytes verified (100%% guard)", id)
 					} else {
 						// Clamp to original task end (don't go past original boundary)
 						originalEnd := task.Offset + task.Length

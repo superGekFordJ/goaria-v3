@@ -187,7 +187,11 @@ func TestSetupTasks_BitmapRestoration(t *testing.T) {
 	destPath := filepath.Join(tmpDir, "resume.bin")
 
 	// Create a saved state
-	savedBitmap := []byte{0xFF, 0x00, 0x00} // 10 chunks need 3 bytes
+	// FORK-PATCH: 0xAA = 10 10 10 10 = 4 chunks with ChunkCompleted (state 2).
+	// Previous 0xFF encoded invalid state 3; old RecalculateProgress masked
+	// this by initializing to full progress. With init=0, only valid
+	// ChunkCompleted bits are trusted.
+	savedBitmap := []byte{0xAA, 0x00, 0x00} // 10 chunks need 3 bytes
 	savedState := &types.DownloadState{
 		ID:              "test-id",
 		URL:             "http://example.com",

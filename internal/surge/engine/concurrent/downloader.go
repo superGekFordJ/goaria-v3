@@ -48,6 +48,7 @@ type ConcurrentDownloader struct {
 	workerWg        sync.WaitGroup             // tracks all spawned workers (initial + scaled)
 	workersActive   atomic.Bool                // FORK-PATCH: guards WaitGroup reuse
 	workersMu       sync.Mutex                 // FORK-PATCH: guards Add/Done around Wait
+	totalWorkers    atomic.Int64               // FORK-PATCH: current worker count (initial + scaled - exited)
 
 	// FORK-PATCH: End-game hedge and poison defense.
 	consecutiveHedgeErrors atomic.Int32 // consecutive 4xx/5xx counter for poison defense
@@ -646,7 +647,23 @@ func (d *ConcurrentDownloader) runCompletionMonitor(ctx context.Context, queue *
 				return
 			}
 			// Normal completion: queue empty AND all workers idle.
-			isDone := queue.Len() == 0 && int(queue.IdleWorkers()) == numConns
+			// FORK-PATCH: Use totalWorkers (atomic) instead of stale numConns
+			// to correctly handle ScaleWorkers adding/draining workers at runtime.
+			// Fall back to numConns when totalWorkers is 0 (direct test usage
+			// without executeWorkers initializing the counter).
+			effectiveConns := int(d.totalWorkers.Load())
+			if effectiveConns == 0 {
+				effectiveConns = numConns
+			}
+			isDone := queue.Len() == 0 && int(queue.IdleWorkers()) == effectiveConns
+			// FORK-PATCH: VP guard — prevent silent corruption. When tasks are
+			// lost, VP stalls below fileSize but queue is empty and all workers
+			// idle. Without this guard the monitor would return "success" with
+			// incomplete content → zero-fill holes. Converts silent corruption
+			// into a detectable hang.
+			if isDone && d.State != nil && d.State.VerifiedProgress.Load() < fileSize {
+				isDone = false
+			}
 			if isDone {
 				queue.Close()
 				return
@@ -681,6 +698,7 @@ func (d *ConcurrentDownloader) executeWorkers(ctx context.Context, client *http.
 	}
 	d.workerDepsPtr.Store(deps)
 	d.workersActive.Store(true)
+	d.totalWorkers.Store(int64(numConns)) // FORK-PATCH: track actual worker count for completion monitor
 
 	workerErrors := make(chan error, numConns)
 
@@ -691,6 +709,7 @@ func (d *ConcurrentDownloader) executeWorkers(ctx context.Context, client *http.
 		d.workerWg.Add(1)
 		go func(wid int) {
 			defer d.workerWg.Done()
+			defer d.totalWorkers.Add(-1) // FORK-PATCH: track actual worker count for completion monitor
 			err := d.worker(ctx, wid, workerMirrors, outFile, queue, fileSize, client)
 			if err != nil && err != context.Canceled {
 				workerErrors <- err
@@ -773,10 +792,12 @@ func (d *ConcurrentDownloader) ScaleWorkers(delta int) int {
 			}
 			id := int(d.nextWorkerID.Add(1)) - 1
 			d.workerWg.Add(1)
+			d.totalWorkers.Add(1) // FORK-PATCH: track actual worker count for completion monitor
 			d.workersMu.Unlock()
 
 			go func(workerID int) {
 				defer d.workerWg.Done()
+				defer d.totalWorkers.Add(-1) // FORK-PATCH: track actual worker count for completion monitor
 				if err := d.worker(deps.ctx, workerID, deps.mirrors, deps.file, deps.queue, deps.totalSize, deps.client); err != nil && err != context.Canceled {
 					utils.Debug("Scaled worker %d error: %v", workerID, err)
 				}
@@ -844,6 +865,40 @@ func (d *ConcurrentDownloader) slowThresholdOrDefault(def float64) float64 {
 	return math.Float64frombits(d.slowThresholdOverride.Load())
 }
 
+// FORK-PATCH: mergeOverlappingTasks sorts tasks by Offset and merges
+// overlapping or adjacent byte ranges (union). Prevents handlePause from
+// double-counting hedged duplicate tasks when computing remainingBytes.
+func mergeOverlappingTasks(tasks []types.Task) []types.Task {
+	if len(tasks) <= 1 {
+		return tasks
+	}
+	sort.Slice(tasks, func(i, j int) bool {
+		return tasks[i].Offset < tasks[j].Offset
+	})
+	merged := make([]types.Task, 0, len(tasks))
+	cur := tasks[0]
+	for i := 1; i < len(tasks); i++ {
+		curEnd := cur.Offset + cur.Length
+		next := tasks[i]
+		nextEnd := next.Offset + next.Length
+		if curEnd >= next.Offset {
+			// Overlap or adjacent — merge by union
+			if nextEnd > curEnd {
+				cur.Length = nextEnd - cur.Offset
+			}
+			// Keep non-nil SharedMaxOffset if either has one
+			if cur.SharedMaxOffset == nil && next.SharedMaxOffset != nil {
+				cur.SharedMaxOffset = next.SharedMaxOffset
+			}
+		} else {
+			merged = append(merged, cur)
+			cur = next
+		}
+	}
+	merged = append(merged, cur)
+	return merged
+}
+
 func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queue *TaskQueue, candidateMirrors []string) error {
 	// 1. Collect active tasks as remaining work FIRST
 	var activeRemaining []types.Task
@@ -858,6 +913,13 @@ func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queu
 	// 2. Collect remaining tasks from queue
 	remainingTasks := queue.DrainRemaining()
 	remainingTasks = append(remainingTasks, activeRemaining...)
+
+	// FORK-PATCH: Merge-by-union dedup for overlapping tasks. When hedge
+	// is active, activeTasks contains both original and hedge workers whose
+	// RemainingTask() returns overlapping byte ranges. Without dedup,
+	// remainingBytes double-counts the overlap → computedDownloaded
+	// undercounts → resume VP regression.
+	remainingTasks = mergeOverlappingTasks(remainingTasks)
 
 	// Calculate Downloaded from remaining tasks (ensures consistency)
 	var remainingBytes int64
