@@ -400,3 +400,40 @@ func TestRunCompletionMonitor_NormalCompletionNoKill(t *testing.T) {
 		t.Fatal("runCompletionMonitor did not return within 2s on normal completion")
 	}
 }
+
+// TestRunCompletionMonitor_VPGuard_HangsWhenVPBelowFileSize verifies the
+// negative path of the VerifiedProgress guard: when VP < fileSize with an
+// empty queue and all workers idle, the monitor must NOT complete. Removing
+// the guard would cause silent completion on partial progress.
+func TestRunCompletionMonitor_VPGuard_HangsWhenVPBelowFileSize(t *testing.T) {
+	fileSize := int64(1000)
+	state := types.NewProgressState("cm-vpguard", fileSize)
+	d := &ConcurrentDownloader{
+		activeTasks: make(map[int]*ActiveTask),
+		State:       state,
+		Runtime:     &types.RuntimeConfig{},
+	}
+
+	// Empty queue, all workers idle (matches numConns=2).
+	queue := NewTaskQueue()
+	queue.idleWorkers.Add(2)
+
+	// VP below fileSize — guard must prevent completion.
+	state.VerifiedProgress.Store(500)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		d.runCompletionMonitor(ctx, queue, fileSize, 2)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("runCompletionMonitor returned with VP < fileSize (guard failed)")
+	case <-time.After(500 * time.Millisecond):
+		// Expected: monitor hangs because VP guard blocks completion.
+	}
+}
