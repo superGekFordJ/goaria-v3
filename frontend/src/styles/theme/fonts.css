@@ -1,0 +1,19 @@
+/* === Font Faces (local) === */
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('../../assets/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('../../assets/fonts/JetBrainsMono-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'Sarasa UI SC';
+  src: url('../../assets/fonts/SarasaUiSC-Regular.subset.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+}

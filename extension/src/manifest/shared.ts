@@ -11,8 +11,9 @@ export function getBaseManifest() {
     version: EXTENSION_VERSION,
     manifest_version: 3,
     icons: {
+      16: 'icons/icon-16.png',
+      32: 'icons/icon-32.png',
       48: 'icons/icon-48.png',
-      96: 'icons/icon-96.png',
       128: 'icons/icon-128.png',
     },
     // Firefox MV3 upgrades ws:// to wss:// via the default CSP
@@ -56,6 +57,8 @@ export function getBrowserActionInfo() {
     default_title: EXTENSION_NAME,
     default_popup: 'src/popup/popup.html',
     default_icon: {
+      16: 'icons/icon-16.png',
+      32: 'icons/icon-32.png',
       48: 'icons/icon-48.png',
       128: 'icons/icon-128.png',
     },
