@@ -93,7 +93,7 @@ export function setupPolling(
       }
 
       isFetching.value = true
-      let nextInterval = interval
+      let nextInterval: number
 
       try {
         if (!didInitialSync) {

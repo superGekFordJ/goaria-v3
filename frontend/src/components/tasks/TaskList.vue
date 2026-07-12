@@ -88,7 +88,7 @@
   type DisplayEntry = InlineTaskListEntry & { size: number }
 
   const displayEntries = computed<DisplayEntry[]>(() => {
-    let rawEntries: InlineTaskListEntry[] = []
+    let rawEntries: InlineTaskListEntry[]
     if (isGroupDetailMode.value) {
       rawEntries = detailDisplayTasks.value.map(task => ({
         type: 'task',
