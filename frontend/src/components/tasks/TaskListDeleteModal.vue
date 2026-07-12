@@ -2,7 +2,6 @@
   import { ref, watch } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { Trash2, HardDrive, AlertCircle } from 'lucide-vue-next'
-  import StaticGlassPanel from '../common/StaticGlassPanel.vue'
   import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
 
   const props = defineProps<{
@@ -51,12 +50,8 @@
         <!-- Backdrop -->
         <div class="absolute inset-0 modal-backdrop animate-fade-in"></div>
 
-        <!-- Modal Content -->
-        <StaticGlassPanel
-          radius="rounded-[var(--radius-squircle-2xl)]"
-          fallback-class="glass-panel"
-          base-color-class="bg-white/50 dark:bg-black/60"
-          class="relative w-full max-w-md p-8 animate-spring-in"
+        <div
+          class="glass-panel-solid relative w-full max-w-md p-8 rounded-[var(--radius-squircle-2xl)] animate-spring-in"
         >
           <!-- Warning Icon -->
           <div class="flex justify-center mb-6">
@@ -157,7 +152,7 @@
               <span>{{ t('taskList.cancel') }}</span>
             </div>
           </div>
-        </StaticGlassPanel>
+        </div>
       </div>
     </Transition>
   </Teleport>
@@ -175,11 +170,11 @@
     opacity: 0;
   }
 
-  .modal-enter-active .glass-panel {
+  .modal-enter-active .glass-panel-solid {
     animation: spring-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
   }
 
-  .modal-leave-active .glass-panel {
+  .modal-leave-active .glass-panel-solid {
     animation: spring-out 0.2s ease-out both;
   }
 
