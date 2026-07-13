@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 // TestPreallocateZeroFill_SeeksFromStart verifies that preallocateZeroFill
@@ -60,7 +62,12 @@ func TestPreallocateSparse_GrowsAndSeeksFromStart(t *testing.T) {
 
 	const size = int64(2048)
 	if err := preallocateSparse(file, size); err != nil {
-		t.Fatalf("preallocateSparse failed: %v (FSCTL_SET_SPARSE may be unsupported on this filesystem)", err)
+		// FSCTL_SET_SPARSE fails on FAT32/exFAT/network shares. Skip instead
+		// of failing so the suite passes on non-NTFS temp directories.
+		if errno, ok := err.(windows.Errno); ok && (errno == windows.ERROR_NOT_SUPPORTED || errno == windows.ERROR_INVALID_FUNCTION) {
+			t.Skipf("preallocateSparse unsupported on this filesystem (FSCTL_SET_SPARSE: %v)", err)
+		}
+		t.Fatalf("preallocateSparse failed: %v", err)
 	}
 
 	info, err := file.Stat()
