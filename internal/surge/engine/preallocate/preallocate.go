@@ -8,8 +8,9 @@ import "os"
 
 // Preallocate attempts to physically allocate disk space for the file.
 // On Windows it uses SetFileValidData with SeManageVolumePrivilege elevation
-// (falling back to chunked zero-fill). On Linux it uses fallocate with a
-// Truncate fallback. Other platforms use Truncate only.
+// (falling back to sparse file + Truncate to eliminate non-admin startup
+// latency, then to chunked zero-fill on unsupported filesystems). On Linux it
+// uses fallocate with a Truncate fallback. Other platforms use Truncate only.
 func Preallocate(file *os.File, size int64) error {
 	if size <= 0 {
 		return nil

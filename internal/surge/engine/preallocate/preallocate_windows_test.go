@@ -1,19 +1,21 @@
 //go:build windows
 
-// FORK-PATCH: Windows-specific test for the zero-fill fallback path.
+// FORK-PATCH: Windows-specific tests for the sparse and zero-fill fallback paths.
 
 package preallocate
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
 // TestPreallocateZeroFill_SeeksFromStart verifies that preallocateZeroFill
-// writes from offset 0 even when the file pointer is left at EOF (as happens
-// after a Truncate that precedes a failed SetFileValidData). Without the
-// leading Seek(0,0) the file would grow to 2x the requested size.
+// (tertiary fallback, used only when FSCTL_SET_SPARSE is unsupported) writes
+// from offset 0 even when the file pointer is left at EOF (as happens after
+// a Truncate that precedes a failed SetFileValidData). Without the leading
+// Seek(0,0) the file would grow to 2x the requested size.
 func TestPreallocateZeroFill_SeeksFromStart(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "zerofill.bin")
@@ -40,5 +42,56 @@ func TestPreallocateZeroFill_SeeksFromStart(t *testing.T) {
 	}
 	if info.Size() != size {
 		t.Fatalf("file size = %d, want %d (zero-fill must start from offset 0)", info.Size(), size)
+	}
+}
+
+// TestPreallocateSparse_GrowsAndSeeksFromStart verifies the sparse fallback:
+// the file grows to the requested size, unallocated regions read as zeros,
+// and the file pointer is at offset 0 after the call (so the downloader
+// writes from the beginning).
+func TestPreallocateSparse_GrowsAndSeeksFromStart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sparse.bin")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+
+	const size = int64(2048)
+	if err := preallocateSparse(file, size); err != nil {
+		t.Fatalf("preallocateSparse failed: %v (FSCTL_SET_SPARSE may be unsupported on this filesystem)", err)
+	}
+
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != size {
+		t.Fatalf("file size = %d, want %d", info.Size(), size)
+	}
+
+	// Seek position must be 0 so the downloader writes from the beginning.
+	pos, err := file.Seek(0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pos != 0 {
+		t.Fatalf("file position = %d, want 0 (sparse fallback must seek to start)", pos)
+	}
+
+	// Unallocated region (sparse hole) must read as zeros.
+	buf := make([]byte, size)
+	n, err := file.ReadAt(buf, 0)
+	if err != nil && err != io.EOF {
+		t.Fatalf("ReadAt failed: %v", err)
+	}
+	if int64(n) != size {
+		t.Fatalf("read %d bytes, want %d", n, size)
+	}
+	for i, b := range buf {
+		if b != 0 {
+			t.Fatalf("byte at offset %d = %d, want 0 (sparse hole must read as zero)", i, b)
+		}
 	}
 }

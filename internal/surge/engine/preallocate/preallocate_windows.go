@@ -1,7 +1,9 @@
 //go:build windows
 
 // FORK-PATCH: Windows SetFileValidData preallocation with
-// SeManageVolumePrivilege elevation. Falls back to chunked zero-fill on failure.
+// SeManageVolumePrivilege elevation. Falls back to sparse file + Truncate on
+// privilege failure (eliminates non-admin startup latency); degrades to
+// chunked zero-fill only when FSCTL_SET_SPARSE is unsupported.
 
 package preallocate
 
@@ -12,12 +14,26 @@ import (
 )
 
 func preallocate(file *os.File, size int64) error {
-	// Try SetFileValidData with SeManageVolumePrivilege elevation
+	// Fast path: SetFileValidData with SeManageVolumePrivilege elevation.
+	// Physically allocates contiguous space (no fragmentation). Requires admin;
+	// fails naturally with ERROR_ACCESS_DENIED when the privilege is absent.
 	if err := preallocateWithValidData(file, size); err == nil {
 		return nil
 	}
 
-	// Fallback: chunked zero-fill
+	// Fallback: sparse file + Truncate. Sparse unallocated regions read as 0,
+	// and random WriteAt to the file end does NOT trigger NTFS synchronous
+	// zero-fill of preceding unwritten space — avoiding the concurrent I/O
+	// stall that plain Truncate on a non-sparse file causes. Trade-off: the
+	// non-admin path produces disk fragmentation (the standard Windows platform
+	// compromise to eliminate UX startup latency).
+	if err := preallocateSparse(file, size); err == nil {
+		return nil
+	}
+
+	// Tertiary fallback: chunked zero-fill, only when FSCTL_SET_SPARSE is
+	// unsupported (non-NTFS/FAT32/exFAT/network shares). Preserves
+	// no-fragmentation but retains the startup latency.
 	return preallocateZeroFill(file, size)
 }
 
@@ -51,7 +67,7 @@ func preallocateWithValidData(file *os.File, size int64) error {
 	// not assigned (ERROR_NOT_ALL_ASSIGNED). GetLastError cannot detect this
 	// because Go's syscall wrapper clears LastErrorValue before every syscall,
 	// so it always reads ERROR_SUCCESS here. Rely on SetFileValidData failing
-	// naturally with ERROR_ACCESS_DENIED to trigger the zero-fill fallback.
+	// naturally with ERROR_ACCESS_DENIED to trigger the non-admin fallback chain.
 	// SetFileValidData requires nValidDataLength <= current EOF.
 	// Extend EOF first via Truncate (SetEndOfFile, sparse-instant), then set
 	// valid data length.
@@ -63,6 +79,35 @@ func preallocateWithValidData(file *os.File, size int64) error {
 		return err
 	}
 
+	// Truncate moves the file pointer to EOF; seek back so the downloader
+	// writes from offset 0.
+	_, err := file.Seek(0, 0)
+	return err
+}
+
+// preallocateSparse marks the file sparse via FSCTL_SET_SPARSE, then extends
+// EOF via Truncate. Sparse unallocated regions read as 0 without physical
+// allocation, and random WriteAt to the file end does not trigger NTFS
+// synchronous zero-fill of preceding unwritten space.
+func preallocateSparse(file *os.File, size int64) error {
+	handle := windows.Handle(file.Fd())
+	// FSCTL_SET_SPARSE is idempotent on an already-sparse file. On a file with
+	// existing written data (resume), already-allocated regions stay allocated;
+	// only the gap between current EOF and the new Truncate size becomes sparse.
+	var bytesReturned uint32
+	if err := windows.DeviceIoControl(
+		handle,
+		windows.FSCTL_SET_SPARSE,
+		nil, 0,
+		nil, 0,
+		&bytesReturned,
+		nil,
+	); err != nil {
+		return err
+	}
+	if err := file.Truncate(size); err != nil {
+		return err
+	}
 	// Truncate moves the file pointer to EOF; seek back so the downloader
 	// writes from offset 0.
 	_, err := file.Seek(0, 0)
