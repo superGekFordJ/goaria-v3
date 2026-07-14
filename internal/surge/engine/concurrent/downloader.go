@@ -656,6 +656,8 @@ func (d *ConcurrentDownloader) runCompletionMonitor(ctx context.Context, queue *
 				}
 				d.activeMu.Unlock()
 				queue.Close()
+				// FORK-PATCH: drain remaining queued tasks — Close() only sets
+				// done=true + Broadcast; Pop() still returns already-queued tasks.
 				queue.DrainRemaining()
 				return
 			}
