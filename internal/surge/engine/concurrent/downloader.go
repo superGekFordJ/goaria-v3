@@ -644,6 +644,14 @@ func (d *ConcurrentDownloader) runCompletionMonitor(ctx context.Context, queue *
 					d.KillWorker(id)
 				}
 				queue.Close()
+				// FORK-PATCH: drain remaining tasks. queue.Close() only sets
+				// done=true + Broadcast; Pop() still returns already-queued
+				// tasks to workers past the done check. DrainRemaining clears
+				// the queue so no worker can pop a redundant hedged task after
+				// 100% and waste bandwidth or hang on a tarpit. The worker VP
+				// guard (worker.go) is the second layer for the race window
+				// between Close and Drain.
+				queue.DrainRemaining()
 				return
 			}
 			// Normal completion: queue empty AND all workers idle.

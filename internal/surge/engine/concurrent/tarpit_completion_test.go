@@ -317,8 +317,8 @@ func TestTarpitCompletion_NormalServerUnaffected(t *testing.T) {
 }
 
 // TestRunCompletionMonitor_KillWorkerAt100Percent verifies the completion
-// monitor logic directly: when Downloaded >= fileSize, it kills active workers
-// and closes the queue even if queue.Len() > 0 (requeued hedged task).
+// monitor logic directly: when VerifiedProgress >= fileSize, it kills active
+// workers and closes the queue even if queue.Len() > 0 (requeued hedged task).
 func TestRunCompletionMonitor_KillWorkerAt100Percent(t *testing.T) {
 	fileSize := int64(1000)
 	state := types.NewProgressState("cm-test", fileSize)
@@ -435,5 +435,100 @@ func TestRunCompletionMonitor_VPGuard_HangsWhenVPBelowFileSize(t *testing.T) {
 		t.Fatal("runCompletionMonitor returned with VP < fileSize (guard failed)")
 	case <-time.After(500 * time.Millisecond):
 		// Expected: monitor hangs because VP guard blocks completion.
+	}
+}
+
+// TestTarpitCompletion_VPGuardPreventsPostCloseDownload verifies the combined
+// P1-A (worker VP guard) + P1-B (queue drain) fix: when a tarpit server sends
+// partial data then holds, the normal mirror partner completes the range. The
+// completion monitor kills the stuck worker and drains the queue. Workers that
+// pop a redundant hedged task right as VP hits 100% are stopped by the VP guard
+// before entering downloadTask(), so no redundant download occurs and the
+// Downloaded counter never exceeds fileSize.
+func TestTarpitCompletion_VPGuardPreventsPostCloseDownload(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(1 * types.MB)
+	// Tarpit server: sends 256KB then holds (no EOF).
+	tarpitSrv := newTarpitServer(t, fileSize, 256*types.KB, 0)
+	// Normal server completes the same range so the hedge partner can finish.
+	normalSrv := testutil.NewMockServerT(t,
+		testutil.WithFileSize(fileSize),
+		testutil.WithRangeSupport(true),
+	)
+	defer normalSrv.Close()
+
+	destPath := filepath.Join(tmpDir, "tarpit_vpguard.bin")
+	workingPath := destPath + types.IncompleteSuffix
+	if f, err := os.Create(workingPath); err != nil {
+		t.Fatal(err)
+	} else {
+		_ = f.Close()
+	}
+
+	state := types.NewProgressState("tarpit-vpguard", fileSize)
+	runtime := &types.RuntimeConfig{
+		MaxConnectionsPerDownload: 2,
+		Workers:                   2,
+		MinChunkSize:              128 * types.KB,
+	}
+	d := NewConcurrentDownloader("tarpit-vpguard", nil, state, runtime)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := downloadWithTimeout(t, d, ctx, tarpitSrv.URL, destPath, fileSize,
+		[]string{normalSrv.URL()}, 15*time.Second)
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if err := testutil.VerifyFileSize(workingPath, fileSize); err != nil {
+		t.Error(err)
+	}
+	// VP guard + queue drain prevent redundant post-100% downloads, so
+	// Downloaded must not exceed fileSize.
+	if got := state.Downloaded.Load(); got > fileSize {
+		t.Errorf("Downloaded = %d, want <= %d (VP guard/drain should prevent overcount)", got, fileSize)
+	}
+}
+
+// TestRunCompletionMonitor_DrainsQueueAt100Percent verifies P1-B directly:
+// when VerifiedProgress >= fileSize and the queue still has leftover hedged
+// tasks, runCompletionMonitor must drain the queue before returning.
+func TestRunCompletionMonitor_DrainsQueueAt100Percent(t *testing.T) {
+	fileSize := int64(1000)
+	state := types.NewProgressState("cm-drain", fileSize)
+	d := &ConcurrentDownloader{
+		activeTasks: make(map[int]*ActiveTask),
+		State:       state,
+		Runtime:     &types.RuntimeConfig{},
+	}
+
+	state.VerifiedProgress.Store(fileSize)
+
+	queue := NewTaskQueue()
+	// Queue has leftover hedged tasks.
+	queue.Push(types.Task{Offset: 0, Length: 500})
+	queue.Push(types.Task{Offset: 500, Length: 500})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		d.runCompletionMonitor(ctx, queue, fileSize, 2)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runCompletionMonitor did not return within 2s")
+	}
+
+	if queue.Len() != 0 {
+		t.Errorf("queue.Len() = %d after 100%% completion, want 0 (queue should be drained)", queue.Len())
 	}
 }

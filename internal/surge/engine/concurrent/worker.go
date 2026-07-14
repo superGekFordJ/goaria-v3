@@ -51,6 +51,19 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			return nil // Queue closed, no more work
 		}
 
+		// FORK-PATCH: VP guard — if all bytes are already verified on disk,
+		// skip this task without entering downloadTask(). This closes the
+		// race window between queue.Pop() returning a task and activeTasks
+		// registration: a worker that pops a task right as the completion
+		// monitor hits 100% is invisible to KillWorker (not yet in
+		// activeTasks) and unstoppable by queue.Close (already past Pop).
+		// Without this guard the worker could hang on a tarpit server's
+		// resp.Body.Read(). Returns before ActiveWorkers.Add(1), so no
+		// Add(-1) pairing is needed.
+		if d.State != nil && d.State.VerifiedProgress.Load() >= totalSize {
+			return nil
+		}
+
 		// Update active workers
 		if d.State != nil {
 			d.State.ActiveWorkers.Add(1)
