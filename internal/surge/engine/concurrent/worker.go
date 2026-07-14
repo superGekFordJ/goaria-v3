@@ -115,6 +115,23 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			activeTask.LastActivity.Store(now.UnixNano())
 
 			d.activeMu.Lock()
+			// FORK-PATCH: Final VP re-check under activeMu. Between the Pop-
+			// time VP guard (above) and this registration point, another
+			// worker may have pushed VerifiedProgress to 100%. The completion
+			// monitor holds this same lock while cancelling active workers,
+			// so this check is atomic with the kill sweep: either we register
+			// and get cancelled, or we see VP>=totalSize and exit before
+			// registering. Without this check the worker would enter
+			// downloadTask() invisible to the kill sweep and hang on a tarpit
+			// server's resp.Body.Read().
+			if d.State != nil && d.State.VerifiedProgress.Load() >= totalSize {
+				d.activeMu.Unlock()
+				taskCancel()
+				if d.State != nil {
+					d.State.ActiveWorkers.Add(-1)
+				}
+				return nil
+			}
 			d.activeTasks[id] = activeTask
 			d.activeMu.Unlock()
 

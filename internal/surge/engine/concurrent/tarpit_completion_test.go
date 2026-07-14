@@ -324,8 +324,9 @@ func TestTarpitCompletion_NormalServerUnaffected(t *testing.T) {
 }
 
 // TestRunCompletionMonitor_KillWorkerAt100Percent verifies the completion
-// monitor logic directly: when VerifiedProgress >= fileSize, it kills active
-// workers and closes the queue even if queue.Len() > 0 (requeued hedged task).
+// monitor logic directly: when VerifiedProgress >= fileSize, it cancels all
+// active task contexts under activeMu and closes the queue even if
+// queue.Len() > 0 (requeued hedged task).
 func TestRunCompletionMonitor_KillWorkerAt100Percent(t *testing.T) {
 	fileSize := int64(1000)
 	state := types.NewProgressState("cm-test", fileSize)
@@ -365,9 +366,9 @@ func TestRunCompletionMonitor_KillWorkerAt100Percent(t *testing.T) {
 		t.Fatal("runCompletionMonitor did not return within 2s with VerifiedProgress >= fileSize")
 	}
 
-	// Verify taskCtx was cancelled by KillWorker.
+	// Verify taskCtx was cancelled by the lock-held cancel sweep.
 	if taskCtx.Err() == nil {
-		t.Error("taskCtx should be cancelled after KillWorker at 100%")
+		t.Error("taskCtx should be cancelled after lock-held cancel at 100%")
 	}
 }
 
@@ -481,5 +482,186 @@ func TestRunCompletionMonitor_DrainsQueueAt100Percent(t *testing.T) {
 
 	if queue.Len() != 0 {
 		t.Errorf("queue.Len() = %d after 100%% completion, want 0 (queue should be drained)", queue.Len())
+	}
+}
+
+// TestTarpitCompletion_DeadSilentTarpitMutexFix verifies the mutex fix against
+// a dead-silent tarpit (0 bytes sent, pure hold). The normal mirror completes
+// the range, pushing VerifiedProgress to 100%. The lock-held cancel sweep +
+// worker-side VP re-check ensure no worker remains stuck in downloadTask()
+// after 100%, so Download returns promptly without waiting for the health
+// monitor's 5s grace period.
+func TestTarpitCompletion_DeadSilentTarpitMutexFix(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(512 * types.KB)
+	// Dead-silent tarpit: sends 0 bytes, holds connection forever.
+	tarpitSrv := newTarpitServer(t, fileSize, 0, 0)
+	normalSrv := testutil.NewMockServerT(t,
+		testutil.WithFileSize(fileSize),
+		testutil.WithRangeSupport(true),
+	)
+	defer normalSrv.Close()
+
+	destPath := filepath.Join(tmpDir, "tarpit_deadsilent.bin")
+	workingPath := destPath + types.IncompleteSuffix
+	if f, err := os.Create(workingPath); err != nil {
+		t.Fatal(err)
+	} else {
+		_ = f.Close()
+	}
+
+	state := types.NewProgressState("tarpit-deadsilent", fileSize)
+	runtime := &types.RuntimeConfig{
+		MaxConnectionsPerDownload: 2,
+		Workers:                   2,
+		MinChunkSize:              64 * types.KB,
+	}
+	d := NewConcurrentDownloader("tarpit-deadsilent", nil, state, runtime)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := downloadWithTimeout(t, d, ctx, tarpitSrv.URL, destPath, fileSize,
+		[]string{normalSrv.URL()}, 10*time.Second)
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if err := testutil.VerifyFileSize(workingPath, fileSize); err != nil {
+		t.Error(err)
+	}
+}
+
+// TestRunCompletionMonitor_MutexCancelKillsAllActive verifies O1 directly: at
+// VP=100% the completion monitor cancels all active task contexts under
+// activeMu rather than relying on an activeWorkerIDs() snapshot.
+func TestRunCompletionMonitor_MutexCancelKillsAllActive(t *testing.T) {
+	fileSize := int64(1000)
+	state := types.NewProgressState("cm-mutex", fileSize)
+	d := &ConcurrentDownloader{
+		activeTasks: make(map[int]*ActiveTask),
+		State:       state,
+		Runtime:     &types.RuntimeConfig{},
+	}
+
+	// Register 3 active tasks with cancellable contexts.
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	ctx3, cancel3 := context.WithCancel(context.Background())
+	defer cancel3()
+
+	d.activeTasks[0] = &ActiveTask{Cancel: cancel1}
+	d.activeTasks[1] = &ActiveTask{Cancel: cancel2}
+	d.activeTasks[2] = &ActiveTask{Cancel: cancel3}
+
+	state.VerifiedProgress.Store(fileSize)
+
+	queue := NewTaskQueue()
+	ctx, monCancel := context.WithCancel(context.Background())
+	defer monCancel()
+
+	done := make(chan struct{})
+	go func() {
+		d.runCompletionMonitor(ctx, queue, fileSize, 3)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runCompletionMonitor did not return within 2s")
+	}
+
+	// All three task contexts must be cancelled.
+	if ctx1.Err() == nil || ctx2.Err() == nil || ctx3.Err() == nil {
+		t.Error("not all active task contexts were cancelled at 100%")
+	}
+}
+
+// TestWorker_VPGuardExitsBeforeRegistration verifies that when VP=100% at Pop
+// time, the worker exits at the Pop-time VP guard before ActiveWorkers.Add(1)
+// and activeTasks registration.
+func TestWorker_VPGuardExitsBeforeRegistration(t *testing.T) {
+	fileSize := int64(1000)
+	state := types.NewProgressState("vp-guard", fileSize)
+	runtime := &types.RuntimeConfig{}
+	d := NewConcurrentDownloader("vp-guard", nil, state, runtime)
+
+	// VP already at 100% — worker should exit at the Pop-time VP guard
+	// without reaching ActiveWorkers.Add(1) or activeTasks registration.
+	state.VerifiedProgress.Store(fileSize)
+
+	queue := NewTaskQueue()
+	queue.Push(types.Task{Offset: 0, Length: 500})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	client := &http.Client{}
+	err := d.worker(ctx, 0, []string{"http://localhost:1"}, nil, queue, fileSize, client)
+	if err != nil {
+		t.Fatalf("worker returned error: %v", err)
+	}
+
+	// Worker should have exited without registering any active task.
+	d.activeMu.Lock()
+	registered := len(d.activeTasks)
+	d.activeMu.Unlock()
+	if registered != 0 {
+		t.Errorf("activeTasks has %d entries, want 0 (worker should exit before registration)", registered)
+	}
+
+	// ActiveWorkers should be 0 (Add(1) was never reached because the
+	// Pop-time VP guard returned before it).
+	if got := state.ActiveWorkers.Load(); got != 0 {
+		t.Errorf("ActiveWorkers = %d, want 0", got)
+	}
+}
+
+// TestWorker_ActiveWorkersCountCorrectOnMutexExit verifies O2's ActiveWorkers
+// count pairing: after a normal download completes, ActiveWorkers must be 0 —
+// no count leak from the mutex exit path.
+func TestWorker_ActiveWorkersCountCorrectOnMutexExit(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(512 * types.KB)
+	normalSrv := testutil.NewMockServerT(t,
+		testutil.WithFileSize(fileSize),
+		testutil.WithRangeSupport(true),
+	)
+	defer normalSrv.Close()
+
+	destPath := filepath.Join(tmpDir, "aw_count.bin")
+	workingPath := destPath + types.IncompleteSuffix
+	if f, err := os.Create(workingPath); err != nil {
+		t.Fatal(err)
+	} else {
+		_ = f.Close()
+	}
+
+	state := types.NewProgressState("aw-count", fileSize)
+	runtime := &types.RuntimeConfig{
+		MaxConnectionsPerDownload: 4,
+		Workers:                   4,
+		MinChunkSize:              64 * types.KB,
+	}
+	d := NewConcurrentDownloader("aw-count", nil, state, runtime)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := downloadWithTimeout(t, d, ctx, normalSrv.URL(), destPath, fileSize, nil, 15*time.Second)
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	// After completion, ActiveWorkers must be 0 — no leaks from mutex exit path.
+	if got := state.ActiveWorkers.Load(); got != 0 {
+		t.Errorf("ActiveWorkers = %d after completion, want 0 (no count leak)", got)
 	}
 }

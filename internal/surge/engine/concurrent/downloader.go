@@ -640,17 +640,22 @@ func (d *ConcurrentDownloader) runCompletionMonitor(ctx context.Context, queue *
 			// FORK-PATCH: use VerifiedProgress (chunk-level dedup) instead of
 			// Downloaded, which can overcount when SharedMaxOffset is nil.
 			if d.State != nil && d.State.VerifiedProgress.Load() >= fileSize {
-				for _, id := range d.activeWorkerIDs() {
-					d.KillWorker(id)
+				// FORK-PATCH: Cancel all active workers under activeMu to close
+				// the snapshot gap. The previous approach (activeWorkerIDs()
+				// snapshot + KillWorker loop) missed workers in the window
+				// between queue.Pop() returning and activeTasks registration.
+				// Holding the lock during cancel is safe: Cancel() is a
+				// non-blocking channel close. The worker-side VP re-check
+				// under the same lock (worker.go) ensures workers that haven't
+				// registered yet exit before entering downloadTask().
+				d.activeMu.Lock()
+				for _, at := range d.activeTasks {
+					if at.Cancel != nil {
+						at.Cancel()
+					}
 				}
+				d.activeMu.Unlock()
 				queue.Close()
-				// FORK-PATCH: drain remaining tasks. queue.Close() only sets
-				// done=true + Broadcast; Pop() still returns already-queued
-				// tasks to workers past the done check. DrainRemaining clears
-				// the queue so no worker can pop a redundant hedged task after
-				// 100% and waste bandwidth or hang on a tarpit. The worker VP
-				// guard (worker.go) is the second layer for the race window
-				// between Close and Drain.
 				queue.DrainRemaining()
 				return
 			}
