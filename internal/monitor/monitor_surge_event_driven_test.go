@@ -146,7 +146,7 @@ func TestEventDriven_RemoveMsg_DeletesCacheAndPushesRemoveDelta(t *testing.T) {
 	}, "active")
 
 	// Also seed tracker and telemetry
-	tracker.EnsureTrackedFromEvent("sg_evt-remove-1", 1000, "https://example.com", 4)
+	tracker.EnsureTrackedFromEvent("sg_evt-remove-1", 1000, "https://example.com", 4, "active")
 	if m.telemetry == nil {
 		m.telemetry = NewTelemetryCache()
 	}
@@ -1184,7 +1184,7 @@ func TestHandleSurgeEvent_FirstByteMsg_NoDeltaPush(t *testing.T) {
 		Cache.sgStopped = nil
 	}()
 
-	tracker.EnsureTrackedFromEvent("sg_fb-2", 1000, "https://example.com", 4)
+	tracker.EnsureTrackedFromEvent("sg_fb-2", 1000, "https://example.com", 4, "active")
 
 	m.handleSurgeEvent(surgeEvents.FirstByteMsg{
 		DownloadID: "fb-2",

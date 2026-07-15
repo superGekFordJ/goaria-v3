@@ -131,7 +131,7 @@ func TestReconcileSurgeCache_MissedComplete(t *testing.T) {
 		Status:      "active",
 		TotalLength: "1000",
 	}, "active")
-	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4)
+	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4, "active")
 	// Provide file metadata so handleTaskComplete can write history.
 	Cache.metadata["sg_task1"] = &TaskMetadata{
 		GID:   "sg_task1",
@@ -186,7 +186,7 @@ func TestReconcileSurgeCache_MissedComplete_AlreadyProcessed(t *testing.T) {
 		Status:      "complete",
 		TotalLength: "1000",
 	}, "stopped")
-	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4)
+	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4, "active")
 	tracker.processedComplete["sg_task1"] = true
 
 	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
@@ -263,7 +263,7 @@ func TestReconcileSurgeCache_MissedRemove(t *testing.T) {
 	resetCacheSg()
 
 	Cache.AddSgTask(rpc.Task{GID: "sg_task1", Status: "complete"}, "stopped")
-	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com", 4)
+	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com", 4, "active")
 
 	reader.setLists(nil, nil, nil)
 
@@ -375,7 +375,7 @@ func TestReconcileSurgeCache_RapidStateChange(t *testing.T) {
 		Status:      "active",
 		TotalLength: "1000",
 	}, "active")
-	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4)
+	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4, "active")
 	Cache.metadata["sg_task1"] = &TaskMetadata{
 		GID:   "sg_task1",
 		Files: []string{"/downloads/file.zip"},
@@ -424,7 +424,7 @@ func TestReconcileSurgeCache_NoDiscrepancy(t *testing.T) {
 	Cache.AddSgTask(rpc.Task{GID: "sg_task1", Status: "active"}, "active")
 	Cache.AddSgTask(rpc.Task{GID: "sg_task2", Status: "paused"}, "waiting")
 	Cache.AddSgTask(rpc.Task{GID: "sg_task3", Status: "complete"}, "stopped")
-	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "", 4)
+	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "", 4, "active")
 
 	reader.setLists(
 		[]rpc.Task{{GID: "task1", Status: "downloading"}},
@@ -487,7 +487,7 @@ func TestReconcileSurgeCache_ConcurrentWithEvent(t *testing.T) {
 		Status:      "active",
 		TotalLength: "1000",
 	}, "active")
-	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4)
+	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4, "active")
 	Cache.metadata["sg_task1"] = &TaskMetadata{
 		GID:   "sg_task1",
 		Files: []string{"/downloads/file.zip"},

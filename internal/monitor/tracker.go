@@ -366,7 +366,7 @@ func (t *TaskTracker) UpdateTaskGroupName(groupKey, name, status string) int {
 
 // EnsureTrackedFromEvent 从 Surge 事件创建或更新 tracker 条目
 // 用于 DownloadStartedMsg / DownloadQueuedMsg，不等 tick
-func (t *TaskTracker) EnsureTrackedFromEvent(gid string, totalLength int64, sourceURL string, threadCount int) {
+func (t *TaskTracker) EnsureTrackedFromEvent(gid string, totalLength int64, sourceURL string, threadCount int, status string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -381,16 +381,33 @@ func (t *TaskTracker) EnsureTrackedFromEvent(gid string, totalLength int64, sour
 		if threadCount > 0 && tracked.ThreadCount == 0 {
 			tracked.ThreadCount = threadCount
 		}
+		if status != "" {
+			tracked.Status = status
+		}
 		return
 	}
 
 	t.tasks[gid] = &TrackedTask{
 		GID:         gid,
-		Status:      "active",
+		Status:      status,
 		TotalLength: totalLength,
 		SourceURL:   sourceURL,
 		ThreadCount: threadCount,
 		CreatedAt:   time.Now(),
+	}
+	if t.tasks[gid].Status == "" {
+		t.tasks[gid].Status = "active"
+	}
+}
+
+// SetStatusFromEvent updates a tracked task's status from a Surge lifecycle
+// event (pause/resume) without re-running the full ensure logic. No-op if
+// the task is not yet tracked (reconcileSurgeCache will seed it).
+func (t *TaskTracker) SetStatusFromEvent(gid string, status string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if tracked := t.tasks[gid]; tracked != nil {
+		tracked.Status = status
 	}
 }
 

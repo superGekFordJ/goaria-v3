@@ -551,7 +551,7 @@ func TestTaskTracker_UpdateTaskGroupNamePreservesFolderMetadata(t *testing.T) {
 
 func TestTaskTracker_EnsureTrackedFromEvent_CreatesNew(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-evt-001", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-evt-001", 100000000, "https://example.com/file.zip", 8, "active")
 
 	tracked := tracker.tasks["sg-evt-001"]
 	if tracked == nil {
@@ -575,7 +575,7 @@ func TestTaskTracker_EnsureTrackedFromEvent_UpdatesExisting(t *testing.T) {
 	tracker.Update(active, nil, nil)
 
 	// EnsureTrackedFromEvent should update, not overwrite
-	tracker.EnsureTrackedFromEvent("sg-evt-002", 200000000, "https://new.com/file.zip", 16)
+	tracker.EnsureTrackedFromEvent("sg-evt-002", 200000000, "https://new.com/file.zip", 16, "active")
 
 	tracked := tracker.tasks["sg-evt-002"]
 	if tracked == nil {
@@ -590,7 +590,7 @@ func TestTaskTracker_EnsureTrackedFromEvent_DoesNotOverwriteThreadCount(t *testi
 	tracker := NewTaskTracker()
 	tracker.SetThreadInfo("sg-evt-003", 4, true)
 
-	tracker.EnsureTrackedFromEvent("sg-evt-003", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-evt-003", 100000000, "https://example.com/file.zip", 8, "active")
 
 	tracked := tracker.tasks["sg-evt-003"]
 	if tracked == nil {
@@ -607,7 +607,7 @@ func TestTaskTracker_SampleSpeedFromEvent_LargeFile(t *testing.T) {
 	defer State.SetWindowExists(prevWindow)
 
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-evt-004", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-evt-004", 100000000, "https://example.com/file.zip", 8, "active")
 
 	// First sample — not enough sustained count (threshold=2 for event path)
 	tracker.SampleSpeedFromEvent("sg-evt-004", 10000000, 100000000, 60000000)
@@ -625,7 +625,7 @@ func TestTaskTracker_SampleSpeedFromEvent_LargeFile(t *testing.T) {
 
 func TestTaskTracker_SampleSpeedFromEvent_SmallFileSkipped(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-evt-005", 1000000, "https://example.com/small.zip", 4)
+	tracker.EnsureTrackedFromEvent("sg-evt-005", 1000000, "https://example.com/small.zip", 4, "active")
 
 	// File < 50MB, should not sample
 	tracker.SampleSpeedFromEvent("sg-evt-005", 5000000, 1000000, 500000)
@@ -643,7 +643,7 @@ func TestTaskTracker_SampleSpeedFromEvent_NonexistentTask(t *testing.T) {
 
 func TestTaskTracker_MarkCompleteFromEvent(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-evt-006", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-evt-006", 100000000, "https://example.com/file.zip", 8, "active")
 
 	completed := tracker.MarkCompleteFromEvent("sg-evt-006", "complete")
 	if completed == nil {
@@ -659,7 +659,7 @@ func TestTaskTracker_MarkCompleteFromEvent(t *testing.T) {
 
 func TestTaskTracker_MarkCompleteFromEvent_Idempotent(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-evt-007", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-evt-007", 100000000, "https://example.com/file.zip", 8, "active")
 
 	first := tracker.MarkCompleteFromEvent("sg-evt-007", "complete")
 	if first == nil {
@@ -682,7 +682,7 @@ func TestTaskTracker_MarkCompleteFromEvent_NonexistentTask(t *testing.T) {
 
 func TestTaskTracker_MarkCompleteFromEvent_ErrorStatus(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-evt-008", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-evt-008", 100000000, "https://example.com/file.zip", 8, "active")
 
 	completed := tracker.MarkCompleteFromEvent("sg-evt-008", "error")
 	if completed == nil {
@@ -695,7 +695,7 @@ func TestTaskTracker_MarkCompleteFromEvent_ErrorStatus(t *testing.T) {
 
 func TestTaskTracker_SetScope_ExistingTask(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-evt-009", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-evt-009", 100000000, "https://example.com/file.zip", 8, "active")
 
 	tracker.SetScope("sg-evt-009", "wan", 150, "example.com")
 
@@ -784,7 +784,7 @@ func TestTaskTracker_SetMinChunk_OverwritesExistingValue(t *testing.T) {
 
 func TestTrackerAdapter_GetActiveTrackedTasks_PassesMinChunkThrough(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-minchunk-pass", 0, "", 4)
+	tracker.EnsureTrackedFromEvent("sg-minchunk-pass", 0, "", 4, "active")
 
 	minChunk := int64(8 * 1024 * 1024)
 	tracker.SetMinChunk("sg-minchunk-pass", minChunk)
@@ -804,7 +804,7 @@ func TestTrackerAdapter_GetActiveTrackedTasks_PassesMinChunkThrough(t *testing.T
 
 func TestTaskTracker_SampleSpeedFromEvent_UpdatesTotalAndCompleted(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-evt-011", 0, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-evt-011", 0, "https://example.com/file.zip", 8, "active")
 
 	// First event provides total and completed
 	tracker.SampleSpeedFromEvent("sg-evt-011", 5000000, 200000000, 10000000)
@@ -827,7 +827,7 @@ func TestEventAndTickPath_NoDoubleComplete(t *testing.T) {
 	tracker := NewTaskTracker()
 
 	// 1. 事件路径创建并采样
-	tracker.EnsureTrackedFromEvent("sg-cross-001", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-cross-001", 100000000, "https://example.com/file.zip", 8, "active")
 	tracker.SampleSpeedFromEvent("sg-cross-001", 10000000, 100000000, 60000000)
 	tracker.SampleSpeedFromEvent("sg-cross-001", 10000000, 100000000, 70000000)
 
@@ -863,7 +863,7 @@ func TestEventAndTickPath_TickCompletesFirst(t *testing.T) {
 	tracker := NewTaskTracker()
 
 	// 1. 事件路径创建任务
-	tracker.EnsureTrackedFromEvent("sg-cross-002", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-cross-002", 100000000, "https://example.com/file.zip", 8, "active")
 
 	// 2. tick 路径先检测到完成
 	stopped := []rpc.Task{createMockTask("sg-cross-002", "complete")}
@@ -924,7 +924,7 @@ func TestTaskTracker_GetScope_EmptyScope(t *testing.T) {
 
 func TestRecordPeakEfficiency_FirstRecording(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-peak-001", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-peak-001", 100000000, "https://example.com/file.zip", 8, "active")
 
 	tracker.RecordPeakEfficiency("sg-peak-001", 50*1024*1024, 10)
 
@@ -939,7 +939,7 @@ func TestRecordPeakEfficiency_FirstRecording(t *testing.T) {
 
 func TestRecordPeakEfficiency_HigherThroughputSameEfficiency(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-peak-002", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-peak-002", 100000000, "https://example.com/file.zip", 8, "active")
 
 	// First record: 50MB/s @ 10 workers = 5MB/s/thread
 	tracker.RecordPeakEfficiency("sg-peak-002", 50*1024*1024, 10)
@@ -957,7 +957,7 @@ func TestRecordPeakEfficiency_HigherThroughputSameEfficiency(t *testing.T) {
 
 func TestRecordPeakEfficiency_SameThroughputFewerWorkers(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-peak-003", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-peak-003", 100000000, "https://example.com/file.zip", 8, "active")
 
 	// First: 50MB/s @ 10 workers
 	tracker.RecordPeakEfficiency("sg-peak-003", 50*1024*1024, 10)
@@ -974,7 +974,7 @@ func TestRecordPeakEfficiency_SameThroughputFewerWorkers(t *testing.T) {
 // 50MB/s@10 → 53MB/s@32 should NOT overwrite peakWorkers (efficiency crashes from 5MB/s to 1.66MB/s)
 func TestRecordPeakEfficiency_RejectBloatedN(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-peak-004", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-peak-004", 100000000, "https://example.com/file.zip", 8, "active")
 
 	// Record efficient working point: 50MB/s @ 10 workers = 5MB/s/thread
 	tracker.RecordPeakEfficiency("sg-peak-004", 50*1024*1024, 10)
@@ -995,7 +995,7 @@ func TestRecordPeakEfficiency_RejectBloatedN(t *testing.T) {
 
 func TestRecordPeakEfficiency_ZeroWorkers(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-peak-005", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-peak-005", 100000000, "https://example.com/file.zip", 8, "active")
 
 	tracker.RecordPeakEfficiency("sg-peak-005", 100*1024*1024, 0)
 
@@ -1013,7 +1013,7 @@ func TestRecordPeakEfficiency_NonexistentTask(t *testing.T) {
 
 func TestRecordPeakEfficiency_ConcurrentRace(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-peak-race", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-peak-race", 100000000, "https://example.com/file.zip", 8, "active")
 
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
@@ -1040,7 +1040,7 @@ func TestRecordPeakEfficiency_ConcurrentRace(t *testing.T) {
 // session-best efficiency, so borderline-high-N proposals are rejected.
 func TestRecordPeakEfficiency_M6_BestEffCreepPrevention(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-peak-creep", 100000000, "https://example.com/file.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg-peak-creep", 100000000, "https://example.com/file.zip", 8, "active")
 
 	// Record efficient working point: 50MB/s @ 10 workers = 5MB/s/thread
 	tracker.RecordPeakEfficiency("sg-peak-creep", 50*1024*1024, 10)
@@ -1086,7 +1086,7 @@ func TestRecordPeakEfficiency_M6_BestEffCreepPrevention(t *testing.T) {
 // requires incoming speed ≥ 90% of peak (28.8MB/s) — 4MB/s is way below, so rejected.
 func TestRecordPeakEfficiency_RejectSewageMonster(t *testing.T) {
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg-peak-sewage", 100000000, "https://example.com/file.zip", 32)
+	tracker.EnsureTrackedFromEvent("sg-peak-sewage", 100000000, "https://example.com/file.zip", 32, "active")
 
 	// Record: 32MB/s @ 32 threads = 1MB/s/thread
 	tracker.RecordPeakEfficiency("sg-peak-sewage", 32*1024*1024, 32)
@@ -1241,8 +1241,8 @@ func TestTaskTracker_Update_DoesNotCleanSgTasks(t *testing.T) {
 	tracker := NewTaskTracker()
 
 	// Seed a sg_ task via EnsureTrackedFromEvent
-	tracker.EnsureTrackedFromEvent("sg_survive-1", 100000, "https://example.com", 4)
-	tracker.EnsureTrackedFromEvent("sg_survive-2", 200000, "https://example.com", 8)
+	tracker.EnsureTrackedFromEvent("sg_survive-1", 100000, "https://example.com", 4, "active")
+	tracker.EnsureTrackedFromEvent("sg_survive-2", 200000, "https://example.com", 8, "active")
 
 	// Also seed an ar_ task
 	active := []rpc.Task{createMockTask("ar_active-1", "active")}
@@ -1374,5 +1374,140 @@ func TestSetTTFB_DoesNotOverwriteScopeDomainEnvKey(t *testing.T) {
 	}
 	if tracked.CurrentEnvKey != "envA" {
 		t.Errorf("CurrentEnvKey = %q, want envA", tracked.CurrentEnvKey)
+	}
+}
+
+// ==================== Status Desync Regression Tests ====================
+
+// activeSetContains reports whether gid is present in GetActiveTrackedTasks.
+func activeSetContains(tracker *TaskTracker, gid string) bool {
+	for _, tt := range tracker.GetActiveTrackedTasks() {
+		if tt.GID == gid {
+			return true
+		}
+	}
+	return false
+}
+
+func TestEnsureTrackedFromEvent_SetsStatusOnExistingTask(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.SetThreadInfo("sg-status-existing", 8, false)
+	if tracked := tracker.tasks["sg-status-existing"]; tracked.Status != "" {
+		t.Fatalf("seed Status = %q, want empty", tracked.Status)
+	}
+	tracker.EnsureTrackedFromEvent("sg-status-existing", 100000000, "https://example.com/file.zip", 8, "active")
+	if tracked := tracker.tasks["sg-status-existing"]; tracked.Status != "active" {
+		t.Errorf("Status = %q, want active", tracked.Status)
+	}
+}
+
+func TestEnsureTrackedFromEvent_QueuedStatusNotActive(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg-status-queued", 0, "https://example.com/file.zip", 8, "waiting")
+	tracked := tracker.tasks["sg-status-queued"]
+	if tracked.Status != "waiting" {
+		t.Errorf("Status = %q, want waiting", tracked.Status)
+	}
+	if activeSetContains(tracker, "sg-status-queued") {
+		t.Error("queued task should be excluded from GetActiveTrackedTasks")
+	}
+}
+
+func TestEnsureTrackedFromEvent_StartedStatusActive(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg-status-started", 100000000, "https://example.com/file.zip", 8, "active")
+	if !activeSetContains(tracker, "sg-status-started") {
+		t.Error("started task should be included in GetActiveTrackedTasks")
+	}
+}
+
+func TestEnsureTrackedFromEvent_EmptyStatusDefaultsActive(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg-status-empty", 0, "https://example.com/file.zip", 0, "")
+	if tracked := tracker.tasks["sg-status-empty"]; tracked.Status != "active" {
+		t.Errorf("Status = %q, want active fallback", tracked.Status)
+	}
+}
+
+func TestEnsureTrackedFromEvent_EmptyStatusDoesNotClobberExisting(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg-status-noclobber", 100000000, "https://example.com/file.zip", 8, "active")
+	tracker.EnsureTrackedFromEvent("sg-status-noclobber", 100000000, "", 0, "")
+	if tracked := tracker.tasks["sg-status-noclobber"]; tracked.Status != "active" {
+		t.Errorf("Status = %q, want active (empty must not clobber)", tracked.Status)
+	}
+}
+
+func TestSetStatusFromEvent_PauseResume(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg-status-pauseresume", 100000000, "https://example.com/file.zip", 8, "active")
+	if !activeSetContains(tracker, "sg-status-pauseresume") {
+		t.Fatal("seeded task should be active")
+	}
+	tracker.SetStatusFromEvent("sg-status-pauseresume", "paused")
+	if activeSetContains(tracker, "sg-status-pauseresume") {
+		t.Error("paused task should be excluded from GetActiveTrackedTasks")
+	}
+	tracker.SetStatusFromEvent("sg-status-pauseresume", "active")
+	if !activeSetContains(tracker, "sg-status-pauseresume") {
+		t.Error("resumed task should be included in GetActiveTrackedTasks")
+	}
+}
+
+func TestSetStatusFromEvent_NoOpOnUnknownGid(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.SetStatusFromEvent("sg-status-unknown", "paused")
+	if tracked := tracker.tasks["sg-status-unknown"]; tracked != nil {
+		t.Errorf("unknown gid should not be created, got %#v", tracked)
+	}
+}
+
+func TestEnsureTrackedFromEvent_PlaceholderQueuedStarted(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.SetThreadInfo("sg-status-placeholder", 8, false)
+	tracker.EnsureTrackedFromEvent("sg-status-placeholder", 0, "https://example.com/file.zip", 8, "waiting")
+	if tracked := tracker.tasks["sg-status-placeholder"]; tracked.Status != "waiting" {
+		t.Errorf("after queued: Status = %q, want waiting", tracked.Status)
+	}
+	tracker.EnsureTrackedFromEvent("sg-status-placeholder", 100000000, "https://example.com/file.zip", 8, "active")
+	if tracked := tracker.tasks["sg-status-placeholder"]; tracked.Status != "active" {
+		t.Errorf("after started: Status = %q, want active", tracked.Status)
+	}
+}
+
+func TestEnsureTrackedFromEvent_CompleteDoesNotClobber(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg-status-complete", 100000000, "https://example.com/file.zip", 8, "active")
+	tracker.EnsureTrackedFromEvent("sg-status-complete", 100000000, "", 0, "")
+	if tracked := tracker.tasks["sg-status-complete"]; tracked.Status != "active" {
+		t.Errorf("after empty ensure: Status = %q, want active", tracked.Status)
+	}
+	if completed := tracker.MarkCompleteFromEvent("sg-status-complete", "complete"); completed == nil {
+		t.Fatal("MarkCompleteFromEvent returned nil")
+	}
+	if tracked := tracker.tasks["sg-status-complete"]; tracked.Status != "complete" {
+		t.Errorf("after mark complete: Status = %q, want complete", tracked.Status)
+	}
+}
+
+func TestEngineStatusForTask_Mapping(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"active", "active"},
+		{"downloading", "active"},
+		{"waiting", "waiting"},
+		{"paused", "paused"},
+		{"complete", "complete"},
+		{"error", "error"},
+		{"", "active"},
+		{"unknown", "active"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			if got := engineStatusForTask(c.in); got != c.want {
+				t.Errorf("engineStatusForTask(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
 	}
 }

@@ -596,7 +596,7 @@ func TestSwitchingRace_ConcurrentTickAndEventBridge_NoDoubleOperation(t *testing
 		Status:      "active",
 		TotalLength: "1000",
 	}, "active")
-	m.tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4)
+	m.tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4, "active")
 	Cache.metadata["sg_task1"] = &TaskMetadata{
 		GID:   "sg_task1",
 		Files: []string{"/downloads/file.zip"},

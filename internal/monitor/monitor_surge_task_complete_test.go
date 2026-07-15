@@ -24,7 +24,7 @@ func TestHandleTaskComplete_PeakThreadCountFallback(t *testing.T) {
 	he := rpc.NewHybridEngine(nil, surge)
 
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg_peak-tc", 200000000, "https://example.com/large.zip", 32)
+	tracker.EnsureTrackedFromEvent("sg_peak-tc", 200000000, "https://example.com/large.zip", 32, "active")
 
 	// Simulate convergence recording a peak at 22 workers
 	tracker.RecordPeakEfficiency("sg_peak-tc", 50*1024*1024, 22)
@@ -76,7 +76,7 @@ func TestHandleTaskComplete_ThreadCountFallback(t *testing.T) {
 	he := rpc.NewHybridEngine(nil, surge)
 
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg_tc-fallback", 200000000, "https://example.com/medium.zip", 16)
+	tracker.EnsureTrackedFromEvent("sg_tc-fallback", 200000000, "https://example.com/medium.zip", 16, "active")
 
 	m := &Monitor{engine: he, tracker: tracker}
 
@@ -129,7 +129,7 @@ func TestHandleTaskComplete_ConfigFallback(t *testing.T) {
 	he := rpc.NewHybridEngine(nil, surge)
 
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg_cfg-fallback", 200000000, "https://example.com/config.zip", 0)
+	tracker.EnsureTrackedFromEvent("sg_cfg-fallback", 200000000, "https://example.com/config.zip", 0, "active")
 
 	m := &Monitor{engine: he, tracker: tracker}
 
@@ -187,7 +187,7 @@ func TestHandleTaskComplete_RateLimitSkip(t *testing.T) {
 	he := rpc.NewHybridEngine(nil, surge)
 
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg_ratelimited", 200000000, "https://example.com/limited.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg_ratelimited", 200000000, "https://example.com/limited.zip", 8, "active")
 
 	m := &Monitor{engine: he, tracker: tracker}
 
@@ -235,7 +235,7 @@ func TestHandleTaskComplete_RateLimitNotSet_RecordsNormally(t *testing.T) {
 	he := rpc.NewHybridEngine(nil, surge)
 
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg_unlimited", 200000000, "https://example.com/fast.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg_unlimited", 200000000, "https://example.com/fast.zip", 8, "active")
 
 	m := &Monitor{engine: he, tracker: tracker}
 
@@ -276,7 +276,7 @@ func TestHandleTaskComplete_EmptyEnvKeySkipsRecording(t *testing.T) {
 	he := rpc.NewHybridEngine(nil, surge)
 
 	tracker := NewTaskTracker()
-	tracker.EnsureTrackedFromEvent("sg_no_envkey", 200000000, "https://example.com/large.zip", 8)
+	tracker.EnsureTrackedFromEvent("sg_no_envkey", 200000000, "https://example.com/large.zip", 8, "active")
 
 	m := &Monitor{engine: he, tracker: tracker}
 

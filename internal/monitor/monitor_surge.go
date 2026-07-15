@@ -155,7 +155,7 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		deltaType = "add"
 		gid = "sg_" + ev.DownloadID
 		if m.tracker != nil {
-			m.tracker.EnsureTrackedFromEvent(gid, 0, ev.URL, ev.Workers)
+			m.tracker.EnsureTrackedFromEvent(gid, 0, ev.URL, ev.Workers, "waiting")
 		}
 		if surgeEng != nil {
 			surgeEng.UpsertMasterCacheEntry(types.DownloadEntry{
@@ -183,7 +183,7 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		deltaType = "add"
 		gid = "sg_" + ev.DownloadID
 		if m.tracker != nil {
-			m.tracker.EnsureTrackedFromEvent(gid, ev.Total, ev.URL, ev.Workers)
+			m.tracker.EnsureTrackedFromEvent(gid, ev.Total, ev.URL, ev.Workers, "active")
 		}
 		if surgeEng != nil {
 			entry := types.DownloadEntry{
@@ -361,6 +361,9 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 			log.Printf("[Monitor] Discarding stale pause event for gid %s (superseded by resume)", gid)
 			return
 		}
+		if m.tracker != nil {
+			m.tracker.SetStatusFromEvent(gid, "paused")
+		}
 		Cache.MoveTaskToWaiting(gid, "paused")
 		if task := findTaskInCache(gid); task != nil {
 			m.hub.EmitTaskMove(events.TaskMove{
@@ -376,6 +379,9 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 	case "resume":
 		if surgeEng != nil {
 			surgeEng.InvalidateListCache()
+		}
+		if m.tracker != nil {
+			m.tracker.SetStatusFromEvent(gid, "active")
 		}
 		Cache.MoveTaskToActive(gid, "active")
 		if task := findTaskInCache(gid); task != nil {
@@ -417,7 +423,7 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		}
 		if m.tracker != nil {
 			if completeTotal > 0 {
-				m.tracker.EnsureTrackedFromEvent(gid, completeTotal, "", 0)
+				m.tracker.EnsureTrackedFromEvent(gid, completeTotal, "", 0, "")
 			}
 			if completed := m.tracker.MarkCompleteFromEvent(gid, deltaType); completed != nil {
 				if completed.PeakSpeed == 0 && completeAvgSpeed > 0 {
@@ -610,7 +616,7 @@ func (m *Monitor) reconcileSurgeCache() {
 			list := engineListForStatus(engineTask.Status)
 			Cache.AddSgTask(engineTask, list)
 			if m.tracker != nil {
-				m.tracker.EnsureTrackedFromEvent(gid, parseInt64(engineTask.TotalLength), sourceURLFromTask(engineTask), 0)
+				m.tracker.EnsureTrackedFromEvent(gid, parseInt64(engineTask.TotalLength), sourceURLFromTask(engineTask), 0, engineStatusForTask(engineTask.Status))
 			}
 			Cache.PrefetchMetadata(gid)
 			if list == "stopped" && m.tracker != nil {
@@ -649,9 +655,15 @@ func (m *Monitor) reconcileSurgeCache() {
 			}
 			log.Printf("[Monitor] Surge poll: moved task %s from %s to stopped (missed %s)", gid, cacheList, status)
 		case "waiting":
+			if m.tracker != nil {
+				m.tracker.SetStatusFromEvent(gid, engineStatusForTask(engineTask.Status))
+			}
 			Cache.MoveTaskToWaiting(gid, "paused")
 			log.Printf("[Monitor] Surge poll: moved task %s from %s to waiting (missed pause)", gid, cacheList)
 		case "active":
+			if m.tracker != nil {
+				m.tracker.SetStatusFromEvent(gid, "active")
+			}
 			Cache.MoveTaskToActive(gid, "active")
 			log.Printf("[Monitor] Surge poll: moved task %s from %s to active (missed resume)", gid, cacheList)
 		}
@@ -697,6 +709,26 @@ func engineListForStatus(status string) string {
 		return "stopped"
 	default:
 		return "stopped"
+	}
+}
+
+// engineStatusForTask maps an engine-side status string to the tracker status
+// string. Distinct from engineListForStatus (which maps to cache list names)
+// because tracker status preserves paused/complete/error granularity.
+func engineStatusForTask(status string) string {
+	switch status {
+	case "active", "downloading":
+		return "active"
+	case "waiting":
+		return "waiting"
+	case "paused":
+		return "paused"
+	case "complete":
+		return "complete"
+	case "error":
+		return "error"
+	default:
+		return "active"
 	}
 }
 
