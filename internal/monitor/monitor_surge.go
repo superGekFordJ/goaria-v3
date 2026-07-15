@@ -662,7 +662,7 @@ func (m *Monitor) reconcileSurgeCache() {
 			log.Printf("[Monitor] Surge poll: moved task %s from %s to waiting (missed pause)", gid, cacheList)
 		case "active":
 			if m.tracker != nil {
-				m.tracker.SetStatusFromEvent(gid, "active")
+				m.tracker.SetStatusFromEvent(gid, engineStatusForTask(engineTask.Status))
 			}
 			Cache.MoveTaskToActive(gid, "active")
 			log.Printf("[Monitor] Surge poll: moved task %s from %s to active (missed resume)", gid, cacheList)

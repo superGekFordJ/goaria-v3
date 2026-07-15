@@ -381,7 +381,9 @@ func (t *TaskTracker) EnsureTrackedFromEvent(gid string, totalLength int64, sour
 		if threadCount > 0 && tracked.ThreadCount == 0 {
 			tracked.ThreadCount = threadCount
 		}
-		if status != "" {
+		// Don't resurrect a terminal task (complete/error) back to a
+		// non-terminal status from a late/out-of-order event or reconcile.
+		if status != "" && !t.processedComplete[gid] {
 			tracked.Status = status
 		}
 		return
@@ -406,6 +408,11 @@ func (t *TaskTracker) EnsureTrackedFromEvent(gid string, totalLength int64, sour
 func (t *TaskTracker) SetStatusFromEvent(gid string, status string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// Don't resurrect a terminal task (complete/error) back to a non-terminal
+	// status from a late/out-of-order event or reconcile mismatch.
+	if t.processedComplete[gid] {
+		return
+	}
 	if tracked := t.tasks[gid]; tracked != nil {
 		tracked.Status = status
 	}

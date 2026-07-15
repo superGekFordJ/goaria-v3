@@ -1490,6 +1490,47 @@ func TestEnsureTrackedFromEvent_CompleteDoesNotClobber(t *testing.T) {
 	}
 }
 
+func TestSetStatusFromEvent_DoesNotResurrectTerminalTask(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg-terminal-resurrect", 100000000, "https://example.com/file.zip", 8, "active")
+	if completed := tracker.MarkCompleteFromEvent("sg-terminal-resurrect", "complete"); completed == nil {
+		t.Fatal("MarkCompleteFromEvent returned nil")
+	}
+	if tracked := tracker.tasks["sg-terminal-resurrect"]; tracked.Status != "complete" {
+		t.Fatalf("seed Status = %q, want complete", tracked.Status)
+	}
+
+	// SetStatusFromEvent must not flip a processedComplete task back to active.
+	tracker.SetStatusFromEvent("sg-terminal-resurrect", "active")
+	if tracked := tracker.tasks["sg-terminal-resurrect"]; tracked.Status != "complete" {
+		t.Errorf("Status = %q, want complete (terminal must not resurrect)", tracked.Status)
+	}
+	if activeSetContains(tracker, "sg-terminal-resurrect") {
+		t.Error("terminal task must not re-enter GetActiveTrackedTasks")
+	}
+}
+
+func TestEnsureTrackedFromEvent_DoesNotResurrectTerminalTask(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg-terminal-ensure", 100000000, "https://example.com/file.zip", 8, "active")
+	if completed := tracker.MarkCompleteFromEvent("sg-terminal-ensure", "complete"); completed == nil {
+		t.Fatal("MarkCompleteFromEvent returned nil")
+	}
+	if tracked := tracker.tasks["sg-terminal-ensure"]; tracked.Status != "complete" {
+		t.Fatalf("seed Status = %q, want complete", tracked.Status)
+	}
+
+	// EnsureTrackedFromEvent existing-branch must not flip a processedComplete
+	// task back to active (e.g. a late DownloadStartedMsg on a completed gid).
+	tracker.EnsureTrackedFromEvent("sg-terminal-ensure", 100000000, "https://example.com/file.zip", 8, "active")
+	if tracked := tracker.tasks["sg-terminal-ensure"]; tracked.Status != "complete" {
+		t.Errorf("Status = %q, want complete (terminal must not resurrect)", tracked.Status)
+	}
+	if activeSetContains(tracker, "sg-terminal-ensure") {
+		t.Error("terminal task must not re-enter GetActiveTrackedTasks")
+	}
+}
+
 func TestEngineStatusForTask_Mapping(t *testing.T) {
 	cases := []struct {
 		in, want string
