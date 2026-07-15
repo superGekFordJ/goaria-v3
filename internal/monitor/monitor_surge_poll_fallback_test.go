@@ -202,10 +202,11 @@ func TestReconcileSurgeCache_MissedComplete_AlreadyProcessed(t *testing.T) {
 // TestReconcileSurgeCache_MissedPause verifies that a task the engine reports
 // as paused but Cache has active is moved to waiting.
 func TestReconcileSurgeCache_MissedPause(t *testing.T) {
-	m, reader, _, _ := newReconcileTestMonitor(t)
+	m, reader, _, tracker := newReconcileTestMonitor(t)
 	resetCacheSg()
 
 	Cache.AddSgTask(rpc.Task{GID: "sg_task1", Status: "active"}, "active")
+	tracker.EnsureTrackedFromEvent("sg_task1", 0, "", 0, "active")
 
 	reader.setLists(nil, []rpc.Task{{GID: "task1", Status: "paused"}}, nil)
 
@@ -228,15 +229,29 @@ func TestReconcileSurgeCache_MissedPause(t *testing.T) {
 			t.Fatal("expected sg_task1 NOT in active after reconcile")
 		}
 	}
+
+	if tt := tracker.tasks["sg_task1"]; tt != nil {
+		if tt.Status != "paused" {
+			t.Errorf("tracker status = %s, want paused", tt.Status)
+		}
+	} else {
+		t.Fatal("expected tracker entry for sg_task1")
+	}
+	for _, at := range tracker.GetActiveTrackedTasks() {
+		if at.GID == "sg_task1" {
+			t.Fatal("expected sg_task1 NOT in active tracked tasks after missed pause")
+		}
+	}
 }
 
 // TestReconcileSurgeCache_MissedResume verifies that a task the engine reports
 // as active but Cache has waiting is moved to active.
 func TestReconcileSurgeCache_MissedResume(t *testing.T) {
-	m, reader, _, _ := newReconcileTestMonitor(t)
+	m, reader, _, tracker := newReconcileTestMonitor(t)
 	resetCacheSg()
 
 	Cache.AddSgTask(rpc.Task{GID: "sg_task1", Status: "paused"}, "waiting")
+	tracker.EnsureTrackedFromEvent("sg_task1", 0, "", 0, "paused")
 
 	reader.setLists([]rpc.Task{{GID: "task1", Status: "downloading"}}, nil, nil)
 
@@ -253,6 +268,23 @@ func TestReconcileSurgeCache_MissedResume(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected sg_task1 in active after reconcile")
+	}
+
+	if tt := tracker.tasks["sg_task1"]; tt != nil {
+		if tt.Status != "active" {
+			t.Errorf("tracker status = %s, want active", tt.Status)
+		}
+	} else {
+		t.Fatal("expected tracker entry for sg_task1")
+	}
+	foundActiveTracked := false
+	for _, at := range tracker.GetActiveTrackedTasks() {
+		if at.GID == "sg_task1" {
+			foundActiveTracked = true
+		}
+	}
+	if !foundActiveTracked {
+		t.Fatal("expected sg_task1 in active tracked tasks after missed resume")
 	}
 }
 

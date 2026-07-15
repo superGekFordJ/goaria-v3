@@ -197,9 +197,11 @@ func TestEventDriven_RemoveMsg_DeletesCacheAndPushesRemoveDelta(t *testing.T) {
 func TestEventDriven_PauseMovesTaskToWaiting(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
 	m := &Monitor{
 		hub:                   hub,
 		pusher:                pusher,
+		tracker:               tracker,
 		pauseResumeIntentions: make(map[string]string),
 	}
 
@@ -219,6 +221,7 @@ func TestEventDriven_PauseMovesTaskToWaiting(t *testing.T) {
 	}()
 
 	Cache.sgActive = []rpc.Task{{GID: "sg_evt-pause-1", Status: "active", DownloadSpeed: "100"}}
+	tracker.EnsureTrackedFromEvent("sg_evt-pause-1", 0, "", 0, "active")
 
 	m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{
 		DownloadID: "evt-pause-1",
@@ -249,6 +252,20 @@ func TestEventDriven_PauseMovesTaskToWaiting(t *testing.T) {
 		t.Fatal("expected sg_evt-pause-1 NOT in active after pause")
 	}
 
+	// Verify tracker status synced to paused and no longer in active tracked set.
+	if tt := tracker.tasks["sg_evt-pause-1"]; tt != nil {
+		if tt.Status != "paused" {
+			t.Errorf("tracker status = %s, want paused", tt.Status)
+		}
+	} else {
+		t.Fatal("expected tracker entry for sg_evt-pause-1")
+	}
+	for _, at := range tracker.GetActiveTrackedTasks() {
+		if at.GID == "sg_evt-pause-1" {
+			t.Fatal("expected sg_evt-pause-1 NOT in active tracked tasks after pause")
+		}
+	}
+
 	if recordedMove == nil {
 		t.Fatal("expected task:move event emitted for pause")
 	}
@@ -269,9 +286,11 @@ func TestEventDriven_PauseMovesTaskToWaiting(t *testing.T) {
 func TestEventDriven_ResumeMovesTaskToActive(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
 	m := &Monitor{
-		hub:    hub,
-		pusher: pusher,
+		hub:     hub,
+		pusher:  pusher,
+		tracker: tracker,
 	}
 
 	var recordedMove *events.TaskMove
@@ -290,6 +309,7 @@ func TestEventDriven_ResumeMovesTaskToActive(t *testing.T) {
 	}()
 
 	Cache.sgWaiting = []rpc.Task{{GID: "sg_evt-resume-1", Status: "paused", DownloadSpeed: "0"}}
+	tracker.EnsureTrackedFromEvent("sg_evt-resume-1", 0, "", 0, "paused")
 
 	m.handleSurgeEvent(surgeEvents.DownloadResumedMsg{
 		DownloadID: "evt-resume-1",
@@ -318,6 +338,24 @@ func TestEventDriven_ResumeMovesTaskToActive(t *testing.T) {
 	}
 	if stillWaiting {
 		t.Fatal("expected sg_evt-resume-1 NOT in waiting after resume")
+	}
+
+	// Verify tracker status synced to active and present in active tracked set.
+	if tt := tracker.tasks["sg_evt-resume-1"]; tt != nil {
+		if tt.Status != "active" {
+			t.Errorf("tracker status = %s, want active", tt.Status)
+		}
+	} else {
+		t.Fatal("expected tracker entry for sg_evt-resume-1")
+	}
+	foundActiveTracked := false
+	for _, at := range tracker.GetActiveTrackedTasks() {
+		if at.GID == "sg_evt-resume-1" {
+			foundActiveTracked = true
+		}
+	}
+	if !foundActiveTracked {
+		t.Fatal("expected sg_evt-resume-1 in active tracked tasks after resume")
 	}
 
 	if recordedMove == nil {
