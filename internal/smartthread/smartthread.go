@@ -240,3 +240,43 @@ func minInt(a, b int) int {
 	}
 	return b
 }
+
+// ClampToServerLimit applies the per-domain N_max server limit to Calculate's
+// output. If the domain has a non-expired N_max and params.Split exceeds it,
+// Split is clamped to nMax, MinSize is adjusted so per-worker size stays valid,
+// and TargetBandwidth is scaled proportionally. Calculate itself stays a pure
+// function with no Store dependency.
+func ClampToServerLimit(params ThreadParams, fileSize int64, domain string, store *ServerLimitStore) ThreadParams {
+	if store == nil {
+		return params
+	}
+	nMax, hasLimit := store.GetNMax(domain)
+	if !hasLimit || params.Split <= nMax {
+		return params
+	}
+
+	oldSplit := params.Split
+	params.Split = nMax
+
+	// When split decreases, per-worker size grows, so MinSize never needs to go
+	// up. But Calculate may have raised MinSize to the minChunkSize floor above
+	// the new per-worker size; lower it to keep per-worker >= MinSize, clamped
+	// to minChunkSize so the engine still accepts the split.
+	if fileSize > 0 && nMax > 0 {
+		perWorker := fileSize / int64(nMax)
+		if perWorker < params.MinSize {
+			params.MinSize = perWorker
+			if params.MinSize < minChunkSize {
+				params.MinSize = minChunkSize
+			}
+		}
+	}
+
+	// Scale TargetBandwidth proportionally so the per-worker bandwidth
+	// expectation (and thus ledger Reserve) stays consistent with the new split.
+	if oldSplit > 0 && params.TargetBandwidth > 0 {
+		params.TargetBandwidth = params.TargetBandwidth * int64(nMax) / int64(oldSplit)
+	}
+
+	return params
+}

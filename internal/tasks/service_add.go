@@ -521,6 +521,7 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			EnvKey:            envKey,
 			ReservedBandwidth: ledger.Reserved(scope, envKey),
 		})
+		params = smartthread.ClampToServerLimit(params, fileSize, domain, smartthread.GetDefaultServerLimits())
 		ledger.Reserve(scope, envKey, params.TargetBandwidth)
 		var err error
 		gid, err = s.Engine.AddUri(candidate.url, rpc.AddURIOptions{

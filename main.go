@@ -218,6 +218,7 @@ func main() {
 					EnvKey:            envKey,
 					ReservedBandwidth: monitor.ActiveBandwidthByScope(scope, envKey),
 				})
+				params = smartthread.ClampToServerLimit(params, remaining, domain, smartthread.GetDefaultServerLimits())
 				if params.Split > 0 {
 					cfg.Runtime.Workers = params.Split
 				}
