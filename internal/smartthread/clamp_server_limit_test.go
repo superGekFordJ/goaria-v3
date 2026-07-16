@@ -116,7 +116,7 @@ func TestClampToServerLimit_MinSizeAdjustment(t *testing.T) {
 		store := NewServerLimitStore()
 		store.SetNMax("example.com", 7)
 
-		// 5MB / 7 ≈ 714KB < 1MB MinSize → MinSize would drop to 714KB but
+		// 5MB / 7 ≈ 732KB < 1MB MinSize → MinSize would drop to 732KB but
 		// minChunkSize floor keeps it at 1MB.
 		params := ThreadParams{Split: 16, MinSize: mb}
 		got := ClampToServerLimit(params, 5*mb, "example.com", store)
