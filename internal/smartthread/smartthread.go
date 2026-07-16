@@ -251,7 +251,7 @@ func ClampToServerLimit(params ThreadParams, fileSize int64, domain string, stor
 		return params
 	}
 	nMax, hasLimit := store.GetNMax(domain)
-	if !hasLimit || params.Split <= nMax {
+	if !hasLimit || nMax <= 0 || params.Split <= nMax {
 		return params
 	}
 

@@ -43,6 +43,18 @@ func TestClampToServerLimit_SplitBelowNMax_NoChange(t *testing.T) {
 	if got != params {
 		t.Fatalf("expected unchanged params, got %+v", got)
 	}
+
+	t.Run("SplitEqualsNMax_NoChange", func(t *testing.T) {
+		store := NewServerLimitStore()
+		store.SetNMax("example.com", 7)
+
+		params := ThreadParams{Split: 7, TargetBandwidth: 7 * mb, MinSize: mb, NSat: 6}
+		got := ClampToServerLimit(params, 100*mb, "example.com", store)
+
+		if got != params {
+			t.Fatalf("expected unchanged params when Split==nMax, got %+v", got)
+		}
+	})
 }
 
 func TestClampToServerLimit_ExpiredLimit_NoChange(t *testing.T) {
