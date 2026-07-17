@@ -1,7 +1,8 @@
 <script setup lang="ts">
   import { computed, ref, watch } from 'vue'
   import { useI18n } from 'vue-i18n'
-  import { Trash2 } from 'lucide-vue-next'
+  import { Trash2, HardDrive, AlertCircle } from 'lucide-vue-next'
+  import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
 
   const props = defineProps<{
     open: boolean
@@ -41,42 +42,110 @@
         class="fixed inset-0 z-[100] flex items-center justify-center p-6"
         @click.self="emit('cancel')"
       >
+        <!-- Backdrop -->
         <div class="absolute inset-0 modal-backdrop animate-fade-in"></div>
+
         <div
-          class="relative glass-panel rounded-[var(--radius-squircle-2xl)] w-full max-w-md p-7 animate-spring-in"
+          class="glass-panel-solid relative w-full max-w-md p-8 rounded-[var(--radius-squircle-2xl)] animate-spring-in"
         >
-          <div class="download-group-remove-icon rounded-[var(--radius-squircle-lg)]">
-            <Trash2 :size="28" />
+          <!-- Warning Icon -->
+          <div class="flex justify-center mb-6">
+            <div
+              class="w-20 h-20 rounded-[var(--radius-squircle-lg)] bg-red-500/10 border border-red-500/20 flex items-center justify-center"
+            >
+              <Trash2 :size="36" class="text-red-400" />
+            </div>
           </div>
-          <h3 class="mt-5 text-xl font-black text-center text-[var(--modal-text)]">
+
+          <!-- Title -->
+          <h3 class="text-xl font-bold text-center text-[var(--modal-text)] mb-2">
             {{ t('downloadGroups.removeDialog.title') }}
           </h3>
-          <p class="mt-3 text-sm text-center text-[var(--modal-text-muted)]">
+
+          <!-- Description -->
+          <p
+            class="text-sm text-[var(--modal-text-muted)] text-center mb-8 px-4 truncate font-mono-data"
+            :title="targetName"
+          >
             {{ t('downloadGroups.removeDialog.description', { name: targetName }) }}
           </p>
-          <label class="download-group-delete-files rounded-[var(--radius-squircle-md)]">
-            <input v-model="deleteFiles" type="checkbox" />
-            <span>{{ t('downloadGroups.removeDialog.deleteFiles') }}</span>
+
+          <!-- Delete Local File Option -->
+          <label
+            class="flex items-center gap-4 p-4 mb-8 rounded-[var(--radius-squircle-md)] cursor-pointer transition-all duration-200 group"
+            :class="
+              deleteFiles
+                ? 'bg-red-500/10 border border-red-500/20'
+                : 'bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:bg-red-500/5 hover:border-red-500/10'
+            "
+          >
+            <input v-model="deleteFiles" type="checkbox" class="shrink-0" />
+            <div class="flex items-center gap-3">
+              <HardDrive
+                :size="18"
+                :class="
+                  deleteFiles
+                    ? 'text-red-400'
+                    : 'text-[var(--app-text-subtle)] group-hover:text-red-400/60'
+                "
+              />
+              <div class="flex flex-col">
+                <span
+                  :class="[
+                    'text-sm font-semibold transition-colors',
+                    deleteFiles
+                      ? 'text-red-400'
+                      : 'text-[var(--modal-text-muted)] group-hover:text-red-400/80',
+                  ]"
+                >
+                  {{ t('downloadGroups.removeDialog.deleteFiles') }}
+                </span>
+                <span class="text-[10px] text-[var(--modal-text-subtle)]">
+                  {{ t('taskList.irreversible') }}
+                </span>
+              </div>
+            </div>
           </label>
-          <div class="mt-6 flex gap-3">
-            <button
-              type="button"
-              class="flex-1 btn-glass rounded-[var(--radius-squircle-md)] px-4 py-3 text-sm font-bold text-[var(--modal-text-muted)]"
+
+          <!-- Action Buttons -->
+          <div class="flex gap-3">
+            <!-- Cancel Button -->
+            <LiquidGlassPanel
+              as="button"
+              :interactive="true"
+              hover-effect="glow"
+              base-color-class="bg-[var(--btn-glass-bg)]"
+              fallback-class="btn-glass"
+              class="flex-1 py-4 rounded-[var(--radius-squircle-md)] text-[var(--modal-text-muted)] font-semibold text-sm transition-all duration-200 hover:text-[var(--modal-text)] active:scale-[0.98]"
               @click="emit('cancel')"
             >
-              {{ t('downloadGroups.removeDialog.cancel') }}
-            </button>
+              <span class="flex items-center justify-center w-full h-full">{{
+                t('downloadGroups.removeDialog.cancel')
+              }}</span>
+            </LiquidGlassPanel>
             <button
-              type="button"
-              class="download-group-remove-confirm flex-1 rounded-[var(--radius-squircle-md)] px-4 py-3 text-sm font-black"
               :disabled="busy"
+              class="flex-1 py-4 rounded-[var(--radius-squircle-md)] bg-[var(--status-error)] border border-red-400/20 text-white font-bold text-sm transition-all duration-200 hover:bg-red-400 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-red-500/20"
               @click="confirm"
             >
-              <span v-if="busy">
+              <span v-if="busy" class="flex items-center justify-center gap-2">
+                <AlertCircle :size="16" class="animate-pulse" />
                 {{ t('downloadGroups.removeDialog.removing') }}
               </span>
               <span v-else>{{ t('downloadGroups.removeDialog.confirm') }}</span>
             </button>
+          </div>
+
+          <!-- Keyboard Shortcut Hint -->
+          <div class="flex justify-center mt-6">
+            <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
+              <kbd
+                class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]"
+              >
+                Esc
+              </kbd>
+              <span>{{ t('downloadGroups.removeDialog.cancel') }}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -85,40 +154,26 @@
 </template>
 
 <style scoped>
-  .download-group-remove-icon {
-    margin: 0 auto;
-    display: flex;
-    height: 4.5rem;
-    width: 4.5rem;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid color-mix(in srgb, var(--status-error) 24%, transparent);
-    background: color-mix(in srgb, var(--status-error) 9%, transparent);
-    color: var(--status-error);
+  /* Modal transitions */
+  .modal-enter-active,
+  .modal-leave-active {
+    transition: opacity 0.3s ease;
   }
 
-  .download-group-delete-files {
-    margin-top: 1.5rem;
-    display: flex;
-    cursor: pointer;
-    align-items: center;
-    gap: 0.75rem;
-    border: 1px solid var(--glass-border);
-    background: var(--btn-glass-bg);
-    padding: 0.875rem 1rem;
-    color: var(--modal-text-muted);
-    font-size: 0.875rem;
-    font-weight: 700;
+  .modal-enter-from,
+  .modal-leave-to {
+    opacity: 0;
   }
 
-  .download-group-remove-confirm {
-    border: 1px solid color-mix(in srgb, var(--status-error) 24%, transparent);
-    background: var(--status-error);
-    color: var(--neon-btn-text);
+  .modal-enter-active .glass-panel-solid {
+    animation: spring-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
   }
 
-  .download-group-remove-confirm:disabled {
-    cursor: wait;
-    opacity: 0.65;
+  .modal-leave-active .glass-panel-solid {
+    animation: spring-out 0.2s ease-out both;
+  }
+
+  kbd {
+    font-family: var(--font-family-mono);
   }
 </style>

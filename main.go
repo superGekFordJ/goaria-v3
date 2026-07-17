@@ -105,6 +105,7 @@ func main() {
 		},
 		Windows: application.WindowsOptions{
 			DisableQuitOnLastWindowClosed: true,
+			AdditionalBrowserArgs:         []string{"--enable-smooth-scrolling"},
 		},
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: false,

@@ -4,7 +4,7 @@
   import { useTaskStore } from '../../stores/task'
   import { useDownloadGroupStore } from '../../stores/downloadGroups'
   import { Pause, Play, Trash2, X, CheckSquare } from 'lucide-vue-next'
-  import StaticGlassPanel from '../common/StaticGlassPanel.vue'
+  import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
 
   const { t } = useI18n()
   const taskStore = useTaskStore()
@@ -51,7 +51,7 @@
 <template>
   <Transition name="slide-up">
     <div v-if="selectedCount > 0" class="batch-action-bar">
-      <StaticGlassPanel radius="rounded-[var(--radius-squircle-xl)]">
+      <LiquidGlassPanel radius="rounded-[var(--radius-squircle-xl)]">
         <div class="batch-action-bar-content">
           <!-- Selection Info -->
           <div class="batch-info">
@@ -97,7 +97,7 @@
             <X :size="16" />
           </button>
         </div>
-      </StaticGlassPanel>
+      </LiquidGlassPanel>
     </div>
   </Transition>
 </template>
