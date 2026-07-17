@@ -14,6 +14,10 @@ import "goaria-v3/internal/speedstats"
 //     surrogate, not the hardware NIC rate.
 //   - Resume with stale envKey: collision may fail → degrade to logical-only.
 func applyPhysicalCeiling(vLogicalAvailable int64, p CalcParams) int64 {
+	// min(0, anything)=0; skip physical work when logical is already exhausted.
+	if vLogicalAvailable <= 0 {
+		return 0
+	}
 	if p.Ledger == nil || p.ActiveMACsFunc == nil || p.ComputeEnvKeyFunc == nil {
 		return vLogicalAvailable // degrade: injection missing (e.g. Resume path)
 	}
@@ -27,26 +31,24 @@ func applyPhysicalCeiling(vLogicalAvailable int64, p CalcParams) int64 {
 
 	// Forward collision: find the physical NIC whose hash matches p.EnvKey.
 	// "0"=direct, "1"=proxy (monitor routeCode constants, unexported here).
-	var matchedMAC string
+	var matchedDirect, matchedProxy string
 	for _, mac := range macs {
 		hDirect := p.ComputeEnvKeyFunc("0", mac)
 		hProxy := p.ComputeEnvKeyFunc("1", mac)
 		if p.EnvKey == hDirect || p.EnvKey == hProxy {
-			matchedMAC = mac
+			matchedDirect, matchedProxy = hDirect, hProxy
 			break
 		}
 	}
-	if matchedMAC == "" {
+	if matchedDirect == "" {
 		return vLogicalAvailable // degrade: collision failed (stale envKey / unknown NIC)
 	}
 
 	// Query 4 buckets (wan/lan × direct/proxy) on the matched physical NIC.
-	hDirect := p.ComputeEnvKeyFunc("0", matchedMAC)
-	hProxy := p.ComputeEnvKeyFunc("1", matchedMAC)
-	v1, ok1 := speedstats.GetGlobalPeak("wan", hDirect)
-	v2, ok2 := speedstats.GetGlobalPeak("wan", hProxy)
-	v3, ok3 := speedstats.GetGlobalPeak("lan", hDirect)
-	v4, ok4 := speedstats.GetGlobalPeak("lan", hProxy)
+	v1, ok1 := speedstats.GetGlobalPeak("wan", matchedDirect)
+	v2, ok2 := speedstats.GetGlobalPeak("wan", matchedProxy)
+	v3, ok3 := speedstats.GetGlobalPeak("lan", matchedDirect)
+	v4, ok4 := speedstats.GetGlobalPeak("lan", matchedProxy)
 
 	// Zero-ceiling guard: no historical data on any bucket → do not apply.
 	if !ok1 && !ok2 && !ok3 && !ok4 {
@@ -65,8 +67,8 @@ func applyPhysicalCeiling(vLogicalAvailable int64, p CalcParams) int64 {
 	}
 
 	// Symmetric deduction: both WAN and LAN subtract total reserved (direct+proxy).
-	wanReserved := p.Ledger.Reserved("wan", hDirect) + p.Ledger.Reserved("wan", hProxy)
-	lanReserved := p.Ledger.Reserved("lan", hDirect) + p.Ledger.Reserved("lan", hProxy)
+	wanReserved := p.Ledger.Reserved("wan", matchedDirect) + p.Ledger.Reserved("wan", matchedProxy)
+	lanReserved := p.Ledger.Reserved("lan", matchedDirect) + p.Ledger.Reserved("lan", matchedProxy)
 	totalReserved := wanReserved + lanReserved
 
 	vPhysicalAvailable := max(physicalPeak-totalReserved, 0)

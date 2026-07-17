@@ -27,6 +27,16 @@ func baseParams(envKey string, macs []string, ledger *BandwidthLedger) CalcParam
 	}
 }
 
+// seedPeaks resets records and seeds 100MB peaks for wan direct+proxy on the
+// given hashes, registering a cleanup so each subtest starts and ends clean.
+func seedPeaks(t *testing.T, hDirect, hProxy string) {
+	t.Helper()
+	speedstats.ResetRecordsForTest()
+	speedstats.AddRecordV2(100*physMB, 8, 1*1024*1024*1024, false, 50, "host.com", "wan", hDirect)
+	speedstats.AddRecordV2(100*physMB, 8, 1*1024*1024*1024, false, 50, "host.com", "wan", hProxy)
+	t.Cleanup(speedstats.ResetRecordsForTest)
+}
+
 func TestApplyPhysicalCeiling(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
@@ -34,10 +44,6 @@ func TestApplyPhysicalCeiling(t *testing.T) {
 	const mac = "aabbccddeeff"
 	hDirect := mockEnvKey("0", mac)
 	hProxy := mockEnvKey("1", mac)
-
-	// Seed historical peaks: wan+direct=100MB, wan+proxy=100MB.
-	speedstats.AddRecordV2(100*physMB, 8, 1*1024*1024*1024, false, 50, "host.com", "wan", hDirect)
-	speedstats.AddRecordV2(100*physMB, 8, 1*1024*1024*1024, false, 50, "host.com", "wan", hProxy)
 
 	t.Run("Degrade_NilLedger", func(t *testing.T) {
 		p := baseParams(hDirect, []string{mac}, nil)
@@ -93,11 +99,7 @@ func TestApplyPhysicalCeiling(t *testing.T) {
 
 	t.Run("Degrade_AllBucketsZero", func(t *testing.T) {
 		speedstats.ResetRecordsForTest()
-		t.Cleanup(func() {
-			speedstats.ResetRecordsForTest()
-			speedstats.AddRecordV2(100*physMB, 8, 1*1024*1024*1024, false, 50, "host.com", "wan", hDirect)
-			speedstats.AddRecordV2(100*physMB, 8, 1*1024*1024*1024, false, 50, "host.com", "wan", hProxy)
-		})
+		t.Cleanup(speedstats.ResetRecordsForTest)
 		p := baseParams(hDirect, []string{mac}, &BandwidthLedger{reserved: map[string]int64{}})
 		if got := applyPhysicalCeiling(5*physMB, p); got != 5*physMB {
 			t.Errorf("got %d, want %d (degrade on all buckets zero)", got, 5*physMB)
@@ -105,6 +107,7 @@ func TestApplyPhysicalCeiling(t *testing.T) {
 	})
 
 	t.Run("PhysicalCeiling_TighterThanLogical", func(t *testing.T) {
+		seedPeaks(t, hDirect, hProxy)
 		// physicalPeak=100MB, totalReserved=98MB → vPhysical=2MB < vLogical=5MB.
 		ledger := &BandwidthLedger{reserved: map[string]int64{
 			"wan" + hDirect: 8 * physMB,
@@ -117,6 +120,7 @@ func TestApplyPhysicalCeiling(t *testing.T) {
 	})
 
 	t.Run("PhysicalCeiling_LooserThanLogical", func(t *testing.T) {
+		seedPeaks(t, hDirect, hProxy)
 		// physicalPeak=100MB, totalReserved=10MB → vPhysical=90MB > vLogical=5MB → min=5MB.
 		ledger := &BandwidthLedger{reserved: map[string]int64{
 			"wan" + hDirect: 10 * physMB,
@@ -128,6 +132,7 @@ func TestApplyPhysicalCeiling(t *testing.T) {
 	})
 
 	t.Run("PhysicalCeiling_ZeroAfterDeduction", func(t *testing.T) {
+		seedPeaks(t, hDirect, hProxy)
 		// physicalPeak=100MB, totalReserved=150MB → vPhysical=0.
 		ledger := &BandwidthLedger{reserved: map[string]int64{
 			"wan" + hDirect: 50 * physMB,
@@ -140,6 +145,7 @@ func TestApplyPhysicalCeiling(t *testing.T) {
 	})
 
 	t.Run("Collision_DirectRoute", func(t *testing.T) {
+		seedPeaks(t, hDirect, hProxy)
 		ledger := &BandwidthLedger{reserved: map[string]int64{}}
 		p := baseParams(hDirect, []string{mac}, ledger)
 		// physicalPeak=100MB, totalReserved=0 → vPhysical=100MB > vLogical=5MB → 5MB.
@@ -149,6 +155,7 @@ func TestApplyPhysicalCeiling(t *testing.T) {
 	})
 
 	t.Run("Collision_ProxyRoute", func(t *testing.T) {
+		seedPeaks(t, hDirect, hProxy)
 		ledger := &BandwidthLedger{reserved: map[string]int64{}}
 		p := baseParams(hProxy, []string{mac}, ledger)
 		if got := applyPhysicalCeiling(5*physMB, p); got != 5*physMB {
@@ -157,6 +164,7 @@ func TestApplyPhysicalCeiling(t *testing.T) {
 	})
 
 	t.Run("MultiNIC_OnlyMatchedDeducted", func(t *testing.T) {
+		seedPeaks(t, hDirect, hProxy)
 		// Two NICs; only the matched one's reserved is deducted.
 		const mac2 = "112233445566"
 		h2Direct := mockEnvKey("0", mac2)
@@ -176,6 +184,7 @@ func TestApplyPhysicalCeiling(t *testing.T) {
 	})
 
 	t.Run("ScopeDefaultWan", func(t *testing.T) {
+		seedPeaks(t, hDirect, hProxy)
 		// Reserved("", hDirect) defaults to wan per BandwidthLedger.
 		ledger := &BandwidthLedger{reserved: map[string]int64{
 			"wan" + hDirect: 8 * physMB,
@@ -189,6 +198,7 @@ func TestApplyPhysicalCeiling(t *testing.T) {
 	})
 
 	t.Run("LAN_ReservedIncludedInTotal", func(t *testing.T) {
+		seedPeaks(t, hDirect, hProxy)
 		// LAN reserved on the same NIC counts toward totalReserved.
 		ledger := &BandwidthLedger{reserved: map[string]int64{
 			"lan" + hDirect: 95 * physMB,
