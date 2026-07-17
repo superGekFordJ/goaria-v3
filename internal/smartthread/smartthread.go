@@ -90,6 +90,12 @@ func Calculate(p CalcParams) ThreadParams {
 		vAvailable = 0
 	}
 
+	// 物理天花板（前向碰撞 + 对称扣减）：仅当开关开启时应用，
+	// 降级时退回 vLogicalAvailable（原逻辑天花板），只收紧不放宽。
+	if config.Current.EnablePhysicalMacAwareBandwidth {
+		vAvailable = applyPhysicalCeiling(vAvailable, p)
+	}
+
 	// V_target = min(V_single_peak, V_available)
 	// V_single_peak 无（新域名）→ V_target = V_available
 	var vTarget int64

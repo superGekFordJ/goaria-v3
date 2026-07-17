@@ -217,6 +217,8 @@ func main() {
 					Domain:            domain,
 					EnvKey:            envKey,
 					ReservedBandwidth: monitor.ActiveBandwidthByScope(scope, envKey),
+					// Ledger/ActiveMACsFunc/ComputeEnvKeyFunc left nil:
+					// Resume path degrades to logical-only ceiling (no batch ledger).
 				})
 				params = smartthread.ClampToServerLimit(params, remaining, domain, smartthread.GetDefaultServerLimits())
 				if params.Split > 0 {

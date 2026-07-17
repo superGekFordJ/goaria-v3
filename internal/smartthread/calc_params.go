@@ -53,4 +53,9 @@ type CalcParams struct {
 	Domain            string // 用于 GetDomainPeak/GetRTprop（配合 Scope 做 domain+scope 联合过滤）
 	EnvKey            string // 网络环境指纹 (SHA-256 前 8 位 hex)
 	ReservedBandwidth int64  // 同 scope+envKey 活跃任务实时速度之和 + 本批次已预留
+	// 物理天花板注入字段（可选，nil → 降级到仅逻辑天花板）。
+	// 由调用方（tasks 包）注入，打破 monitor↔smartthread 导入环。
+	Ledger            *BandwidthLedger                   // nil on Resume path → degrade
+	ActiveMACsFunc    func() []string                    // inject monitor.State.GetNetEnv().GetAllActiveMACs
+	ComputeEnvKeyFunc func(routeCode, mac string) string // inject monitor.ComputeEnvKey
 }

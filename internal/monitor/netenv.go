@@ -124,6 +124,18 @@ func (n *NetEnvCache) GetPrimaryIfaceMAC() (string, bool) {
 	return mac, ok
 }
 
+// GetAllActiveMACs returns the gateway MACs of all active physical interfaces.
+// Virtual interfaces are already filtered by skipInterfacePrefixes in refresh().
+func (n *NetEnvCache) GetAllActiveMACs() []string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	macs := make([]string, 0, len(n.ifaceToMAC))
+	for _, mac := range n.ifaceToMAC {
+		macs = append(macs, mac)
+	}
+	return macs
+}
+
 // isSkipInterface returns true for loopback/virtual/overlay interface names.
 func isSkipInterface(name string) bool {
 	lower := strings.ToLower(name)

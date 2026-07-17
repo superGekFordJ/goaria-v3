@@ -520,6 +520,15 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			Domain:            domain,
 			EnvKey:            envKey,
 			ReservedBandwidth: ledger.Reserved(scope, envKey),
+			Ledger:            ledger,
+			ActiveMACsFunc: func() []string {
+				ne := monitor.State.GetNetEnv()
+				if ne == nil {
+					return nil
+				}
+				return ne.GetAllActiveMACs()
+			},
+			ComputeEnvKeyFunc: monitor.ComputeEnvKey,
 		})
 		params = smartthread.ClampToServerLimit(params, fileSize, domain, smartthread.GetDefaultServerLimits())
 		ledger.Reserve(scope, envKey, params.TargetBandwidth)
