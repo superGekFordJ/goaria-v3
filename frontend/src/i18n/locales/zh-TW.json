@@ -380,10 +380,8 @@
     },
     "modal": {
       "copy": "複製",
-      "copied": "已複製",
       "openInBrowser": "在瀏覽器中開啟",
       "regenerate": "重新產生",
-      "regenerating": "正在重新產生...",
       "close": "關閉",
       "staleNotice": "此 URL 可能已過期，請重新產生以取得新連結。",
       "pairHelp": "在瀏覽器中開啟此 URL，然後安裝/啟用 GoAria 擴充功能以完成配對。"

@@ -380,10 +380,8 @@
     },
     "modal": {
       "copy": "コピー",
-      "copied": "コピーしました",
       "openInBrowser": "ブラウザで開く",
       "regenerate": "再生成",
-      "regenerating": "再生成中...",
       "close": "閉じる",
       "staleNotice": "この URL は期限切れの可能性があります。新しいリンクを再生成してください。",
       "pairHelp": "この URL をブラウザで開き、GoAria 拡張機能をインストール/有効化してペアリングを完了してください。"

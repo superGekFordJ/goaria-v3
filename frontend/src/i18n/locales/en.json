@@ -380,10 +380,8 @@
     },
     "modal": {
       "copy": "Copy",
-      "copied": "Copied",
       "openInBrowser": "Open in Browser",
       "regenerate": "Regenerate",
-      "regenerating": "Regenerating...",
       "close": "Close",
       "staleNotice": "This URL may have expired. Regenerate for a fresh link.",
       "pairHelp": "Open this URL in your browser, then install/activate the GoAria extension to complete pairing."

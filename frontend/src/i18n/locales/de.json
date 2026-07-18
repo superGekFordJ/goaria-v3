@@ -380,10 +380,8 @@
     },
     "modal": {
       "copy": "Kopieren",
-      "copied": "Kopiert",
       "openInBrowser": "Im Browser öffnen",
       "regenerate": "Neu generieren",
-      "regenerating": "Wird neu generiert...",
       "close": "Schließen",
       "staleNotice": "Diese URL ist möglicherweise abgelaufen. Generieren Sie sie neu für einen aktuellen Link.",
       "pairHelp": "Öffnen Sie diese URL in Ihrem Browser und installieren/aktivieren Sie die GoAria-Erweiterung, um die Kopplung abzuschließen."
