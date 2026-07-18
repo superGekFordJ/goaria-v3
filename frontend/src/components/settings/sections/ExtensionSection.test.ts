@@ -93,16 +93,16 @@ describe('ExtensionSection inline pairing panel', () => {
       },
     })
 
-  it('does not render the pairing panel when pairingPanelOpen is false', () => {
+  it('does not render the pairing stage when pairingPanelOpen is false', () => {
     const wrapper = mountSection()
-    expect(wrapper.find('.glass-panel-solid').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="pairing-stage-pairing"]').exists()).toBe(false)
   })
 
-  it('renders the pairing panel with font-mono-data URL when pairingPanelOpen is true', () => {
+  it('renders the pairing stage with font-mono-data URL when pairingPanelOpen is true', () => {
     storeMock.pairingPanelOpen = true
     storeMock.pairUrl = 'http://127.0.0.1:16810/__goaria_pair__/pair.html?n=abc123'
     const wrapper = mountSection()
-    const urlDisplay = wrapper.find('.glass-panel-solid .font-mono-data')
+    const urlDisplay = wrapper.find('[data-testid="pairing-stage-pairing"] .font-mono-data')
     expect(urlDisplay.exists()).toBe(true)
     expect(urlDisplay.text()).toContain('http://127.0.0.1:16810')
   })
@@ -169,9 +169,20 @@ describe('ExtensionSection inline pairing panel', () => {
     storeMock.pairingPanelOpen = true
     storeMock.pairUrl = 'http://127.0.0.1:16810/pair'
     const wrapper = mountSection()
-    expect(wrapper.find('.glass-panel-solid').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="pairing-stage-pairing"]').exists()).toBe(true)
     storeMock.pairingPanelOpen = false
     await wrapper.vm.$nextTick()
-    expect(wrapper.find('.glass-panel-solid').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="pairing-stage-pairing"]').exists()).toBe(false)
+  })
+
+  it('shows idle stage when closed and pairing stage when open', async () => {
+    const wrapper = mountSection()
+    expect(wrapper.find('[data-testid="pairing-stage-idle"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="pairing-stage-pairing"]').exists()).toBe(false)
+    storeMock.pairingPanelOpen = true
+    storeMock.pairUrl = 'http://127.0.0.1:16810/pair'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="pairing-stage-idle"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="pairing-stage-pairing"]').exists()).toBe(true)
   })
 })
