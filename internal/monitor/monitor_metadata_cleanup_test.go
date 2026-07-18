@@ -39,6 +39,7 @@ func TestMonitor_MetadataCleanup_ThrottleBehavior(t *testing.T) {
 	seedOrphanMetadata(3)
 
 	m := &Monitor{lastMetadataCleanup: time.Now()}
+	m.aria2Recovered.Store(true)
 
 	m.runMetadataCleanup(nil, nil, nil)
 	for i := 0; i < 3; i++ {
@@ -48,17 +49,6 @@ func TestMonitor_MetadataCleanup_ThrottleBehavior(t *testing.T) {
 	}
 
 	m.lastMetadataCleanup = time.Now().Add(-metadataCleanupInterval - time.Second)
-	evicted := 0
-	for i := 0; i < 3; i++ {
-		if Cache.GetMetadata(fmt.Sprintf("ar_orphan_%d", i)) == nil {
-			evicted++
-		}
-	}
-	if evicted != 0 {
-		t.Fatalf("expected no eviction before run, got %d", evicted)
-	}
-
-	m.aria2Recovered.Store(true)
 	m.runMetadataCleanup(nil, nil, nil)
 	for i := 0; i < 3; i++ {
 		if Cache.GetMetadata(fmt.Sprintf("ar_orphan_%d", i)) != nil {
@@ -103,7 +93,9 @@ func TestMonitor_MetadataCleanup_RetainsActiveGids(t *testing.T) {
 	seedOrphanMetadata(1)
 
 	active := []rpc.Task{{GID: "ar_keep", Status: "active"}}
+	Cache.mu.Lock()
 	Cache.metadata["ar_keep"] = &TaskMetadata{GID: "ar_keep", FetchedAt: time.Now().Add(-2 * metadataCleanupGrace)}
+	Cache.mu.Unlock()
 
 	m := &Monitor{}
 	m.aria2Recovered.Store(true)

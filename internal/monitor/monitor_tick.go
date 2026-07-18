@@ -508,5 +508,6 @@ func (m *Monitor) runMetadataCleanup(active, waiting, stopped []rpc.Task) {
 	if evicted > 0 {
 		log.Printf("[Monitor] Metadata cleanup: evicted %d orphaned entries", evicted)
 	}
+	// Unconditional update prevents retrying every tick when nothing needs cleanup.
 	m.lastMetadataCleanup = time.Now()
 }
