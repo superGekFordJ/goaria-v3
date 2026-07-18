@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { computed, ref, watch } from 'vue'
+  import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { Trash2, HardDrive, AlertCircle } from 'lucide-vue-next'
   import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
@@ -27,6 +27,20 @@
       if (open) deleteFiles.value = false
     },
   )
+
+  const handleKeydown = (e: KeyboardEvent) => {
+    if (props.open && e.key === 'Escape') {
+      emit('cancel')
+    }
+  }
+
+  onMounted(() => {
+    window.addEventListener('keydown', handleKeydown)
+  })
+
+  onUnmounted(() => {
+    window.removeEventListener('keydown', handleKeydown)
+  })
 
   function confirm() {
     if (props.busy) return
@@ -125,7 +139,7 @@
             </LiquidGlassPanel>
             <button
               :disabled="busy"
-              class="flex-1 py-4 rounded-[var(--radius-squircle-md)] bg-[var(--status-error)] border border-red-400/20 text-white font-bold text-sm transition-all duration-200 hover:bg-red-400 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-red-500/20"
+              class="download-group-remove-confirm flex-1 py-4 rounded-[var(--radius-squircle-md)] bg-[var(--status-error)] border border-red-400/20 text-white font-bold text-sm transition-all duration-200 hover:bg-red-400 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-red-500/20"
               @click="confirm"
             >
               <span v-if="busy" class="flex items-center justify-center gap-2">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { ref, watch } from 'vue'
+  import { ref, watch, onMounted, onUnmounted } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { Trash2, HardDrive, AlertCircle } from 'lucide-vue-next'
   import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
@@ -33,6 +33,20 @@
     emit('cancel')
     emit('update:show', false)
   }
+
+  const handleKeydown = (e: KeyboardEvent) => {
+    if (props.show && e.key === 'Escape') {
+      handleCancel()
+    }
+  }
+
+  onMounted(() => {
+    window.addEventListener('keydown', handleKeydown)
+  })
+
+  onUnmounted(() => {
+    window.removeEventListener('keydown', handleKeydown)
+  })
 
   const handleConfirm = () => {
     emit('confirm', deleteLocalFile.value)
