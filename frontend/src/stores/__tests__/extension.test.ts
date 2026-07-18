@@ -33,6 +33,7 @@ vi.mock('@wailsio/runtime', () => ({
 
 vi.mock('../../utils/clipboard', () => ({
   copyToClipboard: vi.fn().mockResolvedValue(true),
+  clearClipboardIfMatches: vi.fn().mockResolvedValue(undefined),
 }))
 
 describe('extension store', () => {
@@ -41,7 +42,7 @@ describe('extension store', () => {
     vi.clearAllMocks()
   })
 
-  it('pair() sets showPairingModal and pairUrl after successful PairExtension', async () => {
+  it('pair() sets pairingPanelOpen and pairUrl after successful PairExtension', async () => {
     bindingMocks.PairExtension.mockResolvedValue('http://127.0.0.1:16810/pair')
     bindingMocks.GetExtensionStatus.mockResolvedValue({ status: 'listening', ws_port: 16801, connected_clients: 0, paired: false })
 
@@ -49,11 +50,11 @@ describe('extension store', () => {
     await store.pair()
 
     expect(store.pairUrl).toBe('http://127.0.0.1:16810/pair')
-    expect(store.showPairingModal).toBe(true)
+    expect(store.pairingPanelOpen).toBe(true)
     expect(store.pairing).toBe(false)
   })
 
-  it('pair() does not open modal when PairExtension returns empty', async () => {
+  it('pair() does not open panel when PairExtension returns empty', async () => {
     bindingMocks.PairExtension.mockResolvedValue('')
     bindingMocks.GetExtensionStatus.mockResolvedValue({ status: 'listening', ws_port: 16801, connected_clients: 0, paired: false })
 
@@ -61,22 +62,25 @@ describe('extension store', () => {
     await store.pair()
 
     expect(store.pairUrl).toBe('')
-    expect(store.showPairingModal).toBe(false)
+    expect(store.pairingPanelOpen).toBe(false)
   })
 
-  it('extension:paired listener closes modal and clears pairUrl', async () => {
+  it('extension:paired listener closes panel, clears pairUrl, and clears clipboard', async () => {
     bindingMocks.GetExtensionStatus.mockResolvedValue({ status: 'paired', ws_port: 16801, connected_clients: 1, paired: true })
 
+    const { clearClipboardIfMatches } = await import('../../utils/clipboard')
+
     const store = useExtensionStore()
-    store.showPairingModal = true
+    store.pairingPanelOpen = true
     store.pairUrl = 'http://127.0.0.1:16810/pair'
     store.subscribeToEvents()
 
     eventsMock.emit('extension:paired')
 
-    expect(store.showPairingModal).toBe(false)
+    expect(store.pairingPanelOpen).toBe(false)
     expect(store.pairUrl).toBe('')
     expect(store.paired).toBe(true)
+    expect(clearClipboardIfMatches).toHaveBeenCalledWith('http://127.0.0.1:16810/pair')
   })
 
   it('extension:auth_failed listener sets paired=false and surfaces notice', async () => {

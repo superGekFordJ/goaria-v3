@@ -1,10 +1,11 @@
 <script setup lang="ts">
-  import { computed, onMounted, onUnmounted, watch } from 'vue'
+  import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
   import { useI18n } from 'vue-i18n'
-  import { Puzzle, Link2, Unlink, Loader2, CheckCircle, Radio, AlertCircle } from 'lucide-vue-next'
+  import { Puzzle, Link2, Unlink, Loader2, CheckCircle, Radio, AlertCircle, Copy, Check, ExternalLink, RefreshCw, X } from 'lucide-vue-next'
   import SectionCard from './SectionCard.vue'
-  import ExtensionPairingModal from '../ExtensionPairingModal.vue'
+  import LiquidGlassPanel from '../../common/LiquidGlassPanel.vue'
   import { useExtensionStore } from '../../../stores/extension'
+  import { clearClipboardIfMatches } from '../../../utils/clipboard'
 
   const { t } = useI18n()
   const extensionStore = useExtensionStore()
@@ -21,6 +22,31 @@
 
   const isListening = computed(() => extensionStore.status === 'listening' || extensionStore.status === 'paired')
 
+  const copied = ref(false)
+  const showStaleNotice = ref(false)
+  let staleTimer: ReturnType<typeof setTimeout> | null = null
+
+  function clearStaleTimer() {
+    if (staleTimer) {
+      clearTimeout(staleTimer)
+      staleTimer = null
+    }
+  }
+
+  watch(
+    () => extensionStore.pairingPanelOpen,
+    newVal => {
+      copied.value = false
+      showStaleNotice.value = false
+      clearStaleTimer()
+      if (newVal) {
+        staleTimer = setTimeout(() => {
+          showStaleNotice.value = true
+        }, 5 * 60 * 1000)
+      }
+    },
+  )
+
   onMounted(() => {
     extensionStore.subscribeToEvents()
     extensionStore.refreshStatus()
@@ -30,6 +56,7 @@
     extensionStore.unsubscribeFromEvents()
     clearAuthFailedTimer()
     clearUnpairRotatedTimer()
+    clearStaleTimer()
   })
 
   let authFailedTimer: ReturnType<typeof setTimeout> | null = null
@@ -75,6 +102,29 @@
       }
     },
   )
+
+  const handleClose = () => {
+    clearStaleTimer()
+    const consumedUrl = extensionStore.pairUrl
+    extensionStore.pairUrl = ''
+    extensionStore.pairingPanelOpen = false
+    if (consumedUrl) {
+      void clearClipboardIfMatches(consumedUrl)
+    }
+  }
+
+  const handleCopy = async () => {
+    const ok = await extensionStore.copyPairUrl()
+    if (ok) {
+      copied.value = true
+    }
+  }
+
+  const handleRegenerate = () => {
+    clearStaleTimer()
+    showStaleNotice.value = false
+    extensionStore.regenerate()
+  }
 </script>
 
 <template>
@@ -175,15 +225,139 @@
       </div>
     </div>
 
-    <!-- Pairing Modal -->
-    <ExtensionPairingModal
-      :show="extensionStore.showPairingModal"
-      :url="extensionStore.pairUrl"
-      :regenerating="extensionStore.regenerating"
-      @update:show="extensionStore.showPairingModal = $event"
-      @close="extensionStore.showPairingModal = false"
-      @regenerate="extensionStore.regenerate()"
-      @open-in-browser="extensionStore.openInBrowser(extensionStore.pairUrl)"
-    />
+    <!-- Inline Pairing Panel -->
+    <Transition name="modal">
+      <div
+        v-if="extensionStore.pairingPanelOpen"
+        class="mt-4 glass-panel-solid p-6 rounded-[var(--radius-squircle-md)] animate-spring-in"
+      >
+        <!-- Header Row -->
+        <div class="flex items-center justify-between mb-4">
+          <div class="flex items-center gap-3">
+            <div
+              class="w-8 h-8 rounded-[var(--radius-squircle-md)] flex items-center justify-center"
+              :class="
+                showStaleNotice
+                  ? 'bg-[color-mix(in_srgb,var(--status-error)_12%,transparent)] border border-[color-mix(in_srgb,var(--status-error)_25%,transparent)]'
+                  : 'bg-[color-mix(in_srgb,var(--neon-primary)_12%,transparent)] border border-[color-mix(in_srgb,var(--neon-primary)_25%,transparent)]'
+              "
+            >
+              <Link2 :size="16" :class="showStaleNotice ? 'text-[var(--status-error)]' : 'text-[var(--neon-primary)]'" />
+            </div>
+            <h4 class="text-sm font-bold text-[var(--app-text)]">
+              {{ t('extension.modal.title') }}
+            </h4>
+          </div>
+          <button
+            class="p-1.5 rounded-lg text-[var(--app-text-subtle)] hover:text-[var(--app-text)] transition-colors duration-200"
+            @click="handleClose"
+          >
+            <X :size="16" />
+          </button>
+        </div>
+
+        <!-- Help Text -->
+        <p class="text-xs text-[var(--app-text-muted)] mb-3 leading-relaxed">
+          {{ t('extension.modal.pairHelp') }}
+        </p>
+
+        <!-- Pairing URL Display -->
+        <div
+          class="mb-3 p-3 rounded-[var(--radius-squircle-md)] border bg-[var(--input-bg)] border-[var(--input-border)]"
+        >
+          <p class="text-xs font-mono-data text-[var(--app-text)] break-all leading-relaxed">
+            {{ extensionStore.pairUrl || '—' }}
+          </p>
+        </div>
+
+        <!-- Stale URL Notice -->
+        <Transition name="modal">
+          <div
+            v-if="showStaleNotice"
+            class="mb-3 flex items-start gap-2.5 p-3 rounded-[var(--radius-squircle-md)] bg-[color-mix(in_srgb,var(--status-error)_10%,transparent)] border border-[color-mix(in_srgb,var(--status-error)_20%,transparent)]"
+          >
+            <AlertCircle :size="14" class="shrink-0 mt-0.5 text-[var(--status-error)]" />
+            <span class="text-xs text-[var(--app-text-muted)] leading-relaxed">
+              {{ t('extension.modal.staleNotice') }}
+            </span>
+          </div>
+        </Transition>
+
+        <!-- Action Buttons -->
+        <div class="flex flex-col gap-2">
+          <!-- Primary Actions Row -->
+          <div class="flex gap-2">
+            <!-- Copy Button -->
+            <LiquidGlassPanel
+              as="button"
+              :interactive="true"
+              hover-effect="glow"
+              base-color-class="bg-[var(--btn-glass-bg)]"
+              fallback-class="btn-glass"
+              class="flex-1 py-2.5 rounded-[var(--radius-squircle-md)] text-[var(--app-text-muted)] font-semibold text-xs transition-all duration-200 hover:text-[var(--app-text)] active:scale-[0.98]"
+              @click="handleCopy"
+            >
+              <span class="flex items-center justify-center gap-2 w-full h-full">
+                <Check v-if="copied" :size="14" class="text-[var(--status-complete)]" />
+                <Copy v-else :size="14" />
+                {{ copied ? t('extension.modal.copied') : t('extension.modal.copy') }}
+              </span>
+            </LiquidGlassPanel>
+
+            <!-- Open in Browser Button -->
+            <LiquidGlassPanel
+              as="button"
+              :interactive="true"
+              hover-effect="glow"
+              base-color-class="bg-[var(--btn-glass-bg)]"
+              fallback-class="btn-glass"
+              class="flex-1 py-2.5 rounded-[var(--radius-squircle-md)] text-[var(--app-text-muted)] font-semibold text-xs transition-all duration-200 hover:text-[var(--app-text)] active:scale-[0.98]"
+              @click="extensionStore.openInBrowser(extensionStore.pairUrl)"
+            >
+              <span class="flex items-center justify-center gap-2 w-full h-full">
+                <ExternalLink :size="14" />
+                {{ t('extension.modal.openInBrowser') }}
+              </span>
+            </LiquidGlassPanel>
+          </div>
+
+          <!-- Secondary Actions Row -->
+          <div class="flex gap-2">
+            <!-- Regenerate Button -->
+            <LiquidGlassPanel
+              as="button"
+              :interactive="!extensionStore.regenerating"
+              hover-effect="glow"
+              base-color-class="bg-[var(--btn-glass-bg)]"
+              fallback-class="btn-glass"
+              :disabled="extensionStore.regenerating"
+              class="flex-1 py-2.5 rounded-[var(--radius-squircle-md)] text-[var(--app-text-muted)] font-semibold text-xs transition-all duration-200 hover:text-[var(--neon-primary)] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+              @click="handleRegenerate"
+            >
+              <span class="flex items-center justify-center gap-2 w-full h-full">
+                <Loader2 v-if="extensionStore.regenerating" :size="14" class="animate-spin" />
+                <RefreshCw v-else :size="14" />
+                {{ extensionStore.regenerating ? t('extension.modal.regenerating') : t('extension.modal.regenerate') }}
+              </span>
+            </LiquidGlassPanel>
+
+            <!-- Close Button -->
+            <LiquidGlassPanel
+              as="button"
+              :interactive="true"
+              hover-effect="glow"
+              base-color-class="bg-[var(--btn-glass-bg)]"
+              fallback-class="btn-glass"
+              class="flex-1 py-2.5 rounded-[var(--radius-squircle-md)] text-[var(--app-text-muted)] font-semibold text-xs transition-all duration-200 hover:text-[var(--app-text)] active:scale-[0.98]"
+              @click="handleClose"
+            >
+              <span class="flex items-center justify-center gap-2 w-full h-full">
+                {{ t('extension.modal.close') }}
+              </span>
+            </LiquidGlassPanel>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </SectionCard>
 </template>

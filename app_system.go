@@ -364,6 +364,7 @@ func openURLInDefaultBrowser(url string) error {
 		args = []string{url}
 	}
 	cmd := exec.Command(name, args...)
+	hideWindow(cmd)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -445,7 +446,7 @@ func isValidPairingURL(urlStr string) bool {
 	return true
 }
 
-// UnpairExtension clears the secret and emits the unpaired event.
+// UnpairExtension rotates the secret and emits the unpaired event.
 func (a *App) UnpairExtension() error {
 	if a.extensionServer == nil {
 		return errors.New("extension server not initialized")

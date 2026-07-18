@@ -58,15 +58,20 @@ func Load() {
 		ExtensionEnabled:       true,
 		ExtensionWSPort:        16801,
 	}
-	data, err := os.ReadFile(GetConfigPath())
-	if err == nil {
+	data, readErr := os.ReadFile(GetConfigPath())
+	fileExisted := readErr == nil || !os.IsNotExist(readErr)
+	if readErr == nil {
 		_ = json.Unmarshal(data, Current)
+	} else if fileExisted {
+		log.Printf("[Config] failed to read config (not overwriting): %v", readErr)
 	}
 
 	if Current.ExtensionSecret == "" {
 		Current.ExtensionSecret = generateSecretHex()
-		if err := saveLocked(); err != nil {
-			log.Printf("[Config] failed to persist extension secret: %v", err)
+		if readErr == nil || !fileExisted {
+			if err := saveLocked(); err != nil {
+				log.Printf("[Config] failed to persist extension secret: %v", err)
+			}
 		}
 	}
 }
@@ -82,7 +87,7 @@ func saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(GetConfigPath(), data, 0o600)
+	return os.WriteFile(GetConfigPath(), data, 0o644)
 }
 
 func getDefaultDownloadDir() string {

@@ -9,7 +9,7 @@ import {
   OpenPairingURLInBrowser,
 } from '../../bindings/goaria-v3/app.js'
 import { ExtensionStatus } from '../../bindings/goaria-v3/internal/extension/models.js'
-import { copyToClipboard } from '../utils/clipboard'
+import { copyToClipboard, clearClipboardIfMatches } from '../utils/clipboard'
 
 export const useExtensionStore = defineStore('extension', () => {
   const status = ref<'disconnected' | 'listening' | 'paired'>('disconnected')
@@ -18,7 +18,7 @@ export const useExtensionStore = defineStore('extension', () => {
   const paired = ref(false)
   const pairing = ref(false)
   const pairUrl = ref('')
-  const showPairingModal = ref(false)
+  const pairingPanelOpen = ref(false)
   const regenerating = ref(false)
   // No shared toast store exists in the frontend; ExtensionSection watches this ref.
   const authFailedNotice = ref(false)
@@ -50,7 +50,7 @@ export const useExtensionStore = defineStore('extension', () => {
       const url = await PairExtension()
       if (url) {
         pairUrl.value = url
-        showPairingModal.value = true
+        pairingPanelOpen.value = true
       }
       await refreshStatus()
     } catch (err) {
@@ -115,10 +115,14 @@ export const useExtensionStore = defineStore('extension', () => {
     })
 
     pairedUnsubscribe = Events.On('extension:paired', () => {
+      const consumedUrl = pairUrl.value
       paired.value = true
       status.value = 'paired'
       pairUrl.value = ''
-      showPairingModal.value = false
+      pairingPanelOpen.value = false
+      if (consumedUrl) {
+        void clearClipboardIfMatches(consumedUrl)
+      }
       refreshStatus()
     })
 
@@ -155,7 +159,7 @@ export const useExtensionStore = defineStore('extension', () => {
     paired,
     pairing,
     pairUrl,
-    showPairingModal,
+    pairingPanelOpen,
     regenerating,
     authFailedNotice,
     unpairRotatedNotice,

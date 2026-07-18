@@ -2,7 +2,7 @@ import { ref, watch } from 'vue'
 import { Clipboard, Events } from '@wailsio/runtime'
 import { useTaskStore } from '../stores/task'
 import { useUIStore } from '../stores/ui'
-import { isValidUrl, isDuplicateUri } from '../utils/url'
+import { isValidUrl, isDuplicateUri, isPairingUrl } from '../utils/url'
 
 export function useSmartInput() {
   const uiStore = useUIStore()
@@ -19,7 +19,7 @@ export function useSmartInput() {
       .split('\n')
       .map(l => l.trim())
       .filter(Boolean)
-    const validUrls = lines.filter(isValidUrl)
+    const validUrls = lines.filter(isValidUrl).filter(u => !isPairingUrl(u))
     if (validUrls.length === 0) return
 
     if (uiStore.activeTab !== 'downloads') {
@@ -49,7 +49,7 @@ export function useSmartInput() {
         .split('\n')
         .map(l => l.trim())
         .filter(Boolean)
-      const validUrls = lines.filter(isValidUrl)
+      const validUrls = lines.filter(isValidUrl).filter(u => !isPairingUrl(u))
 
       if (validUrls.length === 0) return
 
