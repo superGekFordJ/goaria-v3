@@ -74,5 +74,5 @@ export function getHostPermissions() {
 }
 
 export function getCommonPermissions() {
-  return ['webRequest', 'cookies', 'storage', 'tabs', 'downloads', 'notifications']
+  return ['webRequest', 'cookies', 'storage', 'tabs', 'downloads', 'notifications', 'contextMenus']
 }

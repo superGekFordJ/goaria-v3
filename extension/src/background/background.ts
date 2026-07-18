@@ -6,6 +6,7 @@ import { connectionState } from '../stores/connection.svelte'
 import { isFirefox } from '../utils/extensionInfo'
 import { FirefoxBlockingInterceptor } from '../interceptors/FirefoxBlockingInterceptor'
 import { ChromeDownloadsApiInterceptor } from '../interceptors/ChromeDownloadsApiInterceptor'
+import { initContextMenu } from './contextMenu'
 import type {
   InterceptionToggleMessage,
   PairSecretMessage,
@@ -81,6 +82,12 @@ void (async () => {
   // Chrome path B persists pending decisions in storage.session so a SW restart
   // can resume an in-flight cancel/resume. Firefox is a no-op here.
   void interceptor.recoverPendingDecisions()
+
+  // Right-click "Download with GoAria" context menu. Registered via
+  // runtime.onInstalled (idempotent across SW restarts). Click handler
+  // forwards a normal download request, or shows a graceful prompt for
+  // m3u8 URLs (HLS engine not yet ready).
+  initContextMenu()
 })()
 
 export { wsClient }

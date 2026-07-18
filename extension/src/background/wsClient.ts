@@ -119,7 +119,7 @@ export class WsClient {
     // Explicit field mapping: avoid generic key converters so header names
     // inside `headers` are never mangled.
     const payload = {
-      type: MSG_TYPE_DOWNLOAD,
+      type: req.type ?? MSG_TYPE_DOWNLOAD,
       url: req.url,
       final_url: req.finalUrl,
       headers: req.headers,
