@@ -62,6 +62,9 @@ export class WsClient {
   private pending = new Map<number, PendingRequest>()
   // Track the in-flight port probe so a late disconnect() can abort it.
   private probing: { cancel: () => void } | null = null
+  // Serializes sends: acks are correlated by FIFO order (firstPending), so
+  // only one request may be in flight at a time. All callers are covered.
+  private sendChain: Promise<unknown> = Promise.resolve()
 
   /** Start port probing + auth. Safe to call multiple times. */
   connect(): void {
@@ -110,8 +113,17 @@ export class WsClient {
    * Send a download handoff. camelCase TS fields are converted to the
    * snake_case JSON shape expected by the Go DownloadRequest struct.
    * Rejects immediately when the socket is not open (no queueing).
+   * Serialized: acks are correlated by FIFO order, so concurrent sends
+   * are queued to keep only one request in flight at a time.
    */
   sendDownloadRequest(req: DownloadHandoffMessage): Promise<DownloadResponse> {
+    const next = this.sendChain.then(() => this.doSendDownloadRequest(req))
+    // Keep the chain alive on rejection so a failure doesn't block later sends.
+    this.sendChain = next.catch(() => undefined)
+    return next
+  }
+
+  private doSendDownloadRequest(req: DownloadHandoffMessage): Promise<DownloadResponse> {
     if (this.ws?.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('WebSocket is not connected'))
     }
@@ -309,9 +321,8 @@ export class WsClient {
       // Ack resolves the oldest pending request. This relies on a
       // single-flight assumption: only one download request is in flight per
       // socket at a time. The Go backend (server.go handleConn) does not echo
-      // a request id, so FIFO is the only correlation strategy. Concurrent
-      // requests would risk mismatched acks; future interceptors must
-      // serialize calls or add request-id support (requires Go changes).
+      // a request id, so FIFO is the only correlation strategy. sendDownloadRequest
+      // serializes all callers via sendChain to enforce this invariant.
       const entry = this.firstPending()
       if (!entry) return
       clearTimeout(entry.timer)

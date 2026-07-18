@@ -57,6 +57,12 @@ onMessage('pair:unpair', async () => {
   return { ok: true }
 })
 
+// Right-click "Download with GoAria" context menu. Registered at top level
+// (before the async IIFE) so the onClicked wake-up listener is bound
+// synchronously on SW restart — contextMenus.onClicked is an MV3 wake-up
+// event and must be registered before any await to avoid missing dispatches.
+initContextMenu()
+
 // SW startup: load persisted state before connecting so the interceptor
 // uses the user's saved autoCapture setting. Awaited before connect() and
 // interceptor registration to close the race where a freshly restarted SW
@@ -82,12 +88,6 @@ void (async () => {
   // Chrome path B persists pending decisions in storage.session so a SW restart
   // can resume an in-flight cancel/resume. Firefox is a no-op here.
   void interceptor.recoverPendingDecisions()
-
-  // Right-click "Download with GoAria" context menu. Registered via
-  // runtime.onInstalled (idempotent across SW restarts). Click handler
-  // forwards a normal download request, or shows a graceful prompt for
-  // m3u8 URLs (HLS engine not yet ready).
-  initContextMenu()
 })()
 
 export { wsClient }
