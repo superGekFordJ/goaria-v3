@@ -36,6 +36,7 @@ func seedOrphanMetadata(n int) []string {
 
 func TestMonitor_MetadataCleanup_ThrottleBehavior(t *testing.T) {
 	resetCacheMetadataForTest()
+	t.Cleanup(resetCacheMetadataForTest)
 	seedOrphanMetadata(3)
 
 	m := &Monitor{lastMetadataCleanup: time.Now()}
@@ -59,6 +60,7 @@ func TestMonitor_MetadataCleanup_ThrottleBehavior(t *testing.T) {
 
 func TestMonitor_MetadataCleanup_RunsOnFirstRecoveryTick(t *testing.T) {
 	resetCacheMetadataForTest()
+	t.Cleanup(resetCacheMetadataForTest)
 	seedOrphanMetadata(2)
 
 	m := &Monitor{}
@@ -75,6 +77,7 @@ func TestMonitor_MetadataCleanup_RunsOnFirstRecoveryTick(t *testing.T) {
 
 func TestMonitor_MetadataCleanup_SkipsBeforeRecovery(t *testing.T) {
 	resetCacheMetadataForTest()
+	t.Cleanup(resetCacheMetadataForTest)
 	seedOrphanMetadata(2)
 
 	m := &Monitor{lastMetadataCleanup: time.Now().Add(-metadataCleanupInterval - time.Second)}
@@ -90,6 +93,7 @@ func TestMonitor_MetadataCleanup_SkipsBeforeRecovery(t *testing.T) {
 
 func TestMonitor_MetadataCleanup_RetainsActiveGids(t *testing.T) {
 	resetCacheMetadataForTest()
+	t.Cleanup(resetCacheMetadataForTest)
 	seedOrphanMetadata(1)
 
 	active := []rpc.Task{{GID: "ar_keep", Status: "active"}}
@@ -113,6 +117,7 @@ func TestMonitor_MetadataCleanup_RetainsActiveGids(t *testing.T) {
 
 func TestMonitor_MetadataCleanup_TickIntegration(t *testing.T) {
 	resetCacheMetadataForTest()
+	t.Cleanup(resetCacheMetadataForTest)
 	resetCacheAr()
 	seedOrphanMetadata(1)
 
