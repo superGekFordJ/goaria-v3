@@ -228,6 +228,10 @@ func withConfig(t *testing.T) {
 	orig := config.Current
 	config.Current = &config.AppConfig{}
 	t.Cleanup(func() { config.Current = orig })
+
+	tmp := t.TempDir()
+	t.Setenv("USERPROFILE", tmp)
+	t.Setenv("HOME", tmp)
 }
 
 func TestPairing_Start_PersistsSecretToConfig(t *testing.T) {
