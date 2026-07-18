@@ -3,7 +3,7 @@
   import { useI18n } from 'vue-i18n'
   import { Link2, Copy, Check, ExternalLink, RefreshCw, X, Loader2, AlertCircle } from 'lucide-vue-next'
   import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
-  import { copyToClipboard } from '../../utils/clipboard'
+  import { useExtensionStore } from '../../stores/extension'
 
   const props = defineProps<{
     show: boolean
@@ -20,6 +20,7 @@
   }>()
 
   const { t } = useI18n()
+  const extensionStore = useExtensionStore()
   const copied = ref(false)
   const showStaleNotice = ref(false)
   let staleTimer: ReturnType<typeof setTimeout> | null = null
@@ -56,7 +57,7 @@
   }
 
   const handleCopy = async () => {
-    const ok = await copyToClipboard(props.url)
+    const ok = await extensionStore.copyPairUrl()
     if (ok) {
       copied.value = true
       emit('copied')

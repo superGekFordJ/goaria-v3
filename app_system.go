@@ -406,9 +406,16 @@ func (a *App) RegeneratePairing() (string, error) {
 }
 
 // isValidPairingURL checks scheme, host, port, and path match GoAria pairing conventions.
+// Rejects userinfo and shell metacharacters to prevent command injection on Windows.
 func isValidPairingURL(urlStr string) bool {
+	if strings.ContainsAny(urlStr, "&|><^();%") {
+		return false
+	}
 	parsed, err := url.Parse(urlStr)
 	if err != nil {
+		return false
+	}
+	if parsed.User != nil {
 		return false
 	}
 	if parsed.Scheme != "http" {

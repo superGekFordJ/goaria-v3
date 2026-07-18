@@ -28,15 +28,36 @@
 
   onUnmounted(() => {
     extensionStore.unsubscribeFromEvents()
+    clearAuthFailedTimer()
+    clearUnpairRotatedTimer()
   })
+
+  let authFailedTimer: ReturnType<typeof setTimeout> | null = null
+  let unpairRotatedTimer: ReturnType<typeof setTimeout> | null = null
+
+  function clearAuthFailedTimer() {
+    if (authFailedTimer) {
+      clearTimeout(authFailedTimer)
+      authFailedTimer = null
+    }
+  }
+
+  function clearUnpairRotatedTimer() {
+    if (unpairRotatedTimer) {
+      clearTimeout(unpairRotatedTimer)
+      unpairRotatedTimer = null
+    }
+  }
 
   // Auto-dismiss the auth-failed notice after 8 seconds.
   watch(
     () => extensionStore.authFailedNotice,
     val => {
+      clearAuthFailedTimer()
       if (val) {
-        setTimeout(() => {
+        authFailedTimer = setTimeout(() => {
           extensionStore.authFailedNotice = false
+          authFailedTimer = null
         }, 8000)
       }
     },
@@ -45,9 +66,11 @@
   watch(
     () => extensionStore.unpairRotatedNotice,
     val => {
+      clearUnpairRotatedTimer()
       if (val) {
-        setTimeout(() => {
+        unpairRotatedTimer = setTimeout(() => {
           extensionStore.unpairRotatedNotice = false
+          unpairRotatedTimer = null
         }, 8000)
       }
     },

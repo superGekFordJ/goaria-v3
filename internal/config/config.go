@@ -82,7 +82,7 @@ func saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(GetConfigPath(), data, 0o644)
+	return os.WriteFile(GetConfigPath(), data, 0o600)
 }
 
 func getDefaultDownloadDir() string {

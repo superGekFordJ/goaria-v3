@@ -8,6 +8,9 @@ import (
 )
 
 func TestLoad_GeneratesExtensionSecretIfEmpty(t *testing.T) {
+	orig := Current
+	t.Cleanup(func() { Current = orig })
+
 	tmp := t.TempDir()
 	t.Setenv("USERPROFILE", tmp)
 	t.Setenv("HOME", tmp)
@@ -44,6 +47,9 @@ func TestLoad_GeneratesExtensionSecretIfEmpty(t *testing.T) {
 }
 
 func TestLoad_PreservesExistingExtensionSecret(t *testing.T) {
+	orig := Current
+	t.Cleanup(func() { Current = orig })
+
 	tmp := t.TempDir()
 	t.Setenv("USERPROFILE", tmp)
 	t.Setenv("HOME", tmp)

@@ -48,6 +48,21 @@ func TestIsValidPairingURL(t *testing.T) {
 			url:  "https://evil.com/exploit?cmd=rm -rf /",
 			want: false,
 		},
+		{
+			name: "userinfo injection rejected",
+			url:  "http://evil&calc@127.0.0.1:16810/__goaria_pair__/pair.html?n=abc",
+			want: false,
+		},
+		{
+			name: "pipe metacharacter in query rejected",
+			url:  "http://127.0.0.1:16810/__goaria_pair__/pair.html?n=a|b",
+			want: false,
+		},
+		{
+			name: "normal valid URL accepted",
+			url:  "http://127.0.0.1:16810/__goaria_pair__/pair.html?n=normal",
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {

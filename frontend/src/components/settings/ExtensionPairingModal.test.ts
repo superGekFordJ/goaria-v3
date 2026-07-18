@@ -13,11 +13,13 @@ vi.mock('vue-i18n', async (importOriginal) => {
   }
 })
 
-const clipboardMock = vi.hoisted(() => ({
-  copyToClipboard: vi.fn().mockResolvedValue(true),
-}))
+const copyPairUrlMock = vi.hoisted(() => vi.fn().mockResolvedValue(true))
 
-vi.mock('../../utils/clipboard', () => clipboardMock)
+vi.mock('../../stores/extension', () => ({
+  useExtensionStore: () => ({
+    copyPairUrl: copyPairUrlMock,
+  }),
+}))
 
 const StubPanel = defineComponent({
   name: 'LiquidGlassPanel',
@@ -48,7 +50,7 @@ const TeleportStub = defineComponent({
 describe('ExtensionPairingModal', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    clipboardMock.copyToClipboard.mockResolvedValue(true)
+    copyPairUrlMock.mockResolvedValue(true)
   })
 
   const mountModal = (props: Partial<{ show: boolean; url: string; regenerating: boolean }> = {}) => {
@@ -81,13 +83,13 @@ describe('ExtensionPairingModal', () => {
     expect(wrapper.find('.glass-panel-solid').exists()).toBe(false)
   })
 
-  it('Copy button calls copyToClipboard and emits copied', async () => {
+  it('Copy button calls copyPairUrl and emits copied', async () => {
     const wrapper = mountModal()
     const buttons = wrapper.findAll('button')
     const copyButton = buttons.find((b) => b.text().includes('extension.modal.copy'))
     expect(copyButton).toBeDefined()
     await copyButton!.trigger('click')
-    expect(clipboardMock.copyToClipboard).toHaveBeenCalledWith('http://127.0.0.1:16810/__goaria_pair__/pair.html?n=abc123')
+    expect(copyPairUrlMock).toHaveBeenCalledOnce()
     expect(wrapper.emitted('copied')).toBeTruthy()
   })
 
@@ -100,11 +102,12 @@ describe('ExtensionPairingModal', () => {
     expect(wrapper.emitted('regenerate')).toBeTruthy()
   })
 
-  it('Regenerate button shows regenerating text when regenerating=true', () => {
+  it('Regenerate button shows regenerating text and is disabled when regenerating=true', () => {
     const wrapper = mountModal({ regenerating: true })
     const buttons = wrapper.findAll('button')
     const regenButton = buttons.find((b) => b.text().includes('extension.modal.regenerating'))
     expect(regenButton).toBeDefined()
+    expect(regenButton!.attributes('disabled')).toBeDefined()
   })
 
   it('stale notice appears after timeout', async () => {
@@ -137,6 +140,16 @@ describe('ExtensionPairingModal', () => {
     const closeButton = buttons.find((b) => b.text().includes('extension.modal.close'))
     expect(closeButton).toBeDefined()
     await closeButton!.trigger('click')
+    expect(wrapper.emitted('close')).toBeTruthy()
+    expect(wrapper.emitted('update:show')).toBeTruthy()
+    expect(wrapper.emitted('update:show')![0]).toEqual([false])
+  })
+
+  it('backdrop click emits close', async () => {
+    const wrapper = mountModal()
+    const overlay = wrapper.find('.fixed.inset-0')
+    expect(overlay.exists()).toBe(true)
+    await overlay.trigger('click')
     expect(wrapper.emitted('close')).toBeTruthy()
     expect(wrapper.emitted('update:show')).toBeTruthy()
     expect(wrapper.emitted('update:show')![0]).toEqual([false])

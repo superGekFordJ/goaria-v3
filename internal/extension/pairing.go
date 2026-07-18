@@ -31,6 +31,7 @@ type PairingService struct {
 	pairURL      string
 	expectedHost string
 	ttlTimer     *time.Timer
+	gen          uint64
 }
 
 // NewPairingService creates a new pairing service.
@@ -76,6 +77,10 @@ func (p *PairingService) Start() (string, error) {
 	expectedHost := fmt.Sprintf("127.0.0.1:%d", port)
 
 	nonce := p.store.GenerateNonce()
+	if nonce == "" {
+		p.mu.Unlock()
+		return "", fmt.Errorf("failed to generate pairing nonce")
+	}
 	p.store.SetPairNonce(nonce)
 
 	secret := p.store.GenerateSecret()
@@ -104,7 +109,16 @@ func (p *PairingService) Start() (string, error) {
 	p.expectedHost = expectedHost
 	p.pairURL = fmt.Sprintf("http://127.0.0.1:%d%s?n=%s", port, PairPagePath, nonce)
 	url := p.pairURL
-	p.ttlTimer = time.AfterFunc(pairingTTL, p.Stop)
+	p.gen++
+	myGen := p.gen
+	p.ttlTimer = time.AfterFunc(pairingTTL, func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.gen != myGen {
+			return
+		}
+		p.stopLocked()
+	})
 	p.mu.Unlock()
 
 	go func() {
@@ -161,9 +175,9 @@ func (p *PairingService) stopLocked() {
 	p.expectedHost = ""
 }
 
-// Regenerate atomically stops the current pairing server and starts a fresh
-// one with a new nonce + secret + URL. The stop-then-start happens under a
-// single lock acquisition to prevent a stale server from serving the old nonce.
+// Regenerate stops the current pairing server and starts a fresh one with a
+// new nonce + secret + URL. The lock is released between stop and start (Start
+// re-acquires it), but the single-method API prevents wrong-order calls.
 func (p *PairingService) Regenerate() (string, error) {
 	p.mu.Lock()
 	if p.active {
