@@ -31,7 +31,7 @@ internal/process/bundled/darwin/aria2c
 .vscode/
 .idea/
 docs/*
-docs/temp/
+!docs/whitepaper
 .windsurf
 
 # --- 构建产物 ---
