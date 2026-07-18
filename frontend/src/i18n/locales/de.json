@@ -379,7 +379,6 @@
       "paired": "Mit {count} Erweiterung(en) gekoppelt"
     },
     "modal": {
-      "title": "Browser-Erweiterung koppeln",
       "copy": "Kopieren",
       "copied": "Kopiert",
       "openInBrowser": "Im Browser öffnen",

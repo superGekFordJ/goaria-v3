@@ -379,7 +379,6 @@
       "paired": "Paired with {count} extension(s)"
     },
     "modal": {
-      "title": "Pair Browser Extension",
       "copy": "Copy",
       "copied": "Copied",
       "openInBrowser": "Open in Browser",

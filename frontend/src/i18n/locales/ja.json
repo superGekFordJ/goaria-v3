@@ -379,7 +379,6 @@
       "paired": "{count} 個の拡張機能とペアリング済み"
     },
     "modal": {
-      "title": "ブラウザ拡張機能をペアリング",
       "copy": "コピー",
       "copied": "コピーしました",
       "openInBrowser": "ブラウザで開く",

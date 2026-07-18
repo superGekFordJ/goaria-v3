@@ -379,7 +379,6 @@
       "paired": "已配对 {count} 个扩展"
     },
     "modal": {
-      "title": "配对浏览器扩展",
       "copy": "复制",
       "copied": "已复制",
       "openInBrowser": "在浏览器中打开",

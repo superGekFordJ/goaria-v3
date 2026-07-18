@@ -379,7 +379,6 @@
       "paired": "Emparejado con {count} extensión(es)"
     },
     "modal": {
-      "title": "Emparejar extensión del navegador",
       "copy": "Copiar",
       "copied": "Copiado",
       "openInBrowser": "Abrir en el navegador",
