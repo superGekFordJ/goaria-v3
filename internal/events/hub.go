@@ -189,3 +189,13 @@ func (h *Hub) EmitExtensionUnpaired() {
 		h.app.Event.Emit("extension:unpaired")
 	}
 }
+
+// EmitExtensionAuthFailed notifies the desktop frontend that a WS auth mismatch
+// occurred. This goes ONLY to the desktop frontend — never back over the WS.
+func (h *Hub) EmitExtensionAuthFailed() {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.app != nil && h.app.Event != nil {
+		h.app.Event.Emit("extension:auth_failed")
+	}
+}

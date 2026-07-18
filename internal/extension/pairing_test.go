@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"goaria-v3/internal/config"
 )
 
 func TestPairing_NonceOneTime(t *testing.T) {
@@ -217,4 +219,147 @@ func TestPairing_AllPortsInUse_ReturnsError(t *testing.T) {
 	if !strings.Contains(err.Error(), "in use") {
 		t.Fatalf("error should mention ports in use, got: %v", err)
 	}
+}
+
+// withConfig sets config.Current to a fresh AppConfig for the test and restores
+// the original on cleanup, so persistence tests don't clobber the real config.
+func withConfig(t *testing.T) {
+	t.Helper()
+	orig := config.Current
+	config.Current = &config.AppConfig{}
+	t.Cleanup(func() { config.Current = orig })
+}
+
+func TestPairing_Start_PersistsSecretToConfig(t *testing.T) {
+	withConfig(t)
+	store := NewSecretStore()
+	ps := NewPairingService(store, nil)
+
+	if _, err := ps.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer ps.Stop()
+
+	if config.Current.ExtensionSecret != store.GetSecret() {
+		t.Fatalf("config.ExtensionSecret %q != store secret %q", config.Current.ExtensionSecret, store.GetSecret())
+	}
+	if config.Current.ExtensionSecret == "" {
+		t.Fatal("persisted secret should not be empty")
+	}
+}
+
+func TestPairing_Regenerate_NewNonceAndSecret(t *testing.T) {
+	withConfig(t)
+	store := NewSecretStore()
+	ps := NewPairingService(store, nil)
+
+	url1, err := ps.Start()
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer ps.Stop()
+	secret1 := store.GetSecret()
+
+	url2, err := ps.Regenerate()
+	if err != nil {
+		t.Fatalf("Regenerate: %v", err)
+	}
+	defer ps.Stop()
+	secret2 := store.GetSecret()
+
+	if url2 == url1 {
+		t.Fatal("Regenerate should produce a new URL")
+	}
+	if secret2 == secret1 {
+		t.Fatal("Regenerate should produce a new secret")
+	}
+	if secret2 == "" {
+		t.Fatal("new secret should not be empty")
+	}
+}
+
+func TestPairing_Regenerate_StopsOldServer(t *testing.T) {
+	withConfig(t)
+	store := NewSecretStore()
+	ps := NewPairingService(store, nil)
+
+	url1, err := ps.Start()
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Consume the old nonce so we can distinguish "old server gone" from "nonce replay".
+	respOld := httpGet(t, url1)
+	respOld.Body.Close()
+
+	if _, err := ps.Regenerate(); err != nil {
+		t.Fatalf("Regenerate: %v", err)
+	}
+	defer ps.Stop()
+
+	// The old URL's nonce is already consumed AND the old server is stopped.
+	// If the new server happened to rebind the same port, the old nonce is gone (410).
+	// If the port is free, we get a connection error. Either way, no 200 with the old secret.
+	client := &http.Client{Timeout: 1 * time.Second}
+	resp, err := client.Get(url1)
+	if err != nil {
+		return // Connection error — old listener is gone. Expected.
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatal("old URL should not return 200 after Regenerate (stale nonce/server)")
+	}
+}
+
+func TestPairing_TTL_AutoStops(t *testing.T) {
+	withConfig(t)
+	origTTL := pairingTTL
+	pairingTTL = 50 * time.Millisecond
+	t.Cleanup(func() { pairingTTL = origTTL })
+
+	store := NewSecretStore()
+	ps := NewPairingService(store, nil)
+
+	if _, err := ps.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !ps.IsActive() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if ps.IsActive() {
+		t.Fatal("pairing service should auto-stop after TTL")
+	}
+}
+
+func TestPairing_Start_EmptySecretReturnsError(t *testing.T) {
+	withConfig(t)
+	origReader := randReader
+	randReader = &failingReader{}
+	t.Cleanup(func() { randReader = origReader })
+
+	store := NewSecretStore()
+	ps := NewPairingService(store, nil)
+
+	_, err := ps.Start()
+	if err == nil {
+		ps.Stop()
+		t.Fatal("expected error when secret generation fails")
+	}
+	if !strings.Contains(err.Error(), "secret") {
+		t.Fatalf("error should mention secret, got: %v", err)
+	}
+	if ps.IsActive() {
+		t.Fatal("pairing service should not be active after empty-secret error")
+	}
+}
+
+type failingReader struct{}
+
+func (f *failingReader) Read(p []byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
 }

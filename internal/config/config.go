@@ -1,7 +1,10 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -22,6 +25,7 @@ type AppConfig struct {
 	ConvergenceInterval             int    `json:"convergence_interval"`                // 收敛tick间隔(秒), 0=默认5秒
 	ExtensionEnabled                bool   `json:"extension_enabled"`                   // 浏览器扩展集成开关
 	ExtensionWSPort                 int    `json:"extension_ws_port"`                   // WebSocket 端口, 0=自动探测
+	ExtensionSecret                 string `json:"extension_secret"`                    // 浏览器扩展认证密钥, 持久化到 config.json
 	EnablePhysicalMacAwareBandwidth bool   `json:"enable_physical_mac_aware_bandwidth"` // 物理网卡感知带宽天花板开关（默认 false）
 }
 
@@ -58,11 +62,22 @@ func Load() {
 	if err == nil {
 		_ = json.Unmarshal(data, Current)
 	}
+
+	if Current.ExtensionSecret == "" {
+		Current.ExtensionSecret = generateSecretHex()
+		if err := saveLocked(); err != nil {
+			log.Printf("[Config] failed to persist extension secret: %v", err)
+		}
+	}
 }
 
 func Save() error {
 	mu.Lock()
 	defer mu.Unlock()
+	return saveLocked()
+}
+
+func saveLocked() error {
 	data, err := json.MarshalIndent(Current, "", "  ")
 	if err != nil {
 		return err
@@ -73,4 +88,12 @@ func Save() error {
 func getDefaultDownloadDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "Downloads")
+}
+
+func generateSecretHex() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
 }

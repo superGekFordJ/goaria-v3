@@ -377,6 +377,21 @@
       "listening": "Escuchando en el puerto {port}",
       "disconnected": "No escuchando",
       "paired": "Emparejado con {count} extensión(es)"
+    },
+    "modal": {
+      "title": "Emparejar extensión del navegador",
+      "copy": "Copiar",
+      "copied": "Copiado",
+      "openInBrowser": "Abrir en el navegador",
+      "regenerate": "Regenerar",
+      "regenerating": "Regenerando...",
+      "close": "Cerrar",
+      "staleNotice": "Esta URL puede haber expirado. Regénere para obtener un enlace nuevo.",
+      "pairHelp": "Abra esta URL en su navegador, luego instale/active la extensión GoAria para completar el emparejamiento."
+    },
+    "toast": {
+      "authFailed": "La extensión emparejada fue rechazada. Vuelva a emparejar la extensión.",
+      "unpairRotated": "Desvinculado. Se ha generado un nuevo secreto; vuelva a emparejar la extensión para reconectar."
     }
   }
 }

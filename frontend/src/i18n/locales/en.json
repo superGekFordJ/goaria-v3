@@ -377,6 +377,21 @@
       "listening": "Listening on port {port}",
       "disconnected": "Not listening",
       "paired": "Paired with {count} extension(s)"
+    },
+    "modal": {
+      "title": "Pair Browser Extension",
+      "copy": "Copy",
+      "copied": "Copied",
+      "openInBrowser": "Open in Browser",
+      "regenerate": "Regenerate",
+      "regenerating": "Regenerating...",
+      "close": "Close",
+      "staleNotice": "This URL may have expired. Regenerate for a fresh link.",
+      "pairHelp": "Open this URL in your browser, then install/activate the GoAria extension to complete pairing."
+    },
+    "toast": {
+      "authFailed": "The paired extension was rejected. Please re-pair the extension.",
+      "unpairRotated": "Unbound. A new secret has been generated; re-pair the extension to reconnect."
     }
   }
 }

@@ -131,6 +131,7 @@ func main() {
 	// Initialize extension WebSocket server (downloads go through tasks.Service)
 	if config.Current.ExtensionEnabled {
 		extStore := extension.NewSecretStore()
+		extStore.SetSecret(config.Current.ExtensionSecret)
 		extServer := extension.NewServer(eventHub, appService.taskService(), extStore)
 		appService.SetExtensionServer(extServer)
 		go func() {

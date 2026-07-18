@@ -3,12 +3,21 @@ package extension
 import (
 	"fmt"
 	"html"
+	"log"
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
+	"goaria-v3/internal/config"
 	"goaria-v3/internal/events"
 )
+
+// PairingTTL is the auto-stop duration for an abandoned pairing server.
+const PairingTTL = 10 * time.Minute
+
+// pairingTTL is overridable in tests.
+var pairingTTL = PairingTTL
 
 // PairingService runs a short-lived HTTP server on a fixed pairing port.
 // The pairing page injects the secret into the DOM (data-secret) and shuts down after use.
@@ -21,6 +30,7 @@ type PairingService struct {
 	active       bool
 	pairURL      string
 	expectedHost string
+	ttlTimer     *time.Timer
 }
 
 // NewPairingService creates a new pairing service.
@@ -69,7 +79,17 @@ func (p *PairingService) Start() (string, error) {
 	p.store.SetPairNonce(nonce)
 
 	secret := p.store.GenerateSecret()
+	if secret == "" {
+		p.mu.Unlock()
+		return "", fmt.Errorf("failed to generate pairing secret")
+	}
 	p.store.SetSecret(secret)
+	if config.Current != nil {
+		config.Current.ExtensionSecret = secret
+		if err := config.Save(); err != nil {
+			log.Printf("[Extension] failed to persist secret after generation: %v", err)
+		}
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(PairPagePath, func(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +104,7 @@ func (p *PairingService) Start() (string, error) {
 	p.expectedHost = expectedHost
 	p.pairURL = fmt.Sprintf("http://127.0.0.1:%d%s?n=%s", port, PairPagePath, nonce)
 	url := p.pairURL
+	p.ttlTimer = time.AfterFunc(pairingTTL, p.Stop)
 	p.mu.Unlock()
 
 	go func() {
@@ -118,6 +139,15 @@ func (p *PairingService) handlePairPage(w http.ResponseWriter, r *http.Request, 
 func (p *PairingService) Stop() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.stopLocked()
+}
+
+// stopLocked closes the server and cancels the TTL timer; caller must hold p.mu.
+func (p *PairingService) stopLocked() {
+	if p.ttlTimer != nil {
+		p.ttlTimer.Stop()
+		p.ttlTimer = nil
+	}
 	if p.httpServer != nil {
 		_ = p.httpServer.Close()
 		p.httpServer = nil
@@ -127,6 +157,20 @@ func (p *PairingService) Stop() {
 		p.listener = nil
 	}
 	p.active = false
+	p.pairURL = ""
+	p.expectedHost = ""
+}
+
+// Regenerate atomically stops the current pairing server and starts a fresh
+// one with a new nonce + secret + URL. The stop-then-start happens under a
+// single lock acquisition to prevent a stale server from serving the old nonce.
+func (p *PairingService) Regenerate() (string, error) {
+	p.mu.Lock()
+	if p.active {
+		p.stopLocked()
+	}
+	p.mu.Unlock()
+	return p.Start()
 }
 
 // pairPageHTML returns a minimal HTML page with the secret in a data attribute.

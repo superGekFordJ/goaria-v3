@@ -377,6 +377,21 @@
       "listening": "正在监听端口 {port}",
       "disconnected": "未监听",
       "paired": "已配对 {count} 个扩展"
+    },
+    "modal": {
+      "title": "配对浏览器扩展",
+      "copy": "复制",
+      "copied": "已复制",
+      "openInBrowser": "在浏览器中打开",
+      "regenerate": "重新生成",
+      "regenerating": "正在重新生成...",
+      "close": "关闭",
+      "staleNotice": "此 URL 可能已过期，请重新生成以获取新链接。",
+      "pairHelp": "在浏览器中打开此 URL，然后安装/激活 GoAria 扩展以完成配对。"
+    },
+    "toast": {
+      "authFailed": "已配对的扩展被拒绝，请重新配对扩展。",
+      "unpairRotated": "已解绑。已生成新密钥，请重新配对扩展以重新连接。"
     }
   }
 }

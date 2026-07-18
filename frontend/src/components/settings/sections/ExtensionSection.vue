@@ -1,8 +1,9 @@
 <script setup lang="ts">
-  import { computed, onMounted, onUnmounted } from 'vue'
+  import { computed, onMounted, onUnmounted, watch } from 'vue'
   import { useI18n } from 'vue-i18n'
-  import { Puzzle, Link2, Unlink, Loader2, CheckCircle, Radio } from 'lucide-vue-next'
+  import { Puzzle, Link2, Unlink, Loader2, CheckCircle, Radio, AlertCircle } from 'lucide-vue-next'
   import SectionCard from './SectionCard.vue'
+  import ExtensionPairingModal from '../ExtensionPairingModal.vue'
   import { useExtensionStore } from '../../../stores/extension'
 
   const { t } = useI18n()
@@ -28,6 +29,29 @@
   onUnmounted(() => {
     extensionStore.unsubscribeFromEvents()
   })
+
+  // Auto-dismiss the auth-failed notice after 8 seconds.
+  watch(
+    () => extensionStore.authFailedNotice,
+    val => {
+      if (val) {
+        setTimeout(() => {
+          extensionStore.authFailedNotice = false
+        }, 8000)
+      }
+    },
+  )
+
+  watch(
+    () => extensionStore.unpairRotatedNotice,
+    val => {
+      if (val) {
+        setTimeout(() => {
+          extensionStore.unpairRotatedNotice = false
+        }, 8000)
+      }
+    },
+  )
 </script>
 
 <template>
@@ -70,16 +94,31 @@
       </span>
     </div>
 
-    <!-- Pairing URL Display -->
-    <div v-if="extensionStore.pairUrl" class="mb-4">
-      <label class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-2">
-        <Link2 :size="10" />
-        {{ t('extension.pairUrl') }}
-      </label>
-      <div class="bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl px-4 py-3 text-xs font-mono-data text-[var(--app-text)]/60 break-all">
-        {{ extensionStore.pairUrl }}
+    <!-- Auth Failed Notice -->
+    <Transition name="modal">
+      <div
+        v-if="extensionStore.authFailedNotice"
+        class="mb-4 flex items-start gap-2.5 p-3 rounded-[var(--radius-squircle-md)] bg-[color-mix(in_srgb,var(--status-error)_10%,transparent)] border border-[color-mix(in_srgb,var(--status-error)_20%,transparent)]"
+      >
+        <AlertCircle :size="16" class="shrink-0 mt-0.5 text-[var(--status-error)]" />
+        <span class="text-xs text-[var(--app-text-muted)] leading-relaxed">
+          {{ t('extension.toast.authFailed') }}
+        </span>
       </div>
-    </div>
+    </Transition>
+
+    <!-- Unpair Rotated Notice -->
+    <Transition name="modal">
+      <div
+        v-if="extensionStore.unpairRotatedNotice"
+        class="mb-4 flex items-start gap-2.5 p-3 rounded-[var(--radius-squircle-md)] bg-[color-mix(in_srgb,var(--neon-primary)_10%,transparent)] border border-[color-mix(in_srgb,var(--neon-primary)_20%,transparent)]"
+      >
+        <CheckCircle :size="16" class="shrink-0 mt-0.5 text-[var(--neon-primary)]" />
+        <span class="text-xs text-[var(--app-text-muted)] leading-relaxed">
+          {{ t('extension.toast.unpairRotated') }}
+        </span>
+      </div>
+    </Transition>
 
     <!-- Action Buttons -->
     <div class="flex items-center gap-3">
@@ -112,5 +151,16 @@
         </span>
       </div>
     </div>
+
+    <!-- Pairing Modal -->
+    <ExtensionPairingModal
+      :show="extensionStore.showPairingModal"
+      :url="extensionStore.pairUrl"
+      :regenerating="extensionStore.regenerating"
+      @update:show="extensionStore.showPairingModal = $event"
+      @close="extensionStore.showPairingModal = false"
+      @regenerate="extensionStore.regenerate()"
+      @open-in-browser="extensionStore.openInBrowser(extensionStore.pairUrl)"
+    />
   </SectionCard>
 </template>

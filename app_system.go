@@ -3,10 +3,12 @@ package main
 import (
 	"errors"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -377,17 +379,63 @@ func (a *App) GetExtensionStatus() extension.ExtensionStatus {
 	return a.extensionServer.GetStatus()
 }
 
-// PairExtension starts the pairing flow and opens the pairing page in the default browser.
+// PairExtension starts the pairing flow and returns the pairing URL.
+// The frontend decides whether to open the browser via OpenPairingURLInBrowser.
 func (a *App) PairExtension() (string, error) {
 	if a.extensionServer == nil {
 		return "", errors.New("extension server not initialized")
 	}
-	url, err := a.extensionServer.StartPairing()
-	if err != nil {
-		return "", err
+	return a.extensionServer.StartPairing()
+}
+
+// OpenPairingURLInBrowser validates the URL is a genuine GoAria pairing URL
+// before opening it in the default browser. Prevents arbitrary-URL injection.
+func (a *App) OpenPairingURLInBrowser(urlStr string) error {
+	if !isValidPairingURL(urlStr) {
+		return errors.New("not a valid GoAria pairing URL")
 	}
-	_ = openURLInDefaultBrowser(url)
-	return url, nil
+	return openURLInDefaultBrowser(urlStr)
+}
+
+// RegeneratePairing stops the current pairing server and starts a fresh one.
+func (a *App) RegeneratePairing() (string, error) {
+	if a.extensionServer == nil {
+		return "", errors.New("extension server not initialized")
+	}
+	return a.extensionServer.RegeneratePairing()
+}
+
+// isValidPairingURL checks scheme, host, port, and path match GoAria pairing conventions.
+func isValidPairingURL(urlStr string) bool {
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "http" {
+		return false
+	}
+	if parsed.Hostname() != "127.0.0.1" {
+		return false
+	}
+	portStr := parsed.Port()
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return false
+	}
+	portValid := false
+	for _, p := range extension.PairPortFallbacks {
+		if port == p {
+			portValid = true
+			break
+		}
+	}
+	if !portValid {
+		return false
+	}
+	if parsed.Path != extension.PairPagePath {
+		return false
+	}
+	return true
 }
 
 // UnpairExtension clears the secret and emits the unpaired event.

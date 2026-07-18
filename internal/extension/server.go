@@ -3,15 +3,26 @@ package extension
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
+	"goaria-v3/internal/config"
 	"goaria-v3/internal/events"
 
 	"github.com/gorilla/websocket"
 )
+
+// allowEmptySecret is the dev escape hatch for the MVP empty-secret bypass.
+// Production rejects empty secrets unless GOARIA_EXTENSION_ALLOW_EMPTY_SECRET=1.
+var allowEmptySecret = os.Getenv("GOARIA_EXTENSION_ALLOW_EMPTY_SECRET") == "1"
+
+// authFailedSink is a test-only hook for observing extension:auth_failed emits
+// without a full Wails event hub. Production leaves this nil.
+var authFailedSink func()
 
 // Server is the WebSocket server that receives download requests from the browser extension.
 // It holds a TaskAdder (tasks.Service), never rpc.DownloadEngine directly.
@@ -61,17 +72,24 @@ func (s *Server) StartPairing() (string, error) {
 	if ps != nil && ps.IsActive() {
 		return ps.Start()
 	}
-	// New pairing cycle: reset paired state so the next auth re-triggers NotifyPaired.
-	// Clear the old secret so the new cycle generates a fresh one.
-	if s.store != nil {
-		s.store.ClearSecret()
-	}
 	ps = NewPairingService(s.store, s.eventHub)
 	s.mu.Lock()
 	s.pairingService = ps
 	s.paired = false
 	s.mu.Unlock()
 	return ps.Start()
+}
+
+// RegeneratePairing delegates to the active pairing service's Regenerate.
+// Returns an error if no pairing service is active.
+func (s *Server) RegeneratePairing() (string, error) {
+	s.mu.Lock()
+	ps := s.pairingService
+	s.mu.Unlock()
+	if ps == nil {
+		return "", fmt.Errorf("no active pairing service")
+	}
+	return ps.Regenerate()
 }
 
 // GetStore returns the secret store (shared with the pairing service).
@@ -161,13 +179,17 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 	}()
 
 	secret := s.store.GetSecret()
-	// Secret empty = MVP (skip validation); non-empty = production (validate).
-	if secret != "" {
+	if secret == "" {
+		if !allowEmptySecret {
+			return
+		}
+	} else {
 		var auth AuthMessage
 		if err := conn.ReadJSON(&auth); err != nil {
 			return
 		}
 		if auth.Secret != secret {
+			s.notifyAuthFailed()
 			return
 		}
 		if s.markPaired() {
@@ -326,7 +348,8 @@ func (s *Server) NotifyPaired() {
 	}
 }
 
-// NotifyUnpaired clears the secret, disconnects active connections, emits extension:unpaired.
+// NotifyUnpaired rotates the secret (never clears), disconnects active connections,
+// emits extension:unpaired. Rotation ensures the old extension can no longer auth.
 func (s *Server) NotifyUnpaired() {
 	s.mu.Lock()
 	s.paired = false
@@ -342,10 +365,32 @@ func (s *Server) NotifyUnpaired() {
 	}
 
 	if s.store != nil {
-		s.store.ClearSecret()
+		newSecret := s.store.GenerateSecret()
+		if newSecret != "" {
+			s.store.SetSecret(newSecret)
+			if config.Current != nil {
+				config.Current.ExtensionSecret = newSecret
+				if err := config.Save(); err != nil {
+					log.Printf("[Extension] failed to persist rotated secret: %v", err)
+				}
+			}
+		} else {
+			log.Printf("[Extension] secret rotation failed; keeping old secret")
+		}
 	}
 	if s.eventHub != nil {
 		s.eventHub.EmitExtensionUnpaired()
+	}
+}
+
+// notifyAuthFailed emits extension:auth_failed to the desktop frontend only.
+// It is never sent back over the WS to the untrusted client (no auth oracle).
+func (s *Server) notifyAuthFailed() {
+	if s.eventHub != nil {
+		s.eventHub.EmitExtensionAuthFailed()
+	}
+	if authFailedSink != nil {
+		authFailedSink()
 	}
 }
 

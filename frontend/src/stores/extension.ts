@@ -1,8 +1,15 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { Events } from '@wailsio/runtime'
-import { GetExtensionStatus, PairExtension, UnpairExtension } from '../../bindings/goaria-v3/app.js'
+import {
+  GetExtensionStatus,
+  PairExtension,
+  UnpairExtension,
+  RegeneratePairing,
+  OpenPairingURLInBrowser,
+} from '../../bindings/goaria-v3/app.js'
 import { ExtensionStatus } from '../../bindings/goaria-v3/internal/extension/models.js'
+import { copyToClipboard } from '../utils/clipboard'
 
 export const useExtensionStore = defineStore('extension', () => {
   const status = ref<'disconnected' | 'listening' | 'paired'>('disconnected')
@@ -11,10 +18,16 @@ export const useExtensionStore = defineStore('extension', () => {
   const paired = ref(false)
   const pairing = ref(false)
   const pairUrl = ref('')
+  const showPairingModal = ref(false)
+  const regenerating = ref(false)
+  // No shared toast store exists in the frontend; ExtensionSection watches this ref.
+  const authFailedNotice = ref(false)
+  const unpairRotatedNotice = ref(false)
 
   let statusUnsubscribe: (() => void) | null = null
   let pairedUnsubscribe: (() => void) | null = null
   let unpairedUnsubscribe: (() => void) | null = null
+  let authFailedUnsubscribe: (() => void) | null = null
 
   async function refreshStatus() {
     try {
@@ -37,6 +50,7 @@ export const useExtensionStore = defineStore('extension', () => {
       const url = await PairExtension()
       if (url) {
         pairUrl.value = url
+        showPairingModal.value = true
       }
       await refreshStatus()
     } catch (err) {
@@ -52,10 +66,38 @@ export const useExtensionStore = defineStore('extension', () => {
       paired.value = false
       status.value = 'listening'
       pairUrl.value = ''
+      unpairRotatedNotice.value = true
       await refreshStatus()
     } catch (err) {
       console.error('Failed to unpair extension:', err)
     }
+  }
+
+  async function regenerate() {
+    if (regenerating.value) return
+    regenerating.value = true
+    try {
+      const url = await RegeneratePairing()
+      if (url) {
+        pairUrl.value = url
+      }
+    } catch (err) {
+      console.error('Failed to regenerate pairing:', err)
+    } finally {
+      regenerating.value = false
+    }
+  }
+
+  async function openInBrowser(url: string) {
+    try {
+      await OpenPairingURLInBrowser(url)
+    } catch (err) {
+      console.error('Failed to open pairing URL in browser:', err)
+    }
+  }
+
+  async function copyPairUrl(): Promise<boolean> {
+    return copyToClipboard(pairUrl.value)
   }
 
   function subscribeToEvents() {
@@ -76,6 +118,7 @@ export const useExtensionStore = defineStore('extension', () => {
       paired.value = true
       status.value = 'paired'
       pairUrl.value = ''
+      showPairingModal.value = false
       refreshStatus()
     })
 
@@ -85,15 +128,24 @@ export const useExtensionStore = defineStore('extension', () => {
       pairUrl.value = ''
       refreshStatus()
     })
+
+    authFailedUnsubscribe = Events.On('extension:auth_failed', () => {
+      paired.value = false
+      status.value = 'listening'
+      pairUrl.value = ''
+      authFailedNotice.value = true
+    })
   }
 
   function unsubscribeFromEvents() {
     statusUnsubscribe?.()
     pairedUnsubscribe?.()
     unpairedUnsubscribe?.()
+    authFailedUnsubscribe?.()
     statusUnsubscribe = null
     pairedUnsubscribe = null
     unpairedUnsubscribe = null
+    authFailedUnsubscribe = null
   }
 
   return {
@@ -103,9 +155,16 @@ export const useExtensionStore = defineStore('extension', () => {
     paired,
     pairing,
     pairUrl,
+    showPairingModal,
+    regenerating,
+    authFailedNotice,
+    unpairRotatedNotice,
     refreshStatus,
     pair,
     unpair,
+    regenerate,
+    openInBrowser,
+    copyPairUrl,
     subscribeToEvents,
     unsubscribeFromEvents,
   }
