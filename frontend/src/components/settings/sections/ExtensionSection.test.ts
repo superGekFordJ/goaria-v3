@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils'
-import { defineComponent, h, reactive } from 'vue'
+import { defineComponent, reactive } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ExtensionSection from './ExtensionSection.vue'
 
@@ -49,18 +49,6 @@ vi.mock('../../../utils/clipboard', () => ({
   clearClipboardIfMatches: vi.fn().mockResolvedValue(undefined),
 }))
 
-const StubPanel = defineComponent({
-  name: 'LiquidGlassPanel',
-  props: {
-    as: { type: String, default: 'div' },
-    interactive: { type: Boolean, default: false },
-    disabled: { type: Boolean, default: false },
-  },
-  setup(props, { slots }) {
-    return () => h(props.as, { disabled: props.disabled || undefined }, slots.default?.())
-  },
-})
-
 const TransitionStub = defineComponent({
   name: 'Transition',
   setup(_, { slots }) {
@@ -87,7 +75,6 @@ describe('ExtensionSection inline pairing panel', () => {
     mount(ExtensionSection, {
       global: {
         stubs: {
-          LiquidGlassPanel: StubPanel,
           Transition: TransitionStub,
         },
       },
@@ -102,19 +89,26 @@ describe('ExtensionSection inline pairing panel', () => {
     storeMock.pairingPanelOpen = true
     storeMock.pairUrl = 'http://127.0.0.1:16810/__goaria_pair__/pair.html?n=abc123'
     const wrapper = mountSection()
-    const urlDisplay = wrapper.find('[data-testid="pairing-stage-pairing"] .font-mono-data')
-    expect(urlDisplay.exists()).toBe(true)
-    expect(urlDisplay.text()).toContain('http://127.0.0.1:16810')
+    const urlInput = wrapper.find('[data-testid="pairing-url-input"]')
+    expect(urlInput.exists()).toBe(true)
+    expect(urlInput.attributes('value')).toContain('http://127.0.0.1:16810')
+  })
+
+  it('URL input is readonly', () => {
+    storeMock.pairingPanelOpen = true
+    storeMock.pairUrl = 'http://127.0.0.1:16810/pair'
+    const wrapper = mountSection()
+    const urlInput = wrapper.find('[data-testid="pairing-url-input"]')
+    expect(urlInput.attributes('readonly')).toBeDefined()
   })
 
   it('Copy button calls copyPairUrl', async () => {
     storeMock.pairingPanelOpen = true
     storeMock.pairUrl = 'http://127.0.0.1:16810/pair'
     const wrapper = mountSection()
-    const buttons = wrapper.findAll('button')
-    const copyButton = buttons.find((b) => b.text().includes('extension.modal.copy'))
-    expect(copyButton).toBeDefined()
-    await copyButton!.trigger('click')
+    const copyButton = wrapper.find('[data-testid="pairing-copy-btn"]')
+    expect(copyButton.exists()).toBe(true)
+    await copyButton.trigger('click')
     expect(storeMock.copyPairUrl).toHaveBeenCalledOnce()
   })
 
@@ -122,10 +116,9 @@ describe('ExtensionSection inline pairing panel', () => {
     storeMock.pairingPanelOpen = true
     storeMock.pairUrl = 'http://127.0.0.1:16810/pair'
     const wrapper = mountSection()
-    const buttons = wrapper.findAll('button')
-    const openButton = buttons.find((b) => b.text().includes('extension.modal.openInBrowser'))
-    expect(openButton).toBeDefined()
-    await openButton!.trigger('click')
+    const openButton = wrapper.find('[data-testid="pairing-open-btn"]')
+    expect(openButton.exists()).toBe(true)
+    await openButton.trigger('click')
     expect(storeMock.openInBrowser).toHaveBeenCalledWith('http://127.0.0.1:16810/pair')
   })
 
@@ -133,10 +126,9 @@ describe('ExtensionSection inline pairing panel', () => {
     storeMock.pairingPanelOpen = true
     storeMock.pairUrl = 'http://127.0.0.1:16810/pair'
     const wrapper = mountSection()
-    const buttons = wrapper.findAll('button')
-    const regenButton = buttons.find((b) => b.text().includes('extension.modal.regenerate'))
-    expect(regenButton).toBeDefined()
-    await regenButton!.trigger('click')
+    const regenButton = wrapper.find('[data-testid="pairing-regenerate-btn"]')
+    expect(regenButton.exists()).toBe(true)
+    await regenButton.trigger('click')
     expect(storeMock.regenerate).toHaveBeenCalledOnce()
   })
 
@@ -144,10 +136,9 @@ describe('ExtensionSection inline pairing panel', () => {
     storeMock.pairingPanelOpen = true
     storeMock.pairUrl = 'http://127.0.0.1:16810/pair'
     const wrapper = mountSection()
-    const buttons = wrapper.findAll('button')
-    const closeButton = buttons.find((b) => b.text().includes('extension.modal.close'))
-    expect(closeButton).toBeDefined()
-    await closeButton!.trigger('click')
+    const closeButton = wrapper.find('[data-testid="pairing-close-btn"]')
+    expect(closeButton.exists()).toBe(true)
+    await closeButton.trigger('click')
     expect(storeMock.pairingPanelOpen).toBe(false)
     expect(storeMock.pairUrl).toBe('')
   })

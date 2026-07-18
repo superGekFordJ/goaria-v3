@@ -1,9 +1,8 @@
 <script setup lang="ts">
   import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
   import { useI18n } from 'vue-i18n'
-  import { Puzzle, Link2, Unlink, Loader2, CheckCircle, Radio, AlertCircle, Copy, Check, ExternalLink, RefreshCw } from 'lucide-vue-next'
+  import { Puzzle, Link2, Unlink, Loader2, CheckCircle, Radio, AlertCircle, Copy, Check, ExternalLink, RefreshCw, X } from 'lucide-vue-next'
   import SectionCard from './SectionCard.vue'
-  import LiquidGlassPanel from '../../common/LiquidGlassPanel.vue'
   import { useExtensionStore } from '../../../stores/extension'
   import { clearClipboardIfMatches } from '../../../utils/clipboard'
 
@@ -123,6 +122,7 @@
   const handleRegenerate = () => {
     clearStaleTimer()
     showStaleNotice.value = false
+    copied.value = false
     extensionStore.regenerate()
   }
 </script>
@@ -184,164 +184,141 @@
     </Transition>
 
     <!-- Two-stage cross-fade: idle vs pairing -->
-    <Transition name="fade" mode="out-in">
+    <!-- Grid overlap ensures the container is sized by the tallest stage, providing true Zero Layout Shift -->
+    <div class="grid grid-cols-1 grid-rows-1 mt-2">
       <!-- Stage 1: Idle -->
-      <div v-if="!extensionStore.pairingPanelOpen" key="idle" data-testid="pairing-stage-idle">
-        <!-- Connected Clients -->
-        <div v-if="isListening" class="mb-4 flex items-center gap-2">
-          <span class="text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)]">
-            {{ t('extension.connectedClients') }}
-          </span>
-          <span class="text-sm font-mono-data text-[var(--app-text)]/80">
-            {{ extensionStore.connectedClients }}
-          </span>
-        </div>
-
-        <!-- Action Buttons -->
-        <div class="flex items-center gap-3">
-          <!-- Pair Button -->
-          <button
-            :disabled="extensionStore.pairing"
-            class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:border-[var(--neon-primary)]/30 transition-all duration-200 text-xs font-mono-data text-[var(--app-text-muted)] hover:text-[var(--neon-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
-            @click="extensionStore.pair()"
-          >
-            <Loader2 v-if="extensionStore.pairing" :size="14" class="animate-spin" />
-            <Link2 v-else :size="14" />
-            {{ extensionStore.pairing ? t('extension.pairing') : t('extension.pair') }}
-          </button>
-
-          <!-- Unpair Button -->
-          <button
-            v-if="extensionStore.paired"
-            class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:border-red-500/30 transition-all duration-200 text-xs font-mono-data text-[var(--app-text-muted)] hover:text-red-400"
-            @click="extensionStore.unpair()"
-          >
-            <Unlink :size="14" />
-            {{ t('extension.unpair') }}
-          </button>
-
-          <!-- Paired Badge -->
-          <div v-if="extensionStore.paired" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20">
-            <CheckCircle :size="12" class="text-[var(--status-complete)]" />
-            <span class="text-[10px] font-mono-data text-[var(--status-complete)]">
-              {{ t('extension.paired') }}
+      <Transition name="fade">
+        <div v-if="!extensionStore.pairingPanelOpen" data-testid="pairing-stage-idle" class="col-start-1 row-start-1 flex flex-col justify-start">
+          <!-- Connected Clients -->
+          <div v-if="isListening" class="mb-4 flex items-center gap-2">
+            <span class="text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)]">
+              {{ t('extension.connectedClients') }}
+            </span>
+            <span class="text-sm font-mono-data text-[var(--app-text)]/80">
+              {{ extensionStore.connectedClients }}
             </span>
           </div>
+
+          <!-- Action Buttons -->
+          <div class="flex items-center gap-3">
+            <!-- Pair Button -->
+            <button
+              :disabled="extensionStore.pairing"
+              class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:border-[var(--neon-primary)]/30 transition-all duration-200 text-xs font-mono-data text-[var(--app-text-muted)] hover:text-[var(--neon-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+              @click="extensionStore.pair()"
+            >
+              <Loader2 v-if="extensionStore.pairing" :size="14" class="animate-spin" />
+              <Link2 v-else :size="14" />
+              {{ extensionStore.pairing ? t('extension.pairing') : t('extension.pair') }}
+            </button>
+
+            <!-- Unpair Button -->
+            <button
+              v-if="extensionStore.paired"
+              class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:border-red-500/30 transition-all duration-200 text-xs font-mono-data text-[var(--app-text-muted)] hover:text-red-400"
+              @click="extensionStore.unpair()"
+            >
+              <Unlink :size="14" />
+              {{ t('extension.unpair') }}
+            </button>
+
+            <!-- Paired Badge -->
+            <div v-if="extensionStore.paired" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20">
+              <CheckCircle :size="12" class="text-[var(--status-complete)]" />
+              <span class="text-[10px] font-mono-data text-[var(--status-complete)]">
+                {{ t('extension.paired') }}
+              </span>
+            </div>
+          </div>
         </div>
-      </div>
+      </Transition>
 
       <!-- Stage 2: Pairing -->
-      <div v-else key="pairing" data-testid="pairing-stage-pairing">
-        <!-- Help Text -->
-        <p class="text-xs text-[var(--app-text-muted)] mb-3 leading-relaxed">
-          {{ t('extension.modal.pairHelp') }}
-        </p>
-
-        <!-- Pairing URL Display -->
-        <div
-          class="mb-3 p-3 rounded-[var(--radius-squircle-md)] border bg-[var(--input-bg)] border-[var(--input-border)]"
-        >
-          <p class="text-xs font-mono-data text-[var(--app-text)] break-all leading-relaxed">
-            {{ extensionStore.pairUrl || '—' }}
-          </p>
-        </div>
-
-        <!-- Stale URL Notice -->
-        <Transition name="modal">
-          <div
-            v-if="showStaleNotice"
-            class="mb-3 flex items-start gap-2.5 p-3 rounded-[var(--radius-squircle-md)] bg-[color-mix(in_srgb,var(--status-error)_10%,transparent)] border border-[color-mix(in_srgb,var(--status-error)_20%,transparent)]"
-          >
-            <AlertCircle :size="14" class="shrink-0 mt-0.5 text-[var(--status-error)]" />
-            <span class="text-xs text-[var(--app-text-muted)] leading-relaxed">
-              {{ t('extension.modal.staleNotice') }}
-            </span>
-          </div>
-        </Transition>
-
-        <!-- Action Buttons -->
-        <div class="flex flex-col gap-2">
-          <!-- Primary Actions Row -->
-          <div class="flex gap-2">
-            <!-- Copy Button -->
-            <LiquidGlassPanel
-              as="button"
-              :interactive="true"
-              hover-effect="glow"
-              base-color-class="bg-[var(--btn-glass-bg)]"
-              fallback-class="btn-glass"
-              class="flex-1 py-2.5 rounded-[var(--radius-squircle-md)] text-[var(--app-text-muted)] font-semibold text-xs transition-all duration-200 hover:text-[var(--app-text)] active:scale-[0.98]"
-              @click="handleCopy"
-            >
-              <span class="flex items-center justify-center gap-2 w-full h-full">
-                <Check v-if="copied" :size="14" class="text-[var(--status-complete)]" />
-                <Copy v-else :size="14" />
-                {{ copied ? t('extension.modal.copied') : t('extension.modal.copy') }}
-              </span>
-            </LiquidGlassPanel>
-
-            <!-- Open in Browser Button -->
-            <LiquidGlassPanel
-              as="button"
-              :interactive="true"
-              hover-effect="glow"
-              base-color-class="bg-[var(--btn-glass-bg)]"
-              fallback-class="btn-glass"
-              class="flex-1 py-2.5 rounded-[var(--radius-squircle-md)] text-[var(--app-text-muted)] font-semibold text-xs transition-all duration-200 hover:text-[var(--app-text)] active:scale-[0.98]"
-              @click="extensionStore.openInBrowser(extensionStore.pairUrl)"
-            >
-              <span class="flex items-center justify-center gap-2 w-full h-full">
-                <ExternalLink :size="14" />
-                {{ t('extension.modal.openInBrowser') }}
-              </span>
-            </LiquidGlassPanel>
-          </div>
-
-          <!-- Secondary Actions Row -->
-          <div class="flex gap-2">
-            <!-- Regenerate Button -->
-            <LiquidGlassPanel
-              as="button"
-              :interactive="!extensionStore.regenerating"
-              hover-effect="glow"
-              base-color-class="bg-[var(--btn-glass-bg)]"
-              fallback-class="btn-glass"
-              :disabled="extensionStore.regenerating"
-              class="flex-1 py-2.5 rounded-[var(--radius-squircle-md)] text-[var(--app-text-muted)] font-semibold text-xs transition-all duration-200 hover:text-[var(--neon-primary)] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-              @click="handleRegenerate"
-            >
-              <span class="flex items-center justify-center gap-2 w-full h-full">
-                <Loader2 v-if="extensionStore.regenerating" :size="14" class="animate-spin" />
-                <RefreshCw v-else :size="14" />
-                {{ extensionStore.regenerating ? t('extension.modal.regenerating') : t('extension.modal.regenerate') }}
-              </span>
-            </LiquidGlassPanel>
-
-            <!-- Close Button -->
-            <LiquidGlassPanel
-              as="button"
-              :interactive="true"
-              hover-effect="glow"
-              base-color-class="bg-[var(--btn-glass-bg)]"
-              fallback-class="btn-glass"
-              class="flex-1 py-2.5 rounded-[var(--radius-squircle-md)] text-[var(--app-text-muted)] font-semibold text-xs transition-all duration-200 hover:text-[var(--app-text)] active:scale-[0.98]"
+      <Transition name="fade">
+        <div v-if="extensionStore.pairingPanelOpen" data-testid="pairing-stage-pairing" class="col-start-1 row-start-1 flex flex-col justify-start w-full z-10">
+          <!-- Header: Help text & Close -->
+          <div class="flex items-start justify-between gap-4 mb-3">
+            <p class="text-xs text-[var(--app-text-muted)] leading-relaxed flex-1">
+              {{ t('extension.modal.pairHelp') }}
+            </p>
+            <button
+              data-testid="pairing-close-btn"
+              class="p-1 rounded-md text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--btn-glass-bg)] transition-all shrink-0 mt-[-2px]"
+              :aria-label="t('extension.modal.close')"
               @click="handleClose"
             >
-              <span class="flex items-center justify-center gap-2 w-full h-full">
-                {{ t('extension.modal.close') }}
-              </span>
-            </LiquidGlassPanel>
+              <X :size="16" />
+            </button>
           </div>
+
+          <!-- URL Input & Actions -->
+          <div class="flex items-center gap-2">
+            <!-- Unified Input Group -->
+            <div class="flex-1 flex items-center bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl h-[38px] overflow-hidden focus-within:border-[var(--neon-primary)]/50 transition-colors">
+              <input
+                data-testid="pairing-url-input"
+                readonly
+                :value="extensionStore.pairUrl || '—'"
+                class="flex-1 bg-transparent px-3 text-[11px] font-mono-data text-[var(--app-text)] focus:outline-none w-0 truncate"
+                :aria-label="t('extension.pairUrl')"
+              />
+              <!-- Inline Actions -->
+              <div class="flex items-center gap-1 pr-1.5 pl-1.5 border-l border-[var(--glass-border)] bg-[var(--btn-glass-bg)]/30 h-full">
+                <button
+                  data-testid="pairing-copy-btn"
+                  class="p-1.5 rounded-lg text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--btn-glass-bg)] transition-all"
+                  :title="t('extension.modal.copy')"
+                  @click="handleCopy"
+                >
+                  <Check v-if="copied" :size="14" class="text-[var(--status-complete)]" />
+                  <Copy v-else :size="14" />
+                </button>
+                <button
+                  data-testid="pairing-open-btn"
+                  class="p-1.5 rounded-lg text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--btn-glass-bg)] transition-all"
+                  :title="t('extension.modal.openInBrowser')"
+                  @click="extensionStore.openInBrowser(extensionStore.pairUrl)"
+                >
+                  <ExternalLink :size="14" />
+                </button>
+              </div>
+            </div>
+            
+            <!-- Regenerate Button -->
+            <button
+              data-testid="pairing-regenerate-btn"
+              :disabled="extensionStore.regenerating"
+              class="flex items-center justify-center h-[38px] px-3.5 rounded-xl bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] text-[var(--app-text-muted)] hover:text-[var(--neon-primary)] hover:border-[var(--neon-primary)]/30 transition-all disabled:opacity-50 shrink-0"
+              :title="t('extension.modal.regenerate')"
+              @click="handleRegenerate"
+            >
+              <Loader2 v-if="extensionStore.regenerating" :size="14" class="animate-spin" />
+              <RefreshCw v-else :size="14" />
+            </button>
+          </div>
+
+          <!-- Stale URL Notice -->
+          <Transition name="fade">
+            <div
+              v-if="showStaleNotice"
+              class="mt-3 flex items-center gap-2 p-2.5 rounded-xl bg-[color-mix(in_srgb,var(--status-error)_10%,transparent)] border border-[color-mix(in_srgb,var(--status-error)_20%,transparent)]"
+            >
+              <AlertCircle :size="14" class="shrink-0 text-[var(--status-error)]" />
+              <span class="text-xs text-[var(--app-text-muted)]">
+                {{ t('extension.modal.staleNotice') }}
+              </span>
+            </div>
+          </Transition>
         </div>
-      </div>
-    </Transition>
+      </Transition>
+    </div>
   </SectionCard>
 </template>
 
 <style scoped>
   .fade-enter-active,
   .fade-leave-active {
-    transition: opacity 0.2s ease;
+    transition: opacity 0.25s ease;
   }
   .fade-enter-from,
   .fade-leave-to {
