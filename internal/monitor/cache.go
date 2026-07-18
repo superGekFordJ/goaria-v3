@@ -841,16 +841,36 @@ func (c *TaskCache) enrichSgEntry(gid string, full rpc.Task) {
 	}
 }
 
-// CleanupMetadata 清理已移除任务的元数据
-func (c *TaskCache) CleanupMetadata(activeGids map[string]bool) {
+// CleanupMetadata evicts orphaned metadata entries for Aria2 tasks no longer
+// in any engine list. It protects pendingStartGids entries, recently-fetched
+// metadata (FetchedAt grace), and skips Surge (sg_) GIDs which have their own
+// reconcile path. It does not touch the durable group store. Returns the count
+// of evicted entries.
+func (c *TaskCache) CleanupMetadata(activeGids map[string]bool) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for gid := range c.metadata {
-		if !activeGids[gid] {
-			delete(c.metadata, gid)
+	now := time.Now()
+	evicted := 0
+	for gid, meta := range c.metadata {
+		if IsSgGid(gid) {
+			continue
 		}
+		if activeGids[gid] {
+			continue
+		}
+		if c.pendingStartGids != nil {
+			if _, ok := c.pendingStartGids[gid]; ok {
+				continue
+			}
+		}
+		if meta != nil && now.Sub(meta.FetchedAt) < metadataCleanupGrace {
+			continue
+		}
+		delete(c.metadata, gid)
+		evicted++
 	}
+	return evicted
 }
 
 // GetLastUpdate 获取最后更新时间

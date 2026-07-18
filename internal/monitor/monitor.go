@@ -22,6 +22,15 @@ import (
 
 var scopeClassifier = speedstats.NewScopeClassifier()
 
+// metadataCleanupInterval throttles periodic orphan metadata eviction from
+// the Aria2 tick path. Cleanup runs at most once per this interval.
+const metadataCleanupInterval = 30 * time.Second
+
+// metadataCleanupGrace protects recently-fetched metadata from eviction,
+// covering the window between metadata prefetch and the task appearing in
+// engine lists. Matches the pendingStartGids TTL.
+const metadataCleanupGrace = 30 * time.Second
+
 // Monitor 后端监控器
 type Monitor struct {
 	app     *application.App
@@ -87,6 +96,11 @@ type Monitor struct {
 	surgeRecovered         atomic.Bool
 	recoveryLogged         sync.Once
 	aria2UnavailableLogged atomic.Bool
+
+	// lastMetadataCleanup tracks the last run of orphan metadata eviction
+	// from tick(). The zero value means "never run", which triggers a
+	// cleanup on the first post-recovery tick.
+	lastMetadataCleanup time.Time
 }
 
 func New(app *application.App, hub *events.Hub, systray *application.SystemTray, engine rpc.DownloadEngine) *Monitor {

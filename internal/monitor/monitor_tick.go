@@ -281,6 +281,13 @@ func (m *Monitor) tick() {
 		m.handleTaskComplete(task)
 	}
 
+	// Periodic eviction of orphaned Aria2 metadata entries. Runs at most every
+	// metadataCleanupInterval, gated on aria2Recovered. Reuses local slices to
+	// avoid deep-copying cache state. Safe to run concurrently with the Surge
+	// event path's handleTaskComplete: both use the same mu RWMutex (Lock here
+	// vs RLock in GetMetadata), serialized with no nesting.
+	m.runMetadataCleanup(active, waiting, stopped)
+
 	// 构建托盘快照
 	snapshot := m.buildTraySnapshot()
 
@@ -474,4 +481,32 @@ func filterSurgeTasks(tasks []rpc.Task) []rpc.Task {
 		}
 	}
 	return filtered
+}
+
+// runMetadataCleanup throttles and runs orphan metadata eviction using the
+// local tick slices to build the engine GID set without deep copies. The
+// zero-value lastMetadataCleanup triggers a run on the first post-recovery
+// tick.
+func (m *Monitor) runMetadataCleanup(active, waiting, stopped []rpc.Task) {
+	if !m.aria2Recovered.Load() {
+		return
+	}
+	if time.Since(m.lastMetadataCleanup) <= metadataCleanupInterval {
+		return
+	}
+	activeGids := make(map[string]bool, len(active)+len(waiting)+len(stopped))
+	for i := range active {
+		activeGids[active[i].GID] = true
+	}
+	for i := range waiting {
+		activeGids[waiting[i].GID] = true
+	}
+	for i := range stopped {
+		activeGids[stopped[i].GID] = true
+	}
+	evicted := Cache.CleanupMetadata(activeGids)
+	if evicted > 0 {
+		log.Printf("[Monitor] Metadata cleanup: evicted %d orphaned entries", evicted)
+	}
+	m.lastMetadataCleanup = time.Now()
 }

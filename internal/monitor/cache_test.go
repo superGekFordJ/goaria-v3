@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -860,5 +861,130 @@ func TestTaskCache_AddSgTask_DoesNotTouchAriaSlices(t *testing.T) {
 	}
 	if arCount != 1 {
 		t.Errorf("expected 1 ar_ task in active, got %d", arCount)
+	}
+}
+
+func newCleanupTestCache() *TaskCache {
+	return &TaskCache{
+		metadata:         make(map[string]*TaskMetadata),
+		pendingStartGids: make(map[string]time.Time),
+	}
+}
+
+func TestTaskCache_CleanupMetadata_EvictsOrphans(t *testing.T) {
+	cache := newCleanupTestCache()
+	cache.metadata["ar_1"] = &TaskMetadata{GID: "ar_1", FetchedAt: time.Now().Add(-2 * metadataCleanupGrace)}
+	cache.metadata["ar_2"] = &TaskMetadata{GID: "ar_2", FetchedAt: time.Now().Add(-2 * metadataCleanupGrace)}
+	cache.metadata["ar_3"] = &TaskMetadata{GID: "ar_3", FetchedAt: time.Now().Add(-2 * metadataCleanupGrace)}
+
+	evicted := cache.CleanupMetadata(map[string]bool{"ar_1": true})
+
+	if evicted != 2 {
+		t.Fatalf("expected 2 evicted, got %d", evicted)
+	}
+	if cache.GetMetadata("ar_1") == nil {
+		t.Fatal("expected ar_1 retained")
+	}
+	if cache.GetMetadata("ar_2") != nil {
+		t.Fatal("expected ar_2 evicted")
+	}
+	if cache.GetMetadata("ar_3") != nil {
+		t.Fatal("expected ar_3 evicted")
+	}
+}
+
+func TestTaskCache_CleanupMetadata_ProtectsPendingStart(t *testing.T) {
+	cache := newCleanupTestCache()
+	cache.metadata["ar_orphan"] = &TaskMetadata{GID: "ar_orphan", FetchedAt: time.Now().Add(-2 * metadataCleanupGrace)}
+	cache.metadata["ar_pending"] = &TaskMetadata{GID: "ar_pending", FetchedAt: time.Now().Add(-2 * metadataCleanupGrace)}
+	cache.markPendingStart("ar_pending")
+
+	evicted := cache.CleanupMetadata(map[string]bool{})
+
+	if evicted != 1 {
+		t.Fatalf("expected 1 evicted, got %d", evicted)
+	}
+	if cache.GetMetadata("ar_orphan") != nil {
+		t.Fatal("expected ar_orphan evicted")
+	}
+	if cache.GetMetadata("ar_pending") == nil {
+		t.Fatal("expected ar_pending retained")
+	}
+}
+
+func TestTaskCache_CleanupMetadata_ProtectsRecentFetchedAt(t *testing.T) {
+	cache := newCleanupTestCache()
+	cache.metadata["ar_recent"] = &TaskMetadata{GID: "ar_recent", FetchedAt: time.Now()}
+	cache.metadata["ar_old"] = &TaskMetadata{GID: "ar_old", FetchedAt: time.Now().Add(-2 * metadataCleanupGrace)}
+
+	evicted := cache.CleanupMetadata(map[string]bool{})
+
+	if evicted != 1 {
+		t.Fatalf("expected 1 evicted, got %d", evicted)
+	}
+	if cache.GetMetadata("ar_recent") == nil {
+		t.Fatal("expected ar_recent retained by grace")
+	}
+	if cache.GetMetadata("ar_old") != nil {
+		t.Fatal("expected ar_old evicted")
+	}
+}
+
+func TestTaskCache_CleanupMetadata_SkipsSgGids(t *testing.T) {
+	cache := newCleanupTestCache()
+	cache.metadata["sg_1"] = &TaskMetadata{GID: "sg_1", FetchedAt: time.Now().Add(-2 * metadataCleanupGrace)}
+	cache.metadata["ar_orphan"] = &TaskMetadata{GID: "ar_orphan", FetchedAt: time.Now().Add(-2 * metadataCleanupGrace)}
+
+	evicted := cache.CleanupMetadata(map[string]bool{})
+
+	if evicted != 1 {
+		t.Fatalf("expected 1 evicted, got %d", evicted)
+	}
+	if cache.GetMetadata("sg_1") == nil {
+		t.Fatal("expected sg_1 retained")
+	}
+	if cache.GetMetadata("ar_orphan") != nil {
+		t.Fatal("expected ar_orphan evicted")
+	}
+}
+
+func TestTaskCache_CleanupMetadata_DoesNotTouchGroupStore(t *testing.T) {
+	dir := t.TempDir()
+	ResetTaskGroupStoreForTest(filepath.Join(dir, "groups.json"), true)
+	t.Cleanup(func() {
+		ResetTaskGroupStoreForTest("", true)
+	})
+
+	cache := newCleanupTestCache()
+	group := testDownloadGroup("dg-cleanup")
+	cache.RegisterTaskGroup("ar_orphan", group)
+	cache.metadata["ar_orphan"].FetchedAt = time.Now().Add(-2 * metadataCleanupGrace)
+
+	evicted := cache.CleanupMetadata(map[string]bool{})
+
+	if evicted != 1 {
+		t.Fatalf("expected 1 evicted, got %d", evicted)
+	}
+	if cache.GetMetadata("ar_orphan") != nil {
+		t.Fatal("expected ar_orphan metadata evicted")
+	}
+	if got := GetStoredTaskGroup("ar_orphan"); got == nil || got.ID != group.ID {
+		t.Fatalf("expected durable group store intact, got %#v", got)
+	}
+}
+
+func TestTaskCache_CleanupMetadata_KeepsActiveInAllLists(t *testing.T) {
+	cache := newCleanupTestCache()
+	cache.metadata["ar_a"] = &TaskMetadata{GID: "ar_a", FetchedAt: time.Now().Add(-2 * metadataCleanupGrace)}
+	cache.metadata["ar_w"] = &TaskMetadata{GID: "ar_w", FetchedAt: time.Now().Add(-2 * metadataCleanupGrace)}
+	cache.metadata["ar_s"] = &TaskMetadata{GID: "ar_s", FetchedAt: time.Now().Add(-2 * metadataCleanupGrace)}
+
+	evicted := cache.CleanupMetadata(map[string]bool{"ar_a": true, "ar_w": true, "ar_s": true})
+
+	if evicted != 0 {
+		t.Fatalf("expected 0 evicted, got %d", evicted)
+	}
+	if cache.GetMetadata("ar_a") == nil || cache.GetMetadata("ar_w") == nil || cache.GetMetadata("ar_s") == nil {
+		t.Fatal("expected all retained")
 	}
 }
