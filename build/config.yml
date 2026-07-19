@@ -8,10 +8,10 @@ info:
   companyName: "GoAria" # The name of the company
   productName: "GoAria" # The name of the application
   productIdentifier: "" # The unique product identifier
-  description: "A light-weight aria2 GUI" # The application description
+  description: "A modern dual-core downloader with BBR Adaptive Engine" # The application description
   copyright: "(c) 2026, GoAria" # Copyright text
-  comments: "GoAria backend service" # Comments
-  version: "2.0.0" # The application version
+  comments: "GoAria v3 (Surge + Aria2)" # Comments
+  version: "3.0.0-rc.1" # The application version
 
 # iOS build configuration (uncomment to customise iOS project generation)
 # Note: Keys under `ios` OVERRIDE values under `info` when set.

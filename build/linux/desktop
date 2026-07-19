@@ -1,7 +1,7 @@
 [Desktop Entry]
 Version=1.0
 Name=GoAria
-Comment=A light-weight aria2 GUI
+Comment=A modern dual-core downloader with BBR Adaptive Engine
 # The Exec line includes %u to pass the URL to the application
 Exec=/usr/local/bin/goaria-v3 %u
 Terminal=false
