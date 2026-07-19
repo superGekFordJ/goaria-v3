@@ -607,6 +607,12 @@ func (m *Monitor) reconcileSurgeCache() {
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{Type: "remove", GID: gid})
 		}
+		// Terminal: clear intention to avoid unbounded map growth.
+		m.pauseResumeVersionMu.Lock()
+		if m.pauseResumeIntentions != nil {
+			delete(m.pauseResumeIntentions, gid)
+		}
+		m.pauseResumeVersionMu.Unlock()
 		log.Printf("[Monitor] Surge poll: removed stale task %s (was in %s)", gid, cacheList)
 	}
 
@@ -619,14 +625,22 @@ func (m *Monitor) reconcileSurgeCache() {
 				m.tracker.EnsureTrackedFromEvent(gid, parseInt64(engineTask.TotalLength), sourceURLFromTask(engineTask), 0, engineStatusForTask(engineTask.Status))
 			}
 			Cache.PrefetchMetadata(gid)
-			if list == "stopped" && m.tracker != nil {
-				status := "complete"
-				if engineTask.Status == "error" {
-					status = "error"
+			if list == "stopped" {
+				if m.tracker != nil {
+					status := "complete"
+					if engineTask.Status == "error" {
+						status = "error"
+					}
+					if completed := m.tracker.MarkCompleteFromEvent(gid, status); completed != nil {
+						m.handleTaskComplete(completed)
+					}
 				}
-				if completed := m.tracker.MarkCompleteFromEvent(gid, status); completed != nil {
-					m.handleTaskComplete(completed)
+				// Terminal: clear intention to avoid unbounded map growth.
+				m.pauseResumeVersionMu.Lock()
+				if m.pauseResumeIntentions != nil {
+					delete(m.pauseResumeIntentions, gid)
 				}
+				m.pauseResumeVersionMu.Unlock()
 			}
 			log.Printf("[Monitor] Surge poll: added missing task %s to %s", gid, list)
 			continue
@@ -665,10 +679,19 @@ func (m *Monitor) reconcileSurgeCache() {
 			}
 			m.hub.NotifyInternal(events.TaskDelta{Type: status, GID: gid})
 			if m.tracker != nil {
+				if total := parseInt64(engineTask.TotalLength); total > 0 {
+					m.tracker.EnsureTrackedFromEvent(gid, total, "", 0, "")
+				}
 				if completed := m.tracker.MarkCompleteFromEvent(gid, status); completed != nil {
 					m.handleTaskComplete(completed)
 				}
 			}
+			// Terminal: clear intention to avoid unbounded map growth.
+			m.pauseResumeVersionMu.Lock()
+			if m.pauseResumeIntentions != nil {
+				delete(m.pauseResumeIntentions, gid)
+			}
+			m.pauseResumeVersionMu.Unlock()
 			log.Printf("[Monitor] Surge poll: moved task %s from %s to stopped (missed %s)", gid, cacheList, status)
 		case "waiting":
 			if m.tracker != nil {

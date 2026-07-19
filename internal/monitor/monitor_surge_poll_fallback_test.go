@@ -994,6 +994,128 @@ func TestStartSurgeEventBridge_Aria2Only(t *testing.T) {
 	close(m.stopChan)
 }
 
+// TestReconcileSurgeCache_MissedComplete_ClearsPauseResumeIntention verifies
+// that the reconcile stopped branch clears the pauseResumeIntentions entry for
+// the completed GID, matching handleSurgeEvent's terminal cleanup.
+func TestReconcileSurgeCache_MissedComplete_ClearsPauseResumeIntention(t *testing.T) {
+	m, reader, _, tracker := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+
+	m.pauseResumeIntentions = map[string]string{"sg_task1": "pause"}
+
+	Cache.AddSgTask(rpc.Task{
+		GID:         "sg_task1",
+		Status:      "active",
+		TotalLength: "1000",
+	}, "active")
+	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4, "active")
+	Cache.metadata["sg_task1"] = &TaskMetadata{
+		GID:   "sg_task1",
+		Files: []string{"/downloads/file.zip"},
+		Dir:   "/downloads",
+	}
+
+	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
+
+	m.reconcileSurgeCache()
+
+	m.pauseResumeVersionMu.RLock()
+	_, exists := m.pauseResumeIntentions["sg_task1"]
+	m.pauseResumeVersionMu.RUnlock()
+	if exists {
+		t.Error("expected pauseResumeIntentions[sg_task1] cleared after reconcile stopped")
+	}
+}
+
+// TestReconcileSurgeCache_MissedRemove_ClearsPauseResumeIntention verifies
+// that the reconcile remove path clears the pauseResumeIntentions entry,
+// matching handleSurgeEvent's terminal cleanup.
+func TestReconcileSurgeCache_MissedRemove_ClearsPauseResumeIntention(t *testing.T) {
+	m, reader, _, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+
+	m.pauseResumeIntentions = map[string]string{"sg_task1": "pause"}
+
+	Cache.AddSgTask(rpc.Task{GID: "sg_task1", Status: "complete"}, "stopped")
+
+	reader.setLists(nil, nil, nil)
+
+	m.reconcileSurgeCache()
+
+	m.pauseResumeVersionMu.RLock()
+	_, exists := m.pauseResumeIntentions["sg_task1"]
+	m.pauseResumeVersionMu.RUnlock()
+	if exists {
+		t.Error("expected pauseResumeIntentions[sg_task1] cleared after reconcile remove")
+	}
+}
+
+// TestReconcileSurgeCache_MissedAddWithComplete_ClearsPauseResumeIntention
+// verifies that the "added missing task" stopped path also clears the
+// pauseResumeIntentions entry.
+func TestReconcileSurgeCache_MissedAddWithComplete_ClearsPauseResumeIntention(t *testing.T) {
+	m, reader, _, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+
+	m.pauseResumeIntentions = map[string]string{"sg_task1": "pause"}
+
+	Cache.metadata["sg_task1"] = &TaskMetadata{
+		GID:   "sg_task1",
+		Files: []string{"/downloads/file.zip"},
+		Dir:   "/downloads",
+	}
+
+	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
+
+	m.reconcileSurgeCache()
+
+	m.pauseResumeVersionMu.RLock()
+	_, exists := m.pauseResumeIntentions["sg_task1"]
+	m.pauseResumeVersionMu.RUnlock()
+	if exists {
+		t.Error("expected pauseResumeIntentions[sg_task1] cleared after missed-add-with-complete")
+	}
+}
+
+// TestReconcileSurgeCache_MissedComplete_UpdatesTrackerTotalLength verifies
+// that the reconcile stopped branch calls EnsureTrackedFromEvent to update the
+// tracker's TotalLength from the engine task before MarkCompleteFromEvent, so
+// handleTaskComplete records accurate history. This matches handleSurgeEvent's
+// complete case which calls EnsureTrackedFromEvent(completeTotal) first.
+func TestReconcileSurgeCache_MissedComplete_UpdatesTrackerTotalLength(t *testing.T) {
+	m, reader, _, tracker := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+
+	// Track the task with TotalLength=0 (simulates stale/zero tracker state).
+	tracker.EnsureTrackedFromEvent("sg_task1", 0, "https://example.com/file.zip", 4, "active")
+	Cache.AddSgTask(rpc.Task{
+		GID:         "sg_task1",
+		Status:      "active",
+		TotalLength: "1000",
+	}, "active")
+	Cache.metadata["sg_task1"] = &TaskMetadata{
+		GID:   "sg_task1",
+		Files: []string{"/downloads/file.zip"},
+		Dir:   "/downloads",
+	}
+
+	// Engine reports the task as complete with TotalLength=5000.
+	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "5000"}})
+
+	m.reconcileSurgeCache()
+
+	tt := tracker.tasks["sg_task1"]
+	if tt == nil {
+		t.Fatal("expected tracker entry for sg_task1")
+	}
+	if tt.TotalLength != 5000 {
+		t.Errorf("tracker TotalLength = %d, want 5000 (EnsureTrackedFromEvent should update from engine)", tt.TotalLength)
+	}
+}
+
 // --- helpers ---
 
 type countingReader struct {
