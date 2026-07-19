@@ -62,6 +62,10 @@ type LocalDownloadService struct {
 	broadcastWG  sync.WaitGroup
 	reportTicker *time.Ticker
 	reportWG     sync.WaitGroup
+	// sendWG tracks in-flight per-listener terminal-event send goroutines so
+	// the broadcastLoop cleanup does not close listener channels while a send
+	// is still in flight (send-on-closed-channel race).
+	sendWG sync.WaitGroup
 
 	// Lifecycle
 	ctx    context.Context
@@ -151,37 +155,59 @@ func (s *LocalDownloadService) broadcastLoop() {
 		copy(listenersCopy, s.listeners)
 		s.listenerMu.Unlock()
 
-		for _, ch := range listenersCopy {
-			// Check message type
-			isProgress := false
-			switch msg.(type) {
-			case events.ProgressMsg:
-				isProgress = true
-			case events.BatchProgressMsg:
-				isProgress = true
-			}
+		// Check message type
+		isProgress := false
+		switch msg.(type) {
+		case events.ProgressMsg:
+			isProgress = true
+		case events.BatchProgressMsg:
+			isProgress = true
+		}
 
-			func() {
-				defer func() { _ = recover() }()
-				if isProgress {
-					// Non-blocking send for progress updates
+		if isProgress {
+			// Non-blocking send for progress updates (drop if full; re-sent every 150ms)
+			for _, ch := range listenersCopy {
+				func() {
+					defer func() { _ = recover() }()
 					select {
 					case ch <- msg:
 					default:
-						// Drop progress message if channel is full
 					}
-				} else {
-					// Blocking send with timeout for critical state changes
-					// We don't want to drop these, but we also don't want to block forever if a client is dead
-					select {
-					case ch <- msg:
-					case <-time.After(1 * time.Second):
-						utils.Debug("Dropped critical event due to slow client")
-					}
+				}()
+			}
+			continue
+		}
+
+		// FORK-PATCH: Terminal events (complete/error/pause/resume/remove/started/queued)
+		// use blocking send with ctx.Done guard instead of 1s timeout, preventing
+		// irreversible event loss under high-density end-game load. Sends to multiple
+		// listeners are concurrent (per-listener goroutine) to eliminate head-of-line
+		// blocking where a slow listener delays others.
+		var wg sync.WaitGroup
+		for _, ch := range listenersCopy {
+			s.sendWG.Add(1)
+			wg.Add(1)
+			go func(ch chan any) {
+				defer s.sendWG.Done()
+				defer wg.Done()
+				defer func() { _ = recover() }()
+				select {
+				case ch <- msg:
+				case <-s.ctx.Done():
 				}
-			}()
+			}(ch)
+		}
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-s.ctx.Done():
 		}
 	}
+	// Wait for any in-flight per-listener send goroutines before closing
+	// listener channels. ctx is cancelled before InputCh is closed (Shutdown),
+	// so blocked sends exit via ctx.Done and this returns promptly.
+	s.sendWG.Wait()
 	// Close all listeners when input closes
 	s.listenerMu.Lock()
 	for _, ch := range s.listeners {
@@ -330,6 +356,9 @@ func (s *LocalDownloadService) StreamEvents(ctx context.Context) (<-chan interfa
 
 	go func() {
 		defer close(outCh)
+		// FORK-PATCH: recover prevents a panic from orphaning inCh (which
+		// would block broadcastLoop forever with no receiver).
+		defer func() { _ = recover() }()
 		for {
 			select {
 			case <-stopCh:

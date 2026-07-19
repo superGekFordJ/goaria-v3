@@ -37,6 +37,9 @@ func main() {
 		// GoAria-only regression test for health-cancel requeue + SharedMaxOffset
 		// dedup. Not in upstream fork; must survive vendor sync.
 		filepath.Join("engine", "concurrent", "health_cancel_requeue_test.go"): true,
+		// GoAria-only regression test for broadcaster terminal event delivery.
+		// Not in upstream fork; must survive vendor sync.
+		filepath.Join("core", "broadcaster_terminal_delivery_test.go"): true,
 	}
 
 	// Phase 1: Read source files, replace imports, and write pre-fmt content

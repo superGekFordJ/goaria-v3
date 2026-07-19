@@ -648,6 +648,22 @@ func (m *Monitor) reconcileSurgeCache() {
 				Cache.PatchTaskProgress(gid, engineTask.TotalLength, "0", engineTask.TotalLength)
 			}
 			Cache.MoveTaskToStopped(gid, status)
+			// Emit frontend delta (matches handleSurgeEvent complete/error path).
+			if State.HasWindow() {
+				if status == "complete" && engineTask.TotalLength != "" {
+					m.pusher.Queue(events.TaskDelta{
+						Type: status, GID: gid,
+						Payload: map[string]interface{}{
+							"completedLength": engineTask.TotalLength,
+							"downloadSpeed":   "0",
+							"totalLength":     engineTask.TotalLength,
+						},
+					})
+				} else {
+					m.pusher.Queue(events.TaskDelta{Type: status, GID: gid})
+				}
+			}
+			m.hub.NotifyInternal(events.TaskDelta{Type: status, GID: gid})
 			if m.tracker != nil {
 				if completed := m.tracker.MarkCompleteFromEvent(gid, status); completed != nil {
 					m.handleTaskComplete(completed)
@@ -659,12 +675,30 @@ func (m *Monitor) reconcileSurgeCache() {
 				m.tracker.SetStatusFromEvent(gid, engineStatusForTask(engineTask.Status))
 			}
 			Cache.MoveTaskToWaiting(gid, "paused")
+			if task := findTaskInCache(gid); task != nil {
+				m.hub.EmitTaskMove(events.TaskMove{
+					GID: gid, From: cacheList, To: "waiting", Task: task,
+				})
+			}
+			if State.HasWindow() {
+				m.pusher.Queue(events.TaskDelta{Type: "pause", GID: gid})
+			}
+			m.hub.NotifyInternal(events.TaskDelta{Type: "pause", GID: gid})
 			log.Printf("[Monitor] Surge poll: moved task %s from %s to waiting (missed pause)", gid, cacheList)
 		case "active":
 			if m.tracker != nil {
 				m.tracker.SetStatusFromEvent(gid, engineStatusForTask(engineTask.Status))
 			}
 			Cache.MoveTaskToActive(gid, "active")
+			if task := findTaskInCache(gid); task != nil {
+				m.hub.EmitTaskMove(events.TaskMove{
+					GID: gid, From: cacheList, To: "active", Task: task,
+				})
+			}
+			if State.HasWindow() {
+				m.pusher.Queue(events.TaskDelta{Type: "resume", GID: gid})
+			}
+			m.hub.NotifyInternal(events.TaskDelta{Type: "resume", GID: gid})
 			log.Printf("[Monitor] Surge poll: moved task %s from %s to active (missed resume)", gid, cacheList)
 		}
 	}

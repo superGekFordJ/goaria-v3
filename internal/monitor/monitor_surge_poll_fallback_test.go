@@ -119,8 +119,9 @@ func resetHistoryForTest(t *testing.T) {
 }
 
 // TestReconcileSurgeCache_MissedComplete verifies that a task the engine
-// reports as complete but Cache still has active is moved to stopped and
-// handleTaskComplete runs (writing history). No complete delta is pushed.
+// reports as complete but Cache still has active is moved to stopped,
+// handleTaskComplete runs (writing history), and a complete delta is pushed
+// to the frontend (matching the handleSurgeEvent event path).
 func TestReconcileSurgeCache_MissedComplete(t *testing.T) {
 	m, reader, pusher, tracker := newReconcileTestMonitor(t)
 	resetCacheSg()
@@ -166,12 +167,16 @@ func TestReconcileSurgeCache_MissedComplete(t *testing.T) {
 	}
 
 	pusher.mu.Lock()
+	foundComplete := false
 	for _, d := range pusher.pending {
 		if d.Type == "complete" && d.GID == "sg_task1" {
-			t.Error("did not expect complete delta from poll")
+			foundComplete = true
 		}
 	}
 	pusher.mu.Unlock()
+	if !foundComplete {
+		t.Error("expected complete delta from poll (reconcile now emits deltas matching event path)")
+	}
 }
 
 // TestReconcileSurgeCache_MissedComplete_AlreadyProcessed verifies that when
@@ -196,6 +201,277 @@ func TestReconcileSurgeCache_MissedComplete_AlreadyProcessed(t *testing.T) {
 
 	if historyCount() != before {
 		t.Errorf("history count = %d, want %d (should not double-process)", historyCount(), before)
+	}
+}
+
+// TestReconcileSurgeCache_MissedComplete_EmitsDeltaWithPayload verifies that
+// the complete delta emitted by reconcile carries the progress payload
+// (completedLength/totalLength) when TotalLength is set.
+func TestReconcileSurgeCache_MissedComplete_EmitsDeltaWithPayload(t *testing.T) {
+	m, reader, pusher, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+
+	Cache.AddSgTask(rpc.Task{
+		GID:         "sg_task1",
+		Status:      "active",
+		TotalLength: "1000",
+	}, "active")
+	Cache.metadata["sg_task1"] = &TaskMetadata{
+		GID:   "sg_task1",
+		Files: []string{"/downloads/file.zip"},
+		Dir:   "/downloads",
+	}
+
+	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
+
+	m.reconcileSurgeCache()
+
+	pusher.mu.Lock()
+	var delta *events.TaskDelta
+	for i := range pusher.pending {
+		if pusher.pending[i].Type == "complete" && pusher.pending[i].GID == "sg_task1" {
+			d := pusher.pending[i]
+			delta = &d
+			break
+		}
+	}
+	pusher.mu.Unlock()
+	if delta == nil {
+		t.Fatal("expected complete delta with payload")
+	}
+	payload, ok := delta.Payload.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map payload, got %T", delta.Payload)
+	}
+	if payload["completedLength"] != "1000" {
+		t.Errorf("completedLength = %v, want 1000", payload["completedLength"])
+	}
+	if payload["totalLength"] != "1000" {
+		t.Errorf("totalLength = %v, want 1000", payload["totalLength"])
+	}
+}
+
+// TestReconcileSurgeCache_MissedComplete_EmptyTotalLength verifies that when
+// TotalLength is empty, the complete delta is still emitted but without a
+// payload (matches handleSurgeEvent error/no-total path).
+func TestReconcileSurgeCache_MissedComplete_EmptyTotalLength(t *testing.T) {
+	m, reader, pusher, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+
+	Cache.AddSgTask(rpc.Task{
+		GID:    "sg_task1",
+		Status: "active",
+	}, "active")
+	Cache.metadata["sg_task1"] = &TaskMetadata{
+		GID:   "sg_task1",
+		Files: []string{"/downloads/file.zip"},
+		Dir:   "/downloads",
+	}
+
+	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete"}})
+
+	m.reconcileSurgeCache()
+
+	pusher.mu.Lock()
+	foundDelta := false
+	for _, d := range pusher.pending {
+		if d.Type == "complete" && d.GID == "sg_task1" {
+			foundDelta = true
+			if d.Payload != nil {
+				t.Errorf("expected nil payload for empty TotalLength, got %v", d.Payload)
+			}
+		}
+	}
+	pusher.mu.Unlock()
+	if !foundDelta {
+		t.Fatal("expected complete delta even with empty TotalLength")
+	}
+}
+
+// TestReconcileSurgeCache_MissedComplete_HeadlessNoDelta verifies that in
+// headless mode (no window), reconcile does not push a delta to the pusher,
+// but still calls NotifyInternal (triggers forceTick for tray update).
+func TestReconcileSurgeCache_MissedComplete_HeadlessNoDelta(t *testing.T) {
+	m, reader, pusher, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+
+	// Override to headless after newReconcileTestMonitor set it true.
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(false)
+	t.Cleanup(func() { State.SetWindowExists(prevWindow) })
+
+	Cache.AddSgTask(rpc.Task{
+		GID:         "sg_task1",
+		Status:      "active",
+		TotalLength: "1000",
+	}, "active")
+	Cache.metadata["sg_task1"] = &TaskMetadata{
+		GID:   "sg_task1",
+		Files: []string{"/downloads/file.zip"},
+		Dir:   "/downloads",
+	}
+
+	// Register a delta listener to verify NotifyInternal fires.
+	var internalFired atomic.Bool
+	m.hub.SubscribeTaskDelta(func(delta events.TaskDelta) {
+		if delta.Type == "complete" && delta.GID == "sg_task1" {
+			internalFired.Store(true)
+		}
+	})
+
+	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
+
+	m.reconcileSurgeCache()
+
+	pusher.mu.Lock()
+	for _, d := range pusher.pending {
+		if d.Type == "complete" && d.GID == "sg_task1" {
+			t.Error("did not expect complete delta in headless mode")
+		}
+	}
+	pusher.mu.Unlock()
+
+	if !internalFired.Load() {
+		t.Error("expected NotifyInternal to fire even in headless mode")
+	}
+}
+
+// TestReconcileSurgeCache_MissedComplete_DuplicateDeltaDedup verifies that
+// when the event path already queued a complete delta, reconcile's delta is
+// deduped by the pusher (same GID, same type → replacement, single entry).
+func TestReconcileSurgeCache_MissedComplete_DuplicateDeltaDedup(t *testing.T) {
+	m, reader, pusher, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+
+	Cache.AddSgTask(rpc.Task{
+		GID:         "sg_task1",
+		Status:      "active",
+		TotalLength: "1000",
+	}, "active")
+	Cache.metadata["sg_task1"] = &TaskMetadata{
+		GID:   "sg_task1",
+		Files: []string{"/downloads/file.zip"},
+		Dir:   "/downloads",
+	}
+
+	// Simulate the event path already queuing a complete delta.
+	pusher.Queue(events.TaskDelta{
+		Type: "complete", GID: "sg_task1",
+		Payload: map[string]interface{}{
+			"completedLength": "1000",
+			"downloadSpeed":   "0",
+			"totalLength":     "1000",
+		},
+	})
+
+	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
+
+	m.reconcileSurgeCache()
+
+	pusher.mu.Lock()
+	count := 0
+	for _, d := range pusher.pending {
+		if d.GID == "sg_task1" && d.Type == "complete" {
+			count++
+		}
+	}
+	pusher.mu.Unlock()
+	if count != 1 {
+		t.Errorf("expected exactly 1 complete delta for sg_task1 (dedup), got %d", count)
+	}
+}
+
+// TestReconcileSurgeCache_MissedPause_EmitsDelta verifies that the waiting
+// branch emits a pause delta and an EmitTaskMove (From: active, To: waiting).
+func TestReconcileSurgeCache_MissedPause_EmitsDelta(t *testing.T) {
+	m, reader, pusher, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+
+	Cache.AddSgTask(rpc.Task{GID: "sg_task1", Status: "active"}, "active")
+
+	var moveFired atomic.Bool
+	var moveFrom, moveTo string
+	m.hub.SubscribeTaskMove(func(move events.TaskMove) {
+		if move.GID == "sg_task1" {
+			moveFired.Store(true)
+			moveFrom = move.From
+			moveTo = move.To
+		}
+	})
+
+	reader.setLists(nil, []rpc.Task{{GID: "task1", Status: "paused"}}, nil)
+
+	m.reconcileSurgeCache()
+
+	pusher.mu.Lock()
+	foundPause := false
+	for _, d := range pusher.pending {
+		if d.Type == "pause" && d.GID == "sg_task1" {
+			foundPause = true
+		}
+	}
+	pusher.mu.Unlock()
+	if !foundPause {
+		t.Error("expected pause delta from poll")
+	}
+
+	if !moveFired.Load() {
+		t.Fatal("expected EmitTaskMove for missed pause")
+	}
+	if moveFrom != "active" {
+		t.Errorf("EmitTaskMove From = %s, want active", moveFrom)
+	}
+	if moveTo != "waiting" {
+		t.Errorf("EmitTaskMove To = %s, want waiting", moveTo)
+	}
+}
+
+// TestReconcileSurgeCache_MissedResume_EmitsDelta verifies that the active
+// branch emits a resume delta and an EmitTaskMove (From: waiting, To: active).
+func TestReconcileSurgeCache_MissedResume_EmitsDelta(t *testing.T) {
+	m, reader, pusher, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+
+	Cache.AddSgTask(rpc.Task{GID: "sg_task1", Status: "paused"}, "waiting")
+
+	var moveFired atomic.Bool
+	var moveFrom, moveTo string
+	m.hub.SubscribeTaskMove(func(move events.TaskMove) {
+		if move.GID == "sg_task1" {
+			moveFired.Store(true)
+			moveFrom = move.From
+			moveTo = move.To
+		}
+	})
+
+	reader.setLists([]rpc.Task{{GID: "task1", Status: "downloading"}}, nil, nil)
+
+	m.reconcileSurgeCache()
+
+	pusher.mu.Lock()
+	foundResume := false
+	for _, d := range pusher.pending {
+		if d.Type == "resume" && d.GID == "sg_task1" {
+			foundResume = true
+		}
+	}
+	pusher.mu.Unlock()
+	if !foundResume {
+		t.Error("expected resume delta from poll")
+	}
+
+	if !moveFired.Load() {
+		t.Fatal("expected EmitTaskMove for missed resume")
+	}
+	if moveFrom != "waiting" {
+		t.Errorf("EmitTaskMove From = %s, want waiting", moveFrom)
+	}
+	if moveTo != "active" {
+		t.Errorf("EmitTaskMove To = %s, want active", moveTo)
 	}
 }
 

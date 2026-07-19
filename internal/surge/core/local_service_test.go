@@ -216,25 +216,24 @@ func TestLocalDownloadService_Shutdown_WaitsForBroadcastDrain(t *testing.T) {
 		done <- svc.Shutdown()
 	}()
 
-	select {
-	case err := <-done:
-		t.Fatalf("shutdown returned before broadcaster drained listener backlog: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	select {
-	case <-streamCh:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("timed out draining listener backlog")
-	}
-
+	// FORK-PATCH: With the ctx.Done guard on terminal event sends, Shutdown
+	// returns promptly even when a listener's outCh is full — blocked
+	// per-listener goroutines exit via ctx.Done. Previously Shutdown waited
+	// for the 1s timeout per blocked event. Verify Shutdown completes quickly.
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("shutdown failed: %v", err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("shutdown did not finish after broadcaster unblocked")
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not finish within 5s (ctx.Done guard should let blocked sends exit)")
+	}
+
+	// Buffered events (already in outCh before shutdown) are still readable.
+	select {
+	case <-streamCh:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out draining listener backlog")
 	}
 }
 
