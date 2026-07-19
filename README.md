@@ -33,9 +33,9 @@
 
 ## 📖 简介
 
-**GoAria** 是基于 [Wails v3](https://wails.io) 构建的现代化 Aria2 图形界面。
+**GoAria** 是基于 [Wails v3](https://wails.io) 构建的现代化极速下载器。从 v3.0 开始，GoAria 迎来了重大的双核架构升级：我们在保留 `aria2c` 作为后备引擎与 RPC 接口的同时，引入了由 SurgeDM 团队打造的内置 `surge` 引擎作为 HTTP(S) 的新默认下载核心，并搭载了更加智能的**线程调度大脑**。
 
-与追求全功能的下载器不同，GoAria 的哲学是**实用主义**与**零干扰**。我们剔除了磁力链接等复杂功能，专注于提升 link（HTTP/HTTPS/FTP）下载的效率。它不仅仅是一个壳，而是一个经过深度优化的生产力工具，旨在以极低的资源占用，提供原生应用级的操作手感
+与追求全功能的传统下载器不同，GoAria 的哲学是**实用主义**与**零干扰**。全新的底层架构能根据历史测速与实时网络状况动态分配最优线程，旨在以极低的资源占用，提供原生应用级的操作手感与大幅跃升的单线程效率。
 
 <div align="center">
   <img src="frontend/src/assets/images/display.png" alt="GoAria Screenshot" width="800" />
@@ -44,12 +44,14 @@
 
 ## ✨ 核心特性
 
-### 🎯 专注于下载
+### 🚀 更加智能的自适应引擎
 
-- **精简核心**: 专注处理 HTTP/HTTPS/FTP/SFTP 链接，不包含磁力、种子等冗余模块，保持功能纯粹。
-- **Spotlight 交互**: 类似系统级搜索的标题栏设计，支持链接自动识别，一键开始任务。
-- **智能线程**: 根据文件大小智能计算最优线程数，避免资源浪费。
+- **双核无缝切换**: 默认采用内联 `surge` 引擎处理 HTTP(S) 下载，获取极致速度；同时完整保留 `aria2c` 进程作为其它协议的可靠回退选项。
+- **更加智能的线程调度**: 引擎会实时监测网络状况，结合历史预判自动为您计算每一个任务的最优并发数，彻底告别手动猜线程的烦恼。
+- **单线程效率飞跃**: 极致优化的底层架构与分级内存池机制，配合极低 IPC 成本的纯事件驱动设计，带来了超越传统下载工具的单线程性能。
+- **内网极速打满**: 针对 Windows 重构预分配机制，瞬间打满 2.5Gbps 物理网卡上限。
 - **智能组下载**: 批量添加的链接自动归档至专属文件夹，并在任务列表中聚合为单一“组卡片”，支持一键全组控制与后台清理。
+
 
 ### 🚀 极致轻量
 
@@ -58,12 +60,14 @@
 - **智能轮询控制**: 当窗口隐藏时自动优化 API 请求频率，尊重你的 CPU 和电量。
 - **轻量模式**: 支持无头模式，无 UI，仅作为 Aria2 的前端，通过 RPC 与 Aria2 交互。可通过命令行参数 `--hidden` 来直接启动无头模式。
 
-### 🎨 现代美学 (Aesthetics)
+### 🧊 现代液态玻璃美学
+
 
 - **原生沉浸**: 深度适配 Windows 11 Mica / Acrylic 材质，支持自定义皮肤（黑曜石与激光 / 电子纸与陶瓷）。
 - **液态玻璃特效**: 统一的高级“液态玻璃”视觉组件，提供更灵动且具质感的交互反馈，并智能响应系统“减弱动态效果”模式以节能。
 - **智慧交互**: 灵感源自 Spotlight 的一键抓取设计，通过动态光效而非枯燥文字传达任务状态。
 - **极致流畅**: 虚拟滚动技术加持，处理上千个任务依旧丝滑无感。
+- **官方浏览器扩展**: 首个无缝接管浏览器请求的扩展即将上线，为您提供极致顺滑的下载接力体验。
 
 ## 🛠️ 技术架构
 
@@ -71,14 +75,14 @@ GoAria 采用 **Frontend-Backend-Daemon** 三层架构，确保稳定性与扩�
 
 ```mermaid
 graph TD
-    A["Frontend UI (Vue 3 + Pinia)"] <-->|Wails Bindings| B["Backend (Go App)"]
-    B <-->|RPC| C["Daemon (Aria2c Process)"]
-    B -->|Manage| C
+    A["Frontend UI (Vue 3 + Pinia)"] <-->|Single Source Event Bus| B["Backend (Go App)"]
+    B <-->|RPC & WS Sensor| C["Daemon (Aria2c Fallback)"]
+    B -->|Event Bridge| D["In-Process Engine (Surge)"]
 ```
 
-- **Frontend**: 负责极致的 UI/UX 呈现。
-- **Backend**: 处理业务逻辑，作为 Aria2 与 UI 的桥梁，确保持久化与系统集成。
-- **Daemon**: 发布产物内置 Aria2 二进制，开箱即用，无需额外配置。
+- **Frontend**: 负责极致的液态玻璃 UI/UX 呈现。
+- **Backend**: 作为中央 Hub 聚合来自 Surge 与 Aria2 的状态，通过单源信使（Single Source Event Bus）将事件统一推送至前端。
+- **Dual Engines**: `surge` 作为内置极速 HTTP(S) 引擎；`aria2c` 作为独立进程提供跨协议兼容与原生 RPC 接口。
 
 ## 💻 开发指南
 
@@ -120,7 +124,7 @@ wails3 task build
 wails3 task package
 ```
 
-> Linux / macOS 构建说明：发布产物仍然保持“内置 Aria2、开箱即用”的契约，但本地构建/打包现在会在构建前强制准备可嵌入的 `aria2c`。原生构建器可直接安装系统 `aria2c` 后运行 `wails3 task linux:prepare:aria2` 或 `wails3 task darwin:prepare:aria2`；若无法原生解析目标二进制，可显式设置 `ARIA2_BUNDLED_PATH=/path/to/aria2c` 作为开发期覆盖。未能准备该二进制时，Linux/macOS 的 `build` / `package` 会直接失败，而不会产出缺失运行时依赖的伪成功构建。
+> Linux / macOS 构建说明：发布产物现在同时内置了 `surge` 引擎与 `aria2c`。本地构建/打包流程仍会强制准备可嵌入的 `aria2c`。原生构建器可直接安装系统 `aria2c` 后运行 `wails3 task linux:prepare:aria2` 或 `wails3 task darwin:prepare:aria2`。
 
 ## 📄 许可证
 
