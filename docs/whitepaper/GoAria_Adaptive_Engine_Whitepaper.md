@@ -28,7 +28,7 @@ description: "基于 BBR 理论的应用层线程数自适应调度架构与实�
   - [§3.2 采样存储与查询 API](#32-采样存储与查询-api)
   - [§3.3 Tracker 引导的初始线程数](#33-tracker-引导的初始线程数)
   - [§3.4 跨下载收敛轨迹](#34-跨下载收敛轨迹)
-  - [§3.5 51dee21 Preallocate Fix 与数据有效性](#35-51dee21-preallocate-fix-与数据有效性)
+  - [§3.5 4325ae4 Preallocate Fix 与数据有效性](#35-4325ae4-preallocate-fix-与数据有效性)
   - [§3.6 冷启动 vs 热启动：寻找真正的学习主证据](#36-冷启动-vs-热启动寻找真正的学习主证据)
 - [第四章：运行时多重兜底 (Runtime Multi-Layer Fallback)](#第四章运行时多重兜底-runtime-multi-layer-fallback)
   - [§4.1 ConvergenceTicker 比率纠偏](#41-convergenceticker-比率纠偏)
@@ -454,11 +454,11 @@ xychart-beta
 
 _图3.2：Tracker 收敛轨迹图（4→6→7→8）。其中第 1、2、4 轮有 JSONL 仪器级日志验证，第 3 轮（因文件较小未纳入对比）为测试期间人工记录。_
 
-### §3.5 51dee21 Preallocate Fix 与数据有效性
+### §3.5 4325ae4 Preallocate Fix 与数据有效性
 
 在探讨自适应学习的有效性时，我们必须坦诚地面对工程开发中的一段关键迭代历史。
 
-在基准测试的早期阶段，GoAria 在面对超大文件时，偶发性地存在约 2.5 秒的启动迟滞。经过严密排查，这一问题被定位为 Windows 平台下文件预分配（Preallocate）导致的 I/O 阻塞。为此，工程团队在 GoAria 公开主干分支中提交了关键的修复补丁（`commit 51dee21`），引入了 Sparse File Fallback（稀疏文件降级回退）机制，彻底消除了这长达数秒的硬盘阻塞。
+在基准测试的早期阶段，GoAria 在面对超大文件时，偶发性地存在约 2.5 秒的启动迟滞。经过严密排查，这一问题被定位为 Windows 平台下文件预分配（Preallocate）导致的 I/O 阻塞。为此，工程团队在 GoAria 公开主干分支中提交了关键的修复补丁（`commit 4325ae4`），引入了 Sparse File Fallback（稀疏文件降级回退）机制，彻底消除了这长达数秒的硬盘阻塞。
 
 这引发了一个必须回答的严肃问题：在 fix 之前的测速数据是否仍然具有科学说服力？
 
