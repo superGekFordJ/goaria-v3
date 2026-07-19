@@ -45,8 +45,11 @@ function mockTask(overrides: Partial<Task> = {}): Task {
 const groupHint: TaskGroupHint = {
   groupKey: 'dg-card',
   folderLabel: 'Batch 2026-05-07 dg-card',
+  folderPath: '/downloads/Batch 2026-05-07 dg-card',
   totalCount: 5,
-  isAutoFoldered: false,
+  visibleCount: 2,
+  ordinal: 1,
+  isAutoFoldered: true,
 }
 
 describe('TaskCard group hint chip', () => {
@@ -54,17 +57,17 @@ describe('TaskCard group hint chip', () => {
     vi.clearAllMocks()
   })
 
-  it('renders a compact grouped chip and keeps existing controls', () => {
+  it('renders a compact grouped chip with folder hint and mono count', () => {
     const wrapper = mount(TaskCard, {
       props: { task: mockTask(), groupHint },
     })
 
-    const chip = wrapper.find('.download-group-chip')
+    const chip = wrapper.find('.task-group-chip')
     expect(chip.exists()).toBe(true)
-    expect(chip.text()).toContain('Batch 2026-05-07 dg-card')
-    expect(chip.text()).toContain('taskCard.groupItemCount {"count":5}')
-    expect(chip.attributes('aria-label')).toContain('taskCard.groupHintLabel')
+    expect(chip.text()).toContain('taskCard.groupFolder {"folder":"Batch 2026-05-07 dg-card"}')
+    expect(chip.text()).toContain('taskCard.groupOrdinal {"index":1,"count":5}')
     expect(chip.find('.font-mono-data').exists()).toBe(true)
+    expect(chip.attributes('aria-label')).toContain('taskCard.groupHintLabel')
 
     expect(wrapper.find('input.task-checkbox').exists()).toBe(true)
     expect(wrapper.findAll('button')).toHaveLength(3)
@@ -72,12 +75,12 @@ describe('TaskCard group hint chip', () => {
     wrapper.unmount()
   })
 
-  it('renders no group chip for ungrouped tasks', () => {
+  it('renders no group chip for ungrouped cards while keeping actions', () => {
     const wrapper = mount(TaskCard, {
       props: { task: mockTask(), groupHint: null },
     })
 
-    expect(wrapper.find('.download-group-chip').exists()).toBe(false)
+    expect(wrapper.find('.task-group-chip').exists()).toBe(false)
     expect(wrapper.find('input.task-checkbox').exists()).toBe(true)
     expect(wrapper.findAll('button')).toHaveLength(3)
 
