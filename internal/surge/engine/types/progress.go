@@ -691,8 +691,11 @@ func (ps *ProgressState) UpdateChunkStatus(offset, length int64, status ChunkSta
 	}
 }
 
-// RecalculateProgress reconstructs ChunkProgress from the restored bitmap only.
-// The remainingTasks parameter is retained for signature compatibility but unused.
+// RecalculateProgress reconstructs ChunkProgress from the bitmap and remaining
+// tasks. Chunks not covered by remainingTasks are assumed fully on disk;
+// remainingTasks overlap is subtracted to reflect bytes not yet downloaded.
+// Bitmap-verified ChunkCompleted chunks are restored to full regardless of
+// remainingTasks coverage (hedged bytes re-queued by KillWorker).
 func (ps *ProgressState) RecalculateProgress(remainingTasks []Task) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -703,21 +706,58 @@ func (ps *ProgressState) RecalculateProgress(remainingTasks []Task) {
 
 	ps.ChunkProgress = make([]int64, ps.BitmapWidth)
 	var totalVerified int64
-	// FORK-PATCH: Initialize to 0 (not full). The bitmap trust loop below
-	// restores ChunkCompleted chunks to full. Previous code initialized all
-	// chunks to full then subtracted remaining task overlap — but if a chunk
-	// had no remaining task covering it (task lost) AND bitmap didn't mark it
-	// ChunkCompleted, ChunkProgress stayed full → falsely marked complete →
-	// zero-fill hole. With init=0 we skip the overlap subtraction entirely;
-	// only bitmap-verified chunks get nonzero progress.
+
+	// FORK-PATCH: Step 1 — Initialize all chunks to full (on-disk assumption).
+	// The previous init=0 approach discarded partial chunk progress, causing
+	// UpdateChunkStatus to never reach full → permanent hang. Init=full is safe
+	// now because early-EOF guard prevents task loss; VP guard converts any
+	// residual task loss to a detectable hang rather than silent corruption.
 	for i := 0; i < ps.BitmapWidth; i++ {
-		ps.ChunkProgress[i] = 0
+		chunkStart := int64(i) * ps.ActualChunkSize
+		chunkEnd := chunkStart + ps.ActualChunkSize
+		if chunkEnd > ps.TotalSize {
+			chunkEnd = ps.TotalSize
+		}
+		ps.ChunkProgress[i] = chunkEnd - chunkStart
+		totalVerified += ps.ChunkProgress[i]
 	}
 
-	// FORK-PATCH: Trust the restored bitmap — chunks marked ChunkCompleted
-	// have their bytes fully on disk even if remainingTasks still cover them
-	// (hedged bytes re-queued by KillWorker). Restore ChunkProgress to full
-	// and add back to totalVerified so VP stays in sync with sum(ChunkProgress).
+	// Step 2 — Subtract remainingTasks overlap (bytes not yet downloaded).
+	for _, task := range remainingTasks {
+		startIdx := int(task.Offset / ps.ActualChunkSize)
+		endIdx := int((task.Offset + task.Length - 1) / ps.ActualChunkSize)
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		if endIdx >= ps.BitmapWidth {
+			endIdx = ps.BitmapWidth - 1
+		}
+		for i := startIdx; i <= endIdx; i++ {
+			chunkStart := int64(i) * ps.ActualChunkSize
+			chunkEnd := chunkStart + ps.ActualChunkSize
+			if chunkEnd > ps.TotalSize {
+				chunkEnd = ps.TotalSize
+			}
+			taskStart := task.Offset
+			if taskStart < chunkStart {
+				taskStart = chunkStart
+			}
+			taskEnd := task.Offset + task.Length
+			if taskEnd > chunkEnd {
+				taskEnd = chunkEnd
+			}
+			overlap := taskEnd - taskStart
+			if overlap > 0 {
+				ps.ChunkProgress[i] -= overlap
+				totalVerified -= overlap
+			}
+		}
+	}
+
+	// FORK-PATCH: Step 3 — Bitmap trust. Chunks marked ChunkCompleted have
+	// their bytes fully on disk even if remainingTasks still cover them
+	// (hedged bytes re-queued by KillWorker). Restore to full, overriding
+	// Step 2's subtraction.
 	for i := 0; i < ps.BitmapWidth; i++ {
 		if ps.getChunkState(i) == ChunkCompleted {
 			chunkStart := int64(i) * ps.ActualChunkSize

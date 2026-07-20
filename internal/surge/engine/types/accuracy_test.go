@@ -122,22 +122,23 @@ func TestRestoreBitmap_ShortBitmapRecoversWithoutPanic(t *testing.T) {
 		t.Fatalf("chunk 99 state = %v, want Pending", got)
 	}
 
-	state.RecalculateProgress([]types.Task{{Offset: 0, Length: chunkSize}})
+	// remainingTasks covers the entire file so that non-bitmap-verified chunks
+	// (1-99) are fully subtracted → Pending. Chunk 0 is bitmap-verified
+	// Completed → bitmap trust restores it to full despite remaining coverage.
+	state.RecalculateProgress([]types.Task{{Offset: 0, Length: totalSize}})
 
 	// FORK-PATCH: RecalculateProgress trusts the restored bitmap's
 	// ChunkCompleted chunks: chunk 0 stays Completed even though a remaining
-	// task covers it, because the bitmap indicates the bytes are already
-	// on disk (hedged-partner scenario). With init=0, only bitmap-verified
-	// chunks are Completed; all others are Pending regardless of remaining
-	// task coverage (defense-in-depth: don't assume complete without proof).
+	// task covers it (bitmap indicates bytes on disk). Non-verified chunks
+	// are fully subtracted by remaining → Pending.
 	if got := state.GetChunkState(0); got != types.ChunkCompleted {
 		t.Fatalf("chunk 0 state after recalc = %v, want Completed (bitmap trust)", got)
 	}
 	if got := state.GetChunkState(1); got != types.ChunkPending {
-		t.Fatalf("chunk 1 state after recalc = %v, want Pending (not in bitmap)", got)
+		t.Fatalf("chunk 1 state after recalc = %v, want Pending (fully covered by remaining, no bitmap)", got)
 	}
 	if got := state.GetChunkState(99); got != types.ChunkPending {
-		t.Fatalf("chunk 99 state after recalc = %v, want Pending (not in bitmap)", got)
+		t.Fatalf("chunk 99 state after recalc = %v, want Pending (fully covered by remaining, no bitmap)", got)
 	}
 }
 
@@ -159,22 +160,31 @@ func TestRecalculateProgress(t *testing.T) {
 
 	state.RecalculateProgress(tasks)
 
-	// FORK-PATCH: With init=0, RecalculateProgress only trusts the bitmap.
-	// Fresh InitBitmap creates all-pending bitmap, so all chunks are Pending
-	// regardless of remaining task coverage. Previously, chunks not covered
-	// by remaining tasks were assumed complete (init=full) — this caused
-	// zero-fill holes when tasks were lost. Defense-in-depth: only bitmap-
-	// verified chunks are considered complete.
-	// Verify Chunk 0 (Pending — no bitmap entry, init=0)
-	if state.GetChunkState(0) != types.ChunkPending {
-		t.Errorf("Expected Chunk 0 to be Pending (init=0, no bitmap), got %v", state.GetChunkState(0))
+	// FORK-PATCH: RecalculateProgress uses full-minus-remaining calculation.
+	// Fresh InitBitmap creates all-pending bitmap (no ChunkCompleted entries).
+	// Chunk 0: 10MB full − 5MB remaining = 5MB → Downloading
+	// Chunk 1: 10MB full − 10MB remaining = 0 → Pending
+	// Chunk 2: 10MB full − 0 remaining = 10MB → Completed (full, no remaining coverage)
+	if state.GetChunkState(0) != types.ChunkDownloading {
+		t.Errorf("Expected Chunk 0 to be Downloading (partial: 5MB remaining), got %v", state.GetChunkState(0))
 	}
-	// Verify Chunk 1 (Pending — fully covered by remaining task)
+	if state.ChunkProgress[0] != 5*1024*1024 {
+		t.Errorf("Expected ChunkProgress[0] = 5MB, got %d", state.ChunkProgress[0])
+	}
 	if state.GetChunkState(1) != types.ChunkPending {
-		t.Errorf("Expected Chunk 1 to be Pending (Empty), got %v", state.GetChunkState(1))
+		t.Errorf("Expected Chunk 1 to be Pending (fully covered by remaining), got %v", state.GetChunkState(1))
 	}
-	// Verify Chunk 2 (Pending — not covered but no bitmap proof of completion)
-	if state.GetChunkState(2) != types.ChunkPending {
-		t.Errorf("Expected Chunk 2 to be Pending (no bitmap proof), got %v", state.GetChunkState(2))
+	if state.ChunkProgress[1] != 0 {
+		t.Errorf("Expected ChunkProgress[1] = 0, got %d", state.ChunkProgress[1])
+	}
+	if state.GetChunkState(2) != types.ChunkCompleted {
+		t.Errorf("Expected Chunk 2 to be Completed (no remaining coverage), got %v", state.GetChunkState(2))
+	}
+	if state.ChunkProgress[2] != 10*1024*1024 {
+		t.Errorf("Expected ChunkProgress[2] = 10MB, got %d", state.ChunkProgress[2])
+	}
+	// VP = 5MB + 0 + 10MB = 15MB
+	if vp := state.VerifiedProgress.Load(); vp != 15*1024*1024 {
+		t.Errorf("Expected VP = 15MB, got %d", vp)
 	}
 }

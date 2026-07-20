@@ -48,6 +48,9 @@ func main() {
 		// GoAria-only regression test for resume VP bitmap trust guard.
 		// Not in upstream fork; must survive vendor sync.
 		filepath.Join("engine", "concurrent", "resume_antiregression_vp_guard_test.go"): true,
+		// GoAria-only regression test for RecalculateProgress partial chunk
+		// starvation fix. Not in upstream fork; must survive vendor sync.
+		filepath.Join("engine", "types", "recalculate_progress_partial_chunk_test.go"): true,
 	}
 
 	// Phase 1: Read source files, replace imports, and write pre-fmt content

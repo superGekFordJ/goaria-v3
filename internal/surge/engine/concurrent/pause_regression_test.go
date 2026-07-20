@@ -132,8 +132,10 @@ func TestPauseRegression_RemainingZeroEarlyExit_Unaffected(t *testing.T) {
 
 // TestPauseRegression_ResumeVerifiedProgressUnaffected verifies that when
 // resuming from a saved state where Downloaded = fileSize but the bitmap has
-// no completed chunks, setupTasks trusts the bitmap (VP=0) and restores
-// Downloaded for counter consistency. VP is never inflated by savedState.Downloaded.
+// no completed chunks, setupTasks trusts the bitmap-recalculated VP and
+// restores Downloaded for counter consistency. VP is never inflated by
+// savedState.Downloaded. With full-minus-remaining calculation, chunks not
+// covered by remainingTasks are assumed on-disk → VP reflects that.
 func TestPauseRegression_ResumeVerifiedProgressUnaffected(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
@@ -144,6 +146,8 @@ func TestPauseRegression_ResumeVerifiedProgressUnaffected(t *testing.T) {
 
 	// Build a saved state: Downloaded = fileSize (100%), but bitmap has no
 	// completed chunks (inconsistent state from task-loss path inflation).
+	// remainingTasks cover chunks 0-4 (500 bytes); chunks 5-9 have no
+	// remaining coverage → assumed on-disk → VP includes those bytes.
 	savedBitmap := make([]byte, 3) // 10 chunks → 3 bytes (2-bit-per-chunk)
 	savedState := &types.DownloadState{
 		ID:              "resume-test",
@@ -197,10 +201,11 @@ func TestPauseRegression_ResumeVerifiedProgressUnaffected(t *testing.T) {
 		t.Fatal("expected tasks from saved state, got none")
 	}
 
-	// FORK-PATCH: VP strictly follows bitmap truth (no completed chunks → 0).
-	// savedState.Downloaded is inflated and must NOT override VP.
-	if got := progState.VerifiedProgress.Load(); got != 0 {
-		t.Errorf("VerifiedProgress = %d, want 0 (bitmap has no completed chunks)", got)
+	// FORK-PATCH: VP follows bitmap-recalculated truth, not savedState.Downloaded.
+	// Chunks 0-4 fully covered by remaining → 0; chunks 5-9 no remaining → full.
+	// VP = 5 × 100 = 500. savedState.Downloaded (1000) does NOT override VP.
+	if got := progState.VerifiedProgress.Load(); got != 500 {
+		t.Errorf("VerifiedProgress = %d, want 500 (chunks 5-9 on-disk, 0-4 remaining)", got)
 	}
 	// Downloaded is restored to max(savedState.Downloaded, VP) for counter consistency.
 	if got := progState.Downloaded.Load(); got != fileSize {
