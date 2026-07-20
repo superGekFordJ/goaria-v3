@@ -281,3 +281,58 @@ func TestResume_BitmapTrust_AllZeroBitmapBenignRegression(t *testing.T) {
 		t.Errorf("Downloaded = %d, want 9000 (restored for counter consistency)", downloaded)
 	}
 }
+
+// TestResume_BitmapTrust_DownloadedNotGreaterThanVP verifies the else branch
+// of the Downloaded restore: when savedState.Downloaded <= VP, Downloaded is
+// set to VP (max(saved, VP) = VP).
+func TestResume_BitmapTrust_DownloadedNotGreaterThanVP(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(10000)
+	chunkSize := int64(1000)
+	destPath := filepath.Join(tmpDir, "dl_le_vp.bin")
+
+	// Bitmap marks chunks 0-7 complete (8000 bytes verified).
+	// savedState.Downloaded = 3000 < VP=8000 → Downloaded should be set to VP.
+	savedState := &types.DownloadState{
+		ID:              "dl-le-vp",
+		URL:             "http://example.com",
+		DestPath:        destPath,
+		TotalSize:       fileSize,
+		Downloaded:      3000, // less than bitmap VP
+		ActualChunkSize: chunkSize,
+		ChunkBitmap:     buildCompletedBitmap(fileSize, chunkSize, 8),
+		Tasks:           []types.Task{{Offset: 8000, Length: 2000}},
+	}
+	saveResumeState(t, "dl-le-vp", "http://example.com", destPath, savedState, fileSize)
+
+	progState := types.NewProgressState("dl-le-vp", fileSize)
+	progState.InitBitmap(fileSize, chunkSize)
+
+	d := &ConcurrentDownloader{
+		ID:    "dl-le-vp",
+		URL:   "http://example.com",
+		State: progState,
+	}
+
+	f, err := os.Open(destPath + types.IncompleteSuffix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	if _, err := d.setupTasks(destPath, fileSize, chunkSize, f); err != nil {
+		t.Fatalf("setupTasks failed: %v", err)
+	}
+
+	vp := progState.VerifiedProgress.Load()
+	downloaded := progState.Downloaded.Load()
+
+	if vp != 8000 {
+		t.Errorf("VP = %d, want 8000 (8 chunks complete)", vp)
+	}
+	if downloaded != 8000 {
+		t.Errorf("Downloaded = %d, want 8000 (max(saved=3000, VP=8000) = VP)", downloaded)
+	}
+}

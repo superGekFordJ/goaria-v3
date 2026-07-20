@@ -144,7 +144,7 @@ func TestPauseRegression_ResumeVerifiedProgressUnaffected(t *testing.T) {
 
 	// Build a saved state: Downloaded = fileSize (100%), but bitmap has no
 	// completed chunks (inconsistent state from task-loss path inflation).
-	savedBitmap := make([]byte, 4) // 10 chunks → 3 bytes, round up
+	savedBitmap := make([]byte, 3) // 10 chunks → 3 bytes (2-bit-per-chunk)
 	savedState := &types.DownloadState{
 		ID:              "resume-test",
 		URL:             "http://example.com",

@@ -426,7 +426,6 @@ func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize i
 	if isResume {
 		if d.State != nil {
 			d.State.SetSavedElapsed(time.Duration(savedState.Elapsed))
-			d.State.SyncSessionStart()
 
 			if len(savedState.ChunkBitmap) > 0 && savedState.ActualChunkSize > 0 {
 				d.State.RestoreBitmap(savedState.ChunkBitmap, savedState.ActualChunkSize)
@@ -442,7 +441,6 @@ func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize i
 				} else {
 					d.State.Downloaded.Store(vp)
 				}
-				d.State.SyncSessionStart()
 				utils.Debug("Restored chunk map: size %d", savedState.ActualChunkSize)
 			} else {
 				// FORK-PATCH: Legacy .surge files without bitmap — keep
@@ -450,6 +448,9 @@ func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize i
 				d.State.VerifiedProgress.Store(savedState.Downloaded)
 				d.State.Downloaded.Store(savedState.Downloaded)
 			}
+			// FORK-PATCH: Sync session start after VP is finalized in both
+			// branches so SessionStartBytes captures the correct VP.
+			d.State.SyncSessionStart()
 		}
 		utils.Debug("Resuming from saved state: %d tasks, %d bytes downloaded", len(savedState.Tasks), savedState.Downloaded)
 		return savedState.Tasks, nil
