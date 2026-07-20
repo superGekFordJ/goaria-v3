@@ -202,9 +202,9 @@ func TestPauseRegression_ResumeVerifiedProgressUnaffected(t *testing.T) {
 	if got := progState.VerifiedProgress.Load(); got != 0 {
 		t.Errorf("VerifiedProgress = %d, want 0 (bitmap has no completed chunks)", got)
 	}
-	// Downloaded is restored to max(savedState.Downloaded, VP) for UI display.
+	// Downloaded is restored to max(savedState.Downloaded, VP) for counter consistency.
 	if got := progState.Downloaded.Load(); got != fileSize {
-		t.Errorf("Downloaded = %d, want %d (restored for UI display)", got, fileSize)
+		t.Errorf("Downloaded = %d, want %d (restored for counter consistency)", got, fileSize)
 	}
 }
 

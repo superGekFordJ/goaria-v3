@@ -106,7 +106,7 @@ func TestResume_BitmapTrust_InflatedDownloadedDoesNotOverrideVP(t *testing.T) {
 		t.Errorf("VP = %d, want 5000 (bitmap truth, not inflated Downloaded)", vp)
 	}
 	if downloaded != 10000 {
-		t.Errorf("Downloaded = %d, want 10000 (restored for UI display)", downloaded)
+		t.Errorf("Downloaded = %d, want 10000 (restored for counter consistency)", downloaded)
 	}
 	if vp >= fileSize {
 		t.Errorf("VP %d >= fileSize %d — completionMonitor would false-complete", vp, fileSize)
@@ -168,7 +168,7 @@ func TestResume_BitmapTrust_SingleChunkVPZeroInflatedDownloaded(t *testing.T) {
 		t.Errorf("VP = %d, want 0 (single chunk not complete — never inflate to fileSize)", vp)
 	}
 	if downloaded != 58000000 {
-		t.Errorf("Downloaded = %d, want 58000000 (restored for UI display)", downloaded)
+		t.Errorf("Downloaded = %d, want 58000000 (restored for counter consistency)", downloaded)
 	}
 	if vp >= fileSize {
 		t.Errorf("VP %d >= fileSize %d — completionMonitor would false-complete", vp, fileSize)
@@ -278,6 +278,6 @@ func TestResume_BitmapTrust_AllZeroBitmapBenignRegression(t *testing.T) {
 		t.Errorf("VP = %d, want 0 (no chunk marked complete — benign regression)", vp)
 	}
 	if downloaded != 9000 {
-		t.Errorf("Downloaded = %d, want 9000 (restored for UI display)", downloaded)
+		t.Errorf("Downloaded = %d, want 9000 (restored for counter consistency)", downloaded)
 	}
 }

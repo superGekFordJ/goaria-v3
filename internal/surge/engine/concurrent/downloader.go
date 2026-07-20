@@ -434,7 +434,8 @@ func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize i
 				// FORK-PATCH: Unconditionally trust bitmap-recalculated VP.
 				// savedState.Downloaded may be inflated by task-loss paths;
 				// overriding VP with it causes false completion. Restore
-				// Downloaded to max(saved, VP) for UI display only.
+				// Downloaded to max(saved, VP) for counter consistency —
+				// UI progress follows VP via GetProgress(), not this counter.
 				vp := d.State.VerifiedProgress.Load()
 				if savedState.Downloaded > vp {
 					d.State.Downloaded.Store(savedState.Downloaded)
