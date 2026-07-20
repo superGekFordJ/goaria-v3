@@ -40,17 +40,6 @@ func main() {
 		// GoAria-only regression test for broadcaster terminal event delivery.
 		// Not in upstream fork; must survive vendor sync.
 		filepath.Join("core", "broadcaster_terminal_delivery_test.go"): true,
-		// GoAria-only regression tests for early-EOF / VP-guard fixes.
-		// Not in upstream fork; must survive vendor sync.
-		filepath.Join("engine", "concurrent", "stealwork_dedup_test.go"):      true,
-		filepath.Join("engine", "concurrent", "early_eof_requeue_test.go"):    true,
-		filepath.Join("engine", "concurrent", "handlepause_vp_guard_test.go"): true,
-		// GoAria-only regression test for resume VP bitmap trust guard.
-		// Not in upstream fork; must survive vendor sync.
-		filepath.Join("engine", "concurrent", "resume_antiregression_vp_guard_test.go"): true,
-		// GoAria-only regression test for RecalculateProgress partial chunk
-		// starvation fix. Not in upstream fork; must survive vendor sync.
-		filepath.Join("engine", "types", "recalculate_progress_partial_chunk_test.go"): true,
 	}
 
 	// Phase 1: Read source files, replace imports, and write pre-fmt content

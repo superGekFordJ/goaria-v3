@@ -722,7 +722,9 @@ func (ps *ProgressState) RecalculateProgress(remainingTasks []Task) {
 		totalVerified += ps.ChunkProgress[i]
 	}
 
-	// Step 2 — Subtract remainingTasks overlap (bytes not yet downloaded).
+	// FORK-PATCH: Step 2 — Subtract remainingTasks overlap (bytes not yet
+	// downloaded). Clamp overlap to ChunkProgress[i] so overlapping
+	// remainingTasks can never drive it negative (guards INV-A6).
 	for _, task := range remainingTasks {
 		startIdx := int(task.Offset / ps.ActualChunkSize)
 		endIdx := int((task.Offset + task.Length - 1) / ps.ActualChunkSize)
@@ -748,6 +750,9 @@ func (ps *ProgressState) RecalculateProgress(remainingTasks []Task) {
 			}
 			overlap := taskEnd - taskStart
 			if overlap > 0 {
+				if overlap > ps.ChunkProgress[i] {
+					overlap = ps.ChunkProgress[i]
+				}
 				ps.ChunkProgress[i] -= overlap
 				totalVerified -= overlap
 			}
