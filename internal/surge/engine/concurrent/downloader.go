@@ -942,10 +942,19 @@ func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queu
 		remainingBytes += task.Length
 	}
 	if remainingBytes == 0 {
-		utils.Debug("Download pause requested at completion boundary; finalizing as completed")
-		d.State.Resume()
-		_, _ = d.State.FinalizeSession(fileSize)
-		return nil
+		if d.State == nil || d.State.VerifiedProgress.Load() >= fileSize {
+			utils.Debug("Download pause requested at completion boundary; finalizing as completed")
+			if d.State != nil {
+				d.State.Resume()
+				_, _ = d.State.FinalizeSession(fileSize)
+			}
+			return nil
+		}
+		// VP < fileSize but remainingBytes == 0: tasks were lost or VP
+		// undercounted. Fall through to the standard pause path to save
+		// state for resume instead of finalizing an incomplete file.
+		utils.Debug("Download pause at remainingBytes=0 but VP=%d < fileSize=%d; saving state for resume",
+			d.State.VerifiedProgress.Load(), fileSize)
 	}
 	computedDownloaded := fileSize - remainingBytes
 	// FORK-PATCH: Trust the chunk-level dedup counter over the recompute.

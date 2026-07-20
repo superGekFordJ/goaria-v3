@@ -555,6 +555,15 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 		}
 	}
 
+	// FORK-PATCH: early-EOF guard. A partial-data + io.EOF (n>0) path breaks
+	// out of the read loop with offset < StopAt. Without this guard the task
+	// silently returns nil, dropping undownloaded bytes from both activeTasks
+	// and the queue. Route to the standard error path so the worker retries
+	// and requeues the residual.
+	if offset < activeTask.StopAt.Load() {
+		return fmt.Errorf("early EOF: read up to %d, expected %d", offset, activeTask.StopAt.Load())
+	}
+
 	return nil
 }
 
@@ -639,17 +648,18 @@ func (d *ConcurrentDownloader) StealWork(queue *TaskQueue) bool {
 		return false
 	}
 
-	// FORK-PATCH: carry SharedMaxOffset so the stolen task shares write dedup
-	// with the original worker on the same byte range. Read under RLock to
-	// match the hedger initialization pattern.
-	active.SharedMaxOffsetMu.RLock()
-	sharedPtr := active.SharedMaxOffset
-	active.SharedMaxOffsetMu.RUnlock()
+	// FORK-PATCH: SharedMaxOffset is for HEDGING (racing on the same byte
+	// range). Stealing creates a strictly disjoint, adjacent byte range. If
+	// they share the pointer, the stolen worker (at a higher offset) will
+	// permanently mask the original worker's progress, causing
+	// VerifiedProgress to stall and preventing download completion.
+	newSharedPtr := &atomic.Int64{}
+	newSharedPtr.Store(stolenStart)
 
 	stolenTask := types.Task{
 		Offset:          stolenStart,
 		Length:          originalEnd - stolenStart,
-		SharedMaxOffset: sharedPtr,
+		SharedMaxOffset: newSharedPtr,
 	}
 
 	queue.Push(stolenTask)

@@ -2,9 +2,11 @@ package concurrent
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -24,21 +26,41 @@ func TestConcurrentDownloader_PrewarmConnections(t *testing.T) {
 	prewarmSeen := false
 	downloadSeen := false
 
-	// Create mock server to track request order
+	// Create mock server to track request order. The handler must serve real
+	// data so the download can complete; a handler that only tracks requests
+	// without writing a body causes early-EOF errors after the Bug B guard.
+	data := make([]byte, fileSize)
 	server := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),
 		testutil.WithHandler(func(w http.ResponseWriter, r *http.Request) {
 			mu.Lock()
-			defer mu.Unlock()
-
 			rng := r.Header.Get("Range")
 			if rng == "bytes=0-0" {
 				prewarmSeen = true
 			} else if rng != "" {
-				// Actual download request usually has a real range
 				downloadSeen = true
 			}
+			mu.Unlock()
+
+			// Serve the requested range so the download completes.
+			start := int64(0)
+			end := fileSize - 1
+			if rng != "" {
+				var ok bool
+				start, end, ok = parseSimpleRange(rng, fileSize)
+				if !ok {
+					http.Error(w, "Invalid range", http.StatusRequestedRangeNotSatisfiable)
+					return
+				}
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
+				w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+				w.WriteHeader(http.StatusPartialContent)
+			} else {
+				w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
+				w.WriteHeader(http.StatusOK)
+			}
+			_, _ = w.Write(data[start : end+1])
 		}),
 	)
 	defer server.Close()

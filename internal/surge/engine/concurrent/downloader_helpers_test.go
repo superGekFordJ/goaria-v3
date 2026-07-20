@@ -17,6 +17,7 @@ func TestHandlePause_CompletionBoundary(t *testing.T) {
 	fileSize := int64(1000)
 	destPath := filepath.Join(tmpDir, "test.bin")
 	state := types.NewProgressState("test-id", fileSize)
+	state.VerifiedProgress.Store(fileSize)
 	downloader := &ConcurrentDownloader{
 		ID:      "test-id",
 		State:   state,
@@ -253,6 +254,7 @@ func TestHandlePause_CompletionFinalization(t *testing.T) {
 	fileSize := int64(1000)
 	destPath := filepath.Join(tmpDir, "test.bin")
 	progState := types.NewProgressState("test-id", fileSize)
+	progState.VerifiedProgress.Store(fileSize)
 	downloader := &ConcurrentDownloader{
 		ID:    "test-id",
 		State: progState,

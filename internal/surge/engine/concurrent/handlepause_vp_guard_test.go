@@ -1,0 +1,113 @@
+package concurrent
+
+import (
+	"path/filepath"
+	"testing"
+
+	"goaria-v3/internal/surge/engine/types"
+)
+
+// TestHandlePause_RemainingZeroButVPLessThanFileSize_SavesStateNotFinalize
+// verifies that when remainingBytes == 0 but VP < fileSize, handlePause falls
+// through to the standard pause path (returns ErrPaused) instead of finalizing
+// an incomplete file as completed.
+func TestHandlePause_RemainingZeroButVPLessThanFileSize_SavesStateNotFinalize(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(1000)
+	destPath := filepath.Join(tmpDir, "vp_guard.bin")
+	progState := types.NewProgressState("vp-guard", fileSize)
+	progState.VerifiedProgress.Store(500) // VP < fileSize
+
+	d := &ConcurrentDownloader{
+		ID:      "vp-guard",
+		State:   progState,
+		Runtime: &types.RuntimeConfig{},
+	}
+
+	queue := NewTaskQueue()
+	// No tasks → remainingBytes == 0, but VP=500 < fileSize=1000.
+
+	err := d.handlePause(destPath, fileSize, queue, nil)
+	if err != types.ErrPaused {
+		t.Fatalf("expected ErrPaused (save state for resume), got %v", err)
+	}
+}
+
+// TestHandlePause_RemainingZeroAndVPEqualsFileSize_Finalizes verifies the
+// normal completion boundary: VP == fileSize → finalize as completed.
+func TestHandlePause_RemainingZeroAndVPEqualsFileSize_Finalizes(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(1000)
+	destPath := filepath.Join(tmpDir, "vp_equal.bin")
+	progState := types.NewProgressState("vp-equal", fileSize)
+	progState.VerifiedProgress.Store(fileSize)
+
+	d := &ConcurrentDownloader{
+		ID:      "vp-equal",
+		State:   progState,
+		Runtime: &types.RuntimeConfig{},
+	}
+
+	queue := NewTaskQueue()
+
+	err := d.handlePause(destPath, fileSize, queue, nil)
+	if err != nil {
+		t.Fatalf("expected nil (finalize), got %v", err)
+	}
+	if progState.IsPaused() {
+		t.Error("state should not be paused — should be finalized as completed")
+	}
+}
+
+// TestHandlePause_RemainingZeroAndVPGreaterThanFileSize_Finalizes verifies
+// the >= boundary: VP > fileSize (defensive) still finalizes.
+func TestHandlePause_RemainingZeroAndVPGreaterThanFileSize_Finalizes(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(1000)
+	destPath := filepath.Join(tmpDir, "vp_greater.bin")
+	progState := types.NewProgressState("vp-greater", fileSize)
+	progState.VerifiedProgress.Store(1001) // VP > fileSize
+
+	d := &ConcurrentDownloader{
+		ID:      "vp-greater",
+		State:   progState,
+		Runtime: &types.RuntimeConfig{},
+	}
+
+	queue := NewTaskQueue()
+
+	err := d.handlePause(destPath, fileSize, queue, nil)
+	if err != nil {
+		t.Fatalf("expected nil (finalize), got %v", err)
+	}
+	if progState.IsPaused() {
+		t.Error("state should not be paused — should be finalized as completed")
+	}
+}
+
+// TestHandlePause_NilState_RemainingZero_NoPanic verifies the defensive
+// d.State == nil check: handlePause returns nil without panicking.
+func TestHandlePause_NilState_RemainingZero_NoPanic(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(1000)
+	destPath := filepath.Join(tmpDir, "nil_state.bin")
+	d := &ConcurrentDownloader{
+		ID:    "nil-state",
+		State: nil,
+	}
+
+	queue := NewTaskQueue()
+
+	err := d.handlePause(destPath, fileSize, queue, nil)
+	if err != nil {
+		t.Fatalf("expected nil for nil-state completion boundary, got %v", err)
+	}
+}
