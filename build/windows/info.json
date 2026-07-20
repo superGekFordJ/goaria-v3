@@ -1,15 +1,15 @@
 {
 	"fixed": {
-		"file_version": "3.0.0-rc.1"
+		"file_version": "3.0.0-rc.2"
 	},
 	"info": {
 		"0000": {
-			"ProductVersion": "3.0.0-rc.1",
+			"ProductVersion": "3.0.0-rc.2",
 			"CompanyName": "GoAria",
-			"FileDescription": "A modern dual-core downloader with BBR Adaptive Engine",
+			"FileDescription": "GoAria",
 			"LegalCopyright": "(c) 2026, GoAria",
 			"ProductName": "GoAria",
-			"Comments": "GoAria v3 (Surge + Aria2)"
+			"Comments": "A modern dual-core downloader with BBR Adaptive Engine"
 		}
 	}
 }
