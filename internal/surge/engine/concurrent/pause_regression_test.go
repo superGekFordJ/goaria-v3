@@ -131,9 +131,9 @@ func TestPauseRegression_RemainingZeroEarlyExit_Unaffected(t *testing.T) {
 }
 
 // TestPauseRegression_ResumeVerifiedProgressUnaffected verifies that when
-// resuming from a saved state where Downloaded = fileSize but Tasks contain
-// requeued hedged bytes, setupTasks does not regress VerifiedProgress via
-// RecalculateProgress.
+// resuming from a saved state where Downloaded = fileSize but the bitmap has
+// no completed chunks, setupTasks trusts the bitmap (VP=0) and restores
+// Downloaded for UI display only. VP is never inflated by savedState.Downloaded.
 func TestPauseRegression_ResumeVerifiedProgressUnaffected(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
@@ -142,15 +142,15 @@ func TestPauseRegression_ResumeVerifiedProgressUnaffected(t *testing.T) {
 	chunkSize := int64(100)
 	destPath := filepath.Join(tmpDir, "resume_regress.bin")
 
-	// Build a saved state: Downloaded = fileSize (100%), but Tasks contain
-	// requeued hedged bytes (simulating the hedge+kill requeue scenario).
+	// Build a saved state: Downloaded = fileSize (100%), but bitmap has no
+	// completed chunks (inconsistent state from task-loss path inflation).
 	savedBitmap := make([]byte, 4) // 10 chunks → 3 bytes, round up
 	savedState := &types.DownloadState{
 		ID:              "resume-test",
 		URL:             "http://example.com",
 		DestPath:        destPath,
 		TotalSize:       fileSize,
-		Downloaded:      fileSize, // 100% — handlePause max() guard saved this
+		Downloaded:      fileSize, // inflated — handlePause max() guard saved this
 		ActualChunkSize: chunkSize,
 		ChunkBitmap:     savedBitmap,
 		// Tasks contain requeued hedged bytes (already on disk).
@@ -197,12 +197,14 @@ func TestPauseRegression_ResumeVerifiedProgressUnaffected(t *testing.T) {
 		t.Fatal("expected tasks from saved state, got none")
 	}
 
-	// VerifiedProgress should NOT regress below savedState.Downloaded.
-	if got := progState.VerifiedProgress.Load(); got < fileSize {
-		t.Errorf("VerifiedProgress = %d, want >= %d (resume should not regress)", got, fileSize)
+	// FORK-PATCH: VP strictly follows bitmap truth (no completed chunks → 0).
+	// savedState.Downloaded is inflated and must NOT override VP.
+	if got := progState.VerifiedProgress.Load(); got != 0 {
+		t.Errorf("VerifiedProgress = %d, want 0 (bitmap has no completed chunks)", got)
 	}
-	if got := progState.Downloaded.Load(); got != progState.VerifiedProgress.Load() {
-		t.Errorf("Downloaded = %d, want %d (should match VerifiedProgress)", got, progState.VerifiedProgress.Load())
+	// Downloaded is restored to max(savedState.Downloaded, VP) for UI display.
+	if got := progState.Downloaded.Load(); got != fileSize {
+		t.Errorf("Downloaded = %d, want %d (restored for UI display)", got, fileSize)
 	}
 }
 

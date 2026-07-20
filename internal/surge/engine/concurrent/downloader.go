@@ -425,23 +425,29 @@ func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize i
 
 	if isResume {
 		if d.State != nil {
-			d.State.Downloaded.Store(savedState.Downloaded)
-			d.State.VerifiedProgress.Store(savedState.Downloaded)
 			d.State.SetSavedElapsed(time.Duration(savedState.Elapsed))
 			d.State.SyncSessionStart()
 
 			if len(savedState.ChunkBitmap) > 0 && savedState.ActualChunkSize > 0 {
 				d.State.RestoreBitmap(savedState.ChunkBitmap, savedState.ActualChunkSize)
 				d.State.RecalculateProgress(savedState.Tasks)
-				// FORK-PATCH: Prevent resume progress regression. Remaining
-				// tasks may contain hedged bytes already on disk; trust the
-				// saved Downloaded when RecalculateProgress undercounts.
-				if savedState.Downloaded > d.State.VerifiedProgress.Load() {
-					d.State.VerifiedProgress.Store(savedState.Downloaded)
+				// FORK-PATCH: Unconditionally trust bitmap-recalculated VP.
+				// savedState.Downloaded may be inflated by task-loss paths;
+				// overriding VP with it causes false completion. Restore
+				// Downloaded to max(saved, VP) for UI display only.
+				vp := d.State.VerifiedProgress.Load()
+				if savedState.Downloaded > vp {
+					d.State.Downloaded.Store(savedState.Downloaded)
+				} else {
+					d.State.Downloaded.Store(vp)
 				}
-				d.State.Downloaded.Store(d.State.VerifiedProgress.Load())
 				d.State.SyncSessionStart()
 				utils.Debug("Restored chunk map: size %d", savedState.ActualChunkSize)
+			} else {
+				// FORK-PATCH: Legacy .surge files without bitmap — keep
+				// historical behavior: VP = Downloaded = savedState.Downloaded.
+				d.State.VerifiedProgress.Store(savedState.Downloaded)
+				d.State.Downloaded.Store(savedState.Downloaded)
 			}
 		}
 		utils.Debug("Resuming from saved state: %d tasks, %d bytes downloaded", len(savedState.Tasks), savedState.Downloaded)
