@@ -133,7 +133,7 @@ func TestPauseRegression_RemainingZeroEarlyExit_Unaffected(t *testing.T) {
 // TestPauseRegression_ResumeVerifiedProgressUnaffected verifies that when
 // resuming from a saved state where Downloaded = fileSize but the bitmap has
 // no completed chunks, setupTasks trusts the bitmap (VP=0) and restores
-// Downloaded for UI display only. VP is never inflated by savedState.Downloaded.
+// Downloaded for counter consistency. VP is never inflated by savedState.Downloaded.
 func TestPauseRegression_ResumeVerifiedProgressUnaffected(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
