@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/utils"
 )
 
 // fireAndKill advances ticks until one kill fires, returning the tick count.
@@ -26,8 +26,8 @@ func fireAndKill(t *testing.T, d *CDNDetector, clock *time.Time, ctrl *mockCDNCo
 func TestCDNDetector_KillCountCap_DegradesToDrain(t *testing.T) {
 	ctrl := newMockCDNControl()
 	setStats(ctrl,
-		matureWorker(1, 100, 206),        // dead: speed ~0, below dead floor
-		matureWorker(2, 5*types.MB, 206), // healthy peer
+		matureWorker(1, 100, 206),         // dead: speed ~0, below dead floor
+		matureWorker(2, 5*utils.MiB, 206), // healthy peer
 	)
 	d, clock := newTestDetector(ctrl)
 
@@ -63,7 +63,7 @@ func TestCDNDetector_KillCountReset_OnRecovery(t *testing.T) {
 	ctrl := newMockCDNControl()
 	setStats(ctrl,
 		matureWorker(1, 100, 206),
-		matureWorker(2, 5*types.MB, 206),
+		matureWorker(2, 5*utils.MiB, 206),
 	)
 	d, clock := newTestDetector(ctrl)
 
@@ -77,8 +77,8 @@ func TestCDNDetector_KillCountReset_OnRecovery(t *testing.T) {
 
 	// Recover worker 1 to healthy speed → reason == "" → killCount reset.
 	setStats(ctrl,
-		matureWorker(1, 5*types.MB, 206),
-		matureWorker(2, 5*types.MB, 206),
+		matureWorker(1, 5*utils.MiB, 206),
+		matureWorker(2, 5*utils.MiB, 206),
 	)
 	for i := 0; i < 5; i++ {
 		advanceTick(d, clock)
@@ -87,7 +87,7 @@ func TestCDNDetector_KillCountReset_OnRecovery(t *testing.T) {
 	// Make worker 1 dead again → should start fresh (killCount=0 → 1st kill, not 3rd → drain).
 	setStats(ctrl,
 		matureWorker(1, 100, 206),
-		matureWorker(2, 5*types.MB, 206),
+		matureWorker(2, 5*utils.MiB, 206),
 	)
 
 	prevKills := ctrl.killsCount()
@@ -116,7 +116,7 @@ func TestCDNDetector_KillCountNotReset_OnWarmup(t *testing.T) {
 	ctrl := newMockCDNControl()
 	setStats(ctrl,
 		matureWorker(1, 100, 206),
-		matureWorker(2, 5*types.MB, 206),
+		matureWorker(2, 5*utils.MiB, 206),
 	)
 	d, clock := newTestDetector(ctrl)
 
@@ -133,7 +133,7 @@ func TestCDNDetector_KillCountNotReset_OnWarmup(t *testing.T) {
 	warmup := matureWorker(1, 100, 206)
 	warmup.WorkerStartUnix = d.now().UnixNano()
 	warmup.SessionBytes = 0
-	setStats(ctrl, warmup, matureWorker(2, 5*types.MB, 206))
+	setStats(ctrl, warmup, matureWorker(2, 5*utils.MiB, 206))
 	for i := 0; i < 5; i++ {
 		advanceTick(d, clock)
 	}
@@ -141,7 +141,7 @@ func TestCDNDetector_KillCountNotReset_OnWarmup(t *testing.T) {
 	// Worker 1 matures and is dead again. killCount should still be 3
 	// (preserved through warmup), so the next fire should be a drain.
 	mature := matureWorker(1, 100, 206)
-	setStats(ctrl, mature, matureWorker(2, 5*types.MB, 206))
+	setStats(ctrl, mature, matureWorker(2, 5*utils.MiB, 206))
 
 	prevKills := ctrl.killsCount()
 	prevDrains := ctrl.drainsCount()
@@ -169,7 +169,7 @@ func TestCDNDetector_KillCountAbsentEviction(t *testing.T) {
 	ctrl := newMockCDNControl()
 	setStats(ctrl,
 		matureWorker(1, 100, 206),
-		matureWorker(2, 5*types.MB, 206),
+		matureWorker(2, 5*utils.MiB, 206),
 	)
 	d, clock := newTestDetector(ctrl)
 
@@ -179,7 +179,7 @@ func TestCDNDetector_KillCountAbsentEviction(t *testing.T) {
 	}
 
 	// Remove worker 1 from stats (simulating drain/exit).
-	setStats(ctrl, matureWorker(2, 5*types.MB, 206))
+	setStats(ctrl, matureWorker(2, 5*utils.MiB, 206))
 	for i := 0; i < cdnWorkerEvictTicks+2; i++ {
 		advanceTick(d, clock)
 	}
@@ -198,7 +198,7 @@ func TestCDNDetector_KillCountAbsentEviction(t *testing.T) {
 	// Re-add worker 1 as dead → killCount should be 0 (fresh state).
 	setStats(ctrl,
 		matureWorker(1, 100, 206),
-		matureWorker(2, 5*types.MB, 206),
+		matureWorker(2, 5*utils.MiB, 206),
 	)
 
 	prevKills := ctrl.killsCount()
@@ -224,7 +224,7 @@ func TestCDNDetector_DrainAtMostOnePerGidPerTick(t *testing.T) {
 	setStats(ctrl,
 		matureWorker(1, 100, 206),
 		matureWorker(3, 100, 206),
-		matureWorker(2, 5*types.MB, 206),
+		matureWorker(2, 5*utils.MiB, 206),
 	)
 	d, clock := newTestDetector(ctrl)
 

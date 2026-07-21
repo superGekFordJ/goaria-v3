@@ -3,28 +3,24 @@ package types
 import (
 	"context"
 	"time"
-)
 
-const (
-	KB = 1 << 10
-	MB = 1 << 20
-	GB = 1 << 30
+	"goaria-v3/internal/surge/utils"
 )
 
 const (
 	IncompleteSuffix = ".surge"
 
-	MinChunk     = 2 * MB
-	AlignSize    = 4 * KB
-	WorkerBuffer = 512 * KB
+	MinChunk     = 2 * utils.MiB
+	AlignSize    = 4 * utils.KiB
+	WorkerBuffer = 512 * utils.KiB
 
 	// FORK-PATCH: MaxPoolBufferCap is the maximum capacity (4MB) allowed for
 	// buffer pool entries. Buffers whose capacity exceeds this threshold are
 	// discarded rather than returned to the pool, preventing memory leaks from
 	// oversized pinned slices (Go Issue #23199).
-	MaxPoolBufferCap = 4 * MB
+	MaxPoolBufferCap = 4 * utils.MiB
 
-	WorkerBatchSize     = 1 * MB
+	WorkerBatchSize     = 1 * utils.MiB
 	WorkerBatchInterval = 200 * time.Millisecond
 
 	PerDownloadMax = 32
@@ -62,7 +58,7 @@ const (
 	// FORK-PATCH: Minimum chunk floor for tail-end adaptive degradation.
 	// When total remaining < activeWorkers × MinChunk, the dynamic floor allows
 	// work stealing to split smaller chunks, utilizing idle workers in the tail phase.
-	MinChunkDynamicFloor = 256 * KB
+	MinChunkDynamicFloor = 256 * utils.KiB
 )
 
 type DownloadConfig struct {

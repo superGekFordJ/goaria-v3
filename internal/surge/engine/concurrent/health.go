@@ -129,7 +129,7 @@ func (d *ConcurrentDownloader) checkWorkerHealth() {
 		if downloadedBytes < 0 {
 			downloadedBytes = 0
 		}
-		if downloadedBytes < int64(types.MB) {
+		if downloadedBytes < int64(utils.MiB) {
 			continue
 		}
 
@@ -145,7 +145,7 @@ func (d *ConcurrentDownloader) checkWorkerHealth() {
 
 			if isBelowThreshold {
 				utils.Debug("Health: Worker %d slow (%.2f KB/s vs mean %.2f KB/s), cancelling",
-					workerID, workerSpeed/float64(types.KB), meanSpeed/float64(types.KB))
+					workerID, workerSpeed/float64(utils.KiB), meanSpeed/float64(utils.KiB))
 				if active.Cancel != nil {
 					active.Cancel()
 				}

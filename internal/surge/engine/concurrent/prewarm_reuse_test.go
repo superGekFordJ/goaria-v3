@@ -10,10 +10,11 @@ import (
 	"goaria-v3/internal/surge/engine"
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/testutil"
+	"goaria-v3/internal/surge/utils"
 )
 
 func TestPrewarmConnections_Reuse(t *testing.T) {
-	fileSize := int64(1 * types.KB)
+	fileSize := int64(1 * utils.KiB)
 	server := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),

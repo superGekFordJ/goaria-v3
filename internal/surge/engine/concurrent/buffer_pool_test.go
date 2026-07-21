@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/utils"
 )
 
 func TestTieredBufferPool_GetPut(t *testing.T) {
@@ -49,7 +50,7 @@ func TestTieredBufferPool_PutWrongTier(t *testing.T) {
 	p := NewTieredBufferPool()
 
 	// Create a buffer with cap that doesn't match any tier (256KB)
-	wrong := make([]byte, 256*types.KB)
+	wrong := make([]byte, 256*utils.KiB)
 	wrongPtr := &wrong
 
 	// Put it — should be discarded (no matching tier)
@@ -70,21 +71,21 @@ func TestTierForSpeed(t *testing.T) {
 		want  bufferTier
 	}{
 		{0, tierSmall},
-		{1 * float64(types.MB), tierSmall},
-		{9.9 * float64(types.MB), tierSmall},
-		{10 * float64(types.MB), tierSmall},    // exactly 10MB/s → not > 10MB/s → small
-		{10.1 * float64(types.MB), tierMedium}, // just above 10MB/s → medium
-		{15 * float64(types.MB), tierMedium},
-		{50 * float64(types.MB), tierMedium},  // exactly 50MB/s → not > 50MB/s → medium
-		{50.1 * float64(types.MB), tierLarge}, // just above 50MB/s → large
-		{60 * float64(types.MB), tierLarge},
-		{100 * float64(types.MB), tierLarge},
+		{1 * float64(utils.MiB), tierSmall},
+		{9.9 * float64(utils.MiB), tierSmall},
+		{10 * float64(utils.MiB), tierSmall},    // exactly 10MB/s → not > 10MB/s → small
+		{10.1 * float64(utils.MiB), tierMedium}, // just above 10MB/s → medium
+		{15 * float64(utils.MiB), tierMedium},
+		{50 * float64(utils.MiB), tierMedium},  // exactly 50MB/s → not > 50MB/s → medium
+		{50.1 * float64(utils.MiB), tierLarge}, // just above 50MB/s → large
+		{60 * float64(utils.MiB), tierLarge},
+		{100 * float64(utils.MiB), tierLarge},
 	}
 
 	for _, tt := range tests {
 		got := TierForSpeed(tt.speed)
 		if got != tt.want {
-			t.Errorf("TierForSpeed(%.1f MB/s) = %d, want %d", tt.speed/float64(types.MB), got, tt.want)
+			t.Errorf("TierForSpeed(%.1f MB/s) = %d, want %d", tt.speed/float64(utils.MiB), got, tt.want)
 		}
 	}
 }
@@ -95,12 +96,12 @@ func TestTierForBufferSize(t *testing.T) {
 		want bufferTier
 	}{
 		{0, tierSmall},
-		{16 * types.KB, tierSmall},
-		{32 * types.KB, tierSmall},   // exactly 32KB → tierSmall (>= 32KB)
-		{256 * types.KB, tierSmall},  // 256KB >= 32KB but < 512KB → tierSmall
-		{512 * types.KB, tierMedium}, // exactly 512KB → tierMedium
-		{1 * types.MB, tierLarge},    // exactly 1MB → tierLarge
-		{2 * types.MB, tierLarge},    // > 1MB → tierLarge
+		{16 * utils.KiB, tierSmall},
+		{32 * utils.KiB, tierSmall},   // exactly 32KB → tierSmall (>= 32KB)
+		{256 * utils.KiB, tierSmall},  // 256KB >= 32KB but < 512KB → tierSmall
+		{512 * utils.KiB, tierMedium}, // exactly 512KB → tierMedium
+		{1 * utils.MiB, tierLarge},    // exactly 1MB → tierLarge
+		{2 * utils.MiB, tierLarge},    // > 1MB → tierLarge
 	}
 
 	for _, tt := range tests {

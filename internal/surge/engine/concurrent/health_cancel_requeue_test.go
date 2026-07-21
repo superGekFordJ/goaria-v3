@@ -13,6 +13,7 @@ import (
 
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/testutil"
+	"goaria-v3/internal/surge/utils"
 )
 
 // nonzeroTarpitHandler sends a configurable number of non-zero bytes (0xFF)
@@ -140,9 +141,9 @@ func TestHealthCancelRequeue_PreservesSharedMaxOffset(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(512 * types.KB)
+	fileSize := int64(512 * utils.KiB)
 	// Tarpit: sends 128KB of 0xFF then holds (stall triggers health-cancel).
-	tarpitSrv := newNonzeroTarpitServer(t, fileSize, 128*types.KB)
+	tarpitSrv := newNonzeroTarpitServer(t, fileSize, 128*utils.KiB)
 	// Pattern server: serves non-zero deterministic data, fast completion.
 	normalSrv := newPatternServer(t, fileSize)
 
@@ -158,7 +159,7 @@ func TestHealthCancelRequeue_PreservesSharedMaxOffset(t *testing.T) {
 	runtime := &types.RuntimeConfig{
 		MaxConnectionsPerDownload: 2,
 		Workers:                   2,
-		MinChunkSize:              64 * types.KB,
+		MinChunkSize:              64 * utils.KiB,
 		StallTimeout:              500 * time.Millisecond,
 	}
 	d := NewConcurrentDownloader("health-requeue", nil, state, runtime)
@@ -201,9 +202,9 @@ func TestHealthCancelRequeue_NilSharedMaxOffset_NoOvercount(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(256 * types.KB)
+	fileSize := int64(256 * utils.KiB)
 	// Tarpit: sends 64KB of 0xFF then holds.
-	tarpitSrv := newNonzeroTarpitServer(t, fileSize, 64*types.KB)
+	tarpitSrv := newNonzeroTarpitServer(t, fileSize, 64*utils.KiB)
 	// Pattern server for retry after mirror rotation.
 	normalSrv := newPatternServer(t, fileSize)
 
@@ -219,7 +220,7 @@ func TestHealthCancelRequeue_NilSharedMaxOffset_NoOvercount(t *testing.T) {
 	runtime := &types.RuntimeConfig{
 		MaxConnectionsPerDownload: 1,
 		Workers:                   1,
-		MinChunkSize:              64 * types.KB,
+		MinChunkSize:              64 * utils.KiB,
 		StallTimeout:              500 * time.Millisecond,
 	}
 	d := NewConcurrentDownloader("nil-shared", nil, state, runtime)

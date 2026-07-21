@@ -12,6 +12,7 @@ import (
 
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/testutil"
+	"goaria-v3/internal/surge/utils"
 )
 
 // TestDrainWorker_MarksDraining verifies that DrainWorker sets both the
@@ -60,7 +61,7 @@ func TestDrainWorker_ExitsAfterCurrentChunk(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(4 * types.MB)
+	fileSize := int64(4 * utils.MiB)
 	// Moderate byte latency ensures the worker is still downloading the first
 	// chunk when we issue the drain, so the drain flag is checked before
 	// the worker can pop the next task. 2µs/byte ≈ 2s per 1MB chunk.
@@ -169,7 +170,7 @@ func TestDrainWorker_IdleWorker_DesignLimit(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(1 * types.MB)
+	fileSize := int64(1 * utils.MiB)
 	server := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),
@@ -187,7 +188,7 @@ func TestDrainWorker_IdleWorker_DesignLimit(t *testing.T) {
 	defer func() { _ = f.Close() }()
 
 	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{
-		WorkerBufferSize: 32 * types.KB,
+		WorkerBufferSize: 32 * utils.KiB,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -214,7 +215,7 @@ func TestDrainWorker_IdleWorker_DesignLimit(t *testing.T) {
 	queue.Push(types.Task{Offset: 0, Length: fileSize})
 
 	// Push a second task that should NOT be picked up after drain
-	queue.Push(types.Task{Offset: 0, Length: 1 * types.MB})
+	queue.Push(types.Task{Offset: 0, Length: 1 * utils.MiB})
 
 	done := make(chan struct{})
 	go func() {
@@ -246,7 +247,7 @@ func TestDrainWorker_IdleWorker_DesignLimit(t *testing.T) {
 // since queue.Close() wakes up all blocked workers.
 func TestDrainWorker_IdleWorker_QueueClose(t *testing.T) {
 	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{
-		WorkerBufferSize: 32 * types.KB,
+		WorkerBufferSize: 32 * utils.KiB,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -306,21 +307,21 @@ func TestGracePeriod_DownloadVolumeCheck(t *testing.T) {
 
 	// Worker 0: 10 MB/s, started 10s ago, downloaded >1MB → eligible for slow check
 	w0 := &ActiveTask{
-		Task:      types.Task{Offset: 0, Length: 10 * types.MB},
+		Task:      types.Task{Offset: 0, Length: 10 * utils.MiB},
 		StartTime: now.Add(-10 * time.Second),
 		Speed:     10 * 1024 * 1024,
 		Cancel:    w0Cancel,
 	}
-	w0.CurrentOffset.Store(2 * types.MB) // Downloaded 2MB > 1MB
+	w0.CurrentOffset.Store(2 * utils.MiB) // Downloaded 2MB > 1MB
 
 	// Worker 1: 0.1 MB/s, started 10s ago, but downloaded <1MB → protected by volume grace
 	w1 := &ActiveTask{
-		Task:      types.Task{Offset: 10 * types.MB, Length: 10 * types.MB},
+		Task:      types.Task{Offset: 10 * utils.MiB, Length: 10 * utils.MiB},
 		StartTime: now.Add(-10 * time.Second),
 		Speed:     100 * 1024,
 		Cancel:    w1Cancel,
 	}
-	w1.CurrentOffset.Store(10*types.MB + 100*types.KB) // Only 100KB downloaded < 1MB
+	w1.CurrentOffset.Store(10*utils.MiB + 100*utils.KiB) // Only 100KB downloaded < 1MB
 
 	d.activeTasks[0] = w0
 	d.activeTasks[1] = w1
@@ -366,7 +367,7 @@ func TestStallDetection_NotBlockedByVolumeGrace(t *testing.T) {
 	// Volume grace would protect it from slow speed check, but stall
 	// detection must still fire.
 	active := &ActiveTask{
-		Task:      types.Task{Offset: 0, Length: 10 * types.MB},
+		Task:      types.Task{Offset: 0, Length: 10 * utils.MiB},
 		StartTime: now.Add(-30 * time.Second),
 		Cancel:    stalledCancel,
 	}
@@ -393,7 +394,7 @@ func TestScaleWorkers_Up(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(1 * types.MB)
+	fileSize := int64(1 * utils.MiB)
 	server := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),
@@ -410,7 +411,7 @@ func TestScaleWorkers_Up(t *testing.T) {
 	defer func() { _ = f.Close() }()
 
 	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{
-		WorkerBufferSize: 32 * types.KB,
+		WorkerBufferSize: 32 * utils.KiB,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -625,7 +626,7 @@ func TestScaleWorkers_UpDuringActiveWorkers(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(1 * types.MB)
+	fileSize := int64(1 * utils.MiB)
 	server := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),
@@ -642,7 +643,7 @@ func TestScaleWorkers_UpDuringActiveWorkers(t *testing.T) {
 	defer func() { _ = f.Close() }()
 
 	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{
-		WorkerBufferSize: 32 * types.KB,
+		WorkerBufferSize: 32 * utils.KiB,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -723,7 +724,7 @@ func TestConnErrorDetection_503(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(1 * types.MB)
+	fileSize := int64(1 * utils.MiB)
 	server := testutil.NewMockServerT(t,
 		testutil.WithHandler(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -760,7 +761,7 @@ func TestConnErrorDetection_429(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(1 * types.MB)
+	fileSize := int64(1 * utils.MiB)
 	server := testutil.NewMockServerT(t,
 		testutil.WithHandler(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusTooManyRequests)
@@ -797,7 +798,7 @@ func TestScaleWorkers_ConcurrentScaleUp(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(1 * types.MB)
+	fileSize := int64(1 * utils.MiB)
 	server := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),
@@ -814,7 +815,7 @@ func TestScaleWorkers_ConcurrentScaleUp(t *testing.T) {
 	defer func() { _ = f.Close() }()
 
 	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{
-		WorkerBufferSize: 32 * types.KB,
+		WorkerBufferSize: 32 * utils.KiB,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

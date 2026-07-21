@@ -15,6 +15,7 @@ import (
 
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/testutil"
+	"goaria-v3/internal/surge/utils"
 )
 
 // tarpitHandler serves a configurable number of bytes for each Range request
@@ -139,9 +140,9 @@ func TestTarpitCompletion_PartialDataHang(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(1 * types.MB)
+	fileSize := int64(1 * utils.MiB)
 	// Tarpit server: sends 256KB then holds (no EOF).
-	tarpitSrv := newTarpitServer(t, fileSize, 256*types.KB, 0)
+	tarpitSrv := newTarpitServer(t, fileSize, 256*utils.KiB, 0)
 	// Normal server completes the same range so the hedge partner can finish.
 	normalSrv := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
@@ -164,7 +165,7 @@ func TestTarpitCompletion_PartialDataHang(t *testing.T) {
 	runtime := &types.RuntimeConfig{
 		MaxConnectionsPerDownload: 2,
 		Workers:                   2,
-		MinChunkSize:              128 * types.KB,
+		MinChunkSize:              128 * utils.KiB,
 	}
 	d := NewConcurrentDownloader("tarpit-partial", nil, state, runtime)
 
@@ -194,9 +195,9 @@ func TestTarpitCompletion_TrickleEvadesStall(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(512 * types.KB)
+	fileSize := int64(512 * utils.KiB)
 	// Trickle: send 128KB then 1 byte per 100ms (evades 3s stall detection).
-	tarpitSrv := newTarpitServer(t, fileSize, 128*types.KB, 100*time.Millisecond)
+	tarpitSrv := newTarpitServer(t, fileSize, 128*utils.KiB, 100*time.Millisecond)
 	normalSrv := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),
@@ -215,7 +216,7 @@ func TestTarpitCompletion_TrickleEvadesStall(t *testing.T) {
 	runtime := &types.RuntimeConfig{
 		MaxConnectionsPerDownload: 2,
 		Workers:                   2,
-		MinChunkSize:              64 * types.KB,
+		MinChunkSize:              64 * utils.KiB,
 	}
 	d := NewConcurrentDownloader("tarpit-trickle", nil, state, runtime)
 
@@ -240,8 +241,8 @@ func TestTarpitCompletion_RequeueGuard(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(1 * types.MB)
-	tarpitSrv := newTarpitServer(t, fileSize, 128*types.KB, 0)
+	fileSize := int64(1 * utils.MiB)
+	tarpitSrv := newTarpitServer(t, fileSize, 128*utils.KiB, 0)
 	normalSrv := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),
@@ -260,7 +261,7 @@ func TestTarpitCompletion_RequeueGuard(t *testing.T) {
 	runtime := &types.RuntimeConfig{
 		MaxConnectionsPerDownload: 2,
 		Workers:                   2,
-		MinChunkSize:              128 * types.KB,
+		MinChunkSize:              128 * utils.KiB,
 	}
 	d := NewConcurrentDownloader("tarpit-guard", nil, state, runtime)
 
@@ -285,7 +286,7 @@ func TestTarpitCompletion_NormalServerUnaffected(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(1 * types.MB)
+	fileSize := int64(1 * utils.MiB)
 	server := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),
@@ -495,7 +496,7 @@ func TestTarpitCompletion_DeadSilentTarpitMutexFix(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(512 * types.KB)
+	fileSize := int64(512 * utils.KiB)
 	// Dead-silent tarpit: sends 0 bytes, holds connection forever.
 	tarpitSrv := newTarpitServer(t, fileSize, 0, 0)
 	normalSrv := testutil.NewMockServerT(t,
@@ -516,7 +517,7 @@ func TestTarpitCompletion_DeadSilentTarpitMutexFix(t *testing.T) {
 	runtime := &types.RuntimeConfig{
 		MaxConnectionsPerDownload: 2,
 		Workers:                   2,
-		MinChunkSize:              64 * types.KB,
+		MinChunkSize:              64 * utils.KiB,
 	}
 	d := NewConcurrentDownloader("tarpit-deadsilent", nil, state, runtime)
 
@@ -629,7 +630,7 @@ func TestWorker_ActiveWorkersCountCorrectOnMutexExit(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(512 * types.KB)
+	fileSize := int64(512 * utils.KiB)
 	normalSrv := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),
@@ -648,7 +649,7 @@ func TestWorker_ActiveWorkersCountCorrectOnMutexExit(t *testing.T) {
 	runtime := &types.RuntimeConfig{
 		MaxConnectionsPerDownload: 4,
 		Workers:                   4,
-		MinChunkSize:              64 * types.KB,
+		MinChunkSize:              64 * utils.KiB,
 	}
 	d := NewConcurrentDownloader("aw-count", nil, state, runtime)
 

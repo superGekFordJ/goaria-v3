@@ -12,6 +12,7 @@ import (
 
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/testutil"
+	"goaria-v3/internal/surge/utils"
 )
 
 // earlyEOFHandler serves a 206 Partial Content response but only sends
@@ -73,9 +74,9 @@ func TestEarlyEOF_TaskRequeuedNotLost(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(256 * types.KB)
+	fileSize := int64(256 * utils.KiB)
 	// Early-EOF server: sends only 64KB of the 256KB range, then EOF.
-	eofSrv := newEarlyEOFServer(t, fileSize, 64*types.KB)
+	eofSrv := newEarlyEOFServer(t, fileSize, 64*utils.KiB)
 	// Normal server completes the full range on retry (mirror failover).
 	normalSrv := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
@@ -95,7 +96,7 @@ func TestEarlyEOF_TaskRequeuedNotLost(t *testing.T) {
 	runtime := &types.RuntimeConfig{
 		MaxConnectionsPerDownload: 1,
 		Workers:                   1,
-		MinChunkSize:              256 * types.KB,
+		MinChunkSize:              256 * utils.KiB,
 	}
 	d := NewConcurrentDownloader("early-eof", nil, state, runtime)
 
@@ -124,7 +125,7 @@ func TestEarlyEOF_NormalCompletion_Unaffected(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(256 * types.KB)
+	fileSize := int64(256 * utils.KiB)
 	normalSrv := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),
@@ -143,7 +144,7 @@ func TestEarlyEOF_NormalCompletion_Unaffected(t *testing.T) {
 	runtime := &types.RuntimeConfig{
 		MaxConnectionsPerDownload: 1,
 		Workers:                   1,
-		MinChunkSize:              256 * types.KB,
+		MinChunkSize:              256 * utils.KiB,
 	}
 	d := NewConcurrentDownloader("normal-complete", nil, state, runtime)
 

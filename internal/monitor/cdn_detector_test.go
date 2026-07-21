@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/utils"
 )
 
 // mockCDNControl records Kill/SetSlowThreshold calls and serves fixed stats.
@@ -102,7 +103,7 @@ func matureWorker(id int, speed float64, status int32) types.WorkerSnapshot {
 		WorkerID:         id,
 		EMASpeed:         speed,
 		WorkerStartUnix:  time.Now().Add(-60 * time.Second).UnixNano(),
-		SessionBytes:     5 * types.MB,
+		SessionBytes:     5 * utils.MiB,
 		HTTPStatus:       status,
 		LastActivityUnix: time.Now().UnixNano(),
 	}
@@ -113,7 +114,7 @@ func matureWorker(id int, speed float64, status int32) types.WorkerSnapshot {
 // tick so a fresh downloader after pause/resume is re-armed.
 func TestCDNDetector_ThresholdTakeover(t *testing.T) {
 	ctrl := newMockCDNControl()
-	setStats(ctrl, matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206))
+	setStats(ctrl, matureWorker(1, 5*utils.MiB, 206), matureWorker(2, 5*utils.MiB, 206))
 	d, clock := newTestDetector(ctrl)
 
 	advanceTick(d, clock)
@@ -131,8 +132,8 @@ func TestCDNDetector_ThresholdTakeover(t *testing.T) {
 // killed even if it is the slowest.
 func TestCDNDetector_WarmupExemption(t *testing.T) {
 	ctrl := newMockCDNControl()
-	fast := matureWorker(2, 5*types.MB, 206)
-	newborn := matureWorker(1, 1*types.KB, 206)
+	fast := matureWorker(2, 5*utils.MiB, 206)
+	newborn := matureWorker(1, 1*utils.KiB, 206)
 	newborn.WorkerStartUnix = time.Now().UnixNano() // just started
 	newborn.SessionBytes = 0
 	setStats(ctrl, newborn, fast)
@@ -150,8 +151,8 @@ func TestCDNDetector_WarmupExemption(t *testing.T) {
 func TestCDNDetector_ThrottleKill(t *testing.T) {
 	ctrl := newMockCDNControl()
 	setStats(ctrl,
-		matureWorker(1, 100*types.KB, 206), // throttled: steady 100KB/s
-		matureWorker(2, 5*types.MB, 206),   // healthy peer: 5MB/s
+		matureWorker(1, 100*utils.KiB, 206), // throttled: steady 100KB/s
+		matureWorker(2, 5*utils.MiB, 206),   // healthy peer: 5MB/s
 	)
 	d, clock := newTestDetector(ctrl)
 	// Need >=10 ticks to fill the window + 5 ticks sustain.
@@ -171,8 +172,8 @@ func TestCDNDetector_ThrottleKill(t *testing.T) {
 func TestCDNDetector_ThrottleSustainDebounce(t *testing.T) {
 	ctrl := newMockCDNControl()
 	setStats(ctrl,
-		matureWorker(1, 100*types.KB, 206),
-		matureWorker(2, 5*types.MB, 206),
+		matureWorker(1, 100*utils.KiB, 206),
+		matureWorker(2, 5*utils.MiB, 206),
 	)
 	d, clock := newTestDetector(ctrl)
 	// The verdict holds from the first sample; sustain is 5s, so the kill lands
@@ -194,8 +195,8 @@ func TestCDNDetector_ThrottleSustainDebounce(t *testing.T) {
 func TestCDNDetector_DeadKill(t *testing.T) {
 	ctrl := newMockCDNControl()
 	setStats(ctrl,
-		matureWorker(1, 100, 206),        // ~0, below dead floor (2KB)
-		matureWorker(2, 5*types.MB, 206), // healthy peer
+		matureWorker(1, 100, 206),         // ~0, below dead floor (2KB)
+		matureWorker(2, 5*utils.MiB, 206), // healthy peer
 	)
 	d, clock := newTestDetector(ctrl)
 	for i := 0; i < 18; i++ {
@@ -214,8 +215,8 @@ func TestCDNDetector_DeadKill(t *testing.T) {
 func TestCDNDetector_AllSlowNoKill(t *testing.T) {
 	ctrl := newMockCDNControl()
 	setStats(ctrl,
-		matureWorker(1, 100*types.KB, 206),
-		matureWorker(2, 120*types.KB, 206),
+		matureWorker(1, 100*utils.KiB, 206),
+		matureWorker(2, 120*utils.KiB, 206),
 	)
 	d, clock := newTestDetector(ctrl)
 	for i := 0; i < 18; i++ {
@@ -248,8 +249,8 @@ func TestCDNDetector_AllDeadNoKill(t *testing.T) {
 func TestCDNDetector_PoisonNoKill(t *testing.T) {
 	ctrl := newMockCDNControl()
 	setStats(ctrl,
-		matureWorker(1, 100*types.KB, 403), // poisoned
-		matureWorker(2, 5*types.MB, 206),
+		matureWorker(1, 100*utils.KiB, 403), // poisoned
+		matureWorker(2, 5*utils.MiB, 206),
 	)
 	d, clock := newTestDetector(ctrl)
 	for i := 0; i < 18; i++ {
@@ -281,7 +282,7 @@ func TestCDNDetector_OneKillPerTick(t *testing.T) {
 	setStats(ctrl,
 		matureWorker(1, 100, 206),
 		matureWorker(3, 100, 206),
-		matureWorker(2, 5*types.MB, 206),
+		matureWorker(2, 5*utils.MiB, 206),
 	)
 	d, clock := newTestDetector(ctrl)
 	// Each tick may kill at most one worker (two dead workers alternate, each
@@ -308,7 +309,7 @@ func TestCDNDetector_Cooldown(t *testing.T) {
 	ctrl := newMockCDNControl()
 	setStats(ctrl,
 		matureWorker(1, 100, 206),
-		matureWorker(2, 5*types.MB, 206),
+		matureWorker(2, 5*utils.MiB, 206),
 	)
 	d, clock := newTestDetector(ctrl)
 	// Drive past sustain to land the first kill.
@@ -339,7 +340,7 @@ func TestCDNDetector_Cooldown(t *testing.T) {
 // TestCDNDetector_GIDRemoved cleans up state when a gid disappears.
 func TestCDNDetector_GIDRemoved(t *testing.T) {
 	ctrl := newMockCDNControl()
-	setStats(ctrl, matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206))
+	setStats(ctrl, matureWorker(1, 5*utils.MiB, 206), matureWorker(2, 5*utils.MiB, 206))
 	d, clock := newTestDetector(ctrl)
 	advanceTick(d, clock)
 	d.mu.Lock()
@@ -367,7 +368,7 @@ func TestCDNDetector_GIDRemoved(t *testing.T) {
 // preventing unbounded growth across ScaleWorkers up/down cycles.
 func TestCDNDetector_WorkerStateEviction(t *testing.T) {
 	ctrl := newMockCDNControl()
-	setStats(ctrl, matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206), matureWorker(3, 5*types.MB, 206))
+	setStats(ctrl, matureWorker(1, 5*utils.MiB, 206), matureWorker(2, 5*utils.MiB, 206), matureWorker(3, 5*utils.MiB, 206))
 	d, clock := newTestDetector(ctrl)
 	advanceTick(d, clock)
 	// Prime workerState for all three workers via the decision tree path.
@@ -386,7 +387,7 @@ func TestCDNDetector_WorkerStateEviction(t *testing.T) {
 	}
 	// Worker 3 disappears from stats; after enough ticks it must be pruned from
 	// both history and workerState.
-	setStats(ctrl, matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206))
+	setStats(ctrl, matureWorker(1, 5*utils.MiB, 206), matureWorker(2, 5*utils.MiB, 206))
 	for i := 0; i < cdnWorkerEvictTicks+1; i++ {
 		advanceTick(d, clock)
 	}
@@ -418,13 +419,13 @@ func TestCDNDetector_WorkerStateEviction(t *testing.T) {
 // retains its heldSince/lastKill timers rather than being reset.
 func TestCDNDetector_WorkerStateGraceOnSingleAbsent(t *testing.T) {
 	ctrl := newMockCDNControl()
-	setStats(ctrl, matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206))
+	setStats(ctrl, matureWorker(1, 5*utils.MiB, 206), matureWorker(2, 5*utils.MiB, 206))
 	d, clock := newTestDetector(ctrl)
 	for i := 0; i < 3; i++ {
 		advanceTick(d, clock)
 	}
 	// Worker 2 vanishes for a single tick (still alive, just not sampled).
-	setStats(ctrl, matureWorker(1, 5*types.MB, 206))
+	setStats(ctrl, matureWorker(1, 5*utils.MiB, 206))
 	advanceTick(d, clock)
 	d.mu.Lock()
 	ws := d.workerState["sg_test"]
@@ -437,10 +438,10 @@ func TestCDNDetector_WorkerStateGraceOnSingleAbsent(t *testing.T) {
 		t.Fatal("worker 2 state should survive a single absent tick (grace period)")
 	}
 	// Reappearing resets the absent counter so the grace window restarts.
-	setStats(ctrl, matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206))
+	setStats(ctrl, matureWorker(1, 5*utils.MiB, 206), matureWorker(2, 5*utils.MiB, 206))
 	advanceTick(d, clock)
 	// Now absent again for one tick — still within grace.
-	setStats(ctrl, matureWorker(1, 5*types.MB, 206))
+	setStats(ctrl, matureWorker(1, 5*utils.MiB, 206))
 	advanceTick(d, clock)
 	d.mu.Lock()
 	ws = d.workerState["sg_test"]
@@ -461,23 +462,23 @@ func TestCDNDetector_PoisonExcludedFromHealthyMedian(t *testing.T) {
 	// Worker 1: 403 poison but positive speed (the theoretical window).
 	// Worker 2: target (slow). Worker 3: genuine healthy peer.
 	setStats(ctrl,
-		matureWorker(1, 5*types.MB, 403),
-		matureWorker(2, 100*types.KB, 206),
-		matureWorker(3, 5*types.MB, 206),
+		matureWorker(1, 5*utils.MiB, 403),
+		matureWorker(2, 100*utils.KiB, 206),
+		matureWorker(3, 5*utils.MiB, 206),
 	)
 	d, _ := newTestDetector(ctrl)
 	median := d.healthyPeerMedian(
 		[]types.WorkerSnapshot{
-			matureWorker(1, 5*types.MB, 403),
-			matureWorker(2, 100*types.KB, 206),
-			matureWorker(3, 5*types.MB, 206),
+			matureWorker(1, 5*utils.MiB, 403),
+			matureWorker(2, 100*utils.KiB, 206),
+			matureWorker(3, 5*utils.MiB, 206),
 		},
 		2, // target = worker 2
 		time.Now(),
 	)
 	// Only worker 3 qualifies (worker 1 excluded by poison). Median = 5MB.
-	if median != 5*types.MB {
-		t.Errorf("healthyPeerMedian = %v, want %v (4xx excluded)", median, 5*types.MB)
+	if median != 5*utils.MiB {
+		t.Errorf("healthyPeerMedian = %v, want %v (4xx excluded)", median, 5*utils.MiB)
 	}
 }
 
@@ -485,7 +486,7 @@ func TestCDNDetector_PoisonExcludedFromHealthyMedian(t *testing.T) {
 // (sync.Once guards the channel close — no double-close panic).
 func TestCDNDetector_ConcurrentStop(t *testing.T) {
 	ctrl := newMockCDNControl()
-	setStats(ctrl, matureWorker(1, 5*types.MB, 206))
+	setStats(ctrl, matureWorker(1, 5*utils.MiB, 206))
 	d, _ := newTestDetector(ctrl)
 	d.Start()
 	// Give the loop a moment to spin up.
@@ -507,7 +508,7 @@ func TestCDNDetector_ConcurrentStop(t *testing.T) {
 // takeover must be re-issued on the reappearance tick.
 func TestCDNDetector_ThresholdReissuedAfterGap(t *testing.T) {
 	ctrl := newMockCDNControl()
-	setStats(ctrl, matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206))
+	setStats(ctrl, matureWorker(1, 5*utils.MiB, 206), matureWorker(2, 5*utils.MiB, 206))
 	d, clock := newTestDetector(ctrl)
 
 	// First tick: takeover issued.
@@ -528,7 +529,7 @@ func TestCDNDetector_ThresholdReissuedAfterGap(t *testing.T) {
 	ctrl.mu.Lock()
 	ctrl.thresholds["test"] = 0.30
 	ctrl.stats["test"] = []types.WorkerSnapshot{
-		matureWorker(1, 5*types.MB, 206), matureWorker(2, 5*types.MB, 206),
+		matureWorker(1, 5*utils.MiB, 206), matureWorker(2, 5*utils.MiB, 206),
 	}
 	ctrl.mu.Unlock()
 	d.getActiveGids = func() []string { return []string{"sg_test"} }

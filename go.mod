@@ -5,6 +5,7 @@ go 1.26
 require (
 	github.com/Masterminds/semver/v3 v3.4.0
 	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/dustin/go-humanize v1.0.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/h2non/filetype v1.1.3

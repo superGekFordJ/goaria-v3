@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/utils"
 )
 
 // --- alignedSplitSizeWithMin tests ---
@@ -108,8 +109,8 @@ func TestStealWork_TailEndDynamicChunk(t *testing.T) {
 		offset int64
 		length int64
 	}{
-		{offset: 0, length: 3 * types.MB / 2},
-		{offset: 3 * types.MB / 2, length: 3 * types.MB / 2},
+		{offset: 0, length: 3 * utils.MiB / 2},
+		{offset: 3 * utils.MiB / 2, length: 3 * utils.MiB / 2},
 	})
 
 	queue := NewTaskQueue()
@@ -138,8 +139,8 @@ func TestStealWork_NormalPhase_NoDegradation(t *testing.T) {
 		offset int64
 		length int64
 	}{
-		{offset: 0, length: 10 * types.MB},
-		{offset: 10 * types.MB, length: 10 * types.MB},
+		{offset: 0, length: 10 * utils.MiB},
+		{offset: 10 * utils.MiB, length: 10 * utils.MiB},
 	})
 
 	queue := NewTaskQueue()
@@ -167,7 +168,7 @@ func TestStealWork_TinyRemaining_FloorKicksIn(t *testing.T) {
 		offset int64
 		length int64
 	}{
-		{offset: 0, length: 300 * types.KB},
+		{offset: 0, length: 300 * utils.KiB},
 	})
 
 	queue := NewTaskQueue()
@@ -207,7 +208,7 @@ func TestStealWork_SingleActiveNoIdle(t *testing.T) {
 		offset int64
 		length int64
 	}{
-		{offset: 0, length: 5 * types.MB},
+		{offset: 0, length: 5 * utils.MiB},
 	})
 
 	queue := NewTaskQueue()
@@ -233,8 +234,8 @@ func TestStealWork_DynamicFloorExactly256KB(t *testing.T) {
 		offset int64
 		length int64
 	}{
-		{offset: 0, length: 512 * types.KB},
-		{offset: 512 * types.KB, length: 512 * types.KB},
+		{offset: 0, length: 512 * utils.KiB},
+		{offset: 512 * utils.KiB, length: 512 * utils.KiB},
 	})
 
 	queue := NewTaskQueue()
@@ -254,8 +255,8 @@ func TestStealWork_DynamicFloorExactly256KB(t *testing.T) {
 		t.Fatal("should be able to pop stolen task")
 	}
 	// half of 512KB = 256KB, aligned
-	if stolen.Length != 256*types.KB {
-		t.Errorf("stolen task length = %d, want %d", stolen.Length, 256*types.KB)
+	if stolen.Length != 256*utils.KiB {
+		t.Errorf("stolen task length = %d, want %d", stolen.Length, 256*utils.KiB)
 	}
 
 	queue.Close()
@@ -271,7 +272,7 @@ func TestStealWork_HalfEqualsDynamicMinChunk(t *testing.T) {
 		offset int64
 		length int64
 	}{
-		{offset: 0, length: 1 * types.MB},
+		{offset: 0, length: 1 * utils.MiB},
 	})
 
 	queue := NewTaskQueue()
@@ -290,8 +291,8 @@ func TestStealWork_HalfEqualsDynamicMinChunk(t *testing.T) {
 		t.Fatal("should be able to pop stolen task")
 	}
 	// half of 1MB = 512KB, aligned
-	if stolen.Length != 512*types.KB {
-		t.Errorf("stolen task length = %d, want %d", stolen.Length, 512*types.KB)
+	if stolen.Length != 512*utils.KiB {
+		t.Errorf("stolen task length = %d, want %d", stolen.Length, 512*utils.KiB)
 	}
 
 	queue.Close()

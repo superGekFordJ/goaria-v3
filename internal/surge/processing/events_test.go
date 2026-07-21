@@ -11,6 +11,7 @@ import (
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/processing"
 	"goaria-v3/internal/surge/testutil"
+	"goaria-v3/internal/surge/utils"
 )
 
 func TestStartEventWorker_FinalizesCompletedFileUsingDestPath(t *testing.T) {
@@ -104,7 +105,7 @@ func TestStartEventWorker_CompletionPreservesOverrideMetadata(t *testing.T) {
 		Filename:     "video.mp4",
 		Status:       "downloading",
 		Workers:      8,
-		MinChunkSize: 4 * types.MB,
+		MinChunkSize: 4 * utils.MiB,
 	}); err != nil {
 		t.Fatalf("failed to seed download entry: %v", err)
 	}
@@ -134,8 +135,8 @@ func TestStartEventWorker_CompletionPreservesOverrideMetadata(t *testing.T) {
 	if entry.Workers != 8 {
 		t.Fatalf("Workers = %d, want 8 (preserved from existing entry)", entry.Workers)
 	}
-	if entry.MinChunkSize != 4*types.MB {
-		t.Fatalf("MinChunkSize = %d, want %d (preserved from existing entry)", entry.MinChunkSize, 4*types.MB)
+	if entry.MinChunkSize != 4*utils.MiB {
+		t.Fatalf("MinChunkSize = %d, want %d (preserved from existing entry)", entry.MinChunkSize, 4*utils.MiB)
 	}
 }
 

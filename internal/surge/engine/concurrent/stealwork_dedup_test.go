@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/utils"
 )
 
 // TestStealWork_StolenTaskHasIndependentSharedMaxOffset verifies that the
@@ -13,15 +14,15 @@ import (
 func TestStealWork_StolenTaskHasIndependentSharedMaxOffset(t *testing.T) {
 	d := &ConcurrentDownloader{
 		activeTasks: make(map[int]*ActiveTask),
-		Runtime:     &types.RuntimeConfig{MinChunkSize: 2 * types.MB},
+		Runtime:     &types.RuntimeConfig{MinChunkSize: 2 * utils.MiB},
 	}
 
 	// Original worker at offset 0, length 4MB, not yet hedged (SharedMaxOffset nil).
 	active := &ActiveTask{
-		Task: types.Task{Offset: 0, Length: 4 * types.MB},
+		Task: types.Task{Offset: 0, Length: 4 * utils.MiB},
 	}
 	active.CurrentOffset.Store(0)
-	active.StopAt.Store(4 * types.MB)
+	active.StopAt.Store(4 * utils.MiB)
 	d.activeTasks[0] = active
 
 	queue := NewTaskQueue()
@@ -57,14 +58,14 @@ func TestStealWork_StolenTaskHasIndependentSharedMaxOffset(t *testing.T) {
 func TestStealWork_NilSharedMaxOffset_OriginalUnchanged(t *testing.T) {
 	d := &ConcurrentDownloader{
 		activeTasks: make(map[int]*ActiveTask),
-		Runtime:     &types.RuntimeConfig{MinChunkSize: 2 * types.MB},
+		Runtime:     &types.RuntimeConfig{MinChunkSize: 2 * utils.MiB},
 	}
 
 	active := &ActiveTask{
-		Task: types.Task{Offset: 0, Length: 4 * types.MB},
+		Task: types.Task{Offset: 0, Length: 4 * utils.MiB},
 	}
 	active.CurrentOffset.Store(0)
-	active.StopAt.Store(4 * types.MB)
+	active.StopAt.Store(4 * utils.MiB)
 	d.activeTasks[0] = active
 
 	queue := NewTaskQueue()
@@ -95,11 +96,11 @@ func TestStealWork_DedupDoesNotMaskOriginalWorker(t *testing.T) {
 	// Original worker: never hedged → SharedMaxOffset nil → no dedup.
 	// Stolen worker: independent pointer initialized to stolenStart.
 	stolenPtr := &atomic.Int64{}
-	stolenStart := int64(2 * types.MB)
+	stolenStart := int64(2 * utils.MiB)
 	stolenPtr.Store(stolenStart)
 
 	// Simulate the stolen worker downloading 2MB–4MB and advancing its pointer.
-	stolenPtr.Store(4 * types.MB)
+	stolenPtr.Store(4 * utils.MiB)
 
 	// Original worker writes at offset ~0. With nil pointer (never hedged),
 	// downloadTask takes the else branch: newlyWritten = readSoFar (full credit).
@@ -132,7 +133,7 @@ func TestStealWork_DedupDoesNotMaskOriginalWorker(t *testing.T) {
 	}
 
 	// Confirm the stolen pointer does not affect the original worker's accounting.
-	if got := stolenPtr.Load(); got != 4*types.MB {
-		t.Errorf("stolen pointer = %d, want %d (should be independent)", got, 4*types.MB)
+	if got := stolenPtr.Load(); got != 4*utils.MiB {
+		t.Errorf("stolen pointer = %d, want %d (should be independent)", got, 4*utils.MiB)
 	}
 }

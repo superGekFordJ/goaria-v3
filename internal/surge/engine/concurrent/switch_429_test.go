@@ -10,13 +10,14 @@ import (
 
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/testutil"
+	"goaria-v3/internal/surge/utils"
 )
 
 func TestConcurrentDownloader_SwitchOn429(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(256 * types.KB)
+	fileSize := int64(256 * utils.KiB)
 
 	// Server 1: Always returns 429
 	server1 := testutil.NewMockServerT(t,
@@ -45,7 +46,7 @@ func TestConcurrentDownloader_SwitchOn429(t *testing.T) {
 	runtime := &types.RuntimeConfig{
 		MaxConnectionsPerDownload: 1, // Single worker to trace behavior easily
 		MaxTaskRetries:            5,
-		MinChunkSize:              64 * types.KB,
+		MinChunkSize:              64 * utils.KiB,
 		DialHedgeCount:            0, // Disable hedging for deterministic failover test
 	}
 
@@ -94,7 +95,7 @@ func TestConcurrentDownloader_BackoffOnSingleMirror(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(1 * types.MB) // Use enough size so it doesn't just finish instantly on 1st byte
+	fileSize := int64(1 * utils.MiB) // Use enough size so it doesn't just finish instantly on 1st byte
 
 	// Server: Returns 429 once, then succeeds
 	// This forces a retry.
@@ -114,7 +115,7 @@ func TestConcurrentDownloader_BackoffOnSingleMirror(t *testing.T) {
 	runtime := &types.RuntimeConfig{
 		MaxConnectionsPerDownload: 1,
 		MaxTaskRetries:            5,
-		MinChunkSize:              64 * types.KB,
+		MinChunkSize:              64 * utils.KiB,
 		DialHedgeCount:            0, // Disable hedging for deterministic backoff timing
 	}
 

@@ -13,13 +13,14 @@ import (
 
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/testutil"
+	"goaria-v3/internal/surge/utils"
 )
 
 func TestConcurrentDownloader_PrewarmConnections(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(1 * types.MB)
+	fileSize := int64(1 * utils.MiB)
 	destPath := filepath.Join(tmpDir, "prewarm_test.bin")
 
 	var mu sync.Mutex
@@ -74,7 +75,7 @@ func TestConcurrentDownloader_PrewarmConnections(t *testing.T) {
 	runtime := &types.RuntimeConfig{
 		MaxConnectionsPerDownload: 2,
 		DialHedgeCount:            2, // Enable hedging
-		MinChunkSize:              256 * types.KB,
+		MinChunkSize:              256 * utils.KiB,
 	}
 
 	downloader := NewConcurrentDownloader("prewarm-id", nil, state, runtime)

@@ -11,6 +11,7 @@ import (
 
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/testutil"
+	"goaria-v3/internal/surge/utils"
 )
 
 // TestConcurrentDownloader_CustomHeaders verifies that custom headers from browser
@@ -19,7 +20,7 @@ func TestConcurrentDownloader_CustomHeaders(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(64 * types.KB)
+	fileSize := int64(64 * utils.KiB)
 
 	// Track received headers
 	var mu sync.Mutex
@@ -115,7 +116,7 @@ func TestConcurrentDownloader_DefaultUserAgent(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(32 * types.KB)
+	fileSize := int64(32 * utils.KiB)
 
 	var mu sync.Mutex
 	var receivedUserAgent string
@@ -179,7 +180,7 @@ func TestConcurrentDownloader_RangeHeaderNotOverridden(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(32 * types.KB)
+	fileSize := int64(32 * utils.KiB)
 
 	var mu sync.Mutex
 	var receivedRange string
@@ -245,7 +246,7 @@ func TestConcurrentDownloader_HeadersForwardedOnRedirect(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(32 * types.KB)
+	fileSize := int64(32 * utils.KiB)
 
 	// Track received headers on the final server
 	var mu sync.Mutex

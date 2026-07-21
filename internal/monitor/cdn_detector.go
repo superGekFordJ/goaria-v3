@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/utils"
 )
 
 // CDN throttle fingerprint tuning knobs.
@@ -16,12 +17,12 @@ const (
 	cdnDetectorInterval = 1 * time.Second
 	cdnHistoryWindow    = 10 * time.Second
 	cdnWarmupGrace      = 5 * time.Second
-	cdnWarmupBytes      = 1 * types.MB
+	cdnWarmupBytes      = 1 * utils.MiB
 	cdnSustainDuration  = 5 * time.Second
 	cdnSteadyCoV        = 0.05
 	cdnThrottleRelRatio = 0.5
-	cdnHealthyPeerFloor = 1 * types.MB // healthy peers must be clearly faster than this
-	cdnDeadFloorBps     = 2 * types.KB // ~0才算死，避免误杀低天花板下的公平分享者
+	cdnHealthyPeerFloor = 1 * utils.MiB // healthy peers must be clearly faster than this
+	cdnDeadFloorBps     = 2 * utils.KiB // ~0才算死，避免误杀低天花板下的公平分享者
 	cdnWorkerEvictTicks = 3
 	cdnActionCooldown   = 10 * time.Second
 	cdnMaxKillCount     = 3 // after 3 kills without improvement, drain instead of kill

@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/utils"
 )
 
 // FORK-PATCH: TieredBufferPool provides speed-adaptive buffer pooling with
@@ -22,15 +23,15 @@ const (
 )
 
 var tierSizes = [tierCount]int{
-	tierSmall:  32 * types.KB,
-	tierMedium: 512 * types.KB,
-	tierLarge:  1 * types.MB,
+	tierSmall:  32 * utils.KiB,
+	tierMedium: 512 * utils.KiB,
+	tierLarge:  1 * utils.MiB,
 }
 
 // Speed thresholds for tier selection (bytes/sec).
 const (
-	tierSpeedLow  = 10 * float64(types.MB) // below → tierSmall
-	tierSpeedHigh = 50 * float64(types.MB) // above → tierLarge
+	tierSpeedLow  = 10 * float64(utils.MiB) // below → tierSmall
+	tierSpeedHigh = 50 * float64(utils.MiB) // above → tierLarge
 )
 
 // TieredBufferPool manages three sync.Pool instances, one per buffer tier.
