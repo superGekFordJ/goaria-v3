@@ -368,6 +368,11 @@
     "pairHelp": "Klicken Sie auf die Schaltfläche und installieren Sie die Erweiterung in Ihrem Browser, um die Kopplung abzuschließen.",
     "pair": "Browser-Erweiterung koppeln",
     "unpair": "Entkoppeln",
+    "unpairConfirm": {
+      "message": "Entkopplung bestätigen? Dadurch wird der Sicherheitsschlüssel zurückgesetzt und alle gekoppelten Erweiterungen werden getrennt.",
+      "confirm": "Alle trennen",
+      "cancel": "Abbrechen"
+    },
     "pairing": "Koppelung...",
     "pairUrl": "Koppelungs-URL",
     "paired": "Gekoppelt",
@@ -384,11 +389,12 @@
       "regenerate": "Neu generieren",
       "close": "Schließen",
       "staleNotice": "Diese URL ist möglicherweise abgelaufen. Generieren Sie sie neu für einen aktuellen Link.",
-      "pairHelp": "Öffnen Sie diese URL in Ihrem Browser und installieren/aktivieren Sie die GoAria-Erweiterung, um die Kopplung abzuschließen."
+      "pairHelp": "Öffnen Sie diese URL in Ihrem Browser und installieren/aktivieren Sie die GoAria-Erweiterung, um die Kopplung abzuschließen.",
+      "regenerateHelp": "Jede URL kann nur einmal geöffnet werden und ist 10 Minuten gültig."
     },
     "toast": {
       "authFailed": "Die gekoppelte Erweiterung wurde abgewiesen. Bitte koppeln Sie die Erweiterung neu.",
-      "unpairRotated": "Entkoppelt. Ein neues Geheimnis wurde generiert; koppeln Sie die Erweiterung neu, um die Verbindung wiederherzustellen."
+      "unpairRotated": "Sicherheitsschlüssel zurückgesetzt. Alle Erweiterungen getrennt. Bitte neu koppeln."
     }
   }
 }

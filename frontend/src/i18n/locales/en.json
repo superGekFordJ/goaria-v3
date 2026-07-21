@@ -368,6 +368,11 @@
     "pairHelp": "Click the button, then install the extension in your browser to complete pairing.",
     "pair": "Pair Browser Extension",
     "unpair": "Unpair",
+    "unpairConfirm": {
+      "message": "Confirm unpair? This will reset the security key and disconnect all paired extensions.",
+      "confirm": "Disconnect All",
+      "cancel": "Cancel"
+    },
     "pairing": "Pairing...",
     "pairUrl": "Pairing URL",
     "paired": "Paired",
@@ -384,11 +389,12 @@
       "regenerate": "Regenerate",
       "close": "Close",
       "staleNotice": "This URL may have expired. Regenerate for a fresh link.",
-      "pairHelp": "Open this URL in your browser, then install/activate the GoAria extension to complete pairing."
+      "pairHelp": "Open this URL in your browser, then install/activate the GoAria extension to complete pairing.",
+      "regenerateHelp": "Each URL can only be opened once and is valid for 10 minutes."
     },
     "toast": {
       "authFailed": "The paired extension was rejected. Please re-pair the extension.",
-      "unpairRotated": "Unbound. A new secret has been generated; re-pair the extension to reconnect."
+      "unpairRotated": "Security key reset. All extensions disconnected. Please re-pair."
     }
   }
 }

@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"goaria-v3/internal/config"
 	"goaria-v3/internal/events"
 )
 
@@ -82,13 +81,11 @@ func (p *PairingService) Start() (string, error) {
 	}
 	p.store.SetPairNonce(nonce)
 
-	secret := p.store.GenerateSecret()
+	secret := p.store.GetSecret()
 	if secret == "" {
 		p.mu.Unlock()
-		return "", fmt.Errorf("failed to generate pairing secret")
+		return "", fmt.Errorf("extension secret not initialized; ensure config.Load() has run")
 	}
-	p.store.SetSecret(secret)
-	config.Update(func(c *config.AppConfig) { c.ExtensionSecret = secret })
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(PairPagePath, func(w http.ResponseWriter, r *http.Request) {
@@ -170,8 +167,10 @@ func (p *PairingService) stopLocked() {
 }
 
 // Regenerate stops the current pairing server and starts a fresh one with a
-// new nonce + secret + URL. The lock is released between stop and start (Start
-// re-acquires it), but the single-method API prevents wrong-order calls.
+// new nonce + port + URL. The global secret is NOT rotated — already-paired
+// extensions remain connected. Use this to refresh an expired pairing URL.
+// The lock is released between stop and start (Start re-acquires it), but the
+// single-method API prevents wrong-order calls.
 func (p *PairingService) Regenerate() (string, error) {
 	p.mu.Lock()
 	if p.active {

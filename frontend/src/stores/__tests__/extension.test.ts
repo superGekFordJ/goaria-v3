@@ -127,12 +127,28 @@ describe('extension store', () => {
 
     const store = useExtensionStore()
     store.paired = true
+    store.showUnpairConfirm = true
     await store.unpair()
 
     expect(store.paired).toBe(false)
     expect(store.status).toBe('listening')
     expect(store.pairUrl).toBe('')
     expect(store.unpairRotatedNotice).toBe(true)
+    expect(store.showUnpairConfirm).toBe(false)
+  })
+
+  it('requestUnpair() sets showUnpairConfirm to true', () => {
+    const store = useExtensionStore()
+    expect(store.showUnpairConfirm).toBe(false)
+    store.requestUnpair()
+    expect(store.showUnpairConfirm).toBe(true)
+  })
+
+  it('cancelUnpair() resets showUnpairConfirm to false', () => {
+    const store = useExtensionStore()
+    store.showUnpairConfirm = true
+    store.cancelUnpair()
+    expect(store.showUnpairConfirm).toBe(false)
   })
 
   it('openInBrowser() calls OpenPairingURLInBrowser binding', async () => {

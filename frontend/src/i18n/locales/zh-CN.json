@@ -368,6 +368,11 @@
     "pairHelp": "点击按钮后在浏览器中安装扩展并完成配对。",
     "pair": "绑定浏览器扩展",
     "unpair": "解绑",
+    "unpairConfirm": {
+      "message": "确认解绑？这会重置安全密钥，所有已配对的扩展都将断开连接。",
+      "confirm": "断联所有扩展",
+      "cancel": "取消"
+    },
     "pairing": "配对中...",
     "pairUrl": "配对 URL",
     "paired": "已配对",
@@ -384,11 +389,12 @@
       "regenerate": "重新生成",
       "close": "关闭",
       "staleNotice": "此 URL 可能已过期，请重新生成以获取新链接。",
-      "pairHelp": "在浏览器中打开此 URL，然后安装/激活 GoAria 扩展以完成配对。"
+      "pairHelp": "在浏览器中打开此 URL，然后安装/激活 GoAria 扩展以完成配对。",
+      "regenerateHelp": "每个配对链接仅可打开一次，有效期 10 分钟。"
     },
     "toast": {
       "authFailed": "已配对的扩展被拒绝，请重新配对扩展。",
-      "unpairRotated": "已解绑。已生成新密钥，请重新配对扩展以重新连接。"
+      "unpairRotated": "安全密钥已重置，所有扩展已断开连接，请重新配对。"
     }
   }
 }

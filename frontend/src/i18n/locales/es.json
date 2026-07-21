@@ -368,6 +368,11 @@
     "pairHelp": "Haga clic en el botón e instale la extensión en su navegador para completar el emparejamiento.",
     "pair": "Emparejar extensión del navegador",
     "unpair": "Desemparejar",
+    "unpairConfirm": {
+      "message": "¿Confirmar desemparejamiento? Esto restablecerá la clave de seguridad y desconectará todas las extensiones emparejadas.",
+      "confirm": "Desconectar todas",
+      "cancel": "Cancelar"
+    },
     "pairing": "Emparejando...",
     "pairUrl": "URL de emparejamiento",
     "paired": "Emparejado",
@@ -384,11 +389,12 @@
       "regenerate": "Regenerar",
       "close": "Cerrar",
       "staleNotice": "Esta URL puede haber expirado. Regénere para obtener un enlace nuevo.",
-      "pairHelp": "Abra esta URL en su navegador, luego instale/active la extensión GoAria para completar el emparejamiento."
+      "pairHelp": "Abra esta URL en su navegador, luego instale/active la extensión GoAria para completar el emparejamiento.",
+      "regenerateHelp": "Cada URL solo se puede abrir una vez y es válida durante 10 minutos."
     },
     "toast": {
       "authFailed": "La extensión emparejada fue rechazada. Vuelva a emparejar la extensión.",
-      "unpairRotated": "Desvinculado. Se ha generado un nuevo secreto; vuelva a emparejar la extensión para reconectar."
+      "unpairRotated": "Clave de seguridad restablecida. Todas las extensiones desconectadas. Vuelva a emparejar."
     }
   }
 }

@@ -22,6 +22,8 @@ const storeFns = vi.hoisted(() => ({
   refreshStatus: vi.fn(),
   pair: vi.fn(),
   unpair: vi.fn(),
+  requestUnpair: vi.fn(),
+  cancelUnpair: vi.fn(),
   regenerate: vi.fn(),
   openInBrowser: vi.fn(),
   copyPairUrl: vi.fn().mockResolvedValue(true),
@@ -38,6 +40,7 @@ const storeMock = reactive({
   regenerating: false,
   authFailedNotice: false,
   unpairRotatedNotice: false,
+  showUnpairConfirm: false,
   ...storeFns,
 })
 
@@ -69,6 +72,7 @@ describe('ExtensionSection inline pairing panel', () => {
     storeMock.regenerating = false
     storeMock.authFailedNotice = false
     storeMock.unpairRotatedNotice = false
+    storeMock.showUnpairConfirm = false
   })
 
   const mountSection = () =>
@@ -175,5 +179,44 @@ describe('ExtensionSection inline pairing panel', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.find('[data-testid="pairing-stage-idle"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="pairing-stage-pairing"]').exists()).toBe(true)
+  })
+
+  it('Unpair button calls requestUnpair instead of unpair directly', async () => {
+    storeMock.paired = true
+    const wrapper = mountSection()
+    const unpairBtn = wrapper.find('[data-testid="unpair-btn"]')
+    expect(unpairBtn.exists()).toBe(true)
+    await unpairBtn.trigger('click')
+    expect(storeMock.requestUnpair).toHaveBeenCalledOnce()
+    expect(storeMock.unpair).not.toHaveBeenCalled()
+  })
+
+  it('in-place confirmation UI renders when showUnpairConfirm is true', async () => {
+    storeMock.paired = true
+    storeMock.showUnpairConfirm = true
+    const wrapper = mountSection()
+    const confirm = wrapper.find('[data-testid="unpair-confirm"]')
+    expect(confirm.exists()).toBe(true)
+    expect(wrapper.text()).toContain('extension.unpairConfirm.message')
+  })
+
+  it('Confirm button calls unpair', async () => {
+    storeMock.paired = true
+    storeMock.showUnpairConfirm = true
+    const wrapper = mountSection()
+    const confirmBtn = wrapper.find('[data-testid="unpair-confirm-btn"]')
+    expect(confirmBtn.exists()).toBe(true)
+    await confirmBtn.trigger('click')
+    expect(storeMock.unpair).toHaveBeenCalledOnce()
+  })
+
+  it('Cancel button calls cancelUnpair', async () => {
+    storeMock.paired = true
+    storeMock.showUnpairConfirm = true
+    const wrapper = mountSection()
+    const cancelBtn = wrapper.find('[data-testid="unpair-cancel-btn"]')
+    expect(cancelBtn.exists()).toBe(true)
+    await cancelBtn.trigger('click')
+    expect(storeMock.cancelUnpair).toHaveBeenCalledOnce()
   })
 })

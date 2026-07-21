@@ -212,18 +212,47 @@
               {{ extensionStore.pairing ? t('extension.pairing') : t('extension.pair') }}
             </button>
 
-            <!-- Unpair Button -->
-            <button
-              v-if="extensionStore.paired"
-              class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:border-red-500/30 transition-all duration-200 text-xs font-mono-data text-[var(--app-text-muted)] hover:text-red-400"
-              @click="extensionStore.unpair()"
-            >
-              <Unlink :size="14" />
-              {{ t('extension.unpair') }}
-            </button>
+            <!-- Unpair Button / In-place Confirmation -->
+            <Transition v-if="extensionStore.paired" mode="out-in" name="fade">
+              <button
+                v-if="!extensionStore.showUnpairConfirm"
+                key="unpair"
+                data-testid="unpair-btn"
+                class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:border-red-500/30 transition-all duration-200 text-xs font-mono-data text-[var(--app-text-muted)] hover:text-red-400"
+                @click="extensionStore.requestUnpair()"
+              >
+                <Unlink :size="14" />
+                {{ t('extension.unpair') }}
+              </button>
+              <div
+                v-else
+                key="unpair-confirm"
+                data-testid="unpair-confirm"
+                class="flex items-center gap-2"
+              >
+                <span class="text-[10px] text-[var(--app-text-subtle)] leading-tight max-w-[180px]">
+                  {{ t('extension.unpairConfirm.message') }}
+                </span>
+                <button
+                  data-testid="unpair-confirm-btn"
+                  class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-red-500/15 border border-red-500/30 text-[10px] font-mono-data text-red-400 hover:bg-red-500/25 transition-all"
+                  @click="extensionStore.unpair()"
+                >
+                  <Unlink :size="12" />
+                  {{ t('extension.unpairConfirm.confirm') }}
+                </button>
+                <button
+                  data-testid="unpair-cancel-btn"
+                  class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] text-[10px] font-mono-data text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition-all"
+                  @click="extensionStore.cancelUnpair()"
+                >
+                  {{ t('extension.unpairConfirm.cancel') }}
+                </button>
+              </div>
+            </Transition>
 
             <!-- Paired Badge -->
-            <div v-if="extensionStore.paired" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20">
+            <div v-if="extensionStore.paired && !extensionStore.showUnpairConfirm" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20">
               <CheckCircle :size="12" class="text-[var(--status-complete)]" />
               <span class="text-[10px] font-mono-data text-[var(--status-complete)]">
                 {{ t('extension.paired') }}
@@ -296,6 +325,11 @@
               <RefreshCw v-else :size="14" />
             </button>
           </div>
+
+          <!-- Pairing URL validity hint -->
+          <p class="text-[10px] text-[var(--app-text-subtle)] mt-1.5">
+            {{ t('extension.modal.regenerateHelp') }}
+          </p>
 
           <!-- Stale URL Notice -->
           <Transition name="fade">

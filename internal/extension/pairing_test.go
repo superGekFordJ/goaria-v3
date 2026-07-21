@@ -15,6 +15,7 @@ import (
 
 func TestPairing_NonceOneTime(t *testing.T) {
 	store := NewSecretStore()
+	store.SetSecret("test-secret")
 	ps := NewPairingService(store, nil)
 
 	url, err := ps.Start()
@@ -40,6 +41,7 @@ func TestPairing_NonceOneTime(t *testing.T) {
 
 func TestPairing_HostHeaderCheck(t *testing.T) {
 	store := NewSecretStore()
+	store.SetSecret("test-secret")
 	ps := NewPairingService(store, nil)
 
 	url, err := ps.Start()
@@ -66,6 +68,7 @@ func TestPairing_HostHeaderCheck(t *testing.T) {
 
 func TestPairing_SecretInDOMNotURL(t *testing.T) {
 	store := NewSecretStore()
+	store.SetSecret("test-secret")
 	ps := NewPairingService(store, nil)
 
 	url, err := ps.Start()
@@ -89,6 +92,7 @@ func TestPairing_SecretInDOMNotURL(t *testing.T) {
 
 func TestPairing_StopClosesListener(t *testing.T) {
 	store := NewSecretStore()
+	store.SetSecret("test-secret")
 	ps := NewPairingService(store, nil)
 
 	_, err := ps.Start()
@@ -104,6 +108,7 @@ func TestPairing_StopClosesListener(t *testing.T) {
 
 func TestPairing_NoCORSHeader(t *testing.T) {
 	store := NewSecretStore()
+	store.SetSecret("test-secret")
 	ps := NewPairingService(store, nil)
 
 	url, err := ps.Start()
@@ -121,6 +126,7 @@ func TestPairing_NoCORSHeader(t *testing.T) {
 
 func TestPairing_ConcurrentStart_ReturnsExisting(t *testing.T) {
 	store := NewSecretStore()
+	store.SetSecret("test-secret")
 	ps := NewPairingService(store, nil)
 
 	url1, err := ps.Start()
@@ -153,6 +159,7 @@ func httpGet(t *testing.T, urlStr string) *http.Response {
 // PairPortFallbacks entries rather than a random OS port.
 func TestPairing_Start_UsesFallbackPort(t *testing.T) {
 	store := NewSecretStore()
+	store.SetSecret("test-secret")
 	ps := NewPairingService(store, nil)
 
 	urlStr, err := ps.Start()
@@ -234,9 +241,11 @@ func withConfig(t *testing.T) {
 	t.Setenv("HOME", tmp)
 }
 
-func TestPairing_Start_PersistsSecretToConfig(t *testing.T) {
+func TestPairing_Start_PreservesExistingSecret(t *testing.T) {
 	withConfig(t)
 	store := NewSecretStore()
+	store.SetSecret("predefined-secret")
+	config.SetTestConfig(&config.AppConfig{ExtensionSecret: "predefined-secret"})
 	ps := NewPairingService(store, nil)
 
 	if _, err := ps.Start(); err != nil {
@@ -244,17 +253,18 @@ func TestPairing_Start_PersistsSecretToConfig(t *testing.T) {
 	}
 	defer ps.Stop()
 
-	if config.Get().ExtensionSecret != store.GetSecret() {
-		t.Fatalf("config.ExtensionSecret %q != store secret %q", config.Get().ExtensionSecret, store.GetSecret())
+	if store.GetSecret() != "predefined-secret" {
+		t.Fatalf("store secret should be unchanged, got %q", store.GetSecret())
 	}
-	if config.Get().ExtensionSecret == "" {
-		t.Fatal("persisted secret should not be empty")
+	if config.Get().ExtensionSecret != "predefined-secret" {
+		t.Fatalf("config secret should be unchanged, got %q", config.Get().ExtensionSecret)
 	}
 }
 
-func TestPairing_Regenerate_NewNonceAndSecret(t *testing.T) {
+func TestPairing_Regenerate_NewNoncePreservesSecret(t *testing.T) {
 	withConfig(t)
 	store := NewSecretStore()
+	store.SetSecret("stable-secret")
 	ps := NewPairingService(store, nil)
 
 	url1, err := ps.Start()
@@ -262,29 +272,25 @@ func TestPairing_Regenerate_NewNonceAndSecret(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	defer ps.Stop()
-	secret1 := store.GetSecret()
 
 	url2, err := ps.Regenerate()
 	if err != nil {
 		t.Fatalf("Regenerate: %v", err)
 	}
 	defer ps.Stop()
-	secret2 := store.GetSecret()
 
 	if url2 == url1 {
 		t.Fatal("Regenerate should produce a new URL")
 	}
-	if secret2 == secret1 {
-		t.Fatal("Regenerate should produce a new secret")
-	}
-	if secret2 == "" {
-		t.Fatal("new secret should not be empty")
+	if store.GetSecret() != "stable-secret" {
+		t.Fatalf("secret should be unchanged after Regenerate, got %q", store.GetSecret())
 	}
 }
 
 func TestPairing_Regenerate_StopsOldServer(t *testing.T) {
 	withConfig(t)
 	store := NewSecretStore()
+	store.SetSecret("test-secret")
 	ps := NewPairingService(store, nil)
 
 	url1, err := ps.Start()
@@ -322,6 +328,7 @@ func TestPairing_TTL_AutoStops(t *testing.T) {
 	t.Cleanup(func() { pairingTTL = origTTL })
 
 	store := NewSecretStore()
+	store.SetSecret("test-secret")
 	ps := NewPairingService(store, nil)
 
 	if _, err := ps.Start(); err != nil {
@@ -340,25 +347,21 @@ func TestPairing_TTL_AutoStops(t *testing.T) {
 	}
 }
 
-func TestPairing_Start_EmptySecretReturnsError(t *testing.T) {
+func TestPairing_Start_EmptyStoreReturnsError(t *testing.T) {
 	withConfig(t)
-	origReader := randReader
-	randReader = &nonceOnlyFailingReader{}
-	t.Cleanup(func() { randReader = origReader })
-
 	store := NewSecretStore()
 	ps := NewPairingService(store, nil)
 
 	_, err := ps.Start()
 	if err == nil {
 		ps.Stop()
-		t.Fatal("expected error when secret generation fails")
+		t.Fatal("expected error when store secret is not initialized")
 	}
-	if !strings.Contains(err.Error(), "secret") {
-		t.Fatalf("error should mention secret, got: %v", err)
+	if !strings.Contains(err.Error(), "secret not initialized") {
+		t.Fatalf("error should mention secret not initialized, got: %v", err)
 	}
 	if ps.IsActive() {
-		t.Fatal("pairing service should not be active after empty-secret error")
+		t.Fatal("pairing service should not be active after empty-store error")
 	}
 }
 
@@ -368,28 +371,12 @@ func (f *failingReader) Read(p []byte) (int, error) {
 	return 0, io.ErrUnexpectedEOF
 }
 
-// nonceOnlyFailingReader succeeds for the first Read (nonce, 16 bytes) but
-// fails for subsequent reads (secret, 32 bytes).
-type nonceOnlyFailingReader struct {
-	called bool
-}
-
-func (f *nonceOnlyFailingReader) Read(p []byte) (int, error) {
-	if !f.called {
-		f.called = true
-		for i := range p {
-			p[i] = 0xAA
-		}
-		return len(p), nil
-	}
-	return 0, io.ErrUnexpectedEOF
-}
-
 // TestPairing_TTL_StaleCallbackDoesNotKillNewServer verifies that a stale TTL
 // callback from a previous generation does not stop a freshly-Regenerated server.
 func TestPairing_TTL_StaleCallbackDoesNotKillNewServer(t *testing.T) {
 	withConfig(t)
 	store := NewSecretStore()
+	store.SetSecret("test-secret")
 	ps := NewPairingService(store, nil)
 
 	if _, err := ps.Start(); err != nil {
@@ -440,6 +427,7 @@ func TestPairing_Start_EmptyNonceReturnsError(t *testing.T) {
 	t.Cleanup(func() { randReader = origReader })
 
 	store := NewSecretStore()
+	store.SetSecret("test-secret")
 	ps := NewPairingService(store, nil)
 
 	_, err := ps.Start()
@@ -452,5 +440,26 @@ func TestPairing_Start_EmptyNonceReturnsError(t *testing.T) {
 	}
 	if ps.IsActive() {
 		t.Fatal("pairing service should not be active after empty-nonce error")
+	}
+}
+
+// TestPairing_Start_MultipleCallsPreserveSecret verifies the core multi-browser
+// invariant: pairing Firefox then Chrome does not rotate the global secret, so
+// both extensions stay connected (regression test for the silent kickout defect).
+func TestPairing_Start_MultipleCallsPreserveSecret(t *testing.T) {
+	withConfig(t)
+	store := NewSecretStore()
+	store.SetSecret("multi-browser-secret")
+	ps := NewPairingService(store, nil)
+
+	for i := 0; i < 3; i++ {
+		if _, err := ps.Start(); err != nil {
+			t.Fatalf("Start #%d: %v", i, err)
+		}
+		ps.Stop()
+	}
+
+	if store.GetSecret() != "multi-browser-secret" {
+		t.Fatalf("secret should remain stable across multiple pairing sessions, got %q", store.GetSecret())
 	}
 }

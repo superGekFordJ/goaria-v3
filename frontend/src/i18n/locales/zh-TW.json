@@ -368,6 +368,11 @@
     "pairHelp": "點擊按鈕後在瀏覽器中安裝擴充功能並完成配對。",
     "pair": "綁定瀏覽器擴充功能",
     "unpair": "解除綁定",
+    "unpairConfirm": {
+      "message": "確認解除綁定？這會重置安全密鑰，所有已配對的擴充功能都將斷開連線。",
+      "confirm": "斷聯所有擴充功能",
+      "cancel": "取消"
+    },
     "pairing": "配對中...",
     "pairUrl": "配對 URL",
     "paired": "已配對",
@@ -384,11 +389,12 @@
       "regenerate": "重新產生",
       "close": "關閉",
       "staleNotice": "此 URL 可能已過期，請重新產生以取得新連結。",
-      "pairHelp": "在瀏覽器中開啟此 URL，然後安裝/啟用 GoAria 擴充功能以完成配對。"
+      "pairHelp": "在瀏覽器中開啟此 URL，然後安裝/啟用 GoAria 擴充功能以完成配對。",
+      "regenerateHelp": "每個配對連結僅可開啟一次，有效期 10 分鐘。"
     },
     "toast": {
       "authFailed": "已配對的擴充功能被拒絕，請重新配對擴充功能。",
-      "unpairRotated": "已解除綁定。已產生新密鑰，請重新配對擴充功能以重新連線。"
+      "unpairRotated": "安全密鑰已重置，所有擴充功能已斷開連線，請重新配對。"
     }
   }
 }

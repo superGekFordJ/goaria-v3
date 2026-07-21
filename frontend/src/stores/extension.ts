@@ -23,6 +23,7 @@ export const useExtensionStore = defineStore('extension', () => {
   // No shared toast store exists in the frontend; ExtensionSection watches this ref.
   const authFailedNotice = ref(false)
   const unpairRotatedNotice = ref(false)
+  const showUnpairConfirm = ref(false)
 
   let statusUnsubscribe: (() => void) | null = null
   let pairedUnsubscribe: (() => void) | null = null
@@ -67,10 +68,19 @@ export const useExtensionStore = defineStore('extension', () => {
       status.value = 'listening'
       pairUrl.value = ''
       unpairRotatedNotice.value = true
+      showUnpairConfirm.value = false
       await refreshStatus()
     } catch (err) {
       console.error('Failed to unpair extension:', err)
     }
+  }
+
+  function requestUnpair() {
+    showUnpairConfirm.value = true
+  }
+
+  function cancelUnpair() {
+    showUnpairConfirm.value = false
   }
 
   async function regenerate() {
@@ -163,9 +173,12 @@ export const useExtensionStore = defineStore('extension', () => {
     regenerating,
     authFailedNotice,
     unpairRotatedNotice,
+    showUnpairConfirm,
     refreshStatus,
     pair,
     unpair,
+    requestUnpair,
+    cancelUnpair,
     regenerate,
     openInBrowser,
     copyPairUrl,
