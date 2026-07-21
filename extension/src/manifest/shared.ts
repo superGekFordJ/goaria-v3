@@ -1,7 +1,6 @@
 import pkg from '../../package.json' with { type: 'json' }
 
 export const EXTENSION_NAME = 'GoAria'
-export const EXTENSION_DESCRIPTION = 'Download manager integration for GoAria'
 export const EXTENSION_VERSION = pkg.version
 
 export function getBaseManifest() {

@@ -24,6 +24,10 @@ function scanDir(dir, files = []) {
 
 // Line-by-line scanner: tracks block/html comment and string state to
 // classify Chinese characters as comment (warning) or code/string (error).
+// Limitation: string state resets at each line start, so a multi-line
+// template literal with Chinese on continuation lines is classified by the
+// line's own content (a pure-continuation line is treated as code). No such
+// strings exist in the current codebase; revisit if one is introduced.
 function scanFile(file) {
   const lines = readFileSync(file, 'utf8').split('\n')
   let inBlock = false

@@ -1,6 +1,6 @@
 {
-  "manifest_extensionName": { "message": "GoAria" },
-  "manifest_extensionDescription": { "message": "Download manager integration for GoAria" },
+  "extensionName": { "message": "GoAria" },
+  "extensionDescription": { "message": "Download manager integration for GoAria" },
 
   "popup_status_connected_paired": { "message": "Paired · Connected" },
   "popup_status_connected_unpaired": { "message": "Connected · Unpaired" },

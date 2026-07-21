@@ -1,6 +1,6 @@
 {
-  "manifest_extensionName": { "message": "GoAria" },
-  "manifest_extensionDescription": { "message": "GoAria 下载管理集成" },
+  "extensionName": { "message": "GoAria" },
+  "extensionDescription": { "message": "GoAria 下载管理集成" },
 
   "popup_status_connected_paired": { "message": "已配对 · 已连接" },
   "popup_status_connected_unpaired": { "message": "已连接 · 未配对" },
