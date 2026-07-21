@@ -7,6 +7,18 @@
 /* Glass component styles extracted for popup + Shadow DOM shared consumption. */
 
 /* === StaticGlassPanel === */
+:where(button.static-glass-root, button.liquid-glass-root) {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+}
+
 .static-glass-root {
   position: relative;
   isolation: isolate;
@@ -234,15 +246,19 @@
   height: 100%;
   pointer-events: none;
   overflow: visible;
-  opacity: calc(0.95 * var(--spec, 1));
-}
-
-[data-theme='dark'] .glass-rim {
   opacity: calc(0.55 * var(--spec, 1));
 }
 
-[data-theme='dark'] .liquid-glass-root::before {
+[data-theme='light'] .glass-rim {
+  opacity: calc(0.95 * var(--spec, 1));
+}
+
+.liquid-glass-root::before {
   opacity: calc(0.45 * var(--spec, 1));
+}
+
+[data-theme='light'] .liquid-glass-root::before {
+  opacity: var(--spec, 1);
 }
 
 .liquid-glass-root[data-active='false']::before,
@@ -254,6 +270,8 @@
 .shadow-dom-popup-wrapper {
   pointer-events: auto;
   width: 320px;
+  color: var(--app-text, #e4e4e7);
+  font-family: var(--font-family-ui, system-ui, sans-serif);
 }
 
 .shadow-dom-popup {
@@ -341,13 +359,14 @@
 /* === Popup (toolbar) === */
 html,
 body {
-  min-width: 220px;
-  min-height: 300px;
+  width: 300px;
+  min-height: 400px;
   margin: 0;
 }
 
 .popup-root {
   width: 300px;
+  min-height: 100vh;
   padding: 16px;
   background: linear-gradient(
     135deg,

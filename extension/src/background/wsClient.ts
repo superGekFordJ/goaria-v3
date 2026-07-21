@@ -339,6 +339,16 @@ export class WsClient {
     } else if (msg.type === MSG_TYPE_AUTH_ACK) {
       // Backend confirms auth succeeded; transition to connected immediately
       // so interception can start without waiting for the first download_ack.
+      if (!connectionState.paired) {
+        connectionState.paired = true
+        // Push pairing status change to the popup (if open).
+        const pairStatus = {
+          paired: connectionState.paired,
+          status: connectionState.status,
+          wsPort: this.currentPort,
+        }
+        void sendMessage('pair:status', pairStatus as any, 'popup').catch(() => {})
+      }
       if (connectionState.status !== 'connected') {
         this.setStatus('connected', '')
       }
