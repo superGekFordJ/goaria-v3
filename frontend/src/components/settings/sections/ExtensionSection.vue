@@ -212,18 +212,28 @@
               {{ extensionStore.pairing ? t('extension.pairing') : t('extension.pair') }}
             </button>
 
-            <!-- Unpair Button / In-place Confirmation -->
+            <!-- Unpair Button + Paired Badge / In-place Confirmation -->
             <Transition v-if="extensionStore.paired" mode="out-in" name="fade">
-              <button
+              <div
                 v-if="!extensionStore.showUnpairConfirm"
-                key="unpair"
-                data-testid="unpair-btn"
-                class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:border-red-500/30 transition-all duration-200 text-xs font-mono-data text-[var(--app-text-muted)] hover:text-red-400"
-                @click="extensionStore.requestUnpair()"
+                key="unpair-idle"
+                class="flex items-center gap-3"
               >
-                <Unlink :size="14" />
-                {{ t('extension.unpair') }}
-              </button>
+                <button
+                  data-testid="unpair-btn"
+                  class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:border-red-500/30 transition-all duration-200 text-xs font-mono-data text-[var(--app-text-muted)] hover:text-red-400"
+                  @click="extensionStore.requestUnpair()"
+                >
+                  <Unlink :size="14" />
+                  {{ t('extension.unpair') }}
+                </button>
+                <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20">
+                  <CheckCircle :size="12" class="text-[var(--status-complete)]" />
+                  <span class="text-[10px] font-mono-data text-[var(--status-complete)]">
+                    {{ t('extension.paired') }}
+                  </span>
+                </div>
+              </div>
               <div
                 v-else
                 key="unpair-confirm"
@@ -250,14 +260,6 @@
                 </button>
               </div>
             </Transition>
-
-            <!-- Paired Badge -->
-            <div v-if="extensionStore.paired && !extensionStore.showUnpairConfirm" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20">
-              <CheckCircle :size="12" class="text-[var(--status-complete)]" />
-              <span class="text-[10px] font-mono-data text-[var(--status-complete)]">
-                {{ t('extension.paired') }}
-              </span>
-            </div>
           </div>
         </div>
       </Transition>
@@ -318,18 +320,13 @@
               data-testid="pairing-regenerate-btn"
               :disabled="extensionStore.regenerating"
               class="flex items-center justify-center h-[38px] px-3.5 rounded-xl bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] text-[var(--app-text-muted)] hover:text-[var(--neon-primary)] hover:border-[var(--neon-primary)]/30 transition-all disabled:opacity-50 shrink-0"
-              :title="t('extension.modal.regenerate')"
+              :title="t('extension.modal.regenerateHelp')"
               @click="handleRegenerate"
             >
               <Loader2 v-if="extensionStore.regenerating" :size="14" class="animate-spin" />
               <RefreshCw v-else :size="14" />
             </button>
           </div>
-
-          <!-- Pairing URL validity hint -->
-          <p class="text-[10px] text-[var(--app-text-subtle)] mt-1.5">
-            {{ t('extension.modal.regenerateHelp') }}
-          </p>
 
           <!-- Stale URL Notice -->
           <Transition name="fade">
