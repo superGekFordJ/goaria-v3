@@ -1,7 +1,20 @@
 <script setup lang="ts">
   import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
   import { useI18n } from 'vue-i18n'
-  import { Puzzle, Link2, Unlink, Loader2, CheckCircle, Radio, AlertCircle, Copy, Check, ExternalLink, RefreshCw, X } from 'lucide-vue-next'
+  import {
+    Puzzle,
+    Link2,
+    Unlink,
+    Loader2,
+    CheckCircle,
+    Radio,
+    AlertCircle,
+    Copy,
+    Check,
+    ExternalLink,
+    RefreshCw,
+    X,
+  } from 'lucide-vue-next'
   import SectionCard from './SectionCard.vue'
   import { useExtensionStore } from '../../../stores/extension'
   import { clearClipboardIfMatches } from '../../../utils/clipboard'
@@ -19,7 +32,9 @@
     return t('extension.status.disconnected')
   })
 
-  const isListening = computed(() => extensionStore.status === 'listening' || extensionStore.status === 'paired')
+  const isListening = computed(
+    () => extensionStore.status === 'listening' || extensionStore.status === 'paired',
+  )
 
   const copied = ref(false)
   const showStaleNotice = ref(false)
@@ -39,9 +54,12 @@
       showStaleNotice.value = false
       clearStaleTimer()
       if (newVal) {
-        staleTimer = setTimeout(() => {
-          showStaleNotice.value = true
-        }, 5 * 60 * 1000)
+        staleTimer = setTimeout(
+          () => {
+            showStaleNotice.value = true
+          },
+          5 * 60 * 1000,
+        )
       }
     },
   )
@@ -149,7 +167,10 @@
           {{ statusText }}
         </span>
       </div>
-      <div v-if="isListening" class="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-[var(--btn-glass-bg)]">
+      <div
+        v-if="isListening"
+        class="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-[var(--btn-glass-bg)]"
+      >
         <Radio :size="10" class="text-[var(--neon-primary)]" />
         <span class="text-[10px] font-mono-data text-[var(--app-text-subtle)]">
           {{ extensionStore.wsPort }}
@@ -188,10 +209,16 @@
     <div class="grid grid-cols-1 grid-rows-1 mt-2">
       <!-- Stage 1: Idle -->
       <Transition name="fade">
-        <div v-if="!extensionStore.pairingPanelOpen" data-testid="pairing-stage-idle" class="col-start-1 row-start-1 flex flex-col justify-start">
+        <div
+          v-if="!extensionStore.pairingPanelOpen"
+          data-testid="pairing-stage-idle"
+          class="col-start-1 row-start-1 flex flex-col justify-start"
+        >
           <!-- Connected Clients -->
           <div v-if="isListening" class="mb-4 flex items-center gap-2">
-            <span class="text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)]">
+            <span
+              class="text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)]"
+            >
               {{ t('extension.connectedClients') }}
             </span>
             <span class="text-sm font-mono-data text-[var(--app-text)]/80">
@@ -227,7 +254,9 @@
                   <Unlink :size="14" />
                   {{ t('extension.unpair') }}
                 </button>
-                <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20">
+                <div
+                  class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
+                >
                   <CheckCircle :size="12" class="text-[var(--status-complete)]" />
                   <span class="text-[10px] font-mono-data text-[var(--status-complete)]">
                     {{ t('extension.paired') }}
@@ -266,7 +295,11 @@
 
       <!-- Stage 2: Pairing -->
       <Transition name="fade">
-        <div v-if="extensionStore.pairingPanelOpen" data-testid="pairing-stage-pairing" class="col-start-1 row-start-1 flex flex-col justify-start w-full z-10">
+        <div
+          v-if="extensionStore.pairingPanelOpen"
+          data-testid="pairing-stage-pairing"
+          class="col-start-1 row-start-1 flex flex-col justify-start w-full z-10"
+        >
           <!-- Header: Help text & Close -->
           <div class="flex items-start justify-between gap-4 mb-3">
             <p class="text-xs text-[var(--app-text-muted)] leading-relaxed flex-1">
@@ -285,7 +318,9 @@
           <!-- URL Input & Actions -->
           <div class="flex items-center gap-2">
             <!-- Unified Input Group -->
-            <div class="flex-1 flex items-center bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl h-[38px] overflow-hidden focus-within:border-[var(--neon-primary)]/50 transition-colors">
+            <div
+              class="flex-1 flex items-center bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl h-[38px] overflow-hidden focus-within:border-[var(--neon-primary)]/50 transition-colors"
+            >
               <input
                 data-testid="pairing-url-input"
                 readonly
@@ -294,7 +329,9 @@
                 :aria-label="t('extension.pairUrl')"
               />
               <!-- Inline Actions -->
-              <div class="flex items-center gap-1 pr-1.5 pl-1.5 border-l border-[var(--glass-border)] bg-[var(--btn-glass-bg)]/30 h-full">
+              <div
+                class="flex items-center gap-1 pr-1.5 pl-1.5 border-l border-[var(--glass-border)] bg-[var(--btn-glass-bg)]/30 h-full"
+              >
                 <button
                   data-testid="pairing-copy-btn"
                   class="p-1.5 rounded-lg text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--btn-glass-bg)] transition-all"
@@ -314,7 +351,7 @@
                 </button>
               </div>
             </div>
-            
+
             <!-- Regenerate Button -->
             <button
               data-testid="pairing-regenerate-btn"
