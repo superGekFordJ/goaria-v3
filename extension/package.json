@@ -15,7 +15,7 @@
     "package": "pnpm run build && pnpm run zip:chrome && pnpm run zip:firefox",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "gen:i18n": "node scripts/gen-i18n-types.js",
-    "check:i18n": "node scripts/gen-i18n-types.js && node scripts/check-hardcode.js",
+    "check:i18n": "node scripts/gen-i18n-types.js && node scripts/check-i18n-keys.js && node scripts/check-hardcode.js",
     "lint": "eslint . --fix && pnpm run check:i18n",
     "format": "prettier --write \"*.{js,ts,json}\" \"src/**/*.{js,ts,svelte,css,html}\""
   },

@@ -18,7 +18,7 @@
   "popup_settings_port": { "message": "Puerto" },
 
   "shadow_popup_taken_over": { "message": "GoAria tomó la descarga" },
-  "shadow_popup_takeover_failed": { "message": "Error en la toma" },
+  "shadow_popup_takeover_failed": { "message": "Error al tomar la descarga" },
   "shadow_popup_btn_confirm": { "message": "Confirmar" },
   "shadow_popup_btn_close": { "message": "Cerrar" },
 
@@ -32,5 +32,5 @@
   "pair_close_fallback": { "message": "Puede cerrar esta pestaña manualmente." },
 
   "interceptor_notif_title_taken": { "message": "GoAria tomó la descarga" },
-  "interceptor_notif_title_failed": { "message": "Error en la toma" }
+  "interceptor_notif_title_failed": { "message": "Error al tomar la descarga" }
 }

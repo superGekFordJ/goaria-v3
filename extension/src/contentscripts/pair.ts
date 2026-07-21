@@ -49,7 +49,9 @@ async function pair(): Promise<void> {
   // if the tab is still alive 200ms later, close was blocked.
   setTimeout(() => {
     window.close()
-    setTimeout(() => setStatus(`${t('pair_success')}\n${t('pair_close_fallback')}`), 200)
+    // pair_success was already shown for 3s; if close was blocked, only the
+    // manual-close hint is needed (avoids repeating "you can close this tab").
+    setTimeout(() => setStatus(t('pair_close_fallback')), 200)
   }, 3000)
 }
 

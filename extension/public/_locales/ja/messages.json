@@ -6,7 +6,7 @@
   "popup_status_connected_unpaired": { "message": "接続済み · 未ペアリング" },
   "popup_status_connecting": { "message": "接続中..." },
   "popup_status_disconnected": { "message": "未接続" },
-  "popup_toggle_intercept": { "message": "ダウンロードを傍受" },
+  "popup_toggle_intercept": { "message": "ダウンロードをインターセプト" },
   "popup_btn_pair": { "message": "ペアリング" },
   "popup_pair_guide": { "message": "GoAria 設定で「拡張機能をバインド」をクリックしてください" },
   "popup_btn_unpair": { "message": "ペアリング解除" },
