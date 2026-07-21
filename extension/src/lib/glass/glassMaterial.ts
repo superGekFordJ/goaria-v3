@@ -345,10 +345,10 @@ function buildChrome(host: HTMLElement) {
   const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs')
   defs.innerHTML = `
     <linearGradient id="rim-light" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#fff" stop-opacity=".85"/>
-      <stop offset=".3" stop-color="#fff" stop-opacity=".20"/>
-      <stop offset=".65" stop-color="#fff" stop-opacity=".06"/>
-      <stop offset="1" stop-color="#fff" stop-opacity=".16"/>
+      <stop offset="0" stop-color="#fff" stop-opacity=".80"/>
+      <stop offset=".3" stop-color="#fff" stop-opacity=".15"/>
+      <stop offset=".65" stop-color="#000" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#000" stop-opacity=".16"/>
     </linearGradient>
     <linearGradient id="rim-dark" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#fff" stop-opacity=".32"/>

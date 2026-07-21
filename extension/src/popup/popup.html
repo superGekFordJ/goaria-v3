@@ -1,8 +1,17 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <title>GoAria</title>
+    <script>
+      (function() {
+        const isLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+        document.documentElement.setAttribute('data-theme', isLight ? 'light' : 'dark');
+        window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', e => {
+          document.documentElement.setAttribute('data-theme', e.matches ? 'light' : 'dark');
+        });
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>
