@@ -1,0 +1,36 @@
+{
+  "manifest_extensionName": { "message": "GoAria" },
+  "manifest_extensionDescription": { "message": "Download manager integration for GoAria" },
+
+  "popup_status_connected_paired": { "message": "Paired · Connected" },
+  "popup_status_connected_unpaired": { "message": "Connected · Unpaired" },
+  "popup_status_connecting": { "message": "Connecting..." },
+  "popup_status_disconnected": { "message": "Disconnected" },
+  "popup_toggle_intercept": { "message": "Intercept downloads" },
+  "popup_btn_pair": { "message": "Pair" },
+  "popup_pair_guide": { "message": "Click \"Bind Extension\" in GoAria settings" },
+  "popup_btn_unpair": { "message": "Unpair" },
+  "popup_confirm_unpair": { "message": "Confirm unpair?" },
+  "popup_btn_confirm": { "message": "Confirm" },
+  "popup_btn_cancel": { "message": "Cancel" },
+  "popup_btn_settings": { "message": "Settings" },
+  "popup_settings_advanced_materials": { "message": "Advanced materials" },
+  "popup_settings_port": { "message": "Port" },
+
+  "shadow_popup_taken_over": { "message": "GoAria took over download" },
+  "shadow_popup_takeover_failed": { "message": "Takeover failed" },
+  "shadow_popup_btn_confirm": { "message": "Confirm" },
+  "shadow_popup_btn_close": { "message": "Close" },
+
+  "context_menu_download_with": { "message": "Download with GoAria" },
+  "context_hls_unsupported_title": { "message": "GoAria — HLS Not Yet Supported" },
+  "context_hls_unsupported_body": { "message": "HLS video stream download is coming soon, not supported yet." },
+
+  "pair_success": { "message": "Pairing successful! You can close this tab." },
+  "pair_no_secret": { "message": "Pairing failed: no secret found." },
+  "pair_retry": { "message": "Pairing failed: background not reachable. Please reload." },
+  "pair_close_fallback": { "message": "You can close this tab manually." },
+
+  "interceptor_notif_title_taken": { "message": "GoAria took over download" },
+  "interceptor_notif_title_failed": { "message": "Takeover failed" }
+}

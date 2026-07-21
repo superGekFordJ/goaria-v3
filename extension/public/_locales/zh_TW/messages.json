@@ -1,0 +1,36 @@
+{
+  "manifest_extensionName": { "message": "GoAria" },
+  "manifest_extensionDescription": { "message": "GoAria 下載管理整合" },
+
+  "popup_status_connected_paired": { "message": "已配對 · 已連線" },
+  "popup_status_connected_unpaired": { "message": "已連線 · 未配對" },
+  "popup_status_connecting": { "message": "連線中..." },
+  "popup_status_disconnected": { "message": "未連線" },
+  "popup_toggle_intercept": { "message": "攔截下載" },
+  "popup_btn_pair": { "message": "配對" },
+  "popup_pair_guide": { "message": "請在 GoAria 設定中點擊綁定擴充功能" },
+  "popup_btn_unpair": { "message": "解除綁定" },
+  "popup_confirm_unpair": { "message": "確定解除綁定？" },
+  "popup_btn_confirm": { "message": "確認" },
+  "popup_btn_cancel": { "message": "取消" },
+  "popup_btn_settings": { "message": "設定" },
+  "popup_settings_advanced_materials": { "message": "進階材質" },
+  "popup_settings_port": { "message": "連接埠" },
+
+  "shadow_popup_taken_over": { "message": "GoAria 已接管下載" },
+  "shadow_popup_takeover_failed": { "message": "接管失敗" },
+  "shadow_popup_btn_confirm": { "message": "確認" },
+  "shadow_popup_btn_close": { "message": "關閉" },
+
+  "context_menu_download_with": { "message": "用 GoAria 下載" },
+  "context_hls_unsupported_title": { "message": "GoAria — HLS 尚不支援" },
+  "context_hls_unsupported_body": { "message": "HLS 影片串流下載即將推出，尚不支援。請等待後續版本。" },
+
+  "pair_success": { "message": "綁定成功！可以關閉此分頁。" },
+  "pair_no_secret": { "message": "綁定失敗：未找到金鑰。" },
+  "pair_retry": { "message": "綁定失敗：無法連接背景，請重新整理。" },
+  "pair_close_fallback": { "message": "可手動關閉此分頁。" },
+
+  "interceptor_notif_title_taken": { "message": "GoAria 已接管下載" },
+  "interceptor_notif_title_failed": { "message": "接管失敗" }
+}

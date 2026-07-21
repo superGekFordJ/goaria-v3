@@ -1,0 +1,36 @@
+{
+  "manifest_extensionName": { "message": "GoAria" },
+  "manifest_extensionDescription": { "message": "GoAria ダウンロードマネージャー連携" },
+
+  "popup_status_connected_paired": { "message": "ペアリング済み · 接続済み" },
+  "popup_status_connected_unpaired": { "message": "接続済み · 未ペアリング" },
+  "popup_status_connecting": { "message": "接続中..." },
+  "popup_status_disconnected": { "message": "未接続" },
+  "popup_toggle_intercept": { "message": "ダウンロードを傍受" },
+  "popup_btn_pair": { "message": "ペアリング" },
+  "popup_pair_guide": { "message": "GoAria 設定で「拡張機能をバインド」をクリックしてください" },
+  "popup_btn_unpair": { "message": "ペアリング解除" },
+  "popup_confirm_unpair": { "message": "ペアリングを解除しますか？" },
+  "popup_btn_confirm": { "message": "確認" },
+  "popup_btn_cancel": { "message": "キャンセル" },
+  "popup_btn_settings": { "message": "設定" },
+  "popup_settings_advanced_materials": { "message": "高度なマテリアル" },
+  "popup_settings_port": { "message": "ポート" },
+
+  "shadow_popup_taken_over": { "message": "GoAria がダウンロードを引き継ぎました" },
+  "shadow_popup_takeover_failed": { "message": "引き継ぎ失敗" },
+  "shadow_popup_btn_confirm": { "message": "確認" },
+  "shadow_popup_btn_close": { "message": "閉じる" },
+
+  "context_menu_download_with": { "message": "GoAria でダウンロード" },
+  "context_hls_unsupported_title": { "message": "GoAria — HLS は未対応" },
+  "context_hls_unsupported_body": { "message": "HLS 動画ストリームのダウンロードは近日対応予定です。現在は未対応です。" },
+
+  "pair_success": { "message": "ペアリング成功！このタブを閉じることができます。" },
+  "pair_no_secret": { "message": "ペアリング失敗：シークレットが見つかりません。" },
+  "pair_retry": { "message": "ペアリング失敗：バックグラウンドに接続できません。再読み込みしてください。" },
+  "pair_close_fallback": { "message": "このタブを手動で閉じることができます。" },
+
+  "interceptor_notif_title_taken": { "message": "GoAria がダウンロードを引き継ぎました" },
+  "interceptor_notif_title_failed": { "message": "引き継ぎ失敗" }
+}

@@ -6,8 +6,9 @@ export const EXTENSION_VERSION = pkg.version
 
 export function getBaseManifest() {
   return {
-    name: EXTENSION_NAME,
-    description: EXTENSION_DESCRIPTION,
+    name: '__MSG_extensionName__',
+    description: '__MSG_extensionDescription__',
+    default_locale: 'en',
     version: EXTENSION_VERSION,
     manifest_version: 3,
     icons: {

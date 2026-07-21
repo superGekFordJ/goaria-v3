@@ -5,16 +5,17 @@
   import { sendMessage } from 'webext-bridge/popup'
   import LiquidGlassPanel from '../lib/glass/LiquidGlassPanel.svelte'
   import type { InterceptionToggleMessage } from '../utils/messaging'
+  import { t } from '../lib/i18n'
 
   let showSettings = $state(false)
   let showPairGuide = $state(false)
   let showUnpairConfirm = $state(false)
 
   let statusText = $derived.by(() => {
-    if (connectionState.status === 'connected' && connectionState.paired) return '已配对 · 已连接'
-    if (connectionState.status === 'connected' && !connectionState.paired) return '已连接 · 未配对'
-    if (connectionState.status === 'connecting') return '连接中...'
-    return '未连接'
+    if (connectionState.status === 'connected' && connectionState.paired) return t('popup_status_connected_paired')
+    if (connectionState.status === 'connected' && !connectionState.paired) return t('popup_status_connected_unpaired')
+    if (connectionState.status === 'connecting') return t('popup_status_connecting')
+    return t('popup_status_disconnected')
   })
 
   let statusClass = $derived(connectionState.status)
@@ -79,7 +80,7 @@
       onclick={toggleInterception}
     >
       <span class="btn-inner">
-        <span class="popup-toggle-label">拦截下载</span>
+        <span class="popup-toggle-label">{t('popup_toggle_intercept')}</span>
         <span>{configState.autoCapture ? 'ON' : 'OFF'}</span>
       </span>
     </LiquidGlassPanel>
@@ -95,17 +96,17 @@
         class="popup-pair-btn"
         onclick={() => (showPairGuide = !showPairGuide)}
       >
-        <span class="btn-inner">配对</span>
+        <span class="btn-inner">{t('popup_btn_pair')}</span>
       </LiquidGlassPanel>
       {#if showPairGuide}
-        <div class="popup-guide">请在 GoAria 设置中点击绑定扩展</div>
+        <div class="popup-guide">{t('popup_pair_guide')}</div>
       {/if}
     </div>
   {:else}
     <div class="popup-section">
       {#if showUnpairConfirm}
         <div class="popup-confirm-row">
-          <span class="popup-confirm-text">确定解绑？</span>
+          <span class="popup-confirm-text">{t('popup_confirm_unpair')}</span>
           <LiquidGlassPanel
             as="button"
             interactive={true}
@@ -114,7 +115,7 @@
             class="popup-confirm-btn"
             onclick={handleUnpair}
           >
-            <span class="btn-inner">确认</span>
+            <span class="btn-inner">{t('popup_btn_confirm')}</span>
           </LiquidGlassPanel>
           <LiquidGlassPanel
             as="button"
@@ -124,7 +125,7 @@
             class="popup-confirm-cancel"
             onclick={() => (showUnpairConfirm = false)}
           >
-            <span class="btn-inner">取消</span>
+            <span class="btn-inner">{t('popup_btn_cancel')}</span>
           </LiquidGlassPanel>
         </div>
       {:else}
@@ -136,7 +137,7 @@
           class="popup-unpair-btn"
           onclick={() => (showUnpairConfirm = true)}
         >
-          <span class="btn-inner">解绑</span>
+          <span class="btn-inner">{t('popup_btn_unpair')}</span>
         </LiquidGlassPanel>
       {/if}
     </div>
@@ -151,13 +152,13 @@
       class="popup-settings-toggle"
       onclick={() => (showSettings = !showSettings)}
     >
-      <span class="btn-inner">设置</span>
+      <span class="btn-inner">{t('popup_btn_settings')}</span>
     </LiquidGlassPanel>
 
     {#if showSettings}
       <div class="etched-panel popup-settings-panel">
         <div class="popup-settings-row">
-          <span class="popup-settings-label">高级材质</span>
+          <span class="popup-settings-label">{t('popup_settings_advanced_materials')}</span>
           <LiquidGlassPanel
             as="button"
             interactive={true}
@@ -170,7 +171,7 @@
           </LiquidGlassPanel>
         </div>
         <div class="popup-settings-row">
-          <span class="popup-settings-label">端口</span>
+          <span class="popup-settings-label">{t('popup_settings_port')}</span>
           <span class="popup-settings-label">{configState.port}</span>
         </div>
       </div>

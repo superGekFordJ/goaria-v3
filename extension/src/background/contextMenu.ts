@@ -4,29 +4,27 @@ import { getCookiesForUrl } from './cookieCapture'
 import { getDownloadPageUrl } from './refererCapture'
 import { getScheme } from '../interceptors/DownloadLinkInterceptor'
 import type { DownloadHandoffMessage } from '../utils/messaging'
+import { t } from '../lib/i18n'
 
-// Bilingual menu title (structured for future i18n migration).
-const MENU_TITLE_ZH = '用 GoAria 下载'
 const MENU_ID = 'goaria-download-link'
-
-// Bilingual HLS unsupported prompt text.
-const HLS_UNSUPPORTED_TITLE = 'GoAria — HLS 暂不支持 / HLS Not Yet Supported'
-const HLS_UNSUPPORTED_BODY =
-  'HLS 视频流下载即将推出，暂不支持。请等待后续版本。' +
-  ' / HLS video stream download is coming soon, not supported yet.'
 
 /**
  * Register the right-click "Download with GoAria" context menu. The menu item
  * is created on install/update via runtime.onInstalled + removeAll (idempotent
  * across SW restarts — Chrome/Firefox persist the registration). The click
  * listener is bound at top level so it re-attaches on every SW restart.
+ *
+ * The title is resolved once via getMessage() at creation time. A browser UI
+ * language change mid-session won't refresh it until the next onInstalled
+ * (extension update/reload). This is an accepted trade-off to avoid extra
+ * language-change plumbing.
  */
 export function initContextMenu(): void {
   browser.runtime.onInstalled.addListener(() => {
     void browser.contextMenus.removeAll().then(() => {
       browser.contextMenus.create({
         id: MENU_ID,
-        title: MENU_TITLE_ZH,
+        title: t('context_menu_download_with'),
         contexts: ['link', 'video', 'audio'],
       })
     })
@@ -50,8 +48,8 @@ function showHlsUnsupportedPrompt(): void {
     .create({
       type: 'basic',
       iconUrl: browser.runtime.getURL('icons/icon-48.png'),
-      title: HLS_UNSUPPORTED_TITLE,
-      message: HLS_UNSUPPORTED_BODY,
+      title: t('context_hls_unsupported_title'),
+      message: t('context_hls_unsupported_body'),
     })
     .catch(() => {
       // notifications API may be unavailable in some environments.

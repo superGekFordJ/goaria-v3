@@ -2,6 +2,7 @@
   import { fly } from 'svelte/transition'
   import { popupQueue } from '../stores/popupQueue.svelte'
   import LiquidGlassPanel from '../lib/glass/LiquidGlassPanel.svelte'
+  import { t } from '../lib/i18n'
 
   let { effects = 'full' }: { effects?: 'full' | 'reduced' } = $props()
 
@@ -55,7 +56,7 @@
             {message.success ? '✓' : '✕'}
           </span>
           <span class="popup-title">
-            {message.success ? 'GoAria 已接管下载' : '接管失败'}
+            {message.success ? t('shadow_popup_taken_over') : t('shadow_popup_takeover_failed')}
           </span>
         </div>
 
@@ -81,7 +82,7 @@
               class="popup-btn"
               onclick={dismiss}
             >
-              <span class="btn-inner">确认</span>
+              <span class="btn-inner">{t('shadow_popup_btn_confirm')}</span>
             </LiquidGlassPanel>
           {:else}
             <LiquidGlassPanel
@@ -92,7 +93,7 @@
               class="popup-btn"
               onclick={dismiss}
             >
-              <span class="btn-inner">关闭</span>
+              <span class="btn-inner">{t('shadow_popup_btn_close')}</span>
             </LiquidGlassPanel>
           {/if}
         </div>

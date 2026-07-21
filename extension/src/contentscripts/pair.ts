@@ -1,14 +1,9 @@
 import { sendMessage } from 'webext-bridge/content-script'
 import type { PairSecretMessage } from '../utils/messaging'
+import { t } from '../lib/i18n'
 
-// Bilingual copy: the pairing page is standalone HTML outside the Wails
-// WebView, so it has no access to the i18n system.
-const TEXT_SUCCESS = 'Pairing successful! You can close this tab. / 绑定成功！可以关闭此标签页。'
-const TEXT_NO_SECRET = 'Pairing failed: no secret found. / 绑定失败：未找到密钥。'
-const TEXT_RETRY =
-  'Pairing failed: background not reachable. Please reload. / 绑定失败：无法连接后台，请刷新重试。'
-const TEXT_CLOSE_FALLBACK = 'You can close this tab manually. / 可手动关闭此标签页。'
-
+// pair.ts is an extension-injected content script, so it can use the
+// extension's native browser.i18n.getMessage() (not the desktop vue-i18n).
 function setStatus(text: string): void {
   const p = document.querySelector('p')
   if (p) {
@@ -25,7 +20,7 @@ async function pair(): Promise<void> {
   const cfgEl = document.querySelector('#cfg')
   const secret = cfgEl?.getAttribute('data-secret') ?? ''
   if (!secret) {
-    setStatus(TEXT_NO_SECRET)
+    setStatus(t('pair_no_secret'))
     return
   }
 
@@ -38,23 +33,23 @@ async function pair(): Promise<void> {
     )
   } catch {
     // Background SW may not be ready yet, or the message round-trip failed.
-    setStatus(TEXT_RETRY)
+    setStatus(t('pair_retry'))
     return
   }
 
   if (!result?.ok) {
     // Background rejected the secret (empty or storage write failure).
-    setStatus(TEXT_RETRY)
+    setStatus(t('pair_retry'))
     return
   }
 
-  setStatus(TEXT_SUCCESS)
+  setStatus(t('pair_success'))
   // Some browsers block window.close() for non-script-opened tabs.
   // Wait 3s for the success message to be visible, then attempt close;
   // if the tab is still alive 200ms later, close was blocked.
   setTimeout(() => {
     window.close()
-    setTimeout(() => setStatus(`${TEXT_SUCCESS}\n${TEXT_CLOSE_FALLBACK}`), 200)
+    setTimeout(() => setStatus(`${t('pair_success')}\n${t('pair_close_fallback')}`), 200)
   }, 3000)
 }
 

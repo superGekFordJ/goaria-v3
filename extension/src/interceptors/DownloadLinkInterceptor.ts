@@ -12,6 +12,7 @@ import type {
   InterceptedReply,
 } from '../utils/messaging'
 import type { InterceptionContext, InterceptionDecision } from './LinkGrabberResponse'
+import { t } from '../lib/i18n'
 
 // MIME types that are page/resource content, not downloads. Interception skips
 // these unless a Content-Disposition: attachment header overrides the type.
@@ -202,7 +203,7 @@ export function showInterceptedNotification(msg: DownloadInterceptedMessage): vo
     void browser.notifications.create({
       type: 'basic',
       iconUrl: browser.runtime.getURL('icons/icon-128.png'),
-      title: msg.success ? 'GoAria 已接管下载' : '接管失败',
+      title: msg.success ? t('interceptor_notif_title_taken') : t('interceptor_notif_title_failed'),
       message: msg.error ? `${msg.filename}\n${msg.error}` : msg.filename || msg.url,
     })
   } catch {

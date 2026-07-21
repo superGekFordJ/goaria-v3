@@ -71,7 +71,7 @@ try {
   const shadowRoot = createShadowHost()
   if (shadowRoot) {
     // Read the persisted effects setting before mounting so the Shadow DOM
-    // popup respects the user's "高级材质" toggle.
+    // popup respects the user's "advanced materials" toggle.
     void configState.loadEffects().then(() => {
       try {
         mount(ShadowDomPopup, { target: shadowRoot, props: { effects: configState.effects } })

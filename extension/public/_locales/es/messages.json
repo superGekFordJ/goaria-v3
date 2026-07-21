@@ -1,0 +1,36 @@
+{
+  "manifest_extensionName": { "message": "GoAria" },
+  "manifest_extensionDescription": { "message": "Integración del gestor de descargas para GoAria" },
+
+  "popup_status_connected_paired": { "message": "Emparejado · Conectado" },
+  "popup_status_connected_unpaired": { "message": "Conectado · No emparejado" },
+  "popup_status_connecting": { "message": "Conectando..." },
+  "popup_status_disconnected": { "message": "Desconectado" },
+  "popup_toggle_intercept": { "message": "Interceptar descargas" },
+  "popup_btn_pair": { "message": "Emparejar" },
+  "popup_pair_guide": { "message": "Haga clic en «Vincular extensión» en los ajustes de GoAria" },
+  "popup_btn_unpair": { "message": "Desemparejar" },
+  "popup_confirm_unpair": { "message": "¿Confirmar desemparejamiento?" },
+  "popup_btn_confirm": { "message": "Confirmar" },
+  "popup_btn_cancel": { "message": "Cancelar" },
+  "popup_btn_settings": { "message": "Ajustes" },
+  "popup_settings_advanced_materials": { "message": "Materiales Avanzados" },
+  "popup_settings_port": { "message": "Puerto" },
+
+  "shadow_popup_taken_over": { "message": "GoAria tomó la descarga" },
+  "shadow_popup_takeover_failed": { "message": "Toma fallida" },
+  "shadow_popup_btn_confirm": { "message": "Confirmar" },
+  "shadow_popup_btn_close": { "message": "Cerrar" },
+
+  "context_menu_download_with": { "message": "Descargar con GoAria" },
+  "context_hls_unsupported_title": { "message": "GoAria — HLS aún no compatible" },
+  "context_hls_unsupported_body": { "message": "La descarga de transmisiones HLS estará disponible pronto, aún no es compatible." },
+
+  "pair_success": { "message": "¡Emparejamiento exitoso! Puede cerrar esta pestaña." },
+  "pair_no_secret": { "message": "Emparejamiento fallido: no se encontró el secreto." },
+  "pair_retry": { "message": "Emparejamiento fallido: fondo inalcanzable. Recargue la página." },
+  "pair_close_fallback": { "message": "Puede cerrar esta pestaña manualmente." },
+
+  "interceptor_notif_title_taken": { "message": "GoAria tomó la descarga" },
+  "interceptor_notif_title_failed": { "message": "Toma fallida" }
+}

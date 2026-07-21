@@ -1,0 +1,36 @@
+{
+  "manifest_extensionName": { "message": "GoAria" },
+  "manifest_extensionDescription": { "message": "Download-Manager-Integration für GoAria" },
+
+  "popup_status_connected_paired": { "message": "Gekoppelt · Verbunden" },
+  "popup_status_connected_unpaired": { "message": "Verbunden · Nicht gekoppelt" },
+  "popup_status_connecting": { "message": "Verbindung wird hergestellt..." },
+  "popup_status_disconnected": { "message": "Getrennt" },
+  "popup_toggle_intercept": { "message": "Downloads abfangen" },
+  "popup_btn_pair": { "message": "Koppeln" },
+  "popup_pair_guide": { "message": "Klicken Sie in den GoAria-Einstellungen auf „Erweiterung binden“" },
+  "popup_btn_unpair": { "message": "Entkoppeln" },
+  "popup_confirm_unpair": { "message": "Entkopplung bestätigen?" },
+  "popup_btn_confirm": { "message": "Bestätigen" },
+  "popup_btn_cancel": { "message": "Abbrechen" },
+  "popup_btn_settings": { "message": "Einstellungen" },
+  "popup_settings_advanced_materials": { "message": "Erweiterte Materialien" },
+  "popup_settings_port": { "message": "Port" },
+
+  "shadow_popup_taken_over": { "message": "GoAria hat Download übernommen" },
+  "shadow_popup_takeover_failed": { "message": "Übernahme fehlgeschlagen" },
+  "shadow_popup_btn_confirm": { "message": "Bestätigen" },
+  "shadow_popup_btn_close": { "message": "Schließen" },
+
+  "context_menu_download_with": { "message": "Mit GoAria herunterladen" },
+  "context_hls_unsupported_title": { "message": "GoAria — HLS noch nicht unterstützt" },
+  "context_hls_unsupported_body": { "message": "HLS-Videostream-Download kommt bald, derzeit noch nicht unterstützt." },
+
+  "pair_success": { "message": "Kopplung erfolgreich! Sie können diesen Tab schließen." },
+  "pair_no_secret": { "message": "Kopplung fehlgeschlagen: kein Secret gefunden." },
+  "pair_retry": { "message": "Kopplung fehlgeschlagen: Hintergrund nicht erreichbar. Bitte neu laden." },
+  "pair_close_fallback": { "message": "Sie können diesen Tab manuell schließen." },
+
+  "interceptor_notif_title_taken": { "message": "GoAria hat Download übernommen" },
+  "interceptor_notif_title_failed": { "message": "Übernahme fehlgeschlagen" }
+}
