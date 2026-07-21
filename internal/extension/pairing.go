@@ -167,7 +167,7 @@ func (p *PairingService) stopLocked() {
 }
 
 // Regenerate stops the current pairing server and starts a fresh one with a
-// new nonce + port + URL. The global secret is NOT rotated — already-paired
+// new nonce + URL. The global secret is NOT rotated — already-paired
 // extensions remain connected. Use this to refresh an expired pairing URL.
 // The lock is released between stop and start (Start re-acquires it), but the
 // single-method API prevents wrong-order calls.
