@@ -115,7 +115,7 @@ func TestConvergence_RecordPeakEfficiency_FloorHitRebound(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	recorder := &monotonicMockPeakRecorder{}
-	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{}, 0, 0)
 
 	// Clear any leftover N_max from previous tests (global singleton).
 	ct.limits.Clear("example.com")
@@ -199,7 +199,7 @@ func TestConvergence_RecordPeakEfficiency_MonotonicRatchet(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	recorder := &monotonicMockPeakRecorder{}
-	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{}, 0, 0)
 
 	// Clear any leftover N_max from previous tests (global singleton).
 	ct.limits.Clear("example.com")

@@ -30,7 +30,7 @@ func setupCeilingHitState(t *testing.T, gid string, ceilingMemory int64, cooldow
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 	ct.mu.Lock()
 	s := ct.getOrCreateState(gid)

@@ -258,7 +258,15 @@ func (m *Monitor) Start() {
 	// Start convergence tick if engine is HybridEngine
 	if he, ok := m.engine.(*rpc.HybridEngine); ok {
 		adapter := &trackerAdapter{TaskTracker: m.tracker, engine: he}
-		m.convergence = smartthread.NewConvergenceTicker(he, adapter, m.telemetry, adapter, adapter)
+		convIntervalSec := 0
+		maxConn := 0
+		if config.Current != nil {
+			convIntervalSec = config.Current.ConvergenceInterval
+			if v, err := strconv.Atoi(config.Current.MaxConnections); err == nil && v > 0 {
+				maxConn = v
+			}
+		}
+		m.convergence = smartthread.NewConvergenceTicker(he, adapter, m.telemetry, adapter, adapter, convIntervalSec, maxConn)
 		m.convergence.Start()
 		// CDN throttle detector: only for HybridEngine (needs Surge control).
 		if se, ok := he.SurgeEngineRef(); ok && se != nil {

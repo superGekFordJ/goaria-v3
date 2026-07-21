@@ -28,7 +28,7 @@ func TestConvergence_BandwidthRelease_SkipsCeilingHit(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 	// phaseCeilingHit with kneeFrozen=false isolates the ceiling-hit suppression.
 	ct.mu.Lock()
@@ -79,7 +79,7 @@ func TestConvergence_BandwidthRelease_SkipsBlackout(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 	defer ct.Stop()
 
 	ct.mu.Lock()
@@ -128,7 +128,7 @@ func TestConvergence_BandwidthRelease_NonKeepAliveTaskBenefits(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 	ct.mu.Lock()
 	s := ct.getOrCreateState(beneficiaryGid)
@@ -200,7 +200,7 @@ func TestConvergence_ApprovedDelta_PreventsSameTickOversell(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 	ct.limits.Clear("example.com")
 
 	// Both tasks in Probe-Up-ready state.
@@ -279,7 +279,7 @@ func TestConvergence_BandwidthRelease_BlockedByVAvailable(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 	ct.mu.Lock()
 	s := ct.getOrCreateState(beneficiaryGid)
@@ -329,7 +329,7 @@ func TestConvergence_BandwidthRelease_DomainScopeMatching(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 	for _, gid := range []string{gidA, gidB} {
 		ct.mu.Lock()
@@ -388,7 +388,7 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 		aria2 := &rpc.Aria2Engine{}
 		surge := rpc.NewSurgeEngineForTesting(nil)
 		he := rpc.NewHybridEngine(aria2, surge)
-		ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+		ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 		for _, gid := range []string{gidA, gidB} {
 			ct.mu.Lock()
@@ -437,7 +437,7 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 		aria2 := &rpc.Aria2Engine{}
 		surge := rpc.NewSurgeEngineForTesting(nil)
 		he := rpc.NewHybridEngine(aria2, surge)
-		ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+		ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 		ct.mu.Lock()
 		s := ct.getOrCreateState(gidB)
@@ -492,7 +492,7 @@ func TestConvergence_BandwidthRelease_SingleBeneficiaryElection(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 	for _, gid := range []string{gid1, gid2, gid3} {
 		ct.mu.Lock()
@@ -552,7 +552,7 @@ func TestConvergence_BandwidthRelease_FairRotation(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 	for _, gid := range []string{gid1, gid2} {
 		ct.mu.Lock()
@@ -625,7 +625,7 @@ func TestConvergence_BandwidthRelease_DelayCompensation(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 	ct.mu.Lock()
 	s := ct.getOrCreateState(beneficiaryGid)
@@ -685,7 +685,7 @@ func TestConvergence_BandwidthRelease_NoCompensationWhenSpeedZero(t *testing.T) 
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 	ct.mu.Lock()
 	s := ct.getOrCreateState(beneficiaryGid)

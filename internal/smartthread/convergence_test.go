@@ -162,6 +162,12 @@ func TestConvergenceTicker_StartStop(t *testing.T) {
 	ct.Start()
 	time.Sleep(10 * time.Millisecond)
 	ct.Stop()
+
+	select {
+	case <-ct.stopChan:
+	default:
+		t.Error("stopChan not closed after Stop()")
+	}
 }
 
 func TestConvergenceTicker_SelfCleanupStaleStates(t *testing.T) {

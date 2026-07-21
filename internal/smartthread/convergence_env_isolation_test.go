@@ -41,7 +41,7 @@ func TestConvergence_CrossEnvIsolation_ApprovedDelta(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 	ct.limits.Clear("example.com")
 
 	for _, gid := range []string{gidA, gidB} {
@@ -119,7 +119,7 @@ func TestConvergence_BandwidthRelease_CrossEnvNoBeneficiary(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 	ct.mu.Lock()
 	s := ct.getOrCreateState(beneficiaryGid)
@@ -174,7 +174,7 @@ func TestConvergence_BandwidthRelease_SameEnvBeneficiary(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 	ct.mu.Lock()
 	s := ct.getOrCreateState(beneficiaryGid)

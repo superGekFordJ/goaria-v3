@@ -4,12 +4,10 @@ import (
 	"log"
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"goaria-v3/internal/config"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/surge/engine/types"
@@ -127,6 +125,11 @@ type ConvergenceTicker struct {
 	prevActiveSpeeds map[string]int64   // gid → last known rawBps, for delay compensation
 	stopChan         chan struct{}
 	stopOnce         sync.Once
+	wg               sync.WaitGroup
+
+	// Injected at construction to avoid background goroutine reads of config.Current.
+	interval       time.Duration
+	maxConnections int
 }
 
 func NewConvergenceTicker(
@@ -135,7 +138,16 @@ func NewConvergenceTicker(
 	telemetry TelemetryProvider,
 	peakRecorder PeakEfficiencyRecorder,
 	rateChecker RateLimitChecker,
+	convergenceIntervalSec int,
+	maxConnections int,
 ) *ConvergenceTicker {
+	interval := convergenceInterval
+	if convergenceIntervalSec > 0 {
+		interval = time.Duration(convergenceIntervalSec) * time.Second
+	}
+	if maxConnections <= 0 {
+		maxConnections = 8
+	}
 	return &ConvergenceTicker{
 		engine:           engine,
 		tracker:          tracker,
@@ -147,10 +159,13 @@ func NewConvergenceTicker(
 		prevActiveGids:   make(map[string]gidInfo),
 		prevActiveSpeeds: make(map[string]int64),
 		stopChan:         make(chan struct{}),
+		interval:         interval,
+		maxConnections:   maxConnections,
 	}
 }
 
 func (c *ConvergenceTicker) Start() {
+	c.wg.Add(1)
 	go c.run()
 }
 
@@ -158,9 +173,11 @@ func (c *ConvergenceTicker) Stop() {
 	c.stopOnce.Do(func() {
 		close(c.stopChan)
 	})
+	c.wg.Wait()
 }
 
 func (c *ConvergenceTicker) run() {
+	defer c.wg.Done()
 	ticker := time.NewTicker(c.currentInterval())
 	defer ticker.Stop()
 
@@ -176,10 +193,7 @@ func (c *ConvergenceTicker) run() {
 }
 
 func (c *ConvergenceTicker) currentInterval() time.Duration {
-	if config.Current != nil && config.Current.ConvergenceInterval > 0 {
-		return time.Duration(config.Current.ConvergenceInterval) * time.Second
-	}
-	return convergenceInterval
+	return c.interval
 }
 
 // pendingScale collects batched scale operations to execute after all tasks are processed.
@@ -430,11 +444,9 @@ func (c *ConvergenceTicker) computeProbeFloor(domain, scope, envKey string) int 
 	if !ok || rtpropMs <= 0 {
 		return probeFloorWorkers
 	}
-	wMax := 8
-	if config.Current != nil {
-		if v, err := strconv.Atoi(config.Current.MaxConnections); err == nil && v > 0 {
-			wMax = v
-		}
+	wMax := c.maxConnections
+	if wMax <= 0 {
+		wMax = 8
 	}
 	bdp := float64(btlBw) * (float64(rtpropMs) / 1000.0)
 	bbrFloor := int(math.Ceil(bdp / float64(wMax)))

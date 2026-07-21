@@ -51,7 +51,7 @@ func (m *mockRateChecker) GetRateLimit(gid string) (int64, bool) {
 
 // newTestConvergenceTicker creates a ConvergenceTicker with default mock recorder/checker.
 func newTestConvergenceTicker(engine *rpc.HybridEngine, tracker *mockTracker, telemetry *mockTelemetry) *ConvergenceTicker {
-	return NewConvergenceTicker(engine, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	return NewConvergenceTicker(engine, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 }
 
 // makeWorkers creates n worker snapshots with the given EMASpeed.
@@ -123,7 +123,7 @@ func TestConvergence_ProbeDown_ProbesBelowInitialWorkers(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	recorder := &mockPeakRecorder{}
-	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{}, 0, 0)
 	defer ct.Stop()
 
 	// Tick 1: first sample — stores baseline, no decision
@@ -288,7 +288,7 @@ func TestConvergence_RateLimitSkip(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	recorder := &mockPeakRecorder{}
-	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, rateChecker)
+	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, rateChecker, 0, 0)
 	defer ct.Stop()
 
 	// Set up state with baseline
@@ -380,7 +380,7 @@ func TestConvergence_M1_CongestionTrapEscape(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	recorder := &mockPeakRecorder{}
-	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{}, 0, 0)
 	defer ct.Stop()
 
 	// Tick 1: first sample (baseline)
@@ -842,7 +842,7 @@ func TestConvergence_E2E_MomentumChain(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	recorder := &mockPeakRecorder{}
-	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{}, 0, 0)
 	defer ct.Stop()
 
 	// Helper: call processTask directly, simulating successful scale by
@@ -1115,7 +1115,7 @@ func TestConvergence_E2E_LinearZoneKneeViaSettling(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	recorder := &mockPeakRecorder{}
-	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{}, 0, 0)
 	defer ct.Stop()
 
 	// Helper: call processTask directly, simulating successful scale by

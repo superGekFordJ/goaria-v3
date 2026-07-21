@@ -30,7 +30,7 @@ func setupFloorHitState(t *testing.T, gid string, floorMemory int64, cooldown in
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 	ct.mu.Lock()
 	s := ct.getOrCreateState(gid)
@@ -220,7 +220,7 @@ func TestConvergence_FloorHit_KneeFrozenSet(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 	// Clear any leftover N_max from previous tests (global singleton).
 	ct.limits.Clear("example.com")

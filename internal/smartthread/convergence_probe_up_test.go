@@ -34,7 +34,7 @@ func setupProbeUpState(t *testing.T, gid string, bestEff int64, peakWorkers int)
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	recorder := &monotonicMockPeakRecorder{}
-	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{})
+	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{}, 0, 0)
 
 	// Clear any leftover N_max from previous tests (global singleton).
 	ct.limits.Clear("example.com")
@@ -158,7 +158,7 @@ func TestConvergence_ProbeUp_BlockedByRateLimit(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	rateChecker := &mockRateChecker{limited: map[string]bool{gid: true}}
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, rateChecker)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, rateChecker, 0, 0)
 
 	ct.mu.Lock()
 	s := ct.getOrCreateState(gid)
