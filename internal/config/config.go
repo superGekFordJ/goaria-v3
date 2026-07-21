@@ -111,12 +111,6 @@ func Load() {
 	}
 }
 
-func Save() error {
-	writeMu.Lock()
-	defer writeMu.Unlock()
-	return saveLocked(current.Load())
-}
-
 func saveLocked(cfg *AppConfig) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
