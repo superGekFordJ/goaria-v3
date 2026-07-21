@@ -119,19 +119,19 @@ func setupAppTaskExtractorTest(t *testing.T, snapshots batchAddRPCSnapshots, dis
 func setupAppTaskExtractorTestWithRecorder(t *testing.T, snapshots batchAddRPCSnapshots, dispatcher ExtractorAddTaskDispatcher, recorder *extractorRPCRecorder) (*Service, *extractorRPCRecorder) {
 	t.Helper()
 
-	originalConfig := config.Current
+	originalConfig := config.Get()
 	originalSaveEnabled := history.SaveEnabled
 	history.DisableSaveForTest()
 	history.Clear()
 	monitor.ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
-	config.Current = &config.AppConfig{
+	config.SetTestConfig(&config.AppConfig{
 		DownloadDir:            t.TempDir(),
 		SmartThreadMode:        false,
 		MaxConnections:         "8",
 		MinThreadLife:          5,
 		ShowHistory:            true,
 		MaxConcurrentDownloads: "3",
-	}
+	})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
@@ -183,7 +183,7 @@ func setupAppTaskExtractorTestWithRecorder(t *testing.T, snapshots batchAddRPCSn
 		history.Clear()
 		monitor.ResetTaskGroupStoreForTest("", true)
 		history.SetSaveEnabled(originalSaveEnabled)
-		config.Current = originalConfig
+		config.SetTestConfig(originalConfig)
 	})
 
 	svc := &Service{
@@ -254,8 +254,6 @@ var appTaskFixtureIdentity = extractor.VerifiedPackIdentity{
 	PublicKeySHA256: strings.Repeat("5", 64),
 }
 
-
-
 func TestAddUri_NonExtractorURLUsesExistingDirectPath(t *testing.T) {
 	service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, &fakeAddTaskDispatcher{})
 	directURL := "https://example.com/file.zip"
@@ -299,7 +297,6 @@ func TestAddUri_ExtractorSubmitsResolvedItemWithOutAndHeaders(t *testing.T) {
 	}
 }
 
-
 func TestAddUri_MultiItemExtractorCreatesCollectionGroupFolder(t *testing.T) {
 	shareURL := "https://fixture.invalid/d/collection-secret?token=synthetic"
 	directOne := "https://download.fixture.invalid/one.bin"
@@ -312,7 +309,7 @@ func TestAddUri_MultiItemExtractorCreatesCollectionGroupFolder(t *testing.T) {
 		resolutions: map[string]extractor.AddTaskResolution{shareURL: {Matched: true, SourceURL: shareURL, PackID: "fixturepack", Items: items}},
 	}
 	service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
-	baseDir := config.Current.DownloadDir
+	baseDir := config.Get().DownloadDir
 
 	result := service.AddUri(shareURL)
 
@@ -377,7 +374,6 @@ func TestAddUri_GroupPersistsBeforeSaveSessionForFastCompleteRace(t *testing.T) 
 	}
 }
 
-
 func TestBatchAddUri_ExtractorDeduplicatesResolvedDirectURLAgainstHistory(t *testing.T) {
 	shareURL := "https://fixture.invalid/d/abc"
 	directURL := "https://download.fixture.invalid/file.bin"
@@ -396,7 +392,6 @@ func TestBatchAddUri_ExtractorDeduplicatesResolvedDirectURLAgainstHistory(t *tes
 		t.Fatalf("expected no addUri for resolved history duplicate, got %d", got)
 	}
 }
-
 
 func TestBatchAddUri_ExtractorDeduplicatesDirectAndShareWithinBatch(t *testing.T) {
 	shareURL := "https://fixture.invalid/d/abc"
@@ -421,7 +416,6 @@ func TestBatchAddUri_ExtractorDeduplicatesDirectAndShareWithinBatch(t *testing.T
 	}
 }
 
-
 func TestBatchAddUri_SingleItemExtractorCanUseAdHocBatchGroup(t *testing.T) {
 	shareURL := "https://fixture.invalid/d/single"
 	directURLs := []string{
@@ -433,7 +427,7 @@ func TestBatchAddUri_SingleItemExtractorCanUseAdHocBatchGroup(t *testing.T) {
 	}
 	dispatcher := &fakeAddTaskDispatcher{resolutions: map[string]extractor.AddTaskResolution{shareURL: singleItemResolution(shareURL, directURLs[0])}}
 	service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
-	baseDir := config.Current.DownloadDir
+	baseDir := config.Get().DownloadDir
 
 	result := service.BatchAddUri([]string{shareURL, directURLs[1], directURLs[2], directURLs[3], directURLs[4]})
 
@@ -599,8 +593,10 @@ func TestAddUri_ExtractorSmartThreadDoesNotUnauthenticatedHEADHeaderedItem(t *te
 		headers:     map[string][]string{"download": {"Authorization: Bearer test-token"}},
 	}
 	service, recorder := setupAppTaskExtractorTest(t, batchAddRPCSnapshots{}, dispatcher)
-	config.Current.SmartThreadMode = true
-	config.Current.MaxConnections = "4"
+	config.Update(func(c *config.AppConfig) {
+		c.SmartThreadMode = true
+		c.MaxConnections = "4"
+	})
 
 	result := service.AddUri(shareURL)
 

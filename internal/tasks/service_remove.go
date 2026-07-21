@@ -206,7 +206,7 @@ func cleanupRemovedTask(gid string, target removalTarget, deleteFile bool) {
 		if !filepath.IsAbs(cleanP) {
 			baseDir := dir
 			if baseDir == "" {
-				baseDir = config.Current.DownloadDir
+				baseDir = config.Get().DownloadDir
 			}
 			absPath = filepath.Clean(filepath.Join(filepath.FromSlash(baseDir), cleanP))
 		}

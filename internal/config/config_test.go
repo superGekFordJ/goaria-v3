@@ -9,8 +9,8 @@ import (
 )
 
 func TestLoad_GeneratesExtensionSecretIfEmpty(t *testing.T) {
-	orig := Current
-	t.Cleanup(func() { Current = orig })
+	orig := Get()
+	t.Cleanup(func() { SetTestConfig(orig) })
 
 	tmp := t.TempDir()
 	t.Setenv("USERPROFILE", tmp)
@@ -27,14 +27,14 @@ func TestLoad_GeneratesExtensionSecretIfEmpty(t *testing.T) {
 	}
 
 	Load()
-	if Current == nil {
+	if Get() == nil {
 		t.Fatal("Current should not be nil after Load")
 	}
-	if Current.ExtensionSecret == "" {
+	if Get().ExtensionSecret == "" {
 		t.Fatal("ExtensionSecret should be generated on first boot")
 	}
-	if len(Current.ExtensionSecret) != 64 {
-		t.Fatalf("ExtensionSecret should be 64 hex chars, got %d", len(Current.ExtensionSecret))
+	if len(Get().ExtensionSecret) != 64 {
+		t.Fatalf("ExtensionSecret should be 64 hex chars, got %d", len(Get().ExtensionSecret))
 	}
 
 	// Verify it was persisted to disk.
@@ -42,14 +42,14 @@ func TestLoad_GeneratesExtensionSecretIfEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), Current.ExtensionSecret) {
+	if !strings.Contains(string(data), Get().ExtensionSecret) {
 		t.Fatal("ExtensionSecret should be persisted in config.json")
 	}
 }
 
 func TestLoad_PreservesExistingExtensionSecret(t *testing.T) {
-	orig := Current
-	t.Cleanup(func() { Current = orig })
+	orig := Get()
+	t.Cleanup(func() { SetTestConfig(orig) })
 
 	tmp := t.TempDir()
 	t.Setenv("USERPROFILE", tmp)
@@ -66,14 +66,14 @@ func TestLoad_PreservesExistingExtensionSecret(t *testing.T) {
 	}
 
 	Load()
-	if Current.ExtensionSecret != existingSecret {
-		t.Fatalf("ExtensionSecret should be preserved, got %q", Current.ExtensionSecret)
+	if Get().ExtensionSecret != existingSecret {
+		t.Fatalf("ExtensionSecret should be preserved, got %q", Get().ExtensionSecret)
 	}
 }
 
 func TestLoad_DoesNotWipeConfigOnFailedRead(t *testing.T) {
-	orig := Current
-	t.Cleanup(func() { Current = orig })
+	orig := Get()
+	t.Cleanup(func() { SetTestConfig(orig) })
 
 	tmp := t.TempDir()
 	t.Setenv("USERPROFILE", tmp)

@@ -74,8 +74,8 @@ func main() {
 	appService := NewApp()
 	configureEmbeddedExtractorDispatcher(appService)
 
-	rpc.Init(config.Current.RPCPort, config.Current.RPCSecret)
-	if err := process.StartAria2(config.Current); err != nil {
+	rpc.Init(config.Get().RPCPort, config.Get().RPCSecret)
+	if err := process.StartAria2(config.Get()); err != nil {
 		log.Fatalf("failed to start bundled aria2: %v", err)
 	}
 
@@ -119,7 +119,7 @@ func main() {
 	// Start Aria2 WebSocket listener (after Aria2 is ready)
 	go func() {
 		if err := rpc.WaitForReady(5 * time.Second); err == nil {
-			rpc.InitNotifier(eventHub, config.Current.RPCPort, config.Current.RPCSecret)
+			rpc.InitNotifier(eventHub, config.Get().RPCPort, config.Get().RPCSecret)
 		}
 	}()
 
@@ -129,13 +129,13 @@ func main() {
 	appService.updater = update.NewUpdater(eventHub)
 
 	// Initialize extension WebSocket server (downloads go through tasks.Service)
-	if config.Current.ExtensionEnabled {
+	if config.Get().ExtensionEnabled {
 		extStore := extension.NewSecretStore()
-		extStore.SetSecret(config.Current.ExtensionSecret)
+		extStore.SetSecret(config.Get().ExtensionSecret)
 		extServer := extension.NewServer(eventHub, appService.taskService(), extStore)
 		appService.SetExtensionServer(extServer)
 		go func() {
-			if err := extServer.Start(config.Current.ExtensionWSPort); err != nil {
+			if err := extServer.Start(config.Get().ExtensionWSPort); err != nil {
 				log.Printf("[Extension] WebSocket server failed to start: %v", err)
 			}
 		}()
@@ -157,7 +157,7 @@ func main() {
 	if hybrid, ok := appService.downloadEngine.(*rpc.HybridEngine); ok {
 		if surgeEng, ok := hybrid.SurgeEngineRef(); ok {
 			surgeEng.SetResumeParamsHook(func(cfg *types.DownloadConfig) {
-				if !config.Current.SmartThreadMode {
+				if !config.Get().SmartThreadMode {
 					return
 				}
 
@@ -207,7 +207,7 @@ func main() {
 					envKey = prevEnvKey
 				}
 
-				maxConn, _ := strconv.Atoi(config.Current.MaxConnections)
+				maxConn, _ := strconv.Atoi(config.Get().MaxConnections)
 				if maxConn <= 0 {
 					maxConn = 8
 				}

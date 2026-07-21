@@ -460,7 +460,7 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 		return nil
 	}
 
-	dir := config.Current.DownloadDir
+	dir := config.Get().DownloadDir
 	if candidate.downloadGroup != nil {
 		if err := candidate.downloadGroup.EnsureDir(); err != nil {
 			return "", err
@@ -474,7 +474,7 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 
 	var gid string
 
-	if config.Current.SmartThreadMode {
+	if config.Get().SmartThreadMode {
 		fileSize := candidate.sizeBytes
 		var ttfbMs int64
 		var remoteIP string
@@ -508,7 +508,7 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 
 		envKey := monitor.ComputeEnvKeyForDownload(candidate.url, remoteIP)
 
-		maxConn, _ := strconv.Atoi(config.Current.MaxConnections)
+		maxConn, _ := strconv.Atoi(config.Get().MaxConnections)
 		if maxConn <= 0 {
 			maxConn = 8
 		}
@@ -559,7 +559,7 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			}
 		}
 	} else {
-		maxConn, _ := strconv.Atoi(config.Current.MaxConnections)
+		maxConn, _ := strconv.Atoi(config.Get().MaxConnections)
 		if maxConn <= 0 {
 			maxConn = 8
 		}

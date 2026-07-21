@@ -3,7 +3,6 @@ package extension
 import (
 	"fmt"
 	"html"
-	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -89,12 +88,7 @@ func (p *PairingService) Start() (string, error) {
 		return "", fmt.Errorf("failed to generate pairing secret")
 	}
 	p.store.SetSecret(secret)
-	if config.Current != nil {
-		config.Current.ExtensionSecret = secret
-		if err := config.Save(); err != nil {
-			log.Printf("[Extension] failed to persist secret after generation: %v", err)
-		}
-	}
+	config.Update(func(c *config.AppConfig) { c.ExtensionSecret = secret })
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(PairPagePath, func(w http.ResponseWriter, r *http.Request) {

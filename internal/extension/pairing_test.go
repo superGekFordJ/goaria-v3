@@ -221,13 +221,13 @@ func TestPairing_AllPortsInUse_ReturnsError(t *testing.T) {
 	}
 }
 
-// withConfig sets config.Current to a fresh AppConfig for the test and restores
+// withConfig sets config to a fresh AppConfig for the test and restores
 // the original on cleanup, so persistence tests don't clobber the real config.
 func withConfig(t *testing.T) {
 	t.Helper()
-	orig := config.Current
-	config.Current = &config.AppConfig{}
-	t.Cleanup(func() { config.Current = orig })
+	orig := config.Get()
+	config.SetTestConfig(&config.AppConfig{})
+	t.Cleanup(func() { config.SetTestConfig(orig) })
 
 	tmp := t.TempDir()
 	t.Setenv("USERPROFILE", tmp)
@@ -244,10 +244,10 @@ func TestPairing_Start_PersistsSecretToConfig(t *testing.T) {
 	}
 	defer ps.Stop()
 
-	if config.Current.ExtensionSecret != store.GetSecret() {
-		t.Fatalf("config.ExtensionSecret %q != store secret %q", config.Current.ExtensionSecret, store.GetSecret())
+	if config.Get().ExtensionSecret != store.GetSecret() {
+		t.Fatalf("config.ExtensionSecret %q != store secret %q", config.Get().ExtensionSecret, store.GetSecret())
 	}
-	if config.Current.ExtensionSecret == "" {
+	if config.Get().ExtensionSecret == "" {
 		t.Fatal("persisted secret should not be empty")
 	}
 }

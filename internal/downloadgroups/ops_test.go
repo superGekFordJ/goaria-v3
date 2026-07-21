@@ -504,11 +504,11 @@ func TestOpenDownloadGroupFolder_RedactsUnsafeMissingAndLauncherErrors(t *testin
 
 func TestRemoveDownloadGroup_CleansUpFolder(t *testing.T) {
 	tempBaseDir := t.TempDir()
-	config.Current = &config.AppConfig{
+	config.SetTestConfig(&config.AppConfig{
 		DownloadDir: tempBaseDir,
-	}
+	})
 	defer func() {
-		config.Current = nil
+		config.SetTestConfig(nil)
 	}()
 
 	group := groupReadTestGroup("dg-cleanup-test", 2)

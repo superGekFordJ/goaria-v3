@@ -127,7 +127,7 @@ type ConvergenceTicker struct {
 	stopOnce         sync.Once
 	wg               sync.WaitGroup
 
-	// Injected at construction to avoid background goroutine reads of config.Current.
+	// Injected at construction to avoid background goroutine reads of config.
 	interval       time.Duration
 	maxConnections int
 }

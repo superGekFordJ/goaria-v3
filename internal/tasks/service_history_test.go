@@ -16,20 +16,20 @@ func setupAppTaskHistoryTest(t *testing.T) {
 
 	originalCache := monitor.Cache
 	originalSaveEnabled := history.SaveEnabled
-	originalConfig := config.Current
+	originalConfig := config.Get()
 
 	monitor.ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
 	monitor.Cache = monitor.NewTaskCacheForTest()
 	history.DisableSaveForTest()
 	history.Clear()
-	config.Current = &config.AppConfig{ShowHistory: true}
+	config.SetTestConfig(&config.AppConfig{ShowHistory: true})
 
 	t.Cleanup(func() {
 		history.Clear()
 		monitor.ResetTaskGroupStoreForTest("", true)
 		history.SetSaveEnabled(originalSaveEnabled)
 		monitor.Cache = originalCache
-		config.Current = originalConfig
+		config.SetTestConfig(originalConfig)
 	})
 }
 
@@ -341,7 +341,7 @@ func TestGetTasks_BackfillsHistoryMetadataAndLengths(t *testing.T) {
 
 func TestGetStoppedTasks_RespectsShowHistoryDisabled(t *testing.T) {
 	setupAppTaskHistoryTest(t)
-	config.Current.ShowHistory = false
+	config.Update(func(c *config.AppConfig) { c.ShowHistory = false })
 
 	cacheTask := rpc.Task{
 		GID:             "gid-disabled-cache",
@@ -372,7 +372,7 @@ func TestGetStoppedTasks_RespectsShowHistoryDisabled(t *testing.T) {
 
 func TestGetTasks_RespectsShowHistoryDisabledAndKeepsActiveWaiting(t *testing.T) {
 	setupAppTaskHistoryTest(t)
-	config.Current.ShowHistory = false
+	config.Update(func(c *config.AppConfig) { c.ShowHistory = false })
 
 	activeTask := rpc.Task{
 		GID:             "gid-disabled-active",

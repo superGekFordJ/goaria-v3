@@ -34,7 +34,7 @@ func (a *App) CreateWindow() {
 
 	log.Printf(
 		"[App] Creating window: transparency=%s backgroundType=%v",
-		config.Current.WindowTransparency,
+		config.Get().WindowTransparency,
 		backgroundType,
 	)
 
@@ -196,7 +196,7 @@ func (a *App) getWindowConfig() (
 	backdropType = application.Auto
 	macBackdrop = application.MacBackdropNormal
 
-	switch config.Current.WindowTransparency {
+	switch config.Get().WindowTransparency {
 	case "acrylic":
 		backgroundType = application.BackgroundTypeTranslucent
 		backgroundColour = application.NewRGBA(0, 0, 0, 0)
@@ -274,7 +274,7 @@ func (a *App) GetFullSnapshot() FullSnapshot {
 	monitor.HydrateTaskGroups(snapshot.Tasks.Waiting)
 
 	// 仅在显示历史时获取 stopped
-	if config.Current.ShowHistory {
+	if config.Get().ShowHistory {
 		snapshot.Tasks.Stopped = a.taskService().StoppedTasksWithHistory(monitor.Cache.GetStopped())
 	}
 

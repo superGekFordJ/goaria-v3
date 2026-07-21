@@ -49,7 +49,7 @@ func (a *App) OpenFolder(task rpc.Task) {
 	if len(task.Files) > 0 && task.Files[0].Path != "" {
 		target = task.Files[0].Path
 	}
-	if launchTarget, ok := resolveOpenFolderLaunchTarget(target, config.Current.DownloadDir, true); ok {
+	if launchTarget, ok := resolveOpenFolderLaunchTarget(target, config.Get().DownloadDir, true); ok {
 		_ = openFolderLauncher(launchTarget)
 	}
 }
@@ -207,24 +207,22 @@ func openFolderCommandSpecForGOOS(goos string, target openFolderLaunchTarget) (o
 
 // GetConfig returns the current configuration
 func (a *App) GetConfig() *config.AppConfig {
-	return config.Current
+	return config.Get()
 }
 
 // SaveConfig saves the configuration and restarts Aria2 if needed
 func (a *App) SaveConfig(newCfg config.AppConfig) string {
-	*config.Current = newCfg
-	if err := config.Save(); err != nil {
+	config.Update(func(c *config.AppConfig) { *c = newCfg })
+	cfg := config.Get()
+	if err := process.RestartAria2(cfg); err != nil {
 		return err.Error()
 	}
-	if err := process.RestartAria2(config.Current); err != nil {
-		return err.Error()
-	}
-	rpc.Init(config.Current.RPCPort, config.Current.RPCSecret)
+	rpc.Init(cfg.RPCPort, cfg.RPCSecret)
 	_ = rpc.WaitForReady(4 * time.Second)
 	_ = a.downloadEngine.ChangeGlobalOption(map[string]string{
-		"max-concurrent-downloads":  config.Current.MaxConcurrentDownloads,
-		"max-connection-per-server": config.Current.MaxConnections,
-		"user-agent":                config.Current.UserAgent,
+		"max-concurrent-downloads":  cfg.MaxConcurrentDownloads,
+		"max-connection-per-server": cfg.MaxConnections,
+		"user-agent":                cfg.UserAgent,
 	})
 	return "success"
 }
@@ -323,7 +321,7 @@ func (a *App) SelectDirectory() string {
 		return ""
 	}
 
-	startDir := resolveExistingDir(config.Current.DownloadDir)
+	startDir := resolveExistingDir(config.Get().DownloadDir)
 	if startDir == "" {
 		if home, err := os.UserHomeDir(); err == nil {
 			startDir = resolveExistingDir(home)

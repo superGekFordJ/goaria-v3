@@ -52,7 +52,7 @@ func Calculate(p CalcParams) ThreadParams {
 	}
 
 	// 获取 T_min
-	tMin := config.Current.MinThreadLife
+	tMin := config.Get().MinThreadLife
 	if tMin <= 0 {
 		tMin = defaultMinThreadLife
 	}
@@ -92,7 +92,7 @@ func Calculate(p CalcParams) ThreadParams {
 
 	// 物理天花板（前向碰撞 + 对称扣减）：仅当开关开启时应用，
 	// 降级时退回 vLogicalAvailable（原逻辑天花板），只收紧不放宽。
-	if config.Current.EnablePhysicalMacAwareBandwidth {
+	if config.Get().EnablePhysicalMacAwareBandwidth {
 		vAvailable = applyPhysicalCeiling(vAvailable, p)
 	}
 

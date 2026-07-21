@@ -368,12 +368,7 @@ func (s *Server) NotifyUnpaired() {
 		newSecret := s.store.GenerateSecret()
 		if newSecret != "" {
 			s.store.SetSecret(newSecret)
-			if config.Current != nil {
-				config.Current.ExtensionSecret = newSecret
-				if err := config.Save(); err != nil {
-					log.Printf("[Extension] failed to persist rotated secret: %v", err)
-				}
-			}
+			config.Update(func(c *config.AppConfig) { c.ExtensionSecret = newSecret })
 		} else {
 			log.Printf("[Extension] secret rotation failed; keeping old secret")
 		}

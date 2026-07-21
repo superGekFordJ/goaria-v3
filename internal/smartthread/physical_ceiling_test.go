@@ -204,7 +204,7 @@ func TestApplyPhysicalCeiling(t *testing.T) {
 
 func TestCalculate_PhysicalCeilingIntegration(t *testing.T) {
 	setupTestConfig(t)
-	t.Cleanup(func() { config.Current.EnablePhysicalMacAwareBandwidth = false })
+	t.Cleanup(func() { config.Update(func(c *config.AppConfig) { c.EnablePhysicalMacAwareBandwidth = false }) })
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
@@ -228,7 +228,7 @@ func TestCalculate_PhysicalCeilingIntegration(t *testing.T) {
 
 	macs := []string{mac}
 	calc := func(physicalOn bool) ThreadParams {
-		config.Current.EnablePhysicalMacAwareBandwidth = physicalOn
+		config.Update(func(c *config.AppConfig) { c.EnablePhysicalMacAwareBandwidth = physicalOn })
 		return Calculate(CalcParams{
 			FileSize:          1 * 1024 * 1024 * 1024, // 1GB
 			MaxConnections:    16,
@@ -258,6 +258,54 @@ func TestCalculate_PhysicalCeilingIntegration(t *testing.T) {
 	}
 }
 
+func TestCalculate_PhysicalCeilingFloorCascade(t *testing.T) {
+	setupTestConfig(t)
+	t.Cleanup(func() { config.Update(func(c *config.AppConfig) { c.EnablePhysicalMacAwareBandwidth = false }) })
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	const mac = "aabbccddeeff"
+	hDirect := mockEnvKey("0", mac)
+	hProxy := mockEnvKey("1", mac)
+	const domain = "example.com"
+
+	// vThreadAvg: 12.5MB/s (100MB peak / 8 threads) for the task's own bucket.
+	speedstats.AddRecordV2(100*physMB, 8, 1*1024*1024*1024, false, 50, domain, "wan", hDirect)
+	// vGlobalPeak (logical, wan+hDirect) = 100MB → vLogicalAvailable = 100-10 = 90MB (high).
+	speedstats.AddRecordV2(100*physMB, 8, 1*1024*1024*1024, false, 50, "other.com", "wan", hDirect)
+	// Physical proxy bucket (wan+hProxy) = 100MB so physicalPeak = 100MB.
+	speedstats.AddRecordV2(100*physMB, 8, 1*1024*1024*1024, false, 50, "other.com", "wan", hProxy)
+
+	// totalReserved = 10 + 140 = 150MB > physicalPeak(100MB) → vPhysicalAvailable = 0.
+	// p.ReservedBandwidth = Reserved("wan", hDirect) = 10MB (low) so logical stays high.
+	ledger := &BandwidthLedger{reserved: map[string]int64{
+		"wan" + hDirect: 10 * physMB,
+		"wan" + hProxy:  140 * physMB,
+	}}
+
+	config.Update(func(c *config.AppConfig) { c.EnablePhysicalMacAwareBandwidth = true })
+	got := Calculate(CalcParams{
+		FileSize:          1 * 1024 * 1024 * 1024, // 1GB
+		MaxConnections:    16,
+		Scope:             "wan",
+		Domain:            domain,
+		EnvKey:            hDirect,
+		ReservedBandwidth: ledger.Reserved("wan", hDirect),
+		Ledger:            ledger,
+		ActiveMACsFunc:    func() []string { return []string{mac} },
+		ComputeEnvKeyFunc: mockEnvKey,
+	})
+
+	// vAvailable = min(90MB, 0) = 0 → floor = congestionFloor = 2.
+	// vTarget = 0 → nSat = 1; nFinal clamped up to floor → Split = 2.
+	if got.Split != congestionFloor {
+		t.Errorf("Split=%d, want %d (vAvailable=0 floor cascade)", got.Split, congestionFloor)
+	}
+	if got.IsExploration {
+		t.Errorf("IsExploration=true, want false (domain record seeded)")
+	}
+}
+
 func TestCalculate_PhysicalCeilingDisabledNoChange(t *testing.T) {
 	setupTestConfig(t)
 	speedstats.ResetRecordsForTest()
@@ -271,7 +319,7 @@ func TestCalculate_PhysicalCeilingDisabledNoChange(t *testing.T) {
 	speedstats.AddRecordV2(100*physMB, 8, 1*1024*1024*1024, false, 50, "other.com", "wan", hDirect)
 
 	// Switch OFF: injections present but ignored — result equals no-injection.
-	config.Current.EnablePhysicalMacAwareBandwidth = false
+	config.Update(func(c *config.AppConfig) { c.EnablePhysicalMacAwareBandwidth = false })
 	withInj := Calculate(CalcParams{
 		FileSize:          1 * 1024 * 1024 * 1024,
 		MaxConnections:    16,

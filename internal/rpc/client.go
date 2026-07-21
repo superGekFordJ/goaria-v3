@@ -330,10 +330,7 @@ func HeadProbe(rawURL string, timeout time.Duration) HeadProbeResult {
 		return HeadProbeResult{}
 	}
 
-	ua := ""
-	if config.Current != nil {
-		ua = config.Current.UserAgent
-	}
+	ua := config.Get().UserAgent
 	if ua != "" {
 		req.Header.Set("User-Agent", ua)
 	}
@@ -405,10 +402,7 @@ func headProbeWithHeaders(rawURL string, timeout time.Duration, headers []string
 		return HeadProbeResult{}
 	}
 
-	ua := ""
-	if config.Current != nil {
-		ua = config.Current.UserAgent
-	}
+	ua := config.Get().UserAgent
 	if ua != "" {
 		req.Header.Set("User-Agent", ua)
 	}

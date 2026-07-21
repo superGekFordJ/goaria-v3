@@ -260,11 +260,9 @@ func (m *Monitor) Start() {
 		adapter := &trackerAdapter{TaskTracker: m.tracker, engine: he}
 		convIntervalSec := 0
 		maxConn := 0
-		if config.Current != nil {
-			convIntervalSec = config.Current.ConvergenceInterval
-			if v, err := strconv.Atoi(config.Current.MaxConnections); err == nil && v > 0 {
-				maxConn = v
-			}
+		convIntervalSec = config.Get().ConvergenceInterval
+		if v, err := strconv.Atoi(config.Get().MaxConnections); err == nil && v > 0 {
+			maxConn = v
 		}
 		m.convergence = smartthread.NewConvergenceTicker(he, adapter, m.telemetry, adapter, adapter, convIntervalSec, maxConn)
 		m.convergence.Start()
@@ -390,7 +388,7 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 			threadSource = "threadCount"
 		}
 		if threadCount <= 0 {
-			threadCount, _ = strconv.Atoi(config.Current.MaxConnections)
+			threadCount, _ = strconv.Atoi(config.Get().MaxConnections)
 			if threadCount <= 0 {
 				threadCount = 8
 			}

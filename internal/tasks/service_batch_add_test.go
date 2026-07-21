@@ -126,7 +126,7 @@ func batchAddTaskListResult(tasks []rpc.Task) []rpc.Task {
 func setupAppTaskBatchAddTest(t *testing.T, snapshots batchAddRPCSnapshots) (*Service, *batchAddRPCCounter) {
 	t.Helper()
 
-	originalConfig := config.Current
+	originalConfig := config.Get()
 	originalSaveEnabled := history.SaveEnabled
 	monitor.ResetDownloadGroupNamerForTest()
 	restoreNamer := monitor.ConfigureDownloadGroupNamerForTest(10*time.Second, 10*time.Second, 1)
@@ -134,10 +134,10 @@ func setupAppTaskBatchAddTest(t *testing.T, snapshots batchAddRPCSnapshots) (*Se
 	monitor.ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
 	history.DisableSaveForTest()
 	history.Clear()
-	config.Current = &config.AppConfig{
+	config.SetTestConfig(&config.AppConfig{
 		DownloadDir:     t.TempDir(),
 		SmartThreadMode: false,
-	}
+	})
 
 	counter := newBatchAddRPCCounter()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +192,7 @@ func setupAppTaskBatchAddTest(t *testing.T, snapshots batchAddRPCSnapshots) (*Se
 		history.Clear()
 		monitor.ResetTaskGroupStoreForTest("", true)
 		history.SetSaveEnabled(originalSaveEnabled)
-		config.Current = originalConfig
+		config.SetTestConfig(originalConfig)
 	})
 
 	return &Service{
@@ -346,7 +346,7 @@ func TestBatchAddUri_TruncatesAt100BeforeProcessing(t *testing.T) {
 
 func TestBatchAddUri_FourUniqueAddableDirectURLsDoNotCreateGroup(t *testing.T) {
 	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
-	baseDir := config.Current.DownloadDir
+	baseDir := config.Get().DownloadDir
 	urls := []string{
 		"https://example.com/one.bin",
 		"https://example.com/two.bin",
@@ -369,7 +369,7 @@ func TestBatchAddUri_FourUniqueAddableDirectURLsDoNotCreateGroup(t *testing.T) {
 
 func TestBatchAddUri_FiveUniqueAddableDirectURLsCreateBatchGroupFolder(t *testing.T) {
 	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
-	baseDir := config.Current.DownloadDir
+	baseDir := config.Get().DownloadDir
 	urls := []string{
 		"https://example.com/one.bin",
 		"https://example.com/two.bin",
@@ -411,7 +411,7 @@ func TestBatchAddUri_DuplicatesDoNotCountTowardBatchGroupThreshold(t *testing.T)
 	newThree := "https://example.com/new-three.bin"
 	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{active: []rpc.Task{taskWithSourceURL("gid-active", activeURL)}})
 	history.Add(history.HistoryEntry{GID: "gid-history", Source: historyURL})
-	baseDir := config.Current.DownloadDir
+	baseDir := config.Get().DownloadDir
 
 	result := service.BatchAddUri([]string{activeURL, historyURL, duplicateURL, duplicateURL, newOne, newTwo, newThree})
 
@@ -430,7 +430,7 @@ func TestBatchAddUri_DuplicatesDoNotCountTowardBatchGroupThreshold(t *testing.T)
 func TestBatchAddUri_DuplicateOnlyBatchDoesNotCreateFolder(t *testing.T) {
 	historyURL := "https://example.com/history-only.bin"
 	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
-	baseDir := config.Current.DownloadDir
+	baseDir := config.Get().DownloadDir
 	history.Add(history.HistoryEntry{GID: "gid-history", Source: historyURL})
 
 	result := service.BatchAddUri([]string{historyURL, " " + historyURL + " "})
@@ -462,7 +462,7 @@ func TestBatchAddUri_AllGroupedAddsFailCleansEmptyGroupFolderAndStore(t *testing
 		"https://example.com/fail-four.bin",
 		"https://example.com/fail-five.bin",
 	}
-	baseDir := config.Current.DownloadDir
+	baseDir := config.Get().DownloadDir
 
 	result := service.BatchAddUri(urls)
 
@@ -509,8 +509,10 @@ func TestBatchAddUri_GroupNameEnqueueDoesNotBlockAddPath(t *testing.T) {
 
 func TestBatchAddUri_SmartThreadOffPassesMaxConnectionsAsSplit(t *testing.T) {
 	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
-	config.Current.SmartThreadMode = false
-	config.Current.MaxConnections = "16"
+	config.Update(func(c *config.AppConfig) {
+		c.SmartThreadMode = false
+		c.MaxConnections = "16"
+	})
 
 	urls := []string{
 		"https://example.com/one.bin",
@@ -543,8 +545,10 @@ func TestBatchAddUri_SmartThreadOffPassesMaxConnectionsAsSplit(t *testing.T) {
 
 func TestBatchAddUri_SmartThreadOffFallsBackToDefaultWhenMaxConnectionsInvalid(t *testing.T) {
 	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
-	config.Current.SmartThreadMode = false
-	config.Current.MaxConnections = "not-a-number"
+	config.Update(func(c *config.AppConfig) {
+		c.SmartThreadMode = false
+		c.MaxConnections = "not-a-number"
+	})
 
 	url := "https://example.com/fallback.bin"
 	result := service.BatchAddUri([]string{url})
@@ -560,10 +564,10 @@ func TestBatchAddUri_SmartThreadOffFallsBackToDefaultWhenMaxConnectionsInvalid(t
 }
 
 func TestDownloadGroupPathSafetyCollisionAndInvalidBase(t *testing.T) {
-	originalConfig := config.Current
-	t.Cleanup(func() { config.Current = originalConfig })
+	originalConfig := config.Get()
+	t.Cleanup(func() { config.SetTestConfig(originalConfig) })
 	baseDir := t.TempDir()
-	config.Current = &config.AppConfig{DownloadDir: baseDir}
+	config.SetTestConfig(&config.AppConfig{DownloadDir: baseDir})
 
 	name, err := downloadgroups.SafeDownloadGroupFolderName("collection", "2026-05-07 15:04:05", "dg-a/b\\c?token")
 	if err != nil {

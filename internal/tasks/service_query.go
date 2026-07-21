@@ -20,7 +20,7 @@ func (s *Service) GetActiveTasks() map[string][]rpc.Task {
 }
 
 func (s *Service) GetStoppedTasks() []rpc.Task {
-	if !config.Current.ShowHistory {
+	if !config.Get().ShowHistory {
 		return []rpc.Task{}
 	}
 
@@ -105,7 +105,7 @@ func (s *Service) GetTasks() map[string][]rpc.Task {
 	monitor.HydrateTaskGroups(active)
 	monitor.HydrateTaskGroups(waiting)
 	var stopped []rpc.Task
-	if config.Current.ShowHistory {
+	if config.Get().ShowHistory {
 		stopped = s.StoppedTasksWithHistory(monitor.Cache.GetStopped())
 	}
 	return map[string][]rpc.Task{"active": active, "waiting": waiting, "stopped": stopped}

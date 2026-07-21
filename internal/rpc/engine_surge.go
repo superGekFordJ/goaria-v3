@@ -39,10 +39,8 @@ type SurgeEngine struct {
 func NewSurgeEngine() *SurgeEngine {
 	progressCh := make(chan any, 256)
 	maxDownloads := 3
-	if config.Current != nil {
-		if md, err := strconv.Atoi(config.Current.MaxConcurrentDownloads); err == nil && md > 0 {
-			maxDownloads = md
-		}
+	if md, err := strconv.Atoi(config.Get().MaxConcurrentDownloads); err == nil && md > 0 {
+		maxDownloads = md
 	}
 	pool := download.NewWorkerPool(progressCh, maxDownloads)
 	svc := core.NewLocalDownloadServiceWithInput(pool, progressCh)

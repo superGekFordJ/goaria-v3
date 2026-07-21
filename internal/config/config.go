@@ -8,8 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 )
 
+// AppConfig holds all user-configurable settings. All fields must be value types
+// (string/bool/int) — Update relies on shallow copy, so slice/map/pointer fields
+// would share state between old and new snapshots.
 type AppConfig struct {
 	RPCPort                         string `json:"rpc_port"`
 	RPCSecret                       string `json:"rpc_secret"`
@@ -30,9 +34,37 @@ type AppConfig struct {
 }
 
 var (
-	Current *AppConfig
-	mu      sync.RWMutex
+	current atomic.Pointer[AppConfig]
+	writeMu sync.Mutex
 )
+
+// Get returns the current config snapshot. Callers must not mutate the result.
+func Get() *AppConfig {
+	return current.Load()
+}
+
+// Update applies mutate to a copy of the current config, atomically swaps it in,
+// and persists to disk. mutate must be a pure local mutation — never call
+// Get/Update/Save inside it (re-entrancy deadlock).
+func Update(mutate func(*AppConfig)) {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	old := current.Load()
+	if old == nil {
+		panic("config.Update called before config.Load")
+	}
+	newCfg := *old
+	mutate(&newCfg)
+	current.Store(&newCfg)
+	if err := saveLocked(&newCfg); err != nil {
+		log.Printf("[Config] failed to persist after update: %v", err)
+	}
+}
+
+// SetTestConfig replaces the global config for test setup. Production code must not call this.
+func SetTestConfig(cfg *AppConfig) {
+	current.Store(cfg)
+}
 
 func GetConfigPath() string {
 	home, _ := os.UserHomeDir()
@@ -42,9 +74,7 @@ func GetConfigPath() string {
 }
 
 func Load() {
-	mu.Lock()
-	defer mu.Unlock()
-	Current = &AppConfig{
+	cfg := AppConfig{
 		RPCPort:                "16800",
 		RPCSecret:              "",
 		DownloadDir:            getDefaultDownloadDir(),
@@ -61,15 +91,20 @@ func Load() {
 	data, readErr := os.ReadFile(GetConfigPath())
 	fileExisted := readErr == nil || !os.IsNotExist(readErr)
 	if readErr == nil {
-		_ = json.Unmarshal(data, Current)
+		_ = json.Unmarshal(data, &cfg)
 	} else if fileExisted {
 		log.Printf("[Config] failed to read config (not overwriting): %v", readErr)
 	}
 
-	if Current.ExtensionSecret == "" {
-		Current.ExtensionSecret = generateSecretHex()
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	current.Store(&cfg)
+
+	if cfg.ExtensionSecret == "" {
+		cfg.ExtensionSecret = generateSecretHex()
+		current.Store(&cfg)
 		if readErr == nil || !fileExisted {
-			if err := saveLocked(); err != nil {
+			if err := saveLocked(&cfg); err != nil {
 				log.Printf("[Config] failed to persist extension secret: %v", err)
 			}
 		}
@@ -77,13 +112,13 @@ func Load() {
 }
 
 func Save() error {
-	mu.Lock()
-	defer mu.Unlock()
-	return saveLocked()
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	return saveLocked(current.Load())
 }
 
-func saveLocked() error {
-	data, err := json.MarshalIndent(Current, "", "  ")
+func saveLocked(cfg *AppConfig) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}

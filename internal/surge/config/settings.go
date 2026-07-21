@@ -152,27 +152,19 @@ func Resolve[T any](s *Setting) T {
 		return zero
 	}
 
-	// Map dynamically to GoAria's global config.Current
+	// Map dynamically to GoAria's global config
 	switch s.Key {
 	case "default_download_dir":
-		if config.Current != nil {
-			return any(config.Current.DownloadDir).(T)
-		}
+		return any(config.Get().DownloadDir).(T)
 	case "user_agent":
-		if config.Current != nil {
-			return any(config.Current.UserAgent).(T)
-		}
+		return any(config.Get().UserAgent).(T)
 	case "max_connections_per_host":
-		if config.Current != nil {
-			if val, err := strconv.Atoi(config.Current.MaxConnections); err == nil {
-				return any(val).(T)
-			}
+		if val, err := strconv.Atoi(config.Get().MaxConnections); err == nil {
+			return any(val).(T)
 		}
 	case "max_concurrent_downloads":
-		if config.Current != nil {
-			if val, err := strconv.Atoi(config.Current.MaxConcurrentDownloads); err == nil {
-				return any(val).(T)
-			}
+		if val, err := strconv.Atoi(config.Get().MaxConcurrentDownloads); err == nil {
+			return any(val).(T)
 		}
 	}
 
@@ -278,10 +270,7 @@ func GetStateDir() string {
 }
 
 func GetDownloadsDir() string {
-	if config.Current != nil {
-		return config.Current.DownloadDir
-	}
-	return ""
+	return config.Get().DownloadDir
 }
 
 func GetRuntimeDir() string {

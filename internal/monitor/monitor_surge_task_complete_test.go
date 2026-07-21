@@ -121,9 +121,9 @@ func TestHandleTaskComplete_ConfigFallback(t *testing.T) {
 	defer State.SetWindowExists(prevWindow)
 
 	// Ensure config is set with a known MaxConnections
-	origConfig := config.Current
-	config.Current = &config.AppConfig{MaxConnections: "12"}
-	defer func() { config.Current = origConfig }()
+	origConfig := config.Get()
+	config.SetTestConfig(&config.AppConfig{MaxConnections: "12"})
+	defer func() { config.SetTestConfig(origConfig) }()
 
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(nil, surge)

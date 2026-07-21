@@ -42,14 +42,11 @@ func NewDownloadGroupPlan(kind string, itemCount int, now time.Time) (*DownloadG
 	if itemCount <= 0 {
 		return nil, errors.New("could not prepare download group folder")
 	}
-	if config.Current == nil {
-		return nil, errors.New("could not prepare download group folder")
-	}
 	if kind != DownloadGroupKindCollection && kind != DownloadGroupKindBatch && kind != DownloadGroupKindGeneric {
 		kind = DownloadGroupKindGeneric
 	}
 
-	baseDir, err := ResolveDownloadGroupBaseDir(config.Current.DownloadDir)
+	baseDir, err := ResolveDownloadGroupBaseDir(config.Get().DownloadDir)
 	if err != nil {
 		return nil, err
 	}
@@ -1139,10 +1136,10 @@ func RemoveDownloadGroup(groupKey string, deleteFiles bool, removeTasks func(gid
 		dir := filepath.Clean(resolution.card.DownloadGroup.Dir)
 		go func(dir string) {
 			time.Sleep(1500 * time.Millisecond)
-			if config.Current == nil || !isSafeDownloadGroupFolderPathHint(dir) {
+			if !isSafeDownloadGroupFolderPathHint(dir) {
 				return
 			}
-			absBase, err1 := filepath.Abs(config.Current.DownloadDir)
+			absBase, err1 := filepath.Abs(config.Get().DownloadDir)
 			absGroup, err2 := filepath.Abs(dir)
 			if err1 == nil && err2 == nil && DownloadGroupPathContained(absBase, absGroup) {
 				if isDirEmpty(dir) {

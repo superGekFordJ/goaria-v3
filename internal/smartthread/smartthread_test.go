@@ -9,13 +9,13 @@ import (
 
 func setupTestConfig(t *testing.T) {
 	t.Helper()
-	originalConfig := config.Current
+	originalConfig := config.Get()
 	t.Cleanup(func() {
-		config.Current = originalConfig
+		config.SetTestConfig(originalConfig)
 	})
-	config.Current = &config.AppConfig{
+	config.SetTestConfig(&config.AppConfig{
 		MinThreadLife: 5,
-	}
+	})
 }
 
 func TestCalculate_CapMinSplitSize(t *testing.T) {
