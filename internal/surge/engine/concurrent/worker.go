@@ -324,9 +324,11 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 		}
 	}()
 
-	// Handle rate limiting explicitly (429 always, 503 only with Retry-After)
-	if resp.StatusCode == http.StatusTooManyRequests ||
-		(resp.StatusCode == http.StatusServiceUnavailable && resp.Header.Get("Retry-After") != "") {
+	// Handle rate limiting explicitly: only 429/503 with Retry-After trigger
+	// Penalize. Bare 429 (no Retry-After) falls through to the generic path so
+	// genericAttempt feeds RetryCount and the N_max fuse can see it.
+	if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) &&
+		resp.Header.Get("Retry-After") != "" {
 		// FORK-PATCH: Poison defense — track 4xx/5xx for hedge disabling.
 		d.recordHedgeError()
 		ra, ok := engine.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())

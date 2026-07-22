@@ -533,3 +533,63 @@ func TestConcurrentDownloader_Bare503IsGeneric(t *testing.T) {
 		t.Fatalf("Download failed: %v", err)
 	}
 }
+
+func TestConcurrentDownloader_Bare429IsGeneric(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(128 * utils.KiB)
+
+	var count atomic.Int64
+
+	server := testutil.NewMockServerT(t,
+		testutil.WithFileSize(fileSize),
+		testutil.WithRangeSupport(true),
+		testutil.WithHandler(func(w http.ResponseWriter, r *http.Request) {
+			n := count.Add(1)
+			if n == 1 {
+				// Bare 429: no Retry-After header.
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
+			w.WriteHeader(http.StatusPartialContent)
+			buf := make([]byte, fileSize)
+			w.Write(buf)
+		}),
+	)
+	defer server.Close()
+
+	destPath := filepath.Join(tmpDir, "bare429_test.bin")
+	state := types.NewProgressState("bare429-test", fileSize)
+
+	runtime := &types.RuntimeConfig{
+		MaxConnectionsPerDownload: 1,
+		MaxTaskRetries:            3,
+		MinChunkSize:              fileSize,
+		DialHedgeCount:            0,
+	}
+
+	downloader := NewConcurrentDownloader("bare429-id", nil, state, runtime)
+	downloader.hostLimiter = engine.NewHostRateLimiter()
+
+	mirrors := []string{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if f, err := os.Create(destPath + ".surge"); err == nil {
+		_ = f.Close()
+	}
+
+	err := downloader.Download(ctx, server.URL(), mirrors, nil, destPath, fileSize)
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	// Bare 429 must NOT trigger Penalize (only 429/503 with Retry-After do).
+	host := engine.MirrorHost(server.URL())
+	if bu := downloader.hostLimiter.BlockedUntil(host, time.Now()); !bu.IsZero() {
+		t.Errorf("expected no penalty for bare 429, but host blocked until %v", bu)
+	}
+}
