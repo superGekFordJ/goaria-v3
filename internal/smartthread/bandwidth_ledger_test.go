@@ -96,3 +96,73 @@ func TestBandwidthLedger_NegativeBandwidthIgnored(t *testing.T) {
 		t.Errorf("Reserved(wan, env1) = %d, want 1000000 (negative ignored)", got)
 	}
 }
+
+// --- reservedWorkers (TOCTOU guard) tests ---
+
+func TestBandwidthLedger_ReserveWorkersAccumulates(t *testing.T) {
+	ledger := &BandwidthLedger{
+		reservedWorkers: make(map[string]int),
+	}
+
+	ledger.ReserveWorkers("wan", "example.com", 3)
+	if got := ledger.ReservedWorkers("wan", "example.com"); got != 3 {
+		t.Errorf("ReservedWorkers(wan, example.com) = %d, want 3", got)
+	}
+
+	ledger.ReserveWorkers("wan", "example.com", 2)
+	if got := ledger.ReservedWorkers("wan", "example.com"); got != 5 {
+		t.Errorf("ReservedWorkers(wan, example.com) = %d, want 5", got)
+	}
+}
+
+func TestBandwidthLedger_ReserveWorkersScopeDomainIsolation(t *testing.T) {
+	ledger := &BandwidthLedger{
+		reservedWorkers: make(map[string]int),
+	}
+
+	ledger.ReserveWorkers("wan", "a.com", 3)
+	if got := ledger.ReservedWorkers("wan", "b.com"); got != 0 {
+		t.Errorf("ReservedWorkers(wan, b.com) = %d, want 0 (domain isolation)", got)
+	}
+	if got := ledger.ReservedWorkers("lan", "a.com"); got != 0 {
+		t.Errorf("ReservedWorkers(lan, a.com) = %d, want 0 (scope isolation)", got)
+	}
+}
+
+func TestBandwidthLedger_ReserveWorkersNilSafety(t *testing.T) {
+	var ledger *BandwidthLedger
+
+	if got := ledger.ReservedWorkers("wan", "example.com"); got != 0 {
+		t.Errorf("nil.ReservedWorkers = %d, want 0", got)
+	}
+
+	ledger.ReserveWorkers("wan", "example.com", 3) // should not panic
+}
+
+func TestBandwidthLedger_ReserveWorkersEmptyScopeDomain(t *testing.T) {
+	ledger := &BandwidthLedger{
+		reservedWorkers: make(map[string]int),
+	}
+
+	ledger.ReserveWorkers("", "example.com", 3)
+	if got := ledger.ReservedWorkers("", "example.com"); got != 0 {
+		t.Errorf("ReservedWorkers(empty scope) = %d, want 0", got)
+	}
+
+	ledger.ReserveWorkers("wan", "", 3)
+	if got := ledger.ReservedWorkers("wan", ""); got != 0 {
+		t.Errorf("ReservedWorkers(empty domain) = %d, want 0", got)
+	}
+}
+
+func TestBandwidthLedger_ReleaseWorkersFloor(t *testing.T) {
+	ledger := &BandwidthLedger{
+		reservedWorkers: make(map[string]int),
+	}
+
+	ledger.ReserveWorkers("wan", "a.com", 3)
+	ledger.ReleaseWorkers("wan", "a.com", 5) // release more than reserved
+	if got := ledger.ReservedWorkers("wan", "a.com"); got != 0 {
+		t.Errorf("ReservedWorkers after over-release = %d, want 0 (floor)", got)
+	}
+}

@@ -50,8 +50,9 @@ func SetActiveBandwidthProvider(fn ActiveBandwidthFunc) {
 // added to guard against the convergence tick reading
 // activeBandwidthProvider while a batch add is in progress.
 type BandwidthLedger struct {
-	mu       sync.Mutex
-	reserved map[string]int64
+	mu              sync.Mutex
+	reserved        map[string]int64
+	reservedWorkers map[string]int // key = scope|domain, batch-accumulated worker reservations
 }
 
 // NewBandwidthLedger creates a ledger seeded with current active bandwidth
@@ -59,7 +60,8 @@ type BandwidthLedger struct {
 // running tasks for pre-scan seeding (pre-scan, not lazy init).
 func NewBandwidthLedger(activeTasks []TrackedTaskInfo) *BandwidthLedger {
 	l := &BandwidthLedger{
-		reserved: make(map[string]int64),
+		reserved:        make(map[string]int64),
+		reservedWorkers: make(map[string]int),
 	}
 	seen := make(map[string]bool)
 	for _, t := range activeTasks {
@@ -103,4 +105,57 @@ func (l *BandwidthLedger) Reserve(scope, envKey string, bandwidth int64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.reserved[key] += bandwidth
+}
+
+// ReservedWorkers returns the batch-accumulated worker reservations for the
+// given scope+domain. Used by ClampToServerLimit to prevent TOCTOU oversell
+// when multiple concurrent goroutines each query existingDomainWorkers before
+// telemetry updates.
+func (l *BandwidthLedger) ReservedWorkers(scope, domain string) int {
+	if l == nil {
+		return 0
+	}
+	if scope == "" || domain == "" {
+		return 0
+	}
+	key := scope + "|" + domain
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.reservedWorkers[key]
+}
+
+// ReserveWorkers adds count to the batch-accumulated worker reservations for
+// the given scope+domain. Called after ClampToServerLimit to record the
+// actual split that will be launched.
+func (l *BandwidthLedger) ReserveWorkers(scope, domain string, count int) {
+	if l == nil || count <= 0 {
+		return
+	}
+	if scope == "" || domain == "" {
+		return
+	}
+	key := scope + "|" + domain
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.reservedWorkers[key] += count
+}
+
+// ReleaseWorkers subtracts count from the batch-accumulated worker
+// reservations. Called when AddUri fails and the reserved quota should be
+// returned to the pool. Floor at 0.
+func (l *BandwidthLedger) ReleaseWorkers(scope, domain string, count int) {
+	if l == nil || count <= 0 {
+		return
+	}
+	if scope == "" || domain == "" {
+		return
+	}
+	key := scope + "|" + domain
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	v := l.reservedWorkers[key] - count
+	if v < 0 {
+		v = 0
+	}
+	l.reservedWorkers[key] = v
 }

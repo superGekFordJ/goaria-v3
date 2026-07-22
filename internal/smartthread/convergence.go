@@ -21,6 +21,13 @@ type gidInfo struct {
 	EnvKey string
 }
 
+// domainStats aggregates per-limitKey retry and worker counts for domain-level N_max.
+type domainStats struct {
+	retryCountSum int32
+	activeWorkers int
+	tasksInDomain int
+}
+
 // TrackedTaskInfo is a minimal view of monitor.TrackedTask for convergence.
 type TrackedTaskInfo struct {
 	GID             string
@@ -104,10 +111,6 @@ type convergenceState struct {
 	// totalRemaining < activeWorkers × effectiveMinChunk. Not reset on
 	// active-set change — permanent until gid disappears from active list.
 	blackout bool
-
-	// N_max fuse early-unlock: consecutive ticks with retryCountSum == 0
-	// while currentWorkers >= nMax. Reset on active-set change.
-	zeroRetryCount int
 }
 
 type ConvergenceTicker struct {
@@ -118,14 +121,15 @@ type ConvergenceTicker struct {
 	rateChecker  RateLimitChecker
 	limits       *ServerLimitStore
 
-	mu               sync.Mutex
-	states           map[string]*convergenceState
-	prevActiveGids   map[string]gidInfo // gid → gidInfo, for bandwidth borrowing diff
-	rotationCounter  int                // fair rotation for beneficiary election
-	prevActiveSpeeds map[string]int64   // gid → last known rawBps, for delay compensation
-	stopChan         chan struct{}
-	stopOnce         sync.Once
-	wg               sync.WaitGroup
+	mu                sync.Mutex
+	states            map[string]*convergenceState
+	prevActiveGids    map[string]gidInfo // gid → gidInfo, for bandwidth borrowing diff
+	rotationCounter   int                // fair rotation for beneficiary election
+	prevActiveSpeeds  map[string]int64   // gid → last known rawBps, for delay compensation
+	domainUnlockTicks map[string]int     // limitKey → consecutive zero-retry ticks, for domain-level N_max unlock
+	stopChan          chan struct{}
+	stopOnce          sync.Once
+	wg                sync.WaitGroup
 
 	// Injected at construction to avoid background goroutine reads of config.
 	interval       time.Duration
@@ -149,18 +153,19 @@ func NewConvergenceTicker(
 		maxConnections = 8
 	}
 	return &ConvergenceTicker{
-		engine:           engine,
-		tracker:          tracker,
-		telemetry:        telemetry,
-		peakRecorder:     peakRecorder,
-		rateChecker:      rateChecker,
-		limits:           GetDefaultServerLimits(),
-		states:           make(map[string]*convergenceState),
-		prevActiveGids:   make(map[string]gidInfo),
-		prevActiveSpeeds: make(map[string]int64),
-		stopChan:         make(chan struct{}),
-		interval:         interval,
-		maxConnections:   maxConnections,
+		engine:            engine,
+		tracker:           tracker,
+		telemetry:         telemetry,
+		peakRecorder:      peakRecorder,
+		rateChecker:       rateChecker,
+		limits:            GetDefaultServerLimits(),
+		states:            make(map[string]*convergenceState),
+		prevActiveGids:    make(map[string]gidInfo),
+		prevActiveSpeeds:  make(map[string]int64),
+		domainUnlockTicks: make(map[string]int),
+		stopChan:          make(chan struct{}),
+		interval:          interval,
+		maxConnections:    maxConnections,
 	}
 }
 
@@ -230,6 +235,7 @@ func (c *ConvergenceTicker) tick() {
 	if len(c.prevActiveGids) > 0 {
 		if !sameActiveSet(c.prevActiveGids, activeGids) {
 			windowInvalidated = true
+			c.domainUnlockTicks = make(map[string]int)
 			for _, s := range c.states {
 				s.prevCompleted = 0
 				s.prevSampleAt = time.Time{}
@@ -249,11 +255,68 @@ func (c *ConvergenceTicker) tick() {
 				s.floorMemory = 0
 				s.floorHitCount = 0
 				s.lastRawBps = 0
-				s.zeroRetryCount = 0
 			}
 		}
 	}
 	c.mu.Unlock()
+
+	// Domain Pre-pass: aggregate retryCountSum and activeWorkers per limitKey.
+	dStats := make(map[string]*domainStats)
+	for _, task := range activeTasks {
+		if !strings.HasPrefix(task.GID, "sg_") {
+			continue
+		}
+		if task.Scope == "" || task.Domain == "" {
+			continue
+		}
+		stats := c.telemetry.Get(task.GID)
+		if len(stats) == 0 {
+			continue
+		}
+		lk := limitKey(task.Scope, task.Domain)
+		ds, ok := dStats[lk]
+		if !ok {
+			ds = &domainStats{}
+			dStats[lk] = ds
+		}
+		ds.activeWorkers += len(stats)
+		ds.tasksInDomain++
+		for _, ws := range stats {
+			ds.retryCountSum += ws.RetryCount
+		}
+	}
+
+	// Domain-level N_max fuse and unlock.
+	for lk, ds := range dStats {
+		threshold := int32(connErrorThreshold)
+		if scaled := int32(2 * ds.tasksInDomain); scaled > threshold {
+			threshold = scaled
+		}
+		switch {
+		case ds.retryCountSum >= threshold:
+			if _, hasLimit := c.limits.GetNMax(lk); !hasLimit {
+				c.limits.SetNMax(lk, ds.activeWorkers)
+				log.Printf("[convergence] server-limit-fuse: limitKey=%s N_max=%d locked (retryCountSum=%d tasksInDomain=%d)",
+					lk, ds.activeWorkers, ds.retryCountSum, ds.tasksInDomain)
+			}
+			c.domainUnlockTicks[lk] = 0
+		case ds.retryCountSum == 0:
+			nMax, hasLimit := c.limits.GetNMax(lk)
+			if hasLimit {
+				c.domainUnlockTicks[lk]++
+				if c.domainUnlockTicks[lk] >= lockUnlockConfirmTicks {
+					c.limits.Clear(lk)
+					c.domainUnlockTicks[lk] = 0
+					log.Printf("[convergence] server-limit-unlock: limitKey=%s N_max=%d cleared (zero retries for %d ticks, %d workers)",
+						lk, nMax, lockUnlockConfirmTicks, ds.activeWorkers)
+				}
+			} else {
+				c.domainUnlockTicks[lk] = 0
+			}
+		default:
+			c.domainUnlockTicks[lk] = 0
+		}
+	}
 
 	for _, task := range activeTasks {
 		if !strings.HasPrefix(task.GID, "sg_") {
@@ -283,7 +346,7 @@ func (c *ConvergenceTicker) tick() {
 	// Bandwidth borrowing: detect tasks that disappeared since last tick.
 	// For each completed task, elect a single same-domain+scope beneficiary.
 	// Skip GIDs already scaled by processTask to prevent double ScaleUp.
-	pending = append(pending, c.bandwidthRelease(activeTasks, activeGids, pendingGids, approvedDelta)...)
+	pending = append(pending, c.bandwidthRelease(activeTasks, activeGids, pendingGids, approvedDelta, dStats)...)
 
 	// Self-cleanup: remove states for GIDs no longer active
 	c.mu.Lock()
@@ -334,7 +397,7 @@ func (c *ConvergenceTicker) tick() {
 // currentWorkers, fair rotation on tie) to prevent thundering-herd ScaleUp.
 // GIDs already scaled by processTask this tick (present in pendingGids) are
 // skipped to prevent double ScaleUp.
-func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, activeGids map[string]gidInfo, pendingGids map[string]bool, approvedDelta map[string]int) []pendingScale {
+func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, activeGids map[string]gidInfo, pendingGids map[string]bool, approvedDelta map[string]int, dStats map[string]*domainStats) []pendingScale {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -371,9 +434,21 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 				continue
 			}
 			cw := len(c.telemetry.Get(t.GID))
-			// N_max clamp: skip candidates already at or above N_max for their domain.
-			if nMax, hasLimit := c.limits.GetNMax(t.Domain); hasLimit && cw >= nMax {
-				continue
+			// N_max clamp: skip when domain total workers + 1 would exceed N_max.
+			lk := ""
+			if t.Scope != "" && t.Domain != "" {
+				lk = limitKey(t.Scope, t.Domain)
+			}
+			if lk != "" {
+				if nMax, hasLimit := c.limits.GetNMax(lk); hasLimit {
+					domainTotalWorkers := 0
+					if ds, ok := dStats[lk]; ok {
+						domainTotalWorkers = ds.activeWorkers
+					}
+					if domainTotalWorkers+1 > nMax {
+						continue
+					}
+				}
 			}
 			candidates = append(candidates, candidate{
 				gid:            t.GID,
@@ -525,56 +600,13 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 		return pendingScale{}, false
 	}
 
-	var retryCountSum int32
-	for _, ws := range stats {
-		retryCountSum += ws.RetryCount
-	}
 	currentWorkers := len(stats)
 
-	_, domain, _, _ := c.tracker.GetScopeAndEnv(gid)
-
-	// C1: N_max fuse — detect conn errors and lock N_max (immediate safety, runs regardless of windowInvalidated).
-	// Early unlock: when retryCountSum stays 0 for lockUnlockConfirmTicks consecutive
-	// ticks while currentWorkers >= nMax, the server limit has lifted — clear N_max.
-	switch {
-	case retryCountSum >= int32(connErrorThreshold):
-		if _, hasLimit := c.limits.GetNMax(domain); !hasLimit {
-			c.limits.SetNMax(domain, currentWorkers)
-			log.Printf("[convergence] server-limit-fuse: domain=%s N_max=%d locked (retryCountSum=%d)",
-				domain, currentWorkers, retryCountSum)
-		}
-		c.mu.Lock()
-		if s, ok := c.states[gid]; ok {
-			s.zeroRetryCount = 0
-		}
-		c.mu.Unlock()
-	case retryCountSum == 0:
-		nMax, hasLimit := c.limits.GetNMax(domain)
-		if hasLimit && currentWorkers >= nMax {
-			c.mu.Lock()
-			s := c.getOrCreateState(gid)
-			s.zeroRetryCount++
-			if s.zeroRetryCount >= lockUnlockConfirmTicks {
-				c.limits.Clear(domain)
-				s.zeroRetryCount = 0
-				log.Printf("[convergence] server-limit-unlock: domain=%s N_max=%d cleared (zero retries for %d ticks at %d workers)",
-					domain, nMax, lockUnlockConfirmTicks, currentWorkers)
-			}
-			c.mu.Unlock()
-		} else {
-			c.mu.Lock()
-			if s, ok := c.states[gid]; ok {
-				s.zeroRetryCount = 0
-			}
-			c.mu.Unlock()
-		}
-	default:
-		// Partial recovery (0 < retryCountSum < threshold) — reset unlock counter.
-		c.mu.Lock()
-		if s, ok := c.states[gid]; ok {
-			s.zeroRetryCount = 0
-		}
-		c.mu.Unlock()
+	// Domain-level N_max key. Empty when scope/domain is missing — callers
+	// guard with lk != "" before querying the Store.
+	lk := ""
+	if task.Scope != "" && task.Domain != "" {
+		lk = limitKey(task.Scope, task.Domain)
 	}
 
 	// Rate limit guard (Edge Case 4): skip ratchet and probe when rate-limited.
@@ -803,7 +835,11 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 				rebound = 1
 			}
 			// N_max clamp: rebound must not push currentWorkers above N_max.
-			nMax, hasLimit := c.limits.GetNMax(domain)
+			var nMax int
+			hasLimit := false
+			if lk != "" {
+				nMax, hasLimit = c.limits.GetNMax(lk)
+			}
 			if hasLimit {
 				headroom := nMax - currentWorkers
 				if headroom <= 0 {
@@ -953,10 +989,14 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 		newEff := rawBps / int64(currentWorkers)
 		preheated := s.peakWorkers > 0 || (s.sustainCount >= peakSustainCycles && s.bestEff > 0)
 		if newEff >= int64(float64(s.bestEff)*probeUpEffThreshold) && preheated {
-			// N_max check — C1 fuse only SETS N_max; suppression is here.
-			nMax, hasLimit := c.limits.GetNMax(domain)
+			// N_max check — Domain Pre-pass only SETS N_max; suppression is here.
+			var nMax int
+			hasLimit := false
+			if lk != "" {
+				nMax, hasLimit = c.limits.GetNMax(lk)
+			}
 			if !hasLimit || currentWorkers < nMax {
-				vAvailable := c.checkVAvailable(task.Scope, domain, task.EnvKey, approvedDelta)
+				vAvailable := c.checkVAvailable(task.Scope, task.Domain, task.EnvKey, approvedDelta)
 				if vAvailable && !rateLimited {
 					if c.peakRecorder != nil && rawBps > 0 && currentWorkers > 0 {
 						c.peakRecorder.RecordPeakEfficiency(gid, rawBps, currentWorkers)
@@ -975,7 +1015,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	}
 
 	if s.phase == phaseStable {
-		probeFloor := c.computeProbeFloor(domain, task.Scope, task.EnvKey)
+		probeFloor := c.computeProbeFloor(task.Domain, task.Scope, task.EnvKey)
 		if currentWorkers > probeFloor && (s.peakWorkers > 0 || s.sustainCount >= peakSustainCycles) {
 			shouldProbe := false
 			if s.probeMomentum && s.probeCooldown == 0 {

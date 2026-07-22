@@ -72,7 +72,7 @@ func TestProbeMomentum_ClearedOnFloorReached(t *testing.T) {
 	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
-	ct.limits.Clear("example.com")
+	ct.limits.Clear("wan|example.com")
 
 	ct.mu.Lock()
 	s := ct.getOrCreateState(gid)

@@ -52,6 +52,7 @@ func TestConvergence_BandwidthRelease_SkipsCeilingHit(t *testing.T) {
 		map[string]gidInfo{gid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
 		nil,
+		nil,
 	)
 	for _, r := range releases {
 		if r.gid == gid {
@@ -100,6 +101,7 @@ func TestConvergence_BandwidthRelease_SkipsBlackout(t *testing.T) {
 		[]TrackedTaskInfo{tracker.tasks[0]},
 		map[string]gidInfo{gid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
+		nil,
 		nil,
 	)
 	for _, r := range releases {
@@ -150,6 +152,7 @@ func TestConvergence_BandwidthRelease_NonKeepAliveTaskBenefits(t *testing.T) {
 		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
 		approvedDelta,
+		nil,
 	)
 	found := false
 	for _, r := range releases {
@@ -201,7 +204,7 @@ func TestConvergence_ApprovedDelta_PreventsSameTickOversell(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 0)
-	ct.limits.Clear("example.com")
+	ct.limits.Clear("wan|example.com")
 
 	// Both tasks in Probe-Up-ready state.
 	for _, gid := range []string{gid1, gid2} {
@@ -300,6 +303,7 @@ func TestConvergence_BandwidthRelease_BlockedByVAvailable(t *testing.T) {
 		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
 		nil,
+		nil,
 	)
 	for _, r := range releases {
 		if r.gid == beneficiaryGid {
@@ -351,6 +355,7 @@ func TestConvergence_BandwidthRelease_DomainScopeMatching(t *testing.T) {
 		tracker.tasks,
 		map[string]gidInfo{gidA: {Domain: "a.com", Scope: "wan", EnvKey: "testenv"}, gidB: {Domain: "b.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
+		nil,
 		nil,
 	)
 	if len(releases) != 1 {
@@ -411,6 +416,7 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 			map[string]gidInfo{gidA: {Domain: "", Scope: "wan", EnvKey: "testenv"}, gidB: {Domain: "b.com", Scope: "wan", EnvKey: "testenv"}},
 			map[string]bool{},
 			nil,
+			nil,
 		)
 		if len(releases) != 1 {
 			t.Fatalf("expected 1 release, got %d: %+v", len(releases), releases)
@@ -457,6 +463,7 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 			tracker.tasks,
 			map[string]gidInfo{gidB: {Domain: "b.com", Scope: "wan", EnvKey: "testenv"}},
 			map[string]bool{},
+			nil,
 			nil,
 		)
 		if len(releases) != 1 {
@@ -514,6 +521,7 @@ func TestConvergence_BandwidthRelease_SingleBeneficiaryElection(t *testing.T) {
 		tracker.tasks,
 		map[string]gidInfo{gid1: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}, gid2: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}, gid3: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
+		nil,
 		nil,
 	)
 	if len(releases) != 1 {
@@ -576,7 +584,7 @@ func TestConvergence_BandwidthRelease_FairRotation(t *testing.T) {
 	ct.rotationCounter = 0
 	ct.mu.Unlock()
 
-	releases1 := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil)
+	releases1 := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil)
 	if len(releases1) != 1 {
 		t.Fatalf("expected 1 release on first call, got %d", len(releases1))
 	}
@@ -589,7 +597,7 @@ func TestConvergence_BandwidthRelease_FairRotation(t *testing.T) {
 	}
 	ct.mu.Unlock()
 
-	releases2 := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil)
+	releases2 := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil)
 	if len(releases2) != 1 {
 		t.Fatalf("expected 1 release on second call, got %d", len(releases2))
 	}
@@ -649,6 +657,7 @@ func TestConvergence_BandwidthRelease_DelayCompensation(t *testing.T) {
 		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
 		nil,
+		nil,
 	)
 	found := false
 	for _, r := range releases {
@@ -706,6 +715,7 @@ func TestConvergence_BandwidthRelease_NoCompensationWhenSpeedZero(t *testing.T) 
 		[]TrackedTaskInfo{tracker.tasks[0]},
 		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
+		nil,
 		nil,
 	)
 	for _, r := range releases {

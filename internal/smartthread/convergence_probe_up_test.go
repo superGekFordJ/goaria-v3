@@ -37,7 +37,7 @@ func setupProbeUpState(t *testing.T, gid string, bestEff int64, peakWorkers int)
 	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{}, 0, 0)
 
 	// Clear any leftover N_max from previous tests (global singleton).
-	ct.limits.Clear("example.com")
+	ct.limits.Clear("wan|example.com")
 
 	ct.mu.Lock()
 	s := ct.getOrCreateState(gid)
@@ -118,7 +118,7 @@ func TestConvergence_ProbeUp_BlockedByBestEffZero(t *testing.T) {
 func TestConvergence_ProbeUp_BlockedByNMax(t *testing.T) {
 	gid := "sg_probe_up_nmax"
 	ct, tracker, telemetry, _ := setupProbeUpState(t, gid, 1_310_720, 8)
-	ct.limits.SetNMax("example.com", 8) // currentWorkers=8 >= nMax=8
+	ct.limits.SetNMax("wan|example.com", 8) // currentWorkers=8 >= nMax=8
 
 	ps, ok := probeUpProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
 	if ok && ps.delta > 0 {

@@ -42,7 +42,7 @@ func TestConvergence_CrossEnvIsolation_ApprovedDelta(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 0)
-	ct.limits.Clear("example.com")
+	ct.limits.Clear("wan|example.com")
 
 	for _, gid := range []string{gidA, gidB} {
 		ct.mu.Lock()
@@ -141,6 +141,7 @@ func TestConvergence_BandwidthRelease_CrossEnvNoBeneficiary(t *testing.T) {
 		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan", EnvKey: "envB"}},
 		map[string]bool{},
 		nil,
+		nil,
 	)
 	for _, r := range releases {
 		if r.gid == beneficiaryGid {
@@ -194,6 +195,7 @@ func TestConvergence_BandwidthRelease_SameEnvBeneficiary(t *testing.T) {
 		[]TrackedTaskInfo{tracker.tasks[0]},
 		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan", EnvKey: "envA"}},
 		map[string]bool{},
+		nil,
 		nil,
 	)
 	found := false

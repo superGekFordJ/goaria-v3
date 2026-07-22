@@ -58,6 +58,9 @@ type ProgressState struct {
 	drainWorkerFn func(int) bool
 
 	// FORK-PATCH: Server connection error counter for N_max fuse
+	// DEPRECATED: This is a dead-end counter, N_max fuse relies on genericAttempt
+	// (reflected in WorkerSnapshot.RetryCount). Kept for fork-patch compatibility;
+	// do not extend or build new logic on top of it.
 	consecutiveConnErrors atomic.Int32
 }
 
@@ -431,11 +434,13 @@ func (ps *ProgressState) DrainWorker(workerID int) bool {
 }
 
 // FORK-PATCH: IncrConnErrors increments the server connection error counter.
+// DEPRECATED: N_max fuse relies on genericAttempt (WorkerSnapshot.RetryCount).
 func (ps *ProgressState) IncrConnErrors() {
 	ps.consecutiveConnErrors.Add(1)
 }
 
 // FORK-PATCH: DecrConnErrors decrements the server connection error counter (floor 0).
+// DEPRECATED: N_max fuse relies on genericAttempt (WorkerSnapshot.RetryCount).
 func (ps *ProgressState) DecrConnErrors() {
 	for {
 		val := ps.consecutiveConnErrors.Load()
@@ -449,6 +454,7 @@ func (ps *ProgressState) DecrConnErrors() {
 }
 
 // FORK-PATCH: GetConnErrors returns the current server connection error count.
+// DEPRECATED: N_max fuse relies on genericAttempt (WorkerSnapshot.RetryCount).
 func (ps *ProgressState) GetConnErrors() int32 {
 	return ps.consecutiveConnErrors.Load()
 }

@@ -222,7 +222,9 @@ func main() {
 					// Ledger/ActiveMACsFunc/ComputeEnvKeyFunc left nil:
 					// Resume path degrades to logical-only ceiling (no batch ledger).
 				})
-				params = smartthread.ClampToServerLimit(params, remaining, domain, smartthread.GetDefaultServerLimits())
+				params = smartthread.ClampToServerLimit(params, remaining, scope, domain,
+					tasks.ExistingDomainWorkersFromTelemetry(scope, domain),
+					smartthread.GetDefaultServerLimits())
 				if params.Split > 0 {
 					cfg.Runtime.Workers = params.Split
 				}

@@ -46,6 +46,37 @@ func collectActiveTaskInfos() []smartthread.TrackedTaskInfo {
 	return result
 }
 
+// ExistingDomainWorkersFromTelemetry returns the total active worker count
+// for all tracked tasks matching the given scope+domain. Used by
+// ClampToServerLimit to account for existing domain concurrency before
+// launching a new task.
+func ExistingDomainWorkersFromTelemetry(scope, domain string) int {
+	if scope == "" || domain == "" {
+		return 0
+	}
+	tr := monitor.State.GetTracker()
+	if tr == nil {
+		return 0
+	}
+	tasks := tr.GetActiveTrackedTasks()
+	mon := monitor.State.GetMonitor()
+	var telemetry *monitor.TelemetryCache
+	if mon != nil {
+		telemetry = mon.GetTelemetry()
+	}
+	total := 0
+	for _, t := range tasks {
+		if t.Scope != scope || t.Domain != domain {
+			continue
+		}
+		if telemetry != nil {
+			stats := telemetry.Get(t.GID)
+			total += len(stats)
+		}
+	}
+	return total
+}
+
 // AddUriFromExtension processes a download request from the browser extension.
 // It goes through the directAddTaskCandidate path (extracted=false, protected=false)
 // carrying extension metadata (headers/size/dedupKey) so the task benefits from the
@@ -530,8 +561,11 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			},
 			ComputeEnvKeyFunc: monitor.ComputeEnvKey,
 		})
-		params = smartthread.ClampToServerLimit(params, fileSize, domain, smartthread.GetDefaultServerLimits())
+		params = smartthread.ClampToServerLimit(params, fileSize, scope, domain,
+			ExistingDomainWorkersFromTelemetry(scope, domain)+ledger.ReservedWorkers(scope, domain),
+			smartthread.GetDefaultServerLimits())
 		ledger.Reserve(scope, envKey, params.TargetBandwidth)
+		ledger.ReserveWorkers(scope, domain, params.Split)
 		var err error
 		gid, err = s.Engine.AddUri(candidate.url, rpc.AddURIOptions{
 			Dir:          dir,
@@ -542,6 +576,7 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			BeforeSave:   registerGroup,
 		})
 		if err != nil {
+			ledger.ReleaseWorkers(scope, domain, params.Split)
 			return "", err
 		}
 

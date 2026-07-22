@@ -10,8 +10,10 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// N_max clamp + conservative unlock tests
+// N_max clamp + conservative unlock tests (domain-level aggregation)
 // ---------------------------------------------------------------------------
+
+func lk(scope, domain string) string { return scope + "|" + domain }
 
 // TestConvergenceNMaxClamp_KneeCrossedRebound verifies that when N_max is set
 // and currentWorkers >= nMax, the knee-crossed rebound is clamped to 0 and the
@@ -22,6 +24,7 @@ func TestConvergenceNMaxClamp_KneeCrossedRebound(t *testing.T) {
 
 	gid := "sg_nmax_rebound"
 	domain := "example.com"
+	key := lk("wan", domain)
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024},
@@ -35,10 +38,9 @@ func TestConvergenceNMaxClamp_KneeCrossedRebound(t *testing.T) {
 	he := rpc.NewHybridEngine(aria2, surge)
 	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
-	ct.limits.Clear(domain)
-	ct.limits.SetNMax(domain, 7)
+	ct.limits.Clear(key)
+	ct.limits.SetNMax(key, 7)
 
-	// Set up knee-crossed conditions: lastStep > 0, linear zone drop.
 	ct.mu.Lock()
 	s := ct.getOrCreateState(gid)
 	s.phase = phaseStable
@@ -51,10 +53,8 @@ func TestConvergenceNMaxClamp_KneeCrossedRebound(t *testing.T) {
 	setPrevSampleAgoState(s, 5*time.Second)
 	ct.mu.Unlock()
 
-	// 7 workers (== nMax), rawBps drops significantly → knee crossed.
-	// dropRatio > 0.5 → rebound would be ceil(2/2)=1, but clamped to 0 (headroom=0).
 	telemetry.data[gid] = makeWorkers(7, 2*1024*1024)
-	tracker.tasks[0].CompletedLength = 110 * 1024 * 1024 // +10MB/5s = 10MB/s (big drop from 32MB/s)
+	tracker.tasks[0].CompletedLength = 110 * 1024 * 1024
 	ct.mu.Lock()
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
@@ -79,6 +79,7 @@ func TestConvergenceNMaxClamp_KneeCrossedRebound(t *testing.T) {
 		t.Cleanup(speedstats.ResetRecordsForTest)
 
 		gid2 := "sg_nmax_rebound_partial"
+		key2 := lk("wan", domain)
 		tracker2 := &mockTracker{
 			tasks: []TrackedTaskInfo{
 				{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024},
@@ -88,8 +89,8 @@ func TestConvergenceNMaxClamp_KneeCrossedRebound(t *testing.T) {
 			data: map[string][]types.WorkerSnapshot{gid2: makeWorkers(7, 2*1024*1024)},
 		}
 		ct2 := NewConvergenceTicker(he, tracker2, telemetry2, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
-		ct2.limits.Clear(domain)
-		ct2.limits.SetNMax(domain, 8) // headroom = 8 - 7 = 1
+		ct2.limits.Clear(key2)
+		ct2.limits.SetNMax(key2, 8) // headroom = 8 - 7 = 1
 
 		ct2.mu.Lock()
 		s2 := ct2.getOrCreateState(gid2)
@@ -117,12 +118,13 @@ func TestConvergenceNMaxClamp_KneeCrossedRebound(t *testing.T) {
 }
 
 // TestConvergenceNMaxClamp_BandwidthRelease verifies that bandwidthRelease skips
-// candidates already at or above N_max.
+// candidates when domain total workers + 1 would exceed N_max.
 func TestConvergenceNMaxClamp_BandwidthRelease(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	domain := "example.com"
+	key := lk("wan", domain)
 	candidateGid := "sg_bw_candidate"
 
 	tracker := &mockTracker{
@@ -138,10 +140,9 @@ func TestConvergenceNMaxClamp_BandwidthRelease(t *testing.T) {
 	he := rpc.NewHybridEngine(aria2, surge)
 	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
-	ct.limits.Clear(domain)
-	ct.limits.SetNMax(domain, 6) // candidate has 6 workers == nMax
+	ct.limits.Clear(key)
+	ct.limits.SetNMax(key, 6) // domain total = 6, +1 = 7 > 6 → skip
 
-	// Simulate a completed task to trigger bandwidthRelease.
 	completedGid := "sg_bw_completed"
 	ct.mu.Lock()
 	ct.prevActiveGids = map[string]gidInfo{
@@ -149,27 +150,33 @@ func TestConvergenceNMaxClamp_BandwidthRelease(t *testing.T) {
 	}
 	ct.mu.Unlock()
 
+	dStats := map[string]*domainStats{
+		key: {activeWorkers: 6, tasksInDomain: 1},
+	}
+
 	releases := ct.bandwidthRelease(
 		tracker.tasks,
 		map[string]gidInfo{candidateGid: {Domain: domain, Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
 		nil,
+		dStats,
 	)
 	for _, r := range releases {
 		if r.gid == candidateGid {
-			t.Fatal("expected bandwidthRelease to skip candidate at N_max")
+			t.Fatal("expected bandwidthRelease to skip candidate at domain N_max")
 		}
 	}
 
 	t.Run("candidate_below_nmax", func(t *testing.T) {
-		ct.limits.Clear(domain)
-		ct.limits.SetNMax(domain, 7) // candidate has 6 < 7 → should be elected
+		ct.limits.Clear(key)
+		ct.limits.SetNMax(key, 7) // domain total = 6, +1 = 7 <= 7 → elect
 
 		releases2 := ct.bandwidthRelease(
 			tracker.tasks,
 			map[string]gidInfo{candidateGid: {Domain: domain, Scope: "wan", EnvKey: "testenv"}},
 			map[string]bool{},
 			nil,
+			dStats,
 		)
 		found := false
 		for _, r := range releases2 {
@@ -178,20 +185,20 @@ func TestConvergenceNMaxClamp_BandwidthRelease(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatal("expected bandwidthRelease to elect candidate below N_max")
+			t.Fatal("expected bandwidthRelease to elect candidate below domain N_max")
 		}
 	})
 }
 
 // TestConvergenceNMaxUnlock_RetryCountSumZero verifies that N_max is cleared
-// after lockUnlockConfirmTicks consecutive ticks with retryCountSum == 0 and
-// currentWorkers >= nMax.
+// after lockUnlockConfirmTicks consecutive ticks with retryCountSum == 0.
 func TestConvergenceNMaxUnlock_RetryCountSumZero(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	gid := "sg_nmax_unlock"
 	domain := "example.com"
+	key := lk("wan", domain)
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
@@ -211,33 +218,27 @@ func TestConvergenceNMaxUnlock_RetryCountSumZero(t *testing.T) {
 	he := rpc.NewHybridEngine(aria2, surge)
 	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
-	ct.limits.Clear(domain)
-	ct.limits.SetNMax(domain, 3)
+	ct.limits.Clear(key)
+	ct.limits.SetNMax(key, 3)
 
-	// Tick 1: retryCountSum == 0, currentWorkers == 3 >= nMax == 3 → zeroRetryCount=1
+	// Tick 1: retryCountSum == 0 → domainUnlockTicks=1
 	ct.tick()
-	if _, hasLimit := ct.limits.GetNMax(domain); !hasLimit {
+	if _, hasLimit := ct.limits.GetNMax(key); !hasLimit {
 		t.Fatal("N_max should not be cleared after only 1 tick")
 	}
-	ct.mu.Lock()
-	s := ct.states[gid]
-	ct.mu.Unlock()
-	if s.zeroRetryCount != 1 {
-		t.Fatalf("expected zeroRetryCount=1 after tick 1, got %d", s.zeroRetryCount)
+	if ct.domainUnlockTicks[key] != 1 {
+		t.Fatalf("expected domainUnlockTicks=1 after tick 1, got %d", ct.domainUnlockTicks[key])
 	}
 
-	// Tick 2: retryCountSum == 0 again → zeroRetryCount=2 >= lockUnlockConfirmTicks → unlock
+	// Tick 2: retryCountSum == 0 again → domainUnlockTicks=2 >= lockUnlockConfirmTicks → unlock
 	tracker.tasks[0].CompletedLength = 60 * 1024 * 1024
 	ct.tick()
 
-	if _, hasLimit := ct.limits.GetNMax(domain); hasLimit {
+	if _, hasLimit := ct.limits.GetNMax(key); hasLimit {
 		t.Fatal("expected N_max to be cleared after 2 consecutive zero-retry ticks")
 	}
-	ct.mu.Lock()
-	s = ct.states[gid]
-	ct.mu.Unlock()
-	if s.zeroRetryCount != 0 {
-		t.Fatalf("expected zeroRetryCount=0 after unlock, got %d", s.zeroRetryCount)
+	if ct.domainUnlockTicks[key] != 0 {
+		t.Fatalf("expected domainUnlockTicks=0 after unlock, got %d", ct.domainUnlockTicks[key])
 	}
 }
 
@@ -249,6 +250,7 @@ func TestConvergenceNMaxUnlock_PartialRetryResetsCounter(t *testing.T) {
 
 	gid := "sg_nmax_partial"
 	domain := "example.com"
+	key := lk("wan", domain)
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
@@ -268,16 +270,13 @@ func TestConvergenceNMaxUnlock_PartialRetryResetsCounter(t *testing.T) {
 	he := rpc.NewHybridEngine(aria2, surge)
 	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
-	ct.limits.Clear(domain)
-	ct.limits.SetNMax(domain, 3)
+	ct.limits.Clear(key)
+	ct.limits.SetNMax(key, 3)
 
-	// Tick 1: retryCountSum=0 → zeroRetryCount=1
+	// Tick 1: retryCountSum=0 → domainUnlockTicks=1
 	ct.tick()
-	ct.mu.Lock()
-	s := ct.states[gid]
-	ct.mu.Unlock()
-	if s.zeroRetryCount != 1 {
-		t.Fatalf("expected zeroRetryCount=1 after tick 1, got %d", s.zeroRetryCount)
+	if ct.domainUnlockTicks[key] != 1 {
+		t.Fatalf("expected domainUnlockTicks=1 after tick 1, got %d", ct.domainUnlockTicks[key])
 	}
 
 	// Tick 2: retryCountSum=1 (partial) → reset
@@ -288,17 +287,14 @@ func TestConvergenceNMaxUnlock_PartialRetryResetsCounter(t *testing.T) {
 	}
 	tracker.tasks[0].CompletedLength = 60 * 1024 * 1024
 	ct.tick()
-	ct.mu.Lock()
-	s = ct.states[gid]
-	ct.mu.Unlock()
-	if s.zeroRetryCount != 0 {
-		t.Fatalf("expected zeroRetryCount=0 after partial retry, got %d", s.zeroRetryCount)
+	if ct.domainUnlockTicks[key] != 0 {
+		t.Fatalf("expected domainUnlockTicks=0 after partial retry, got %d", ct.domainUnlockTicks[key])
 	}
-	if _, hasLimit := ct.limits.GetNMax(domain); !hasLimit {
+	if _, hasLimit := ct.limits.GetNMax(key); !hasLimit {
 		t.Fatal("N_max should still be locked after partial retry")
 	}
 
-	// Tick 3: retryCountSum=0 → zeroRetryCount=1
+	// Tick 3: retryCountSum=0 → domainUnlockTicks=1
 	telemetry.data[gid] = []types.WorkerSnapshot{
 		{WorkerID: 0, EMASpeed: 2 * 1024 * 1024, RetryCount: 0},
 		{WorkerID: 1, EMASpeed: 2 * 1024 * 1024, RetryCount: 0},
@@ -306,29 +302,29 @@ func TestConvergenceNMaxUnlock_PartialRetryResetsCounter(t *testing.T) {
 	}
 	tracker.tasks[0].CompletedLength = 70 * 1024 * 1024
 	ct.tick()
-	ct.mu.Lock()
-	s = ct.states[gid]
-	ct.mu.Unlock()
-	if s.zeroRetryCount != 1 {
-		t.Fatalf("expected zeroRetryCount=1 after tick 3, got %d", s.zeroRetryCount)
+	if ct.domainUnlockTicks[key] != 1 {
+		t.Fatalf("expected domainUnlockTicks=1 after tick 3, got %d", ct.domainUnlockTicks[key])
 	}
 
-	// Tick 4: retryCountSum=0 → zeroRetryCount=2 → unlock
+	// Tick 4: retryCountSum=0 → domainUnlockTicks=2 → unlock
 	tracker.tasks[0].CompletedLength = 80 * 1024 * 1024
 	ct.tick()
-	if _, hasLimit := ct.limits.GetNMax(domain); hasLimit {
+	if _, hasLimit := ct.limits.GetNMax(key); hasLimit {
 		t.Fatal("expected N_max to be cleared after tick 4 (2 consecutive zero-retry ticks)")
 	}
 }
 
-// TestConvergenceNMaxUnlock_WorkersBelowNMaxNoUnlock verifies that N_max is NOT
-// cleared when currentWorkers < nMax, even with retryCountSum == 0.
-func TestConvergenceNMaxUnlock_WorkersBelowNMaxNoUnlock(t *testing.T) {
+// TestConvergenceNMaxUnlock_WorkersBelowNMaxStillUnlocks verifies that N_max IS
+// cleared when currentWorkers < nMax, as long as retryCountSum == 0 for
+// lockUnlockConfirmTicks consecutive ticks. The domain-level unlock no longer
+// requires currentWorkers >= nMax.
+func TestConvergenceNMaxUnlock_WorkersBelowNMaxStillUnlocks(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	gid := "sg_nmax_below"
 	domain := "example.com"
+	key := lk("wan", domain)
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
@@ -348,27 +344,28 @@ func TestConvergenceNMaxUnlock_WorkersBelowNMaxNoUnlock(t *testing.T) {
 	he := rpc.NewHybridEngine(aria2, surge)
 	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
-	ct.limits.Clear(domain)
-	ct.limits.SetNMax(domain, 5) // nMax=5, currentWorkers=3 < 5
+	ct.limits.Clear(key)
+	ct.limits.SetNMax(key, 5) // nMax=5, currentWorkers=3 < 5
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 2; i++ {
 		tracker.tasks[0].CompletedLength = int64(50+i*10) * 1024 * 1024
 		ct.tick()
 	}
 
-	if _, hasLimit := ct.limits.GetNMax(domain); !hasLimit {
-		t.Fatal("N_max should NOT be cleared when currentWorkers < nMax")
+	if _, hasLimit := ct.limits.GetNMax(key); hasLimit {
+		t.Fatal("N_max should be cleared after 2 consecutive zero-retry ticks even when currentWorkers < nMax")
 	}
 }
 
 // TestConvergenceNMaxUnlock_ActiveSetChangeResetsCounter verifies that an
-// active-set change resets zeroRetryCount to 0.
+// active-set change resets domainUnlockTicks to 0.
 func TestConvergenceNMaxUnlock_ActiveSetChangeResetsCounter(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	gid := "sg_nmax_activeset"
 	domain := "example.com"
+	key := lk("wan", domain)
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
@@ -388,23 +385,16 @@ func TestConvergenceNMaxUnlock_ActiveSetChangeResetsCounter(t *testing.T) {
 	he := rpc.NewHybridEngine(aria2, surge)
 	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
-	ct.limits.Clear(domain)
-	ct.limits.SetNMax(domain, 3)
+	ct.limits.Clear(key)
+	ct.limits.SetNMax(key, 3)
 
-	// Tick 1: zeroRetryCount=1
+	// Tick 1: domainUnlockTicks=1
 	ct.tick()
-	ct.mu.Lock()
-	s := ct.states[gid]
-	ct.mu.Unlock()
-	if s.zeroRetryCount != 1 {
-		t.Fatalf("expected zeroRetryCount=1 after tick 1, got %d", s.zeroRetryCount)
+	if ct.domainUnlockTicks[key] != 1 {
+		t.Fatalf("expected domainUnlockTicks=1 after tick 1, got %d", ct.domainUnlockTicks[key])
 	}
 
-	// Add a second task → active set changes → windowInvalidated → zeroRetryCount reset.
-	// The reset happens at the start of the tick, then C1 fuse increments it again
-	// (retryCountSum=0, currentWorkers >= nMax). So after this tick, zeroRetryCount=1
-	// (not 2, which it would have been without the reset). This means 2 more ticks
-	// are needed to unlock instead of 1.
+	// Add a second task → active set changes → windowInvalidated → domainUnlockTicks reset.
 	gid2 := "sg_nmax_activeset_2"
 	tracker.tasks = append(tracker.tasks, TrackedTaskInfo{
 		GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 20 * 1024 * 1024,
@@ -414,22 +404,145 @@ func TestConvergenceNMaxUnlock_ActiveSetChangeResetsCounter(t *testing.T) {
 	tracker.tasks[0].CompletedLength = 60 * 1024 * 1024
 	ct.tick()
 
-	ct.mu.Lock()
-	s = ct.states[gid]
-	ct.mu.Unlock()
-	// Without reset, zeroRetryCount would be 2 (carried over from tick 1 + this tick).
-	// With reset, it's 1 (reset to 0, then incremented once this tick).
-	if s.zeroRetryCount != 1 {
-		t.Fatalf("expected zeroRetryCount=1 after active-set change (reset then re-incremented), got %d", s.zeroRetryCount)
+	// After reset + re-increment, domainUnlockTicks should be 1 (not 2).
+	if ct.domainUnlockTicks[key] != 1 {
+		t.Fatalf("expected domainUnlockTicks=1 after active-set change (reset then re-incremented), got %d", ct.domainUnlockTicks[key])
 	}
-	if _, hasLimit := ct.limits.GetNMax(domain); !hasLimit {
+	if _, hasLimit := ct.limits.GetNMax(key); !hasLimit {
 		t.Fatal("N_max should still be locked after active-set change (needs 1 more tick)")
 	}
 
-	// One more tick → zeroRetryCount=2 → unlock
+	// One more tick → domainUnlockTicks=2 → unlock
 	tracker.tasks[0].CompletedLength = 70 * 1024 * 1024
 	ct.tick()
-	if _, hasLimit := ct.limits.GetNMax(domain); hasLimit {
+	if _, hasLimit := ct.limits.GetNMax(key); hasLimit {
 		t.Fatal("expected N_max to be cleared after 2 consecutive zero-retry ticks post-reset")
+	}
+}
+
+// --- New domain-level aggregation tests ---
+
+// TestConvergenceNMaxFuse_MultiTaskDomainAggregation verifies that 2 same-domain
+// tasks with retryCount=2 each (sum=4) trigger fuse at threshold=max(3, 2*2)=4,
+// and N_max is locked at the sum of activeWorkers (not single-task count).
+func TestConvergenceNMaxFuse_MultiTaskDomainAggregation(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	domain := "example.com"
+	key := lk("wan", domain)
+	gid1 := "sg_multi_1"
+	gid2 := "sg_multi_2"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
+			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid1: {
+				{WorkerID: 0, EMASpeed: 2 * 1024 * 1024, RetryCount: 2},
+				{WorkerID: 1, EMASpeed: 2 * 1024 * 1024, RetryCount: 0},
+				{WorkerID: 2, EMASpeed: 2 * 1024 * 1024, RetryCount: 0},
+			},
+			gid2: {
+				{WorkerID: 0, EMASpeed: 2 * 1024 * 1024, RetryCount: 2},
+				{WorkerID: 1, EMASpeed: 2 * 1024 * 1024, RetryCount: 0},
+			},
+		},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+
+	ct.limits.Clear(key)
+	ct.tick()
+
+	nMax, hasLimit := ct.limits.GetNMax(key)
+	if !hasLimit {
+		t.Fatal("expected N_max to be locked after multi-task domain aggregation fuse")
+	}
+	// activeWorkers = 3 + 2 = 5
+	if nMax != 5 {
+		t.Fatalf("expected N_max=5 (sum of activeWorkers), got %d", nMax)
+	}
+}
+
+// TestConvergenceNMaxFuse_SingleTaskThresholdSensitivity verifies that a single
+// task with retryCount=3 triggers fuse at threshold=max(3, 2*1)=3.
+func TestConvergenceNMaxFuse_SingleTaskThresholdSensitivity(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	domain := "example.com"
+	key := lk("wan", domain)
+	gid := "sg_single_fuse"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid: {
+				{WorkerID: 0, EMASpeed: 2 * 1024 * 1024, RetryCount: 1},
+				{WorkerID: 1, EMASpeed: 2 * 1024 * 1024, RetryCount: 1},
+				{WorkerID: 2, EMASpeed: 2 * 1024 * 1024, RetryCount: 1},
+			},
+		},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+
+	ct.limits.Clear(key)
+	ct.tick()
+
+	if _, hasLimit := ct.limits.GetNMax(key); !hasLimit {
+		t.Fatal("expected N_max to be locked for single task with retryCountSum=3 >= threshold=3")
+	}
+}
+
+// TestConvergenceNMaxUnlock_NoNMaxFloorRequirement verifies that unlock happens
+// even when activeWorkers < nMax (no >= nMax requirement).
+func TestConvergenceNMaxUnlock_NoNMaxFloorRequirement(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	domain := "example.com"
+	key := lk("wan", domain)
+	gid1 := "sg_floor_1"
+	gid2 := "sg_floor_2"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
+			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid1: makeWorkers(3, 2*1024*1024), // all RetryCount=0
+			gid2: makeWorkers(3, 2*1024*1024),
+		},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+
+	ct.limits.Clear(key)
+	ct.limits.SetNMax(key, 10) // nMax=10, activeWorkers=6 < 10
+
+	// 2 ticks with retryCountSum=0 → unlock
+	for i := 0; i < 2; i++ {
+		tracker.tasks[0].CompletedLength = int64(50+i*10) * 1024 * 1024
+		ct.tick()
+	}
+
+	if _, hasLimit := ct.limits.GetNMax(key); hasLimit {
+		t.Fatal("expected N_max to be cleared even when activeWorkers < nMax (no floor requirement)")
 	}
 }
