@@ -118,7 +118,7 @@ func TestConvergence_RecordPeakEfficiency_FloorHitRebound(t *testing.T) {
 	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{}, 0, 0)
 
 	// Clear any leftover N_max from previous tests (global singleton).
-	ct.limits.Clear("wan|example.com")
+	ct.limits.Clear(limitKey("wan", "example.com"))
 
 	// Set up knee-crossed conditions
 	ct.mu.Lock()
@@ -160,7 +160,7 @@ func TestConvergence_RecordPeakEfficiency_ProbeDownTrigger(t *testing.T) {
 	ct, tracker, telemetry, recorder := setupProbeUpState(t, gid, 1_310_720, 8)
 
 	// Block Probe-Up via N_max so Probe-Down can fire
-	ct.limits.SetNMax("wan|example.com", 8)
+	ct.limits.SetNMax(limitKey("wan", "example.com"), 8)
 
 	// rawBps = 10 MB/s, 8 workers. Probe-Down fires (step=1, delta=-1).
 	ps, ok := probeUpProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
@@ -202,7 +202,7 @@ func TestConvergence_RecordPeakEfficiency_MonotonicRatchet(t *testing.T) {
 	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{}, 0, 0)
 
 	// Clear any leftover N_max from previous tests (global singleton).
-	ct.limits.Clear("wan|example.com")
+	ct.limits.Clear(limitKey("wan", "example.com"))
 
 	// Pre-record a high peak (100 MB/s, 8 workers)
 	recorder.RecordPeakEfficiency(gid, 100*1024*1024, 8)

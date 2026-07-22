@@ -42,7 +42,7 @@ func TestConvergence_CrossEnvIsolation_ApprovedDelta(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 0)
-	ct.limits.Clear("wan|example.com")
+	ct.limits.Clear(limitKey("wan", "example.com"))
 
 	for _, gid := range []string{gidA, gidB} {
 		ct.mu.Lock()

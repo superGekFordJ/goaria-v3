@@ -9,7 +9,7 @@ const mb = 1024 * 1024
 
 func TestClampToServerLimit_ClampsSplit(t *testing.T) {
 	store := NewServerLimitStore()
-	store.SetNMax("wan|example.com", 7)
+	store.SetNMax(limitKey("wan", "example.com"), 7)
 
 	params := ThreadParams{Split: 16, TargetBandwidth: 16 * mb, MinSize: mb, NSat: 12}
 	got := ClampToServerLimit(params, 100*mb, "wan", "example.com", 0, store)
@@ -35,7 +35,7 @@ func TestClampToServerLimit_NoLimit_NoChange(t *testing.T) {
 
 func TestClampToServerLimit_SplitBelowNMax_NoChange(t *testing.T) {
 	store := NewServerLimitStore()
-	store.SetNMax("wan|example.com", 7)
+	store.SetNMax(limitKey("wan", "example.com"), 7)
 
 	params := ThreadParams{Split: 4, TargetBandwidth: 4 * mb, MinSize: mb, NSat: 6}
 	got := ClampToServerLimit(params, 100*mb, "wan", "example.com", 0, store)
@@ -46,7 +46,7 @@ func TestClampToServerLimit_SplitBelowNMax_NoChange(t *testing.T) {
 
 	t.Run("SplitEqualsNMax_NoChange", func(t *testing.T) {
 		store := NewServerLimitStore()
-		store.SetNMax("wan|example.com", 7)
+		store.SetNMax(limitKey("wan", "example.com"), 7)
 
 		params := ThreadParams{Split: 7, TargetBandwidth: 7 * mb, MinSize: mb, NSat: 6}
 		got := ClampToServerLimit(params, 100*mb, "wan", "example.com", 0, store)
@@ -58,7 +58,7 @@ func TestClampToServerLimit_SplitBelowNMax_NoChange(t *testing.T) {
 
 	t.Run("ZeroNMax_NoChange", func(t *testing.T) {
 		store := NewServerLimitStore()
-		store.SetNMax("wan|example.com", 0)
+		store.SetNMax(limitKey("wan", "example.com"), 0)
 
 		params := ThreadParams{Split: 16, TargetBandwidth: 16 * mb, MinSize: mb, NSat: 12}
 		got := ClampToServerLimit(params, 100*mb, "wan", "example.com", 0, store)
@@ -72,7 +72,7 @@ func TestClampToServerLimit_SplitBelowNMax_NoChange(t *testing.T) {
 func TestClampToServerLimit_ExpiredLimit_NoChange(t *testing.T) {
 	store := NewServerLimitStore()
 	store.mu.Lock()
-	store.limits["wan|expired.com"] = &serverLimit{
+	store.limits[limitKey("wan", "expired.com")] = &serverLimit{
 		NMax:       7,
 		DetectedAt: time.Now().Add(-25 * time.Hour),
 		TTL:        serverLimitTTL,
@@ -99,7 +99,7 @@ func TestClampToServerLimit_NilStore_NoChange(t *testing.T) {
 func TestClampToServerLimit_MinSizeAdjustment(t *testing.T) {
 	t.Run("perWorkerAboveMinSize_NoChange", func(t *testing.T) {
 		store := NewServerLimitStore()
-		store.SetNMax("wan|example.com", 7)
+		store.SetNMax(limitKey("wan", "example.com"), 7)
 
 		params := ThreadParams{Split: 16, MinSize: mb}
 		got := ClampToServerLimit(params, 10*mb, "wan", "example.com", 0, store)
@@ -111,7 +111,7 @@ func TestClampToServerLimit_MinSizeAdjustment(t *testing.T) {
 
 	t.Run("perWorkerBelowMinSize_ClampedToFloor", func(t *testing.T) {
 		store := NewServerLimitStore()
-		store.SetNMax("wan|example.com", 7)
+		store.SetNMax(limitKey("wan", "example.com"), 7)
 
 		params := ThreadParams{Split: 16, MinSize: mb}
 		got := ClampToServerLimit(params, 5*mb, "wan", "example.com", 0, store)
@@ -124,7 +124,7 @@ func TestClampToServerLimit_MinSizeAdjustment(t *testing.T) {
 
 func TestClampToServerLimit_FileSizeZero_NoMinSizeAdjustment(t *testing.T) {
 	store := NewServerLimitStore()
-	store.SetNMax("wan|example.com", 7)
+	store.SetNMax(limitKey("wan", "example.com"), 7)
 
 	params := ThreadParams{Split: 16, MinSize: 0, TargetBandwidth: 16 * mb}
 	got := ClampToServerLimit(params, 0, "wan", "example.com", 0, store)
@@ -139,7 +139,7 @@ func TestClampToServerLimit_FileSizeZero_NoMinSizeAdjustment(t *testing.T) {
 
 func TestClampToServerLimit_TargetBandwidthScales(t *testing.T) {
 	store := NewServerLimitStore()
-	store.SetNMax("wan|example.com", 7)
+	store.SetNMax(limitKey("wan", "example.com"), 7)
 
 	params := ThreadParams{Split: 16, TargetBandwidth: 16 * mb}
 	got := ClampToServerLimit(params, 100*mb, "wan", "example.com", 0, store)
@@ -152,7 +152,7 @@ func TestClampToServerLimit_TargetBandwidthScales(t *testing.T) {
 
 func TestClampToServerLimit_TargetBandwidthZero_StaysZero(t *testing.T) {
 	store := NewServerLimitStore()
-	store.SetNMax("wan|example.com", 7)
+	store.SetNMax(limitKey("wan", "example.com"), 7)
 
 	params := ThreadParams{Split: 16, TargetBandwidth: 0}
 	got := ClampToServerLimit(params, 100*mb, "wan", "example.com", 0, store)
@@ -164,7 +164,7 @@ func TestClampToServerLimit_TargetBandwidthZero_StaysZero(t *testing.T) {
 
 func TestClampToServerLimit_NSatUnchanged(t *testing.T) {
 	store := NewServerLimitStore()
-	store.SetNMax("wan|example.com", 7)
+	store.SetNMax(limitKey("wan", "example.com"), 7)
 
 	params := ThreadParams{Split: 16, NSat: 12, TargetBandwidth: 16 * mb}
 	got := ClampToServerLimit(params, 100*mb, "wan", "example.com", 0, store)
@@ -181,7 +181,7 @@ func TestClampToServerLimit_NSatUnchanged(t *testing.T) {
 
 func TestClampToServerLimit_DomainLevelClamp(t *testing.T) {
 	store := NewServerLimitStore()
-	store.SetNMax("wan|example.com", 10)
+	store.SetNMax(limitKey("wan", "example.com"), 10)
 
 	params := ThreadParams{Split: 16, TargetBandwidth: 16 * mb, MinSize: mb}
 	got := ClampToServerLimit(params, 100*mb, "wan", "example.com", 7, store)
@@ -193,7 +193,7 @@ func TestClampToServerLimit_DomainLevelClamp(t *testing.T) {
 
 func TestClampToServerLimit_ExistingExceedsNMax_FloorsAt1(t *testing.T) {
 	store := NewServerLimitStore()
-	store.SetNMax("wan|example.com", 5)
+	store.SetNMax(limitKey("wan", "example.com"), 5)
 
 	params := ThreadParams{Split: 16, TargetBandwidth: 16 * mb, MinSize: mb}
 	got := ClampToServerLimit(params, 100*mb, "wan", "example.com", 8, store)
@@ -205,7 +205,7 @@ func TestClampToServerLimit_ExistingExceedsNMax_FloorsAt1(t *testing.T) {
 
 func TestClampToServerLimit_EmptyScope_NoChange(t *testing.T) {
 	store := NewServerLimitStore()
-	store.SetNMax("wan|example.com", 7)
+	store.SetNMax(limitKey("wan", "example.com"), 7)
 
 	params := ThreadParams{Split: 16, TargetBandwidth: 16 * mb, MinSize: mb}
 	got := ClampToServerLimit(params, 100*mb, "", "example.com", 0, store)
@@ -217,7 +217,7 @@ func TestClampToServerLimit_EmptyScope_NoChange(t *testing.T) {
 
 func TestClampToServerLimit_EmptyDomain_NoChange(t *testing.T) {
 	store := NewServerLimitStore()
-	store.SetNMax("wan|example.com", 7)
+	store.SetNMax(limitKey("wan", "example.com"), 7)
 
 	params := ThreadParams{Split: 16, TargetBandwidth: 16 * mb, MinSize: mb}
 	got := ClampToServerLimit(params, 100*mb, "wan", "", 0, store)
@@ -229,7 +229,7 @@ func TestClampToServerLimit_EmptyDomain_NoChange(t *testing.T) {
 
 func TestClampToServerLimit_CompoundKey(t *testing.T) {
 	store := NewServerLimitStore()
-	store.SetNMax("wan|example.com", 7)
+	store.SetNMax(limitKey("wan", "example.com"), 7)
 
 	params := ThreadParams{Split: 16, TargetBandwidth: 16 * mb, MinSize: mb}
 	got := ClampToServerLimit(params, 100*mb, "wan", "example.com", 0, store)

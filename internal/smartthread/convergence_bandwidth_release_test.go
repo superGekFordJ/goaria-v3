@@ -204,7 +204,7 @@ func TestConvergence_ApprovedDelta_PreventsSameTickOversell(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 0)
-	ct.limits.Clear("wan|example.com")
+	ct.limits.Clear(limitKey("wan", "example.com"))
 
 	// Both tasks in Probe-Up-ready state.
 	for _, gid := range []string{gid1, gid2} {

@@ -223,7 +223,7 @@ func TestConvergence_FloorHit_KneeFrozenSet(t *testing.T) {
 	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
 
 	// Clear any leftover N_max from previous tests (global singleton).
-	ct.limits.Clear("wan|example.com")
+	ct.limits.Clear(limitKey("wan", "example.com"))
 
 	// Set up knee-crossed conditions: lastStep > 0, linear zone drop.
 	ct.mu.Lock()

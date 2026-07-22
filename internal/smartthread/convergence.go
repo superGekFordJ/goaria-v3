@@ -318,6 +318,13 @@ func (c *ConvergenceTicker) tick() {
 		}
 	}
 
+	// Prune domainUnlockTicks entries for domains no longer active this tick.
+	for lk := range c.domainUnlockTicks {
+		if _, ok := dStats[lk]; !ok {
+			delete(c.domainUnlockTicks, lk)
+		}
+	}
+
 	for _, task := range activeTasks {
 		if !strings.HasPrefix(task.GID, "sg_") {
 			continue
