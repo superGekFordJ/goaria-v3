@@ -296,7 +296,7 @@ func TestConvergenceTicker_ServerLimitFuse(t *testing.T) {
 	defer ct.Stop()
 
 	// Clear any pre-existing limit for this domain
-	key := "wan|" + domain
+	key := limitKey("wan", domain)
 	ct.limits.Clear(key)
 
 	ct.tick()

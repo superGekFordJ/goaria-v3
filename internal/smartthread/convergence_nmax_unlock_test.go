@@ -13,8 +13,6 @@ import (
 // N_max clamp + conservative unlock tests (domain-level aggregation)
 // ---------------------------------------------------------------------------
 
-func lk(scope, domain string) string { return scope + "|" + domain }
-
 // TestConvergenceNMaxClamp_KneeCrossedRebound verifies that when N_max is set
 // and currentWorkers >= nMax, the knee-crossed rebound is clamped to 0 and the
 // system enters FloorHit without scaling up.
@@ -24,7 +22,7 @@ func TestConvergenceNMaxClamp_KneeCrossedRebound(t *testing.T) {
 
 	gid := "sg_nmax_rebound"
 	domain := "example.com"
-	key := lk("wan", domain)
+	key := limitKey("wan", domain)
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024},
@@ -79,7 +77,7 @@ func TestConvergenceNMaxClamp_KneeCrossedRebound(t *testing.T) {
 		t.Cleanup(speedstats.ResetRecordsForTest)
 
 		gid2 := "sg_nmax_rebound_partial"
-		key2 := lk("wan", domain)
+		key2 := limitKey("wan", domain)
 		tracker2 := &mockTracker{
 			tasks: []TrackedTaskInfo{
 				{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024},
@@ -124,7 +122,7 @@ func TestConvergenceNMaxClamp_BandwidthRelease(t *testing.T) {
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	domain := "example.com"
-	key := lk("wan", domain)
+	key := limitKey("wan", domain)
 	candidateGid := "sg_bw_candidate"
 
 	tracker := &mockTracker{
@@ -198,7 +196,7 @@ func TestConvergenceNMaxUnlock_RetryCountSumZero(t *testing.T) {
 
 	gid := "sg_nmax_unlock"
 	domain := "example.com"
-	key := lk("wan", domain)
+	key := limitKey("wan", domain)
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
@@ -250,7 +248,7 @@ func TestConvergenceNMaxUnlock_PartialRetryResetsCounter(t *testing.T) {
 
 	gid := "sg_nmax_partial"
 	domain := "example.com"
-	key := lk("wan", domain)
+	key := limitKey("wan", domain)
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
@@ -324,7 +322,7 @@ func TestConvergenceNMaxUnlock_WorkersBelowNMaxStillUnlocks(t *testing.T) {
 
 	gid := "sg_nmax_below"
 	domain := "example.com"
-	key := lk("wan", domain)
+	key := limitKey("wan", domain)
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
@@ -365,7 +363,7 @@ func TestConvergenceNMaxUnlock_ActiveSetChangeResetsCounter(t *testing.T) {
 
 	gid := "sg_nmax_activeset"
 	domain := "example.com"
-	key := lk("wan", domain)
+	key := limitKey("wan", domain)
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
@@ -430,7 +428,7 @@ func TestConvergenceNMaxFuse_MultiTaskDomainAggregation(t *testing.T) {
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	domain := "example.com"
-	key := lk("wan", domain)
+	key := limitKey("wan", domain)
 	gid1 := "sg_multi_1"
 	gid2 := "sg_multi_2"
 	tracker := &mockTracker{
@@ -477,7 +475,7 @@ func TestConvergenceNMaxFuse_SingleTaskThresholdSensitivity(t *testing.T) {
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	domain := "example.com"
-	key := lk("wan", domain)
+	key := limitKey("wan", domain)
 	gid := "sg_single_fuse"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
@@ -513,7 +511,7 @@ func TestConvergenceNMaxUnlock_NoNMaxFloorRequirement(t *testing.T) {
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	domain := "example.com"
-	key := lk("wan", domain)
+	key := limitKey("wan", domain)
 	gid1 := "sg_floor_1"
 	gid2 := "sg_floor_2"
 	tracker := &mockTracker{

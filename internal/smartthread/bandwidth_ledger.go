@@ -118,7 +118,7 @@ func (l *BandwidthLedger) ReservedWorkers(scope, domain string) int {
 	if scope == "" || domain == "" {
 		return 0
 	}
-	key := scope + "|" + domain
+	key := limitKey(scope, domain)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.reservedWorkers[key]
@@ -134,7 +134,7 @@ func (l *BandwidthLedger) ReserveWorkers(scope, domain string, count int) {
 	if scope == "" || domain == "" {
 		return
 	}
-	key := scope + "|" + domain
+	key := limitKey(scope, domain)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.reservedWorkers[key] += count
@@ -150,7 +150,7 @@ func (l *BandwidthLedger) ReleaseWorkers(scope, domain string, count int) {
 	if scope == "" || domain == "" {
 		return
 	}
-	key := scope + "|" + domain
+	key := limitKey(scope, domain)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	v := l.reservedWorkers[key] - count

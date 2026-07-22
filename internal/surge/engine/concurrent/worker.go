@@ -263,6 +263,8 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 		if lastErr != nil {
 			// FORK-PATCH: Increment conn error counter on server connection limit errors
 			// DEPRECATED: This counter is a dead-end, N_max fuse relies on genericAttempt.
+			//             Kept for fork-patch compatibility; do not remove without upstream
+			//             fork-patch coordination.
 			if d.State != nil && isConnLimitError(lastErr) {
 				d.State.IncrConnErrors()
 			}
