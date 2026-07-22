@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"goaria-v3/internal/surge/engine"
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/testutil"
 	"goaria-v3/internal/surge/utils"
@@ -764,6 +765,9 @@ func TestConnErrorDetection_429(t *testing.T) {
 	fileSize := int64(1 * utils.MiB)
 	server := testutil.NewMockServerT(t,
 		testutil.WithHandler(func(w http.ResponseWriter, r *http.Request) {
+			// FORK-PATCH: Retry-After: 0 clamps to RateLimitMinBackoff (500ms),
+			// allowing the rlRetries budget to exhaust within the test timeout.
+			w.Header().Set("Retry-After", "0")
 			w.WriteHeader(http.StatusTooManyRequests)
 		}),
 	)
@@ -780,6 +784,7 @@ func TestConnErrorDetection_429(t *testing.T) {
 	runtime := &types.RuntimeConfig{MaxConnectionsPerDownload: 1}
 
 	d := NewConcurrentDownloader("conn-429-test", nil, state, runtime)
+	d.hostLimiter = engine.NewHostRateLimiter()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

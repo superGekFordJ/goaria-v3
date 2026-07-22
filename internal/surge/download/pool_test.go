@@ -1191,7 +1191,7 @@ func TestWorkerPool_NaturalCompletion_MarksDone(t *testing.T) {
 	pool.mu.Unlock()
 
 	// Simulate the natural completion path: the worker goroutine sets Done=true
-	// after TUIDownload returns nil (see pool.go worker() else branch).
+	// after RunDownload returns nil (see pool.go worker() else branch).
 	state.Done.Store(true)
 
 	if !state.Done.Load() {

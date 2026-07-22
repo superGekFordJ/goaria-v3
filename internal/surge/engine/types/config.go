@@ -50,6 +50,13 @@ const (
 
 	ProgressChannelBuffer = 100
 
+	RateLimitBaseBackoff    = 1 * time.Second
+	RateLimitMaxBackoff     = 30 * time.Second
+	RateLimitMinBackoff     = 500 * time.Millisecond
+	RateLimitJitterFraction = 0.2
+	RateLimitPenaltyDecay   = 60 * time.Second
+	RateLimitMaxRetries     = 6
+
 	// FORK-PATCH: End-game hedge configuration.
 	BalancerTickInterval = 200 * time.Millisecond // normal balancer tick interval
 	HedgeErrorThreshold  = 3                      // consecutive 4xx/5xx before disabling hedge

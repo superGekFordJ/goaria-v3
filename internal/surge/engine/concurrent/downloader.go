@@ -69,6 +69,8 @@ type ConcurrentDownloader struct {
 	ttfbSent atomic.Bool
 	// FORK-PATCH: resume flag — suppresses FirstByteMsg on resume (resume has its own HeadProbe).
 	isResume atomic.Bool
+
+	hostLimiter *engine.HostRateLimiter
 }
 
 // FORK-PATCH: per-worker (connection) session, survives across chunks.
@@ -100,6 +102,7 @@ func NewConcurrentDownloader(id string, progressCh chan<- any, progState *types.
 		activeTasks:  make(map[int]*ActiveTask),
 		Runtime:      runtime,
 		bufPool:      NewTieredBufferPool(), // FORK-PATCH: tiered buffer pool replaces fixed sync.Pool
+		hostLimiter:  engine.DefaultHostRateLimiter,
 	}
 }
 
@@ -269,6 +272,10 @@ func (d *ConcurrentDownloader) applyClientSettings(client *http.Client) {
 // Uses pre-probed metadata (file size already known)
 func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, candidateMirrors []string, activeMirrors []string, destPath string, fileSize int64) error {
 	utils.Debug("ConcurrentDownloader.Download: %s -> %s (size: %d, mirrors: %d)", rawurl, destPath, fileSize, len(activeMirrors))
+
+	if d.hostLimiter == nil {
+		d.hostLimiter = engine.DefaultHostRateLimiter
+	}
 
 	d.initMirrorStatus(rawurl, candidateMirrors, activeMirrors, destPath)
 

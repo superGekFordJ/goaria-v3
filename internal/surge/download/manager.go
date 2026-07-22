@@ -71,8 +71,8 @@ func uniqueFilePath(path string) string {
 	return path
 }
 
-// TUIDownload is the main entry point for downloads executed by the Engine pool
-func TUIDownload(ctx context.Context, cfg *types.DownloadConfig) error {
+// RunDownload is the main entry point for downloads executed by the Engine pool
+func RunDownload(ctx context.Context, cfg *types.DownloadConfig) error {
 	start := time.Now()
 	if cfg.Runtime == nil {
 		cfg.Runtime = types.DefaultRuntimeConfig()
@@ -326,5 +326,5 @@ func Download(ctx context.Context, url string, outPath string, progressCh chan<-
 	}
 	// Default runtime config
 	cfg.Runtime = types.DefaultRuntimeConfig()
-	return TUIDownload(ctx, &cfg)
+	return RunDownload(ctx, &cfg)
 }

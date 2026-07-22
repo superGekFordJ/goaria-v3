@@ -40,6 +40,11 @@ func main() {
 		// GoAria-only regression test for broadcaster terminal event delivery.
 		// Not in upstream fork; must survive vendor sync.
 		filepath.Join("core", "broadcaster_terminal_delivery_test.go"): true,
+		// GoAria-only TestMain setup files for vendored test packages.
+		// Not in upstream fork; must survive vendor sync.
+		filepath.Join("core", "testmain_test.go"):       true,
+		filepath.Join("download", "testmain_test.go"):   true,
+		filepath.Join("processing", "testmain_test.go"): true,
 	}
 
 	// Phase 1: Read source files, replace imports, and write pre-fmt content
