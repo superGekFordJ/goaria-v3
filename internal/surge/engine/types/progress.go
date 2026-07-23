@@ -22,6 +22,7 @@ type ProgressState struct {
 	Error         atomic.Pointer[error]
 	Paused        atomic.Bool
 	Pausing       atomic.Bool // Intermediate state: Pause requested but workers not yet exited
+	RateLimited   atomic.Bool // Set when the downloader is backing off due to HTTP 429/rate-limit
 	cancelFunc    context.CancelFunc
 
 	VerifiedProgress  atomic.Int64  // Verified bytes written to disk (for UI progress)
@@ -280,9 +281,11 @@ func (ps *ProgressState) SessionReset() {
 	ps.SessionStartBytes = 0
 	ps.StartTime = time.Now()
 	ps.SavedElapsed = 0
+	ps.ActiveWorkers.Store(0)
 	ps.Done.Store(false)
 	ps.Paused.Store(false)
 	ps.Pausing.Store(false)
+	ps.RateLimited.Store(false)
 	ps.Error.Store(nil)
 
 	// Clear mirrors error status
@@ -615,7 +618,6 @@ func (ps *ProgressState) UpdateChunkStatus(offset, length int64, status ChunkSta
 	ps.mu.Lock()
 
 	if ps.ActualChunkSize == 0 || len(ps.ChunkBitmap) == 0 {
-		utils.Debug("UpdateChunkStatus skipped: ActualChunkSize=%d, BitmapLen=%d", ps.ActualChunkSize, len(ps.ChunkBitmap))
 		ps.mu.Unlock()
 		return
 	}

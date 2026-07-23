@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/surge/engine"
+	"goaria-v3/internal/surge/engine/events"
 	"goaria-v3/internal/surge/engine/types"
 	"goaria-v3/internal/surge/utils"
 )
@@ -620,6 +621,33 @@ func (p *WorkerPool) worker() {
 
 		if isPaused {
 			utils.Debug("WorkerPool: Download %s paused cleanly", localCfg.ID)
+			// Single-threaded downloads return a non-nil error on pause; the pool
+			// must emit DownloadPausedMsg to fill the gap (concurrent downloader
+			// sends it via handlePause).
+			if err != nil && localCfg.ProgressCh != nil {
+				var downloaded int64
+				var rateLimit int64
+				var rateLimitSet bool
+				var workers int
+				var minChunkSize int64
+				if localCfg.State != nil {
+					downloaded = localCfg.State.Downloaded.Load()
+				}
+				if localCfg.Runtime != nil {
+					workers = localCfg.Runtime.Workers
+					minChunkSize = localCfg.Runtime.MinChunkSize
+				}
+				rateLimit, rateLimitSet = localCfg.RateLimitBps, localCfg.RateLimitSet
+				safeSendProgress(localCfg.ProgressCh, events.DownloadPausedMsg{
+					DownloadID:   localCfg.ID,
+					Filename:     localCfg.Filename,
+					Downloaded:   downloaded,
+					RateLimit:    rateLimit,
+					RateLimitSet: rateLimitSet,
+					Workers:      workers,
+					MinChunkSize: minChunkSize,
+				})
+			}
 			// If paused, we keep it in downloads map for potential resume via ExtractPausedConfig
 		} else if err != nil {
 			if localCfg.State != nil {
