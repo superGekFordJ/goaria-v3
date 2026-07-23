@@ -77,6 +77,9 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 
 		var lastErr error
 		var lastSpeed float64 // FORK-PATCH: track speed for tier adjustment
+		// FORK-PATCH: keep the last attempt's ActiveTask so the residual requeue
+		// after retry exhaustion reads the current StopAt/CurrentOffset.
+		var lastActiveTask *ActiveTask
 		maxRetries := d.Runtime.GetMaxTaskRetries()
 		genericAttempt := 0
 		rlRetries := 0
@@ -105,6 +108,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 				WindowStart: now, // Initialize sliding window
 				workerID:    id,
 			}
+			lastActiveTask = activeTask
 			// FORK-PATCH: Record retry attempt count for N_max fuse telemetry.
 			// Uses genericAttempt (NOT rlRetries) — rate-limit retries are
 			// intentionally excluded from the N_max fuse.
@@ -268,10 +272,19 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			if d.State != nil && isConnLimitError(lastErr) {
 				d.State.IncrConnErrors()
 			}
-			// Log failed task but continue with next task
-			// If we modified StopAt we should probably reset it or push the remaining part?
-			// TODO: Could optimize by pushing only remaining part if we track that.
-			queue.Push(task)
+			// FORK-PATCH: requeue based on the activeTask's current StopAt/CurrentOffset
+			// residual, not the stale task end. The original end may have been reduced by
+			// StealWork or partially written and already counted in VP; pushing the stale
+			// task would resurrect stolen ranges and re-count verified bytes.
+			if remaining := lastActiveTask.RemainingTask(); remaining != nil {
+				originalEnd := task.Offset + task.Length
+				if remaining.Offset+remaining.Length > originalEnd {
+					remaining.Length = originalEnd - remaining.Offset
+				}
+				if remaining.Length > 0 {
+					queue.Push(*remaining)
+				}
+			}
 			utils.Debug("task at offset %d failed after %d retries: %v", task.Offset, maxRetries, lastErr)
 		}
 	}
@@ -510,6 +523,23 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 				newlyWritten = int64(readSoFar)
 			}
 
+			// FORK-PATCH: clamp newlyWritten to the current StopAt. StealWork may have
+			// reduced StopAt between the read-loop's stopAt check and this count point:
+			// this worker still writes [newStopAt, offset) to disk and counts them, while
+			// the stolen task also starts from newStopAt, double-counting that span. After
+			// clamp, over-boundary bytes remain on disk (WriteAt is correct) but are only
+			// counted by the stolen worker — the race degrades to at most one buffer of
+			// safe redundant download.
+			clampStopAt := activeTask.StopAt.Load()
+			if offset > clampStopAt {
+				excess := offset - clampStopAt
+				if newlyWritten > excess {
+					newlyWritten -= excess
+				} else {
+					newlyWritten = 0
+				}
+			}
+
 			activeTask.CurrentOffset.Store(offset)
 			activeTask.WindowBytes.Add(newlyWritten)
 			// FORK-PATCH: accumulate deduplicated write bytes into the per-worker
@@ -610,6 +640,13 @@ func (d *ConcurrentDownloader) StealWork(queue *TaskQueue) bool {
 
 	// Find the worker with the MOST remaining work
 	for id, active := range d.activeTasks {
+		// FORK-PATCH: skip hedged workers — stealing one side of a hedged pair only
+		// reduces the victim's StopAt, while the hedge partner still downloads the full
+		// range with the shared pointer; the stolen task gets an independent pointer and
+		// re-counts the stolen span, causing VP double-counting.
+		if active.Hedged.Load() != 0 {
+			continue
+		}
 		remaining := active.RemainingBytes()
 		if remaining > dynamicMinChunk && remaining > maxRemaining {
 			maxRemaining = remaining
@@ -756,12 +793,21 @@ func (d *ConcurrentDownloader) HedgeWork(queue *TaskQueue) bool {
 // with hedge partners on the same byte range.
 func resumeOnRetryOffset(task *types.Task, activeTask *ActiveTask) {
 	current := activeTask.CurrentOffset.Load()
-	if current > task.Offset {
-		oldStart := task.Offset
-		task.Offset = current
-		task.Length = oldStart + task.Length - current
-		activeTask.SharedMaxOffsetMu.RLock()
-		task.SharedMaxOffset = activeTask.SharedMaxOffset
-		activeTask.SharedMaxOffsetMu.RUnlock()
+	stopAt := activeTask.StopAt.Load()
+	// FORK-PATCH: unconditionally clamp to StopAt — even when current == task.Offset
+	// (retry with no progress), task.Length must shrink; otherwise the next retry
+	// resets StopAt back to the original end, resurrecting the stolen range and
+	// causing double-counting.
+	effectiveEnd := task.Offset + task.Length
+	if stopAt < effectiveEnd {
+		effectiveEnd = stopAt
 	}
+	task.Offset = current
+	task.Length = effectiveEnd - current
+	if task.Length < 0 {
+		task.Length = 0
+	}
+	activeTask.SharedMaxOffsetMu.RLock()
+	task.SharedMaxOffset = activeTask.SharedMaxOffset
+	activeTask.SharedMaxOffsetMu.RUnlock()
 }
