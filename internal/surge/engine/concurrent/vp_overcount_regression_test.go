@@ -555,4 +555,12 @@ func TestVPOvercount_DownloadTaskCountClampedMultiChunk(t *testing.T) {
 		t.Fatalf("chunk 1 progress=%d, want 0 — over-boundary bytes leaked into chunk 1",
 			chunk1Progress)
 	}
+
+	// Verify CurrentOffset stores the clamped value, not the raw over-boundary
+	// offset. This is the core of the offset-clamp fix: StealWork reads
+	// finalCurrent from CurrentOffset, so a clamped value lets the stolen
+	// worker start from max(newStopAt, clampedOffset) = newStopAt.
+	if got := activeTask.CurrentOffset.Load(); got != stopAt {
+		t.Fatalf("CurrentOffset = %d, want %d (clamped to StopAt)", got, stopAt)
+	}
 }
