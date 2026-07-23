@@ -523,16 +523,19 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 				newlyWritten = int64(readSoFar)
 			}
 
-			// FORK-PATCH: clamp newlyWritten to the current StopAt. StealWork may have
-			// reduced StopAt between the read-loop's stopAt check and this count point:
-			// this worker still writes [newStopAt, offset) to disk and counts them, while
-			// the stolen task also starts from newStopAt, double-counting that span. After
-			// clamp, over-boundary bytes remain on disk (WriteAt is correct) but are only
-			// counted by the stolen worker — the race degrades to at most one buffer of
-			// safe redundant download.
+			// FORK-PATCH: clamp offset and newlyWritten to the current StopAt together.
+			// StealWork may reduce StopAt between the read-loop's stopAt check and this
+			// count point. Clamping offset (not just newlyWritten) keeps CurrentOffset at
+			// the effective completion boundary so StealWork's finalCurrent reads the
+			// clamped value and the stolen worker starts from max(newStopAt, clampedOffset)
+			// = newStopAt, correctly owning [newStopAt, ...). pendingStart = offset -
+			// newlyWritten then stays within the correct chunk. This relies on StealWork
+			// skipping the hedged victim (Task 3); removing that skip reintroduces a
+			// hedged-CAS undercount.
 			clampStopAt := activeTask.StopAt.Load()
 			if offset > clampStopAt {
 				excess := offset - clampStopAt
+				offset = clampStopAt
 				if newlyWritten > excess {
 					newlyWritten -= excess
 				} else {

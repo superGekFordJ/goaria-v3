@@ -462,3 +462,97 @@ func TestVPOvercount_DownloadTaskCountClampedToStopAt(t *testing.T) {
 		t.Fatalf("VP=%d, expected non-zero clamped count", vp)
 	}
 }
+
+// TestVPOvercount_DownloadTaskCountClampedMultiChunk verifies that the Task 4
+// clamp attributes bytes to the correct chunk when the reduced StopAt falls in
+// a different chunk than the write start. The single-chunk test 8 cannot expose
+// the pendingStart mis-attribution bug: with multiple chunks, a clamped
+// pendingStart pointing past clampStopAt would credit the wrong chunk, leaving
+// the first chunk permanently incomplete (VP < fileSize → hang).
+func TestVPOvercount_DownloadTaskCountClampedMultiChunk(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	// Two chunks: chunk 0 = [0, 128KiB), chunk 1 = [128KiB, 256KiB).
+	chunkSize := int64(128 * utils.KiB)
+	fileSize := int64(2 * chunkSize)
+	handler := &fullRangeHandler{fileSize: fileSize}
+	srv := testutil.NewHTTPServerT(t, handler)
+	t.Cleanup(srv.Close)
+
+	workingPath := filepath.Join(tmpDir, "clamp_multi.bin")
+	f, err := os.OpenFile(workingPath, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	state := types.NewProgressState("clamp-multi", fileSize)
+	// Use chunkSize as ActualChunkSize so the file spans 2 chunks.
+	state.InitBitmap(fileSize, chunkSize)
+
+	runtime := &types.RuntimeConfig{}
+	limiter := newSignalLimiter()
+	d := &ConcurrentDownloader{
+		State:   state,
+		Runtime: runtime,
+		Limiter: limiter,
+	}
+
+	task := types.Task{Offset: 0, Length: fileSize}
+	activeTask := &ActiveTask{Task: task, workerID: 0}
+	activeTask.CurrentOffset.Store(0)
+	activeTask.StopAt.Store(fileSize)
+
+	buf := make([]byte, fileSize)
+	client := &http.Client{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- d.downloadTask(ctx, srv.URL, f, activeTask, buf, client, fileSize)
+	}()
+
+	// Wait until the worker is blocked in the limiter (past the pre-write
+	// truncation check), then reduce StopAt to a boundary inside chunk 0.
+	// The write starts at offset 0 (chunk 0) and extends to fileSize; the
+	// clamp must attribute bytes to [0, stopAt) in chunk 0, not to chunk 1.
+	<-limiter.arrived
+	stopAt := chunkSize / 2 // 64KiB — inside chunk 0
+	activeTask.StopAt.Store(stopAt)
+	close(limiter.gate)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("downloadTask returned error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("downloadTask did not complete")
+	}
+
+	vp := state.VerifiedProgress.Load()
+	// VP must equal the reduced StopAt — bytes [0, stopAt) attributed to
+	// chunk 0. If pendingStart were mis-attributed to chunk 1, chunk 0 would
+	// stay at 0 and chunk 1 would get credit it shouldn't, leaving VP correct
+	// in total but chunk 0 incomplete. Check chunk 0 progress directly.
+	if vp != stopAt {
+		t.Fatalf("VP=%d, want %d (reduced StopAt) — chunk attribution wrong",
+			vp, stopAt)
+	}
+
+	// Verify chunk 0 received the credit (not chunk 1). No concurrent writes
+	// after downloadTask returns, so direct read is safe.
+	chunk0Progress := state.ChunkProgress[0]
+	chunk1Progress := state.ChunkProgress[1]
+
+	if chunk0Progress != stopAt {
+		t.Fatalf("chunk 0 progress=%d, want %d — bytes mis-attributed to wrong chunk",
+			chunk0Progress, stopAt)
+	}
+	if chunk1Progress != 0 {
+		t.Fatalf("chunk 1 progress=%d, want 0 — over-boundary bytes leaked into chunk 1",
+			chunk1Progress)
+	}
+}
