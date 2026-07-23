@@ -221,7 +221,7 @@ func (d *SingleDownloader) Download(ctx context.Context, rawurl, destPath string
 
 	reader := io.Reader(resp.Body)
 	if d.Limiter != nil {
-		reader = &throttledReader{reader: resp.Body, limiter: d.Limiter, ctx: ctx}
+		reader = &throttledReader{reader: resp.Body, limiter: d.Limiter, ctx: dlCtx}
 	}
 
 	if d.State == nil {
@@ -232,6 +232,9 @@ func (d *SingleDownloader) Download(ctx context.Context, rawurl, destPath string
 		progressReader.Flush()
 	}
 	if err != nil {
+		if ctxErr := dlCtx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
