@@ -227,7 +227,8 @@ func TestConcurrentDownloader_AllMirrors429ThenRecover(t *testing.T) {
 		t.Fatalf("Download failed: %v", err)
 	}
 
-	if elapsed < 900*time.Millisecond {
+	// 1s Retry-After with 20% jitter can be as low as 800ms; use 700ms as safe floor.
+	if elapsed < 700*time.Millisecond {
 		t.Errorf("Expected coordinated backoff of ~1s, but download completed in %v", elapsed)
 	}
 }
@@ -427,7 +428,8 @@ func TestConcurrentDownloader_503WithRetryAfterTreatedAsThrottle(t *testing.T) {
 		t.Fatalf("Download failed: %v", err)
 	}
 
-	if elapsed < 900*time.Millisecond {
+	// 1s Retry-After with 20% jitter can be as low as 800ms; use 700ms as safe floor.
+	if elapsed < 700*time.Millisecond {
 		t.Errorf("Expected backoff after 503+Retry-After, but completed in %v", elapsed)
 	}
 }
