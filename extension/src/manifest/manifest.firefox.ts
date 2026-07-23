@@ -19,6 +19,9 @@ export function getManifestForFirefox() {
       gecko: {
         id: 'goaria-integration@goaria.app',
         strict_min_version: '109.0',
+        data_collection_permissions: {
+          required: ['none'],
+        },
       },
     },
     host_permissions: getHostPermissions(),
