@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"goaria-v3/internal/surge/engine/state"
-	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/store"
+	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/surge/utils"
 )
 
@@ -24,17 +24,17 @@ func SetupStateDB(t *testing.T) string {
 	t.Helper()
 
 	tempDir := t.TempDir()
-	state.CloseDB()
-	state.Configure(filepath.Join(tempDir, "surge.db"))
+	store.CloseDB()
+	store.Configure(filepath.Join(tempDir, "surge.db"))
 
-	t.Cleanup(state.CloseDB)
+	t.Cleanup(store.CloseDB)
 	return tempDir
 }
 
-// SeedMasterList inserts a DownloadEntry into the master list for test setups.
-func SeedMasterList(t *testing.T, entry types.DownloadEntry) {
+// SeedMasterList inserts a DownloadRecord into the master list for test setups.
+func SeedMasterList(t *testing.T, entry types.DownloadRecord) {
 	t.Helper()
-	if err := state.AddToMasterList(entry); err != nil {
+	if err := store.AddToMasterList(entry); err != nil {
 		t.Fatalf("SeedMasterList failed: %v", err)
 	}
 }
