@@ -7,7 +7,7 @@ import (
 
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/rpc"
-	surgeEvents "goaria-v3/internal/surge/engine/events"
+	surgeEvents "goaria-v3/internal/surge/types"
 )
 
 func TestMonitor_FilterDeletedTasks_TombstoneWindow(t *testing.T) {
@@ -146,7 +146,7 @@ func TestMonitor_HandleSurgeEvent_CompleteEventDispatches(t *testing.T) {
 		receivedDelta = &delta
 	})
 
-	m.handleSurgeEvent(surgeEvents.DownloadCompleteMsg{
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
 		DownloadID: "test-123",
 	})
 

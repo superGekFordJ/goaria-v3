@@ -12,7 +12,7 @@ import (
 
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/rpc"
-	surgeEvents "goaria-v3/internal/surge/engine/events"
+	surgeEvents "goaria-v3/internal/surge/types"
 )
 
 // mockTickEngine is a configurable DownloadEngine for tick() recovery tests.
@@ -620,7 +620,7 @@ func TestSwitchingRace_ConcurrentTickAndEventBridge_NoDoubleOperation(t *testing
 
 	go func() {
 		defer wg.Done()
-		m.handleSurgeEvent(surgeEvents.DownloadCompleteMsg{
+		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
 			DownloadID: "task1",
 			Total:      1000,
 		})
@@ -699,7 +699,7 @@ func TestSwitchingRace_EventBridgeStartsImmediatelyNoWaitForTickRecovery(t *test
 
 	go func() {
 		defer wg.Done()
-		m.handleSurgeEvent(surgeEvents.DownloadStartedMsg{
+		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, 
 			DownloadID: "task1",
 			URL:        "https://example.com/file.zip",
 			Total:      1000,
@@ -790,7 +790,7 @@ func TestSwitchingRace_LastTickRoundOverlapsEventBridgeStartup(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		m.handleSurgeEvent(surgeEvents.DownloadPausedMsg{
+		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, 
 			DownloadID: "task1",
 		})
 	}()

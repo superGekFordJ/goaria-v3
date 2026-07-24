@@ -11,18 +11,20 @@ import (
 	"time"
 
 	"goaria-v3/internal/config"
-	"goaria-v3/internal/surge/core"
-	"goaria-v3/internal/surge/download"
-	"goaria-v3/internal/surge/engine/state"
-	"goaria-v3/internal/surge/engine/types"
-	"goaria-v3/internal/surge/processing"
-	"goaria-v3/internal/surge/utils"
+	surgeconfig "goaria-v3/internal/surge/config"
+	"goaria-v3/internal/surge/orchestrator"
+	"goaria-v3/internal/surge/progress"
+	"goaria-v3/internal/surge/scheduler"
+	"goaria-v3/internal/surge/service"
+	"goaria-v3/internal/surge/store"
+	"goaria-v3/internal/surge/types"
 )
 
 type SurgeEngine struct {
-	service *core.LocalDownloadService
-	manager *processing.LifecycleManager
-	cleanup func()
+	service  *service.LocalDownloadService
+	manager  *orchestrator.LifecycleManager
+	scheduler *scheduler.Scheduler
+	cleanup  func()
 
 	listCacheMu sync.Mutex
 	listCache   []types.DownloadStatus
@@ -30,22 +32,33 @@ type SurgeEngine struct {
 
 	// masterCache is an in-memory mirror of master.gob's non-active entries
 	// (stopped/waiting/paused/queued). Active entries are served live from the
-	// Pool and are not stored here. Kept in sync by handleSurgeEvent on
+	// scheduler and are not stored here. Kept in sync by handleSurgeEvent on
 	// status-transition events and refreshed periodically by tick().
 	masterCacheMu sync.RWMutex
-	masterCache   []types.DownloadEntry
+	masterCache   []types.DownloadRecord
+}
+
+func (e *SurgeEngine) getScheduler() *scheduler.Scheduler {
+	if e.scheduler != nil {
+		return e.scheduler
+	}
+	if e.manager != nil {
+		return e.manager.GetScheduler()
+	}
+	return nil
 }
 
 func NewSurgeEngine() *SurgeEngine {
-	progressCh := make(chan any, 256)
+	progressCh := make(chan types.DownloadEvent, 256)
 	maxDownloads := 3
 	if md, err := strconv.Atoi(config.Get().MaxConcurrentDownloads); err == nil && md > 0 {
 		maxDownloads = md
 	}
-	pool := download.NewWorkerPool(progressCh, maxDownloads)
-	svc := core.NewLocalDownloadServiceWithInput(pool, progressCh)
-
-	mgr := processing.NewLifecycleManager(svc.Add, svc.AddWithID)
+	pool := scheduler.New(progressCh, maxDownloads)
+	settings := surgeconfig.DefaultSettings()
+	eventBus := orchestrator.NewEventBus()
+	mgr := orchestrator.NewLifecycleManager(pool, eventBus, settings)
+	svc := service.NewLocalDownloadService(mgr)
 
 	engineCtx, engineCancel := context.WithCancel(context.Background())
 
@@ -65,29 +78,7 @@ func NewSurgeEngine() *SurgeEngine {
 		}()
 	}
 
-	svc.SetLifecycleHooks(core.LifecycleHooks{
-		Pause:       mgr.Pause,
-		Resume:      mgr.Resume,
-		ResumeBatch: mgr.ResumeBatch,
-		Cancel:      mgr.Cancel,
-		UpdateURL:   mgr.UpdateURL,
-	})
-
-	mgr.SetEngineHooks(processing.EngineHooks{
-		Pause:               svc.Pool.Pause,
-		ExtractPausedConfig: svc.Pool.ExtractPausedConfig,
-		GetStatus:           svc.Pool.GetStatus,
-		AddConfig:           svc.Pool.Add,
-		Cancel:              svc.Pool.Cancel,
-		UpdateURL:           svc.Pool.UpdateURL,
-		PublishEvent:        svc.Publish,
-	})
-
 	cleanup := func() {
-		// Shutdown first: PauseAll + wait for pause events to be published,
-		// then close InputCh which drains the broadcaster and closes listener
-		// channels, allowing the event worker to process final pause events
-		// before the stream goroutine exits.
 		_ = svc.Shutdown()
 		engineCancel()
 		if eventCleanup != nil {
@@ -98,13 +89,10 @@ func NewSurgeEngine() *SurgeEngine {
 		}
 	}
 
-	// Load master list into the in-memory mirror once at startup so
-	// getDownloadList reads from cache instead of gob-decoding each tick.
-	// handleSurgeEvent keeps it current on status-transition events.
-	var masterEntries []types.DownloadEntry
-	if list, err := state.LoadMasterList(); err != nil {
+	var masterEntries []types.DownloadRecord
+	if list, err := store.LoadMasterList(); err != nil {
 		log.Printf("[Surge] Failed to load master list for cache init: %v", err)
-		masterEntries = []types.DownloadEntry{}
+		masterEntries = []types.DownloadRecord{}
 	} else {
 		masterEntries = list.Downloads
 	}
@@ -112,6 +100,7 @@ func NewSurgeEngine() *SurgeEngine {
 	return &SurgeEngine{
 		service:     svc,
 		manager:     mgr,
+		scheduler:   pool,
 		cleanup:     cleanup,
 		masterCache: masterEntries,
 	}
@@ -125,7 +114,7 @@ func (e *SurgeEngine) IsSurgeActive() bool {
 // LifecycleManager's EngineHooks. This allows GoAria to recompute Workers
 // and MinChunkSize on resume using current BBR/bandwidth state.
 // Uses read-modify-write to preserve any other hooks set by callers.
-func (e *SurgeEngine) SetResumeParamsHook(fn func(cfg *types.DownloadConfig)) {
+func (e *SurgeEngine) SetResumeParamsHook(fn func(cfg *types.DownloadRecord)) {
 	if e.manager == nil {
 		return
 	}
@@ -135,10 +124,7 @@ func (e *SurgeEngine) SetResumeParamsHook(fn func(cfg *types.DownloadConfig)) {
 }
 
 // getDownloadList returns the Surge download list with a 1s TTL request-scoped
-// cache over the merged Pool-active + masterCache result. This avoids
-// re-merging when TellWaiting and TellStopped are called concurrently within
-// the same tick. The underlying masterCache is an in-memory mirror of
-// master.gob kept current by handleSurgeEvent, so no gob.Decode happens here.
+// cache over the merged scheduler-active + masterCache result.
 func (e *SurgeEngine) getDownloadList() ([]types.DownloadStatus, error) {
 	e.listCacheMu.Lock()
 	if time.Since(e.listCacheAt) < 1*time.Second && e.listCache != nil {
@@ -157,19 +143,17 @@ func (e *SurgeEngine) getDownloadList() ([]types.DownloadStatus, error) {
 	return list, nil
 }
 
-// buildDownloadList merges Pool-active entries with the masterCache mirror,
-// replacing the per-tick state.ListAllDownloads gob.Decode path. The Pool
-// active construction mirrors service.List (local_service.go) so output stays
-// consistent with the vendored implementation.
+// buildDownloadList merges scheduler-active entries with the masterCache mirror.
+// Speed fields are B/s (aligned with tip scheduler / local_service).
 func (e *SurgeEngine) buildDownloadList() []types.DownloadStatus {
 	var statuses []types.DownloadStatus
 
-	// 1. Active downloads from pool (mirrors service.List Pool construction).
-	if e.service != nil && e.service.Pool != nil {
-		activeConfigs := e.service.Pool.GetAll()
+	pool := e.getScheduler()
+	if pool != nil {
+		activeConfigs := pool.GetAll()
 		for _, cfg := range activeConfigs {
 			statusStr := "downloading"
-			if st := e.service.Pool.GetStatus(cfg.ID); st != nil {
+			if st := pool.GetStatus(cfg.ID); st != nil {
 				statusStr = st.Status
 			}
 			status := types.DownloadStatus{
@@ -177,43 +161,45 @@ func (e *SurgeEngine) buildDownloadList() []types.DownloadStatus {
 				URL:          cfg.URL,
 				Filename:     cfg.Filename,
 				Status:       statusStr,
-				RateLimit:    cfg.RateLimitBps,
+				RateLimit:    cfg.RateLimit,
 				RateLimitSet: cfg.RateLimitSet,
 			}
 
-			if cfg.State != nil {
-				downloaded, totalSize, _, sessionElapsed, connections, sessionStart := cfg.State.GetProgress()
+			if cfg.ProgressState != nil {
+				cp := progress.CfgProgress(&cfg)
+				if cp != nil {
+					downloaded, totalSize, _, sessionElapsed, connections, sessionStart := cp.GetProgress()
 
-				status.TotalSize = totalSize
-				status.Downloaded = downloaded
-				if dp := cfg.State.GetDestPath(); dp != "" {
-					status.DestPath = dp
-				}
+					status.TotalSize = totalSize
+					status.Downloaded = downloaded
+					if dp := cp.GetDestPath(); dp != "" {
+						status.DestPath = dp
+					}
 
-				if status.TotalSize > 0 {
-					status.Progress = float64(status.Downloaded) * 100 / float64(status.TotalSize)
-				}
+					if status.TotalSize > 0 {
+						status.Progress = float64(status.Downloaded) * 100 / float64(status.TotalSize)
+					}
 
-				status.Connections = int(connections)
+					status.Connections = int(connections)
 
-				switch {
-				case cfg.State.IsPausing():
-					status.Status = "pausing"
-				case cfg.State.IsPaused():
-					status.Status = "paused"
-				case cfg.State.Done.Load():
-					status.Status = "completed"
-				}
+					switch {
+					case cp.IsPausing():
+						status.Status = "pausing"
+					case cp.IsPaused():
+						status.Status = "paused"
+					case cp.Done.Load():
+						status.Status = "completed"
+					}
 
-				if status.Status == "downloading" {
-					sessionDownloaded := downloaded - sessionStart
-					if sessionElapsed.Seconds() > 0 && sessionDownloaded > 0 {
-						status.Speed = float64(sessionDownloaded) / sessionElapsed.Seconds() / float64(utils.MiB)
+					if status.Status == "downloading" {
+						sessionDownloaded := downloaded - sessionStart
+						if sessionElapsed.Seconds() > 0 && sessionDownloaded > 0 {
+							status.Speed = float64(sessionDownloaded) / sessionElapsed.Seconds()
 
-						remaining := status.TotalSize - status.Downloaded
-						if remaining > 0 && status.Speed > 0 {
-							speedBytes := status.Speed * float64(utils.MiB)
-							status.ETA = int64(float64(remaining) / speedBytes)
+							remaining := status.TotalSize - status.Downloaded
+							if remaining > 0 && status.Speed > 0 {
+								status.ETA = int64(float64(remaining) / status.Speed)
+							}
 						}
 					}
 				}
@@ -223,11 +209,8 @@ func (e *SurgeEngine) buildDownloadList() []types.DownloadStatus {
 		}
 	}
 
-	// 2. Non-active entries from the masterCache mirror (replaces
-	// state.ListAllDownloads gob.Decode). Copy under RLock so concurrent
-	// writers (Upsert/Remove) cannot mutate the backing array mid-iteration.
 	e.masterCacheMu.RLock()
-	cache := make([]types.DownloadEntry, len(e.masterCache))
+	cache := make([]types.DownloadRecord, len(e.masterCache))
 	copy(cache, e.masterCache)
 	e.masterCacheMu.RUnlock()
 
@@ -241,11 +224,11 @@ func (e *SurgeEngine) buildDownloadList() []types.DownloadStatus {
 			continue
 		}
 
-		var progress float64
+		var progressPct float64
 		if d.TotalSize > 0 {
-			progress = float64(d.Downloaded) * 100 / float64(d.TotalSize)
+			progressPct = float64(d.Downloaded) * 100 / float64(d.TotalSize)
 		} else if d.Status == "completed" {
-			progress = 100.0
+			progressPct = 100.0
 		}
 		statuses = append(statuses, types.DownloadStatus{
 			ID:           d.ID,
@@ -255,8 +238,8 @@ func (e *SurgeEngine) buildDownloadList() []types.DownloadStatus {
 			Status:       d.Status,
 			TotalSize:    d.TotalSize,
 			Downloaded:   d.Downloaded,
-			Progress:     progress,
-			Speed:        completedSpeedMBps(d),
+			Progress:     progressPct,
+			Speed:        completedSpeedBps(d),
 			Connections:  0,
 			TimeTaken:    d.TimeTaken,
 			AvgSpeed:     d.AvgSpeed,
@@ -267,26 +250,23 @@ func (e *SurgeEngine) buildDownloadList() []types.DownloadStatus {
 	return statuses
 }
 
-// completedSpeedMBps mirrors the vendored helper in local_service.go so
-// buildDownloadList can compute completed-task speed display without calling
-// the unexported core package function.
-func completedSpeedMBps(entry types.DownloadEntry) float64 {
+// completedSpeedBps mirrors the vendored helper in local_service.go.
+// Returns bytes/sec for completed tasks.
+func completedSpeedBps(entry types.DownloadRecord) float64 {
 	if entry.Status != "completed" {
 		return 0
 	}
 	if entry.AvgSpeed > 0 {
-		return entry.AvgSpeed / float64(utils.MiB)
+		return entry.AvgSpeed
 	}
 	if entry.TimeTaken > 0 {
-		return float64(entry.TotalSize) * 1000 / float64(entry.TimeTaken) / float64(utils.MiB)
+		return float64(entry.TotalSize) * 1000 / float64(entry.TimeTaken)
 	}
 	return 0
 }
 
 // InvalidateListCache clears the 1s TTL list cache so the next getDownloadList
-// call fetches fresh data. Called on status-transition events (pause/resume/
-// complete/error) to prevent stale cache from causing list divergence between
-// TellActive (uncached) and TellWaiting/TellStopped (cached).
+// call fetches fresh data.
 func (e *SurgeEngine) InvalidateListCache() {
 	e.listCacheMu.Lock()
 	e.listCache = nil
@@ -305,10 +285,10 @@ func (e *SurgeEngine) ListCacheAtForTesting() time.Time {
 }
 
 // MasterCacheForTesting returns a copy of the masterCache slice for test inspection.
-func (e *SurgeEngine) MasterCacheForTesting() []types.DownloadEntry {
+func (e *SurgeEngine) MasterCacheForTesting() []types.DownloadRecord {
 	e.masterCacheMu.RLock()
 	defer e.masterCacheMu.RUnlock()
-	out := make([]types.DownloadEntry, len(e.masterCache))
+	out := make([]types.DownloadRecord, len(e.masterCache))
 	copy(out, e.masterCache)
 	for i := range out {
 		if out[i].Mirrors != nil {
@@ -319,19 +299,14 @@ func (e *SurgeEngine) MasterCacheForTesting() []types.DownloadEntry {
 }
 
 // SetMasterCacheForTesting replaces the masterCache contents for test setup.
-func (e *SurgeEngine) SetMasterCacheForTesting(entries []types.DownloadEntry) {
+func (e *SurgeEngine) SetMasterCacheForTesting(entries []types.DownloadRecord) {
 	e.masterCacheMu.Lock()
 	e.masterCache = entries
 	e.masterCacheMu.Unlock()
 }
 
 // UpsertMasterCacheEntry adds or replaces an entry in masterCache by ID.
-// It performs a full replacement (no field-level merge), so callers handling
-// events with incomplete payloads MUST first read the existing entry via
-// GetMasterCacheEntry, copy it, and overwrite only the payload-provided fields
-// before calling this — otherwise URL/DestPath/Mirrors/Workers etc. would be
-// zeroed out.
-func (e *SurgeEngine) UpsertMasterCacheEntry(entry types.DownloadEntry) {
+func (e *SurgeEngine) UpsertMasterCacheEntry(entry types.DownloadRecord) {
 	e.masterCacheMu.Lock()
 	defer e.masterCacheMu.Unlock()
 	for i, existing := range e.masterCache {
@@ -343,10 +318,8 @@ func (e *SurgeEngine) UpsertMasterCacheEntry(entry types.DownloadEntry) {
 	e.masterCache = append(e.masterCache, entry)
 }
 
-// GetMasterCacheEntry returns a copy of the masterCache entry for the given ID
-// and whether it was found. Used by handleSurgeEvent to read the existing
-// entry before merging fields from incomplete event payloads.
-func (e *SurgeEngine) GetMasterCacheEntry(id string) (types.DownloadEntry, bool) {
+// GetMasterCacheEntry returns a copy of the masterCache entry for the given ID.
+func (e *SurgeEngine) GetMasterCacheEntry(id string) (types.DownloadRecord, bool) {
 	e.masterCacheMu.RLock()
 	defer e.masterCacheMu.RUnlock()
 	for _, existing := range e.masterCache {
@@ -357,7 +330,7 @@ func (e *SurgeEngine) GetMasterCacheEntry(id string) (types.DownloadEntry, bool)
 			return existing, true
 		}
 	}
-	return types.DownloadEntry{}, false
+	return types.DownloadRecord{}, false
 }
 
 // RemoveMasterCacheEntry removes an entry from masterCache by ID.
@@ -373,11 +346,9 @@ func (e *SurgeEngine) RemoveMasterCacheEntry(id string) {
 	e.masterCache = out
 }
 
-// RefreshMasterCache reloads masterCache from master.gob via state.LoadMasterList.
-// Called on the 10s tick boundary to sync non-event-driven master list writes
-// (e.g. removeDownloadsByStatus, PauseAllDownloads).
+// RefreshMasterCache reloads masterCache from master.gob via store.LoadMasterList.
 func (e *SurgeEngine) RefreshMasterCache() {
-	list, err := state.LoadMasterList()
+	list, err := store.LoadMasterList()
 	if err != nil {
 		log.Printf("[Surge] Failed to refresh master cache: %v", err)
 		return
@@ -410,13 +381,14 @@ func convertTask(status types.DownloadStatus) Task {
 	if status.Error != "" || status.Status == "error" {
 		errCode = "1"
 	}
+	// status.Speed is already B/s; Aria2 DownloadSpeed is also B/s.
 	return Task{
 		GID:             status.ID,
 		Title:           status.Filename,
 		Status:          mapStatus(status.Status),
 		TotalLength:     strconv.FormatInt(status.TotalSize, 10),
 		CompletedLength: strconv.FormatInt(status.Downloaded, 10),
-		DownloadSpeed:   strconv.FormatInt(int64(status.Speed*float64(utils.MiB)), 10),
+		DownloadSpeed:   strconv.FormatInt(int64(status.Speed), 10),
 		ErrorCode:       errCode,
 		ErrorMessage:    status.Error,
 		Dir:             dir,
@@ -437,7 +409,7 @@ func (e *SurgeEngine) AddUri(url string, options AddURIOptions) (string, error) 
 			headersMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 		}
 	}
-	req := &processing.DownloadRequest{
+	req := &orchestrator.DownloadRequest{
 		URL:          url,
 		Path:         options.Dir,
 		Filename:     options.Out,
@@ -505,10 +477,14 @@ func (e *SurgeEngine) TellStatusMulti(gids []string, keys []string) ([]Task, err
 }
 
 func (e *SurgeEngine) TellActive() ([]Task, error) {
-	configs := e.service.Pool.GetAll()
+	pool := e.getScheduler()
+	if pool == nil {
+		return nil, nil
+	}
+	configs := pool.GetAll()
 	var res []Task
 	for _, cfg := range configs {
-		status := e.service.Pool.GetStatus(cfg.ID)
+		status := pool.GetStatus(cfg.ID)
 		if status != nil && mapStatus(status.Status) == "active" {
 			res = append(res, convertTask(*status))
 		}
@@ -517,10 +493,14 @@ func (e *SurgeEngine) TellActive() ([]Task, error) {
 }
 
 func (e *SurgeEngine) TellActiveProgress() ([]TaskProgress, error) {
-	configs := e.service.Pool.GetAll()
+	pool := e.getScheduler()
+	if pool == nil {
+		return nil, nil
+	}
+	configs := pool.GetAll()
 	var res []TaskProgress
 	for _, cfg := range configs {
-		status := e.service.Pool.GetStatus(cfg.ID)
+		status := pool.GetStatus(cfg.ID)
 		if status != nil && mapStatus(status.Status) == "active" {
 			t := convertTask(*status)
 			res = append(res, TaskProgress{
@@ -620,7 +600,30 @@ func (e *SurgeEngine) TellStoppedLite(offset, num int) ([]Task, error) {
 }
 
 func (e *SurgeEngine) StreamEvents(ctx context.Context) (<-chan any, func(), error) {
-	return e.service.StreamEvents(ctx)
+	typed, cleanup, err := e.service.StreamEvents(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	out := make(chan any, 64)
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-typed:
+				if !ok {
+					return
+				}
+				select {
+				case out <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return out, cleanup, nil
 }
 
 func (e *SurgeEngine) Close() {
@@ -630,60 +633,59 @@ func (e *SurgeEngine) Close() {
 }
 
 // GetWorkerStats returns per-worker telemetry snapshots for the given download ID.
-// Returns nil if the download is not active or has no telemetry data.
 func (e *SurgeEngine) GetWorkerStats(gid string) []types.WorkerSnapshot {
-	if e.service == nil || e.service.Pool == nil {
+	pool := e.getScheduler()
+	if pool == nil {
 		return nil
 	}
-	return e.service.Pool.GetWorkerStats(gid)
+	return pool.GetWorkerStats(gid)
 }
 
 // ScaleWorkers adjusts the worker count for a Surge download.
-// Returns the number of workers actually added (positive) or drained (negative).
 func (e *SurgeEngine) ScaleWorkers(gid string, delta int) int {
-	if e.service == nil || e.service.Pool == nil {
+	pool := e.getScheduler()
+	if pool == nil {
 		return 0
 	}
-	return e.service.Pool.ScaleWorkers(gid, delta)
+	return pool.ScaleWorkers(gid, delta)
 }
 
-// KillWorker hard-interrupts a specific worker of a Surge download, destroying
-// its TCP socket and triggering an in-place reconnect. Returns false if the
-// download is not active or the worker has no active task.
+// KillWorker hard-interrupts a specific worker of a Surge download.
 func (e *SurgeEngine) KillWorker(gid string, workerID int) bool {
-	if e.service == nil || e.service.Pool == nil {
+	pool := e.getScheduler()
+	if pool == nil {
 		return false
 	}
-	return e.service.Pool.KillWorker(gid, workerID)
+	return pool.KillWorker(gid, workerID)
 }
 
 // SetSlowWorkerThreshold applies a runtime override of the relative slow-worker
 // threshold for a Surge download.
 func (e *SurgeEngine) SetSlowWorkerThreshold(gid string, v float64) {
-	if e.service == nil || e.service.Pool == nil {
+	pool := e.getScheduler()
+	if pool == nil {
 		return
 	}
-	e.service.Pool.SetSlowWorkerThreshold(gid, v)
+	pool.SetSlowWorkerThreshold(gid, v)
 }
 
-// DrainWorker marks a specific worker of a Surge download as draining. The
-// worker finishes its current chunk and exits gracefully, preserving the TCP
-// connection in the Transport idle pool. Returns false if the download is not
-// active.
+// DrainWorker marks a specific worker of a Surge download as draining.
 func (e *SurgeEngine) DrainWorker(gid string, workerID int) bool {
-	if e.service == nil || e.service.Pool == nil {
+	pool := e.getScheduler()
+	if pool == nil {
 		return false
 	}
-	return e.service.Pool.DrainWorker(gid, workerID)
+	return pool.DrainWorker(gid, workerID)
 }
 
 // GetRateLimit returns the effective per-download rate limit (bps) and whether
-// an explicit rate limit is active. Returns (0, false) if no explicit limit.
+// an explicit rate limit is active.
 func (e *SurgeEngine) GetRateLimit(gid string) (int64, bool) {
-	if e.service == nil || e.service.Pool == nil {
+	pool := e.getScheduler()
+	if pool == nil {
 		return 0, false
 	}
-	status := e.service.Pool.GetStatus(gid)
+	status := pool.GetStatus(gid)
 	if status == nil {
 		return 0, false
 	}
@@ -693,17 +695,19 @@ func (e *SurgeEngine) GetRateLimit(gid string) (int64, bool) {
 	return status.RateLimit, false
 }
 
-// NewSurgeEngineForTesting creates a SurgeEngine with a pre-configured pool for testing.
-// This is used by monitor-side telemetry collection tests.
-func NewSurgeEngineForTesting(pool *download.WorkerPool) *SurgeEngine {
-	var masterEntries []types.DownloadEntry
-	if list, err := state.LoadMasterList(); err == nil {
+// NewSurgeEngineForTesting creates a SurgeEngine with a pre-configured scheduler for testing.
+func NewSurgeEngineForTesting(pool *scheduler.Scheduler) *SurgeEngine {
+	var masterEntries []types.DownloadRecord
+	if list, err := store.LoadMasterList(); err == nil {
 		masterEntries = list.Downloads
 	} else {
-		masterEntries = []types.DownloadEntry{}
+		masterEntries = []types.DownloadRecord{}
 	}
+	mgr := orchestrator.NewLifecycleManager(pool, orchestrator.NewEventBus(), surgeconfig.DefaultSettings())
 	return &SurgeEngine{
-		service:     &core.LocalDownloadService{Pool: pool},
+		service:     service.NewLocalDownloadService(mgr),
+		manager:     mgr,
+		scheduler:   pool,
 		masterCache: masterEntries,
 	}
 }

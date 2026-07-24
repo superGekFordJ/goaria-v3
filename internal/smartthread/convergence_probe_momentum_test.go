@@ -6,7 +6,7 @@ import (
 
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/speedstats"
-	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/types"
 )
 
 // TestProbeUp_BlockedDuringMomentum verifies that Probe-Up does not fire while

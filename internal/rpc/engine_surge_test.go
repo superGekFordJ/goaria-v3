@@ -6,9 +6,9 @@ import (
 	"sync"
 	"testing"
 
-	"goaria-v3/internal/surge/core"
-	"goaria-v3/internal/surge/download"
-	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/progress"
+	"goaria-v3/internal/surge/scheduler"
+	"goaria-v3/internal/surge/types"
 )
 
 func TestSurgeEngine_MapStatus(t *testing.T) {
@@ -109,8 +109,12 @@ func TestAddUri_ZeroSplitMinSplitSize_Defaults(t *testing.T) {
 	}
 }
 
-func findSurgeConfigByID(e *SurgeEngine, id string) *types.DownloadConfig {
-	for _, cfg := range e.service.Pool.GetAll() {
+func findSurgeConfigByID(e *SurgeEngine, id string) *types.DownloadRecord {
+	pool := e.getScheduler()
+	if pool == nil {
+		return nil
+	}
+	for _, cfg := range pool.GetAll() {
 		if cfg.ID == id {
 			return &cfg
 		}
@@ -126,7 +130,7 @@ func TestSurgeEngine_SetResumeParamsHook(t *testing.T) {
 	var gotWorkers int
 	var gotMinChunk int64
 
-	engine.SetResumeParamsHook(func(cfg *types.DownloadConfig) {
+	engine.SetResumeParamsHook(func(cfg *types.DownloadRecord) {
 		called = true
 		gotWorkers = cfg.Runtime.Workers
 		gotMinChunk = cfg.Runtime.MinChunkSize
@@ -139,7 +143,7 @@ func TestSurgeEngine_SetResumeParamsHook(t *testing.T) {
 		t.Fatal("RecomputeResumeParams hook not set")
 	}
 
-	cfg := &types.DownloadConfig{
+	cfg := &types.DownloadRecord{
 		ID:      "test-resume",
 		Runtime: &types.RuntimeConfig{Workers: 4, MinChunkSize: 1024},
 	}
@@ -173,7 +177,7 @@ func TestSurgeEngine_SetResumeParamsHook_NilHook_PreservesValues(t *testing.T) {
 	}
 
 	// Simulate what the engine does: if hook is nil, skip (preserve saved values)
-	cfg := &types.DownloadConfig{
+	cfg := &types.DownloadRecord{
 		ID:      "test-resume-no-hook",
 		Runtime: &types.RuntimeConfig{Workers: 6, MinChunkSize: 4 * 1024 * 1024},
 	}
@@ -195,7 +199,7 @@ func TestSurgeEngine_SetResumeParamsHook_NilHook_PreservesValues(t *testing.T) {
 func TestSurgeEngine_KillWorker_Delegation(t *testing.T) {
 	var mu sync.Mutex
 	var killedID int
-	state := types.NewProgressState("dl-x", 1000)
+	state := progress.New("dl-x", 1000)
 	state.SetKillWorkerFn(func(workerID int) bool {
 		mu.Lock()
 		killedID = workerID
@@ -203,10 +207,10 @@ func TestSurgeEngine_KillWorker_Delegation(t *testing.T) {
 		return true
 	})
 
-	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{
-		"dl-x": {ID: "dl-x", State: state},
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
+		"dl-x": {ID: "dl-x", ProgressState: state},
 	})
-	engine := &SurgeEngine{service: &core.LocalDownloadService{Pool: pool}}
+	engine := NewSurgeEngineForTesting(pool)
 
 	if ok := engine.KillWorker("dl-x", 9); !ok {
 		t.Error("KillWorker(dl-x, 9) = false, want true")
@@ -228,17 +232,17 @@ func TestSurgeEngine_KillWorker_Delegation(t *testing.T) {
 func TestSurgeEngine_SetSlowWorkerThreshold_Delegation(t *testing.T) {
 	var mu sync.Mutex
 	var gotVal float64
-	state := types.NewProgressState("dl-y", 1000)
+	state := progress.New("dl-y", 1000)
 	state.SetSetSlowThresholdFn(func(v float64) {
 		mu.Lock()
 		gotVal = v
 		mu.Unlock()
 	})
 
-	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{
-		"dl-y": {ID: "dl-y", State: state},
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
+		"dl-y": {ID: "dl-y", ProgressState: state},
 	})
-	engine := &SurgeEngine{service: &core.LocalDownloadService{Pool: pool}}
+	engine := NewSurgeEngineForTesting(pool)
 
 	engine.SetSlowWorkerThreshold("dl-y", 0.0)
 	mu.Lock()
@@ -252,10 +256,10 @@ func TestSurgeEngine_SetSlowWorkerThreshold_Delegation(t *testing.T) {
 }
 
 func TestSurgeEngine_InvalidateListCache_ForcesFreshFetch(t *testing.T) {
-	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
 		"dl-cache-1": {ID: "dl-cache-1"},
 	})
-	engine := &SurgeEngine{service: &core.LocalDownloadService{Pool: pool}}
+	engine := NewSurgeEngineForTesting(pool)
 
 	// Populate the cache
 	first, err := engine.getDownloadList()

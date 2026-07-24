@@ -61,7 +61,7 @@ func TestCleanup_ShutdownPausesAllDownloads(t *testing.T) {
 	// svc.Shutdown() → GracefulShutdown() → PauseAll() sets state to paused.
 	// If engineCancel() ran first, the event worker would have exited before
 	// processing pause events, and the state might not reach "paused".
-	status := engine.service.Pool.GetStatus(gid)
+	status := engine.getScheduler().GetStatus(gid)
 	if status == nil {
 		t.Fatal("expected download status after Close(), got nil — download may have been removed instead of paused")
 	}

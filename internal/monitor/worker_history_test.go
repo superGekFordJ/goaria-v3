@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/types"
 )
 
 func TestWorkerHistory_ObserveAndWindow(t *testing.T) {

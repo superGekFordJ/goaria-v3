@@ -6,27 +6,25 @@ import (
 	"sync"
 	"testing"
 
-	"goaria-v3/internal/surge/core"
-	"goaria-v3/internal/surge/download"
-	"goaria-v3/internal/surge/engine/state"
-	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/scheduler"
+	"goaria-v3/internal/surge/store"
 	"goaria-v3/internal/surge/testutil"
+	"goaria-v3/internal/surge/types"
 )
 
 func newCacheTestEngine(t *testing.T) *SurgeEngine {
 	t.Helper()
 	testutil.SetupStateDB(t)
-	pool := download.NewWorkerPoolForTesting(nil)
-	return &SurgeEngine{
-		service:     &core.LocalDownloadService{Pool: pool},
-		masterCache: []types.DownloadEntry{},
-	}
+	pool := scheduler.NewSchedulerForTesting(nil)
+	e := NewSurgeEngineForTesting(pool)
+	e.masterCache = []types.DownloadRecord{}
+	return e
 }
 
 func TestMasterCache_UpsertAndRemove(t *testing.T) {
 	e := newCacheTestEngine(t)
 
-	entry := types.DownloadEntry{ID: "dl-1", URL: "http://x/a", Status: "completed"}
+	entry := types.DownloadRecord{ID: "dl-1", URL: "http://x/a", Status: "completed"}
 	e.UpsertMasterCacheEntry(entry)
 
 	list, err := e.getDownloadList()
@@ -47,7 +45,7 @@ func TestMasterCache_UpsertAndRemove(t *testing.T) {
 	}
 
 	// Upsert replaces existing entry (same ID).
-	e.UpsertMasterCacheEntry(types.DownloadEntry{ID: "dl-1", URL: "http://x/a", Status: "error"})
+	e.UpsertMasterCacheEntry(types.DownloadRecord{ID: "dl-1", URL: "http://x/a", Status: "error"})
 	got, ok := e.GetMasterCacheEntry("dl-1")
 	if !ok {
 		t.Fatal("expected dl-1 in cache")
@@ -75,7 +73,7 @@ func TestMasterCache_ConcurrentReadWrite(t *testing.T) {
 			defer writerWG.Done()
 			for i := 0; i < 200; i++ {
 				id := "dl-" + string(rune('A'+w)) + "-" + string(rune('0'+i%10))
-				e.UpsertMasterCacheEntry(types.DownloadEntry{ID: id, Status: "completed"})
+				e.UpsertMasterCacheEntry(types.DownloadRecord{ID: id, Status: "completed"})
 				if i%5 == 0 {
 					e.RemoveMasterCacheEntry(id)
 				}
@@ -107,25 +105,21 @@ func TestMasterCache_CrashRecovery(t *testing.T) {
 	testutil.SetupStateDB(t)
 
 	// First instance: seed master.gob via state and load into cache.
-	entry := types.DownloadEntry{ID: "dl-recover", URL: "http://x/a", Status: "completed", TotalSize: 100}
-	if err := state.AddToMasterList(entry); err != nil {
+	entry := types.DownloadRecord{ID: "dl-recover", URL: "http://x/a", Status: "completed", TotalSize: 100}
+	if err := store.AddToMasterList(entry); err != nil {
 		t.Fatalf("AddToMasterList: %v", err)
 	}
 
-	first := &SurgeEngine{
-		service:     &core.LocalDownloadService{Pool: download.NewWorkerPoolForTesting(nil)},
-		masterCache: []types.DownloadEntry{},
-	}
+	first := NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+	first.masterCache = []types.DownloadRecord{}
 	first.RefreshMasterCache()
 	if got, ok := first.GetMasterCacheEntry("dl-recover"); !ok || got.URL != "http://x/a" {
 		t.Fatalf("first instance cache missing entry: %+v ok=%v", got, ok)
 	}
 
 	// Simulate restart: new SurgeEngine loads master list at construction.
-	second := &SurgeEngine{
-		service:     &core.LocalDownloadService{Pool: download.NewWorkerPoolForTesting(nil)},
-		masterCache: loadMasterEntriesForTest(t),
-	}
+	second := NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+	second.masterCache = loadMasterEntriesForTest(t)
 	if got, ok := second.GetMasterCacheEntry("dl-recover"); !ok || got.Status != "completed" {
 		t.Fatalf("second instance (restart) cache missing entry: %+v ok=%v", got, ok)
 	}
@@ -135,7 +129,7 @@ func TestMasterCache_FileCorruption(t *testing.T) {
 	tempDir := testutil.SetupStateDB(t)
 
 	// Seed a valid entry first so the master.gob path exists.
-	if err := state.AddToMasterList(types.DownloadEntry{ID: "dl-1", Status: "completed"}); err != nil {
+	if err := store.AddToMasterList(types.DownloadRecord{ID: "dl-1", Status: "completed"}); err != nil {
 		t.Fatalf("AddToMasterList: %v", err)
 	}
 
@@ -145,10 +139,8 @@ func TestMasterCache_FileCorruption(t *testing.T) {
 		t.Fatalf("write corrupt master.gob: %v", err)
 	}
 
-	e := &SurgeEngine{
-		service:     &core.LocalDownloadService{Pool: download.NewWorkerPoolForTesting(nil)},
-		masterCache: []types.DownloadEntry{{ID: "stale"}},
-	}
+	e := NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+	e.masterCache = []types.DownloadRecord{{ID: "stale"}}
 	// RefreshMasterCache logs the error and leaves cache unchanged (best-effort).
 	e.RefreshMasterCache()
 
@@ -160,14 +152,12 @@ func TestMasterCache_FileCorruption(t *testing.T) {
 
 func TestMasterCache_GetDownloadListNoGobDecode(t *testing.T) {
 	testutil.SetupStateDB(t)
-	if err := state.AddToMasterList(types.DownloadEntry{ID: "dl-cached", URL: "http://x/a", Status: "completed"}); err != nil {
+	if err := store.AddToMasterList(types.DownloadRecord{ID: "dl-cached", URL: "http://x/a", Status: "completed"}); err != nil {
 		t.Fatalf("AddToMasterList: %v", err)
 	}
 
-	e := &SurgeEngine{
-		service:     &core.LocalDownloadService{Pool: download.NewWorkerPoolForTesting(nil)},
-		masterCache: []types.DownloadEntry{{ID: "dl-cached", URL: "http://x/a", Status: "completed"}},
-	}
+	e := NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+	e.masterCache = []types.DownloadRecord{{ID: "dl-cached", URL: "http://x/a", Status: "completed"}}
 
 	// Multiple calls should return the cached entry without touching gob.
 	for i := 0; i < 5; i++ {
@@ -190,13 +180,11 @@ func TestMasterCache_GetDownloadListNoGobDecode(t *testing.T) {
 func TestMasterCache_NonEventWriteConsistency(t *testing.T) {
 	testutil.SetupStateDB(t)
 
-	e := &SurgeEngine{
-		service:     &core.LocalDownloadService{Pool: download.NewWorkerPoolForTesting(nil)},
-		masterCache: []types.DownloadEntry{},
-	}
+	e := NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+	e.masterCache = []types.DownloadRecord{}
 
-	// Simulate a non-event-driven write directly to state (e.g. removeDownloadsByStatus peer).
-	if err := state.AddToMasterList(types.DownloadEntry{ID: "dl-nonevt", URL: "http://x/a", Status: "completed"}); err != nil {
+	// Simulate a non-event-driven write directly to store (e.g. removeDownloadsByStatus peer).
+	if err := store.AddToMasterList(types.DownloadRecord{ID: "dl-nonevt", URL: "http://x/a", Status: "completed"}); err != nil {
 		t.Fatalf("AddToMasterList: %v", err)
 	}
 
@@ -216,7 +204,7 @@ func TestMasterCache_MergePatternPreservesFields(t *testing.T) {
 	e := newCacheTestEngine(t)
 
 	// Seed a full entry with rich metadata.
-	full := types.DownloadEntry{
+	full := types.DownloadRecord{
 		ID:           "dl-merge",
 		URL:          "http://x/a",
 		URLHash:      "hash-a",
@@ -266,11 +254,11 @@ func TestMasterCache_MergePatternPreservesFields(t *testing.T) {
 
 // loadMasterEntriesForTest mirrors NewSurgeEngine's startup load for tests
 // that construct SurgeEngine manually without going through NewSurgeEngine.
-func loadMasterEntriesForTest(t *testing.T) []types.DownloadEntry {
+func loadMasterEntriesForTest(t *testing.T) []types.DownloadRecord {
 	t.Helper()
-	list, err := state.LoadMasterList()
+	list, err := store.LoadMasterList()
 	if err != nil {
-		return []types.DownloadEntry{}
+		return []types.DownloadRecord{}
 	}
 	return list.Downloads
 }

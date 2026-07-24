@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/types"
 )
 
 // timedSnapshot pairs a worker telemetry snapshot with its sample time.

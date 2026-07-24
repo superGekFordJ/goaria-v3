@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/types"
 )
 
 // TestToRuntimeConfig_AllFieldsExplicit is the test-period safety net

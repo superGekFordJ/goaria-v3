@@ -10,7 +10,7 @@ import (
 
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/speedstats"
-	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/types"
 )
 
 // gidInfo records the domain, scope, and envKey of a previously active gid,

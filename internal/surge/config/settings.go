@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/config"
-	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/surge/utils"
 )
 
@@ -152,19 +152,21 @@ func Resolve[T any](s *Setting) T {
 		return zero
 	}
 
-	// Map dynamically to GoAria's global config
-	switch s.Key {
-	case "default_download_dir":
-		return any(config.Get().DownloadDir).(T)
-	case "user_agent":
-		return any(config.Get().UserAgent).(T)
-	case "max_connections_per_host":
-		if val, err := strconv.Atoi(config.Get().MaxConnections); err == nil {
-			return any(val).(T)
-		}
-	case "max_concurrent_downloads":
-		if val, err := strconv.Atoi(config.Get().MaxConcurrentDownloads); err == nil {
-			return any(val).(T)
+	// Map dynamically to GoAria's global config when available.
+	if appCfg := config.Get(); appCfg != nil {
+		switch s.Key {
+		case "default_download_dir":
+			return any(appCfg.DownloadDir).(T)
+		case "user_agent":
+			return any(appCfg.UserAgent).(T)
+		case "max_connections_per_host":
+			if val, err := strconv.Atoi(appCfg.MaxConnections); err == nil {
+				return any(val).(T)
+			}
+		case "max_concurrent_downloads":
+			if val, err := strconv.Atoi(appCfg.MaxConcurrentDownloads); err == nil {
+				return any(val).(T)
+			}
 		}
 	}
 
@@ -270,7 +272,10 @@ func GetStateDir() string {
 }
 
 func GetDownloadsDir() string {
-	return config.Get().DownloadDir
+	if appCfg := config.Get(); appCfg != nil {
+		return appCfg.DownloadDir
+	}
+	return ""
 }
 
 func GetRuntimeDir() string {

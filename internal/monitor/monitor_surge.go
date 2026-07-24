@@ -9,9 +9,8 @@ import (
 
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/rpc"
-	surgeEvents "goaria-v3/internal/surge/engine/events"
-	"goaria-v3/internal/surge/engine/state"
-	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/store"
+	"goaria-v3/internal/surge/types"
 )
 
 // surgeListReader abstracts the Surge engine list-read methods used by
@@ -104,8 +103,13 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 	// Reuse the cached SurgeEngine ref (set in Start); nil in Aria2-only mode.
 	surgeEng := m.surgeEng
 
-	switch ev := rawEvt.(type) {
-	case surgeEvents.ProgressMsg:
+	ev, ok := rawEvt.(types.DownloadEvent)
+	if !ok {
+		return
+	}
+
+	switch ev.Type {
+	case types.EventProgress:
 		gid = "sg_" + ev.DownloadID
 		completedStr := strconv.FormatInt(ev.Downloaded, 10)
 		speedStr := strconv.FormatInt(int64(ev.Speed), 10)
@@ -127,8 +131,8 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		}
 		return
 
-	case surgeEvents.BatchProgressMsg:
-		for _, p := range ev {
+	case types.EventBatchProgress:
+		for _, p := range ev.BatchEvents {
 			pgid := "sg_" + p.DownloadID
 			completedStr := strconv.FormatInt(p.Downloaded, 10)
 			speedStr := strconv.FormatInt(int64(p.Speed), 10)
@@ -151,17 +155,17 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 		}
 		return
 
-	case surgeEvents.DownloadQueuedMsg:
+	case types.EventQueued:
 		deltaType = "add"
 		gid = "sg_" + ev.DownloadID
 		if m.tracker != nil {
 			m.tracker.EnsureTrackedFromEvent(gid, 0, ev.URL, ev.Workers, "waiting")
 		}
 		if surgeEng != nil {
-			surgeEng.UpsertMasterCacheEntry(types.DownloadEntry{
+			surgeEng.UpsertMasterCacheEntry(types.DownloadRecord{
 				ID:           ev.DownloadID,
 				URL:          ev.URL,
-				URLHash:      state.URLHash(ev.URL),
+				URLHash:      store.URLHash(ev.URL),
 				DestPath:     ev.DestPath,
 				Filename:     ev.Filename,
 				Mirrors:      append([]string(nil), ev.Mirrors...),
@@ -179,17 +183,17 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 			DownloadSpeed: "0",
 		}, "waiting")
 		Cache.PrefetchMetadata(gid)
-	case surgeEvents.DownloadStartedMsg:
+	case types.EventStarted:
 		deltaType = "add"
 		gid = "sg_" + ev.DownloadID
 		if m.tracker != nil {
 			m.tracker.EnsureTrackedFromEvent(gid, ev.Total, ev.URL, ev.Workers, "active")
 		}
 		if surgeEng != nil {
-			entry := types.DownloadEntry{
+			entry := types.DownloadRecord{
 				ID:           ev.DownloadID,
 				URL:          ev.URL,
-				URLHash:      state.URLHash(ev.URL),
+				URLHash:      store.URLHash(ev.URL),
 				DestPath:     ev.DestPath,
 				Filename:     ev.Filename,
 				Status:       "downloading",
@@ -218,16 +222,16 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 			DownloadSpeed: "0",
 		}, "active")
 		Cache.PrefetchMetadata(gid)
-	case surgeEvents.FirstByteMsg:
+	case types.EventFirstByte:
 		gid = "sg_" + ev.DownloadID
 		if m.tracker != nil {
 			m.tracker.SetTTFB(gid, ev.TTFBMs)
 		}
 		return
-	case surgeEvents.DownloadResumedMsg:
+	case types.EventResumed:
 		deltaType = "resume"
 		gid = "sg_" + ev.DownloadID
-		// ResumedMsg payload is minimal (ID+Filename); merge onto existing
+		// Resumed payload is minimal (ID+Filename); merge onto existing
 		// entry to avoid zeroing URL/DestPath/Mirrors/Workers.
 		if surgeEng != nil {
 			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
@@ -236,10 +240,10 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 				surgeEng.UpsertMasterCacheEntry(merged)
 			}
 		}
-	case surgeEvents.DownloadPausedMsg:
+	case types.EventPaused:
 		deltaType = "pause"
 		gid = "sg_" + ev.DownloadID
-		// PausedMsg lacks URL/DestPath/TotalSize; merge onto existing entry.
+		// Paused lacks URL/DestPath/TotalSize; merge onto existing entry.
 		if surgeEng != nil {
 			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
 				merged := existing
@@ -253,7 +257,7 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 				merged.MinChunkSize = ev.MinChunkSize
 				surgeEng.UpsertMasterCacheEntry(merged)
 			} else {
-				surgeEng.UpsertMasterCacheEntry(types.DownloadEntry{
+				surgeEng.UpsertMasterCacheEntry(types.DownloadRecord{
 					ID:           ev.DownloadID,
 					Filename:     ev.Filename,
 					Status:       "paused",
@@ -265,12 +269,12 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 				})
 			}
 		}
-	case surgeEvents.DownloadCompleteMsg:
+	case types.EventComplete:
 		deltaType = "complete"
 		gid = "sg_" + ev.DownloadID
 		completeTotal = ev.Total
 		completeAvgSpeed = ev.AvgSpeed
-		// CompleteMsg lacks URL/DestPath/Mirrors/Workers; merge onto existing.
+		// Complete lacks URL/DestPath/Mirrors/Workers; merge onto existing.
 		if surgeEng != nil {
 			var avgSpeed float64
 			if ev.Elapsed.Seconds() > 0 {
@@ -288,7 +292,7 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 				merged.RateLimitSet = ev.RateLimitSet
 				surgeEng.UpsertMasterCacheEntry(merged)
 			} else {
-				surgeEng.UpsertMasterCacheEntry(types.DownloadEntry{
+				surgeEng.UpsertMasterCacheEntry(types.DownloadRecord{
 					ID:           ev.DownloadID,
 					Filename:     ev.Filename,
 					Status:       "completed",
@@ -302,10 +306,10 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 				})
 			}
 		}
-	case surgeEvents.DownloadErrorMsg:
+	case types.EventError:
 		deltaType = "error"
 		gid = "sg_" + ev.DownloadID
-		// ErrorMsg is minimal; merge onto existing to preserve URL/Mirrors/etc.
+		// Error is minimal; merge onto existing to preserve URL/Mirrors/etc.
 		if surgeEng != nil {
 			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
 				merged := existing
@@ -315,7 +319,7 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 				}
 				surgeEng.UpsertMasterCacheEntry(merged)
 			} else {
-				surgeEng.UpsertMasterCacheEntry(types.DownloadEntry{
+				surgeEng.UpsertMasterCacheEntry(types.DownloadRecord{
 					ID:       ev.DownloadID,
 					Filename: ev.Filename,
 					DestPath: ev.DestPath,
@@ -323,7 +327,7 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 				})
 			}
 		}
-	case surgeEvents.DownloadRemovedMsg:
+	case types.EventRemoved:
 		deltaType = "remove"
 		gid = "sg_" + ev.DownloadID
 		if surgeEng != nil {

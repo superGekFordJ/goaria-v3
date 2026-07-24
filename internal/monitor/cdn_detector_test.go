@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/surge/utils"
 )
 

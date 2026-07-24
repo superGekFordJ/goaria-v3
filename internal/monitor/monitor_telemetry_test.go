@@ -5,8 +5,9 @@ import (
 	"testing"
 
 	"goaria-v3/internal/rpc"
-	"goaria-v3/internal/surge/download"
-	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/progress"
+	"goaria-v3/internal/surge/scheduler"
+	"goaria-v3/internal/surge/types"
 )
 
 func TestTelemetryCache_SetGet(t *testing.T) {
@@ -162,13 +163,13 @@ func TestCollectTelemetry_NonSurgeGids(t *testing.T) {
 // from the SurgeEngine and populated in the telemetry cache.
 func TestCollectTelemetry_SurgeGidsPopulated(t *testing.T) {
 	// Build a real SurgeEngine with a mock pool containing an active download
-	state := types.NewProgressState("test-dl", 1024*1024)
+	state := progress.New("test-dl", 1024*1024)
 	state.SetWorkerStats([]types.WorkerSnapshot{
 		{WorkerID: 0, EMASpeed: 500000, ChunkStart: 0, ChunkOffset: 512, ChunkLength: 1024},
 	})
 
-	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{
-		"abc": {ID: "abc", State: state},
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
+		"abc": {ID: "abc", ProgressState: state},
 	})
 
 	se := rpc.NewSurgeEngineForTesting(pool)
@@ -212,11 +213,11 @@ func TestCollectTelemetry_SurgeGidsPopulated(t *testing.T) {
 // no longer in the active list is removed, while active GIDs with stats are retained.
 func TestCollectTelemetry_RemovesStaleEntries(t *testing.T) {
 	// Build a real pool with an active download for "active" GID
-	state := types.NewProgressState("active-dl", 1024*1024)
+	state := progress.New("active-dl", 1024*1024)
 	state.SetWorkerStats([]types.WorkerSnapshot{{WorkerID: 0, EMASpeed: 1000}})
 
-	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{
-		"active": {ID: "active", State: state},
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
+		"active": {ID: "active", ProgressState: state},
 	})
 
 	se := rpc.NewSurgeEngineForTesting(pool)
@@ -259,7 +260,7 @@ func TestCollectTelemetry_RemovesStaleEntries(t *testing.T) {
 // from acting on outdated worker snapshots.
 func TestCollectTelemetry_ActiveButNilStats_StaleRemoved(t *testing.T) {
 	// Pool has no download for "ghost" GID → GetWorkerStats returns nil
-	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{})
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{})
 
 	se := rpc.NewSurgeEngineForTesting(pool)
 	he := rpc.NewHybridEngine(&rpc.Aria2Engine{}, se)
@@ -290,11 +291,11 @@ func TestCollectTelemetry_ActiveButNilStats_StaleRemoved(t *testing.T) {
 // (Set/ActiveGIDs/Remove) and direct telemetry Remove (as InvalidateTask does)
 // to verify no data race under -race.
 func TestCollectTelemetry_ConcurrentWithRemove(t *testing.T) {
-	state := types.NewProgressState("race-dl", 1024*1024)
+	state := progress.New("race-dl", 1024*1024)
 	state.SetWorkerStats([]types.WorkerSnapshot{{WorkerID: 0, EMASpeed: 1000}})
 
-	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{
-		"race": {ID: "race", State: state},
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
+		"race": {ID: "race", ProgressState: state},
 	})
 
 	se := rpc.NewSurgeEngineForTesting(pool)

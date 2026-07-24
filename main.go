@@ -24,7 +24,8 @@ import (
 	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/surge"
-	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/progress"
+	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/tasks"
 	"goaria-v3/internal/tray"
 	"goaria-v3/internal/update"
@@ -156,7 +157,7 @@ func main() {
 
 	if hybrid, ok := appService.downloadEngine.(*rpc.HybridEngine); ok {
 		if surgeEng, ok := hybrid.SurgeEngineRef(); ok {
-			surgeEng.SetResumeParamsHook(func(cfg *types.DownloadConfig) {
+			surgeEng.SetResumeParamsHook(func(cfg *types.DownloadRecord) {
 				if !config.Get().SmartThreadMode {
 					return
 				}
@@ -169,11 +170,13 @@ func main() {
 				scope, domain, prevEnvKey, ok := tracker.GetScopeAndEnv(gid)
 
 				remaining := cfg.TotalSize
-				if cfg.State != nil {
-					downloaded := cfg.State.Downloaded.Load()
-					if cfg.TotalSize > 0 && downloaded < cfg.TotalSize {
-						remaining = cfg.TotalSize - downloaded
-					}
+				downloaded := cfg.Downloaded
+				if cp := progress.CfgProgress(cfg); cp != nil {
+					d, _, _, _, _, _ := cp.GetProgress()
+					downloaded = d
+				}
+				if cfg.TotalSize > 0 && downloaded < cfg.TotalSize {
+					remaining = cfg.TotalSize - downloaded
 				}
 				if remaining <= 0 {
 					return
@@ -225,6 +228,9 @@ func main() {
 				params = smartthread.ClampToServerLimit(params, remaining, scope, domain,
 					tasks.ExistingDomainWorkersFromTelemetry(scope, domain),
 					smartthread.GetDefaultServerLimits())
+				if cfg.Runtime == nil {
+					cfg.Runtime = &types.RuntimeConfig{}
+				}
 				if params.Split > 0 {
 					cfg.Runtime.Workers = params.Split
 				}

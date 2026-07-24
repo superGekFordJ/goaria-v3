@@ -6,8 +6,9 @@ import (
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/speedstats"
-	"goaria-v3/internal/surge/download"
-	"goaria-v3/internal/surge/engine/types"
+	"goaria-v3/internal/surge/progress"
+	"goaria-v3/internal/surge/scheduler"
+	"goaria-v3/internal/surge/types"
 )
 
 // TestHandleTaskComplete_PeakThreadCountFallback verifies that handleTaskComplete
@@ -174,13 +175,13 @@ func TestHandleTaskComplete_RateLimitSkip(t *testing.T) {
 	defer State.SetWindowExists(prevWindow)
 
 	// Create a WorkerPool with a rate-limited download entry
-	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
 		"ratelimited": {
 			URL:          "https://example.com/limited.zip",
 			ID:           "ratelimited",
-			RateLimitBps: 1_000_000, // 1MB/s rate limit
+			RateLimit:    1_000_000, // 1MB/s rate limit
 			RateLimitSet: true,
-			State:        types.NewProgressState("ratelimited", 200000000),
+			ProgressState: progress.New("ratelimited", 200000000),
 		},
 	})
 	surge := rpc.NewSurgeEngineForTesting(pool)
@@ -222,13 +223,13 @@ func TestHandleTaskComplete_RateLimitNotSet_RecordsNormally(t *testing.T) {
 	defer State.SetWindowExists(prevWindow)
 
 	// Create a WorkerPool with a non-rate-limited download entry
-	pool := download.NewWorkerPoolForTesting(map[string]types.DownloadConfig{
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
 		"unlimited": {
 			URL:          "https://example.com/fast.zip",
 			ID:           "unlimited",
-			RateLimitBps: 0, // No rate limit
-			RateLimitSet: false,
-			State:        types.NewProgressState("unlimited", 200000000),
+			RateLimit:     0, // No rate limit
+			RateLimitSet:  false,
+			ProgressState: progress.New("unlimited", 200000000),
 		},
 	})
 	surge := rpc.NewSurgeEngineForTesting(pool)

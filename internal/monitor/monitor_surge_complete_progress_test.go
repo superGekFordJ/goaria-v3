@@ -5,7 +5,7 @@ import (
 
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/rpc"
-	surgeEvents "goaria-v3/internal/surge/engine/events"
+	surgeEvents "goaria-v3/internal/surge/types"
 )
 
 // findSgStoppedTask returns the stopped task with the given GID, or nil.
@@ -58,7 +58,7 @@ func TestComplete_SyncsProgressToFull(t *testing.T) {
 	}}
 	defer resetCacheSg()
 
-	m.handleSurgeEvent(surgeEvents.DownloadCompleteMsg{
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
 		DownloadID: "big",
 		Total:      1000,
 	})
@@ -100,7 +100,7 @@ func TestComplete_SmallFileShowsFull(t *testing.T) {
 	}}
 	defer resetCacheSg()
 
-	m.handleSurgeEvent(surgeEvents.DownloadCompleteMsg{
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
 		DownloadID: "small",
 		Total:      500,
 	})
@@ -139,7 +139,7 @@ func TestComplete_PayloadCarriesProgress(t *testing.T) {
 	}}
 	defer resetCacheSg()
 
-	m.handleSurgeEvent(surgeEvents.DownloadCompleteMsg{
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
 		DownloadID: "payload",
 		Total:      1000,
 	})

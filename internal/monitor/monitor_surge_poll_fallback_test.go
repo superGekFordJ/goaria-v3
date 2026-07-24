@@ -10,7 +10,7 @@ import (
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/rpc"
-	surgeEvents "goaria-v3/internal/surge/engine/events"
+	surgeEvents "goaria-v3/internal/surge/types"
 )
 
 // mockSurgeListReader is a test-only surgeListReader that returns
@@ -816,7 +816,7 @@ func TestReconcileSurgeCache_ConcurrentWithEvent(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		m.handleSurgeEvent(surgeEvents.DownloadCompleteMsg{
+		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
 			DownloadID: "task1",
 			Total:      1000,
 		})
@@ -916,7 +916,7 @@ func TestStartSurgeEventBridge_DisconnectReconnect(t *testing.T) {
 	mockEng := m.engine.(*reconnectMockEngine)
 	mockEng.failCount = 1 // first call fails, second succeeds
 	mockEng.streamChan = make(chan any, 1)
-	mockEng.streamChan <- surgeEvents.ProgressMsg{DownloadID: "x"}
+	mockEng.streamChan <- surgeEvents.DownloadEvent{Type: surgeEvents.EventProgress, DownloadID: "x"}
 
 	done := make(chan struct{})
 	go func() {
