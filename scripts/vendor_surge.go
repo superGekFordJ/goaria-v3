@@ -4,8 +4,9 @@
 // Vendor source branch: goaria-fork-v2 (Plan C / #522 tree). goaria-fork is
 // the read-only patch archive only — do not vendor from it.
 //
-// forceVendorBlocked: -force is hard-blocked until Inventory §5.4 dual-path /
-// ports complete (SPEC-225 preserve cutover). Do not remove until then.
+// vendorWriteBlocked: all non-dry-run writes (including -force) are hard-blocked
+// until Inventory §5.4 dual-path / ports and later adapter readiness. Plan C
+// hold — only -dry-run is allowed until the gate lifts.
 package main
 
 import (
@@ -18,19 +19,28 @@ import (
 	"path/filepath"
 )
 
-// forceVendorBlocked rejects -force until Inventory §5.4 (dual-path preserves
-// or ports) is satisfied. SPEC-225 preserve cutover.
-const forceVendorBlocked = true
+// vendorWriteBlocked rejects any vendor write that is not -dry-run until
+// Inventory §5.4 (dual-path preserves or ports) and adapter readiness. Also
+// rejects -force even with -dry-run so force is never implied as available.
+const vendorWriteBlocked = true
 
 func main() {
 	dryRun := flag.Bool("dry-run", false, "Show what would change without writing files")
 	force := flag.Bool("force", false, "Overwrite all files even if content is identical")
 	flag.Parse()
 
-	if forceVendorBlocked && *force {
-		fmt.Fprintln(os.Stderr, "error: -force is blocked by SPEC-225 preserve cutover (Inventory §5.4).")
-		fmt.Fprintln(os.Stderr, "Refuse until dual-path preserves cover old+new VP paths or owning SPECs retire old keys.")
-		os.Exit(2)
+	if vendorWriteBlocked {
+		if *force {
+			fmt.Fprintln(os.Stderr, "error: -force is blocked by Plan C preserve cutover (Inventory §5.4).")
+			fmt.Fprintln(os.Stderr, "Refuse until dual-path preserves cover old+new VP paths or owning SPECs retire old keys.")
+			os.Exit(2)
+		}
+		if !*dryRun {
+			fmt.Fprintln(os.Stderr, "error: vendor WRITE is blocked by Plan C hold (Inventory §5.4).")
+			fmt.Fprintln(os.Stderr, "Only -dry-run is allowed until dual-path / ports and adapter readiness; plain WRITE would mutate shared utils/testutil under the live old tree.")
+			fmt.Fprintln(os.Stderr, "Do not push remotes; lift this gate locally when Inventory §5.4 is satisfied.")
+			os.Exit(2)
+		}
 	}
 
 	srcBase := filepath.Clean("third_party/Surge/internal")
