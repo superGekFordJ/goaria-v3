@@ -4,9 +4,8 @@
 // Vendor source branch: goaria-fork-v2 (Plan C / #522 tree). goaria-fork is
 // the read-only patch archive only — do not vendor from it.
 //
-// vendorWriteBlocked: all non-dry-run writes (including -force) are hard-blocked
-// until Inventory §5.4 dual-path / ports and later adapter readiness. Plan C
-// hold — only -dry-run is allowed until the gate lifts.
+// WRITE hold lifted after Inventory §5.4 unlock (ports + adapters ready).
+// Plain WRITE is allowed; -force remains permanently rejected.
 package main
 
 import (
@@ -19,22 +18,23 @@ import (
 	"path/filepath"
 )
 
-// vendorWriteBlocked rejects any vendor write that is not -dry-run until
-// Inventory §5.4 (dual-path preserves or ports) and adapter readiness. Also
-// rejects -force even with -dry-run so force is never implied as available.
-const vendorWriteBlocked = true
+// vendorWriteBlocked=false: plain dry-run and WRITE allowed from goaria-fork-v2.
+// -force stays rejected regardless of this flag.
+const vendorWriteBlocked = false
 
 func main() {
 	dryRun := flag.Bool("dry-run", false, "Show what would change without writing files")
 	force := flag.Bool("force", false, "Overwrite all files even if content is identical")
 	flag.Parse()
 
+	// -force is never allowed (would overwrite preserveFiles / GoAria-only paths).
+	if *force {
+		fmt.Fprintln(os.Stderr, "error: -force is permanently blocked.")
+		fmt.Fprintln(os.Stderr, "Use plain WRITE (content-diff only) or -dry-run; never overwrite preserve paths.")
+		os.Exit(2)
+	}
+
 	if vendorWriteBlocked {
-		if *force {
-			fmt.Fprintln(os.Stderr, "error: -force is blocked by Plan C preserve cutover (Inventory §5.4).")
-			fmt.Fprintln(os.Stderr, "Refuse until dual-path preserves cover old+new VP paths or owning SPECs retire old keys.")
-			os.Exit(2)
-		}
 		if !*dryRun {
 			fmt.Fprintln(os.Stderr, "error: vendor WRITE is blocked by Plan C hold (Inventory §5.4).")
 			fmt.Fprintln(os.Stderr, "Only -dry-run is allowed until dual-path / ports and adapter readiness; plain WRITE would mutate shared utils/testutil under the live old tree.")
@@ -61,40 +61,19 @@ func main() {
 	}
 
 	// GoAria-only paths that must survive stale prune. Keys use filepath.Join
-	// so Windows Walk Rel matches. Keep OLD keys until ports / dual-path
-	// (Inventory §5.4); do not delete old keys in this cutover.
+	// so Windows Walk Rel matches.
 	preserveFiles := map[string]bool{
 		// Permanent: replaces excluded upstream notify.go (path unchanged post-#522).
 		filepath.Join("utils", "notify_stub.go"): true,
 
-		// --- Existing old-path preserves (keep; planned future keys in comments) ---
-		// Planned: strategy/concurrent/… (228a/228b)
-		filepath.Join("engine", "concurrent", "health_cancel_requeue_test.go"): true,
-		// EventBus terminal delivery — future home = orchestrator/… (SPEC-230b).
-		// Do NOT migrate to service/broadcaster_… (mechanical core→service rename is wrong).
-		filepath.Join("core", "broadcaster_terminal_delivery_test.go"): true,
-		// Planned new keys (comments only): service/ / scheduler/ / orchestrator/
-		filepath.Join("core", "testmain_test.go"):       true, // → service/testmain_test.go
-		filepath.Join("download", "testmain_test.go"):   true, // → scheduler/testmain_test.go
-		filepath.Join("processing", "testmain_test.go"): true, // → orchestrator/testmain_test.go
+		// GoAria-only progress regression (relocated from engine/types/).
+		filepath.Join("progress", "recalculate_progress_partial_chunk_test.go"): true,
 
-		// --- Inventory §5.2 VP / concurrent suite (GoAria-only; keep old path until ports / dual-path) ---
-		filepath.Join("engine", "concurrent", "early_eof_requeue_test.go"):              true, // → strategy/concurrent/…
-		filepath.Join("engine", "concurrent", "stealwork_dedup_test.go"):                true, // → strategy/concurrent/…
-		filepath.Join("engine", "concurrent", "handlepause_vp_guard_test.go"):           true, // → strategy/concurrent/…
-		filepath.Join("engine", "concurrent", "resume_antiregression_vp_guard_test.go"): true, // → strategy/concurrent/…
-		filepath.Join("engine", "concurrent", "vp_overcount_regression_test.go"):        true, // → strategy/concurrent/…
-		filepath.Join("engine", "concurrent", "switch_429_test.go"):                     true, // → strategy/concurrent/…
-		// Planned: progress/… (or types equivalent; locked in later SPEC-227)
-		filepath.Join("engine", "types", "recalculate_progress_partial_chunk_test.go"): true,
+		// GoAria AppConfig TestMain overlays on tip goleak harnesses.
+		filepath.Join("orchestrator", "main_test.go"): true,
+		filepath.Join("service", "main_test.go"):      true,
+		filepath.Join("scheduler", "main_test.go"):    true,
 	}
-
-	// Future dual-path new keys (NOT registered yet — draft only until ports land):
-	//   strategy/concurrent/{early_eof,stealwork,handlepause,resume_antiregression,
-	//     vp_overcount,switch_429,health_cancel}_*.go
-	//   progress/recalculate_progress_partial_chunk_test.go
-	//   orchestrator/broadcaster_terminal_delivery_test.go  (SPEC-230b; NOT service/)
-	//   service/testmain_test.go, scheduler/testmain_test.go, orchestrator/testmain_test.go
 
 	// Phase 1: Read source files, replace imports, and write pre-fmt content
 	// to a temp directory. We format the temp dir before comparing so that
@@ -264,6 +243,10 @@ formatters:
 	// Phase 5: Report
 	var toWrite, toSkip, toDelete int
 	for _, a := range actions {
+		if preserveFiles[a.relPath] {
+			toSkip++
+			continue
+		}
 		if a.exists && a.identical && !*force {
 			toSkip++
 		} else if a.exists {
@@ -300,6 +283,11 @@ formatters:
 	written := 0
 	for _, a := range actions {
 		if a.exists && a.identical && !*force {
+			continue
+		}
+		// Never overwrite GoAria-only preserve overlays (e.g. AppConfig TestMain).
+		if preserveFiles[a.relPath] {
+			toSkip++
 			continue
 		}
 		dstPath := filepath.Join(dstBase, a.relPath)
