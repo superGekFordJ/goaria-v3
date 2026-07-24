@@ -1,5 +1,11 @@
 //go:build ignore
 
+// Vendor Surge core packages from third_party/Surge into internal/surge.
+// Vendor source branch: goaria-fork-v2 (Plan C / #522 tree). goaria-fork is
+// the read-only patch archive only — do not vendor from it.
+//
+// forceVendorBlocked: -force is hard-blocked until Inventory §5.4 dual-path /
+// ports complete (SPEC-225 preserve cutover). Do not remove until then.
 package main
 
 import (
@@ -12,16 +18,30 @@ import (
 	"path/filepath"
 )
 
+// forceVendorBlocked rejects -force until Inventory §5.4 (dual-path preserves
+// or ports) is satisfied. SPEC-225 preserve cutover.
+const forceVendorBlocked = true
+
 func main() {
 	dryRun := flag.Bool("dry-run", false, "Show what would change without writing files")
 	force := flag.Bool("force", false, "Overwrite all files even if content is identical")
 	flag.Parse()
 
+	if forceVendorBlocked && *force {
+		fmt.Fprintln(os.Stderr, "error: -force is blocked by SPEC-225 preserve cutover (Inventory §5.4).")
+		fmt.Fprintln(os.Stderr, "Refuse until dual-path preserves cover old+new VP paths or owning SPECs retire old keys.")
+		os.Exit(2)
+	}
+
 	srcBase := filepath.Clean("third_party/Surge/internal")
 	dstBase := filepath.Clean("internal/surge")
 
-	// Subdirectories to copy (download package is required by core, testutil for tests)
-	dirsToCopy := []string{"engine", "core", "processing", "utils", "download", "testutil"}
+	// #522 package tree from goaria-fork-v2 (Inventory §4). Never vendor config/.
+	dirsToCopy := []string{
+		"strategy", "orchestrator", "service", "scheduler",
+		"progress", "transport", "store", "types",
+		"utils", "testutil", "probe",
+	}
 
 	// Exclude TUI/GUI files from source
 	excludes := map[string]bool{
@@ -30,22 +50,41 @@ func main() {
 		filepath.Join("utils", "open_test.go"): true,
 	}
 
-	// GoAria-created stub files that replace excluded upstream files.
-	// These must not be deleted as "stale" during vendor sync.
+	// GoAria-only paths that must survive stale prune. Keys use filepath.Join
+	// so Windows Walk Rel matches. Keep OLD keys until ports / dual-path
+	// (Inventory §5.4); do not delete old keys in this cutover.
 	preserveFiles := map[string]bool{
+		// Permanent: replaces excluded upstream notify.go (path unchanged post-#522).
 		filepath.Join("utils", "notify_stub.go"): true,
-		// GoAria-only regression test for health-cancel requeue + SharedMaxOffset
-		// dedup. Not in upstream fork; must survive vendor sync.
+
+		// --- Existing old-path preserves (keep; planned future keys in comments) ---
+		// Planned: strategy/concurrent/… (228a/228b)
 		filepath.Join("engine", "concurrent", "health_cancel_requeue_test.go"): true,
-		// GoAria-only regression test for broadcaster terminal event delivery.
-		// Not in upstream fork; must survive vendor sync.
+		// EventBus terminal delivery — future home = orchestrator/… (SPEC-230b).
+		// Do NOT migrate to service/broadcaster_… (mechanical core→service rename is wrong).
 		filepath.Join("core", "broadcaster_terminal_delivery_test.go"): true,
-		// GoAria-only TestMain setup files for vendored test packages.
-		// Not in upstream fork; must survive vendor sync.
-		filepath.Join("core", "testmain_test.go"):       true,
-		filepath.Join("download", "testmain_test.go"):   true,
-		filepath.Join("processing", "testmain_test.go"): true,
+		// Planned new keys (comments only): service/ / scheduler/ / orchestrator/
+		filepath.Join("core", "testmain_test.go"):       true, // → service/testmain_test.go
+		filepath.Join("download", "testmain_test.go"):   true, // → scheduler/testmain_test.go
+		filepath.Join("processing", "testmain_test.go"): true, // → orchestrator/testmain_test.go
+
+		// --- Inventory §5.2 VP / concurrent suite (GoAria-only; keep old path until ports / dual-path) ---
+		filepath.Join("engine", "concurrent", "early_eof_requeue_test.go"):              true, // → strategy/concurrent/…
+		filepath.Join("engine", "concurrent", "stealwork_dedup_test.go"):                true, // → strategy/concurrent/…
+		filepath.Join("engine", "concurrent", "handlepause_vp_guard_test.go"):           true, // → strategy/concurrent/…
+		filepath.Join("engine", "concurrent", "resume_antiregression_vp_guard_test.go"): true, // → strategy/concurrent/…
+		filepath.Join("engine", "concurrent", "vp_overcount_regression_test.go"):        true, // → strategy/concurrent/…
+		filepath.Join("engine", "concurrent", "switch_429_test.go"):                     true, // → strategy/concurrent/…
+		// Planned: progress/… (or types equivalent; locked in later SPEC-227)
+		filepath.Join("engine", "types", "recalculate_progress_partial_chunk_test.go"): true,
 	}
+
+	// Future dual-path new keys (NOT registered yet — draft only until ports land):
+	//   strategy/concurrent/{early_eof,stealwork,handlepause,resume_antiregression,
+	//     vp_overcount,switch_429,health_cancel}_*.go
+	//   progress/recalculate_progress_partial_chunk_test.go
+	//   orchestrator/broadcaster_terminal_delivery_test.go  (SPEC-230b; NOT service/)
+	//   service/testmain_test.go, scheduler/testmain_test.go, orchestrator/testmain_test.go
 
 	// Phase 1: Read source files, replace imports, and write pre-fmt content
 	// to a temp directory. We format the temp dir before comparing so that
