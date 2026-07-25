@@ -1,6 +1,7 @@
 package smartthread
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -268,6 +269,59 @@ func TestConvergence_ProbeUp_GainRatioZeroRawBps(t *testing.T) {
 	}
 	if s.frozenCooldown != ceilingHitCooldownCycles {
 		t.Fatalf("expected frozenCooldown=%d, got %d", ceilingHitCooldownCycles, s.frozenCooldown)
+	}
+}
+
+// TestConvergence_ProbeUp_MacroProviderNoDeadlock verifies that wiring a
+// Macro-like provider (which calls LastRawBps → c.mu.Lock) does not deadlock
+// Probe-Up when GetGlobalPeak is populated (the path that actually invokes
+// activeBandwidthProvider under the former lock).
+func TestConvergence_ProbeUp_MacroProviderNoDeadlock(t *testing.T) {
+	gid := "sg_probe_up_macro_lock"
+	ct, tracker, telemetry, _ := setupProbeUpState(t, gid, 1_310_720, 8)
+	defer ct.Stop()
+
+	// Force checkVAvailable into the provider path. D2 writes lastRawBps≈10MB/s
+	// before Probe-Up, so Macro occupancy ≈10MB; plant peak/threads so
+	// globalPeak-activeBw >= vThreadAvg still holds.
+	speedstats.AddRecordV2(100*1024*1024, 10, 100*1024*1024, false, 50, "example.com", "wan", "testenv")
+
+	orig := activeBandwidthProvider
+	t.Cleanup(func() { activeBandwidthProvider = orig })
+	var providerCalls atomic.Int32
+	activeBandwidthProvider = func(scope, envKey string) int64 {
+		providerCalls.Add(1)
+		bps, ready := ct.LastRawBps(gid)
+		if ready {
+			return bps
+		}
+		return 0
+	}
+	ct.InjectMacroOccupancyForTest(gid, 1_000_000, true)
+
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.probeCooldown = probeIntervalCycles
+	s.probeMomentum = false
+	ct.mu.Unlock()
+
+	done := make(chan struct{})
+	var ps pendingScale
+	var ok bool
+	go func() {
+		defer close(done)
+		ps, ok = probeUpProcess(ct, tracker, telemetry, gid, 60*1024*1024, 8)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("deadlock: Probe-Up held c.mu while Macro provider re-entered LastRawBps")
+	}
+	if providerCalls.Load() < 1 {
+		t.Fatal("expected activeBandwidthProvider to be invoked (GetGlobalPeak path)")
+	}
+	if !ok || ps.delta != 1 {
+		t.Fatalf("expected probe-up +1 under Macro provider, got ok=%v delta=%d calls=%d", ok, ps.delta, providerCalls.Load())
 	}
 }
 

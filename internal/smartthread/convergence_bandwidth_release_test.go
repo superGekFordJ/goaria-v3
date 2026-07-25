@@ -1,6 +1,7 @@
 package smartthread
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -605,6 +606,77 @@ func TestConvergence_BandwidthRelease_FairRotation(t *testing.T) {
 
 	if firstElected == secondElected {
 		t.Errorf("expected fair rotation to elect different beneficiaries, got %s twice", firstElected)
+	}
+}
+
+func TestConvergence_BandwidthRelease_MacroProviderNoDeadlock(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	speedstats.AddRecordV2(100*1024*1024, 1, 100*1024*1024, false, 50, "example.com", "wan", "testenv")
+
+	beneficiaryGid := "sg_release_macro_ben"
+	completedGid := "sg_release_macro_done"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: beneficiaryGid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", CompletedLength: 100 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{beneficiaryGid: makeWorkers(8, 2*1024*1024)},
+	}
+	ct := NewConvergenceTicker(
+		rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+		tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0,
+	)
+	defer ct.Stop()
+
+	orig := activeBandwidthProvider
+	t.Cleanup(func() { activeBandwidthProvider = orig })
+	var providerCalls atomic.Int32
+	activeBandwidthProvider = func(scope, envKey string) int64 {
+		providerCalls.Add(1)
+		bps, ready := ct.LastRawBps(beneficiaryGid)
+		if ready {
+			return bps
+		}
+		return 0
+	}
+	ct.InjectMacroOccupancyForTest(beneficiaryGid, 0, true)
+
+	ct.mu.Lock()
+	s := ct.getOrCreateState(beneficiaryGid)
+	s.phase = phaseStable
+	s.kneeFrozen = false
+	s.blackout = false
+	ct.prevActiveGids = map[string]gidInfo{
+		completedGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
+	}
+	ct.prevActiveSpeeds = map[string]int64{completedGid: 10 * 1024 * 1024}
+	ct.mu.Unlock()
+
+	done := make(chan struct{})
+	var releases []pendingScale
+	go func() {
+		defer close(done)
+		releases = ct.bandwidthRelease(
+			[]TrackedTaskInfo{tracker.tasks[0]},
+			map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
+			map[string]bool{},
+			nil,
+			nil,
+		)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("deadlock: bandwidthRelease held c.mu while Macro provider re-entered LastRawBps")
+	}
+	if len(releases) != 1 || releases[0].gid != beneficiaryGid {
+		t.Fatalf("expected release to %s, got %+v", beneficiaryGid, releases)
+	}
+	if providerCalls.Load() < 1 {
+		t.Fatal("expected activeBandwidthProvider to be invoked (GetGlobalPeak path)")
 	}
 }
 

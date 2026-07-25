@@ -492,7 +492,12 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 		elected := candidates[electedIdx]
 
 		disappearedSpeed := c.prevActiveSpeeds[gid]
-		if !c.checkVAvailableWithCompensation(elected.scope, elected.domain, elected.envKey, approvedDelta, disappearedSpeed) {
+		scope, domain, envKey := elected.scope, elected.domain, elected.envKey
+		// Provider (Macro → LastRawBps) locks c.mu; must not call under our lock.
+		c.mu.Unlock()
+		ok := c.checkVAvailableWithCompensation(scope, domain, envKey, approvedDelta, disappearedSpeed)
+		c.mu.Lock()
+		if !ok {
 			continue
 		}
 
@@ -569,6 +574,9 @@ func (c *ConvergenceTicker) computeVThreadAvg(domain, scope, envKey string) int6
 // approved this tick via approvedDelta to prevent same-tick oversell.
 // When globalPeak data is unavailable, returns true (allow — conservative
 // only when data exists).
+//
+// Lock topology: must NOT be called while holding c.mu. The activeBandwidth
+// provider (MacroBandwidthByScope) may call LastRawBps which locks c.mu.
 func (c *ConvergenceTicker) checkVAvailable(scope, domain, envKey string, approvedDelta map[string]int) bool {
 	globalPeak, ok := speedstats.GetGlobalPeak(scope, envKey)
 	if !ok || globalPeak <= 0 {
@@ -584,6 +592,8 @@ func (c *ConvergenceTicker) checkVAvailable(scope, domain, envKey string, approv
 // disappearedSpeed from effectiveBw to compensate for activeBandwidthProvider
 // cache lag (a disappeared task's bandwidth may still be counted for 1-5s).
 // When disappearedSpeed is 0, this degrades to checkVAvailable.
+//
+// Lock topology: must NOT be called while holding c.mu (same as checkVAvailable).
 func (c *ConvergenceTicker) checkVAvailableWithCompensation(scope, domain, envKey string, approvedDelta map[string]int, disappearedSpeed int64) bool {
 	globalPeak, ok := speedstats.GetGlobalPeak(scope, envKey)
 	if !ok || globalPeak <= 0 {
@@ -1016,7 +1026,15 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 				nMax, hasLimit = c.limits.GetNMax(lk)
 			}
 			if !hasLimit || currentWorkers < nMax {
-				vAvailable := c.checkVAvailable(task.Scope, task.Domain, task.EnvKey, approvedDelta)
+				scope, domain, envKey := task.Scope, task.Domain, task.EnvKey
+				// Provider (Macro → LastRawBps) locks c.mu; release before call.
+				c.mu.Unlock()
+				vAvailable := c.checkVAvailable(scope, domain, envKey, approvedDelta)
+				c.mu.Lock()
+				s = c.states[gid]
+				if s == nil {
+					return pendingScale{}, false
+				}
 				if vAvailable && !rateLimited {
 					if c.peakRecorder != nil && rawBps > 0 && currentWorkers > 0 {
 						c.peakRecorder.RecordPeakEfficiency(gid, rawBps, currentWorkers)
@@ -1119,6 +1137,9 @@ func (c *ConvergenceTicker) RemoveTask(gid string) {
 // LastRawBps returns the last macro-band rawBps for gid and whether a D2
 // sample has latched (macroReady). Missing/cold → (0, false); sampled zero →
 // (0, true). Read-only; does not create state.
+//
+// Lock topology: acquires c.mu. Callers that already hold c.mu must not invoke
+// this (or MacroBandwidthByScope) — unlock first or pass a precomputed occupancy.
 func (c *ConvergenceTicker) LastRawBps(gid string) (bps int64, ready bool) {
 	if c == nil {
 		return 0, false
