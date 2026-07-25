@@ -18,6 +18,7 @@ import (
 	"goaria-v3/internal/surge/service"
 	"goaria-v3/internal/surge/store"
 	"goaria-v3/internal/surge/types"
+	"goaria-v3/internal/surge/utils"
 )
 
 type SurgeEngine struct {
@@ -48,16 +49,60 @@ func (e *SurgeEngine) getScheduler() *scheduler.Scheduler {
 	return nil
 }
 
+// buildSurgeIsNameActive mirrors tip cmd.buildActiveDownloadChecker: treat
+// in-flight scheduler destinations as filename conflicts within a directory.
+func buildSurgeIsNameActive(pool *scheduler.Scheduler) orchestrator.IsNameActiveFunc {
+	if pool == nil {
+		return nil
+	}
+	return func(dir, name string) bool {
+		dir = utils.EnsureAbsPath(strings.TrimSpace(dir))
+		name = strings.TrimSpace(name)
+		if dir == "" || name == "" {
+			return false
+		}
+		for _, cfg := range pool.GetAll() {
+			existingName := strings.TrimSpace(cfg.Filename)
+			existingDir := strings.TrimSpace(cfg.OutputPath)
+			if cfg.DestPath != "" {
+				existingDir = filepath.Dir(cfg.DestPath)
+				if existingName == "" {
+					existingName = filepath.Base(cfg.DestPath)
+				}
+			}
+			if ps := progress.CfgProgress(&cfg); ps != nil {
+				if stateName := strings.TrimSpace(ps.GetFilename()); stateName != "" {
+					existingName = stateName
+				}
+				if stateDestPath := strings.TrimSpace(ps.GetDestPath()); stateDestPath != "" {
+					existingDir = filepath.Dir(stateDestPath)
+					if existingName == "" {
+						existingName = filepath.Base(stateDestPath)
+					}
+				}
+			}
+			if existingDir == "" || existingName == "" {
+				continue
+			}
+			if utils.EnsureAbsPath(existingDir) == dir && existingName == name {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 func NewSurgeEngine() *SurgeEngine {
-	progressCh := make(chan types.DownloadEvent, 256)
 	maxDownloads := 3
 	if md, err := strconv.Atoi(config.Get().MaxConcurrentDownloads); err == nil && md > 0 {
 		maxDownloads = md
 	}
-	pool := scheduler.New(progressCh, maxDownloads)
 	settings := surgeconfig.DefaultSettings()
 	eventBus := orchestrator.NewEventBus()
-	mgr := orchestrator.NewLifecycleManager(pool, eventBus, settings)
+	// Pass EventBus.InputCh as the scheduler default so a nil ProgressCh
+	// fallback still reaches the live consumer (Enqueue normally sets it too).
+	pool := scheduler.New(eventBus.InputCh, maxDownloads)
+	mgr := orchestrator.NewLifecycleManager(pool, eventBus, settings, buildSurgeIsNameActive(pool))
 	svc := service.NewLocalDownloadService(mgr)
 
 	engineCtx, engineCancel := context.WithCancel(context.Background())
@@ -703,7 +748,8 @@ func NewSurgeEngineForTesting(pool *scheduler.Scheduler) *SurgeEngine {
 	} else {
 		masterEntries = []types.DownloadRecord{}
 	}
-	mgr := orchestrator.NewLifecycleManager(pool, orchestrator.NewEventBus(), surgeconfig.DefaultSettings())
+	eventBus := orchestrator.NewEventBus()
+	mgr := orchestrator.NewLifecycleManager(pool, eventBus, surgeconfig.DefaultSettings(), buildSurgeIsNameActive(pool))
 	return &SurgeEngine{
 		service:     service.NewLocalDownloadService(mgr),
 		manager:     mgr,

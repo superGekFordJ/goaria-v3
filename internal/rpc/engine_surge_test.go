@@ -299,3 +299,91 @@ func TestSurgeEngine_InvalidateListCache_ForcesFreshFetch(t *testing.T) {
 		t.Errorf("fresh len = %d, want %d", len(fresh), len(first))
 	}
 }
+
+// TestNewSurgeEngine_WiresIsNameActiveAndEventBusProgress verifies D1/D3 wiring:
+// IsNameActive inspects in-flight destinations, and Enqueue ProgressCh is EventBus.InputCh.
+func TestNewSurgeEngine_WiresIsNameActiveAndEventBusProgress(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "64")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	engine := NewSurgeEngine()
+	defer engine.Close()
+
+	dir := t.TempDir()
+	gid, err := engine.AddUri(srv.URL+"/active.bin", AddURIOptions{
+		Dir: dir,
+		Out: "active.bin",
+	})
+	if err != nil {
+		t.Fatalf("AddUri failed: %v", err)
+	}
+
+	if !engine.manager.IsNameActive(dir, "active.bin") {
+		t.Fatal("expected IsNameActive after enqueue")
+	}
+	if engine.manager.IsNameActive(dir, "other.bin") {
+		t.Fatal("did not expect unrelated name to be active")
+	}
+	if engine.manager.IsNameActive(t.TempDir(), "active.bin") {
+		t.Fatal("did not expect same name in a different directory")
+	}
+
+	cfg := findSurgeConfigByID(engine, gid)
+	if cfg == nil {
+		t.Fatal("expected config in pool")
+	}
+	bus := engine.manager.GetEventBus()
+	if bus == nil {
+		t.Fatal("expected EventBus")
+	}
+	if cfg.ProgressCh == nil {
+		t.Fatal("expected ProgressCh to be set")
+	}
+	if cfg.ProgressCh != bus.InputCh {
+		t.Fatal("ProgressCh should be EventBus.InputCh (no orphan default channel)")
+	}
+}
+
+// TestNewSurgeEngineForTesting_IsNameActiveRenamesMemoryOnlyCollision covers the
+// in-memory-without-disk case that disk/.surge checks alone miss.
+func TestNewSurgeEngineForTesting_IsNameActiveRenamesMemoryOnlyCollision(t *testing.T) {
+	dir := t.TempDir()
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
+		"seed": {
+			ID:         "seed",
+			Filename:   "memory.bin",
+			OutputPath: dir,
+		},
+	})
+	engine := NewSurgeEngineForTesting(pool)
+
+	if !engine.manager.IsNameActive(dir, "memory.bin") {
+		t.Fatal("expected seeded in-memory name to be active")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "64")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	gid, err := engine.AddUri(srv.URL+"/memory.bin", AddURIOptions{
+		Dir: dir,
+		Out: "memory.bin",
+	})
+	if err != nil {
+		t.Fatalf("AddUri failed: %v", err)
+	}
+	cfg := findSurgeConfigByID(engine, gid)
+	if cfg == nil {
+		t.Fatal("expected enqueued config in pool")
+	}
+	if cfg.Filename != "memory(1).bin" {
+		t.Fatalf("Filename = %q, want memory(1).bin (IsNameActive rename)", cfg.Filename)
+	}
+}
