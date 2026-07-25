@@ -259,7 +259,11 @@ func (c *ConvergenceTicker) tick() {
 				s.ceilingHitCount = 0
 				s.floorMemory = 0
 				s.floorHitCount = 0
-				s.lastRawBps = 0
+				// Blackout never re-enters D2; clearing lastRawBps would leave
+				// macroReady+(0) forever while workers still move bytes.
+				if !s.blackout {
+					s.lastRawBps = 0
+				}
 			}
 		}
 	}

@@ -168,6 +168,72 @@ func TestConvergence_MacroReady_ClearedOnRemoveTask(t *testing.T) {
 	}
 }
 
+func TestConvergence_Blackout_PreservesLastRawBpsAcrossWindowInvalidate(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	gid1 := "sg_blackout_occ_1"
+	gid2 := "sg_blackout_occ_2"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{
+				GID: gid1, Status: "active", Scope: "wan", EnvKey: "env1", Domain: "example.com",
+				IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024, MinChunk: 1024 * 1024,
+			},
+			{
+				GID: gid2, Status: "active", Scope: "wan", EnvKey: "env1", Domain: "example.com",
+				IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024, MinChunk: 1024 * 1024,
+			},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid1: makeChunkWorkers(4, 2*1024*1024, []int64{256 * 1024, 256 * 1024, 256 * 1024, 256 * 1024}),
+			gid2: makeChunkWorkers(4, 2*1024*1024, []int64{1024 * 1024, 1024 * 1024, 1024 * 1024, 1024 * 1024}),
+		},
+	}
+	ct := newTestConvergenceTicker(
+		rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+		tracker, telemetry,
+	)
+	defer ct.Stop()
+
+	// Trigger blackout on gid1 with a computable finalRawBps.
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid1)
+	s.prevCompleted = 90 * 1024 * 1024
+	setPrevSampleAgoState(s, 5*time.Second)
+	ct.mu.Unlock()
+	ct.tick()
+
+	preBps, ready := ct.LastRawBps(gid1)
+	if !ready || preBps <= 0 {
+		t.Fatalf("pre-invalidate blackout: LastRawBps=(%d,%v), want (bps>0,true)", preBps, ready)
+	}
+	ct.mu.Lock()
+	if s = ct.states[gid1]; s == nil || !s.blackout {
+		ct.mu.Unlock()
+		t.Fatal("expected blackout=true before invalidate")
+	}
+	ct.mu.Unlock()
+
+	// Drop gid2 → active-set change. Blackout occupancy must survive.
+	tracker.tasks = []TrackedTaskInfo{tracker.tasks[0]}
+	delete(telemetry.data, gid2)
+	ct.tick()
+
+	bps, ready := ct.LastRawBps(gid1)
+	if !ready {
+		t.Fatal("after invalidate: macroReady cleared; want preserved")
+	}
+	if bps != preBps {
+		t.Errorf("after invalidate: LastRawBps=%d, want preserved %d (blackout carve-out)", bps, preBps)
+	}
+	if bps == 0 {
+		t.Error("after invalidate: blackout occupancy zeroed; contradicts SPEC-180")
+	}
+}
+
 func TestConvergence_Blackout_WritesLastRawBpsAndMacroReady(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
