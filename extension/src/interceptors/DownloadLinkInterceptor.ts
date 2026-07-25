@@ -115,10 +115,10 @@ export abstract class DownloadLinkInterceptor {
     //    pulled in just because the extension is registered.
     if (getDispositionType(ctx.contentDisposition) === 'inline') return 'pass'
 
-    // 3. Strict whitelist hit — a user who explicitly registered .exe wants
-    //    it intercepted even if the server misconfigures the MIME as
-    //    text/plain or omits Content-Disposition: attachment.
-    if (hasStrictWhitelist && extMatches) return 'intercept'
+    // 3. Strict whitelist hit — override weak/misconfigured MIME (empty,
+    //    text/plain, installer types), but never cancel clear page navigations.
+    //    text/html|xhtml|json still fall through to the NON_DOWNLOAD pass.
+    if (hasStrictWhitelist && extMatches && !isStrongPageMime(mime)) return 'intercept'
 
     // 4. Non-download MIME types (text/html, text/css, etc.).
     if (mime && NON_DOWNLOAD_MIME_TYPES.has(mime)) return 'pass'
@@ -322,6 +322,16 @@ export function isDownloadMimeType(mimeType: string): boolean {
   return DOWNLOAD_MIME_TYPES.has(mimeType)
 }
 
+// Page navigations whitelist must never cancel, even when the URL path looks
+// like a registered download extension (e.g. soft-404 HTML at /app.exe).
+function isStrongPageMime(mimeType: string): boolean {
+  return (
+    mimeType === 'text/html' ||
+    mimeType === 'application/xhtml+xml' ||
+    mimeType === 'application/json'
+  )
+}
+
 function matchesRegisteredFileTypes(ext: string): boolean {
   const types = configState.registeredFileTypes
   if (types.length === 0) return true
@@ -329,17 +339,19 @@ function matchesRegisteredFileTypes(ext: string): boolean {
   return types.some(t => t.toLowerCase() === ext)
 }
 
-// Extract the file extension, preferring Content-Disposition filename (ctx.filename)
-// and falling back to the URL pathname. This handles dynamic download URLs
-// (e.g. download.php?id=123 + Content-Disposition: filename="app.exe") where
-// the URL path has no usable extension but the real filename does.
+// Extension priority: CD/browser filename basename → finalUrl path → url path.
+// Only a non-empty ext short-circuits; trailing-dot basenames ("file.exe.")
+// and extensionless CD names ("download") fall through to URL sources.
 // Chrome may supply an OS path in item.filename (dots in directory names), so
 // take the basename before reading the extension.
 function getEffectiveExtension(ctx: InterceptionContext): string {
   if (ctx.filename) {
-    const base = basenameOfPath(ctx.filename)
-    const dot = base.lastIndexOf('.')
-    if (dot > 0) return base.slice(dot + 1).toLowerCase()
+    const ext = extensionOfBasename(basenameOfPath(ctx.filename))
+    if (ext) return ext
+  }
+  if (ctx.finalUrl) {
+    const ext = getUrlExtension(ctx.finalUrl)
+    if (ext) return ext
   }
   return getUrlExtension(ctx.url)
 }
@@ -349,14 +361,18 @@ function basenameOfPath(path: string): string {
   return slash >= 0 ? path.slice(slash + 1) : path
 }
 
+function extensionOfBasename(base: string): string {
+  const dot = base.lastIndexOf('.')
+  if (dot <= 0) return ''
+  return base.slice(dot + 1).toLowerCase()
+}
+
 function getUrlExtension(url: string): string {
   try {
     const u = new URL(url)
     const last = u.pathname.split('/').pop()
     if (!last) return ''
-    const dot = last.lastIndexOf('.')
-    if (dot === -1) return ''
-    return last.slice(dot + 1).toLowerCase()
+    return extensionOfBasename(last)
   } catch {
     return ''
   }
