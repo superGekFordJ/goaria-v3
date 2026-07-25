@@ -148,9 +148,9 @@ func TestComplete_PayloadCarriesProgress(t *testing.T) {
 	if delta == nil {
 		t.Fatal("expected complete delta in pusher pending queue")
 	}
-	payload, ok := delta.Payload.(map[string]interface{})
+	payload, ok := delta.Payload.(map[string]string)
 	if !ok {
-		t.Fatalf("expected map payload, got %T", delta.Payload)
+		t.Fatalf("expected map[string]string payload, got %T", delta.Payload)
 	}
 	if payload["completedLength"] != "1000" {
 		t.Errorf("payload completedLength = %v, want 1000", payload["completedLength"])

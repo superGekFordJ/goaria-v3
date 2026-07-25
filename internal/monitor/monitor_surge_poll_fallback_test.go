@@ -240,9 +240,9 @@ func TestReconcileSurgeCache_MissedComplete_EmitsDeltaWithPayload(t *testing.T) 
 	if delta == nil {
 		t.Fatal("expected complete delta with payload")
 	}
-	payload, ok := delta.Payload.(map[string]interface{})
+	payload, ok := delta.Payload.(map[string]string)
 	if !ok {
-		t.Fatalf("expected map payload, got %T", delta.Payload)
+		t.Fatalf("expected map[string]string payload, got %T", delta.Payload)
 	}
 	if payload["completedLength"] != "1000" {
 		t.Errorf("completedLength = %v, want 1000", payload["completedLength"])
@@ -361,7 +361,7 @@ func TestReconcileSurgeCache_MissedComplete_DuplicateDeltaDedup(t *testing.T) {
 	// Simulate the event path already queuing a complete delta.
 	pusher.Queue(events.TaskDelta{
 		Type: "complete", GID: "sg_task1",
-		Payload: map[string]interface{}{
+		Payload: map[string]string{
 			"completedLength": "1000",
 			"downloadSpeed":   "0",
 			"totalLength":     "1000",

@@ -122,7 +122,7 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 			m.pusher.Queue(events.TaskDelta{
 				Type: "progress",
 				GID:  gid,
-				Payload: map[string]interface{}{
+				Payload: map[string]string{
 					"completedLength": completedStr,
 					"downloadSpeed":   speedStr,
 					"totalLength":     totalStr,
@@ -145,7 +145,7 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 				m.pusher.Queue(events.TaskDelta{
 					Type: "progress",
 					GID:  pgid,
-					Payload: map[string]interface{}{
+					Payload: map[string]string{
 						"completedLength": completedStr,
 						"downloadSpeed":   speedStr,
 						"totalLength":     totalStr,
@@ -415,7 +415,7 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 				totalStr := strconv.FormatInt(completeTotal, 10)
 				m.pusher.Queue(events.TaskDelta{
 					Type: deltaType, GID: gid,
-					Payload: map[string]interface{}{
+					Payload: map[string]string{
 						"completedLength": totalStr,
 						"downloadSpeed":   "0",
 						"totalLength":     totalStr,
@@ -671,7 +671,7 @@ func (m *Monitor) reconcileSurgeCache() {
 				if status == "complete" && engineTask.TotalLength != "" {
 					m.pusher.Queue(events.TaskDelta{
 						Type: status, GID: gid,
-						Payload: map[string]interface{}{
+						Payload: map[string]string{
 							"completedLength": engineTask.TotalLength,
 							"downloadSpeed":   "0",
 							"totalLength":     engineTask.TotalLength,

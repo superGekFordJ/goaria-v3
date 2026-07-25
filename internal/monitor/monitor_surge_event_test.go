@@ -42,9 +42,9 @@ func TestHandleSurgeEvent_ProgressMsg_QueuesProgressDelta(t *testing.T) {
 		t.Errorf("delta GID = %q, want sg_test-1", delta.GID)
 	}
 
-	payload, ok := delta.Payload.(map[string]interface{})
+	payload, ok := delta.Payload.(map[string]string)
 	if !ok {
-		t.Fatalf("expected map[string]interface{} payload, got %T", delta.Payload)
+		t.Fatalf("expected map[string]string payload, got %T", delta.Payload)
 	}
 	if payload["completedLength"] != "500" {
 		t.Errorf("completedLength = %v, want 500", payload["completedLength"])

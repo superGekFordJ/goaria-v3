@@ -304,7 +304,7 @@ func (m *Monitor) tick() {
 		for _, task := range active {
 			// 仅推送 active 任务的进度
 			// 使用 map reduce payload 大小
-			payload := map[string]interface{}{
+			payload := map[string]string{
 				"completedLength": task.CompletedLength,
 				"downloadSpeed":   task.DownloadSpeed,
 				"totalLength":     task.TotalLength,
