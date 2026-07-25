@@ -417,11 +417,28 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	var releases []pendingScale
+	// Snapshot disappearances under lock. Unlock-before-provider must not
+	// range over live prevActiveGids — RemoveTask may delete concurrently.
+	type disappearance struct {
+		gid   string
+		info  gidInfo
+		speed int64
+	}
+	var disappeared []disappearance
 	for gid, info := range c.prevActiveGids {
 		if _, ok := activeGids[gid]; ok {
-			continue // still active
+			continue
 		}
+		disappeared = append(disappeared, disappearance{
+			gid:   gid,
+			info:  info,
+			speed: c.prevActiveSpeeds[gid],
+		})
+	}
+
+	var releases []pendingScale
+	for _, d := range disappeared {
+		gid, info := d.gid, d.info
 
 		type candidate struct {
 			gid            string
@@ -491,7 +508,7 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 		c.rotationCounter++
 		elected := candidates[electedIdx]
 
-		disappearedSpeed := c.prevActiveSpeeds[gid]
+		disappearedSpeed := d.speed
 		scope, domain, envKey := elected.scope, elected.domain, elected.envKey
 		// Provider (Macro → LastRawBps) locks c.mu; must not call under our lock.
 		c.mu.Unlock()
