@@ -153,7 +153,7 @@ func main() {
 	monitor.State.SetMonitor(mon) // 注册到全局状态，供 RemoveTask 调用
 	mon.Start()
 
-	smartthread.SetActiveBandwidthProvider(monitor.ActiveBandwidthByScope)
+	smartthread.SetActiveBandwidthProvider(monitor.MacroBandwidthByScope)
 
 	if hybrid, ok := appService.downloadEngine.(*rpc.HybridEngine); ok {
 		if surgeEng, ok := hybrid.SurgeEngineRef(); ok {
@@ -221,7 +221,7 @@ func main() {
 					Scope:             scope,
 					Domain:            domain,
 					EnvKey:            envKey,
-					ReservedBandwidth: monitor.ActiveBandwidthByScope(scope, envKey),
+					ReservedBandwidth: monitor.MacroBandwidthByScope(scope, envKey),
 					// Ledger/ActiveMACsFunc/ComputeEnvKeyFunc left nil:
 					// Resume path degrades to logical-only ceiling (no batch ledger).
 				})

@@ -3,7 +3,7 @@ package smartthread
 import "sync"
 
 // ActiveBandwidthFunc returns the current total download speed for a given scope+envKey.
-// This is injected from outside (monitor.ActiveBandwidthByScope) to avoid an
+// This is injected from outside (monitor.MacroBandwidthByScope) to avoid an
 // import cycle between smartthread and monitor.
 type ActiveBandwidthFunc func(scope, envKey string) int64
 
@@ -32,7 +32,7 @@ func SetActiveBandwidthProvider(fn ActiveBandwidthFunc) {
 }
 
 // BandwidthLedger tracks per-scope reserved bandwidth within a batch add session.
-// It seeds from the real-time active bandwidth (monitor.ActiveBandwidthByScope)
+// It seeds from the real-time active bandwidth (monitor.MacroBandwidthByScope)
 // at construction time, then accumulates per-task TargetBandwidth as tasks are
 // calculated.
 //

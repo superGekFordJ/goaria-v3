@@ -107,6 +107,11 @@ type convergenceState struct {
 	// rawBps is computed in processTask.
 	lastRawBps int64
 
+	// macroReady latches true on first D2 (or blackout) rawBps sample.
+	// Distinguishes cold (never sampled) from hot-zero (sampled 0 B/s).
+	// Survives window invalidation; cleared only when state is deleted.
+	macroReady bool
+
 	// tail blackout zone: permanently suppresses all macro decisions when
 	// totalRemaining < activeWorkers × effectiveMinChunk. Not reset on
 	// active-set change — permanent until gid disappears from active list.
@@ -666,15 +671,18 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 
 			// Final RecordPeakEfficiency before permanent sleep — blackout
 			// early-return is before D3 ratchet, so ratchet is permanently
-			// skipped. Compute rawBps from last tick's baseline.
-			if s.prevCompleted > 0 && !s.prevSampleAt.IsZero() && c.peakRecorder != nil {
+			// skipped. Compute rawBps from last tick's baseline and latch
+			// macro occupancy so ledger still counts this gid (SPEC-180).
+			if s.prevCompleted > 0 && !s.prevSampleAt.IsZero() {
 				dt := time.Since(s.prevSampleAt)
 				if dt > 0 {
 					finalRawBps := int64(float64(task.CompletedLength-s.prevCompleted) / dt.Seconds())
 					if finalRawBps < 0 {
 						finalRawBps = 0
 					}
-					if finalRawBps > 0 && currentWorkers > 0 {
+					s.lastRawBps = finalRawBps
+					s.macroReady = true
+					if finalRawBps > 0 && currentWorkers > 0 && c.peakRecorder != nil {
 						c.peakRecorder.RecordPeakEfficiency(gid, finalRawBps, currentWorkers)
 					}
 				}
@@ -714,6 +722,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 		rawBps = 0
 	}
 	s.lastRawBps = rawBps
+	s.macroReady = true
 
 	// D2: Settling — transition to stable, no decision this tick.
 	// Do NOT overwrite probeBaseline — it must retain the pre-probe throughput
@@ -1101,4 +1110,57 @@ func (c *ConvergenceTicker) RemoveTask(gid string) {
 	delete(c.prevActiveGids, gid)
 	delete(c.prevActiveSpeeds, gid)
 	c.mu.Unlock()
+}
+
+// LastRawBps returns the last macro-band rawBps for gid and whether a D2
+// sample has latched (macroReady). Missing/cold → (0, false); sampled zero →
+// (0, true). Read-only; does not create state.
+func (c *ConvergenceTicker) LastRawBps(gid string) (bps int64, ready bool) {
+	if c == nil {
+		return 0, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s, ok := c.states[gid]
+	if !ok || s == nil {
+		return 0, false
+	}
+	return s.lastRawBps, s.macroReady
+}
+
+// SumLastRawBps sums lastRawBps for ready sg_ tasks matching scope+envKey.
+// Ready-only (no Cache cold pad); MacroBandwidth mixes pads in monitor.
+func (c *ConvergenceTicker) SumLastRawBps(scope, envKey string) int64 {
+	if c == nil || c.tracker == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var sum int64
+	for _, task := range c.tracker.GetActiveTrackedTasks() {
+		if !strings.HasPrefix(task.GID, "sg_") {
+			continue
+		}
+		if task.Scope != scope || task.EnvKey != envKey {
+			continue
+		}
+		s, ok := c.states[task.GID]
+		if !ok || s == nil || !s.macroReady {
+			continue
+		}
+		sum += s.lastRawBps
+	}
+	return sum
+}
+
+// InjectMacroOccupancyForTest sets lastRawBps/macroReady for cross-package unit tests.
+func (c *ConvergenceTicker) InjectMacroOccupancyForTest(gid string, bps int64, ready bool) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := c.getOrCreateState(gid)
+	s.lastRawBps = bps
+	s.macroReady = ready
 }

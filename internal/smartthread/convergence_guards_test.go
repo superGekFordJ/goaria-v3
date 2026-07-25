@@ -30,8 +30,13 @@ func TestConvergence_LastRawBps_SetAfterSecondTick(t *testing.T) {
 	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
-	// First tick: establishes baseline, lastRawBps should stay 0.
+	// First tick: establishes baseline, lastRawBps should stay 0 / not ready.
 	ct.tick()
+
+	bps, ready := ct.LastRawBps(gid)
+	if ready || bps != 0 {
+		t.Errorf("after first baseline tick: LastRawBps=(%d,%v), want (0,false)", bps, ready)
+	}
 
 	ct.mu.Lock()
 	s := ct.states[gid]
@@ -41,6 +46,9 @@ func TestConvergence_LastRawBps_SetAfterSecondTick(t *testing.T) {
 	}
 	if s.lastRawBps != 0 {
 		t.Errorf("expected lastRawBps=0 after first sample, got %d", s.lastRawBps)
+	}
+	if s.macroReady {
+		t.Error("expected macroReady=false after first baseline tick")
 	}
 
 	// Second tick: CompletedLength increases → rawBps computed → lastRawBps set.
@@ -53,6 +61,11 @@ func TestConvergence_LastRawBps_SetAfterSecondTick(t *testing.T) {
 
 	ct.tick()
 
+	bps, ready = ct.LastRawBps(gid)
+	if !ready || bps <= 0 {
+		t.Errorf("after second tick: LastRawBps=(%d,%v), want (bps>0, true)", bps, ready)
+	}
+
 	ct.mu.Lock()
 	s = ct.states[gid]
 	ct.mu.Unlock()
@@ -61,6 +74,9 @@ func TestConvergence_LastRawBps_SetAfterSecondTick(t *testing.T) {
 	}
 	if s.lastRawBps <= 0 {
 		t.Errorf("expected lastRawBps > 0 after second tick, got %d", s.lastRawBps)
+	}
+	if !s.macroReady {
+		t.Error("expected macroReady=true after second tick D2 sample")
 	}
 }
 
