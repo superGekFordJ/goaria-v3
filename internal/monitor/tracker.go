@@ -188,6 +188,7 @@ func (t *TaskTracker) sampleSpeed(task *TrackedTask, speed int64) {
 // sampleSpeedInternal 稳定性检测与 PeakSpeed 写入（仅 Aria2 tick 路径）。
 // Surge 事件路径已退役峰值采样，不再调用此方法；Surge PeakSpeed 由
 // RecordPeakEfficiency（ConvergenceTicker）配对写入。
+// PeakEnvKey 经 acceptPeakSpeed 写入；空 CurrentEnvKey 不 wipe 已有指纹。
 func (t *TaskTracker) sampleSpeedInternal(task *TrackedTask, speed int64, threshold int) {
 	if task.SustainedSpeed > 0 {
 		diff := float64(speed-task.SustainedSpeed) / float64(task.SustainedSpeed)
@@ -204,8 +205,7 @@ func (t *TaskTracker) sampleSpeedInternal(task *TrackedTask, speed int64, thresh
 
 	if task.SustainedCount >= threshold && task.CompletedLength > speedstats.MinFileSize {
 		if speed > task.PeakSpeed {
-			task.PeakSpeed = speed
-			task.PeakEnvKey = task.CurrentEnvKey // peak attribution: record env at peak time
+			acceptPeakSpeed(task, speed)
 		}
 	}
 }

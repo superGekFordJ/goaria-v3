@@ -430,8 +430,10 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 				m.tracker.EnsureTrackedFromEvent(gid, completeTotal, "", 0, "")
 			}
 			if completed := m.tracker.MarkCompleteFromEvent(gid, deltaType); completed != nil {
+				// AvgSpeed substitutes for PeakSpeed when no peak-time accept occurred;
+				// acceptPeakSpeed refreshes PeakEnvKey to Current on this complete copy only.
 				if completed.PeakSpeed == 0 && completeAvgSpeed > 0 {
-					completed.PeakSpeed = int64(completeAvgSpeed)
+					acceptPeakSpeed(completed, int64(completeAvgSpeed))
 				}
 				m.handleTaskComplete(completed)
 			}

@@ -6,9 +6,10 @@ import (
 
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/rpc"
+	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/surge/scheduler"
-	surgeEvents "goaria-v3/internal/surge/types"
 	"goaria-v3/internal/surge/testutil"
+	surgeEvents "goaria-v3/internal/surge/types"
 )
 
 func TestHandleSurgeEvent_ProgressMsg_QueuesProgressDelta(t *testing.T) {
@@ -584,6 +585,229 @@ func TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback(t *testing.T) {
 	// 4. Verify processedComplete was set
 	if !tracker.processedComplete["sg_avg-fallback"] {
 		t.Error("Expected processedComplete to be set")
+	}
+}
+
+// TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback_RefreshesPeakEnvKeyToCurrent
+// verifies AvgSpeed substitute-peak refreshes PeakEnvKey to Current on the
+// complete copy only (resume changed Current; seed PeakEnvKey must not stick).
+func TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback_RefreshesPeakEnvKeyToCurrent(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	se := &mockSafeEngine{}
+	hybrid := rpc.NewHybridEngine(nil, se)
+	m := &Monitor{hub: hub, pusher: pusher, tracker: tracker, engine: hybrid}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	const (
+		downloadID = "avg-env-refresh"
+		gid        = "sg_" + downloadID
+		avgSpeed   = int64(7_000_000)
+		total      = int64(100_000_000)
+	)
+
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventStarted,
+		DownloadID: downloadID,
+		Total:      total,
+		URL:        "https://avg-env-refresh.example.com/large.zip",
+		Workers:    8,
+	})
+	tracker.SetScopeAndEnv(gid, "wan", 50, "avg-env-refresh.example.com", "envA")
+
+	tracked := tracker.tasks[gid]
+	if tracked == nil {
+		t.Fatal("expected tracked task")
+	}
+	if tracked.PeakEnvKey != "envA" {
+		t.Fatalf("PeakEnvKey seed = %q, want envA", tracked.PeakEnvKey)
+	}
+	if tracked.PeakSpeed != 0 {
+		t.Fatalf("PeakSpeed before complete = %d, want 0", tracked.PeakSpeed)
+	}
+	// Resume refreshes Current only; PeakEnvKey seed stays until accept.
+	tracked.CurrentEnvKey = "envB"
+
+	before := speedstatsRecordCount()
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
+		DownloadID: downloadID,
+		Total:      total,
+		AvgSpeed:   float64(avgSpeed),
+	})
+
+	if tracked.PeakSpeed != 0 {
+		t.Errorf("tracker PeakSpeed = %d, want 0 (fallback only on copy)", tracked.PeakSpeed)
+	}
+	if tracked.PeakEnvKey != "envA" {
+		t.Errorf("tracker PeakEnvKey = %q, want envA (copy-only refresh)", tracked.PeakEnvKey)
+	}
+
+	if after := speedstatsRecordCount(); after != before+1 {
+		t.Fatalf("expected 1 new speedstats record, got %d (before=%d, after=%d)", after-before, before, after)
+	}
+	rec := findRecordByDomain("avg-env-refresh.example.com")
+	if rec == nil {
+		t.Fatal("expected speedstats record")
+	}
+	if rec.EnvKey != "envB" {
+		t.Errorf("EnvKey = %q, want envB (AvgSpeed attributed to Current)", rec.EnvKey)
+	}
+	if rec.PeakSpeed != avgSpeed {
+		t.Errorf("PeakSpeed = %d, want %d (AvgSpeed substitute)", rec.PeakSpeed, avgSpeed)
+	}
+}
+
+// TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback_EmptyCurrentDoesNotInventOrWipePeakEnvKey
+// verifies empty CurrentEnvKey keeps the seed PeakEnvKey (no invent, no wipe).
+func TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback_EmptyCurrentDoesNotInventOrWipePeakEnvKey(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	se := &mockSafeEngine{}
+	hybrid := rpc.NewHybridEngine(nil, se)
+	m := &Monitor{hub: hub, pusher: pusher, tracker: tracker, engine: hybrid}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	const (
+		downloadID = "avg-env-empty-current"
+		gid        = "sg_" + downloadID
+		avgSpeed   = int64(6_000_000)
+		total      = int64(100_000_000)
+	)
+
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventStarted,
+		DownloadID: downloadID,
+		Total:      total,
+		URL:        "https://avg-empty-current.example.com/large.zip",
+		Workers:    8,
+	})
+	tracker.SetScopeAndEnv(gid, "wan", 50, "avg-empty-current.example.com", "envA")
+
+	tracked := tracker.tasks[gid]
+	if tracked == nil {
+		t.Fatal("expected tracked task")
+	}
+	tracked.CurrentEnvKey = ""
+
+	before := speedstatsRecordCount()
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
+		DownloadID: downloadID,
+		Total:      total,
+		AvgSpeed:   float64(avgSpeed),
+	})
+
+	if tracked.PeakSpeed != 0 {
+		t.Errorf("tracker PeakSpeed = %d, want 0", tracked.PeakSpeed)
+	}
+	if tracked.PeakEnvKey != "envA" {
+		t.Errorf("tracker PeakEnvKey = %q, want envA", tracked.PeakEnvKey)
+	}
+
+	if after := speedstatsRecordCount(); after != before+1 {
+		t.Fatalf("expected 1 new speedstats record, got %d", after-before)
+	}
+	rec := findRecordByDomain("avg-empty-current.example.com")
+	if rec == nil {
+		t.Fatal("expected speedstats record")
+	}
+	if rec.EnvKey != "envA" {
+		t.Errorf("EnvKey = %q, want envA (empty Current must not invent or wipe)", rec.EnvKey)
+	}
+	if rec.PeakSpeed != avgSpeed {
+		t.Errorf("PeakSpeed = %d, want %d", rec.PeakSpeed, avgSpeed)
+	}
+}
+
+// TestHandleSurgeEvent_CompleteMsg_NoAvgSpeedRefreshWhenPeakSpeedAlreadySet verifies
+// that an existing peak-time accept is not overwritten by AvgSpeed / Current.
+func TestHandleSurgeEvent_CompleteMsg_NoAvgSpeedRefreshWhenPeakSpeedAlreadySet(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	se := &mockSafeEngine{}
+	hybrid := rpc.NewHybridEngine(nil, se)
+	m := &Monitor{hub: hub, pusher: pusher, tracker: tracker, engine: hybrid}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	const (
+		downloadID = "avg-env-no-refresh"
+		gid        = "sg_" + downloadID
+		peakSpeed  = int64(40_000_000)
+		avgSpeed   = int64(5_000_000)
+		total      = int64(200_000_000)
+	)
+
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventStarted,
+		DownloadID: downloadID,
+		Total:      total,
+		URL:        "https://avg-no-refresh.example.com/large.zip",
+		Workers:    8,
+	})
+	tracker.SetScopeAndEnv(gid, "wan", 50, "avg-no-refresh.example.com", "envA")
+	tracker.RecordPeakEfficiency(gid, peakSpeed, 16)
+
+	tracked := tracker.tasks[gid]
+	if tracked == nil {
+		t.Fatal("expected tracked task")
+	}
+	if tracked.PeakSpeed != peakSpeed {
+		t.Fatalf("PeakSpeed after RecordPeak = %d, want %d", tracked.PeakSpeed, peakSpeed)
+	}
+	if tracked.PeakEnvKey != "envA" {
+		t.Fatalf("PeakEnvKey after RecordPeak = %q, want envA", tracked.PeakEnvKey)
+	}
+	tracked.CurrentEnvKey = "envB"
+
+	before := speedstatsRecordCount()
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
+		DownloadID: downloadID,
+		Total:      total,
+		AvgSpeed:   float64(avgSpeed),
+	})
+
+	if tracked.PeakSpeed != peakSpeed {
+		t.Errorf("tracker PeakSpeed = %d, want %d (AvgSpeed must not overwrite)", tracked.PeakSpeed, peakSpeed)
+	}
+	if tracked.PeakEnvKey != "envA" {
+		t.Errorf("tracker PeakEnvKey = %q, want envA", tracked.PeakEnvKey)
+	}
+
+	if after := speedstatsRecordCount(); after != before+1 {
+		t.Fatalf("expected 1 new speedstats record, got %d", after-before)
+	}
+	rec := findRecordByDomain("avg-no-refresh.example.com")
+	if rec == nil {
+		t.Fatal("expected speedstats record")
+	}
+	if rec.EnvKey != "envA" {
+		t.Errorf("EnvKey = %q, want envA (no refresh when PeakSpeed already set)", rec.EnvKey)
+	}
+	if rec.PeakSpeed != peakSpeed {
+		t.Errorf("PeakSpeed = %d, want %d", rec.PeakSpeed, peakSpeed)
 	}
 }
 

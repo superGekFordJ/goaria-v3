@@ -1293,6 +1293,37 @@ func TestTaskTracker_PeakEnvKeyAttribution(t *testing.T) {
 	}
 }
 
+// TestSampleSpeedInternal_EmptyCurrentEnvKeyDoesNotWipePeakEnvKey verifies Aria2
+// peak accept via acceptPeakSpeed does not clear PeakEnvKey when Current is empty.
+func TestSampleSpeedInternal_EmptyCurrentEnvKeyDoesNotWipePeakEnvKey(t *testing.T) {
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	tracker := NewTaskTracker()
+	gid := "sg-sample-empty-current"
+	tracker.SetThreadInfo(gid, 8, false)
+	tracker.SetScopeAndEnv(gid, "wan", 50, "example.com", "envA")
+
+	tracked := tracker.tasks[gid]
+	if tracked == nil {
+		t.Fatal("expected task to be tracked")
+	}
+	tracked.TotalLength = 100 * 1024 * 1024
+	tracked.CompletedLength = 60 * 1024 * 1024
+	tracked.CurrentEnvKey = ""
+
+	const newPeak = int64(15 * 1024 * 1024)
+	tracker.sampleSpeedInternal(tracked, newPeak, 1)
+
+	if tracked.PeakSpeed != newPeak {
+		t.Errorf("PeakSpeed = %d, want %d", tracked.PeakSpeed, newPeak)
+	}
+	if tracked.PeakEnvKey != "envA" {
+		t.Errorf("PeakEnvKey = %q, want envA (empty Current must not wipe)", tracked.PeakEnvKey)
+	}
+}
+
 func TestSetScopeAndEnv_ZeroTTFB_PreservesExistingTTFB(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.SetScopeAndEnv("sg-ttfb-001", "wan", 120, "example.com", "envA")
