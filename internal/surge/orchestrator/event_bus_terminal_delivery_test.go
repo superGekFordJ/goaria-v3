@@ -141,9 +141,12 @@ func TestEventBus_TerminalEventDeliveredToFastListenerConcurrent(t *testing.T) {
 
 func TestEventBus_ShutdownDoesNotDeadlockWithBlockedListener(t *testing.T) {
 	eb := NewEventBus()
-
 	sub, cleanup := eb.Subscribe()
-	defer cleanup()
+	// Shutdown before cleanup so blocked sends exit via ctx.Done first.
+	defer func() {
+		eb.Shutdown()
+		cleanup()
+	}()
 
 	fillSubscriber(t, eb, sub, 100)
 
@@ -178,9 +181,12 @@ func TestEventBus_ShutdownDoesNotDeadlockWithBlockedListener(t *testing.T) {
 
 func TestEventBus_CtxCancelledMidSend(t *testing.T) {
 	eb := NewEventBus()
-
 	sub, cleanup := eb.Subscribe()
-	defer cleanup()
+	// Shutdown is the sole InputCh close path (Once); never close InputCh by hand.
+	defer func() {
+		eb.Shutdown()
+		cleanup()
+	}()
 
 	fillSubscriber(t, eb, sub, 100)
 
@@ -201,19 +207,17 @@ func TestEventBus_CtxCancelledMidSend(t *testing.T) {
 	}
 	time.Sleep(100 * time.Millisecond)
 
-	// Cancel mid-send (same step Shutdown uses before closing InputCh).
+	// Unblock mid-send via cancel, then drain/exit through Shutdown only.
 	eb.cancel()
-	close(eb.InputCh)
-
-	finished := make(chan struct{})
+	shutdownDone := make(chan struct{})
 	go func() {
-		eb.wg.Wait()
-		close(finished)
+		eb.Shutdown()
+		close(shutdownDone)
 	}()
 	select {
-	case <-finished:
+	case <-shutdownDone:
 	case <-time.After(5 * time.Second):
-		t.Fatal("broadcastLoop did not finish after ctx cancel")
+		t.Fatal("broadcastLoop did not finish after cancel+Shutdown")
 	}
 }
 

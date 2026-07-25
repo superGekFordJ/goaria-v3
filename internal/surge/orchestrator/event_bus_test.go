@@ -110,9 +110,11 @@ func TestEventBus_ProgressMsgDropBehavior(t *testing.T) {
 // deliver or ctx cancel; upstream still waits/drops after 1s.
 func TestEventBus_TerminalEventBlocksUntilDrainedOrShutdown(t *testing.T) {
 	eb := NewEventBus()
-
 	sub, cleanup := eb.Subscribe()
-	defer cleanup()
+	defer func() {
+		eb.Shutdown()
+		cleanup()
+	}()
 
 	fillSubscriber(t, eb, sub, 100)
 
@@ -176,9 +178,11 @@ func TestEventBus_TerminalEventBlocksUntilDrainedOrShutdown(t *testing.T) {
 
 func TestEventBus_ShutdownCleanly(t *testing.T) {
 	eb := NewEventBus()
-
 	sub, cleanup := eb.Subscribe()
-	defer cleanup()
+	defer func() {
+		eb.Shutdown()
+		cleanup()
+	}()
 
 	eb.Shutdown()
 
