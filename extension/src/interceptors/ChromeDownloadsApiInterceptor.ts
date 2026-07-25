@@ -1,5 +1,8 @@
 import browser from 'webextension-polyfill'
-import { DownloadLinkInterceptor } from './DownloadLinkInterceptor'
+import {
+  DownloadLinkInterceptor,
+  extractMimeType,
+} from './DownloadLinkInterceptor'
 import type { InterceptionContext } from './LinkGrabberResponse'
 import { SMALL_FILE_THRESHOLD_BYTES } from '../stores/config.svelte'
 import {
@@ -131,7 +134,7 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       url: item.url,
       finalUrl: chromeItem.finalUrl ?? '',
       tabId: -1,
-      mimeType: item.mime ?? '',
+      mimeType: extractMimeType(item.mime ?? ''),
       contentDisposition: '',
       fileSize: item.fileSize > 0 ? item.fileSize : item.totalBytes > 0 ? item.totalBytes : 0,
       filename,

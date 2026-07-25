@@ -54,6 +54,9 @@ const DOWNLOAD_MIME_TYPES = new Set([
   'application/x-msdownload',
   'application/x-msi',
   'application/vnd.microsoft.portable-executable',
+  'application/x-dosexec',
+  'application/x-ms-dos-executable',
+  'application/x-ms-ne-executable',
   // Linux packages
   'application/x-debian-package',
   'application/x-redhat-package-manager',
@@ -95,28 +98,38 @@ export abstract class DownloadLinkInterceptor {
     const ext = getEffectiveExtension(ctx)
     const extMatches = matchesRegisteredFileTypes(ext)
 
-    // 1. Strict whitelist hit takes top priority — a user who explicitly
-    //    registered .exe wants it intercepted even if the server misconfigures
-    //    the MIME as text/plain or omits Content-Disposition: attachment.
-    if (hasStrictWhitelist && extMatches) return 'intercept'
-
-    // 2. Content-Disposition: attachment — a server-declared download.
-    //    With a strict whitelist we already know ext didn't match (step 1),
-    //    so pass. Without a whitelist, intercept all attachments.
+    // 1. Content-Disposition: attachment — a server-declared download.
+    //    With a strict whitelist, only intercept whitelist hits; on a miss,
+    //    still allow MIME fallback for extensionless CDN URLs (e.g. attachment
+    //    + application/zip with no filename ext). Without a whitelist,
+    //    intercept all attachments.
     if (hasAttachmentDisposition(ctx.contentDisposition)) {
-      if (hasStrictWhitelist) return 'pass'
-      return 'intercept'
+      if (!hasStrictWhitelist) return 'intercept'
+      if (extMatches) return 'intercept'
+      if (!ext && mime && isDownloadMimeType(mime)) return 'intercept'
+      return 'pass'
     }
 
-    // 3. inline disposition is a page-embedded resource, not a download.
+    // 2. inline disposition is a page-embedded resource, not a download.
+    //    Evaluated before the whitelist so an explicit inline never gets
+    //    pulled in just because the extension is registered.
     if (getDispositionType(ctx.contentDisposition) === 'inline') return 'pass'
 
-    // 4. Non-download MIME types (text/html, text/css, etc.) — only relevant
-    //    when there's no strict whitelist hit (already checked in step 1).
+    // 3. Strict whitelist hit — a user who explicitly registered .exe wants
+    //    it intercepted even if the server misconfigures the MIME as
+    //    text/plain or omits Content-Disposition: attachment.
+    if (hasStrictWhitelist && extMatches) return 'intercept'
+
+    // 4. Non-download MIME types (text/html, text/css, etc.).
     if (mime && NON_DOWNLOAD_MIME_TYPES.has(mime)) return 'pass'
 
-    // 5. No strict whitelist: intercept everything that isn't clearly a page.
-    if (!hasStrictWhitelist) return 'intercept'
+    // 5. No strict whitelist: only intercept clear download MIME (or empty
+    //    MIME). Without this gate, Firefox main_frame would false-capture
+    //    SVG/XML and other non-page, non-download types.
+    if (!hasStrictWhitelist) {
+      if (mime && !isDownloadMimeType(mime)) return 'pass'
+      return 'intercept'
+    }
 
     // 6. Strict whitelist, ext didn't match. Allow MIME-based fallback only
     //    when the file truly has no extension (e.g. an extension-less CDN
@@ -320,12 +333,20 @@ function matchesRegisteredFileTypes(ext: string): boolean {
 // and falling back to the URL pathname. This handles dynamic download URLs
 // (e.g. download.php?id=123 + Content-Disposition: filename="app.exe") where
 // the URL path has no usable extension but the real filename does.
+// Chrome may supply an OS path in item.filename (dots in directory names), so
+// take the basename before reading the extension.
 function getEffectiveExtension(ctx: InterceptionContext): string {
   if (ctx.filename) {
-    const dot = ctx.filename.lastIndexOf('.')
-    if (dot > 0) return ctx.filename.slice(dot + 1).toLowerCase()
+    const base = basenameOfPath(ctx.filename)
+    const dot = base.lastIndexOf('.')
+    if (dot > 0) return base.slice(dot + 1).toLowerCase()
   }
   return getUrlExtension(ctx.url)
+}
+
+function basenameOfPath(path: string): string {
+  const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  return slash >= 0 ? path.slice(slash + 1) : path
 }
 
 function getUrlExtension(url: string): string {

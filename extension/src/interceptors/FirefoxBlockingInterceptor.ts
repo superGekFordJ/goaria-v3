@@ -187,7 +187,7 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
       mimeType: extractMimeType(contentType),
       contentDisposition,
       fileSize: contentLength,
-      filename: extractFilename(contentDisposition, url),
+      filename: extractFilename(contentDisposition, finalUrl || url),
       referrer,
       initiator: details.initiator,
       originUrl: details.originUrl,
