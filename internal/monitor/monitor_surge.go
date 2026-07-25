@@ -82,7 +82,12 @@ func (m *Monitor) surgeEventBridgeLoop() {
 					streamClosed = true
 					break
 				}
-				m.handleSurgeEvent(rawEvt)
+				ev, ok := rawEvt.(types.DownloadEvent)
+				if !ok {
+					log.Printf("[Monitor] dropping unexpected Surge stream event type %T", rawEvt)
+					continue
+				}
+				m.handleSurgeEvent(ev)
 			}
 		}
 
@@ -94,7 +99,7 @@ func (m *Monitor) surgeEventBridgeLoop() {
 	}
 }
 
-func (m *Monitor) handleSurgeEvent(rawEvt any) {
+func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 	var deltaType string
 	var gid string
 	var completeTotal int64
@@ -102,11 +107,6 @@ func (m *Monitor) handleSurgeEvent(rawEvt any) {
 
 	// Reuse the cached SurgeEngine ref (set in Start); nil in Aria2-only mode.
 	surgeEng := m.surgeEng
-
-	ev, ok := rawEvt.(types.DownloadEvent)
-	if !ok {
-		return
-	}
 
 	switch ev.Type {
 	case types.EventProgress:
