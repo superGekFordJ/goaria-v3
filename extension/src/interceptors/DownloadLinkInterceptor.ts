@@ -49,6 +49,20 @@ const DOWNLOAD_MIME_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  // Windows executables / installers
+  'application/x-msdos-program',
+  'application/x-msdownload',
+  'application/x-msi',
+  'application/vnd.microsoft.portable-executable',
+  // Linux packages
+  'application/x-debian-package',
+  'application/x-redhat-package-manager',
+  'application/x-rpm',
+  // Android
+  'application/vnd.android.package-archive',
+  // macOS
+  'application/x-apple-diskimage',
+  'application/x-dmg',
 ])
 
 /**
@@ -75,20 +89,42 @@ export abstract class DownloadLinkInterceptor {
     if (scheme && NON_HTTP_SCHEMES.has(scheme)) return 'pass'
     if (scheme !== 'http:' && scheme !== 'https:') return 'pass'
 
-    // Content-Disposition: attachment wins regardless of MIME type.
+    const mime = ctx.mimeType
+    const types = configState.registeredFileTypes
+    const hasStrictWhitelist = types.length > 0
+    const ext = getEffectiveExtension(ctx)
+    const extMatches = matchesRegisteredFileTypes(ext)
+
+    // 1. Strict whitelist hit takes top priority — a user who explicitly
+    //    registered .exe wants it intercepted even if the server misconfigures
+    //    the MIME as text/plain or omits Content-Disposition: attachment.
+    if (hasStrictWhitelist && extMatches) return 'intercept'
+
+    // 2. Content-Disposition: attachment — a server-declared download.
+    //    With a strict whitelist we already know ext didn't match (step 1),
+    //    so pass. Without a whitelist, intercept all attachments.
     if (hasAttachmentDisposition(ctx.contentDisposition)) {
-      if (!matchesRegisteredFileTypes(ctx.url)) return 'pass'
+      if (hasStrictWhitelist) return 'pass'
       return 'intercept'
     }
-    // inline disposition is a page-embedded resource, not a download.
+
+    // 3. inline disposition is a page-embedded resource, not a download.
     if (getDispositionType(ctx.contentDisposition) === 'inline') return 'pass'
 
-    const mime = ctx.mimeType
+    // 4. Non-download MIME types (text/html, text/css, etc.) — only relevant
+    //    when there's no strict whitelist hit (already checked in step 1).
     if (mime && NON_DOWNLOAD_MIME_TYPES.has(mime)) return 'pass'
-    if (mime && !isDownloadMimeType(mime)) return 'pass'
 
-    if (!matchesRegisteredFileTypes(ctx.url)) return 'pass'
-    return 'intercept'
+    // 5. No strict whitelist: intercept everything that isn't clearly a page.
+    if (!hasStrictWhitelist) return 'intercept'
+
+    // 6. Strict whitelist, ext didn't match. Allow MIME-based fallback only
+    //    when the file truly has no extension (e.g. an extension-less CDN
+    //    URL serving application/zip). If there IS an extension, respect the
+    //    user's whitelist — they chose not to include it.
+    if (!ext && mime && isDownloadMimeType(mime)) return 'intercept'
+
+    return 'pass'
   }
 
   /**
@@ -273,12 +309,23 @@ export function isDownloadMimeType(mimeType: string): boolean {
   return DOWNLOAD_MIME_TYPES.has(mimeType)
 }
 
-function matchesRegisteredFileTypes(url: string): boolean {
+function matchesRegisteredFileTypes(ext: string): boolean {
   const types = configState.registeredFileTypes
   if (types.length === 0) return true
-  const ext = getUrlExtension(url)
   if (!ext) return false
   return types.some(t => t.toLowerCase() === ext)
+}
+
+// Extract the file extension, preferring Content-Disposition filename (ctx.filename)
+// and falling back to the URL pathname. This handles dynamic download URLs
+// (e.g. download.php?id=123 + Content-Disposition: filename="app.exe") where
+// the URL path has no usable extension but the real filename does.
+function getEffectiveExtension(ctx: InterceptionContext): string {
+  if (ctx.filename) {
+    const dot = ctx.filename.lastIndexOf('.')
+    if (dot > 0) return ctx.filename.slice(dot + 1).toLowerCase()
+  }
+  return getUrlExtension(ctx.url)
 }
 
 function getUrlExtension(url: string): string {
