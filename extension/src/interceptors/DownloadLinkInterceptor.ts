@@ -116,9 +116,15 @@ export abstract class DownloadLinkInterceptor {
     if (getDispositionType(ctx.contentDisposition) === 'inline') return 'pass'
 
     // 3. Strict whitelist hit — override weak/misconfigured MIME (empty,
-    //    text/plain, installer types), but never cancel clear page navigations.
-    //    text/html|xhtml|json still fall through to the NON_DOWNLOAD pass.
-    if (hasStrictWhitelist && extMatches && !isStrongPageMime(mime)) return 'intercept'
+    //    text/plain, installer types), but never cancel NON_DOWNLOAD page
+    //    or resource types other than text/plain (the classic misconfig).
+    if (
+      hasStrictWhitelist &&
+      extMatches &&
+      !(mime && NON_DOWNLOAD_MIME_TYPES.has(mime) && mime !== 'text/plain')
+    ) {
+      return 'intercept'
+    }
 
     // 4. Non-download MIME types (text/html, text/css, etc.).
     if (mime && NON_DOWNLOAD_MIME_TYPES.has(mime)) return 'pass'
@@ -320,16 +326,6 @@ export function isDownloadMimeType(mimeType: string): boolean {
   if (mimeType.startsWith('audio/')) return true
   if (mimeType.startsWith('image/') && mimeType !== 'image/svg+xml') return true
   return DOWNLOAD_MIME_TYPES.has(mimeType)
-}
-
-// Page navigations whitelist must never cancel, even when the URL path looks
-// like a registered download extension (e.g. soft-404 HTML at /app.exe).
-function isStrongPageMime(mimeType: string): boolean {
-  return (
-    mimeType === 'text/html' ||
-    mimeType === 'application/xhtml+xml' ||
-    mimeType === 'application/json'
-  )
 }
 
 function matchesRegisteredFileTypes(ext: string): boolean {
