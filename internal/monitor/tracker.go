@@ -185,13 +185,9 @@ func (t *TaskTracker) sampleSpeed(task *TrackedTask, speed int64) {
 	t.sampleSpeedInternal(task, speed, threshold)
 }
 
-// sampleSpeedInternal 共享稳定性检测和峰值速度逻辑
-// 临时桥接：事件路径的 SampleSpeedFromEvent 依赖此方法，将用
-// DownloadCompleteMsg 携带的 peak speed 替代实时采样，届时可移除事件路径调用
-//
-// SustainedCount 在 tick 和事件路径间共享：若 tick 样本（5s 间隔）与事件样本
-// （200ms 间隔）速度差异 >15%，tick 会重置 SustainedCount=1。事件路径在 ~0.4s
-// （2 个 200ms 事件）内即可恢复，对 PeakSpeed 取最大值语义无害。
+// sampleSpeedInternal 稳定性检测与 PeakSpeed 写入（仅 Aria2 tick 路径）。
+// Surge 事件路径已退役峰值采样，不再调用此方法；Surge PeakSpeed 由
+// RecordPeakEfficiency（ConvergenceTicker）配对写入。
 func (t *TaskTracker) sampleSpeedInternal(task *TrackedTask, speed int64, threshold int) {
 	if task.SustainedSpeed > 0 {
 		diff := float64(speed-task.SustainedSpeed) / float64(task.SustainedSpeed)
@@ -418,10 +414,11 @@ func (t *TaskTracker) SetStatusFromEvent(gid string, status string) {
 	}
 }
 
-// SampleSpeedFromEvent 从 Surge ProgressMsg 事件采样速度
-// 事件路径阈值：窗口模式 2 次（~0.4s @ 200ms），无头模式 1 次
-// 临时桥接：将用 DownloadCompleteMsg 携带的 peak speed 替代此方法
-func (t *TaskTracker) SampleSpeedFromEvent(gid string, speed int64, totalLength int64, completedLength int64) {
+// UpdateProgressFromEvent refreshes tracker TotalLength/CompletedLength from a
+// Surge Progress/BatchProgress event. Lengths only — does not touch PeakSpeed,
+// PeakThreadCount, PeakEnvKey, or Sustained*. ConvergenceTicker derives rawBps
+// from CompletedLength deltas; PeakSpeed ownership stays with RecordPeakEfficiency.
+func (t *TaskTracker) UpdateProgressFromEvent(gid string, totalLength, completedLength int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -436,16 +433,6 @@ func (t *TaskTracker) SampleSpeedFromEvent(gid string, speed int64, totalLength 
 	if completedLength > 0 {
 		tracked.CompletedLength = completedLength
 	}
-
-	if totalLength > 0 && totalLength <= speedstats.MinFileSize {
-		return
-	}
-
-	threshold := 2
-	if !State.HasWindow() {
-		threshold = 1
-	}
-	t.sampleSpeedInternal(tracked, speed, threshold)
 }
 
 // MarkCompleteFromEvent 从 Surge complete/error 事件标记完成
@@ -581,13 +568,25 @@ func (t *TaskTracker) GetActiveTrackedTasks() []TrackedTask {
 	return result
 }
 
+// acceptPeakSpeed writes PeakSpeed and, when CurrentEnvKey is non-empty,
+// refreshes PeakEnvKey for SPEC-176 peak-time attribution. Empty CurrentEnvKey
+// must not wipe an existing PeakEnvKey.
+func acceptPeakSpeed(tt *TrackedTask, speed int64) {
+	tt.PeakSpeed = speed
+	if tt.CurrentEnvKey != "" {
+		tt.PeakEnvKey = tt.CurrentEnvKey
+	}
+}
+
 // RecordPeakEfficiency updates PeakSpeed and PeakThreadCount for the given gid
 // using the D3 efficiency-guarded ratchet with bestEff anchoring (Edge Case 14).
 // Only accepts the incoming pair when it represents a more optimal working point.
 // Rejects bloated N where absolute speed marginally increases but per-thread
 // efficiency crashes below the bestEff-anchored guard.
-// This is the convergence layer's paired write entry — it does not touch
-// sampleSpeedInternal's existing PeakSpeed logic.
+// On every accepted PeakSpeed write, PeakEnvKey is set to CurrentEnvKey when
+// non-empty (macro paired-write inherits SPEC-176 peak-time attribution after
+// event-path sampling was retired). ThreadCount-only updates do not refresh
+// PeakEnvKey. Does not touch sampleSpeedInternal (Aria2 tick path).
 func (t *TaskTracker) RecordPeakEfficiency(gid string, peakSpeed int64, peakWorkers int) {
 	if peakWorkers <= 0 {
 		return
@@ -605,7 +604,7 @@ func (t *TaskTracker) RecordPeakEfficiency(gid string, peakSpeed int64, peakWork
 	}
 
 	if tt.PeakThreadCount == 0 {
-		tt.PeakSpeed = peakSpeed
+		acceptPeakSpeed(tt, peakSpeed)
 		tt.PeakThreadCount = peakWorkers
 		return
 	}
@@ -622,19 +621,19 @@ func (t *TaskTracker) RecordPeakEfficiency(gid string, peakSpeed int64, peakWork
 		// (peakRaiseBand noise gate) or workers reduced at comparable throughput (≥90% of peak).
 		if float64(peakSpeed) > float64(tt.PeakSpeed)*trackerPeakRaiseBand {
 			if peakSpeed > tt.PeakSpeed {
-				tt.PeakSpeed = peakSpeed
+				acceptPeakSpeed(tt, peakSpeed)
 			}
 			tt.PeakThreadCount = peakWorkers
 		} else if peakWorkers < tt.PeakThreadCount && float64(peakSpeed) >= float64(tt.PeakSpeed)*trackerPeakSpeedGuardBand {
 			if peakSpeed > tt.PeakSpeed {
-				tt.PeakSpeed = peakSpeed
+				acceptPeakSpeed(tt, peakSpeed)
 			}
 			tt.PeakThreadCount = peakWorkers
 		}
 	} else if float64(peakSpeed) > float64(tt.PeakSpeed)*trackerPeakRaiseBand {
 		// Absolute throughput up ≥5% but efficiency below guard — only update
 		// PeakSpeed (for V_target/BtlBw), keep efficient PeakThreadCount unchanged.
-		tt.PeakSpeed = peakSpeed
+		acceptPeakSpeed(tt, peakSpeed)
 	}
 }
 

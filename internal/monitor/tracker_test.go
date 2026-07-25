@@ -601,44 +601,49 @@ func TestTaskTracker_EnsureTrackedFromEvent_DoesNotOverwriteThreadCount(t *testi
 	}
 }
 
-func TestTaskTracker_SampleSpeedFromEvent_LargeFile(t *testing.T) {
-	prevWindow := State.HasWindow()
-	State.SetWindowExists(true)
-	defer State.SetWindowExists(prevWindow)
-
+func TestTaskTracker_UpdateProgressFromEvent_LargeFile(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.EnsureTrackedFromEvent("sg-evt-004", 100000000, "https://example.com/file.zip", 8, "active")
 
-	// First sample — not enough sustained count (threshold=2 for event path)
-	tracker.SampleSpeedFromEvent("sg-evt-004", 10000000, 100000000, 60000000)
+	tracker.UpdateProgressFromEvent("sg-evt-004", 100000000, 60000000)
 	tracked := tracker.tasks["sg-evt-004"]
+	if tracked.CompletedLength != 60000000 {
+		t.Errorf("CompletedLength = %d, want 60000000", tracked.CompletedLength)
+	}
 	if tracked.PeakSpeed != 0 {
-		t.Errorf("PeakSpeed = %d, want 0 (first sample, not enough sustained)", tracked.PeakSpeed)
+		t.Errorf("PeakSpeed = %d, want 0 (event path does not sample peak)", tracked.PeakSpeed)
 	}
 
-	// Second sample — now sustained count = 2, should record
-	tracker.SampleSpeedFromEvent("sg-evt-004", 10000000, 100000000, 70000000)
-	if tracked.PeakSpeed != 10000000 {
-		t.Errorf("PeakSpeed = %d, want 10000000 (after 2 stable samples)", tracked.PeakSpeed)
+	tracker.UpdateProgressFromEvent("sg-evt-004", 100000000, 70000000)
+	if tracked.CompletedLength != 70000000 {
+		t.Errorf("CompletedLength = %d, want 70000000", tracked.CompletedLength)
+	}
+	if tracked.PeakSpeed != 0 {
+		t.Errorf("PeakSpeed = %d, want 0 after second progress event", tracked.PeakSpeed)
 	}
 }
 
-func TestTaskTracker_SampleSpeedFromEvent_SmallFileSkipped(t *testing.T) {
+func TestTaskTracker_UpdateProgressFromEvent_SmallFile(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.EnsureTrackedFromEvent("sg-evt-005", 1000000, "https://example.com/small.zip", 4, "active")
 
-	// File < 50MB, should not sample
-	tracker.SampleSpeedFromEvent("sg-evt-005", 5000000, 1000000, 500000)
+	tracker.UpdateProgressFromEvent("sg-evt-005", 1000000, 500000)
 	tracked := tracker.tasks["sg-evt-005"]
+	if tracked.CompletedLength != 500000 {
+		t.Errorf("CompletedLength = %d, want 500000 (small files still update lengths)", tracked.CompletedLength)
+	}
+	if tracked.TotalLength != 1000000 {
+		t.Errorf("TotalLength = %d, want 1000000", tracked.TotalLength)
+	}
 	if tracked.PeakSpeed != 0 {
-		t.Errorf("PeakSpeed = %d, want 0 (small file skipped)", tracked.PeakSpeed)
+		t.Errorf("PeakSpeed = %d, want 0", tracked.PeakSpeed)
 	}
 }
 
-func TestTaskTracker_SampleSpeedFromEvent_NonexistentTask(t *testing.T) {
+func TestTaskTracker_UpdateProgressFromEvent_NonexistentTask(t *testing.T) {
 	tracker := NewTaskTracker()
 	// Should not panic
-	tracker.SampleSpeedFromEvent("nonexistent", 10000000, 100000000, 1000000)
+	tracker.UpdateProgressFromEvent("nonexistent", 100000000, 1000000)
 }
 
 func TestTaskTracker_MarkCompleteFromEvent(t *testing.T) {
@@ -802,12 +807,11 @@ func TestTrackerAdapter_GetActiveTrackedTasks_PassesMinChunkThrough(t *testing.T
 	}
 }
 
-func TestTaskTracker_SampleSpeedFromEvent_UpdatesTotalAndCompleted(t *testing.T) {
+func TestTaskTracker_UpdateProgressFromEvent_UpdatesTotalAndCompleted(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.EnsureTrackedFromEvent("sg-evt-011", 0, "https://example.com/file.zip", 8, "active")
 
-	// First event provides total and completed
-	tracker.SampleSpeedFromEvent("sg-evt-011", 5000000, 200000000, 10000000)
+	tracker.UpdateProgressFromEvent("sg-evt-011", 200000000, 10000000)
 	tracked := tracker.tasks["sg-evt-011"]
 	if tracked.TotalLength != 200000000 {
 		t.Errorf("TotalLength = %d, want 200000000", tracked.TotalLength)
@@ -820,24 +824,23 @@ func TestTaskTracker_SampleSpeedFromEvent_UpdatesTotalAndCompleted(t *testing.T)
 // TestEventAndTickPath_NoDoubleComplete 验证事件路径先标记完成后，
 // tick 路径 Update 不会重复触发 handleTaskComplete。
 func TestEventAndTickPath_NoDoubleComplete(t *testing.T) {
-	prevWindow := State.HasWindow()
-	State.SetWindowExists(true)
-	defer State.SetWindowExists(prevWindow)
-
 	tracker := NewTaskTracker()
 
-	// 1. 事件路径创建并采样
+	// 1. 事件路径创建并刷新进度（不再采样 PeakSpeed）
 	tracker.EnsureTrackedFromEvent("sg-cross-001", 100000000, "https://example.com/file.zip", 8, "active")
-	tracker.SampleSpeedFromEvent("sg-cross-001", 10000000, 100000000, 60000000)
-	tracker.SampleSpeedFromEvent("sg-cross-001", 10000000, 100000000, 70000000)
+	tracker.UpdateProgressFromEvent("sg-cross-001", 100000000, 60000000)
+	tracker.UpdateProgressFromEvent("sg-cross-001", 100000000, 70000000)
 
 	// 2. 事件路径标记完成
 	completed := tracker.MarkCompleteFromEvent("sg-cross-001", "complete")
 	if completed == nil {
 		t.Fatal("Expected non-nil from event-path MarkCompleteFromEvent")
 	}
-	if completed.PeakSpeed != 10000000 {
-		t.Errorf("PeakSpeed = %d, want 10000000", completed.PeakSpeed)
+	if completed.PeakSpeed != 0 {
+		t.Errorf("PeakSpeed = %d, want 0 (event path does not sample peak)", completed.PeakSpeed)
+	}
+	if completed.CompletedLength != 70000000 {
+		t.Errorf("CompletedLength = %d, want 70000000", completed.CompletedLength)
 	}
 
 	// 3. tick 路径 Update 收到 stopped 列表中有该任务
@@ -1112,6 +1115,103 @@ func TestRecordPeakEfficiency_RejectSewageMonster(t *testing.T) {
 	// PeakSpeed should also NOT change (4 < 32, no update)
 	if tracked.PeakSpeed != 32*1024*1024 {
 		t.Errorf("PeakSpeed = %d, want %d (should not decrease)", tracked.PeakSpeed, 32*1024*1024)
+	}
+}
+
+func TestRecordPeakEfficiency_WritesPeakEnvKeyOnFirstWrite(t *testing.T) {
+	tracker := NewTaskTracker()
+	gid := "sg-peak-env-first"
+	tracker.EnsureTrackedFromEvent(gid, 100000000, "https://example.com/file.zip", 8, "active")
+	tracker.SetScopeAndEnv(gid, "wan", 50, "example.com", "envA")
+
+	tracker.RecordPeakEfficiency(gid, 50*1024*1024, 10)
+
+	tracked := tracker.tasks[gid]
+	if tracked.PeakSpeed != 50*1024*1024 || tracked.PeakThreadCount != 10 {
+		t.Fatalf("PeakSpeed=%d PeakThreadCount=%d", tracked.PeakSpeed, tracked.PeakThreadCount)
+	}
+	if tracked.PeakEnvKey != "envA" {
+		t.Errorf("PeakEnvKey = %q, want envA on first PeakSpeed accept", tracked.PeakEnvKey)
+	}
+}
+
+func TestRecordPeakEfficiency_PeakEnvKeyFollowsCurrentOnNewPeak(t *testing.T) {
+	tracker := NewTaskTracker()
+	gid := "sg-peak-env-follow"
+	tracker.EnsureTrackedFromEvent(gid, 100000000, "https://example.com/file.zip", 8, "active")
+	tracker.SetScopeAndEnv(gid, "wan", 50, "example.com", "envA")
+
+	tracker.RecordPeakEfficiency(gid, 50*1024*1024, 10)
+	if tracker.tasks[gid].PeakEnvKey != "envA" {
+		t.Fatalf("setup PeakEnvKey = %q, want envA", tracker.tasks[gid].PeakEnvKey)
+	}
+
+	tracker.mu.Lock()
+	tracker.tasks[gid].CurrentEnvKey = "envB"
+	tracker.mu.Unlock()
+
+	// Higher throughput same-ish efficiency → accept PeakSpeed, refresh PeakEnvKey
+	tracker.RecordPeakEfficiency(gid, 60*1024*1024, 12)
+
+	tracked := tracker.tasks[gid]
+	if tracked.PeakSpeed != 60*1024*1024 {
+		t.Fatalf("PeakSpeed = %d, want %d", tracked.PeakSpeed, 60*1024*1024)
+	}
+	if tracked.PeakEnvKey != "envB" {
+		t.Errorf("PeakEnvKey = %q, want envB after mid-download env change", tracked.PeakEnvKey)
+	}
+}
+
+func TestRecordPeakEfficiency_AbsoluteThroughputOnlyWritesPeakEnvKey(t *testing.T) {
+	tracker := NewTaskTracker()
+	gid := "sg-peak-env-abs"
+	tracker.EnsureTrackedFromEvent(gid, 100000000, "https://example.com/file.zip", 8, "active")
+	tracker.SetScopeAndEnv(gid, "wan", 50, "example.com", "envA")
+
+	tracker.RecordPeakEfficiency(gid, 50*1024*1024, 10)
+
+	tracker.mu.Lock()
+	tracker.tasks[gid].CurrentEnvKey = "envB"
+	tracker.mu.Unlock()
+
+	// Bloated N: PeakSpeed rises, PeakThreadCount stays — still accepts PeakSpeed
+	tracker.RecordPeakEfficiency(gid, 53*1024*1024, 32)
+
+	tracked := tracker.tasks[gid]
+	if tracked.PeakSpeed != 53*1024*1024 {
+		t.Fatalf("PeakSpeed = %d, want %d", tracked.PeakSpeed, 53*1024*1024)
+	}
+	if tracked.PeakThreadCount != 10 {
+		t.Fatalf("PeakThreadCount = %d, want 10", tracked.PeakThreadCount)
+	}
+	if tracked.PeakEnvKey != "envB" {
+		t.Errorf("PeakEnvKey = %q, want envB on absolute-throughput-only PeakSpeed accept", tracked.PeakEnvKey)
+	}
+}
+
+func TestRecordPeakEfficiency_EmptyCurrentEnvKeyDoesNotWipePeakEnvKey(t *testing.T) {
+	tracker := NewTaskTracker()
+	gid := "sg-peak-env-empty"
+	tracker.EnsureTrackedFromEvent(gid, 100000000, "https://example.com/file.zip", 8, "active")
+	tracker.SetScopeAndEnv(gid, "wan", 50, "example.com", "envA")
+
+	tracker.RecordPeakEfficiency(gid, 50*1024*1024, 10)
+	if tracker.tasks[gid].PeakEnvKey != "envA" {
+		t.Fatalf("setup PeakEnvKey = %q, want envA", tracker.tasks[gid].PeakEnvKey)
+	}
+
+	tracker.mu.Lock()
+	tracker.tasks[gid].CurrentEnvKey = ""
+	tracker.mu.Unlock()
+
+	tracker.RecordPeakEfficiency(gid, 60*1024*1024, 12)
+
+	tracked := tracker.tasks[gid]
+	if tracked.PeakSpeed != 60*1024*1024 {
+		t.Fatalf("PeakSpeed = %d, want %d", tracked.PeakSpeed, 60*1024*1024)
+	}
+	if tracked.PeakEnvKey != "envA" {
+		t.Errorf("PeakEnvKey = %q, want envA (empty CurrentEnvKey must not wipe)", tracked.PeakEnvKey)
 	}
 }
 

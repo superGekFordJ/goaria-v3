@@ -116,7 +116,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		totalStr := strconv.FormatInt(ev.Total, 10)
 		Cache.PatchTaskProgress(gid, completedStr, speedStr, totalStr)
 		if m.tracker != nil {
-			m.tracker.SampleSpeedFromEvent(gid, int64(ev.Speed), ev.Total, ev.Downloaded)
+			m.tracker.UpdateProgressFromEvent(gid, ev.Total, ev.Downloaded)
 		}
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{
@@ -139,7 +139,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			totalStr := strconv.FormatInt(p.Total, 10)
 			Cache.PatchTaskProgress(pgid, completedStr, speedStr, totalStr)
 			if m.tracker != nil {
-				m.tracker.SampleSpeedFromEvent(pgid, int64(p.Speed), p.Total, p.Downloaded)
+				m.tracker.UpdateProgressFromEvent(pgid, p.Total, p.Downloaded)
 			}
 			if State.HasWindow() {
 				m.pusher.Queue(events.TaskDelta{
