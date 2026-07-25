@@ -4,13 +4,8 @@ import (
 	"testing"
 )
 
-// Fixed: event path must not overwrite PeakSpeed without PeakThreadCount.
-// Progress events only refresh lengths; PeakSpeed stays with RecordPeakEfficiency.
+// Fixed: lengths-only UpdateProgressFromEvent must not mutate PeakSpeed/PeakThreadCount.
 func TestEventPath_DoesNotTearPeakThreadPairing(t *testing.T) {
-	prev := State.HasWindow()
-	State.SetWindowExists(false)
-	defer State.SetWindowExists(prev)
-
 	tr := NewTaskTracker()
 	gid := "sg_tear-pair"
 	tr.EnsureTrackedFromEvent(gid, 200*1024*1024, "https://ex.com/f", 16, "active")
@@ -28,7 +23,7 @@ func TestEventPath_DoesNotTearPeakThreadPairing(t *testing.T) {
 	}
 	tr.mu.RUnlock()
 
-	// High event-band spike must be ignored for PeakSpeed; lengths still advance.
+	// Lengths-only API has no speed param; Peak* must stay put while CL advances.
 	tr.UpdateProgressFromEvent(gid, 200*1024*1024, 100*1024*1024)
 
 	tr.mu.RLock()

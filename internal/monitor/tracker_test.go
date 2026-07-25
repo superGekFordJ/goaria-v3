@@ -961,15 +961,31 @@ func TestRecordPeakEfficiency_HigherThroughputSameEfficiency(t *testing.T) {
 func TestRecordPeakEfficiency_SameThroughputFewerWorkers(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.EnsureTrackedFromEvent("sg-peak-003", 100000000, "https://example.com/file.zip", 8, "active")
+	tracker.SetScopeAndEnv("sg-peak-003", "wan", 50, "example.com", "envA")
 
 	// First: 50MB/s @ 10 workers
 	tracker.RecordPeakEfficiency("sg-peak-003", 50*1024*1024, 10)
-	// Second: 50MB/s @ 8 workers (same throughput, fewer workers, higher eff)
+	if tracker.tasks["sg-peak-003"].PeakEnvKey != "envA" {
+		t.Fatalf("setup PeakEnvKey = %q, want envA", tracker.tasks["sg-peak-003"].PeakEnvKey)
+	}
+
+	tracker.mu.Lock()
+	tracker.tasks["sg-peak-003"].CurrentEnvKey = "envB"
+	tracker.mu.Unlock()
+
+	// Second: 50MB/s @ 8 workers (same throughput, fewer workers, higher eff).
+	// ThreadCount-only accept — PeakSpeed unchanged → PeakEnvKey must stay envA.
 	tracker.RecordPeakEfficiency("sg-peak-003", 50*1024*1024, 8)
 
 	tracked := tracker.tasks["sg-peak-003"]
 	if tracked.PeakThreadCount != 8 {
 		t.Errorf("PeakThreadCount = %d, want 8 (fewer workers at same throughput)", tracked.PeakThreadCount)
+	}
+	if tracked.PeakSpeed != 50*1024*1024 {
+		t.Errorf("PeakSpeed = %d, want %d (unchanged on ThreadCount-only accept)", tracked.PeakSpeed, 50*1024*1024)
+	}
+	if tracked.PeakEnvKey != "envA" {
+		t.Errorf("PeakEnvKey = %q, want envA (ThreadCount-only must not refresh)", tracked.PeakEnvKey)
 	}
 }
 
