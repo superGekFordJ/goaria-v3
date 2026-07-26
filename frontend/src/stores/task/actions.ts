@@ -358,10 +358,33 @@ export function setupActions(state: TaskState) {
 
   // --- User Actions ---
 
+  // Reorder newly-added tasks to the front so fetchTasks snapshots match the event-path prepend.
+  function prependNewTasks(knownGids: Set<string>) {
+    const active = tasks.value.active
+    const waiting = tasks.value.waiting
+
+    const newActive = active.filter(t => !knownGids.has(t.gid))
+    const oldActive = active.filter(t => knownGids.has(t.gid))
+    const newWaiting = waiting.filter(t => !knownGids.has(t.gid))
+    const oldWaiting = waiting.filter(t => knownGids.has(t.gid))
+
+    if (newActive.length > 0 || newWaiting.length > 0) {
+      tasks.value = {
+        ...tasks.value,
+        active: [...newActive, ...oldActive],
+        waiting: [...newWaiting, ...oldWaiting],
+      }
+    }
+  }
+
   async function addUri(uri: string) {
     try {
       const res = await AddUri(uri)
+      const knownGids = new Set<string>()
+      for (const t of tasks.value.active) knownGids.add(t.gid)
+      for (const t of tasks.value.waiting) knownGids.add(t.gid)
       await fetchTasks()
+      prependNewTasks(knownGids)
       immediateUpdateTrayIcon()
 
       if (
@@ -385,7 +408,11 @@ export function setupActions(state: TaskState) {
       const res = await BatchAddUri(uris)
       const downloadGroupStore = useDownloadGroupStore()
       downloadGroupStore.addPlaceholdersFromDownloadGroups(res.groups, 'batch-add')
+      const knownGids = new Set<string>()
+      for (const t of tasks.value.active) knownGids.add(t.gid)
+      for (const t of tasks.value.waiting) knownGids.add(t.gid)
       await fetchTasks()
+      prependNewTasks(knownGids)
       immediateUpdateTrayIcon()
       if (
         pollingContextEnabled.value &&

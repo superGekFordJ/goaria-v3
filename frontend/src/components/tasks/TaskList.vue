@@ -1,5 +1,14 @@
 <script setup lang="ts">
-  import { ref, computed, onMounted, onUnmounted, watch, onActivated, onDeactivated } from 'vue'
+  import {
+    ref,
+    computed,
+    onMounted,
+    onUnmounted,
+    watch,
+    onActivated,
+    onDeactivated,
+    nextTick,
+  } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { RecycleScroller } from 'vue-virtual-scroller'
   import { useTaskStore } from '../../stores/task'
@@ -13,6 +22,7 @@
   import DownloadGroupRemoveDialog from '../groups/DownloadGroupRemoveDialog.vue'
   import { CheckCircle2, SearchX, Layers3, Download } from 'lucide-vue-next'
   import { useTaskKeyboard } from '../../composables/useTaskKeyboard'
+  import { useFLIPAnimation } from '../../composables/useFLIPAnimation'
   import TaskListEmptyState from './TaskListEmptyState.vue'
   import TaskListDeleteModal from './TaskListDeleteModal.vue'
   import TaskListBatchDeleteModal from './TaskListBatchDeleteModal.vue'
@@ -214,67 +224,39 @@
     return delTarget.value.files[0].path.split(/[\\/]/).pop() || t('taskList.unknownTask')
   })
 
-  const listContainer = ref<HTMLElement | null>(null)
-  // 优化：复用 Map 实例减少 GC 压力
-  const prevOrderByGid = new Map<string, number>()
+  const taskContainer = ref<HTMLElement | null>(null)
+  const { capture, play, clear } = useFLIPAnimation(taskContainer)
 
-  const scrollToTask = (gid: string, block: 'start' | 'center' | 'end' | 'nearest' = 'center') => {
-    const container = listContainer.value
-    if (!container) return
-    const el = container.querySelector<HTMLElement>(`[data-gid="${gid}"]`)
-    if (!el) return
-    el.scrollIntoView({ behavior: 'smooth', block })
-  }
+  const skipNextFlip = ref(false)
 
-  const scrollToEntry = (
-    entryKey: string,
-    block: 'start' | 'center' | 'end' | 'nearest' = 'center',
-  ) => {
-    const container = listContainer.value
-    if (!container) return
-    const el = container.querySelector<HTMLElement>(`[data-entry-key="${entryKey}"]`)
-    if (!el) return
-    el.scrollIntoView({ behavior: 'smooth', block })
-  }
+  // Pre-watcher captures First rects before Vue patches DOM
+  watch(
+    displayEntries,
+    () => {
+      capture()
+    },
+    { flush: 'pre' },
+  )
 
+  // O2: boundary crossing wipes rects and skips one FLIP cycle — DOM structure changes
+  // between <div> and <RecycleScroller>, making First/Last comparison meaningless.
+  watch(useVirtualList, () => {
+    clear()
+    skipNextFlip.value = true
+  })
+
+  // Post-watcher executes FLIP Play phase after Vue updates DOM
   watch(
     displayEntries,
     (newList, oldList) => {
-      if (useVirtualList.value || !oldList) {
-        prevOrderByGid.clear()
-        newList.forEach((entry, i) => prevOrderByGid.set(entry.key, i))
+      if (!oldList || oldList.length === 0) return
+      if (skipNextFlip.value) {
+        skipNextFlip.value = false
         return
       }
-
-      // Find any task that moved significantly (index changed by >= 2)
-      let movedKey: string | null = null
-      let movedDirection: 'up' | 'down' = 'up'
-
-      for (const [key, oldIdx] of prevOrderByGid) {
-        const newIdx = newList.findIndex(entry => entry.key === key)
-        if (newIdx === -1) continue // task removed
-        const delta = newIdx - oldIdx
-        if (Math.abs(delta) >= 2) {
-          movedKey = key
-          movedDirection = delta < 0 ? 'up' : 'down'
-          break
-        }
-      }
-
-      // Update order tracking
-      prevOrderByGid.clear()
-      newList.forEach((entry, i) => prevOrderByGid.set(entry.key, i))
-
-      if (!movedKey) return
-
-      // Wait for TransitionGroup animation to complete (500ms is the animation duration)
-      setTimeout(() => {
-        if (movedKey?.startsWith('task:')) {
-          scrollToTask(movedKey.slice('task:'.length), movedDirection === 'up' ? 'start' : 'end')
-        } else if (movedKey) {
-          scrollToEntry(movedKey, movedDirection === 'up' ? 'start' : 'end')
-        }
-      }, 550)
+      nextTick(() => {
+        play()
+      })
     },
     { flush: 'post' },
   )
@@ -465,18 +447,17 @@
     />
 
     <!-- Task List Container -->
-    <div class="flex-1 min-h-0 relative">
+    <div ref="taskContainer" class="flex-1 min-h-0 relative">
       <!-- Empty State -->
       <TaskListEmptyState :show="displayEntries.length === 0" :config="emptyStateConfig" />
 
       <!-- Virtual Scrolling Task List -->
       <div
         v-if="displayEntries.length > 0 && !useVirtualList"
-        ref="listContainer"
         :key="isGroupDetailMode ? `group-detail:${props.detailKey}` : uiStore.activeTab"
         class="h-full overflow-y-auto px-5 py-4"
       >
-        <TransitionGroup name="task-list" tag="div" class="flex flex-col gap-4">
+        <div class="flex flex-col gap-4">
           <div
             v-for="(entry, index) in displayEntries"
             :key="entry.key"
@@ -502,7 +483,7 @@
               @remove="openInlineRemoveDialog"
             />
           </div>
-        </TransitionGroup>
+        </div>
       </div>
 
       <RecycleScroller
@@ -580,21 +561,6 @@
 </template>
 
 <style scoped>
-  /* List transition animations */
-  .task-list-move {
-    transition: all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
-  }
-
-  .task-list-enter-active {
-    animation: spring-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
-  }
-
-  .task-list-leave-active {
-    animation: spring-out 0.3s ease-out both;
-    position: absolute;
-    width: calc(100% - 40px);
-  }
-
   /* All extracted styles moved to respective sub-components */
 
   /* Virtual scroller customization */
