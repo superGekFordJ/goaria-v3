@@ -61,7 +61,11 @@
         ref="refractionLayer"
         class="absolute top-0 left-0 -z-10 h-full w-full overflow-hidden transition-all duration-300 pointer-events-none"
         :class="[radius, baseColorClass]"
-        :style="filterId ? { backdropFilter: `url(#${filterId})`, WebkitBackdropFilter: `url(#${filterId})` } : {}"
+        :style="
+          filterId
+            ? { backdropFilter: `url(#${filterId})`, WebkitBackdropFilter: `url(#${filterId})` }
+            : {}
+        "
       >
         <!-- Interactive Hover Glow -->
         <div
@@ -111,6 +115,5 @@
     >
       <slot />
     </div>
-
   </component>
 </template>

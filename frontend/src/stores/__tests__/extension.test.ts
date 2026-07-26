@@ -44,7 +44,12 @@ describe('extension store', () => {
 
   it('pair() sets pairingPanelOpen and pairUrl after successful PairExtension', async () => {
     bindingMocks.PairExtension.mockResolvedValue('http://127.0.0.1:16810/pair')
-    bindingMocks.GetExtensionStatus.mockResolvedValue({ status: 'listening', ws_port: 16801, connected_clients: 0, paired: false })
+    bindingMocks.GetExtensionStatus.mockResolvedValue({
+      status: 'listening',
+      ws_port: 16801,
+      connected_clients: 0,
+      paired: false,
+    })
 
     const store = useExtensionStore()
     await store.pair()
@@ -56,7 +61,12 @@ describe('extension store', () => {
 
   it('pair() does not open panel when PairExtension returns empty', async () => {
     bindingMocks.PairExtension.mockResolvedValue('')
-    bindingMocks.GetExtensionStatus.mockResolvedValue({ status: 'listening', ws_port: 16801, connected_clients: 0, paired: false })
+    bindingMocks.GetExtensionStatus.mockResolvedValue({
+      status: 'listening',
+      ws_port: 16801,
+      connected_clients: 0,
+      paired: false,
+    })
 
     const store = useExtensionStore()
     await store.pair()
@@ -66,7 +76,12 @@ describe('extension store', () => {
   })
 
   it('extension:paired listener closes panel, clears pairUrl, and clears clipboard', async () => {
-    bindingMocks.GetExtensionStatus.mockResolvedValue({ status: 'paired', ws_port: 16801, connected_clients: 1, paired: true })
+    bindingMocks.GetExtensionStatus.mockResolvedValue({
+      status: 'paired',
+      ws_port: 16801,
+      connected_clients: 1,
+      paired: true,
+    })
 
     const { clearClipboardIfMatches } = await import('../../utils/clipboard')
 
@@ -123,7 +138,12 @@ describe('extension store', () => {
 
   it('unpair() sets unpairRotatedNotice and reflects unpaired state', async () => {
     bindingMocks.UnpairExtension.mockResolvedValue(undefined)
-    bindingMocks.GetExtensionStatus.mockResolvedValue({ status: 'listening', ws_port: 16801, connected_clients: 0, paired: false })
+    bindingMocks.GetExtensionStatus.mockResolvedValue({
+      status: 'listening',
+      ws_port: 16801,
+      connected_clients: 0,
+      paired: false,
+    })
 
     const store = useExtensionStore()
     store.paired = true

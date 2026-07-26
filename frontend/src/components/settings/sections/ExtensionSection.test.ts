@@ -3,7 +3,7 @@ import { defineComponent, reactive } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ExtensionSection from './ExtensionSection.vue'
 
-vi.mock('vue-i18n', async (importOriginal) => {
+vi.mock('vue-i18n', async importOriginal => {
   const actual = await importOriginal<typeof import('vue-i18n')>()
   return {
     ...actual,

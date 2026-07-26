@@ -39,14 +39,7 @@
     :aria-hidden="label ? undefined : 'true'"
   >
     <defs v-if="isChipped">
-      <linearGradient
-        :id="gradientId"
-        x1="2"
-        y1="2"
-        x2="22"
-        y2="22"
-        gradientUnits="userSpaceOnUse"
-      >
+      <linearGradient :id="gradientId" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
         <stop offset="0%" stop-color="var(--skin-accent-from)" />
         <stop offset="100%" stop-color="var(--skin-accent-to)" />
       </linearGradient>

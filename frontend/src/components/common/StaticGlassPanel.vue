@@ -52,7 +52,14 @@
       <div
         class="absolute inset-0 -z-10 pointer-events-none transition-all duration-300 backdrop-blur-2xl dark:backdrop-blur-xl"
         :class="[radius, baseColorClass]"
-        :style="refractionFilter ? { backdropFilter: `blur(16px) url(#${refractionFilter})`, WebkitBackdropFilter: `blur(16px) url(#${refractionFilter})` } : {}"
+        :style="
+          refractionFilter
+            ? {
+                backdropFilter: `blur(16px) url(#${refractionFilter})`,
+                WebkitBackdropFilter: `blur(16px) url(#${refractionFilter})`,
+              }
+            : {}
+        "
       ></div>
 
       <!-- Soft Glass Edge & Shadow Layer -->

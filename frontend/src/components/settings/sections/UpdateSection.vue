@@ -184,7 +184,9 @@
           <div
             class="w-9 h-5 rounded-full relative transition-all duration-300 cursor-pointer shrink-0 border"
             :class="[
-              includePreRelease ? 'bg-[var(--neon-primary)] border-transparent' : 'bg-[var(--btn-glass-bg)] border-[var(--glass-border)]',
+              includePreRelease
+                ? 'bg-[var(--neon-primary)] border-transparent'
+                : 'bg-[var(--btn-glass-bg)] border-[var(--glass-border)]',
             ]"
             role="switch"
             tabindex="0"
@@ -195,9 +197,7 @@
           >
             <div
               class="absolute top-[2px] w-3.5 h-3.5 rounded-full bg-[var(--card-bg)] shadow-md transition-all duration-300"
-              :class="[
-                includePreRelease ? 'left-[18px]' : 'left-[2px]',
-              ]"
+              :class="[includePreRelease ? 'left-[18px]' : 'left-[2px]']"
             ></div>
           </div>
         </div>
@@ -215,7 +215,9 @@
 
         <!-- Up to Date Status -->
         <template v-else-if="status === 'idle' && upToDate">
-          <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20">
+          <div
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
+          >
             <CheckCircle :size="12" class="text-[var(--status-complete)]" />
             <span class="text-[10px] font-mono-data text-[var(--status-complete)]">
               {{ t('update.upToDate') }}
@@ -243,7 +245,9 @@
         <template v-else-if="status === 'error' && availableReleases.length === 0">
           <div class="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-[var(--status-error)]/10">
             <AlertCircle :size="12" class="text-[var(--status-error)]" />
-            <span class="text-[10px] font-mono-data text-[var(--status-error)] max-w-[120px] truncate">
+            <span
+              class="text-[10px] font-mono-data text-[var(--status-error)] max-w-[120px] truncate"
+            >
               {{ errorMsg || t('update.error') }}
             </span>
           </div>
@@ -342,7 +346,7 @@
               :class="[
                 status === 'downloading' || status === 'ready' || status === 'checking'
                   ? 'bg-transparent border border-[var(--glass-border)] text-[var(--app-text-muted)] opacity-50 cursor-not-allowed'
-                  : 'bg-[var(--neon-primary)]/10 border border-[var(--neon-primary)]/30 hover:bg-[var(--neon-primary)]/20 text-[var(--neon-primary)]'
+                  : 'bg-[var(--neon-primary)]/10 border border-[var(--neon-primary)]/30 hover:bg-[var(--neon-primary)]/20 text-[var(--neon-primary)]',
               ]"
               :disabled="status === 'downloading' || status === 'ready' || status === 'checking'"
               @click="startUpdate(release)"

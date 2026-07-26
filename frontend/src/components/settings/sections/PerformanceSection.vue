@@ -106,9 +106,13 @@
           <div class="group relative flex items-center">
             <Info :size="12" class="cursor-help hover:text-[var(--app-text)] transition-colors" />
             <!-- Tooltip Popup -->
-            <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 rounded-lg glass-panel-solid opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[100] text-center text-[10px] font-medium normal-case tracking-normal pointer-events-none">
+            <div
+              class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 rounded-lg glass-panel-solid opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[100] text-center text-[10px] font-medium normal-case tracking-normal pointer-events-none"
+            >
               {{ t('performance.surgeExclusiveTooltip') }}
-              <div class="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 glass-panel-solid-arrow transform rotate-45"></div>
+              <div
+                class="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 glass-panel-solid-arrow transform rotate-45"
+              ></div>
             </div>
           </div>
         </label>
@@ -148,7 +152,10 @@
                   <span class="text-sm font-mono-data font-medium">
                     {{ n }} {{ t('performance.threads') }}
                   </span>
-                  <span v-if="n === '24' || n === '32'" class="flex items-center gap-1 text-[9px] font-bold text-[var(--neon-primary)] bg-[var(--neon-primary)]/10 px-1.5 py-0.5 rounded uppercase tracking-wider">
+                  <span
+                    v-if="n === '24' || n === '32'"
+                    class="flex items-center gap-1 text-[9px] font-bold text-[var(--neon-primary)] bg-[var(--neon-primary)]/10 px-1.5 py-0.5 rounded uppercase tracking-wider"
+                  >
                     Surge
                   </span>
                 </div>

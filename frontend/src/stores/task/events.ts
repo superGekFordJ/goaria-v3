@@ -223,7 +223,10 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
 
         if (incoming?.download_group && getActivePinia()) {
           const downloadGroupStore = useDownloadGroupStore()
-          downloadGroupStore.addPlaceholdersFromDownloadGroups([incoming.download_group], 'websocket')
+          downloadGroupStore.addPlaceholdersFromDownloadGroups(
+            [incoming.download_group],
+            'websocket',
+          )
         }
 
         if (hasValidFiles(incoming) || hasTaskGroupMetadata(incoming)) {

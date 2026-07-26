@@ -5,8 +5,9 @@
   -webkit-backdrop-filter: none;
   border: 1px solid rgba(255, 255, 255, 0.05); /* 降低外边框粗糙感，避免与高光叠加发灰 */
   box-shadow:
-    inset 1px 1px 0 0 rgba(255, 255, 255, 0.18),   /* 改为 0 模糊半径的硬边高光，形成极细的 1px 锐利反光线，彻底解决发灰色带问题 */
-    inset -1px -1px 2px 0 rgba(0, 0, 0, 0.4),
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.18),
+    /* 改为 0 模糊半径的硬边高光，形成极细的 1px 锐利反光线，彻底解决发灰色带问题 */ inset -1px -1px
+      2px 0 rgba(0, 0, 0, 0.4),
     var(--glass-shadow);
 }
 
@@ -42,22 +43,30 @@
 .neon-glow-cyan {
   box-shadow:
     0 0 calc(10px * var(--effects-glow-intensity, 1)) var(--neon-glow),
-    0 0 calc(20px * var(--effects-glow-intensity, 1)) color-mix(in srgb, var(--neon-primary) 30%, transparent),
-    0 0 calc(40px * var(--effects-glow-intensity, 1)) color-mix(in srgb, var(--neon-primary) 15%, transparent);
+    0 0 calc(20px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-primary) 30%, transparent),
+    0 0 calc(40px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-primary) 15%, transparent);
 }
 
 .neon-glow-green {
   box-shadow:
-    0 0 calc(10px * var(--effects-glow-intensity, 1)) color-mix(in srgb, var(--neon-secondary) 40%, transparent),
-    0 0 calc(20px * var(--effects-glow-intensity, 1)) color-mix(in srgb, var(--neon-secondary) 20%, transparent),
-    0 0 calc(40px * var(--effects-glow-intensity, 1)) color-mix(in srgb, var(--neon-secondary) 10%, transparent);
+    0 0 calc(10px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-secondary) 40%, transparent),
+    0 0 calc(20px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-secondary) 20%, transparent),
+    0 0 calc(40px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-secondary) 10%, transparent);
 }
 
 .neon-glow-blue {
   box-shadow:
-    0 0 calc(10px * var(--effects-glow-intensity, 1)) color-mix(in srgb, var(--neon-blue) 40%, transparent),
-    0 0 calc(20px * var(--effects-glow-intensity, 1)) color-mix(in srgb, var(--neon-blue) 20%, transparent),
-    0 0 calc(40px * var(--effects-glow-intensity, 1)) color-mix(in srgb, var(--neon-blue) 10%, transparent);
+    0 0 calc(10px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-blue) 40%, transparent),
+    0 0 calc(20px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-blue) 20%, transparent),
+    0 0 calc(40px * var(--effects-glow-intensity, 1))
+      color-mix(in srgb, var(--neon-blue) 10%, transparent);
 }
 
 /* === Etched Micro-Glass Panel (Recessed Groove & Matte Grain) === */
@@ -73,7 +82,9 @@
     inset 1px 1px 3px 0 rgba(0, 0, 0, 0.55),
     inset -1px -1px 2px 0 rgba(255, 255, 255, 0.04),
     0 1px 0 0 rgba(255, 255, 255, 0.03);
-  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+  transition:
+    border-color 0.25s ease,
+    box-shadow 0.25s ease;
 }
 
 /* Local noise overlay simulating physical micro-pitted matte/frosted texture */
@@ -205,9 +216,13 @@
     rgba(255, 255, 255, 0.1) 280deg,
     rgba(255, 255, 255, 0.15) 360deg
   );
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
   mask-composite: exclude;
 }
 
@@ -223,4 +238,3 @@
     rgba(255, 255, 255, 0.9) 360deg
   );
 }
-
