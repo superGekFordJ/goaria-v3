@@ -176,7 +176,6 @@ describe('useFLIPAnimation', () => {
     expect(el.style.transition).toBe('')
     expect(el.style.zIndex).toBe('')
     expect(el.style.position).toBe('')
-    expect(el.style.opacity).toBe('')
     expect(el.style.filter).toBe('')
     expect(el.style.boxShadow).toBe('')
     expect(el.style.borderRadius).toBe('')

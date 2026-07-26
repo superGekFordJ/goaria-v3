@@ -254,6 +254,8 @@
         skipNextFlip.value = false
         return
       }
+      // Reduced effects: snap to new positions instantly, no FLIP transition.
+      if (uiStore.effects === 'reduced') return
       nextTick(() => {
         play()
       })

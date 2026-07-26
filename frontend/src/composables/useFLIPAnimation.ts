@@ -21,8 +21,6 @@ const DEFAULT_THRESHOLD = 2
 const DEFAULT_MAJOR_MOVE_THRESHOLD = 40
 const DEFAULT_DURATION = 0.45
 const DEFAULT_FALLBACK_TIMEOUT = 600
-const MAJOR_MOVE_BOX_SHADOW = '0 12px 24px rgba(0,0,0,0.35)'
-const SQUIRCLE_RADIUS = 'var(--radius-squircle-xl)'
 
 export function useFLIPAnimation(
   containerRef: Ref<HTMLElement | null>,
@@ -91,7 +89,7 @@ export function useFLIPAnimation(
     // No movement and no genuinely entering items -> skip the play phase entirely.
     if (deltas.length === 0 && !hasEntering) return
 
-    const transitionString = `transform ${duration}s cubic-bezier(0.2, 0.8, 0.2, 1), opacity ${duration}s ease, box-shadow ${duration}s ease`
+    const transitionString = `transform ${duration}s cubic-bezier(0.2, 0.8, 0.2, 1)`
 
     deltas.forEach(({ el, deltaY, isMajorMove }) => {
       // N1 generation counter: stale cleanup closures bail out when a newer cycle owns the element.
@@ -100,12 +98,6 @@ export function useFLIPAnimation(
 
       el.style.position = 'relative'
       el.style.zIndex = isMajorMove ? '30' : '1'
-      el.style.opacity = isMajorMove ? '0.88' : '1'
-      // D1: box-shadow replaces filter:drop-shadow to avoid re-rasterization cost.
-      if (isMajorMove) {
-        el.style.boxShadow = MAJOR_MOVE_BOX_SHADOW
-        el.style.borderRadius = SQUIRCLE_RADIUS
-      }
       el.style.animation = 'none'
       el.style.animationDelay = '0s'
       el.style.transform = `translateY(${deltaY}px) ${isMajorMove ? 'scale(1.02)' : 'scale(1)'}`
@@ -117,9 +109,6 @@ export function useFLIPAnimation(
       requestAnimationFrame(() => {
         el.style.transition = transitionString
         el.style.transform = 'translateY(0px) scale(1)'
-        if (isMajorMove) {
-          el.style.opacity = '1'
-        }
       })
 
       const cleanup = () => {
@@ -129,10 +118,7 @@ export function useFLIPAnimation(
         el.style.animation = 'none'
         el.style.zIndex = ''
         el.style.position = ''
-        el.style.opacity = ''
         el.style.filter = ''
-        el.style.boxShadow = ''
-        el.style.borderRadius = ''
         el.style.animationDelay = ''
         el.classList.remove('animate-spring-in')
         el.removeEventListener('transitionend', onTransitionEnd)
