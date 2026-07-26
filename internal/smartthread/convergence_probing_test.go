@@ -271,7 +271,9 @@ func TestConvergence_MultiTask_WindowInvalidation(t *testing.T) {
 }
 
 // TestConvergence_RateLimitSkip_SkipsProbeButRecordsPeak verifies a true positive
-// rate limit blocks Probe-Up/Probe-Down while still allowing D3 Peak recording.
+// rate limit blocks Probe pendingScale while still allowing D3 Peak recording.
+// Uses processTask (not tick): nil Surge pool makes ScaleWorkers return 0 and D5
+// reset phaseStable, so post-tick phase checks can false-green.
 func TestConvergence_RateLimitSkip_SkipsProbeButRecordsPeak(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
@@ -299,41 +301,62 @@ func TestConvergence_RateLimitSkip_SkipsProbeButRecordsPeak(t *testing.T) {
 	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, rateChecker, 0, 0)
 	defer ct.Stop()
 
-	// Set up state with baseline
+	// Baseline + momentum: blocks Probe-Up, prefers Probe-Down once preheated.
 	ct.mu.Lock()
 	s := ct.getOrCreateState(gid)
 	s.prevCompleted = 10 * 1024 * 1024
 	setPrevSampleAgoState(s, 5*time.Second)
 	s.phase = phaseStable
+	s.probeMomentum = true
+	s.probeCooldown = 0
 	ct.mu.Unlock()
 
 	tracker.tasks[0].CompletedLength = 60 * 1024 * 1024
-	ct.tick()
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil)
+	if ok || ps.delta != 0 {
+		t.Fatalf("unexpected pending scale on first sample: ok=%v delta=%d", ok, ps.delta)
+	}
 
-	// Second productive tick so sustainCount >= peakSustainCycles and D3 adopts.
+	// Second sample: sustainCount reaches peakSustainCycles → D3 adopts and
+	// Probe-Down is eligible; rate limit must suppress pendingScale.
 	tracker.tasks[0].CompletedLength = 110 * 1024 * 1024
 	ct.mu.Lock()
-	if st, ok := ct.states[gid]; ok {
-		setPrevSampleAgoState(st, 5*time.Second)
-	}
+	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
-	ct.tick()
 
-	ct.mu.Lock()
-	s = ct.states[gid]
-	ct.mu.Unlock()
-	if s.phase == phaseSettling {
-		t.Error("expected no probe when rate-limited, but phase=settling")
+	ps, ok = ct.processTask(tracker.tasks[0], false, nil)
+	if ok || ps.delta != 0 {
+		t.Fatalf("expected no pending scale under rate limit, got ok=%v delta=%d", ok, ps.delta)
 	}
-	if s.phase == phaseProbingUp {
-		t.Error("expected no probe-up when rate-limited, but phase=probingUp")
-	}
+
 	if len(recorder.records) == 0 {
 		t.Error("expected D3 RecordPeakEfficiency under true rate limit, got none")
 	}
 	bps, ready := ct.LastRawBps(gid)
 	if !ready || bps <= 0 {
 		t.Errorf("expected D2 LastRawBps ready under true rate limit, got (%d,%v)", bps, ready)
+	}
+
+	ct.mu.Lock()
+	s = ct.states[gid]
+	eligibleDown := s.phase == phaseStable &&
+		s.probeMomentum &&
+		s.probeCooldown == 0 &&
+		(s.peakWorkers > 0 || s.sustainCount >= peakSustainCycles)
+	ct.mu.Unlock()
+	if !eligibleDown {
+		t.Fatalf("expected Probe-Down-eligible state under cap (proves gate, not missing preconditions)")
+	}
+
+	// Control: same eligibility without the cap must emit Probe-Down pendingScale.
+	rateChecker.limited[gid] = false
+	tracker.tasks[0].CompletedLength = 160 * 1024 * 1024
+	ct.mu.Lock()
+	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
+	ct.mu.Unlock()
+	ps, ok = ct.processTask(tracker.tasks[0], false, nil)
+	if !ok || ps.delta >= 0 {
+		t.Fatalf("without rate limit expected Probe-Down (delta<0), got ok=%v delta=%d", ok, ps.delta)
 	}
 }
 

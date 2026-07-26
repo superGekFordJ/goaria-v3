@@ -212,9 +212,6 @@ func TestHandleTaskComplete_RateLimitSkip(t *testing.T) {
 
 // TestHandleTaskComplete_ZeroRateLimitStillRecords verifies RateLimitSet=true with
 // RateLimit=0 (explicit unlimited / false-positive shape) still AddRecordV2.
-
-// TestHandleTaskComplete_ZeroRateLimitStillRecords verifies RateLimitSet=true with
-// RateLimit=0 (explicit unlimited / false-positive shape) still AddRecordV2.
 func TestHandleTaskComplete_ZeroRateLimitStillRecords(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
