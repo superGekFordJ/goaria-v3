@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/surge/config"
+	probing "goaria-v3/internal/surge/probe"
 	"goaria-v3/internal/surge/scheduler"
 	"goaria-v3/internal/surge/store"
 	"goaria-v3/internal/surge/types"
@@ -229,5 +230,44 @@ func TestLifecycleManager_ResumeBatch_CorruptStateIgnored(t *testing.T) {
 	}
 	if pool.GetStatus("id-corrupt") == nil {
 		t.Errorf("expected id-corrupt to be in pool")
+	}
+}
+
+// TestBuildDownloadRecord_DefaultUnlimitedKeepsRateLimitUnset verifies default
+// "0" does not set RateLimitSet; a positive default does.
+func TestBuildDownloadRecord_DefaultUnlimitedKeepsRateLimitUnset(t *testing.T) {
+	progressCh := make(chan types.DownloadEvent, 4)
+	pool := scheduler.New(progressCh, 1)
+	mgr := NewLifecycleManager(pool, nil, nil)
+	defer mgr.Shutdown()
+
+	destDir := t.TempDir()
+	probe := &probing.ProbeResult{FileSize: 1024, SupportsRange: true}
+	req := &DownloadRequest{URL: "https://example.com/f.bin"}
+
+	cfg, err := mgr.buildDownloadRecord(req, "rl-unlimited", destDir, "f.bin", probe)
+	if err != nil {
+		t.Fatalf("buildDownloadRecord: %v", err)
+	}
+	if cfg.RateLimitSet {
+		t.Error("default \"0\": RateLimitSet=true, want false")
+	}
+	if cfg.RateLimit != 0 {
+		t.Errorf("default \"0\": RateLimit=%d, want 0", cfg.RateLimit)
+	}
+
+	settings := mgr.GetSettings()
+	settings.Network.DefaultDownloadRateLimit.Value = "1MB"
+	mgr.ApplySettings(settings)
+
+	cfg2, err := mgr.buildDownloadRecord(req, "rl-capped", destDir, "g.bin", probe)
+	if err != nil {
+		t.Fatalf("buildDownloadRecord positive default: %v", err)
+	}
+	if !cfg2.RateLimitSet {
+		t.Error("default \"1MB\": RateLimitSet=false, want true")
+	}
+	if cfg2.RateLimit <= 0 {
+		t.Errorf("default \"1MB\": RateLimit=%d, want >0", cfg2.RateLimit)
 	}
 }

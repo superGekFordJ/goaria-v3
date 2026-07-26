@@ -58,8 +58,9 @@ type PeakEfficiencyRecorder interface {
 	RecordPeakEfficiency(gid string, peak int64, workers int)
 }
 
-// RateLimitChecker reports whether a download is currently rate-limited.
-// Returns (bps, true) if an effective per-download or global rate limit is active.
+// RateLimitChecker reports whether a download has an active positive bandwidth cap.
+// Returns (bps, true) only when an effective per-download rate limit with bps > 0
+// is in force. Callers must treat bps <= 0 as not limited (Surge "0"/unlimited).
 type RateLimitChecker interface {
 	GetRateLimit(gid string) (int64, bool)
 }
@@ -652,10 +653,11 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 		lk = limitKey(task.Scope, task.Domain)
 	}
 
-	// Rate limit guard (Edge Case 4): skip ratchet and probe when rate-limited.
+	// Edge Case 4: positive per-download cap suppresses Probe-Up/Probe-Down only.
+	// D2 rawBps / D3 RecordPeakEfficiency still run under a true rate limit.
 	rateLimited := false
 	if c.rateChecker != nil {
-		if _, limited := c.rateChecker.GetRateLimit(gid); limited {
+		if bps, limited := c.rateChecker.GetRateLimit(gid); limited && bps > 0 {
 			rateLimited = true
 		}
 	}
@@ -665,8 +667,8 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	defer c.mu.Unlock()
 
 	// Tail blackout zone: per-gid permanent sleep when totalRemaining <
-	// activeWorkers × effectiveMinChunk. Runs before windowInvalidated/
-	// rateLimited early-return because blackout is permanent.
+	// activeWorkers × effectiveMinChunk. Runs before windowInvalidated
+	// early-return because blackout is permanent.
 	if s.blackout {
 		s.prevCompleted = task.CompletedLength
 		s.prevSampleAt = time.Now()
@@ -725,9 +727,9 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 		}
 	}
 
-	// --- active probing state machine ---
-	// Skip probe/ratchet when window invalidated or rate-limited.
-	if windowInvalidated || rateLimited {
+	// Window invalidation: skip D2/D3 and reset sustain. Rate-limit does not
+	// participate — it only gates Probe-Up/Probe-Down below.
+	if windowInvalidated {
 		s.sustainCount = 0
 		s.prevCompleted = task.CompletedLength
 		s.prevSampleAt = time.Now()
@@ -1084,7 +1086,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 				}
 			}
 
-			if shouldProbe {
+			if shouldProbe && !rateLimited {
 				// Skip probe-down when rawBps == 0: a zero-speed task is either
 				// dead or stalled. Killing workers won't help and causes a cold
 				// probe-down cycle (probeBaseline=0 dead zone).

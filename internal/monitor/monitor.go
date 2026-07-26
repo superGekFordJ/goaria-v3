@@ -416,9 +416,9 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 			// for BBR (GetDomainPeak/GetRTprop can't match) and would only pollute V_global_peak.
 			log.Printf("[Monitor] Skipping speed stats for task %s: no domain/URL available", task.GID)
 		} else if he, ok := m.engine.(*rpc.HybridEngine); ok {
-			if _, rateLimited := he.GetRateLimit(task.GID); rateLimited {
-				// Rate limit guard: skip AddRecordV2 to avoid polluting speedstats with
-				// rate-limited throughput (which doesn't reflect server capacity for BBR).
+			if bps, rateLimited := he.GetRateLimit(task.GID); rateLimited && bps > 0 {
+				// Positive cap only: skip AddRecordV2 so capped throughput does not
+				// pollute BBR. Zero/unlimited (bps<=0) records normally.
 				log.Printf("[Monitor] Skipping speed stats for task %s: rate-limited (would pollute BBR)", task.GID)
 			} else {
 				speedstats.AddRecordV2(task.PeakSpeed, threadCount, task.TotalLength, isExploration, task.TTFBMs, task.Domain, task.Scope, task.PeakEnvKey)

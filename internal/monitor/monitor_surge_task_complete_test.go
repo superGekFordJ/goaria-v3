@@ -199,6 +199,7 @@ func TestHandleTaskComplete_RateLimitSkip(t *testing.T) {
 	task.Domain = "example.com"
 	task.Scope = "wan"
 	task.FilePath = "D:\\Downloads\\limited.zip"
+	task.PeakEnvKey = "testenv"
 
 	before := speedstatsRecordCount()
 	m.handleTaskComplete(task)
@@ -206,6 +207,54 @@ func TestHandleTaskComplete_RateLimitSkip(t *testing.T) {
 
 	if after != before {
 		t.Errorf("expected no new speedstats record when rate-limited, got %d new records", after-before)
+	}
+}
+
+// TestHandleTaskComplete_ZeroRateLimitStillRecords verifies RateLimitSet=true with
+// RateLimit=0 (explicit unlimited / false-positive shape) still AddRecordV2.
+
+// TestHandleTaskComplete_ZeroRateLimitStillRecords verifies RateLimitSet=true with
+// RateLimit=0 (explicit unlimited / false-positive shape) still AddRecordV2.
+func TestHandleTaskComplete_ZeroRateLimitStillRecords(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
+		"zero-cap": {
+			URL:           "https://example.com/fast.zip",
+			ID:            "zero-cap",
+			RateLimit:     0,
+			RateLimitSet:  true,
+			ProgressState: progress.New("zero-cap", 200000000),
+		},
+	})
+	surge := rpc.NewSurgeEngineForTesting(pool)
+	he := rpc.NewHybridEngine(nil, surge)
+
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_zero-cap", 200000000, "https://example.com/fast.zip", 8, "active")
+
+	m := &Monitor{engine: he, tracker: tracker}
+
+	task := tracker.tasks["sg_zero-cap"]
+	task.Status = "complete"
+	task.PeakSpeed = 50 * 1024 * 1024
+	task.ThreadCount = 8
+	task.Domain = "example.com"
+	task.Scope = "wan"
+	task.FilePath = "D:\\Downloads\\fast.zip"
+	task.PeakEnvKey = "testenv"
+
+	before := speedstatsRecordCount()
+	m.handleTaskComplete(task)
+	after := speedstatsRecordCount()
+
+	if after != before+1 {
+		t.Errorf("expected 1 new speedstats record for zero-cap unlimited, got %d", after-before)
 	}
 }
 

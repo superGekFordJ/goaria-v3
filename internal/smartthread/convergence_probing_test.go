@@ -30,9 +30,11 @@ func (m *mockPeakRecorder) RecordPeakEfficiency(gid string, peak int64, workers 
 	}{peak, workers}
 }
 
-// mockRateChecker implements RateLimitChecker for testing
+// mockRateChecker implements RateLimitChecker for testing.
+// When limited[gid]=true, returns bps[gid] if set, else 1_000_000 (true positive cap).
 type mockRateChecker struct {
 	limited map[string]bool
+	bps     map[string]int64
 }
 
 func (m *mockRateChecker) GetRateLimit(gid string) (int64, bool) {
@@ -44,6 +46,11 @@ func (m *mockRateChecker) GetRateLimit(gid string) (int64, bool) {
 		return 0, false
 	}
 	if limited {
+		if m.bps != nil {
+			if b, ok := m.bps[gid]; ok {
+				return b, true
+			}
+		}
 		return 1_000_000, true
 	}
 	return 0, false
@@ -263,8 +270,9 @@ func TestConvergence_MultiTask_WindowInvalidation(t *testing.T) {
 	}
 }
 
-// TestConvergence_RateLimitSkip verifies that rate-limited tasks don't get probed.
-func TestConvergence_RateLimitSkip(t *testing.T) {
+// TestConvergence_RateLimitSkip_SkipsProbeButRecordsPeak verifies a true positive
+// rate limit blocks Probe-Up/Probe-Down while still allowing D3 Peak recording.
+func TestConvergence_RateLimitSkip_SkipsProbeButRecordsPeak(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
@@ -302,14 +310,75 @@ func TestConvergence_RateLimitSkip(t *testing.T) {
 	tracker.tasks[0].CompletedLength = 60 * 1024 * 1024
 	ct.tick()
 
+	// Second productive tick so sustainCount >= peakSustainCycles and D3 adopts.
+	tracker.tasks[0].CompletedLength = 110 * 1024 * 1024
+	ct.mu.Lock()
+	if st, ok := ct.states[gid]; ok {
+		setPrevSampleAgoState(st, 5*time.Second)
+	}
+	ct.mu.Unlock()
+	ct.tick()
+
 	ct.mu.Lock()
 	s = ct.states[gid]
 	ct.mu.Unlock()
 	if s.phase == phaseSettling {
 		t.Error("expected no probe when rate-limited, but phase=settling")
 	}
-	if len(recorder.records) > 0 {
-		t.Errorf("expected no peak recording when rate-limited, got %d records", len(recorder.records))
+	if s.phase == phaseProbingUp {
+		t.Error("expected no probe-up when rate-limited, but phase=probingUp")
+	}
+	if len(recorder.records) == 0 {
+		t.Error("expected D3 RecordPeakEfficiency under true rate limit, got none")
+	}
+	bps, ready := ct.LastRawBps(gid)
+	if !ready || bps <= 0 {
+		t.Errorf("expected D2 LastRawBps ready under true rate limit, got (%d,%v)", bps, ready)
+	}
+}
+
+// TestConvergence_ZeroBpsRateLimitDoesNotSkipD2D3 verifies the old false-positive
+// shape GetRateLimit(0,true) does not silence D2/D3 (consumer requires bps>0).
+func TestConvergence_ZeroBpsRateLimitDoesNotSkipD2D3(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	gid := "sg_zero_bps_fp"
+	rateChecker := &mockRateChecker{
+		limited: map[string]bool{gid: true},
+		bps:     map[string]int64{gid: 0},
+	}
+
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", CompletedLength: 10 * 1024 * 1024, MinChunk: 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid: makeChunkWorkers(4, 2*1024*1024, []int64{10 * 1024 * 1024, 10 * 1024 * 1024, 10 * 1024 * 1024, 10 * 1024 * 1024}),
+		},
+	}
+
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, rateChecker, 0, 0)
+	defer ct.Stop()
+
+	ct.tick()
+
+	tracker.tasks[0].CompletedLength = 60 * 1024 * 1024
+	ct.mu.Lock()
+	if s, ok := ct.states[gid]; ok {
+		setPrevSampleAgoState(s, 5*time.Second)
+	}
+	ct.mu.Unlock()
+	ct.tick()
+
+	bps, ready := ct.LastRawBps(gid)
+	if !ready || bps <= 0 {
+		t.Errorf("after two ticks with (0,true) mock: LastRawBps=(%d,%v), want (bps>0, true)", bps, ready)
 	}
 }
 

@@ -724,7 +724,8 @@ func (e *SurgeEngine) DrainWorker(gid string, workerID int) bool {
 }
 
 // GetRateLimit returns the effective per-download rate limit (bps) and whether
-// an explicit rate limit is active.
+// a positive bandwidth cap is active. bps == 0 (Surge "0"/unlimited, including
+// RateLimitSet=true explicit unlimited) is never limited.
 func (e *SurgeEngine) GetRateLimit(gid string) (int64, bool) {
 	pool := e.getScheduler()
 	if pool == nil {
@@ -734,10 +735,10 @@ func (e *SurgeEngine) GetRateLimit(gid string) (int64, bool) {
 	if status == nil {
 		return 0, false
 	}
-	if status.RateLimitSet {
+	if status.RateLimit > 0 {
 		return status.RateLimit, true
 	}
-	return status.RateLimit, false
+	return 0, false
 }
 
 // NewSurgeEngineForTesting creates a SurgeEngine with a pre-configured scheduler for testing.

@@ -387,3 +387,38 @@ func TestNewSurgeEngineForTesting_IsNameActiveRenamesMemoryOnlyCollision(t *test
 		t.Fatalf("Filename = %q, want memory(1).bin (IsNameActive rename)", cfg.Filename)
 	}
 }
+
+// TestSurgeEngine_GetRateLimit_ZeroUnlimitedNotLimited verifies limited==(bps>0):
+// RateLimitSet=true with RateLimit=0 is not limited; positive cap is limited; missing is not.
+func TestSurgeEngine_GetRateLimit_ZeroUnlimitedNotLimited(t *testing.T) {
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
+		"unlimited-set": {
+			ID:           "unlimited-set",
+			RateLimit:    0,
+			RateLimitSet: true,
+			ProgressState: progress.New("unlimited-set", 1000),
+		},
+		"capped": {
+			ID:           "capped",
+			RateLimit:    1_000_000,
+			RateLimitSet: true,
+			ProgressState: progress.New("capped", 1000),
+		},
+	})
+	engine := NewSurgeEngineForTesting(pool)
+
+	bps, limited := engine.GetRateLimit("unlimited-set")
+	if limited || bps != 0 {
+		t.Errorf("explicit unlimited: GetRateLimit=(%d,%v), want (0,false)", bps, limited)
+	}
+
+	bps, limited = engine.GetRateLimit("capped")
+	if !limited || bps != 1_000_000 {
+		t.Errorf("positive cap: GetRateLimit=(%d,%v), want (1000000,true)", bps, limited)
+	}
+
+	bps, limited = engine.GetRateLimit("missing")
+	if limited || bps != 0 {
+		t.Errorf("missing: GetRateLimit=(%d,%v), want (0,false)", bps, limited)
+	}
+}
