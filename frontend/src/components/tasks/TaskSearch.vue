@@ -1,7 +1,7 @@
 <script setup lang="ts">
   import { ref } from 'vue'
   import { useI18n } from 'vue-i18n'
-  import { Search, X } from 'lucide-vue-next'
+  import { Search, X } from '@lucide/vue'
   import StaticGlassPanel from '../common/StaticGlassPanel.vue'
   const { t } = useI18n()
   const searchQuery = defineModel<string>({ default: '' })

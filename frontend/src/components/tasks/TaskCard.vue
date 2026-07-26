@@ -4,7 +4,7 @@
   import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
   import type { TaskGroupHint } from '../../stores/task/grouping'
   import { useTaskStore } from '../../stores/task'
-  import { Pause, Play, FolderOpen, Trash2, Clock, Zap, Layers3 } from 'lucide-vue-next'
+  import { Pause, Play, FolderOpen, Trash2, Clock, Zap, Layers3 } from '@lucide/vue'
   import FileIcon from '../common/FileIcon.vue'
   import {
     TASK_PROGRESS_CONFIG,

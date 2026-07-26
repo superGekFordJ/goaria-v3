@@ -6,7 +6,7 @@
   import { useDownloadGroupStore } from '../../stores/downloadGroups'
   import { isValidUrl, isDuplicateUri } from '../../utils/url'
   import { buildBatchGroupResultHints, type TaskGroupHint } from '../../stores/task/grouping'
-  import { Link, Plus, Loader2, ChevronUp, Layers3 } from 'lucide-vue-next'
+  import { Link, Plus, Loader2, ChevronUp, Layers3 } from '@lucide/vue'
   import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
 
   const { t } = useI18n()

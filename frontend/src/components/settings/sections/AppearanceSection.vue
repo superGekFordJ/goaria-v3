@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { Palette, Monitor, Sun, Moon, Languages, ChevronDown, Check } from 'lucide-vue-next'
+  import { Palette, Monitor, Sun, Moon, Languages, ChevronDown, Check } from '@lucide/vue'
   import { useI18n } from 'vue-i18n'
   import { ref, computed, onMounted, onUnmounted } from 'vue'
   import SectionCard from './SectionCard.vue'

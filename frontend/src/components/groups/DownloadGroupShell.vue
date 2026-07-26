@@ -10,7 +10,7 @@
     Play,
     RefreshCw,
     Trash2,
-  } from 'lucide-vue-next'
+  } from '@lucide/vue'
   import {
     normalizeDownloadGroupWarningSummaries,
     type DownloadGroupOperationAction,

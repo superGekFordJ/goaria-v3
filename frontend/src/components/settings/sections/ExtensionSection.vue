@@ -14,7 +14,7 @@
     ExternalLink,
     RefreshCw,
     X,
-  } from 'lucide-vue-next'
+  } from '@lucide/vue'
   import SectionCard from './SectionCard.vue'
   import { useExtensionStore } from '../../../stores/extension'
   import { clearClipboardIfMatches } from '../../../utils/clipboard'

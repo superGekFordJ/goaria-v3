@@ -8,7 +8,7 @@
     RotateCcw,
     AlertCircle,
     CheckCircle,
-  } from 'lucide-vue-next'
+  } from '@lucide/vue'
   import ThemeIcon from '../../common/ThemeIcon.vue'
   import {
     GetAppVersion,

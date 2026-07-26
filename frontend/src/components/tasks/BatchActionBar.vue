@@ -3,7 +3,7 @@
   import { useI18n } from 'vue-i18n'
   import { useTaskStore } from '../../stores/task'
   import { useDownloadGroupStore } from '../../stores/downloadGroups'
-  import { Pause, Play, Trash2, X, CheckSquare } from 'lucide-vue-next'
+  import { Pause, Play, Trash2, X, CheckSquare } from '@lucide/vue'
   import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
 
   const { t } = useI18n()

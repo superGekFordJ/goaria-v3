@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { Layers, History } from 'lucide-vue-next'
+  import { Layers, History } from '@lucide/vue'
   import { useI18n } from 'vue-i18n'
   import SectionCard from './SectionCard.vue'
 

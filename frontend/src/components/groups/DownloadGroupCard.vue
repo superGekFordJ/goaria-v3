@@ -1,7 +1,7 @@
 <script setup lang="ts">
   import { computed, watch } from 'vue'
   import { useI18n } from 'vue-i18n'
-  import { AlertTriangle, Folder, Layers3, Pause, Play, Trash2, FolderOpen } from 'lucide-vue-next'
+  import { AlertTriangle, Folder, Layers3, Pause, Play, Trash2, FolderOpen } from '@lucide/vue'
   import {
     TASK_PROGRESS_CONFIG,
     SURGE_TASK_PROGRESS_CONFIG,

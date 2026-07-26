@@ -1,7 +1,7 @@
 <script setup lang="ts">
   import { ref, onMounted } from 'vue'
   import { useI18n } from 'vue-i18n'
-  import { Minus, Square, X, PanelBottomClose } from 'lucide-vue-next'
+  import { Minus, Square, X, PanelBottomClose } from '@lucide/vue'
   import { Window, Application } from '@wailsio/runtime'
   import { useTaskStore } from '../../stores/task'
 

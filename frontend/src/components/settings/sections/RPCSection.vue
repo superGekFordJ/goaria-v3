@@ -1,7 +1,7 @@
 <script setup lang="ts">
   import { ref } from 'vue'
   import { useI18n } from 'vue-i18n'
-  import { Zap, Globe, Shield, Eye, EyeOff, RefreshCw } from 'lucide-vue-next'
+  import { Zap, Globe, Shield, Eye, EyeOff, RefreshCw } from '@lucide/vue'
   import SectionCard from './SectionCard.vue'
 
   const { t } = useI18n()

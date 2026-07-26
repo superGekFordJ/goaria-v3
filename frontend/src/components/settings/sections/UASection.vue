@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { Globe, Loader2, Download, X } from 'lucide-vue-next'
+  import { Globe, Loader2, Download, X } from '@lucide/vue'
   import { useI18n } from 'vue-i18n'
   import SectionCard from './SectionCard.vue'
   import { useUserAgent } from '../../common/useUserAgent'

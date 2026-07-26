@@ -2,7 +2,7 @@
   import { ref, onMounted, onUnmounted, computed } from 'vue'
   import { useUIStore } from '../../stores/ui'
   import { useTaskStore } from '../../stores/task'
-  import { Activity, Cpu, Database, X } from 'lucide-vue-next'
+  import { Activity, Cpu, Database, X } from '@lucide/vue'
 
   const uiStore = useUIStore()
   const taskStore = useTaskStore()

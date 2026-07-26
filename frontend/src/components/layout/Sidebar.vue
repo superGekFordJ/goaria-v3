@@ -5,7 +5,7 @@
   import { useConfigStore } from '../../stores/config'
   import { useTaskStore } from '../../stores/task'
   import { useDownloadGroupStore } from '../../stores/downloadGroups'
-  import { Download, CheckCircle, Settings as SettingsIcon, Activity } from 'lucide-vue-next'
+  import { Download, CheckCircle, Settings as SettingsIcon, Activity } from '@lucide/vue'
   import ThemeIcon from '../common/ThemeIcon.vue'
   import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
   import StaticGlassPanel from '../common/StaticGlassPanel.vue'

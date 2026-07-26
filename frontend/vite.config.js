@@ -33,7 +33,7 @@ export default defineConfig({
       output: {
         manualChunks: (id) => {
           if (id.includes('node_modules/vue') || id.includes('node_modules/pinia')) return 'vue'
-          if (id.includes('node_modules/lucide-vue-next')) return 'icons'
+          if (id.includes('node_modules/@lucide/vue') || id.includes('node_modules/lucide-vue-next')) return 'icons'
           if (id.includes('node_modules/vue-virtual-scroller')) return 'scroller'
         },
       },
@@ -52,7 +52,7 @@ export default defineConfig({
 
   // Optimize dependencies
   optimizeDeps: {
-    include: ['vue', 'pinia', 'lucide-vue-next', 'vue-virtual-scroller'],
+    include: ['vue', 'pinia', '@lucide/vue', 'vue-virtual-scroller'],
   },
 
   // CSS configuration

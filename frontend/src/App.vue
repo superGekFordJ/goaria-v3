@@ -12,7 +12,7 @@
   import { subscribeToWindowEvents, unsubscribeFromWindowEvents } from './stores/events'
   import { Events } from '@wailsio/runtime'
   import { useSmartInput } from './composables/useSmartInput'
-  import { Download } from 'lucide-vue-next'
+  import { Download } from '@lucide/vue'
   import { useI18n } from 'vue-i18n'
 
   const DebugPanel = import.meta.env.DEV

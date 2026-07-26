@@ -2,7 +2,7 @@
   import { ref, onMounted, onUnmounted } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { useConfigStore } from '../../stores/config'
-  import { Settings as SettingsIcon, CheckCircle, Loader2 } from 'lucide-vue-next'
+  import { Settings as SettingsIcon, CheckCircle, Loader2 } from '@lucide/vue'
 
   // Sections
   import DownloadSection from './sections/DownloadSection.vue'

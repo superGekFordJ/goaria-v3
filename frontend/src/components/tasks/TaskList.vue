@@ -20,7 +20,7 @@
   import DownloadGroupCard from '../groups/DownloadGroupCard.vue'
   import DownloadGroupOperationNotice from '../groups/DownloadGroupOperationNotice.vue'
   import DownloadGroupRemoveDialog from '../groups/DownloadGroupRemoveDialog.vue'
-  import { CheckCircle2, SearchX, Layers3, Download } from 'lucide-vue-next'
+  import { CheckCircle2, SearchX, Layers3, Download } from '@lucide/vue'
   import { useTaskKeyboard } from '../../composables/useTaskKeyboard'
   import { useFLIPAnimation } from '../../composables/useFLIPAnimation'
   import TaskListEmptyState from './TaskListEmptyState.vue'
