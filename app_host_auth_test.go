@@ -7,6 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"goaria-v3/internal/config"
+	"goaria-v3/internal/extractor"
+	"goaria-v3/internal/history"
+	"goaria-v3/internal/monitor"
+	"goaria-v3/internal/rpc"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,11 +20,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"goaria-v3/internal/config"
-	"goaria-v3/internal/extractor"
-	"goaria-v3/internal/history"
-	"goaria-v3/internal/monitor"
-	"goaria-v3/internal/rpc"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -1165,14 +1165,14 @@ func setupAppTaskHistoryTest(t *testing.T) *App {
 
 	originalCache := monitor.Cache
 	originalSaveEnabled := history.SaveEnabled
-	originalConfig := config.Current
+	originalConfig := config.Get()
 
 	monitor.ResetDownloadGroupNamerForTest()
 	monitor.ResetTaskGroupStoreForTest(filepath.Join(t.TempDir(), "download_groups.json"), true)
 	monitor.Cache = &monitor.TaskCache{}
 	history.DisableSaveForTest()
 	history.Clear()
-	config.Current = &config.AppConfig{ShowHistory: true}
+	config.SetTestConfig(&config.AppConfig{ShowHistory: true})
 
 	t.Cleanup(func() {
 		monitor.ResetDownloadGroupNamerForTest()
@@ -1180,7 +1180,7 @@ func setupAppTaskHistoryTest(t *testing.T) *App {
 		monitor.ResetTaskGroupStoreForTest("", true)
 		history.SetSaveEnabled(originalSaveEnabled)
 		monitor.Cache = originalCache
-		config.Current = originalConfig
+		config.SetTestConfig(originalConfig)
 	})
 
 	return NewApp()
