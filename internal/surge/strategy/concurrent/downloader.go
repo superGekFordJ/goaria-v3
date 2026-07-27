@@ -806,17 +806,18 @@ func (d *ConcurrentDownloader) DrainWorker(id int) bool {
 }
 
 // ScaleWorkers adjusts the number of running workers by delta.
-// Positive delta spawns new workers (reusing idle connections from the
-// Transport pool). Negative delta drains the slowest |delta| workers.
+// Positive delta admits under workersActive, optionally prewarms once
+// (bounded), then spawns all admitted workers (reusing idle connections).
+// Negative delta drains the slowest |delta| workers.
 // Returns the number of workers actually added (positive) or drained (negative).
-// FORK-PATCH: Runtime scale up/down API (WaitGroup reuse protection + workerDeps atomization)
+// FORK-PATCH: Runtime scale up/down API (WaitGroup reuse protection + workerDeps atomization + ScaleUp prewarm)
 func (d *ConcurrentDownloader) ScaleWorkers(delta int) int {
 	deps := d.workerDepsPtr.Load()
 	if delta == 0 || deps == nil || deps.ctx.Err() != nil {
 		return 0
 	}
 	if delta > 0 {
-		added := 0
+		admitted := make([]int, 0, delta)
 		for i := 0; i < delta; i++ {
 			// FORK-PATCH: Guard WaitGroup reuse — check workersActive under lock before Add
 			d.workersMu.Lock()
@@ -828,7 +829,23 @@ func (d *ConcurrentDownloader) ScaleWorkers(delta int) int {
 			d.workerWg.Add(1)
 			d.totalWorkers.Add(1) // FORK-PATCH: track actual worker count for completion monitor
 			d.workersMu.Unlock()
+			admitted = append(admitted, id)
+		}
+		if len(admitted) == 0 {
+			return 0
+		}
 
+		// FORK-PATCH: one batched ScaleUp prewarm before spawn (ignore DialHedgeCount)
+		if deps.client != nil && len(deps.mirrors) > 0 {
+			need := len(admitted)
+			if need > 128 {
+				need = 128
+			}
+			d.prewarmConnectionsBounded(deps.ctx, deps.client, need, deps.mirrors, scalePrewarmBudget)
+		}
+
+		// Always spawn admitted workers (WaitGroup Done pairing); prewarm timeout is best-effort.
+		for _, id := range admitted {
 			go func(workerID int) {
 				defer d.workerWg.Done()
 				defer d.totalWorkers.Add(-1) // FORK-PATCH: track actual worker count for completion monitor
@@ -836,9 +853,8 @@ func (d *ConcurrentDownloader) ScaleWorkers(delta int) int {
 					utils.Debug("Scaled worker %d error: %v", workerID, err)
 				}
 			}(id)
-			added++
 		}
-		return added
+		return len(admitted)
 	}
 
 	toDrain := -delta
@@ -1099,60 +1115,78 @@ func (d *ConcurrentDownloader) bootstrapMetadata(ctx context.Context, client *ht
 	return fileSize, nil
 }
 
-// prewarmConnections fires off concurrent pings to the mirrors to populate the connection pool
+// FORK-PATCH: ScaleUp prewarm wait budget (hard cap). Not DialTimeout.
+// Bounds Convergence tick stall; timeout degrades to today's worker dial.
+const scalePrewarmBudget = 300 * time.Millisecond
+
+// prewarmConnections fires off concurrent pings to populate the idle pool.
+// Initial Download path: wait budget is DialTimeout; total pings = numRequired+hedgeCount.
 func (d *ConcurrentDownloader) prewarmConnections(ctx context.Context, client *http.Client, numRequired, hedgeCount int, mirrors []string) {
-	totalToStart := numRequired + hedgeCount
+	_ = d.prewarmConnectionsWithBudget(ctx, client, numRequired, numRequired+hedgeCount, mirrors, types.DialTimeout)
+}
+
+// FORK-PATCH: ScaleUp bounded prewarm — count capped at 128, no DialHedge, caller-supplied budget.
+func (d *ConcurrentDownloader) prewarmConnectionsBounded(ctx context.Context, client *http.Client, count int, mirrors []string, budget time.Duration) int {
+	if count <= 0 {
+		return 0
+	}
+	if count > 128 {
+		count = 128
+	}
+	return d.prewarmConnectionsWithBudget(ctx, client, count, count, mirrors, budget)
+}
+
+// prewarmConnectionsWithBudget starts totalToStart Range 0-0 pings and waits until
+// numRequired are ready, budget elapses, or ctx is done. Leftover pings are cancelled.
+func (d *ConcurrentDownloader) prewarmConnectionsWithBudget(ctx context.Context, client *http.Client, numRequired, totalToStart int, mirrors []string, budget time.Duration) int {
 	if totalToStart > 128 { // Safety cap
 		totalToStart = 128
 	}
+	if totalToStart <= 0 || numRequired <= 0 {
+		return 0
+	}
+	if numRequired > totalToStart {
+		numRequired = totalToStart
+	}
 
-	// Channel to signal when a connection is ready (handshake complete)
 	ready := make(chan struct{}, totalToStart)
 
-	// Create a sub-context for the pings so we can stop them once we have enough
 	pingCtx, cancelPings := context.WithCancel(ctx)
 	defer cancelPings()
 
 	for i := 0; i < totalToStart; i++ {
 		go func(idx int) {
-			// Round-robin mirrors
 			mirror := mirrors[idx%len(mirrors)]
 
-			// Use a fast Range request to ensure the handshake completes
 			req, err := http.NewRequestWithContext(pingCtx, http.MethodGet, mirror, nil)
 			if err != nil {
 				return
 			}
 
-			// Forward custom headers (essential for authenticated mirrors)
 			for key, val := range d.Headers {
 				if key != "Range" {
 					req.Header.Set(key, val)
 				}
 			}
 
-			// Ensure User-Agent and Range are set
 			if req.Header.Get("User-Agent") == "" {
 				req.Header.Set("User-Agent", d.Runtime.GetUserAgent())
 			}
 			req.Header.Set("Range", "bytes=0-0")
 
-			// Perform dial + request
 			resp, err := client.Do(req)
 			if err != nil {
 				return
 			}
 
-			// Drain body and close to return connection to idle pool, then signal readiness.
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
 			ready <- struct{}{}
 		}(i)
 	}
 
-	// Wait until we have enough ready connections OR we hit a timeout
 	completed := 0
-	timeout := time.After(types.DialTimeout) // Use standard dial timeout for the whole batch
+	timeout := time.After(budget)
 
 	for completed < numRequired {
 		select {
@@ -1160,12 +1194,12 @@ func (d *ConcurrentDownloader) prewarmConnections(ctx context.Context, client *h
 			completed++
 		case <-timeout:
 			utils.Debug("Pre-warming timed out after %d/%d connections", completed, numRequired)
-			return
+			return completed
 		case <-ctx.Done():
-			return
+			return completed
 		}
 	}
 
 	utils.Debug("Pre-warming complete: %d connections hot", completed)
-	// Remaining pings will be cancelled by defer cancelPings()
+	return completed
 }
