@@ -121,6 +121,7 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 				if tracked.Status != "complete" && tracked.Status != "error" {
 					// 状态变为完成，触发完成处理
 					tracked.Status = task.Status
+					tracked.resumeOccupancyHold = false
 					t.fillTaskInfo(tracked, task)
 					completed = append(completed, copyTrackedTask(tracked))
 					t.processedComplete[task.GID] = true
@@ -129,6 +130,7 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 				// 新发现的已完成任务（可能是重启后）
 				tracked = t.createTrackedTask(task)
 				tracked.Status = task.Status
+				tracked.resumeOccupancyHold = false
 				t.tasks[task.GID] = tracked
 				completed = append(completed, copyTrackedTask(tracked))
 				t.processedComplete[task.GID] = true
@@ -165,6 +167,7 @@ func (t *TaskTracker) updateActiveTask(task rpc.Task) {
 
 	// 更新进度
 	tracked.Status = task.Status
+	tracked.resumeOccupancyHold = false
 	tracked.CompletedLength = parseInt64(task.CompletedLength)
 	tracked.TotalLength = parseInt64(task.TotalLength)
 

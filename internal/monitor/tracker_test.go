@@ -1752,6 +1752,24 @@ func TestGetOccupancyTrackedTasks_ResumeHoldWhilePaused(t *testing.T) {
 	}
 }
 
+func TestUpdate_ClearsResumeOccupancyHold(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_tick", 100, "https://x", 4, "active")
+	tracker.SetStatusFromEvent("sg_tick", "paused")
+	tracker.SetTargetBandwidth("sg_tick", 4_000_000)
+	if !tracker.tasks["sg_tick"].resumeOccupancyHold {
+		t.Fatal("expected hold before Update")
+	}
+
+	tracker.Update([]rpc.Task{createMockTask("sg_tick", "active")}, nil, nil)
+	if tracker.tasks["sg_tick"].resumeOccupancyHold {
+		t.Error("Update/updateActiveTask must clear resumeOccupancyHold")
+	}
+	if tracker.tasks["sg_tick"].Status != "active" {
+		t.Errorf("Status = %q, want active", tracker.tasks["sg_tick"].Status)
+	}
+}
+
 func TestEnsureTrackedFromEvent_CompleteDoesNotClobber(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.EnsureTrackedFromEvent("sg-status-complete", 100000000, "https://example.com/file.zip", 8, "active")

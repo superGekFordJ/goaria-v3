@@ -43,9 +43,9 @@ func SetActiveBandwidthProvider(fn ActiveBandwidthFunc) {
 // calculated. Domain occupancy is tracked separately in reservedByDomain.
 //
 // BatchAddURI shares one ledger across up to 12 concurrent submit goroutines.
-// Callers must hold WithAlloc (or LockAlloc/UnlockAlloc) across
-// Reserved* → Calculate → Clamp → Reserve* so domain/global claims cannot
-// TOCTOU. Release* on AddUri failure may run outside the alloc lock.
+// Callers must hold WithAlloc across Reserved* → Calculate → Clamp → Reserve*
+// so domain/global claims cannot TOCTOU. Release* on AddUri failure may run
+// outside the alloc lock.
 //
 // Usage:
 //
@@ -55,8 +55,10 @@ func SetActiveBandwidthProvider(fn ActiveBandwidthFunc) {
 //	    domainReserved := ledger.ReservedByDomain(scope, domain)
 //	    params := Calculate(CalcParams{..., ReservedBandwidth: reserved,
 //	        ReservedDomainBandwidth: domainReserved})
+//	    params = ClampToServerLimit(params, ...)
 //	    ledger.Reserve(scope, envKey, params.TargetBandwidth)
 //	    ledger.ReserveByDomain(scope, domain, params.TargetBandwidth)
+//	    ledger.ReserveWorkers(scope, domain, params.Split)
 //	})
 type BandwidthLedger struct {
 	allocMu          sync.Mutex // serializes claim path for concurrent batch submit
