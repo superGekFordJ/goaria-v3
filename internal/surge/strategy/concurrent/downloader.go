@@ -1149,8 +1149,10 @@ func (d *ConcurrentDownloader) prewarmConnectionsWithBudget(ctx context.Context,
 		numRequired = totalToStart
 	}
 
+	// Channel to signal when a connection is ready (handshake complete)
 	ready := make(chan struct{}, totalToStart)
 
+	// Create a sub-context for the pings so we can stop them once we have enough
 	pingCtx, cancelPings := context.WithCancel(ctx)
 	defer cancelPings()
 
@@ -1158,11 +1160,13 @@ func (d *ConcurrentDownloader) prewarmConnectionsWithBudget(ctx context.Context,
 		go func(idx int) {
 			mirror := mirrors[idx%len(mirrors)]
 
+			// Use a fast Range request to ensure the handshake completes
 			req, err := http.NewRequestWithContext(pingCtx, http.MethodGet, mirror, nil)
 			if err != nil {
 				return
 			}
 
+			// Forward custom headers (essential for authenticated mirrors)
 			for key, val := range d.Headers {
 				if key != "Range" {
 					req.Header.Set(key, val)
@@ -1179,6 +1183,7 @@ func (d *ConcurrentDownloader) prewarmConnectionsWithBudget(ctx context.Context,
 				return
 			}
 
+			// Drain body and close to return connection to idle pool, then signal readiness.
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
 			ready <- struct{}{}
