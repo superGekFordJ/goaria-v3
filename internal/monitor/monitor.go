@@ -575,6 +575,24 @@ func (m *Monitor) GetTelemetry() *TelemetryCache {
 	return m.telemetry
 }
 
+// LastRawBps returns Convergence macro-band occupancy for gid.
+// Missing/cold monitor or ticker → (0, false).
+func (m *Monitor) LastRawBps(gid string) (bps int64, ready bool) {
+	if m == nil || m.convergence == nil {
+		return 0, false
+	}
+	return m.convergence.LastRawBps(gid)
+}
+
+// NewMonitorWithTelemetryForTest builds a Monitor with the given telemetry cache.
+// For unit tests that need ExistingDomainWorkers / occupancy wiring without Start().
+func NewMonitorWithTelemetryForTest(tc *TelemetryCache) *Monitor {
+	if tc == nil {
+		tc = NewTelemetryCache()
+	}
+	return &Monitor{telemetry: tc}
+}
+
 // trackerAdapter wraps TaskTracker to satisfy smartthread.TrackerProvider,
 // PeakEfficiencyRecorder, and RateLimitChecker interfaces.
 type trackerAdapter struct {

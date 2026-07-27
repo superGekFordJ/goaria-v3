@@ -56,6 +56,13 @@ type TrackedTask struct {
 	// ThreadParams.MinSize at task-add time. 0 means unknown/uncaptured
 	// (non-Surge path, event-created, or restart recovery).
 	MinChunk int64
+
+	// TargetBandwidth is the Calculate-clamped occupancy (bytes/s) persisted
+	// after successful AddUri/Resume for hybrid ledger seeding.
+	TargetBandwidth int64
+	// AllocatedAt is when TargetBandwidth was last written (bw>0). Distinct
+	// from CreatedAt, which SetThreadInfo refreshes for grace-period reuse.
+	AllocatedAt time.Time
 }
 
 // TaskTracker 后端任务追踪器
@@ -555,6 +562,27 @@ func (t *TaskTracker) SetMinChunk(gid string, minChunk int64) {
 	}
 }
 
+// SetTargetBandwidth persists Calculate occupancy for hybrid ledger seeding.
+// When bw>0, refreshes AllocatedAt (Add/Resume re-allocation) and, if Status
+// is still empty, sets Status="active" so placeholders are occupancy-visible
+// without widening GetActiveTrackedTasks for Convergence.
+func (t *TaskTracker) SetTargetBandwidth(gid string, bw int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	tracked := t.tasks[gid]
+	if tracked == nil {
+		tracked = &TrackedTask{GID: gid, CreatedAt: time.Now()}
+		t.tasks[gid] = tracked
+	}
+	tracked.TargetBandwidth = bw
+	if bw > 0 {
+		tracked.AllocatedAt = time.Now()
+		if tracked.Status == "" {
+			tracked.Status = "active"
+		}
+	}
+}
+
 // GetActiveTrackedTasks returns copies of all tracked tasks with status "active".
 func (t *TaskTracker) GetActiveTrackedTasks() []TrackedTask {
 	t.mu.RLock()
@@ -563,6 +591,27 @@ func (t *TaskTracker) GetActiveTrackedTasks() []TrackedTask {
 	for _, tt := range t.tasks {
 		if tt.Status == "active" {
 			result = append(result, *tt)
+		}
+	}
+	return result
+}
+
+// GetOccupancyTrackedTasks returns tasks that should seed BandwidthLedger
+// occupancy. Includes Status=="active" and AddURI placeholders
+// (Status=="" && TargetBandwidth>0). Excludes paused/waiting/complete/error.
+// Does not widen Convergence's GetActiveTrackedTasks semantics.
+func (t *TaskTracker) GetOccupancyTrackedTasks() []TrackedTask {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	result := make([]TrackedTask, 0, len(t.tasks))
+	for _, tt := range t.tasks {
+		switch tt.Status {
+		case "active":
+			result = append(result, *tt)
+		case "":
+			if tt.TargetBandwidth > 0 {
+				result = append(result, *tt)
+			}
 		}
 	}
 	return result

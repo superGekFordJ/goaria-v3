@@ -449,6 +449,62 @@ func TestConvergence_ProbeFloor_StopsAtFloor(t *testing.T) {
 	}
 }
 
+// TestConvergence_ProbeFloor_StaticAllowsProbeDownWithBBRHistory regresses the
+// deleted BDP-as-workers floor: DomainPeak+RTprop present must not block
+// probe-down when N=8 (static probeFloorWorkers=2).
+func TestConvergence_ProbeFloor_StaticAllowsProbeDownWithBBRHistory(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	// Old computeProbeFloor: bdp=50MB/s*0.1s=5e6 → ceil(5e6/8)≈625000 workers floor.
+	speedstats.AddRecordV2(50*1024*1024, 8, 200*1024*1024, false, 100, "example.com", "wan", "testenv")
+
+	gid := "sg_bbr_floor"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 60 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gid: makeWorkers(8, 2*1024*1024),
+		},
+	}
+
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := newTestConvergenceTicker(he, tracker, telemetry)
+	defer ct.Stop()
+
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.prevCompleted = 10 * 1024 * 1024
+	setPrevSampleAgoState(s, 5*time.Second)
+	s.phase = phaseStable
+	s.probeCooldown = 0
+	s.peakWorkers = 8
+	s.probeMomentum = true // prefer probe-down; blocks Probe-Up
+	ct.mu.Unlock()
+
+	// processTask directly — tick() D5 rolls back when ScaleWorkers returns 0.
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil)
+	if !ok || ps.delta >= 0 {
+		t.Fatalf("expected probe-down delta<0 with DomainPeak+RTprop present, got ok=%v delta=%d", ok, ps.delta)
+	}
+
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s == nil || s.phase != phaseSettling {
+		phase := -1
+		if s != nil {
+			phase = s.phase
+		}
+		t.Fatalf("expected phaseSettling after probe-down; phase=%d", phase)
+	}
+}
+
 // TestConvergence_M1_CongestionTrapEscape verifies the SPEC's headline acceptance criterion:
 // starting from a high-N low-throughput state, the momentum chain drives probes down
 // until throughput improves. Tests the success → momentum → continue-probing path.

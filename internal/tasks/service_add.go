@@ -30,26 +30,74 @@ var scopeClassifier = speedstats.NewScopeClassifier()
 // collectActiveTaskInfos builds a TrackedTaskInfo slice from the current tracker state
 // for BandwidthLedger pre-scan seeding.
 func collectActiveTaskInfos() []smartthread.TrackedTaskInfo {
+	return BuildOccupancyTaskInfos()
+}
+
+// BuildOccupancyTaskInfos builds hybrid-seed inputs for NewBandwidthLedger.
+// Shared by AddURI/BatchAddURI and Resume so seed policy cannot drift.
+func BuildOccupancyTaskInfos() []smartthread.TrackedTaskInfo {
 	tr := monitor.State.GetTracker()
 	if tr == nil {
 		return nil
 	}
-	tasks := tr.GetActiveTrackedTasks()
-	result := make([]smartthread.TrackedTaskInfo, len(tasks))
-	for i, t := range tasks {
-		result[i] = smartthread.TrackedTaskInfo{
-			GID:    t.GID,
-			Scope:  t.Scope,
-			EnvKey: t.CurrentEnvKey,
+	occupied := tr.GetOccupancyTrackedTasks()
+	if len(occupied) == 0 {
+		return nil
+	}
+
+	speedByGID := map[string]int64{}
+	if monitor.Cache != nil {
+		for _, t := range monitor.Cache.GetActive() {
+			speedByGID[t.GID] = parseDownloadSpeed(t.DownloadSpeed)
 		}
 	}
+
+	mon := monitor.State.GetMonitor()
+	result := make([]smartthread.TrackedTaskInfo, 0, len(occupied))
+	for _, t := range occupied {
+		info := smartthread.TrackedTaskInfo{
+			GID:             t.GID,
+			Status:          t.Status,
+			Scope:           t.Scope,
+			Domain:          t.Domain,
+			EnvKey:          t.CurrentEnvKey,
+			ThreadCount:     t.ThreadCount,
+			TargetBandwidth: t.TargetBandwidth,
+			AllocatedAt:     t.AllocatedAt,
+		}
+		cacheSpeed := speedByGID[t.GID]
+		if strings.HasPrefix(t.GID, "sg_") {
+			if mon != nil {
+				bps, ready := mon.LastRawBps(t.GID)
+				info.MacroReady = ready
+				if ready {
+					info.TelemetryBps = bps
+				} else {
+					info.TelemetryBps = cacheSpeed
+				}
+			} else {
+				info.TelemetryBps = cacheSpeed
+			}
+		} else {
+			info.TelemetryBps = cacheSpeed
+		}
+		result = append(result, info)
+	}
 	return result
+}
+
+func parseDownloadSpeed(s string) int64 {
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || v < 0 {
+		return 0
+	}
+	return v
 }
 
 // ExistingDomainWorkersFromTelemetry returns the total active worker count
 // for all tracked tasks matching the given scope+domain. Used by
 // ClampToServerLimit to account for existing domain concurrency before
-// launching a new task.
+// launching a new task. Cold fallback: max(len(snapshots), ThreadCount).
 func ExistingDomainWorkersFromTelemetry(scope, domain string) int {
 	if scope == "" || domain == "" {
 		return 0
@@ -58,7 +106,7 @@ func ExistingDomainWorkersFromTelemetry(scope, domain string) int {
 	if tr == nil {
 		return 0
 	}
-	tasks := tr.GetActiveTrackedTasks()
+	tasks := tr.GetOccupancyTrackedTasks()
 	mon := monitor.State.GetMonitor()
 	var telemetry *monitor.TelemetryCache
 	if mon != nil {
@@ -69,10 +117,15 @@ func ExistingDomainWorkersFromTelemetry(scope, domain string) int {
 		if t.Scope != scope || t.Domain != domain {
 			continue
 		}
+		snapCount := 0
 		if telemetry != nil {
-			stats := telemetry.Get(t.GID)
-			total += len(stats)
+			snapCount = len(telemetry.Get(t.GID))
 		}
+		n := snapCount
+		if t.ThreadCount > n {
+			n = t.ThreadCount
+		}
+		total += n
 	}
 	return total
 }
@@ -545,13 +598,14 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 		}
 
 		params := smartthread.Calculate(smartthread.CalcParams{
-			FileSize:          fileSize,
-			MaxConnections:    maxConn,
-			Scope:             scope,
-			Domain:            domain,
-			EnvKey:            envKey,
-			ReservedBandwidth: ledger.Reserved(scope, envKey),
-			Ledger:            ledger,
+			FileSize:                fileSize,
+			MaxConnections:          maxConn,
+			Scope:                   scope,
+			Domain:                  domain,
+			EnvKey:                  envKey,
+			ReservedBandwidth:       ledger.Reserved(scope, envKey),
+			ReservedDomainBandwidth: ledger.ReservedByDomain(scope, domain),
+			Ledger:                  ledger,
 			ActiveMACsFunc: func() []string {
 				ne := monitor.State.GetNetEnv()
 				if ne == nil {
@@ -565,6 +619,7 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			ExistingDomainWorkersFromTelemetry(scope, domain)+ledger.ReservedWorkers(scope, domain),
 			smartthread.GetDefaultServerLimits())
 		ledger.Reserve(scope, envKey, params.TargetBandwidth)
+		ledger.ReserveByDomain(scope, domain, params.TargetBandwidth)
 		ledger.ReserveWorkers(scope, domain, params.Split)
 		var err error
 		gid, err = s.Engine.AddUri(candidate.url, rpc.AddURIOptions{
@@ -576,6 +631,8 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			BeforeSave:   registerGroup,
 		})
 		if err != nil {
+			ledger.Release(scope, envKey, params.TargetBandwidth)
+			ledger.ReleaseByDomain(scope, domain, params.TargetBandwidth)
 			ledger.ReleaseWorkers(scope, domain, params.Split)
 			return "", err
 		}
@@ -587,6 +644,7 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 					// Set IsKeepAlive when initial split < nSat
 					tracker.SetKeepAlive(gid, params.Split < params.NSat)
 					tracker.SetMinChunk(gid, params.MinSize)
+					tracker.SetTargetBandwidth(gid, params.TargetBandwidth)
 				}
 			}
 			if tracker := monitor.State.GetTracker(); tracker != nil {

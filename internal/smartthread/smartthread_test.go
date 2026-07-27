@@ -498,3 +498,116 @@ func TestCalculate_CrossScopeIsolation(t *testing.T) {
 		t.Errorf("Split = %d, want 2 (wan V_thread_avg=2MB/s; would be 1 if polluted by lan 20MB/s)", params.Split)
 	}
 }
+
+func TestCalculate_DomainExhaustion_FloorOne(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	// a.com: 8MB/s @ 8 threads → V_thread=1MB/s, V_single=8MB/s
+	// big.com lifts global peak so domain exhaustion ≠ global congestion.
+	speedstats.AddRecordV2(8*1024*1024, 8, 200*1024*1024, false, 100, "a.com", "wan", "testenv")
+	speedstats.AddRecordV2(100*1024*1024, 1, 200*1024*1024, false, 100, "big.com", "wan", "testenv")
+
+	params := Calculate(CalcParams{
+		FileSize:                1 * 1024 * 1024 * 1024,
+		MaxConnections:          16,
+		Scope:                   "wan",
+		EnvKey:                  "testenv",
+		Domain:                  "a.com",
+		ReservedDomainBandwidth: 8 * 1024 * 1024,
+	})
+	if params.Split != 1 {
+		t.Errorf("Split = %d, want 1 (domain exhausted, global healthy → floor 1 not congestionFloor 2)", params.Split)
+	}
+}
+
+func TestCalculate_GlobalCongestion_FloorTwo(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	speedstats.AddRecordV2(8*1024*1024, 8, 200*1024*1024, false, 100, "a.com", "wan", "testenv")
+	speedstats.AddRecordV2(100*1024*1024, 1, 200*1024*1024, false, 100, "big.com", "wan", "testenv")
+
+	params := Calculate(CalcParams{
+		FileSize:          1 * 1024 * 1024 * 1024,
+		MaxConnections:    16,
+		Scope:             "wan",
+		EnvKey:            "testenv",
+		Domain:            "a.com",
+		ReservedBandwidth: 100 * 1024 * 1024,
+	})
+	if params.Split != congestionFloor {
+		t.Errorf("Split = %d, want %d (global saturation → congestionFloor)", params.Split, congestionFloor)
+	}
+}
+
+func TestCalculate_SameBatch_DomainReserve_Pattern9111(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	speedstats.AddRecordV2(8*1024*1024, 8, 200*1024*1024, false, 100, "a.com", "wan", "testenv")
+	speedstats.AddRecordV2(100*1024*1024, 1, 200*1024*1024, false, 100, "big.com", "wan", "testenv")
+
+	ledger := NewBandwidthLedger(nil)
+	fileSize := int64(1 * 1024 * 1024 * 1024)
+	var splits []int
+	for i := 0; i < 4; i++ {
+		params := Calculate(CalcParams{
+			FileSize:                fileSize,
+			MaxConnections:          16,
+			Scope:                   "wan",
+			EnvKey:                  "testenv",
+			Domain:                  "a.com",
+			ReservedBandwidth:       ledger.Reserved("wan", "testenv"),
+			ReservedDomainBandwidth: ledger.ReservedByDomain("wan", "a.com"),
+		})
+		splits = append(splits, params.Split)
+		ledger.Reserve("wan", "testenv", params.TargetBandwidth)
+		ledger.ReserveByDomain("wan", "a.com", params.TargetBandwidth)
+	}
+
+	if splits[0] != 9 {
+		t.Fatalf("task0 Split = %d, want 9", splits[0])
+	}
+	for i := 1; i < 4; i++ {
+		if splits[i] != 1 {
+			t.Errorf("task%d Split = %d, want 1 (domain exhausted → floor 1)", i, splits[i])
+		}
+	}
+}
+
+func TestCalculate_DifferentDomainUnaffected(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	speedstats.AddRecordV2(8*1024*1024, 8, 200*1024*1024, false, 100, "a.com", "wan", "testenv")
+	speedstats.AddRecordV2(8*1024*1024, 8, 200*1024*1024, false, 100, "b.com", "wan", "testenv")
+	speedstats.AddRecordV2(100*1024*1024, 1, 200*1024*1024, false, 100, "big.com", "wan", "testenv")
+
+	ledger := NewBandwidthLedger(nil)
+	paramsA := Calculate(CalcParams{
+		FileSize:                1 * 1024 * 1024 * 1024,
+		MaxConnections:          16,
+		Scope:                   "wan",
+		EnvKey:                  "testenv",
+		Domain:                  "a.com",
+		ReservedDomainBandwidth: ledger.ReservedByDomain("wan", "a.com"),
+	})
+	ledger.ReserveByDomain("wan", "a.com", paramsA.TargetBandwidth)
+
+	paramsB := Calculate(CalcParams{
+		FileSize:                1 * 1024 * 1024 * 1024,
+		MaxConnections:          16,
+		Scope:                   "wan",
+		EnvKey:                  "testenv",
+		Domain:                  "b.com",
+		ReservedDomainBandwidth: ledger.ReservedByDomain("wan", "b.com"),
+	})
+	if paramsB.Split != 9 {
+		t.Errorf("b.com Split = %d, want 9 (unaffected by a.com domain reserve)", paramsB.Split)
+	}
+}

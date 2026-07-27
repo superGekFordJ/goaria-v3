@@ -215,13 +215,15 @@ func main() {
 					maxConn = 8
 				}
 
+				occupancyLedger := smartthread.NewBandwidthLedger(tasks.BuildOccupancyTaskInfos())
 				params := smartthread.Calculate(smartthread.CalcParams{
-					FileSize:          remaining,
-					MaxConnections:    maxConn,
-					Scope:             scope,
-					Domain:            domain,
-					EnvKey:            envKey,
-					ReservedBandwidth: monitor.MacroBandwidthByScope(scope, envKey),
+					FileSize:                remaining,
+					MaxConnections:          maxConn,
+					Scope:                   scope,
+					Domain:                  domain,
+					EnvKey:                  envKey,
+					ReservedBandwidth:       monitor.MacroBandwidthByScope(scope, envKey),
+					ReservedDomainBandwidth: occupancyLedger.ReservedByDomain(scope, domain),
 					// Ledger/ActiveMACsFunc/ComputeEnvKeyFunc left nil:
 					// Resume path degrades to logical-only ceiling (no batch ledger).
 				})
@@ -238,6 +240,9 @@ func main() {
 					cfg.Runtime.MinChunkSize = params.MinSize
 				}
 				tracker.SetScopeAndEnv(gid, scope, resumeTTFB, domain, envKey)
+				if params.Split > 0 || params.TargetBandwidth > 0 {
+					tracker.SetTargetBandwidth(gid, params.TargetBandwidth)
+				}
 			})
 		}
 	}

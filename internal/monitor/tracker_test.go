@@ -1622,6 +1622,87 @@ func TestEnsureTrackedFromEvent_PlaceholderQueuedStarted(t *testing.T) {
 	}
 }
 
+func TestSetTargetBandwidth_PersistsAllocatedAtAndOccupancy(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.SetThreadInfo("sg_occ_1", 8, false)
+	createdAt := tracker.tasks["sg_occ_1"].CreatedAt
+
+	time.Sleep(2 * time.Millisecond)
+	tracker.SetTargetBandwidth("sg_occ_1", 5_000_000)
+
+	tt := tracker.tasks["sg_occ_1"]
+	if tt.TargetBandwidth != 5_000_000 {
+		t.Fatalf("TargetBandwidth = %d, want 5000000", tt.TargetBandwidth)
+	}
+	if tt.AllocatedAt.IsZero() {
+		t.Fatal("AllocatedAt should be set")
+	}
+	if !tt.CreatedAt.Equal(createdAt) {
+		t.Error("SetTargetBandwidth must not refresh CreatedAt")
+	}
+	if tt.Status != "active" {
+		t.Errorf("Status = %q, want active (empty → active on bw>0)", tt.Status)
+	}
+
+	occ := tracker.GetOccupancyTrackedTasks()
+	found := false
+	for _, o := range occ {
+		if o.GID == "sg_occ_1" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("placeholder with TargetBandwidth should appear in GetOccupancyTrackedTasks")
+	}
+}
+
+func TestGetOccupancyTrackedTasks_ExcludesPausedWaitingComplete(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.SetThreadInfo("sg_active", 4, false)
+	tracker.SetTargetBandwidth("sg_active", 1_000_000)
+
+	tracker.SetThreadInfo("sg_paused", 4, false)
+	tracker.SetTargetBandwidth("sg_paused", 1_000_000)
+	tracker.SetStatusFromEvent("sg_paused", "paused")
+
+	tracker.SetThreadInfo("sg_waiting", 4, false)
+	tracker.EnsureTrackedFromEvent("sg_waiting", 0, "https://x", 4, "waiting")
+	tracker.tasks["sg_waiting"].TargetBandwidth = 1_000_000
+
+	tracker.EnsureTrackedFromEvent("sg_done", 100, "https://x", 4, "active")
+	tracker.SetTargetBandwidth("sg_done", 1_000_000)
+	_ = tracker.MarkCompleteFromEvent("sg_done", "complete")
+
+	// Empty status without TargetBandwidth must be excluded.
+	tracker.SetThreadInfo("sg_empty", 4, false)
+
+	occ := tracker.GetOccupancyTrackedTasks()
+	gids := map[string]bool{}
+	for _, o := range occ {
+		gids[o.GID] = true
+	}
+	if !gids["sg_active"] {
+		t.Error("active occupancy missing")
+	}
+	if gids["sg_paused"] || gids["sg_waiting"] || gids["sg_done"] || gids["sg_empty"] {
+		t.Errorf("unexpected occupancy gids: %v", gids)
+	}
+}
+
+func TestGetOccupancyTrackedTasks_IncludesEmptyStatusPlaceholder(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.tasks["sg_ph"] = &TrackedTask{
+		GID:             "sg_ph",
+		TargetBandwidth: 2_000_000,
+		Status:          "",
+	}
+	occ := tracker.GetOccupancyTrackedTasks()
+	if len(occ) != 1 || occ[0].GID != "sg_ph" {
+		t.Fatalf("empty-status placeholder with TargetBandwidth should be included, got %#v", occ)
+	}
+}
+
 func TestEnsureTrackedFromEvent_CompleteDoesNotClobber(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.EnsureTrackedFromEvent("sg-status-complete", 100000000, "https://example.com/file.zip", 8, "active")

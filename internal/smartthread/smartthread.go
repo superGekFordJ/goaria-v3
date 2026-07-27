@@ -96,11 +96,16 @@ func Calculate(p CalcParams) ThreadParams {
 		vAvailable = applyPhysicalCeiling(vAvailable, p)
 	}
 
-	// V_target = min(V_single_peak, V_available)
-	// V_single_peak 无（新域名）→ V_target = V_available
+	// V_target = min(domain remaining, V_available) when domain peak known.
+	// Domain-only exhaustion uses floor=1 (global V_available still healthy);
+	// congestionFloor=2 applies only when global V_available is congested.
 	var vTarget int64
 	if singlePeakOK {
-		vTarget = min64(vSinglePeak, vAvailable)
+		vDomainAvailable := vSinglePeak - p.ReservedDomainBandwidth
+		if vDomainAvailable < 0 {
+			vDomainAvailable = 0
+		}
+		vTarget = min64(vDomainAvailable, vAvailable)
 	} else {
 		vTarget = vAvailable
 	}
@@ -235,6 +240,13 @@ func ceilDiv(a, b int64) int64 {
 
 func min64(a, b int64) int64 {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
 		return a
 	}
 	return b

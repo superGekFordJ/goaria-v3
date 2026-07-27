@@ -1,6 +1,10 @@
 package smartthread
 
-import "sync"
+import (
+	"strings"
+	"sync"
+	"time"
+)
 
 // ActiveBandwidthFunc returns the current total download speed for a given scope+envKey.
 // This is injected from outside (monitor.MacroBandwidthByScope) to avoid an
@@ -16,6 +20,8 @@ var (
 	// SetActiveBandwidthProvider) that happens-before all subsequent reads.
 	// If this is ever changed to support hot-swapping, it must become atomic
 	// or mutex-guarded.
+	// Note: NewBandwidthLedger no longer lumps this provider into the seed
+	// (hybrid per-task seed replaces it). Residual callers may still inject it.
 	activeBandwidthProvider     ActiveBandwidthFunc = noActiveBandwidth
 	activeBandwidthProviderOnce sync.Once
 )
@@ -32,17 +38,20 @@ func SetActiveBandwidthProvider(fn ActiveBandwidthFunc) {
 }
 
 // BandwidthLedger tracks per-scope reserved bandwidth within a batch add session.
-// It seeds from the real-time active bandwidth (monitor.MacroBandwidthByScope)
-// at construction time, then accumulates per-task TargetBandwidth as tasks are
-// calculated.
+// It seeds from hybrid per-task occupancy (TargetBandwidth while cold, telemetry
+// once ready/aged), then accumulates per-task TargetBandwidth as tasks are
+// calculated. Domain occupancy is tracked separately in reservedByDomain.
 //
 // Usage:
 //
 //	ledger := NewBandwidthLedger(activeTasks)
 //	for _, candidate := range batch {
 //	    reserved := ledger.Reserved(scope, envKey)
-//	    params := Calculate(CalcParams{..., ReservedBandwidth: reserved})
+//	    domainReserved := ledger.ReservedByDomain(scope, domain)
+//	    params := Calculate(CalcParams{..., ReservedBandwidth: reserved,
+//	        ReservedDomainBandwidth: domainReserved})
 //	    ledger.Reserve(scope, envKey, params.TargetBandwidth)
+//	    ledger.ReserveByDomain(scope, domain, params.TargetBandwidth)
 //	}
 //
 // BandwidthLedger is accessed during batch-add (single goroutine) but its
@@ -50,36 +59,64 @@ func SetActiveBandwidthProvider(fn ActiveBandwidthFunc) {
 // added to guard against the convergence tick reading
 // activeBandwidthProvider while a batch add is in progress.
 type BandwidthLedger struct {
-	mu              sync.Mutex
-	reserved        map[string]int64
-	reservedWorkers map[string]int // key = scope|domain, batch-accumulated worker reservations
+	mu               sync.Mutex
+	reserved         map[string]int64
+	reservedByDomain map[string]int64 // key = scope|domain
+	reservedWorkers  map[string]int   // key = scope|domain, batch-accumulated worker reservations
 }
 
-// NewBandwidthLedger creates a ledger seeded with current active bandwidth
-// per scope+envKey. The activeTasks parameter provides the set of currently
-// running tasks for pre-scan seeding (pre-scan, not lazy init).
+// NewBandwidthLedger creates a ledger seeded with hybrid per-task occupancy.
+// Each task contributes independently (no once-per-key MacroBandwidth lump).
 func NewBandwidthLedger(activeTasks []TrackedTaskInfo) *BandwidthLedger {
 	l := &BandwidthLedger{
-		reserved:        make(map[string]int64),
-		reservedWorkers: make(map[string]int),
+		reserved:         make(map[string]int64),
+		reservedByDomain: make(map[string]int64),
+		reservedWorkers:  make(map[string]int),
 	}
-	seen := make(map[string]bool)
+	now := time.Now()
 	for _, t := range activeTasks {
 		if t.Scope == "" {
 			continue
 		}
-		key := t.Scope + t.EnvKey
-		if seen[key] {
+		contrib := hybridSeedContrib(t, now)
+		if contrib <= 0 {
 			continue
 		}
-		seen[key] = true
-		l.reserved[key] = activeBandwidthProvider(t.Scope, t.EnvKey)
+		key := t.Scope + t.EnvKey
+		l.reserved[key] += contrib
+		if t.Domain != "" {
+			l.reservedByDomain[limitKey(t.Scope, t.Domain)] += contrib
+		}
 	}
 	return l
 }
 
+// hybridSeedContrib returns the occupancy contribution for one task.
+// Surge: !MacroReady → max(Target, telem); MacroReady → telem.
+// Aria2: within aria2ColdSeedWindow → max(Target, telem); else telem.
+func hybridSeedContrib(t TrackedTaskInfo, now time.Time) int64 {
+	telem := t.TelemetryBps
+	if telem < 0 {
+		telem = 0
+	}
+	target := t.TargetBandwidth
+	if target < 0 {
+		target = 0
+	}
+	if strings.HasPrefix(t.GID, "sg_") {
+		if !t.MacroReady {
+			return max64(target, telem)
+		}
+		return telem
+	}
+	if !t.AllocatedAt.IsZero() && now.Sub(t.AllocatedAt) < aria2ColdSeedWindow {
+		return max64(target, telem)
+	}
+	return telem
+}
+
 // Reserved returns the total reserved bandwidth for the given scope+envKey
-// (active baseline + batch-accumulated reservations).
+// (hybrid seed baseline + batch-accumulated reservations).
 func (l *BandwidthLedger) Reserved(scope, envKey string) int64 {
 	if l == nil {
 		return 0
@@ -105,6 +142,72 @@ func (l *BandwidthLedger) Reserve(scope, envKey string, bandwidth int64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.reserved[key] += bandwidth
+}
+
+// Release subtracts bandwidth from the scope+envKey running total.
+// Called when AddUri fails. Floor at 0.
+func (l *BandwidthLedger) Release(scope, envKey string, bandwidth int64) {
+	if l == nil || bandwidth <= 0 {
+		return
+	}
+	if scope == "" {
+		scope = "wan"
+	}
+	key := scope + envKey
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	v := l.reserved[key] - bandwidth
+	if v < 0 {
+		v = 0
+	}
+	l.reserved[key] = v
+}
+
+// ReservedByDomain returns reserved bandwidth for the given scope+domain.
+func (l *BandwidthLedger) ReservedByDomain(scope, domain string) int64 {
+	if l == nil {
+		return 0
+	}
+	if scope == "" || domain == "" {
+		return 0
+	}
+	key := limitKey(scope, domain)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.reservedByDomain[key]
+}
+
+// ReserveByDomain adds bandwidth to the scope+domain running total.
+func (l *BandwidthLedger) ReserveByDomain(scope, domain string, bandwidth int64) {
+	if l == nil || bandwidth <= 0 {
+		return
+	}
+	if scope == "" || domain == "" {
+		return
+	}
+	key := limitKey(scope, domain)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.reservedByDomain[key] += bandwidth
+}
+
+// ReleaseByDomain subtracts bandwidth from the scope+domain running total.
+// Floor at 0.
+func (l *BandwidthLedger) ReleaseByDomain(scope, domain string, bandwidth int64) {
+	if l == nil || bandwidth <= 0 {
+		return
+	}
+	if scope == "" || domain == "" {
+		return
+	}
+	key := limitKey(scope, domain)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	v := l.reservedByDomain[key] - bandwidth
+	if v < 0 {
+		v = 0
+	}
+	l.reservedByDomain[key] = v
 }
 
 // ReservedWorkers returns the batch-accumulated worker reservations for the

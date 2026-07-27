@@ -2,7 +2,6 @@ package smartthread
 
 import (
 	"log"
-	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -28,7 +27,8 @@ type domainStats struct {
 	tasksInDomain int
 }
 
-// TrackedTaskInfo is a minimal view of monitor.TrackedTask for convergence.
+// TrackedTaskInfo is a minimal view of monitor.TrackedTask for convergence
+// and BandwidthLedger hybrid occupancy seeding.
 type TrackedTaskInfo struct {
 	GID             string
 	Status          string
@@ -39,6 +39,11 @@ type TrackedTaskInfo struct {
 	CompletedLength int64
 	MinChunk        int64 // from ThreadParams.MinSize, for blackout zone detection
 	TotalLength     int64 // from TrackedTask.TotalLength, for completed-task guard
+	ThreadCount     int
+	TargetBandwidth int64
+	AllocatedAt     time.Time
+	TelemetryBps    int64 // Cache EMA / DownloadSpeed pad, or LastRawBps when ready
+	MacroReady      bool  // Surge: Convergence macroReady latch
 }
 
 // TrackerProvider provides task tracking data to the convergence ticker.
@@ -543,33 +548,6 @@ func sameActiveSet(a, b map[string]gidInfo) bool {
 	return true
 }
 
-// computeProbeFloor returns the BBR-aware lower bound for probing.
-// Uses speedstats.GetDomainPeak + GetRTprop to estimate BDP, then:
-//
-//	bbrFloor = ceil(BtlBw * RTprop / W_max)
-//
-// Falls back to probeFloorWorkers when BBR data is unavailable.
-func (c *ConvergenceTicker) computeProbeFloor(domain, scope, envKey string) int {
-	btlBw, ok := speedstats.GetDomainPeak(domain, scope, envKey)
-	if !ok || btlBw <= 0 {
-		return probeFloorWorkers
-	}
-	rtpropMs, ok := speedstats.GetRTprop(domain, scope, envKey)
-	if !ok || rtpropMs <= 0 {
-		return probeFloorWorkers
-	}
-	wMax := c.maxConnections
-	if wMax <= 0 {
-		wMax = 8
-	}
-	bdp := float64(btlBw) * (float64(rtpropMs) / 1000.0)
-	bbrFloor := int(math.Ceil(bdp / float64(wMax)))
-	if bbrFloor < probeFloorWorkers {
-		return probeFloorWorkers
-	}
-	return bbrFloor
-}
-
 // computeVThreadAvg returns the estimated per-thread average throughput for
 // V_available checks. Tries domain-specific median first, falls back to
 // scope-wide median with 0.5x penalty, then clamps to minThreadEfficiency.
@@ -1072,7 +1050,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	}
 
 	if s.phase == phaseStable {
-		probeFloor := c.computeProbeFloor(task.Domain, task.Scope, task.EnvKey)
+		probeFloor := probeFloorWorkers
 		if currentWorkers > probeFloor && (s.peakWorkers > 0 || s.sustainCount >= peakSustainCycles) {
 			shouldProbe := false
 			if s.probeMomentum && s.probeCooldown == 0 {

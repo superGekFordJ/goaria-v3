@@ -35,6 +35,11 @@ const (
 	frozenCooldownCycles  = 12   // ~60s @ 5s interval; must be < IdleConnTimeout(90s)/interval
 	probeFloorWorkers     = 2    // hard lower bound for probing (aligns with congestionFloor)
 
+	// aria2ColdSeedWindow is the wall-clock window during which Aria2 tasks
+	// seed ledger occupancy from max(TargetBandwidth, TelemetryBps).
+	// Surge uses macroReady instead; this age window is Aria2-only.
+	aria2ColdSeedWindow = 15 * time.Second
+
 	// Probe-Up / CeilingHit / FloorHit tunables
 	gainRatioThreshold       = 0.50 // GainRatio >= 0.5 → up-probe success; < 0.5 → ceiling hit rebound
 	ceilingUnlockRatio       = 1.05 // rawBps > ceilingMemory*1.05 → ceiling unlock candidate
@@ -53,6 +58,9 @@ type CalcParams struct {
 	Domain            string // 用于 GetDomainPeak/GetRTprop（配合 Scope 做 domain+scope 联合过滤）
 	EnvKey            string // 网络环境指纹 (SHA-256 前 8 位 hex)
 	ReservedBandwidth int64  // 同 scope+envKey 活跃任务实时速度之和 + 本批次已预留
+	// ReservedDomainBandwidth is occupancy already claimed against V_single_peak
+	// for this scope|domain (hybrid seed + batch ReserveByDomain).
+	ReservedDomainBandwidth int64
 	// 物理天花板注入字段（可选，nil → 降级到仅逻辑天花板）。
 	// 由调用方（tasks 包）注入，打破 monitor↔smartthread 导入环。
 	Ledger            *BandwidthLedger                   // nil on Resume path → degrade
