@@ -27,6 +27,12 @@
   </p>
 
   <p>
+    <a href="https://addons.mozilla.org/addon/goaria">
+      <img src="https://raw.githubusercontent.com/superGekFordJ/goaria-assets/main/get-the-addon.svg" alt="Get the Add-on" height="52">
+    </a>
+  </p>
+
+  <p>
     <a href="./README.md">简体中文</a> | <a href="./README_EN.md">English</a>
   </p>
 </div>
