@@ -42,27 +42,43 @@ func SetActiveBandwidthProvider(fn ActiveBandwidthFunc) {
 // once ready/aged), then accumulates per-task TargetBandwidth as tasks are
 // calculated. Domain occupancy is tracked separately in reservedByDomain.
 //
+// BatchAddURI shares one ledger across up to 12 concurrent submit goroutines.
+// Callers must hold WithAlloc (or LockAlloc/UnlockAlloc) across
+// Reserved* → Calculate → Clamp → Reserve* so domain/global claims cannot
+// TOCTOU. Release* on AddUri failure may run outside the alloc lock.
+//
 // Usage:
 //
 //	ledger := NewBandwidthLedger(activeTasks)
-//	for _, candidate := range batch {
+//	ledger.WithAlloc(func() {
 //	    reserved := ledger.Reserved(scope, envKey)
 //	    domainReserved := ledger.ReservedByDomain(scope, domain)
 //	    params := Calculate(CalcParams{..., ReservedBandwidth: reserved,
 //	        ReservedDomainBandwidth: domainReserved})
 //	    ledger.Reserve(scope, envKey, params.TargetBandwidth)
 //	    ledger.ReserveByDomain(scope, domain, params.TargetBandwidth)
-//	}
-//
-// BandwidthLedger is accessed during batch-add (single goroutine) but its
-// Reserved/Reserve methods are also safe for concurrent use — the mutex was
-// added to guard against the convergence tick reading
-// activeBandwidthProvider while a batch add is in progress.
+//	})
 type BandwidthLedger struct {
-	mu               sync.Mutex
+	allocMu          sync.Mutex // serializes claim path for concurrent batch submit
+	mu               sync.Mutex // protects map fields
 	reserved         map[string]int64
 	reservedByDomain map[string]int64 // key = scope|domain
 	reservedWorkers  map[string]int   // key = scope|domain, batch-accumulated worker reservations
+}
+
+// WithAlloc runs fn while holding the allocation lock. Nil ledger runs fn
+// without locking (Resume / tests with no batch ledger).
+func (l *BandwidthLedger) WithAlloc(fn func()) {
+	if fn == nil {
+		return
+	}
+	if l == nil {
+		fn()
+		return
+	}
+	l.allocMu.Lock()
+	defer l.allocMu.Unlock()
+	fn()
 }
 
 // NewBandwidthLedger creates a ledger seeded with hybrid per-task occupancy.

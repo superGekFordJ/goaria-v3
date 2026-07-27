@@ -63,6 +63,11 @@ type TrackedTask struct {
 	// AllocatedAt is when TargetBandwidth was last written (bw>0). Distinct
 	// from CreatedAt, which SetThreadInfo refreshes for grace-period reuse.
 	AllocatedAt time.Time
+	// resumeOccupancyHold is set when SetTargetBandwidth writes while Status
+	// is still "paused" (Resume hook runs before EventResumed). Lets
+	// GetOccupancyTrackedTasks see the claim without treating long-paused
+	// tasks as holding bandwidth. Cleared whenever status changes.
+	resumeOccupancyHold bool
 }
 
 // TaskTracker 后端任务追踪器
@@ -388,6 +393,7 @@ func (t *TaskTracker) EnsureTrackedFromEvent(gid string, totalLength int64, sour
 		// non-terminal status from a late/out-of-order event or reconcile.
 		if status != "" && !t.processedComplete[gid] {
 			tracked.Status = status
+			tracked.resumeOccupancyHold = false
 		}
 		return
 	}
@@ -418,6 +424,9 @@ func (t *TaskTracker) SetStatusFromEvent(gid string, status string) {
 	}
 	if tracked := t.tasks[gid]; tracked != nil {
 		tracked.Status = status
+		// Resume claims while paused use resumeOccupancyHold; any status
+		// transition (EventResumed→active, user pause, terminal) clears it.
+		tracked.resumeOccupancyHold = false
 	}
 }
 
@@ -457,6 +466,7 @@ func (t *TaskTracker) MarkCompleteFromEvent(gid string, status string) *TrackedT
 	}
 
 	tracked.Status = status
+	tracked.resumeOccupancyHold = false
 	t.processedComplete[gid] = true
 	return copyTrackedTask(tracked)
 }
@@ -563,9 +573,12 @@ func (t *TaskTracker) SetMinChunk(gid string, minChunk int64) {
 }
 
 // SetTargetBandwidth persists Calculate occupancy for hybrid ledger seeding.
-// When bw>0, refreshes AllocatedAt (Add/Resume re-allocation) and, if Status
-// is still empty, sets Status="active" so placeholders are occupancy-visible
-// without widening GetActiveTrackedTasks for Convergence.
+// When bw>0, refreshes AllocatedAt (Add/Resume re-allocation). If Status is
+// still empty, sets Status="active" (placeholders then appear in both
+// occupancy seeding and Convergence GetActiveTrackedTasks — intentional
+// defense-in-depth for the AddURI pre-event window). If Status is "paused"
+// (Resume hook before EventResumed), sets resumeOccupancyHold so occupancy
+// seeding sees the claim without flipping paused→active.
 func (t *TaskTracker) SetTargetBandwidth(gid string, bw int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -577,8 +590,11 @@ func (t *TaskTracker) SetTargetBandwidth(gid string, bw int64) {
 	tracked.TargetBandwidth = bw
 	if bw > 0 {
 		tracked.AllocatedAt = time.Now()
-		if tracked.Status == "" {
+		switch tracked.Status {
+		case "":
 			tracked.Status = "active"
+		case "paused":
+			tracked.resumeOccupancyHold = true
 		}
 	}
 }
@@ -597,9 +613,10 @@ func (t *TaskTracker) GetActiveTrackedTasks() []TrackedTask {
 }
 
 // GetOccupancyTrackedTasks returns tasks that should seed BandwidthLedger
-// occupancy. Includes Status=="active" and AddURI placeholders
-// (Status=="" && TargetBandwidth>0). Excludes paused/waiting/complete/error.
-// Does not widen Convergence's GetActiveTrackedTasks semantics.
+// occupancy. Includes Status=="active", AddURI placeholders
+// (Status=="" && TargetBandwidth>0), and just-resumed claims still marked
+// paused (resumeOccupancyHold). Excludes ordinary paused/waiting/complete/error.
+// Does not change Convergence GetActiveTrackedTasks filter semantics.
 func (t *TaskTracker) GetOccupancyTrackedTasks() []TrackedTask {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -610,6 +627,10 @@ func (t *TaskTracker) GetOccupancyTrackedTasks() []TrackedTask {
 			result = append(result, *tt)
 		case "":
 			if tt.TargetBandwidth > 0 {
+				result = append(result, *tt)
+			}
+		case "paused":
+			if tt.resumeOccupancyHold && tt.TargetBandwidth > 0 {
 				result = append(result, *tt)
 			}
 		}

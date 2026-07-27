@@ -1703,6 +1703,55 @@ func TestGetOccupancyTrackedTasks_IncludesEmptyStatusPlaceholder(t *testing.T) {
 	}
 }
 
+func TestSetTargetBandwidth_ResumeHoldWhilePaused(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_p", 100, "https://x", 4, "active")
+	tracker.SetStatusFromEvent("sg_p", "paused")
+	tracker.SetTargetBandwidth("sg_p", 2_000_000)
+	if tracker.tasks["sg_p"].Status != "paused" {
+		t.Errorf("Status = %q, want paused (must not override non-empty)", tracker.tasks["sg_p"].Status)
+	}
+	if !tracker.tasks["sg_p"].resumeOccupancyHold {
+		t.Error("expected resumeOccupancyHold after SetTargetBandwidth while paused")
+	}
+}
+
+func TestGetOccupancyTrackedTasks_ResumeHoldWhilePaused(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_r1", 100, "https://x", 4, "active")
+	tracker.SetScopeAndEnv("sg_r1", "wan", 0, "a.com", "env1")
+	tracker.SetStatusFromEvent("sg_r1", "paused")
+
+	// Long-paused without hold must stay excluded.
+	tracker.tasks["sg_r1"].TargetBandwidth = 5_000_000
+	tracker.tasks["sg_r1"].AllocatedAt = time.Now().Add(-time.Hour)
+	if len(tracker.GetOccupancyTrackedTasks()) != 0 {
+		t.Fatal("long-paused without hold must not seed occupancy")
+	}
+
+	// Resume hook write while still paused → hold → visible.
+	tracker.SetTargetBandwidth("sg_r1", 8_000_000)
+	occ := tracker.GetOccupancyTrackedTasks()
+	if len(occ) != 1 || occ[0].GID != "sg_r1" || occ[0].TargetBandwidth != 8_000_000 {
+		t.Fatalf("resume hold occupancy = %#v, want sg_r1 @ 8MB", occ)
+	}
+	if activeSetContains(tracker, "sg_r1") {
+		t.Error("paused+hold must not widen GetActiveTrackedTasks")
+	}
+
+	// EventResumed clears hold; active path takes over.
+	tracker.SetStatusFromEvent("sg_r1", "active")
+	if tracker.tasks["sg_r1"].resumeOccupancyHold {
+		t.Error("hold should clear on status transition")
+	}
+	if !activeSetContains(tracker, "sg_r1") {
+		t.Error("active after resume should be in GetActiveTrackedTasks")
+	}
+	if len(tracker.GetOccupancyTrackedTasks()) != 1 {
+		t.Fatal("active task should remain in occupancy")
+	}
+}
+
 func TestEnsureTrackedFromEvent_CompleteDoesNotClobber(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.EnsureTrackedFromEvent("sg-status-complete", 100000000, "https://example.com/file.zip", 8, "active")

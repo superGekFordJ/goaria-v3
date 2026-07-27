@@ -102,3 +102,32 @@ func TestBuildOccupancyTaskInfos_SeedsLedger(t *testing.T) {
 		t.Errorf("ReservedByDomain = %d, want 3000000 (cold hybrid seed)", got)
 	}
 }
+
+func TestBuildOccupancyTaskInfos_ResumeHoldSeedsDomainReserved(t *testing.T) {
+	origTr := monitor.State.GetTracker()
+	origMon := monitor.State.GetMonitor()
+	t.Cleanup(func() {
+		monitor.State.SetTracker(origTr)
+		monitor.State.SetMonitor(origMon)
+	})
+
+	tr := monitor.NewTaskTracker()
+	tr.EnsureTrackedFromEvent("sg_paused1", 100, "https://a.com/1", 4, "active")
+	tr.SetScopeAndEnv("sg_paused1", "wan", 0, "a.com", "env1")
+	tr.SetStatusFromEvent("sg_paused1", "paused")
+	// Simulate Resume hook write before EventResumed.
+	tr.SetTargetBandwidth("sg_paused1", 9_000_000)
+
+	tr.EnsureTrackedFromEvent("sg_paused2", 100, "https://a.com/2", 4, "active")
+	tr.SetScopeAndEnv("sg_paused2", "wan", 0, "a.com", "env1")
+	tr.SetStatusFromEvent("sg_paused2", "paused")
+	// Second resume still paused, no Target yet — must see first claim.
+	monitor.State.SetTracker(tr)
+	monitor.State.SetMonitor(nil)
+
+	infos := BuildOccupancyTaskInfos()
+	ledger := smartthread.NewBandwidthLedger(infos)
+	if got := ledger.ReservedByDomain("wan", "a.com"); got != 9_000_000 {
+		t.Errorf("ReservedByDomain = %d, want 9000000 (resume-hold seed for ResumeBatch)", got)
+	}
+}

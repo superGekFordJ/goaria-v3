@@ -1,8 +1,11 @@
 package smartthread
 
 import (
+	"sync"
 	"testing"
 	"time"
+
+	"goaria-v3/internal/speedstats"
 )
 
 func TestBandwidthLedger_SeedsFromActiveBandwidth(t *testing.T) {
@@ -244,6 +247,59 @@ func TestBandwidthLedger_AddUriFailureReleaseAllDimensions(t *testing.T) {
 	}
 	if got := ledger.ReservedWorkers("wan", "a.com"); got != 0 {
 		t.Errorf("ReservedWorkers after failure release = %d, want 0", got)
+	}
+}
+
+func TestBandwidthLedger_ConcurrentAlloc_SerializesDomainClaim(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	speedstats.AddRecordV2(8*1024*1024, 8, 200*1024*1024, false, 100, "a.com", "wan", "testenv")
+	speedstats.AddRecordV2(100*1024*1024, 1, 200*1024*1024, false, 100, "big.com", "wan", "testenv")
+
+	ledger := NewBandwidthLedger(nil)
+	fileSize := int64(1 * 1024 * 1024 * 1024)
+	const n = 8
+	splits := make([]int, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			var params ThreadParams
+			ledger.WithAlloc(func() {
+				params = Calculate(CalcParams{
+					FileSize:                fileSize,
+					MaxConnections:          16,
+					Scope:                   "wan",
+					EnvKey:                  "testenv",
+					Domain:                  "a.com",
+					ReservedBandwidth:       ledger.Reserved("wan", "testenv"),
+					ReservedDomainBandwidth: ledger.ReservedByDomain("wan", "a.com"),
+				})
+				ledger.Reserve("wan", "testenv", params.TargetBandwidth)
+				ledger.ReserveByDomain("wan", "a.com", params.TargetBandwidth)
+				ledger.ReserveWorkers("wan", "a.com", params.Split)
+			})
+			splits[idx] = params.Split
+		}(i)
+	}
+	wg.Wait()
+
+	high, floor1 := 0, 0
+	for _, s := range splits {
+		switch s {
+		case 9:
+			high++
+		case 1:
+			floor1++
+		default:
+			t.Errorf("unexpected Split=%d in %v", s, splits)
+		}
+	}
+	if high != 1 || floor1 != n-1 {
+		t.Fatalf("concurrent domain claims: splits=%v want exactly one 9 and %d ones", splits, n-1)
 	}
 }
 

@@ -597,30 +597,33 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			maxConn = 8
 		}
 
-		params := smartthread.Calculate(smartthread.CalcParams{
-			FileSize:                fileSize,
-			MaxConnections:          maxConn,
-			Scope:                   scope,
-			Domain:                  domain,
-			EnvKey:                  envKey,
-			ReservedBandwidth:       ledger.Reserved(scope, envKey),
-			ReservedDomainBandwidth: ledger.ReservedByDomain(scope, domain),
-			Ledger:                  ledger,
-			ActiveMACsFunc: func() []string {
-				ne := monitor.State.GetNetEnv()
-				if ne == nil {
-					return nil
-				}
-				return ne.GetAllActiveMACs()
-			},
-			ComputeEnvKeyFunc: monitor.ComputeEnvKey,
+		var params smartthread.ThreadParams
+		ledger.WithAlloc(func() {
+			params = smartthread.Calculate(smartthread.CalcParams{
+				FileSize:                fileSize,
+				MaxConnections:          maxConn,
+				Scope:                   scope,
+				Domain:                  domain,
+				EnvKey:                  envKey,
+				ReservedBandwidth:       ledger.Reserved(scope, envKey),
+				ReservedDomainBandwidth: ledger.ReservedByDomain(scope, domain),
+				Ledger:                  ledger,
+				ActiveMACsFunc: func() []string {
+					ne := monitor.State.GetNetEnv()
+					if ne == nil {
+						return nil
+					}
+					return ne.GetAllActiveMACs()
+				},
+				ComputeEnvKeyFunc: monitor.ComputeEnvKey,
+			})
+			params = smartthread.ClampToServerLimit(params, fileSize, scope, domain,
+				ExistingDomainWorkersFromTelemetry(scope, domain)+ledger.ReservedWorkers(scope, domain),
+				smartthread.GetDefaultServerLimits())
+			ledger.Reserve(scope, envKey, params.TargetBandwidth)
+			ledger.ReserveByDomain(scope, domain, params.TargetBandwidth)
+			ledger.ReserveWorkers(scope, domain, params.Split)
 		})
-		params = smartthread.ClampToServerLimit(params, fileSize, scope, domain,
-			ExistingDomainWorkersFromTelemetry(scope, domain)+ledger.ReservedWorkers(scope, domain),
-			smartthread.GetDefaultServerLimits())
-		ledger.Reserve(scope, envKey, params.TargetBandwidth)
-		ledger.ReserveByDomain(scope, domain, params.TargetBandwidth)
-		ledger.ReserveWorkers(scope, domain, params.Split)
 		var err error
 		gid, err = s.Engine.AddUri(candidate.url, rpc.AddURIOptions{
 			Dir:          dir,
