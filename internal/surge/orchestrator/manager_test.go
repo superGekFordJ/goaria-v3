@@ -233,7 +233,7 @@ func TestLifecycleManager_ResumeBatch_CorruptStateIgnored(t *testing.T) {
 	}
 }
 
-// TestBuildDownloadRecord_DefaultUnlimitedKeepsRateLimitUnset verifies default
+// FORK-PATCH: TestBuildDownloadRecord_DefaultUnlimitedKeepsRateLimitUnset verifies default
 // "0" does not set RateLimitSet; a positive default does.
 func TestBuildDownloadRecord_DefaultUnlimitedKeepsRateLimitUnset(t *testing.T) {
 	progressCh := make(chan types.DownloadEvent, 4)

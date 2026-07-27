@@ -384,7 +384,7 @@ func (mgr *LifecycleManager) buildDownloadRecord(req *DownloadRequest, requestID
 	if settings.Network.DefaultDownloadRateLimit != nil {
 		if parsed, err := utils.ParseRateLimitValue(settings.Network.DefaultDownloadRateLimit.Value); err == nil {
 			rateLimit = parsed
-			// Only a positive default is an explicit override. "0"/unlimited must
+			// FORK-PATCH: Only a positive default is an explicit override. "0"/unlimited must
 			// keep RateLimitSet=false so inherit semantics stay intact.
 			if parsed > 0 {
 				rateLimitSet = true
