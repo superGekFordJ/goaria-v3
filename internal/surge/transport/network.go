@@ -41,6 +41,12 @@ var DefaultNetworkPool = &NetworkPool{
 	transportMap: make(map[*http.Transport]*transportLease),
 }
 
+// FORK-PATCH: process-lifetime LRU TLS session cache shared by all NetworkPool
+// Transports so new dials can 1-RTT resume across Transport rebuilds / poolKeys.
+// Capacity 256 is host:port keyed (ample for multi-task × mirrors). Do not share
+// with service HTTP clients. Do not clear on CloseAll / idle eviction.
+var sharedClientSessionCache = tls.NewLRUClientSessionCache(256)
+
 // AcquireTransport returns a shared transport for the given configuration.
 func (p *NetworkPool) AcquireTransport(proxyURL, customDNS string, maxConns int) *http.Transport {
 	p.mu.Lock()
@@ -173,5 +179,8 @@ func (p *NetworkPool) createNewTransport(proxyURL, customDNS string, maxConns in
 		DisableCompression: true,
 		ForceAttemptHTTP2:  false,
 		TLSNextProto:       make(map[string]func(string, *tls.Conn) http.RoundTripper),
+		TLSClientConfig: &tls.Config{
+			ClientSessionCache: sharedClientSessionCache,
+		},
 	}
 }
