@@ -1657,6 +1657,11 @@ func TestSetTargetBandwidth_PersistsAllocatedAtAndOccupancy(t *testing.T) {
 	}
 }
 
+// TestGetOccupancyTrackedTasks_ExcludesPausedWaitingComplete covers occupancy
+// inclusion/exclusion after SPEC-247: waiting with TargetBandwidth>0 is
+// intentionally included (reverses SPEC-242's blanket waiting exclusion).
+// Waiting with bw==0, paused-without-hold, complete, and empty-without-bw
+// remain excluded. GetActiveTrackedTasks stays active-only.
 func TestGetOccupancyTrackedTasks_ExcludesPausedWaitingComplete(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.SetThreadInfo("sg_active", 4, false)
@@ -1669,6 +1674,10 @@ func TestGetOccupancyTrackedTasks_ExcludesPausedWaitingComplete(t *testing.T) {
 	tracker.SetThreadInfo("sg_waiting", 4, false)
 	tracker.EnsureTrackedFromEvent("sg_waiting", 0, "https://x", 4, "waiting")
 	tracker.tasks["sg_waiting"].TargetBandwidth = 1_000_000
+
+	tracker.SetThreadInfo("sg_waiting0", 2, false)
+	tracker.EnsureTrackedFromEvent("sg_waiting0", 0, "https://x", 2, "waiting")
+	// TargetBandwidth left at 0 — still excluded.
 
 	tracker.EnsureTrackedFromEvent("sg_done", 100, "https://x", 4, "active")
 	tracker.SetTargetBandwidth("sg_done", 1_000_000)
@@ -1685,8 +1694,40 @@ func TestGetOccupancyTrackedTasks_ExcludesPausedWaitingComplete(t *testing.T) {
 	if !gids["sg_active"] {
 		t.Error("active occupancy missing")
 	}
-	if gids["sg_paused"] || gids["sg_waiting"] || gids["sg_done"] || gids["sg_empty"] {
+	if !gids["sg_waiting"] {
+		t.Error("waiting with TargetBandwidth>0 must seed occupancy (SPEC-247)")
+	}
+	if gids["sg_paused"] || gids["sg_waiting0"] || gids["sg_done"] || gids["sg_empty"] {
 		t.Errorf("unexpected occupancy gids: %v", gids)
+	}
+	if activeSetContains(tracker, "sg_waiting") {
+		t.Error("waiting claim must not widen GetActiveTrackedTasks")
+	}
+}
+
+func TestGetOccupancyTrackedTasks_WaitingClaimReleasedOnRemove(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_q", 0, "https://a.com/f", 9, "waiting")
+	tracker.SetScopeAndEnv("sg_q", "wan", 0, "a.com", "env1")
+	tracker.SetThreadInfo("sg_q", 9, false)
+	tracker.SetTargetBandwidth("sg_q", 5_000_000)
+
+	occ := tracker.GetOccupancyTrackedTasks()
+	found := false
+	for _, o := range occ {
+		if o.GID == "sg_q" && o.TargetBandwidth == 5_000_000 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("waiting+bw claim missing from occupancy: %#v", occ)
+	}
+
+	tracker.RemoveTask("sg_q")
+	for _, o := range tracker.GetOccupancyTrackedTasks() {
+		if o.GID == "sg_q" {
+			t.Fatal("RemoveTask must drop waiting claim from occupancy")
+		}
 	}
 }
 

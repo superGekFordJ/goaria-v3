@@ -194,6 +194,89 @@ func TestSurgeEngine_SetResumeParamsHook_NilHook_PreservesValues(t *testing.T) {
 	}
 }
 
+func TestSurgeEngine_SetTightenOnPickupHook(t *testing.T) {
+	engine := NewSurgeEngine()
+	defer engine.Close()
+
+	var called bool
+	engine.SetTightenOnPickupHook(func(cfg *types.DownloadRecord) {
+		called = true
+		cfg.Runtime.Workers = 1
+	})
+
+	hooks := engine.manager.GetEngineHooks()
+	if hooks.TightenOnPickup == nil {
+		t.Fatal("TightenOnPickup hook not set on EngineHooks")
+	}
+
+	cfg := &types.DownloadRecord{
+		ID:      "test-tighten",
+		Runtime: &types.RuntimeConfig{Workers: 9, MinChunkSize: 1024},
+	}
+	hooks.TightenOnPickup(cfg)
+	if !called {
+		t.Fatal("hook was not called")
+	}
+	if cfg.Runtime.Workers != 1 {
+		t.Errorf("after hook Workers=%d, want 1", cfg.Runtime.Workers)
+	}
+}
+
+func TestSurgeEngine_SetTightenOnPickupHook_PreservesResume(t *testing.T) {
+	engine := NewSurgeEngine()
+	defer engine.Close()
+
+	engine.SetResumeParamsHook(func(cfg *types.DownloadRecord) {
+		cfg.Runtime.Workers = 12
+	})
+	engine.SetTightenOnPickupHook(func(cfg *types.DownloadRecord) {
+		cfg.Runtime.Workers = 1
+	})
+
+	hooks := engine.manager.GetEngineHooks()
+	if hooks.RecomputeResumeParams == nil {
+		t.Fatal("SetTighten must RMW-preserve RecomputeResumeParams")
+	}
+	if hooks.TightenOnPickup == nil {
+		t.Fatal("TightenOnPickup missing after set")
+	}
+
+	cfg := &types.DownloadRecord{Runtime: &types.RuntimeConfig{Workers: 4}}
+	hooks.RecomputeResumeParams(cfg)
+	if cfg.Runtime.Workers != 12 {
+		t.Errorf("Resume hook Workers=%d, want 12", cfg.Runtime.Workers)
+	}
+}
+
+func TestSurgeEngine_SetResumeParamsHook_PreservesTighten(t *testing.T) {
+	engine := NewSurgeEngine()
+	defer engine.Close()
+
+	engine.SetTightenOnPickupHook(func(cfg *types.DownloadRecord) {
+		cfg.Runtime.Workers = 1
+	})
+	engine.SetResumeParamsHook(func(cfg *types.DownloadRecord) {
+		cfg.Runtime.Workers = 12
+	})
+
+	hooks := engine.manager.GetEngineHooks()
+	if hooks.TightenOnPickup == nil {
+		t.Fatal("SetResumeParamsHook must RMW-preserve TightenOnPickup")
+	}
+}
+
+func TestSurgeEngine_SetTightenOnPickupHook_NilClears(t *testing.T) {
+	engine := NewSurgeEngine()
+	defer engine.Close()
+
+	engine.SetTightenOnPickupHook(func(cfg *types.DownloadRecord) {})
+	engine.SetTightenOnPickupHook(nil)
+	hooks := engine.manager.GetEngineHooks()
+	if hooks.TightenOnPickup != nil {
+		t.Fatal("nil SetTightenOnPickupHook should clear EngineHooks field")
+	}
+}
+
 // TestSurgeEngine_KillWorker_Delegation verifies KillWorker delegates to the
 // pool and routes to the correct ProgressState. Returns false for unknown ids.
 func TestSurgeEngine_KillWorker_Delegation(t *testing.T) {

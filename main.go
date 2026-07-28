@@ -244,6 +244,9 @@ func main() {
 					tracker.SetTargetBandwidth(gid, params.TargetBandwidth)
 				}
 			})
+			surgeEng.SetTightenOnPickupHook(func(cfg *types.DownloadRecord) {
+				tasks.ApplyPickupTighten(cfg)
+			})
 		}
 	}
 

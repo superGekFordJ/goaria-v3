@@ -131,3 +131,31 @@ func TestBuildOccupancyTaskInfos_ResumeHoldSeedsDomainReserved(t *testing.T) {
 		t.Errorf("ReservedByDomain = %d, want 9000000 (resume-hold seed for ResumeBatch)", got)
 	}
 }
+
+func TestBuildOccupancyTaskInfos_WaitingClaimSeedsDomainReserved(t *testing.T) {
+	origTr := monitor.State.GetTracker()
+	origMon := monitor.State.GetMonitor()
+	t.Cleanup(func() {
+		monitor.State.SetTracker(origTr)
+		monitor.State.SetMonitor(origMon)
+	})
+
+	tr := monitor.NewTaskTracker()
+	// First batch waiter holds claim while still queued.
+	tr.EnsureTrackedFromEvent("sg_wait", 0, "https://a.com/1", 9, "waiting")
+	tr.SetScopeAndEnv("sg_wait", "wan", 0, "a.com", "env1")
+	tr.SetThreadInfo("sg_wait", 9, false)
+	tr.SetTargetBandwidth("sg_wait", 7_000_000)
+	monitor.State.SetTracker(tr)
+	monitor.State.SetMonitor(nil)
+
+	infos := BuildOccupancyTaskInfos()
+	ledger := smartthread.NewBandwidthLedger(infos)
+	if got := ledger.ReservedByDomain("wan", "a.com"); got != 7_000_000 {
+		t.Errorf("ReservedByDomain = %d, want 7000000 (waiting claim visible to later AddUri)", got)
+	}
+	if ExistingDomainWorkersFromTelemetry("wan", "a.com") != 9 {
+		t.Errorf("ExistingDomainWorkers = %d, want 9 from waiting ThreadCount",
+			ExistingDomainWorkersFromTelemetry("wan", "a.com"))
+	}
+}

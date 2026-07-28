@@ -55,6 +55,11 @@ type Scheduler struct {
 	downloadLimiters            map[string]*transport.RateLimiter
 	defaultDownloadRateLimitBps int64
 	shutdownOnce                sync.Once
+
+	// tightenOnPickup is host-injected clamp-before-start (nil = no-op).
+	// Separate mutex so the callback runs after p.mu.Unlock without nesting.
+	tightenMu       sync.RWMutex
+	tightenOnPickup func(*types.DownloadRecord)
 }
 
 var (
@@ -89,6 +94,20 @@ func New(progressCh chan<- types.DownloadEvent, maxDownloads int) *Scheduler {
 		go pool.worker()
 	}
 	return pool
+}
+
+// SetTightenOnPickup installs (or clears, when fn is nil) the pre-RunDownload
+// tighten-only callback. Safe to call concurrently with workers.
+func (p *Scheduler) SetTightenOnPickup(fn func(*types.DownloadRecord)) {
+	p.tightenMu.Lock()
+	p.tightenOnPickup = fn
+	p.tightenMu.Unlock()
+}
+
+func (p *Scheduler) getTightenOnPickup() func(*types.DownloadRecord) {
+	p.tightenMu.RLock()
+	defer p.tightenMu.RUnlock()
+	return p.tightenOnPickup
 }
 
 // removeQueueOrderLocked removes an ID from queueOrder preserving the order of other elements.
@@ -652,6 +671,10 @@ func (p *Scheduler) worker() {
 		// Make a local copy for RunDownload to mutate safely
 		localCfg := ad.config
 		p.mu.Unlock()
+
+		if fn := p.getTightenOnPickup(); fn != nil {
+			fn(&localCfg)
+		}
 
 		err := RunDownload(ctx, &localCfg)
 		ad.running.Store(false)

@@ -115,12 +115,16 @@ func NewLifecycleManager(pool *scheduler.Scheduler, eventBus *EventBus, settings
 	}
 }
 
-// SetEngineHooks injects the narrow resume recompute hook without replacing
-// LifecycleManager's direct pool/eventBus control flow.
+// SetEngineHooks injects host hooks without replacing LifecycleManager's
+// direct pool/eventBus control flow. Also syncs TightenOnPickup onto the
+// scheduler so EngineHooks and the worker callback cannot drift.
 func (mgr *LifecycleManager) SetEngineHooks(hooks EngineHooks) {
 	mgr.hooksMu.Lock()
-	defer mgr.hooksMu.Unlock()
 	mgr.engineHooks = hooks
+	mgr.hooksMu.Unlock()
+	if mgr.pool != nil {
+		mgr.pool.SetTightenOnPickup(hooks.TightenOnPickup)
+	}
 }
 
 func (mgr *LifecycleManager) getEngineHooks() EngineHooks {

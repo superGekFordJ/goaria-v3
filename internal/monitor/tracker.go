@@ -617,8 +617,10 @@ func (t *TaskTracker) GetActiveTrackedTasks() []TrackedTask {
 
 // GetOccupancyTrackedTasks returns tasks that should seed BandwidthLedger
 // occupancy. Includes Status=="active", AddURI placeholders
-// (Status=="" && TargetBandwidth>0), and just-resumed claims still marked
-// paused (resumeOccupancyHold). Excludes ordinary paused/waiting/complete/error.
+// (Status=="" && TargetBandwidth>0), waiting claims with TargetBandwidth>0
+// (queued Surge hold), and just-resumed claims still marked paused
+// (resumeOccupancyHold). Excludes ordinary paused (no hold), waiting with
+// bw==0, complete, error, and empty-status without bw.
 // Does not change Convergence GetActiveTrackedTasks filter semantics.
 func (t *TaskTracker) GetOccupancyTrackedTasks() []TrackedTask {
 	t.mu.RLock()
@@ -629,6 +631,10 @@ func (t *TaskTracker) GetOccupancyTrackedTasks() []TrackedTask {
 		case "active":
 			result = append(result, *tt)
 		case "":
+			if tt.TargetBandwidth > 0 {
+				result = append(result, *tt)
+			}
+		case "waiting":
 			if tt.TargetBandwidth > 0 {
 				result = append(result, *tt)
 			}

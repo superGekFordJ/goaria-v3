@@ -10,13 +10,17 @@ import (
 	"goaria-v3/internal/surge/utils"
 )
 
-// EngineHooks is a narrow resume recompute hook surface for host integration.
-// LifecycleManager keeps direct pool/eventBus wiring; only RecomputeResumeParams
-// is reintroduced so GoAria can adjust Workers/MinChunkSize before re-enqueue.
+// EngineHooks is a narrow host-integration hook surface for LifecycleManager.
+// Direct pool/eventBus wiring stays on the manager; these callbacks let GoAria
+// adjust Runtime params at resume and at scheduler pickup.
 type EngineHooks struct {
 	// RecomputeResumeParams, when non-nil, runs before pool.Add on resume paths.
 	// If nil, saved resume parameters are used unchanged.
 	RecomputeResumeParams func(cfg *types.DownloadRecord)
+	// TightenOnPickup, when non-nil, runs in scheduler.worker after a task
+	// leaves the queue and before RunDownload. Tighten-only:
+	// may lower Runtime.Workers; must never raise Workers/MinChunkSize.
+	TightenOnPickup func(cfg *types.DownloadRecord)
 }
 
 // Pause pauses an active download.
