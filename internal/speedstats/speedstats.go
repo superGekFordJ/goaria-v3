@@ -154,11 +154,15 @@ func GetRecentPeak() (vSingleEst int64, ok bool) {
 	return GetRecentPeakByScope("", "")
 }
 
+// medianFallbackMinN is locked at 0: GetRecentPeak* always uses p75, never
+// falls back to median for small sample counts.
+const medianFallbackMinN = 0
+
 // p75SortedAsc returns the p75 element of a non-empty ascending-sorted
-// []int64 using nearest-rank index (n*3)/4 (SPEC-246).
-// Small-sample contract: n<=2 identical to today's median index (n/2);
+// []int64 using nearest-rank index (n*3)/4.
+// Small-sample contract: n<=2 identical to median index (n/2);
 // n==3 or n==4 selects the maximum (intentional max-filter lean).
-// Never falls back to median for any n (medianFallbackMinN = 0 / disabled).
+// Never falls back to median for any n (medianFallbackMinN locked at 0).
 func p75SortedAsc(sorted []int64) int64 {
 	n := len(sorted)
 	if n == 0 {
@@ -167,8 +171,9 @@ func p75SortedAsc(sorted []int64) int64 {
 	return sorted[(n*3)/4]
 }
 
-// GetRecentPeakByScope 与 GetRecentPeak 逻辑相同但加 scope+envKey 过滤
-// scope 为空时不过滤 scope；envKey 绝不跨 env 回退
+// GetRecentPeakByScope returns the p75 per-thread efficiency (bytes/s) over the
+// recentDays window for scope+envKey (scope "" = no scope filter; envKey never
+// cross-env falls back). At most the last 100 matching samples are used.
 func GetRecentPeakByScope(scope string, envKey string) (vSingleEst int64, ok bool) {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -211,9 +216,10 @@ func GetRecentPeakByScope(scope string, envKey string) (vSingleEst int64, ok boo
 	return p75SortedAsc(vValues), true
 }
 
-// GetRecentPeakByDomain 与 GetRecentPeakByScope 逻辑相同但按 domain+scope+envKey 联合过滤
-// domain 为空时直接返回 0, false（空域名无意义，应走回退路径）
-// scope 为空时不过滤 scope；envKey 绝不跨 env 回退
+// GetRecentPeakByDomain returns the p75 per-thread efficiency (bytes/s) over the
+// recentDays window for domain+scope+envKey (empty domain → 0,false; scope "" =
+// no scope filter; envKey never cross-env falls back). At most the last 100
+// matching samples are used.
 func GetRecentPeakByDomain(domain, scope string, envKey string) (vSingleEst int64, ok bool) {
 	if domain == "" {
 		return 0, false

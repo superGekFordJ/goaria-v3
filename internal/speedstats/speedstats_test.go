@@ -528,7 +528,7 @@ func TestP75SortedAsc_SmallSampleMatrix(t *testing.T) {
 		{"n2_identical_to_median", []int64{10, 20}, 20, false},
 		{"n3_selects_max", []int64{1, 2, 3}, 3, true},
 		{"n4_selects_max", []int64{1, 2, 3, 4}, 4, true},
-		{"n4_all_equal", []int64{7, 7, 7, 7}, 7, true},
+		{"n4_all_equal", []int64{7, 7, 7, 7}, 7, false},
 		{"n5_p75_above_median", []int64{1, 2, 3, 4, 5}, 4, false},
 		{"n8_contended_heavy", []int64{1, 1, 1, 1, 1, 10, 10, 10}, 10, false},
 	}
@@ -556,6 +556,11 @@ func TestP75SortedAsc_SmallSampleMatrix(t *testing.T) {
 			t.Errorf("p75SortedAsc([]int64{}) = %d, want 0", got)
 		}
 	})
+	t.Run("medianFallbackMinN_disabled", func(t *testing.T) {
+		if medianFallbackMinN != 0 {
+			t.Errorf("medianFallbackMinN = %d, want 0 (fallback disabled)", medianFallbackMinN)
+		}
+	})
 }
 
 // TestGetRecentPeakByDomain_ContendedPollution_P75AboveMedian seeds many low-eff
@@ -568,12 +573,12 @@ func TestGetRecentPeakByDomain_ContendedPollution_P75AboveMedian(t *testing.T) {
 	now := time.Now().Unix()
 	mu.Lock()
 	records = []SpeedRecord{
-		// Contended lows: 2MB/s @ 1 thread → eff 2MB
-		{Timestamp: now, PeakSpeed: 2 * 1024 * 1024, ThreadCount: 1, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
-		{Timestamp: now, PeakSpeed: 2 * 1024 * 1024, ThreadCount: 1, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
-		{Timestamp: now, PeakSpeed: 2 * 1024 * 1024, ThreadCount: 1, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
-		{Timestamp: now, PeakSpeed: 2 * 1024 * 1024, ThreadCount: 1, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
-		{Timestamp: now, PeakSpeed: 2 * 1024 * 1024, ThreadCount: 1, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
+		// Contended lows: 16MB/s @ 8 threads → eff 2MB (multi-thread contention)
+		{Timestamp: now, PeakSpeed: 16 * 1024 * 1024, ThreadCount: 8, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now, PeakSpeed: 16 * 1024 * 1024, ThreadCount: 8, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now, PeakSpeed: 16 * 1024 * 1024, ThreadCount: 8, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now, PeakSpeed: 16 * 1024 * 1024, ThreadCount: 8, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now, PeakSpeed: 16 * 1024 * 1024, ThreadCount: 8, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
 		// Clean highs: 8MB/s @ 1 thread → eff 8MB
 		{Timestamp: now, PeakSpeed: 8 * 1024 * 1024, ThreadCount: 1, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
 		{Timestamp: now, PeakSpeed: 8 * 1024 * 1024, ThreadCount: 1, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
