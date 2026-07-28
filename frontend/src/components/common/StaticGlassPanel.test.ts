@@ -63,4 +63,32 @@ describe('StaticGlassPanel', () => {
     expect(wrapper.classes()).toContain('cursor-pointer')
     expect(wrapper.classes()).toContain('hover:scale-[1.01]')
   })
+
+  it('balanced tier renders glass layer with static refraction when refraction is enabled', () => {
+    uiStoreMock.effectsTier = 'balanced'
+    const wrapper = mount(StaticGlassPanel, {
+      props: { refraction: true },
+    })
+
+    // Glass layer renders (v-if="effectsTier !== 'reduced'" passes)
+    const html = wrapper.html()
+    expect(html).toContain('blur(var(--glass-blur))')
+
+    // Static refraction filter id is applied
+    expect(html).toContain('static-glass-refraction')
+  })
+
+  it('balanced tier renders glass layer without refraction filter when refraction is disabled', () => {
+    uiStoreMock.effectsTier = 'balanced'
+    const wrapper = mount(StaticGlassPanel, {
+      props: { refraction: false },
+    })
+
+    // Glass layer still renders
+    const html = wrapper.html()
+    expect(html).toContain('blur(var(--glass-blur))')
+
+    // No refraction filter id applied
+    expect(html).not.toContain('static-glass-refraction')
+  })
 })

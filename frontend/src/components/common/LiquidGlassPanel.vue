@@ -36,6 +36,9 @@
   // automatically when this ref changes (e.g. effects toggle, active state change).
   const refractionLayer = ref<HTMLElement | null>(null)
   const { filterId } = useLiquidGlass(refractionLayer)
+
+  // Shared static refraction filter id for the balanced tier (no dynamic SDF).
+  const staticFilterId = computed(() => getStaticGlassFilterId())
 </script>
 
 <template>
@@ -101,8 +104,8 @@
         class="absolute top-0 left-0 -z-10 h-full w-full overflow-hidden transition-all duration-300 pointer-events-none"
         :class="[radius, baseColorClass]"
         :style="{
-          backdropFilter: `blur(var(--glass-blur)) url(#${getStaticGlassFilterId()})`,
-          WebkitBackdropFilter: `blur(var(--glass-blur)) url(#${getStaticGlassFilterId()})`,
+          backdropFilter: `blur(var(--glass-blur)) url(#${staticFilterId})`,
+          WebkitBackdropFilter: `blur(var(--glass-blur)) url(#${staticFilterId})`,
         }"
       ></div>
       <div
