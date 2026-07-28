@@ -36,11 +36,15 @@ func ApplyPickupTighten(cfg *types.DownloadRecord) {
 	remaining := cfg.TotalSize
 	downloaded := cfg.Downloaded
 	if cp := progress.CfgProgress(cfg); cp != nil {
-		d, _, _, _, _, _ := cp.GetProgress()
+		d, total, _, _, _, _ := cp.GetProgress()
 		downloaded = d
+		// Prefer progress total when cfg.TotalSize is still unknown.
+		if remaining <= 0 && total > 0 {
+			remaining = total
+		}
 	}
-	if cfg.TotalSize > 0 && downloaded < cfg.TotalSize {
-		remaining = cfg.TotalSize - downloaded
+	if remaining > 0 && downloaded < remaining {
+		remaining -= downloaded
 	}
 	if remaining <= 0 {
 		return
@@ -55,13 +59,16 @@ func ApplyPickupTighten(cfg *types.DownloadRecord) {
 	ledger := smartthread.NewBandwidthLedger(infos)
 	existingWorkers := ExistingDomainWorkersFromTelemetryExcluding(scope, domain, gid)
 
+	// Scope reserved from occupancy ledger (includes waiting TargetBandwidth
+	// claims). Domain reserved already used the same ledger. Live Macro alone
+	// would miss waiters — promote is occupancy-aware, not Resume-Macro parity.
 	params := smartthread.Calculate(smartthread.CalcParams{
 		FileSize:                remaining,
 		MaxConnections:          maxConn,
 		Scope:                   scope,
 		Domain:                  domain,
 		EnvKey:                  envKey,
-		ReservedBandwidth:       monitor.MacroBandwidthByScope(scope, envKey),
+		ReservedBandwidth:       ledger.Reserved(scope, envKey),
 		ReservedDomainBandwidth: ledger.ReservedByDomain(scope, domain),
 	})
 	params = smartthread.ClampToServerLimit(params, remaining, scope, domain,
@@ -115,7 +122,7 @@ func ExistingDomainWorkersFromTelemetryExcluding(scope, domain, excludeGID strin
 	}
 	total := 0
 	for _, t := range occupied {
-		if t.GID == excludeGID {
+		if excludeGID != "" && t.GID == excludeGID {
 			continue
 		}
 		if t.Scope != scope || t.Domain != domain {

@@ -195,8 +195,8 @@ func TestSurgeEngine_SetResumeParamsHook_NilHook_PreservesValues(t *testing.T) {
 }
 
 func TestSurgeEngine_SetTightenOnPickupHook(t *testing.T) {
-	engine := NewSurgeEngine()
-	defer engine.Close()
+	pool := scheduler.NewSchedulerForTesting(nil)
+	engine := NewSurgeEngineForTesting(pool)
 
 	var called bool
 	engine.SetTightenOnPickupHook(func(cfg *types.DownloadRecord) {
@@ -208,17 +208,20 @@ func TestSurgeEngine_SetTightenOnPickupHook(t *testing.T) {
 	if hooks.TightenOnPickup == nil {
 		t.Fatal("TightenOnPickup hook not set on EngineHooks")
 	}
+	if !pool.TightenOnPickupInstalled() {
+		t.Fatal("SetTightenOnPickupHook must sync callback onto scheduler")
+	}
 
 	cfg := &types.DownloadRecord{
 		ID:      "test-tighten",
 		Runtime: &types.RuntimeConfig{Workers: 9, MinChunkSize: 1024},
 	}
-	hooks.TightenOnPickup(cfg)
+	pool.CallTightenOnPickup(cfg)
 	if !called {
-		t.Fatal("hook was not called")
+		t.Fatal("scheduler bridge did not invoke hook")
 	}
 	if cfg.Runtime.Workers != 1 {
-		t.Errorf("after hook Workers=%d, want 1", cfg.Runtime.Workers)
+		t.Errorf("after scheduler invoke Workers=%d, want 1", cfg.Runtime.Workers)
 	}
 }
 
@@ -239,6 +242,9 @@ func TestSurgeEngine_SetTightenOnPickupHook_PreservesResume(t *testing.T) {
 	}
 	if hooks.TightenOnPickup == nil {
 		t.Fatal("TightenOnPickup missing after set")
+	}
+	if pool := engine.getScheduler(); pool == nil || !pool.TightenOnPickupInstalled() {
+		t.Fatal("TightenOnPickup must remain installed on scheduler after RMW")
 	}
 
 	cfg := &types.DownloadRecord{Runtime: &types.RuntimeConfig{Workers: 4}}
@@ -263,17 +269,31 @@ func TestSurgeEngine_SetResumeParamsHook_PreservesTighten(t *testing.T) {
 	if hooks.TightenOnPickup == nil {
 		t.Fatal("SetResumeParamsHook must RMW-preserve TightenOnPickup")
 	}
+	if pool := engine.getScheduler(); pool == nil || !pool.TightenOnPickupInstalled() {
+		t.Fatal("scheduler TightenOnPickup must survive SetResumeParamsHook RMW")
+	}
 }
 
 func TestSurgeEngine_SetTightenOnPickupHook_NilClears(t *testing.T) {
-	engine := NewSurgeEngine()
-	defer engine.Close()
+	pool := scheduler.NewSchedulerForTesting(nil)
+	engine := NewSurgeEngineForTesting(pool)
 
 	engine.SetTightenOnPickupHook(func(cfg *types.DownloadRecord) {})
+	if !pool.TightenOnPickupInstalled() {
+		t.Fatal("expected scheduler hook after set")
+	}
 	engine.SetTightenOnPickupHook(nil)
 	hooks := engine.manager.GetEngineHooks()
 	if hooks.TightenOnPickup != nil {
 		t.Fatal("nil SetTightenOnPickupHook should clear EngineHooks field")
+	}
+	if pool.TightenOnPickupInstalled() {
+		t.Fatal("nil SetTightenOnPickupHook must clear scheduler callback")
+	}
+	cfg := &types.DownloadRecord{Runtime: &types.RuntimeConfig{Workers: 7}}
+	pool.CallTightenOnPickup(cfg)
+	if cfg.Runtime.Workers != 7 {
+		t.Fatalf("nil-cleared scheduler invoke mutated Workers to %d", cfg.Runtime.Workers)
 	}
 }
 

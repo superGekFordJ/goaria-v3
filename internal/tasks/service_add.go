@@ -94,40 +94,12 @@ func parseDownloadSpeed(s string) int64 {
 	return v
 }
 
-// ExistingDomainWorkersFromTelemetry returns the total active worker count
+// ExistingDomainWorkersFromTelemetry returns the total occupancy worker count
 // for all tracked tasks matching the given scope+domain. Used by
 // ClampToServerLimit to account for existing domain concurrency before
 // launching a new task. Cold fallback: max(len(snapshots), ThreadCount).
 func ExistingDomainWorkersFromTelemetry(scope, domain string) int {
-	if scope == "" || domain == "" {
-		return 0
-	}
-	tr := monitor.State.GetTracker()
-	if tr == nil {
-		return 0
-	}
-	tasks := tr.GetOccupancyTrackedTasks()
-	mon := monitor.State.GetMonitor()
-	var telemetry *monitor.TelemetryCache
-	if mon != nil {
-		telemetry = mon.GetTelemetry()
-	}
-	total := 0
-	for _, t := range tasks {
-		if t.Scope != scope || t.Domain != domain {
-			continue
-		}
-		snapCount := 0
-		if telemetry != nil {
-			snapCount = len(telemetry.Get(t.GID))
-		}
-		n := snapCount
-		if t.ThreadCount > n {
-			n = t.ThreadCount
-		}
-		total += n
-	}
-	return total
+	return ExistingDomainWorkersFromTelemetryExcluding(scope, domain, "")
 }
 
 // AddUriFromExtension processes a download request from the browser extension.

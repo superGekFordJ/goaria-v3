@@ -6,6 +6,7 @@ import (
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/smartthread"
+	"goaria-v3/internal/surge/progress"
 	"goaria-v3/internal/surge/types"
 )
 
@@ -65,6 +66,14 @@ func TestApplyPickupTighten_CongestedDomainClampsDown(t *testing.T) {
 			if o.ThreadCount != 1 {
 				t.Errorf("tracker ThreadCount = %d, want 1", o.ThreadCount)
 			}
+			// Shrink path always calls SetTargetBandwidth; N_max fuse yields a
+			// scaled-down claim, not the pre-promote 8MB waiter bake.
+			if o.TargetBandwidth <= 0 {
+				t.Error("SetTargetBandwidth must refresh claim after shrink")
+			}
+			if o.TargetBandwidth == 8_000_000 {
+				t.Error("TargetBandwidth still 8MB — expected recalculated/scaled claim")
+			}
 		}
 	}
 	if !found {
@@ -104,11 +113,18 @@ func TestApplyPickupTighten_SelfExclusion(t *testing.T) {
 	t.Cleanup(func() { limits.Clear("wan|a.com") })
 
 	// Alone with ThreadCount=9 and N_max=9: without self-exclude, existing=9
-	// → Clamp to 1. With self-exclude, existing=0 → Split may stay ≥9 → no apply.
+	// → Clamp to 1. With self-exclude, existing=0 → N_max fuse must not fire.
 	tr.EnsureTrackedFromEvent("sg_solo", 100_000_000, "https://a.com/f", 9, "waiting")
 	tr.SetScopeAndEnv("sg_solo", "wan", 0, "a.com", "env1")
 	tr.SetThreadInfo("sg_solo", 9, false)
 	tr.SetTargetBandwidth("sg_solo", 8_000_000)
+
+	if got := ExistingDomainWorkersFromTelemetry("wan", "a.com"); got != 9 {
+		t.Fatalf("ExistingDomainWorkers (with self) = %d, want 9", got)
+	}
+	if got := ExistingDomainWorkersFromTelemetryExcluding("wan", "a.com", "sg_solo"); got != 0 {
+		t.Fatalf("ExistingDomainWorkers excluding self = %d, want 0", got)
+	}
 
 	cfg := &types.DownloadRecord{
 		ID:        "solo",
@@ -125,6 +141,35 @@ func TestApplyPickupTighten_SelfExclusion(t *testing.T) {
 	}
 	if cfg.Runtime.Workers > 9 {
 		t.Fatalf("Workers = %d grew above 9", cfg.Runtime.Workers)
+	}
+}
+
+func TestApplyPickupTighten_ProgressTotalWhenCfgTotalUnknown(t *testing.T) {
+	tr := withPickupTightenFixture(t, true)
+	limits := smartthread.GetDefaultServerLimits()
+	limits.SetNMax("wan|prog.com", 4)
+	t.Cleanup(func() { limits.Clear("wan|prog.com") })
+
+	tr.EnsureTrackedFromEvent("sg_peer", 50, "https://prog.com/p", 4, "active")
+	tr.SetScopeAndEnv("sg_peer", "wan", 0, "prog.com", "env1")
+	tr.SetThreadInfo("sg_peer", 4, false)
+	tr.SetTargetBandwidth("sg_peer", 3_000_000)
+
+	tr.EnsureTrackedFromEvent("sg_p", 0, "https://prog.com/f", 6, "waiting")
+	tr.SetScopeAndEnv("sg_p", "wan", 0, "prog.com", "env1")
+	tr.SetThreadInfo("sg_p", 6, false)
+	tr.SetTargetBandwidth("sg_p", 2_000_000)
+
+	ps := progress.New("p", 40_000_000)
+	cfg := &types.DownloadRecord{
+		ID:            "p",
+		TotalSize:     0, // unknown on record; progress knows size
+		ProgressState: ps,
+		Runtime:       &types.RuntimeConfig{Workers: 6, MinChunkSize: 1024 * 1024},
+	}
+	ApplyPickupTighten(cfg)
+	if cfg.Runtime.Workers != 1 {
+		t.Fatalf("Workers = %d, want 1 (progress total must unlock clamp)", cfg.Runtime.Workers)
 	}
 }
 

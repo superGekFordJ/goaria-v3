@@ -168,9 +168,10 @@ func (e *SurgeEngine) SetResumeParamsHook(fn func(cfg *types.DownloadRecord)) {
 	e.manager.SetEngineHooks(hooks)
 }
 
-// SetTightenOnPickupHook injects the TightenOnPickup callback into EngineHooks
-// and the scheduler worker path. Tighten-only: may lower Runtime.Workers before
-// RunDownload; must never raise Workers/MinChunkSize. RMW preserves Resume hook.
+// SetTightenOnPickupHook injects the TightenOnPickup callback into EngineHooks.
+// SetEngineHooks syncs the callback onto the scheduler worker path (nil clears).
+// Tighten-only: may lower Runtime.Workers before RunDownload; must never raise
+// Workers/MinChunkSize. RMW preserves Resume hook.
 func (e *SurgeEngine) SetTightenOnPickupHook(fn func(cfg *types.DownloadRecord)) {
 	if e.manager == nil {
 		return
@@ -178,9 +179,6 @@ func (e *SurgeEngine) SetTightenOnPickupHook(fn func(cfg *types.DownloadRecord))
 	hooks := e.manager.GetEngineHooks()
 	hooks.TightenOnPickup = fn
 	e.manager.SetEngineHooks(hooks)
-	if e.scheduler != nil {
-		e.scheduler.SetTightenOnPickup(fn)
-	}
 }
 
 // getDownloadList returns the Surge download list with a 1s TTL request-scoped

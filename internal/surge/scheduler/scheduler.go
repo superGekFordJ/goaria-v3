@@ -104,6 +104,20 @@ func (p *Scheduler) SetTightenOnPickup(fn func(*types.DownloadRecord)) {
 	p.tightenMu.Unlock()
 }
 
+// TightenOnPickupInstalled reports whether a non-nil pickup tighten callback
+// is installed on the scheduler (the production worker path).
+func (p *Scheduler) TightenOnPickupInstalled() bool {
+	return p.getTightenOnPickup() != nil
+}
+
+// CallTightenOnPickup runs the installed pickup callback if non-nil (nil-safe).
+// Mirrors worker() pre-RunDownload invoke for host-wiring tests.
+func (p *Scheduler) CallTightenOnPickup(cfg *types.DownloadRecord) {
+	if fn := p.getTightenOnPickup(); fn != nil {
+		fn(cfg)
+	}
+}
+
 func (p *Scheduler) getTightenOnPickup() func(*types.DownloadRecord) {
 	p.tightenMu.RLock()
 	defer p.tightenMu.RUnlock()
