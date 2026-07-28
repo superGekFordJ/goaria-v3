@@ -58,7 +58,8 @@ func TestComplete_SyncsProgressToFull(t *testing.T) {
 	}}
 	defer resetCacheSg()
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
 		DownloadID: "big",
 		Total:      1000,
 	})
@@ -100,7 +101,8 @@ func TestComplete_SmallFileShowsFull(t *testing.T) {
 	}}
 	defer resetCacheSg()
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
 		DownloadID: "small",
 		Total:      500,
 	})
@@ -139,7 +141,8 @@ func TestComplete_PayloadCarriesProgress(t *testing.T) {
 	}}
 	defer resetCacheSg()
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
 		DownloadID: "payload",
 		Total:      1000,
 	})

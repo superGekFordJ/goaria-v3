@@ -22,10 +22,10 @@ import (
 )
 
 type SurgeEngine struct {
-	service  *service.LocalDownloadService
-	manager  *orchestrator.LifecycleManager
+	service   *service.LocalDownloadService
+	manager   *orchestrator.LifecycleManager
 	scheduler *scheduler.Scheduler
-	cleanup  func()
+	cleanup   func()
 
 	listCacheMu sync.Mutex
 	listCache   []types.DownloadStatus

@@ -816,7 +816,8 @@ func TestReconcileSurgeCache_ConcurrentWithEvent(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+		m.handleSurgeEvent(surgeEvents.DownloadEvent{
+			Type:       surgeEvents.EventComplete,
 			DownloadID: "task1",
 			Total:      1000,
 		})

@@ -28,7 +28,8 @@ func TestEventDriven_AddQueuedMsg_InsertsCacheWaiting(t *testing.T) {
 		Cache.sgStopped = nil
 	}()
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventQueued, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventQueued,
 		DownloadID: "evt-queued-1",
 		URL:        "https://example.com/file.zip",
 		Workers:    4,
@@ -83,7 +84,8 @@ func TestEventDriven_AddStartedMsg_InsertsCacheActive(t *testing.T) {
 		Cache.sgStopped = nil
 	}()
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventStarted,
 		DownloadID: "evt-started-1",
 		Total:      50000000,
 		URL:        "https://example.com/large.zip",
@@ -151,7 +153,8 @@ func TestEventDriven_RemoveMsg_DeletesCacheAndPushesRemoveDelta(t *testing.T) {
 		m.telemetry = NewTelemetryCache()
 	}
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventRemoved, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventRemoved,
 		DownloadID: "evt-remove-1",
 	})
 
@@ -223,7 +226,8 @@ func TestEventDriven_PauseMovesTaskToWaiting(t *testing.T) {
 	Cache.sgActive = []rpc.Task{{GID: "sg_evt-pause-1", Status: "active", DownloadSpeed: "100"}}
 	tracker.EnsureTrackedFromEvent("sg_evt-pause-1", 0, "", 0, "active")
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventPaused,
 		DownloadID: "evt-pause-1",
 	})
 
@@ -311,7 +315,8 @@ func TestEventDriven_ResumeMovesTaskToActive(t *testing.T) {
 	Cache.sgWaiting = []rpc.Task{{GID: "sg_evt-resume-1", Status: "paused", DownloadSpeed: "0"}}
 	tracker.EnsureTrackedFromEvent("sg_evt-resume-1", 0, "", 0, "paused")
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventResumed, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventResumed,
 		DownloadID: "evt-resume-1",
 	})
 
@@ -397,7 +402,8 @@ func TestEventDriven_CompleteMovesToStopped(t *testing.T) {
 		Status: "active",
 	}, "active")
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
 		DownloadID: "evt-complete-1",
 		Total:      1000,
 		AvgSpeed:   500,
@@ -448,7 +454,8 @@ func TestEventDriven_QueuedThenStarted_MovesFromWaitingToActive(t *testing.T) {
 	}()
 
 	// Queue
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventQueued, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventQueued,
 		DownloadID: "evt-flow-1",
 		URL:        "https://example.com/file.zip",
 		Workers:    4,
@@ -467,7 +474,8 @@ func TestEventDriven_QueuedThenStarted_MovesFromWaitingToActive(t *testing.T) {
 	}
 
 	// Started
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventStarted,
 		DownloadID: "evt-flow-1",
 		Total:      100000,
 		URL:        "https://example.com/file.zip",
@@ -605,7 +613,8 @@ func TestEventDriven_DeleteRace_TaskNotResurrectedByTick(t *testing.T) {
 	Cache.engine = engine
 
 	// Seed the task in cache via started event
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventStarted,
 		DownloadID: "del-race-1",
 		Total:      1000,
 		URL:        "https://example.com/file.zip",
@@ -613,14 +622,16 @@ func TestEventDriven_DeleteRace_TaskNotResurrectedByTick(t *testing.T) {
 	})
 
 	// Complete the task
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
 		DownloadID: "del-race-1",
 		Total:      1000,
 		AvgSpeed:   500,
 	})
 
 	// Now remove it
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventRemoved, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventRemoved,
 		DownloadID: "del-race-1",
 	})
 
@@ -686,13 +697,15 @@ func TestEventDriven_CompletePersistenceRace(t *testing.T) {
 	Cache.engine = engine
 
 	// Seed + complete via events
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventStarted,
 		DownloadID: "persist-1",
 		Total:      1000,
 		URL:        "https://example.com/file.zip",
 		Workers:    4,
 	})
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
 		DownloadID: "persist-1",
 		Total:      1000,
 		AvgSpeed:   500,
@@ -864,7 +877,8 @@ func TestEventDriven_RapidAddRemove(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		// Add
-		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, 
+		m.handleSurgeEvent(surgeEvents.DownloadEvent{
+			Type:       surgeEvents.EventStarted,
 			DownloadID: "rapid-ar-1",
 			Total:      1000,
 			URL:        "https://example.com/file.zip",
@@ -885,7 +899,8 @@ func TestEventDriven_RapidAddRemove(t *testing.T) {
 		}
 
 		// Remove
-		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventRemoved, 
+		m.handleSurgeEvent(surgeEvents.DownloadEvent{
+			Type:       surgeEvents.EventRemoved,
 			DownloadID: "rapid-ar-1",
 		})
 
@@ -955,7 +970,8 @@ func TestEventDriven_PrefetchMetadata_EnrichesSgSliceEntry(t *testing.T) {
 
 	Cache.engine = hybrid
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventStarted,
 		DownloadID: "enrich-1",
 		Total:      1000,
 		URL:        "https://example.com/file.zip",
@@ -1127,7 +1143,8 @@ func TestSurgeRemove_DirectCacheDelete_NoTombstone(t *testing.T) {
 	// Seed a sg_ task in cache
 	Cache.AddSgTask(rpc.Task{GID: "sg_tombstone-1", Status: "active"}, "active")
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventRemoved, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventRemoved,
 		DownloadID: "tombstone-1",
 	})
 
@@ -1177,7 +1194,8 @@ func TestHandleSurgeEvent_FirstByteMsg_SetsTTFB(t *testing.T) {
 	}()
 
 	// Create the task via DownloadStartedMsg (TTFBMs=0 initially).
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventStarted,
 		DownloadID: "fb-1",
 		Total:      50000000,
 		URL:        "https://example.com/large.zip",
@@ -1186,7 +1204,8 @@ func TestHandleSurgeEvent_FirstByteMsg_SetsTTFB(t *testing.T) {
 	tracker.SetScopeAndEnv("sg_fb-1", "wan", 0, "example.com", "envA")
 
 	// Send FirstByteMsg with TTFB=80.
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventFirstByte, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventFirstByte,
 		DownloadID: "fb-1",
 		TTFBMs:     80,
 	})
@@ -1224,7 +1243,8 @@ func TestHandleSurgeEvent_FirstByteMsg_NoDeltaPush(t *testing.T) {
 
 	tracker.EnsureTrackedFromEvent("sg_fb-2", 1000, "https://example.com", 4, "active")
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventFirstByte, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventFirstByte,
 		DownloadID: "fb-2",
 		TTFBMs:     50,
 	})
@@ -1261,7 +1281,8 @@ func TestHandleSurgeEvent_FirstByteMsg_BeforeStarted_SilentSkip(t *testing.T) {
 	}()
 
 	// FirstByteMsg before any DownloadStartedMsg — task does not exist.
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventFirstByte, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventFirstByte,
 		DownloadID: "fb-3",
 		TTFBMs:     90,
 	})
@@ -1271,7 +1292,8 @@ func TestHandleSurgeEvent_FirstByteMsg_BeforeStarted_SilentSkip(t *testing.T) {
 	}
 
 	// Now DownloadStartedMsg creates the task with TTFBMs=0.
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventStarted,
 		DownloadID: "fb-3",
 		Total:      1000,
 		URL:        "https://example.com/file.zip",

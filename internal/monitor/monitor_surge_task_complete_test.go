@@ -177,10 +177,10 @@ func TestHandleTaskComplete_RateLimitSkip(t *testing.T) {
 	// Create a WorkerPool with a rate-limited download entry
 	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
 		"ratelimited": {
-			URL:          "https://example.com/limited.zip",
-			ID:           "ratelimited",
-			RateLimit:    1_000_000, // 1MB/s rate limit
-			RateLimitSet: true,
+			URL:           "https://example.com/limited.zip",
+			ID:            "ratelimited",
+			RateLimit:     1_000_000, // 1MB/s rate limit
+			RateLimitSet:  true,
 			ProgressState: progress.New("ratelimited", 200000000),
 		},
 	})
@@ -271,8 +271,8 @@ func TestHandleTaskComplete_RateLimitNotSet_RecordsNormally(t *testing.T) {
 	// Create a WorkerPool with a non-rate-limited download entry
 	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
 		"unlimited": {
-			URL:          "https://example.com/fast.zip",
-			ID:           "unlimited",
+			URL:           "https://example.com/fast.zip",
+			ID:            "unlimited",
 			RateLimit:     0, // No rate limit
 			RateLimitSet:  false,
 			ProgressState: progress.New("unlimited", 200000000),

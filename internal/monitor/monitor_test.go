@@ -146,7 +146,8 @@ func TestMonitor_HandleSurgeEvent_CompleteEventDispatches(t *testing.T) {
 		receivedDelta = &delta
 	})
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
 		DownloadID: "test-123",
 	})
 

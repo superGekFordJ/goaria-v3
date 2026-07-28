@@ -620,7 +620,8 @@ func TestSwitchingRace_ConcurrentTickAndEventBridge_NoDoubleOperation(t *testing
 
 	go func() {
 		defer wg.Done()
-		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+		m.handleSurgeEvent(surgeEvents.DownloadEvent{
+			Type:       surgeEvents.EventComplete,
 			DownloadID: "task1",
 			Total:      1000,
 		})
@@ -699,7 +700,8 @@ func TestSwitchingRace_EventBridgeStartsImmediatelyNoWaitForTickRecovery(t *test
 
 	go func() {
 		defer wg.Done()
-		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, 
+		m.handleSurgeEvent(surgeEvents.DownloadEvent{
+			Type:       surgeEvents.EventStarted,
 			DownloadID: "task1",
 			URL:        "https://example.com/file.zip",
 			Total:      1000,
@@ -790,7 +792,8 @@ func TestSwitchingRace_LastTickRoundOverlapsEventBridgeStartup(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, 
+		m.handleSurgeEvent(surgeEvents.DownloadEvent{
+			Type:       surgeEvents.EventPaused,
 			DownloadID: "task1",
 		})
 	}()

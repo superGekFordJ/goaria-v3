@@ -21,7 +21,8 @@ func TestHandleSurgeEvent_ProgressMsg_QueuesProgressDelta(t *testing.T) {
 	State.SetWindowExists(true)
 	defer State.SetWindowExists(prevWindow)
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventProgress, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventProgress,
 		DownloadID: "test-1",
 		Downloaded: 500,
 		Total:      1000,
@@ -95,7 +96,8 @@ func TestHandleSurgeEvent_CompleteEvent_NoDelay(t *testing.T) {
 	})
 
 	start := time.Now()
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
 		DownloadID: "test-2",
 	})
 	elapsed := time.Since(start)
@@ -130,7 +132,8 @@ func TestHandleSurgeEvent_PauseEvent_QueuesPauseDeltaAndPatchesCache(t *testing.
 	Cache.sgActive = []rpc.Task{{GID: "sg_test-pause", Status: "active", DownloadSpeed: "100"}}
 	defer func() { Cache.sgActive = nil }()
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventPaused,
 		DownloadID: "test-pause",
 	})
 
@@ -190,7 +193,8 @@ func TestHandleSurgeEvent_ResumeEvent_QueuesResumeDeltaAndPatchesCache(t *testin
 	Cache.sgWaiting = []rpc.Task{{GID: "sg_test-resume", Status: "paused"}}
 	defer func() { Cache.sgWaiting = nil }()
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventResumed, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventResumed,
 		DownloadID: "test-resume",
 	})
 
@@ -256,7 +260,8 @@ func TestHandleSurgeEvent_CompleteEvent_QueuesToFrontend(t *testing.T) {
 	State.SetWindowExists(true)
 	defer State.SetWindowExists(prevWindow)
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
 		DownloadID: "test-push",
 	})
 
@@ -296,7 +301,8 @@ func TestHandleSurgeEvent_CompleteEvent_NoCacheNeeded_StoppedVisibleNextTick(t *
 	m.shouldFetchStopped = false
 	m.mu.Unlock()
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
 		DownloadID: "test-nocache",
 	})
 
@@ -340,7 +346,8 @@ func TestHandleSurgeEvent_CompleteEvent_UpdatesMasterCache(t *testing.T) {
 	State.SetWindowExists(true)
 	defer State.SetWindowExists(prevWindow)
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
 		DownloadID: "dl-cache-timing",
 		Total:      1000,
 		Filename:   "a.bin",
@@ -410,7 +417,8 @@ func TestHandleSurgeEvent_CompleteEvent_PushesDeltaToFrontend(t *testing.T) {
 		}
 	})
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
 		DownloadID: "test-direct-push",
 	})
 
@@ -471,7 +479,8 @@ func TestHandleSurgeEvent_ErrorEvent_PushesDeltaToFrontend(t *testing.T) {
 		}
 	})
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventError, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventError,
 		DownloadID: "test-err-push",
 	})
 
@@ -520,7 +529,8 @@ func TestHandleSurgeEvent_ProgressMsg_NoWindow_DoesNotPush(t *testing.T) {
 	State.SetWindowExists(false)
 	defer State.SetWindowExists(prevWindow)
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventProgress, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventProgress,
 		DownloadID: "test-4",
 		Downloaded: 100,
 		Total:      200,
@@ -556,7 +566,8 @@ func TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback(t *testing.T) {
 	defer State.SetWindowExists(prevWindow)
 
 	// 1. Create tracked task via DownloadStartedMsg (no progress events → PeakSpeed stays 0)
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventStarted,
 		DownloadID: "avg-fallback",
 		Total:      100000000, // >50MB
 		URL:        "https://example.com/large.zip",
@@ -564,7 +575,8 @@ func TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback(t *testing.T) {
 	})
 
 	// 2. Complete without any ProgressMsg — PeakSpeed should be 0
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
 		DownloadID: "avg-fallback",
 		Total:      100000000,
 		AvgSpeed:   5000000, // 5MB/s average
@@ -829,7 +841,8 @@ func TestHandleSurgeEvent_CompleteMsg_TotalEnrichesTrackedTask(t *testing.T) {
 	defer State.SetWindowExists(prevWindow)
 
 	// 1. Queue with Total=0 (DownloadQueuedMsg typically has no size)
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventQueued, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventQueued,
 		DownloadID: "total-enrich",
 		URL:        "https://example.com/queued.zip",
 		Workers:    4,
@@ -844,7 +857,8 @@ func TestHandleSurgeEvent_CompleteMsg_TotalEnrichesTrackedTask(t *testing.T) {
 	}
 
 	// 2. Complete with Total — should enrich TotalLength via EnsureTrackedFromEvent
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
 		DownloadID: "total-enrich",
 		Total:      200000000, // 200MB
 		AvgSpeed:   10000000,  // 10MB/s
@@ -1223,7 +1237,8 @@ func TestHandleSurgeEvent_NoInvalidationOnProgress(t *testing.T) {
 	cacheAtBefore := surgeEng.ListCacheAtForTesting()
 	surgeEng.ListCacheMuForTesting().Unlock()
 
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventProgress, 
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventProgress,
 		DownloadID: "inv-5",
 		Downloaded: 100,
 		Total:      1000,

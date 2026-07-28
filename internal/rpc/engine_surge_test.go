@@ -393,15 +393,15 @@ func TestNewSurgeEngineForTesting_IsNameActiveRenamesMemoryOnlyCollision(t *test
 func TestSurgeEngine_GetRateLimit_ZeroUnlimitedNotLimited(t *testing.T) {
 	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
 		"unlimited-set": {
-			ID:           "unlimited-set",
-			RateLimit:    0,
-			RateLimitSet: true,
+			ID:            "unlimited-set",
+			RateLimit:     0,
+			RateLimitSet:  true,
 			ProgressState: progress.New("unlimited-set", 1000),
 		},
 		"capped": {
-			ID:           "capped",
-			RateLimit:    1_000_000,
-			RateLimitSet: true,
+			ID:            "capped",
+			RateLimit:     1_000_000,
+			RateLimitSet:  true,
 			ProgressState: progress.New("capped", 1000),
 		},
 	})
