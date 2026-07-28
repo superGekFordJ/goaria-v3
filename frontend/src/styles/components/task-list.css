@@ -324,10 +324,6 @@
   display: none;
 }
 
-[data-theme='light'][data-effects='reduced'] .task-card-active {
-  box-shadow: var(--glass-shadow) !important;
-}
-
 /* === Noise Texture Overlay (Subtle) === */
 .noise-overlay {
   position: fixed;

@@ -44,7 +44,7 @@ vi.mock('../../stores/downloadGroups', () => ({
 
 vi.mock('../../stores/ui', () => ({
   useUIStore: () => ({
-    effects: 'full',
+    effectsTier: 'full',
   }),
 }))
 

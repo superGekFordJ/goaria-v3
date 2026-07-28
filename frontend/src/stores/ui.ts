@@ -121,7 +121,6 @@ export const useUIStore = defineStore(
     }
 
     const effectsTier = computed<EffectsTier>(() => levelToTier(effectsLevel.value))
-    const effects = computed<EffectsTier>(() => effectsTier.value)
 
     function setEffectsLevel(level: number) {
       const clamped = Math.max(0, Math.min(100, Math.round(level)))
@@ -221,7 +220,6 @@ export const useUIStore = defineStore(
       density,
       effectsLevel,
       effectsTier,
-      effects,
       pendingPasteUri,
       pendingPasteUris,
       // Actions

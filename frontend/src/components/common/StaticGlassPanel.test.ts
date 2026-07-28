@@ -3,7 +3,6 @@ import { mount } from '@vue/test-utils'
 import StaticGlassPanel from './StaticGlassPanel.vue'
 
 const uiStoreMock = vi.hoisted(() => ({
-  effects: 'full',
   effectsTier: 'full',
   effectsLevel: 100,
 }))
@@ -19,7 +18,6 @@ vi.mock('../../composables/useLiquidGlass', () => ({
 describe('StaticGlassPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    uiStoreMock.effects = 'full'
     uiStoreMock.effectsTier = 'full'
     uiStoreMock.effectsLevel = 100
   })
