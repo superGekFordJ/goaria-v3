@@ -284,6 +284,11 @@ func (c *ConvergenceTicker) tick() {
 		if task.Scope == "" || task.Domain == "" {
 			continue
 		}
+		// Align processTask complete guard: 100% tasks still listed must not
+		// inflate N_max / release clamp. TotalLength==0 (unknown size) counts.
+		if task.TotalLength > 0 && task.CompletedLength >= task.TotalLength {
+			continue
+		}
 		stats := c.telemetry.Get(task.GID)
 		if len(stats) == 0 {
 			continue
@@ -370,11 +375,17 @@ func (c *ConvergenceTicker) tick() {
 	// Skip GIDs already scaled by processTask to prevent double ScaleUp.
 	pending = append(pending, c.bandwidthRelease(activeTasks, activeGids, pendingGids, approvedDelta, dStats)...)
 
-	// Self-cleanup: remove states for GIDs no longer active
+	// Self-cleanup: remove states for GIDs no longer active.
+	// prevActiveSpeeds must prune by activeGids (not only via states): RemoveTask
+	// deletes states early while intentionally keeping speeds until this tick.
 	c.mu.Lock()
 	for gid := range c.states {
 		if _, ok := activeGids[gid]; !ok {
 			delete(c.states, gid)
+		}
+	}
+	for gid := range c.prevActiveSpeeds {
+		if _, ok := activeGids[gid]; !ok {
 			delete(c.prevActiveSpeeds, gid)
 		}
 	}
@@ -424,7 +435,8 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 	defer c.mu.Unlock()
 
 	// Snapshot disappearances under lock. Unlock-before-provider must not
-	// range over live prevActiveGids — RemoveTask may delete concurrently.
+	// range over live prevActiveGids — concurrent mutation (e.g. states clear
+	// via RemoveTask) can still race the maps mid-iteration.
 	type disappearance struct {
 		gid   string
 		info  gidInfo
@@ -445,6 +457,10 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 	var releases []pendingScale
 	for _, d := range disappeared {
 		gid, info := d.gid, d.info
+		// Unknown ownership: empty Domain must not wildcard across domains.
+		if info.Domain == "" {
+			continue
+		}
 
 		type candidate struct {
 			gid            string
@@ -458,11 +474,7 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 			if !strings.HasPrefix(t.GID, "sg_") {
 				continue
 			}
-			domainMatch := t.Domain == info.Domain
-			if info.Domain == "" {
-				domainMatch = true
-			}
-			if !domainMatch || t.Scope != info.Scope || t.EnvKey != info.EnvKey {
+			if t.Domain != info.Domain || t.Scope != info.Scope || t.EnvKey != info.EnvKey {
 				continue
 			}
 			if pendingGids[t.GID] {
@@ -473,6 +485,10 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 				continue
 			}
 			cw := len(c.telemetry.Get(t.GID))
+			// Align processTask: zero-telemetry candidates cannot ScaleWorkers.
+			if cw == 0 {
+				continue
+			}
 			// N_max clamp: skip when domain total workers + 1 would exceed N_max.
 			lk := ""
 			if t.Scope != "" && t.Domain != "" {
@@ -1123,11 +1139,13 @@ func (c *ConvergenceTicker) getOrCreateState(gid string) *convergenceState {
 	return s
 }
 
+// RemoveTask clears per-gid convergence state immediately so LastRawBps
+// returns (0, false). prevActiveGids / prevActiveSpeeds are preserved until the
+// next tick replaces/prunes them, so complete/delete can still participate in
+// disappearance diff and windowInvalidated.
 func (c *ConvergenceTicker) RemoveTask(gid string) {
 	c.mu.Lock()
 	delete(c.states, gid)
-	delete(c.prevActiveGids, gid)
-	delete(c.prevActiveSpeeds, gid)
 	c.mu.Unlock()
 }
 

@@ -367,6 +367,9 @@ func TestConvergence_BandwidthRelease_DomainScopeMatching(t *testing.T) {
 	}
 }
 
+// TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly keeps its
+// historical name. SPEC-243 reversed empty-Domain semantics: unknown ownership
+// skips the disappearance entirely (no cross-domain wildcard release).
 func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
@@ -374,10 +377,6 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 	gidA := "sg_empty_domain"
 	gidB := "sg_known_domain"
 
-	// Scenario 1: both candidates present, gidA has fewer workers so it is
-	// elected deterministically (lowest currentWorkers wins). gidB has a
-	// non-empty domain but must still be a valid candidate under the
-	// empty-domain fallback.
 	t.Run("both_present_lowest_workers_elected", func(t *testing.T) {
 		tracker := &mockTracker{
 			tasks: []TrackedTaskInfo{
@@ -419,17 +418,11 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 			nil,
 			nil,
 		)
-		if len(releases) != 1 {
-			t.Fatalf("expected 1 release, got %d: %+v", len(releases), releases)
-		}
-		if releases[0].gid != gidA {
-			t.Errorf("expected gidA elected (lowest workers), got %s", releases[0].gid)
+		if len(releases) != 0 {
+			t.Fatalf("SPEC-243: empty-Domain disappearance must skip release, got %d: %+v", len(releases), releases)
 		}
 	})
 
-	// Scenario 2: only gidB (non-empty domain) present. If the empty-domain
-	// fallback correctly ignores domain, gidB is elected — proving it is a
-	// valid candidate when the disappeared task's domain is empty.
 	t.Run("only_nonempty_domain_candidate_elected", func(t *testing.T) {
 		tracker := &mockTracker{
 			tasks: []TrackedTaskInfo{
@@ -467,11 +460,8 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 			nil,
 			nil,
 		)
-		if len(releases) != 1 {
-			t.Fatalf("expected 1 release for gidB, got %d: %+v", len(releases), releases)
-		}
-		if releases[0].gid != gidB {
-			t.Errorf("expected gidB elected (non-empty domain still valid under empty-domain fallback), got %s", releases[0].gid)
+		if len(releases) != 0 {
+			t.Fatalf("SPEC-243: empty-Domain disappearance must skip release, got %d: %+v", len(releases), releases)
 		}
 	})
 }

@@ -96,6 +96,7 @@ func TestConvergenceTicker_NonSurgeGidSkipped(t *testing.T) {
 
 func TestConvergenceTicker_RemoveTask(t *testing.T) {
 	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
 	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")
 
 	gid := "sg_remove"
@@ -124,28 +125,56 @@ func TestConvergenceTicker_RemoveTask(t *testing.T) {
 
 	ct.mu.Lock()
 	_, exists := ct.states[gid]
+	_, prevExists := ct.prevActiveGids[gid]
 	ct.mu.Unlock()
 	if !exists {
 		t.Fatal("expected convergence state to exist after tick")
 	}
-	ct.mu.Lock()
-	_, prevExists := ct.prevActiveGids[gid]
-	ct.mu.Unlock()
 	if !prevExists {
 		t.Fatal("expected prevActiveGids to contain gid after tick")
 	}
+
+	// Seed speeds so we can assert prune-by-activeGids after RemoveTask.
+	ct.mu.Lock()
+	ct.prevActiveSpeeds[gid] = 2 * 1024 * 1024
+	ct.mu.Unlock()
 
 	ct.RemoveTask(gid)
 
 	ct.mu.Lock()
 	_, exists = ct.states[gid]
 	_, prevExists = ct.prevActiveGids[gid]
+	_, speedExists := ct.prevActiveSpeeds[gid]
 	ct.mu.Unlock()
 	if exists {
 		t.Error("expected convergence state to be removed")
 	}
+	// SPEC-243: RemoveTask preserves prevActiveGids / prevActiveSpeeds so the
+	// next tick can observe disappearance + windowInvalidated on complete/delete.
+	if !prevExists {
+		t.Error("expected prevActiveGids retained after RemoveTask until tick replace")
+	}
+	if !speedExists {
+		t.Error("expected prevActiveSpeeds retained after RemoveTask until tick prune")
+	}
+	if bps, ready := ct.LastRawBps(gid); bps != 0 || ready {
+		t.Errorf("LastRawBps after RemoveTask: got (%d,%v), want (0,false)", bps, ready)
+	}
+
+	// Empty active set → tick replaces prevActiveGids and prunes speeds by activeGids.
+	tracker.tasks = nil
+	delete(telemetry.data, gid)
+	ct.tick()
+
+	ct.mu.Lock()
+	_, prevExists = ct.prevActiveGids[gid]
+	_, speedExists = ct.prevActiveSpeeds[gid]
+	ct.mu.Unlock()
 	if prevExists {
-		t.Error("expected prevActiveGids to be cleaned by RemoveTask")
+		t.Error("expected prevActiveGids cleared after tick replace")
+	}
+	if speedExists {
+		t.Error("expected prevActiveSpeeds pruned by activeGids after tick")
 	}
 }
 
