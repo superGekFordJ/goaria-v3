@@ -519,33 +519,41 @@ func TestGetRecentPeakByDomain_CrossScopeIsolation(t *testing.T) {
 // (disabled — never fall back to median for any n).
 func TestP75SortedAsc_SmallSampleMatrix(t *testing.T) {
 	cases := []struct {
-		name   string
-		sorted []int64
+		name      string
+		sorted    []int64
+		wantP75   int64
+		expectMax bool // n==3 or n==4: p75 selects the maximum
 	}{
-		{"n1_identical", []int64{100}},
-		{"n2_identical_to_median", []int64{10, 20}},
-		{"n3_selects_max", []int64{1, 2, 3}},
-		{"n4_selects_max", []int64{1, 2, 3, 4}},
-		{"n5_p75_above_median", []int64{1, 2, 3, 4, 5}},
-		{"n8_contended_heavy", []int64{1, 1, 1, 1, 1, 10, 10, 10}},
+		{"n1_identical", []int64{100}, 100, false},
+		{"n2_identical_to_median", []int64{10, 20}, 20, false},
+		{"n3_selects_max", []int64{1, 2, 3}, 3, true},
+		{"n4_selects_max", []int64{1, 2, 3, 4}, 4, true},
+		{"n4_all_equal", []int64{7, 7, 7, 7}, 7, true},
+		{"n5_p75_above_median", []int64{1, 2, 3, 4, 5}, 4, false},
+		{"n8_contended_heavy", []int64{1, 1, 1, 1, 1, 10, 10, 10}, 10, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			n := len(tc.sorted)
 			median := tc.sorted[n/2]
-			wantP75 := tc.sorted[(n*3)/4]
 			got := p75SortedAsc(tc.sorted)
-			if got != wantP75 {
-				t.Errorf("p75SortedAsc = %d, want %d (idx=(n*3)/4)", got, wantP75)
+			if got != tc.wantP75 {
+				t.Errorf("p75SortedAsc = %d, want %d", got, tc.wantP75)
 			}
 			if got < median {
 				t.Errorf("p75=%d < median=%d (tighten-only violated)", got, median)
+			}
+			if tc.expectMax && got != tc.sorted[n-1] {
+				t.Errorf("p75=%d, want max=%d for n=%d", got, tc.sorted[n-1], n)
 			}
 		})
 	}
 	t.Run("empty_guard", func(t *testing.T) {
 		if got := p75SortedAsc(nil); got != 0 {
 			t.Errorf("p75SortedAsc(nil) = %d, want 0", got)
+		}
+		if got := p75SortedAsc([]int64{}); got != 0 {
+			t.Errorf("p75SortedAsc([]int64{}) = %d, want 0", got)
 		}
 	})
 }

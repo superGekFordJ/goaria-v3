@@ -254,6 +254,7 @@ func GetRecentPeakByDomain(domain, scope string, envKey string) (vSingleEst int6
 		vValues = vValues[len(vValues)-100:]
 	}
 
+	// 计算 p75 基准 (Baseline)
 	sort.Slice(vValues, func(i, j int) bool {
 		return vValues[i] < vValues[j]
 	})
