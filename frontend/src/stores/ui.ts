@@ -173,7 +173,7 @@ export const useUIStore = defineStore(
       root.setAttribute('data-effects', tier)
       root.style.setProperty('--ui-effects-level', String(level))
       root.style.setProperty('--glass-blur', `${Math.max(2, 24 - (level / 100) * 22)}px`)
-      root.style.setProperty('--glass-opacity', String(0.08 + (level / 100) * 0.32))
+      root.style.setProperty('--glass-opacity', String(0.40 - (level / 100) * 0.32))
     }
 
     /**

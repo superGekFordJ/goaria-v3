@@ -56,9 +56,9 @@
     "advancedMaterials": "高级材质",
     "advancedMaterialsTitle": "高级材质",
     "advancedMaterialsDesc": "拖动滑块以平衡视觉丰富度与 GPU 性能。",
-    "effectsLow": "省电模式",
+    "effectsLow": "精简",
     "effectsBalanced": "均衡",
-    "effectsHigh": "全景展示"
+    "effectsHigh": "全效"
   },
   "download": {
     "title": "下载目录",

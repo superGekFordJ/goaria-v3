@@ -21,6 +21,8 @@
     'update:modelValue': [value: number]
   }>()
 
+  const localValue = ref(props.modelValue)
+
   const rootRef = ref<HTMLElement | null>(null)
   const railRef = ref<HTMLElement | null>(null)
   const fillRef = ref<HTMLElement | null>(null)
@@ -64,6 +66,8 @@
   let raf = 0
   let frameT = 0
   let mapBucket = -1
+  let railWidth = 0
+  let ro: ResizeObserver | null = null
   const mapCache = new Map<string, { blurX: number; blurY: number; url: string }>()
   const mapDpr = Math.min(4, Math.max(3, (window.devicePixelRatio || 1) * 2))
 
@@ -209,7 +213,11 @@
     thumb.style.width = `${currentW}px`
     thumb.style.height = `${currentH}px`
     thumb.style.borderRadius = `${currentTr}px`
-    thumb.style.transform = 'translate(-50%, -50%)'
+    
+    const pct = ((localValue.value - props.min) / (props.max - props.min))
+    const x = pct * railWidth
+    thumb.style.transform = `translate3d(calc(${x}px - 50%), -50%, 0)`
+    
     refract.style.inset = `${-currentCapturePad}px`
 
     if (rimRef.value && rimRectRef.value) {
@@ -273,30 +281,27 @@
 
   function valueFromEvent(e: PointerEvent): number {
     const rail = railRef.value
-    if (!rail) return props.modelValue
+    if (!rail) return localValue.value
     const rect = rail.getBoundingClientRect()
-    const halfMaxThumbW = (THUMB_W * MAX_LIFT) / 2
-    const usable = rect.width - halfMaxThumbW * 2
-    if (usable <= 0) return props.modelValue
-    const x = Math.max(halfMaxThumbW, Math.min(rect.width - halfMaxThumbW, e.clientX - rect.left))
-    const pct = ((x - halfMaxThumbW) / usable) * 100
+    if (rect.width === 0) return localValue.value
+    let pct = (e.clientX - rect.left) / rect.width
+    pct = Math.max(0, Math.min(1, pct))
     const range = props.max - props.min
-    const stepped = Math.round((props.min + (pct / 100) * range) / props.step) * props.step
+    const stepped = Math.round((props.min + pct * range) / props.step) * props.step
     return Math.max(props.min, Math.min(props.max, stepped))
   }
 
   function render() {
     const fill = fillRef.value
-    const thumb = thumbRef.value
     const root = rootRef.value
-    if (!fill || !thumb || !root) return
-    const pct = ((props.modelValue - props.min) / (props.max - props.min)) * 100
-    const halfMaxThumbW = (THUMB_W * MAX_LIFT) / 2
-    // map 0-100% into [halfMaxThumbW, 100% - halfMaxThumbW]
-    const offset = halfMaxThumbW - (pct * halfMaxThumbW * 2) / 100
-    thumb.style.left = `calc(${pct}% + ${offset}px)`
-    fill.style.width = `calc(${pct}% + ${offset}px)`
-    root.setAttribute('aria-valuenow', String(Math.round(props.modelValue)))
+    if (!fill || !root) return
+    const pct = ((localValue.value - props.min) / (props.max - props.min))
+    fill.style.width = `${pct * 100}%`
+    root.setAttribute('aria-valuenow', String(Math.round(localValue.value)))
+    
+    if (!raf) {
+      applyStyles()
+    }
   }
 
   function onPointerDown(e: PointerEvent) {
@@ -307,15 +312,16 @@
     thumbRef.value?.classList.add('pressed')
     lastX = e.clientX
     moveT = performance.now()
-    const v = valueFromEvent(e)
-    emit('update:modelValue', v)
+    localValue.value = valueFromEvent(e)
+    emit('update:modelValue', localValue.value)
     kick()
   }
 
   function onPointerMove(e: PointerEvent) {
     if (!pressed) return
-    const v = valueFromEvent(e)
-    emit('update:modelValue', v)
+    localValue.value = valueFromEvent(e)
+    emit('update:modelValue', localValue.value)
+    render()
     const now = performance.now()
     const dt = Math.max(4, now - moveT) / 1000
     vx += ((e.clientX - lastX) / dt - vx) * 0.35
@@ -338,18 +344,31 @@
     else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') v = Math.max(props.min, props.modelValue - step)
     else return
     e.preventDefault()
+    localValue.value = v
     emit('update:modelValue', v)
   }
 
-  watch(() => props.modelValue, render)
+  watch(() => props.modelValue, (v) => { localValue.value = v; render() })
 
   onMounted(() => {
+    if (railRef.value) {
+      railWidth = railRef.value.getBoundingClientRect().width
+      ro = new ResizeObserver((entries) => {
+        if (entries[0]) {
+          railWidth = entries[0].contentRect.width
+          if (!raf) applyStyles()
+        }
+      })
+      ro.observe(railRef.value)
+    }
+    
     ensureFilter()
     render()
     applyLens()
   })
 
   onBeforeUnmount(() => {
+    if (ro) ro.disconnect()
     if (raf) cancelAnimationFrame(raf)
     if (svgRoot) svgRoot.remove()
   })
@@ -411,6 +430,7 @@
     display: flex;
     align-items: center;
     height: 44px;
+    padding: 0 24px;
     touch-action: none;
     cursor: pointer;
     outline: none;
@@ -482,7 +502,7 @@
     width: 46px;
     height: 28px;
     border-radius: 14px;
-    transform: translate(-50%, -50%);
+    transform: translate3d(-50%, -50%, 0);
     isolation: isolate;
     overflow: hidden;
     background: #fff;
@@ -534,10 +554,6 @@
       inset 0 -8px 14px -10px rgba(10, 15, 40, 0.35);
   }
 
-  :global([data-theme='dark']) .lgs-thumb.pressed {
-    background: rgba(20, 20, 26, 0.35);
-  }
-
   .lgs-thumb.pressed .lgs-noise {
     opacity: 0.05;
   }
@@ -545,8 +561,28 @@
   .lgs-thumb.pressed .lgs-rim {
     opacity: 1;
   }
+</style>
 
-  :global([data-theme='dark']) .lgs-thumb.pressed .lgs-rim {
+<style>
+  /* 全局注入暗色模式样式，确保覆盖 scoped 隔离 */
+  [data-theme='dark'] .lgs-thumb {
+    background: #606068; /* 不透明的金属深灰，增强向液态玻璃转化时的惊艳反差 */
+    box-shadow:
+      inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+      0 1px 3px rgba(0, 0, 0, 0.5);
+  }
+
+  /* 恢复完美暗色折射质感，避免浑浊发白 */
+  [data-theme='dark'] .lgs-thumb.pressed {
+    background: rgba(20, 20, 26, 0.35);
+    box-shadow:
+      0 10px 24px rgba(0, 0, 10, 0.5),
+      0 3px 8px rgba(0, 0, 10, 0.4),
+      inset 0 1px 1px rgba(255, 255, 255, 0.2),
+      inset 0 -8px 14px -10px rgba(10, 15, 40, 0.6);
+  }
+
+  [data-theme='dark'] .lgs-thumb.pressed .lgs-rim {
     opacity: 0.85;
   }
 </style>

@@ -55,10 +55,10 @@
     "auto": "自動",
     "advancedMaterials": "高度なマテリアル",
     "advancedMaterialsTitle": "高度なマテリアル",
-    "advancedMaterialsDesc": "スライダーをドラッグして、視覚的な豊かさとGPUパフォーマンスのバランスを調整します。",
-    "effectsLow": "バッテリー節約",
+    "advancedMaterialsDesc": "スライダーを調整して、視覚的な豊かさとパフォーマンスのバランスを最適化します。",
+    "effectsLow": "軽量",
     "effectsBalanced": "バランス",
-    "effectsHigh": "ショーケース"
+    "effectsHigh": "フルエフェクト"
   },
   "download": {
     "title": "ダウンロード先",

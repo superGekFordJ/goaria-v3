@@ -55,10 +55,10 @@
     "auto": "Auto",
     "advancedMaterials": "Erweiterte Materialien",
     "advancedMaterialsTitle": "Erweiterte Materialien",
-    "advancedMaterialsDesc": "Schieber ziehen, um visuelle Opulenz und GPU-Leistung auszubalancieren.",
-    "effectsLow": "Energiesparen",
-    "effectsBalanced": "Ausgeglichen",
-    "effectsHigh": "Schaufenster"
+    "advancedMaterialsDesc": "Passen Sie den Schieberegler an, um die visuelle Wiedergabetreue und die GPU-Leistung auszubalancieren.",
+    "effectsLow": "Reduziert",
+    "effectsBalanced": "Ausgewogen",
+    "effectsHigh": "Voll"
   },
   "download": {
     "title": "Download-Verzeichnis",

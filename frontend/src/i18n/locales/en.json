@@ -55,10 +55,10 @@
     "auto": "Auto",
     "advancedMaterials": "Advanced Materials",
     "advancedMaterialsTitle": "Advanced Materials",
-    "advancedMaterialsDesc": "Drag the slider to balance visual richness and GPU performance.",
-    "effectsLow": "Battery Saver",
+    "advancedMaterialsDesc": "Adjust the slider to balance visual fidelity and GPU performance.",
+    "effectsLow": "Reduced",
     "effectsBalanced": "Balanced",
-    "effectsHigh": "Showcase"
+    "effectsHigh": "Full"
   },
   "download": {
     "title": "Download Directory",

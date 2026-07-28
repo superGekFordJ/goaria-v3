@@ -55,10 +55,10 @@
     "auto": "Auto",
     "advancedMaterials": "Materiales Avanzados",
     "advancedMaterialsTitle": "Materiales Avanzados",
-    "advancedMaterialsDesc": "Arrastra el deslizador para equilibrar la riqueza visual y el rendimiento de GPU.",
-    "effectsLow": "Ahorro de Batería",
+    "advancedMaterialsDesc": "Ajusta el control deslizante para equilibrar la fidelidad visual y el rendimiento de la GPU.",
+    "effectsLow": "Reducido",
     "effectsBalanced": "Equilibrado",
-    "effectsHigh": "Exhibición"
+    "effectsHigh": "Completo"
   },
   "download": {
     "title": "Directorio de Descargas",
