@@ -10,9 +10,9 @@ import (
 )
 
 // TestConvergence_RemoveTask_PreservesDisappearanceSignal proves the production
-// complete path (leave active → RemoveTask) keeps prevActiveGids. Release and
-// windowInvalidated are asserted in separate subtests so bandwidthRelease is not
-// double-fired (once manually, once inside tick).
+// complete path (leave active → RemoveTask) keeps prevActiveGids. Subtests cover
+// release-only, invalidate-only, and a single full tick() that asserts both
+// without double-firing bandwidthRelease manually.
 //
 // Forbidden: hand-injecting ct.prevActiveGids — prev* must come from tick #1.
 func TestConvergence_RemoveTask_PreservesDisappearanceSignal(t *testing.T) {
@@ -130,6 +130,53 @@ func TestConvergence_RemoveTask_PreservesDisappearanceSignal(t *testing.T) {
 		}
 		if donorStillPrev {
 			t.Fatal("expected donor absent from prevActiveGids after tick replace")
+		}
+	})
+
+	// Single full tick: arm+invalidate together (no manual bandwidthRelease).
+	t.Run("release_and_invalidate_via_one_tick", func(t *testing.T) {
+		donor, beneficiary, _, _, ct := setup(t)
+
+		ct.mu.Lock()
+		benState := ct.states[beneficiary]
+		if benState != nil {
+			benState.sustainCount = 3
+			benState.prevCompleted = 5 * 1024 * 1024
+			benState.prevSampleAt = time.Now().Add(-time.Minute)
+			benState.phase = phaseStable
+			benState.kneeFrozen = false
+			benState.blackout = false
+		}
+		ct.mu.Unlock()
+
+		ct.tick()
+
+		ct.mu.Lock()
+		benState = ct.states[beneficiary]
+		sustainAfter := -1
+		phase := -1
+		if benState != nil {
+			sustainAfter = benState.sustainCount
+			phase = benState.phase
+		}
+		lk := limitKey("wan", "example.com")
+		_, armed := ct.pendingReleases[lk]
+		_, donorStillPrev := ct.prevActiveGids[donor]
+		ct.mu.Unlock()
+
+		if sustainAfter != 0 {
+			t.Fatalf("one tick should invalidate sustainCount, got %d", sustainAfter)
+		}
+		if !armed {
+			t.Fatal("one tick should arm pendingReleases for disappeared donor")
+		}
+		if donorStillPrev {
+			t.Fatal("donor should be pruned from prevActiveGids after tick")
+		}
+		// Arm free +1 is non-probing; ScaleWorkers may no-op in Hybrid test engine,
+		// but phase must not become phaseProbingUp from the arm path.
+		if phase == phaseProbingUp {
+			t.Fatal("arm +1 via full tick must not enter phaseProbingUp")
 		}
 	})
 }

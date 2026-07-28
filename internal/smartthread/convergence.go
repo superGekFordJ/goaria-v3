@@ -501,8 +501,9 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 	defer c.mu.Unlock()
 
 	// Snapshot disappearances under lock. Unlock-before-provider must not
-	// range over live prevActiveGids — concurrent mutation (e.g. states clear
-	// via RemoveTask) can still race the maps mid-iteration.
+	// range over live prevActiveGids — another tick mutation (or future
+	// writer) must not race mid-iteration. RemoveTask only clears states now
+	// (SPEC-243); prev* stay until this tick replaces/prunes them.
 	type disappearance struct {
 		gid   string
 		info  gidInfo
@@ -698,8 +699,15 @@ func (c *ConvergenceTicker) settlePendingReleases(
 
 		delta := 0
 		switch {
+		case gap == 0:
+			// Domain already filled — disarm before cold degrade to +1.
+			// (observedEff<=0 + gap==0 must not keep-arm forever emitting free +1.)
+			delete(c.pendingReleases, lk)
+			log.Printf("[convergence] bandwidth-borrow-disarm: limitKey=%s gap=0 observedEff=%d (fills domain)",
+				lk, observedEff)
+			continue
 		case observedEff <= 0:
-			// Cold/stalled: degrade to status-quo +1 (not historical Calculate).
+			// Cold/stalled with remaining gap: degrade to status-quo +1 (not historical Calculate).
 			delta = 1
 		case gap < observedEff:
 			// Insufficient for a full worker — disarm before ceilDiv.
@@ -716,18 +724,15 @@ func (c *ConvergenceTicker) settlePendingReleases(
 		}
 
 		// Clamp chain: N_max → V_available → maxConnections → rateLimited.
-		if nMax, hasLimit := c.limits.GetNMax(lk); hasLimit {
-			domainWorkers := cw
-			if dStats != nil {
-				if ds, ok := dStats[lk]; ok {
-					domainWorkers = ds.activeWorkers
-				}
+		// V_available deny skips (keeps arm) rather than reducing delta — intentional
+		// anti-overshoot; partial reduce under cold-peak allow would be riskier.
+		domainWorkers := cw
+		if dStats != nil {
+			if ds, ok := dStats[lk]; ok {
+				domainWorkers = ds.activeWorkers
 			}
-			pendingDomain := 0
-			if approvedDelta != nil {
-				pendingDomain = approvedDelta[approvedNMaxKey(scope, domain)]
-			}
-			headroom := nMax - domainWorkers - pendingDomain
+		}
+		if headroom, hasLimit := c.domainNMaxHeadroom(scope, domain, domainWorkers, approvedDelta); hasLimit {
 			if headroom <= 0 {
 				continue // keep armed; no deferral bump
 			}
@@ -785,7 +790,7 @@ func (c *ConvergenceTicker) settlePendingReleases(
 				approvedDelta[approvedNMaxKey(elected.scope, elected.domain)] += delta
 			}
 		}
-		// Keep arm for multi-step doubling until gap < observedEff or prune.
+		// Keep arm for multi-step doubling until gap==0 / gap < observedEff or prune.
 		log.Printf("[convergence] bandwidth-borrow-settle: gid=%s scope=%s envKey=%s domain=%s delta=%d gap=%d observedEff=%d currentDomain=%d target=%d",
 			elected.gid, elected.scope, elected.envKey, elected.domain, delta, gap, observedEff, currentDomainBps, targetDomainBps)
 	}
@@ -834,7 +839,9 @@ func (c *ConvergenceTicker) electReleaseBeneficiary(
 			continue
 		}
 		s := c.getOrCreateState(t.GID)
-		if s.kneeFrozen || s.phase == phaseCeilingHit || s.blackout {
+		// Skip phaseProbingUp: arm free +1 / settle jump must not corrupt an
+		// in-flight GainRatio baseline (narrow same-tick race after Probe-Up).
+		if s.kneeFrozen || s.phase == phaseCeilingHit || s.phase == phaseProbingUp || s.blackout {
 			continue
 		}
 		lk := ""
@@ -842,19 +849,15 @@ func (c *ConvergenceTicker) electReleaseBeneficiary(
 			lk = limitKey(t.Scope, t.Domain)
 		}
 		if lk != "" {
-			if nMax, hasLimit := c.limits.GetNMax(lk); hasLimit {
-				// Align Probe-Up: missing dStats falls back to candidate workers.
-				domainWorkers := cw
-				if dStats != nil {
-					if ds, ok := dStats[lk]; ok {
-						domainWorkers = ds.activeWorkers
-					}
+			// Align Probe-Up: missing dStats falls back to candidate workers.
+			domainWorkers := cw
+			if dStats != nil {
+				if ds, ok := dStats[lk]; ok {
+					domainWorkers = ds.activeWorkers
 				}
-				pendingDomain := 0
-				if approvedDelta != nil {
-					pendingDomain = approvedDelta[approvedNMaxKey(t.Scope, t.Domain)]
-				}
-				if domainWorkers+pendingDomain+needed > nMax {
+			}
+			if headroom, hasLimit := c.domainNMaxHeadroom(t.Scope, t.Domain, domainWorkers, approvedDelta); hasLimit {
+				if headroom < needed {
 					continue
 				}
 			}
@@ -896,6 +899,24 @@ func sameActiveSet(a, b map[string]gidInfo) bool {
 		}
 	}
 	return true
+}
+
+// domainNMaxHeadroom returns remaining N_max slots for scope|domain after
+// counting domainWorkers and same-tick approvedNMaxKey pending.
+// hasLimit false → unlimited (caller skips clamp). Empty scope/domain → no limit.
+func (c *ConvergenceTicker) domainNMaxHeadroom(scope, domain string, domainWorkers int, approvedDelta map[string]int) (headroom int, hasLimit bool) {
+	if c == nil || scope == "" || domain == "" {
+		return 0, false
+	}
+	nMax, ok := c.limits.GetNMax(limitKey(scope, domain))
+	if !ok {
+		return 0, false
+	}
+	pending := 0
+	if approvedDelta != nil {
+		pending = approvedDelta[approvedNMaxKey(scope, domain)]
+	}
+	return nMax - domainWorkers - pending, true
 }
 
 // computeVThreadAvg returns the estimated per-thread average throughput for
@@ -1249,23 +1270,15 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 				rebound = 1
 			}
 			// N_max clamp: rebound must not push domain workers above N_max.
-			var nMax int
-			hasLimit := false
-			if lk != "" {
-				nMax, hasLimit = c.limits.GetNMax(lk)
+			// Knee rebound intentionally skips V_available (known non-goal): it
+			// restores productive workers after Probe-Down overshoot, not a free ScaleUp.
+			domainWorkers := currentWorkers
+			if dStats != nil {
+				if ds, ok := dStats[lk]; ok {
+					domainWorkers = ds.activeWorkers
+				}
 			}
-			if hasLimit {
-				domainWorkers := currentWorkers
-				if dStats != nil {
-					if ds, ok := dStats[lk]; ok {
-						domainWorkers = ds.activeWorkers
-					}
-				}
-				pendingDomain := 0
-				if approvedDelta != nil {
-					pendingDomain = approvedDelta[approvedNMaxKey(task.Scope, task.Domain)]
-				}
-				headroom := nMax - domainWorkers - pendingDomain
+			if headroom, hasLimit := c.domainNMaxHeadroom(task.Scope, task.Domain, domainWorkers, approvedDelta); hasLimit {
 				if headroom <= 0 {
 					rebound = 0
 				} else if rebound > headroom {
@@ -1289,6 +1302,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 					gid, rawBps, s.probeBaseline, dropRatio, rebound)
 				return pendingScale{gid: gid, scope: task.Scope, domain: task.Domain, envKey: task.EnvKey, delta: rebound}, true
 			}
+			nMax, _ := c.limits.GetNMax(lk)
 			log.Printf("[convergence] knee-crossed: gid=%s raw=%d baseline=%d dropRatio=%.2f rebound=0 (N_max=%d clamp) floorHit",
 				gid, rawBps, s.probeBaseline, dropRatio, nMax)
 			return pendingScale{}, false
@@ -1414,22 +1428,14 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 		preheated := s.peakWorkers > 0 || (s.sustainCount >= peakSustainCycles && s.bestEff > 0)
 		if newEff >= int64(float64(s.bestEff)*probeUpEffThreshold) && preheated {
 			// N_max check — domain-aggregated workers + same-tick domain approvedDelta.
-			var nMax int
-			hasLimit := false
-			if lk != "" {
-				nMax, hasLimit = c.limits.GetNMax(lk)
-			}
 			domainWorkers := currentWorkers
 			if dStats != nil {
 				if ds, ok := dStats[lk]; ok {
 					domainWorkers = ds.activeWorkers
 				}
 			}
-			pendingDomain := 0
-			if approvedDelta != nil {
-				pendingDomain = approvedDelta[approvedNMaxKey(task.Scope, task.Domain)]
-			}
-			if !hasLimit || domainWorkers+pendingDomain+1 <= nMax {
+			headroom, hasLimit := c.domainNMaxHeadroom(task.Scope, task.Domain, domainWorkers, approvedDelta)
+			if !hasLimit || headroom >= 1 {
 				scope, domain, envKey := task.Scope, task.Domain, task.EnvKey
 				domainOcc := int64(0)
 				if domainMacroBps != nil {

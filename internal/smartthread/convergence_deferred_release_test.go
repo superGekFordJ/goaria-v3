@@ -334,6 +334,132 @@ func TestConvergence_DeferredRelease_ObservedEffZeroDegradesToOne(t *testing.T) 
 	}
 }
 
+// TestConvergence_DeferredRelease_GapZeroBeforeColdDegrade proves gap==0 disarms
+// even when observedEff<=0 (SPEC_FLAW: cold degrade must not run first).
+func TestConvergence_DeferredRelease_GapZeroBeforeColdDegrade(t *testing.T) {
+	ben := "sg_gap0_cold"
+	peer := "sg_gap0_peer"
+	ct, tracker, telemetry := deferredReleaseFixture(t, ben, 1)
+
+	tracker.tasks = append(tracker.tasks, TrackedTaskInfo{
+		GID: peer, Status: "active", Scope: "wan", EnvKey: "testenv",
+		Domain: "example.com", CompletedLength: 50 * 1024 * 1024,
+	})
+	telemetry.data[peer] = makeWorkers(4, 2*1024*1024)
+
+	ct.mu.Lock()
+	ct.states[ben].lastRawBps = 0 // stalled → observedEff=0
+	peerState := ct.getOrCreateState(peer)
+	peerState.macroReady = true
+	peerState.lastRawBps = 40 * 1024 * 1024 // fills domain alone
+	peerState.phase = phaseStable
+	ct.mu.Unlock()
+
+	lk := limitKey("wan", "example.com")
+	armPending(ct, lk, "testenv", 40*1024*1024) // target == current → gap=0
+
+	activeGids := map[string]gidInfo{
+		ben:  {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
+		peer: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
+	}
+	dStats := map[string]*domainStats{lk: {activeWorkers: 5, tasksInDomain: 2}}
+	approved := make(map[string]int)
+
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, approved, dStats, false)
+	if len(settles) != 0 {
+		t.Fatalf("gap==0 must disarm before cold +1, got %+v", settles)
+	}
+	ct.mu.Lock()
+	_, stillArmed := ct.pendingReleases[lk]
+	ct.mu.Unlock()
+	if stillArmed {
+		t.Fatal("expected pendingReleases disarmed when gap==0")
+	}
+}
+
+func TestConvergence_DeferredRelease_SkipsPhaseProbingUpElect(t *testing.T) {
+	ben := "sg_probe_elect"
+	ct, tracker, _ := deferredReleaseFixture(t, ben, 2)
+
+	ct.mu.Lock()
+	ct.states[ben].phase = phaseProbingUp
+	ct.states[ben].lastRawBps = 10 * 1024 * 1024
+	ct.mu.Unlock()
+
+	lk := limitKey("wan", "example.com")
+	armPending(ct, lk, "testenv", 40*1024*1024)
+
+	activeGids := map[string]gidInfo{ben: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}}
+	dStats := map[string]*domainStats{lk: {activeWorkers: 2, tasksInDomain: 1}}
+
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, false)
+	if len(settles) != 0 {
+		t.Fatalf("phaseProbingUp must be skipped in elect, got %+v", settles)
+	}
+	ct.mu.Lock()
+	_, stillArmed := ct.pendingReleases[lk]
+	ct.mu.Unlock()
+	if !stillArmed {
+		t.Fatal("no candidate should keep arm (not disarm)")
+	}
+}
+
+func TestConvergence_DeferredRelease_MaxConnectionsClampsSettle(t *testing.T) {
+	ben := "sg_maxconn"
+	ct, tracker, _ := deferredReleaseFixtureMaxConn(t, ben, 4, 4) // already at maxConnections
+
+	ct.mu.Lock()
+	ct.states[ben].lastRawBps = 20 * 1024 * 1024 // observedEff=5MB, gap large
+	ct.mu.Unlock()
+
+	lk := limitKey("wan", "example.com")
+	armPending(ct, lk, "testenv", 80*1024*1024)
+
+	activeGids := map[string]gidInfo{ben: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}}
+	dStats := map[string]*domainStats{lk: {activeWorkers: 4, tasksInDomain: 1}}
+
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, false)
+	if len(settles) != 0 {
+		t.Fatalf("maxConnections headroom 0 should skip settle, got %+v", settles)
+	}
+	ct.mu.Lock()
+	_, stillArmed := ct.pendingReleases[lk]
+	ct.mu.Unlock()
+	if !stillArmed {
+		t.Fatal("maxConnections deny should keep arm")
+	}
+}
+
+func TestConvergence_DeferredRelease_RateLimitedKeepsArm(t *testing.T) {
+	ben := "sg_ratelim"
+	ct, tracker, _ := deferredReleaseFixture(t, ben, 2)
+	ct.rateChecker = &mockRateChecker{
+		limited: map[string]bool{ben: true},
+		bps:     map[string]int64{ben: 1_000_000},
+	}
+
+	ct.mu.Lock()
+	ct.states[ben].lastRawBps = 10 * 1024 * 1024
+	ct.mu.Unlock()
+
+	lk := limitKey("wan", "example.com")
+	armPending(ct, lk, "testenv", 40*1024*1024)
+
+	activeGids := map[string]gidInfo{ben: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}}
+	dStats := map[string]*domainStats{lk: {activeWorkers: 2, tasksInDomain: 1}}
+
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, false)
+	if len(settles) != 0 {
+		t.Fatalf("rateLimited should skip settle, got %+v", settles)
+	}
+	ct.mu.Lock()
+	_, stillArmed := ct.pendingReleases[lk]
+	ct.mu.Unlock()
+	if !stillArmed {
+		t.Fatal("rateLimited deny should keep arm")
+	}
+}
+
 func TestConvergence_DeferredRelease_PartialScaleAdjustsProbeUpDelta(t *testing.T) {
 	ben := "sg_partial_ben"
 	ct, _, _ := deferredReleaseFixture(t, ben, 4)
