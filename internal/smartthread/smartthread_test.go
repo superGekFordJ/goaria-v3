@@ -249,7 +249,7 @@ func TestCalculate_DirtySampleClamp(t *testing.T) {
 
 	// Single dirty sample: PeakSpeed=50KB/s with 8 threads → V_thread_avg = 6.25KB/s
 	// This is well below the 100KB/s clamp threshold (minThreadEfficiency).
-	// With only this record, GetRecentPeakByScope returns median = 6.25KB/s,
+	// With only this record, GetRecentPeakByScope returns p75 = 6.25KB/s (n=1 ≡ median),
 	// GetGlobalPeak returns 50KB/s, GetDomainPeak returns 50KB/s.
 	speedstats.AddRecordV2(50000, 8, 200*1024*1024, false, 100, "example.com", "wan", "testenv")
 
@@ -337,8 +337,8 @@ func TestCalculate_DomainIsolation_NoPollution(t *testing.T) {
 
 	// 3 slow.com records: 1MB/s, 1 thread → V_thread = 1MB/s each
 	// 1 fast.com record: 67MB/s, 4 threads → V_thread = 16.75MB/s
-	// Scope median (polluted): [1MB, 1MB, 1MB, 16.75MB] → median = 1MB/s
-	// Domain median for fast.com: 16.75MB/s (not polluted)
+	// Scope p75 of those four: [1MB, 1MB, 1MB, 16.75MB] → p75 = max = 16.75MB/s
+	// Domain p75 for fast.com: 16.75MB/s (single sample, not polluted)
 	for i := 0; i < 3; i++ {
 		speedstats.AddRecordV2(1*1024*1024, 1, 200*1024*1024, false, 100, "slow.com", "wan", "testenv")
 	}
@@ -356,9 +356,10 @@ func TestCalculate_DomainIsolation_NoPollution(t *testing.T) {
 	// V_target = min(67MB, 67MB) = 67MB
 	// N_sat = ceil(67MB / 16.75MB) + 1 = 5
 	// N_final = 5
-	// Without isolation (scope median = 1MB/s): N_sat = ceil(67MB / 1MB) + 1 = 68 → clamped to 8
+	// Without isolation, scope p75 of the same four samples is also 16.75MB/s (max),
+	// so the old "scope median=1MB → Split 8" counterfactual no longer applies under p75.
 	if params.Split != 5 {
-		t.Errorf("Split = %d, want 5 (domain-isolated V_thread_avg=16.75MB/s; would be 8 if polluted by scope median=1MB/s)", params.Split)
+		t.Errorf("Split = %d, want 5 (domain-isolated V_thread_avg=16.75MB/s)", params.Split)
 	}
 }
 
@@ -371,7 +372,7 @@ func TestCalculate_NewDomainFallback_Penalty(t *testing.T) {
 	t.Cleanup(func() { activeBandwidthProvider = orig })
 	activeBandwidthProvider = noActiveBandwidth
 
-	// known.com: 8MB/s, 4 threads → V_thread = 2MB/s (scope median)
+	// known.com: 8MB/s, 4 threads → V_thread = 2MB/s (scope p75)
 	speedstats.AddRecordV2(8*1024*1024, 4, 200*1024*1024, false, 100, "known.com", "wan", "testenv")
 
 	params := Calculate(CalcParams{
@@ -402,7 +403,7 @@ func TestCalculate_BatchMixedDomains(t *testing.T) {
 	t.Cleanup(func() { activeBandwidthProvider = orig })
 	activeBandwidthProvider = noActiveBandwidth
 
-	// known.com: 8MB/s, 4 threads → V_thread = 2MB/s (domain and scope median)
+	// known.com: 8MB/s, 4 threads → V_thread = 2MB/s (domain and scope p75)
 	speedstats.AddRecordV2(8*1024*1024, 4, 200*1024*1024, false, 100, "known.com", "wan", "testenv")
 
 	ledger := NewBandwidthLedger(nil)

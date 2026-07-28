@@ -148,10 +148,23 @@ func AddRecordV2(peakSpeed int64, threadCount int, fileSize int64, isExploration
 	saveAsync()
 }
 
-// GetRecentPeak 获取最近有效峰值（采用单线程开发效率中位数 + 标杆优先逻辑）
+// GetRecentPeak 获取最近有效峰值（采用单线程效率 p75 + 标杆优先逻辑）
 // 返回最近 recentDays 天内的单线程能力评估值 (bytes/s)
 func GetRecentPeak() (vSingleEst int64, ok bool) {
 	return GetRecentPeakByScope("", "")
+}
+
+// p75SortedAsc returns the p75 element of a non-empty ascending-sorted
+// []int64 using nearest-rank index (n*3)/4 (SPEC-246).
+// Small-sample contract: n<=2 identical to today's median index (n/2);
+// n==3 or n==4 selects the maximum (intentional max-filter lean).
+// Never falls back to median for any n (medianFallbackMinN = 0 / disabled).
+func p75SortedAsc(sorted []int64) int64 {
+	n := len(sorted)
+	if n == 0 {
+		return 0
+	}
+	return sorted[(n*3)/4]
 }
 
 // GetRecentPeakByScope 与 GetRecentPeak 逻辑相同但加 scope+envKey 过滤
@@ -191,13 +204,11 @@ func GetRecentPeakByScope(scope string, envKey string) (vSingleEst int64, ok boo
 		vValues = vValues[len(vValues)-100:]
 	}
 
-	// 计算中位数基准 (Baseline)
+	// 计算 p75 基准 (Baseline)
 	sort.Slice(vValues, func(i, j int) bool {
 		return vValues[i] < vValues[j]
 	})
-	medianV := vValues[len(vValues)/2]
-
-	return medianV, true
+	return p75SortedAsc(vValues), true
 }
 
 // GetRecentPeakByDomain 与 GetRecentPeakByScope 逻辑相同但按 domain+scope+envKey 联合过滤
@@ -246,9 +257,7 @@ func GetRecentPeakByDomain(domain, scope string, envKey string) (vSingleEst int6
 	sort.Slice(vValues, func(i, j int) bool {
 		return vValues[i] < vValues[j]
 	})
-	medianV := vValues[len(vValues)/2]
-
-	return medianV, true
+	return p75SortedAsc(vValues), true
 }
 
 // GetGlobalPeak 返回最近 recentDays 内指定 scope+envKey 的总峰值速度 (bytes/s)

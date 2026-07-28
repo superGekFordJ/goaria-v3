@@ -58,10 +58,10 @@ func Calculate(p CalcParams) ThreadParams {
 	}
 
 	// --- 数据采集 ---
-	// Tier 1: Domain-specific median (preferred — no cross-CDN pollution)
+	// Tier 1: Domain-specific p75 (preferred — no cross-CDN pollution)
 	vThreadAvg, threadAvgOK := speedstats.GetRecentPeakByDomain(p.Domain, p.Scope, p.EnvKey)
 
-	// Tier 2: Fallback to scope-wide median with 0.5x conservative penalty
+	// Tier 2: Fallback to scope-wide p75 with 0.5x conservative penalty
 	// for unknown domains (avoids over-allocation from polluted scope data)
 	if !threadAvgOK {
 		vThreadAvg, threadAvgOK = speedstats.GetRecentPeakByScope(p.Scope, p.EnvKey)

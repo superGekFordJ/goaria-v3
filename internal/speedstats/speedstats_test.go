@@ -515,6 +515,80 @@ func TestGetRecentPeakByDomain_CrossScopeIsolation(t *testing.T) {
 	}
 }
 
+// TestP75SortedAsc_SmallSampleMatrix locks idx=(n*3)/4 and medianFallbackMinN=0
+// (disabled — never fall back to median for any n).
+func TestP75SortedAsc_SmallSampleMatrix(t *testing.T) {
+	cases := []struct {
+		name   string
+		sorted []int64
+	}{
+		{"n1_identical", []int64{100}},
+		{"n2_identical_to_median", []int64{10, 20}},
+		{"n3_selects_max", []int64{1, 2, 3}},
+		{"n4_selects_max", []int64{1, 2, 3, 4}},
+		{"n5_p75_above_median", []int64{1, 2, 3, 4, 5}},
+		{"n8_contended_heavy", []int64{1, 1, 1, 1, 1, 10, 10, 10}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n := len(tc.sorted)
+			median := tc.sorted[n/2]
+			wantP75 := tc.sorted[(n*3)/4]
+			got := p75SortedAsc(tc.sorted)
+			if got != wantP75 {
+				t.Errorf("p75SortedAsc = %d, want %d (idx=(n*3)/4)", got, wantP75)
+			}
+			if got < median {
+				t.Errorf("p75=%d < median=%d (tighten-only violated)", got, median)
+			}
+		})
+	}
+	t.Run("empty_guard", func(t *testing.T) {
+		if got := p75SortedAsc(nil); got != 0 {
+			t.Errorf("p75SortedAsc(nil) = %d, want 0", got)
+		}
+	})
+}
+
+// TestGetRecentPeakByDomain_ContendedPollution_P75AboveMedian seeds many low-eff
+// samples plus fewer high-eff samples; p75 must exceed median (medianFallbackMinN=0).
+func TestGetRecentPeakByDomain_ContendedPollution_P75AboveMedian(t *testing.T) {
+	tmpDir := t.TempDir()
+	SetStatsPath(filepath.Join(tmpDir, "speed_stats.gob"))
+	SetSaveInterval(1 * time.Hour)
+
+	now := time.Now().Unix()
+	mu.Lock()
+	records = []SpeedRecord{
+		// Contended lows: 2MB/s @ 1 thread → eff 2MB
+		{Timestamp: now, PeakSpeed: 2 * 1024 * 1024, ThreadCount: 1, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now, PeakSpeed: 2 * 1024 * 1024, ThreadCount: 1, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now, PeakSpeed: 2 * 1024 * 1024, ThreadCount: 1, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now, PeakSpeed: 2 * 1024 * 1024, ThreadCount: 1, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now, PeakSpeed: 2 * 1024 * 1024, ThreadCount: 1, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
+		// Clean highs: 8MB/s @ 1 thread → eff 8MB
+		{Timestamp: now, PeakSpeed: 8 * 1024 * 1024, ThreadCount: 1, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now, PeakSpeed: 8 * 1024 * 1024, ThreadCount: 1, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
+		{Timestamp: now, PeakSpeed: 8 * 1024 * 1024, ThreadCount: 1, Domain: "cdn.com", Scope: "wan", EnvKey: "env1"},
+	}
+	mu.Unlock()
+
+	// sorted eff: [2,2,2,2,2,8,8,8]; n=8; median idx=4 → 2MB; p75 idx=6 → 8MB
+	const medianWouldBe = 2 * 1024 * 1024
+	const wantP75 = 8 * 1024 * 1024
+
+	v, ok := GetRecentPeakByDomain("cdn.com", "wan", "env1")
+	if !ok {
+		t.Fatal("Expected ok=true for cdn.com")
+	}
+	if v != wantP75 {
+		t.Errorf("GetRecentPeakByDomain = %d, want p75=%d (median would be %d)", v, wantP75, medianWouldBe)
+	}
+	if v <= medianWouldBe {
+		t.Errorf("p75=%d must be strictly greater than median=%d under contended pollution", v, medianWouldBe)
+	}
+}
+
 func TestGetDomainPeak_CrossScopeIsolation(t *testing.T) {
 	tmpDir := t.TempDir()
 	SetStatsPath(filepath.Join(tmpDir, "speed_stats.gob"))

@@ -920,8 +920,8 @@ func (c *ConvergenceTicker) domainNMaxHeadroom(scope, domain string, domainWorke
 }
 
 // computeVThreadAvg returns the estimated per-thread average throughput for
-// V_available checks. Tries domain-specific median first, falls back to
-// scope-wide median with 0.5x penalty, then clamps to minThreadEfficiency.
+// V_available checks. Tries domain-specific p75 first, falls back to
+// scope-wide p75 with 0.5x penalty, then clamps to minThreadEfficiency.
 func (c *ConvergenceTicker) computeVThreadAvg(domain, scope, envKey string) int64 {
 	vThreadAvg, ok := speedstats.GetRecentPeakByDomain(domain, scope, envKey)
 	if !ok {
