@@ -55,7 +55,10 @@
     "auto": "自動",
     "advancedMaterials": "進階材質",
     "advancedMaterialsTitle": "進階材質",
-    "advancedMaterialsDesc": "開啟全景液態玻璃與物理高光邊緣。關閉以提升低階設備的效能。"
+    "advancedMaterialsDesc": "拖動滑桿以平衡視覺豐富度與 GPU 效能。",
+    "effectsLow": "省電模式",
+    "effectsBalanced": "均衡",
+    "effectsHigh": "全景展示"
   },
   "download": {
     "title": "下載目錄",

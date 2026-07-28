@@ -31,7 +31,7 @@
   })
 
   const refractionFilter = computed(() => {
-    if (!props.refraction || uiStore.effects !== 'full') return ''
+    if (!props.refraction || uiStore.effectsTier === 'reduced') return ''
     return getStaticGlassFilterId()
   })
 </script>
@@ -44,22 +44,22 @@
     :class="[
       isInteractive ? 'cursor-pointer hover:scale-[1.01] active:scale-[0.99]' : '',
       radius,
-      uiStore.effects === 'reduced' ? fallbackClass : '',
+      uiStore.effectsTier === 'reduced' ? fallbackClass : '',
     ]"
   >
-    <template v-if="uiStore.effects === 'full'">
+    <template v-if="uiStore.effectsTier !== 'reduced'">
       <!-- Background layer with blur (+ optional static refraction) -->
       <div
-        class="absolute inset-0 -z-10 pointer-events-none transition-all duration-300 backdrop-blur-2xl dark:backdrop-blur-xl"
+        class="absolute inset-0 -z-10 pointer-events-none transition-all duration-300"
         :class="[radius, baseColorClass]"
-        :style="
-          refractionFilter
-            ? {
-                backdropFilter: `blur(16px) url(#${refractionFilter})`,
-                WebkitBackdropFilter: `blur(16px) url(#${refractionFilter})`,
-              }
-            : {}
-        "
+        :style="{
+          backdropFilter: refractionFilter
+            ? `blur(var(--glass-blur)) url(#${refractionFilter})`
+            : 'blur(var(--glass-blur))',
+          WebkitBackdropFilter: refractionFilter
+            ? `blur(var(--glass-blur)) url(#${refractionFilter})`
+            : 'blur(var(--glass-blur))',
+        }"
       ></div>
 
       <!-- Soft Glass Edge & Shadow Layer -->

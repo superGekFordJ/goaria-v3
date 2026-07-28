@@ -190,13 +190,29 @@
   --effects-glow-intensity: 1;
   --effects-animation-enabled: 1;
   --effects-blur-enabled: 1;
+  --glass-blur: 2px;
+  --glass-opacity: 0.4;
+  --ui-effects-level: 100;
+}
+
+/* Balanced: Static glass + lightweight animations, no dynamic SDF */
+[data-effects='balanced'] {
+  --effects-glow-intensity: 0.7;
+  --effects-animation-enabled: 1;
+  --effects-blur-enabled: 1;
+  --glass-blur: 13px;
+  --glass-opacity: 0.24;
+  --ui-effects-level: 50;
 }
 
 /* Reduced: Minimal animations for performance */
 [data-effects='reduced'] {
-  --effects-glow-intensity: 0.3;
+  --effects-glow-intensity: 0;
   --effects-animation-enabled: 0;
-  --effects-blur-enabled: 0;
+  --effects-blur-enabled: 1;
+  --glass-blur: 24px;
+  --glass-opacity: 0.08;
+  --ui-effects-level: 0;
 }
 
 /* Disable animations when effects are reduced */
@@ -211,6 +227,14 @@
   animation: none !important;
 }
 
-[data-effects='reduced'] .task-card-active {
+[data-effects='reduced'] .status-dot::after {
+  animation: none !important;
+}
+
+[data-effects='reduced'] .progress-bar-energy::before {
+  animation: none !important;
+}
+
+[data-effects='reduced'] .task-card-error {
   animation: none !important;
 }

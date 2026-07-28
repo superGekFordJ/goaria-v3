@@ -111,7 +111,6 @@
 /* === Task Card Specific === */
 .task-card {
   position: relative;
-  overflow: hidden;
   transition:
     box-shadow 0.5s ease,
     border-color 0.3s ease;
@@ -172,28 +171,36 @@
 /* === Status-Based Card Glow (Light is Status) === */
 
 /* Active/Downloading - Cyan/Emerald breathing glow */
+/* Static glow on the element itself (rasterized once); breathing via ::after opacity */
 .task-card-active {
   border-color: color-mix(in srgb, var(--glow-active-secondary) 20%, transparent);
   box-shadow:
-    0 0 20px color-mix(in srgb, var(--glow-active-secondary) 8%, transparent),
-    0 0 40px color-mix(in srgb, var(--glow-active) 5%, transparent),
+    0 0 20px color-mix(in srgb, var(--glow-active-secondary) 10%, transparent),
+    0 0 40px color-mix(in srgb, var(--glow-active) 6%, transparent),
     var(--glass-shadow);
-  animation: glow-breathe-active 3s ease-in-out infinite;
+  position: relative;
 }
 
-@keyframes glow-breathe-active {
+.task-card-active::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    0 0 20px color-mix(in srgb, var(--glow-active-secondary) 10%, transparent),
+    0 0 40px color-mix(in srgb, var(--glow-active) 6%, transparent);
+  opacity: 0.6;
+  animation: glow-breathe-opacity 3s ease-in-out infinite;
+}
+
+@keyframes glow-breathe-opacity {
   0%,
   100% {
-    box-shadow:
-      0 0 15px color-mix(in srgb, var(--glow-active-secondary) 8%, transparent),
-      0 0 30px color-mix(in srgb, var(--glow-active) 4%, transparent),
-      var(--glass-shadow);
+    opacity: 0.4;
   }
   50% {
-    box-shadow:
-      0 0 25px color-mix(in srgb, var(--glow-active-secondary) 12%, transparent),
-      0 0 50px color-mix(in srgb, var(--glow-active) 8%, transparent),
-      var(--glass-shadow);
+    opacity: 0.9;
   }
 }
 
@@ -270,23 +277,20 @@
     0 0 20px color-mix(in srgb, var(--glow-active-secondary) 8%, transparent),
     0 0 40px color-mix(in srgb, var(--glow-active) 4%, transparent),
     var(--glass-shadow);
-  animation: glow-breathe-active-light 3s ease-in-out infinite;
+  position: relative;
 }
 
-@keyframes glow-breathe-active-light {
-  0%,
-  100% {
-    box-shadow:
-      0 0 15px color-mix(in srgb, var(--glow-active-secondary) 6%, transparent),
-      0 0 30px color-mix(in srgb, var(--glow-active) 3%, transparent),
-      var(--glass-shadow);
-  }
-  50% {
-    box-shadow:
-      0 0 25px color-mix(in srgb, var(--glow-active-secondary) 10%, transparent),
-      0 0 50px color-mix(in srgb, var(--glow-active) 6%, transparent),
-      var(--glass-shadow);
-  }
+[data-theme='light'] .task-card-active::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    0 0 20px color-mix(in srgb, var(--glow-active-secondary) 8%, transparent),
+    0 0 40px color-mix(in srgb, var(--glow-active) 4%, transparent);
+  opacity: 0.6;
+  animation: glow-breathe-opacity 3s ease-in-out infinite;
 }
 
 [data-theme='light'] .task-card-paused {
@@ -301,6 +305,27 @@
   box-shadow:
     0 0 15px color-mix(in srgb, var(--glow-error) 8%, transparent),
     var(--glass-shadow);
+}
+
+/* === Effects Tier Gating for task-card-active glow === */
+/* balanced/reduced: kill breathing ::after, keep static glow on element */
+[data-effects='balanced'] .task-card-active::after,
+[data-effects='reduced'] .task-card-active::after {
+  animation: none !important;
+  opacity: 0 !important;
+}
+
+/* reduced: no static glow either */
+[data-effects='reduced'] .task-card-active {
+  box-shadow: var(--glass-shadow) !important;
+}
+
+[data-effects='reduced'] .task-card-active::after {
+  display: none;
+}
+
+[data-theme='light'][data-effects='reduced'] .task-card-active {
+  box-shadow: var(--glass-shadow) !important;
 }
 
 /* === Noise Texture Overlay (Subtle) === */

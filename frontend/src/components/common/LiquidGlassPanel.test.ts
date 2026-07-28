@@ -4,6 +4,8 @@ import LiquidGlassPanel from './LiquidGlassPanel.vue'
 
 const uiStoreMock = vi.hoisted(() => ({
   effects: 'full',
+  effectsTier: 'full',
+  effectsLevel: 100,
 }))
 
 vi.mock('../../stores/ui', () => ({
@@ -12,12 +14,15 @@ vi.mock('../../stores/ui', () => ({
 
 vi.mock('../../composables/useLiquidGlass', () => ({
   useLiquidGlass: () => ({ filterId: { value: 'lg-test' } }),
+  getStaticGlassFilterId: () => 'static-glass-filter',
 }))
 
 describe('LiquidGlassPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     uiStoreMock.effects = 'full'
+    uiStoreMock.effectsTier = 'full'
+    uiStoreMock.effectsLevel = 100
   })
 
   it('renders correctly with default props', () => {

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { resolveLocale, setI18nLocale } from '../i18n'
 import { type SkinId, DEFAULT_SKIN_ID, normaliseSkinId } from '../utils/skinCatalog'
 
@@ -7,8 +7,14 @@ export type LocalePreference = 'auto' | 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'es' |
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type { SkinId } from '../utils/skinCatalog'
 export type Density = 'compact' | 'comfortable'
-export type Effects = 'full' | 'reduced'
+export type EffectsTier = 'reduced' | 'balanced' | 'full'
 export type ActiveTab = 'downloads' | 'stopped' | 'settings'
+
+export function levelToTier(level: number): EffectsTier {
+  if (level <= 30) return 'reduced'
+  if (level <= 70) return 'balanced'
+  return 'full'
+}
 
 let systemThemeMedia: MediaQueryList | null = null
 let detachSystemThemeListener: (() => void) | null = null
@@ -23,7 +29,7 @@ export const useUIStore = defineStore(
     const themeMode = ref<ThemeMode>('system')
     const skinId = ref<SkinId>(DEFAULT_SKIN_ID)
     const density = ref<Density>('comfortable')
-    const effects = ref<Effects>('full')
+    const effectsLevel = ref<number>(50)
     const pendingPasteUri = ref('')
     const pendingPasteUris = ref<string[]>([])
 
@@ -114,8 +120,12 @@ export const useUIStore = defineStore(
       applyDensity()
     }
 
-    function setEffects(newEffects: Effects) {
-      effects.value = newEffects
+    const effectsTier = computed<EffectsTier>(() => levelToTier(effectsLevel.value))
+    const effects = computed<EffectsTier>(() => effectsTier.value)
+
+    function setEffectsLevel(level: number) {
+      const clamped = Math.max(0, Math.min(100, Math.round(level)))
+      effectsLevel.value = clamped
       applyEffects()
     }
 
@@ -159,17 +169,43 @@ export const useUIStore = defineStore(
 
     function applyEffects() {
       const root = document.documentElement
-      root.setAttribute('data-effects', effects.value)
+      const level = effectsLevel.value
+      const tier = effectsTier.value
+      root.setAttribute('data-effects', tier)
+      root.style.setProperty('--ui-effects-level', String(level))
+      root.style.setProperty('--glass-blur', `${Math.max(2, 24 - (level / 100) * 22)}px`)
+      root.style.setProperty('--glass-opacity', String(0.08 + (level / 100) * 0.32))
     }
 
     /**
      * Initialize theme and skin on app startup
      * Should be called in App.vue onMounted
      */
+    function normalizeEffectsLevel() {
+      // Check for legacy persisted `effects: 'full'|'reduced'` and migrate
+      try {
+        const raw = localStorage.getItem('ui')
+        if (raw) {
+          const parsed = JSON.parse(raw) as Record<string, unknown>
+          const old = parsed.effects
+          if (typeof old === 'string') {
+            effectsLevel.value = old === 'full' ? 100 : old === 'reduced' ? 0 : 50
+            return
+          }
+        }
+      } catch {
+        // ignore parse errors
+      }
+      if (typeof effectsLevel.value !== 'number' || Number.isNaN(effectsLevel.value)) {
+        effectsLevel.value = 50
+      }
+    }
+
     function initTheme() {
       normalizeNavigationState()
       // Defensive: normalise persisted skinId in case it was set to an unknown value
       skinId.value = normaliseSkinId(skinId.value)
+      normalizeEffectsLevel()
       applyTheme()
       applySkin()
       applyDensity()
@@ -183,6 +219,8 @@ export const useUIStore = defineStore(
       themeMode,
       skinId,
       density,
+      effectsLevel,
+      effectsTier,
       effects,
       pendingPasteUri,
       pendingPasteUris,
@@ -199,7 +237,7 @@ export const useUIStore = defineStore(
       setTheme,
       setSkin,
       setDensity,
-      setEffects,
+      setEffectsLevel,
       initTheme,
       // Locale
       locale,
@@ -216,7 +254,7 @@ export const useUIStore = defineStore(
         'themeMode',
         'skinId',
         'density',
-        'effects',
+        'effectsLevel',
       ],
     },
   },

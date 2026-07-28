@@ -1,7 +1,7 @@
 <script setup lang="ts">
   import { computed, ref } from 'vue'
   import { useUIStore } from '../../stores/ui'
-  import { useLiquidGlass } from '../../composables/useLiquidGlass'
+  import { useLiquidGlass, getStaticGlassFilterId } from '../../composables/useLiquidGlass'
 
   const props = withDefaults(
     defineProps<{
@@ -46,15 +46,15 @@
     :class="[
       isInteractive ? 'cursor-pointer' : '',
       isInteractive &&
-      uiStore.effects === 'full' &&
+      uiStore.effectsTier !== 'reduced' &&
       (hoverEffect === 'all' || hoverEffect === 'scale')
         ? 'hover:scale-[1.02] active:scale-[0.98]'
         : '',
       radius,
-      uiStore.effects === 'reduced' ? fallbackClass : '',
+      uiStore.effectsTier === 'reduced' ? fallbackClass : '',
     ]"
   >
-    <template v-if="uiStore.effects === 'full'">
+    <template v-if="uiStore.effectsTier === 'full'">
       <!-- Layer 1: Central Translucency + Refraction (backdrop-filter → SVG SDF displacement) -->
       <div
         v-if="active"
@@ -91,6 +91,28 @@
       <div
         v-if="active"
         class="absolute inset-0 z-[1] pointer-events-none transition-all duration-300 lg-specular"
+        :class="[radius]"
+      ></div>
+    </template>
+    <template v-else-if="uiStore.effectsTier === 'balanced'">
+      <!-- Balanced: static glass + bevel + shared static refraction (no dynamic SDF, no specular ring) -->
+      <div
+        v-if="active"
+        class="absolute top-0 left-0 -z-10 h-full w-full overflow-hidden transition-all duration-300 pointer-events-none"
+        :class="[radius, baseColorClass]"
+        :style="{
+          backdropFilter: `blur(var(--glass-blur)) url(#${getStaticGlassFilterId()})`,
+          WebkitBackdropFilter: `blur(var(--glass-blur)) url(#${getStaticGlassFilterId()})`,
+        }"
+      ></div>
+      <div
+        v-else-if="isInteractive"
+        class="absolute top-0 left-0 -z-10 h-full w-full overflow-hidden transition-all duration-300 pointer-events-none bg-transparent opacity-0 group-hover/liquid:bg-[var(--app-liquid-glass-hover)] group-hover/liquid:opacity-100"
+        :class="[radius]"
+      ></div>
+      <div
+        v-if="active"
+        class="absolute inset-0 z-0 pointer-events-none transition-all duration-300 lg-bevel"
         :class="[radius]"
       ></div>
     </template>

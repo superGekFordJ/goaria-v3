@@ -149,7 +149,38 @@ describe('group shell visual policy', () => {
     expect(source).toContain('download-group-operation-notice-error')
 
     wrapper.unmount()
-    document.documentElement.removeAttribute('data-effects')
+    document.documentElement.setAttribute('data-effects', 'balanced')
+  })
+
+  it('Placeholder/degraded cards render normally under balanced effects', async () => {
+    document.documentElement.setAttribute('data-effects', 'balanced')
+    const placeholderItem: DownloadGroupMasterItem = {
+      type: 'placeholder',
+      group_key: 'dg-placeholder-balanced',
+      placeholder: {
+        group_key: 'dg-placeholder-balanced',
+        download_group: {
+          id: 'dg-placeholder-balanced',
+          kind: 'batch',
+          name: 'Pending Batch',
+          folder_name: 'Pending Batch',
+          dir: '/downloads/pending',
+          item_count: 4,
+          created_at: 1,
+        },
+        created_at: 1,
+        expires_at: 2,
+        source: 'batch-add',
+      },
+    }
+    const wrapper = mount(DownloadGroupCard, { props: { item: placeholderItem } })
+    const classes = wrapper.find('.download-group-card').attributes('class') ?? ''
+
+    // balanced should not kill animations (unlike reduced)
+    expect(classes).not.toMatch(/animate-none/)
+
+    wrapper.unmount()
+    document.documentElement.setAttribute('data-effects', 'balanced')
   })
 
   it('warning and operation notice severity styling is tokenized and provider-neutral', async () => {

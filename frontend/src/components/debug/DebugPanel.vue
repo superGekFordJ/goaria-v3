@@ -68,7 +68,7 @@
   const themeDisplay = computed(() => uiStore.themeMode)
   const skinDisplay = computed(() => uiStore.skinId)
   const densityDisplay = computed(() => uiStore.density)
-  const effectsDisplay = computed(() => uiStore.effects)
+  const effectsDisplay = computed(() => `${uiStore.effectsLevel} (${uiStore.effectsTier})`)
 
   const taskStats = computed(() => ({
     active: taskStore.activeTasks.length,

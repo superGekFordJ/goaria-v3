@@ -55,7 +55,10 @@
     "auto": "Auto",
     "advancedMaterials": "Advanced Materials",
     "advancedMaterialsTitle": "Advanced Materials",
-    "advancedMaterialsDesc": "Enable panoramic liquid glass and physical specular edges. Disable to improve performance on low-end devices."
+    "advancedMaterialsDesc": "Drag the slider to balance visual richness and GPU performance.",
+    "effectsLow": "Battery Saver",
+    "effectsBalanced": "Balanced",
+    "effectsHigh": "Showcase"
   },
   "download": {
     "title": "Download Directory",

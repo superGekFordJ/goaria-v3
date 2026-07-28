@@ -55,7 +55,10 @@
     "auto": "Auto",
     "advancedMaterials": "Erweiterte Materialien",
     "advancedMaterialsTitle": "Erweiterte Materialien",
-    "advancedMaterialsDesc": "Aktivieren Sie das flüssige Panoramaglas und die physischen spiegelnden Kanten. Deaktivieren Sie diese Option, um die Leistung zu verbessern."
+    "advancedMaterialsDesc": "Schieber ziehen, um visuelle Opulenz und GPU-Leistung auszubalancieren.",
+    "effectsLow": "Energiesparen",
+    "effectsBalanced": "Ausgeglichen",
+    "effectsHigh": "Schaufenster"
   },
   "download": {
     "title": "Download-Verzeichnis",

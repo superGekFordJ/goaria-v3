@@ -3,6 +3,7 @@
   import { useI18n } from 'vue-i18n'
   import { ref, computed, onMounted, onUnmounted } from 'vue'
   import SectionCard from './SectionCard.vue'
+  import LiquidGlassSlider from '../../common/LiquidGlassSlider.vue'
   import { useUIStore, type ThemeMode, type LocalePreference } from '../../../stores/ui'
   import { skinCatalog, type SkinId } from '../../../utils/skinCatalog'
 
@@ -40,6 +41,17 @@
     if (uiStore.themeMode === 'dark') return 'dark'
     return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
   })
+
+  const tierLabel = computed(() => {
+    const tier = uiStore.effectsTier
+    if (tier === 'reduced') return t('appearance.effectsLow')
+    if (tier === 'balanced') return t('appearance.effectsBalanced')
+    return t('appearance.effectsHigh')
+  })
+
+  function onSliderUpdate(v: number) {
+    uiStore.setEffectsLevel(v)
+  }
 </script>
 
 <template>
@@ -273,34 +285,34 @@
       >
         {{ t('appearance.advancedMaterials') }}
       </label>
-      <button
-        type="button"
-        class="w-full flex items-center justify-between p-4 rounded-xl border bg-[var(--btn-glass-bg)] border-[var(--glass-border)] text-[var(--app-text)] hover:border-[var(--neon-primary)]/30 transition-all duration-200"
-        @click="uiStore.setEffects(uiStore.effects === 'full' ? 'reduced' : 'full')"
+      <div
+        class="w-full p-4 rounded-xl border bg-[var(--btn-glass-bg)] border-[var(--glass-border)]"
       >
-        <div class="text-left">
-          <span class="text-sm font-medium block">
-            {{ t('appearance.advancedMaterialsTitle') }}
-          </span>
-          <span class="text-[10px] text-[var(--app-text-subtle)] block mt-1">
-            {{ t('appearance.advancedMaterialsDesc') }}
+        <div class="flex items-center justify-between mb-3">
+          <div class="text-left">
+            <span class="text-sm font-medium block">
+              {{ t('appearance.advancedMaterialsTitle') }}
+            </span>
+            <span class="text-[10px] text-[var(--app-text-subtle)] block mt-1">
+              {{ t('appearance.advancedMaterialsDesc') }}
+            </span>
+          </div>
+          <span
+            class="text-[10px] font-bold uppercase tracking-widest text-[var(--neon-primary)]"
+          >
+            {{ tierLabel }}
           </span>
         </div>
-        <!-- Toggle Switch -->
-        <div
-          :class="[
-            'w-12 h-7 rounded-full relative transition-all duration-300 cursor-pointer shrink-0 ml-4',
-            uiStore.effects === 'full' ? 'bg-[var(--neon-primary)]' : 'bg-[var(--btn-glass-bg)]',
-          ]"
-        >
-          <div
-            :class="[
-              'absolute top-1 w-5 h-5 rounded-full bg-[var(--card-bg)] shadow-lg ring-1 ring-[var(--glass-border)] transition-all duration-300',
-              uiStore.effects === 'full' ? 'left-6' : 'left-1',
-            ]"
-          ></div>
-        </div>
-      </button>
+        <LiquidGlassSlider
+          :model-value="uiStore.effectsLevel"
+          :min="0"
+          :max="100"
+          :step="1"
+          :aria-label="t('appearance.advancedMaterialsTitle')"
+          :aria-valuetext="tierLabel"
+          @update:model-value="onSliderUpdate"
+        />
+      </div>
     </div>
   </SectionCard>
 </template>

@@ -4,6 +4,8 @@ import StaticGlassPanel from './StaticGlassPanel.vue'
 
 const uiStoreMock = vi.hoisted(() => ({
   effects: 'full',
+  effectsTier: 'full',
+  effectsLevel: 100,
 }))
 
 vi.mock('../../stores/ui', () => ({
@@ -18,6 +20,8 @@ describe('StaticGlassPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     uiStoreMock.effects = 'full'
+    uiStoreMock.effectsTier = 'full'
+    uiStoreMock.effectsLevel = 100
   })
 
   it('renders correctly with default props', () => {
