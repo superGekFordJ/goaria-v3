@@ -54,7 +54,7 @@ func floorHitProcess(ct *ConvergenceTicker, tracker *mockTracker, telemetry *moc
 		setPrevSampleAgoState(s, 5*time.Second)
 	}
 	ct.mu.Unlock()
-	return ct.processTask(tracker.tasks[0], false, nil)
+	return ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 }
 
 // TestConvergence_FloorHit_SmartUnlock verifies consecutive 2 ticks with
@@ -245,7 +245,7 @@ func TestConvergence_FloorHit_KneeFrozenSet(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 	if !ok || ps.delta <= 0 {
 		t.Fatalf("expected rebound (delta>0) after knee crossing, got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -275,6 +275,7 @@ func TestConvergence_FloorHit_KneeFrozenSet(t *testing.T) {
 		[]TrackedTaskInfo{tracker.tasks[0]},
 		map[string]gidInfo{gid: {Domain: "example.com", Scope: "wan"}},
 		map[string]bool{},
+		nil,
 		nil,
 		nil,
 	)

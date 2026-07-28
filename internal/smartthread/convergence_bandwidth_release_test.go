@@ -54,6 +54,7 @@ func TestConvergence_BandwidthRelease_SkipsCeilingHit(t *testing.T) {
 		map[string]bool{},
 		nil,
 		nil,
+		nil,
 	)
 	for _, r := range releases {
 		if r.gid == gid {
@@ -102,6 +103,7 @@ func TestConvergence_BandwidthRelease_SkipsBlackout(t *testing.T) {
 		[]TrackedTaskInfo{tracker.tasks[0]},
 		map[string]gidInfo{gid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
+		nil,
 		nil,
 		nil,
 	)
@@ -154,6 +156,7 @@ func TestConvergence_BandwidthRelease_NonKeepAliveTaskBenefits(t *testing.T) {
 		map[string]bool{},
 		approvedDelta,
 		nil,
+		nil,
 	)
 	found := false
 	for _, r := range releases {
@@ -164,8 +167,11 @@ func TestConvergence_BandwidthRelease_NonKeepAliveTaskBenefits(t *testing.T) {
 	if !found {
 		t.Fatal("expected non-keep-alive task to receive bandwidth-release ScaleUp")
 	}
-	if approvedDelta["wantestenv"] != 1 {
-		t.Fatalf("expected approvedDelta[wantestenv]=1, got %d", approvedDelta["wantestenv"])
+	if approvedDelta[approvedScopeKey("wan", "testenv")] != 1 {
+		t.Fatalf("expected approvedDelta[scope]=1, got %d", approvedDelta[approvedScopeKey("wan", "testenv")])
+	}
+	if approvedDelta[approvedDomainKey("wan", "example.com", "testenv")] != 1 {
+		t.Fatalf("expected approvedDelta[domain]=1, got %d", approvedDelta[approvedDomainKey("wan", "example.com", "testenv")])
 	}
 }
 
@@ -229,12 +235,15 @@ func TestConvergence_ApprovedDelta_PreventsSameTickOversell(t *testing.T) {
 		setPrevSampleAgoState(s, 5*time.Second)
 	}
 	ct.mu.Unlock()
-	ps1, ok1 := ct.processTask(tracker.tasks[0], false, approvedDelta)
+	ps1, ok1 := ct.processTask(tracker.tasks[0], false, approvedDelta, nil, nil)
 	if !ok1 || ps1.delta != 1 {
 		t.Fatalf("expected first task probe-up +1, got ok=%v delta=%d", ok1, ps1.delta)
 	}
 	if ps1.delta > 0 {
-		approvedDelta[ps1.scope+ps1.envKey] += ps1.delta
+		approvedDelta[approvedScopeKey(ps1.scope, ps1.envKey)] += ps1.delta
+		if ps1.domain != "" {
+			approvedDelta[approvedDomainKey(ps1.scope, ps1.domain, ps1.envKey)] += ps1.delta
+		}
 	}
 
 	// Second task: same scope, V_available headroom now consumed by first.
@@ -245,7 +254,7 @@ func TestConvergence_ApprovedDelta_PreventsSameTickOversell(t *testing.T) {
 		setPrevSampleAgoState(s, 5*time.Second)
 	}
 	ct.mu.Unlock()
-	ps2, ok2 := ct.processTask(tracker.tasks[1], false, approvedDelta)
+	ps2, ok2 := ct.processTask(tracker.tasks[1], false, approvedDelta, nil, nil)
 	if ok2 && ps2.delta > 0 {
 		t.Fatalf("expected second task blocked by approvedDelta, got delta=%d", ps2.delta)
 	}
@@ -305,6 +314,7 @@ func TestConvergence_BandwidthRelease_BlockedByVAvailable(t *testing.T) {
 		map[string]bool{},
 		nil,
 		nil,
+		nil,
 	)
 	for _, r := range releases {
 		if r.gid == beneficiaryGid {
@@ -356,6 +366,7 @@ func TestConvergence_BandwidthRelease_DomainScopeMatching(t *testing.T) {
 		tracker.tasks,
 		map[string]gidInfo{gidA: {Domain: "a.com", Scope: "wan", EnvKey: "testenv"}, gidB: {Domain: "b.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
+		nil,
 		nil,
 		nil,
 	)
@@ -417,6 +428,7 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 			map[string]bool{},
 			nil,
 			nil,
+			nil,
 		)
 		if len(releases) != 0 {
 			t.Fatalf("SPEC-243: empty-Domain disappearance must skip release, got %d: %+v", len(releases), releases)
@@ -457,6 +469,7 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 			tracker.tasks,
 			map[string]gidInfo{gidB: {Domain: "b.com", Scope: "wan", EnvKey: "testenv"}},
 			map[string]bool{},
+			nil,
 			nil,
 			nil,
 		)
@@ -512,6 +525,7 @@ func TestConvergence_BandwidthRelease_SingleBeneficiaryElection(t *testing.T) {
 		tracker.tasks,
 		map[string]gidInfo{gid1: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}, gid2: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}, gid3: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
+		nil,
 		nil,
 		nil,
 	)
@@ -575,7 +589,7 @@ func TestConvergence_BandwidthRelease_FairRotation(t *testing.T) {
 	ct.rotationCounter = 0
 	ct.mu.Unlock()
 
-	releases1 := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil)
+	releases1 := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil)
 	if len(releases1) != 1 {
 		t.Fatalf("expected 1 release on first call, got %d", len(releases1))
 	}
@@ -588,7 +602,7 @@ func TestConvergence_BandwidthRelease_FairRotation(t *testing.T) {
 	}
 	ct.mu.Unlock()
 
-	releases2 := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil)
+	releases2 := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil)
 	if len(releases2) != 1 {
 		t.Fatalf("expected 1 release on second call, got %d", len(releases2))
 	}
@@ -656,6 +670,7 @@ func TestConvergence_BandwidthRelease_MacroProviderNoDeadlock(t *testing.T) {
 			[]TrackedTaskInfo{tracker.tasks[0]},
 			map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 			map[string]bool{},
+			nil,
 			nil,
 			nil,
 		)
@@ -735,6 +750,7 @@ func TestConvergence_BandwidthRelease_SnapshotSurvivesConcurrentRemove(t *testin
 			map[string]bool{},
 			nil,
 			nil,
+			nil,
 		)
 	}()
 	select {
@@ -801,6 +817,7 @@ func TestConvergence_BandwidthRelease_DelayCompensation(t *testing.T) {
 		map[string]bool{},
 		nil,
 		nil,
+		nil,
 	)
 	found := false
 	for _, r := range releases {
@@ -858,6 +875,7 @@ func TestConvergence_BandwidthRelease_NoCompensationWhenSpeedZero(t *testing.T) 
 		[]TrackedTaskInfo{tracker.tasks[0]},
 		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}},
 		map[string]bool{},
+		nil,
 		nil,
 		nil,
 	)

@@ -83,7 +83,7 @@ func TestConvergence_RecordPeakEfficiency_CeilingHitRebound(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 	if !ok || ps.delta != -1 {
 		t.Fatalf("expected ceiling-hit -1, got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -139,7 +139,7 @@ func TestConvergence_RecordPeakEfficiency_FloorHitRebound(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 	if !ok || ps.delta <= 0 {
 		t.Fatalf("expected rebound (delta>0), got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -227,7 +227,7 @@ func TestConvergence_RecordPeakEfficiency_MonotonicRatchet(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 	if !ok || ps.delta != 1 {
 		t.Fatalf("expected probe-up +1, got ok=%v delta=%d", ok, ps.delta)
 	}

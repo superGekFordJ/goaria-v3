@@ -216,6 +216,7 @@ func (c *ConvergenceTicker) currentInterval() time.Duration {
 type pendingScale struct {
 	gid    string
 	scope  string
+	domain string
 	envKey string
 	delta  int
 }
@@ -228,8 +229,10 @@ func (c *ConvergenceTicker) tick() {
 	activeTasks := c.tracker.GetActiveTrackedTasks()
 	activeGids := make(map[string]gidInfo) // gid → gidInfo
 	var pending []pendingScale
-	pendingGids := make(map[string]bool)  // GIDs already scaled this tick
-	approvedDelta := make(map[string]int) // key = scope+envKey → accumulated positive delta this tick
+	pendingGids := make(map[string]bool) // GIDs already scaled this tick
+	// approvedDelta: same-tick positive ScaleUp accumulator for scope ∩ domain
+	// headroom. Keys via approvedScopeKey / approvedDomainKey (delimited).
+	approvedDelta := make(map[string]int)
 
 	for _, task := range activeTasks {
 		if !strings.HasPrefix(task.GID, "sg_") {
@@ -345,13 +348,36 @@ func (c *ConvergenceTicker) tick() {
 		}
 	}
 
+	// Domain macro occupancy snapshot (env-aware). Separate short lock — no
+	// telemetry/provider calls. Still-listed complete peers may contribute
+	// lastRawBps while excluded from dStats workers (physical occupancy).
+	domainMacroBps := make(map[string]int64)
+	c.mu.Lock()
 	for _, task := range activeTasks {
 		if !strings.HasPrefix(task.GID, "sg_") {
 			continue
 		}
-		if ps, ok := c.processTask(task, windowInvalidated, approvedDelta); ok {
+		if task.Scope == "" || task.Domain == "" {
+			continue
+		}
+		s, ok := c.states[task.GID]
+		if !ok || s == nil || !s.macroReady {
+			continue
+		}
+		domainMacroBps[approvedDomainKey(task.Scope, task.Domain, task.EnvKey)] += s.lastRawBps
+	}
+	c.mu.Unlock()
+
+	for _, task := range activeTasks {
+		if !strings.HasPrefix(task.GID, "sg_") {
+			continue
+		}
+		if ps, ok := c.processTask(task, windowInvalidated, approvedDelta, dStats, domainMacroBps); ok {
 			if ps.delta > 0 {
-				approvedDelta[ps.scope+ps.envKey] += ps.delta
+				approvedDelta[approvedScopeKey(ps.scope, ps.envKey)] += ps.delta
+				if ps.domain != "" {
+					approvedDelta[approvedDomainKey(ps.scope, ps.domain, ps.envKey)] += ps.delta
+				}
 			}
 			pending = append(pending, ps)
 			pendingGids[ps.gid] = true
@@ -373,7 +399,7 @@ func (c *ConvergenceTicker) tick() {
 	// Bandwidth borrowing: detect tasks that disappeared since last tick.
 	// For each completed task, elect a single same-domain+scope beneficiary.
 	// Skip GIDs already scaled by processTask to prevent double ScaleUp.
-	pending = append(pending, c.bandwidthRelease(activeTasks, activeGids, pendingGids, approvedDelta, dStats)...)
+	pending = append(pending, c.bandwidthRelease(activeTasks, activeGids, pendingGids, approvedDelta, dStats, domainMacroBps)...)
 
 	// Self-cleanup: remove states for GIDs no longer active.
 	// prevActiveSpeeds must prune by activeGids (not only via states): RemoveTask
@@ -430,7 +456,7 @@ func (c *ConvergenceTicker) tick() {
 // currentWorkers, fair rotation on tie) to prevent thundering-herd ScaleUp.
 // GIDs already scaled by processTask this tick (present in pendingGids) are
 // skipped to prevent double ScaleUp.
-func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, activeGids map[string]gidInfo, pendingGids map[string]bool, approvedDelta map[string]int, dStats map[string]*domainStats) []pendingScale {
+func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, activeGids map[string]gidInfo, pendingGids map[string]bool, approvedDelta map[string]int, dStats map[string]*domainStats, domainMacroBps map[string]int64) []pendingScale {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -494,7 +520,8 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 			if s.kneeFrozen || s.phase == phaseCeilingHit || s.blackout {
 				continue
 			}
-			// N_max clamp: skip when domain total workers + 1 would exceed N_max.
+			// N_max clamp: skip when domain total workers + same-tick domain
+			// approvedDelta + 1 would exceed N_max.
 			lk := ""
 			if t.Scope != "" && t.Domain != "" {
 				lk = limitKey(t.Scope, t.Domain)
@@ -505,7 +532,11 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 					if ds, ok := dStats[lk]; ok {
 						domainTotalWorkers = ds.activeWorkers
 					}
-					if domainTotalWorkers+1 > nMax {
+					pendingDomain := 0
+					if approvedDelta != nil {
+						pendingDomain = approvedDelta[approvedDomainKey(t.Scope, t.Domain, t.EnvKey)]
+					}
+					if domainTotalWorkers+pendingDomain+1 > nMax {
 						continue
 					}
 				}
@@ -537,18 +568,25 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 
 		disappearedSpeed := d.speed
 		scope, domain, envKey := elected.scope, elected.domain, elected.envKey
+		domainOcc := int64(0)
+		if domainMacroBps != nil {
+			domainOcc = domainMacroBps[approvedDomainKey(scope, domain, envKey)]
+		}
 		// Provider (Macro → LastRawBps) locks c.mu; must not call under our lock.
 		c.mu.Unlock()
-		ok := c.checkVAvailableWithCompensation(scope, domain, envKey, approvedDelta, disappearedSpeed)
+		ok := c.checkVAvailableWithCompensation(scope, domain, envKey, approvedDelta, domainOcc, disappearedSpeed)
 		c.mu.Lock()
 		if !ok {
 			continue
 		}
 
-		releases = append(releases, pendingScale{gid: elected.gid, scope: elected.scope, envKey: elected.envKey, delta: 1})
+		releases = append(releases, pendingScale{gid: elected.gid, scope: elected.scope, domain: elected.domain, envKey: elected.envKey, delta: 1})
 		pendingGids[elected.gid] = true
 		if approvedDelta != nil {
-			approvedDelta[elected.scope+elected.envKey]++
+			approvedDelta[approvedScopeKey(elected.scope, elected.envKey)]++
+			if elected.domain != "" {
+				approvedDelta[approvedDomainKey(elected.scope, elected.domain, elected.envKey)]++
+			}
 		}
 		log.Printf("[convergence] bandwidth-borrow: gid=%s scope=%s envKey=%s domain=%s released by completed gid=%s (elected, %d candidates)",
 			elected.gid, elected.scope, elected.envKey, elected.domain, gid, len(candidates))
@@ -586,49 +624,72 @@ func (c *ConvergenceTicker) computeVThreadAvg(domain, scope, envKey string) int6
 	return vThreadAvg
 }
 
-// checkVAvailable returns true if there is enough global bandwidth headroom
-// to add one more worker in the given scope. It accounts for delta already
-// approved this tick via approvedDelta to prevent same-tick oversell.
-// When globalPeak data is unavailable, returns true (allow — conservative
-// only when data exists).
+// checkVAvailable returns true when both scope and domain bandwidth headroom
+// allow adding one worker (intersection). Missing peak on a dimension allows
+// that dimension (cold-start must not lock). Same-tick approvedDelta counts
+// both scope and domain keys via approvedScopeKey / approvedDomainKey.
 //
 // Lock topology: must NOT be called while holding c.mu. The activeBandwidth
 // provider (MacroBandwidthByScope) may call LastRawBps which locks c.mu.
-func (c *ConvergenceTicker) checkVAvailable(scope, domain, envKey string, approvedDelta map[string]int) bool {
-	globalPeak, ok := speedstats.GetGlobalPeak(scope, envKey)
-	if !ok || globalPeak <= 0 {
-		return true
-	}
-	activeBw := activeBandwidthProvider(scope, envKey)
+func (c *ConvergenceTicker) checkVAvailable(scope, domain, envKey string, approvedDelta map[string]int, domainOcc int64) bool {
 	vThreadAvg := c.computeVThreadAvg(domain, scope, envKey)
-	effectiveBw := activeBw + int64(approvedDelta[scope+envKey])*vThreadAvg
-	return globalPeak-effectiveBw >= vThreadAvg
+
+	scopeOK := true
+	if globalPeak, ok := speedstats.GetGlobalPeak(scope, envKey); ok && globalPeak > 0 {
+		activeBw := activeBandwidthProvider(scope, envKey)
+		effectiveScope := activeBw + int64(approvedDelta[approvedScopeKey(scope, envKey)])*vThreadAvg
+		scopeOK = globalPeak-effectiveScope >= vThreadAvg
+	}
+
+	domainOK := true
+	if domain != "" {
+		if domainPeak, ok := speedstats.GetDomainPeak(domain, scope, envKey); ok && domainPeak > 0 {
+			effectiveDomain := domainOcc + int64(approvedDelta[approvedDomainKey(scope, domain, envKey)])*vThreadAvg
+			domainOK = domainPeak-effectiveDomain >= vThreadAvg
+		}
+	}
+	return scopeOK && domainOK
 }
 
 // checkVAvailableWithCompensation is like checkVAvailable but subtracts
-// disappearedSpeed from effectiveBw to compensate for activeBandwidthProvider
-// cache lag (a disappeared task's bandwidth may still be counted for 1-5s).
-// When disappearedSpeed is 0, this degrades to checkVAvailable.
+// disappearedSpeed from effective occupancy on both scope and domain dims to
+// compensate for activeBandwidthProvider / macro lag (a disappeared task's
+// bandwidth may still be counted for 1-5s). When disappearedSpeed is 0, this
+// degrades to checkVAvailable.
 //
 // Lock topology: must NOT be called while holding c.mu (same as checkVAvailable).
-func (c *ConvergenceTicker) checkVAvailableWithCompensation(scope, domain, envKey string, approvedDelta map[string]int, disappearedSpeed int64) bool {
-	globalPeak, ok := speedstats.GetGlobalPeak(scope, envKey)
-	if !ok || globalPeak <= 0 {
-		return true
-	}
-	activeBw := activeBandwidthProvider(scope, envKey)
+func (c *ConvergenceTicker) checkVAvailableWithCompensation(scope, domain, envKey string, approvedDelta map[string]int, domainOcc int64, disappearedSpeed int64) bool {
 	vThreadAvg := c.computeVThreadAvg(domain, scope, envKey)
-	effectiveBw := activeBw + int64(approvedDelta[scope+envKey])*vThreadAvg
-	compensatedBw := effectiveBw - disappearedSpeed
-	if compensatedBw < 0 {
-		compensatedBw = 0
+
+	scopeOK := true
+	if globalPeak, ok := speedstats.GetGlobalPeak(scope, envKey); ok && globalPeak > 0 {
+		activeBw := activeBandwidthProvider(scope, envKey)
+		effectiveScope := activeBw + int64(approvedDelta[approvedScopeKey(scope, envKey)])*vThreadAvg
+		compensatedScope := effectiveScope - disappearedSpeed
+		if compensatedScope < 0 {
+			compensatedScope = 0
+		}
+		scopeOK = globalPeak-compensatedScope >= vThreadAvg
 	}
-	return globalPeak-compensatedBw >= vThreadAvg
+
+	domainOK := true
+	if domain != "" {
+		if domainPeak, ok := speedstats.GetDomainPeak(domain, scope, envKey); ok && domainPeak > 0 {
+			effectiveDomain := domainOcc + int64(approvedDelta[approvedDomainKey(scope, domain, envKey)])*vThreadAvg
+			compensatedDomain := effectiveDomain - disappearedSpeed
+			if compensatedDomain < 0 {
+				compensatedDomain = 0
+			}
+			domainOK = domainPeak-compensatedDomain >= vThreadAvg
+		}
+	}
+	return scopeOK && domainOK
 }
 
 // processTask evaluates a single task and returns a pending scale operation if one is needed.
 // windowInvalidated indicates the active set changed this tick — skip probe/ratchet decisions.
-func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated bool, approvedDelta map[string]int) (pendingScale, bool) {
+// dStats / domainMacroBps / approvedDelta may be nil in unit tests (degrade safely).
+func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated bool, approvedDelta map[string]int, dStats map[string]*domainStats, domainMacroBps map[string]int64) (pendingScale, bool) {
 	gid := task.GID
 
 	stats := c.telemetry.Get(gid)
@@ -851,7 +912,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			s.probeUpBaselineWorkers = 0
 			s.prevCompleted = task.CompletedLength
 			s.prevSampleAt = now
-			return pendingScale{gid: gid, scope: task.Scope, envKey: task.EnvKey, delta: -1}, true
+			return pendingScale{gid: gid, scope: task.Scope, domain: task.Domain, envKey: task.EnvKey, delta: -1}, true
 		}
 	}
 
@@ -882,14 +943,26 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			if rebound < 1 {
 				rebound = 1
 			}
-			// N_max clamp: rebound must not push currentWorkers above N_max.
+			// N_max clamp: rebound must not push domain workers above N_max.
 			var nMax int
 			hasLimit := false
 			if lk != "" {
 				nMax, hasLimit = c.limits.GetNMax(lk)
 			}
 			if hasLimit {
-				headroom := nMax - currentWorkers
+				domainWorkers := currentWorkers
+				if dStats != nil {
+					if ds, ok := dStats[lk]; ok {
+						domainWorkers = ds.activeWorkers
+					} else {
+						domainWorkers = 0
+					}
+				}
+				pendingDomain := 0
+				if approvedDelta != nil {
+					pendingDomain = approvedDelta[approvedDomainKey(task.Scope, task.Domain, task.EnvKey)]
+				}
+				headroom := nMax - domainWorkers - pendingDomain
 				if headroom <= 0 {
 					rebound = 0
 				} else if rebound > headroom {
@@ -911,7 +984,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			if rebound > 0 {
 				log.Printf("[convergence] knee-crossed: gid=%s raw=%d baseline=%d dropRatio=%.2f rebound=+%d floorHit",
 					gid, rawBps, s.probeBaseline, dropRatio, rebound)
-				return pendingScale{gid: gid, scope: task.Scope, envKey: task.EnvKey, delta: rebound}, true
+				return pendingScale{gid: gid, scope: task.Scope, domain: task.Domain, envKey: task.EnvKey, delta: rebound}, true
 			}
 			log.Printf("[convergence] knee-crossed: gid=%s raw=%d baseline=%d dropRatio=%.2f rebound=0 (N_max=%d clamp) floorHit",
 				gid, rawBps, s.probeBaseline, dropRatio, nMax)
@@ -1029,25 +1102,41 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	//   2. bestEff > 0 (prevents premature probing before efficiency baseline)
 	//   3. newEff >= bestEff*probeUpEffThreshold (current efficiency within 5% of best)
 	//   4. preheated: peakWorkers > 0 || (sustainCount >= peakSustainCycles && bestEff > 0)
-	//   5. N_max not exceeded: !(hasLimit && currentWorkers >= nMax)
-	//   6. V_available sufficient: globalPeak - activeBw >= vThreadAvg (or no globalPeak data → allow)
+	//   5. N_max not exceeded: domainWorkers + domainApprovedDelta + 1 <= nMax
+	//   6. V_available sufficient: scope ∩ domain headroom (cold peak → allow that dim)
 	//   7. !rateLimited
 	//   8. !probeMomentum (don't interrupt an active down-probe combo)
 	if s.phase == phaseStable && s.bestEff > 0 && !s.probeMomentum {
 		newEff := rawBps / int64(currentWorkers)
 		preheated := s.peakWorkers > 0 || (s.sustainCount >= peakSustainCycles && s.bestEff > 0)
 		if newEff >= int64(float64(s.bestEff)*probeUpEffThreshold) && preheated {
-			// N_max check — Domain Pre-pass only SETS N_max; suppression is here.
+			// N_max check — domain-aggregated workers + same-tick domain approvedDelta.
 			var nMax int
 			hasLimit := false
 			if lk != "" {
 				nMax, hasLimit = c.limits.GetNMax(lk)
 			}
-			if !hasLimit || currentWorkers < nMax {
+			domainWorkers := currentWorkers
+			if dStats != nil {
+				if ds, ok := dStats[lk]; ok {
+					domainWorkers = ds.activeWorkers
+				} else {
+					domainWorkers = 0
+				}
+			}
+			pendingDomain := 0
+			if approvedDelta != nil {
+				pendingDomain = approvedDelta[approvedDomainKey(task.Scope, task.Domain, task.EnvKey)]
+			}
+			if !hasLimit || domainWorkers+pendingDomain+1 <= nMax {
 				scope, domain, envKey := task.Scope, task.Domain, task.EnvKey
+				domainOcc := int64(0)
+				if domainMacroBps != nil {
+					domainOcc = domainMacroBps[approvedDomainKey(scope, domain, envKey)]
+				}
 				// Provider (Macro → LastRawBps) locks c.mu; release before call.
 				c.mu.Unlock()
-				vAvailable := c.checkVAvailable(scope, domain, envKey, approvedDelta)
+				vAvailable := c.checkVAvailable(scope, domain, envKey, approvedDelta, domainOcc)
 				c.mu.Lock()
 				s = c.states[gid]
 				if s == nil {
@@ -1064,7 +1153,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 					s.prevSampleAt = now
 					log.Printf("[convergence] probe-up: gid=%s workers=%d baseline=%d",
 						gid, currentWorkers, rawBps)
-					return pendingScale{gid: gid, scope: task.Scope, envKey: task.EnvKey, delta: 1}, true
+					return pendingScale{gid: gid, scope: task.Scope, domain: task.Domain, envKey: task.EnvKey, delta: 1}, true
 				}
 			}
 		}
@@ -1115,7 +1204,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 					if c.peakRecorder != nil && rawBps > 0 && currentWorkers > 0 {
 						c.peakRecorder.RecordPeakEfficiency(gid, rawBps, currentWorkers)
 					}
-					return pendingScale{gid: gid, scope: task.Scope, envKey: task.EnvKey, delta: -step}, true
+					return pendingScale{gid: gid, scope: task.Scope, domain: task.Domain, envKey: task.EnvKey, delta: -step}, true
 				}
 			}
 		}

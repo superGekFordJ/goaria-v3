@@ -312,7 +312,7 @@ func TestConvergence_RateLimitSkip_SkipsProbeButRecordsPeak(t *testing.T) {
 	ct.mu.Unlock()
 
 	tracker.tasks[0].CompletedLength = 60 * 1024 * 1024
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 	if ok || ps.delta != 0 {
 		t.Fatalf("unexpected pending scale on first sample: ok=%v delta=%d", ok, ps.delta)
 	}
@@ -324,7 +324,7 @@ func TestConvergence_RateLimitSkip_SkipsProbeButRecordsPeak(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok = ct.processTask(tracker.tasks[0], false, nil)
+	ps, ok = ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 	if ok || ps.delta != 0 {
 		t.Fatalf("expected no pending scale under rate limit, got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -354,7 +354,7 @@ func TestConvergence_RateLimitSkip_SkipsProbeButRecordsPeak(t *testing.T) {
 	ct.mu.Lock()
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
-	ps, ok = ct.processTask(tracker.tasks[0], false, nil)
+	ps, ok = ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 	if !ok || ps.delta >= 0 {
 		t.Fatalf("without rate limit expected Probe-Down (delta<0), got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -488,7 +488,7 @@ func TestConvergence_ProbeFloor_StaticAllowsProbeDownWithBBRHistory(t *testing.T
 	ct.mu.Unlock()
 
 	// processTask directly — tick() D5 rolls back when ScaleWorkers returns 0.
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 	if !ok || ps.delta >= 0 {
 		t.Fatalf("expected probe-down delta<0 with DomainPeak+RTprop present, got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -1006,7 +1006,7 @@ func TestConvergence_E2E_MomentumChain(t *testing.T) {
 			setPrevSampleAgoState(s, 5*time.Second)
 		}
 		ct.mu.Unlock()
-		return ct.processTask(tracker.tasks[0], false, nil)
+		return ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 	}
 
 	// Tick 1: first sample — stores baseline, no decision
@@ -1282,7 +1282,7 @@ func TestConvergence_E2E_LinearZoneKneeViaSettling(t *testing.T) {
 			setPrevSampleAgoState(s, 5*time.Second)
 		}
 		ct.mu.Unlock()
-		return ct.processTask(tracker.tasks[0], false, nil)
+		return ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 	}
 
 	// Tick 1: first sample — stores baseline, no decision

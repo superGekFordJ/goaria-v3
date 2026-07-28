@@ -10,8 +10,8 @@ import (
 )
 
 // TestConvergence_CrossEnvIsolation_ApprovedDelta verifies that approvedDelta
-// keys on scope+envKey, so two tasks in the same scope but different envKeys
-// accumulate independently — a ScaleUp in envA does not consume envB's headroom.
+// keys on delimited scope|envKey, so two tasks in the same scope but different
+// envKeys accumulate independently — a ScaleUp in envA does not consume envB's headroom.
 func TestConvergence_CrossEnvIsolation_ApprovedDelta(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
@@ -58,7 +58,7 @@ func TestConvergence_CrossEnvIsolation_ApprovedDelta(t *testing.T) {
 	approvedDelta := make(map[string]int)
 
 	// Process task A (envA): should get +1 and consume envA's headroom.
-	psA, okA := ct.processTask(tracker.tasks[0], false, approvedDelta)
+	psA, okA := ct.processTask(tracker.tasks[0], false, approvedDelta, nil, nil)
 	if !okA || psA.delta != 1 {
 		t.Fatalf("expected envA task probe-up +1, got ok=%v delta=%d", okA, psA.delta)
 	}
@@ -66,12 +66,15 @@ func TestConvergence_CrossEnvIsolation_ApprovedDelta(t *testing.T) {
 		t.Fatalf("expected pendingScale envKey=envA, got %q", psA.envKey)
 	}
 	if psA.delta > 0 {
-		approvedDelta[psA.scope+psA.envKey] += psA.delta
+		approvedDelta[approvedScopeKey(psA.scope, psA.envKey)] += psA.delta
+		if psA.domain != "" {
+			approvedDelta[approvedDomainKey(psA.scope, psA.domain, psA.envKey)] += psA.delta
+		}
 	}
 
 	// Process task B (envB): should also get +1 because approvedDelta key is
-	// "wanenvB", independent from "wanenvA". envA's consumption doesn't block envB.
-	psB, okB := ct.processTask(tracker.tasks[1], false, approvedDelta)
+	// delimited scope|envB, independent from scope|envA.
+	psB, okB := ct.processTask(tracker.tasks[1], false, approvedDelta, nil, nil)
 	if !okB || psB.delta != 1 {
 		t.Fatalf("expected envB task probe-up +1 (independent approvedDelta), got ok=%v delta=%d", okB, psB.delta)
 	}
@@ -79,15 +82,18 @@ func TestConvergence_CrossEnvIsolation_ApprovedDelta(t *testing.T) {
 		t.Fatalf("expected pendingScale envKey=envB, got %q", psB.envKey)
 	}
 	if psB.delta > 0 {
-		approvedDelta[psB.scope+psB.envKey] += psB.delta
+		approvedDelta[approvedScopeKey(psB.scope, psB.envKey)] += psB.delta
+		if psB.domain != "" {
+			approvedDelta[approvedDomainKey(psB.scope, psB.domain, psB.envKey)] += psB.delta
+		}
 	}
 
-	// Verify approvedDelta has two separate keys.
-	if approvedDelta["wanenvA"] != 1 {
-		t.Errorf("approvedDelta[wanenvA] = %d, want 1", approvedDelta["wanenvA"])
+	// Verify approvedDelta has two separate scope keys (and domain keys).
+	if approvedDelta[approvedScopeKey("wan", "envA")] != 1 {
+		t.Errorf("approvedDelta[wan|envA] = %d, want 1", approvedDelta[approvedScopeKey("wan", "envA")])
 	}
-	if approvedDelta["wanenvB"] != 1 {
-		t.Errorf("approvedDelta[wanenvB] = %d, want 1", approvedDelta["wanenvB"])
+	if approvedDelta[approvedScopeKey("wan", "envB")] != 1 {
+		t.Errorf("approvedDelta[wan|envB] = %d, want 1", approvedDelta[approvedScopeKey("wan", "envB")])
 	}
 }
 
@@ -140,6 +146,7 @@ func TestConvergence_BandwidthRelease_CrossEnvNoBeneficiary(t *testing.T) {
 		[]TrackedTaskInfo{tracker.tasks[0]},
 		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan", EnvKey: "envB"}},
 		map[string]bool{},
+		nil,
 		nil,
 		nil,
 	)
@@ -195,6 +202,7 @@ func TestConvergence_BandwidthRelease_SameEnvBeneficiary(t *testing.T) {
 		[]TrackedTaskInfo{tracker.tasks[0]},
 		map[string]gidInfo{beneficiaryGid: {Domain: "example.com", Scope: "wan", EnvKey: "envA"}},
 		map[string]bool{},
+		nil,
 		nil,
 		nil,
 	)

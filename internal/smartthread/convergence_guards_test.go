@@ -238,7 +238,7 @@ func TestConvergence_CompletedTaskGuard_TotalLengthZeroSkipsGuard(t *testing.T) 
 
 	// Call processTask directly — ct.tick() would reset state when ScaleWorkers
 	// returns 0 (test engine has no real pool).
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 	if !ok || ps.delta >= 0 {
 		t.Fatalf("expected probe-down (delta<0), got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -399,7 +399,7 @@ func TestConvergence_ProbeDown_ProceedsOnPositiveRawBps(t *testing.T) {
 
 	// Call processTask directly — ct.tick() would reset state when ScaleWorkers
 	// returns 0 (test engine has no real pool).
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 	if !ok || ps.delta >= 0 {
 		t.Fatalf("expected probe-down (delta<0), got ok=%v delta=%d", ok, ps.delta)
 	}

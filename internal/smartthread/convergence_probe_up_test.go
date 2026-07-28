@@ -63,7 +63,7 @@ func probeUpProcess(ct *ConvergenceTicker, tracker *mockTracker, telemetry *mock
 		setPrevSampleAgoState(s, 5*time.Second)
 	}
 	ct.mu.Unlock()
-	return ct.processTask(tracker.tasks[0], false, nil)
+	return ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 }
 
 // TestConvergence_ProbeUp_TriggersWhenStableAndEfficient verifies that
@@ -209,7 +209,7 @@ func TestConvergence_ProbeUp_SuccessContinuesChain(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok = ct.processTask(tracker.tasks[0], false, nil)
+	ps, ok = ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 	if !ok || ps.delta != 1 {
 		t.Fatalf("expected chain probe-up +1 after success, got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -254,7 +254,7 @@ func TestConvergence_ProbeUp_GainRatioZeroRawBps(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok = ct.processTask(tracker.tasks[0], false, nil)
+	ps, ok = ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 	if !ok || ps.delta != -1 {
 		t.Fatalf("expected ceiling-hit rebound -1, got ok=%v delta=%d", ok, ps.delta)
 	}

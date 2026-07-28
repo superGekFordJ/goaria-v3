@@ -54,7 +54,7 @@ func ceilingHitProcess(ct *ConvergenceTicker, tracker *mockTracker, telemetry *m
 		setPrevSampleAgoState(s, 5*time.Second)
 	}
 	ct.mu.Unlock()
-	return ct.processTask(tracker.tasks[0], false, nil)
+	return ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 }
 
 // TestConvergence_CeilingHit_SmartUnlock verifies consecutive 2 ticks with

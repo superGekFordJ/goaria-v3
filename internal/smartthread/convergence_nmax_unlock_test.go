@@ -57,7 +57,7 @@ func TestConvergenceNMaxClamp_KneeCrossedRebound(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil)
 	if ok && ps.delta > 0 {
 		t.Fatalf("expected no scale-up (rebound clamped to 0), got delta=%d", ps.delta)
 	}
@@ -108,7 +108,7 @@ func TestConvergenceNMaxClamp_KneeCrossedRebound(t *testing.T) {
 		setPrevSampleAgoState(ct2.states[gid2], 5*time.Second)
 		ct2.mu.Unlock()
 
-		ps2, ok2 := ct2.processTask(tracker2.tasks[0], false, nil)
+		ps2, ok2 := ct2.processTask(tracker2.tasks[0], false, nil, nil, nil)
 		if !ok2 || ps2.delta != 1 {
 			t.Fatalf("expected rebound clamped to 1 (headroom=1), got ok=%v delta=%d", ok2, ps2.delta)
 		}
@@ -158,6 +158,7 @@ func TestConvergenceNMaxClamp_BandwidthRelease(t *testing.T) {
 		map[string]bool{},
 		nil,
 		dStats,
+		nil,
 	)
 	for _, r := range releases {
 		if r.gid == candidateGid {
@@ -175,6 +176,7 @@ func TestConvergenceNMaxClamp_BandwidthRelease(t *testing.T) {
 			map[string]bool{},
 			nil,
 			dStats,
+			nil,
 		)
 		found := false
 		for _, r := range releases2 {

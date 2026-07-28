@@ -266,6 +266,18 @@ func limitKey(scope, domain string) string {
 	return scope + "|" + domain
 }
 
+// approvedScopeKey is the tick-local approvedDelta key for scope headroom.
+// Format: scope + "|" + envKey (never bare concat).
+func approvedScopeKey(scope, envKey string) string {
+	return scope + "|" + envKey
+}
+
+// approvedDomainKey is the tick-local approvedDelta / domainMacroBps key.
+// Format: scope + "|" + domain + "|" + envKey — env-aware, unlike limitKey.
+func approvedDomainKey(scope, domain, envKey string) string {
+	return scope + "|" + domain + "|" + envKey
+}
+
 // ClampToServerLimit applies the per-domain N_max server limit to Calculate's
 // output. If the domain has a non-expired N_max and params.Split would push
 // the domain total above N_max, Split is clamped to max(1, nMax - existingDomainWorkers),
