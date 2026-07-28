@@ -56,7 +56,7 @@ type Scheduler struct {
 	defaultDownloadRateLimitBps int64
 	shutdownOnce                sync.Once
 
-	// tightenOnPickup is host-injected clamp-before-start (nil = no-op).
+	// FORK-PATCH: tightenOnPickup is host-injected clamp-before-start (nil = no-op).
 	// Separate mutex so the callback runs after p.mu.Unlock without nesting.
 	tightenMu       sync.RWMutex
 	tightenOnPickup func(*types.DownloadRecord)
@@ -98,6 +98,7 @@ func New(progressCh chan<- types.DownloadEvent, maxDownloads int) *Scheduler {
 
 // SetTightenOnPickup installs (or clears, when fn is nil) the pre-RunDownload
 // tighten-only callback. Safe to call concurrently with workers.
+// FORK-PATCH: host clamp-before-start hook used by LifecycleManager.SetEngineHooks.
 func (p *Scheduler) SetTightenOnPickup(fn func(*types.DownloadRecord)) {
 	p.tightenMu.Lock()
 	p.tightenOnPickup = fn
@@ -686,6 +687,7 @@ func (p *Scheduler) worker() {
 		localCfg := ad.config
 		p.mu.Unlock()
 
+		// FORK-PATCH: host tighten-only clamp after dequeue, before RunDownload.
 		if fn := p.getTightenOnPickup(); fn != nil {
 			fn(&localCfg)
 		}

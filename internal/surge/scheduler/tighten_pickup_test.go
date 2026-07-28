@@ -13,6 +13,8 @@ import (
 	"goaria-v3/internal/surge/types"
 )
 
+// FORK-PATCH: scheduler pickup tighten hook regressions (host clamp-before-start).
+
 func TestScheduler_TightenOnPickup_InvokedAndShrinks(t *testing.T) {
 	ch := make(chan types.DownloadEvent, 100)
 	pool := New(ch, 1)
