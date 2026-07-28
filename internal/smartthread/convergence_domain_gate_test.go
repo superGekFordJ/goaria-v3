@@ -35,6 +35,7 @@ func accumulatePending(approved map[string]int, ps pendingScale) {
 	approved[approvedScopeKey(ps.scope, ps.envKey)] += ps.delta
 	if ps.domain != "" {
 		approved[approvedDomainKey(ps.scope, ps.domain, ps.envKey)] += ps.delta
+		approved[approvedNMaxKey(ps.scope, ps.domain)] += ps.delta
 	}
 }
 
@@ -352,7 +353,8 @@ func TestConvergence_BandwidthRelease_RespectsDomainApprovedDelta(t *testing.T) 
 
 	dStats := map[string]*domainStats{key: {activeWorkers: 5}}
 	approved := map[string]int{
-		approvedDomainKey("wan", domain, "testenv"): 1, // prior Probe-Up filled last slot
+		approvedNMaxKey("wan", domain):              1, // prior Probe-Up filled last slot (env-blind)
+		approvedDomainKey("wan", domain, "testenv"): 1,
 		approvedScopeKey("wan", "testenv"):          1,
 	}
 
@@ -379,5 +381,125 @@ func TestConvergence_BandwidthRelease_RespectsDomainApprovedDelta(t *testing.T) 
 	)
 	if len(releasesOK) != 1 {
 		t.Fatalf("control: expected 1 release without approvedDelta, got %#v", releasesOK)
+	}
+}
+
+// TestConvergence_ProbeUp_CrossEnvNMaxPendingShared proves N_max pending is
+// env-blind: envA +1 fills the last slot so envB on the same scope|domain
+// cannot Probe-Up even though its env-partitioned BW approvedDomainKey is 0.
+func TestConvergence_ProbeUp_CrossEnvNMaxPendingShared(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	speedstats.AddRecordV2(50*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "envA")
+	speedstats.AddRecordV2(50*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "envB")
+
+	orig := activeBandwidthProvider
+	t.Cleanup(func() { activeBandwidthProvider = orig })
+	activeBandwidthProvider = func(scope, envKey string) int64 { return 0 }
+
+	domain := "example.com"
+	key := limitKey("wan", domain)
+	gidA := "sg_crossenv_nmax_a"
+	gidB := "sg_crossenv_nmax_b"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gidA, Status: "active", Scope: "wan", EnvKey: "envA", Domain: domain, CompletedLength: 60 * 1024 * 1024},
+			{GID: gidB, Status: "active", Scope: "wan", EnvKey: "envB", Domain: domain, CompletedLength: 60 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{
+			gidA: makeWorkers(5, 2*1024*1024),
+			gidB: makeWorkers(5, 2*1024*1024),
+		},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct.limits.Clear(key)
+	ct.limits.SetNMax(key, 11) // 5+5=10; one +1 fills last slot
+
+	setupDomainGateProbeReady(ct, gidA, 1_310_720, 5)
+	setupDomainGateProbeReady(ct, gidB, 1_310_720, 5)
+
+	dStats := map[string]*domainStats{key: {activeWorkers: 10, tasksInDomain: 2}}
+	approved := make(map[string]int)
+
+	psA, okA := ct.processTask(tracker.tasks[0], false, approved, dStats, nil)
+	if !okA || psA.delta != 1 {
+		t.Fatalf("expected envA Probe-Up +1, got ok=%v delta=%d", okA, psA.delta)
+	}
+	accumulatePending(approved, psA)
+	if approved[approvedNMaxKey("wan", domain)] != 1 {
+		t.Fatalf("expected env-blind nmax pending=1, got %d", approved[approvedNMaxKey("wan", domain)])
+	}
+
+	psB, okB := ct.processTask(tracker.tasks[1], false, approved, dStats, nil)
+	if okB && psB.delta > 0 {
+		t.Fatalf("expected envB blocked by shared N_max pending, got delta=%d", psB.delta)
+	}
+}
+
+// TestConvergence_BandwidthRelease_DomainCompDoesNotFalseAllow verifies
+// disappearedSpeed compensates scope only: domainMacroBps already excludes
+// the disappeared task, so domain must still deny when occupancy is at peak.
+func TestConvergence_BandwidthRelease_DomainCompDoesNotFalseAllow(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	// Domain peak 10MB; scope peak also seeded high via second domain.
+	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")
+	speedstats.AddRecordV2(50*1024*1024, 1, 10*1024*1024, false, 50, "other.com", "wan", "testenv")
+
+	orig := activeBandwidthProvider
+	t.Cleanup(func() { activeBandwidthProvider = orig })
+	// Scope still counts disappeared 10MB; without compensation scope would deny.
+	// With scope-only compensation, scope allows — domain must still deny.
+	activeBandwidthProvider = func(scope, envKey string) int64 { return 10 * 1024 * 1024 }
+
+	domain := "example.com"
+	beneficiary := "sg_comp_ben"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: beneficiary, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, CompletedLength: 10 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{
+		data: map[string][]types.WorkerSnapshot{beneficiary: makeWorkers(2, 2*1024*1024)},
+	}
+	aria2 := &rpc.Aria2Engine{}
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(aria2, surge)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct.limits.Clear(limitKey("wan", domain))
+
+	ct.mu.Lock()
+	s := ct.getOrCreateState(beneficiary)
+	s.phase = phaseStable
+	s.kneeFrozen = false
+	s.blackout = false
+	ct.prevActiveGids = map[string]gidInfo{
+		"sg_comp_donor": {Domain: domain, Scope: "wan", EnvKey: "testenv"},
+	}
+	ct.prevActiveSpeeds = map[string]int64{
+		"sg_comp_donor": 10 * 1024 * 1024,
+	}
+	ct.mu.Unlock()
+
+	// Living peer already occupies full domain peak; disappeared is NOT in occ.
+	domainMacro := map[string]int64{
+		approvedDomainKey("wan", domain, "testenv"): 10 * 1024 * 1024,
+	}
+
+	releases := ct.bandwidthRelease(
+		tracker.tasks,
+		map[string]gidInfo{beneficiary: {Domain: domain, Scope: "wan", EnvKey: "testenv"}},
+		map[string]bool{},
+		nil,
+		nil,
+		domainMacro,
+	)
+	if len(releases) != 0 {
+		t.Fatalf("domain compensation must not false-allow when occ already excludes donor, got %#v", releases)
 	}
 }

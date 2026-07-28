@@ -272,10 +272,17 @@ func approvedScopeKey(scope, envKey string) string {
 	return scope + "|" + envKey
 }
 
-// approvedDomainKey is the tick-local approvedDelta / domainMacroBps key.
-// Format: scope + "|" + domain + "|" + envKey — env-aware, unlike limitKey.
+// approvedDomainKey is the tick-local approvedDelta / domainMacroBps key for
+// bandwidth gates. Format: scope + "|" + domain + "|" + envKey — env-aware.
 func approvedDomainKey(scope, domain, envKey string) string {
 	return scope + "|" + domain + "|" + envKey
+}
+
+// approvedNMaxKey is the tick-local approvedDelta key for N_max pending counts.
+// Env-blind like limitKey (scope|domain). Prefixed so it cannot collide with
+// approvedScopeKey when envKey equals a domain string.
+func approvedNMaxKey(scope, domain string) string {
+	return "nmax|" + scope + "|" + domain
 }
 
 // ClampToServerLimit applies the per-domain N_max server limit to Calculate's

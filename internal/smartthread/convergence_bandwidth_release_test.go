@@ -173,6 +173,9 @@ func TestConvergence_BandwidthRelease_NonKeepAliveTaskBenefits(t *testing.T) {
 	if approvedDelta[approvedDomainKey("wan", "example.com", "testenv")] != 1 {
 		t.Fatalf("expected approvedDelta[domain]=1, got %d", approvedDelta[approvedDomainKey("wan", "example.com", "testenv")])
 	}
+	if approvedDelta[approvedNMaxKey("wan", "example.com")] != 1 {
+		t.Fatalf("expected approvedDelta[nmax]=1, got %d", approvedDelta[approvedNMaxKey("wan", "example.com")])
+	}
 }
 
 // TestConvergence_ApprovedDelta_PreventsSameTickOversell verifies that the
@@ -188,7 +191,7 @@ func TestConvergence_ApprovedDelta_PreventsSameTickOversell(t *testing.T) {
 
 	// globalPeak = 10 MB/s, vThreadAvg = 10 MB/s (1 thread).
 	// activeBw = 0 → first +1: effectiveBw=0, headroom=10MB >= 10MB → pass.
-	// After approvedDelta["wan"]=1 → second +1: effectiveBw=10MB, headroom=0 < 10MB → blocked.
+	// After approvedDelta[approvedScopeKey]=1 → second +1: effectiveBw=10MB, headroom=0 < 10MB → blocked.
 	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")
 
 	orig := activeBandwidthProvider
@@ -243,6 +246,7 @@ func TestConvergence_ApprovedDelta_PreventsSameTickOversell(t *testing.T) {
 		approvedDelta[approvedScopeKey(ps1.scope, ps1.envKey)] += ps1.delta
 		if ps1.domain != "" {
 			approvedDelta[approvedDomainKey(ps1.scope, ps1.domain, ps1.envKey)] += ps1.delta
+			approvedDelta[approvedNMaxKey(ps1.scope, ps1.domain)] += ps1.delta
 		}
 	}
 

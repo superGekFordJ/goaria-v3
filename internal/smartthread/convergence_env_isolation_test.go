@@ -69,6 +69,7 @@ func TestConvergence_CrossEnvIsolation_ApprovedDelta(t *testing.T) {
 		approvedDelta[approvedScopeKey(psA.scope, psA.envKey)] += psA.delta
 		if psA.domain != "" {
 			approvedDelta[approvedDomainKey(psA.scope, psA.domain, psA.envKey)] += psA.delta
+			approvedDelta[approvedNMaxKey(psA.scope, psA.domain)] += psA.delta
 		}
 	}
 
@@ -85,6 +86,7 @@ func TestConvergence_CrossEnvIsolation_ApprovedDelta(t *testing.T) {
 		approvedDelta[approvedScopeKey(psB.scope, psB.envKey)] += psB.delta
 		if psB.domain != "" {
 			approvedDelta[approvedDomainKey(psB.scope, psB.domain, psB.envKey)] += psB.delta
+			approvedDelta[approvedNMaxKey(psB.scope, psB.domain)] += psB.delta
 		}
 	}
 
