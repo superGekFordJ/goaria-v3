@@ -6,6 +6,7 @@ import (
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/smartthread"
+	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/surge/progress"
 	"goaria-v3/internal/surge/types"
 )
@@ -243,6 +244,56 @@ func TestApplyPickupTighten_SmartThreadOffNoOp(t *testing.T) {
 	ApplyPickupTighten(cfg)
 	if cfg.Runtime.Workers != 9 {
 		t.Fatalf("Workers = %d, want 9 when SmartThreadMode off", cfg.Runtime.Workers)
+	}
+}
+
+// Same-scope / other-domain waiter must shrink promote via ledger.Reserved
+// (scope BW), not domain N_max / ReservedByDomain — Macro alone would miss it.
+func TestApplyPickupTighten_SameScopeOtherDomainWaiterShrinksViaLedger(t *testing.T) {
+	tr := withPickupTightenFixture(t, true)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	// Seed BBR so Calculate uses ReservedBandwidth (legacy ignores it).
+	// Global peak 20MB/s; per-thread ~2MB/s on promo.com.
+	speedstats.AddRecordV2(20*1024*1024, 10, 100*1024*1024, false, 50, "promo.com", "wan", "env1")
+
+	// Waiter on a different domain, same scope+env, claims most of global BW.
+	tr.EnsureTrackedFromEvent("sg_waiter", 0, "https://other.com/w", 8, "waiting")
+	tr.SetScopeAndEnv("sg_waiter", "wan", 0, "other.com", "env1")
+	tr.SetThreadInfo("sg_waiter", 8, false)
+	tr.SetTargetBandwidth("sg_waiter", 18*1024*1024)
+
+	tr.EnsureTrackedFromEvent("sg_promo", 100_000_000, "https://promo.com/f", 9, "waiting")
+	tr.SetScopeAndEnv("sg_promo", "wan", 0, "promo.com", "env1")
+	tr.SetThreadInfo("sg_promo", 9, false)
+	tr.SetTargetBandwidth("sg_promo", 10*1024*1024)
+
+	// Domain worker path must be free — prove shrink is scope-ledger driven.
+	if got := ExistingDomainWorkersFromTelemetryExcluding("wan", "promo.com", "sg_promo"); got != 0 {
+		t.Fatalf("promo domain existing workers = %d, want 0", got)
+	}
+	infos := BuildOccupancyTaskInfosExcluding("sg_promo")
+	ledger := smartthread.NewBandwidthLedger(infos)
+	if got := ledger.Reserved("wan", "env1"); got < 18*1024*1024 {
+		t.Fatalf("ledger.Reserved = %d, want >= 18MB from other-domain waiter", got)
+	}
+	if got := ledger.ReservedByDomain("wan", "promo.com"); got != 0 {
+		t.Fatalf("ReservedByDomain(promo) = %d, want 0 (waiter is other domain)", got)
+	}
+
+	cfg := &types.DownloadRecord{
+		ID:        "promo",
+		TotalSize: 100_000_000,
+		Runtime:   &types.RuntimeConfig{Workers: 9, MinChunkSize: 1024 * 1024},
+	}
+	ApplyPickupTighten(cfg)
+
+	if cfg.Runtime.Workers >= 9 {
+		t.Fatalf("Workers = %d, want shrink from other-domain waiter via ledger.Reserved", cfg.Runtime.Workers)
+	}
+	if cfg.Runtime.Workers > 3 {
+		t.Fatalf("Workers = %d, want <= 3 under ~2MB scope headroom", cfg.Runtime.Workers)
 	}
 }
 
