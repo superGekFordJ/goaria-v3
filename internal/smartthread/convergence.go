@@ -480,13 +480,18 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 			if pendingGids[t.GID] {
 				continue
 			}
-			s := c.getOrCreateState(t.GID)
-			if s.kneeFrozen || s.phase == phaseCeilingHit || s.blackout {
+			// Align processTask / dStats: 100% still-listed peers must not win
+			// election (ascending workers favors draining tasks). TotalLength==0 exempt.
+			if t.TotalLength > 0 && t.CompletedLength >= t.TotalLength {
 				continue
 			}
 			cw := len(c.telemetry.Get(t.GID))
 			// Align processTask: zero-telemetry candidates cannot ScaleWorkers.
 			if cw == 0 {
+				continue
+			}
+			s := c.getOrCreateState(t.GID)
+			if s.kneeFrozen || s.phase == phaseCeilingHit || s.blackout {
 				continue
 			}
 			// N_max clamp: skip when domain total workers + 1 would exceed N_max.
