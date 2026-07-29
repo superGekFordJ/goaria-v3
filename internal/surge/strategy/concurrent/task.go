@@ -57,9 +57,25 @@ type ActiveTask struct {
 	Draining atomic.Bool
 }
 
+// currentOffset returns the effective offset, using SharedMaxOffset when larger.
+// FORK-PATCH: #568 max(shared) under SharedMaxOffsetMu RLock (upstream bare-reads
+// the pointer). Keeps pointer-carry RemainingTask below from tip #568.
+func (at *ActiveTask) currentOffset() int64 {
+	current := at.CurrentOffset.Load()
+	at.SharedMaxOffsetMu.RLock()
+	ptr := at.SharedMaxOffset
+	at.SharedMaxOffsetMu.RUnlock()
+	if ptr != nil {
+		if shared := ptr.Load(); shared > current {
+			current = shared
+		}
+	}
+	return current
+}
+
 // RemainingBytes returns the number of bytes left for this task
 func (at *ActiveTask) RemainingBytes() int64 {
-	current := at.CurrentOffset.Load()
+	current := at.currentOffset()
 	stopAt := at.StopAt.Load()
 	if current >= stopAt {
 		return 0
@@ -69,14 +85,16 @@ func (at *ActiveTask) RemainingBytes() int64 {
 
 // RemainingTask returns a Task representing the remaining work, or nil if complete
 func (at *ActiveTask) RemainingTask() *types.Task {
-	current := at.CurrentOffset.Load()
+	current := at.currentOffset()
 	stopAt := at.StopAt.Load()
 	if current >= stopAt {
 		return nil
 	}
 	// FORK-PATCH: carry SharedMaxOffset so requeued tasks share write dedup
 	// with hedge partners. Read pointer under RLock to avoid racing with
-	// hedger initialization (matches worker.go read pattern).
+	// hedger initialization (matches worker.go read pattern). Offset/Length
+	// already honor max(shared) via currentOffset (#568); tip RemainingTask
+	// drops this field — keep the carry.
 	at.SharedMaxOffsetMu.RLock()
 	ptr := at.SharedMaxOffset
 	at.SharedMaxOffsetMu.RUnlock()

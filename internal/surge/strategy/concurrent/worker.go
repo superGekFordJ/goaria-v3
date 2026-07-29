@@ -63,11 +63,40 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			d.State.ActiveWorkers.Add(1)
 		}
 
+		// FORK-PATCH: Register ActiveTask once outside the retry loop so the
+		// task stays visible in activeTasks during PickMirror wait / single-
+		// mirror backoff (upstream #566). Residual requeue still uses this
+		// pointer after map delete — do NOT adopt upstream return lastErr.
+		now := time.Now()
+		activeTask := &ActiveTask{
+			Task:        task,
+			StartTime:   now,
+			WindowStart: now,
+			workerID:    id,
+		}
+		if task.SharedMaxOffset != nil {
+			activeTask.SharedMaxOffset = task.SharedMaxOffset
+			activeTask.Hedged.Store(1)
+		}
+		activeTask.CurrentOffset.Store(task.Offset)
+		activeTask.StopAt.Store(task.Offset + task.Length)
+		activeTask.LastActivity.Store(now.UnixNano())
+
+		d.activeMu.Lock()
+		// FORK-PATCH: Final VP re-check under activeMu before registration.
+		// Fail path never inserts; Cancel is assigned per attempt inside the loop.
+		if d.State != nil && d.State.Bytes.VerifiedProgress.Load() >= totalSize {
+			d.activeMu.Unlock()
+			if d.State != nil {
+				d.State.ActiveWorkers.Add(-1)
+			}
+			return nil
+		}
+		d.activeTasks[id] = activeTask
+		d.activeMu.Unlock()
+
 		var lastErr error
 		var lastSpeed float64 // FORK-PATCH: track speed for tier adjustment
-		// FORK-PATCH: keep the last attempt's ActiveTask so the residual requeue
-		// after retry exhaustion reads the current StopAt/CurrentOffset.
-		var lastActiveTask *ActiveTask
 		maxRetries := d.Runtime.GetMaxTaskRetries()
 		genericAttempt := 0
 		rlRetries := 0
@@ -76,49 +105,34 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			idx, wait := d.hostLimiter.PickMirror(mirrorHosts, currentMirrorIdx, time.Now())
 			currentMirrorIdx = idx
 			if wait > 0 {
+				activeTask.WaitingOnLimiter.Store(true)
 				if !interruptibleSleep(ctx, wait) {
-					if d.State != nil {
-						d.State.ActiveWorkers.Add(-1)
-					}
+					activeTask.WaitingOnLimiter.Store(false)
+					// Requeue before map delete so handlePause (post-worker-exit)
+					// still sees remaining work after Pause cancels ctx.
+					d.releaseActiveOnCancel(id, activeTask, task, queue)
 					return ctx.Err()
 				}
+				activeTask.WaitingOnLimiter.Store(false)
 			}
 			currentURL := mirrors[currentMirrorIdx]
 
 			taskCtx, taskCancel := context.WithCancel(ctx)
 			now := time.Now()
-			activeTask := &ActiveTask{
-				Task:        task,
-				StartTime:   now,
-				Cancel:      taskCancel,
-				WindowStart: now,
-				workerID:    id,
-			}
-			lastActiveTask = activeTask
+			// Publish Cancel + window fields under activeMu so health (which
+			// reads them under the same lock) cannot observe a torn refresh
+			// on a live activeTasks entry across retries.
+			d.activeMu.Lock()
+			activeTask.Cancel = taskCancel
+			activeTask.StartTime = now
+			activeTask.WindowStart = now
+			activeTask.WindowBytes.Store(0)
+			activeTask.LastActivity.Store(now.UnixNano())
+			d.activeMu.Unlock()
 			// FORK-PATCH: Record retry attempt count for N_max fuse telemetry.
 			// Uses genericAttempt (NOT rlRetries) — rate-limit retries are
 			// intentionally excluded from the N_max fuse.
 			activeTask.RetryCount.Store(int32(genericAttempt))
-			if task.SharedMaxOffset != nil {
-				activeTask.SharedMaxOffset = task.SharedMaxOffset
-				activeTask.Hedged.Store(1)
-			}
-			activeTask.CurrentOffset.Store(task.Offset)
-			activeTask.StopAt.Store(task.Offset + task.Length)
-			activeTask.LastActivity.Store(now.UnixNano())
-
-			d.activeMu.Lock()
-			// FORK-PATCH: Final VP re-check under activeMu before registration.
-			if d.State != nil && d.State.Bytes.VerifiedProgress.Load() >= totalSize {
-				d.activeMu.Unlock()
-				taskCancel()
-				if d.State != nil {
-					d.State.ActiveWorkers.Add(-1)
-				}
-				return nil
-			}
-			d.activeTasks[id] = activeTask
-			d.activeMu.Unlock()
 
 			if d.State != nil {
 				utils.Debug("Worker %d: Setting range %d-%d to Downloading", id, task.Offset, task.Offset+task.Length)
@@ -135,12 +149,15 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			wasExternallyCancelled := taskCtx.Err() != nil
 
 			taskCancel()
+			// Drop Cancel while still mapped so health cannot invoke a spent
+			// cancel across the inter-attempt / backoff gap.
+			d.activeMu.Lock()
+			activeTask.Cancel = nil
+			d.activeMu.Unlock()
 			utils.Debug("Worker %d: Task offset=%d length=%d took %v", id, task.Offset, task.Length, time.Since(taskStart))
 
 			if ctx.Err() != nil {
-				if d.State != nil {
-					d.State.ActiveWorkers.Add(-1)
-				}
+				d.releaseActiveOnCancel(id, activeTask, task, queue)
 				return ctx.Err()
 			}
 
@@ -164,16 +181,9 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 						}
 					}
 				}
-				d.activeMu.Lock()
-				delete(d.activeTasks, id)
-				d.activeMu.Unlock()
 				lastErr = nil
 				break
 			}
-
-			d.activeMu.Lock()
-			delete(d.activeTasks, id)
-			d.activeMu.Unlock()
 
 			if lastErr == nil {
 				d.hostLimiter.RecordSuccess(mirrorHosts[currentMirrorIdx])
@@ -208,10 +218,20 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			d.ReportMirrorError(mirrors[currentMirrorIdx])
 			currentMirrorIdx = (currentMirrorIdx + 1) % len(mirrors)
 			if len(mirrors) == 1 {
-				interruptibleSleep(ctx, time.Duration(1<<genericAttempt)*types.RetryBaseDelay)
+				activeTask.WaitingOnLimiter.Store(true)
+				if !interruptibleSleep(ctx, time.Duration(1<<genericAttempt)*types.RetryBaseDelay) {
+					activeTask.WaitingOnLimiter.Store(false)
+					d.releaseActiveOnCancel(id, activeTask, task, queue)
+					return ctx.Err()
+				}
+				activeTask.WaitingOnLimiter.Store(false)
 			}
 			resumeOnRetryOffset(&task, activeTask)
 		}
+
+		d.activeMu.Lock()
+		delete(d.activeTasks, id)
+		d.activeMu.Unlock()
 
 		// FORK-PATCH: Dynamically adjust buffer tier based on observed speed.
 		if lastSpeed > 0 {
@@ -237,7 +257,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			}
 			// FORK-PATCH: requeue residual from activeTask StopAt/CurrentOffset;
 			// continue outer loop — do not escalate chunk failure to whole download.
-			if remaining := lastActiveTask.RemainingTask(); remaining != nil {
+			if remaining := activeTask.RemainingTask(); remaining != nil {
 				originalEnd := task.Offset + task.Length
 				if remaining.Offset+remaining.Length > originalEnd {
 					remaining.Length = originalEnd - remaining.Offset
@@ -248,6 +268,27 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			}
 			utils.Debug("Worker %d: task at offset %d failed after %d retries: %v", id, task.Offset, maxRetries, lastErr)
 		}
+	}
+}
+
+// releaseActiveOnCancel requeues residual work then removes the worker from
+// activeTasks. Pause cancels downloadCtx and handlePause runs only after
+// workers exit — without this push, cancel-path map deletes lose remaining.
+func (d *ConcurrentDownloader) releaseActiveOnCancel(id int, activeTask *ActiveTask, task types.Task, queue *TaskQueue) {
+	if remaining := activeTask.RemainingTask(); remaining != nil {
+		originalEnd := task.Offset + task.Length
+		if remaining.Offset+remaining.Length > originalEnd {
+			remaining.Length = originalEnd - remaining.Offset
+		}
+		if remaining.Length > 0 {
+			queue.Push(*remaining)
+		}
+	}
+	d.activeMu.Lock()
+	delete(d.activeTasks, id)
+	d.activeMu.Unlock()
+	if d.State != nil {
+		d.State.ActiveWorkers.Add(-1)
 	}
 }
 
@@ -761,4 +802,6 @@ func resumeOnRetryOffset(task *types.Task, activeTask *ActiveTask) {
 	activeTask.SharedMaxOffsetMu.RLock()
 	task.SharedMaxOffset = activeTask.SharedMaxOffset
 	activeTask.SharedMaxOffsetMu.RUnlock()
+	// Keep Range header in sync after hoist — downloadTask reads activeTask.Task.
+	activeTask.Task = *task
 }

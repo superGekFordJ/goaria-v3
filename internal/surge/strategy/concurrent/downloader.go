@@ -900,6 +900,29 @@ func (d *ConcurrentDownloader) KillWorker(id int) bool {
 	return false
 }
 
+// preferFirstSameSharedMaxOffset keeps the first task for each non-nil
+// SharedMaxOffset pointer identity and drops later duplicates. Callers must
+// pass an active-first ordered slice so the advanced active remaining wins
+// over a queued-stale copy of the same hedge pointer.
+// FORK-PATCH: #568 same-pointer keep-first before mergeOverlappingTasks.
+func preferFirstSameSharedMaxOffset(tasks []types.Task) []types.Task {
+	if len(tasks) <= 1 {
+		return tasks
+	}
+	seen := make(map[*atomic.Int64]struct{}, len(tasks))
+	out := make([]types.Task, 0, len(tasks))
+	for _, task := range tasks {
+		if task.SharedMaxOffset != nil {
+			if _, ok := seen[task.SharedMaxOffset]; ok {
+				continue
+			}
+			seen[task.SharedMaxOffset] = struct{}{}
+		}
+		out = append(out, task)
+	}
+	return out
+}
+
 // mergeOverlappingTasks merges overlapping/adjacent tasks by union range.
 // When hedge is active, activeTasks may contain both original and hedge workers
 // whose RemainingTask() returns overlapping byte ranges. Without dedup,
@@ -937,7 +960,9 @@ func mergeOverlappingTasks(tasks []types.Task) []types.Task {
 }
 
 func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queue *TaskQueue, candidateMirrors []string) error {
-	// 1. Collect active tasks as remaining work FIRST
+	// 1. Collect active RemainingTask copies, then drain the queue (active-first).
+	// Keep-first same-pointer prefer depends on this order so an advanced
+	// active remaining wins over a queued-stale hedge copy.
 	var activeRemaining []types.Task
 	d.activeMu.Lock()
 	for _, active := range d.activeTasks {
@@ -947,16 +972,13 @@ func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queu
 	}
 	d.activeMu.Unlock()
 
-	// 2. Collect remaining tasks from queue
-	remainingTasks := queue.DrainRemaining()
-	remainingTasks = append(remainingTasks, activeRemaining...)
+	allTasks := append(append([]types.Task(nil), activeRemaining...), queue.DrainRemaining()...)
 
-	// FORK-PATCH: Merge-by-union dedup for overlapping tasks. When hedge
-	// is active, activeTasks contains both original and hedge workers whose
-	// RemainingTask() returns overlapping byte ranges. Without dedup,
-	// remainingBytes double-counts the overlap → computedDownloaded
-	// undercounts → resume VP regression.
-	remainingTasks = mergeOverlappingTasks(remainingTasks)
+	// FORK-PATCH: #568 keep-first same SharedMaxOffset pointer, then
+	// merge-by-union for general range overlap/adjacency (SPEC-200). Prefer
+	// must run before merge — merge alone unions queued-stale 500/500 with
+	// advanced 600/400 into 500/500.
+	remainingTasks := mergeOverlappingTasks(preferFirstSameSharedMaxOffset(allTasks))
 
 	// Calculate Downloaded from remaining tasks (ensures consistency)
 	var remainingBytes int64
@@ -980,8 +1002,10 @@ func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queu
 	}
 	computedDownloaded := fileSize - remainingBytes
 	// FORK-PATCH: Trust the chunk-level dedup counter over the recompute.
-	// remainingBytes may include hedged bytes already on disk (RemainingTask
-	// does not carry SharedMaxOffset), so the recompute can undercount.
+	// remainingBytes can still overstate work when hedged partners share a
+	// pointer (queued-stale duplicates / bitmap already counted bytes), so
+	// the recompute can undercount even though RemainingTask carries
+	// SharedMaxOffset for write-dedup. Prefer + max(VP, …) close the gap.
 	if d.State != nil {
 		if vp := d.State.Bytes.VerifiedProgress.Load(); vp > computedDownloaded {
 			computedDownloaded = vp
@@ -1007,6 +1031,12 @@ func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queu
 	if d.Runtime != nil {
 		workers = d.Runtime.Workers
 		minChunkSize = d.Runtime.MinChunkSize
+	}
+
+	// Clear SharedMaxOffset on pause-snapshot copies only so hot resume does
+	// not pin ranges as hedged. Live ActiveTask pointers stay untouched.
+	for i := range remainingTasks {
+		remainingTasks[i].SharedMaxOffset = nil
 	}
 
 	// Save state for resume (use computed value for consistency)

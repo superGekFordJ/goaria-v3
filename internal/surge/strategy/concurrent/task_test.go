@@ -75,15 +75,48 @@ func TestActiveTask_RemainingTaskCarriesSharedMaxOffset(t *testing.T) {
 	at.CurrentOffset.Store(300)
 	at.StopAt.Store(1000)
 
+	// shared > current: Offset/Length use max(shared); pointer identity preserved
 	remaining := at.RemainingTask()
 	if remaining == nil {
 		t.Fatal("RemainingTask returned nil")
+	}
+	if remaining.Offset != 500 || remaining.Length != 500 {
+		t.Errorf("RemainingTask = %+v, want Offset=500, Length=500", remaining)
 	}
 	if remaining.SharedMaxOffset != shared {
 		t.Error("RemainingTask did not carry SharedMaxOffset pointer")
 	}
 	if remaining.SharedMaxOffset.Load() != 500 {
 		t.Errorf("SharedMaxOffset value = %d, want 500", remaining.SharedMaxOffset.Load())
+	}
+	if got := at.RemainingBytes(); got != 500 {
+		t.Errorf("RemainingBytes = %d, want 500", got)
+	}
+
+	// shared <= current: effective offset stays CurrentOffset; carry still present
+	at.CurrentOffset.Store(700)
+	remaining = at.RemainingTask()
+	if remaining == nil {
+		t.Fatal("RemainingTask returned nil when current ahead of shared")
+	}
+	if remaining.Offset != 700 || remaining.Length != 300 {
+		t.Errorf("RemainingTask = %+v, want Offset=700, Length=300", remaining)
+	}
+	if remaining.SharedMaxOffset != shared {
+		t.Error("RemainingTask did not carry SharedMaxOffset when current ahead")
+	}
+	if got := at.RemainingBytes(); got != 300 {
+		t.Errorf("RemainingBytes = %d, want 300", got)
+	}
+
+	// shared >= stopAt ⇒ complete
+	shared.Store(1000)
+	at.CurrentOffset.Store(300)
+	if at.RemainingTask() != nil {
+		t.Error("RemainingTask should return nil when shared >= stopAt")
+	}
+	if got := at.RemainingBytes(); got != 0 {
+		t.Errorf("RemainingBytes = %d, want 0 when shared >= stopAt", got)
 	}
 }
 
