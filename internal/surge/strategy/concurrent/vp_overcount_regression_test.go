@@ -202,7 +202,8 @@ func TestVPOvercount_RetryRespectsStolenStopAt(t *testing.T) {
 	// independent SharedMaxOffset.
 	active.StopAt.Store(50 * utils.MiB)
 
-	resumeOnRetryOffset(&task, active)
+	var d ConcurrentDownloader
+	d.resumeOnRetryOffset(&task, active)
 
 	// The next attempt re-stores StopAt = task.Offset + task.Length.
 	retryStopAt := task.Offset + task.Length
@@ -229,7 +230,8 @@ func TestRetryStopAt_ClampedToActiveStopAt(t *testing.T) {
 	active.CurrentOffset.Store(20 * utils.MiB)
 	active.StopAt.Store(50 * utils.MiB) // steal reduced StopAt below original end 80M
 
-	resumeOnRetryOffset(&task, active)
+	var d ConcurrentDownloader
+	d.resumeOnRetryOffset(&task, active)
 
 	if task.Offset+task.Length > active.StopAt.Load() {
 		t.Fatalf("task end=%d not clamped to StopAt=%d", task.Offset+task.Length, active.StopAt.Load())
@@ -251,7 +253,8 @@ func TestVPOvercount_RetryNoProgressStillClamps(t *testing.T) {
 	// Steal reduced StopAt below the original end (10M + 80M = 90M).
 	active.StopAt.Store(40 * utils.MiB)
 
-	resumeOnRetryOffset(&task, active)
+	var d ConcurrentDownloader
+	d.resumeOnRetryOffset(&task, active)
 
 	if task.Offset+task.Length > active.StopAt.Load() {
 		t.Fatalf("task end=%d not clamped to StopAt=%d (no-progress case)",

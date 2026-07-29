@@ -125,6 +125,9 @@ func (d *ConcurrentDownloader) checkWorkerHealth() {
 		// FORK-PATCH: Volume grace — skip slow speed check if downloaded
 		// less than 1MB (TCP slow start may not have ramped up yet) .
 		// Only protects the slow speed check below, NOT stall detection above.
+		// Task.Offset is the attempt-start snapshot (published under activeMu);
+		// CurrentOffset advances atomically during the attempt — grace is
+		// bytes since this attempt began, not since the original chunk start.
 		downloadedBytes := active.CurrentOffset.Load() - active.Task.Offset
 		if downloadedBytes < 0 {
 			downloadedBytes = 0

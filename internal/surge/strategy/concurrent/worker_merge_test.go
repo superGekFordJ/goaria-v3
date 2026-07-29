@@ -26,7 +26,8 @@ func TestResumeOnRetryOffset_SharedMaxOffsetCarryAndStopAtClamp(t *testing.T) {
 	active.CurrentOffset.Store(1000)
 	active.StopAt.Store(3000)
 
-	resumeOnRetryOffset(&task, active)
+	var d ConcurrentDownloader
+	d.resumeOnRetryOffset(&task, active)
 
 	if task.Offset != 1000 {
 		t.Fatalf("Offset = %d, want 1000", task.Offset)

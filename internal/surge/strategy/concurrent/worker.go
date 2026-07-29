@@ -207,7 +207,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 					break
 				}
 				currentMirrorIdx = (currentMirrorIdx + 1) % len(mirrors)
-				resumeOnRetryOffset(&task, activeTask)
+				d.resumeOnRetryOffset(&task, activeTask)
 				continue
 			}
 
@@ -226,7 +226,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 				}
 				activeTask.WaitingOnLimiter.Store(false)
 			}
-			resumeOnRetryOffset(&task, activeTask)
+			d.resumeOnRetryOffset(&task, activeTask)
 		}
 
 		d.activeMu.Lock()
@@ -783,7 +783,7 @@ func (d *ConcurrentDownloader) HedgeWork(queue *TaskQueue) bool {
 // attempt, preventing double-counting bytes on retry.
 // FORK-PATCH: carries SharedMaxOffset so retried tasks share write dedup
 // with hedge partners on the same byte range.
-func resumeOnRetryOffset(task *types.Task, activeTask *ActiveTask) {
+func (d *ConcurrentDownloader) resumeOnRetryOffset(task *types.Task, activeTask *ActiveTask) {
 	current := activeTask.CurrentOffset.Load()
 	stopAt := activeTask.StopAt.Load()
 	// FORK-PATCH: unconditionally clamp to StopAt — even when current == task.Offset
@@ -802,6 +802,9 @@ func resumeOnRetryOffset(task *types.Task, activeTask *ActiveTask) {
 	activeTask.SharedMaxOffsetMu.RLock()
 	task.SharedMaxOffset = activeTask.SharedMaxOffset
 	activeTask.SharedMaxOffsetMu.RUnlock()
-	// Keep Range header in sync after hoist — downloadTask reads activeTask.Task.
+	// Publish Task under activeMu so health (which reads Task.Offset under the
+	// same lock) cannot race the attempt-start snapshot used for Range/grace.
+	d.activeMu.Lock()
 	activeTask.Task = *task
+	d.activeMu.Unlock()
 }
