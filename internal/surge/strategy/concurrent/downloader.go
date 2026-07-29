@@ -900,24 +900,32 @@ func (d *ConcurrentDownloader) KillWorker(id int) bool {
 	return false
 }
 
-// preferFirstSameSharedMaxOffset keeps the first task for each non-nil
-// SharedMaxOffset pointer identity and drops later duplicates. Callers must
-// pass an active-first ordered slice so the advanced active remaining wins
-// over a queued-stale copy of the same hedge pointer.
-// FORK-PATCH: #568 same-pointer keep-first before mergeOverlappingTasks.
-func preferFirstSameSharedMaxOffset(tasks []types.Task) []types.Task {
+// preferMaxOffsetSameSharedMaxOffset keeps, for each non-nil SharedMaxOffset
+// pointer identity, the task with the highest Offset (then shortest Length on
+// Offset ties; remaining ties keep the first encountered). Nil-pointer tasks
+// are always kept. Same-pointer outcome is order-independent; collect still
+// uses active-first for unrelated remaining visibility.
+// FORK-PATCH: #568 same-pointer max-Offset before mergeOverlappingTasks.
+func preferMaxOffsetSameSharedMaxOffset(tasks []types.Task) []types.Task {
 	if len(tasks) <= 1 {
 		return tasks
 	}
-	seen := make(map[*atomic.Int64]struct{}, len(tasks))
 	out := make([]types.Task, 0, len(tasks))
+	pos := make(map[*atomic.Int64]int, len(tasks))
 	for _, task := range tasks {
-		if task.SharedMaxOffset != nil {
-			if _, ok := seen[task.SharedMaxOffset]; ok {
-				continue
-			}
-			seen[task.SharedMaxOffset] = struct{}{}
+		if task.SharedMaxOffset == nil {
+			out = append(out, task)
+			continue
 		}
+		if idx, ok := pos[task.SharedMaxOffset]; ok {
+			prev := out[idx]
+			if task.Offset > prev.Offset ||
+				(task.Offset == prev.Offset && task.Length < prev.Length) {
+				out[idx] = task
+			}
+			continue
+		}
+		pos[task.SharedMaxOffset] = len(out)
 		out = append(out, task)
 	}
 	return out
@@ -961,8 +969,8 @@ func mergeOverlappingTasks(tasks []types.Task) []types.Task {
 
 func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queue *TaskQueue, candidateMirrors []string) error {
 	// 1. Collect active RemainingTask copies, then drain the queue (active-first).
-	// Keep-first same-pointer prefer depends on this order so an advanced
-	// active remaining wins over a queued-stale hedge copy.
+	// Same-pointer prefer is max-Offset (order-independent); active-first
+	// collect is retained for remaining visibility when the map is non-empty.
 	var activeRemaining []types.Task
 	d.activeMu.Lock()
 	for _, active := range d.activeTasks {
@@ -974,11 +982,12 @@ func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queu
 
 	allTasks := append(append([]types.Task(nil), activeRemaining...), queue.DrainRemaining()...)
 
-	// FORK-PATCH: #568 keep-first same SharedMaxOffset pointer, then
+	// FORK-PATCH: #568 max-Offset same SharedMaxOffset pointer, then
 	// merge-by-union for general range overlap/adjacency (SPEC-200). Prefer
 	// must run before merge — merge alone unions queued-stale 500/500 with
-	// advanced 600/400 into 500/500.
-	remainingTasks := mergeOverlappingTasks(preferFirstSameSharedMaxOffset(allTasks))
+	// advanced 600/400 into 500/500. Max-Offset also covers empty-active
+	// production pause (requeue-then-delete) where FIFO would see stale first.
+	remainingTasks := mergeOverlappingTasks(preferMaxOffsetSameSharedMaxOffset(allTasks))
 
 	// Calculate Downloaded from remaining tasks (ensures consistency)
 	var remainingBytes int64

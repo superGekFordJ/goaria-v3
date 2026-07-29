@@ -10,12 +10,12 @@ import (
 	"goaria-v3/internal/surge/types"
 )
 
-func TestPreferFirstSameSharedMaxOffset_ActiveFirstKeepsAdvanced(t *testing.T) {
+func TestPreferMaxOffsetSameSharedMaxOffset_ActiveFirstKeepsAdvanced(t *testing.T) {
 	shared := new(atomic.Int64)
 	shared.Store(600)
 
-	// Production collect order: active remaining then queued-stale.
-	got := preferFirstSameSharedMaxOffset([]types.Task{
+	// Active-first collect order still yields 600/400 under max-Offset.
+	got := preferMaxOffsetSameSharedMaxOffset([]types.Task{
 		{Offset: 600, Length: 400, SharedMaxOffset: shared},
 		{Offset: 500, Length: 500, SharedMaxOffset: shared},
 	})
@@ -30,40 +30,39 @@ func TestPreferFirstSameSharedMaxOffset_ActiveFirstKeepsAdvanced(t *testing.T) {
 	}
 }
 
-func TestPreferFirstSameSharedMaxOffset_QueueFirstKeepsStale(t *testing.T) {
+func TestPreferMaxOffsetSameSharedMaxOffset_QueueFirstKeepsAdvanced(t *testing.T) {
 	shared := new(atomic.Int64)
 	shared.Store(600)
 
-	// Documents why active-first collect is mandatory: keep-first on
-	// queue-first order retains the stale 500/500 copy.
-	got := preferFirstSameSharedMaxOffset([]types.Task{
+	// Queue stale-first must still keep the advanced copy (order-independent).
+	got := preferMaxOffsetSameSharedMaxOffset([]types.Task{
 		{Offset: 500, Length: 500, SharedMaxOffset: shared},
 		{Offset: 600, Length: 400, SharedMaxOffset: shared},
 	})
 	if len(got) != 1 {
 		t.Fatalf("len = %d, want 1", len(got))
 	}
-	if got[0].Offset != 500 || got[0].Length != 500 {
-		t.Fatalf("queue-first keep = %d/%d, want stale 500/500", got[0].Offset, got[0].Length)
+	if got[0].Offset != 600 || got[0].Length != 400 {
+		t.Fatalf("queue-first keep = %d/%d, want advanced 600/400", got[0].Offset, got[0].Length)
 	}
 }
 
-func TestPreferFirstSameSharedMaxOffset_DistinctAndNilKept(t *testing.T) {
+func TestPreferMaxOffsetSameSharedMaxOffset_DistinctAndNilKept(t *testing.T) {
 	a := new(atomic.Int64)
 	b := new(atomic.Int64)
 	a.Store(100)
 	b.Store(300)
 
-	got := preferFirstSameSharedMaxOffset([]types.Task{
-		{Offset: 0, Length: 100, SharedMaxOffset: a},
+	got := preferMaxOffsetSameSharedMaxOffset([]types.Task{
+		{Offset: 100, Length: 100, SharedMaxOffset: a},
 		{Offset: 200, Length: 50}, // nil pointer — always keep
 		{Offset: 300, Length: 100, SharedMaxOffset: b},
-		{Offset: 50, Length: 50, SharedMaxOffset: a}, // duplicate of a — drop
+		{Offset: 50, Length: 50, SharedMaxOffset: a}, // stale duplicate of a — drop
 	})
 	if len(got) != 3 {
 		t.Fatalf("len = %d, want 3 (two distinct pointers + nil)", len(got))
 	}
-	if got[0].Offset != 0 || got[1].Offset != 200 || got[2].Offset != 300 {
+	if got[0].Offset != 100 || got[1].Offset != 200 || got[2].Offset != 300 {
 		t.Fatalf("unexpected keep order: %+v", got)
 	}
 }
@@ -123,6 +122,73 @@ func TestHandlePause_QueuedStaleHedge_PrefersActiveRemaining(t *testing.T) {
 		t.Fatal("live ActiveTask SharedMaxOffset must not be cleared by pause")
 	}
 	// Classic fixture: remaining Length 400 + VP 600 → Downloaded 600.
+	if ev.State.Downloaded != 600 {
+		t.Fatalf("State.Downloaded = %d, want 600", ev.State.Downloaded)
+	}
+	if ev.Downloaded != 600 {
+		t.Fatalf("event Downloaded = %d, want 600", ev.Downloaded)
+	}
+}
+
+func TestHandlePause_EmptyActive_QueueStaleFirst_PrefersMaxOffset(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(1000)
+	destPath := filepath.Join(tmpDir, "empty_active_prefer.bin")
+	state := progress.New("empty-active-prefer", fileSize)
+	state.Bytes.VerifiedProgress.Store(600)
+
+	shared := new(atomic.Int64)
+	shared.Store(600)
+
+	progressCh := make(chan types.DownloadEvent, 1)
+	d := &ConcurrentDownloader{
+		ID:           "empty-active-prefer",
+		URL:          "http://example.com/file.bin",
+		State:        state,
+		ProgressChan: progressCh,
+		Runtime:      &types.RuntimeConfig{},
+		// Production pause after releaseActiveOnCancel: map emptied, both
+		// copies already on the queue (stale FIFO-first, then advanced).
+		activeTasks: map[int]*ActiveTask{},
+	}
+
+	queue := NewTaskQueue()
+	queue.Push(types.Task{Offset: 500, Length: 500, SharedMaxOffset: shared})
+	queue.Push(types.Task{Offset: 600, Length: 400, SharedMaxOffset: shared})
+
+	err := d.handlePause(destPath, fileSize, queue, nil)
+	if !errors.Is(err, types.ErrPaused) {
+		t.Fatalf("expected ErrPaused, got %v", err)
+	}
+
+	ev := <-progressCh
+	if ev.State == nil {
+		t.Fatal("expected pause State")
+	}
+	tasks := ev.State.Tasks
+	if len(tasks) != 1 {
+		t.Fatalf("persisted tasks = %d, want 1", len(tasks))
+	}
+	if tasks[0].Offset != 600 || tasks[0].Length != 400 {
+		t.Fatalf("persisted remaining = %d/%d, want 600/400", tasks[0].Offset, tasks[0].Length)
+	}
+	if tasks[0].SharedMaxOffset != nil {
+		t.Fatal("pause snapshot SharedMaxOffset should be cleared")
+	}
+
+	// Downloaded==600 alone is insufficient under max(VP, computed): wrong
+	// prefer 500/500 still yields Downloaded=max(600,500)=600, but
+	// Downloaded+ΣLength=1100≠fileSize. Correct prefer: 600+400=1000.
+	var remainingSum int64
+	for _, task := range tasks {
+		remainingSum += task.Length
+	}
+	if ev.State.Downloaded+remainingSum != fileSize {
+		t.Fatalf("Downloaded(%d)+ΣLength(%d)=%d, want fileSize %d",
+			ev.State.Downloaded, remainingSum, ev.State.Downloaded+remainingSum, fileSize)
+	}
 	if ev.State.Downloaded != 600 {
 		t.Fatalf("State.Downloaded = %d, want 600", ev.State.Downloaded)
 	}
