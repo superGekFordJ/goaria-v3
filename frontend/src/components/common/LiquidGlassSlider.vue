@@ -8,12 +8,14 @@
       max?: number
       step?: number
       ariaLabel?: string
+      ariaValuetext?: string
     }>(),
     {
       min: 0,
       max: 100,
       step: 1,
       ariaLabel: '',
+      ariaValuetext: '',
     },
   )
 
@@ -33,7 +35,7 @@
 
   const THUMB_W = 46
   const THUMB_H = 28
-  const MAX_LIFT = 1.5
+  const MAX_LIFT = 1.7
   const MAP_PAD = 14
   const LENS = { disp: 13, blur: 0, ca: 0, satBoost: 0.35 }
   const STIFF = 340
@@ -47,7 +49,7 @@
     return /Chrom(e|ium)/.test(navigator.userAgent) || !!(window as unknown as { chrome?: unknown }).chrome
   })()
 
-  let filterId = ''
+  const filterId = ref('')
   let filterEl: SVGFilterElement | null = null
   let fMap: SVGFEImageElement | null = null
   let fMapBlur: SVGFEGaussianBlurElement | null = null
@@ -86,7 +88,8 @@
     const canvas = document.createElement('canvas')
     canvas.width = mapW
     canvas.height = mapH
-    const ctx = canvas.getContext('2d')!
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return ''
     const img = ctx.createImageData(mapW, mapH)
     const data = img.data
     const hw = lensW / 2
@@ -135,7 +138,7 @@
 
   function ensureFilter() {
     const uid = `lgs-${Math.random().toString(36).slice(2, 9)}`
-    filterId = uid
+    filterId.value = uid
 
     svgRoot = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
     svgRoot.setAttribute('width', '0')
@@ -342,6 +345,10 @@
     let v: number
     if (e.key === 'ArrowRight' || e.key === 'ArrowUp') v = Math.min(props.max, props.modelValue + step)
     else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') v = Math.max(props.min, props.modelValue - step)
+    else if (e.key === 'PageUp') v = Math.min(props.max, props.modelValue + props.step * 10)
+    else if (e.key === 'PageDown') v = Math.max(props.min, props.modelValue - props.step * 10)
+    else if (e.key === 'Home') v = props.min
+    else if (e.key === 'End') v = props.max
     else return
     e.preventDefault()
     localValue.value = v
@@ -384,6 +391,7 @@
     :aria-valuemin="min"
     :aria-valuemax="max"
     :aria-valuenow="modelValue"
+    :aria-valuetext="ariaValuetext"
     @pointerdown="onPointerDown"
     @pointermove="onPointerMove"
     @pointerup="release"
@@ -488,11 +496,11 @@
   }
 
   .lgs-ticks .tick-30 {
-    left: calc(30% + 13.8px);
+    left: 30%;
   }
 
   .lgs-ticks .tick-70 {
-    left: calc(70% - 13.8px);
+    left: 70%;
   }
 
   .lgs-thumb {
