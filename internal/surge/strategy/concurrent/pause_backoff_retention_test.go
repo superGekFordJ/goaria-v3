@@ -47,8 +47,26 @@ func TestConcurrentDownloader_PauseDuringRetryBackoff(t *testing.T) {
 		_ = f.Close()
 	}
 
+	// Pause mid single-mirror backoff (WaitingOnLimiter), not on a fixed sleep.
 	go func() {
-		time.Sleep(150 * time.Millisecond)
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			downloader.activeMu.Lock()
+			waiting := false
+			for _, at := range downloader.activeTasks {
+				if at != nil && at.WaitingOnLimiter.Load() {
+					waiting = true
+					break
+				}
+			}
+			downloader.activeMu.Unlock()
+			if waiting {
+				state.Pause()
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Error("timed out waiting for WaitingOnLimiter before pause")
 		state.Pause()
 	}()
 
@@ -75,7 +93,23 @@ func TestConcurrentDownloader_PauseDuringRetryBackoff(t *testing.T) {
 		t.Fatalf("Expected state in paused event")
 	}
 
-	if savedState.Downloaded > 0 {
+	if savedState.Downloaded != 0 {
 		t.Errorf("Expected 0 bytes downloaded in saved state, but got %d (progress jump bug!)", savedState.Downloaded)
+	}
+
+	var remainingBytes int64
+	for _, task := range savedState.Tasks {
+		remainingBytes += task.Length
+	}
+	// Mid-backoff with no successful writes: remaining coverage must still span
+	// the whole file. Downloaded==0 alone misses the phantom-complete case
+	// where Tasks were dropped and Downloaded was recomputed high.
+	if remainingBytes != fileSize {
+		t.Errorf("remaining task coverage = %d (Tasks=%d), want fileSize=%d",
+			remainingBytes, len(savedState.Tasks), fileSize)
+	}
+	if savedState.Downloaded+remainingBytes != fileSize {
+		t.Errorf("Downloaded(%d)+remaining(%d) = %d, want fileSize=%d",
+			savedState.Downloaded, remainingBytes, savedState.Downloaded+remainingBytes, fileSize)
 	}
 }
