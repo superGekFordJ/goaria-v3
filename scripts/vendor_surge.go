@@ -315,4 +315,68 @@ formatters:
 
 	fmt.Printf("Vendored: %d files written, %d stale files removed.\n", written, deleted)
 	fmt.Println("Surge core packages successfully vended and import paths rewritten.")
+
+	// Phase 8: Lint vendored code with internal/surge exclusion removed.
+	// This surfaces lint issues (including in fork-patch code) that the main
+	// .golangci.yml excludes. Does not fail the vendor — just reports.
+	lintConfig, err := os.CreateTemp(".", ".golangci-vendor-lint-*.yml")
+	if err != nil {
+		fmt.Printf("Warning: could not create temp lint config: %v\n", err)
+		return
+	}
+	defer os.Remove(lintConfig.Name())
+	lintOverride := `version: "2"
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+  tests: true
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - errorlint
+    - bodyclose
+    - bidichk
+    - asciicheck
+    - gocheckcompilerdirectives
+    - nolintlint
+    - misspell
+    - copyloopvar
+    - durationcheck
+    - nosprintfhostport
+    - errchkjson
+    - canonicalheader
+    - rowserrcheck
+    - sqlclosecheck
+    - nilerr
+    - nilnesserr
+    - unconvert
+    - gocritic
+  settings:
+    copyloopvar:
+      check-alias: true
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+`
+	if _, err := lintConfig.WriteString(lintOverride); err != nil {
+		fmt.Printf("Warning: could not write temp lint config: %v\n", err)
+		return
+	}
+	lintConfig.Close()
+
+	fmt.Println("\nRunning golangci-lint run on internal/surge (exclusion removed)...")
+	lintCmd := exec.Command("golangci-lint", "run", "-c", lintConfig.Name(), "./internal/surge/...")
+	lintCmd.Stdout = os.Stdout
+	lintCmd.Stderr = os.Stderr
+	if err := lintCmd.Run(); err != nil {
+		fmt.Printf("⚠ Lint issues found in vendored code (does not block vendor).\n")
+		fmt.Printf("  Fork-patch code (// FORK-PATCH:) should be fixed in the goaria-fork-v2 branch.\n")
+		fmt.Printf("  Upstream issues should be reported or tolerated.\n")
+	} else {
+		fmt.Println("No lint issues found in vendored code.")
+	}
 }
