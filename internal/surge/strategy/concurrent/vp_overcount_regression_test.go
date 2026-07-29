@@ -476,7 +476,7 @@ func TestVPOvercount_DownloadTaskCountClampedMultiChunk(t *testing.T) {
 
 	// Two chunks: chunk 0 = [0, 128KiB), chunk 1 = [128KiB, 256KiB).
 	chunkSize := int64(128 * utils.KiB)
-	fileSize := int64(2 * chunkSize)
+	fileSize := 2 * chunkSize
 	handler := &fullRangeHandler{fileSize: fileSize}
 	srv := testutil.NewHTTPServerT(t, handler)
 	t.Cleanup(srv.Close)

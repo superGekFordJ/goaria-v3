@@ -92,7 +92,7 @@ func TierForSpeed(speed float64) bufferTier {
 // TierForBufferSize maps a configured buffer size to the closest tier.
 // Used for initial tier selection from RuntimeConfig.WorkerBufferSize.
 func TierForBufferSize(size int) bufferTier {
-	for i := bufferTier(tierCount - 1); i >= 0; i-- {
+	for i := tierCount - 1; i >= 0; i-- {
 		if size >= tierSizes[i] {
 			return i
 		}

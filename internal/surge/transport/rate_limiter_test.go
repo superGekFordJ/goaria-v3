@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -90,7 +91,7 @@ func TestRateLimiter_SetRateDecreaseWakesWaiter(t *testing.T) {
 	limiter.SetRate(0, 0)
 	select {
 	case err := <-done:
-		if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 			t.Fatalf("WaitN returned error after disable: %v", err)
 		}
 	case <-time.After(1 * time.Second):

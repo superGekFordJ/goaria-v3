@@ -181,11 +181,9 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 				current := activeTask.CurrentOffset.Load()
 				if current < task.Offset+task.Length && current >= stopAt {
 					utils.Debug("Worker stopped early due to stealing")
-				} else {
+				} else if d.State != nil {
 					// FORK-PATCH: Decrement conn error counter on successful chunk completion
-					if d.State != nil {
-						d.State.DecrConnErrors()
-					}
+					d.State.DecrConnErrors()
 				}
 				break
 			}
@@ -239,15 +237,13 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			}
 			// FORK-PATCH: requeue residual from activeTask StopAt/CurrentOffset;
 			// continue outer loop — do not escalate chunk failure to whole download.
-			if lastActiveTask != nil {
-				if remaining := lastActiveTask.RemainingTask(); remaining != nil {
-					originalEnd := task.Offset + task.Length
-					if remaining.Offset+remaining.Length > originalEnd {
-						remaining.Length = originalEnd - remaining.Offset
-					}
-					if remaining.Length > 0 {
-						queue.Push(*remaining)
-					}
+			if remaining := lastActiveTask.RemainingTask(); remaining != nil {
+				originalEnd := task.Offset + task.Length
+				if remaining.Offset+remaining.Length > originalEnd {
+					remaining.Length = originalEnd - remaining.Offset
+				}
+				if remaining.Length > 0 {
+					queue.Push(*remaining)
 				}
 			}
 			utils.Debug("Worker %d: task at offset %d failed after %d retries: %v", id, task.Offset, maxRetries, lastErr)

@@ -5,6 +5,7 @@
 package preallocate
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -64,7 +65,8 @@ func TestPreallocateSparse_GrowsAndSeeksFromStart(t *testing.T) {
 	if err := preallocateSparse(file, size); err != nil {
 		// FSCTL_SET_SPARSE fails on FAT32/exFAT/network shares. Skip instead
 		// of failing so the suite passes on non-NTFS temp directories.
-		if errno, ok := err.(windows.Errno); ok && (errno == windows.ERROR_NOT_SUPPORTED || errno == windows.ERROR_INVALID_FUNCTION) {
+		var errno windows.Errno
+		if errors.As(err, &errno) && (errno == windows.ERROR_NOT_SUPPORTED || errno == windows.ERROR_INVALID_FUNCTION) {
 			t.Skipf("preallocateSparse unsupported on this filesystem (FSCTL_SET_SPARSE: %v)", err)
 		}
 		t.Fatalf("preallocateSparse failed: %v", err)
@@ -90,7 +92,7 @@ func TestPreallocateSparse_GrowsAndSeeksFromStart(t *testing.T) {
 	// Unallocated region (sparse hole) must read as zeros.
 	buf := make([]byte, size)
 	n, err := file.ReadAt(buf, 0)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
 	if int64(n) != size {

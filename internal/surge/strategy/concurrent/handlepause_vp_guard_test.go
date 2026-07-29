@@ -1,6 +1,7 @@
 package concurrent
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -31,7 +32,7 @@ func TestHandlePause_RemainingZeroButVPLessThanFileSize_SavesStateNotFinalize(t 
 	// No tasks → remainingBytes == 0, but VP=500 < fileSize=1000.
 
 	err := d.handlePause(destPath, fileSize, queue, nil)
-	if err != types.ErrPaused {
+	if !errors.Is(err, types.ErrPaused) {
 		t.Fatalf("expected ErrPaused (save state for resume), got %v", err)
 	}
 }

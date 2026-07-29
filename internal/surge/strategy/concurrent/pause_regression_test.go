@@ -1,6 +1,7 @@
 package concurrent
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestPauseRegression_HedgeKillRequeue_CompletedDoesNotRegress(t *testing.T) 
 	queue.Push(types.Task{Offset: 886046419, Length: 187695405})
 
 	err := d.handlePause(destPath, fileSize, queue, nil)
-	if err != types.ErrPaused {
+	if !errors.Is(err, types.ErrPaused) {
 		t.Fatalf("expected ErrPaused, got %v", err)
 	}
 
@@ -75,7 +76,7 @@ func TestPauseRegression_NormalPause_Unaffected(t *testing.T) {
 	queue.Push(types.Task{Offset: 500, Length: 500})
 
 	err := d.handlePause(destPath, fileSize, queue, nil)
-	if err != types.ErrPaused {
+	if !errors.Is(err, types.ErrPaused) {
 		t.Fatalf("expected ErrPaused, got %v", err)
 	}
 

@@ -2,7 +2,6 @@ package concurrent
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -272,6 +271,6 @@ func waitScaledWorkers(t *testing.T, d *ConcurrentDownloader, cancel context.Can
 	case <-done:
 	case <-time.After(timeout):
 		cancel()
-		t.Fatal(fmt.Sprintf("scaled workers did not exit within %v", timeout))
+		t.Fatalf("scaled workers did not exit within %v", timeout)
 	}
 }
