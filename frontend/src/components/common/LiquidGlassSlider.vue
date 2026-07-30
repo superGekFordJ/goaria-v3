@@ -77,7 +77,16 @@
   let currentH = THUMB_H
   let currentCapturePad = 0
 
-  function buildDisplacementMap(w: number, h: number, radius: number, bezel: number, pad: number, dpr: number): string {
+  function canvasToBlobUrl(canvas: HTMLCanvasElement): Promise<string> {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (blob) resolve(URL.createObjectURL(blob))
+        else reject(new Error('canvas.toBlob returned null'))
+      })
+    })
+  }
+
+  function buildDisplacementMap(w: number, h: number, radius: number, bezel: number, pad: number, dpr: number): Promise<string> {
     const lensW = Math.max(2, w * dpr)
     const lensH = Math.max(2, h * dpr)
     const mapPad = Math.max(2, pad * dpr)
@@ -89,7 +98,7 @@
     canvas.width = mapW
     canvas.height = mapH
     const ctx = canvas.getContext('2d')
-    if (!ctx) return ''
+    if (!ctx) return Promise.reject(new Error('no 2d context'))
     const img = ctx.createImageData(mapW, mapH)
     const data = img.data
     const hw = lensW / 2
@@ -133,7 +142,7 @@
       }
     }
     ctx.putImageData(img, 0, 0)
-    return canvas.toDataURL()
+    return canvasToBlobUrl(canvas)
   }
 
   function ensureFilter() {
@@ -190,12 +199,32 @@
       entry = {
         blurX: 0.32 / (mapShapeW + MAP_PAD * 2),
         blurY: 0.32 / (mapShapeH + MAP_PAD * 2),
-        url: buildDisplacementMap(mapShapeW, mapShapeH, mapShapeH / 2, mapShapeH / 2, MAP_PAD, mapDpr),
+        url: '',
       }
       mapCache.set(key, entry)
+      buildDisplacementMap(mapShapeW, mapShapeH, mapShapeH / 2, mapShapeH / 2, MAP_PAD, mapDpr)
+        .then((url) => {
+          const cached = mapCache.get(key)
+          if (!cached) {
+            URL.revokeObjectURL(url)
+            return
+          }
+          const prev = cached.url
+          cached.url = url
+          if (mapBucket === bucket && fMap) {
+            fMap.setAttribute('href', url)
+          }
+          if (prev) URL.revokeObjectURL(prev)
+        })
+        .catch(() => {
+          mapCache.delete(key)
+          if (mapBucket === bucket) mapBucket = -1
+        })
     }
     fMapBlur.setAttribute('stdDeviation', `${entry.blurX} ${entry.blurY}`)
-    fMap.setAttribute('href', entry.url)
+    if (entry.url) {
+      fMap.setAttribute('href', entry.url)
+    }
   }
 
   function applyStyles() {
@@ -377,7 +406,19 @@
   onBeforeUnmount(() => {
     if (ro) ro.disconnect()
     if (raf) cancelAnimationFrame(raf)
+    mapBucket = -1
+    fMap = null
+    fMapBlur = null
+    fDisp = null
+    fSat = null
+    filterEl = null
     if (svgRoot) svgRoot.remove()
+    svgRoot = null
+    defsEl = null
+    for (const entry of mapCache.values()) {
+      if (entry.url) URL.revokeObjectURL(entry.url)
+    }
+    mapCache.clear()
   })
 </script>
 

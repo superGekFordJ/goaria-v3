@@ -12,20 +12,29 @@ export interface GlassParams {
 }
 
 export const GLASS_PRESETS: Record<string, GlassParams> = {
-  clear: { blur: 2, tint: 0.03, disp: 44, bezel: 24, ca: 0.07, sat: 1.05, spec: 0.6 },
+  clear: { blur: 0, tint: 0.03, disp: 44, bezel: 24, ca: 0.07, sat: 1.05, spec: 0.6 },
 }
 
 /* ================= SDF Displacement Map Generator =================
  * Rounded-rect SDF: center = neutral gray (no displacement);
  * rim band = inward displacement along SDF normal with circular lens profile.
  * R encodes dx, G encodes dy; 0.5 (128) is neutral. Encoded at half amplitude. */
+function canvasToBlobUrl(canvas: HTMLCanvasElement): Promise<string> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(URL.createObjectURL(blob))
+      else reject(new Error('canvas.toBlob returned null'))
+    })
+  })
+}
+
 function buildDisplacementMap(
   w: number,
   h: number,
   radius: number,
   bezel: number,
   dpr: number,
-): string {
+): Promise<string> {
   const W = Math.max(2, Math.round(w * dpr))
   const H = Math.max(2, Math.round(h * dpr))
   const R = Math.min(radius * dpr, W / 2, H / 2)
@@ -75,7 +84,7 @@ function buildDisplacementMap(
     }
   }
   ctx.putImageData(img, 0, 0)
-  return canvas.toDataURL()
+  return canvasToBlobUrl(canvas)
 }
 
 /* ================= SVG Filter Pipeline ================= */
@@ -106,6 +115,8 @@ interface GlassEntry {
   sat: SVGFEColorMatrixElement
   geom: { w: number; h: number; bezel: number; radius: number; dpr: number }
   ro: ResizeObserver
+  blobUrl: string | null
+  mapGen: number
 }
 
 /* Global singleton: one SVG <defs> for all glass elements */
@@ -115,6 +126,15 @@ let uidCounter = 0
 
 function ensureDefs(): SVGDefsElement {
   if (defsEl && document.body.contains(defsEl)) return defsEl
+  if (registry) {
+    for (const stale of registry.values()) {
+      stale.mapGen++
+      if (stale.blobUrl) {
+        URL.revokeObjectURL(stale.blobUrl)
+        stale.blobUrl = null
+      }
+    }
+  }
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
   svg.setAttribute('width', '0')
   svg.setAttribute('height', '0')
@@ -142,8 +162,26 @@ function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, be
 
   const g = entry.geom
   if (g.w !== w || g.h !== h || g.bezel !== bezel || g.radius !== radius || g.dpr !== dpr) {
-    entry.map.setAttribute('href', buildDisplacementMap(w, h, radius, bezel, dpr))
     entry.geom = { w, h, bezel, radius, dpr }
+    entry.mapGen++
+    const gen = entry.mapGen
+    buildDisplacementMap(w, h, radius, bezel, dpr)
+      .then((url) => {
+        if (gen !== entry.mapGen || !registry?.has(entry.key)) {
+          URL.revokeObjectURL(url)
+          return
+        }
+        const prev = entry.blobUrl
+        entry.blobUrl = url
+        entry.map.setAttribute('href', url)
+        if (prev) URL.revokeObjectURL(prev)
+      })
+      .catch(() => {
+        // Reset geom so a later update can retry the same dimensions.
+        if (gen === entry.mapGen) {
+          entry.geom = { w: 0, h: 0, bezel: 0, radius: 0, dpr: 0 }
+        }
+      })
   }
 
   const dispPx = Math.min(params.disp * dispMul, minDim * 0.35)
@@ -206,6 +244,8 @@ export function useLiquidGlass(
       ro: new ResizeObserver(() => {
         if (entry) updateGlass(entry, params, dispMul, bezelMul)
       }),
+      blobUrl: null,
+      mapGen: 0,
     }
 
     registry.set(key, entry)
@@ -218,7 +258,12 @@ export function useLiquidGlass(
 
   function unregister() {
     if (!entry) return
+    entry.mapGen++
     entry.ro.disconnect()
+    if (entry.blobUrl) {
+      URL.revokeObjectURL(entry.blobUrl)
+      entry.blobUrl = null
+    }
     entry.filter.remove()
     registry?.delete(entry.key)
     entry = null
@@ -244,13 +289,21 @@ export function useLiquidGlass(
  * No ResizeObserver, no per-element canvas — just a single filter element in the DOM.
  * Produces a subtle edge bend with slight blur and saturation boost. */
 let staticFilterId: string | null = null
+let staticBlobUrl: string | null = null
+let staticMapGen = 0
 
 export function getStaticGlassFilterId(): string {
   if (staticFilterId && document.getElementById(staticFilterId)) return staticFilterId
 
   const size = 256
-  const mapUrl = buildDisplacementMap(size, size, 64, 36, 1)
   const id = 'static-glass-refraction'
+  staticMapGen++
+  const gen = staticMapGen
+
+  if (staticBlobUrl) {
+    URL.revokeObjectURL(staticBlobUrl)
+    staticBlobUrl = null
+  }
 
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
   svg.setAttribute('width', '0')
@@ -268,7 +321,7 @@ export function getStaticGlassFilterId(): string {
   filter.setAttribute('primitiveUnits', 'objectBoundingBox')
   filter.setAttribute('color-interpolation-filters', 'sRGB')
   filter.innerHTML = `
-    <feImage x="0" y="0" width="1" height="1" result="map" preserveAspectRatio="none" href="${mapUrl}"/>
+    <feImage x="0" y="0" width="1" height="1" result="map" preserveAspectRatio="none" class="f-static-map"/>
     <feDisplacementMap in="SourceGraphic" in2="map" xChannelSelector="R" yChannelSelector="G" scale="0.01" result="dr"/>
     <feGaussianBlur in="dr" stdDeviation="0.004" result="soft"/>
     <feColorMatrix in="soft" type="saturate" values="1.08"/>
@@ -278,5 +331,29 @@ export function getStaticGlassFilterId(): string {
   document.body.appendChild(svg)
 
   staticFilterId = id
+
+  buildDisplacementMap(size, size, 64, 36, 1)
+    .then((url) => {
+      if (gen !== staticMapGen || staticFilterId !== id) {
+        URL.revokeObjectURL(url)
+        return
+      }
+      const mapEl = filter.querySelector('.f-static-map') as SVGFEImageElement | null
+      if (!mapEl) {
+        URL.revokeObjectURL(url)
+        return
+      }
+      const prev = staticBlobUrl
+      staticBlobUrl = url
+      mapEl.setAttribute('href', url)
+      if (prev) URL.revokeObjectURL(prev)
+    })
+    .catch(() => {
+      if (gen === staticMapGen) {
+        staticFilterId = null
+        svg.remove()
+      }
+    })
+
   return id
 }

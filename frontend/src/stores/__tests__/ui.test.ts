@@ -40,10 +40,10 @@ describe('uiStore applyEffects', () => {
     expect(document.documentElement.getAttribute('data-effects')).toBe('full')
     expect(document.documentElement.style.getPropertyValue('--ui-effects-level')).toBe('75')
     expect(document.documentElement.style.getPropertyValue('--glass-blur')).toBe(
-      `${Math.max(2, 24 - (75 / 100) * 22)}px`,
+      (8 - 6 * Math.pow((75 - 70) / 30, 2)).toFixed(2) + 'px',
     )
     expect(document.documentElement.style.getPropertyValue('--glass-opacity')).toBe(
-      String(0.08 + (75 / 100) * 0.32),
+      (0.3 - 0.1 * Math.pow((75 - 70) / 30, 2)).toFixed(4),
     )
   })
 

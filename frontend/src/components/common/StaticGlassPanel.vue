@@ -18,7 +18,7 @@
       interactive: false,
       radius: 'rounded-full',
       fallbackClass: '',
-      baseColorClass: 'bg-white/20 dark:bg-black/20',
+      baseColorClass: 'bg-[var(--app-liquid-glass-bg)]',
       disabled: false,
       refraction: false,
     },

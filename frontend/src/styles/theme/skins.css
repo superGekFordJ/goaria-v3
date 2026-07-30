@@ -191,7 +191,7 @@
   --effects-animation-enabled: 1;
   --effects-blur-enabled: 1;
   --glass-blur: 2px;
-  --glass-opacity: 0.4;
+  --glass-opacity: 0.2;
   --ui-effects-level: 100;
 }
 
@@ -200,8 +200,8 @@
   --effects-glow-intensity: 0.7;
   --effects-animation-enabled: 1;
   --effects-blur-enabled: 1;
-  --glass-blur: 13px;
-  --glass-opacity: 0.24;
+  --glass-blur: 11.27px;
+  --glass-opacity: 0.3571;
   --ui-effects-level: 50;
 }
 
@@ -210,8 +210,8 @@
   --effects-glow-intensity: 0;
   --effects-animation-enabled: 0;
   --effects-blur-enabled: 1;
-  --glass-blur: 24px;
-  --glass-opacity: 0.08;
+  --glass-blur: 48px;
+  --glass-opacity: 1;
   --ui-effects-level: 0;
 }
 

@@ -72,8 +72,8 @@
   --glass-border-highlight: rgba(255, 255, 255, 0.12);
   --glass-hover: rgba(255, 255, 255, 0.04);
   --glass-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.4);
-  --app-liquid-glass-bg: rgba(0, 0, 0, 0.2);
-  --app-liquid-glass-hover: rgba(0, 0, 0, 0.2);
+  --app-liquid-glass-bg: rgba(0, 0, 0, calc(var(--glass-opacity, 0.3571) * 0.2));
+  --app-liquid-glass-hover: rgba(0, 0, 0, calc(var(--glass-opacity, 0.3571) * 0.2));
 
   /* Sidebar - Fused with background, more transparent */
   --sidebar-bg: transparent;
@@ -169,8 +169,8 @@
     --glass-bg: rgba(255, 255, 255, 0.9);
     --glass-border: rgba(0, 0, 0, 0.08);
     --glass-hover: rgba(0, 0, 0, 0.03);
-    --app-liquid-glass-bg: rgba(0, 0, 0, 0.04);
-    --app-liquid-glass-hover: rgba(0, 0, 0, 0.025);
+    --app-liquid-glass-bg: rgba(0, 0, 0, calc(var(--glass-opacity, 0.3571) * 0.04));
+    --app-liquid-glass-hover: rgba(0, 0, 0, calc(var(--glass-opacity, 0.3571) * 0.025));
 
     /* Sidebar */
     --sidebar-bg: rgba(245, 245, 248, 0.7);
@@ -270,8 +270,8 @@
   --glass-border-highlight: rgba(255, 255, 255, 0.8);
   --glass-hover: rgba(0, 0, 0, 0.02);
   --glass-shadow: 0 8px 32px -8px rgba(0, 0, 0, 0.12);
-  --app-liquid-glass-bg: rgba(0, 0, 0, 0.04);
-  --app-liquid-glass-hover: rgba(0, 0, 0, 0.025);
+  --app-liquid-glass-bg: rgba(0, 0, 0, calc(var(--glass-opacity, 0.3571) * 0.04));
+  --app-liquid-glass-hover: rgba(0, 0, 0, calc(var(--glass-opacity, 0.3571) * 0.025));
 
   /* Sidebar - Subtle separation with better text contrast */
   --sidebar-bg: transparent;
