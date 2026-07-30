@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { levelToTier } from '../ui'
 
 describe('levelToTier', () => {
@@ -27,11 +27,6 @@ describe('uiStore applyEffects', () => {
     document.documentElement.style.removeProperty('--glass-opacity')
     document.documentElement.style.removeProperty('--ui-effects-level')
     localStorage.clear()
-    vi.useRealTimers()
-  })
-
-  afterEach(() => {
-    vi.useRealTimers()
   })
 
   it('sets CSS variables and data-effects attribute on setEffectsLevel', async () => {
@@ -65,8 +60,7 @@ describe('uiStore applyEffects', () => {
     expect(store.effectsLevel).toBe(0)
   })
 
-  it('updates live effectsLevel immediately but defers effectsLevelPersisted', async () => {
-    vi.useFakeTimers()
+  it('setEffectsLevel updates live CSS but does not touch effectsLevelPersisted', async () => {
     const { setActivePinia, createPinia } = await import('pinia')
     const { useUIStore } = await import('../ui')
     setActivePinia(createPinia())
@@ -78,16 +72,9 @@ describe('uiStore applyEffects', () => {
 
     expect(store.effectsLevel).toBe(80)
     expect(store.effectsLevelPersisted).toBe(50)
-
-    vi.advanceTimersByTime(399)
-    expect(store.effectsLevelPersisted).toBe(50)
-
-    vi.advanceTimersByTime(1)
-    expect(store.effectsLevelPersisted).toBe(80)
   })
 
   it('commitEffectsLevel flushes persisted level immediately', async () => {
-    vi.useFakeTimers()
     const { setActivePinia, createPinia } = await import('pinia')
     const { useUIStore } = await import('../ui')
     setActivePinia(createPinia())

@@ -19,8 +19,6 @@ export function levelToTier(level: number): EffectsTier {
 let systemThemeMedia: MediaQueryList | null = null
 let detachSystemThemeListener: (() => void) | null = null
 
-const EFFECTS_PERSIST_DEBOUNCE_MS = 400
-let effectsPersistTimer: ReturnType<typeof setTimeout> | null = null
 let effectsUnloadBound = false
 
 function clampEffectsLevel(level: number): number {
@@ -39,7 +37,7 @@ export const useUIStore = defineStore(
     const density = ref<Density>('comfortable')
     // Live visual level — drives CSS every tick; not in persist.pick.
     const effectsLevel = ref<number>(50)
-    // Committed mirror — pinia persist only watches this (debounce / pointer-up / unload).
+    // Committed mirror — pinia persist only watches this (slider commit / unload).
     const effectsLevelPersisted = ref<number>(50)
     const pendingPasteUri = ref('')
     const pendingPasteUris = ref<string[]>([])
@@ -134,28 +132,15 @@ export const useUIStore = defineStore(
     const effectsTier = computed<EffectsTier>(() => levelToTier(effectsLevel.value))
 
     function flushEffectsLevelPersist() {
-      if (effectsPersistTimer) {
-        clearTimeout(effectsPersistTimer)
-        effectsPersistTimer = null
-      }
       const clamped = clampEffectsLevel(effectsLevel.value)
       if (effectsLevelPersisted.value !== clamped) {
         effectsLevelPersisted.value = clamped
       }
     }
 
-    function scheduleEffectsLevelPersist() {
-      if (effectsPersistTimer) clearTimeout(effectsPersistTimer)
-      effectsPersistTimer = setTimeout(() => {
-        effectsPersistTimer = null
-        flushEffectsLevelPersist()
-      }, EFFECTS_PERSIST_DEBOUNCE_MS)
-    }
-
     function setEffectsLevel(level: number) {
       effectsLevel.value = clampEffectsLevel(level)
       applyEffects()
-      scheduleEffectsLevelPersist()
     }
 
     function commitEffectsLevel(level?: number) {

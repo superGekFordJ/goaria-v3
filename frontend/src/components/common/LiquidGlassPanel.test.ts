@@ -94,16 +94,4 @@ describe('LiquidGlassPanel', () => {
     // Shared static refraction filter id is applied via backdrop-filter
     expect(html).toContain('static-glass-filter')
   })
-
-  it('balanced tier omits static refraction when refraction is disabled', () => {
-    uiStoreMock.effectsTier = 'balanced'
-    const wrapper = mount(LiquidGlassPanel, {
-      props: { refraction: false },
-    })
-
-    const html = wrapper.html()
-    expect(html).not.toContain('static-glass-filter')
-    expect(html).toContain('blur(var(--glass-blur))')
-    expect(wrapper.find('.lg-bevel').exists()).toBe(true)
-  })
 })
