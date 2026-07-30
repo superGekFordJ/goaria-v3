@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { levelToTier } from '../ui'
 
 describe('levelToTier', () => {
@@ -27,6 +27,11 @@ describe('uiStore applyEffects', () => {
     document.documentElement.style.removeProperty('--glass-opacity')
     document.documentElement.style.removeProperty('--ui-effects-level')
     localStorage.clear()
+    vi.useRealTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   it('sets CSS variables and data-effects attribute on setEffectsLevel', async () => {
@@ -60,6 +65,45 @@ describe('uiStore applyEffects', () => {
     expect(store.effectsLevel).toBe(0)
   })
 
+  it('updates live effectsLevel immediately but defers effectsLevelPersisted', async () => {
+    vi.useFakeTimers()
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { useUIStore } = await import('../ui')
+    setActivePinia(createPinia())
+    const store = useUIStore()
+
+    store.setEffectsLevel(10)
+    store.setEffectsLevel(20)
+    store.setEffectsLevel(80)
+
+    expect(store.effectsLevel).toBe(80)
+    expect(store.effectsLevelPersisted).toBe(50)
+
+    vi.advanceTimersByTime(399)
+    expect(store.effectsLevelPersisted).toBe(50)
+
+    vi.advanceTimersByTime(1)
+    expect(store.effectsLevelPersisted).toBe(80)
+  })
+
+  it('commitEffectsLevel flushes persisted level immediately', async () => {
+    vi.useFakeTimers()
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { useUIStore } = await import('../ui')
+    setActivePinia(createPinia())
+    const store = useUIStore()
+
+    store.setEffectsLevel(66)
+    expect(store.effectsLevelPersisted).toBe(50)
+
+    store.commitEffectsLevel()
+    expect(store.effectsLevelPersisted).toBe(66)
+
+    store.commitEffectsLevel(90)
+    expect(store.effectsLevel).toBe(90)
+    expect(store.effectsLevelPersisted).toBe(90)
+  })
+
   it('migrates legacy persisted effects:full to effectsLevel 100', async () => {
     localStorage.setItem('ui', JSON.stringify({ effects: 'full' }))
     const { setActivePinia, createPinia } = await import('pinia')
@@ -69,6 +113,7 @@ describe('uiStore applyEffects', () => {
 
     store.initTheme()
     expect(store.effectsLevel).toBe(100)
+    expect(store.effectsLevelPersisted).toBe(100)
   })
 
   it('migrates legacy persisted effects:reduced to effectsLevel 0', async () => {
@@ -80,6 +125,31 @@ describe('uiStore applyEffects', () => {
 
     store.initTheme()
     expect(store.effectsLevel).toBe(0)
+    expect(store.effectsLevelPersisted).toBe(0)
+  })
+
+  it('hydrates from legacy live effectsLevel key', async () => {
+    localStorage.setItem('ui', JSON.stringify({ effectsLevel: 42 }))
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { useUIStore } = await import('../ui')
+    setActivePinia(createPinia())
+    const store = useUIStore()
+
+    store.initTheme()
+    expect(store.effectsLevel).toBe(42)
+    expect(store.effectsLevelPersisted).toBe(42)
+  })
+
+  it('hydrates from effectsLevelPersisted key', async () => {
+    localStorage.setItem('ui', JSON.stringify({ effectsLevelPersisted: 77 }))
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { useUIStore } = await import('../ui')
+    setActivePinia(createPinia())
+    const store = useUIStore()
+
+    store.initTheme()
+    expect(store.effectsLevel).toBe(77)
+    expect(store.effectsLevelPersisted).toBe(77)
   })
 
   it('defaults to effectsLevel 50 when no legacy data', async () => {
@@ -90,5 +160,6 @@ describe('uiStore applyEffects', () => {
 
     store.initTheme()
     expect(store.effectsLevel).toBe(50)
+    expect(store.effectsLevelPersisted).toBe(50)
   })
 })

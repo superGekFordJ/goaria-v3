@@ -94,4 +94,11 @@ describe('BatchActionBar group selection', () => {
     expect(downloadGroupStore.pauseGroup).toHaveBeenCalledWith('dg-only')
     wrapper.unmount()
   })
+
+  it('disables balanced static refraction on the floating glass panel', () => {
+    const wrapper = mount(BatchActionBar)
+    const panel = wrapper.getComponent({ name: 'LiquidGlassPanel' })
+    expect(panel.props('refraction')).toBe(false)
+    wrapper.unmount()
+  })
 })

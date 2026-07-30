@@ -13,6 +13,8 @@
       fallbackClass?: string
       baseColorClass?: string
       disabled?: boolean
+      /** Balanced-tier static refraction. Default true preserves sidebar etc. */
+      refraction?: boolean
     }>(),
     {
       as: 'div',
@@ -23,6 +25,7 @@
       fallbackClass: '',
       baseColorClass: 'bg-[var(--app-liquid-glass-bg)]',
       disabled: false,
+      refraction: true,
     },
   )
 
@@ -38,7 +41,23 @@
   const { filterId } = useLiquidGlass(refractionLayer)
 
   // Shared static refraction filter id for the balanced tier (no dynamic SDF).
-  const staticFilterId = computed(() => getStaticGlassFilterId())
+  const staticFilterId = computed(() => {
+    if (!props.refraction || uiStore.effectsTier === 'reduced') return ''
+    return getStaticGlassFilterId()
+  })
+
+  const balancedBackdrop = computed(() => {
+    if (staticFilterId.value) {
+      return {
+        backdropFilter: `blur(var(--glass-blur)) url(#${staticFilterId.value})`,
+        WebkitBackdropFilter: `blur(var(--glass-blur)) url(#${staticFilterId.value})`,
+      }
+    }
+    return {
+      backdropFilter: 'blur(var(--glass-blur))',
+      WebkitBackdropFilter: 'blur(var(--glass-blur))',
+    }
+  })
 </script>
 
 <template>
@@ -98,15 +117,12 @@
       ></div>
     </template>
     <template v-else-if="uiStore.effectsTier === 'balanced'">
-      <!-- Balanced: static glass + bevel + shared static refraction (no dynamic SDF, no specular ring) -->
+      <!-- Balanced: blur + tint + bevel; optional static refraction (off for floating overlays) -->
       <div
         v-if="active"
         class="absolute top-0 left-0 -z-10 h-full w-full overflow-hidden transition-all duration-300 pointer-events-none"
         :class="[radius, baseColorClass]"
-        :style="{
-          backdropFilter: `blur(var(--glass-blur)) url(#${staticFilterId})`,
-          WebkitBackdropFilter: `blur(var(--glass-blur)) url(#${staticFilterId})`,
-        }"
+        :style="balancedBackdrop"
       ></div>
       <div
         v-else-if="isInteractive"

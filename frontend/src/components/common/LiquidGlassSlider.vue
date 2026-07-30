@@ -21,6 +21,7 @@
 
   const emit = defineEmits<{
     'update:modelValue': [value: number]
+    change: [value: number]
   }>()
 
   const localValue = ref(props.modelValue)
@@ -77,16 +78,9 @@
   let currentH = THUMB_H
   let currentCapturePad = 0
 
-  function canvasToBlobUrl(canvas: HTMLCanvasElement): Promise<string> {
-    return new Promise((resolve, reject) => {
-      canvas.toBlob((blob) => {
-        if (blob) resolve(URL.createObjectURL(blob))
-        else reject(new Error('canvas.toBlob returned null'))
-      })
-    })
-  }
 
-  function buildDisplacementMap(w: number, h: number, radius: number, bezel: number, pad: number, dpr: number): Promise<string> {
+
+  function buildDisplacementMap(w: number, h: number, radius: number, bezel: number, pad: number, dpr: number): string {
     const lensW = Math.max(2, w * dpr)
     const lensH = Math.max(2, h * dpr)
     const mapPad = Math.max(2, pad * dpr)
@@ -97,8 +91,7 @@
     const canvas = document.createElement('canvas')
     canvas.width = mapW
     canvas.height = mapH
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return Promise.reject(new Error('no 2d context'))
+    const ctx = canvas.getContext('2d')!
     const img = ctx.createImageData(mapW, mapH)
     const data = img.data
     const hw = lensW / 2
@@ -142,7 +135,7 @@
       }
     }
     ctx.putImageData(img, 0, 0)
-    return canvasToBlobUrl(canvas)
+    return canvas.toDataURL('image/png')
   }
 
   function ensureFilter() {
@@ -202,24 +195,8 @@
         url: '',
       }
       mapCache.set(key, entry)
-      buildDisplacementMap(mapShapeW, mapShapeH, mapShapeH / 2, mapShapeH / 2, MAP_PAD, mapDpr)
-        .then((url) => {
-          const cached = mapCache.get(key)
-          if (!cached) {
-            URL.revokeObjectURL(url)
-            return
-          }
-          const prev = cached.url
-          cached.url = url
-          if (mapBucket === bucket && fMap) {
-            fMap.setAttribute('href', url)
-          }
-          if (prev) URL.revokeObjectURL(prev)
-        })
-        .catch(() => {
-          mapCache.delete(key)
-          if (mapBucket === bucket) mapBucket = -1
-        })
+      const url = buildDisplacementMap(mapShapeW, mapShapeH, mapShapeH / 2, mapShapeH / 2, MAP_PAD, mapDpr)
+      entry.url = url
     }
     fMapBlur.setAttribute('stdDeviation', `${entry.blurX} ${entry.blurY}`)
     if (entry.url) {
@@ -366,6 +343,7 @@
     if (!pressed) return
     pressed = false
     thumbRef.value?.classList.remove('pressed')
+    emit('change', localValue.value)
     kick()
   }
 
@@ -382,6 +360,7 @@
     e.preventDefault()
     localValue.value = v
     emit('update:modelValue', v)
+    emit('change', v)
   }
 
   watch(() => props.modelValue, (v) => { localValue.value = v; render() })

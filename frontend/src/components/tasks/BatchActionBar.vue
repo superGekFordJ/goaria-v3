@@ -51,7 +51,7 @@
 <template>
   <Transition name="slide-up">
     <div v-if="selectedCount > 0" class="batch-action-bar">
-      <LiquidGlassPanel radius="rounded-[var(--radius-squircle-xl)]">
+      <LiquidGlassPanel radius="rounded-[var(--radius-squircle-xl)]" :refraction="false">
         <div class="batch-action-bar-content">
           <!-- Selection Info -->
           <div class="batch-info">

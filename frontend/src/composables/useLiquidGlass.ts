@@ -113,7 +113,10 @@ interface GlassEntry {
   db: SVGFEDisplacementMapElement
   blur: SVGFEGaussianBlurElement
   sat: SVGFEColorMatrixElement
+  /** Geometry matching the currently bound map (attrs-safe). */
   geom: { w: number; h: number; bezel: number; radius: number; dpr: number }
+  /** Target of an in-flight blob rebuild; null when idle. */
+  pendingGeom: { w: number; h: number; bezel: number; radius: number; dpr: number } | null
   ro: ResizeObserver
   blobUrl: string | null
   mapGen: number
@@ -129,6 +132,7 @@ function ensureDefs(): SVGDefsElement {
   if (registry) {
     for (const stale of registry.values()) {
       stale.mapGen++
+      stale.pendingGeom = null
       if (stale.blobUrl) {
         URL.revokeObjectURL(stale.blobUrl)
         stale.blobUrl = null
@@ -148,6 +152,35 @@ function ensureDefs(): SVGDefsElement {
   return defs
 }
 
+function geomEquals(
+  a: { w: number; h: number; bezel: number; radius: number; dpr: number },
+  w: number,
+  h: number,
+  bezel: number,
+  radius: number,
+  dpr: number,
+): boolean {
+  return a.w === w && a.h === h && a.bezel === bezel && a.radius === radius && a.dpr === dpr
+}
+
+function applyGlassAttrs(
+  entry: GlassEntry,
+  params: GlassParams,
+  dispMul: number,
+  w: number,
+  h: number,
+) {
+  const minDim = Math.min(w, h)
+  const dispPx = Math.min(params.disp * dispMul, minDim * 0.35)
+  const diag = Math.sqrt((w * w + h * h) / 2)
+  const scale = (2 * dispPx) / diag
+  entry.dr.setAttribute('scale', (scale * (1 - params.ca)).toFixed(5))
+  entry.dg.setAttribute('scale', scale.toFixed(5))
+  entry.db.setAttribute('scale', (scale * (1 + params.ca)).toFixed(5))
+  entry.blur.setAttribute('stdDeviation', `${(params.blur / w).toFixed(5)} ${(params.blur / h).toFixed(5)}`)
+  entry.sat.setAttribute('values', params.sat.toFixed(2))
+}
+
 function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, bezelMul: number) {
   const rect = entry.layer.getBoundingClientRect()
   const w = Math.round(rect.width)
@@ -160,38 +193,40 @@ function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, be
   const bezel = Math.min(Math.max(2, params.bezel * bezelMul), minDim * 0.5)
   const dpr = Math.min(window.devicePixelRatio || 1, 2)
 
-  const g = entry.geom
-  if (g.w !== w || g.h !== h || g.bezel !== bezel || g.radius !== radius || g.dpr !== dpr) {
-    entry.geom = { w, h, bezel, radius, dpr }
-    entry.mapGen++
-    const gen = entry.mapGen
-    buildDisplacementMap(w, h, radius, bezel, dpr)
-      .then((url) => {
-        if (gen !== entry.mapGen || !registry?.has(entry.key)) {
-          URL.revokeObjectURL(url)
-          return
-        }
-        const prev = entry.blobUrl
-        entry.blobUrl = url
-        entry.map.setAttribute('href', url)
-        if (prev) URL.revokeObjectURL(prev)
-      })
-      .catch(() => {
-        // Reset geom so a later update can retry the same dimensions.
-        if (gen === entry.mapGen) {
-          entry.geom = { w: 0, h: 0, bezel: 0, radius: 0, dpr: 0 }
-        }
-      })
+  // Attrs are only safe when the bound map matches this geometry.
+  if (geomEquals(entry.geom, w, h, bezel, radius, dpr)) {
+    applyGlassAttrs(entry, params, dispMul, w, h)
+    return
   }
 
-  const dispPx = Math.min(params.disp * dispMul, minDim * 0.35)
-  const diag = Math.sqrt((w * w + h * h) / 2)
-  const scale = (2 * dispPx) / diag
-  entry.dr.setAttribute('scale', (scale * (1 - params.ca)).toFixed(5))
-  entry.dg.setAttribute('scale', scale.toFixed(5))
-  entry.db.setAttribute('scale', (scale * (1 + params.ca)).toFixed(5))
-  entry.blur.setAttribute('stdDeviation', `${(params.blur / w).toFixed(5)} ${(params.blur / h).toFixed(5)}`)
-  entry.sat.setAttribute('values', params.sat.toFixed(2))
+  // Same target already rebuilding — keep last coherent map+attrs.
+  if (entry.pendingGeom && geomEquals(entry.pendingGeom, w, h, bezel, radius, dpr)) {
+    return
+  }
+
+  const target = { w, h, bezel, radius, dpr }
+  entry.pendingGeom = target
+  entry.mapGen++
+  const gen = entry.mapGen
+  buildDisplacementMap(w, h, radius, bezel, dpr)
+    .then((url) => {
+      if (gen !== entry.mapGen || !registry?.has(entry.key)) {
+        URL.revokeObjectURL(url)
+        return
+      }
+      const prev = entry.blobUrl
+      entry.blobUrl = url
+      entry.geom = target
+      entry.pendingGeom = null
+      entry.map.setAttribute('href', url)
+      applyGlassAttrs(entry, params, dispMul, w, h)
+      if (prev) URL.revokeObjectURL(prev)
+    })
+    .catch(() => {
+      if (gen === entry.mapGen) {
+        entry.pendingGeom = null
+      }
+    })
 }
 
 /* ================= Composable ================= */
@@ -241,6 +276,7 @@ export function useLiquidGlass(
       blur: filter.querySelector('.f-blur') as unknown as SVGFEGaussianBlurElement,
       sat: filter.querySelector('.f-sat') as unknown as SVGFEColorMatrixElement,
       geom: { w: 0, h: 0, bezel: 0, radius: 0, dpr: 0 },
+      pendingGeom: null,
       ro: new ResizeObserver(() => {
         if (entry) updateGlass(entry, params, dispMul, bezelMul)
       }),
@@ -322,7 +358,7 @@ export function getStaticGlassFilterId(): string {
   filter.setAttribute('color-interpolation-filters', 'sRGB')
   filter.innerHTML = `
     <feImage x="0" y="0" width="1" height="1" result="map" preserveAspectRatio="none" class="f-static-map"/>
-    <feDisplacementMap in="SourceGraphic" in2="map" xChannelSelector="R" yChannelSelector="G" scale="0.01" result="dr"/>
+    <feDisplacementMap in="SourceGraphic" in2="map" xChannelSelector="R" yChannelSelector="G" scale="0" result="dr" class="f-static-disp"/>
     <feGaussianBlur in="dr" stdDeviation="0.004" result="soft"/>
     <feColorMatrix in="soft" type="saturate" values="1.08"/>
   `
@@ -339,13 +375,15 @@ export function getStaticGlassFilterId(): string {
         return
       }
       const mapEl = filter.querySelector('.f-static-map') as SVGFEImageElement | null
-      if (!mapEl) {
+      const dispEl = filter.querySelector('.f-static-disp') as SVGFEDisplacementMapElement | null
+      if (!mapEl || !dispEl) {
         URL.revokeObjectURL(url)
         return
       }
       const prev = staticBlobUrl
       staticBlobUrl = url
       mapEl.setAttribute('href', url)
+      dispEl.setAttribute('scale', '0.01')
       if (prev) URL.revokeObjectURL(prev)
     })
     .catch(() => {

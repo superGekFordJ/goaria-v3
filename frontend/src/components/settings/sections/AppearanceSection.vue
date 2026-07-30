@@ -52,6 +52,10 @@
   function onSliderUpdate(v: number) {
     uiStore.setEffectsLevel(v)
   }
+
+  function onSliderCommit(v: number) {
+    uiStore.commitEffectsLevel(v)
+  }
 </script>
 
 <template>
@@ -311,6 +315,7 @@
           :aria-label="t('appearance.advancedMaterialsTitle')"
           :aria-valuetext="tierLabel"
           @update:model-value="onSliderUpdate"
+          @change="onSliderCommit"
         />
       </div>
     </div>

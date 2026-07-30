@@ -19,6 +19,14 @@ export function levelToTier(level: number): EffectsTier {
 let systemThemeMedia: MediaQueryList | null = null
 let detachSystemThemeListener: (() => void) | null = null
 
+const EFFECTS_PERSIST_DEBOUNCE_MS = 400
+let effectsPersistTimer: ReturnType<typeof setTimeout> | null = null
+let effectsUnloadBound = false
+
+function clampEffectsLevel(level: number): number {
+  return Math.max(0, Math.min(100, Math.round(level)))
+}
+
 export const useUIStore = defineStore(
   'ui',
   () => {
@@ -29,7 +37,10 @@ export const useUIStore = defineStore(
     const themeMode = ref<ThemeMode>('system')
     const skinId = ref<SkinId>(DEFAULT_SKIN_ID)
     const density = ref<Density>('comfortable')
+    // Live visual level — drives CSS every tick; not in persist.pick.
     const effectsLevel = ref<number>(50)
+    // Committed mirror — pinia persist only watches this (debounce / pointer-up / unload).
+    const effectsLevelPersisted = ref<number>(50)
     const pendingPasteUri = ref('')
     const pendingPasteUris = ref<string[]>([])
 
@@ -122,10 +133,44 @@ export const useUIStore = defineStore(
 
     const effectsTier = computed<EffectsTier>(() => levelToTier(effectsLevel.value))
 
+    function flushEffectsLevelPersist() {
+      if (effectsPersistTimer) {
+        clearTimeout(effectsPersistTimer)
+        effectsPersistTimer = null
+      }
+      const clamped = clampEffectsLevel(effectsLevel.value)
+      if (effectsLevelPersisted.value !== clamped) {
+        effectsLevelPersisted.value = clamped
+      }
+    }
+
+    function scheduleEffectsLevelPersist() {
+      if (effectsPersistTimer) clearTimeout(effectsPersistTimer)
+      effectsPersistTimer = setTimeout(() => {
+        effectsPersistTimer = null
+        flushEffectsLevelPersist()
+      }, EFFECTS_PERSIST_DEBOUNCE_MS)
+    }
+
     function setEffectsLevel(level: number) {
-      const clamped = Math.max(0, Math.min(100, Math.round(level)))
-      effectsLevel.value = clamped
+      effectsLevel.value = clampEffectsLevel(level)
       applyEffects()
+      scheduleEffectsLevelPersist()
+    }
+
+    function commitEffectsLevel(level?: number) {
+      if (level !== undefined) {
+        effectsLevel.value = clampEffectsLevel(level)
+        applyEffects()
+      }
+      flushEffectsLevelPersist()
+    }
+
+    function bindEffectsPersistFlush() {
+      if (effectsUnloadBound || typeof window === 'undefined') return
+      effectsUnloadBound = true
+      window.addEventListener('beforeunload', flushEffectsLevelPersist)
+      window.addEventListener('pagehide', flushEffectsLevelPersist)
     }
 
     function applyTheme() {
@@ -195,23 +240,45 @@ export const useUIStore = defineStore(
      * Should be called in App.vue onMounted
      */
     function normalizeEffectsLevel() {
-      // Check for legacy persisted `effects: 'full'|'reduced'` and migrate
       try {
         const raw = localStorage.getItem('ui')
         if (raw) {
           const parsed = JSON.parse(raw) as Record<string, unknown>
           const old = parsed.effects
           if (typeof old === 'string') {
-            effectsLevel.value = old === 'full' ? 100 : old === 'reduced' ? 0 : 50
+            const migrated = old === 'full' ? 100 : old === 'reduced' ? 0 : 50
+            effectsLevel.value = migrated
+            effectsLevelPersisted.value = migrated
+            return
+          }
+          const committed = parsed.effectsLevelPersisted
+          if (typeof committed === 'number' && !Number.isNaN(committed)) {
+            const level = clampEffectsLevel(committed)
+            effectsLevel.value = level
+            effectsLevelPersisted.value = level
+            return
+          }
+          // Pre-split persist wrote live `effectsLevel` into the ui blob.
+          const legacyLive = parsed.effectsLevel
+          if (typeof legacyLive === 'number' && !Number.isNaN(legacyLive)) {
+            const level = clampEffectsLevel(legacyLive)
+            effectsLevel.value = level
+            effectsLevelPersisted.value = level
             return
           }
         }
       } catch {
         // ignore parse errors
       }
-      if (typeof effectsLevel.value !== 'number' || Number.isNaN(effectsLevel.value)) {
-        effectsLevel.value = 50
+      if (
+        typeof effectsLevelPersisted.value === 'number' &&
+        !Number.isNaN(effectsLevelPersisted.value)
+      ) {
+        effectsLevel.value = clampEffectsLevel(effectsLevelPersisted.value)
+        return
       }
+      effectsLevel.value = 50
+      effectsLevelPersisted.value = 50
     }
 
     function initTheme() {
@@ -219,6 +286,7 @@ export const useUIStore = defineStore(
       // Defensive: normalise persisted skinId in case it was set to an unknown value
       skinId.value = normaliseSkinId(skinId.value)
       normalizeEffectsLevel()
+      bindEffectsPersistFlush()
       applyTheme()
       applySkin()
       applyDensity()
@@ -233,6 +301,7 @@ export const useUIStore = defineStore(
       skinId,
       density,
       effectsLevel,
+      effectsLevelPersisted,
       effectsTier,
       pendingPasteUri,
       pendingPasteUris,
@@ -250,6 +319,7 @@ export const useUIStore = defineStore(
       setSkin,
       setDensity,
       setEffectsLevel,
+      commitEffectsLevel,
       initTheme,
       // Locale
       locale,
@@ -266,7 +336,7 @@ export const useUIStore = defineStore(
         'themeMode',
         'skinId',
         'density',
-        'effectsLevel',
+        'effectsLevelPersisted',
       ],
     },
   },
