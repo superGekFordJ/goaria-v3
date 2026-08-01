@@ -48,11 +48,9 @@ func (a *App) cancelWindowReclaim() {
 }
 
 // runWindowReclaim gates on headless (window nil) then runs reclaim off windowMu.
+// Do not clear reclaimTimer here: a stale AfterFunc (Stop returned false) must not
+// wipe a newer timer armed by a later scheduleWindowReclaim.
 func (a *App) runWindowReclaim() {
-	a.reclaimMu.Lock()
-	a.reclaimTimer = nil
-	a.reclaimMu.Unlock()
-
 	if !windowReclaimHeadless(a) {
 		return
 	}

@@ -173,8 +173,32 @@ func TestWindowReclaim_DestroyWindowSchedulesOnlyOnSuccess(t *testing.T) {
 	}
 }
 
+// Stale AfterFunc (Stop returned false) must not nil a newer timer, or cancel silently fails.
+func TestWindowReclaim_StaleCallbackDoesNotOrphanNewerTimer(t *testing.T) {
+	restoreWindowReclaimDefaults(t)
+	windowReclaimEnabled = func() bool { return true }
+	windowReclaimDelay = 40 * time.Millisecond
+	windowReclaimHeadless = func(*App) bool { return true }
+
+	var count atomic.Int32
+	windowReclaimFn = func() { count.Add(1) }
+
+	a := &App{}
+	a.scheduleWindowReclaim() // newer timer armed
+
+	// Simulate a previous timer's callback still running after reschedule.
+	a.runWindowReclaim()
+	waitReclaimCount(t, &count, 1, 200*time.Millisecond)
+
+	a.cancelWindowReclaim()
+	time.Sleep(100 * time.Millisecond)
+	if got := count.Load(); got != 1 {
+		t.Fatalf("stale callback orphaned newer timer: reclaim count=%d, want 1", got)
+	}
+}
+
 func TestWindowReclaim_DefaultFnNoPanic(t *testing.T) {
 	restoreWindowReclaimDefaults(t)
-	// Smoke: real GC pair must not panic and does not clear caches.
+	// Smoke: real GC pair must not panic.
 	windowReclaimFn()
 }
