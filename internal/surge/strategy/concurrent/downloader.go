@@ -82,11 +82,13 @@ type workerSession struct {
 // FORK-PATCH: workerDeps bundles worker dependencies for atomic access via ScaleWorkers
 type workerDeps struct {
 	ctx       context.Context
+	cancel    context.CancelFunc
 	mirrors   []string
 	file      *os.File
 	queue     *TaskQueue
 	totalSize int64
 	client    *http.Client
+	errs      chan<- error
 }
 
 // FORK-PATCH: runtime override of the relative slow-worker threshold.
@@ -732,20 +734,22 @@ func (d *ConcurrentDownloader) runHealthMonitor(ctx context.Context) {
 }
 
 func (d *ConcurrentDownloader) executeWorkers(ctx context.Context, cancel context.CancelFunc, client *http.Client, outFile *os.File, queue *TaskQueue, fileSize int64, workerMirrors []string, numConns int) error {
+	workerErrors := make(chan error, numConns)
+
 	// FORK-PATCH: Atomically store worker deps for ScaleWorkers
 	deps := &workerDeps{
 		ctx:       ctx,
+		cancel:    cancel,
 		mirrors:   workerMirrors,
 		file:      outFile,
 		queue:     queue,
 		totalSize: fileSize,
 		client:    client,
+		errs:      workerErrors,
 	}
 	d.workerDepsPtr.Store(deps)
 	d.workersActive.Store(true)
 	d.totalWorkers.Store(int64(numConns)) // FORK-PATCH: track actual worker count for completion monitor
-
-	workerErrors := make(chan error, numConns)
 
 	// Start workers
 	for i := 0; i < numConns; i++ {
@@ -850,7 +854,20 @@ func (d *ConcurrentDownloader) ScaleWorkers(delta int) int {
 				defer d.workerWg.Done()
 				defer d.totalWorkers.Add(-1) // FORK-PATCH: track actual worker count for completion monitor
 				if err := d.worker(deps.ctx, workerID, deps.mirrors, deps.file, deps.queue, deps.totalSize, deps.client); err != nil && !errors.Is(err, context.Canceled) {
-					utils.Debug("Scaled worker %d error: %v", workerID, err)
+					// Forward non-ctx errors like initial workers. Cancel first,
+					// then non-blocking send so a full buffer cannot deadlock
+					// workerWg.Wait vs channel close.
+					if deps.cancel != nil {
+						deps.cancel()
+					}
+					if deps.errs != nil {
+						select {
+						case deps.errs <- err:
+						default:
+						}
+					} else {
+						utils.Debug("Scaled worker %d error: %v", workerID, err)
+					}
 				}
 			}(id)
 		}

@@ -255,8 +255,12 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			if d.State != nil && isConnLimitError(lastErr) {
 				d.State.IncrConnErrors()
 			}
-			// FORK-PATCH: requeue residual from activeTask StopAt/CurrentOffset;
-			// continue outer loop — do not escalate chunk failure to whole download.
+			// FORK-PATCH: requeue residual from activeTask StopAt/CurrentOffset.
+			// Transient/unknown: continue outer loop (do not escalate). Permanent
+			// HTTP: residual requeue (originalEnd clamp) THEN return lastErr —
+			// sole carve-out so sticky 4xx ends the download after MaxTaskRetries
+			// burn (GoAria typically len(mirrors)==1; burn gives transient 403 a
+			// backoff-clear chance). Push before return keeps pause race safe.
 			if remaining := activeTask.RemainingTask(); remaining != nil {
 				originalEnd := task.Offset + task.Length
 				if remaining.Offset+remaining.Length > originalEnd {
@@ -267,6 +271,9 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 				}
 			}
 			utils.Debug("Worker %d: task at offset %d failed after %d retries: %v", id, task.Offset, maxRetries, lastErr)
+			if errors.Is(lastErr, types.ErrPermanentHTTP) {
+				return lastErr
+			}
 		}
 	}
 }
@@ -364,6 +371,11 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 		// FORK-PATCH: Poison defense — track 4xx/5xx for hedge disabling.
 		if resp.StatusCode >= 400 {
 			d.recordHedgeError()
+		}
+		// Permanent 4xx (≠429) wrap after poison record so scheduler #541 can
+		// skip whole-download retries once the worker escalates.
+		if types.IsPermanentHTTPStatus(resp.StatusCode) {
+			return fmt.Errorf("unexpected status: %d: %w", resp.StatusCode, types.ErrPermanentHTTP)
 		}
 		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
