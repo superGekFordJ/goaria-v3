@@ -43,6 +43,10 @@ type App struct {
 	lastToggleTime time.Time  // 上次切换窗口时间，用于全局防抖
 	isToggling     bool       // 防止重入标志
 
+	// Windows tray reclaim: debounced GC after successful DestroyWindow
+	reclaimMu    sync.Mutex
+	reclaimTimer *time.Timer
+
 	downloadEngine  rpc.DownloadEngine
 	extensionServer *extension.Server
 }

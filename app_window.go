@@ -18,6 +18,9 @@ func (a *App) CreateWindow() {
 	a.windowMu.Lock()
 	defer a.windowMu.Unlock()
 
+	// Cancel pending Windows tray reclaim before Show or create.
+	a.cancelWindowReclaim()
+
 	if a.window != nil {
 		// 窗口已存在，直接显示
 		a.window.Show()
@@ -97,6 +100,9 @@ func (a *App) DestroyWindow() {
 
 	// 更新状态
 	monitor.State.SetWindowExists(false)
+
+	// Optional Windows reclaim: 2s debounce after successful destroy.
+	a.scheduleWindowReclaim()
 
 	log.Println("[App] Window destroyed - entering headless mode")
 }
