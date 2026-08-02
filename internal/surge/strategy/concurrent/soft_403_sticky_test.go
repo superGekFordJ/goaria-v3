@@ -292,8 +292,9 @@ func TestSoft403_StickyAll403_EscalatesAfterBudget(t *testing.T) {
 		t.Fatalf("want IsPermanentHTTPError, got: %v", err)
 	}
 	n := requests.Load()
-	if n < 2 {
-		t.Fatalf("expected multiple burns before escalate, got %d", n)
+	// limit=2, MaxTaskRetries=2, 1 worker → minimum 2*2=4 requests before escalate.
+	if n < 4 {
+		t.Fatalf("expected at least limit*MaxTaskRetries=%d requests before escalate, got %d", 2*2, n)
 	}
 	if n > 32 {
 		t.Fatalf("request count %d looks like unbounded churn", n)
@@ -474,5 +475,124 @@ func TestSoft403_Hard401_DownloadTaskImmediate(t *testing.T) {
 	err = d.downloadTask(context.Background(), server.URL, f, active, make([]byte, 32*1024), &http.Client{}, 1024)
 	if !types.IsPermanentHTTPError(err) {
 		t.Fatalf("401 must be immediate permanent, got: %v", err)
+	}
+}
+
+// TestSoft403_HealthCancel_DoesNotIncrementSticky verifies that a health-cancelled
+// 403 attempt does not increment the sticky counter. The first request returns 403
+// (setting LastHTTPStatus); the second holds until the task is externally cancelled
+// via activeTask.Cancel (simulating health-check cancellation). The health-cancel
+// block sets lastErr=nil before the post-exhaustion block, so the counter stays 0.
+func TestSoft403_HealthCancel_DoesNotIncrementSticky(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	prev := soft403StickyExhaustions
+	soft403StickyExhaustions = 1
+	t.Cleanup(func() { soft403StickyExhaustions = prev })
+
+	fileSize := int64(32 * utils.KiB)
+	blob := make([]byte, fileSize)
+	for i := range blob {
+		blob[i] = byte(i)
+	}
+
+	var requests atomic.Int64
+	secondStarted := make(chan struct{})
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := requests.Add(1)
+		if n == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if n == 2 {
+			close(secondStarted)
+			<-r.Context().Done()
+			return
+		}
+		serveRange206(w, r, blob)
+	}))
+	defer server.Close()
+
+	destPath := filepath.Join(tmpDir, "hc403.bin")
+	if f, err := os.Create(destPath + types.IncompleteSuffix); err == nil {
+		_ = f.Close()
+	}
+
+	state := progress.New("hc403", fileSize)
+	d := NewConcurrentDownloader("hc403", nil, state, &types.RuntimeConfig{
+		MaxConnectionsPerDownload: 1,
+		MaxTaskRetries:            3,
+		Workers:                   1,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Cancel the active task once the second request reaches the handler,
+	// simulating a health-check cancel while LastHTTPStatus is still 403
+	// from the first attempt.
+	go func() {
+		<-secondStarted
+		d.activeMu.Lock()
+		for _, at := range d.activeTasks {
+			if at.Cancel != nil {
+				at.Cancel()
+			}
+		}
+		d.activeMu.Unlock()
+	}()
+
+	err := downloadWithTimeout(t, d, ctx, server.URL, destPath, fileSize, nil, 30*time.Second)
+	if err != nil {
+		t.Fatalf("download should complete after health-cancel + 206: %v", err)
+	}
+	if got := d.soft403NoProgressExhaustions.Load(); got != 0 {
+		t.Fatalf("sticky counter = %d, want 0 (health-cancel must not increment)", got)
+	}
+}
+
+// TestSoft403_DownloadEntry_ResetsStickyCounter verifies that Download entry
+// resets the sticky counter to 0. A 404 (hard permanent) does not increment the
+// counter, so any non-zero value after Download proves the entry reset was skipped.
+func TestSoft403_DownloadEntry_ResetsStickyCounter(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(16 * utils.KiB)
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	destPath := filepath.Join(tmpDir, "entry_reset.bin")
+	if f, err := os.Create(destPath + types.IncompleteSuffix); err == nil {
+		_ = f.Close()
+	}
+
+	state := progress.New("entry-reset", fileSize)
+	d := NewConcurrentDownloader("entry-reset", nil, state, &types.RuntimeConfig{
+		MaxConnectionsPerDownload: 1,
+		MaxTaskRetries:            1,
+		Workers:                   1,
+	})
+
+	// Pre-warm the counter to a non-zero value (simulating prior sticky pressure).
+	d.soft403NoProgressExhaustions.Store(5)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err := downloadWithTimeout(t, d, ctx, server.URL, destPath, fileSize, nil, 15*time.Second)
+	if err == nil {
+		t.Fatal("expected permanent error from 404")
+	}
+	if !types.IsPermanentHTTPError(err) {
+		t.Fatalf("expected IsPermanentHTTPError, got: %v", err)
+	}
+	// 404 is hard permanent — it returns before the 403 sticky check, so the
+	// counter must be 0 (reset at Download entry, not incremented by 404).
+	if got := d.soft403NoProgressExhaustions.Load(); got != 0 {
+		t.Fatalf("sticky counter = %d after Download, want 0 (entry reset)", got)
 	}
 }

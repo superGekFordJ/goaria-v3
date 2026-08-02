@@ -124,7 +124,9 @@ func TestSticky403_NoChurn(t *testing.T) {
 	if n < 1 {
 		t.Fatalf("expected at least one request, got %d", n)
 	}
-	if n > 64 {
+	// 3 exhaustions × 3 retries × 2 workers = 18 theoretical max; allow headroom
+	// for requeue races and balancer splits without masking unbounded churn.
+	if n > 30 {
 		t.Fatalf("request count %d looks like residual churn (want bounded)", n)
 	}
 }
