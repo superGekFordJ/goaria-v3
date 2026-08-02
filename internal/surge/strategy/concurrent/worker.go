@@ -256,11 +256,11 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 				d.State.IncrConnErrors()
 			}
 			// FORK-PATCH: requeue residual from activeTask StopAt/CurrentOffset.
-			// Transient/unknown: continue outer loop (do not escalate). Permanent
-			// HTTP: residual requeue (originalEnd clamp) THEN return lastErr —
-			// sole carve-out so sticky 4xx ends the download after MaxTaskRetries
-			// burn (GoAria typically len(mirrors)==1; burn gives transient 403 a
-			// backoff-clear chance). Push before return keeps pause race safe.
+			// Transient/unknown: continue outer loop (do not escalate). Hard
+			// permanent HTTP: residual requeue (originalEnd clamp) THEN return
+			// lastErr. Soft-403: count consecutive no-206 exhaustions; escalate
+			// via wrap+B1 only after soft403StickyExhaustions. Push before
+			// return keeps pause race safe.
 			if remaining := activeTask.RemainingTask(); remaining != nil {
 				originalEnd := task.Offset + task.Length
 				if remaining.Offset+remaining.Length > originalEnd {
@@ -273,6 +273,12 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			utils.Debug("Worker %d: task at offset %d failed after %d retries: %v", id, task.Offset, maxRetries, lastErr)
 			if errors.Is(lastErr, types.ErrPermanentHTTP) {
 				return lastErr
+			}
+			if activeTask.LastHTTPStatus.Load() == http.StatusForbidden {
+				n := d.soft403NoProgressExhaustions.Add(1)
+				if int(n) >= soft403StickyExhaustions {
+					return fmt.Errorf("unexpected status: 403: %w", types.ErrPermanentHTTP)
+				}
 			}
 		}
 	}
@@ -373,8 +379,10 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 			d.recordHedgeError()
 		}
 		// Permanent 4xx (≠429) wrap after poison record so scheduler #541 can
-		// skip whole-download retries once the worker escalates.
-		if types.IsPermanentHTTPStatus(resp.StatusCode) {
+		// skip whole-download retries once the worker escalates. Mid-chunk 403
+		// is concurrent-local transient (CDN soft throttle); sticky budget
+		// escalates after Soft403StickyExhaustions residual burns.
+		if types.IsPermanentHTTPStatus(resp.StatusCode) && resp.StatusCode != http.StatusForbidden {
 			return fmt.Errorf("unexpected status: %d: %w", resp.StatusCode, types.ErrPermanentHTTP)
 		}
 		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
@@ -382,6 +390,8 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 
 	// FORK-PATCH: Reset hedge poison counter on valid response.
 	d.recordHedgeSuccess()
+	// FORK-PATCH: intervening 206 clears soft-403 sticky pressure.
+	d.soft403NoProgressExhaustions.Store(0)
 
 	// FORK-PATCH: send FirstByte once — first non-hedged 206 only.
 	if !d.isResume.Load() && activeTask.Hedged.Load() == 0 {

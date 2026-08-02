@@ -25,7 +25,7 @@ func TestPermanentStatus_DownloadTaskMatrix(t *testing.T) {
 		permanent bool
 	}{
 		{"401", http.StatusUnauthorized, true},
-		{"403", http.StatusForbidden, true},
+		{"403", http.StatusForbidden, false},
 		{"404", http.StatusNotFound, true},
 		{"410", http.StatusGone, true},
 		{"416", http.StatusRequestedRangeNotSatisfiable, true},
@@ -84,6 +84,10 @@ func TestSticky403_NoChurn(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
+	prev := soft403StickyExhaustions
+	soft403StickyExhaustions = 3
+	t.Cleanup(func() { soft403StickyExhaustions = prev })
+
 	fileSize := int64(64 * utils.KiB)
 	var requests atomic.Int64
 	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -104,19 +108,19 @@ func TestSticky403_NoChurn(t *testing.T) {
 		Workers:                   2,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	err := downloadWithTimeout(t, d, ctx, server.URL, destPath, fileSize, nil, 6*time.Second)
+	err := downloadWithTimeout(t, d, ctx, server.URL, destPath, fileSize, nil, 35*time.Second)
 	if err == nil {
-		t.Fatal("expected permanent HTTP error")
+		t.Fatal("expected permanent HTTP error after soft-403 sticky budget")
 	}
 	if !types.IsPermanentHTTPError(err) {
 		t.Fatalf("expected IsPermanentHTTPError, got: %v", err)
 	}
 
 	n := requests.Load()
-	// Burn MaxTaskRetries(=3) per chunk across a few workers — bounded, not unbounded churn.
+	// Budget=3 exhaustions × MaxTaskRetries(=3) across workers — bounded, not unbounded churn.
 	if n < 1 {
 		t.Fatalf("expected at least one request, got %d", n)
 	}
@@ -172,13 +176,14 @@ func TestMirrors_403_Failover(t *testing.T) {
 
 // TestPermanentHTTP_B1_RequeueThenReturn asserts residual Push still runs on the
 // permanent path before return (ordering unit test; not full Pause integration).
+// Uses 404 (hard permanent) — mid-chunk 403 is soft until sticky budget.
 func TestPermanentHTTP_B1_RequeueThenReturn(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
 	fileSize := int64(32 * utils.KiB)
 	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
 
@@ -223,7 +228,7 @@ func TestScaleWorkers_PermanentForward(t *testing.T) {
 
 	fileSize := int64(16 * utils.KiB)
 	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
 

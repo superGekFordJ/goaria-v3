@@ -65,6 +65,11 @@ type ConcurrentDownloader struct {
 	consecutiveHedgeErrors atomic.Int32
 	hedgeDisabled          atomic.Bool
 
+	// FORK-PATCH: consecutive soft-403 MaxTaskRetries exhaustions without an
+	// intervening 206. Mid-chunk 403 stays transient; sticky budget then
+	// escalates via ErrPermanentHTTP + B1 (SPEC-256 amend).
+	soft403NoProgressExhaustions atomic.Int32
+
 	// FORK-PATCH: TTFB one-shot guard — only the first non-hedged 206 sends FirstByte.
 	ttfbSent atomic.Bool
 	// FORK-PATCH: resume flag — suppresses FirstByte on resume (setupTasks wiring later).
@@ -72,6 +77,13 @@ type ConcurrentDownloader struct {
 
 	hostLimiter *transport.HostRateLimiter
 }
+
+// Soft403StickyExhaustions is the max consecutive soft-403 post-exhaustion
+// cycles without an intervening 206 before escalating to ErrPermanentHTTP.
+const Soft403StickyExhaustions = 16
+
+// soft403StickyExhaustions is the live limit (tests may lower temporarily).
+var soft403StickyExhaustions = Soft403StickyExhaustions
 
 // FORK-PATCH: per-worker (connection) session, survives across chunks.
 type workerSession struct {
@@ -318,6 +330,9 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 	if d.hostLimiter == nil {
 		d.hostLimiter = transport.DefaultHostRateLimiter
 	}
+
+	// FORK-PATCH: soft-403 sticky budget is per-Download, not cross-resume.
+	d.soft403NoProgressExhaustions.Store(0)
 
 	d.initMirrorStatus(rawurl, candidateMirrors, activeMirrors, destPath)
 
