@@ -170,7 +170,15 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			// Disk-full / quota: fail immediately — no in-place retry, no mirror
 			// rotate, no residual Push. Must run before health-cancel swallow so
 			// a cancel race cannot clear and requeue a disk-space error.
+			// Drop activeTasks + ActiveWorkers here (like the post-loop path)
+			// without releaseActiveOnCancel — that helper would Push remaining.
 			if types.IsInsufficientDiskSpace(lastErr) {
+				d.activeMu.Lock()
+				delete(d.activeTasks, id)
+				d.activeMu.Unlock()
+				if d.State != nil {
+					d.State.ActiveWorkers.Add(-1)
+				}
 				return lastErr
 			}
 

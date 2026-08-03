@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"goaria-v3/internal/surge/progress"
 	"goaria-v3/internal/surge/testutil"
 	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/surge/utils"
@@ -43,7 +44,8 @@ func TestENOSPC_NoInPlaceRetryNoResidualPush(t *testing.T) {
 	}
 	defer func() { _ = f.Close() }()
 
-	d := NewConcurrentDownloader("enospc-worker", nil, nil, &types.RuntimeConfig{
+	state := progress.New("enospc-worker", fileSize)
+	d := NewConcurrentDownloader("enospc-worker", nil, state, &types.RuntimeConfig{
 		MaxTaskRetries:   3,
 		WorkerBufferSize: 32 * utils.KiB,
 	})
@@ -63,6 +65,15 @@ func TestENOSPC_NoInPlaceRetryNoResidualPush(t *testing.T) {
 	}
 	if queue.Len() != 0 {
 		t.Fatalf("expected no residual Push on disk-space path, queue len=%d", queue.Len())
+	}
+	d.activeMu.Lock()
+	activeLeft := len(d.activeTasks)
+	d.activeMu.Unlock()
+	if activeLeft != 0 {
+		t.Fatalf("activeTasks len=%d after ENOSPC return, want 0 (no zombie map entry)", activeLeft)
+	}
+	if got := state.ActiveWorkers.Load(); got != 0 {
+		t.Fatalf("ActiveWorkers=%d after ENOSPC return, want 0", got)
 	}
 	queue.Close()
 }
@@ -93,7 +104,8 @@ func TestENOSPC_DownloadEndsImmediately(t *testing.T) {
 		_ = f.Close()
 	}
 
-	d := NewConcurrentDownloader("enospc-dl", nil, nil, &types.RuntimeConfig{
+	state := progress.New("enospc-dl", fileSize)
+	d := NewConcurrentDownloader("enospc-dl", nil, state, &types.RuntimeConfig{
 		MaxConnectionsPerDownload: 2,
 		MaxTaskRetries:            3,
 		Workers:                   2,
@@ -113,5 +125,14 @@ func TestENOSPC_DownloadEndsImmediately(t *testing.T) {
 	// Bounded: workers may race a write each, but must not burn MaxTaskRetries×workers.
 	if n := writeAttempts.Load(); n > 4 {
 		t.Fatalf("write attempts = %d, want ≤4 (no retry storm)", n)
+	}
+	d.activeMu.Lock()
+	activeLeft := len(d.activeTasks)
+	d.activeMu.Unlock()
+	if activeLeft != 0 {
+		t.Fatalf("activeTasks len=%d after Download ENOSPC, want 0", activeLeft)
+	}
+	if got := state.ActiveWorkers.Load(); got != 0 {
+		t.Fatalf("ActiveWorkers=%d after Download ENOSPC, want 0", got)
 	}
 }
