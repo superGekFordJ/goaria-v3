@@ -5,6 +5,7 @@
   import { useUIStore } from '../../stores/ui'
   import { useDownloadGroupStore } from '../../stores/downloadGroups'
   import { isValidUrl, isDuplicateUri } from '../../utils/url'
+  import { isInsufficientDiskSpaceMessage } from '../../utils/diskSpaceError'
   import { buildBatchGroupResultHints, type TaskGroupHint } from '../../stores/task/grouping'
   import { Link, Plus, Loader2, ChevronUp, Layers3 } from '@lucide/vue'
   import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
@@ -38,6 +39,7 @@
     succeeded: number
     duplicates: number
     errors: number
+    diskErrors: number
     groupHints: TaskGroupHint[]
   } | null>(null)
   const BATCH_AUTO_FOLDER_THRESHOLD = 5
@@ -166,6 +168,11 @@
         setTimeout(() => {
           errorMessage.value = ''
         }, 3000)
+      } else if (isInsufficientDiskSpaceMessage(res)) {
+        errorMessage.value = t('taskHeader.insufficientDiskSpace')
+        setTimeout(() => {
+          errorMessage.value = ''
+        }, 3000)
       } else {
         errorMessage.value = `${t('taskHeader.addFailed')}: ${res}`
         setTimeout(() => {
@@ -192,19 +199,23 @@
       const res = await taskStore.batchAddUri(urls)
       const succeeded = res.succeeded?.length || 0
       const duplicates = res.duplicates?.length || 0
-      const errors = Object.keys(res.errors || {}).length
+      const errorMap = res.errors || {}
+      const errorKeys = Object.keys(errorMap)
+      const errors = errorKeys.length
+      const diskErrors = errorKeys.filter(key =>
+        isInsufficientDiskSpaceMessage(errorMap[key]),
+      ).length
 
       const groupHints = buildBatchGroupResultHints(res.groups)
       // Redundant placeholder registration is now handled inside taskStore.batchAddUri before fetchTasks
       // downloadGroupStore.addPlaceholdersFromDownloadGroups(res.groups, 'batch-add')
       void downloadGroupStore.fetchGroups()
 
-      batchResult.value = { succeeded, duplicates, errors, groupHints }
+      batchResult.value = { succeeded, duplicates, errors, diskErrors, groupHints }
 
       if (errors > 0) {
         // Keep only failed URLs in textarea
-        const failedUrls = Object.keys(res.errors || {})
-        textareaValue.value = failedUrls.join('\n')
+        textareaValue.value = errorKeys.join('\n')
       } else {
         // All succeeded or duplicated — collapse
         textareaValue.value = ''
@@ -365,8 +376,27 @@
           <span v-if="batchResult.duplicates > 0" class="text-amber-400 dark:text-amber-400">
             {{ t('taskHeader.batchDuplicates', { count: batchResult.duplicates }) }}
           </span>
-          <span v-if="batchResult.errors > 0" class="text-[var(--status-error)]">
+          <span
+            v-if="batchResult.diskErrors > 0"
+            class="text-[var(--status-error)]"
+          >
+            {{ t('taskHeader.insufficientDiskSpaceBatch', { count: batchResult.diskErrors }) }}
+          </span>
+          <span
+            v-else-if="batchResult.errors > 0"
+            class="text-[var(--status-error)]"
+          >
             {{ t('taskHeader.batchErrors', { count: batchResult.errors }) }}
+          </span>
+          <span
+            v-if="batchResult.errors > batchResult.diskErrors && batchResult.diskErrors > 0"
+            class="text-[var(--status-error)]"
+          >
+            {{
+              t('taskHeader.batchErrors', {
+                count: batchResult.errors - batchResult.diskErrors,
+              })
+            }}
           </span>
           <span
             v-if="primaryBatchGroupHint"

@@ -11,6 +11,7 @@
     SURGE_TASK_PROGRESS_CONFIG,
     useSmoothProgress,
   } from '../../composables/useSmoothProgress'
+  import { isInsufficientDiskSpaceFailure } from '../../utils/diskSpaceError'
 
   const { t } = useI18n()
 
@@ -145,7 +146,9 @@
       case 'error':
         return {
           dotClass: 'status-error',
-          label: t('taskCard.error'),
+          label: isInsufficientDiskSpaceFailure(props.task.errorCode, props.task.errorMessage)
+            ? t('taskCard.insufficientDiskSpace')
+            : t('taskCard.error'),
           labelClass: 'text-red-400',
           showProgress: false,
         }
