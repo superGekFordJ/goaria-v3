@@ -293,6 +293,19 @@ func LoadStates(ids []string) (map[string]*types.DownloadRecord, error) {
 	return states, errors.Join(errs...)
 }
 
+// DeleteDetail removes only the detail gob for id (master list untouched).
+// Used when abandoning a concurrent zero-progress session before single-threaded
+// fallback so Resume cannot reload range Tasks that Truncate discarded.
+func DeleteDetail(id string) error {
+	masterMu.Lock()
+	defer masterMu.Unlock()
+
+	if err := utils.RemoveFile(getDetailPath(baseDir, id)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove detail state: %w", err)
+	}
+	return nil
+}
+
 func DeleteState(id string) error {
 	masterMu.Lock()
 	defer masterMu.Unlock()

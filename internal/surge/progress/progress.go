@@ -266,10 +266,11 @@ func (ps *DownloadProgress) SessionReset() {
 	ps.Bitmap.Reset()
 
 	ps.mu.Lock()
-	defer ps.mu.Unlock()
+	ps.pendingResumeState = nil
 	for i := range ps.mirrors {
 		ps.mirrors[i].Error = false
 	}
+	ps.mu.Unlock()
 
 	// FORK-PATCH: Clear per-worker telemetry on session reset
 	ps.workerStatsMu.Lock()

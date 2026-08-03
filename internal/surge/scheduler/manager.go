@@ -12,6 +12,7 @@ import (
 
 	"goaria-v3/internal/surge/probe"
 	"goaria-v3/internal/surge/progress"
+	"goaria-v3/internal/surge/store"
 	"goaria-v3/internal/surge/strategy/concurrent"
 	"goaria-v3/internal/surge/strategy/single"
 	"goaria-v3/internal/surge/types"
@@ -28,6 +29,21 @@ func shouldFallbackToSingle(downloadErr error, downloaded int64) bool {
 		!errors.Is(downloadErr, context.DeadlineExceeded) &&
 		!types.IsInsufficientDiskSpace(downloadErr) &&
 		downloaded == 0
+}
+
+// abandonConcurrentResumeForSingleFallback clears in-memory pending resume
+// snapshot (via SessionReset) and deletes the detail gob so Truncate+single
+// cannot later re-SaveState abandoned concurrent range Tasks.
+func abandonConcurrentResumeForSingleFallback(progState *progress.DownloadProgress, downloadID string) {
+	if progState != nil {
+		progState.SessionReset()
+	}
+	if downloadID == "" {
+		return
+	}
+	if err := store.DeleteDetail(downloadID); err != nil {
+		utils.Debug("Failed to invalidate concurrent detail on single fallback: %v", err)
+	}
 }
 
 // safeSendProgress sends msg on ch, recovering from panics caused by sending
@@ -260,10 +276,10 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 			utils.Debug("Concurrent download failed: %v - falling back to single-threaded", downloadErr)
 			useConcurrent = false // Trigger sequential block below
 
-			// Reset progress state cleanly for single-stream restart from byte 0
-			if progState != nil {
-				progState.SessionReset()
-			}
+			// Abandon concurrent resume metadata before Truncate+single:
+			// Layer1 SaveState may have just written range Tasks at Downloaded==0,
+			// and pendingResumeState would otherwise leak onto a later EventError.
+			abandonConcurrentResumeForSingleFallback(progState, cfg.ID)
 
 			// Truncate the working file to zero to prevent stale tail bytes
 			// from the failed concurrent session.

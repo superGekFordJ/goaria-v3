@@ -319,6 +319,10 @@ func TestDownloadProgress_SessionReset(t *testing.T) {
 	ps.ActiveWorkers.Store(8)
 	ps.RateLimited.Store(true)
 	ps.InitBitmap(1000, 100)
+	ps.SetPendingResumeState(&types.DownloadRecord{
+		ID:    "test-reset",
+		Tasks: []types.Task{{Offset: 0, Length: 1000}},
+	})
 
 	// Simulate some activity
 	ps.UpdateChunkStatus(0, 100, types.ChunkCompleted)
@@ -345,6 +349,9 @@ func TestDownloadProgress_SessionReset(t *testing.T) {
 	}
 	if ps.RateLimited.Load() {
 		t.Error("RateLimited should be false after reset")
+	}
+	if ps.TakePendingResumeState() != nil {
+		t.Error("pendingResumeState should be cleared by SessionReset")
 	}
 
 	// Verify bitmap was cleared
