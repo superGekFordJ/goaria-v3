@@ -1,0 +1,203 @@
+package orchestrator
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"goaria-v3/internal/surge/scheduler"
+	"goaria-v3/internal/surge/types"
+)
+
+func TestEnqueue_DiskPrecheckReject(t *testing.T) {
+	orig := freeDiskBytes
+	t.Cleanup(func() { freeDiskBytes = orig })
+	freeDiskBytes = func(string) (int64, error) {
+		return types.DiskSpaceSafetyBuffer, nil
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	progressCh := make(chan types.DownloadEvent, 10)
+	pool := scheduler.New(progressCh, 1)
+	eb := NewEventBus()
+	mgr := NewLifecycleManager(pool, eb, nil)
+	defer mgr.Shutdown()
+
+	destDir := t.TempDir()
+	req := &DownloadRequest{
+		URL:      ts.URL + "/big.bin",
+		Filename: "big.bin",
+		Path:     destDir,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, _, err := mgr.Enqueue(ctx, req)
+	if !errors.Is(err, types.ErrInsufficientDiskSpace) {
+		t.Fatalf("Enqueue error = %v, want ErrInsufficientDiskSpace", err)
+	}
+
+	surgePath := filepath.Join(destDir, "big.bin") + types.IncompleteSuffix
+	if _, err := os.Stat(surgePath); !os.IsNotExist(err) {
+		t.Fatalf("expected no .surge working file at %s, stat err=%v", surgePath, err)
+	}
+	entries, err := os.ReadDir(destDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected empty dest dir after reject, got %d entries", len(entries))
+	}
+}
+
+func TestEnqueue_DiskPrecheckAllow(t *testing.T) {
+	orig := freeDiskBytes
+	t.Cleanup(func() { freeDiskBytes = orig })
+	freeDiskBytes = func(string) (int64, error) {
+		return types.DiskSpaceSafetyBuffer + 10*1024*1024, nil
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	progressCh := make(chan types.DownloadEvent, 10)
+	pool := scheduler.New(progressCh, 1)
+	eb := NewEventBus()
+	mgr := NewLifecycleManager(pool, eb, nil)
+	defer mgr.Shutdown()
+
+	destDir := t.TempDir()
+	req := &DownloadRequest{
+		URL:      ts.URL + "/ok.bin",
+		Filename: "ok.bin",
+		Path:     destDir,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	id, finalName, err := mgr.Enqueue(ctx, req)
+	if err != nil {
+		t.Fatalf("Enqueue failed: %v", err)
+	}
+	if id == "" {
+		t.Fatal("expected non-empty ID")
+	}
+	if finalName != "ok.bin" {
+		t.Fatalf("expected ok.bin, got %s", finalName)
+	}
+
+	surgePath := filepath.Join(destDir, finalName) + types.IncompleteSuffix
+	if _, err := os.Stat(surgePath); err != nil {
+		t.Fatalf("expected working file at %s: %v", surgePath, err)
+	}
+}
+
+func TestEnqueue_DiskPrecheckSkipUnknownSize(t *testing.T) {
+	orig := freeDiskBytes
+	t.Cleanup(func() { freeDiskBytes = orig })
+	called := false
+	freeDiskBytes = func(string) (int64, error) {
+		called = true
+		return 0, nil
+	}
+
+	// No Content-Length → probe FileSize 0 / unknown → skip precheck.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	progressCh := make(chan types.DownloadEvent, 10)
+	pool := scheduler.New(progressCh, 1)
+	eb := NewEventBus()
+	mgr := NewLifecycleManager(pool, eb, nil)
+	defer mgr.Shutdown()
+
+	destDir := t.TempDir()
+	req := &DownloadRequest{
+		URL:      ts.URL + "/unknown.bin",
+		Filename: "unknown.bin",
+		Path:     destDir,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, _, err := mgr.Enqueue(ctx, req)
+	if errors.Is(err, types.ErrInsufficientDiskSpace) {
+		t.Fatal("unknown size must not return ErrInsufficientDiskSpace")
+	}
+	if err != nil {
+		t.Fatalf("Enqueue failed: %v", err)
+	}
+	if called {
+		t.Fatal("freeDiskBytes should not be called when FileSize is unknown")
+	}
+
+	surgePath := filepath.Join(destDir, "unknown.bin") + types.IncompleteSuffix
+	if _, err := os.Stat(surgePath); err != nil {
+		t.Fatalf("expected working file at %s: %v", surgePath, err)
+	}
+}
+
+func TestEnqueue_DiskPrecheckFailOpen(t *testing.T) {
+	orig := freeDiskBytes
+	t.Cleanup(func() { freeDiskBytes = orig })
+	freeDiskBytes = func(string) (int64, error) {
+		return 0, fmt.Errorf("statfs simulated failure")
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	progressCh := make(chan types.DownloadEvent, 10)
+	pool := scheduler.New(progressCh, 1)
+	eb := NewEventBus()
+	mgr := NewLifecycleManager(pool, eb, nil)
+	defer mgr.Shutdown()
+
+	destDir := t.TempDir()
+	req := &DownloadRequest{
+		URL:      ts.URL + "/failopen.bin",
+		Filename: "failopen.bin",
+		Path:     destDir,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, _, err := mgr.Enqueue(ctx, req)
+	if errors.Is(err, types.ErrInsufficientDiskSpace) {
+		t.Fatal("query error must fail-open, not return ErrInsufficientDiskSpace")
+	}
+	if err != nil {
+		t.Fatalf("Enqueue failed: %v", err)
+	}
+
+	surgePath := filepath.Join(destDir, "failopen.bin") + types.IncompleteSuffix
+	if _, err := os.Stat(surgePath); err != nil {
+		t.Fatalf("expected working file at %s: %v", surgePath, err)
+	}
+}

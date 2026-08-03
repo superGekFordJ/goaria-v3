@@ -55,6 +55,10 @@ const (
 
 var reserveWorkingFile = precreateWorkingFile
 
+// freeDiskBytes is injectable so enqueue precheck tests can simulate tight disks
+// without manufacturing a full volume.
+var freeDiskBytes = types.FreeDiskBytes
+
 func precreateWorkingFile(destPath, filename string) error {
 	if err := os.MkdirAll(destPath, 0o755); err != nil {
 		return fmt.Errorf("failed to create destination directory: %w", err)
@@ -286,6 +290,19 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 		)
 		if err != nil {
 			return "", "", fmt.Errorf("failed to resolve destination: %w", err)
+		}
+
+		// Known-size disk precheck before reservation so a reject leaves no
+		// exclusive .surge orphan. Resume / ResumeBatch bypass enqueueResolved
+		// by design and rely on the write-path disk sentinel + error SaveState.
+		if probeResult != nil && probeResult.FileSize > 0 {
+			free, freeErr := freeDiskBytes(finalPath)
+			if freeErr != nil {
+				utils.Debug("Lifecycle: free-space query failed for %s: %v (fail-open)\n", finalPath, freeErr)
+			} else if !types.HasSufficientDiskSpace(probeResult.FileSize, free) {
+				utils.Debug("Lifecycle: insufficient disk for %s (size=%d free=%d)\n", finalPath, probeResult.FileSize, free)
+				return "", "", types.ErrInsufficientDiskSpace
+			}
 		}
 
 		// Reserve the working path before dispatch so a concurrent enqueue has to
