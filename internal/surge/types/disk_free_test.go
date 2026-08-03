@@ -1,6 +1,7 @@
 package types
 
 import (
+	"math"
 	"testing"
 )
 
@@ -54,5 +55,32 @@ func TestFreeDiskBytes_NonexistentAncestor(t *testing.T) {
 	}
 	if free < 0 {
 		t.Fatalf("FreeDiskBytes returned negative: %d", free)
+	}
+}
+
+func TestClampFreeBytesProduct(t *testing.T) {
+	tests := []struct {
+		name      string
+		blocks    uint64
+		blockSize uint64
+		want      int64
+	}{
+		{name: "zero blocks", blocks: 0, blockSize: 4096, want: 0},
+		{name: "zero block size", blocks: 100, blockSize: 0, want: 0},
+		{name: "normal", blocks: 1000, blockSize: 4096, want: 1000 * 4096},
+		{name: "exact MaxInt64", blocks: 1, blockSize: math.MaxInt64, want: math.MaxInt64},
+		{name: "overflow clamps", blocks: math.MaxInt64/2 + 1, blockSize: 3, want: math.MaxInt64},
+		{name: "huge inputs clamp", blocks: math.MaxUint64, blockSize: math.MaxUint64, want: math.MaxInt64},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := clampFreeBytesProduct(tt.blocks, tt.blockSize)
+			if got != tt.want {
+				t.Fatalf("clampFreeBytesProduct(%d, %d) = %d, want %d", tt.blocks, tt.blockSize, got, tt.want)
+			}
+			if got < 0 {
+				t.Fatalf("clampFreeBytesProduct returned negative: %d", got)
+			}
+		})
 	}
 }

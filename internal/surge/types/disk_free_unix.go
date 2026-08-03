@@ -10,5 +10,7 @@ func freeDiskBytesAt(path string) (int64, error) {
 		return 0, err
 	}
 	// Bavail is free blocks available to an unprivileged writer.
-	return int64(st.Bavail) * int64(st.Bsize), nil
+	// Clamp like Windows GetDiskFreeSpaceEx so a pathological Statfs report
+	// cannot wrap negative and fail-closed at enqueue.
+	return clampFreeBytesProduct(uint64(st.Bavail), uint64(st.Bsize)), nil
 }
