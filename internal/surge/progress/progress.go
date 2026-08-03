@@ -45,6 +45,10 @@ type DownloadProgress struct {
 	rateLimit    int64
 	rateLimitSet bool
 
+	// pendingResumeState holds a pause-grade snapshot stashed by concurrent
+	// error-path save so the scheduler can attach it to EventError.State.
+	pendingResumeState *types.DownloadRecord
+
 	// FORK-PATCH: Per-worker telemetry storage
 	workerStatsMu sync.RWMutex
 	workerStats   []types.WorkerSnapshot
@@ -150,6 +154,30 @@ func (ps *DownloadProgress) GetError() error {
 		return *e
 	}
 	return nil
+}
+
+// SetPendingResumeState stashes a pause-grade DownloadRecord for the scheduler
+// to attach onto EventError. Nil-safe; overwrites any prior pending snapshot.
+func (ps *DownloadProgress) SetPendingResumeState(s *types.DownloadRecord) {
+	if ps == nil {
+		return
+	}
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	ps.pendingResumeState = s
+}
+
+// TakePendingResumeState returns and clears the pending resume snapshot.
+// Nil-safe; a second Take returns nil.
+func (ps *DownloadProgress) TakePendingResumeState() *types.DownloadRecord {
+	if ps == nil {
+		return nil
+	}
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	s := ps.pendingResumeState
+	ps.pendingResumeState = nil
+	return s
 }
 
 func (ps *DownloadProgress) GetProgress() (downloaded int64, total int64, totalElapsed time.Duration, sessionElapsed time.Duration, connections int32, sessionStartBytes int64) {

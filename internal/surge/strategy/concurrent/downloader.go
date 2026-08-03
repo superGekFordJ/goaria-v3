@@ -421,6 +421,14 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 	}
 
 	if downloadErr != nil {
+		// Persist pause-grade progress so whole-download retries and a later
+		// EventError→Resume can continue from remaining Tasks (not byte 0).
+		// Skip cancel/deadline to match scheduler isCancel (no EventError).
+		if d.State != nil &&
+			!errors.Is(downloadErr, context.Canceled) &&
+			!errors.Is(downloadErr, context.DeadlineExceeded) {
+			_ = d.saveStateSnapshot(destPath, fileSize, queue, candidateMirrors, false)
+		}
 		return downloadErr
 	}
 	if downloadCtx.Err() != nil {
@@ -1000,6 +1008,14 @@ func mergeOverlappingTasks(tasks []types.Task) []types.Task {
 }
 
 func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queue *TaskQueue, candidateMirrors []string) error {
+	return d.saveStateSnapshot(destPath, fileSize, queue, candidateMirrors, true)
+}
+
+// saveStateSnapshot builds a pause-grade DownloadRecord from active tasks +
+// queue remaining work. emitPauseEvent=true mirrors historical handlePause
+// (EventPaused + ErrPaused). emitPauseEvent=false best-effort persists via
+// SaveStateWithOptions and stashes the record for EventError.State.
+func (d *ConcurrentDownloader) saveStateSnapshot(destPath string, fileSize int64, queue *TaskQueue, candidateMirrors []string, emitPauseEvent bool) error {
 	// 1. Collect active RemainingTask copies, then drain the queue (active-first).
 	// Same-pointer prefer is max-Offset (order-independent); active-first
 	// collect is retained for remaining visibility when the map is non-empty.
@@ -1098,23 +1114,36 @@ func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queu
 		Workers:         workers,
 		MinChunkSize:    minChunkSize,
 	}
-	if d.ProgressChan != nil {
-		d.ProgressChan <- types.DownloadEvent{
-			Type:         types.EventPaused,
-			DownloadID:   d.ID,
-			Filename:     filepath.Base(destPath),
-			Downloaded:   computedDownloaded,
-			State:        s,
-			RateLimit:    rateLimit,
-			RateLimitSet: rateLimitSet,
-			Workers:      workers,
-			MinChunkSize: minChunkSize,
+
+	if emitPauseEvent {
+		if d.ProgressChan != nil {
+			d.ProgressChan <- types.DownloadEvent{
+				Type:         types.EventPaused,
+				DownloadID:   d.ID,
+				Filename:     filepath.Base(destPath),
+				Downloaded:   computedDownloaded,
+				State:        s,
+				RateLimit:    rateLimit,
+				RateLimitSet: rateLimitSet,
+				Workers:      workers,
+				MinChunkSize: minChunkSize,
+			}
 		}
+
+		utils.Debug("Download paused, state saved (Downloaded=%d, RemainingTasks=%d, RemainingBytes=%d)",
+			computedDownloaded, len(remainingTasks), remainingBytes)
+		return types.ErrPaused
 	}
 
-	utils.Debug("Download paused, state saved (Downloaded=%d, RemainingTasks=%d, RemainingBytes=%d)",
-		computedDownloaded, len(remainingTasks), remainingBytes)
-	return types.ErrPaused
+	// Error / retry path: stash for EventError + best-effort direct persist.
+	// Do not set Pausing/Paused — scheduler isPaused must stay false.
+	d.State.SetPendingResumeState(s)
+	if saveErr := store.SaveStateWithOptions(d.URL, destPath, s, store.SaveStateOptions{SkipFileHash: true}); saveErr != nil {
+		utils.Debug("Failed to save state snapshot: %v", saveErr)
+	} else {
+		utils.Debug("Saved progress state snapshot (Downloaded=%d, RemainingTasks=%d)", s.Downloaded, len(s.Tasks))
+	}
+	return nil
 }
 
 func (d *ConcurrentDownloader) syncFile(outFile *os.File) error {

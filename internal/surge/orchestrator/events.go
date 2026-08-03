@@ -347,7 +347,77 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 
 		case types.EventError:
 			existing, _ := store.GetDownload(m.DownloadID)
-			if existing != nil {
+			if m.State != nil {
+				stateSnapshot := m.State
+				snapshot := *stateSnapshot
+				destPath := stateSnapshot.DestPath
+				url := stateSnapshot.URL
+				if existing != nil {
+					if destPath == "" {
+						destPath = existing.DestPath
+					}
+					if url == "" {
+						url = existing.URL
+					}
+				}
+				if destPath == "" {
+					destPath = m.DestPath
+				}
+
+				entry := types.DownloadRecord{
+					ID:           m.DownloadID,
+					Status:       "error",
+					Downloaded:   snapshot.Downloaded,
+					DestPath:     destPath,
+					Filename:     m.Filename,
+					TotalSize:    snapshot.TotalSize,
+					TimeTaken:    snapshot.Elapsed / int64(time.Millisecond),
+					Workers:      snapshot.Workers,
+					MinChunkSize: snapshot.MinChunkSize,
+					RateLimit:    snapshot.RateLimit,
+					RateLimitSet: snapshot.RateLimitSet,
+				}
+				if existing != nil {
+					entry.URL = existing.URL
+					entry.URLHash = existing.URLHash
+					entry.Mirrors = append([]string(nil), existing.Mirrors...)
+					if entry.Filename == "" {
+						entry.Filename = existing.Filename
+					}
+					if entry.TotalSize == 0 {
+						entry.TotalSize = existing.TotalSize
+					}
+					if entry.Downloaded == 0 && existing.Downloaded > 0 {
+						entry.Downloaded = existing.Downloaded
+					}
+					if entry.Workers == 0 {
+						entry.Workers = existing.Workers
+					}
+					if entry.MinChunkSize == 0 {
+						entry.MinChunkSize = existing.MinChunkSize
+					}
+					if !entry.RateLimitSet && existing.RateLimitSet {
+						entry.RateLimit = existing.RateLimit
+						entry.RateLimitSet = existing.RateLimitSet
+					}
+				} else if url != "" {
+					entry.URL = url
+					entry.URLHash = store.URLHash(url)
+				}
+				if err := store.AddToMasterList(entry); err != nil {
+					utils.Debug("Lifecycle: Failed to persist error state: %v", err)
+				}
+
+				if destPath != "" && url != "" {
+					if err := store.SaveStateWithOptions(url, destPath, &snapshot, store.SaveStateOptions{
+						SkipFileHash: true,
+					}); err != nil {
+						utils.Debug("Lifecycle: Failed to save error state: %v", err)
+					}
+				} else {
+					utils.Debug("Lifecycle: Skipping SaveState on error for %s: destPath=%q url=%q", m.DownloadID, destPath, url)
+				}
+			} else if existing != nil {
 				existing.Status = "error"
 				if err := store.AddToMasterList(*existing); err != nil {
 					utils.Debug("Lifecycle: Failed to persist error state: %v", err)

@@ -495,3 +495,23 @@ func TestRecalculateProgress_BitmapTrust_PreventsOvershootOnReDownload(t *testin
 		t.Errorf("VerifiedProgress = %d overshoots TotalSize = %d", vp, totalSize)
 	}
 }
+
+func TestPendingResumeState_SetTakeClear(t *testing.T) {
+	var nilPS *DownloadProgress
+	if nilPS.TakePendingResumeState() != nil {
+		t.Fatal("nil Take should return nil")
+	}
+	nilPS.SetPendingResumeState(&types.DownloadRecord{ID: "x"}) // must not panic
+
+	ps := New("pending", 1000)
+	rec := &types.DownloadRecord{ID: "pending", Downloaded: 400, Tasks: []types.Task{{Offset: 400, Length: 600}}}
+	ps.SetPendingResumeState(rec)
+
+	got := ps.TakePendingResumeState()
+	if got == nil || got.Downloaded != 400 || len(got.Tasks) != 1 {
+		t.Fatalf("Take = %+v, want snapshot with Downloaded=400 and 1 task", got)
+	}
+	if second := ps.TakePendingResumeState(); second != nil {
+		t.Fatalf("second Take = %+v, want nil", second)
+	}
+}

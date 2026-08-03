@@ -838,6 +838,14 @@ func (p *Scheduler) worker() {
 					DestPath:   finalDestPath,
 					Err:        err,
 				}
+				if localCfg.ProgressState != nil {
+					if pending := progress.CfgProgress(&localCfg).TakePendingResumeState(); pending != nil {
+						errEvent.State = pending
+						if pending.Downloaded > 0 {
+							errEvent.Downloaded = pending.Downloaded
+						}
+					}
+				}
 			}
 
 			if !isCancel && localCfg.ProgressState != nil {
