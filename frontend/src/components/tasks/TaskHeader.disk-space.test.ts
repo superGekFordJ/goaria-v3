@@ -111,4 +111,38 @@ describe('TaskHeader insufficient disk space', () => {
     expect(wrapper.text()).toContain('taskHeader.batchSucceeded {"count":1}')
     wrapper.unmount()
   })
+
+  it('shows batch disk and generic error counts for mixed failures', async () => {
+    storeMocks.taskStore.batchAddUri.mockResolvedValue({
+      succeeded: ['https://example.invalid/ok.bin'],
+      duplicates: [],
+      errors: {
+        'https://example.invalid/fail-disk.bin': 'insufficient disk space',
+        'https://example.invalid/fail-other.bin': 'network timeout',
+      },
+    })
+    const wrapper = mountHeader()
+
+    await pasteMultiline(
+      wrapper,
+      [
+        'https://example.invalid/ok.bin',
+        'https://example.invalid/fail-disk.bin',
+        'https://example.invalid/fail-other.bin',
+      ].join('\n'),
+    )
+    await wrapper.findAll('button')[1].trigger('click')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('taskHeader.insufficientDiskSpaceBatch {"count":1}')
+    expect(wrapper.text()).toContain('taskHeader.batchErrors {"count":1}')
+    expect(wrapper.text()).toContain('taskHeader.batchSucceeded {"count":1}')
+    expect((wrapper.find('textarea').element as HTMLTextAreaElement).value).toContain(
+      'https://example.invalid/fail-disk.bin',
+    )
+    expect((wrapper.find('textarea').element as HTMLTextAreaElement).value).toContain(
+      'https://example.invalid/fail-other.bin',
+    )
+    wrapper.unmount()
+  })
 })

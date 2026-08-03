@@ -46,14 +46,35 @@ describe('TaskCard insufficient disk space', () => {
     vi.clearAllMocks()
   })
 
-  it('shows disk-space label when errorCode is 9', () => {
+  it('shows disk-space label when errorCode is 9', async () => {
     const wrapper = mount(TaskCard, {
       props: { task: mockTask() },
     })
 
     expect(wrapper.text()).toContain('taskCard.insufficientDiskSpace')
     expect(wrapper.text()).not.toContain('taskCard.error')
-    expect(wrapper.findAll('button')).toHaveLength(3)
+    const buttons = wrapper.findAll('button')
+    expect(buttons).toHaveLength(3)
+
+    await buttons[0].trigger('click')
+    expect(storeMocks.taskStore.resume).toHaveBeenCalledWith('sg_disk')
+    await buttons[1].trigger('click')
+    expect(storeMocks.taskStore.openTaskFolder).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('shows disk-space label from message when errorCode is empty', () => {
+    const wrapper = mount(TaskCard, {
+      props: {
+        task: mockTask({
+          errorCode: '',
+          errorMessage: 'write failed: insufficient disk space',
+        }),
+      },
+    })
+
+    expect(wrapper.text()).toContain('taskCard.insufficientDiskSpace')
+    expect(wrapper.text()).not.toContain('taskCard.error')
     wrapper.unmount()
   })
 
