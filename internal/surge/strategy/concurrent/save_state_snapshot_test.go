@@ -139,9 +139,8 @@ func TestSaveStateSnapshot_ErrorPath_DownloadPersistsRemainingTasks(t *testing.T
 	defer cleanup()
 
 	fileSize := int64(64 * utils.KiB)
-	// Hard-permanent 404: worker burns retries then residual-Pushes before return,
-	// so Download's emit=false snapshot still sees remaining Tasks (unlike ENOSPC
-	// which intentionally skips residual Push).
+	// Hard-permanent 404: worker burns retries then residual-Pushes before return.
+	// ENOSPC coverage is in enospc_test.go (off-queue abandonedRemaining, no live Push).
 	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))

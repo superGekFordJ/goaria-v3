@@ -31,15 +31,19 @@ type ConcurrentDownloader struct {
 	State        *progress.DownloadProgress // Shared state for TUI polling
 	activeTasks  map[int]*ActiveTask
 	activeMu     sync.Mutex
-	URL          string // For pause/resume
-	DestPath     string // For pause/resume
-	Runtime      *types.RuntimeConfig
-	Limiter      types.ByteLimiter
-	RateLimitBps int64
-	RateLimitSet bool
-	TotalSize    int64
-	bufPool      *TieredBufferPool // FORK-PATCH: tiered buffer pool with cap filter
-	Headers      map[string]string // Custom HTTP headers from browser (cookies, auth, etc.)
+	// abandonedRemaining holds ENOSPC in-flight residuals captured off the
+	// live queue (no Push during the storm window). saveStateSnapshot unions
+	// these with active+queue drains so Resume does not lose the failing range.
+	abandonedRemaining []types.Task
+	URL                string // For pause/resume
+	DestPath           string // For pause/resume
+	Runtime            *types.RuntimeConfig
+	Limiter            types.ByteLimiter
+	RateLimitBps       int64
+	RateLimitSet       bool
+	TotalSize          int64
+	bufPool            *TieredBufferPool // FORK-PATCH: tiered buffer pool with cap filter
+	Headers            map[string]string // Custom HTTP headers from browser (cookies, auth, etc.)
 
 	// FORK-PATCH: Drain/scale infrastructure
 	nextWorkerID    atomic.Int64               // dynamic worker ID allocation
@@ -1016,7 +1020,8 @@ func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queu
 // (EventPaused + ErrPaused). emitPauseEvent=false best-effort persists via
 // SaveStateWithOptions and stashes the record for EventError.State.
 func (d *ConcurrentDownloader) saveStateSnapshot(destPath string, fileSize int64, queue *TaskQueue, candidateMirrors []string, emitPauseEvent bool) error {
-	// 1. Collect active RemainingTask copies, then drain the queue (active-first).
+	// 1. Collect active RemainingTask copies, drain abandoned ENOSPC stash
+	// (off-queue residuals), then drain the live queue (active-first).
 	// Same-pointer prefer is max-Offset (order-independent); active-first
 	// collect is retained for remaining visibility when the map is non-empty.
 	var activeRemaining []types.Task
@@ -1026,9 +1031,11 @@ func (d *ConcurrentDownloader) saveStateSnapshot(destPath string, fileSize int64
 			activeRemaining = append(activeRemaining, *remaining)
 		}
 	}
+	abandoned := d.abandonedRemaining
+	d.abandonedRemaining = nil
 	d.activeMu.Unlock()
 
-	allTasks := append(append([]types.Task(nil), activeRemaining...), queue.DrainRemaining()...)
+	allTasks := append(append(append([]types.Task(nil), activeRemaining...), abandoned...), queue.DrainRemaining()...)
 
 	// FORK-PATCH: #568 max-Offset same SharedMaxOffset pointer, then
 	// merge-by-union for general range overlap/adjacency (SPEC-200). Prefer
