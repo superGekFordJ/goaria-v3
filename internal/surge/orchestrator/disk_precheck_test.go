@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"goaria-v3/internal/surge/progress"
 	"goaria-v3/internal/surge/scheduler"
 	"goaria-v3/internal/surge/types"
 )
@@ -199,5 +200,40 @@ func TestEnqueue_DiskPrecheckFailOpen(t *testing.T) {
 	surgePath := filepath.Join(destDir, "failopen.bin") + types.IncompleteSuffix
 	if _, err := os.Stat(surgePath); err != nil {
 		t.Fatalf("expected working file at %s: %v", surgePath, err)
+	}
+}
+
+func TestResume_BypassesDiskPrecheck(t *testing.T) {
+	orig := freeDiskBytes
+	t.Cleanup(func() { freeDiskBytes = orig })
+	called := false
+	freeDiskBytes = func(string) (int64, error) {
+		called = true
+		return 0, nil
+	}
+
+	state := progress.New("resume-disk", 1000)
+	state.Pause()
+
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
+		"resume-disk": {
+			ID:            "resume-disk",
+			Filename:      "resume.bin",
+			ProgressState: state,
+			URL:           "http://example.com/resume",
+			DestPath:      filepath.Join(t.TempDir(), "resume.bin"),
+			TotalSize:     10 * 1024 * 1024 * 1024,
+		},
+	})
+
+	eb := NewEventBus()
+	mgr := NewLifecycleManager(pool, eb, nil)
+	defer mgr.Shutdown()
+
+	if err := mgr.Resume("resume-disk"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if called {
+		t.Fatal("Resume must not call freeDiskBytes; it bypasses enqueueResolved")
 	}
 }

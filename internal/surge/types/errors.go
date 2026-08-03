@@ -26,9 +26,12 @@ var (
 	// that makes retrying pointless (e.g. 403 Forbidden, 404 Not Found, 401 Unauthorized).
 	ErrPermanentHTTP = errors.New("permanent HTTP error")
 
-	// ErrInsufficientDiskSpace indicates a write/preallocate failed because the
-	// volume is full or the process quota is exhausted (ENOSPC / EDQUOT /
-	// ERROR_DISK_FULL). Retrying and Truncate fallbacks must not run.
+	// ErrInsufficientDiskSpace indicates the destination volume cannot hold
+	// the download (or the process quota is exhausted). First-class producers:
+	// enqueue precheck returns this bare sentinel when FileSize is known and
+	// free space is insufficient; write/preallocate paths annotate the same
+	// sentinel on ENOSPC / EDQUOT / ERROR_DISK_FULL / ERROR_DISK_QUOTA_EXCEEDED.
+	// Retrying and Truncate fallbacks must not run when this sentinel matches.
 	ErrInsufficientDiskSpace = errors.New("insufficient disk space")
 )
 
