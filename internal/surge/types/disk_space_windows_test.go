@@ -17,3 +17,9 @@ func TestIsInsufficientDiskSpace_ERROR_DISK_FULL(t *testing.T) {
 		t.Fatal("bare ERROR_DISK_FULL should match")
 	}
 }
+
+func TestIsInsufficientDiskSpace_ERROR_DISK_QUOTA_EXCEEDED(t *testing.T) {
+	if !IsInsufficientDiskSpace(windows.ERROR_DISK_QUOTA_EXCEEDED) {
+		t.Fatal("bare ERROR_DISK_QUOTA_EXCEEDED should match (EDQUOT parity)")
+	}
+}
