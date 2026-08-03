@@ -419,7 +419,11 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			totalStr := strconv.FormatInt(completeTotal, 10)
 			Cache.PatchTaskProgress(gid, totalStr, "0", totalStr)
 		}
-		Cache.MoveTaskToStopped(gid, deltaType)
+		if deltaType == "error" && (errorCode != "" || errorMessage != "") {
+			Cache.MoveTaskToStoppedWithError(gid, deltaType, errorCode, errorMessage)
+		} else {
+			Cache.MoveTaskToStopped(gid, deltaType)
+		}
 		if State.HasWindow() {
 			if deltaType == "complete" && completeTotal > 0 {
 				totalStr := strconv.FormatInt(completeTotal, 10)

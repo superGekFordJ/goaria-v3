@@ -324,8 +324,6 @@ func (s *Service) addNormalizedInput(ctx context.Context, normalizedURL string, 
 		}
 		return
 	}
-	// Serial enqueue so each candidate sees free space after prior reservations
-	// (engine precheck soft-block). Concurrent submit races the cushion.
 	submitCandidatesSerially(s, ctx, candidates, batchState, historyDuplicates, authState, ledger)
 }
 
@@ -333,12 +331,6 @@ func submitCandidatesSerially(s *Service, ctx context.Context, candidates []addT
 	for _, candidate := range candidates {
 		s.submitAddCandidate(ctx, candidate, batchState, historyDuplicates, authState, ledger)
 	}
-}
-
-// submitCandidatesConcurrently remains as a thin serial alias for tests that
-// call it by name; soft-block requires ordered enqueue.
-func submitCandidatesConcurrently(s *Service, ctx context.Context, candidates []addTaskCandidate, batchState *addCandidateBatchState, historyDuplicates map[string]bool, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) {
-	submitCandidatesSerially(s, ctx, candidates, batchState, historyDuplicates, authState, ledger)
 }
 
 func (s *Service) submitAddCandidate(ctx context.Context, candidate addTaskCandidate, batchState *addCandidateBatchState, historyDuplicates map[string]bool, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) {

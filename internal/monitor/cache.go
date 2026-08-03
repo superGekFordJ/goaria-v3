@@ -294,6 +294,16 @@ func (c *TaskCache) PatchTaskProgress(gid, completedLength, downloadSpeed, total
 // so that GetStopped() returns the task immediately, before the next tick
 // populates it from the engine.
 func (c *TaskCache) MoveTaskToStopped(gid, status string) {
+	c.moveTaskToStopped(gid, status, "", "")
+}
+
+// MoveTaskToStoppedWithError is MoveTaskToStopped plus immediate ErrorCode /
+// ErrorMessage stamping for EventError paths (avoids empty codes until TellStopped).
+func (c *TaskCache) MoveTaskToStoppedWithError(gid, status, errorCode, errorMessage string) {
+	c.moveTaskToStopped(gid, status, errorCode, errorMessage)
+}
+
+func (c *TaskCache) moveTaskToStopped(gid, status, errorCode, errorMessage string) {
 	if enginePrefix(gid) == "sg" {
 		c.sgMu.Lock()
 		defer c.sgMu.Unlock()
@@ -302,6 +312,12 @@ func (c *TaskCache) MoveTaskToStopped(gid, status string) {
 				task := c.sgActive[i]
 				task.Status = status
 				task.DownloadSpeed = "0"
+				if errorCode != "" {
+					task.ErrorCode = errorCode
+				}
+				if errorMessage != "" {
+					task.ErrorMessage = errorMessage
+				}
 				c.sgStopped = append(c.sgStopped, task)
 				c.sgActive = append(c.sgActive[:i], c.sgActive[i+1:]...)
 				return
@@ -312,6 +328,12 @@ func (c *TaskCache) MoveTaskToStopped(gid, status string) {
 				task := c.sgWaiting[i]
 				task.Status = status
 				task.DownloadSpeed = "0"
+				if errorCode != "" {
+					task.ErrorCode = errorCode
+				}
+				if errorMessage != "" {
+					task.ErrorMessage = errorMessage
+				}
 				c.sgStopped = append(c.sgStopped, task)
 				c.sgWaiting = append(c.sgWaiting[:i], c.sgWaiting[i+1:]...)
 				return
@@ -326,6 +348,12 @@ func (c *TaskCache) MoveTaskToStopped(gid, status string) {
 			task := c.arActive[i]
 			task.Status = status
 			task.DownloadSpeed = "0"
+			if errorCode != "" {
+				task.ErrorCode = errorCode
+			}
+			if errorMessage != "" {
+				task.ErrorMessage = errorMessage
+			}
 			c.arStopped = append(c.arStopped, task)
 			c.arActive = append(c.arActive[:i], c.arActive[i+1:]...)
 			return
@@ -336,6 +364,12 @@ func (c *TaskCache) MoveTaskToStopped(gid, status string) {
 			task := c.arWaiting[i]
 			task.Status = status
 			task.DownloadSpeed = "0"
+			if errorCode != "" {
+				task.ErrorCode = errorCode
+			}
+			if errorMessage != "" {
+				task.ErrorMessage = errorMessage
+			}
 			c.arStopped = append(c.arStopped, task)
 			c.arWaiting = append(c.arWaiting[:i], c.arWaiting[i+1:]...)
 			return

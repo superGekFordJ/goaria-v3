@@ -577,6 +577,25 @@ func TestHandleSurgeEvent_ErrorEvent_DiskSpacePersistsErrorAndDelta(t *testing.T
 	if payload["errorMessage"] != surgeEvents.ErrInsufficientDiskSpace.Error() {
 		t.Fatalf("errorMessage = %q, want sentinel", payload["errorMessage"])
 	}
+
+	Cache.sgMu.RLock()
+	defer Cache.sgMu.RUnlock()
+	var stopped *rpc.Task
+	for i := range Cache.sgStopped {
+		if Cache.sgStopped[i].GID == "sg_disk-err" {
+			stopped = &Cache.sgStopped[i]
+			break
+		}
+	}
+	if stopped == nil {
+		t.Fatal("expected stopped cache task")
+	}
+	if stopped.ErrorCode != "9" {
+		t.Fatalf("stopped ErrorCode = %q, want 9", stopped.ErrorCode)
+	}
+	if stopped.ErrorMessage != surgeEvents.ErrInsufficientDiskSpace.Error() {
+		t.Fatalf("stopped ErrorMessage = %q, want sentinel", stopped.ErrorMessage)
+	}
 }
 
 // mockSurgeActiveEngine wraps Aria2Engine but reports IsSurgeActive()=true,
