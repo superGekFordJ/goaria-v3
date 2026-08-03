@@ -202,6 +202,7 @@ func (s *LocalDownloadService) GetStatus(id string) (*types.DownloadStatus, erro
 			AvgSpeed:     entry.AvgSpeed,
 			RateLimit:    entry.RateLimit,
 			RateLimitSet: entry.RateLimitSet,
+			Error:        entry.Error,
 		}
 		return &status, nil
 	}
@@ -428,6 +429,7 @@ func (s *LocalDownloadService) List() ([]types.DownloadStatus, error) {
 				AvgSpeed:     d.AvgSpeed,
 				RateLimit:    d.RateLimit,
 				RateLimitSet: d.RateLimitSet,
+				Error:        d.Error,
 			})
 		}
 	}

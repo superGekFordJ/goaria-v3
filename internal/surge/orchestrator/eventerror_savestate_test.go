@@ -65,6 +65,9 @@ func TestEventError_WithState_SaveStateAndStatusError(t *testing.T) {
 			if entry.Downloaded != 600 {
 				t.Fatalf("master Downloaded=%d, want 600", entry.Downloaded)
 			}
+			if entry.Error != "disk full" {
+				t.Fatalf("master Error=%q, want %q", entry.Error, "disk full")
+			}
 			break
 		}
 		if time.Now().After(deadline) {
@@ -118,6 +121,9 @@ func TestEventError_NilState_StatusErrorOnly(t *testing.T) {
 	for {
 		entry, err := store.GetDownload(id)
 		if err == nil && entry != nil && entry.Status == "error" {
+			if entry.Error != "boom" {
+				t.Fatalf("nil-State master Error=%q, want boom", entry.Error)
+			}
 			break
 		}
 		if time.Now().After(deadline) {

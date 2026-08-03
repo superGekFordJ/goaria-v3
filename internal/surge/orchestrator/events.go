@@ -384,6 +384,9 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					RateLimit:    snapshot.RateLimit,
 					RateLimitSet: snapshot.RateLimitSet,
 				}
+				if m.Err != nil {
+					entry.Error = m.Err.Error()
+				}
 				if existing != nil {
 					entry.URL = existing.URL
 					entry.URLHash = existing.URLHash
@@ -426,6 +429,9 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				}
 			} else if existing != nil {
 				existing.Status = "error"
+				if m.Err != nil {
+					existing.Error = m.Err.Error()
+				}
 				if err := store.AddToMasterList(*existing); err != nil {
 					utils.Debug("Lifecycle: Failed to persist error state: %v", err)
 				}
