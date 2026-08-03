@@ -57,7 +57,7 @@ var reserveWorkingFile = precreateWorkingFile
 
 // freeDiskBytes is injectable so enqueue precheck tests can simulate tight disks
 // without manufacturing a full volume.
-var freeDiskBytes = types.FreeDiskBytes
+var freeDiskBytes = utils.FreeDiskBytes
 
 func precreateWorkingFile(destPath, filename string) error {
 	if err := os.MkdirAll(destPath, 0o755); err != nil {
@@ -299,7 +299,7 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 			free, freeErr := freeDiskBytes(finalPath)
 			if freeErr != nil {
 				utils.Debug("Lifecycle: free-space query failed for %s: %v (fail-open)\n", finalPath, freeErr)
-			} else if !types.HasSufficientDiskSpace(probeResult.FileSize, free) {
+			} else if !utils.HasSufficientDiskSpace(probeResult.FileSize, free) {
 				utils.Debug("Lifecycle: insufficient disk for %s (size=%d free=%d)\n", finalPath, probeResult.FileSize, free)
 				return "", "", types.ErrInsufficientDiskSpace
 			}

@@ -1,6 +1,6 @@
 //go:build unix
 
-package types
+package utils
 
 import "syscall"
 

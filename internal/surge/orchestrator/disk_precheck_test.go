@@ -14,13 +14,14 @@ import (
 	"goaria-v3/internal/surge/progress"
 	"goaria-v3/internal/surge/scheduler"
 	"goaria-v3/internal/surge/types"
+	"goaria-v3/internal/surge/utils"
 )
 
 func TestEnqueue_DiskPrecheckReject(t *testing.T) {
 	orig := freeDiskBytes
 	t.Cleanup(func() { freeDiskBytes = orig })
 	freeDiskBytes = func(string) (int64, error) {
-		return types.DiskSpaceSafetyBuffer, nil
+		return utils.DiskSpaceSafetyBuffer, nil
 	}
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +69,7 @@ func TestEnqueue_DiskPrecheckAllow(t *testing.T) {
 	orig := freeDiskBytes
 	t.Cleanup(func() { freeDiskBytes = orig })
 	freeDiskBytes = func(string) (int64, error) {
-		return types.DiskSpaceSafetyBuffer + 10*1024*1024, nil
+		return utils.DiskSpaceSafetyBuffer + 10*1024*1024, nil
 	}
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

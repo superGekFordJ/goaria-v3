@@ -1,6 +1,6 @@
 //go:build windows
 
-package types
+package utils
 
 import (
 	"math"
