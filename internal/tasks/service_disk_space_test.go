@@ -15,22 +15,22 @@ import (
 	surgetypes "goaria-v3/internal/surge/types"
 )
 
-// diskSpaceStubEngine returns ErrInsufficientDiskSpace after N successful adds.
+// diskSpaceStubEngine rejects URLs in rejectURLs with ErrInsufficientDiskSpace;
+// all other URLs succeed. Behavior is URL-keyed so concurrent submit stays deterministic.
 type diskSpaceStubEngine struct {
-	mu           sync.Mutex
-	succeedFirst int
-	calls        []string
+	mu         sync.Mutex
+	rejectURLs map[string]struct{}
+	calls      []string
 }
 
 func (e *diskSpaceStubEngine) AddUri(url string, options rpc.AddURIOptions) (string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.calls = append(e.calls, url)
-	if e.succeedFirst > 0 {
-		e.succeedFirst--
-		return fmt.Sprintf("gid-%d", len(e.calls)), nil
+	if _, reject := e.rejectURLs[url]; reject {
+		return "", surgetypes.ErrInsufficientDiskSpace
 	}
-	return "", surgetypes.ErrInsufficientDiskSpace
+	return fmt.Sprintf("gid-%d", len(e.calls)), nil
 }
 
 func (e *diskSpaceStubEngine) Pause(string) error                  { return nil }
@@ -114,10 +114,10 @@ func TestRedactAddTaskError_InsufficientDiskSpace(t *testing.T) {
 }
 
 func TestBatchAddUri_DiskSpaceErrorRecorded(t *testing.T) {
-	stub := &diskSpaceStubEngine{succeedFirst: 0}
+	url := "https://example.com/too-big.bin"
+	stub := &diskSpaceStubEngine{rejectURLs: map[string]struct{}{url: {}}}
 	service := setupDiskSpaceAddService(t, stub)
 
-	url := "https://example.com/too-big.bin"
 	result := service.BatchAddUri([]string{url})
 
 	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{})
@@ -129,12 +129,12 @@ func TestBatchAddUri_DiskSpaceErrorRecorded(t *testing.T) {
 	}
 }
 
-func TestBatchAddUri_SerialSoftBlockPartialSuccess(t *testing.T) {
-	stub := &diskSpaceStubEngine{succeedFirst: 1}
-	service := setupDiskSpaceAddService(t, stub)
-
+func TestBatchAddUri_PartialDiskRejectKeepsSuccesses(t *testing.T) {
 	okURL := "https://example.com/ok.bin"
 	failURL := "https://example.com/fail.bin"
+	stub := &diskSpaceStubEngine{rejectURLs: map[string]struct{}{failURL: {}}}
+	service := setupDiskSpaceAddService(t, stub)
+
 	result := service.BatchAddUri([]string{okURL, failURL})
 
 	assertBatchAddStrings(t, "succeeded", result.Succeeded, []string{okURL})
@@ -145,15 +145,15 @@ func TestBatchAddUri_SerialSoftBlockPartialSuccess(t *testing.T) {
 		t.Fatalf("ok URL should not be in Errors: %#v", result.Errors)
 	}
 	if stub.callCount() != 2 {
-		t.Fatalf("AddUri calls = %d, want 2 (serial)", stub.callCount())
+		t.Fatalf("AddUri calls = %d, want 2", stub.callCount())
 	}
 }
 
 func TestAddUri_InsufficientDiskSpaceMessage(t *testing.T) {
-	stub := &diskSpaceStubEngine{succeedFirst: 0}
+	url := "https://example.com/huge.bin"
+	stub := &diskSpaceStubEngine{rejectURLs: map[string]struct{}{url: {}}}
 	service := setupDiskSpaceAddService(t, stub)
 
-	url := "https://example.com/huge.bin"
 	got := service.AddUri(url)
 	if got != surgetypes.ErrInsufficientDiskSpace.Error() {
 		t.Fatalf("AddUri() = %q, want sentinel", got)

@@ -599,7 +599,7 @@ func TestDownloadGroupPathSafetyCollisionAndInvalidBase(t *testing.T) {
 	}
 }
 
-func TestSubmitCandidatesSerially_DedupRaceOnlyOneSucceeds(t *testing.T) {
+func TestSubmitCandidatesConcurrently_DedupRaceOnlyOneSucceeds(t *testing.T) {
 	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
 
 	dupURL := "https://example.com/dedup-race.bin"
@@ -619,7 +619,7 @@ func TestSubmitCandidatesSerially_DedupRaceOnlyOneSucceeds(t *testing.T) {
 	authState := newAddTaskAuthBatchState()
 	ledger := smartthread.NewBandwidthLedger(nil)
 
-	submitCandidatesSerially(service, context.Background(), candidates, batchState, nil, authState, ledger)
+	submitCandidatesConcurrently(service, context.Background(), candidates, batchState, nil, authState, ledger)
 
 	if len(summary.succeeded) != 1 {
 		t.Fatalf("expected exactly 1 success, got %d: %#v", len(summary.succeeded), summary.succeeded)
@@ -632,10 +632,10 @@ func TestSubmitCandidatesSerially_DedupRaceOnlyOneSucceeds(t *testing.T) {
 	}
 }
 
-// TestSubmitCandidatesSerially_FailedCandidateAllowsRetry verifies that when a
+// TestSubmitCandidatesConcurrently_FailedCandidateAllowsRetry verifies that when a
 // candidate fails and unmarkSeen removes its URL, a subsequent same-URL candidate
-// is NOT treated as a duplicate and is allowed to retry.
-func TestSubmitCandidatesSerially_FailedCandidateAllowsRetry(t *testing.T) {
+// is NOT treated as a duplicate and is allowed to retry (same-URL still serialized by lockForUrl).
+func TestSubmitCandidatesConcurrently_FailedCandidateAllowsRetry(t *testing.T) {
 	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
 	// Fail only the first aria2.addUri call; the second should succeed.
 	counter.failFirstAddURI = 1
@@ -657,7 +657,7 @@ func TestSubmitCandidatesSerially_FailedCandidateAllowsRetry(t *testing.T) {
 	authState := newAddTaskAuthBatchState()
 	ledger := smartthread.NewBandwidthLedger(nil)
 
-	submitCandidatesSerially(service, context.Background(), candidates, batchState, nil, authState, ledger)
+	submitCandidatesConcurrently(service, context.Background(), candidates, batchState, nil, authState, ledger)
 
 	if len(summary.duplicates) != 0 {
 		t.Fatalf("expected 0 duplicates (retry should not be deduped), got %d: %#v", len(summary.duplicates), summary.duplicates)

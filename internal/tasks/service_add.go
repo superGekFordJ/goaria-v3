@@ -7,6 +7,7 @@ import (
 	neturl "net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"goaria-v3/internal/config"
@@ -302,7 +303,7 @@ func (s *Service) BatchAddUri(urls []string) BatchAddResult {
 		candidateSeen: seenCandidates,
 		summary:       &summary,
 	}
-	submitCandidatesSerially(s, context.Background(), pendingCandidates, batchState, historyDuplicates, authState, ledger)
+	submitCandidatesConcurrently(s, context.Background(), pendingCandidates, batchState, historyDuplicates, authState, ledger)
 	result.Succeeded = append(result.Succeeded, summary.succeeded...)
 	result.Duplicates = append(result.Duplicates, summary.duplicates...)
 	result.Groups = append(result.Groups, summary.groups...)
@@ -324,13 +325,30 @@ func (s *Service) addNormalizedInput(ctx context.Context, normalizedURL string, 
 		}
 		return
 	}
-	submitCandidatesSerially(s, ctx, candidates, batchState, historyDuplicates, authState, ledger)
+	submitCandidatesConcurrently(s, ctx, candidates, batchState, historyDuplicates, authState, ledger)
 }
 
-func submitCandidatesSerially(s *Service, ctx context.Context, candidates []addTaskCandidate, batchState *addCandidateBatchState, historyDuplicates map[string]bool, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) {
-	for _, candidate := range candidates {
-		s.submitAddCandidate(ctx, candidate, batchState, historyDuplicates, authState, ledger)
+const addCandidateConcurrency = 12
+
+func submitCandidatesConcurrently(s *Service, ctx context.Context, candidates []addTaskCandidate, batchState *addCandidateBatchState, historyDuplicates map[string]bool, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) {
+	if len(candidates) <= 1 {
+		for _, candidate := range candidates {
+			s.submitAddCandidate(ctx, candidate, batchState, historyDuplicates, authState, ledger)
+		}
+		return
 	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, addCandidateConcurrency)
+	for _, candidate := range candidates {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(c addTaskCandidate) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			s.submitAddCandidate(ctx, c, batchState, historyDuplicates, authState, ledger)
+		}(candidate)
+	}
+	wg.Wait()
 }
 
 func (s *Service) submitAddCandidate(ctx context.Context, candidate addTaskCandidate, batchState *addCandidateBatchState, historyDuplicates map[string]bool, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) {
