@@ -359,6 +359,13 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					if url == "" {
 						url = existing.URL
 					}
+					candidateElapsed := existing.TimeTaken * int64(time.Millisecond)
+					if candidateElapsed > snapshot.Elapsed {
+						snapshot.Elapsed = candidateElapsed
+					}
+					if snapshot.Downloaded > existing.Downloaded && snapshot.Elapsed <= candidateElapsed {
+						snapshot.Elapsed = candidateElapsed + int64(time.Millisecond)
+					}
 				}
 				if destPath == "" {
 					destPath = m.DestPath

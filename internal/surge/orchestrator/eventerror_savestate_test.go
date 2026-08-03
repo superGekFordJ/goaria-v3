@@ -130,3 +130,76 @@ func TestEventError_NilState_StatusErrorOnly(t *testing.T) {
 		t.Fatal("nil-State EventError must not invent detail.gob")
 	}
 }
+
+func TestEventError_WithState_ElapsedMonotonicBump(t *testing.T) {
+	tmpDir := testutil.SetupStateDB(t)
+	destPath := filepath.Join(tmpDir, "error_elapsed.bin")
+	url := "http://example.com/error_elapsed.bin"
+	id := "error-elapsed"
+
+	testutil.SeedMasterList(t, types.DownloadRecord{
+		ID:         id,
+		URL:        url,
+		URLHash:    store.URLHash(url),
+		DestPath:   destPath,
+		Filename:   filepath.Base(destPath),
+		Status:     "downloading",
+		TotalSize:  1000,
+		Downloaded: 100,
+		TimeTaken:  5000, // 5s already on master
+	})
+
+	ch := make(chan types.DownloadEvent, 1)
+	mgr := NewLifecycleManager(nil, nil, nil)
+	defer mgr.Shutdown()
+	go mgr.StartEventWorker(ch)
+
+	snapshot := &types.DownloadRecord{
+		URL:        url,
+		ID:         id,
+		DestPath:   destPath,
+		TotalSize:  1000,
+		Downloaded: 400,                // advanced vs master
+		Elapsed:    int64(time.Second), // 1s — below master candidateElapsed
+		Tasks:      []types.Task{{Offset: 400, Length: 600}},
+		Filename:   filepath.Base(destPath),
+	}
+
+	ch <- types.DownloadEvent{
+		Type:       types.EventError,
+		DownloadID: id,
+		Filename:   filepath.Base(destPath),
+		DestPath:   destPath,
+		Downloaded: 400,
+		Err:        errors.New("boom"),
+		State:      snapshot,
+	}
+	close(ch)
+
+	deadline := time.Now().Add(3 * time.Second)
+	var entry *types.DownloadRecord
+	for {
+		got, err := store.GetDownload(id)
+		if err == nil && got != nil && got.Status == "error" {
+			entry = got
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for Status=error")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Pause-aligned bump: Downloaded advanced and Elapsed was ≤ candidate → +1ms.
+	if entry.TimeTaken < 5001 {
+		t.Fatalf("TimeTaken=%d, want >=5001 (monotonic bump vs master)", entry.TimeTaken)
+	}
+
+	saved, err := store.LoadState(url, destPath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if saved.Elapsed < int64(5001*time.Millisecond) {
+		t.Fatalf("detail Elapsed=%d, want >=5001ms monotonic", saved.Elapsed)
+	}
+}

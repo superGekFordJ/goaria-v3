@@ -113,3 +113,30 @@ func TestHandlePause_NilState_RemainingZero_NoPanic(t *testing.T) {
 		t.Fatalf("expected nil for nil-state completion boundary, got %v", err)
 	}
 }
+
+// TestSaveStateSnapshot_NilState_RemainingTasksNoPanic locks helper nil-safety
+// when remaining work exists (call sites usually gate State already).
+func TestSaveStateSnapshot_NilState_RemainingTasksNoPanic(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(1000)
+	destPath := filepath.Join(tmpDir, "nil_state_remain.bin")
+	d := &ConcurrentDownloader{
+		ID:    "nil-state-remain",
+		State: nil,
+	}
+
+	queueFalse := NewTaskQueue()
+	queueFalse.Push(types.Task{Offset: 0, Length: fileSize})
+	if err := d.saveStateSnapshot(destPath, fileSize, queueFalse, nil, false); err != nil {
+		t.Fatalf("emit=false nil State: %v", err)
+	}
+
+	queueTrue := NewTaskQueue()
+	queueTrue.Push(types.Task{Offset: 0, Length: fileSize})
+	err := d.saveStateSnapshot(destPath, fileSize, queueTrue, nil, true)
+	if !errors.Is(err, types.ErrPaused) {
+		t.Fatalf("emit=true nil State: got %v, want ErrPaused", err)
+	}
+}

@@ -1074,6 +1074,13 @@ func (d *ConcurrentDownloader) saveStateSnapshot(destPath string, fileSize int64
 		if vp := d.State.Bytes.VerifiedProgress.Load(); vp > computedDownloaded {
 			computedDownloaded = vp
 		}
+	} else {
+		// Call sites normally gate State; keep the helper nil-safe for reuse.
+		utils.Debug("saveStateSnapshot: nil State with remainingBytes=%d; skipping persist", remainingBytes)
+		if emitPauseEvent {
+			return types.ErrPaused
+		}
+		return nil
 	}
 
 	// Calculate total elapsed time
@@ -1084,11 +1091,7 @@ func (d *ConcurrentDownloader) saveStateSnapshot(destPath string, fileSize int64
 
 	var rateLimit int64
 	var rateLimitSet bool
-	if d.State != nil {
-		rateLimit, rateLimitSet = d.State.GetRateLimit()
-	} else {
-		rateLimit, rateLimitSet = d.RateLimitBps, d.RateLimitSet
-	}
+	rateLimit, rateLimitSet = d.State.GetRateLimit()
 
 	var workers int
 	var minChunkSize int64
