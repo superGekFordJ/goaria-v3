@@ -366,6 +366,27 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					if snapshot.Downloaded > existing.Downloaded && snapshot.Elapsed <= candidateElapsed {
 						snapshot.Elapsed = candidateElapsed + int64(time.Millisecond)
 					}
+					// Backfill sparse snapshot fields from the master record so both
+					// the entry and SaveStateWithOptions propagate complete metadata.
+					if snapshot.Filename == "" {
+						snapshot.Filename = existing.Filename
+					}
+					if snapshot.TotalSize == 0 {
+						snapshot.TotalSize = existing.TotalSize
+					}
+					if snapshot.Downloaded == 0 && existing.Downloaded > 0 {
+						snapshot.Downloaded = existing.Downloaded
+					}
+					if snapshot.Workers == 0 {
+						snapshot.Workers = existing.Workers
+					}
+					if snapshot.MinChunkSize == 0 {
+						snapshot.MinChunkSize = existing.MinChunkSize
+					}
+					if !snapshot.RateLimitSet && existing.RateLimitSet {
+						snapshot.RateLimit = existing.RateLimit
+						snapshot.RateLimitSet = existing.RateLimitSet
+					}
 				}
 				if destPath == "" {
 					destPath = m.DestPath
@@ -373,6 +394,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 
 				entry := types.DownloadRecord{
 					ID:           m.DownloadID,
+					URL:          url,
 					Status:       "error",
 					Downloaded:   snapshot.Downloaded,
 					DestPath:     destPath,
@@ -388,30 +410,12 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					entry.Error = m.Err.Error()
 				}
 				if existing != nil {
-					entry.URL = existing.URL
 					entry.URLHash = existing.URLHash
 					entry.Mirrors = append([]string(nil), existing.Mirrors...)
 					if entry.Filename == "" {
 						entry.Filename = existing.Filename
 					}
-					if entry.TotalSize == 0 {
-						entry.TotalSize = existing.TotalSize
-					}
-					if entry.Downloaded == 0 && existing.Downloaded > 0 {
-						entry.Downloaded = existing.Downloaded
-					}
-					if entry.Workers == 0 {
-						entry.Workers = existing.Workers
-					}
-					if entry.MinChunkSize == 0 {
-						entry.MinChunkSize = existing.MinChunkSize
-					}
-					if !entry.RateLimitSet && existing.RateLimitSet {
-						entry.RateLimit = existing.RateLimit
-						entry.RateLimitSet = existing.RateLimitSet
-					}
 				} else if url != "" {
-					entry.URL = url
 					entry.URLHash = store.URLHash(url)
 				}
 				if err := store.AddToMasterList(entry); err != nil {
