@@ -43,6 +43,13 @@ type LifecycleManager struct {
 	// large batch of downloads does not flood the network with HEAD requests.
 	probeSem     chan struct{}
 	shutdownOnce sync.Once
+
+	// diskReserve tracks known FileSize debits after a successful enqueue
+	// precheck so a later enqueue against the same free cushion soft-blocks
+	// before async preallocate writes bytes (process-wide; slightly
+	// pessimistic across volumes).
+	diskReserveMu   sync.Mutex
+	diskReserveByID map[string]int64
 }
 
 const (
@@ -116,6 +123,7 @@ func NewLifecycleManager(pool *scheduler.Scheduler, eventBus *EventBus, settings
 		aggregator:          aggregator,
 		isNameActive:        activeCheck,
 		probeSem:            sem,
+		diskReserveByID:     make(map[string]int64),
 	}
 }
 
@@ -295,13 +303,21 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 		// Known-size disk precheck before reservation so a reject leaves no
 		// exclusive .surge orphan. Resume / ResumeBatch bypass enqueueResolved
 		// by design and rely on the write-path disk sentinel + error SaveState.
+		// Subtract in-flight FileSize debits so serial/batch enqueue soft-blocks
+		// before async preallocate actually consumes free space.
 		if probeResult != nil && probeResult.FileSize > 0 {
 			free, freeErr := freeDiskBytes(finalPath)
 			if freeErr != nil {
 				utils.Debug("Lifecycle: free-space query failed for %s: %v (fail-open)\n", finalPath, freeErr)
-			} else if !types.HasSufficientDiskSpace(probeResult.FileSize, free) {
-				utils.Debug("Lifecycle: insufficient disk for %s (size=%d free=%d)\n", finalPath, probeResult.FileSize, free)
-				return "", "", types.ErrInsufficientDiskSpace
+			} else {
+				adjusted := free - mgr.pendingDiskReserved()
+				if adjusted < 0 {
+					adjusted = 0
+				}
+				if !types.HasSufficientDiskSpace(probeResult.FileSize, adjusted) {
+					utils.Debug("Lifecycle: insufficient disk for %s (size=%d free=%d pending=%d)\n", finalPath, probeResult.FileSize, free, mgr.pendingDiskReserved())
+					return "", "", types.ErrInsufficientDiskSpace
+				}
 			}
 		}
 
@@ -320,6 +336,10 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 		if err != nil {
 			_ = os.Remove(surgePath)
 			return "", "", err
+		}
+
+		if probeResult != nil && probeResult.FileSize > 0 {
+			mgr.reserveDiskBytes(cfg.ID, probeResult.FileSize)
 		}
 
 		queuedEvent := types.DownloadEvent{

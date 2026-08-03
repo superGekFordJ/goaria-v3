@@ -203,6 +203,75 @@ func TestEnqueue_DiskPrecheckFailOpen(t *testing.T) {
 	}
 }
 
+func TestEnqueue_DiskPrecheckPendingReserveSoftBlock(t *testing.T) {
+	orig := freeDiskBytes
+	t.Cleanup(func() { freeDiskBytes = orig })
+
+	const fileSize = int64(4 * 1024 * 1024) // 4 MiB
+	// Enough free for one file + buffer, not two.
+	freeDiskBytes = func(string) (int64, error) {
+		return types.DiskSpaceSafetyBuffer + fileSize + 1024, nil
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	progressCh := make(chan types.DownloadEvent, 10)
+	pool := scheduler.New(progressCh, 2)
+	eb := NewEventBus()
+	mgr := NewLifecycleManager(pool, eb, nil)
+	defer mgr.Shutdown()
+
+	destDir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	id1, _, err := mgr.Enqueue(ctx, &DownloadRequest{
+		URL:      ts.URL + "/one.bin",
+		Filename: "one.bin",
+		Path:     destDir,
+	})
+	if err != nil {
+		t.Fatalf("first Enqueue: %v", err)
+	}
+	if id1 == "" {
+		t.Fatal("expected first id")
+	}
+	if got := mgr.pendingDiskReserved(); got != fileSize {
+		t.Fatalf("pending after first = %d, want %d", got, fileSize)
+	}
+
+	_, _, err = mgr.Enqueue(ctx, &DownloadRequest{
+		URL:      ts.URL + "/two.bin",
+		Filename: "two.bin",
+		Path:     destDir,
+	})
+	if !errors.Is(err, types.ErrInsufficientDiskSpace) {
+		t.Fatalf("second Enqueue error = %v, want ErrInsufficientDiskSpace (pending debit)", err)
+	}
+
+	mgr.releaseDiskBytes(id1)
+	if got := mgr.pendingDiskReserved(); got != 0 {
+		t.Fatalf("pending after release = %d, want 0", got)
+	}
+
+	id2, _, err := mgr.Enqueue(ctx, &DownloadRequest{
+		URL:      ts.URL + "/two.bin",
+		Filename: "two.bin",
+		Path:     destDir,
+	})
+	if err != nil {
+		t.Fatalf("third Enqueue after release: %v", err)
+	}
+	if id2 == "" {
+		t.Fatal("expected third id")
+	}
+}
+
 func TestResume_BypassesDiskPrecheck(t *testing.T) {
 	orig := freeDiskBytes
 	t.Cleanup(func() { freeDiskBytes = orig })
