@@ -21,6 +21,13 @@ func TestIsPermanentHTTPError(t *testing.T) {
 	}
 }
 
+func TestIsInsufficientDiskSpace_JoinParity(t *testing.T) {
+	joined := errors.Join(errors.New("write failed"), ErrInsufficientDiskSpace)
+	if !IsInsufficientDiskSpace(joined) {
+		t.Fatal("expected Join-wrapped ErrInsufficientDiskSpace to match")
+	}
+}
+
 func TestIsPermanentHTTPStatus(t *testing.T) {
 	tests := []struct {
 		status   int

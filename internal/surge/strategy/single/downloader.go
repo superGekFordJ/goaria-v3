@@ -233,7 +233,7 @@ func (d *SingleDownloader) Download(ctx context.Context, rawurl, destPath string
 			return ctxErr
 		}
 		utils.Debug("Single downloader: copy error for %s: %v", rawurl, err)
-		return fmt.Errorf("copy error: %w", err)
+		return fmt.Errorf("copy error: %w", types.AnnotateInsufficientDiskSpace(err))
 	}
 
 	if preallocated && written != fileSize {

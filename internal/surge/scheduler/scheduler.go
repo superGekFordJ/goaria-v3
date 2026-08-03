@@ -32,6 +32,18 @@ type queuedTask struct {
 	inFlight bool
 }
 
+// shouldRetryFailedDownload reports whether a whole-download failure should be
+// re-enqueued (≤10 retries). Permanent HTTP and insufficient disk space are
+// terminal at this layer.
+func shouldRetryFailedDownload(err error, shuttingDown bool, retries int) bool {
+	return !shuttingDown &&
+		!errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded) &&
+		!types.IsPermanentHTTPError(err) &&
+		!types.IsInsufficientDiskSpace(err) &&
+		retries < 10
+}
+
 // Scheduler manages the download workers and tasks.
 //
 // Lock Ordering:
@@ -750,7 +762,7 @@ func (p *Scheduler) worker() {
 			p.mu.Lock()
 			delete(p.downloads, localCfg.ID)
 
-			if !p.isShuttingDown && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !types.IsPermanentHTTPError(err) && qt.retries < 10 {
+			if shouldRetryFailedDownload(err, p.isShuttingDown, qt.retries) {
 				qt.retries++
 				qt.inFlight = true // Keep in-flight while sending progress outside lock
 				qt.cfg = localCfg

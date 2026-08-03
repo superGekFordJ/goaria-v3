@@ -16,6 +16,12 @@ import (
 	"goaria-v3/internal/surge/utils"
 )
 
+// writeAtFn is the WriteAt seam used by downloadTask. Tests may swap it to
+// inject disk-full failures without filling a real volume.
+var writeAtFn = func(f *os.File, b []byte, off int64) (int, error) {
+	return f.WriteAt(b, off)
+}
+
 // worker downloads tasks from the queue
 func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []string, file *os.File, queue *TaskQueue, totalSize int64, client *http.Client) error {
 	// FORK-PATCH: Get pooled buffer from tiered pool
@@ -161,6 +167,13 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 				return ctx.Err()
 			}
 
+			// Disk-full / quota: fail immediately — no in-place retry, no mirror
+			// rotate, no residual Push. Must run before health-cancel swallow so
+			// a cancel race cannot clear and requeue a disk-space error.
+			if types.IsInsufficientDiskSpace(lastErr) {
+				return lastErr
+			}
+
 			// FORK-PATCH: health-cancel path with 100% VP guard
 			if wasExternallyCancelled && lastErr != nil {
 				currentMirrorIdx = (currentMirrorIdx + 1) % len(mirrors)
@@ -260,7 +273,8 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			// permanent HTTP: residual requeue (originalEnd clamp) THEN return
 			// lastErr. Soft-403: count consecutive no-206 exhaustions; escalate
 			// via wrap+B1 only after soft403StickyExhaustions. Push before
-			// return keeps pause race safe.
+			// return keeps pause race safe. Disk-space never reaches here —
+			// early return above skips residual Push.
 			if remaining := activeTask.RemainingTask(); remaining != nil {
 				originalEnd := task.Offset + task.Length
 				if remaining.Offset+remaining.Length > originalEnd {
@@ -507,9 +521,9 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 				activeTask.LastActivity.Store(time.Now().UnixNano())
 			}
 
-			_, writeErr := file.WriteAt(buf[:readSoFar], offset)
+			_, writeErr := writeAtFn(file, buf[:readSoFar], offset)
 			if writeErr != nil {
-				return fmt.Errorf("write error: %w", writeErr)
+				return fmt.Errorf("write error: %w", types.AnnotateInsufficientDiskSpace(writeErr))
 			}
 
 			now := time.Now()

@@ -18,6 +18,18 @@ import (
 	"goaria-v3/internal/surge/utils"
 )
 
+// shouldFallbackToSingle reports whether a concurrent failure with zero
+// progress should Truncate the working file and restart single-threaded.
+// Insufficient disk space is excluded — Truncate cannot create free space.
+func shouldFallbackToSingle(downloadErr error, downloaded int64) bool {
+	return downloadErr != nil &&
+		!errors.Is(downloadErr, types.ErrPaused) &&
+		!errors.Is(downloadErr, context.Canceled) &&
+		!errors.Is(downloadErr, context.DeadlineExceeded) &&
+		!types.IsInsufficientDiskSpace(downloadErr) &&
+		downloaded == 0
+}
+
 // safeSendProgress sends msg on ch, recovering from panics caused by sending
 // on a closed channel (which can happen during shutdown).
 func safeSendProgress(ch chan<- types.DownloadEvent, msg types.DownloadEvent, doneCh <-chan struct{}) {
@@ -243,7 +255,8 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 		// Determine if we should attempt a fallback to single-threaded mode.
 		// We fallback if concurrent failed, but it wasn't a clean pause or external cancellation,
 		// AND we haven't made any progress yet (to avoid discarding progress).
-		if downloadErr != nil && !errors.Is(downloadErr, types.ErrPaused) && !errors.Is(downloadErr, context.Canceled) && !errors.Is(downloadErr, context.DeadlineExceeded) && downloaded == 0 {
+		// Disk-full / quota must not Truncate + restart — space will not appear.
+		if shouldFallbackToSingle(downloadErr, downloaded) {
 			utils.Debug("Concurrent download failed: %v - falling back to single-threaded", downloadErr)
 			useConcurrent = false // Trigger sequential block below
 

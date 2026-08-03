@@ -4,7 +4,11 @@
 
 package preallocate
 
-import "os"
+import (
+	"os"
+
+	"goaria-v3/internal/surge/types"
+)
 
 // Preallocate attempts to physically allocate disk space for the file.
 // On Windows it uses SetFileValidData with SeManageVolumePrivilege elevation
@@ -15,5 +19,5 @@ func Preallocate(file *os.File, size int64) error {
 	if size <= 0 {
 		return nil
 	}
-	return preallocate(file, size)
+	return types.AnnotateInsufficientDiskSpace(preallocate(file, size))
 }
