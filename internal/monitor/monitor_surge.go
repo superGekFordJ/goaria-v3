@@ -313,7 +313,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		gid = "sg_" + ev.DownloadID
 		if ev.Err != nil {
 			errorMessage = ev.Err.Error()
-			errorCode = errorCodeForDiskMessage(errorMessage)
+			errorCode = rpc.ClassifySurgeErrorCode(errorMessage, true)
 		}
 		// Error is minimal; merge onto existing to preserve URL/Mirrors/etc.
 		if surgeEng != nil {
@@ -689,7 +689,16 @@ func (m *Monitor) reconcileSurgeCache() {
 			if status == "complete" && engineTask.TotalLength != "" {
 				Cache.PatchTaskProgress(gid, engineTask.TotalLength, "0", engineTask.TotalLength)
 			}
-			Cache.MoveTaskToStopped(gid, status)
+			errCode := engineTask.ErrorCode
+			errMsg := engineTask.ErrorMessage
+			if status == "error" {
+				if errCode == "" {
+					errCode = rpc.ClassifySurgeErrorCode(errMsg, true)
+				}
+				Cache.MoveTaskToStoppedWithError(gid, status, errCode, errMsg)
+			} else {
+				Cache.MoveTaskToStopped(gid, status)
+			}
 			// Emit frontend delta (matches handleSurgeEvent complete/error path).
 			if State.HasWindow() {
 				if status == "complete" && engineTask.TotalLength != "" {
@@ -699,6 +708,14 @@ func (m *Monitor) reconcileSurgeCache() {
 							"completedLength": engineTask.TotalLength,
 							"downloadSpeed":   "0",
 							"totalLength":     engineTask.TotalLength,
+						},
+					})
+				} else if status == "error" && (errCode != "" || errMsg != "") {
+					m.pusher.Queue(events.TaskDelta{
+						Type: status, GID: gid,
+						Payload: map[string]string{
+							"errorCode":    errCode,
+							"errorMessage": errMsg,
 						},
 					})
 				} else {
@@ -822,15 +839,4 @@ func sourceURLFromTask(t rpc.Task) string {
 		return t.Files[0].Uris[0].Uri
 	}
 	return ""
-}
-
-// errorCodeForDiskMessage maps a Surge error string to Aria2-compatible codes.
-func errorCodeForDiskMessage(msg string) string {
-	if msg == "" {
-		return "1"
-	}
-	if strings.Contains(msg, types.ErrInsufficientDiskSpace.Error()) {
-		return "9"
-	}
-	return "1"
 }

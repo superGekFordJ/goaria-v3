@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"goaria-v3/internal/surge/types"
@@ -70,7 +71,7 @@ func TestConvertTask_ErrorCodeDiskSpace(t *testing.T) {
 	if task.ErrorCode != "9" {
 		t.Fatalf("ErrorCode = %q, want 9", task.ErrorCode)
 	}
-	if task.ErrorMessage == "" || !isInsufficientDiskSpaceMessage(task.ErrorMessage) {
+	if task.ErrorMessage == "" || !strings.Contains(task.ErrorMessage, types.ErrInsufficientDiskSpace.Error()) {
 		t.Fatalf("ErrorMessage = %q, want disk sentinel", task.ErrorMessage)
 	}
 	if task.Status != "error" {

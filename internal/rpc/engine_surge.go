@@ -434,20 +434,20 @@ func mapStatus(s string) string {
 	}
 }
 
-// errorCodeForSurgeStatus maps Surge status.Error to Aria2-compatible codes.
-// Disk-space failures (sentinel text) → "9"; other errors → "1"; none → "".
-func errorCodeForSurgeStatus(status types.DownloadStatus) string {
-	if status.Error == "" && status.Status != "error" {
+// ClassifySurgeErrorCode maps a Surge error string (and/or error status) to
+// Aria2-compatible codes: disk-space sentinel → "9"; other errors → "1"; none → "".
+func ClassifySurgeErrorCode(errMsg string, statusIsError bool) string {
+	if errMsg == "" && !statusIsError {
 		return ""
 	}
-	if isInsufficientDiskSpaceMessage(status.Error) {
+	if errMsg != "" && strings.Contains(errMsg, types.ErrInsufficientDiskSpace.Error()) {
 		return "9"
 	}
 	return "1"
 }
 
-func isInsufficientDiskSpaceMessage(msg string) bool {
-	return msg != "" && strings.Contains(msg, types.ErrInsufficientDiskSpace.Error())
+func errorCodeForSurgeStatus(status types.DownloadStatus) string {
+	return ClassifySurgeErrorCode(status.Error, status.Status == "error" || status.Error != "")
 }
 
 func convertTask(status types.DownloadStatus) Task {

@@ -252,6 +252,108 @@ func TestReconcileSurgeCache_MissedComplete_EmitsDeltaWithPayload(t *testing.T) 
 	}
 }
 
+// TestReconcileSurgeCache_MissedError_StampsErrorCode verifies that a missed
+// EventError recovered via poll stamps Cache ErrorCode/ErrorMessage and emits
+// an error delta payload (mirrors the event path).
+func TestReconcileSurgeCache_MissedError_StampsErrorCode(t *testing.T) {
+	m, reader, pusher, tracker := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+
+	Cache.AddSgTask(rpc.Task{
+		GID:         "sg_disk1",
+		Status:      "active",
+		TotalLength: "1000",
+	}, "active")
+	tracker.EnsureTrackedFromEvent("sg_disk1", 1000, "https://example.com/big.bin", 4, "active")
+
+	reader.setLists(nil, nil, []rpc.Task{{
+		GID:          "disk1",
+		Status:       "error",
+		TotalLength:  "1000",
+		ErrorCode:    "9",
+		ErrorMessage: surgeEvents.ErrInsufficientDiskSpace.Error(),
+	}})
+
+	m.reconcileSurgeCache()
+
+	var stopped *rpc.Task
+	for _, task := range Cache.GetStopped() {
+		if task.GID == "sg_disk1" {
+			t := task
+			stopped = &t
+			break
+		}
+	}
+	if stopped == nil {
+		t.Fatal("expected sg_disk1 in stopped after reconcile")
+	}
+	if stopped.Status != "error" {
+		t.Fatalf("Status = %q, want error", stopped.Status)
+	}
+	if stopped.ErrorCode != "9" {
+		t.Fatalf("ErrorCode = %q, want 9", stopped.ErrorCode)
+	}
+	if stopped.ErrorMessage != surgeEvents.ErrInsufficientDiskSpace.Error() {
+		t.Fatalf("ErrorMessage = %q, want sentinel", stopped.ErrorMessage)
+	}
+
+	pusher.mu.Lock()
+	var delta *events.TaskDelta
+	for i := range pusher.pending {
+		if pusher.pending[i].Type == "error" && pusher.pending[i].GID == "sg_disk1" {
+			d := pusher.pending[i]
+			delta = &d
+			break
+		}
+	}
+	pusher.mu.Unlock()
+	if delta == nil {
+		t.Fatal("expected error delta from poll")
+	}
+	payload, ok := delta.Payload.(map[string]string)
+	if !ok {
+		t.Fatalf("payload type = %T, want map[string]string", delta.Payload)
+	}
+	if payload["errorCode"] != "9" {
+		t.Fatalf("delta errorCode = %q, want 9", payload["errorCode"])
+	}
+	if payload["errorMessage"] != surgeEvents.ErrInsufficientDiskSpace.Error() {
+		t.Fatalf("delta errorMessage = %q, want sentinel", payload["errorMessage"])
+	}
+}
+
+// TestReconcileSurgeCache_MissedError_ClassifiesFromMessageOnly verifies that
+// when TellStopped omits ErrorCode but carries the disk sentinel message,
+// poll still classifies "9".
+func TestReconcileSurgeCache_MissedError_ClassifiesFromMessageOnly(t *testing.T) {
+	m, reader, _, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+
+	Cache.AddSgTask(rpc.Task{
+		GID:    "sg_disk2",
+		Status: "active",
+	}, "active")
+
+	reader.setLists(nil, nil, []rpc.Task{{
+		GID:          "disk2",
+		Status:       "error",
+		ErrorMessage: surgeEvents.ErrInsufficientDiskSpace.Error(),
+	}})
+
+	m.reconcileSurgeCache()
+
+	for _, task := range Cache.GetStopped() {
+		if task.GID == "sg_disk2" {
+			if task.ErrorCode != "9" {
+				t.Fatalf("ErrorCode = %q, want 9 (classified from message)", task.ErrorCode)
+			}
+			return
+		}
+	}
+	t.Fatal("expected sg_disk2 in stopped")
+}
+
 // TestReconcileSurgeCache_MissedComplete_EmptyTotalLength verifies that when
 // TotalLength is empty, the complete delta is still emitted but without a
 // payload (matches handleSurgeEvent error/no-total path).
