@@ -517,6 +517,68 @@ func TestHandleSurgeEvent_ErrorEvent_PushesDeltaToFrontend(t *testing.T) {
 	}
 }
 
+func TestHandleSurgeEvent_ErrorEvent_DiskSpacePersistsErrorAndDelta(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	surgeEng := &rpc.SurgeEngine{}
+	surgeEng.UpsertMasterCacheEntry(surgeEvents.DownloadRecord{
+		ID:       "disk-err",
+		URL:      "http://example.com/big.bin",
+		Filename: "big.bin",
+		Status:   "downloading",
+	})
+	m := &Monitor{
+		hub:           hub,
+		pusher:        pusher,
+		forceTickChan: make(chan struct{}, 1),
+		surgeEng:      surgeEng,
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	Cache.sgActive = []rpc.Task{{GID: "sg_disk-err", Status: "active"}}
+	defer func() { Cache.sgActive = nil; Cache.sgStopped = nil }()
+
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventError,
+		DownloadID: "disk-err",
+		Err:        surgeEvents.ErrInsufficientDiskSpace,
+	})
+
+	entry, ok := surgeEng.GetMasterCacheEntry("disk-err")
+	if !ok {
+		t.Fatal("expected masterCache entry")
+	}
+	if entry.Error != surgeEvents.ErrInsufficientDiskSpace.Error() {
+		t.Fatalf("masterCache Error = %q, want sentinel", entry.Error)
+	}
+
+	pusher.mu.Lock()
+	defer pusher.mu.Unlock()
+	var errDelta *events.TaskDelta
+	for i := range pusher.pending {
+		if pusher.pending[i].Type == "error" && pusher.pending[i].GID == "sg_disk-err" {
+			errDelta = &pusher.pending[i]
+			break
+		}
+	}
+	if errDelta == nil {
+		t.Fatal("expected error delta in pusher queue")
+	}
+	payload, ok := errDelta.Payload.(map[string]string)
+	if !ok {
+		t.Fatalf("payload type = %T, want map[string]string", errDelta.Payload)
+	}
+	if payload["errorCode"] != "9" {
+		t.Fatalf("errorCode = %q, want 9", payload["errorCode"])
+	}
+	if payload["errorMessage"] != surgeEvents.ErrInsufficientDiskSpace.Error() {
+		t.Fatalf("errorMessage = %q, want sentinel", payload["errorMessage"])
+	}
+}
+
 // mockSurgeActiveEngine wraps Aria2Engine but reports IsSurgeActive()=true,
 // simulating production where SurgeEngine always has a non-nil service.
 

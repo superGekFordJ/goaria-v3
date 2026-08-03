@@ -104,6 +104,8 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 	var gid string
 	var completeTotal int64
 	var completeAvgSpeed float64
+	var errorMessage string
+	var errorCode string
 
 	// Reuse the cached SurgeEngine ref (set in Start); nil in Aria2-only mode.
 	surgeEng := m.surgeEng
@@ -309,6 +311,10 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 	case types.EventError:
 		deltaType = "error"
 		gid = "sg_" + ev.DownloadID
+		if ev.Err != nil {
+			errorMessage = ev.Err.Error()
+			errorCode = errorCodeForDiskMessage(errorMessage)
+		}
 		// Error is minimal; merge onto existing to preserve URL/Mirrors/etc.
 		if surgeEng != nil {
 			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
@@ -317,6 +323,9 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 				if ev.DestPath != "" {
 					merged.DestPath = ev.DestPath
 				}
+				if errorMessage != "" {
+					merged.Error = errorMessage
+				}
 				surgeEng.UpsertMasterCacheEntry(merged)
 			} else {
 				surgeEng.UpsertMasterCacheEntry(types.DownloadRecord{
@@ -324,6 +333,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 					Filename: ev.Filename,
 					DestPath: ev.DestPath,
 					Status:   "error",
+					Error:    errorMessage,
 				})
 			}
 		}
@@ -419,6 +429,14 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 						"completedLength": totalStr,
 						"downloadSpeed":   "0",
 						"totalLength":     totalStr,
+					},
+				})
+			} else if deltaType == "error" && (errorCode != "" || errorMessage != "") {
+				m.pusher.Queue(events.TaskDelta{
+					Type: deltaType, GID: gid,
+					Payload: map[string]string{
+						"errorCode":    errorCode,
+						"errorMessage": errorMessage,
 					},
 				})
 			} else {
@@ -800,4 +818,15 @@ func sourceURLFromTask(t rpc.Task) string {
 		return t.Files[0].Uris[0].Uri
 	}
 	return ""
+}
+
+// errorCodeForDiskMessage maps a Surge error string to Aria2-compatible codes.
+func errorCodeForDiskMessage(msg string) string {
+	if msg == "" {
+		return "1"
+	}
+	if strings.Contains(msg, types.ErrInsufficientDiskSpace.Error()) {
+		return "9"
+	}
+	return "1"
 }

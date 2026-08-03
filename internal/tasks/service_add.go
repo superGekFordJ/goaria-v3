@@ -7,7 +7,6 @@ import (
 	neturl "net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"goaria-v3/internal/config"
@@ -19,6 +18,7 @@ import (
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
+	surgetypes "goaria-v3/internal/surge/types"
 )
 
 // Compile-time check: *Service satisfies the extension.TaskAdder interface.
@@ -302,7 +302,7 @@ func (s *Service) BatchAddUri(urls []string) BatchAddResult {
 		candidateSeen: seenCandidates,
 		summary:       &summary,
 	}
-	submitCandidatesConcurrently(s, context.Background(), pendingCandidates, batchState, historyDuplicates, authState, ledger)
+	submitCandidatesSerially(s, context.Background(), pendingCandidates, batchState, historyDuplicates, authState, ledger)
 	result.Succeeded = append(result.Succeeded, summary.succeeded...)
 	result.Duplicates = append(result.Duplicates, summary.duplicates...)
 	result.Groups = append(result.Groups, summary.groups...)
@@ -324,30 +324,21 @@ func (s *Service) addNormalizedInput(ctx context.Context, normalizedURL string, 
 		}
 		return
 	}
-	submitCandidatesConcurrently(s, ctx, candidates, batchState, historyDuplicates, authState, ledger)
+	// Serial enqueue so each candidate sees free space after prior reservations
+	// (engine precheck soft-block). Concurrent submit races the cushion.
+	submitCandidatesSerially(s, ctx, candidates, batchState, historyDuplicates, authState, ledger)
 }
 
-const addCandidateConcurrency = 12
-
-func submitCandidatesConcurrently(s *Service, ctx context.Context, candidates []addTaskCandidate, batchState *addCandidateBatchState, historyDuplicates map[string]bool, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) {
-	if len(candidates) <= 1 {
-		for _, candidate := range candidates {
-			s.submitAddCandidate(ctx, candidate, batchState, historyDuplicates, authState, ledger)
-		}
-		return
-	}
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, addCandidateConcurrency)
+func submitCandidatesSerially(s *Service, ctx context.Context, candidates []addTaskCandidate, batchState *addCandidateBatchState, historyDuplicates map[string]bool, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) {
 	for _, candidate := range candidates {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(c addTaskCandidate) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			s.submitAddCandidate(ctx, c, batchState, historyDuplicates, authState, ledger)
-		}(candidate)
+		s.submitAddCandidate(ctx, candidate, batchState, historyDuplicates, authState, ledger)
 	}
-	wg.Wait()
+}
+
+// submitCandidatesConcurrently remains as a thin serial alias for tests that
+// call it by name; soft-block requires ordered enqueue.
+func submitCandidatesConcurrently(s *Service, ctx context.Context, candidates []addTaskCandidate, batchState *addCandidateBatchState, historyDuplicates map[string]bool, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) {
+	submitCandidatesSerially(s, ctx, candidates, batchState, historyDuplicates, authState, ledger)
 }
 
 func (s *Service) submitAddCandidate(ctx context.Context, candidate addTaskCandidate, batchState *addCandidateBatchState, historyDuplicates map[string]bool, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) {
@@ -988,6 +979,9 @@ func firstErrorString(errors map[string]string) string {
 func redactAddTaskError(err error) string {
 	if err == nil {
 		return ""
+	}
+	if surgetypes.IsInsufficientDiskSpace(err) {
+		return surgetypes.ErrInsufficientDiskSpace.Error()
 	}
 
 	return redactAssignmentValues(extractor.RedactSensitive(err.Error()))

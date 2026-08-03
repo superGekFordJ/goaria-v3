@@ -303,6 +303,7 @@ func (e *SurgeEngine) buildDownloadList() []types.DownloadStatus {
 			AvgSpeed:     d.AvgSpeed,
 			RateLimit:    d.RateLimit,
 			RateLimitSet: d.RateLimitSet,
+			Error:        d.Error,
 		})
 	}
 	return statuses
@@ -433,12 +434,24 @@ func mapStatus(s string) string {
 	}
 }
 
+// errorCodeForSurgeStatus maps Surge status.Error to Aria2-compatible codes.
+// Disk-space failures (sentinel text) → "9"; other errors → "1"; none → "".
+func errorCodeForSurgeStatus(status types.DownloadStatus) string {
+	if status.Error == "" && status.Status != "error" {
+		return ""
+	}
+	if isInsufficientDiskSpaceMessage(status.Error) {
+		return "9"
+	}
+	return "1"
+}
+
+func isInsufficientDiskSpaceMessage(msg string) bool {
+	return msg != "" && strings.Contains(msg, types.ErrInsufficientDiskSpace.Error())
+}
+
 func convertTask(status types.DownloadStatus) Task {
 	dir := filepath.Dir(status.DestPath)
-	var errCode string
-	if status.Error != "" || status.Status == "error" {
-		errCode = "1"
-	}
 	// status.Speed is already B/s; Aria2 DownloadSpeed is also B/s.
 	return Task{
 		GID:             status.ID,
@@ -447,7 +460,7 @@ func convertTask(status types.DownloadStatus) Task {
 		TotalLength:     strconv.FormatInt(status.TotalSize, 10),
 		CompletedLength: strconv.FormatInt(status.Downloaded, 10),
 		DownloadSpeed:   strconv.FormatInt(int64(status.Speed), 10),
-		ErrorCode:       errCode,
+		ErrorCode:       errorCodeForSurgeStatus(status),
 		ErrorMessage:    status.Error,
 		Dir:             dir,
 		Files: []File{
