@@ -243,7 +243,6 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 			}
 
 		case types.EventComplete:
-			mgr.releaseDiskBytes(m.DownloadID)
 			var avgSpeed float64
 			if m.Elapsed.Seconds() > 0 {
 				avgSpeed = float64(m.Total) / m.Elapsed.Seconds()
@@ -347,7 +346,6 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 			triggerGC()
 
 		case types.EventError:
-			mgr.releaseDiskBytes(m.DownloadID)
 			existing, _ := store.GetDownload(m.DownloadID)
 			if m.State != nil {
 				stateSnapshot := m.State
@@ -457,7 +455,6 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 			triggerGC()
 
 		case types.EventRemoved:
-			mgr.releaseDiskBytes(m.DownloadID)
 			// Remove resume metadata before touching files so a deleted download does not
 			// come back during startup recovery. DeleteState atomically removes both the
 			// detail gob and the master list entry, so no separate RemoveFromMasterList call
