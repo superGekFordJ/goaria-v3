@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"goaria-v3/internal/surge/types"
 )
 
 type mockEngine struct {
@@ -224,6 +227,37 @@ func TestHybridEngine_DynamicFallback(t *testing.T) {
 	}
 	if len(aria2.addedUrls) != 1 {
 		t.Errorf("expected fallback to Aria2, got %d", len(aria2.addedUrls))
+	}
+}
+
+func TestHybridEngine_DiskSpaceNoFallback(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{name: "bare sentinel", err: types.ErrInsufficientDiskSpace},
+		{name: "wrapped sentinel", err: fmt.Errorf("enqueue: %w", types.ErrInsufficientDiskSpace)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			aria2 := &mockEngine{addResultGid: "ar_should_not_run"}
+			surge := &mockEngine{addResultErr: tc.err}
+			hybrid := NewHybridEngine(aria2, surge)
+
+			gid, err := hybrid.AddUri("https://example.com/file.zip", AddURIOptions{})
+			if gid != "" {
+				t.Errorf("expected empty GID, got %q", gid)
+			}
+			if !errors.Is(err, types.ErrInsufficientDiskSpace) {
+				t.Fatalf("expected ErrInsufficientDiskSpace, got %v", err)
+			}
+			if len(surge.addedUrls) != 1 {
+				t.Errorf("expected 1 Surge attempt, got %d", len(surge.addedUrls))
+			}
+			if len(aria2.addedUrls) != 0 {
+				t.Errorf("expected no Aria2 fallback, got %d", len(aria2.addedUrls))
+			}
+		})
 	}
 }
 

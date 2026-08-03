@@ -6,6 +6,8 @@ import (
 	"log"
 	"strconv"
 	"strings"
+
+	"goaria-v3/internal/surge/types"
 )
 
 type HybridEngine struct {
@@ -47,6 +49,11 @@ func (h *HybridEngine) AddUri(url string, options AddURIOptions) (string, error)
 				}
 			}
 			return prefixedGid, nil
+		}
+		if types.IsInsufficientDiskSpace(err) {
+			// Disk space is a shared machine constraint: Aria2 cannot succeed either,
+			// and a doomed fallback task would burn the remaining free bytes.
+			return "", err
 		}
 		log.Printf("[Hybrid] Surge failed to add URI %s: %v, falling back to Aria2", url, err)
 	}
