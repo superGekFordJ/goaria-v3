@@ -103,6 +103,13 @@
     return t('taskHeader.startDownload')
   })
 
+  // Active neon state: valid input and not mid-submit (mirrors :disabled inverse)
+  const canSubmit = computed(() =>
+    isMultiline.value
+      ? parsedStats.value.valid > 0 && !submitting.value
+      : Boolean(urlInput.value.trim()) && !isAdding.value,
+  )
+
   const preSubmitGroupHint = computed(() => {
     if (!isMultiline.value || parsedStats.value.uniqueAddable < BATCH_AUTO_FOLDER_THRESHOLD)
       return null
@@ -335,29 +342,26 @@
         as="button"
         :interactive="true"
         hover-effect="all"
-        :disabled="isMultiline ? !parsedStats.valid || submitting : !urlInput.trim() || isAdding"
-        :base-color-class="
-          (isMultiline ? parsedStats.valid > 0 && !submitting : urlInput.trim() && !isAdding)
-            ? 'bg-neon-glass'
-            : 'bg-[var(--btn-glass-bg)]'
-        "
-        :fallback-class="
-          (isMultiline ? parsedStats.valid > 0 && !submitting : urlInput.trim() && !isAdding)
-            ? 'btn-neon'
-            : 'btn-glass'
-        "
+        :disabled="!canSubmit"
+        :base-color-class="canSubmit ? 'bg-neon-glass' : 'bg-[var(--btn-glass-bg)]'"
+        :fallback-class="canSubmit ? 'btn-neon' : 'btn-glass'"
         :class="[
-          'px-6 py-3 rounded-[var(--radius-squircle-md)] font-bold text-sm transition-all duration-300 flex items-center gap-2 self-start',
+          'task-header-add-btn px-6 h-11 box-border rounded-[var(--radius-squircle-md)] font-bold text-sm',
+          'flex items-center justify-center self-start shrink-0',
           'disabled:opacity-30 disabled:cursor-not-allowed disabled:transform-none',
-          (isMultiline ? parsedStats.valid > 0 && !submitting : urlInput.trim() && !isAdding)
-            ? 'btn-neon-glass'
-            : 'text-[var(--app-text-subtle)] border border-[var(--glass-border)]',
+          'before:pointer-events-none before:absolute before:inset-0 before:z-[2] before:rounded-[inherit]',
+          'before:ring-1 before:ring-inset before:ring-[var(--glass-border)] before:transition-opacity before:duration-300',
+          canSubmit
+            ? 'btn-neon-glass before:opacity-0'
+            : 'text-[var(--app-text-subtle)] before:opacity-100',
         ]"
         @click="isMultiline ? handleBatchAdd() : handleAdd()"
       >
-        <Loader2 v-if="isAdding || submitting" :size="16" class="animate-spin" />
-        <Plus v-else :size="16" />
-        <span>{{ buttonLabel }}</span>
+        <span class="flex items-center justify-center gap-2 w-full h-full">
+          <Loader2 v-if="isAdding || submitting" :size="16" class="animate-spin" />
+          <Plus v-else :size="16" />
+          <span>{{ buttonLabel }}</span>
+        </span>
       </LiquidGlassPanel>
     </div>
 
@@ -519,6 +523,13 @@
     transition: background-color 5000s ease-in-out 0s;
   }
 
+  /* Prevent box-shadow transition to avoid visual bloat during active/inactive switch */
+  .task-header-add-btn {
+    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, transform, filter, backdrop-filter;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 300ms;
+  }
+
   /* Keyboard shortcut styling */
   kbd {
     font-family: var(--font-family-mono);
@@ -553,5 +564,14 @@
   .fade-enter-from,
   .fade-leave-to {
     opacity: 0;
+  }
+
+  /*
+   * Override LiquidGlassPanel's transition-all so neon box-shadow / ring does not
+   * interpolate into a visual width/height pulse when canSubmit toggles.
+   */
+  .task-header-add-btn {
+    transition-property: color, transform, opacity;
+    transition-duration: 300ms;
   }
 </style>
