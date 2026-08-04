@@ -396,3 +396,44 @@ func TestEventPaused_Sparse_IdentityLoadState(t *testing.T) {
 		t.Fatalf("detail identity blanked: URL=%q DestPath=%q", saved.URL, saved.DestPath)
 	}
 }
+
+func TestEventPaused_StateWithoutMasterPersistsResolvedURL(t *testing.T) {
+	tmpDir := testutil.SetupStateDB(t)
+	destPath := filepath.Join(tmpDir, "pause-state-without-master.bin")
+	url := "http://example.com/pause-state-without-master.bin"
+	id := "pause-state-without-master"
+
+	// No SeedMasterList: master entry is absent when EventPaused arrives.
+
+	ch := make(chan types.DownloadEvent, 1)
+	mgr := NewLifecycleManager(nil, nil, nil)
+	defer mgr.Shutdown()
+	done := make(chan struct{})
+	go func() {
+		mgr.StartEventWorker(ch)
+		close(done)
+	}()
+
+	ch <- types.DownloadEvent{
+		Type:       types.EventPaused,
+		DownloadID: id,
+		State: &types.DownloadRecord{
+			ID:         "stale-snapshot-id",
+			URL:        url,
+			DestPath:   destPath,
+			Filename:   filepath.Base(destPath),
+			TotalSize:  1000,
+			Downloaded: 250,
+		},
+	}
+	close(ch)
+	<-done
+
+	entry, err := store.GetDownload(id)
+	if err != nil {
+		t.Fatalf("GetDownload: %v", err)
+	}
+	if entry == nil || entry.URL != url || entry.URLHash != store.URLHash(url) {
+		t.Fatalf("master entry = %+v, want URL=%q with matching hash", entry, url)
+	}
+}
