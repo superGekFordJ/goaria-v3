@@ -17,9 +17,9 @@ import (
 // metadata, those rich values survive on the master list after the worker
 // finishes.
 //
-// Post-e84795b finding-3 backfill copies missing snapshot fields from the
-// master record before SaveStateWithOptions, so Filename / TotalSize /
-// Downloaded / Workers / MinChunkSize are preserved when reloaded from disk.
+// Taskless snapshots (empty Tasks) apply max(existing, snapshot) for
+// Downloaded; Filename / TotalSize / Workers / MinChunkSize still sparse-
+// backfill from the master before SaveStateWithOptions.
 func TestEventError_SparseSnapshot_PreservesMasterMetadata(t *testing.T) {
 	tmpDir := testutil.SetupStateDB(t)
 	destPath := filepath.Join(tmpDir, "report.pdf")
