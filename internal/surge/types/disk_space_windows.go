@@ -14,6 +14,9 @@ func isDiskFull(err error) bool {
 	if !errors.As(err, &errno) {
 		return false
 	}
-	// ERROR_DISK_FULL ≈ ENOSPC; ERROR_DISK_QUOTA_EXCEEDED ≈ EDQUOT.
-	return errno == windows.ERROR_DISK_FULL || errno == windows.ERROR_DISK_QUOTA_EXCEEDED
+	// ERROR_DISK_FULL ≈ ENOSPC; ERROR_DISK_QUOTA_EXCEEDED ≈ EDQUOT;
+	// ERROR_HANDLE_DISK_FULL = handle-scoped disk full (often wrapped in *os.PathError).
+	return errno == windows.ERROR_DISK_FULL ||
+		errno == windows.ERROR_DISK_QUOTA_EXCEEDED ||
+		errno == windows.ERROR_HANDLE_DISK_FULL
 }

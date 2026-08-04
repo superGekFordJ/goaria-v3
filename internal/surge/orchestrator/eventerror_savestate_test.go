@@ -31,7 +31,11 @@ func TestEventError_WithState_SaveStateAndStatusError(t *testing.T) {
 	ch := make(chan types.DownloadEvent, 1)
 	mgr := NewLifecycleManager(nil, nil, nil)
 	defer mgr.Shutdown()
-	go mgr.StartEventWorker(ch)
+	done := make(chan struct{})
+	go func() {
+		mgr.StartEventWorker(ch)
+		close(done)
+	}()
 
 	snapshot := &types.DownloadRecord{
 		URL:             url,
@@ -57,23 +61,20 @@ func TestEventError_WithState_SaveStateAndStatusError(t *testing.T) {
 		State:      snapshot,
 	}
 	close(ch)
+	<-done
 
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		entry, err := store.GetDownload(id)
-		if err == nil && entry != nil && entry.Status == "error" {
-			if entry.Downloaded != 600 {
-				t.Fatalf("master Downloaded=%d, want 600", entry.Downloaded)
-			}
-			if entry.Error != "disk full" {
-				t.Fatalf("master Error=%q, want %q", entry.Error, "disk full")
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for Status=error")
-		}
-		time.Sleep(20 * time.Millisecond)
+	entry, err := store.GetDownload(id)
+	if err != nil {
+		t.Fatalf("GetDownload: %v", err)
+	}
+	if entry == nil || entry.Status != "error" {
+		t.Fatalf("Status=%v, want error", entry)
+	}
+	if entry.Downloaded != 600 {
+		t.Fatalf("master Downloaded=%d, want 600", entry.Downloaded)
+	}
+	if entry.Error != "disk full" {
+		t.Fatalf("master Error=%q, want %q", entry.Error, "disk full")
 	}
 
 	saved, err := store.LoadState(url, destPath)
@@ -107,7 +108,11 @@ func TestEventError_NilState_StatusErrorOnly(t *testing.T) {
 	ch := make(chan types.DownloadEvent, 1)
 	mgr := NewLifecycleManager(nil, nil, nil)
 	defer mgr.Shutdown()
-	go mgr.StartEventWorker(ch)
+	done := make(chan struct{})
+	go func() {
+		mgr.StartEventWorker(ch)
+		close(done)
+	}()
 
 	ch <- types.DownloadEvent{
 		Type:       types.EventError,
@@ -116,20 +121,17 @@ func TestEventError_NilState_StatusErrorOnly(t *testing.T) {
 		Err:        errors.New("boom"),
 	}
 	close(ch)
+	<-done
 
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		entry, err := store.GetDownload(id)
-		if err == nil && entry != nil && entry.Status == "error" {
-			if entry.Error != "boom" {
-				t.Fatalf("nil-State master Error=%q, want boom", entry.Error)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for Status=error without State")
-		}
-		time.Sleep(20 * time.Millisecond)
+	entry, err := store.GetDownload(id)
+	if err != nil {
+		t.Fatalf("GetDownload: %v", err)
+	}
+	if entry == nil || entry.Status != "error" {
+		t.Fatalf("Status=%v, want error", entry)
+	}
+	if entry.Error != "boom" {
+		t.Fatalf("nil-State master Error=%q, want boom", entry.Error)
 	}
 
 	if _, err := store.LoadState(url, destPath); err == nil {
@@ -158,7 +160,11 @@ func TestEventError_WithState_ElapsedMonotonicBump(t *testing.T) {
 	ch := make(chan types.DownloadEvent, 1)
 	mgr := NewLifecycleManager(nil, nil, nil)
 	defer mgr.Shutdown()
-	go mgr.StartEventWorker(ch)
+	done := make(chan struct{})
+	go func() {
+		mgr.StartEventWorker(ch)
+		close(done)
+	}()
 
 	snapshot := &types.DownloadRecord{
 		URL:        url,
@@ -181,19 +187,14 @@ func TestEventError_WithState_ElapsedMonotonicBump(t *testing.T) {
 		State:      snapshot,
 	}
 	close(ch)
+	<-done
 
-	deadline := time.Now().Add(3 * time.Second)
-	var entry *types.DownloadRecord
-	for {
-		got, err := store.GetDownload(id)
-		if err == nil && got != nil && got.Status == "error" {
-			entry = got
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for Status=error")
-		}
-		time.Sleep(20 * time.Millisecond)
+	entry, err := store.GetDownload(id)
+	if err != nil {
+		t.Fatalf("GetDownload: %v", err)
+	}
+	if entry == nil || entry.Status != "error" {
+		t.Fatalf("Status=%v, want error", entry)
 	}
 
 	// Pause-aligned bump: Downloaded advanced and Elapsed was ≤ candidate → +1ms.

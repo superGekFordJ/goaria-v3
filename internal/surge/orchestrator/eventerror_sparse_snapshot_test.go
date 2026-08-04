@@ -14,14 +14,12 @@ import (
 // TestEventError_SparseSnapshot_PreservesMasterMetadata verifies that when an
 // EventError arrives with a sparse snapshot (zero/empty Filename, TotalSize,
 // Downloaded, Workers, MinChunkSize) but an existing master record has rich
-// metadata, the master list retains the rich values after both AddToMasterList
-// and SaveStateWithOptions have run.
+// metadata, those rich values survive on the master list after the worker
+// finishes.
 //
-// The fork applies field-level fallbacks to `entry` only (not `snapshot`), then
-// SaveStateWithOptions unconditionally overwrites the master list's Filename,
-// TotalSize, Downloaded, Workers, MinChunkSize with the snapshot's sparse
-// values — clobbering the backfilled values. This test reads the master list
-// from disk (post-SaveStateWithOptions) to catch that clobber.
+// Post-e84795b finding-3 backfill copies missing snapshot fields from the
+// master record before SaveStateWithOptions, so Filename / TotalSize /
+// Downloaded / Workers / MinChunkSize are preserved when reloaded from disk.
 func TestEventError_SparseSnapshot_PreservesMasterMetadata(t *testing.T) {
 	tmpDir := testutil.SetupStateDB(t)
 	destPath := filepath.Join(tmpDir, "report.pdf")
@@ -47,7 +45,11 @@ func TestEventError_SparseSnapshot_PreservesMasterMetadata(t *testing.T) {
 	ch := make(chan types.DownloadEvent, 1)
 	mgr := NewLifecycleManager(nil, nil, nil)
 	defer mgr.Shutdown()
-	go mgr.StartEventWorker(ch)
+	done := make(chan struct{})
+	go func() {
+		mgr.StartEventWorker(ch)
+		close(done)
+	}()
 
 	// Sparse snapshot: valid identity but zero/empty metadata fields.
 	snapshot := &types.DownloadRecord{
@@ -65,25 +67,7 @@ func TestEventError_SparseSnapshot_PreservesMasterMetadata(t *testing.T) {
 		State:      snapshot,
 	}
 	close(ch)
-
-	// Wait for the worker to finish processing (both AddToMasterList and
-	// SaveStateWithOptions). Poll until status becomes "error".
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		entry, err := store.GetDownload(id)
-		if err == nil && entry != nil && entry.Status == "error" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for Status=error")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	// Give SaveStateWithOptions a moment to run after AddToMasterList.
-	// AddToMasterList sets status=error; SaveStateWithOptions runs next and
-	// clobbers the master list. We must read from disk to see the final state.
-	time.Sleep(100 * time.Millisecond)
+	<-done
 
 	// Reload the master list from disk to get the post-SaveStateWithOptions state.
 	list, err := store.LoadMasterList()
@@ -101,26 +85,29 @@ func TestEventError_SparseSnapshot_PreservesMasterMetadata(t *testing.T) {
 	if record == nil {
 		t.Fatal("master list does not contain record after EventError")
 	}
+	if record.Status != "error" {
+		t.Fatalf("Status=%q, want error", record.Status)
+	}
 
 	// Assert that the rich metadata from the seeded record is preserved.
 	if record.Filename != "report.pdf" {
-		t.Errorf("Filename=%q, want %q (clobbered by SaveStateWithOptions)",
+		t.Errorf("Filename=%q, want %q (expected snapshot backfill from master)",
 			record.Filename, "report.pdf")
 	}
 	if record.TotalSize != 1000000 {
-		t.Errorf("TotalSize=%d, want %d (clobbered by SaveStateWithOptions)",
+		t.Errorf("TotalSize=%d, want %d (expected snapshot backfill from master)",
 			record.TotalSize, 1000000)
 	}
 	if record.Downloaded != 500000 {
-		t.Errorf("Downloaded=%d, want %d (clobbered by SaveStateWithOptions)",
+		t.Errorf("Downloaded=%d, want %d (expected snapshot backfill from master)",
 			record.Downloaded, 500000)
 	}
 	if record.Workers != 4 {
-		t.Errorf("Workers=%d, want %d (clobbered by SaveStateWithOptions)",
+		t.Errorf("Workers=%d, want %d (expected snapshot backfill from master)",
 			record.Workers, 4)
 	}
 	if record.MinChunkSize != 1048576 {
-		t.Errorf("MinChunkSize=%d, want %d (clobbered by SaveStateWithOptions)",
+		t.Errorf("MinChunkSize=%d, want %d (expected snapshot backfill from master)",
 			record.MinChunkSize, 1048576)
 	}
 }
