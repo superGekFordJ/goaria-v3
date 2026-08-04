@@ -58,7 +58,7 @@ func TestAnnotateInsufficientDiskSpace_PathError(t *testing.T) {
 	if !errors.As(annotated, &pathErr) {
 		t.Fatal("annotated lost PathError via unwrap")
 	}
-	// Raw PathError (no annotate) still matches via isDiskFull.
+	// Raw PathError (no annotate) still matches via utils.IsOSDiskFull.
 	if !IsInsufficientDiskSpace(raw) {
 		t.Fatal("raw PathError should match IsInsufficientDiskSpace")
 	}

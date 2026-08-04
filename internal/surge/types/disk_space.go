@@ -3,6 +3,8 @@ package types
 import (
 	"errors"
 	"fmt"
+
+	"goaria-v3/internal/surge/utils"
 )
 
 // AnnotateInsufficientDiskSpace wraps err with ErrInsufficientDiskSpace when
@@ -15,7 +17,7 @@ func AnnotateInsufficientDiskSpace(err error) error {
 	if errors.Is(err, ErrInsufficientDiskSpace) {
 		return err
 	}
-	if isDiskFull(err) {
+	if utils.IsOSDiskFull(err) {
 		return fmt.Errorf("%w: %w", err, ErrInsufficientDiskSpace)
 	}
 	return err
@@ -25,5 +27,5 @@ func AnnotateInsufficientDiskSpace(err error) error {
 // quota failure. True for the sentinel and for raw platform errno values so
 // callers remain safe even if a site forgets to annotate.
 func IsInsufficientDiskSpace(err error) bool {
-	return err != nil && (errors.Is(err, ErrInsufficientDiskSpace) || isDiskFull(err))
+	return err != nil && (errors.Is(err, ErrInsufficientDiskSpace) || utils.IsOSDiskFull(err))
 }
