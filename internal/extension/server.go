@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"goaria-v3/internal/config"
@@ -18,7 +19,12 @@ import (
 
 // allowEmptySecret is the dev escape hatch for the MVP empty-secret bypass.
 // Production rejects empty secrets unless GOARIA_EXTENSION_ALLOW_EMPTY_SECRET=1.
-var allowEmptySecret = os.Getenv("GOARIA_EXTENSION_ALLOW_EMPTY_SECRET") == "1"
+// atomic.Bool so tests can flip it without racing in-flight handleConn readers.
+var allowEmptySecret atomic.Bool
+
+func init() {
+	allowEmptySecret.Store(os.Getenv("GOARIA_EXTENSION_ALLOW_EMPTY_SECRET") == "1")
+}
 
 // authFailedSink is a test-only hook for observing extension:auth_failed emits
 // without a full Wails event hub. Production leaves this nil.
@@ -180,7 +186,7 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 
 	secret := s.store.GetSecret()
 	if secret == "" {
-		if !allowEmptySecret {
+		if !allowEmptySecret.Load() {
 			return
 		}
 	} else {

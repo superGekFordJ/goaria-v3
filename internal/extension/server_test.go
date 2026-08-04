@@ -51,9 +51,9 @@ func newTestServer(t *testing.T, taskAdder TaskAdder, store *SecretStore) *Serve
 // that exercise the MVP empty-secret path. Restores the original value on cleanup.
 func withAllowEmptySecret(t *testing.T, enabled bool) {
 	t.Helper()
-	orig := allowEmptySecret
-	allowEmptySecret = enabled
-	t.Cleanup(func() { allowEmptySecret = orig })
+	orig := allowEmptySecret.Load()
+	allowEmptySecret.Store(enabled)
+	t.Cleanup(func() { allowEmptySecret.Store(orig) })
 }
 
 func dialWS(t *testing.T, port int, origin string) *websocket.Conn {

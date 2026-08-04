@@ -22,6 +22,8 @@ var (
 )
 
 // scheduleWindowReclaim arms a single AfterFunc reclaim (Windows only). Safe under windowMu.
+// Injectables are snapshotted into the callback so a late AfterFunc cannot race test cleanup
+// restoring the package-level hooks.
 func (a *App) scheduleWindowReclaim() {
 	if !windowReclaimEnabled() {
 		return
@@ -33,7 +35,11 @@ func (a *App) scheduleWindowReclaim() {
 	if a.reclaimTimer != nil {
 		a.reclaimTimer.Stop()
 	}
-	a.reclaimTimer = time.AfterFunc(windowReclaimDelay, a.runWindowReclaim)
+	fn := windowReclaimFn
+	headless := windowReclaimHeadless
+	a.reclaimTimer = time.AfterFunc(windowReclaimDelay, func() {
+		a.runWindowReclaim(fn, headless)
+	})
 }
 
 // cancelWindowReclaim stops any pending reclaim timer (best-effort).
@@ -50,10 +56,9 @@ func (a *App) cancelWindowReclaim() {
 // runWindowReclaim gates on headless (window nil) then runs reclaim off windowMu.
 // Do not clear reclaimTimer here: a stale AfterFunc (Stop returned false) must not
 // wipe a newer timer armed by a later scheduleWindowReclaim.
-func (a *App) runWindowReclaim() {
-	if !windowReclaimHeadless(a) {
+func (a *App) runWindowReclaim(fn func(), headlessProbe func(*App) bool) {
+	if !headlessProbe(a) {
 		return
 	}
-
-	windowReclaimFn()
+	fn()
 }
