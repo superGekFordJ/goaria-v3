@@ -3,9 +3,9 @@ package orchestrator
 import "goaria-v3/internal/surge/types"
 
 // isTaskBackedResumeSnapshot reports whether rec carries a valid remaining-task
-// set for EventError Downloaded resume-authority decisions. Empty or invalid
-// Tasks are treated as taskless; Downloaded/Tasks accounting equality is not
-// required (saveStateSnapshot uses max(VerifiedProgress, TotalSize-remaining)).
+// set for Downloaded authority on EventError and EventPaused merges. Empty or
+// invalid Tasks are treated as taskless; Downloaded/Tasks accounting equality is
+// not required (saveStateSnapshot uses max(VerifiedProgress, TotalSize-remaining)).
 func isTaskBackedResumeSnapshot(rec types.DownloadRecord) bool {
 	if len(rec.Tasks) == 0 || rec.TotalSize <= 0 {
 		return false

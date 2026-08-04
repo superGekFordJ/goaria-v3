@@ -184,8 +184,8 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				break
 			}
 
-			// Pause snapshots can race slightly behind the master entry, so fall back to
-			// the DB values to keep the resume key stable when the in-memory state is sparse.
+			// Sparse EventPaused.State must not clobber master metadata or blank the
+			// resume key. Field authority is pause-specific (not EventError symmetry).
 			stateSnapshot := m.State
 			snapshot := *stateSnapshot
 			destPath := stateSnapshot.DestPath
@@ -207,19 +207,84 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					snapshot.Elapsed = candidateElapsed + int64(time.Millisecond)
 				}
 			}
+			if destPath == "" {
+				destPath = m.DestPath
+			}
+			if url == "" {
+				url = m.URL
+			}
+
+			if m.Filename != "" {
+				snapshot.Filename = m.Filename
+			}
+			if m.Workers != 0 {
+				snapshot.Workers = m.Workers
+			}
+			if m.MinChunkSize != 0 {
+				snapshot.MinChunkSize = m.MinChunkSize
+			}
+			if existing != nil {
+				if snapshot.Filename == "" {
+					snapshot.Filename = existing.Filename
+				}
+				if snapshot.TotalSize == 0 {
+					snapshot.TotalSize = existing.TotalSize
+				}
+				if snapshot.Workers == 0 {
+					snapshot.Workers = existing.Workers
+				}
+				if snapshot.MinChunkSize == 0 {
+					snapshot.MinChunkSize = existing.MinChunkSize
+				}
+			}
+
+			// Downloaded: task-backed keeps snapshot exactly (incl. first-pause 0);
+			// taskless/invalid with master uses max so sparse zeros cannot wipe progress.
+			if !isTaskBackedResumeSnapshot(snapshot) && existing != nil {
+				if existing.Downloaded > snapshot.Downloaded {
+					snapshot.Downloaded = existing.Downloaded
+				}
+			}
+
+			// RateLimit: event RateLimitSet=false is omission vs a still-set master
+			// override (intentional clear already persisted RateLimitSet=false on master).
+			rateLimit := m.RateLimit
+			rateLimitSet := m.RateLimitSet
+			if !m.RateLimitSet && existing != nil && existing.RateLimitSet {
+				rateLimit = existing.RateLimit
+				rateLimitSet = existing.RateLimitSet
+			}
+			snapshot.RateLimit = rateLimit
+			snapshot.RateLimitSet = rateLimitSet
+
+			// Materialize identity before SaveStateWithOptions — store writes
+			// state.URL/DestPath/ID, not the function args.
+			if m.DownloadID != "" {
+				snapshot.ID = m.DownloadID
+			}
+			snapshot.URL = url
+			snapshot.DestPath = destPath
+
+			entryFilename := m.Filename
+			if entryFilename == "" {
+				entryFilename = snapshot.Filename
+			}
+			if entryFilename == "" && existing != nil {
+				entryFilename = existing.Filename
+			}
 
 			entry := types.DownloadRecord{
 				ID:           m.DownloadID,
 				Status:       "paused",
 				Downloaded:   snapshot.Downloaded,
 				DestPath:     destPath,
-				Filename:     m.Filename,
+				Filename:     entryFilename,
 				TotalSize:    snapshot.TotalSize,
 				TimeTaken:    snapshot.Elapsed / int64(time.Millisecond),
-				RateLimit:    m.RateLimit,
-				RateLimitSet: m.RateLimitSet,
-				Workers:      m.Workers,
-				MinChunkSize: m.MinChunkSize,
+				RateLimit:    rateLimit,
+				RateLimitSet: rateLimitSet,
+				Workers:      snapshot.Workers,
+				MinChunkSize: snapshot.MinChunkSize,
 			}
 			if existing != nil {
 				entry.URL = existing.URL
