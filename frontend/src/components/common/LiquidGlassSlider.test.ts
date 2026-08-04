@@ -1,6 +1,30 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import LiquidGlassSlider from './LiquidGlassSlider.vue'
+
+// happy-dom does not implement Canvas 2D `getContext('2d')` (returns null), so
+// the slider's SDF displacement-map builder crashes on mount. Stub the minimal
+// Canvas 2D surface the component actually touches: getContext / createImageData
+// / putImageData / toDataURL. Canvas work is purely visual and not asserted.
+let getContextSpy: ReturnType<typeof vi.spyOn> | undefined
+let toDataURLSpy: ReturnType<typeof vi.spyOn> | undefined
+
+beforeEach(() => {
+  getContextSpy = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(() => {
+    const ctx = {
+      createImageData: (w: number, h: number): ImageData =>
+        ({ data: new Uint8ClampedArray(w * h * 4) }) as ImageData,
+      putImageData: () => {},
+    }
+    return ctx as unknown as CanvasRenderingContext2D
+  })
+  toDataURLSpy = vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,')
+})
+
+afterEach(() => {
+  getContextSpy?.mockRestore()
+  toDataURLSpy?.mockRestore()
+})
 
 describe('LiquidGlassSlider', () => {
   it('renders correctly', () => {
