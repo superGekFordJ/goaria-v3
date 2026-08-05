@@ -54,7 +54,6 @@
     "language": "Idioma",
     "auto": "Auto",
     "advancedMaterials": "Materiales Avanzados",
-    "advancedMaterialsTitle": "Materiales Avanzados",
     "advancedMaterialsDesc": "Ajusta el control deslizante para equilibrar la fidelidad visual y el rendimiento de la GPU.",
     "effectsLow": "Reducido",
     "effectsBalanced": "Equilibrado",

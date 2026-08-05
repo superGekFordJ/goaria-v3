@@ -294,10 +294,7 @@
       >
         <div class="flex items-center justify-between mb-3">
           <div class="text-left">
-            <span class="text-sm font-medium block">
-              {{ t('appearance.advancedMaterialsTitle') }}
-            </span>
-            <span class="text-[10px] text-[var(--app-text-subtle)] block mt-1">
+            <span class="text-[10px] text-[var(--app-text-subtle)] block">
               {{ t('appearance.advancedMaterialsDesc') }}
             </span>
           </div>
@@ -312,7 +309,7 @@
           :min="0"
           :max="100"
           :step="1"
-          :aria-label="t('appearance.advancedMaterialsTitle')"
+          :aria-label="t('appearance.advancedMaterials')"
           :aria-valuetext="tierLabel"
           @update:model-value="onSliderUpdate"
           @change="onSliderCommit"

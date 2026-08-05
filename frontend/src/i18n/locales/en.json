@@ -54,7 +54,6 @@
     "language": "Language",
     "auto": "Auto",
     "advancedMaterials": "Advanced Materials",
-    "advancedMaterialsTitle": "Advanced Materials",
     "advancedMaterialsDesc": "Adjust the slider to balance visual fidelity and GPU performance.",
     "effectsLow": "Reduced",
     "effectsBalanced": "Balanced",

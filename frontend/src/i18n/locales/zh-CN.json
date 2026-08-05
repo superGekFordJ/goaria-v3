@@ -54,7 +54,6 @@
     "language": "语言",
     "auto": "自动",
     "advancedMaterials": "高级材质",
-    "advancedMaterialsTitle": "高级材质",
     "advancedMaterialsDesc": "拖动滑块以平衡视觉丰富度与 GPU 性能。",
     "effectsLow": "精简",
     "effectsBalanced": "均衡",
