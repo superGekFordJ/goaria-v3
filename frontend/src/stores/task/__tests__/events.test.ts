@@ -1171,5 +1171,40 @@ describe('setupEvents', () => {
       expect(state.tasks.value.stopped).toHaveLength(0)
       expect(state.tasks.value.waiting).toHaveLength(0)
     })
+
+    it('should apply payload status and cleared errors onto an existing dest row', () => {
+      state.tasks.value = {
+        active: [
+          mockTask('gid-stale-terminal', {
+            status: 'error',
+            errorCode: '9',
+            errorMessage: 'disk full',
+            files: [{ path: '/downloads/stale.zip', uris: [] }],
+          }),
+        ],
+        waiting: [],
+        stopped: [],
+      }
+      const retained = state.tasks.value.active[0]
+
+      events.handleTaskMove({
+        gid: 'gid-stale-terminal',
+        from: 'waiting',
+        to: 'active',
+        task: {
+          gid: 'gid-stale-terminal',
+          status: 'active',
+          errorCode: '',
+          errorMessage: '',
+        },
+      })
+
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0]).toBe(retained)
+      expect(state.tasks.value.active[0].status).toBe('active')
+      expect(state.tasks.value.active[0].errorCode).toBe('')
+      expect(state.tasks.value.active[0].errorMessage).toBe('')
+      expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/stale.zip')
+    })
   })
 })

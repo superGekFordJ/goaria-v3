@@ -418,15 +418,9 @@ func moveTaskBetweenLists(active, waiting, stopped *[]rpc.Task, gid, status, des
 	}
 
 	if updateTaskInPlace(dest, gid, status) {
-		// Harden against corrupt multi-membership: GID must live in one list.
-		for _, srcName := range []string{"active", "waiting", "stopped"} {
-			if srcName == destName {
-				continue
-			}
-			if src := listPtrByName(active, waiting, stopped, srcName); src != nil {
-				_, _ = detachTask(src, gid)
-			}
-		}
+		// Sibling copies are discarded (not merged): cache dest is already the
+		// live engine-facing row; frontend richest-merge is the UI safety net.
+		sweepGIDFromOtherLists(active, waiting, stopped, gid, destName)
 		return destName
 	}
 
@@ -449,9 +443,23 @@ func moveTaskBetweenLists(active, waiting, stopped *[]rpc.Task, gid, status, des
 			task.ErrorMessage = ""
 		}
 		*dest = append(*dest, task)
+		// Drop any remaining corrupt twins in other non-dest lists.
+		sweepGIDFromOtherLists(active, waiting, stopped, gid, destName)
 		return srcName
 	}
 	return ""
+}
+
+// sweepGIDFromOtherLists detaches gid from every list except destName.
+func sweepGIDFromOtherLists(active, waiting, stopped *[]rpc.Task, gid, destName string) {
+	for _, srcName := range []string{"active", "waiting", "stopped"} {
+		if srcName == destName {
+			continue
+		}
+		if src := listPtrByName(active, waiting, stopped, srcName); src != nil {
+			_, _ = detachTask(src, gid)
+		}
+	}
 }
 
 func listPtrByName(active, waiting, stopped *[]rpc.Task, name string) *[]rpc.Task {

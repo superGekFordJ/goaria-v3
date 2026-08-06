@@ -560,6 +560,10 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
 
     if (destRow) {
       Object.assign(destRow, mergeTaskPreservingRichData(merged, destRow))
+      // Dest-last merge keeps rich files/lengths; payload still owns terminal fields.
+      if (incoming?.status !== undefined) destRow.status = incoming.status
+      if (incoming?.errorCode !== undefined) destRow.errorCode = incoming.errorCode
+      if (incoming?.errorMessage !== undefined) destRow.errorMessage = incoming.errorMessage
       active = to === 'active' ? tasks.value.active : purge(tasks.value.active)
       waiting = to === 'waiting' ? tasks.value.waiting : purge(tasks.value.waiting)
       stopped = to === 'stopped' ? tasks.value.stopped : purge(tasks.value.stopped)

@@ -468,6 +468,51 @@ func TestTaskCache_MoveTaskToActive_SweepsCorruptSibling(t *testing.T) {
 	}
 }
 
+func TestTaskCache_MoveTaskToWaiting_SweepsCorruptStoppedSibling(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{GID: "sg_w_dup", Status: "paused"}, "waiting")
+	cache.sgMu.Lock()
+	cache.sgStopped = append(cache.sgStopped, rpc.Task{
+		GID: "sg_w_dup", Status: "error", ErrorCode: "9", ErrorMessage: "stale",
+	})
+	cache.sgMu.Unlock()
+
+	from := cache.MoveTaskToWaiting("sg_w_dup", "paused")
+	if from != "waiting" {
+		t.Fatalf("expected from=waiting (in-place), got %q", from)
+	}
+	if len(cache.GetWaiting()) != 1 {
+		t.Fatalf("expected 1 waiting, got %#v", cache.GetWaiting())
+	}
+	if len(cache.GetStopped()) != 0 {
+		t.Fatalf("expected stopped twin purged, got %#v", cache.GetStopped())
+	}
+}
+
+func TestTaskCache_MoveTaskToActive_CrossListSweepsRemainingTwin(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{GID: "sg_cross", Status: "paused"}, "waiting")
+	cache.sgMu.Lock()
+	cache.sgStopped = append(cache.sgStopped, rpc.Task{
+		GID: "sg_cross", Status: "error", ErrorCode: "1",
+	})
+	cache.sgMu.Unlock()
+
+	from := cache.MoveTaskToActive("sg_cross", "active")
+	if from != "waiting" {
+		t.Fatalf("expected from=waiting, got %q", from)
+	}
+	if len(cache.GetActive()) != 1 || cache.GetActive()[0].GID != "sg_cross" {
+		t.Fatalf("expected active=[sg_cross], got %#v", cache.GetActive())
+	}
+	if len(cache.GetWaiting()) != 0 {
+		t.Fatalf("expected waiting empty, got %#v", cache.GetWaiting())
+	}
+	if len(cache.GetStopped()) != 0 {
+		t.Fatalf("expected stopped twin purged after cross-list move, got %#v", cache.GetStopped())
+	}
+}
+
 func TestTaskCache_MoveTaskToActive_FromStopped_Aria2(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
 	cache.UpdateFromAria2(nil, nil, []rpc.Task{{
