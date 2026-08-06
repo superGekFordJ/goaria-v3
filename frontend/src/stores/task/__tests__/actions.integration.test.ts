@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { CancellablePromise } from '@wailsio/runtime'
 import { setupState } from '../state'
 import { setupActions } from '../actions'
+import { setupEvents } from '../events'
+import type { TaskPolling } from '../polling'
 import { clearMetadataCache } from '../metadata'
 import type { Task } from '../../../../bindings/goaria-v3/internal/rpc/models'
 
@@ -443,27 +445,37 @@ describe('setupActions — integration', () => {
   // resume / syncFromSnapshot
   // =====================================================
   describe('resume', () => {
-    it('should optimistically move stopped task to active without fetchTasks', async () => {
-      state.tasks.value.stopped = [mockTask('sg_r1', { status: 'error' })]
+    it('should optimistically move stopped task to active via real moveTaskToActive', async () => {
+      state.tasks.value.stopped = [
+        mockTask('sg_r1', { status: 'error', errorCode: '1', errorMessage: 'fail' }),
+      ]
       mockResumeTask.mockResolvedValue(undefined as never)
-      const moveSpy = vi.fn((gid: string) => {
-        const stopped = state.tasks.value.stopped.find(t => t.gid === gid)
-        if (!stopped) return
-        state.tasks.value = {
-          active: [{ ...stopped, status: 'active', errorCode: '', errorMessage: '' }, ...state.tasks.value.active],
-          waiting: state.tasks.value.waiting,
-          stopped: state.tasks.value.stopped.filter(t => t.gid !== gid),
-        }
-      })
-      actions.setMoveTaskToActive(moveSpy)
+      const events = setupEvents(state, actions, {} as TaskPolling)
+      actions.setMoveTaskToActive(events.moveTaskToActive)
 
       await actions.resume('sg_r1')
 
       expect(mockResumeTask).toHaveBeenCalledWith('sg_r1')
-      expect(moveSpy).toHaveBeenCalledWith('sg_r1')
       expect(mockGetTasks).not.toHaveBeenCalled()
-      expect(state.tasks.value.active.some(t => t.gid === 'sg_r1')).toBe(true)
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['sg_r1'])
+      expect(state.tasks.value.active[0].status).toBe('active')
+      expect(state.tasks.value.active[0].errorCode).toBe('')
       expect(state.tasks.value.stopped.some(t => t.gid === 'sg_r1')).toBe(false)
+    })
+
+    it('should fetchTasks when move callback is unset after successful ResumeTask', async () => {
+      state.tasks.value.stopped = [mockTask('sg_r_unset', { status: 'error' })]
+      mockResumeTask.mockResolvedValue(undefined as never)
+      mockGetTasks.mockResolvedValue({
+        active: [mockTask('sg_r_unset')],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+
+      await actions.resume('sg_r_unset')
+
+      expect(mockGetTasks).toHaveBeenCalled()
+      expect(state.tasks.value.active.some(t => t.gid === 'sg_r_unset')).toBe(true)
     })
 
     it('should fetchTasks when ResumeTask fails', async () => {
@@ -481,28 +493,33 @@ describe('setupActions — integration', () => {
   })
 
   describe('batchResume', () => {
-    it('should optimistically move each GID without fetchTasks on success', async () => {
+    it('should optimistically move each GID via real moveTaskToActive without fetchTasks', async () => {
       state.tasks.value.stopped = [
         mockTask('sg_b1', { status: 'error' }),
         mockTask('sg_b2', { status: 'error' }),
       ]
       mockBatchResume.mockResolvedValue(undefined as never)
-      const moved: string[] = []
-      actions.setMoveTaskToActive((gid: string) => {
-        moved.push(gid)
-        const stopped = state.tasks.value.stopped.find(t => t.gid === gid)
-        if (!stopped) return
-        state.tasks.value = {
-          active: [{ ...stopped, status: 'active' }, ...state.tasks.value.active],
-          waiting: state.tasks.value.waiting,
-          stopped: state.tasks.value.stopped.filter(t => t.gid !== gid),
-        }
-      })
+      const events = setupEvents(state, actions, {} as TaskPolling)
+      actions.setMoveTaskToActive(events.moveTaskToActive)
 
       await actions.batchResume(['sg_b1', 'sg_b2'])
 
-      expect(moved).toEqual(['sg_b1', 'sg_b2'])
       expect(mockGetTasks).not.toHaveBeenCalled()
+      expect(state.tasks.value.active.map(t => t.gid).sort()).toEqual(['sg_b1', 'sg_b2'])
+      expect(state.tasks.value.stopped).toHaveLength(0)
+    })
+
+    it('should fetchTasks when BatchResume fails', async () => {
+      mockBatchResume.mockRejectedValue(new Error('batch resume failed'))
+      mockGetTasks.mockResolvedValue({
+        active: [],
+        waiting: [],
+        stopped: [mockTask('sg_bf', { status: 'error' })],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+
+      await actions.batchResume(['sg_bf'])
+
+      expect(mockGetTasks).toHaveBeenCalled()
     })
   })
 

@@ -1199,6 +1199,39 @@ func TestHandleSurgeEvent_DiscardsPauseAgainstStoppedWithoutIntention(t *testing
 	}
 }
 
+func TestHandleSurgeEvent_DiscardsPauseAgainstStoppedEvenWithPauseIntention(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	m := &Monitor{
+		hub:                   hub,
+		pusher:                pusher,
+		pauseResumeIntentions: make(map[string]string),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	Cache.sgStopped = []rpc.Task{{
+		GID: "sg_term-batch", Status: "error",
+		ErrorCode: "1", ErrorMessage: "fail",
+	}}
+	defer func() { Cache.sgStopped = nil; Cache.sgWaiting = nil; Cache.sgActive = nil }()
+
+	// BatchPause re-arms pause intention on terminal GIDs; must still discard.
+	m.BumpPauseResumeIntention("sg_term-batch", PauseResumeIntentionPause)
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "term-batch"})
+
+	if !Cache.IsInStopped("sg_term-batch") {
+		t.Fatal("expected stopped task to remain stopped despite pause intention")
+	}
+	for _, task := range Cache.GetWaiting() {
+		if task.GID == "sg_term-batch" {
+			t.Fatal("expected BatchPause-armed pause not to revive stopped→waiting")
+		}
+	}
+}
+
 func TestHandleSurgeEvent_ResumeFromStopped_RetiresHistory(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)

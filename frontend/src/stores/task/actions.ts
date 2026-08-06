@@ -80,6 +80,54 @@ export function setupActions(state: TaskState) {
     _admitFromStopped.clear()
   }
 
+  // One-GID-one-list partition shared by fetchTasks and syncFromSnapshot.
+  function partitionTaskLists(
+    activeIn: Task[] | null | undefined,
+    waitingIn: Task[] | null | undefined,
+    stoppedIn: Task[] | null | undefined,
+  ): { active: Task[]; waiting: Task[]; stopped: Task[] } {
+    const active: Task[] = []
+    _activeGidSet.clear()
+    for (const t of activeIn || []) {
+      const gid = t?.gid
+      if (!gid || _activeGidSet.has(gid)) continue
+      _activeGidSet.add(gid)
+      active.push(t)
+    }
+
+    const waiting: Task[] = []
+    _waitingGidSet.clear()
+    for (const t of waitingIn || []) {
+      const gid = t?.gid
+      if (!gid || _activeGidSet.has(gid) || _waitingGidSet.has(gid)) continue
+      _waitingGidSet.add(gid)
+      waiting.push(t)
+    }
+
+    const stopped: Task[] = []
+    _stoppedGidSet.clear()
+    for (const t of stoppedIn || []) {
+      const gid = t?.gid
+      if (!gid || _activeGidSet.has(gid) || _waitingGidSet.has(gid) || _stoppedGidSet.has(gid))
+        continue
+      _stoppedGidSet.add(gid)
+      stopped.push(t)
+    }
+
+    return { active, waiting, stopped }
+  }
+
+  async function applyOptimisticResume(gids: string[]) {
+    if (!_moveTaskToActive) {
+      await fetchTasks()
+      return
+    }
+    for (const gid of gids) {
+      clearStoppedSuppression(gid)
+      _moveTaskToActive(gid)
+    }
+  }
+
   // --- Core Fetch Logic ---
 
   function handleFetchError(err: unknown) {
@@ -359,44 +407,18 @@ export function setupActions(state: TaskState) {
       consecutiveErrors.value = 0
       clearStoppedSuppression()
 
-      const active: Task[] = []
-      _activeGidSet.clear()
-      for (const t of res.active || []) {
-        const gid = t?.gid
-        if (!gid || _activeGidSet.has(gid)) continue
-        _activeGidSet.add(gid)
-        active.push(t)
-      }
-
-      const waiting: Task[] = []
-      _waitingGidSet.clear()
-      for (const t of res.waiting || []) {
-        const gid = t?.gid
-        if (!gid || _activeGidSet.has(gid) || _waitingGidSet.has(gid)) continue
-        _waitingGidSet.add(gid)
-        waiting.push(t)
-      }
-
-      const stopped: Task[] = []
-      _stoppedGidSet.clear()
-      for (const t of res.stopped || []) {
-        const gid = t?.gid
-        if (!gid || _activeGidSet.has(gid) || _waitingGidSet.has(gid) || _stoppedGidSet.has(gid))
-          continue
-        _stoppedGidSet.add(gid)
-        stopped.push(t)
-      }
+      const { active, waiting, stopped } = partitionTaskLists(
+        res.active,
+        res.waiting,
+        res.stopped,
+      )
 
       for (const t of [...active, ...waiting, ...stopped]) cacheMetadata(t)
 
-      const activeWithMeta = active.map(applyMetadataFromCache)
-      const waitingWithMeta = waiting.map(applyMetadataFromCache)
-      const stoppedWithMeta = stopped.map(applyMetadataFromCache)
-
       const newTasks = {
-        active: activeWithMeta,
-        waiting: waitingWithMeta,
-        stopped: stoppedWithMeta,
+        active: active.map(applyMetadataFromCache),
+        waiting: waiting.map(applyMetadataFromCache),
+        stopped: stopped.map(applyMetadataFromCache),
       }
 
       // Assign tasks FIRST so the async metadata callback operates on current state
@@ -497,8 +519,7 @@ export function setupActions(state: TaskState) {
   async function resume(gid: string) {
     try {
       await ResumeTask(gid)
-      clearStoppedSuppression(gid)
-      _moveTaskToActive?.(gid)
+      await applyOptimisticResume([gid])
       immediateUpdateTrayIcon()
     } catch (err) {
       console.error(`Failed to resume task ${gid}:`, err)
@@ -588,10 +609,7 @@ export function setupActions(state: TaskState) {
   async function batchResume(gids: string[]) {
     try {
       await BatchResume(gids)
-      for (const gid of gids) {
-        clearStoppedSuppression(gid)
-        _moveTaskToActive?.(gid)
-      }
+      await applyOptimisticResume(gids)
       immediateUpdateTrayIcon()
     } catch (err) {
       console.error('Batch resume failed:', err)
@@ -631,33 +649,11 @@ export function setupActions(state: TaskState) {
       const snapshot = await GetFullSnapshot()
       clearStoppedSuppression()
 
-      const active: Task[] = []
-      _activeGidSet.clear()
-      for (const t of snapshot.tasks.active || []) {
-        const gid = t?.gid
-        if (!gid || _activeGidSet.has(gid)) continue
-        _activeGidSet.add(gid)
-        active.push(t)
-      }
-
-      const waiting: Task[] = []
-      _waitingGidSet.clear()
-      for (const t of snapshot.tasks.waiting || []) {
-        const gid = t?.gid
-        if (!gid || _activeGidSet.has(gid) || _waitingGidSet.has(gid)) continue
-        _waitingGidSet.add(gid)
-        waiting.push(t)
-      }
-
-      const stopped: Task[] = []
-      _stoppedGidSet.clear()
-      for (const t of snapshot.tasks.stopped || []) {
-        const gid = t?.gid
-        if (!gid || _activeGidSet.has(gid) || _waitingGidSet.has(gid) || _stoppedGidSet.has(gid))
-          continue
-        _stoppedGidSet.add(gid)
-        stopped.push(t)
-      }
+      const { active, waiting, stopped } = partitionTaskLists(
+        snapshot.tasks.active,
+        snapshot.tasks.waiting,
+        snapshot.tasks.stopped,
+      )
 
       for (const t of [...active, ...waiting, ...stopped]) cacheMetadata(t)
 

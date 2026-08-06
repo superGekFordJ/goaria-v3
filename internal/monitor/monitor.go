@@ -210,27 +210,30 @@ func (m *Monitor) shouldDiscardStalePause(gid string) bool {
 	return intention == PauseResumeIntentionResume
 }
 
-// shouldDiscardPauseAgainstStopped discards a delayed pause event that would
-// revive a terminal stopped row when the user did not explicitly pause.
+// shouldDiscardPauseAgainstStopped discards every event-path pause while the
+// GID is still in cache stopped. Intention is ignored: BatchPause can re-arm
+// pause intention on terminal GIDs, and active→waiting never needs this hatch.
+// Reconcile engine=waiting remains the only stopped→waiting repair path.
 func (m *Monitor) shouldDiscardPauseAgainstStopped(gid string) bool {
-	if m == nil || gid == "" || !Cache.IsInStopped(gid) {
+	if m == nil || gid == "" {
 		return false
 	}
-	m.pauseResumeVersionMu.RLock()
-	defer m.pauseResumeVersionMu.RUnlock()
-	if m.pauseResumeIntentions == nil {
-		return true
-	}
-	return m.pauseResumeIntentions[gid] != PauseResumeIntentionPause
+	return Cache.IsInStopped(gid)
 }
 
 // RetireHistoryIfResumedFromStopped removes durable history when a GID leaves
 // stopped for a live list (active/waiting). Safe no-op when from != "stopped".
-func (m *Monitor) RetireHistoryIfResumedFromStopped(gid, from string) {
+// Package-level so group IPC can retire without a live Monitor instance.
+func RetireHistoryIfResumedFromStopped(gid, from string) {
 	if from != "stopped" || gid == "" {
 		return
 	}
 	history.Remove(gid)
+}
+
+// RetireHistoryIfResumedFromStopped is the Monitor method form of the package helper.
+func (m *Monitor) RetireHistoryIfResumedFromStopped(gid, from string) {
+	RetireHistoryIfResumedFromStopped(gid, from)
 }
 
 // RecoveryComplete reports whether at least one available engine has completed

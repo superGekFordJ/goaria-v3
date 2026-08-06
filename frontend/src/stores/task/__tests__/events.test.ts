@@ -742,6 +742,7 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active[0].gid).toBe('gid-r')
       expect(state.tasks.value.active[0].status).toBe('active')
       expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(actions.clearStoppedSuppression).toHaveBeenCalledWith('gid-r')
     })
 
     it('should move an errored stopped task to active without losing group metadata', async () => {
@@ -764,6 +765,7 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active[0].completedLength).toBe('420')
       expect(state.tasks.value.active[0].download_group?.id).toBe('dg-events')
       expect(state.tasks.value.stopped).toHaveLength(0)
+      expect(actions.clearStoppedSuppression).toHaveBeenCalledWith('gid-error-resume')
     })
 
     it('should collapse a stale active and stopped duplicate', async () => {
@@ -961,6 +963,7 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active.length).toBe(0)
       expect(state.tasks.value.waiting.length).toBe(1)
       expect(state.tasks.value.waiting[0].gid).toBe('gid-m')
+      expect(actions.clearStoppedSuppression).toHaveBeenCalledWith('gid-m')
     })
 
     it('should move task from waiting to active', () => {
@@ -975,6 +978,7 @@ describe('setupEvents', () => {
 
       expect(state.tasks.value.waiting.length).toBe(0)
       expect(state.tasks.value.active.length).toBe(1)
+      expect(actions.clearStoppedSuppression).toHaveBeenCalledWith('gid-m')
     })
 
     it('should cache metadata when fullTask has files', () => {

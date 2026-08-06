@@ -648,6 +648,40 @@ func TestGetStoppedTasks_ExcludesLiveActiveGIDFromHistory(t *testing.T) {
 	}
 }
 
+func TestGetStoppedTasks_ExcludesLiveWaitingGIDFromHistory(t *testing.T) {
+	setupAppTaskHistoryTest(t)
+	waitingTask := rpc.Task{
+		GID:             "gid-live-waiting",
+		Status:          "paused",
+		TotalLength:     "100",
+		CompletedLength: "50",
+		Files:           []rpc.File{{Path: filepath.Join("live", "wait.bin")}},
+	}
+	entry := history.HistoryEntry{
+		GID:             waitingTask.GID,
+		Dir:             filepath.Join("history", "wait"),
+		Path:            filepath.Join("history", "wait", "wait.bin"),
+		Source:          "https://example.com/wait.bin",
+		TotalLength:     "100",
+		CompletedLength: "50",
+		Status:          "error",
+	}
+
+	monitor.Cache.UpdateFromAria2(nil, []rpc.Task{waitingTask}, nil)
+	history.Add(entry)
+
+	if got := countTasksByGID(GetStoppedTasks(), waitingTask.GID); got != 0 {
+		t.Fatalf("expected waiting GID excluded from stopped, got %d", got)
+	}
+	tasks := GetTasks()
+	if got := countTasksByGID(tasks["stopped"], waitingTask.GID); got != 0 {
+		t.Fatalf("expected GetTasks stopped to exclude waiting GID, got %d", got)
+	}
+	if got := countTasksByGID(tasks["waiting"], waitingTask.GID); got != 1 {
+		t.Fatalf("expected GID once in waiting, got %d", got)
+	}
+}
+
 func TestGetStoppedTasks_LegacyStatusLessProjectsComplete(t *testing.T) {
 	setupAppTaskHistoryTest(t)
 	entry := history.HistoryEntry{

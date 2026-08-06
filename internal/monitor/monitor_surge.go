@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/events"
+	"goaria-v3/internal/history"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/surge/store"
 	"goaria-v3/internal/surge/types"
@@ -376,13 +377,24 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			return
 		}
 		if m.shouldDiscardPauseAgainstStopped(gid) {
-			log.Printf("[Monitor] Discarding pause event for stopped gid %s (no pause intention)", gid)
+			log.Printf("[Monitor] Discarding pause event for stopped gid %s", gid)
 			return
 		}
 		if m.tracker != nil {
 			m.tracker.SetStatusFromEvent(gid, "paused")
 		}
 		from := Cache.MoveTaskToWaiting(gid, "paused")
+		// TOCTOU: concurrent complete/error may place the GID in stopped between
+		// the pre-check and this move. Refuse event-path stopped→waiting.
+		if from == "stopped" {
+			status := "error"
+			if entry, ok := history.Get(gid); ok {
+				status = history.ProjectedStoppedStatus(entry)
+			}
+			Cache.MoveTaskToStopped(gid, status)
+			log.Printf("[Monitor] Discarding pause that raced stopped→waiting for gid %s (restored stopped)", gid)
+			return
+		}
 		if from != "" && from != "waiting" {
 			if task := findTaskInCache(gid); task != nil {
 				m.hub.EmitTaskMove(events.TaskMove{
