@@ -378,14 +378,16 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		if m.tracker != nil {
 			m.tracker.SetStatusFromEvent(gid, "paused")
 		}
-		Cache.MoveTaskToWaiting(gid, "paused")
-		if task := findTaskInCache(gid); task != nil {
-			m.hub.EmitTaskMove(events.TaskMove{
-				GID:  gid,
-				From: "active",
-				To:   "waiting",
-				Task: task,
-			})
+		from := Cache.MoveTaskToWaiting(gid, "paused")
+		if from != "" && from != "waiting" {
+			if task := findTaskInCache(gid); task != nil {
+				m.hub.EmitTaskMove(events.TaskMove{
+					GID:  gid,
+					From: from,
+					To:   "waiting",
+					Task: task,
+				})
+			}
 		}
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{Type: "pause", GID: gid})
@@ -397,14 +399,16 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		if m.tracker != nil {
 			m.tracker.SetStatusFromEvent(gid, "active")
 		}
-		Cache.MoveTaskToActive(gid, "active")
-		if task := findTaskInCache(gid); task != nil {
-			m.hub.EmitTaskMove(events.TaskMove{
-				GID:  gid,
-				From: "waiting",
-				To:   "active",
-				Task: task,
-			})
+		from := Cache.MoveTaskToActive(gid, "active")
+		if from != "" && from != "active" {
+			if task := findTaskInCache(gid); task != nil {
+				m.hub.EmitTaskMove(events.TaskMove{
+					GID:  gid,
+					From: from,
+					To:   "active",
+					Task: task,
+				})
+			}
 		}
 		if State.HasWindow() {
 			m.pusher.Queue(events.TaskDelta{Type: "resume", GID: gid})
@@ -742,11 +746,13 @@ func (m *Monitor) reconcileSurgeCache() {
 			if m.tracker != nil {
 				m.tracker.SetStatusFromEvent(gid, engineStatusForTask(engineTask.Status))
 			}
-			Cache.MoveTaskToWaiting(gid, "paused")
-			if task := findTaskInCache(gid); task != nil {
-				m.hub.EmitTaskMove(events.TaskMove{
-					GID: gid, From: cacheList, To: "waiting", Task: task,
-				})
+			from := Cache.MoveTaskToWaiting(gid, "paused")
+			if from != "" && from != "waiting" {
+				if task := findTaskInCache(gid); task != nil {
+					m.hub.EmitTaskMove(events.TaskMove{
+						GID: gid, From: from, To: "waiting", Task: task,
+					})
+				}
 			}
 			if State.HasWindow() {
 				m.pusher.Queue(events.TaskDelta{Type: "pause", GID: gid})
@@ -757,11 +763,13 @@ func (m *Monitor) reconcileSurgeCache() {
 			if m.tracker != nil {
 				m.tracker.SetStatusFromEvent(gid, engineStatusForTask(engineTask.Status))
 			}
-			Cache.MoveTaskToActive(gid, "active")
-			if task := findTaskInCache(gid); task != nil {
-				m.hub.EmitTaskMove(events.TaskMove{
-					GID: gid, From: cacheList, To: "active", Task: task,
-				})
+			from := Cache.MoveTaskToActive(gid, "active")
+			if from != "" && from != "active" {
+				if task := findTaskInCache(gid); task != nil {
+					m.hub.EmitTaskMove(events.TaskMove{
+						GID: gid, From: from, To: "active", Task: task,
+					})
+				}
 			}
 			if State.HasWindow() {
 				m.pusher.Queue(events.TaskDelta{Type: "resume", GID: gid})

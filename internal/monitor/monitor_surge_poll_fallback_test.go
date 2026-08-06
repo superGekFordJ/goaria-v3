@@ -666,6 +666,82 @@ func TestReconcileSurgeCache_MissedResume(t *testing.T) {
 	}
 }
 
+// TestReconcileSurgeCache_MissedResume_FromStopped_Converges verifies that a
+// stopped→active reconcile emits From=stopped once and a second pass is quiet.
+func TestReconcileSurgeCache_MissedResume_FromStopped_Converges(t *testing.T) {
+	m, reader, pusher, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+
+	Cache.AddSgTask(rpc.Task{
+		GID: "sg_task1", Status: "error",
+		ErrorCode: "9", ErrorMessage: "fail",
+	}, "stopped")
+
+	var moves []events.TaskMove
+	m.hub.SubscribeTaskMove(func(move events.TaskMove) {
+		if move.GID == "sg_task1" {
+			moves = append(moves, move)
+		}
+	})
+
+	reader.setLists([]rpc.Task{{GID: "task1", Status: "downloading"}}, nil, nil)
+
+	m.reconcileSurgeCache()
+
+	found := false
+	for _, task := range Cache.GetActive() {
+		if task.GID == "sg_task1" {
+			found = true
+			if task.Status != "active" {
+				t.Errorf("Status = %s, want active", task.Status)
+			}
+			if task.ErrorCode != "" || task.ErrorMessage != "" {
+				t.Errorf("expected cleared errors, got code=%q msg=%q", task.ErrorCode, task.ErrorMessage)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected sg_task1 in active after reconcile from stopped")
+	}
+	if len(moves) != 1 {
+		t.Fatalf("expected 1 move on first reconcile, got %d", len(moves))
+	}
+	if moves[0].From != "stopped" || moves[0].To != "active" {
+		t.Errorf("move From/To = %q/%q, want stopped/active", moves[0].From, moves[0].To)
+	}
+
+	pusher.mu.Lock()
+	resumeCount := 0
+	for _, d := range pusher.pending {
+		if d.Type == "resume" && d.GID == "sg_task1" {
+			resumeCount++
+		}
+	}
+	pusher.mu.Unlock()
+	if resumeCount != 1 {
+		t.Fatalf("expected 1 resume delta on first pass, got %d", resumeCount)
+	}
+
+	// Second pass: cache already active — no further move or resume delta.
+	pusher.mu.Lock()
+	pusher.pending = nil
+	pusher.mu.Unlock()
+	moves = nil
+
+	m.reconcileSurgeCache()
+
+	if len(moves) != 0 {
+		t.Fatalf("expected no move on second reconcile, got %d (%#v)", len(moves), moves)
+	}
+	pusher.mu.Lock()
+	for _, d := range pusher.pending {
+		if d.Type == "resume" && d.GID == "sg_task1" {
+			t.Fatal("expected no resume delta on second reconcile")
+		}
+	}
+	pusher.mu.Unlock()
+}
+
 // TestReconcileSurgeCache_MissedRemove verifies that a task in Cache but not
 // in the engine is removed and a remove delta is pushed.
 func TestReconcileSurgeCache_MissedRemove(t *testing.T) {

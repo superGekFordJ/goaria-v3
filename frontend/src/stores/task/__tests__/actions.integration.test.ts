@@ -141,6 +141,50 @@ describe('setupActions — integration', () => {
       expect(state.tasks.value.active[0].gid).toBe('a2')
     })
 
+    it('should admit a previously suppressed stopped GID on the second consecutive fetch', async () => {
+      state.tasks.value.stopped = [mockTask('a1', { status: 'complete' })]
+
+      mockGetActiveTasks.mockResolvedValue({
+        active: [mockTask('a1'), mockTask('a2')],
+        waiting: [],
+      } as unknown as { active: Task[]; waiting: Task[] })
+
+      await actions.fetchActiveTasks()
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['a2'])
+      expect(state.tasks.value.stopped.some(t => t.gid === 'a1')).toBe(true)
+
+      await actions.fetchActiveTasks()
+      expect(state.tasks.value.active.map(t => t.gid).sort()).toEqual(['a1', 'a2'])
+      expect(state.tasks.value.stopped.some(t => t.gid === 'a1')).toBe(false)
+    })
+
+    it('should reset one-shot suppression when a GID disappears between fetches', async () => {
+      state.tasks.value.stopped = [mockTask('a1', { status: 'complete' })]
+
+      mockGetActiveTasks.mockResolvedValueOnce({
+        active: [mockTask('a1'), mockTask('a2')],
+        waiting: [],
+      } as unknown as { active: Task[]; waiting: Task[] })
+      await actions.fetchActiveTasks()
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['a2'])
+
+      mockGetActiveTasks.mockResolvedValueOnce({
+        active: [mockTask('a2')],
+        waiting: [],
+      } as unknown as { active: Task[]; waiting: Task[] })
+      await actions.fetchActiveTasks()
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['a2'])
+      expect(state.tasks.value.stopped.some(t => t.gid === 'a1')).toBe(true)
+
+      mockGetActiveTasks.mockResolvedValueOnce({
+        active: [mockTask('a1'), mockTask('a2')],
+        waiting: [],
+      } as unknown as { active: Task[]; waiting: Task[] })
+      await actions.fetchActiveTasks()
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['a2'])
+      expect(state.tasks.value.stopped.some(t => t.gid === 'a1')).toBe(true)
+    })
+
     it('should trigger metadata fetch for tasks missing files[0].path', async () => {
       mockGetActiveTasks.mockResolvedValue({
         active: [mockTask('a1', { files: [] })],

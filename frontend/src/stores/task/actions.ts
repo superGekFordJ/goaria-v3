@@ -28,6 +28,10 @@ export function setupActions(state: TaskState) {
   const _activeGidSet = new Set<string>()
   const _waitingGidSet = new Set<string>()
   const _stoppedGidSet = new Set<string>()
+  // GIDs suppressed by _stoppedGidSet on the previous fetchActiveTasks call.
+  // Second consecutive backend sighting admits the GID (one-shot stale-snapshot defense).
+  const _prevStoppedSuppressedGids = new Set<string>()
+  const _currStoppedSuppressedGids = new Set<string>()
   const metadataPending = new Set<string>()
   let metadataInFlight = false
 
@@ -230,11 +234,25 @@ export function setupActions(state: TaskState) {
         lastStoppedTasksRef = tasks.value.stopped
       }
 
+      _currStoppedSuppressedGids.clear()
+      const admitFromStopped = new Set<string>()
+
+      const shouldAdmitStoppedGid = (gid: string): boolean => {
+        if (!_stoppedGidSet.has(gid)) return true
+        if (_prevStoppedSuppressedGids.has(gid)) {
+          admitFromStopped.add(gid)
+          return true
+        }
+        _currStoppedSuppressedGids.add(gid)
+        return false
+      }
+
       const active: Task[] = []
       _activeGidSet.clear()
       for (const t of res.active || []) {
         const gid = t?.gid
-        if (!gid || _stoppedGidSet.has(gid) || _activeGidSet.has(gid)) continue
+        if (!gid || _activeGidSet.has(gid)) continue
+        if (!shouldAdmitStoppedGid(gid)) continue
         _activeGidSet.add(gid)
         active.push(t)
       }
@@ -243,8 +261,8 @@ export function setupActions(state: TaskState) {
       _waitingGidSet.clear()
       for (const t of res.waiting || []) {
         const gid = t?.gid
-        if (!gid || _activeGidSet.has(gid) || _stoppedGidSet.has(gid) || _waitingGidSet.has(gid))
-          continue
+        if (!gid || _activeGidSet.has(gid) || _waitingGidSet.has(gid)) continue
+        if (!shouldAdmitStoppedGid(gid)) continue
         _waitingGidSet.add(gid)
         waiting.push(t)
       }
@@ -257,14 +275,24 @@ export function setupActions(state: TaskState) {
 
       const activeResult = mergeTasks(tasks.value.active, active)
       const waitingResult = mergeTasks(tasks.value.waiting, waiting)
+      const stoppedChanged = admitFromStopped.size > 0
+      const nextStopped = stoppedChanged
+        ? tasks.value.stopped.filter(t => !admitFromStopped.has(t.gid))
+        : tasks.value.stopped
 
-      if (activeResult.changed || waitingResult.changed) {
+      if (activeResult.changed || waitingResult.changed || stoppedChanged) {
         tasks.value = {
           active: activeResult.merged,
           waiting: waitingResult.merged,
-          stopped: tasks.value.stopped,
+          stopped: nextStopped,
         }
       }
+
+      _prevStoppedSuppressedGids.clear()
+      for (const gid of _currStoppedSuppressedGids) {
+        _prevStoppedSuppressedGids.add(gid)
+      }
+      _currStoppedSuppressedGids.clear()
 
       queueMissingMetadataFromLists(activeResult.merged, waitingResult.merged)
 

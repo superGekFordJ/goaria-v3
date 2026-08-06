@@ -236,6 +236,99 @@ func TestHandleSurgeEvent_ResumeEvent_QueuesResumeDeltaAndPatchesCache(t *testin
 	}
 }
 
+func TestHandleSurgeEvent_ResumeEvent_FromStopped_EmitsStoppedFrom(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	se := &rpc.SurgeEngine{}
+	hybrid := rpc.NewHybridEngine(nil, se)
+	m := &Monitor{hub: hub, pusher: pusher, engine: hybrid}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	Cache.sgStopped = []rpc.Task{{
+		GID: "sg_test-resume-stopped", Status: "error",
+		ErrorCode: "9", ErrorMessage: "fail",
+		Files: []rpc.File{{Path: "/dl/a.bin"}}, Dir: "/dl",
+	}}
+	Cache.sgActive = nil
+	Cache.sgWaiting = nil
+	defer func() {
+		Cache.sgStopped = nil
+		Cache.sgActive = nil
+		Cache.sgWaiting = nil
+	}()
+
+	var gotMove *events.TaskMove
+	hub.SubscribeTaskMove(func(move events.TaskMove) {
+		cp := move
+		gotMove = &cp
+	})
+
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventResumed,
+		DownloadID: "test-resume-stopped",
+	})
+
+	if len(Cache.GetStopped()) != 0 {
+		t.Fatalf("expected stopped empty, got %#v", Cache.GetStopped())
+	}
+	found := false
+	for _, task := range Cache.GetActive() {
+		if task.GID == "sg_test-resume-stopped" {
+			found = true
+			if task.Status != "active" {
+				t.Errorf("Status = %q, want active", task.Status)
+			}
+			if task.ErrorCode != "" || task.ErrorMessage != "" {
+				t.Errorf("expected cleared errors, got code=%q msg=%q", task.ErrorCode, task.ErrorMessage)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected task in active after resume from stopped")
+	}
+	if gotMove == nil {
+		t.Fatal("expected task:move emission")
+	}
+	if gotMove.From != "stopped" || gotMove.To != "active" {
+		t.Errorf("move From/To = %q/%q, want stopped/active", gotMove.From, gotMove.To)
+	}
+}
+
+func TestHandleSurgeEvent_ResumeEvent_UnknownGID_NoMove(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	se := &rpc.SurgeEngine{}
+	hybrid := rpc.NewHybridEngine(nil, se)
+	m := &Monitor{hub: hub, pusher: pusher, engine: hybrid}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	Cache.sgActive = nil
+	Cache.sgWaiting = nil
+	Cache.sgStopped = nil
+
+	var moveCount int
+	hub.SubscribeTaskMove(func(move events.TaskMove) {
+		if move.GID == "sg_test-resume-missing" {
+			moveCount++
+		}
+	})
+
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventResumed,
+		DownloadID: "test-resume-missing",
+	})
+
+	if moveCount != 0 {
+		t.Fatalf("expected no task:move for unknown GID, got %d", moveCount)
+	}
+}
+
 func TestHandleSurgeEvent_CompleteEvent_QueuesToFrontend(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)

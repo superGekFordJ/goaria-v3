@@ -332,7 +332,10 @@ func TestTaskCache_MoveTaskToActive_FromWaiting(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
 	cache.AddSgTask(rpc.Task{GID: "sg_4", Status: "paused"}, "waiting")
 
-	cache.MoveTaskToActive("sg_4", "active")
+	from := cache.MoveTaskToActive("sg_4", "active")
+	if from != "waiting" {
+		t.Fatalf("expected from=waiting, got %q", from)
+	}
 
 	if len(cache.GetWaiting()) != 0 {
 		t.Fatalf("expected waiting empty, got %d", len(cache.GetWaiting()))
@@ -343,6 +346,131 @@ func TestTaskCache_MoveTaskToActive_FromWaiting(t *testing.T) {
 	}
 	if active[0].DownloadSpeed != "0" {
 		t.Errorf("expected DownloadSpeed=0, got %s", active[0].DownloadSpeed)
+	}
+}
+
+func TestTaskCache_MoveTaskToActive_FromStopped(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	group := &rpc.DownloadGroup{ID: "dg-1", Kind: "batch", Name: "Batch"}
+	cache.AddSgTask(rpc.Task{
+		GID:             "sg_err",
+		Status:          "error",
+		ErrorCode:       "9",
+		ErrorMessage:    "disk full",
+		CompletedLength: "500",
+		TotalLength:     "1000",
+		Dir:             "/downloads",
+		Files:           []rpc.File{{Path: "/downloads/err.bin"}},
+		DownloadGroup:   group,
+		DownloadSpeed:   "0",
+	}, "stopped")
+
+	from := cache.MoveTaskToActive("sg_err", "active")
+	if from != "stopped" {
+		t.Fatalf("expected from=stopped, got %q", from)
+	}
+	if len(cache.GetStopped()) != 0 {
+		t.Fatalf("expected stopped empty, got %d", len(cache.GetStopped()))
+	}
+	active := cache.GetActive()
+	if len(active) != 1 {
+		t.Fatalf("expected 1 active, got %#v", active)
+	}
+	got := active[0]
+	if got.Status != "active" {
+		t.Errorf("Status = %q, want active", got.Status)
+	}
+	if got.DownloadSpeed != "0" {
+		t.Errorf("DownloadSpeed = %q, want 0", got.DownloadSpeed)
+	}
+	if got.ErrorCode != "" || got.ErrorMessage != "" {
+		t.Errorf("expected cleared error fields, got code=%q msg=%q", got.ErrorCode, got.ErrorMessage)
+	}
+	if got.CompletedLength != "500" || got.TotalLength != "1000" {
+		t.Errorf("lengths not preserved: completed=%q total=%q", got.CompletedLength, got.TotalLength)
+	}
+	if got.Dir != "/downloads" || len(got.Files) == 0 || got.Files[0].Path != "/downloads/err.bin" {
+		t.Errorf("files/dir not preserved: dir=%q files=%#v", got.Dir, got.Files)
+	}
+	if got.DownloadGroup == nil || got.DownloadGroup.ID != "dg-1" {
+		t.Errorf("DownloadGroup not preserved: %#v", got.DownloadGroup)
+	}
+}
+
+func TestTaskCache_MoveTaskToWaiting_FromStopped(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{
+		GID:          "sg_err_w",
+		Status:       "error",
+		ErrorCode:    "1",
+		ErrorMessage: "fail",
+		Dir:          "/dl",
+		Files:        []rpc.File{{Path: "/dl/a.bin"}},
+	}, "stopped")
+
+	from := cache.MoveTaskToWaiting("sg_err_w", "paused")
+	if from != "stopped" {
+		t.Fatalf("expected from=stopped, got %q", from)
+	}
+	waiting := cache.GetWaiting()
+	if len(waiting) != 1 || waiting[0].Status != "paused" {
+		t.Fatalf("expected waiting=[sg_err_w paused], got %#v", waiting)
+	}
+	if waiting[0].ErrorCode != "" || waiting[0].ErrorMessage != "" {
+		t.Errorf("expected cleared error fields, got code=%q msg=%q", waiting[0].ErrorCode, waiting[0].ErrorMessage)
+	}
+	if len(cache.GetStopped()) != 0 {
+		t.Fatalf("expected stopped empty, got %d", len(cache.GetStopped()))
+	}
+}
+
+func TestTaskCache_MoveTaskToActive_ReturnValues(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{GID: "sg_already", Status: "active"}, "active")
+
+	if from := cache.MoveTaskToActive("sg_already", "active"); from != "active" {
+		t.Fatalf("already-in-destination: got %q, want active", from)
+	}
+	if from := cache.MoveTaskToActive("sg_missing", "active"); from != "" {
+		t.Fatalf("unknown GID: got %q, want empty", from)
+	}
+}
+
+func TestTaskCache_MoveTaskToActive_FromStopped_Aria2(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(nil, nil, []rpc.Task{{
+		GID:          "ar_err",
+		Status:       "error",
+		ErrorCode:    "3",
+		ErrorMessage: "not found",
+		Dir:          "/aria",
+		Files:        []rpc.File{{Path: "/aria/x.bin"}},
+	}})
+
+	from := cache.MoveTaskToActive("ar_err", "active")
+	if from != "stopped" {
+		t.Fatalf("expected from=stopped, got %q", from)
+	}
+	active := cache.GetActive()
+	found := false
+	for _, tsk := range active {
+		if tsk.GID == "ar_err" {
+			found = true
+			if tsk.ErrorCode != "" || tsk.ErrorMessage != "" {
+				t.Errorf("expected cleared errors, got code=%q msg=%q", tsk.ErrorCode, tsk.ErrorMessage)
+			}
+			if tsk.Status != "active" {
+				t.Errorf("Status = %q, want active", tsk.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected ar_err in active")
+	}
+	for _, tsk := range cache.GetStopped() {
+		if tsk.GID == "ar_err" {
+			t.Fatal("ar_err should not remain in stopped")
+		}
 	}
 }
 

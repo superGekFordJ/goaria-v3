@@ -730,12 +730,83 @@ describe('setupEvents', () => {
   // handleTaskDelta — resume event
   // =====================================================
   describe('handleTaskDelta — resume', () => {
-    it('should patch task status to active', async () => {
+    it('should move a waiting task to active', async () => {
       state.tasks.value.waiting = [mockTask('gid-r', { status: 'paused' })]
 
       await events.handleTaskDelta({ type: 'resume', gid: 'gid-r' })
+      await events.handleTaskDelta({ type: 'resume', gid: 'gid-r' })
 
-      expect(state.tasks.value.waiting[0].status).toBe('active')
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0].gid).toBe('gid-r')
+      expect(state.tasks.value.active[0].status).toBe('active')
+      expect(state.tasks.value.waiting).toHaveLength(0)
+    })
+
+    it('should move an errored stopped task to active without losing group metadata', async () => {
+      state.tasks.value.stopped = [
+        mockTask('gid-error-resume', {
+          status: 'error',
+          errorCode: '9',
+          errorMessage: 'disk full',
+          completedLength: '420',
+          download_group: mockGroup,
+        }),
+      ]
+
+      await events.handleTaskDelta({ type: 'resume', gid: 'gid-error-resume' })
+
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0].status).toBe('active')
+      expect(state.tasks.value.active[0].errorCode).toBe('')
+      expect(state.tasks.value.active[0].errorMessage).toBe('')
+      expect(state.tasks.value.active[0].completedLength).toBe('420')
+      expect(state.tasks.value.active[0].download_group?.id).toBe('dg-events')
+      expect(state.tasks.value.stopped).toHaveLength(0)
+    })
+
+    it('should collapse a stale active and stopped duplicate', async () => {
+      const activeTask = mockTask('gid-resume-duplicate', {
+        status: 'active',
+        completedLength: '600',
+        files: [],
+        dir: '',
+      })
+      state.tasks.value = {
+        active: [activeTask],
+        waiting: [],
+        stopped: [
+          mockTask('gid-resume-duplicate', {
+            status: 'error',
+            completedLength: '500',
+            errorCode: '9',
+            errorMessage: 'fail',
+            files: [{ path: '/downloads/from-stopped.zip', uris: [] }],
+            dir: '/downloads/stopped-dir',
+            download_group: mockGroup,
+          }),
+        ],
+      }
+      const retained = state.tasks.value.active[0]
+
+      await events.handleTaskDelta({ type: 'resume', gid: 'gid-resume-duplicate' })
+
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0]).toBe(retained)
+      expect(state.tasks.value.active[0].completedLength).toBe('600')
+      expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/from-stopped.zip')
+      expect(state.tasks.value.active[0].dir).toBe('/downloads/stopped-dir')
+      expect(state.tasks.value.active[0].download_group?.id).toBe('dg-events')
+      expect(state.tasks.value.active[0].errorCode).toBe('')
+      expect(state.tasks.value.active[0].errorMessage).toBe('')
+      expect(state.tasks.value.stopped).toHaveLength(0)
+    })
+
+    it('should not create a task for an unknown resume GID', async () => {
+      await events.handleTaskDelta({ type: 'resume', gid: 'gid-unknown-resume' })
+
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.stopped).toHaveLength(0)
     })
   })
 
@@ -938,6 +1009,36 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active[0].completedLength).toBe('123')
       expect(state.tasks.value.active[0].downloadSpeed).toBe('456')
       expect(getMetadataCacheSize()).toBe(1)
+    })
+
+    it('should purge all lists when from is wrong but the task exists elsewhere', () => {
+      state.tasks.value = {
+        active: [],
+        waiting: [],
+        stopped: [
+          mockTask('gid-wrong-from', {
+            status: 'error',
+            errorCode: '9',
+            download_group: mockGroup,
+          }),
+        ],
+      }
+
+      events.handleTaskMove({
+        gid: 'gid-wrong-from',
+        from: 'waiting',
+        to: 'active',
+        task: {
+          gid: 'gid-wrong-from',
+          status: 'active',
+        },
+      })
+
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0].gid).toBe('gid-wrong-from')
+      expect(state.tasks.value.active[0].download_group?.id).toBe('dg-events')
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.stopped).toHaveLength(0)
     })
   })
 })

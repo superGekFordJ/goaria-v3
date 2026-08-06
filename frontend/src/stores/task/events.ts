@@ -144,6 +144,57 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     }, 5000)
   }
 
+  function moveTaskToActive(gid: string) {
+    const activeTask = tasks.value.active.find(t => t.gid === gid)
+    const waitingTask = tasks.value.waiting.find(t => t.gid === gid)
+    const stoppedTask = tasks.value.stopped.find(t => t.gid === gid)
+    const sourceTask = waitingTask ?? stoppedTask
+    const task = activeTask ?? sourceTask
+    if (!task) return
+
+    if (activeTask && sourceTask) {
+      const backfill: Partial<Task> = {}
+      if (!hasValidFiles(activeTask) && hasValidFiles(sourceTask)) {
+        backfill.files = sourceTask.files
+      }
+      if (!isNonEmptyString(activeTask.dir) && isNonEmptyString(sourceTask.dir)) {
+        backfill.dir = sourceTask.dir
+      }
+      if (!isNonEmptyString(activeTask.title) && isNonEmptyString(sourceTask.title)) {
+        backfill.title = sourceTask.title
+      }
+      Object.assign(
+        activeTask,
+        mergeTaskPreservingRichData(activeTask, {
+          ...backfill,
+          ...mergeTaskGroupMetadata(activeTask, sourceTask),
+        }),
+      )
+    }
+
+    const surviving = activeTask ?? task
+    surviving.status = 'active'
+    if (stoppedTask) {
+      surviving.errorCode = ''
+      surviving.errorMessage = ''
+    }
+
+    if (hasValidFiles(surviving) || hasTaskGroupMetadata(surviving)) {
+      cacheMetadata(surviving)
+    }
+
+    if (!waitingTask && !stoppedTask) {
+      tasks.value = { ...tasks.value }
+      return
+    }
+
+    tasks.value = {
+      active: activeTask ? tasks.value.active : [surviving, ...tasks.value.active],
+      waiting: tasks.value.waiting.filter(t => t.gid !== gid),
+      stopped: tasks.value.stopped.filter(t => t.gid !== gid),
+    }
+  }
+
   function removeTaskFromState(gid: string) {
     const inActive = tasks.value.active.some(t => t.gid === gid)
     const inWaiting = tasks.value.waiting.some(t => t.gid === gid)
@@ -370,7 +421,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       }
 
       case 'resume': {
-        patchTaskStatus(delta.gid, 'active')
+        moveTaskToActive(delta.gid)
         useDownloadGroupStore().scheduleAutoSyncImmediate('resume-delta')
         break
       }
@@ -456,28 +507,43 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       cacheMetadata(toTask(incoming))
     }
 
+    const byName = {
+      active: tasks.value.active,
+      waiting: tasks.value.waiting,
+      stopped: tasks.value.stopped,
+    } as const
+
+    // from is a hint for locating the richest existing copy, not the removal instruction
     let movedTask: Task | undefined
-    if (from === 'active') {
-      movedTask = tasks.value.active.find(t => t.gid === gid)
-      tasks.value.active = tasks.value.active.filter(t => t.gid !== gid)
-    } else if (from === 'waiting') {
-      movedTask = tasks.value.waiting.find(t => t.gid === gid)
-      tasks.value.waiting = tasks.value.waiting.filter(t => t.gid !== gid)
-    } else if (from === 'stopped') {
-      movedTask = tasks.value.stopped.find(t => t.gid === gid)
-      tasks.value.stopped = tasks.value.stopped.filter(t => t.gid !== gid)
+    if (from === 'active' || from === 'waiting' || from === 'stopped') {
+      movedTask = byName[from].find(t => t.gid === gid)
+    }
+    if (!movedTask) {
+      for (const name of ['active', 'waiting', 'stopped'] as const) {
+        if (name === from) continue
+        movedTask = byName[name].find(t => t.gid === gid)
+        if (movedTask) break
+      }
     }
 
     const taskToAdd = applyMetadataFromCache(
       mergeTaskPreservingRichData(movedTask, incoming ?? { gid }),
     )
 
-    if (to === 'active' && !tasks.value.active.some(t => t.gid === gid)) {
-      tasks.value.active = [taskToAdd, ...tasks.value.active]
-    } else if (to === 'waiting' && !tasks.value.waiting.some(t => t.gid === gid)) {
-      tasks.value.waiting = [taskToAdd, ...tasks.value.waiting]
-    } else if (to === 'stopped' && !tasks.value.stopped.some(t => t.gid === gid)) {
-      tasks.value.stopped = [taskToAdd, ...tasks.value.stopped]
+    const destAlreadyHas =
+      (to === 'active' && tasks.value.active.some(t => t.gid === gid)) ||
+      (to === 'waiting' && tasks.value.waiting.some(t => t.gid === gid)) ||
+      (to === 'stopped' && tasks.value.stopped.some(t => t.gid === gid))
+
+    const purge = (list: Task[]) => list.filter(t => t.gid !== gid)
+    let active = to === 'active' && destAlreadyHas ? tasks.value.active : purge(tasks.value.active)
+    let waiting = to === 'waiting' && destAlreadyHas ? tasks.value.waiting : purge(tasks.value.waiting)
+    let stopped = to === 'stopped' && destAlreadyHas ? tasks.value.stopped : purge(tasks.value.stopped)
+
+    if (!destAlreadyHas) {
+      if (to === 'active') active = [taskToAdd, ...active]
+      else if (to === 'waiting') waiting = [taskToAdd, ...waiting]
+      else if (to === 'stopped') stopped = [taskToAdd, ...stopped]
     }
 
     if (to === 'stopped') {
@@ -488,7 +554,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       }, 5000)
     }
 
-    tasks.value = { ...tasks.value }
+    tasks.value = { active, waiting, stopped }
     immediateUpdateTrayIcon()
   }
 

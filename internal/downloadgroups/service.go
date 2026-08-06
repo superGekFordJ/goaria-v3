@@ -1263,21 +1263,21 @@ func pauseResumeDownloadGroup(groupKey string, action string) DownloadGroupOpera
 	successCode := DownloadGroupOperationCodePaused
 	patchStatus := DownloadGroupStatusPaused
 	moveFunc := monitor.Cache.MoveTaskToWaiting
-	fromList, toList := "active", "waiting"
+	toList := "waiting"
 	if action == DownloadGroupOperationActionResume {
 		successCode = DownloadGroupOperationCodeResumed
 		patchStatus = DownloadGroupStatusActive
 		moveFunc = monitor.Cache.MoveTaskToActive
-		fromList, toList = "waiting", "active"
+		toList = "active"
 	}
 	for _, target := range actionable {
 		item, ok := multiByGID[target.gid]
 		if ok && item.OK {
 			result.addItem(DownloadGroupOperationItemResult{GID: target.gid, Status: DownloadGroupOperationItemSucceeded, Code: successCode})
-			moveFunc(target.gid, patchStatus)
-			if monitor.IsSgGid(target.gid) {
+			from := moveFunc(target.gid, patchStatus)
+			if from != "" && from != toList && monitor.IsSgGid(target.gid) {
 				if mon := monitor.State.GetMonitor(); mon != nil {
-					mon.EmitTaskMoveForGroupOp(target.gid, fromList, toList)
+					mon.EmitTaskMoveForGroupOp(target.gid, from, toList)
 				}
 			}
 			continue

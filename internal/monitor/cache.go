@@ -377,70 +377,107 @@ func (c *TaskCache) moveTaskToStopped(gid, status, errorCode, errorMessage strin
 	}
 }
 
-// MoveTaskToWaiting moves a task from active to the waiting list, setting its
-// status. Called from handleSurgeEvent for pause events so that the task
-// appears in GetWaiting() immediately, matching engine TellWaiting behavior.
-func (c *TaskCache) MoveTaskToWaiting(gid, status string) {
+// MoveTaskToWaiting moves a task into the waiting list from any of the three
+// engine slices (active / waiting / stopped), setting its status. Returns the
+// source list name, or "" when the GID was not found. When the source is
+// stopped, ErrorCode/ErrorMessage are cleared.
+func (c *TaskCache) MoveTaskToWaiting(gid, status string) string {
 	if enginePrefix(gid) == "sg" {
 		c.sgMu.Lock()
 		defer c.sgMu.Unlock()
-		for i := range c.sgActive {
-			if c.sgActive[i].GID == gid {
-				task := c.sgActive[i]
-				task.Status = status
-				task.DownloadSpeed = "0"
-				c.sgWaiting = append(c.sgWaiting, task)
-				c.sgActive = append(c.sgActive[:i], c.sgActive[i+1:]...)
-				return
-			}
-		}
-		return
+		return moveTaskBetweenLists(&c.sgActive, &c.sgWaiting, &c.sgStopped, gid, status, "waiting")
 	}
 	c.arMu.Lock()
 	defer c.arMu.Unlock()
-	for i := range c.arActive {
-		if c.arActive[i].GID == gid {
-			task := c.arActive[i]
-			task.Status = status
-			task.DownloadSpeed = "0"
-			c.arWaiting = append(c.arWaiting, task)
-			c.arActive = append(c.arActive[:i], c.arActive[i+1:]...)
-			return
+	return moveTaskBetweenLists(&c.arActive, &c.arWaiting, &c.arStopped, gid, status, "waiting")
+}
+
+// MoveTaskToActive moves a task into the active list from any of the three
+// engine slices (active / waiting / stopped), setting its status. Returns the
+// source list name, or "" when the GID was not found. When the source is
+// stopped, ErrorCode/ErrorMessage are cleared.
+func (c *TaskCache) MoveTaskToActive(gid, status string) string {
+	if enginePrefix(gid) == "sg" {
+		c.sgMu.Lock()
+		defer c.sgMu.Unlock()
+		return moveTaskBetweenLists(&c.sgActive, &c.sgWaiting, &c.sgStopped, gid, status, "active")
+	}
+	c.arMu.Lock()
+	defer c.arMu.Unlock()
+	return moveTaskBetweenLists(&c.arActive, &c.arWaiting, &c.arStopped, gid, status, "active")
+}
+
+// moveTaskBetweenLists relocates gid into the destination slice among the three
+// list pointers (caller must hold the matching engine mutex). Returns the
+// source list name ("active"/"waiting"/"stopped"), the destination name when
+// already there, or "" when not found.
+func moveTaskBetweenLists(active, waiting, stopped *[]rpc.Task, gid, status, destName string) string {
+	dest := listPtrByName(active, waiting, stopped, destName)
+	if dest == nil {
+		return ""
+	}
+
+	if from := updateTaskInPlace(dest, gid, status); from != "" {
+		return destName
+	}
+
+	for _, srcName := range []string{"active", "waiting", "stopped"} {
+		if srcName == destName {
+			continue
 		}
+		src := listPtrByName(active, waiting, stopped, srcName)
+		if src == nil {
+			continue
+		}
+		task, ok := detachTask(src, gid)
+		if !ok {
+			continue
+		}
+		task.Status = status
+		task.DownloadSpeed = "0"
+		if srcName == "stopped" {
+			task.ErrorCode = ""
+			task.ErrorMessage = ""
+		}
+		*dest = append(*dest, task)
+		return srcName
+	}
+	return ""
+}
+
+func listPtrByName(active, waiting, stopped *[]rpc.Task, name string) *[]rpc.Task {
+	switch name {
+	case "active":
+		return active
+	case "waiting":
+		return waiting
+	case "stopped":
+		return stopped
+	default:
+		return nil
 	}
 }
 
-// MoveTaskToActive moves a task from waiting to the active list, setting its
-// status. Called from handleSurgeEvent for resume events so that the task
-// appears in GetActive() immediately, matching engine TellActive behavior.
-func (c *TaskCache) MoveTaskToActive(gid, status string) {
-	if enginePrefix(gid) == "sg" {
-		c.sgMu.Lock()
-		defer c.sgMu.Unlock()
-		for i := range c.sgWaiting {
-			if c.sgWaiting[i].GID == gid {
-				task := c.sgWaiting[i]
-				task.Status = status
-				task.DownloadSpeed = "0"
-				c.sgActive = append(c.sgActive, task)
-				c.sgWaiting = append(c.sgWaiting[:i], c.sgWaiting[i+1:]...)
-				return
-			}
-		}
-		return
-	}
-	c.arMu.Lock()
-	defer c.arMu.Unlock()
-	for i := range c.arWaiting {
-		if c.arWaiting[i].GID == gid {
-			task := c.arWaiting[i]
-			task.Status = status
-			task.DownloadSpeed = "0"
-			c.arActive = append(c.arActive, task)
-			c.arWaiting = append(c.arWaiting[:i], c.arWaiting[i+1:]...)
-			return
+func updateTaskInPlace(list *[]rpc.Task, gid, status string) string {
+	for i := range *list {
+		if (*list)[i].GID == gid {
+			(*list)[i].Status = status
+			(*list)[i].DownloadSpeed = "0"
+			return gid
 		}
 	}
+	return ""
+}
+
+func detachTask(list *[]rpc.Task, gid string) (rpc.Task, bool) {
+	for i := range *list {
+		if (*list)[i].GID == gid {
+			task := (*list)[i]
+			*list = append((*list)[:i], (*list)[i+1:]...)
+			return task, true
+		}
+	}
+	return rpc.Task{}, false
 }
 
 // AddSgTask inserts or updates a Surge task in the specified sg slice.
