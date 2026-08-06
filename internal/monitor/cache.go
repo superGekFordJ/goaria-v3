@@ -149,16 +149,39 @@ func NewTaskCacheForTest() *TaskCache {
 // 仅替换 aria2 (ar_) 切片；Surge (sg_) 切片由事件驱动路径维护
 // （AddSgTask/MoveTaskTo*/RemoveTask/PatchTaskProgress）。
 // 共享字段（pendingStartGids、lastUpdate）在 mu 下更新。
+// GIDs that leave arStopped for arActive/arWaiting trigger history retirement.
 func (c *TaskCache) UpdateFromAria2(active, waiting, stopped []rpc.Task) {
 	_, arActive := splitByPrefix(active)
 	_, arWaiting := splitByPrefix(waiting)
 	_, arStopped := splitByPrefix(stopped)
 
 	c.arMu.Lock()
+	prevStopped := make(map[string]struct{}, len(c.arStopped))
+	for i := range c.arStopped {
+		if gid := c.arStopped[i].GID; gid != "" {
+			prevStopped[gid] = struct{}{}
+		}
+	}
 	c.arActive = copyTaskSlice(arActive)
 	c.arWaiting = copyTaskSlice(arWaiting)
 	c.arStopped = copyTaskSlice(arStopped)
+
+	var resumedFromStopped []string
+	for _, task := range c.arActive {
+		if _, wasStopped := prevStopped[task.GID]; wasStopped {
+			resumedFromStopped = append(resumedFromStopped, task.GID)
+		}
+	}
+	for _, task := range c.arWaiting {
+		if _, wasStopped := prevStopped[task.GID]; wasStopped {
+			resumedFromStopped = append(resumedFromStopped, task.GID)
+		}
+	}
 	c.arMu.Unlock()
+
+	for _, gid := range resumedFromStopped {
+		RetireHistoryIfResumedFromStopped(gid, "stopped")
+	}
 
 	c.mu.Lock()
 	c.lastUpdate = time.Now()
@@ -382,14 +405,24 @@ func (c *TaskCache) moveTaskToStopped(gid, status, errorCode, errorMessage strin
 // source list name, or "" when the GID was not found. When the source is
 // stopped, ErrorCode/ErrorMessage are cleared.
 func (c *TaskCache) MoveTaskToWaiting(gid, status string) string {
+	return c.moveTaskToWaiting(gid, status, false)
+}
+
+// MoveTaskToWaitingFromLive moves only from active/waiting. If the GID is
+// solely in stopped, returns "" without mutating (refuses cleared-error TOCTOU).
+func (c *TaskCache) MoveTaskToWaitingFromLive(gid, status string) string {
+	return c.moveTaskToWaiting(gid, status, true)
+}
+
+func (c *TaskCache) moveTaskToWaiting(gid, status string, refuseStopped bool) string {
 	if enginePrefix(gid) == "sg" {
 		c.sgMu.Lock()
 		defer c.sgMu.Unlock()
-		return moveTaskBetweenLists(&c.sgActive, &c.sgWaiting, &c.sgStopped, gid, status, "waiting")
+		return moveTaskBetweenLists(&c.sgActive, &c.sgWaiting, &c.sgStopped, gid, status, "waiting", refuseStopped)
 	}
 	c.arMu.Lock()
 	defer c.arMu.Unlock()
-	return moveTaskBetweenLists(&c.arActive, &c.arWaiting, &c.arStopped, gid, status, "waiting")
+	return moveTaskBetweenLists(&c.arActive, &c.arWaiting, &c.arStopped, gid, status, "waiting", refuseStopped)
 }
 
 // MoveTaskToActive moves a task into the active list from any of the three
@@ -400,18 +433,19 @@ func (c *TaskCache) MoveTaskToActive(gid, status string) string {
 	if enginePrefix(gid) == "sg" {
 		c.sgMu.Lock()
 		defer c.sgMu.Unlock()
-		return moveTaskBetweenLists(&c.sgActive, &c.sgWaiting, &c.sgStopped, gid, status, "active")
+		return moveTaskBetweenLists(&c.sgActive, &c.sgWaiting, &c.sgStopped, gid, status, "active", false)
 	}
 	c.arMu.Lock()
 	defer c.arMu.Unlock()
-	return moveTaskBetweenLists(&c.arActive, &c.arWaiting, &c.arStopped, gid, status, "active")
+	return moveTaskBetweenLists(&c.arActive, &c.arWaiting, &c.arStopped, gid, status, "active", false)
 }
 
 // moveTaskBetweenLists relocates gid into the destination slice among the three
 // list pointers (caller must hold the matching engine mutex). Returns the
 // source list name ("active"/"waiting"/"stopped"), the destination name when
-// already there, or "" when not found.
-func moveTaskBetweenLists(active, waiting, stopped *[]rpc.Task, gid, status, destName string) string {
+// already there, or "" when not found. When refuseStopped is true, a stopped
+// source is skipped so ErrorCode/ErrorMessage are never cleared.
+func moveTaskBetweenLists(active, waiting, stopped *[]rpc.Task, gid, status, destName string, refuseStopped bool) string {
 	dest := listPtrByName(active, waiting, stopped, destName)
 	if dest == nil {
 		return ""
@@ -426,6 +460,9 @@ func moveTaskBetweenLists(active, waiting, stopped *[]rpc.Task, gid, status, des
 
 	for _, srcName := range []string{"active", "waiting", "stopped"} {
 		if srcName == destName {
+			continue
+		}
+		if refuseStopped && srcName == "stopped" {
 			continue
 		}
 		src := listPtrByName(active, waiting, stopped, srcName)
@@ -617,6 +654,22 @@ func (c *TaskCache) GetTaskLists() (active, waiting, stopped []rpc.Task) {
 	c.arMu.RUnlock()
 
 	return append(sgActive, arActive...), append(sgWaiting, arWaiting...), append(sgStopped, arStopped...)
+}
+
+// GetLiveTaskLists returns a per-engine coherent snapshot of active+waiting only
+// (no stopped deep-copy). Used by high-frequency GetActiveTasks.
+func (c *TaskCache) GetLiveTaskLists() (active, waiting []rpc.Task) {
+	c.sgMu.RLock()
+	sgActive := copyTaskSlice(c.sgActive)
+	sgWaiting := copyTaskSlice(c.sgWaiting)
+	c.sgMu.RUnlock()
+
+	c.arMu.RLock()
+	arActive := copyTaskSlice(c.arActive)
+	arWaiting := copyTaskSlice(c.arWaiting)
+	c.arMu.RUnlock()
+
+	return append(sgActive, arActive...), append(sgWaiting, arWaiting...)
 }
 
 // IsInStopped reports whether gid is present in the stopped list for its engine.

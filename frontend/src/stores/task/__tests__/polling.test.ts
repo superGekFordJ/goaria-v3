@@ -85,6 +85,7 @@ function createMockActions(): TaskActions {
     minimizeToTray: vi.fn(),
     setPollingCallbacks: vi.fn(),
     setMoveTaskToActive: vi.fn(),
+    markResumeSuperseded: vi.fn(),
     clearStoppedSuppression: vi.fn(),
     metadataPending: new Set<string>(),
     metadataInFlight: vi.fn().mockReturnValue(false),

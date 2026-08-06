@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"goaria-v3/internal/events"
-	"goaria-v3/internal/history"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/surge/store"
 	"goaria-v3/internal/surge/types"
@@ -383,19 +382,16 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		if m.tracker != nil {
 			m.tracker.SetStatusFromEvent(gid, "paused")
 		}
-		from := Cache.MoveTaskToWaiting(gid, "paused")
-		// TOCTOU: concurrent complete/error may place the GID in stopped between
-		// the pre-check and this move. Refuse event-path stopped→waiting.
-		if from == "stopped" {
-			status := "error"
-			if entry, ok := history.Get(gid); ok {
-				status = history.ProjectedStoppedStatus(entry)
+		// Atomic refuse-stopped move: never clear ErrorCode on a concurrent
+		// complete/error that lands between the IsInStopped check and this call.
+		from := Cache.MoveTaskToWaitingFromLive(gid, "paused")
+		if from == "" {
+			if Cache.IsInStopped(gid) {
+				log.Printf("[Monitor] Discarding pause that raced stopped for gid %s", gid)
 			}
-			Cache.MoveTaskToStopped(gid, status)
-			log.Printf("[Monitor] Discarding pause that raced stopped→waiting for gid %s (restored stopped)", gid)
 			return
 		}
-		if from != "" && from != "waiting" {
+		if from != "waiting" {
 			if task := findTaskInCache(gid); task != nil {
 				m.hub.EmitTaskMove(events.TaskMove{
 					GID:  gid,
@@ -760,12 +756,17 @@ func (m *Monitor) reconcileSurgeCache() {
 			m.pauseResumeVersionMu.Unlock()
 			log.Printf("[Monitor] Surge poll: moved task %s from %s to stopped (missed %s)", gid, cacheList, status)
 		case "waiting":
+			// Corrupted engine waiting must not revive terminal stopped rows.
+			// Authoritative resume uses engine=active → MoveTaskToActive.
+			if cacheList == "stopped" {
+				log.Printf("[Monitor] Surge poll: refusing stopped→waiting for terminal gid %s", gid)
+				continue
+			}
 			if m.tracker != nil {
 				m.tracker.SetStatusFromEvent(gid, engineStatusForTask(engineTask.Status))
 			}
-			from := Cache.MoveTaskToWaiting(gid, "paused")
+			from := Cache.MoveTaskToWaitingFromLive(gid, "paused")
 			if from != "" && from != "waiting" {
-				m.RetireHistoryIfResumedFromStopped(gid, from)
 				if task := findTaskInCache(gid); task != nil {
 					m.hub.EmitTaskMove(events.TaskMove{
 						GID: gid, From: from, To: "waiting", Task: task,

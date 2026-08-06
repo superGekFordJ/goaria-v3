@@ -9,7 +9,7 @@ import (
 )
 
 func (s *Service) GetActiveTasks() map[string][]rpc.Task {
-	active, waiting, _ := monitor.Cache.GetTaskLists()
+	active, waiting := monitor.Cache.GetLiveTaskLists()
 	monitor.HydrateTaskGroups(active)
 	monitor.HydrateTaskGroups(waiting)
 	return map[string][]rpc.Task{

@@ -58,6 +58,10 @@ export function setupActions(state: TaskState) {
   let _restartPollingCallback: (() => void) | null = null
   let _stopPollingCallback: ((disableContext: boolean) => void) | null = null
   let _moveTaskToActive: ((gid: string) => void) | null = null
+  // Per-GID resume op generation: terminal events during IPC mark superseded (-1)
+  // so optimistic move does not overwrite a completed/error transition.
+  let _resumeOpGen = 0
+  const _resumePendingGids = new Map<string, number>()
 
   function setPollingCallbacks(restart: () => void, stop: (disable: boolean) => void) {
     _restartPollingCallback = restart
@@ -66,6 +70,40 @@ export function setupActions(state: TaskState) {
 
   function setMoveTaskToActive(fn: (gid: string) => void) {
     _moveTaskToActive = fn
+  }
+
+  function markResumeSuperseded(gid: string) {
+    if (!gid || !_resumePendingGids.has(gid)) return
+    _resumePendingGids.set(gid, -1)
+  }
+
+  function beginResumePending(gids: string[]): number {
+    const gen = ++_resumeOpGen
+    for (const gid of gids) {
+      if (gid) _resumePendingGids.set(gid, gen)
+    }
+    return gen
+  }
+
+  function takeConfirmedResumeGids(gids: string[], gen: number): string[] {
+    const confirmed: string[] = []
+    for (const gid of gids) {
+      const pending = _resumePendingGids.get(gid)
+      _resumePendingGids.delete(gid)
+      if (pending === gen) confirmed.push(gid)
+    }
+    return confirmed
+  }
+
+  function batchResumeOkGids(results: unknown, requested: string[]): string[] {
+    if (!Array.isArray(results)) return requested
+    const ok = new Set<string>()
+    for (const item of results) {
+      if (!item || typeof item !== 'object') continue
+      const row = item as { gid?: string; ok?: boolean }
+      if (row.ok === true && typeof row.gid === 'string' && row.gid) ok.add(row.gid)
+    }
+    return requested.filter(gid => ok.has(gid))
   }
 
   function clearStoppedSuppression(gid?: string) {
@@ -517,11 +555,18 @@ export function setupActions(state: TaskState) {
   }
 
   async function resume(gid: string) {
+    const gen = beginResumePending([gid])
     try {
       await ResumeTask(gid)
-      await applyOptimisticResume([gid])
+      const confirmed = takeConfirmedResumeGids([gid], gen)
+      if (confirmed.length === 0) {
+        await fetchTasks()
+        return
+      }
+      await applyOptimisticResume(confirmed)
       immediateUpdateTrayIcon()
     } catch (err) {
+      takeConfirmedResumeGids([gid], gen)
       console.error(`Failed to resume task ${gid}:`, err)
       await fetchTasks()
     }
@@ -607,11 +652,20 @@ export function setupActions(state: TaskState) {
   }
 
   async function batchResume(gids: string[]) {
+    const gen = beginResumePending(gids)
     try {
-      await BatchResume(gids)
-      await applyOptimisticResume(gids)
+      const results = await BatchResume(gids)
+      const engineOk = batchResumeOkGids(results, gids)
+      const confirmed = takeConfirmedResumeGids(engineOk, gen)
+      for (const gid of gids) _resumePendingGids.delete(gid)
+      if (confirmed.length === 0) {
+        await fetchTasks()
+        return
+      }
+      await applyOptimisticResume(confirmed)
       immediateUpdateTrayIcon()
     } catch (err) {
+      for (const gid of gids) _resumePendingGids.delete(gid)
       console.error('Batch resume failed:', err)
       await fetchTasks()
     }
@@ -700,6 +754,7 @@ export function setupActions(state: TaskState) {
     minimizeToTray,
     setPollingCallbacks,
     setMoveTaskToActive,
+    markResumeSuperseded,
     clearStoppedSuppression,
     metadataPending, // Shared with events
     metadataInFlight: () => metadataInFlight, // Getter

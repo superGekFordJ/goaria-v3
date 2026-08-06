@@ -468,6 +468,46 @@ func TestTaskCache_MoveTaskToWaiting_FromStopped(t *testing.T) {
 	}
 }
 
+func TestTaskCache_MoveTaskToWaitingFromLive_RefusesStoppedPreservesError(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{
+		GID:          "sg_term_refuse",
+		Status:       "error",
+		ErrorCode:    "1",
+		ErrorMessage: "fail",
+	}, "stopped")
+
+	from := cache.MoveTaskToWaitingFromLive("sg_term_refuse", "paused")
+	if from != "" {
+		t.Fatalf("expected refuse-stopped move to return empty, got %q", from)
+	}
+	if !cache.IsInStopped("sg_term_refuse") {
+		t.Fatal("expected task to remain stopped")
+	}
+	stopped := cache.GetStopped()
+	if len(stopped) != 1 || stopped[0].ErrorCode != "1" || stopped[0].ErrorMessage != "fail" {
+		t.Fatalf("expected ErrorCode preserved on refuse, got %#v", stopped)
+	}
+	if len(cache.GetWaiting()) != 0 {
+		t.Fatalf("expected waiting empty, got %#v", cache.GetWaiting())
+	}
+}
+
+func TestTaskCache_GetLiveTaskLists_SkipsStoppedCopy(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{GID: "sg_a", Status: "active"}, "active")
+	cache.AddSgTask(rpc.Task{GID: "sg_w", Status: "paused"}, "waiting")
+	cache.AddSgTask(rpc.Task{GID: "sg_s", Status: "error", ErrorCode: "1"}, "stopped")
+
+	active, waiting := cache.GetLiveTaskLists()
+	if len(active) != 1 || active[0].GID != "sg_a" {
+		t.Fatalf("active=%#v", active)
+	}
+	if len(waiting) != 1 || waiting[0].GID != "sg_w" {
+		t.Fatalf("waiting=%#v", waiting)
+	}
+}
+
 func TestTaskCache_MoveTaskToActive_ReturnValues(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
 	cache.AddSgTask(rpc.Task{GID: "sg_already", Status: "active"}, "active")

@@ -463,6 +463,30 @@ describe('setupActions — integration', () => {
       expect(state.tasks.value.stopped.some(t => t.gid === 'sg_r1')).toBe(false)
     })
 
+    it('should skip optimistic move when terminal event lands during ResumeTask IPC', async () => {
+      state.tasks.value.stopped = [
+        mockTask('sg_race', { status: 'error', errorCode: '1', errorMessage: 'fail' }),
+      ]
+      const deferred = createControlledPromise<void>()
+      mockResumeTask.mockReturnValue(deferred.promise as never)
+      mockGetTasks.mockResolvedValue({
+        active: [],
+        waiting: [],
+        stopped: [mockTask('sg_race', { status: 'complete' })],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      const events = setupEvents(state, actions, {} as TaskPolling)
+      actions.setMoveTaskToActive(events.moveTaskToActive)
+
+      const resumePromise = actions.resume('sg_race')
+      actions.markResumeSuperseded('sg_race')
+      deferred.resolve(undefined)
+      await resumePromise
+
+      expect(mockGetTasks).toHaveBeenCalled()
+      expect(state.tasks.value.active.some(t => t.gid === 'sg_race')).toBe(false)
+      expect(state.tasks.value.stopped.some(t => t.gid === 'sg_race')).toBe(true)
+    })
+
     it('should fetchTasks when move callback is unset after successful ResumeTask', async () => {
       state.tasks.value.stopped = [mockTask('sg_r_unset', { status: 'error' })]
       mockResumeTask.mockResolvedValue(undefined as never)
@@ -498,7 +522,10 @@ describe('setupActions — integration', () => {
         mockTask('sg_b1', { status: 'error' }),
         mockTask('sg_b2', { status: 'error' }),
       ]
-      mockBatchResume.mockResolvedValue(undefined as never)
+      mockBatchResume.mockResolvedValue([
+        { gid: 'sg_b1', ok: true },
+        { gid: 'sg_b2', ok: true },
+      ] as never)
       const events = setupEvents(state, actions, {} as TaskPolling)
       actions.setMoveTaskToActive(events.moveTaskToActive)
 
@@ -507,6 +534,25 @@ describe('setupActions — integration', () => {
       expect(mockGetTasks).not.toHaveBeenCalled()
       expect(state.tasks.value.active.map(t => t.gid).sort()).toEqual(['sg_b1', 'sg_b2'])
       expect(state.tasks.value.stopped).toHaveLength(0)
+    })
+
+    it('should only optimistically move OK GIDs from BatchResume results', async () => {
+      state.tasks.value.stopped = [
+        mockTask('sg_ok', { status: 'error' }),
+        mockTask('sg_fail', { status: 'error' }),
+      ]
+      mockBatchResume.mockResolvedValue([
+        { gid: 'sg_ok', ok: true },
+        { gid: 'sg_fail', ok: false, error: 'unpause failed' },
+      ] as never)
+      const events = setupEvents(state, actions, {} as TaskPolling)
+      actions.setMoveTaskToActive(events.moveTaskToActive)
+
+      await actions.batchResume(['sg_ok', 'sg_fail'])
+
+      expect(mockGetTasks).not.toHaveBeenCalled()
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['sg_ok'])
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['sg_fail'])
     })
 
     it('should fetchTasks when BatchResume fails', async () => {

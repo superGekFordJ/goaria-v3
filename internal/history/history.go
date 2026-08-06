@@ -248,6 +248,17 @@ func Add(entry HistoryEntry) {
 
 // Remove removes an entry by GID
 func Remove(gid string) {
+	removeLocked(gid, true)
+}
+
+// RemoveKeepingGroupStore removes the history entry without firing group-store
+// cleanup hooks. Use when the caller re-homes download_group to live ownership
+// before retirement (resume/stopped→live).
+func RemoveKeepingGroupStore(gid string) {
+	removeLocked(gid, false)
+}
+
+func removeLocked(gid string, notifyGroup bool) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -256,7 +267,9 @@ func Remove(gid string) {
 	}
 
 	if i, ok := gidIndex[gid]; ok {
-		notifyGroupRemove(gid)
+		if notifyGroup {
+			notifyGroupRemove(gid)
+		}
 		// Update sourceIndex
 		oldSource := entries[i].Source
 		if oldSource != "" {

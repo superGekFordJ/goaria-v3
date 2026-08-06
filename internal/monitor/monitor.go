@@ -213,7 +213,7 @@ func (m *Monitor) shouldDiscardStalePause(gid string) bool {
 // shouldDiscardPauseAgainstStopped discards every event-path pause while the
 // GID is still in cache stopped. Intention is ignored: BatchPause can re-arm
 // pause intention on terminal GIDs, and active→waiting never needs this hatch.
-// Reconcile engine=waiting remains the only stopped→waiting repair path.
+// Reconcile also refuses stopped→waiting for terminal rows (Round-2).
 func (m *Monitor) shouldDiscardPauseAgainstStopped(gid string) bool {
 	if m == nil || gid == "" {
 		return false
@@ -221,14 +221,32 @@ func (m *Monitor) shouldDiscardPauseAgainstStopped(gid string) bool {
 	return Cache.IsInStopped(gid)
 }
 
+// ClearPauseResumeIntention drops a stale intention after a failed user resume
+// so later pause events are not misclassified against a dead resume bump.
+func (m *Monitor) ClearPauseResumeIntention(gid string) {
+	if m == nil || gid == "" {
+		return
+	}
+	m.pauseResumeVersionMu.Lock()
+	defer m.pauseResumeVersionMu.Unlock()
+	if m.pauseResumeIntentions != nil {
+		delete(m.pauseResumeIntentions, gid)
+	}
+}
+
 // RetireHistoryIfResumedFromStopped removes durable history when a GID leaves
 // stopped for a live list (active/waiting). Safe no-op when from != "stopped".
-// Package-level so group IPC can retire without a live Monitor instance.
+// Re-homes download_group into the durable group store before removal so resume
+// does not wipe live group ownership via history cleanup hooks.
 func RetireHistoryIfResumedFromStopped(gid, from string) {
 	if from != "stopped" || gid == "" {
 		return
 	}
-	history.Remove(gid)
+	if entry, ok := history.Get(gid); ok && entry.DownloadGroup != nil {
+		RegisterTaskGroup(gid, *entry.DownloadGroup)
+		Cache.SetTaskGroup(gid, *entry.DownloadGroup)
+	}
+	history.RemoveKeepingGroupStore(gid)
 }
 
 // RetireHistoryIfResumedFromStopped is the Monitor method form of the package helper.

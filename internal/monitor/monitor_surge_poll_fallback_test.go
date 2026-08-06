@@ -666,9 +666,9 @@ func TestReconcileSurgeCache_MissedResume(t *testing.T) {
 	}
 }
 
-// TestReconcileSurgeCache_MissedPause_FromStopped_StillMoves verifies engine
-// waiting truth can still move stopped→waiting (event-path guard does not apply).
-func TestReconcileSurgeCache_MissedPause_FromStopped_StillMoves(t *testing.T) {
+// TestReconcileSurgeCache_MissedPause_FromStopped_Refused verifies engine
+// waiting must not revive a terminal stopped row (Round-2 app-layer refusal).
+func TestReconcileSurgeCache_MissedPause_FromStopped_Refused(t *testing.T) {
 	m, reader, _, _ := newReconcileTestMonitor(t)
 	resetCacheSg()
 
@@ -681,21 +681,24 @@ func TestReconcileSurgeCache_MissedPause_FromStopped_StillMoves(t *testing.T) {
 
 	m.reconcileSurgeCache()
 
-	found := false
 	for _, task := range Cache.GetWaiting() {
 		if task.GID == "sg_task1" {
-			found = true
-			if task.Status != "paused" {
-				t.Errorf("Status = %s, want paused", task.Status)
-			}
+			t.Fatal("expected reconcile to refuse stopped→waiting for terminal gid")
 		}
 	}
-	if !found {
-		t.Fatal("expected sg_task1 in waiting after reconcile from stopped")
+	if !Cache.IsInStopped("sg_task1") {
+		t.Fatal("expected sg_task1 to remain in stopped")
 	}
-	if Cache.IsInStopped("sg_task1") {
-		t.Fatal("expected sg_task1 removed from stopped")
+	stopped := Cache.GetStopped()
+	for _, task := range stopped {
+		if task.GID == "sg_task1" {
+			if task.ErrorCode != "9" {
+				t.Fatalf("expected ErrorCode preserved, got %q", task.ErrorCode)
+			}
+			return
+		}
 	}
+	t.Fatal("expected sg_task1 still in stopped with error metadata")
 }
 
 // TestReconcileSurgeCache_MissedResume_FromStopped_RetiresHistory verifies

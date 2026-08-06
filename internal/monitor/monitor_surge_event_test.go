@@ -1279,6 +1279,59 @@ func TestHandleSurgeEvent_ResumeFromStopped_RetiresHistory(t *testing.T) {
 	}
 }
 
+func TestRetireHistoryIfResumedFromStopped_RehomesDownloadGroup(t *testing.T) {
+	setupTaskGroupStoreTest(t)
+	history.DisableSaveForTest()
+	history.Clear()
+	defer history.Clear()
+
+	group := testDownloadGroup("dg-retire-home")
+	history.Add(history.HistoryEntry{
+		GID:           "sg_grp_resume",
+		Path:          "/tmp/g.bin",
+		Status:        "error",
+		DownloadGroup: copyDownloadGroup(&group),
+	})
+	history.SetGroupCleanupHooks(RemoveTaskGroup, RemoveTaskGroups, ClearTaskGroups)
+
+	Cache.sgActive = []rpc.Task{{GID: "sg_grp_resume", Status: "active"}}
+	defer func() { Cache.sgActive = nil; Cache.metadata = make(map[string]*TaskMetadata) }()
+
+	RetireHistoryIfResumedFromStopped("sg_grp_resume", "stopped")
+
+	if _, ok := history.Get("sg_grp_resume"); ok {
+		t.Fatal("expected history removed")
+	}
+	stored := GetStoredTaskGroup("sg_grp_resume")
+	if stored == nil || stored.ID != group.ID {
+		t.Fatalf("expected download_group re-homed to group store, got %#v", stored)
+	}
+}
+
+func TestTaskCache_UpdateFromAria2_RetiresHistoryOnStoppedToLive(t *testing.T) {
+	history.DisableSaveForTest()
+	history.Clear()
+	defer history.Clear()
+
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.UpdateFromAria2(nil, nil, []rpc.Task{{
+		GID: "ar_resume_hist", Status: "error", ErrorCode: "1",
+		Files: []rpc.File{{Path: "/tmp/ar.bin"}},
+	}})
+	history.Add(history.HistoryEntry{
+		GID: "ar_resume_hist", Path: "/tmp/ar.bin", Status: "error",
+	})
+
+	cache.UpdateFromAria2([]rpc.Task{{
+		GID: "ar_resume_hist", Status: "active",
+		Files: []rpc.File{{Path: "/tmp/ar.bin"}},
+	}}, nil, nil)
+
+	if _, ok := history.Get("ar_resume_hist"); ok {
+		t.Fatal("expected Aria2 stopped→active to retire history")
+	}
+}
+
 func TestHandleSurgeEvent_PauseResumePauseSequence(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)

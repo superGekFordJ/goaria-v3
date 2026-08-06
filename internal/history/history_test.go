@@ -201,6 +201,24 @@ func TestRemove(t *testing.T) {
 	}
 }
 
+func TestRemoveKeepingGroupStore_SkipsGroupHook(t *testing.T) {
+	setupTest(t)
+
+	hooked := false
+	SetGroupCleanupHooks(func(string) { hooked = true }, nil, nil)
+	t.Cleanup(func() { SetGroupCleanupHooks(nil, nil, nil) })
+
+	Add(HistoryEntry{GID: "keep-group", Path: "/tmp/a.bin"})
+	RemoveKeepingGroupStore("keep-group")
+
+	if _, ok := Get("keep-group"); ok {
+		t.Fatal("expected entry removed")
+	}
+	if hooked {
+		t.Fatal("expected RemoveKeepingGroupStore to skip group cleanup hook")
+	}
+}
+
 func TestRemoveMany(t *testing.T) {
 	setupTest(t)
 

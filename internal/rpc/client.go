@@ -108,9 +108,9 @@ type GlobalStat struct {
 }
 
 type MultiCallItemResult struct {
-	GID   string
-	OK    bool
-	Error string
+	GID   string `json:"gid"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
 }
 
 type AddURIOptions struct {

@@ -342,6 +342,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       }
 
       case 'complete': {
+        actions.markResumeSuperseded(delta.gid)
         const payload = delta.payload as Task | undefined
 
         // 对于已经进入 stopped 的任务，应用随后到来的带精确 payload 的 Pusher 推送
@@ -435,6 +436,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       }
 
       case 'error': {
+        actions.markResumeSuperseded(delta.gid)
         const errorPayload = delta.payload as Task | undefined
 
         // 尝试在 active/waiting 中找到任务
