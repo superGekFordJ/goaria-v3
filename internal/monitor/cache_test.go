@@ -436,6 +436,38 @@ func TestTaskCache_MoveTaskToActive_ReturnValues(t *testing.T) {
 	}
 }
 
+func TestTaskCache_MoveTaskToWaiting_ReturnValues(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{GID: "sg_already_w", Status: "paused"}, "waiting")
+
+	if from := cache.MoveTaskToWaiting("sg_already_w", "paused"); from != "waiting" {
+		t.Fatalf("already-in-destination: got %q, want waiting", from)
+	}
+	if from := cache.MoveTaskToWaiting("sg_missing_w", "paused"); from != "" {
+		t.Fatalf("unknown GID: got %q, want empty", from)
+	}
+}
+
+func TestTaskCache_MoveTaskToActive_SweepsCorruptSibling(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{GID: "sg_dup", Status: "active"}, "active")
+	// Simulate corrupt multi-membership without going through public APIs.
+	cache.sgMu.Lock()
+	cache.sgWaiting = append(cache.sgWaiting, rpc.Task{GID: "sg_dup", Status: "paused"})
+	cache.sgMu.Unlock()
+
+	from := cache.MoveTaskToActive("sg_dup", "active")
+	if from != "active" {
+		t.Fatalf("expected from=active (in-place), got %q", from)
+	}
+	if len(cache.GetActive()) != 1 {
+		t.Fatalf("expected 1 active, got %#v", cache.GetActive())
+	}
+	if len(cache.GetWaiting()) != 0 {
+		t.Fatalf("expected waiting purged of sibling, got %#v", cache.GetWaiting())
+	}
+}
+
 func TestTaskCache_MoveTaskToActive_FromStopped_Aria2(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
 	cache.UpdateFromAria2(nil, nil, []rpc.Task{{

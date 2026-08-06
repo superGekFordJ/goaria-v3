@@ -32,6 +32,7 @@ export function setupActions(state: TaskState) {
   // Second consecutive backend sighting admits the GID (one-shot stale-snapshot defense).
   const _prevStoppedSuppressedGids = new Set<string>()
   const _currStoppedSuppressedGids = new Set<string>()
+  const _admitFromStopped = new Set<string>()
   const metadataPending = new Set<string>()
   let metadataInFlight = false
 
@@ -235,12 +236,12 @@ export function setupActions(state: TaskState) {
       }
 
       _currStoppedSuppressedGids.clear()
-      const admitFromStopped = new Set<string>()
+      _admitFromStopped.clear()
 
       const shouldAdmitStoppedGid = (gid: string): boolean => {
         if (!_stoppedGidSet.has(gid)) return true
         if (_prevStoppedSuppressedGids.has(gid)) {
-          admitFromStopped.add(gid)
+          _admitFromStopped.add(gid)
           return true
         }
         _currStoppedSuppressedGids.add(gid)
@@ -275,9 +276,9 @@ export function setupActions(state: TaskState) {
 
       const activeResult = mergeTasks(tasks.value.active, active)
       const waitingResult = mergeTasks(tasks.value.waiting, waiting)
-      const stoppedChanged = admitFromStopped.size > 0
+      const stoppedChanged = _admitFromStopped.size > 0
       const nextStopped = stoppedChanged
-        ? tasks.value.stopped.filter(t => !admitFromStopped.has(t.gid))
+        ? tasks.value.stopped.filter(t => !_admitFromStopped.has(t.gid))
         : tasks.value.stopped
 
       if (activeResult.changed || waitingResult.changed || stoppedChanged) {

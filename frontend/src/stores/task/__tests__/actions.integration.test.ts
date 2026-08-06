@@ -158,6 +158,23 @@ describe('setupActions — integration', () => {
       expect(state.tasks.value.stopped.some(t => t.gid === 'a1')).toBe(false)
     })
 
+    it('should admit a previously suppressed stopped GID into waiting on the second fetch', async () => {
+      state.tasks.value.stopped = [mockTask('w1', { status: 'complete' })]
+
+      mockGetActiveTasks.mockResolvedValue({
+        active: [],
+        waiting: [mockTask('w1', { status: 'paused' }), mockTask('w2')],
+      } as unknown as { active: Task[]; waiting: Task[] })
+
+      await actions.fetchActiveTasks()
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['w2'])
+      expect(state.tasks.value.stopped.some(t => t.gid === 'w1')).toBe(true)
+
+      await actions.fetchActiveTasks()
+      expect(state.tasks.value.waiting.map(t => t.gid).sort()).toEqual(['w1', 'w2'])
+      expect(state.tasks.value.stopped.some(t => t.gid === 'w1')).toBe(false)
+    })
+
     it('should reset one-shot suppression when a GID disappears between fetches', async () => {
       state.tasks.value.stopped = [mockTask('a1', { status: 'complete' })]
 

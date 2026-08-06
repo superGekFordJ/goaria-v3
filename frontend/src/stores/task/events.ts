@@ -144,6 +144,26 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     }, 5000)
   }
 
+  function backfillRichFields(retained: Task, donor: Task) {
+    const backfill: Partial<Task> = {}
+    if (!hasValidFiles(retained) && hasValidFiles(donor)) {
+      backfill.files = donor.files
+    }
+    if (!isNonEmptyString(retained.dir) && isNonEmptyString(donor.dir)) {
+      backfill.dir = donor.dir
+    }
+    if (!isNonEmptyString(retained.title) && isNonEmptyString(donor.title)) {
+      backfill.title = donor.title
+    }
+    Object.assign(
+      retained,
+      mergeTaskPreservingRichData(retained, {
+        ...backfill,
+        ...mergeTaskGroupMetadata(retained, donor),
+      }),
+    )
+  }
+
   function moveTaskToActive(gid: string) {
     const activeTask = tasks.value.active.find(t => t.gid === gid)
     const waitingTask = tasks.value.waiting.find(t => t.gid === gid)
@@ -153,23 +173,9 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     if (!task) return
 
     if (activeTask && sourceTask) {
-      const backfill: Partial<Task> = {}
-      if (!hasValidFiles(activeTask) && hasValidFiles(sourceTask)) {
-        backfill.files = sourceTask.files
-      }
-      if (!isNonEmptyString(activeTask.dir) && isNonEmptyString(sourceTask.dir)) {
-        backfill.dir = sourceTask.dir
-      }
-      if (!isNonEmptyString(activeTask.title) && isNonEmptyString(sourceTask.title)) {
-        backfill.title = sourceTask.title
-      }
-      Object.assign(
-        activeTask,
-        mergeTaskPreservingRichData(activeTask, {
-          ...backfill,
-          ...mergeTaskGroupMetadata(activeTask, sourceTask),
-        }),
-      )
+      backfillRichFields(activeTask, sourceTask)
+    } else if (waitingTask && stoppedTask) {
+      backfillRichFields(waitingTask, stoppedTask)
     }
 
     const surviving = activeTask ?? task
@@ -513,37 +519,57 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       stopped: tasks.value.stopped,
     } as const
 
-    // from is a hint for locating the richest existing copy, not the removal instruction
+    const copies: Task[] = []
+    for (const name of ['active', 'waiting', 'stopped'] as const) {
+      const copy = byName[name].find(t => t.gid === gid)
+      if (copy) copies.push(copy)
+    }
+
+    // from is a hint for the preferred non-dest base; fall back across lists
     let movedTask: Task | undefined
     if (from === 'active' || from === 'waiting' || from === 'stopped') {
       movedTask = byName[from].find(t => t.gid === gid)
     }
     if (!movedTask) {
-      for (const name of ['active', 'waiting', 'stopped'] as const) {
-        if (name === from) continue
-        movedTask = byName[name].find(t => t.gid === gid)
-        if (movedTask) break
-      }
+      movedTask = copies[0]
     }
 
-    const taskToAdd = applyMetadataFromCache(
-      mergeTaskPreservingRichData(movedTask, incoming ?? { gid }),
+    const destRow =
+      (to === 'active' && tasks.value.active.find(t => t.gid === gid)) ||
+      (to === 'waiting' && tasks.value.waiting.find(t => t.gid === gid)) ||
+      (to === 'stopped' && tasks.value.stopped.find(t => t.gid === gid)) ||
+      undefined
+
+    // Fold every non-destination copy + incoming, then prefer dest fields last
+    let acc: Task | undefined
+    for (const copy of copies) {
+      if (destRow && copy === destRow) continue
+      acc = acc ? mergeTaskPreservingRichData(acc, copy) : toTask(copy)
+    }
+    if (!acc && movedTask && movedTask !== destRow) {
+      acc = toTask(movedTask)
+    }
+    const merged = applyMetadataFromCache(
+      mergeTaskPreservingRichData(acc ?? destRow ?? movedTask, incoming ?? { gid }),
     )
 
-    const destAlreadyHas =
-      (to === 'active' && tasks.value.active.some(t => t.gid === gid)) ||
-      (to === 'waiting' && tasks.value.waiting.some(t => t.gid === gid)) ||
-      (to === 'stopped' && tasks.value.stopped.some(t => t.gid === gid))
-
     const purge = (list: Task[]) => list.filter(t => t.gid !== gid)
-    let active = to === 'active' && destAlreadyHas ? tasks.value.active : purge(tasks.value.active)
-    let waiting = to === 'waiting' && destAlreadyHas ? tasks.value.waiting : purge(tasks.value.waiting)
-    let stopped = to === 'stopped' && destAlreadyHas ? tasks.value.stopped : purge(tasks.value.stopped)
+    let active: Task[]
+    let waiting: Task[]
+    let stopped: Task[]
 
-    if (!destAlreadyHas) {
-      if (to === 'active') active = [taskToAdd, ...active]
-      else if (to === 'waiting') waiting = [taskToAdd, ...waiting]
-      else if (to === 'stopped') stopped = [taskToAdd, ...stopped]
+    if (destRow) {
+      Object.assign(destRow, mergeTaskPreservingRichData(merged, destRow))
+      active = to === 'active' ? tasks.value.active : purge(tasks.value.active)
+      waiting = to === 'waiting' ? tasks.value.waiting : purge(tasks.value.waiting)
+      stopped = to === 'stopped' ? tasks.value.stopped : purge(tasks.value.stopped)
+    } else {
+      active = purge(tasks.value.active)
+      waiting = purge(tasks.value.waiting)
+      stopped = purge(tasks.value.stopped)
+      if (to === 'active') active = [merged, ...active]
+      else if (to === 'waiting') waiting = [merged, ...waiting]
+      else if (to === 'stopped') stopped = [merged, ...stopped]
     }
 
     if (to === 'stopped') {

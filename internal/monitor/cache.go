@@ -417,7 +417,16 @@ func moveTaskBetweenLists(active, waiting, stopped *[]rpc.Task, gid, status, des
 		return ""
 	}
 
-	if from := updateTaskInPlace(dest, gid, status); from != "" {
+	if updateTaskInPlace(dest, gid, status) {
+		// Harden against corrupt multi-membership: GID must live in one list.
+		for _, srcName := range []string{"active", "waiting", "stopped"} {
+			if srcName == destName {
+				continue
+			}
+			if src := listPtrByName(active, waiting, stopped, srcName); src != nil {
+				_, _ = detachTask(src, gid)
+			}
+		}
 		return destName
 	}
 
@@ -458,15 +467,15 @@ func listPtrByName(active, waiting, stopped *[]rpc.Task, name string) *[]rpc.Tas
 	}
 }
 
-func updateTaskInPlace(list *[]rpc.Task, gid, status string) string {
+func updateTaskInPlace(list *[]rpc.Task, gid, status string) bool {
 	for i := range *list {
 		if (*list)[i].GID == gid {
 			(*list)[i].Status = status
 			(*list)[i].DownloadSpeed = "0"
-			return gid
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
 func detachTask(list *[]rpc.Task, gid string) (rpc.Task, bool) {

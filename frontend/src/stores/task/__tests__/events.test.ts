@@ -770,6 +770,7 @@ describe('setupEvents', () => {
         completedLength: '600',
         files: [],
         dir: '',
+        title: '',
       })
       state.tasks.value = {
         active: [activeTask],
@@ -780,6 +781,7 @@ describe('setupEvents', () => {
             completedLength: '500',
             errorCode: '9',
             errorMessage: 'fail',
+            title: 'From Stopped',
             files: [{ path: '/downloads/from-stopped.zip', uris: [] }],
             dir: '/downloads/stopped-dir',
             download_group: mockGroup,
@@ -793,11 +795,98 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active).toHaveLength(1)
       expect(state.tasks.value.active[0]).toBe(retained)
       expect(state.tasks.value.active[0].completedLength).toBe('600')
+      expect(state.tasks.value.active[0].title).toBe('From Stopped')
       expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/from-stopped.zip')
       expect(state.tasks.value.active[0].dir).toBe('/downloads/stopped-dir')
       expect(state.tasks.value.active[0].download_group?.id).toBe('dg-events')
       expect(state.tasks.value.active[0].errorCode).toBe('')
       expect(state.tasks.value.active[0].errorMessage).toBe('')
+      expect(state.tasks.value.stopped).toHaveLength(0)
+    })
+
+    it('should backfill stopped rich data onto waiting when both exist without active', async () => {
+      state.tasks.value = {
+        active: [],
+        waiting: [
+          mockTask('gid-wait-stop', {
+            status: 'paused',
+            files: [],
+            dir: '',
+            title: '',
+          }),
+        ],
+        stopped: [
+          mockTask('gid-wait-stop', {
+            status: 'error',
+            title: 'Stopped Title',
+            files: [{ path: '/downloads/ws.zip', uris: [] }],
+            dir: '/downloads/ws',
+            download_group: mockGroup,
+            errorCode: '9',
+          }),
+        ],
+      }
+
+      await events.handleTaskDelta({ type: 'resume', gid: 'gid-wait-stop' })
+
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0].title).toBe('Stopped Title')
+      expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/ws.zip')
+      expect(state.tasks.value.active[0].dir).toBe('/downloads/ws')
+      expect(state.tasks.value.active[0].download_group?.id).toBe('dg-events')
+      expect(state.tasks.value.active[0].errorCode).toBe('')
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.stopped).toHaveLength(0)
+    })
+
+    it('should converge to a single active row for move-then-resume order', async () => {
+      state.tasks.value.stopped = [
+        mockTask('gid-order-mr', {
+          status: 'error',
+          errorCode: '9',
+          download_group: mockGroup,
+        }),
+      ]
+
+      events.handleTaskMove({
+        gid: 'gid-order-mr',
+        from: 'stopped',
+        to: 'active',
+        task: { gid: 'gid-order-mr', status: 'active' },
+      })
+      await events.handleTaskDelta({ type: 'resume', gid: 'gid-order-mr' })
+
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0].gid).toBe('gid-order-mr')
+      expect(state.tasks.value.active[0].status).toBe('active')
+      expect(state.tasks.value.active[0].download_group?.id).toBe('dg-events')
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.stopped).toHaveLength(0)
+    })
+
+    it('should converge to a single active row for resume-then-move order', async () => {
+      state.tasks.value.stopped = [
+        mockTask('gid-order-rm', {
+          status: 'error',
+          errorCode: '9',
+          files: [{ path: '/downloads/order-rm.zip', uris: [] }],
+          download_group: mockGroup,
+        }),
+      ]
+
+      await events.handleTaskDelta({ type: 'resume', gid: 'gid-order-rm' })
+      events.handleTaskMove({
+        gid: 'gid-order-rm',
+        from: 'stopped',
+        to: 'active',
+        task: { gid: 'gid-order-rm', status: 'active', files: [], dir: '' },
+      })
+
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0].gid).toBe('gid-order-rm')
+      expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/order-rm.zip')
+      expect(state.tasks.value.active[0].download_group?.id).toBe('dg-events')
+      expect(state.tasks.value.waiting).toHaveLength(0)
       expect(state.tasks.value.stopped).toHaveLength(0)
     })
 
@@ -1039,6 +1128,48 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active[0].download_group?.id).toBe('dg-events')
       expect(state.tasks.value.waiting).toHaveLength(0)
       expect(state.tasks.value.stopped).toHaveLength(0)
+    })
+
+    it('should merge rich stopped data into an existing Lite active dest row', () => {
+      const liteActive = mockTask('gid-lite-dest', {
+        status: 'active',
+        files: [],
+        dir: '',
+        title: '',
+        completedLength: '700',
+      })
+      state.tasks.value = {
+        active: [liteActive],
+        waiting: [],
+        stopped: [
+          mockTask('gid-lite-dest', {
+            status: 'error',
+            title: 'Rich Stopped',
+            files: [{ path: '/downloads/rich-stopped.zip', uris: [] }],
+            dir: '/downloads/rich',
+            download_group: mockGroup,
+            completedLength: '500',
+          }),
+        ],
+      }
+      const retained = state.tasks.value.active[0]
+
+      events.handleTaskMove({
+        gid: 'gid-lite-dest',
+        from: 'waiting',
+        to: 'active',
+        task: { gid: 'gid-lite-dest', status: 'active', files: [], dir: '' },
+      })
+
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0]).toBe(retained)
+      expect(state.tasks.value.active[0].title).toBe('Rich Stopped')
+      expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/rich-stopped.zip')
+      expect(state.tasks.value.active[0].dir).toBe('/downloads/rich')
+      expect(state.tasks.value.active[0].download_group?.id).toBe('dg-events')
+      expect(state.tasks.value.active[0].completedLength).toBe('700')
+      expect(state.tasks.value.stopped).toHaveLength(0)
+      expect(state.tasks.value.waiting).toHaveLength(0)
     })
   })
 })
