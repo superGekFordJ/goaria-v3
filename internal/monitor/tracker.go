@@ -433,6 +433,25 @@ func (t *TaskTracker) SetStatusFromEvent(gid string, status string) {
 	}
 }
 
+// ReopenAfterStoppedToLive clears terminal dedup so a confirmed stopped→live
+// resume can accept a later complete/error. Call only from authoritative
+// resume paths (alongside history retirement), never from generic pause/status.
+func (t *TaskTracker) ReopenAfterStoppedToLive(gid, status string) {
+	if t == nil || gid == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.processedComplete, gid)
+	if status == "" {
+		status = "active"
+	}
+	if tracked := t.tasks[gid]; tracked != nil {
+		tracked.Status = status
+		tracked.resumeOccupancyHold = false
+	}
+}
+
 // UpdateProgressFromEvent refreshes tracker TotalLength/CompletedLength from a
 // Surge Progress/BatchProgress event. Lengths only — does not touch PeakSpeed,
 // PeakThreadCount, PeakEnvKey, or Sustained*. ConvergenceTicker derives rawBps

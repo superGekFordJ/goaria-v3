@@ -1846,6 +1846,28 @@ func TestSetStatusFromEvent_DoesNotResurrectTerminalTask(t *testing.T) {
 	}
 }
 
+func TestTaskTracker_ReopenAfterStoppedToLive_AllowsSecondComplete(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg-reopen", 1000, "https://example.com/f.bin", 0, "active")
+	if first := tracker.MarkCompleteFromEvent("sg-reopen", "error"); first == nil {
+		t.Fatal("expected first complete")
+	}
+	tracker.SetStatusFromEvent("sg-reopen", "active")
+	if tracker.tasks["sg-reopen"].Status != "error" {
+		t.Fatal("SetStatusFromEvent must still refuse terminal without explicit reopen")
+	}
+	tracker.ReopenAfterStoppedToLive("sg-reopen", "active")
+	if tracker.processedComplete["sg-reopen"] {
+		t.Fatal("expected processedComplete cleared")
+	}
+	if tracker.tasks["sg-reopen"].Status != "active" {
+		t.Fatalf("Status = %q, want active", tracker.tasks["sg-reopen"].Status)
+	}
+	if second := tracker.MarkCompleteFromEvent("sg-reopen", "error"); second == nil {
+		t.Fatal("expected second MarkCompleteFromEvent after reopen")
+	}
+}
+
 func TestEnsureTrackedFromEvent_DoesNotResurrectTerminalTask(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.EnsureTrackedFromEvent("sg-terminal-ensure", 100000000, "https://example.com/file.zip", 8, "active")

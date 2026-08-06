@@ -1279,6 +1279,65 @@ func TestHandleSurgeEvent_ResumeFromStopped_RetiresHistory(t *testing.T) {
 	}
 }
 
+func TestHandleSurgeEvent_ErrorResumeError_AllowsSecondTerminal(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	m := &Monitor{
+		hub:                   hub,
+		pusher:                pusher,
+		tracker:               tracker,
+		pauseResumeIntentions: make(map[string]string),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	history.DisableSaveForTest()
+	history.Clear()
+	defer history.Clear()
+
+	Cache.sgStopped = []rpc.Task{{
+		GID: "sg_reerr", Status: "error",
+		ErrorCode: "1", ErrorMessage: "fail",
+		Files: []rpc.File{{Path: "/tmp/reerr.bin"}},
+	}}
+	Cache.metadata["sg_reerr"] = &TaskMetadata{
+		GID: "sg_reerr", Files: []string{"/tmp/reerr.bin"}, Dir: "/tmp",
+	}
+	defer func() {
+		Cache.sgStopped = nil
+		Cache.sgActive = nil
+		delete(Cache.metadata, "sg_reerr")
+	}()
+
+	tracker.EnsureTrackedFromEvent("sg_reerr", 1000, "https://example.com/reerr.bin", 0, "error")
+	if completed := tracker.MarkCompleteFromEvent("sg_reerr", "error"); completed == nil {
+		t.Fatal("expected first terminal mark")
+	}
+	history.Add(history.HistoryEntry{GID: "sg_reerr", Path: "/tmp/reerr.bin", Status: "error"})
+
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventResumed, DownloadID: "reerr"})
+
+	if tracker.processedComplete["sg_reerr"] {
+		t.Fatal("expected processedComplete cleared after resume reopen")
+	}
+	if _, ok := history.Get("sg_reerr"); ok {
+		t.Fatal("expected history retired on resume")
+	}
+
+	second := tracker.MarkCompleteFromEvent("sg_reerr", "error")
+	if second == nil {
+		t.Fatal("expected second MarkCompleteFromEvent after reopen")
+	}
+	m.handleTaskComplete(second)
+	entry, ok := history.Get("sg_reerr")
+	if !ok || entry.Status != "error" {
+		t.Fatalf("expected second history error entry, got ok=%v entry=%#v", ok, entry)
+	}
+}
+
 func TestRetireHistoryIfResumedFromStopped_RehomesDownloadGroup(t *testing.T) {
 	setupTaskGroupStoreTest(t)
 	history.DisableSaveForTest()
@@ -1313,6 +1372,15 @@ func TestTaskCache_UpdateFromAria2_RetiresHistoryOnStoppedToLive(t *testing.T) {
 	history.Clear()
 	defer history.Clear()
 
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("ar_resume_hist", 1000, "https://example.com/ar.bin", 0, "error")
+	if completed := tracker.MarkCompleteFromEvent("ar_resume_hist", "error"); completed == nil {
+		t.Fatal("expected first terminal")
+	}
+	prevMon := State.GetMonitor()
+	State.SetMonitor(&Monitor{tracker: tracker})
+	t.Cleanup(func() { State.SetMonitor(prevMon) })
+
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
 	cache.UpdateFromAria2(nil, nil, []rpc.Task{{
 		GID: "ar_resume_hist", Status: "error", ErrorCode: "1",
@@ -1329,6 +1397,9 @@ func TestTaskCache_UpdateFromAria2_RetiresHistoryOnStoppedToLive(t *testing.T) {
 
 	if _, ok := history.Get("ar_resume_hist"); ok {
 		t.Fatal("expected Aria2 stopped→active to retire history")
+	}
+	if tracker.processedComplete["ar_resume_hist"] {
+		t.Fatal("expected Aria2 stopped→live to reopen tracker processedComplete")
 	}
 }
 

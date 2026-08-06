@@ -237,7 +237,8 @@ func (m *Monitor) ClearPauseResumeIntention(gid string) {
 // RetireHistoryIfResumedFromStopped removes durable history when a GID leaves
 // stopped for a live list (active/waiting). Safe no-op when from != "stopped".
 // Re-homes download_group into the durable group store before removal so resume
-// does not wipe live group ownership via history cleanup hooks.
+// does not wipe live group ownership via history cleanup hooks. Also reopens
+// TaskTracker so a later complete/error can record a new terminal result.
 func RetireHistoryIfResumedFromStopped(gid, from string) {
 	if from != "stopped" || gid == "" {
 		return
@@ -247,11 +248,17 @@ func RetireHistoryIfResumedFromStopped(gid, from string) {
 		Cache.SetTaskGroup(gid, *entry.DownloadGroup)
 	}
 	history.RemoveKeepingGroupStore(gid)
+	if mon := State.GetMonitor(); mon != nil && mon.tracker != nil {
+		mon.tracker.ReopenAfterStoppedToLive(gid, "active")
+	}
 }
 
 // RetireHistoryIfResumedFromStopped is the Monitor method form of the package helper.
 func (m *Monitor) RetireHistoryIfResumedFromStopped(gid, from string) {
 	RetireHistoryIfResumedFromStopped(gid, from)
+	if from == "stopped" && m != nil && m.tracker != nil {
+		m.tracker.ReopenAfterStoppedToLive(gid, "active")
+	}
 }
 
 // RecoveryComplete reports whether at least one available engine has completed

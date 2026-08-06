@@ -701,6 +701,102 @@ func TestReconcileSurgeCache_MissedPause_FromStopped_Refused(t *testing.T) {
 	t.Fatal("expected sg_task1 still in stopped with error metadata")
 }
 
+// TestReconcileSurgeCache_HistoryOnlyWaiting_RefusesAdmit seeds stopped from
+// durable history when cache is empty but engine reports waiting (restart /
+// cache-loss + late pause leaving Surge waiting while history is terminal).
+func TestReconcileSurgeCache_HistoryOnlyWaiting_RefusesAdmit(t *testing.T) {
+	m, reader, _, tracker := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+
+	history.Add(history.HistoryEntry{
+		GID:             "sg_task1",
+		Path:            "/tmp/hist-error.bin",
+		Status:          "error",
+		TotalLength:     "1000",
+		CompletedLength: "200",
+	})
+
+	reader.setLists(nil, []rpc.Task{{GID: "task1", Status: "paused", TotalLength: "1000"}}, nil)
+	m.reconcileSurgeCache()
+
+	for _, task := range Cache.GetWaiting() {
+		if task.GID == "sg_task1" {
+			t.Fatal("expected history-terminal GID not admitted to waiting")
+		}
+	}
+	found := false
+	for _, task := range Cache.GetStopped() {
+		if task.GID == "sg_task1" {
+			found = true
+			if task.Status != "error" {
+				t.Fatalf("Status = %q, want error", task.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected history-terminal GID seeded into stopped")
+	}
+	if _, ok := history.Get("sg_task1"); !ok {
+		t.Fatal("expected history entry retained (not retired on refused waiting admit)")
+	}
+	if !tracker.processedComplete["sg_task1"] {
+		t.Fatal("expected tracker marked terminal for seeded history row")
+	}
+}
+
+// TestReconcileSurgeCache_ErrorResumeError_AllowsSecondTerminal verifies
+// stopped→active reopen clears processedComplete so a later error records again.
+func TestReconcileSurgeCache_ErrorResumeError_AllowsSecondTerminal(t *testing.T) {
+	m, reader, _, tracker := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+
+	Cache.AddSgTask(rpc.Task{
+		GID: "sg_task1", Status: "error",
+		ErrorCode: "9", ErrorMessage: "fail",
+		Files:     []rpc.File{{Path: "/tmp/a.bin"}},
+		TotalLength: "1000",
+	}, "stopped")
+	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/a.bin", 0, "error")
+	if completed := tracker.MarkCompleteFromEvent("sg_task1", "error"); completed == nil {
+		t.Fatal("expected first MarkCompleteFromEvent")
+	}
+	history.Add(history.HistoryEntry{GID: "sg_task1", Path: "/tmp/a.bin", Status: "error"})
+	Cache.metadata["sg_task1"] = &TaskMetadata{
+		GID:   "sg_task1",
+		Files: []string{"/tmp/a.bin"},
+		Dir:   "/tmp",
+	}
+
+	reader.setLists([]rpc.Task{{GID: "task1", Status: "downloading", TotalLength: "1000"}}, nil, nil)
+	m.reconcileSurgeCache()
+
+	if tracker.processedComplete["sg_task1"] {
+		t.Fatal("expected processedComplete cleared after stopped→active reopen")
+	}
+	if _, ok := history.Get("sg_task1"); ok {
+		t.Fatal("expected history retired on resume")
+	}
+
+	reader.setLists(nil, nil, []rpc.Task{{
+		GID: "task1", Status: "error", TotalLength: "1000",
+		ErrorCode: "1", ErrorMessage: "again",
+	}})
+	m.reconcileSurgeCache()
+
+	if !tracker.processedComplete["sg_task1"] {
+		t.Fatal("expected second terminal to set processedComplete")
+	}
+	entry, ok := history.Get("sg_task1")
+	if !ok {
+		t.Fatal("expected history rewritten after second error")
+	}
+	if entry.Status != "error" {
+		t.Fatalf("history Status = %q, want error", entry.Status)
+	}
+}
+
 // TestReconcileSurgeCache_MissedResume_FromStopped_RetiresHistory verifies
 // stopped→active reconcile removes durable history for the GID.
 func TestReconcileSurgeCache_MissedResume_FromStopped_RetiresHistory(t *testing.T) {

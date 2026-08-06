@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/events"
+	"goaria-v3/internal/history"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/surge/store"
 	"goaria-v3/internal/surge/types"
@@ -665,6 +666,28 @@ func (m *Monitor) reconcileSurgeCache() {
 		cacheList, inCache := cacheAll[gid]
 		if !inCache {
 			list := engineListForStatus(engineTask.Status)
+			// After cache loss, engine waiting must not revive a historied
+			// terminal row as paused. History remains authority until an
+			// authoritative engine=active resume reopens the GID.
+			if list == "waiting" {
+				if entry, ok := history.Get(gid); ok {
+					termStatus := history.ProjectedStoppedStatus(entry)
+					stoppedTask := history.ToStoppedTask(entry)
+					Cache.AddSgTask(stoppedTask, "stopped")
+					if m.tracker != nil {
+						m.tracker.EnsureTrackedFromEvent(
+							gid,
+							parseInt64(stoppedTask.TotalLength),
+							sourceURLFromTask(stoppedTask),
+							0,
+							termStatus,
+						)
+						_ = m.tracker.MarkCompleteFromEvent(gid, termStatus)
+					}
+					log.Printf("[Monitor] Surge poll: refusing history-terminal waiting admit for gid %s (seeded stopped/%s)", gid, termStatus)
+					continue
+				}
+			}
 			Cache.AddSgTask(engineTask, list)
 			if m.tracker != nil {
 				m.tracker.EnsureTrackedFromEvent(gid, parseInt64(engineTask.TotalLength), sourceURLFromTask(engineTask), 0, engineStatusForTask(engineTask.Status))
@@ -686,6 +709,10 @@ func (m *Monitor) reconcileSurgeCache() {
 					delete(m.pauseResumeIntentions, gid)
 				}
 				m.pauseResumeVersionMu.Unlock()
+			}
+			if list == "active" {
+				// Engine active after cache miss is authoritative resume.
+				m.RetireHistoryIfResumedFromStopped(gid, "stopped")
 			}
 			log.Printf("[Monitor] Surge poll: added missing task %s to %s", gid, list)
 			continue
