@@ -345,12 +345,13 @@ func GetDownloadGroupDetail(groupKey string) DownloadGroupDetailEnvelope {
 }
 
 func buildDownloadGroupReadSnapshot() downloadGroupReadSnapshot {
-	active := cloneDownloadGroupTasks(monitor.Cache.GetActive())
-	waiting := cloneDownloadGroupTasks(monitor.Cache.GetWaiting())
+	activeCache, waitingCache, stoppedCacheRaw := monitor.Cache.GetTaskLists()
+	active := cloneDownloadGroupTasks(activeCache)
+	waiting := cloneDownloadGroupTasks(waitingCache)
 	monitor.HydrateTaskGroups(active)
 	monitor.HydrateTaskGroups(waiting)
 
-	stoppedCache := cloneDownloadGroupTasks(monitor.Cache.GetStopped())
+	stoppedCache := cloneDownloadGroupTasks(stoppedCacheRaw)
 	originalStoppedGIDs := make(map[string]struct{}, len(stoppedCache))
 	for _, task := range stoppedCache {
 		if task.GID != "" {
@@ -364,7 +365,7 @@ func buildDownloadGroupReadSnapshot() downloadGroupReadSnapshot {
 			historyByGID[entry.GID] = entry
 		}
 	}
-	stopped := cloneDownloadGroupTasks(stoppedTasksWithHistory(stoppedCache))
+	stopped := cloneDownloadGroupTasks(stoppedTasksWithHistory(active, waiting, stoppedCache))
 
 	bestPriority := make(map[string]int)
 	markDownloadGroupBestPriority(bestPriority, active, 3)
@@ -941,8 +942,18 @@ func cloneDownloadGroupTask(task rpc.Task) rpc.Task {
 	return cloned
 }
 
-func stoppedTasksWithHistory(stopped []rpc.Task) []rpc.Task {
-	existingGIDs := make(map[string]struct{}, len(stopped))
+func stoppedTasksWithHistory(active, waiting, stopped []rpc.Task) []rpc.Task {
+	existingGIDs := make(map[string]struct{}, len(stopped)+len(active)+len(waiting))
+	for i := range active {
+		if gid := active[i].GID; gid != "" {
+			existingGIDs[gid] = struct{}{}
+		}
+	}
+	for i := range waiting {
+		if gid := waiting[i].GID; gid != "" {
+			existingGIDs[gid] = struct{}{}
+		}
+	}
 	for i := range stopped {
 		existingGIDs[stopped[i].GID] = struct{}{}
 		if stopped[i].DownloadGroup == nil {
@@ -957,7 +968,7 @@ func stoppedTasksWithHistory(stopped []rpc.Task) []rpc.Task {
 	}
 
 	for _, entry := range history.GetMissingByGID(existingGIDs) {
-		stopped = append(stopped, historyEntryToStoppedTask(entry))
+		stopped = append(stopped, history.ToStoppedTask(entry))
 		if entry.DownloadGroup != nil {
 			monitor.RemoveTaskGroup(entry.GID)
 		}
@@ -987,18 +998,6 @@ func backfillStoppedTaskFromHistory(task *rpc.Task, entry history.HistoryEntry) 
 	}
 	if task.CompletedLength == "0" && isNonZeroLength(entry.CompletedLength) {
 		task.CompletedLength = entry.CompletedLength
-	}
-}
-
-func historyEntryToStoppedTask(entry history.HistoryEntry) rpc.Task {
-	return rpc.Task{
-		GID:             entry.GID,
-		Status:          "complete",
-		TotalLength:     entry.TotalLength,
-		CompletedLength: entry.CompletedLength,
-		Dir:             entry.Dir,
-		Files:           []rpc.File{{Path: entry.Path, Uris: historySourceURIs(entry.Source)}},
-		DownloadGroup:   CopyDownloadGroup(entry.DownloadGroup),
 	}
 }
 
@@ -1275,8 +1274,9 @@ func pauseResumeDownloadGroup(groupKey string, action string) DownloadGroupOpera
 		if ok && item.OK {
 			result.addItem(DownloadGroupOperationItemResult{GID: target.gid, Status: DownloadGroupOperationItemSucceeded, Code: successCode})
 			from := moveFunc(target.gid, patchStatus)
-			if from != "" && from != toList && monitor.IsSgGid(target.gid) {
-				if mon := monitor.State.GetMonitor(); mon != nil {
+			if mon := monitor.State.GetMonitor(); mon != nil {
+				mon.RetireHistoryIfResumedFromStopped(target.gid, from)
+				if from != "" && from != toList && monitor.IsSgGid(target.gid) {
 					mon.EmitTaskMoveForGroupOp(target.gid, from, toList)
 				}
 			}

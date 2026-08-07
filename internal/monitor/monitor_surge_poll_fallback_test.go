@@ -666,6 +666,63 @@ func TestReconcileSurgeCache_MissedResume(t *testing.T) {
 	}
 }
 
+// TestReconcileSurgeCache_MissedPause_FromStopped_StillMoves verifies engine
+// waiting truth can still move stopped→waiting (event-path guard does not apply).
+func TestReconcileSurgeCache_MissedPause_FromStopped_StillMoves(t *testing.T) {
+	m, reader, _, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+
+	Cache.AddSgTask(rpc.Task{
+		GID: "sg_task1", Status: "error",
+		ErrorCode: "9", ErrorMessage: "fail",
+	}, "stopped")
+
+	reader.setLists(nil, []rpc.Task{{GID: "task1", Status: "paused"}}, nil)
+
+	m.reconcileSurgeCache()
+
+	found := false
+	for _, task := range Cache.GetWaiting() {
+		if task.GID == "sg_task1" {
+			found = true
+			if task.Status != "paused" {
+				t.Errorf("Status = %s, want paused", task.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected sg_task1 in waiting after reconcile from stopped")
+	}
+	if Cache.IsInStopped("sg_task1") {
+		t.Fatal("expected sg_task1 removed from stopped")
+	}
+}
+
+// TestReconcileSurgeCache_MissedResume_FromStopped_RetiresHistory verifies
+// stopped→active reconcile removes durable history for the GID.
+func TestReconcileSurgeCache_MissedResume_FromStopped_RetiresHistory(t *testing.T) {
+	m, reader, _, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+
+	history.DisableSaveForTest()
+	history.Clear()
+	defer history.Clear()
+
+	Cache.AddSgTask(rpc.Task{
+		GID: "sg_task1", Status: "error",
+		ErrorCode: "9", ErrorMessage: "fail",
+		Files: []rpc.File{{Path: "/tmp/a.bin"}},
+	}, "stopped")
+	history.Add(history.HistoryEntry{GID: "sg_task1", Path: "/tmp/a.bin", Status: "error"})
+
+	reader.setLists([]rpc.Task{{GID: "task1", Status: "downloading"}}, nil, nil)
+	m.reconcileSurgeCache()
+
+	if _, ok := history.Get("sg_task1"); ok {
+		t.Fatal("expected history retired after reconcile stopped→active")
+	}
+}
+
 // TestReconcileSurgeCache_MissedResume_FromStopped_Converges verifies that a
 // stopped→active reconcile emits From=stopped once and a second pass is quiet.
 func TestReconcileSurgeCache_MissedResume_FromStopped_Converges(t *testing.T) {

@@ -189,6 +189,8 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       cacheMetadata(surviving)
     }
 
+    actions.clearStoppedSuppression(gid)
+
     if (!waitingTask && !stoppedTask) {
       tasks.value = { ...tasks.value }
       return
@@ -585,12 +587,16 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     }
 
     tasks.value = { active, waiting, stopped }
+    if (to === 'active' || to === 'waiting') {
+      actions.clearStoppedSuppression(gid)
+    }
     immediateUpdateTrayIcon()
   }
 
   return {
     handleTaskDelta,
     handleTaskMove,
+    moveTaskToActive,
     moveTaskToStopped, // Exposed for tests/polling
   }
 }

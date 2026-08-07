@@ -600,6 +600,49 @@ func (c *TaskCache) GetStopped() []rpc.Task {
 	return append(sg, ar...)
 }
 
+// GetTaskLists returns a per-engine coherent snapshot of active/waiting/stopped.
+// Each engine's three lists are copied under one mutex; sg then ar are merged.
+// Does not nest sgMu/arMu.
+func (c *TaskCache) GetTaskLists() (active, waiting, stopped []rpc.Task) {
+	c.sgMu.RLock()
+	sgActive := copyTaskSlice(c.sgActive)
+	sgWaiting := copyTaskSlice(c.sgWaiting)
+	sgStopped := copyTaskSlice(c.sgStopped)
+	c.sgMu.RUnlock()
+
+	c.arMu.RLock()
+	arActive := copyTaskSlice(c.arActive)
+	arWaiting := copyTaskSlice(c.arWaiting)
+	arStopped := copyTaskSlice(c.arStopped)
+	c.arMu.RUnlock()
+
+	return append(sgActive, arActive...), append(sgWaiting, arWaiting...), append(sgStopped, arStopped...)
+}
+
+// IsInStopped reports whether gid is present in the stopped list for its engine.
+func (c *TaskCache) IsInStopped(gid string) bool {
+	if gid == "" {
+		return false
+	}
+	if enginePrefix(gid) == "sg" {
+		c.sgMu.RLock()
+		defer c.sgMu.RUnlock()
+		return containsTaskGID(c.sgStopped, gid)
+	}
+	c.arMu.RLock()
+	defer c.arMu.RUnlock()
+	return containsTaskGID(c.arStopped, gid)
+}
+
+func containsTaskGID(tasks []rpc.Task, gid string) bool {
+	for i := range tasks {
+		if tasks[i].GID == gid {
+			return true
+		}
+	}
+	return false
+}
+
 // GetMetadata 获取任务元数据（用于 UI 展示）
 func (c *TaskCache) GetMetadata(gid string) *TaskMetadata {
 	c.mu.RLock()

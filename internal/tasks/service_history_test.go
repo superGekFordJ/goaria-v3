@@ -302,8 +302,9 @@ func assertHistoryOnlyStoppedTask(t *testing.T, task rpc.Task, entry history.His
 	if task.GID != entry.GID {
 		t.Fatalf("expected gid %q, got %q", entry.GID, task.GID)
 	}
-	if task.Status != "complete" {
-		t.Fatalf("expected synthetic history task status %q, got %q", "complete", task.Status)
+	wantStatus := history.ProjectedStoppedStatus(entry)
+	if task.Status != wantStatus {
+		t.Fatalf("expected synthetic history task status %q, got %q", wantStatus, task.Status)
 	}
 	if task.Dir != entry.Dir {
 		t.Fatalf("expected dir %q, got %q", entry.Dir, task.Dir)
@@ -584,6 +585,87 @@ func TestGetTasks_HistoryBackfillRemovesCompletedGroupFromDurableStore(t *testin
 	_ = GetTasks()
 	if got := monitor.GetStoredTaskGroup("gid-completed"); got != nil {
 		t.Fatalf("expected completed history group removed from durable store, got %#v", got)
+	}
+}
+
+func TestGetStoppedTasks_ProjectsHistoriedErrorStatus(t *testing.T) {
+	setupAppTaskHistoryTest(t)
+	entry := history.HistoryEntry{
+		GID:             "gid-history-error",
+		Dir:             filepath.Join("history", "error"),
+		Path:            filepath.Join("history", "error", "missing.bin"),
+		Source:          "https://example.com/missing.bin",
+		TotalLength:     "1024",
+		CompletedLength: "10",
+		Status:          "error",
+	}
+
+	monitor.Cache.UpdateFromAria2(nil, nil, nil)
+	history.Add(entry)
+
+	task := mustFindTaskByGID(t, GetStoppedTasks(), entry.GID)
+	assertHistoryOnlyStoppedTask(t, task, entry)
+
+	tasks := GetTasks()
+	task = mustFindTaskByGID(t, tasks["stopped"], entry.GID)
+	if task.Status != "error" {
+		t.Fatalf("expected GetTasks stopped status error, got %q", task.Status)
+	}
+}
+
+func TestGetStoppedTasks_ExcludesLiveActiveGIDFromHistory(t *testing.T) {
+	setupAppTaskHistoryTest(t)
+	activeTask := rpc.Task{
+		GID:             "gid-live-resume",
+		Status:          "active",
+		TotalLength:     "100",
+		CompletedLength: "50",
+		Files:           []rpc.File{{Path: filepath.Join("live", "file.bin")}},
+	}
+	entry := history.HistoryEntry{
+		GID:             activeTask.GID,
+		Dir:             filepath.Join("history", "live"),
+		Path:            filepath.Join("history", "live", "file.bin"),
+		Source:          "https://example.com/live.bin",
+		TotalLength:     "100",
+		CompletedLength: "50",
+		Status:          "error",
+	}
+
+	monitor.Cache.UpdateFromAria2([]rpc.Task{activeTask}, nil, nil)
+	history.Add(entry)
+
+	stopped := GetStoppedTasks()
+	if got := countTasksByGID(stopped, activeTask.GID); got != 0 {
+		t.Fatalf("expected live GID excluded from stopped, got %d", got)
+	}
+	tasks := GetTasks()
+	if got := countTasksByGID(tasks["stopped"], activeTask.GID); got != 0 {
+		t.Fatalf("expected GetTasks stopped to exclude live GID, got %d", got)
+	}
+	if got := countTasksByGID(tasks["active"], activeTask.GID); got != 1 {
+		t.Fatalf("expected GID once in active, got %d", got)
+	}
+}
+
+func TestGetStoppedTasks_LegacyStatusLessProjectsComplete(t *testing.T) {
+	setupAppTaskHistoryTest(t)
+	entry := history.HistoryEntry{
+		GID:             "gid-legacy-complete",
+		Dir:             filepath.Join("history", "legacy"),
+		Path:            filepath.Join("history", "legacy", "old.bin"),
+		Source:          "https://example.com/old.bin",
+		TotalLength:     "2048",
+		CompletedLength: "2048",
+	}
+
+	monitor.Cache.UpdateFromAria2(nil, nil, nil)
+	history.Add(entry)
+
+	task := mustFindTaskByGID(t, GetStoppedTasks(), entry.GID)
+	assertHistoryOnlyStoppedTask(t, task, entry)
+	if task.Status != "complete" {
+		t.Fatalf("expected legacy projection complete, got %q", task.Status)
 	}
 }
 

@@ -23,6 +23,7 @@ export const useTaskStore = defineStore('task', () => {
     polling.startPolling, // restart
     polling.stopPolling, // stop
   )
+  actions.setMoveTaskToActive(events.moveTaskToActive)
 
   // Events (if setupEvents needed polling, which it doesn't currently, but type says so in plan)
   // Actually setupEvents doesn't use polling in implementation above, but good to be consistent.

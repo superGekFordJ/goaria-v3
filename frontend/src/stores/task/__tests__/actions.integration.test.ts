@@ -40,6 +40,9 @@ import {
   GetStoppedTasks,
   GetTaskMetadata,
   AddUri,
+  ResumeTask,
+  BatchResume,
+  GetFullSnapshot,
 } from '../../../../bindings/goaria-v3/app.js'
 
 const mockGetActiveTasks = vi.mocked(GetActiveTasks)
@@ -47,6 +50,9 @@ const mockGetStoppedTasks = vi.mocked(GetStoppedTasks)
 const mockGetTasks = vi.mocked(GetTasks)
 const mockGetTaskMetadata = vi.mocked(GetTaskMetadata)
 const mockAddUri = vi.mocked(AddUri)
+const mockResumeTask = vi.mocked(ResumeTask)
+const mockBatchResume = vi.mocked(BatchResume)
+const mockGetFullSnapshot = vi.mocked(GetFullSnapshot)
 
 // --- Helpers ---
 
@@ -127,6 +133,7 @@ describe('setupActions — integration', () => {
     })
 
     it('should deduplicate tasks already in stopped list', async () => {
+      state.syncMode.value = 'polling'
       state.tasks.value.stopped = [mockTask('a1', { status: 'complete' })]
 
       mockGetActiveTasks.mockResolvedValue({
@@ -136,12 +143,13 @@ describe('setupActions — integration', () => {
 
       await actions.fetchActiveTasks()
 
-      // a1 is in stopped, so it should be filtered out from active
+      // a1 is in stopped, so it should be filtered out from active on first polling sighting
       expect(state.tasks.value.active.length).toBe(1)
       expect(state.tasks.value.active[0].gid).toBe('a2')
     })
 
     it('should admit a previously suppressed stopped GID on the second consecutive fetch', async () => {
+      state.syncMode.value = 'polling'
       state.tasks.value.stopped = [mockTask('a1', { status: 'complete' })]
 
       mockGetActiveTasks.mockResolvedValue({
@@ -159,6 +167,7 @@ describe('setupActions — integration', () => {
     })
 
     it('should admit a previously suppressed stopped GID into waiting on the second fetch', async () => {
+      state.syncMode.value = 'polling'
       state.tasks.value.stopped = [mockTask('w1', { status: 'complete' })]
 
       mockGetActiveTasks.mockResolvedValue({
@@ -175,7 +184,22 @@ describe('setupActions — integration', () => {
       expect(state.tasks.value.stopped.some(t => t.gid === 'w1')).toBe(false)
     })
 
+    it('should admit a local-stopped GID on first sighting in event-driven mode', async () => {
+      state.syncMode.value = 'event-driven'
+      state.tasks.value.stopped = [mockTask('a1', { status: 'error' })]
+
+      mockGetActiveTasks.mockResolvedValue({
+        active: [mockTask('a1'), mockTask('a2')],
+        waiting: [],
+      } as unknown as { active: Task[]; waiting: Task[] })
+
+      await actions.fetchActiveTasks()
+      expect(state.tasks.value.active.map(t => t.gid).sort()).toEqual(['a1', 'a2'])
+      expect(state.tasks.value.stopped.some(t => t.gid === 'a1')).toBe(false)
+    })
+
     it('should reset one-shot suppression when a GID disappears between fetches', async () => {
+      state.syncMode.value = 'polling'
       state.tasks.value.stopped = [mockTask('a1', { status: 'complete' })]
 
       mockGetActiveTasks.mockResolvedValueOnce({
@@ -412,6 +436,91 @@ describe('setupActions — integration', () => {
       await actions.fetchActiveTasks()
       expect(stopPollingCalled).toBe(true)
       expect(state.consecutiveErrors.value).toBe(3)
+    })
+  })
+
+  // =====================================================
+  // resume / syncFromSnapshot
+  // =====================================================
+  describe('resume', () => {
+    it('should optimistically move stopped task to active without fetchTasks', async () => {
+      state.tasks.value.stopped = [mockTask('sg_r1', { status: 'error' })]
+      mockResumeTask.mockResolvedValue(undefined as never)
+      const moveSpy = vi.fn((gid: string) => {
+        const stopped = state.tasks.value.stopped.find(t => t.gid === gid)
+        if (!stopped) return
+        state.tasks.value = {
+          active: [{ ...stopped, status: 'active', errorCode: '', errorMessage: '' }, ...state.tasks.value.active],
+          waiting: state.tasks.value.waiting,
+          stopped: state.tasks.value.stopped.filter(t => t.gid !== gid),
+        }
+      })
+      actions.setMoveTaskToActive(moveSpy)
+
+      await actions.resume('sg_r1')
+
+      expect(mockResumeTask).toHaveBeenCalledWith('sg_r1')
+      expect(moveSpy).toHaveBeenCalledWith('sg_r1')
+      expect(mockGetTasks).not.toHaveBeenCalled()
+      expect(state.tasks.value.active.some(t => t.gid === 'sg_r1')).toBe(true)
+      expect(state.tasks.value.stopped.some(t => t.gid === 'sg_r1')).toBe(false)
+    })
+
+    it('should fetchTasks when ResumeTask fails', async () => {
+      mockResumeTask.mockRejectedValue(new Error('resume failed'))
+      mockGetTasks.mockResolvedValue({
+        active: [],
+        waiting: [],
+        stopped: [mockTask('sg_r2', { status: 'error' })],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+
+      await actions.resume('sg_r2')
+
+      expect(mockGetTasks).toHaveBeenCalled()
+    })
+  })
+
+  describe('batchResume', () => {
+    it('should optimistically move each GID without fetchTasks on success', async () => {
+      state.tasks.value.stopped = [
+        mockTask('sg_b1', { status: 'error' }),
+        mockTask('sg_b2', { status: 'error' }),
+      ]
+      mockBatchResume.mockResolvedValue(undefined as never)
+      const moved: string[] = []
+      actions.setMoveTaskToActive((gid: string) => {
+        moved.push(gid)
+        const stopped = state.tasks.value.stopped.find(t => t.gid === gid)
+        if (!stopped) return
+        state.tasks.value = {
+          active: [{ ...stopped, status: 'active' }, ...state.tasks.value.active],
+          waiting: state.tasks.value.waiting,
+          stopped: state.tasks.value.stopped.filter(t => t.gid !== gid),
+        }
+      })
+
+      await actions.batchResume(['sg_b1', 'sg_b2'])
+
+      expect(moved).toEqual(['sg_b1', 'sg_b2'])
+      expect(mockGetTasks).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('syncFromSnapshot', () => {
+    it('should dedupe stopped GIDs that are also in active/waiting', async () => {
+      mockGetFullSnapshot.mockResolvedValue({
+        tasks: {
+          active: [mockTask('twin', { status: 'active' })],
+          waiting: [],
+          stopped: [mockTask('twin', { status: 'complete' }), mockTask('only-stopped')],
+        },
+        trayState: { hasActive: true, hasPaused: false, hasError: false },
+      } as never)
+
+      await actions.syncFromSnapshot()
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['twin'])
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['only-stopped'])
     })
   })
 })

@@ -639,3 +639,117 @@ func TestHistoryLoadOldEntriesWithoutDownloadGroup(t *testing.T) {
 		t.Fatal("expected sourceIndex rebuilt for old entry")
 	}
 }
+
+func TestProjectedStoppedStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		want   string
+	}{
+		{name: "error", status: "error", want: "error"},
+		{name: "complete", status: "complete", want: "complete"},
+		{name: "empty legacy", status: "", want: "complete"},
+		{name: "unknown", status: "paused", want: "complete"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ProjectedStoppedStatus(HistoryEntry{Status: tc.status})
+			if got != tc.want {
+				t.Fatalf("ProjectedStoppedStatus(%q) = %q, want %q", tc.status, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestToStoppedTask_ProjectsStatus(t *testing.T) {
+	errorTask := ToStoppedTask(HistoryEntry{
+		GID:             "gid-err",
+		Dir:             "/tmp",
+		Path:            "/tmp/err.bin",
+		TotalLength:     "10",
+		CompletedLength: "5",
+		Source:          "https://example.com/err.bin",
+		Status:          "error",
+	})
+	if errorTask.Status != "error" {
+		t.Fatalf("expected error status, got %q", errorTask.Status)
+	}
+	if errorTask.GID != "gid-err" || errorTask.Dir != "/tmp" {
+		t.Fatalf("unexpected projected fields: %#v", errorTask)
+	}
+	if len(errorTask.Files) != 1 || errorTask.Files[0].Path != "/tmp/err.bin" {
+		t.Fatalf("unexpected files: %#v", errorTask.Files)
+	}
+
+	legacyTask := ToStoppedTask(HistoryEntry{
+		GID:    "gid-legacy",
+		Path:   "/tmp/legacy.bin",
+		Status: "",
+	})
+	if legacyTask.Status != "complete" {
+		t.Fatalf("expected legacy empty status to project complete, got %q", legacyTask.Status)
+	}
+}
+
+func TestHistoryStatusRoundTrip(t *testing.T) {
+	historyFile := setupTest(t)
+	SetSaveEnabled(true)
+	defer DisableSaveForTest()
+
+	Add(HistoryEntry{GID: "gid-err", Path: "/tmp/a.bin", Status: "error"})
+	Add(HistoryEntry{GID: "gid-ok", Path: "/tmp/b.bin", Status: "complete"})
+
+	// Force flush of debounced saver.
+	time.Sleep(50 * time.Millisecond)
+	if err := Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	Clear()
+	Load()
+
+	errEntry, ok := Get("gid-err")
+	if !ok {
+		t.Fatal("expected gid-err after reload")
+	}
+	if errEntry.Status != "error" {
+		t.Fatalf("expected status error, got %q", errEntry.Status)
+	}
+	okEntry, ok := Get("gid-ok")
+	if !ok {
+		t.Fatal("expected gid-ok after reload")
+	}
+	if okEntry.Status != "complete" {
+		t.Fatalf("expected status complete, got %q", okEntry.Status)
+	}
+
+	data, err := os.ReadFile(historyFile)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var raw []map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	_ = raw
+}
+
+func TestHistoryLoadLegacyWithoutStatus(t *testing.T) {
+	historyFile := setupTest(t)
+	oldJSON := `[{"gid":"legacy-gid","title":"Old","path":"/tmp/old.bin","source":"https://example.com/old.bin"}]`
+	if err := os.WriteFile(historyFile, []byte(oldJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	Load()
+	entry, ok := Get("legacy-gid")
+	if !ok {
+		t.Fatal("expected legacy entry to load")
+	}
+	if entry.Status != "" {
+		t.Fatalf("expected empty status for legacy JSON, got %q", entry.Status)
+	}
+	if ProjectedStoppedStatus(entry) != "complete" {
+		t.Fatalf("expected legacy projection complete, got %q", ProjectedStoppedStatus(entry))
+	}
+}

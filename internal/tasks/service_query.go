@@ -9,8 +9,7 @@ import (
 )
 
 func (s *Service) GetActiveTasks() map[string][]rpc.Task {
-	active := monitor.Cache.GetActive()
-	waiting := monitor.Cache.GetWaiting()
+	active, waiting, _ := monitor.Cache.GetTaskLists()
 	monitor.HydrateTaskGroups(active)
 	monitor.HydrateTaskGroups(waiting)
 	return map[string][]rpc.Task{
@@ -24,11 +23,24 @@ func (s *Service) GetStoppedTasks() []rpc.Task {
 		return []rpc.Task{}
 	}
 
-	return s.StoppedTasksWithHistory(monitor.Cache.GetStopped())
+	active, waiting, stopped := monitor.Cache.GetTaskLists()
+	return s.StoppedTasksWithHistory(active, waiting, stopped)
 }
 
-func (s *Service) StoppedTasksWithHistory(stopped []rpc.Task) []rpc.Task {
-	existingGIDs := make(map[string]struct{}, len(stopped))
+// StoppedTasksWithHistory merges cache stopped with history-only rows, excluding
+// any GID that is already live in active/waiting (or present in stopped).
+func (s *Service) StoppedTasksWithHistory(active, waiting, stopped []rpc.Task) []rpc.Task {
+	existingGIDs := make(map[string]struct{}, len(stopped)+len(active)+len(waiting))
+	for i := range active {
+		if gid := active[i].GID; gid != "" {
+			existingGIDs[gid] = struct{}{}
+		}
+	}
+	for i := range waiting {
+		if gid := waiting[i].GID; gid != "" {
+			existingGIDs[gid] = struct{}{}
+		}
+	}
 	for i := range stopped {
 		existingGIDs[stopped[i].GID] = struct{}{}
 		if stopped[i].DownloadGroup == nil {
@@ -43,7 +55,7 @@ func (s *Service) StoppedTasksWithHistory(stopped []rpc.Task) []rpc.Task {
 	}
 
 	for _, entry := range history.GetMissingByGID(existingGIDs) {
-		stopped = append(stopped, historyEntryToStoppedTask(entry))
+		stopped = append(stopped, history.ToStoppedTask(entry))
 		if entry.DownloadGroup != nil {
 			monitor.RemoveTaskGroup(entry.GID)
 		}
@@ -76,18 +88,6 @@ func (s *Service) backfillStoppedTaskFromHistory(task *rpc.Task, entry history.H
 	}
 }
 
-func historyEntryToStoppedTask(entry history.HistoryEntry) rpc.Task {
-	return rpc.Task{
-		GID:             entry.GID,
-		Status:          "complete",
-		TotalLength:     entry.TotalLength,
-		CompletedLength: entry.CompletedLength,
-		Dir:             entry.Dir,
-		Files:           []rpc.File{{Path: entry.Path, Uris: historySourceURIs(entry.Source)}},
-		DownloadGroup:   downloadgroups.CopyDownloadGroup(entry.DownloadGroup),
-	}
-}
-
 func historySourceURIs(source string) []rpc.Uri {
 	if source == "" {
 		return []rpc.Uri{}
@@ -100,13 +100,12 @@ func isNonZeroLength(value string) bool {
 }
 
 func (s *Service) GetTasks() map[string][]rpc.Task {
-	active := monitor.Cache.GetActive()
-	waiting := monitor.Cache.GetWaiting()
+	active, waiting, stoppedCache := monitor.Cache.GetTaskLists()
 	monitor.HydrateTaskGroups(active)
 	monitor.HydrateTaskGroups(waiting)
 	var stopped []rpc.Task
 	if config.Get().ShowHistory {
-		stopped = s.StoppedTasksWithHistory(monitor.Cache.GetStopped())
+		stopped = s.StoppedTasksWithHistory(active, waiting, stoppedCache)
 	}
 	return map[string][]rpc.Task{"active": active, "waiting": waiting, "stopped": stopped}
 }

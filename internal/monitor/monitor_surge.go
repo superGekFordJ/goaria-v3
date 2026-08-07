@@ -375,6 +375,10 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			log.Printf("[Monitor] Discarding stale pause event for gid %s (superseded by resume)", gid)
 			return
 		}
+		if m.shouldDiscardPauseAgainstStopped(gid) {
+			log.Printf("[Monitor] Discarding pause event for stopped gid %s (no pause intention)", gid)
+			return
+		}
 		if m.tracker != nil {
 			m.tracker.SetStatusFromEvent(gid, "paused")
 		}
@@ -401,6 +405,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		}
 		from := Cache.MoveTaskToActive(gid, "active")
 		if from != "" && from != "active" {
+			m.RetireHistoryIfResumedFromStopped(gid, from)
 			if task := findTaskInCache(gid); task != nil {
 				m.hub.EmitTaskMove(events.TaskMove{
 					GID:  gid,
@@ -748,6 +753,7 @@ func (m *Monitor) reconcileSurgeCache() {
 			}
 			from := Cache.MoveTaskToWaiting(gid, "paused")
 			if from != "" && from != "waiting" {
+				m.RetireHistoryIfResumedFromStopped(gid, from)
 				if task := findTaskInCache(gid); task != nil {
 					m.hub.EmitTaskMove(events.TaskMove{
 						GID: gid, From: from, To: "waiting", Task: task,
@@ -765,6 +771,7 @@ func (m *Monitor) reconcileSurgeCache() {
 			}
 			from := Cache.MoveTaskToActive(gid, "active")
 			if from != "" && from != "active" {
+				m.RetireHistoryIfResumedFromStopped(gid, from)
 				if task := findTaskInCache(gid); task != nil {
 					m.hub.EmitTaskMove(events.TaskMove{
 						GID: gid, From: from, To: "active", Task: task,

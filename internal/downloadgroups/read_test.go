@@ -536,3 +536,60 @@ func TestGetDownloadGroups_DoesNotUseDisplayNameAsFolderLabel(t *testing.T) {
 		t.Fatalf("expected no folder_label fallback from display name, got %q", card.FolderLabel)
 	}
 }
+
+func TestGetDownloadGroupDetail_ProjectsHistoriedErrorStatus(t *testing.T) {
+	setupDownloadGroupsTest(t)
+	group := groupReadTestGroup("dg-history-error", 2)
+	entry := groupReadHistoryEntry("gid-hist-err", &group, "100", "10")
+	entry.Status = "error"
+	history.Add(entry)
+	history.Add(groupReadHistoryEntry("gid-hist-ok", &group, "100", "100"))
+
+	detail := GetDownloadGroupDetail(group.ID)
+	if !detail.Found {
+		t.Fatal("expected group detail found")
+	}
+	found := false
+	for _, task := range detail.Tasks.Stopped {
+		if task.GID == entry.GID {
+			found = true
+			if task.Status != "error" {
+				t.Fatalf("expected history-only stopped status error, got %q", task.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected history-only error task in stopped members")
+	}
+}
+
+func TestGetDownloadGroups_ExcludesLiveActiveGIDFromHistoryOnly(t *testing.T) {
+	setupDownloadGroupsTest(t)
+	group := groupReadTestGroup("dg-live-exclude", 2)
+	monitor.Cache.UpdateFromAria2([]rpc.Task{
+		groupReadTask("gid-live-twin", "active", &group, "100", "50", "1"),
+		groupReadTask("gid-live-sibling", "waiting", &group, "100", "0", "0"),
+	}, nil, nil)
+	entry := groupReadHistoryEntry("gid-live-twin", &group, "100", "50")
+	entry.Status = "error"
+	history.Add(entry)
+
+	detail := GetDownloadGroupDetail(group.ID)
+	if !detail.Found {
+		t.Fatal("expected group detail found")
+	}
+	for _, task := range detail.Tasks.Stopped {
+		if task.GID == "gid-live-twin" {
+			t.Fatal("expected live active GID excluded from stopped/history members")
+		}
+	}
+	foundActive := false
+	for _, task := range detail.Tasks.Active {
+		if task.GID == "gid-live-twin" {
+			foundActive = true
+		}
+	}
+	if !foundActive {
+		t.Fatal("expected GID present in active members")
+	}
+}

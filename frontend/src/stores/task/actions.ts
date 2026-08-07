@@ -30,6 +30,7 @@ export function setupActions(state: TaskState) {
   const _stoppedGidSet = new Set<string>()
   // GIDs suppressed by _stoppedGidSet on the previous fetchActiveTasks call.
   // Second consecutive backend sighting admits the GID (one-shot stale-snapshot defense).
+  // Polling mode only; event-driven admits on first sighting.
   const _prevStoppedSuppressedGids = new Set<string>()
   const _currStoppedSuppressedGids = new Set<string>()
   const _admitFromStopped = new Set<string>()
@@ -46,6 +47,7 @@ export function setupActions(state: TaskState) {
     throttledUpdateTrayIcon,
     immediateUpdateTrayIcon,
     pollingEnabled,
+    syncMode,
   } = state
 
   const MAX_CONSECUTIVE_ERRORS = 3
@@ -55,10 +57,27 @@ export function setupActions(state: TaskState) {
   // Callback to restart polling if needed (will be injected by index.ts or polling.ts)
   let _restartPollingCallback: (() => void) | null = null
   let _stopPollingCallback: ((disableContext: boolean) => void) | null = null
+  let _moveTaskToActive: ((gid: string) => void) | null = null
 
   function setPollingCallbacks(restart: () => void, stop: (disable: boolean) => void) {
     _restartPollingCallback = restart
     _stopPollingCallback = stop
+  }
+
+  function setMoveTaskToActive(fn: (gid: string) => void) {
+    _moveTaskToActive = fn
+  }
+
+  function clearStoppedSuppression(gid?: string) {
+    if (gid) {
+      _prevStoppedSuppressedGids.delete(gid)
+      _currStoppedSuppressedGids.delete(gid)
+      _admitFromStopped.delete(gid)
+      return
+    }
+    _prevStoppedSuppressedGids.clear()
+    _currStoppedSuppressedGids.clear()
+    _admitFromStopped.clear()
   }
 
   // --- Core Fetch Logic ---
@@ -240,6 +259,11 @@ export function setupActions(state: TaskState) {
 
       const shouldAdmitStoppedGid = (gid: string): boolean => {
         if (!_stoppedGidSet.has(gid)) return true
+        // Event-driven: no continuous active poll race — admit on first backend sighting.
+        if (syncMode.value === 'event-driven') {
+          _admitFromStopped.add(gid)
+          return true
+        }
         if (_prevStoppedSuppressedGids.has(gid)) {
           _admitFromStopped.add(gid)
           return true
@@ -333,6 +357,7 @@ export function setupActions(state: TaskState) {
     try {
       const res = await GetTasks()
       consecutiveErrors.value = 0
+      clearStoppedSuppression()
 
       const active: Task[] = []
       _activeGidSet.clear()
@@ -472,10 +497,12 @@ export function setupActions(state: TaskState) {
   async function resume(gid: string) {
     try {
       await ResumeTask(gid)
-      await fetchTasks()
+      clearStoppedSuppression(gid)
+      _moveTaskToActive?.(gid)
       immediateUpdateTrayIcon()
     } catch (err) {
       console.error(`Failed to resume task ${gid}:`, err)
+      await fetchTasks()
     }
   }
 
@@ -561,10 +588,14 @@ export function setupActions(state: TaskState) {
   async function batchResume(gids: string[]) {
     try {
       await BatchResume(gids)
-      await fetchTasks()
+      for (const gid of gids) {
+        clearStoppedSuppression(gid)
+        _moveTaskToActive?.(gid)
+      }
       immediateUpdateTrayIcon()
     } catch (err) {
       console.error('Batch resume failed:', err)
+      await fetchTasks()
     }
   }
 
@@ -598,18 +629,45 @@ export function setupActions(state: TaskState) {
   async function syncFromSnapshot() {
     try {
       const snapshot = await GetFullSnapshot()
-      for (const t of [
-        ...(snapshot.tasks.active || []),
-        ...(snapshot.tasks.waiting || []),
-        ...(snapshot.tasks.stopped || []),
-      ]) {
-        cacheMetadata(t)
+      clearStoppedSuppression()
+
+      const active: Task[] = []
+      _activeGidSet.clear()
+      for (const t of snapshot.tasks.active || []) {
+        const gid = t?.gid
+        if (!gid || _activeGidSet.has(gid)) continue
+        _activeGidSet.add(gid)
+        active.push(t)
       }
+
+      const waiting: Task[] = []
+      _waitingGidSet.clear()
+      for (const t of snapshot.tasks.waiting || []) {
+        const gid = t?.gid
+        if (!gid || _activeGidSet.has(gid) || _waitingGidSet.has(gid)) continue
+        _waitingGidSet.add(gid)
+        waiting.push(t)
+      }
+
+      const stopped: Task[] = []
+      _stoppedGidSet.clear()
+      for (const t of snapshot.tasks.stopped || []) {
+        const gid = t?.gid
+        if (!gid || _activeGidSet.has(gid) || _waitingGidSet.has(gid) || _stoppedGidSet.has(gid))
+          continue
+        _stoppedGidSet.add(gid)
+        stopped.push(t)
+      }
+
+      for (const t of [...active, ...waiting, ...stopped]) cacheMetadata(t)
+
       tasks.value = {
-        active: (snapshot.tasks.active || []).map(applyMetadataFromCache),
-        waiting: (snapshot.tasks.waiting || []).map(applyMetadataFromCache),
-        stopped: (snapshot.tasks.stopped || []).map(applyMetadataFromCache),
+        active: active.map(applyMetadataFromCache),
+        waiting: waiting.map(applyMetadataFromCache),
+        stopped: stopped.map(applyMetadataFromCache),
       }
+      lastStoppedTasksRef = tasks.value.stopped
+
       if (!pollingEnabled.value && _restartPollingCallback) {
         _restartPollingCallback() // This is actually startPolling
       }
@@ -645,6 +703,8 @@ export function setupActions(state: TaskState) {
     syncFromSnapshot,
     minimizeToTray,
     setPollingCallbacks,
+    setMoveTaskToActive,
+    clearStoppedSuppression,
     metadataPending, // Shared with events
     metadataInFlight: () => metadataInFlight, // Getter
     setMetadataInFlight: (val: boolean) => (metadataInFlight = val),

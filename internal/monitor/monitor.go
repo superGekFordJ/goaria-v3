@@ -210,6 +210,29 @@ func (m *Monitor) shouldDiscardStalePause(gid string) bool {
 	return intention == PauseResumeIntentionResume
 }
 
+// shouldDiscardPauseAgainstStopped discards a delayed pause event that would
+// revive a terminal stopped row when the user did not explicitly pause.
+func (m *Monitor) shouldDiscardPauseAgainstStopped(gid string) bool {
+	if m == nil || gid == "" || !Cache.IsInStopped(gid) {
+		return false
+	}
+	m.pauseResumeVersionMu.RLock()
+	defer m.pauseResumeVersionMu.RUnlock()
+	if m.pauseResumeIntentions == nil {
+		return true
+	}
+	return m.pauseResumeIntentions[gid] != PauseResumeIntentionPause
+}
+
+// RetireHistoryIfResumedFromStopped removes durable history when a GID leaves
+// stopped for a live list (active/waiting). Safe no-op when from != "stopped".
+func (m *Monitor) RetireHistoryIfResumedFromStopped(gid, from string) {
+	if from != "stopped" || gid == "" {
+		return
+	}
+	history.Remove(gid)
+}
+
 // RecoveryComplete reports whether at least one available engine has completed
 // its first successful recovery round. Non-blocking; used for diagnostics, not
 // for gating GetFullSnapshot. In Aria2-only mode (m.surgeEng == nil) only
@@ -440,6 +463,10 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 	log.Printf("[Monitor] Task completed: %s, peak speed: %d B/s", task.GID, task.PeakSpeed)
 
 	// 2. 写入历史记录
+	status := task.Status
+	if status == "" {
+		status = "complete"
+	}
 	history.Add(history.HistoryEntry{
 		GID:             task.GID,
 		Title:           filepath.Base(task.FilePath),
@@ -448,6 +475,7 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 		TotalLength:     fmt.Sprintf("%d", task.TotalLength),
 		CompletedLength: fmt.Sprintf("%d", task.CompletedLength),
 		Source:          task.SourceURL,
+		Status:          status,
 		DownloadGroup:   copyDownloadGroup(task.DownloadGroup),
 	})
 	if task.DownloadGroup != nil {

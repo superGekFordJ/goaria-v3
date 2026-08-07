@@ -23,7 +23,36 @@ type HistoryEntry struct {
 	CompletedLength string             `json:"completedLength"`
 	CompletedAt     int64              `json:"completedAt"`
 	Source          string             `json:"source,omitempty"` // magnet/http
+	Status          string             `json:"status,omitempty"` // terminal: "complete" | "error"; empty = legacy → complete
 	DownloadGroup   *rpc.DownloadGroup `json:"download_group,omitempty"`
+}
+
+// ProjectedStoppedStatus resolves the stopped-list status for a history entry.
+// Only an explicit stored "error" projects as error; empty/unknown/legacy → complete.
+func ProjectedStoppedStatus(entry HistoryEntry) string {
+	if entry.Status == "error" {
+		return "error"
+	}
+	return "complete"
+}
+
+// ToStoppedTask projects a history entry into a synthetic stopped rpc.Task.
+func ToStoppedTask(entry HistoryEntry) rpc.Task {
+	var uris []rpc.Uri
+	if entry.Source != "" {
+		uris = []rpc.Uri{{Uri: entry.Source}}
+	} else {
+		uris = []rpc.Uri{}
+	}
+	return rpc.Task{
+		GID:             entry.GID,
+		Status:          ProjectedStoppedStatus(entry),
+		TotalLength:     entry.TotalLength,
+		CompletedLength: entry.CompletedLength,
+		Dir:             entry.Dir,
+		Files:           []rpc.File{{Path: entry.Path, Uris: uris}},
+		DownloadGroup:   copyDownloadGroup(entry.DownloadGroup),
+	}
 }
 
 func copyDownloadGroup(group *rpc.DownloadGroup) *rpc.DownloadGroup {

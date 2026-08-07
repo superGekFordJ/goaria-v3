@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/events"
+	"goaria-v3/internal/history"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/surge/scheduler"
@@ -1164,6 +1165,84 @@ func TestHandleSurgeEvent_AcceptsPauseWithNoPriorIntention(t *testing.T) {
 	pusher.mu.Unlock()
 	if !found {
 		t.Fatal("expected pause delta with no prior intention")
+	}
+}
+
+func TestHandleSurgeEvent_DiscardsPauseAgainstStoppedWithoutIntention(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	m := &Monitor{
+		hub:                   hub,
+		pusher:                pusher,
+		pauseResumeIntentions: make(map[string]string),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	Cache.sgStopped = []rpc.Task{{
+		GID: "sg_term-1", Status: "error",
+		ErrorCode: "1", ErrorMessage: "fail",
+	}}
+	defer func() { Cache.sgStopped = nil; Cache.sgWaiting = nil }()
+
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "term-1"})
+
+	if !Cache.IsInStopped("sg_term-1") {
+		t.Fatal("expected task to remain in stopped after late pause")
+	}
+	for _, task := range Cache.GetWaiting() {
+		if task.GID == "sg_term-1" {
+			t.Fatal("expected late pause not to revive stopped task into waiting")
+		}
+	}
+}
+
+func TestHandleSurgeEvent_ResumeFromStopped_RetiresHistory(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	m := &Monitor{
+		hub:                   hub,
+		pusher:                pusher,
+		pauseResumeIntentions: make(map[string]string),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	history.DisableSaveForTest()
+	history.Clear()
+	defer history.Clear()
+
+	Cache.sgStopped = []rpc.Task{{
+		GID: "sg_hist-1", Status: "error",
+		ErrorCode: "1", ErrorMessage: "fail",
+		Files: []rpc.File{{Path: "/tmp/hist.bin"}},
+	}}
+	defer func() { Cache.sgStopped = nil; Cache.sgActive = nil }()
+
+	history.Add(history.HistoryEntry{
+		GID: "sg_hist-1", Path: "/tmp/hist.bin", Status: "error",
+	})
+
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventResumed, DownloadID: "hist-1"})
+
+	if Cache.IsInStopped("sg_hist-1") {
+		t.Fatal("expected task moved out of stopped on resume")
+	}
+	foundActive := false
+	for _, task := range Cache.GetActive() {
+		if task.GID == "sg_hist-1" {
+			foundActive = true
+		}
+	}
+	if !foundActive {
+		t.Fatal("expected task in active after resume from stopped")
+	}
+	if _, ok := history.Get("sg_hist-1"); ok {
+		t.Fatal("expected history entry retired after stopped→active resume")
 	}
 }
 

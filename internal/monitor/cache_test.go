@@ -349,6 +349,50 @@ func TestTaskCache_MoveTaskToActive_FromWaiting(t *testing.T) {
 	}
 }
 
+func TestTaskCache_GetTaskLists_CoherentPerEngine(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{GID: "sg_a", Status: "active"}, "active")
+	cache.AddSgTask(rpc.Task{GID: "sg_w", Status: "paused"}, "waiting")
+	cache.AddSgTask(rpc.Task{GID: "sg_s", Status: "complete"}, "stopped")
+	cache.UpdateFromAria2(
+		[]rpc.Task{{GID: "ar_a", Status: "active"}},
+		[]rpc.Task{{GID: "ar_w", Status: "waiting"}},
+		[]rpc.Task{{GID: "ar_s", Status: "complete"}},
+	)
+
+	active, waiting, stopped := cache.GetTaskLists()
+	wantActive := map[string]bool{"sg_a": true, "ar_a": true}
+	wantWaiting := map[string]bool{"sg_w": true, "ar_w": true}
+	wantStopped := map[string]bool{"sg_s": true, "ar_s": true}
+	for _, task := range active {
+		if !wantActive[task.GID] {
+			t.Fatalf("unexpected active gid %q", task.GID)
+		}
+		delete(wantActive, task.GID)
+	}
+	for _, task := range waiting {
+		if !wantWaiting[task.GID] {
+			t.Fatalf("unexpected waiting gid %q", task.GID)
+		}
+		delete(wantWaiting, task.GID)
+	}
+	for _, task := range stopped {
+		if !wantStopped[task.GID] {
+			t.Fatalf("unexpected stopped gid %q", task.GID)
+		}
+		delete(wantStopped, task.GID)
+	}
+	if len(wantActive) != 0 || len(wantWaiting) != 0 || len(wantStopped) != 0 {
+		t.Fatalf("missing gids active=%v waiting=%v stopped=%v", wantActive, wantWaiting, wantStopped)
+	}
+
+	active[0].Status = "mutated"
+	freshActive, _, _ := cache.GetTaskLists()
+	if freshActive[0].Status == "mutated" {
+		t.Fatal("expected GetTaskLists to return defensive copies")
+	}
+}
+
 func TestTaskCache_MoveTaskToActive_FromStopped(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
 	group := &rpc.DownloadGroup{ID: "dg-1", Kind: "batch", Name: "Batch"}
