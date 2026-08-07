@@ -430,14 +430,24 @@ func (c *TaskCache) moveTaskToWaiting(gid, status string, refuseStopped bool) st
 // source list name, or "" when the GID was not found. When the source is
 // stopped, ErrorCode/ErrorMessage are cleared.
 func (c *TaskCache) MoveTaskToActive(gid, status string) string {
+	return c.moveTaskToActive(gid, status, false)
+}
+
+// MoveTaskToActiveFromLive moves only from active/waiting. If the GID is
+// solely in stopped, returns "" without mutating (refuses cleared-error TOCTOU).
+func (c *TaskCache) MoveTaskToActiveFromLive(gid, status string) string {
+	return c.moveTaskToActive(gid, status, true)
+}
+
+func (c *TaskCache) moveTaskToActive(gid, status string, refuseStopped bool) string {
 	if enginePrefix(gid) == "sg" {
 		c.sgMu.Lock()
 		defer c.sgMu.Unlock()
-		return moveTaskBetweenLists(&c.sgActive, &c.sgWaiting, &c.sgStopped, gid, status, "active", false)
+		return moveTaskBetweenLists(&c.sgActive, &c.sgWaiting, &c.sgStopped, gid, status, "active", refuseStopped)
 	}
 	c.arMu.Lock()
 	defer c.arMu.Unlock()
-	return moveTaskBetweenLists(&c.arActive, &c.arWaiting, &c.arStopped, gid, status, "active", false)
+	return moveTaskBetweenLists(&c.arActive, &c.arWaiting, &c.arStopped, gid, status, "active", refuseStopped)
 }
 
 // moveTaskBetweenLists relocates gid into the destination slice among the three

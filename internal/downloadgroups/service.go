@@ -1261,12 +1261,12 @@ func pauseResumeDownloadGroup(groupKey string, action string) DownloadGroupOpera
 	}
 	successCode := DownloadGroupOperationCodePaused
 	patchStatus := DownloadGroupStatusPaused
-	moveFunc := monitor.Cache.MoveTaskToWaiting
+	moveFunc := monitor.MoveTaskToWaitingFromLive
 	toList := "waiting"
 	if action == DownloadGroupOperationActionResume {
 		successCode = DownloadGroupOperationCodeResumed
 		patchStatus = DownloadGroupStatusActive
-		moveFunc = monitor.Cache.MoveTaskToActive
+		moveFunc = monitor.MoveTaskToActiveFromLive
 		toList = "active"
 	}
 	for _, target := range actionable {
@@ -1274,8 +1274,6 @@ func pauseResumeDownloadGroup(groupKey string, action string) DownloadGroupOpera
 		if ok && item.OK {
 			result.addItem(DownloadGroupOperationItemResult{GID: target.gid, Status: DownloadGroupOperationItemSucceeded, Code: successCode})
 			from := moveFunc(target.gid, patchStatus)
-			// Retire history even when Monitor is unavailable (group IPC path).
-			monitor.RetireHistoryIfResumedFromStopped(target.gid, from)
 			if from != "" && from != toList && monitor.IsSgGid(target.gid) {
 				if mon := monitor.State.GetMonitor(); mon != nil {
 					mon.EmitTaskMoveForGroupOp(target.gid, from, toList)

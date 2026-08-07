@@ -167,12 +167,16 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 // NewMonitorForTest creates a Monitor with a hub and pusher for cross-package
 // tests that need to emit task:move / remove deltas via monitor.State.
 func NewMonitorForTest(hub *events.Hub) *Monitor {
-	return &Monitor{
+	tracker := NewTaskTracker()
+	m := &Monitor{
 		hub:                   hub,
 		pusher:                NewPusher(hub),
+		tracker:               tracker,
 		deletedGids:           make(map[string]time.Time),
 		pauseResumeIntentions: make(map[string]string),
 	}
+	State.SetTracker(tracker)
+	return m
 }
 
 // Intention strings recorded by BumpPauseResumeIntention and checked by
@@ -380,6 +384,47 @@ func (m *Monitor) moveToStoppedAndHandle(gid, status, errorCode, errorMessage st
 		return
 	}
 	body()
+}
+
+// MoveTaskToWaitingFromLive is the group-IPC post-RPC pause move: under the
+// per-GID lifecycle gate, refuse a current-generation terminal marker and an
+// atomic stopped source. Does not retire history (group IPC has no legitimate
+// stopped→live transition).
+func MoveTaskToWaitingFromLive(gid, status string) string {
+	return moveFromLiveUnderLifecycle(gid, status, false)
+}
+
+// MoveTaskToActiveFromLive is the group-IPC post-RPC resume move: same gate and
+// refuse-stopped semantics as MoveTaskToWaitingFromLive. Does not retire history.
+func MoveTaskToActiveFromLive(gid, status string) string {
+	return moveFromLiveUnderLifecycle(gid, status, true)
+}
+
+func moveFromLiveUnderLifecycle(gid, status string, toActive bool) string {
+	if gid == "" {
+		return ""
+	}
+	var tracker *TaskTracker
+	if mon := State.GetMonitor(); mon != nil {
+		tracker = mon.tracker
+	}
+	var from string
+	body := func() {
+		if tracker != nil && tracker.TerminalAcceptedInCurrentGeneration(gid) {
+			return
+		}
+		if toActive {
+			from = Cache.MoveTaskToActiveFromLive(gid, status)
+		} else {
+			from = Cache.MoveTaskToWaitingFromLive(gid, status)
+		}
+	}
+	if tracker != nil {
+		tracker.RunUnderLifecycle(gid, body)
+	} else {
+		body()
+	}
+	return from
 }
 
 // RecoveryComplete reports whether at least one available engine has completed
