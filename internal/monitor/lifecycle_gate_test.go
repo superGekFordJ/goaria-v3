@@ -361,3 +361,165 @@ func TestLifecycle_TickReacceptUnderGate(t *testing.T) {
 		t.Fatal("expected real terminal after dropped stale tick snapshot")
 	}
 }
+
+func seedStoppedTerminalHistory(t *testing.T, tracker *TaskTracker, gid, path string) {
+	t.Helper()
+	Cache.sgMu.Lock()
+	Cache.sgStopped = []rpc.Task{{
+		GID: gid, Status: "error", ErrorCode: "1", ErrorMessage: "old",
+		TotalLength: "1000", CompletedLength: "1000",
+		Files: []rpc.File{{Path: path}},
+	}}
+	Cache.sgActive = nil
+	Cache.sgWaiting = nil
+	Cache.sgMu.Unlock()
+	Cache.metadata[gid] = &TaskMetadata{GID: gid, Files: []string{path}, Dir: "/tmp"}
+	tracker.EnsureTrackedFromEvent(gid, 1000, "https://example.com/"+gid, 0, "error")
+	if first := tracker.MarkCompleteFromEvent(gid, "error"); first == nil {
+		t.Fatal("expected seed terminal mark")
+	}
+	history.Add(history.HistoryEntry{GID: gid, Path: path, Status: "error"})
+}
+
+func cleanupSgCache(t *testing.T, gid string) {
+	t.Helper()
+	t.Cleanup(func() {
+		Cache.sgMu.Lock()
+		Cache.sgStopped = nil
+		Cache.sgActive = nil
+		Cache.sgWaiting = nil
+		Cache.sgMu.Unlock()
+		delete(Cache.metadata, gid)
+	})
+}
+
+// Documents the pre-fix gap: MoveTaskToActive then retire without one gate lets
+// a concurrent terminal reject on the old marker and then lose H0 on retire.
+func TestLifecycle_UnprotectedMoveRetireGap_LosesHistory(t *testing.T) {
+	history.DisableSaveForTest()
+	history.Clear()
+	defer history.Clear()
+
+	hub := events.NewHub(nil)
+	tracker := NewTaskTracker()
+	m := &Monitor{hub: hub, pusher: NewPusher(hub), tracker: tracker, engine: &mockSafeEngine{}}
+	prevMon := State.GetMonitor()
+	State.SetMonitor(m)
+	t.Cleanup(func() { State.SetMonitor(prevMon) })
+
+	const gid = "sg_gap_unprot"
+	cleanupSgCache(t, gid)
+	seedStoppedTerminalHistory(t, tracker, gid, "/tmp/unprot.bin")
+
+	from := Cache.MoveTaskToActive(gid, "active")
+	if from != "stopped" {
+		t.Fatalf("from=%q, want stopped", from)
+	}
+	// Terminal races after cache is live but before retire clears the marker.
+	Cache.MoveTaskToStopped(gid, "complete")
+	m.markCompleteAndHandle(gid, "complete", nil)
+	m.RetireHistoryIfResumedFromStopped(gid, "stopped")
+
+	if entries := historyEntriesForGID(gid); len(entries) != 0 {
+		t.Fatalf("unprotected gap should leave 0 history, got %#v", entries)
+	}
+}
+
+func TestLifecycle_CacheMoveRetire_SerializesWithTerminal(t *testing.T) {
+	history.DisableSaveForTest()
+	history.Clear()
+	defer history.Clear()
+
+	hub := events.NewHub(nil)
+	tracker := NewTaskTracker()
+	m := &Monitor{hub: hub, pusher: NewPusher(hub), tracker: tracker, engine: &mockSafeEngine{}}
+	prevMon := State.GetMonitor()
+	State.SetMonitor(m)
+	t.Cleanup(func() { State.SetMonitor(prevMon) })
+
+	const gid = "sg_gap_fix"
+	cleanupSgCache(t, gid)
+	seedStoppedTerminalHistory(t, tracker, gid, "/tmp/fix.bin")
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	tracker.afterMoveBeforeRetire = func(string) {
+		close(started)
+		<-release
+	}
+	t.Cleanup(func() { tracker.afterMoveBeforeRetire = nil })
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		from := m.moveToActiveAndRetireIfStopped(gid, "active")
+		if from != "stopped" {
+			t.Errorf("from=%q, want stopped", from)
+		}
+	}()
+	<-started
+
+	terminalScheduled := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		close(terminalScheduled)
+		m.moveToStoppedAndHandle(gid, "complete", "", "", 1000, nil)
+	}()
+	<-terminalScheduled
+	for i := 0; i < 64; i++ {
+		runtime.Gosched()
+	}
+	close(release)
+	wg.Wait()
+
+	entries := historyEntriesForGID(gid)
+	if len(entries) != 1 {
+		t.Fatalf("want exactly 1 H1 after gated move+retire vs terminal, got %d %#v", len(entries), entries)
+	}
+	if entries[0].Status != "complete" {
+		t.Fatalf("want new complete H1, got %#v", entries[0])
+	}
+	if entries[0].Path == "" {
+		t.Fatal("expected durable path on H1")
+	}
+}
+
+func TestLifecycle_TerminalThenResumeThenTerminal_SingleHistory(t *testing.T) {
+	history.DisableSaveForTest()
+	history.Clear()
+	defer history.Clear()
+
+	hub := events.NewHub(nil)
+	tracker := NewTaskTracker()
+	m := &Monitor{hub: hub, pusher: NewPusher(hub), tracker: tracker, engine: &mockSafeEngine{}}
+	prevMon := State.GetMonitor()
+	State.SetMonitor(m)
+	t.Cleanup(func() { State.SetMonitor(prevMon) })
+
+	const gid = "sg_gap_opp"
+	cleanupSgCache(t, gid)
+	seedStoppedTerminalHistory(t, tracker, gid, "/tmp/opp.bin")
+
+	// Opposite order: terminal attempted while still on old generation (no-op),
+	// then resume retires H0, then a real new-generation terminal writes H1.
+	m.moveToStoppedAndHandle(gid, "complete", "", "", 1000, nil)
+	if entries := historyEntriesForGID(gid); len(entries) != 1 || entries[0].Status != "error" {
+		t.Fatalf("old-generation terminal must remain H0 error, got %#v", entries)
+	}
+
+	from := m.moveToActiveAndRetireIfStopped(gid, "active")
+	if from != "stopped" {
+		t.Fatalf("from=%q, want stopped", from)
+	}
+	if _, ok := history.Get(gid); ok {
+		t.Fatal("expected H0 retired after resume")
+	}
+
+	m.moveToStoppedAndHandle(gid, "complete", "", "", 1000, nil)
+	entries := historyEntriesForGID(gid)
+	if len(entries) != 1 || entries[0].Status != "complete" {
+		t.Fatalf("want single H1 complete after resume+terminal, got %#v", entries)
+	}
+}

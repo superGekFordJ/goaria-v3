@@ -268,25 +268,47 @@ func (m *Monitor) RetireHistoryIfResumedFromStopped(gid, from string) {
 	retireHistoryAndReopen(tracker, gid)
 }
 
+// retireHistoryAndReopenLocked performs reopen + group re-home + history remove.
+// Caller must already hold the GID lifecycle lock (or accept no serialization).
+func retireHistoryAndReopenLocked(tracker *TaskTracker, gid string) {
+	if tracker != nil {
+		tracker.ReopenAfterStoppedToLive(gid, "active")
+		if tracker.retireBetweenReopenAndRemove != nil {
+			tracker.retireBetweenReopenAndRemove(gid)
+		}
+	}
+	if entry, ok := history.Get(gid); ok && entry.DownloadGroup != nil {
+		RegisterTaskGroup(gid, *entry.DownloadGroup)
+		Cache.SetTaskGroup(gid, *entry.DownloadGroup)
+	}
+	history.RemoveKeepingGroupStore(gid)
+}
+
 func retireHistoryAndReopen(tracker *TaskTracker, gid string) {
 	body := func() {
-		if tracker != nil {
-			tracker.ReopenAfterStoppedToLive(gid, "active")
-			if tracker.retireBetweenReopenAndRemove != nil {
-				tracker.retireBetweenReopenAndRemove(gid)
-			}
-		}
-		if entry, ok := history.Get(gid); ok && entry.DownloadGroup != nil {
-			RegisterTaskGroup(gid, *entry.DownloadGroup)
-			Cache.SetTaskGroup(gid, *entry.DownloadGroup)
-		}
-		history.RemoveKeepingGroupStore(gid)
+		retireHistoryAndReopenLocked(tracker, gid)
 	}
 	if tracker != nil {
 		tracker.RunUnderLifecycle(gid, body)
 		return
 	}
 	body()
+}
+
+// markCompleteAndHandleLocked accepts terminal + history write. Caller must
+// already hold the GID lifecycle lock.
+func (m *Monitor) markCompleteAndHandleLocked(gid, status string, prep func(*TrackedTask)) {
+	if m == nil || m.tracker == nil || gid == "" {
+		return
+	}
+	completed := m.tracker.MarkCompleteFromEvent(gid, status)
+	if completed == nil {
+		return
+	}
+	if prep != nil {
+		prep(completed)
+	}
+	m.handleTaskComplete(completed)
 }
 
 // markCompleteAndHandle accepts a terminal event under the per-GID lifecycle
@@ -296,15 +318,68 @@ func (m *Monitor) markCompleteAndHandle(gid, status string, prep func(*TrackedTa
 		return
 	}
 	m.tracker.RunUnderLifecycle(gid, func() {
-		completed := m.tracker.MarkCompleteFromEvent(gid, status)
-		if completed == nil {
+		m.markCompleteAndHandleLocked(gid, status, prep)
+	})
+}
+
+// moveToActiveAndRetireIfStopped serializes SetStatus + MoveTaskToActive with
+// stopped→live retirement under one lifecycle gate so a concurrent terminal
+// cannot observe "cache already live" while the old terminal marker remains.
+func (m *Monitor) moveToActiveAndRetireIfStopped(gid, status string) (from string) {
+	if m == nil || gid == "" {
+		return ""
+	}
+	if status == "" {
+		status = "active"
+	}
+	body := func() {
+		if m.tracker != nil {
+			m.tracker.SetStatusFromEvent(gid, status)
+		}
+		from = Cache.MoveTaskToActive(gid, "active")
+		if from == "" || from == "active" {
 			return
 		}
-		if prep != nil {
-			prep(completed)
+		if m.tracker != nil && m.tracker.afterMoveBeforeRetire != nil {
+			m.tracker.afterMoveBeforeRetire(gid)
 		}
-		m.handleTaskComplete(completed)
-	})
+		if from == "stopped" {
+			retireHistoryAndReopenLocked(m.tracker, gid)
+		}
+	}
+	if m.tracker != nil {
+		m.tracker.RunUnderLifecycle(gid, body)
+	} else {
+		body()
+	}
+	return from
+}
+
+// moveToStoppedAndHandle serializes cache stopped membership with terminal
+// acceptance and history.Add under one lifecycle gate.
+func (m *Monitor) moveToStoppedAndHandle(gid, status, errorCode, errorMessage string, ensureTotal int64, prep func(*TrackedTask)) {
+	if m == nil || gid == "" {
+		return
+	}
+	body := func() {
+		if status == "error" {
+			Cache.MoveTaskToStoppedWithError(gid, status, errorCode, errorMessage)
+		} else {
+			Cache.MoveTaskToStopped(gid, status)
+		}
+		if m.tracker == nil {
+			return
+		}
+		if ensureTotal > 0 {
+			m.tracker.EnsureTrackedFromEvent(gid, ensureTotal, "", 0, "")
+		}
+		m.markCompleteAndHandleLocked(gid, status, prep)
+	}
+	if m.tracker != nil {
+		m.tracker.RunUnderLifecycle(gid, body)
+		return
+	}
+	body()
 }
 
 // RecoveryComplete reports whether at least one available engine has completed

@@ -92,6 +92,8 @@ type TaskTracker struct {
 
 	// Test-only: runs inside retire after reopen, before history.Remove.
 	retireBetweenReopenAndRemove func(string)
+	// Test-only: runs after MoveTaskToActive inside the resume gate, before retire.
+	afterMoveBeforeRetire func(string)
 }
 
 // NewTaskTracker 创建新的任务追踪器

@@ -409,12 +409,8 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		if surgeEng != nil {
 			surgeEng.InvalidateListCache()
 		}
-		if m.tracker != nil {
-			m.tracker.SetStatusFromEvent(gid, "active")
-		}
-		from := Cache.MoveTaskToActive(gid, "active")
+		from := m.moveToActiveAndRetireIfStopped(gid, "active")
 		if from != "" && from != "active" {
-			m.RetireHistoryIfResumedFromStopped(gid, from)
 			if task := findTaskInCache(gid); task != nil {
 				m.hub.EmitTaskMove(events.TaskMove{
 					GID:  gid,
@@ -437,11 +433,17 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			totalStr := strconv.FormatInt(completeTotal, 10)
 			Cache.PatchTaskProgress(gid, totalStr, "0", totalStr)
 		}
-		if deltaType == "error" && (errorCode != "" || errorMessage != "") {
-			Cache.MoveTaskToStoppedWithError(gid, deltaType, errorCode, errorMessage)
-		} else {
-			Cache.MoveTaskToStopped(gid, deltaType)
+		errCode, errMsg := "", ""
+		if deltaType == "error" {
+			errCode, errMsg = errorCode, errorMessage
 		}
+		m.moveToStoppedAndHandle(gid, deltaType, errCode, errMsg, completeTotal, func(completed *TrackedTask) {
+			// AvgSpeed substitutes for PeakSpeed when no peak-time accept occurred;
+			// acceptPeakSpeed refreshes PeakEnvKey to Current on this complete copy only.
+			if completed.PeakSpeed == 0 && completeAvgSpeed > 0 {
+				acceptPeakSpeed(completed, int64(completeAvgSpeed))
+			}
+		})
 		if State.HasWindow() {
 			if deltaType == "complete" && completeTotal > 0 {
 				totalStr := strconv.FormatInt(completeTotal, 10)
@@ -464,18 +466,6 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			} else {
 				m.pusher.Queue(events.TaskDelta{Type: deltaType, GID: gid})
 			}
-		}
-		if m.tracker != nil {
-			if completeTotal > 0 {
-				m.tracker.EnsureTrackedFromEvent(gid, completeTotal, "", 0, "")
-			}
-			m.markCompleteAndHandle(gid, deltaType, func(completed *TrackedTask) {
-				// AvgSpeed substitutes for PeakSpeed when no peak-time accept occurred;
-				// acceptPeakSpeed refreshes PeakEnvKey to Current on this complete copy only.
-				if completed.PeakSpeed == 0 && completeAvgSpeed > 0 {
-					acceptPeakSpeed(completed, int64(completeAvgSpeed))
-				}
-			})
 		}
 		// Terminal: clear intention to avoid unbounded map growth.
 		m.pauseResumeVersionMu.Lock()
@@ -689,30 +679,50 @@ func (m *Monitor) reconcileSurgeCache() {
 					continue
 				}
 			}
-			Cache.AddSgTask(engineTask, list)
-			if m.tracker != nil {
-				m.tracker.EnsureTrackedFromEvent(gid, parseInt64(engineTask.TotalLength), sourceURLFromTask(engineTask), 0, engineStatusForTask(engineTask.Status))
-			}
-			Cache.PrefetchMetadata(gid)
-			if list == "stopped" {
+			if list == "active" {
+				// Admit + retire under one gate (same gap as stopped→active move).
 				if m.tracker != nil {
-					status := "complete"
-					if engineTask.Status == "error" {
-						status = "error"
-					}
-					m.markCompleteAndHandle(gid, status, nil)
+					m.tracker.RunUnderLifecycle(gid, func() {
+						Cache.AddSgTask(engineTask, list)
+						m.tracker.EnsureTrackedFromEvent(gid, parseInt64(engineTask.TotalLength), sourceURLFromTask(engineTask), 0, engineStatusForTask(engineTask.Status))
+						retireHistoryAndReopenLocked(m.tracker, gid)
+					})
+				} else {
+					Cache.AddSgTask(engineTask, list)
+					retireHistoryAndReopenLocked(nil, gid)
 				}
-				// Terminal: clear intention to avoid unbounded map growth.
+				Cache.PrefetchMetadata(gid)
+				log.Printf("[Monitor] Surge poll: added missing task %s to %s", gid, list)
+				continue
+			}
+			if list == "stopped" {
+				status := "complete"
+				if engineTask.Status == "error" {
+					status = "error"
+				}
+				if m.tracker != nil {
+					m.tracker.RunUnderLifecycle(gid, func() {
+						Cache.AddSgTask(engineTask, list)
+						m.tracker.EnsureTrackedFromEvent(gid, parseInt64(engineTask.TotalLength), sourceURLFromTask(engineTask), 0, engineStatusForTask(engineTask.Status))
+						m.markCompleteAndHandleLocked(gid, status, nil)
+					})
+				} else {
+					Cache.AddSgTask(engineTask, list)
+				}
+				Cache.PrefetchMetadata(gid)
 				m.pauseResumeVersionMu.Lock()
 				if m.pauseResumeIntentions != nil {
 					delete(m.pauseResumeIntentions, gid)
 				}
 				m.pauseResumeVersionMu.Unlock()
+				log.Printf("[Monitor] Surge poll: added missing task %s to %s", gid, list)
+				continue
 			}
-			if list == "active" {
-				// Engine active after cache miss is authoritative resume.
-				m.RetireHistoryIfResumedFromStopped(gid, "stopped")
+			Cache.AddSgTask(engineTask, list)
+			if m.tracker != nil {
+				m.tracker.EnsureTrackedFromEvent(gid, parseInt64(engineTask.TotalLength), sourceURLFromTask(engineTask), 0, engineStatusForTask(engineTask.Status))
 			}
+			Cache.PrefetchMetadata(gid)
 			log.Printf("[Monitor] Surge poll: added missing task %s to %s", gid, list)
 			continue
 		}
@@ -734,14 +744,14 @@ func (m *Monitor) reconcileSurgeCache() {
 			}
 			errCode := engineTask.ErrorCode
 			errMsg := engineTask.ErrorMessage
-			if status == "error" {
-				if errCode == "" {
-					errCode = rpc.ClassifySurgeErrorCode(errMsg, true)
-				}
-				Cache.MoveTaskToStoppedWithError(gid, status, errCode, errMsg)
-			} else {
-				Cache.MoveTaskToStopped(gid, status)
+			if status == "error" && errCode == "" {
+				errCode = rpc.ClassifySurgeErrorCode(errMsg, true)
 			}
+			ensureTotal := parseInt64(engineTask.TotalLength)
+			if status != "error" {
+				errCode, errMsg = "", ""
+			}
+			m.moveToStoppedAndHandle(gid, status, errCode, errMsg, ensureTotal, nil)
 			// Emit frontend delta (matches handleSurgeEvent complete/error path).
 			if State.HasWindow() {
 				if status == "complete" && engineTask.TotalLength != "" {
@@ -766,12 +776,6 @@ func (m *Monitor) reconcileSurgeCache() {
 				}
 			}
 			m.hub.NotifyInternal(events.TaskDelta{Type: status, GID: gid})
-			if m.tracker != nil {
-				if total := parseInt64(engineTask.TotalLength); total > 0 {
-					m.tracker.EnsureTrackedFromEvent(gid, total, "", 0, "")
-				}
-				m.markCompleteAndHandle(gid, status, nil)
-			}
 			// Terminal: clear intention to avoid unbounded map growth.
 			m.pauseResumeVersionMu.Lock()
 			if m.pauseResumeIntentions != nil {
@@ -803,12 +807,8 @@ func (m *Monitor) reconcileSurgeCache() {
 			m.hub.NotifyInternal(events.TaskDelta{Type: "pause", GID: gid})
 			log.Printf("[Monitor] Surge poll: moved task %s from %s to waiting (missed pause)", gid, cacheList)
 		case "active":
-			if m.tracker != nil {
-				m.tracker.SetStatusFromEvent(gid, engineStatusForTask(engineTask.Status))
-			}
-			from := Cache.MoveTaskToActive(gid, "active")
+			from := m.moveToActiveAndRetireIfStopped(gid, engineStatusForTask(engineTask.Status))
 			if from != "" && from != "active" {
-				m.RetireHistoryIfResumedFromStopped(gid, from)
 				if task := findTaskInCache(gid); task != nil {
 					m.hub.EmitTaskMove(events.TaskMove{
 						GID: gid, From: from, To: "active", Task: task,
