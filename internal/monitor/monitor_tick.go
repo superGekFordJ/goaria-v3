@@ -285,14 +285,10 @@ func (m *Monitor) tick() {
 
 	// 处理已完成任务（写入历史和速度统计）
 	for _, task := range completedTasks {
-		status := task.Status
 		m.tracker.RunUnderLifecycle(task.GID, func() {
-			// Update marked under tracker.mu without the lifecycle lock; a
-			// concurrent retire may have cleared acceptance since then.
-			if completed := m.tracker.MarkCompleteFromEvent(task.GID, status); completed != nil {
-				m.handleTaskComplete(completed)
-				return
-			}
+			// Update accepted under tracker.mu without the lifecycle lock.
+			// If a concurrent retire bumped generation and cleared acceptance,
+			// drop this snapshot — do not re-mark it onto the new generation.
 			if m.tracker.TerminalAcceptedInCurrentGeneration(task.GID) {
 				m.handleTaskComplete(task)
 			}

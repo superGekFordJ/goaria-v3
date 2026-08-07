@@ -1,9 +1,9 @@
 package monitor
 
 import (
+	"runtime"
 	"sync"
 	"testing"
-	"time"
 
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/history"
@@ -57,13 +57,17 @@ func TestLifecycle_Interleave_ReopenThenTerminalThenRemove(t *testing.T) {
 	}()
 
 	<-started
-	// Terminal blocked on lifecycle until retire finishes Remove.
+	terminalScheduled := make(chan struct{})
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		close(terminalScheduled)
 		m.markCompleteAndHandle(gid, "complete", nil)
 	}()
-	time.Sleep(20 * time.Millisecond)
+	<-terminalScheduled
+	for i := 0; i < 64; i++ {
+		runtime.Gosched()
+	}
 	close(release)
 	wg.Wait()
 
@@ -76,7 +80,7 @@ func TestLifecycle_Interleave_ReopenThenTerminalThenRemove(t *testing.T) {
 	}
 }
 
-func TestLifecycle_Interleave_RemoveThenTerminalThenReopen(t *testing.T) {
+func TestLifecycle_Interleave_RemoveThenTerminalConcurrent(t *testing.T) {
 	history.DisableSaveForTest()
 	history.Clear()
 	defer history.Clear()
@@ -97,17 +101,42 @@ func TestLifecycle_Interleave_RemoveThenTerminalThenReopen(t *testing.T) {
 	t.Cleanup(func() { delete(Cache.metadata, gid) })
 	history.Add(history.HistoryEntry{GID: gid, Path: "/tmp/b.bin", Status: "error"})
 
-	// Serialize under gate: retire (remove archive) then terminal must still
-	// write a replacement for the new generation.
-	m.RetireHistoryIfResumedFromStopped(gid, "stopped")
-	if _, ok := history.Get(gid); ok {
-		t.Fatal("expected history removed by retire")
+	// Concurrent retire vs terminal: force retire to hold the gate through
+	// reopen+remove while terminal blocks; after Remove, terminal must write
+	// the replacement (assessment Remove→terminal window closed by the gate).
+	started := make(chan struct{})
+	release := make(chan struct{})
+	tracker.retireBetweenReopenAndRemove = func(string) {
+		close(started)
+		<-release
 	}
-	m.markCompleteAndHandle(gid, "error", nil)
+	t.Cleanup(func() { tracker.retireBetweenReopenAndRemove = nil })
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		m.RetireHistoryIfResumedFromStopped(gid, "stopped")
+	}()
+	<-started
+
+	terminalScheduled := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		close(terminalScheduled)
+		m.markCompleteAndHandle(gid, "error", nil)
+	}()
+	<-terminalScheduled
+	for i := 0; i < 64; i++ {
+		runtime.Gosched()
+	}
+	close(release)
+	wg.Wait()
 
 	entries := historyEntriesForGID(gid)
 	if len(entries) != 1 {
-		t.Fatalf("want exactly 1 history entry after remove→terminal under gate, got %d %#v", len(entries), entries)
+		t.Fatalf("want exactly 1 history entry after concurrent retire+terminal, got %d %#v", len(entries), entries)
 	}
 	if entries[0].Status != "error" {
 		t.Fatalf("want error entry, got %#v", entries[0])
@@ -284,25 +313,20 @@ func TestLifecycle_TickReacceptUnderGate(t *testing.T) {
 		t.Fatalf("Update should detect first complete, got %d", len(completed))
 	}
 
-	// Simulate tick post-loop re-accept under lifecycle (no concurrent retire).
+	// No concurrent retire: current-generation acceptance still valid → handle.
 	for _, task := range completed {
-		status := task.Status
 		tracker.RunUnderLifecycle(task.GID, func() {
-			if c := tracker.MarkCompleteFromEvent(task.GID, status); c != nil {
-				m.handleTaskComplete(c)
-				return
-			}
 			if tracker.TerminalAcceptedInCurrentGeneration(task.GID) {
 				m.handleTaskComplete(task)
 			}
 		})
 	}
 	if entries := historyEntriesForGID(gid); len(entries) != 1 {
-		t.Fatalf("want 1 history from tick re-accept, got %d", len(entries))
+		t.Fatalf("want 1 history from tick handle, got %d", len(entries))
 	}
 
-	// Concurrent retire between Update and handle: generation advances; stale
-	// snapshot must not leave empty archive after a fresh terminal.
+	// Retire between Update and handle: generation advanced, acceptance cleared.
+	// Tick must drop the stale snapshot (no ghost history / no new-gen marker).
 	history.Clear()
 	tracker.ReopenAfterStoppedToLive(gid, "active")
 	tracker.tasks[gid].Status = "active"
@@ -314,25 +338,26 @@ func TestLifecycle_TickReacceptUnderGate(t *testing.T) {
 	if len(completed2) != 1 {
 		t.Fatal("expected second Update complete after reopen")
 	}
-	retireDone := make(chan struct{})
-	go func() {
-		m.RetireHistoryIfResumedFromStopped(gid, "stopped")
-		close(retireDone)
-	}()
-	<-retireDone
+	genAfterUpdate := tracker.LifecycleGeneration(gid)
+	m.RetireHistoryIfResumedFromStopped(gid, "stopped")
+	if tracker.LifecycleGeneration(gid) != genAfterUpdate+1 {
+		t.Fatal("expected retire to bump generation after Update accept")
+	}
 	for _, task := range completed2 {
-		status := task.Status
 		tracker.RunUnderLifecycle(task.GID, func() {
-			if c := tracker.MarkCompleteFromEvent(task.GID, status); c != nil {
-				m.handleTaskComplete(c)
-				return
-			}
 			if tracker.TerminalAcceptedInCurrentGeneration(task.GID) {
 				m.handleTaskComplete(task)
 			}
 		})
 	}
-	if entries := historyEntriesForGID(gid); len(entries) != 1 {
-		t.Fatalf("after retire+re-accept want 1 history, got %d %#v", len(entries), entries)
+	if entries := historyEntriesForGID(gid); len(entries) != 0 {
+		t.Fatalf("after retire-between-Update-and-handle want 0 history, got %d %#v", len(entries), entries)
+	}
+	if tracker.TerminalAcceptedInCurrentGeneration(gid) {
+		t.Fatal("stale Update must not plant terminal marker on new generation")
+	}
+	// Real terminal for the new generation must still be accept-able.
+	if second := tracker.MarkCompleteFromEvent(gid, "error"); second == nil {
+		t.Fatal("expected real terminal after dropped stale tick snapshot")
 	}
 }
