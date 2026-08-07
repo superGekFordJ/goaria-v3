@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -320,5 +321,116 @@ func assertNoTwinInGetTaskLists(t *testing.T, gid string) {
 	}
 	if inStopped && (inActive || inWaiting) {
 		t.Fatalf("GetTaskLists twin for %s: active=%v waiting=%v stopped=%v", gid, inActive, inWaiting, inStopped)
+	}
+}
+
+// blockingPrefetchTickEngine blocks inside TellStatusMulti so tests can run
+// InvalidateTask after filterDeletedTasks and before lastStopped persist.
+type blockingPrefetchTickEngine struct {
+	mockTickEngine
+	prefetchCalled  chan struct{}
+	prefetchRelease chan struct{}
+}
+
+func (e *blockingPrefetchTickEngine) TellStatusMulti(gids []string, keys []string) ([]rpc.Task, error) {
+	select {
+	case e.prefetchCalled <- struct{}{}:
+	default:
+	}
+	<-e.prefetchRelease
+	out := make([]rpc.Task, 0, len(gids))
+	for _, gid := range gids {
+		out = append(out, rpc.Task{
+			GID:    gid,
+			Status: "complete",
+			Files:  []rpc.File{{Path: "/tmp/" + gid + ".bin"}},
+		})
+	}
+	return out, nil
+}
+
+// TestTick_StaleStopped_MidTickInvalidate_DoesNotResurrectInLastStopped plants
+// InvalidateTask after the early filterDeletedTasks pass (while Prefetch blocks)
+// and asserts the persist-time deletedGids scrub keeps the GID out of lastStopped
+// and cache stopped despite the always-rewrite of lastStopped.
+func TestTick_StaleStopped_MidTickInvalidate_DoesNotResurrectInLastStopped(t *testing.T) {
+	const (
+		targetGID = "ar_midtick_deleted"
+		keepGID   = "ar_midtick_keep"
+	)
+	target := rpc.Task{
+		GID: targetGID, Status: "complete",
+		TotalLength: "1000", CompletedLength: "1000",
+	}
+	keep := rpc.Task{
+		GID: keepGID, Status: "complete",
+		TotalLength: "500", CompletedLength: "500",
+	}
+
+	engine := &blockingPrefetchTickEngine{
+		prefetchCalled:  make(chan struct{}, 1),
+		prefetchRelease: make(chan struct{}),
+	}
+	engine.setLists(nil, nil, []rpc.Task{keep, target})
+
+	m := newTickRecoveryMonitor(t, engine)
+	m.aria2Recovered.Store(true)
+	m.shouldFetchStopped = true
+	m.lastStoppedFetchTime = time.Now().Add(-20 * time.Second)
+	m.lastStopped = []rpc.Task{keep, target}
+
+	tickDone := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				tickDone <- fmt.Errorf("tick panicked: %v", r)
+			}
+		}()
+		m.tick()
+		tickDone <- nil
+	}()
+
+	select {
+	case <-engine.prefetchCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for PrefetchMetadataMulti (TellStatusMulti)")
+	}
+
+	// Past filterDeletedTasks; tombstone now so always-rewrite without scrub
+	// would resurrect target into lastStopped / UpdateFromAria2 stopped.
+	m.InvalidateTask(targetGID)
+
+	close(engine.prefetchRelease)
+
+	if err := <-tickDone; err != nil {
+		t.Fatalf("tick failed: %v", err)
+	}
+
+	if taskInCacheStopped(targetGID) {
+		t.Fatal("expected mid-tick InvalidateTask scrub to keep target out of cache stopped")
+	}
+	if !taskInCacheStopped(keepGID) {
+		t.Fatal("expected non-deleted survivor to remain in cache stopped")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	hasTarget, hasKeep := false, false
+	for _, task := range m.lastStopped {
+		if task.GID == targetGID {
+			hasTarget = true
+		}
+		if task.GID == keepGID {
+			hasKeep = true
+		}
+	}
+	if hasTarget {
+		t.Fatal("BUG: always-rewrite resurrected tombstoned GID into lastStopped")
+	}
+	if !hasKeep {
+		t.Fatalf("expected lastStopped to retain %s, got %v", keepGID, taskGIDs(m.lastStopped))
+	}
+	if _, deleted := m.deletedGids[targetGID]; !deleted {
+		t.Fatal("expected deletedGids tombstone to remain after tick")
 	}
 }
