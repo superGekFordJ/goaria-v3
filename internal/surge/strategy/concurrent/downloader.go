@@ -69,10 +69,8 @@ type ConcurrentDownloader struct {
 	consecutiveHedgeErrors atomic.Int32
 	hedgeDisabled          atomic.Bool
 
-	// FORK-PATCH: consecutive soft-403 MaxTaskRetries exhaustions without an
-	// intervening 206. Mid-chunk 403 stays transient; sticky budget then
-	// escalates via ErrPermanentHTTP + B1 (SPEC-256 amend).
-	soft403NoProgressExhaustions atomic.Int32
+	// FORK-PATCH: session-local Soft-403 pressure state.
+	soft403Guard soft403ProgressGuard
 
 	// FORK-PATCH: TTFB one-shot guard — only the first non-hedged 206 sends FirstByte.
 	ttfbSent atomic.Bool
@@ -82,12 +80,137 @@ type ConcurrentDownloader struct {
 	hostLimiter *transport.HostRateLimiter
 }
 
-// Soft403StickyExhaustions is the max consecutive soft-403 post-exhaustion
-// cycles without an intervening 206 before escalating to ErrPermanentHTTP.
+// Soft403StickyExhaustions is the Soft-403 pressure limit.
 const Soft403StickyExhaustions = 16
 
-// soft403StickyExhaustions is the live limit (tests may lower temporarily).
-var soft403StickyExhaustions = Soft403StickyExhaustions
+// Soft403NoProgressConfirmWindow is the confirmation window after pressure arms.
+const Soft403NoProgressConfirmWindow = 5 * time.Second
+
+var (
+	soft403StickyExhaustions       = Soft403StickyExhaustions
+	soft403NoProgressConfirmWindow = Soft403NoProgressConfirmWindow
+)
+
+type soft403ProgressGuard struct {
+	mu                        sync.Mutex
+	primed                    bool
+	exhaustionCount           int
+	observedVerifiedProgress  int64
+	candidateSince            time.Time
+	candidateVerifiedProgress int64
+}
+
+func (d *ConcurrentDownloader) resetSoft403Guard() {
+	d.soft403Guard.reset()
+}
+
+func (d *ConcurrentDownloader) primeSoft403Guard() {
+	state := d.State
+	if state == nil {
+		return
+	}
+	d.soft403Guard.prime(state.Bytes.VerifiedProgress.Load())
+}
+
+func (d *ConcurrentDownloader) recordSoft403Exhaustion(now time.Time) bool {
+	state := d.State
+	if state == nil {
+		return d.soft403Guard.recordWithoutProgress(soft403StickyExhaustions)
+	}
+
+	return d.soft403Guard.recordWithProgress(
+		now,
+		state.Bytes.VerifiedProgress.Load(),
+		func() int64 { return state.Bytes.VerifiedProgress.Load() },
+		soft403StickyExhaustions,
+		soft403NoProgressConfirmWindow,
+	)
+}
+
+func (g *soft403ProgressGuard) reset() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.primed = false
+	g.observedVerifiedProgress = 0
+	g.clearPressure()
+}
+
+func (g *soft403ProgressGuard) prime(verifiedProgress int64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.primed = true
+	g.observedVerifiedProgress = verifiedProgress
+	g.clearPressure()
+}
+
+func (g *soft403ProgressGuard) recordWithoutProgress(limit int) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.candidateSince = time.Time{}
+	g.candidateVerifiedProgress = 0
+	g.increment(limit)
+	return g.exhaustionCount >= normalizedSoft403Limit(limit)
+}
+
+func (g *soft403ProgressGuard) recordWithProgress(now time.Time, verifiedProgress int64, finalVerifiedProgress func() int64, limit int, confirmWindow time.Duration) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if !g.primed {
+		g.primed = true
+		g.observedVerifiedProgress = verifiedProgress
+		g.clearPressure()
+	} else if verifiedProgress != g.observedVerifiedProgress {
+		g.observedVerifiedProgress = verifiedProgress
+		g.clearPressure()
+	}
+
+	g.increment(limit)
+	limit = normalizedSoft403Limit(limit)
+	if g.exhaustionCount < limit {
+		return false
+	}
+	if g.candidateSince.IsZero() {
+		g.candidateSince = now
+		g.candidateVerifiedProgress = verifiedProgress
+		return false
+	}
+	if now.Before(g.candidateSince.Add(confirmWindow)) {
+		return false
+	}
+
+	finalVerified := finalVerifiedProgress()
+	if finalVerified != g.candidateVerifiedProgress {
+		g.observedVerifiedProgress = finalVerified
+		g.clearPressure()
+		g.increment(limit)
+		return false
+	}
+	return true
+}
+
+func (g *soft403ProgressGuard) clearPressure() {
+	g.exhaustionCount = 0
+	g.candidateSince = time.Time{}
+	g.candidateVerifiedProgress = 0
+}
+
+func (g *soft403ProgressGuard) increment(limit int) {
+	limit = normalizedSoft403Limit(limit)
+	if g.exhaustionCount < limit {
+		g.exhaustionCount++
+	}
+}
+
+func normalizedSoft403Limit(limit int) int {
+	if limit < 1 {
+		return 1
+	}
+	return limit
+}
 
 // FORK-PATCH: per-worker (connection) session, survives across chunks.
 type workerSession struct {
@@ -335,8 +458,7 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 		d.hostLimiter = transport.DefaultHostRateLimiter
 	}
 
-	// FORK-PATCH: soft-403 sticky budget is per-Download, not cross-resume.
-	d.soft403NoProgressExhaustions.Store(0)
+	d.resetSoft403Guard()
 
 	d.initMirrorStatus(rawurl, candidateMirrors, activeMirrors, destPath)
 
@@ -404,6 +526,7 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 	if err != nil {
 		return err
 	}
+	d.primeSoft403Guard()
 
 	queue := NewTaskQueue()
 	queue.PushMultiple(tasks)

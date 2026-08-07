@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,6 +39,62 @@ func serveRange206(w http.ResponseWriter, r *http.Request, blob []byte) {
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.WriteHeader(http.StatusPartialContent)
 	_, _ = io.CopyN(w, bytes.NewReader(blob[start:end+1]), end-start+1)
+}
+
+type soft403RoundTripper func(*http.Request) (*http.Response, error)
+
+func (f soft403RoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+type soft403GuardSnapshot struct {
+	exhaustionCount           int
+	observedVerifiedProgress  int64
+	candidateSince            time.Time
+	candidateVerifiedProgress int64
+}
+
+func snapshotSoft403Guard(d *ConcurrentDownloader) soft403GuardSnapshot {
+	d.soft403Guard.mu.Lock()
+	defer d.soft403Guard.mu.Unlock()
+
+	return soft403GuardSnapshot{
+		exhaustionCount:           d.soft403Guard.exhaustionCount,
+		observedVerifiedProgress:  d.soft403Guard.observedVerifiedProgress,
+		candidateSince:            d.soft403Guard.candidateSince,
+		candidateVerifiedProgress: d.soft403Guard.candidateVerifiedProgress,
+	}
+}
+
+func setSoft403GuardTestLimits(t *testing.T, limit int, confirmWindow time.Duration) {
+	t.Helper()
+	previousLimit := soft403StickyExhaustions
+	previousWindow := soft403NoProgressConfirmWindow
+	soft403StickyExhaustions = limit
+	soft403NoProgressConfirmWindow = confirmWindow
+	t.Cleanup(func() {
+		soft403StickyExhaustions = previousLimit
+		soft403NoProgressConfirmWindow = previousWindow
+	})
+}
+
+func waitForSoft403Condition(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if condition() {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("timed out waiting for Soft-403 condition")
+		case <-ticker.C:
+		}
+	}
 }
 
 func TestSoft403StickyExhaustions_Constant(t *testing.T) {
@@ -257,9 +314,7 @@ func TestSoft403_StickyAll403_EscalatesAfterBudget(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	prev := soft403StickyExhaustions
-	soft403StickyExhaustions = 2
-	t.Cleanup(func() { soft403StickyExhaustions = prev })
+	setSoft403GuardTestLimits(t, 2, 200*time.Millisecond)
 
 	fileSize := int64(32 * utils.KiB)
 	var requests atomic.Int64
@@ -301,9 +356,8 @@ func TestSoft403_StickyAll403_EscalatesAfterBudget(t *testing.T) {
 	}
 }
 
-// TestSoft403_Mixed206ResetsSticky: intervening 206 clears sticky counter so
-// a later burst of 403s does not escalate early.
-func TestSoft403_Mixed206ResetsSticky(t *testing.T) {
+// TestSoft403_Mixed206ProgressRecovers verifies verified body progress recovers.
+func TestSoft403_Mixed206ProgressRecovers(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
@@ -547,8 +601,9 @@ func TestSoft403_HealthCancel_DoesNotIncrementSticky(t *testing.T) {
 	if err != nil {
 		t.Fatalf("download should complete after health-cancel + 206: %v", err)
 	}
-	if got := d.soft403NoProgressExhaustions.Load(); got != 0 {
-		t.Fatalf("sticky counter = %d, want 0 (health-cancel must not increment)", got)
+	guard := snapshotSoft403Guard(d)
+	if guard.exhaustionCount != 0 || !guard.candidateSince.IsZero() {
+		t.Fatalf("guard = %+v, want no health-cancel pressure", guard)
 	}
 }
 
@@ -577,8 +632,10 @@ func TestSoft403_DownloadEntry_ResetsStickyCounter(t *testing.T) {
 		Workers:                   1,
 	})
 
-	// Pre-warm the counter to a non-zero value (simulating prior sticky pressure).
-	d.soft403NoProgressExhaustions.Store(5)
+	d.soft403Guard.mu.Lock()
+	d.soft403Guard.exhaustionCount = 5
+	d.soft403Guard.candidateSince = time.Now()
+	d.soft403Guard.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -590,9 +647,424 @@ func TestSoft403_DownloadEntry_ResetsStickyCounter(t *testing.T) {
 	if !types.IsPermanentHTTPError(err) {
 		t.Fatalf("expected IsPermanentHTTPError, got: %v", err)
 	}
-	// 404 is hard permanent — it returns before the 403 sticky check, so the
-	// counter must be 0 (reset at Download entry, not incremented by 404).
-	if got := d.soft403NoProgressExhaustions.Load(); got != 0 {
-		t.Fatalf("sticky counter = %d after Download, want 0 (entry reset)", got)
+	guard := snapshotSoft403Guard(d)
+	if guard.exhaustionCount != 0 || !guard.candidateSince.IsZero() {
+		t.Fatalf("guard = %+v after Download, want reset state", guard)
+	}
+}
+
+func TestSoft403Guard_NoVerifiedProgressConfirmsAfterWindow(t *testing.T) {
+	state := progress.New("guard-no-progress", 1024)
+	d := NewConcurrentDownloader("guard-no-progress", nil, state, nil)
+	d.resetSoft403Guard()
+	d.primeSoft403Guard()
+
+	now := time.Unix(100, 0)
+	for i := 0; i < Soft403StickyExhaustions; i++ {
+		if d.recordSoft403Exhaustion(now) {
+			t.Fatalf("exhaustion %d escalated while arming", i+1)
+		}
+	}
+
+	guard := snapshotSoft403Guard(d)
+	if guard.exhaustionCount != Soft403StickyExhaustions || guard.candidateSince.IsZero() {
+		t.Fatalf("guard = %+v, want armed candidate at limit", guard)
+	}
+	if d.recordSoft403Exhaustion(now.Add(Soft403NoProgressConfirmWindow - time.Nanosecond)) {
+		t.Fatal("guard escalated before confirmation deadline")
+	}
+	if !d.recordSoft403Exhaustion(now.Add(Soft403NoProgressConfirmWindow)) {
+		t.Fatal("guard did not escalate at confirmation deadline")
+	}
+}
+
+func TestSoft403Guard_FinalRecheckSeesVerifiedProgress(t *testing.T) {
+	state := progress.New("guard-final-recheck", 1024)
+	d := NewConcurrentDownloader("guard-final-recheck", nil, state, nil)
+	d.resetSoft403Guard()
+	d.primeSoft403Guard()
+
+	now := time.Unix(150, 0)
+	for i := 0; i < Soft403StickyExhaustions; i++ {
+		if d.recordSoft403Exhaustion(now) {
+			t.Fatalf("exhaustion %d escalated while arming", i+1)
+		}
+	}
+	if d.soft403Guard.recordWithProgress(
+		now.Add(Soft403NoProgressConfirmWindow),
+		state.Bytes.VerifiedProgress.Load(),
+		func() int64 {
+			state.Bytes.VerifiedProgress.Store(1)
+			return state.Bytes.VerifiedProgress.Load()
+		},
+		Soft403StickyExhaustions,
+		Soft403NoProgressConfirmWindow,
+	) {
+		t.Fatal("final verified-progress recheck escalated")
+	}
+	guard := snapshotSoft403Guard(d)
+	if guard.exhaustionCount != 1 || !guard.candidateSince.IsZero() || guard.observedVerifiedProgress != 1 {
+		t.Fatalf("guard after final recheck = %+v, want fresh epoch", guard)
+	}
+}
+
+func TestSoft403Guard_ProgressChangesClearCandidate(t *testing.T) {
+	state := progress.New("guard-progress", 1024)
+	d := NewConcurrentDownloader("guard-progress", nil, state, nil)
+	d.resetSoft403Guard()
+	d.primeSoft403Guard()
+
+	now := time.Unix(200, 0)
+	for i := 0; i < Soft403StickyExhaustions; i++ {
+		if d.recordSoft403Exhaustion(now) {
+			t.Fatalf("exhaustion %d escalated while arming", i+1)
+		}
+	}
+
+	state.Bytes.VerifiedProgress.Store(128)
+	if d.recordSoft403Exhaustion(now.Add(time.Second)) {
+		t.Fatal("verified progress advance escalated")
+	}
+	guard := snapshotSoft403Guard(d)
+	if guard.exhaustionCount != 1 || !guard.candidateSince.IsZero() || guard.observedVerifiedProgress != 128 {
+		t.Fatalf("guard after advance = %+v, want fresh epoch", guard)
+	}
+
+	for i := 1; i < Soft403StickyExhaustions; i++ {
+		if d.recordSoft403Exhaustion(now.Add(time.Duration(i+1) * time.Second)) {
+			t.Fatalf("new epoch escalated before candidate at exhaustion %d", i+1)
+		}
+	}
+	guard = snapshotSoft403Guard(d)
+	if guard.candidateSince.IsZero() || guard.candidateVerifiedProgress != 128 {
+		t.Fatalf("guard = %+v, want candidate based on advanced VP", guard)
+	}
+
+	state.Bytes.VerifiedProgress.Store(64)
+	if d.recordSoft403Exhaustion(now.Add(100 * time.Second)) {
+		t.Fatal("verified progress decrease escalated")
+	}
+	guard = snapshotSoft403Guard(d)
+	if guard.exhaustionCount != 1 || !guard.candidateSince.IsZero() || guard.observedVerifiedProgress != 64 {
+		t.Fatalf("guard after decrease = %+v, want rebased fresh epoch", guard)
+	}
+}
+
+func TestSoft403Guard_RestoredBaselineAndSessionReset(t *testing.T) {
+	state := progress.New("guard-resume", 1024)
+	state.Bytes.VerifiedProgress.Store(512)
+	d := NewConcurrentDownloader("guard-resume", nil, state, nil)
+	d.resetSoft403Guard()
+	d.primeSoft403Guard()
+
+	now := time.Unix(300, 0)
+	guard := snapshotSoft403Guard(d)
+	if guard.observedVerifiedProgress != 512 || guard.exhaustionCount != 0 || !guard.candidateSince.IsZero() {
+		t.Fatalf("guard after restored baseline = %+v", guard)
+	}
+	for i := 0; i < Soft403StickyExhaustions; i++ {
+		if d.recordSoft403Exhaustion(now) {
+			t.Fatalf("exhaustion %d escalated while arming", i+1)
+		}
+	}
+	if !d.recordSoft403Exhaustion(now.Add(Soft403NoProgressConfirmWindow)) {
+		t.Fatal("historical resume VP incorrectly counted as fresh progress")
+	}
+
+	d.resetSoft403Guard()
+	d.primeSoft403Guard()
+	guard = snapshotSoft403Guard(d)
+	if guard.observedVerifiedProgress != 512 || guard.exhaustionCount != 0 || !guard.candidateSince.IsZero() {
+		t.Fatalf("guard after new session = %+v, want fresh state", guard)
+	}
+}
+
+func TestSoft403Guard_NilStateFallbackEscalatesAtLimit(t *testing.T) {
+	d := NewConcurrentDownloader("guard-nil", nil, nil, nil)
+	d.resetSoft403Guard()
+
+	now := time.Unix(400, 0)
+	for i := 0; i < Soft403StickyExhaustions-1; i++ {
+		if d.recordSoft403Exhaustion(now) {
+			t.Fatalf("fallback escalated at exhaustion %d", i+1)
+		}
+	}
+	if !d.recordSoft403Exhaustion(now) {
+		t.Fatal("fallback did not escalate at limit")
+	}
+}
+
+func TestSoft403Guard_ConcurrentRecord(t *testing.T) {
+	state := progress.New("guard-race", 1024)
+	d := NewConcurrentDownloader("guard-race", nil, state, nil)
+	d.resetSoft403Guard()
+	d.primeSoft403Guard()
+
+	now := time.Unix(500, 0)
+	results := make(chan bool, Soft403StickyExhaustions*2)
+	var wg sync.WaitGroup
+	for i := 0; i < Soft403StickyExhaustions*2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- d.recordSoft403Exhaustion(now)
+		}()
+	}
+	wg.Wait()
+	close(results)
+	for escalated := range results {
+		if escalated {
+			t.Fatal("concurrent arm call escalated before confirmation")
+		}
+	}
+
+	guard := snapshotSoft403Guard(d)
+	if guard.exhaustionCount != Soft403StickyExhaustions || guard.candidateSince.IsZero() {
+		t.Fatalf("guard after concurrent calls = %+v", guard)
+	}
+	if !d.recordSoft403Exhaustion(now.Add(Soft403NoProgressConfirmWindow)) {
+		t.Fatal("concurrent guard did not confirm after deadline")
+	}
+}
+
+func TestSoft403_Empty206DoesNotResetProgressGuard(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	state := progress.New("empty-206", 1024)
+	d := NewConcurrentDownloader("empty-206", nil, state, &types.RuntimeConfig{WorkerBufferSize: 1024})
+	d.resetSoft403Guard()
+	d.primeSoft403Guard()
+
+	now := time.Unix(600, 0)
+	for i := 0; i < Soft403StickyExhaustions; i++ {
+		if d.recordSoft403Exhaustion(now) {
+			t.Fatalf("exhaustion %d escalated while arming", i+1)
+		}
+	}
+	before := snapshotSoft403Guard(d)
+
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		w.Header().Set("Content-Range", "bytes 0-1023/1024")
+		w.WriteHeader(http.StatusPartialContent)
+	}))
+	defer server.Close()
+
+	f, err := os.Create(filepath.Join(tmpDir, "empty206.surge"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	active := &ActiveTask{Task: types.Task{Offset: 0, Length: 1024}}
+	active.StopAt.Store(1024)
+	if err := d.downloadTask(context.Background(), server.URL, f, active, make([]byte, 1024), &http.Client{}, 1024); err == nil {
+		t.Fatal("expected empty 206 body to fail")
+	}
+	if state.Bytes.VerifiedProgress.Load() != 0 {
+		t.Fatalf("VerifiedProgress=%d, want 0", state.Bytes.VerifiedProgress.Load())
+	}
+	after := snapshotSoft403Guard(d)
+	if after.exhaustionCount != before.exhaustionCount || after.candidateSince != before.candidateSince || after.candidateVerifiedProgress != before.candidateVerifiedProgress {
+		t.Fatalf("empty 206 changed guard: before=%+v after=%+v", before, after)
+	}
+	if !d.recordSoft403Exhaustion(now.Add(Soft403NoProgressConfirmWindow)) {
+		t.Fatal("empty 206 body prevented no-progress confirmation")
+	}
+}
+
+func TestSoft403_StaleStatusDoesNotClassifyTransportFailure(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+	setSoft403GuardTestLimits(t, 1, Soft403NoProgressConfirmWindow)
+
+	fileSize := int64(1024)
+	blob := bytes.Repeat([]byte{1}, int(fileSize))
+	var calls atomic.Int32
+	queue := NewTaskQueue()
+	queue.Push(types.Task{Offset: 0, Length: fileSize})
+
+	client := &http.Client{Transport: soft403RoundTripper(func(r *http.Request) (*http.Response, error) {
+		switch calls.Add(1) {
+		case 1:
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+				Request:    r,
+			}, nil
+		case 2:
+			return nil, fmt.Errorf("pre-response transport failure")
+		default:
+			queue.Close()
+			return &http.Response{
+				StatusCode:    http.StatusPartialContent,
+				Header:        make(http.Header),
+				Body:          io.NopCloser(bytes.NewReader(blob)),
+				ContentLength: fileSize,
+				Request:       r,
+			}, nil
+		}
+	})}
+
+	f, err := os.Create(filepath.Join(tmpDir, "stale-status.surge"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	d := NewConcurrentDownloader("stale-status", nil, nil, &types.RuntimeConfig{
+		MaxTaskRetries:   2,
+		WorkerBufferSize: int(fileSize),
+	})
+	if err := d.worker(context.Background(), 0, []string{"http://example.test"}, f, queue, fileSize, client); err != nil {
+		t.Fatalf("stale 403 status classified final transport failure as terminal: %v", err)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("requests=%d, want 3", calls.Load())
+	}
+}
+
+func TestSoft403_SlowVerifiedBodyPreventsFalseTerminal(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+	setSoft403GuardTestLimits(t, 2, 2*time.Second)
+
+	blockSize := int64(types.WorkerBatchSize)
+	rangeSize := 4 * blockSize
+	fileSize := 2 * rangeSize
+	block := bytes.Repeat([]byte{7}, int(blockSize))
+	advanceBody := make(chan struct{})
+	allowForbidden := make(chan struct{})
+	healthyStarted := make(chan struct{})
+	healthyFinished := make(chan struct{})
+	var healthyStartedOnce sync.Once
+	var healthyFinishedOnce sync.Once
+	var forbiddenRequests atomic.Int64
+
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var start, end int64
+		if _, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil || start < 0 || end < start {
+			http.Error(w, "bad range", http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		if start != 0 {
+			select {
+			case <-allowForbidden:
+				forbiddenRequests.Add(1)
+				w.WriteHeader(http.StatusForbidden)
+			case <-r.Context().Done():
+			}
+			return
+		}
+
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", rangeSize-1, fileSize))
+		w.Header().Set("Content-Length", strconv.FormatInt(rangeSize, 10))
+		w.WriteHeader(http.StatusPartialContent)
+		flusher, _ := w.(http.Flusher)
+		for part := int64(0); part < 4; part++ {
+			if part > 0 {
+				select {
+				case <-advanceBody:
+				case <-r.Context().Done():
+					return
+				}
+			}
+			if _, err := w.Write(block); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			if part == 0 {
+				healthyStartedOnce.Do(func() { close(healthyStarted) })
+			}
+		}
+		healthyFinishedOnce.Do(func() { close(healthyFinished) })
+	}))
+	defer server.Close()
+
+	destPath := filepath.Join(tmpDir, "slow-verified-body.bin")
+	if f, err := os.Create(destPath + types.IncompleteSuffix); err == nil {
+		_ = f.Close()
+	} else {
+		t.Fatal(err)
+	}
+
+	state := progress.New("slow-verified-body", fileSize)
+	d := NewConcurrentDownloader("slow-verified-body", nil, state, &types.RuntimeConfig{
+		MaxConnectionsPerDownload: 2,
+		Workers:                   2,
+		MinChunkSize:              rangeSize,
+		WorkerBufferSize:          int(blockSize / 2),
+		MaxTaskRetries:            2,
+		DialHedgeCount:            0,
+		SlowWorkerThreshold:       0,
+		SlowWorkerGracePeriod:     0,
+		StallTimeout:              0,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		result <- d.Download(ctx, server.URL, nil, nil, destPath, fileSize)
+	}()
+
+	select {
+	case <-healthyStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("healthy range did not start")
+	}
+	waitForSoft403Condition(t, 5*time.Second, func() bool {
+		return state.Bytes.VerifiedProgress.Load() >= blockSize
+	})
+	close(allowForbidden)
+	lastProgress := state.Bytes.VerifiedProgress.Load()
+
+	for completedBlocks := int64(1); completedBlocks < 4; completedBlocks++ {
+		waitForSoft403Condition(t, 5*time.Second, func() bool {
+			guard := snapshotSoft403Guard(d)
+			return !guard.candidateSince.IsZero() && guard.candidateVerifiedProgress >= lastProgress
+		})
+		select {
+		case err := <-result:
+			t.Fatalf("download terminated while healthy body was held: %v", err)
+		default:
+		}
+		if completedBlocks < 3 {
+			select {
+			case <-healthyFinished:
+				t.Fatal("healthy body finished before all synchronized progress pulses")
+			default:
+			}
+		}
+		select {
+		case advanceBody <- struct{}{}:
+		case err := <-result:
+			t.Fatalf("download terminated before healthy progress pulse: %v", err)
+		}
+		waitForSoft403Condition(t, 5*time.Second, func() bool {
+			return state.Bytes.VerifiedProgress.Load() > lastProgress
+		})
+		lastProgress = state.Bytes.VerifiedProgress.Load()
+	}
+
+	select {
+	case <-healthyFinished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("healthy body did not finish")
+	}
+	select {
+	case err := <-result:
+		if !types.IsPermanentHTTPError(err) {
+			t.Fatalf("want confirmed permanent error after healthy body finished, got %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("persistent 403 range did not confirm after healthy body finished")
+	}
+	if forbiddenRequests.Load() < 2 {
+		t.Fatalf("forbidden requests=%d, want persistent failures", forbiddenRequests.Load())
 	}
 }

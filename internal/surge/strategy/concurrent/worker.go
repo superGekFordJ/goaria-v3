@@ -148,6 +148,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			}
 
 			taskStart := time.Now()
+			activeTask.LastHTTPStatus.Store(0)
 			lastErr = d.downloadTask(taskCtx, currentURL, file, activeTask, buf, client, totalSize)
 			// FORK-PATCH: Capture speed for dynamic tier adjustment
 			lastSpeed = activeTask.GetSpeed()
@@ -294,10 +295,8 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			// FORK-PATCH: requeue residual from activeTask StopAt/CurrentOffset.
 			// Transient/unknown: continue outer loop (do not escalate). Hard
 			// permanent HTTP: residual requeue (originalEnd clamp) THEN return
-			// lastErr. Soft-403: count consecutive no-206 exhaustions; escalate
-			// via wrap+B1 only after soft403StickyExhaustions. Push before
-			// return keeps pause race safe. Disk-space never reaches here —
-			// early return above skips residual Push.
+			// lastErr. Soft-403 is decided after the existing residual path.
+			// Disk-space never reaches here — early return above skips residual Push.
 			if remaining := activeTask.RemainingTask(); remaining != nil {
 				originalEnd := task.Offset + task.Length
 				if remaining.Offset+remaining.Length > originalEnd {
@@ -311,11 +310,8 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			if errors.Is(lastErr, types.ErrPermanentHTTP) {
 				return lastErr
 			}
-			if activeTask.LastHTTPStatus.Load() == http.StatusForbidden {
-				n := d.soft403NoProgressExhaustions.Add(1)
-				if int(n) >= soft403StickyExhaustions {
-					return fmt.Errorf("unexpected status: 403: %w", types.ErrPermanentHTTP)
-				}
+			if activeTask.LastHTTPStatus.Load() == http.StatusForbidden && d.recordSoft403Exhaustion(time.Now()) {
+				return fmt.Errorf("unexpected status: 403: %w", types.ErrPermanentHTTP)
 			}
 		}
 	}
@@ -427,8 +423,6 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 
 	// FORK-PATCH: Reset hedge poison counter on valid response.
 	d.recordHedgeSuccess()
-	// FORK-PATCH: intervening 206 clears soft-403 sticky pressure.
-	d.soft403NoProgressExhaustions.Store(0)
 
 	// FORK-PATCH: send FirstByte once — first non-hedged 206 only.
 	if !d.isResume.Load() && activeTask.Hedged.Load() == 0 {

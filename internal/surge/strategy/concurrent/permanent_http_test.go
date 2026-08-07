@@ -84,9 +84,7 @@ func TestSticky403_NoChurn(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	prev := soft403StickyExhaustions
-	soft403StickyExhaustions = 3
-	t.Cleanup(func() { soft403StickyExhaustions = prev })
+	setSoft403GuardTestLimits(t, 3, 200*time.Millisecond)
 
 	fileSize := int64(64 * utils.KiB)
 	var requests atomic.Int64
