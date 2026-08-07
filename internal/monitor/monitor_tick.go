@@ -108,7 +108,7 @@ func (m *Monitor) tick() {
 					m.mu.Unlock()
 				}
 			}
-			// 注意：lastStopped 将在 enrichTasks 后更新，确保缓存包含完整文件信息
+			// lastStopped is persisted after fast-retry + normalize (below), not here.
 		}()
 	} else {
 		m.mu.Lock()
@@ -266,7 +266,10 @@ func (m *Monitor) tick() {
 
 	// Persist normalized stopped after fast-retry. Always rewrite the reuse buffer
 	// so stripped conflicts do not linger; only bump fetch time on fetchStopped ticks.
+	// Re-scrub deletedGids under the same lock so a mid-tick InvalidateTask cannot
+	// be undone by writing a pre-tombstone local stopped slice back into lastStopped.
 	m.mu.Lock()
+	stopped = dropDeletedStopped(m.deletedGids, stopped)
 	m.lastStopped = copyTaskSlice(stopped)
 	if fetchStopped {
 		m.shouldFetchStopped = false

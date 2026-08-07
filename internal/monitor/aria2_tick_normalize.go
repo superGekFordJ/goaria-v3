@@ -1,6 +1,10 @@
 package monitor
 
-import "goaria-v3/internal/rpc"
+import (
+	"time"
+
+	"goaria-v3/internal/rpc"
+)
 
 // normalizeAria2TickLists canonicalizes Aria2 tick list triples with precedence
 // active > waiting > stopped. Waiting entries that collide with active are
@@ -55,4 +59,23 @@ func normalizeAria2TickLists(active, waiting, stopped []rpc.Task) (normActive, n
 		normStopped = append(normStopped, t)
 	}
 	return normActive, normWaiting, normStopped
+}
+
+// dropDeletedStopped removes tombstoned GIDs from stopped. Used under m.mu at
+// lastStopped persist so a mid-tick InvalidateTask scrub is not undone.
+func dropDeletedStopped(deletedGids map[string]time.Time, stopped []rpc.Task) []rpc.Task {
+	if len(deletedGids) == 0 {
+		return stopped
+	}
+	out := make([]rpc.Task, 0, len(stopped))
+	for _, t := range stopped {
+		if t.GID == "" {
+			continue
+		}
+		if _, deleted := deletedGids[t.GID]; deleted {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }

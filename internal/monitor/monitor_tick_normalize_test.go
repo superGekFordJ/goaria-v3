@@ -143,10 +143,16 @@ func TestTick_StaleStopped_FastRetryAppend_Stripped(t *testing.T) {
 	defer history.Clear()
 
 	const gid = "ar_stale_fastretry"
+	const keepGID = "ar_keep_fastretry"
 	staleStopped := rpc.Task{
 		GID: gid, Status: "complete",
 		TotalLength: "1000", CompletedLength: "1000",
 		Files: []rpc.File{{Path: "/tmp/fast.bin"}},
+	}
+	keepStopped := rpc.Task{
+		GID: keepGID, Status: "complete",
+		TotalLength: "500", CompletedLength: "500",
+		Files: []rpc.File{{Path: "/tmp/keep.bin"}},
 	}
 	liveActive := rpc.Task{
 		GID: gid, Status: "active",
@@ -155,8 +161,9 @@ func TestTick_StaleStopped_FastRetryAppend_Stripped(t *testing.T) {
 	}
 
 	engine := &mockTickEngine{}
-	// Engine stopped omits live GID; fast-retry would re-append from cache.
-	engine.setLists([]rpc.Task{liveActive}, nil, nil)
+	// Engine stopped has a non-conflicting survivor; cache still has live-conflicting gid.
+	// Fast-retry would re-append the conflict; normalize must strip it and keep ar_keep.
+	engine.setLists([]rpc.Task{liveActive}, nil, []rpc.Task{keepStopped})
 	m := newTickRecoveryMonitor(t, engine)
 	m.aria2Recovered.Store(true)
 	m.shouldFetchStopped = true
@@ -172,7 +179,7 @@ func TestTick_StaleStopped_FastRetryAppend_Stripped(t *testing.T) {
 	State.SetMonitor(m)
 	t.Cleanup(func() { State.SetMonitor(prevMon) })
 
-	Cache.UpdateFromAria2(nil, nil, []rpc.Task{staleStopped})
+	Cache.UpdateFromAria2(nil, nil, []rpc.Task{staleStopped, keepStopped})
 	history.Add(history.HistoryEntry{GID: gid, Path: "/tmp/fast.bin", Status: "complete"})
 
 	m.tick()
@@ -188,10 +195,17 @@ func TestTick_StaleStopped_FastRetryAppend_Stripped(t *testing.T) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	keepFound := false
 	for _, task := range m.lastStopped {
 		if task.GID == gid {
 			t.Fatal("expected lastStopped written after normalize without live conflict GID")
 		}
+		if task.GID == keepGID {
+			keepFound = true
+		}
+	}
+	if !keepFound {
+		t.Fatalf("expected lastStopped to retain fast-retry/engine survivor %s, got %v", keepGID, taskGIDs(m.lastStopped))
 	}
 }
 
