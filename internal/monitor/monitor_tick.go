@@ -285,7 +285,18 @@ func (m *Monitor) tick() {
 
 	// 处理已完成任务（写入历史和速度统计）
 	for _, task := range completedTasks {
-		m.handleTaskComplete(task)
+		status := task.Status
+		m.tracker.RunUnderLifecycle(task.GID, func() {
+			// Update marked under tracker.mu without the lifecycle lock; a
+			// concurrent retire may have cleared acceptance since then.
+			if completed := m.tracker.MarkCompleteFromEvent(task.GID, status); completed != nil {
+				m.handleTaskComplete(completed)
+				return
+			}
+			if m.tracker.TerminalAcceptedInCurrentGeneration(task.GID) {
+				m.handleTaskComplete(task)
+			}
+		})
 	}
 
 	// Periodic eviction of orphaned Aria2 metadata entries. Runs at most every

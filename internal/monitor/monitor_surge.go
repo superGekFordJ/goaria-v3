@@ -469,14 +469,13 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			if completeTotal > 0 {
 				m.tracker.EnsureTrackedFromEvent(gid, completeTotal, "", 0, "")
 			}
-			if completed := m.tracker.MarkCompleteFromEvent(gid, deltaType); completed != nil {
+			m.markCompleteAndHandle(gid, deltaType, func(completed *TrackedTask) {
 				// AvgSpeed substitutes for PeakSpeed when no peak-time accept occurred;
 				// acceptPeakSpeed refreshes PeakEnvKey to Current on this complete copy only.
 				if completed.PeakSpeed == 0 && completeAvgSpeed > 0 {
 					acceptPeakSpeed(completed, int64(completeAvgSpeed))
 				}
-				m.handleTaskComplete(completed)
-			}
+			})
 		}
 		// Terminal: clear intention to avoid unbounded map growth.
 		m.pauseResumeVersionMu.Lock()
@@ -682,7 +681,9 @@ func (m *Monitor) reconcileSurgeCache() {
 							0,
 							termStatus,
 						)
-						_ = m.tracker.MarkCompleteFromEvent(gid, termStatus)
+						m.tracker.RunUnderLifecycle(gid, func() {
+							_ = m.tracker.MarkCompleteFromEvent(gid, termStatus)
+						})
 					}
 					log.Printf("[Monitor] Surge poll: refusing history-terminal waiting admit for gid %s (seeded stopped/%s)", gid, termStatus)
 					continue
@@ -699,9 +700,7 @@ func (m *Monitor) reconcileSurgeCache() {
 					if engineTask.Status == "error" {
 						status = "error"
 					}
-					if completed := m.tracker.MarkCompleteFromEvent(gid, status); completed != nil {
-						m.handleTaskComplete(completed)
-					}
+					m.markCompleteAndHandle(gid, status, nil)
 				}
 				// Terminal: clear intention to avoid unbounded map growth.
 				m.pauseResumeVersionMu.Lock()
@@ -771,9 +770,7 @@ func (m *Monitor) reconcileSurgeCache() {
 				if total := parseInt64(engineTask.TotalLength); total > 0 {
 					m.tracker.EnsureTrackedFromEvent(gid, total, "", 0, "")
 				}
-				if completed := m.tracker.MarkCompleteFromEvent(gid, status); completed != nil {
-					m.handleTaskComplete(completed)
-				}
+				m.markCompleteAndHandle(gid, status, nil)
 			}
 			// Terminal: clear intention to avoid unbounded map growth.
 			m.pauseResumeVersionMu.Lock()

@@ -70,13 +70,28 @@ type TrackedTask struct {
 	resumeOccupancyHold bool
 }
 
+// lifecycleState is the per-GID gate for stopped→live retirement vs terminal
+// accept/history write. generation bumps only on ReopenAfterStoppedToLive;
+// terminalHandled is scoped to the current generation.
+type lifecycleState struct {
+	mu              sync.Mutex
+	generation      uint64
+	terminalHandled bool
+}
+
 // TaskTracker 后端任务追踪器
 type TaskTracker struct {
 	mu    sync.RWMutex
 	tasks map[string]*TrackedTask // gid -> task
 
-	// 已处理的完成任务 GID（防止重复处理）
+	// 已处理的完成任务 GID（防止重复处理）；与 lifecycle.terminalHandled 同世代保持一致
 	processedComplete map[string]bool
+
+	lifecycleMu sync.Mutex
+	lifecycle   map[string]*lifecycleState
+
+	// Test-only: runs inside retire after reopen, before history.Remove.
+	retireBetweenReopenAndRemove func(string)
 }
 
 // NewTaskTracker 创建新的任务追踪器
@@ -84,6 +99,7 @@ func NewTaskTracker() *TaskTracker {
 	return &TaskTracker{
 		tasks:             make(map[string]*TrackedTask),
 		processedComplete: make(map[string]bool),
+		lifecycle:         make(map[string]*lifecycleState),
 	}
 }
 
@@ -112,8 +128,8 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 	for _, task := range stopped {
 		currentGids[task.GID] = true
 		if task.Status == "complete" || task.Status == "error" {
-			// 检查是否已处理过
-			if t.processedComplete[task.GID] {
+			// Generation-scoped: do not take lifecycle lock here (holds tracker.mu).
+			if t.isTerminalAcceptedLocked(task.GID) {
 				continue
 			}
 
@@ -124,7 +140,7 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 					tracked.resumeOccupancyHold = false
 					t.fillTaskInfo(tracked, task)
 					completed = append(completed, copyTrackedTask(tracked))
-					t.processedComplete[task.GID] = true
+					t.markTerminalAcceptedLocked(task.GID)
 				}
 			} else {
 				// 新发现的已完成任务（可能是重启后）
@@ -133,7 +149,7 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 				tracked.resumeOccupancyHold = false
 				t.tasks[task.GID] = tracked
 				completed = append(completed, copyTrackedTask(tracked))
-				t.processedComplete[task.GID] = true
+				t.markTerminalAcceptedLocked(task.GID)
 			}
 		}
 	}
@@ -394,7 +410,7 @@ func (t *TaskTracker) EnsureTrackedFromEvent(gid string, totalLength int64, sour
 		}
 		// Don't resurrect a terminal task (complete/error) back to a
 		// non-terminal status from a late/out-of-order event or reconcile.
-		if status != "" && !t.processedComplete[gid] {
+		if status != "" && !t.isTerminalAcceptedLocked(gid) {
 			tracked.Status = status
 			tracked.resumeOccupancyHold = false
 		}
@@ -414,15 +430,101 @@ func (t *TaskTracker) EnsureTrackedFromEvent(gid string, totalLength int64, sour
 	}
 }
 
+// RunUnderLifecycle serializes stopped→live retirement with terminal acceptance
+// for a single GID. fn must not call RunUnderLifecycle for the same GID.
+// Lock order: acquire the GID lifecycle lock before TaskTracker.mu.
+func (t *TaskTracker) RunUnderLifecycle(gid string, fn func()) {
+	if fn == nil {
+		return
+	}
+	if t == nil || gid == "" {
+		fn()
+		return
+	}
+	ls := t.getLifecycle(gid)
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	fn()
+}
+
+func (t *TaskTracker) getLifecycle(gid string) *lifecycleState {
+	t.lifecycleMu.Lock()
+	defer t.lifecycleMu.Unlock()
+	if t.lifecycle == nil {
+		t.lifecycle = make(map[string]*lifecycleState)
+	}
+	ls := t.lifecycle[gid]
+	if ls == nil {
+		ls = &lifecycleState{}
+		t.lifecycle[gid] = ls
+	}
+	return ls
+}
+
+// markTerminalAcceptedLocked records terminal acceptance for the current
+// generation. Caller must hold tracker.mu.
+func (t *TaskTracker) markTerminalAcceptedLocked(gid string) {
+	if t.processedComplete == nil {
+		t.processedComplete = make(map[string]bool)
+	}
+	t.processedComplete[gid] = true
+	ls := t.getLifecycle(gid)
+	ls.terminalHandled = true
+}
+
+// isTerminalAcceptedLocked reports whether gid already accepted a terminal for
+// the current generation. Caller must hold tracker.mu (or RLock).
+func (t *TaskTracker) isTerminalAcceptedLocked(gid string) bool {
+	if !t.processedComplete[gid] {
+		return false
+	}
+	ls := t.getLifecycle(gid)
+	return ls.terminalHandled
+}
+
+// TerminalAcceptedInCurrentGeneration reports whether gid is marked complete
+// for the current lifecycle generation (call under RunUnderLifecycle when
+// racing retire).
+func (t *TaskTracker) TerminalAcceptedInCurrentGeneration(gid string) bool {
+	if t == nil || gid == "" {
+		return false
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.isTerminalAcceptedLocked(gid)
+}
+
+// LifecycleGeneration returns the current stopped→live generation for tests.
+func (t *TaskTracker) LifecycleGeneration(gid string) uint64 {
+	if t == nil || gid == "" {
+		return 0
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.getLifecycle(gid).generation
+}
+
+// HasLifecycleEntry reports whether a lifecycle map entry exists (tests).
+func (t *TaskTracker) HasLifecycleEntry(gid string) bool {
+	if t == nil || gid == "" {
+		return false
+	}
+	t.lifecycleMu.Lock()
+	defer t.lifecycleMu.Unlock()
+	_, ok := t.lifecycle[gid]
+	return ok
+}
+
 // SetStatusFromEvent updates a tracked task's status from a Surge lifecycle
 // event (pause/resume) without re-running the full ensure logic. No-op if
 // the task is not yet tracked (reconcileSurgeCache will seed it).
+// Does not bump lifecycle generation.
 func (t *TaskTracker) SetStatusFromEvent(gid string, status string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	// Don't resurrect a terminal task (complete/error) back to a non-terminal
 	// status from a late/out-of-order event or reconcile mismatch.
-	if t.processedComplete[gid] {
+	if t.isTerminalAcceptedLocked(gid) {
 		return
 	}
 	if tracked := t.tasks[gid]; tracked != nil {
@@ -436,12 +538,16 @@ func (t *TaskTracker) SetStatusFromEvent(gid string, status string) {
 // ReopenAfterStoppedToLive clears terminal dedup so a confirmed stopped→live
 // resume can accept a later complete/error. Call only from authoritative
 // resume paths (alongside history retirement), never from generic pause/status.
+// Bumps lifecycle generation and clears the generation-scoped terminal marker.
 func (t *TaskTracker) ReopenAfterStoppedToLive(gid, status string) {
 	if t == nil || gid == "" {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	ls := t.getLifecycle(gid)
+	ls.generation++
+	ls.terminalHandled = false
 	delete(t.processedComplete, gid)
 	if status == "" {
 		status = "active"
@@ -474,7 +580,7 @@ func (t *TaskTracker) UpdateProgressFromEvent(gid string, totalLength, completed
 }
 
 // MarkCompleteFromEvent 从 Surge complete/error 事件标记完成
-// 返回副本供 handleTaskComplete 使用，已处理则返回 nil
+// 返回副本供 handleTaskComplete 使用；当前世代已接受则返回 nil
 func (t *TaskTracker) MarkCompleteFromEvent(gid string, status string) *TrackedTask {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -483,13 +589,13 @@ func (t *TaskTracker) MarkCompleteFromEvent(gid string, status string) *TrackedT
 	if tracked == nil {
 		return nil
 	}
-	if t.processedComplete[gid] {
+	if t.isTerminalAcceptedLocked(gid) {
 		return nil
 	}
 
 	tracked.Status = status
 	tracked.resumeOccupancyHold = false
-	t.processedComplete[gid] = true
+	t.markTerminalAcceptedLocked(gid)
 	return copyTrackedTask(tracked)
 }
 
@@ -562,9 +668,13 @@ func (t *TaskTracker) GetScopeAndEnv(gid string) (scope, domain, envKey string, 
 // RemoveTask 从追踪器中移除任务
 func (t *TaskTracker) RemoveTask(gid string) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	delete(t.tasks, gid)
 	delete(t.processedComplete, gid)
+	t.mu.Unlock()
+
+	t.lifecycleMu.Lock()
+	delete(t.lifecycle, gid)
+	t.lifecycleMu.Unlock()
 }
 
 // SetKeepAlive sets the IsKeepAlive flag for a tracked task.

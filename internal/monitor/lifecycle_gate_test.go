@@ -1,0 +1,338 @@
+package monitor
+
+import (
+	"sync"
+	"testing"
+	"time"
+
+	"goaria-v3/internal/events"
+	"goaria-v3/internal/history"
+	"goaria-v3/internal/rpc"
+)
+
+func historyEntriesForGID(gid string) []history.HistoryEntry {
+	var out []history.HistoryEntry
+	for _, e := range history.GetAll() {
+		if e.GID == gid {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func TestLifecycle_Interleave_ReopenThenTerminalThenRemove(t *testing.T) {
+	history.DisableSaveForTest()
+	history.Clear()
+	defer history.Clear()
+
+	hub := events.NewHub(nil)
+	tracker := NewTaskTracker()
+	m := &Monitor{hub: hub, pusher: NewPusher(hub), tracker: tracker}
+	prevMon := State.GetMonitor()
+	State.SetMonitor(m)
+	t.Cleanup(func() { State.SetMonitor(prevMon) })
+
+	const gid = "sg_life_a"
+	tracker.EnsureTrackedFromEvent(gid, 1000, "https://example.com/a.bin", 0, "error")
+	if first := tracker.MarkCompleteFromEvent(gid, "error"); first == nil {
+		t.Fatal("expected first terminal")
+	}
+	Cache.metadata[gid] = &TaskMetadata{GID: gid, Files: []string{"/tmp/a.bin"}, Dir: "/tmp"}
+	t.Cleanup(func() { delete(Cache.metadata, gid) })
+	history.Add(history.HistoryEntry{GID: gid, Path: "/tmp/a.bin", Status: "error"})
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	tracker.retireBetweenReopenAndRemove = func(string) {
+		close(started)
+		<-release
+	}
+	t.Cleanup(func() { tracker.retireBetweenReopenAndRemove = nil })
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		m.RetireHistoryIfResumedFromStopped(gid, "stopped")
+	}()
+
+	<-started
+	// Terminal blocked on lifecycle until retire finishes Remove.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		m.markCompleteAndHandle(gid, "complete", nil)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	entries := historyEntriesForGID(gid)
+	if len(entries) != 1 {
+		t.Fatalf("want exactly 1 history entry after reopen→terminal→remove serialize, got %d %#v", len(entries), entries)
+	}
+	if entries[0].Status != "complete" {
+		t.Fatalf("want replacement complete entry, got %#v", entries[0])
+	}
+}
+
+func TestLifecycle_Interleave_RemoveThenTerminalThenReopen(t *testing.T) {
+	history.DisableSaveForTest()
+	history.Clear()
+	defer history.Clear()
+
+	hub := events.NewHub(nil)
+	tracker := NewTaskTracker()
+	m := &Monitor{hub: hub, pusher: NewPusher(hub), tracker: tracker}
+	prevMon := State.GetMonitor()
+	State.SetMonitor(m)
+	t.Cleanup(func() { State.SetMonitor(prevMon) })
+
+	const gid = "sg_life_b"
+	tracker.EnsureTrackedFromEvent(gid, 1000, "https://example.com/b.bin", 0, "error")
+	if first := tracker.MarkCompleteFromEvent(gid, "error"); first == nil {
+		t.Fatal("expected first terminal")
+	}
+	Cache.metadata[gid] = &TaskMetadata{GID: gid, Files: []string{"/tmp/b.bin"}, Dir: "/tmp"}
+	t.Cleanup(func() { delete(Cache.metadata, gid) })
+	history.Add(history.HistoryEntry{GID: gid, Path: "/tmp/b.bin", Status: "error"})
+
+	// Serialize under gate: retire (remove archive) then terminal must still
+	// write a replacement for the new generation.
+	m.RetireHistoryIfResumedFromStopped(gid, "stopped")
+	if _, ok := history.Get(gid); ok {
+		t.Fatal("expected history removed by retire")
+	}
+	m.markCompleteAndHandle(gid, "error", nil)
+
+	entries := historyEntriesForGID(gid)
+	if len(entries) != 1 {
+		t.Fatalf("want exactly 1 history entry after remove→terminal under gate, got %d %#v", len(entries), entries)
+	}
+	if entries[0].Status != "error" {
+		t.Fatalf("want error entry, got %#v", entries[0])
+	}
+}
+
+func TestLifecycle_NoGenerationBumpOnPauseOrWaiting(t *testing.T) {
+	tracker := NewTaskTracker()
+	const gid = "sg_life_pause"
+	tracker.EnsureTrackedFromEvent(gid, 1000, "https://example.com/p.bin", 0, "active")
+	if first := tracker.MarkCompleteFromEvent(gid, "error"); first == nil {
+		t.Fatal("expected terminal seed")
+	}
+	before := tracker.LifecycleGeneration(gid)
+
+	tracker.SetStatusFromEvent(gid, "paused")
+	if tracker.LifecycleGeneration(gid) != before {
+		t.Fatalf("pause must not bump generation: before=%d after=%d", before, tracker.LifecycleGeneration(gid))
+	}
+	if !tracker.processedComplete[gid] {
+		t.Fatal("pause must not clear terminal acceptance")
+	}
+
+	tracker.SetStatusFromEvent(gid, "waiting")
+	if tracker.LifecycleGeneration(gid) != before {
+		t.Fatalf("waiting status must not bump generation")
+	}
+
+	tracker.ReopenAfterStoppedToLive(gid, "active")
+	after := tracker.LifecycleGeneration(gid)
+	if after != before+1 {
+		t.Fatalf("stopped→live reopen should bump once: before=%d after=%d", before, after)
+	}
+}
+
+func TestLifecycle_RemoveTaskCleansLifecycleEntry(t *testing.T) {
+	tracker := NewTaskTracker()
+	const gid = "sg_life_rm"
+	tracker.EnsureTrackedFromEvent(gid, 100, "", 0, "active")
+	tracker.ReopenAfterStoppedToLive(gid, "active")
+	if !tracker.HasLifecycleEntry(gid) {
+		t.Fatal("expected lifecycle entry after reopen")
+	}
+	tracker.RemoveTask(gid)
+	if tracker.HasLifecycleEntry(gid) {
+		t.Fatal("RemoveTask must drop lifecycle map entry")
+	}
+	if tracker.processedComplete[gid] {
+		t.Fatal("RemoveTask must clear processedComplete")
+	}
+}
+
+func TestLifecycle_GroupIPC_PackageRetireSharesGate(t *testing.T) {
+	history.DisableSaveForTest()
+	history.Clear()
+	defer history.Clear()
+
+	tracker := NewTaskTracker()
+	prevMon := State.GetMonitor()
+	State.SetMonitor(&Monitor{tracker: tracker})
+	t.Cleanup(func() { State.SetMonitor(prevMon) })
+
+	const gid = "sg_life_grp"
+	tracker.EnsureTrackedFromEvent(gid, 1000, "https://example.com/g.bin", 0, "error")
+	if first := tracker.MarkCompleteFromEvent(gid, "error"); first == nil {
+		t.Fatal("expected first terminal")
+	}
+	before := tracker.LifecycleGeneration(gid)
+	history.Add(history.HistoryEntry{GID: gid, Path: "/tmp/g.bin", Status: "error"})
+
+	// Group IPC path uses the package helper (same gate as Surge event retire).
+	RetireHistoryIfResumedFromStopped(gid, "stopped")
+
+	if _, ok := history.Get(gid); ok {
+		t.Fatal("expected history removed via package retire")
+	}
+	after := tracker.LifecycleGeneration(gid)
+	if after != before+1 {
+		t.Fatalf("package retire must bump generation once: before=%d after=%d", before, after)
+	}
+	if tracker.processedComplete[gid] {
+		t.Fatal("expected terminal marker cleared")
+	}
+
+	// Second package call without intervening terminal still reopens once more
+	// (idempotent API for from!=stopped only); from==stopped is a real transition.
+	RetireHistoryIfResumedFromStopped(gid, "waiting")
+	if tracker.LifecycleGeneration(gid) != after {
+		t.Fatal("from!=stopped must not bump generation")
+	}
+}
+
+func TestLifecycle_RetireHistory_MethodNoDoubleReopen(t *testing.T) {
+	tracker := NewTaskTracker()
+	m := &Monitor{tracker: tracker}
+	prevMon := State.GetMonitor()
+	State.SetMonitor(m)
+	t.Cleanup(func() { State.SetMonitor(prevMon) })
+
+	const gid = "sg_life_e7"
+	tracker.EnsureTrackedFromEvent(gid, 100, "", 0, "error")
+	_ = tracker.MarkCompleteFromEvent(gid, "error")
+	before := tracker.LifecycleGeneration(gid)
+
+	m.RetireHistoryIfResumedFromStopped(gid, "stopped")
+	after := tracker.LifecycleGeneration(gid)
+	if after != before+1 {
+		t.Fatalf("method retire must reopen exactly once (E7): before=%d after=%d", before, after)
+	}
+}
+
+func TestLifecycle_ErrorResumeError_ViaMarkCompleteAndHandle(t *testing.T) {
+	history.DisableSaveForTest()
+	history.Clear()
+	defer history.Clear()
+
+	hub := events.NewHub(nil)
+	tracker := NewTaskTracker()
+	m := &Monitor{
+		hub:                   hub,
+		pusher:                NewPusher(hub),
+		tracker:               tracker,
+		pauseResumeIntentions: make(map[string]string),
+	}
+	prevMon := State.GetMonitor()
+	State.SetMonitor(m)
+	t.Cleanup(func() { State.SetMonitor(prevMon) })
+
+	Cache.metadata["sg_life_err"] = &TaskMetadata{
+		GID: "sg_life_err", Files: []string{"/tmp/reerr.bin"}, Dir: "/tmp",
+	}
+	defer delete(Cache.metadata, "sg_life_err")
+
+	tracker.EnsureTrackedFromEvent("sg_life_err", 1000, "https://example.com/reerr.bin", 0, "error")
+	m.markCompleteAndHandle("sg_life_err", "error", nil)
+	if entries := historyEntriesForGID("sg_life_err"); len(entries) != 1 {
+		t.Fatalf("first terminal: want 1 history, got %d", len(entries))
+	}
+
+	m.RetireHistoryIfResumedFromStopped("sg_life_err", "stopped")
+	if _, ok := history.Get("sg_life_err"); ok {
+		t.Fatal("expected history retired")
+	}
+
+	m.markCompleteAndHandle("sg_life_err", "error", nil)
+	entries := historyEntriesForGID("sg_life_err")
+	if len(entries) != 1 || entries[0].Status != "error" {
+		t.Fatalf("second terminal: want 1 error entry, got %#v", entries)
+	}
+}
+
+func TestLifecycle_TickReacceptUnderGate(t *testing.T) {
+	history.DisableSaveForTest()
+	history.Clear()
+	defer history.Clear()
+
+	hub := events.NewHub(nil)
+	tracker := NewTaskTracker()
+	m := &Monitor{hub: hub, pusher: NewPusher(hub), tracker: tracker, engine: &mockSafeEngine{}}
+	prevMon := State.GetMonitor()
+	State.SetMonitor(m)
+	t.Cleanup(func() { State.SetMonitor(prevMon) })
+
+	const gid = "ar_life_tick"
+	Cache.metadata[gid] = &TaskMetadata{GID: gid, Files: []string{"/tmp/tick.bin"}, Dir: "/tmp"}
+	t.Cleanup(func() { delete(Cache.metadata, gid) })
+
+	completed := tracker.Update(nil, nil, []rpc.Task{{
+		GID: gid, Status: "complete",
+		TotalLength: "100", CompletedLength: "100",
+		Files: []rpc.File{{Path: "/tmp/tick.bin"}},
+	}})
+	if len(completed) != 1 {
+		t.Fatalf("Update should detect first complete, got %d", len(completed))
+	}
+
+	// Simulate tick post-loop re-accept under lifecycle (no concurrent retire).
+	for _, task := range completed {
+		status := task.Status
+		tracker.RunUnderLifecycle(task.GID, func() {
+			if c := tracker.MarkCompleteFromEvent(task.GID, status); c != nil {
+				m.handleTaskComplete(c)
+				return
+			}
+			if tracker.TerminalAcceptedInCurrentGeneration(task.GID) {
+				m.handleTaskComplete(task)
+			}
+		})
+	}
+	if entries := historyEntriesForGID(gid); len(entries) != 1 {
+		t.Fatalf("want 1 history from tick re-accept, got %d", len(entries))
+	}
+
+	// Concurrent retire between Update and handle: generation advances; stale
+	// snapshot must not leave empty archive after a fresh terminal.
+	history.Clear()
+	tracker.ReopenAfterStoppedToLive(gid, "active")
+	tracker.tasks[gid].Status = "active"
+	completed2 := tracker.Update(nil, nil, []rpc.Task{{
+		GID: gid, Status: "complete",
+		TotalLength: "100", CompletedLength: "100",
+		Files: []rpc.File{{Path: "/tmp/tick.bin"}},
+	}})
+	if len(completed2) != 1 {
+		t.Fatal("expected second Update complete after reopen")
+	}
+	retireDone := make(chan struct{})
+	go func() {
+		m.RetireHistoryIfResumedFromStopped(gid, "stopped")
+		close(retireDone)
+	}()
+	<-retireDone
+	for _, task := range completed2 {
+		status := task.Status
+		tracker.RunUnderLifecycle(task.GID, func() {
+			if c := tracker.MarkCompleteFromEvent(task.GID, status); c != nil {
+				m.handleTaskComplete(c)
+				return
+			}
+			if tracker.TerminalAcceptedInCurrentGeneration(task.GID) {
+				m.handleTaskComplete(task)
+			}
+		})
+	}
+	if entries := historyEntriesForGID(gid); len(entries) != 1 {
+		t.Fatalf("after retire+re-accept want 1 history, got %d %#v", len(entries), entries)
+	}
+}

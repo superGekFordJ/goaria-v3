@@ -237,28 +237,74 @@ func (m *Monitor) ClearPauseResumeIntention(gid string) {
 // RetireHistoryIfResumedFromStopped removes durable history when a GID leaves
 // stopped for a live list (active/waiting). Safe no-op when from != "stopped".
 // Re-homes download_group into the durable group store before removal so resume
-// does not wipe live group ownership via history cleanup hooks. Also reopens
-// TaskTracker so a later complete/error can record a new terminal result.
+// does not wipe live group ownership via history cleanup hooks. Tracker reopen
+// (generation bump + clear terminal marker) and history.Remove run under the
+// same per-GID lifecycle lock as terminal acceptance.
 func RetireHistoryIfResumedFromStopped(gid, from string) {
 	if from != "stopped" || gid == "" {
 		return
 	}
-	if entry, ok := history.Get(gid); ok && entry.DownloadGroup != nil {
-		RegisterTaskGroup(gid, *entry.DownloadGroup)
-		Cache.SetTaskGroup(gid, *entry.DownloadGroup)
+	var tracker *TaskTracker
+	if mon := State.GetMonitor(); mon != nil {
+		tracker = mon.tracker
 	}
-	history.RemoveKeepingGroupStore(gid)
-	if mon := State.GetMonitor(); mon != nil && mon.tracker != nil {
-		mon.tracker.ReopenAfterStoppedToLive(gid, "active")
-	}
+	retireHistoryAndReopen(tracker, gid)
 }
 
 // RetireHistoryIfResumedFromStopped is the Monitor method form of the package helper.
 func (m *Monitor) RetireHistoryIfResumedFromStopped(gid, from string) {
-	RetireHistoryIfResumedFromStopped(gid, from)
-	if from == "stopped" && m != nil && m.tracker != nil {
-		m.tracker.ReopenAfterStoppedToLive(gid, "active")
+	if from != "stopped" || gid == "" {
+		return
 	}
+	var tracker *TaskTracker
+	if m != nil {
+		tracker = m.tracker
+	}
+	if tracker == nil {
+		if mon := State.GetMonitor(); mon != nil {
+			tracker = mon.tracker
+		}
+	}
+	retireHistoryAndReopen(tracker, gid)
+}
+
+func retireHistoryAndReopen(tracker *TaskTracker, gid string) {
+	body := func() {
+		if tracker != nil {
+			tracker.ReopenAfterStoppedToLive(gid, "active")
+			if tracker.retireBetweenReopenAndRemove != nil {
+				tracker.retireBetweenReopenAndRemove(gid)
+			}
+		}
+		if entry, ok := history.Get(gid); ok && entry.DownloadGroup != nil {
+			RegisterTaskGroup(gid, *entry.DownloadGroup)
+			Cache.SetTaskGroup(gid, *entry.DownloadGroup)
+		}
+		history.RemoveKeepingGroupStore(gid)
+	}
+	if tracker != nil {
+		tracker.RunUnderLifecycle(gid, body)
+		return
+	}
+	body()
+}
+
+// markCompleteAndHandle accepts a terminal event under the per-GID lifecycle
+// lock so it cannot race history retirement's reopen+remove critical section.
+func (m *Monitor) markCompleteAndHandle(gid, status string, prep func(*TrackedTask)) {
+	if m == nil || m.tracker == nil || gid == "" {
+		return
+	}
+	m.tracker.RunUnderLifecycle(gid, func() {
+		completed := m.tracker.MarkCompleteFromEvent(gid, status)
+		if completed == nil {
+			return
+		}
+		if prep != nil {
+			prep(completed)
+		}
+		m.handleTaskComplete(completed)
+	})
 }
 
 // RecoveryComplete reports whether at least one available engine has completed
