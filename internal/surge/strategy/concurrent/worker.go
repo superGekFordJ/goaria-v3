@@ -489,6 +489,7 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 			readSize = remaining
 		}
 
+		flushUpdates()
 		readSoFar := 0
 		var readErr error
 

@@ -47,6 +47,34 @@ func (f soft403RoundTripper) RoundTrip(r *http.Request) (*http.Response, error) 
 	return f(r)
 }
 
+type blockedSubBatchBody struct {
+	blocked     chan struct{}
+	release     chan struct{}
+	once        sync.Once
+	releaseOnce sync.Once
+	first       bool
+}
+
+func (b *blockedSubBatchBody) Read(p []byte) (int, error) {
+	if b.first {
+		b.first = false
+		for i := range p {
+			p[i] = 1
+		}
+		return len(p), nil
+	}
+	b.once.Do(func() { close(b.blocked) })
+	<-b.release
+	for i := range p {
+		p[i] = 2
+	}
+	return len(p), io.EOF
+}
+
+func (b *blockedSubBatchBody) Close() error {
+	return nil
+}
+
 type soft403GuardSnapshot struct {
 	exhaustionCount           int
 	observedVerifiedProgress  int64
@@ -923,6 +951,78 @@ func TestSoft403_StaleStatusDoesNotClassifyTransportFailure(t *testing.T) {
 	}
 	if calls.Load() != 3 {
 		t.Fatalf("requests=%d, want 3", calls.Load())
+	}
+}
+
+func TestSoft403_BlockedReadPublishesSubBatch(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+	setSoft403GuardTestLimits(t, 1, Soft403NoProgressConfirmWindow)
+
+	const subBatch = 64 * 1024
+	fileSize := int64(subBatch + 1)
+	state := progress.New("blocked-read", fileSize)
+	state.InitBitmap(fileSize, fileSize)
+	d := NewConcurrentDownloader("blocked-read", nil, state, &types.RuntimeConfig{WorkerBufferSize: subBatch})
+	d.resetSoft403Guard()
+	d.primeSoft403Guard()
+
+	now := time.Unix(700, 0)
+	if d.recordSoft403Exhaustion(now) {
+		t.Fatal("candidate armed permanently")
+	}
+
+	body := &blockedSubBatchBody{
+		blocked: make(chan struct{}),
+		release: make(chan struct{}),
+		first:   true,
+	}
+	t.Cleanup(func() { body.releaseOnce.Do(func() { close(body.release) }) })
+	client := &http.Client{Transport: soft403RoundTripper(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     make(http.Header),
+			Body:       body,
+			Request:    r,
+		}, nil
+	})}
+
+	file, err := os.Create(filepath.Join(tmpDir, "blocked-read.surge"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+
+	active := &ActiveTask{Task: types.Task{Offset: 0, Length: fileSize}}
+	active.StopAt.Store(fileSize)
+	done := make(chan error, 1)
+	go func() {
+		done <- d.downloadTask(context.Background(), "http://blocked-read.test", file, active, make([]byte, subBatch), client, fileSize)
+	}()
+
+	select {
+	case <-body.blocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("body did not reach blocked read")
+	}
+	if got := state.Bytes.VerifiedProgress.Load(); got != subBatch {
+		t.Fatalf("VerifiedProgress=%d while next read blocked, want %d", got, subBatch)
+	}
+	if d.recordSoft403Exhaustion(now.Add(Soft403NoProgressConfirmWindow)) {
+		t.Fatal("blocked read caused a false Soft-403 permanent decision")
+	}
+
+	body.releaseOnce.Do(func() { close(body.release) })
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("blocked-read download failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked-read download did not finish")
+	}
+	if got := state.Bytes.VerifiedProgress.Load(); got != fileSize {
+		t.Fatalf("VerifiedProgress=%d, want %d", got, fileSize)
 	}
 }
 
