@@ -21,12 +21,14 @@ import (
 type mockTickEngine struct {
 	mockSurgeActiveEngine
 
-	mu            sync.Mutex
-	active        []rpc.Task
-	waiting       []rpc.Task
-	stopped       []rpc.Task
-	activeErr     error
-	activeLiteErr error
+	mu             sync.Mutex
+	active         []rpc.Task
+	waiting        []rpc.Task
+	stopped        []rpc.Task
+	activeErr      error
+	activeLiteErr  error
+	stoppedLiteErr error
+	stoppedErr     error
 }
 
 func (e *mockTickEngine) TellActiveLite() ([]rpc.Task, error) {
@@ -62,12 +64,18 @@ func (e *mockTickEngine) TellWaiting(offset, num int) ([]rpc.Task, error) {
 func (e *mockTickEngine) TellStoppedLite(offset, num int) ([]rpc.Task, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.stoppedLiteErr != nil {
+		return nil, e.stoppedLiteErr
+	}
 	return e.stopped, nil
 }
 
 func (e *mockTickEngine) TellStopped(offset, num int) ([]rpc.Task, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.stoppedErr != nil {
+		return nil, e.stoppedErr
+	}
 	return e.stopped, nil
 }
 

@@ -184,16 +184,6 @@ func (m *Monitor) tick() {
 	HydrateTaskGroups(waiting)
 	HydrateTaskGroups(stopped)
 
-	// 更新 lastStopped 缓存（包含已丰富的文件信息）
-	// 这确保下次 tick 使用缓存时，任务已有正确的文件名
-	if fetchStopped {
-		m.mu.Lock()
-		m.lastStopped = stopped
-		m.shouldFetchStopped = false
-		m.lastStoppedFetchTime = time.Now()
-		m.mu.Unlock()
-	}
-
 	// 检测列表转移并发射事件（在有窗口时）
 	// 仅检测 active <-> waiting，stopped 转移由 complete/error 事件处理
 	if State.HasWindow() {
@@ -269,6 +259,20 @@ func (m *Monitor) tick() {
 
 	// Collect per-worker telemetry from Surge engine
 	m.collectTelemetry()
+
+	// Canonicalize cross-list membership before lastStopped persist / cache+tracker.
+	// Precedence: active > waiting > stopped (strips stale stopped beside fresh live).
+	active, waiting, stopped = normalizeAria2TickLists(active, waiting, stopped)
+
+	// Persist normalized stopped after fast-retry. Always rewrite the reuse buffer
+	// so stripped conflicts do not linger; only bump fetch time on fetchStopped ticks.
+	m.mu.Lock()
+	m.lastStopped = copyTaskSlice(stopped)
+	if fetchStopped {
+		m.shouldFetchStopped = false
+		m.lastStoppedFetchTime = time.Now()
+	}
+	m.mu.Unlock()
 
 	// 更新缓存
 	Cache.UpdateFromAria2(active, waiting, stopped)
