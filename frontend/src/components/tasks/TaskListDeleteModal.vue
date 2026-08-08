@@ -64,9 +64,12 @@
         <!-- Backdrop -->
         <div class="absolute inset-0 modal-backdrop animate-fade-in"></div>
 
-        <div
-          class="glass-panel-solid relative w-full max-w-md p-8 rounded-[var(--radius-squircle-2xl)] animate-spring-in"
+        <LiquidGlassPanel
+          base-color-class="bg-white/50 dark:bg-zinc-900/60"
+          fallback-class="glass-panel-solid"
+          class="relative w-full max-w-md p-8 rounded-[var(--radius-squircle-2xl)] animate-spring-in text-[var(--modal-text)]"
         >
+          <div class="flex flex-col w-full">
           <!-- Warning Icon -->
           <div class="flex justify-center mb-6">
             <div
@@ -166,7 +169,8 @@
               <span>{{ t('taskList.cancel') }}</span>
             </div>
           </div>
-        </div>
+          </div>
+        </LiquidGlassPanel>
       </div>
     </Transition>
   </Teleport>

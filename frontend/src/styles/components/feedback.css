@@ -13,8 +13,8 @@
 /* === Modal Backdrop === */
 .modal-backdrop {
   background: rgba(0, 0, 0, 0.7);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
 }
 
 :root[data-theme='light'] .modal-backdrop {
