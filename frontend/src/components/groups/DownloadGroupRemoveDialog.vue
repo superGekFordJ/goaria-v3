@@ -59,9 +59,12 @@
         <!-- Backdrop -->
         <div class="absolute inset-0 modal-backdrop animate-fade-in"></div>
 
-        <div
-          class="glass-panel-solid relative w-full max-w-md p-8 rounded-[var(--radius-squircle-2xl)] animate-spring-in"
+        <LiquidGlassPanel
+          base-color-class="bg-white/50 dark:bg-zinc-900/60"
+          fallback-class="glass-panel-solid"
+          class="relative w-full max-w-md p-8 rounded-[var(--radius-squircle-2xl)] animate-spring-in-transform text-[var(--modal-text)]"
         >
+          <div class="flex flex-col w-full">
           <!-- Warning Icon -->
           <div class="flex justify-center mb-6">
             <div
@@ -161,7 +164,8 @@
               <span>{{ t('downloadGroups.removeDialog.cancel') }}</span>
             </div>
           </div>
-        </div>
+          </div>
+        </LiquidGlassPanel>
       </div>
     </Transition>
   </Teleport>
@@ -180,11 +184,11 @@
   }
 
   .modal-enter-active .glass-panel-solid {
-    animation: spring-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+    animation: spring-in-transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
   }
 
   .modal-leave-active .glass-panel-solid {
-    animation: spring-out 0.2s ease-out both;
+    animation: spring-out-transform 0.2s ease-out both;
   }
 
   kbd {
