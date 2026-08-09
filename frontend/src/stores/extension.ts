@@ -7,7 +7,7 @@ import {
   UnpairExtension,
   RegeneratePairing,
   OpenPairingURLInBrowser,
-} from '../../bindings/goaria-v3/app.js'
+} from '../../bindings/goaria-v3/internal/wailsapp/app.js'
 import { ExtensionStatus } from '../../bindings/goaria-v3/internal/extension/models.js'
 import { copyToClipboard, clearClipboardIfMatches } from '../utils/clipboard'
 

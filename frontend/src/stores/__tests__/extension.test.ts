@@ -10,7 +10,7 @@ const bindingMocks = vi.hoisted(() => ({
   OpenPairingURLInBrowser: vi.fn(),
 }))
 
-vi.mock('../../../bindings/goaria-v3/app.js', () => bindingMocks)
+vi.mock('../../../bindings/goaria-v3/internal/wailsapp/app.js', () => bindingMocks)
 
 const eventsMock = vi.hoisted(() => {
   const handlers: Record<string, ((ev: unknown) => void) | undefined> = {}

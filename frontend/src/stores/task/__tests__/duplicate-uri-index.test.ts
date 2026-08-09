@@ -7,7 +7,7 @@ import type { TaskPolling } from '../polling'
 import { isDuplicateUri } from '../../../utils/url'
 import { clearMetadataCache } from '../metadata'
 
-vi.mock('../../../../bindings/goaria-v3/app.js', () => ({
+vi.mock('../../../../bindings/goaria-v3/internal/wailsapp/app.js', () => ({
   GetTasks: vi.fn(),
   GetActiveTasks: vi.fn(),
   GetStoppedTasks: vi.fn(),
@@ -25,7 +25,7 @@ vi.mock('../../../../bindings/goaria-v3/app.js', () => ({
   UpdateTrayState: vi.fn(),
 }))
 
-import { GetTasks, GetTaskMetadata, RemoveTask } from '../../../../bindings/goaria-v3/app.js'
+import { GetTasks, GetTaskMetadata, RemoveTask } from '../../../../bindings/goaria-v3/internal/wailsapp/app.js'
 
 const mockGetTasks = vi.mocked(GetTasks)
 const mockGetTaskMetadata = vi.mocked(GetTaskMetadata)

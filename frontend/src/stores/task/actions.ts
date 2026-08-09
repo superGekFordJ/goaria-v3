@@ -15,7 +15,7 @@ import {
   BatchRemove,
   GetFullSnapshot,
   MinimizeToTray,
-} from '../../../bindings/goaria-v3/app.js'
+} from '../../../bindings/goaria-v3/internal/wailsapp/app.js'
 import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 import type { BatchAddResult } from '../../../bindings/goaria-v3/internal/tasks/models'
 import { cacheMetadata, applyMetadataFromCache } from './metadata'

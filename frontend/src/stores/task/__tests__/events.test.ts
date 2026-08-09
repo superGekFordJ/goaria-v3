@@ -18,7 +18,7 @@ const mockGroup = {
 }
 
 // Mock Wails bindings
-vi.mock('../../../../bindings/goaria-v3/app.js', () => ({
+vi.mock('../../../../bindings/goaria-v3/internal/wailsapp/app.js', () => ({
   UpdateTrayState: vi.fn(),
 }))
 

@@ -1,4 +1,4 @@
-package main
+package wailsapp
 
 import (
 	"errors"
@@ -231,7 +231,7 @@ func (a *App) SaveConfig(newCfg config.AppConfig) string {
 
 // GetAppVersion returns the current application version
 func (a *App) GetAppVersion() string {
-	return version
+	return a.version
 }
 
 // CheckForUpdate checks GitHub Releases for a newer version
@@ -240,10 +240,10 @@ func (a *App) CheckForUpdate(includePreRelease bool) update.UpdateResult {
 		a.eventHub.EmitUpdateStatus(update.StatusChecking, nil)
 	}
 
-	result, err := update.Check(version, includePreRelease)
+	result, err := update.Check(a.version, includePreRelease)
 	if err != nil {
 		errResult := update.UpdateResult{
-			Current: version,
+			Current: a.version,
 			Error:   err.Error(),
 		}
 		if a.eventHub != nil {

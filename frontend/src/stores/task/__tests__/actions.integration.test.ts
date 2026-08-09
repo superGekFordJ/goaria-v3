@@ -18,7 +18,7 @@ const mockGroup = {
 }
 
 // Mock Wails bindings
-vi.mock('../../../../bindings/goaria-v3/app.js', () => ({
+vi.mock('../../../../bindings/goaria-v3/internal/wailsapp/app.js', () => ({
   GetTasks: vi.fn(),
   GetActiveTasks: vi.fn(),
   GetStoppedTasks: vi.fn(),
@@ -45,7 +45,7 @@ import {
   ResumeTask,
   BatchResume,
   GetFullSnapshot,
-} from '../../../../bindings/goaria-v3/app.js'
+} from '../../../../bindings/goaria-v3/internal/wailsapp/app.js'
 
 const mockGetActiveTasks = vi.mocked(GetActiveTasks)
 const mockGetStoppedTasks = vi.mocked(GetStoppedTasks)

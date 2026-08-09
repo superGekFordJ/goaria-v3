@@ -1,6 +1,7 @@
-package main
+package wailsapp
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -13,9 +14,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"goaria-v3/internal/extractor"
@@ -34,86 +37,187 @@ const (
 	appHostAuthInitialURL            = "/"
 	appHostAuthInitialHTML           = `<!doctype html><html><head><meta charset="utf-8"><title>GoAria Auth</title></head><body></body></html>`
 	appHostAuthCORSAllowedHeaders    = "content-type, x-goaria-auth-session"
-	appHostAuthRawMessagePrefix      = "goaria-auth-diag:"
-	appHostAuthRawMessageStage       = "injection"
-	appHostAuthRawMessageScriptRun   = "script_running"
-	appHostAuthRawMessageOriginPass  = "origin_check_passed"
-
-	appHostAuthDiagnosticsEnv    = "GOARIA_WEBVIEW_AUTH_DIAGNOSTICS"
-	appHostAuthDiagnosticsOutEnv = "GOARIA_WEBVIEW_AUTH_DIAGNOSTICS_OUT"
-
-	appHostAuthDiagnosticSessionOpened             = "session_opened"
-	appHostAuthDiagnosticSessionUnavailable        = "session_unavailable"
-	appHostAuthDiagnosticSessionBusy               = "session_busy"
-	appHostAuthDiagnosticWindowOpenFailed          = "window_open_failed"
-	appHostAuthDiagnosticPreflightAccepted         = "preflight_accepted"
-	appHostAuthDiagnosticPreflightOriginRejected   = "preflight_origin_rejected"
-	appHostAuthDiagnosticPreflightMethodRejected   = "preflight_method_rejected"
-	appHostAuthDiagnosticPreflightHeaderRejected   = "preflight_header_rejected"
-	appHostAuthDiagnosticPostOriginRejected        = "post_origin_rejected"
-	appHostAuthDiagnosticPostMethodRejected        = "post_method_rejected"
-	appHostAuthDiagnosticPostContentTypeRejected   = "post_content_type_rejected"
-	appHostAuthDiagnosticPostSessionHeaderRejected = "post_session_header_rejected"
-	appHostAuthDiagnosticPostBodyRejected          = "post_body_rejected"
-	appHostAuthDiagnosticPostPayloadRejected       = "post_payload_rejected"
-	appHostAuthDiagnosticPostAccepted              = "post_accepted"
-	appHostAuthDiagnosticPostExpired               = "post_expired"
-	appHostAuthDiagnosticTerminalSuccess           = "terminal_success"
-	appHostAuthDiagnosticTerminalCancel            = "terminal_cancel"
-	appHostAuthDiagnosticTerminalError             = "terminal_error"
-	appHostAuthDiagnosticSessionClosed             = "session_closed"
+	appHostAuthDiagnosticEnv         = "GOARIA_WEBVIEW_AUTH_DIAGNOSTIC"
+	appHostAuthDiagnosticLogEnv      = "GOARIA_WEBVIEW_AUTH_DIAGNOSTIC_LOG"
+	appHostAuthSourceProbeEnv        = "GOARIA_WEBVIEW_AUTH_SOURCE_PROBE"
+	appHostAuthDiagnosticDefaultLog  = "build/extractor/cache/spec113-webview-auth-diagnostic.jsonl"
 )
 
 var _ extractor.AuthWebViewDriver = (*appHostAuthDriver)(nil)
 
-var appHostAuthDiagnosticCategories = map[string]struct{}{
-	appHostAuthDiagnosticSessionOpened:             {},
-	appHostAuthDiagnosticSessionUnavailable:        {},
-	appHostAuthDiagnosticSessionBusy:               {},
-	appHostAuthDiagnosticWindowOpenFailed:          {},
-	appHostAuthDiagnosticPreflightAccepted:         {},
-	appHostAuthDiagnosticPreflightOriginRejected:   {},
-	appHostAuthDiagnosticPreflightMethodRejected:   {},
-	appHostAuthDiagnosticPreflightHeaderRejected:   {},
-	appHostAuthDiagnosticPostOriginRejected:        {},
-	appHostAuthDiagnosticPostMethodRejected:        {},
-	appHostAuthDiagnosticPostContentTypeRejected:   {},
-	appHostAuthDiagnosticPostSessionHeaderRejected: {},
-	appHostAuthDiagnosticPostBodyRejected:          {},
-	appHostAuthDiagnosticPostPayloadRejected:       {},
-	appHostAuthDiagnosticPostAccepted:              {},
-	appHostAuthDiagnosticPostExpired:               {},
-	appHostAuthRawMessageScriptRun:                 {},
-	appHostAuthRawMessageOriginPass:                {},
-	appHostAuthDiagnosticTerminalSuccess:           {},
-	appHostAuthDiagnosticTerminalCancel:            {},
-	appHostAuthDiagnosticTerminalError:             {},
-	appHostAuthDiagnosticSessionClosed:             {},
+type appHostAuthDiagnosticObserver struct{}
+
+var appHostAuthDiagnosticSeq atomic.Int64
+
+var appHostAuthDiagnosticMu sync.Mutex
+
+type appHostAuthDiagnosticEvent struct {
+	Seq       int64  `json:"seq"`
+	Stage     string `json:"stage"`
+	Category  string `json:"category"`
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
-var appHostAuthRawMessageSink = appHostAuthObserveRawMessageCategory
+func appHostAuthDiagnosticsEnabled() bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(appHostAuthDiagnosticEnv)))
+
+	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func appHostAuthSourceProbeEnabled() bool {
+	if !appHostAuthDiagnosticsEnabled() {
+		return false
+	}
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(appHostAuthSourceProbeEnv)))
+
+	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func (appHostAuthDiagnosticObserver) RecordWebViewAuthEvent(stage string, category string) {
+	appHostAuthRecordDiagnostic(stage, category)
+}
+
+func appHostAuthRecordDiagnostic(stage string, category string) {
+	if !appHostAuthDiagnosticsEnabled() || !appHostAuthDiagnosticAllowed(stage, category) {
+		return
+	}
+	logPath := strings.TrimSpace(os.Getenv(appHostAuthDiagnosticLogEnv))
+	if logPath == "" {
+		logPath = appHostAuthDiagnosticDefaultLog
+	}
+	if strings.TrimSpace(filepath.Base(logPath)) == "" {
+		return
+	}
+	cleanPath := filepath.Clean(logPath)
+	if err := os.MkdirAll(filepath.Dir(cleanPath), 0o700); err != nil {
+		return
+	}
+	event := appHostAuthDiagnosticEvent{
+		Seq:       appHostAuthDiagnosticSeq.Add(1),
+		Stage:     stage,
+		Category:  category,
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	appHostAuthDiagnosticMu.Lock()
+	defer appHostAuthDiagnosticMu.Unlock()
+	file, err := os.OpenFile(cleanPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	_, _ = file.Write(append(raw, '\n'))
+}
+
+func HostAuthCallbackMiddleware(appService *App) func(http.Handler) http.Handler {
+	return appService.hostAuthCallbackMiddleware
+}
+
+func HostAuthRawMessageHandler(window application.Window, message string, origin *application.OriginInfo) {
+	appHostAuthRawMessageHandler(window, message, origin)
+}
+
+// appHostAuthRawMessageHandler is registered as the application-wide
+// RawMessageHandler in application options. It receives all chrome.webview.postMessage
+// payloads that do NOT start with the internal "wails:" prefix. This native
+// channel is unauthenticated, so it only accepts the minimal pre-context
+// injection proof categories that cannot carry callback/parser/store/session
+// evidence. All richer diagnostic envelopes must use the authenticated local
+// callback route.
+func appHostAuthRawMessageHandler(_ application.Window, message string, _ *application.OriginInfo) {
+	const prefix = "goaria-auth-diag:"
+	if !strings.HasPrefix(message, prefix) {
+		return
+	}
+	payload := strings.TrimPrefix(message, prefix)
+	parts := strings.SplitN(payload, ":", 2)
+	if len(parts) != 2 {
+		return
+	}
+	if !appHostAuthRawDiagnosticAllowed(parts[0], parts[1]) {
+		return
+	}
+	appHostAuthRecordDiagnostic("raw_message", "handler_invoked")
+	appHostAuthRecordDiagnostic(parts[0], parts[1])
+}
+
+func appHostAuthRawDiagnosticAllowed(stage string, category string) bool {
+	if stage != "injection" {
+		return false
+	}
+	switch category {
+	case "script_running", "origin_check_passed":
+		return true
+	default:
+		return false
+	}
+}
+
+func appHostAuthDiagnosticAllowed(stage string, category string) bool {
+	switch stage {
+	case "driver":
+		switch category {
+		case "open_attempted", "opened", "unavailable", "inflight_rejected":
+			return true
+		}
+	case "injection":
+		switch category {
+		case "navigation_completed", "execjs_dispatched", "script_running", "origin_check_passed", "attempted", "origin_mismatch", "marker_skip", "collector_eval_attempted", "collector_eval_succeeded", "collector_eval_failed", "collector_function_missing", "collector_invoked":
+			return true
+		}
+	case "raw_message":
+		return category == "handler_invoked"
+	case "post_capture":
+		switch category {
+		case "called", "rejected":
+			return true
+		}
+	case "callback_route":
+		switch category {
+		case "hit", "diagnostic_event_accepted", "diagnostic_event_rejected", "method_rejected", "origin_rejected", "content_type_rejected", "session_rejected", "body_rejected", "late_or_expired":
+			return true
+		}
+	case "parser":
+		switch category {
+		case "accepted", "rejected_payload", "rejected_secret_candidate", "rejected_kind", "rejected_expiry":
+			return true
+		}
+	case "session":
+		switch category {
+		case "success", "timeout", "cancel", "error":
+			return true
+		}
+	case "store":
+		switch category {
+		case "set_attempted", "set_succeeded", "set_failed", "snapshot_bucket_zero", "snapshot_bucket_nonzero":
+			return true
+		}
+	case "collector_attempt":
+		return category == "ticked"
+	case "collector_source":
+		switch category {
+		case "bounded_found", "bounded_not_found", "bounded_invalid", "single_fire_already_done":
+			return true
+		}
+	case "collector_probe":
+		switch category {
+		case "started", "completed", "storage_checked", "storage_present", "storage_absent", "storage_invalid", "cookie_checked", "cookie_present", "cookie_absent", "cookie_invalid", "request_header_checked", "request_header_present", "request_header_absent", "request_header_invalid", "response_json_checked", "response_json_present", "response_json_absent", "response_json_invalid", "network_hooks_installed", "network_hooks_absent", "network_fetch_seen", "network_xhr_seen", "request_header_source_checked", "request_header_source_matched", "request_header_source_unmatched", "request_header_value_absent", "response_source_checked", "response_source_matched", "response_source_unmatched", "candidate_shape_nonempty", "candidate_shape_parser_compatible", "candidate_shape_invalid", "post_capture_suppressed", "no_bounded_channel", "channel_count_one", "channel_count_many":
+			return true
+		}
+	}
+
+	return false
+}
 
 type appHostAuthDriver struct {
-	app         *App
-	factory     hostAuthSessionWindowFactory
-	diagnostics appHostAuthDiagnosticObserver
+	app     *App
+	factory hostAuthSessionWindowFactory
 
 	mu       sync.Mutex
 	inflight *appHostAuthSession
-}
-
-type appHostAuthDiagnosticObserver interface {
-	observeAppHostAuthDiagnostic(appHostAuthDiagnosticEvent)
-}
-
-type appHostAuthDiagnosticEvent struct {
-	Category string `json:"category"`
-}
-
-type appHostAuthJSONLDiagnosticObserver struct {
-	mu     sync.Mutex
-	writer io.Writer
-	path   string
 }
 
 type hostAuthSessionWindowFactory interface {
@@ -212,159 +316,34 @@ func newAppHostAuthDriver(app *App) *appHostAuthDriver {
 }
 
 func newAppHostAuthDriverWithFactory(app *App, factory hostAuthSessionWindowFactory) *appHostAuthDriver {
-	return newAppHostAuthDriverWithFactoryAndDiagnostics(app, factory, newAppHostAuthDiagnosticObserverFromEnv())
-}
-
-func newAppHostAuthDriverWithFactoryAndDiagnostics(app *App, factory hostAuthSessionWindowFactory, observer appHostAuthDiagnosticObserver) *appHostAuthDriver {
 	if factory == nil {
 		factory = &wailsHostAuthSessionWindowFactory{app: app}
 	}
 
-	return &appHostAuthDriver{app: app, factory: factory, diagnostics: observer}
-}
-
-func appHostAuthDiagnosticsEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(appHostAuthDiagnosticsEnv))) {
-	case "1", "true", "category", "categories":
-		return true
-	default:
-		return false
-	}
-}
-
-func newAppHostAuthDiagnosticObserverFromEnv() appHostAuthDiagnosticObserver {
-	if !appHostAuthDiagnosticsEnabled() {
-		return nil
-	}
-	if outPath := strings.TrimSpace(os.Getenv(appHostAuthDiagnosticsOutEnv)); outPath != "" {
-		file, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			return nil
-		}
-		_ = file.Close()
-
-		return &appHostAuthJSONLDiagnosticObserver{path: outPath}
-	}
-
-	return &appHostAuthJSONLDiagnosticObserver{writer: os.Stderr}
-}
-
-func (o *appHostAuthJSONLDiagnosticObserver) observeAppHostAuthDiagnostic(event appHostAuthDiagnosticEvent) {
-	if o == nil || o.writer == nil && o.path == "" || !appHostAuthDiagnosticCategoryAllowed(event.Category) {
-		return
-	}
-	raw, err := json.Marshal(event)
-	if err != nil {
-		return
-	}
-	raw = append(raw, '\n')
-
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.path != "" {
-		file, err := os.OpenFile(o.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			return
-		}
-		defer file.Close()
-		_, _ = file.Write(raw)
-		return
-	}
-	_, _ = o.writer.Write(raw)
-}
-
-func (d *appHostAuthDriver) observe(category string) {
-	if d == nil || d.diagnostics == nil || !appHostAuthDiagnosticCategoryAllowed(category) {
-		return
-	}
-	defer func() {
-		_ = recover()
-	}()
-	d.diagnostics.observeAppHostAuthDiagnostic(appHostAuthDiagnosticEvent{Category: category})
-}
-
-func (h *appHostAuthCallbackHandler) observe(category string) {
-	if h == nil || h.session == nil || h.session.driver == nil {
-		return
-	}
-	h.session.driver.observe(category)
-}
-
-func appHostAuthDiagnosticCategoryAllowed(category string) bool {
-	_, ok := appHostAuthDiagnosticCategories[category]
-
-	return ok
-}
-
-func appHostAuthRawMessageHandler(_ application.Window, message string, _ *application.OriginInfo) {
-	category, ok := appHostAuthRawMessageCategory(message)
-	if !ok || appHostAuthRawMessageSink == nil {
-		return
-	}
-	appHostAuthRawMessageSink(category)
-}
-
-func appHostAuthRawMessageCategory(message string) (string, bool) {
-	if !strings.HasPrefix(message, appHostAuthRawMessagePrefix) {
-		return "", false
-	}
-	payload := strings.TrimPrefix(message, appHostAuthRawMessagePrefix)
-	stage, category, ok := strings.Cut(payload, ":")
-	if !ok || !appHostAuthRawMessageAllowed(stage, category) {
-		return "", false
-	}
-
-	return category, true
-}
-
-func appHostAuthRawMessageAllowed(stage string, category string) bool {
-	if stage != appHostAuthRawMessageStage {
-		return false
-	}
-	switch category {
-	case appHostAuthRawMessageScriptRun, appHostAuthRawMessageOriginPass:
-		return true
-	default:
-		return false
-	}
-}
-
-func appHostAuthObserveRawMessageCategory(category string) {
-	if !appHostAuthDiagnosticCategoryAllowed(category) {
-		return
-	}
-	observer := newAppHostAuthDiagnosticObserverFromEnv()
-	if observer == nil {
-		return
-	}
-	defer func() {
-		_ = recover()
-	}()
-	observer.observeAppHostAuthDiagnostic(appHostAuthDiagnosticEvent{Category: category})
+	return &appHostAuthDriver{app: app, factory: factory}
 }
 
 func (d *appHostAuthDriver) OpenAuthSession(ctx context.Context, request extractor.WebViewAuthRequest, sink extractor.AuthWebViewSink) (extractor.AuthWebViewSession, error) {
+	appHostAuthRecordDiagnostic("driver", "open_attempted")
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if d == nil || d.app == nil || d.factory == nil {
-		if d != nil {
-			d.observe(appHostAuthDiagnosticSessionUnavailable)
-		}
+		appHostAuthRecordDiagnostic("driver", "unavailable")
 		return nil, errors.New(appHostAuthUnavailableMessage)
 	}
 	if err := d.app.hostAuthSessionAvailable(); err != nil {
-		d.observe(appHostAuthDiagnosticSessionUnavailable)
+		appHostAuthRecordDiagnostic("driver", "unavailable")
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		d.observe(appHostAuthDiagnosticSessionUnavailable)
+		appHostAuthRecordDiagnostic("driver", "unavailable")
 		return nil, errors.New(appHostAuthUnavailableMessage)
 	}
 
 	callbackPath, callbackToken, err := d.app.registerHostAuthCallbackSession(request)
 	if err != nil {
-		d.observe(appHostAuthDiagnosticSessionUnavailable)
+		appHostAuthRecordDiagnostic("driver", "unavailable")
 		return nil, errors.New(appHostAuthUnavailableMessage)
 	}
 	cleanup := sync.OnceFunc(func() {
@@ -374,16 +353,12 @@ func (d *appHostAuthDriver) OpenAuthSession(ctx context.Context, request extract
 	session := &appHostAuthSession{driver: d, sink: sink, kind: request.Kind, cleanup: cleanup, request: request}
 	if !d.app.hostAuthCallbackRegistry().bind(callbackPath, session) {
 		cleanup()
-		d.observe(appHostAuthDiagnosticSessionUnavailable)
+		appHostAuthRecordDiagnostic("driver", "unavailable")
 		return nil, errors.New(appHostAuthUnavailableMessage)
 	}
 	if err := d.setInflight(session); err != nil {
 		cleanup()
-		if err.Error() == appHostAuthInProgressMessage {
-			d.observe(appHostAuthDiagnosticSessionBusy)
-		} else {
-			d.observe(appHostAuthDiagnosticSessionUnavailable)
-		}
+		appHostAuthRecordDiagnostic("driver", "inflight_rejected")
 		return nil, err
 	}
 
@@ -394,16 +369,16 @@ func (d *appHostAuthDriver) OpenAuthSession(ctx context.Context, request extract
 	})
 	if err != nil {
 		session.release()
-		d.observe(appHostAuthDiagnosticWindowOpenFailed)
+		appHostAuthRecordDiagnostic("driver", "unavailable")
 		return nil, errors.New(appHostAuthUnavailableMessage)
 	}
 	if window == nil {
 		session.release()
-		d.observe(appHostAuthDiagnosticWindowOpenFailed)
+		appHostAuthRecordDiagnostic("driver", "unavailable")
 		return nil, errors.New(appHostAuthUnavailableMessage)
 	}
 	session.setWindow(window)
-	d.observe(appHostAuthDiagnosticSessionOpened)
+	appHostAuthRecordDiagnostic("driver", "opened")
 
 	return session, nil
 }
@@ -442,9 +417,8 @@ func (s *appHostAuthSession) succeed(payload appHostAuthSessionPayload) bool {
 		token, err := appHostAuthTokenFromPayload(s.kind, payload)
 		if err != nil {
 			s.release()
-			if s.driver != nil {
-				s.driver.observe(appHostAuthDiagnosticTerminalError)
-			}
+			appHostAuthRecordDiagnostic("session", "error")
+			appHostAuthRecordDiagnostic("parser", appHostAuthParserRejectCategory(err))
 			if s.sink.OnError != nil {
 				s.sink.OnError(err)
 			}
@@ -453,9 +427,8 @@ func (s *appHostAuthSession) succeed(payload appHostAuthSessionPayload) bool {
 		}
 
 		s.release()
-		if s.driver != nil {
-			s.driver.observe(appHostAuthDiagnosticTerminalSuccess)
-		}
+		appHostAuthRecordDiagnostic("parser", "accepted")
+		appHostAuthRecordDiagnostic("session", "success")
 		if s.sink.OnSuccess != nil {
 			s.sink.OnSuccess(token)
 		}
@@ -469,9 +442,7 @@ func (s *appHostAuthSession) cancel() bool {
 	won := false
 	s.terminalOnce.Do(func() {
 		s.release()
-		if s.driver != nil {
-			s.driver.observe(appHostAuthDiagnosticTerminalCancel)
-		}
+		appHostAuthRecordDiagnostic("session", "cancel")
 		if s.sink.OnCancel != nil {
 			s.sink.OnCancel()
 		}
@@ -485,9 +456,7 @@ func (s *appHostAuthSession) fail(err error) bool {
 	won := false
 	s.terminalOnce.Do(func() {
 		s.release()
-		if s.driver != nil {
-			s.driver.observe(appHostAuthDiagnosticTerminalError)
-		}
+		appHostAuthRecordDiagnostic("session", "error")
 		if s.sink.OnError != nil {
 			s.sink.OnError(appHostAuthSanitizedCallbackError(err))
 		}
@@ -525,9 +494,6 @@ func (s *appHostAuthSession) Close() error {
 		s.mu.Unlock()
 		if window != nil {
 			closeErr = window.Close()
-		}
-		if s.driver != nil {
-			s.driver.observe(appHostAuthDiagnosticSessionClosed)
 		}
 	})
 
@@ -651,6 +617,7 @@ func (a *App) hostAuthCallbackMiddleware(next http.Handler) http.Handler {
 		}
 		handler := a.hostAuthCallbackRegistry().lookup(r.URL.Path)
 		if handler == nil {
+			appHostAuthRecordDiagnostic("callback_route", "late_or_expired")
 			http.Error(w, "expired", http.StatusGone)
 			return
 		}
@@ -741,6 +708,7 @@ func (r *appHostAuthCallbackRegistry) unregister(path string) {
 
 func (h *appHostAuthCallbackHandler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.session == nil {
+		appHostAuthRecordDiagnostic("callback_route", "late_or_expired")
 		http.Error(w, "expired", http.StatusNotFound)
 		return
 	}
@@ -748,74 +716,130 @@ func (h *appHostAuthCallbackHandler) serveHTTP(w http.ResponseWriter, r *http.Re
 		h.handlePreflight(w, r)
 		return
 	}
+	appHostAuthRecordDiagnostic("callback_route", "hit")
 	if r.Method != http.MethodPost {
-		h.observe(appHostAuthDiagnosticPostMethodRejected)
+		appHostAuthRecordDiagnostic("callback_route", "method_rejected")
 		http.Error(w, "invalid", http.StatusMethodNotAllowed)
 		return
 	}
 	if !h.validateOrigin(r.Header.Get("Origin")) {
-		h.observe(appHostAuthDiagnosticPostOriginRejected)
+		appHostAuthRecordDiagnostic("callback_route", "origin_rejected")
 		http.Error(w, "invalid", http.StatusForbidden)
 		return
 	}
 	writeAppHostAuthCORSHeaders(w, r.Header.Get("Origin"))
 	if !appHostAuthContentTypeAllowed(r.Header.Get("Content-Type"), h.request.CallbackTransport.ContentTypes) {
-		h.fail(w, appHostAuthDiagnosticPostContentTypeRejected)
+		h.fail(w, "content_type_rejected")
 		return
 	}
 	if !appHostAuthTokenMatches(r.Header.Get(appHostAuthSessionHeader), h.token) {
-		h.fail(w, appHostAuthDiagnosticPostSessionHeaderRejected)
+		h.fail(w, "session_rejected")
 		return
 	}
 	raw, err := appHostAuthReadBoundedBody(r.Body, h.request.CallbackTransport.MaxBodyBytes)
 	if err != nil {
-		h.fail(w, appHostAuthDiagnosticPostBodyRejected)
+		h.fail(w, "body_rejected")
+		return
+	}
+	if h.handleDiagnosticEnvelope(w, raw) {
 		return
 	}
 	token, err := extractor.ParseWebViewAuthCallbackPayload(h.request, raw)
 	if err != nil {
-		h.fail(w, appHostAuthDiagnosticPostPayloadRejected)
+		appHostAuthRecordDiagnostic("parser", appHostAuthParserRejectCategory(err))
+		h.fail(w, "body_rejected")
 		return
 	}
+	appHostAuthRecordDiagnostic("parser", "accepted")
 	if !h.session.succeed(appHostAuthSessionPayload{Kind: token.Kind, Secret: token.Secret, ExpiresAt: token.ExpiresAt, RedactedDisplay: token.RedactedDisplay}) {
-		h.observe(appHostAuthDiagnosticPostExpired)
+		appHostAuthRecordDiagnostic("callback_route", "late_or_expired")
 		http.Error(w, "expired", http.StatusConflict)
 		return
 	}
-	h.observe(appHostAuthDiagnosticPostAccepted)
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = io.WriteString(w, "accepted")
 }
 
-func (h *appHostAuthCallbackHandler) fail(w http.ResponseWriter, category string) {
+func (h *appHostAuthCallbackHandler) fail(w http.ResponseWriter, routeCategory string) {
+	appHostAuthRecordDiagnostic("callback_route", routeCategory)
 	if !h.session.fail(errors.New(appHostAuthInvalidPayloadMessage)) {
-		h.observe(appHostAuthDiagnosticPostExpired)
+		appHostAuthRecordDiagnostic("callback_route", "late_or_expired")
 		http.Error(w, "expired", http.StatusConflict)
 		return
 	}
-	h.observe(category)
 	http.Error(w, "invalid", http.StatusBadRequest)
+}
+
+func (h *appHostAuthCallbackHandler) handleDiagnosticEnvelope(w http.ResponseWriter, raw []byte) bool {
+	if !appHostAuthDiagnosticsEnabled() {
+		return false
+	}
+	var envelope struct {
+		Diagnostic bool   `json:"diagnostic"`
+		Stage      string `json:"stage"`
+		Category   string `json:"category"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil {
+		return false
+	}
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return false
+	}
+	if !envelope.Diagnostic {
+		return false
+	}
+	if !appHostAuthDiagnosticAllowed(envelope.Stage, envelope.Category) {
+		appHostAuthRecordDiagnostic("callback_route", "diagnostic_event_rejected")
+		http.Error(w, "diagnostic_event_rejected", http.StatusUnprocessableEntity)
+
+		return true
+	}
+	appHostAuthRecordDiagnostic(envelope.Stage, envelope.Category)
+	appHostAuthRecordDiagnostic("callback_route", "diagnostic_event_accepted")
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = io.WriteString(w, "accepted")
+
+	return true
+}
+
+func appHostAuthParserRejectCategory(err error) string {
+	if err == nil {
+		return "rejected_payload"
+	}
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "secret"):
+		return "rejected_secret_candidate"
+	case strings.Contains(message, "kind"):
+		return "rejected_kind"
+	case strings.Contains(message, "expiry"):
+		return "rejected_expiry"
+	default:
+		return "rejected_payload"
+	}
 }
 
 func (h *appHostAuthCallbackHandler) handlePreflight(w http.ResponseWriter, r *http.Request) {
 	origin := r.Header.Get("Origin")
 	if !h.validateOrigin(origin) {
-		h.observe(appHostAuthDiagnosticPreflightOriginRejected)
+		appHostAuthRecordDiagnostic("callback_route", "origin_rejected")
 		http.Error(w, "invalid", http.StatusForbidden)
 		return
 	}
 	if !strings.EqualFold(r.Header.Get("Access-Control-Request-Method"), http.MethodPost) {
-		h.observe(appHostAuthDiagnosticPreflightMethodRejected)
+		appHostAuthRecordDiagnostic("callback_route", "method_rejected")
 		http.Error(w, "invalid", http.StatusMethodNotAllowed)
 		return
 	}
 	if !appHostAuthCORSHeadersAllowed(r.Header.Values("Access-Control-Request-Headers")) {
-		h.observe(appHostAuthDiagnosticPreflightHeaderRejected)
+		appHostAuthRecordDiagnostic("callback_route", "content_type_rejected")
 		http.Error(w, "invalid", http.StatusForbidden)
 		return
 	}
 	writeAppHostAuthCORSHeaders(w, origin)
-	h.observe(appHostAuthDiagnosticPreflightAccepted)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -969,6 +993,11 @@ func openWailsHostAuthSessionWindow(creator appHostAuthWindowCreator, request ap
 }
 
 func appHostAuthSessionWindowOptions(request appHostAuthSessionRequest) application.WebviewWindowOptions {
+	// Wails v3 alpha Windows only passes WebviewWindowOptions.JS to
+	// chromium.Init when HTML is non-empty. The real auth page navigation still
+	// happens below via SetURL(request.LoginURL); this minimal blank document
+	// exists only so the origin-gated collector bootstrap is initialized before
+	// any third-party navigation without marking the page Wails-runtime-ready.
 	return application.WebviewWindowOptions{
 		Name:             appHostAuthSessionWindowName(request),
 		Title:            "GoAria Auth Session",
@@ -994,7 +1023,9 @@ func setupWailsHostAuthSessionWindow(window appHostAuthWebviewWindow, request ap
 		}
 	}))
 	inject := func(_ *application.WindowEvent) {
+		appHostAuthRecordDiagnostic("injection", "navigation_completed")
 		window.ExecJS(renderAppHostAuthCollectorJS(request))
+		appHostAuthRecordDiagnostic("injection", "execjs_dispatched")
 	}
 	for _, eventType := range appHostAuthNavigationCompleteEvents() {
 		unregisters = append(unregisters, window.RegisterHook(eventType, inject))
@@ -1072,17 +1103,32 @@ func appHostAuthNavigationCompleteEvents() []events.WindowEventType {
 
 func renderAppHostAuthCollectorJS(request appHostAuthSessionRequest) string {
 	contentType := appHostAuthCallbackContentType(request.CallbackTransport)
-	contextPayload := map[string]string{
-		"callback_url":     request.CallbackURL,
-		"session_token":    request.SessionToken,
-		"expected_kind":    string(request.Kind),
-		"content_type":     contentType,
-		"session_header":   appHostAuthSessionHeader,
-		"auth_page_origin": request.AuthPageOrigin,
+	authPageOriginJSON := appHostAuthJSON(request.AuthPageOrigin)
+	diagnosticsEnabled := appHostAuthDiagnosticsEnabled()
+	diagnosticsEnabledJSON := appHostAuthJSON(diagnosticsEnabled)
+	callbackPayload := map[string]any{
+		"callback_url":         request.CallbackURL,
+		"session_token":        request.SessionToken,
+		"expected_kind":        string(request.Kind),
+		"content_type":         contentType,
+		"session_header":       appHostAuthSessionHeader,
+		"auth_page_origin":     request.AuthPageOrigin,
+		"diagnostic_enabled":   diagnosticsEnabled,
+		"source_probe_enabled": appHostAuthSourceProbeEnabled(),
 	}
-	contextJSON := appHostAuthJSON(contextPayload)
+	callbackJSON := appHostAuthJSON(callbackPayload)
 	collectorJSON := appHostAuthJSON(request.CollectorJS)
-	return `(function(){"use strict";var postRaw=function(category){try{var w=(typeof window!=="undefined"?window:null);if(w&&w.chrome&&w.chrome.webview&&typeof w.chrome.webview.postMessage==="function"){w.chrome.webview.postMessage("` + appHostAuthRawMessagePrefix + appHostAuthRawMessageStage + `:"+category);}}catch(_){}};postRaw("` + appHostAuthRawMessageScriptRun + `");var context=` + contextJSON + `;if(window.location.origin!==context.auth_page_origin){return;}postRaw("` + appHostAuthRawMessageOriginPass + `");var marker="__goariaHostAuthCollectorExecuted";if(window[marker]){return;}window[marker]=true;var collectorSource=` + collectorJSON + `;var postCapture=function(payload){return fetch(context.callback_url,{method:"POST",headers:{"Content-Type":context.content_type,[context.session_header]:context.session_token},body:JSON.stringify(payload)});};var collector=(0,eval)(collectorSource);if(typeof collector==="function"){collector(context,postCapture);}})();`
+	// __goariaPostDiag emits diagnostic events through the WebView2 native
+	// chrome.webview.postMessage channel, which is delivered to the host via
+	// the application-wide RawMessageHandler regardless of CORS / Mixed
+	// Content / CSP restrictions on the loaded page. It runs both BEFORE the
+	// origin gate (so we can confirm the script executed at all on a hostile
+	// or redirected origin) and AFTER the origin gate (so we can confirm the
+	// origin matched even when the subsequent fetch-based diagnostics are
+	// blocked). Only the static categories "script_running" and
+	// "origin_check_passed" are emitted before context is constructed; no
+	// callback URL or session token is ever exposed pre-gate.
+	return `(function(){"use strict";var __goariaInjDiag=` + diagnosticsEnabledJSON + `;var __goariaPostDiag=function(category){if(!__goariaInjDiag){return;}try{var w=(typeof window!=="undefined"?window:null);if(w&&w.chrome&&w.chrome.webview&&typeof w.chrome.webview.postMessage==="function"){w.chrome.webview.postMessage("goaria-auth-diag:injection:"+category);}}catch(__e){}};__goariaPostDiag("script_running");var authPageOrigin=` + authPageOriginJSON + `;if(window.location.origin!==authPageOrigin){return;}__goariaPostDiag("origin_check_passed");var context=` + callbackJSON + `;var diagnosticsEnabled=context.diagnostic_enabled===true;var sourceProbeEnabled=context.source_probe_enabled===true;void sourceProbeEnabled;var diagnostic=function(stage,category){if(!diagnosticsEnabled){return Promise.resolve();}return fetch(context.callback_url,{method:"POST",headers:{"Content-Type":context.content_type,[context.session_header]:context.session_token},body:JSON.stringify({diagnostic:true,stage:stage,category:category})}).then(function(response){return response&&response.ok;}).catch(function(){return false;});};if(diagnosticsEnabled){context.diagnostic=diagnostic;}diagnostic("injection","attempted");var marker="__goariaHostAuthCollectorExecuted";if(window[marker]){diagnostic("injection","marker_skip");return;}window[marker]=true;var collectorSource=` + collectorJSON + `;var postCapture=function(payload){diagnostic("post_capture","called");return fetch(context.callback_url,{method:"POST",headers:{"Content-Type":context.content_type,[context.session_header]:context.session_token},body:JSON.stringify(payload)}).catch(function(error){diagnostic("post_capture","rejected");throw error;});};var collector;try{diagnostic("injection","collector_eval_attempted");collector=(0,eval)(collectorSource);diagnostic("injection","collector_eval_succeeded");}catch(_){diagnostic("injection","collector_eval_failed");return;}if(typeof collector==="function"){diagnostic("injection","collector_invoked");collector(context,postCapture);}else{diagnostic("injection","collector_function_missing");}})();`
 }
 
 func appHostAuthJSON(value any) string {

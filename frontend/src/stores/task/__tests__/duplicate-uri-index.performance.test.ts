@@ -3,7 +3,7 @@ import type { Task } from '../../../../bindings/goaria-v3/internal/rpc/models'
 import { setupState } from '../state'
 import { isDuplicateUri, isValidUrl } from '../../../utils/url'
 
-vi.mock('../../../../bindings/goaria-v3/app.js', () => ({
+vi.mock('../../../../bindings/goaria-v3/internal/wailsapp/app.js', () => ({
   UpdateTrayState: vi.fn(),
 }))
 

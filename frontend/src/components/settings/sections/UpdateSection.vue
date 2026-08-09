@@ -15,7 +15,7 @@
     CheckForUpdate,
     ApplyUpdate,
     RestartApp,
-  } from '../../../../bindings/goaria-v3/app.js'
+  } from '../../../../bindings/goaria-v3/internal/wailsapp/app.js'
   import { Events } from '@wailsio/runtime'
   import { useSmoothProgress } from '../../../composables/useSmoothProgress'
 

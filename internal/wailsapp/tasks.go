@@ -1,4 +1,4 @@
-package main
+package wailsapp
 
 import (
 	"goaria-v3/internal/downloadgroups"
