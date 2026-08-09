@@ -62,16 +62,39 @@ type downloadGroupMultiResultEngine interface {
 	ResumeMultiResults(gids []string) ([]rpc.MultiCallItemResult, error)
 }
 
+func wrapMultiResults(fn func(gids []string) error) func(gids []string) ([]rpc.MultiCallItemResult, error) {
+	return func(gids []string) ([]rpc.MultiCallItemResult, error) {
+		results := make([]rpc.MultiCallItemResult, 0, len(gids))
+		if len(gids) == 0 {
+			return results, nil
+		}
+		if err := fn(gids); err != nil {
+			for _, gid := range gids {
+				results = append(results, rpc.MultiCallItemResult{GID: gid, OK: false, Error: err.Error()})
+			}
+			return results, nil
+		}
+		for _, gid := range gids {
+			results = append(results, rpc.MultiCallItemResult{GID: gid, OK: true})
+		}
+		return results, nil
+	}
+}
+
 // NewApp creates a new App instance
 func NewApp(options Options) *App {
 	downloadgroups.OpenFolderLauncher = func(dir string) error {
 		return openFolderLauncher(openFolderLaunchTarget{OpenDir: dir})
 	}
-	downloadgroups.PauseMultiResults = rpc.PauseMultiResults
-	downloadgroups.ResumeMultiResults = rpc.UnpauseMultiResults
 	if engine, ok := options.DownloadEngine.(downloadGroupMultiResultEngine); ok {
 		downloadgroups.PauseMultiResults = engine.PauseMultiResults
 		downloadgroups.ResumeMultiResults = engine.ResumeMultiResults
+	} else if options.DownloadEngine != nil {
+		downloadgroups.PauseMultiResults = wrapMultiResults(options.DownloadEngine.PauseMulti)
+		downloadgroups.ResumeMultiResults = wrapMultiResults(options.DownloadEngine.ResumeMulti)
+	} else {
+		downloadgroups.PauseMultiResults = rpc.PauseMultiResults
+		downloadgroups.ResumeMultiResults = rpc.UnpauseMultiResults
 	}
 
 	version := options.Version
