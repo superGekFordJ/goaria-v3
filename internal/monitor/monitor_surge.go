@@ -445,7 +445,8 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			}
 		})
 		if State.HasWindow() {
-			if deltaType == "complete" && completeTotal > 0 {
+			switch {
+			case deltaType == "complete" && completeTotal > 0:
 				totalStr := strconv.FormatInt(completeTotal, 10)
 				m.pusher.Queue(events.TaskDelta{
 					Type: deltaType, GID: gid,
@@ -455,7 +456,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 						"totalLength":     totalStr,
 					},
 				})
-			} else if deltaType == "error" && (errorCode != "" || errorMessage != "") {
+			case deltaType == "error" && (errorCode != "" || errorMessage != ""):
 				m.pusher.Queue(events.TaskDelta{
 					Type: deltaType, GID: gid,
 					Payload: map[string]string{
@@ -463,7 +464,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 						"errorMessage": errorMessage,
 					},
 				})
-			} else {
+			default:
 				m.pusher.Queue(events.TaskDelta{Type: deltaType, GID: gid})
 			}
 		}
@@ -754,7 +755,8 @@ func (m *Monitor) reconcileSurgeCache() {
 			m.moveToStoppedAndHandle(gid, status, errCode, errMsg, ensureTotal, nil)
 			// Emit frontend delta (matches handleSurgeEvent complete/error path).
 			if State.HasWindow() {
-				if status == "complete" && engineTask.TotalLength != "" {
+				switch {
+				case status == "complete" && engineTask.TotalLength != "":
 					m.pusher.Queue(events.TaskDelta{
 						Type: status, GID: gid,
 						Payload: map[string]string{
@@ -763,7 +765,7 @@ func (m *Monitor) reconcileSurgeCache() {
 							"totalLength":     engineTask.TotalLength,
 						},
 					})
-				} else if status == "error" && (errCode != "" || errMsg != "") {
+				case status == "error" && (errCode != "" || errMsg != ""):
 					m.pusher.Queue(events.TaskDelta{
 						Type: status, GID: gid,
 						Payload: map[string]string{
@@ -771,7 +773,7 @@ func (m *Monitor) reconcileSurgeCache() {
 							"errorMessage": errMsg,
 						},
 					})
-				} else {
+				default:
 					m.pusher.Queue(events.TaskDelta{Type: status, GID: gid})
 				}
 			}
