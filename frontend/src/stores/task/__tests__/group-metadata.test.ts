@@ -17,7 +17,7 @@ import {
 import type { TaskPolling } from '../polling'
 import type { Task } from '../../../../bindings/goaria-v3/internal/rpc/models'
 
-vi.mock('../../../../bindings/goaria-v3/app.js', () => ({
+vi.mock('../../../../bindings/goaria-v3/internal/wailsapp/app.js', () => ({
   GetTasks: vi.fn(),
   GetActiveTasks: vi.fn(),
   GetStoppedTasks: vi.fn(),

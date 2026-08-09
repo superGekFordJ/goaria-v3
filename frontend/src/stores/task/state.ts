@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
-import { UpdateTrayState } from '../../../bindings/goaria-v3/app.js'
+import { UpdateTrayState } from '../../../bindings/goaria-v3/internal/wailsapp/app.js'
 
 type UriLookup = Iterable<string> & {
   readonly size: number

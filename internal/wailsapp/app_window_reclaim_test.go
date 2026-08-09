@@ -1,4 +1,4 @@
-package main
+package wailsapp
 
 import (
 	"sync/atomic"

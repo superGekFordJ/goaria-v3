@@ -1,4 +1,4 @@
-package main
+package wailsapp
 
 import (
 	"sync"
@@ -20,10 +20,10 @@ import (
 // App struct for service bindings
 //
 // Methods are split across files by domain:
-//   - app.go:        struct definition, constructor, setters
-//   - app_window.go: window lifecycle, tray, snapshot
-//   - app_tasks.go:  task CRUD, batch operations, metadata
-//   - app_system.go: OpenFolder, config, self-update, directory picker
+//   - app.go:    struct definition, constructor, setters
+//   - window.go: window lifecycle, tray, snapshot
+//   - tasks.go:  task CRUD, batch operations, metadata
+//   - system.go: OpenFolder, config, self-update, directory picker
 type App struct {
 	app       *application.App
 	window    *application.WebviewWindow
@@ -31,6 +31,7 @@ type App struct {
 	eventHub  *events.Hub
 	updater   *update.Updater
 	trayState tray.TrayState
+	version   string
 
 	extractorDispatcher tasks.ExtractorAddTaskDispatcher
 	authMu              sync.RWMutex
@@ -51,25 +52,51 @@ type App struct {
 	extensionServer *extension.Server
 }
 
+type Options struct {
+	DownloadEngine rpc.DownloadEngine
+	Version        string
+}
+
+type downloadGroupMultiResultEngine interface {
+	PauseMultiResults(gids []string) ([]rpc.MultiCallItemResult, error)
+	ResumeMultiResults(gids []string) ([]rpc.MultiCallItemResult, error)
+}
+
 // NewApp creates a new App instance
-func NewApp() *App {
+func NewApp(options Options) *App {
 	downloadgroups.OpenFolderLauncher = func(dir string) error {
 		return openFolderLauncher(openFolderLaunchTarget{OpenDir: dir})
 	}
+	downloadgroups.PauseMultiResults = rpc.PauseMultiResults
+	downloadgroups.ResumeMultiResults = rpc.UnpauseMultiResults
+	if engine, ok := options.DownloadEngine.(downloadGroupMultiResultEngine); ok {
+		downloadgroups.PauseMultiResults = engine.PauseMultiResults
+		downloadgroups.ResumeMultiResults = engine.ResumeMultiResults
+	}
 
-	// Instantiate the hybrid routing engine
-	hybrid := rpc.NewHybridEngine(
-		&rpc.Aria2Engine{},
-		rpc.NewSurgeEngine(),
-	)
-
-	downloadgroups.PauseMultiResults = hybrid.PauseMultiResults
-	downloadgroups.ResumeMultiResults = hybrid.ResumeMultiResults
+	version := options.Version
+	if version == "" {
+		version = "dev"
+	}
 
 	return &App{
 		trayState:      tray.StateIdle,
-		downloadEngine: hybrid,
+		version:        version,
+		downloadEngine: options.DownloadEngine,
 	}
+}
+
+func ConfigureUpdater(appService *App, eventHub *events.Hub) {
+	if appService == nil {
+		return
+	}
+	appService.updater = update.NewUpdater(eventHub)
+}
+
+func NewExtensionServer(eventHub *events.Hub, appService *App, secret string) *extension.Server {
+	extStore := extension.NewSecretStore()
+	extStore.SetSecret(secret)
+	return extension.NewServer(eventHub, appService.taskService(), extStore)
 }
 
 // SetApp stores the application instance reference

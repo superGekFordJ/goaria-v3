@@ -37,7 +37,7 @@ const bindingMocks = vi.hoisted(() => ({
   OpenFolder: vi.fn(),
 }))
 
-vi.mock('../../../bindings/goaria-v3/app.js', () => bindingMocks)
+vi.mock('../../../bindings/goaria-v3/internal/wailsapp/app.js', () => bindingMocks)
 
 const taskStoreMock = vi.hoisted(() => ({
   __state: null as null | { activeTasks: Task[]; waitingTasks: Task[]; stoppedTasks: Task[] },
