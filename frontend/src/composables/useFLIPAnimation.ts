@@ -62,7 +62,9 @@ export function useFLIPAnimation(
     const elements = container.querySelectorAll<HTMLElement>(keySelector)
 
     // D2 early-exit: first pass computes deltaY for every element.
-    // Entering items (key absent from lastRects) use container bottom as origin.
+    // Entering items (key absent from lastRects) originate one card height above
+    // their final position, so they slide down into place — matching the project's
+    // prepend-first ordering where new tasks land at the top of the list.
     const deltas: Array<{ el: HTMLElement; deltaY: number; isMajorMove: boolean }> = []
     let hasEntering = false
 
@@ -70,11 +72,12 @@ export function useFLIPAnimation(
       const key = el.getAttribute(keyAttribute)
       if (!key) return
 
-      const newTop = el.getBoundingClientRect().top - containerRect.top
+      const elRect = el.getBoundingClientRect()
+      const newTop = elRect.top - containerRect.top
       const storedOldTop = lastRects.get(key)
       const isEntering = storedOldTop === undefined
       if (isEntering) hasEntering = true
-      const oldTop = isEntering ? containerRect.height : (storedOldTop as number)
+      const oldTop = isEntering ? newTop - elRect.height : (storedOldTop as number)
       const deltaY = oldTop - newTop
 
       if (Math.abs(deltaY) > threshold) {

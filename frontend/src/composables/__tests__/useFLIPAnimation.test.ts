@@ -134,7 +134,7 @@ describe('useFLIPAnimation', () => {
     expect(el.style.transition).toBe('')
   })
 
-  it('treats undefined keys as entering from container bottom', () => {
+  it('treats undefined keys as entering from above their final position', () => {
     const container = makeContainer()
     const containerRef = ref<HTMLElement | null>(container)
     const { capture, play } = useFLIPAnimation(containerRef)
@@ -152,7 +152,7 @@ describe('useFLIPAnimation', () => {
 
     play()
 
-    // 'b' enters from container height (600) -> deltaY = 600, animated.
+    // 'b' enters from above its final position (newTop - height = -100) -> deltaY = -100, animated.
     expect(newEl.style.transform).not.toBe('')
     expect(newEl.style.transition).not.toBe('')
   })
@@ -194,7 +194,7 @@ describe('useFLIPAnimation', () => {
     }).not.toThrow()
   })
 
-  it('treats play() without capture() as all-entering and animates', () => {
+  it('treats play() without capture() as all-entering from above and animates', () => {
     const container = makeContainer()
     const containerRef = ref<HTMLElement | null>(container)
     const { play } = useFLIPAnimation(containerRef)
@@ -206,7 +206,7 @@ describe('useFLIPAnimation', () => {
 
     play()
 
-    // All keys undefined -> entering from bottom -> animated.
+    // All keys undefined -> entering from above their final positions -> animated.
     expect(els[0].style.transform).not.toBe('')
     expect(els[1].style.transform).not.toBe('')
   })
