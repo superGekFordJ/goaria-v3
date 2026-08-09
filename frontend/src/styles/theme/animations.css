@@ -26,6 +26,30 @@
   }
 }
 
+/* Transform-only spring variants: avoid animating opacity on glass panels
+   whose backdrop-filter breaks when an ancestor/element has opacity < 1
+   (the backdrop samples an offscreen buffer instead of the real page). */
+@keyframes spring-in-transform {
+  0% {
+    transform: scale(0.9) translateY(10px);
+  }
+  50% {
+    transform: scale(1.02) translateY(-2px);
+  }
+  100% {
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes spring-out-transform {
+  0% {
+    transform: scale(1) translateY(0);
+  }
+  100% {
+    transform: scale(0.95) translateY(10px);
+  }
+}
+
 @keyframes fade-in {
   from {
     opacity: 0;
@@ -127,6 +151,14 @@
 
 .animate-spring-out {
   animation: spring-out 0.3s ease-out both;
+}
+
+.animate-spring-in-transform {
+  animation: spring-in-transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+}
+
+.animate-spring-out-transform {
+  animation: spring-out-transform 0.3s ease-out both;
 }
 
 .animate-fade-in {
