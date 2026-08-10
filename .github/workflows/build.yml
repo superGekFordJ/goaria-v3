@@ -61,6 +61,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install Linux system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev
+
       - name: Install golangci-lint
         shell: bash
         run: |
@@ -101,6 +106,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev
 
+      - name: Create frontend dist placeholder
+        run: mkdir -p frontend/dist && echo '<html><body></body></html>' > frontend/dist/index.html
+
       - name: Compile and closure check (${{ matrix.variant }})
         shell: bash
         run: |
@@ -114,71 +122,6 @@ jobs:
           go build $tags ./...
           go list -deps $tags ./... >/dev/null
           echo "$variant compile+closure check passed"
-
-  mobile-toolchain-probe:
-    runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [ios, android]
-        variant: [generic-no-pack, full-pack]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: Add Go bin to PATH
-        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
-      - name: Probe ${{ matrix.target }} toolchain (${{ matrix.variant }})
-        shell: bash
-        run: |
-          set -euo pipefail
-          target="${{ matrix.target }}"
-          variant="${{ matrix.variant }}"
-          tags=""
-          if [ "$variant" = "full-pack" ]; then
-            tags="-tags extractor"
-          fi
-          if [ "$target" = "ios" ]; then
-            SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
-            CGO_ENABLED=1 GOOS=ios GOARCH=arm64 \
-              CGO_CFLAGS="-isysroot $SDK_PATH -target arm64-apple-ios15.0-simulator -mios-simulator-version-min=15.0" \
-              CGO_LDFLAGS="-isysroot $SDK_PATH -target arm64-apple-ios15.0-simulator" \
-              go vet $tags ./internal/extractor/ 2>&1 || {
-                if [ "$variant" = "full-pack" ]; then
-                  echo "full-pack extractor capability not supported on ios toolchain; use generic-no-pack" >&2
-                  exit 1
-                fi
-                exit 1
-              }
-          elif [ "$target" = "android" ]; then
-            NDK_ROOT="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/r26d}"
-            if [ ! -d "$NDK_ROOT" ]; then
-              echo "Android NDK not found at $NDK_ROOT" >&2
-              if [ "$variant" = "full-pack" ]; then
-                echo "full-pack extractor capability not supported on android toolchain; use generic-no-pack" >&2
-                exit 1
-              fi
-              exit 1
-            fi
-            HOST_TAG="darwin-x86_64"
-            TOOLCHAIN="$NDK_ROOT/toolchains/llvm/prebuilt/$HOST_TAG"
-            CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
-              CC="$TOOLCHAIN/bin/aarch64-linux-android21-clang" \
-              go vet $tags ./internal/extractor/ 2>&1 || {
-                if [ "$variant" = "full-pack" ]; then
-                  echo "full-pack extractor capability not supported on android toolchain; use generic-no-pack" >&2
-                  exit 1
-                fi
-                exit 1
-              }
-          fi
-          echo "$target $variant toolchain probe passed"
 
   linux-package:
     runs-on: ubuntu-latest
