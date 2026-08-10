@@ -489,6 +489,11 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 			readSize = remaining
 		}
 
+		// FORK-PATCH: Flush pending progress before entering a potentially unbounded network block.
+		// Since the batch time interval is checked synchronously during the active read/write loop,
+		// already-written bytes would remain unpublished if the subsequent read blocks indefinitely.
+		// Flushing here ensures that global progress observers can observe all committed bytes
+		// even when the worker is stalled waiting for the next network chunk.
 		flushUpdates()
 		readSoFar := 0
 		var readErr error
