@@ -3,7 +3,12 @@ param(
     [string]$ExtractorVariant = $env:EXTRACTOR_VARIANT
 )
 
-# Validate variant if provided
+# Normalize to lowercase (Taskfile case statements are case-sensitive)
+if ($ExtractorVariant) {
+    $ExtractorVariant = $ExtractorVariant.ToLower()
+}
+
+# variant validation; keep in sync across all build files
 if ($ExtractorVariant -and $ExtractorVariant -ne "generic-no-pack" -and $ExtractorVariant -ne "full-pack") {
     Write-Error "unknown EXTRACTOR_VARIANT: $ExtractorVariant"
     exit 1

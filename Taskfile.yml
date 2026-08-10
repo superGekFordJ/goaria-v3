@@ -14,6 +14,7 @@ vars:
   VITE_PORT: "{{.WAILS_VITE_PORT | default 9245}}"
   EXTRACTOR_VARIANT:
     sh: 'printf "%s" "${EXTRACTOR_VARIANT:-}"'
+  # variant->tag mapping; keep in sync across all build files
   EXTRACTOR_BUILD_TAGS:
     sh: |
       v="${EXTRACTOR_VARIANT:-}"

@@ -52,6 +52,7 @@ tasks:
       - task: common:generate:icons
       - go build {{.BUILD_FLAGS}} -o {{.OUTPUT}}
     vars:
+      # variant->tag mapping; keep in sync across all build files
       EXTRACTOR_BUILD_TAGS:
         sh: |
           v="{{.EXTRACTOR_VARIANT}}"
