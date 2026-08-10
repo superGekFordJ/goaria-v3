@@ -12,17 +12,31 @@ vars:
   APP_NAME: "goaria-v3"
   BIN_DIR: "bin"
   VITE_PORT: "{{.WAILS_VITE_PORT | default 9245}}"
+  EXTRACTOR_VARIANT:
+    sh: 'printf "%s" "${EXTRACTOR_VARIANT:-}"'
+  EXTRACTOR_BUILD_TAGS:
+    sh: |
+      v="${EXTRACTOR_VARIANT:-}"
+      case "$v" in
+        ""|"generic-no-pack") printf '' ;;
+        "full-pack") printf 'extractor' ;;
+        *) echo "unknown EXTRACTOR_VARIANT: $v" >&2; exit 1 ;;
+      esac
 
 tasks:
   build:
     summary: Builds the application
     cmds:
       - task: "{{OS}}:build"
+        vars:
+          EXTRACTOR_VARIANT: '{{.EXTRACTOR_VARIANT}}'
 
   package:
     summary: Packages a production build of the application
     cmds:
       - task: "{{OS}}:package"
+        vars:
+          EXTRACTOR_VARIANT: '{{.EXTRACTOR_VARIANT}}'
 
   run:
     summary: Runs the application

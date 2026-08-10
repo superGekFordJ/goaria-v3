@@ -50,11 +50,107 @@ jobs:
           printf 'release_tag=%s\n' "${RELEASE_TAG:-}" >> "$GITHUB_OUTPUT"
           printf 'Resolved extractor package variant: %s\n' "$variant"
 
+  dual-tag-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install golangci-lint
+        shell: bash
+        run: |
+          version=$(go list -m -f '{{.Version}}' github.com/golangci/golangci-lint/v2 2>/dev/null || echo "latest")
+          if [ "$version" = "latest" ]; then
+            go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+          else
+            go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${version}"
+          fi
+
+      - name: Add Go bin to PATH
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Lint default (generic)
+        run: golangci-lint run ./...
+
+      - name: Lint with extractor tag (full)
+        run: golangci-lint run --build-tags extractor ./...
+
+  mobile-toolchain-probe:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [ios, android]
+        variant: [generic-no-pack, full-pack]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Add Go bin to PATH
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Probe ${{ matrix.target }} toolchain (${{ matrix.variant }})
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          variant="${{ matrix.variant }}"
+          tags=""
+          if [ "$variant" = "full-pack" ]; then
+            tags="-tags extractor"
+          fi
+          if [ "$target" = "ios" ]; then
+            SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
+            CGO_ENABLED=1 GOOS=ios GOARCH=arm64 \
+              CGO_CFLAGS="-isysroot $SDK_PATH -target arm64-apple-ios15.0-simulator -mios-simulator-version-min=15.0" \
+              CGO_LDFLAGS="-isysroot $SDK_PATH -target arm64-apple-ios15.0-simulator" \
+              go vet $tags ./internal/extractor/ 2>&1 || {
+                if [ "$variant" = "full-pack" ]; then
+                  echo "full-pack extractor capability not supported on ios toolchain; use generic-no-pack" >&2
+                  exit 1
+                fi
+                exit 1
+              }
+          elif [ "$target" = "android" ]; then
+            NDK_ROOT="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/r26d}"
+            if [ ! -d "$NDK_ROOT" ]; then
+              echo "Android NDK not found at $NDK_ROOT" >&2
+              if [ "$variant" = "full-pack" ]; then
+                echo "full-pack extractor capability not supported on android toolchain; use generic-no-pack" >&2
+                exit 1
+              fi
+              exit 1
+            fi
+            HOST_TAG="darwin-x86_64"
+            TOOLCHAIN="$NDK_ROOT/toolchains/llvm/prebuilt/$HOST_TAG"
+            CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
+              CC="$TOOLCHAIN/bin/aarch64-linux-android21-clang" \
+              go vet $tags ./internal/extractor/ 2>&1 || {
+                if [ "$variant" = "full-pack" ]; then
+                  echo "full-pack extractor capability not supported on android toolchain; use generic-no-pack" >&2
+                  exit 1
+                fi
+                exit 1
+              }
+          fi
+          echo "$target $variant toolchain probe passed"
+
   linux-package:
     runs-on: ubuntu-latest
     needs: resolve-package-variant
     env:
       EXTRACTOR_RELEASE_VARIANT: ${{ needs.resolve-package-variant.outputs.extractor_variant }}
+      EXTRACTOR_VARIANT: ${{ needs.resolve-package-variant.outputs.extractor_variant }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -182,6 +278,43 @@ jobs:
       - name: Smoke test bundled Linux runtime
         run: wails3 task linux:smoke
 
+      - name: Cross-check extractor build evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="build/extractor/extractor_build_evidence.summary.json"
+          if [ ! -f "$evidence" ]; then
+            echo "evidence file not found: $evidence" >&2
+            exit 1
+          fi
+          variant=$(jq -r '.variant' "$evidence")
+          capability=$(jq -r '.compile_capability' "$evidence")
+          closure=$(jq -r '.closure_verified' "$evidence")
+          requested=$(jq -r '.requested_variant' "$evidence")
+          expected="${EXTRACTOR_RELEASE_VARIANT}"
+          echo "evidence: variant=$variant capability=$capability closure=$closure requested=$requested"
+          if [ "$variant" != "$expected" ]; then
+            echo "variant mismatch: evidence=$variant expected=$expected" >&2
+            exit 1
+          fi
+          if [ "$requested" != "$expected" ]; then
+            echo "requested_variant mismatch: evidence=$requested expected=$expected" >&2
+            exit 1
+          fi
+          if [ "$expected" = "full-pack" ] && [ "$capability" != "extractor" ]; then
+            echo "full-pack requires compile_capability=extractor, got: $capability" >&2
+            exit 1
+          fi
+          if [ "$expected" = "generic-no-pack" ] && [ -n "$capability" ]; then
+            echo "generic-no-pack must not have compile_capability, got: $capability" >&2
+            exit 1
+          fi
+          if [ "$closure" != "true" ]; then
+            echo "closure_verified is not true" >&2
+            exit 1
+          fi
+          echo "evidence cross-check passed"
+
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -234,6 +367,7 @@ jobs:
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
       EXTRACTOR_RELEASE_VARIANT: ${{ needs.resolve-package-variant.outputs.extractor_variant }}
+      EXTRACTOR_VARIANT: ${{ needs.resolve-package-variant.outputs.extractor_variant }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -351,6 +485,43 @@ jobs:
           kill "$pid" || true
           wait "$pid" || true
 
+      - name: Cross-check extractor build evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="build/extractor/extractor_build_evidence.summary.json"
+          if [ ! -f "$evidence" ]; then
+            echo "evidence file not found: $evidence" >&2
+            exit 1
+          fi
+          variant=$(jq -r '.variant' "$evidence")
+          capability=$(jq -r '.compile_capability' "$evidence")
+          closure=$(jq -r '.closure_verified' "$evidence")
+          requested=$(jq -r '.requested_variant' "$evidence")
+          expected="${EXTRACTOR_RELEASE_VARIANT}"
+          echo "evidence: variant=$variant capability=$capability closure=$closure requested=$requested"
+          if [ "$variant" != "$expected" ]; then
+            echo "variant mismatch: evidence=$variant expected=$expected" >&2
+            exit 1
+          fi
+          if [ "$requested" != "$expected" ]; then
+            echo "requested_variant mismatch: evidence=$requested expected=$expected" >&2
+            exit 1
+          fi
+          if [ "$expected" = "full-pack" ] && [ "$capability" != "extractor" ]; then
+            echo "full-pack requires compile_capability=extractor, got: $capability" >&2
+            exit 1
+          fi
+          if [ "$expected" = "generic-no-pack" ] && [ -n "$capability" ]; then
+            echo "generic-no-pack must not have compile_capability, got: $capability" >&2
+            exit 1
+          fi
+          if [ "$closure" != "true" ]; then
+            echo "closure_verified is not true" >&2
+            exit 1
+          fi
+          echo "evidence cross-check passed"
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -386,6 +557,7 @@ jobs:
     needs: resolve-package-variant
     env:
       EXTRACTOR_RELEASE_VARIANT: ${{ needs.resolve-package-variant.outputs.extractor_variant }}
+      EXTRACTOR_VARIANT: ${{ needs.resolve-package-variant.outputs.extractor_variant }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -465,6 +637,39 @@ jobs:
 
       - name: Build and package
         run: .\build.ps1
+
+      - name: Cross-check extractor build evidence
+        shell: pwsh
+        run: |
+          $evidence = "build/extractor/extractor_build_evidence.summary.json"
+          if (-not (Test-Path $evidence)) {
+            Write-Error "evidence file not found: $evidence"
+            exit 1
+          }
+          $summary = Get-Content $evidence -Raw | ConvertFrom-Json
+          $expected = $env:EXTRACTOR_RELEASE_VARIANT
+          Write-Host "evidence: variant=$($summary.variant) capability=$($summary.compile_capability) closure=$($summary.closure_verified) requested=$($summary.requested_variant)"
+          if ($summary.variant -ne $expected) {
+            Write-Error "variant mismatch: evidence=$($summary.variant) expected=$expected"
+            exit 1
+          }
+          if ($summary.requested_variant -ne $expected) {
+            Write-Error "requested_variant mismatch: evidence=$($summary.requested_variant) expected=$expected"
+            exit 1
+          }
+          if ($expected -eq "full-pack" -and $summary.compile_capability -ne "extractor") {
+            Write-Error "full-pack requires compile_capability=extractor, got: $($summary.compile_capability)"
+            exit 1
+          }
+          if ($expected -eq "generic-no-pack" -and $summary.compile_capability) {
+            Write-Error "generic-no-pack must not have compile_capability, got: $($summary.compile_capability)"
+            exit 1
+          }
+          if ($summary.closure_verified -ne $true) {
+            Write-Error "closure_verified is not true"
+            exit 1
+          }
+          Write-Host "evidence cross-check passed"
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4

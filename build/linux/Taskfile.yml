@@ -80,6 +80,7 @@ tasks:
           ARCH: '{{.ARCH}}'
           DEV: '{{.DEV}}'
           OUTPUT: '{{.OUTPUT}}'
+          EXTRACTOR_VARIANT: '{{.EXTRACTOR_VARIANT}}'
     vars:
       DEFAULT_OUTPUT: '{{.BIN_DIR}}/{{.APP_NAME}}'
       OUTPUT: '{{ .OUTPUT | default .DEFAULT_OUTPUT }}'
@@ -105,7 +106,15 @@ tasks:
       - task: generate:dotdesktop
       - go build {{.BUILD_FLAGS}} -o {{.OUTPUT}}
     vars:
-      BUILD_FLAGS: '{{if eq .DEV "true"}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production -trimpath -buildvcs=false -ldflags="-w -s"{{end}}'
+      EXTRACTOR_BUILD_TAGS:
+        sh: |
+          v="{{.EXTRACTOR_VARIANT}}"
+          case "$v" in
+            ""|"generic-no-pack") printf '' ;;
+            "full-pack") printf 'extractor' ;;
+            *) echo "unknown EXTRACTOR_VARIANT: $v" >&2; exit 1 ;;
+          esac
+      BUILD_FLAGS: '{{if eq .DEV "true"}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{end}}'
       DEFAULT_OUTPUT: '{{.BIN_DIR}}/{{.APP_NAME}}'
       OUTPUT: '{{ .OUTPUT | default .DEFAULT_OUTPUT }}'
     env:
@@ -130,7 +139,7 @@ tasks:
       - task: common:build:frontend
       - task: common:generate:icons
       - task: generate:dotdesktop
-      - docker run --rm -v "{{.ROOT_DIR}}:/app" {{.GO_CACHE_MOUNT}} {{.REPLACE_MOUNTS}} -e APP_NAME={{.APP_NAME}} {{.CROSS_IMAGE}} linux {{.DOCKER_ARCH}}
+      - docker run --rm -v "{{.ROOT_DIR}}:/app" {{.GO_CACHE_MOUNT}} {{.REPLACE_MOUNTS}} -e APP_NAME={{.APP_NAME}} -e EXTRACTOR_VARIANT={{.EXTRACTOR_VARIANT}} {{.CROSS_IMAGE}} linux {{.DOCKER_ARCH}}
       - docker run --rm -v "{{.ROOT_DIR}}:/app" alpine chown -R $(id -u):$(id -g) /app/bin
       - mkdir -p {{.BIN_DIR}}
       - mv bin/{{.APP_NAME}}-linux-{{.DOCKER_ARCH}} {{.OUTPUT}}
