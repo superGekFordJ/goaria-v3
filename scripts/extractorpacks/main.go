@@ -156,6 +156,9 @@ type workflowCleanupOptions struct {
 type workflowEvidenceSummary struct {
 	SchemaVersion             int      `json:"schema_version"`
 	Variant                   string   `json:"variant"`
+	RequestedVariant          string   `json:"requested_variant"`
+	CompileCapability         string   `json:"compile_capability"`
+	ClosureVerified           bool     `json:"closure_verified"` // asserted, not independently verified; build success is the real check
 	PackAssetCount            int      `json:"pack_asset_count"`
 	HostPolicyBundleInjected  bool     `json:"host_policy_bundle_injected"`
 	AuthRuntimeBundleInjected bool     `json:"auth_runtime_bundle_injected"`
@@ -487,6 +490,9 @@ func prepareWorkflow(opts workflowPrepareOptions) (err error) {
 		return writeWorkflowEvidenceSummary(opts.Paths.SummaryOut, workflowEvidenceSummary{
 			SchemaVersion:             lockSchemaVersion,
 			Variant:                   workflowVariantGenericNoPack,
+			RequestedVariant:          mode,
+			CompileCapability:         "",
+			ClosureVerified:           true,
 			PackAssetCount:            0,
 			HostPolicyBundleInjected:  false,
 			AuthRuntimeBundleInjected: false,
@@ -567,6 +573,9 @@ func prepareWorkflow(opts workflowPrepareOptions) (err error) {
 	return writeWorkflowEvidenceSummary(opts.Paths.SummaryOut, workflowEvidenceSummary{
 		SchemaVersion:             lockSchemaVersion,
 		Variant:                   workflowVariantFullPack,
+		RequestedVariant:          mode,
+		CompileCapability:         "extractor",
+		ClosureVerified:           true,
 		PackAssetCount:            len(verified),
 		HostPolicyBundleInjected:  true,
 		AuthRuntimeBundleInjected: true,

@@ -1099,6 +1099,15 @@ func TestWorkflowPrepareGenericNoPackCleansStaleOutputsAndWritesSummary(t *testi
 	if summary.Variant != workflowVariantGenericNoPack || summary.PackAssetCount != 0 || summary.HostPolicyBundleInjected || summary.AuthRuntimeBundleInjected || summary.PackVerificationRequired {
 		t.Fatalf("unexpected generic summary: %+v", summary)
 	}
+	if summary.RequestedVariant != workflowVariantGenericNoPack {
+		t.Fatalf("unexpected requested_variant: %s", summary.RequestedVariant)
+	}
+	if summary.CompileCapability != "" {
+		t.Fatalf("unexpected compile_capability for generic: %s", summary.CompileCapability)
+	}
+	if !summary.ClosureVerified {
+		t.Fatalf("expected closure_verified=true for generic")
+	}
 }
 
 func TestWorkflowPrepareFullPackSyntheticSuccessAndCleanup(t *testing.T) {
@@ -1124,6 +1133,15 @@ func TestWorkflowPrepareFullPackSyntheticSuccessAndCleanup(t *testing.T) {
 	summary := readWorkflowSummary(t, paths.SummaryOut)
 	if summary.Variant != workflowVariantFullPack || summary.PackAssetCount != fullPackCount || !summary.HostPolicyBundleInjected || !summary.AuthRuntimeBundleInjected || !summary.GeneratedPackEmbed || summary.PublicProvenanceWritten {
 		t.Fatalf("unexpected full-pack summary: %+v", summary)
+	}
+	if summary.RequestedVariant != workflowVariantFullPack {
+		t.Fatalf("unexpected requested_variant for full-pack: %s", summary.RequestedVariant)
+	}
+	if summary.CompileCapability != "extractor" {
+		t.Fatalf("unexpected compile_capability for full-pack: %s", summary.CompileCapability)
+	}
+	if !summary.ClosureVerified {
+		t.Fatalf("expected closure_verified=true for full-pack")
 	}
 	summaryText := readTextFile(t, paths.SummaryOut)
 	for _, forbidden := range []string{"policy_private_sha256", privatePolicyHashFromRaw(t, fixture.policyRaw), privateAuthRuntimeHashFromRaw(t, fixture.authRuntimeRaw), "private_policy", "private", "secret", "token", "cookie", "authorization", "asset_url", "asset_path", "release.example.test", "fixture.invalid", "example.test", "https://", "/assets/", defaultWorkflowAuthRuntimeEmbedPath} {
