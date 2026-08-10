@@ -163,6 +163,9 @@ func appHostAuthDiagnosticAllowed(stage string, category string) bool {
 	return false
 }
 
+// appHostAuthRawMessageHandler receives unauthenticated chrome.webview.postMessage
+// payloads; the allowlist is intentionally restrictive so only pre-context
+// injection proof categories are accepted, not callback or session evidence.
 func appHostAuthRawMessageHandler(_ application.Window, message string, _ *application.OriginInfo) {
 	const prefix = "goaria-auth-diag:"
 	if !strings.HasPrefix(message, prefix) {

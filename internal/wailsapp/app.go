@@ -33,11 +33,11 @@ type App struct {
 	version   string
 
 	extractorAdapter  tasks.ExtractorAdapter
-	authMu            sync.RWMutex
-	authProfileStore  hostAuthProfileStore
-	hostAuthRuntime   hostAuthRuntime
-	authWebViewDriver hostAuthDriver
-	hostAuthCallbacks hostAuthCallbackRegistry
+	authMu            sync.RWMutex             //nolint:unused
+	authProfileStore  hostAuthProfileStore     //nolint:unused
+	hostAuthRuntime   hostAuthRuntime          //nolint:unused
+	authWebViewDriver hostAuthDriver           //nolint:unused
+	hostAuthCallbacks hostAuthCallbackRegistry //nolint:unused
 
 	windowMu       sync.Mutex // 保护窗口操作
 	lastToggleTime time.Time  // 上次切换窗口时间，用于全局防抖
@@ -153,6 +153,6 @@ func (a *App) SetExtensionServer(s *extension.Server) {
 	a.extensionServer = s
 }
 
-func (a *App) setExtractorAdapter(adapter tasks.ExtractorAdapter) {
+func (a *App) setExtractorAdapter(adapter tasks.ExtractorAdapter) { //nolint:unused
 	a.extractorAdapter = adapter
 }
