@@ -488,14 +488,18 @@
   color: var(--app-text);
 }
 
-/* Slide up animation for batch action bar */
-.slide-up-enter-active,
+/* Slide up animation for batch action bar — transform-only: opacity < 1 would
+   make the glass panel's backdrop-filter sample an offscreen buffer. Leave uses
+   an accelerate curve: the spring overshoot would bounce back visibly at full opacity. */
+.slide-up-enter-active {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
 .slide-up-leave-active {
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: transform 0.22s cubic-bezier(0.4, 0, 1, 1);
 }
 
 .slide-up-enter-from,
 .slide-up-leave-to {
-  opacity: 0;
-  transform: translateX(-50%) translateY(20px);
+  transform: translateX(-50%) translateY(24px);
 }
