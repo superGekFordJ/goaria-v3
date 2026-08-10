@@ -33,14 +33,15 @@ func (e *diskSpaceStubEngine) AddUri(url string, options rpc.AddURIOptions) (str
 	return fmt.Sprintf("gid-%d", len(e.calls)), nil
 }
 
-func (e *diskSpaceStubEngine) Pause(string) error                  { return nil }
-func (e *diskSpaceStubEngine) Resume(string) error                 { return nil }
-func (e *diskSpaceStubEngine) PauseMulti([]string) error           { return nil }
-func (e *diskSpaceStubEngine) ResumeMulti([]string) error          { return nil }
-func (e *diskSpaceStubEngine) Remove(string, bool) error           { return nil }
+func (e *diskSpaceStubEngine) Pause(string) error         { return nil }
+func (e *diskSpaceStubEngine) Resume(string) error        { return nil }
+func (e *diskSpaceStubEngine) PauseMulti([]string) error  { return nil }
+func (e *diskSpaceStubEngine) ResumeMulti([]string) error { return nil }
+func (e *diskSpaceStubEngine) Remove(string, bool) error  { return nil }
 func (e *diskSpaceStubEngine) TellStatus(string, []string) (rpc.Task, error) {
 	return rpc.Task{}, nil
 }
+
 func (e *diskSpaceStubEngine) TellStatusMulti([]string, []string) ([]rpc.Task, error) {
 	return nil, nil
 }
@@ -58,6 +59,7 @@ func (e *diskSpaceStubEngine) SaveSession() error { return nil }
 func (e *diskSpaceStubEngine) ChangeGlobalOption(map[string]string) error {
 	return nil
 }
+
 func (e *diskSpaceStubEngine) StreamEvents(context.Context) (<-chan any, func(), error) {
 	ch := make(chan any)
 	close(ch)
@@ -100,14 +102,15 @@ func setupDiskSpaceAddService(t *testing.T, engine rpc.DownloadEngine) *Service 
 
 func TestRedactAddTaskError_InsufficientDiskSpace(t *testing.T) {
 	t.Parallel()
+	svc := &Service{}
 
-	got := redactAddTaskError(surgetypes.ErrInsufficientDiskSpace)
+	got := svc.redactAddTaskError(surgetypes.ErrInsufficientDiskSpace)
 	if got != surgetypes.ErrInsufficientDiskSpace.Error() {
 		t.Fatalf("redactAddTaskError(bare) = %q, want sentinel", got)
 	}
 
 	wrapped := fmt.Errorf("enqueue: %w", surgetypes.ErrInsufficientDiskSpace)
-	got = redactAddTaskError(wrapped)
+	got = svc.redactAddTaskError(wrapped)
 	if got != surgetypes.ErrInsufficientDiskSpace.Error() {
 		t.Fatalf("redactAddTaskError(wrapped) = %q, want sentinel", got)
 	}

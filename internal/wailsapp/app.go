@@ -33,12 +33,12 @@ type App struct {
 	trayState tray.TrayState
 	version   string
 
-	extractorDispatcher tasks.ExtractorAddTaskDispatcher
-	authMu              sync.RWMutex
-	authProfileStore    extractor.AuthProfileStore
-	hostAuthRuntime     *extractor.HostAuthRuntime
-	authWebViewDriver   extractor.AuthWebViewDriver
-	hostAuthCallbacks   *appHostAuthCallbackRegistry
+	extractorAdapter  tasks.ExtractorAdapter
+	authMu            sync.RWMutex
+	authProfileStore  extractor.AuthProfileStore
+	hostAuthRuntime   *extractor.HostAuthRuntime
+	authWebViewDriver extractor.AuthWebViewDriver
+	hostAuthCallbacks *appHostAuthCallbackRegistry
 
 	windowMu       sync.Mutex // 保护窗口操作
 	lastToggleTime time.Time  // 上次切换窗口时间，用于全局防抖
@@ -154,8 +154,8 @@ func (a *App) SetExtensionServer(s *extension.Server) {
 	a.extensionServer = s
 }
 
-func (a *App) setExtractorDispatcher(dispatcher tasks.ExtractorAddTaskDispatcher) {
-	a.extractorDispatcher = dispatcher
+func (a *App) setExtractorAdapter(adapter tasks.ExtractorAdapter) {
+	a.extractorAdapter = adapter
 }
 
 func (a *App) setHostAuthState(store extractor.AuthProfileStore, runtime *extractor.HostAuthRuntime, driver extractor.AuthWebViewDriver) {
@@ -179,10 +179,6 @@ func (a *App) authProfileStoreForTest() extractor.AuthProfileStore {
 }
 
 func (a *App) hostAuthRuntimeForTest() *extractor.HostAuthRuntime {
-	return a.hostAuthRuntimeForTaskFlow()
-}
-
-func (a *App) hostAuthRuntimeForTaskFlow() *extractor.HostAuthRuntime {
 	if a == nil {
 		return nil
 	}

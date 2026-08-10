@@ -174,14 +174,14 @@ func ConfigureEmbeddedExtractorDispatcher(appService *App) error {
 }
 
 type embeddedExtractorConfigDeps struct {
-	hasEmbeddedReleasePacks             func() bool
-	embeddedReleaseRequired             func() bool
-	loadHostPolicyResolver              func() (extractor.HostPolicyResolver, error)
-	loadAuthRuntimeBundle               func() (*extractor.PrivateAuthRuntimeBundle, error)
-	defaultAuthProfileStorePath         func() (string, error)
-	newFileAuthProfileStore             func(string) (extractor.AuthProfileStore, error)
-	newAuthWebViewDriver                func(*App) extractor.AuthWebViewDriver
-	newEmbeddedReleaseAddTaskDispatcher func(extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error)
+	hasEmbeddedReleasePacks          func() bool
+	embeddedReleaseRequired          func() bool
+	loadHostPolicyResolver           func() (extractor.HostPolicyResolver, error)
+	loadAuthRuntimeBundle            func() (*extractor.PrivateAuthRuntimeBundle, error)
+	defaultAuthProfileStorePath      func() (string, error)
+	newFileAuthProfileStore          func(string) (extractor.AuthProfileStore, error)
+	newAuthWebViewDriver             func(*App) extractor.AuthWebViewDriver
+	newEmbeddedReleaseAddTaskAdapter func(extractor.EmbeddedReleaseDispatcherConfig, *extractor.HostAuthRuntime) (tasks.ExtractorAdapter, error)
 }
 
 func defaultEmbeddedExtractorConfigDeps() embeddedExtractorConfigDeps {
@@ -197,8 +197,12 @@ func defaultEmbeddedExtractorConfigDeps() embeddedExtractorConfigDeps {
 		newAuthWebViewDriver: func(appService *App) extractor.AuthWebViewDriver {
 			return newAppHostAuthDriver(appService)
 		},
-		newEmbeddedReleaseAddTaskDispatcher: func(config extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
-			return extractor.NewEmbeddedReleaseAddTaskDispatcher(config)
+		newEmbeddedReleaseAddTaskAdapter: func(config extractor.EmbeddedReleaseDispatcherConfig, runtime *extractor.HostAuthRuntime) (tasks.ExtractorAdapter, error) {
+			dispatcher, err := extractor.NewEmbeddedReleaseAddTaskDispatcher(config)
+			if err != nil {
+				return nil, err
+			}
+			return extractor.NewTasksAdapter(dispatcher, runtime), nil
 		},
 	}
 }
@@ -337,18 +341,18 @@ func configureEmbeddedExtractorDispatcherWithDeps(appService *App, deps embedded
 	}
 	appService.setHostAuthState(store, hostRuntime, driver)
 
-	dispatcher, err := deps.newEmbeddedReleaseAddTaskDispatcher(extractor.EmbeddedReleaseDispatcherConfig{
+	adapter, err := deps.newEmbeddedReleaseAddTaskAdapter(extractor.EmbeddedReleaseDispatcherConfig{
 		AuthResolver:       authResolver,
 		HostPolicyResolver: hostPolicyResolver,
 		AuthRuntimeBundle:  authBundle,
-	})
+	}, hostRuntime)
 	if err != nil {
 		diagnostic.record("dispatcher", "failed")
 		diagnostic.finish("activation_missing_or_skipped")
 		return sanitizedEmbeddedExtractorConfigError("create embedded extractor dispatcher", err)
 	}
-	if dispatcher != nil {
-		appService.setExtractorDispatcher(dispatcher)
+	if adapter != nil {
+		appService.setExtractorAdapter(adapter)
 		diagnostic.record("dispatcher", "configured")
 		diagnostic.finish("activation_proved")
 		return nil
@@ -382,8 +386,8 @@ func normalizeEmbeddedExtractorConfigDeps(deps embeddedExtractorConfigDeps) embe
 	if deps.newAuthWebViewDriver == nil {
 		deps.newAuthWebViewDriver = defaults.newAuthWebViewDriver
 	}
-	if deps.newEmbeddedReleaseAddTaskDispatcher == nil {
-		deps.newEmbeddedReleaseAddTaskDispatcher = defaults.newEmbeddedReleaseAddTaskDispatcher
+	if deps.newEmbeddedReleaseAddTaskAdapter == nil {
+		deps.newEmbeddedReleaseAddTaskAdapter = defaults.newEmbeddedReleaseAddTaskAdapter
 	}
 
 	return deps

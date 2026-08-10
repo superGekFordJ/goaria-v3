@@ -99,13 +99,13 @@ func TestBuildDownloadList_ForwardsMasterCacheError(t *testing.T) {
 
 	engine := &SurgeEngine{}
 	engine.SetMasterCacheForTesting([]types.DownloadRecord{{
-		ID:       "disk-stopped",
-		URL:      "http://example.com/big.bin",
-		Filename: "big.bin",
-		DestPath: `/tmp/big.bin`,
-		Status:   "error",
-		Error:    types.ErrInsufficientDiskSpace.Error(),
-		TotalSize: 100,
+		ID:         "disk-stopped",
+		URL:        "http://example.com/big.bin",
+		Filename:   "big.bin",
+		DestPath:   `/tmp/big.bin`,
+		Status:     "error",
+		Error:      types.ErrInsufficientDiskSpace.Error(),
+		TotalSize:  100,
 		Downloaded: 40,
 	}})
 

@@ -330,8 +330,6 @@ func appHistoryTestDownloadGroup(id string) *rpc.DownloadGroup {
 	}
 }
 
-
-
 func TestGetStoppedTasks_BackfillsHistoryMetadataAndLengths(t *testing.T) {
 	assertHistoryBackfillBehavior(t, GetStoppedTasks)
 }
