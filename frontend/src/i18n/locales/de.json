@@ -109,6 +109,8 @@
     "tryOtherKeywords": "Versuchen Sie andere Suchbegriffe",
     "noCompleted": "Keine abgeschlossenen Aufgaben",
     "completedHere": "Fertige Downloads erscheinen hier",
+    "noErrors": "Keine fehlerhaften Aufgaben",
+    "allErrorsResolved": "Alle fehlerhaften Aufgaben wurden behoben",
     "unknownTask": "Unbekannte Aufgabe",
     "confirmDelete": "Aufgabe löschen?",
     "deleteFile": "Auch lokale Datei löschen",
@@ -331,6 +333,11 @@
   "taskSearch": {
     "placeholder": "Fertige Aufgaben suchen...",
     "clear": "Suche löschen"
+  },
+  "errorFilter": {
+    "tagLabel": "Fehlerhafte Aufgaben",
+    "tagAriaLabel": "{count} fehlerhafte Aufgaben filtern",
+    "dismiss": "Schließen"
   },
   "batch": {
     "selected": "{count} ausgewählt",

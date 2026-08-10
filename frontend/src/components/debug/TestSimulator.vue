@@ -25,8 +25,17 @@
     return (memoryAfter.value / 1024 / 1024).toFixed(2)
   })
 
+  const errorSamples = [
+    { code: '22', message: 'Timeout.' },
+    { code: '1', message: 'Connection refused.' },
+    { code: '3', message: 'Resource was not found.' },
+    { code: '19', message: 'No response from server.' },
+    { code: '24', message: 'Too many redirects.' },
+    { code: '32', message: 'Disk I/O error.' },
+  ]
+
   function createMockTask(index: number, status: string = 'complete'): Task {
-    return {
+    const base: Task = {
       gid: `sim-${Date.now()}-${index.toString().padStart(6, '0')}`,
       title: `sim-task-${index}`,
       status,
@@ -43,6 +52,14 @@
         },
       ],
     }
+
+    if (status === 'error') {
+      const sample = errorSamples[index % errorSamples.length]
+      base.errorCode = sample.code
+      base.errorMessage = sample.message
+    }
+
+    return base
   }
 
   interface PerformanceMemory {
@@ -120,6 +137,33 @@
     renderTime.value = Math.round(performance.now() - startTime)
     memoryAfter.value = getMemoryUsage()
     lastOperation.value = `完成注入 ${count} 个 ${status} 任务`
+    isRunning.value = false
+  }
+
+  async function injectErrorTasks(count: number) {
+    if (isRunning.value) return
+    isRunning.value = true
+    lastOperation.value = `注入 ${count} 个 error 任务...`
+    memoryBefore.value = getMemoryUsage()
+
+    const newTasks: Task[] = []
+    for (let i = 0; i < count; i++) {
+      newTasks.push(createMockTask(i, 'error'))
+    }
+
+    const startTime = performance.now()
+
+    taskStore.tasks = {
+      ...taskStore.tasks,
+      stopped: [...newTasks, ...taskStore.tasks.stopped],
+    }
+
+    await new Promise(resolve => requestAnimationFrame(resolve))
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    renderTime.value = Math.round(performance.now() - startTime)
+    memoryAfter.value = getMemoryUsage()
+    lastOperation.value = `完成注入 ${count} 个 error 任务`
     isRunning.value = false
   }
 
@@ -262,6 +306,9 @@
       <button :disabled="isRunning" class="btn" @click="injectTasks(100)">+100 任务</button>
       <button :disabled="isRunning" class="btn btn-danger" @click="injectTasks(1000)">
         +1000 任务
+      </button>
+      <button :disabled="isRunning" class="btn btn-danger" @click="injectErrorTasks(10)">
+        +10 错误任务
       </button>
     </div>
 

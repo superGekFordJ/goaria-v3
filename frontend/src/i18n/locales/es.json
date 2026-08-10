@@ -109,6 +109,8 @@
     "tryOtherKeywords": "Intenta buscar con otras palabras clave",
     "noCompleted": "No hay tareas completadas",
     "completedHere": "Las tareas completadas aparecerán aquí",
+    "noErrors": "Sin tareas con error",
+    "allErrorsResolved": "Todas las tareas con error han sido resueltas",
     "unknownTask": "Tarea desconocida",
     "confirmDelete": "¿Eliminar tarea?",
     "deleteFile": "Eliminar también el archivo local",
@@ -331,6 +333,11 @@
   "taskSearch": {
     "placeholder": "Buscar tareas completadas...",
     "clear": "Limpiar búsqueda"
+  },
+  "errorFilter": {
+    "tagLabel": "Tareas con error",
+    "tagAriaLabel": "Filtrar {count} tareas con error",
+    "dismiss": "Cerrar"
   },
   "batch": {
     "selected": "{count} seleccionados",

@@ -109,6 +109,8 @@
     "tryOtherKeywords": "別のキーワードで検索してください",
     "noCompleted": "完了したタスクはありません",
     "completedHere": "完了したダウンロードタスクはここに表示されます",
+    "noErrors": "エラータスクなし",
+    "allErrorsResolved": "すべてのエラータスクが解決されました",
     "unknownTask": "不明なタスク",
     "confirmDelete": "タスクを削除しますか？",
     "deleteFile": "ローカルファイルも同時に削除する",
@@ -331,6 +333,11 @@
   "taskSearch": {
     "placeholder": "完了したタスクを検索...",
     "clear": "検索をクリア"
+  },
+  "errorFilter": {
+    "tagLabel": "エラータスク",
+    "tagAriaLabel": "{count}件のエラータスクを絞り込み",
+    "dismiss": "閉じる"
   },
   "batch": {
     "selected": "{count} 項目を選択中",

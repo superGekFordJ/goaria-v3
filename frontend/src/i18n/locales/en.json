@@ -109,6 +109,8 @@
     "tryOtherKeywords": "Try other keywords",
     "noCompleted": "No completed tasks",
     "completedHere": "Completed tasks will appear here",
+    "noErrors": "No error tasks",
+    "allErrorsResolved": "All error tasks have been resolved",
     "unknownTask": "Unknown Task",
     "confirmDelete": "Delete task?",
     "deleteFile": "Also delete local file",
@@ -331,6 +333,11 @@
   "taskSearch": {
     "placeholder": "Search completed tasks...",
     "clear": "Clear search"
+  },
+  "errorFilter": {
+    "tagLabel": "Error tasks",
+    "tagAriaLabel": "Filter {count} error tasks",
+    "dismiss": "Dismiss"
   },
   "batch": {
     "selected": "Selected {count} items",

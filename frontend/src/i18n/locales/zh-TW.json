@@ -109,6 +109,8 @@
     "tryOtherKeywords": "請嘗試使用其他關鍵字搜尋",
     "noCompleted": "沒有已完成的任務",
     "completedHere": "已完成的下載任務將顯示於此",
+    "noErrors": "無錯誤任務",
+    "allErrorsResolved": "所有錯誤任務已處理",
     "unknownTask": "未知的任務",
     "confirmDelete": "確認刪除任務？",
     "deleteFile": "同時刪除本機檔案",
@@ -331,6 +333,11 @@
   "taskSearch": {
     "placeholder": "搜尋已完成的任務...",
     "clear": "清除搜尋"
+  },
+  "errorFilter": {
+    "tagLabel": "錯誤任務",
+    "tagAriaLabel": "篩選 {count} 個錯誤任務",
+    "dismiss": "關閉"
   },
   "batch": {
     "selected": "已選取 {count} 個項目",

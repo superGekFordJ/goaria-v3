@@ -16,11 +16,12 @@
   import TaskCard from './TaskCard.vue'
   import TaskHeader from './TaskHeader.vue'
   import TaskSearch from './TaskSearch.vue'
+  import ErrorFilterTag from './ErrorFilterTag.vue'
   import BatchActionBar from './BatchActionBar.vue'
   import DownloadGroupCard from '../groups/DownloadGroupCard.vue'
   import DownloadGroupOperationNotice from '../groups/DownloadGroupOperationNotice.vue'
   import DownloadGroupRemoveDialog from '../groups/DownloadGroupRemoveDialog.vue'
-  import { CheckCircle2, SearchX, Layers3, Download } from '@lucide/vue'
+  import { CheckCircle2, SearchX, Layers3, Download, CheckCircle } from '@lucide/vue'
   import { useTaskKeyboard } from '../../composables/useTaskKeyboard'
   import { useFLIPAnimation } from '../../composables/useFLIPAnimation'
   import TaskListEmptyState from './TaskListEmptyState.vue'
@@ -72,6 +73,25 @@
   // Search State
   const searchQuery = ref('')
 
+  // Error Filter State
+  const errorFilterActive = ref(false)
+
+  const errorCount = computed(
+    () => taskStore.stoppedTasks.filter(t => t.status === 'error').length,
+  )
+
+  const isErrorFilterActive = computed(
+    () =>
+      !isGroupDetailMode.value &&
+      uiStore.activeTab === 'stopped' &&
+      errorFilterActive.value,
+  )
+
+  // Error filter toggle — additive (AND) with search query, no dismissal
+  const toggleErrorFilter = () => {
+    errorFilterActive.value = !errorFilterActive.value
+  }
+
   // Task filtering logic based on active tab
   // 优化：避免每次访问都创建新数组，直接使用 store 的响应式数据
   const combinedDownloads = computed(() => {
@@ -117,6 +137,7 @@
         tasks: taskStore.stoppedTasks,
         groupItems: downloadGroupStore.masterItems,
         searchQuery: searchQuery.value,
+        errorOnly: errorFilterActive.value,
       })
     }
 
@@ -174,6 +195,15 @@
         title: t('taskList.noDownloads'),
         description: t('taskList.pasteLink'),
         accent: 'var(--neon-primary)',
+      }
+    }
+    // Error filter active but no results (e.g. combined with search, or errors resolved)
+    if (isErrorFilterActive.value && displayEntries.value.length === 0) {
+      return {
+        icon: CheckCircle,
+        title: t('taskList.noErrors'),
+        description: t('taskList.allErrorsResolved'),
+        accent: 'var(--status-complete)',
       }
     }
     // Search empty state
@@ -404,6 +434,19 @@
       // 切换到"已完成"时立即拉取 stopped 任务
       if (newTab === 'stopped') {
         taskStore.fetchStoppedTasks()
+      } else {
+        // Leaving stopped tab: clear error filter state
+        errorFilterActive.value = false
+      }
+    },
+  )
+
+  // Auto-clear error filter when no errors remain (e.g. all errors deleted)
+  watch(
+    () => displayEntries.value.length,
+    len => {
+      if (errorFilterActive.value && len === 0 && errorCount.value === 0) {
+        errorFilterActive.value = false
       }
     },
   )
@@ -429,11 +472,14 @@
   onDeactivated(() => {
     deactivateKeydown()
     clearGroupDetailSelection()
+    // Reset error filter when leaving the page — prevents ghost empty state on return
+    errorFilterActive.value = false
   })
 
   onUnmounted(() => {
     deactivateKeydown()
     clearGroupDetailSelection()
+    errorFilterActive.value = false
   })
 </script>
 
@@ -442,11 +488,24 @@
     <!-- Task Addition Header (only in downloads tab) -->
     <TaskHeader v-if="!isGroupDetailMode && uiStore.activeTab === 'downloads'" />
 
-    <!-- Search Box (only in stopped tab) -->
-    <TaskSearch
-      v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped'"
-      v-model="searchQuery"
-    />
+    <!-- Search Box + Error Filter Chips Row (only in stopped tab) -->
+    <div v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped'" class="shrink-0">
+      <TaskSearch v-model="searchQuery" />
+
+      <!-- Filter Chips Row — smooth height expansion, left-aligned to search content -->
+      <Transition name="filter-chips-expand">
+        <div
+          v-if="errorCount > 0"
+          class="filter-chips-row"
+        >
+          <ErrorFilterTag
+            :error-count="errorCount"
+            :active="errorFilterActive"
+            @toggle="toggleErrorFilter"
+          />
+        </div>
+      </Transition>
+    </div>
 
     <!-- Task List Container -->
     <div ref="taskContainer" class="flex-1 min-h-0 relative">
@@ -568,5 +627,39 @@
   /* Virtual scroller customization */
   :deep(.vue-recycle-scroller__item-wrapper) {
     overflow: visible !important;
+  }
+
+  /* Filter chips row — left-aligned to search content (icon position),
+     tight spacing to feel like an extension of the search bar */
+  .filter-chips-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: flex-start;
+    padding-left: 32px;
+    padding-top: 4px;
+    padding-bottom: 6px;
+    overflow: hidden;
+  }
+
+  /* Smooth height expansion: grid-template-rows 0fr → 1fr technique
+     for buttery slide-down without knowing exact pixel height */
+  .filter-chips-expand-enter-active,
+  .filter-chips-expand-leave-active {
+    transition:
+      grid-template-rows 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+      opacity 0.25s ease,
+      padding 0.3s ease;
+    display: grid;
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+
+  .filter-chips-expand-enter-from,
+  .filter-chips-expand-leave-to {
+    grid-template-rows: 0fr;
+    opacity: 0;
+    padding-top: 0;
+    padding-bottom: 0;
   }
 </style>

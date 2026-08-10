@@ -88,6 +88,7 @@ export type BuildInlineTaskListEntriesOptions = {
   tasks: Task[]
   groupItems: DownloadGroupMasterItem[]
   searchQuery?: string
+  errorOnly?: boolean
 }
 
 export type DownloadGroupFetchOptions = {
@@ -324,6 +325,7 @@ export function buildInlineTaskListEntries({
   tasks,
   groupItems,
   searchQuery = '',
+  errorOnly = false,
 }: BuildInlineTaskListEntriesOptions): InlineTaskListEntry[] {
   const eligibleItems = groupItems.filter(item => isDownloadGroupItemEligibleForTab(item, tab))
   const eligibleByKey = new Map<string, DownloadGroupMasterItem>()
@@ -365,21 +367,44 @@ export function buildInlineTaskListEntries({
   }
 
   const query = searchQuery.trim().toLowerCase()
-  if (tab !== 'stopped' || !query) return entries
+  const applyErrorOnly = errorOnly && tab === 'stopped'
+  if (!query && !applyErrorOnly) return entries
 
+  // Error filter: groups with error members (aligned with search's group-member match pattern)
+  const errorGroupKeys = new Set<string>()
+  if (applyErrorOnly) {
+    for (const item of eligibleItems) {
+      if (item.type === 'backend' && item.card.counts.error > 0) {
+        errorGroupKeys.add(item.group_key)
+      }
+    }
+  }
+
+  // Search filter: groups whose display name or any member matches the query
   const stoppedMemberSearchMatchByGroupKey = new Set<string>()
-  for (const task of tasks) {
-    const groupKey = getTaskDownloadGroupId(task)
-    if (!groupKey || !eligibleByKey.has(groupKey)) continue
-    if (taskMatchesSearch(task, query)) stoppedMemberSearchMatchByGroupKey.add(groupKey)
+  if (query) {
+    for (const task of tasks) {
+      const groupKey = getTaskDownloadGroupId(task)
+      if (!groupKey || !eligibleByKey.has(groupKey)) continue
+      if (taskMatchesSearch(task, query)) stoppedMemberSearchMatchByGroupKey.add(groupKey)
+    }
   }
 
   return entries.filter(entry => {
-    if (entry.type === 'task') return taskMatchesSearch(entry.task, query)
-    return (
-      getDownloadGroupMasterItemSearchText(entry.item).includes(query) ||
-      stoppedMemberSearchMatchByGroupKey.has(entry.group_key)
+    if (entry.type === 'task') {
+      if (applyErrorOnly && entry.task.status !== 'error') return false
+      if (query && !taskMatchesSearch(entry.task, query)) return false
+      return true
+    }
+    // Group entry: AND of error filter and search filter
+    if (applyErrorOnly && !errorGroupKeys.has(entry.group_key)) return false
+    if (
+      query &&
+      !getDownloadGroupMasterItemSearchText(entry.item).includes(query) &&
+      !stoppedMemberSearchMatchByGroupKey.has(entry.group_key)
     )
+      return false
+    return true
   })
 }
 

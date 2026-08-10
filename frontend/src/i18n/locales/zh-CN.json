@@ -109,6 +109,8 @@
     "tryOtherKeywords": "尝试使用其他关键词搜索",
     "noCompleted": "暂无完成任务",
     "completedHere": "完成的下载任务将在此处显示",
+    "noErrors": "无错误任务",
+    "allErrorsResolved": "所有错误任务已处理",
     "unknownTask": "未知任务",
     "confirmDelete": "确认删除任务？",
     "deleteFile": "同时删除本地文件",
@@ -331,6 +333,11 @@
   "taskSearch": {
     "placeholder": "搜索已完成任务...",
     "clear": "清除搜索"
+  },
+  "errorFilter": {
+    "tagLabel": "错误任务",
+    "tagAriaLabel": "筛选 {count} 个错误任务",
+    "dismiss": "关闭"
   },
   "batch": {
     "selected": "已选择 {count} 项",
