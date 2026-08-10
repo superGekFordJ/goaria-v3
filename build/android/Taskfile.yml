@@ -49,7 +49,10 @@ tasks:
     summary: Creates a build of the application for Android
     deps:
       - task: probe:extractor:capability
-        vars: { PRODUCTION: '{{.PRODUCTION}}' }
+        vars:
+          PRODUCTION: '{{.PRODUCTION}}'
+          EXTRACTOR_BUILD_TAGS:
+            ref: .EXTRACTOR_BUILD_TAGS
       - task: common:go:mod:tidy
       - task: generate:android:bindings
         vars:

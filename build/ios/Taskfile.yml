@@ -43,7 +43,10 @@ tasks:
     summary: Creates a build of the application for iOS
     deps:
       - task: probe:extractor:capability
-        vars: { PRODUCTION: '{{.PRODUCTION}}' }
+        vars:
+          PRODUCTION: '{{.PRODUCTION}}'
+          EXTRACTOR_BUILD_TAGS:
+            ref: .EXTRACTOR_BUILD_TAGS
       - task: generate:ios:overlay
       - task: generate:ios:xcode
       - task: common:go:mod:tidy

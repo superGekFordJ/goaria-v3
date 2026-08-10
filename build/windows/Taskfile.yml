@@ -70,7 +70,10 @@ tasks:
     deps:
       - task: common:go:mod:tidy
       - task: common:build:frontend
-        vars: { DEV: "false" }
+        vars:
+          BUILD_FLAGS:
+            ref: .BUILD_FLAGS
+          DEV: "false"
       - task: common:generate:icons
     cmds:
       # 1. 强制生成 ARM64 的资源文件
@@ -79,7 +82,7 @@ tasks:
       - wails3 generate syso -arch arm64 -icon build/windows/icon.ico -manifest build/windows/wails.exe.manifest -info build/windows/info.json -out wails_windows_arm64.syso
 
       # 2. 强制编译 ARM64 的 EXE
-      - go build -tags production{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -ldflags="-w -s -H windowsgui -X main.version={{.APP_VERSION}}" -o bin/{{.APP_NAME}}-arm64.exe
+      - go build {{.BUILD_FLAGS}} -o bin/{{.APP_NAME}}-arm64.exe
 
       # 3. 清理 syso 文件
       - cmd: powershell Remove-item *.syso
@@ -97,6 +100,7 @@ tasks:
             "full-pack") printf 'extractor' ;;
             *) echo "unknown EXTRACTOR_VARIANT: $v" >&2; exit 1 ;;
           esac
+      BUILD_FLAGS: '-tags production{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui -X main.version={{.APP_VERSION}}"'
     env:
       GOOS: windows
       GOARCH: arm64
