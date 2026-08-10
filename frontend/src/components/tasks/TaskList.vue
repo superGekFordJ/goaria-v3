@@ -278,9 +278,12 @@
   // Tag appear/disappear changes sticky header height, shifting card positions.
   watch(
     () => errorCount.value > 0,
-    () => {
+    (hasErrors) => {
       clear()
       skipNextFlip.value = true
+      if (!hasErrors) {
+        errorFilterActive.value = false
+      }
     },
   )
 
@@ -507,6 +510,25 @@
     <div ref="taskContainer" class="flex-1 min-h-0 relative">
       <!-- Empty State -->
       <TaskListEmptyState :show="displayEntries.length === 0" :config="emptyStateConfig" />
+
+      <!-- Empty State Filter Tag (Absolute Overlay to keep it visible when list is empty) -->
+      <div
+        v-if="displayEntries.length === 0"
+        class="absolute top-0 left-0 w-full px-5 z-20 pointer-events-none"
+      >
+        <Transition name="filter-chips-fade">
+          <div
+            v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped' && errorCount > 0"
+            class="filter-chips-row"
+          >
+            <ErrorFilterTag
+              :error-count="errorCount"
+              :active="errorFilterActive"
+              @toggle="toggleErrorFilter"
+            />
+          </div>
+        </Transition>
+      </div>
 
       <!-- Non-virtual path -->
       <div
