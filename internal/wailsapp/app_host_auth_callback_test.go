@@ -1,3 +1,5 @@
+//go:build extractor
+
 package wailsapp
 
 import (

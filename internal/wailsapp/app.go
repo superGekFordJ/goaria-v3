@@ -7,7 +7,6 @@ import (
 	"goaria-v3/internal/downloadgroups"
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/extension"
-	"goaria-v3/internal/extractor"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/tasks"
@@ -35,10 +34,10 @@ type App struct {
 
 	extractorAdapter  tasks.ExtractorAdapter
 	authMu            sync.RWMutex
-	authProfileStore  extractor.AuthProfileStore
-	hostAuthRuntime   *extractor.HostAuthRuntime
-	authWebViewDriver extractor.AuthWebViewDriver
-	hostAuthCallbacks *appHostAuthCallbackRegistry
+	authProfileStore  hostAuthProfileStore
+	hostAuthRuntime   hostAuthRuntime
+	authWebViewDriver hostAuthDriver
+	hostAuthCallbacks hostAuthCallbackRegistry
 
 	windowMu       sync.Mutex // 保护窗口操作
 	lastToggleTime time.Time  // 上次切换窗口时间，用于全局防抖
@@ -156,42 +155,4 @@ func (a *App) SetExtensionServer(s *extension.Server) {
 
 func (a *App) setExtractorAdapter(adapter tasks.ExtractorAdapter) {
 	a.extractorAdapter = adapter
-}
-
-func (a *App) setHostAuthState(store extractor.AuthProfileStore, runtime *extractor.HostAuthRuntime, driver extractor.AuthWebViewDriver) {
-	if a == nil {
-		return
-	}
-	a.authMu.Lock()
-	defer a.authMu.Unlock()
-	a.authProfileStore = store
-	a.hostAuthRuntime = runtime
-	a.authWebViewDriver = driver
-}
-
-func (a *App) authProfileStoreForTest() extractor.AuthProfileStore {
-	if a == nil {
-		return nil
-	}
-	a.authMu.RLock()
-	defer a.authMu.RUnlock()
-	return a.authProfileStore
-}
-
-func (a *App) hostAuthRuntimeForTest() *extractor.HostAuthRuntime {
-	if a == nil {
-		return nil
-	}
-	a.authMu.RLock()
-	defer a.authMu.RUnlock()
-	return a.hostAuthRuntime
-}
-
-func (a *App) authWebViewDriverForTest() extractor.AuthWebViewDriver {
-	if a == nil {
-		return nil
-	}
-	a.authMu.RLock()
-	defer a.authMu.RUnlock()
-	return a.authWebViewDriver
 }
