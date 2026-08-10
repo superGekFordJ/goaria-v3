@@ -50,15 +50,8 @@ tasks:
     vars:
       APP_VERSION:
         sh: 'powershell -NoProfile -Command "(Select-String -Path build/config.yml -Pattern ''^\s+version:'').Line.Split(''\"'')[1]"'
-      # variant->tag mapping; keep in sync across all build files
       EXTRACTOR_BUILD_TAGS:
-        sh: |
-          v="{{.EXTRACTOR_VARIANT}}"
-          case "$v" in
-            ""|"generic-no-pack") printf '' ;;
-            "full-pack") printf 'extractor' ;;
-            *) echo "unknown EXTRACTOR_VARIANT: $v" >&2; exit 1 ;;
-          esac
+        sh: '. "{{.ROOT_DIR}}/scripts/extractor_tags.sh" "{{.EXTRACTOR_VARIANT}}"'
       BUILD_FLAGS: '{{if eq .DEV "true"}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui -X main.version={{.APP_VERSION}}"{{end}}'
     env:
       GOOS: windows
@@ -91,15 +84,8 @@ tasks:
     vars:
       APP_VERSION:
         sh: 'powershell -NoProfile -Command "(Select-String -Path build/config.yml -Pattern ''^\s+version:'').Line.Split(''\"'')[1]"'
-      # variant->tag mapping; keep in sync across all build files
       EXTRACTOR_BUILD_TAGS:
-        sh: |
-          v="{{.EXTRACTOR_VARIANT}}"
-          case "$v" in
-            ""|"generic-no-pack") printf '' ;;
-            "full-pack") printf 'extractor' ;;
-            *) echo "unknown EXTRACTOR_VARIANT: $v" >&2; exit 1 ;;
-          esac
+        sh: '. "{{.ROOT_DIR}}/scripts/extractor_tags.sh" "{{.EXTRACTOR_VARIANT}}"'
       BUILD_FLAGS: '-tags production{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui -X main.version={{.APP_VERSION}}"'
     env:
       GOOS: windows

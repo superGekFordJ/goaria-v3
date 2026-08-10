@@ -72,15 +72,8 @@ tasks:
           ARCH: '{{.ARCH | default "arm64"}}'
           EXTRACTOR_VARIANT: '{{.EXTRACTOR_VARIANT}}'
     vars:
-      # variant->tag mapping; keep in sync across all build files
       EXTRACTOR_BUILD_TAGS:
-        sh: |
-          v="{{.EXTRACTOR_VARIANT}}"
-          case "$v" in
-            ""|"generic-no-pack") printf '' ;;
-            "full-pack") printf 'extractor' ;;
-            *) echo "unknown EXTRACTOR_VARIANT: $v" >&2; exit 1 ;;
-          esac
+        sh: '. "{{.ROOT_DIR}}/scripts/extractor_tags.sh" "{{.EXTRACTOR_VARIANT}}"'
       BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
     env:
       PRODUCTION: '{{.PRODUCTION | default "false"}}'
@@ -134,15 +127,8 @@ tasks:
         go build -buildmode=c-shared {{.BUILD_FLAGS}} \
           -o build/android/app/src/main/jniLibs/$JNI_DIR/libwails.so
     vars:
-      # variant->tag mapping; keep in sync across all build files
       EXTRACTOR_BUILD_TAGS:
-        sh: |
-          v="{{.EXTRACTOR_VARIANT}}"
-          case "$v" in
-            ""|"generic-no-pack") printf '' ;;
-            "full-pack") printf 'extractor' ;;
-            *) echo "unknown EXTRACTOR_VARIANT: $v" >&2; exit 1 ;;
-          esac
+        sh: '. "{{.ROOT_DIR}}/scripts/extractor_tags.sh" "{{.EXTRACTOR_VARIANT}}"'
       BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
 
   compile:go:all-archs:
