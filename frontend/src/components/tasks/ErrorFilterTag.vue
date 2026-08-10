@@ -17,17 +17,18 @@
 <template>
   <div class="error-filter-tag-wrapper">
     <LiquidGlassPanel
+      as="button"
+      :interactive="true"
+      hover-effect="scale"
       radius="rounded-[var(--radius-squircle-md)]"
       base-color-class="bg-white/10 dark:bg-white/5"
       class="error-filter-tag"
       :class="{ 'error-filter-tag-active': active, 'error-filter-tag-inactive': !active }"
+      :aria-label="t('errorFilter.tagAriaLabel', { count: errorCount })"
+      :aria-pressed="active"
+      @click="emit('toggle')"
     >
-      <button
-        class="flex items-center gap-2 px-3 py-1.5 w-full h-full cursor-pointer"
-        :aria-label="t('errorFilter.tagAriaLabel', { count: errorCount })"
-        :aria-pressed="active"
-        @click="emit('toggle')"
-      >
+      <span class="flex items-center gap-2 px-3 py-1.5 w-full h-full">
         <!-- Error dot (Light is Status) -->
         <span class="error-status-dot" :class="{ 'error-status-dot-active': active }"></span>
 
@@ -42,8 +43,8 @@
         >
           {{ t('errorFilter.tagLabel') }}
         </span>
-        <span class="font-mono-data text-[var(--status-error)]">{{ errorCount }}</span>
-      </button>
+        <span class="font-mono-data text-[var(--status-error)]" aria-hidden="true">{{ errorCount }}</span>
+      </span>
     </LiquidGlassPanel>
   </div>
 </template>
@@ -81,7 +82,7 @@
     box-shadow:
       0 0 16px color-mix(in srgb, var(--glow-error) 12%, transparent),
       0 0 32px color-mix(in srgb, var(--glow-error) 6%, transparent),
-      0 4px 16px rgba(0, 0, 0, 0.12);
+      0 4px 16px color-mix(in srgb, var(--app-bg) 12%, transparent);
   }
 
   /* Error status dot — 绯红色实心点 per visual_system.md "Light is Status" */

@@ -644,12 +644,21 @@
 
   /* Smooth height expansion: grid-template-rows 0fr → 1fr technique
      for buttery slide-down without knowing exact pixel height */
-  .filter-chips-expand-enter-active,
-  .filter-chips-expand-leave-active {
+  .filter-chips-expand-enter-active {
     transition:
       grid-template-rows 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
       opacity 0.25s ease,
-      padding 0.3s ease;
+      padding 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    display: grid;
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+
+  .filter-chips-expand-leave-active {
+    transition:
+      grid-template-rows 0.22s cubic-bezier(0.4, 0, 1, 1),
+      opacity 0.18s ease,
+      padding 0.22s cubic-bezier(0.4, 0, 1, 1);
     display: grid;
     grid-template-rows: 1fr;
     opacity: 1;

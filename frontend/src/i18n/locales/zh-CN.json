@@ -336,8 +336,7 @@
   },
   "errorFilter": {
     "tagLabel": "错误任务",
-    "tagAriaLabel": "筛选 {count} 个错误任务",
-    "dismiss": "关闭"
+    "tagAriaLabel": "筛选 {count} 个错误任务"
   },
   "batch": {
     "selected": "已选择 {count} 项",

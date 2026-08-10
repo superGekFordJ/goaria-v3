@@ -336,8 +336,7 @@
   },
   "errorFilter": {
     "tagLabel": "Tareas con error",
-    "tagAriaLabel": "Filtrar {count} tareas con error",
-    "dismiss": "Cerrar"
+    "tagAriaLabel": "Filtrar {count} tareas con error"
   },
   "batch": {
     "selected": "{count} seleccionados",

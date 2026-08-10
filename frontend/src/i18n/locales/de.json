@@ -336,8 +336,7 @@
   },
   "errorFilter": {
     "tagLabel": "Fehlerhafte Aufgaben",
-    "tagAriaLabel": "{count} fehlerhafte Aufgaben filtern",
-    "dismiss": "Schließen"
+    "tagAriaLabel": "{count} fehlerhafte Aufgaben filtern"
   },
   "batch": {
     "selected": "{count} ausgewählt",

@@ -336,8 +336,7 @@
   },
   "errorFilter": {
     "tagLabel": "エラータスク",
-    "tagAriaLabel": "{count}件のエラータスクを絞り込み",
-    "dismiss": "閉じる"
+    "tagAriaLabel": "{count}件のエラータスクを絞り込み"
   },
   "batch": {
     "selected": "{count} 項目を選択中",

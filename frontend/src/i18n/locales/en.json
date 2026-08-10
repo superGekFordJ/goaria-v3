@@ -336,8 +336,7 @@
   },
   "errorFilter": {
     "tagLabel": "Error tasks",
-    "tagAriaLabel": "Filter {count} error tasks",
-    "dismiss": "Dismiss"
+    "tagAriaLabel": "Filter {count} error tasks"
   },
   "batch": {
     "selected": "Selected {count} items",

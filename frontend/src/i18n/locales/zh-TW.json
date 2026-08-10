@@ -336,8 +336,7 @@
   },
   "errorFilter": {
     "tagLabel": "錯誤任務",
-    "tagAriaLabel": "篩選 {count} 個錯誤任務",
-    "dismiss": "關閉"
+    "tagAriaLabel": "篩選 {count} 個錯誤任務"
   },
   "batch": {
     "selected": "已選取 {count} 個項目",
