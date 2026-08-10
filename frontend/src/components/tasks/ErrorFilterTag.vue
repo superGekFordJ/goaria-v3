@@ -58,12 +58,10 @@
   .error-filter-tag-inactive {
     border: 1px solid color-mix(in srgb, var(--glass-border) 80%, transparent);
     box-shadow: none;
-    opacity: 0.85;
     transition: all 0.3s ease;
   }
 
   .error-filter-tag-inactive:hover {
-    opacity: 1;
     border-color: color-mix(in srgb, var(--glow-error) 20%, transparent);
   }
 

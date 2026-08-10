@@ -275,6 +275,15 @@
     skipNextFlip.value = true
   })
 
+  // Tag appear/disappear changes sticky header height, shifting card positions.
+  watch(
+    () => errorCount.value > 0,
+    () => {
+      clear()
+      skipNextFlip.value = true
+    },
+  )
+
   // Post-watcher executes FLIP Play phase after Vue updates DOM
   watch(
     displayEntries,
@@ -488,36 +497,42 @@
     <!-- Task Addition Header (only in downloads tab) -->
     <TaskHeader v-if="!isGroupDetailMode && uiStore.activeTab === 'downloads'" />
 
-    <!-- Search Box + Error Filter Chips Row (only in stopped tab) -->
-    <div v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped'" class="shrink-0">
-      <TaskSearch v-model="searchQuery" />
-
-      <!-- Filter Chips Row — smooth height expansion, left-aligned to search content -->
-      <Transition name="filter-chips-expand">
-        <div
-          v-if="errorCount > 0"
-          class="filter-chips-row"
-        >
-          <ErrorFilterTag
-            :error-count="errorCount"
-            :active="errorFilterActive"
-            @toggle="toggleErrorFilter"
-          />
-        </div>
-      </Transition>
-    </div>
+    <!-- Search Box (only in stopped tab) — outside scroll container -->
+    <TaskSearch
+      v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped'"
+      v-model="searchQuery"
+    />
 
     <!-- Task List Container -->
     <div ref="taskContainer" class="flex-1 min-h-0 relative">
       <!-- Empty State -->
       <TaskListEmptyState :show="displayEntries.length === 0" :config="emptyStateConfig" />
 
-      <!-- Virtual Scrolling Task List -->
+      <!-- Non-virtual path -->
       <div
         v-if="displayEntries.length > 0 && !useVirtualList"
         :key="isGroupDetailMode ? `group-detail:${props.detailKey}` : uiStore.activeTab"
-        class="h-full overflow-y-auto px-5 py-4"
+        class="h-full overflow-y-auto px-5 pb-4"
       >
+        <!-- Sticky header area -->
+        <div class="sticky top-0 z-20 pointer-events-none">
+          <!-- Sticky filter chips row (stopped tab only) -->
+          <Transition name="filter-chips-fade">
+            <div
+              v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped' && errorCount > 0"
+              class="filter-chips-row pointer-events-auto"
+            >
+              <ErrorFilterTag
+                :error-count="errorCount"
+                :active="errorFilterActive"
+                @toggle="toggleErrorFilter"
+              />
+            </div>
+          </Transition>
+          <!-- Permanent gap above first card (transparent, cards scroll behind it visibly) -->
+          <div class="h-4 shrink-0"></div>
+        </div>
+
         <div class="flex flex-col gap-4">
           <div
             v-for="(entry, index) in displayEntries"
@@ -547,34 +562,54 @@
         </div>
       </div>
 
+      <!-- Virtual path -->
       <RecycleScroller
         v-else-if="displayEntries.length > 0"
-        v-slot="{ item }"
-        class="h-full px-5 py-4"
+        class="h-full px-5 pb-4"
         :items="displayEntries"
         :item-size="null"
         size-field="size"
         key-field="key"
         :buffer="200"
       >
-        <div class="task-list-virtual-row" :data-entry-key="item.key">
-          <TaskCard
-            v-if="item.type === 'task'"
-            :task="item.task"
-            :group-hint="groupHintsByGid.get(item.task.gid)"
-            @confirm-delete="confirmDelete"
-          />
-          <DownloadGroupCard
-            v-else
-            :item="item.item"
-            :operation-busy="inlineActionBusy(item.group_key)"
-            @open="openInlineGroupDetail"
-            @pause="pauseInlineGroup"
-            @resume="resumeInlineGroup"
-            @open-folder="openInlineGroupFolder"
-            @remove="openInlineRemoveDialog"
-          />
-        </div>
+        <template #before>
+          <!-- Sticky filter chips row (stopped tab only) -->
+          <Transition name="filter-chips-fade">
+            <div
+              v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped' && errorCount > 0"
+              class="filter-chips-row"
+            >
+              <ErrorFilterTag
+                :error-count="errorCount"
+                :active="errorFilterActive"
+                @toggle="toggleErrorFilter"
+              />
+            </div>
+          </Transition>
+          <!-- Permanent gap for the first card that cards can visibly scroll behind -->
+          <div class="h-4 shrink-0"></div>
+        </template>
+
+        <template #default="{ item }">
+          <div class="task-list-virtual-row" :data-entry-key="item.key">
+            <TaskCard
+              v-if="item.type === 'task'"
+              :task="item.task"
+              :group-hint="groupHintsByGid.get(item.task.gid)"
+              @confirm-delete="confirmDelete"
+            />
+            <DownloadGroupCard
+              v-else
+              :item="item.item"
+              :operation-busy="inlineActionBusy(item.group_key)"
+              @open="openInlineGroupDetail"
+              @pause="pauseInlineGroup"
+              @resume="resumeInlineGroup"
+              @open-folder="openInlineGroupFolder"
+              @remove="openInlineRemoveDialog"
+            />
+          </div>
+        </template>
       </RecycleScroller>
     </div>
 
@@ -629,6 +664,14 @@
     overflow: visible !important;
   }
 
+  /* Sticky header for virtual scroller — applied to the slot wrapper div itself */
+  :deep(.vue-recycle-scroller > .vue-recycle-scroller__slot:first-child) {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    pointer-events: none; /* Let clicks pass through the transparent gap */
+  }
+
   /* Filter chips row — left-aligned to search content (icon position),
      tight spacing to feel like an extension of the search bar */
   .filter-chips-row {
@@ -640,35 +683,17 @@
     padding-top: 4px;
     padding-bottom: 6px;
     overflow: hidden;
+    pointer-events: auto; /* Re-enable clicks for the tag */
   }
 
-  /* Smooth height expansion: grid-template-rows 0fr → 1fr technique
-     for buttery slide-down without knowing exact pixel height */
-  .filter-chips-expand-enter-active {
-    transition:
-      grid-template-rows 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
-      opacity 0.25s ease,
-      padding 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-    display: grid;
-    grid-template-rows: 1fr;
-    opacity: 1;
+  /* Simple fade transition for tag to avoid virtual scroller overlap bugs */
+  .filter-chips-fade-enter-active,
+  .filter-chips-fade-leave-active {
+    transition: opacity 0.2s ease;
   }
 
-  .filter-chips-expand-leave-active {
-    transition:
-      grid-template-rows 0.22s cubic-bezier(0.4, 0, 1, 1),
-      opacity 0.18s ease,
-      padding 0.22s cubic-bezier(0.4, 0, 1, 1);
-    display: grid;
-    grid-template-rows: 1fr;
-    opacity: 1;
-  }
-
-  .filter-chips-expand-enter-from,
-  .filter-chips-expand-leave-to {
-    grid-template-rows: 0fr;
+  .filter-chips-fade-enter-from,
+  .filter-chips-fade-leave-to {
     opacity: 0;
-    padding-top: 0;
-    padding-bottom: 0;
   }
 </style>
