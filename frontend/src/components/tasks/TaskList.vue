@@ -513,14 +513,15 @@
         v-if="displayEntries.length > 0 && !useVirtualList"
         :key="isGroupDetailMode ? `group-detail:${props.detailKey}` : uiStore.activeTab"
         class="h-full overflow-y-auto px-5 pb-4"
+        :class="{ 'pt-4': isGroupDetailMode || uiStore.activeTab !== 'stopped' }"
       >
         <!-- Sticky header area -->
-        <div class="sticky top-0 z-20 pointer-events-none">
+        <div class="sticky top-0 z-40 pointer-events-none">
           <!-- Sticky filter chips row (stopped tab only) -->
           <Transition name="filter-chips-fade">
             <div
               v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped' && errorCount > 0"
-              class="filter-chips-row pointer-events-auto"
+              class="filter-chips-row"
             >
               <ErrorFilterTag
                 :error-count="errorCount"
@@ -530,7 +531,10 @@
             </div>
           </Transition>
           <!-- Permanent gap above first card (transparent, cards scroll behind it visibly) -->
-          <div class="h-4 shrink-0"></div>
+          <div
+            v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped'"
+            class="h-4"
+          ></div>
         </div>
 
         <div class="flex flex-col gap-4">
@@ -566,6 +570,7 @@
       <RecycleScroller
         v-else-if="displayEntries.length > 0"
         class="h-full px-5 pb-4"
+        :class="{ 'pt-4': isGroupDetailMode || uiStore.activeTab !== 'stopped' }"
         :items="displayEntries"
         :item-size="null"
         size-field="size"
@@ -587,7 +592,10 @@
             </div>
           </Transition>
           <!-- Permanent gap for the first card that cards can visibly scroll behind -->
-          <div class="h-4 shrink-0"></div>
+          <div
+            v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped'"
+            class="h-4"
+          ></div>
         </template>
 
         <template #default="{ item }">
@@ -668,7 +676,7 @@
   :deep(.vue-recycle-scroller > .vue-recycle-scroller__slot:first-child) {
     position: sticky;
     top: 0;
-    z-index: 20;
+    z-index: 40;
     pointer-events: none; /* Let clicks pass through the transparent gap */
   }
 
@@ -686,10 +694,14 @@
     pointer-events: auto; /* Re-enable clicks for the tag */
   }
 
-  /* Simple fade transition for tag to avoid virtual scroller overlap bugs */
-  .filter-chips-fade-enter-active,
+  /* Fade transition for tag — opacity-only to avoid virtual scroller height bugs.
+     Enter uses spring overshoot, leave uses accelerate curve. */
+  .filter-chips-fade-enter-active {
+    transition: opacity 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
   .filter-chips-fade-leave-active {
-    transition: opacity 0.2s ease;
+    transition: opacity 0.2s cubic-bezier(0.4, 0, 1, 1);
   }
 
   .filter-chips-fade-enter-from,
