@@ -1,4 +1,14 @@
 # GoAria Build & Package Script
+param(
+    [string]$ExtractorVariant = $env:EXTRACTOR_VARIANT
+)
+
+# Validate variant if provided
+if ($ExtractorVariant -and $ExtractorVariant -ne "generic-no-pack" -and $ExtractorVariant -ne "full-pack") {
+    Write-Error "unknown EXTRACTOR_VARIANT: $ExtractorVariant"
+    exit 1
+}
+$env:EXTRACTOR_VARIANT = $ExtractorVariant
 
 # 1. 从 build/config.yml 获取版本号
 $configPath = Join-Path $PSScriptRoot "build/config.yml"

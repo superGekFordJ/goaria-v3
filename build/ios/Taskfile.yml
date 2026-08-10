@@ -17,12 +17,33 @@ tasks:
       TASK_FORCE_YES: '{{if .YES}}true{{else}}false{{end}}'
     prompt: This will check and install iOS development dependencies. Continue?
 
+  probe:extractor:capability:
+    internal: true
+    summary: Probe whether the extractor capability compiles for the iOS toolchain
+    platforms: [darwin]
+    preconditions:
+      - sh: '[ -n "{{.EXTRACTOR_BUILD_TAGS}}" ] && [ "{{.PRODUCTION}}" = "true" ]'
+        msg: "extractor capability not requested in production build"
+    cmds:
+      - |
+        set -e
+        SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
+        CGO_ENABLED=1 GOOS=ios GOARCH=arm64 \
+          CGO_CFLAGS="-isysroot $SDK_PATH -target arm64-apple-ios15.0-simulator -mios-simulator-version-min=15.0" \
+          CGO_LDFLAGS="-isysroot $SDK_PATH -target arm64-apple-ios15.0-simulator" \
+          go vet -tags extractor ./internal/extractor/ 2>&1 || {
+            echo "full-pack extractor capability not supported on ios toolchain; use generic-no-pack" >&2
+            exit 1
+          }
+
   # Note: Bindings generation may show CGO warnings for iOS C imports.
   # These warnings are harmless and don't affect the generated bindings,
   # as the generator only needs to parse Go types, not C implementations.
   build:
     summary: Creates a build of the application for iOS
     deps:
+      - task: probe:extractor:capability
+        vars: { PRODUCTION: '{{.PRODUCTION}}' }
       - task: generate:ios:overlay
       - task: generate:ios:xcode
       - task: common:go:mod:tidy
@@ -41,7 +62,15 @@ tasks:
       - echo "Building iOS app {{.APP_NAME}}..."
       - go build -buildmode=c-archive -overlay build/ios/xcode/overlay.json {{.BUILD_FLAGS}} -o {{.OUTPUT}}.a
     vars:
-      BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,ios -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags ios,debug -buildvcs=false -gcflags=all="-l"{{end}}'
+      EXTRACTOR_BUILD_TAGS:
+        sh: |
+          v="{{.EXTRACTOR_VARIANT}}"
+          case "$v" in
+            ""|"generic-no-pack") printf '' ;;
+            "full-pack") printf 'extractor' ;;
+            *) echo "unknown EXTRACTOR_VARIANT: $v" >&2; exit 1 ;;
+          esac
+      BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,ios{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags ios,debug -buildvcs=false -gcflags=all="-l"{{end}}'
       DEFAULT_OUTPUT: '{{.BIN_DIR}}/{{.APP_NAME}}'
       OUTPUT: '{{ .OUTPUT | default .DEFAULT_OUTPUT }}'
       SDK_PATH:

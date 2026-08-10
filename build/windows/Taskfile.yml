@@ -23,6 +23,7 @@ tasks:
         vars:
           ARCH: "{{.ARCH}}"
           DEV: "{{.DEV}}"
+          EXTRACTOR_VARIANT: '{{.EXTRACTOR_VARIANT}}'
     vars:
       # Default to CGO_ENABLED=0 if not explicitly set
       CGO_ENABLED: '{{.CGO_ENABLED | default "0"}}'
@@ -49,7 +50,15 @@ tasks:
     vars:
       APP_VERSION:
         sh: 'powershell -NoProfile -Command "(Select-String -Path build/config.yml -Pattern ''^\s+version:'').Line.Split(''\"'')[1]"'
-      BUILD_FLAGS: '{{if eq .DEV "true"}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui -X main.version={{.APP_VERSION}}"{{end}}'
+      EXTRACTOR_BUILD_TAGS:
+        sh: |
+          v="{{.EXTRACTOR_VARIANT}}"
+          case "$v" in
+            ""|"generic-no-pack") printf '' ;;
+            "full-pack") printf 'extractor' ;;
+            *) echo "unknown EXTRACTOR_VARIANT: $v" >&2; exit 1 ;;
+          esac
+      BUILD_FLAGS: '{{if eq .DEV "true"}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui -X main.version={{.APP_VERSION}}"{{end}}'
     env:
       GOOS: windows
       CGO_ENABLED: '{{.CGO_ENABLED | default "0"}}'
@@ -69,7 +78,7 @@ tasks:
       - wails3 generate syso -arch arm64 -icon build/windows/icon.ico -manifest build/windows/wails.exe.manifest -info build/windows/info.json -out wails_windows_arm64.syso
 
       # 2. 强制编译 ARM64 的 EXE
-      - go build -tags production -trimpath -ldflags="-w -s -H windowsgui -X main.version={{.APP_VERSION}}" -o bin/{{.APP_NAME}}-arm64.exe
+      - go build -tags production{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -ldflags="-w -s -H windowsgui -X main.version={{.APP_VERSION}}" -o bin/{{.APP_NAME}}-arm64.exe
 
       # 3. 清理 syso 文件
       - cmd: powershell Remove-item *.syso
@@ -78,6 +87,14 @@ tasks:
     vars:
       APP_VERSION:
         sh: 'powershell -NoProfile -Command "(Select-String -Path build/config.yml -Pattern ''^\s+version:'').Line.Split(''\"'')[1]"'
+      EXTRACTOR_BUILD_TAGS:
+        sh: |
+          v="{{.EXTRACTOR_VARIANT}}"
+          case "$v" in
+            ""|"generic-no-pack") printf '' ;;
+            "full-pack") printf 'extractor' ;;
+            *) echo "unknown EXTRACTOR_VARIANT: $v" >&2; exit 1 ;;
+          esac
     env:
       GOOS: windows
       GOARCH: arm64
@@ -98,7 +115,7 @@ tasks:
           Build it first: wails3 task setup:docker
     cmds:
       - task: generate:syso
-      - docker run --rm -v "{{.ROOT_DIR}}:/app" {{.GO_CACHE_MOUNT}} {{.REPLACE_MOUNTS}} -e APP_NAME={{.APP_NAME}} {{.CROSS_IMAGE}} windows {{.DOCKER_ARCH}}
+      - docker run --rm -v "{{.ROOT_DIR}}:/app" {{.GO_CACHE_MOUNT}} {{.REPLACE_MOUNTS}} -e APP_NAME={{.APP_NAME}} -e EXTRACTOR_VARIANT={{.EXTRACTOR_VARIANT}} {{.CROSS_IMAGE}} windows {{.DOCKER_ARCH}}
       - docker run --rm -v "{{.ROOT_DIR}}:/app" alpine chown -R $(id -u):$(id -g) /app/bin
       - rm -f *.syso
     vars:

@@ -18,9 +18,38 @@ tasks:
       TASK_FORCE_YES: '{{if .YES}}true{{else}}false{{end}}'
     prompt: This will check and install Android development dependencies. Continue?
 
+  probe:extractor:capability:
+    internal: true
+    summary: Probe whether the extractor capability compiles for the Android toolchain
+    preconditions:
+      - sh: '[ -n "{{.EXTRACTOR_BUILD_TAGS}}" ] && [ "{{.PRODUCTION}}" = "true" ]'
+        msg: "extractor capability not requested in production build"
+    cmds:
+      - |
+        set -e
+        NDK_ROOT="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/{{.NDK_VERSION}}}"
+        if [ ! -d "$NDK_ROOT" ]; then
+          echo "Error: Android NDK not found at $NDK_ROOT" >&2
+          exit 1
+        fi
+        case "$(uname -s)" in
+          Darwin) HOST_TAG="darwin-x86_64" ;;
+          Linux)  HOST_TAG="linux-x86_64" ;;
+          *)      echo "Unsupported host OS" >&2; exit 1 ;;
+        esac
+        TOOLCHAIN="$NDK_ROOT/toolchains/llvm/prebuilt/$HOST_TAG"
+        CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
+          CC="$TOOLCHAIN/bin/aarch64-linux-android{{.MIN_SDK}}-clang" \
+          go vet -tags extractor ./internal/extractor/ 2>&1 || {
+            echo "full-pack extractor capability not supported on android toolchain; use generic-no-pack" >&2
+            exit 1
+          }
+
   build:
     summary: Creates a build of the application for Android
     deps:
+      - task: probe:extractor:capability
+        vars: { PRODUCTION: '{{.PRODUCTION}}' }
       - task: common:go:mod:tidy
       - task: generate:android:bindings
         vars:
@@ -39,7 +68,15 @@ tasks:
         vars:
           ARCH: '{{.ARCH | default "arm64"}}'
     vars:
-      BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
+      EXTRACTOR_BUILD_TAGS:
+        sh: |
+          v="{{.EXTRACTOR_VARIANT}}"
+          case "$v" in
+            ""|"generic-no-pack") printf '' ;;
+            "full-pack") printf 'extractor' ;;
+            *) echo "unknown EXTRACTOR_VARIANT: $v" >&2; exit 1 ;;
+          esac
+      BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
     env:
       PRODUCTION: '{{.PRODUCTION | default "false"}}'
 
@@ -92,7 +129,15 @@ tasks:
         go build -buildmode=c-shared {{.BUILD_FLAGS}} \
           -o build/android/app/src/main/jniLibs/$JNI_DIR/libwails.so
     vars:
-      BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
+      EXTRACTOR_BUILD_TAGS:
+        sh: |
+          v="{{.EXTRACTOR_VARIANT}}"
+          case "$v" in
+            ""|"generic-no-pack") printf '' ;;
+            "full-pack") printf 'extractor' ;;
+            *) echo "unknown EXTRACTOR_VARIANT: $v" >&2; exit 1 ;;
+          esac
+      BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
 
   compile:go:all-archs:
     summary: Compile Go code for all Android architectures (fat APK)

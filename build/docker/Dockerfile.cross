@@ -169,6 +169,19 @@ esac
 export CGO_ENABLED=1
 export CGO_CFLAGS="-w"
 
+# Variant → build tag mapping (single source of truth mirrors Taskfile.yml)
+EXTRACTOR_VARIANT_VAL="${EXTRACTOR_VARIANT:-}"
+BUILD_TAGS=""
+case "$EXTRACTOR_VARIANT_VAL" in
+    ""|"generic-no-pack") ;;
+    "full-pack") BUILD_TAGS="extractor" ;;
+    *) echo "unknown EXTRACTOR_VARIANT: $EXTRACTOR_VARIANT_VAL" >&2; exit 1 ;;
+esac
+TAG_FLAG=""
+if [ -n "$BUILD_TAGS" ]; then
+    TAG_FLAG="-tags $BUILD_TAGS"
+fi
+
 # Build frontend if exists and not already built (host may have built it)
 if [ -d "frontend" ] && [ -f "frontend/package.json" ] && [ ! -d "frontend/dist" ]; then
     (cd frontend && npm install --silent && npm run build --silent)
@@ -185,7 +198,7 @@ if [ "$GOOS" = "windows" ]; then
     LDFLAGS="-s -w -H windowsgui"
 fi
 
-go build -ldflags="$LDFLAGS" -o bin/${APP}-${GOOS}-${GOARCH}${EXT} .
+go build $TAG_FLAG -ldflags="$LDFLAGS" -o bin/${APP}-${GOOS}-${GOARCH}${EXT} .
 echo "Built: bin/${APP}-${GOOS}-${GOARCH}${EXT}"
 SCRIPT
 RUN chmod +x /usr/local/bin/build.sh
