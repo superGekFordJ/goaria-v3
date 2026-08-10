@@ -36,7 +36,7 @@ func TestNormalizeAria2TickLists(t *testing.T) {
 			wantStoppedGIDs: nil,
 		},
 		{
-			name: "active+waiting same GID strips waiting and stopped",
+			name:   "active+waiting same GID strips waiting and stopped",
 			active: []rpc.Task{{GID: "ar_x", Status: "active"}},
 			waiting: []rpc.Task{
 				{GID: "ar_x", Status: "waiting"},

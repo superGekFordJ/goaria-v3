@@ -755,7 +755,7 @@ func TestReconcileSurgeCache_ErrorResumeError_AllowsSecondTerminal(t *testing.T)
 	Cache.AddSgTask(rpc.Task{
 		GID: "sg_task1", Status: "error",
 		ErrorCode: "9", ErrorMessage: "fail",
-		Files:     []rpc.File{{Path: "/tmp/a.bin"}},
+		Files:       []rpc.File{{Path: "/tmp/a.bin"}},
 		TotalLength: "1000",
 	}, "stopped")
 	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/a.bin", 0, "error")

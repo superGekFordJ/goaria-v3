@@ -1,11 +1,9 @@
 package tasks
 
 import (
-	"context"
 	"sync"
 
 	"goaria-v3/internal/downloadgroups"
-	"goaria-v3/internal/extractor"
 	"goaria-v3/internal/rpc"
 )
 
@@ -16,15 +14,6 @@ type BatchAddResult struct {
 	Groups     []rpc.DownloadGroup `json:"groups,omitempty"`
 }
 
-type ExtractorAddTaskDispatcher interface {
-	Resolve(ctx context.Context, rawURL string) (extractor.AddTaskResolution, error)
-	BuildAria2Headers(ctx context.Context, item extractor.ResolvedAddItem) ([]string, error)
-}
-
-type ExtractorAuthRuntimeSourcePlanner interface {
-	AuthRuntimeRequestsForSource(ctx context.Context, rawURL string) ([]extractor.HostAuthRuntimeRequest, error)
-}
-
 type addTaskCandidate struct {
 	sourceURL         string
 	url               string
@@ -33,7 +22,7 @@ type addTaskCandidate struct {
 	extracted         bool
 	protected         bool
 	displayKey        string
-	item              extractor.ResolvedAddItem
+	item              ResolvedItem
 	downloadGroup     *downloadgroups.DownloadGroupPlan
 	externalHeaders   []string
 	externalSizeBytes int64
@@ -51,7 +40,7 @@ type addTaskSummary struct {
 }
 
 type addTaskAuthBatchState struct {
-	refreshGuard *extractor.HostAuthRuntimeBatchGuard
+	refreshGuard RefreshGuard
 
 	mu        sync.Mutex
 	refreshed map[string]struct{}
@@ -59,7 +48,7 @@ type addTaskAuthBatchState struct {
 }
 
 type addTaskAuthSourcePlan struct {
-	request                       extractor.HostAuthRuntimeRequest
+	request                       AuthRequest
 	key                           string
 	locallyAvailableBeforeResolve bool
 }

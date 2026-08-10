@@ -1,4 +1,4 @@
-package tasks
+package tasks_test
 
 import (
 	"crypto/sha256"

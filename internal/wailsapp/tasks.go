@@ -6,9 +6,6 @@ import (
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/tasks"
 )
-type extractorAddTaskDispatcher = tasks.ExtractorAddTaskDispatcher
-type extractorAuthRuntimeSourcePlanner = tasks.ExtractorAuthRuntimeSourcePlanner
-
 
 // RecordTaskSpeed 已废弃 - 后端 TaskTracker 自动采集
 // 保留空实现以兼容现有前端
@@ -19,9 +16,8 @@ func (a *App) RecordTaskSpeed(gid string, speed int64, cl int64) {
 
 func (a *App) taskService() *tasks.Service {
 	return &tasks.Service{
-		Dispatcher: a.extractorDispatcher,
-		Runtime:    a.hostAuthRuntimeForTaskFlow(),
-		Engine:     a.downloadEngine,
+		Adapter: a.extractorAdapter,
+		Engine:  a.downloadEngine,
 	}
 }
 

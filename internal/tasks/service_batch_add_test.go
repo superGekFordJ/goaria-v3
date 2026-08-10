@@ -31,9 +31,9 @@ type batchAddRPCRequest struct {
 }
 
 type batchAddRPCSnapshots struct {
-	active  []rpc.Task
-	waiting []rpc.Task
-	stopped []rpc.Task
+	Active  []rpc.Task
+	Waiting []rpc.Task
+	Stopped []rpc.Task
 }
 
 type batchAddRPCCounter struct {
@@ -152,11 +152,11 @@ func setupAppTaskBatchAddTest(t *testing.T, snapshots batchAddRPCSnapshots) (*Se
 		counter.recordMethod(req.Method)
 		switch req.Method {
 		case "aria2.tellActive":
-			_ = json.NewEncoder(w).Encode(batchAddSuccessResponse(batchAddTaskListResult(snapshots.active)))
+			_ = json.NewEncoder(w).Encode(batchAddSuccessResponse(batchAddTaskListResult(snapshots.Active)))
 		case "aria2.tellWaiting":
-			_ = json.NewEncoder(w).Encode(batchAddSuccessResponse(batchAddTaskListResult(snapshots.waiting)))
+			_ = json.NewEncoder(w).Encode(batchAddSuccessResponse(batchAddTaskListResult(snapshots.Waiting)))
 		case "aria2.tellStopped":
-			_ = json.NewEncoder(w).Encode(batchAddSuccessResponse(batchAddTaskListResult(snapshots.stopped)))
+			_ = json.NewEncoder(w).Encode(batchAddSuccessResponse(batchAddTaskListResult(snapshots.Stopped)))
 		case "aria2.addUri":
 			uri, options := batchAddParams(req.Params)
 			counter.recordAddURI(uri)
@@ -287,9 +287,9 @@ func TestBatchAddUri_PreservesExistingAndBatchDuplicateOrder(t *testing.T) {
 	newURL := "https://example.com/new.iso"
 
 	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{
-		active:  []rpc.Task{taskWithSourceURL("gid-active", " "+activeURL+" ")},
-		waiting: []rpc.Task{taskWithSourceURL("gid-waiting", waitingURL)},
-		stopped: []rpc.Task{taskWithSourceURL("gid-stopped", stoppedURL)},
+		Active:  []rpc.Task{taskWithSourceURL("gid-active", " "+activeURL+" ")},
+		Waiting: []rpc.Task{taskWithSourceURL("gid-waiting", waitingURL)},
+		Stopped: []rpc.Task{taskWithSourceURL("gid-stopped", stoppedURL)},
 	})
 	history.Add(history.HistoryEntry{GID: "gid-history", Source: historyURL})
 
@@ -409,7 +409,7 @@ func TestBatchAddUri_DuplicatesDoNotCountTowardBatchGroupThreshold(t *testing.T)
 	newOne := "https://example.com/new-one.bin"
 	newTwo := "https://example.com/new-two.bin"
 	newThree := "https://example.com/new-three.bin"
-	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{active: []rpc.Task{taskWithSourceURL("gid-active", activeURL)}})
+	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{Active: []rpc.Task{taskWithSourceURL("gid-active", activeURL)}})
 	history.Add(history.HistoryEntry{GID: "gid-history", Source: historyURL})
 	baseDir := config.Get().DownloadDir
 
@@ -616,7 +616,7 @@ func TestSubmitCandidatesConcurrently_DedupRaceOnlyOneSucceeds(t *testing.T) {
 		candidateSeen: candidateSeen,
 		summary:       summary,
 	}
-	authState := newAddTaskAuthBatchState()
+	authState := service.newAddTaskAuthBatchState()
 	ledger := smartthread.NewBandwidthLedger(nil)
 
 	submitCandidatesConcurrently(service, context.Background(), candidates, batchState, nil, authState, ledger)
@@ -654,7 +654,7 @@ func TestSubmitCandidatesConcurrently_FailedCandidateAllowsRetry(t *testing.T) {
 		candidateSeen: candidateSeen,
 		summary:       summary,
 	}
-	authState := newAddTaskAuthBatchState()
+	authState := service.newAddTaskAuthBatchState()
 	ledger := smartthread.NewBandwidthLedger(nil)
 
 	submitCandidatesConcurrently(service, context.Background(), candidates, batchState, nil, authState, ledger)

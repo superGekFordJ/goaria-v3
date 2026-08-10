@@ -13,7 +13,6 @@ import (
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/downloadgroups"
 	"goaria-v3/internal/extension"
-	"goaria-v3/internal/extractor"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
@@ -148,7 +147,7 @@ func (s *Service) AddUriFromExtension(req extension.DownloadRequest) (string, er
 		candidate.sizeBytes = req.FileSize
 	}
 
-	authState := newAddTaskAuthBatchState()
+	authState := s.newAddTaskAuthBatchState()
 	ledger := smartthread.NewBandwidthLedger(collectActiveTaskInfos())
 
 	gid, err := s.addTaskCandidate(context.Background(), candidate, authState, ledger)
@@ -186,7 +185,7 @@ func (s *Service) AddUri(url string) string {
 
 	summary := addTaskSummary{errors: make(map[string]string)}
 	candidateSeen := make(map[string]bool)
-	authState := newAddTaskAuthBatchState()
+	authState := s.newAddTaskAuthBatchState()
 	batchState := &addCandidateBatchState{
 		existingUrls:  existingURLs,
 		candidateSeen: candidateSeen,
@@ -243,7 +242,7 @@ func (s *Service) BatchAddUri(urls []string) BatchAddResult {
 	batchThresholdSeen := make(map[string]struct{}, len(urls))
 	batchGroupCount := 0
 	summary := addTaskSummary{errors: result.Errors}
-	authState := newAddTaskAuthBatchState()
+	authState := s.newAddTaskAuthBatchState()
 
 	for _, rawUrl := range urls {
 		normalized := strings.TrimSpace(rawUrl)
@@ -264,7 +263,7 @@ func (s *Service) BatchAddUri(urls []string) BatchAddResult {
 
 		candidates, err := s.resolveAddCandidates(context.Background(), normalized, authState)
 		if err != nil {
-			result.Errors[normalized] = redactAddTaskError(err)
+			result.Errors[normalized] = s.redactAddTaskError(err)
 			continue
 		}
 
@@ -287,7 +286,7 @@ func (s *Service) BatchAddUri(urls []string) BatchAddResult {
 	if batchGroupCount >= 5 {
 		batchGroup, err := downloadgroups.NewDownloadGroupPlan(downloadgroups.DownloadGroupKindBatch, batchGroupCount, time.Now())
 		if err != nil {
-			result.Errors["batch"] = redactAddTaskError(err)
+			result.Errors["batch"] = s.redactAddTaskError(err)
 			return result
 		}
 		for i := range pendingCandidates {
@@ -314,7 +313,7 @@ func (s *Service) BatchAddUri(urls []string) BatchAddResult {
 func (s *Service) addNormalizedInput(ctx context.Context, normalizedURL string, batchState *addCandidateBatchState, historyDuplicates map[string]bool, authState *addTaskAuthBatchState) {
 	candidates, err := s.resolveAddCandidates(ctx, normalizedURL, authState)
 	if err != nil {
-		batchState.recordError(normalizedURL, redactAddTaskError(err))
+		batchState.recordError(normalizedURL, s.redactAddTaskError(err))
 		return
 	}
 
@@ -363,7 +362,7 @@ func (s *Service) submitAddCandidate(ctx context.Context, candidate addTaskCandi
 
 	if _, err := s.addTaskCandidate(ctx, candidate, authState, ledger); err != nil {
 		batchState.unmarkSeen(candidate.url)
-		batchState.recordError(displayKey, redactAddTaskError(err))
+		batchState.recordError(displayKey, s.redactAddTaskError(err))
 		return
 	}
 
@@ -387,29 +386,28 @@ func (s *addTaskSummary) addGroupLocked(group rpc.DownloadGroup) {
 }
 
 func (s *Service) resolveAddCandidates(ctx context.Context, normalizedURL string, authState *addTaskAuthBatchState) ([]addTaskCandidate, error) {
-	if s == nil || s.Dispatcher == nil {
+	if s == nil || s.Adapter == nil {
 		return []addTaskCandidate{directAddTaskCandidate(normalizedURL)}, nil
 	}
 
-	runtime := s.Runtime
-	sourcePlans, err := s.preflightSourceAuth(ctx, normalizedURL, runtime, authState)
+	sourcePlans, err := s.preflightSourceAuth(ctx, normalizedURL, authState)
 	if err != nil {
 		return nil, err
 	}
 
-	resolution, err := s.Dispatcher.Resolve(ctx, normalizedURL)
+	resolution, err := s.Adapter.Resolve(ctx, normalizedURL)
 	if err != nil {
-		if !extractor.IsGenericAuthResolutionError(err) || !canRefreshAddTaskSourceAuth(sourcePlans) {
+		if !isGenericAuthResolutionError(err) || !canRefreshAddTaskSourceAuth(sourcePlans) {
 			return nil, err
 		}
-		refreshed, refreshErr := s.refreshSourceAuthAfterGenericFailure(ctx, runtime, authState, sourcePlans)
+		refreshed, refreshErr := s.refreshSourceAuthAfterGenericFailure(ctx, authState, sourcePlans)
 		if refreshErr != nil {
 			return nil, refreshErr
 		}
 		if !refreshed {
 			return nil, err
 		}
-		resolution, err = s.Dispatcher.Resolve(ctx, normalizedURL)
+		resolution, err = s.Adapter.Resolve(ctx, normalizedURL)
 		if err != nil {
 			return nil, err
 		}
@@ -417,8 +415,8 @@ func (s *Service) resolveAddCandidates(ctx context.Context, normalizedURL string
 	return addCandidatesFromResolution(normalizedURL, resolution)
 }
 
-func addCandidatesFromResolution(normalizedURL string, resolution extractor.AddTaskResolution) ([]addTaskCandidate, error) {
-	if !resolution.Matched {
+func addCandidatesFromResolution(normalizedURL string, resolution Resolution) ([]addTaskCandidate, error) {
+	if resolution.Status != ResolutionStatusMatched {
 		return []addTaskCandidate{directAddTaskCandidate(normalizedURL)}, nil
 	}
 
@@ -448,7 +446,12 @@ func directAddTaskCandidate(normalizedURL string) addTaskCandidate {
 	}
 }
 
-func extractorAddTaskCandidate(item extractor.ResolvedAddItem) addTaskCandidate {
+func isGenericAuthResolutionError(err error) bool {
+	var genericErr *GenericAuthResolutionError
+	return errors.As(err, &genericErr)
+}
+
+func extractorAddTaskCandidate(item ResolvedItem) addTaskCandidate {
 	displayKey := item.URL
 	if displayKey == "" && item.ID != "" {
 		displayKey = item.SourceURL + "#" + item.ID
@@ -490,7 +493,7 @@ func isDuplicateAddCandidate(candidate addTaskCandidate, existingURLs map[string
 func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandidate, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) (string, error) {
 	out := ""
 	if candidate.out != "" {
-		safeOut, err := extractor.SafeAria2OutFilename(candidate.out)
+		safeOut, err := SafeAria2OutFilename(candidate.out)
 		if err != nil {
 			return "", err
 		}
@@ -682,11 +685,11 @@ func (s *Service) buildCandidateHeaders(ctx context.Context, candidate addTaskCa
 }
 
 func (s *Service) buildExtractorHeaders(ctx context.Context, candidate addTaskCandidate) ([]string, error) {
-	if !candidate.extracted || s == nil || s.Dispatcher == nil {
+	if !candidate.extracted || s == nil || s.Adapter == nil {
 		return nil, nil
 	}
 
-	return s.Dispatcher.BuildAria2Headers(ctx, candidate.item)
+	return s.Adapter.BuildHeaders(ctx, candidate.item)
 }
 
 // mergeHeaders combines external (extension) headers with extractor headers,
@@ -717,9 +720,13 @@ func mergeHeaders(externalHeaders, extractorHeaders []string) []string {
 	return result
 }
 
-func newAddTaskAuthBatchState() *addTaskAuthBatchState {
+func (s *Service) newAddTaskAuthBatchState() *addTaskAuthBatchState {
+	var guard RefreshGuard
+	if s != nil && s.Adapter != nil {
+		guard = s.Adapter.NewRefreshGuard()
+	}
 	return &addTaskAuthBatchState{
-		refreshGuard: extractor.NewHostAuthRuntimeBatchGuard(),
+		refreshGuard: guard,
 		refreshed:    make(map[string]struct{}),
 		stale:        make(map[string]struct{}),
 	}
@@ -759,16 +766,12 @@ func (s *addTaskAuthBatchState) markStaleRefresh(key string) bool {
 	return true
 }
 
-func (s *Service) preflightSourceAuth(ctx context.Context, normalizedURL string, runtime *extractor.HostAuthRuntime, authState *addTaskAuthBatchState) ([]addTaskAuthSourcePlan, error) {
-	if s == nil || s.Dispatcher == nil || runtime == nil {
-		return nil, nil
-	}
-	planner, ok := s.Dispatcher.(ExtractorAuthRuntimeSourcePlanner)
-	if !ok {
+func (s *Service) preflightSourceAuth(ctx context.Context, normalizedURL string, authState *addTaskAuthBatchState) ([]addTaskAuthSourcePlan, error) {
+	if s == nil || s.Adapter == nil {
 		return nil, nil
 	}
 
-	requests, err := planner.AuthRuntimeRequestsForSource(ctx, normalizedURL)
+	requests, err := s.Adapter.AuthRequestsForSource(ctx, normalizedURL)
 	if err != nil {
 		return nil, addTaskAuthUnavailableError()
 	}
@@ -779,7 +782,7 @@ func (s *Service) preflightSourceAuth(ctx context.Context, normalizedURL string,
 	plans := make([]addTaskAuthSourcePlan, 0, len(requests))
 	for _, request := range requests {
 		key := addTaskAuthRuntimeKey(request)
-		preflight, err := runtime.Preflight(ctx, request)
+		preflight, err := s.Adapter.Preflight(ctx, request)
 		if err != nil {
 			return nil, addTaskAuthUnavailableError()
 		}
@@ -798,16 +801,16 @@ func (s *Service) preflightSourceAuth(ctx context.Context, normalizedURL string,
 		if authState != nil && !authState.markStaleRefresh(key) {
 			return nil, addTaskAuthUnavailableError()
 		}
-		var guard *extractor.HostAuthRuntimeBatchGuard
+		var guard RefreshGuard
 		if authState != nil {
 			guard = authState.refreshGuard
 		}
-		refreshed, err := runtime.RefreshOnRecoverablePreflightFailure(ctx, request, guard)
-		if err != nil || !refreshed.Available || !addTaskAuthProfilesAvailable(refreshed) {
+		refreshed, err := s.Adapter.RefreshOnRecoverablePreflightFailure(ctx, request, guard)
+		if err != nil || !refreshed.Available {
 			return nil, addTaskAuthUnavailableError()
 		}
-		postRefresh, err := runtime.Preflight(ctx, request)
-		if err != nil || !postRefresh.Available || !addTaskAuthProfilesAvailable(postRefresh) {
+		postRefresh, err := s.Adapter.Preflight(ctx, request)
+		if err != nil || !postRefresh.Available {
 			return nil, addTaskAuthUnavailableError()
 		}
 	}
@@ -825,8 +828,8 @@ func canRefreshAddTaskSourceAuth(plans []addTaskAuthSourcePlan) bool {
 	return false
 }
 
-func (s *Service) refreshSourceAuthAfterGenericFailure(ctx context.Context, runtime *extractor.HostAuthRuntime, authState *addTaskAuthBatchState, plans []addTaskAuthSourcePlan) (bool, error) {
-	if runtime == nil {
+func (s *Service) refreshSourceAuthAfterGenericFailure(ctx context.Context, authState *addTaskAuthBatchState, plans []addTaskAuthSourcePlan) (bool, error) {
+	if s == nil || s.Adapter == nil {
 		return false, nil
 	}
 	for _, plan := range plans {
@@ -836,11 +839,11 @@ func (s *Service) refreshSourceAuthAfterGenericFailure(ctx context.Context, runt
 		if authState != nil && !authState.markRefreshed(plan.key) {
 			continue
 		}
-		var guard *extractor.HostAuthRuntimeBatchGuard
+		var guard RefreshGuard
 		if authState != nil {
 			guard = authState.refreshGuard
 		}
-		result, err := runtime.RefreshOnGenericFailure(ctx, plan.request, guard)
+		result, err := s.Adapter.RefreshOnGenericFailure(ctx, plan.request, guard)
 		if err != nil {
 			return false, addTaskAuthUnavailableError()
 		}
@@ -856,32 +859,40 @@ func (s *Service) preflightCandidateAuth(ctx context.Context, candidate addTaskC
 	if !candidate.extracted || candidate.item.AuthProfileRef == "" {
 		return nil
 	}
-	if candidate.item.PackIdentity.PackID == "" || candidate.item.Manifest.PackID == "" {
-		return addTaskAuthUnavailableError()
-	}
-	if err := extractor.ValidateResolvedAddItemAuthPolicy(candidate.item); err != nil {
-		return addTaskAuthUnavailableError()
-	}
-	runtime := s.Runtime
-	if runtime == nil {
+	if s == nil || s.Adapter == nil {
 		return nil
 	}
-
-	request := extractor.HostAuthRuntimeRequest{
-		PackIdentity: candidate.item.PackIdentity,
-		Manifest:     candidate.item.Manifest,
-		SourceURL:    candidate.item.SourceURL,
-		TargetURL:    candidate.item.URL,
-		ProfileRef:   extractor.AuthProfileID(candidate.item.AuthProfileRef),
+	if candidate.item.PackID == "" {
+		return addTaskAuthUnavailableError()
 	}
-	preflight, err := runtime.Preflight(ctx, request)
+	if err := s.Adapter.ValidateItemAuthPolicy(candidate.item); err != nil {
+		return addTaskAuthUnavailableError()
+	}
+
+	request := AuthRequest{
+		Ref:             candidate.item.Ref,
+		PackID:          candidate.item.PackID,
+		PackVersion:     candidate.item.PackVersion,
+		AssetSHA256:     candidate.item.AssetSHA256,
+		ManifestSHA256:  candidate.item.ManifestSHA256,
+		PayloadSHA256:   candidate.item.PayloadSHA256,
+		SignatureSHA256: candidate.item.SignatureSHA256,
+		PublicKeySHA256: candidate.item.PublicKeySHA256,
+		SourceURL:       candidate.item.SourceURL,
+		TargetURL:       candidate.item.URL,
+		ProfileRef:      candidate.item.AuthProfileRef,
+	}
+	preflight, err := s.Adapter.Preflight(ctx, request)
 	if err != nil {
 		return addTaskAuthUnavailableError()
 	}
 	if !preflight.Matched {
+		if preflight.NoRuntime {
+			return nil
+		}
 		return addTaskAuthUnavailableError()
 	}
-	if preflight.Available && addTaskAuthProfilesAvailable(preflight) {
+	if preflight.Available {
 		return nil
 	}
 	if !preflight.Refreshable {
@@ -891,33 +902,20 @@ func (s *Service) preflightCandidateAuth(ctx context.Context, candidate addTaskC
 	if authState != nil && !authState.markStaleRefresh(key) {
 		return addTaskAuthUnavailableError()
 	}
-	var guard *extractor.HostAuthRuntimeBatchGuard
+	var guard RefreshGuard
 	if authState != nil {
 		guard = authState.refreshGuard
 	}
-	refreshed, err := runtime.RefreshOnRecoverablePreflightFailure(ctx, request, guard)
-	if err != nil || !refreshed.Available || !addTaskAuthProfilesAvailable(refreshed) {
+	refreshed, err := s.Adapter.RefreshOnRecoverablePreflightFailure(ctx, request, guard)
+	if err != nil || !refreshed.Available {
 		return addTaskAuthUnavailableError()
 	}
-	ensured, err := runtime.Preflight(ctx, request)
-	if err != nil || !ensured.Available || !addTaskAuthProfilesAvailable(ensured) {
+	ensured, err := s.Adapter.Preflight(ctx, request)
+	if err != nil || !ensured.Available {
 		return addTaskAuthUnavailableError()
 	}
 
 	return nil
-}
-
-func addTaskAuthProfilesAvailable(result extractor.HostAuthRuntimeResult) bool {
-	if len(result.ProfileStatuses) == 0 {
-		return result.Available
-	}
-	for _, status := range result.ProfileStatuses {
-		if status.Status != extractor.HostAuthRuntimeProfileAvailable {
-			return false
-		}
-	}
-
-	return true
 }
 
 // resolveHostIP extracts the host from url and does a DNS lookup.
@@ -941,26 +939,26 @@ func resolveHostIP(rawurl string) string {
 	return ips[0]
 }
 
-func addTaskAuthRuntimeKey(request extractor.HostAuthRuntimeRequest) string {
-	profileRef := string(request.ProfileRef)
+func addTaskAuthRuntimeKey(request AuthRequest) string {
+	profileRef := request.ProfileRef
 	if profileRef == "" {
 		profileRef = "*"
 	}
 	parts := []string{
-		request.PackIdentity.PackID,
-		request.PackIdentity.PackVersion,
-		request.PackIdentity.AssetSHA256,
-		request.PackIdentity.ManifestSHA256,
-		request.PackIdentity.PayloadSHA256,
-		request.PackIdentity.SignatureSHA256,
-		request.PackIdentity.PublicKeySHA256,
+		request.PackID,
+		request.PackVersion,
+		request.AssetSHA256,
+		request.ManifestSHA256,
+		request.PayloadSHA256,
+		request.SignatureSHA256,
+		request.PublicKeySHA256,
 		profileRef,
 	}
 
 	return strings.Join(parts, "\x00")
 }
 
-func addTaskAuthRuntimePreflightKey(request extractor.HostAuthRuntimeRequest) string {
+func addTaskAuthRuntimePreflightKey(request AuthRequest) string {
 	return addTaskAuthRuntimeKey(request) + "\x00" + authTaskHashString(request.SourceURL) + "\x00" + authTaskHashString(request.TargetURL)
 }
 
@@ -986,50 +984,17 @@ func firstErrorString(errors map[string]string) string {
 	return ""
 }
 
-func redactAddTaskError(err error) string {
+func (s *Service) redactAddTaskError(err error) string {
 	if err == nil {
 		return ""
 	}
 	if surgetypes.IsInsufficientDiskSpace(err) {
 		return surgetypes.ErrInsufficientDiskSpace.Error()
 	}
-
-	return redactAssignmentValues(extractor.RedactSensitive(err.Error()))
-}
-
-func redactAssignmentValues(input string) string {
-	markers := []string{"token=", "secret=", "auth=", "key="}
-	var builder strings.Builder
-	lower := strings.ToLower(input)
-	for offset := 0; offset < len(input); {
-		match := -1
-		marker := ""
-		for _, candidate := range markers {
-			if idx := strings.Index(lower[offset:], candidate); idx >= 0 && (match < 0 || idx < match) {
-				match = idx
-				marker = candidate
-			}
-		}
-		if match < 0 {
-			builder.WriteString(input[offset:])
-			break
-		}
-
-		start := offset + match
-		valueStart := start + len(marker)
-		valueEnd := valueStart
-		for valueEnd < len(input) && !strings.ContainsRune(" \t\r\n&;,'\"`,)", rune(input[valueEnd])) {
-			valueEnd++
-		}
-
-		builder.WriteString(input[offset:valueStart])
-		if valueEnd > valueStart {
-			builder.WriteString("[REDACTED]")
-		}
-		offset = valueEnd
+	if s != nil && s.Adapter != nil {
+		return redactAssignmentValues(s.Adapter.RedactError(err))
 	}
-
-	return builder.String()
+	return redactAssignmentValues(err.Error())
 }
 
 func collectTaskSourceURLs(existingURLs map[string]bool, tasks []rpc.Task) {

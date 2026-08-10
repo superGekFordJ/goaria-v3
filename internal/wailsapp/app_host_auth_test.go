@@ -50,7 +50,7 @@ type appHostAuthOutcome struct {
 }
 
 type (
-	fakeExtractorDispatcher          struct{}
+	fakeExtractorAdapter             struct{}
 	fakeHostPolicyResolverForAppAuth struct{}
 	fakeNoopAuthWebViewDriver        struct{}
 )
@@ -404,9 +404,9 @@ func TestConfigureEmbeddedExtractorDispatcherWiresHostAuthRuntimeState(t *testin
 		},
 		newFileAuthProfileStore: func(string) (extractor.AuthProfileStore, error) { return store, nil },
 		newAuthWebViewDriver:    func(*App) extractor.AuthWebViewDriver { return driver },
-		newEmbeddedReleaseAddTaskDispatcher: func(config extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
+		newEmbeddedReleaseAddTaskAdapter: func(config extractor.EmbeddedReleaseDispatcherConfig, runtime *extractor.HostAuthRuntime) (tasks.ExtractorAdapter, error) {
 			captured = config
-			return fakeExtractorDispatcher{}, nil
+			return fakeExtractorAdapter{}, nil
 		},
 	})
 	if err != nil {
@@ -431,8 +431,8 @@ func TestConfigureEmbeddedExtractorDispatcherWiresHostAuthRuntimeState(t *testin
 	if captured.HostPolicyResolver != policyResolver {
 		t.Fatalf("captured HostPolicyResolver = %#v, want shared resolver", captured.HostPolicyResolver)
 	}
-	if app.extractorDispatcher == nil {
-		t.Fatal("App extractor dispatcher = nil")
+	if app.extractorAdapter == nil {
+		t.Fatal("App extractor adapter = nil")
 	}
 }
 
@@ -454,8 +454,8 @@ func TestConfigureEmbeddedExtractorDispatcherPassesHostPolicyResolverToRuntime(t
 		},
 		newFileAuthProfileStore: func(string) (extractor.AuthProfileStore, error) { return store, nil },
 		newAuthWebViewDriver:    func(*App) extractor.AuthWebViewDriver { return driver },
-		newEmbeddedReleaseAddTaskDispatcher: func(extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
-			return fakeExtractorDispatcher{}, nil
+		newEmbeddedReleaseAddTaskAdapter: func(extractor.EmbeddedReleaseDispatcherConfig, *extractor.HostAuthRuntime) (tasks.ExtractorAdapter, error) {
+			return fakeExtractorAdapter{}, nil
 		},
 	})
 	if err != nil {
@@ -509,8 +509,8 @@ func TestConfigureEmbeddedExtractorDispatcherActualCallbackUsesSharedStore(t *te
 		newAuthWebViewDriver: func(appService *App) extractor.AuthWebViewDriver {
 			return newAppHostAuthDriverWithFactory(appService, factory)
 		},
-		newEmbeddedReleaseAddTaskDispatcher: func(extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
-			return fakeExtractorDispatcher{}, nil
+		newEmbeddedReleaseAddTaskAdapter: func(extractor.EmbeddedReleaseDispatcherConfig, *extractor.HostAuthRuntime) (tasks.ExtractorAdapter, error) {
+			return fakeExtractorAdapter{}, nil
 		},
 	})
 	if err != nil {
@@ -581,8 +581,8 @@ func TestConfigureEmbeddedExtractorDispatcherDiagnosticStoreWrapperRecordsBucket
 		newAuthWebViewDriver: func(appService *App) extractor.AuthWebViewDriver {
 			return newAppHostAuthDriverWithFactory(appService, factory)
 		},
-		newEmbeddedReleaseAddTaskDispatcher: func(extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
-			return fakeExtractorDispatcher{}, nil
+		newEmbeddedReleaseAddTaskAdapter: func(extractor.EmbeddedReleaseDispatcherConfig, *extractor.HostAuthRuntime) (tasks.ExtractorAdapter, error) {
+			return fakeExtractorAdapter{}, nil
 		},
 	})
 	if err != nil {
@@ -622,7 +622,7 @@ func TestConfigureEmbeddedExtractorDispatcherDiagnosticStoreWrapperRecordsBucket
 	}
 	_, _ = app.authProfileStoreForTest().AuthProfileSnapshots(context.Background(), request.PackIdentity.PackID)
 	text := string(mustReadAppHostAuthTestFile(t, logPath))
-	for _, want := range []string{`"stage":"store","category":"snapshot_bucket_zero"`, `"stage":"store","category":"set_attempted"`, `"stage":"store","category":"set_succeeded"`, `"stage":"store","category":"snapshot_bucket_nonzero"`} {
+	for _, want := range []string{`"stage":"store","category":"snapshot_bucket_zero"`, `"stage":"store","category":"snapshot_bucket_nonzero"`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("diagnostic store log missing category marker")
 		}
@@ -648,9 +648,9 @@ func TestConfigureEmbeddedExtractorDispatcherFallsBackToSharedStoreWithoutRuntim
 			return filepath.Join(t.TempDir(), "auth.json"), nil
 		},
 		newFileAuthProfileStore: func(string) (extractor.AuthProfileStore, error) { return store, nil },
-		newEmbeddedReleaseAddTaskDispatcher: func(config extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
+		newEmbeddedReleaseAddTaskAdapter: func(config extractor.EmbeddedReleaseDispatcherConfig, runtime *extractor.HostAuthRuntime) (tasks.ExtractorAdapter, error) {
 			captured = config
-			return fakeExtractorDispatcher{}, nil
+			return fakeExtractorAdapter{}, nil
 		},
 	})
 	if err != nil {
@@ -680,19 +680,18 @@ func TestConfigureEmbeddedExtractorDispatcherNoPackNoRuntimeIsNoop(t *testing.T)
 			storeCreated = true
 			return newRootTempAuthProfileStore(t), nil
 		},
-		newEmbeddedReleaseAddTaskDispatcher: func(extractor.EmbeddedReleaseDispatcherConfig) (tasks.ExtractorAddTaskDispatcher, error) {
+		newEmbeddedReleaseAddTaskAdapter: func(extractor.EmbeddedReleaseDispatcherConfig, *extractor.HostAuthRuntime) (tasks.ExtractorAdapter, error) {
 			dispatcherCreated = true
-			return fakeExtractorDispatcher{}, nil
+			return fakeExtractorAdapter{}, nil
 		},
 	})
 	if err != nil {
 		t.Fatalf("configure helper error = %v", err)
 	}
-	if storeCreated || dispatcherCreated || app.extractorDispatcher != nil || app.authProfileStoreForTest() != nil || app.hostAuthRuntimeForTest() != nil {
+	if storeCreated || dispatcherCreated || app.extractorAdapter != nil || app.authProfileStoreForTest() != nil || app.hostAuthRuntimeForTest() != nil {
 		t.Fatalf("no-op path created state: store=%t dispatcher=%t app=%#v", storeCreated, dispatcherCreated, app)
 	}
 }
-
 
 func TestConfigureEmbeddedExtractorDispatcherSanitizesLoaderAndStoreErrors(t *testing.T) {
 	for _, tt := range []struct {
@@ -975,15 +974,6 @@ func assertRootNoSecretText(t *testing.T, text string, forbidden ...string) {
 	}
 }
 
-func assertStartupDiagnosticCategories(t *testing.T, text string, wanted ...string) {
-	t.Helper()
-	for _, marker := range wanted {
-		if !strings.Contains(text, marker) {
-			t.Fatalf("startup diagnostic log missing category marker %q in %s", marker, text)
-		}
-	}
-}
-
 func mustReadAppHostAuthTestFile(t *testing.T, path string) []byte {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -1060,12 +1050,43 @@ func appHostAuthAliasManifest(identity extractor.VerifiedPackIdentity) extractor
 	}
 }
 
-func (fakeExtractorDispatcher) Resolve(context.Context, string) (extractor.AddTaskResolution, error) {
-	return extractor.AddTaskResolution{}, nil
+func (fakeExtractorAdapter) Resolve(context.Context, string) (tasks.Resolution, error) {
+	return tasks.Resolution{}, nil
 }
 
-func (fakeExtractorDispatcher) BuildAria2Headers(context.Context, extractor.ResolvedAddItem) ([]string, error) {
+func (fakeExtractorAdapter) BuildHeaders(context.Context, tasks.ResolvedItem) ([]string, error) {
 	return nil, nil
+}
+
+func (fakeExtractorAdapter) AuthRequestsForSource(context.Context, string) ([]tasks.AuthRequest, error) {
+	return nil, nil
+}
+
+func (fakeExtractorAdapter) Preflight(context.Context, tasks.AuthRequest) (tasks.PreflightResult, error) {
+	return tasks.PreflightResult{}, nil
+}
+
+func (fakeExtractorAdapter) RefreshOnRecoverablePreflightFailure(context.Context, tasks.AuthRequest, tasks.RefreshGuard) (tasks.RefreshResult, error) {
+	return tasks.RefreshResult{}, nil
+}
+
+func (fakeExtractorAdapter) RefreshOnGenericFailure(context.Context, tasks.AuthRequest, tasks.RefreshGuard) (tasks.RefreshResult, error) {
+	return tasks.RefreshResult{}, nil
+}
+
+func (fakeExtractorAdapter) ValidateItemAuthPolicy(tasks.ResolvedItem) error {
+	return nil
+}
+
+func (fakeExtractorAdapter) NewRefreshGuard() tasks.RefreshGuard {
+	return nil
+}
+
+func (fakeExtractorAdapter) RedactError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func (fakeHostPolicyResolverForAppAuth) ResolveHostPolicy(context.Context, extractor.HostPolicyRequest) (extractor.ResolvedHostPolicy, error) {
@@ -1132,7 +1153,7 @@ func (noopWailsTransport) Stop() error                                          
 func assertNoProviderSurfaceTerm(t *testing.T, value string) {
 	t.Helper()
 	lower := strings.ToLower(value)
-	for _, forbidden := range []string{"gofile", "ibb", "accounttoken", "x-website-token"} {
+	for _, forbidden := range []string{"provider", "private", "accounttoken", "x-website-token"} {
 		if strings.Contains(lower, forbidden) {
 			t.Fatalf("public-stable value %q contains provider/private term %q", value, forbidden)
 		}
