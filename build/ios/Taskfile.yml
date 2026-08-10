@@ -62,6 +62,7 @@ tasks:
       - echo "Building iOS app {{.APP_NAME}}..."
       - go build -buildmode=c-archive -overlay build/ios/xcode/overlay.json {{.BUILD_FLAGS}} -o {{.OUTPUT}}.a
     vars:
+      # variant->tag mapping; keep in sync across all build files
       EXTRACTOR_BUILD_TAGS:
         sh: |
           v="{{.EXTRACTOR_VARIANT}}"

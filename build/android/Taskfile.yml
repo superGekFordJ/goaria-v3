@@ -67,7 +67,9 @@ tasks:
       - task: compile:go:shared
         vars:
           ARCH: '{{.ARCH | default "arm64"}}'
+          EXTRACTOR_VARIANT: '{{.EXTRACTOR_VARIANT}}'
     vars:
+      # variant->tag mapping; keep in sync across all build files
       EXTRACTOR_BUILD_TAGS:
         sh: |
           v="{{.EXTRACTOR_VARIANT}}"
@@ -129,6 +131,7 @@ tasks:
         go build -buildmode=c-shared {{.BUILD_FLAGS}} \
           -o build/android/app/src/main/jniLibs/$JNI_DIR/libwails.so
     vars:
+      # variant->tag mapping; keep in sync across all build files
       EXTRACTOR_BUILD_TAGS:
         sh: |
           v="{{.EXTRACTOR_VARIANT}}"
@@ -145,9 +148,11 @@ tasks:
       - task: compile:go:shared
         vars:
           ARCH: arm64
+          EXTRACTOR_VARIANT: '{{.EXTRACTOR_VARIANT}}'
       - task: compile:go:shared
         vars:
           ARCH: amd64
+          EXTRACTOR_VARIANT: '{{.EXTRACTOR_VARIANT}}'
 
   package:
     summary: Packages a production build of the application into an APK
