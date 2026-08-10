@@ -40,6 +40,10 @@ linters:
   exclusions:
     paths:
       - internal/surge
+    rules:
+      - linters:
+          - unused
+        path: internal/wailsapp/(extractor_capability|extractor_setup_diagnostics|host_auth_diagnostics|app_auth_generic|host_auth_generic|app)\.go
 
 issues:
   max-issues-per-linter: 0
