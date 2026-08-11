@@ -570,3 +570,46 @@ func TestSurgeEngine_buildDownloadList_ActiveErrorAfterDone(t *testing.T) {
 		t.Errorf("Error=%q, want 'worker failed after Done'", found.Error)
 	}
 }
+
+// TestSurgeEngine_buildDownloadList_ErrorOverridesPausing verifies the B3b
+// recheck overrides "pausing" when GetError() returns non-nil. Without the
+// recheck, the switch block overrides GetStatus's "error" with "pausing".
+func TestSurgeEngine_buildDownloadList_ErrorOverridesPausing(t *testing.T) {
+	state := progress.New("toctou-pause-id", 1000)
+	state.Bytes.VerifiedProgress.Store(500)
+	state.SetPausing(true)
+	state.SetError(errors.New("worker failed while pausing"))
+
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
+		"toctou-pause-id": {
+			ID:            "toctou-pause-id",
+			URL:           "http://example.com/pause.bin",
+			Filename:      "pause.bin",
+			ProgressState: state,
+		},
+	})
+	engine := NewSurgeEngineForTesting(pool)
+
+	list, err := engine.getDownloadList()
+	if err != nil {
+		t.Fatalf("getDownloadList: %v", err)
+	}
+
+	var found *types.DownloadStatus
+	for i := range list {
+		if list[i].ID == "toctou-pause-id" {
+			found = &list[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("entry not found in list")
+	}
+
+	if found.Status != "error" {
+		t.Errorf("Status=%q, want error (recheck overrides pausing)", found.Status)
+	}
+	if found.Error != "worker failed while pausing" {
+		t.Errorf("Error=%q, want 'worker failed while pausing'", found.Error)
+	}
+}

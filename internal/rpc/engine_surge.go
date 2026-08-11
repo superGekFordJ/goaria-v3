@@ -249,7 +249,7 @@ func (e *SurgeEngine) buildDownloadList() []types.DownloadStatus {
 						status.Status = "completed"
 					}
 					// GetStatus and metric reads are separate snapshots; recheck errors
-					// so a worker failure between those reads is not reported as downloading.
+					// so a worker failure is not reported as completed or pausing.
 					if err := cp.GetError(); err != nil {
 						status.Status = "error"
 						status.Error = err.Error()
