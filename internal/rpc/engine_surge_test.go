@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -523,5 +524,49 @@ func TestSurgeEngine_GetRateLimit_ZeroUnlimitedNotLimited(t *testing.T) {
 	bps, limited = engine.GetRateLimit("missing")
 	if limited || bps != 0 {
 		t.Errorf("missing: GetRateLimit=(%d,%v), want (0,false)", bps, limited)
+	}
+}
+
+// TestSurgeEngine_buildDownloadList_ActiveErrorAfterDone verifies the B3b
+// TOCTOU recheck: when Done=true and GetError() returns non-nil, the status
+// must be "error" not "completed". Without the recheck, the switch block
+// overrides GetStatus's "error" with "completed" because Done.Load() is true.
+func TestSurgeEngine_buildDownloadList_ActiveErrorAfterDone(t *testing.T) {
+	state := progress.New("toctou-id", 1000)
+	state.Bytes.VerifiedProgress.Store(500)
+	state.Done.Store(true)
+	state.SetError(errors.New("worker failed after Done"))
+
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
+		"toctou-id": {
+			ID:            "toctou-id",
+			URL:           "http://example.com/file.bin",
+			Filename:      "file.bin",
+			ProgressState: state,
+		},
+	})
+	engine := NewSurgeEngineForTesting(pool)
+
+	list, err := engine.getDownloadList()
+	if err != nil {
+		t.Fatalf("getDownloadList: %v", err)
+	}
+
+	var found *types.DownloadStatus
+	for i := range list {
+		if list[i].ID == "toctou-id" {
+			found = &list[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("entry not found in list")
+	}
+
+	if found.Status != "error" {
+		t.Errorf("Status=%q, want error (TOCTOU recheck after Done)", found.Status)
+	}
+	if found.Error != "worker failed after Done" {
+		t.Errorf("Error=%q, want 'worker failed after Done'", found.Error)
 	}
 }
