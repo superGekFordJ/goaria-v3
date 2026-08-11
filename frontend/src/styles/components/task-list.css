@@ -214,29 +214,28 @@
 }
 
 /* Error - Rose warning glow */
+/* Static glow on the element itself (rasterized once); breathing via ::after
+   opacity, same separation strategy as .task-card-active (Section 4.2). */
 .task-card-error {
   border-color: color-mix(in srgb, var(--glow-error) 20%, transparent);
   box-shadow:
     0 0 15px color-mix(in srgb, var(--glow-error) 10%, transparent),
     0 0 30px color-mix(in srgb, var(--glow-error) 5%, transparent),
     var(--glass-shadow);
-  animation: glow-pulse-error 2s ease-in-out infinite;
+  position: relative;
 }
 
-@keyframes glow-pulse-error {
-  0%,
-  100% {
-    box-shadow:
-      0 0 12px color-mix(in srgb, var(--glow-error) 8%, transparent),
-      0 0 25px color-mix(in srgb, var(--glow-error) 4%, transparent),
-      var(--glass-shadow);
-  }
-  50% {
-    box-shadow:
-      0 0 18px color-mix(in srgb, var(--glow-error) 15%, transparent),
-      0 0 35px color-mix(in srgb, var(--glow-error) 8%, transparent),
-      var(--glass-shadow);
-  }
+.task-card-error::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    0 0 15px color-mix(in srgb, var(--glow-error) 10%, transparent),
+    0 0 30px color-mix(in srgb, var(--glow-error) 5%, transparent);
+  opacity: 0.6;
+  animation: glow-breathe-opacity 2s ease-in-out infinite;
 }
 
 /* Complete - Subtle teal accent */
@@ -305,23 +304,40 @@
   box-shadow:
     0 0 15px color-mix(in srgb, var(--glow-error) 8%, transparent),
     var(--glass-shadow);
+  position: relative;
 }
 
-/* === Effects Tier Gating for task-card-active glow === */
-/* balanced/reduced: kill breathing ::after, keep static glow on element */
-[data-effects='balanced'] .task-card-active::after,
-[data-effects='reduced'] .task-card-active::after {
-  animation: none !important;
-  opacity: 0 !important;
+[data-theme='light'] .task-card-error::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 15px color-mix(in srgb, var(--glow-error) 8%, transparent);
+  opacity: 0.6;
+  animation: glow-breathe-opacity 2s ease-in-out infinite;
+}
+
+/* === Effects Tier Gating for task-card glow (active + error) === */
+/* Breathing ::after is gated by data-effects-glow, set in applyEffects() to
+   'breathe' only at level >= 95. Below that (balanced, reduced, and full 71–94)
+   the ::after is fully removed via display:none to drop both the paint layer
+   and any compositing layer, not just hide it. Rules use !important to win
+   over same-specificity [data-theme='light'] ::after definitions above. */
+[data-effects-glow='static'] .task-card-active::after,
+[data-effects-glow='static'] .task-card-error::after {
+  display: none !important;
 }
 
 /* reduced: no static glow either */
-[data-effects='reduced'] .task-card-active {
+[data-effects='reduced'] .task-card-active,
+[data-effects='reduced'] .task-card-error {
   box-shadow: var(--glass-shadow) !important;
 }
 
-[data-effects='reduced'] .task-card-active::after {
-  display: none;
+[data-effects='reduced'] .task-card-active::after,
+[data-effects='reduced'] .task-card-error::after {
+  display: none !important;
 }
 
 /* === Noise Texture Overlay (Subtle) === */

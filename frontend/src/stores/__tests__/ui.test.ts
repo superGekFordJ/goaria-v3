@@ -23,6 +23,7 @@ describe('levelToTier', () => {
 describe('uiStore applyEffects', () => {
   beforeEach(() => {
     document.documentElement.removeAttribute('data-effects')
+    document.documentElement.removeAttribute('data-effects-glow')
     document.documentElement.style.removeProperty('--glass-blur')
     document.documentElement.style.removeProperty('--glass-opacity')
     document.documentElement.style.removeProperty('--ui-effects-level')
@@ -38,6 +39,7 @@ describe('uiStore applyEffects', () => {
     store.setEffectsLevel(75)
 
     expect(document.documentElement.getAttribute('data-effects')).toBe('full')
+    expect(document.documentElement.getAttribute('data-effects-glow')).toBe('static')
     expect(document.documentElement.style.getPropertyValue('--ui-effects-level')).toBe('75')
     expect(document.documentElement.style.getPropertyValue('--glass-blur')).toBe(
       (8 - 6 * Math.pow((75 - 70) / 30, 2)).toFixed(2) + 'px',
@@ -58,6 +60,28 @@ describe('uiStore applyEffects', () => {
 
     store.setEffectsLevel(-50)
     expect(store.effectsLevel).toBe(0)
+  })
+
+  it('gates data-effects-glow at level 95 boundary', async () => {
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { useUIStore } = await import('../ui')
+    setActivePinia(createPinia())
+    const store = useUIStore()
+
+    store.setEffectsLevel(94)
+    expect(document.documentElement.getAttribute('data-effects-glow')).toBe('static')
+
+    store.setEffectsLevel(95)
+    expect(document.documentElement.getAttribute('data-effects-glow')).toBe('breathe')
+
+    store.setEffectsLevel(100)
+    expect(document.documentElement.getAttribute('data-effects-glow')).toBe('breathe')
+
+    store.setEffectsLevel(94)
+    expect(document.documentElement.getAttribute('data-effects-glow')).toBe('static')
+
+    store.setEffectsLevel(71)
+    expect(document.documentElement.getAttribute('data-effects-glow')).toBe('static')
   })
 
   it('setEffectsLevel updates live CSS but does not touch effectsLevelPersisted', async () => {
@@ -101,6 +125,7 @@ describe('uiStore applyEffects', () => {
     store.initTheme()
     expect(store.effectsLevel).toBe(100)
     expect(store.effectsLevelPersisted).toBe(100)
+    expect(document.documentElement.getAttribute('data-effects-glow')).toBe('breathe')
   })
 
   it('migrates legacy persisted effects:reduced to effectsLevel 0', async () => {
@@ -148,5 +173,6 @@ describe('uiStore applyEffects', () => {
     store.initTheme()
     expect(store.effectsLevel).toBe(50)
     expect(store.effectsLevelPersisted).toBe(50)
+    expect(document.documentElement.getAttribute('data-effects-glow')).toBe('static')
   })
 })

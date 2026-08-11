@@ -234,7 +234,3 @@
 [data-effects='reduced'] .progress-bar-energy::before {
   animation: none !important;
 }
-
-[data-effects='reduced'] .task-card-error {
-  animation: none !important;
-}

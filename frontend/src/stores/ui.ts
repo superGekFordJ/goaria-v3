@@ -201,8 +201,13 @@ export const useUIStore = defineStore(
       const level = effectsLevel.value
       const tier = effectsTier.value
       root.setAttribute('data-effects', tier)
+      // Breathing glow on task cards is gated behind a finer threshold than the
+      // three-tier system: only level >= 95 enables the ::after opacity breathe.
+      // 71–94 stays visually equivalent to balanced (static glow, no breathing),
+      // avoiding per-active-card compositing layers for the majority of full-tier users.
+      root.setAttribute('data-effects-glow', level >= 95 ? 'breathe' : 'static')
       root.style.setProperty('--ui-effects-level', String(level))
-      
+
       let blur: number
       if (level <= 70) {
         blur = 8 + 40 * Math.pow((70 - level) / 70, 2)
