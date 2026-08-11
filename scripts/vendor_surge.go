@@ -58,6 +58,13 @@ func main() {
 		filepath.Join("utils", "notify.go"):    true,
 		filepath.Join("utils", "open.go"):      true,
 		filepath.Join("utils", "open_test.go"): true,
+		// text.go pulls charmbracelet/x/ansi (+ displaywidth, go-colorful,
+		// go-runewidth) purely for upstream TUI rendering. None of its 4
+		// exported helpers (WrapText/Truncate/TruncateMiddle/TruncateTwoLines)
+		// are called inside the vendored slice — only by upstream internal/tui,
+		// which is not vendored. Excluding it drops 4 indirect deps from go.mod.
+		filepath.Join("utils", "text.go"):      true,
+		filepath.Join("utils", "text_test.go"): true,
 	}
 
 	// GoAria-only paths that must survive stale prune. Keys use filepath.Join
