@@ -1,6 +1,10 @@
 import { defineStore } from 'pinia'
 import { ref, reactive } from 'vue'
-import { GetConfig, SaveConfig, SelectDirectory } from '../../bindings/goaria-v3/internal/wailsapp/app.js'
+import {
+  GetConfig,
+  SaveConfig,
+  SelectDirectory,
+} from '../../bindings/goaria-v3/internal/wailsapp/app.js'
 import { AppConfig } from '../../bindings/goaria-v3/internal/config/models.js'
 
 export const useConfigStore = defineStore(

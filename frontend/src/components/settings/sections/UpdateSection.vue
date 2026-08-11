@@ -1,14 +1,7 @@
 <script setup lang="ts">
   import { ref, computed, onMounted, onUnmounted } from 'vue'
   import { useI18n } from 'vue-i18n'
-  import {
-    Loader2,
-    RefreshCw,
-    Download,
-    RotateCcw,
-    AlertCircle,
-    CheckCircle,
-  } from '@lucide/vue'
+  import { Loader2, RefreshCw, Download, RotateCcw, AlertCircle, CheckCircle } from '@lucide/vue'
   import ThemeIcon from '../../common/ThemeIcon.vue'
   import {
     GetAppVersion,

@@ -45,9 +45,13 @@
   const E_GAIN = 1 / 2400
 
   const SUPPORTS_URL_FILTER = (() => {
-    const brands = (navigator as Navigator & { userAgentData?: { brands?: { brand: string }[] } }).userAgentData
-    if (brands?.brands?.some((b) => /chromium/i.test(b.brand))) return true
-    return /Chrom(e|ium)/.test(navigator.userAgent) || !!(window as unknown as { chrome?: unknown }).chrome
+    const brands = (navigator as Navigator & { userAgentData?: { brands?: { brand: string }[] } })
+      .userAgentData
+    if (brands?.brands?.some(b => /chromium/i.test(b.brand))) return true
+    return (
+      /Chrom(e|ium)/.test(navigator.userAgent) ||
+      !!(window as unknown as { chrome?: unknown }).chrome
+    )
   })()
 
   const filterId = ref('')
@@ -78,9 +82,14 @@
   let currentH = THUMB_H
   let currentCapturePad = 0
 
-
-
-  function buildDisplacementMap(w: number, h: number, radius: number, bezel: number, pad: number, dpr: number): string {
+  function buildDisplacementMap(
+    w: number,
+    h: number,
+    radius: number,
+    bezel: number,
+    pad: number,
+    dpr: number,
+  ): string {
     const lensW = Math.max(2, w * dpr)
     const lensH = Math.max(2, h * dpr)
     const mapPad = Math.max(2, pad * dpr)
@@ -195,7 +204,14 @@
         url: '',
       }
       mapCache.set(key, entry)
-      const url = buildDisplacementMap(mapShapeW, mapShapeH, mapShapeH / 2, mapShapeH / 2, MAP_PAD, mapDpr)
+      const url = buildDisplacementMap(
+        mapShapeW,
+        mapShapeH,
+        mapShapeH / 2,
+        mapShapeH / 2,
+        MAP_PAD,
+        mapDpr,
+      )
       entry.url = url
     }
     fMapBlur.setAttribute('stdDeviation', `${entry.blurX} ${entry.blurY}`)
@@ -222,11 +238,11 @@
     thumb.style.width = `${currentW}px`
     thumb.style.height = `${currentH}px`
     thumb.style.borderRadius = `${currentTr}px`
-    
-    const pct = ((localValue.value - props.min) / (props.max - props.min))
+
+    const pct = (localValue.value - props.min) / (props.max - props.min)
     const x = pct * railWidth
     thumb.style.transform = `translate3d(calc(${x}px - 50%), -50%, 0)`
-    
+
     refract.style.inset = `${-currentCapturePad}px`
 
     if (rimRef.value && rimRectRef.value) {
@@ -242,7 +258,10 @@
     if (!refract) return
 
     if (!SUPPORTS_URL_FILTER) {
-      const fb = p > 0.01 ? `blur(${(2 * p).toFixed(2)}px) saturate(${(1 + LENS.satBoost * p).toFixed(2)})` : 'none'
+      const fb =
+        p > 0.01
+          ? `blur(${(2 * p).toFixed(2)}px) saturate(${(1 + LENS.satBoost * p).toFixed(2)})`
+          : 'none'
       const style = refract.style as CSSStyleDeclaration & { webkitBackdropFilter: string }
       style.backdropFilter = fb
       style.webkitBackdropFilter = fb
@@ -304,10 +323,10 @@
     const fill = fillRef.value
     const root = rootRef.value
     if (!fill || !root) return
-    const pct = ((localValue.value - props.min) / (props.max - props.min))
+    const pct = (localValue.value - props.min) / (props.max - props.min)
     fill.style.width = `${pct * 100}%`
     root.setAttribute('aria-valuenow', String(Math.round(localValue.value)))
-    
+
     if (!raf) {
       applyStyles()
     }
@@ -350,8 +369,10 @@
   function onKeydown(e: KeyboardEvent) {
     const step = e.shiftKey ? props.step * 10 : props.step
     let v: number
-    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') v = Math.min(props.max, props.modelValue + step)
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') v = Math.max(props.min, props.modelValue - step)
+    if (e.key === 'ArrowRight' || e.key === 'ArrowUp')
+      v = Math.min(props.max, props.modelValue + step)
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown')
+      v = Math.max(props.min, props.modelValue - step)
     else if (e.key === 'PageUp') v = Math.min(props.max, props.modelValue + props.step * 10)
     else if (e.key === 'PageDown') v = Math.max(props.min, props.modelValue - props.step * 10)
     else if (e.key === 'Home') v = props.min
@@ -363,12 +384,18 @@
     emit('change', v)
   }
 
-  watch(() => props.modelValue, (v) => { localValue.value = v; render() })
+  watch(
+    () => props.modelValue,
+    v => {
+      localValue.value = v
+      render()
+    },
+  )
 
   onMounted(() => {
     if (railRef.value) {
       railWidth = railRef.value.getBoundingClientRect().width
-      ro = new ResizeObserver((entries) => {
+      ro = new ResizeObserver(entries => {
         if (entries[0]) {
           railWidth = entries[0].contentRect.width
           if (!raf) applyStyles()
@@ -376,7 +403,7 @@
       })
       ro.observe(railRef.value)
     }
-    
+
     ensureFilter()
     render()
     applyLens()

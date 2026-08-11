@@ -65,8 +65,7 @@ export type DownloadGroupPlaceholderMasterItem = {
 }
 
 export type DownloadGroupMasterItem =
-  | DownloadGroupBackendMasterItem
-  | DownloadGroupPlaceholderMasterItem
+  DownloadGroupBackendMasterItem | DownloadGroupPlaceholderMasterItem
 
 export type InlineTaskListTab = 'downloads' | 'stopped'
 

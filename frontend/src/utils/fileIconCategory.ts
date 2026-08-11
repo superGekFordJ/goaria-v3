@@ -1,10 +1,5 @@
 export type FileIconCategoryId =
-  | 'default'
-  | 'media'
-  | 'archive'
-  | 'executable'
-  | 'document'
-  | 'disk'
+  'default' | 'media' | 'archive' | 'executable' | 'document' | 'disk'
 
 export const FILE_ICON_CATEGORIES = [
   'default',

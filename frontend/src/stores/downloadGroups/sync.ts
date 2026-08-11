@@ -1,5 +1,8 @@
 import { watch, type WatchStopHandle } from 'vue'
-import { GetDownloadGroups, GetDownloadGroupDetail } from '../../../bindings/goaria-v3/internal/wailsapp/app.js'
+import {
+  GetDownloadGroups,
+  GetDownloadGroupDetail,
+} from '../../../bindings/goaria-v3/internal/wailsapp/app.js'
 import type {
   DownloadGroupCard,
   DownloadGroupDetailEnvelope,

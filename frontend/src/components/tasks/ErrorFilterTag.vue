@@ -43,7 +43,9 @@
         >
           {{ t('errorFilter.tagLabel') }}
         </span>
-        <span class="font-mono-data text-[var(--status-error)]" aria-hidden="true">{{ errorCount }}</span>
+        <span class="font-mono-data text-[var(--status-error)]" aria-hidden="true">{{
+          errorCount
+        }}</span>
       </span>
     </LiquidGlassPanel>
   </div>

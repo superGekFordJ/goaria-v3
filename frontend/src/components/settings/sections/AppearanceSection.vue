@@ -298,9 +298,7 @@
               {{ t('appearance.advancedMaterialsDesc') }}
             </span>
           </div>
-          <span
-            class="text-[10px] font-bold uppercase tracking-widest text-[var(--neon-primary)]"
-          >
+          <span class="text-[10px] font-bold uppercase tracking-widest text-[var(--neon-primary)]">
             {{ tierLabel }}
           </span>
         </div>

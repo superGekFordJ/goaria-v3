@@ -25,7 +25,11 @@ vi.mock('../../../../bindings/goaria-v3/internal/wailsapp/app.js', () => ({
   UpdateTrayState: vi.fn(),
 }))
 
-import { GetTasks, GetTaskMetadata, RemoveTask } from '../../../../bindings/goaria-v3/internal/wailsapp/app.js'
+import {
+  GetTasks,
+  GetTaskMetadata,
+  RemoveTask,
+} from '../../../../bindings/goaria-v3/internal/wailsapp/app.js'
 
 const mockGetTasks = vi.mocked(GetTasks)
 const mockGetTaskMetadata = vi.mocked(GetTaskMetadata)

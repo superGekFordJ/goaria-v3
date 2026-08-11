@@ -380,16 +380,10 @@
           <span v-if="batchResult.duplicates > 0" class="text-amber-400 dark:text-amber-400">
             {{ t('taskHeader.batchDuplicates', { count: batchResult.duplicates }) }}
           </span>
-          <span
-            v-if="batchResult.diskErrors > 0"
-            class="text-[var(--status-error)]"
-          >
+          <span v-if="batchResult.diskErrors > 0" class="text-[var(--status-error)]">
             {{ t('taskHeader.insufficientDiskSpaceBatch', { count: batchResult.diskErrors }) }}
           </span>
-          <span
-            v-else-if="batchResult.errors > 0"
-            class="text-[var(--status-error)]"
-          >
+          <span v-else-if="batchResult.errors > 0" class="text-[var(--status-error)]">
             {{ t('taskHeader.batchErrors', { count: batchResult.errors }) }}
           </span>
           <span
@@ -525,7 +519,9 @@
 
   /* Prevent box-shadow transition to avoid visual bloat during active/inactive switch */
   .task-header-add-btn {
-    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, transform, filter, backdrop-filter;
+    transition-property:
+      color, background-color, border-color, text-decoration-color, fill, stroke, opacity,
+      transform, filter, backdrop-filter;
     transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
     transition-duration: 300ms;
   }

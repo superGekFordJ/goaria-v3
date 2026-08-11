@@ -21,7 +21,7 @@ export const GLASS_PRESETS: Record<string, GlassParams> = {
  * R encodes dx, G encodes dy; 0.5 (128) is neutral. Encoded at half amplitude. */
 function canvasToBlobUrl(canvas: HTMLCanvasElement): Promise<string> {
   return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
+    canvas.toBlob(blob => {
       if (blob) resolve(URL.createObjectURL(blob))
       else reject(new Error('canvas.toBlob returned null'))
     })
@@ -177,7 +177,10 @@ function applyGlassAttrs(
   entry.dr.setAttribute('scale', (scale * (1 - params.ca)).toFixed(5))
   entry.dg.setAttribute('scale', scale.toFixed(5))
   entry.db.setAttribute('scale', (scale * (1 + params.ca)).toFixed(5))
-  entry.blur.setAttribute('stdDeviation', `${(params.blur / w).toFixed(5)} ${(params.blur / h).toFixed(5)}`)
+  entry.blur.setAttribute(
+    'stdDeviation',
+    `${(params.blur / w).toFixed(5)} ${(params.blur / h).toFixed(5)}`,
+  )
   entry.sat.setAttribute('values', params.sat.toFixed(2))
 }
 
@@ -209,7 +212,7 @@ function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, be
   entry.mapGen++
   const gen = entry.mapGen
   buildDisplacementMap(w, h, radius, bezel, dpr)
-    .then((url) => {
+    .then(url => {
       if (gen !== entry.mapGen || !registry?.has(entry.key)) {
         URL.revokeObjectURL(url)
         return
@@ -308,7 +311,7 @@ export function useLiquidGlass(
 
   watch(
     layerRef,
-    (newEl) => {
+    newEl => {
       if (entry) unregister()
       if (newEl) register()
     },
@@ -369,7 +372,7 @@ export function getStaticGlassFilterId(): string {
   staticFilterId = id
 
   buildDisplacementMap(size, size, 64, 36, 1)
-    .then((url) => {
+    .then(url => {
       if (gen !== staticMapGen || staticFilterId !== id) {
         URL.revokeObjectURL(url)
         return

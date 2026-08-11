@@ -18,7 +18,9 @@ beforeEach(() => {
     }
     return ctx as unknown as CanvasRenderingContext2D
   })
-  toDataURLSpy = vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,')
+  toDataURLSpy = vi
+    .spyOn(HTMLCanvasElement.prototype, 'toDataURL')
+    .mockReturnValue('data:image/png;base64,')
 })
 
 afterEach(() => {
@@ -35,10 +37,10 @@ describe('LiquidGlassSlider', () => {
         max: 100,
         step: 1,
         ariaLabel: 'Test Slider',
-        ariaValuetext: 'Test Value'
-      }
+        ariaValuetext: 'Test Value',
+      },
     })
-    
+
     expect(wrapper.exists()).toBe(true)
     const root = wrapper.find('.lgs')
     expect(root.attributes('aria-valuenow')).toBe('50')
@@ -52,12 +54,12 @@ describe('LiquidGlassSlider', () => {
         modelValue: 50,
         min: 0,
         max: 100,
-        step: 2
-      }
+        step: 2,
+      },
     })
 
     const slider = wrapper.find('.lgs')
-    
+
     // ArrowRight (+step)
     await slider.trigger('keydown', { key: 'ArrowRight' })
     expect(wrapper.emitted('update:modelValue')![0]).toEqual([52])
@@ -89,16 +91,16 @@ describe('LiquidGlassSlider', () => {
         modelValue: 95,
         min: 0,
         max: 100,
-        step: 10
-      }
+        step: 10,
+      },
     })
 
     const slider = wrapper.find('.lgs')
-    
+
     // ArrowRight (+10 from 95 should clamp to 100)
     await slider.trigger('keydown', { key: 'ArrowRight' })
     expect(wrapper.emitted('update:modelValue')![0]).toEqual([100])
-    
+
     // PageDown from near min (should clamp to 0)
     await wrapper.setProps({ modelValue: 5 })
     await slider.trigger('keydown', { key: 'PageDown' })

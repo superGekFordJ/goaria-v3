@@ -445,11 +445,7 @@ export function setupActions(state: TaskState) {
       consecutiveErrors.value = 0
       clearStoppedSuppression()
 
-      const { active, waiting, stopped } = partitionTaskLists(
-        res.active,
-        res.waiting,
-        res.stopped,
-      )
+      const { active, waiting, stopped } = partitionTaskLists(res.active, res.waiting, res.stopped)
 
       for (const t of [...active, ...waiting, ...stopped]) cacheMetadata(t)
 
