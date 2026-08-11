@@ -361,6 +361,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					URLHash:      urlHash,
 					DestPath:     destPath,
 					Filename:     filename,
+					Error:        err.Error(),
 					Status:       "error",
 					TotalSize:    m.Total,
 					Downloaded:   m.Total,
@@ -551,6 +552,30 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					existing.Error = m.Err.Error()
 				}
 				if err := store.AddToMasterList(*existing); err != nil {
+					utils.Debug("Lifecycle: Failed to persist error state: %v", err)
+				}
+			} else {
+				// nil-existing + nil-State: persist a minimal error record so an
+				// early failure (before scheduler produces State, no master entry)
+				// is not lost from master.gob.
+				entry := types.DownloadRecord{
+					ID:     m.DownloadID,
+					Status: "error",
+				}
+				if m.Err != nil {
+					entry.Error = m.Err.Error()
+				}
+				if m.Filename != "" {
+					entry.Filename = m.Filename
+				}
+				if m.DestPath != "" {
+					entry.DestPath = m.DestPath
+				}
+				if m.URL != "" {
+					entry.URL = m.URL
+					entry.URLHash = store.URLHash(m.URL)
+				}
+				if err := store.AddToMasterList(entry); err != nil {
 					utils.Debug("Lifecycle: Failed to persist error state: %v", err)
 				}
 			}

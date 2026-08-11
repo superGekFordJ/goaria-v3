@@ -210,3 +210,59 @@ func TestEventError_WithState_ElapsedMonotonicBump(t *testing.T) {
 		t.Fatalf("detail Elapsed=%d, want >=5001ms monotonic", saved.Elapsed)
 	}
 }
+
+func TestEventError_NilState_NilExisting_MinimalRecord(t *testing.T) {
+	tmpDir := testutil.SetupStateDB(t)
+	destPath := filepath.Join(tmpDir, "early_fail.bin")
+	url := "http://example.com/early_fail.bin"
+	id := "early-fail"
+
+	// Deliberately do NOT call testutil.SeedMasterList — existing must be nil.
+	// State is also nil (not set in the event). This exercises the B6 else block.
+
+	ch := make(chan types.DownloadEvent, 1)
+	mgr := NewLifecycleManager(nil, nil, nil)
+	defer mgr.Shutdown()
+	done := make(chan struct{})
+	go func() {
+		mgr.StartEventWorker(ch)
+		close(done)
+	}()
+
+	ch <- types.DownloadEvent{
+		Type:       types.EventError,
+		DownloadID: id,
+		Err:        errors.New("early failure"),
+		Filename:   "early_fail.bin",
+		DestPath:   destPath,
+		URL:        url,
+	}
+	close(ch)
+	<-done
+
+	entry, err := store.GetDownload(id)
+	if err != nil {
+		t.Fatalf("GetDownload: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("expected minimal error record, got nil — B6 else block did not persist")
+	}
+	if entry.Status != "error" {
+		t.Fatalf("Status=%q, want error", entry.Status)
+	}
+	if entry.Error != "early failure" {
+		t.Fatalf("Error=%q, want %q", entry.Error, "early failure")
+	}
+	if entry.Filename != "early_fail.bin" {
+		t.Fatalf("Filename=%q, want %q", entry.Filename, "early_fail.bin")
+	}
+	if entry.URL != url {
+		t.Fatalf("URL=%q, want %q", entry.URL, url)
+	}
+	if entry.URLHash != store.URLHash(url) {
+		t.Fatalf("URLHash=%q, want %q", entry.URLHash, store.URLHash(url))
+	}
+	if entry.DestPath != destPath {
+		t.Fatalf("DestPath=%q, want %q", entry.DestPath, destPath)
+	}
+}
