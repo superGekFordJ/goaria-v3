@@ -81,15 +81,10 @@
   // Error Filter State
   const errorFilterActive = ref(false)
 
-  const errorCount = computed(
-    () => taskStore.stoppedTasks.filter(t => t.status === 'error').length,
-  )
+  const errorCount = computed(() => taskStore.stoppedTasks.filter(t => t.status === 'error').length)
 
   const isErrorFilterActive = computed(
-    () =>
-      !isGroupDetailMode.value &&
-      uiStore.activeTab === 'stopped' &&
-      errorFilterActive.value,
+    () => !isGroupDetailMode.value && uiStore.activeTab === 'stopped' && errorFilterActive.value,
   )
 
   // Error filter toggle — additive (AND) with search query, no dismissal
@@ -263,90 +258,81 @@
   const taskContainer = ref<HTMLElement | null>(null)
   const { capture, play, clear } = useFLIPAnimation(taskContainer)
 
+  // One-shot guard consumed by the post-watcher below. Every guard only ever
+  // raises it, never lowers it, so guards firing in the same tick cannot cancel
+  // each other and the behaviour does not depend on watcher registration order.
   const skipNextFlip = ref(false)
+
+  // While <KeepAlive> holds this panel deactivated the subtree is detached:
+  // every rect measures 0, so capture()/play() would only pollute lastRects and
+  // force layout for content nobody can see.
+  const isPanelActive = ref(true)
 
   // Pre-watcher captures First rects before Vue patches DOM
   watch(
     displayEntries,
     () => {
+      if (!isPanelActive.value) return
       capture()
     },
     { flush: 'pre' },
   )
 
   // Tag appear/disappear changes sticky header height, shifting card positions.
-  // When errorCount→0, errorFilterActive is deactivated and the full stopped
-  // list replaces the error-only list.
-  //
-  // Two sub-cases:
-  // 1. Same mode (no boundary crossing, e.g. 15 error → 15 full in <div>):
-  //    Non-error tasks were absent from DOM during capture() (filtered out),
-  //    so FLIP treats them as "entering" and assigns oldTop = newTop - height
-  //    — they snap up then "bounce back" down. Skip FLIP; tag leave animation
-  //    provides enough visual feedback.
-  // 2. Cross-boundary (e.g. 15 error → 100 full, <div> → RecycleScroller):
-  //    RecycleScroller only renders viewport+buffer items. FLIP's entering
-  //    logic only affects DOM-present items, which slide in from one card
-  //    height above — this looks natural (like scrolling into place), not
-  //    broken. Don't set skipNextFlip here; let the boundary watcher's
-  //    scrollTop check decide. This watcher runs BEFORE the boundary watcher
-  //    (registered first), so the boundary watcher can override this decision
-  //    if the user is scrolled down (where FLIP would tear).
+  // Appearing is safe for FLIP: the tag is in flow while it fades in, so play()
+  // measures the grown header and the cards glide down by the exact delta.
+  // Disappearing also deactivates the error filter, so the full stopped list
+  // replaces the error-only one in the same tick — and the destination branch
+  // decides whether FLIP can cope:
+  // 1. Destination is the plain <div> (e.g. 15 error → 15 full): every
+  //    non-error row was filtered out during capture(), so FLIP treats the
+  //    whole list as "entering" (oldTop = newTop - height) and it snaps up then
+  //    bounces back. Skip FLIP; the tag leave animation carries the change.
+  // 2. Destination is <RecycleScroller> (e.g. 15 error → 100 full): only
+  //    viewport+buffer rows exist, so the same entering logic slides a handful
+  //    of rows down into place, which reads as a natural settle. Let FLIP play;
+  //    the boundary watcher below still vetoes it when the user is scrolled.
   watch(
     () => errorCount.value > 0,
-    (hasErrors) => {
-      if (!hasErrors) {
-        errorFilterActive.value = false
-        // Only skip FLIP if NOT crossing the virtual boundary. If crossing,
-        // let the boundary watcher decide based on scrollTop.
-        // useVirtualList has already updated at this point (same tick), so
-        // check if we're in the non-virtual mode (no boundary crossed) or
-        // about to enter virtual mode (boundary crossed — don't skip here).
-        if (!useVirtualList.value) {
-          skipNextFlip.value = true
-        }
+    hasErrors => {
+      if (hasErrors) return
+      errorFilterActive.value = false
+      // Reading useVirtualList after the mutation re-evaluates the computed
+      // chain, so this reflects the destination list, not the error-only one.
+      if (!useVirtualList.value) {
+        skipNextFlip.value = true
       }
     },
   )
 
   // Boundary crossing: when the list grows past 15 or shrinks below 16, the
   // DOM switches between <div> and <RecycleScroller>. FLIP can animate this
-  // transition IF the user is at the top (scrollTop ≈ 0) — all items are
-  // rendered in both modes, so capture()/play() coordinate comparison is valid.
+  // transition IF the user is at the top (scrollTop ≈ 0) — both branches render
+  // the same leading rows there, so First/Last comparison stays valid.
   // But if the user has scrolled down in RecycleScroller, off-screen items
   // were recycled (not in DOM), so capture() can't record them. When crossing
   // to <div> (scrollTop resets to 0, all items render), FLIP assigns huge
   // deltaY to ex-viewport items and treats ex-off-screen items as entering —
   // causing visual tearing. So only allow cross-boundary FLIP at the top;
   // otherwise skip it (hard cut, no animation).
-  // This watcher runs AFTER the errorCount watcher, so it can override the
-  // errorCount decision when both fire in the same tick.
+  // Watchers are pre-flush, so this still measures the outgoing scroller.
   watch(useVirtualList, () => {
-    const container = taskContainer.value
-    if (container) {
-      const scroller = container.querySelector<HTMLElement>(
-        '.overflow-y-auto, .vue-recycle-scroller',
-      )
-      if (scroller && scroller.scrollTop > 4) {
-        skipNextFlip.value = true
-        return
-      }
+    const scroller = taskContainer.value?.querySelector<HTMLElement>('[data-task-scroll-root]')
+    if (scroller && scroller.scrollTop > 4) {
+      skipNextFlip.value = true
     }
-    // At the top: let FLIP handle the boundary crossing naturally.
-    // Don't set skipNextFlip — clear any prior decision from errorCount watcher
-    // to allow FLIP to play.
-    skipNextFlip.value = false
   })
 
   // Post-watcher executes FLIP Play phase after Vue updates DOM
   watch(
     displayEntries,
     (newList, oldList) => {
+      // The guard flag is one-shot: consume it before any early return, or a
+      // cycle that had nothing to animate would leak it into the next one.
+      const skip = skipNextFlip.value
+      skipNextFlip.value = false
+      if (skip || !isPanelActive.value) return
       if (!oldList || oldList.length === 0) return
-      if (skipNextFlip.value) {
-        skipNextFlip.value = false
-        return
-      }
       // Reduced effects: snap to new positions instantly, no FLIP transition.
       if (uiStore.effectsTier === 'reduced') return
       nextTick(() => {
@@ -530,17 +516,19 @@
   onActivated(() => {
     clearSelectionForMode()
     activateKeydown()
-    // KeepAlive restore: RecycleScroller's internal transform layout needs
-    // 1-2 frames to recompute after the container returns from detached/hidden
-    // state. capture() would record stale/zero coordinates, and play() would
-    // compute huge deltaY values — causing cards to "fly" from wrong positions.
-    // Skip the first FLIP cycle after activation; the list just needs to appear
-    // correctly, not animate.
+    isPanelActive.value = true
+    // KeepAlive restore: the subtree was detached, so the scroller's scrollTop
+    // was reset and RecycleScroller needs a frame or two to recompute its
+    // transform layout. Anything captured before that settles is stale, and
+    // play() would turn it into huge deltaY values — cards fly in from nowhere.
+    // Drop the stale rects and skip the first cycle after activation; the list
+    // just needs to appear correctly, not animate.
     clear()
     skipNextFlip.value = true
   })
 
   onDeactivated(() => {
+    isPanelActive.value = false
     deactivateKeydown()
     clearGroupDetailSelection()
     // Reset error filter when leaving the page — prevents ghost empty state on return
@@ -575,24 +563,30 @@
         v-if="displayEntries.length === 0"
         class="absolute top-0 left-0 w-full px-5 z-20 pointer-events-none"
       >
-        <Transition name="filter-chips-fade">
-          <div
-            v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped' && errorCount > 0"
-            class="filter-chips-row"
-          >
-            <ErrorFilterTag
-              :error-count="errorCount"
-              :active="errorFilterActive"
-              @toggle="toggleErrorFilter"
-            />
-          </div>
-        </Transition>
+        <!-- Padding-free positioning context: the leaving tag goes position:absolute,
+             which anchors to the containing block's padding box — without this the
+             tag would jump out of the px-5 inset when it starts to fade. -->
+        <div class="relative">
+          <Transition name="filter-chips-fade">
+            <div
+              v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped' && errorCount > 0"
+              class="filter-chips-row"
+            >
+              <ErrorFilterTag
+                :error-count="errorCount"
+                :active="errorFilterActive"
+                @toggle="toggleErrorFilter"
+              />
+            </div>
+          </Transition>
+        </div>
       </div>
 
       <!-- Non-virtual path -->
       <div
         v-if="displayEntries.length > 0 && !useVirtualList"
         :key="isGroupDetailMode ? `group-detail:${props.detailKey}` : uiStore.activeTab"
+        data-task-scroll-root
         class="h-full overflow-y-auto px-5 pb-4"
         :class="{ 'pt-4': isGroupDetailMode || uiStore.activeTab !== 'stopped' }"
       >
@@ -612,10 +606,7 @@
             </div>
           </Transition>
           <!-- Permanent gap above first card (transparent, cards scroll behind it visibly) -->
-          <div
-            v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped'"
-            class="h-4"
-          ></div>
+          <div v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped'" class="h-4"></div>
         </div>
 
         <div class="flex flex-col gap-4">
@@ -650,6 +641,7 @@
       <!-- Virtual path -->
       <RecycleScroller
         v-else-if="displayEntries.length > 0"
+        data-task-scroll-root
         class="h-full px-5 pb-4"
         :class="{ 'pt-4': isGroupDetailMode || uiStore.activeTab !== 'stopped' }"
         :items="displayEntries"
@@ -673,10 +665,7 @@
             </div>
           </Transition>
           <!-- Permanent gap for the first card that cards can visibly scroll behind -->
-          <div
-            v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped'"
-            class="h-4"
-          ></div>
+          <div v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped'" class="h-4"></div>
         </template>
 
         <template #default="{ item }">

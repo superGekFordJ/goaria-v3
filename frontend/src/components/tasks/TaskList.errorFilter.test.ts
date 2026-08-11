@@ -1,7 +1,7 @@
 /* eslint-disable vue/one-component-per-file */
-import { mount } from '@vue/test-utils'
-import { defineComponent, h, nextTick, reactive, type PropType } from 'vue'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { defineComponent, h, KeepAlive, nextTick, reactive, ref, type PropType } from 'vue'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Task } from '../../../bindings/goaria-v3/internal/rpc/models'
 import TaskList from './TaskList.vue'
 import type { DownloadGroupMasterItem } from '../../stores/downloadGroups'
@@ -42,6 +42,7 @@ const taskStoreMock = reactive({
 
 const uiStoreMock = reactive({
   activeTab: 'downloads' as 'downloads' | 'stopped',
+  effectsTier: 'full' as 'full' | 'balanced' | 'reduced',
 })
 
 const downloadGroupStoreMock = {
@@ -138,10 +139,50 @@ const RecycleScrollerStub = defineComponent({
   setup(props, { attrs, slots }) {
     return () => {
       const children = props.items.flatMap((item, index) => slots.default?.({ item, index }) ?? [])
-      return h('div', { ...attrs, 'data-test': 'recycle-scroller-stub' }, children)
+      // The sticky header (error filter tag) lives in the #before slot, so the
+      // stub has to render it to keep the two branches comparable.
+      return h('div', { ...attrs, 'data-test': 'recycle-scroller-stub' }, [
+        slots.before?.() ?? [],
+        children,
+      ])
     }
   },
 })
+
+const OtherPanelStub = defineComponent({
+  name: 'OtherPanel',
+  template: '<div data-test="other-panel" />',
+})
+
+const globalStubs = {
+  TaskCard: TaskCardStub,
+  TaskHeader: TaskHeaderStub,
+  TaskSearch: TaskSearchStub,
+  BatchActionBar: BatchActionBarStub,
+  ErrorFilterTag: ErrorFilterTagStub,
+  DownloadGroupCard: defineComponent({ name: 'DownloadGroupCard', template: '<article />' }),
+  TaskListEmptyState: defineComponent({
+    name: 'TaskListEmptyState',
+    template: '<div />',
+  }),
+  TaskListDeleteModal: defineComponent({
+    name: 'TaskListDeleteModal',
+    template: '<div />',
+  }),
+  TaskListBatchDeleteModal: defineComponent({
+    name: 'TaskListBatchDeleteModal',
+    template: '<div />',
+  }),
+  DownloadGroupOperationNotice: defineComponent({
+    name: 'DownloadGroupOperationNotice',
+    template: '<div />',
+  }),
+  DownloadGroupRemoveDialog: defineComponent({
+    name: 'DownloadGroupRemoveDialog',
+    template: '<div />',
+  }),
+  RecycleScroller: RecycleScrollerStub,
+}
 
 function createTask(index: number, status: Task['status'] = 'active'): Task {
   return {
@@ -162,43 +203,49 @@ function createTask(index: number, status: Task['status'] = 'active'): Task {
   } as Task
 }
 
+function createTasks(count: number, status: Task['status'], startIndex = 0): Task[] {
+  return Array.from({ length: count }, (_, i) => createTask(startIndex + i, status))
+}
+
 function mountTaskList() {
   return mount(TaskList, {
-    global: {
-      stubs: {
-        TaskCard: TaskCardStub,
-        TaskHeader: TaskHeaderStub,
-        TaskSearch: TaskSearchStub,
-        BatchActionBar: BatchActionBarStub,
-        ErrorFilterTag: ErrorFilterTagStub,
-        DownloadGroupCard: defineComponent({ name: 'DownloadGroupCard', template: '<article />' }),
-        TaskListEmptyState: defineComponent({
-          name: 'TaskListEmptyState',
-          template: '<div />',
-        }),
-        TaskListDeleteModal: defineComponent({
-          name: 'TaskListDeleteModal',
-          template: '<div />',
-        }),
-        TaskListBatchDeleteModal: defineComponent({
-          name: 'TaskListBatchDeleteModal',
-          template: '<div />',
-        }),
-        DownloadGroupOperationNotice: defineComponent({
-          name: 'DownloadGroupOperationNotice',
-          template: '<div />',
-        }),
-        DownloadGroupRemoveDialog: defineComponent({
-          name: 'DownloadGroupRemoveDialog',
-          template: '<div />',
-        }),
-        RecycleScroller: RecycleScrollerStub,
-      },
-    },
+    global: { stubs: globalStubs },
   })
 }
 
-describe('TaskList errorCount watcher', () => {
+// Mirrors App.vue: the panel lives inside <KeepAlive>, so switching away
+// deactivates it instead of unmounting it.
+function mountKeepAliveHost() {
+  const showTaskList = ref(true)
+  const host = defineComponent({
+    name: 'KeepAliveHost',
+    setup() {
+      return () =>
+        h(KeepAlive, null, {
+          default: () => [h(showTaskList.value ? TaskList : OtherPanelStub)],
+        })
+    },
+  })
+  const wrapper = mount(host, { global: { stubs: globalStubs } })
+  return { wrapper, showTaskList }
+}
+
+/** Flushes the pre/post watcher queue plus the nextTick that schedules play(). */
+async function settle() {
+  await nextTick()
+  await flushPromises()
+}
+
+function activateErrorFilter(wrapper: ReturnType<typeof mountTaskList>) {
+  wrapper.findComponent(ErrorFilterTagStub).vm.$emit('toggle')
+  return settle()
+}
+
+describe('TaskList FLIP guards', () => {
+  // The store mocks are module singletons: a wrapper leaked by a failing test
+  // would keep reacting to them and pollute the next test's FLIP call counts.
+  enableAutoUnmount(afterEach)
+
   beforeEach(() => {
     vi.clearAllMocks()
     taskStoreMock.activeTasks = []
@@ -209,54 +256,171 @@ describe('TaskList errorCount watcher', () => {
     taskStoreMock.getSelectedGroupKeys = []
     downloadGroupStoreMock.masterItems = []
     uiStoreMock.activeTab = 'downloads'
+    uiStoreMock.effectsTier = 'full'
   })
 
-  it('sets skipNextFlip when errorCount crosses zero (tag disappears)', async () => {
-    taskStoreMock.stoppedTasks = Array.from({ length: 5 }, (_, i) => createTask(i, 'error'))
+  it('skips FLIP when the last error disappears and the destination is the plain list', async () => {
+    taskStoreMock.stoppedTasks = [...createTasks(5, 'error'), ...createTasks(5, 'complete', 5)]
     uiStoreMock.activeTab = 'stopped'
 
     const wrapper = mountTaskList()
-
-    await nextTick()
-    await nextTick()
-
-    flipMocks.clear.mockClear()
+    await settle()
+    await activateErrorFilter(wrapper)
     flipMocks.play.mockClear()
 
-    taskStoreMock.stoppedTasks = Array.from({ length: 5 }, (_, i) => createTask(i, 'complete'))
+    // Deleting every error task also deactivates the filter: the 5 complete
+    // tasks were never captured, so FLIP would treat all of them as entering.
+    taskStoreMock.stoppedTasks = createTasks(5, 'complete', 5)
+    await settle()
 
-    await nextTick()
-    await nextTick()
-
-    expect(flipMocks.clear).toHaveBeenCalled()
     expect(flipMocks.play).not.toHaveBeenCalled()
-
-    wrapper.unmount()
+    expect(wrapper.find('[data-test="error-filter-tag-stub"]').exists()).toBe(false)
+    expect(wrapper.findAll('.task-card-stub')).toHaveLength(5)
   })
 
-  it('sets skipNextFlip when errorCount crosses zero (tag appears)', async () => {
-    taskStoreMock.stoppedTasks = Array.from({ length: 5 }, (_, i) => createTask(i, 'complete'))
+  it('keeps skipping FLIP when the error collapse also crosses down to the plain list', async () => {
+    // Regression: the boundary watcher used to reset the flag to false here,
+    // which brought back the "whole list snaps up and bounces" bug.
+    taskStoreMock.stoppedTasks = [...createTasks(20, 'error'), ...createTasks(10, 'complete', 20)]
     uiStoreMock.activeTab = 'stopped'
 
     const wrapper = mountTaskList()
-
-    await nextTick()
-    await nextTick()
-
-    flipMocks.clear.mockClear()
+    await settle()
+    await activateErrorFilter(wrapper)
+    expect(wrapper.find('[data-test="recycle-scroller-stub"]').exists()).toBe(true)
     flipMocks.play.mockClear()
 
-    taskStoreMock.stoppedTasks = [
-      ...Array.from({ length: 5 }, (_, i) => createTask(i, 'complete')),
-      ...Array.from({ length: 3 }, (_, i) => createTask(i + 5, 'error')),
-    ]
+    taskStoreMock.stoppedTasks = createTasks(10, 'complete', 20)
+    await settle()
 
-    await nextTick()
-    await nextTick()
-
-    expect(flipMocks.clear).toHaveBeenCalled()
+    expect(wrapper.find('[data-test="recycle-scroller-stub"]').exists()).toBe(false)
     expect(flipMocks.play).not.toHaveBeenCalled()
+  })
 
-    wrapper.unmount()
+  it('lets FLIP play when the error collapse crosses up into the virtual branch at the top', async () => {
+    taskStoreMock.stoppedTasks = [...createTasks(5, 'error'), ...createTasks(20, 'complete', 5)]
+    uiStoreMock.activeTab = 'stopped'
+
+    const wrapper = mountTaskList()
+    await settle()
+    await activateErrorFilter(wrapper)
+    expect(wrapper.find('[data-test="recycle-scroller-stub"]').exists()).toBe(false)
+    flipMocks.play.mockClear()
+
+    taskStoreMock.stoppedTasks = createTasks(20, 'complete', 5)
+    await settle()
+
+    expect(wrapper.find('[data-test="recycle-scroller-stub"]').exists()).toBe(true)
+    expect(flipMocks.play).toHaveBeenCalled()
+  })
+
+  it('lets FLIP play when the tag appears', async () => {
+    taskStoreMock.stoppedTasks = createTasks(5, 'complete')
+    uiStoreMock.activeTab = 'stopped'
+
+    const wrapper = mountTaskList()
+    await settle()
+    flipMocks.play.mockClear()
+
+    // The tag is in flow while it fades in, so play() measures the grown
+    // header and the cards glide down by the exact delta.
+    taskStoreMock.stoppedTasks = [...createTasks(5, 'complete'), ...createTasks(3, 'error', 5)]
+    await settle()
+
+    expect(wrapper.find('[data-test="error-filter-tag-stub"]').exists()).toBe(true)
+    expect(flipMocks.play).toHaveBeenCalled()
+  })
+
+  it('lets FLIP play across the 15↔16 boundary while scrolled to the top', async () => {
+    taskStoreMock.stoppedTasks = createTasks(15, 'complete')
+    uiStoreMock.activeTab = 'stopped'
+
+    const wrapper = mountTaskList()
+    await settle()
+    flipMocks.play.mockClear()
+
+    taskStoreMock.stoppedTasks = createTasks(16, 'complete')
+    await settle()
+
+    expect(wrapper.find('[data-test="recycle-scroller-stub"]').exists()).toBe(true)
+    expect(flipMocks.play).toHaveBeenCalled()
+  })
+
+  it('skips FLIP across the boundary when the user has scrolled away from the top', async () => {
+    taskStoreMock.stoppedTasks = createTasks(20, 'complete')
+    uiStoreMock.activeTab = 'stopped'
+
+    const wrapper = mountTaskList()
+    await settle()
+
+    // Recycled off-screen rows were never captured, so FLIP would tear here.
+    const scrollRoot = wrapper.find('[data-task-scroll-root]')
+    expect(scrollRoot.exists()).toBe(true)
+    ;(scrollRoot.element as HTMLElement).scrollTop = 420
+    flipMocks.play.mockClear()
+
+    taskStoreMock.stoppedTasks = createTasks(10, 'complete')
+    await settle()
+
+    expect(wrapper.find('[data-test="recycle-scroller-stub"]').exists()).toBe(false)
+    expect(flipMocks.play).not.toHaveBeenCalled()
+  })
+
+  it('skips play() entirely in the reduced effects tier', async () => {
+    taskStoreMock.stoppedTasks = createTasks(5, 'complete')
+    uiStoreMock.activeTab = 'stopped'
+    uiStoreMock.effectsTier = 'reduced'
+
+    mountTaskList()
+    await settle()
+    flipMocks.capture.mockClear()
+    flipMocks.play.mockClear()
+
+    taskStoreMock.stoppedTasks = createTasks(6, 'complete')
+    await settle()
+
+    // capture() stays warm so switching back to full effects animates at once.
+    expect(flipMocks.capture).toHaveBeenCalled()
+    expect(flipMocks.play).not.toHaveBeenCalled()
+  })
+
+  it('holds the KeepAlive activation guard even when the list crosses the boundary', async () => {
+    // Regression: after a KeepAlive restore the boundary watcher used to clear
+    // the activation guard, letting cards fly in from stale coordinates.
+    taskStoreMock.stoppedTasks = createTasks(15, 'complete')
+    uiStoreMock.activeTab = 'stopped'
+
+    const { showTaskList } = mountKeepAliveHost()
+    await settle()
+
+    showTaskList.value = false
+    await settle()
+    showTaskList.value = true
+    await settle()
+    flipMocks.play.mockClear()
+
+    taskStoreMock.stoppedTasks = createTasks(16, 'complete')
+    await settle()
+
+    expect(flipMocks.play).not.toHaveBeenCalled()
+  })
+
+  it('does not run FLIP while the panel is deactivated', async () => {
+    taskStoreMock.stoppedTasks = createTasks(5, 'complete')
+    uiStoreMock.activeTab = 'stopped'
+
+    const { showTaskList } = mountKeepAliveHost()
+    await settle()
+
+    showTaskList.value = false
+    await settle()
+    flipMocks.capture.mockClear()
+    flipMocks.play.mockClear()
+
+    taskStoreMock.stoppedTasks = createTasks(6, 'complete')
+    await settle()
+
+    expect(flipMocks.capture).not.toHaveBeenCalled()
+    expect(flipMocks.play).not.toHaveBeenCalled()
   })
 })
