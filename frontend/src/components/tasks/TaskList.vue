@@ -73,6 +73,11 @@
   // Search State
   const searchQuery = ref('')
 
+  // Clear selection when searching to prevent operating on hidden items
+  watch(searchQuery, () => {
+    taskStore.clearSelection()
+  })
+
   // Error Filter State
   const errorFilterActive = ref(false)
 
@@ -90,6 +95,7 @@
   // Error filter toggle — additive (AND) with search query, no dismissal
   const toggleErrorFilter = () => {
     errorFilterActive.value = !errorFilterActive.value
+    taskStore.clearSelection()
   }
 
   // Task filtering logic based on active tab
@@ -268,24 +274,69 @@
     { flush: 'pre' },
   )
 
-  // O2: boundary crossing wipes rects and skips one FLIP cycle — DOM structure changes
-  // between <div> and <RecycleScroller>, making First/Last comparison meaningless.
-  watch(useVirtualList, () => {
-    clear()
-    skipNextFlip.value = true
-  })
-
   // Tag appear/disappear changes sticky header height, shifting card positions.
+  // When errorCount→0, errorFilterActive is deactivated and the full stopped
+  // list replaces the error-only list.
+  //
+  // Two sub-cases:
+  // 1. Same mode (no boundary crossing, e.g. 15 error → 15 full in <div>):
+  //    Non-error tasks were absent from DOM during capture() (filtered out),
+  //    so FLIP treats them as "entering" and assigns oldTop = newTop - height
+  //    — they snap up then "bounce back" down. Skip FLIP; tag leave animation
+  //    provides enough visual feedback.
+  // 2. Cross-boundary (e.g. 15 error → 100 full, <div> → RecycleScroller):
+  //    RecycleScroller only renders viewport+buffer items. FLIP's entering
+  //    logic only affects DOM-present items, which slide in from one card
+  //    height above — this looks natural (like scrolling into place), not
+  //    broken. Don't set skipNextFlip here; let the boundary watcher's
+  //    scrollTop check decide. This watcher runs BEFORE the boundary watcher
+  //    (registered first), so the boundary watcher can override this decision
+  //    if the user is scrolled down (where FLIP would tear).
   watch(
     () => errorCount.value > 0,
     (hasErrors) => {
-      clear()
-      skipNextFlip.value = true
       if (!hasErrors) {
         errorFilterActive.value = false
+        // Only skip FLIP if NOT crossing the virtual boundary. If crossing,
+        // let the boundary watcher decide based on scrollTop.
+        // useVirtualList has already updated at this point (same tick), so
+        // check if we're in the non-virtual mode (no boundary crossed) or
+        // about to enter virtual mode (boundary crossed — don't skip here).
+        if (!useVirtualList.value) {
+          skipNextFlip.value = true
+        }
       }
     },
   )
+
+  // Boundary crossing: when the list grows past 15 or shrinks below 16, the
+  // DOM switches between <div> and <RecycleScroller>. FLIP can animate this
+  // transition IF the user is at the top (scrollTop ≈ 0) — all items are
+  // rendered in both modes, so capture()/play() coordinate comparison is valid.
+  // But if the user has scrolled down in RecycleScroller, off-screen items
+  // were recycled (not in DOM), so capture() can't record them. When crossing
+  // to <div> (scrollTop resets to 0, all items render), FLIP assigns huge
+  // deltaY to ex-viewport items and treats ex-off-screen items as entering —
+  // causing visual tearing. So only allow cross-boundary FLIP at the top;
+  // otherwise skip it (hard cut, no animation).
+  // This watcher runs AFTER the errorCount watcher, so it can override the
+  // errorCount decision when both fire in the same tick.
+  watch(useVirtualList, () => {
+    const container = taskContainer.value
+    if (container) {
+      const scroller = container.querySelector<HTMLElement>(
+        '.overflow-y-auto, .vue-recycle-scroller',
+      )
+      if (scroller && scroller.scrollTop > 4) {
+        skipNextFlip.value = true
+        return
+      }
+    }
+    // At the top: let FLIP handle the boundary crossing naturally.
+    // Don't set skipNextFlip — clear any prior decision from errorCount watcher
+    // to allow FLIP to play.
+    skipNextFlip.value = false
+  })
 
   // Post-watcher executes FLIP Play phase after Vue updates DOM
   watch(
@@ -479,6 +530,14 @@
   onActivated(() => {
     clearSelectionForMode()
     activateKeydown()
+    // KeepAlive restore: RecycleScroller's internal transform layout needs
+    // 1-2 frames to recompute after the container returns from detached/hidden
+    // state. capture() would record stale/zero coordinates, and play() would
+    // compute huge deltaY values — causing cards to "fly" from wrong positions.
+    // Skip the first FLIP cycle after activation; the list just needs to appear
+    // correctly, not animate.
+    clear()
+    skipNextFlip.value = true
   })
 
   onDeactivated(() => {
@@ -717,17 +776,34 @@
   }
 
   /* Fade transition for tag — opacity-only to avoid virtual scroller height bugs.
-     Enter uses spring overshoot, leave uses accelerate curve. */
+     Enter uses spring overshoot, leave uses accelerate curve.
+     Leave uses position:absolute so the tag exits layout flow immediately —
+     the sticky header collapses to its final height in the same frame FLIP
+     captures newTop, so deltaY accurately reflects the full header collapse.
+     Without this, the tag occupies space during its opacity fade, FLIP
+     measures a partial deltaY, and the header collapse after fade-end causes
+     a secondary hard jump that conflicts with the FLIP transition.
+     Leave also adds translateY + scale to match the FLIP cards' upward motion,
+     so the tag fades out "in flow" with the cards instead of floating in place. */
   .filter-chips-fade-enter-active {
     transition: opacity 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
   }
 
   .filter-chips-fade-leave-active {
-    transition: opacity 0.2s cubic-bezier(0.4, 0, 1, 1);
+    transition:
+      opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1),
+      transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+    position: absolute;
+    left: 0;
+    right: 0;
   }
 
-  .filter-chips-fade-enter-from,
+  .filter-chips-fade-enter-from {
+    opacity: 0;
+  }
+
   .filter-chips-fade-leave-to {
     opacity: 0;
+    transform: translateY(-20px) scale(0.95);
   }
 </style>
