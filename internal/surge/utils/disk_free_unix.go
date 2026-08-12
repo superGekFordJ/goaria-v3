@@ -4,6 +4,7 @@ package utils
 
 import (
 	"errors"
+	"math"
 	"syscall"
 )
 
@@ -26,4 +27,16 @@ func IsOSDiskFull(err error) bool {
 		return false
 	}
 	return errno == syscall.ENOSPC || errno == syscall.EDQUOT
+}
+
+// clampFreeBytesProduct multiplies available blocks by block size without
+// wrapping to a negative int64 (clamps to MaxInt64 on overflow).
+func clampFreeBytesProduct(blocks, blockSize uint64) int64 {
+	if blocks == 0 || blockSize == 0 {
+		return 0
+	}
+	if blocks > math.MaxInt64/blockSize {
+		return math.MaxInt64
+	}
+	return int64(blocks * blockSize)
 }
