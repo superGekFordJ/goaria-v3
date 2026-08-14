@@ -93,9 +93,19 @@ export function setupActions(state: TaskState) {
     return gids.filter(gid => Boolean(gid) && _resumePendingGids.get(gid) === gen)
   }
 
-  function clearResumePending(gids: string[]): void {
+  function clearResumePending(gids: string[], gen: number): void {
     for (const gid of gids) {
-      if (gid) _resumePendingGids.delete(gid)
+      if (!gid) continue
+      const pending = _resumePendingGids.get(gid)
+      if (pending === gen || pending === -1) _resumePendingGids.delete(gid)
+    }
+  }
+
+  async function recoverResumeSnapshot(gids: string[], gen: number) {
+    try {
+      await fetchTasks()
+    } finally {
+      clearResumePending(gids, gen)
     }
   }
 
@@ -656,21 +666,19 @@ export function setupActions(state: TaskState) {
       await ResumeTask(gid)
       const confirmed = confirmedResumeGids(requested, gen)
       if (confirmed.length === 0) {
-        clearResumePending(requested)
-        await fetchTasks()
+        await recoverResumeSnapshot(requested, gen)
         return
       }
       const outcome = await applyOptimisticResume(confirmed)
-      clearResumePending(requested)
       if (outcome === 'needs-fetch') {
-        await fetchTasks()
+        await recoverResumeSnapshot(requested, gen)
         return
       }
+      clearResumePending(requested, gen)
       immediateUpdateTrayIcon()
     } catch (err) {
-      clearResumePending(requested)
       console.error(`Failed to resume task ${gid}:`, err)
-      await fetchTasks()
+      await recoverResumeSnapshot(requested, gen)
     }
   }
 
@@ -760,21 +768,19 @@ export function setupActions(state: TaskState) {
       const engineOk = batchResumeOkGids(results, gids)
       const confirmed = confirmedResumeGids(engineOk, gen)
       if (confirmed.length === 0) {
-        clearResumePending(gids)
-        await fetchTasks()
+        await recoverResumeSnapshot(gids, gen)
         return
       }
       const outcome = await applyOptimisticResume(confirmed)
-      clearResumePending(gids)
       if (outcome === 'needs-fetch') {
-        await fetchTasks()
+        await recoverResumeSnapshot(gids, gen)
         return
       }
+      clearResumePending(gids, gen)
       immediateUpdateTrayIcon()
     } catch (err) {
-      clearResumePending(gids)
       console.error('Batch resume failed:', err)
-      await fetchTasks()
+      await recoverResumeSnapshot(gids, gen)
     }
   }
 

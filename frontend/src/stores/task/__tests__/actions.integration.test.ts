@@ -699,6 +699,80 @@ describe('setupActions — integration', () => {
       expect(state.tasks.value.active.some(t => t.gid === 'sg_late')).toBe(false)
     })
 
+    it('supersedes on dest-stopped during IPC and does not revive after ResumeTask', async () => {
+      state.tasks.value.waiting = [mockTask('sg_term', { status: 'paused' })]
+      const deferred = createControlledPromise<void>()
+      mockResumeTask.mockReturnValue(asCancellable(deferred.promise) as never)
+      mockGetTasks.mockResolvedValue({
+        active: [],
+        waiting: [],
+        stopped: [mockTask('sg_term', { status: 'complete' })],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      const events = wireMover(state, actions)
+
+      const resumePromise = actions.resume('sg_term')
+      await flushPromises()
+      events.handleTaskMove({
+        gid: 'sg_term',
+        from: 'waiting',
+        to: 'stopped',
+        task: { gid: 'sg_term', status: 'complete' },
+      })
+
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['sg_term'])
+      expect(actions.isResumePending('sg_term')).toBe(true)
+
+      deferred.resolve(undefined)
+      await resumePromise
+
+      expect(mockGetTasks).toHaveBeenCalled()
+      expect(state.tasks.value.active.some(t => t.gid === 'sg_term')).toBe(false)
+      expect(state.tasks.value.stopped.some(t => t.gid === 'sg_term')).toBe(true)
+      expect(actions.isResumePending('sg_term')).toBe(false)
+    })
+
+    it('holds dest-active until GetTasks finishes after empty confirmed', async () => {
+      state.tasks.value.waiting = [mockTask('sg_snap', { status: 'paused' })]
+      const ipc = createControlledPromise<void>()
+      mockResumeTask.mockReturnValue(asCancellable(ipc.promise) as never)
+      const snapshot = createControlledPromise<{
+        active: Task[]
+        waiting: Task[]
+        stopped: Task[]
+      }>()
+      mockGetTasks.mockReturnValue(asCancellable(snapshot.promise) as never)
+      const events = wireMover(state, actions)
+
+      const resumePromise = actions.resume('sg_snap')
+      await flushPromises()
+      actions.markResumeSuperseded('sg_snap')
+      ipc.resolve(undefined)
+      await flushPromises()
+
+      expect(mockGetTasks).toHaveBeenCalled()
+      expect(actions.isResumePending('sg_snap')).toBe(true)
+
+      events.handleTaskMove({
+        gid: 'sg_snap',
+        from: 'waiting',
+        to: 'active',
+        task: { gid: 'sg_snap', status: 'active' },
+      })
+      expect(state.tasks.value.active.some(t => t.gid === 'sg_snap')).toBe(false)
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['sg_snap'])
+
+      snapshot.resolve({
+        active: [],
+        waiting: [],
+        stopped: [mockTask('sg_snap', { status: 'complete' })],
+      })
+      await resumePromise
+
+      expect(state.tasks.value.active.some(t => t.gid === 'sg_snap')).toBe(false)
+      expect(state.tasks.value.stopped.some(t => t.gid === 'sg_snap')).toBe(true)
+      expect(actions.isResumePending('sg_snap')).toBe(false)
+    })
+
     it('should fetchTasks when move callback is unset after successful ResumeTask', async () => {
       state.tasks.value.stopped = [mockTask('sg_r_unset', { status: 'error' })]
       mockResumeTask.mockResolvedValue(undefined as never)
@@ -928,6 +1002,57 @@ describe('setupActions — integration', () => {
 
       expect(mockGetTasks).toHaveBeenCalled()
       expect(state.tasks.value.active.map(t => t.gid)).toEqual(['ghost'])
+    })
+
+    it('does not clear a newer overlapping resume gen when the batch finishes', async () => {
+      state.tasks.value.waiting = [
+        mockTask('A', { status: 'paused' }),
+        mockTask('B', { status: 'paused' }),
+      ]
+      const batchIpc = createControlledPromise<{ gid: string; ok: boolean }[]>()
+      const resumeIpc = createControlledPromise<void>()
+      mockBatchResume.mockReturnValue(asCancellable(batchIpc.promise) as never)
+      mockResumeTask.mockReturnValue(asCancellable(resumeIpc.promise) as never)
+      const events = wireMover(state, actions)
+
+      const batchPromise = actions.batchResume(['A', 'B'])
+      await flushPromises()
+      const resumePromise = actions.resume('A')
+      await flushPromises()
+
+      events.handleTaskMove({
+        gid: 'A',
+        from: 'waiting',
+        to: 'active',
+        task: { gid: 'A', status: 'active' },
+      })
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A', 'B'])
+
+      batchIpc.resolve([
+        { gid: 'A', ok: true },
+        { gid: 'B', ok: true },
+      ])
+      await batchPromise
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['B'])
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A'])
+      expect(actions.isResumePending('A')).toBe(true)
+      expect(mockGetTasks).not.toHaveBeenCalled()
+
+      events.handleTaskMove({
+        gid: 'A',
+        from: 'waiting',
+        to: 'active',
+        task: { gid: 'A', status: 'active' },
+      })
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A'])
+
+      resumeIpc.resolve(undefined)
+      await resumePromise
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A', 'B'])
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(actions.isResumePending('A')).toBe(false)
     })
   })
 

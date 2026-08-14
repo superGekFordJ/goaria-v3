@@ -569,6 +569,9 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     if (to === 'active' && actions.isResumePending(gid)) {
       return
     }
+    if (to === 'stopped') {
+      actions.markResumeSuperseded(gid)
+    }
 
     const byName = {
       active: tasks.value.active,

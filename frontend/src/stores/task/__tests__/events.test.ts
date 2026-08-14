@@ -1251,6 +1251,7 @@ describe('setupEvents', () => {
 
       expect(state.tasks.value.waiting).toHaveLength(0)
       expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['gid-term'])
+      expect(actions.markResumeSuperseded).toHaveBeenCalledWith('gid-term')
     })
   })
 
