@@ -57,7 +57,7 @@ export function setupActions(state: TaskState) {
   // Callback to restart polling if needed (will be injected by index.ts or polling.ts)
   let _restartPollingCallback: (() => void) | null = null
   let _stopPollingCallback: ((disableContext: boolean) => void) | null = null
-  let _moveTaskToActive: ((gid: string) => void) | null = null
+  let _moveTasksToActive: ((gids: string[]) => { missing: boolean }) | null = null
   // Per-GID resume op generation: terminal events during IPC mark superseded (-1)
   // so optimistic move does not overwrite a completed/error transition.
   let _resumeOpGen = 0
@@ -68,8 +68,12 @@ export function setupActions(state: TaskState) {
     _stopPollingCallback = stop
   }
 
-  function setMoveTaskToActive(fn: (gid: string) => void) {
-    _moveTaskToActive = fn
+  function setMoveTasksToActive(fn: (gids: string[]) => { missing: boolean }) {
+    _moveTasksToActive = fn
+  }
+
+  function isResumePending(gid: string): boolean {
+    return Boolean(gid) && _resumePendingGids.has(gid)
   }
 
   function markResumeSuperseded(gid: string) {
@@ -85,14 +89,14 @@ export function setupActions(state: TaskState) {
     return gen
   }
 
-  function takeConfirmedResumeGids(gids: string[], gen: number): string[] {
-    const confirmed: string[] = []
+  function confirmedResumeGids(gids: string[], gen: number): string[] {
+    return gids.filter(gid => Boolean(gid) && _resumePendingGids.get(gid) === gen)
+  }
+
+  function clearResumePending(gids: string[]): void {
     for (const gid of gids) {
-      const pending = _resumePendingGids.get(gid)
-      _resumePendingGids.delete(gid)
-      if (pending === gen) confirmed.push(gid)
+      if (gid) _resumePendingGids.delete(gid)
     }
-    return confirmed
   }
 
   function batchResumeOkGids(results: unknown, requested: string[]): string[] {
@@ -155,15 +159,18 @@ export function setupActions(state: TaskState) {
     return { active, waiting, stopped }
   }
 
-  async function applyOptimisticResume(gids: string[]) {
-    if (!_moveTaskToActive) {
+  function gidSeq(list: Task[]): string {
+    return list.map(t => t.gid).join(',')
+  }
+
+  async function applyOptimisticResume(gids: string[]): Promise<'fetched' | 'ok' | 'needs-fetch'> {
+    if (!_moveTasksToActive) {
       await fetchTasks()
-      return
+      return 'fetched'
     }
-    for (const gid of gids) {
-      clearStoppedSuppression(gid)
-      _moveTaskToActive(gid)
-    }
+    for (const gid of gids) clearStoppedSuppression(gid)
+    const result = _moveTasksToActive(gids)
+    return result.missing ? 'needs-fetch' : 'ok'
   }
 
   // --- Core Fetch Logic ---
@@ -358,11 +365,26 @@ export function setupActions(state: TaskState) {
         return false
       }
 
+      const resumeHold = new Map<string, { bucket: 'waiting' | 'stopped'; task: Task }>()
+      if (_resumePendingGids.size > 0) {
+        for (const t of tasks.value.waiting) {
+          if (t.gid && _resumePendingGids.has(t.gid)) {
+            resumeHold.set(t.gid, { bucket: 'waiting', task: t })
+          }
+        }
+        for (const t of tasks.value.stopped) {
+          if (t.gid && _resumePendingGids.has(t.gid) && !resumeHold.has(t.gid)) {
+            resumeHold.set(t.gid, { bucket: 'stopped', task: t })
+          }
+        }
+      }
+
       const active: Task[] = []
       _activeGidSet.clear()
       for (const t of res.active || []) {
         const gid = t?.gid
         if (!gid || _activeGidSet.has(gid)) continue
+        if (resumeHold.has(gid)) continue
         if (!shouldAdmitStoppedGid(gid)) continue
         _activeGidSet.add(gid)
         active.push(t)
@@ -373,6 +395,7 @@ export function setupActions(state: TaskState) {
       for (const t of res.waiting || []) {
         const gid = t?.gid
         if (!gid || _activeGidSet.has(gid) || _waitingGidSet.has(gid)) continue
+        if (resumeHold.has(gid)) continue
         if (!shouldAdmitStoppedGid(gid)) continue
         _waitingGidSet.add(gid)
         waiting.push(t)
@@ -381,20 +404,95 @@ export function setupActions(state: TaskState) {
       for (const t of [...active, ...waiting]) cacheMetadata(t)
 
       const oldCount = tasks.value.active.length + tasks.value.waiting.length
-      const newCount = active.length + waiting.length
-      const taskCompleted = newCount < oldCount
 
       const activeResult = mergeTasks(tasks.value.active, active)
       const waitingResult = mergeTasks(tasks.value.waiting, waiting)
       const stoppedChanged = _admitFromStopped.size > 0
-      const nextStopped = stoppedChanged
+      const admittedStopped = stoppedChanged
         ? tasks.value.stopped.filter(t => !_admitFromStopped.has(t.gid))
         : tasks.value.stopped
 
-      if (activeResult.changed || waitingResult.changed || stoppedChanged) {
+      let nextActive = activeResult.merged
+      let nextWaiting = waitingResult.merged
+      let nextStopped = admittedStopped
+
+      if (resumeHold.size > 0) {
+        const heldGids = new Set(resumeHold.keys())
+        nextActive = nextActive.filter(t => !heldGids.has(t.gid))
+
+        const mergedWaiting = new Map(nextWaiting.map(t => [t.gid, t]))
+        const restoredWaiting: Task[] = []
+        const seenWaiting = new Set<string>()
+        for (const t of tasks.value.waiting) {
+          const hold = resumeHold.get(t.gid)
+          if (hold?.bucket === 'waiting') {
+            restoredWaiting.push(hold.task)
+            seenWaiting.add(t.gid)
+            continue
+          }
+          const merged = t.gid ? mergedWaiting.get(t.gid) : undefined
+          if (merged && !heldGids.has(t.gid)) {
+            restoredWaiting.push(merged)
+            seenWaiting.add(t.gid)
+          }
+        }
+        for (const t of nextWaiting) {
+          if (!t.gid || seenWaiting.has(t.gid) || heldGids.has(t.gid)) continue
+          restoredWaiting.push(t)
+          seenWaiting.add(t.gid)
+        }
+        nextWaiting = restoredWaiting
+
+        const mergedStopped = new Map(nextStopped.map(t => [t.gid, t]))
+        const restoredStopped: Task[] = []
+        const seenStopped = new Set<string>()
+        for (const t of tasks.value.stopped) {
+          const hold = resumeHold.get(t.gid)
+          if (hold?.bucket === 'stopped') {
+            restoredStopped.push(hold.task)
+            seenStopped.add(t.gid)
+            continue
+          }
+          const merged = t.gid ? mergedStopped.get(t.gid) : undefined
+          if (merged && !heldGids.has(t.gid)) {
+            restoredStopped.push(merged)
+            seenStopped.add(t.gid)
+          }
+        }
+        for (const t of nextStopped) {
+          if (!t.gid || seenStopped.has(t.gid) || heldGids.has(t.gid)) continue
+          restoredStopped.push(t)
+          seenStopped.add(t.gid)
+        }
+        nextStopped = restoredStopped
+      }
+
+      const newCount = nextActive.length + nextWaiting.length
+      const taskCompleted = newCount < oldCount
+
+      const membershipUnchanged =
+        gidSeq(nextActive) === gidSeq(tasks.value.active) &&
+        gidSeq(nextWaiting) === gidSeq(tasks.value.waiting) &&
+        gidSeq(nextStopped) === gidSeq(tasks.value.stopped)
+      const freezeOnly =
+        resumeHold.size > 0 &&
+        membershipUnchanged &&
+        nextWaiting.every((t, i) => t === tasks.value.waiting[i]) &&
+        nextStopped.every((t, i) => t === tasks.value.stopped[i]) &&
+        nextActive.every((t, i) => t === tasks.value.active[i])
+
+      if (
+        !freezeOnly &&
+        (activeResult.changed ||
+          waitingResult.changed ||
+          stoppedChanged ||
+          nextActive !== activeResult.merged ||
+          nextWaiting !== waitingResult.merged ||
+          nextStopped !== admittedStopped)
+      ) {
         tasks.value = {
-          active: activeResult.merged,
-          waiting: waitingResult.merged,
+          active: nextActive,
+          waiting: nextWaiting,
           stopped: nextStopped,
         }
       }
@@ -405,10 +503,10 @@ export function setupActions(state: TaskState) {
       }
       _currStoppedSuppressedGids.clear()
 
-      queueMissingMetadataFromLists(activeResult.merged, waitingResult.merged)
+      queueMissingMetadataFromLists(nextActive, nextWaiting)
 
       throttledUpdateTrayIcon()
-      return { hasActiveTasks: active.length > 0 || waiting.length > 0, taskCompleted }
+      return { hasActiveTasks: nextActive.length > 0 || nextWaiting.length > 0, taskCompleted }
     } catch (err) {
       handleFetchError(err)
       return { hasActiveTasks: false, taskCompleted: false }
@@ -552,18 +650,25 @@ export function setupActions(state: TaskState) {
   }
 
   async function resume(gid: string) {
-    const gen = beginResumePending([gid])
+    const requested = [gid]
+    const gen = beginResumePending(requested)
     try {
       await ResumeTask(gid)
-      const confirmed = takeConfirmedResumeGids([gid], gen)
+      const confirmed = confirmedResumeGids(requested, gen)
       if (confirmed.length === 0) {
+        clearResumePending(requested)
         await fetchTasks()
         return
       }
-      await applyOptimisticResume(confirmed)
+      const outcome = await applyOptimisticResume(confirmed)
+      clearResumePending(requested)
+      if (outcome === 'needs-fetch') {
+        await fetchTasks()
+        return
+      }
       immediateUpdateTrayIcon()
     } catch (err) {
-      takeConfirmedResumeGids([gid], gen)
+      clearResumePending(requested)
       console.error(`Failed to resume task ${gid}:`, err)
       await fetchTasks()
     }
@@ -653,16 +758,21 @@ export function setupActions(state: TaskState) {
     try {
       const results = await BatchResume(gids)
       const engineOk = batchResumeOkGids(results, gids)
-      const confirmed = takeConfirmedResumeGids(engineOk, gen)
-      for (const gid of gids) _resumePendingGids.delete(gid)
+      const confirmed = confirmedResumeGids(engineOk, gen)
       if (confirmed.length === 0) {
+        clearResumePending(gids)
         await fetchTasks()
         return
       }
-      await applyOptimisticResume(confirmed)
+      const outcome = await applyOptimisticResume(confirmed)
+      clearResumePending(gids)
+      if (outcome === 'needs-fetch') {
+        await fetchTasks()
+        return
+      }
       immediateUpdateTrayIcon()
     } catch (err) {
-      for (const gid of gids) _resumePendingGids.delete(gid)
+      clearResumePending(gids)
       console.error('Batch resume failed:', err)
       await fetchTasks()
     }
@@ -750,7 +860,8 @@ export function setupActions(state: TaskState) {
     syncFromSnapshot,
     minimizeToTray,
     setPollingCallbacks,
-    setMoveTaskToActive,
+    setMoveTasksToActive,
+    isResumePending,
     markResumeSuperseded,
     clearStoppedSuppression,
     metadataPending, // Shared with events

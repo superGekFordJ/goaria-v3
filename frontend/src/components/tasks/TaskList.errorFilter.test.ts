@@ -487,6 +487,34 @@ describe('TaskList FLIP guards', () => {
     expect(flipMocks.play).toHaveBeenCalled()
   })
 
+  it('plays once when four paused waiting cards become active then skips the same-key follow-up', async () => {
+    taskStoreMock.waitingTasks = createTasks(4, 'paused')
+    taskStoreMock.activeTasks = []
+    uiStoreMock.activeTab = 'downloads'
+
+    mountTaskList()
+    await settle()
+    flipMocks.capture.mockClear()
+    flipMocks.play.mockClear()
+
+    const pausedKeys = ['task:gid-00', 'task:gid-01', 'task:gid-02', 'task:gid-03']
+    taskStoreMock.waitingTasks = []
+    taskStoreMock.activeTasks = createTasks(4, 'active')
+    await settle()
+
+    expect(flipMocks.capture).toHaveBeenCalledTimes(1)
+    expect(flipMocks.capture).toHaveBeenCalledWith(pausedKeys)
+    expect(flipMocks.play).toHaveBeenCalledTimes(1)
+
+    flipMocks.capture.mockClear()
+    flipMocks.play.mockClear()
+
+    taskStoreMock.activeTasks = createTasks(4, 'active')
+    await settle()
+    expect(flipMocks.capture).not.toHaveBeenCalled()
+    expect(flipMocks.play).not.toHaveBeenCalled()
+  })
+
   it('plays once for a prepend then skips the same-key follow-up', async () => {
     taskStoreMock.activeTasks = createTasks(2, 'active')
     uiStoreMock.activeTab = 'downloads'

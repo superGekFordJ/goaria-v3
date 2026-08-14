@@ -100,6 +100,45 @@ function asCancellable<T>(promise: Promise<T>): CancellablePromise<T> {
   }) as unknown as CancellablePromise<T>
 }
 
+function membershipKey(state: ReturnType<typeof setupState>) {
+  return [
+    state.tasks.value.active.map(t => t.gid).join(','),
+    state.tasks.value.waiting.map(t => t.gid).join(','),
+    state.tasks.value.stopped.map(t => t.gid).join(','),
+  ].join('|')
+}
+
+function watchMembership(state: ReturnType<typeof setupState>) {
+  let changes = 0
+  let last = membershipKey(state)
+  const stop = watch(
+    () => state.tasks.value,
+    () => {
+      const next = membershipKey(state)
+      if (next !== last) {
+        changes++
+        last = next
+      }
+    },
+    { flush: 'sync' },
+  )
+  return {
+    get changes() {
+      return changes
+    },
+    stop,
+  }
+}
+
+function wireMover(
+  state: ReturnType<typeof setupState>,
+  actions: ReturnType<typeof setupActions>,
+) {
+  const events = setupEvents(state, actions, {} as TaskPolling)
+  actions.setMoveTasksToActive(events.moveTasksToActive)
+  return events
+}
+
 // --- Tests ---
 
 describe('setupActions — integration', () => {
@@ -594,8 +633,7 @@ describe('setupActions — integration', () => {
         mockTask('sg_r1', { status: 'error', errorCode: '1', errorMessage: 'fail' }),
       ]
       mockResumeTask.mockResolvedValue(undefined as never)
-      const events = setupEvents(state, actions, {} as TaskPolling)
-      actions.setMoveTaskToActive(events.moveTaskToActive)
+      wireMover(state, actions)
 
       await actions.resume('sg_r1')
 
@@ -618,8 +656,7 @@ describe('setupActions — integration', () => {
         waiting: [],
         stopped: [mockTask('sg_race', { status: 'complete' })],
       } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
-      const events = setupEvents(state, actions, {} as TaskPolling)
-      actions.setMoveTaskToActive(events.moveTaskToActive)
+      wireMover(state, actions)
 
       const resumePromise = actions.resume('sg_race')
       actions.markResumeSuperseded('sg_race')
@@ -629,6 +666,37 @@ describe('setupActions — integration', () => {
       expect(mockGetTasks).toHaveBeenCalled()
       expect(state.tasks.value.active.some(t => t.gid === 'sg_race')).toBe(false)
       expect(state.tasks.value.stopped.some(t => t.gid === 'sg_race')).toBe(true)
+    })
+
+    it('does not revive a superseded GID from a late dest-active move', async () => {
+      state.tasks.value.waiting = [mockTask('sg_late', { status: 'paused' })]
+      const deferred = createControlledPromise<void>()
+      mockResumeTask.mockReturnValue(asCancellable(deferred.promise) as never)
+      mockGetTasks.mockResolvedValue({
+        active: [],
+        waiting: [],
+        stopped: [mockTask('sg_late', { status: 'complete' })],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      const events = wireMover(state, actions)
+
+      const resumePromise = actions.resume('sg_late')
+      await flushPromises()
+      actions.markResumeSuperseded('sg_late')
+      events.handleTaskMove({
+        gid: 'sg_late',
+        from: 'waiting',
+        to: 'active',
+        task: { gid: 'sg_late', status: 'active' },
+      })
+
+      expect(state.tasks.value.active.some(t => t.gid === 'sg_late')).toBe(false)
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['sg_late'])
+
+      deferred.resolve(undefined)
+      await resumePromise
+
+      expect(mockGetTasks).toHaveBeenCalled()
+      expect(state.tasks.value.active.some(t => t.gid === 'sg_late')).toBe(false)
     })
 
     it('should fetchTasks when move callback is unset after successful ResumeTask', async () => {
@@ -658,6 +726,35 @@ describe('setupActions — integration', () => {
 
       expect(mockGetTasks).toHaveBeenCalled()
     })
+
+    it('holds dest-active moves during ResumeTask then moves once on success', async () => {
+      state.tasks.value.waiting = [mockTask('sg_one', { status: 'paused' })]
+      const deferred = createControlledPromise<void>()
+      mockResumeTask.mockReturnValue(asCancellable(deferred.promise) as never)
+      const events = wireMover(state, actions)
+      const membership = watchMembership(state)
+
+      const resumePromise = actions.resume('sg_one')
+      await flushPromises()
+      events.handleTaskMove({
+        gid: 'sg_one',
+        from: 'waiting',
+        to: 'active',
+        task: { gid: 'sg_one', status: 'active' },
+      })
+
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['sg_one'])
+      expect(membership.changes).toBe(0)
+
+      deferred.resolve(undefined)
+      await resumePromise
+      membership.stop()
+
+      expect(mockGetTasks).not.toHaveBeenCalled()
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['sg_one'])
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(membership.changes).toBe(1)
+    })
   })
 
   describe('batchResume', () => {
@@ -670,13 +767,12 @@ describe('setupActions — integration', () => {
         { gid: 'sg_b1', ok: true },
         { gid: 'sg_b2', ok: true },
       ] as never)
-      const events = setupEvents(state, actions, {} as TaskPolling)
-      actions.setMoveTaskToActive(events.moveTaskToActive)
+      wireMover(state, actions)
 
       await actions.batchResume(['sg_b1', 'sg_b2'])
 
       expect(mockGetTasks).not.toHaveBeenCalled()
-      expect(state.tasks.value.active.map(t => t.gid).sort()).toEqual(['sg_b1', 'sg_b2'])
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['sg_b1', 'sg_b2'])
       expect(state.tasks.value.stopped).toHaveLength(0)
     })
 
@@ -689,8 +785,7 @@ describe('setupActions — integration', () => {
         { gid: 'sg_ok', ok: true },
         { gid: 'sg_fail', ok: false, error: 'unpause failed' },
       ] as never)
-      const events = setupEvents(state, actions, {} as TaskPolling)
-      actions.setMoveTaskToActive(events.moveTaskToActive)
+      wireMover(state, actions)
 
       await actions.batchResume(['sg_ok', 'sg_fail'])
 
@@ -710,6 +805,129 @@ describe('setupActions — integration', () => {
       await actions.batchResume(['sg_bf'])
 
       expect(mockGetTasks).toHaveBeenCalled()
+    })
+
+    it('holds dest-active moves during BatchResume then prepends waiting relative order in one assign', async () => {
+      state.tasks.value.waiting = ['A', 'B', 'C', 'D'].map(gid =>
+        mockTask(gid, { status: 'paused' }),
+      )
+      const deferred = createControlledPromise<
+        { gid: string; ok: boolean; error?: string }[]
+      >()
+      mockBatchResume.mockReturnValue(asCancellable(deferred.promise) as never)
+      const events = wireMover(state, actions)
+      const membership = watchMembership(state)
+
+      const resumePromise = actions.batchResume(['D', 'C', 'B', 'A'])
+      await flushPromises()
+      for (const gid of ['A', 'B', 'C', 'D']) {
+        events.handleTaskMove({
+          gid,
+          from: 'waiting',
+          to: 'active',
+          task: { gid, status: 'active' },
+        })
+      }
+
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A', 'B', 'C', 'D'])
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(membership.changes).toBe(0)
+
+      deferred.resolve([
+        { gid: 'D', ok: true },
+        { gid: 'C', ok: true },
+        { gid: 'B', ok: true },
+        { gid: 'A', ok: true },
+      ])
+      await resumePromise
+      membership.stop()
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A', 'B', 'C', 'D'])
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(mockGetTasks).not.toHaveBeenCalled()
+      expect(membership.changes).toBe(1)
+    })
+
+    it('moves only OK GIDs from a mixed paused batch in one assign', async () => {
+      state.tasks.value.waiting = ['A', 'B', 'C', 'D'].map(gid =>
+        mockTask(gid, { status: 'paused' }),
+      )
+      mockBatchResume.mockResolvedValue([
+        { gid: 'A', ok: true },
+        { gid: 'B', ok: false, error: 'unpause failed' },
+        { gid: 'C', ok: true },
+        { gid: 'D', ok: false, error: 'unpause failed' },
+      ] as never)
+      wireMover(state, actions)
+      const membership = watchMembership(state)
+
+      await actions.batchResume(['D', 'C', 'B', 'A'])
+      membership.stop()
+
+      expect(mockGetTasks).not.toHaveBeenCalled()
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A', 'C'])
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['B', 'D'])
+      expect(membership.changes).toBe(1)
+    })
+
+    it('does not assign or fetch when every confirmed GID is already active', async () => {
+      state.tasks.value.active = ['A', 'B', 'C', 'D'].map(gid => mockTask(gid))
+      mockBatchResume.mockResolvedValue(
+        ['A', 'B', 'C', 'D'].map(gid => ({ gid, ok: true })) as never,
+      )
+      wireMover(state, actions)
+      const membership = watchMembership(state)
+
+      await actions.batchResume(['A', 'B', 'C', 'D'])
+      membership.stop()
+
+      expect(mockGetTasks).not.toHaveBeenCalled()
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A', 'B', 'C', 'D'])
+      expect(membership.changes).toBe(0)
+    })
+
+    it('freezes in-flight fetchActiveTasks membership until BatchResume resolves', async () => {
+      state.tasks.value.waiting = ['A', 'B', 'C', 'D'].map(gid =>
+        mockTask(gid, { status: 'paused' }),
+      )
+      const deferred = createControlledPromise<
+        { gid: string; ok: boolean; error?: string }[]
+      >()
+      mockBatchResume.mockReturnValue(asCancellable(deferred.promise) as never)
+      mockGetActiveTasks.mockResolvedValue({
+        active: ['A', 'B', 'C', 'D'].map(gid => mockTask(gid)),
+        waiting: [],
+      } as unknown as { active: Task[]; waiting: Task[] })
+      wireMover(state, actions)
+
+      const resumePromise = actions.batchResume(['D', 'C', 'B', 'A'])
+      await flushPromises()
+      await actions.fetchActiveTasks()
+
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A', 'B', 'C', 'D'])
+      expect(state.tasks.value.active).toHaveLength(0)
+
+      deferred.resolve(['A', 'B', 'C', 'D'].map(gid => ({ gid, ok: true })))
+      await resumePromise
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A', 'B', 'C', 'D'])
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(mockGetTasks).not.toHaveBeenCalled()
+    })
+
+    it('fetches when a confirmed GID is missing from every list', async () => {
+      mockBatchResume.mockResolvedValue([{ gid: 'ghost', ok: true }] as never)
+      mockGetTasks.mockResolvedValue({
+        active: [mockTask('ghost')],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      wireMover(state, actions)
+
+      await actions.batchResume(['ghost'])
+
+      expect(mockGetTasks).toHaveBeenCalled()
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['ghost'])
     })
   })
 

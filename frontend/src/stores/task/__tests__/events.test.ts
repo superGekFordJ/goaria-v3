@@ -23,10 +23,12 @@ vi.mock('../../../../bindings/goaria-v3/internal/wailsapp/app.js', () => ({
 }))
 
 // Mock downloadGroups store to avoid Pinia setup in events tests
+const downloadGroupMocks = vi.hoisted(() => ({
+  scheduleAutoSyncImmediate: vi.fn(),
+}))
+
 vi.mock('../../downloadGroups', () => ({
-  useDownloadGroupStore: () => ({
-    scheduleAutoSyncImmediate: vi.fn(),
-  }),
+  useDownloadGroupStore: () => downloadGroupMocks,
 }))
 
 // --- Helpers ---
@@ -119,7 +121,8 @@ function createMockActions(): TaskActions {
     syncFromSnapshot: vi.fn(),
     minimizeToTray: vi.fn(),
     setPollingCallbacks: vi.fn(),
-    setMoveTaskToActive: vi.fn(),
+    setMoveTasksToActive: vi.fn(),
+    isResumePending: vi.fn(() => false),
     markResumeSuperseded: vi.fn(),
     clearStoppedSuppression: vi.fn(),
     metadataInFlight: vi.fn().mockReturnValue(false),
@@ -1212,6 +1215,79 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active[0].errorCode).toBe('')
       expect(state.tasks.value.active[0].errorMessage).toBe('')
       expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/stale.zip')
+    })
+
+    it('does not migrate lists while resume is pending for dest-active moves', () => {
+      actions.isResumePending = vi.fn((gid: string) => gid === 'gid-hold')
+      state.tasks.value.waiting = [mockTask('gid-hold', { status: 'paused' })]
+      const waiting = [...state.tasks.value.waiting]
+
+      events.handleTaskMove({
+        gid: 'gid-hold',
+        from: 'waiting',
+        to: 'active',
+        task: {
+          gid: 'gid-hold',
+          status: 'active',
+          files: [{ path: '/downloads/hold-meta.zip', uris: [] }],
+        },
+      })
+
+      expect(state.tasks.value.waiting).toEqual(waiting)
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(getMetadataCacheSize()).toBeGreaterThan(0)
+    })
+
+    it('still migrates to stopped while resume is pending', () => {
+      actions.isResumePending = vi.fn(() => true)
+      state.tasks.value.waiting = [mockTask('gid-term', { status: 'paused' })]
+
+      events.handleTaskMove({
+        gid: 'gid-term',
+        from: 'waiting',
+        to: 'stopped',
+        task: { gid: 'gid-term', status: 'complete' },
+      })
+
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['gid-term'])
+    })
+  })
+
+  describe('resume pending hold', () => {
+    it('skips resume-delta list migration while pending and still schedules group auto-sync', async () => {
+      actions.isResumePending = vi.fn((gid: string) => gid === 'gid-hold-delta')
+      state.tasks.value.waiting = [mockTask('gid-hold-delta', { status: 'paused' })]
+
+      await events.handleTaskDelta({ type: 'resume', gid: 'gid-hold-delta' })
+
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['gid-hold-delta'])
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(downloadGroupMocks.scheduleAutoSyncImmediate).toHaveBeenCalledWith('resume-delta')
+    })
+
+    it('still moves to stopped on complete while pending', async () => {
+      actions.isResumePending = vi.fn(() => true)
+      state.tasks.value.waiting = [mockTask('gid-hold-complete', { status: 'paused' })]
+
+      await events.handleTaskDelta({ type: 'complete', gid: 'gid-hold-complete' })
+
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['gid-hold-complete'])
+    })
+
+    it('still moves to stopped on error while pending', async () => {
+      actions.isResumePending = vi.fn(() => true)
+      state.tasks.value.waiting = [mockTask('gid-hold-error', { status: 'paused' })]
+
+      await events.handleTaskDelta({
+        type: 'error',
+        gid: 'gid-hold-error',
+        payload: { errorCode: '1', errorMessage: 'fail' },
+      })
+
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['gid-hold-error'])
     })
   })
 })

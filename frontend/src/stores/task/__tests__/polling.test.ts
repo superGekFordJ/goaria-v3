@@ -84,7 +84,8 @@ function createMockActions(): TaskActions {
     syncFromSnapshot: vi.fn(),
     minimizeToTray: vi.fn(),
     setPollingCallbacks: vi.fn(),
-    setMoveTaskToActive: vi.fn(),
+    setMoveTasksToActive: vi.fn(),
+    isResumePending: vi.fn(() => false),
     markResumeSuperseded: vi.fn(),
     clearStoppedSuppression: vi.fn(),
     metadataPending: new Set<string>(),
@@ -100,6 +101,7 @@ function createMockEvents(): TaskEvents {
     handleTaskDelta: vi.fn(),
     handleTaskMove: vi.fn(),
     moveTaskToActive: vi.fn(),
+    moveTasksToActive: vi.fn(),
     moveTaskToStopped: vi.fn(),
   }
 }

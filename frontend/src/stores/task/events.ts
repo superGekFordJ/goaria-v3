@@ -164,13 +164,13 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     )
   }
 
-  function moveTaskToActive(gid: string) {
+  function prepareResumeSurvivor(gid: string): { survivor: Task; alreadyActive: boolean } | null {
     const activeTask = tasks.value.active.find(t => t.gid === gid)
     const waitingTask = tasks.value.waiting.find(t => t.gid === gid)
     const stoppedTask = tasks.value.stopped.find(t => t.gid === gid)
     const sourceTask = waitingTask ?? stoppedTask
     const task = activeTask ?? sourceTask
-    if (!task) return
+    if (!task) return null
 
     if (activeTask && sourceTask) {
       backfillRichFields(activeTask, sourceTask)
@@ -190,17 +190,64 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     }
 
     actions.clearStoppedSuppression(gid)
+    return { survivor: surviving, alreadyActive: Boolean(activeTask) }
+  }
 
-    if (!waitingTask && !stoppedTask) {
-      tasks.value = { ...tasks.value }
-      return
+  function moveTasksToActive(gids: string[]): { missing: boolean } {
+    const requested: string[] = []
+    const requestedSet = new Set<string>()
+    for (const gid of gids) {
+      if (!gid || requestedSet.has(gid)) continue
+      requestedSet.add(gid)
+      requested.push(gid)
     }
 
+    const known = new Set<string>()
+    for (const list of [tasks.value.active, tasks.value.waiting, tasks.value.stopped]) {
+      for (const t of list) {
+        if (t.gid) known.add(t.gid)
+      }
+    }
+    const missing = requested.some(gid => !known.has(gid))
+
+    const moverGids = new Set<string>()
+    const prependBlock: Task[] = []
+    let collapse = false
+
+    const consider = (gid: string) => {
+      if (moverGids.has(gid)) return
+      const prepared = prepareResumeSurvivor(gid)
+      if (!prepared) return
+      moverGids.add(gid)
+      if (prepared.alreadyActive) {
+        collapse = true
+        return
+      }
+      prependBlock.push(prepared.survivor)
+    }
+
+    for (const t of tasks.value.waiting) {
+      if (t.gid && requestedSet.has(t.gid)) consider(t.gid)
+    }
+    for (const t of tasks.value.stopped) {
+      if (t.gid && requestedSet.has(t.gid)) consider(t.gid)
+    }
+
+    if (prependBlock.length === 0 && !collapse) {
+      return { missing }
+    }
+
+    const prependGids = new Set(prependBlock.map(t => t.gid))
     tasks.value = {
-      active: activeTask ? tasks.value.active : [surviving, ...tasks.value.active],
-      waiting: tasks.value.waiting.filter(t => t.gid !== gid),
-      stopped: tasks.value.stopped.filter(t => t.gid !== gid),
+      active: [...prependBlock, ...tasks.value.active.filter(t => !prependGids.has(t.gid))],
+      waiting: tasks.value.waiting.filter(t => !moverGids.has(t.gid)),
+      stopped: tasks.value.stopped.filter(t => !moverGids.has(t.gid)),
     }
+    return { missing }
+  }
+
+  function moveTaskToActive(gid: string) {
+    moveTasksToActive([gid])
   }
 
   function removeTaskFromState(gid: string) {
@@ -430,7 +477,9 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       }
 
       case 'resume': {
-        moveTaskToActive(delta.gid)
+        if (!actions.isResumePending(delta.gid)) {
+          moveTaskToActive(delta.gid)
+        }
         useDownloadGroupStore().scheduleAutoSyncImmediate('resume-delta')
         break
       }
@@ -517,6 +566,10 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       cacheMetadata(toTask(incoming))
     }
 
+    if (to === 'active' && actions.isResumePending(gid)) {
+      return
+    }
+
     const byName = {
       active: tasks.value.active,
       waiting: tasks.value.waiting,
@@ -599,6 +652,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     handleTaskDelta,
     handleTaskMove,
     moveTaskToActive,
+    moveTasksToActive,
     moveTaskToStopped, // Exposed for tests/polling
   }
 }
