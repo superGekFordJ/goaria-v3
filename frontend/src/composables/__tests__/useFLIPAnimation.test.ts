@@ -43,6 +43,20 @@ function setRowTop(el: HTMLElement, top: number): void {
   vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(mockRect(top, 100))
 }
 
+function invertDy(el: HTMLElement): number | null {
+  const match = el.style.transform.match(/translateY\((-?\d+(?:\.\d+)?)px\)/)
+  return match ? Number(match[1]) : null
+}
+
+function holdAnimationFrames(): FrameRequestCallback[] {
+  const queue: FrameRequestCallback[] = []
+  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+    queue.push(cb)
+    return queue.length
+  })
+  return queue
+}
+
 describe('useFLIPAnimation', () => {
   let rafMock: ReturnType<typeof vi.fn>
 
@@ -194,6 +208,32 @@ describe('useFLIPAnimation', () => {
     }).not.toThrow()
   })
 
+  it('after cleanup, a later below-threshold cycle keeps animation none', () => {
+    const container = makeContainer()
+    const containerRef = ref<HTMLElement | null>(container)
+    const { capture, play } = useFLIPAnimation(containerRef)
+
+    const els = setupRows(container, [{ key: 'a', top: 0 }])
+    const el = els[0]
+    el.classList.add('animate-spring-in')
+
+    capture()
+    setRowTop(el, 100)
+    play()
+    vi.advanceTimersByTime(700)
+
+    expect(el.style.animation).toBe('none')
+    expect(el.classList.contains('animate-spring-in')).toBe(false)
+
+    capture()
+    setRowTop(el, 101)
+    play()
+
+    expect(invertDy(el)).toBeNull()
+    expect(el.style.animation).toBe('none')
+    expect(el.classList.contains('animate-spring-in')).toBe(false)
+  })
+
   it('treats play() without capture() as all-entering from above and animates', () => {
     const container = makeContainer()
     const containerRef = ref<HTMLElement | null>(container)
@@ -209,5 +249,106 @@ describe('useFLIPAnimation', () => {
     // All keys undefined -> entering from above their final positions -> animated.
     expect(els[0].style.transform).not.toBe('')
     expect(els[1].style.transform).not.toBe('')
+  })
+
+  it('new key with Last at top inverts -height; existing yielder also -height', () => {
+    holdAnimationFrames()
+    const container = makeContainer()
+    const containerRef = ref<HTMLElement | null>(container)
+    const { capture, play } = useFLIPAnimation(containerRef)
+
+    setupRows(container, [{ key: 'a', top: 0 }])
+    capture()
+
+    const [enterer, yielder] = setupRows(container, [
+      { key: 'b', top: 0 },
+      { key: 'a', top: 100 },
+    ])
+    play()
+
+    expect(invertDy(enterer)).toBe(-100)
+    expect(invertDy(yielder)).toBe(-100)
+  })
+
+  it('consecutive prepends with Last at top: every enterer inverts -height', () => {
+    holdAnimationFrames()
+    const container = makeContainer()
+    const containerRef = ref<HTMLElement | null>(container)
+    const { capture, play } = useFLIPAnimation(containerRef)
+
+    const keys = ['seed']
+    setupRows(container, [{ key: 'seed', top: 0 }])
+
+    const enteringDy: Array<{ key: string; dy: number | null }> = []
+    for (let n = 1; n <= 4; n++) {
+      capture()
+      const next = `n${n}`
+      keys.unshift(next)
+      const els = setupRows(
+        container,
+        keys.map((key, index) => ({ key, top: index * 100 })),
+      )
+      play()
+      enteringDy.push({ key: next, dy: invertDy(els[0]) })
+    }
+
+    expect(enteringDy).toEqual([
+      { key: 'n1', dy: -100 },
+      { key: 'n2', dy: -100 },
+      { key: 'n3', dy: -100 },
+      { key: 'n4', dy: -100 },
+    ])
+  })
+
+  it('new key with Last at bottom still inverts -height into the bottom slot', () => {
+    holdAnimationFrames()
+    const container = makeContainer()
+    const containerRef = ref<HTMLElement | null>(container)
+    const { capture, play } = useFLIPAnimation(containerRef)
+
+    setupRows(container, [
+      { key: 'a', top: 0 },
+      { key: 'b', top: 100 },
+    ])
+    capture()
+
+    const bottomTop = 400
+    const [a, b, c] = setupRows(container, [
+      { key: 'a', top: 0 },
+      { key: 'b', top: 100 },
+      { key: 'c', top: bottomTop },
+    ])
+    play()
+
+    expect(invertDy(c)).toBe(-100)
+    expect(invertDy(a)).toBeNull()
+    expect(invertDy(b)).toBeNull()
+  })
+
+  it('key already in lastRects at the bottom, Last at top: positive MOVE deltaY', () => {
+    holdAnimationFrames()
+    const container = makeContainer()
+    const containerRef = ref<HTMLElement | null>(container)
+    const { capture, play } = useFLIPAnimation(containerRef)
+
+    const bottomTop = 300
+    setupRows(container, [
+      { key: 'a', top: 0 },
+      { key: 'b', top: 100 },
+      { key: 'c', top: 200 },
+      { key: 'd', top: bottomTop },
+    ])
+    capture()
+
+    const [d] = setupRows(container, [
+      { key: 'd', top: 0 },
+      { key: 'a', top: 100 },
+      { key: 'b', top: 200 },
+      { key: 'c', top: 300 },
+    ])
+    play()
+
+    expect(invertDy(d)).toBe(bottomTop)
+    expect(invertDy(d)).toBeGreaterThan(0)
   })
 })

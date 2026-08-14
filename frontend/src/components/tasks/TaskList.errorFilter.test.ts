@@ -423,4 +423,48 @@ describe('TaskList FLIP guards', () => {
     expect(flipMocks.capture).not.toHaveBeenCalled()
     expect(flipMocks.play).not.toHaveBeenCalled()
   })
+
+  it('skips capture and play on Downloads when keys and sizes are unchanged', async () => {
+    taskStoreMock.activeTasks = createTasks(3, 'active')
+    uiStoreMock.activeTab = 'downloads'
+
+    mountTaskList()
+    await settle()
+    flipMocks.capture.mockClear()
+    flipMocks.play.mockClear()
+
+    taskStoreMock.activeTasks = createTasks(3, 'active')
+    await settle()
+
+    expect(flipMocks.capture).not.toHaveBeenCalled()
+    expect(flipMocks.play).not.toHaveBeenCalled()
+  })
+
+  it('still plays on Downloads when a new key is prepended', async () => {
+    taskStoreMock.activeTasks = createTasks(2, 'active')
+    uiStoreMock.activeTab = 'downloads'
+
+    mountTaskList()
+    await settle()
+    flipMocks.play.mockClear()
+
+    taskStoreMock.activeTasks = [createTask(9), ...createTasks(2, 'active')]
+    await settle()
+
+    expect(flipMocks.play).toHaveBeenCalled()
+  })
+
+  it('still plays on Downloads when the same keys change card size', async () => {
+    taskStoreMock.activeTasks = createTasks(2, 'active')
+    uiStoreMock.activeTab = 'downloads'
+
+    mountTaskList()
+    await settle()
+    flipMocks.play.mockClear()
+
+    taskStoreMock.activeTasks = createTasks(2, 'paused')
+    await settle()
+
+    expect(flipMocks.play).toHaveBeenCalled()
+  })
 })

@@ -268,11 +268,34 @@
   // force layout for content nobody can see.
   const isPanelActive = ref(true)
 
+  function sameDisplayIdentity(
+    next: DisplayEntry[] | undefined,
+    prev: DisplayEntry[] | undefined,
+  ): boolean {
+    if (!next || !prev || next.length !== prev.length) return false
+    for (let i = 0; i < next.length; i++) {
+      if (next[i].key !== prev[i].key || next[i].size !== prev[i].size) return false
+    }
+    return true
+  }
+
+  // Downloads-only: same key+size sequence is a new array, not a reorder.
+  // A second capture/play on that identity replays Invert on every yielder
+  // (viewport-bottom looks like a late drop; the enterer clips above the port).
+  // Stopped tab is excluded so error-tag header growth still FLIPs.
+  function isDownloadsIdentitySkip(
+    next: DisplayEntry[] | undefined,
+    prev: DisplayEntry[] | undefined,
+  ): boolean {
+    return uiStore.activeTab === 'downloads' && sameDisplayIdentity(next, prev)
+  }
+
   // Pre-watcher captures First rects before Vue patches DOM
   watch(
     displayEntries,
-    () => {
+    (newList, oldList) => {
       if (!isPanelActive.value) return
+      if (isDownloadsIdentitySkip(newList, oldList)) return
       capture()
     },
     { flush: 'pre' },
@@ -335,6 +358,7 @@
       if (!oldList || oldList.length === 0) return
       // Reduced effects: snap to new positions instantly, no FLIP transition.
       if (uiStore.effectsTier === 'reduced') return
+      if (isDownloadsIdentitySkip(newList, oldList)) return
       nextTick(() => {
         play()
       })

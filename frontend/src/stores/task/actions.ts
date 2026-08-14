@@ -439,7 +439,7 @@ export function setupActions(state: TaskState) {
     }
   }
 
-  async function fetchTasks() {
+  async function fetchTasks(options?: { prependUnknownFrom?: Set<string> }) {
     try {
       const res = await GetTasks()
       consecutiveErrors.value = 0
@@ -449,10 +449,23 @@ export function setupActions(state: TaskState) {
 
       for (const t of [...active, ...waiting, ...stopped]) cacheMetadata(t)
 
+      let nextActive = active.map(applyMetadataFromCache)
+      let nextWaiting = waiting.map(applyMetadataFromCache)
+      const nextStopped = stopped.map(applyMetadataFromCache)
+
+      // Prepend in THIS assign. await fetchTasks() then a second tasks.value=
+      // (prependNewTasks) is two Vue flushes: TaskList capture/plays append,
+      // then a bottom→top MOVE that looks like the pre-e2fd1dee enter swap.
+      if (options?.prependUnknownFrom) {
+        const known = options.prependUnknownFrom
+        nextActive = prependUnknownGids(nextActive, known)
+        nextWaiting = prependUnknownGids(nextWaiting, known)
+      }
+
       const newTasks = {
-        active: active.map(applyMetadataFromCache),
-        waiting: waiting.map(applyMetadataFromCache),
-        stopped: stopped.map(applyMetadataFromCache),
+        active: nextActive,
+        waiting: nextWaiting,
+        stopped: nextStopped,
       }
 
       // Assign tasks FIRST so the async metadata callback operates on current state
@@ -468,33 +481,24 @@ export function setupActions(state: TaskState) {
 
   // --- User Actions ---
 
-  // Reorder newly-added tasks to the front so fetchTasks snapshots match the event-path prepend.
-  function prependNewTasks(knownGids: Set<string>) {
-    const active = tasks.value.active
-    const waiting = tasks.value.waiting
+  function prependUnknownGids(list: Task[], knownGids: Set<string>): Task[] {
+    const incoming = list.filter(t => !knownGids.has(t.gid))
+    if (incoming.length === 0) return list
+    return [...incoming, ...list.filter(t => knownGids.has(t.gid))]
+  }
 
-    const newActive = active.filter(t => !knownGids.has(t.gid))
-    const oldActive = active.filter(t => knownGids.has(t.gid))
-    const newWaiting = waiting.filter(t => !knownGids.has(t.gid))
-    const oldWaiting = waiting.filter(t => knownGids.has(t.gid))
-
-    if (newActive.length > 0 || newWaiting.length > 0) {
-      tasks.value = {
-        ...tasks.value,
-        active: [...newActive, ...oldActive],
-        waiting: [...newWaiting, ...oldWaiting],
-      }
-    }
+  function snapshotKnownDownloadGids(): Set<string> {
+    const knownGids = new Set<string>()
+    for (const t of tasks.value.active) knownGids.add(t.gid)
+    for (const t of tasks.value.waiting) knownGids.add(t.gid)
+    return knownGids
   }
 
   async function addUri(uri: string) {
     try {
+      const knownGids = snapshotKnownDownloadGids()
       const res = await AddUri(uri)
-      const knownGids = new Set<string>()
-      for (const t of tasks.value.active) knownGids.add(t.gid)
-      for (const t of tasks.value.waiting) knownGids.add(t.gid)
-      await fetchTasks()
-      prependNewTasks(knownGids)
+      await fetchTasks({ prependUnknownFrom: knownGids })
       immediateUpdateTrayIcon()
 
       if (
@@ -515,14 +519,11 @@ export function setupActions(state: TaskState) {
 
   async function batchAddUri(uris: string[]): Promise<BatchAddResult> {
     try {
+      const knownGids = snapshotKnownDownloadGids()
       const res = await BatchAddUri(uris)
       const downloadGroupStore = useDownloadGroupStore()
       downloadGroupStore.addPlaceholdersFromDownloadGroups(res.groups, 'batch-add')
-      const knownGids = new Set<string>()
-      for (const t of tasks.value.active) knownGids.add(t.gid)
-      for (const t of tasks.value.waiting) knownGids.add(t.gid)
-      await fetchTasks()
-      prependNewTasks(knownGids)
+      await fetchTasks({ prependUnknownFrom: knownGids })
       immediateUpdateTrayIcon()
       if (
         pollingContextEnabled.value &&

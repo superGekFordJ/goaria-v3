@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { computed, defineComponent, nextTick, watch } from 'vue'
+import { mount } from '@vue/test-utils'
 import type { CancellablePromise } from '@wailsio/runtime'
 import { setupState } from '../state'
 import { setupActions } from '../actions'
@@ -75,6 +77,10 @@ function mockTask(gid: string, overrides: Partial<Task> = {}): Task {
 
 function flushPromises() {
   return new Promise<void>(resolve => setTimeout(resolve, 0))
+}
+
+function activeOrder(state: ReturnType<typeof setupState>) {
+  return state.tasks.value.active.map(t => t.gid).join(',')
 }
 
 function createControlledPromise<T>() {
@@ -417,6 +423,146 @@ describe('setupActions — integration', () => {
       expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/first-add.zip')
       expect(state.tasks.value.active[0].dir).toBe('/downloads')
       expect(state.tasks.value.active[0].totalLength).toBe('4096')
+    })
+  })
+
+  describe('addUri same-flush prepend', () => {
+    it('addUri prepends unknown GIDs in the same fetchTasks assign as the snapshot', async () => {
+      mockAddUri.mockResolvedValue('c')
+      mockGetTasks.mockResolvedValue({
+        active: [mockTask('a'), mockTask('b'), mockTask('c')],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+
+      state.tasks.value = {
+        active: [mockTask('a'), mockTask('b')],
+        waiting: [],
+        stopped: [],
+      }
+
+      const preOrders: string[] = []
+      const postOrders: string[] = []
+      const Probe = defineComponent({
+        setup() {
+          const order = computed(() => activeOrder(state))
+          watch(
+            order,
+            next => {
+              preOrders.push(next)
+            },
+            { flush: 'pre' },
+          )
+          watch(
+            order,
+            next => {
+              postOrders.push(next)
+            },
+            { flush: 'post' },
+          )
+          return () => null
+        },
+      })
+      const probe = mount(Probe)
+
+      await actions.addUri('https://example.com/c.zip')
+      await nextTick()
+      probe.unmount()
+
+      expect(preOrders).toEqual(['c,a,b'])
+      expect(postOrders).toEqual(['c,a,b'])
+      expect(activeOrder(state)).toBe('c,a,b')
+    })
+
+    it('fetchTasks prependUnknownFrom prepends unknowns; all-known is a no-op', async () => {
+      mockGetTasks.mockResolvedValueOnce({
+        active: [mockTask('a'), mockTask('b'), mockTask('c')],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+
+      state.tasks.value = {
+        active: [mockTask('a'), mockTask('b')],
+        waiting: [],
+        stopped: [],
+      }
+
+      await actions.fetchTasks({ prependUnknownFrom: new Set(['a', 'b']) })
+      expect(activeOrder(state)).toBe('c,a,b')
+
+      mockGetTasks.mockResolvedValueOnce({
+        active: [mockTask('a'), mockTask('b'), mockTask('c')],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+
+      await actions.fetchTasks({
+        prependUnknownFrom: new Set(['a', 'b', 'c']),
+      })
+      expect(activeOrder(state)).toBe('a,b,c')
+    })
+
+    it('fetchActiveTasks never prepends: equal fields keep the array, field change follows backend order', async () => {
+      expect(actions.fetchActiveTasks.length).toBe(0)
+
+      state.tasks.value = {
+        active: [mockTask('c'), mockTask('a'), mockTask('b')],
+        waiting: [],
+        stopped: [],
+      }
+      const storedActive = state.tasks.value.active
+
+      mockGetActiveTasks.mockResolvedValueOnce({
+        active: [mockTask('a'), mockTask('b'), mockTask('c')],
+        waiting: [],
+      } as unknown as { active: Task[]; waiting: Task[] })
+
+      await actions.fetchActiveTasks()
+      expect(state.tasks.value.active).toBe(storedActive)
+      expect(activeOrder(state)).toBe('c,a,b')
+
+      mockGetActiveTasks.mockResolvedValueOnce({
+        active: [
+          mockTask('a', { downloadSpeed: '200' }),
+          mockTask('b'),
+          mockTask('c', { downloadSpeed: '200' }),
+        ],
+        waiting: [],
+      } as unknown as { active: Task[]; waiting: Task[] })
+
+      await actions.fetchActiveTasks()
+      expect(state.tasks.value.active).not.toBe(storedActive)
+      expect(activeOrder(state)).toBe('a,b,c')
+    })
+
+    it('in-flight task:add during AddUri still ends prepended (knownGids captured before RPC)', async () => {
+      const events = setupEvents(state, actions, {} as TaskPolling)
+      state.tasks.value = {
+        active: [mockTask('a'), mockTask('b')],
+        waiting: [],
+        stopped: [],
+      }
+
+      mockAddUri.mockImplementation(() =>
+        asCancellable(
+          (async () => {
+            await events.handleTaskDelta({
+              type: 'add',
+              gid: 'c',
+              payload: mockTask('c') as unknown as Record<string, unknown>,
+            })
+            return 'c'
+          })(),
+        ),
+      )
+      mockGetTasks.mockResolvedValue({
+        active: [mockTask('a'), mockTask('b'), mockTask('c')],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+
+      await actions.addUri('https://example.com/c.zip')
+      expect(activeOrder(state)).toBe('c,a,b')
     })
   })
 
