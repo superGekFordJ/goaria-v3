@@ -58,7 +58,7 @@ export function setupActions(state: TaskState) {
   let _restartPollingCallback: (() => void) | null = null
   let _stopPollingCallback: ((disableContext: boolean) => void) | null = null
   let _moveTasksToActive: ((gids: string[]) => { missing: boolean }) | null = null
-  // Per-GID resume op generation: terminal events during IPC mark superseded (-1)
+  // Per-GID resume op generation: terminal events during IPC stamp superseded as -gen
   // so optimistic move does not overwrite a completed/error transition.
   let _resumeOpGen = 0
   const _resumePendingGids = new Map<string, number>()
@@ -77,8 +77,10 @@ export function setupActions(state: TaskState) {
   }
 
   function markResumeSuperseded(gid: string) {
-    if (!gid || !_resumePendingGids.has(gid)) return
-    _resumePendingGids.set(gid, -1)
+    if (!gid) return
+    const pending = _resumePendingGids.get(gid)
+    if (pending === undefined || pending < 0) return
+    _resumePendingGids.set(gid, -pending)
   }
 
   function beginResumePending(gids: string[]): number {
@@ -97,7 +99,7 @@ export function setupActions(state: TaskState) {
     for (const gid of gids) {
       if (!gid) continue
       const pending = _resumePendingGids.get(gid)
-      if (pending === gen || pending === -1) _resumePendingGids.delete(gid)
+      if (pending === gen || pending === -gen) _resumePendingGids.delete(gid)
     }
   }
 
@@ -533,13 +535,58 @@ export function setupActions(state: TaskState) {
       for (const t of tasks.value.active) _activeGidSet.add(t.gid)
       for (const t of tasks.value.waiting) _waitingGidSet.add(t.gid)
 
+      const heldStopped = new Map<string, Task>()
+      if (_resumePendingGids.size > 0) {
+        for (const t of tasks.value.stopped) {
+          if (
+            t.gid &&
+            _resumePendingGids.has(t.gid) &&
+            !_activeGidSet.has(t.gid) &&
+            !_waitingGidSet.has(t.gid)
+          ) {
+            heldStopped.set(t.gid, t)
+          }
+        }
+      }
+
       const filteredStopped = stopped.filter(
         t => !_activeGidSet.has(t.gid) && !_waitingGidSet.has(t.gid),
       )
 
       const stoppedResult = mergeTasks(tasks.value.stopped, filteredStopped)
-      if (stoppedResult.changed) {
-        tasks.value = { ...tasks.value, stopped: stoppedResult.merged }
+      let nextStopped = stoppedResult.merged
+
+      if (heldStopped.size > 0) {
+        const mergedByGid = new Map(nextStopped.map(t => [t.gid, t]))
+        const restored: Task[] = []
+        const seen = new Set<string>()
+        for (const t of tasks.value.stopped) {
+          const held = t.gid ? heldStopped.get(t.gid) : undefined
+          if (held) {
+            restored.push(held)
+            seen.add(t.gid)
+            continue
+          }
+          const merged = t.gid ? mergedByGid.get(t.gid) : undefined
+          if (merged && !heldStopped.has(t.gid)) {
+            restored.push(merged)
+            seen.add(t.gid)
+          }
+        }
+        for (const t of nextStopped) {
+          if (!t.gid || seen.has(t.gid) || heldStopped.has(t.gid)) continue
+          if (_activeGidSet.has(t.gid) || _waitingGidSet.has(t.gid)) continue
+          restored.push(t)
+          seen.add(t.gid)
+        }
+        nextStopped = restored
+      }
+
+      const unchanged =
+        nextStopped.length === tasks.value.stopped.length &&
+        nextStopped.every((t, i) => t === tasks.value.stopped[i])
+      if (!unchanged) {
+        tasks.value = { ...tasks.value, stopped: nextStopped }
       }
       lastStoppedFetchTime = Date.now()
     } catch (err) {

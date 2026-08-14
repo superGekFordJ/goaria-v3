@@ -373,6 +373,58 @@ describe('setupActions — integration', () => {
       expect(stoppedGids).not.toContain('overlap')
       expect(stoppedGids).toContain('s1')
     })
+
+    it('keeps pending local stopped rows when GetStoppedTasks omits them', async () => {
+      state.tasks.value.stopped = [
+        mockTask('sg_s1', { status: 'error' }),
+        mockTask('sg_s2', { status: 'error' }),
+      ]
+      const deferred = createControlledPromise<{ gid: string; ok: boolean }[]>()
+      mockBatchResume.mockReturnValue(asCancellable(deferred.promise) as never)
+      mockGetStoppedTasks.mockResolvedValue([] as Task[])
+      wireMover(state, actions)
+      const membership = watchMembership(state)
+
+      const resumePromise = actions.batchResume(['sg_s2', 'sg_s1'])
+      await flushPromises()
+      await actions.fetchStoppedTasks()
+
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['sg_s1', 'sg_s2'])
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(membership.changes).toBe(0)
+
+      deferred.resolve([
+        { gid: 'sg_s1', ok: true },
+        { gid: 'sg_s2', ok: true },
+      ])
+      await resumePromise
+      membership.stop()
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['sg_s1', 'sg_s2'])
+      expect(state.tasks.value.stopped).toHaveLength(0)
+      expect(mockGetTasks).not.toHaveBeenCalled()
+    })
+
+    it('does not admit a pending live GID onto stopped', async () => {
+      state.tasks.value.waiting = [mockTask('sg_live', { status: 'paused' })]
+      const deferred = createControlledPromise<void>()
+      mockResumeTask.mockReturnValue(asCancellable(deferred.promise) as never)
+      mockGetStoppedTasks.mockResolvedValue([
+        mockTask('sg_live', { status: 'complete' }),
+        mockTask('sg_other', { status: 'complete' }),
+      ] as Task[])
+      wireMover(state, actions)
+
+      const resumePromise = actions.resume('sg_live')
+      await flushPromises()
+      await actions.fetchStoppedTasks()
+
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['sg_live'])
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['sg_other'])
+
+      deferred.resolve(undefined)
+      await resumePromise
+    })
   })
 
   // =====================================================
@@ -1052,6 +1104,60 @@ describe('setupActions — integration', () => {
 
       expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A', 'B'])
       expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(actions.isResumePending('A')).toBe(false)
+    })
+
+    it('does not clear a newer superseded gen when the older batch finishes', async () => {
+      state.tasks.value.waiting = [
+        mockTask('A', { status: 'paused' }),
+        mockTask('B', { status: 'paused' }),
+      ]
+      const batchIpc = createControlledPromise<{ gid: string; ok: boolean }[]>()
+      const resumeIpc = createControlledPromise<void>()
+      mockBatchResume.mockReturnValue(asCancellable(batchIpc.promise) as never)
+      mockResumeTask.mockReturnValue(asCancellable(resumeIpc.promise) as never)
+      mockGetTasks.mockResolvedValue({
+        active: [mockTask('B')],
+        waiting: [],
+        stopped: [mockTask('A', { status: 'complete' })],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      const events = wireMover(state, actions)
+
+      const batchPromise = actions.batchResume(['A', 'B'])
+      await flushPromises()
+      const resumePromise = actions.resume('A')
+      await flushPromises()
+
+      events.handleTaskMove({
+        gid: 'A',
+        from: 'waiting',
+        to: 'stopped',
+        task: { gid: 'A', status: 'complete' },
+      })
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['A'])
+      expect(actions.isResumePending('A')).toBe(true)
+
+      batchIpc.resolve([
+        { gid: 'A', ok: true },
+        { gid: 'B', ok: true },
+      ])
+      await batchPromise
+
+      expect(actions.isResumePending('A')).toBe(true)
+      events.handleTaskMove({
+        gid: 'A',
+        from: 'stopped',
+        to: 'active',
+        task: { gid: 'A', status: 'active' },
+      })
+      expect(state.tasks.value.active.some(t => t.gid === 'A')).toBe(false)
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['A'])
+
+      resumeIpc.resolve(undefined)
+      await resumePromise
+
+      expect(mockGetTasks).toHaveBeenCalled()
+      expect(state.tasks.value.active.some(t => t.gid === 'A')).toBe(false)
       expect(actions.isResumePending('A')).toBe(false)
     })
   })
