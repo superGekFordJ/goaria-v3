@@ -287,7 +287,11 @@
     next: DisplayEntry[] | undefined,
     prev: DisplayEntry[] | undefined,
   ): boolean {
-    return uiStore.activeTab === 'downloads' && sameDisplayIdentity(next, prev)
+    return (
+      !isGroupDetailMode.value &&
+      uiStore.activeTab === 'downloads' &&
+      sameDisplayIdentity(next, prev)
+    )
   }
 
   // Pre-watcher captures First rects before Vue patches DOM

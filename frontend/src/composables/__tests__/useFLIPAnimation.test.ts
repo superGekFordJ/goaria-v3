@@ -48,6 +48,31 @@ function invertDy(el: HTMLElement): number | null {
   return match ? Number(match[1]) : null
 }
 
+function translateY(el: HTMLElement): number {
+  return invertDy(el) ?? 0
+}
+
+function makeLayoutRow(key: string, layoutTop: number, height = 100): HTMLElement {
+  const el = document.createElement('div')
+  el.setAttribute('data-entry-key', key)
+  el.dataset.layoutTop = String(layoutTop)
+  vi.spyOn(el, 'getBoundingClientRect').mockImplementation(() => {
+    const top = Number(el.dataset.layoutTop) + translateY(el)
+    return mockRect(top, height)
+  })
+  return el
+}
+
+function installLayoutRows(
+  container: HTMLElement,
+  rows: Array<{ key: string; layoutTop: number }>,
+): HTMLElement[] {
+  const els = rows.map(r => makeLayoutRow(r.key, r.layoutTop))
+  els.forEach(el => container.appendChild(el))
+  vi.spyOn(container, 'querySelectorAll').mockReturnValue(els as unknown as NodeListOf<HTMLElement>)
+  return els
+}
+
 function holdAnimationFrames(): FrameRequestCallback[] {
   const queue: FrameRequestCallback[] = []
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
@@ -384,5 +409,58 @@ describe('useFLIPAnimation', () => {
 
     expect(invertDy(d)).toBe(bottomTop)
     expect(invertDy(d)).toBeGreaterThan(0)
+  })
+
+  it('leftover Invert capture with previousKeys: new key at old top still enters from-above', () => {
+    holdAnimationFrames()
+    const container = makeContainer()
+    const { capture, play } = useFLIPAnimation(ref(container))
+
+    installLayoutRows(container, [{ key: 'a', layoutTop: 0 }])
+    capture()
+    const [b, a] = installLayoutRows(container, [
+      { key: 'b', layoutTop: 0 },
+      { key: 'a', layoutTop: 100 },
+    ])
+    play()
+
+    b.dataset.layoutTop = '100'
+    a.dataset.layoutTop = '200'
+    const [c] = installLayoutRows(container, [{ key: 'c', layoutTop: 0 }])
+    vi.spyOn(container, 'querySelectorAll').mockReturnValue(
+      [c, b, a] as unknown as NodeListOf<HTMLElement>,
+    )
+
+    capture(['b', 'a'])
+    play()
+
+    expect(invertDy(c)).toBe(-100)
+    expect(invertDy(b)).toBe(-100)
+  })
+
+  it('same-key second play during leftover Invert replays yielder -height', () => {
+    holdAnimationFrames()
+    const container = makeContainer()
+    const { capture, play } = useFLIPAnimation(ref(container))
+
+    installLayoutRows(container, [
+      { key: 'a', layoutTop: 0 },
+      { key: 'b', layoutTop: 100 },
+    ])
+    capture()
+    const [enterer, yielder] = installLayoutRows(container, [
+      { key: 'c', layoutTop: 0 },
+      { key: 'a', layoutTop: 100 },
+      { key: 'b', layoutTop: 200 },
+    ])
+    play()
+    expect(invertDy(enterer)).toBe(-100)
+    expect(invertDy(yielder)).toBe(-100)
+
+    capture()
+    play()
+
+    expect(invertDy(yielder)).toBe(-100)
+    expect(invertDy(enterer)).toBe(-100)
   })
 })

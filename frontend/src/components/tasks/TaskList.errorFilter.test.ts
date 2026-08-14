@@ -470,4 +470,60 @@ describe('TaskList FLIP guards', () => {
 
     expect(flipMocks.play).toHaveBeenCalled()
   })
+
+  it('still plays on Stopped when keys and sizes are unchanged', async () => {
+    taskStoreMock.stoppedTasks = createTasks(3, 'complete')
+    uiStoreMock.activeTab = 'stopped'
+
+    mountTaskList()
+    await settle()
+    flipMocks.capture.mockClear()
+    flipMocks.play.mockClear()
+
+    taskStoreMock.stoppedTasks = createTasks(3, 'complete')
+    await settle()
+
+    expect(flipMocks.capture).toHaveBeenCalled()
+    expect(flipMocks.play).toHaveBeenCalled()
+  })
+
+  it('plays once for a prepend then skips the same-key follow-up', async () => {
+    taskStoreMock.activeTasks = createTasks(2, 'active')
+    uiStoreMock.activeTab = 'downloads'
+
+    mountTaskList()
+    await settle()
+    flipMocks.capture.mockClear()
+    flipMocks.play.mockClear()
+
+    taskStoreMock.activeTasks = [createTask(9), ...createTasks(2, 'active')]
+    await settle()
+    expect(flipMocks.capture).toHaveBeenCalledTimes(1)
+    expect(flipMocks.play).toHaveBeenCalledTimes(1)
+    flipMocks.capture.mockClear()
+    flipMocks.play.mockClear()
+
+    taskStoreMock.activeTasks = [createTask(9), ...createTasks(2, 'active')]
+    await settle()
+    expect(flipMocks.capture).not.toHaveBeenCalled()
+    expect(flipMocks.play).not.toHaveBeenCalled()
+  })
+
+  it('does not skip a same-tick prepend plus same-key replace', async () => {
+    taskStoreMock.activeTasks = createTasks(2, 'active')
+    uiStoreMock.activeTab = 'downloads'
+
+    mountTaskList()
+    await settle()
+    flipMocks.capture.mockClear()
+    flipMocks.play.mockClear()
+
+    const prepended = [createTask(9), ...createTasks(2, 'active')]
+    taskStoreMock.activeTasks = prepended
+    taskStoreMock.activeTasks = prepended.map(task => ({ ...task }))
+    await settle()
+
+    expect(flipMocks.capture).toHaveBeenCalled()
+    expect(flipMocks.play).toHaveBeenCalled()
+  })
 })
