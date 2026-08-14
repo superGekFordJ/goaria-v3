@@ -270,6 +270,40 @@ describe('useFLIPAnimation', () => {
     expect(invertDy(yielder)).toBe(-100)
   })
 
+  it('unfiltered capture after the new key is already at the old top is clone (invert ~0)', () => {
+    holdAnimationFrames()
+    const container = makeContainer()
+    const containerRef = ref<HTMLElement | null>(container)
+    const { capture, play } = useFLIPAnimation(containerRef)
+
+    const [enterer, yielder] = setupRows(container, [
+      { key: 'b', top: 0 },
+      { key: 'a', top: 100 },
+    ])
+    capture()
+    play()
+
+    expect(invertDy(enterer)).toBeNull()
+    expect(invertDy(yielder)).toBeNull()
+  })
+
+  it('capture restricted to previous keys: new key already at old top still enters from-above', () => {
+    holdAnimationFrames()
+    const container = makeContainer()
+    const containerRef = ref<HTMLElement | null>(container)
+    const { capture, play } = useFLIPAnimation(containerRef)
+
+    const [enterer, yielder] = setupRows(container, [
+      { key: 'b', top: 0 },
+      { key: 'a', top: 100 },
+    ])
+    capture(['a'])
+    play()
+
+    expect(invertDy(enterer)).toBe(-100)
+    expect(invertDy(yielder)).toBeNull()
+  })
+
   it('consecutive prepends with Last at top: every enterer inverts -height', () => {
     holdAnimationFrames()
     const container = makeContainer()

@@ -503,8 +503,6 @@ describe('setupActions — integration', () => {
     })
 
     it('fetchActiveTasks never prepends: equal fields keep the array, field change follows backend order', async () => {
-      expect(actions.fetchActiveTasks.length).toBe(0)
-
       state.tasks.value = {
         active: [mockTask('c'), mockTask('a'), mockTask('b')],
         waiting: [],

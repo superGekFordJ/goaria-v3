@@ -296,7 +296,7 @@
     (newList, oldList) => {
       if (!isPanelActive.value) return
       if (isDownloadsIdentitySkip(newList, oldList)) return
-      capture()
+      capture(oldList?.map(entry => entry.key))
     },
     { flush: 'pre' },
   )

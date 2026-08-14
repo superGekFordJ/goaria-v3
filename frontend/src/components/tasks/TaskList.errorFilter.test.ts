@@ -446,11 +446,14 @@ describe('TaskList FLIP guards', () => {
 
     mountTaskList()
     await settle()
+    flipMocks.capture.mockClear()
     flipMocks.play.mockClear()
 
     taskStoreMock.activeTasks = [createTask(9), ...createTasks(2, 'active')]
     await settle()
 
+    expect(flipMocks.capture).toHaveBeenCalled()
+    expect(flipMocks.capture).toHaveBeenCalledWith(['task:gid-00', 'task:gid-01'])
     expect(flipMocks.play).toHaveBeenCalled()
   })
 

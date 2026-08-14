@@ -10,7 +10,7 @@ export interface FLIPAnimationOptions {
 }
 
 export interface FLIPAnimationApi {
-  capture: () => void
+  capture: (previousKeys?: readonly string[]) => void
   play: () => void
   clear: () => void
 }
@@ -36,18 +36,19 @@ export function useFLIPAnimation(
   const lastRects = new Map<string, number>()
   const flipGeneration = new WeakMap<HTMLElement, number>()
 
-  function capture(): void {
+  function capture(previousKeys?: readonly string[]): void {
     const container = containerRef.value
     if (!container) return
     lastRects.clear()
+    const allowed = previousKeys ? new Set(previousKeys) : null
     const containerRect = container.getBoundingClientRect()
     const elements = container.querySelectorAll<HTMLElement>(keySelector)
     elements.forEach(el => {
       const key = el.getAttribute(keyAttribute)
-      if (key) {
-        const rect = el.getBoundingClientRect()
-        lastRects.set(key, rect.top - containerRect.top)
-      }
+      if (!key) return
+      if (allowed && !allowed.has(key)) return
+      const rect = el.getBoundingClientRect()
+      lastRects.set(key, rect.top - containerRect.top)
     })
   }
 
