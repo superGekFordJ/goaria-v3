@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { mergeTasks, isTaskEqual, dedupByGid } from '../utils'
+import { mergeTasks, isTaskEqual, dedupByGid, applyLocalOrder } from '../utils'
 import { clearMetadataCache, cacheMetadata } from '../metadata'
 import type { Task } from '../../../../bindings/goaria-v3/internal/rpc/models'
 
@@ -101,6 +101,38 @@ describe('Task Utils', () => {
       expect(result.changed).toBe(true)
       expect(result.merged[0].files![0].path).toBe('/real.iso')
       expect(result.merged[0]).not.toBe(oldTask) // Should be new object
+    })
+  })
+
+  describe('applyLocalOrder', () => {
+    it('keeps known GIDs in local order when backend order differs', () => {
+      const local = [mockTask('c'), mockTask('a'), mockTask('b')]
+      const incoming = [mockTask('a'), mockTask('b'), mockTask('c')]
+      expect(applyLocalOrder(local, incoming).map(t => t.gid)).toEqual(['c', 'a', 'b'])
+    })
+
+    it('leads with never-seen GIDs in incoming order', () => {
+      const local = [mockTask('b'), mockTask('a')]
+      const incoming = [mockTask('a'), mockTask('b'), mockTask('c'), mockTask('d')]
+      expect(applyLocalOrder(local, incoming).map(t => t.gid)).toEqual(['c', 'd', 'b', 'a'])
+    })
+
+    it('drops GIDs missing from the incoming list', () => {
+      const local = [mockTask('c'), mockTask('a'), mockTask('b')]
+      const incoming = [mockTask('a'), mockTask('c')]
+      expect(applyLocalOrder(local, incoming).map(t => t.gid)).toEqual(['c', 'a'])
+    })
+
+    it('returns the incoming reference for empty local, empty incoming, and matching order', () => {
+      const incoming = [mockTask('a'), mockTask('b')]
+      expect(applyLocalOrder([], incoming)).toBe(incoming)
+
+      const emptyIncoming: Task[] = []
+      expect(applyLocalOrder([mockTask('a')], emptyIncoming)).toBe(emptyIncoming)
+
+      const local = [mockTask('a'), mockTask('b'), mockTask('c')]
+      const matching = [mockTask('a'), mockTask('b'), mockTask('c')]
+      expect(applyLocalOrder(local, matching)).toBe(matching)
     })
   })
 })

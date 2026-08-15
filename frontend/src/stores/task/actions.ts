@@ -19,7 +19,7 @@ import {
 import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 import type { BatchAddResult } from '../../../bindings/goaria-v3/internal/tasks/models'
 import { cacheMetadata, applyMetadataFromCache } from './metadata'
-import { mergeTasks, dedupByGid } from './utils'
+import { mergeTasks, dedupByGid, applyLocalOrder } from './utils'
 import { cloneTaskGroupMetadata, mergeTaskGroupMetadata } from './grouping'
 import { useDownloadGroupStore } from '../downloadGroups'
 
@@ -417,8 +417,14 @@ export function setupActions(state: TaskState) {
 
       const oldCount = tasks.value.active.length + tasks.value.waiting.length
 
-      const activeResult = mergeTasks(tasks.value.active, active)
-      const waitingResult = mergeTasks(tasks.value.waiting, waiting)
+      const activeResult = mergeTasks(
+        tasks.value.active,
+        applyLocalOrder(tasks.value.active, active),
+      )
+      const waitingResult = mergeTasks(
+        tasks.value.waiting,
+        applyLocalOrder(tasks.value.waiting, waiting),
+      )
       const stoppedChanged = _admitFromStopped.size > 0
       const admittedStopped = stoppedChanged
         ? tasks.value.stopped.filter(t => !_admitFromStopped.has(t.gid))
@@ -434,24 +440,24 @@ export function setupActions(state: TaskState) {
 
         const mergedWaiting = new Map(nextWaiting.map(t => [t.gid, t]))
         const restoredWaiting: Task[] = []
-        const seenWaiting = new Set<string>()
+        const localWaitingGids = new Set<string>()
+        for (const t of tasks.value.waiting) {
+          if (t.gid) localWaitingGids.add(t.gid)
+        }
+        for (const t of nextWaiting) {
+          if (!t.gid || localWaitingGids.has(t.gid) || heldGids.has(t.gid)) continue
+          restoredWaiting.push(t)
+        }
         for (const t of tasks.value.waiting) {
           const hold = resumeHold.get(t.gid)
           if (hold?.bucket === 'waiting') {
             restoredWaiting.push(hold.task)
-            seenWaiting.add(t.gid)
             continue
           }
           const merged = t.gid ? mergedWaiting.get(t.gid) : undefined
           if (merged && !heldGids.has(t.gid)) {
             restoredWaiting.push(merged)
-            seenWaiting.add(t.gid)
           }
-        }
-        for (const t of nextWaiting) {
-          if (!t.gid || seenWaiting.has(t.gid) || heldGids.has(t.gid)) continue
-          restoredWaiting.push(t)
-          seenWaiting.add(t.gid)
         }
         nextWaiting = restoredWaiting
 
@@ -604,8 +610,8 @@ export function setupActions(state: TaskState) {
 
       for (const t of [...active, ...waiting, ...stopped]) cacheMetadata(t)
 
-      let nextActive = active.map(applyMetadataFromCache)
-      let nextWaiting = waiting.map(applyMetadataFromCache)
+      let nextActive = applyLocalOrder(tasks.value.active, active).map(applyMetadataFromCache)
+      let nextWaiting = applyLocalOrder(tasks.value.waiting, waiting).map(applyMetadataFromCache)
       const nextStopped = stopped.map(applyMetadataFromCache)
 
       // Prepend in THIS assign. await fetchTasks() then a second tasks.value=
@@ -872,8 +878,8 @@ export function setupActions(state: TaskState) {
       for (const t of [...active, ...waiting, ...stopped]) cacheMetadata(t)
 
       tasks.value = {
-        active: active.map(applyMetadataFromCache),
-        waiting: waiting.map(applyMetadataFromCache),
+        active: applyLocalOrder(tasks.value.active, active).map(applyMetadataFromCache),
+        waiting: applyLocalOrder(tasks.value.waiting, waiting).map(applyMetadataFromCache),
         stopped: stopped.map(applyMetadataFromCache),
       }
       lastStoppedTasksRef = tasks.value.stopped

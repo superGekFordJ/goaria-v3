@@ -1,11 +1,11 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { computed, defineComponent, nextTick, watch } from 'vue'
 import { mount } from '@vue/test-utils'
 import type { CancellablePromise } from '@wailsio/runtime'
 import { setupState } from '../state'
 import { setupActions } from '../actions'
 import { setupEvents } from '../events'
-import type { TaskPolling } from '../polling'
+import { setupPolling, type TaskPolling } from '../polling'
 import { clearMetadataCache } from '../metadata'
 import type { Task } from '../../../../bindings/goaria-v3/internal/rpc/models'
 
@@ -38,12 +38,20 @@ vi.mock('../../../../bindings/goaria-v3/internal/wailsapp/app.js', () => ({
   UpdateTrayState: vi.fn(),
 }))
 
+vi.mock('../../events', () => ({
+  subscribeToTaskEvents: vi.fn(),
+  unsubscribeFromTaskEvents: vi.fn(),
+  subscribeToTaskMoveEvent: vi.fn(),
+  unsubscribeFromTaskMoveEvent: vi.fn(),
+}))
+
 import {
   GetTasks,
   GetActiveTasks,
   GetStoppedTasks,
   GetTaskMetadata,
   AddUri,
+  PauseTask,
   ResumeTask,
   BatchResume,
   GetFullSnapshot,
@@ -54,6 +62,7 @@ const mockGetStoppedTasks = vi.mocked(GetStoppedTasks)
 const mockGetTasks = vi.mocked(GetTasks)
 const mockGetTaskMetadata = vi.mocked(GetTaskMetadata)
 const mockAddUri = vi.mocked(AddUri)
+const mockPauseTask = vi.mocked(PauseTask)
 const mockResumeTask = vi.mocked(ResumeTask)
 const mockBatchResume = vi.mocked(BatchResume)
 const mockGetFullSnapshot = vi.mocked(GetFullSnapshot)
@@ -81,6 +90,10 @@ function flushPromises() {
 
 function activeOrder(state: ReturnType<typeof setupState>) {
   return state.tasks.value.active.map(t => t.gid).join(',')
+}
+
+function waitingOrder(state: ReturnType<typeof setupState>) {
+  return state.tasks.value.waiting.map(t => t.gid).join(',')
 }
 
 function createControlledPromise<T>() {
@@ -565,7 +578,7 @@ describe('setupActions — integration', () => {
       expect(activeOrder(state)).toBe('c,a,b')
     })
 
-    it('fetchTasks prependUnknownFrom prepends unknowns; all-known is a no-op', async () => {
+    it('fetchTasks prependUnknownFrom prepends unknowns; all-known keeps local order', async () => {
       mockGetTasks.mockResolvedValueOnce({
         active: [mockTask('a'), mockTask('b'), mockTask('c')],
         waiting: [],
@@ -590,10 +603,10 @@ describe('setupActions — integration', () => {
       await actions.fetchTasks({
         prependUnknownFrom: new Set(['a', 'b', 'c']),
       })
-      expect(activeOrder(state)).toBe('a,b,c')
+      expect(activeOrder(state)).toBe('c,a,b')
     })
 
-    it('fetchActiveTasks never prepends: equal fields keep the array, field change follows backend order', async () => {
+    it('fetchActiveTasks never hoists known GIDs; field-change polls keep local order', async () => {
       state.tasks.value = {
         active: [mockTask('c'), mockTask('a'), mockTask('b')],
         waiting: [],
@@ -621,7 +634,7 @@ describe('setupActions — integration', () => {
 
       await actions.fetchActiveTasks()
       expect(state.tasks.value.active).not.toBe(storedActive)
-      expect(activeOrder(state)).toBe('a,b,c')
+      expect(activeOrder(state)).toBe('c,a,b')
     })
 
     it('in-flight task:add during AddUri still ends prepended (knownGids captured before RPC)', async () => {
@@ -652,6 +665,246 @@ describe('setupActions — integration', () => {
 
       await actions.addUri('https://example.com/c.zip')
       expect(activeOrder(state)).toBe('c,a,b')
+    })
+  })
+
+  describe('local order on full reads', () => {
+    let polling: ReturnType<typeof setupPolling> | undefined
+
+    afterEach(() => {
+      polling?.stopPolling(true)
+      polling = undefined
+    })
+
+    function wireRealPolling() {
+      const events = setupEvents(state, actions, {} as TaskPolling)
+      const nextPolling = setupPolling(state, actions, () => events)
+      polling = nextPolling
+      actions.setPollingCallbacks(nextPolling.startPolling, nextPolling.stopPolling)
+      state.pollingContextEnabled.value = true
+      state.isWindowVisible.value = true
+      return { events, polling: nextPolling }
+    }
+
+    it('keeps sequential addUri newest-first when backend returns FIFO', async () => {
+      mockAddUri.mockResolvedValueOnce('a')
+      mockGetTasks.mockResolvedValueOnce({
+        active: [mockTask('a')],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      await actions.addUri('https://example.com/a.zip')
+      expect(activeOrder(state)).toBe('a')
+
+      mockAddUri.mockResolvedValueOnce('b')
+      mockGetTasks.mockResolvedValueOnce({
+        active: [mockTask('a'), mockTask('b')],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      await actions.addUri('https://example.com/b.zip')
+      expect(activeOrder(state)).toBe('b,a')
+
+      mockAddUri.mockResolvedValueOnce('c')
+      mockGetTasks.mockResolvedValueOnce({
+        active: [mockTask('a'), mockTask('b'), mockTask('c')],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      await actions.addUri('https://example.com/c.zip')
+      expect(activeOrder(state)).toBe('c,b,a')
+    })
+
+    it('plain fetchTasks keeps local order and leads with never-seen GIDs', async () => {
+      state.tasks.value = {
+        active: [mockTask('c'), mockTask('a'), mockTask('b')],
+        waiting: [],
+        stopped: [],
+      }
+
+      mockGetTasks.mockResolvedValueOnce({
+        active: [mockTask('a'), mockTask('b'), mockTask('c')],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      await actions.fetchTasks()
+      expect(activeOrder(state)).toBe('c,a,b')
+
+      mockGetTasks.mockResolvedValueOnce({
+        active: [mockTask('a'), mockTask('b'), mockTask('c'), mockTask('d')],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      await actions.fetchTasks()
+      expect(activeOrder(state)).toBe('d,c,a,b')
+
+      mockGetTasks.mockResolvedValueOnce({
+        active: [mockTask('a'), mockTask('c')],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      await actions.fetchTasks()
+      expect(activeOrder(state)).toBe('c,a')
+    })
+
+    it('pause keeps surviving active order and puts the paused GID at the top of waiting', async () => {
+      mockPauseTask.mockResolvedValue(undefined as never)
+      state.tasks.value = {
+        active: [mockTask('c'), mockTask('a'), mockTask('b')],
+        waiting: [mockTask('w1', { status: 'paused' })],
+        stopped: [],
+      }
+      mockGetTasks.mockResolvedValue({
+        active: [mockTask('b'), mockTask('c')],
+        waiting: [mockTask('w1', { status: 'paused' }), mockTask('a', { status: 'paused' })],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+
+      await actions.pause('a')
+
+      expect(activeOrder(state)).toBe('c,b')
+      expect(waitingOrder(state)).toBe('a,w1')
+    })
+
+    it('waiting lists follow the same local-order rule on fetchTasks and fetchActiveTasks', async () => {
+      const paused = (gid: string) => mockTask(gid, { status: 'paused' })
+      state.tasks.value = {
+        active: [],
+        waiting: [paused('w2'), paused('w1')],
+        stopped: [],
+      }
+
+      mockGetTasks.mockResolvedValue({
+        active: [],
+        waiting: [paused('w1'), paused('w2'), paused('w3')],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      await actions.fetchTasks()
+      expect(waitingOrder(state)).toBe('w3,w2,w1')
+
+      state.tasks.value = {
+        active: [],
+        waiting: [paused('w2'), paused('w1')],
+        stopped: [],
+      }
+      mockGetActiveTasks.mockResolvedValue({
+        active: [],
+        waiting: [paused('w1'), paused('w2'), paused('w3')],
+      } as unknown as { active: Task[]; waiting: Task[] })
+      await actions.fetchActiveTasks()
+      expect(waitingOrder(state)).toBe('w3,w2,w1')
+    })
+
+    it('places a never-seen waiting GID first while a resume hold is active', async () => {
+      state.tasks.value.waiting = ['A', 'B', 'C', 'D'].map(gid =>
+        mockTask(gid, { status: 'paused' }),
+      )
+      const deferred = createControlledPromise<{ gid: string; ok: boolean; error?: string }[]>()
+      mockBatchResume.mockReturnValue(asCancellable(deferred.promise) as never)
+      mockGetActiveTasks.mockResolvedValue({
+        active: [],
+        waiting: [mockTask('fresh', { status: 'paused' })],
+      } as unknown as { active: Task[]; waiting: Task[] })
+      wireMover(state, actions)
+
+      const resumePromise = actions.batchResume(['D', 'C', 'B', 'A'])
+      await flushPromises()
+      await actions.fetchActiveTasks()
+
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['fresh', 'A', 'B', 'C', 'D'])
+      expect(state.tasks.value.active).toHaveLength(0)
+
+      const membership = watchMembership(state)
+      deferred.resolve(['A', 'B', 'C', 'D'].map(gid => ({ gid, ok: true })))
+      await resumePromise
+      membership.stop()
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A', 'B', 'C', 'D'])
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['fresh'])
+      expect(mockGetTasks).not.toHaveBeenCalled()
+      expect(membership.changes).toBe(1)
+    })
+
+    it('addUri restart poll cannot flatten order (real setupPolling)', async () => {
+      wireRealPolling()
+      state.tasks.value = {
+        active: [mockTask('a'), mockTask('b')],
+        waiting: [],
+        stopped: [],
+      }
+
+      mockAddUri.mockResolvedValue('c')
+      mockGetTasks.mockResolvedValue({
+        active: [mockTask('a'), mockTask('b'), mockTask('c')],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      mockGetActiveTasks.mockResolvedValue({
+        active: [
+          mockTask('a', { downloadSpeed: '200' }),
+          mockTask('b', { downloadSpeed: '200' }),
+          mockTask('c', { downloadSpeed: '200' }),
+        ],
+        waiting: [],
+      } as unknown as { active: Task[]; waiting: Task[] })
+
+      const preOrders: string[] = []
+      const postOrders: string[] = []
+      const Probe = defineComponent({
+        setup() {
+          const order = computed(() => activeOrder(state))
+          watch(
+            order,
+            next => {
+              preOrders.push(next)
+            },
+            { flush: 'pre' },
+          )
+          watch(
+            order,
+            next => {
+              postOrders.push(next)
+            },
+            { flush: 'post' },
+          )
+          return () => null
+        },
+      })
+      const probe = mount(Probe)
+
+      await actions.addUri('https://example.com/c.zip')
+      await flushPromises()
+      await nextTick()
+      probe.unmount()
+
+      expect(preOrders).toEqual(['c,a,b'])
+      expect(postOrders).toEqual(['c,a,b'])
+      expect(activeOrder(state)).toBe('c,a,b')
+      expect(mockGetActiveTasks).toHaveBeenCalled()
+    })
+
+    it('window focus re-sync keeps local order', async () => {
+      const wired = wireRealPolling()
+      state.tasks.value = {
+        active: [mockTask('c'), mockTask('a'), mockTask('b')],
+        waiting: [],
+        stopped: [],
+      }
+      mockGetActiveTasks.mockResolvedValue({
+        active: [
+          mockTask('a', { downloadSpeed: '200' }),
+          mockTask('b', { downloadSpeed: '200' }),
+          mockTask('c', { downloadSpeed: '200' }),
+        ],
+        waiting: [],
+      } as unknown as { active: Task[]; waiting: Task[] })
+
+      wired.polling.setWindowVisibility(false)
+      wired.polling.setWindowVisibility(true)
+      await flushPromises()
+
+      expect(activeOrder(state)).toBe('c,a,b')
+      expect(mockGetActiveTasks).toHaveBeenCalled()
     })
   })
 

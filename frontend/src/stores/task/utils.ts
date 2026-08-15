@@ -124,6 +124,8 @@ export function mergeTasks(oldList: Task[], newList: Task[]): { merged: Task[]; 
 const _mergeOldMap = new Map<string, Task>()
 const _mergeOldGids = new Set<string>()
 const _dedupGidSet = new Set<string>()
+const _localOrderGids = new Set<string>()
+const _incomingKnown = new Map<string, Task>()
 export function dedupByGid(list: Task[]): Task[] {
   _dedupGidSet.clear()
   return (list || []).filter(t => {
@@ -132,4 +134,34 @@ export function dedupByGid(list: Task[]): Task[] {
     _dedupGidSet.add(gid)
     return true
   })
+}
+
+/**
+ * Keep local row order; never-seen GIDs lead in incoming order.
+ * Membership still comes from `incoming` (local-only GIDs drop out).
+ */
+export function applyLocalOrder(localList: Task[], incoming: Task[]): Task[] {
+  if (incoming.length === 0 || localList.length === 0) return incoming
+
+  _localOrderGids.clear()
+  for (const t of localList) {
+    if (t?.gid) _localOrderGids.add(t.gid)
+  }
+
+  const ordered: Task[] = []
+  _incomingKnown.clear()
+  for (const t of incoming) {
+    const gid = t?.gid
+    if (!gid || !_localOrderGids.has(gid)) ordered.push(t)
+    else _incomingKnown.set(gid, t)
+  }
+  if (_incomingKnown.size === 0) return incoming
+
+  for (const t of localList) {
+    const kept = t.gid ? _incomingKnown.get(t.gid) : undefined
+    if (kept) ordered.push(kept)
+  }
+  const unchanged =
+    ordered.length === incoming.length && ordered.every((t, i) => t === incoming[i])
+  return unchanged ? incoming : ordered
 }
