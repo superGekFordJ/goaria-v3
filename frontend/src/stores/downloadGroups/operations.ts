@@ -14,6 +14,8 @@ import {
   normalizeRefreshHint,
   createRejectedOperationResult,
   getTaskDownloadGroupId,
+  snapshotGroupResumeHoldGids,
+  succeededOperationItemGids,
   type DownloadGroupOperationAction,
 } from './utils'
 
@@ -117,9 +119,25 @@ export function useDownloadGroupOperations(
   }
 
   function resumeGroup(groupKey: string) {
-    return runGroupOperation('resume', groupKey, normalizedKey =>
-      ResumeDownloadGroup(normalizedKey),
-    )
+    return runGroupOperation('resume', groupKey, async normalizedKey => {
+      const taskStore = useTaskStore()
+      const requested = snapshotGroupResumeHoldGids(
+        normalizedKey,
+        taskStore.waitingTasks,
+        currentDetailKey.value,
+        currentDetail.value?.tasks?.waiting,
+      )
+      let result: DownloadGroupOperationResult | undefined
+      await taskStore.runHeldResume(
+        requested,
+        async () => {
+          result = await ResumeDownloadGroup(normalizedKey)
+          return succeededOperationItemGids(result)
+        },
+        { recoverSnapshot: false },
+      )
+      return result ?? createRejectedOperationResult('resume', normalizedKey)
+    })
   }
 
   function removeGroup(groupKey: string, deleteFiles: boolean) {

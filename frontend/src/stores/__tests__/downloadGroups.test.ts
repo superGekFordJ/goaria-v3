@@ -13,6 +13,10 @@ import {
   buildInlineTaskListEntries,
   isTerminalDownloadGroupCard,
 } from '../downloadGroups'
+import {
+  snapshotGroupResumeHoldGids,
+  succeededOperationItemGids,
+} from '../downloadGroups/utils'
 import type {
   DownloadGroupCard,
   DownloadGroupDetailEnvelope,
@@ -60,6 +64,15 @@ const taskStoreMock = vi.hoisted(() => ({
     if (this.__state) this.__state.stoppedTasks = value
   },
   fetchTasks: vi.fn().mockResolvedValue(undefined),
+  runHeldResume: vi.fn(
+    async (
+      _gids: string[],
+      getEngineOkGids: () => Promise<string[]>,
+      _options?: { recoverSnapshot?: boolean },
+    ) => {
+      await getEngineOkGids()
+    },
+  ),
   clearSelection: vi.fn(),
   clearSelectedGroup: vi.fn(),
   selectedGids: new Set<string>(),
@@ -194,6 +207,15 @@ describe('download group store', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     taskStoreMock.fetchTasks.mockResolvedValue(undefined)
+    taskStoreMock.runHeldResume.mockImplementation(
+      async (
+        _gids: string[],
+        getEngineOkGids: () => Promise<string[]>,
+        _options?: { recoverSnapshot?: boolean },
+      ) => {
+        await getEngineOkGids()
+      },
+    )
     taskStoreMock.clearSelection.mockClear()
     taskStoreMock.clearSelectedGroup.mockClear()
     taskStoreMock.selectedGids = new Set(['gid-selected-one', 'gid-selected-two'])
@@ -892,6 +914,13 @@ describe('download group store', () => {
     expect(bindingMocks.BatchPause).not.toHaveBeenCalled()
     expect(bindingMocks.RemoveTask).not.toHaveBeenCalled()
     expect(bindingMocks.BatchRemove).not.toHaveBeenCalled()
+
+    bindingMocks.ResumeDownloadGroup.mockResolvedValueOnce(operationResult({ action: 'resume' }))
+    await store.resumeGroup('dg-boundary')
+
+    expect(bindingMocks.ResumeDownloadGroup).toHaveBeenCalledWith('dg-boundary')
+    expect(bindingMocks.BatchResume).not.toHaveBeenCalled()
+    expect(bindingMocks.ResumeTask).not.toHaveBeenCalled()
   })
 
   it('cloneDownloadGroup preserves generated name_status for placeholders', () => {
@@ -1018,5 +1047,315 @@ describe('download group store', () => {
     expect(bindingMocks.GetDownloadGroups).toHaveBeenCalledTimes(1)
 
     store.stopAutoSync()
+  })
+
+  it('resumeGroup snapshots paused waiting GIDs before ResumeDownloadGroup and does not send member GIDs', async () => {
+    taskStoreMock.waitingTasks = [
+      groupedTask('gid-paused-a', 'dg-op', { status: 'paused' }),
+      groupedTask('gid-queued', 'dg-op', { status: 'waiting' }),
+      groupedTask('gid-other', 'dg-other', { status: 'paused' }),
+      groupedTask('gid-paused-b', 'dg-op', { status: 'paused' }),
+    ]
+    taskStoreMock.activeTasks = [groupedTask('gid-active', 'dg-op', { status: 'active' })]
+    taskStoreMock.stoppedTasks = [groupedTask('gid-complete', 'dg-op', { status: 'complete' })]
+    const ipc = deferred<DownloadGroupOperationResult>()
+    bindingMocks.ResumeDownloadGroup.mockReturnValueOnce(ipc.promise)
+
+    const store = useDownloadGroupStore()
+    const resumePromise = store.resumeGroup('dg-op')
+    await Promise.resolve()
+
+    expect(taskStoreMock.runHeldResume).toHaveBeenCalledTimes(1)
+    expect(taskStoreMock.runHeldResume.mock.calls[0][0]).toEqual(['gid-paused-a', 'gid-paused-b'])
+    expect(taskStoreMock.runHeldResume.mock.calls[0][2]).toEqual({ recoverSnapshot: false })
+    expect(bindingMocks.ResumeDownloadGroup).toHaveBeenCalledWith('dg-op')
+    expect(bindingMocks.ResumeDownloadGroup.mock.calls[0]).toHaveLength(1)
+    expect(taskStoreMock.fetchTasks).not.toHaveBeenCalled()
+
+    ipc.resolve(
+      operationResult({
+        action: 'resume',
+        refresh: { tasks: true, groups: false, detail: false },
+      }),
+    )
+    await resumePromise
+  })
+
+  it('resumeGroup unions open-detail paused waiting GIDs after task-store order', async () => {
+    taskStoreMock.waitingTasks = [groupedTask('gid-paused-a', 'dg-op', { status: 'paused' })]
+    bindingMocks.ResumeDownloadGroup.mockResolvedValueOnce(
+      operationResult({ action: 'resume' }),
+    )
+    const store = useDownloadGroupStore()
+    store.currentDetailKey = 'dg-op'
+    store.currentDetail = {
+      group_key: 'dg-op',
+      found: true,
+      group: card('dg-op'),
+      tasks: {
+        active: [],
+        waiting: [
+          groupedTask('gid-paused-a', 'dg-op', { status: 'paused' }),
+          groupedTask('gid-detail-extra', 'dg-op', { status: 'paused' }),
+        ],
+        stopped: [],
+      },
+      updated_at: 1,
+      degraded: false,
+      warnings: [],
+    } as DownloadGroupDetailEnvelope
+
+    await store.resumeGroup('dg-op')
+
+    expect(taskStoreMock.runHeldResume.mock.calls[0][0]).toEqual([
+      'gid-paused-a',
+      'gid-detail-extra',
+    ])
+  })
+
+  it('resumeGroup confirms only succeeded item GIDs and still records partial-failure notices', async () => {
+    const engineOk: string[][] = []
+    taskStoreMock.runHeldResume.mockImplementation(
+      async (
+        _gids: string[],
+        getEngineOkGids: () => Promise<string[]>,
+        _options?: { recoverSnapshot?: boolean },
+      ) => {
+        engineOk.push(await getEngineOkGids())
+      },
+    )
+    const store = useDownloadGroupStore()
+    bindingMocks.ResumeDownloadGroup.mockResolvedValueOnce(
+      operationResult({
+        action: 'resume',
+        ok: false,
+        succeeded: 1,
+        skipped: 1,
+        failed: 1,
+        items: [
+          { gid: 'gid-ok', status: 'succeeded', code: 'resumed' },
+          { gid: 'gid-skip', status: 'skipped', code: 'not_paused', message: 'backend skip' },
+          { gid: 'gid-fail', status: 'failed', code: 'rpc_error', message: 'backend failure' },
+        ],
+        warnings: [{ code: 'partial_failure', severity: 'warning', count: 1 }],
+      }),
+    )
+
+    await store.resumeGroup('dg-op')
+
+    expect(engineOk).toEqual([['gid-ok']])
+    expect(store.operationNotice?.severity).toBe('warning')
+    expect(store.operationNotice?.code).toBe('partial_failure')
+  })
+
+  it('resumeGroup clears via recoverSnapshot false and fetches tasks only after the hold returns', async () => {
+    const order: string[] = []
+    const ipc = deferred<DownloadGroupOperationResult>()
+    bindingMocks.ResumeDownloadGroup.mockReturnValueOnce(ipc.promise)
+    taskStoreMock.runHeldResume.mockImplementation(
+      async (
+        _gids: string[],
+        getEngineOkGids: () => Promise<string[]>,
+        _options?: { recoverSnapshot?: boolean },
+      ) => {
+        order.push('held-start')
+        await getEngineOkGids()
+        order.push('held-end')
+      },
+    )
+    taskStoreMock.fetchTasks.mockImplementation(async () => {
+      order.push('fetchTasks')
+    })
+    const store = useDownloadGroupStore()
+    const resumePromise = store.resumeGroup('dg-op')
+    await Promise.resolve()
+
+    expect(order).toEqual(['held-start'])
+    expect(taskStoreMock.fetchTasks).not.toHaveBeenCalled()
+    expect(taskStoreMock.runHeldResume.mock.calls[0][2]).toEqual({ recoverSnapshot: false })
+
+    ipc.resolve(
+      operationResult({
+        action: 'resume',
+        refresh: { tasks: true, groups: false, detail: false },
+      }),
+    )
+    await resumePromise
+
+    expect(order).toEqual(['held-start', 'held-end', 'fetchTasks'])
+    expect(taskStoreMock.fetchTasks).toHaveBeenCalledTimes(1)
+  })
+
+  it('resumeGroup still calls ResumeDownloadGroup when the local snapshot is empty', async () => {
+    bindingMocks.ResumeDownloadGroup.mockResolvedValueOnce(
+      operationResult({
+        action: 'resume',
+        ok: true,
+        noop: true,
+        succeeded: 0,
+        skipped: 1,
+        failed: 0,
+        items: [{ gid: 'gid-active', status: 'skipped', code: 'already_active' }],
+        refresh: { tasks: true, groups: false, detail: false },
+      }),
+    )
+    const store = useDownloadGroupStore()
+
+    await store.resumeGroup('dg-op')
+
+    expect(taskStoreMock.runHeldResume).toHaveBeenCalledWith(
+      [],
+      expect.any(Function),
+      { recoverSnapshot: false },
+    )
+    expect(bindingMocks.ResumeDownloadGroup).toHaveBeenCalledWith('dg-op')
+    expect(taskStoreMock.fetchTasks).toHaveBeenCalledTimes(1)
+  })
+
+  it('resumeGroup records a rejected result and fetches once when ResumeDownloadGroup throws', async () => {
+    bindingMocks.ResumeDownloadGroup.mockRejectedValueOnce(new Error('resume ipc failed'))
+    bindingMocks.GetDownloadGroups.mockResolvedValueOnce(envelope([card('dg-op')]))
+    bindingMocks.GetDownloadGroupDetail.mockResolvedValueOnce({
+      group_key: 'dg-op',
+      found: true,
+      group: card('dg-op'),
+      tasks: { active: [], waiting: [], stopped: [] },
+      updated_at: 1,
+      degraded: false,
+      warnings: [],
+    } as DownloadGroupDetailEnvelope)
+    const store = useDownloadGroupStore()
+    store.currentDetailKey = 'dg-op'
+
+    await store.resumeGroup('dg-op')
+
+    expect(store.lastOperationResult?.ok).toBe(false)
+    expect(store.lastOperationResult?.items?.[0]?.code).toBe('rpc_error')
+    expect(taskStoreMock.fetchTasks).toHaveBeenCalledTimes(1)
+  })
+
+  it('runAutoSync skips group and detail fetches while a group resume is in flight', async () => {
+    bindingMocks.GetDownloadGroups.mockResolvedValue(envelope([card('dg-op')]))
+    bindingMocks.GetDownloadGroupDetail.mockResolvedValue({
+      group_key: 'dg-op',
+      found: true,
+      group: card('dg-op'),
+      tasks: { active: [], waiting: [], stopped: [] },
+      updated_at: 1,
+      degraded: false,
+      warnings: [],
+    } as DownloadGroupDetailEnvelope)
+    const ipc = deferred<DownloadGroupOperationResult>()
+    bindingMocks.ResumeDownloadGroup.mockReturnValueOnce(ipc.promise)
+    const store = useDownloadGroupStore()
+    store.currentDetailKey = 'dg-op'
+    store.startAutoSync()
+
+    const resumePromise = store.resumeGroup('dg-op')
+    await Promise.resolve()
+    expect(store.isGroupOperationBusy('dg-op', 'resume')).toBe(true)
+
+    store.scheduleAutoSyncImmediate('resume-delta')
+    await Promise.resolve()
+
+    expect(bindingMocks.GetDownloadGroups).not.toHaveBeenCalled()
+    expect(bindingMocks.GetDownloadGroupDetail).not.toHaveBeenCalled()
+
+    ipc.resolve(
+      operationResult({
+        action: 'resume',
+        refresh: { tasks: true, groups: true, detail: true },
+      }),
+    )
+    await resumePromise
+
+    expect(bindingMocks.GetDownloadGroups).toHaveBeenCalled()
+    expect(bindingMocks.GetDownloadGroupDetail).toHaveBeenCalledWith('dg-op')
+
+    store.stopAutoSync()
+  })
+
+  it('resumeGroup sequential calls hold each group snapshot separately', async () => {
+    taskStoreMock.waitingTasks = [
+      groupedTask('gid-a1', 'dg-a', { status: 'paused' }),
+      groupedTask('gid-b1', 'dg-b', { status: 'paused' }),
+      groupedTask('gid-a2', 'dg-a', { status: 'paused' }),
+    ]
+    bindingMocks.ResumeDownloadGroup.mockResolvedValueOnce(
+      operationResult({
+        action: 'resume',
+        group_key: 'dg-a',
+        refresh: { tasks: true, groups: false, detail: false },
+      }),
+    )
+    bindingMocks.ResumeDownloadGroup.mockResolvedValueOnce(
+      operationResult({
+        action: 'resume',
+        group_key: 'dg-b',
+        refresh: { tasks: true, groups: false, detail: false },
+      }),
+    )
+    const store = useDownloadGroupStore()
+
+    await store.resumeGroup('dg-a')
+    await store.resumeGroup('dg-b')
+
+    expect(taskStoreMock.runHeldResume.mock.calls[0][0]).toEqual(['gid-a1', 'gid-a2'])
+    expect(taskStoreMock.runHeldResume.mock.calls[1][0]).toEqual(['gid-b1'])
+    expect(bindingMocks.ResumeDownloadGroup.mock.calls.map(call => call[0])).toEqual([
+      'dg-a',
+      'dg-b',
+    ])
+  })
+})
+
+describe('group resume hold snapshot helpers', () => {
+  it('keeps paused waiting members in waiting order and ignores other statuses and groups', () => {
+    expect(
+      snapshotGroupResumeHoldGids('dg-op', [
+        groupedTask('gid-paused-a', 'dg-op', { status: 'paused' }),
+        groupedTask('gid-active', 'dg-op', { status: 'active' }),
+        groupedTask('gid-queued', 'dg-op', { status: 'waiting' }),
+        groupedTask('gid-other', 'dg-other', { status: 'paused' }),
+        groupedTask('gid-paused-b', 'dg-op', { status: 'paused' }),
+        groupedTask('gid-complete', 'dg-op', { status: 'complete' }),
+      ]),
+    ).toEqual(['gid-paused-a', 'gid-paused-b'])
+  })
+
+  it('appends open-detail paused waiting GIDs after task-store order', () => {
+    expect(
+      snapshotGroupResumeHoldGids(
+        'dg-op',
+        [groupedTask('gid-paused-a', 'dg-op', { status: 'paused' })],
+        'dg-op',
+        [
+          groupedTask('gid-paused-a', 'dg-op', { status: 'paused' }),
+          groupedTask('gid-detail-extra', 'dg-op', { status: 'paused' }),
+          groupedTask('gid-detail-queued', 'dg-op', { status: 'waiting' }),
+        ],
+      ),
+    ).toEqual(['gid-paused-a', 'gid-detail-extra'])
+  })
+
+  it('returns an empty snapshot for empty inputs', () => {
+    expect(snapshotGroupResumeHoldGids('dg-op', [])).toEqual([])
+    expect(snapshotGroupResumeHoldGids('dg-op', undefined)).toEqual([])
+  })
+
+  it('maps only succeeded items with a non-empty gid', () => {
+    expect(
+      succeededOperationItemGids(
+        operationResult({
+          items: [
+            { gid: 'gid-ok', status: 'succeeded', code: 'resumed' },
+            { gid: 'gid-skip', status: 'skipped', code: 'not_paused' },
+            { gid: 'gid-fail', status: 'failed', code: 'rpc_error' },
+            { gid: '', status: 'succeeded', code: 'resumed' },
+            { status: 'succeeded', code: 'resumed' },
+          ],
+        }),
+      ),
+    ).toEqual(['gid-ok'])
   })
 })

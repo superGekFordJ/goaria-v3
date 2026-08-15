@@ -712,26 +712,49 @@ export function setupActions(state: TaskState) {
     }
   }
 
-  async function resume(gid: string) {
-    const requested = [gid]
-    const gen = beginResumePending(requested)
+  async function runHeldResume(
+    requestedGids: string[],
+    getEngineOkGids: () => Promise<string[]>,
+    options?: { recoverSnapshot?: boolean },
+  ): Promise<void> {
+    const recoverSnapshot = options?.recoverSnapshot !== false
+    const gen = beginResumePending(requestedGids)
     try {
-      await ResumeTask(gid)
-      const confirmed = confirmedResumeGids(requested, gen)
+      const engineOk = await getEngineOkGids()
+      const confirmed = confirmedResumeGids(engineOk, gen)
       if (confirmed.length === 0) {
-        await recoverResumeSnapshot(requested, gen)
+        if (recoverSnapshot) await recoverResumeSnapshot(requestedGids, gen)
+        else clearResumePending(requestedGids, gen)
         return
       }
       const outcome = await applyOptimisticResume(confirmed)
-      if (outcome === 'needs-fetch') {
-        await recoverResumeSnapshot(requested, gen)
+      if (outcome === 'fetched') {
+        clearResumePending(requestedGids, gen)
+        immediateUpdateTrayIcon()
         return
       }
-      clearResumePending(requested, gen)
+      if (outcome === 'needs-fetch') {
+        if (recoverSnapshot) await recoverResumeSnapshot(requestedGids, gen)
+        else clearResumePending(requestedGids, gen)
+        return
+      }
+      clearResumePending(requestedGids, gen)
       immediateUpdateTrayIcon()
     } catch (err) {
+      if (recoverSnapshot) await recoverResumeSnapshot(requestedGids, gen)
+      else clearResumePending(requestedGids, gen)
+      throw err
+    }
+  }
+
+  async function resume(gid: string) {
+    try {
+      await runHeldResume([gid], async () => {
+        await ResumeTask(gid)
+        return [gid]
+      })
+    } catch (err) {
       console.error(`Failed to resume task ${gid}:`, err)
-      await recoverResumeSnapshot(requested, gen)
     }
   }
 
@@ -815,25 +838,13 @@ export function setupActions(state: TaskState) {
   }
 
   async function batchResume(gids: string[]) {
-    const gen = beginResumePending(gids)
     try {
-      const results = await BatchResume(gids)
-      const engineOk = batchResumeOkGids(results, gids)
-      const confirmed = confirmedResumeGids(engineOk, gen)
-      if (confirmed.length === 0) {
-        await recoverResumeSnapshot(gids, gen)
-        return
-      }
-      const outcome = await applyOptimisticResume(confirmed)
-      if (outcome === 'needs-fetch') {
-        await recoverResumeSnapshot(gids, gen)
-        return
-      }
-      clearResumePending(gids, gen)
-      immediateUpdateTrayIcon()
+      await runHeldResume(gids, async () => {
+        const results = await BatchResume(gids)
+        return batchResumeOkGids(results, gids)
+      })
     } catch (err) {
       console.error('Batch resume failed:', err)
-      await recoverResumeSnapshot(gids, gen)
     }
   }
 
@@ -915,6 +926,7 @@ export function setupActions(state: TaskState) {
     clearSelection,
     batchPause,
     batchResume,
+    runHeldResume,
     batchRemove,
     syncFromSnapshot,
     minimizeToTray,

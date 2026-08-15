@@ -1415,6 +1415,144 @@ describe('setupActions — integration', () => {
     })
   })
 
+  describe('runHeldResume', () => {
+    it('holds dest-active moves until the engine callback resolves, then assigns once', async () => {
+      state.tasks.value.waiting = ['A', 'B', 'C', 'D'].map(gid =>
+        mockTask(gid, { status: 'paused' }),
+      )
+      const deferred = createControlledPromise<string[]>()
+      const events = wireMover(state, actions)
+      const membership = watchMembership(state)
+
+      const resumePromise = actions.runHeldResume(
+        ['A', 'B', 'C', 'D'],
+        () => deferred.promise,
+        { recoverSnapshot: false },
+      )
+      await flushPromises()
+      for (const gid of ['A', 'B', 'C', 'D']) {
+        events.handleTaskMove({
+          gid,
+          from: 'waiting',
+          to: 'active',
+          task: { gid, status: 'active' },
+        })
+      }
+
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A', 'B', 'C', 'D'])
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(membership.changes).toBe(0)
+
+      deferred.resolve(['A', 'B', 'C', 'D'])
+      await resumePromise
+      membership.stop()
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A', 'B', 'C', 'D'])
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(mockGetTasks).not.toHaveBeenCalled()
+      expect(membership.changes).toBe(1)
+    })
+
+    it('moves only confirmed engine-ok GIDs in one assign without fetching', async () => {
+      state.tasks.value.waiting = ['A', 'B', 'C', 'D'].map(gid =>
+        mockTask(gid, { status: 'paused' }),
+      )
+      wireMover(state, actions)
+      const membership = watchMembership(state)
+
+      await actions.runHeldResume(['A', 'B', 'C', 'D'], async () => ['A', 'C'], {
+        recoverSnapshot: false,
+      })
+      membership.stop()
+
+      expect(mockGetTasks).not.toHaveBeenCalled()
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A', 'C'])
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['B', 'D'])
+      expect(membership.changes).toBe(1)
+    })
+
+    it('clears pending without fetching when confirmed is empty and recoverSnapshot is false', async () => {
+      state.tasks.value.waiting = [mockTask('A', { status: 'paused' })]
+      wireMover(state, actions)
+
+      await actions.runHeldResume(['A'], async () => [], { recoverSnapshot: false })
+
+      expect(mockGetTasks).not.toHaveBeenCalled()
+      expect(actions.isResumePending('A')).toBe(false)
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A'])
+    })
+
+    it('clears pending, does not fetch, and rethrows when the engine callback fails', async () => {
+      state.tasks.value.waiting = [mockTask('A', { status: 'paused' })]
+      wireMover(state, actions)
+
+      await expect(
+        actions.runHeldResume(
+          ['A'],
+          async () => {
+            throw new Error('group resume failed')
+          },
+          { recoverSnapshot: false },
+        ),
+      ).rejects.toThrow('group resume failed')
+
+      expect(mockGetTasks).not.toHaveBeenCalled()
+      expect(actions.isResumePending('A')).toBe(false)
+    })
+
+    it('does not let an older batchResume clear a newer runHeldResume gen', async () => {
+      state.tasks.value.waiting = [
+        mockTask('A', { status: 'paused' }),
+        mockTask('B', { status: 'paused' }),
+      ]
+      const batchIpc = createControlledPromise<{ gid: string; ok: boolean }[]>()
+      const heldIpc = createControlledPromise<string[]>()
+      mockBatchResume.mockReturnValue(asCancellable(batchIpc.promise) as never)
+      const events = wireMover(state, actions)
+
+      const batchPromise = actions.batchResume(['A', 'B'])
+      await flushPromises()
+      const heldPromise = actions.runHeldResume(['A'], () => heldIpc.promise, {
+        recoverSnapshot: false,
+      })
+      await flushPromises()
+
+      events.handleTaskMove({
+        gid: 'A',
+        from: 'waiting',
+        to: 'active',
+        task: { gid: 'A', status: 'active' },
+      })
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A', 'B'])
+
+      batchIpc.resolve([
+        { gid: 'A', ok: true },
+        { gid: 'B', ok: true },
+      ])
+      await batchPromise
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['B'])
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A'])
+      expect(actions.isResumePending('A')).toBe(true)
+      expect(mockGetTasks).not.toHaveBeenCalled()
+
+      events.handleTaskMove({
+        gid: 'A',
+        from: 'waiting',
+        to: 'active',
+        task: { gid: 'A', status: 'active' },
+      })
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A'])
+
+      heldIpc.resolve(['A'])
+      await heldPromise
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A', 'B'])
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(actions.isResumePending('A')).toBe(false)
+    })
+  })
+
   describe('syncFromSnapshot', () => {
     it('should dedupe stopped GIDs that are also in active/waiting', async () => {
       mockGetFullSnapshot.mockResolvedValue({

@@ -35,6 +35,7 @@ export function useDownloadGroupSync(state: DownloadGroupState, actions: Downloa
     detailError,
     placeholders,
     isAutoSyncActive,
+    operationInFlight,
     backendCards,
     updatedAt,
     degraded,
@@ -264,6 +265,9 @@ export function useDownloadGroupSync(state: DownloadGroupState, actions: Downloa
 
   async function runAutoSync(reason = 'task-signature') {
     if (!isAutoSyncActive.value) return
+    for (const key of operationInFlight.value) {
+      if (key.startsWith('resume:')) return
+    }
 
     await fetchGroups({ silent: true, reason })
     if (!isAutoSyncActive.value) return

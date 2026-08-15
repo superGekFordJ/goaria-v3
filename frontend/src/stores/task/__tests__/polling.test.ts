@@ -80,6 +80,7 @@ function createMockActions(): TaskActions {
     clearSelection: vi.fn(),
     batchPause: vi.fn(),
     batchResume: vi.fn(),
+    runHeldResume: vi.fn(),
     batchRemove: vi.fn(),
     syncFromSnapshot: vi.fn(),
     minimizeToTray: vi.fn(),

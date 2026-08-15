@@ -215,6 +215,47 @@ export function getTaskDownloadGroupId(task?: Task | null): string {
   return cleanKey(task?.download_group?.id)
 }
 
+export function snapshotGroupResumeHoldGids(
+  groupKey: string,
+  waitingTasks: Task[] | null | undefined,
+  detailKey?: string | null,
+  detailWaiting?: Task[] | null,
+): string[] {
+  const key = cleanKey(groupKey)
+  const seen = new Set<string>()
+  const gids: string[] = []
+
+  function appendPausedWaiting(list: Task[] | null | undefined, requireGroupKey: boolean) {
+    if (!list) return
+    for (const task of list) {
+      const gid = cleanKey(task?.gid)
+      if (!gid || seen.has(gid)) continue
+      if (task.status !== 'paused') continue
+      if (requireGroupKey && getTaskDownloadGroupId(task) !== key) continue
+      seen.add(gid)
+      gids.push(gid)
+    }
+  }
+
+  appendPausedWaiting(waitingTasks, true)
+  if (key && cleanKey(detailKey) === key) {
+    appendPausedWaiting(detailWaiting, false)
+  }
+  return gids
+}
+
+export function succeededOperationItemGids(
+  result?: Pick<DownloadGroupOperationResult, 'items'> | null,
+): string[] {
+  const gids: string[] = []
+  for (const item of result?.items ?? []) {
+    const gid = cleanKey(item?.gid)
+    if (!gid || item.status !== 'succeeded') continue
+    gids.push(gid)
+  }
+  return gids
+}
+
 export function isTerminalDownloadGroupCard(card?: DownloadGroupCard | null): boolean {
   if (!card) return false
   const isTerminalStatus = card.status === 'complete' || card.status === 'error'
