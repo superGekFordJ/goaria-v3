@@ -79,6 +79,11 @@ jobs:
       - name: Add Go bin to PATH
         run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      # main.go embeds frontend/dist; the directory is gitignored, so typecheck
+      # fails on a clean checkout unless a placeholder exists first.
+      - name: Create frontend dist placeholder
+        run: mkdir -p frontend/dist && echo '<html><body></body></html>' > frontend/dist/index.html
+
       - name: Lint default (generic)
         run: golangci-lint run ./...
 
