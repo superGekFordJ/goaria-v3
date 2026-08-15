@@ -8,7 +8,7 @@
     RotateCcw,
     AlertCircle,
     CheckCircle,
-    ExternalLink,
+    FileText,
   } from '@lucide/vue'
   import ThemeIcon from '../../common/ThemeIcon.vue'
   import {
@@ -321,7 +321,7 @@
               :aria-label="t('update.viewReleaseNotes')"
               @click.stop="openReleaseNotes(release.html_url)"
             >
-              <ExternalLink :size="12" />
+              <FileText :size="12" />
             </button>
           </div>
 
