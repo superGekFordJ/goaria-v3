@@ -99,9 +99,7 @@
         :interactive="true"
         :class="[
           'w-full transition-all duration-300 group',
-          uiStore.activeTab === item.id
-            ? 'border border-[var(--card-border)]'
-            : 'hover:bg-[var(--sidebar-hover)] border border-transparent',
+          uiStore.activeTab === item.id ? '' : 'hover:bg-[var(--sidebar-hover)]',
         ]"
         @click="handleNavClick(item.id)"
       >
@@ -157,9 +155,7 @@
         :interactive="true"
         :class="[
           'w-full transition-all duration-300 group',
-          uiStore.activeTab === 'settings'
-            ? 'border border-[var(--card-border)]'
-            : 'hover:bg-[var(--sidebar-hover)] border border-transparent',
+          uiStore.activeTab === 'settings' ? '' : 'hover:bg-[var(--sidebar-hover)]',
         ]"
         @click="uiStore.setActiveTab('settings')"
       >
