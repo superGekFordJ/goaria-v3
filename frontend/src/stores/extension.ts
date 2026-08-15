@@ -9,6 +9,7 @@ import {
 } from '../../bindings/goaria-v3/internal/wailsapp/app.js'
 import { ExtensionStatus } from '../../bindings/goaria-v3/internal/extension/models.js'
 import { copyToClipboard, clearClipboardIfMatches } from '../utils/clipboard'
+import { isValidPairingUrl } from '../utils/url'
 
 export const useExtensionStore = defineStore('extension', () => {
   const status = ref<'disconnected' | 'listening' | 'paired'>('disconnected')
@@ -98,7 +99,10 @@ export const useExtensionStore = defineStore('extension', () => {
   }
 
   async function openInBrowser(url: string) {
-    if (!url) return
+    if (!isValidPairingUrl(url)) {
+      console.error('Refused to open invalid pairing URL:', url)
+      return
+    }
     try {
       await Browser.OpenURL(url)
     } catch (err) {

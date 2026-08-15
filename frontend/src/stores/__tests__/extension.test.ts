@@ -175,10 +175,22 @@ describe('extension store', () => {
     expect(store.showUnpairConfirm).toBe(false)
   })
 
-  it('openInBrowser() calls Browser.OpenURL', async () => {
+  it('openInBrowser() calls Browser.OpenURL with valid pairing URL', async () => {
     const store = useExtensionStore()
-    await store.openInBrowser('http://127.0.0.1:16810/pair')
+    const validUrl = 'http://127.0.0.1:16810/__goaria_pair__/pair.html?nonce=abc123'
+    await store.openInBrowser(validUrl)
 
-    expect(browserMock.OpenURL).toHaveBeenCalledWith('http://127.0.0.1:16810/pair')
+    expect(browserMock.OpenURL).toHaveBeenCalledWith(validUrl)
+  })
+
+  it('openInBrowser() rejects invalid URLs and does not call Browser.OpenURL', async () => {
+    const store = useExtensionStore()
+    await store.openInBrowser('')
+    await store.openInBrowser('http://evil.com/__goaria_pair__/pair.html')
+    await store.openInBrowser('http://127.0.0.1:9999/__goaria_pair__/pair.html')
+    await store.openInBrowser('https://127.0.0.1:16810/__goaria_pair__/pair.html')
+    await store.openInBrowser('http://127.0.0.1:16810/wrong-path')
+
+    expect(browserMock.OpenURL).not.toHaveBeenCalled()
   })
 })

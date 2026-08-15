@@ -353,7 +353,7 @@ func (a *App) GetExtensionStatus() extension.ExtensionStatus {
 }
 
 // PairExtension starts the pairing flow and returns the pairing URL.
-// The frontend directly opens the URL in the default browser via Wails Browser.OpenURL.
+// The frontend opens the URL in the default browser on explicit user action via Wails Browser.OpenURL.
 func (a *App) PairExtension() (string, error) {
 	if a.extensionServer == nil {
 		return "", errors.New("extension server not initialized")

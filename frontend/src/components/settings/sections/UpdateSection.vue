@@ -19,6 +19,7 @@
   } from '../../../../bindings/goaria-v3/internal/wailsapp/app.js'
   import { Browser, Events } from '@wailsio/runtime'
   import { useSmoothProgress } from '../../../composables/useSmoothProgress'
+  import { isValidReleaseNotesUrl } from '../../../utils/url'
 
   interface ReleaseInfo {
     tag_name: string
@@ -156,9 +157,12 @@
     }
   }
 
-  const openReleaseNotes = (url?: string) => {
-    if (url && url.startsWith('https://')) {
-      void Browser.OpenURL(url)
+  const openReleaseNotes = async (url?: string) => {
+    if (!isValidReleaseNotesUrl(url)) return
+    try {
+      await Browser.OpenURL(url!)
+    } catch (err) {
+      console.error('Failed to open release notes in browser:', err)
     }
   }
 </script>
@@ -314,9 +318,9 @@
               {{ t('update.beta') }}
             </span>
             <button
-              v-if="release.html_url"
+              v-if="isValidReleaseNotesUrl(release.html_url)"
               type="button"
-              class="p-1 rounded-md text-[var(--app-text-subtle)] hover:text-[var(--neon-primary)] hover:bg-[var(--btn-glass-bg)] transition-all duration-200 cursor-pointer"
+              class="w-6 h-6 flex items-center justify-center p-1 rounded-md text-[var(--app-text-subtle)] hover:text-[var(--neon-primary)] hover:bg-[var(--btn-glass-bg)] transition-all duration-200 cursor-pointer shrink-0"
               :title="t('update.viewReleaseNotes')"
               :aria-label="t('update.viewReleaseNotes')"
               @click.stop="openReleaseNotes(release.html_url)"
