@@ -3,12 +3,10 @@ package wailsapp
 import (
 	"errors"
 	"log"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -346,30 +344,6 @@ func (a *App) SelectDirectory() string {
 
 // --- Browser Extension ---
 
-// openURLInDefaultBrowser opens a URL in the system's default browser.
-func openURLInDefaultBrowser(url string) error {
-	var name string
-	var args []string
-	switch runtime.GOOS {
-	case "windows":
-		name = "cmd"
-		args = []string{"/c", "start", "", url}
-	case "darwin":
-		name = "open"
-		args = []string{url}
-	default:
-		name = "xdg-open"
-		args = []string{url}
-	}
-	cmd := exec.Command(name, args...)
-	hideWindow(cmd)
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	_ = cmd.Process.Release()
-	return nil
-}
-
 // GetExtensionStatus returns the extension server status for the frontend.
 func (a *App) GetExtensionStatus() extension.ExtensionStatus {
 	if a.extensionServer == nil {
@@ -379,21 +353,12 @@ func (a *App) GetExtensionStatus() extension.ExtensionStatus {
 }
 
 // PairExtension starts the pairing flow and returns the pairing URL.
-// The frontend decides whether to open the browser via OpenPairingURLInBrowser.
+// The frontend directly opens the URL in the default browser via Wails Browser.OpenURL.
 func (a *App) PairExtension() (string, error) {
 	if a.extensionServer == nil {
 		return "", errors.New("extension server not initialized")
 	}
 	return a.extensionServer.StartPairing()
-}
-
-// OpenPairingURLInBrowser validates the URL is a genuine GoAria pairing URL
-// before opening it in the default browser. Prevents arbitrary-URL injection.
-func (a *App) OpenPairingURLInBrowser(urlStr string) error {
-	if !isValidPairingURL(urlStr) {
-		return errors.New("not a valid GoAria pairing URL")
-	}
-	return openURLInDefaultBrowser(urlStr)
 }
 
 // RegeneratePairing stops the current pairing server and starts a fresh one.
@@ -402,46 +367,6 @@ func (a *App) RegeneratePairing() (string, error) {
 		return "", errors.New("extension server not initialized")
 	}
 	return a.extensionServer.RegeneratePairing()
-}
-
-// isValidPairingURL checks scheme, host, port, and path match GoAria pairing conventions.
-// Rejects userinfo and shell metacharacters to prevent command injection on Windows.
-func isValidPairingURL(urlStr string) bool {
-	if strings.ContainsAny(urlStr, "&|><^();%") {
-		return false
-	}
-	parsed, err := url.Parse(urlStr)
-	if err != nil {
-		return false
-	}
-	if parsed.User != nil {
-		return false
-	}
-	if parsed.Scheme != "http" {
-		return false
-	}
-	if parsed.Hostname() != "127.0.0.1" {
-		return false
-	}
-	portStr := parsed.Port()
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return false
-	}
-	portValid := false
-	for _, p := range extension.PairPortFallbacks {
-		if port == p {
-			portValid = true
-			break
-		}
-	}
-	if !portValid {
-		return false
-	}
-	if parsed.Path != extension.PairPagePath {
-		return false
-	}
-	return true
 }
 
 // UnpairExtension rotates the secret and emits the unpaired event.

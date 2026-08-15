@@ -362,7 +362,8 @@
     "restart": "重新啟動應用程式",
     "currentVersion": "目前版本",
     "includePreRelease": "包含不穩定版本 (Beta)",
-    "beta": "測試版"
+    "beta": "測試版",
+    "viewReleaseNotes": "檢視更新日誌"
   },
   "fileIcon": {
     "label": {

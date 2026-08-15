@@ -362,7 +362,8 @@
     "restart": "Restart App",
     "currentVersion": "Current Version",
     "includePreRelease": "Include unstable versions (Beta)",
-    "beta": "Beta"
+    "beta": "Beta",
+    "viewReleaseNotes": "View Release Notes"
   },
   "fileIcon": {
     "label": {

@@ -1,12 +1,11 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { Events } from '@wailsio/runtime'
+import { Browser, Events } from '@wailsio/runtime'
 import {
   GetExtensionStatus,
   PairExtension,
   UnpairExtension,
   RegeneratePairing,
-  OpenPairingURLInBrowser,
 } from '../../bindings/goaria-v3/internal/wailsapp/app.js'
 import { ExtensionStatus } from '../../bindings/goaria-v3/internal/extension/models.js'
 import { copyToClipboard, clearClipboardIfMatches } from '../utils/clipboard'
@@ -99,8 +98,9 @@ export const useExtensionStore = defineStore('extension', () => {
   }
 
   async function openInBrowser(url: string) {
+    if (!url) return
     try {
-      await OpenPairingURLInBrowser(url)
+      await Browser.OpenURL(url)
     } catch (err) {
       console.error('Failed to open pairing URL in browser:', err)
     }

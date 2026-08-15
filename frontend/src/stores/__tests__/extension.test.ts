@@ -7,10 +7,13 @@ const bindingMocks = vi.hoisted(() => ({
   PairExtension: vi.fn(),
   UnpairExtension: vi.fn(),
   RegeneratePairing: vi.fn(),
-  OpenPairingURLInBrowser: vi.fn(),
 }))
 
 vi.mock('../../../bindings/goaria-v3/internal/wailsapp/app.js', () => bindingMocks)
+
+const browserMock = vi.hoisted(() => ({
+  OpenURL: vi.fn().mockResolvedValue(undefined),
+}))
 
 const eventsMock = vi.hoisted(() => {
   const handlers: Record<string, ((ev: unknown) => void) | undefined> = {}
@@ -28,6 +31,7 @@ const eventsMock = vi.hoisted(() => {
 })
 
 vi.mock('@wailsio/runtime', () => ({
+  Browser: browserMock,
   Events: eventsMock,
 }))
 
@@ -171,12 +175,10 @@ describe('extension store', () => {
     expect(store.showUnpairConfirm).toBe(false)
   })
 
-  it('openInBrowser() calls OpenPairingURLInBrowser binding', async () => {
-    bindingMocks.OpenPairingURLInBrowser.mockResolvedValue(undefined)
-
+  it('openInBrowser() calls Browser.OpenURL', async () => {
     const store = useExtensionStore()
     await store.openInBrowser('http://127.0.0.1:16810/pair')
 
-    expect(bindingMocks.OpenPairingURLInBrowser).toHaveBeenCalledWith('http://127.0.0.1:16810/pair')
+    expect(browserMock.OpenURL).toHaveBeenCalledWith('http://127.0.0.1:16810/pair')
   })
 })

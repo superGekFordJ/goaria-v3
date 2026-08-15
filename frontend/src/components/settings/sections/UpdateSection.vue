@@ -1,7 +1,15 @@
 <script setup lang="ts">
   import { ref, computed, onMounted, onUnmounted } from 'vue'
   import { useI18n } from 'vue-i18n'
-  import { Loader2, RefreshCw, Download, RotateCcw, AlertCircle, CheckCircle } from '@lucide/vue'
+  import {
+    Loader2,
+    RefreshCw,
+    Download,
+    RotateCcw,
+    AlertCircle,
+    CheckCircle,
+    ExternalLink,
+  } from '@lucide/vue'
   import ThemeIcon from '../../common/ThemeIcon.vue'
   import {
     GetAppVersion,
@@ -9,7 +17,7 @@
     ApplyUpdate,
     RestartApp,
   } from '../../../../bindings/goaria-v3/internal/wailsapp/app.js'
-  import { Events } from '@wailsio/runtime'
+  import { Browser, Events } from '@wailsio/runtime'
   import { useSmoothProgress } from '../../../composables/useSmoothProgress'
 
   interface ReleaseInfo {
@@ -145,6 +153,12 @@
       await RestartApp()
     } catch {
       // App should have exited
+    }
+  }
+
+  const openReleaseNotes = (url?: string) => {
+    if (url && url.startsWith('https://')) {
+      void Browser.OpenURL(url)
     }
   }
 </script>
@@ -288,7 +302,7 @@
           :key="release.tag_name"
           class="flex items-center justify-between p-3 rounded-xl bg-[var(--btn-glass-bg)]/30 border border-[var(--glass-border)]/50 hover:bg-[var(--btn-glass-bg)]/50 transition-all duration-200"
         >
-          <!-- Left: Version info and Beta badge -->
+          <!-- Left: Version info, Beta badge & Release notes link -->
           <div class="flex items-center gap-2">
             <span class="text-xs font-bold font-mono-data text-[var(--app-text)]">
               {{ release.tag_name }}
@@ -299,6 +313,16 @@
             >
               {{ t('update.beta') }}
             </span>
+            <button
+              v-if="release.html_url"
+              type="button"
+              class="p-1 rounded-md text-[var(--app-text-subtle)] hover:text-[var(--neon-primary)] hover:bg-[var(--btn-glass-bg)] transition-all duration-200 cursor-pointer"
+              :title="t('update.viewReleaseNotes')"
+              :aria-label="t('update.viewReleaseNotes')"
+              @click.stop="openReleaseNotes(release.html_url)"
+            >
+              <ExternalLink :size="12" />
+            </button>
           </div>
 
           <!-- Right: Actions / Download progress / Ready to restart -->
