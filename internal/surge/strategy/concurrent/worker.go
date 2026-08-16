@@ -198,6 +198,31 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 				return lastErr
 			}
 
+			if errors.Is(lastErr, types.ErrRangeUnsupported) || errors.Is(lastErr, types.ErrSourceMetadataMismatch) {
+				var stash *types.Task
+				if d.payloadFirstVerified.Load() {
+					if remaining := activeTask.RemainingTask(); remaining != nil {
+						originalEnd := task.Offset + task.Length
+						if remaining.Offset+remaining.Length > originalEnd {
+							remaining.Length = originalEnd - remaining.Offset
+						}
+						if remaining.Length > 0 {
+							stash = remaining
+						}
+					}
+				}
+				d.activeMu.Lock()
+				if stash != nil {
+					d.abandonedRemaining = append(d.abandonedRemaining, *stash)
+				}
+				delete(d.activeTasks, id)
+				d.activeMu.Unlock()
+				if d.State != nil {
+					d.State.ActiveWorkers.Add(-1)
+				}
+				return lastErr
+			}
+
 			// FORK-PATCH: health-cancel path with 100% VP guard
 			if wasExternallyCancelled && lastErr != nil {
 				currentMirrorIdx = (currentMirrorIdx + 1) % len(mirrors)
@@ -399,46 +424,51 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 		return &rateLimitError{retryAfter: ra, explicit: ok}
 	}
 
-	// Validate status code
-	if resp.StatusCode == http.StatusOK {
-		// Valid only if we requested the full file
-		// If we wanted a partial range but got the whole file (200), that's an error because we can't handle the full stream at a non-zero offset
-		if task.Offset != 0 || task.Length != totalSize {
-			return fmt.Errorf("server indicated success (200) but ignored range request (expected 206)")
+	payloadFirst := d.payloadFirstSession.Load()
+	var classErr error
+	if payloadFirst {
+		classErr = classifyPayloadFirstHeaders(resp, activeTask.Task, totalSize)
+		if classErr != nil && !errors.Is(classErr, errPayloadFirstLegacyStatus) {
+			return classErr
 		}
-	} else if resp.StatusCode != http.StatusPartialContent {
-		// FORK-PATCH: Poison defense — track 4xx/5xx for hedge disabling.
-		if resp.StatusCode >= 400 {
-			d.recordHedgeError()
+		if classErr == nil {
+			d.recordHedgeSuccess()
+			if err := d.persistRangeSupportedBeforeWrite(); err != nil {
+				return err
+			}
+			d.sendFirstByteOnce(ttfbStart, activeTask)
+			limitResponseBody(resp, task.Length)
 		}
-		// Permanent 4xx (≠429) wrap after poison record so scheduler #541 can
-		// skip whole-download retries once the worker escalates. Mid-chunk 403
-		// is concurrent-local transient (CDN soft throttle); sticky budget
-		// escalates after Soft403StickyExhaustions residual burns.
-		if types.IsPermanentHTTPStatus(resp.StatusCode) && resp.StatusCode != http.StatusForbidden {
-			return fmt.Errorf("unexpected status: %d: %w", resp.StatusCode, types.ErrPermanentHTTP)
-		}
-		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 
-	// FORK-PATCH: Reset hedge poison counter on valid response.
-	d.recordHedgeSuccess()
-
-	// FORK-PATCH: send FirstByte once — first non-hedged 206 only.
-	if !d.isResume.Load() && activeTask.Hedged.Load() == 0 {
-		if d.ttfbSent.CompareAndSwap(false, true) {
-			ttfbMs := time.Since(ttfbStart).Milliseconds()
-			if d.ProgressChan != nil {
-				func() {
-					defer func() { _ = recover() }()
-					d.ProgressChan <- types.DownloadEvent{
-						Type:       types.EventFirstByte,
-						DownloadID: d.ID,
-						TTFBMs:     ttfbMs,
-					}
-				}()
+	if !payloadFirst || errors.Is(classErr, errPayloadFirstLegacyStatus) {
+		// Validate status code
+		if resp.StatusCode == http.StatusOK {
+			// Valid only if we requested the full file
+			// If we wanted a partial range but got the whole file (200), that's an error because we can't handle the full stream at a non-zero offset
+			if task.Offset != 0 || task.Length != totalSize {
+				return fmt.Errorf("server indicated success (200) but ignored range request (expected 206)")
 			}
+		} else if resp.StatusCode != http.StatusPartialContent {
+			// FORK-PATCH: Poison defense — track 4xx/5xx for hedge disabling.
+			if resp.StatusCode >= 400 {
+				d.recordHedgeError()
+			}
+			// Permanent 4xx (≠429) wrap after poison record so scheduler #541 can
+			// skip whole-download retries once the worker escalates. Mid-chunk 403
+			// is concurrent-local transient (CDN soft throttle); sticky budget
+			// escalates after Soft403StickyExhaustions residual burns.
+			if types.IsPermanentHTTPStatus(resp.StatusCode) && resp.StatusCode != http.StatusForbidden {
+				return fmt.Errorf("unexpected status: %d: %w", resp.StatusCode, types.ErrPermanentHTTP)
+			}
+			return fmt.Errorf("unexpected status: %d", resp.StatusCode)
 		}
+
+		// FORK-PATCH: Reset hedge poison counter on valid response.
+		d.recordHedgeSuccess()
+
+		// FORK-PATCH: send FirstByte once — first non-hedged 206 only.
+		d.sendFirstByteOnce(ttfbStart, activeTask)
 	}
 
 	// Batching State

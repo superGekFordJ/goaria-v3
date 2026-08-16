@@ -44,6 +44,23 @@ type ConcurrentDownloader struct {
 	TotalSize          int64
 	bufPool            *TieredBufferPool // FORK-PATCH: tiered buffer pool with cap filter
 	Headers            map[string]string // Custom HTTP headers from browser (cookies, auth, etc.)
+	// FORK-PATCH: payload-first Range verification. Mode is copied from the
+	// download record; SkipServerProbe stays sticky after promote.
+	RangeAcquisitionMode types.RangeAcquisitionMode
+	SkipServerProbe      bool
+
+	payloadFirstSession  atomic.Bool
+	payloadFirstVerified atomic.Bool
+	skipRangePrewarm     atomic.Bool
+	pfFanout             sync.Once
+	pfPlannedConns       int
+	pfPlannedTasks       []types.Task
+	pfChunkSize          int64
+	pfCandidateMirrors   []string
+	pfHelperCtx          context.Context
+	pfHelperWG           *sync.WaitGroup
+	pfQueue              *TaskQueue
+	pfFileSize           int64
 
 	// FORK-PATCH: Drain/scale infrastructure
 	nextWorkerID    atomic.Int64               // dynamic worker ID allocation
@@ -460,6 +477,15 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 
 	d.resetSoft403Guard()
 
+	payloadFirst := d.RangeAcquisitionMode.IsPayloadFirst()
+	if payloadFirst {
+		d.payloadFirstSession.Store(true)
+		d.skipRangePrewarm.Store(true)
+		if fileSize <= 0 {
+			return types.ErrSourceMetadataMismatch
+		}
+	}
+
 	d.initMirrorStatus(rawurl, candidateMirrors, activeMirrors, destPath)
 
 	workingPath := destPath + types.IncompleteSuffix
@@ -481,6 +507,9 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 
 	// Ensure we have the total file size
 	if fileSize <= 0 {
+		if payloadFirst {
+			return types.ErrSourceMetadataMismatch
+		}
 		var err error
 		fileSize, err = d.bootstrapMetadata(downloadCtx, client, rawurl)
 		if err != nil {
@@ -499,10 +528,13 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 	chunkSize := d.determineChunkSize(fileSize, numConns)
 
 	workerMirrors := d.getWorkerMirrors(activeMirrors)
+	if payloadFirst {
+		workerMirrors = []string{rawurl}
+	}
 
 	// Pre-warm connections if configured
 	hedgeCount := d.Runtime.GetDialHedgeCount()
-	if hedgeCount > 0 {
+	if hedgeCount > 0 && !d.skipRangePrewarm.Load() {
 		d.prewarmConnections(downloadCtx, client, numConns, hedgeCount, workerMirrors)
 	}
 
@@ -531,11 +563,23 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 	queue := NewTaskQueue()
 	queue.PushMultiple(tasks)
 
-	// Start monitoring and balancing helpers
-	d.startHelpers(downloadCtx, &wgHelpers, queue, fileSize, numConns)
+	verifyConns := numConns
+	if payloadFirst {
+		d.pfPlannedConns = numConns
+		d.pfPlannedTasks = append([]types.Task(nil), tasks...)
+		d.pfChunkSize = chunkSize
+		d.pfCandidateMirrors = append([]string(nil), candidateMirrors...)
+		d.pfHelperCtx = downloadCtx
+		d.pfHelperWG = &wgHelpers
+		d.pfQueue = queue
+		d.pfFileSize = fileSize
+		verifyConns = 1
+	} else {
+		d.startHelpers(downloadCtx, &wgHelpers, queue, fileSize, numConns)
+	}
 
 	// Execute download workers
-	downloadErr := d.executeWorkers(downloadCtx, cancel, client, outFile, queue, fileSize, workerMirrors, numConns)
+	downloadErr := d.executeWorkers(downloadCtx, cancel, client, outFile, queue, fileSize, workerMirrors, verifyConns)
 
 	// Handle pause request: must return types.ErrPaused to prevent finalization
 	if d.State != nil && d.State.IsPaused() {
@@ -551,6 +595,11 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 		// Persist pause-grade progress so whole-download retries and a later
 		// EventError→Resume can continue from remaining Tasks (not byte 0).
 		// Skip cancel/deadline to match scheduler isCancel (no EventError).
+		// FORK-PATCH: never snapshot an unverified payload-first session —
+		// Tasks at 0 bytes would cold-resume as RangeSupported.
+		if d.payloadFirstSession.Load() && !d.payloadFirstVerified.Load() {
+			return downloadErr
+		}
 		if d.State != nil &&
 			!errors.Is(downloadErr, context.Canceled) &&
 			!errors.Is(downloadErr, context.DeadlineExceeded) {
@@ -970,6 +1019,9 @@ func (d *ConcurrentDownloader) ScaleWorkers(delta int) int {
 	if delta == 0 || deps == nil || deps.ctx.Err() != nil {
 		return 0
 	}
+	if delta > 0 && d.payloadFirstSession.Load() && !d.payloadFirstVerified.Load() {
+		return 0
+	}
 	if delta > 0 {
 		admitted := make([]int, 0, delta)
 		for i := 0; i < delta; i++ {
@@ -990,7 +1042,7 @@ func (d *ConcurrentDownloader) ScaleWorkers(delta int) int {
 		}
 
 		// FORK-PATCH: one batched ScaleUp prewarm before spawn (ignore DialHedgeCount)
-		if deps.client != nil && len(deps.mirrors) > 0 {
+		if !d.skipRangePrewarm.Load() && deps.client != nil && len(deps.mirrors) > 0 {
 			need := len(admitted)
 			if need > 128 {
 				need = 128
@@ -1138,6 +1190,102 @@ func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queu
 	return d.saveStateSnapshot(destPath, fileSize, queue, candidateMirrors, true)
 }
 
+// persistRangeSupportedBeforeWrite writes RangeSupported + the original planned
+// task layout before the first payload WriteAt. Failure must not write body.
+func (d *ConcurrentDownloader) persistRangeSupportedBeforeWrite() error {
+	if !d.payloadFirstSession.Load() || d.payloadFirstVerified.Load() {
+		return nil
+	}
+	if d.DestPath == "" || d.URL == "" {
+		return fmt.Errorf("payload-first persist missing dest identity")
+	}
+
+	tasks := make([]types.Task, len(d.pfPlannedTasks))
+	copy(tasks, d.pfPlannedTasks)
+	for i := range tasks {
+		tasks[i].SharedMaxOffset = nil
+	}
+
+	var bitmap []byte
+	chunkSize := d.pfChunkSize
+	if d.State != nil {
+		var snapChunk int64
+		bitmap, _, _, snapChunk, _ = d.State.GetBitmapSnapshot(false)
+		if snapChunk > 0 {
+			chunkSize = snapChunk
+		}
+	}
+
+	var workers int
+	var minChunkSize int64
+	if d.Runtime != nil {
+		workers = d.Runtime.Workers
+		minChunkSize = d.Runtime.MinChunkSize
+	}
+
+	s := &types.DownloadRecord{
+		URL:                  d.URL,
+		ID:                   d.ID,
+		DestPath:             d.DestPath,
+		TotalSize:            d.pfFileSize,
+		Downloaded:           0,
+		Tasks:                tasks,
+		Filename:             filepath.Base(d.DestPath),
+		Mirrors:              append([]string(nil), d.pfCandidateMirrors...),
+		ChunkBitmap:          bitmap,
+		ActualChunkSize:      chunkSize,
+		Workers:              workers,
+		MinChunkSize:         minChunkSize,
+		RangeAcquisitionMode: types.RangeAcquireRangeSupported,
+		SkipServerProbe:      d.SkipServerProbe,
+	}
+	if d.State != nil {
+		s.RateLimit, s.RateLimitSet = d.State.GetRateLimit()
+	}
+
+	if err := store.SaveStateWithOptions(d.URL, d.DestPath, s, store.SaveStateOptions{SkipFileHash: true}); err != nil {
+		return fmt.Errorf("payload-first persist RangeSupported: %w", err)
+	}
+
+	d.RangeAcquisitionMode = types.RangeAcquireRangeSupported
+	d.payloadFirstVerified.Store(true)
+	d.fanoutAfterRangeVerified()
+	return nil
+}
+
+func (d *ConcurrentDownloader) fanoutAfterRangeVerified() {
+	d.pfFanout.Do(func() {
+		if d.pfHelperWG != nil && d.pfHelperCtx != nil && d.pfQueue != nil {
+			d.startHelpers(d.pfHelperCtx, d.pfHelperWG, d.pfQueue, d.pfFileSize, d.pfPlannedConns)
+		}
+		remaining := d.pfPlannedConns - 1
+		if remaining > 0 {
+			d.ScaleWorkers(remaining)
+		}
+	})
+}
+
+func (d *ConcurrentDownloader) sendFirstByteOnce(ttfbStart time.Time, activeTask *ActiveTask) {
+	if d.isResume.Load() || activeTask == nil || activeTask.Hedged.Load() != 0 {
+		return
+	}
+	if !d.ttfbSent.CompareAndSwap(false, true) {
+		return
+	}
+	ttfbMs := time.Since(ttfbStart).Milliseconds()
+	if d.ProgressChan == nil {
+		return
+	}
+	func() {
+		defer func() { _ = recover() }()
+		d.ProgressChan <- types.DownloadEvent{
+			Type:       types.EventFirstByte,
+			DownloadID: d.ID,
+			TTFBMs:     ttfbMs,
+		}
+	}()
+}
+
 // saveStateSnapshot builds a pause-grade DownloadRecord from active tasks +
 // queue remaining work. emitPauseEvent=true mirrors historical handlePause
 // (EventPaused + ErrPaused). emitPauseEvent=false best-effort persists via
@@ -1231,21 +1379,23 @@ func (d *ConcurrentDownloader) saveStateSnapshot(destPath string, fileSize int64
 
 	// Save state for resume (use computed value for consistency)
 	s := &types.DownloadRecord{
-		URL:             d.URL,
-		ID:              d.ID,
-		DestPath:        destPath,
-		TotalSize:       fileSize,
-		Downloaded:      computedDownloaded,
-		Tasks:           remainingTasks,
-		Filename:        filepath.Base(destPath),
-		Elapsed:         totalElapsed.Nanoseconds(),
-		Mirrors:         candidateMirrors,
-		ChunkBitmap:     bitmap,
-		ActualChunkSize: chunkSize,
-		RateLimit:       rateLimit,
-		RateLimitSet:    rateLimitSet,
-		Workers:         workers,
-		MinChunkSize:    minChunkSize,
+		URL:                  d.URL,
+		ID:                   d.ID,
+		DestPath:             destPath,
+		TotalSize:            fileSize,
+		Downloaded:           computedDownloaded,
+		Tasks:                remainingTasks,
+		Filename:             filepath.Base(destPath),
+		Elapsed:              totalElapsed.Nanoseconds(),
+		Mirrors:              candidateMirrors,
+		ChunkBitmap:          bitmap,
+		ActualChunkSize:      chunkSize,
+		RateLimit:            rateLimit,
+		RateLimitSet:         rateLimitSet,
+		Workers:              workers,
+		MinChunkSize:         minChunkSize,
+		RangeAcquisitionMode: d.RangeAcquisitionMode,
+		SkipServerProbe:      d.SkipServerProbe,
 	}
 
 	if emitPauseEvent {
