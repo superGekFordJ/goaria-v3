@@ -73,8 +73,11 @@ func TestShouldFallbackToSingle_PayloadFirst(t *testing.T) {
 	if shouldFallbackToSingle(fmt.Errorf("unexpected status: 403"), 0, mode) {
 		t.Fatal("403 must not fallback on payload-first")
 	}
-	if !shouldFallbackToSingle(types.ErrRangeUnsupported, 0, types.RangeAcquireRangeSupported) {
-		t.Fatal("RangeSupported at 0 verified bytes may fallback on proven ignore-Range")
+	if shouldFallbackToSingle(types.ErrRangeUnsupported, 0, types.RangeAcquireRangeSupported) {
+		t.Fatal("RangeSupported must not Truncate even at 0 Downloaded")
+	}
+	if shouldFallbackToSingle(types.ErrPayloadFirstPersist, 0, mode) {
+		t.Fatal("persist failure must not Truncate")
 	}
 	if shouldFallbackToSingle(types.ErrSourceMetadataMismatch, 0, types.RangeAcquireRangeSupported) {
 		t.Fatal("RangeSupported mismatch must not Truncate")
@@ -87,6 +90,12 @@ func TestShouldRetryFailedDownload_RangeSentinels(t *testing.T) {
 	}
 	if shouldRetryFailedDownload(types.ErrSourceMetadataMismatch, false, 0) {
 		t.Fatal("ErrSourceMetadataMismatch must be terminal")
+	}
+	if shouldRetryFailedDownload(types.ErrPayloadFirstPersist, false, 0) {
+		t.Fatal("ErrPayloadFirstPersist must be terminal")
+	}
+	if shouldRetryFailedDownload(fmt.Errorf("payload-first persist RangeSupported: %w", types.ErrPayloadFirstPersist), false, 0) {
+		t.Fatal("wrapped persist failure must be terminal")
 	}
 	if !shouldRetryFailedDownload(errors.New("transient"), false, 0) {
 		t.Fatal("transient failure should still retry")

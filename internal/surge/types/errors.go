@@ -43,6 +43,10 @@ var (
 	// shard (bad/missing Content-Range, 206 total mismatch, 416, length wrong).
 	// Zero payload write. No auto single fallback. Terminal at whole-download retry.
 	ErrSourceMetadataMismatch = errors.New("source metadata mismatch")
+
+	// FORK-PATCH: payload-first persist of RangeSupported failed. No body
+	// write, no residual requeue, no whole-download retry.
+	ErrPayloadFirstPersist = errors.New("payload-first persist failed")
 )
 
 // IsPermanentHTTPError reports whether err is a permanent HTTP error that

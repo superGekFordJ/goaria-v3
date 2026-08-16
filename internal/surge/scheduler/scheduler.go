@@ -43,6 +43,7 @@ func shouldRetryFailedDownload(err error, shuttingDown bool, retries int) bool {
 		!types.IsInsufficientDiskSpace(err) &&
 		!errors.Is(err, types.ErrRangeUnsupported) &&
 		!errors.Is(err, types.ErrSourceMetadataMismatch) &&
+		!errors.Is(err, types.ErrPayloadFirstPersist) &&
 		retries < 10
 }
 

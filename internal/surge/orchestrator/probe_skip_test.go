@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	probing "goaria-v3/internal/surge/probe"
 	"goaria-v3/internal/surge/scheduler"
 	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/surge/utils"
@@ -401,5 +402,27 @@ func TestEnqueue_SkipDoesNotTakeProbeSem(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("non-skip Enqueue error = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestBuildDownloadRecord_ProbeFalseWritesRangeUnsupported(t *testing.T) {
+	mgr, _ := newSkipEnqueueManager(t)
+	defer mgr.Shutdown()
+	req := &DownloadRequest{
+		URL:      "http://example.com/no-range.bin",
+		Filename: "no-range.bin",
+		Path:     t.TempDir(),
+		FileSize: 2048,
+	}
+	rec, err := mgr.buildDownloadRecord(req, "probe-false-id", req.Path, req.Filename, &probing.ProbeResult{
+		FileSize:      2048,
+		SupportsRange: false,
+		Filename:      "no-range.bin",
+	})
+	if err != nil {
+		t.Fatalf("buildDownloadRecord: %v", err)
+	}
+	if rec.RangeAcquisitionMode != types.RangeAcquireRangeUnsupported {
+		t.Fatalf("mode = %q, want range_unsupported", rec.RangeAcquisitionMode)
 	}
 }

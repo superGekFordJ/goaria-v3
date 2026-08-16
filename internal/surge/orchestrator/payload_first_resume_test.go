@@ -140,3 +140,69 @@ func TestResume_PayloadFirst_HonorsSavedMode(t *testing.T) {
 		t.Fatal("RangeSupported must launch concurrent")
 	}
 }
+
+func TestHydrate_SkipServerProbeORsTrue(t *testing.T) {
+	tmpDir := testutil.SetupStateDB(t)
+	destPath := filepath.Join(tmpDir, "or.bin")
+	url := "http://example.com/or.bin"
+	testutil.SeedMasterList(t, types.DownloadRecord{
+		ID:                   "or-id",
+		URL:                  url,
+		URLHash:              store.URLHash(url),
+		DestPath:             destPath,
+		Filename:             "or.bin",
+		Status:               "paused",
+		RangeAcquisitionMode: types.RangeAcquireRangeSupported,
+		SkipServerProbe:      false,
+	})
+	if err := store.SaveStateWithOptions(url, destPath, &types.DownloadRecord{
+		ID:                   "or-id",
+		URL:                  url,
+		DestPath:             destPath,
+		Filename:             "or.bin",
+		RangeAcquisitionMode: types.RangeAcquireRangeSupported,
+		SkipServerProbe:      false,
+		Tasks:                []types.Task{{Offset: 0, Length: 100}},
+	}, store.SaveStateOptions{SkipFileHash: true}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &types.DownloadRecord{
+		URL:             url,
+		DestPath:        destPath,
+		SkipServerProbe: true,
+	}
+	hydrateConfigFromDisk(cfg)
+	if !cfg.SkipServerProbe {
+		t.Fatal("hydrate must OR SkipServerProbe, not overwrite true with false")
+	}
+	if cfg.RangeAcquisitionMode != types.RangeAcquireRangeSupported {
+		t.Fatalf("mode = %q", cfg.RangeAcquisitionMode)
+	}
+}
+
+func TestEventQueued_SkipsInsertWhenAbsent(t *testing.T) {
+	_ = testutil.SetupStateDB(t)
+	ch := make(chan types.DownloadEvent, 1)
+	mgr := NewLifecycleManager(nil, nil, nil)
+	defer mgr.Shutdown()
+	done := make(chan struct{})
+	go func() {
+		mgr.StartEventWorker(ch)
+		close(done)
+	}()
+	ch <- types.DownloadEvent{
+		Type:       types.EventQueued,
+		DownloadID: "missing-queued",
+		URL:        "http://example.com/missing.bin",
+		Filename:   "missing.bin",
+	}
+	close(ch)
+	<-done
+	got, err := store.GetDownload("missing-queued")
+	if err != nil {
+		t.Fatalf("GetDownload: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("EventQueued inserted no-mode row: %+v", got)
+	}
+}

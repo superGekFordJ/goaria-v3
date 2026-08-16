@@ -137,8 +137,14 @@ func SaveStateWithOptions(url string, destPath string, state *types.DownloadReco
 			list.Downloads[i].TimeTaken = state.Elapsed / int64(time.Millisecond)
 			list.Downloads[i].Workers = state.Workers
 			list.Downloads[i].MinChunkSize = state.MinChunkSize
-			list.Downloads[i].RangeAcquisitionMode = state.RangeAcquisitionMode
-			list.Downloads[i].SkipServerProbe = state.SkipServerProbe
+			// FORK-PATCH: sparse SaveState must not wipe a persisted mode
+			// with gob zero, or demote SkipServerProbe true→false.
+			if state.RangeAcquisitionMode != "" {
+				list.Downloads[i].RangeAcquisitionMode = state.RangeAcquisitionMode
+			}
+			if state.SkipServerProbe {
+				list.Downloads[i].SkipServerProbe = true
+			}
 			if err := saveMasterListLocked(list); err != nil {
 				return fmt.Errorf("failed to update master list: %w", err)
 			}

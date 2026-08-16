@@ -22,9 +22,10 @@ import (
 // shouldFallbackToSingle reports whether a concurrent failure with zero
 // progress should Truncate the working file and restart single-threaded.
 // Insufficient disk space is excluded — Truncate cannot create free space.
-// FORK-PATCH: payload-first / RangeSupported only fallback on proven
-// ignore-Range (ErrRangeUnsupported) at zero verified bytes. Mismatch,
-// 416, 403, 429, and transport must not take this branch.
+// FORK-PATCH: payload-first only fallback on proven ignore-Range
+// (ErrRangeUnsupported) at zero verified bytes. Once RangeSupported is
+// persisted, Truncate+single is forbidden even at Downloaded==0. Mismatch,
+// persist failure, 416, 403, 429, and transport must not take this branch.
 func shouldFallbackToSingle(downloadErr error, downloaded int64, mode types.RangeAcquisitionMode) bool {
 	if downloadErr == nil || downloaded != 0 {
 		return false
@@ -32,13 +33,17 @@ func shouldFallbackToSingle(downloadErr error, downloaded int64, mode types.Rang
 	if errors.Is(downloadErr, types.ErrPaused) ||
 		errors.Is(downloadErr, context.Canceled) ||
 		errors.Is(downloadErr, context.DeadlineExceeded) ||
-		types.IsInsufficientDiskSpace(downloadErr) {
+		types.IsInsufficientDiskSpace(downloadErr) ||
+		errors.Is(downloadErr, types.ErrPayloadFirstPersist) {
 		return false
 	}
 	if errors.Is(downloadErr, types.ErrSourceMetadataMismatch) {
 		return false
 	}
-	if mode.IsPayloadFirst() || mode == types.RangeAcquireRangeSupported {
+	if mode == types.RangeAcquireRangeSupported {
+		return false
+	}
+	if mode.IsPayloadFirst() {
 		return errors.Is(downloadErr, types.ErrRangeUnsupported)
 	}
 	return true

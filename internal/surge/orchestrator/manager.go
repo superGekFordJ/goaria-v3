@@ -463,6 +463,12 @@ func (mgr *LifecycleManager) buildDownloadRecord(req *DownloadRequest, requestID
 	}
 
 	mode := resolvedRangeMode(req)
+	// FORK-PATCH: ProbeServer proved ignore-Range while mode is still empty.
+	// Persist range_unsupported so sequential speedstats can skip. Probe-fail
+	// optimistic SupportsRange=true is unchanged.
+	if mode == types.RangeAcquireProbeAtEnqueue && probeResult != nil && !probeResult.SupportsRange {
+		mode = types.RangeAcquireRangeUnsupported
+	}
 	skipOrigin := req.SkipServerProbe || shouldSkipServerProbe(req)
 
 	cfg := types.DownloadRecord{

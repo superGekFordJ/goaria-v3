@@ -1273,3 +1273,45 @@ func TestLoadMasterListUnlocked_UnsupportedVersion_StartsFresh(t *testing.T) {
 		t.Fatalf("expected empty list, got %d items", len(list.Downloads))
 	}
 }
+
+func TestSaveStateWithOptions_EmptyModeDoesNotWipe(t *testing.T) {
+	tmpDir := setupTestDB(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	defer CloseDB()
+
+	url := "http://example.com/mode.bin"
+	destPath := filepath.Join(tmpDir, "mode.bin")
+	id := "mode-id"
+	if err := AddToMasterList(types.DownloadRecord{
+		ID:                   id,
+		URL:                  url,
+		URLHash:              URLHash(url),
+		DestPath:             destPath,
+		Filename:             "mode.bin",
+		Status:               "downloading",
+		RangeAcquisitionMode: types.RangeAcquireRangeSupported,
+		SkipServerProbe:      true,
+	}); err != nil {
+		t.Fatalf("AddToMasterList: %v", err)
+	}
+
+	sparse := &types.DownloadRecord{
+		ID:       id,
+		URL:      url,
+		DestPath: destPath,
+		Filename: "mode.bin",
+	}
+	if err := SaveStateWithOptions(url, destPath, sparse, SaveStateOptions{SkipFileHash: true}); err != nil {
+		t.Fatalf("SaveStateWithOptions: %v", err)
+	}
+	got, err := GetDownload(id)
+	if err != nil || got == nil {
+		t.Fatalf("GetDownload: %v", err)
+	}
+	if got.RangeAcquisitionMode != types.RangeAcquireRangeSupported {
+		t.Fatalf("mode = %q, want range_supported", got.RangeAcquisitionMode)
+	}
+	if !got.SkipServerProbe {
+		t.Fatal("SkipServerProbe wiped by empty snapshot")
+	}
+}

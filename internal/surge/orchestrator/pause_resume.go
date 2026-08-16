@@ -70,10 +70,10 @@ func hydrateConfigFromDisk(cfg *types.DownloadRecord) {
 	}
 	if saved.RangeAcquisitionMode != "" {
 		cfg.RangeAcquisitionMode = saved.RangeAcquisitionMode
-		cfg.SkipServerProbe = saved.SkipServerProbe
 	} else if len(saved.Tasks) > 0 && cfg.RangeAcquisitionMode == "" {
 		cfg.RangeAcquisitionMode = types.UpgradeLegacyRangeMode("", true)
 	}
+	cfg.SkipServerProbe = cfg.SkipServerProbe || saved.SkipServerProbe
 	if len(saved.Tasks) > 0 {
 		cfg.SupportsRange = types.ShouldUseConcurrent(cfg.RangeAcquisitionMode, true)
 		cfg.Tasks = saved.Tasks
