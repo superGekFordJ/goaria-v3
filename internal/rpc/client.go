@@ -2,10 +2,8 @@ package rpc
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -13,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"goaria-v3/internal/config"
 	"goaria-v3/internal/surge/types"
 )
 
@@ -293,164 +290,6 @@ func parseAddURIResponse(resp []byte) (string, error) {
 	}
 
 	return "", nil
-}
-
-// HeadProbeResult contains the result of a HEAD probe request.
-type HeadProbeResult struct {
-	ContentLength int64
-	TTFBMs        int64
-	RemoteIP      string
-}
-
-// HeadProbe sends a HEAD request and returns Content-Length, TTFB, and remote IP.
-// The remote IP is captured from the TCP connection to avoid extra DNS lookups.
-func HeadProbe(rawURL string, timeout time.Duration) HeadProbeResult {
-	var capturedIP string
-
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
-			if err != nil {
-				return nil, err
-			}
-			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				if tcpAddr, ok := tcpConn.RemoteAddr().(*net.TCPAddr); ok {
-					capturedIP = tcpAddr.IP.String()
-				}
-			}
-			return conn, nil
-		},
-	}
-
-	client := &http.Client{
-		Timeout:   timeout,
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		},
-	}
-
-	req, err := http.NewRequest("HEAD", rawURL, nil)
-	if err != nil {
-		return HeadProbeResult{}
-	}
-
-	ua := config.Get().UserAgent
-	if ua != "" {
-		req.Header.Set("User-Agent", ua)
-	}
-
-	start := time.Now()
-	resp, err := client.Do(req)
-	if err != nil {
-		return HeadProbeResult{RemoteIP: capturedIP}
-	}
-	defer resp.Body.Close()
-
-	ttfb := time.Since(start).Milliseconds()
-
-	result := HeadProbeResult{
-		TTFBMs:   ttfb,
-		RemoteIP: capturedIP,
-	}
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-		if resp.ContentLength > 0 {
-			result.ContentLength = resp.ContentLength
-		}
-	}
-
-	return result
-}
-
-// HeadProbeWithHeaders sends a HEAD request with extra headers (e.g. Cookie/Referer
-// from the browser extension) and returns the same metrics as HeadProbe.
-// Headers are validated via ValidateAddURIHeaders before use to prevent CRLF injection.
-func HeadProbeWithHeaders(rawURL string, timeout time.Duration, headers []string) HeadProbeResult {
-	if err := ValidateAddURIHeaders(headers); err != nil {
-		return HeadProbeResult{}
-	}
-	return headProbeWithHeaders(rawURL, timeout, headers)
-}
-
-func headProbeWithHeaders(rawURL string, timeout time.Duration, headers []string) HeadProbeResult {
-	var capturedIP string
-
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
-			if err != nil {
-				return nil, err
-			}
-			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				if tcpAddr, ok := tcpConn.RemoteAddr().(*net.TCPAddr); ok {
-					capturedIP = tcpAddr.IP.String()
-				}
-			}
-			return conn, nil
-		},
-	}
-
-	client := &http.Client{
-		Timeout:   timeout,
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		},
-	}
-
-	req, err := http.NewRequest("HEAD", rawURL, nil)
-	if err != nil {
-		return HeadProbeResult{}
-	}
-
-	ua := config.Get().UserAgent
-	if ua != "" {
-		req.Header.Set("User-Agent", ua)
-	}
-
-	for _, line := range headers {
-		name, value, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		req.Header.Set(strings.TrimSpace(name), strings.TrimSpace(value))
-	}
-
-	start := time.Now()
-	resp, err := client.Do(req)
-	if err != nil {
-		return HeadProbeResult{RemoteIP: capturedIP}
-	}
-	defer resp.Body.Close()
-
-	ttfb := time.Since(start).Milliseconds()
-
-	result := HeadProbeResult{
-		TTFBMs:   ttfb,
-		RemoteIP: capturedIP,
-	}
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-		if resp.ContentLength > 0 {
-			result.ContentLength = resp.ContentLength
-		}
-	}
-
-	return result
-}
-
-// HeadContentLength 发送 HEAD 请求获取文件大小
-// 返回 Content-Length (bytes)，失败返回 0
-// timeout: 超时时间
-func HeadContentLength(url string, timeout time.Duration) int64 {
-	return HeadProbe(url, timeout).ContentLength
 }
 
 func Pause(gid string) error {
