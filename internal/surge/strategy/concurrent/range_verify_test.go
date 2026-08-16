@@ -26,31 +26,106 @@ func TestParseSingleContentRange(t *testing.T) {
 
 func TestClassifyPayloadFirstHeaders(t *testing.T) {
 	task := types.Task{Offset: 0, Length: 1024}
-	resp206 := &http.Response{
-		StatusCode:    http.StatusPartialContent,
-		ContentLength: 1024,
-		Header:        http.Header{"Content-Range": []string{"bytes 0-1023/4096"}, "Content-Length": []string{"1024"}},
+	cases := []struct {
+		name string
+		resp *http.Response
+		want error
+	}{
+		{
+			name: "valid_206",
+			resp: &http.Response{
+				StatusCode:    http.StatusPartialContent,
+				ContentLength: 1024,
+				Header:        http.Header{"Content-Range": []string{"bytes 0-1023/4096"}, "Content-Length": []string{"1024"}},
+			},
+		},
+		{
+			name: "shorter_legal_206",
+			resp: &http.Response{
+				StatusCode:    http.StatusPartialContent,
+				ContentLength: 512,
+				Header:        http.Header{"Content-Range": []string{"bytes 0-511/4096"}, "Content-Length": []string{"512"}},
+			},
+		},
+		{
+			name: "200_matching_size",
+			resp: &http.Response{
+				StatusCode:    http.StatusOK,
+				ContentLength: 4096,
+				Header:        http.Header{"Content-Length": []string{"4096"}},
+			},
+			want: types.ErrRangeUnsupported,
+		},
+		{
+			name: "200_no_content_length",
+			resp: &http.Response{
+				StatusCode:    http.StatusOK,
+				ContentLength: -1,
+				Header:        http.Header{},
+			},
+			want: types.ErrSourceMetadataMismatch,
+		},
+		{
+			name: "200_wrong_content_length",
+			resp: &http.Response{
+				StatusCode:    http.StatusOK,
+				ContentLength: 12,
+				Header:        http.Header{"Content-Length": []string{"12"}},
+			},
+			want: types.ErrSourceMetadataMismatch,
+		},
+		{
+			name: "416",
+			resp: &http.Response{StatusCode: http.StatusRequestedRangeNotSatisfiable, Header: http.Header{}},
+			want: types.ErrSourceMetadataMismatch,
+		},
+		{
+			name: "403_legacy",
+			resp: &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{}},
+			want: errPayloadFirstLegacyStatus,
+		},
+		{
+			name: "429_legacy",
+			resp: &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{}},
+			want: errPayloadFirstLegacyStatus,
+		},
+		{
+			name: "multiple_content_range",
+			resp: &http.Response{
+				StatusCode: http.StatusPartialContent,
+				Header:     http.Header{"Content-Range": []string{"bytes 0-1023/4096", "bytes 0-1023/4096"}},
+			},
+			want: types.ErrSourceMetadataMismatch,
+		},
+		{
+			name: "206_wrong_end",
+			resp: &http.Response{
+				StatusCode: http.StatusPartialContent,
+				Header:     http.Header{"Content-Range": []string{"bytes 0-2047/4096"}, "Content-Length": []string{"2048"}},
+			},
+			want: types.ErrSourceMetadataMismatch,
+		},
+		{
+			name: "206_wrong_total",
+			resp: &http.Response{
+				StatusCode: http.StatusPartialContent,
+				Header:     http.Header{"Content-Range": []string{"bytes 0-1023/9999"}, "Content-Length": []string{"1024"}},
+			},
+			want: types.ErrSourceMetadataMismatch,
+		},
 	}
-	if err := classifyPayloadFirstHeaders(resp206, task, 4096); err != nil {
-		t.Fatalf("valid 206: %v", err)
-	}
-
-	resp200 := &http.Response{
-		StatusCode:    http.StatusOK,
-		ContentLength: 4096,
-		Header:        http.Header{"Content-Length": []string{"4096"}},
-	}
-	if !errors.Is(classifyPayloadFirstHeaders(resp200, task, 4096), types.ErrRangeUnsupported) {
-		t.Fatal("200+matching CL must be ErrRangeUnsupported")
-	}
-
-	resp416 := &http.Response{StatusCode: http.StatusRequestedRangeNotSatisfiable, Header: http.Header{}}
-	if !errors.Is(classifyPayloadFirstHeaders(resp416, task, 4096), types.ErrSourceMetadataMismatch) {
-		t.Fatal("416 must be mismatch")
-	}
-
-	resp403 := &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{}}
-	if !errors.Is(classifyPayloadFirstHeaders(resp403, task, 4096), errPayloadFirstLegacyStatus) {
-		t.Fatal("403 must use legacy status handling")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := classifyPayloadFirstHeaders(tc.resp, task, 4096)
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("got %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("got %v, want %v", err, tc.want)
+			}
+		})
 	}
 }

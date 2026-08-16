@@ -51,12 +51,14 @@ type ConcurrentDownloader struct {
 
 	payloadFirstSession  atomic.Bool
 	payloadFirstVerified atomic.Bool
+	payloadFirstWrote    atomic.Bool
 	skipRangePrewarm     atomic.Bool
 	pfFanout             sync.Once
 	pfPlannedConns       int
 	pfPlannedTasks       []types.Task
 	pfChunkSize          int64
 	pfCandidateMirrors   []string
+	pfFullMirrors        []string
 	pfHelperCtx          context.Context
 	pfHelperWG           *sync.WaitGroup
 	pfQueue              *TaskQueue
@@ -505,11 +507,9 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 	defer wgHelpers.Wait()
 	defer cancel()
 
-	// Ensure we have the total file size
+	// Ensure we have the total file size. Payload-first with size<=0 already
+	// returned above; this path is bootstrap for proven-Range sessions.
 	if fileSize <= 0 {
-		if payloadFirst {
-			return types.ErrSourceMetadataMismatch
-		}
 		var err error
 		fileSize, err = d.bootstrapMetadata(downloadCtx, client, rawurl)
 		if err != nil {
@@ -527,10 +527,17 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 	numConns := d.getInitialConnections(effectiveSizeForWorkers)
 	chunkSize := d.determineChunkSize(fileSize, numConns)
 
-	workerMirrors := d.getWorkerMirrors(activeMirrors)
+	// FORK-PATCH: first payload-first request stays on the primary URL.
+	// After the first successful WriteAt, unpin to the full candidate list.
+	fullMirrors := d.getWorkerMirrors(activeMirrors)
+	if payloadFirst && len(candidateMirrors) > 0 {
+		fullMirrors = d.getWorkerMirrors(candidateMirrors)
+	}
+	workerMirrors := fullMirrors
 	if payloadFirst {
 		workerMirrors = []string{rawurl}
 	}
+	d.pfFullMirrors = fullMirrors
 
 	// Pre-warm connections if configured
 	hedgeCount := d.Runtime.GetDialHedgeCount()
@@ -1019,7 +1026,7 @@ func (d *ConcurrentDownloader) ScaleWorkers(delta int) int {
 	if delta == 0 || deps == nil || deps.ctx.Err() != nil {
 		return 0
 	}
-	if delta > 0 && d.payloadFirstSession.Load() && !d.payloadFirstVerified.Load() {
+	if delta > 0 && d.payloadFirstSession.Load() && !d.payloadFirstWrote.Load() {
 		return 0
 	}
 	if delta > 0 {
@@ -1192,6 +1199,7 @@ func (d *ConcurrentDownloader) handlePause(destPath string, fileSize int64, queu
 
 // persistRangeSupportedBeforeWrite writes RangeSupported + the original planned
 // task layout before the first payload WriteAt. Failure must not write body.
+// Fan-out waits for the first successful WriteAt (notePayloadFirstWrite).
 func (d *ConcurrentDownloader) persistRangeSupportedBeforeWrite() error {
 	if !d.payloadFirstSession.Load() || d.payloadFirstVerified.Load() {
 		return nil
@@ -1244,13 +1252,37 @@ func (d *ConcurrentDownloader) persistRangeSupportedBeforeWrite() error {
 	}
 
 	if err := store.SaveStateWithOptions(d.URL, d.DestPath, s, store.SaveStateOptions{SkipFileHash: true}); err != nil {
-		return fmt.Errorf("payload-first persist RangeSupported: %w", err)
+		return fmt.Errorf("payload-first persist RangeSupported: %w", errors.Join(types.ErrPayloadFirstPersist, err))
 	}
 
 	d.RangeAcquisitionMode = types.RangeAcquireRangeSupported
 	d.payloadFirstVerified.Store(true)
-	d.fanoutAfterRangeVerified()
 	return nil
+}
+
+// notePayloadFirstWrite fans out helpers/workers after the first successful
+// payload WriteAt. Persist already set RangeSupported; ScaleWorkers stays
+// no-op until this CAS so a later 200 cannot Truncate an empty batch window.
+func (d *ConcurrentDownloader) notePayloadFirstWrite() {
+	if !d.payloadFirstSession.Load() {
+		return
+	}
+	d.unpinWorkerMirrors()
+	if !d.payloadFirstWrote.CompareAndSwap(false, true) {
+		return
+	}
+	d.fanoutAfterRangeVerified()
+}
+
+func (d *ConcurrentDownloader) unpinWorkerMirrors() {
+	if len(d.pfFullMirrors) <= 1 {
+		return
+	}
+	deps := d.workerDepsPtr.Load()
+	if deps == nil {
+		return
+	}
+	deps.mirrors = d.pfFullMirrors
 }
 
 func (d *ConcurrentDownloader) fanoutAfterRangeVerified() {

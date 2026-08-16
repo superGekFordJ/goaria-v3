@@ -517,6 +517,7 @@ func TestScaleWorkers_Prewarm_PayloadFirstDisabled(t *testing.T) {
 	})
 	d.payloadFirstSession.Store(true)
 	d.payloadFirstVerified.Store(true)
+	d.payloadFirstWrote.Store(true)
 	d.skipRangePrewarm.Store(true)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -595,7 +596,12 @@ func TestPayloadFirst_PauseResumeKeepsProgress(t *testing.T) {
 	if err := testutil.VerifyFileSize(destPath+types.IncompleteSuffix, fileSize); err != nil {
 		t.Error(err)
 	}
-	_ = before
+	if d2.State == nil {
+		t.Fatal("resume state missing")
+	}
+	if got := d2.State.Bytes.Downloaded.Load(); got < before {
+		t.Fatalf("resume Downloaded=%d < paused %d", got, before)
+	}
 }
 
 func TestPayloadFirst_NoBodyBeforeValidate(t *testing.T) {
@@ -625,5 +631,108 @@ func TestPayloadFirst_NoBodyBeforeValidate(t *testing.T) {
 	}
 	if writes.Load() != 0 {
 		t.Fatalf("WriteAt = %d, want 0", writes.Load())
+	}
+}
+
+func TestPayloadFirst_PersistFailureReturns(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+	fileSize := int64(64 * 1024)
+	server, _, _ := servePayloadRange(t, fileSize, nil)
+	destPath := filepath.Join(tmpDir, "pf_persist_fail.bin")
+	seedPayloadFirstMaster(t, server.URL, destPath, fileSize)
+	details := filepath.Join(tmpDir, "details")
+	_ = os.RemoveAll(details)
+	if err := os.WriteFile(details, []byte("blocked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writes := installWriteAtCounter(t)
+	d := newPayloadFirstDownloader(t, destPath, fileSize)
+	d.Runtime.Workers = 1
+	d.Runtime.MaxTaskRetries = 3
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := d.Download(ctx, server.URL, nil, nil, destPath, fileSize)
+	if !errors.Is(err, types.ErrPayloadFirstPersist) {
+		t.Fatalf("err = %v, want ErrPayloadFirstPersist", err)
+	}
+	if writes.Load() != 0 {
+		t.Fatalf("WriteAt = %d, want 0", writes.Load())
+	}
+}
+
+func TestScaleWorkers_NoOpUntilFirstWrite(t *testing.T) {
+	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{
+		WorkerBufferSize: 32 * utils.KiB,
+	})
+	d.payloadFirstSession.Store(true)
+	d.payloadFirstVerified.Store(true)
+	d.workersActive.Store(true)
+	d.workerDepsPtr.Store(&workerDeps{ctx: context.Background()})
+	if added := d.ScaleWorkers(2); added != 0 {
+		t.Fatalf("ScaleWorkers before first write = %d, want 0", added)
+	}
+}
+
+func TestPayloadFirst_Shorter206Completes(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+	fileSize := int64(64 * 1024)
+	short := int64(1024)
+	server, zeroZero, _ := servePayloadRange(t, fileSize, func(w http.ResponseWriter, r *http.Request, start, end int64) bool {
+		if start == 0 && end > short-1 {
+			end = short - 1
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+			w.WriteHeader(http.StatusPartialContent)
+			blob := make([]byte, end-start+1)
+			for i := range blob {
+				blob[i] = byte(start + int64(i))
+			}
+			_, _ = w.Write(blob)
+			return true
+		}
+		return false
+	})
+	destPath := filepath.Join(tmpDir, "pf_short.bin")
+	seedPayloadFirstMaster(t, server.URL, destPath, fileSize)
+	d := newPayloadFirstDownloader(t, destPath, fileSize)
+	d.Runtime.Workers = 2
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := d.Download(ctx, server.URL, nil, nil, destPath, fileSize); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if zeroZero.Load() != 0 {
+		t.Fatalf("bytes=0-0 = %d, want 0", zeroZero.Load())
+	}
+	if err := testutil.VerifyFileSize(destPath+types.IncompleteSuffix, fileSize); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestPayloadFirst_UnpinsMirrorsAfterFirstWrite(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+	fileSize := int64(256 * 1024)
+	var mirrorHits atomic.Int64
+	mirror, _, _ := servePayloadRange(t, fileSize, func(w http.ResponseWriter, r *http.Request, start, end int64) bool {
+		mirrorHits.Add(1)
+		return false
+	})
+	primary, zeroZero, _ := servePayloadRange(t, fileSize, nil)
+	destPath := filepath.Join(tmpDir, "pf_unpin.bin")
+	seedPayloadFirstMaster(t, primary.URL, destPath, fileSize)
+	d := newPayloadFirstDownloader(t, destPath, fileSize)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := d.Download(ctx, primary.URL, []string{mirror.URL}, nil, destPath, fileSize); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if zeroZero.Load() != 0 {
+		t.Fatalf("bytes=0-0 = %d, want 0", zeroZero.Load())
+	}
+	if mirrorHits.Load() == 0 {
+		t.Fatal("expected later workers to use the unpinned mirror")
 	}
 }

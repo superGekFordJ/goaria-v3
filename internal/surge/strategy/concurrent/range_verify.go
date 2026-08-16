@@ -109,14 +109,30 @@ func validatePayloadFirst206(resp *http.Response, task types.Task, trustedSize i
 		return types.ErrSourceMetadataMismatch
 	}
 	wantEnd := task.Offset + task.Length - 1
-	if start != task.Offset || end != wantEnd || total != trustedSize {
+	if start != task.Offset || end < start || end > wantEnd || total != trustedSize {
 		return types.ErrSourceMetadataMismatch
 	}
+	served := end - start + 1
 	if raw := strings.TrimSpace(resp.Header.Get("Content-Length")); raw != "" {
 		cl, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || cl != task.Length {
+		if err != nil || cl != served {
 			return types.ErrSourceMetadataMismatch
 		}
 	}
 	return nil
+}
+
+func payloadFirstServedLength(resp *http.Response, task types.Task) int64 {
+	if resp == nil {
+		return task.Length
+	}
+	values := resp.Header.Values("Content-Range")
+	if len(values) != 1 {
+		return task.Length
+	}
+	start, end, _, err := parseSingleContentRange(values[0])
+	if err != nil || end < start {
+		return task.Length
+	}
+	return end - start + 1
 }

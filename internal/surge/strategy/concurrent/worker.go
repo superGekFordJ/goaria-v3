@@ -198,7 +198,9 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 				return lastErr
 			}
 
-			if errors.Is(lastErr, types.ErrRangeUnsupported) || errors.Is(lastErr, types.ErrSourceMetadataMismatch) {
+			if errors.Is(lastErr, types.ErrRangeUnsupported) ||
+				errors.Is(lastErr, types.ErrSourceMetadataMismatch) ||
+				errors.Is(lastErr, types.ErrPayloadFirstPersist) {
 				var stash *types.Task
 				if d.payloadFirstVerified.Load() {
 					if remaining := activeTask.RemainingTask(); remaining != nil {
@@ -437,7 +439,8 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 				return err
 			}
 			d.sendFirstByteOnce(ttfbStart, activeTask)
-			limitResponseBody(resp, task.Length)
+			served := payloadFirstServedLength(resp, task)
+			limitResponseBody(resp, served)
 		}
 	}
 
@@ -578,6 +581,7 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 			if writeErr != nil {
 				return fmt.Errorf("write error: %w", types.AnnotateInsufficientDiskSpace(writeErr))
 			}
+			d.notePayloadFirstWrite()
 
 			now := time.Now()
 			rangeStart := offset // Start of this write
