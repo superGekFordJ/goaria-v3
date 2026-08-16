@@ -1260,20 +1260,17 @@ func (d *ConcurrentDownloader) persistRangeSupportedBeforeWrite() error {
 	return nil
 }
 
-// notePayloadFirstWrite fans out helpers/workers after the first successful
-// payload WriteAt. Persist already set RangeSupported; ScaleWorkers stays
-// no-op until this CAS so a later 200 cannot Truncate an empty batch window.
+// notePayloadFirstWrite starts helpers and remaining workers after the first
+// successful payload WriteAt. Truncate-at-zero is already forbidden once
+// mode is RangeSupported; this Once only serializes unpin + fan-out.
 func (d *ConcurrentDownloader) notePayloadFirstWrite() {
 	if !d.payloadFirstSession.Load() {
-		return
-	}
-	d.unpinWorkerMirrors()
-	if !d.payloadFirstWrote.CompareAndSwap(false, true) {
 		return
 	}
 	d.fanoutAfterRangeVerified()
 }
 
+// unpinWorkerMirrors must run only from fanoutAfterRangeVerified's Once.
 func (d *ConcurrentDownloader) unpinWorkerMirrors() {
 	if len(d.pfFullMirrors) <= 1 {
 		return
@@ -1287,6 +1284,8 @@ func (d *ConcurrentDownloader) unpinWorkerMirrors() {
 
 func (d *ConcurrentDownloader) fanoutAfterRangeVerified() {
 	d.pfFanout.Do(func() {
+		d.unpinWorkerMirrors()
+		d.payloadFirstWrote.Store(true)
 		if d.pfHelperWG != nil && d.pfHelperCtx != nil && d.pfQueue != nil {
 			d.startHelpers(d.pfHelperCtx, d.pfHelperWG, d.pfQueue, d.pfFileSize, d.pfPlannedConns)
 		}

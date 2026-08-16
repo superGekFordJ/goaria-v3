@@ -36,7 +36,7 @@ var (
 
 	// FORK-PATCH: HTTP 200 that ignored Range with Content-Length == trusted size.
 	// Zero payload write. Immediate return (no generic retry). Scheduler may
-	// Truncate+single only when verified bytes are still 0.
+	// Truncate+single only while still payload-first at 0 verified bytes.
 	ErrRangeUnsupported = errors.New("source ignored range request")
 
 	// FORK-PATCH: Range metadata does not match the trusted size / requested
