@@ -487,6 +487,115 @@ func TestHandleSurgeEvent_CompleteEvent_UpdatesMasterCache(t *testing.T) {
 	}
 }
 
+// TestHandleSurgeEvent_EventStartedPreservesRangeAcquisitionMode verifies
+// EventStarted keeps RangeAcquisitionMode and SkipServerProbe from the
+// queued cache entry the same way it keeps Mirrors.
+func TestHandleSurgeEvent_EventStartedPreservesRangeAcquisitionMode(t *testing.T) {
+	testutil.SetupStateDB(t)
+	hub := events.NewHub(nil)
+	se := rpc.NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+	se.UpsertMasterCacheEntry(surgeEvents.DownloadRecord{
+		ID:                   "dl-keep-range",
+		URL:                  "http://x/keep.bin",
+		Mirrors:              []string{"http://m1"},
+		RangeAcquisitionMode: surgeEvents.RangeAcquireRangeUnsupported,
+		SkipServerProbe:      true,
+		Status:               "queued",
+	})
+
+	m := &Monitor{hub: hub, pusher: NewPusher(hub), surgeEng: se}
+
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventStarted,
+		DownloadID: "dl-keep-range",
+		URL:        "http://x/keep.bin",
+		Total:      100000000,
+		Workers:    16,
+	})
+
+	got, ok := se.GetMasterCacheEntry("dl-keep-range")
+	if !ok {
+		t.Fatal("expected cache entry after EventStarted")
+	}
+	if got.RangeAcquisitionMode != surgeEvents.RangeAcquireRangeUnsupported {
+		t.Errorf("RangeAcquisitionMode = %q, want range_unsupported", got.RangeAcquisitionMode)
+	}
+	if !got.SkipServerProbe {
+		t.Error("SkipServerProbe = false, want true")
+	}
+	if len(got.Mirrors) != 1 || got.Mirrors[0] != "http://m1" {
+		t.Errorf("Mirrors = %v, want [http://m1]", got.Mirrors)
+	}
+}
+
+// TestHandleSurgeEvent_RangeUnsupportedOnStoreSkipsAfterEventStarted verifies
+// persistRangeUnsupported (gob list) still suppresses speedstats when
+// EventStarted has replaced the cache with an empty-mode hit.
+func TestHandleSurgeEvent_RangeUnsupportedOnStoreSkipsAfterEventStarted(t *testing.T) {
+	testutil.SetupStateDB(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	const (
+		downloadID = "evt-range-unsup-store"
+		gid        = "sg_" + downloadID
+		avgSpeed   = int64(40_000_000)
+		total      = int64(100_000_000)
+	)
+
+	se := rpc.NewSurgeEngineForTesting(nil)
+	testutil.SeedMasterList(t, surgeEvents.DownloadRecord{
+		ID:                   downloadID,
+		URL:                  "https://evt-range-unsup.example.com/seq.bin",
+		RangeAcquisitionMode: surgeEvents.RangeAcquireRangeUnsupported,
+	})
+	if _, ok := se.GetMasterCacheEntry(downloadID); ok {
+		t.Fatal("setup: cache must not already hold the store-only mode")
+	}
+
+	hub := events.NewHub(nil)
+	tracker := NewTaskTracker()
+	m := &Monitor{
+		hub:      hub,
+		pusher:   NewPusher(hub),
+		tracker:  tracker,
+		engine:   rpc.NewHybridEngine(nil, se),
+		surgeEng: se,
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventStarted,
+		DownloadID: downloadID,
+		Total:      total,
+		URL:        "https://evt-range-unsup.example.com/seq.bin",
+		Workers:    16,
+	})
+	entry, ok := se.GetMasterCacheEntry(downloadID)
+	if !ok {
+		t.Fatal("expected EventStarted to insert a cache hit")
+	}
+	if entry.RangeAcquisitionMode != "" {
+		t.Fatalf("cache mode = %q, want empty (store-only sequential signal)", entry.RangeAcquisitionMode)
+	}
+
+	tracker.SetScopeAndEnv(gid, "wan", 50, "evt-range-unsup.example.com", "envA")
+
+	before := speedstatsRecordCount()
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
+		DownloadID: downloadID,
+		Total:      total,
+		AvgSpeed:   float64(avgSpeed),
+	})
+	if after := speedstatsRecordCount(); after != before {
+		t.Fatalf("expected no speedstats record for store range_unsupported, got %d new", after-before)
+	}
+}
+
 func TestHandleSurgeEvent_CompleteEvent_PushesDeltaToFrontend(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)

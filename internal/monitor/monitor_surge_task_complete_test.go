@@ -8,6 +8,7 @@ import (
 	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/surge/progress"
 	"goaria-v3/internal/surge/scheduler"
+	"goaria-v3/internal/surge/testutil"
 	"goaria-v3/internal/surge/types"
 )
 
@@ -194,6 +195,55 @@ func TestHandleTaskComplete_RangeUnsupportedSkipsSpeedstats(t *testing.T) {
 
 	if after != before {
 		t.Fatalf("expected no speedstats record for range_unsupported, got %d new", after-before)
+	}
+}
+
+// TestHandleTaskComplete_EmptyCacheModeReadsStoreRangeUnsupported verifies a
+// cache hit with empty mode still skips when the gob list has range_unsupported.
+func TestHandleTaskComplete_EmptyCacheModeReadsStoreRangeUnsupported(t *testing.T) {
+	testutil.SetupStateDB(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(nil, surge)
+	const rawID = "empty-cache-store-unsup"
+	testutil.SeedMasterList(t, types.DownloadRecord{
+		ID:                   rawID,
+		URL:                  "https://empty-cache-store.example.com/seq.bin",
+		RangeAcquisitionMode: types.RangeAcquireRangeUnsupported,
+	})
+	surge.UpsertMasterCacheEntry(types.DownloadRecord{
+		ID:     rawID,
+		URL:    "https://empty-cache-store.example.com/seq.bin",
+		Status: "downloading",
+	})
+
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_"+rawID, 200000000, "https://empty-cache-store.example.com/seq.bin", 16, "active")
+
+	m := &Monitor{engine: he, tracker: tracker, surgeEng: surge}
+
+	task := tracker.tasks["sg_"+rawID]
+	task.Status = "complete"
+	task.PeakSpeed = 40 * 1024 * 1024
+	task.ThreadCount = 16
+	task.PeakThreadCount = 0
+	task.Domain = "empty-cache-store.example.com"
+	task.Scope = "wan"
+	task.FilePath = "D:\\Downloads\\seq.bin"
+	task.PeakEnvKey = "testenv"
+
+	before := speedstatsRecordCount()
+	m.handleTaskComplete(task)
+	after := speedstatsRecordCount()
+
+	if after != before {
+		t.Fatalf("expected no speedstats record for empty-cache + store range_unsupported, got %d new", after-before)
 	}
 }
 

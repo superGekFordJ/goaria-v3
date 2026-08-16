@@ -16,6 +16,7 @@ import (
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
+	"goaria-v3/internal/surge/store"
 	"goaria-v3/internal/surge/types"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -686,7 +687,8 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 
 // sequentialSpeedstatsSkip is true only for proven ignore-Range sequential
 // downloads. PeakThreadCount==0 is not sequential (fast concurrent / Aria2).
-// Master-cache miss fails open so short-lived successes still record.
+// Cache miss or empty mode is not sequential; persistRangeUnsupported writes
+// the gob list, so that is checked when the event cache is empty or stale.
 func (m *Monitor) sequentialSpeedstatsSkip(task *TrackedTask) bool {
 	if task == nil || m == nil {
 		return false
@@ -698,6 +700,25 @@ func (m *Monitor) lookupRangeAcquisitionMode(gid string) types.RangeAcquisitionM
 	if !strings.HasPrefix(gid, "sg_") {
 		return ""
 	}
+	rawID := gid[3:]
+	cacheMode := m.masterCacheRangeMode(rawID)
+	if cacheMode == types.RangeAcquireRangeUnsupported {
+		return cacheMode
+	}
+	rec, err := store.GetDownload(rawID)
+	if err != nil || rec == nil {
+		return cacheMode
+	}
+	if rec.RangeAcquisitionMode == types.RangeAcquireRangeUnsupported {
+		return rec.RangeAcquisitionMode
+	}
+	if cacheMode != "" {
+		return cacheMode
+	}
+	return rec.RangeAcquisitionMode
+}
+
+func (m *Monitor) masterCacheRangeMode(rawID string) types.RangeAcquisitionMode {
 	se := m.surgeEng
 	if se == nil {
 		he, ok := m.engine.(*rpc.HybridEngine)
@@ -709,7 +730,7 @@ func (m *Monitor) lookupRangeAcquisitionMode(gid string) types.RangeAcquisitionM
 			return ""
 		}
 	}
-	entry, ok := se.GetMasterCacheEntry(gid[3:])
+	entry, ok := se.GetMasterCacheEntry(rawID)
 	if !ok {
 		return ""
 	}

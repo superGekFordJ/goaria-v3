@@ -165,7 +165,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			m.tracker.EnsureTrackedFromEvent(gid, 0, ev.URL, ev.Workers, "waiting")
 		}
 		if surgeEng != nil {
-			surgeEng.UpsertMasterCacheEntry(types.DownloadRecord{
+			entry := types.DownloadRecord{
 				ID:           ev.DownloadID,
 				URL:          ev.URL,
 				URLHash:      store.URLHash(ev.URL),
@@ -177,7 +177,11 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 				RateLimitSet: ev.RateLimitSet,
 				Workers:      ev.Workers,
 				MinChunkSize: ev.MinChunkSize,
-			})
+			}
+			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
+				keepRangeAcquisition(&entry, existing)
+			}
+			surgeEng.UpsertMasterCacheEntry(entry)
 		}
 		Cache.AddSgTask(rpc.Task{
 			GID:           gid,
@@ -206,7 +210,10 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 				Workers:      ev.Workers,
 				MinChunkSize: ev.MinChunkSize,
 			}
-			// Preserve Mirrors/Downloaded/TimeTaken from any prior queued entry.
+			// Preserve Mirrors/Downloaded/TimeTaken and Range acquisition
+			// fields from any prior queued entry. A fresh record would drop
+			// range_unsupported and SkipServerProbe the same way it used to
+			// drop mirrors.
 			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
 				entry.Mirrors = append([]string(nil), existing.Mirrors...)
 				if existing.Downloaded > 0 {
@@ -215,6 +222,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 				if existing.TimeTaken > 0 {
 					entry.TimeTaken = existing.TimeTaken
 				}
+				keepRangeAcquisition(&entry, existing)
 			}
 			surgeEng.UpsertMasterCacheEntry(entry)
 		}
@@ -503,6 +511,18 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 
 	log.Printf("[Monitor] Surge Event: %s -> %s (gid: %s)", deltaType, gid, gid)
 	log.Printf("[DEBUG-EVT-MON] handleSurgeEvent done: type=%s gid=%s", deltaType, gid)
+}
+
+func keepRangeAcquisition(dst *types.DownloadRecord, src types.DownloadRecord) {
+	if dst == nil {
+		return
+	}
+	if dst.RangeAcquisitionMode == "" {
+		dst.RangeAcquisitionMode = src.RangeAcquisitionMode
+	}
+	if !dst.SkipServerProbe {
+		dst.SkipServerProbe = src.SkipServerProbe
+	}
 }
 
 // findTaskInCache searches active+waiting+stopped cache slices for a task by GID.
