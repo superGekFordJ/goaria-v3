@@ -482,10 +482,14 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 	payloadFirst := d.RangeAcquisitionMode.IsPayloadFirst()
 	if payloadFirst {
 		d.payloadFirstSession.Store(true)
-		d.skipRangePrewarm.Store(true)
 		if fileSize <= 0 {
 			return types.ErrSourceMetadataMismatch
 		}
+	}
+	// FORK-PATCH: skip-origin (presigned URLs) must not DialHedge 0-0 after
+	// mode promotes to RangeSupported on a later Download() call.
+	if payloadFirst || d.SkipServerProbe {
+		d.skipRangePrewarm.Store(true)
 	}
 
 	d.initMirrorStatus(rawurl, candidateMirrors, activeMirrors, destPath)
@@ -590,6 +594,9 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 
 	// Handle pause request: must return types.ErrPaused to prevent finalization
 	if d.State != nil && d.State.IsPaused() {
+		if d.payloadFirstSession.Load() && !d.payloadFirstVerified.Load() {
+			return types.ErrPaused
+		}
 		pauseErr := d.handlePause(destPath, fileSize, queue, candidateMirrors)
 		if pauseErr == nil {
 			// Pause was requested at completion boundary, so handlePause finalized it.

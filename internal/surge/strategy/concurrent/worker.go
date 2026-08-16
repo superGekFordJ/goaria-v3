@@ -427,6 +427,11 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 	}
 
 	payloadFirst := d.payloadFirstSession.Load()
+	// After Range is proven, unpinned mirrors use legacy 200-rotate instead of
+	// treating ignore-Range as a whole-download sentinel. Primary stays strict.
+	if payloadFirst && d.payloadFirstVerified.Load() && rawurl != d.URL {
+		payloadFirst = false
+	}
 	var classErr error
 	if payloadFirst {
 		classErr = classifyPayloadFirstHeaders(resp, activeTask.Task, totalSize)

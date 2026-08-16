@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"goaria-v3/internal/surge/types"
 )
 
 type testRPCRequest struct {
@@ -135,13 +137,15 @@ func TestAddUriWithAria2OptionsSerializesHeadersOutAndSmartThreadOptions(t *test
 
 	supportsRange := false
 	gid, err := AddUriWithAria2Options(directURL, AddURIOptions{
-		Dir:           "D:/Downloads",
-		Out:           "file.bin",
-		Headers:       []string{"Authorization: Bearer test-token", "User-Agent: GoAria-Test"},
-		Split:         8,
-		MinSplitSize:  1_048_576,
-		FileSize:      1024,
-		SupportsRange: &supportsRange,
+		Dir:                  "D:/Downloads",
+		Out:                  "file.bin",
+		Headers:              []string{"Authorization: Bearer test-token", "User-Agent: GoAria-Test"},
+		Split:                8,
+		MinSplitSize:         1_048_576,
+		FileSize:             1024,
+		SupportsRange:        &supportsRange,
+		RangeAcquisitionMode: types.RangeAcquirePayloadFirstUnknown,
+		SkipServerProbe:      true,
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -176,7 +180,7 @@ func TestAddUriWithAria2OptionsSerializesHeadersOutAndSmartThreadOptions(t *test
 	}
 	for key := range options {
 		if _, ok := allowed[key]; !ok {
-			t.Fatalf("unexpected aria2 option key %q (FileSize/SupportsRange must not serialize)", key)
+			t.Fatalf("unexpected aria2 option key %q (FileSize/SupportsRange/RangeAcquisitionMode/SkipServerProbe must not serialize)", key)
 		}
 	}
 

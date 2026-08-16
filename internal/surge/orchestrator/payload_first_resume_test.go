@@ -206,3 +206,69 @@ func TestEventQueued_SkipsInsertWhenAbsent(t *testing.T) {
 		t.Fatalf("EventQueued inserted no-mode row: %+v", got)
 	}
 }
+
+func TestEventStarted_CopiesModeFromStateWhenAbsent(t *testing.T) {
+	_ = testutil.SetupStateDB(t)
+	ch := make(chan types.DownloadEvent, 1)
+	mgr := NewLifecycleManager(nil, nil, nil)
+	defer mgr.Shutdown()
+	done := make(chan struct{})
+	go func() {
+		mgr.StartEventWorker(ch)
+		close(done)
+	}()
+	ch <- types.DownloadEvent{
+		Type:       types.EventStarted,
+		DownloadID: "started-from-state",
+		URL:        "http://example.com/from-state.bin",
+		Filename:   "from-state.bin",
+		Total:      1024,
+		State: &types.DownloadRecord{
+			RangeAcquisitionMode: types.RangeAcquirePayloadFirstUnknown,
+			SkipServerProbe:      true,
+		},
+	}
+	close(ch)
+	<-done
+	got, err := store.GetDownload("started-from-state")
+	if err != nil || got == nil {
+		t.Fatalf("GetDownload: %v", err)
+	}
+	if got.RangeAcquisitionMode != types.RangeAcquirePayloadFirstUnknown {
+		t.Fatalf("mode = %q, want payload_first_unknown from State", got.RangeAcquisitionMode)
+	}
+	if !got.SkipServerProbe {
+		t.Fatal("SkipServerProbe missing from State")
+	}
+	if got.Status != "downloading" {
+		t.Fatalf("status = %q, want downloading", got.Status)
+	}
+}
+
+func TestEventStarted_SkipsInsertWhenAbsentAndNoMode(t *testing.T) {
+	_ = testutil.SetupStateDB(t)
+	ch := make(chan types.DownloadEvent, 1)
+	mgr := NewLifecycleManager(nil, nil, nil)
+	defer mgr.Shutdown()
+	done := make(chan struct{})
+	go func() {
+		mgr.StartEventWorker(ch)
+		close(done)
+	}()
+	ch <- types.DownloadEvent{
+		Type:       types.EventStarted,
+		DownloadID: "started-no-mode",
+		URL:        "http://example.com/no-mode.bin",
+		Filename:   "no-mode.bin",
+		Total:      1024,
+	}
+	close(ch)
+	<-done
+	got, err := store.GetDownload("started-no-mode")
+	if err != nil {
+		t.Fatalf("GetDownload: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("EventStarted inserted no-mode row: %+v", got)
+	}
+}

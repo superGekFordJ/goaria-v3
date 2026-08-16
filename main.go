@@ -194,7 +194,7 @@ func main() {
 
 			// Re-probe TTFB and remote IP on resume; 1s timeout trades
 			// accuracy for latency vs AddUri's 3s. Skipped for custom
-			// headers (extracted/protected) to mirror the AddUri path.
+			// headers, skip-origin, and payload-first (presigned URLs).
 			var resumeTTFB int64
 			var remoteIP string
 			if !tasks.ShouldSkipResumeHeadProbe(cfg) {

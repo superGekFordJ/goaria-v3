@@ -169,6 +169,14 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				}
 				copyRangeAcquisition(&entry, existing)
 			}
+			if entry.RangeAcquisitionMode == "" {
+				copyRangeAcquisition(&entry, m.State)
+			}
+			// FORK-PATCH: do not insert a gob-zero mode row. Empty mode would
+			// cold-resume as sequential-from-zero. Skip like EventQueued.
+			if entry.RangeAcquisitionMode == "" {
+				break
+			}
 			if err := store.AddToMasterList(entry); err != nil {
 				utils.Debug("Lifecycle: Failed to save initial download state: %v", err)
 			}

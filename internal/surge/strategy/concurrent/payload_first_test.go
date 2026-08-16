@@ -736,3 +736,110 @@ func TestPayloadFirst_UnpinsMirrorsAfterFirstWrite(t *testing.T) {
 		t.Fatal("expected later workers to use the unpinned mirror")
 	}
 }
+
+func TestRangeSupported_SkipServerProbeNoZeroZero(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+	fileSize := int64(64 * 1024)
+	server, zeroZero, _ := servePayloadRange(t, fileSize, nil)
+	destPath := filepath.Join(tmpDir, "skip_prewarm.bin")
+	if f, err := os.Create(destPath + types.IncompleteSuffix); err != nil {
+		t.Fatal(err)
+	} else {
+		_ = f.Close()
+	}
+	testutil.SeedMasterList(t, types.DownloadRecord{
+		ID:                   "skip-prewarm",
+		URL:                  server.URL,
+		URLHash:              store.URLHash(server.URL),
+		DestPath:             destPath,
+		Filename:             filepath.Base(destPath),
+		TotalSize:            fileSize,
+		Status:               "downloading",
+		RangeAcquisitionMode: types.RangeAcquireRangeSupported,
+		SkipServerProbe:      true,
+	})
+	state := progress.New("skip-prewarm", fileSize)
+	d := NewConcurrentDownloader("skip-prewarm", nil, state, payloadFirstRuntime())
+	d.RangeAcquisitionMode = types.RangeAcquireRangeSupported
+	d.SkipServerProbe = true
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := d.Download(ctx, server.URL, nil, nil, destPath, fileSize); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if zeroZero.Load() != 0 {
+		t.Fatalf("bytes=0-0 = %d, want 0 on skip-origin RangeSupported", zeroZero.Load())
+	}
+}
+
+func TestPayloadFirst_UnverifiedPauseDoesNotSnapshot(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+	fileSize := int64(64 * 1024)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(server.Close)
+	destPath := filepath.Join(tmpDir, "pf_unverified_pause.bin")
+	seedPayloadFirstMaster(t, server.URL, destPath, fileSize)
+	d := newPayloadFirstDownloader(t, destPath, fileSize)
+	d.Runtime.Workers = 1
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	go func() {
+		errCh <- d.Download(ctx, server.URL, nil, nil, destPath, fileSize)
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for first request")
+	}
+	d.State.Pause()
+	close(release)
+	err := <-errCh
+	if err != nil && !errors.Is(err, types.ErrPaused) && !errors.Is(err, context.Canceled) {
+		t.Fatalf("unverified pause err = %v", err)
+	}
+	saved, loadErr := store.LoadState(server.URL, destPath)
+	if loadErr == nil && saved != nil && len(saved.Tasks) > 0 {
+		t.Fatal("unverified pause must not persist a task snapshot")
+	}
+}
+
+func TestPayloadFirst_Mirror200AfterVerifyRotates(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+	fileSize := int64(256 * 1024)
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(make([]byte, fileSize))
+	}))
+	t.Cleanup(mirror.Close)
+	primary, zeroZero, _ := servePayloadRange(t, fileSize, nil)
+	destPath := filepath.Join(tmpDir, "pf_mirror200.bin")
+	seedPayloadFirstMaster(t, primary.URL, destPath, fileSize)
+	d := newPayloadFirstDownloader(t, destPath, fileSize)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := d.Download(ctx, primary.URL, []string{mirror.URL}, nil, destPath, fileSize); err != nil {
+		t.Fatalf("Download: %v (mirror 200 must rotate, not abort as RangeUnsupported)", err)
+	}
+	if zeroZero.Load() != 0 {
+		t.Fatalf("bytes=0-0 = %d, want 0", zeroZero.Load())
+	}
+}
