@@ -16,7 +16,8 @@ import (
 type HeadProbeResult struct {
 	ContentLength int64
 	TTFBMs        int64
-	// RemoteIP is the physical TCP peer of the last hop (direct origin; includes reused conns).
+	// RemoteIP is the physical TCP peer of the last persistConn (direct origin; includes reused conns).
+	// On HTTPS this is post-TLS; handshake failure leaves it empty (or the previous hop on redirect).
 	RemoteIP string
 }
 
@@ -83,7 +84,8 @@ func headProbe(rawURL string, timeout time.Duration, headers []string) HeadProbe
 		req.Header.Set(strings.TrimSpace(name), strings.TrimSpace(value))
 	}
 
-	// GotConn reports the peer even on keep-alive reuse; last hop wins on redirects.
+	// GotConn reports the persistConn peer even on keep-alive reuse; last hop wins on redirects.
+	// HTTPS fires after TLS, so handshake failure does not set peerIP.
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
 		GotConn: func(info httptrace.GotConnInfo) {
 			if info.Conn == nil {
@@ -100,7 +102,7 @@ func headProbe(rawURL string, timeout time.Duration, headers []string) HeadProbe
 	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		// Do-error after connect keeps last GotConn peer; dial/validation leave it empty.
+		// Last GotConn peer is kept; dial refused / TLS handshake / validation leave it empty.
 		return HeadProbeResult{RemoteIP: peerIP}
 	}
 	defer resp.Body.Close()
