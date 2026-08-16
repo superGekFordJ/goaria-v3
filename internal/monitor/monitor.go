@@ -597,20 +597,8 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 
 	// 1. 记录速度统计（仅 >50MB 文件）— 不依赖 FilePath，先于 history 执行
 	if task.TotalLength > speedstats.MinFileSize && task.PeakSpeed > 0 {
-		// Fallback chain: PeakThreadCount (convergence-recorded) → ThreadCount (initial) → config
 		threadCount := task.PeakThreadCount
 		threadSource := "peakThreadCount"
-		if threadCount <= 0 {
-			threadCount = task.ThreadCount
-			threadSource = "threadCount"
-		}
-		if threadCount <= 0 {
-			threadCount, _ = strconv.Atoi(config.Get().MaxConnections)
-			if threadCount <= 0 {
-				threadCount = 8
-			}
-			threadSource = "config"
-		}
 		isExploration := task.IsExploration
 
 		// Fallback: tasks that bypassed service_add.go (external RPC, resume after restart)
@@ -628,6 +616,8 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 		// envKey and would pollute env-aware history buckets.
 		if task.PeakEnvKey == "" {
 			log.Printf("[Monitor] Skipping speed stats for task %s: no envKey (external RPC or wake-up path)", task.GID)
+		} else if task.PeakThreadCount <= 0 {
+			log.Printf("[Monitor] Skipping speed stats for task %s: PeakThreadCount<=0 (sequential / unverified workers)", task.GID)
 		} else if task.Domain == "" {
 			// Skip recording if we still have no domain — a record without domain is useless
 			// for BBR (GetDomainPeak/GetRTprop can't match) and would only pollute V_global_peak.

@@ -61,10 +61,7 @@ func TestHandleTaskComplete_PeakThreadCountFallback(t *testing.T) {
 }
 
 // TestHandleTaskComplete_ThreadCountFallback verifies that when PeakThreadCount is 0,
-// handleTaskComplete falls back to ThreadCount.
-
-// TestHandleTaskComplete_ThreadCountFallback verifies that when PeakThreadCount is 0,
-// handleTaskComplete falls back to ThreadCount.
+// handleTaskComplete does not write a speedstats record (no initial-N denominator).
 func TestHandleTaskComplete_ThreadCountFallback(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
@@ -95,24 +92,13 @@ func TestHandleTaskComplete_ThreadCountFallback(t *testing.T) {
 	m.handleTaskComplete(task)
 	after := speedstatsRecordCount()
 
-	if after != before+1 {
-		t.Fatalf("expected 1 new speedstats record, got %d", after-before)
-	}
-
-	rec := findRecordByDomain("example.com")
-	if rec == nil {
-		t.Fatal("expected to find speedstats record")
-	}
-	if rec.ThreadCount != 16 {
-		t.Errorf("ThreadCount = %d, want 16 (from ThreadCount fallback)", rec.ThreadCount)
+	if after != before {
+		t.Fatalf("expected no speedstats record when PeakThreadCount==0, got %d new", after-before)
 	}
 }
 
 // TestHandleTaskComplete_ConfigFallback verifies that when both PeakThreadCount and
-// ThreadCount are 0, handleTaskComplete falls back to config.MaxConnections (default 8).
-
-// TestHandleTaskComplete_ConfigFallback verifies that when both PeakThreadCount and
-// ThreadCount are 0, handleTaskComplete falls back to config.MaxConnections (default 8).
+// ThreadCount are 0, handleTaskComplete does not write a speedstats record.
 func TestHandleTaskComplete_ConfigFallback(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
@@ -148,21 +134,10 @@ func TestHandleTaskComplete_ConfigFallback(t *testing.T) {
 	m.handleTaskComplete(task)
 	after := speedstatsRecordCount()
 
-	if after != before+1 {
-		t.Fatalf("expected 1 new speedstats record, got %d", after-before)
-	}
-
-	rec := findRecordByDomain("example.com")
-	if rec == nil {
-		t.Fatal("expected to find speedstats record")
-	}
-	if rec.ThreadCount != 12 {
-		t.Errorf("ThreadCount = %d, want 12 (from config.MaxConnections)", rec.ThreadCount)
+	if after != before {
+		t.Fatalf("expected no speedstats record when PeakThreadCount==0, got %d new", after-before)
 	}
 }
-
-// TestHandleTaskComplete_RateLimitSkip verifies that rate-limited tasks skip
-// AddRecordV2 to avoid polluting speedstats with throttled throughput.
 
 // TestHandleTaskComplete_RateLimitSkip verifies that rate-limited tasks skip
 // AddRecordV2 to avoid polluting speedstats with throttled throughput.
@@ -196,6 +171,7 @@ func TestHandleTaskComplete_RateLimitSkip(t *testing.T) {
 	task.Status = "complete"
 	task.PeakSpeed = 1 * 1024 * 1024 // 1MB/s (rate-limited)
 	task.ThreadCount = 8
+	task.PeakThreadCount = 8
 	task.Domain = "example.com"
 	task.Scope = "wan"
 	task.FilePath = "D:\\Downloads\\limited.zip"
@@ -241,6 +217,7 @@ func TestHandleTaskComplete_ZeroRateLimitStillRecords(t *testing.T) {
 	task.Status = "complete"
 	task.PeakSpeed = 50 * 1024 * 1024
 	task.ThreadCount = 8
+	task.PeakThreadCount = 8
 	task.Domain = "example.com"
 	task.Scope = "wan"
 	task.FilePath = "D:\\Downloads\\fast.zip"
@@ -254,9 +231,6 @@ func TestHandleTaskComplete_ZeroRateLimitStillRecords(t *testing.T) {
 		t.Errorf("expected 1 new speedstats record for zero-cap unlimited, got %d", after-before)
 	}
 }
-
-// TestHandleTaskComplete_RateLimitNotSet_RecordsNormally verifies that when no rate
-// limit is active, AddRecordV2 proceeds normally.
 
 // TestHandleTaskComplete_RateLimitNotSet_RecordsNormally verifies that when no rate
 // limit is active, AddRecordV2 proceeds normally.
@@ -290,6 +264,7 @@ func TestHandleTaskComplete_RateLimitNotSet_RecordsNormally(t *testing.T) {
 	task.Status = "complete"
 	task.PeakSpeed = 50 * 1024 * 1024 // 50MB/s (not rate-limited)
 	task.ThreadCount = 8
+	task.PeakThreadCount = 8
 	task.Domain = "example.com"
 	task.Scope = "wan"
 	task.FilePath = "D:\\Downloads\\fast.zip"
@@ -303,10 +278,6 @@ func TestHandleTaskComplete_RateLimitNotSet_RecordsNormally(t *testing.T) {
 		t.Errorf("expected 1 new speedstats record when not rate-limited, got %d", after-before)
 	}
 }
-
-// TestHandleTaskComplete_EmptyEnvKeySkipsRecording verifies that a task with
-// PeakEnvKey="" (external RPC or wake-up path) does NOT produce a speedstats
-// record — empty envKey is a dirty-data signal that would pollute env-aware buckets.
 
 // TestHandleTaskComplete_EmptyEnvKeySkipsRecording verifies that a task with
 // PeakEnvKey="" (external RPC or wake-up path) does NOT produce a speedstats

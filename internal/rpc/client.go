@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/config"
+	"goaria-v3/internal/surge/types"
 )
 
 const (
@@ -121,10 +122,12 @@ type AddURIOptions struct {
 	MinSplitSize int64
 	BeforeSave   AddURIHook
 	FileSize     int64
-	// SupportsRange is a host probe hint. Nil means unknown (engine probes).
-	// A non-nil false skips ProbeServer and runs sequential; non-nil true skips
-	// ProbeServer and keeps concurrent. Aria2 JSON allowlist ignores this field.
-	SupportsRange *bool
+	// SupportsRange is a 286-compat probe hint. Nil means unknown (engine probes).
+	// Host 287 skip-intent leaves this nil and sets RangeAcquisitionMode +
+	// SkipServerProbe instead. Aria2 JSON allowlist ignores these fields.
+	SupportsRange        *bool
+	RangeAcquisitionMode types.RangeAcquisitionMode
+	SkipServerProbe      bool
 }
 
 type AddURIHook func(gid string) error

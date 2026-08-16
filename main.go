@@ -197,7 +197,7 @@ func main() {
 			// headers (extracted/protected) to mirror the AddUri path.
 			var resumeTTFB int64
 			var remoteIP string
-			if len(cfg.Headers) == 0 {
+			if !tasks.ShouldSkipResumeHeadProbe(cfg) {
 				probe := rpc.HeadProbe(cfg.URL, 1*time.Second)
 				resumeTTFB = probe.TTFBMs
 				remoteIP = probe.RemoteIP

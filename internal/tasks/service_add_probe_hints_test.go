@@ -40,7 +40,7 @@ func setupProbeHintsAddService(t *testing.T, engine rpc.DownloadEngine, smartThr
 	return svc
 }
 
-func TestAddUriFromExtension_TrustedSizeFilenameSetsSequentialSkip(t *testing.T) {
+func TestAddUriFromExtension_TrustedSizeFilenameSetsPayloadFirstSkip(t *testing.T) {
 	for _, smartThread := range []bool{false, true} {
 		for _, skipHead := range []bool{false, true} {
 			t.Run(smartThreadName(smartThread, skipHead), func(t *testing.T) {
@@ -67,8 +67,14 @@ func TestAddUriFromExtension_TrustedSizeFilenameSetsSequentialSkip(t *testing.T)
 				if got.Out != "ext.bin" {
 					t.Fatalf("Out = %q, want ext.bin", got.Out)
 				}
-				if got.SupportsRange == nil || *got.SupportsRange {
-					t.Fatalf("SupportsRange = %v, want pointer to false", ptrBool(got.SupportsRange))
+				if got.SupportsRange != nil {
+					t.Fatalf("SupportsRange = %v, want nil", ptrBool(got.SupportsRange))
+				}
+				if got.RangeAcquisitionMode != "payload_first_unknown" {
+					t.Fatalf("RangeAcquisitionMode = %q, want payload_first_unknown", got.RangeAcquisitionMode)
+				}
+				if !got.SkipServerProbe {
+					t.Fatal("SkipServerProbe = false, want true")
 				}
 			})
 		}
@@ -91,8 +97,9 @@ func TestAddUriFromExtension_MissingFilenameLeavesRangeNil(t *testing.T) {
 		if len(opts) != 1 {
 			t.Fatalf("AddUri calls = %d, want 1", len(opts))
 		}
-		if opts[0].FileSize != 0 || opts[0].SupportsRange != nil {
-			t.Fatalf("FileSize=%d SupportsRange=%v, want 0/nil", opts[0].FileSize, ptrBool(opts[0].SupportsRange))
+		if opts[0].FileSize != 0 || opts[0].SupportsRange != nil || opts[0].RangeAcquisitionMode != "" || opts[0].SkipServerProbe {
+			t.Fatalf("FileSize=%d SupportsRange=%v mode=%q skip=%v, want 0/nil/empty/false",
+				opts[0].FileSize, ptrBool(opts[0].SupportsRange), opts[0].RangeAcquisitionMode, opts[0].SkipServerProbe)
 		}
 	})
 
@@ -131,8 +138,9 @@ func TestAddUriFromExtension_SkipHeadProbeWithoutSizeLeavesRangeNil(t *testing.T
 	if len(opts) != 1 {
 		t.Fatalf("AddUri calls = %d, want 1", len(opts))
 	}
-	if opts[0].FileSize != 0 || opts[0].SupportsRange != nil {
-		t.Fatalf("FileSize=%d SupportsRange=%v, want 0/nil", opts[0].FileSize, ptrBool(opts[0].SupportsRange))
+	if opts[0].FileSize != 0 || opts[0].SupportsRange != nil || opts[0].RangeAcquisitionMode != "" || opts[0].SkipServerProbe {
+		t.Fatalf("FileSize=%d SupportsRange=%v mode=%q skip=%v, want 0/nil/empty/false",
+			opts[0].FileSize, ptrBool(opts[0].SupportsRange), opts[0].RangeAcquisitionMode, opts[0].SkipServerProbe)
 	}
 }
 
@@ -157,8 +165,11 @@ func TestAddUriFromExtension_PreservesAuthHeadersOnSkip(t *testing.T) {
 	if !containsHeader(got, "Cookie: sid=abc") || !containsHeader(got, "Authorization: Bearer tok") {
 		t.Fatalf("headers = %#v, want Cookie and Authorization", got)
 	}
-	if opts[0].SupportsRange == nil || *opts[0].SupportsRange {
-		t.Fatalf("SupportsRange = %v, want pointer to false", ptrBool(opts[0].SupportsRange))
+	if opts[0].SupportsRange != nil {
+		t.Fatalf("SupportsRange = %v, want nil", ptrBool(opts[0].SupportsRange))
+	}
+	if opts[0].RangeAcquisitionMode != "payload_first_unknown" || !opts[0].SkipServerProbe {
+		t.Fatalf("mode=%q skip=%v, want payload_first_unknown/true", opts[0].RangeAcquisitionMode, opts[0].SkipServerProbe)
 	}
 }
 
@@ -181,11 +192,27 @@ func TestAddUri_TrustedProbeExtractorLeavesRangeNil(t *testing.T) {
 	if len(opts) != 1 {
 		t.Fatalf("AddUri calls = %d, want 1", len(opts))
 	}
-	if opts[0].FileSize != 0 || opts[0].SupportsRange != nil {
-		t.Fatalf("extractor FileSize=%d SupportsRange=%v, want 0/nil", opts[0].FileSize, ptrBool(opts[0].SupportsRange))
+	if opts[0].FileSize != 0 || opts[0].SupportsRange != nil || opts[0].RangeAcquisitionMode != "" || opts[0].SkipServerProbe {
+		t.Fatalf("extractor FileSize=%d SupportsRange=%v mode=%q skip=%v, want 0/nil/empty/false", opts[0].FileSize, ptrBool(opts[0].SupportsRange), opts[0].RangeAcquisitionMode, opts[0].SkipServerProbe)
 	}
 	if opts[0].Out != "file.bin" {
 		t.Fatalf("Out = %q, want file.bin", opts[0].Out)
+	}
+}
+
+func TestAddUri_ProtectedTrustedSizeFilenameLeavesRangeNil(t *testing.T) {
+	candidate := addTaskCandidate{
+		protected: true,
+		sizeBytes: 4096,
+		out:       "prot.bin",
+	}
+	if shouldSkipEngineProbe(candidate, "prot.bin") {
+		t.Fatal("protected=true must not skip engine probe")
+	}
+	opts := buildCandidateAddURIOptions(`D:\Downloads`, "prot.bin", nil, 8, 0, nil, candidate)
+	if opts.FileSize != 0 || opts.SupportsRange != nil || opts.RangeAcquisitionMode != "" || opts.SkipServerProbe {
+		t.Fatalf("protected skip fields set: FileSize=%d SupportsRange=%v mode=%q skip=%v",
+			opts.FileSize, ptrBool(opts.SupportsRange), opts.RangeAcquisitionMode, opts.SkipServerProbe)
 	}
 }
 

@@ -36,13 +36,14 @@ func TestEnsureScopeDomain_FallbackFromLANURL(t *testing.T) {
 
 	m := newMonitorWithMockEngine()
 	task := &TrackedTask{
-		GID:         "sg_lan_1",
-		Status:      "complete",
-		TotalLength: 100 * 1024 * 1024,
-		PeakSpeed:   5_000_000,
-		ThreadCount: 4,
-		PeakEnvKey:  "testenv",
-		SourceURL:   "http://192.168.1.1/file.zip",
+		GID:             "sg_lan_1",
+		Status:          "complete",
+		TotalLength:     100 * 1024 * 1024,
+		PeakSpeed:       5_000_000,
+		ThreadCount:     4,
+		PeakThreadCount: 4,
+		PeakEnvKey:      "testenv",
+		SourceURL:       "http://192.168.1.1/file.zip",
 	}
 
 	m.handleTaskComplete(task)
@@ -72,13 +73,14 @@ func TestEnsureScopeDomain_FallbackFromWANURL(t *testing.T) {
 
 	m := newMonitorWithMockEngine()
 	task := &TrackedTask{
-		GID:         "sg_wan_1",
-		Status:      "complete",
-		TotalLength: 100 * 1024 * 1024,
-		PeakSpeed:   5_000_000,
-		ThreadCount: 4,
-		PeakEnvKey:  "testenv",
-		SourceURL:   "http://example.com/file.zip",
+		GID:             "sg_wan_1",
+		Status:          "complete",
+		TotalLength:     100 * 1024 * 1024,
+		PeakSpeed:       5_000_000,
+		ThreadCount:     4,
+		PeakThreadCount: 4,
+		PeakEnvKey:      "testenv",
+		SourceURL:       "http://example.com/file.zip",
 	}
 
 	m.handleTaskComplete(task)
@@ -134,15 +136,16 @@ func TestEnsureScopeDomain_NoopWhenDomainSet(t *testing.T) {
 
 	m := newMonitorWithMockEngine()
 	task := &TrackedTask{
-		GID:         "sg_existing_1",
-		Status:      "complete",
-		TotalLength: 100 * 1024 * 1024,
-		PeakSpeed:   5_000_000,
-		ThreadCount: 4,
-		PeakEnvKey:  "testenv",
-		Domain:      "existing.com",
-		Scope:       speedstats.ScopeWAN,
-		SourceURL:   "http://other.com/file.zip",
+		GID:             "sg_existing_1",
+		Status:          "complete",
+		TotalLength:     100 * 1024 * 1024,
+		PeakSpeed:       5_000_000,
+		ThreadCount:     4,
+		PeakThreadCount: 4,
+		PeakEnvKey:      "testenv",
+		Domain:          "existing.com",
+		Scope:           speedstats.ScopeWAN,
+		SourceURL:       "http://other.com/file.zip",
 	}
 
 	m.handleTaskComplete(task)
@@ -192,14 +195,15 @@ func TestHandleTaskComplete_FallbackClassifiesAndRecords(t *testing.T) {
 
 	m := newMonitorWithMockEngine()
 	task := &TrackedTask{
-		GID:         "sg_fallback_1",
-		Status:      "complete",
-		TotalLength: 100 * 1024 * 1024,
-		PeakSpeed:   5_000_000,
-		ThreadCount: 4,
-		PeakEnvKey:  "testenv",
-		Domain:      "",
-		SourceURL:   "http://example.com/file.zip",
+		GID:             "sg_fallback_1",
+		Status:          "complete",
+		TotalLength:     100 * 1024 * 1024,
+		PeakSpeed:       5_000_000,
+		ThreadCount:     4,
+		PeakThreadCount: 4,
+		PeakEnvKey:      "testenv",
+		Domain:          "",
+		SourceURL:       "http://example.com/file.zip",
 	}
 
 	m.handleTaskComplete(task)

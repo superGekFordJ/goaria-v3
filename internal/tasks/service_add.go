@@ -505,8 +505,8 @@ func buildCandidateAddURIOptions(dir, out string, headers []string, split int, m
 	}
 	if shouldSkipEngineProbe(candidate, out) {
 		opts.FileSize = candidate.sizeBytes
-		supportsRange := false
-		opts.SupportsRange = &supportsRange
+		opts.RangeAcquisitionMode = surgetypes.RangeAcquirePayloadFirstUnknown
+		opts.SkipServerProbe = true
 	}
 	return opts
 }

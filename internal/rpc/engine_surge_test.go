@@ -131,20 +131,19 @@ func TestSurgeEngine_AddUri_SkipTrustedMetadata(t *testing.T) {
 		if r.Header.Get("Range") == "bytes=0-0" {
 			probes.Add(1)
 		}
-		w.Header().Set("Content-Length", "1024")
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusBadGateway)
 	}))
 	defer srv.Close()
 
 	engine := NewSurgeEngine()
 	defer engine.Close()
 
-	supportsRange := false
 	gid, err := engine.AddUri(srv.URL+"/file.bin", AddURIOptions{
-		Dir:           t.TempDir(),
-		Out:           "file.bin",
-		FileSize:      1024,
-		SupportsRange: &supportsRange,
+		Dir:                  t.TempDir(),
+		Out:                  "file.bin",
+		FileSize:             1024,
+		RangeAcquisitionMode: types.RangeAcquirePayloadFirstUnknown,
+		SkipServerProbe:      true,
 	})
 	if err != nil {
 		t.Fatalf("AddUri: %v", err)
@@ -162,8 +161,14 @@ func TestSurgeEngine_AddUri_SkipTrustedMetadata(t *testing.T) {
 	if cfg.Filename != "file.bin" {
 		t.Fatalf("Filename = %q, want file.bin", cfg.Filename)
 	}
+	if cfg.RangeAcquisitionMode != types.RangeAcquirePayloadFirstUnknown {
+		t.Fatalf("mode = %q, want payload_first_unknown", cfg.RangeAcquisitionMode)
+	}
+	if !cfg.SkipServerProbe {
+		t.Fatal("SkipServerProbe = false, want true")
+	}
 	if cfg.SupportsRange {
-		t.Fatal("SupportsRange = true, want false")
+		t.Fatal("SupportsRange = true, want false until verify")
 	}
 }
 
