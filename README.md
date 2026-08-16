@@ -30,6 +30,9 @@
     <a href="https://addons.mozilla.org/addon/goaria">
       <img src="https://raw.githubusercontent.com/superGekFordJ/goaria-assets/main/get-the-addon.svg" alt="Get the Add-on" height="52">
     </a>
+    <a href="https://microsoftedge.microsoft.com/addons/detail/goaria/ofjjbleopjcflpbdnklpdnchbmkkicfd">
+      <img src="https://raw.githubusercontent.com/superGekFordJ/goaria-assets/main/get-it-from-ms-edge.svg" alt="Get it from Microsoft Edge" height="52">
+    </a>
   </p>
 
   <p>
@@ -58,16 +61,14 @@
 - **内网极速打满**: 针对 Windows 重构预分配机制，瞬间打满 2.5Gbps 物理网卡上限。
 - **智能组下载**: 批量添加的链接自动归档至专属文件夹，并在任务列表中聚合为单一“组卡片”，支持一键全组控制与后台清理。
 
-
 ### 🚀 极致轻量
 
-- **低资源占用**: 基于 Go 与 Wails v3，占用存储空间极小。
-- **极小分发体积**: 经过 UPX 压缩后的成品仅约 **10MB**，开箱即用，轻快如风。
-- **智能轮询控制**: 当窗口隐藏时自动优化 API 请求频率，尊重你的 CPU 和电量。
-- **轻量模式**: 支持无头模式，无 UI，仅作为 Aria2 的前端，通过 RPC 与 Aria2 交互。可通过命令行参数 `--hidden` 来直接启动无头模式。
+- **低资源占用**: 基于 Go 与 Wails v3，底层开销极低。
+- **内嵌 Surge 原生引擎**: 采用内嵌编译与零 IPC 进程损耗设计，彻底告别传统跨进程通信造成的性能与上下文切换瓶颈。
+- **真·纯后台极低驻留**: 支持最小化/托盘纯后台静默运行，常规后台待机内存占用压缩至约 **20MB**。
+- **纯粹事件驱动与零无效唤醒**: 全面采用事件信使推送机制，告别传统高频轮询。无 Aria2 任务时自动休眠，仅在状态真实变动时按需通知，彻底消除待机功耗。
 
 ### 🧊 现代液态玻璃美学
-
 
 - **原生沉浸**: 深度适配 Windows 11 Mica / Acrylic 材质，支持自定义皮肤（黑曜石与激光 / 电子纸与陶瓷）。
 - **液态玻璃特效**: 统一的高级“液态玻璃”视觉组件，提供更灵动且具质感的交互反馈，并智能响应系统“减弱动态效果”模式以节能。
@@ -92,14 +93,23 @@ graph TD
 
 ## 💻 开发指南
 
-确保您的系统已安装 Go 1.25+ 和 Node.js 18+。
+确保您的系统已安装 Go 1.26+ 和 Node.js 22+。
 
-### ⚡ 快速设置 (Windows)
+### ⚡ 快速设置
 
-我们提供了一个脚本来自动准备开发环境（安装 Wails3，下载 Aria2 内核等）。注意甄别您下载的脚本来源，确保其来自官方仓库。
+我们提供了自动化脚本来快速准备开发环境（检查工具链、安装依赖并准备 Aria2 内核等）：
+
+**Windows (PowerShell):**
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+**Linux / macOS (Bash):**
+
+```bash
+chmod +x setup.sh
+./setup.sh
 ```
 
 ### 手动设置

@@ -11,7 +11,7 @@ info:
   description: "GoAria" # The application description
   copyright: "(c) 2026, GoAria" # Copyright text
   comments: "A modern dual-core downloader with BBR Adaptive Engine" # Comments
-  version: "3.2.3" # The application version
+  version: "3.2.4" # The application version
 
 # iOS build configuration (uncomment to customise iOS project generation)
 # Note: Keys under `ios` OVERRIDE values under `info` when set.

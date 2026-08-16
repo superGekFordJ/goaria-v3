@@ -30,6 +30,9 @@
     <a href="https://addons.mozilla.org/addon/goaria">
       <img src="https://raw.githubusercontent.com/superGekFordJ/goaria-assets/main/get-the-addon.svg" alt="Get the Add-on" height="52">
     </a>
+    <a href="https://microsoftedge.microsoft.com/addons/detail/goaria/ofjjbleopjcflpbdnklpdnchbmkkicfd">
+      <img src="https://raw.githubusercontent.com/superGekFordJ/goaria-assets/main/get-it-from-ms-edge.svg" alt="Get it from Microsoft Edge" height="52">
+    </a>
   </p>
 
   <p>
@@ -62,13 +65,12 @@ Unlike feature-heavy traditional download managers, GoAria's philosophy is roote
 
 ### 🚀 Extreme Lightweight
 
-- **Low Resource Usage**: Built with Go and Wails v3, ensuring minimal storage space.
-- **Tiny Distribution**: The final binary is approximately **10MB** after UPX compression. Portable and blazing fast.
-- **Smart Polling**: Automatically optimizes API request frequency when the window is hidden to respect your CPU and battery life.
-- **Lightweight Mode**: Support headless mode, no UI, only as Aria2 frontend, through RPC with Aria2 interaction. You can use `--hidden` to directly start headless mode.
+- **Minimal Resource Footprint**: Built with Go and Wails v3, delivering near-zero runtime overhead.
+- **Embedded In-Process Engine**: Features an embedded compilation and zero-IPC design with Surge, completely eliminating inter-process communication bottlenecks and context-switching overhead.
+- **True Headless Background Efficiency**: Seamlessly runs silently in the background/system tray with idle memory footprint compressed to around **20MB**.
+- **Pure Event-Driven & Zero Idle Wakeups**: Fully driven by the in-process Event Bridge, eradicating traditional high-frequency busy-polling. Automatically sleeps when no Aria2 tasks exist and updates only on real state changes, effectively eliminating standby power drain.
 
 ### 🧊 Liquid Glass Aesthetics
-
 
 - **Native Immersion**: Seamlessly integrates with Windows 11 Mica / Acrylic materials, blending into your desktop environment.
 - **Liquid Glass Visuals**: Premium unified "Liquid Glass" components for dynamic interaction feedback, with smart support for "reduced motion" mode for energy efficiency.
@@ -93,14 +95,23 @@ graph TD
 
 ## 💻 Development Guide
 
-Ensure your system has Go 1.25+ and Node.js 18+ installed.
+Ensure your system has Go 1.26+ and Node.js 22+ installed.
 
-### ⚡ Quick Setup (Windows)
+### ⚡ Quick Setup
 
-We provide a script to automatically verify the environment and download the Aria2 core.
+We provide automated setup scripts to prepare your development environment (check toolchains, install dependencies, and stage Aria2 binaries):
+
+**Windows (PowerShell):**
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+**Linux / macOS (Bash):**
+
+```bash
+chmod +x setup.sh
+./setup.sh
 ```
 
 ### Manual Setup
