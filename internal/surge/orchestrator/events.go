@@ -97,6 +97,20 @@ func isTaskBackedResumeSnapshot(rec types.DownloadRecord) bool {
 	return true
 }
 
+// FORK-PATCH: AddToMasterList replaces the whole record. Sparse lifecycle
+// writes must copy Range acquisition fields or enqueue-persisted mode is wiped.
+func copyRangeAcquisition(dst *types.DownloadRecord, src *types.DownloadRecord) {
+	if dst == nil || src == nil {
+		return
+	}
+	if dst.RangeAcquisitionMode == "" {
+		dst.RangeAcquisitionMode = src.RangeAcquisitionMode
+	}
+	if !dst.SkipServerProbe {
+		dst.SkipServerProbe = src.SkipServerProbe
+	}
+}
+
 func finalizeCompletedFile(finalPath string) error {
 	if finalPath == "" {
 		return fmt.Errorf("missing destination path for completed download")
@@ -153,6 +167,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				if existing.TimeTaken > 0 {
 					entry.TimeTaken = existing.TimeTaken
 				}
+				copyRangeAcquisition(&entry, existing)
 			}
 			if err := store.AddToMasterList(entry); err != nil {
 				utils.Debug("Lifecycle: Failed to save initial download state: %v", err)
@@ -256,6 +271,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				if snapshot.MinChunkSize == 0 {
 					snapshot.MinChunkSize = existing.MinChunkSize
 				}
+				copyRangeAcquisition(&snapshot, existing)
 			}
 
 			// Downloaded: task-backed keeps snapshot exactly (incl. first-pause 0);
@@ -309,9 +325,12 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 			if existing != nil {
 				entry.URL = existing.URL
 				entry.URLHash = existing.URLHash
+				copyRangeAcquisition(&entry, &snapshot)
+				copyRangeAcquisition(&entry, existing)
 			} else {
 				entry.URL = url
 				entry.URLHash = store.URLHash(url)
+				copyRangeAcquisition(&entry, &snapshot)
 			}
 			if err := store.AddToMasterList(entry); err != nil {
 				utils.Debug("Lifecycle: Failed to persist paused state: %v", err)
@@ -373,6 +392,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				if existing != nil {
 					errEntry.Workers = existing.Workers
 					errEntry.MinChunkSize = existing.MinChunkSize
+					copyRangeAcquisition(&errEntry, existing)
 				}
 				if err := store.AddToMasterList(errEntry); err != nil {
 					utils.Debug("Lifecycle: Failed to persist finalization error state: %v", err)
@@ -409,6 +429,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 			if existing != nil {
 				entry.Workers = existing.Workers
 				entry.MinChunkSize = existing.MinChunkSize
+				copyRangeAcquisition(&entry, existing)
 			}
 			if err := store.AddToMasterList(entry); err != nil {
 				utils.Debug("Lifecycle: Failed to persist completed download: %v", err)
@@ -484,6 +505,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 						snapshot.RateLimit = existing.RateLimit
 						snapshot.RateLimitSet = existing.RateLimitSet
 					}
+					copyRangeAcquisition(&snapshot, existing)
 				}
 
 				// Resume-authority Downloaded: task-backed keeps snapshot exactly
@@ -530,8 +552,11 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				if existing != nil {
 					entry.URLHash = existing.URLHash
 					entry.Mirrors = append([]string(nil), existing.Mirrors...)
+					copyRangeAcquisition(&entry, &snapshot)
+					copyRangeAcquisition(&entry, existing)
 				} else if url != "" {
 					entry.URLHash = store.URLHash(url)
+					copyRangeAcquisition(&entry, &snapshot)
 				}
 				if err := store.AddToMasterList(entry); err != nil {
 					utils.Debug("Lifecycle: Failed to persist error state: %v", err)

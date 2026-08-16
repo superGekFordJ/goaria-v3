@@ -41,6 +41,8 @@ func shouldRetryFailedDownload(err error, shuttingDown bool, retries int) bool {
 		!errors.Is(err, context.DeadlineExceeded) &&
 		!types.IsPermanentHTTPError(err) &&
 		!types.IsInsufficientDiskSpace(err) &&
+		!errors.Is(err, types.ErrRangeUnsupported) &&
+		!errors.Is(err, types.ErrSourceMetadataMismatch) &&
 		retries < 10
 }
 
@@ -713,6 +715,8 @@ func (p *Scheduler) worker() {
 		if _, exists := p.downloads[localCfg.ID]; exists {
 			ad.config.TotalSize = localCfg.TotalSize
 			ad.config.SupportsRange = localCfg.SupportsRange
+			ad.config.RangeAcquisitionMode = localCfg.RangeAcquisitionMode
+			ad.config.SkipServerProbe = localCfg.SkipServerProbe
 			ad.config.Runtime = localCfg.Runtime
 		}
 		p.mu.Unlock()

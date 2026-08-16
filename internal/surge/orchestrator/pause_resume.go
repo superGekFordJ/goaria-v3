@@ -68,11 +68,19 @@ func hydrateConfigFromDisk(cfg *types.DownloadRecord) {
 	if saved.TotalSize > 0 {
 		cfg.TotalSize = saved.TotalSize
 	}
+	if saved.RangeAcquisitionMode != "" {
+		cfg.RangeAcquisitionMode = saved.RangeAcquisitionMode
+		cfg.SkipServerProbe = saved.SkipServerProbe
+	} else if len(saved.Tasks) > 0 && cfg.RangeAcquisitionMode == "" {
+		cfg.RangeAcquisitionMode = types.UpgradeLegacyRangeMode("", true)
+	}
 	if len(saved.Tasks) > 0 {
-		cfg.SupportsRange = true
+		cfg.SupportsRange = types.ShouldUseConcurrent(cfg.RangeAcquisitionMode, true)
 		cfg.Tasks = saved.Tasks
 		cfg.ChunkBitmap = saved.ChunkBitmap
 		cfg.ActualChunkSize = saved.ActualChunkSize
+	} else if cfg.RangeAcquisitionMode != "" {
+		cfg.SupportsRange = types.ShouldUseConcurrent(cfg.RangeAcquisitionMode, cfg.SupportsRange)
 	}
 }
 
@@ -446,22 +454,42 @@ func buildResumeConfig(id, outputPath string, entry *types.DownloadRecord, saved
 		actualChunkSize = savedState.ActualChunkSize
 	}
 
+	var mode types.RangeAcquisitionMode
+	skipOrigin := false
+	if savedState != nil && savedState.RangeAcquisitionMode != "" {
+		mode = savedState.RangeAcquisitionMode
+		skipOrigin = savedState.SkipServerProbe
+	} else if entry != nil && entry.RangeAcquisitionMode != "" {
+		mode = entry.RangeAcquisitionMode
+		skipOrigin = entry.SkipServerProbe
+	} else {
+		mode = types.UpgradeLegacyRangeMode("", savedState != nil && len(savedState.Tasks) > 0)
+		if entry != nil {
+			skipOrigin = entry.SkipServerProbe
+		}
+	}
+	if savedState != nil && savedState.SkipServerProbe {
+		skipOrigin = true
+	}
+
 	return types.DownloadRecord{
-		URL:             url,
-		OutputPath:      outputPath,
-		DestPath:        destPath,
-		ID:              id,
-		Filename:        filename,
-		TotalSize:       totalSize,
-		SupportsRange:   savedState != nil && len(savedState.Tasks) > 0,
-		IsResume:        true,
-		ProgressState:   dmState,
-		Runtime:         runtime,
-		Mirrors:         mirrorURLs,
-		RateLimit:       rateLimit,
-		RateLimitSet:    rateLimitSet,
-		Tasks:           tasks,
-		ChunkBitmap:     chunkBitmap,
-		ActualChunkSize: actualChunkSize,
+		URL:                  url,
+		OutputPath:           outputPath,
+		DestPath:             destPath,
+		ID:                   id,
+		Filename:             filename,
+		TotalSize:            totalSize,
+		SupportsRange:        types.ShouldUseConcurrent(mode, savedState != nil && len(savedState.Tasks) > 0),
+		RangeAcquisitionMode: mode,
+		SkipServerProbe:      skipOrigin,
+		IsResume:             true,
+		ProgressState:        dmState,
+		Runtime:              runtime,
+		Mirrors:              mirrorURLs,
+		RateLimit:            rateLimit,
+		RateLimitSet:         rateLimitSet,
+		Tasks:                tasks,
+		ChunkBitmap:          chunkBitmap,
+		ActualChunkSize:      actualChunkSize,
 	}
 }

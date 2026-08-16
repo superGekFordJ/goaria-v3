@@ -46,7 +46,7 @@ func TestAbandonConcurrentResumeForSingleFallback(t *testing.T) {
 	ps := progress.New(id, 1000)
 	ps.SetPendingResumeState(stale)
 
-	if !shouldFallbackToSingle(errors.New("boom"), 0) {
+	if !shouldFallbackToSingle(errors.New("boom"), 0, "") {
 		t.Fatal("expected fallback eligibility for zero-progress non-disk error")
 	}
 

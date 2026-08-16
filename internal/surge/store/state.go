@@ -137,6 +137,8 @@ func SaveStateWithOptions(url string, destPath string, state *types.DownloadReco
 			list.Downloads[i].TimeTaken = state.Elapsed / int64(time.Millisecond)
 			list.Downloads[i].Workers = state.Workers
 			list.Downloads[i].MinChunkSize = state.MinChunkSize
+			list.Downloads[i].RangeAcquisitionMode = state.RangeAcquisitionMode
+			list.Downloads[i].SkipServerProbe = state.SkipServerProbe
 			if err := saveMasterListLocked(list); err != nil {
 				return fmt.Errorf("failed to update master list: %w", err)
 			}

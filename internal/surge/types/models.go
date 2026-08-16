@@ -70,6 +70,14 @@ type DownloadRecord struct {
 	Workers      int      `json:"workers,omitempty"`
 	MinChunkSize int64    `json:"min_chunk_size,omitempty"`
 
+	// FORK-PATCH: persisted Range acquisition policy. Empty is ProbeAtEnqueue
+	// (gob zero-value). Must not be gob:"-": cold resume cannot reconstruct it
+	// from SupportsRange.
+	RangeAcquisitionMode RangeAcquisitionMode `json:"range_acquisition_mode,omitempty"`
+	// FORK-PATCH: sticky skip-origin so resume HEAD does not burn presigned URLs
+	// after mode promotes to RangeSupported. Headers stay gob:"-".
+	SkipServerProbe bool `json:"skip_server_probe,omitempty"`
+
 	// Runtime / Transient Configuration (Not persisted)
 	IsResume           bool                 `json:"-" gob:"-"`
 	ProgressCh         chan<- DownloadEvent `json:"-" gob:"-"`

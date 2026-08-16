@@ -33,6 +33,16 @@ var (
 	// sentinel on ENOSPC / EDQUOT / ERROR_DISK_FULL / ERROR_DISK_QUOTA_EXCEEDED.
 	// Retrying and Truncate fallbacks must not run when this sentinel matches.
 	ErrInsufficientDiskSpace = errors.New("insufficient disk space")
+
+	// FORK-PATCH: HTTP 200 that ignored Range with Content-Length == trusted size.
+	// Zero payload write. Immediate return (no generic retry). Scheduler may
+	// Truncate+single only when verified bytes are still 0.
+	ErrRangeUnsupported = errors.New("source ignored range request")
+
+	// FORK-PATCH: Range metadata does not match the trusted size / requested
+	// shard (bad/missing Content-Range, 206 total mismatch, 416, length wrong).
+	// Zero payload write. No auto single fallback. Terminal at whole-download retry.
+	ErrSourceMetadataMismatch = errors.New("source metadata mismatch")
 )
 
 // IsPermanentHTTPError reports whether err is a permanent HTTP error that

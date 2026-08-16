@@ -22,13 +22,26 @@ import (
 // shouldFallbackToSingle reports whether a concurrent failure with zero
 // progress should Truncate the working file and restart single-threaded.
 // Insufficient disk space is excluded — Truncate cannot create free space.
-func shouldFallbackToSingle(downloadErr error, downloaded int64) bool {
-	return downloadErr != nil &&
-		!errors.Is(downloadErr, types.ErrPaused) &&
-		!errors.Is(downloadErr, context.Canceled) &&
-		!errors.Is(downloadErr, context.DeadlineExceeded) &&
-		!types.IsInsufficientDiskSpace(downloadErr) &&
-		downloaded == 0
+// FORK-PATCH: payload-first / RangeSupported only fallback on proven
+// ignore-Range (ErrRangeUnsupported) at zero verified bytes. Mismatch,
+// 416, 403, 429, and transport must not take this branch.
+func shouldFallbackToSingle(downloadErr error, downloaded int64, mode types.RangeAcquisitionMode) bool {
+	if downloadErr == nil || downloaded != 0 {
+		return false
+	}
+	if errors.Is(downloadErr, types.ErrPaused) ||
+		errors.Is(downloadErr, context.Canceled) ||
+		errors.Is(downloadErr, context.DeadlineExceeded) ||
+		types.IsInsufficientDiskSpace(downloadErr) {
+		return false
+	}
+	if errors.Is(downloadErr, types.ErrSourceMetadataMismatch) {
+		return false
+	}
+	if mode.IsPayloadFirst() || mode == types.RangeAcquireRangeSupported {
+		return errors.Is(downloadErr, types.ErrRangeUnsupported)
+	}
+	return true
 }
 
 // abandonConcurrentResumeForSingleFallback clears in-memory pending resume
@@ -109,6 +122,23 @@ func uniqueFilePath(path string) string {
 	// Fallback: if all 100 numbered candidates are taken, return an empty string so
 	// callers can detect the failure rather than silently receiving a conflicting path.
 	return ""
+}
+
+// persistRangeUnsupported writes proven sequential mode onto the master record
+// so a later sparse lifecycle replace cannot revive payload-first.
+func persistRangeUnsupported(cfg *types.DownloadRecord) {
+	if cfg == nil || cfg.ID == "" {
+		return
+	}
+	existing, err := store.GetDownload(cfg.ID)
+	if err != nil || existing == nil {
+		return
+	}
+	existing.RangeAcquisitionMode = types.RangeAcquireRangeUnsupported
+	existing.SkipServerProbe = cfg.SkipServerProbe
+	if err := store.AddToMasterList(*existing); err != nil {
+		utils.Debug("Failed to persist RangeUnsupported: %v", err)
+	}
 }
 
 // RunDownload is the main entry point for downloads executed by the Engine pool
@@ -204,16 +234,16 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 		}
 	}
 
-	// Choose downloader based on probe results
+	// Choose downloader based on acquisition mode (empty mode: SupportsRange bool).
 	var downloadErr error
-	useConcurrent := cfg.SupportsRange
+	useConcurrent := types.ShouldUseConcurrent(cfg.RangeAcquisitionMode, cfg.SupportsRange)
 
 	if useConcurrent {
 		utils.Debug("Using concurrent downloader")
 
 		// We probe all candidate mirrors (mirrors) to filter out invalid ones
 		var activeMirrors []string
-		if len(mirrors) > 0 {
+		if len(mirrors) > 0 && !cfg.RangeAcquisitionMode.IsPayloadFirst() {
 			utils.Debug("Probing %d mirrors", len(mirrors))
 			// Always check primary + mirrors to ensure we are using the best set
 			allToCheck := append([]string{cfg.URL}, mirrors...)
@@ -239,6 +269,8 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 
 		d := concurrent.NewConcurrentDownloader(cfg.ID, cfg.ProgressCh, progState, cfg.Runtime)
 		d.Headers = cfg.Headers // Forward custom headers from browser extension
+		d.RangeAcquisitionMode = cfg.RangeAcquisitionMode
+		d.SkipServerProbe = cfg.SkipServerProbe
 		d.Limiter = cfg.Limiter
 		d.RateLimitBps = cfg.RateLimit
 		d.RateLimitSet = cfg.RateLimitSet
@@ -262,6 +294,9 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 		if d.TotalSize > 0 {
 			effectiveTotalSize = d.TotalSize
 		}
+		cfg.RangeAcquisitionMode = d.RangeAcquisitionMode
+		cfg.SkipServerProbe = d.SkipServerProbe
+		cfg.SupportsRange = types.ShouldUseConcurrent(d.RangeAcquisitionMode, cfg.SupportsRange)
 
 		var downloaded int64
 		if progState != nil {
@@ -272,9 +307,12 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 		// We fallback if concurrent failed, but it wasn't a clean pause or external cancellation,
 		// AND we haven't made any progress yet (to avoid discarding progress).
 		// Disk-full / quota must not Truncate + restart — space will not appear.
-		if shouldFallbackToSingle(downloadErr, downloaded) {
+		if shouldFallbackToSingle(downloadErr, downloaded, cfg.RangeAcquisitionMode) {
 			utils.Debug("Concurrent download failed: %v - falling back to single-threaded", downloadErr)
 			useConcurrent = false // Trigger sequential block below
+			cfg.RangeAcquisitionMode = types.RangeAcquireRangeUnsupported
+			cfg.SupportsRange = false
+			persistRangeUnsupported(cfg)
 
 			// Abandon concurrent resume metadata before Truncate+single:
 			// Layer1 SaveState may have just written range Tasks at Downloaded==0,

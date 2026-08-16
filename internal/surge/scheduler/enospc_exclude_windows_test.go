@@ -26,7 +26,7 @@ func TestWindowsDiskFullErrnos_ExcludedFromRetryAndFallback(t *testing.T) {
 			if shouldRetryFailedDownload(tt.err, false, 0) {
 				t.Fatalf("shouldRetryFailedDownload(%v) = true, want false", tt.err)
 			}
-			if shouldFallbackToSingle(tt.err, 0) {
+			if shouldFallbackToSingle(tt.err, 0, "") {
 				t.Fatalf("shouldFallbackToSingle(%v) = true, want false", tt.err)
 			}
 		})

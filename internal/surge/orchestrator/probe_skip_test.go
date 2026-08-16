@@ -24,10 +24,14 @@ func newRangeProbeServer(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Range") == "bytes=0-0" {
 			probes.Add(1)
+			w.Header().Set("Content-Length", "1024")
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.WriteHeader(http.StatusOK)
+			return
 		}
-		w.Header().Set("Content-Length", "1024")
-		w.Header().Set("Accept-Ranges", "bytes")
-		w.WriteHeader(http.StatusOK)
+		// Fail payload GETs immediately so Enqueue tests can snapshot the
+		// queued record without holding .surge open past cleanup.
+		w.WriteHeader(http.StatusBadGateway)
 	}))
 	t.Cleanup(ts.Close)
 	return ts, &probes
@@ -70,9 +74,18 @@ func restoreProbeSem(mgr *LifecycleManager, n int) {
 	}
 }
 
+func cancelEnqueue(t *testing.T, mgr *LifecycleManager, id string) {
+	t.Helper()
+	if id == "" {
+		return
+	}
+	t.Cleanup(func() { _ = mgr.Cancel(id) })
+}
+
 func TestEnqueue_SkipTrustedMetadataNoProbeGET(t *testing.T) {
 	ts, probes := newRangeProbeServer(t)
 	mgr, pool := newSkipEnqueueManager(t)
+	defer mgr.Shutdown()
 	destDir := t.TempDir()
 
 	req := &DownloadRequest{
@@ -90,6 +103,7 @@ func TestEnqueue_SkipTrustedMetadataNoProbeGET(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
+	cancelEnqueue(t, mgr, id)
 	if finalName != "skip.bin" {
 		t.Fatalf("Filename = %q, want skip.bin", finalName)
 	}
@@ -108,7 +122,13 @@ func TestEnqueue_SkipTrustedMetadataNoProbeGET(t *testing.T) {
 		t.Fatalf("record Filename = %q, want skip.bin", rec.Filename)
 	}
 	if rec.SupportsRange {
-		t.Fatal("SupportsRange = true, want false")
+		t.Fatal("SupportsRange = true, want false until first-shard verify")
+	}
+	if rec.RangeAcquisitionMode != types.RangeAcquirePayloadFirstUnknown {
+		t.Fatalf("RangeAcquisitionMode = %q, want payload_first_unknown", rec.RangeAcquisitionMode)
+	}
+	if !rec.SkipServerProbe {
+		t.Fatal("SkipServerProbe = false, want true")
 	}
 
 	surgePath := filepath.Join(destDir, finalName) + types.IncompleteSuffix
@@ -120,6 +140,7 @@ func TestEnqueue_SkipTrustedMetadataNoProbeGET(t *testing.T) {
 func TestEnqueue_SkipMissingFilenameStillProbes(t *testing.T) {
 	ts, probes := newRangeProbeServer(t)
 	mgr, _ := newSkipEnqueueManager(t)
+	defer mgr.Shutdown()
 
 	for _, name := range []string{"", "   "} {
 		t.Run("filename="+name, func(t *testing.T) {
@@ -133,7 +154,8 @@ func TestEnqueue_SkipMissingFilenameStillProbes(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			_, _, err := mgr.Enqueue(ctx, req)
+			id, _, err := mgr.Enqueue(ctx, req)
+			cancelEnqueue(t, mgr, id)
 			if probes.Load() < 1 {
 				t.Fatalf("Range bytes=0-0 probes = %d, want >= 1 (err=%v)", probes.Load(), err)
 			}
@@ -144,6 +166,7 @@ func TestEnqueue_SkipMissingFilenameStillProbes(t *testing.T) {
 func TestEnqueue_SkipFileSizeZeroStillProbes(t *testing.T) {
 	ts, probes := newRangeProbeServer(t)
 	mgr, _ := newSkipEnqueueManager(t)
+	defer mgr.Shutdown()
 
 	req := &DownloadRequest{
 		URL:           ts.URL + "/zero.bin",
@@ -154,8 +177,10 @@ func TestEnqueue_SkipFileSizeZeroStillProbes(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if _, _, err := mgr.Enqueue(ctx, req); err != nil {
+	if id, _, err := mgr.Enqueue(ctx, req); err != nil {
 		t.Fatalf("Enqueue: %v", err)
+	} else {
+		cancelEnqueue(t, mgr, id)
 	}
 	if probes.Load() < 1 {
 		t.Fatalf("Range bytes=0-0 probes = %d, want >= 1", probes.Load())
@@ -165,6 +190,7 @@ func TestEnqueue_SkipFileSizeZeroStillProbes(t *testing.T) {
 func TestEnqueue_SkipNilRangeStillProbes(t *testing.T) {
 	ts, probes := newRangeProbeServer(t)
 	mgr, _ := newSkipEnqueueManager(t)
+	defer mgr.Shutdown()
 
 	req := &DownloadRequest{
 		URL:      ts.URL + "/nil-range.bin",
@@ -174,17 +200,20 @@ func TestEnqueue_SkipNilRangeStillProbes(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if _, _, err := mgr.Enqueue(ctx, req); err != nil {
+	if id, _, err := mgr.Enqueue(ctx, req); err != nil {
 		t.Fatalf("Enqueue: %v", err)
+	} else {
+		cancelEnqueue(t, mgr, id)
 	}
 	if probes.Load() < 1 {
 		t.Fatalf("Range bytes=0-0 probes = %d, want >= 1", probes.Load())
 	}
 }
 
-func TestEnqueue_SkipKnownSizeNonRangeIsSequential(t *testing.T) {
+func TestEnqueue_SkipKnownSizeIsPayloadFirstUnknown(t *testing.T) {
 	ts, probes := newRangeProbeServer(t)
 	mgr, pool := newSkipEnqueueManager(t)
+	defer mgr.Shutdown()
 
 	t.Run("false", func(t *testing.T) {
 		req := &DownloadRequest{
@@ -200,12 +229,19 @@ func TestEnqueue_SkipKnownSizeNonRangeIsSequential(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
+		cancelEnqueue(t, mgr, id)
 		rec, ok := recordByID(pool, id)
 		if !ok {
 			t.Fatal("expected queued record")
 		}
 		if rec.SupportsRange {
-			t.Fatal("SupportsRange = true, want false")
+			t.Fatal("SupportsRange = true, want false until verify")
+		}
+		if rec.RangeAcquisitionMode != types.RangeAcquirePayloadFirstUnknown {
+			t.Fatalf("mode = %q, want payload_first_unknown", rec.RangeAcquisitionMode)
+		}
+		if !rec.SkipServerProbe {
+			t.Fatal("SkipServerProbe = false, want true")
 		}
 		if probes.Load() != 0 {
 			t.Fatalf("Range bytes=0-0 probes = %d, want 0", probes.Load())
@@ -227,12 +263,16 @@ func TestEnqueue_SkipKnownSizeNonRangeIsSequential(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
+		cancelEnqueue(t, mgr, id)
 		rec, ok := recordByID(pool, id)
 		if !ok {
 			t.Fatal("expected queued record")
 		}
 		if !rec.SupportsRange {
 			t.Fatal("SupportsRange = false, want true")
+		}
+		if rec.RangeAcquisitionMode != types.RangeAcquireRangeSupported {
+			t.Fatalf("mode = %q, want range_supported", rec.RangeAcquisitionMode)
 		}
 		if probes.Load() != 0 {
 			t.Fatalf("Range bytes=0-0 probes = %d, want 0", probes.Load())
@@ -249,6 +289,7 @@ func TestEnqueue_SkipDiskPrecheckReject(t *testing.T) {
 
 	ts, probes := newRangeProbeServer(t)
 	mgr, _ := newSkipEnqueueManager(t)
+	defer mgr.Shutdown()
 	destDir := t.TempDir()
 
 	req := &DownloadRequest{
@@ -285,6 +326,7 @@ func TestEnqueue_SkipDiskPrecheckReject(t *testing.T) {
 func TestEnqueue_SkipPreservesAuthHeaders(t *testing.T) {
 	ts, probes := newRangeProbeServer(t)
 	mgr, pool := newSkipEnqueueManager(t)
+	defer mgr.Shutdown()
 
 	req := &DownloadRequest{
 		URL:           ts.URL + "/auth.bin",
@@ -304,6 +346,7 @@ func TestEnqueue_SkipPreservesAuthHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
+	cancelEnqueue(t, mgr, id)
 	if probes.Load() != 0 {
 		t.Fatalf("Range bytes=0-0 probes = %d, want 0", probes.Load())
 	}
@@ -322,6 +365,7 @@ func TestEnqueue_SkipPreservesAuthHeaders(t *testing.T) {
 func TestEnqueue_SkipDoesNotTakeProbeSem(t *testing.T) {
 	ts, _ := newRangeProbeServer(t)
 	mgr, _ := newSkipEnqueueManager(t)
+	defer mgr.Shutdown()
 
 	drained := drainProbeSem(mgr)
 	if drained == 0 {
@@ -338,8 +382,10 @@ func TestEnqueue_SkipDoesNotTakeProbeSem(t *testing.T) {
 	}
 	skipCtx, skipCancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer skipCancel()
-	if _, _, err := mgr.Enqueue(skipCtx, skipReq); err != nil {
+	if id, _, err := mgr.Enqueue(skipCtx, skipReq); err != nil {
 		t.Fatalf("skip Enqueue with drained probeSem: %v", err)
+	} else {
+		cancelEnqueue(t, mgr, id)
 	}
 
 	probeReq := &DownloadRequest{

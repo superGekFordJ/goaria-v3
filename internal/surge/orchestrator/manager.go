@@ -201,23 +201,39 @@ type DownloadRequest struct {
 	Workers            int
 	MinChunkSize       int64
 	// FORK-PATCH: host-supplied probe hints. Skip ProbeServer only when
-	// FileSize > 0, Filename is non-empty after trim, and SupportsRange is
-	// non-nil. A nil pointer is unknown Range (not optimistic true).
-	FileSize      int64
-	SupportsRange *bool
+	// FileSize > 0, Filename is non-empty after trim, and mode is a skip
+	// mode or 286 SupportsRange is non-nil. A nil pointer + empty mode is
+	// unknown Range (not optimistic true). *false means payload-first unknown.
+	FileSize             int64
+	SupportsRange        *bool
+	RangeAcquisitionMode types.RangeAcquisitionMode
+	SkipServerProbe      bool
 }
 
-// FORK-PATCH: skip ProbeServer iff trusted size, trimmed filename, and explicit Range.
+// FORK-PATCH: skip ProbeServer iff trusted size, trimmed filename, and skip mode
+// (or 286 explicit Range pointer). Does not take probeSem.
 func shouldSkipServerProbe(req *DownloadRequest) bool {
-	return req != nil && req.FileSize > 0 && strings.TrimSpace(req.Filename) != "" && req.SupportsRange != nil
+	if req == nil || req.FileSize <= 0 || strings.TrimSpace(req.Filename) == "" {
+		return false
+	}
+	return types.ShouldSkipServerProbe(req.RangeAcquisitionMode, req.SupportsRange)
+}
+
+func resolvedRangeMode(req *DownloadRequest) types.RangeAcquisitionMode {
+	if req == nil {
+		return types.RangeAcquireProbeAtEnqueue
+	}
+	return types.ResolveRangeAcquisitionMode(req.RangeAcquisitionMode, req.SupportsRange)
 }
 
 // FORK-PATCH: local ProbeResult from host hints; ContentType stays empty.
+// SupportsRange bool is true only for proven RangeSupported.
 func synthesizedProbeResult(req *DownloadRequest) *probing.ProbeResult {
 	name := strings.TrimSpace(req.Filename)
+	mode := resolvedRangeMode(req)
 	return &probing.ProbeResult{
 		FileSize:         req.FileSize,
-		SupportsRange:    *req.SupportsRange,
+		SupportsRange:    mode == types.RangeAcquireRangeSupported,
 		Filename:         name,
 		DetectedFilename: name,
 	}
@@ -368,17 +384,20 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 		// Doing this BEFORE pool.Add prevents EventStarted from racing with this
 		// persistence and corrupting the status to "queued" if it starts instantly.
 		if err := store.AddToMasterList(types.DownloadRecord{
-			ID:           queuedEvent.DownloadID,
-			URL:          queuedEvent.URL,
-			URLHash:      store.URLHash(queuedEvent.URL),
-			DestPath:     queuedEvent.DestPath,
-			Filename:     queuedEvent.Filename,
-			Mirrors:      append([]string(nil), queuedEvent.Mirrors...),
-			Status:       "queued",
-			RateLimit:    queuedEvent.RateLimit,
-			RateLimitSet: queuedEvent.RateLimitSet,
-			Workers:      queuedEvent.Workers,
-			MinChunkSize: queuedEvent.MinChunkSize,
+			ID:                   queuedEvent.DownloadID,
+			URL:                  queuedEvent.URL,
+			URLHash:              store.URLHash(queuedEvent.URL),
+			DestPath:             queuedEvent.DestPath,
+			Filename:             queuedEvent.Filename,
+			Mirrors:              append([]string(nil), queuedEvent.Mirrors...),
+			Status:               "queued",
+			TotalSize:            cfg.TotalSize,
+			RateLimit:            queuedEvent.RateLimit,
+			RateLimitSet:         queuedEvent.RateLimitSet,
+			Workers:              queuedEvent.Workers,
+			MinChunkSize:         queuedEvent.MinChunkSize,
+			RangeAcquisitionMode: cfg.RangeAcquisitionMode,
+			SkipServerProbe:      cfg.SkipServerProbe,
 		}); err != nil {
 			utils.Debug("Lifecycle: Failed to persist queued download synchronously: %v", err)
 		}
@@ -443,20 +462,25 @@ func (mgr *LifecycleManager) buildDownloadRecord(req *DownloadRequest, requestID
 		}
 	}
 
+	mode := resolvedRangeMode(req)
+	skipOrigin := req.SkipServerProbe || shouldSkipServerProbe(req)
+
 	cfg := types.DownloadRecord{
-		URL:                req.URL,
-		Mirrors:            req.Mirrors,
-		OutputPath:         finalPath,
-		ID:                 id,
-		Filename:           finalFilename,
-		ProgressState:      state,
-		Runtime:            runtime,
-		Headers:            req.Headers,
-		IsExplicitCategory: req.IsExplicitCategory,
-		TotalSize:          probeResult.FileSize,
-		SupportsRange:      probeResult.SupportsRange,
-		RateLimit:          rateLimit,
-		RateLimitSet:       rateLimitSet,
+		URL:                  req.URL,
+		Mirrors:              req.Mirrors,
+		OutputPath:           finalPath,
+		ID:                   id,
+		Filename:             finalFilename,
+		ProgressState:        state,
+		Runtime:              runtime,
+		Headers:              req.Headers,
+		IsExplicitCategory:   req.IsExplicitCategory,
+		TotalSize:            probeResult.FileSize,
+		SupportsRange:        probeResult.SupportsRange,
+		RangeAcquisitionMode: mode,
+		SkipServerProbe:      skipOrigin,
+		RateLimit:            rateLimit,
+		RateLimitSet:         rateLimitSet,
 	}
 
 	if mgr.eventBus != nil {
