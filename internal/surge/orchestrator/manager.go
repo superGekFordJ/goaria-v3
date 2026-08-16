@@ -39,8 +39,8 @@ type LifecycleManager struct {
 	engineHooks EngineHooks
 	hooksMu     sync.RWMutex
 
-	// probeSem caps the number of simultaneous server probes so adding a
-	// large batch of downloads does not flood the network with HEAD requests.
+	// FORK-PATCH: probeSem caps ProbeServerWithProxy GET Range: bytes=0-0 only.
+	// Trusted size+filename+explicit Range skip this slot entirely.
 	probeSem     chan struct{}
 	shutdownOnce sync.Once
 }
@@ -200,6 +200,27 @@ type DownloadRequest struct {
 	SkipApproval       bool
 	Workers            int
 	MinChunkSize       int64
+	// FORK-PATCH: host-supplied probe hints. Skip ProbeServer only when
+	// FileSize > 0, Filename is non-empty after trim, and SupportsRange is
+	// non-nil. A nil pointer is unknown Range (not optimistic true).
+	FileSize      int64
+	SupportsRange *bool
+}
+
+// FORK-PATCH: skip ProbeServer iff trusted size, trimmed filename, and explicit Range.
+func shouldSkipServerProbe(req *DownloadRequest) bool {
+	return req != nil && req.FileSize > 0 && strings.TrimSpace(req.Filename) != "" && req.SupportsRange != nil
+}
+
+// FORK-PATCH: local ProbeResult from host hints; ContentType stays empty.
+func synthesizedProbeResult(req *DownloadRequest) *probing.ProbeResult {
+	name := strings.TrimSpace(req.Filename)
+	return &probing.ProbeResult{
+		FileSize:         req.FileSize,
+		SupportsRange:    *req.SupportsRange,
+		Filename:         name,
+		DetectedFilename: name,
+	}
 }
 
 // Enqueue probes and reserves a stable destination before dispatching to the queue layer.
@@ -232,43 +253,51 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 
 	settings := mgr.GetSettings()
 
-	// Throttle concurrent probes — acquire a semaphore slot before probing.
-	// If the context is cancelled (e.g., shutdown) we abort immediately.
-	if mgr.probeSem != nil {
-		select {
-		case <-mgr.probeSem:
-			// acquired
-		case <-ctx.Done():
-			return "", "", fmt.Errorf("enqueue aborted before probe: %w", ctx.Err())
-		}
-		defer func() { mgr.probeSem <- struct{}{} }()
-	}
-
-	probeResult, probeErr := probing.ProbeServerWithProxy(ctx, req.URL, req.Filename, req.Headers, settings.ToRuntimeConfig())
-	if probeErr != nil {
-		// Distinguish between terminal client errors (invalid scheme, etc.) and
-		// server-side rejections or timeouts that we can optimistically ignore.
-		var urlErr *neturl.Error
-		var isTerminal bool
-		if errors.As(probeErr, &urlErr) {
-			var opErr *net.OpError
-			isTerminal = !errors.As(probeErr, &opErr) && // not a network-layer error
-				strings.Contains(urlErr.Error(), "unsupported protocol scheme")
-		}
-		isTerminal = isTerminal || errors.Is(probeErr, probing.ErrProbeRequestCreation)
-
-		if isTerminal {
-			return "", "", probeErr
+	var probeResult *probing.ProbeResult
+	if shouldSkipServerProbe(req) {
+		// FORK-PATCH: host already has trusted size, filename, and an explicit
+		// Range decision — do not take probeSem or call ProbeServerWithProxy.
+		probeResult = synthesizedProbeResult(req)
+	} else {
+		// Throttle concurrent probes — acquire a semaphore slot before probing.
+		// If the context is cancelled (e.g., shutdown) we abort immediately.
+		if mgr.probeSem != nil {
+			select {
+			case <-mgr.probeSem:
+				// acquired
+			case <-ctx.Done():
+				return "", "", fmt.Errorf("enqueue aborted before probe: %w", ctx.Err())
+			}
+			defer func() { mgr.probeSem <- struct{}{} }()
 		}
 
-		utils.Debug("Lifecycle: Probe failed: %v - enqueueing with optimistic fallback metadata\n", probeErr)
-		// Probe failures are non-fatal for known server-side issues (403/405/500) or
-		// network timeouts: some servers reject lightweight probe requests but still
-		// serve the actual download correctly.
-		probeResult = &probing.ProbeResult{SupportsRange: true}
-		if req.Filename != "" {
-			probeResult.Filename = req.Filename
-			probeResult.DetectedFilename = req.Filename
+		var probeErr error
+		probeResult, probeErr = probing.ProbeServerWithProxy(ctx, req.URL, req.Filename, req.Headers, settings.ToRuntimeConfig())
+		if probeErr != nil {
+			// Distinguish between terminal client errors (invalid scheme, etc.) and
+			// server-side rejections or timeouts that we can optimistically ignore.
+			var urlErr *neturl.Error
+			var isTerminal bool
+			if errors.As(probeErr, &urlErr) {
+				var opErr *net.OpError
+				isTerminal = !errors.As(probeErr, &opErr) && // not a network-layer error
+					strings.Contains(urlErr.Error(), "unsupported protocol scheme")
+			}
+			isTerminal = isTerminal || errors.Is(probeErr, probing.ErrProbeRequestCreation)
+
+			if isTerminal {
+				return "", "", probeErr
+			}
+
+			utils.Debug("Lifecycle: Probe failed: %v - enqueueing with optimistic fallback metadata\n", probeErr)
+			// Probe failures are non-fatal for known server-side issues (403/405/500) or
+			// network timeouts: some servers reject lightweight probe requests but still
+			// serve the actual download correctly.
+			probeResult = &probing.ProbeResult{SupportsRange: true}
+			if req.Filename != "" {
+				probeResult.Filename = req.Filename
+				probeResult.DetectedFilename = req.Filename
+			}
 		}
 	}
 

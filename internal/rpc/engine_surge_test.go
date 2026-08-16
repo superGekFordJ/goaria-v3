@@ -4,7 +4,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"goaria-v3/internal/surge/progress"
@@ -121,6 +123,98 @@ func findSurgeConfigByID(e *SurgeEngine, id string) *types.DownloadRecord {
 		}
 	}
 	return nil
+}
+
+func TestSurgeEngine_AddUri_SkipTrustedMetadata(t *testing.T) {
+	var probes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") == "bytes=0-0" {
+			probes.Add(1)
+		}
+		w.Header().Set("Content-Length", "1024")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	engine := NewSurgeEngine()
+	defer engine.Close()
+
+	supportsRange := false
+	gid, err := engine.AddUri(srv.URL+"/file.bin", AddURIOptions{
+		Dir:           t.TempDir(),
+		Out:           "file.bin",
+		FileSize:      1024,
+		SupportsRange: &supportsRange,
+	})
+	if err != nil {
+		t.Fatalf("AddUri: %v", err)
+	}
+	if probes.Load() != 0 {
+		t.Fatalf("Range bytes=0-0 probes = %d, want 0", probes.Load())
+	}
+	cfg := findSurgeConfigByID(engine, gid)
+	if cfg == nil {
+		t.Fatal("expected config in pool")
+	}
+	if cfg.TotalSize != 1024 {
+		t.Fatalf("TotalSize = %d, want 1024", cfg.TotalSize)
+	}
+	if cfg.Filename != "file.bin" {
+		t.Fatalf("Filename = %q, want file.bin", cfg.Filename)
+	}
+	if cfg.SupportsRange {
+		t.Fatal("SupportsRange = true, want false")
+	}
+}
+
+func TestSurgeEngine_HybridSkipProbeBeforeSave(t *testing.T) {
+	var probes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") == "bytes=0-0" {
+			probes.Add(1)
+		}
+		w.Header().Set("Content-Length", "512")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	surge := NewSurgeEngine()
+	defer surge.Close()
+	aria2 := &mockEngine{addResultGid: "should-not-run"}
+	hybrid := NewHybridEngine(aria2, surge)
+
+	hookCalled := false
+	supportsRange := false
+	gid, err := hybrid.AddUri(srv.URL+"/tiny.bin", AddURIOptions{
+		Dir:           t.TempDir(),
+		Out:           "tiny.bin",
+		FileSize:      512,
+		SupportsRange: &supportsRange,
+		BeforeSave: func(string) error {
+			hookCalled = true
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Hybrid AddUri: %v", err)
+	}
+	if !hookCalled {
+		t.Fatal("expected BeforeSave after successful skip AddUri")
+	}
+	if len(aria2.addedUrls) != 0 {
+		t.Fatalf("expected no Aria2 fallback, got %v", aria2.addedUrls)
+	}
+	if probes.Load() != 0 {
+		t.Fatalf("Range bytes=0-0 probes = %d, want 0", probes.Load())
+	}
+	rawID := strings.TrimPrefix(gid, "sg_")
+	cfg := findSurgeConfigByID(surge, rawID)
+	if cfg == nil {
+		t.Fatal("expected surge record after skip")
+	}
+	if cfg.Filename != "tiny.bin" {
+		t.Fatalf("Filename = %q, want tiny.bin", cfg.Filename)
+	}
 }
 
 func TestSurgeEngine_SetResumeParamsHook(t *testing.T) {

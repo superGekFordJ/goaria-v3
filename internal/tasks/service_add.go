@@ -490,6 +490,27 @@ func isDuplicateAddCandidate(candidate addTaskCandidate, existingURLs map[string
 	return history.ContainsSource(candidate.url)
 }
 
+func shouldSkipEngineProbe(candidate addTaskCandidate, sanitizedOut string) bool {
+	return !candidate.extracted && !candidate.protected && sanitizedOut != "" && candidate.sizeBytes > 0
+}
+
+func buildCandidateAddURIOptions(dir, out string, headers []string, split int, minSplitSize int64, beforeSave rpc.AddURIHook, candidate addTaskCandidate) rpc.AddURIOptions {
+	opts := rpc.AddURIOptions{
+		Dir:          dir,
+		Out:          out,
+		Headers:      headers,
+		Split:        split,
+		MinSplitSize: minSplitSize,
+		BeforeSave:   beforeSave,
+	}
+	if shouldSkipEngineProbe(candidate, out) {
+		opts.FileSize = candidate.sizeBytes
+		supportsRange := false
+		opts.SupportsRange = &supportsRange
+	}
+	return opts
+}
+
 func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandidate, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) (string, error) {
 	out := ""
 	if candidate.out != "" {
@@ -601,14 +622,9 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			ledger.ReserveWorkers(scope, domain, params.Split)
 		})
 		var err error
-		gid, err = s.Engine.AddUri(candidate.url, rpc.AddURIOptions{
-			Dir:          dir,
-			Out:          out,
-			Headers:      headers,
-			Split:        params.Split,
-			MinSplitSize: params.MinSize,
-			BeforeSave:   registerGroup,
-		})
+		gid, err = s.Engine.AddUri(candidate.url, buildCandidateAddURIOptions(
+			dir, out, headers, params.Split, params.MinSize, registerGroup, candidate,
+		))
 		if err != nil {
 			ledger.Release(scope, envKey, params.TargetBandwidth)
 			ledger.ReleaseByDomain(scope, domain, params.TargetBandwidth)
@@ -636,13 +652,9 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			maxConn = 8
 		}
 		var err error
-		gid, err = s.Engine.AddUri(candidate.url, rpc.AddURIOptions{
-			Dir:        dir,
-			Out:        out,
-			Headers:    headers,
-			Split:      maxConn,
-			BeforeSave: registerGroup,
-		})
+		gid, err = s.Engine.AddUri(candidate.url, buildCandidateAddURIOptions(
+			dir, out, headers, maxConn, 0, registerGroup, candidate,
+		))
 		if err != nil {
 			return "", err
 		}

@@ -487,12 +487,14 @@ func (e *SurgeEngine) AddUri(url string, options AddURIOptions) (string, error) 
 		}
 	}
 	req := &orchestrator.DownloadRequest{
-		URL:          url,
-		Path:         options.Dir,
-		Filename:     options.Out,
-		Headers:      headersMap,
-		Workers:      options.Split,
-		MinChunkSize: options.MinSplitSize,
+		URL:           url,
+		Path:          options.Dir,
+		Filename:      options.Out,
+		Headers:       headersMap,
+		Workers:       options.Split,
+		MinChunkSize:  options.MinSplitSize,
+		FileSize:      options.FileSize,
+		SupportsRange: options.SupportsRange,
 	}
 	gid, _, err := e.manager.Enqueue(context.Background(), req)
 	return gid, err

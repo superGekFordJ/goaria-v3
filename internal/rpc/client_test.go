@@ -133,12 +133,15 @@ func TestAddUriWithAria2OptionsSerializesHeadersOutAndSmartThreadOptions(t *test
 	defer server.Close()
 	initTestRPCServer(t, server.URL, "secret")
 
+	supportsRange := false
 	gid, err := AddUriWithAria2Options(directURL, AddURIOptions{
-		Dir:          "D:/Downloads",
-		Out:          "file.bin",
-		Headers:      []string{"Authorization: Bearer test-token", "User-Agent: GoAria-Test"},
-		Split:        8,
-		MinSplitSize: 1_048_576,
+		Dir:           "D:/Downloads",
+		Out:           "file.bin",
+		Headers:       []string{"Authorization: Bearer test-token", "User-Agent: GoAria-Test"},
+		Split:         8,
+		MinSplitSize:  1_048_576,
+		FileSize:      1024,
+		SupportsRange: &supportsRange,
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -166,6 +169,15 @@ func TestAddUriWithAria2OptionsSerializesHeadersOutAndSmartThreadOptions(t *test
 	}
 	if got := options["header"]; !reflect.DeepEqual(got, []any{"Authorization: Bearer test-token", "User-Agent: GoAria-Test"}) {
 		t.Fatalf("expected ordered header list, got %#v", got)
+	}
+	allowed := map[string]struct{}{
+		"dir": {}, "out": {}, "header": {}, "split": {},
+		"max-connection-per-server": {}, "min-split-size": {},
+	}
+	for key := range options {
+		if _, ok := allowed[key]; !ok {
+			t.Fatalf("unexpected aria2 option key %q (FileSize/SupportsRange must not serialize)", key)
+		}
 	}
 
 	methods := make([]string, 0, len(requests))

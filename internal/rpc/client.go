@@ -120,6 +120,11 @@ type AddURIOptions struct {
 	Split        int
 	MinSplitSize int64
 	BeforeSave   AddURIHook
+	FileSize     int64
+	// SupportsRange is a host probe hint. Nil means unknown (engine probes).
+	// A non-nil false skips ProbeServer and runs sequential; non-nil true skips
+	// ProbeServer and keeps concurrent. Aria2 JSON allowlist ignores this field.
+	SupportsRange *bool
 }
 
 type AddURIHook func(gid string) error
