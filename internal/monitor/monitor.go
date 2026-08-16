@@ -16,6 +16,7 @@ import (
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
+	"goaria-v3/internal/surge/types"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -597,8 +598,19 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 
 	// 1. 记录速度统计（仅 >50MB 文件）— 不依赖 FilePath，先于 history 执行
 	if task.TotalLength > speedstats.MinFileSize && task.PeakSpeed > 0 {
+		// Fallback chain: PeakThreadCount (D3) → ThreadCount (started workers) → config
 		threadCount := task.PeakThreadCount
 		threadSource := "peakThreadCount"
+		if threadCount <= 0 {
+			threadCount = task.ThreadCount
+			threadSource = "threadCount"
+		}
+		if threadCount <= 0 {
+			if v, err := strconv.Atoi(config.Get().MaxConnections); err == nil && v > 0 {
+				threadCount = v
+				threadSource = "config"
+			}
+		}
 		isExploration := task.IsExploration
 
 		// Fallback: tasks that bypassed service_add.go (external RPC, resume after restart)
@@ -616,8 +628,10 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 		// envKey and would pollute env-aware history buckets.
 		if task.PeakEnvKey == "" {
 			log.Printf("[Monitor] Skipping speed stats for task %s: no envKey (external RPC or wake-up path)", task.GID)
-		} else if task.PeakThreadCount <= 0 {
-			log.Printf("[Monitor] Skipping speed stats for task %s: PeakThreadCount<=0 (sequential / unverified workers)", task.GID)
+		} else if m.sequentialSpeedstatsSkip(task) {
+			log.Printf("[Monitor] Skipping speed stats for task %s: range_unsupported", task.GID)
+		} else if threadCount <= 0 {
+			log.Printf("[Monitor] Skipping speed stats for task %s: no thread count", task.GID)
 		} else if task.Domain == "" {
 			// Skip recording if we still have no domain — a record without domain is useless
 			// for BBR (GetDomainPeak/GetRTprop can't match) and would only pollute V_global_peak.
@@ -668,6 +682,38 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 	}
 
 	log.Printf("[Monitor] History recorded: %s", task.GID)
+}
+
+// sequentialSpeedstatsSkip is true only for proven ignore-Range sequential
+// downloads. PeakThreadCount==0 is not sequential (fast concurrent / Aria2).
+// Master-cache miss fails open so short-lived successes still record.
+func (m *Monitor) sequentialSpeedstatsSkip(task *TrackedTask) bool {
+	if task == nil || m == nil {
+		return false
+	}
+	return m.lookupRangeAcquisitionMode(task.GID) == types.RangeAcquireRangeUnsupported
+}
+
+func (m *Monitor) lookupRangeAcquisitionMode(gid string) types.RangeAcquisitionMode {
+	if !strings.HasPrefix(gid, "sg_") {
+		return ""
+	}
+	se := m.surgeEng
+	if se == nil {
+		he, ok := m.engine.(*rpc.HybridEngine)
+		if !ok {
+			return ""
+		}
+		se, ok = he.SurgeEngineRef()
+		if !ok || se == nil {
+			return ""
+		}
+	}
+	entry, ok := se.GetMasterCacheEntry(gid[3:])
+	if !ok {
+		return ""
+	}
+	return entry.RangeAcquisitionMode
 }
 
 // InvalidateTask 使指定任务的缓存失效并发送删除事件

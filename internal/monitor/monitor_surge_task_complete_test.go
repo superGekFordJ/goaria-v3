@@ -61,7 +61,7 @@ func TestHandleTaskComplete_PeakThreadCountFallback(t *testing.T) {
 }
 
 // TestHandleTaskComplete_ThreadCountFallback verifies that when PeakThreadCount is 0,
-// handleTaskComplete does not write a speedstats record (no initial-N denominator).
+// handleTaskComplete falls back to ThreadCount.
 func TestHandleTaskComplete_ThreadCountFallback(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
@@ -92,13 +92,21 @@ func TestHandleTaskComplete_ThreadCountFallback(t *testing.T) {
 	m.handleTaskComplete(task)
 	after := speedstatsRecordCount()
 
-	if after != before {
-		t.Fatalf("expected no speedstats record when PeakThreadCount==0, got %d new", after-before)
+	if after != before+1 {
+		t.Fatalf("expected 1 new speedstats record, got %d", after-before)
+	}
+
+	rec := findRecordByDomain("example.com")
+	if rec == nil {
+		t.Fatal("expected to find speedstats record")
+	}
+	if rec.ThreadCount != 16 {
+		t.Errorf("ThreadCount = %d, want 16 (from ThreadCount fallback)", rec.ThreadCount)
 	}
 }
 
 // TestHandleTaskComplete_ConfigFallback verifies that when both PeakThreadCount and
-// ThreadCount are 0, handleTaskComplete does not write a speedstats record.
+// ThreadCount are 0, handleTaskComplete falls back to config.MaxConnections.
 func TestHandleTaskComplete_ConfigFallback(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
@@ -134,8 +142,102 @@ func TestHandleTaskComplete_ConfigFallback(t *testing.T) {
 	m.handleTaskComplete(task)
 	after := speedstatsRecordCount()
 
+	if after != before+1 {
+		t.Fatalf("expected 1 new speedstats record, got %d", after-before)
+	}
+
+	rec := findRecordByDomain("example.com")
+	if rec == nil {
+		t.Fatal("expected to find speedstats record")
+	}
+	if rec.ThreadCount != 12 {
+		t.Errorf("ThreadCount = %d, want 12 (from config.MaxConnections)", rec.ThreadCount)
+	}
+}
+
+// TestHandleTaskComplete_RangeUnsupportedSkipsSpeedstats verifies proven
+// sequential mode suppresses AddRecordV2 even when ThreadCount is the SmartThread initial N.
+func TestHandleTaskComplete_RangeUnsupportedSkipsSpeedstats(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(nil, surge)
+	surge.UpsertMasterCacheEntry(types.DownloadRecord{
+		ID:                   "range-unsup-skip",
+		URL:                  "https://range-unsup.example.com/seq.bin",
+		RangeAcquisitionMode: types.RangeAcquireRangeUnsupported,
+	})
+
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_range-unsup-skip", 200000000, "https://range-unsup.example.com/seq.bin", 16, "active")
+
+	m := &Monitor{engine: he, tracker: tracker}
+
+	task := tracker.tasks["sg_range-unsup-skip"]
+	task.Status = "complete"
+	task.PeakSpeed = 40 * 1024 * 1024
+	task.ThreadCount = 16
+	task.PeakThreadCount = 0
+	task.Domain = "range-unsup.example.com"
+	task.Scope = "wan"
+	task.FilePath = "D:\\Downloads\\seq.bin"
+	task.PeakEnvKey = "testenv"
+
+	before := speedstatsRecordCount()
+	m.handleTaskComplete(task)
+	after := speedstatsRecordCount()
+
 	if after != before {
-		t.Fatalf("expected no speedstats record when PeakThreadCount==0, got %d new", after-before)
+		t.Fatalf("expected no speedstats record for range_unsupported, got %d new", after-before)
+	}
+}
+
+// TestHandleTaskComplete_Aria2PeakThreadCountZeroUsesThreadCount verifies Aria2
+// completions still record when PeakThreadCount is unset (Aria2 never writes D3).
+func TestHandleTaskComplete_Aria2PeakThreadCountZeroUsesThreadCount(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(nil, surge)
+
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("ar_aria2-peak0", 200000000, "https://aria2-peak0.example.com/file.bin", 8, "active")
+
+	m := &Monitor{engine: he, tracker: tracker}
+
+	task := tracker.tasks["ar_aria2-peak0"]
+	task.Status = "complete"
+	task.PeakSpeed = 25 * 1024 * 1024
+	task.ThreadCount = 8
+	task.PeakThreadCount = 0
+	task.Domain = "aria2-peak0.example.com"
+	task.Scope = "wan"
+	task.FilePath = "D:\\Downloads\\file.bin"
+	task.PeakEnvKey = "testenv"
+
+	before := speedstatsRecordCount()
+	m.handleTaskComplete(task)
+	after := speedstatsRecordCount()
+
+	if after != before+1 {
+		t.Fatalf("expected 1 new speedstats record for Aria2 peak=0, got %d", after-before)
+	}
+	rec := findRecordByDomain("aria2-peak0.example.com")
+	if rec == nil {
+		t.Fatal("expected speedstats record")
+	}
+	if rec.ThreadCount != 8 {
+		t.Errorf("ThreadCount = %d, want 8 (Aria2 ThreadCount fallback)", rec.ThreadCount)
 	}
 }
 

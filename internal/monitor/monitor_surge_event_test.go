@@ -729,6 +729,9 @@ func TestHandleSurgeEvent_ProgressMsg_NoWindow_DoesNotPush(t *testing.T) {
 // completes without reaching the stable sample threshold (PeakSpeed==0),
 // DownloadCompleteMsg.AvgSpeed is used as a fallback.
 func TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
 	tracker := NewTaskTracker()
@@ -740,14 +743,19 @@ func TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback(t *testing.T) {
 	State.SetWindowExists(true)
 	defer State.SetWindowExists(prevWindow)
 
+	const gid = "sg_avg-fallback"
+
 	// 1. Create tracked task via DownloadStartedMsg (no progress events → PeakSpeed stays 0)
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{
 		Type:       surgeEvents.EventStarted,
 		DownloadID: "avg-fallback",
 		Total:      100000000, // >50MB
-		URL:        "https://example.com/large.zip",
+		URL:        "https://avg-fallback.example.com/large.zip",
 		Workers:    8,
 	})
+	tracker.SetScopeAndEnv(gid, "wan", 50, "avg-fallback.example.com", "envA")
+
+	before := speedstatsRecordCount()
 
 	// 2. Complete without any ProgressMsg — PeakSpeed should be 0
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{
@@ -758,7 +766,7 @@ func TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback(t *testing.T) {
 	})
 
 	// 3. Verify the tracker's internal PeakSpeed is still 0 (fallback only on copy)
-	tracked := tracker.tasks["sg_avg-fallback"]
+	tracked := tracker.tasks[gid]
 	if tracked == nil {
 		t.Fatal("Expected tracked task to exist")
 	}
@@ -770,8 +778,22 @@ func TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback(t *testing.T) {
 	}
 
 	// 4. Verify processedComplete was set
-	if !tracker.processedComplete["sg_avg-fallback"] {
+	if !tracker.processedComplete[gid] {
 		t.Error("Expected processedComplete to be set")
+	}
+
+	if after := speedstatsRecordCount(); after != before+1 {
+		t.Fatalf("expected 1 new speedstats record, got %d (before=%d, after=%d)", after-before, before, after)
+	}
+	rec := findRecordByDomain("avg-fallback.example.com")
+	if rec == nil {
+		t.Fatal("expected speedstats record")
+	}
+	if rec.ThreadCount != 8 {
+		t.Errorf("ThreadCount = %d, want 8 (EventStarted Workers)", rec.ThreadCount)
+	}
+	if rec.PeakSpeed != 5000000 {
+		t.Errorf("PeakSpeed = %d, want 5000000 (AvgSpeed substitute)", rec.PeakSpeed)
 	}
 }
 
@@ -850,6 +872,9 @@ func TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback_RefreshesPeakEnvKeyToCurr
 	if rec.PeakSpeed != avgSpeed {
 		t.Errorf("PeakSpeed = %d, want %d (AvgSpeed substitute)", rec.PeakSpeed, avgSpeed)
 	}
+	if rec.ThreadCount != 8 {
+		t.Errorf("ThreadCount = %d, want 8 (EventStarted Workers)", rec.ThreadCount)
+	}
 }
 
 // TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback_EmptyCurrentDoesNotInventOrWipePeakEnvKey
@@ -918,6 +943,9 @@ func TestHandleSurgeEvent_CompleteMsg_AvgSpeedFallback_EmptyCurrentDoesNotInvent
 	}
 	if rec.PeakSpeed != avgSpeed {
 		t.Errorf("PeakSpeed = %d, want %d", rec.PeakSpeed, avgSpeed)
+	}
+	if rec.ThreadCount != 8 {
+		t.Errorf("ThreadCount = %d, want 8 (EventStarted Workers)", rec.ThreadCount)
 	}
 }
 
