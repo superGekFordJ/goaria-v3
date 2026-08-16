@@ -279,7 +279,3 @@ func normalizeEmbeddedExtractorConfigDeps(deps embeddedExtractorConfigDeps) embe
 func sanitizedEmbeddedExtractorConfigError(action string, err error) error {
 	return fmt.Errorf("%s failed", action)
 }
-
-func loadEmbeddedExtractorHostPolicyResolver() (extractor.HostPolicyResolver, error) {
-	return extractor.LoadPrivatePolicyBundleResolverFromRuntimeSources()
-}
