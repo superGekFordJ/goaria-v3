@@ -113,8 +113,9 @@ func (c *ScopeClassifier) ClassifyByURLAndIP(rawURL string, remoteIP string) (sc
 }
 
 // classifyAddr determines wan/lan for a parsed IP address.
-// Order: loopback → lan, link-local → lan, CGNAT 100.64/10 → wan, private → lan, else → wan.
+// Order: Unmap → loopback → link-local → CGNAT → private → connected GUA → wan.
 func classifyAddr(ip netip.Addr) string {
+	ip = ip.Unmap()
 	if ip.IsLoopback() {
 		return ScopeLAN
 	}
@@ -129,6 +130,10 @@ func classifyAddr(ip netip.Addr) string {
 	}
 
 	if ip.IsPrivate() {
+		return ScopeLAN
+	}
+
+	if isIPv6GUA(ip) && connectedGUAContains(ip) {
 		return ScopeLAN
 	}
 

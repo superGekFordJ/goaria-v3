@@ -12,6 +12,14 @@ import (
 	"goaria-v3/internal/config"
 )
 
+const (
+	probeMaxIdleConns        = 64
+	probeMaxIdleConnsPerHost = 8
+	probeIdleConnTimeout     = 30 * time.Second
+	probeSessionCacheSize    = 128
+	probeTLSHandshakeTimeout = 5 * time.Second
+)
+
 // HeadProbeResult contains the result of a HEAD probe request.
 type HeadProbeResult struct {
 	ContentLength int64
@@ -21,7 +29,7 @@ type HeadProbeResult struct {
 	RemoteIP string
 }
 
-var probeSessionCache = tls.NewLRUClientSessionCache(128)
+var probeSessionCache = tls.NewLRUClientSessionCache(probeSessionCacheSize)
 
 // Dedicated HTTP/1.1 transport for HeadProbe. Isolated from Aria2 httpClient
 // and Surge DefaultNetworkPool (including its TLS session cache of 256).
@@ -32,9 +40,10 @@ var probeTransport = &http.Transport{
 	TLSClientConfig: &tls.Config{
 		ClientSessionCache: probeSessionCache,
 	},
-	MaxIdleConns:        64,
-	MaxIdleConnsPerHost: 8,
-	IdleConnTimeout:     30 * time.Second,
+	MaxIdleConns:        probeMaxIdleConns,
+	MaxIdleConnsPerHost: probeMaxIdleConnsPerHost,
+	IdleConnTimeout:     probeIdleConnTimeout,
+	TLSHandshakeTimeout: probeTLSHandshakeTimeout,
 }
 
 // HeadProbe sends a HEAD request and returns Content-Length, TTFB, and remote IP.

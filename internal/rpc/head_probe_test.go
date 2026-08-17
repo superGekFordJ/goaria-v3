@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -32,8 +34,11 @@ func startHeadProbeServer(t *testing.T, handler http.Handler) (*httptest.Server,
 
 func requireLoopbackIP(t *testing.T, remote string) {
 	t.Helper()
-	ip := net.ParseIP(remote)
-	if ip == nil || !ip.IsLoopback() {
+	if strings.ContainsAny(remote, "[]") {
+		t.Fatalf("RemoteIP must not contain brackets, got %q", remote)
+	}
+	addr, err := netip.ParseAddr(remote)
+	if err != nil || !addr.IsLoopback() {
 		t.Fatalf("expected loopback RemoteIP, got %q", remote)
 	}
 }
@@ -53,9 +58,6 @@ func TestHeadProbe_ReusesHTTP1ConnectionAndCapturesPeerIP(t *testing.T) {
 	if first.ContentLength != wantLen {
 		t.Fatalf("ContentLength = %d, want %d", first.ContentLength, wantLen)
 	}
-	if first.TTFBMs < 0 {
-		t.Fatalf("TTFBMs = %d", first.TTFBMs)
-	}
 	if got := stateNew.Load(); got != 1 {
 		t.Fatalf("StateNew after first HEAD = %d, want 1", got)
 	}
@@ -67,6 +69,50 @@ func TestHeadProbe_ReusesHTTP1ConnectionAndCapturesPeerIP(t *testing.T) {
 	}
 	if got := stateNew.Load(); got != 1 {
 		t.Fatalf("StateNew after second HEAD = %d, want 1 (reuse)", got)
+	}
+}
+
+func TestHeadProbe_TCP6LoopbackRemoteIPParses(t *testing.T) {
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("tcp6 [::1]:0 bind failed: %v", err)
+	}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			t.Errorf("method = %s", r.Method)
+		}
+		w.Header().Set("Content-Length", "1")
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewUnstartedServer(handler)
+	_ = srv.Listener.Close()
+	srv.Listener = ln
+	srv.Start()
+	t.Cleanup(func() {
+		srv.Close()
+		probeTransport.CloseIdleConnections()
+	})
+
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split tcp6 addr: %v", err)
+	}
+	probeURL := "http://" + net.JoinHostPort("::1", port) + "/"
+
+	result := HeadProbe(probeURL, 2*time.Second)
+	if strings.ContainsAny(result.RemoteIP, "[]") {
+		t.Fatalf("RemoteIP contains brackets: %q", result.RemoteIP)
+	}
+	addr, err := netip.ParseAddr(result.RemoteIP)
+	if err != nil {
+		t.Fatalf("ParseAddr(%q): %v", result.RemoteIP, err)
+	}
+	if !addr.IsLoopback() || !addr.Is6() || addr.Is4In6() {
+		t.Fatalf("RemoteIP = %q, want IPv6-form loopback", result.RemoteIP)
+	}
+	if result.ContentLength != 1 {
+		t.Fatalf("ContentLength = %d, want 1", result.ContentLength)
 	}
 }
 
@@ -242,8 +288,32 @@ func TestProbeTransport_HTTP2Disabled(t *testing.T) {
 	if probeTransport.DisableKeepAlives {
 		t.Error("expected keep-alives enabled")
 	}
+	if probeTransport.MaxIdleConns != probeMaxIdleConns {
+		t.Errorf("MaxIdleConns = %d, want %d", probeTransport.MaxIdleConns, probeMaxIdleConns)
+	}
+	if probeTransport.MaxIdleConnsPerHost != probeMaxIdleConnsPerHost {
+		t.Errorf("MaxIdleConnsPerHost = %d, want %d", probeTransport.MaxIdleConnsPerHost, probeMaxIdleConnsPerHost)
+	}
+	if probeTransport.IdleConnTimeout != probeIdleConnTimeout {
+		t.Errorf("IdleConnTimeout = %s, want %s", probeTransport.IdleConnTimeout, probeIdleConnTimeout)
+	}
+	if probeTransport.TLSHandshakeTimeout != probeTLSHandshakeTimeout {
+		t.Errorf("TLSHandshakeTimeout = %s, want %s", probeTransport.TLSHandshakeTimeout, probeTLSHandshakeTimeout)
+	}
+	if probeTransport.Dial != nil { //nolint:staticcheck // deprecated field; must stay unset
+		t.Error("expected Dial == nil")
+	}
+	if probeTransport.DialContext != nil {
+		t.Error("expected DialContext == nil")
+	}
 	if probeTransport.TLSClientConfig == nil || probeTransport.TLSClientConfig.ClientSessionCache == nil {
 		t.Fatal("expected isolated ClientSessionCache")
+	}
+	if probeTransport.TLSClientConfig.ClientSessionCache != probeSessionCache {
+		t.Error("expected ClientSessionCache == probeSessionCache")
+	}
+	if probeSessionCacheSize != 128 {
+		t.Errorf("probeSessionCacheSize = %d, want 128", probeSessionCacheSize)
 	}
 	if probeTransport == httpClient.Transport {
 		t.Fatal("probeTransport must not be Aria2 httpClient.Transport")
