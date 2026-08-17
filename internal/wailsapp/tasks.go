@@ -7,13 +7,6 @@ import (
 	"goaria-v3/internal/tasks"
 )
 
-// RecordTaskSpeed 已废弃 - 后端 TaskTracker 自动采集
-// 保留空实现以兼容现有前端
-func (a *App) RecordTaskSpeed(gid string, speed int64, cl int64) {
-	// 业务逻辑已迁移到 monitor.TaskTracker
-	// 此方法保留以兼容前端，但不执行任何操作
-}
-
 func (a *App) taskService() *tasks.Service {
 	return &tasks.Service{
 		Adapter: a.extractorAdapter,
