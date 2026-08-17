@@ -584,6 +584,8 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 		d.pfHelperWG = &wgHelpers
 		d.pfQueue = queue
 		d.pfFileSize = fileSize
+		// FORK-PATCH: keep verifyConns==1 so persistRangeSupportedBeforeWrite
+		// check-then-act cannot race a second worker. Do not raise verifyConns.
 		verifyConns = 1
 	} else {
 		d.startHelpers(downloadCtx, &wgHelpers, queue, fileSize, numConns)

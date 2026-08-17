@@ -159,7 +159,8 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				Workers:      m.Workers,
 				MinChunkSize: m.MinChunkSize,
 			}
-			if existing, _ := store.GetDownload(m.DownloadID); existing != nil {
+			existing, _ := store.GetDownload(m.DownloadID)
+			if existing != nil {
 				entry.Mirrors = append([]string(nil), existing.Mirrors...)
 				if existing.Downloaded > 0 {
 					entry.Downloaded = existing.Downloaded
@@ -172,9 +173,9 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 			if entry.RangeAcquisitionMode == "" {
 				copyRangeAcquisition(&entry, m.State)
 			}
-			// FORK-PATCH: do not insert a gob-zero mode row. Empty mode would
-			// cold-resume as sequential-from-zero. Skip like EventQueued.
-			if entry.RangeAcquisitionMode == "" {
+			// FORK-PATCH: skip gob-zero insert only when no master row exists.
+			// ProbeAtEnqueue queued rows (empty mode) must still move to downloading.
+			if entry.RangeAcquisitionMode == "" && existing == nil {
 				break
 			}
 			if err := store.AddToMasterList(entry); err != nil {

@@ -2,6 +2,7 @@ package types
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 )
 
@@ -48,6 +49,45 @@ var (
 	// write, no residual requeue, no whole-download retry.
 	ErrPayloadFirstPersist = errors.New("payload-first persist failed")
 )
+
+// PayloadFirstMismatchKind classifies why payload-first headers failed the
+// Range contract. Only 206_total and 416_star_total are size hypotheses.
+type PayloadFirstMismatchKind string
+
+const (
+	MismatchKind206Total     PayloadFirstMismatchKind = "206_total"
+	MismatchKind416StarTotal PayloadFirstMismatchKind = "416_star_total"
+	MismatchKind200CL        PayloadFirstMismatchKind = "200_cl"
+	MismatchKind200Chunked   PayloadFirstMismatchKind = "200_chunked"
+	MismatchKind206Star      PayloadFirstMismatchKind = "206_star"
+	MismatchKind416Bare      PayloadFirstMismatchKind = "416_bare"
+	MismatchKindMultipart    PayloadFirstMismatchKind = "multipart"
+)
+
+// FORK-PATCH: SourceMetadataMismatchError wraps ErrSourceMetadataMismatch
+// with Kind and ObservedSize so the scheduler can size-heal without scraping.
+type SourceMetadataMismatchError struct {
+	Kind         PayloadFirstMismatchKind
+	ObservedSize int64
+}
+
+func NewSourceMetadataMismatch(kind PayloadFirstMismatchKind, observedSize int64) *SourceMetadataMismatchError {
+	return &SourceMetadataMismatchError{Kind: kind, ObservedSize: observedSize}
+}
+
+func (e *SourceMetadataMismatchError) Error() string {
+	if e == nil {
+		return ErrSourceMetadataMismatch.Error()
+	}
+	if e.Kind == "" && e.ObservedSize == 0 {
+		return ErrSourceMetadataMismatch.Error()
+	}
+	return fmt.Sprintf("%s: kind=%s observed=%d", ErrSourceMetadataMismatch.Error(), e.Kind, e.ObservedSize)
+}
+
+func (e *SourceMetadataMismatchError) Unwrap() error {
+	return ErrSourceMetadataMismatch
+}
 
 // IsPermanentHTTPError reports whether err is a permanent HTTP error that
 // should not be retried by the scheduler.

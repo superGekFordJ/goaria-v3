@@ -370,6 +370,28 @@ func TestDownloadProgress_SessionReset(t *testing.T) {
 	}
 }
 
+func TestDownloadProgress_SessionResetThenInitBitmapFollowsNewSize(t *testing.T) {
+	oldSize := int64(1024 * 1024)
+	newSize := int64(256 * 1024)
+	chunk := int64(256 * 1024)
+	ps := New("heal-layout", oldSize)
+	ps.InitBitmap(oldSize, chunk)
+	_, oldWidth, _, _, _ := ps.GetBitmapSnapshot(true)
+	if oldWidth != 4 {
+		t.Fatalf("old width = %d, want 4", oldWidth)
+	}
+	ps.SessionReset()
+	ps.SetTotalSize(newSize)
+	ps.InitBitmap(newSize, chunk)
+	_, newWidth, _, acs, _ := ps.GetBitmapSnapshot(true)
+	if newWidth != 1 {
+		t.Fatalf("new width = %d, want 1 (followed new size)", newWidth)
+	}
+	if acs != chunk {
+		t.Fatalf("chunk = %d, want %d", acs, chunk)
+	}
+}
+
 // FORK-PATCH: verify bitmap trust restores Completed chunks covered by
 // remainingTasks (hedged bytes re-queued after KillWorker).
 func TestRecalculateProgress_BitmapTrust_RestoresHedgedChunks(t *testing.T) {

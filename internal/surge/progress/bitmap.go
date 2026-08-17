@@ -32,14 +32,15 @@ func bitmapLayout(totalSize, chunkSize int64) (numChunks int, bytesNeeded int, o
 	return numChunks, bytesNeeded, true
 }
 
-// Reset clears the bitmap completely.
+// Reset clears bitmap layout so a later InitBitmap can follow a new totalSize.
+// FORK-PATCH: nil slices and zero width/chunkSize; do not reallocate the old width.
 func (b *BitmapTracker) Reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.width > 0 {
-		b.chunkStatus = make([]atomic.Int32, b.width)
-		b.chunkProgress = make([]atomic.Int64, b.width)
-	}
+	b.chunkStatus = nil
+	b.chunkProgress = nil
+	b.width = 0
+	b.actualChunkSize = 0
 }
 
 // InitBitmap initializes the chunk bitmap.

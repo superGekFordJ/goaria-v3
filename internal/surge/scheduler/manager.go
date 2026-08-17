@@ -146,6 +146,96 @@ func persistRangeUnsupported(cfg *types.DownloadRecord) {
 	}
 }
 
+// persistMasterTotalSize writes only TotalSize onto the master record.
+// FORK-PATCH: size-heal must not mint range_supported/unsupported or copy Headers.
+func persistMasterTotalSize(cfg *types.DownloadRecord, totalSize int64) {
+	if cfg == nil || cfg.ID == "" {
+		return
+	}
+	existing, err := store.GetDownload(cfg.ID)
+	if err != nil || existing == nil {
+		return
+	}
+	existing.TotalSize = totalSize
+	if err := store.AddToMasterList(*existing); err != nil {
+		utils.Debug("Failed to persist healed TotalSize: %v", err)
+	}
+}
+
+func attachConcurrentDownloader(cfg *types.DownloadRecord, progState *progress.DownloadProgress) *concurrent.ConcurrentDownloader {
+	d := concurrent.NewConcurrentDownloader(cfg.ID, cfg.ProgressCh, progState, cfg.Runtime)
+	d.Headers = cfg.Headers
+	d.RangeAcquisitionMode = cfg.RangeAcquisitionMode
+	d.SkipServerProbe = cfg.SkipServerProbe
+	d.Limiter = cfg.Limiter
+	d.RateLimitBps = cfg.RateLimit
+	d.RateLimitSet = cfg.RateLimitSet
+	if progState != nil {
+		progState.SetScaleWorkersFn(d.ScaleWorkers)
+		progState.SetKillWorkerFn(d.KillWorker)
+		progState.SetSetSlowThresholdFn(d.SetSlowWorkerThreshold)
+		progState.SetDrainWorkerFn(d.DrainWorker)
+	}
+	return d
+}
+
+func detachConcurrentBridges(progState *progress.DownloadProgress) {
+	if progState == nil {
+		return
+	}
+	progState.SetScaleWorkersFn(nil)
+	progState.SetKillWorkerFn(nil)
+	progState.SetSetSlowThresholdFn(nil)
+	progState.SetDrainWorkerFn(nil)
+}
+
+func copyBackConcurrent(d *concurrent.ConcurrentDownloader, cfg *types.DownloadRecord, effectiveTotalSize *int64) {
+	if d.TotalSize > 0 {
+		*effectiveTotalSize = d.TotalSize
+	}
+	cfg.RangeAcquisitionMode = d.RangeAcquisitionMode
+	cfg.SkipServerProbe = d.SkipServerProbe
+	cfg.SupportsRange = types.ShouldUseConcurrent(d.RangeAcquisitionMode, cfg.SupportsRange)
+}
+
+func applySingleFallback(cfg *types.DownloadRecord, progState *progress.DownloadProgress, finalDestPath string, downloadErr error) {
+	utils.Debug("Concurrent download failed: %v - falling back to single-threaded", downloadErr)
+	cfg.RangeAcquisitionMode = types.RangeAcquireRangeUnsupported
+	cfg.SupportsRange = false
+	persistRangeUnsupported(cfg)
+	abandonConcurrentResumeForSingleFallback(progState, cfg.ID)
+	surgePath := finalDestPath + types.IncompleteSuffix
+	_ = os.Truncate(surgePath, 0)
+}
+
+func payloadFirstHealSize(err error, cfg *types.DownloadRecord, downloaded, verified int64, healedOnce bool, ctxErr error) (int64, bool) {
+	if healedOnce || ctxErr != nil || err == nil || cfg == nil {
+		return 0, false
+	}
+	if !errors.Is(err, types.ErrSourceMetadataMismatch) {
+		return 0, false
+	}
+	if !cfg.RangeAcquisitionMode.IsPayloadFirst() {
+		return 0, false
+	}
+	if downloaded != 0 || verified != 0 {
+		return 0, false
+	}
+	var mismatch *types.SourceMetadataMismatchError
+	if !errors.As(err, &mismatch) || mismatch == nil {
+		return 0, false
+	}
+	if mismatch.ObservedSize <= 0 || mismatch.ObservedSize == cfg.TotalSize {
+		return 0, false
+	}
+	switch mismatch.Kind {
+	case types.MismatchKind206Total, types.MismatchKind416StarTotal:
+		return mismatch.ObservedSize, true
+	default:
+		return 0, false
+	}
+}
+
 // RunDownload is the main entry point for downloads executed by the Engine pool
 func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 	start := time.Now()
@@ -272,62 +362,57 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 			utils.Debug("Found %d active mirrors from %d candidates", len(activeMirrors), len(mirrors))
 		}
 
-		d := concurrent.NewConcurrentDownloader(cfg.ID, cfg.ProgressCh, progState, cfg.Runtime)
-		d.Headers = cfg.Headers // Forward custom headers from browser extension
-		d.RangeAcquisitionMode = cfg.RangeAcquisitionMode
-		d.SkipServerProbe = cfg.SkipServerProbe
-		d.Limiter = cfg.Limiter
-		d.RateLimitBps = cfg.RateLimit
-		d.RateLimitSet = cfg.RateLimitSet
-		// FORK-PATCH: Register Scale/Kill/Slow/Drain bridges for Scheduler control APIs.
-		if progState != nil {
-			progState.SetScaleWorkersFn(d.ScaleWorkers)
-			progState.SetKillWorkerFn(d.KillWorker)
-			progState.SetSetSlowThresholdFn(d.SetSlowWorkerThreshold)
-			progState.SetDrainWorkerFn(d.DrainWorker)
-		}
+		d := attachConcurrentDownloader(cfg, progState)
 		utils.Debug("Calling Download with mirrors: %v", mirrors)
 		// Pass effectiveTotalSize to avoid unnecessary bootstrap if state already knows the size
 		downloadErr = d.Download(ctx, cfg.URL, mirrors, activeMirrors, finalDestPath, effectiveTotalSize)
 		// FORK-PATCH: Clear bridges after download (including before single fallback).
-		if progState != nil {
-			progState.SetScaleWorkersFn(nil)
-			progState.SetKillWorkerFn(nil)
-			progState.SetSetSlowThresholdFn(nil)
-			progState.SetDrainWorkerFn(nil)
-		}
-		if d.TotalSize > 0 {
-			effectiveTotalSize = d.TotalSize
-		}
-		cfg.RangeAcquisitionMode = d.RangeAcquisitionMode
-		cfg.SkipServerProbe = d.SkipServerProbe
-		cfg.SupportsRange = types.ShouldUseConcurrent(d.RangeAcquisitionMode, cfg.SupportsRange)
+		detachConcurrentBridges(progState)
+		copyBackConcurrent(d, cfg, &effectiveTotalSize)
 
-		var downloaded int64
+		var downloaded, verified int64
 		if progState != nil {
 			downloaded = progState.Bytes.Downloaded.Load()
+			verified = progState.Bytes.VerifiedProgress.Load()
 		}
 
 		// Determine if we should attempt a fallback to single-threaded mode.
 		// We fallback if concurrent failed, but it wasn't a clean pause or external cancellation,
 		// AND we haven't made any progress yet (to avoid discarding progress).
 		// Disk-full / quota must not Truncate + restart — space will not appear.
+		healedOnce := false
 		if shouldFallbackToSingle(downloadErr, downloaded, cfg.RangeAcquisitionMode) {
-			utils.Debug("Concurrent download failed: %v - falling back to single-threaded", downloadErr)
+			applySingleFallback(cfg, progState, finalDestPath, downloadErr)
 			useConcurrent = false // Trigger sequential block below
-			cfg.RangeAcquisitionMode = types.RangeAcquireRangeUnsupported
-			cfg.SupportsRange = false
-			persistRangeUnsupported(cfg)
-
-			// Abandon concurrent resume metadata before Truncate+single:
-			// Layer1 SaveState may have just written range Tasks at Downloaded==0,
-			// and pendingResumeState would otherwise leak onto a later EventError.
+		} else if newSize, ok := payloadFirstHealSize(downloadErr, cfg, downloaded, verified, healedOnce, ctx.Err()); ok {
+			// FORK-PATCH: one-shot size-heal. Mode stays payload_first_unknown.
+			healedOnce = true
+			persistMasterTotalSize(cfg, newSize)
+			// FORK-PATCH: SessionReset (inside abandon) before SetTotalSize so
+			// retry InitBitmap sees a cleared layout and the size actually changes.
 			abandonConcurrentResumeForSingleFallback(progState, cfg.ID)
-
-			// Truncate the working file to zero to prevent stale tail bytes
-			// from the failed concurrent session.
+			if progState != nil {
+				progState.SetTotalSize(newSize)
+			}
 			surgePath := finalDestPath + types.IncompleteSuffix
-			_ = os.Truncate(surgePath, 0)
+			if truncErr := os.Truncate(surgePath, 0); truncErr != nil {
+				utils.Debug("payload-first size-heal Truncate failed: %v", truncErr)
+			} else if healedOnce {
+				cfg.TotalSize = newSize
+				effectiveTotalSize = newSize
+				d2 := attachConcurrentDownloader(cfg, progState)
+				downloadErr = d2.Download(ctx, cfg.URL, mirrors, activeMirrors, finalDestPath, effectiveTotalSize)
+				detachConcurrentBridges(progState)
+				copyBackConcurrent(d2, cfg, &effectiveTotalSize)
+				downloaded = 0
+				if progState != nil {
+					downloaded = progState.Bytes.Downloaded.Load()
+				}
+				if shouldFallbackToSingle(downloadErr, downloaded, cfg.RangeAcquisitionMode) {
+					applySingleFallback(cfg, progState, finalDestPath, downloadErr)
+					useConcurrent = false
+				}
+			}
 		}
 	}
 

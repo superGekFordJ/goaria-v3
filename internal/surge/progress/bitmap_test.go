@@ -35,6 +35,27 @@ func TestBitmapTracker_InitAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestBitmapTracker_ResetClearsLayoutForNewSize(t *testing.T) {
+	chunk := int64(256 * 1024)
+	oldSize := int64(1024 * 1024) // width 4
+	newSize := int64(512 * 1024)  // width 2
+	bt := &BitmapTracker{}
+	bt.InitBitmap(oldSize, chunk)
+	_, oldWidth, _, _, _ := bt.GetBitmapSnapshot(oldSize, false)
+	if oldWidth != 4 {
+		t.Fatalf("old width = %d, want 4", oldWidth)
+	}
+	bt.Reset()
+	bt.InitBitmap(newSize, chunk)
+	_, newWidth, _, acs, _ := bt.GetBitmapSnapshot(newSize, false)
+	if newWidth != 2 {
+		t.Fatalf("new width = %d, want 2 (must follow new size)", newWidth)
+	}
+	if acs != chunk {
+		t.Fatalf("actualChunkSize = %d, want %d", acs, chunk)
+	}
+}
+
 func TestBitmapTracker_UpdateChunkStatus(t *testing.T) {
 	bt := &BitmapTracker{}
 	totalSize := int64(1000)

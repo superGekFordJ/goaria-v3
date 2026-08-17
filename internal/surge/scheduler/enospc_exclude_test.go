@@ -82,6 +82,10 @@ func TestShouldFallbackToSingle_PayloadFirst(t *testing.T) {
 	if shouldFallbackToSingle(types.ErrSourceMetadataMismatch, 0, types.RangeAcquireRangeSupported) {
 		t.Fatal("RangeSupported mismatch must not Truncate")
 	}
+	typed := types.NewSourceMetadataMismatch(types.MismatchKind206Total, 100)
+	if shouldFallbackToSingle(typed, 0, mode) {
+		t.Fatal("typed mismatch must not auto-fallback")
+	}
 }
 
 func TestShouldRetryFailedDownload_RangeSentinels(t *testing.T) {
@@ -90,6 +94,9 @@ func TestShouldRetryFailedDownload_RangeSentinels(t *testing.T) {
 	}
 	if shouldRetryFailedDownload(types.ErrSourceMetadataMismatch, false, 0) {
 		t.Fatal("ErrSourceMetadataMismatch must be terminal")
+	}
+	if shouldRetryFailedDownload(types.NewSourceMetadataMismatch(types.MismatchKind206Total, 100), false, 0) {
+		t.Fatal("typed mismatch must be terminal")
 	}
 	if shouldRetryFailedDownload(types.ErrPayloadFirstPersist, false, 0) {
 		t.Fatal("ErrPayloadFirstPersist must be terminal")

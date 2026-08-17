@@ -272,3 +272,51 @@ func TestEventStarted_SkipsInsertWhenAbsentAndNoMode(t *testing.T) {
 		t.Fatalf("EventStarted inserted no-mode row: %+v", got)
 	}
 }
+
+func TestEventStarted_QueuedEmptyModeMovesToDownloading(t *testing.T) {
+	tmpDir := testutil.SetupStateDB(t)
+	destPath := filepath.Join(tmpDir, "probe.bin")
+	url := "http://example.com/probe.bin"
+	id := "probe-queued"
+
+	testutil.SeedMasterList(t, types.DownloadRecord{
+		ID:        id,
+		URL:       url,
+		URLHash:   store.URLHash(url),
+		DestPath:  destPath,
+		Filename:  "probe.bin",
+		Status:    "queued",
+		TotalSize: 1024,
+	})
+
+	ch := make(chan types.DownloadEvent, 1)
+	mgr := NewLifecycleManager(nil, nil, nil)
+	defer mgr.Shutdown()
+	done := make(chan struct{})
+	go func() {
+		mgr.StartEventWorker(ch)
+		close(done)
+	}()
+
+	ch <- types.DownloadEvent{
+		Type:       types.EventStarted,
+		DownloadID: id,
+		URL:        url,
+		DestPath:   destPath,
+		Filename:   "probe.bin",
+		Total:      1024,
+	}
+	close(ch)
+	<-done
+
+	got, err := store.GetDownload(id)
+	if err != nil || got == nil {
+		t.Fatalf("GetDownload: %v", err)
+	}
+	if got.Status != "downloading" {
+		t.Fatalf("status = %q, want downloading", got.Status)
+	}
+	if got.RangeAcquisitionMode != types.RangeAcquireProbeAtEnqueue {
+		t.Fatalf("mode = %q, want empty ProbeAtEnqueue", got.RangeAcquisitionMode)
+	}
+}
