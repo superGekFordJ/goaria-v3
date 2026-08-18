@@ -159,6 +159,14 @@ func (c *idempotencyCache) clear() {
 	c.completed = nil
 }
 
+func (c *idempotencyCache) hasCompleted(gen uint64, msgType, requestID string) bool {
+	key := idempKey(gen, msgType, requestID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	return ok && e.completed
+}
+
 func (c *idempotencyCache) len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -107,4 +107,15 @@ describe('replayStore', () => {
     expect(storage.data.has('replay_uuid-old')).toBe(false)
     expect(storage.data.has('replay_uuid-new')).toBe(true)
   })
+
+  it('deletes malformed replay_ keys during getAll sweep', async () => {
+    const storage = memoryStorage()
+    storage.data.set('replay_bad', { not: 'a record' })
+    storage.data.set('other_key', { keep: true })
+    const store = createReplayStore(storage, 'replay_', 60_000, () => 1_000)
+    await store.persist('extractor_resolve', 'uuid-ok')
+    expect(storage.data.has('replay_bad')).toBe(false)
+    expect(storage.data.has('other_key')).toBe(true)
+    expect(storage.data.has('replay_uuid-ok')).toBe(true)
+  })
 })

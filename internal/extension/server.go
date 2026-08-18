@@ -417,7 +417,9 @@ func (s *Server) dispatchAsync(
 					log.Printf("[Extension] async handler panic: %v", rec)
 					busy := marshalBusyAck(ackType, reqID)
 					s.idemp.abandon(gen, env.Type, reqID, digest, busy)
-					_ = sc.writeRaw(busy)
+					if connCtx.Err() == nil {
+						_ = sc.writeRaw(busy)
+					}
 				}()
 			}
 		}()

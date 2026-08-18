@@ -59,7 +59,14 @@ export function createReplayStore(
       return null
     }
     const record = parseRecord(raw)
-    if (!record) return null
+    if (!record) {
+      try {
+        await storage.remove(storageKey(requestId))
+      } catch {
+        /* ignore */
+      }
+      return null
+    }
     if (record.expiresAt <= now()) {
       memory.delete(requestId)
       try {
@@ -104,12 +111,13 @@ export function createReplayStore(
     for (const [key, raw] of Object.entries(all)) {
       if (!key.startsWith(prefix)) continue
       const record = parseRecord(raw)
-      if (!record || record.expiresAt > t) continue
-      memory.delete(record.requestId)
-      try {
-        await storage.remove(key)
-      } catch {
-        /* ignore */
+      if (!record || record.expiresAt <= t) {
+        if (record) memory.delete(record.requestId)
+        try {
+          await storage.remove(key)
+        } catch {
+          /* ignore */
+        }
       }
     }
   }

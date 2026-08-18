@@ -226,8 +226,9 @@ export class WsClient {
     if (this.ws !== socket || socket.readyState !== WebSocket.OPEN) {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         void this.replay.remove(id)
+        return Promise.reject(new Error('WebSocket is not connected'))
       }
-      return Promise.reject(new Error('WebSocket is not connected'))
+      return Promise.reject(new Error('WebSocket was replaced before send'))
     }
     const body = { ...payload, type, request_id: id }
     return new Promise<Record<string, unknown>>((resolve, reject) => {

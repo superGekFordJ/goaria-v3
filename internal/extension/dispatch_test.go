@@ -1054,6 +1054,54 @@ func TestExtractorResolve_ConnDropCompletesSuccessfulStub(t *testing.T) {
 	}
 }
 
+func TestExtractorResolve_ConnDropZeroWaitersReplayHits(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	block := make(chan struct{})
+	started := make(chan struct{}, 1)
+	resolver := &fakeResolver{ready: true, block: block, started: started}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{Resolver: resolver})
+	defer srv.Stop()
+	t.Cleanup(func() {
+		select {
+		case <-block:
+		default:
+			close(block)
+		}
+	})
+	startSrv(t, srv)
+	connA := dialAuthed(t, srv, "prod-secret")
+	writeResolve(t, connA, "r-solo", `"n":1`)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("owner did not start")
+	}
+	_ = connA.Close()
+	close(block)
+
+	gen := store.Generation()
+	deadline := time.Now().Add(2 * time.Second)
+	for !srv.idemp.hasCompleted(gen, MsgTypeExtractorResolve, "r-solo") {
+		if time.Now().After(deadline) {
+			t.Fatal("want completed cache entry after owner drop with no waiters")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	connB := dialAuthed(t, srv, "prod-secret")
+	defer connB.Close()
+	writeResolve(t, connB, "r-solo", `"n":1`)
+	replay := parseTypedAck(t, readRaw(t, connB, 2*time.Second))
+	if replay.ErrorCode != ErrCodeUnsupported {
+		t.Fatalf("later replay should hit cached stub, got %+v", replay)
+	}
+	if resolver.calls.Load() != 1 {
+		t.Fatalf("zero-waiter owner drop must complete for later replay, calls=%d", resolver.calls.Load())
+	}
+}
+
 func TestExtractorResolve_UnpairCancelsGenerationCtx(t *testing.T) {
 	store := NewSecretStore()
 	store.SetSecret("prod-secret")
