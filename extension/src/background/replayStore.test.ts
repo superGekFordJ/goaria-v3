@@ -67,4 +67,25 @@ describe('replayStore', () => {
     const loaded = await store.load('uuid-exp')
     expect(loaded).toBeNull()
   })
+
+  it('does not reuse a stored id when the requested type differs', async () => {
+    const storage = memoryStorage()
+    const store = createReplayStore(storage, 'replay_', 60_000, () => 1_000)
+    await store.persist('extractor_resolve', 'uuid-1')
+    const reused = await store.persistOrReuse('batch_download', 'uuid-1')
+    expect(reused).toBe('uuid-1')
+    expect((await store.load('uuid-1'))?.type).toBe('batch_download')
+  })
+
+  it('sweeps expired memory keys on persist', async () => {
+    let now = 1_000
+    const storage = memoryStorage()
+    const store = createReplayStore(storage, 'replay_', 50, () => now)
+    await store.persist('extractor_resolve', 'uuid-old')
+    expect(storage.data.has('replay_uuid-old')).toBe(true)
+    now = 2_000
+    await store.persist('extractor_resolve', 'uuid-new')
+    expect(storage.data.has('replay_uuid-old')).toBe(false)
+    expect(storage.data.has('replay_uuid-new')).toBe(true)
+  })
 })

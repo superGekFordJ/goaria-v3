@@ -15,7 +15,6 @@ import {
   MSG_TYPE_DOWNLOAD,
   MSG_TYPE_EXTRACTOR_RESOLVE,
   MSG_TYPE_EXTRACTOR_RESOLVE_ACK,
-  MSG_TYPE_PING,
   MSG_TYPE_PROTOCOL_ERROR,
   PROTOCOL_VERSION,
   RECONNECT_BASE_DELAY_MS,
@@ -114,8 +113,8 @@ export class WsClient {
   )
   // Track the in-flight port probe so a late disconnect() can abort it.
   private probing: { cancel: () => void } | null = null
-  // Serializes sends: acks are correlated by FIFO order (firstPending), so
-  // only one request may be in flight at a time. All callers are covered.
+  // Serializes download sends. Correlation prefers request_id; FIFO is
+  // download-kind fallback only when the ack omits id.
   private sendChain: Promise<unknown> = Promise.resolve()
 
   /** Start port probing + auth. Safe to call multiple times. */
@@ -166,8 +165,8 @@ export class WsClient {
    * Send a download handoff. camelCase TS fields are converted to the
    * snake_case JSON shape expected by the Go DownloadRequest struct.
    * Rejects immediately when the socket is not open (no queueing).
-   * Serialized: acks are correlated by FIFO order, so concurrent sends
-   * are queued to keep only one request in flight at a time.
+   * Serialized: correlation prefers request_id; FIFO is download-kind
+   * fallback only when the ack omits id. Concurrent sends stay queued.
    */
   sendDownloadRequest(req: DownloadHandoffMessage): Promise<DownloadResponse> {
     const next = this.sendChain.then(() => this.doSendDownloadRequest(req))
@@ -177,20 +176,17 @@ export class WsClient {
   }
 
   /**
-   * Send a non-download protocol message correlated by request_id.
+   * Send extractor_resolve / batch_download correlated by request_id.
    * Not serialized on the download sendChain. Local-rejects when the
-   * required extractor capability is missing.
+   * required extractor capability is missing. Pass requestId to reuse a
+   * persisted UUID after an explicit service-worker replay.
    */
   sendRequest(
     type: string,
     payload: Record<string, unknown> = {},
+    requestId?: string,
   ): Promise<Record<string, unknown>> {
-    if (
-      type === MSG_TYPE_DOWNLOAD ||
-      type === MSG_TYPE_AUTH ||
-      type === MSG_TYPE_PING ||
-      type === MSG_TYPE_AUTH_ACK
-    ) {
+    if (type !== MSG_TYPE_EXTRACTOR_RESOLVE && type !== MSG_TYPE_BATCH_DOWNLOAD) {
       return Promise.reject(new Error(`sendRequest does not send ${type}`))
     }
     if (
@@ -205,25 +201,24 @@ export class WsClient {
     ) {
       return Promise.reject(new Error('Host does not support extractor.batch'))
     }
-    return this.doSendRequest(type, payload)
+    return this.doSendRequest(type, payload, requestId)
   }
 
   private async doSendRequest(
     type: string,
     payload: Record<string, unknown>,
+    requestId?: string,
   ): Promise<Record<string, unknown>> {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    const socket = this.ws
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('WebSocket is not connected'))
     }
-    const id = newRequestId()
-    if (type === MSG_TYPE_EXTRACTOR_RESOLVE || type === MSG_TYPE_BATCH_DOWNLOAD) {
-      await this.replay.persist(type, id)
-    }
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    const id = requestId && requestId !== '' ? requestId : newRequestId()
+    await this.replay.persistOrReuse(type, id)
+    if (this.ws !== socket || socket.readyState !== WebSocket.OPEN) {
       void this.replay.remove(id)
       return Promise.reject(new Error('WebSocket is not connected'))
     }
-    const socket = this.ws
     const body = { ...payload, type, request_id: id }
     return new Promise<Record<string, unknown>>((resolve, reject) => {
       this.trackPending(
@@ -244,7 +239,8 @@ export class WsClient {
   }
 
   private doSendDownloadRequest(req: DownloadHandoffMessage): Promise<DownloadResponse> {
-    if (this.ws?.readyState !== WebSocket.OPEN) {
+    const socket = this.ws
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('WebSocket is not connected'))
     }
     const id = newRequestId()
@@ -272,7 +268,7 @@ export class WsClient {
         'Download request timed out',
       )
       try {
-        this.ws?.send(JSON.stringify(payload))
+        socket.send(JSON.stringify(payload))
       } catch (err) {
         this.clearPending(id)
         reject(err instanceof Error ? err : new Error(String(err)))

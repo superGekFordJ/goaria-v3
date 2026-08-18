@@ -158,3 +158,35 @@ func TestIdempotency_ClearDropsHits(t *testing.T) {
 		t.Fatalf("after clear want miss, got %d", st)
 	}
 }
+
+func TestIdempotency_WaiterCapReturnsBusy(t *testing.T) {
+	orig := idempMaxWaiters
+	idempMaxWaiters = 1
+	t.Cleanup(func() { idempMaxWaiters = orig })
+
+	c := newIdempotencyCache()
+	d := canonicalDigest(json.RawMessage(`{"x":1}`))
+	if st, _, _ := c.begin(1, MsgTypeExtractorResolve, "r1", d); st != idempMiss {
+		t.Fatalf("owner want miss, got %d", st)
+	}
+	st, _, wait := c.lookup(1, MsgTypeExtractorResolve, "r1", d)
+	if st != idempCoalesce || wait == nil {
+		t.Fatalf("first extra want coalesce, got %d wait=%v", st, wait)
+	}
+	st, _, wait2 := c.lookup(1, MsgTypeExtractorResolve, "r1", d)
+	if st != idempBusy || wait2 != nil {
+		t.Fatalf("over-cap want busy without waiter chan, got %d wait=%v", st, wait2)
+	}
+	ack := []byte("shared")
+	done := make(chan []byte, 1)
+	go func() { done <- <-wait }()
+	c.complete(1, MsgTypeExtractorResolve, "r1", d, ack)
+	select {
+	case got := <-done:
+		if string(got) != "shared" {
+			t.Fatalf("capped waiter got %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("capped waiter was not completed")
+	}
+}

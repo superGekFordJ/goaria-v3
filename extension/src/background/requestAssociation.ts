@@ -59,7 +59,15 @@ export function createPendingMap<T = unknown>() {
     const id = typeof msg.request_id === 'string' && msg.request_id !== '' ? msg.request_id : ''
 
     if (type === MSG_DOWNLOAD_ACK) {
-      const entry = id ? completeById(id) : completeFifo()
+      if (id) {
+        const entry = pending.get(id)
+        if (!entry || entry.kind !== 'download') {
+          return { kind: 'ignored' }
+        }
+        pending.delete(id)
+        return { kind: 'download_ack', entry }
+      }
+      const entry = completeFifo()
       if (!entry) {
         return { kind: 'ignored' }
       }

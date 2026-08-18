@@ -103,4 +103,16 @@ describe('requestAssociation', () => {
     }
     expect(map.size()).toBe(1)
   })
+
+  it('ignores download_ack whose request_id matches a non-download pending', () => {
+    const map = createPendingMap<string>()
+    const rpc = deferred<string>()
+    const download = deferred<string>()
+    map.add({ id: 'shared-id', kind: 'rpc', resolve: rpc.resolve, reject: rpc.reject })
+    map.add({ id: 'dl-1', kind: 'download', resolve: download.resolve, reject: download.reject })
+
+    const routed = map.routeMessage({ type: 'download_ack', request_id: 'shared-id' })
+    expect(routed.kind).toBe('ignored')
+    expect(map.size()).toBe(2)
+  })
 })

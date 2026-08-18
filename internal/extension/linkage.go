@@ -13,6 +13,8 @@ type StubAck struct {
 }
 
 // ExtractorResolver is the host-side resolve seam. Ready is the capability gate.
+// HandleResolve does not receive secret generation; adapters that need it
+// close over SecretStore.
 type ExtractorResolver interface {
 	Ready() bool
 	HandleResolve(ctx context.Context, env RequestEnvelope, raw json.RawMessage) StubAck

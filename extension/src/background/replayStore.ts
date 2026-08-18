@@ -36,6 +36,7 @@ export function createReplayStore(
   }
 
   async function persist(type: string, requestId: string): Promise<void> {
+    await sweepExpired()
     const record: ReplayRecord = { requestId, type, expiresAt: now() + ttlMs }
     memory.set(requestId, record)
     try {
@@ -71,12 +72,26 @@ export function createReplayStore(
     return record
   }
 
-  // Explicit SW-replay: reuse only when the caller already has this requestId.
+  // Explicit SW-replay: reuse only when the caller already has this requestId
+  // and the stored type matches. Type mismatch overwrites the record.
   async function persistOrReuse(type: string, requestId: string): Promise<string> {
     const existing = await load(requestId)
-    if (existing) return existing.requestId
+    if (existing && existing.type === type) return existing.requestId
     await persist(type, requestId)
     return requestId
+  }
+
+  async function sweepExpired(): Promise<void> {
+    const t = now()
+    for (const [id, rec] of memory) {
+      if (rec.expiresAt > t) continue
+      memory.delete(id)
+      try {
+        await storage.remove(storageKey(id))
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   async function remove(requestId: string): Promise<void> {

@@ -62,7 +62,15 @@ func (c *safeConn) releaseInFlight() {
 	c.inFlight.Add(-1)
 }
 
+func (c *safeConn) setGrantedCaps(caps []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.grantedCaps = append([]string(nil), caps...)
+}
+
 func (c *safeConn) hasGranted(cap string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for _, x := range c.grantedCaps {
 		if x == cap {
 			return true

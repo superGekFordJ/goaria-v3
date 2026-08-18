@@ -11,16 +11,21 @@ import (
 )
 
 type fakeResolver struct {
-	ready   bool
-	code    string
-	calls   atomic.Int32
-	block   chan struct{}
-	started chan struct{}
+	ready    bool
+	code     string
+	calls    atomic.Int32
+	block    chan struct{}
+	started  chan struct{}
+	panicNow bool
 }
 
 func (f *fakeResolver) Ready() bool { return f.ready }
 
-func (f *fakeResolver) HandleResolve(_ context.Context, _ RequestEnvelope, _ json.RawMessage) StubAck {
+func (f *fakeResolver) HandleResolve(ctx context.Context, _ RequestEnvelope, _ json.RawMessage) StubAck {
+	if f.panicNow {
+		f.panicNow = false
+		panic("extractor resolve test panic")
+	}
 	f.calls.Add(1)
 	if f.started != nil {
 		select {
@@ -29,7 +34,11 @@ func (f *fakeResolver) HandleResolve(_ context.Context, _ RequestEnvelope, _ jso
 		}
 	}
 	if f.block != nil {
-		<-f.block
+		select {
+		case <-f.block:
+		case <-ctx.Done():
+			return StubAck{ErrorCode: ErrCodeBusy}
+		}
 	}
 	code := f.code
 	if code == "" {
@@ -72,6 +81,13 @@ func withPerConnInFlightMax(t *testing.T, n int) {
 	orig := perConnInFlightMax
 	perConnInFlightMax = n
 	t.Cleanup(func() { perConnInFlightMax = orig })
+}
+
+func withIdempMaxWaiters(t *testing.T, n int) {
+	t.Helper()
+	orig := idempMaxWaiters
+	idempMaxWaiters = n
+	t.Cleanup(func() { idempMaxWaiters = orig })
 }
 
 func startSrv(t *testing.T, srv *Server) {
@@ -928,7 +944,201 @@ func TestExtractorResolve_StopUnblocksCoalescedWaiter(t *testing.T) {
 	writeResolve(t, connB, "r-stop", `"n":1`)
 	srv.Stop()
 	connB.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, _, err := connB.ReadMessage(); err == nil {
-		t.Fatal("expected coalesced waiter connection to close on Stop")
+	_, raw, err := connB.ReadMessage()
+	if err == nil {
+		ack := parseTypedAck(t, raw)
+		if ack.ErrorCode != ErrCodeBusy {
+			t.Fatalf("Stop waiter ack want busy or close, got %+v", ack)
+		}
+	}
+	if srv.idemp.len() != 0 {
+		t.Fatalf("Stop must clear idempotency cache, len=%d", srv.idemp.len())
+	}
+}
+
+func TestExtractorResolve_WaiterCapImmediateBusy(t *testing.T) {
+	withIdempMaxWaiters(t, 1)
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	block := make(chan struct{})
+	started := make(chan struct{}, 1)
+	resolver := &fakeResolver{ready: true, block: block, started: started}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{Resolver: resolver})
+	defer srv.Stop()
+	t.Cleanup(func() {
+		select {
+		case <-block:
+		default:
+			close(block)
+		}
+	})
+	startSrv(t, srv)
+	connA := dialAuthed(t, srv, "prod-secret")
+	defer connA.Close()
+	connB := dialAuthed(t, srv, "prod-secret")
+	defer connB.Close()
+
+	writeResolve(t, connA, "r-cap", `"n":1`)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("owner did not start")
+	}
+	writeResolve(t, connB, "r-cap", `"n":1`)
+	writeResolve(t, connB, "r-cap", `"n":1`)
+	start := time.Now()
+	busy := parseTypedAck(t, readRaw(t, connB, 2*time.Second))
+	if time.Since(start) > 200*time.Millisecond {
+		t.Fatalf("excess waiter busy was not immediate: %s", time.Since(start))
+	}
+	if busy.ErrorCode != ErrCodeBusy || busy.RequestID != "r-cap" {
+		t.Fatalf("want busy for waiter over cap, got %+v", busy)
+	}
+	close(block)
+	coal := parseTypedAck(t, readRaw(t, connB, 2*time.Second))
+	if coal.RequestID != "r-cap" || coal.ErrorCode != ErrCodeUnsupported {
+		t.Fatalf("capped coalesced waiter should still get owner ack, got %+v", coal)
+	}
+	if resolver.calls.Load() != 1 {
+		t.Fatalf("waiter cap must not start a second handler, calls=%d", resolver.calls.Load())
+	}
+}
+
+func TestExtractorResolve_ConnDropAbandonsNotCaches(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	block := make(chan struct{})
+	started := make(chan struct{}, 2)
+	resolver := &fakeResolver{ready: true, block: block, started: started}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{Resolver: resolver})
+	defer srv.Stop()
+	t.Cleanup(func() {
+		select {
+		case <-block:
+		default:
+			close(block)
+		}
+	})
+	startSrv(t, srv)
+	connA := dialAuthed(t, srv, "prod-secret")
+	writeResolve(t, connA, "r-drop", `"n":1`)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("owner did not start")
+	}
+	_ = connA.Close()
+	time.Sleep(50 * time.Millisecond)
+	if resolver.calls.Load() != 1 {
+		t.Fatalf("dropped socket must not cancel generation ctx into a new run, calls=%d", resolver.calls.Load())
+	}
+	close(block)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if srv.idemp.len() == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if srv.idemp.len() != 0 {
+		t.Fatalf("dead connection must abandon, not cache, len=%d", srv.idemp.len())
+	}
+
+	connB := dialAuthed(t, srv, "prod-secret")
+	defer connB.Close()
+	writeResolve(t, connB, "r-drop", `"n":1`)
+	replay := parseTypedAck(t, readRaw(t, connB, 2*time.Second))
+	if replay.ErrorCode != ErrCodeUnsupported {
+		t.Fatalf("replay after abandon must re-run, got %+v", replay)
+	}
+	if resolver.calls.Load() != 2 {
+		t.Fatalf("want handler re-run after conn drop abandon, calls=%d", resolver.calls.Load())
+	}
+}
+
+func TestExtractorResolve_UnpairCancelsGenerationCtx(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	block := make(chan struct{})
+	started := make(chan struct{}, 1)
+	resolver := &fakeResolver{ready: true, block: block, started: started}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{Resolver: resolver})
+	defer srv.Stop()
+	t.Cleanup(func() {
+		select {
+		case <-block:
+		default:
+			close(block)
+		}
+	})
+	startSrv(t, srv)
+	conn := dialAuthed(t, srv, "prod-secret")
+	writeResolve(t, conn, "r-unpair-ctx", `"n":1`)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("owner did not start")
+	}
+	srv.NotifyUnpaired()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if srv.idemp.len() == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if srv.idemp.len() != 0 {
+		t.Fatalf("unpair must clear in-flight cache, len=%d", srv.idemp.len())
+	}
+	close(block)
+
+	newSecret := store.GetSecret()
+	if newSecret == "" || newSecret == "prod-secret" {
+		t.Fatalf("unpair should rotate secret, got %q", newSecret)
+	}
+	conn2 := dialAuthed(t, srv, newSecret)
+	defer conn2.Close()
+	writeResolve(t, conn2, "r-unpair-ctx", `"n":1`)
+	ack := parseTypedAck(t, readRaw(t, conn2, 2*time.Second))
+	if ack.ErrorCode != ErrCodeUnsupported {
+		t.Fatalf("new generation must run a fresh handler, got %+v", ack)
+	}
+	if resolver.calls.Load() != 2 {
+		t.Fatalf("want re-run after unpair, calls=%d", resolver.calls.Load())
+	}
+}
+
+func TestExtractorResolve_HandlerPanicAbandonsBusy(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	resolver := &fakeResolver{ready: true, panicNow: true}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{Resolver: resolver})
+	defer srv.Stop()
+	startSrv(t, srv)
+	conn := dialAuthed(t, srv, "prod-secret")
+	defer conn.Close()
+
+	writeResolve(t, conn, "r-panic", `"n":1`)
+	ack := parseTypedAck(t, readRaw(t, conn, 2*time.Second))
+	if ack.ErrorCode != ErrCodeBusy || ack.RequestID != "r-panic" {
+		t.Fatalf("panic must abandon with busy, got %+v", ack)
+	}
+
+	req := DownloadRequest{Type: MsgTypeDownload, URL: "https://example.com/file.bin"}
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.WriteMessage(websocket.TextMessage, mustMarshal(t, req)); err != nil {
+		t.Fatal(err)
+	}
+	raw := readRaw(t, conn, 2*time.Second)
+	var resp DownloadResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Type != MsgTypeDownloadAck || !resp.Success {
+		t.Fatalf("server must survive handler panic, got %s", raw)
 	}
 }

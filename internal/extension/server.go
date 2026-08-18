@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,11 +60,16 @@ type Server struct {
 	resolveInFlight  atomic.Int32
 	batchInFlight    atomic.Int32
 	idemp            *idempotencyCache
+	// opCtx is cancelled on unpair/Stop and replaced for the next pairing
+	// generation. Dropping one connection does not cancel it.
+	opCtx    context.Context
+	opCancel context.CancelFunc
 }
 
 // NewServer creates a new extension WebSocket server.
 // taskAdder is the access-layer contract: downloads go through tasks.Service.
 func NewServer(eventHub *events.Hub, taskAdder TaskAdder, store *SecretStore) *Server {
+	opCtx, opCancel := context.WithCancel(context.Background())
 	return &Server{
 		eventHub:  eventHub,
 		taskAdder: taskAdder,
@@ -74,6 +80,8 @@ func NewServer(eventHub *events.Hub, taskAdder TaskAdder, store *SecretStore) *S
 		},
 		activeConns: make(map[*safeConn]struct{}),
 		idemp:       newIdempotencyCache(),
+		opCtx:       opCtx,
+		opCancel:    opCancel,
 	}
 }
 
@@ -244,7 +252,7 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 	hostVersion := s.hostVersion
 	s.mu.RUnlock()
 	caps := s.computeCapabilities(secret)
-	sc.grantedCaps = append([]string(nil), caps...)
+	sc.setGrantedCaps(caps)
 	if err := sc.writeJSON(AuthAck{
 		Type:            MsgTypeAuthAck,
 		ProtocolVersion: ProtocolVersion,
@@ -254,8 +262,9 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 		return
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	connCtx, connCancel := context.WithCancel(context.Background())
+	defer connCancel()
+	opCtx := s.operationContext()
 
 	for {
 		_, raw, err := sc.ReadMessage()
@@ -272,7 +281,7 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 		case MsgTypeDownload:
 			s.dispatchDownload(sc, env, raw)
 		case MsgTypeExtractorResolve:
-			s.dispatchAsync(ctx, sc, env, raw, MsgTypeExtractorResolveAck, CapExtractorResolve, true, func(ctx context.Context, env RequestEnvelope, raw json.RawMessage) StubAck {
+			s.dispatchAsync(opCtx, connCtx, sc, env, raw, MsgTypeExtractorResolveAck, CapExtractorResolve, true, func(ctx context.Context, env RequestEnvelope, raw json.RawMessage) StubAck {
 				s.mu.RLock()
 				r := s.linkage.Resolver
 				s.mu.RUnlock()
@@ -282,7 +291,7 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 				return r.HandleResolve(ctx, env, raw)
 			})
 		case MsgTypeBatchDownload:
-			s.dispatchAsync(ctx, sc, env, raw, MsgTypeBatchDownloadAck, CapExtractorBatch, false, func(ctx context.Context, env RequestEnvelope, raw json.RawMessage) StubAck {
+			s.dispatchAsync(opCtx, connCtx, sc, env, raw, MsgTypeBatchDownloadAck, CapExtractorBatch, false, func(ctx context.Context, env RequestEnvelope, raw json.RawMessage) StubAck {
 				s.mu.RLock()
 				c := s.linkage.Committer
 				s.mu.RUnlock()
@@ -324,7 +333,8 @@ func (s *Server) dispatchDownload(sc *safeConn, env RequestEnvelope, raw []byte)
 }
 
 func (s *Server) dispatchAsync(
-	ctx context.Context,
+	opCtx context.Context,
+	connCtx context.Context,
 	sc *safeConn,
 	env RequestEnvelope,
 	raw []byte,
@@ -358,6 +368,9 @@ func (s *Server) dispatchAsync(
 	case idempCoalesce:
 		go writeCoalescedAck(sc, wait)
 		return
+	case idempBusy:
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeBusy})
+		return
 	}
 
 	if !sc.tryAcquireInFlight() {
@@ -387,23 +400,37 @@ func (s *Server) dispatchAsync(
 		sc.releaseInFlight()
 		go writeCoalescedAck(sc, wait)
 		return
+	case idempBusy:
+		s.releaseGate(isResolve)
+		sc.releaseInFlight()
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeBusy})
+		return
 	}
 
 	go func() {
+		defer s.releaseGate(isResolve)
+		defer sc.releaseInFlight()
 		defer func() {
-			s.releaseGate(isResolve)
-			sc.releaseInFlight()
+			if rec := recover(); rec != nil {
+				log.Printf("[Extension] async handler panic: %v", rec)
+				busy := marshalBusyAck(ackType, reqID)
+				s.idemp.abandon(gen, env.Type, reqID, digest, busy)
+				_ = sc.writeRaw(busy)
+			}
 		}()
-		stub := run(ctx, env, json.RawMessage(raw))
+		stub := run(opCtx, env, json.RawMessage(raw))
+		if opCtx.Err() != nil || connCtx.Err() != nil {
+			busy := marshalBusyAck(ackType, reqID)
+			s.idemp.abandon(gen, env.Type, reqID, digest, busy)
+			if connCtx.Err() == nil {
+				_ = sc.writeRaw(busy)
+			}
+			return
+		}
 		ack := s.typedAckFromStub(ackType, reqID, stub)
 		data, err := json.Marshal(ack)
 		if err != nil {
-			busyAck := TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeBusy}
-			busy, marshalErr := json.Marshal(busyAck)
-			if marshalErr != nil {
-				s.idemp.abandon(gen, env.Type, reqID, digest, nil)
-				return
-			}
+			busy := marshalBusyAck(ackType, reqID)
 			s.idemp.abandon(gen, env.Type, reqID, digest, busy)
 			_ = sc.writeRaw(busy)
 			return
@@ -422,6 +449,35 @@ func writeCoalescedAck(sc *safeConn, wait <-chan []byte) {
 		return
 	}
 	_ = sc.writeRaw(ack)
+}
+
+func marshalBusyAck(ackType, requestID string) []byte {
+	ack := TypedAck{Type: ackType, RequestID: requestID, ErrorCode: ErrCodeBusy}
+	data, err := json.Marshal(ack)
+	if err != nil {
+		return []byte(`{"type":` + strconv.Quote(ackType) + `,"request_id":` + strconv.Quote(requestID) + `,"error_code":"busy"}`)
+	}
+	return data
+}
+
+func (s *Server) operationContext() context.Context {
+	s.mu.RLock()
+	ctx := s.opCtx
+	s.mu.RUnlock()
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+func (s *Server) replaceOpContext() {
+	s.mu.Lock()
+	old := s.opCancel
+	s.opCtx, s.opCancel = context.WithCancel(context.Background())
+	s.mu.Unlock()
+	if old != nil {
+		old()
+	}
 }
 
 func tryAcquireCount(counter *atomic.Int32, max int) bool {
@@ -565,6 +621,10 @@ func (s *Server) Stop() {
 	for _, conn := range conns {
 		_ = conn.Close()
 	}
+	s.replaceOpContext()
+	if s.idemp != nil {
+		s.idemp.clear()
+	}
 }
 
 // emitStatus pushes extension:status to the frontend via EventHub.
@@ -636,6 +696,8 @@ func (s *Server) NotifyUnpaired() {
 	for _, conn := range conns {
 		_ = conn.Close()
 	}
+
+	s.replaceOpContext()
 
 	if s.store != nil {
 		newSecret := s.store.GenerateSecret()

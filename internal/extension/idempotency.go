@@ -10,8 +10,9 @@ import (
 )
 
 var (
-	idempotencyTTL = 60 * time.Second
-	idempotencyMax = 256
+	idempotencyTTL  = 60 * time.Second
+	idempotencyMax  = 256
+	idempMaxWaiters = 8
 )
 
 type idempStatus int
@@ -21,6 +22,7 @@ const (
 	idempHit
 	idempCoalesce
 	idempConflict
+	idempBusy
 )
 
 type idempEntry struct {
@@ -101,6 +103,9 @@ func (c *idempotencyCache) inspectLocked(key, digest string, addWaiter bool) (id
 	}
 	if !addWaiter {
 		return idempCoalesce, nil, nil
+	}
+	if len(e.waiters) >= idempMaxWaiters {
+		return idempBusy, nil, nil
 	}
 	ch := make(chan []byte, 1)
 	e.waiters = append(e.waiters, ch)
