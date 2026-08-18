@@ -115,4 +115,29 @@ describe('requestAssociation', () => {
     expect(routed.kind).toBe('ignored')
     expect(map.size()).toBe(2)
   })
+
+  it('refuses a second pending entry with the same id', async () => {
+    const map = createPendingMap<string>()
+    const first = deferred<string>()
+    const second = deferred<string>()
+    expect(map.add({ id: 'dup', kind: 'rpc', resolve: first.resolve, reject: first.reject })).toBe(true)
+    expect(map.add({ id: 'dup', kind: 'rpc', resolve: second.resolve, reject: second.reject })).toBe(false)
+    expect(map.size()).toBe(1)
+    expect(map.has('dup')).toBe(true)
+
+    const routed = map.routeMessage({ type: 'extractor_resolve_ack', request_id: 'dup' })
+    expect(routed.kind).toBe('typed_ack')
+    if (routed.kind === 'typed_ack') routed.entry.resolve('first')
+    await expect(first.promise).resolves.toBe('first')
+    expect(map.size()).toBe(0)
+  })
+
+  it('ignores extractor ack whose request_id matches a download pending', () => {
+    const map = createPendingMap<string>()
+    const download = deferred<string>()
+    map.add({ id: 'shared-id', kind: 'download', resolve: download.resolve, reject: download.reject })
+    const routed = map.routeMessage({ type: 'extractor_resolve_ack', request_id: 'shared-id' })
+    expect(routed.kind).toBe('ignored')
+    expect(map.size()).toBe(1)
+  })
 })

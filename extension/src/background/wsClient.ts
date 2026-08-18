@@ -20,6 +20,7 @@ import {
   RECONNECT_BASE_DELAY_MS,
   RECONNECT_MAX_ATTEMPTS,
   REPLAY_TTL_MS,
+  REQUEST_ACK_TIMEOUT_MS,
   STORAGE_KEY_REPLAY_PREFIX,
   STORAGE_KEY_SECRET,
   WS_CONNECT_TIMEOUT_MS,
@@ -72,6 +73,13 @@ function sessionReplayStorage(): ReplayStorage {
         await browser.storage.session.remove(key)
       } catch {
         throw new Error('storage.session unavailable')
+      }
+    },
+    async getAll() {
+      try {
+        return (await browser.storage.session.get(null)) as Record<string, unknown>
+      } catch {
+        return undefined
       }
     },
   }
@@ -216,18 +224,24 @@ export class WsClient {
     const id = requestId && requestId !== '' ? requestId : newRequestId()
     await this.replay.persistOrReuse(type, id)
     if (this.ws !== socket || socket.readyState !== WebSocket.OPEN) {
-      void this.replay.remove(id)
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        void this.replay.remove(id)
+      }
       return Promise.reject(new Error('WebSocket is not connected'))
     }
     const body = { ...payload, type, request_id: id }
     return new Promise<Record<string, unknown>>((resolve, reject) => {
-      this.trackPending(
+      const tracked = this.trackPending(
         id,
         'rpc',
         resolve as (value: unknown) => void,
         reject,
-        DOWNLOAD_ACK_TIMEOUT_MS,
+        REQUEST_ACK_TIMEOUT_MS,
       )
+      if (!tracked) {
+        reject(new Error('Request already in flight'))
+        return
+      }
       try {
         socket.send(JSON.stringify(body))
       } catch (err) {
@@ -259,7 +273,7 @@ export class WsClient {
       download_page: req.downloadPage,
     }
     return new Promise<DownloadResponse>((resolve, reject) => {
-      this.trackPending(
+      const tracked = this.trackPending(
         id,
         'download',
         value => resolve(value as DownloadResponse),
@@ -267,6 +281,10 @@ export class WsClient {
         DOWNLOAD_ACK_TIMEOUT_MS,
         'Download request timed out',
       )
+      if (!tracked) {
+        reject(new Error('Request already in flight'))
+        return
+      }
       try {
         socket.send(JSON.stringify(payload))
       } catch (err) {
@@ -564,7 +582,10 @@ export class WsClient {
     reject: (err: Error) => void,
     timeoutMs: number,
     timeoutMessage = 'Request timed out',
-  ): void {
+  ): boolean {
+    if (!this.pending.add({ id, kind, resolve, reject })) {
+      return false
+    }
     const timer = setTimeout(() => {
       const entry = this.pending.completeById(id)
       this.pendingTimers.delete(id)
@@ -572,7 +593,7 @@ export class WsClient {
       entry?.reject(new Error(timeoutMessage))
     }, timeoutMs)
     this.pendingTimers.set(id, timer)
-    this.pending.add({ id, kind, resolve, reject })
+    return true
   }
 
   private clearTimer(id: string): void {

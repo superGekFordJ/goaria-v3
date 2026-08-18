@@ -74,9 +74,9 @@ const DOWNLOAD_MIME_TYPES = new Set([
  * and the SW-restart recovery strategy.
  */
 export abstract class DownloadLinkInterceptor {
-  // Serializes sendDownloadRequest calls. The WS client correlates acks by
-  // FIFO order and assumes a single in-flight request, so concurrent sends
-  // would mismatch acks. This chain ensures only one request is in flight.
+  // Serializes sendDownloadRequest calls. wsClient already serializes and
+  // prefers request_id; this chain keeps interceptor callers from racing
+  // the download-kind FIFO fallback when an ack omits id.
   private sendChain: Promise<DownloadResponse | void> = Promise.resolve()
 
   /**

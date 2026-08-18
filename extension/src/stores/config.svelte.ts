@@ -41,6 +41,8 @@ export const STORAGE_KEY_AUTO_CAPTURE = 'goaria_auto_capture'
 export const WS_CONNECT_TIMEOUT_MS = 3000
 // download_ack wait before rejecting a pending download request.
 export const DOWNLOAD_ACK_TIMEOUT_MS = 10000
+// extractor_resolve / batch_download wait; same 10s as download in this slice.
+export const REQUEST_ACK_TIMEOUT_MS = DOWNLOAD_ACK_TIMEOUT_MS
 
 // Extension-only constants (no Go counterpart).
 

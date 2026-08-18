@@ -14,6 +14,13 @@ function memoryStorage(): ReplayStorage & { data: Map<string, unknown> } {
     async remove(key) {
       data.delete(key)
     },
+    async getAll() {
+      const all: Record<string, unknown> = {}
+      for (const [key, value] of data) {
+        all[key] = value
+      }
+      return all
+    },
   }
 }
 
@@ -68,7 +75,7 @@ describe('replayStore', () => {
     expect(loaded).toBeNull()
   })
 
-  it('does not reuse a stored id when the requested type differs', async () => {
+  it('overwrites the stored type on persistOrReuse type mismatch', async () => {
     const storage = memoryStorage()
     const store = createReplayStore(storage, 'replay_', 60_000, () => 1_000)
     await store.persist('extractor_resolve', 'uuid-1')
@@ -85,6 +92,18 @@ describe('replayStore', () => {
     expect(storage.data.has('replay_uuid-old')).toBe(true)
     now = 2_000
     await store.persist('extractor_resolve', 'uuid-new')
+    expect(storage.data.has('replay_uuid-old')).toBe(false)
+    expect(storage.data.has('replay_uuid-new')).toBe(true)
+  })
+
+  it('sweeps expired storage keys after a cold store using getAll', async () => {
+    let now = 1_000
+    const storage = memoryStorage()
+    const first = createReplayStore(storage, 'replay_', 50, () => now)
+    await first.persist('extractor_resolve', 'uuid-old')
+    now = 2_000
+    const second = createReplayStore(storage, 'replay_', 50, () => now)
+    await second.persist('extractor_resolve', 'uuid-new')
     expect(storage.data.has('replay_uuid-old')).toBe(false)
     expect(storage.data.has('replay_uuid-new')).toBe(true)
   })

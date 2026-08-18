@@ -27,8 +27,14 @@ const MSG_BATCH_DOWNLOAD_ACK = 'batch_download_ack'
 export function createPendingMap<T = unknown>() {
   const pending = new Map<string, PendingEntry<T>>()
 
-  function add(entry: PendingEntry<T>): void {
+  function add(entry: PendingEntry<T>): boolean {
+    if (pending.has(entry.id)) return false
     pending.set(entry.id, entry)
+    return true
+  }
+
+  function has(id: string): boolean {
+    return pending.has(id)
   }
 
   function completeById(id: string): PendingEntry<T> | undefined {
@@ -83,8 +89,11 @@ export function createPendingMap<T = unknown>() {
 
     if (type === MSG_EXTRACTOR_RESOLVE_ACK || type === MSG_BATCH_DOWNLOAD_ACK) {
       if (!id) return { kind: 'ignored' }
-      const entry = completeById(id)
-      if (!entry) return { kind: 'ignored' }
+      const entry = pending.get(id)
+      if (!entry || entry.kind !== 'rpc') {
+        return { kind: 'ignored' }
+      }
+      pending.delete(id)
       return { kind: 'typed_ack', entry }
     }
 
@@ -93,6 +102,7 @@ export function createPendingMap<T = unknown>() {
 
   return {
     add,
+    has,
     completeById,
     completeFifo,
     failAll,

@@ -8,6 +8,7 @@ export type ReplayStorage = {
   get: (key: string) => Promise<unknown>
   set: (key: string, value: unknown) => Promise<void>
   remove: (key: string) => Promise<void>
+  getAll?: () => Promise<Record<string, unknown> | undefined>
 }
 
 export function createReplayStore(
@@ -88,6 +89,25 @@ export function createReplayStore(
       memory.delete(id)
       try {
         await storage.remove(storageKey(id))
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!storage.getAll) return
+    let all: Record<string, unknown> | undefined
+    try {
+      all = await storage.getAll()
+    } catch {
+      return
+    }
+    if (!all) return
+    for (const [key, raw] of Object.entries(all)) {
+      if (!key.startsWith(prefix)) continue
+      const record = parseRecord(raw)
+      if (!record || record.expiresAt > t) continue
+      memory.delete(record.requestId)
+      try {
+        await storage.remove(key)
       } catch {
         /* ignore */
       }

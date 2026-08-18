@@ -68,7 +68,7 @@ func (c *idempotencyCache) lookup(gen uint64, msgType, requestID, digest string)
 	key := idempKey(gen, msgType, requestID)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.inspectLocked(key, digest, true)
+	return c.inspectLocked(key, digest)
 }
 
 // begin registers an in-flight owner after admission. A raced duplicate
@@ -77,7 +77,7 @@ func (c *idempotencyCache) begin(gen uint64, msgType, requestID, digest string) 
 	key := idempKey(gen, msgType, requestID)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	st, cached, wait := c.inspectLocked(key, digest, true)
+	st, cached, wait := c.inspectLocked(key, digest)
 	if st != idempMiss {
 		return st, cached, wait
 	}
@@ -86,7 +86,7 @@ func (c *idempotencyCache) begin(gen uint64, msgType, requestID, digest string) 
 	return idempMiss, nil, nil
 }
 
-func (c *idempotencyCache) inspectLocked(key, digest string, addWaiter bool) (idempStatus, []byte, <-chan []byte) {
+func (c *idempotencyCache) inspectLocked(key, digest string) (idempStatus, []byte, <-chan []byte) {
 	e, ok := c.entries[key]
 	if !ok {
 		return idempMiss, nil, nil
@@ -100,9 +100,6 @@ func (c *idempotencyCache) inspectLocked(key, digest string, addWaiter bool) (id
 	}
 	if e.completed {
 		return idempHit, e.ack, nil
-	}
-	if !addWaiter {
-		return idempCoalesce, nil, nil
 	}
 	if len(e.waiters) >= idempMaxWaiters {
 		return idempBusy, nil, nil
@@ -124,9 +121,7 @@ func (c *idempotencyCache) abandon(gen uint64, msgType, requestID, digest string
 	delete(c.entries, key)
 	c.mu.Unlock()
 	for _, ch := range waiters {
-		if ack != nil {
-			ch <- ack
-		}
+		ch <- ack
 		close(ch)
 	}
 }

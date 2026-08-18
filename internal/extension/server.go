@@ -412,14 +412,17 @@ func (s *Server) dispatchAsync(
 		defer sc.releaseInFlight()
 		defer func() {
 			if rec := recover(); rec != nil {
-				log.Printf("[Extension] async handler panic: %v", rec)
-				busy := marshalBusyAck(ackType, reqID)
-				s.idemp.abandon(gen, env.Type, reqID, digest, busy)
-				_ = sc.writeRaw(busy)
+				func() {
+					defer func() { _ = recover() }()
+					log.Printf("[Extension] async handler panic: %v", rec)
+					busy := marshalBusyAck(ackType, reqID)
+					s.idemp.abandon(gen, env.Type, reqID, digest, busy)
+					_ = sc.writeRaw(busy)
+				}()
 			}
 		}()
 		stub := run(opCtx, env, json.RawMessage(raw))
-		if opCtx.Err() != nil || connCtx.Err() != nil {
+		if opCtx.Err() != nil {
 			busy := marshalBusyAck(ackType, reqID)
 			s.idemp.abandon(gen, env.Type, reqID, digest, busy)
 			if connCtx.Err() == nil {
@@ -432,11 +435,15 @@ func (s *Server) dispatchAsync(
 		if err != nil {
 			busy := marshalBusyAck(ackType, reqID)
 			s.idemp.abandon(gen, env.Type, reqID, digest, busy)
-			_ = sc.writeRaw(busy)
+			if connCtx.Err() == nil {
+				_ = sc.writeRaw(busy)
+			}
 			return
 		}
 		s.idemp.complete(gen, env.Type, reqID, digest, data)
-		_ = sc.writeRaw(data)
+		if connCtx.Err() == nil {
+			_ = sc.writeRaw(data)
+		}
 	}()
 }
 

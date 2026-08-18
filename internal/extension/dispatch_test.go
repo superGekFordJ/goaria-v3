@@ -1005,7 +1005,7 @@ func TestExtractorResolve_WaiterCapImmediateBusy(t *testing.T) {
 	}
 }
 
-func TestExtractorResolve_ConnDropAbandonsNotCaches(t *testing.T) {
+func TestExtractorResolve_ConnDropCompletesSuccessfulStub(t *testing.T) {
 	store := NewSecretStore()
 	store.SetSecret("prod-secret")
 	block := make(chan struct{})
@@ -1029,32 +1029,28 @@ func TestExtractorResolve_ConnDropAbandonsNotCaches(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("owner did not start")
 	}
-	_ = connA.Close()
-	time.Sleep(50 * time.Millisecond)
-	if resolver.calls.Load() != 1 {
-		t.Fatalf("dropped socket must not cancel generation ctx into a new run, calls=%d", resolver.calls.Load())
-	}
-	close(block)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if srv.idemp.len() == 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if srv.idemp.len() != 0 {
-		t.Fatalf("dead connection must abandon, not cache, len=%d", srv.idemp.len())
-	}
 
 	connB := dialAuthed(t, srv, "prod-secret")
 	defer connB.Close()
 	writeResolve(t, connB, "r-drop", `"n":1`)
+	_ = connA.Close()
+	close(block)
+
+	ack := parseTypedAck(t, readRaw(t, connB, 2*time.Second))
+	if ack.ErrorCode != ErrCodeUnsupported || ack.RequestID != "r-drop" {
+		t.Fatalf("coalesced waiter should get successful stub, got %+v", ack)
+	}
+	if resolver.calls.Load() != 1 {
+		t.Fatalf("owner drop must not re-run a successful stub, calls=%d", resolver.calls.Load())
+	}
+
+	writeResolve(t, connB, "r-drop", `"n":1`)
 	replay := parseTypedAck(t, readRaw(t, connB, 2*time.Second))
 	if replay.ErrorCode != ErrCodeUnsupported {
-		t.Fatalf("replay after abandon must re-run, got %+v", replay)
+		t.Fatalf("replay should hit cached stub, got %+v", replay)
 	}
-	if resolver.calls.Load() != 2 {
-		t.Fatalf("want handler re-run after conn drop abandon, calls=%d", resolver.calls.Load())
+	if resolver.calls.Load() != 1 {
+		t.Fatalf("cache hit must not start a second handler, calls=%d", resolver.calls.Load())
 	}
 }
 
