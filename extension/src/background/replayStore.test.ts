@@ -18,14 +18,26 @@ function memoryStorage(): ReplayStorage & { data: Map<string, unknown> } {
 }
 
 describe('replayStore', () => {
-  it('persists and reuses a UUID for the same type', async () => {
+  it('persists and loads a UUID by request id', async () => {
     const storage = memoryStorage()
     const store = createReplayStore(storage, 'replay_', 60_000, () => 1_000)
     await store.persist('extractor_resolve', 'uuid-1')
-    const loaded = await store.load('extractor_resolve')
+    const loaded = await store.load('uuid-1')
     expect(loaded?.requestId).toBe('uuid-1')
-    const reused = await store.persistOrReuse('extractor_resolve', 'uuid-2')
+    const reused = await store.persistOrReuse('extractor_resolve', 'uuid-1')
     expect(reused).toBe('uuid-1')
+  })
+
+  it('does not share a UUID across two overlapping persists of the same type', async () => {
+    const storage = memoryStorage()
+    const store = createReplayStore(storage, 'replay_', 60_000, () => 1_000)
+    const first = await store.persistOrReuse('extractor_resolve', 'uuid-1')
+    const second = await store.persistOrReuse('extractor_resolve', 'uuid-2')
+    expect(first).toBe('uuid-1')
+    expect(second).toBe('uuid-2')
+    expect(first).not.toBe(second)
+    expect((await store.load('uuid-1'))?.requestId).toBe('uuid-1')
+    expect((await store.load('uuid-2'))?.requestId).toBe('uuid-2')
   })
 
   it('degrades to memory when storage throws', async () => {
@@ -42,7 +54,7 @@ describe('replayStore', () => {
     }
     const store = createReplayStore(throwing, 'replay_', 60_000, () => 1_000)
     await expect(store.persist('batch_download', 'uuid-throw')).resolves.toBeUndefined()
-    const loaded = await store.load('batch_download')
+    const loaded = await store.load('uuid-throw')
     expect(loaded?.requestId).toBe('uuid-throw')
   })
 
@@ -52,7 +64,7 @@ describe('replayStore', () => {
     const store = createReplayStore(storage, 'replay_', 50, () => now)
     await store.persist('extractor_resolve', 'uuid-exp')
     now = 2_000
-    const loaded = await store.load('extractor_resolve')
+    const loaded = await store.load('uuid-exp')
     expect(loaded).toBeNull()
   })
 })

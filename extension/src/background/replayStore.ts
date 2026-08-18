@@ -18,8 +18,8 @@ export function createReplayStore(
 ) {
   const memory = new Map<string, ReplayRecord>()
 
-  function storageKey(type: string): string {
-    return `${prefix}${type}`
+  function storageKey(requestId: string): string {
+    return `${prefix}${requestId}`
   }
 
   function parseRecord(raw: unknown): ReplayRecord | null {
@@ -37,51 +37,52 @@ export function createReplayStore(
 
   async function persist(type: string, requestId: string): Promise<void> {
     const record: ReplayRecord = { requestId, type, expiresAt: now() + ttlMs }
-    memory.set(type, record)
+    memory.set(requestId, record)
     try {
-      await storage.set(storageKey(type), record)
+      await storage.set(storageKey(requestId), record)
     } catch {
       // storage unavailable: memory still holds the record for this lifetime.
     }
   }
 
-  async function load(type: string): Promise<ReplayRecord | null> {
-    const mem = memory.get(type)
+  async function load(requestId: string): Promise<ReplayRecord | null> {
+    const mem = memory.get(requestId)
     if (mem && mem.expiresAt > now()) return mem
-    if (mem) memory.delete(type)
+    if (mem) memory.delete(requestId)
 
     let raw: unknown
     try {
-      raw = await storage.get(storageKey(type))
+      raw = await storage.get(storageKey(requestId))
     } catch {
       return null
     }
     const record = parseRecord(raw)
     if (!record) return null
     if (record.expiresAt <= now()) {
-      memory.delete(type)
+      memory.delete(requestId)
       try {
-        await storage.remove(storageKey(type))
+        await storage.remove(storageKey(requestId))
       } catch {
         /* ignore */
       }
       return null
     }
-    memory.set(type, record)
+    memory.set(requestId, record)
     return record
   }
 
+  // Explicit SW-replay: reuse only when the caller already has this requestId.
   async function persistOrReuse(type: string, requestId: string): Promise<string> {
-    const existing = await load(type)
+    const existing = await load(requestId)
     if (existing) return existing.requestId
     await persist(type, requestId)
     return requestId
   }
 
-  async function remove(type: string): Promise<void> {
-    memory.delete(type)
+  async function remove(requestId: string): Promise<void> {
+    memory.delete(requestId)
     try {
-      await storage.remove(storageKey(type))
+      await storage.remove(storageKey(requestId))
     } catch {
       /* ignore */
     }

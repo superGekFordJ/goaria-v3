@@ -757,3 +757,178 @@ func TestExtractorResolve_ConcurrentStubWrites(t *testing.T) {
 		t.Fatalf("acks: %+v %+v", ack1, ack2)
 	}
 }
+
+func TestExtractorResolve_MVPEmptySecretUnavailable(t *testing.T) {
+	withAllowEmptySecret(t, true)
+	store := NewSecretStore()
+	resolver := &fakeResolver{ready: true}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{Resolver: resolver})
+	defer srv.Stop()
+	startSrv(t, srv)
+	conn := dialWS(t, srv.GetStatus().WSPort, "chrome-extension://abc")
+	defer conn.Close()
+	readAuthAck(t, conn)
+
+	writeResolve(t, conn, "r-mvp", `"source_url":"https://example.com"`)
+	start := time.Now()
+	ack := parseTypedAck(t, readRaw(t, conn, 2*time.Second))
+	if time.Since(start) > 200*time.Millisecond {
+		t.Fatalf("unavailable took too long: %s", time.Since(start))
+	}
+	if ack.ErrorCode != ErrCodeUnavailable {
+		t.Fatalf("MVP empty secret must not run resolve, got %+v", ack)
+	}
+	if resolver.calls.Load() != 0 {
+		t.Fatalf("HandleResolve must not run, calls=%d", resolver.calls.Load())
+	}
+}
+
+func TestExtractorResolve_LateSetLinkageDoesNotGrant(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	resolver := &fakeResolver{ready: true}
+	srv := newTestServer(t, nil, store)
+	defer srv.Stop()
+	startSrv(t, srv)
+	conn := dialAuthed(t, srv, "prod-secret")
+	defer conn.Close()
+
+	srv.SetLinkage(Linkage{Resolver: resolver})
+	writeResolve(t, conn, "r-late", `"n":1`)
+	ack := parseTypedAck(t, readRaw(t, conn, 2*time.Second))
+	if ack.ErrorCode != ErrCodeUnavailable {
+		t.Fatalf("snapshot must keep extractor off, got %+v", ack)
+	}
+	if resolver.calls.Load() != 0 {
+		t.Fatalf("HandleResolve must not run, calls=%d", resolver.calls.Load())
+	}
+}
+
+func TestExtractorResolve_ResolveLimitHonoredAfterNewServer(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	block := make(chan struct{})
+	started := make(chan struct{}, 4)
+	resolver := &fakeResolver{ready: true, block: block, started: started}
+	srv := newTestServer(t, nil, store)
+	withResolveConcurrency(t, 1)
+	srv.SetLinkage(Linkage{Resolver: resolver})
+	defer srv.Stop()
+	t.Cleanup(func() { close(block) })
+	startSrv(t, srv)
+	conn := dialAuthed(t, srv, "prod-secret")
+	defer conn.Close()
+
+	writeResolve(t, conn, "r-gate-1", `"n":1`)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("owner did not start")
+	}
+	writeResolve(t, conn, "r-gate-2", `"n":2`)
+	start := time.Now()
+	ack := parseTypedAck(t, readRaw(t, conn, 2*time.Second))
+	if time.Since(start) > 200*time.Millisecond {
+		t.Fatalf("busy was not immediate: %s", time.Since(start))
+	}
+	if ack.ErrorCode != ErrCodeBusy || ack.RequestID != "r-gate-2" {
+		t.Fatalf("want busy after post-construct override, got %+v", ack)
+	}
+}
+
+func TestExtractorResolve_CoalesceDoesNotStallDownload(t *testing.T) {
+	withResolveConcurrency(t, 1)
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	block := make(chan struct{})
+	started := make(chan struct{}, 1)
+	resolver := &fakeResolver{ready: true, block: block, started: started}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{Resolver: resolver})
+	defer srv.Stop()
+	t.Cleanup(func() {
+		select {
+		case <-block:
+		default:
+			close(block)
+		}
+	})
+	startSrv(t, srv)
+	connA := dialAuthed(t, srv, "prod-secret")
+	defer connA.Close()
+	connB := dialAuthed(t, srv, "prod-secret")
+	defer connB.Close()
+
+	writeResolve(t, connA, "r-coal", `"source_url":"https://example.com/a"`)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("owner did not start")
+	}
+	writeResolve(t, connB, "r-coal", `"source_url":"https://example.com/a"`)
+	req := DownloadRequest{Type: MsgTypeDownload, URL: "https://example.com/file.bin"}
+	connB.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	_ = connB.WriteMessage(websocket.TextMessage, mustMarshal(t, req))
+	raw := readRaw(t, connB, 2*time.Second)
+	var resp DownloadResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Type != MsgTypeDownloadAck || !resp.Success {
+		t.Fatalf("coalesce must not stall download FIFO, got %s", raw)
+	}
+
+	writeResolve(t, connB, "r-busy-other", `"n":9`)
+	start := time.Now()
+	busy := parseTypedAck(t, readRaw(t, connB, 2*time.Second))
+	if time.Since(start) > 200*time.Millisecond {
+		t.Fatalf("busy was not immediate: %s", time.Since(start))
+	}
+	if busy.ErrorCode != ErrCodeBusy || busy.RequestID != "r-busy-other" {
+		t.Fatalf("want busy for distinct id while coalesced, got %+v", busy)
+	}
+	if resolver.calls.Load() != 1 {
+		t.Fatalf("coalesce must run handler once, calls=%d", resolver.calls.Load())
+	}
+	close(block)
+	coal := parseTypedAck(t, readRaw(t, connB, 2*time.Second))
+	if coal.RequestID != "r-coal" || coal.ErrorCode != ErrCodeUnsupported {
+		t.Fatalf("coalesced waiter should get owner ack, got %+v", coal)
+	}
+}
+
+func TestExtractorResolve_StopUnblocksCoalescedWaiter(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	block := make(chan struct{})
+	started := make(chan struct{}, 1)
+	resolver := &fakeResolver{ready: true, block: block, started: started}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{Resolver: resolver})
+	t.Cleanup(func() {
+		select {
+		case <-block:
+		default:
+			close(block)
+		}
+	})
+	startSrv(t, srv)
+	connA := dialAuthed(t, srv, "prod-secret")
+	defer connA.Close()
+	connB := dialAuthed(t, srv, "prod-secret")
+	defer connB.Close()
+
+	writeResolve(t, connA, "r-stop", `"n":1`)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("owner did not start")
+	}
+	writeResolve(t, connB, "r-stop", `"n":1`)
+	srv.Stop()
+	connB.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := connB.ReadMessage(); err == nil {
+		t.Fatal("expected coalesced waiter connection to close on Stop")
+	}
+}

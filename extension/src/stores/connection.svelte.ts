@@ -7,7 +7,7 @@ class ConnectionState {
   wsPort = $state(0)
   paired = $state(false)
   lastError = $state('')
-  capabilities = $state<string[]>([])
+  capabilities = $state<string[] | undefined>(undefined)
   protocolVersion = $state(0)
   hostVersion = $state('')
 

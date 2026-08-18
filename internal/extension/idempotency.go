@@ -62,33 +62,52 @@ func canonicalDigest(raw json.RawMessage) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (c *idempotencyCache) lookupOrBegin(gen uint64, msgType, requestID, digest string) (idempStatus, []byte, <-chan []byte) {
+func (c *idempotencyCache) lookup(gen uint64, msgType, requestID, digest string) (idempStatus, []byte, <-chan []byte) {
 	key := idempKey(gen, msgType, requestID)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.inspectLocked(key, digest, true)
+}
 
-	if e, ok := c.entries[key]; ok {
-		if e.completed && time.Now().After(e.expiresAt) {
-			c.removeLocked(key)
-		} else {
-			if e.digest != digest {
-				return idempConflict, nil, nil
-			}
-			if e.completed {
-				return idempHit, e.ack, nil
-			}
-			ch := make(chan []byte, 1)
-			e.waiters = append(e.waiters, ch)
-			return idempCoalesce, nil, ch
-		}
+// begin registers an in-flight owner after admission. A raced duplicate
+// coalesces instead of starting a second handler.
+func (c *idempotencyCache) begin(gen uint64, msgType, requestID, digest string) (idempStatus, []byte, <-chan []byte) {
+	key := idempKey(gen, msgType, requestID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st, cached, wait := c.inspectLocked(key, digest, true)
+	if st != idempMiss {
+		return st, cached, wait
 	}
-
 	c.evictIfNeededLocked()
 	c.entries[key] = &idempEntry{digest: digest}
 	return idempMiss, nil, nil
 }
 
-func (c *idempotencyCache) abandon(gen uint64, msgType, requestID, digest string) {
+func (c *idempotencyCache) inspectLocked(key, digest string, addWaiter bool) (idempStatus, []byte, <-chan []byte) {
+	e, ok := c.entries[key]
+	if !ok {
+		return idempMiss, nil, nil
+	}
+	if e.completed && time.Now().After(e.expiresAt) {
+		c.removeLocked(key)
+		return idempMiss, nil, nil
+	}
+	if e.digest != digest {
+		return idempConflict, nil, nil
+	}
+	if e.completed {
+		return idempHit, e.ack, nil
+	}
+	if !addWaiter {
+		return idempCoalesce, nil, nil
+	}
+	ch := make(chan []byte, 1)
+	e.waiters = append(e.waiters, ch)
+	return idempCoalesce, nil, ch
+}
+
+func (c *idempotencyCache) abandon(gen uint64, msgType, requestID, digest string, ack []byte) {
 	key := idempKey(gen, msgType, requestID)
 	c.mu.Lock()
 	e, ok := c.entries[key]
@@ -100,6 +119,9 @@ func (c *idempotencyCache) abandon(gen uint64, msgType, requestID, digest string
 	delete(c.entries, key)
 	c.mu.Unlock()
 	for _, ch := range waiters {
+		if ack != nil {
+			ch <- ack
+		}
 		close(ch)
 	}
 }

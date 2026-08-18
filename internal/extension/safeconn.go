@@ -16,6 +16,9 @@ type safeConn struct {
 	mu       sync.Mutex
 	closed   bool
 	inFlight atomic.Int32
+	// grantedCaps is the auth_ack snapshot for this connection; never re-read
+	// live Ready() or store secret to admit extractor messages.
+	grantedCaps []string
 }
 
 func newSafeConn(conn *websocket.Conn) *safeConn {
@@ -57,6 +60,15 @@ func (c *safeConn) tryAcquireInFlight() bool {
 
 func (c *safeConn) releaseInFlight() {
 	c.inFlight.Add(-1)
+}
+
+func (c *safeConn) hasGranted(cap string) bool {
+	for _, x := range c.grantedCaps {
+		if x == cap {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *safeConn) Close() error {

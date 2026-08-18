@@ -56,8 +56,8 @@ type Server struct {
 	activeConns      map[*safeConn]struct{}
 	hostVersion      string
 	linkage          Linkage
-	resolveSem       chan struct{}
-	batchGate        chan struct{}
+	resolveInFlight  atomic.Int32
+	batchInFlight    atomic.Int32
 	idemp            *idempotencyCache
 }
 
@@ -73,8 +73,6 @@ func NewServer(eventHub *events.Hub, taskAdder TaskAdder, store *SecretStore) *S
 			Subprotocols: []string{"goaria-extension"},
 		},
 		activeConns: make(map[*safeConn]struct{}),
-		resolveSem:  make(chan struct{}, resolveConcurrency),
-		batchGate:   make(chan struct{}, batchConcurrency),
 		idemp:       newIdempotencyCache(),
 	}
 }
@@ -245,11 +243,13 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 	s.mu.RLock()
 	hostVersion := s.hostVersion
 	s.mu.RUnlock()
+	caps := s.computeCapabilities(secret)
+	sc.grantedCaps = append([]string(nil), caps...)
 	if err := sc.writeJSON(AuthAck{
 		Type:            MsgTypeAuthAck,
 		ProtocolVersion: ProtocolVersion,
 		HostVersion:     hostVersion,
-		Capabilities:    s.computeCapabilities(secret),
+		Capabilities:    caps,
 	}); err != nil {
 		return
 	}
@@ -272,7 +272,7 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 		case MsgTypeDownload:
 			s.dispatchDownload(sc, env, raw)
 		case MsgTypeExtractorResolve:
-			s.dispatchAsync(ctx, sc, env, raw, MsgTypeExtractorResolveAck, s.resolveSem, s.resolverReady, func(ctx context.Context, env RequestEnvelope, raw json.RawMessage) StubAck {
+			s.dispatchAsync(ctx, sc, env, raw, MsgTypeExtractorResolveAck, CapExtractorResolve, true, func(ctx context.Context, env RequestEnvelope, raw json.RawMessage) StubAck {
 				s.mu.RLock()
 				r := s.linkage.Resolver
 				s.mu.RUnlock()
@@ -282,7 +282,7 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 				return r.HandleResolve(ctx, env, raw)
 			})
 		case MsgTypeBatchDownload:
-			s.dispatchAsync(ctx, sc, env, raw, MsgTypeBatchDownloadAck, s.batchGate, s.committerReady, func(ctx context.Context, env RequestEnvelope, raw json.RawMessage) StubAck {
+			s.dispatchAsync(ctx, sc, env, raw, MsgTypeBatchDownloadAck, CapExtractorBatch, false, func(ctx context.Context, env RequestEnvelope, raw json.RawMessage) StubAck {
 				s.mu.RLock()
 				c := s.linkage.Committer
 				s.mu.RUnlock()
@@ -329,16 +329,16 @@ func (s *Server) dispatchAsync(
 	env RequestEnvelope,
 	raw []byte,
 	ackType string,
-	sem chan struct{},
-	ready func() bool,
+	requiredCap string,
+	isResolve bool,
 	run func(context.Context, RequestEnvelope, json.RawMessage) StubAck,
 ) {
 	reqID := env.RequestID
 	if !validRequestID(reqID) {
-		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeInvalidRequest})
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: echoRequestID(reqID), ErrorCode: ErrCodeInvalidRequest})
 		return
 	}
-	if !ready() {
+	if !sc.hasGranted(requiredCap) {
 		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeUnavailable})
 		return
 	}
@@ -347,7 +347,7 @@ func (s *Server) dispatchAsync(
 	if s.store != nil {
 		gen = s.store.Generation()
 	}
-	st, cached, wait := s.idemp.lookupOrBegin(gen, env.Type, reqID, digest)
+	st, cached, wait := s.idemp.lookup(gen, env.Type, reqID, digest)
 	switch st {
 	case idempHit:
 		_ = sc.writeRaw(cached)
@@ -356,45 +356,100 @@ func (s *Server) dispatchAsync(
 		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeIdempotencyConflict})
 		return
 	case idempCoalesce:
-		if wait == nil {
-			return
-		}
-		ack, ok := <-wait
-		if ok {
-			_ = sc.writeRaw(ack)
-		}
+		go writeCoalescedAck(sc, wait)
 		return
 	}
 
 	if !sc.tryAcquireInFlight() {
-		s.idemp.abandon(gen, env.Type, reqID, digest)
 		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeBusy})
 		return
 	}
-	select {
-	case sem <- struct{}{}:
-	default:
+	if !s.tryAcquireGate(isResolve) {
 		sc.releaseInFlight()
-		s.idemp.abandon(gen, env.Type, reqID, digest)
 		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeBusy})
+		return
+	}
+
+	st, cached, wait = s.idemp.begin(gen, env.Type, reqID, digest)
+	switch st {
+	case idempHit:
+		s.releaseGate(isResolve)
+		sc.releaseInFlight()
+		_ = sc.writeRaw(cached)
+		return
+	case idempConflict:
+		s.releaseGate(isResolve)
+		sc.releaseInFlight()
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeIdempotencyConflict})
+		return
+	case idempCoalesce:
+		s.releaseGate(isResolve)
+		sc.releaseInFlight()
+		go writeCoalescedAck(sc, wait)
 		return
 	}
 
 	go func() {
 		defer func() {
-			<-sem
+			s.releaseGate(isResolve)
 			sc.releaseInFlight()
 		}()
 		stub := run(ctx, env, json.RawMessage(raw))
 		ack := s.typedAckFromStub(ackType, reqID, stub)
 		data, err := json.Marshal(ack)
 		if err != nil {
-			s.idemp.abandon(gen, env.Type, reqID, digest)
+			busyAck := TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeBusy}
+			busy, marshalErr := json.Marshal(busyAck)
+			if marshalErr != nil {
+				s.idemp.abandon(gen, env.Type, reqID, digest, nil)
+				return
+			}
+			s.idemp.abandon(gen, env.Type, reqID, digest, busy)
+			_ = sc.writeRaw(busy)
 			return
 		}
 		s.idemp.complete(gen, env.Type, reqID, digest, data)
 		_ = sc.writeRaw(data)
 	}()
+}
+
+func writeCoalescedAck(sc *safeConn, wait <-chan []byte) {
+	if wait == nil {
+		return
+	}
+	ack, ok := <-wait
+	if !ok || len(ack) == 0 {
+		return
+	}
+	_ = sc.writeRaw(ack)
+}
+
+func tryAcquireCount(counter *atomic.Int32, max int) bool {
+	limit := int32(max)
+	for {
+		cur := counter.Load()
+		if cur >= limit {
+			return false
+		}
+		if counter.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+func (s *Server) tryAcquireGate(isResolve bool) bool {
+	if isResolve {
+		return tryAcquireCount(&s.resolveInFlight, resolveConcurrency)
+	}
+	return tryAcquireCount(&s.batchInFlight, batchConcurrency)
+}
+
+func (s *Server) releaseGate(isResolve bool) {
+	if isResolve {
+		s.resolveInFlight.Add(-1)
+		return
+	}
+	s.batchInFlight.Add(-1)
 }
 
 func (s *Server) typedAckFromStub(ackType, requestID string, stub StubAck) TypedAck {

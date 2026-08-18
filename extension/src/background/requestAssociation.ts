@@ -1,5 +1,8 @@
+export type PendingKind = 'download' | 'rpc'
+
 export type PendingEntry<T = unknown> = {
   id: string
+  kind: PendingKind
   resolve: (value: T) => void
   reject: (err: Error) => void
 }
@@ -37,6 +40,7 @@ export function createPendingMap<T = unknown>() {
 
   function completeFifo(): PendingEntry<T> | undefined {
     for (const entry of pending.values()) {
+      if (entry.kind !== 'download') continue
       pending.delete(entry.id)
       return entry
     }
@@ -56,9 +60,6 @@ export function createPendingMap<T = unknown>() {
 
     if (type === MSG_DOWNLOAD_ACK) {
       const entry = id ? completeById(id) : completeFifo()
-      if (!entry && !id) {
-        return { kind: 'ignored' }
-      }
       if (!entry) {
         return { kind: 'ignored' }
       }

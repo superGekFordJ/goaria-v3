@@ -11,8 +11,11 @@ import {
   MSG_TYPE_AUTH,
   MSG_TYPE_AUTH_ACK,
   MSG_TYPE_BATCH_DOWNLOAD,
+  MSG_TYPE_BATCH_DOWNLOAD_ACK,
   MSG_TYPE_DOWNLOAD,
   MSG_TYPE_EXTRACTOR_RESOLVE,
+  MSG_TYPE_EXTRACTOR_RESOLVE_ACK,
+  MSG_TYPE_PING,
   MSG_TYPE_PROTOCOL_ERROR,
   PROTOCOL_VERSION,
   RECONNECT_BASE_DELAY_MS,
@@ -33,11 +36,18 @@ import type {
 } from '../utils/messaging'
 
 function newRequestId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
+  const c = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined
+  if (c && typeof c.randomUUID === 'function') {
+    return c.randomUUID()
   }
   const bytes = new Uint8Array(32)
-  crypto.getRandomValues(bytes)
+  if (c && typeof c.getRandomValues === 'function') {
+    c.getRandomValues(bytes)
+  } else {
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Math.floor(Math.random() * 256)
+    }
+  }
   return [...bytes].map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
@@ -176,6 +186,14 @@ export class WsClient {
     payload: Record<string, unknown> = {},
   ): Promise<Record<string, unknown>> {
     if (
+      type === MSG_TYPE_DOWNLOAD ||
+      type === MSG_TYPE_AUTH ||
+      type === MSG_TYPE_PING ||
+      type === MSG_TYPE_AUTH_ACK
+    ) {
+      return Promise.reject(new Error(`sendRequest does not send ${type}`))
+    }
+    if (
       type === MSG_TYPE_EXTRACTOR_RESOLVE &&
       !hasCapability(connectionState.capabilities, CAP_EXTRACTOR_RESOLVE)
     ) {
@@ -194,20 +212,32 @@ export class WsClient {
     type: string,
     payload: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    if (this.ws?.readyState !== WebSocket.OPEN) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('WebSocket is not connected'))
     }
-    let id = newRequestId()
+    const id = newRequestId()
     if (type === MSG_TYPE_EXTRACTOR_RESOLVE || type === MSG_TYPE_BATCH_DOWNLOAD) {
-      id = await this.replay.persistOrReuse(type, id)
+      await this.replay.persist(type, id)
     }
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      void this.replay.remove(id)
+      return Promise.reject(new Error('WebSocket is not connected'))
+    }
+    const socket = this.ws
     const body = { ...payload, type, request_id: id }
     return new Promise<Record<string, unknown>>((resolve, reject) => {
-      this.trackPending(id, resolve as (value: unknown) => void, reject, DOWNLOAD_ACK_TIMEOUT_MS)
+      this.trackPending(
+        id,
+        'rpc',
+        resolve as (value: unknown) => void,
+        reject,
+        DOWNLOAD_ACK_TIMEOUT_MS,
+      )
       try {
-        this.ws?.send(JSON.stringify(body))
+        socket.send(JSON.stringify(body))
       } catch (err) {
         this.clearPending(id)
+        void this.replay.remove(id)
         reject(err instanceof Error ? err : new Error(String(err)))
       }
     })
@@ -235,6 +265,7 @@ export class WsClient {
     return new Promise<DownloadResponse>((resolve, reject) => {
       this.trackPending(
         id,
+        'download',
         value => resolve(value as DownloadResponse),
         reject,
         DOWNLOAD_ACK_TIMEOUT_MS,
@@ -398,7 +429,7 @@ export class WsClient {
     const msg = data as Record<string, unknown>
     if (msg.type === MSG_TYPE_AUTH_ACK) {
       const parsed = parseAuthAck(msg)
-      connectionState.capabilities = parsed.capabilities ?? []
+      connectionState.capabilities = parsed.capabilities
       connectionState.protocolVersion = parsed.protocolVersion
       connectionState.hostVersion = parsed.hostVersion
       if (!connectionState.paired) {
@@ -443,6 +474,7 @@ export class WsClient {
     }
 
     if (routed.kind === 'protocol_error') {
+      void this.replay.remove(routed.entry.id)
       const code = typeof msg.error_code === 'string' ? msg.error_code : MSG_TYPE_PROTOCOL_ERROR
       routed.entry.reject(new Error(code))
       return
@@ -461,10 +493,10 @@ export class WsClient {
       routed.entry.resolve(msg)
     }
     const msgType = typeof msg.type === 'string' ? msg.type : ''
-    if (msgType === 'extractor_resolve_ack') {
-      void this.replay.remove(MSG_TYPE_EXTRACTOR_RESOLVE)
-    } else if (msgType === 'batch_download_ack') {
-      void this.replay.remove(MSG_TYPE_BATCH_DOWNLOAD)
+    if (msgType === MSG_TYPE_EXTRACTOR_RESOLVE_ACK) {
+      void this.replay.remove(routed.entry.id)
+    } else if (msgType === MSG_TYPE_BATCH_DOWNLOAD_ACK) {
+      void this.replay.remove(routed.entry.id)
     }
   }
 
@@ -531,6 +563,7 @@ export class WsClient {
 
   private trackPending(
     id: string,
+    kind: 'download' | 'rpc',
     resolve: (value: unknown) => void,
     reject: (err: Error) => void,
     timeoutMs: number,
@@ -539,10 +572,11 @@ export class WsClient {
     const timer = setTimeout(() => {
       const entry = this.pending.completeById(id)
       this.pendingTimers.delete(id)
+      void this.replay.remove(id)
       entry?.reject(new Error(timeoutMessage))
     }, timeoutMs)
     this.pendingTimers.set(id, timer)
-    this.pending.add({ id, resolve, reject })
+    this.pending.add({ id, kind, resolve, reject })
   }
 
   private clearTimer(id: string): void {
@@ -559,7 +593,7 @@ export class WsClient {
   }
 
   private clearProtocolState(): void {
-    connectionState.capabilities = []
+    connectionState.capabilities = undefined
     connectionState.protocolVersion = 0
     connectionState.hostVersion = ''
   }

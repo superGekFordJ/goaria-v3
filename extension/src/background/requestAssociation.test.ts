@@ -16,8 +16,8 @@ describe('requestAssociation', () => {
     const map = createPendingMap<string>()
     const a = deferred<string>()
     const b = deferred<string>()
-    map.add({ id: 'a', resolve: a.resolve, reject: a.reject })
-    map.add({ id: 'b', resolve: b.resolve, reject: b.reject })
+    map.add({ id: 'a', kind: 'download', resolve: a.resolve, reject: a.reject })
+    map.add({ id: 'b', kind: 'download', resolve: b.resolve, reject: b.reject })
 
     const routed = map.routeMessage({ type: 'download_ack', request_id: 'b' })
     expect(routed.kind).toBe('download_ack')
@@ -31,8 +31,8 @@ describe('requestAssociation', () => {
     const map = createPendingMap<string>()
     const first = deferred<string>()
     const second = deferred<string>()
-    map.add({ id: '1', resolve: first.resolve, reject: first.reject })
-    map.add({ id: '2', resolve: second.resolve, reject: second.reject })
+    map.add({ id: '1', kind: 'download', resolve: first.resolve, reject: first.reject })
+    map.add({ id: '2', kind: 'download', resolve: second.resolve, reject: second.reject })
 
     const routed = map.routeMessage({ type: 'download_ack' })
     expect(routed.kind).toBe('download_ack')
@@ -46,8 +46,8 @@ describe('requestAssociation', () => {
     const map = createPendingMap<string>()
     const download = deferred<string>()
     const other = deferred<string>()
-    map.add({ id: 'dl-1', resolve: download.resolve, reject: download.reject })
-    map.add({ id: 'err-a', resolve: other.resolve, reject: other.reject })
+    map.add({ id: 'dl-1', kind: 'download', resolve: download.resolve, reject: download.reject })
+    map.add({ id: 'err-a', kind: 'rpc', resolve: other.resolve, reject: other.reject })
 
     const routed = map.routeMessage({
       type: 'protocol_error',
@@ -71,7 +71,7 @@ describe('requestAssociation', () => {
   it('ignores protocol_error without request_id so FIFO stays intact', () => {
     const map = createPendingMap<string>()
     const download = deferred<string>()
-    map.add({ id: 'dl-1', resolve: download.resolve, reject: download.reject })
+    map.add({ id: 'dl-1', kind: 'download', resolve: download.resolve, reject: download.reject })
     const routed = map.routeMessage({ type: 'protocol_error', error_code: 'unsupported' })
     expect(routed.kind).toBe('ignored')
     expect(map.size()).toBe(1)
@@ -80,8 +80,27 @@ describe('requestAssociation', () => {
   it('ignores unknown server types', () => {
     const map = createPendingMap<string>()
     const download = deferred<string>()
-    map.add({ id: 'dl-1', resolve: download.resolve, reject: download.reject })
+    map.add({ id: 'dl-1', kind: 'download', resolve: download.resolve, reject: download.reject })
     expect(map.routeMessage({ type: 'capability_update' }).kind).toBe('ignored')
+    expect(map.size()).toBe(1)
+  })
+
+  it('does not FIFO-steal an rpc pending on download_ack with unknown request_id', () => {
+    const map = createPendingMap<string>()
+    const rpc = deferred<string>()
+    const download = deferred<string>()
+    map.add({ id: 'rpc-1', kind: 'rpc', resolve: rpc.resolve, reject: rpc.reject })
+    map.add({ id: 'dl-1', kind: 'download', resolve: download.resolve, reject: download.reject })
+
+    const unknown = map.routeMessage({ type: 'download_ack', request_id: 'missing' })
+    expect(unknown.kind).toBe('ignored')
+    expect(map.size()).toBe(2)
+
+    const fifo = map.routeMessage({ type: 'download_ack' })
+    expect(fifo.kind).toBe('download_ack')
+    if (fifo.kind === 'download_ack') {
+      expect(fifo.entry.id).toBe('dl-1')
+    }
     expect(map.size()).toBe(1)
   })
 })
