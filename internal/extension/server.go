@@ -1,7 +1,9 @@
 package extension
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -10,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/events"
@@ -17,10 +20,16 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// allowEmptySecret is the dev escape hatch for the MVP empty-secret bypass.
-// Production rejects empty secrets unless GOARIA_EXTENSION_ALLOW_EMPTY_SECRET=1.
-// atomic.Bool so tests can flip it without racing in-flight handleConn readers.
-var allowEmptySecret atomic.Bool
+const wsReadLimit int64 = 1 << 20
+
+var (
+	allowEmptySecret atomic.Bool
+
+	authReadTimeout    = 5 * time.Second
+	resolveConcurrency = 2
+	batchConcurrency   = 1
+	perConnInFlightMax = 4
+)
 
 func init() {
 	allowEmptySecret.Store(os.Getenv("GOARIA_EXTENSION_ALLOW_EMPTY_SECRET") == "1")
@@ -44,7 +53,12 @@ type Server struct {
 	connectedClients int
 	wsPort           int
 	paired           bool
-	activeConns      map[*websocket.Conn]struct{}
+	activeConns      map[*safeConn]struct{}
+	hostVersion      string
+	linkage          Linkage
+	resolveSem       chan struct{}
+	batchGate        chan struct{}
+	idemp            *idempotencyCache
 }
 
 // NewServer creates a new extension WebSocket server.
@@ -58,7 +72,10 @@ func NewServer(eventHub *events.Hub, taskAdder TaskAdder, store *SecretStore) *S
 			CheckOrigin:  checkOrigin,
 			Subprotocols: []string{"goaria-extension"},
 		},
-		activeConns: make(map[*websocket.Conn]struct{}),
+		activeConns: make(map[*safeConn]struct{}),
+		resolveSem:  make(chan struct{}, resolveConcurrency),
+		batchGate:   make(chan struct{}, batchConcurrency),
+		idemp:       newIdempotencyCache(),
 	}
 }
 
@@ -67,6 +84,20 @@ func (s *Server) SetPairingService(ps *PairingService) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pairingService = ps
+}
+
+// SetHostVersion records the desktop app version echoed in auth_ack.
+func (s *Server) SetHostVersion(version string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hostVersion = version
+}
+
+// SetLinkage injects optional extractor seams. Production in this slice does not call it.
+func (s *Server) SetLinkage(l Linkage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.linkage = l
 }
 
 // StartPairing creates or reuses the pairing service and returns the pairing URL.
@@ -161,12 +192,13 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleConn validates Origin + Secret (if-branch: empty=MVP, non-empty=production),
-// then processes download requests.
+// then dispatches post-auth messages.
 func (s *Server) handleConn(conn *websocket.Conn) {
-	defer conn.Close()
+	sc := newSafeConn(conn)
+	defer sc.Close()
 
 	s.mu.Lock()
-	s.activeConns[conn] = struct{}{}
+	s.activeConns[sc] = struct{}{}
 	s.connectedClients++
 	count := s.connectedClients
 	s.mu.Unlock()
@@ -174,7 +206,7 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 
 	defer func() {
 		s.mu.Lock()
-		delete(s.activeConns, conn)
+		delete(s.activeConns, sc)
 		s.connectedClients--
 		c := s.connectedClients
 		if c < 0 {
@@ -184,62 +216,247 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 		s.emitStatus(c)
 	}()
 
+	sc.SetReadLimit(wsReadLimit)
+
 	secret := s.store.GetSecret()
 	if secret == "" {
 		if !allowEmptySecret.Load() {
 			return
 		}
+		// MVP: do not read a first auth frame; tests send download/ping first.
 	} else {
+		_ = sc.SetReadDeadline(time.Now().Add(authReadTimeout))
 		var auth AuthMessage
-		if err := conn.ReadJSON(&auth); err != nil {
+		if err := sc.ReadJSON(&auth); err != nil {
 			return
 		}
-		if auth.Secret != secret {
-			s.notifyAuthFailed()
+		if auth.Type != MsgTypeAuth || auth.Secret != secret {
+			if auth.Type == MsgTypeAuth && auth.Secret != secret {
+				s.notifyAuthFailed()
+			}
 			return
 		}
+		_ = sc.SetReadDeadline(time.Time{})
 		if s.markPaired() {
 			s.NotifyPaired()
 		}
 	}
 
-	// Confirm auth so the extension can transition to "connected" immediately,
-	// without waiting for the first download_ack (which would never arrive
-	// because interception stays disabled until connected — a deadlock).
-	authAck, err := json.Marshal(map[string]string{"type": MsgTypeAuthAck})
-	if err != nil {
+	s.mu.RLock()
+	hostVersion := s.hostVersion
+	s.mu.RUnlock()
+	if err := sc.writeJSON(AuthAck{
+		Type:            MsgTypeAuthAck,
+		ProtocolVersion: ProtocolVersion,
+		HostVersion:     hostVersion,
+		Capabilities:    s.computeCapabilities(secret),
+	}); err != nil {
 		return
 	}
-	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	_ = conn.WriteMessage(websocket.TextMessage, authAck)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	for {
-		_, raw, err := conn.ReadMessage()
+		_, raw, err := sc.ReadMessage()
 		if err != nil {
 			return
 		}
 
-		var msg struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(raw, &msg); err != nil {
+		var env RequestEnvelope
+		if err := json.Unmarshal(raw, &env); err != nil {
 			continue
 		}
 
-		if msg.Type == MsgTypeDownload {
-			var req DownloadRequest
-			if err := json.Unmarshal(raw, &req); err != nil {
-				s.writeAck(conn, DownloadResponse{
-					Type:    MsgTypeDownloadAck,
-					Success: false,
-					Error:   "invalid request",
-				})
-				continue
-			}
-			resp := s.handleDownload(req)
-			s.writeAck(conn, resp)
+		switch env.Type {
+		case MsgTypeDownload:
+			s.dispatchDownload(sc, env, raw)
+		case MsgTypeExtractorResolve:
+			s.dispatchAsync(ctx, sc, env, raw, MsgTypeExtractorResolveAck, s.resolveSem, s.resolverReady, func(ctx context.Context, env RequestEnvelope, raw json.RawMessage) StubAck {
+				s.mu.RLock()
+				r := s.linkage.Resolver
+				s.mu.RUnlock()
+				if r == nil {
+					return StubAck{ErrorCode: ErrCodeUnavailable}
+				}
+				return r.HandleResolve(ctx, env, raw)
+			})
+		case MsgTypeBatchDownload:
+			s.dispatchAsync(ctx, sc, env, raw, MsgTypeBatchDownloadAck, s.batchGate, s.committerReady, func(ctx context.Context, env RequestEnvelope, raw json.RawMessage) StubAck {
+				s.mu.RLock()
+				c := s.linkage.Committer
+				s.mu.RUnlock()
+				if c == nil {
+					return StubAck{ErrorCode: ErrCodeUnavailable}
+				}
+				return c.HandleCommit(ctx, env, raw)
+			})
+		case MsgTypeAuth, MsgTypePing:
+			// Post-handshake no-ops: the real client always sends auth after open,
+			// including on the MVP skip-auth path; tests also write ping first.
+		default:
+			_ = sc.writeJSON(ProtocolError{
+				Type:      MsgTypeProtocolError,
+				RequestID: echoRequestID(env.RequestID),
+				ErrorCode: ErrCodeUnsupported,
+			})
 		}
 	}
+}
+
+func (s *Server) dispatchDownload(sc *safeConn, env RequestEnvelope, raw []byte) {
+	var req DownloadRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		resp := DownloadResponse{Type: MsgTypeDownloadAck, Success: false, Error: "invalid request"}
+		if validRequestID(env.RequestID) {
+			resp.RequestID = env.RequestID
+		}
+		_ = sc.writeJSON(resp)
+		return
+	}
+	resp := s.handleDownload(req)
+	if validRequestID(req.RequestID) {
+		resp.RequestID = req.RequestID
+	} else if validRequestID(env.RequestID) {
+		resp.RequestID = env.RequestID
+	}
+	_ = sc.writeJSON(resp)
+}
+
+func (s *Server) dispatchAsync(
+	ctx context.Context,
+	sc *safeConn,
+	env RequestEnvelope,
+	raw []byte,
+	ackType string,
+	sem chan struct{},
+	ready func() bool,
+	run func(context.Context, RequestEnvelope, json.RawMessage) StubAck,
+) {
+	reqID := env.RequestID
+	if !validRequestID(reqID) {
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeInvalidRequest})
+		return
+	}
+	if !ready() {
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeUnavailable})
+		return
+	}
+	digest := canonicalDigest(raw)
+	gen := uint64(0)
+	if s.store != nil {
+		gen = s.store.Generation()
+	}
+	st, cached, wait := s.idemp.lookupOrBegin(gen, env.Type, reqID, digest)
+	switch st {
+	case idempHit:
+		_ = sc.writeRaw(cached)
+		return
+	case idempConflict:
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeIdempotencyConflict})
+		return
+	case idempCoalesce:
+		if wait == nil {
+			return
+		}
+		ack, ok := <-wait
+		if ok {
+			_ = sc.writeRaw(ack)
+		}
+		return
+	}
+
+	if !sc.tryAcquireInFlight() {
+		s.idemp.abandon(gen, env.Type, reqID, digest)
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeBusy})
+		return
+	}
+	select {
+	case sem <- struct{}{}:
+	default:
+		sc.releaseInFlight()
+		s.idemp.abandon(gen, env.Type, reqID, digest)
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeBusy})
+		return
+	}
+
+	go func() {
+		defer func() {
+			<-sem
+			sc.releaseInFlight()
+		}()
+		stub := run(ctx, env, json.RawMessage(raw))
+		ack := s.typedAckFromStub(ackType, reqID, stub)
+		data, err := json.Marshal(ack)
+		if err != nil {
+			s.idemp.abandon(gen, env.Type, reqID, digest)
+			return
+		}
+		s.idemp.complete(gen, env.Type, reqID, digest, data)
+		_ = sc.writeRaw(data)
+	}()
+}
+
+func (s *Server) typedAckFromStub(ackType, requestID string, stub StubAck) TypedAck {
+	ack := TypedAck{Type: ackType, RequestID: requestID, ErrorCode: stub.ErrorCode}
+	if stub.Error == "" {
+		return ack
+	}
+	s.mu.RLock()
+	redactor := s.linkage.Redactor
+	s.mu.RUnlock()
+	if redactor == nil {
+		return ack
+	}
+	ack.Error = redactor.Redact(errors.New(stub.Error))
+	return ack
+}
+
+func (s *Server) computeCapabilities(secret string) []string {
+	caps := []string{CapRequestID}
+	if secret == "" {
+		return caps
+	}
+	if s.resolverReady() {
+		caps = append(caps, CapExtractorResolve)
+	}
+	if s.committerReady() {
+		caps = append(caps, CapExtractorBatch)
+	}
+	return caps
+}
+
+func (s *Server) resolverReady() bool {
+	s.mu.RLock()
+	r := s.linkage.Resolver
+	s.mu.RUnlock()
+	return r != nil && r.Ready()
+}
+
+func (s *Server) committerReady() bool {
+	s.mu.RLock()
+	c := s.linkage.Committer
+	s.mu.RUnlock()
+	return c != nil && c.Ready()
+}
+
+func validRequestID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for _, r := range id {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func echoRequestID(id string) string {
+	if validRequestID(id) {
+		return id
+	}
+	return ""
 }
 
 // handleDownload forwards the request to TaskAdder (tasks.Service), never rpc.DownloadEngine.
@@ -252,15 +469,6 @@ func (s *Server) handleDownload(req DownloadRequest) DownloadResponse {
 		return DownloadResponse{Type: MsgTypeDownloadAck, Success: false, Error: err.Error()}
 	}
 	return DownloadResponse{Type: MsgTypeDownloadAck, Success: true, GID: gid}
-}
-
-func (s *Server) writeAck(conn *websocket.Conn, resp DownloadResponse) {
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return
-	}
-	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	_ = conn.WriteMessage(websocket.TextMessage, data)
 }
 
 // GetStatus returns the current server status for the frontend.
@@ -285,7 +493,6 @@ func (s *Server) GetStatus() ExtensionStatus {
 // Stop closes the listener, HTTP server, and all active WebSocket connections.
 func (s *Server) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.httpServer != nil {
 		_ = s.httpServer.Close()
 		s.httpServer = nil
@@ -294,9 +501,14 @@ func (s *Server) Stop() {
 		_ = s.listener.Close()
 		s.listener = nil
 	}
+	conns := make([]*safeConn, 0, len(s.activeConns))
 	for conn := range s.activeConns {
-		_ = conn.Close()
+		conns = append(conns, conn)
 		delete(s.activeConns, conn)
+	}
+	s.mu.Unlock()
+	for _, conn := range conns {
+		_ = conn.Close()
 	}
 }
 
@@ -359,7 +571,7 @@ func (s *Server) NotifyPaired() {
 func (s *Server) NotifyUnpaired() {
 	s.mu.Lock()
 	s.paired = false
-	conns := make([]*websocket.Conn, 0, len(s.activeConns))
+	conns := make([]*safeConn, 0, len(s.activeConns))
 	for conn := range s.activeConns {
 		conns = append(conns, conn)
 		delete(s.activeConns, conn)
@@ -378,6 +590,9 @@ func (s *Server) NotifyUnpaired() {
 		} else {
 			log.Printf("[Extension] secret rotation failed; keeping old secret")
 		}
+	}
+	if s.idemp != nil {
+		s.idemp.clear()
 	}
 	if s.eventHub != nil {
 		s.eventHub.EmitExtensionUnpaired()

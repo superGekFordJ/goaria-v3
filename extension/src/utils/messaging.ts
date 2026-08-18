@@ -72,6 +72,7 @@ export type DownloadResponse = {
   success: boolean
   gid: string
   error?: string
+  request_id?: string
 }
 
 // background -> content script: fired after a download interception resolves

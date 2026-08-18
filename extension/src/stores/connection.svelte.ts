@@ -7,6 +7,9 @@ class ConnectionState {
   wsPort = $state(0)
   paired = $state(false)
   lastError = $state('')
+  capabilities = $state<string[]>([])
+  protocolVersion = $state(0)
+  hostVersion = $state('')
 
   get isConnected() {
     return this.status === 'connected'

@@ -118,7 +118,9 @@ func ConfigureUpdater(appService *App, eventHub *events.Hub) {
 func NewExtensionServer(eventHub *events.Hub, appService *App, secret string) *extension.Server {
 	extStore := extension.NewSecretStore()
 	extStore.SetSecret(secret)
-	return extension.NewServer(eventHub, appService.taskService(), extStore)
+	s := extension.NewServer(eventHub, appService.taskService(), extStore)
+	s.SetHostVersion(appService.GetAppVersion())
+	return s
 }
 
 // SetApp stores the application instance reference

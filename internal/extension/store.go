@@ -14,9 +14,10 @@ import (
 var randReader io.Reader = rand.Reader
 
 type SecretStore struct {
-	mu        sync.RWMutex
-	secret    string
-	pairNonce string
+	mu         sync.RWMutex
+	secret     string
+	pairNonce  string
+	generation uint64
 }
 
 func NewSecretStore() *SecretStore {
@@ -69,7 +70,16 @@ func (s *SecretStore) VerifyAndConsumeNonce(nonce string) bool {
 func (s *SecretStore) SetSecret(secret string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if secret != s.secret {
+		s.generation++
+	}
 	s.secret = secret
+}
+
+func (s *SecretStore) Generation() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.generation
 }
 
 func (s *SecretStore) GetSecret() string {

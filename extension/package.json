@@ -14,6 +14,7 @@
     "zip:firefox": "cd dist/firefox && 7z a -tzip ../goaria-extension-firefox.zip *",
     "package": "pnpm run build && pnpm run zip:chrome && pnpm run zip:firefox",
     "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run",
     "gen:i18n": "node scripts/gen-i18n-types.js",
     "check:i18n": "node scripts/gen-i18n-types.js && node scripts/check-i18n-keys.js && node scripts/check-hardcode.js",
     "lint": "eslint . --fix && pnpm run check:i18n",
@@ -43,7 +44,8 @@
     "typescript": "6.0.3",
     "typescript-eslint": "8.62.1",
     "vite": "8.1.3",
-    "vite-plugin-environment": "1.1.3"
+    "vite-plugin-environment": "1.1.3",
+    "vitest": "^4.1.10"
   },
   "packageManager": "pnpm@11.17.0+sha512.cca3cea332ad254bb84145f966d19f4879615210346fc92c79a047f23a0d7b3cca3c3792f0076ba1f1831d277efbcf0a9119b31a9a60eca7fb3d6231f331ef72"
 }

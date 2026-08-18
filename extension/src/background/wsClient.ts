@@ -1,13 +1,24 @@
 import { sendMessage } from 'webext-bridge/background'
 import browser from 'webextension-polyfill'
+import { hasCapability, parseAuthAck } from './capabilities'
+import { createPendingMap } from './requestAssociation'
+import { createReplayStore, type ReplayStorage } from './replayStore'
 import {
+  CAP_EXTRACTOR_BATCH,
+  CAP_EXTRACTOR_RESOLVE,
+  CLIENT_VERSION,
   DOWNLOAD_ACK_TIMEOUT_MS,
   MSG_TYPE_AUTH,
   MSG_TYPE_AUTH_ACK,
+  MSG_TYPE_BATCH_DOWNLOAD,
   MSG_TYPE_DOWNLOAD,
-  MSG_TYPE_DOWNLOAD_ACK,
+  MSG_TYPE_EXTRACTOR_RESOLVE,
+  MSG_TYPE_PROTOCOL_ERROR,
+  PROTOCOL_VERSION,
   RECONNECT_BASE_DELAY_MS,
   RECONNECT_MAX_ATTEMPTS,
+  REPLAY_TTL_MS,
+  STORAGE_KEY_REPLAY_PREFIX,
   STORAGE_KEY_SECRET,
   WS_CONNECT_TIMEOUT_MS,
   WS_PORT_FALLBACKS,
@@ -21,13 +32,40 @@ import type {
   WsStatusMessage,
 } from '../utils/messaging'
 
-// Pending download request awaiting a download_ack from the Go backend.
-type PendingRequest = {
-  id: number
-  resolve: (resp: DownloadResponse) => void
-  reject: (err: Error) => void
-  timer: ReturnType<typeof setTimeout>
-  sentAt: number
+function newRequestId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  const bytes = new Uint8Array(32)
+  crypto.getRandomValues(bytes)
+  return [...bytes].map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+function sessionReplayStorage(): ReplayStorage {
+  return {
+    async get(key) {
+      try {
+        const result = await browser.storage.session.get(key)
+        return result[key]
+      } catch {
+        throw new Error('storage.session unavailable')
+      }
+    },
+    async set(key, value) {
+      try {
+        await browser.storage.session.set({ [key]: value })
+      } catch {
+        throw new Error('storage.session unavailable')
+      }
+    },
+    async remove(key) {
+      try {
+        await browser.storage.session.remove(key)
+      } catch {
+        throw new Error('storage.session unavailable')
+      }
+    },
+  }
 }
 
 // Auth-fail heuristic: if the socket closes very soon after we sent a
@@ -57,9 +95,13 @@ export class WsClient {
   // heuristic only applies when the secret was non-empty: in MVP mode (empty
   // secret) the Go backend skips validation, so a quick close can't be auth.
   private authSecretNonEmpty = false
-  // Monotonic id used to correlate download_ack replies with pending promises.
-  private nextRequestId = 1
-  private pending = new Map<number, PendingRequest>()
+  private pending = createPendingMap<unknown>()
+  private pendingTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private replay = createReplayStore(
+    sessionReplayStorage(),
+    STORAGE_KEY_REPLAY_PREFIX,
+    REPLAY_TTL_MS,
+  )
   // Track the in-flight port probe so a late disconnect() can abort it.
   private probing: { cancel: () => void } | null = null
   // Serializes sends: acks are correlated by FIFO order (firstPending), so
@@ -96,6 +138,7 @@ export class WsClient {
     }
     this.teardownSocket()
     this.failAllPending('WebSocket disconnected')
+    this.clearProtocolState()
     this.setStatus('disconnected', '')
   }
 
@@ -123,15 +166,63 @@ export class WsClient {
     return next
   }
 
+  /**
+   * Send a non-download protocol message correlated by request_id.
+   * Not serialized on the download sendChain. Local-rejects when the
+   * required extractor capability is missing.
+   */
+  sendRequest(
+    type: string,
+    payload: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
+    if (
+      type === MSG_TYPE_EXTRACTOR_RESOLVE &&
+      !hasCapability(connectionState.capabilities, CAP_EXTRACTOR_RESOLVE)
+    ) {
+      return Promise.reject(new Error('Host does not support extractor.resolve'))
+    }
+    if (
+      type === MSG_TYPE_BATCH_DOWNLOAD &&
+      !hasCapability(connectionState.capabilities, CAP_EXTRACTOR_BATCH)
+    ) {
+      return Promise.reject(new Error('Host does not support extractor.batch'))
+    }
+    return this.doSendRequest(type, payload)
+  }
+
+  private async doSendRequest(
+    type: string,
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('WebSocket is not connected'))
+    }
+    let id = newRequestId()
+    if (type === MSG_TYPE_EXTRACTOR_RESOLVE || type === MSG_TYPE_BATCH_DOWNLOAD) {
+      id = await this.replay.persistOrReuse(type, id)
+    }
+    const body = { ...payload, type, request_id: id }
+    return new Promise<Record<string, unknown>>((resolve, reject) => {
+      this.trackPending(id, resolve as (value: unknown) => void, reject, DOWNLOAD_ACK_TIMEOUT_MS)
+      try {
+        this.ws?.send(JSON.stringify(body))
+      } catch (err) {
+        this.clearPending(id)
+        reject(err instanceof Error ? err : new Error(String(err)))
+      }
+    })
+  }
+
   private doSendDownloadRequest(req: DownloadHandoffMessage): Promise<DownloadResponse> {
     if (this.ws?.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('WebSocket is not connected'))
     }
-    const id = this.nextRequestId++
+    const id = newRequestId()
     // Explicit field mapping: avoid generic key converters so header names
     // inside `headers` are never mangled.
     const payload = {
       type: req.type ?? MSG_TYPE_DOWNLOAD,
+      request_id: id,
       url: req.url,
       final_url: req.finalUrl,
       headers: req.headers,
@@ -142,23 +233,17 @@ export class WsClient {
       download_page: req.downloadPage,
     }
     return new Promise<DownloadResponse>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        if (this.pending.delete(id)) {
-          reject(new Error('Download request timed out'))
-        }
-      }, DOWNLOAD_ACK_TIMEOUT_MS)
-      this.pending.set(id, {
+      this.trackPending(
         id,
-        resolve,
+        value => resolve(value as DownloadResponse),
         reject,
-        timer,
-        sentAt: Date.now(),
-      })
+        DOWNLOAD_ACK_TIMEOUT_MS,
+        'Download request timed out',
+      )
       try {
         this.ws?.send(JSON.stringify(payload))
       } catch (err) {
-        this.pending.delete(id)
-        clearTimeout(timer)
+        this.clearPending(id)
         reject(err instanceof Error ? err : new Error(String(err)))
       }
     })
@@ -286,7 +371,14 @@ export class WsClient {
       // storage read failure: proceed with empty secret (MVP mode).
     }
     try {
-      this.ws.send(JSON.stringify({ type: MSG_TYPE_AUTH, secret }))
+      this.ws.send(
+        JSON.stringify({
+          type: MSG_TYPE_AUTH,
+          secret,
+          protocol_version: PROTOCOL_VERSION,
+          client_version: CLIENT_VERSION,
+        }),
+      )
       this.authSentAt = Date.now()
       this.authSecretNonEmpty = secret !== ''
     } catch (err) {
@@ -304,13 +396,13 @@ export class WsClient {
     }
     if (!data || typeof data !== 'object') return
     const msg = data as Record<string, unknown>
-    if (msg.type === MSG_TYPE_DOWNLOAD_ACK) {
-      const resp = msg as unknown as DownloadResponse
-      // First successful ack implies pairing succeeded (backend only reaches
-      // the message loop after auth validation when a secret is set).
-      if (resp.success && !connectionState.paired) {
+    if (msg.type === MSG_TYPE_AUTH_ACK) {
+      const parsed = parseAuthAck(msg)
+      connectionState.capabilities = parsed.capabilities ?? []
+      connectionState.protocolVersion = parsed.protocolVersion
+      connectionState.hostVersion = parsed.hostVersion
+      if (!connectionState.paired) {
         connectionState.paired = true
-        // Push pairing status change to the popup (if open).
         const pairStatus: PairStatusMessage = {
           paired: connectionState.paired,
           status: connectionState.status,
@@ -318,40 +410,61 @@ export class WsClient {
         }
         void sendMessage('pair:status', pairStatus, 'popup').catch(() => {})
       }
-      // Ack resolves the oldest pending request. This relies on a
-      // single-flight assumption: only one download request is in flight per
-      // socket at a time. The Go backend (server.go handleConn) does not echo
-      // a request id, so FIFO is the only correlation strategy. sendDownloadRequest
-      // serializes all callers via sendChain to enforce this invariant.
-      const entry = this.firstPending()
-      if (!entry) return
-      clearTimeout(entry.timer)
-      this.pending.delete(entry.id)
-      if (resp.success) {
-        entry.resolve(resp)
-      } else {
-        entry.reject(new Error(resp.error || 'Download rejected by GoAria'))
-      }
-      // Mark connected on first ack: backend is fully responsive.
       if (connectionState.status !== 'connected') {
         this.setStatus('connected', '')
       }
-    } else if (msg.type === MSG_TYPE_AUTH_ACK) {
-      // Backend confirms auth succeeded; transition to connected immediately
-      // so interception can start without waiting for the first download_ack.
-      if (!connectionState.paired) {
+      return
+    }
+
+    const routed = this.pending.routeMessage(msg)
+    if (routed.kind === 'ignored') return
+    this.clearTimer(routed.entry.id)
+
+    if (routed.kind === 'download_ack') {
+      const resp = msg as unknown as DownloadResponse
+      if (resp.success && !connectionState.paired) {
         connectionState.paired = true
-        // Push pairing status change to the popup (if open).
-        const pairStatus = {
+        const pairStatus: PairStatusMessage = {
           paired: connectionState.paired,
           status: connectionState.status,
           wsPort: this.currentPort,
         }
-        void sendMessage('pair:status', pairStatus as any, 'popup').catch(() => {})
+        void sendMessage('pair:status', pairStatus, 'popup').catch(() => {})
+      }
+      if (resp.success) {
+        routed.entry.resolve(resp)
+      } else {
+        routed.entry.reject(new Error(resp.error || 'Download rejected by GoAria'))
       }
       if (connectionState.status !== 'connected') {
         this.setStatus('connected', '')
       }
+      return
+    }
+
+    if (routed.kind === 'protocol_error') {
+      const code = typeof msg.error_code === 'string' ? msg.error_code : MSG_TYPE_PROTOCOL_ERROR
+      routed.entry.reject(new Error(code))
+      return
+    }
+
+    const errorCode = typeof msg.error_code === 'string' ? msg.error_code : ''
+    if (
+      errorCode === 'unavailable' ||
+      errorCode === 'busy' ||
+      errorCode === 'invalid_request' ||
+      errorCode === 'idempotency_conflict' ||
+      errorCode === 'unsupported'
+    ) {
+      routed.entry.reject(new Error(errorCode))
+    } else {
+      routed.entry.resolve(msg)
+    }
+    const msgType = typeof msg.type === 'string' ? msg.type : ''
+    if (msgType === 'extractor_resolve_ack') {
+      void this.replay.remove(MSG_TYPE_EXTRACTOR_RESOLVE)
+    } else if (msgType === 'batch_download_ack') {
+      void this.replay.remove(MSG_TYPE_BATCH_DOWNLOAD)
     }
   }
 
@@ -363,6 +476,7 @@ export class WsClient {
       !this.manuallyDisconnected
     this.teardownSocket()
     this.failAllPending('WebSocket closed')
+    this.clearProtocolState()
     if (this.manuallyDisconnected) {
       this.setStatus('disconnected', '')
       return
@@ -408,18 +522,46 @@ export class WsClient {
   }
 
   private failAllPending(reason: string): void {
-    for (const entry of this.pending.values()) {
-      clearTimeout(entry.timer)
-      entry.reject(new Error(reason))
+    for (const timer of this.pendingTimers.values()) {
+      clearTimeout(timer)
     }
-    this.pending.clear()
+    this.pendingTimers.clear()
+    this.pending.failAll(reason)
   }
 
-  private firstPending(): PendingRequest | null {
-    for (const entry of this.pending.values()) {
-      return entry
+  private trackPending(
+    id: string,
+    resolve: (value: unknown) => void,
+    reject: (err: Error) => void,
+    timeoutMs: number,
+    timeoutMessage = 'Request timed out',
+  ): void {
+    const timer = setTimeout(() => {
+      const entry = this.pending.completeById(id)
+      this.pendingTimers.delete(id)
+      entry?.reject(new Error(timeoutMessage))
+    }, timeoutMs)
+    this.pendingTimers.set(id, timer)
+    this.pending.add({ id, resolve, reject })
+  }
+
+  private clearTimer(id: string): void {
+    const timer = this.pendingTimers.get(id)
+    if (timer) {
+      clearTimeout(timer)
+      this.pendingTimers.delete(id)
     }
-    return null
+  }
+
+  private clearPending(id: string): void {
+    this.clearTimer(id)
+    this.pending.completeById(id)
+  }
+
+  private clearProtocolState(): void {
+    connectionState.capabilities = []
+    connectionState.protocolVersion = 0
+    connectionState.hostVersion = ''
   }
 
   private setStatus(status: WsStatusMessage['status'], lastError: string): void {

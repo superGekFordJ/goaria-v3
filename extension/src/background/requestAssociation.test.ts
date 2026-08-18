@@ -1,0 +1,87 @@
+import { describe, expect, it } from 'vitest'
+import { createPendingMap } from './requestAssociation'
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (err: Error) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
+describe('requestAssociation', () => {
+  it('matches download_ack by request_id when present', async () => {
+    const map = createPendingMap<string>()
+    const a = deferred<string>()
+    const b = deferred<string>()
+    map.add({ id: 'a', resolve: a.resolve, reject: a.reject })
+    map.add({ id: 'b', resolve: b.resolve, reject: b.reject })
+
+    const routed = map.routeMessage({ type: 'download_ack', request_id: 'b' })
+    expect(routed.kind).toBe('download_ack')
+    if (routed.kind === 'download_ack') routed.entry.resolve('ok-b')
+
+    await expect(b.promise).resolves.toBe('ok-b')
+    expect(map.size()).toBe(1)
+  })
+
+  it('falls back to FIFO when download_ack omits request_id', async () => {
+    const map = createPendingMap<string>()
+    const first = deferred<string>()
+    const second = deferred<string>()
+    map.add({ id: '1', resolve: first.resolve, reject: first.reject })
+    map.add({ id: '2', resolve: second.resolve, reject: second.reject })
+
+    const routed = map.routeMessage({ type: 'download_ack' })
+    expect(routed.kind).toBe('download_ack')
+    if (routed.kind === 'download_ack') routed.entry.resolve('fifo')
+
+    await expect(first.promise).resolves.toBe('fifo')
+    expect(map.size()).toBe(1)
+  })
+
+  it('does not steal FIFO when protocol_error carries another id', async () => {
+    const map = createPendingMap<string>()
+    const download = deferred<string>()
+    const other = deferred<string>()
+    map.add({ id: 'dl-1', resolve: download.resolve, reject: download.reject })
+    map.add({ id: 'err-a', resolve: other.resolve, reject: other.reject })
+
+    const routed = map.routeMessage({
+      type: 'protocol_error',
+      request_id: 'err-a',
+      error_code: 'unsupported',
+    })
+    expect(routed.kind).toBe('protocol_error')
+    if (routed.kind === 'protocol_error') {
+      routed.entry.reject(new Error('unsupported'))
+    }
+
+    await expect(other.promise).rejects.toThrow('unsupported')
+    expect(map.size()).toBe(1)
+
+    const fifo = map.routeMessage({ type: 'download_ack' })
+    expect(fifo.kind).toBe('download_ack')
+    if (fifo.kind === 'download_ack') fifo.entry.resolve('download-ok')
+    await expect(download.promise).resolves.toBe('download-ok')
+  })
+
+  it('ignores protocol_error without request_id so FIFO stays intact', () => {
+    const map = createPendingMap<string>()
+    const download = deferred<string>()
+    map.add({ id: 'dl-1', resolve: download.resolve, reject: download.reject })
+    const routed = map.routeMessage({ type: 'protocol_error', error_code: 'unsupported' })
+    expect(routed.kind).toBe('ignored')
+    expect(map.size()).toBe(1)
+  })
+
+  it('ignores unknown server types', () => {
+    const map = createPendingMap<string>()
+    const download = deferred<string>()
+    map.add({ id: 'dl-1', resolve: download.resolve, reject: download.reject })
+    expect(map.routeMessage({ type: 'capability_update' }).kind).toBe('ignored')
+    expect(map.size()).toBe(1)
+  })
+})

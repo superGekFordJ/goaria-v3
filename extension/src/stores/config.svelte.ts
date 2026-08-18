@@ -8,6 +8,20 @@ export const MSG_TYPE_AUTH = 'auth'
 export const MSG_TYPE_AUTH_ACK = 'auth_ack'
 export const MSG_TYPE_DOWNLOAD = 'download'
 export const MSG_TYPE_DOWNLOAD_ACK = 'download_ack'
+export const MSG_TYPE_PING = 'ping'
+export const MSG_TYPE_EXTRACTOR_RESOLVE = 'extractor_resolve'
+export const MSG_TYPE_EXTRACTOR_RESOLVE_ACK = 'extractor_resolve_ack'
+export const MSG_TYPE_BATCH_DOWNLOAD = 'batch_download'
+export const MSG_TYPE_BATCH_DOWNLOAD_ACK = 'batch_download_ack'
+export const MSG_TYPE_PROTOCOL_ERROR = 'protocol_error'
+export const MSG_TYPE_CAPABILITY_UPDATE = 'capability_update'
+
+export const PROTOCOL_VERSION = 2
+export const CLIENT_VERSION = '0.1.1'
+
+export const CAP_REQUEST_ID = 'request_id'
+export const CAP_EXTRACTOR_RESOLVE = 'extractor.resolve'
+export const CAP_EXTRACTOR_BATCH = 'extractor.batch'
 
 // Aligned with server.go upgrader.Subprotocols.
 export const WS_SUBPROTOCOL = 'goaria-extension'
@@ -39,6 +53,10 @@ export const PENDING_DECISION_TTL_MS = 30_000 // 30s
 
 // storage.session key prefix for pending download decisions (Chrome MV3 path B).
 export const STORAGE_KEY_PENDING_PREFIX = 'pending_'
+
+// storage.session key prefix for replayable extractor request ids (SW restart).
+export const STORAGE_KEY_REPLAY_PREFIX = 'replay_'
+export const REPLAY_TTL_MS = 60_000
 
 class ConfigState {
   autoCapture = $state(true)
