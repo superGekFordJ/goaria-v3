@@ -99,7 +99,8 @@ func (s *Server) SetHostVersion(version string) {
 	s.hostVersion = version
 }
 
-// SetLinkage injects optional extractor seams. Production in this slice does not call it.
+// SetLinkage injects optional extractor seams after NewServer.
+// Already-authed connections keep the capability snapshot from auth_ack.
 func (s *Server) SetLinkage(l Linkage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -253,12 +254,14 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 	s.mu.RUnlock()
 	caps := s.computeCapabilities(secret)
 	sc.setGrantedCaps(caps)
-	if err := sc.writeJSON(AuthAck{
+	ack := AuthAck{
 		Type:            MsgTypeAuthAck,
 		ProtocolVersion: ProtocolVersion,
 		HostVersion:     hostVersion,
 		Capabilities:    caps,
-	}); err != nil {
+	}
+	ack.Match = s.matchWireForAck(caps)
+	if err := sc.writeJSON(ack); err != nil {
 		return
 	}
 
@@ -281,25 +284,9 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 		case MsgTypeDownload:
 			s.dispatchDownload(sc, env, raw)
 		case MsgTypeExtractorResolve:
-			s.dispatchAsync(opCtx, connCtx, sc, env, raw, MsgTypeExtractorResolveAck, CapExtractorResolve, true, func(ctx context.Context, env RequestEnvelope, raw json.RawMessage) StubAck {
-				s.mu.RLock()
-				r := s.linkage.Resolver
-				s.mu.RUnlock()
-				if r == nil {
-					return StubAck{ErrorCode: ErrCodeUnavailable}
-				}
-				return r.HandleResolve(ctx, env, raw)
-			})
+			s.dispatchAsync(opCtx, connCtx, sc, env, raw, MsgTypeExtractorResolveAck, CapExtractorResolve, true)
 		case MsgTypeBatchDownload:
-			s.dispatchAsync(opCtx, connCtx, sc, env, raw, MsgTypeBatchDownloadAck, CapExtractorBatch, false, func(ctx context.Context, env RequestEnvelope, raw json.RawMessage) StubAck {
-				s.mu.RLock()
-				c := s.linkage.Committer
-				s.mu.RUnlock()
-				if c == nil {
-					return StubAck{ErrorCode: ErrCodeUnavailable}
-				}
-				return c.HandleCommit(ctx, env, raw)
-			})
+			s.dispatchAsync(opCtx, connCtx, sc, env, raw, MsgTypeBatchDownloadAck, CapExtractorBatch, false)
 		case MsgTypeAuth, MsgTypePing:
 			// Post-handshake no-ops: the real client always sends auth after open,
 			// including on the MVP skip-auth path; tests also write ping first.
@@ -341,7 +328,6 @@ func (s *Server) dispatchAsync(
 	ackType string,
 	requiredCap string,
 	isResolve bool,
-	run func(context.Context, RequestEnvelope, json.RawMessage) StubAck,
 ) {
 	reqID := env.RequestID
 	if !validRequestID(reqID) {
@@ -360,6 +346,9 @@ func (s *Server) dispatchAsync(
 	st, cached, wait := s.idemp.lookup(gen, env.Type, reqID, digest)
 	switch st {
 	case idempHit:
+		if isResolve {
+			cached = s.rewriteCachedResolve(cached)
+		}
 		_ = sc.writeRaw(cached)
 		return
 	case idempConflict:
@@ -388,6 +377,9 @@ func (s *Server) dispatchAsync(
 	case idempHit:
 		s.releaseGate(isResolve)
 		sc.releaseInFlight()
+		if isResolve {
+			cached = s.rewriteCachedResolve(cached)
+		}
 		_ = sc.writeRaw(cached)
 		return
 	case idempConflict:
@@ -414,7 +406,7 @@ func (s *Server) dispatchAsync(
 			if rec := recover(); rec != nil {
 				func() {
 					defer func() { _ = recover() }()
-					log.Printf("[Extension] async handler panic: %v", rec)
+					log.Printf("[Extension] async handler panic: %T", rec)
 					busy := marshalBusyAck(ackType, reqID)
 					s.idemp.abandon(gen, env.Type, reqID, digest, busy)
 					if connCtx.Err() == nil {
@@ -423,17 +415,34 @@ func (s *Server) dispatchAsync(
 				}()
 			}
 		}()
-		stub := run(opCtx, env, json.RawMessage(raw))
-		if opCtx.Err() != nil {
-			busy := marshalBusyAck(ackType, reqID)
-			s.idemp.abandon(gen, env.Type, reqID, digest, busy)
-			if connCtx.Err() == nil {
-				_ = sc.writeRaw(busy)
+		var data []byte
+		var err error
+		skipIdemp := false
+		if isResolve {
+			result := s.runResolve(opCtx, env, json.RawMessage(raw))
+			if opCtx.Err() != nil {
+				busy := marshalBusyAck(ackType, reqID)
+				s.idemp.abandon(gen, env.Type, reqID, digest, busy)
+				if connCtx.Err() == nil {
+					_ = sc.writeRaw(busy)
+				}
+				return
 			}
-			return
+			ack := s.resolveAckFromResult(ackType, reqID, result)
+			data, err = json.Marshal(ack)
+		} else {
+			result := s.runCommit(opCtx, env, json.RawMessage(raw))
+			if opCtx.Err() != nil {
+				busy := marshalBusyAck(ackType, reqID)
+				s.idemp.abandon(gen, env.Type, reqID, digest, busy)
+				if connCtx.Err() == nil {
+					_ = sc.writeRaw(busy)
+				}
+				return
+			}
+			skipIdemp = result.SkipIdempotency
+			data, err = marshalBatchAck(s.batchAckFromResult(ackType, reqID, result))
 		}
-		ack := s.typedAckFromStub(ackType, reqID, stub)
-		data, err := json.Marshal(ack)
 		if err != nil {
 			busy := marshalBusyAck(ackType, reqID)
 			s.idemp.abandon(gen, env.Type, reqID, digest, busy)
@@ -442,7 +451,11 @@ func (s *Server) dispatchAsync(
 			}
 			return
 		}
-		s.idemp.complete(gen, env.Type, reqID, digest, data)
+		if skipIdemp {
+			s.idemp.abandon(gen, env.Type, reqID, digest, data)
+		} else {
+			s.idemp.complete(gen, env.Type, reqID, digest, data)
+		}
 		if connCtx.Err() == nil {
 			_ = sc.writeRaw(data)
 		}
@@ -517,19 +530,150 @@ func (s *Server) releaseGate(isResolve bool) {
 	s.batchInFlight.Add(-1)
 }
 
-func (s *Server) typedAckFromStub(ackType, requestID string, stub StubAck) TypedAck {
-	ack := TypedAck{Type: ackType, RequestID: requestID, ErrorCode: stub.ErrorCode}
-	if stub.Error == "" {
+func (s *Server) runResolve(ctx context.Context, env RequestEnvelope, raw json.RawMessage) ResolveResult {
+	s.mu.RLock()
+	r := s.linkage.Resolver
+	s.mu.RUnlock()
+	if r == nil {
+		return ResolveResult{ErrorCode: ErrCodeUnavailable}
+	}
+
+	return r.HandleResolve(ctx, env, raw)
+}
+
+func (s *Server) runCommit(ctx context.Context, env RequestEnvelope, raw json.RawMessage) CommitResult {
+	s.mu.RLock()
+	c := s.linkage.Committer
+	s.mu.RUnlock()
+	if c == nil {
+		return CommitResult{ErrorCode: ErrCodeUnavailable}
+	}
+
+	return c.HandleCommit(ctx, env, raw)
+}
+
+func (s *Server) batchAckFromResult(ackType, requestID string, result CommitResult) BatchDownloadAck {
+	ack := BatchDownloadAck{
+		Type:      ackType,
+		RequestID: requestID,
+		Success:   result.Success,
+		ErrorCode: result.ErrorCode,
+	}
+	if result.Error != "" {
+		ack.Error = s.redactLinkageError(result.Error)
+	}
+	if result.ErrorCode != "" {
 		return ack
 	}
+	ack.GroupKey = result.GroupKey
+	ack.SucceededItemIDs = result.SucceededItemIDs
+	if ack.SucceededItemIDs == nil {
+		ack.SucceededItemIDs = []string{}
+	}
+	ack.DuplicateItemIDs = result.DuplicateItemIDs
+	if ack.DuplicateItemIDs == nil {
+		ack.DuplicateItemIDs = []string{}
+	}
+	if len(result.ErrorsByItemID) > 0 {
+		ack.ErrorsByItemID = SanitizeCommitItemErrors(result.ErrorsByItemID)
+	}
+
+	return ack
+}
+
+func marshalBatchAck(ack BatchDownloadAck) ([]byte, error) {
+	if ack.ErrorCode != "" {
+		return json.Marshal(TypedAck{
+			Type:      ack.Type,
+			RequestID: ack.RequestID,
+			ErrorCode: ack.ErrorCode,
+			Error:     ack.Error,
+		})
+	}
+	type successWire struct {
+		Type             string            `json:"type"`
+		RequestID        string            `json:"request_id,omitempty"`
+		Success          bool              `json:"success"`
+		GroupKey         string            `json:"group_key,omitempty"`
+		SucceededItemIDs []string          `json:"succeeded_item_ids"`
+		DuplicateItemIDs []string          `json:"duplicate_item_ids"`
+		ErrorsByItemID   map[string]string `json:"errors_by_item_id,omitempty"`
+		Error            string            `json:"error,omitempty"`
+	}
+
+	return json.Marshal(successWire{
+		Type:             ack.Type,
+		RequestID:        ack.RequestID,
+		Success:          ack.Success,
+		GroupKey:         ack.GroupKey,
+		SucceededItemIDs: ack.SucceededItemIDs,
+		DuplicateItemIDs: ack.DuplicateItemIDs,
+		ErrorsByItemID:   ack.ErrorsByItemID,
+		Error:            ack.Error,
+	})
+}
+
+func (s *Server) rewriteCachedResolve(cached []byte) []byte {
+	s.mu.RLock()
+	r := s.linkage.Resolver
+	s.mu.RUnlock()
+	if r == nil {
+		return cached
+	}
+	rewritten := r.RewriteCachedResolve(cached)
+	if len(rewritten) == 0 {
+		return cached
+	}
+
+	return rewritten
+}
+
+func (s *Server) resolveAckFromResult(ackType, requestID string, result ResolveResult) ExtractorResolveAck {
+	ack := ExtractorResolveAck{
+		Type:      ackType,
+		RequestID: requestID,
+		Items:     make([]ExtractorResolveAckItem, 0, len(result.Items)),
+	}
+	if result.ErrorCode != "" {
+		ack.ErrorCode = result.ErrorCode
+		if result.Error != "" {
+			ack.Error = s.redactLinkageError(result.Error)
+		}
+
+		return ack
+	}
+	matched := result.Matched
+	ack.Matched = &matched
+	if result.Matched {
+		ack.SessionID = result.SessionID
+		ack.TotalCount = result.TotalCount
+		ack.TotalBytes = result.TotalBytes
+	}
+	for _, item := range result.Items {
+		ack.Items = append(ack.Items, ExtractorResolveAckItem(item))
+	}
+
+	return ack
+}
+
+func (s *Server) redactLinkageError(message string) string {
 	s.mu.RLock()
 	redactor := s.linkage.Redactor
 	s.mu.RUnlock()
 	if redactor == nil {
-		return ack
+		return ""
 	}
-	ack.Error = redactor.Redact(errors.New(stub.Error))
-	return ack
+
+	return redactor.Redact(errors.New(message))
+}
+
+func (s *Server) invalidateResolver() {
+	s.mu.RLock()
+	r := s.linkage.Resolver
+	s.mu.RUnlock()
+	if r != nil {
+		r.Invalidate()
+	}
 }
 
 func (s *Server) computeCapabilities(secret string) []string {
@@ -546,6 +690,41 @@ func (s *Server) computeCapabilities(secret string) []string {
 	return caps
 }
 
+// matchWireForAck attaches match when the publish gate passes. Snapshot
+// failure omits the object; auth_ack is still written and the socket stays open.
+func (s *Server) matchWireForAck(caps []string) *MatchDigestWire {
+	if !containsCap(caps, CapExtractorResolve) || !s.digestsReady() {
+		return nil
+	}
+	s.mu.RLock()
+	provider := s.linkage.Digests
+	s.mu.RUnlock()
+	if provider == nil {
+		return nil
+	}
+	snap, ok := provider.Snapshot()
+	if !ok {
+		return nil
+	}
+	if snap.Version != MatchDigestVersion || !validMatchSaltHex(snap.Salt) {
+		return nil
+	}
+	exact := snap.ExactDigests
+	if exact == nil {
+		exact = []string{}
+	}
+	sub := snap.SubdomainDigests
+	if sub == nil {
+		sub = []string{}
+	}
+	return &MatchDigestWire{
+		DigestVersion:    snap.Version,
+		Salt:             snap.Salt,
+		ExactDigests:     exact,
+		SubdomainDigests: sub,
+	}
+}
+
 func (s *Server) resolverReady() bool {
 	s.mu.RLock()
 	r := s.linkage.Resolver
@@ -558,6 +737,36 @@ func (s *Server) committerReady() bool {
 	c := s.linkage.Committer
 	s.mu.RUnlock()
 	return c != nil && c.Ready()
+}
+
+func (s *Server) digestsReady() bool {
+	s.mu.RLock()
+	d := s.linkage.Digests
+	s.mu.RUnlock()
+	return d != nil && d.Ready()
+}
+
+func containsCap(caps []string, want string) bool {
+	for _, c := range caps {
+		if c == want {
+			return true
+		}
+	}
+	return false
+}
+
+func validMatchSaltHex(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= '0' && c <= '9' || c >= 'a' && c <= 'f' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validRequestID(id string) bool {
@@ -631,6 +840,7 @@ func (s *Server) Stop() {
 		_ = conn.Close()
 	}
 	s.replaceOpContext()
+	s.invalidateResolver()
 	if s.idemp != nil {
 		s.idemp.clear()
 	}
@@ -707,6 +917,7 @@ func (s *Server) NotifyUnpaired() {
 	}
 
 	s.replaceOpContext()
+	s.invalidateResolver()
 
 	if s.store != nil {
 		newSecret := s.store.GenerateSecret()

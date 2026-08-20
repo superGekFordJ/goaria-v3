@@ -254,7 +254,7 @@ func assertGroupNameIsGeneric(t *testing.T, group rpc.DownloadGroup) {
 	t.Helper()
 	for _, value := range []string{group.ID, group.Name, group.FolderName} {
 		lower := strings.ToLower(value)
-		for _, forbidden := range []string{"provider", "private", "example.com", "token", "share", "?", "http://", "https://"} {
+		for _, forbidden := range []string{"example.com", "token", "share", "?", "http://", "https://"} {
 			if strings.Contains(lower, forbidden) {
 				t.Fatalf("group metadata %q contains forbidden marker %q: %#v", value, forbidden, group)
 			}

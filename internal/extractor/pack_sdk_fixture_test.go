@@ -3,8 +3,6 @@ package extractor_test
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -18,11 +16,12 @@ import (
 
 func TestHostCallFixturePackVerifiesAndRunsThroughDispatcher(t *testing.T) {
 	assets, pack := verifiedHostCallFixturePack(t)
-	registry, rejections := extractor.NewRegistry([]extractor.EmbeddedPack{{
+	resolver := fixtureHostPolicyResolver(pack)
+	registry, rejections := extractor.NewRegistryWithHostPolicyResolver([]extractor.EmbeddedPack{{
 		ManifestJSON: assets.ManifestJSON,
 		Payload:      assets.Payload,
 		Signature:    assets.Signature,
-	}}, policyForFixture(assets.PublicKey))
+	}}, policyForFixture(assets.PublicKey), resolver)
 	if len(rejections) != 0 {
 		t.Fatalf("NewRegistry() rejections = %#v", rejections)
 	}
@@ -32,7 +31,8 @@ func TestHostCallFixturePackVerifiesAndRunsThroughDispatcher(t *testing.T) {
 
 	brokerTransport := &fixtureHTTPTransport{body: `{"ok":true,"item":"fixture-item"}`}
 	runner := extractor.NewRunnerWithConfig(extractor.RunnerConfig{
-		HTTPBroker: extractor.NewHTTPBroker(extractor.HTTPBrokerConfig{Transport: brokerTransport}),
+		HTTPBroker:         extractor.NewHTTPBroker(extractor.HTTPBrokerConfig{Transport: brokerTransport, HostPolicyResolver: resolver}),
+		HostPolicyResolver: resolver,
 	})
 	dispatcher := extractor.NewAddTaskDispatcher(extractor.AddTaskDispatcherConfig{
 		Registry: registry,
@@ -62,6 +62,9 @@ func TestHostCallFixturePackVerifiesAndRunsThroughDispatcher(t *testing.T) {
 	if item.AuthProfileRef != "" || item.HeaderProfileRef != "" {
 		t.Fatalf("fixture item returned auth/header refs unexpectedly: %#v", item)
 	}
+	if item.MimeType != "application/octet-stream" {
+		t.Fatalf("item mime = %q, want application/octet-stream", item.MimeType)
+	}
 	joinedMetadata := strings.ToLower(strings.Join(mapValues(item.Metadata), " "))
 	for _, forbidden := range []string{"authorization", "cookie", "token", "secret", "raw"} {
 		if strings.Contains(joinedMetadata, forbidden) {
@@ -71,23 +74,12 @@ func TestHostCallFixturePackVerifiesAndRunsThroughDispatcher(t *testing.T) {
 }
 
 func TestHostCallFixtureDeniedPolicyDoesNotCallBroker(t *testing.T) {
-	assets, err := packbuilder.BuildSignedHostCallFixture()
-	if err != nil {
-		t.Fatalf("BuildSignedHostCallFixture() error = %v", err)
-	}
-	manifest := assets.Manifest
-	manifest.Capabilities = []extractor.Capability{extractor.CapabilityParseWASM}
-	manifest.PayloadSHA256 = assets.PayloadSHA256
-	manifestJSON := mustJSON(t, manifest)
-	_, privateKey := packbuilder.DeterministicFixtureKeyPair()
-	assets.ManifestJSON = manifestJSON
-	assets.Signature = ed25519.Sign(privateKey, manifestJSON)
-
-	registry, rejections := extractor.NewRegistry([]extractor.EmbeddedPack{{
+	assets, pack := verifiedHostCallFixturePack(t)
+	registry, rejections := extractor.NewRegistryWithHostPolicyResolver([]extractor.EmbeddedPack{{
 		ManifestJSON: assets.ManifestJSON,
 		Payload:      assets.Payload,
 		Signature:    assets.Signature,
-	}}, policyForFixture(assets.PublicKey))
+	}}, policyForFixture(assets.PublicKey), fixtureHostPolicyResolver(pack))
 	if len(rejections) != 0 {
 		t.Fatalf("NewRegistry() rejections = %#v", rejections)
 	}
@@ -95,7 +87,8 @@ func TestHostCallFixtureDeniedPolicyDoesNotCallBroker(t *testing.T) {
 	dispatcher := extractor.NewAddTaskDispatcher(extractor.AddTaskDispatcherConfig{
 		Registry: registry,
 		Runner: extractor.NewRunnerWithConfig(extractor.RunnerConfig{
-			HTTPBroker: extractor.NewHTTPBroker(extractor.HTTPBrokerConfig{Transport: transport}),
+			HTTPBroker:         extractor.NewHTTPBroker(extractor.HTTPBrokerConfig{Transport: transport}),
+			HostPolicyResolver: fixtureHostPolicyResolver(pack),
 		}),
 	})
 
@@ -111,47 +104,6 @@ func TestHostCallFixtureDeniedPolicyDoesNotCallBroker(t *testing.T) {
 	}
 	if len(resolution.Items) != 1 || resolution.Items[0].URL != packbuilder.HostCallFixtureItemURL {
 		t.Fatalf("resolution items = %#v", resolution.Items)
-	}
-}
-
-func TestHostCallFixtureDeniedDomainDoesNotCallBroker(t *testing.T) {
-	assets, err := packbuilder.BuildSignedHostCallFixture()
-	if err != nil {
-		t.Fatalf("BuildSignedHostCallFixture() error = %v", err)
-	}
-	manifest := assets.Manifest
-	manifest.Domains = []extractor.DomainRule{{Host: "example.invalid", IncludeSubdomains: true}}
-	manifest.PayloadSHA256 = assets.PayloadSHA256
-	manifestJSON := mustJSON(t, manifest)
-	_, privateKey := packbuilder.DeterministicFixtureKeyPair()
-	assets.ManifestJSON = manifestJSON
-	assets.Signature = ed25519.Sign(privateKey, manifestJSON)
-
-	registry, rejections := extractor.NewRegistry([]extractor.EmbeddedPack{{
-		ManifestJSON: assets.ManifestJSON,
-		Payload:      assets.Payload,
-		Signature:    assets.Signature,
-	}}, policyForFixture(assets.PublicKey))
-	if len(rejections) != 0 {
-		t.Fatalf("NewRegistry() rejections = %#v", rejections)
-	}
-	transport := &fixtureHTTPTransport{err: errors.New("transport must not be called")}
-	dispatcher := extractor.NewAddTaskDispatcher(extractor.AddTaskDispatcherConfig{
-		Registry: registry,
-		Runner: extractor.NewRunnerWithConfig(extractor.RunnerConfig{
-			HTTPBroker: extractor.NewHTTPBroker(extractor.HTTPBrokerConfig{Transport: transport}),
-		}),
-	})
-
-	resolution, err := dispatcher.Resolve(context.Background(), packbuilder.HostCallFixtureShareURL)
-	if err != nil {
-		t.Fatalf("Resolve() error = %v", err)
-	}
-	if resolution.Matched || len(resolution.Items) != 0 {
-		t.Fatalf("resolution = %#v, want no-match direct fallback for denied registry domain", resolution)
-	}
-	if transport.Count() != 0 {
-		t.Fatalf("fake broker transport calls = %d, want 0", transport.Count())
 	}
 }
 
@@ -197,6 +149,40 @@ func verifiedHostCallFixturePack(t *testing.T) (packbuilder.SignedPackAssets, ex
 	}
 
 	return assets, pack
+}
+
+func fixtureHostPolicyResolver(pack extractor.VerifiedPack) extractor.HostPolicyResolver {
+	return fixturePolicyResolver{policy: extractor.ResolvedHostPolicy{
+		PolicyID:            "hpr-fixture001",
+		PolicyVersion:       "fixture-1",
+		PolicySHA256:        strings.Repeat("a", 64),
+		PackIdentity:        pack.Identity,
+		DomainPolicyRefs:    []string{packbuilder.HostCallFixtureDomainPolicyRef},
+		BrokerPolicyRefs:    []string{packbuilder.HostCallFixtureBrokerPolicyRef},
+		AllowedCapabilities: []extractor.Capability{extractor.CapabilityParseWASM, extractor.CapabilityHTTPFetch},
+		IngressDomains:      []extractor.DomainRule{{Host: "share.fixture.invalid"}},
+		BrokerDomains:       []extractor.DomainRule{{Host: "api.fixture.invalid"}, {Host: "download.fixture.invalid"}},
+		OutputDomains: []extractor.HostPolicyOutputRule{{
+			Host:         "download.fixture.invalid",
+			PathPrefixes: []string{"/"},
+		}},
+		Endpoints: []extractor.HostPolicyEndpoint{{
+			BrokerPolicyRef:  packbuilder.HostCallFixtureBrokerPolicyRef,
+			EndpointRef:      packbuilder.HostCallFixtureEndpointRef,
+			URLTemplate:      packbuilder.HostCallFixtureAPIBaseURL + "/{id}",
+			Methods:          []string{http.MethodGet},
+			TimeoutMillis:    1000,
+			MaxResponseBytes: 4096,
+		}},
+	}}
+}
+
+type fixturePolicyResolver struct {
+	policy extractor.ResolvedHostPolicy
+}
+
+func (r fixturePolicyResolver) ResolveHostPolicy(context.Context, extractor.HostPolicyRequest) (extractor.ResolvedHostPolicy, error) {
+	return r.policy, nil
 }
 
 func policyForFixture(publicKey ed25519.PublicKey) extractor.TrustPolicy {
@@ -253,14 +239,4 @@ func mapValues(input map[string]string) []string {
 	}
 
 	return values
-}
-
-func mustJSON(t *testing.T, value any) []byte {
-	t.Helper()
-	raw, err := json.Marshal(value)
-	if err != nil {
-		t.Fatalf("json.Marshal() error = %v", err)
-	}
-
-	return raw
 }

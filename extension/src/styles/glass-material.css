@@ -534,3 +534,348 @@ body {
   padding: 4px 10px;
   font-size: 12px;
 }
+
+/* === Shared shadow stack (toast above capsule) === */
+.shadow-root-app {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.extractor-capsule-wrapper {
+  pointer-events: auto;
+  width: 260px;
+  color: var(--app-text, #e4e4e7);
+  font-family: var(--font-family-ui, system-ui, sans-serif);
+}
+
+.extractor-capsule {
+  width: 100%;
+}
+
+.extractor-capsule-inner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  width: 100%;
+}
+
+.extractor-capsule-beam,
+.extractor-capsule-complete {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.extractor-capsule-beam {
+  box-shadow: 0 0 14px color-mix(in srgb, var(--skin-focus-beam, #06ffd5) 55%, transparent);
+  animation: extractor-capsule-pulse 1.6s ease-in-out infinite;
+}
+
+.extractor-capsule-complete {
+  box-shadow: 0 0 16px color-mix(in srgb, var(--status-complete, #06ffd5) 70%, transparent);
+}
+
+@keyframes extractor-capsule-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.015);
+  }
+}
+
+.extractor-capsule-row {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+:where(button.extractor-capsule-action, button.extractor-capsule-dismiss) {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+}
+
+.extractor-capsule-action {
+  flex: 1;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--app-text, #e4e4e7);
+}
+
+.extractor-capsule-action:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.extractor-capsule-dismiss {
+  flex-shrink: 0;
+  cursor: pointer;
+  width: 22px;
+  height: 22px;
+  font-size: 12px;
+  line-height: 22px;
+  text-align: center;
+  opacity: 0.7;
+}
+
+.extractor-capsule-dismiss:hover,
+.extractor-capsule-dismiss:focus-visible {
+  opacity: 1;
+}
+
+.extractor-capsule-hint {
+  position: relative;
+  z-index: 1;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.extractor-capsule-chip {
+  position: relative;
+  z-index: 1;
+  padding: 6px 8px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shadow-root-app.is-picker-open {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1;
+}
+
+.extractor-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--app-text, #e4e4e7);
+  font-family: var(--font-family-ui, system-ui, sans-serif);
+}
+
+.extractor-picker-scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+}
+
+.extractor-picker-panel {
+  position: relative;
+  z-index: 1;
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(560px, calc(100vh - 32px));
+  animation: extractor-picker-in 180ms ease-out;
+}
+
+@keyframes extractor-picker-in {
+  from {
+    transform: translateY(12px);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.extractor-picker-shell {
+  width: 100%;
+}
+
+.extractor-picker-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  width: 100%;
+  max-height: min(560px, calc(100vh - 32px));
+}
+
+.extractor-picker-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.extractor-picker-title {
+  flex: 1;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+:where(
+  .extractor-picker-overlay button,
+  .extractor-picker-overlay input[type='checkbox'],
+  .extractor-picker-overlay input[type='text']
+) {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  color: inherit;
+}
+
+:where(.extractor-picker-overlay input[type='checkbox']) {
+  appearance: auto;
+  -webkit-appearance: auto;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.extractor-picker-close {
+  flex-shrink: 0;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  width: 22px;
+  height: 22px;
+  line-height: 22px;
+  text-align: center;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.extractor-picker-close:hover,
+.extractor-picker-close:focus-visible {
+  opacity: 1;
+}
+
+.extractor-picker-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.extractor-picker-textbtn {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-size: 12px;
+  text-decoration: underline;
+}
+
+.extractor-picker-textbtn:disabled {
+  cursor: default;
+  opacity: 0.6;
+  text-decoration: none;
+}
+
+.extractor-picker-hint {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.extractor-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+  min-height: 120px;
+  max-height: 240px;
+}
+
+.extractor-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.extractor-picker-row.is-active {
+  outline: 1px solid color-mix(in srgb, var(--skin-focus-beam, #06ffd5) 55%, transparent);
+}
+
+.extractor-picker-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.extractor-picker-size {
+  flex-shrink: 0;
+  opacity: 0.75;
+}
+
+.extractor-picker-summary {
+  font-size: 12px;
+}
+
+.extractor-picker-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.extractor-picker-folder {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--app-text, #e4e4e7) 22%, transparent);
+  border-radius: 8px;
+  background: transparent;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.extractor-picker-folder:disabled {
+  opacity: 0.55;
+}
+
+.extractor-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.extractor-picker-btn {
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 12px;
+  background: color-mix(in srgb, var(--app-text, #e4e4e7) 12%, transparent);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.extractor-picker-btn.is-primary {
+  background: color-mix(in srgb, var(--skin-focus-beam, #06ffd5) 28%, transparent);
+}
+
+.extractor-picker-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+

@@ -45,10 +45,14 @@ func VerifyEmbeddedPack(pack EmbeddedPack, policy TrustPolicy) (VerifiedPack, er
 		return VerifiedPack{}, errors.New("trust policy has no trusted public keys")
 	}
 	if pack.AssetSHA256 != "" {
-		if err := validateSHA256Hex("asset_sha256", pack.AssetSHA256); err != nil {
+		if err := validateLowerHexSHA256Field("asset_sha256", pack.AssetSHA256); err != nil {
 			return VerifiedPack{}, err
 		}
 	}
+
+	manifestSHA256 := sha256HexString(pack.ManifestJSON)
+	payloadSHA256 := sha256HexString(pack.Payload)
+	signatureSHA256 := sha256HexString(pack.Signature)
 
 	manifest, err := decodeManifestStrict(pack.ManifestJSON)
 	if err != nil {
@@ -57,17 +61,13 @@ func VerifyEmbeddedPack(pack EmbeddedPack, policy TrustPolicy) (VerifiedPack, er
 	if err := ValidateManifest(manifest, policy); err != nil {
 		return VerifiedPack{}, fmt.Errorf("validate manifest: %w", err)
 	}
-	manifestSHA := sha256Hex(pack.ManifestJSON)
-	payloadSHA := sha256Hex(pack.Payload)
-	signatureSHA := sha256Hex(pack.Signature)
-	if payloadSHA != manifest.PayloadSHA256 {
+	if payloadSHA256 != manifest.PayloadSHA256 {
 		return VerifiedPack{}, errors.New("payload sha256 does not match manifest")
 	}
-	publicKeySHA, ok := verifyAnyTrustedKey(policy.TrustedPublicKeys, pack.ManifestJSON, pack.Signature)
+	publicKeySHA256, ok := verifyAnyTrustedKey(policy.TrustedPublicKeys, pack.ManifestJSON, pack.Signature)
 	if !ok {
 		return VerifiedPack{}, errors.New("embedded pack signature verification failed")
 	}
-
 	normalized := normalizeManifest(manifest)
 
 	return VerifiedPack{
@@ -77,10 +77,10 @@ func VerifyEmbeddedPack(pack EmbeddedPack, policy TrustPolicy) (VerifiedPack, er
 			PackID:          normalized.PackID,
 			PackVersion:     normalized.PackVersion,
 			AssetSHA256:     pack.AssetSHA256,
-			ManifestSHA256:  manifestSHA,
-			PayloadSHA256:   payloadSHA,
-			SignatureSHA256: signatureSHA,
-			PublicKeySHA256: publicKeySHA,
+			ManifestSHA256:  manifestSHA256,
+			PayloadSHA256:   payloadSHA256,
+			SignatureSHA256: signatureSHA256,
+			PublicKeySHA256: publicKeySHA256,
 		},
 	}, nil
 }
@@ -107,7 +107,7 @@ func verifyAnyTrustedKey(keys []ed25519.PublicKey, message []byte, signature []b
 			continue
 		}
 		if ed25519.Verify(key, message, signature) {
-			return sha256Hex(key), true
+			return sha256HexString(key), true
 		}
 	}
 
@@ -142,7 +142,7 @@ func cloneBytes(bytes []byte) []byte {
 	return cloned
 }
 
-func sha256Hex(data []byte) string {
+func sha256HexString(data []byte) string {
 	hash := sha256.Sum256(data)
 
 	return hex.EncodeToString(hash[:])

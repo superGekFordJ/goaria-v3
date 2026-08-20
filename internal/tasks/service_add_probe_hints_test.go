@@ -81,7 +81,7 @@ func TestAddUriFromExtension_TrustedSizeFilenameSetsPayloadFirstSkip(t *testing.
 	}
 }
 
-func TestAddUriFromExtension_MissingFilenameLeavesRangeNil(t *testing.T) {
+func TestAddUriFromExtension_MissingFilenameUsesURLBasename(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		cap := &capturingAddURIEngine{}
 		svc := setupProbeHintsAddService(t, cap, false)
@@ -97,9 +97,8 @@ func TestAddUriFromExtension_MissingFilenameLeavesRangeNil(t *testing.T) {
 		if len(opts) != 1 {
 			t.Fatalf("AddUri calls = %d, want 1", len(opts))
 		}
-		if opts[0].FileSize != 0 || opts[0].SupportsRange != nil || opts[0].RangeAcquisitionMode != "" || opts[0].SkipServerProbe {
-			t.Fatalf("FileSize=%d SupportsRange=%v mode=%q skip=%v, want 0/nil/empty/false",
-				opts[0].FileSize, ptrBool(opts[0].SupportsRange), opts[0].RangeAcquisitionMode, opts[0].SkipServerProbe)
+		if opts[0].Out != "nofile.bin" {
+			t.Fatalf("Out = %q, want nofile.bin", opts[0].Out)
 		}
 	})
 
@@ -112,11 +111,15 @@ func TestAddUriFromExtension_MissingFilenameLeavesRangeNil(t *testing.T) {
 			Filename: "   ",
 			FileSize: 4096,
 		})
-		if err == nil {
-			t.Fatal("expected sanitization error for whitespace filename")
+		if err != nil {
+			t.Fatalf("AddUriFromExtension: %v", err)
 		}
-		if n := len(cap.snapshotOptions()); n != 0 {
-			t.Fatalf("AddUri calls = %d, want 0", n)
+		opts := cap.snapshotOptions()
+		if len(opts) != 1 {
+			t.Fatalf("AddUri calls = %d, want 1", len(opts))
+		}
+		if opts[0].Out != "ws.bin" {
+			t.Fatalf("Out = %q, want ws.bin", opts[0].Out)
 		}
 	})
 }
@@ -176,10 +179,10 @@ func TestAddUriFromExtension_PreservesAuthHeadersOnSkip(t *testing.T) {
 func TestAddUri_TrustedProbeExtractorLeavesRangeNil(t *testing.T) {
 	cap := &capturingAddURIEngine{}
 	svc := setupProbeHintsAddService(t, cap, false)
-	shareURL := "https://gofile.io/d/probe-hints"
+	shareURL := "https://share.fixture.invalid/d/probe-hints"
 	svc.Adapter = &fakePortAdapter{items: []ResolvedItem{{
 		SourceURL: shareURL,
-		URL:       "https://cdn.gofile.io/file.bin",
+		URL:       "https://download.fixture.invalid/file.bin",
 		Filename:  "file.bin",
 		SizeBytes: 10 * 1024 * 1024,
 		ID:        "item-1",
@@ -242,4 +245,43 @@ func containsHeader(headers []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestAddUriFromExtension_ReservedFilenameIsRenamed(t *testing.T) {
+	cap := &capturingAddURIEngine{}
+	svc := setupProbeHintsAddService(t, cap, false)
+	_, err := svc.AddUriFromExtension(extension.DownloadRequest{
+		Type:     extension.MsgTypeDownload,
+		URL:      "https://files.alpha.test/downloads/b.bin",
+		Filename: "CON.txt",
+	})
+	if err != nil {
+		t.Fatalf("AddUriFromExtension: %v", err)
+	}
+	opts := cap.snapshotOptions()
+	if len(opts) != 1 {
+		t.Fatalf("AddUri calls = %d, want 1", len(opts))
+	}
+	if opts[0].Out == "CON.txt" || opts[0].Out == "" {
+		t.Fatalf("Out = %q, want renamed non-reserved name", opts[0].Out)
+	}
+}
+
+func TestAddUriFromExtension_EmptyFilenameDeviceURLUsesDownloadBin(t *testing.T) {
+	cap := &capturingAddURIEngine{}
+	svc := setupProbeHintsAddService(t, cap, false)
+	_, err := svc.AddUriFromExtension(extension.DownloadRequest{
+		Type: extension.MsgTypeDownload,
+		URL:  "https://files.alpha.test/NUL",
+	})
+	if err != nil {
+		t.Fatalf("AddUriFromExtension: %v", err)
+	}
+	opts := cap.snapshotOptions()
+	if len(opts) != 1 {
+		t.Fatalf("AddUri calls = %d, want 1", len(opts))
+	}
+	if opts[0].Out == "" || opts[0].Out == "NUL" {
+		t.Fatalf("Out = %q, want download.bin or other non-device name", opts[0].Out)
+	}
 }

@@ -36,12 +36,7 @@ func NewRunner() *Runner {
 }
 
 func NewRunnerWithConfig(config RunnerConfig) *Runner {
-	hostImports := HostImportConfig{}
-	hostImports.HTTPBroker = config.HTTPBroker
-	hostImports.AuthResolver = config.AuthResolver
-	hostImports.HostPolicyResolver = config.HostPolicyResolver
-
-	return &Runner{hostImports: hostImports}
+	return &Runner{hostImports: HostImportConfig(config)}
 }
 
 func (r *Runner) Match(ctx context.Context, pack VerifiedPack, input MatchInput) (MatchOutput, error) {
@@ -70,6 +65,7 @@ func (r *Runner) Match(ctx context.Context, pack VerifiedPack, input MatchInput)
 }
 
 func (r *Runner) Extract(ctx context.Context, pack VerifiedPack, input ExtractInput) (ExtractOutput, error) {
+	resetLastHTTPFetchStatus(ctx)
 	if err := ValidateExtractInput(input); err != nil {
 		return ExtractOutput{}, err
 	}
@@ -89,6 +85,17 @@ func (r *Runner) Extract(ctx context.Context, pack VerifiedPack, input ExtractIn
 	}
 	if err := ValidateExtractOutput(output, pack.Manifest.ResourceLimits); err != nil {
 		return ExtractOutput{}, fmt.Errorf("validate extract output: %w", err)
+	}
+	if isAliasManifest(pack.Manifest) && len(output.Items) > 0 {
+		policy, err := resolveAliasHostPolicy(ctx, r.hostImports.HostPolicyResolver, pack.Identity, pack.Manifest)
+		if err != nil {
+			return ExtractOutput{}, fmt.Errorf("validate extract output: %w", err)
+		}
+		for i, item := range output.Items {
+			if err := policyAllowsOutputURL(policy, item.URL); err != nil {
+				return ExtractOutput{}, fmt.Errorf("validate extract output: item %d url: %w", i, err)
+			}
+		}
 	}
 
 	return output, nil
@@ -124,7 +131,7 @@ func (r *Runner) runOperation(ctx context.Context, pack VerifiedPack, operation 
 	if err != nil {
 		return nil, err
 	}
-	bridge := newHostImportBridge(pack.Manifest, pack.Identity, budget, r.hostImports)
+	bridge := newHostImportBridge(pack, budget, r.hostImports)
 	if err := bridge.instantiateHostImports(execCtx, runtime); err != nil {
 		return nil, fmt.Errorf("instantiate host imports: %w", err)
 	}

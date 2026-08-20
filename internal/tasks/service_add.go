@@ -512,13 +512,13 @@ func buildCandidateAddURIOptions(dir, out string, headers []string, split int, m
 }
 
 func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandidate, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) (string, error) {
-	out := ""
-	if candidate.out != "" {
-		safeOut, err := SafeAria2OutFilename(candidate.out)
-		if err != nil {
-			return "", err
-		}
-		out = safeOut
+	rawURL := candidate.url
+	if rawURL == "" {
+		rawURL = candidate.sourceURL
+	}
+	out, err := resolveAria2OutFilename(candidate.out, rawURL)
+	if err != nil {
+		return "", err
 	}
 
 	if err := s.preflightCandidateAuth(ctx, candidate, authState); err != nil {
@@ -549,7 +549,7 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 		group := candidate.downloadGroup.GroupCopy()
 		dir = group.Dir
 	}
-	if candidate.downloadGroup != nil {
+	if candidate.downloadGroup != nil && !candidate.callerOwnsGroupCleanup {
 		defer candidate.downloadGroup.CleanupIfUnused()
 	}
 

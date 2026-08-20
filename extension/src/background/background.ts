@@ -7,6 +7,8 @@ import { isFirefox } from '../utils/extensionInfo'
 import { FirefoxBlockingInterceptor } from '../interceptors/FirefoxBlockingInterceptor'
 import { ChromeDownloadsApiInterceptor } from '../interceptors/ChromeDownloadsApiInterceptor'
 import { initContextMenu } from './contextMenu'
+import { initTabMatcher } from './tabMatcher'
+import { initExtractorFlow, onExtractorUnpair } from './extractorFlow'
 import type {
   InterceptionToggleMessage,
   PairSecretMessage,
@@ -54,6 +56,7 @@ onMessage('pair:unpair', async () => {
   }
   wsClient.disconnect()
   connectionState.paired = false
+  await onExtractorUnpair()
   return { ok: true }
 })
 
@@ -62,6 +65,8 @@ onMessage('pair:unpair', async () => {
 // synchronously on SW restart — contextMenus.onClicked is an MV3 wake-up
 // event and must be registered before any await to avoid missing dispatches.
 initContextMenu()
+initTabMatcher()
+initExtractorFlow()
 
 // SW startup: load persisted state before connecting so the interceptor
 // uses the user's saved autoCapture setting. Awaited before connect() and

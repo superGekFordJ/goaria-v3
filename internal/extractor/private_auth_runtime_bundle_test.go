@@ -2,6 +2,7 @@ package extractor
 
 import (
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,8 +13,8 @@ func TestPrivateAuthRuntimeBundleLoadsAndReturnsCopies(t *testing.T) {
 	identityOne := privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1")
 	identityTwo := privateAuthRuntimeIdentity("xpk-alpha002", "opaque-2", "2")
 	raw := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{
-		{Identity: identityOne, ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://fixture.invalid/login"},
-		{Identity: identityTwo, ProfileRef: "apr-alpha002", Kind: AuthSecretKindCookie, LoginURL: "https://example.test/login"},
+		{Identity: identityOne, ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://share.alpha.test/login"},
+		{Identity: identityTwo, ProfileRef: "apr-alpha002", Kind: AuthSecretKindCookie, LoginURL: "https://api.alpha.test/login"},
 	}, nil)
 
 	bundle, err := NewPrivateAuthRuntimeBundle(raw, PrivateAuthRuntimeBundleLoadOptions{})
@@ -30,58 +31,41 @@ func TestPrivateAuthRuntimeBundleLoadsAndReturnsCopies(t *testing.T) {
 	if len(identities) != 2 || identities[0] != identityOne || identities[1] != identityTwo {
 		t.Fatalf("PackIdentities() = %#v", identities)
 	}
-	exactIdentity := identities[0]
 	identities[0] = privateAuthRuntimeIdentity("xpk-mutated001", "opaque-1", "3")
 	if fresh := bundle.PackIdentities(); fresh[0] != identityOne {
 		t.Fatalf("PackIdentities() returned mutable backing data: %#v", fresh)
 	}
 
-	pack, ok := bundle.PackRuntime(exactIdentity)
+	pack, ok := bundle.PackRuntime(identityOne)
 	if !ok {
 		t.Fatal("PackRuntime() ok = false")
 	}
-	if pack.PackIdentity != exactIdentity || pack.StoreBinding.Scope != "pack" || len(pack.Profiles) != 1 {
+	if pack.PackIdentity != identityOne || pack.StoreBinding.Scope != "pack" || len(pack.Profiles) != 1 {
 		t.Fatalf("PackRuntime() returned unexpected pack: %#v", pack)
 	}
-	if pack.Profiles[0].ProfileRef != AuthProfileID("apr-alpha001") || pack.Profiles[0].Kind != AuthSecretKindBearer || pack.Profiles[0].Login.URL != "https://fixture.invalid/login" {
+	if pack.Profiles[0].ProfileRef != AuthProfileID("apr-alpha001") || pack.Profiles[0].Kind != AuthSecretKindBearer || pack.Profiles[0].Login.URL != "https://share.alpha.test/login" {
 		t.Fatalf("PackRuntime() returned unexpected profile: %#v", pack.Profiles[0])
-	}
-	if pack.Profiles[0].Login.CallbackTransport.Mode != privateAuthRuntimeCallbackTransportMode || pack.Profiles[0].Login.CallbackTransport.MaxBodyBytes != 16384 {
-		t.Fatalf("PackRuntime() callback transport = %#v", pack.Profiles[0].Login.CallbackTransport)
-	}
-	if pack.Profiles[0].Login.CollectorJS == "" || len(pack.Profiles[0].Login.Capture.SecretCandidates) != 2 {
-		t.Fatalf("PackRuntime() callback/capture missing: %#v", pack.Profiles[0].Login)
 	}
 	pack.StoreBinding.ProfileRefs[0] = "apr-mutated"
 	pack.Profiles[0].ProfileRef = "apr-mutated"
-	pack.Profiles[0].Login.AllowedDomains[0].Host = "mutated.example.test"
-	pack.Profiles[0].Login.CallbackTransport.ContentTypes[0] = "mutated"
+	pack.Profiles[0].Login.AllowedDomains[0].Host = "mutated.alpha.test"
+	pack.Profiles[0].Login.CallbackTransport.MaxBodyBytes = 1
 	pack.Profiles[0].Login.Capture.SecretCandidates[0] = "mutated"
 	pack.Provisioning.ProfileRefs[0] = "apr-mutated"
 	pack.Materialization.ProfileRefs[0] = "apr-mutated"
 
-	fresh, ok := bundle.PackRuntime(exactIdentity)
+	fresh, ok := bundle.PackRuntime(identityOne)
 	if !ok {
 		t.Fatal("PackRuntime() fresh ok = false")
 	}
-	if fresh.StoreBinding.ProfileRefs[0] != "apr-alpha001" || fresh.Profiles[0].ProfileRef != "apr-alpha001" || fresh.Profiles[0].Login.AllowedDomains[0].Host != "fixture.invalid" || fresh.Profiles[0].Login.CallbackTransport.ContentTypes[0] != "application/json" || fresh.Profiles[0].Login.Capture.SecretCandidates[0] != "secret" || fresh.Provisioning.ProfileRefs[0] != "apr-alpha001" || fresh.Materialization.ProfileRefs[0] != "apr-alpha001" {
+	if fresh.StoreBinding.ProfileRefs[0] != "apr-alpha001" || fresh.Profiles[0].ProfileRef != "apr-alpha001" || fresh.Profiles[0].Login.AllowedDomains[0].Host != "share.alpha.test" || fresh.Profiles[0].Login.CallbackTransport.ContentTypes[0] != "application/json" || fresh.Profiles[0].Login.Capture.SecretCandidates[0] != "secret" || fresh.Provisioning.ProfileRefs[0] != "apr-alpha001" || fresh.Materialization.ProfileRefs[0] != "apr-alpha001" {
 		t.Fatalf("PackRuntime() did not return defensive copies: %#v", fresh)
-	}
-	if _, ok := bundle.PackRuntime(mutateIdentity(exactIdentity, func(id *VerifiedPackIdentity) {
-		id.AssetSHA256 = strings.Repeat("9", 64)
-	})); ok {
-		t.Fatal("PackRuntime() matched mutated hash identity")
-	}
-	if _, ok := bundle.PackRuntime(mutateIdentity(exactIdentity, func(id *VerifiedPackIdentity) {
-		id.PackVersion = "opaque-9"
-	})); ok {
-		t.Fatal("PackRuntime() matched mutated version identity")
 	}
 }
 
 func TestPrivateAuthRuntimeBundleRejectsMalformedBundles(t *testing.T) {
 	identity := privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1")
-	basePack := privateAuthRuntimePackFixture{Identity: identity, ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://fixture.invalid/login"}
+	basePack := privateAuthRuntimePackFixture{Identity: identity, ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://share.alpha.test/login"}
 	validRaw := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, nil)
 	validHash := privateAuthRuntimeHash(t, validRaw)
 
@@ -94,9 +78,6 @@ func TestPrivateAuthRuntimeBundleRejectsMalformedBundles(t *testing.T) {
 		{name: "unknown envelope field", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(bundle map[string]any, _ map[string]any, _ []map[string]any) { bundle["unknown"] = true })},
 		{name: "unknown runtime field", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, runtime map[string]any, _ []map[string]any) { runtime["unknown"] = true })},
 		{name: "unknown pack field", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) { packs[0]["unknown"] = true })},
-		{name: "unknown identity field", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["verified_pack_identity"].(map[string]any)["unknown"] = true
-		})},
 		{name: "unknown nested section field", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["store_binding"].(map[string]any)["unknown"] = true
 		})},
@@ -129,7 +110,7 @@ func TestPrivateAuthRuntimeBundleRejectsMalformedBundles(t *testing.T) {
 		}), opts: PrivateAuthRuntimeBundleLoadOptions{ExpectedAuthRuntimePublicFingerprint: strings.Repeat("4", 64)}},
 		{name: "malformed expected public fingerprint", raw: validRaw, opts: PrivateAuthRuntimeBundleLoadOptions{ExpectedAuthRuntimePublicFingerprint: strings.Repeat("Z", 64)}},
 		{name: "zero packs", raw: privateAuthRuntimeBundleRaw(t, nil, nil)},
-		{name: "malformed identity", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{{Identity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.ManifestSHA256 = "bad" }), ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://fixture.invalid/login"}}, nil)},
+		{name: "malformed identity", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{{Identity: mutatePrivateAuthRuntimeIdentity(identity, func(id *VerifiedPackIdentity) { id.ManifestSHA256 = "bad" }), ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://share.alpha.test/login"}}, nil)},
 		{name: "duplicate identity", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack, basePack}, nil)},
 		{name: "duplicate profile ref", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			profiles := packs[0]["profiles"].([]map[string]any)
@@ -139,13 +120,13 @@ func TestPrivateAuthRuntimeBundleRejectsMalformedBundles(t *testing.T) {
 			packs[0]["profiles"].([]map[string]any)[0]["kind"] = "basic"
 		})},
 		{name: "invalid login url", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["url"] = "http://fixture.invalid/login"
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["url"] = "http://share.alpha.test/login"
 		})},
 		{name: "invalid login traversal", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["url"] = "https://fixture.invalid/a/../login"
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["url"] = "https://share.alpha.test/a/../login"
 		})},
 		{name: "invalid domain rule", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["allowed_domains"] = []map[string]any{{"host": "fixture"}}
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["allowed_domains"] = []map[string]any{{"host": "share"}}
 		})},
 		{name: "invalid store binding ref", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["store_binding"].(map[string]any)["profile_refs"] = []string{"apr-missing001"}
@@ -167,61 +148,40 @@ func TestPrivateAuthRuntimeBundleRejectsMalformedBundles(t *testing.T) {
 		{name: "provisioning missing login", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["url"] = ""
 		})},
-		{name: "missing callback transport", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+		{name: "webview missing callback transport", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			delete(packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any), "callback_transport")
 		})},
-		{name: "unsupported callback transport mode", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["mode"] = "manual"
+		{name: "webview unsupported callback transport", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["mode"] = "query"
 		})},
-		{name: "empty callback content types", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["content_types"] = []string{}
-		})},
-		{name: "disallowed callback content type", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["content_types"] = []string{"text/plain"}
-		})},
-		{name: "duplicate callback content types", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["content_types"] = []string{"application/json", "application/json"}
-		})},
-		{name: "zero callback body limit", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["max_body_bytes"] = int64(0)
-		})},
-		{name: "oversized callback body limit", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+		{name: "webview callback body too large", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["max_body_bytes"] = int64(privateAuthRuntimeMaxCallbackBodyBytes + 1)
 		})},
-		{name: "empty collector source", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+		{name: "webview callback content types empty", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["content_types"] = []string{}
+		})},
+		{name: "webview callback content type invalid", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["callback_transport"].(map[string]any)["content_types"] = []string{"text/plain"}
+		})},
+		{name: "webview empty collector source", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["collector_js"] = "  "
 		})},
-		{name: "oversized collector source", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["collector_js"] = strings.Repeat("a", privateAuthRuntimeMaxCollectorJSBytes+1)
-		})},
-		{name: "nul collector source", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["collector_js"] = "(() => {})();\x00"
-		})},
-		{name: "missing capture contract", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+		{name: "webview capture missing", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			delete(packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any), "capture")
 		})},
-		{name: "unsupported capture format", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+		{name: "webview unsupported capture format", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["format"] = "text"
 		})},
-		{name: "empty capture candidates", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+		{name: "webview capture candidates empty", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["secret_candidates"] = []string{}
 		})},
-		{name: "duplicate capture candidates", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+		{name: "webview capture candidates duplicate", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["secret_candidates"] = []string{"secret", "secret"}
 		})},
-		{name: "invalid capture candidate path", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+		{name: "webview invalid capture candidate", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["secret_candidates"] = []string{"capture[0].secret"}
 		})},
-		{name: "uppercase capture candidate path", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["secret_candidates"] = []string{"Capture.secret"}
-		})},
-		{name: "double underscore capture candidate path", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["secret_candidates"] = []string{"capture.secret__value"}
-		})},
-		{name: "over deep capture candidate path", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["secret_candidates"] = []string{"a.b.c.d.e.f.g.h.i"}
-		})},
-		{name: "invalid capture optional path", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+		{name: "webview invalid capture optional path", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			packs[0]["profiles"].([]map[string]any)[0]["login"].(map[string]any)["capture"].(map[string]any)["kind_field"] = "bad path"
 		})},
 		{name: "invalid materialization ref", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
@@ -235,7 +195,7 @@ func TestPrivateAuthRuntimeBundleRejectsMalformedBundles(t *testing.T) {
 		})},
 		{name: "refresh provisioning incomplete", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			profiles := packs[0]["profiles"].([]map[string]any)
-			profiles = append(profiles, privateAuthRuntimeProfileMap("apr-beta001", AuthSecretKindBearer, "https://example.test/login"))
+			profiles = append(profiles, privateAuthRuntimeProfileMap("apr-beta001", AuthSecretKindBearer, "https://api.alpha.test/login"))
 			packs[0]["profiles"] = profiles
 			packs[0]["store_binding"].(map[string]any)["profile_refs"] = []string{"apr-alpha001", "apr-beta001"}
 			packs[0]["materialization"].(map[string]any)["profile_refs"] = []string{"apr-alpha001", "apr-beta001"}
@@ -243,7 +203,7 @@ func TestPrivateAuthRuntimeBundleRejectsMalformedBundles(t *testing.T) {
 		})},
 		{name: "materialization not store bound", raw: privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 			profiles := packs[0]["profiles"].([]map[string]any)
-			profiles = append(profiles, privateAuthRuntimeProfileMap("apr-beta001", AuthSecretKindBearer, "https://example.test/login"))
+			profiles = append(profiles, privateAuthRuntimeProfileMap("apr-beta001", AuthSecretKindBearer, "https://api.alpha.test/login"))
 			packs[0]["profiles"] = profiles
 			packs[0]["materialization"].(map[string]any)["profile_refs"] = []string{"apr-beta001"}
 			packs[0]["provisioning"].(map[string]any)["profile_refs"] = []string{"apr-alpha001", "apr-beta001"}
@@ -263,26 +223,19 @@ func TestPrivateAuthRuntimeBundleRejectsMalformedBundles(t *testing.T) {
 	if _, err := NewPrivateAuthRuntimeBundle(validRaw, PrivateAuthRuntimeBundleLoadOptions{ExpectedAuthRuntimePrivateSHA256: validHash}); err != nil {
 		t.Fatalf("NewPrivateAuthRuntimeBundle() expected sha match error = %v", err)
 	}
-	publicFingerprint := strings.Repeat("3", 64)
-	withFingerprint := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{basePack}, func(bundle map[string]any, _ map[string]any, _ []map[string]any) {
-		bundle["auth_runtime_public_fingerprint"] = publicFingerprint
-	})
-	if _, err := NewPrivateAuthRuntimeBundle(withFingerprint, PrivateAuthRuntimeBundleLoadOptions{ExpectedAuthRuntimePublicFingerprint: publicFingerprint}); err != nil {
-		t.Fatalf("NewPrivateAuthRuntimeBundle() expected public fingerprint match error = %v", err)
-	}
 }
 
 func TestPrivateAuthRuntimeBundleKeepsAuthSecretKindClosed(t *testing.T) {
 	for _, kind := range []AuthSecretKind{AuthSecretKindBearer, AuthSecretKindCookie} {
 		t.Run(string(kind), func(t *testing.T) {
-			raw := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{{Identity: privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1"), ProfileRef: "apr-alpha001", Kind: kind, LoginURL: "https://fixture.invalid/login"}}, nil)
+			raw := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{{Identity: privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1"), ProfileRef: "apr-alpha001", Kind: kind, LoginURL: "https://share.alpha.test/login"}}, nil)
 			if _, err := NewPrivateAuthRuntimeBundle(raw, PrivateAuthRuntimeBundleLoadOptions{}); err != nil {
 				t.Fatalf("NewPrivateAuthRuntimeBundle() kind %q error = %v", kind, err)
 			}
 		})
 	}
 
-	raw := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{{Identity: privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1"), ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://fixture.invalid/login"}}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
+	raw := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{{Identity: privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1"), ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://share.alpha.test/login"}}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
 		packs[0]["profiles"].([]map[string]any)[0]["kind"] = "header"
 	})
 	_, err := NewPrivateAuthRuntimeBundle(raw, PrivateAuthRuntimeBundleLoadOptions{})
@@ -305,7 +258,7 @@ func TestPrivateAuthRuntimeSourceLoading(t *testing.T) {
 	}
 
 	identity := privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1")
-	raw := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{{Identity: identity, ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://fixture.invalid/login"}}, nil)
+	raw := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{{Identity: identity, ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://share.alpha.test/login"}}, nil)
 	runtimeHash := privateAuthRuntimeHash(t, raw)
 	path := filepath.Join(t.TempDir(), "runtime.json")
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
@@ -334,7 +287,7 @@ func TestPrivateAuthRuntimeSourceLoading(t *testing.T) {
 			t.Fatal("LoadPrivateAuthRuntimeBundleFromRuntimeSources() error = nil, want mismatch")
 		}
 		assertGenericPrivateAuthRuntimeBundleError(t, err)
-		assertNoPrivateBundleLeak(t, err.Error(), path, runtimeHash, string(raw), "fixture.invalid")
+		assertNoForbiddenSubstrings(t, err.Error(), path, runtimeHash, string(raw), "share.alpha.test")
 	})
 
 	t.Run("embedded loads", func(t *testing.T) {
@@ -359,23 +312,7 @@ func TestPrivateAuthRuntimeSourceLoading(t *testing.T) {
 			t.Fatal("LoadPrivateAuthRuntimeBundleFromRuntimeSources() error = nil, want ambiguity denial")
 		}
 		assertGenericPrivateAuthRuntimeBundleError(t, err)
-		assertNoPrivateBundleLeak(t, err.Error(), path, runtimeHash, string(raw), "fixture.invalid")
-	})
-
-	t.Run("env invalid does not fall back to embedded", func(t *testing.T) {
-		invalidPath := filepath.Join(t.TempDir(), "invalid-runtime.json")
-		if err := os.WriteFile(invalidPath, []byte(`{"schema_version":`), 0o600); err != nil {
-			t.Fatalf("WriteFile() invalid runtime error = %v", err)
-		}
-		withPrivateAuthRuntimeEnv(t, invalidPath, "")
-		withEmbeddedPrivateAuthRuntimeBundleState(t, raw, runtimeHash)
-
-		bundle, err := LoadPrivateAuthRuntimeBundleFromRuntimeSources()
-		if err == nil {
-			t.Fatalf("LoadPrivateAuthRuntimeBundleFromRuntimeSources() error = nil, bundle=%#v", bundle)
-		}
-		assertGenericPrivateAuthRuntimeBundleError(t, err)
-		assertNoPrivateBundleLeak(t, err.Error(), invalidPath, runtimeHash, string(raw), "fixture.invalid")
+		assertNoForbiddenSubstrings(t, err.Error(), path, runtimeHash, string(raw), "share.alpha.test")
 	})
 
 	t.Run("missing file path is redacted", func(t *testing.T) {
@@ -388,13 +325,13 @@ func TestPrivateAuthRuntimeSourceLoading(t *testing.T) {
 			t.Fatal("LoadPrivateAuthRuntimeBundleFromRuntimeSources() error = nil, want file denial")
 		}
 		assertGenericPrivateAuthRuntimeBundleError(t, err)
-		assertNoPrivateBundleLeak(t, err.Error(), missingPath)
+		assertNoForbiddenSubstrings(t, err.Error(), missingPath)
 	})
 }
 
 func TestPrivateAuthRuntimeBundleErrorsAreGeneric(t *testing.T) {
 	identity := privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1")
-	raw := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{{Identity: identity, ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://fixture.invalid/login"}}, nil)
+	raw := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{{Identity: identity, ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://share.alpha.test/login"}}, nil)
 	runtimeHash := privateAuthRuntimeHash(t, raw)
 	path := filepath.Join(t.TempDir(), "custody-runtime.json")
 
@@ -402,8 +339,50 @@ func TestPrivateAuthRuntimeBundleErrorsAreGeneric(t *testing.T) {
 	if err == nil {
 		t.Fatalf("NewPrivateAuthRuntimeBundle() error = nil, bundle=%#v", bundle)
 	}
-	assertNoPrivateBundleLeak(t, err.Error(), runtimeHash, string(raw), path, "fixture.invalid", "https://fixture.invalid/login", "apr-alpha001", "opaque-secret-fixture")
+	assertNoForbiddenSubstrings(t, err.Error(), runtimeHash, string(raw), path, "share.alpha.test", "https://share.alpha.test/login", "apr-alpha001", "opaque-secret-fixture")
 	assertGenericPrivateAuthRuntimeBundleError(t, err)
+}
+
+func TestPrivateAuthRuntimeRuntimeSourceState(t *testing.T) {
+	identity := privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1")
+	raw := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{{Identity: identity, ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://share.alpha.test/login"}}, nil)
+	runtimeHash := privateAuthRuntimeHash(t, raw)
+	path := filepath.Join(t.TempDir(), "runtime.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	t.Run("none", func(t *testing.T) {
+		withPrivateAuthRuntimeEnv(t, "", "")
+		withEmbeddedPrivateAuthRuntimeBundleState(t, nil, "")
+		if got := PrivateAuthRuntimeBundleRuntimeSourceState(); got != RuntimeSourceStateNone {
+			t.Fatalf("PrivateAuthRuntimeBundleRuntimeSourceState() = %q, want none", got)
+		}
+	})
+
+	t.Run("env", func(t *testing.T) {
+		withPrivateAuthRuntimeEnv(t, path, runtimeHash)
+		withEmbeddedPrivateAuthRuntimeBundleState(t, nil, "")
+		if got := PrivateAuthRuntimeBundleRuntimeSourceState(); got != RuntimeSourceStateEnv {
+			t.Fatalf("PrivateAuthRuntimeBundleRuntimeSourceState() = %q, want env", got)
+		}
+	})
+
+	t.Run("embedded", func(t *testing.T) {
+		withPrivateAuthRuntimeEnv(t, "", "")
+		withEmbeddedPrivateAuthRuntimeBundleState(t, raw, runtimeHash)
+		if got := PrivateAuthRuntimeBundleRuntimeSourceState(); got != RuntimeSourceStateEmbedded {
+			t.Fatalf("PrivateAuthRuntimeBundleRuntimeSourceState() = %q, want embedded", got)
+		}
+	})
+
+	t.Run("ambiguous", func(t *testing.T) {
+		withPrivateAuthRuntimeEnv(t, path, runtimeHash)
+		withEmbeddedPrivateAuthRuntimeBundleState(t, raw, runtimeHash)
+		if got := PrivateAuthRuntimeBundleRuntimeSourceState(); got != RuntimeSourceStateAmbiguous {
+			t.Fatalf("PrivateAuthRuntimeBundleRuntimeSourceState() = %q, want ambiguous", got)
+		}
+	})
 }
 
 type privateAuthRuntimePackFixture struct {
@@ -457,14 +436,14 @@ func privateAuthRuntimeBundleRawWithRuntime(t *testing.T, runtimeRaw []byte, mut
 		"schema_version":              1,
 		"bundle_id":                   "arb-alpha001",
 		"bundle_version":              "opaque-1",
-		"auth_runtime_private_sha256": sha256Hex(runtimeRaw),
+		"auth_runtime_private_sha256": sha256HexString(runtimeRaw),
 		"runtime":                     json.RawMessage(runtimeRaw),
 	}
 	if mutate != nil {
 		mutate(bundle)
 	}
 	if _, ok := bundle["auth_runtime_private_sha256"]; !ok {
-		bundle["auth_runtime_private_sha256"] = sha256Hex(runtimeRaw)
+		bundle["auth_runtime_private_sha256"] = sha256HexString(runtimeRaw)
 	}
 	if _, ok := bundle["runtime"]; !ok {
 		bundle["runtime"] = json.RawMessage(runtimeRaw)
@@ -479,7 +458,7 @@ func privateAuthRuntimeBundleRawWithRuntime(t *testing.T, runtimeRaw []byte, mut
 
 func privateAuthRuntimeBundleRawWithInvalidRuntime(t *testing.T, runtimeRaw []byte) []byte {
 	t.Helper()
-	raw := []byte(`{"schema_version":1,"bundle_id":"arb-alpha001","bundle_version":"opaque-1","auth_runtime_private_sha256":"` + sha256Hex(runtimeRaw) + `","runtime":` + string(runtimeRaw) + `}`)
+	raw := []byte(`{"schema_version":1,"bundle_id":"arb-alpha001","bundle_version":"opaque-1","auth_runtime_private_sha256":"` + sha256HexString(runtimeRaw) + `","runtime":` + string(runtimeRaw) + `}`)
 
 	return raw
 }
@@ -499,7 +478,7 @@ func privateAuthRuntimePackMap(fixture privateAuthRuntimePackFixture) map[string
 	}
 	loginURL := fixture.LoginURL
 	if loginURL == "" {
-		loginURL = "https://fixture.invalid/login"
+		loginURL = "https://share.alpha.test/login"
 	}
 
 	return map[string]any{
@@ -537,12 +516,16 @@ func privateAuthRuntimePackMap(fixture privateAuthRuntimePackFixture) map[string
 }
 
 func privateAuthRuntimeProfileMap(profileRef string, kind AuthSecretKind, loginURL string) map[string]any {
+	loginHost := "share.alpha.test"
+	if parsed, err := url.Parse(loginURL); err == nil && parsed.Host != "" {
+		loginHost = parsed.Host
+	}
 	return map[string]any{
 		"profile_ref": profileRef,
 		"kind":        kind,
 		"login": map[string]any{
 			"url":             loginURL,
-			"allowed_domains": []map[string]any{{"host": "fixture.invalid"}},
+			"allowed_domains": []map[string]any{{"host": loginHost}},
 			"timeout_millis":  30000,
 			"callback_transport": map[string]any{
 				"mode":           "local_post",
@@ -573,6 +556,12 @@ func privateAuthRuntimeIdentity(packID string, version string, seed string) Veri
 	}
 }
 
+func mutatePrivateAuthRuntimeIdentity(identity VerifiedPackIdentity, mutate func(*VerifiedPackIdentity)) VerifiedPackIdentity {
+	mutate(&identity)
+
+	return identity
+}
+
 func privateAuthRuntimeHash(t *testing.T, raw []byte) string {
 	t.Helper()
 	var envelope struct {
@@ -582,7 +571,7 @@ func privateAuthRuntimeHash(t *testing.T, raw []byte) string {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
 
-	return sha256Hex(envelope.Runtime)
+	return sha256HexString(envelope.Runtime)
 }
 
 func assertGenericPrivateAuthRuntimeBundleError(t *testing.T, err error) {

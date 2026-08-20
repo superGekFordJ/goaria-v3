@@ -67,26 +67,18 @@ func (r *Registry) FindByURLWithContext(ctx context.Context, rawURL string) []Ve
 	if r == nil || len(r.packs) == 0 {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
-	host, ok := parseHTTPURLHost(rawURL)
+	host, ok := ParseHTTPURLHost(rawURL)
 	if !ok {
 		return nil
 	}
 
 	matches := make([]VerifiedPack, 0)
 	for _, pack := range r.packs {
-		if manifestMatchesHost(pack.Manifest, host) {
-			matches = append(matches, cloneVerifiedPack(pack))
-			continue
-		}
-		if !isAliasManifest(pack.Manifest) {
-			continue
-		}
-		policy, err := resolveAliasHostPolicy(ctx, r.hostPolicyResolver, pack.Identity, pack.Manifest)
-		if err != nil {
-			continue
-		}
-		if policyIngressMatchesHost(policy, host) {
+		if registryPackMatchesHost(ctx, r.hostPolicyResolver, pack, host) {
 			matches = append(matches, cloneVerifiedPack(pack))
 		}
 	}
@@ -94,7 +86,20 @@ func (r *Registry) FindByURLWithContext(ctx context.Context, rawURL string) []Ve
 	return matches
 }
 
-func parseHTTPURLHost(rawURL string) (string, bool) {
+func registryPackMatchesHost(ctx context.Context, resolver HostPolicyResolver, pack VerifiedPack, host string) bool {
+	if isAliasManifest(pack.Manifest) {
+		policy, err := resolveAliasHostPolicy(ctx, resolver, pack.Identity, pack.Manifest)
+		if err != nil {
+			return false
+		}
+
+		return policyIngressMatchesHost(policy, host)
+	}
+
+	return manifestMatchesHost(pack.Manifest, host)
+}
+
+func ParseHTTPURLHost(rawURL string) (string, bool) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return "", false

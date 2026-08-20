@@ -69,6 +69,18 @@ func allowedHTTPURLForCapability(ctx CapabilityContext, rawURL string) (*url.URL
 	return allowedHTTPURLForManifest(ctx.Manifest, rawURL)
 }
 
+func allowedHTTPURLForManifest(manifest Manifest, rawURL string) (*url.URL, error) {
+	parsed, host, err := parseSafeHTTPURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	if !manifestMatchesHost(manifest, host) {
+		return nil, redactErrorf("url %s is not allowed by manifest domain rules", rawURL)
+	}
+
+	return parsed, nil
+}
+
 func allowedHTTPURLForAliasPolicy(ctx context.Context, manifest Manifest, identity VerifiedPackIdentity, resolver HostPolicyResolver, capability Capability, rawURL string) (*url.URL, error) {
 	parsed, host, err := parseSafeHTTPURL(rawURL)
 	if err != nil {
@@ -88,18 +100,6 @@ func allowedHTTPURLForAliasPolicy(ctx context.Context, manifest Manifest, identi
 	return parsed, nil
 }
 
-func allowedHTTPURLForManifest(manifest Manifest, rawURL string) (*url.URL, error) {
-	parsed, host, err := parseSafeHTTPURL(rawURL)
-	if err != nil {
-		return nil, err
-	}
-	if !manifestMatchesHost(manifest, host) {
-		return nil, redactErrorf("url %s is not allowed by manifest domain rules", rawURL)
-	}
-
-	return parsed, nil
-}
-
 func parseSafeHTTPURL(rawURL string) (*url.URL, string, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -112,7 +112,7 @@ func parseSafeHTTPURL(rawURL string) (*url.URL, string, error) {
 		return nil, "", redactErrorf("url %s must not include userinfo", rawURL)
 	}
 
-	host, ok := parseHTTPURLHost(rawURL)
+	host, ok := ParseHTTPURLHost(rawURL)
 	if !ok {
 		return nil, "", redactErrorf("url %s has an unsafe or unsupported host", rawURL)
 	}

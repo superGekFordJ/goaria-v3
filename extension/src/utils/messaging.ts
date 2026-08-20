@@ -19,6 +19,16 @@ declare module 'webext-bridge' {
     'ws:status': WsStatusMessage
     'ws:getStatus': ProtocolWithReturn<GetWsStatusMessage, WsStatusMessage>
     'download:intercepted': ProtocolWithReturn<DownloadInterceptedMessage, InterceptedReply>
+    'extractor:detected': ProtocolWithReturn<ExtractorDetectedMessage, InterceptedReply>
+    'extractor:hide': ExtractorHideMessage
+    'extractor:click': ProtocolWithReturn<ExtractorClickMessage, ExtractorClickReply>
+    'extractor:picker-open': ProtocolWithReturn<ExtractorPickerOpenMessage, ExtractorPickerOpenReply>
+    'extractor:picker-submit': ProtocolWithReturn<ExtractorPickerSubmitMessage, ExtractorClickReply>
+    'extractor:picker-catalog': ExtractorPickerCatalogMessage
+    'extractor:ignore': ProtocolWithReturn<ExtractorIgnoreMessage, ExtractorIgnoreReply>
+    'extractor:nav': ProtocolWithReturn<ExtractorNavMessage, ExtractorIgnoreReply>
+    'extractor:fallback': ProtocolWithReturn<ExtractorFallbackMessage, ExtractorIgnoreReply>
+    'extractor:result': ExtractorResultMessage
     'interception:toggle': ProtocolWithReturn<InterceptionToggleMessage, InterceptionToggleResult>
   }
 }
@@ -86,10 +96,97 @@ export type DownloadInterceptedMessage = {
   error?: string
 }
 
-// Reply from the content script: 'shown' when the in-page toast rendered,
-// 'fallback' when it could not (mount failed / not ready). The background
-// uses this to decide whether to degrade to a system notification.
-export type InterceptedReply = 'shown' | 'fallback'
+// Reply from the content script: 'shown' when the in-page toast/capsule rendered,
+// 'pending' only while a capsule mount is actually scheduled (do not notify yet),
+// 'fallback' when it could not (no host / mount failed / iframe / not ready).
+export type InterceptedReply = 'shown' | 'fallback' | 'pending'
+
+export type ExtractorDetectedMessage = {
+  generation: number
+  page_token: string
+}
+
+export type ExtractorHideReason =
+  | 'nav'
+  | 'disconnect'
+  | 'unpair'
+  | 'generation'
+  | 'matched_false'
+  | 'ignore'
+
+export type ExtractorHideMessage = {
+  reason: ExtractorHideReason
+  page_token?: string
+}
+
+export type ExtractorClickMessage = {
+  page_token: string
+}
+
+export type ExtractorClickReply = {
+  accepted: boolean
+  error_code?: string
+}
+
+export type ExtractorIgnoreMessage = {
+  page_token: string
+}
+
+export type ExtractorIgnoreReply = {
+  ok: boolean
+}
+
+export type ExtractorNavMessage = {
+  page_token: string
+}
+
+export type ExtractorFallbackMessage = {
+  page_token: string
+}
+
+export type ExtractorResultUi = 'idle' | 'resolving' | 'ready' | 'committing' | 'success' | 'error'
+
+export type ExtractorResultMessage = {
+  page_token: string
+  ui: ExtractorResultUi
+  count?: number
+  filename?: string
+  error_code?: string
+  lease_deadline?: number
+}
+
+export type PickerCatalogItem = {
+  index: number
+  filename?: string
+  size_bytes?: number
+  mime_type?: string
+}
+
+export type ExtractorPickerOpenMessage = {
+  page_token: string
+}
+
+export type ExtractorPickerOpenReply = {
+  ok: boolean
+  error_code?: string
+  items?: PickerCatalogItem[]
+  lease_deadline?: number
+  count?: number
+}
+
+export type ExtractorPickerSubmitMessage = {
+  page_token: string
+  indices: number[]
+  create_group?: boolean
+  folder_name?: string
+}
+
+export type ExtractorPickerCatalogMessage = {
+  page_token: string
+  items: PickerCatalogItem[]
+  lease_deadline?: number
+  count?: number
+}
 
 export type InterceptionToggleMessage = {
   enabled: boolean

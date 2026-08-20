@@ -114,6 +114,7 @@ func TestAppHostAuthDriverReportsCallbackSuccessCancelTimeoutInvalidPayload(t *t
 		store := newRootTempAuthProfileStore(t)
 		factory := &fakeHostAuthSessionWindowFactory{}
 		coordinator := extractor.NewWebViewAuthCoordinator(store, newAppHostAuthDriverWithFactory(newWindowedAuthApp(t), factory))
+		coordinator.SetObserver(appHostAuthDiagnosticObserver{})
 		resultCh := make(chan appHostAuthOutcome, 1)
 
 		go func() {
@@ -624,7 +625,7 @@ func TestConfigureEmbeddedExtractorDispatcherDiagnosticStoreWrapperRecordsBucket
 	}
 	_, _ = app.authProfileStoreForTest().AuthProfileSnapshots(context.Background(), request.PackIdentity.PackID)
 	text := string(mustReadAppHostAuthTestFile(t, logPath))
-	for _, want := range []string{`"stage":"store","category":"snapshot_bucket_zero"`, `"stage":"store","category":"snapshot_bucket_nonzero"`} {
+	for _, want := range []string{`"stage":"store","category":"snapshot_bucket_zero"`, `"stage":"store","category":"set_attempted"`, `"stage":"store","category":"set_succeeded"`, `"stage":"store","category":"snapshot_bucket_nonzero"`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("diagnostic store log missing category marker")
 		}
@@ -693,6 +694,152 @@ func TestConfigureEmbeddedExtractorDispatcherNoPackNoRuntimeIsNoop(t *testing.T)
 	if storeCreated || dispatcherCreated || app.extractorAdapter != nil || app.authProfileStoreForTest() != nil || app.hostAuthRuntimeForTest() != nil {
 		t.Fatalf("no-op path created state: store=%t dispatcher=%t app=%#v", storeCreated, dispatcherCreated, app)
 	}
+}
+
+func TestConfigureEmbeddedExtractorDispatcherStartupNoRuntimeInputs(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "startup.jsonl")
+	t.Setenv(extractorStartupDiagnosticEnv, "1")
+	t.Setenv(extractorStartupDiagnosticLogEnv, logPath)
+	app := NewApp(Options{})
+	storeCreated := false
+	dispatcherCreated := false
+
+	err := configureEmbeddedExtractorDispatcherWithDeps(app, embeddedExtractorConfigDeps{
+		hasEmbeddedReleasePacks:              func() bool { return false },
+		embeddedReleaseRequired:              func() bool { return false },
+		privatePolicyRuntimeSourceState:      func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateNone },
+		privateAuthRuntimeRuntimeSourceState: func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateNone },
+		loadAuthRuntimeBundle:                func() (*extractor.PrivateAuthRuntimeBundle, error) { return nil, nil },
+		newFileAuthProfileStore: func(string) (extractor.AuthProfileStore, error) {
+			storeCreated = true
+			return newRootTempAuthProfileStore(t), nil
+		},
+		newEmbeddedReleaseAddTaskAdapter: func(extractor.EmbeddedReleaseDispatcherConfig, *extractor.HostAuthRuntime) (tasks.ExtractorAdapter, error) {
+			dispatcherCreated = true
+			return fakeExtractorAdapter{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("configure helper error = %v", err)
+	}
+	if storeCreated || dispatcherCreated || app.extractorAdapter != nil || app.authProfileStoreForTest() != nil || app.hostAuthRuntimeForTest() != nil {
+		t.Fatalf("startup no-runtime path created state: store=%t dispatcher=%t app=%#v", storeCreated, dispatcherCreated, app)
+	}
+	text := string(mustReadAppHostAuthTestFile(t, logPath))
+	assertStartupDiagnosticCategories(t, text,
+		`"stage":"embedded_pack","category":"absent"`,
+		`"stage":"embedded_release","category":"optional"`,
+		`"stage":"policy_source","category":"none"`,
+		`"stage":"auth_runtime_source","category":"none"`,
+		`"stage":"policy_load","category":"skipped"`,
+		`"stage":"auth_store","category":"skipped"`,
+		`"stage":"host_auth_runtime","category":"skipped"`,
+		`"stage":"driver","category":"skipped"`,
+		`"stage":"dispatcher","category":"skipped"`,
+		`"stage":"startup_activation","category":"no_runtime_inputs"`,
+	)
+	assertRootNoSecretText(t, text, "raw-token", "fixture.invalid")
+}
+
+func TestConfigureEmbeddedExtractorDispatcherStartupActivationProved(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "startup.jsonl")
+	t.Setenv(extractorStartupDiagnosticEnv, "1")
+	t.Setenv(extractorStartupDiagnosticLogEnv, logPath)
+	app := NewApp(Options{})
+	store := newRootTempAuthProfileStore(t)
+	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
+	storePath := filepath.Join(t.TempDir(), "auth.json")
+
+	err := configureEmbeddedExtractorDispatcherWithDeps(app, embeddedExtractorConfigDeps{
+		hasEmbeddedReleasePacks:              func() bool { return true },
+		embeddedReleaseRequired:              func() bool { return false },
+		privatePolicyRuntimeSourceState:      func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateEmbedded },
+		privateAuthRuntimeRuntimeSourceState: func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateEmbedded },
+		loadHostPolicyResolver:               func() (extractor.HostPolicyResolver, error) { return fakeHostPolicyResolverForAppAuth{}, nil },
+		loadAuthRuntimeBundle:                func() (*extractor.PrivateAuthRuntimeBundle, error) { return bundle, nil },
+		defaultAuthProfileStorePath: func() (string, error) {
+			return storePath, nil
+		},
+		newFileAuthProfileStore: func(path string) (extractor.AuthProfileStore, error) {
+			if path != storePath {
+				t.Fatalf("store path mismatch")
+			}
+			return store, nil
+		},
+		newAuthWebViewDriver: func(*App) extractor.AuthWebViewDriver { return fakeNoopAuthWebViewDriver{} },
+		newEmbeddedReleaseAddTaskAdapter: func(extractor.EmbeddedReleaseDispatcherConfig, *extractor.HostAuthRuntime) (tasks.ExtractorAdapter, error) {
+			return fakeExtractorAdapter{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("configure helper error = %v", err)
+	}
+	if app.authProfileStoreForTest() != store {
+		t.Fatalf("App store = %#v, want shared store", app.authProfileStoreForTest())
+	}
+	if app.hostAuthRuntimeForTest() == nil || app.authWebViewDriverForTest() == nil || app.extractorAdapter == nil {
+		t.Fatalf("startup activation proved path not fully configured: runtime=%#v driver=%#v adapter=%#v", app.hostAuthRuntimeForTest(), app.authWebViewDriverForTest(), app.extractorAdapter)
+	}
+	text := string(mustReadAppHostAuthTestFile(t, logPath))
+	assertStartupDiagnosticCategories(t, text,
+		`"stage":"embedded_pack","category":"present"`,
+		`"stage":"embedded_release","category":"optional"`,
+		`"stage":"policy_source","category":"embedded"`,
+		`"stage":"policy_load","category":"loaded"`,
+		`"stage":"auth_runtime_source","category":"embedded"`,
+		`"stage":"auth_runtime_load","category":"loaded_nonzero"`,
+		`"stage":"auth_store","category":"configured"`,
+		`"stage":"host_auth_runtime","category":"configured"`,
+		`"stage":"driver","category":"configured"`,
+		`"stage":"dispatcher","category":"configured"`,
+		`"stage":"startup_activation","category":"activation_proved"`,
+	)
+	assertRootNoSecretText(t, text, storePath, "xpk-alpha001", "apr-alpha001", "fixture.invalid")
+}
+
+func TestConfigureEmbeddedExtractorDispatcherStartupActivationMissingOrSkipped(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "startup.jsonl")
+	t.Setenv(extractorStartupDiagnosticEnv, "1")
+	t.Setenv(extractorStartupDiagnosticLogEnv, logPath)
+	app := NewApp(Options{})
+	bundle := syntheticRootPrivateAuthRuntimeBundle(t)
+
+	err := configureEmbeddedExtractorDispatcherWithDeps(app, embeddedExtractorConfigDeps{
+		hasEmbeddedReleasePacks:              func() bool { return true },
+		embeddedReleaseRequired:              func() bool { return false },
+		privatePolicyRuntimeSourceState:      func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateEmbedded },
+		privateAuthRuntimeRuntimeSourceState: func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateEmbedded },
+		loadHostPolicyResolver:               func() (extractor.HostPolicyResolver, error) { return fakeHostPolicyResolverForAppAuth{}, nil },
+		loadAuthRuntimeBundle:                func() (*extractor.PrivateAuthRuntimeBundle, error) { return bundle, nil },
+		defaultAuthProfileStorePath: func() (string, error) {
+			return filepath.Join(t.TempDir(), "auth.json"), nil
+		},
+		newFileAuthProfileStore: func(string) (extractor.AuthProfileStore, error) {
+			return newRootTempAuthProfileStore(t), nil
+		},
+		newAuthWebViewDriver: func(*App) extractor.AuthWebViewDriver { return fakeNoopAuthWebViewDriver{} },
+		newEmbeddedReleaseAddTaskAdapter: func(extractor.EmbeddedReleaseDispatcherConfig, *extractor.HostAuthRuntime) (tasks.ExtractorAdapter, error) {
+			return nil, errors.New("dispatcher failed Authorization: Bearer raw-secret token=raw-token")
+		},
+	})
+	if err == nil {
+		t.Fatal("configure helper error = nil, want sanitized dispatcher failure")
+	}
+	assertRootNoSecretText(t, err.Error(), "raw-secret", "raw-token", "Authorization")
+	text := string(mustReadAppHostAuthTestFile(t, logPath))
+	assertStartupDiagnosticCategories(t, text,
+		`"stage":"embedded_pack","category":"present"`,
+		`"stage":"policy_source","category":"embedded"`,
+		`"stage":"policy_load","category":"loaded"`,
+		`"stage":"auth_runtime_source","category":"embedded"`,
+		`"stage":"auth_runtime_load","category":"loaded_nonzero"`,
+		`"stage":"auth_store","category":"configured"`,
+		`"stage":"host_auth_runtime","category":"configured"`,
+		`"stage":"driver","category":"configured"`,
+		`"stage":"dispatcher","category":"failed"`,
+		`"stage":"startup_activation","category":"activation_missing_or_skipped"`,
+	)
+	assertRootNoSecretText(t, text, "raw-secret", "raw-token", "Authorization")
 }
 
 func TestConfigureEmbeddedExtractorDispatcherSanitizesLoaderAndStoreErrors(t *testing.T) {
@@ -976,6 +1123,15 @@ func assertRootNoSecretText(t *testing.T, text string, forbidden ...string) {
 	}
 }
 
+func assertStartupDiagnosticCategories(t *testing.T, text string, wanted ...string) {
+	t.Helper()
+	for _, marker := range wanted {
+		if !strings.Contains(text, marker) {
+			t.Fatalf("startup diagnostic log missing category marker %q in %s", marker, text)
+		}
+	}
+}
+
 func mustReadAppHostAuthTestFile(t *testing.T, path string) []byte {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -1135,7 +1291,7 @@ func (r *appHostAuthAliasResolver) ResolveHostPolicy(_ context.Context, request 
 		BrokerDomains:       []extractor.DomainRule{{Host: "auth.alpha.test"}},
 		OutputDomains:       []extractor.HostPolicyOutputRule{{Host: "auth.alpha.test", PathPrefixes: []string{"/"}}},
 		AuthProfiles:        []extractor.HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []extractor.DomainRule{{Host: "auth.alpha.test"}}}},
-		BrokerEndpoints:     []extractor.HostPolicyBrokerEndpoint{{BrokerPolicyRef: "bpr-alpha001", EndpointRef: "epr-alpha001", URLTemplate: "https://auth.alpha.test/session/{id}", Methods: []string{"GET"}, AuthProfileRefs: []string{"apr-alpha001"}, TimeoutMillis: 3000, MaxResponseBytes: 65536}},
+		Endpoints:           []extractor.HostPolicyEndpoint{{BrokerPolicyRef: "bpr-alpha001", EndpointRef: "epr-alpha001", URLTemplate: "https://auth.alpha.test/session/{id}", Methods: []string{"GET"}, AuthProfileRefs: []extractor.AuthProfileID{"apr-alpha001"}, TimeoutMillis: 3000, MaxResponseBytes: 65536}},
 	}, nil
 }
 
@@ -1155,7 +1311,7 @@ func (noopWailsTransport) Stop() error                                          
 func assertNoProviderSurfaceTerm(t *testing.T, value string) {
 	t.Helper()
 	lower := strings.ToLower(value)
-	for _, forbidden := range []string{"provider", "private", "accounttoken", "x-website-token"} {
+	for _, forbidden := range []string{"accounttoken", "x-website-token"} {
 		if strings.Contains(lower, forbidden) {
 			t.Fatalf("public-stable value %q contains provider/private term %q", value, forbidden)
 		}

@@ -16,7 +16,7 @@ func TestCapabilityGuardAllowsHTTPFetchForAllowedDomains(t *testing.T) {
 	} {
 		t.Run(rawURL, func(t *testing.T) {
 			if err := ValidateCapabilityURL(CapabilityContext{
-				PackID:     "fixturepack",
+				PackID:     "xpk-fixture01",
 				Manifest:   manifest,
 				Capability: CapabilityHTTPFetch,
 			}, rawURL); err != nil {
@@ -31,7 +31,7 @@ func TestCapabilityGuardRejectsMissingHTTPFetchCapability(t *testing.T) {
 	manifest.Capabilities = []Capability{CapabilityParseWASM}
 
 	if err := ValidateCapabilityURL(CapabilityContext{
-		PackID:     "fixturepack",
+		PackID:     "xpk-fixture01",
 		Manifest:   manifest,
 		Capability: CapabilityHTTPFetch,
 	}, "https://fixture.invalid/d/abc"); err == nil {
@@ -44,12 +44,105 @@ func TestCapabilityGuardRejectsExactDomainSubdomainWhenDisabled(t *testing.T) {
 	manifest.Domains = []DomainRule{{Host: "fixture.invalid"}}
 
 	if err := ValidateCapabilityURL(CapabilityContext{
-		PackID:     "fixturepack",
+		PackID:     "xpk-fixture01",
 		Manifest:   manifest,
 		Capability: CapabilityHTTPFetch,
 	}, "https://api.fixture.invalid/path"); err == nil {
 		t.Fatal("ValidateCapabilityURL() error = nil, want error")
 	}
+}
+
+func TestCapabilityGuardRejectsAliasManifestURLsWithoutResolver(t *testing.T) {
+	manifest := validAliasTestManifest()
+
+	for _, rawURL := range []string{
+		"https://dpr-alpha001.invalid/path",
+		"https://bpr-alpha001.invalid/path",
+		"https://opaque.invalid/path",
+	} {
+		t.Run(rawURL, func(t *testing.T) {
+			if err := ValidateCapabilityURL(CapabilityContext{
+				PackID:     "xpk-alpha001",
+				Manifest:   manifest,
+				Capability: CapabilityHTTPFetch,
+			}, rawURL); err == nil {
+				t.Fatal("ValidateCapabilityURL() error = nil, want fail-closed alias denial")
+			}
+		})
+	}
+}
+
+func TestCapabilityGuardAllowsAliasBrokerDomainWithPolicy(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	resolver := &fakeHostPolicyResolver{policy: syntheticHostPolicy(pack.Identity)}
+
+	if err := ValidateCapabilityURL(CapabilityContext{
+		PackID:             pack.Manifest.PackID,
+		Manifest:           pack.Manifest,
+		Capability:         CapabilityHTTPFetch,
+		PackIdentity:       pack.Identity,
+		HostPolicyResolver: resolver,
+	}, "https://api.alpha.test/path"); err != nil {
+		t.Fatalf("ValidateCapabilityURL() error = %v", err)
+	}
+}
+
+func TestCapabilityGuardAliasPolicyDenials(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	tests := []struct {
+		name     string
+		policy   ResolvedHostPolicy
+		identity VerifiedPackIdentity
+		rawURL   string
+	}{
+		{name: "identity mismatch", policy: syntheticHostPolicy(VerifiedPackIdentity{PackID: pack.Manifest.PackID, PackVersion: pack.Manifest.PackVersion}), identity: pack.Identity, rawURL: "https://api.alpha.test/path"},
+		{name: "capability mismatch", policy: func() ResolvedHostPolicy {
+			p := syntheticHostPolicy(pack.Identity)
+			p.AllowedCapabilities = []Capability{CapabilityParseWASM, CapabilityAuthProfile}
+			return p
+		}(), identity: pack.Identity, rawURL: "https://api.alpha.test/path"},
+		{name: "ingress only denied", policy: syntheticHostPolicy(pack.Identity), identity: pack.Identity, rawURL: "https://share.alpha.test/path"},
+		{name: "malformed policy domain", policy: func() ResolvedHostPolicy {
+			p := syntheticHostPolicy(pack.Identity)
+			p.BrokerDomains = []DomainRule{{Host: "*.alpha.test"}}
+			return p
+		}(), identity: pack.Identity, rawURL: "https://api.alpha.test/path"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateCapabilityURL(CapabilityContext{
+				PackID:             pack.Manifest.PackID,
+				Manifest:           pack.Manifest,
+				Capability:         CapabilityHTTPFetch,
+				PackIdentity:       tt.identity,
+				HostPolicyResolver: &fakeHostPolicyResolver{policy: tt.policy},
+			}, tt.rawURL)
+			if err == nil {
+				t.Fatal("ValidateCapabilityURL() error = nil, want fail closed")
+			}
+		})
+	}
+}
+
+func TestCapabilityGuardAliasResolverUsesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	resolver := HostPolicyResolver(hostPolicyResolverFunc(func(context.Context, HostPolicyRequest) (ResolvedHostPolicy, error) {
+		return ResolvedHostPolicy{}, context.Canceled
+	}))
+	pack := syntheticAliasVerifiedPack()
+
+	_, err := allowedHTTPURLForAliasPolicy(ctx, pack.Manifest, pack.Identity, resolver, CapabilityHTTPFetch, "https://api.alpha.test/path")
+	if err == nil {
+		t.Fatal("allowedHTTPURLForAliasPolicy() error = nil, want cancellation denial")
+	}
+}
+
+type hostPolicyResolverFunc func(context.Context, HostPolicyRequest) (ResolvedHostPolicy, error)
+
+func (fn hostPolicyResolverFunc) ResolveHostPolicy(ctx context.Context, request HostPolicyRequest) (ResolvedHostPolicy, error) {
+	return fn(ctx, request)
 }
 
 func TestCapabilityGuardRejectsUnsafeURLs(t *testing.T) {
@@ -70,7 +163,7 @@ func TestCapabilityGuardRejectsUnsafeURLs(t *testing.T) {
 	for _, rawURL := range unsafeURLs {
 		t.Run(rawURL, func(t *testing.T) {
 			if err := ValidateCapabilityURL(CapabilityContext{
-				PackID:     "fixturepack",
+				PackID:     "xpk-fixture01",
 				Manifest:   manifest,
 				Capability: CapabilityHTTPFetch,
 			}, rawURL); err == nil {
@@ -78,105 +171,6 @@ func TestCapabilityGuardRejectsUnsafeURLs(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestCapabilityGuardDoesNotTreatAliasRefsAsDomains(t *testing.T) {
-	manifest := validAliasTestManifest(nil)
-
-	if err := ValidateCapabilityURL(CapabilityContext{
-		PackID:     manifest.PackID,
-		Manifest:   manifest,
-		Capability: CapabilityHTTPFetch,
-	}, "https://dpr-alpha001/path"); err == nil {
-		t.Fatal("ValidateCapabilityURL() error = nil, want alias ref not treated as domain")
-	}
-	if err := ValidateCapabilityURL(CapabilityContext{
-		PackID:     manifest.PackID,
-		Manifest:   manifest,
-		Capability: CapabilityHTTPFetch,
-	}, "bpr-alpha001"); err == nil {
-		t.Fatal("ValidateCapabilityURL() error = nil, want opaque broker ref not treated as URL/domain")
-	}
-}
-
-func TestCapabilityGuardAllowsAliasBrokerDomainWithPolicy(t *testing.T) {
-	manifest := validAliasTestManifest(nil)
-	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
-	identity := syntheticVerifiedPackIdentity(manifest)
-	resolver := &fakeHostPolicyResolver{policy: validResolvedHostPolicy(identity, manifest)}
-
-	if err := ValidateCapabilityURL(CapabilityContext{
-		PackID:             manifest.PackID,
-		Manifest:           manifest,
-		Capability:         CapabilityHTTPFetch,
-		PackIdentity:       identity,
-		HostPolicyResolver: resolver,
-	}, "https://api.alpha.test/path"); err != nil {
-		t.Fatalf("ValidateCapabilityURL() error = %v", err)
-	}
-}
-
-func TestCapabilityGuardAliasPolicyDenials(t *testing.T) {
-	manifest := validAliasTestManifest(nil)
-	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
-	identity := syntheticVerifiedPackIdentity(manifest)
-	base := validResolvedHostPolicy(identity, manifest)
-	tests := []struct {
-		name     string
-		policy   extractorResolvedHostPolicyMutator
-		identity VerifiedPackIdentity
-		rawURL   string
-	}{
-		{name: "identity mismatch", policy: func(policy *ResolvedHostPolicy) { policy.PackIdentity.AssetSHA256 = strings.Repeat("9", 64) }, identity: identity, rawURL: "https://api.alpha.test/path"},
-		{name: "capability mismatch", policy: func(policy *ResolvedHostPolicy) {
-			policy.AllowedCapabilities = []Capability{CapabilityParseWASM, CapabilityAuthProfile}
-		}, identity: identity, rawURL: "https://api.alpha.test/path"},
-		{name: "ingress only denied", policy: nil, identity: identity, rawURL: "https://share.alpha.test/path"},
-		{name: "malformed policy domain", policy: func(policy *ResolvedHostPolicy) { policy.BrokerDomains = []DomainRule{{Host: "*.alpha.test"}} }, identity: identity, rawURL: "https://api.alpha.test/path"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			policy := cloneResolvedHostPolicy(base)
-			if tt.policy != nil {
-				tt.policy(&policy)
-			}
-			err := ValidateCapabilityURL(CapabilityContext{
-				PackID:             manifest.PackID,
-				Manifest:           manifest,
-				Capability:         CapabilityHTTPFetch,
-				PackIdentity:       tt.identity,
-				HostPolicyResolver: &fakeHostPolicyResolver{policy: policy},
-			}, tt.rawURL)
-			if err == nil {
-				t.Fatal("ValidateCapabilityURL() error = nil, want fail closed")
-			}
-		})
-	}
-}
-
-func TestCapabilityGuardAliasResolverUsesCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	resolver := HostPolicyResolver(hostPolicyResolverFunc(func(context.Context, HostPolicyRequest) (ResolvedHostPolicy, error) {
-		return ResolvedHostPolicy{}, context.Canceled
-	}))
-	manifest := validAliasTestManifest(nil)
-	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
-	identity := syntheticVerifiedPackIdentity(manifest)
-
-	_, err := allowedHTTPURLForAliasPolicy(ctx, manifest, identity, resolver, CapabilityHTTPFetch, "https://api.alpha.test/path")
-	if err == nil {
-		t.Fatal("allowedHTTPURLForAliasPolicy() error = nil, want cancellation denial")
-	}
-}
-
-type extractorResolvedHostPolicyMutator func(*ResolvedHostPolicy)
-
-type hostPolicyResolverFunc func(context.Context, HostPolicyRequest) (ResolvedHostPolicy, error)
-
-func (fn hostPolicyResolverFunc) ResolveHostPolicy(ctx context.Context, request HostPolicyRequest) (ResolvedHostPolicy, error) {
-	return fn(ctx, request)
 }
 
 func TestRedactSensitiveRemovesTokensCookiesAndQuerySecrets(t *testing.T) {

@@ -14,8 +14,6 @@ var (
 	embeddedReleaseRequired          bool
 )
 
-const requiredEmbeddedAuthRuntimeNotConfiguredError = "required embedded authenticated extractor auth runtime is not configured"
-
 type EmbeddedReleaseDispatcherConfig struct {
 	AuthResolver       AuthProfileResolver
 	HeaderResolver     HeaderProfileResolver
@@ -109,7 +107,10 @@ func NewEmbeddedReleaseAddTaskDispatcher(config EmbeddedReleaseDispatcherConfig)
 	return NewAddTaskDispatcher(AddTaskDispatcherConfig{
 		Registry: registry,
 		Runner: NewRunnerWithConfig(RunnerConfig{
-			HTTPBroker:         NewHTTPBroker(HTTPBrokerConfig{AuthResolver: config.AuthResolver}),
+			HTTPBroker: NewHTTPBroker(HTTPBrokerConfig{
+				AuthResolver:       config.AuthResolver,
+				HostPolicyResolver: config.HostPolicyResolver,
+			}),
 			AuthResolver:       config.AuthResolver,
 			HostPolicyResolver: config.HostPolicyResolver,
 		}),
@@ -123,11 +124,8 @@ func validateRequiredEmbeddedAliasHostPolicies(packs []VerifiedPack, resolver Ho
 		if !isAliasManifest(pack.Manifest) {
 			continue
 		}
-		if !hasPrivatePolicyBundleIdentity(pack.Identity) {
-			return errors.New("required embedded alias extractor host policy is not configured")
-		}
 		if _, err := resolveAliasHostPolicy(context.Background(), resolver, pack.Identity, pack.Manifest); err != nil {
-			return errors.New("required embedded alias extractor host policy is not configured")
+			return errors.New("required embedded extractor alias host policy is invalid")
 		}
 	}
 
@@ -146,35 +144,30 @@ func validateRequiredEmbeddedAuthRuntime(packs []VerifiedPack, bundle *PrivateAu
 		return nil
 	}
 	if bundle == nil || bundle.PackCount() == 0 {
-		return errors.New(requiredEmbeddedAuthRuntimeNotConfiguredError)
+		return errors.New("required embedded authenticated extractor auth runtime is not configured")
 	}
 
-	runtimeIdentities := bundle.PackIdentities()
-	if len(runtimeIdentities) != bundle.PackCount() {
-		return errors.New(requiredEmbeddedAuthRuntimeNotConfiguredError)
-	}
-
-	seenRuntime := make(map[VerifiedPackIdentity]struct{}, len(runtimeIdentities))
-	for _, identity := range runtimeIdentities {
+	seenRuntime := make(map[VerifiedPackIdentity]struct{}, bundle.PackCount())
+	for _, identity := range bundle.PackIdentities() {
 		if _, duplicate := seenRuntime[identity]; duplicate {
-			return errors.New(requiredEmbeddedAuthRuntimeNotConfiguredError)
+			return errors.New("required embedded authenticated extractor auth runtime is not configured")
 		}
 		seenRuntime[identity] = struct{}{}
 		if _, ok := requiredIdentities[identity]; !ok {
-			return errors.New(requiredEmbeddedAuthRuntimeNotConfiguredError)
+			return errors.New("required embedded authenticated extractor auth runtime is not configured")
 		}
 		pack, ok := bundle.PackRuntime(identity)
-		if !ok || pack.PackIdentity != identity || len(pack.StoreBinding.ProfileRefs) == 0 || len(pack.Materialization.ProfileRefs) == 0 {
-			return errors.New(requiredEmbeddedAuthRuntimeNotConfiguredError)
+		if !ok || len(pack.StoreBinding.ProfileRefs) == 0 || len(pack.Materialization.ProfileRefs) == 0 {
+			return errors.New("required embedded authenticated extractor auth runtime is not configured")
 		}
 	}
 
 	if len(seenRuntime) != len(requiredIdentities) {
-		return errors.New(requiredEmbeddedAuthRuntimeNotConfiguredError)
+		return errors.New("required embedded authenticated extractor auth runtime is not configured")
 	}
 	for identity := range requiredIdentities {
 		if _, ok := seenRuntime[identity]; !ok {
-			return errors.New(requiredEmbeddedAuthRuntimeNotConfiguredError)
+			return errors.New("required embedded authenticated extractor auth runtime is not configured")
 		}
 	}
 

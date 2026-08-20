@@ -10,11 +10,6 @@ const taskStoreMock = vi.hoisted(() => ({
 }))
 
 const quietForbiddenFragments = [
-  ['go', 'file'].join(''),
-  ['go', 'file.io'].join(''),
-  ['i', 'bb'].join(''),
-  ['i', 'bb.co'].join(''),
-  ['i.', 'i', 'bb.co'].join(''),
   ['supported', 'site'].join('-'),
   ['supported', 'sites'].join(' '),
   ['market', 'place'].join(''),

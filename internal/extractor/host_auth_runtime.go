@@ -113,11 +113,6 @@ type hostAuthRuntimeProvisionPlan struct {
 	storeAllowedDomains []DomainRule
 }
 
-type hostAuthRuntimeAliasProvisionContext struct {
-	policy                ResolvedHostPolicy
-	storeAllowedDomainsBy map[AuthProfileID][]DomainRule
-}
-
 func NewHostAuthRuntime(config HostAuthRuntimeConfig) *HostAuthRuntime {
 	materializer := config.Materializer
 	if materializer == nil {
@@ -411,26 +406,18 @@ func (r *HostAuthRuntime) Provision(ctx context.Context, request HostAuthRuntime
 }
 
 func (r *HostAuthRuntime) startProvisioningWebView(ctx context.Context, plan hostAuthRuntimeProvisionPlan) (WebViewAuthResult, error) {
+	return r.startProvisioningWebViewWithStoreDomains(ctx, plan.request, plan.storeAllowedDomains)
+}
+
+func (r *HostAuthRuntime) startProvisioningWebViewWithStoreDomains(ctx context.Context, request WebViewAuthRequest, storeDomains []DomainRule) (WebViewAuthResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if r == nil || r.coordinator == nil {
-		return WebViewAuthResult{}, errors.New("webview auth coordinator is nil")
+	storeRequest := request
+	if len(storeDomains) > 0 {
+		storeRequest.AllowedDomains = cloneDomainRules(storeDomains)
 	}
-	if r.coordinator.store == nil {
-		return WebViewAuthResult{}, errors.New("webview auth coordinator requires an auth profile store")
-	}
-	if r.coordinator.driver == nil {
-		return WebViewAuthResult{}, errors.New("webview auth coordinator requires a driver")
-	}
-
-	driverRequest := plan.request
-	storeRequest := plan.request
-	if len(plan.storeAllowedDomains) > 0 {
-		storeRequest.AllowedDomains = cloneDomainRules(plan.storeAllowedDomains)
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, effectiveWebViewTimeout(driverRequest))
+	ctx, cancel := context.WithTimeout(ctx, effectiveWebViewTimeout(request))
 	defer cancel()
 
 	terminal := newAuthTerminal()
@@ -445,34 +432,20 @@ func (r *HostAuthRuntime) startProvisioningWebView(ctx context.Context, plan hos
 			terminal.complete(webViewTerminalEvent{status: WebViewAuthStatusError, err: err})
 		},
 	}
-
-	session, err := r.coordinator.driver.OpenAuthSession(ctx, driverRequest, sink)
+	session, err := r.coordinator.driver.OpenAuthSession(ctx, request, sink)
 	if err != nil {
-		return WebViewAuthResult{}, redactedError(fmt.Errorf("open auth webview for %s: %w", driverRequest.LoginURL, err))
+		return WebViewAuthResult{}, redactedError(fmt.Errorf("open auth webview for %s: %w", request.LoginURL, err))
 	}
 	defer func() { _ = session.Close() }()
 
-	event := terminal.wait(ctx)
-	return r.coordinator.handleTerminalEvent(storeRequest, event)
+	return r.coordinator.handleTerminalEvent(storeRequest, terminal.wait(ctx))
 }
 
-func hostAuthRuntimeProvisionWebViewRequest(bound hostAuthRuntimeBoundRequest, profile PrivateAuthRuntimeProfile, ref AuthProfileID) WebViewAuthRequest {
-	return WebViewAuthRequest{
-		PackID:            bound.pack.PackIdentity.PackID,
-		Manifest:          cloneManifest(bound.request.Manifest),
-		ProfileID:         ref,
-		LoginURL:          profile.Login.URL,
-		AllowedDomains:    cloneDomainRules(profile.Login.AllowedDomains),
-		Timeout:           time.Duration(profile.Login.TimeoutMillis) * time.Millisecond,
-		Kind:              profile.Kind,
-		CallbackTransport: webViewAuthCallbackTransportFromRuntime(profile.Login.CallbackTransport),
-		CollectorJS:       profile.Login.CollectorJS,
-		Capture:           webViewAuthCaptureFromRuntime(profile.Login.Capture, bound.pack.Normalization),
+func (r *HostAuthRuntime) validateAliasWebViewAuthRequest(ctx context.Context, bound hostAuthRuntimeBoundRequest, profile PrivateAuthRuntimeProfile, request WebViewAuthRequest) (WebViewAuthRequest, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-}
-
-func (r *HostAuthRuntime) validateAliasWebViewLoginRequest(bound hostAuthRuntimeBoundRequest, profile PrivateAuthRuntimeProfile, request WebViewAuthRequest, policy ResolvedHostPolicy) (WebViewAuthRequest, error) {
-	if r == nil || bound.pack.PackIdentity == (VerifiedPackIdentity{}) {
+	if r == nil || r.hostPolicyResolver == nil || bound.pack.PackIdentity == (VerifiedPackIdentity{}) {
 		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
 	}
 	if request.Manifest.PackID != bound.pack.PackIdentity.PackID || request.Manifest.PackVersion != bound.pack.PackIdentity.PackVersion || request.PackID != bound.pack.PackIdentity.PackID {
@@ -488,21 +461,29 @@ func (r *HostAuthRuntime) validateAliasWebViewLoginRequest(bound hostAuthRuntime
 		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
 	}
 
+	policy, err := resolveAliasHostPolicy(ctx, r.hostPolicyResolver, bound.pack.PackIdentity, request.Manifest)
+	if err != nil {
+		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+	}
+	if !ManifestHasCapability(request.Manifest, CapabilityAuthProfile) || !policyAllowsCapability(policy, CapabilityAuthProfile) {
+		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+	}
+	if err := ValidateCapabilityURL(CapabilityContext{
+		PackID:             request.PackID,
+		Manifest:           request.Manifest,
+		Capability:         CapabilityAuthProfile,
+		PackIdentity:       bound.pack.PackIdentity,
+		HostPolicyResolver: r.hostPolicyResolver,
+	}, request.LoginURL); err != nil {
+		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+	}
+
 	validatedRequest, err := validateWebViewAuthRequestBase(request)
 	if err != nil {
 		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
 	}
-	if err := ValidateCapabilityURL(CapabilityContext{
-		PackID:             bound.pack.PackIdentity.PackID,
-		Manifest:           validatedRequest.Manifest,
-		Capability:         CapabilityAuthProfile,
-		PackIdentity:       bound.pack.PackIdentity,
-		HostPolicyResolver: r.hostPolicyResolver,
-	}, validatedRequest.LoginURL); err != nil {
-		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
-	}
 	_, loginHost, err := parseSafeHTTPURL(validatedRequest.LoginURL)
-	if err != nil || !policyBrokerMatchesHost(policy, loginHost) {
+	if err != nil {
 		return WebViewAuthRequest{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
 	}
 	for _, rule := range validatedRequest.AllowedDomains {
@@ -514,33 +495,16 @@ func (r *HostAuthRuntime) validateAliasWebViewLoginRequest(bound hostAuthRuntime
 	return validatedRequest, nil
 }
 
-func (r *HostAuthRuntime) resolveAliasProvisionContext(ctx context.Context, bound hostAuthRuntimeBoundRequest) (hostAuthRuntimeAliasProvisionContext, error) {
-	if r == nil || r.hostPolicyResolver == nil {
-		return hostAuthRuntimeAliasProvisionContext{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
-	}
-	policy, err := resolveAliasHostPolicy(ctx, r.hostPolicyResolver, bound.pack.PackIdentity, bound.request.Manifest)
-	if err != nil {
-		return hostAuthRuntimeAliasProvisionContext{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
-	}
-	if !ManifestHasCapability(bound.request.Manifest, CapabilityAuthProfile) || !policyAllowsCapability(policy, CapabilityAuthProfile) {
-		return hostAuthRuntimeAliasProvisionContext{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
-	}
-	storeAllowedDomainsBy := make(map[AuthProfileID][]DomainRule, len(bound.selectedRefs))
-	for _, ref := range bound.selectedRefs {
-		if !targetHostInProfileScope(policy, ref, bound.targetHost) {
-			return hostAuthRuntimeAliasProvisionContext{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
-		}
-		domains, err := hostAuthRuntimeAuthProfileScopeDomains(policy, ref)
-		if err != nil {
-			return hostAuthRuntimeAliasProvisionContext{}, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
-		}
-		storeAllowedDomainsBy[ref] = domains
+func hostAuthRuntimeLoginAllowedDomainMatchesHost(rule DomainRule, loginHost string) bool {
+	return strings.EqualFold(rule.Host, loginHost)
+}
+
+func targetHostInProfileScope(policy ResolvedHostPolicy, profileID AuthProfileID, targetHost string) bool {
+	if targetHost == "" {
+		return true
 	}
 
-	return hostAuthRuntimeAliasProvisionContext{
-		policy:                policy,
-		storeAllowedDomainsBy: storeAllowedDomainsBy,
-	}, nil
+	return policyAuthProfileMatchesHost(policy, profileID, targetHost)
 }
 
 func (r *HostAuthRuntime) Clear(ctx context.Context, request HostAuthRuntimeRequest) (HostAuthRuntimeResult, error) {
@@ -686,24 +650,62 @@ func (r *HostAuthRuntime) provisionPlans(ctx context.Context, bound hostAuthRunt
 	if err := r.validateProvisionable(bound); err != nil {
 		return nil, err
 	}
-	var aliasContext hostAuthRuntimeAliasProvisionContext
-	hasAliasContext := false
+	policy, err := r.resolveAliasProvisionTargetPolicy(ctx, bound)
+	if err != nil {
+		return nil, err
+	}
+
+	return r.webViewProvisionPlans(ctx, bound, policy)
+}
+
+func (r *HostAuthRuntime) resolveAliasProvisionTargetPolicy(ctx context.Context, bound hostAuthRuntimeBoundRequest) (*ResolvedHostPolicy, error) {
 	if isAliasManifest(bound.request.Manifest) {
-		resolvedAliasContext, err := r.resolveAliasProvisionContext(ctx, bound)
+		if r.hostPolicyResolver == nil {
+			return nil, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+		}
+		aliasPolicy, err := resolveAliasHostPolicy(ctx, r.hostPolicyResolver, bound.pack.PackIdentity, bound.request.Manifest)
 		if err != nil {
 			return nil, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
 		}
-		aliasContext = resolvedAliasContext
-		hasAliasContext = true
+		if bound.targetHost != "" {
+			for _, ref := range bound.selectedRefs {
+				if !targetHostInProfileScope(aliasPolicy, ref, bound.targetHost) {
+					return nil, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+				}
+			}
+		}
+
+		return &aliasPolicy, nil
 	}
+
+	return nil, nil
+}
+
+func (r *HostAuthRuntime) webViewProvisionPlans(ctx context.Context, bound hostAuthRuntimeBoundRequest, aliasPolicy *ResolvedHostPolicy) ([]hostAuthRuntimeProvisionPlan, error) {
 	plans := make([]hostAuthRuntimeProvisionPlan, 0, len(bound.selectedRefs))
 	for _, ref := range bound.selectedRefs {
 		profile := r.profiles[bound.pack.PackIdentity][ref]
 		storeAllowedDomains := cloneDomainRules(profile.Login.AllowedDomains)
-		webViewRequest := hostAuthRuntimeProvisionWebViewRequest(bound, profile, ref)
-		if hasAliasContext {
-			storeAllowedDomains = cloneDomainRules(aliasContext.storeAllowedDomainsBy[ref])
-			validatedRequest, err := r.validateAliasWebViewLoginRequest(bound, profile, webViewRequest, aliasContext.policy)
+		if aliasPolicy != nil {
+			storeAllowedDomains = hostAuthRuntimeAuthProfileScopeDomains(*aliasPolicy, ref)
+			if len(storeAllowedDomains) == 0 {
+				return nil, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
+			}
+		}
+		webViewRequest := WebViewAuthRequest{
+			PackID:            bound.pack.PackIdentity.PackID,
+			Manifest:          cloneManifest(bound.request.Manifest),
+			ProfileID:         ref,
+			LoginURL:          profile.Login.URL,
+			AllowedDomains:    cloneDomainRules(profile.Login.AllowedDomains),
+			Timeout:           time.Duration(profile.Login.TimeoutMillis) * time.Millisecond,
+			Kind:              profile.Kind,
+			CallbackTransport: webViewAuthCallbackTransportFromRuntime(profile.Login.CallbackTransport),
+			CollectorJS:       profile.Login.CollectorJS,
+			Capture:           webViewAuthCaptureFromRuntime(profile.Login.Capture, bound.pack.Normalization),
+		}
+		if isAliasManifest(webViewRequest.Manifest) {
+			validatedRequest, err := r.validateAliasWebViewAuthRequest(ctx, bound, profile, webViewRequest)
 			if err != nil {
 				return nil, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
 			}
@@ -721,31 +723,14 @@ func (r *HostAuthRuntime) provisionPlans(ctx context.Context, bound hostAuthRunt
 	return plans, nil
 }
 
-func targetHostInProfileScope(policy ResolvedHostPolicy, ref AuthProfileID, targetHost string) bool {
-	if targetHost == "" {
-		return true
-	}
-
-	return policyAuthProfileMatchesHost(policy, ref, targetHost)
-}
-
-func hostAuthRuntimeAuthProfileScopeDomains(policy ResolvedHostPolicy, ref AuthProfileID) ([]DomainRule, error) {
+func hostAuthRuntimeAuthProfileScopeDomains(policy ResolvedHostPolicy, profileID AuthProfileID) []DomainRule {
 	for _, scope := range policy.AuthProfiles {
-		if scope.ProfileID != ref {
-			continue
+		if scope.ProfileID == profileID {
+			return cloneDomainRules(scope.Domains)
 		}
-		if len(scope.Domains) == 0 {
-			return nil, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
-		}
-
-		return cloneDomainRules(scope.Domains), nil
 	}
 
-	return nil, errors.New(hostAuthRuntimeProvisionUnavailableMessage)
-}
-
-func hostAuthRuntimeLoginAllowedDomainMatchesHost(rule DomainRule, loginHost string) bool {
-	return matchesDomainRule(rule.Host, DomainRule{Host: loginHost}) && (!rule.IncludeSubdomains || rule.Host != loginHost)
+	return nil
 }
 
 func (g *HostAuthRuntimeBatchGuard) mark(key string) bool {
@@ -890,9 +875,9 @@ func (r *HostAuthRuntime) profileRefreshable(ctx context.Context, bound hostAuth
 	}
 	refreshBound := bound
 	refreshBound.selectedRefs = []AuthProfileID{ref}
-	plans, err := r.provisionPlans(ctx, refreshBound)
+	_, err := r.provisionPlans(ctx, refreshBound)
 
-	return err == nil && len(plans) == 1
+	return err == nil
 }
 
 func (r *HostAuthRuntime) validateProvisionable(bound hostAuthRuntimeBoundRequest) error {

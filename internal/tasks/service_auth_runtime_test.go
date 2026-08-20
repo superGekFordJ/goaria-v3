@@ -17,8 +17,6 @@ import (
 	"goaria-v3/internal/tasks"
 )
 
-const addTaskGenericAuthResolutionError = "could not resolve this link; authentication may be required or the link is unsupported"
-
 type authRuntimeTaskDispatcher struct {
 	mu            sync.Mutex
 	events        *authRuntimeTaskEventLog
@@ -464,7 +462,7 @@ func TestAddUri_AuthRuntimeGenericEmptyOutputRefreshesOnceAndRetries(t *testing.
 			sourceURL: {authRuntimeTaskSourceRequest(identity, manifest, sourceURL)},
 		},
 		resolveErrors: map[string][]error{
-			sourceURL: {errors.New(addTaskGenericAuthResolutionError), nil},
+			sourceURL: {&tasks.GenericAuthResolutionError{}, nil},
 		},
 		resolutions: map[string][]extractor.AddTaskResolution{
 			sourceURL: {authRuntimeTaskResolution(sourceURL, targetURL, identity, manifest, true)},
@@ -537,7 +535,7 @@ func TestAddUri_AuthRuntimeGenericEmptyOutputWithoutLocalSourceAuthDoesNotRetry(
 	sourceURL := "https://fixture.invalid/d/no-local-auth"
 	dispatcher := &authRuntimeTaskDispatcher{
 		resolveErrors: map[string][]error{
-			sourceURL: {errors.New(addTaskGenericAuthResolutionError)},
+			sourceURL: {&tasks.GenericAuthResolutionError{}},
 		},
 	}
 	driver := &authRuntimeTaskDriver{}
@@ -629,8 +627,8 @@ func TestBatchAddUri_AuthRuntimeRefreshesOncePerRuntimeEntry(t *testing.T) {
 			secondSource: {authRuntimeTaskSourceRequest(identity, manifest, secondSource)},
 		},
 		resolveErrors: map[string][]error{
-			firstSource:  {errors.New(addTaskGenericAuthResolutionError), nil},
-			secondSource: {errors.New(addTaskGenericAuthResolutionError)},
+			firstSource:  {&tasks.GenericAuthResolutionError{}, nil},
+			secondSource: {&tasks.GenericAuthResolutionError{}},
 		},
 		resolutions: map[string][]extractor.AddTaskResolution{
 			firstSource: {authRuntimeTaskResolution(firstSource, firstTarget, identity, manifest, true)},
@@ -843,7 +841,7 @@ func authRuntimeAliasTaskHostPolicyValue(identity extractor.VerifiedPackIdentity
 		BrokerDomains:       []extractor.DomainRule{{Host: "login.alpha.test"}},
 		OutputDomains:       []extractor.HostPolicyOutputRule{{Host: "target.alpha.test", PathPrefixes: []string{"/files/"}}},
 		AuthProfiles:        []extractor.HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []extractor.DomainRule{{Host: "target.alpha.test"}}}},
-		BrokerEndpoints:     []extractor.HostPolicyBrokerEndpoint{{BrokerPolicyRef: "bpr-alpha001", EndpointRef: "ep-alpha001", URLTemplate: "https://login.alpha.test/session/{id}", Methods: []string{"GET"}, AuthProfileRefs: []string{"apr-alpha001"}, TimeoutMillis: 3000, MaxResponseBytes: 65536}},
+		Endpoints:           []extractor.HostPolicyEndpoint{{BrokerPolicyRef: "bpr-alpha001", EndpointRef: "ep-alpha001", URLTemplate: "https://login.alpha.test/session/{id}", Methods: []string{"GET"}, AuthProfileRefs: []extractor.AuthProfileID{"apr-alpha001"}, TimeoutMillis: 3000, MaxResponseBytes: 65536}},
 	}
 }
 
@@ -894,7 +892,7 @@ func authRuntimeTaskResolution(sourceURL string, targetURL string, identity extr
 		SourceURL:    sourceURL,
 		PackID:       identity.PackID,
 		PackIdentity: identity,
-		Manifest:     manifest,
+		PackManifest: manifest,
 		ID:           "item-1",
 		URL:          targetURL,
 		Filename:     "file.bin",

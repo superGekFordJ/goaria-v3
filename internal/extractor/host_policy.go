@@ -3,13 +3,19 @@ package extractor
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
-var brokerEndpointParamPattern = regexp.MustCompile(`\{([a-zA-Z0-9_-]+)\}`)
+const (
+	maxHostPolicyEndpointParams        = 16
+	maxHostPolicyEndpointParamKeyLen   = 32
+	maxHostPolicyEndpointParamValueLen = 512
+)
 
 type HostPolicyResolver interface {
 	ResolveHostPolicy(ctx context.Context, request HostPolicyRequest) (ResolvedHostPolicy, error)
@@ -32,7 +38,7 @@ type ResolvedHostPolicy struct {
 	BrokerDomains       []DomainRule
 	OutputDomains       []HostPolicyOutputRule
 	AuthProfiles        []HostPolicyAuthProfileScope
-	BrokerEndpoints     []HostPolicyBrokerEndpoint
+	Endpoints           []HostPolicyEndpoint
 }
 
 type HostPolicyOutputRule struct {
@@ -46,12 +52,12 @@ type HostPolicyAuthProfileScope struct {
 	Domains   []DomainRule
 }
 
-type HostPolicyBrokerEndpoint struct {
+type HostPolicyEndpoint struct {
 	BrokerPolicyRef  string
 	EndpointRef      string
 	URLTemplate      string
 	Methods          []string
-	AuthProfileRefs  []string
+	AuthProfileRefs  []AuthProfileID
 	TimeoutMillis    int
 	MaxResponseBytes int64
 }
@@ -62,83 +68,98 @@ func isAliasManifest(manifest Manifest) bool {
 
 func resolveAliasHostPolicy(ctx context.Context, resolver HostPolicyResolver, identity VerifiedPackIdentity, manifest Manifest) (ResolvedHostPolicy, error) {
 	if !isAliasManifest(manifest) {
-		return ResolvedHostPolicy{}, errors.New("host policy requires alias manifest")
+		return ResolvedHostPolicy{}, errors.New("host policy resolution requires an alias manifest")
 	}
 	if resolver == nil {
-		return ResolvedHostPolicy{}, errors.New("host policy resolver is not configured")
+		return ResolvedHostPolicy{}, errors.New("host policy resolver is required for alias manifest")
 	}
-	if !hasVerifiedPackIdentity(identity) {
-		return ResolvedHostPolicy{}, errors.New("verified pack identity is incomplete")
+	if identity == (VerifiedPackIdentity{}) {
+		return ResolvedHostPolicy{}, errors.New("verified pack identity is required for alias manifest")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
-	request := HostPolicyRequest{
+	resolved, err := resolver.ResolveHostPolicy(ctx, HostPolicyRequest{
 		PackIdentity: identity,
 		Manifest:     cloneManifest(manifest),
-	}
-	policy, err := resolver.ResolveHostPolicy(ctx, request)
+	})
 	if err != nil {
-		return ResolvedHostPolicy{}, errors.New("host policy resolver failed")
+		return ResolvedHostPolicy{}, errors.New("host policy resolution denied")
 	}
-	if err := validateResolvedHostPolicy(identity, manifest, policy); err != nil {
+	if err := validateResolvedHostPolicy(identity, manifest, resolved); err != nil {
 		return ResolvedHostPolicy{}, err
 	}
 
-	return cloneResolvedHostPolicy(policy), nil
+	return cloneResolvedHostPolicy(resolved), nil
 }
 
 func validateResolvedHostPolicy(identity VerifiedPackIdentity, manifest Manifest, policy ResolvedHostPolicy) error {
 	if err := validateOpaquePolicyRef("policy_id", policy.PolicyID); err != nil {
+		return errors.New("resolved host policy is invalid")
+	}
+	if strings.TrimSpace(policy.PolicyVersion) == "" || strings.TrimSpace(policy.PolicyVersion) != policy.PolicyVersion {
+		return errors.New("resolved host policy is invalid")
+	}
+	if err := validateLowerHexSHA256Field("policy_sha256", policy.PolicySHA256); err != nil {
+		return errors.New("resolved host policy is invalid")
+	}
+	if policy.PackIdentity != identity {
+		return errors.New("resolved host policy does not match verified pack identity")
+	}
+	if policy.PackIdentity.PackID != manifest.PackID || policy.PackIdentity.PackVersion != manifest.PackVersion {
+		return errors.New("resolved host policy does not match manifest identity")
+	}
+	if !sameStringSet(policy.DomainPolicyRefs, manifest.DomainPolicyRefs) {
+		return errors.New("resolved host policy does not match manifest domain policy refs")
+	}
+	if !sameStringSet(policy.BrokerPolicyRefs, manifest.BrokerPolicyRefs) {
+		return errors.New("resolved host policy does not match manifest broker policy refs")
+	}
+	if err := validateOpaquePolicyRefs("domain_policy_refs", policy.DomainPolicyRefs); err != nil {
+		return errors.New("resolved host policy is invalid")
+	}
+	if err := validateOpaquePolicyRefs("broker_policy_refs", policy.BrokerPolicyRefs); err != nil {
+		return errors.New("resolved host policy is invalid")
+	}
+	if err := validateHostPolicyCapabilities(manifest, policy.AllowedCapabilities); err != nil {
 		return err
 	}
-	if policy.PolicyVersion == "" || strings.TrimSpace(policy.PolicyVersion) != policy.PolicyVersion {
-		return errors.New("host policy version must be non-empty and trimmed")
-	}
-	if err := validateSHA256Hex("policy_sha256", policy.PolicySHA256); err != nil {
-		return err
-	}
-	if !hasVerifiedPackIdentity(identity) || policy.PackIdentity != identity {
-		return errors.New("host policy identity does not match verified pack")
-	}
-	if identity.PackID != manifest.PackID || identity.PackVersion != manifest.PackVersion {
-		return errors.New("verified pack identity does not match manifest")
-	}
-	if !samePolicyRefSet(manifest.DomainPolicyRefs, policy.DomainPolicyRefs) {
-		return errors.New("host policy domain refs do not match manifest")
-	}
-	if !samePolicyRefSet(manifest.BrokerPolicyRefs, policy.BrokerPolicyRefs) {
-		return errors.New("host policy broker refs do not match manifest")
-	}
-	if err := validateCapabilities(policy.AllowedCapabilities, capabilitiesAllowedByManifest(manifest)); err != nil {
-		return errors.New("host policy capabilities are not allowed by manifest")
+	if len(policy.IngressDomains) == 0 {
+		return errors.New("resolved host policy ingress domain rules are required")
 	}
 	if err := validateDomainRules(policy.IngressDomains); err != nil {
-		return errors.New("host policy ingress domains are invalid")
+		return errors.New("resolved host policy ingress domain rules are invalid")
 	}
 	if len(policy.OutputDomains) == 0 {
-		return errors.New("host policy output domains are required")
+		return errors.New("resolved host policy output domain rules are required")
 	}
 	if err := validateHostPolicyOutputDomains(policy.OutputDomains); err != nil {
 		return err
 	}
-	if len(policy.BrokerDomains) > 0 {
-		if err := validateDomainRules(policy.BrokerDomains); err != nil {
-			return errors.New("host policy broker domains are invalid")
+	requiresBroker := ManifestHasCapability(manifest, CapabilityHTTPFetch) || ManifestHasCapability(manifest, CapabilityAuthProfile)
+	if requiresBroker {
+		if len(policy.BrokerDomains) == 0 {
+			return errors.New("resolved host policy broker domain rules are required")
 		}
+		if err := validateDomainRules(policy.BrokerDomains); err != nil {
+			return errors.New("resolved host policy broker domain rules are invalid")
+		}
+	} else if len(policy.BrokerDomains) > 0 {
+		return errors.New("resolved host policy broker domain rules require broker capabilities")
 	}
 	if err := validateHostPolicyAuthProfiles(policy.AuthProfiles, policy.AllowedCapabilities); err != nil {
 		return err
 	}
-	needsBrokerEndpoints := manifestHasCapability(manifest, CapabilityHTTPFetch) || manifestHasCapability(manifest, CapabilityAuthProfile)
-	if needsBrokerEndpoints {
-		if len(policy.BrokerDomains) == 0 {
-			return errors.New("host policy broker domains are required")
+	if requiresBroker {
+		if len(policy.Endpoints) == 0 {
+			return errors.New("resolved host policy endpoints are required")
 		}
-		if len(policy.BrokerEndpoints) == 0 {
-			return errors.New("host policy broker endpoints are required")
+		if err := validateHostPolicyEndpoints(manifest, policy); err != nil {
+			return err
 		}
-	}
-	if err := validateHostPolicyBrokerEndpoints(manifest, policy); err != nil {
-		return err
+	} else if len(policy.Endpoints) > 0 {
+		return errors.New("resolved host policy endpoints require broker capabilities")
 	}
 
 	return nil
@@ -146,11 +167,12 @@ func validateResolvedHostPolicy(identity VerifiedPackIdentity, manifest Manifest
 
 func validateHostPolicyOutputDomains(rules []HostPolicyOutputRule) error {
 	for _, rule := range rules {
-		if err := validateDomainRule(DomainRule{Host: rule.Host, IncludeSubdomains: rule.IncludeSubdomains}); err != nil {
-			return errors.New("host policy output domain is invalid")
+		domain := DomainRule{Host: rule.Host, IncludeSubdomains: rule.IncludeSubdomains}
+		if err := validateDomainRule(domain); err != nil {
+			return errors.New("resolved host policy output domain rule is invalid")
 		}
 		if len(rule.PathPrefixes) == 0 {
-			return errors.New("host policy output path prefixes are required")
+			return errors.New("resolved host policy output path prefixes are required")
 		}
 		seen := make(map[string]struct{}, len(rule.PathPrefixes))
 		for _, prefix := range rule.PathPrefixes {
@@ -158,7 +180,7 @@ func validateHostPolicyOutputDomains(rules []HostPolicyOutputRule) error {
 				return err
 			}
 			if _, ok := seen[prefix]; ok {
-				return errors.New("host policy output path prefixes contain duplicates")
+				return errors.New("resolved host policy output path prefixes contain duplicate entries")
 			}
 			seen[prefix] = struct{}{}
 		}
@@ -169,19 +191,161 @@ func validateHostPolicyOutputDomains(rules []HostPolicyOutputRule) error {
 
 func validateHostPolicyOutputPathPrefix(prefix string) error {
 	if prefix == "" || strings.TrimSpace(prefix) != prefix {
-		return errors.New("host policy output path prefix is invalid")
+		return errors.New("resolved host policy output path prefix must be non-empty and trimmed")
 	}
 	if !strings.HasPrefix(prefix, "/") {
-		return errors.New("host policy output path prefix is invalid")
+		return errors.New("resolved host policy output path prefix must start with slash")
 	}
 	if prefix != "/" && !strings.HasSuffix(prefix, "/") {
-		return errors.New("host policy output path prefix is invalid")
+		return errors.New("resolved host policy output path prefix must end with slash")
 	}
-	if strings.ContainsAny(prefix, "\\?#%") || containsControl(prefix) {
-		return errors.New("host policy output path prefix is invalid")
+	if strings.ContainsAny(prefix, "\\?#%") || stringContainsControl(prefix) {
+		return errors.New("resolved host policy output path prefix contains unsafe syntax")
 	}
 	if strings.Contains(prefix, "//") || strings.Contains(prefix, "/./") || strings.Contains(prefix, "/../") || strings.Contains(prefix, "..") {
-		return errors.New("host policy output path prefix is invalid")
+		return errors.New("resolved host policy output path prefix contains unsafe path segments")
+	}
+
+	return nil
+}
+
+func validateHostPolicyEndpoints(manifest Manifest, policy ResolvedHostPolicy) error {
+	seen := make(map[string]map[string]struct{}, len(policy.Endpoints))
+	for _, endpoint := range policy.Endpoints {
+		if err := validateOpaquePolicyRef("broker_policy_ref", endpoint.BrokerPolicyRef); err != nil {
+			return errors.New("resolved host policy endpoint is invalid")
+		}
+		if !stringSliceContains(policy.BrokerPolicyRefs, endpoint.BrokerPolicyRef) || !stringSliceContains(manifest.BrokerPolicyRefs, endpoint.BrokerPolicyRef) {
+			return errors.New("resolved host policy endpoint broker ref is not declared")
+		}
+		if err := validateOpaquePolicyRef("endpoint_ref", endpoint.EndpointRef); err != nil {
+			return errors.New("resolved host policy endpoint is invalid")
+		}
+		byBroker := seen[endpoint.BrokerPolicyRef]
+		if byBroker == nil {
+			byBroker = make(map[string]struct{})
+			seen[endpoint.BrokerPolicyRef] = byBroker
+		}
+		if _, ok := byBroker[endpoint.EndpointRef]; ok {
+			return errors.New("resolved host policy endpoint refs must be unique per broker ref")
+		}
+		byBroker[endpoint.EndpointRef] = struct{}{}
+
+		if _, _, err := validateHostPolicyEndpointURLTemplate(policy, endpoint.URLTemplate); err != nil {
+			return err
+		}
+		if _, err := normalizeHostPolicyEndpointMethodNames(endpoint.Methods); err != nil {
+			return err
+		}
+		if err := validateHostPolicyEndpointAuthRefs(endpoint.AuthProfileRefs); err != nil {
+			return err
+		}
+		if endpoint.TimeoutMillis < 0 {
+			return errors.New("resolved host policy endpoint timeout must not be negative")
+		}
+		if endpoint.MaxResponseBytes < 0 {
+			return errors.New("resolved host policy endpoint max response bytes must not be negative")
+		}
+	}
+
+	return nil
+}
+
+func validateHostPolicyEndpointURLTemplate(policy ResolvedHostPolicy, template string) (*url.URL, map[string]struct{}, error) {
+	if template == "" || strings.TrimSpace(template) != template {
+		return nil, nil, errors.New("resolved host policy endpoint url template must be non-empty and trimmed")
+	}
+	if stringContainsControl(template) {
+		return nil, nil, errors.New("resolved host policy endpoint url template contains control characters")
+	}
+	parsed, host, err := parseSafeHTTPURL(template)
+	if err != nil {
+		return nil, nil, errors.New("resolved host policy endpoint url template is invalid")
+	}
+	if !policyBrokerMatchesHost(policy, host) {
+		return nil, nil, errors.New("resolved host policy endpoint url template host is not allowed by broker policy")
+	}
+	placeholders, err := hostPolicyEndpointPlaceholders(template)
+	if err != nil {
+		return nil, nil, err
+	}
+	if hostPolicyEndpointTemplateContainsPlaceholder(parsed.Scheme) || hostPolicyEndpointTemplateContainsPlaceholder(parsed.Host) {
+		return nil, nil, errors.New("resolved host policy endpoint url template must use a concrete host")
+	}
+
+	return parsed, placeholders, nil
+}
+
+func normalizeHostPolicyEndpointMethods(methods []string, policy HTTPBrokerPolicy) ([]string, error) {
+	normalized, err := normalizeHostPolicyEndpointMethodNames(methods)
+	if err != nil || len(normalized) == 0 {
+		return normalized, err
+	}
+	allowed := policy.AllowedMethods
+	if len(allowed) == 0 {
+		allowed = DefaultHTTPBrokerPolicy().AllowedMethods
+	}
+	for _, method := range normalized {
+		if _, ok := allowed[method]; !ok {
+			return nil, fmt.Errorf("resolved host policy endpoint method %q is not allowed", method)
+		}
+	}
+
+	return normalized, nil
+}
+
+func normalizeHostPolicyEndpointMethodNames(methods []string) ([]string, error) {
+	if len(methods) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(methods))
+	normalized := make([]string, 0, len(methods))
+	for _, method := range methods {
+		method = strings.ToUpper(strings.TrimSpace(method))
+		if method == "" || strings.ContainsAny(method, " \t\r\n") {
+			return nil, errors.New("resolved host policy endpoint method is invalid")
+		}
+		if _, ok := seen[method]; ok {
+			return nil, errors.New("resolved host policy endpoint methods contain duplicate entries")
+		}
+		seen[method] = struct{}{}
+		normalized = append(normalized, method)
+	}
+
+	return normalized, nil
+}
+
+func validateHostPolicyEndpointAuthRefs(refs []AuthProfileID) error {
+	seen := make(map[AuthProfileID]struct{}, len(refs))
+	for _, ref := range refs {
+		if err := validateAuthProfileID(ref); err != nil {
+			return errors.New("resolved host policy endpoint auth profile ref is invalid")
+		}
+		if _, ok := seen[ref]; ok {
+			return errors.New("resolved host policy endpoint auth profile refs contain duplicate entries")
+		}
+		seen[ref] = struct{}{}
+	}
+
+	return nil
+}
+
+func validateHostPolicyCapabilities(manifest Manifest, capabilities []Capability) error {
+	if len(capabilities) == 0 {
+		return errors.New("resolved host policy allowed capabilities are required")
+	}
+	seen := make(map[Capability]struct{}, len(capabilities))
+	for _, capability := range capabilities {
+		if capability == "" {
+			return errors.New("resolved host policy allowed capability is invalid")
+		}
+		if _, ok := seen[capability]; ok {
+			return errors.New("resolved host policy allowed capabilities contain duplicate entries")
+		}
+		seen[capability] = struct{}{}
+		if !ManifestHasCapability(manifest, capability) {
+			return errors.New("resolved host policy allowed capability is not declared by manifest")
+		}
 	}
 
 	return nil
@@ -191,222 +355,36 @@ func validateHostPolicyAuthProfiles(scopes []HostPolicyAuthProfileScope, capabil
 	if len(scopes) == 0 {
 		return nil
 	}
-	if !capabilityListContains(capabilities, CapabilityAuthProfile) {
-		return errors.New("host policy auth profile scopes require auth capability")
+	if !capabilitySliceContains(capabilities, CapabilityAuthProfile) {
+		return errors.New("resolved host policy auth profile scopes require auth capability")
 	}
 	seen := make(map[AuthProfileID]struct{}, len(scopes))
 	for _, scope := range scopes {
 		if err := validateAuthProfileID(scope.ProfileID); err != nil {
-			return errors.New("host policy auth profile scope is invalid")
+			return errors.New("resolved host policy auth profile scope is invalid")
 		}
 		if _, ok := seen[scope.ProfileID]; ok {
-			return errors.New("host policy auth profile scopes contain duplicates")
+			return errors.New("resolved host policy auth profile scopes contain duplicate entries")
 		}
 		seen[scope.ProfileID] = struct{}{}
+		if len(scope.Domains) == 0 {
+			return errors.New("resolved host policy auth profile domain rules are required")
+		}
 		if err := validateDomainRules(scope.Domains); err != nil {
-			return errors.New("host policy auth profile domain rules are invalid")
+			return errors.New("resolved host policy auth profile domain rules are invalid")
 		}
 	}
 
 	return nil
-}
-
-func policyIngressMatchesHost(policy ResolvedHostPolicy, host string) bool {
-	for _, rule := range policy.IngressDomains {
-		if matchesDomainRule(host, rule) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func policyBrokerMatchesHost(policy ResolvedHostPolicy, host string) bool {
-	for _, rule := range policy.BrokerDomains {
-		if matchesDomainRule(host, rule) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func validateHostPolicyBrokerEndpoints(manifest Manifest, policy ResolvedHostPolicy) error {
-	if len(policy.BrokerEndpoints) == 0 {
-		return nil
-	}
-	manifestBrokerRefs := makeStringSet(manifest.BrokerPolicyRefs)
-	policyBrokerRefs := makeStringSet(policy.BrokerPolicyRefs)
-	declaredAuthProfiles := make(map[string]struct{}, len(policy.AuthProfiles))
-	for _, scope := range policy.AuthProfiles {
-		declaredAuthProfiles[string(scope.ProfileID)] = struct{}{}
-	}
-	seenEndpoints := make(map[string]struct{}, len(policy.BrokerEndpoints))
-	for _, endpoint := range policy.BrokerEndpoints {
-		if err := validateOpaquePolicyRef("broker_policy_ref", endpoint.BrokerPolicyRef); err != nil {
-			return errors.New("host policy broker endpoint ref is invalid")
-		}
-		if _, ok := manifestBrokerRefs[endpoint.BrokerPolicyRef]; !ok {
-			return errors.New("host policy broker endpoint uses undeclared broker policy ref")
-		}
-		if _, ok := policyBrokerRefs[endpoint.BrokerPolicyRef]; !ok {
-			return errors.New("host policy broker endpoint uses unknown broker policy ref")
-		}
-		if err := validateOpaquePolicyRef("endpoint_ref", endpoint.EndpointRef); err != nil {
-			return errors.New("host policy endpoint ref is invalid")
-		}
-		key := endpoint.BrokerPolicyRef + "\x00" + endpoint.EndpointRef
-		if _, ok := seenEndpoints[key]; ok {
-			return errors.New("host policy broker endpoints contain duplicate refs")
-		}
-		seenEndpoints[key] = struct{}{}
-		if err := validateBrokerEndpointURLTemplate(endpoint.URLTemplate); err != nil {
-			return err
-		}
-		if _, err := normalizeBrokerEndpointMethods(endpoint.Methods, DefaultHTTPBrokerPolicy()); err != nil {
-			return err
-		}
-		if err := validateBrokerEndpointAuthProfileRefs(endpoint.AuthProfileRefs); err != nil {
-			return err
-		}
-		for _, ref := range endpoint.AuthProfileRefs {
-			if !manifestHasCapability(manifest, CapabilityAuthProfile) || !policyAllowsCapability(policy, CapabilityAuthProfile) {
-				return errors.New("host policy broker endpoint auth profile refs require auth capability")
-			}
-			if _, ok := declaredAuthProfiles[ref]; !ok {
-				return errors.New("host policy broker endpoint auth profile ref is not declared")
-			}
-		}
-		if err := validateBrokerEndpointResourceCaps(endpoint, manifest, DefaultHTTPBrokerPolicy()); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func normalizeBrokerEndpointMethods(methods []string, policy HTTPBrokerPolicy) ([]string, error) {
-	if len(methods) == 0 {
-		return nil, nil
-	}
-	allowed := policy.AllowedMethods
-	if len(allowed) == 0 {
-		allowed = DefaultHTTPBrokerPolicy().AllowedMethods
-	}
-	seen := make(map[string]struct{}, len(methods))
-	normalized := make([]string, 0, len(methods))
-	for _, method := range methods {
-		method = strings.ToUpper(strings.TrimSpace(method))
-		if method == "" || strings.ContainsAny(method, " \t\r\n") {
-			return nil, errors.New("host policy broker endpoint method is invalid")
-		}
-		if _, ok := seen[method]; ok {
-			return nil, errors.New("host policy broker endpoint methods contain duplicates")
-		}
-		if _, ok := allowed[method]; !ok {
-			return nil, errors.New("host policy broker endpoint method is not allowed")
-		}
-		seen[method] = struct{}{}
-		normalized = append(normalized, method)
-	}
-
-	return normalized, nil
-}
-
-func validateBrokerEndpointResourceCaps(endpoint HostPolicyBrokerEndpoint, manifest Manifest, policy HTTPBrokerPolicy) error {
-	if endpoint.TimeoutMillis < 0 {
-		return errors.New("host policy broker endpoint timeout is invalid")
-	}
-	if endpoint.TimeoutMillis > 0 {
-		brokerMaxMillis := int(policy.MaxTimeout / time.Millisecond)
-		if manifest.ResourceLimits.TimeoutMillis > 0 && endpoint.TimeoutMillis > manifest.ResourceLimits.TimeoutMillis {
-			return errors.New("host policy broker endpoint timeout exceeds manifest limit")
-		}
-		if brokerMaxMillis > 0 && endpoint.TimeoutMillis > brokerMaxMillis {
-			return errors.New("host policy broker endpoint timeout exceeds broker limit")
-		}
-	}
-	if endpoint.MaxResponseBytes < 0 {
-		return errors.New("host policy broker endpoint response cap is invalid")
-	}
-	if endpoint.MaxResponseBytes > 0 {
-		if manifest.ResourceLimits.MaxResponseBytes > 0 && endpoint.MaxResponseBytes > manifest.ResourceLimits.MaxResponseBytes {
-			return errors.New("host policy broker endpoint response cap exceeds manifest limit")
-		}
-		if policy.MaxResponseBytes > 0 && endpoint.MaxResponseBytes > policy.MaxResponseBytes {
-			return errors.New("host policy broker endpoint response cap exceeds broker limit")
-		}
-	}
-
-	return nil
-}
-
-func validateBrokerEndpointURLTemplate(template string) error {
-	if template == "" || strings.TrimSpace(template) != template {
-		return errors.New("host policy broker endpoint template is invalid")
-	}
-	if len(template) > maxABIURLBytes {
-		return errors.New("host policy broker endpoint template is invalid")
-	}
-	if strings.ContainsAny(template, "\r\n\x00") {
-		return errors.New("host policy broker endpoint template is invalid")
-	}
-	if strings.ContainsAny(brokerEndpointParamPattern.ReplaceAllString(template, ""), "{}") {
-		return errors.New("host policy broker endpoint template is invalid")
-	}
-	parsed, err := url.Parse(template)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil {
-		return errors.New("host policy broker endpoint template is invalid")
-	}
-	if err := validateBrokerEndpointTemplatePlaceholders(parsed); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func validateBrokerEndpointAuthProfileRefs(refs []string) error {
-	seen := make(map[string]struct{}, len(refs))
-	for _, ref := range refs {
-		if err := validateAuthProfileID(AuthProfileID(ref)); err != nil {
-			return errors.New("host policy broker endpoint auth profile ref is invalid")
-		}
-		if _, ok := seen[ref]; ok {
-			return errors.New("host policy broker endpoint auth profile refs contain duplicates")
-		}
-		seen[ref] = struct{}{}
-	}
-
-	return nil
-}
-
-func findBrokerEndpoint(policy ResolvedHostPolicy, brokerPolicyRef string, endpointRef string) (HostPolicyBrokerEndpoint, bool) {
-	var found HostPolicyBrokerEndpoint
-	count := 0
-	for _, endpoint := range policy.BrokerEndpoints {
-		if endpoint.BrokerPolicyRef != brokerPolicyRef || endpoint.EndpointRef != endpointRef {
-			continue
-		}
-		found = cloneHostPolicyBrokerEndpoint(endpoint)
-		count++
-	}
-
-	return found, count == 1
-}
-
-func endpointAllowsAuthProfile(endpoint HostPolicyBrokerEndpoint, profileRef AuthProfileID) bool {
-	for _, allowed := range endpoint.AuthProfileRefs {
-		if allowed == string(profileRef) {
-			return true
-		}
-	}
-
-	return false
 }
 
 func policyAllowsCapability(policy ResolvedHostPolicy, capability Capability) bool {
-	for _, allowed := range policy.AllowedCapabilities {
-		if allowed == capability {
+	return capabilitySliceContains(policy.AllowedCapabilities, capability)
+}
+
+func capabilitySliceContains(capabilities []Capability, capability Capability) bool {
+	for _, candidate := range capabilities {
+		if candidate == capability {
 			return true
 		}
 	}
@@ -414,33 +392,18 @@ func policyAllowsCapability(policy ResolvedHostPolicy, capability Capability) bo
 	return false
 }
 
-func expandBrokerEndpointURL(policy ResolvedHostPolicy, endpoint HostPolicyBrokerEndpoint, params map[string]string) (string, error) {
-	if err := validateHostImportParams(params); err != nil {
-		return "", errors.New("invalid endpoint params")
-	}
-	parsedTemplate, err := url.Parse(endpoint.URLTemplate)
-	if err != nil {
-		return "", errors.New("expanded endpoint url is invalid")
-	}
-	expanded, err := expandBrokerEndpointTemplate(parsedTemplate, params)
-	if err != nil {
-		return "", err
-	}
-	parsed, host, err := parseSafeHTTPURL(expanded)
-	if err != nil {
-		return "", errors.New("expanded endpoint url is invalid")
-	}
-	if !policyBrokerMatchesHost(policy, host) {
-		return "", errors.New("expanded endpoint host is not allowed")
-	}
+func policyIngressMatchesHost(policy ResolvedHostPolicy, host string) bool {
+	return domainRulesMatchHost(policy.IngressDomains, host)
+}
 
-	return parsed.String(), nil
+func policyBrokerMatchesHost(policy ResolvedHostPolicy, host string) bool {
+	return domainRulesMatchHost(policy.BrokerDomains, host)
 }
 
 func policyAllowsOutputURL(policy ResolvedHostPolicy, rawURL string) error {
 	parsed, host, err := parseSafeHTTPURL(rawURL)
 	if err != nil {
-		return redactErrorf("output url is invalid")
+		return err
 	}
 	if parsed.Scheme != "https" {
 		return redactErrorf("output url must use https")
@@ -452,11 +415,9 @@ func policyAllowsOutputURL(policy ResolvedHostPolicy, rawURL string) error {
 	if path == "" {
 		path = "/"
 	}
-	if err := validateOutputURLPath(path); err != nil {
-		return err
-	}
 	for _, rule := range policy.OutputDomains {
-		if !matchesDomainRule(host, DomainRule{Host: rule.Host, IncludeSubdomains: rule.IncludeSubdomains}) {
+		domain := DomainRule{Host: rule.Host, IncludeSubdomains: rule.IncludeSubdomains}
+		if !matchesDomainRule(host, domain) {
 			continue
 		}
 		for _, prefix := range rule.PathPrefixes {
@@ -469,50 +430,6 @@ func policyAllowsOutputURL(policy ResolvedHostPolicy, rawURL string) error {
 	return redactErrorf("url is not allowed by alias output policy")
 }
 
-func validateOutputURLPath(escapedPath string) error {
-	for _, current := range strings.Split(escapedPath, "/") {
-		if current == "" {
-			continue
-		}
-		for depth := 0; ; depth++ {
-			if outputURLPathSegmentUnsafe(current) {
-				return redactErrorf("output url path is invalid")
-			}
-			if !containsPercentEscape(current) {
-				break
-			}
-			if depth >= 8 {
-				return redactErrorf("output url path is invalid")
-			}
-			decoded, err := url.PathUnescape(current)
-			if err != nil {
-				return redactErrorf("output url path is invalid")
-			}
-			current = decoded
-		}
-	}
-
-	return nil
-}
-
-func outputURLPathSegmentUnsafe(segment string) bool {
-	return segment == "." || segment == ".." || strings.Contains(segment, "/") || strings.Contains(segment, `\`) || containsControl(segment)
-}
-
-func containsPercentEscape(value string) bool {
-	for i := 0; i+2 < len(value); i++ {
-		if value[i] == '%' && isASCIIHex(value[i+1]) && isASCIIHex(value[i+2]) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func isASCIIHex(c byte) bool {
-	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
-}
-
 func policyAuthProfileMatchesHost(policy ResolvedHostPolicy, profileID AuthProfileID, host string) bool {
 	for _, scope := range policy.AuthProfiles {
 		if scope.ProfileID == profileID {
@@ -523,208 +440,69 @@ func policyAuthProfileMatchesHost(policy ResolvedHostPolicy, profileID AuthProfi
 	return false
 }
 
-func validateBrokerEndpointTemplatePlaceholders(parsed *url.URL) error {
-	if parsed == nil {
-		return errors.New("host policy broker endpoint template is invalid")
-	}
-	if strings.Contains(parsed.Scheme, "{") || strings.Contains(parsed.Host, "{") || strings.Contains(parsed.Fragment, "{") || strings.Contains(parsed.RawFragment, "{") {
-		return errors.New("host policy broker endpoint template is invalid")
-	}
-	pathPlaceholders, err := templatePathPlaceholders(parsed.Path)
-	if err != nil {
-		return err
-	}
-	queryPlaceholders, err := templateQueryPlaceholders(parsed.RawQuery)
-	if err != nil {
-		return err
-	}
-	if len(pathPlaceholders)+len(queryPlaceholders) != len(brokerEndpointParamPattern.FindAllStringSubmatch(parsed.Path+"?"+parsed.RawQuery, -1)) {
-		return errors.New("host policy broker endpoint template is invalid")
+func resolveHostPolicyEndpoint(policy ResolvedHostPolicy, brokerPolicyRef string, endpointRef string) (HostPolicyEndpoint, bool) {
+	for _, endpoint := range policy.Endpoints {
+		if endpoint.BrokerPolicyRef == brokerPolicyRef && endpoint.EndpointRef == endpointRef {
+			return cloneHostPolicyEndpoint(endpoint), true
+		}
 	}
 
-	return nil
+	return HostPolicyEndpoint{}, false
 }
 
-func expandBrokerEndpointTemplate(parsed *url.URL, params map[string]string) (string, error) {
-	if err := validateBrokerEndpointTemplatePlaceholders(parsed); err != nil {
-		return "", errors.New("expanded endpoint url is invalid")
-	}
-	pathPlaceholders, err := templatePathPlaceholders(parsed.Path)
+func validateHostPolicyEndpointRequest(endpoint HostPolicyEndpoint, method string, authProfileRef AuthProfileID, manifest Manifest, brokerPolicy HTTPBrokerPolicy) (string, int, int64, error) {
+	normalizedMethod, err := normalizeHostImportMethod(method)
 	if err != nil {
-		return "", errors.New("invalid endpoint params")
+		return "", 0, 0, err
 	}
-	queryPlaceholders, err := templateQueryPlaceholders(parsed.RawQuery)
+	normalizedEndpointMethods, err := normalizeHostPolicyEndpointMethods(endpoint.Methods, brokerPolicy)
 	if err != nil {
-		return "", errors.New("invalid endpoint params")
+		return "", 0, 0, err
 	}
-	required := make(map[string]struct{}, len(pathPlaceholders)+len(queryPlaceholders))
-	for _, placeholder := range pathPlaceholders {
-		required[placeholder] = struct{}{}
+	if len(normalizedEndpointMethods) > 0 && !stringSliceContains(normalizedEndpointMethods, normalizedMethod) {
+		return "", 0, 0, errors.New("http method is not allowed by host policy endpoint")
 	}
-	for _, placeholder := range queryPlaceholders {
-		required[placeholder] = struct{}{}
+	if authProfileRef != "" && !hostPolicyEndpointAllowsAuthProfile(endpoint, authProfileRef) {
+		return "", 0, 0, errors.New("auth profile is not allowed by host policy endpoint")
 	}
-	for key := range required {
-		if _, ok := params[key]; !ok {
-			return "", errors.New("invalid endpoint params")
-		}
-	}
-	for key := range params {
-		if _, ok := required[key]; !ok {
-			return "", errors.New("invalid endpoint params")
-		}
-	}
-	expanded := *parsed
-	expanded.RawPath = ""
-	expanded.Path, err = expandEndpointPath(parsed.Path, params)
-	if err != nil {
-		return "", err
-	}
-	expanded.RawQuery, err = expandEndpointRawQuery(parsed.RawQuery, params)
-	if err != nil {
-		return "", err
+	if err := validateHostPolicyEndpointResourceCaps(endpoint, manifest, brokerPolicy); err != nil {
+		return "", 0, 0, err
 	}
 
-	return expanded.String(), nil
+	return normalizedMethod, endpoint.TimeoutMillis, endpoint.MaxResponseBytes, nil
 }
 
-func templatePathPlaceholders(escapedPath string) ([]string, error) {
-	if escapedPath == "" {
-		return nil, nil
+func validateHostPolicyEndpointResourceCaps(endpoint HostPolicyEndpoint, manifest Manifest, brokerPolicy HTTPBrokerPolicy) error {
+	if endpoint.TimeoutMillis < 0 {
+		return errors.New("endpoint timeout_millis must not be negative")
 	}
-	segments := strings.Split(escapedPath, "/")
-	placeholders := make([]string, 0)
-	for _, segment := range segments {
-		if !strings.Contains(segment, "{") && !strings.Contains(segment, "}") {
-			continue
+	if endpoint.TimeoutMillis > 0 {
+		brokerMaxMillis := int(brokerPolicy.MaxTimeout / time.Millisecond)
+		if manifest.ResourceLimits.TimeoutMillis > 0 && endpoint.TimeoutMillis > manifest.ResourceLimits.TimeoutMillis {
+			return errors.New("endpoint timeout_millis exceeds manifest resource limit")
 		}
-		match := brokerEndpointParamPattern.FindStringSubmatch(segment)
-		if len(match) != 2 || match[0] != segment {
-			return nil, errors.New("host policy broker endpoint template is invalid")
+		if brokerMaxMillis > 0 && endpoint.TimeoutMillis > brokerMaxMillis {
+			return errors.New("endpoint timeout_millis exceeds broker resource limit")
 		}
-		placeholders = append(placeholders, match[1])
 	}
-
-	return placeholders, nil
-}
-
-func templateQueryPlaceholders(rawQuery string) ([]string, error) {
-	if rawQuery == "" {
-		return nil, nil
+	if endpoint.MaxResponseBytes < 0 {
+		return errors.New("endpoint max_response_bytes must not be negative")
 	}
-	parts := strings.Split(rawQuery, "&")
-	placeholders := make([]string, 0)
-	for _, part := range parts {
-		if part == "" {
-			return nil, errors.New("host policy broker endpoint template is invalid")
+	if endpoint.MaxResponseBytes > 0 {
+		if manifest.ResourceLimits.MaxResponseBytes > 0 && endpoint.MaxResponseBytes > manifest.ResourceLimits.MaxResponseBytes {
+			return errors.New("endpoint max_response_bytes exceeds manifest resource limit")
 		}
-		key, value, hasValue := strings.Cut(part, "=")
-		if !hasValue || key == "" || isTokenShapedEndpointQueryKey(key) {
-			return nil, errors.New("host policy broker endpoint template is invalid")
-		}
-		if strings.Contains(key, "{") || strings.Contains(key, "}") {
-			return nil, errors.New("host policy broker endpoint template is invalid")
-		}
-		if !strings.Contains(value, "{") && !strings.Contains(value, "}") {
-			continue
-		}
-		match := brokerEndpointParamPattern.FindStringSubmatch(value)
-		if len(match) != 2 || match[0] != value {
-			return nil, errors.New("host policy broker endpoint template is invalid")
-		}
-		placeholders = append(placeholders, match[1])
-	}
-
-	return placeholders, nil
-}
-
-func expandEndpointPath(escapedPath string, params map[string]string) (string, error) {
-	if escapedPath == "" {
-		return "", nil
-	}
-	segments := strings.Split(escapedPath, "/")
-	for i, segment := range segments {
-		match := brokerEndpointParamPattern.FindStringSubmatch(segment)
-		if len(match) == 0 || match[0] != segment {
-			continue
-		}
-		value := params[match[1]]
-		if err := validateEndpointPathParam(value); err != nil {
-			return "", err
-		}
-		segments[i] = value
-	}
-
-	return strings.Join(segments, "/"), nil
-}
-
-func expandEndpointRawQuery(rawQuery string, params map[string]string) (string, error) {
-	if rawQuery == "" {
-		return "", nil
-	}
-	parts := strings.Split(rawQuery, "&")
-	for i, part := range parts {
-		key, value, hasValue := strings.Cut(part, "=")
-		if !hasValue {
-			return "", errors.New("invalid endpoint params")
-		}
-		match := brokerEndpointParamPattern.FindStringSubmatch(value)
-		if len(match) == 0 || match[0] != value {
-			continue
-		}
-		if err := validateEndpointQueryParam(params[match[1]]); err != nil {
-			return "", err
-		}
-		parts[i] = key + "=" + url.QueryEscape(params[match[1]])
-	}
-
-	return strings.Join(parts, "&"), nil
-}
-
-func validateEndpointPathParam(value string) error {
-	if value == "." || value == ".." || strings.Contains(value, "/") || strings.Contains(value, `\`) || strings.ContainsAny(value, `:/?#[]@!$&'()*+,;=`) {
-		return errors.New("invalid endpoint params")
-	}
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
-			return errors.New("invalid endpoint params")
+		if brokerPolicy.MaxResponseBytes > 0 && endpoint.MaxResponseBytes > brokerPolicy.MaxResponseBytes {
+			return errors.New("endpoint max_response_bytes exceeds broker resource limit")
 		}
 	}
 
 	return nil
 }
 
-func validateEndpointQueryParam(value string) error {
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
-			return errors.New("invalid endpoint params")
-		}
-	}
-
-	return nil
-}
-
-func isTokenShapedEndpointQueryKey(key string) bool {
-	decoded, err := url.QueryUnescape(key)
-	if err != nil {
-		decoded = key
-	}
-	normalized := strings.ToLower(strings.TrimSpace(decoded))
-	normalized = strings.NewReplacer("-", "_", ".", "_", " ", "_", ":", "_").Replace(normalized)
-	if _, ok := tokenLikeQueryKeys[normalized]; ok {
-		return true
-	}
-	sensitive := map[string]struct{}{
-		"authorization": {},
-		"cookie":        {},
-		"set_cookie":    {},
-	}
-	if _, ok := sensitive[normalized]; ok {
-		return true
-	}
-	parts := strings.FieldsFunc(normalized, func(r rune) bool { return r == '_' })
-	for _, part := range parts {
-		if _, ok := tokenLikeQueryKeys[part]; ok {
+func hostPolicyEndpointAllowsAuthProfile(endpoint HostPolicyEndpoint, authProfileRef AuthProfileID) bool {
+	for _, allowed := range endpoint.AuthProfileRefs {
+		if allowed == authProfileRef {
 			return true
 		}
 	}
@@ -732,9 +510,152 @@ func isTokenShapedEndpointQueryKey(key string) bool {
 	return false
 }
 
-func capabilityListContains(capabilities []Capability, capability Capability) bool {
-	for _, candidate := range capabilities {
-		if candidate == capability {
+func expandHostPolicyEndpointURL(policy ResolvedHostPolicy, endpoint HostPolicyEndpoint, params map[string]string) (string, error) {
+	_, placeholders, err := validateHostPolicyEndpointURLTemplate(policy, endpoint.URLTemplate)
+	if err != nil {
+		return "", err
+	}
+	validatedParams, err := validateHostPolicyEndpointParams(params)
+	if err != nil {
+		return "", err
+	}
+	for key := range validatedParams {
+		if _, ok := placeholders[key]; !ok {
+			return "", fmt.Errorf("unknown endpoint param %q", key)
+		}
+	}
+	for key := range placeholders {
+		if _, ok := validatedParams[key]; !ok {
+			return "", fmt.Errorf("missing endpoint param %q", key)
+		}
+	}
+
+	expanded := endpoint.URLTemplate
+	for key, value := range validatedParams {
+		expanded = strings.ReplaceAll(expanded, "{"+key+"}", url.PathEscape(value))
+	}
+	if hostPolicyEndpointTemplateContainsPlaceholder(expanded) {
+		return "", errors.New("endpoint url contains unresolved placeholders")
+	}
+	_, host, err := parseSafeHTTPURL(expanded)
+	if err != nil {
+		return "", err
+	}
+	if !policyBrokerMatchesHost(policy, host) {
+		return "", errors.New("expanded endpoint url is not allowed by broker policy")
+	}
+
+	return expanded, nil
+}
+
+func validateHostPolicyEndpointParams(params map[string]string) (map[string]string, error) {
+	if len(params) == 0 {
+		return nil, nil
+	}
+	if len(params) > maxHostPolicyEndpointParams {
+		return nil, fmt.Errorf("params must contain at most %d entries", maxHostPolicyEndpointParams)
+	}
+	validated := make(map[string]string, len(params))
+	for key, value := range params {
+		if err := validateHostPolicyEndpointParamKey(key); err != nil {
+			return nil, err
+		}
+		if err := validateHostPolicyEndpointParamValue(value); err != nil {
+			return nil, err
+		}
+		if _, ok := validated[key]; ok {
+			return nil, errors.New("params contain duplicate keys")
+		}
+		validated[key] = value
+	}
+
+	return validated, nil
+}
+
+func validateHostPolicyEndpointParamKey(key string) error {
+	if len(key) < 1 || len(key) > maxHostPolicyEndpointParamKeyLen {
+		return fmt.Errorf("param key length must be between 1 and %d bytes", maxHostPolicyEndpointParamKeyLen)
+	}
+	if !utf8.ValidString(key) || strings.TrimSpace(key) != key || stringContainsControl(key) {
+		return errors.New("param key must be valid UTF-8, trimmed, and control-free")
+	}
+	if !isHostPolicyEndpointPlaceholderKey(key) {
+		return fmt.Errorf("param key %q is invalid", key)
+	}
+	if isHostPolicyEndpointSensitiveKey(key) {
+		return fmt.Errorf("param key %q is reserved", key)
+	}
+
+	return nil
+}
+
+func validateHostPolicyEndpointParamValue(value string) error {
+	if len(value) < 1 || len(value) > maxHostPolicyEndpointParamValueLen {
+		return fmt.Errorf("param value length must be between 1 and %d bytes", maxHostPolicyEndpointParamValueLen)
+	}
+	if !utf8.ValidString(value) || strings.TrimSpace(value) != value || stringContainsControl(value) {
+		return errors.New("param value must be valid UTF-8, trimmed, and control-free")
+	}
+	if strings.Contains(value, "://") || strings.ContainsAny(value, "/\\?#@%&=;:") {
+		return errors.New("param value contains reserved URL syntax")
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "bearer ") || strings.HasPrefix(lower, "basic ") || strings.Contains(lower, "authorization:") || strings.Contains(lower, "cookie:") {
+		return errors.New("param value contains credential-looking syntax")
+	}
+
+	return nil
+}
+
+func hostPolicyEndpointPlaceholders(template string) (map[string]struct{}, error) {
+	placeholders := make(map[string]struct{})
+	for i := 0; i < len(template); i++ {
+		switch template[i] {
+		case '{':
+			end := strings.IndexByte(template[i+1:], '}')
+			if end < 0 {
+				return nil, errors.New("endpoint url template contains an unterminated placeholder")
+			}
+			key := template[i+1 : i+1+end]
+			if err := validateHostPolicyEndpointParamKey(key); err != nil {
+				return nil, errors.New("endpoint url template contains an invalid placeholder")
+			}
+			placeholders[key] = struct{}{}
+			i += end + 1
+		case '}':
+			return nil, errors.New("endpoint url template contains an unmatched placeholder terminator")
+		}
+		if len(placeholders) > maxHostPolicyEndpointParams {
+			return nil, fmt.Errorf("endpoint url template must contain at most %d placeholders", maxHostPolicyEndpointParams)
+		}
+	}
+
+	return placeholders, nil
+}
+
+func isHostPolicyEndpointPlaceholderKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	if !isLowerSlugEdge(key[0]) || !isLowerSlugEdge(key[len(key)-1]) {
+		return false
+	}
+	for i := 1; i < len(key)-1; i++ {
+		if !isLowerSlugEdge(key[i]) && key[i] != '-' {
+			return false
+		}
+	}
+
+	return true
+}
+
+func isHostPolicyEndpointSensitiveKey(key string) bool {
+	lower := strings.ToLower(key)
+	if lower == "key" || lower == "api-key" || lower == "apikey" {
+		return true
+	}
+	for _, marker := range []string{"token", "secret", "auth", "cookie", "header", "credential", "password", "passwd", "bearer", "session"} {
+		if strings.Contains(lower, marker) {
 			return true
 		}
 	}
@@ -742,7 +663,7 @@ func capabilityListContains(capabilities []Capability, capability Capability) bo
 	return false
 }
 
-func containsControl(value string) bool {
+func stringContainsControl(value string) bool {
 	for _, r := range value {
 		if r == 0 || r < 0x20 || r == 0x7f {
 			return true
@@ -752,66 +673,30 @@ func containsControl(value string) bool {
 	return false
 }
 
-func validateResolvedHostPolicyBinding(identity VerifiedPackIdentity, manifest Manifest, policy ResolvedHostPolicy) error {
-	if !isAliasManifest(manifest) {
-		return errors.New("host policy requires alias manifest")
-	}
-	if !hasVerifiedPackIdentity(identity) {
-		return errors.New("verified pack identity is incomplete")
-	}
-	if err := validateResolvedHostPolicy(identity, manifest, policy); err != nil {
-		return err
-	}
-
-	return nil
+func hostPolicyEndpointTemplateContainsPlaceholder(value string) bool {
+	return strings.ContainsAny(value, "{}")
 }
 
-func hasVerifiedPackIdentity(identity VerifiedPackIdentity) bool {
-	return identity.PackID != "" &&
-		identity.PackVersion != "" &&
-		identity.ManifestSHA256 != "" &&
-		identity.PayloadSHA256 != "" &&
-		identity.SignatureSHA256 != "" &&
-		identity.PublicKeySHA256 != ""
+func normalizeHostImportMethod(method string) (string, error) {
+	if method == "" {
+		return http.MethodGet, nil
+	}
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method == "" || strings.ContainsAny(method, " \t\r\n") {
+		return "", fmt.Errorf("unsupported http method %q", method)
+	}
+
+	return method, nil
 }
 
-func samePolicyRefSet(manifestRefs []string, policyRefs []string) bool {
-	if len(manifestRefs) != len(policyRefs) {
-		return false
-	}
-	if err := validateOpaquePolicyRefs("domain_policy_refs", policyRefs); err != nil {
-		return false
-	}
-
-	seen := make(map[string]struct{}, len(manifestRefs))
-	for _, ref := range manifestRefs {
-		seen[ref] = struct{}{}
-	}
-	for _, ref := range policyRefs {
-		if _, ok := seen[ref]; !ok {
-			return false
+func stringSliceContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
 		}
 	}
 
-	return true
-}
-
-func capabilitiesAllowedByManifest(manifest Manifest) map[Capability]struct{} {
-	allowed := make(map[Capability]struct{}, len(manifest.Capabilities))
-	for _, capability := range manifest.Capabilities {
-		allowed[capability] = struct{}{}
-	}
-
-	return allowed
-}
-
-func makeStringSet(values []string) map[string]struct{} {
-	set := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		set[value] = struct{}{}
-	}
-
-	return set
+	return false
 }
 
 func cloneResolvedHostPolicy(policy ResolvedHostPolicy) ResolvedHostPolicy {
@@ -821,8 +706,18 @@ func cloneResolvedHostPolicy(policy ResolvedHostPolicy) ResolvedHostPolicy {
 	policy.IngressDomains = cloneDomainRules(policy.IngressDomains)
 	policy.BrokerDomains = cloneDomainRules(policy.BrokerDomains)
 	policy.OutputDomains = cloneHostPolicyOutputRules(policy.OutputDomains)
-	policy.AuthProfiles = cloneHostPolicyAuthProfileScopes(policy.AuthProfiles)
-	policy.BrokerEndpoints = cloneHostPolicyBrokerEndpoints(policy.BrokerEndpoints)
+	if policy.AuthProfiles != nil {
+		policy.AuthProfiles = append([]HostPolicyAuthProfileScope(nil), policy.AuthProfiles...)
+		for i := range policy.AuthProfiles {
+			policy.AuthProfiles[i].Domains = cloneDomainRules(policy.AuthProfiles[i].Domains)
+		}
+	}
+	if policy.Endpoints != nil {
+		policy.Endpoints = append([]HostPolicyEndpoint(nil), policy.Endpoints...)
+		for i := range policy.Endpoints {
+			policy.Endpoints[i] = cloneHostPolicyEndpoint(policy.Endpoints[i])
+		}
+	}
 
 	return policy
 }
@@ -839,33 +734,28 @@ func cloneHostPolicyOutputRules(rules []HostPolicyOutputRule) []HostPolicyOutput
 	return cloned
 }
 
-func cloneHostPolicyAuthProfileScopes(scopes []HostPolicyAuthProfileScope) []HostPolicyAuthProfileScope {
-	if scopes == nil {
-		return nil
-	}
-	cloned := append([]HostPolicyAuthProfileScope(nil), scopes...)
-	for i := range cloned {
-		cloned[i].Domains = cloneDomainRules(cloned[i].Domains)
-	}
-
-	return cloned
-}
-
-func cloneHostPolicyBrokerEndpoints(endpoints []HostPolicyBrokerEndpoint) []HostPolicyBrokerEndpoint {
-	if endpoints == nil {
-		return nil
-	}
-	cloned := make([]HostPolicyBrokerEndpoint, len(endpoints))
-	for i, endpoint := range endpoints {
-		cloned[i] = cloneHostPolicyBrokerEndpoint(endpoint)
-	}
-
-	return cloned
-}
-
-func cloneHostPolicyBrokerEndpoint(endpoint HostPolicyBrokerEndpoint) HostPolicyBrokerEndpoint {
+func cloneHostPolicyEndpoint(endpoint HostPolicyEndpoint) HostPolicyEndpoint {
 	endpoint.Methods = cloneStringSlice(endpoint.Methods)
-	endpoint.AuthProfileRefs = cloneStringSlice(endpoint.AuthProfileRefs)
+	if endpoint.AuthProfileRefs != nil {
+		endpoint.AuthProfileRefs = append([]AuthProfileID(nil), endpoint.AuthProfileRefs...)
+	}
 
 	return endpoint
+}
+
+func sameStringSet(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(left))
+	for _, value := range left {
+		seen[value] = struct{}{}
+	}
+	for _, value := range right {
+		if _, ok := seen[value]; !ok {
+			return false
+		}
+	}
+
+	return true
 }

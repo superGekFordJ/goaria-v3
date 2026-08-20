@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/tetratelabs/wazero"
@@ -19,17 +18,6 @@ import (
 const (
 	maxHostImportRequestBytes  = 64 * 1024
 	maxHostImportResponseBytes = 2 * 1024 * 1024
-	maxHostImportParams        = 16
-	maxHostImportParamKeyBytes = 64
-	maxHostImportParamValBytes = 1024
-)
-
-type hostImportRequestMode int
-
-const (
-	hostImportRequestModeInvalid hostImportRequestMode = iota
-	hostImportRequestModeRaw
-	hostImportRequestModeRef
 )
 
 type RunnerConfig struct {
@@ -67,7 +55,7 @@ type HostHTTPFetchResponse struct {
 }
 
 type HostAuthProfileStatusRequest struct {
-	AuthProfileRef  string            `json:"auth_profile_ref,omitempty"`
+	AuthProfileRef  string            `json:"auth_profile_ref"`
 	URL             string            `json:"url,omitempty"`
 	BrokerPolicyRef string            `json:"broker_policy_ref,omitempty"`
 	EndpointRef     string            `json:"endpoint_ref,omitempty"`
@@ -84,134 +72,44 @@ type HostAuthProfileStatusResponse struct {
 }
 
 type hostImportBridge struct {
-	manifest           Manifest
-	identity           VerifiedPackIdentity
-	packID             string
-	budget             *HostCallBudget
-	httpBroker         *HTTPBroker
-	authResolver       AuthProfileResolver
-	hostPolicyResolver HostPolicyResolver
-	resolvedPolicy     *ResolvedHostPolicy
-	maxRequestBytes    int
-	maxResponseBytes   int
+	manifest         Manifest
+	packIdentity     VerifiedPackIdentity
+	packID           string
+	budget           *HostCallBudget
+	httpBroker       *HTTPBroker
+	authResolver     AuthProfileResolver
+	hostPolicy       HostPolicyResolver
+	maxRequestBytes  int
+	maxResponseBytes int
 }
 
-func newHostImportBridge(manifest Manifest, identity VerifiedPackIdentity, budget *HostCallBudget, config HostImportConfig) *hostImportBridge {
+type hostImportRequestMode int
+
+const (
+	hostImportModeInvalid hostImportRequestMode = iota
+	hostImportModeLegacyRawURL
+	hostImportModeAliasRef
+)
+
+type hostImportModeFields struct {
+	URL             string
+	BrokerPolicyRef string
+	EndpointRef     string
+	Params          map[string]string
+}
+
+func newHostImportBridge(pack VerifiedPack, budget *HostCallBudget, config HostImportConfig) *hostImportBridge {
 	return &hostImportBridge{
-		manifest:           manifest,
-		identity:           identity,
-		packID:             manifest.PackID,
-		budget:             budget,
-		httpBroker:         config.HTTPBroker,
-		authResolver:       config.AuthResolver,
-		hostPolicyResolver: config.HostPolicyResolver,
-		maxRequestBytes:    maxHostImportRequestBytes,
-		maxResponseBytes:   maxHostImportResponseBytes,
+		manifest:         pack.Manifest,
+		packIdentity:     pack.Identity,
+		packID:           pack.Manifest.PackID,
+		budget:           budget,
+		httpBroker:       config.HTTPBroker,
+		authResolver:     config.AuthResolver,
+		hostPolicy:       config.HostPolicyResolver,
+		maxRequestBytes:  maxHostImportRequestBytes,
+		maxResponseBytes: maxHostImportResponseBytes,
 	}
-}
-
-func (b *hostImportBridge) resolveHostPolicy(ctx context.Context) (ResolvedHostPolicy, error) {
-	if b == nil {
-		return ResolvedHostPolicy{}, errors.New("host import bridge is not configured")
-	}
-	if b.resolvedPolicy != nil {
-		return cloneResolvedHostPolicy(*b.resolvedPolicy), nil
-	}
-	policy, err := resolveAliasHostPolicy(ctx, b.hostPolicyResolver, b.identity, b.manifest)
-	if err != nil {
-		return ResolvedHostPolicy{}, errors.New("host policy denied")
-	}
-	cloned := cloneResolvedHostPolicy(policy)
-	b.resolvedPolicy = &cloned
-
-	return cloneResolvedHostPolicy(cloned), nil
-}
-
-func classifyHostImportRequestMode(rawURL string, brokerPolicyRef string, endpointRef string) (hostImportRequestMode, error) {
-	hasURL := rawURL != ""
-	hasBrokerRef := brokerPolicyRef != ""
-	hasEndpointRef := endpointRef != ""
-	if hasURL && (hasBrokerRef || hasEndpointRef) {
-		return hostImportRequestModeInvalid, errors.New("host import request must not mix url and refs")
-	}
-	if hasURL {
-		return hostImportRequestModeRaw, nil
-	}
-	if hasBrokerRef && hasEndpointRef {
-		return hostImportRequestModeRef, nil
-	}
-	if hasBrokerRef || hasEndpointRef {
-		return hostImportRequestModeInvalid, errors.New("host import ref mode requires broker_policy_ref and endpoint_ref")
-	}
-
-	return hostImportRequestModeInvalid, errors.New("host import request requires url or refs")
-}
-
-func validateHostImportRequestMode(manifest Manifest, rawURL string, brokerPolicyRef string, endpointRef string) (hostImportRequestMode, error) {
-	mode, err := classifyHostImportRequestMode(rawURL, brokerPolicyRef, endpointRef)
-	if err != nil {
-		return hostImportRequestModeInvalid, err
-	}
-	if isAliasManifest(manifest) {
-		if mode != hostImportRequestModeRef {
-			return hostImportRequestModeInvalid, errors.New("alias manifest requires ref-mode host imports")
-		}
-		return mode, nil
-	}
-	if mode != hostImportRequestModeRaw {
-		return hostImportRequestModeInvalid, errors.New("legacy manifest requires raw url host imports")
-	}
-
-	return mode, nil
-}
-
-func validateHostImportRefs(brokerPolicyRef string, endpointRef string) error {
-	if err := validateOpaquePolicyRef("broker_policy_ref", brokerPolicyRef); err != nil {
-		return err
-	}
-	if err := validateOpaquePolicyRef("endpoint_ref", endpointRef); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func validateHostImportParams(params map[string]string) error {
-	if len(params) > maxHostImportParams {
-		return fmt.Errorf("params must not contain more than %d entries", maxHostImportParams)
-	}
-	for key, value := range params {
-		if len(key) < 1 || len(key) > maxHostImportParamKeyBytes {
-			return fmt.Errorf("params key length must be between 1 and %d bytes", maxHostImportParamKeyBytes)
-		}
-		if len(value) > maxHostImportParamValBytes {
-			return fmt.Errorf("params value exceeds %d bytes", maxHostImportParamValBytes)
-		}
-		if err := validateHostImportParamScalar(key, "params key"); err != nil {
-			return err
-		}
-		if err := validateHostImportParamScalar(value, "params value"); err != nil {
-			return err
-		}
-		if isCredentialShapedMetadataKey(key) {
-			return errors.New("params key is credential-shaped")
-		}
-	}
-
-	return nil
-}
-
-func validateHostImportParamScalar(value string, field string) error {
-	if strings.Contains(value, "://") || strings.Contains(value, `\`) {
-		return fmt.Errorf("%s contains unsupported marker", field)
-	}
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
-			return fmt.Errorf("%s must not contain control characters", field)
-		}
-	}
-
-	return nil
 }
 
 func (b *hostImportBridge) executeHTTPFetch(ctx context.Context, requestBytes []byte) []byte {
@@ -222,20 +120,6 @@ func (b *hostImportBridge) executeHTTPFetch(ctx context.Context, requestBytes []
 	var request HostHTTPFetchRequest
 	if err := b.decodeRequestStrict(requestBytes, &request); err != nil {
 		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
-	}
-	mode, err := validateHostImportRequestMode(b.manifest, request.URL, request.BrokerPolicyRef, request.EndpointRef)
-	if err != nil {
-		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
-	}
-	if mode == hostImportRequestModeRef {
-		if err := validateHostImportRefs(request.BrokerPolicyRef, request.EndpointRef); err != nil {
-			return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
-		}
-		if err := validateHostImportParams(request.Params); err != nil {
-			return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
-		}
-	} else if len(request.Params) > 0 {
-		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "invalid_request", Message: "params require ref-mode host import"}, b.responseCap())
 	}
 	if request.AuthProfileRef != "" {
 		if err := validateAuthProfileID(AuthProfileID(request.AuthProfileRef)); err != nil {
@@ -248,59 +132,101 @@ func (b *hostImportBridge) executeHTTPFetch(ctx context.Context, requestBytes []
 	if request.MaxResponseBytes < 0 {
 		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "invalid_request", Message: "max_response_bytes must not be negative"}, b.responseCap())
 	}
+	mode, params, err := determineHostImportRequestMode(b.manifest, hostImportModeFields{
+		URL:             request.URL,
+		BrokerPolicyRef: request.BrokerPolicyRef,
+		EndpointRef:     request.EndpointRef,
+		Params:          request.Params,
+	})
+	if err != nil {
+		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
+	}
 	if b.httpBroker == nil {
 		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "not_configured", Message: "http broker is not configured"}, b.responseCap())
+	}
+
+	if mode == hostImportModeAliasRef {
+		return b.executeHTTPFetchRefMode(ctx, request, params)
 	}
 
 	var timeout time.Duration
 	if request.TimeoutMillis > 0 {
 		timeout = time.Duration(request.TimeoutMillis) * time.Millisecond
 	}
-	var response HTTPFetchResponse
-	var fetchErr error
-	if mode == hostImportRequestModeRef {
-		policy, err := b.resolveHostPolicy(ctx)
-		if err != nil {
-			return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "policy_denied", Message: "host policy denied"}, b.responseCap())
-		}
-		response, fetchErr = b.httpBroker.FetchRef(ctx, HTTPFetchRefRequest{
-			PackID:           b.packID,
-			Manifest:         b.manifest,
-			PackIdentity:     b.identity,
-			HostPolicy:       policy,
-			BrokerPolicyRef:  request.BrokerPolicyRef,
-			EndpointRef:      request.EndpointRef,
-			Params:           request.Params,
-			Method:           request.Method,
-			Headers:          request.Headers,
-			AuthProfileID:    AuthProfileID(request.AuthProfileRef),
-			Timeout:          timeout,
-			MaxResponseBytes: request.MaxResponseBytes,
-		})
-	} else {
-		response, fetchErr = b.httpBroker.Fetch(ctx, HTTPFetchRequest{
-			PackID:           b.packID,
-			Manifest:         b.manifest,
-			Method:           request.Method,
-			URL:              request.URL,
-			Headers:          request.Headers,
-			AuthProfileID:    AuthProfileID(request.AuthProfileRef),
-			Timeout:          timeout,
-			MaxResponseBytes: request.MaxResponseBytes,
-		})
-	}
-	if fetchErr != nil {
+	response, err := b.httpBroker.Fetch(ctx, HTTPFetchRequest{
+		PackID:           b.packID,
+		Manifest:         b.manifest,
+		PackIdentity:     b.packIdentity,
+		Method:           request.Method,
+		URL:              request.URL,
+		Headers:          request.Headers,
+		AuthProfileID:    AuthProfileID(request.AuthProfileRef),
+		Timeout:          timeout,
+		MaxResponseBytes: request.MaxResponseBytes,
+	})
+	if err != nil {
 		if request.AuthProfileRef != "" {
 			return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "authenticated_fetch_failed", Message: "authenticated fetch failed"}, b.responseCap())
 		}
 
-		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "fetch_failed", Message: RedactSensitive(fetchErr.Error())}, b.responseCap())
+		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "fetch_failed", Message: "fetch failed"}, b.responseCap())
 	}
 
 	return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{
 		OK:         true,
 		StatusCode: response.StatusCode,
-		FinalURL:   response.FinalURL,
+		FinalURL:   RedactSensitive(response.FinalURL),
+		Headers:    safeHeaderMap(response.Headers),
+		BodyBase64: base64.StdEncoding.EncodeToString(response.Body),
+	}, b.responseCap())
+}
+
+func (b *hostImportBridge) executeHTTPFetchRefMode(ctx context.Context, request HostHTTPFetchRequest, params map[string]string) []byte {
+	policy, err := resolveAliasHostPolicy(ctx, b.effectiveHostPolicyResolver(), b.packIdentity, b.manifest)
+	if err != nil {
+		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "policy_denied", Message: "alias host policy denied request"}, b.responseCap())
+	}
+	endpoint, ok := resolveHostPolicyEndpoint(policy, request.BrokerPolicyRef, request.EndpointRef)
+	if !ok {
+		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "policy_denied", Message: "host policy endpoint is not available"}, b.responseCap())
+	}
+	method, endpointTimeoutMillis, endpointMaxResponseBytes, err := validateHostPolicyEndpointRequest(endpoint, request.Method, AuthProfileID(request.AuthProfileRef), b.manifest, b.httpBroker.policy)
+	if err != nil {
+		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "policy_denied", Message: RedactSensitive(err.Error())}, b.responseCap())
+	}
+	expandedURL, err := expandHostPolicyEndpointURL(policy, endpoint, params)
+	if err != nil {
+		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
+	}
+
+	timeoutMillis := minPositiveDurationMillis(request.TimeoutMillis, endpointTimeoutMillis)
+	var timeout time.Duration
+	if timeoutMillis > 0 {
+		timeout = time.Duration(timeoutMillis) * time.Millisecond
+	}
+	maxResponseBytes := minPositiveInt64(request.MaxResponseBytes, endpointMaxResponseBytes)
+	response, err := b.httpBroker.Fetch(ctx, HTTPFetchRequest{
+		PackID:           b.packID,
+		Manifest:         b.manifest,
+		PackIdentity:     b.packIdentity,
+		Method:           method,
+		URL:              expandedURL,
+		Headers:          request.Headers,
+		AuthProfileID:    AuthProfileID(request.AuthProfileRef),
+		Timeout:          timeout,
+		MaxResponseBytes: maxResponseBytes,
+	})
+	if err != nil {
+		if request.AuthProfileRef != "" {
+			return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "authenticated_fetch_failed", Message: "authenticated fetch failed"}, b.responseCap())
+		}
+
+		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "fetch_failed", Message: "fetch failed"}, b.responseCap())
+	}
+
+	return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{
+		OK:         true,
+		StatusCode: response.StatusCode,
 		Headers:    safeHeaderMap(response.Headers),
 		BodyBase64: base64.StdEncoding.EncodeToString(response.Body),
 	}, b.responseCap())
@@ -315,62 +241,92 @@ func (b *hostImportBridge) executeAuthProfileStatus(ctx context.Context, request
 	if err := b.decodeRequestStrict(requestBytes, &request); err != nil {
 		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
 	}
-	mode, err := validateHostImportRequestMode(b.manifest, request.URL, request.BrokerPolicyRef, request.EndpointRef)
-	if err != nil {
-		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
-	}
-	if mode == hostImportRequestModeRef {
-		if err := validateHostImportRefs(request.BrokerPolicyRef, request.EndpointRef); err != nil {
-			return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
-		}
-		if err := validateHostImportParams(request.Params); err != nil {
-			return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
-		}
-	} else if len(request.Params) > 0 {
-		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "invalid_request", Message: "params require ref-mode host import"}, b.responseCap())
-	}
 	profileID := AuthProfileID(request.AuthProfileRef)
 	if err := validateAuthProfileID(profileID); err != nil {
 		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
 	}
-	targetURL := request.URL
-	if mode == hostImportRequestModeRef {
-		policy, err := b.resolveHostPolicy(ctx)
-		if err != nil {
-			return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: "host policy denied"}, b.responseCap())
-		}
-		if err := validateResolvedHostPolicyBinding(b.identity, b.manifest, policy); err != nil {
-			return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: "host policy denied"}, b.responseCap())
-		}
-		if !manifestHasCapability(b.manifest, CapabilityAuthProfile) || !policyAllowsCapability(policy, CapabilityAuthProfile) {
-			return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: "host policy denied"}, b.responseCap())
-		}
-		endpoint, ok := findBrokerEndpoint(policy, request.BrokerPolicyRef, request.EndpointRef)
-		if !ok || !endpointAllowsAuthProfile(endpoint, profileID) {
-			return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: "host policy denied"}, b.responseCap())
-		}
-		targetURL, err = expandBrokerEndpointURL(policy, endpoint, request.Params)
+	mode, params, err := determineHostImportRequestMode(b.manifest, hostImportModeFields{
+		URL:             request.URL,
+		BrokerPolicyRef: request.BrokerPolicyRef,
+		EndpointRef:     request.EndpointRef,
+		Params:          request.Params,
+	})
+	if err != nil {
+		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
+	}
+	if mode == hostImportModeAliasRef {
+		return b.executeAuthProfileStatusRefMode(ctx, request, params, profileID)
+	}
+	if err := ValidateCapabilityURL(CapabilityContext{
+		PackID:             b.packID,
+		Manifest:           b.manifest,
+		Capability:         CapabilityAuthProfile,
+		PackIdentity:       b.packIdentity,
+		HostPolicyResolver: b.hostPolicy,
+	}, request.URL); err != nil {
+		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: RedactSensitive(err.Error())}, b.responseCap())
+	}
+	if isAliasManifest(b.manifest) {
+		_, host, err := parseSafeHTTPURL(request.URL)
 		if err != nil {
 			return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: RedactSensitive(err.Error())}, b.responseCap())
 		}
-		parsed, _, err := parseSafeHTTPURL(targetURL)
-		if err != nil || parsed.Scheme != "https" {
-			return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: "host policy denied"}, b.responseCap())
-		}
-	} else {
-		if err := ValidateCapabilityURL(CapabilityContext{
-			PackID:     b.packID,
-			Manifest:   b.manifest,
-			Capability: CapabilityAuthProfile,
-		}, request.URL); err != nil {
-			return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: RedactSensitive(err.Error())}, b.responseCap())
+		policy, err := resolveAliasHostPolicy(ctx, b.hostPolicy, b.packIdentity, b.manifest)
+		if err != nil || !policyAuthProfileMatchesHost(policy, profileID, host) {
+			return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: "auth profile is not allowed by alias host policy"}, b.responseCap())
 		}
 	}
 	if b.authResolver == nil {
 		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "not_configured", Message: "auth resolver is not configured"}, b.responseCap())
 	}
 
-	resolved, err := b.authResolver.ResolveAuthProfile(ctx, b.packID, profileID, targetURL)
+	resolved, err := b.authResolver.ResolveAuthProfile(ctx, b.packID, profileID, request.URL)
+	if err != nil {
+		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "auth_unavailable", Message: "auth profile unavailable"}, b.responseCap())
+	}
+
+	return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{
+		OK:              true,
+		Available:       true,
+		Kind:            resolved.Kind,
+		RedactedDisplay: RedactSensitive(resolved.RedactedDisplay, authSecretForms(resolved.HeaderName, resolved.HeaderValue)...),
+	}, b.responseCap())
+}
+
+func (b *hostImportBridge) executeAuthProfileStatusRefMode(ctx context.Context, request HostAuthProfileStatusRequest, params map[string]string, profileID AuthProfileID) []byte {
+	if !ManifestHasCapability(b.manifest, CapabilityAuthProfile) {
+		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: "pack is not allowed to use auth profiles"}, b.responseCap())
+	}
+	policy, err := resolveAliasHostPolicy(ctx, b.effectiveHostPolicyResolver(), b.packIdentity, b.manifest)
+	if err != nil {
+		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: "alias host policy denied request"}, b.responseCap())
+	}
+	if !policyAllowsCapability(policy, CapabilityAuthProfile) {
+		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: "alias host policy denied auth profile status"}, b.responseCap())
+	}
+	endpoint, ok := resolveHostPolicyEndpoint(policy, request.BrokerPolicyRef, request.EndpointRef)
+	if !ok {
+		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: "host policy endpoint is not available"}, b.responseCap())
+	}
+	if !hostPolicyEndpointAllowsAuthProfile(endpoint, profileID) {
+		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: "auth profile is not allowed by host policy endpoint"}, b.responseCap())
+	}
+	expandedURL, err := expandHostPolicyEndpointURL(policy, endpoint, params)
+	if err != nil {
+		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
+	}
+	_, host, err := parseSafeHTTPURL(expandedURL)
+	if err != nil {
+		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: RedactSensitive(err.Error())}, b.responseCap())
+	}
+	if !policyBrokerMatchesHost(policy, host) || !policyAuthProfileMatchesHost(policy, profileID, host) {
+		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "policy_denied", Message: "auth profile is not allowed by alias host policy"}, b.responseCap())
+	}
+	if b.authResolver == nil {
+		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "not_configured", Message: "auth resolver is not configured"}, b.responseCap())
+	}
+
+	resolved, err := b.authResolver.ResolveAuthProfile(ctx, b.packID, profileID, expandedURL)
 	if err != nil {
 		return encodeHostAuthProfileStatusResponse(HostAuthProfileStatusResponse{OK: false, ErrorCode: "auth_unavailable", Message: "auth profile unavailable"}, b.responseCap())
 	}
@@ -461,6 +417,59 @@ func (b *hostImportBridge) decodeRequestStrict(raw []byte, output any) error {
 	}
 
 	return decodeStrictJSON(raw, output)
+}
+
+func (b *hostImportBridge) effectiveHostPolicyResolver() HostPolicyResolver {
+	if b == nil {
+		return nil
+	}
+	if b.hostPolicy != nil {
+		return b.hostPolicy
+	}
+	if b.httpBroker != nil {
+		return b.httpBroker.hostPolicyResolver
+	}
+
+	return nil
+}
+
+func determineHostImportRequestMode(manifest Manifest, fields hostImportModeFields) (hostImportRequestMode, map[string]string, error) {
+	hasURL := fields.URL != ""
+	hasBrokerRef := fields.BrokerPolicyRef != ""
+	hasEndpointRef := fields.EndpointRef != ""
+	hasParams := len(fields.Params) > 0
+	hasAnyRefField := hasBrokerRef || hasEndpointRef || hasParams
+	alias := isAliasManifest(manifest)
+
+	if hasURL && hasAnyRefField {
+		return hostImportModeInvalid, nil, errors.New("raw url must not be combined with ref-mode fields")
+	}
+	if hasURL {
+		if alias {
+			return hostImportModeInvalid, nil, errors.New("alias manifest host imports must use broker_policy_ref and endpoint_ref")
+		}
+
+		return hostImportModeLegacyRawURL, nil, nil
+	}
+	if hasBrokerRef && hasEndpointRef {
+		if !alias {
+			return hostImportModeInvalid, nil, errors.New("ref-mode host imports require an alias manifest")
+		}
+		if err := validateOpaquePolicyRef("broker_policy_ref", fields.BrokerPolicyRef); err != nil {
+			return hostImportModeInvalid, nil, err
+		}
+		if err := validateOpaquePolicyRef("endpoint_ref", fields.EndpointRef); err != nil {
+			return hostImportModeInvalid, nil, err
+		}
+		params, err := validateHostPolicyEndpointParams(fields.Params)
+		if err != nil {
+			return hostImportModeInvalid, nil, err
+		}
+
+		return hostImportModeAliasRef, params, nil
+	}
+
+	return hostImportModeInvalid, nil, errors.New("host import request must provide either legacy url or broker_policy_ref with endpoint_ref")
 }
 
 func (b *hostImportBridge) requestCap() int {

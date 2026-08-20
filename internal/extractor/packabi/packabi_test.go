@@ -61,13 +61,15 @@ func TestPackABIJSONShapesUseStableSnakeCase(t *testing.T) {
 		TimeoutMillis:    100,
 		MaxResponseBytes: 512,
 	}, []string{`"method"`, `"url"`, `"headers"`, `"auth_profile_ref"`, `"timeout_millis"`, `"max_response_bytes"`})
-	assertJSON(t, HostHTTPFetchRequest{
-		Method:          "GET",
-		BrokerPolicyRef: "bpr-alpha001",
-		EndpointRef:     "epr-alpha001",
-		Params:          map[string]string{"id": "item-001"},
-		AuthProfileRef:  "apr-alpha001",
-	}, []string{`"method"`, `"broker_policy_ref"`, `"endpoint_ref"`, `"params"`, `"auth_profile_ref"`})
+	assertJSONAbsent(t, HostHTTPFetchRequest{
+		Method:           "GET",
+		BrokerPolicyRef:  "bpr-alpha001",
+		EndpointRef:      "ep-alpha001",
+		Params:           map[string]string{"id": "fixture-item"},
+		AuthProfileRef:   "alpha-secret",
+		TimeoutMillis:    100,
+		MaxResponseBytes: 512,
+	}, []string{`"broker_policy_ref"`, `"endpoint_ref"`, `"params"`, `"auth_profile_ref"`, `"timeout_millis"`, `"max_response_bytes"`}, []string{`"url"`})
 	assertJSON(t, HostHTTPFetchResponse{
 		OK:         true,
 		StatusCode: 200,
@@ -76,12 +78,12 @@ func TestPackABIJSONShapesUseStableSnakeCase(t *testing.T) {
 		BodyBase64: "e30=",
 	}, []string{`"ok"`, `"status_code"`, `"final_url"`, `"headers"`, `"body_base64"`})
 	assertJSON(t, HostAuthProfileStatusRequest{AuthProfileRef: "fixture-auth", URL: "https://api.fixture.invalid/path"}, []string{`"auth_profile_ref"`, `"url"`})
-	assertJSON(t, HostAuthProfileStatusRequest{
-		AuthProfileRef:  "apr-alpha001",
+	assertJSONAbsent(t, HostAuthProfileStatusRequest{
+		AuthProfileRef:  "alpha-secret",
 		BrokerPolicyRef: "bpr-alpha001",
-		EndpointRef:     "epr-alpha001",
-		Params:          map[string]string{"id": "item-001"},
-	}, []string{`"auth_profile_ref"`, `"broker_policy_ref"`, `"endpoint_ref"`, `"params"`})
+		EndpointRef:     "ep-alpha001",
+		Params:          map[string]string{"id": "fixture-item"},
+	}, []string{`"auth_profile_ref"`, `"broker_policy_ref"`, `"endpoint_ref"`, `"params"`}, []string{`"url"`})
 	assertJSON(t, HostAuthProfileStatusResponse{OK: true, Available: true, Kind: AuthSecretKindBearer, RedactedDisplay: "fi…re"}, []string{`"ok"`, `"available"`, `"kind"`, `"redacted_display"`})
 }
 
@@ -103,6 +105,24 @@ func TestPackABIJSONShapesDoNotExposeSecretFields(t *testing.T) {
 			if strings.Contains(lower, forbidden) {
 				t.Fatalf("%T JSON exposes forbidden field marker %q in %s", value, forbidden, raw)
 			}
+		}
+	}
+}
+
+func assertJSONAbsent(t *testing.T, value any, fields []string, absent []string) {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("json.Marshal(%T) error = %v", value, err)
+	}
+	for _, field := range fields {
+		if !strings.Contains(string(raw), field) {
+			t.Fatalf("json.Marshal(%T) = %s, missing %s", value, raw, field)
+		}
+	}
+	for _, field := range absent {
+		if strings.Contains(string(raw), field) {
+			t.Fatalf("json.Marshal(%T) = %s, unexpectedly contains %s", value, raw, field)
 		}
 	}
 }

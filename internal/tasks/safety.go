@@ -2,15 +2,26 @@ package tasks
 
 import (
 	"errors"
+	"net/url"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"goaria-v3/internal/downloadgroups"
+)
+
+const fallbackOutFilename = "download.bin"
+
+var (
+	ErrEmptyOutFilename    = errors.New("filename must be non-empty after trim")
+	ErrReservedOutFilename = errors.New("filename is a reserved device name")
 )
 
 func SafeAria2OutFilename(filename string) (string, error) {
 	trimmed := strings.TrimSpace(filename)
 	if trimmed == "" {
-		return "", errors.New("filename must be non-empty after trim")
+		return "", ErrEmptyOutFilename
 	}
 	if strings.ContainsAny(trimmed, "\r\n") {
 		return "", errors.New("filename must not contain CR/LF")
@@ -30,8 +41,49 @@ func SafeAria2OutFilename(filename string) (string, error) {
 	if filepath.Base(trimmed) != trimmed {
 		return "", errors.New("filename must be a base name")
 	}
+	if downloadgroups.IsWindowsReservedName(trimmed) {
+		return "", ErrReservedOutFilename
+	}
 
 	return trimmed, nil
+}
+
+func isRecoverableOutFilenameError(err error) bool {
+	return errors.Is(err, ErrEmptyOutFilename) || errors.Is(err, ErrReservedOutFilename)
+}
+
+func urlPathBasename(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return ""
+	}
+	base := path.Base(parsed.Path)
+	if base == "." || base == "/" || base == ".." {
+		return ""
+	}
+	return base
+}
+
+func resolveAria2OutFilename(filename, rawURL string) (string, error) {
+	trimmed := strings.TrimSpace(filename)
+	if trimmed != "" {
+		safe, err := SafeAria2OutFilename(trimmed)
+		if err == nil {
+			return safe, nil
+		}
+		if !isRecoverableOutFilenameError(err) {
+			return "", err
+		}
+	}
+
+	base := urlPathBasename(rawURL)
+	if base != "" {
+		safe, err := SafeAria2OutFilename(base)
+		if err == nil {
+			return safe, nil
+		}
+	}
+	return fallbackOutFilename, nil
 }
 
 func isWindowsAbsPath(value string) bool {

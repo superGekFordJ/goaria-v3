@@ -94,12 +94,39 @@ func (r WebViewAuthResult) GoString() string {
 }
 
 type WebViewAuthCoordinator struct {
-	store  AuthProfileStore
-	driver AuthWebViewDriver
+	store      AuthProfileStore
+	driver     AuthWebViewDriver
+	observerMu sync.RWMutex
+	observer   WebViewAuthObserver
+}
+
+type WebViewAuthObserver interface {
+	RecordWebViewAuthEvent(stage string, category string)
 }
 
 func NewWebViewAuthCoordinator(store AuthProfileStore, driver AuthWebViewDriver) *WebViewAuthCoordinator {
 	return &WebViewAuthCoordinator{store: store, driver: driver}
+}
+
+func (c *WebViewAuthCoordinator) SetObserver(observer WebViewAuthObserver) {
+	if c == nil {
+		return
+	}
+	c.observerMu.Lock()
+	defer c.observerMu.Unlock()
+	c.observer = observer
+}
+
+func (c *WebViewAuthCoordinator) recordEvent(stage string, category string) {
+	if c == nil {
+		return
+	}
+	c.observerMu.RLock()
+	observer := c.observer
+	c.observerMu.RUnlock()
+	if observer != nil {
+		observer.RecordWebViewAuthEvent(stage, category)
+	}
 }
 
 func (c *WebViewAuthCoordinator) Start(ctx context.Context, request WebViewAuthRequest) (WebViewAuthResult, error) {
@@ -254,6 +281,12 @@ func validateWebViewAuthCollectorJS(source string) error {
 	return nil
 }
 
+func cloneWebViewAuthCaptureContract(capture WebViewAuthCaptureContract) WebViewAuthCaptureContract {
+	capture.SecretCandidates = cloneStringSlice(capture.SecretCandidates)
+
+	return capture
+}
+
 func validateWebViewAuthCaptureContract(capture WebViewAuthCaptureContract) error {
 	if capture.Format != webViewAuthCaptureFormatJSON {
 		return errors.New("auth webview capture format is invalid")
@@ -284,7 +317,7 @@ func validateWebViewAuthCaptureContract(capture WebViewAuthCaptureContract) erro
 }
 
 func ParseWebViewAuthCallbackPayload(request WebViewAuthRequest, raw []byte) (AuthWebViewToken, error) {
-	validated, err := validateWebViewAuthRequest(request)
+	validated, err := validateWebViewAuthRequestBase(request)
 	if err != nil {
 		return AuthWebViewToken{}, errors.New("auth webview callback request is invalid")
 	}
@@ -414,6 +447,7 @@ func (c *WebViewAuthCoordinator) handleTerminalEvent(request WebViewAuthRequest,
 			Message: "authentication canceled",
 		}, nil
 	case WebViewAuthStatusTimeout:
+		c.recordEvent("session", "timeout")
 		return WebViewAuthResult{
 			Status:  WebViewAuthStatusTimeout,
 			PackID:  request.PackID,
@@ -437,7 +471,7 @@ func (c *WebViewAuthCoordinator) handleSuccess(request WebViewAuthRequest, token
 	if token.Kind != request.Kind {
 		return WebViewAuthResult{}, redactedError(fmt.Errorf("captured token kind %q does not match requested kind %q", token.Kind, request.Kind), token.Secret)
 	}
-
+	c.recordEvent("store", "set_attempted")
 	snapshot, err := c.store.SetAuthProfile(context.Background(), AuthProfileUpdate{
 		PackID:          request.PackID,
 		ProfileID:       request.ProfileID,
@@ -448,8 +482,10 @@ func (c *WebViewAuthCoordinator) handleSuccess(request WebViewAuthRequest, token
 		RedactedDisplay: token.RedactedDisplay,
 	})
 	if err != nil {
+		c.recordEvent("store", "set_failed")
 		return WebViewAuthResult{}, redactedError(fmt.Errorf("store captured auth profile %q: %w", request.ProfileID, err), token.Secret)
 	}
+	c.recordEvent("store", "set_succeeded")
 
 	return WebViewAuthResult{
 		Status:   WebViewAuthStatusSuccess,
@@ -461,13 +497,10 @@ func (c *WebViewAuthCoordinator) handleSuccess(request WebViewAuthRequest, token
 }
 
 func effectiveWebViewTimeout(request WebViewAuthRequest) time.Duration {
-	manifestTimeout := time.Duration(request.Manifest.ResourceLimits.TimeoutMillis) * time.Millisecond
-	if request.Timeout > 0 && manifestTimeout > 0 && request.Timeout < manifestTimeout {
-		return request.Timeout
-	}
-	if manifestTimeout > 0 {
-		return manifestTimeout
-	}
+	// Manifest.ResourceLimits.TimeoutMillis is the WASM sandbox execution
+	// budget (used by the extractor runner) and must not constrain
+	// interactive WebView login sessions, which are human-paced and can
+	// legitimately wait minutes for the user to complete auth.
 	if request.Timeout > 0 {
 		return request.Timeout
 	}

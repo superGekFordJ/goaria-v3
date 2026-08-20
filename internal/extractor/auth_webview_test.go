@@ -3,6 +3,7 @@ package extractor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -63,14 +64,14 @@ func TestWebViewAuthSuccessStoresProfileAndReturnsRedactedResult(t *testing.T) {
 	if strings.Contains(outcome.result.String(), secret) {
 		t.Fatalf("result leaked secret: %#v", outcome.result)
 	}
-	resolved, err := store.ResolveAuthProfile(context.Background(), "fixturepack", "default", "https://fixture.invalid/d/abc")
+	resolved, err := store.ResolveAuthProfile(context.Background(), "xpk-fixture01", "apr-fixture01", "https://auth.fixture.invalid/d/abc")
 	if err != nil {
 		t.Fatalf("ResolveAuthProfile() error = %v", err)
 	}
 	if resolved.HeaderValue != "Bearer "+secret {
 		t.Fatalf("resolved HeaderValue = %q, want captured token", resolved.HeaderValue)
 	}
-	if _, err := store.ResolveAuthProfile(context.Background(), "fixturepack", "default", "https://api.fixture.invalid/d/abc"); err == nil {
+	if _, err := store.ResolveAuthProfile(context.Background(), "xpk-fixture01", "apr-fixture01", "https://api.auth.fixture.invalid/d/abc"); err == nil {
 		t.Fatal("ResolveAuthProfile() error = nil for subdomain outside login origin scope, want error")
 	}
 	if driver.CloseCount() != 1 {
@@ -144,7 +145,7 @@ func TestWebViewAuthSuccessPersistsWhenCallerContextCanceledAfterSuccessWins(t *
 	if outcome.result.Status != WebViewAuthStatusSuccess {
 		t.Fatalf("Start() status = %q, want success", outcome.result.Status)
 	}
-	resolved, err := store.ResolveAuthProfile(context.Background(), "fixturepack", "default", "https://fixture.invalid/d/abc")
+	resolved, err := store.ResolveAuthProfile(context.Background(), "xpk-fixture01", "apr-fixture01", "https://auth.fixture.invalid/d/abc")
 	if err != nil {
 		t.Fatalf("ResolveAuthProfile() error = %v", err)
 	}
@@ -156,16 +157,16 @@ func TestWebViewAuthSuccessPersistsWhenCallerContextCanceledAfterSuccessWins(t *
 func TestWebViewAuthAllowedDomainsDefaultToLoginOriginAndExplicitDomainsAreScoped(t *testing.T) {
 	manifest := validCapabilityManifest()
 	manifest.Domains = []DomainRule{
-		{Host: "fixture.invalid", IncludeSubdomains: true},
-		{Host: "other.fixture.invalid"},
+		{Host: "auth.fixture.invalid", IncludeSubdomains: true},
+		{Host: "other.auth.fixture.invalid"},
 	}
 
 	for _, tt := range []struct {
 		name           string
 		allowedDomains []DomainRule
 	}{
-		{name: "different manifest domain", allowedDomains: []DomainRule{{Host: "other.fixture.invalid"}}},
-		{name: "expands login origin", allowedDomains: []DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}}},
+		{name: "different manifest domain", allowedDomains: []DomainRule{{Host: "other.auth.fixture.invalid"}}},
+		{name: "expands login origin", allowedDomains: []DomainRule{{Host: "auth.fixture.invalid", IncludeSubdomains: true}}},
 		{name: "outside manifest", allowedDomains: []DomainRule{{Host: "evil.test"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -193,7 +194,7 @@ func TestWebViewAuthAllowedDomainsDefaultToLoginOriginAndExplicitDomainsAreScope
 		go func() {
 			result, err := coordinator.Start(context.Background(), webViewAuthRequestForTest(func(request *WebViewAuthRequest) {
 				request.Manifest = manifest
-				request.AllowedDomains = []DomainRule{{Host: "fixture.invalid"}}
+				request.AllowedDomains = []DomainRule{{Host: "auth.fixture.invalid"}}
 			}))
 			resultCh <- webViewAuthOutcome{result: result, err: err}
 		}()
@@ -230,7 +231,7 @@ func TestWebViewAuthCancelClosesOnceAndDoesNotStore(t *testing.T) {
 	if outcome.result.Status != WebViewAuthStatusCanceled {
 		t.Fatalf("Start() status = %q, want canceled", outcome.result.Status)
 	}
-	if _, err := store.ResolveAuthProfile(context.Background(), "fixturepack", "default", "https://fixture.invalid/d/abc"); err == nil {
+	if _, err := store.ResolveAuthProfile(context.Background(), "xpk-fixture01", "apr-fixture01", "https://auth.fixture.invalid/d/abc"); err == nil {
 		t.Fatal("ResolveAuthProfile() error = nil, want no stored token")
 	}
 	if driver.CloseCount() != 1 {
@@ -252,7 +253,7 @@ func TestWebViewAuthTimeoutClosesOnceAndDoesNotStore(t *testing.T) {
 	if result.Status != WebViewAuthStatusTimeout {
 		t.Fatalf("Start() status = %q, want timeout", result.Status)
 	}
-	if _, err := store.ResolveAuthProfile(context.Background(), "fixturepack", "default", "https://fixture.invalid/d/abc"); err == nil {
+	if _, err := store.ResolveAuthProfile(context.Background(), "xpk-fixture01", "apr-fixture01", "https://auth.fixture.invalid/d/abc"); err == nil {
 		t.Fatal("ResolveAuthProfile() error = nil, want no stored token")
 	}
 	if driver.CloseCount() != 1 {
@@ -308,7 +309,7 @@ func TestWebViewAuthRedactsDriverAndCaptureErrors(t *testing.T) {
 		coordinator := NewWebViewAuthCoordinator(store, driver)
 
 		_, err := coordinator.Start(context.Background(), webViewAuthRequestForTest(func(request *WebViewAuthRequest) {
-			request.LoginURL = "https://fixture.invalid/login?token=" + secret
+			request.LoginURL = "https://auth.fixture.invalid/login?token=" + secret
 		}))
 		if err == nil {
 			t.Fatal("Start() error = nil, want driver error")
@@ -337,7 +338,7 @@ func TestWebViewAuthRedactsDriverAndCaptureErrors(t *testing.T) {
 		if strings.Contains(outcome.err.Error(), secret) {
 			t.Fatalf("Start() leaked secret: %v", outcome.err)
 		}
-		if _, err := store.ResolveAuthProfile(context.Background(), "fixturepack", "default", "https://fixture.invalid/d/abc"); err == nil {
+		if _, err := store.ResolveAuthProfile(context.Background(), "xpk-fixture01", "apr-fixture01", "https://auth.fixture.invalid/d/abc"); err == nil {
 			t.Fatal("ResolveAuthProfile() error = nil, want no stored token")
 		}
 	})
@@ -424,6 +425,121 @@ func TestWebViewAuthCallbackParser(t *testing.T) {
 				t.Fatal("ParseWebViewAuthCallbackPayload() error = nil, want validation failure")
 			}
 			assertNoForbiddenSubstrings(t, err.Error(), "bad\nsecret", "default-kind-secret", "synthetic-captured-secret")
+		})
+	}
+}
+
+func TestWebViewAuthCallbackParserCaptureMatrix(t *testing.T) {
+	base := webViewAuthRequestForTest(nil)
+	expires := "2026-05-14T12:00:00Z"
+	for _, tt := range []struct {
+		name        string
+		raw         string
+		wantKind    AuthSecretKind
+		wantSecret  string
+		wantExpiry  bool
+		wantDisplay string
+	}{
+		{name: "primary candidate", raw: `{"kind":"bearer","secret":"  matrix-primary-secret  "}`, wantKind: AuthSecretKindBearer, wantSecret: "matrix-primary-secret"},
+		{name: "nested candidate", raw: `{"kind":"bearer","capture":{"secret":"matrix-nested-secret"}}`, wantKind: AuthSecretKindBearer, wantSecret: "matrix-nested-secret"},
+		{name: "default kind when field missing", raw: `{"secret":"matrix-default-kind-secret"}`, wantKind: AuthSecretKindBearer, wantSecret: "matrix-default-kind-secret"},
+		{name: "explicit matching kind", raw: `{"kind":"bearer","secret":"matrix-kind-secret"}`, wantKind: AuthSecretKindBearer, wantSecret: "matrix-kind-secret"},
+		{name: "valid expiry and redacted display", raw: `{"kind":"bearer","secret":"matrix-expiry-secret","expires_at":"` + expires + `","redacted_display":"synthetic display"}`, wantKind: AuthSecretKindBearer, wantSecret: "matrix-expiry-secret", wantExpiry: true, wantDisplay: "synthetic display"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			token, err := ParseWebViewAuthCallbackPayload(base, []byte(tt.raw))
+			if err != nil {
+				t.Fatalf("ParseWebViewAuthCallbackPayload() error = %v", err)
+			}
+			if token.Kind != tt.wantKind || token.Secret != tt.wantSecret {
+				t.Fatalf("parsed token public shape = kind:%q secret-match:%t", token.Kind, token.Secret == tt.wantSecret)
+			}
+			if (token.ExpiresAt != nil) != tt.wantExpiry {
+				t.Fatalf("expiry presence = %t, want %t", token.ExpiresAt != nil, tt.wantExpiry)
+			}
+			if token.ExpiresAt != nil && token.ExpiresAt.Format(time.RFC3339) != expires {
+				t.Fatalf("expiry mismatch")
+			}
+			if token.RedactedDisplay != tt.wantDisplay {
+				t.Fatalf("redacted display = %q, want %q", token.RedactedDisplay, tt.wantDisplay)
+			}
+		})
+	}
+
+	for _, tt := range []struct {
+		name      string
+		raw       string
+		forbidden []string
+	}{
+		{name: "capture_secret_candidate_mismatch_missing", raw: `{"kind":"bearer","capture":{}}`},
+		{name: "capture_secret_candidate_mismatch_non_string", raw: `{"kind":"bearer","secret":123,"capture":{"secret":false}}`},
+		{name: "capture_secret_candidate_mismatch_empty_after_trim", raw: `{"kind":"bearer","secret":"   "}`},
+		{name: "capture_secret_candidate_mismatch_array", raw: `{"kind":"bearer","secret":["array-secret"]}`, forbidden: []string{"array-secret"}},
+		{name: "capture_secret_candidate_mismatch_scalar_parent", raw: `{"kind":"bearer","capture":"scalar"}`},
+		{name: "capture_secret_candidate_mismatch_crlf", raw: `{"kind":"bearer","secret":"bad\nsecret"}`, forbidden: []string{"bad\nsecret"}},
+		{name: "capture_kind_field_mismatch_wrong_kind", raw: `{"kind":"cookie","secret":"matrix-kind-mismatch-secret"}`, forbidden: []string{"matrix-kind-mismatch-secret"}},
+		{name: "capture_kind_field_mismatch_unsupported_kind", raw: `{"kind":"basic","secret":"matrix-unsupported-secret"}`, forbidden: []string{"matrix-unsupported-secret"}},
+		{name: "capture_kind_field_mismatch_non_string_kind", raw: `{"kind":42,"secret":"matrix-non-string-kind-secret"}`, forbidden: []string{"matrix-non-string-kind-secret"}},
+		{name: "capture_kind_field_mismatch_empty_kind", raw: `{"kind":"","secret":"matrix-empty-kind-secret"}`, forbidden: []string{"matrix-empty-kind-secret"}},
+		{name: "invalid_expiry_type", raw: `{"kind":"bearer","secret":"matrix-expiry-type-secret","expires_at":123}`, forbidden: []string{"matrix-expiry-type-secret"}},
+		{name: "invalid_expiry_string", raw: `{"kind":"bearer","secret":"matrix-expiry-string-secret","expires_at":"not-time"}`, forbidden: []string{"matrix-expiry-string-secret"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseWebViewAuthCallbackPayload(base, []byte(tt.raw))
+			if err == nil {
+				t.Fatal("ParseWebViewAuthCallbackPayload() error = nil, want validation failure")
+			}
+			assertNoForbiddenSubstrings(t, err.Error(), tt.forbidden...)
+		})
+	}
+}
+
+func TestWebViewAuthCallbackParserMaterializerCompatibilityMatrix(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		kind       AuthSecretKind
+		raw        string
+		headerName string
+	}{
+		{name: "bearer", kind: AuthSecretKindBearer, raw: `{"kind":"bearer","secret":"matrix-materializer-bearer","redacted_display":"matrix-materializer-bearer"}`, headerName: "Authorization"},
+		{name: "cookie", kind: AuthSecretKindCookie, raw: `{"kind":"cookie","secret":"sid=matrix-materializer-cookie; pref=synthetic","redacted_display":"sid=matrix-materializer-cookie"}`, headerName: "Cookie"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			request := webViewAuthRequestForTest(func(request *WebViewAuthRequest) {
+				request.PackID = "xpk-matrix001"
+				request.Manifest.PackID = "xpk-matrix001"
+				request.Manifest.Domains = []DomainRule{{Host: "matrix.test"}}
+				request.ProfileID = "apr-matrix001"
+				request.LoginURL = "https://matrix.test/login"
+				request.AllowedDomains = []DomainRule{{Host: "matrix.test"}}
+				request.Kind = tt.kind
+			})
+			token, err := ParseWebViewAuthCallbackPayload(request, []byte(tt.raw))
+			if err != nil {
+				t.Fatalf("ParseWebViewAuthCallbackPayload() error = %v", err)
+			}
+			store := newTempAuthProfileStore(t)
+			coordinator := NewWebViewAuthCoordinator(store, newFakeAuthWebViewDriver())
+			result, err := coordinator.handleSuccess(request, token)
+			if err != nil {
+				t.Fatalf("handleSuccess() error = %v", err)
+			}
+			if result.Status != WebViewAuthStatusSuccess || !result.Snapshot.HasSecret {
+				t.Fatalf("handleSuccess() public shape invalid")
+			}
+			resolved, err := store.ResolveAuthProfile(context.Background(), request.PackID, request.ProfileID, "https://matrix.test/item")
+			if err != nil {
+				t.Fatalf("ResolveAuthProfile() error = %v", err)
+			}
+			material, err := NewDefaultAuthMaterializer().MaterializeAuth(resolved)
+			if err != nil {
+				t.Fatalf("MaterializeAuth() error = %v", err)
+			}
+			if material.Kind != tt.kind || material.HeaderName != tt.headerName || material.HeaderValue() == "" {
+				t.Fatalf("materialized public shape invalid")
+			}
+			formatted := fmt.Sprintf("%#v %#v", result, material)
+			assertNoForbiddenSubstrings(t, formatted, token.Secret, material.HeaderValue())
 		})
 	}
 }
@@ -554,11 +670,11 @@ func receiveWebViewOutcome(t *testing.T, resultCh <-chan webViewAuthOutcome) web
 
 func webViewAuthRequestForTest(mutate func(*WebViewAuthRequest)) WebViewAuthRequest {
 	request := WebViewAuthRequest{
-		PackID:         "fixturepack",
+		PackID:         "xpk-fixture01",
 		Manifest:       validCapabilityManifest(),
-		ProfileID:      "default",
-		LoginURL:       "https://fixture.invalid/login",
-		AllowedDomains: []DomainRule{{Host: "fixture.invalid"}},
+		ProfileID:      "apr-fixture01",
+		LoginURL:       "https://auth.fixture.invalid/login",
+		AllowedDomains: []DomainRule{{Host: "auth.fixture.invalid"}},
 		Timeout:        time.Second,
 		Kind:           AuthSecretKindBearer,
 		CallbackTransport: WebViewAuthCallbackTransport{

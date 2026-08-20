@@ -22,6 +22,12 @@ func TestGenericConfigureEmbeddedExtractorDispatcherNoop(t *testing.T) {
 	}
 }
 
+func TestGenericConfigureExtensionLinkageNoop(t *testing.T) {
+	app := NewApp(Options{})
+	ConfigureExtensionLinkage(app, nil)
+	ConfigureExtensionLinkage(nil, nil)
+}
+
 func TestGenericHostAuthCallbackMiddlewarePassthrough(t *testing.T) {
 	app := NewApp(Options{})
 	middleware := HostAuthCallbackMiddleware(app)

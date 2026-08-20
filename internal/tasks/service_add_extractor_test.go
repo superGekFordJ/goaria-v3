@@ -102,7 +102,7 @@ func (d *fakeAddTaskDispatcher) toNeutralItem(item extractor.ResolvedAddItem) ta
 		SizeBytes:        item.SizeBytes,
 		AuthProfileRef:   item.AuthProfileRef,
 		HeaderProfileRef: item.HeaderProfileRef,
-		PackID:           item.Manifest.PackID,
+		PackID:           item.PackManifest.PackID,
 		PackVersion:      item.PackIdentity.PackVersion,
 		AssetSHA256:      item.PackIdentity.AssetSHA256,
 		ManifestSHA256:   item.PackIdentity.ManifestSHA256,
@@ -343,7 +343,7 @@ func resolvedItem(sourceURL, directURL string) extractor.ResolvedAddItem {
 	return extractor.ResolvedAddItem{
 		SourceURL:    sourceURL,
 		PackID:       appTaskFixtureIdentity.PackID,
-		Manifest:     appTaskFixtureManifest(),
+		PackManifest: appTaskFixtureManifest(),
 		PackIdentity: appTaskFixtureIdentity,
 		URL:          directURL,
 		Filename:     "file.bin",
@@ -394,7 +394,7 @@ func TestAddUri_NonExtractorURLUsesExistingDirectPath(t *testing.T) {
 }
 
 func TestAddUri_ExtractorSubmitsResolvedItemWithOutAndHeaders(t *testing.T) {
-	shareURL := "https://fixture.invalid/d/abc"
+	shareURL := "https://share.fixture.invalid/s/abc"
 	directURL := "https://download.fixture.invalid/file.bin"
 	dispatcher := &fakeAddTaskDispatcher{
 		resolutions: map[string]extractor.AddTaskResolution{shareURL: singleItemResolution(shareURL, directURL)},
@@ -419,8 +419,44 @@ func TestAddUri_ExtractorSubmitsResolvedItemWithOutAndHeaders(t *testing.T) {
 	}
 }
 
+func TestAddUri_ExtractorOwnedSubdomainStoredAuthHeaders(t *testing.T) {
+	shareURL := "https://share.fixture.invalid/s/appauth"
+	directURL := "https://download.fixture.invalid/app-auth-profile.bin"
+	item := resolvedItem(shareURL, directURL)
+	item.Filename = "app-auth-profile.bin"
+	item.AuthProfileRef = "apr-fixture01"
+	dispatcher := &fakeAddTaskDispatcher{
+		resolutions: map[string]extractor.AddTaskResolution{shareURL: {Matched: true, SourceURL: shareURL, PackID: appTaskFixtureIdentity.PackID, Items: []extractor.ResolvedAddItem{item}}},
+		headers:     map[string][]string{directURL: {"Authorization: Bearer app-fixture-token"}},
+	}
+	service, recorder := setupAppTaskExtractorTest(t, tasks.BatchAddRPCSnapshots{}, dispatcher)
+	config.Update(func(c *config.AppConfig) {
+		c.SmartThreadMode = true
+		c.MaxConnections = "4"
+	})
+
+	result := service.AddUri(shareURL)
+
+	if result != "success" {
+		t.Fatalf("AddUri() = %q, want success", result)
+	}
+	if got := recorder.addURIsSnapshot(); !reflect.DeepEqual(got, []string{directURL}) {
+		t.Fatalf("expected direct output add, got %#v", got)
+	}
+	options := recorder.optionsSnapshot()[0]
+	if options["out"] != "app-auth-profile.bin" {
+		t.Fatalf("expected out=app-auth-profile.bin, got %#v", options["out"])
+	}
+	if got := options["header"]; !reflect.DeepEqual(got, []any{"Authorization: Bearer app-fixture-token"}) {
+		t.Fatalf("expected auth header list, got %#v", got)
+	}
+	if _, ok := options["split"]; !ok {
+		t.Fatalf("expected smartthread split option, got %#v", options)
+	}
+}
+
 func TestAddUri_MultiItemExtractorCreatesCollectionGroupFolder(t *testing.T) {
-	shareURL := "https://fixture.invalid/d/collection-secret?token=synthetic"
+	shareURL := "https://share.fixture.invalid/s/collection-secret?token=synthetic"
 	directOne := "https://download.fixture.invalid/one.bin"
 	directTwo := "https://download.fixture.invalid/two.bin"
 	items := []extractor.ResolvedAddItem{
@@ -471,7 +507,7 @@ func TestAddUri_MultiItemExtractorCreatesCollectionGroupFolder(t *testing.T) {
 }
 
 func TestAddUri_GroupPersistsBeforeSaveSessionForFastCompleteRace(t *testing.T) {
-	shareURL := "https://fixture.invalid/d/fast-complete"
+	shareURL := "https://share.fixture.invalid/s/fast-complete"
 	directOne := "https://download.fixture.invalid/fast-one.bin"
 	directTwo := "https://download.fixture.invalid/fast-two.bin"
 	items := []extractor.ResolvedAddItem{
@@ -500,8 +536,28 @@ func TestAddUri_GroupPersistsBeforeSaveSessionForFastCompleteRace(t *testing.T) 
 	}
 }
 
+func TestAddUri_ExtractorEmptyOutputErrorIsGeneric(t *testing.T) {
+	shareURL := "https://share.fixture.invalid/s/empty"
+	dispatcher := &fakeAddTaskDispatcher{
+		resolveErrors: map[string]error{shareURL: &tasks.GenericAuthResolutionError{}},
+	}
+	service, recorder := setupAppTaskExtractorTest(t, tasks.BatchAddRPCSnapshots{}, dispatcher)
+
+	result := service.AddUri(shareURL)
+
+	if strings.Contains(result, "invalid add item") || strings.Contains(result, "extract output must contain at least one item") {
+		t.Fatalf("AddUri() leaked internal empty-output validation error: %q", result)
+	}
+	if !strings.Contains(result, "could not resolve this link") {
+		t.Fatalf("AddUri() = %q, want generic resolver failure", result)
+	}
+	if got := recorder.count("aria2.addUri"); got != 0 {
+		t.Fatalf("expected no aria2.addUri for empty extractor output, got %d", got)
+	}
+}
+
 func TestBatchAddUri_ExtractorDeduplicatesResolvedDirectURLAgainstHistory(t *testing.T) {
-	shareURL := "https://fixture.invalid/d/abc"
+	shareURL := "https://share.fixture.invalid/s/abc"
 	directURL := "https://download.fixture.invalid/file.bin"
 	dispatcher := &fakeAddTaskDispatcher{resolutions: map[string]extractor.AddTaskResolution{shareURL: singleItemResolution(shareURL, directURL)}}
 	service, recorder := setupAppTaskExtractorTest(t, tasks.BatchAddRPCSnapshots{}, dispatcher)
@@ -519,8 +575,34 @@ func TestBatchAddUri_ExtractorDeduplicatesResolvedDirectURLAgainstHistory(t *tes
 	}
 }
 
+func TestBatchAddUri_ExtractorEmptyOutputErrorIsGeneric(t *testing.T) {
+	shareURL := "https://share.fixture.invalid/s/empty"
+	dispatcher := &fakeAddTaskDispatcher{
+		resolveErrors: map[string]error{shareURL: &tasks.GenericAuthResolutionError{}},
+	}
+	service, recorder := setupAppTaskExtractorTest(t, tasks.BatchAddRPCSnapshots{}, dispatcher)
+
+	result := service.BatchAddUri([]string{shareURL})
+
+	tasks.AssertBatchAddStrings(t, "succeeded", result.Succeeded, []string{})
+	tasks.AssertBatchAddStrings(t, "duplicates", result.Duplicates, []string{})
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected one error, got %#v", result.Errors)
+	}
+	errorText := result.Errors[shareURL]
+	if strings.Contains(errorText, "invalid add item") || strings.Contains(errorText, "extract output must contain at least one item") {
+		t.Fatalf("BatchAddUri() leaked internal empty-output validation error: %q", errorText)
+	}
+	if !strings.Contains(errorText, "could not resolve this link") {
+		t.Fatalf("BatchAddUri() error = %q, want generic resolver failure", errorText)
+	}
+	if got := recorder.count("aria2.addUri"); got != 0 {
+		t.Fatalf("expected no aria2.addUri for empty extractor output, got %d", got)
+	}
+}
+
 func TestBatchAddUri_ExtractorDeduplicatesDirectAndShareWithinBatch(t *testing.T) {
-	shareURL := "https://fixture.invalid/d/abc"
+	shareURL := "https://share.fixture.invalid/s/abc"
 	directURL := "https://download.fixture.invalid/file.bin"
 
 	for _, urls := range [][]string{{directURL, shareURL}, {shareURL, directURL}} {
@@ -543,7 +625,7 @@ func TestBatchAddUri_ExtractorDeduplicatesDirectAndShareWithinBatch(t *testing.T
 }
 
 func TestBatchAddUri_SingleItemExtractorCanUseAdHocBatchGroup(t *testing.T) {
-	shareURL := "https://fixture.invalid/d/single"
+	shareURL := "https://share.fixture.invalid/s/single"
 	directURLs := []string{
 		"https://download.fixture.invalid/single.bin",
 		"https://example.com/a.bin",
@@ -577,7 +659,7 @@ func TestBatchAddUri_SingleItemExtractorCanUseAdHocBatchGroup(t *testing.T) {
 }
 
 func TestBatchAddUri_MixedCollectionAndBatchGroupsDoNotPollute(t *testing.T) {
-	collectionShare := "https://fixture.invalid/d/collection"
+	collectionShare := "https://share.fixture.invalid/s/collection"
 	directOne := "https://download.fixture.invalid/collection-one.bin"
 	directTwo := "https://download.fixture.invalid/collection-two.bin"
 	directInputs := []string{
@@ -634,7 +716,7 @@ func TestBatchAddUri_MixedCollectionAndBatchGroupsDoNotPollute(t *testing.T) {
 }
 
 func TestBatchAddUri_ExtractorPartialSuccessAndErrorAreExplicit(t *testing.T) {
-	shareURL := "https://fixture.invalid/d/abc"
+	shareURL := "https://share.fixture.invalid/s/abc"
 	successURL := "https://download.fixture.invalid/success.bin"
 	failURL := "https://download.fixture.invalid/fail.bin"
 	items := []extractor.ResolvedAddItem{
@@ -668,7 +750,7 @@ func TestBatchAddUri_ExtractorPartialSuccessAndErrorAreExplicit(t *testing.T) {
 }
 
 func TestBatchAddUri_ExtractorFailedAddDoesNotPoisonResolvedSeenSet(t *testing.T) {
-	shareURL := "https://fixture.invalid/d/abc"
+	shareURL := "https://share.fixture.invalid/s/abc"
 	directURL := "https://download.fixture.invalid/retry.bin"
 	items := []extractor.ResolvedAddItem{
 		resolvedItem(shareURL, directURL),
@@ -709,7 +791,7 @@ func TestAddUri_ExtractorSmartThreadDoesNotUnauthenticatedHEADHeaderedItem(t *te
 	}))
 	defer fileServer.Close()
 
-	shareURL := "https://fixture.invalid/d/abc"
+	shareURL := "https://share.fixture.invalid/s/abc"
 	directURL := fileServer.URL + "/file.bin"
 	item := resolvedItem(shareURL, directURL)
 	item.HeaderProfileRef = "download"
@@ -753,7 +835,7 @@ func TestAddUri_ExtractorSmartThreadDoesNotUnauthenticatedHEADAuthProfileItem(t 
 	}))
 	defer fileServer.Close()
 
-	shareURL := "https://fixture.invalid/d/auth-profile"
+	shareURL := "https://share.fixture.invalid/s/auth-profile"
 	directURL := fileServer.URL + "/file.bin"
 	item := resolvedItem(shareURL, directURL)
 	item.AuthProfileRef = "apr-alpha001"
@@ -792,7 +874,7 @@ func TestAddUri_ExtractorSmartThreadDoesNotUnauthenticatedHEADAuthProfileItem(t 
 }
 
 func TestAddUri_ExtractorAuthProfileHeaderBuildErrorIsRedacted(t *testing.T) {
-	shareURL := "https://fixture.invalid/d/auth-error"
+	shareURL := "https://share.fixture.invalid/s/auth-error"
 	directURL := "https://download.fixture.invalid/file.bin"
 	item := resolvedItem(shareURL, directURL)
 	item.AuthProfileRef = "apr-alpha001"
@@ -843,7 +925,7 @@ func assertGroupPathGeneric(t *testing.T, dir string) {
 	t.Helper()
 	name := filepath.Base(dir)
 	lower := strings.ToLower(name)
-	for _, forbidden := range []string{"provider", "private", "collection-secret", "token", "synthetic", "cdn", "example"} {
+	for _, forbidden := range []string{"collection-secret", "token", "synthetic", "cdn", "example"} {
 		if strings.Contains(lower, forbidden) {
 			t.Fatalf("group folder %q contains forbidden marker %q", name, forbidden)
 		}

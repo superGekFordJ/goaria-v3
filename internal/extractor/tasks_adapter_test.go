@@ -115,7 +115,7 @@ func TestTasksAdapter_ResolveUnmatchedReturnsUnmatched(t *testing.T) {
 func TestTasksAdapter_ResolveGenericAuthErrorIsWrapped(t *testing.T) {
 	dispatcher := &fakeDispatcherForAdapter{
 		resolveFn: func(ctx context.Context, rawURL string) (AddTaskResolution, error) {
-			return AddTaskResolution{}, errors.New(emptyExtractOutputError)
+			return AddTaskResolution{}, ErrGenericAuthResolution
 		},
 	}
 	adapter := NewTasksAdapter(dispatcher, nil)
@@ -195,6 +195,67 @@ func TestTasksAdapter_BuildHeadersForUnknownRefReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("BuildHeaders() = nil, want error for unknown ref")
 	}
+}
+
+func TestTasksAdapter_MintBuildHeadersThenRelease(t *testing.T) {
+	dispatcher := &fakeDispatcherForAdapter{
+		headersFn: func(ctx context.Context, item ResolvedAddItem) ([]string, error) {
+			return []string{"Cookie: sid=session"}, nil
+		},
+	}
+	adapter := NewTasksAdapter(dispatcher, nil)
+	minted := adapter.Mint(ResolvedAddItem{
+		URL: "https://download.fixture.invalid/files/a.bin",
+		ID:  "item-1",
+	})
+	if minted.Ref == "" {
+		t.Fatal("Mint() Ref is empty")
+	}
+
+	headers, err := adapter.BuildHeaders(context.Background(), minted)
+	if err != nil {
+		t.Fatalf("BuildHeaders() after Mint error = %v", err)
+	}
+	if len(headers) != 1 || headers[0] != "Cookie: sid=session" {
+		t.Fatalf("BuildHeaders() = %#v", headers)
+	}
+
+	adapter.Release(minted.Ref)
+	if _, err := adapter.BuildHeaders(context.Background(), minted); err == nil {
+		t.Fatal("BuildHeaders() after Release error = nil, want error")
+	}
+
+	adapter.Release(minted.Ref)
+	adapter.Release("")
+}
+
+func TestTasksAdapter_MintStoresClonedItem(t *testing.T) {
+	var seenHost string
+	dispatcher := &fakeDispatcherForAdapter{
+		headersFn: func(ctx context.Context, item ResolvedAddItem) ([]string, error) {
+			if item.HostPolicy != nil && len(item.HostPolicy.OutputDomains) > 0 {
+				seenHost = item.HostPolicy.OutputDomains[0].Host
+			}
+			return []string{"Cookie: sid=session"}, nil
+		},
+	}
+	adapter := NewTasksAdapter(dispatcher, nil)
+	policy := &ResolvedHostPolicy{
+		OutputDomains: []HostPolicyOutputRule{{Host: "download.fixture.invalid"}},
+	}
+	item := ResolvedAddItem{
+		URL:        "https://download.fixture.invalid/files/a.bin",
+		HostPolicy: policy,
+	}
+	minted := adapter.Mint(item)
+	policy.OutputDomains[0].Host = "mutated.fixture.invalid"
+	if _, err := adapter.BuildHeaders(context.Background(), minted); err != nil {
+		t.Fatalf("BuildHeaders() error = %v", err)
+	}
+	if seenHost != "download.fixture.invalid" {
+		t.Fatalf("Mint stored aliased HostPolicy, seen host = %q", seenHost)
+	}
+	adapter.Release(minted.Ref)
 }
 
 func TestTasksAdapter_AuthRequestsForSourceConvertsToNeutral(t *testing.T) {

@@ -75,7 +75,7 @@ func validRunnerFixtureWASM() []byte {
 	return buildRunnerFixtureWASM(wasmFixtureConfig{
 		abiVersion:     CurrentABIVersion,
 		matchJSON:      `{"matched":true,"confidence":90,"reason":"fixture"}`,
-		extractJSON:    `{"items":[{"url":"https://download.fixture.invalid/file.bin","filename":"file.bin","size_bytes":123,"mime_type":"application/octet-stream","auth_profile_ref":"fixturepack-default","header_profile_ref":"fixturepack-download","metadata":{"source":"fixture"}}]}`,
+		extractJSON:    `{"items":[{"url":"https://download.fixture.invalid/file.bin","filename":"file.bin","size_bytes":123,"mime_type":"application/octet-stream","auth_profile_ref":"apr-fixture01","header_profile_ref":"hpr-fixture01","metadata":{"source":"fixture"}}]}`,
 		memoryMinPages: 1,
 	})
 }
@@ -326,18 +326,17 @@ func buildExportSection(missing map[string]bool, indexes functionIndexes) []byte
 }
 
 func buildCodeSection(config wasmFixtureConfig, matchLength uint32, indexes functionIndexes) []byte {
-	bodies := []wasmFunctionBody{
-		{instructions: i32ConstInstructions(config.abiVersion)},
-		{instructions: i32ConstInstructions(fixtureInputPtr)},
-		{},
-		{instructions: matchInstructions(config, matchLength)},
-		{instructions: extractInstructions(config, indexes)},
+	bodies := [][]byte{
+		functionBody(i32ConstInstructions(config.abiVersion)),
+		functionBody(i32ConstInstructions(fixtureInputPtr)),
+		functionBody(nil),
+		functionBody(matchInstructions(config, matchLength)),
+		functionBody(extractInstructions(config, indexes)),
 	}
 
 	var section []byte
 	section = appendU32(section, uint32(len(bodies)))
-	for _, bodyConfig := range bodies {
-		body := functionBody(bodyConfig)
+	for _, body := range bodies {
 		section = appendU32(section, uint32(len(body)))
 		section = append(section, body...)
 	}
@@ -356,10 +355,10 @@ func extractInstructions(config wasmFixtureConfig, indexes functionIndexes) []by
 		if count == 0 {
 			count = 1
 		}
+		requestLen := uint32(len(call.Request))
 		for i := uint32(0); i < count; i++ {
 			instructions = append(instructions, i32ConstInstructions(fixtureHostReqPtr)...)
-			instructions = append(instructions, wasmOpI32Const)
-			instructions = appendS32(instructions, int32(len(call.Request)))
+			instructions = append(instructions, i32ConstInstructions(requestLen)...)
 			instructions = append(instructions, wasmOpCall)
 			instructions = appendU32(instructions, fnIndex)
 			instructions = append(instructions, wasmOpDrop)
@@ -386,13 +385,9 @@ func matchInstructions(config wasmFixtureConfig, matchLength uint32) []byte {
 	return i64ConstInstructions(packABIResult(fixtureMatchPtr, matchLength))
 }
 
-type wasmFunctionBody struct {
-	instructions []byte
-}
-
-func functionBody(config wasmFunctionBody) []byte {
+func functionBody(instructions []byte) []byte {
 	body := []byte{0x00}
-	body = append(body, config.instructions...)
+	body = append(body, instructions...)
 	body = append(body, wasmOpEnd)
 
 	return body
@@ -400,7 +395,7 @@ func functionBody(config wasmFunctionBody) []byte {
 
 func i32ConstInstructions(value uint32) []byte {
 	instructions := []byte{wasmOpI32Const}
-	instructions = appendU32(instructions, value)
+	instructions = appendI32(instructions, int32(value))
 
 	return instructions
 }
@@ -468,19 +463,18 @@ func appendU32(buffer []byte, value uint32) []byte {
 	}
 }
 
-func appendS32(buffer []byte, value int32) []byte {
+func appendI32(buffer []byte, value int32) []byte {
 	for {
 		b := byte(value & 0x7f)
 		value >>= 7
-		signBitSet := b&0x40 != 0
-		done := (value == 0 && !signBitSet) || (value == -1 && signBitSet)
+		done := value == 0 && b&0x40 == 0 || value == -1 && b&0x40 != 0
 		if !done {
-			buffer = append(buffer, b|0x80)
-			continue
+			b |= 0x80
 		}
-
 		buffer = append(buffer, b)
-		return buffer
+		if done {
+			return buffer
+		}
 	}
 }
 
@@ -488,9 +482,7 @@ func appendU64(buffer []byte, value uint64) []byte {
 	for {
 		b := byte(value & 0x7f)
 		value >>= 7
-		signBitSet := b&0x40 != 0
-		more := (value != 0 || signBitSet) && (value != ^uint64(0) || !signBitSet)
-		if more {
+		if value != 0 {
 			buffer = append(buffer, b|0x80)
 			continue
 		}

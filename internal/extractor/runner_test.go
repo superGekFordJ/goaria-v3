@@ -9,7 +9,7 @@ import (
 func TestRunnerMatchHappyPath(t *testing.T) {
 	pack := verifiedRunnerPack(t, validRunnerFixtureWASM(), nil)
 
-	output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://fixture.invalid/d/abc"})
+	output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://share.fixture.invalid/s/abc"})
 	if err != nil {
 		t.Fatalf("Runner.Match() error = %v", err)
 	}
@@ -24,7 +24,7 @@ func TestRunnerMatchHappyPath(t *testing.T) {
 func TestRunnerExtractReturnsStructuredItemRefs(t *testing.T) {
 	pack := verifiedRunnerPack(t, validRunnerFixtureWASM(), nil)
 
-	output, err := NewRunner().Extract(context.Background(), pack, ExtractInput{URL: "https://fixture.invalid/d/abc"})
+	output, err := NewRunner().Extract(context.Background(), pack, ExtractInput{URL: "https://share.fixture.invalid/s/abc"})
 	if err != nil {
 		t.Fatalf("Runner.Extract() error = %v", err)
 	}
@@ -50,7 +50,7 @@ func TestRunnerExtractReturnsStructuredItemRefs(t *testing.T) {
 func TestRunnerRejectsABIMismatch(t *testing.T) {
 	pack := verifiedRunnerPack(t, abiMismatchFixtureWASM(), nil)
 
-	if output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://fixture.invalid/d/abc"}); err == nil {
+	if output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://share.fixture.invalid/s/abc"}); err == nil {
 		t.Fatalf("Runner.Match() error = nil, output = %#v, want error", output)
 	}
 }
@@ -58,7 +58,7 @@ func TestRunnerRejectsABIMismatch(t *testing.T) {
 func TestRunnerRejectsMissingRequiredExports(t *testing.T) {
 	pack := verifiedRunnerPack(t, missingAllocFixtureWASM(), nil)
 
-	if output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://fixture.invalid/d/abc"}); err == nil {
+	if output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://share.fixture.invalid/s/abc"}); err == nil {
 		t.Fatalf("Runner.Match() error = nil, output = %#v, want error", output)
 	}
 }
@@ -69,7 +69,7 @@ func TestRunnerEnforcesTimeout(t *testing.T) {
 		limits["timeout_millis"] = 20
 	})
 
-	if output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://fixture.invalid/d/abc"}); err == nil {
+	if output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://share.fixture.invalid/s/abc"}); err == nil {
 		t.Fatalf("Runner.Match() error = nil, output = %#v, want timeout error", output)
 	}
 }
@@ -77,7 +77,7 @@ func TestRunnerEnforcesTimeout(t *testing.T) {
 func TestRunnerRejectsTrap(t *testing.T) {
 	pack := verifiedRunnerPack(t, trapFixtureWASM(), nil)
 
-	if output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://fixture.invalid/d/abc"}); err == nil {
+	if output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://share.fixture.invalid/s/abc"}); err == nil {
 		t.Fatalf("Runner.Match() error = nil, output = %#v, want trap error", output)
 	}
 }
@@ -88,7 +88,7 @@ func TestRunnerEnforcesMemoryLimit(t *testing.T) {
 		limits["max_memory_pages"] = 1
 	})
 
-	if output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://fixture.invalid/d/abc"}); err == nil {
+	if output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://share.fixture.invalid/s/abc"}); err == nil {
 		t.Fatalf("Runner.Match() error = nil, output = %#v, want memory limit error", output)
 	}
 }
@@ -99,7 +99,7 @@ func TestRunnerEnforcesOutputByteLimit(t *testing.T) {
 		limits["max_output_bytes"] = 32
 	})
 
-	if output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://fixture.invalid/d/abc"}); err == nil {
+	if output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://share.fixture.invalid/s/abc"}); err == nil {
 		t.Fatalf("Runner.Match() error = nil, output = %#v, want output byte cap error", output)
 	}
 }
@@ -110,7 +110,7 @@ func TestRunnerEnforcesOutputItemLimit(t *testing.T) {
 		limits["max_output_items"] = 1
 	})
 
-	if output, err := NewRunner().Extract(context.Background(), pack, ExtractInput{URL: "https://fixture.invalid/d/abc"}); err == nil {
+	if output, err := NewRunner().Extract(context.Background(), pack, ExtractInput{URL: "https://share.fixture.invalid/s/abc"}); err == nil {
 		t.Fatalf("Runner.Extract() error = nil, output = %#v, want output item cap error", output)
 	}
 }
@@ -118,7 +118,7 @@ func TestRunnerEnforcesOutputItemLimit(t *testing.T) {
 func TestRunnerRejectsRawSecretShapedOutput(t *testing.T) {
 	pack := verifiedRunnerPack(t, secretMetadataFixtureWASM(), nil)
 
-	if output, err := NewRunner().Extract(context.Background(), pack, ExtractInput{URL: "https://fixture.invalid/d/abc"}); err == nil {
+	if output, err := NewRunner().Extract(context.Background(), pack, ExtractInput{URL: "https://share.fixture.invalid/s/abc"}); err == nil {
 		t.Fatalf("Runner.Extract() error = nil, output = %#v, want secret-shaped output error", output)
 	}
 
@@ -150,7 +150,7 @@ func TestRunnerRequiresVerifiedParseCapability(t *testing.T) {
 	pack := verifiedRunnerPack(t, validRunnerFixtureWASM(), nil)
 	pack.Manifest.Capabilities = []Capability{CapabilityHTTPFetch}
 
-	if output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://fixture.invalid/d/abc"}); err == nil {
+	if output, err := NewRunner().Match(context.Background(), pack, MatchInput{URL: "https://share.fixture.invalid/s/abc"}); err == nil {
 		t.Fatalf("Runner.Match() error = nil, output = %#v, want parse capability error", output)
 	}
 }
@@ -158,9 +158,9 @@ func TestRunnerRequiresVerifiedParseCapability(t *testing.T) {
 func TestABIValidationRejectsUnsafeInputsAndMetadata(t *testing.T) {
 	badInputs := []string{
 		"",
-		"ftp://fixture.invalid/d/abc",
-		"https://user:pass@fixture.invalid/d/abc",
-		"https://fixture.invalid/d/abc\r\nheader: value",
+		"ftp://share.fixture.invalid/s/abc",
+		"https://user:pass@share.fixture.invalid/s/abc",
+		"https://share.fixture.invalid/s/abc\r\nheader: value",
 	}
 	for _, rawURL := range badInputs {
 		t.Run("input "+strings.ReplaceAll(rawURL, "\r\n", "_"), func(t *testing.T) {
@@ -172,7 +172,7 @@ func TestABIValidationRejectsUnsafeInputsAndMetadata(t *testing.T) {
 
 	badOutputs := []ExtractOutput{
 		{Items: []ExtractedItemRef{{SizeBytes: -1}}},
-		{Items: []ExtractedItemRef{{URL: "https://user:pass@fixture.invalid/file.bin"}}},
+		{Items: []ExtractedItemRef{{URL: "https://user:pass@download.fixture.invalid/file.bin"}}},
 		{Items: []ExtractedItemRef{{URL: "file:///tmp/file.bin"}}},
 		{Items: []ExtractedItemRef{{Metadata: map[string]string{"x-api-key": "secret"}}}},
 	}
@@ -214,8 +214,8 @@ func TestABIValidationRejectsCredentialShapedMetadataKeyVariants(t *testing.T) {
 
 	safeOutput := ExtractOutput{Items: []ExtractedItemRef{{
 		URL:              "https://download.fixture.invalid/file.bin",
-		AuthProfileRef:   "fixturepack-default",
-		HeaderProfileRef: "fixturepack-download",
+		AuthProfileRef:   "apr-fixture01",
+		HeaderProfileRef: "hpr-fixture01",
 		Metadata:         map[string]string{"source": "fixture"},
 	}}}
 	if err := ValidateExtractOutput(safeOutput, ResourceLimits{MaxOutputItems: 10}); err != nil {

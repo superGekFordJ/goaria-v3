@@ -17,11 +17,22 @@ export const MSG_TYPE_PROTOCOL_ERROR = 'protocol_error'
 export const MSG_TYPE_CAPABILITY_UPDATE = 'capability_update'
 
 export const PROTOCOL_VERSION = 2
+export const MATCH_DIGEST_VERSION = 1
 export const CLIENT_VERSION = '0.1.1'
 
 export const CAP_REQUEST_ID = 'request_id'
 export const CAP_EXTRACTOR_RESOLVE = 'extractor.resolve'
 export const CAP_EXTRACTOR_BATCH = 'extractor.batch'
+
+export const ERR_CODE_UNSUPPORTED = 'unsupported'
+export const ERR_CODE_UNAVAILABLE = 'unavailable'
+export const ERR_CODE_BUSY = 'busy'
+export const ERR_CODE_INVALID_REQUEST = 'invalid_request'
+export const ERR_CODE_IDEMPOTENCY_CONFLICT = 'idempotency_conflict'
+export const ERR_CODE_AUTH_EXPIRED = 'auth_expired'
+export const ERR_CODE_TIMEOUT = 'timeout'
+export const ERR_CODE_PACK_ERROR = 'pack_error'
+export const ERR_CODE_SESSION_EXPIRED = 'session_expired'
 
 // Aligned with server.go upgrader.Subprotocols.
 export const WS_SUBPROTOCOL = 'goaria-extension'
@@ -41,8 +52,9 @@ export const STORAGE_KEY_AUTO_CAPTURE = 'goaria_auto_capture'
 export const WS_CONNECT_TIMEOUT_MS = 3000
 // download_ack wait before rejecting a pending download request.
 export const DOWNLOAD_ACK_TIMEOUT_MS = 10000
-// extractor_resolve / batch_download wait; same 10s as download in this slice.
+// batch_download wait; same 10s as download.
 export const REQUEST_ACK_TIMEOUT_MS = DOWNLOAD_ACK_TIMEOUT_MS
+export const EXTRACTOR_RESOLVE_ACK_TIMEOUT_MS = 30_000
 
 // Extension-only constants (no Go counterpart).
 
@@ -59,6 +71,21 @@ export const STORAGE_KEY_PENDING_PREFIX = 'pending_'
 // storage.session key prefix for replayable extractor request ids (SW restart).
 export const STORAGE_KEY_REPLAY_PREFIX = 'replay_'
 export const REPLAY_TTL_MS = 60_000
+
+export {
+  EXTRACTOR_SESSION_PREFIX as STORAGE_KEY_EXTRACTOR_SESSION_PREFIX,
+  EXTRACTOR_IGNORE_PREFIX as STORAGE_KEY_EXTRACTOR_IGNORE_PREFIX,
+  EXTRACTOR_NOTIF_PREFIX as STORAGE_KEY_EXTRACTOR_NOTIF_PREFIX,
+  EXTRACTOR_LEASE_MS,
+  EXTRACTOR_MAX_SESSION_ITEMS,
+  EXTRACTOR_PICKER_WINDOW,
+  EXTRACTOR_FOLDER_MAX_RUNES,
+} from '../background/extractorKeys'
+export const EXTRACTOR_RESOLVE_WATCHDOG_MS = 35_000
+export const EXTRACTOR_BATCH_WATCHDOG_MS = 15_000
+export const EXTRACTOR_MAX_RESOLVE_COOKIES = 64
+export const EXTRACTOR_SUCCESS_HOLD_MS = 1_200
+export const EXTRACTOR_SUCCESS_OUT_MS = 160
 
 class ConfigState {
   autoCapture = $state(true)

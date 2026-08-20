@@ -58,6 +58,19 @@ func (a *TasksAdapter) Resolve(ctx context.Context, rawURL string) (tasks.Resolu
 	}, nil
 }
 
+func (a *TasksAdapter) Mint(item ResolvedAddItem) tasks.ResolvedItem {
+	return a.toNeutralItem(CloneResolvedAddItem(item))
+}
+
+func (a *TasksAdapter) Release(ref string) {
+	if a == nil || ref == "" {
+		return
+	}
+	a.mu.Lock()
+	delete(a.resolvedItems, ref)
+	a.mu.Unlock()
+}
+
 func (a *TasksAdapter) toNeutralItem(item ResolvedAddItem) tasks.ResolvedItem {
 	a.mu.Lock()
 	a.nextRef++
@@ -74,7 +87,7 @@ func (a *TasksAdapter) toNeutralItem(item ResolvedAddItem) tasks.ResolvedItem {
 		SizeBytes:        item.SizeBytes,
 		AuthProfileRef:   item.AuthProfileRef,
 		HeaderProfileRef: item.HeaderProfileRef,
-		PackID:           item.Manifest.PackID,
+		PackID:           item.PackManifest.PackID,
 		PackVersion:      item.PackIdentity.PackVersion,
 		AssetSHA256:      item.PackIdentity.AssetSHA256,
 		ManifestSHA256:   item.PackIdentity.ManifestSHA256,
@@ -225,7 +238,7 @@ func (a *TasksAdapter) toExtractorRequest(req tasks.AuthRequest) HostAuthRuntime
 	}
 	manifest := Manifest{PackID: req.PackID}
 	if itemOK {
-		manifest = cloneManifest(item.Manifest)
+		manifest = cloneManifest(item.PackManifest)
 		identity = item.PackIdentity
 	}
 	return HostAuthRuntimeRequest{

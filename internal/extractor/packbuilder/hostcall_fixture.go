@@ -14,10 +14,15 @@ const (
 	HostCallFixtureVersion   = "0.1.0-fixture"
 	HostCallFixtureAssetName = "hostcall-fixture.pack.zip"
 
-	HostCallFixtureShareURL = "https://share.fixture.invalid/s/fixture-item"
-	HostCallFixtureAPIURL   = "https://api.fixture.invalid/resolve/fixture-item"
-	HostCallFixtureItemURL  = "https://download.fixture.invalid/artifact.bin"
-	HostCallFixtureFilename = "fixture-artifact.bin"
+	HostCallFixtureShareURL   = "https://share.fixture.invalid/s/fixture-item"
+	HostCallFixtureAPIBaseURL = "https://api.fixture.invalid/resolve"
+	HostCallFixtureAPIURL     = HostCallFixtureAPIBaseURL + "/fixture-item"
+	HostCallFixtureItemURL    = "https://download.fixture.invalid/artifact.bin"
+	HostCallFixtureFilename   = "fixture-artifact.bin"
+
+	HostCallFixtureDomainPolicyRef = "dpr-fixture001"
+	HostCallFixtureBrokerPolicyRef = "bpr-fixture001"
+	HostCallFixtureEndpointRef     = "ep-fixture001"
 )
 
 const (
@@ -49,7 +54,7 @@ const (
 	fixtureNoMatchPtr = 7168
 )
 
-const hostCallFixtureRequestJSON = `{"url":"` + HostCallFixtureAPIURL + `"}`
+const hostCallFixtureRequestJSON = `{"broker_policy_ref":"` + HostCallFixtureBrokerPolicyRef + `","endpoint_ref":"` + HostCallFixtureEndpointRef + `","params":{"id":"fixture-item"}}`
 
 var (
 	hostCallFixtureMatchJSON = string(mustFixtureJSON(packabi.MatchOutput{
@@ -97,13 +102,13 @@ func HostCallFixtureManifest(payload []byte) extractor.Manifest {
 	hash := sha256.Sum256(payload)
 
 	return extractor.Manifest{
-		PackID:       HostCallFixturePackID,
-		PackVersion:  HostCallFixtureVersion,
-		ABIVersion:   packabi.CurrentABIVersion,
-		Capabilities: []extractor.Capability{extractor.CapabilityParseWASM, extractor.CapabilityHTTPFetch},
-		Domains: []extractor.DomainRule{
-			{Host: "fixture.invalid", IncludeSubdomains: true},
-		},
+		PackID:           HostCallFixturePackID,
+		PackVersion:      HostCallFixtureVersion,
+		ABIVersion:       packabi.CurrentABIVersion,
+		Capabilities:     []extractor.Capability{extractor.CapabilityParseWASM, extractor.CapabilityHTTPFetch},
+		Domains:          []extractor.DomainRule{},
+		DomainPolicyRefs: []string{HostCallFixtureDomainPolicyRef},
+		BrokerPolicyRefs: []string{HostCallFixtureBrokerPolicyRef},
 		ResourceLimits: extractor.ResourceLimits{
 			TimeoutMillis:    1_000,
 			MaxMemoryPages:   1,

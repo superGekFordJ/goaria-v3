@@ -53,27 +53,31 @@ func (s diagnosticAuthProfileStore) RecordWebViewAuthEvent(stage string, categor
 }
 
 func ConfigureEmbeddedExtractorDispatcher(appService *App) error {
-	return configureEmbeddedExtractorDispatcherWithDeps(appService, defaultEmbeddedExtractorConfigDeps())
+	return configureEmbeddedExtractorDispatcherWithDeps(appService, defaultEmbeddedExtractorConfigDeps(appService))
 }
 
 type embeddedExtractorConfigDeps struct {
-	hasEmbeddedReleasePacks          func() bool
-	embeddedReleaseRequired          func() bool
-	loadHostPolicyResolver           func() (extractor.HostPolicyResolver, error)
-	loadAuthRuntimeBundle            func() (*extractor.PrivateAuthRuntimeBundle, error)
-	defaultAuthProfileStorePath      func() (string, error)
-	newFileAuthProfileStore          func(string) (extractor.AuthProfileStore, error)
-	newAuthWebViewDriver             func(*App) extractor.AuthWebViewDriver
-	newEmbeddedReleaseAddTaskAdapter func(extractor.EmbeddedReleaseDispatcherConfig, *extractor.HostAuthRuntime) (tasks.ExtractorAdapter, error)
+	hasEmbeddedReleasePacks              func() bool
+	embeddedReleaseRequired              func() bool
+	privatePolicyRuntimeSourceState      func() extractor.RuntimeSourceState
+	privateAuthRuntimeRuntimeSourceState func() extractor.RuntimeSourceState
+	loadHostPolicyResolver               func() (extractor.HostPolicyResolver, error)
+	loadAuthRuntimeBundle                func() (*extractor.PrivateAuthRuntimeBundle, error)
+	defaultAuthProfileStorePath          func() (string, error)
+	newFileAuthProfileStore              func(string) (extractor.AuthProfileStore, error)
+	newAuthWebViewDriver                 func(*App) extractor.AuthWebViewDriver
+	newEmbeddedReleaseAddTaskAdapter     func(extractor.EmbeddedReleaseDispatcherConfig, *extractor.HostAuthRuntime) (tasks.ExtractorAdapter, error)
 }
 
-func defaultEmbeddedExtractorConfigDeps() embeddedExtractorConfigDeps {
+func defaultEmbeddedExtractorConfigDeps(appService *App) embeddedExtractorConfigDeps {
 	return embeddedExtractorConfigDeps{
-		hasEmbeddedReleasePacks:     extractor.HasEmbeddedReleasePacks,
-		embeddedReleaseRequired:     extractor.EmbeddedReleaseRequired,
-		loadHostPolicyResolver:      extractor.LoadPrivatePolicyBundleResolverFromRuntimeSources,
-		loadAuthRuntimeBundle:       extractor.LoadPrivateAuthRuntimeBundleFromRuntimeSources,
-		defaultAuthProfileStorePath: extractor.DefaultAuthProfileStorePath,
+		hasEmbeddedReleasePacks:              extractor.HasEmbeddedReleasePacks,
+		embeddedReleaseRequired:              extractor.EmbeddedReleaseRequired,
+		privatePolicyRuntimeSourceState:      extractor.PrivatePolicyBundleRuntimeSourceState,
+		privateAuthRuntimeRuntimeSourceState: extractor.PrivateAuthRuntimeBundleRuntimeSourceState,
+		loadHostPolicyResolver:               extractor.LoadPrivatePolicyBundleResolverFromRuntimeSources,
+		loadAuthRuntimeBundle:                extractor.LoadPrivateAuthRuntimeBundleFromRuntimeSources,
+		defaultAuthProfileStorePath:          extractor.DefaultAuthProfileStorePath,
 		newFileAuthProfileStore: func(path string) (extractor.AuthProfileStore, error) {
 			return extractor.NewFileAuthProfileStore(path)
 		},
@@ -84,6 +88,13 @@ func defaultEmbeddedExtractorConfigDeps() embeddedExtractorConfigDeps {
 			dispatcher, err := extractor.NewEmbeddedReleaseAddTaskDispatcher(config)
 			if err != nil {
 				return nil, err
+			}
+			if dispatcher != nil && appService != nil {
+				adapter := extractor.NewTasksAdapter(dispatcher, runtime)
+				linkage := pendingLinkageFromDispatcher(dispatcher)
+				linkage = attachBatchCommitter(linkage, adapter, appService)
+				appService.setPendingExtensionLinkage(linkage)
+				return adapter, nil
 			}
 			return extractor.NewTasksAdapter(dispatcher, runtime), nil
 		},
@@ -109,6 +120,8 @@ func configureEmbeddedExtractorDispatcherWithDeps(appService *App, deps embedded
 	} else {
 		diagnostic.record("embedded_release", "optional")
 	}
+	diagnostic.record("policy_source", string(deps.privatePolicyRuntimeSourceState()))
+	diagnostic.record("auth_runtime_source", string(deps.privateAuthRuntimeRuntimeSourceState()))
 	authBundle, err := deps.loadAuthRuntimeBundle()
 	if err != nil {
 		diagnostic.record("auth_runtime_load", "invalid")
@@ -206,6 +219,7 @@ func configureEmbeddedExtractorDispatcherWithDeps(appService *App, deps embedded
 		}
 		diagnostic.record("driver", "configured")
 		coordinator := extractor.NewWebViewAuthCoordinator(store, driver)
+		coordinator.SetObserver(appHostAuthDiagnosticObserver{})
 		hostRuntime = extractor.NewHostAuthRuntime(extractor.HostAuthRuntimeConfig{
 			Bundle:             authBundle,
 			Store:              store,
@@ -247,12 +261,18 @@ func configureEmbeddedExtractorDispatcherWithDeps(appService *App, deps embedded
 }
 
 func normalizeEmbeddedExtractorConfigDeps(deps embeddedExtractorConfigDeps) embeddedExtractorConfigDeps {
-	defaults := defaultEmbeddedExtractorConfigDeps()
+	defaults := defaultEmbeddedExtractorConfigDeps(nil)
 	if deps.hasEmbeddedReleasePacks == nil {
 		deps.hasEmbeddedReleasePacks = defaults.hasEmbeddedReleasePacks
 	}
 	if deps.embeddedReleaseRequired == nil {
 		deps.embeddedReleaseRequired = defaults.embeddedReleaseRequired
+	}
+	if deps.privatePolicyRuntimeSourceState == nil {
+		deps.privatePolicyRuntimeSourceState = defaults.privatePolicyRuntimeSourceState
+	}
+	if deps.privateAuthRuntimeRuntimeSourceState == nil {
+		deps.privateAuthRuntimeRuntimeSourceState = defaults.privateAuthRuntimeRuntimeSourceState
 	}
 	if deps.loadHostPolicyResolver == nil {
 		deps.loadHostPolicyResolver = defaults.loadHostPolicyResolver
@@ -278,4 +298,8 @@ func normalizeEmbeddedExtractorConfigDeps(deps embeddedExtractorConfigDeps) embe
 
 func sanitizedEmbeddedExtractorConfigError(action string, err error) error {
 	return fmt.Errorf("%s failed", action)
+}
+
+func loadEmbeddedExtractorHostPolicyResolver() (extractor.HostPolicyResolver, error) {
+	return extractor.LoadPrivatePolicyBundleResolverFromRuntimeSources()
 }

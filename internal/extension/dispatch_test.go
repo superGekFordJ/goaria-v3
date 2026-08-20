@@ -1,6 +1,7 @@
 package extension
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"sync/atomic"
@@ -11,17 +12,20 @@ import (
 )
 
 type fakeResolver struct {
-	ready    bool
-	code     string
-	calls    atomic.Int32
-	block    chan struct{}
-	started  chan struct{}
-	panicNow bool
+	ready           bool
+	code            string
+	result          *ResolveResult
+	calls           atomic.Int32
+	invalidateCalls atomic.Int32
+	block           chan struct{}
+	started         chan struct{}
+	panicNow        bool
+	rewrite         func([]byte) []byte
 }
 
 func (f *fakeResolver) Ready() bool { return f.ready }
 
-func (f *fakeResolver) HandleResolve(ctx context.Context, _ RequestEnvelope, _ json.RawMessage) StubAck {
+func (f *fakeResolver) HandleResolve(ctx context.Context, _ RequestEnvelope, _ json.RawMessage) ResolveResult {
 	if f.panicNow {
 		f.panicNow = false
 		panic("extractor resolve test panic")
@@ -37,29 +41,107 @@ func (f *fakeResolver) HandleResolve(ctx context.Context, _ RequestEnvelope, _ j
 		select {
 		case <-f.block:
 		case <-ctx.Done():
-			return StubAck{ErrorCode: ErrCodeBusy}
+			return ResolveResult{ErrorCode: ErrCodeBusy}
 		}
+	}
+	if f.result != nil {
+		return *f.result
 	}
 	code := f.code
 	if code == "" {
 		code = ErrCodeUnsupported
 	}
-	return StubAck{ErrorCode: code}
+	return ResolveResult{ErrorCode: code}
+}
+
+func (f *fakeResolver) Invalidate() {
+	f.invalidateCalls.Add(1)
+}
+
+func (f *fakeResolver) RewriteCachedResolve(cached []byte) []byte {
+	if f.rewrite != nil {
+		return f.rewrite(cached)
+	}
+
+	return cached
 }
 
 type fakeCommitter struct {
-	ready bool
-	code  string
+	ready  bool
+	code   string
+	result *CommitResult
+	calls  atomic.Int32
 }
 
 func (f *fakeCommitter) Ready() bool { return f.ready }
 
-func (f *fakeCommitter) HandleCommit(_ context.Context, _ RequestEnvelope, _ json.RawMessage) StubAck {
+func (f *fakeCommitter) HandleCommit(_ context.Context, _ RequestEnvelope, _ json.RawMessage) CommitResult {
+	f.calls.Add(1)
+	if f.result != nil {
+		return *f.result
+	}
 	code := f.code
 	if code == "" {
 		code = ErrCodeUnsupported
 	}
-	return StubAck{ErrorCode: code}
+	return CommitResult{ErrorCode: code}
+}
+
+type fakeDigests struct {
+	ready   bool
+	ok      bool
+	version int
+	salt    string
+	exact   []string
+	sub     []string
+	seq     atomic.Uint64
+}
+
+func (f *fakeDigests) Ready() bool { return f.ready }
+
+func (f *fakeDigests) Snapshot() (MatchDigestSnapshot, bool) {
+	if !f.ok {
+		return MatchDigestSnapshot{}, false
+	}
+	version := f.version
+	if version == 0 {
+		version = MatchDigestVersion
+	}
+	salt := f.salt
+	if salt == "" {
+		n := f.seq.Add(1)
+		salt = "0000000000000000000000000000000" + trimHexDigit(n)
+	}
+	exact := f.exact
+	if exact == nil {
+		exact = []string{}
+	}
+	sub := f.sub
+	if sub == nil {
+		sub = []string{}
+	}
+	return MatchDigestSnapshot{
+		Version:          version,
+		Salt:             salt,
+		ExactDigests:     exact,
+		SubdomainDigests: sub,
+	}, true
+}
+
+func trimHexDigit(n uint64) string {
+	const hexdigits = "0123456789abcdef"
+	return string(hexdigits[n%16])
+}
+
+func assertNoMatchKey(t *testing.T, raw []byte) {
+	t.Helper()
+	var rawMap map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawMap); err != nil {
+		t.Fatalf("raw map: %v", err)
+	}
+	if _, ok := rawMap["match"]; ok {
+		t.Fatalf("match key must be omitted, got %s", raw)
+	}
 }
 
 func withAuthReadTimeout(t *testing.T, d time.Duration) {
@@ -138,6 +220,19 @@ func writeResolve(t *testing.T, conn *websocket.Conn, id string, extra string) {
 	}
 }
 
+func writeBatch(t *testing.T, conn *websocket.Conn, id string, extra string) {
+	t.Helper()
+	payload := `{"type":"` + MsgTypeBatchDownload + `","request_id":"` + id + `"`
+	if extra != "" {
+		payload += "," + extra
+	}
+	payload += `}`
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
+		t.Fatalf("write batch: %v", err)
+	}
+}
+
 func parseTypedAck(t *testing.T, raw []byte) TypedAck {
 	t.Helper()
 	var ack TypedAck
@@ -212,6 +307,7 @@ func TestAuthAck_ExtractorCapsRequireReadyAndSecret(t *testing.T) {
 	if !hasCap(ack.Capabilities, CapExtractorResolve) || !hasCap(ack.Capabilities, CapExtractorBatch) {
 		t.Fatalf("want extractor caps, got %v", ack.Capabilities)
 	}
+	assertNoMatchKey(t, raw)
 }
 
 func TestAuthAck_MVPOmitsExtractorCaps(t *testing.T) {
@@ -238,6 +334,7 @@ func TestAuthAck_MVPOmitsExtractorCaps(t *testing.T) {
 	if hasCap(ack.Capabilities, CapExtractorResolve) || hasCap(ack.Capabilities, CapExtractorBatch) {
 		t.Fatalf("MVP empty secret must not advertise extractor caps: %v", ack.Capabilities)
 	}
+	assertNoMatchKey(t, raw)
 }
 
 func TestAuthAck_HostVersionEchoed(t *testing.T) {
@@ -259,6 +356,248 @@ func TestAuthAck_HostVersionEchoed(t *testing.T) {
 	}
 	if ack.HostVersion != "dev" {
 		t.Fatalf("host_version want dev, got %q", ack.HostVersion)
+	}
+}
+
+func TestAuthAck_MatchPublishedWhenResolveAndDigestsReady(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("match-secret")
+	digests := &fakeDigests{
+		ready: true,
+		ok:    true,
+		salt:  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		exact: []string{"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+		sub:   []string{},
+	}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{
+		Resolver: &fakeResolver{ready: true},
+		Digests:  digests,
+	})
+	defer srv.Stop()
+	startSrv(t, srv)
+
+	conn := dialWS(t, srv.GetStatus().WSPort, "chrome-extension://abc")
+	defer conn.Close()
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, AuthMessage{Type: MsgTypeAuth, Secret: "match-secret"}))
+	raw := readRaw(t, conn, 2*time.Second)
+	var ack AuthAck
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		t.Fatal(err)
+	}
+	if !hasCap(ack.Capabilities, CapExtractorResolve) {
+		t.Fatalf("want extractor.resolve, got %v", ack.Capabilities)
+	}
+	if ack.Match == nil {
+		t.Fatalf("match missing: %s", raw)
+	}
+	if ack.Match.DigestVersion != MatchDigestVersion {
+		t.Fatalf("digest_version=%d", ack.Match.DigestVersion)
+	}
+	if len(ack.Match.Salt) != 32 {
+		t.Fatalf("salt len=%d", len(ack.Match.Salt))
+	}
+	var rawMap map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawMap); err != nil {
+		t.Fatal(err)
+	}
+	matchRaw, ok := rawMap["match"]
+	if !ok {
+		t.Fatal("match key missing")
+	}
+	var matchMap map[string]json.RawMessage
+	if err := json.Unmarshal(matchRaw, &matchMap); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"digest_version", "salt", "exact_digests", "subdomain_digests"} {
+		if _, exists := matchMap[key]; !exists {
+			t.Fatalf("match missing %s: %s", key, matchRaw)
+		}
+	}
+	if string(matchMap["exact_digests"]) == "null" || len(matchMap["exact_digests"]) == 0 || matchMap["exact_digests"][0] != '[' {
+		t.Fatalf("exact_digests must be a JSON array, got %s", matchMap["exact_digests"])
+	}
+	if string(matchMap["subdomain_digests"]) == "null" || len(matchMap["subdomain_digests"]) == 0 || matchMap["subdomain_digests"][0] != '[' {
+		t.Fatalf("subdomain_digests must be a JSON array, got %s", matchMap["subdomain_digests"])
+	}
+}
+
+func TestAuthAck_MatchOmittedWhenDigestsNotReady(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("match-secret")
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{
+		Resolver: &fakeResolver{ready: true},
+		Digests:  &fakeDigests{ready: false, ok: true},
+	})
+	defer srv.Stop()
+	startSrv(t, srv)
+
+	conn := dialWS(t, srv.GetStatus().WSPort, "chrome-extension://abc")
+	defer conn.Close()
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, AuthMessage{Type: MsgTypeAuth, Secret: "match-secret"}))
+	raw := readRaw(t, conn, 2*time.Second)
+	var ack AuthAck
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		t.Fatal(err)
+	}
+	if !hasCap(ack.Capabilities, CapExtractorResolve) {
+		t.Fatalf("resolver ready should still grant resolve: %v", ack.Capabilities)
+	}
+	assertNoMatchKey(t, raw)
+}
+
+func TestAuthAck_MatchOmittedWhenResolverNotReady(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("match-secret")
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{
+		Resolver: &fakeResolver{ready: false},
+		Digests:  &fakeDigests{ready: true, ok: true},
+	})
+	defer srv.Stop()
+	startSrv(t, srv)
+
+	conn := dialWS(t, srv.GetStatus().WSPort, "chrome-extension://abc")
+	defer conn.Close()
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, AuthMessage{Type: MsgTypeAuth, Secret: "match-secret"}))
+	raw := readRaw(t, conn, 2*time.Second)
+	var ack AuthAck
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		t.Fatal(err)
+	}
+	if hasCap(ack.Capabilities, CapExtractorResolve) {
+		t.Fatalf("Digests.Ready must not grant resolve: %v", ack.Capabilities)
+	}
+	assertNoMatchKey(t, raw)
+}
+
+func TestAuthAck_MVPOmitsMatchWhenBothReady(t *testing.T) {
+	withAllowEmptySecret(t, true)
+	store := NewSecretStore()
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{
+		Resolver: &fakeResolver{ready: true},
+		Digests:  &fakeDigests{ready: true, ok: true},
+	})
+	defer srv.Stop()
+	startSrv(t, srv)
+
+	conn := dialWS(t, srv.GetStatus().WSPort, "chrome-extension://abc")
+	defer conn.Close()
+	raw := readRaw(t, conn, 2*time.Second)
+	var ack AuthAck
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		t.Fatal(err)
+	}
+	if hasCap(ack.Capabilities, CapExtractorResolve) {
+		t.Fatalf("MVP must not advertise extractor.resolve: %v", ack.Capabilities)
+	}
+	assertNoMatchKey(t, raw)
+}
+
+func TestAuthAck_SnapshotFailureOmitsMatchKeepsSocket(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("match-secret")
+	adder := &fakeTaskAdder{gid: "snap-gid"}
+	srv := newTestServer(t, adder, store)
+	srv.SetLinkage(Linkage{
+		Resolver: &fakeResolver{ready: true},
+		Digests:  &fakeDigests{ready: true, ok: false},
+	})
+	defer srv.Stop()
+	startSrv(t, srv)
+
+	conn := dialWS(t, srv.GetStatus().WSPort, "chrome-extension://abc")
+	defer conn.Close()
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, AuthMessage{Type: MsgTypeAuth, Secret: "match-secret"}))
+	raw := readRaw(t, conn, 2*time.Second)
+	var ack AuthAck
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		t.Fatal(err)
+	}
+	if !hasCap(ack.Capabilities, CapExtractorResolve) {
+		t.Fatalf("caps should still include resolve: %v", ack.Capabilities)
+	}
+	assertNoMatchKey(t, raw)
+
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.WriteJSON(DownloadRequest{Type: MsgTypeDownload, URL: "https://example.com/f.bin"}); err != nil {
+		t.Fatalf("write download: %v", err)
+	}
+	dlRaw := readRaw(t, conn, 2*time.Second)
+	var dl DownloadResponse
+	if err := json.Unmarshal(dlRaw, &dl); err != nil {
+		t.Fatalf("download ack: %v raw=%s", err, dlRaw)
+	}
+	if !dl.Success || dl.GID != "snap-gid" {
+		t.Fatalf("socket should still accept download, got %+v", dl)
+	}
+}
+
+func TestAuthAck_TwoConnectionsDifferentSalts(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("match-secret")
+	digests := &fakeDigests{ready: true, ok: true}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{
+		Resolver: &fakeResolver{ready: true},
+		Digests:  digests,
+	})
+	defer srv.Stop()
+	startSrv(t, srv)
+
+	auth := func() string {
+		conn := dialWS(t, srv.GetStatus().WSPort, "chrome-extension://abc")
+		defer conn.Close()
+		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, AuthMessage{Type: MsgTypeAuth, Secret: "match-secret"}))
+		raw := readRaw(t, conn, 2*time.Second)
+		var ack AuthAck
+		if err := json.Unmarshal(raw, &ack); err != nil {
+			t.Fatal(err)
+		}
+		if ack.Match == nil || ack.Match.Salt == "" {
+			t.Fatalf("match/salt missing: %s", raw)
+		}
+		return ack.Match.Salt
+	}
+	salt1 := auth()
+	salt2 := auth()
+	if salt1 == salt2 {
+		t.Fatalf("connections shared salt %q", salt1)
+	}
+}
+
+func TestExtractorResolve_LateSetLinkageDoesNotPushMatch(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	srv := newTestServer(t, nil, store)
+	defer srv.Stop()
+	startSrv(t, srv)
+	conn := dialAuthed(t, srv, "prod-secret")
+	defer conn.Close()
+
+	srv.SetLinkage(Linkage{
+		Resolver: &fakeResolver{ready: true},
+		Digests:  &fakeDigests{ready: true, ok: true},
+	})
+
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.WriteJSON(DownloadRequest{Type: MsgTypeDownload, URL: "https://example.com/f.bin"}); err != nil {
+		t.Fatalf("write download: %v", err)
+	}
+	dlRaw := readRaw(t, conn, 2*time.Second)
+	var dl DownloadResponse
+	if err := json.Unmarshal(dlRaw, &dl); err != nil {
+		t.Fatalf("download ack: %v raw=%s", err, dlRaw)
+	}
+	if dl.Type != MsgTypeDownloadAck {
+		t.Fatalf("next frame type=%s, want download_ack (no capability_update/match push)", dl.Type)
 	}
 }
 
@@ -1185,4 +1524,413 @@ func TestExtractorResolve_HandlerPanicAbandonsBusy(t *testing.T) {
 	if resp.Type != MsgTypeDownloadAck || !resp.Success {
 		t.Fatalf("server must survive handler panic, got %s", raw)
 	}
+}
+
+func TestExtractorResolve_SuccessAckHasNoURLs(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	mime := "application/octet-stream"
+	resolver := &fakeResolver{ready: true, result: &ResolveResult{
+		Matched:    true,
+		SessionID:  "s1",
+		TotalCount: 1,
+		TotalBytes: 12,
+		Items: []ResolveDisplayItem{{
+			ItemID:    "i1",
+			Filename:  "a.bin",
+			SizeBytes: 12,
+			MimeType:  mime,
+		}},
+	}}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{Resolver: resolver})
+	defer srv.Stop()
+	startSrv(t, srv)
+	conn := dialAuthed(t, srv, "prod-secret")
+	defer conn.Close()
+
+	writeResolve(t, conn, "r-ok", `"source_url":"https://share.alpha.test/s"`)
+	raw := readRaw(t, conn, 2*time.Second)
+	var ack ExtractorResolveAck
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		t.Fatalf("unmarshal: %v raw=%s", err, raw)
+	}
+	if ack.ErrorCode != "" || ack.Matched == nil || !*ack.Matched || ack.SessionID != "s1" {
+		t.Fatalf("ack = %+v", ack)
+	}
+	if len(ack.Items) != 1 || ack.Items[0].Filename != "a.bin" || ack.Items[0].MimeType != mime {
+		t.Fatalf("items = %+v", ack.Items)
+	}
+	lower := bytes.ToLower(raw)
+	for _, forbidden := range [][]byte{[]byte("http://"), []byte("https://"), []byte("auth_profile"), []byte("header_profile")} {
+		if bytes.Contains(lower, forbidden) {
+			t.Fatalf("ack leaked %s: %s", forbidden, raw)
+		}
+	}
+}
+
+func TestExtractorResolve_MatchedFalseHasEmptyItems(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	resolver := &fakeResolver{ready: true, result: &ResolveResult{Matched: false}}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{Resolver: resolver})
+	defer srv.Stop()
+	startSrv(t, srv)
+	conn := dialAuthed(t, srv, "prod-secret")
+	defer conn.Close()
+
+	writeResolve(t, conn, "r-miss", `"source_url":"https://share.alpha.test/nope"`)
+	raw := readRaw(t, conn, 2*time.Second)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal map: %v raw=%s", err, raw)
+	}
+	if _, ok := fields["error_code"]; ok {
+		t.Fatalf("matched:false must omit error_code: %s", raw)
+	}
+	if _, ok := fields["session_id"]; ok {
+		t.Fatalf("matched:false must omit session_id: %s", raw)
+	}
+	var ack ExtractorResolveAck
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		t.Fatalf("unmarshal ack: %v", err)
+	}
+	if ack.Matched == nil || *ack.Matched {
+		t.Fatalf("matched = %v", ack.Matched)
+	}
+	if ack.Items == nil || len(ack.Items) != 0 {
+		t.Fatalf("items = %#v, want []", ack.Items)
+	}
+}
+
+func TestNotifyUnpairedAndStop_InvalidateResolver(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	resolver := &fakeResolver{ready: true}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{Resolver: resolver})
+	startSrv(t, srv)
+	conn := dialAuthed(t, srv, "prod-secret")
+	_ = conn.Close()
+
+	srv.NotifyUnpaired()
+	if resolver.invalidateCalls.Load() != 1 {
+		t.Fatalf("NotifyUnpaired Invalidate calls=%d, want 1", resolver.invalidateCalls.Load())
+	}
+	srv.Stop()
+	if resolver.invalidateCalls.Load() != 2 {
+		t.Fatalf("Stop Invalidate calls=%d, want 2", resolver.invalidateCalls.Load())
+	}
+}
+
+func TestNotifyUnpaired_RotationFailureStillInvalidates(t *testing.T) {
+	origReader := randReader
+	randReader = &failingReader{}
+	t.Cleanup(func() { randReader = origReader })
+
+	store := NewSecretStore()
+	store.SetSecret("old-secret")
+	genBefore := store.Generation()
+	resolver := &fakeResolver{ready: true}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{Resolver: resolver})
+	defer srv.Stop()
+	startSrv(t, srv)
+	conn := dialAuthed(t, srv, "old-secret")
+	writeResolve(t, conn, "r-rotfail", `"source_url":"https://share.alpha.test/s"`)
+	_ = parseTypedAck(t, readRaw(t, conn, 2*time.Second))
+
+	srv.NotifyUnpaired()
+	if store.GetSecret() != "old-secret" {
+		t.Fatalf("secret changed to %q", store.GetSecret())
+	}
+	if store.Generation() != genBefore {
+		t.Fatalf("generation = %d, want %d", store.Generation(), genBefore)
+	}
+	if resolver.invalidateCalls.Load() < 1 {
+		t.Fatal("Invalidate must run when rotation fails")
+	}
+	_ = conn.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if srv.GetStatus().ConnectedClients == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	conn2 := dialAuthed(t, srv, "old-secret")
+	defer conn2.Close()
+	writeResolve(t, conn2, "r-rotfail", `"source_url":"https://share.alpha.test/s"`)
+	ack := parseTypedAck(t, readRaw(t, conn2, 2*time.Second))
+	if ack.ErrorCode != ErrCodeUnsupported {
+		t.Fatalf("idemp should be cleared, got %+v", ack)
+	}
+	if resolver.calls.Load() != 2 {
+		t.Fatalf("idemp should miss after unpair, calls=%d", resolver.calls.Load())
+	}
+}
+
+func TestExtractorResolve_RewriteCachedSuccessToSessionExpired(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	resolver := &fakeResolver{ready: true, result: &ResolveResult{
+		Matched:   true,
+		SessionID: "leased-session",
+		Items:     []ResolveDisplayItem{{ItemID: "i1", Filename: "a.bin"}},
+	}}
+	resolver.rewrite = func(cached []byte) []byte {
+		var prev ExtractorResolveAck
+		if err := json.Unmarshal(cached, &prev); err != nil {
+			t.Fatalf("rewrite cached: %v", err)
+		}
+		out, err := json.Marshal(ExtractorResolveAck{
+			Type:      prev.Type,
+			RequestID: prev.RequestID,
+			ErrorCode: ErrCodeSessionExpired,
+			Items:     []ExtractorResolveAckItem{},
+		})
+		if err != nil {
+			t.Fatalf("marshal rewrite: %v", err)
+		}
+		return out
+	}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{Resolver: resolver})
+	defer srv.Stop()
+	startSrv(t, srv)
+	conn := dialAuthed(t, srv, "prod-secret")
+	defer conn.Close()
+
+	writeResolve(t, conn, "r-rewrite", `"source_url":"https://share.alpha.test/s"`)
+	first := parseTypedAck(t, readRaw(t, conn, 2*time.Second))
+	if first.ErrorCode != "" {
+		t.Fatalf("first ack = %+v", first)
+	}
+	if resolver.calls.Load() != 1 {
+		t.Fatalf("first calls=%d", resolver.calls.Load())
+	}
+
+	writeResolve(t, conn, "r-rewrite", `"source_url":"https://share.alpha.test/s"`)
+	raw := readRaw(t, conn, 2*time.Second)
+	ack := parseTypedAck(t, raw)
+	if ack.ErrorCode != ErrCodeSessionExpired || ack.RequestID != "r-rewrite" {
+		t.Fatalf("rewritten ack = %+v raw=%s", ack, raw)
+	}
+	if resolver.calls.Load() != 1 {
+		t.Fatalf("rewrite must not re-run HandleResolve, calls=%d", resolver.calls.Load())
+	}
+}
+
+func TestBatchDownload_SuccessAckHasItemIDsAndNoURLs(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	itemID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{
+		Resolver: &fakeResolver{ready: true},
+		Committer: &fakeCommitter{ready: true, result: &CommitResult{
+			Success:          true,
+			GroupKey:         "dg-1",
+			SucceededItemIDs: []string{itemID},
+		}},
+	})
+	defer srv.Stop()
+	startSrv(t, srv)
+	conn := dialAuthed(t, srv, "prod-secret")
+	defer conn.Close()
+
+	writeBatch(t, conn, "b-ok", `"session_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","item_ids":["`+itemID+`"]`)
+	raw := readRaw(t, conn, 2*time.Second)
+	var ack BatchDownloadAck
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		t.Fatalf("unmarshal: %v raw=%s", err, raw)
+	}
+	if ack.Type != MsgTypeBatchDownloadAck || !ack.Success || ack.GroupKey != "dg-1" {
+		t.Fatalf("ack = %+v raw=%s", ack, raw)
+	}
+	if len(ack.SucceededItemIDs) != 1 || ack.SucceededItemIDs[0] != itemID {
+		t.Fatalf("succeeded = %#v", ack.SucceededItemIDs)
+	}
+	if ack.DuplicateItemIDs == nil {
+		t.Fatal("duplicate_item_ids must be [] not null")
+	}
+	lower := bytes.ToLower(raw)
+	for _, forbidden := range [][]byte{
+		[]byte("http://"),
+		[]byte("https://"),
+		[]byte("auth_profile"),
+		[]byte("header_profile"),
+		[]byte("download.fixture.invalid"),
+	} {
+		if bytes.Contains(lower, forbidden) {
+			t.Fatalf("ack leaked %s: %s", forbidden, raw)
+		}
+	}
+	if !bytes.Contains(raw, []byte(`"success":true`)) || !bytes.Contains(raw, []byte(itemID)) {
+		t.Fatalf("ack missing success/item_id: %s", raw)
+	}
+}
+
+func TestBatchDownload_AckStripsEngineURLFromItemErrors(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	itemID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{
+		Resolver: &fakeResolver{ready: true},
+		Committer: &fakeCommitter{ready: true, result: &CommitResult{
+			Success:          false,
+			SucceededItemIDs: []string{},
+			DuplicateItemIDs: []string{},
+			ErrorsByItemID: map[string]string{
+				itemID: "engine failed https://download.fixture.invalid/?token=leak apr-x r-9",
+			},
+		}},
+	})
+	defer srv.Stop()
+	startSrv(t, srv)
+	conn := dialAuthed(t, srv, "prod-secret")
+	defer conn.Close()
+
+	writeBatch(t, conn, "b-leak", `"session_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","item_ids":["`+itemID+`"]`)
+	raw := readRaw(t, conn, 2*time.Second)
+	var ack BatchDownloadAck
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		t.Fatalf("unmarshal: %v raw=%s", err, raw)
+	}
+	if ack.ErrorCode != "" || ack.Success {
+		t.Fatalf("ack = %+v raw=%s", ack, raw)
+	}
+	if ack.ErrorsByItemID[itemID] != CommitItemErrorAddFailed {
+		t.Fatalf("errors_by_item_id = %#v, want opaque add failed", ack.ErrorsByItemID)
+	}
+	lower := bytes.ToLower(raw)
+	for _, forbidden := range [][]byte{
+		[]byte("https://download.fixture.invalid"),
+		[]byte("http://"),
+		[]byte("https://"),
+		[]byte("apr-"),
+		[]byte("r-9"),
+		[]byte("token=leak"),
+	} {
+		if bytes.Contains(lower, forbidden) {
+			t.Fatalf("ack leaked %s: %s", forbidden, raw)
+		}
+	}
+}
+
+func TestBatchDownload_WholeRequestOmitsErrorsByItemID(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{
+		Resolver:  &fakeResolver{ready: true},
+		Committer: &fakeCommitter{ready: true, result: &CommitResult{ErrorCode: ErrCodeSessionExpired}},
+	})
+	defer srv.Stop()
+	startSrv(t, srv)
+	conn := dialAuthed(t, srv, "prod-secret")
+	defer conn.Close()
+
+	writeBatch(t, conn, "b-expired", `"session_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","item_ids":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]`)
+	raw := readRaw(t, conn, 2*time.Second)
+	ack := parseTypedAck(t, raw)
+	if ack.ErrorCode != ErrCodeSessionExpired || ack.RequestID != "b-expired" {
+		t.Fatalf("ack = %+v raw=%s", ack, raw)
+	}
+	var rawMap map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawMap); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := rawMap["errors_by_item_id"]; ok {
+		t.Fatalf("whole-request error must omit errors_by_item_id: %s", raw)
+	}
+	if _, ok := rawMap["succeeded_item_ids"]; ok {
+		t.Fatalf("whole-request error must omit succeeded_item_ids: %s", raw)
+	}
+}
+
+func TestBatchDownload_SkipIdempotencyRetriesImmediately(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	itemID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	committer := &fakeCommitter{ready: true, result: &CommitResult{
+		ErrorCode:       ErrCodeUnavailable,
+		SkipIdempotency: true,
+	}}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{
+		Resolver:  &fakeResolver{ready: true},
+		Committer: committer,
+	})
+	defer srv.Stop()
+	startSrv(t, srv)
+	conn := dialAuthed(t, srv, "prod-secret")
+	defer conn.Close()
+
+	extra := `"session_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","item_ids":["` + itemID + `"]`
+	writeBatch(t, conn, "b-skip", extra)
+	first := parseTypedAck(t, readRaw(t, conn, 2*time.Second))
+	if first.ErrorCode != ErrCodeUnavailable || first.RequestID != "b-skip" {
+		t.Fatalf("first ack = %+v", first)
+	}
+	writeBatch(t, conn, "b-skip", extra)
+	second := parseTypedAck(t, readRaw(t, conn, 2*time.Second))
+	if second.ErrorCode != ErrCodeUnavailable || second.RequestID != "b-skip" {
+		t.Fatalf("retry ack = %+v", second)
+	}
+	if committer.calls.Load() != 2 {
+		t.Fatalf("SkipIdempotency must re-run HandleCommit, calls=%d", committer.calls.Load())
+	}
+}
+
+func TestBatchDownload_PreConsumeDenylistStaysSticky(t *testing.T) {
+	store := NewSecretStore()
+	store.SetSecret("prod-secret")
+	committer := &denylistCommitter{}
+	srv := newTestServer(t, nil, store)
+	srv.SetLinkage(Linkage{
+		Resolver:  &fakeResolver{ready: true},
+		Committer: committer,
+	})
+	defer srv.Stop()
+	startSrv(t, srv)
+	conn := dialAuthed(t, srv, "prod-secret")
+	defer conn.Close()
+
+	extra := `"session_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","item_ids":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"url":"https://files.alpha.test/x.bin"`
+	writeBatch(t, conn, "b-deny", extra)
+	first := parseTypedAck(t, readRaw(t, conn, 2*time.Second))
+	if first.ErrorCode != ErrCodeInvalidRequest || first.RequestID != "b-deny" {
+		t.Fatalf("first ack = %+v", first)
+	}
+	writeBatch(t, conn, "b-deny", extra)
+	second := parseTypedAck(t, readRaw(t, conn, 2*time.Second))
+	if second.ErrorCode != ErrCodeInvalidRequest || second.RequestID != "b-deny" {
+		t.Fatalf("sticky ack = %+v", second)
+	}
+	if committer.calls.Load() != 1 {
+		t.Fatalf("pre-consume denylist must stay 60s-sticky, calls=%d", committer.calls.Load())
+	}
+}
+
+type denylistCommitter struct {
+	calls atomic.Int32
+}
+
+func (c *denylistCommitter) Ready() bool { return true }
+
+func (c *denylistCommitter) HandleCommit(_ context.Context, _ RequestEnvelope, raw json.RawMessage) CommitResult {
+	c.calls.Add(1)
+	var extra map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &extra); err != nil {
+		return CommitResult{ErrorCode: ErrCodeInvalidRequest}
+	}
+	if _, ok := extra["url"]; ok {
+		return CommitResult{ErrorCode: ErrCodeInvalidRequest}
+	}
+	return CommitResult{Success: true, SucceededItemIDs: []string{}}
 }

@@ -1,6 +1,7 @@
 package extractor
 
 import (
+	"context"
 	"crypto/ed25519"
 	"testing"
 )
@@ -88,6 +89,71 @@ func TestRegistryFindByURLUsesDomainAllowlist(t *testing.T) {
 	}
 }
 
+func TestRegistryFindByURLDoesNotTreatAliasRefsAsDomains(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(1)
+	pack := signedTestPack(t, privateKey, []byte("opaque payload"), func(values map[string]any) {
+		values["pack_id"] = "xpk-alpha001"
+		values["pack_version"] = "opaque-1"
+		values["capabilities"] = []string{
+			string(CapabilityParseWASM),
+			string(CapabilityHTTPFetch),
+			string(CapabilityAuthProfile),
+		}
+		values["domains"] = []map[string]any{}
+		values["domain_policy_refs"] = []string{"dpr-alpha001"}
+		values["broker_policy_refs"] = []string{"bpr-alpha001"}
+	})
+	registry, rejections := NewRegistry([]EmbeddedPack{pack}, policyWithKeys(publicKey))
+	if len(rejections) != 0 {
+		t.Fatalf("NewRegistry() rejections = %#v, want none", rejections)
+	}
+	if packs := registry.Packs(); len(packs) != 1 {
+		t.Fatalf("registry.Packs() = %d packs, want 1", len(packs))
+	}
+
+	for _, rawURL := range []string{
+		"https://dpr-alpha001.invalid/path",
+		"https://bpr-alpha001.invalid/path",
+		"https://opaque.invalid/path",
+	} {
+		t.Run(rawURL, func(t *testing.T) {
+			if matches := registry.FindByURL(rawURL); len(matches) != 0 {
+				t.Fatalf("registry.FindByURL(%q) = %d matches, want 0", rawURL, len(matches))
+			}
+		})
+	}
+}
+
+func TestRegistryFindByURLWithContextMatchesAliasIngressPolicy(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	resolver := &fakeHostPolicyResolver{policy: syntheticHostPolicy(pack.Identity)}
+	registry := &Registry{packs: []VerifiedPack{pack}, hostPolicyResolver: resolver}
+
+	if matches := registry.FindByURLWithContext(context.Background(), "https://share.alpha.test/item"); len(matches) != 1 {
+		t.Fatalf("FindByURLWithContext() matches = %d, want 1", len(matches))
+	}
+	if matches := registry.FindByURLWithContext(context.Background(), "https://api.alpha.test/item"); len(matches) != 0 {
+		t.Fatalf("FindByURLWithContext() broker-only matches = %d, want 0", len(matches))
+	}
+	if resolver.calls == 0 {
+		t.Fatal("resolver was not called for alias manifest")
+	}
+}
+
+func TestRegistryFindByURLWithContextAliasPolicyFailuresNoMatch(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+
+	if matches := (&Registry{packs: []VerifiedPack{pack}}).FindByURLWithContext(context.Background(), "https://share.alpha.test/item"); len(matches) != 0 {
+		t.Fatalf("FindByURLWithContext() without resolver = %d matches, want 0", len(matches))
+	}
+	policy := syntheticHostPolicy(pack.Identity)
+	policy.PackIdentity.PublicKeySHA256 = hashString('9')
+	registry := &Registry{packs: []VerifiedPack{pack}, hostPolicyResolver: &fakeHostPolicyResolver{policy: policy}}
+	if matches := registry.FindByURLWithContext(context.Background(), "https://share.alpha.test/item"); len(matches) != 0 {
+		t.Fatalf("FindByURLWithContext() mismatch = %d matches, want 0", len(matches))
+	}
+}
+
 func TestRegistryExactDomainDoesNotMatchSubdomainWhenDisabled(t *testing.T) {
 	publicKey, privateKey := deterministicKeyPair(1)
 	pack := signedTestPack(t, privateKey, []byte("payload"), func(values map[string]any) {
@@ -105,73 +171,6 @@ func TestRegistryExactDomainDoesNotMatchSubdomainWhenDisabled(t *testing.T) {
 	}
 	if matches := registry.FindByURL("https://api.fixture.invalid/d/abc"); len(matches) != 0 {
 		t.Fatalf("subdomain matches = %d, want 0", len(matches))
-	}
-}
-
-func TestRegistryLoadsAliasPacksButNoResolverYieldsNoMatch(t *testing.T) {
-	publicKey, privateKey := deterministicKeyPair(21)
-	pack := signedAliasTestPack(t, privateKey, []byte("alias payload"), nil)
-	registry, rejections := NewRegistry([]EmbeddedPack{pack}, policyWithKeys(publicKey))
-	if len(rejections) != 0 {
-		t.Fatalf("NewRegistry() rejections = %#v, want none", rejections)
-	}
-	if packs := registry.Packs(); len(packs) != 1 || !isAliasManifest(packs[0].Manifest) {
-		t.Fatalf("registry packs = %#v, want one alias pack", packs)
-	}
-	if matches := registry.FindByURL("https://share.alpha.test/path"); len(matches) != 0 {
-		t.Fatalf("registry.FindByURL() = %d matches, want no resolver no-match", len(matches))
-	}
-}
-
-func TestRegistryFindByURLUsesResolverBackedAliasIngress(t *testing.T) {
-	publicKey, privateKey := deterministicKeyPair(22)
-	pack := signedAliasTestPack(t, privateKey, []byte("alias payload"), nil)
-	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
-	if err != nil {
-		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
-	}
-	resolver := &fakeHostPolicyResolver{policy: validResolvedHostPolicy(verified.Identity, verified.Manifest)}
-	registry, rejections := NewRegistryWithHostPolicyResolver([]EmbeddedPack{pack}, policyWithKeys(publicKey), resolver)
-	if len(rejections) != 0 {
-		t.Fatalf("NewRegistryWithHostPolicyResolver() rejections = %#v, want none", rejections)
-	}
-
-	matches := registry.FindByURL("https://share.alpha.test/path")
-	if len(matches) != 1 {
-		t.Fatalf("registry.FindByURL() = %d matches, want resolver-backed alias match", len(matches))
-	}
-	if matches[0].Identity != verified.Identity || matches[0].Manifest.DomainPolicyRefs[0] != "dpr-alpha001" {
-		t.Fatalf("matched pack identity/refs = %#v %#v", matches[0].Identity, matches[0].Manifest.DomainPolicyRefs)
-	}
-	if noMatches := registry.FindByURL("https://outside.alpha.test/path"); len(noMatches) != 0 {
-		t.Fatalf("registry.FindByURL(outside) = %d matches, want 0", len(noMatches))
-	}
-
-	matches[0].Manifest.DomainPolicyRefs[0] = "dpr-mutated"
-	matches[0].Manifest.BrokerPolicyRefs[0] = "bpr-mutated"
-	matches[0].Payload[0] = 'X'
-	fresh := registry.FindByURL("https://share.alpha.test/path")
-	if fresh[0].Manifest.DomainPolicyRefs[0] != "dpr-alpha001" || fresh[0].Manifest.BrokerPolicyRefs[0] != "bpr-alpha001" || string(fresh[0].Payload) != "alias payload" {
-		t.Fatalf("registry alias match was not defensively copied: %#v", fresh[0])
-	}
-}
-
-func TestRegistryAliasResolverMismatchYieldsNoMatch(t *testing.T) {
-	publicKey, privateKey := deterministicKeyPair(23)
-	pack := signedAliasTestPack(t, privateKey, []byte("alias payload"), nil)
-	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
-	if err != nil {
-		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
-	}
-	mismatchedPolicy := validResolvedHostPolicy(verified.Identity, verified.Manifest)
-	mismatchedPolicy.DomainPolicyRefs = []string{"dpr-alpha002"}
-	registry, rejections := NewRegistryWithHostPolicyResolver([]EmbeddedPack{pack}, policyWithKeys(publicKey), &fakeHostPolicyResolver{policy: mismatchedPolicy})
-	if len(rejections) != 0 {
-		t.Fatalf("NewRegistryWithHostPolicyResolver() rejections = %#v, want none", rejections)
-	}
-
-	if matches := registry.FindByURL("https://share.alpha.test/path"); len(matches) != 0 {
-		t.Fatalf("registry.FindByURL() = %d matches, want resolver mismatch no-match", len(matches))
 	}
 }
 
@@ -218,22 +217,45 @@ func TestRegistryReturnsDefensiveCopies(t *testing.T) {
 	}
 }
 
+func TestRegistryReturnsDefensiveCopiesForAliasRefs(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(1)
+	pack := signedTestPack(t, privateKey, []byte("opaque payload"), func(values map[string]any) {
+		values["pack_id"] = "xpk-alpha001"
+		values["pack_version"] = "opaque-1"
+		values["capabilities"] = []string{
+			string(CapabilityParseWASM),
+			string(CapabilityHTTPFetch),
+			string(CapabilityAuthProfile),
+		}
+		values["domains"] = []map[string]any{}
+		values["domain_policy_refs"] = []string{"dpr-alpha001"}
+		values["broker_policy_refs"] = []string{"bpr-alpha001"}
+	})
+	registry, rejections := NewRegistry([]EmbeddedPack{pack}, policyWithKeys(publicKey))
+	if len(rejections) != 0 {
+		t.Fatalf("NewRegistry() rejections = %#v, want none", rejections)
+	}
+
+	packs := registry.Packs()
+	if len(packs) != 1 {
+		t.Fatalf("registry.Packs() = %d packs, want 1", len(packs))
+	}
+	packs[0].Manifest.DomainPolicyRefs[0] = "dpr-bravo001"
+	packs[0].Manifest.BrokerPolicyRefs[0] = "bpr-bravo001"
+
+	freshPacks := registry.Packs()
+	if freshPacks[0].Manifest.DomainPolicyRefs[0] != "dpr-alpha001" {
+		t.Fatalf("registry domain refs mutated to %#v", freshPacks[0].Manifest.DomainPolicyRefs)
+	}
+	if freshPacks[0].Manifest.BrokerPolicyRefs[0] != "bpr-alpha001" {
+		t.Fatalf("registry broker refs mutated to %#v", freshPacks[0].Manifest.BrokerPolicyRefs)
+	}
+}
+
 func signedTestPack(t *testing.T, privateKey ed25519.PrivateKey, payload []byte, mutate func(map[string]any)) EmbeddedPack {
 	t.Helper()
 
 	manifestJSON := mustManifestJSON(t, payload, mutate)
-
-	return EmbeddedPack{
-		ManifestJSON: manifestJSON,
-		Payload:      payload,
-		Signature:    ed25519.Sign(privateKey, manifestJSON),
-	}
-}
-
-func signedAliasTestPack(t *testing.T, privateKey ed25519.PrivateKey, payload []byte, mutate func(map[string]any)) EmbeddedPack {
-	t.Helper()
-
-	manifestJSON := mustAliasManifestJSON(t, payload, mutate)
 
 	return EmbeddedPack{
 		ManifestJSON: manifestJSON,

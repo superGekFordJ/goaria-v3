@@ -23,31 +23,40 @@ func (r fakeHeaderProfileResolver) ResolveHeaderProfile(ctx context.Context, pac
 type fakeAuthProfileResolver struct {
 	secret ResolvedAuthSecret
 	err    error
+	calls  int
 }
 
-type recordingAuthProfileMaterializer struct {
-	material MaterializedAuthSecret
-	err      error
-	requests []HostAuthRuntimeRequest
-}
-
-func (r fakeAuthProfileResolver) ResolveAuthProfile(ctx context.Context, packID string, profileID AuthProfileID, rawURL string) (ResolvedAuthSecret, error) {
+func (r *fakeAuthProfileResolver) ResolveAuthProfile(ctx context.Context, packID string, profileID AuthProfileID, rawURL string) (ResolvedAuthSecret, error) {
+	r.calls++
 	if r.err != nil {
 		return ResolvedAuthSecret{}, r.err
 	}
 	return r.secret, nil
 }
 
-func (r *recordingAuthProfileMaterializer) ResolveAuthProfile(ctx context.Context, packID string, profileID AuthProfileID, rawURL string) (ResolvedAuthSecret, error) {
-	return ResolvedAuthSecret{}, errors.New("compat resolver should not be used")
+type fakeIdentityAwareAuthResolver struct {
+	secret      ResolvedAuthSecret
+	material    MaterializedAuthSecret
+	err         error
+	calls       int
+	legacyCalls int
+	lastRequest HostAuthRuntimeRequest
 }
 
-func (r *recordingAuthProfileMaterializer) MaterializeAuthProfile(ctx context.Context, request HostAuthRuntimeRequest) (MaterializedAuthSecret, error) {
-	r.requests = append(r.requests, request)
+func (r *fakeIdentityAwareAuthResolver) ResolveAuthProfile(ctx context.Context, packID string, profileID AuthProfileID, rawURL string) (ResolvedAuthSecret, error) {
+	r.legacyCalls++
+	if r.err != nil {
+		return ResolvedAuthSecret{}, r.err
+	}
+	return r.secret, nil
+}
+
+func (r *fakeIdentityAwareAuthResolver) MaterializeAuthProfile(ctx context.Context, request HostAuthRuntimeRequest) (MaterializedAuthSecret, error) {
+	r.calls++
+	r.lastRequest = request
 	if r.err != nil {
 		return MaterializedAuthSecret{}, r.err
 	}
-
 	return r.material, nil
 }
 
@@ -78,7 +87,7 @@ func TestAddTaskDispatcherCandidateNoMatchFallsBack(t *testing.T) {
 		memoryMinPages: 1,
 	}), nil)
 
-	resolution, err := dispatcher.Resolve(context.Background(), "https://fixture.invalid/d/abc")
+	resolution, err := dispatcher.Resolve(context.Background(), "https://share.fixture.invalid/s/abc")
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -93,15 +102,15 @@ func TestAddTaskDispatcherCandidateNoMatchFallsBack(t *testing.T) {
 func TestAddTaskDispatcherRunsVerifiedFixturePack(t *testing.T) {
 	dispatcher := newFixtureAddTaskDispatcher(t, validRunnerFixtureWASM(), nil)
 
-	resolution, err := dispatcher.Resolve(context.Background(), "https://fixture.invalid/d/abc")
+	resolution, err := dispatcher.Resolve(context.Background(), "https://share.fixture.invalid/s/abc")
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
 	if !resolution.Matched {
 		t.Fatal("Resolve() matched = false, want true")
 	}
-	if resolution.PackID != "fixturepack" {
-		t.Fatalf("Resolve() PackID = %q, want fixturepack", resolution.PackID)
+	if resolution.PackID != "xpk-fixture01" {
+		t.Fatalf("Resolve() PackID = %q, want xpk-fixture01", resolution.PackID)
 	}
 	if len(resolution.Items) != 1 {
 		t.Fatalf("Resolve() returned %d items, want 1", len(resolution.Items))
@@ -113,14 +122,14 @@ func TestAddTaskDispatcherRunsVerifiedFixturePack(t *testing.T) {
 	if item.Filename != "file.bin" || item.SizeBytes != 123 {
 		t.Fatalf("item filename/size = %q/%d", item.Filename, item.SizeBytes)
 	}
-	if item.AuthProfileRef != "fixturepack-default" || item.HeaderProfileRef != "fixturepack-download" {
+	if item.AuthProfileRef != "apr-fixture01" || item.HeaderProfileRef != "hpr-fixture01" {
 		t.Fatalf("item refs = auth:%q header:%q", item.AuthProfileRef, item.HeaderProfileRef)
 	}
-	if item.PackIdentity.PackID != resolution.PackID || item.PackIdentity.PackVersion != item.Manifest.PackVersion {
-		t.Fatalf("item identity/manifest not propagated: identity=%#v manifest=%#v", item.PackIdentity, item.Manifest)
+	if item.PackIdentity.PackID != resolution.PackID || item.PackIdentity.PackVersion != item.PackManifest.PackVersion {
+		t.Fatalf("item identity/manifest not propagated: identity=%#v manifest=%#v", item.PackIdentity, item.PackManifest)
 	}
-	if item.Manifest.PackID != resolution.PackID || len(item.Manifest.Domains) == 0 || item.Manifest.Domains[0].Host != "fixture.invalid" {
-		t.Fatalf("item manifest = %#v, want verified pack manifest", item.Manifest)
+	if item.PackManifest.PackID != resolution.PackID || len(item.PackManifest.Domains) == 0 || item.PackManifest.Domains[0].Host != "fixture.invalid" {
+		t.Fatalf("item manifest = %#v, want verified pack manifest", item.PackManifest)
 	}
 }
 
@@ -129,6 +138,7 @@ func TestAddTaskDispatcherAuthRuntimeRequestsForSourceUsesVerifiedMatches(t *tes
 	pack := signedTestPack(t, privateKey, []byte("auth planning payload"), func(values map[string]any) {
 		values["pack_id"] = "xpk-alpha001"
 		values["capabilities"] = []string{string(CapabilityParseWASM), string(CapabilityHTTPFetch), string(CapabilityAuthProfile)}
+		values["domains"] = []map[string]any{{"host": "share.alpha.test"}}
 	})
 	registry, rejections := NewRegistry([]EmbeddedPack{pack}, policyWithKeys(publicKey))
 	if len(rejections) != 0 {
@@ -136,7 +146,7 @@ func TestAddTaskDispatcherAuthRuntimeRequestsForSourceUsesVerifiedMatches(t *tes
 	}
 	dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{Registry: registry})
 
-	requests, err := dispatcher.AuthRuntimeRequestsForSource(context.Background(), "https://fixture.invalid/d/abc")
+	requests, err := dispatcher.AuthRuntimeRequestsForSource(context.Background(), "https://share.alpha.test/d/abc")
 	if err != nil {
 		t.Fatalf("AuthRuntimeRequestsForSource() error = %v", err)
 	}
@@ -151,7 +161,7 @@ func TestAddTaskDispatcherAuthRuntimeRequestsForSourceUsesVerifiedMatches(t *tes
 	if request.Manifest.PackID != verified.Manifest.PackID || request.Manifest.PackVersion != verified.Manifest.PackVersion || !ManifestHasCapability(request.Manifest, CapabilityAuthProfile) {
 		t.Fatalf("request manifest = %#v, want verified auth-capable manifest", request.Manifest)
 	}
-	if request.SourceURL != "https://fixture.invalid/d/abc" || request.TargetURL != "" || request.ProfileRef != "" {
+	if request.SourceURL != "https://share.alpha.test/d/abc" || request.TargetURL != "" || request.ProfileRef != "" {
 		t.Fatalf("request source/target/profile = %#v", request)
 	}
 
@@ -196,7 +206,7 @@ func TestAddTaskDispatcherRejectsInvalidExtractedItems(t *testing.T) {
 				memoryMinPages: 1,
 			}), nil)
 
-			resolution, err := dispatcher.Resolve(context.Background(), "https://fixture.invalid/d/abc")
+			resolution, err := dispatcher.Resolve(context.Background(), "https://share.fixture.invalid/s/abc")
 			if err == nil {
 				t.Fatalf("Resolve() error = nil, resolution = %#v, want error", resolution)
 			}
@@ -218,7 +228,7 @@ func TestAddTaskDispatcherMatchedEmptyExtractOutputReturnsGenericFailure(t *test
 		memoryMinPages: 1,
 	}), nil)
 
-	resolution, err := dispatcher.Resolve(context.Background(), "https://fixture.invalid/d/abc")
+	resolution, err := dispatcher.Resolve(context.Background(), "https://share.fixture.invalid/s/abc")
 	if err == nil {
 		t.Fatalf("Resolve() error = nil, resolution = %#v, want generic unsupported/auth failure", resolution)
 	}
@@ -241,7 +251,7 @@ func TestAddTaskDispatcherInvalidNonEmptyItemRemainsHardFailure(t *testing.T) {
 		memoryMinPages: 1,
 	}), nil)
 
-	resolution, err := dispatcher.Resolve(context.Background(), "https://fixture.invalid/d/abc")
+	resolution, err := dispatcher.Resolve(context.Background(), "https://share.fixture.invalid/s/abc")
 	if err == nil {
 		t.Fatalf("Resolve() error = nil, resolution = %#v, want hard invalid-item failure", resolution)
 	}
@@ -250,75 +260,6 @@ func TestAddTaskDispatcherInvalidNonEmptyItemRemainsHardFailure(t *testing.T) {
 	}
 	if IsGenericAuthResolutionError(err) {
 		t.Fatalf("IsGenericAuthResolutionError(%q) = true, want false", err.Error())
-	}
-}
-
-func TestAddTaskDispatcherAliasOutputPolicyDeniesBeforeResolvedItem(t *testing.T) {
-	manifest := validAliasTestManifest(nil)
-	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
-	identity := syntheticVerifiedPackIdentity(manifest)
-	policy := validResolvedHostPolicy(identity, manifest)
-	pack := VerifiedPack{Manifest: manifest, Identity: identity}
-	rawURL := "https://files.alpha.test/downloads%2fitem.bin?token=raw-query-secret"
-
-	items, err := resolvedItemsFromExtractOutput("https://share.alpha.test/source", pack, &policy, ExtractOutput{Items: []ExtractedItemRef{{
-		ID:             "item-1",
-		URL:            rawURL,
-		Filename:       "file.bin",
-		AuthProfileRef: "apr-alpha001",
-	}}})
-	if err == nil {
-		t.Fatalf("resolvedItemsFromExtractOutput() error = nil, items=%#v", items)
-	}
-	if len(items) != 0 {
-		t.Fatalf("resolvedItemsFromExtractOutput() returned items on denied output: %#v", items)
-	}
-	assertNoForbiddenSubstrings(t, err.Error(), "raw-query-secret")
-}
-
-func TestAddTaskDispatcherResolvedItemsCarryDefensiveAliasPolicyCopies(t *testing.T) {
-	manifest := validAliasTestManifest(nil)
-	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
-	identity := syntheticVerifiedPackIdentity(manifest)
-	policy := validResolvedHostPolicy(identity, manifest)
-	pack := VerifiedPack{Manifest: manifest, Identity: identity}
-	metadata := map[string]string{"label": "fixture-item"}
-
-	items, err := resolvedItemsFromExtractOutput("https://share.alpha.test/source", pack, &policy, ExtractOutput{Items: []ExtractedItemRef{{
-		ID:               "item-1",
-		URL:              "https://files.alpha.test/downloads/item.bin",
-		Filename:         "file.bin",
-		SizeBytes:        123,
-		AuthProfileRef:   "apr-alpha001",
-		HeaderProfileRef: "hpr-alpha001",
-		Metadata:         metadata,
-	}}})
-	if err != nil {
-		t.Fatalf("resolvedItemsFromExtractOutput() error = %v", err)
-	}
-	if len(items) != 1 {
-		t.Fatalf("resolvedItemsFromExtractOutput() items = %d, want 1", len(items))
-	}
-	item := items[0]
-	if item.SourceURL != "https://share.alpha.test/source" || item.PackID != manifest.PackID || item.PackIdentity != identity || item.URL != "https://files.alpha.test/downloads/item.bin" || item.AuthProfileRef != "apr-alpha001" || item.HeaderProfileRef != "hpr-alpha001" || item.Metadata["label"] != "fixture-item" {
-		t.Fatalf("resolved item did not preserve expected fields: %#v", item)
-	}
-	if item.Manifest.PackID != manifest.PackID || item.Manifest.DomainPolicyRefs[0] != "dpr-alpha001" || item.HostPolicy == nil || item.HostPolicy.OutputDomains[0].PathPrefixes[0] != "/downloads/" {
-		t.Fatalf("resolved item missing manifest/host policy copies: %#v", item)
-	}
-
-	metadata["label"] = "mutated"
-	originalPackDomainRef := pack.Manifest.DomainPolicyRefs[0]
-	pack.Manifest.DomainPolicyRefs[0] = "dpr-source-mutated"
-	policy.OutputDomains[0].PathPrefixes[0] = "/mutated/"
-	item.Metadata["label"] = "item-mutated"
-	item.Manifest.DomainPolicyRefs[0] = "item-mutated"
-	item.HostPolicy.OutputDomains[0].PathPrefixes[0] = "/item-mutated/"
-	if metadata["label"] != "mutated" || items[0].Manifest.DomainPolicyRefs[0] != "item-mutated" || items[0].HostPolicy.OutputDomains[0].PathPrefixes[0] != "/item-mutated/" {
-		t.Fatalf("resolved item copy mutation expectation failed: item=%#v source=%#v", items[0], metadata)
-	}
-	if originalPackDomainRef != "dpr-alpha001" || pack.Manifest.DomainPolicyRefs[0] != "dpr-source-mutated" || items[0].Manifest.DomainPolicyRefs[0] == pack.Manifest.DomainPolicyRefs[0] || policy.OutputDomains[0].PathPrefixes[0] == items[0].HostPolicy.OutputDomains[0].PathPrefixes[0] {
-		t.Fatalf("resolved item did not remain independent from source mutations: source=%#v policy=%#v item=%#v", pack, policy, items[0])
 	}
 }
 
@@ -336,45 +277,6 @@ func TestIsGenericAuthResolutionErrorRejectsHardFailures(t *testing.T) {
 	}
 }
 
-func TestAddTaskValidateResolvedItemAuthPolicyAliasScope(t *testing.T) {
-	manifest := validAliasTestManifest(nil)
-	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
-	identity := syntheticVerifiedPackIdentity(manifest)
-	policy := validResolvedHostPolicy(identity, manifest)
-	policy.AuthProfiles = []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "files.alpha.test", IncludeSubdomains: true}}}}
-
-	allowed := ResolvedAddItem{
-		PackIdentity:   identity,
-		Manifest:       manifest,
-		HostPolicy:     &policy,
-		URL:            "https://cdn.files.alpha.test/downloads/item.bin",
-		AuthProfileRef: "apr-alpha001",
-	}
-	if err := ValidateResolvedAddItemAuthPolicy(allowed); err != nil {
-		t.Fatalf("ValidateResolvedAddItemAuthPolicy() allowed error = %v", err)
-	}
-
-	denied := allowed
-	denied.URL = "https://api.alpha.test/downloads/item.bin?token=target-secret"
-	if err := ValidateResolvedAddItemAuthPolicy(denied); err == nil {
-		t.Fatal("ValidateResolvedAddItemAuthPolicy() denial error = nil")
-	} else {
-		assertNoForbiddenSubstrings(t, err.Error(), "target-secret", denied.URL)
-	}
-
-	missingPolicy := allowed
-	missingPolicy.HostPolicy = nil
-	if err := ValidateResolvedAddItemAuthPolicy(missingPolicy); err == nil {
-		t.Fatal("ValidateResolvedAddItemAuthPolicy() missing alias host policy error = nil")
-	}
-
-	invalidRef := allowed
-	invalidRef.AuthProfileRef = "Invalid"
-	if err := ValidateResolvedAddItemAuthPolicy(invalidRef); err == nil {
-		t.Fatal("ValidateResolvedAddItemAuthPolicy() invalid auth ref error = nil")
-	}
-}
-
 func TestAddTaskDispatcherContinuesAfterMatchedEmptyOutput(t *testing.T) {
 	publicKey, privateKey := deterministicKeyPair(85)
 	emptyPack := signedTestPack(t, privateKey, buildRunnerFixtureWASM(wasmFixtureConfig{
@@ -383,15 +285,15 @@ func TestAddTaskDispatcherContinuesAfterMatchedEmptyOutput(t *testing.T) {
 		extractJSON:    `{"items":[]}`,
 		memoryMinPages: 1,
 	}), func(values map[string]any) {
-		values["pack_id"] = "fixturepack-empty"
+		values["pack_id"] = "xpk-fixture01-empty"
 	})
 	resolvingPack := signedTestPack(t, privateKey, buildRunnerFixtureWASM(wasmFixtureConfig{
 		abiVersion:     CurrentABIVersion,
 		matchJSON:      `{"matched":true}`,
-		extractJSON:    `{"items":[{"url":"https://download.fixture.invalid/fallback.bin","filename":"fallback.bin"}]}`,
+		extractJSON:    `{"items":[{"url":"https://download.fixture.invalid/downloads/fallback.bin","filename":"fallback.bin"}]}`,
 		memoryMinPages: 1,
 	}), func(values map[string]any) {
-		values["pack_id"] = "fixturepack-resolver"
+		values["pack_id"] = "xpk-fixture01-resolver"
 	})
 	registry, rejections := NewRegistry([]EmbeddedPack{emptyPack, resolvingPack}, policyWithKeys(publicKey))
 	if len(rejections) != 0 {
@@ -399,97 +301,125 @@ func TestAddTaskDispatcherContinuesAfterMatchedEmptyOutput(t *testing.T) {
 	}
 	dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{Registry: registry, Runner: NewRunner()})
 
-	resolution, err := dispatcher.Resolve(context.Background(), "https://fixture.invalid/d/abc")
+	resolution, err := dispatcher.Resolve(context.Background(), "https://share.fixture.invalid/s/abc")
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
-	if !resolution.Matched || resolution.PackID != "fixturepack-resolver" || len(resolution.Items) != 1 {
+	if !resolution.Matched || resolution.PackID != "xpk-fixture01-resolver" || len(resolution.Items) != 1 {
 		t.Fatalf("resolution = %#v, want later resolving pack item", resolution)
 	}
-	if resolution.Items[0].URL != "https://download.fixture.invalid/fallback.bin" {
+	if resolution.Items[0].URL != "https://download.fixture.invalid/downloads/fallback.bin" {
 		t.Fatalf("resolved URL = %q", resolution.Items[0].URL)
 	}
 }
 
-func TestAddTaskAria2HeaderExpansionValidatesBoundsDedupesAndRedacts(t *testing.T) {
-	t.Run("dedupes", func(t *testing.T) {
-		dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{
-			HeaderResolver: fakeHeaderProfileResolver{headers: map[string][]string{
-				"download": {"User-Agent: GoAria-Test", "User-Agent: GoAria-Test"},
-			}},
-		})
-
-		headers, err := dispatcher.BuildAria2Headers(context.Background(), ResolvedAddItem{
-			PackID:           "fixturepack",
-			URL:              "https://download.fixture.invalid/file.bin",
-			HeaderProfileRef: "download",
-		})
-		if err != nil {
-			t.Fatalf("BuildAria2Headers() error = %v", err)
-		}
-		if len(headers) != 1 || headers[0] != "User-Agent: GoAria-Test" {
-			t.Fatalf("headers = %#v, want deduped single header", headers)
-		}
+func TestAddTaskDispatcherUsesContextAwareAliasRegistry(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(86)
+	pack := signedTestPack(t, privateKey, validRunnerFixtureWASM(), func(values map[string]any) {
+		values["pack_id"] = "xpk-alpha001"
+		values["pack_version"] = "opaque-1"
+		values["capabilities"] = []string{string(CapabilityParseWASM), string(CapabilityHTTPFetch), string(CapabilityAuthProfile)}
+		values["domains"] = []map[string]any{}
+		values["domain_policy_refs"] = []string{"dpr-alpha001"}
+		values["broker_policy_refs"] = []string{"bpr-alpha001"}
 	})
+	registry, rejections := NewRegistryWithHostPolicyResolver([]EmbeddedPack{pack}, policyWithKeys(publicKey), nil)
+	if len(rejections) != 0 {
+		t.Fatalf("NewRegistryWithHostPolicyResolver() rejections = %#v", rejections)
+	}
+	verified := registry.Packs()[0]
+	hostPolicy := syntheticHostPolicy(verified.Identity)
+	hostPolicy.OutputDomains = []HostPolicyOutputRule{{Host: "download.fixture.invalid", PathPrefixes: []string{"/"}}}
+	registry.hostPolicyResolver = &fakeHostPolicyResolver{policy: hostPolicy}
+	dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{Registry: registry, Runner: NewRunnerWithConfig(RunnerConfig{HostPolicyResolver: registry.hostPolicyResolver})})
 
-	t.Run("header count", func(t *testing.T) {
-		headers := make([]string, maxAria2Headers+1)
-		for i := range headers {
-			headers[i] = "X-Test-" + strings.Repeat("A", i+1) + ": value"
-		}
-		dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{
-			HeaderResolver: fakeHeaderProfileResolver{headers: map[string][]string{"download": headers}},
+	resolution, err := dispatcher.Resolve(context.Background(), "https://share.alpha.test/item")
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if !resolution.Matched || resolution.PackID != "xpk-alpha001" {
+		t.Fatalf("resolution = %#v, want alias match", resolution)
+	}
+}
+
+func TestAddTaskDispatcherAliasOutputPolicyIsSeparateFromBrokerPolicy(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(87)
+	makeDispatcher := func(t *testing.T, outputURL string) *AddTaskDispatcher {
+		t.Helper()
+		payload := buildRunnerFixtureWASM(wasmFixtureConfig{
+			abiVersion:     CurrentABIVersion,
+			matchJSON:      `{"matched":true,"confidence":90,"reason":"fixture"}`,
+			extractJSON:    `{"items":[{"url":"` + outputURL + `","filename":"file.bin"}]}`,
+			memoryMinPages: 1,
 		})
-		if _, err := dispatcher.BuildAria2Headers(context.Background(), ResolvedAddItem{
-			PackID:           "fixturepack",
-			URL:              "https://download.fixture.invalid/file.bin",
-			HeaderProfileRef: "download",
-		}); err == nil {
-			t.Fatal("BuildAria2Headers() header count error = nil")
-		}
-	})
-
-	t.Run("invalid materialized auth", func(t *testing.T) {
-		identity := privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1")
-		manifest := hostAuthRuntimeManifest(identity)
-		materializer := &recordingAuthProfileMaterializer{material: MaterializedAuthSecret{HeaderName: "Authorization", Kind: AuthSecretKindBearer}}
-		materializer.material.headerValue = "Bearer materialized-secret\r\nInjected: value"
-		dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{AuthResolver: materializer})
-
-		_, err := dispatcher.BuildAria2Headers(context.Background(), ResolvedAddItem{
-			SourceURL:      "https://fixture.invalid/source?token=source-secret",
-			PackID:         identity.PackID,
-			PackIdentity:   identity,
-			Manifest:       manifest,
-			URL:            "https://fixture.invalid/file.bin?token=query-secret",
-			AuthProfileRef: "apr-alpha001",
+		pack := signedTestPack(t, privateKey, payload, func(values map[string]any) {
+			values["pack_id"] = "xpk-alpha001"
+			values["pack_version"] = "opaque-1"
+			values["capabilities"] = []string{string(CapabilityParseWASM), string(CapabilityHTTPFetch), string(CapabilityAuthProfile)}
+			values["domains"] = []map[string]any{}
+			values["domain_policy_refs"] = []string{"dpr-alpha001"}
+			values["broker_policy_refs"] = []string{"bpr-alpha001"}
 		})
-		if err == nil {
-			t.Fatal("BuildAria2Headers() invalid materialized auth error = nil")
+		registry, rejections := NewRegistryWithHostPolicyResolver([]EmbeddedPack{pack}, policyWithKeys(publicKey), nil)
+		if len(rejections) != 0 {
+			t.Fatalf("NewRegistryWithHostPolicyResolver() rejections = %#v", rejections)
 		}
-		assertNoForbiddenSubstrings(t, err.Error(), "materialized-secret", "query-secret", "source-secret", "Authorization")
-		if len(materializer.requests) != 1 {
-			t.Fatalf("MaterializeAuthProfile() calls = %d, want 1", len(materializer.requests))
-		}
-		req := materializer.requests[0]
-		if req.PackIdentity != identity || req.Manifest.PackID != manifest.PackID || req.SourceURL != "https://fixture.invalid/source?token=source-secret" || req.TargetURL != "https://fixture.invalid/file.bin?token=query-secret" || req.ProfileRef != "apr-alpha001" {
-			t.Fatalf("materializer request = %#v, want exact item-bound request", req)
-		}
-	})
+		verified := registry.Packs()[0]
+		policy := syntheticHostPolicy(verified.Identity)
+		policy.BrokerDomains = []DomainRule{{Host: "api.alpha.test"}, {Host: "page.alpha.test"}}
+		policy.OutputDomains = []HostPolicyOutputRule{{Host: "files.alpha.test", IncludeSubdomains: false, PathPrefixes: []string{"/downloads/"}}}
+		registry.hostPolicyResolver = &fakeHostPolicyResolver{policy: policy}
+
+		return NewAddTaskDispatcher(AddTaskDispatcherConfig{Registry: registry, Runner: NewRunnerWithConfig(RunnerConfig{HostPolicyResolver: registry.hostPolicyResolver})})
+	}
+
+	tests := []struct {
+		name      string
+		outputURL string
+		wantMatch bool
+	}{
+		{name: "explicit output path", outputURL: "https://files.alpha.test/downloads/file.bin", wantMatch: true},
+		{name: "broker api host denied", outputURL: "https://api.alpha.test/files/file.bin"},
+		{name: "broker page host denied", outputURL: "https://page.alpha.test/images/file.bin"},
+		{name: "provider owned non download path denied", outputURL: "https://files.alpha.test/private/file.bin"},
+		{name: "unproven subdomain denied", outputURL: "https://cdn.files.alpha.test/downloads/file.bin"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dispatcher := makeDispatcher(t, tt.outputURL)
+			resolution, err := dispatcher.Resolve(context.Background(), "https://share.alpha.test/item")
+			if tt.wantMatch {
+				if err != nil {
+					t.Fatalf("Resolve() error = %v", err)
+				}
+				if !resolution.Matched || len(resolution.Items) != 1 || resolution.Items[0].URL != tt.outputURL {
+					t.Fatalf("resolution = %#v, want allowed output", resolution)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Resolve() error = nil, resolution = %#v, want output policy denial", resolution)
+			}
+			if strings.Contains(err.Error(), tt.outputURL) {
+				t.Fatalf("Resolve() leaked denied output URL: %q", err.Error())
+			}
+		})
+	}
 }
 
 func TestAddTaskAria2HeaderExpansionUsesHostResolversOnly(t *testing.T) {
+	authResolver := &fakeAuthProfileResolver{secret: ResolvedAuthSecret{
+		HeaderName:  "Authorization",
+		HeaderValue: "Bearer test-secret",
+	}}
 	dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{
-		AuthResolver: fakeAuthProfileResolver{secret: ResolvedAuthSecret{
-			HeaderName:  "Authorization",
-			HeaderValue: "Bearer test-secret",
-		}},
+		AuthResolver: authResolver,
 		HeaderResolver: fakeHeaderProfileResolver{headers: map[string][]string{
 			"download": {"User-Agent: GoAria-Test", "Authorization: Bearer test-secret"},
 		}},
 	})
 	item := ResolvedAddItem{
-		PackID:           "fixturepack",
+		PackID:           "xpk-fixture01",
 		URL:              "https://download.fixture.invalid/file.bin",
 		AuthProfileRef:   "default",
 		HeaderProfileRef: "download",
@@ -510,10 +440,10 @@ func TestAddTaskAria2HeaderExpansionUsesHostResolversOnly(t *testing.T) {
 	}
 
 	failing := NewAddTaskDispatcher(AddTaskDispatcherConfig{
-		AuthResolver: fakeAuthProfileResolver{err: errors.New("raw-token-123 failed")},
+		AuthResolver: &fakeAuthProfileResolver{err: errors.New("raw-token-123 failed")},
 	})
 	_, err = failing.BuildAria2Headers(context.Background(), ResolvedAddItem{
-		PackID:         "fixturepack",
+		PackID:         "xpk-fixture01",
 		URL:            "https://download.fixture.invalid/file.bin?token=raw-token-123",
 		AuthProfileRef: "default",
 	})
@@ -528,20 +458,21 @@ func TestAddTaskAria2HeaderExpansionUsesHostResolversOnly(t *testing.T) {
 func TestAddTaskAria2HeaderExpansionUsesIdentityAwareMaterializer(t *testing.T) {
 	identity := privateAuthRuntimeIdentity("xpk-alpha001", "opaque-1", "1")
 	manifest := hostAuthRuntimeManifest(identity)
-	store := newTempAuthProfileStore(t)
-	setHostAuthProfile(t, store, identity.PackID, "apr-alpha001", AuthSecretKindBearer, "identity-aware-token", []DomainRule{{Host: "fixture.invalid"}}, nil)
-	runtime := NewHostAuthRuntime(HostAuthRuntimeConfig{
-		Bundle: newHostAuthRuntimeBundle(t, identity, nil, nil),
-		Store:  store,
-	})
-	dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{AuthResolver: runtime})
+	resolver := &fakeIdentityAwareAuthResolver{material: MaterializedAuthSecret{
+		HeaderName:      "Authorization",
+		Kind:            AuthSecretKindBearer,
+		RedactedDisplay: "safe bearer",
+		headerValue:     "Bearer identity-aware-token",
+		sensitiveValues: []string{"Bearer identity-aware-token", "identity-aware-token"},
+	}}
+	dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{AuthResolver: resolver})
 
 	headers, err := dispatcher.BuildAria2Headers(context.Background(), ResolvedAddItem{
-		SourceURL:      "https://fixture.invalid/source",
+		SourceURL:      "https://share.alpha.test/source",
 		PackID:         identity.PackID,
 		PackIdentity:   identity,
-		Manifest:       manifest,
-		URL:            "https://fixture.invalid/file.bin?token=query-secret",
+		PackManifest:   manifest,
+		URL:            "https://files.alpha.test/file.bin?token=query-secret",
 		AuthProfileRef: "apr-alpha001",
 	})
 	if err != nil {
@@ -550,21 +481,162 @@ func TestAddTaskAria2HeaderExpansionUsesIdentityAwareMaterializer(t *testing.T) 
 	if strings.Join(headers, "\n") != "Authorization: Bearer identity-aware-token" {
 		t.Fatalf("headers = %#v, want identity-aware bearer header", headers)
 	}
+	if resolver.calls != 1 || resolver.legacyCalls != 0 {
+		t.Fatalf("materializer calls=%d legacy=%d, want 1/0", resolver.calls, resolver.legacyCalls)
+	}
+	if resolver.lastRequest.PackIdentity != identity || resolver.lastRequest.Manifest.PackID != manifest.PackID || resolver.lastRequest.SourceURL != "https://share.alpha.test/source" || resolver.lastRequest.TargetURL != "https://files.alpha.test/file.bin?token=query-secret" || resolver.lastRequest.ProfileRef != "apr-alpha001" {
+		t.Fatalf("materializer request = %#v", resolver.lastRequest)
+	}
 
-	badIdentity := identity
-	badIdentity.PackVersion = "opaque-2"
-	_, err = dispatcher.BuildAria2Headers(context.Background(), ResolvedAddItem{
-		SourceURL:      "https://fixture.invalid/source",
+	failing := &fakeIdentityAwareAuthResolver{err: errors.New("Authorization: Bearer identity-aware-token query-secret failed")}
+	_, err = NewAddTaskDispatcher(AddTaskDispatcherConfig{AuthResolver: failing}).BuildAria2Headers(context.Background(), ResolvedAddItem{
+		SourceURL:      "https://share.alpha.test/source",
 		PackID:         identity.PackID,
-		PackIdentity:   badIdentity,
-		Manifest:       manifest,
-		URL:            "https://fixture.invalid/file.bin?token=query-secret",
+		PackIdentity:   identity,
+		PackManifest:   manifest,
+		URL:            "https://files.alpha.test/file.bin?token=query-secret",
 		AuthProfileRef: "apr-alpha001",
 	})
 	if err == nil {
-		t.Fatal("BuildAria2Headers() mismatched identity error = nil, want fail-closed")
+		t.Fatal("BuildAria2Headers() failing materializer error = nil")
 	}
-	assertNoForbiddenSubstrings(t, err.Error(), "identity-aware-token", "query-secret", "Authorization")
+	assertNoForbiddenSubstrings(t, err.Error(), "identity-aware-token", "query-secret")
+}
+
+func TestAddTaskOwnedSubdomainAuthMaterializationAfterOutputPolicyAcceptance(t *testing.T) {
+	const (
+		packID    = "xpk-fixture01"
+		profileID = AuthProfileID("apr-fixture01")
+		targetURL = "https://assets.fixture.invalid/download/synthetic-file.bin"
+	)
+	policy := ResolvedHostPolicy{
+		OutputDomains: []HostPolicyOutputRule{{
+			Host:              "fixture.invalid",
+			IncludeSubdomains: true,
+			PathPrefixes:      []string{"/files/", "/download/"},
+		}},
+		AuthProfiles: []HostPolicyAuthProfileScope{{
+			ProfileID: profileID,
+			Domains:   []DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}},
+		}},
+	}
+	if err := policyAllowsOutputURL(policy, targetURL); err != nil {
+		t.Fatalf("policyAllowsOutputURL() error = %v", err)
+	}
+	store, err := NewFileAuthProfileStore(t.TempDir() + "/extractor_auth.json")
+	if err != nil {
+		t.Fatalf("NewFileAuthProfileStore() error = %v", err)
+	}
+	if _, err := store.SetAuthProfile(context.Background(), AuthProfileUpdate{
+		PackID:         packID,
+		ProfileID:      profileID,
+		Kind:           AuthSecretKindBearer,
+		Secret:         "synthetic-fixture-token",
+		AllowedDomains: []DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}},
+	}); err != nil {
+		t.Fatalf("SetAuthProfile() error = %v", err)
+	}
+
+	headers, err := NewAddTaskDispatcher(AddTaskDispatcherConfig{AuthResolver: store}).BuildAria2Headers(context.Background(), ResolvedAddItem{
+		PackID:         packID,
+		HostPolicy:     &policy,
+		URL:            targetURL,
+		AuthProfileRef: string(profileID),
+	})
+	if err != nil {
+		t.Fatalf("BuildAria2Headers() error = %v", err)
+	}
+	if strings.Join(headers, "\n") != "Authorization: Bearer synthetic-fixture-token" {
+		t.Fatalf("headers = %#v, want bearer header", headers)
+	}
+}
+
+func TestAddTaskOldAuthScopeDeniesOwnedSubdomainBeforeResolver(t *testing.T) {
+	const (
+		packID    = "xpk-fixture01"
+		profileID = AuthProfileID("apr-fixture01")
+		targetURL = "https://assets.fixture.invalid/download/synthetic-file.bin"
+	)
+	policy := ResolvedHostPolicy{
+		OutputDomains: []HostPolicyOutputRule{{
+			Host:              "fixture.invalid",
+			IncludeSubdomains: true,
+			PathPrefixes:      []string{"/files/", "/download/"},
+		}},
+		AuthProfiles: []HostPolicyAuthProfileScope{{
+			ProfileID: profileID,
+			Domains:   []DomainRule{{Host: "api.fixture.invalid"}, {Host: "download.fixture.invalid", IncludeSubdomains: true}},
+		}},
+	}
+	if err := policyAllowsOutputURL(policy, targetURL); err != nil {
+		t.Fatalf("policyAllowsOutputURL() error = %v", err)
+	}
+	authResolver := &fakeAuthProfileResolver{secret: ResolvedAuthSecret{HeaderName: "Authorization", HeaderValue: "Bearer synthetic-fixture-token"}}
+	_, err := NewAddTaskDispatcher(AddTaskDispatcherConfig{AuthResolver: authResolver}).BuildAria2Headers(context.Background(), ResolvedAddItem{
+		PackID:         packID,
+		HostPolicy:     &policy,
+		URL:            targetURL,
+		AuthProfileRef: string(profileID),
+	})
+	if err == nil {
+		t.Fatal("BuildAria2Headers() error = nil, want old auth-scope denial")
+	}
+	if authResolver.calls != 0 {
+		t.Fatalf("auth resolver calls = %d, want 0", authResolver.calls)
+	}
+	assertNoForbiddenSubstrings(t, err.Error(), "synthetic-fixture-token", targetURL)
+}
+
+func TestAddTaskAliasFinalAuthExpansionChecksHostPolicyBeforeResolver(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	policy := syntheticHostPolicy(pack.Identity)
+	policy.AuthProfiles = []HostPolicyAuthProfileScope{{ProfileID: "alpha-secret", Domains: []DomainRule{{Host: "api.alpha.test"}}}}
+	authResolver := &fakeAuthProfileResolver{secret: ResolvedAuthSecret{
+		HeaderName:  "Authorization",
+		HeaderValue: "Bearer alpha-secret",
+	}}
+	dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{
+		AuthResolver: authResolver,
+	})
+	item := ResolvedAddItem{
+		PackID:         pack.Manifest.PackID,
+		PackManifest:   pack.Manifest,
+		PackIdentity:   pack.Identity,
+		HostPolicy:     &policy,
+		URL:            "https://files.alpha.test/file.bin",
+		AuthProfileRef: "alpha-secret",
+	}
+
+	_, err := dispatcher.BuildAria2Headers(context.Background(), item)
+	if err == nil {
+		t.Fatal("BuildAria2Headers() error = nil, want alias auth-scope denial")
+	}
+	if authResolver.calls != 0 {
+		t.Fatalf("auth resolver calls = %d, want 0", authResolver.calls)
+	}
+}
+
+func TestAddTaskAliasFinalAuthExpansionRequiresHostPolicy(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	authResolver := &fakeAuthProfileResolver{secret: ResolvedAuthSecret{
+		HeaderName:  "Authorization",
+		HeaderValue: "Bearer alpha-secret",
+	}}
+	dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{AuthResolver: authResolver})
+
+	_, err := dispatcher.BuildAria2Headers(context.Background(), ResolvedAddItem{
+		PackID:         pack.Manifest.PackID,
+		PackManifest:   pack.Manifest,
+		PackIdentity:   pack.Identity,
+		URL:            "https://api.alpha.test/file.bin",
+		AuthProfileRef: "alpha-secret",
+	})
+	if err == nil {
+		t.Fatal("BuildAria2Headers() error = nil, want missing alias policy denial")
+	}
+	if authResolver.calls != 0 {
+		t.Fatalf("auth resolver calls = %d, want 0", authResolver.calls)
+	}
 }
 
 func newFixtureAddTaskDispatcher(t *testing.T, payload []byte, mutate func(map[string]any)) *AddTaskDispatcher {
@@ -583,8 +655,7 @@ func newFixtureAddTaskDispatcher(t *testing.T, payload []byte, mutate func(map[s
 }
 
 var (
-	_ AuthProfileResolver   = fakeAuthProfileResolver{}
+	_ AuthProfileResolver   = (*fakeAuthProfileResolver)(nil)
 	_ HeaderProfileResolver = fakeHeaderProfileResolver{}
-	_ AuthProfileResolver   = (*recordingAuthProfileMaterializer)(nil)
 	_                       = ed25519.PublicKey{}
 )

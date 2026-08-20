@@ -1,6 +1,6 @@
 # Extractor Pack Supply-Chain Fixture
 
-This directory contains a deterministic public fixture pack used only by supply-chain verification tests. It contains no real site-specific logic, private source, credentials, release assets, or production signing material.
+This directory contains a deterministic public fixture pack used only by supply-chain verification tests. It contains no proprietary site logic, private source, credentials, release assets, or production signing material.
 
 ## Fixture ZIP contract
 

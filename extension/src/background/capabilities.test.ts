@@ -41,6 +41,64 @@ describe('parseAuthAck / isLegacyHost', () => {
     expect(parsed.capabilities).toEqual(['request_id', 'extractor.resolve', 'extractor.batch'])
     expect(isLegacyHost(parsed)).toBe(false)
   })
+
+  it('copies a valid nested match object', () => {
+    const parsed = parseAuthAck({
+      type: 'auth_ack',
+      protocol_version: 2,
+      capabilities: ['request_id', 'extractor.resolve'],
+      match: {
+        digest_version: 1,
+        salt: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        exact_digests: ['aa'],
+        subdomain_digests: [],
+      },
+    })
+    expect(parsed.match?.digest_version).toBe(1)
+    expect(parsed.match?.exact_digests).toEqual(['aa'])
+    expect(parsed.capabilities).toEqual(['request_id', 'extractor.resolve'])
+    expect(isLegacyHost(parsed)).toBe(false)
+  })
+
+  it('treats invalid or null match as absent while still parsing caps', () => {
+    const nullMatch = parseAuthAck({
+      type: 'auth_ack',
+      protocol_version: 2,
+      capabilities: [],
+      match: null,
+    })
+    expect(nullMatch.match).toBeUndefined()
+    expect(nullMatch.capabilities).toEqual([])
+    expect(isLegacyHost(nullMatch)).toBe(false)
+
+    const badVersion = parseAuthAck({
+      type: 'auth_ack',
+      protocol_version: 2,
+      capabilities: ['request_id'],
+      match: {
+        digest_version: 2,
+        salt: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        exact_digests: [],
+        subdomain_digests: [],
+      },
+    })
+    expect(badVersion.match).toBeUndefined()
+    expect(badVersion.capabilities).toEqual(['request_id'])
+
+    const nullArrays = parseAuthAck({
+      type: 'auth_ack',
+      protocol_version: 2,
+      capabilities: ['request_id'],
+      match: {
+        digest_version: 1,
+        salt: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        exact_digests: null,
+        subdomain_digests: [],
+      },
+    })
+    expect(nullArrays.match).toBeUndefined()
+    expect(nullArrays.capabilities).toEqual(['request_id'])
+  })
 })
 
 describe('hasCapability', () => {

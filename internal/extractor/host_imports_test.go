@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestHostImportHTTPFetchAllowsBrokeredGET(t *testing.T) {
@@ -220,32 +221,257 @@ func TestHostImportHTTPFetchInjectsAuthWithoutReturningSecret(t *testing.T) {
 	}
 }
 
-func TestHostImportHTTPFetchUsesBrokerAuthWhenBridgeResolverNil(t *testing.T) {
-	const rawToken = "raw-bridge-nil-token"
-	transport := &hostImportRecordingTransport{statusCode: http.StatusOK, body: "authenticated ok"}
-	resolver := hostImportAuthResolver{secret: ResolvedAuthSecret{
-		HeaderName:      "Authorization",
-		HeaderValue:     "Bearer " + rawToken,
-		Kind:            AuthSecretKindBearer,
-		RedactedDisplay: "ra…en",
-	}}
-	bridge := newTestHostImportBridge(t, hostImportManifest(), testHTTPBroker(transport, resolver), nil, 4)
+func TestHostImportAliasRawURLRejectedBeforePolicyOrTransport(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	transport := &hostImportRecordingTransport{statusCode: http.StatusOK, body: "alias ok"}
+	resolver := &fakeHostPolicyResolver{policy: syntheticHostPolicy(pack.Identity)}
+	broker := NewHTTPBroker(HTTPBrokerConfig{Policy: testHTTPPolicy(), Transport: transport, HostPolicyResolver: resolver})
+	bridge := newTestHostImportBridgeForPack(t, pack, broker, nil, resolver, 4)
+
+	raw := bridge.executeHTTPFetch(context.Background(), mustHostImportJSON(t, HostHTTPFetchRequest{URL: "https://api.alpha.test/path"}))
+	var response HostHTTPFetchResponse
+	decodeHostImportTestResponse(t, raw, &response)
+	if response.OK {
+		t.Fatalf("executeHTTPFetch() = %#v, want raw-url denial", response)
+	}
+	if resolver.calls != 0 || transport.Count() != 0 {
+		t.Fatalf("resolver calls=%d transport calls=%d, want 0/0", resolver.calls, transport.Count())
+	}
+}
+
+func TestHostImportAliasRefModeHTTPFetchExpandsEndpointWithoutFinalURL(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	transport := &hostImportRecordingTransport{statusCode: http.StatusOK, body: "alias ok"}
+	resolver := &fakeHostPolicyResolver{policy: syntheticHostPolicy(pack.Identity)}
+	broker := NewHTTPBroker(HTTPBrokerConfig{Policy: testHTTPPolicy(), Transport: transport, HostPolicyResolver: resolver})
+	bridge := newTestHostImportBridgeForPack(t, pack, broker, nil, resolver, 4)
 
 	raw := bridge.executeHTTPFetch(context.Background(), mustHostImportJSON(t, HostHTTPFetchRequest{
-		URL:            "https://api.fixture.invalid/path",
-		AuthProfileRef: "default",
+		BrokerPolicyRef: "bpr-alpha001",
+		EndpointRef:     "ep-alpha001",
+		Params:          map[string]string{"id": "fixture-item"},
+		Headers:         map[string]string{"Accept": "application/json"},
 	}))
 	var response HostHTTPFetchResponse
 	decodeHostImportTestResponse(t, raw, &response)
-
 	if !response.OK {
-		t.Fatalf("executeHTTPFetch() OK = false, response = %#v", response)
+		t.Fatalf("executeHTTPFetch() = %#v, want ok", response)
 	}
-	if got := transport.LastRequest().Header.Get("Authorization"); got != "Bearer "+rawToken {
-		t.Fatalf("Authorization header = %q, want broker-injected bearer", got)
+	if response.FinalURL != "" {
+		t.Fatalf("FinalURL = %q, want empty for ref-mode", response.FinalURL)
 	}
-	if strings.Contains(string(raw), rawToken) || strings.Contains(string(raw), "Bearer "+rawToken) {
-		t.Fatalf("executeHTTPFetch() leaked broker auth token in %s", raw)
+	if transport.Count() != 1 {
+		t.Fatalf("transport calls = %d, want 1", transport.Count())
+	}
+	request := transport.LastRequest()
+	if got := request.URL.String(); got != "https://api.alpha.test/files/fixture-item" {
+		t.Fatalf("transport URL = %q, want expanded endpoint", got)
+	}
+	if got := request.Header.Get("Accept"); got != "application/json" {
+		t.Fatalf("Accept header = %q", got)
+	}
+}
+
+func TestHostImportAliasDenialsAndBudgetStopPrivilegedWork(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	transport := &hostImportRecordingTransport{statusCode: http.StatusOK, body: "alias ok"}
+	broker := NewHTTPBroker(HTTPBrokerConfig{Policy: testHTTPPolicy(), Transport: transport})
+	bridge := newTestHostImportBridgeForPack(t, pack, broker, nil, nil, 4)
+
+	request := HostHTTPFetchRequest{BrokerPolicyRef: "bpr-alpha001", EndpointRef: "ep-alpha001", Params: map[string]string{"id": "fixture-item"}}
+	raw := bridge.executeHTTPFetch(context.Background(), mustHostImportJSON(t, request))
+	var response HostHTTPFetchResponse
+	decodeHostImportTestResponse(t, raw, &response)
+	if response.OK {
+		t.Fatalf("executeHTTPFetch() OK = true, want no-resolver denial")
+	}
+	if transport.Count() != 0 {
+		t.Fatalf("transport calls = %d, want 0", transport.Count())
+	}
+
+	exhausted := newTestHostImportBridgeForPack(t, pack, NewHTTPBroker(HTTPBrokerConfig{
+		Policy:             testHTTPPolicy(),
+		Transport:          transport,
+		HostPolicyResolver: &fakeHostPolicyResolver{policy: syntheticHostPolicy(pack.Identity)},
+	}), nil, nil, 1)
+	requestBytes := mustHostImportJSON(t, request)
+	decodeHostImportTestResponse(t, exhausted.executeHTTPFetch(context.Background(), requestBytes), &response)
+	if !response.OK {
+		t.Fatalf("first alias fetch = %#v, want ok", response)
+	}
+	decodeHostImportTestResponse(t, exhausted.executeHTTPFetch(context.Background(), requestBytes), &response)
+	if response.OK {
+		t.Fatalf("second alias fetch OK = true, want budget denial")
+	}
+}
+
+func TestHostImportAliasRefModeHTTPFetchFailsClosedBeforePrivilegedWork(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	tests := []struct {
+		name               string
+		request            HostHTTPFetchRequest
+		policy             ResolvedHostPolicy
+		wantPolicyCalls    int
+		wantTransportCalls int
+	}{
+		{name: "mixed raw and ref", request: HostHTTPFetchRequest{URL: "https://api.alpha.test/files/fixture-item", BrokerPolicyRef: "bpr-alpha001", EndpointRef: "ep-alpha001"}},
+		{name: "missing endpoint ref", request: HostHTTPFetchRequest{BrokerPolicyRef: "bpr-alpha001"}},
+		{name: "invalid params", request: HostHTTPFetchRequest{BrokerPolicyRef: "bpr-alpha001", EndpointRef: "ep-alpha001", Params: map[string]string{"id": "a/b"}}},
+		{name: "unsupported endpoint method", request: HostHTTPFetchRequest{Method: "POST", BrokerPolicyRef: "bpr-alpha001", EndpointRef: "ep-alpha001", Params: map[string]string{"id": "fixture-item"}}, policy: syntheticHostPolicy(pack.Identity), wantPolicyCalls: 1},
+		{name: "unknown endpoint", request: HostHTTPFetchRequest{BrokerPolicyRef: "bpr-alpha001", EndpointRef: "ep-missing001", Params: map[string]string{"id": "fixture-item"}}, policy: syntheticHostPolicy(pack.Identity), wantPolicyCalls: 1},
+		{name: "disallowed auth profile", request: HostHTTPFetchRequest{BrokerPolicyRef: "bpr-alpha001", EndpointRef: "ep-alpha001", Params: map[string]string{"id": "fixture-item"}, AuthProfileRef: "other-secret"}, policy: syntheticHostPolicy(pack.Identity), wantPolicyCalls: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := &hostImportRecordingTransport{statusCode: http.StatusOK, body: "unexpected"}
+			var resolver HostPolicyResolver
+			var fake *fakeHostPolicyResolver
+			if tt.policy.PolicyID != "" {
+				fake = &fakeHostPolicyResolver{policy: tt.policy}
+				resolver = fake
+			}
+			broker := NewHTTPBroker(HTTPBrokerConfig{Policy: testHTTPPolicy(), Transport: transport, HostPolicyResolver: resolver})
+			bridge := newTestHostImportBridgeForPack(t, pack, broker, nil, resolver, 4)
+			raw := bridge.executeHTTPFetch(context.Background(), mustHostImportJSON(t, tt.request))
+			var response HostHTTPFetchResponse
+			decodeHostImportTestResponse(t, raw, &response)
+			if response.OK {
+				t.Fatalf("executeHTTPFetch() = %#v, want fail closed", response)
+			}
+			policyCalls := 0
+			if fake != nil {
+				policyCalls = fake.calls
+			}
+			if policyCalls != tt.wantPolicyCalls || transport.Count() != tt.wantTransportCalls {
+				t.Fatalf("policy calls=%d transport calls=%d, want %d/%d", policyCalls, transport.Count(), tt.wantPolicyCalls, tt.wantTransportCalls)
+			}
+		})
+	}
+}
+
+func TestHostImportAliasRefModeHTTPFetchBrokerErrorsAreGeneric(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	request := HostHTTPFetchRequest{
+		BrokerPolicyRef: "bpr-alpha001",
+		EndpointRef:     "ep-alpha001",
+		Params:          map[string]string{"id": "fixture-item"},
+	}
+	privateURL := "https://api.alpha.test/files/fixture-item"
+	tests := []struct {
+		name      string
+		transport http.RoundTripper
+	}{
+		{
+			name: "transport error with expanded endpoint",
+			transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return nil, errors.New("dial failed for " + privateURL + " with private path")
+			}),
+		},
+		{
+			name: "redirect denial with private location",
+			transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return redirectResponse("https://other.alpha.test/private/redirect-location"), nil
+			}),
+		},
+		{
+			name: "redirect limit with expanded endpoint",
+			transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return redirectResponse(privateURL), nil
+			}),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := &fakeHostPolicyResolver{policy: syntheticHostPolicy(pack.Identity)}
+			broker := NewHTTPBroker(HTTPBrokerConfig{Policy: testHTTPPolicy(), Transport: tt.transport, HostPolicyResolver: resolver})
+			bridge := newTestHostImportBridgeForPack(t, pack, broker, nil, resolver, 4)
+
+			raw := bridge.executeHTTPFetch(context.Background(), mustHostImportJSON(t, request))
+			var response HostHTTPFetchResponse
+			decodeHostImportTestResponse(t, raw, &response)
+			if response.OK || response.ErrorCode != "fetch_failed" || response.Message != "fetch failed" {
+				t.Fatalf("executeHTTPFetch() = %#v, want generic fetch failure", response)
+			}
+			for _, forbidden := range []string{"api.alpha.test", "files/fixture-item", "other.alpha.test", "private/redirect-location", privateURL} {
+				if strings.Contains(string(raw), forbidden) {
+					t.Fatalf("ref-mode broker error leaked %q in %s", forbidden, raw)
+				}
+			}
+		})
+	}
+}
+
+func TestHostImportAliasAuthProfileStatusPolicyBeforeResolver(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	authResolver := &recordingHostImportAuthResolver{secret: ResolvedAuthSecret{HeaderName: "Authorization", HeaderValue: "Bearer alpha-secret", Kind: AuthSecretKindBearer}}
+	bridge := newTestHostImportBridgeForPack(t, pack, nil, authResolver, &fakeHostPolicyResolver{policy: syntheticHostPolicy(pack.Identity)}, 4)
+
+	raw := bridge.executeAuthProfileStatus(context.Background(), mustHostImportJSON(t, HostAuthProfileStatusRequest{
+		AuthProfileRef:  "alpha-secret",
+		BrokerPolicyRef: "bpr-alpha001",
+		EndpointRef:     "ep-alpha001",
+		Params:          map[string]string{"id": "fixture-item"},
+	}))
+	var response HostAuthProfileStatusResponse
+	decodeHostImportTestResponse(t, raw, &response)
+	if !response.OK || !response.Available {
+		t.Fatalf("executeAuthProfileStatus() = %#v, want available", response)
+	}
+	if authResolver.Count() != 1 {
+		t.Fatalf("auth resolver calls = %d, want 1", authResolver.Count())
+	}
+
+	deniedPolicy := syntheticHostPolicy(pack.Identity)
+	deniedPolicy.AuthProfiles = nil
+	deniedResolver := &recordingHostImportAuthResolver{secret: ResolvedAuthSecret{HeaderName: "Authorization", HeaderValue: "Bearer should-not-resolve"}}
+	denied := newTestHostImportBridgeForPack(t, pack, nil, deniedResolver, &fakeHostPolicyResolver{policy: deniedPolicy}, 4)
+	raw = denied.executeAuthProfileStatus(context.Background(), mustHostImportJSON(t, HostAuthProfileStatusRequest{
+		AuthProfileRef:  "alpha-secret",
+		BrokerPolicyRef: "bpr-alpha001",
+		EndpointRef:     "ep-alpha001",
+		Params:          map[string]string{"id": "fixture-item"},
+	}))
+	decodeHostImportTestResponse(t, raw, &response)
+	if response.OK || deniedResolver.Count() != 0 {
+		t.Fatalf("denied auth status response=%#v resolver calls=%d, want denial before resolver", response, deniedResolver.Count())
+	}
+}
+
+func TestHostImportAuthProfileStatusIgnoresBrowserCookies(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	ctx := WithBrowserCookies(context.Background(), []SessionCookie{{
+		Name: "sid", Value: "browser-sid", Domain: ".alpha.test", Path: "/", Secure: true, HostOnly: false,
+	}})
+	bridge := newTestHostImportBridgeForPack(t, pack, nil, nil, &fakeHostPolicyResolver{policy: syntheticHostPolicy(pack.Identity)}, 4)
+
+	raw := bridge.executeAuthProfileStatus(ctx, mustHostImportJSON(t, HostAuthProfileStatusRequest{
+		AuthProfileRef:  "alpha-secret",
+		BrokerPolicyRef: "bpr-alpha001",
+		EndpointRef:     "ep-alpha001",
+		Params:          map[string]string{"id": "fixture-item"},
+	}))
+	var response HostAuthProfileStatusResponse
+	decodeHostImportTestResponse(t, raw, &response)
+	if response.Available {
+		t.Fatalf("executeAuthProfileStatus() = %#v, cookies must not make an empty store available", response)
+	}
+}
+
+func TestHostImportAliasRawURLAuthProfileStatusRejectedBeforePolicyOrResolver(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	fakePolicy := &fakeHostPolicyResolver{policy: syntheticHostPolicy(pack.Identity)}
+	authResolver := &recordingHostImportAuthResolver{secret: ResolvedAuthSecret{HeaderName: "Authorization", HeaderValue: "Bearer alpha-secret"}}
+	bridge := newTestHostImportBridgeForPack(t, pack, nil, authResolver, fakePolicy, 4)
+
+	raw := bridge.executeAuthProfileStatus(context.Background(), mustHostImportJSON(t, HostAuthProfileStatusRequest{
+		AuthProfileRef: "alpha-secret",
+		URL:            "https://api.alpha.test/path",
+	}))
+	var response HostAuthProfileStatusResponse
+	decodeHostImportTestResponse(t, raw, &response)
+	if response.OK || fakePolicy.calls != 0 || authResolver.Count() != 0 {
+		t.Fatalf("response=%#v policy calls=%d resolver calls=%d, want raw-url denial before work", response, fakePolicy.calls, authResolver.Count())
 	}
 }
 
@@ -310,6 +536,152 @@ func TestHostImportAuthProfileStatusReturnsOnlyRedactedMetadata(t *testing.T) {
 			t.Fatalf("auth_profile_status leaked %q in %s", forbidden, responseText)
 		}
 	}
+}
+
+func TestHostImportSeededFileStoreStatusAndHTTPFetchAreRedacted(t *testing.T) {
+	t.Run("bearer status", func(t *testing.T) {
+		store := newTempAuthProfileStore(t)
+		secret := "seeded-hostimport-bearer-secret"
+		seedHostImportLegacyProfile(t, store, AuthSecretKindBearer, secret, nil, "Bearer "+secret)
+		bridge := newTestHostImportBridge(t, hostImportManifest(), nil, store, 4)
+
+		raw := bridge.executeAuthProfileStatus(context.Background(), mustHostImportJSON(t, HostAuthProfileStatusRequest{
+			AuthProfileRef: string(hostImportLegacyProfileID),
+			URL:            "https://api.fixture.invalid/contents/example",
+		}))
+		var response HostAuthProfileStatusResponse
+		decodeHostImportTestResponse(t, raw, &response)
+
+		if !response.OK || !response.Available || response.Kind != AuthSecretKindBearer {
+			t.Fatalf("executeAuthProfileStatus() = %#v, want available bearer", response)
+		}
+		for _, forbidden := range []string{secret, "Bearer " + secret, "Authorization"} {
+			if strings.Contains(string(raw), forbidden) {
+				t.Fatalf("executeAuthProfileStatus() leaked %q in %s", forbidden, raw)
+			}
+		}
+	})
+
+	for _, tt := range []struct {
+		name       string
+		kind       AuthSecretKind
+		secret     string
+		url        string
+		assertions func(t *testing.T, req *http.Request, raw string)
+	}{
+		{
+			name:   "bearer fetch",
+			kind:   AuthSecretKindBearer,
+			secret: "seeded-fetch-bearer-secret",
+			url:    "https://api.fixture.invalid/contents/example",
+			assertions: func(t *testing.T, req *http.Request, raw string) {
+				t.Helper()
+				if got := req.Header.Get("Authorization"); got != "Bearer seeded-fetch-bearer-secret" {
+					t.Fatalf("Authorization header = %q, want derived bearer", got)
+				}
+				for _, forbidden := range []string{"seeded-fetch-bearer-secret", "Bearer seeded-fetch-bearer-secret", "Authorization"} {
+					if strings.Contains(raw, forbidden) {
+						t.Fatalf("executeHTTPFetch() leaked %q in %s", forbidden, raw)
+					}
+				}
+			},
+		},
+		{
+			name:   "cookie fetch",
+			kind:   AuthSecretKindCookie,
+			secret: "session_id=seeded-cookie-secret",
+			url:    "https://api.fixture.invalid/contents/example",
+			assertions: func(t *testing.T, req *http.Request, raw string) {
+				t.Helper()
+				if got := req.Header.Get("Cookie"); got != "session_id=seeded-cookie-secret" {
+					t.Fatalf("Cookie header = %q, want cookie", got)
+				}
+				for _, forbidden := range []string{"seeded-cookie-secret", "session_id=seeded-cookie-secret", "Cookie"} {
+					if strings.Contains(raw, forbidden) {
+						t.Fatalf("executeHTTPFetch() leaked %q in %s", forbidden, raw)
+					}
+				}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTempAuthProfileStore(t)
+			seedHostImportLegacyProfile(t, store, tt.kind, tt.secret, nil, "operator profile")
+			transport := &hostImportRecordingTransport{statusCode: http.StatusOK, body: "authenticated ok"}
+			bridge := newTestHostImportBridge(t, hostImportManifest(), testHTTPBroker(transport, store), store, 4)
+
+			raw := bridge.executeHTTPFetch(context.Background(), mustHostImportJSON(t, HostHTTPFetchRequest{
+				URL:            tt.url,
+				AuthProfileRef: string(hostImportLegacyProfileID),
+			}))
+			var response HostHTTPFetchResponse
+			decodeHostImportTestResponse(t, raw, &response)
+
+			if !response.OK {
+				t.Fatalf("executeHTTPFetch() = %#v, want ok", response)
+			}
+			tt.assertions(t, transport.LastRequest(), string(raw))
+		})
+	}
+}
+
+func TestHostImportSeededFileStoreAuthErrorsAreGeneric(t *testing.T) {
+	t.Run("expired status", func(t *testing.T) {
+		store := newTempAuthProfileStore(t)
+		secret := "expired-hostimport-secret"
+		expiresAt := time.Now().Add(-time.Minute)
+		seedHostImportLegacyProfile(t, store, AuthSecretKindBearer, secret, &expiresAt, "expired")
+		bridge := newTestHostImportBridge(t, hostImportManifest(), nil, store, 4)
+
+		raw := bridge.executeAuthProfileStatus(context.Background(), mustHostImportJSON(t, HostAuthProfileStatusRequest{
+			AuthProfileRef: string(hostImportLegacyProfileID),
+			URL:            "https://api.fixture.invalid/contents/example",
+		}))
+		var response HostAuthProfileStatusResponse
+		decodeHostImportTestResponse(t, raw, &response)
+
+		if response.OK || response.ErrorCode != "auth_unavailable" || response.Message != "auth profile unavailable" {
+			t.Fatalf("executeAuthProfileStatus() = %#v, want generic unavailable", response)
+		}
+		if strings.Contains(string(raw), secret) || strings.Contains(string(raw), "Authorization") {
+			t.Fatalf("executeAuthProfileStatus() leaked secret details in %s", raw)
+		}
+	})
+
+	t.Run("denied fetch", func(t *testing.T) {
+		store := newTempAuthProfileStore(t)
+		secret := "denied-hostimport-secret"
+		if _, err := store.SetAuthProfile(context.Background(), AuthProfileUpdate{
+			PackID:         "xpk-fixture01",
+			ProfileID:      hostImportLegacyProfileID,
+			Kind:           AuthSecretKindBearer,
+			Secret:         secret,
+			AllowedDomains: []DomainRule{{Host: "other.fixture.invalid"}},
+		}); err != nil {
+			t.Fatalf("SetAuthProfile() error = %v", err)
+		}
+		transport := &hostImportRecordingTransport{err: errors.New("transport must not be called")}
+		bridge := newTestHostImportBridge(t, hostImportManifest(), testHTTPBroker(transport, store), store, 4)
+
+		raw := bridge.executeHTTPFetch(context.Background(), mustHostImportJSON(t, HostHTTPFetchRequest{
+			URL:            "https://api.fixture.invalid/contents/example?token=query-secret",
+			AuthProfileRef: string(hostImportLegacyProfileID),
+		}))
+		var response HostHTTPFetchResponse
+		decodeHostImportTestResponse(t, raw, &response)
+
+		if response.OK || response.ErrorCode != "authenticated_fetch_failed" || response.Message != "authenticated fetch failed" {
+			t.Fatalf("executeHTTPFetch() = %#v, want generic authenticated fetch failure", response)
+		}
+		for _, forbidden := range []string{secret, "query-secret", "Authorization", "Cookie"} {
+			if strings.Contains(string(raw), forbidden) {
+				t.Fatalf("executeHTTPFetch() leaked %q in %s", forbidden, raw)
+			}
+		}
+		if transport.Count() != 0 {
+			t.Fatalf("transport calls = %d, want 0", transport.Count())
+		}
+	})
 }
 
 func TestHostImportAuthProfileStatusRejectsDeniedCapabilityDomainOrResolver(t *testing.T) {
@@ -425,225 +797,6 @@ func TestHostImportBudgetExhaustionStopsPrivilegedWork(t *testing.T) {
 	}
 	if transport.Count() != 1 {
 		t.Fatalf("transport calls = %d, want only first call", transport.Count())
-	}
-}
-
-func TestHostImportHTTPFetchAliasRefMode(t *testing.T) {
-	t.Run("success redacts final url", func(t *testing.T) {
-		manifest := hostImportAliasManifest()
-		transport := &hostImportRecordingTransport{statusCode: http.StatusOK, body: "alias ok"}
-		bridge := newTestHostImportBridge(t, manifest, testHTTPBroker(transport, nil), nil, 4)
-
-		raw := bridge.executeHTTPFetch(context.Background(), mustHostImportJSON(t, HostHTTPFetchRequest{
-			Method:          http.MethodGet,
-			BrokerPolicyRef: "bpr-alpha001",
-			EndpointRef:     "epr-alpha001",
-			Params:          map[string]string{"id": "item-001"},
-		}))
-		var response HostHTTPFetchResponse
-		decodeHostImportTestResponse(t, raw, &response)
-
-		if !response.OK || response.FinalURL != "" || response.StatusCode != http.StatusOK {
-			t.Fatalf("executeHTTPFetch() response = %#v", response)
-		}
-		if transport.Count() != 1 {
-			t.Fatalf("transport calls = %d, want 1", transport.Count())
-		}
-		if got := transport.LastRequest().URL.String(); got != "https://api.alpha.test/resource/item-001" {
-			t.Fatalf("transport URL = %q, want expanded private URL", got)
-		}
-		if strings.Contains(string(raw), "api.alpha.test") || strings.Contains(string(raw), "item-001") {
-			t.Fatalf("alias ref-mode response leaked private URL/param: %s", raw)
-		}
-	})
-
-	tests := []struct {
-		name              string
-		manifest          Manifest
-		request           HostHTTPFetchRequest
-		resolver          HostPolicyResolver
-		wantResolverCalls int
-	}{
-		{
-			name:     "alias raw url denied before resolver",
-			manifest: hostImportAliasManifest(),
-			request:  HostHTTPFetchRequest{URL: "https://api.alpha.test/resource/item-001"},
-		},
-		{
-			name:     "alias mixed mode denied before resolver",
-			manifest: hostImportAliasManifest(),
-			request: HostHTTPFetchRequest{
-				URL:             "https://api.alpha.test/resource/item-001",
-				BrokerPolicyRef: "bpr-alpha001",
-				EndpointRef:     "epr-alpha001",
-			},
-		},
-		{
-			name:     "legacy ref mode denied before resolver",
-			manifest: hostImportManifest(),
-			request: HostHTTPFetchRequest{
-				BrokerPolicyRef: "bpr-alpha001",
-				EndpointRef:     "epr-alpha001",
-				Params:          map[string]string{"id": "item-001"},
-			},
-		},
-		{
-			name:     "alias resolver error no transport",
-			manifest: hostImportAliasManifest(),
-			request: HostHTTPFetchRequest{
-				BrokerPolicyRef: "bpr-alpha001",
-				EndpointRef:     "epr-alpha001",
-				Params:          map[string]string{"id": "item-001"},
-			},
-			resolver:          &recordingHostPolicyResolver{err: errors.New("private endpoint template https://api.alpha.test/resource/{id}")},
-			wantResolverCalls: 1,
-		},
-		{
-			name:     "alias malformed params before resolver",
-			manifest: hostImportAliasManifest(),
-			request: HostHTTPFetchRequest{
-				BrokerPolicyRef: "bpr-alpha001",
-				EndpointRef:     "epr-alpha001",
-				Params:          map[string]string{"token": "secret-value"},
-			},
-		},
-		{
-			name:     "alias unknown endpoint with auth stays policy denied",
-			manifest: hostImportAliasManifest(),
-			request: HostHTTPFetchRequest{
-				BrokerPolicyRef: "bpr-alpha001",
-				EndpointRef:     "epr-alpha002",
-				Params:          map[string]string{"id": "item-001"},
-				AuthProfileRef:  "apr-alpha001",
-			},
-			wantResolverCalls: 1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			transport := &hostImportRecordingTransport{err: errors.New("unexpected transport call")}
-			resolver := tt.resolver
-			if resolver == nil {
-				resolver = &recordingHostPolicyResolver{policy: validResolvedHostPolicy(syntheticVerifiedPackIdentity(tt.manifest), tt.manifest)}
-			}
-			bridge := newTestHostImportBridgeWithPolicy(t, tt.manifest, testHTTPBroker(transport, nil), nil, resolver, 4)
-			raw := bridge.executeHTTPFetch(context.Background(), mustHostImportJSON(t, tt.request))
-			var response HostHTTPFetchResponse
-			decodeHostImportTestResponse(t, raw, &response)
-			if response.OK {
-				t.Fatalf("executeHTTPFetch() OK = true, want false: %#v", response)
-			}
-			if transport.Count() != 0 {
-				t.Fatalf("transport calls = %d, want 0", transport.Count())
-			}
-			if recorder, ok := resolver.(*recordingHostPolicyResolver); ok && recorder.Count() != tt.wantResolverCalls {
-				t.Fatalf("host policy resolver calls = %d, want %d", recorder.Count(), tt.wantResolverCalls)
-			}
-			for _, forbidden := range []string{"https://api.alpha.test/resource", "secret-value"} {
-				if strings.Contains(string(raw), forbidden) {
-					t.Fatalf("executeHTTPFetch() leaked %q in %s", forbidden, raw)
-				}
-			}
-			if strings.Contains(string(raw), "auth resolver is not configured") || response.ErrorCode == "not_configured" {
-				t.Fatalf("executeHTTPFetch() exposed auth resolver configuration before policy denial: %s", raw)
-			}
-		})
-	}
-}
-
-func TestHostImportAuthProfileStatusAliasRefMode(t *testing.T) {
-	const rawToken = "raw-alias-status-token"
-	manifest := hostImportAliasManifest()
-	resolver := &recordingHostImportAuthResolver{secret: ResolvedAuthSecret{
-		HeaderName:      "Authorization",
-		HeaderValue:     "Bearer " + rawToken,
-		Kind:            AuthSecretKindBearer,
-		RedactedDisplay: "ra…en",
-	}}
-	bridge := newTestHostImportBridge(t, manifest, nil, resolver, 4)
-
-	raw := bridge.executeAuthProfileStatus(context.Background(), mustHostImportJSON(t, HostAuthProfileStatusRequest{
-		AuthProfileRef:  "apr-alpha001",
-		BrokerPolicyRef: "bpr-alpha001",
-		EndpointRef:     "epr-alpha001",
-		Params:          map[string]string{"id": "item-001"},
-	}))
-	var response HostAuthProfileStatusResponse
-	decodeHostImportTestResponse(t, raw, &response)
-	if !response.OK || !response.Available || response.Kind != AuthSecretKindBearer || response.RedactedDisplay != "ra…en" {
-		t.Fatalf("executeAuthProfileStatus() response = %#v", response)
-	}
-	if resolver.Count() != 1 {
-		t.Fatalf("auth resolver calls = %d, want 1", resolver.Count())
-	}
-	for _, forbidden := range []string{rawToken, "Authorization", "api.alpha.test", "item-001"} {
-		if strings.Contains(string(raw), forbidden) {
-			t.Fatalf("auth status response leaked %q in %s", forbidden, raw)
-		}
-	}
-
-	t.Run("raw url denied before resolver", func(t *testing.T) {
-		resolver := &recordingHostImportAuthResolver{}
-		policyResolver := &recordingHostPolicyResolver{policy: validResolvedHostPolicy(syntheticVerifiedPackIdentity(manifest), manifest)}
-		bridge := newTestHostImportBridgeWithPolicy(t, manifest, nil, resolver, policyResolver, 4)
-		raw := bridge.executeAuthProfileStatus(context.Background(), mustHostImportJSON(t, HostAuthProfileStatusRequest{
-			AuthProfileRef: "apr-alpha001",
-			URL:            "https://api.alpha.test/resource/item-001",
-		}))
-		var response HostAuthProfileStatusResponse
-		decodeHostImportTestResponse(t, raw, &response)
-		if response.OK {
-			t.Fatalf("executeAuthProfileStatus() OK = true, want false: %#v", response)
-		}
-		if resolver.Count() != 0 || policyResolver.Count() != 0 {
-			t.Fatalf("resolver calls auth=%d policy=%d, want 0/0", resolver.Count(), policyResolver.Count())
-		}
-	})
-
-	t.Run("auth scope denied before auth resolver", func(t *testing.T) {
-		resolver := &recordingHostImportAuthResolver{}
-		bridge := newTestHostImportBridge(t, manifest, nil, resolver, 4)
-		raw := bridge.executeAuthProfileStatus(context.Background(), mustHostImportJSON(t, HostAuthProfileStatusRequest{
-			AuthProfileRef:  "apr-alpha002",
-			BrokerPolicyRef: "bpr-alpha001",
-			EndpointRef:     "epr-alpha001",
-			Params:          map[string]string{"id": "item-001"},
-		}))
-		var response HostAuthProfileStatusResponse
-		decodeHostImportTestResponse(t, raw, &response)
-		if response.OK {
-			t.Fatalf("executeAuthProfileStatus() OK = true, want false: %#v", response)
-		}
-		if resolver.Count() != 0 {
-			t.Fatalf("auth resolver calls = %d, want 0", resolver.Count())
-		}
-	})
-}
-
-func TestHostImportAliasBudgetExhaustionSkipsPolicyResolver(t *testing.T) {
-	manifest := hostImportAliasManifest()
-	transport := &hostImportRecordingTransport{err: errors.New("unexpected transport call")}
-	policyResolver := &recordingHostPolicyResolver{policy: validResolvedHostPolicy(syntheticVerifiedPackIdentity(manifest), manifest)}
-	bridge := newTestHostImportBridgeWithPolicy(t, manifest, testHTTPBroker(transport, nil), nil, policyResolver, 1)
-	request := mustHostImportJSON(t, HostHTTPFetchRequest{
-		BrokerPolicyRef: "bpr-alpha001",
-		EndpointRef:     "epr-alpha001",
-		Params:          map[string]string{"token": "secret-value"},
-	})
-
-	var first HostHTTPFetchResponse
-	decodeHostImportTestResponse(t, bridge.executeHTTPFetch(context.Background(), request), &first)
-	if first.OK {
-		t.Fatalf("first executeHTTPFetch() OK = true, want malformed params failure")
-	}
-	var second HostHTTPFetchResponse
-	decodeHostImportTestResponse(t, bridge.executeHTTPFetch(context.Background(), request), &second)
-	if second.OK || second.ErrorCode != "budget_exhausted" {
-		t.Fatalf("second executeHTTPFetch() = %#v, want budget exhausted", second)
-	}
-	if policyResolver.Count() != 0 || transport.Count() != 0 {
-		t.Fatalf("policy resolver/transport calls = %d/%d, want 0/0", policyResolver.Count(), transport.Count())
 	}
 }
 
@@ -774,33 +927,6 @@ type recordingHostImportAuthResolver struct {
 	calls  int
 }
 
-type recordingHostPolicyResolver struct {
-	mu     sync.Mutex
-	policy ResolvedHostPolicy
-	err    error
-	calls  int
-}
-
-func (r *recordingHostPolicyResolver) ResolveHostPolicy(context.Context, HostPolicyRequest) (ResolvedHostPolicy, error) {
-	r.mu.Lock()
-	r.calls++
-	policy := cloneResolvedHostPolicy(r.policy)
-	err := r.err
-	r.mu.Unlock()
-	if err != nil {
-		return ResolvedHostPolicy{}, err
-	}
-
-	return policy, nil
-}
-
-func (r *recordingHostPolicyResolver) Count() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	return r.calls
-}
-
 func (r *recordingHostImportAuthResolver) ResolveAuthProfile(context.Context, string, AuthProfileID, string) (ResolvedAuthSecret, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -821,26 +947,20 @@ func (r *recordingHostImportAuthResolver) Count() int {
 
 func newTestHostImportBridge(t *testing.T, manifest Manifest, broker *HTTPBroker, resolver AuthProfileResolver, maxHostCalls uint32) *hostImportBridge {
 	t.Helper()
-	identity := syntheticVerifiedPackIdentity(manifest)
-	var policyResolver HostPolicyResolver
-	if isAliasManifest(manifest) {
-		policyResolver = &recordingHostPolicyResolver{policy: validResolvedHostPolicy(identity, manifest)}
-	}
-
-	return newTestHostImportBridgeWithPolicy(t, manifest, broker, resolver, policyResolver, maxHostCalls)
+	return newTestHostImportBridgeForPack(t, VerifiedPack{Manifest: manifest}, broker, resolver, nil, maxHostCalls)
 }
 
-func newTestHostImportBridgeWithPolicy(t *testing.T, manifest Manifest, broker *HTTPBroker, resolver AuthProfileResolver, policyResolver HostPolicyResolver, maxHostCalls uint32) *hostImportBridge {
+func newTestHostImportBridgeForPack(t *testing.T, pack VerifiedPack, broker *HTTPBroker, resolver AuthProfileResolver, hostPolicy HostPolicyResolver, maxHostCalls uint32) *hostImportBridge {
 	t.Helper()
 	budget, err := NewHostCallBudget(maxHostCalls)
 	if err != nil {
 		t.Fatalf("NewHostCallBudget() error = %v", err)
 	}
-	identity := syntheticVerifiedPackIdentity(manifest)
-	return newHostImportBridge(manifest, identity, budget, HostImportConfig{
+
+	return newHostImportBridge(pack, budget, HostImportConfig{
 		HTTPBroker:         broker,
 		AuthResolver:       resolver,
-		HostPolicyResolver: policyResolver,
+		HostPolicyResolver: hostPolicy,
 	})
 }
 
@@ -854,14 +974,22 @@ func hostImportManifest() Manifest {
 	return manifest
 }
 
-func hostImportAliasManifest() Manifest {
-	manifest := validAliasTestManifest(nil)
-	manifest.Capabilities = []Capability{CapabilityParseWASM, CapabilityHTTPFetch, CapabilityAuthProfile}
-	manifest.ResourceLimits.TimeoutMillis = 100
-	manifest.ResourceLimits.MaxResponseBytes = 1024
-	manifest.ResourceLimits.MaxHostCalls = 8
+const hostImportLegacyProfileID AuthProfileID = "default"
 
-	return manifest
+func seedHostImportLegacyProfile(t *testing.T, store AuthProfileStore, kind AuthSecretKind, secret string, expiresAt *time.Time, redactedDisplay string) {
+	t.Helper()
+	_, err := store.SetAuthProfile(context.Background(), AuthProfileUpdate{
+		PackID:          "xpk-fixture01",
+		ProfileID:       hostImportLegacyProfileID,
+		Kind:            kind,
+		Secret:          secret,
+		AllowedDomains:  []DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}},
+		ExpiresAt:       expiresAt,
+		RedactedDisplay: redactedDisplay,
+	})
+	if err != nil {
+		t.Fatalf("SetAuthProfile() error = %v", err)
+	}
 }
 
 func mustHostImportJSON(t *testing.T, value any) []byte {

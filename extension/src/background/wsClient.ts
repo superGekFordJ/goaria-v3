@@ -3,11 +3,24 @@ import browser from 'webextension-polyfill'
 import { hasCapability, parseAuthAck } from './capabilities'
 import { createPendingMap } from './requestAssociation'
 import { createReplayStore, type ReplayStorage } from './replayStore'
+import { mintRequestId } from './mintRequestId'
+import { notifyExtractorHostDown, notifyExtractorMatchCleared } from './extractorVisibility'
+import { applyParsedMatch, clearMatchSnapshot } from './matchSnapshot'
+import { rescanHttpTabs } from './tabMatcher'
+import {
+  ackTimeoutMs,
+  buildExtractorBatchPayload,
+  buildExtractorResolvePayload,
+  isRpcErrorCode,
+  noteRpcTimeout,
+  planRpcSend,
+} from './extractorRpc'
 import {
   CAP_EXTRACTOR_BATCH,
   CAP_EXTRACTOR_RESOLVE,
   CLIENT_VERSION,
   DOWNLOAD_ACK_TIMEOUT_MS,
+  EXTRACTOR_RESOLVE_ACK_TIMEOUT_MS,
   MSG_TYPE_AUTH,
   MSG_TYPE_AUTH_ACK,
   MSG_TYPE_BATCH_DOWNLOAD,
@@ -34,22 +47,6 @@ import type {
   PairStatusMessage,
   WsStatusMessage,
 } from '../utils/messaging'
-
-function newRequestId(): string {
-  const c = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined
-  if (c && typeof c.randomUUID === 'function') {
-    return c.randomUUID()
-  }
-  const bytes = new Uint8Array(32)
-  if (c && typeof c.getRandomValues === 'function') {
-    c.getRandomValues(bytes)
-  } else {
-    for (let i = 0; i < bytes.length; i++) {
-      bytes[i] = Math.floor(Math.random() * 256)
-    }
-  }
-  return [...bytes].map(b => b.toString(16).padStart(2, '0')).join('')
-}
 
 function sessionReplayStorage(): ReplayStorage {
   return {
@@ -186,8 +183,12 @@ export class WsClient {
   /**
    * Send extractor_resolve / batch_download correlated by request_id.
    * Not serialized on the download sendChain. Local-rejects when the
-   * required extractor capability is missing. Pass requestId to reuse a
-   * persisted UUID after an explicit service-worker replay.
+   * required extractor capability is missing.
+   * extractor_resolve always ignores caller requestId and mints a fresh id.
+   * Every batch_download (first click, 10s retry, and service-worker wake)
+   * must pass the caller requestId; omitting it is a client error, not a mint.
+   * persist:true is identity-stable only while that id is supplied;
+   * ReplayStore is not a payload store.
    */
   sendRequest(
     type: string,
@@ -221,8 +222,14 @@ export class WsClient {
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('WebSocket is not connected'))
     }
-    const id = requestId && requestId !== '' ? requestId : newRequestId()
-    await this.replay.persistOrReuse(type, id)
+    const planned = planRpcSend(type, requestId, mintRequestId)
+    if ('error' in planned) {
+      return Promise.reject(new Error(planned.error))
+    }
+    const { id, persist } = planned
+    if (persist) {
+      await this.replay.persistOrReuse(type, id)
+    }
     if (this.ws !== socket || socket.readyState !== WebSocket.OPEN) {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         void this.replay.remove(id)
@@ -230,14 +237,32 @@ export class WsClient {
       }
       return Promise.reject(new Error('WebSocket was replaced before send'))
     }
-    const body = { ...payload, type, request_id: id }
+    let outbound: Record<string, unknown> = payload
+    if (type === MSG_TYPE_EXTRACTOR_RESOLVE) {
+      const built = buildExtractorResolvePayload(payload)
+      if ('error' in built) {
+        void this.replay.remove(id)
+        return Promise.reject(new Error(built.error))
+      }
+      outbound = built.payload
+    } else if (type === MSG_TYPE_BATCH_DOWNLOAD) {
+      const built = buildExtractorBatchPayload(payload)
+      if ('error' in built) {
+        void this.replay.remove(id)
+        return Promise.reject(new Error(built.error))
+      }
+      outbound = built.payload
+    }
+    const body = { ...outbound, type, request_id: id }
+    const timeoutMs = ackTimeoutMs(type, EXTRACTOR_RESOLVE_ACK_TIMEOUT_MS, REQUEST_ACK_TIMEOUT_MS)
     return new Promise<Record<string, unknown>>((resolve, reject) => {
       const tracked = this.trackPending(
         id,
         'rpc',
         resolve as (value: unknown) => void,
         reject,
-        REQUEST_ACK_TIMEOUT_MS,
+        timeoutMs,
+        persist,
       )
       if (!tracked) {
         reject(new Error('Request already in flight'))
@@ -258,7 +283,7 @@ export class WsClient {
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('WebSocket is not connected'))
     }
-    const id = newRequestId()
+    const id = mintRequestId()
     // Explicit field mapping: avoid generic key converters so header names
     // inside `headers` are never mangled.
     const payload = {
@@ -280,6 +305,7 @@ export class WsClient {
         value => resolve(value as DownloadResponse),
         reject,
         DOWNLOAD_ACK_TIMEOUT_MS,
+        false,
         'Download request timed out',
       )
       if (!tracked) {
@@ -447,6 +473,13 @@ export class WsClient {
       connectionState.capabilities = parsed.capabilities
       connectionState.protocolVersion = parsed.protocolVersion
       connectionState.hostVersion = parsed.hostVersion
+      if (parsed.match && hasCapability(parsed.capabilities, CAP_EXTRACTOR_RESOLVE)) {
+        applyParsedMatch(parsed.match)
+        void rescanHttpTabs().catch(() => undefined)
+      } else {
+        clearMatchSnapshot()
+        notifyExtractorMatchCleared()
+      }
       if (!connectionState.paired) {
         connectionState.paired = true
         const pairStatus: PairStatusMessage = {
@@ -496,13 +529,7 @@ export class WsClient {
     }
 
     const errorCode = typeof msg.error_code === 'string' ? msg.error_code : ''
-    if (
-      errorCode === 'unavailable' ||
-      errorCode === 'busy' ||
-      errorCode === 'invalid_request' ||
-      errorCode === 'idempotency_conflict' ||
-      errorCode === 'unsupported'
-    ) {
+    if (isRpcErrorCode(errorCode)) {
       routed.entry.reject(new Error(errorCode))
     } else {
       routed.entry.resolve(msg)
@@ -582,7 +609,8 @@ export class WsClient {
     resolve: (value: unknown) => void,
     reject: (err: Error) => void,
     timeoutMs: number,
-    timeoutMessage = 'Request timed out',
+    persist = false,
+    timeoutMessage?: string,
   ): boolean {
     if (!this.pending.add({ id, kind, resolve, reject })) {
       return false
@@ -590,8 +618,16 @@ export class WsClient {
     const timer = setTimeout(() => {
       const entry = this.pending.completeById(id)
       this.pendingTimers.delete(id)
-      void this.replay.remove(id)
-      entry?.reject(new Error(timeoutMessage))
+      if (timeoutMessage) {
+        void this.replay.remove(id)
+        entry?.reject(new Error(timeoutMessage))
+        return
+      }
+      const timed = noteRpcTimeout(persist, id)
+      if (timed.dropReplay) {
+        void this.replay.remove(id)
+      }
+      entry?.reject(timed.error)
     }, timeoutMs)
     this.pendingTimers.set(id, timer)
     return true
@@ -614,6 +650,8 @@ export class WsClient {
     connectionState.capabilities = undefined
     connectionState.protocolVersion = 0
     connectionState.hostVersion = ''
+    clearMatchSnapshot()
+    notifyExtractorHostDown('disconnect')
   }
 
   private setStatus(status: WsStatusMessage['status'], lastError: string): void {

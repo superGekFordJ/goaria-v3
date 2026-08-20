@@ -16,6 +16,11 @@ const (
 	emptyExtractOutputError = "could not resolve this link; authentication may be required or the link is unsupported"
 )
 
+var (
+	ErrResolveTimeout        = errors.New("extractor resolve timed out")
+	ErrGenericAuthResolution = errors.New(emptyExtractOutputError)
+)
+
 type HeaderProfileResolver interface {
 	ResolveHeaderProfile(ctx context.Context, packID string, profileRef string, rawURL string) ([]string, error)
 }
@@ -48,8 +53,8 @@ type AddTaskResolution struct {
 type ResolvedAddItem struct {
 	SourceURL        string
 	PackID           string
+	PackManifest     Manifest
 	PackIdentity     VerifiedPackIdentity
-	Manifest         Manifest
 	HostPolicy       *ResolvedHostPolicy
 	ID               string
 	URL              string
@@ -57,6 +62,7 @@ type ResolvedAddItem struct {
 	SizeBytes        int64
 	AuthProfileRef   string
 	HeaderProfileRef string
+	MimeType         string
 	Metadata         map[string]string
 }
 
@@ -67,6 +73,13 @@ func NewAddTaskDispatcher(config AddTaskDispatcherConfig) *AddTaskDispatcher {
 		authResolver:   config.AuthResolver,
 		headerResolver: config.HeaderResolver,
 	}
+}
+
+func (d *AddTaskDispatcher) Registry() *Registry {
+	if d == nil {
+		return nil
+	}
+	return d.registry
 }
 
 func (d *AddTaskDispatcher) AuthRuntimeRequestsForSource(ctx context.Context, rawURL string) ([]HostAuthRuntimeRequest, error) {
@@ -121,6 +134,9 @@ func (d *AddTaskDispatcher) Resolve(ctx context.Context, rawURL string) (AddTask
 		packID := pack.Manifest.PackID
 		match, err := d.runner.Match(ctx, pack, MatchInput{URL: rawURL})
 		if err != nil {
+			if isResolveTimeout(ctx, err) {
+				return AddTaskResolution{}, ErrResolveTimeout
+			}
 			errorsByPack = append(errorsByPack, safePackError(packID, err))
 			continue
 		}
@@ -131,6 +147,9 @@ func (d *AddTaskDispatcher) Resolve(ctx context.Context, rawURL string) (AddTask
 		positiveMatch = true
 		extracted, err := d.runner.Extract(ctx, pack, ExtractInput{URL: rawURL})
 		if err != nil {
+			if isResolveTimeout(ctx, err) {
+				return AddTaskResolution{}, ErrResolveTimeout
+			}
 			errorsByPack = append(errorsByPack, safePackError(packID, err))
 			continue
 		}
@@ -144,7 +163,6 @@ func (d *AddTaskDispatcher) Resolve(ctx context.Context, rawURL string) (AddTask
 			}
 			hostPolicy = &policy
 		}
-
 		items, err := resolvedItemsFromExtractOutput(rawURL, pack, hostPolicy, extracted)
 		if err != nil {
 			return AddTaskResolution{}, redactedError(fmt.Errorf("extractor pack %q returned invalid add item: %w", packID, err))
@@ -163,7 +181,7 @@ func (d *AddTaskDispatcher) Resolve(ctx context.Context, rawURL string) (AddTask
 	}
 
 	if emptyMatchedOutput {
-		return AddTaskResolution{}, redactErrorf(emptyExtractOutputError)
+		return AddTaskResolution{}, ErrGenericAuthResolution
 	}
 
 	if positiveMatch || len(errorsByPack) == len(candidates) {
@@ -174,11 +192,15 @@ func (d *AddTaskDispatcher) Resolve(ctx context.Context, rawURL string) (AddTask
 }
 
 func IsGenericAuthResolutionError(err error) bool {
-	if err == nil {
-		return false
+	return errors.Is(err, ErrGenericAuthResolution)
+}
+
+func isResolveTimeout(ctx context.Context, err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
 	}
 
-	return err.Error() == emptyExtractOutputError
+	return ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)
 }
 
 func (d *AddTaskDispatcher) BuildAria2Headers(ctx context.Context, item ResolvedAddItem) ([]string, error) {
@@ -195,10 +217,10 @@ func (d *AddTaskDispatcher) BuildAria2Headers(ctx context.Context, item Resolved
 		if d.authResolver == nil {
 			return nil, redactErrorf("auth profile resolver is not configured for ref %q", item.AuthProfileRef)
 		}
-		if materializer, ok := d.authResolver.(authProfileMaterializer); ok && item.PackIdentity.PackID != "" && item.Manifest.PackID != "" {
+		if materializer, ok := d.authResolver.(authProfileMaterializer); ok && item.PackIdentity.PackID != "" && item.PackManifest.PackID != "" {
 			material, err := materializer.MaterializeAuthProfile(ctx, HostAuthRuntimeRequest{
 				PackIdentity: item.PackIdentity,
-				Manifest:     item.Manifest,
+				Manifest:     cloneManifest(item.PackManifest),
 				SourceURL:    item.SourceURL,
 				TargetURL:    item.URL,
 				ProfileRef:   AuthProfileID(item.AuthProfileRef),
@@ -259,7 +281,7 @@ func ValidateResolvedAddItemAuthPolicy(item ResolvedAddItem) error {
 
 func validateResolvedAddItemAuthPolicy(item ResolvedAddItem) error {
 	if item.HostPolicy == nil {
-		if isAliasManifest(item.Manifest) {
+		if isAliasManifest(item.PackManifest) {
 			return redactErrorf("alias host policy is required for auth profile expansion")
 		}
 
@@ -281,8 +303,6 @@ func validateResolvedAddItemAuthPolicy(item ResolvedAddItem) error {
 }
 
 func resolvedItemsFromExtractOutput(sourceURL string, pack VerifiedPack, hostPolicy *ResolvedHostPolicy, output ExtractOutput) ([]ResolvedAddItem, error) {
-	packID := pack.Manifest.PackID
-	manifest := cloneManifest(pack.Manifest)
 	items := make([]ResolvedAddItem, 0, len(output.Items))
 	for i, ref := range output.Items {
 		if err := validateABIURL(ref.URL, "item url"); err != nil {
@@ -310,9 +330,9 @@ func resolvedItemsFromExtractOutput(sourceURL string, pack VerifiedPack, hostPol
 
 		items = append(items, ResolvedAddItem{
 			SourceURL:        sourceURL,
-			PackID:           packID,
+			PackID:           pack.Manifest.PackID,
+			PackManifest:     cloneManifest(pack.Manifest),
 			PackIdentity:     pack.Identity,
-			Manifest:         cloneManifest(manifest),
 			HostPolicy:       cloneResolvedHostPolicyPtr(hostPolicy),
 			ID:               ref.ID,
 			URL:              ref.URL,
@@ -320,11 +340,44 @@ func resolvedItemsFromExtractOutput(sourceURL string, pack VerifiedPack, hostPol
 			SizeBytes:        ref.SizeBytes,
 			AuthProfileRef:   ref.AuthProfileRef,
 			HeaderProfileRef: ref.HeaderProfileRef,
+			MimeType:         ref.MimeType,
 			Metadata:         metadata,
 		})
 	}
 
 	return items, nil
+}
+
+func CloneResolvedAddItem(item ResolvedAddItem) ResolvedAddItem {
+	out := item
+	out.PackManifest = cloneManifest(item.PackManifest)
+	out.HostPolicy = cloneResolvedHostPolicyPtr(item.HostPolicy)
+	if item.Metadata != nil {
+		out.Metadata = make(map[string]string, len(item.Metadata))
+		for key, value := range item.Metadata {
+			out.Metadata[key] = value
+		}
+	}
+
+	return out
+}
+
+func ValidateLeaseOutputURL(item ResolvedAddItem) error {
+	if err := validateABIURL(item.URL, "item url"); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(item.URL)
+	if err != nil || parsed.Scheme != "https" {
+		return errors.New("item url must use https")
+	}
+	if isAliasManifest(item.PackManifest) && item.HostPolicy == nil {
+		return errors.New("alias pack requires host policy")
+	}
+	if item.HostPolicy != nil {
+		return policyAllowsOutputURL(*item.HostPolicy, item.URL)
+	}
+
+	return nil
 }
 
 func cloneResolvedHostPolicyPtr(policy *ResolvedHostPolicy) *ResolvedHostPolicy {

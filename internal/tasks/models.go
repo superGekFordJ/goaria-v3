@@ -15,20 +15,21 @@ type BatchAddResult struct {
 }
 
 type addTaskCandidate struct {
-	sourceURL         string
-	url               string
-	out               string
-	sizeBytes         int64
-	extracted         bool
-	protected         bool
-	displayKey        string
-	item              ResolvedItem
-	downloadGroup     *downloadgroups.DownloadGroupPlan
-	externalHeaders   []string
-	externalSizeBytes int64
-	skipHeadProbe     bool
-	externalDedupKey  string
-	finalURL          string
+	sourceURL              string
+	url                    string
+	out                    string
+	sizeBytes              int64
+	extracted              bool
+	protected              bool
+	displayKey             string
+	item                   ResolvedItem
+	downloadGroup          *downloadgroups.DownloadGroupPlan
+	externalHeaders        []string
+	externalSizeBytes      int64
+	skipHeadProbe          bool
+	externalDedupKey       string
+	finalURL               string
+	callerOwnsGroupCleanup bool
 }
 
 type addTaskSummary struct {

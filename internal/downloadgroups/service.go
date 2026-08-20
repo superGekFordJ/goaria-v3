@@ -78,6 +78,43 @@ func NewDownloadGroupPlan(kind string, itemCount int, now time.Time) (*DownloadG
 	}, nil
 }
 
+func NewDownloadGroupPlanWithFolderName(kind string, itemCount int, now time.Time, folderName string) (*DownloadGroupPlan, error) {
+	sanitized := SanitizeDownloadGroupFolderName(folderName)
+	if sanitized == "" {
+		return NewDownloadGroupPlan(kind, itemCount, now)
+	}
+	if itemCount <= 0 {
+		return nil, errors.New("could not prepare download group folder")
+	}
+	if kind != DownloadGroupKindCollection && kind != DownloadGroupKindBatch && kind != DownloadGroupKindGeneric {
+		kind = DownloadGroupKindGeneric
+	}
+
+	baseDir, err := ResolveDownloadGroupBaseDir(config.Get().DownloadDir)
+	if err != nil {
+		return nil, err
+	}
+	dir, err := ResolveDownloadGroupDir(baseDir, sanitized)
+	if err != nil {
+		return nil, err
+	}
+
+	suffix := OpaqueDownloadGroupSuffix()
+	return &DownloadGroupPlan{
+		baseDir: baseDir,
+		group: rpc.DownloadGroup{
+			ID:         fmt.Sprintf("dg-%d-%s", now.Unix(), suffix),
+			Kind:       kind,
+			Name:       sanitized,
+			NameStatus: rpc.DownloadGroupNameStatusStable,
+			FolderName: sanitized,
+			Dir:        dir,
+			ItemCount:  itemCount,
+			CreatedAt:  now.Unix(),
+		},
+	}, nil
+}
+
 func SafeDownloadGroupFolderName(kind, timestamp, suffix string) (string, error) {
 	label := DownloadGroupLabel(kind)
 	name := strings.TrimSpace(strings.Join([]string{label, timestamp, suffix}, " "))
@@ -251,7 +288,58 @@ func SanitizeDownloadGroupFolderName(name string) string {
 	if len(runes) > DownloadGroupFolderMaxRunes {
 		cleaned = strings.TrimRight(string(runes[:DownloadGroupFolderMaxRunes]), ". ")
 	}
-	return strings.TrimSpace(cleaned)
+	cleaned = strings.TrimSpace(cleaned)
+	if isWindowsReservedFolderName(cleaned) {
+		return ""
+	}
+	return cleaned
+}
+
+func isWindowsReservedFolderName(name string) bool {
+	return IsWindowsReservedName(name)
+}
+
+func IsWindowsReservedName(name string) bool {
+	upper := strings.ToUpper(name)
+	if upper == "CONIN$" || upper == "CONOUT$" {
+		return true
+	}
+	stem := reservedFolderStem(upper)
+	stem = squeezeReservedFolderStem(stem)
+	switch stem {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	if len(stem) != 4 {
+		return false
+	}
+	prefix := stem[:3]
+	digit := stem[3]
+	return (prefix == "COM" || prefix == "LPT") && digit >= '1' && digit <= '9'
+}
+
+func reservedFolderStem(upper string) string {
+	for i, r := range upper {
+		if isReservedFolderDot(r) {
+			return upper[:i]
+		}
+	}
+	return upper
+}
+
+func squeezeReservedFolderStem(stem string) string {
+	var b strings.Builder
+	for _, r := range stem {
+		if unicode.IsSpace(r) || isReservedFolderDot(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func isReservedFolderDot(r rune) bool {
+	return r == '.' || r == '\uFF0E' || r == '\u3002' || r == ':'
 }
 
 func DownloadGroupPathContained(absBase, absGroup string) bool {

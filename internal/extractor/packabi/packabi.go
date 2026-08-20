@@ -83,7 +83,7 @@ type HostHTTPFetchResponse struct {
 }
 
 type HostAuthProfileStatusRequest struct {
-	AuthProfileRef  string            `json:"auth_profile_ref,omitempty"`
+	AuthProfileRef  string            `json:"auth_profile_ref"`
 	URL             string            `json:"url,omitempty"`
 	BrokerPolicyRef string            `json:"broker_policy_ref,omitempty"`
 	EndpointRef     string            `json:"endpoint_ref,omitempty"`

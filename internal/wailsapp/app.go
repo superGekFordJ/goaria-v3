@@ -49,6 +49,9 @@ type App struct {
 
 	downloadEngine  rpc.DownloadEngine
 	extensionServer *extension.Server
+
+	pendingMu               sync.Mutex         //nolint:unused,nolintlint
+	pendingExtensionLinkage *extension.Linkage //nolint:unused,nolintlint
 }
 
 type Options struct {
@@ -157,4 +160,11 @@ func (a *App) SetExtensionServer(s *extension.Server) {
 
 func (a *App) setExtractorAdapter(adapter tasks.ExtractorAdapter) { //nolint:unused,nolintlint
 	a.extractorAdapter = adapter
+}
+
+func (a *App) setPendingExtensionLinkage(l extension.Linkage) { //nolint:unused,nolintlint
+	cp := l
+	a.pendingMu.Lock()
+	a.pendingExtensionLinkage = &cp
+	a.pendingMu.Unlock()
 }

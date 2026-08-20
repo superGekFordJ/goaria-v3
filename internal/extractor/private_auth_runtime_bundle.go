@@ -213,25 +213,30 @@ func LoadPrivateAuthRuntimeBundleFromFile(path string, opts PrivateAuthRuntimeBu
 	return NewPrivateAuthRuntimeBundle(raw, opts)
 }
 
+func PrivateAuthRuntimeBundleRuntimeSourceState() RuntimeSourceState {
+	return classifyRuntimeSourceState(os.Getenv(privateAuthRuntimeBundlePathEnv) != "", len(embeddedPrivateAuthRuntimeBundleJSON) > 0)
+}
+
 func LoadPrivateAuthRuntimeBundleFromRuntimeSources() (*PrivateAuthRuntimeBundle, error) {
 	envPath := os.Getenv(privateAuthRuntimeBundlePathEnv)
 	envExpectedSHA256 := os.Getenv(privateAuthRuntimeBundleExpectedSHA256Env)
-	hasEnvSource := envPath != ""
-	hasEmbeddedSource := len(embeddedPrivateAuthRuntimeBundleJSON) > 0
+	sourceState := PrivateAuthRuntimeBundleRuntimeSourceState()
 
-	switch {
-	case !hasEnvSource && !hasEmbeddedSource:
+	switch sourceState {
+	case RuntimeSourceStateNone:
 		return nil, nil
-	case hasEnvSource && hasEmbeddedSource:
+	case RuntimeSourceStateAmbiguous:
 		return nil, errors.New(privateAuthRuntimeBundleInvalidError)
-	case hasEnvSource:
+	case RuntimeSourceStateEnv:
 		return LoadPrivateAuthRuntimeBundleFromFile(envPath, PrivateAuthRuntimeBundleLoadOptions{
 			ExpectedAuthRuntimePrivateSHA256: envExpectedSHA256,
 		})
-	default:
+	case RuntimeSourceStateEmbedded:
 		return NewPrivateAuthRuntimeBundle(embeddedPrivateAuthRuntimeBundleJSON, PrivateAuthRuntimeBundleLoadOptions{
 			ExpectedAuthRuntimePrivateSHA256: embeddedPrivateAuthRuntimeBundleSHA256,
 		})
+	default:
+		return nil, errors.New(privateAuthRuntimeBundleInvalidError)
 	}
 }
 
@@ -334,17 +339,17 @@ func validatePrivateAuthRuntimeBundleEnvelope(envelope privateAuthRuntimeBundleE
 	if len(envelope.Runtime) == 0 {
 		return errors.New("private auth runtime bundle runtime is empty")
 	}
-	if err := validateSHA256Hex("auth_runtime_private_sha256", envelope.AuthRuntimePrivateSHA256); err != nil {
+	if err := validateLowerHexSHA256Field("auth_runtime_private_sha256", envelope.AuthRuntimePrivateSHA256); err != nil {
 		return err
 	}
-	if sha256Hex(envelope.Runtime) != envelope.AuthRuntimePrivateSHA256 {
+	if sha256HexString(envelope.Runtime) != envelope.AuthRuntimePrivateSHA256 {
 		return errors.New("private auth runtime bundle runtime hash mismatch")
 	}
 	if err := validateExpectedPrivateAuthRuntimeSHA256(opts.ExpectedAuthRuntimePrivateSHA256, envelope.AuthRuntimePrivateSHA256); err != nil {
 		return err
 	}
 	if envelope.AuthRuntimePublicFingerprint != "" {
-		if err := validateSHA256Hex("auth_runtime_public_fingerprint", envelope.AuthRuntimePublicFingerprint); err != nil {
+		if err := validateLowerHexSHA256Field("auth_runtime_public_fingerprint", envelope.AuthRuntimePublicFingerprint); err != nil {
 			return err
 		}
 	}
@@ -362,7 +367,7 @@ func validateExpectedPrivateAuthRuntimeSHA256(expected string, actual string) er
 	if strings.TrimSpace(expected) != expected {
 		return errors.New("expected private auth runtime sha256 is invalid")
 	}
-	if err := validateSHA256Hex("expected_auth_runtime_private_sha256", expected); err != nil {
+	if err := validateLowerHexSHA256Field("expected_auth_runtime_private_sha256", expected); err != nil {
 		return err
 	}
 	if expected != actual {
@@ -379,7 +384,7 @@ func validateExpectedAuthRuntimePublicFingerprint(expected string, actual string
 	if strings.TrimSpace(expected) != expected {
 		return errors.New("expected auth runtime public fingerprint is invalid")
 	}
-	if err := validateSHA256Hex("expected_auth_runtime_public_fingerprint", expected); err != nil {
+	if err := validateLowerHexSHA256Field("expected_auth_runtime_public_fingerprint", expected); err != nil {
 		return err
 	}
 	if expected != actual {
@@ -396,16 +401,20 @@ func validatePrivateAuthRuntimeBundleIdentity(identity VerifiedPackIdentity) err
 	if err := validatePackVersion(identity.PackVersion); err != nil {
 		return err
 	}
-	for field, value := range map[string]string{
-		"asset_sha256":      identity.AssetSHA256,
-		"manifest_sha256":   identity.ManifestSHA256,
-		"payload_sha256":    identity.PayloadSHA256,
-		"signature_sha256":  identity.SignatureSHA256,
-		"public_key_sha256": identity.PublicKeySHA256,
-	} {
-		if err := validateSHA256Hex(field, value); err != nil {
-			return err
-		}
+	if err := validateLowerHexSHA256Field("asset_sha256", identity.AssetSHA256); err != nil {
+		return err
+	}
+	if err := validateLowerHexSHA256Field("manifest_sha256", identity.ManifestSHA256); err != nil {
+		return err
+	}
+	if err := validateLowerHexSHA256Field("payload_sha256", identity.PayloadSHA256); err != nil {
+		return err
+	}
+	if err := validateLowerHexSHA256Field("signature_sha256", identity.SignatureSHA256); err != nil {
+		return err
+	}
+	if err := validateLowerHexSHA256Field("public_key_sha256", identity.PublicKeySHA256); err != nil {
+		return err
 	}
 
 	return nil

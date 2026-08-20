@@ -4,512 +4,413 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestPrivatePolicyBundleLoadsAndResolves(t *testing.T) {
-	manifest := validAliasTestManifest(nil)
-	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
-	identity := syntheticVerifiedPackIdentity(manifest)
-	raw := privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{Identity: identity, Manifest: manifest}}, nil)
+func TestPrivatePolicyBundleLoadsAndResolvesSyntheticPolicy(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	raw, privateSHA := mustPrivatePolicyBundleJSON(t, pack.Identity, nil)
 
-	resolver, err := NewPrivatePolicyBundleResolver(raw, PrivatePolicyBundleLoadOptions{})
+	resolver, err := NewPrivatePolicyBundleResolver(raw, PrivatePolicyBundleLoadOptions{ExpectedPolicyPrivateSHA256: privateSHA})
 	if err != nil {
 		t.Fatalf("NewPrivatePolicyBundleResolver() error = %v", err)
 	}
-	policy, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: identity, Manifest: manifest})
+	resolved, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: pack.Identity, Manifest: pack.Manifest})
 	if err != nil {
 		t.Fatalf("ResolveHostPolicy() error = %v", err)
 	}
-	if policy.PolicyID != "hpb-alpha001" || policy.PolicyVersion != "opaque-1" || policy.PolicySHA256 != privatePolicyHash(t, raw) {
-		t.Fatalf("resolved policy envelope fields mismatch: %#v", policy)
+	if resolved.PackIdentity != pack.Identity {
+		t.Fatalf("resolved identity = %#v, want %#v", resolved.PackIdentity, pack.Identity)
 	}
-	if policy.PackIdentity != identity {
-		t.Fatalf("resolved identity mismatch: %#v", policy.PackIdentity)
+	if resolved.PolicyID != "hpb-alpha001" || resolved.PolicyVersion != "opaque-1" || resolved.PolicySHA256 != privateSHA {
+		t.Fatalf("resolved policy identity = %#v", resolved)
 	}
-	if !policyIngressMatchesHost(policy, "share.alpha.test") {
-		t.Fatalf("resolved policy did not include expected ingress: %#v", policy.IngressDomains)
+	if !policyIngressMatchesHost(resolved, "share.alpha.test") {
+		t.Fatalf("resolved policy does not match synthetic ingress")
 	}
 }
 
-func TestPrivatePolicyBundlePreservesOutputAndAuthPolicyScopes(t *testing.T) {
-	manifest := validAliasTestManifest(nil)
-	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
-	identity := syntheticVerifiedPackIdentity(manifest)
-	outputDomains := []HostPolicyOutputRule{{Host: "assets.alpha.test", IncludeSubdomains: true, PathPrefixes: []string{"/public/", "/"}}}
-	authProfiles := []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "api.alpha.test", IncludeSubdomains: true}}}}
-	endpoints := []HostPolicyBrokerEndpoint{{
-		BrokerPolicyRef: "bpr-alpha001",
-		EndpointRef:     "epr-alpha001",
-		URLTemplate:     "https://api.alpha.test/resource/{id}",
-		Methods:         []string{"GET"},
-		AuthProfileRefs: []string{"apr-alpha001"},
-	}}
-	raw := privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{
-		Identity:        identity,
-		Manifest:        manifest,
-		OutputDomains:   outputDomains,
-		AuthProfiles:    authProfiles,
-		BrokerEndpoints: endpoints,
-	}}, nil)
-
+func TestPrivatePolicyBundleResolverReturnsDefensiveCopies(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	raw, _ := mustPrivatePolicyBundleJSON(t, pack.Identity, nil)
 	resolver, err := NewPrivatePolicyBundleResolver(raw, PrivatePolicyBundleLoadOptions{})
 	if err != nil {
 		t.Fatalf("NewPrivatePolicyBundleResolver() error = %v", err)
 	}
-	policy, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: identity, Manifest: manifest})
+
+	resolved, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: pack.Identity, Manifest: pack.Manifest})
 	if err != nil {
 		t.Fatalf("ResolveHostPolicy() error = %v", err)
 	}
-	if len(policy.OutputDomains) != 1 || policy.OutputDomains[0].Host != "assets.alpha.test" || !policy.OutputDomains[0].IncludeSubdomains || strings.Join(policy.OutputDomains[0].PathPrefixes, ",") != "/public/,/" {
-		t.Fatalf("output domains were not preserved: %#v", policy.OutputDomains)
+	resolved.DomainPolicyRefs[0] = "dpr-mutated"
+	resolved.IngressDomains[0].Host = "mutated.alpha.test"
+	resolved.OutputDomains[0].PathPrefixes[0] = "/mutated/"
+	resolved.AuthProfiles[0].Domains[0].Host = "mutated.alpha.test"
+	resolved.Endpoints[0].Methods[0] = "POST"
+
+	fresh, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: pack.Identity, Manifest: pack.Manifest})
+	if err != nil {
+		t.Fatalf("ResolveHostPolicy() second error = %v", err)
 	}
-	if err := policyAllowsOutputURL(policy, "https://cdn.assets.alpha.test/public/item.bin"); err != nil {
-		t.Fatalf("policyAllowsOutputURL() subdomain output error = %v", err)
-	}
-	if !policyAuthProfileMatchesHost(policy, "apr-alpha001", "sub.api.alpha.test") || policyAuthProfileMatchesHost(policy, "apr-alpha001", "assets.alpha.test") {
-		t.Fatalf("auth profile scope mismatch: %#v", policy.AuthProfiles)
-	}
-	endpoint, ok := findBrokerEndpoint(policy, "bpr-alpha001", "epr-alpha001")
-	if !ok || !endpointAllowsAuthProfile(endpoint, "apr-alpha001") || endpointAllowsAuthProfile(endpoint, "apr-alpha002") {
-		t.Fatalf("endpoint auth refs mismatch: %#v ok=%t", endpoint, ok)
+	if fresh.DomainPolicyRefs[0] != "dpr-alpha001" || fresh.IngressDomains[0].Host != "share.alpha.test" || fresh.OutputDomains[0].PathPrefixes[0] != "/downloads/" || fresh.AuthProfiles[0].Domains[0].Host != "api.alpha.test" || fresh.Endpoints[0].Methods[0] != "GET" {
+		t.Fatalf("resolved policy was not defensive-copied: %#v", fresh)
 	}
 }
 
-func TestPrivatePolicyBundleReturnsDefensiveCopies(t *testing.T) {
-	manifest := validAliasTestManifest(nil)
-	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
-	identity := syntheticVerifiedPackIdentity(manifest)
-	raw := privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{Identity: identity, Manifest: manifest}}, nil)
-
-	resolver, err := NewPrivatePolicyBundleResolver(raw, PrivatePolicyBundleLoadOptions{})
-	if err != nil {
-		t.Fatalf("NewPrivatePolicyBundleResolver() error = %v", err)
-	}
-	for i := range raw {
-		raw[i] = 0
-	}
-	policy, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: identity, Manifest: manifest})
-	if err != nil {
-		t.Fatalf("ResolveHostPolicy() error = %v", err)
-	}
-	policy.DomainPolicyRefs[0] = "dpr-mutated"
-	policy.BrokerPolicyRefs[0] = "bpr-mutated"
-	policy.AllowedCapabilities[0] = Capability("cap.changed")
-	policy.IngressDomains[0].Host = "mutated.alpha.test"
-	policy.OutputDomains[0].PathPrefixes[0] = "/mutated/"
-	policy.AuthProfiles[0].Domains[0].Host = "mutated.alpha.test"
-	policy.BrokerEndpoints[0].Methods[0] = "POST"
-	policy.BrokerEndpoints[0].AuthProfileRefs[0] = "apr-mutated"
-
-	fresh, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: identity, Manifest: manifest})
-	if err != nil {
-		t.Fatalf("ResolveHostPolicy() fresh error = %v", err)
-	}
-	if fresh.DomainPolicyRefs[0] != "dpr-alpha001" || fresh.BrokerPolicyRefs[0] != "bpr-alpha001" || fresh.AllowedCapabilities[0] != CapabilityParseWASM || fresh.IngressDomains[0].Host != "share.alpha.test" || fresh.OutputDomains[0].PathPrefixes[0] != "/downloads/" || fresh.AuthProfiles[0].Domains[0].Host != "api.alpha.test" || fresh.BrokerEndpoints[0].Methods[0] != "GET" || fresh.BrokerEndpoints[0].AuthProfileRefs[0] != "apr-alpha001" {
-		t.Fatalf("resolved policy was not defensively copied: %#v", fresh)
-	}
-}
-
-func TestPrivatePolicyBundleResolverDeniesMismatches(t *testing.T) {
-	manifest := validAliasTestManifest(nil)
-	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
-	identity := syntheticVerifiedPackIdentity(manifest)
-	raw := privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{Identity: identity, Manifest: manifest}}, nil)
+func TestPrivatePolicyBundleResolutionFailsClosedForMismatches(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	raw, _ := mustPrivatePolicyBundleJSON(t, pack.Identity, nil)
 	resolver, err := NewPrivatePolicyBundleResolver(raw, PrivatePolicyBundleLoadOptions{})
 	if err != nil {
 		t.Fatalf("NewPrivatePolicyBundleResolver() error = %v", err)
 	}
 
-	tests := []struct {
-		name     string
-		identity VerifiedPackIdentity
-		manifest Manifest
-	}{
-		{name: "missing bundle identity", identity: syntheticVerifiedPackIdentity(validAliasAuthTestManifest(func(m *Manifest) { m.PackID = "xpk-alpha002" })), manifest: validAliasAuthTestManifest(func(m *Manifest) { m.PackID = "xpk-alpha002" })},
-		{name: "mismatched asset", identity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.AssetSHA256 = strings.Repeat("1", 64) }), manifest: manifest},
-		{name: "mismatched manifest hash", identity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.ManifestSHA256 = strings.Repeat("2", 64) }), manifest: manifest},
-		{name: "mismatched payload hash", identity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.PayloadSHA256 = strings.Repeat("3", 64) }), manifest: manifest},
-		{name: "mismatched signature hash", identity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.SignatureSHA256 = strings.Repeat("4", 64) }), manifest: manifest},
-		{name: "mismatched public key hash", identity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.PublicKeySHA256 = strings.Repeat("5", 64) }), manifest: manifest},
-		{name: "mismatched domain refs", identity: identity, manifest: validAliasAuthTestManifest(func(m *Manifest) { m.DomainPolicyRefs = []string{"dpr-alpha002"} })},
-		{name: "capability mismatch", identity: identity, manifest: validAliasTestManifest(func(m *Manifest) { m.Capabilities = []Capability{CapabilityParseWASM} })},
-		{name: "legacy manifest", identity: syntheticVerifiedPackIdentity(validTestManifest()), manifest: validTestManifest()},
-		{name: "incomplete request identity", identity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.AssetSHA256 = "" }), manifest: manifest},
+	missingIdentity := pack.Identity
+	missingIdentity.AssetSHA256 = hashString('9')
+	if _, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: missingIdentity, Manifest: pack.Manifest}); err == nil {
+		t.Fatal("ResolveHostPolicy() missing identity error = nil")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: tt.identity, Manifest: tt.manifest})
-			if err == nil {
-				t.Fatal("ResolveHostPolicy() error = nil, want denial")
-			}
-			if err.Error() != privateHostPolicyResolutionDenied {
-				t.Fatalf("ResolveHostPolicy() error = %q, want generic denial", err.Error())
-			}
-		})
+	manifestRefMismatch := pack.Manifest
+	manifestRefMismatch.DomainPolicyRefs = []string{"dpr-bravo001"}
+	if _, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: pack.Identity, Manifest: manifestRefMismatch}); err == nil {
+		t.Fatal("ResolveHostPolicy() manifest ref mismatch error = nil")
+	}
+
+	manifestCapabilityMismatch := pack.Manifest
+	manifestCapabilityMismatch.Capabilities = []Capability{CapabilityParseWASM, CapabilityHTTPFetch}
+	if _, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: pack.Identity, Manifest: manifestCapabilityMismatch}); err == nil {
+		t.Fatal("ResolveHostPolicy() capability mismatch error = nil")
+	}
+
+	legacyManifest := validTestManifest()
+	if _, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: pack.Identity, Manifest: legacyManifest}); err == nil {
+		t.Fatal("ResolveHostPolicy() legacy manifest error = nil")
 	}
 }
 
-func TestPrivatePolicyBundleRejectsMalformedBundles(t *testing.T) {
-	manifest := validAliasTestManifest(nil)
-	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
-	identity := syntheticVerifiedPackIdentity(manifest)
-	basePack := privatePolicyBundlePackFixture{Identity: identity, Manifest: manifest}
-	validRaw := privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, nil)
-	validHash := privatePolicyHash(t, validRaw)
-
-	tests := []struct {
-		name string
-		raw  []byte
-		opts PrivatePolicyBundleLoadOptions
-	}{
-		{name: "malformed json", raw: []byte(`{`)},
-		{name: "unknown envelope field", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(bundle map[string]any, _ map[string]any, _ []map[string]any) { bundle["unknown"] = true })},
-		{name: "unknown policy field", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(_ map[string]any, policy map[string]any, _ []map[string]any) { policy["unknown"] = true })},
-		{name: "unknown pack field", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) { packs[0]["unknown"] = true })},
-		{name: "unknown identity field", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["verified_pack_identity"].(map[string]any)["unknown"] = true
-		})},
-		{name: "unknown output rule field", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["output_domain_rules"].([]map[string]any)[0]["unknown"] = true
-		})},
-		{name: "unknown auth scope field", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["auth_profile_scopes"].([]map[string]any)[0]["unknown"] = true
-		})},
-		{name: "unknown endpoint field", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(_ map[string]any, _ map[string]any, packs []map[string]any) {
-			packs[0]["endpoints"].([]map[string]any)[0]["unknown"] = true
-		})},
-		{name: "trailing json", raw: append(cloneBytes(validRaw), []byte(` {}`)...)},
-		{name: "unsupported schema", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(bundle map[string]any, _ map[string]any, _ []map[string]any) { bundle["schema_version"] = 2 })},
-		{name: "malformed bundle id", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(bundle map[string]any, _ map[string]any, _ []map[string]any) {
-			bundle["bundle_id"] = "hpb.alpha001"
-		})},
-		{name: "empty bundle version", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(bundle map[string]any, _ map[string]any, _ []map[string]any) { bundle["bundle_version"] = "" })},
-		{name: "whitespace bundle version", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(bundle map[string]any, _ map[string]any, _ []map[string]any) {
-			bundle["bundle_version"] = "opaque 1"
-		})},
-		{name: "path bundle version", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(bundle map[string]any, _ map[string]any, _ []map[string]any) {
-			bundle["bundle_version"] = "opaque/1"
-		})},
-		{name: "malformed private hash", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(bundle map[string]any, _ map[string]any, _ []map[string]any) {
-			bundle["policy_private_sha256"] = strings.Repeat("A", 64)
-		})},
-		{name: "wrong private hash", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(bundle map[string]any, _ map[string]any, _ []map[string]any) {
-			bundle["policy_private_sha256"] = strings.Repeat("1", 64)
-		})},
-		{name: "expected sha mismatch", raw: validRaw, opts: PrivatePolicyBundleLoadOptions{ExpectedPolicyPrivateSHA256: strings.Repeat("2", 64)}},
-		{name: "malformed expected sha", raw: validRaw, opts: PrivatePolicyBundleLoadOptions{ExpectedPolicyPrivateSHA256: strings.Repeat("A", 64)}},
-		{name: "expected sha whitespace", raw: validRaw, opts: PrivatePolicyBundleLoadOptions{ExpectedPolicyPrivateSHA256: validHash + " "}},
-		{name: "malformed public fingerprint", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(bundle map[string]any, _ map[string]any, _ []map[string]any) {
-			bundle["policy_public_fingerprint"] = strings.Repeat("G", 64)
-		})},
-		{name: "expected fingerprint mismatch", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack}, func(bundle map[string]any, _ map[string]any, _ []map[string]any) {
-			bundle["policy_public_fingerprint"] = strings.Repeat("3", 64)
-		}), opts: PrivatePolicyBundleLoadOptions{ExpectedPolicyPublicFingerprint: strings.Repeat("4", 64)}},
-		{name: "malformed expected fingerprint", raw: validRaw, opts: PrivatePolicyBundleLoadOptions{ExpectedPolicyPublicFingerprint: strings.Repeat("Z", 64)}},
-		{name: "empty packs", raw: privatePolicyBundleRaw(t, nil, nil)},
-		{name: "missing asset sha", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{Identity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.AssetSHA256 = "" }), Manifest: manifest}}, nil)},
-		{name: "malformed manifest sha", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{Identity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.ManifestSHA256 = "bad" }), Manifest: manifest}}, nil)},
-		{name: "duplicate identities", raw: privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{basePack, basePack}, nil)},
+func TestPrivatePolicyBundleResolutionBindsEveryIdentityHashField(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	raw, _ := mustPrivatePolicyBundleJSON(t, pack.Identity, nil)
+	resolver, err := NewPrivatePolicyBundleResolver(raw, PrivatePolicyBundleLoadOptions{})
+	if err != nil {
+		t.Fatalf("NewPrivatePolicyBundleResolver() error = %v", err)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resolver, err := NewPrivatePolicyBundleResolver(tt.raw, tt.opts)
-			if err == nil {
-				t.Fatalf("NewPrivatePolicyBundleResolver() error = nil, resolver=%#v", resolver)
-			}
-			assertGenericPrivateBundleError(t, err)
-		})
-	}
-
-	if _, err := NewPrivatePolicyBundleResolver(validRaw, PrivatePolicyBundleLoadOptions{ExpectedPolicyPrivateSHA256: validHash}); err != nil {
-		t.Fatalf("NewPrivatePolicyBundleResolver() expected sha match error = %v", err)
-	}
-}
-
-func TestPrivatePolicyBundleInvalidPoliciesFailAtLookup(t *testing.T) {
-	manifest := validAliasTestManifest(nil)
-	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
-	identity := syntheticVerifiedPackIdentity(manifest)
 
 	tests := []struct {
 		name   string
-		mutate func(*privatePolicyBundlePackFixture)
+		mutate func(*VerifiedPackIdentity)
 	}{
-		{name: "invalid ingress domain", mutate: func(f *privatePolicyBundlePackFixture) { f.IngressDomains = []DomainRule{{Host: "*.alpha.test"}} }},
-		{name: "invalid broker domain", mutate: func(f *privatePolicyBundlePackFixture) { f.BrokerDomains = []DomainRule{{Host: "api.alpha.test:443"}} }},
-		{name: "invalid output rule", mutate: func(f *privatePolicyBundlePackFixture) { f.OutputDomains[0].Host = "files.alpha.test/path" }},
-		{name: "invalid output path prefix", mutate: func(f *privatePolicyBundlePackFixture) { f.OutputDomains[0].PathPrefixes = []string{"downloads"} }},
-		{name: "invalid auth profile scope", mutate: func(f *privatePolicyBundlePackFixture) { f.AuthProfiles[0].ProfileID = "Invalid" }},
-		{name: "invalid auth profile scope domain", mutate: func(f *privatePolicyBundlePackFixture) {
-			f.AuthProfiles[0].Domains = []DomainRule{{Host: "api.alpha.test/path"}}
-		}},
-		{name: "invalid endpoint ref", mutate: func(f *privatePolicyBundlePackFixture) { f.BrokerEndpoints[0].EndpointRef = "endpoint.alpha" }},
-		{name: "invalid endpoint template", mutate: func(f *privatePolicyBundlePackFixture) {
-			f.BrokerEndpoints[0].URLTemplate = "https://user:pass@api.alpha.test/resource/{id}"
-		}},
-		{name: "invalid endpoint method", mutate: func(f *privatePolicyBundlePackFixture) { f.BrokerEndpoints[0].Methods = []string{"GET", "GET"} }},
-		{name: "invalid auth profile ref", mutate: func(f *privatePolicyBundlePackFixture) { f.BrokerEndpoints[0].AuthProfileRefs = []string{"Invalid"} }},
-		{name: "undeclared auth profile ref", mutate: func(f *privatePolicyBundlePackFixture) {
-			f.BrokerEndpoints[0].AuthProfileRefs = []string{"apr-alpha002"}
-		}},
-		{name: "undeclared broker ref", mutate: func(f *privatePolicyBundlePackFixture) { f.BrokerEndpoints[0].BrokerPolicyRef = "bpr-alpha002" }},
-		{name: "endpoint timeout exceeds limit", mutate: func(f *privatePolicyBundlePackFixture) {
-			f.BrokerEndpoints[0].TimeoutMillis = DefaultTrustPolicy().MaxResourceLimits.TimeoutMillis + 1
-		}},
-		{name: "endpoint response exceeds limit", mutate: func(f *privatePolicyBundlePackFixture) {
-			f.BrokerEndpoints[0].MaxResponseBytes = DefaultTrustPolicy().MaxResourceLimits.MaxResponseBytes + 1
-		}},
-		{name: "duplicate endpoint ref", mutate: func(f *privatePolicyBundlePackFixture) {
-			f.BrokerEndpoints = append(f.BrokerEndpoints, f.BrokerEndpoints[0])
-		}},
+		{name: "asset_sha256", mutate: func(identity *VerifiedPackIdentity) { identity.AssetSHA256 = hashString('1') }},
+		{name: "manifest_sha256", mutate: func(identity *VerifiedPackIdentity) { identity.ManifestSHA256 = hashString('2') }},
+		{name: "payload_sha256", mutate: func(identity *VerifiedPackIdentity) { identity.PayloadSHA256 = hashString('3') }},
+		{name: "signature_sha256", mutate: func(identity *VerifiedPackIdentity) { identity.SignatureSHA256 = hashString('4') }},
+		{name: "public_key_sha256", mutate: func(identity *VerifiedPackIdentity) { identity.PublicKeySHA256 = hashString('5') }},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fixture := privatePolicyBundlePackFixture{
-				Identity: identity, Manifest: manifest,
-				OutputDomains: []HostPolicyOutputRule{{Host: "files.alpha.test", IncludeSubdomains: true, PathPrefixes: []string{"/downloads/"}}},
-				AuthProfiles:  []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "api.alpha.test"}}}},
-				BrokerEndpoints: []HostPolicyBrokerEndpoint{{
-					BrokerPolicyRef:  "bpr-alpha001",
-					EndpointRef:      "epr-alpha001",
-					URLTemplate:      "https://api.alpha.test/resource/{id}",
-					Methods:          []string{"GET", "HEAD"},
-					AuthProfileRefs:  []string{"apr-alpha001"},
-					TimeoutMillis:    100,
-					MaxResponseBytes: 512,
-				}},
-			}
-			tt.mutate(&fixture)
-			resolver, err := NewPrivatePolicyBundleResolver(privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{fixture}, nil), PrivatePolicyBundleLoadOptions{})
-			if err != nil {
-				assertGenericPrivateBundleError(t, err)
-				return
-			}
-			_, err = resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: identity, Manifest: manifest})
-			if err == nil {
-				t.Fatal("ResolveHostPolicy() error = nil, want validation denial")
-			}
-			if err.Error() != privateHostPolicyResolutionDenied {
-				t.Fatalf("ResolveHostPolicy() error = %q, want generic denial", err.Error())
+			identity := pack.Identity
+			tt.mutate(&identity)
+			if _, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: identity, Manifest: pack.Manifest}); err == nil {
+				t.Fatal("ResolveHostPolicy() error = nil, want exact identity hash binding denial")
 			}
 		})
 	}
 }
 
-func TestPrivatePolicyBundleErrorsAreGeneric(t *testing.T) {
-	manifest := validAliasTestManifest(nil)
-	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
-	identity := syntheticVerifiedPackIdentity(manifest)
-	raw := privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{Identity: identity, Manifest: manifest}}, nil)
-	privateHash := privatePolicyHash(t, raw)
-	rawJSON := string(raw)
-	endpointTemplate := "https://api.alpha.test/resource/{id}"
+func TestPrivatePolicyBundleEndpointResourceCapsValidateAtLoadAndLookup(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
 
-	resolver, err := NewPrivatePolicyBundleResolver(raw, PrivatePolicyBundleLoadOptions{ExpectedPolicyPrivateSHA256: strings.Repeat("1", 64)})
-	if err == nil {
-		t.Fatalf("NewPrivatePolicyBundleResolver() error = nil, resolver=%#v", resolver)
+	loadTooLarge := mustMutatedPrivatePolicyBundleJSON(t, pack.Identity, func(envelope map[string]any) {
+		entry := mustPrivatePolicyBundlePackMap(pack.Identity)
+		entry["endpoints"].([]map[string]any)[0]["max_response_bytes"] = DefaultTrustPolicy().MaxResourceLimits.MaxResponseBytes + 1
+		envelope["policy"] = map[string]any{"packs": []any{entry}}
+	})
+	if _, err := NewPrivatePolicyBundleResolver(loadTooLarge, PrivatePolicyBundleLoadOptions{}); err == nil {
+		t.Fatal("NewPrivatePolicyBundleResolver() error = nil, want host max resource cap denial")
 	}
-	assertNoPrivateBundleLeak(t, err.Error(), privateHash, rawJSON, endpointTemplate, "api.alpha.test", "share.alpha.test")
 
-	resolver, err = NewPrivatePolicyBundleResolver(raw, PrivatePolicyBundleLoadOptions{})
+	raw, _ := mustPrivatePolicyBundleJSON(t, pack.Identity, nil)
+	resolver, err := NewPrivatePolicyBundleResolver(raw, PrivatePolicyBundleLoadOptions{})
 	if err != nil {
 		t.Fatalf("NewPrivatePolicyBundleResolver() error = %v", err)
 	}
-	_, err = resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: mutateIdentity(identity, func(id *VerifiedPackIdentity) { id.AssetSHA256 = strings.Repeat("1", 64) }), Manifest: manifest})
-	if err == nil {
-		t.Fatal("ResolveHostPolicy() error = nil, want denial")
+	manifest := pack.Manifest
+	manifest.ResourceLimits.MaxResponseBytes = 128
+	if _, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: pack.Identity, Manifest: manifest}); err == nil {
+		t.Fatal("ResolveHostPolicy() error = nil, want signed manifest resource cap denial")
 	}
-	assertNoPrivateBundleLeak(t, err.Error(), privateHash, rawJSON, endpointTemplate, "api.alpha.test", "share.alpha.test")
 }
 
-func TestPrivatePolicyRuntimeSource(t *testing.T) {
-	withPrivatePolicyRuntimeEnv(t, "", "")
-	withEmbeddedPrivatePolicyBundleState(t, nil, "")
+func TestPrivatePolicyBundleRejectsMalformedEnvelope(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	validRaw, validSHA := mustPrivatePolicyBundleJSON(t, pack.Identity, nil)
+
+	tests := []struct {
+		name    string
+		raw     []byte
+		opts    PrivatePolicyBundleLoadOptions
+		mutate  func(map[string]any)
+		wantErr string
+	}{
+		{name: "malformed json", raw: []byte(`{`), wantErr: "private host policy bundle is invalid"},
+		{name: "unknown envelope field", mutate: func(envelope map[string]any) { envelope["extra"] = true }},
+		{name: "trailing json", raw: append(append([]byte(nil), validRaw...), []byte(` {}`)...)},
+		{name: "unsupported schema", mutate: func(envelope map[string]any) { envelope["schema_version"] = 2 }},
+		{name: "malformed bundle id", mutate: func(envelope map[string]any) { envelope["bundle_id"] = "HPB_ALPHA001" }},
+		{name: "malformed bundle version", mutate: func(envelope map[string]any) { envelope["bundle_version"] = "opaque 1" }},
+		{name: "malformed private hash", mutate: func(envelope map[string]any) { envelope["policy_private_sha256"] = strings.ToUpper(validSHA) }},
+		{name: "wrong computed hash", mutate: func(envelope map[string]any) { envelope["policy_private_sha256"] = hashString('9') }},
+		{name: "expected private hash mismatch", opts: PrivatePolicyBundleLoadOptions{ExpectedPolicyPrivateSHA256: hashString('8')}},
+		{name: "malformed public fingerprint", mutate: func(envelope map[string]any) { envelope["policy_public_fingerprint"] = "abc" }},
+		{name: "expected public fingerprint mismatch", opts: PrivatePolicyBundleLoadOptions{ExpectedPolicyPublicFingerprint: hashString('7')}},
+		{name: "empty packs", mutate: func(envelope map[string]any) { envelope["policy"] = map[string]any{"packs": []any{}} }},
+		{name: "unknown policy field", mutate: func(envelope map[string]any) {
+			envelope["policy"] = map[string]any{"packs": []any{mustPrivatePolicyBundlePackMap(pack.Identity)}, "extra": true}
+		}},
+		{name: "unknown pack field", mutate: func(envelope map[string]any) {
+			entry := mustPrivatePolicyBundlePackMap(pack.Identity)
+			entry["extra"] = true
+			envelope["policy"] = map[string]any{"packs": []any{entry}}
+		}},
+		{name: "duplicate identities", mutate: func(envelope map[string]any) {
+			entry := mustPrivatePolicyBundlePackMap(pack.Identity)
+			envelope["policy"] = map[string]any{"packs": []any{entry, entry}}
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := tt.raw
+			if raw == nil {
+				raw = mustMutatedPrivatePolicyBundleJSON(t, pack.Identity, tt.mutate)
+			}
+			_, err := NewPrivatePolicyBundleResolver(raw, tt.opts)
+			if err == nil {
+				t.Fatal("NewPrivatePolicyBundleResolver() error = nil")
+			}
+			if !strings.Contains(err.Error(), "private host policy bundle is invalid") {
+				t.Fatalf("error = %q, want generic bundle error", err.Error())
+			}
+		})
+	}
+}
+
+func TestPrivatePolicyBundleRejectsInvalidPackEntries(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "missing asset hash", mutate: func(entry map[string]any) { entry["verified_pack_identity"].(map[string]any)["asset_sha256"] = "" }},
+		{name: "public key hash mismatch shape", mutate: func(entry map[string]any) {
+			entry["verified_pack_identity"].(map[string]any)["public_key_sha256"] = "ABC"
+		}},
+		{name: "malformed domain ref", mutate: func(entry map[string]any) { entry["domain_policy_refs"] = []string{"dpr_bravo001"} }},
+		{name: "duplicate domain refs", mutate: func(entry map[string]any) { entry["domain_policy_refs"] = []string{"dpr-alpha001", "dpr-alpha001"} }},
+		{name: "unknown capability", mutate: func(entry map[string]any) {
+			entry["allowed_capabilities"] = []string{string(CapabilityParseWASM), "cap.unknown"}
+		}},
+		{name: "invalid ingress domain", mutate: func(entry map[string]any) {
+			entry["ingress_domain_rules"] = []map[string]any{{"host": "share.alpha.test/path"}}
+		}},
+		{name: "invalid broker domain", mutate: func(entry map[string]any) {
+			entry["broker_domain_rules"] = []map[string]any{{"host": "api.alpha.test/path"}}
+		}},
+		{name: "invalid output domain", mutate: func(entry map[string]any) {
+			entry["output_domain_rules"] = []map[string]any{{"host": "files.alpha.test/path", "path_prefixes": []string{"/downloads/"}}}
+		}},
+		{name: "invalid output path prefix", mutate: func(entry map[string]any) {
+			entry["output_domain_rules"] = []map[string]any{{"host": "files.alpha.test", "path_prefixes": []string{"downloads"}}}
+		}},
+		{name: "invalid auth profile id", mutate: func(entry map[string]any) {
+			entry["auth_profile_scopes"] = []map[string]any{{"profile_id": "Alpha", "domain_rules": []map[string]any{{"host": "api.alpha.test"}}}}
+		}},
+		{name: "invalid auth scope domain", mutate: func(entry map[string]any) {
+			entry["auth_profile_scopes"] = []map[string]any{{"profile_id": "alpha-secret", "domain_rules": []map[string]any{{"host": "api.alpha.test/path"}}}}
+		}},
+		{name: "invalid endpoint ref", mutate: func(entry map[string]any) { entry["endpoints"].([]map[string]any)[0]["endpoint_ref"] = "ep_alpha001" }},
+		{name: "endpoint broker ref mismatch", mutate: func(entry map[string]any) {
+			entry["endpoints"].([]map[string]any)[0]["broker_policy_ref"] = "bpr-bravo001"
+		}},
+		{name: "invalid endpoint template", mutate: func(entry map[string]any) {
+			entry["endpoints"].([]map[string]any)[0]["url_template"] = "https://other.alpha.test/files/{id}"
+		}},
+		{name: "invalid endpoint method", mutate: func(entry map[string]any) {
+			entry["endpoints"].([]map[string]any)[0]["methods"] = []string{"GET", "GET"}
+		}},
+		{name: "undeclared endpoint auth ref", mutate: func(entry map[string]any) {
+			entry["endpoints"].([]map[string]any)[0]["auth_profile_refs"] = []string{"other-secret"}
+		}},
+		{name: "duplicate endpoint refs", mutate: func(entry map[string]any) {
+			endpoint := entry["endpoints"].([]map[string]any)[0]
+			entry["endpoints"] = []map[string]any{endpoint, endpoint}
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := mustMutatedPrivatePolicyBundleJSON(t, pack.Identity, func(envelope map[string]any) {
+				entry := mustPrivatePolicyBundlePackMap(pack.Identity)
+				tt.mutate(entry)
+				envelope["policy"] = map[string]any{"packs": []any{entry}}
+			})
+			if _, err := NewPrivatePolicyBundleResolver(raw, PrivatePolicyBundleLoadOptions{}); err == nil {
+				t.Fatal("NewPrivatePolicyBundleResolver() error = nil")
+			}
+		})
+	}
+}
+
+func TestPrivatePolicyBundleErrorsAreRedacted(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	raw := mustMutatedPrivatePolicyBundleJSON(t, pack.Identity, func(envelope map[string]any) {
+		entry := mustPrivatePolicyBundlePackMap(pack.Identity)
+		entry["endpoints"].([]map[string]any)[0]["url_template"] = "https://secret.alpha.test/files/{id}"
+		envelope["policy"] = map[string]any{"packs": []any{entry}}
+	})
+	_, err := NewPrivatePolicyBundleResolver(raw, PrivatePolicyBundleLoadOptions{ExpectedPolicyPrivateSHA256: hashString('1')})
+	if err == nil {
+		t.Fatal("NewPrivatePolicyBundleResolver() error = nil")
+	}
+	for _, forbidden := range []string{"secret.alpha.test", "policy_private_sha256", string(raw), hashString('1')} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("error %q leaked %q", err.Error(), forbidden)
+		}
+	}
+}
+
+func TestPrivatePolicyRuntimeSourceHelper(t *testing.T) {
+	t.Setenv(privatePolicyBundlePathEnv, "")
+	t.Setenv(privatePolicyBundleSHA256Env, "")
+	withEmbeddedPrivatePolicyBundleState(t, nil, "", "")
 
 	resolver, err := LoadPrivatePolicyBundleResolverFromRuntimeSources()
 	if err != nil {
 		t.Fatalf("LoadPrivatePolicyBundleResolverFromRuntimeSources() no source error = %v", err)
 	}
 	if resolver != nil {
-		t.Fatal("LoadPrivatePolicyBundleResolverFromRuntimeSources() no source resolver != nil")
+		t.Fatal("resolver != nil for no runtime source")
 	}
 
-	manifest := validAliasTestManifest(nil)
-	manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
-	identity := syntheticVerifiedPackIdentity(manifest)
-	raw := privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{Identity: identity, Manifest: manifest}}, nil)
-	policyHash := privatePolicyHash(t, raw)
-	path := filepath.Join(t.TempDir(), "policy.json")
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
+	pack := syntheticAliasVerifiedPack()
+	raw, privateSHA := mustPrivatePolicyBundleJSON(t, pack.Identity, nil)
+	path := tempPrivatePolicyBundleFile(t, raw)
+	t.Setenv(privatePolicyBundlePathEnv, path)
+	t.Setenv(privatePolicyBundleSHA256Env, privateSHA)
+	resolver, err = LoadPrivatePolicyBundleResolverFromRuntimeSources()
+	if err != nil {
+		t.Fatalf("LoadPrivatePolicyBundleResolverFromRuntimeSources() env source error = %v", err)
+	}
+	if resolver == nil {
+		t.Fatal("resolver = nil for env source")
 	}
 
-	t.Run("env path loads", func(t *testing.T) {
-		withPrivatePolicyRuntimeEnv(t, path, policyHash)
-		withEmbeddedPrivatePolicyBundleState(t, nil, "")
+	withEmbeddedPrivatePolicyBundleState(t, raw, privateSHA, hashString('0'))
+	_, err = LoadPrivatePolicyBundleResolverFromRuntimeSources()
+	if err == nil {
+		t.Fatal("LoadPrivatePolicyBundleResolverFromRuntimeSources() ambiguous error = nil")
+	}
+	if strings.Contains(err.Error(), path) || strings.Contains(err.Error(), string(raw)) || !strings.Contains(err.Error(), "private host policy runtime source is invalid") {
+		t.Fatalf("ambiguous error is not redacted/generic: %q", err.Error())
+	}
+}
 
-		resolver, err := LoadPrivatePolicyBundleResolverFromRuntimeSources()
-		if err != nil {
-			t.Fatalf("LoadPrivatePolicyBundleResolverFromRuntimeSources() error = %v", err)
-		}
-		if _, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: identity, Manifest: manifest}); err != nil {
-			t.Fatalf("ResolveHostPolicy() error = %v", err)
+func TestPrivatePolicyRuntimeSourceEmbeddedBytes(t *testing.T) {
+	t.Setenv(privatePolicyBundlePathEnv, "")
+	t.Setenv(privatePolicyBundleSHA256Env, "")
+	pack := syntheticAliasVerifiedPack()
+	raw, privateSHA := mustPrivatePolicyBundleJSON(t, pack.Identity, nil)
+	withEmbeddedPrivatePolicyBundleState(t, raw, privateSHA, hashString('0'))
+
+	resolver, err := LoadPrivatePolicyBundleResolverFromRuntimeSources()
+	if err != nil {
+		t.Fatalf("LoadPrivatePolicyBundleResolverFromRuntimeSources() embedded error = %v", err)
+	}
+	if _, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: pack.Identity, Manifest: pack.Manifest}); err != nil {
+		t.Fatalf("embedded resolver ResolveHostPolicy() error = %v", err)
+	}
+}
+
+func TestPrivatePolicyRuntimeSourceState(t *testing.T) {
+	pack := syntheticAliasVerifiedPack()
+	raw, privateSHA := mustPrivatePolicyBundleJSON(t, pack.Identity, nil)
+	path := tempPrivatePolicyBundleFile(t, raw)
+
+	t.Run("none", func(t *testing.T) {
+		t.Setenv(privatePolicyBundlePathEnv, "")
+		withEmbeddedPrivatePolicyBundleState(t, nil, "", "")
+		if got := PrivatePolicyBundleRuntimeSourceState(); got != RuntimeSourceStateNone {
+			t.Fatalf("PrivatePolicyBundleRuntimeSourceState() = %q, want none", got)
 		}
 	})
 
-	t.Run("env expected sha mismatch", func(t *testing.T) {
-		withPrivatePolicyRuntimeEnv(t, path, strings.Repeat("1", 64))
-		withEmbeddedPrivatePolicyBundleState(t, nil, "")
-
-		_, err := LoadPrivatePolicyBundleResolverFromRuntimeSources()
-		if err == nil {
-			t.Fatal("LoadPrivatePolicyBundleResolverFromRuntimeSources() error = nil, want mismatch")
-		}
-		assertGenericPrivateBundleError(t, err)
-		assertNoPrivateBundleLeak(t, err.Error(), path, policyHash, string(raw), "api.alpha.test")
-	})
-
-	t.Run("embedded loads", func(t *testing.T) {
-		withPrivatePolicyRuntimeEnv(t, "", "")
-		withEmbeddedPrivatePolicyBundleState(t, raw, policyHash)
-
-		resolver, err := LoadPrivatePolicyBundleResolverFromRuntimeSources()
-		if err != nil {
-			t.Fatalf("LoadPrivatePolicyBundleResolverFromRuntimeSources() embedded error = %v", err)
-		}
-		if _, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: identity, Manifest: manifest}); err != nil {
-			t.Fatalf("ResolveHostPolicy() embedded policy error = %v", err)
+	t.Run("env", func(t *testing.T) {
+		t.Setenv(privatePolicyBundlePathEnv, path)
+		t.Setenv(privatePolicyBundleSHA256Env, privateSHA)
+		withEmbeddedPrivatePolicyBundleState(t, nil, "", "")
+		if got := PrivatePolicyBundleRuntimeSourceState(); got != RuntimeSourceStateEnv {
+			t.Fatalf("PrivatePolicyBundleRuntimeSourceState() = %q, want env", got)
 		}
 	})
 
-	t.Run("env and embedded ambiguity", func(t *testing.T) {
-		withPrivatePolicyRuntimeEnv(t, path, policyHash)
-		withEmbeddedPrivatePolicyBundleState(t, raw, policyHash)
-
-		_, err := LoadPrivatePolicyBundleResolverFromRuntimeSources()
-		if err == nil {
-			t.Fatal("LoadPrivatePolicyBundleResolverFromRuntimeSources() error = nil, want ambiguity denial")
+	t.Run("embedded", func(t *testing.T) {
+		t.Setenv(privatePolicyBundlePathEnv, "")
+		withEmbeddedPrivatePolicyBundleState(t, raw, privateSHA, hashString('0'))
+		if got := PrivatePolicyBundleRuntimeSourceState(); got != RuntimeSourceStateEmbedded {
+			t.Fatalf("PrivatePolicyBundleRuntimeSourceState() = %q, want embedded", got)
 		}
-		assertGenericPrivateBundleError(t, err)
-		assertNoPrivateBundleLeak(t, err.Error(), path, policyHash, string(raw), "api.alpha.test")
 	})
 
-	t.Run("file error is redacted", func(t *testing.T) {
-		missingPath := filepath.Join(t.TempDir(), "missing-policy.json")
-		withPrivatePolicyRuntimeEnv(t, missingPath, "")
-		withEmbeddedPrivatePolicyBundleState(t, nil, "")
-
-		_, err := LoadPrivatePolicyBundleResolverFromRuntimeSources()
-		if err == nil {
-			t.Fatal("LoadPrivatePolicyBundleResolverFromRuntimeSources() error = nil, want file denial")
+	t.Run("ambiguous", func(t *testing.T) {
+		t.Setenv(privatePolicyBundlePathEnv, path)
+		t.Setenv(privatePolicyBundleSHA256Env, privateSHA)
+		withEmbeddedPrivatePolicyBundleState(t, raw, privateSHA, hashString('0'))
+		if got := PrivatePolicyBundleRuntimeSourceState(); got != RuntimeSourceStateAmbiguous {
+			t.Fatalf("PrivatePolicyBundleRuntimeSourceState() = %q, want ambiguous", got)
 		}
-		assertGenericPrivateBundleError(t, err)
-		assertNoPrivateBundleLeak(t, err.Error(), missingPath)
 	})
 }
 
-type privatePolicyBundlePackFixture struct {
-	Identity            VerifiedPackIdentity
-	Manifest            Manifest
-	DomainPolicyRefs    []string
-	BrokerPolicyRefs    []string
-	AllowedCapabilities []Capability
-	IngressDomains      []DomainRule
-	BrokerDomains       []DomainRule
-	OutputDomains       []HostPolicyOutputRule
-	AuthProfiles        []HostPolicyAuthProfileScope
-	BrokerEndpoints     []HostPolicyBrokerEndpoint
-}
-
-func privatePolicyBundleRaw(t *testing.T, fixtures []privatePolicyBundlePackFixture, mutate func(map[string]any, map[string]any, []map[string]any)) []byte {
+func mustPrivatePolicyBundleJSON(t *testing.T, identity VerifiedPackIdentity, mutate func(map[string]any)) ([]byte, string) {
 	t.Helper()
-
-	packs := make([]map[string]any, 0, len(fixtures))
-	for _, fixture := range fixtures {
-		packs = append(packs, privatePolicyBundlePackMap(fixture))
+	raw := mustMutatedPrivatePolicyBundleJSON(t, identity, mutate)
+	var envelope map[string]any
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("json.Unmarshal(envelope) error = %v", err)
 	}
-	policy := map[string]any{"packs": packs}
-	bundle := map[string]any{
-		"schema_version": 1,
-		"bundle_id":      "hpb-alpha001",
-		"bundle_version": "opaque-1",
+
+	return raw, envelope["policy_private_sha256"].(string)
+}
+
+func mustMutatedPrivatePolicyBundleJSON(t *testing.T, identity VerifiedPackIdentity, mutate func(map[string]any)) []byte {
+	t.Helper()
+	policy := map[string]any{"packs": []any{mustPrivatePolicyBundlePackMap(identity)}}
+	envelope := map[string]any{
+		"schema_version":            1,
+		"bundle_id":                 "hpb-alpha001",
+		"bundle_version":            "opaque-1",
+		"policy_private_sha256":     hashRawJSONValue(t, policy),
+		"policy_public_fingerprint": hashString('0'),
+		"policy":                    policy,
 	}
 	if mutate != nil {
-		mutate(bundle, policy, packs)
+		oldHash := envelope["policy_private_sha256"]
+		mutate(envelope)
+		if policyValue, ok := envelope["policy"]; ok && envelope["policy_private_sha256"] == oldHash {
+			envelope["policy_private_sha256"] = hashRawJSONValue(t, policyValue)
+		}
 	}
-	policyJSON := mustMarshalPrivatePolicyBundleJSON(t, policy)
-	if _, ok := bundle["policy_private_sha256"]; !ok {
-		bundle["policy_private_sha256"] = sha256Hex(policyJSON)
-	}
-	if _, ok := bundle["policy"]; !ok {
-		bundle["policy"] = json.RawMessage(policyJSON)
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("json.Marshal(envelope) error = %v", err)
 	}
 
-	return mustMarshalPrivatePolicyBundleJSON(t, bundle)
+	return raw
 }
 
-func privatePolicyBundlePackMap(fixture privatePolicyBundlePackFixture) map[string]any {
-	manifest := fixture.Manifest
-	if manifest.PackID == "" {
-		manifest = validAliasTestManifest(nil)
-	}
-	identity := fixture.Identity
-	if identity.PackID == "" {
-		identity = syntheticVerifiedPackIdentity(manifest)
-	}
-	domainRefs := fixture.DomainPolicyRefs
-	if domainRefs == nil {
-		domainRefs = cloneStringSlice(manifest.DomainPolicyRefs)
-	}
-	brokerRefs := fixture.BrokerPolicyRefs
-	if brokerRefs == nil {
-		brokerRefs = cloneStringSlice(manifest.BrokerPolicyRefs)
-	}
-	capabilities := fixture.AllowedCapabilities
-	if capabilities == nil {
-		capabilities = append([]Capability(nil), manifest.Capabilities...)
-	}
-	ingressDomains := fixture.IngressDomains
-	if ingressDomains == nil {
-		ingressDomains = []DomainRule{{Host: "share.alpha.test"}, {Host: "files.alpha.test", IncludeSubdomains: true}}
-	}
-	brokerDomains := fixture.BrokerDomains
-	if brokerDomains == nil {
-		brokerDomains = []DomainRule{{Host: "api.alpha.test"}}
-	}
-	outputDomains := fixture.OutputDomains
-	if outputDomains == nil {
-		outputDomains = []HostPolicyOutputRule{{Host: "files.alpha.test", IncludeSubdomains: true, PathPrefixes: []string{"/downloads/"}}}
-	}
-	authProfiles := fixture.AuthProfiles
-	if authProfiles == nil {
-		if manifestHasCapability(manifest, CapabilityAuthProfile) {
-			authProfiles = []HostPolicyAuthProfileScope{{ProfileID: "apr-alpha001", Domains: []DomainRule{{Host: "api.alpha.test"}}}}
-		}
-	}
-	brokerEndpoints := fixture.BrokerEndpoints
-	if brokerEndpoints == nil {
-		authProfileRefs := []string(nil)
-		if manifestHasCapability(manifest, CapabilityAuthProfile) {
-			authProfileRefs = []string{"apr-alpha001"}
-		}
-		brokerEndpoints = []HostPolicyBrokerEndpoint{{
-			BrokerPolicyRef:  "bpr-alpha001",
-			EndpointRef:      "epr-alpha001",
-			URLTemplate:      "https://api.alpha.test/resource/{id}",
-			Methods:          []string{"GET", "HEAD"},
-			AuthProfileRefs:  authProfileRefs,
-			TimeoutMillis:    100,
-			MaxResponseBytes: 512,
-		}}
-	}
-
+func mustPrivatePolicyBundlePackMap(identity VerifiedPackIdentity) map[string]any {
 	return map[string]any{
 		"verified_pack_identity": map[string]any{
 			"pack_id":           identity.PackID,
@@ -520,173 +421,62 @@ func privatePolicyBundlePackMap(fixture privatePolicyBundlePackFixture) map[stri
 			"signature_sha256":  identity.SignatureSHA256,
 			"public_key_sha256": identity.PublicKeySHA256,
 		},
-		"domain_policy_refs":   cloneStringSlice(domainRefs),
-		"broker_policy_refs":   cloneStringSlice(brokerRefs),
-		"allowed_capabilities": append([]Capability(nil), capabilities...),
-		"ingress_domain_rules": cloneDomainRules(ingressDomains),
-		"broker_domain_rules":  cloneDomainRules(brokerDomains),
-		"output_domain_rules":  privatePolicyBundleOutputRuleMaps(outputDomains),
-		"auth_profile_scopes":  privatePolicyBundleAuthScopeMaps(authProfiles),
-		"endpoints":            privatePolicyBundleEndpointMaps(brokerEndpoints),
+		"domain_policy_refs":   []string{"dpr-alpha001"},
+		"broker_policy_refs":   []string{"bpr-alpha001"},
+		"allowed_capabilities": []string{string(CapabilityParseWASM), string(CapabilityHTTPFetch), string(CapabilityAuthProfile)},
+		"ingress_domain_rules": []map[string]any{{"host": "share.alpha.test", "include_subdomains": false}},
+		"broker_domain_rules":  []map[string]any{{"host": "api.alpha.test", "include_subdomains": false}, {"host": "files.alpha.test", "include_subdomains": false}},
+		"output_domain_rules":  []map[string]any{{"host": "files.alpha.test", "include_subdomains": true, "path_prefixes": []string{"/downloads/"}}},
+		"auth_profile_scopes":  []map[string]any{{"profile_id": "alpha-secret", "domain_rules": []map[string]any{{"host": "api.alpha.test"}}}},
+		"endpoints": []map[string]any{{
+			"broker_policy_ref":  "bpr-alpha001",
+			"endpoint_ref":       "ep-alpha001",
+			"url_template":       "https://api.alpha.test/files/{id}",
+			"methods":            []string{"GET", "HEAD"},
+			"auth_profile_refs":  []string{"alpha-secret"},
+			"timeout_millis":     100,
+			"max_response_bytes": 512,
+		}},
 	}
 }
 
-func validAliasAuthTestManifest(mutate func(*Manifest)) Manifest {
-	manifest := validAliasTestManifest(nil)
-	if !manifestHasCapability(manifest, CapabilityAuthProfile) {
-		manifest.Capabilities = append(manifest.Capabilities, CapabilityAuthProfile)
-	}
-	if mutate != nil {
-		mutate(&manifest)
-	}
-
-	return manifest
-}
-
-func privatePolicyBundleOutputRuleMaps(rules []HostPolicyOutputRule) []map[string]any {
-	if rules == nil {
-		return nil
-	}
-	mapped := make([]map[string]any, len(rules))
-	for i, rule := range rules {
-		mapped[i] = map[string]any{
-			"host":               rule.Host,
-			"include_subdomains": rule.IncludeSubdomains,
-			"path_prefixes":      cloneStringSlice(rule.PathPrefixes),
-		}
-	}
-
-	return mapped
-}
-
-func privatePolicyBundleAuthScopeMaps(scopes []HostPolicyAuthProfileScope) []map[string]any {
-	if scopes == nil {
-		return nil
-	}
-	mapped := make([]map[string]any, len(scopes))
-	for i, scope := range scopes {
-		mapped[i] = map[string]any{
-			"profile_id":   string(scope.ProfileID),
-			"domain_rules": cloneDomainRules(scope.Domains),
-		}
-	}
-
-	return mapped
-}
-
-func privatePolicyBundleEndpointMaps(endpoints []HostPolicyBrokerEndpoint) []map[string]any {
-	if endpoints == nil {
-		return nil
-	}
-	mapped := make([]map[string]any, len(endpoints))
-	for i, endpoint := range endpoints {
-		mapped[i] = map[string]any{
-			"broker_policy_ref":  endpoint.BrokerPolicyRef,
-			"endpoint_ref":       endpoint.EndpointRef,
-			"url_template":       endpoint.URLTemplate,
-			"methods":            cloneStringSlice(endpoint.Methods),
-			"auth_profile_refs":  cloneStringSlice(endpoint.AuthProfileRefs),
-			"timeout_millis":     endpoint.TimeoutMillis,
-			"max_response_bytes": endpoint.MaxResponseBytes,
-		}
-	}
-
-	return mapped
-}
-
-func mustMarshalPrivatePolicyBundleJSON(t *testing.T, value any) []byte {
+func hashRawJSONValue(t *testing.T, value any) string {
 	t.Helper()
-
 	raw, err := json.Marshal(value)
 	if err != nil {
-		t.Fatalf("json.Marshal() error = %v", err)
+		t.Fatalf("json.Marshal(value) error = %v", err)
 	}
 
-	return raw
+	return sha256HexString(raw)
 }
 
-func privatePolicyHash(t *testing.T, raw []byte) string {
+func tempPrivatePolicyBundleFile(t *testing.T, raw []byte) string {
 	t.Helper()
-
-	var envelope struct {
-		Policy json.RawMessage `json:"policy"`
+	file, err := os.CreateTemp(t.TempDir(), "policy-*.json")
+	if err != nil {
+		t.Fatalf("os.CreateTemp() error = %v", err)
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		t.Fatalf("json.Unmarshal() error = %v", err)
+	if _, err := file.Write(raw); err != nil {
+		t.Fatalf("file.Write() error = %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("file.Close() error = %v", err)
 	}
 
-	return sha256Hex(envelope.Policy)
+	return file.Name()
 }
 
-func mutateIdentity(identity VerifiedPackIdentity, mutate func(*VerifiedPackIdentity)) VerifiedPackIdentity {
-	mutated := identity
-	mutate(&mutated)
-
-	return mutated
-}
-
-func assertGenericPrivateBundleError(t *testing.T, err error) {
+func withEmbeddedPrivatePolicyBundleState(t *testing.T, raw []byte, privateSHA string, publicFingerprint string) {
 	t.Helper()
-
-	if err == nil {
-		t.Fatal("error = nil, want generic private bundle error")
-	}
-	if err.Error() != privatePolicyBundleInvalidError {
-		t.Fatalf("error = %q, want %q", err.Error(), privatePolicyBundleInvalidError)
-	}
-}
-
-func assertNoPrivateBundleLeak(t *testing.T, message string, forbidden ...string) {
-	t.Helper()
-
-	for _, value := range forbidden {
-		if value == "" {
-			continue
-		}
-		if strings.Contains(message, value) {
-			t.Fatalf("error %q leaks forbidden value %q", message, value)
-		}
-	}
-}
-
-func withPrivatePolicyRuntimeEnv(t *testing.T, path string, expectedSHA string) {
-	t.Helper()
-
-	oldPath, hadPath := os.LookupEnv(privatePolicyBundlePathEnv)
-	oldSHA, hadSHA := os.LookupEnv(privatePolicyBundleExpectedSHA256Env)
-	if path == "" {
-		_ = os.Unsetenv(privatePolicyBundlePathEnv)
-	} else {
-		_ = os.Setenv(privatePolicyBundlePathEnv, path)
-	}
-	if expectedSHA == "" {
-		_ = os.Unsetenv(privatePolicyBundleExpectedSHA256Env)
-	} else {
-		_ = os.Setenv(privatePolicyBundleExpectedSHA256Env, expectedSHA)
-	}
-	t.Cleanup(func() {
-		if hadPath {
-			_ = os.Setenv(privatePolicyBundlePathEnv, oldPath)
-		} else {
-			_ = os.Unsetenv(privatePolicyBundlePathEnv)
-		}
-		if hadSHA {
-			_ = os.Setenv(privatePolicyBundleExpectedSHA256Env, oldSHA)
-		} else {
-			_ = os.Unsetenv(privatePolicyBundleExpectedSHA256Env)
-		}
-	})
-}
-
-func withEmbeddedPrivatePolicyBundleState(t *testing.T, raw []byte, expectedSHA string) {
-	t.Helper()
-
 	oldRaw := embeddedPrivatePolicyBundleJSON
 	oldSHA := embeddedPrivatePolicyBundleSHA256
+	oldFingerprint := embeddedPrivatePolicyBundlePublicFingerprint
 	embeddedPrivatePolicyBundleJSON = cloneBytes(raw)
-	embeddedPrivatePolicyBundleSHA256 = expectedSHA
+	embeddedPrivatePolicyBundleSHA256 = privateSHA
+	embeddedPrivatePolicyBundlePublicFingerprint = publicFingerprint
 	t.Cleanup(func() {
 		embeddedPrivatePolicyBundleJSON = oldRaw
 		embeddedPrivatePolicyBundleSHA256 = oldSHA
+		embeddedPrivatePolicyBundlePublicFingerprint = oldFingerprint
 	})
 }

@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -61,6 +62,18 @@ func TestSafeAria2OutFilename_TrimsWhitespace(t *testing.T) {
 	}
 	if got != "file.bin" {
 		t.Fatalf("SafeAria2OutFilename() = %q, want file.bin", got)
+	}
+}
+
+func TestSafeAria2OutFilename_RejectsReservedDeviceNames(t *testing.T) {
+	for _, name := range []string{"CON.txt", "CON::$DATA", "COM1:", "NUL:"} {
+		_, err := SafeAria2OutFilename(name)
+		if err == nil {
+			t.Fatalf("SafeAria2OutFilename(%q) = nil, want reserved error", name)
+		}
+		if !errors.Is(err, ErrReservedOutFilename) {
+			t.Fatalf("SafeAria2OutFilename(%q) error = %v, want ErrReservedOutFilename", name, err)
+		}
 	}
 }
 

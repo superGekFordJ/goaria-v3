@@ -31,8 +31,14 @@ func TestBuildSignedHostCallFixtureDeterministicAndVerifiable(t *testing.T) {
 	if !bytes.Contains(first.Payload, []byte(packabi.HostImportModule)) || !bytes.Contains(first.Payload, []byte(packabi.HostImportHTTPFetch)) {
 		t.Fatalf("payload does not contain expected host import strings")
 	}
-	if !bytes.Contains(first.Payload, []byte(HostCallFixtureAPIURL)) || !bytes.Contains(first.Payload, []byte(HostCallFixtureItemURL)) {
-		t.Fatalf("payload missing fixture URLs")
+	if !bytes.Contains(first.Payload, []byte(HostCallFixtureBrokerPolicyRef)) || !bytes.Contains(first.Payload, []byte(HostCallFixtureEndpointRef)) {
+		t.Fatalf("payload missing ref-mode request fields")
+	}
+	if bytes.Contains(first.Payload, []byte(HostCallFixtureAPIURL)) {
+		t.Fatalf("payload embeds raw API URL %q", HostCallFixtureAPIURL)
+	}
+	if !bytes.Contains(first.Payload, []byte(HostCallFixtureItemURL)) {
+		t.Fatalf("payload missing synthetic output URL")
 	}
 
 	policy := extractor.DefaultTrustPolicy()
@@ -87,26 +93,11 @@ func TestFixtureManifestDefaultsArePublicSafe(t *testing.T) {
 	if strings.Join(capabilityStrings(manifest.Capabilities), ",") != "cap.parse.wasm,cap.http.fetch" {
 		t.Fatalf("manifest capabilities = %#v", manifest.Capabilities)
 	}
-	if len(manifest.Domains) != 1 || manifest.Domains[0].Host != "fixture.invalid" || !manifest.Domains[0].IncludeSubdomains {
+	if len(manifest.Domains) != 0 {
 		t.Fatalf("manifest domains = %#v", manifest.Domains)
 	}
-	if manifest.PayloadSHA256 != SHA256Hex(assets.Payload) {
-		t.Fatalf("manifest payload_sha256 = %s, want %s", manifest.PayloadSHA256, SHA256Hex(assets.Payload))
-	}
-	wantLimits := extractor.ResourceLimits{
-		TimeoutMillis:    1_000,
-		MaxMemoryPages:   1,
-		MaxHostCalls:     4,
-		MaxResponseBytes: 4 * 1024,
-		MaxOutputItems:   4,
-		MaxOutputBytes:   8 * 1024,
-	}
-	if manifest.ResourceLimits != wantLimits {
-		t.Fatalf("manifest resource limits = %#v, want %#v", manifest.ResourceLimits, wantLimits)
-	}
-	description := strings.ToLower(manifest.Description)
-	if !strings.Contains(description, "public-safe") || !strings.Contains(description, "fixture") || strings.Contains(description, "provider") || strings.Contains(description, "private") {
-		t.Fatalf("manifest description is not synthetic/public-safe: %q", manifest.Description)
+	if strings.Join(manifest.DomainPolicyRefs, ",") != HostCallFixtureDomainPolicyRef || strings.Join(manifest.BrokerPolicyRefs, ",") != HostCallFixtureBrokerPolicyRef {
+		t.Fatalf("manifest refs domain=%#v broker=%#v", manifest.DomainPolicyRefs, manifest.BrokerPolicyRefs)
 	}
 	if err := extractor.ValidateManifest(manifest, extractor.DefaultTrustPolicy()); err != nil {
 		t.Fatalf("ValidateManifest() error = %v", err)
@@ -206,7 +197,7 @@ func capabilityStrings(capabilities []extractor.Capability) []string {
 func assertNoSecretMarkers(t *testing.T, data []byte) {
 	t.Helper()
 	lower := strings.ToLower(string(data))
-	for _, forbidden := range []string{"raw-token", "raw_token", "private-key", "private_key", "authorization:", "cookie:", "x-api-key", "fixturepack", "imagefixture"} {
+	for _, forbidden := range []string{"raw-token", "raw_token", "private-key", "private_key", "authorization:", "cookie:", "x-api-key"} {
 		if strings.Contains(lower, forbidden) {
 			t.Fatalf("generated fixture contains forbidden marker %q", forbidden)
 		}

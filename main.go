@@ -146,6 +146,7 @@ func main() {
 	if config.Get().ExtensionEnabled {
 		extServer = wailsapp.NewExtensionServer(eventHub, appService, config.Get().ExtensionSecret)
 		appService.SetExtensionServer(extServer)
+		wailsapp.ConfigureExtensionLinkage(appService, extServer)
 		go func() {
 			if err := extServer.Start(config.Get().ExtensionWSPort); err != nil {
 				log.Printf("[Extension] WebSocket server failed to start: %v", err)

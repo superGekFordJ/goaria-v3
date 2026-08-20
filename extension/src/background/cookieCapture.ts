@@ -1,4 +1,8 @@
 import browser from 'webextension-polyfill'
+import { collectStructuredCookies, type CollectCookiesResult } from './browserCookies'
+import { pickCookieStoreId, type CookieStoreHint } from './cookieStoreId'
+
+export { pickCookieStoreId, type CookieStoreHint } from './cookieStoreId'
 
 /**
  * Collect cookies for a URL (including HttpOnly) via the browser.cookies API
@@ -22,5 +26,26 @@ export async function getCookiesForUrl(url: string): Promise<string[]> {
     // cookies.getAll may reject in incognito split mode or without the cookies
     // permission. Don't block interception — the backend may still succeed.
     return []
+  }
+}
+
+export async function getStructuredCookiesForUrl(
+  url: string,
+  storeId: string,
+): Promise<CollectCookiesResult> {
+  return collectStructuredCookies(url, storeId, details => browser.cookies.getAll(details))
+}
+
+export async function resolveCookieStoreIdForTab(
+  tab: browser.Tabs.Tab,
+): Promise<string | undefined> {
+  if (typeof tab.id !== 'number') return undefined
+  const fromTab = pickCookieStoreId(tab.id, (tab as { cookieStoreId?: unknown }).cookieStoreId, [])
+  if (fromTab) return fromTab
+  try {
+    const stores = (await browser.cookies.getAllCookieStores()) as CookieStoreHint[]
+    return pickCookieStoreId(tab.id, undefined, stores)
+  } catch {
+    return undefined
   }
 }

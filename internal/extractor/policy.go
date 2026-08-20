@@ -53,7 +53,7 @@ func ValidateManifest(manifest Manifest, policy TrustPolicy) error {
 	if err := validateCapabilities(manifest.Capabilities, policy.AllowedCapabilities); err != nil {
 		return err
 	}
-	if err := validateManifestDomainMode(manifest); err != nil {
+	if err := validateDomainPolicyMode(manifest); err != nil {
 		return err
 	}
 	if err := validateResourceLimits(manifest.ResourceLimits, policy.MaxResourceLimits); err != nil {
@@ -73,6 +73,81 @@ func normalizeManifest(manifest Manifest) Manifest {
 	}
 
 	return manifest
+}
+
+func validateDomainPolicyMode(manifest Manifest) error {
+	hasDomains := len(manifest.Domains) > 0
+	hasDomainRefs := len(manifest.DomainPolicyRefs) > 0
+	hasBrokerRefs := len(manifest.BrokerPolicyRefs) > 0
+	requiresBrokerRefs := ManifestHasCapability(manifest, CapabilityHTTPFetch) || ManifestHasCapability(manifest, CapabilityAuthProfile)
+
+	if hasDomains {
+		if hasDomainRefs || hasBrokerRefs {
+			return errors.New("manifest must not mix concrete domains with alias policy refs")
+		}
+
+		return validateDomainRules(manifest.Domains)
+	}
+
+	if manifest.Domains == nil {
+		return errors.New("manifest domains must be explicit and non-empty for legacy mode or an explicit empty array for alias mode")
+	}
+	if !hasDomainRefs {
+		return errors.New("alias manifest must declare at least one domain_policy_ref")
+	}
+	if requiresBrokerRefs && !hasBrokerRefs {
+		return errors.New("alias manifest with http or auth capability must declare at least one broker_policy_ref")
+	}
+	if !requiresBrokerRefs && hasBrokerRefs {
+		return errors.New("broker_policy_refs require http or auth capability")
+	}
+	if err := validateOpaquePolicyRefs("domain_policy_refs", manifest.DomainPolicyRefs); err != nil {
+		return err
+	}
+	if err := validateOpaquePolicyRefs("broker_policy_refs", manifest.BrokerPolicyRefs); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateOpaquePolicyRefs(field string, refs []string) error {
+	seen := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if err := validateOpaquePolicyRef(field, ref); err != nil {
+			return err
+		}
+		if _, ok := seen[ref]; ok {
+			return fmt.Errorf("%s contains duplicate ref", field)
+		}
+		seen[ref] = struct{}{}
+	}
+
+	return nil
+}
+
+func validateOpaquePolicyRef(field string, ref string) error {
+	if len(ref) < 3 || len(ref) > 64 {
+		return fmt.Errorf("%s ref length must be between 3 and 64 bytes", field)
+	}
+	if !isOpaquePolicyRefEdge(ref[0]) || !isOpaquePolicyRefEdge(ref[len(ref)-1]) {
+		return fmt.Errorf("%s ref must start and end with a lowercase letter or digit", field)
+	}
+	for i := 1; i < len(ref)-1; i++ {
+		if !isOpaquePolicyRefChar(ref[i]) {
+			return fmt.Errorf("%s ref contains invalid character %q", field, ref[i])
+		}
+	}
+
+	return nil
+}
+
+func isOpaquePolicyRefEdge(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+}
+
+func isOpaquePolicyRefChar(c byte) bool {
+	return isOpaquePolicyRefEdge(c) || c == '-'
 }
 
 func validatePackID(id string) error {
@@ -113,10 +188,10 @@ func validatePackVersion(version string) error {
 }
 
 func validatePayloadSHA256(hash string) error {
-	return validateSHA256Hex("payload_sha256", hash)
+	return validateLowerHexSHA256Field("payload_sha256", hash)
 }
 
-func validateSHA256Hex(field string, hash string) error {
+func validateLowerHexSHA256Field(field string, hash string) error {
 	if len(hash) != 64 {
 		return fmt.Errorf("%s must be 64 lowercase hex characters", field)
 	}
@@ -154,80 +229,6 @@ func validateCapabilities(capabilities []Capability, allowed map[Capability]stru
 		if _, ok := allowed[capability]; !ok {
 			return fmt.Errorf("capability %q is not allowed", capability)
 		}
-	}
-
-	return nil
-}
-
-func validateManifestDomainMode(manifest Manifest) error {
-	hasDomains := len(manifest.Domains) > 0
-	hasDomainRefs := len(manifest.DomainPolicyRefs) > 0
-	hasBrokerRefs := len(manifest.BrokerPolicyRefs) > 0
-
-	if hasDomains {
-		if hasDomainRefs || hasBrokerRefs {
-			return errors.New("manifest must not mix concrete domains with policy refs")
-		}
-
-		return validateDomainRules(manifest.Domains)
-	}
-
-	if !hasDomainRefs && !hasBrokerRefs {
-		return errors.New("manifest must declare concrete domains or explicit alias policy refs")
-	}
-	if manifest.Domains == nil {
-		return errors.New("alias manifest must declare explicit empty domains")
-	}
-	if !hasDomainRefs {
-		return errors.New("alias manifest must declare domain policy refs")
-	}
-	if err := validateOpaquePolicyRefs("domain_policy_refs", manifest.DomainPolicyRefs); err != nil {
-		return err
-	}
-	if err := validateOpaquePolicyRefs("broker_policy_refs", manifest.BrokerPolicyRefs); err != nil {
-		return err
-	}
-
-	needsBrokerRefs := ManifestHasCapability(manifest, CapabilityHTTPFetch) || ManifestHasCapability(manifest, CapabilityAuthProfile)
-	if needsBrokerRefs && !hasBrokerRefs {
-		return errors.New("alias manifest with brokered capabilities must declare broker policy refs")
-	}
-	if !needsBrokerRefs && hasBrokerRefs {
-		return errors.New("alias manifest must not declare broker policy refs without brokered capabilities")
-	}
-
-	return nil
-}
-
-func validateOpaquePolicyRefs(field string, refs []string) error {
-	seen := make(map[string]struct{}, len(refs))
-	for _, ref := range refs {
-		if err := validateOpaquePolicyRef(field, ref); err != nil {
-			return err
-		}
-		if _, ok := seen[ref]; ok {
-			return fmt.Errorf("%s contains duplicate refs", field)
-		}
-		seen[ref] = struct{}{}
-	}
-
-	return nil
-}
-
-func validateOpaquePolicyRef(field string, ref string) error {
-	if len(ref) < 3 || len(ref) > 64 {
-		return fmt.Errorf("%s refs must be between 3 and 64 bytes", field)
-	}
-	if !isLowerSlugEdge(ref[0]) || !isLowerSlugEdge(ref[len(ref)-1]) {
-		return fmt.Errorf("%s refs must start and end with a lowercase letter or digit", field)
-	}
-	for i := 1; i < len(ref)-1; i++ {
-		c := ref[i]
-		if isLowerSlugEdge(c) || c == '-' {
-			continue
-		}
-
-		return fmt.Errorf("%s refs contain invalid characters", field)
 	}
 
 	return nil

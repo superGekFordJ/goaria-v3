@@ -1,8 +1,12 @@
+import type { MatchDigestSnapshot } from './digestMatch'
+import { isValidMatchSnapshot } from './digestMatch'
+
 export type AuthAckInput = {
   type?: unknown
   protocol_version?: unknown
   host_version?: unknown
   capabilities?: unknown
+  match?: unknown
 }
 
 export type ParsedAuthAck = {
@@ -10,21 +14,46 @@ export type ParsedAuthAck = {
   hostVersion: string
   // undefined means the field was missing or JSON null (legacy host).
   capabilities: string[] | undefined
+  match?: MatchDigestSnapshot
 }
 
 export function parseAuthAck(msg: AuthAckInput): ParsedAuthAck {
   const protocolVersion = typeof msg.protocol_version === 'number' ? msg.protocol_version : 0
   const hostVersion = typeof msg.host_version === 'string' ? msg.host_version : ''
+  const match = parseMatchObject(msg.match)
   if (msg.capabilities == null) {
-    return { protocolVersion, hostVersion, capabilities: undefined }
+    return { protocolVersion, hostVersion, capabilities: undefined, match }
   }
   if (!Array.isArray(msg.capabilities)) {
-    return { protocolVersion, hostVersion, capabilities: undefined }
+    return { protocolVersion, hostVersion, capabilities: undefined, match }
   }
   return {
     protocolVersion,
     hostVersion,
     capabilities: msg.capabilities.filter((c): c is string => typeof c === 'string'),
+    match,
+  }
+}
+
+function parseMatchObject(raw: unknown): MatchDigestSnapshot | undefined {
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined
+  }
+  const obj = raw as Record<string, unknown>
+  const candidate = {
+    digest_version: obj.digest_version,
+    salt: obj.salt,
+    exact_digests: obj.exact_digests,
+    subdomain_digests: obj.subdomain_digests,
+  }
+  if (!isValidMatchSnapshot(candidate as MatchDigestSnapshot)) {
+    return undefined
+  }
+  return {
+    digest_version: candidate.digest_version as number,
+    salt: candidate.salt as string,
+    exact_digests: [...(candidate.exact_digests as string[])],
+    subdomain_digests: [...(candidate.subdomain_digests as string[])],
   }
 }
 

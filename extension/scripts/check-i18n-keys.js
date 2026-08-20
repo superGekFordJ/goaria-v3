@@ -22,9 +22,12 @@ for (const entry of readdirSync(localesDir)) {
   locales.push({ locale: entry, keys: new Set(keys) })
 }
 
-// Use the first locale (sorted) as the reference key set.
-locales.sort((a, b) => a.locale.localeCompare(b.locale))
-const reference = locales[0]
+// Use 'en' as the reference key set (matches gen-i18n-types.js source and manifest default_locale).
+const reference = locales.find((l) => l.locale === 'en')
+if (!reference) {
+  console.log('error: reference locale "en" not found')
+  process.exit(1)
+}
 
 for (const loc of locales) {
   if (loc === reference) continue

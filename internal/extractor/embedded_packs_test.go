@@ -46,7 +46,6 @@ func TestNewEmbeddedReleaseDispatcherFailsClosedWhenRequiredNoPacks(t *testing.T
 func TestEmbeddedReleasePacksDefensiveCopies(t *testing.T) {
 	publicKey, privateKey := deterministicKeyPair(32)
 	pack := signedTestPack(t, privateKey, []byte("fixture wasm bytes"), nil)
-	pack.AssetSHA256 = strings.Repeat("a", 64)
 	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, false)
 
 	packs := EmbeddedReleasePacks()
@@ -57,7 +56,6 @@ func TestEmbeddedReleasePacksDefensiveCopies(t *testing.T) {
 	packs[0].ManifestJSON[0] = '{' + 1
 	packs[0].Payload[0] = 'X'
 	packs[0].Signature[0] ^= 0xff
-	packs[0].AssetSHA256 = strings.Repeat("b", 64)
 	keys[0][0] ^= 0xff
 
 	freshPacks := EmbeddedReleasePacks()
@@ -70,9 +68,6 @@ func TestEmbeddedReleasePacksDefensiveCopies(t *testing.T) {
 	}
 	if freshPacks[0].Signature[0] != pack.Signature[0] {
 		t.Fatalf("embedded signature bytes were mutated")
-	}
-	if freshPacks[0].AssetSHA256 != pack.AssetSHA256 {
-		t.Fatalf("embedded asset sha was mutated")
 	}
 	if freshKeys[0][0] != publicKey[0] {
 		t.Fatalf("embedded public key bytes were mutated")
@@ -96,129 +91,127 @@ func TestNewEmbeddedReleaseDispatcherLoadsVerifiedPacks(t *testing.T) {
 	}
 }
 
-func TestNewEmbeddedReleaseDispatcherAcceptsHostPolicyResolver(t *testing.T) {
+func TestEmbeddedReleaseDispatcherAliasResolverOptionalFailClosed(t *testing.T) {
 	publicKey, privateKey := deterministicKeyPair(37)
-	pack := signedAliasTestPack(t, privateKey, []byte("alias release payload"), nil)
-	pack.AssetSHA256 = strings.Repeat("a", 64)
-	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
-	if err != nil {
-		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
-	}
-	resolver := &fakeHostPolicyResolver{policy: validResolvedHostPolicy(verified.Identity, verified.Manifest)}
-	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
-
-	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{HostPolicyResolver: resolver})
-	if err != nil {
-		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = %v", err)
-	}
-	if dispatcher == nil {
-		t.Fatal("NewEmbeddedReleaseAddTaskDispatcher() dispatcher = nil")
-	}
-	if matches := dispatcher.registry.FindByURL("https://share.alpha.test/path"); len(matches) != 1 {
-		t.Fatalf("dispatcher registry resolver matches = %d, want 1", len(matches))
-	}
-	if dispatcher.runner == nil || dispatcher.runner.hostImports.HostPolicyResolver == nil {
-		t.Fatalf("dispatcher runner did not retain host policy resolver")
-	}
-}
-
-func TestNewEmbeddedReleaseDispatcherAliasWithoutResolverNoMatch(t *testing.T) {
-	publicKey, privateKey := deterministicKeyPair(38)
-	pack := signedAliasTestPack(t, privateKey, []byte("alias release payload"), nil)
-	pack.AssetSHA256 = strings.Repeat("a", 64)
+	pack := signedTestPack(t, privateKey, []byte("alias verified payload"), func(values map[string]any) {
+		values["pack_id"] = "xpk-alpha001"
+		values["pack_version"] = "opaque-1"
+		values["capabilities"] = []string{string(CapabilityParseWASM), string(CapabilityHTTPFetch), string(CapabilityAuthProfile)}
+		values["domains"] = []map[string]any{}
+		values["domain_policy_refs"] = []string{"dpr-alpha001"}
+		values["broker_policy_refs"] = []string{"bpr-alpha001"}
+	})
 	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, false)
 
 	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{})
 	if err != nil {
-		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = %v", err)
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() no resolver error = %v", err)
 	}
 	if dispatcher == nil {
-		t.Fatal("NewEmbeddedReleaseAddTaskDispatcher() dispatcher = nil")
+		t.Fatal("dispatcher = nil, want verified alias dispatcher")
 	}
-	if matches := dispatcher.registry.FindByURL("https://share.alpha.test/path"); len(matches) != 0 {
-		t.Fatalf("dispatcher registry alias matches = %d, want no resolver no-match", len(matches))
+	if matches := dispatcher.registry.FindByURL("https://share.alpha.test/item"); len(matches) != 0 {
+		t.Fatalf("alias matches without resolver = %d, want 0", len(matches))
+	}
+
+	verified := dispatcher.registry.Packs()[0]
+	dispatcher, err = NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{
+		HostPolicyResolver: &fakeHostPolicyResolver{policy: syntheticHostPolicy(verified.Identity)},
+	})
+	if err != nil {
+		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() with resolver error = %v", err)
+	}
+	if matches := dispatcher.registry.FindByURL("https://share.alpha.test/item"); len(matches) != 1 {
+		t.Fatalf("alias matches with resolver = %d, want 1", len(matches))
 	}
 }
 
-func TestNewEmbeddedReleaseDispatcherFailsClosedWhenRequiredAliasMissingPolicy(t *testing.T) {
-	publicKey, privateKey := deterministicKeyPair(39)
-	pack := signedAliasTestPack(t, privateKey, []byte("alias release payload"), nil)
-	pack.AssetSHA256 = strings.Repeat("a", 64)
+func TestNewEmbeddedReleaseDispatcherFailsClosedWhenRequiredAliasHasNoResolver(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(38)
+	pack := signedTestPack(t, privateKey, []byte("alias verified payload"), func(values map[string]any) {
+		values["pack_id"] = "xpk-alpha001"
+		values["pack_version"] = "opaque-1"
+		values["capabilities"] = []string{string(CapabilityParseWASM), string(CapabilityHTTPFetch), string(CapabilityAuthProfile)}
+		values["domains"] = []map[string]any{}
+		values["domain_policy_refs"] = []string{"dpr-alpha001"}
+		values["broker_policy_refs"] = []string{"bpr-alpha001"}
+	})
 	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
 
 	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{})
 	if err == nil {
-		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = nil, want required alias host-policy error")
+		t.Fatal("NewEmbeddedReleaseAddTaskDispatcher() error = nil, want required alias policy error")
 	}
 	if dispatcher != nil {
-		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() returned dispatcher for missing required alias policy")
+		t.Fatal("dispatcher != nil for required alias without resolver")
 	}
-	if err.Error() != "required embedded alias extractor host policy is not configured" {
+	if !strings.Contains(err.Error(), "required embedded extractor alias host policy is invalid") {
 		t.Fatalf("error = %q, want generic required alias policy error", err.Error())
 	}
 }
 
 func TestNewEmbeddedReleaseDispatcherFailsClosedWhenRequiredAliasPolicyMismatches(t *testing.T) {
-	publicKey, privateKey := deterministicKeyPair(40)
-	pack := signedAliasTestPack(t, privateKey, []byte("alias release payload"), nil)
-	pack.AssetSHA256 = strings.Repeat("a", 64)
+	publicKey, privateKey := deterministicKeyPair(39)
+	pack := signedTestPack(t, privateKey, []byte("alias verified payload"), func(values map[string]any) {
+		values["pack_id"] = "xpk-alpha001"
+		values["pack_version"] = "opaque-1"
+		values["capabilities"] = []string{string(CapabilityParseWASM), string(CapabilityHTTPFetch), string(CapabilityAuthProfile)}
+		values["domains"] = []map[string]any{}
+		values["domain_policy_refs"] = []string{"dpr-alpha001"}
+		values["broker_policy_refs"] = []string{"bpr-alpha001"}
+	})
 	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
 	if err != nil {
 		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
 	}
-	mismatchedPolicy := validResolvedHostPolicy(verified.Identity, verified.Manifest)
-	mismatchedPolicy.DomainPolicyRefs = []string{"dpr-alpha002"}
+	policy := syntheticHostPolicy(verified.Identity)
+	policy.PackIdentity.PublicKeySHA256 = hashString('9')
 	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
 
-	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{HostPolicyResolver: &fakeHostPolicyResolver{policy: mismatchedPolicy}})
+	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{HostPolicyResolver: &fakeHostPolicyResolver{policy: policy}})
 	if err == nil {
-		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = nil, want mismatched required alias policy error")
+		t.Fatal("NewEmbeddedReleaseAddTaskDispatcher() error = nil, want mismatched policy error")
 	}
 	if dispatcher != nil {
-		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() returned dispatcher for mismatched required alias policy")
+		t.Fatal("dispatcher != nil for required alias mismatched resolver")
 	}
-	if err.Error() != "required embedded alias extractor host policy is not configured" {
-		t.Fatalf("error = %q, want generic required alias policy error", err.Error())
+	if strings.Contains(err.Error(), hashString('9')) || !strings.Contains(err.Error(), "required embedded extractor alias host policy is invalid") {
+		t.Fatalf("error is not generic/redacted: %q", err.Error())
 	}
 }
 
-func TestNewEmbeddedReleaseDispatcherAcceptsMatchingPrivateBundleResolver(t *testing.T) {
-	publicKey, privateKey := deterministicKeyPair(41)
-	pack := signedAliasTestPack(t, privateKey, []byte("alias release payload"), nil)
-	pack.AssetSHA256 = strings.Repeat("a", 64)
+func TestNewEmbeddedReleaseDispatcherRequiredAliasWithBundleResolver(t *testing.T) {
+	publicKey, privateKey := deterministicKeyPair(40)
+	pack := signedTestPack(t, privateKey, []byte("alias verified payload"), func(values map[string]any) {
+		values["pack_id"] = "xpk-alpha001"
+		values["pack_version"] = "opaque-1"
+		values["capabilities"] = []string{string(CapabilityParseWASM), string(CapabilityHTTPFetch), string(CapabilityAuthProfile)}
+		values["domains"] = []map[string]any{}
+		values["domain_policy_refs"] = []string{"dpr-alpha001"}
+		values["broker_policy_refs"] = []string{"bpr-alpha001"}
+	})
+	pack.AssetSHA256 = hashString('a')
 	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
 	if err != nil {
 		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
 	}
-	resolver, err := NewPrivatePolicyBundleResolver(privatePolicyBundleRaw(t, []privatePolicyBundlePackFixture{{Identity: verified.Identity, Manifest: verified.Manifest}}, nil), PrivatePolicyBundleLoadOptions{})
+	raw, privateSHA := mustPrivatePolicyBundleJSON(t, verified.Identity, nil)
+	resolver, err := NewPrivatePolicyBundleResolver(raw, PrivatePolicyBundleLoadOptions{ExpectedPolicyPrivateSHA256: privateSHA})
 	if err != nil {
 		t.Fatalf("NewPrivatePolicyBundleResolver() error = %v", err)
 	}
 	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
 
-	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{HostPolicyResolver: resolver})
+	authRuntimeBundle := newPrivateAuthRuntimeBundleForTest(t, verified.Identity)
+	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{HostPolicyResolver: resolver, AuthRuntimeBundle: authRuntimeBundle})
 	if err != nil {
 		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = %v", err)
 	}
 	if dispatcher == nil {
-		t.Fatal("NewEmbeddedReleaseAddTaskDispatcher() dispatcher = nil")
+		t.Fatal("dispatcher = nil for required alias bundle resolver")
 	}
-	if matches := dispatcher.registry.FindByURL("https://share.alpha.test/path"); len(matches) != 1 {
-		t.Fatalf("dispatcher registry resolver matches = %d, want 1", len(matches))
-	}
-}
-
-func TestNewEmbeddedReleaseDispatcherRequiredLegacyPackDoesNotRequireHostPolicy(t *testing.T) {
-	publicKey, privateKey := deterministicKeyPair(42)
-	pack := signedTestPack(t, privateKey, []byte("legacy release payload"), nil)
-	withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
-
-	dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{})
-	if err != nil {
-		t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = %v", err)
-	}
-	if dispatcher == nil {
-		t.Fatal("NewEmbeddedReleaseAddTaskDispatcher() dispatcher = nil")
+	if matches := dispatcher.registry.FindByURL("https://share.alpha.test/item"); len(matches) != 1 {
+		t.Fatalf("alias matches with bundle resolver = %d, want 1", len(matches))
 	}
 }
 
@@ -263,46 +256,6 @@ func TestNewEmbeddedReleaseDispatcherRequiredAuthCapablePackRejectsMismatchedAut
 	}
 }
 
-func TestNewEmbeddedReleaseDispatcherRequiredAuthCapablePackRejectsNonPackIDAuthRuntimeMismatch(t *testing.T) {
-	publicKey, privateKey := deterministicKeyPair(49)
-	pack := signedAuthCapableTestPack(t, privateKey, []byte("auth release payload"), nil)
-	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
-	if err != nil {
-		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
-	}
-
-	for _, tt := range []struct {
-		name     string
-		identity VerifiedPackIdentity
-	}{
-		{
-			name: "pack version drift",
-			identity: mutateIdentity(verified.Identity, func(id *VerifiedPackIdentity) {
-				id.PackVersion = "opaque-9"
-			}),
-		},
-		{
-			name: "asset sha drift",
-			identity: mutateIdentity(verified.Identity, func(id *VerifiedPackIdentity) {
-				id.AssetSHA256 = strings.Repeat("9", 64)
-			}),
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
-
-			dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{AuthRuntimeBundle: newPrivateAuthRuntimeBundleForTest(t, tt.identity)})
-			if err == nil {
-				t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = nil, dispatcher=%#v", dispatcher)
-			}
-			if dispatcher != nil {
-				t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() returned dispatcher for non-PackID auth runtime mismatch")
-			}
-			assertRequiredEmbeddedAuthRuntimeError(t, err)
-		})
-	}
-}
-
 func TestNewEmbeddedReleaseDispatcherRequiredAuthCapablePackAcceptsMatchingAuthRuntime(t *testing.T) {
 	publicKey, privateKey := deterministicKeyPair(45)
 	pack := signedAuthCapableTestPack(t, privateKey, []byte("auth release payload"), nil)
@@ -320,161 +273,6 @@ func TestNewEmbeddedReleaseDispatcherRequiredAuthCapablePackAcceptsMatchingAuthR
 	if dispatcher == nil {
 		t.Fatal("NewEmbeddedReleaseAddTaskDispatcher() dispatcher = nil")
 	}
-}
-
-func TestNewEmbeddedReleaseDispatcherRequiredAuthCapablePackRejectsStartupIncompleteAuthRuntime(t *testing.T) {
-	publicKey, privateKey := deterministicKeyPair(50)
-	pack := signedAuthCapableTestPack(t, privateKey, []byte("auth release payload"), nil)
-	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
-	if err != nil {
-		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
-	}
-
-	for _, tt := range []struct {
-		name   string
-		mutate func(*PrivateAuthRuntimeBundle, VerifiedPackIdentity)
-	}{
-		{
-			name: "empty store binding refs",
-			mutate: func(bundle *PrivateAuthRuntimeBundle, identity VerifiedPackIdentity) {
-				pack := bundle.packs[identity]
-				pack.StoreBinding.ProfileRefs = nil
-				bundle.packs[identity] = pack
-			},
-		},
-		{
-			name: "empty materialization refs",
-			mutate: func(bundle *PrivateAuthRuntimeBundle, identity VerifiedPackIdentity) {
-				pack := bundle.packs[identity]
-				pack.Materialization.ProfileRefs = nil
-				bundle.packs[identity] = pack
-			},
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			bundle := newPrivateAuthRuntimeBundleForTest(t, verified.Identity)
-			tt.mutate(bundle, verified.Identity)
-			withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
-
-			dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{AuthRuntimeBundle: bundle})
-			if err == nil {
-				t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = nil, dispatcher=%#v", dispatcher)
-			}
-			if dispatcher != nil {
-				t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() returned dispatcher for startup-incomplete auth runtime")
-			}
-			assertRequiredEmbeddedAuthRuntimeError(t, err)
-		})
-	}
-}
-
-func TestNewEmbeddedReleaseDispatcherRequiredAuthCapablePackRejectsMalformedAuthRuntimeBundleState(t *testing.T) {
-	publicKey, privateKey := deterministicKeyPair(51)
-	pack := signedAuthCapableTestPack(t, privateKey, []byte("auth release payload"), nil)
-	verified, err := VerifyEmbeddedPack(pack, policyWithKeys(publicKey))
-	if err != nil {
-		t.Fatalf("VerifyEmbeddedPack() error = %v", err)
-	}
-	otherIdentity := privateAuthRuntimeIdentity("xpk-beta001", "opaque-2", "2")
-
-	for _, tt := range []struct {
-		name   string
-		bundle func() *PrivateAuthRuntimeBundle
-	}{
-		{
-			name: "duplicate runtime identity order",
-			bundle: func() *PrivateAuthRuntimeBundle {
-				bundle := newPrivateAuthRuntimeBundleForTest(t, verified.Identity, otherIdentity)
-				bundle.packOrder = []VerifiedPackIdentity{verified.Identity, verified.Identity}
-
-				return bundle
-			},
-		},
-		{
-			name: "pack runtime miss",
-			bundle: func() *PrivateAuthRuntimeBundle {
-				bundle := newPrivateAuthRuntimeBundleForTest(t, verified.Identity, otherIdentity)
-				delete(bundle.packs, verified.Identity)
-				bundle.packOrder = []VerifiedPackIdentity{verified.Identity}
-
-				return bundle
-			},
-		},
-		{
-			name: "stored pack identity drift",
-			bundle: func() *PrivateAuthRuntimeBundle {
-				bundle := newPrivateAuthRuntimeBundleForTest(t, verified.Identity)
-				storedPack := bundle.packs[verified.Identity]
-				storedPack.PackIdentity = mutateIdentity(verified.Identity, func(id *VerifiedPackIdentity) {
-					id.ManifestSHA256 = strings.Repeat("e", 64)
-				})
-				bundle.packs[verified.Identity] = storedPack
-
-				return bundle
-			},
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			withEmbeddedReleaseState(t, []EmbeddedPack{pack}, []ed25519.PublicKey{publicKey}, true)
-
-			dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{AuthRuntimeBundle: tt.bundle()})
-			if err == nil {
-				t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = nil, dispatcher=%#v", dispatcher)
-			}
-			if dispatcher != nil {
-				t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() returned dispatcher for malformed auth runtime bundle state")
-			}
-			assertRequiredEmbeddedAuthRuntimeError(t, err)
-		})
-	}
-}
-
-func TestNewEmbeddedReleaseDispatcherRequiredMixedPacksRequireRuntimeOnlyForAuthCapable(t *testing.T) {
-	authPublicKey, authPrivateKey := deterministicKeyPair(47)
-	nonAuthPublicKey, nonAuthPrivateKey := deterministicKeyPair(48)
-	authPack := signedAuthCapableTestPack(t, authPrivateKey, []byte("auth release payload"), nil)
-	nonAuthPack := signedTestPack(t, nonAuthPrivateKey, []byte("non auth release payload"), func(values map[string]any) {
-		values["pack_id"] = "xpk-beta001"
-		values["pack_version"] = "opaque-2"
-	})
-	nonAuthPack.AssetSHA256 = strings.Repeat("b", 64)
-	authVerified, err := VerifyEmbeddedPack(authPack, policyWithKeys(authPublicKey))
-	if err != nil {
-		t.Fatalf("VerifyEmbeddedPack(auth) error = %v", err)
-	}
-	nonAuthVerified, err := VerifyEmbeddedPack(nonAuthPack, policyWithKeys(nonAuthPublicKey))
-	if err != nil {
-		t.Fatalf("VerifyEmbeddedPack(non-auth) error = %v", err)
-	}
-	packs := []EmbeddedPack{authPack, nonAuthPack}
-	keys := []ed25519.PublicKey{authPublicKey, nonAuthPublicKey}
-
-	t.Run("auth capable only accepted", func(t *testing.T) {
-		withEmbeddedReleaseState(t, packs, keys, true)
-
-		dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{AuthRuntimeBundle: newPrivateAuthRuntimeBundleForTest(t, authVerified.Identity)})
-		if err != nil {
-			t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = %v", err)
-		}
-		if dispatcher == nil {
-			t.Fatal("NewEmbeddedReleaseAddTaskDispatcher() dispatcher = nil")
-		}
-	})
-
-	t.Run("extra non auth runtime rejected", func(t *testing.T) {
-		withEmbeddedReleaseState(t, packs, keys, true)
-
-		dispatcher, err := NewEmbeddedReleaseAddTaskDispatcher(EmbeddedReleaseDispatcherConfig{AuthRuntimeBundle: newPrivateAuthRuntimeBundleForTest(t, authVerified.Identity, nonAuthVerified.Identity)})
-		if err == nil {
-			t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() error = nil, dispatcher=%#v", dispatcher)
-		}
-		if dispatcher != nil {
-			t.Fatalf("NewEmbeddedReleaseAddTaskDispatcher() returned dispatcher for extra non-auth runtime")
-		}
-		if err.Error() != "required embedded authenticated extractor auth runtime is not configured" {
-			t.Fatalf("error = %q, want generic auth runtime error", err.Error())
-		}
-	})
 }
 
 func TestNewEmbeddedReleaseDispatcherRequiredNonAuthPackDoesNotRequireAuthRuntime(t *testing.T) {
@@ -565,37 +363,14 @@ func signedAuthCapableTestPack(t *testing.T, privateKey ed25519.PrivateKey, payl
 	return pack
 }
 
-func newPrivateAuthRuntimeBundleForTest(t *testing.T, identities ...VerifiedPackIdentity) *PrivateAuthRuntimeBundle {
+func newPrivateAuthRuntimeBundleForTest(t *testing.T, identity VerifiedPackIdentity) *PrivateAuthRuntimeBundle {
 	t.Helper()
-	if len(identities) == 0 {
-		t.Fatal("newPrivateAuthRuntimeBundleForTest requires at least one identity")
-	}
 
-	fixtures := make([]privateAuthRuntimePackFixture, 0, len(identities))
-	for i, identity := range identities {
-		profileRef := "apr-alpha001"
-		loginURL := "https://fixture.invalid/login"
-		if i > 0 {
-			profileRef = "apr-alpha002"
-			loginURL = "https://example.test/login"
-		}
-		fixtures = append(fixtures, privateAuthRuntimePackFixture{Identity: identity, ProfileRef: profileRef, Kind: AuthSecretKindBearer, LoginURL: loginURL})
-	}
-	raw := privateAuthRuntimeBundleRaw(t, fixtures, nil)
+	raw := privateAuthRuntimeBundleRaw(t, []privateAuthRuntimePackFixture{{Identity: identity, ProfileRef: "apr-alpha001", Kind: AuthSecretKindBearer, LoginURL: "https://share.alpha.test/login"}}, nil)
 	bundle, err := NewPrivateAuthRuntimeBundle(raw, PrivateAuthRuntimeBundleLoadOptions{})
 	if err != nil {
 		t.Fatalf("NewPrivateAuthRuntimeBundle() error = %v", err)
 	}
 
 	return bundle
-}
-
-func assertRequiredEmbeddedAuthRuntimeError(t *testing.T, err error) {
-	t.Helper()
-	if err == nil {
-		t.Fatal("error = nil, want required embedded auth runtime failure")
-	}
-	if err.Error() != requiredEmbeddedAuthRuntimeNotConfiguredError {
-		t.Fatalf("error = %q, want %q", err.Error(), requiredEmbeddedAuthRuntimeNotConfiguredError)
-	}
 }
