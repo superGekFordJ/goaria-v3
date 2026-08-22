@@ -1,6 +1,6 @@
 module goaria-v3
 
-go 1.26
+go 1.27
 
 require (
 	github.com/Masterminds/semver/v3 v3.4.0
