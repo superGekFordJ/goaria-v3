@@ -174,7 +174,10 @@ func commitRaw(sessionID string, itemIDs []string, createGroup bool, folderName 
 	if folderName != "" {
 		payload["folder_name"] = folderName
 	}
-	raw, _ := json.Marshal(payload)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
 
 	return raw
 }

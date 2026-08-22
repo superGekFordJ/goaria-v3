@@ -165,7 +165,7 @@ func (a *extensionResolveAdapter) HandleResolve(ctx context.Context, _ extension
 	}
 	ctx = extractor.WithBrowserCookies(ctx, cookies)
 
-	resolution, err, lastStatus := a.resolveOnce(ctx, sourceURL, cookies)
+	resolution, lastStatus, err := a.resolveOnce(ctx, sourceURL, cookies)
 	if ctx.Err() != nil {
 		return mapResolveError(ctx.Err(), lastStatus)
 	}
@@ -182,20 +182,20 @@ func (a *extensionResolveAdapter) HandleResolve(ctx context.Context, _ extension
 	return a.mintSession(resolution, startEpoch)
 }
 
-func (a *extensionResolveAdapter) resolveOnce(ctx context.Context, sourceURL string, cookies []extractor.SessionCookie) (res extractor.AddTaskResolution, err error, lastStatus int) {
+func (a *extensionResolveAdapter) resolveOnce(ctx context.Context, sourceURL string, cookies []extractor.SessionCookie) (res extractor.AddTaskResolution, lastStatus int, err error) {
 	key := a.flightKey(sourceURL, cookies)
 	a.mu.Lock()
 	if existing, ok := a.flights[key]; ok {
 		a.mu.Unlock()
 		select {
 		case <-existing.done:
-			return existing.res, existing.err, existing.lastStatus
+			return existing.res, existing.lastStatus, existing.err
 		case <-ctx.Done():
 			select {
 			case <-existing.done:
-				return existing.res, existing.err, existing.lastStatus
+				return existing.res, existing.lastStatus, existing.err
 			default:
-				return extractor.AddTaskResolution{}, ctx.Err(), 0
+				return extractor.AddTaskResolution{}, 0, ctx.Err()
 			}
 		}
 	}
@@ -227,7 +227,7 @@ func (a *extensionResolveAdapter) resolveOnce(ctx context.Context, sourceURL str
 	flight.err = err
 	flight.lastStatus = lastStatus
 
-	return res, err, lastStatus
+	return res, lastStatus, err
 }
 
 func (a *extensionResolveAdapter) mintSession(resolution extractor.AddTaskResolution, startEpoch uint64) extension.ResolveResult {
