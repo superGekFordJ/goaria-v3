@@ -199,36 +199,72 @@ func TestLocalDownloadService_RateLimits(t *testing.T) {
 func TestLocalDownloadService_Purge(t *testing.T) {
 	svc, ts, tmpDir, _ := setupTestService(t)
 	defer ts.Close()
-	t.Cleanup(func() { _ = svc.Shutdown() })
 
-	blockCh := make(chan struct{})
+	payloadStarted := make(chan struct{}, 1)
+	payloadExited := make(chan struct{}, 1)
+	forceHandlerExit := make(chan struct{}, 1)
 	purgeTs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", "1024")
-		w.WriteHeader(http.StatusOK)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
+		rangeHeader := r.Header.Get("Range")
+		if r.Method == http.MethodGet && rangeHeader == "bytes=0-0" {
+			w.Header().Set("Content-Length", "1")
+			w.Header().Set("Content-Range", "bytes 0-0/1024")
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write([]byte{0})
+			return
 		}
-		if r.Header.Get("Range") != "bytes=0-0" {
+		if r.Method == http.MethodHead {
+			w.Header().Set("Content-Length", "1024")
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		select {
+		case payloadStarted <- struct{}{}:
+		default:
+		}
+		select {
+		case <-r.Context().Done():
 			select {
-			case <-blockCh:
-			case <-r.Context().Done():
+			case payloadExited <- struct{}{}:
+			default:
 			}
+		case <-forceHandlerExit:
 		}
 	}))
-	defer purgeTs.Close()
-	defer close(blockCh)
+	t.Cleanup(func() {
+		select {
+		case forceHandlerExit <- struct{}{}:
+		default:
+		}
+		_ = svc.Shutdown()
+		purgeTs.Close()
+	})
 
-	id, _ := svc.AddWithID(purgeTs.URL, tmpDir, "purge.txt", nil, nil, "purge-id", false, 1, 0)
-
-	status, err := svc.GetStatus(id)
+	id, err := svc.AddWithID(purgeTs.URL, tmpDir, "purge.txt", nil, nil, "purge-id", false, 1, 0)
 	if err != nil {
-		t.Fatalf("GetStatus failed: %v", err)
+		t.Fatalf("AddWithID failed: %v", err)
 	}
-	t.Logf("GetStatus before purge returned destPath: %s", status.DestPath)
 
-	err = svc.Purge(id)
-	if err != nil {
-		t.Errorf("Purge failed: %v", err)
+	select {
+	case <-payloadStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for active payload request")
+	}
+
+	if err := svc.Purge(id); err != nil {
+		t.Fatalf("Purge failed: %v", err)
+	}
+
+	select {
+	case <-payloadExited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for payload handler to exit")
 	}
 
 	// Check that the file was deleted
