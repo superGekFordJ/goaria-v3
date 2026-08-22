@@ -31,6 +31,7 @@ type MockServer struct {
 	FailAfterBytes    int64         // Fail connection after this many bytes (0 = no fail)
 	FailOnNthRequest  int           // Fail on Nth request (0 = don't fail)
 	MaxConcurrentReqs int           // Max concurrent requests (0 = unlimited)
+	RequestStarted    chan<- struct{}
 
 	// Tracking
 	RequestCount   atomic.Int64
@@ -124,6 +125,14 @@ func WithFailOnNthRequest(n int) MockServerOption {
 func WithMaxConcurrentRequests(n int) MockServerOption {
 	return func(m *MockServer) {
 		m.MaxConcurrentReqs = n
+	}
+}
+
+// WithRequestStarted notifies ch when the server begins handling a request.
+// The notification is non-blocking, so callers should provide a buffered channel.
+func WithRequestStarted(ch chan<- struct{}) MockServerOption {
+	return func(m *MockServer) {
+		m.RequestStarted = ch
 	}
 }
 
@@ -221,6 +230,13 @@ type MockServerStats struct {
 }
 
 func (m *MockServer) handleRequest(w http.ResponseWriter, r *http.Request) {
+	if m.RequestStarted != nil {
+		select {
+		case m.RequestStarted <- struct{}{}:
+		default:
+		}
+	}
+
 	if m.CustomHandler != nil {
 		m.CustomHandler(w, r)
 		return
@@ -454,6 +470,13 @@ func NewStreamingMockServerT(t *testing.T, fileSize int64, opts ...MockServerOpt
 }
 
 func (s *StreamingMockServer) handleStreamingRequest(w http.ResponseWriter, r *http.Request) {
+	if s.RequestStarted != nil {
+		select {
+		case s.RequestStarted <- struct{}{}:
+		default:
+		}
+	}
+
 	s.RequestCount.Add(1)
 	s.ActiveRequests.Add(1)
 	defer s.ActiveRequests.Add(-1)

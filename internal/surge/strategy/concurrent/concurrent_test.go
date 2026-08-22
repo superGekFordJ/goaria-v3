@@ -360,10 +360,12 @@ func TestConcurrentDownloader_Cancellation(t *testing.T) {
 	defer cleanup()
 
 	fileSize := int64(10 * utils.MiB)
+	requestStarted := make(chan struct{}, 1)
 	server := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),
 		testutil.WithByteLatency(100*time.Microsecond),
+		testutil.WithRequestStarted(requestStarted),
 	)
 	defer server.Close()
 
@@ -374,8 +376,9 @@ func TestConcurrentDownloader_Cancellation(t *testing.T) {
 	downloader := NewConcurrentDownloader("cancel-id", nil, state, runtime)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	done := make(chan error)
+	done := make(chan error, 1)
 	go func() {
 		// Pre-create incomplete file (simulating processing layer)
 		if f, err := os.Create(destPath + ".surge"); err == nil {
@@ -385,7 +388,11 @@ func TestConcurrentDownloader_Cancellation(t *testing.T) {
 		done <- downloader.Download(ctx, server.URL(), nil, nil, destPath, fileSize)
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-requestStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Request did not start in time")
+	}
 	cancel()
 
 	select {

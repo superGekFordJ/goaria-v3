@@ -422,10 +422,12 @@ func TestSingleDownloader_Download_Cancellation(t *testing.T) {
 
 	// Large file with latency
 	fileSize := int64(5 * utils.MiB)
+	requestStarted := make(chan struct{}, 1)
 	server := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(false),
 		testutil.WithByteLatency(500*time.Microsecond),
+		testutil.WithRequestStarted(requestStarted),
 	)
 	defer server.Close()
 
@@ -436,8 +438,9 @@ func TestSingleDownloader_Download_Cancellation(t *testing.T) {
 	downloader := NewSingleDownloader("cancel-id", nil, state, runtime)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	done := make(chan error)
+	done := make(chan error, 1)
 	go func() {
 		// Pre-create incomplete file (simulating processing layer)
 		if f, err := os.Create(destPath + ".surge"); err == nil {
@@ -447,15 +450,17 @@ func TestSingleDownloader_Download_Cancellation(t *testing.T) {
 		done <- downloader.Download(ctx, server.URL(), destPath, fileSize, "cancel.bin")
 	}()
 
-	// Cancel after a short delay
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-requestStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Request did not start in time")
+	}
 	cancel()
 
 	select {
 	case err := <-done:
-		// Accept context.Canceled or wrapped errors
-		if err != nil && err != context.Canceled && err.Error() != "context canceled" {
-			t.Logf("Expected context.Canceled, got: %v", err)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation error, got: %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Download didn't respond to cancellation")

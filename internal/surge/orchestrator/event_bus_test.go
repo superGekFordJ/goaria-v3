@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"goaria-v3/internal/surge/types"
@@ -81,36 +82,27 @@ func TestEventBus_MultipleSubscribers(t *testing.T) {
 }
 
 func TestEventBus_ProgressMsgDropBehavior(t *testing.T) {
-	eb := NewEventBus()
-	defer eb.Shutdown()
+	synctest.Test(t, func(t *testing.T) {
+		listener := make(chan types.DownloadEvent, 1)
+		listener <- types.DownloadEvent{Type: types.EventStarted, DownloadID: "sentinel"}
+		eb := &EventBus{listeners: []chan types.DownloadEvent{listener}}
 
-	// Subscriber that doesn't read from the channel (will block quickly)
-	_, cleanup := eb.Subscribe()
-	defer cleanup()
+		start := time.Now()
+		eb.broadcastMsg(types.DownloadEvent{Type: types.EventProgress, DownloadID: "progress"})
+		if elapsed := time.Since(start); elapsed != 0 {
+			t.Fatalf("progress event wait = %v, want 0", elapsed)
+		}
 
-	// Fill the buffer (size 100 for outCh) by publishing 100 items
-	for i := 0; i < 100; i++ {
-		_ = eb.Publish(types.DownloadEvent{})
-	}
-
-	// Give the broadcast loop time to fill the subscriber's channel buffer
-	time.Sleep(100 * time.Millisecond)
-
-	// Publish a progress message. It should be dropped immediately without blocking for 1s.
-	start := time.Now()
-	msg := types.DownloadEvent{
-		Type: types.EventProgress, DownloadID: "test",
-	}
-	_ = eb.Publish(msg)
-
-	// Since it's a progress message and the subscriber channel is full, it should drop it and return quickly.
-	// Wait a little bit to ensure broadcastLoop processed it.
-	time.Sleep(50 * time.Millisecond)
-	elapsed := time.Since(start)
-
-	if elapsed >= 1*time.Second {
-		t.Errorf("publish of ProgressMsg took too long (%v), it should be dropped immediately", elapsed)
-	}
+		got := <-listener
+		if got.Type != types.EventStarted || got.DownloadID != "sentinel" {
+			t.Fatalf("listener event = (%v, %q), want sentinel", got.Type, got.DownloadID)
+		}
+		select {
+		case extra := <-listener:
+			t.Fatalf("unexpected queued progress event: %+v", extra)
+		default:
+		}
+	})
 }
 
 // TestEventBus_TerminalEventBlocksUntilDrainedOrShutdown replaces the upstream
