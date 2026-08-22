@@ -198,8 +198,8 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	s.handleConn(conn)
 }
 
-// handleConn validates Origin + Secret (if-branch: empty=MVP, non-empty=production),
-// then dispatches post-auth messages.
+// handleConn validates Origin and Secret, then dispatches post-auth messages.
+// Empty secrets require GOARIA_EXTENSION_ALLOW_EMPTY_SECRET=1.
 func (s *Server) handleConn(conn *websocket.Conn) {
 	sc := newSafeConn(conn)
 	defer sc.Close()
@@ -230,7 +230,7 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 		if !allowEmptySecret.Load() {
 			return
 		}
-		// MVP: do not read a first auth frame; tests send download/ping first.
+		// Explicit test/development mode skips the initial auth frame.
 	} else {
 		_ = sc.SetReadDeadline(time.Now().Add(authReadTimeout))
 		var auth AuthMessage
@@ -289,7 +289,7 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 			s.dispatchAsync(opCtx, connCtx, sc, env, raw, MsgTypeBatchDownloadAck, CapExtractorBatch, false)
 		case MsgTypeAuth, MsgTypePing:
 			// Post-handshake no-ops: the real client always sends auth after open,
-			// including on the MVP skip-auth path; tests also write ping first.
+			// including in explicit test/development mode; tests also write ping first.
 		default:
 			_ = sc.writeJSON(ProtocolError{
 				Type:      MsgTypeProtocolError,

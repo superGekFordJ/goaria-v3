@@ -49,7 +49,7 @@ var WSPortFallbacks = []int{16801, 16802, 16803}
 var PairPortFallbacks = []int{16810, 16811, 16812, 16813, 16814}
 
 // AuthMessage is the first message an extension sends after connecting.
-// Empty secret = MVP (server skips validation); non-empty = production.
+// Empty secrets are accepted only in explicit test/development mode.
 // ClientVersion and ProtocolVersion are ignored for the allow/deny decision.
 type AuthMessage struct {
 	Type            string `json:"type"`

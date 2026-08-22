@@ -505,6 +505,22 @@ describe('handleClick', () => {
     expect(harness.rpc[0]?.payload).not.toHaveProperty('folder_name')
   })
 
+  it('starts a fresh resolve on the next click after the local lease deadline', async () => {
+    const tabId = 52
+    await getExtractorSessionStore().putSession(
+      readyMulti(tabId, { leaseDeadline: Date.now() - 1 }),
+    )
+    harness.rpcImpl = async () => ({ matched: false, items: [] })
+
+    const reply = await handleClick({ page_token: TOKEN }, { tabId })
+    expect(reply).toEqual({ accepted: true })
+    await waitUntil(() => harness.rpc.length === 1)
+    expect(harness.rpc[0]?.type).toBe('extractor_resolve')
+    expect(harness.rpc[0]?.payload).not.toHaveProperty('session_id')
+    expect(harness.rpc[0]?.payload).not.toHaveProperty('item_ids')
+    expect(harness.rpc.some(call => call.type === 'batch_download')).toBe(false)
+  })
+
   it('recaptures the current browser context on the next click after auth_expired', async () => {
     const tabId = 53
     const oldSessionId = 'session-old-fixture'

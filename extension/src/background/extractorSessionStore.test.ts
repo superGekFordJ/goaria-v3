@@ -181,6 +181,47 @@ describe('createExtractorSessionStore', () => {
     expect(await store.shouldNotifyFallback(3, TOKEN)).toBe(false)
   })
 
+  it('deletes an expired session when getSession reaches the deadline', async () => {
+    const storage = memoryStorage()
+    let now = 1_999
+    const store = createExtractorSessionStore(storage, () => now)
+    await store.putSession({
+      tabId: 5,
+      pageToken: TOKEN,
+      generation: 1,
+      state: 'ready',
+      leaseDeadline: 2_000,
+    })
+    expect(await store.getSession(5)).not.toBeNull()
+    now = 2_000
+    expect(await store.getSession(5)).toBeNull()
+    expect(storage.data.has('exs_5')).toBe(false)
+  })
+
+  it('listSessions removes expired rows and returns live rows', async () => {
+    const storage = memoryStorage()
+    const store = createExtractorSessionStore(storage, () => 2_000)
+    await store.putSession({
+      tabId: 6,
+      pageToken: TOKEN,
+      generation: 1,
+      state: 'ready',
+      leaseDeadline: 2_000,
+    })
+    await store.putSession({
+      tabId: 7,
+      pageToken: TOKEN,
+      generation: 1,
+      state: 'ready',
+      leaseDeadline: 2_001,
+    })
+    expect(await store.listSessions()).toEqual([
+      expect.objectContaining({ tabId: 7, leaseDeadline: 2_001 }),
+    ])
+    expect(storage.data.has('exs_6')).toBe(false)
+    expect(storage.data.has('exs_7')).toBe(true)
+  })
+
   it('computes lease deadlines from send and ack clocks', () => {
     expect(leaseDeadlineFromSend(0)).toBe(5 * 60 * 1000)
     expect(leaseDeadlineFromAck(0)).toBe(4.5 * 60 * 1000)

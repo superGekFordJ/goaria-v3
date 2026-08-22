@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/extension"
@@ -466,6 +467,44 @@ func TestExtensionBatch_ReceiptReplaysWithoutSecondAddUri(t *testing.T) {
 	}
 	if h.engine.callCount() != 1 {
 		t.Fatalf("AddUri calls = %d, want 1 after receipt replay", h.engine.callCount())
+	}
+}
+
+func TestExtensionBatch_ReceiptAt61SecondsThenExpiresWithoutSecondAddUri(t *testing.T) {
+	h := setupBatchCommitHarness(t)
+	resolved := resolveFixtureSession(t, h.lease)
+	itemID := resolved.Items[0].ItemID
+	const requestID = "req-receipt-boundaries"
+	raw := commitRaw(resolved.SessionID, []string{itemID}, false, "")
+	first := h.commit.HandleCommit(context.Background(), extension.RequestEnvelope{RequestID: requestID}, raw)
+	if first.ErrorCode != "" || !first.Success {
+		t.Fatalf("first commit = %+v", first)
+	}
+
+	h.lease.mu.Lock()
+	receipt := h.lease.receipts[requestID]
+	receipt.stored = time.Now().Add(-time.Minute - time.Second)
+	h.lease.receipts[requestID] = receipt
+	h.lease.mu.Unlock()
+	afterIdempotency := h.commit.HandleCommit(context.Background(), extension.RequestEnvelope{RequestID: requestID}, raw)
+	if afterIdempotency.ErrorCode != "" || !afterIdempotency.Success {
+		t.Fatalf("receipt after idempotency window = %+v", afterIdempotency)
+	}
+	if h.engine.callCount() != 1 {
+		t.Fatalf("AddUri calls = %d, want 1 after receipt replay", h.engine.callCount())
+	}
+
+	h.lease.mu.Lock()
+	receipt = h.lease.receipts[requestID]
+	receipt.stored = time.Now().Add(-commitReceiptTTL - time.Second)
+	h.lease.receipts[requestID] = receipt
+	h.lease.mu.Unlock()
+	expired := h.commit.HandleCommit(context.Background(), extension.RequestEnvelope{RequestID: requestID}, raw)
+	if expired.ErrorCode != extension.ErrCodeSessionExpired && expired.ErrorCode != extension.ErrCodeInvalidRequest {
+		t.Fatalf("expired receipt error_code = %q", expired.ErrorCode)
+	}
+	if h.engine.callCount() != 1 {
+		t.Fatalf("AddUri calls = %d, want 1 after receipt expiry", h.engine.callCount())
 	}
 }
 

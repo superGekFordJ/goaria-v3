@@ -438,6 +438,38 @@ func TestExtensionResolver_LookupEvictsExpiredSession(t *testing.T) {
 	}
 }
 
+func TestExtensionResolver_InsertSessionEvictsLeastRecentlyUsedAtLimit(t *testing.T) {
+	adapter := newExtensionResolveAdapter(nil)
+	base := time.Now()
+	adapter.mu.Lock()
+	for i := 0; i < maxResolveSessions; i++ {
+		id := string(rune('a' + i))
+		adapter.insertSessionLocked(id, &leasedResolveSession{
+			inserted: base,
+			lastUsed: base.Add(time.Duration(i) * time.Second),
+		})
+	}
+	adapter.insertSessionLocked("newest", &leasedResolveSession{
+		inserted: base,
+		lastUsed: base.Add(maxResolveSessions * time.Second),
+	})
+	_, oldestExists := adapter.sessions["a"]
+	_, nextExists := adapter.sessions["b"]
+	_, newestExists := adapter.sessions["newest"]
+	count := len(adapter.sessions)
+	adapter.mu.Unlock()
+
+	if count != maxResolveSessions {
+		t.Fatalf("session count = %d, want %d", count, maxResolveSessions)
+	}
+	if oldestExists {
+		t.Fatal("least recently used session must be evicted")
+	}
+	if !nextExists || !newestExists {
+		t.Fatal("newer sessions must remain after LRU eviction")
+	}
+}
+
 func TestSanitizeAckMime_TypeSubtypeOnly(t *testing.T) {
 	if got := sanitizeAckMime("application/octet-stream"); got != "application/octet-stream" {
 		t.Fatalf("got %q", got)
