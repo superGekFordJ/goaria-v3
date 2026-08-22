@@ -85,7 +85,7 @@ func (m DownloadEvent) MarshalJSON() ([]byte, error) {
 		Alias
 		Err string `json:"error,omitempty"`
 	}{
-		Alias: (Alias)(m),
+		Alias: Alias(m),
 		Err:   errStr,
 	})
 }
