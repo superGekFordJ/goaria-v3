@@ -61,6 +61,10 @@ export function isLegacyHost(ack: ParsedAuthAck): boolean {
   return ack.protocolVersion === 0 || ack.capabilities === undefined
 }
 
+export function shouldShowLegacyHostHint(ack: ParsedAuthAck): boolean {
+  return isLegacyHost(ack)
+}
+
 export function hasCapability(capabilities: string[] | undefined | null, name: string): boolean {
   if (!capabilities) return false
   return capabilities.includes(name)

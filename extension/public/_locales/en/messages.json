@@ -6,6 +6,7 @@
   "popup_status_connected_unpaired": { "message": "Connected · Unpaired" },
   "popup_status_connecting": { "message": "Connecting..." },
   "popup_status_disconnected": { "message": "Disconnected" },
+  "popup_legacy_host_hint": { "message": "Some newer extension features need a newer GoAria host. Ordinary downloads still work." },
   "popup_toggle_intercept": { "message": "Intercept downloads" },
   "popup_btn_pair": { "message": "Pair" },
   "popup_pair_guide": { "message": "Click \"Bind Extension\" in GoAria settings" },

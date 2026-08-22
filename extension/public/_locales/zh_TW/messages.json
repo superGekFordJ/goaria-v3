@@ -6,6 +6,7 @@
   "popup_status_connected_unpaired": { "message": "已連線 · 未配對" },
   "popup_status_connecting": { "message": "連線中..." },
   "popup_status_disconnected": { "message": "未連線" },
+  "popup_legacy_host_hint": { "message": "部分較新的擴充功能需要較新的 GoAria 主機；一般下載仍可使用。" },
   "popup_toggle_intercept": { "message": "攔截下載" },
   "popup_btn_pair": { "message": "配對" },
   "popup_pair_guide": { "message": "請在 GoAria 設定中點擊綁定擴充功能" },

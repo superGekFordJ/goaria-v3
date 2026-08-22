@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { hasCapability, isLegacyHost, parseAuthAck } from './capabilities'
+import {
+  hasCapability,
+  isLegacyHost,
+  parseAuthAck,
+  shouldShowLegacyHostHint,
+} from './capabilities'
 
 describe('parseAuthAck / isLegacyHost', () => {
   it('treats missing protocol_version and capabilities as legacy', () => {
@@ -7,6 +12,7 @@ describe('parseAuthAck / isLegacyHost', () => {
     expect(parsed.protocolVersion).toBe(0)
     expect(parsed.capabilities).toBeUndefined()
     expect(isLegacyHost(parsed)).toBe(true)
+    expect(shouldShowLegacyHostHint(parsed)).toBe(true)
   })
 
   it('treats JSON null capabilities as missing/legacy', () => {
@@ -17,6 +23,17 @@ describe('parseAuthAck / isLegacyHost', () => {
     })
     expect(parsed.capabilities).toBeUndefined()
     expect(isLegacyHost(parsed)).toBe(true)
+    expect(shouldShowLegacyHostHint(parsed)).toBe(true)
+  })
+
+  it('treats a missing protocol_version as legacy even when capabilities are present', () => {
+    const parsed = parseAuthAck({
+      type: 'auth_ack',
+      capabilities: ['request_id'],
+    })
+    expect(parsed.protocolVersion).toBe(0)
+    expect(parsed.capabilities).toEqual(['request_id'])
+    expect(shouldShowLegacyHostHint(parsed)).toBe(true)
   })
 
   it('treats present empty capabilities as protocol-2, not legacy', () => {
@@ -30,6 +47,34 @@ describe('parseAuthAck / isLegacyHost', () => {
     expect(parsed.hostVersion).toBe('dev')
     expect(parsed.capabilities).toEqual([])
     expect(isLegacyHost(parsed)).toBe(false)
+    expect(shouldShowLegacyHostHint(parsed)).toBe(false)
+  })
+
+  it('treats a 3.3.0 request-id-only host as modern limited without a hint', () => {
+    const parsed = parseAuthAck({
+      type: 'auth_ack',
+      protocol_version: 2,
+      host_version: '3.3.0',
+      capabilities: ['request_id'],
+    })
+    expect(parsed.hostVersion).toBe('3.3.0')
+    expect(isLegacyHost(parsed)).toBe(false)
+    expect(shouldShowLegacyHostHint(parsed)).toBe(false)
+    expect(hasCapability(parsed.capabilities, 'request_id')).toBe(true)
+    expect(hasCapability(parsed.capabilities, 'extractor.resolve')).toBe(false)
+    expect(hasCapability(parsed.capabilities, 'extractor.batch')).toBe(false)
+  })
+
+  it('never grants extractor capabilities from host_version alone', () => {
+    const parsed = parseAuthAck({
+      type: 'auth_ack',
+      protocol_version: 2,
+      host_version: '99.0.0',
+      capabilities: [],
+    })
+    expect(shouldShowLegacyHostHint(parsed)).toBe(false)
+    expect(hasCapability(parsed.capabilities, 'extractor.resolve')).toBe(false)
+    expect(hasCapability(parsed.capabilities, 'extractor.batch')).toBe(false)
   })
 
   it('parses string capabilities including request_id', () => {

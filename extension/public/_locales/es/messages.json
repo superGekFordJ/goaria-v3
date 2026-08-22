@@ -6,6 +6,7 @@
   "popup_status_connected_unpaired": { "message": "Conectado · No emparejado" },
   "popup_status_connecting": { "message": "Conectando..." },
   "popup_status_disconnected": { "message": "Desconectado" },
+  "popup_legacy_host_hint": { "message": "Algunas funciones nuevas de la extensión requieren un host de GoAria más reciente. Las descargas normales siguen funcionando." },
   "popup_toggle_intercept": { "message": "Interceptar descargas" },
   "popup_btn_pair": { "message": "Emparejar" },
   "popup_pair_guide": { "message": "Haga clic en «Vincular extensión» en los ajustes de GoAria" },

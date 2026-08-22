@@ -13,6 +13,20 @@ const harness = vi.hoisted(() => {
     hrefAaa: 'https://share.alpha.test/s/aaa',
     hrefBbb: 'https://share.alpha.test/s/bbb',
     tabUrl: 'https://share.alpha.test/s/aaa',
+    cookieStoreId: 'fixture-store-a',
+    cookies: [] as Array<{
+      name: string
+      value: string
+      domain: string
+      path: string
+      secure: boolean
+      host_only: boolean
+    }>,
+    userAgent: 'FixtureBrowser/1.0',
+    language: 'en-US',
+    tabReads: [] as Array<{ tabId: number; url: string; cookieStoreId: string }>,
+    storeReads: [] as Array<{ url?: string; cookieStoreId?: string }>,
+    cookieReads: [] as Array<{ url: string; storeId: string }>,
     fallbackCalls: [] as Array<{ tabId: number; pageToken: string }>,
     results: [] as Array<Record<string, unknown>>,
     catalogs: [] as Array<Record<string, unknown>>,
@@ -42,10 +56,23 @@ const harness = vi.hoisted(() => {
   }
 })
 
+vi.stubGlobal('navigator', {
+  get userAgent() {
+    return harness.userAgent
+  },
+  get language() {
+    return harness.language
+  },
+})
+
 vi.mock('webextension-polyfill', () => ({
   default: {
     tabs: {
-      get: async () => ({ id: 1, url: harness.tabUrl }),
+      get: async (tabId: number) => {
+        const tab = { id: tabId, url: harness.tabUrl, cookieStoreId: harness.cookieStoreId }
+        harness.tabReads.push({ tabId, url: tab.url, cookieStoreId: tab.cookieStoreId })
+        return tab
+      },
       onRemoved: { addListener() {} },
     },
   },
@@ -114,8 +141,14 @@ vi.mock('./mintRequestId', () => ({
 }))
 
 vi.mock('./cookieCapture', () => ({
-  getStructuredCookiesForUrl: async () => ({ cookies: [] }),
-  resolveCookieStoreIdForTab: async () => 'firefox-container-1',
+  getStructuredCookiesForUrl: async (url: string, storeId: string) => {
+    harness.cookieReads.push({ url, storeId })
+    return { cookies: harness.cookies.map(cookie => ({ ...cookie })) }
+  },
+  resolveCookieStoreIdForTab: async (tab: { url?: string; cookieStoreId?: string }) => {
+    harness.storeReads.push({ url: tab.url, cookieStoreId: tab.cookieStoreId })
+    return tab.cookieStoreId
+  },
 }))
 
 vi.mock('./capabilities', () => ({
@@ -257,6 +290,13 @@ describe('handlePickerOpen / handlePickerSubmit', () => {
     harness.rpc = []
     harness.rpcImpl = async () => ({ success: true })
     harness.tabUrl = harness.hrefAaa
+    harness.cookieStoreId = 'fixture-store-a'
+    harness.cookies = []
+    harness.userAgent = 'FixtureBrowser/1.0'
+    harness.language = 'en-US'
+    harness.tabReads = []
+    harness.storeReads = []
+    harness.cookieReads = []
     cancelAllClicks()
   })
 
@@ -428,6 +468,13 @@ describe('handleClick', () => {
     harness.rpc = []
     harness.rpcImpl = async () => ({ success: true })
     harness.tabUrl = harness.hrefAaa
+    harness.cookieStoreId = 'fixture-store-a'
+    harness.cookies = []
+    harness.userAgent = 'FixtureBrowser/1.0'
+    harness.language = 'en-US'
+    harness.tabReads = []
+    harness.storeReads = []
+    harness.cookieReads = []
     cancelAllClicks()
   })
 
@@ -456,5 +503,74 @@ describe('handleClick', () => {
     await waitUntil(() => harness.rpc.length === 1)
     expect(harness.rpc[0]?.payload).not.toHaveProperty('create_group')
     expect(harness.rpc[0]?.payload).not.toHaveProperty('folder_name')
+  })
+
+  it('recaptures the current browser context on the next click after auth_expired', async () => {
+    const tabId = 53
+    const oldSessionId = 'session-old-fixture'
+    const oldItemId = 'item-old-fixture'
+    const oldRequestId = 'request-old-fixture'
+    await getExtractorSessionStore().putSession({
+      tabId,
+      pageToken: TOKEN,
+      generation: 1,
+      state: 'error',
+      errorCode: 'auth_expired',
+      sessionId: oldSessionId,
+      itemIds: [oldItemId],
+      batchRequestId: oldRequestId,
+      displayItems: [{ filename: 'old.bin' }],
+    })
+
+    const currentUrl = 'https://share.alpha.test/s/aaa?context=current'
+    harness.tabUrl = currentUrl
+    harness.cookieStoreId = 'fixture-store-current'
+    harness.cookies = [
+      {
+        name: 'sid',
+        value: 'current-fixture-value',
+        domain: 'share.alpha.test',
+        path: '/',
+        secure: true,
+        host_only: true,
+      },
+    ]
+    harness.userAgent = 'FixtureBrowser/2.0'
+    harness.language = 'fr-FR'
+    harness.rpcImpl = async () => ({ matched: false, items: [] })
+
+    const reply = await handleClick({ page_token: TOKEN }, { tabId })
+    expect(reply).toEqual({ accepted: true })
+    await waitUntil(() => harness.rpc.length === 1)
+
+    expect(harness.rpc[0]).toMatchObject({
+      type: 'extractor_resolve',
+      payload: {
+        source_url: currentUrl,
+        cookies: harness.cookies,
+        user_agent: 'FixtureBrowser/2.0',
+        accept_language: 'fr-FR',
+      },
+    })
+    expect(harness.rpc[0]?.requestId).toBeUndefined()
+    expect(harness.storeReads).toContainEqual({
+      url: currentUrl,
+      cookieStoreId: 'fixture-store-current',
+    })
+    expect(harness.cookieReads).toEqual([
+      { url: currentUrl, storeId: 'fixture-store-current' },
+    ])
+    expect(harness.tabReads.length).toBeGreaterThan(0)
+    expect(harness.tabReads.every(read => read.url === currentUrl)).toBe(true)
+    expect(harness.rpc.some(call => call.type === 'batch_download')).toBe(false)
+
+    const payload = harness.rpc[0]?.payload as Record<string, unknown>
+    expect(payload).not.toHaveProperty('session_id')
+    expect(payload).not.toHaveProperty('item_ids')
+    expect(payload).not.toHaveProperty('request_id')
+    const serialized = JSON.stringify(payload)
+    expect(serialized).not.toContain(oldSessionId)
+    expect(serialized).not.toContain(oldItemId)
+    expect(serialized).not.toContain(oldRequestId)
   })
 })

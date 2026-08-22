@@ -71,6 +71,7 @@ export type WsStatusMessage = {
   wsPort: number
   paired: boolean
   lastError: string
+  legacyHost?: boolean
 }
 
 // Empty payload: popup asks background for the current WsStatusMessage.

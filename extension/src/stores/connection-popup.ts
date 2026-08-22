@@ -19,6 +19,7 @@ export async function initStatusListener(): Promise<void> {
       connectionState.paired = msg.paired
       connectionState.status = msg.status
       connectionState.wsPort = msg.wsPort
+      if (msg.status !== 'connected') connectionState.legacyHost = undefined
     })
     statusListenerBound = true
   }
@@ -36,6 +37,7 @@ export async function unpairFromPopup(): Promise<void> {
   connectionState.paired = false
   connectionState.status = 'disconnected'
   connectionState.lastError = 'Unpaired'
+  connectionState.legacyHost = undefined
   try {
     await sendMessage('pair:unpair', {}, 'background')
   } catch {

@@ -10,6 +10,7 @@ class ConnectionState {
   capabilities = $state<string[] | undefined>(undefined)
   protocolVersion = $state(0)
   hostVersion = $state('')
+  legacyHost = $state<boolean | undefined>(undefined)
 
   get isConnected() {
     return this.status === 'connected'
@@ -27,6 +28,7 @@ class ConnectionState {
     this.wsPort = msg.wsPort
     this.paired = msg.paired
     this.lastError = msg.lastError
+    this.legacyHost = msg.status === 'connected' ? msg.legacyHost : undefined
   }
 }
 

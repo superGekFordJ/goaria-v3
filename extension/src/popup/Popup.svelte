@@ -69,6 +69,10 @@
     <div class="popup-error-text">{connectionState.lastError}</div>
   {/if}
 
+  {#if connectionState.status === 'connected' && connectionState.legacyHost === true}
+    <div class="etched-panel popup-guide">{t('popup_legacy_host_hint')}</div>
+  {/if}
+
   <div class="popup-section">
     <LiquidGlassPanel
       as="button"

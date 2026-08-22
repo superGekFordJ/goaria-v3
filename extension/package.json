@@ -1,7 +1,7 @@
 {
   "name": "goaria-browser-extension",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "cross-env EXTENSION_TARGET=chrome vite build --watch",

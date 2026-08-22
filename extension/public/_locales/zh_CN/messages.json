@@ -6,6 +6,7 @@
   "popup_status_connected_unpaired": { "message": "已连接 · 未配对" },
   "popup_status_connecting": { "message": "连接中..." },
   "popup_status_disconnected": { "message": "未连接" },
+  "popup_legacy_host_hint": { "message": "部分较新的扩展功能需要较新的 GoAria 宿主；普通下载仍可使用。" },
   "popup_toggle_intercept": { "message": "拦截下载" },
   "popup_btn_pair": { "message": "配对" },
   "popup_pair_guide": { "message": "请在 GoAria 设置中点击绑定扩展" },

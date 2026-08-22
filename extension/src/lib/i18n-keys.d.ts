@@ -53,6 +53,7 @@ export type I18nKey =
   | 'popup_btn_settings'
   | 'popup_btn_unpair'
   | 'popup_confirm_unpair'
+  | 'popup_legacy_host_hint'
   | 'popup_pair_guide'
   | 'popup_settings_advanced_materials'
   | 'popup_settings_port'
