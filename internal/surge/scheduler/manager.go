@@ -301,6 +301,10 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 	// Send download started message
 	if cfg.ProgressCh != nil {
 		rateLimit, rateLimitSet := currentRateLimit()
+		// FORK-PATCH: EventStarted is consumed asynchronously. Snapshot cfg so
+		// copyBackConcurrent's later writes to RangeAcquisitionMode/SkipServerProbe
+		// cannot race with copyRangeAcquisition reading m.State.
+		snap := *cfg
 		safeSendProgress(cfg.ProgressCh, types.DownloadEvent{
 			Type:         types.EventStarted,
 			DownloadID:   cfg.ID,
@@ -308,7 +312,7 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 			Filename:     finalFilename,
 			Total:        cfg.TotalSize, // Relies on TotalSize from Config
 			DestPath:     finalDestPath,
-			State:        cfg,
+			State:        &snap,
 			RateLimit:    rateLimit,
 			RateLimitSet: rateLimitSet,
 			Workers:      cfg.Runtime.Workers,
