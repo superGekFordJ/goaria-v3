@@ -50,10 +50,11 @@ tasks:
 
   # Code quality
   lint:go:
-    summary: Run golangci-lint fmt (gofumpt+gci) + golangci-lint run
+    summary: Run golangci-lint fmt, then dual-tag run (default + extractor)
     cmds:
       - golangci-lint fmt ./...
       - golangci-lint run ./...
+      - golangci-lint run --build-tags extractor ./...
 
   lint:frontend:
     summary: Run frontend lint (pnpm run lint)
