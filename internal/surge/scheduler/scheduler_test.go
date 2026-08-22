@@ -81,8 +81,8 @@ func TestNewScheduler_NilChannel(t *testing.T) {
 }
 
 func TestScheduler_Add_QueuesToChannel(t *testing.T) {
-	ch := make(chan types.DownloadEvent, 10)
-	pool := New(ch, 3)
+	pool := NewSchedulerForTesting(nil)
+	t.Cleanup(pool.GracefulShutdown)
 
 	cfg := types.DownloadRecord{
 		ID:            "test-id",
@@ -90,18 +90,24 @@ func TestScheduler_Add_QueuesToChannel(t *testing.T) {
 		ProgressState: progress.New("test-id", 1000),
 	}
 
-	// Add should not block (buffered channel)
-	done := make(chan bool)
+	// Add should not wait for a worker to consume the queued task.
+	done := make(chan struct{}, 1)
 	go func() {
 		pool.Add(cfg)
-		done <- true
+		done <- struct{}{}
 	}()
 
 	select {
 	case <-done:
-		// Success - Add completed
 	case <-time.After(100 * time.Millisecond):
 		t.Error("Add() blocked unexpectedly")
+	}
+
+	pool.mu.RLock()
+	_, queued := pool.queued[cfg.ID]
+	pool.mu.RUnlock()
+	if !queued {
+		t.Fatal("Add() did not retain the queued task")
 	}
 }
 
