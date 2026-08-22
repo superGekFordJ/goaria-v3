@@ -69,10 +69,7 @@ func applyPhysicalCeiling(vLogicalAvailable int64, p CalcParams) int64 {
 	lanReserved := p.Ledger.Reserved("lan", hDirect) + p.Ledger.Reserved("lan", hProxy)
 	totalReserved := wanReserved + lanReserved
 
-	vPhysicalAvailable := physicalPeak - totalReserved
-	if vPhysicalAvailable < 0 {
-		vPhysicalAvailable = 0
-	}
+	vPhysicalAvailable := max(physicalPeak-totalReserved, 0)
 
 	return min64(vLogicalAvailable, vPhysicalAvailable)
 }

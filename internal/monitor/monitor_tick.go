@@ -51,9 +51,7 @@ func (m *Monitor) tick() {
 	)
 
 	// 1. 获取 Active 任务
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		var err error
 		active, err = m.engine.TellActiveLite()
 		if err != nil {
@@ -65,19 +63,17 @@ func (m *Monitor) tick() {
 				activeErr = err
 			}
 		}
-	}()
+	})
 
 	// 2. 获取 Waiting 任务
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		var err error
 		waiting, err = m.engine.TellWaitingLite(0, 100)
 		if err != nil {
 			log.Printf("[Monitor] TellWaitingLite error: %v, retrying with full request", err)
 			waiting, _ = m.engine.TellWaiting(0, 100)
 		}
-	}()
+	})
 
 	// 3. 获取 Stopped 任务 (仅在需要时或定期兜底刷新时)
 	m.mu.Lock()
@@ -92,9 +88,7 @@ func (m *Monitor) tick() {
 	}
 
 	if fetchStopped {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			var err error
 			// 优化：使用 Lite 接口减少数据量
 			stopped, err = m.engine.TellStoppedLite(0, 100)
@@ -109,7 +103,7 @@ func (m *Monitor) tick() {
 				}
 			}
 			// lastStopped is persisted after fast-retry + normalize (below), not here.
-		}()
+		})
 	} else {
 		m.mu.Lock()
 		stopped = m.lastStopped

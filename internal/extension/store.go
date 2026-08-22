@@ -27,7 +27,7 @@ func NewSecretStore() *SecretStore {
 // GenerateSecret produces a 32-byte random hex string (64 chars).
 // Retries up to 3 times on rand.Read failure; returns "" on exhaustion.
 func (s *SecretStore) GenerateSecret() string {
-	for attempt := 0; attempt < 3; attempt++ {
+	for range 3 {
 		b := make([]byte, 32)
 		if _, err := io.ReadFull(randReader, b); err == nil {
 			return hex.EncodeToString(b)

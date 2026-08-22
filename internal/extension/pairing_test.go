@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -183,13 +184,7 @@ func TestPairing_Start_UsesFallbackPort(t *testing.T) {
 	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
 		t.Fatalf("parse port: %v", err)
 	}
-	found := false
-	for _, p := range PairPortFallbacks {
-		if port == p {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(PairPortFallbacks, port)
 	if !found {
 		t.Fatalf("port %d not in PairPortFallbacks %v", port, PairPortFallbacks)
 	}
@@ -452,7 +447,7 @@ func TestPairing_Start_MultipleCallsPreserveSecret(t *testing.T) {
 	store.SetSecret("multi-browser-secret")
 	ps := NewPairingService(store, nil)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if _, err := ps.Start(); err != nil {
 			t.Fatalf("Start #%d: %v", i, err)
 		}

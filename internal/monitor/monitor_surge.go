@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"log"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -621,15 +622,9 @@ func (m *Monitor) reconcileSurgeCache() {
 	engineWaitingMap := taskMapByGid(engineWaiting)
 	engineStoppedMap := taskMapByGid(engineStopped)
 	engineAll := make(map[string]rpc.Task, len(engineActive)+len(engineWaiting)+len(engineStopped))
-	for gid, t := range engineActiveMap {
-		engineAll[gid] = t
-	}
-	for gid, t := range engineWaitingMap {
-		engineAll[gid] = t
-	}
-	for gid, t := range engineStoppedMap {
-		engineAll[gid] = t
-	}
+	maps.Copy(engineAll, engineActiveMap)
+	maps.Copy(engineAll, engineWaitingMap)
+	maps.Copy(engineAll, engineStoppedMap)
 
 	cacheActive := filterSgOnly(Cache.GetActive())
 	cacheWaiting := filterSgOnly(Cache.GetWaiting())

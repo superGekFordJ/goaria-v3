@@ -362,6 +362,7 @@ linters:
     - nilnesserr
     - unconvert
     - gocritic
+    - modernize
   settings:
     copyloopvar:
       check-alias: true

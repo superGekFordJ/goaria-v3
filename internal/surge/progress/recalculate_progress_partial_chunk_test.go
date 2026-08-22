@@ -143,7 +143,7 @@ func TestRecalculateProgress_EmptyRemaining_VPEqualsFileSize(t *testing.T) {
 		t.Errorf("VP = %d, want %d (fileSize)", vp, totalSize)
 	}
 	_, width, _, _, _ := ps.GetBitmapSnapshot(true)
-	for i := 0; i < width; i++ {
+	for i := range width {
 		if ps.GetChunkState(i) != types.ChunkCompleted {
 			t.Errorf("chunk %d state = %v, want Completed (no remaining)", i, ps.GetChunkState(i))
 		}

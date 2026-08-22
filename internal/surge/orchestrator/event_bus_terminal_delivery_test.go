@@ -54,7 +54,7 @@ func TestEventBus_DropsProgressWhenBufferFull(t *testing.T) {
 
 	fillSubscriber(t, eb, sub, 100)
 
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		if err := eb.Publish(types.DownloadEvent{
 			Type:       types.EventProgress,
 			DownloadID: "extra-prog",
@@ -230,7 +230,7 @@ func TestEventBus_InputChBufferAbsorbsBurst(t *testing.T) {
 	}()
 
 	start := time.Now()
-	for i := 0; i < 80; i++ {
+	for i := range 80 {
 		if err := eb.Publish(types.DownloadEvent{
 			Type:       types.EventProgress,
 			DownloadID: "burst",

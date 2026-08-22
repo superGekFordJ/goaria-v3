@@ -294,7 +294,7 @@ func TestCalculate_BatchDegradation(t *testing.T) {
 	fileSize := int64(1 * 1024 * 1024 * 1024) // 1GB each
 
 	var splits []int
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		reserved := ledger.Reserved("wan", "testenv")
 		params := Calculate(CalcParams{
 			FileSize:          fileSize,
@@ -339,7 +339,7 @@ func TestCalculate_DomainIsolation_NoPollution(t *testing.T) {
 	// 1 fast.com record: 67MB/s, 4 threads → V_thread = 16.75MB/s
 	// Scope p75 of those four: [1MB, 1MB, 1MB, 16.75MB] → p75 = max = 16.75MB/s
 	// Domain p75 for fast.com: 16.75MB/s (single sample, not polluted)
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		speedstats.AddRecordV2(1*1024*1024, 1, 200*1024*1024, false, 100, "slow.com", "wan", "testenv")
 	}
 	speedstats.AddRecordV2(67*1024*1024, 4, 200*1024*1024, false, 100, "fast.com", "wan", "testenv")
@@ -555,7 +555,7 @@ func TestCalculate_SameBatch_DomainReserve_Pattern9111(t *testing.T) {
 	ledger := NewBandwidthLedger(nil)
 	fileSize := int64(1 * 1024 * 1024 * 1024)
 	var splits []int
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		params := Calculate(CalcParams{
 			FileSize:                fileSize,
 			MaxConnections:          16,

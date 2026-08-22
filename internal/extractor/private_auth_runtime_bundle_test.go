@@ -2,6 +2,7 @@ package extractor
 
 import (
 	"encoding/json"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -406,9 +407,7 @@ func privateAuthRuntimeBundleRaw(t *testing.T, fixtures []privateAuthRuntimePack
 	})
 
 	return privateAuthRuntimeBundleRawWithRuntime(t, runtimeRaw, func(envelope map[string]any) {
-		for key, value := range bundleBase {
-			envelope[key] = value
-		}
+		maps.Copy(envelope, bundleBase)
 	})
 }
 

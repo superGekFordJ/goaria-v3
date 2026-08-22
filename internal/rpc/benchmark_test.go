@@ -13,7 +13,7 @@ func BenchmarkUnmarshalTasks(b *testing.B) {
 	// 1. Construct a heavy response (with 1000 files)
 	// Use generic paths to avoid platform confusion, though this is just JSON data.
 	var files []string
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		files = append(files, fmt.Sprintf(`{"path": "downloads/file_%d.txt", "uris": [{"uri": "http://example.com/file_%d.txt", "status": "used"}]}`, i, i))
 	}
 	filesJson := strings.Join(files, ",")
@@ -70,7 +70,7 @@ func BenchmarkUnmarshalTasks(b *testing.B) {
 
 func BenchmarkBatchPause_Sequential(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := map[string]interface{}{
+		response := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      "goaria",
 			"result":  "12345",
@@ -84,7 +84,7 @@ func BenchmarkBatchPause_Sequential(b *testing.B) {
 	Init(port, "secret")
 
 	gids := make([]string, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		gids[i] = fmt.Sprintf("gid-%d", i)
 	}
 
@@ -98,7 +98,7 @@ func BenchmarkBatchPause_Sequential(b *testing.B) {
 
 func BenchmarkBatchResume_Sequential(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := map[string]interface{}{
+		response := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      "goaria",
 			"result":  "12345",
@@ -112,7 +112,7 @@ func BenchmarkBatchResume_Sequential(b *testing.B) {
 	Init(port, "secret")
 
 	gids := make([]string, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		gids[i] = fmt.Sprintf("gid-%d", i)
 	}
 
@@ -126,10 +126,10 @@ func BenchmarkBatchResume_Sequential(b *testing.B) {
 
 func BenchmarkGetTaskMetadata_Sequential(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := map[string]interface{}{
+		response := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      "goaria",
-			"result": map[string]interface{}{
+			"result": map[string]any{
 				"gid":             "gid-x",
 				"status":          "active",
 				"totalLength":     "100",
@@ -137,9 +137,9 @@ func BenchmarkGetTaskMetadata_Sequential(b *testing.B) {
 				"downloadSpeed":   "1",
 				"errorCode":       "",
 				"errorMessage":    "",
-				"files": []interface{}{map[string]interface{}{
+				"files": []any{map[string]any{
 					"path": "D:/Downloads/a.zip",
-					"uris": []interface{}{map[string]interface{}{"uri": "https://example.com/a.zip"}},
+					"uris": []any{map[string]any{"uri": "https://example.com/a.zip"}},
 				}},
 				"dir": "D:/Downloads",
 			},
@@ -153,7 +153,7 @@ func BenchmarkGetTaskMetadata_Sequential(b *testing.B) {
 	Init(port, "secret")
 
 	gids := make([]string, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		gids[i] = fmt.Sprintf("gid-%d", i)
 	}
 
@@ -171,10 +171,10 @@ func BenchmarkGetTaskMetadata_Sequential(b *testing.B) {
 
 func BenchmarkBatchPause_Multi(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := map[string]interface{}{
+		response := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      "goaria",
-			"result":  []interface{}{"12345"},
+			"result":  []any{"12345"},
 		}
 		json.NewEncoder(w).Encode(response)
 	}))
@@ -185,7 +185,7 @@ func BenchmarkBatchPause_Multi(b *testing.B) {
 	Init(port, "secret")
 
 	gids := make([]string, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		gids[i] = fmt.Sprintf("gid-%d", i)
 	}
 
@@ -197,10 +197,10 @@ func BenchmarkBatchPause_Multi(b *testing.B) {
 
 func BenchmarkBatchResume_Multi(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := map[string]interface{}{
+		response := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      "goaria",
-			"result":  []interface{}{"12345"},
+			"result":  []any{"12345"},
 		}
 		json.NewEncoder(w).Encode(response)
 	}))
@@ -211,7 +211,7 @@ func BenchmarkBatchResume_Multi(b *testing.B) {
 	Init(port, "secret")
 
 	gids := make([]string, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		gids[i] = fmt.Sprintf("gid-%d", i)
 	}
 
@@ -223,9 +223,9 @@ func BenchmarkBatchResume_Multi(b *testing.B) {
 
 func BenchmarkGetTaskMetadata_Multi(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resultArr := make([]interface{}, 100)
-		for i := 0; i < 100; i++ {
-			resultArr[i] = []interface{}{map[string]interface{}{
+		resultArr := make([]any, 100)
+		for i := range 100 {
+			resultArr[i] = []any{map[string]any{
 				"gid":             fmt.Sprintf("gid-%d", i),
 				"status":          "active",
 				"totalLength":     "100",
@@ -233,14 +233,14 @@ func BenchmarkGetTaskMetadata_Multi(b *testing.B) {
 				"downloadSpeed":   "1",
 				"errorCode":       "",
 				"errorMessage":    "",
-				"files": []interface{}{map[string]interface{}{
+				"files": []any{map[string]any{
 					"path": "D:/Downloads/a.zip",
-					"uris": []interface{}{map[string]interface{}{"uri": "https://example.com/a.zip"}},
+					"uris": []any{map[string]any{"uri": "https://example.com/a.zip"}},
 				}},
 				"dir": "D:/Downloads",
 			}}
 		}
-		response := map[string]interface{}{
+		response := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      "goaria",
 			"result":  resultArr,
@@ -254,7 +254,7 @@ func BenchmarkGetTaskMetadata_Multi(b *testing.B) {
 	Init(port, "secret")
 
 	gids := make([]string, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		gids[i] = fmt.Sprintf("gid-%d", i)
 	}
 

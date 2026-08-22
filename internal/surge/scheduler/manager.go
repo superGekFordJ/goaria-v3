@@ -115,7 +115,7 @@ func uniqueFilePath(path string) string {
 		}
 	}
 
-	for i := 0; i < 100; i++ { // Try next 100 numbers
+	for i := range 100 { // Try next 100 numbers
 		candidate := filepath.Join(dir, fmt.Sprintf("%s(%d)%s", base, counter+i, ext))
 		if _, err := os.Stat(candidate); os.IsNotExist(err) {
 			if _, err := os.Stat(candidate + types.IncompleteSuffix); os.IsNotExist(err) {
@@ -496,8 +496,9 @@ func Download(ctx context.Context, url string, outPath string, progressCh chan<-
 		ID:            id,
 		ProgressCh:    progressCh,
 		ProgressState: nil,
+
+		// Default runtime config
+		Runtime: types.DefaultRuntimeConfig(),
 	}
-	// Default runtime config
-	cfg.Runtime = types.DefaultRuntimeConfig()
 	return RunDownload(ctx, &cfg)
 }

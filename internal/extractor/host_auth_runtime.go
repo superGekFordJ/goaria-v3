@@ -936,8 +936,9 @@ func (r *HostAuthRuntime) unavailableResult(bound hostAuthRuntimeBoundRequest) H
 		Available: false,
 		PackID:    bound.pack.PackIdentity.PackID,
 		Message:   hostAuthRuntimeProfileUnavailableMessage,
+
+		ProfileStatuses: hostAuthRuntimeUnavailableStatuses(bound),
 	}
-	result.ProfileStatuses = hostAuthRuntimeUnavailableStatuses(bound)
 
 	return cloneHostAuthRuntimeResult(result)
 }

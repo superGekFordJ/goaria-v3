@@ -319,7 +319,7 @@ func TestCollectTelemetry_ConcurrentWithRemove(t *testing.T) {
 	// Goroutine 1: repeatedly call collectTelemetry
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 300; i++ {
+		for range 300 {
 			m.collectTelemetry()
 		}
 	}()
@@ -327,7 +327,7 @@ func TestCollectTelemetry_ConcurrentWithRemove(t *testing.T) {
 	// Goroutine 2: repeatedly remove entries (simulating InvalidateTask telemetry cleanup)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 300; i++ {
+		for range 300 {
 			m.telemetry.Remove("sg_race")
 			m.telemetry.Remove("sg_other")
 			_ = m.telemetry.Get("sg_race")

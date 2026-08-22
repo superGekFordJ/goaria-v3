@@ -208,7 +208,7 @@ func TestScheduler_PauseAll_MultipleDownloads(t *testing.T) {
 
 	// Add multiple active downloads
 	states := make([]*progress.DownloadProgress, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		id := string(rune('a' + i))
 		states[i] = progress.New(id, 1000)
 		pool.mu.Lock()
@@ -642,7 +642,7 @@ func TestScheduler_ConcurrentPauseCancel(t *testing.T) {
 	pool := New(ch, 3)
 
 	// Add multiple downloads
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		id := string(rune('a' + i))
 		state := progress.New(id, 1000)
 		pool.mu.Lock()
@@ -654,7 +654,7 @@ func TestScheduler_ConcurrentPauseCancel(t *testing.T) {
 
 	// Concurrently pause and cancel
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 		id := string(rune('a' + i))
 		go func(id string) {
@@ -982,7 +982,7 @@ func TestScheduler_GracefulShutdown_ClearsQueuedMap(t *testing.T) {
 
 	// Seed the queued map directly (simulating Add() without a live worker).
 	pool.mu.Lock()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		id := fmt.Sprintf("queued-%d", i)
 		pool.queued[id] = &queuedTask{cfg: types.DownloadRecord{ID: id, URL: "http://example.com/file.zip"}}
 		pool.wg.Add(1)

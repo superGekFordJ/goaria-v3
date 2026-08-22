@@ -331,10 +331,7 @@ func (d *ConcurrentDownloader) getInitialConnections(fileSize int64) int {
 			workers = maxConns
 		}
 		if minChunkSize > 0 {
-			maxPossibleChunks := fileSize / minChunkSize
-			if maxPossibleChunks < 1 {
-				maxPossibleChunks = 1
-			}
+			maxPossibleChunks := max(fileSize/minChunkSize, 1)
 			if int64(workers) > maxPossibleChunks {
 				workers = int(maxPossibleChunks)
 			}
@@ -350,10 +347,7 @@ func (d *ConcurrentDownloader) getInitialConnections(fileSize int64) int {
 	// 2. Hard constraint: Don't create chunks smaller than MinChunkSize
 	// If file is 20MB and MinChunk is 10MB, we strictly can't have more than 2 workers
 	if minChunkSize > 0 {
-		maxPossibleChunks := fileSize / minChunkSize
-		if maxPossibleChunks < 1 {
-			maxPossibleChunks = 1
-		}
+		maxPossibleChunks := max(fileSize/minChunkSize, 1)
 		if int64(calculatedWorkers) > maxPossibleChunks {
 			calculatedWorkers = int(maxPossibleChunks)
 		}
@@ -746,25 +740,19 @@ func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize i
 
 func (d *ConcurrentDownloader) startHelpers(ctx context.Context, wg *sync.WaitGroup, queue *TaskQueue, fileSize int64, numConns int) {
 	// Balancer for dynamic chunk splitting and work stealing
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		d.runBalancer(ctx, queue)
-	}()
+	})
 
 	// Monitor for download completion
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		d.runCompletionMonitor(ctx, queue, fileSize, numConns)
-	}()
+	})
 
 	// Health monitor for detecting slow workers
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		d.runHealthMonitor(ctx)
-	}()
+	})
 }
 
 // isEndGame returns true when all tasks have been dispatched (queue is empty)
@@ -967,7 +955,7 @@ func (d *ConcurrentDownloader) executeWorkers(ctx context.Context, cancel contex
 	d.totalWorkers.Store(int64(numConns)) // FORK-PATCH: track actual worker count for completion monitor
 
 	// Start workers
-	for i := 0; i < numConns; i++ {
+	for range numConns {
 		// FORK-PATCH: Use nextWorkerID for dynamic ID allocation.
 		workerID := int(d.nextWorkerID.Add(1)) - 1
 		d.workerWg.Add(1)
@@ -1040,7 +1028,7 @@ func (d *ConcurrentDownloader) ScaleWorkers(delta int) int {
 	}
 	if delta > 0 {
 		admitted := make([]int, 0, delta)
-		for i := 0; i < delta; i++ {
+		for range delta {
 			// FORK-PATCH: Guard WaitGroup reuse — check workersActive under lock before Add
 			d.workersMu.Lock()
 			if !d.workersActive.Load() {
@@ -1059,10 +1047,7 @@ func (d *ConcurrentDownloader) ScaleWorkers(delta int) int {
 
 		// FORK-PATCH: one batched ScaleUp prewarm before spawn (ignore DialHedgeCount)
 		if !d.skipRangePrewarm.Load() && deps.client != nil && len(deps.mirrors) > 0 {
-			need := len(admitted)
-			if need > 128 {
-				need = 128
-			}
+			need := min(len(admitted), 128)
 			d.prewarmConnectionsBounded(deps.ctx, deps.client, need, deps.mirrors, scalePrewarmBudget)
 		}
 

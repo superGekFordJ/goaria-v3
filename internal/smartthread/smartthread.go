@@ -34,10 +34,7 @@ func Calculate(p CalcParams) ThreadParams {
 		isExploration := !speedstats.HasDomainScopeEnvRecord(p.Domain, p.Scope, p.EnvKey)
 		split := maxConn
 		if isExploration {
-			exploreLimit := maxConn / 4
-			if exploreLimit < 4 {
-				exploreLimit = 4
-			}
+			exploreLimit := max(maxConn/4, 4)
 			if split > exploreLimit {
 				split = exploreLimit
 			}
@@ -85,10 +82,7 @@ func Calculate(p CalcParams) ThreadParams {
 	}
 
 	// --- 全局带宽感知 ---
-	vAvailable := vGlobalPeak - p.ReservedBandwidth
-	if vAvailable < 0 {
-		vAvailable = 0
-	}
+	vAvailable := max(vGlobalPeak-p.ReservedBandwidth, 0)
 
 	// 物理天花板（前向碰撞 + 对称扣减）：仅当开关开启时应用，
 	// 降级时退回 vLogicalAvailable（原逻辑天花板），只收紧不放宽。
@@ -101,10 +95,7 @@ func Calculate(p CalcParams) ThreadParams {
 	// congestionFloor=2 applies only when global V_available is congested.
 	var vTarget int64
 	if singlePeakOK {
-		vDomainAvailable := vSinglePeak - p.ReservedDomainBandwidth
-		if vDomainAvailable < 0 {
-			vDomainAvailable = 0
-		}
+		vDomainAvailable := max(vSinglePeak-p.ReservedDomainBandwidth, 0)
 		vTarget = min64(vDomainAvailable, vAvailable)
 	} else {
 		vTarget = vAvailable
@@ -127,26 +118,14 @@ func Calculate(p CalcParams) ThreadParams {
 	}
 
 	// N_final = clamp(min(N_sat, N_tmin, MaxConnections), floor, MaxConnections)
-	nFinal := minInt(minInt(nSat, nTmin), maxConn)
-	if nFinal < floor {
-		nFinal = floor
-	}
-	if nFinal > maxConn {
-		nFinal = maxConn
-	}
-	if nFinal < 1 {
-		nFinal = 1
-	}
+	nFinal := max(min(max(minInt(minInt(nSat, nTmin), maxConn), floor), maxConn), 1)
 
 	// --- 探索标记（重新引入冷启动保守防护） ---
 	// 初见新域名时缺乏 BBR 历史指纹，为获取纯净的单线程效率（V_thread_avg）样本，
 	// 强制限制初始线程数：最高不超过 1/4 MaxConnections，且不低于 4 线程。
 	isExploration := !speedstats.HasDomainScopeEnvRecord(p.Domain, p.Scope, p.EnvKey)
 	if isExploration {
-		exploreLimit := maxConn / 4
-		if exploreLimit < 4 {
-			exploreLimit = 4
-		}
+		exploreLimit := max(maxConn/4, 4)
 		if nFinal > exploreLimit {
 			nFinal = exploreLimit
 		}
@@ -154,21 +133,12 @@ func Calculate(p CalcParams) ThreadParams {
 
 	// --- 初始切分（蓝图 §2.1） ---
 	// MinChunk = clamp(V_thread_avg * T_target_chunk, 1MB, 1GB)
-	minChunk := vThreadAvg * tTargetChunk
-	if minChunk < minChunkSize {
-		minChunk = minChunkSize
-	}
-	if minChunk > maxChunkSize {
-		minChunk = maxChunkSize
-	}
+	minChunk := min(max(vThreadAvg*tTargetChunk, minChunkSize), maxChunkSize)
 	// MinChunk = min(MinChunk, fileSize / N_final)
 	if nFinal > 0 {
 		perWorker := p.FileSize / int64(nFinal)
 		if perWorker < minChunk {
-			minChunk = perWorker
-			if minChunk < minChunkSize {
-				minChunk = minChunkSize
-			}
+			minChunk = max(perWorker, minChunkSize)
 		}
 	}
 
@@ -186,27 +156,17 @@ func Calculate(p CalcParams) ThreadParams {
 // calculateLegacy is the fallback when BBR data is unavailable (cold start).
 // Uses the old N_tmin-only heuristic without bandwidth floor.
 func calculateLegacy(fileSize int64, maxConnections int, domain, scope, envKey string, tMin int) ThreadParams {
-	vSingleEst := int64(2 * 1024 * 1024) // 默认 2MB/s
-	if vSingleEst < minThreadEfficiency {
-		vSingleEst = minThreadEfficiency
-	}
+	vSingleEst := max(
+		// 默认 2MB/s
+		int64(2*1024*1024), minThreadEfficiency)
 
 	nLimit := ceilDiv(fileSize, vSingleEst*int64(tMin))
-	nFinal := int(nLimit)
-	if nFinal < 1 {
-		nFinal = 1
-	}
-	if nFinal > maxConnections {
-		nFinal = maxConnections
-	}
+	nFinal := min(max(int(nLimit), 1), maxConnections)
 
 	// --- 探索标记（重新引入冷启动保守防护） ---
 	isExploration := !speedstats.HasDomainScopeEnvRecord(domain, scope, envKey)
 	if isExploration {
-		exploreLimit := maxConnections / 4
-		if exploreLimit < 4 {
-			exploreLimit = 4
-		}
+		exploreLimit := max(maxConnections/4, 4)
 		if nFinal > exploreLimit {
 			nFinal = exploreLimit
 		}
@@ -304,10 +264,7 @@ func ClampToServerLimit(params ThreadParams, fileSize int64, scope, domain strin
 		return params
 	}
 
-	allowed := nMax - existingDomainWorkers
-	if allowed < 1 {
-		allowed = 1
-	}
+	allowed := max(nMax-existingDomainWorkers, 1)
 	if params.Split <= allowed {
 		return params
 	}
@@ -318,10 +275,7 @@ func ClampToServerLimit(params ThreadParams, fileSize int64, scope, domain strin
 	if fileSize > 0 && allowed > 0 {
 		perWorker := fileSize / int64(allowed)
 		if perWorker < params.MinSize {
-			params.MinSize = perWorker
-			if params.MinSize < minChunkSize {
-				params.MinSize = minChunkSize
-			}
+			params.MinSize = max(perWorker, minChunkSize)
 		}
 	}
 

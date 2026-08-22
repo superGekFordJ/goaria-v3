@@ -699,8 +699,8 @@ func privateAuthRuntimeURLPathHasTraversal(urlPath string) bool {
 	if strings.Contains(urlPath, "\\") {
 		return true
 	}
-	for _, segment := range strings.Split(urlPath, "/") {
-		for i := 0; i < 2; i++ {
+	for segment := range strings.SplitSeq(urlPath, "/") {
+		for range 2 {
 			decoded, err := url.PathUnescape(segment)
 			if err != nil {
 				return true

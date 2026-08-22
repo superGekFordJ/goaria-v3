@@ -112,7 +112,7 @@ func TestHedgeAll_HedgesAllEligible(t *testing.T) {
 		t.Errorf("queue should have 3 tasks, got %d", queue.Len())
 	}
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if d.activeTasks[i].Hedged.Load() != 1 {
 			t.Errorf("active task %d Hedged should be 1", i)
 		}
@@ -204,7 +204,7 @@ func TestRecordHedgeError_DisablesAtThreshold(t *testing.T) {
 		Runtime:     &types.RuntimeConfig{},
 	}
 
-	for i := 0; i < types.HedgeErrorThreshold; i++ {
+	for range types.HedgeErrorThreshold {
 		d.recordHedgeError()
 	}
 
@@ -219,7 +219,7 @@ func TestRecordHedgeError_BelowThreshold(t *testing.T) {
 		Runtime:     &types.RuntimeConfig{},
 	}
 
-	for i := 0; i < types.HedgeErrorThreshold-1; i++ {
+	for range types.HedgeErrorThreshold - 1 {
 		d.recordHedgeError()
 	}
 
@@ -234,7 +234,7 @@ func TestRecordHedgeSuccess_DecaysNotZeros(t *testing.T) {
 		Runtime:     &types.RuntimeConfig{},
 	}
 
-	for i := 0; i < types.HedgeErrorThreshold; i++ {
+	for range types.HedgeErrorThreshold {
 		d.recordHedgeError()
 	}
 
@@ -253,7 +253,7 @@ func TestRecordHedgeSuccess_DecaysNotZeros(t *testing.T) {
 		t.Error("hedgeDisabled should still be true after one success")
 	}
 
-	for i := 0; i < types.HedgeErrorThreshold-1; i++ {
+	for range types.HedgeErrorThreshold - 1 {
 		d.recordHedgeSuccess()
 	}
 
@@ -333,19 +333,15 @@ func TestEndGame_ConcurrentAccess(t *testing.T) {
 
 	var wg sync.WaitGroup
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 200; i++ {
+	wg.Go(func() {
+		for range 200 {
 			d.recordHedgeError()
 			d.recordHedgeSuccess()
 		}
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 200; i++ {
+	wg.Go(func() {
+		for range 200 {
 			d.activeMu.Lock()
 			for _, at := range d.activeTasks {
 				at.Hedged.Store(0)
@@ -355,24 +351,20 @@ func TestEndGame_ConcurrentAccess(t *testing.T) {
 			d.HedgeAll(queue)
 			queue.DrainRemaining()
 		}
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 200; i++ {
+	wg.Go(func() {
+		for range 200 {
 			d.HedgeWork(queue)
 		}
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 200; i++ {
+	wg.Go(func() {
+		for range 200 {
 			_ = d.hedgeDisabled.Load()
 			_ = d.consecutiveHedgeErrors.Load()
 		}
-	}()
+	})
 
 	wg.Wait()
 }

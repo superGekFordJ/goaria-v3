@@ -499,11 +499,9 @@ func (m *Monitor) Start() {
 	if m.surgeEng != nil {
 		m.startSurgeEventBridge()
 		m.surgePollStopChan = make(chan struct{})
-		m.surgePollWg.Add(1)
-		go func() {
-			defer m.surgePollWg.Done()
+		m.surgePollWg.Go(func() {
 			m.surgePollLoop()
-		}()
+		})
 	}
 
 	go m.runLoop()

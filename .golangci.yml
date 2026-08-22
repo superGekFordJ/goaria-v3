@@ -4,10 +4,6 @@ run:
   timeout: 5m
   modules-download-mode: readonly
   tests: true
-  skip-dirs:
-    - frontend
-    - build
-    - internal/surge
 
 linters:
   default: none
@@ -34,6 +30,7 @@ linters:
     - nilnesserr
     - unconvert
     - gocritic
+    - modernize
   settings:
     copyloopvar:
       check-alias: true

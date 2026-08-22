@@ -138,7 +138,7 @@ func (u *Updater) Restart() error {
 }
 
 // emitStatus sends an update status event to the frontend
-func (u *Updater) emitStatus(status string, payload interface{}) {
+func (u *Updater) emitStatus(status string, payload any) {
 	if u.eventHub != nil {
 		u.eventHub.EmitUpdateStatus(status, payload)
 	}

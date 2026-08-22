@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -383,13 +384,7 @@ func policyAllowsCapability(policy ResolvedHostPolicy, capability Capability) bo
 }
 
 func capabilitySliceContains(capabilities []Capability, capability Capability) bool {
-	for _, candidate := range capabilities {
-		if candidate == capability {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(capabilities, capability)
 }
 
 func policyIngressMatchesHost(policy ResolvedHostPolicy, host string) bool {
@@ -501,13 +496,7 @@ func validateHostPolicyEndpointResourceCaps(endpoint HostPolicyEndpoint, manifes
 }
 
 func hostPolicyEndpointAllowsAuthProfile(endpoint HostPolicyEndpoint, authProfileRef AuthProfileID) bool {
-	for _, allowed := range endpoint.AuthProfileRefs {
-		if allowed == authProfileRef {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(endpoint.AuthProfileRefs, authProfileRef)
 }
 
 func expandHostPolicyEndpointURL(policy ResolvedHostPolicy, endpoint HostPolicyEndpoint, params map[string]string) (string, error) {
@@ -690,13 +679,7 @@ func normalizeHostImportMethod(method string) (string, error) {
 }
 
 func stringSliceContains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(values, target)
 }
 
 func cloneResolvedHostPolicy(policy ResolvedHostPolicy) ResolvedHostPolicy {

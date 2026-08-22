@@ -184,7 +184,7 @@ func authSecretForms(headerName string, headerValue string) []string {
 		}
 	}
 	if canonical == "Cookie" {
-		for _, part := range strings.Split(headerValue, ";") {
+		for part := range strings.SplitSeq(headerValue, ";") {
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue

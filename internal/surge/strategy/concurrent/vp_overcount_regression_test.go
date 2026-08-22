@@ -128,8 +128,7 @@ func TestVPOvercount_StaleRequeueDoesNotCreateHole(t *testing.T) {
 	}
 	d := NewConcurrentDownloader("stale-requeue", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	err := downloadWithTimeout(t, d, ctx, srv.URL, destPath, fileSize, nil, 30*time.Second)
 	if err != nil {
@@ -177,8 +176,7 @@ func TestVPOvercount_MaxRetries1_StaleRequeue(t *testing.T) {
 	}
 	d := NewConcurrentDownloader("maxretry1", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	err := downloadWithTimeout(t, d, ctx, srv.URL, destPath, fileSize, nil, 30*time.Second)
 	if err != nil {
@@ -308,7 +306,7 @@ func TestVPOvercount_AllCandidatesHedged_NoSteal(t *testing.T) {
 
 	shared := &atomic.Int64{}
 	shared.Store(0)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		victim := &ActiveTask{Task: types.Task{Offset: 0, Length: 20 * utils.MiB}}
 		victim.CurrentOffset.Store(0)
 		victim.StopAt.Store(20 * utils.MiB)
@@ -430,8 +428,7 @@ func TestVPOvercount_DownloadTaskCountClampedToStopAt(t *testing.T) {
 
 	buf := make([]byte, fileSize)
 	client := &http.Client{}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	done := make(chan error, 1)
 	go func() {
@@ -510,8 +507,7 @@ func TestVPOvercount_DownloadTaskCountClampedMultiChunk(t *testing.T) {
 
 	buf := make([]byte, fileSize)
 	client := &http.Client{}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	done := make(chan error, 1)
 	go func() {

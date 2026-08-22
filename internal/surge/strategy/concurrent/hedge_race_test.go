@@ -29,7 +29,7 @@ func TestHedgeSharedMaxOffsetRace(t *testing.T) {
 	// Hedge goroutine
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 500; i++ {
+		for range 500 {
 			d.HedgeWork(queue)
 			time.Sleep(time.Microsecond)
 		}
@@ -38,7 +38,7 @@ func TestHedgeSharedMaxOffsetRace(t *testing.T) {
 	// Reader goroutine: repeatedly read the shared pointer (mimics downloadTask access)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 500; i++ {
+		for range 500 {
 			// Read under the task's RLock, matching production downloadTask behaviour.
 			active.SharedMaxOffsetMu.RLock()
 			ptr := active.SharedMaxOffset

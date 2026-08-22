@@ -42,7 +42,7 @@ func ReadURLsFromFile(filepath string) ([]string, error) {
 		if line == "" {
 			continue
 		}
-		for _, u := range strings.Fields(line) {
+		for u := range strings.FieldsSeq(line) {
 			normalized := strings.TrimRight(u, "/")
 			if !seen[normalized] {
 				seen[normalized] = true

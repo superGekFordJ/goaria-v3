@@ -233,7 +233,7 @@ func matchInstructions() []byte {
 	instructions = append(instructions, wasmOpI32Sub)
 	instructions = append(instructions, i32ConstInstructions(uint32(len(shareURL)))...)
 	instructions = append(instructions, wasmOpI32Eq)
-	for chunk := 0; chunk < chunkCount; chunk++ {
+	for chunk := range chunkCount {
 		offset := chunk * 4
 		instructions = append(instructions, wasmOpLocalGet, 0x00)
 		instructions = append(instructions, i32ConstInstructions(jsonURLPrefixLen+uint32(offset))...)

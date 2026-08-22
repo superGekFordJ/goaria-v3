@@ -27,10 +27,10 @@ func mockAria2Server(delay time.Duration) http.HandlerFunc {
 		}
 
 		// Simplified response structure
-		emptyListResponse := map[string]interface{}{
+		emptyListResponse := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      "goaria",
-			"result":  []interface{}{},
+			"result":  []any{},
 		}
 
 		// Handle specific methods involved in tick()
@@ -42,7 +42,7 @@ func mockAria2Server(delay time.Duration) http.HandlerFunc {
 		}
 
 		// Default success for other calls (e.g., tellStatus if called)
-		successResponse := map[string]interface{}{
+		successResponse := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      "goaria",
 			"result":  nil,

@@ -210,14 +210,14 @@ func TestDownloadProgress_AtomicOperations(t *testing.T) {
 
 	// Test concurrent increment
 	done := make(chan bool, 10)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		go func() {
 			ps.Bytes.Downloaded.Add(100)
 			done <- true
 		}()
 	}
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		<-done
 	}
 
@@ -506,7 +506,7 @@ func TestRecalculateProgress_BitmapTrust_PreventsOvershootOnReDownload(t *testin
 	ps := New("dl-overshoot", totalSize)
 	ps.InitBitmap(totalSize, chunkSize)
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		ps.SetChunkState(i, types.ChunkCompleted)
 	}
 

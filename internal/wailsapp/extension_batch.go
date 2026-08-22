@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 
 	"goaria-v3/internal/extension"
 	"goaria-v3/internal/extractor"
@@ -265,9 +266,7 @@ func cloneCommitResult(result extension.CommitResult) extension.CommitResult {
 	cloned.DuplicateItemIDs = append([]string{}, result.DuplicateItemIDs...)
 	if result.ErrorsByItemID != nil {
 		cloned.ErrorsByItemID = make(map[string]string, len(result.ErrorsByItemID))
-		for key, value := range result.ErrorsByItemID {
-			cloned.ErrorsByItemID[key] = value
-		}
+		maps.Copy(cloned.ErrorsByItemID, result.ErrorsByItemID)
 	}
 
 	return cloned

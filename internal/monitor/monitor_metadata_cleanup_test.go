@@ -25,7 +25,7 @@ func seedOrphanMetadata(n int) []string {
 	gids := make([]string, 0, n)
 	old := time.Now().Add(-2 * metadataCleanupGrace)
 	Cache.mu.Lock()
-	for i := 0; i < n; i++ {
+	for i := range n {
 		gid := fmt.Sprintf("ar_orphan_%d", i)
 		Cache.metadata[gid] = &TaskMetadata{GID: gid, FetchedAt: old}
 		gids = append(gids, gid)
@@ -43,7 +43,7 @@ func TestMonitor_MetadataCleanup_ThrottleBehavior(t *testing.T) {
 	m.aria2Recovered.Store(true)
 
 	m.runMetadataCleanup(nil, nil, nil)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if Cache.GetMetadata(fmt.Sprintf("ar_orphan_%d", i)) == nil {
 			t.Fatal("expected no eviction while throttled")
 		}
@@ -51,7 +51,7 @@ func TestMonitor_MetadataCleanup_ThrottleBehavior(t *testing.T) {
 
 	m.lastMetadataCleanup = time.Now().Add(-metadataCleanupInterval - time.Second)
 	m.runMetadataCleanup(nil, nil, nil)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if Cache.GetMetadata(fmt.Sprintf("ar_orphan_%d", i)) != nil {
 			t.Fatalf("expected ar_orphan_%d evicted after throttle elapsed", i)
 		}
@@ -68,7 +68,7 @@ func TestMonitor_MetadataCleanup_RunsOnFirstRecoveryTick(t *testing.T) {
 
 	m.runMetadataCleanup(nil, nil, nil)
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if Cache.GetMetadata(fmt.Sprintf("ar_orphan_%d", i)) != nil {
 			t.Fatalf("expected ar_orphan_%d evicted on first recovery tick", i)
 		}
@@ -84,7 +84,7 @@ func TestMonitor_MetadataCleanup_SkipsBeforeRecovery(t *testing.T) {
 
 	m.runMetadataCleanup(nil, nil, nil)
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if Cache.GetMetadata(fmt.Sprintf("ar_orphan_%d", i)) == nil {
 			t.Fatalf("expected ar_orphan_%d retained before recovery", i)
 		}
@@ -143,7 +143,7 @@ func TestTaskCache_CleanupMetadata_ConcurrentWithGetMetadata(t *testing.T) {
 	cache := newCleanupTestCache()
 	old := time.Now().Add(-2 * metadataCleanupGrace)
 	gids := make([]string, 1000)
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		gid := fmt.Sprintf("ar_conc_%d", i)
 		gids[i] = gid
 		cache.metadata[gid] = &TaskMetadata{GID: gid, FetchedAt: old}
@@ -152,7 +152,7 @@ func TestTaskCache_CleanupMetadata_ConcurrentWithGetMetadata(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			cache.GetMetadata(gids[rand.Intn(len(gids))])
 		}
 	}()
@@ -165,20 +165,18 @@ func TestTaskCache_CleanupMetadata_ConcurrentWithUpdateFromAria2(t *testing.T) {
 	cache := newCleanupTestCache()
 	old := time.Now().Add(-2 * metadataCleanupGrace)
 	tasks := make([]rpc.Task, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		gid := fmt.Sprintf("ar_upd_%d", i)
 		cache.metadata[gid] = &TaskMetadata{GID: gid, FetchedAt: old}
 		tasks[i] = rpc.Task{GID: gid, Status: "active"}
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 100; i++ {
+	wg.Go(func() {
+		for range 100 {
 			cache.UpdateFromAria2(tasks, nil, nil)
 		}
-	}()
+	})
 
 	cache.CleanupMetadata(map[string]bool{})
 	wg.Wait()

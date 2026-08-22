@@ -347,7 +347,7 @@ func TestConvergenceNMaxUnlock_WorkersBelowNMaxStillUnlocks(t *testing.T) {
 	ct.limits.Clear(key)
 	ct.limits.SetNMax(key, 5) // nMax=5, currentWorkers=3 < 5
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		tracker.tasks[0].CompletedLength = int64(50+i*10) * 1024 * 1024
 		ct.tick()
 	}
@@ -537,7 +537,7 @@ func TestConvergenceNMaxUnlock_NoNMaxFloorRequirement(t *testing.T) {
 	ct.limits.SetNMax(key, 10) // nMax=10, activeWorkers=6 < 10
 
 	// 2 ticks with retryCountSum=0 → unlock
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		tracker.tasks[0].CompletedLength = int64(50+i*10) * 1024 * 1024
 		ct.tick()
 	}

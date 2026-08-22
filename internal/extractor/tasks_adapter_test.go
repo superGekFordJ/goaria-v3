@@ -124,8 +124,7 @@ func TestTasksAdapter_ResolveGenericAuthErrorIsWrapped(t *testing.T) {
 	if err == nil {
 		t.Fatal("Resolve() error = nil, want generic auth error")
 	}
-	var genericErr *tasks.GenericAuthResolutionError
-	if !errors.As(err, &genericErr) {
+	if _, ok := errors.AsType[*tasks.GenericAuthResolutionError](err); !ok {
 		t.Fatalf("Resolve() error = %v, want *tasks.GenericAuthResolutionError", err)
 	}
 }

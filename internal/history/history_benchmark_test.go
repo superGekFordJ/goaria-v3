@@ -20,7 +20,7 @@ func setupBenchmarkHistoryEntries(n int) {
 	entries = make([]HistoryEntry, n)
 	gidIndex = make(map[string]int, n)
 	sourceIndex = make(map[string]int, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		gid := fmt.Sprintf("gid-%06d", i)
 		source := fmt.Sprintf("https://example.com/source-%06d", i%1000)
 		entries[i] = HistoryEntry{
@@ -42,7 +42,7 @@ func benchmarkSpreadRemovalGIDs(historyLen, removeCount int) []string {
 	}
 
 	gids := make([]string, 0, removeCount)
-	for i := 0; i < removeCount; i++ {
+	for i := range removeCount {
 		idx := i * (historyLen - 1) / (removeCount - 1)
 		gids = append(gids, fmt.Sprintf("gid-%06d", idx))
 	}
@@ -51,7 +51,7 @@ func benchmarkSpreadRemovalGIDs(historyLen, removeCount int) []string {
 
 func benchmarkFrontRemovalGIDs(removeCount int) []string {
 	gids := make([]string, 0, removeCount)
-	for i := 0; i < removeCount; i++ {
+	for i := range removeCount {
 		gids = append(gids, fmt.Sprintf("gid-%06d", i))
 	}
 	return gids
@@ -120,7 +120,7 @@ func BenchmarkAdd_Update(b *testing.B) {
 	mu.Lock()
 	entries = make([]HistoryEntry, n)
 	gidIndex = make(map[string]int)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		gid := fmt.Sprintf("gid-%d", i)
 		entries[i] = HistoryEntry{
 			GID: gid,
@@ -146,7 +146,7 @@ func BenchmarkGetAll_Scan(b *testing.B) {
 	mu.Lock()
 	entries = make([]HistoryEntry, n)
 	gidIndex = make(map[string]int)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		gid := fmt.Sprintf("gid-%d", i)
 		entries[i] = HistoryEntry{
 			GID:    gid,
@@ -181,7 +181,7 @@ func BenchmarkContainsSource(b *testing.B) {
 	entries = make([]HistoryEntry, n)
 	gidIndex = make(map[string]int)
 	sourceIndex = make(map[string]int)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		gid := fmt.Sprintf("gid-%d", i)
 		source := fmt.Sprintf("http://example.com/file-%d.zip", i)
 		entries[i] = HistoryEntry{
@@ -208,7 +208,7 @@ func BenchmarkAdd_New(b *testing.B) {
 	mu.Lock()
 	entries = make([]HistoryEntry, n)
 	gidIndex = make(map[string]int)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		gid := fmt.Sprintf("gid-%d", i)
 		entries[i] = HistoryEntry{
 			GID: gid,

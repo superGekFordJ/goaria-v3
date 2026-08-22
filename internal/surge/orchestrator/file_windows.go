@@ -21,7 +21,7 @@ const (
 func retryRemove(path string) error {
 	var err error
 	wait := retryBaseInterval
-	for i := 0; i < retryAttempts; i++ {
+	for i := range retryAttempts {
 		err = os.Remove(path)
 		if err == nil || os.IsNotExist(err) {
 			return nil
@@ -37,7 +37,7 @@ func retryRemove(path string) error {
 func retryRename(oldpath, newpath string) error {
 	var err error
 	wait := retryBaseInterval
-	for i := 0; i < retryAttempts; i++ {
+	for i := range retryAttempts {
 		err = os.Rename(oldpath, newpath)
 		if err == nil {
 			return nil

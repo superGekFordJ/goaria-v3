@@ -69,7 +69,7 @@ func TestPermanentStatus_DownloadTaskMatrix(t *testing.T) {
 			}
 			if tc.status >= 400 && tc.status < 500 {
 				// Poison path: enough consecutive 4xx should disable hedge.
-				for i := 0; i < types.HedgeErrorThreshold; i++ {
+				for range types.HedgeErrorThreshold {
 					_ = d.downloadTask(context.Background(), server.URL, f, active, make([]byte, 32*1024), &http.Client{}, 1024)
 				}
 				if !d.hedgeDisabled.Load() {

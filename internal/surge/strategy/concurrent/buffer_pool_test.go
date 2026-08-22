@@ -11,7 +11,7 @@ import (
 func TestTieredBufferPool_GetPut(t *testing.T) {
 	p := NewTieredBufferPool()
 
-	for tier := bufferTier(0); tier < tierCount; tier++ {
+	for tier := range tierCount {
 		bufPtr := p.Get(tier)
 		if len(*bufPtr) != tierSizes[tier] {
 			t.Errorf("tier %d: expected len=%d, got len=%d", tier, tierSizes[tier], len(*bufPtr))
@@ -57,7 +57,7 @@ func TestTieredBufferPool_PutWrongTier(t *testing.T) {
 	p.Put(wrongPtr)
 
 	// Get from each tier — should return freshly allocated buffers
-	for tier := bufferTier(0); tier < tierCount; tier++ {
+	for tier := range tierCount {
 		got := p.Get(tier)
 		if cap(*got) != tierSizes[tier] {
 			t.Errorf("tier %d: expected cap=%d (fresh alloc), got cap=%d", tier, tierSizes[tier], cap(*got))
@@ -119,11 +119,9 @@ func TestTieredBufferPool_ConcurrentAccess(t *testing.T) {
 	goroutines := 50
 	iterations := 100
 
-	for i := 0; i < goroutines; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < iterations; j++ {
+	for range goroutines {
+		wg.Go(func() {
+			for j := range iterations {
 				tier := bufferTier(j % int(tierCount))
 				bufPtr := p.Get(tier)
 				if len(*bufPtr) != tierSizes[tier] {
@@ -131,7 +129,7 @@ func TestTieredBufferPool_ConcurrentAccess(t *testing.T) {
 				}
 				p.Put(bufPtr)
 			}
-		}()
+		})
 	}
 
 	wg.Wait()

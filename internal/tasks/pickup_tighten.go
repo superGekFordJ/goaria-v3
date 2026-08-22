@@ -132,10 +132,7 @@ func ExistingDomainWorkersFromTelemetryExcluding(scope, domain, excludeGID strin
 		if telemetry != nil {
 			snapCount = len(telemetry.Get(t.GID))
 		}
-		n := snapCount
-		if t.ThreadCount > n {
-			n = t.ThreadCount
-		}
+		n := max(t.ThreadCount, snapCount)
 		total += n
 	}
 	return total

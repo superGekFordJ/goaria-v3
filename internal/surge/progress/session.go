@@ -51,10 +51,7 @@ func (s *SessionTimer) FinalizeSession(downloaded int64) (sessionElapsed, totalE
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	sessionElapsed = now.Sub(s.startTime)
-	if sessionElapsed < 0 {
-		sessionElapsed = 0
-	}
+	sessionElapsed = max(now.Sub(s.startTime), 0)
 	s.savedElapsed += sessionElapsed
 	if s.savedElapsed < 0 {
 		s.savedElapsed = 0
@@ -78,10 +75,7 @@ func (s *SessionTimer) GetElapsed(paused bool) (sessionElapsed, totalElapsed tim
 		sessionElapsed = 0
 		totalElapsed = saved
 	} else {
-		sessionElapsed = time.Since(start)
-		if sessionElapsed < 0 {
-			sessionElapsed = 0
-		}
+		sessionElapsed = max(time.Since(start), 0)
 		totalElapsed = saved + sessionElapsed
 	}
 	if totalElapsed < 0 {

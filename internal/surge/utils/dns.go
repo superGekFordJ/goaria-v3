@@ -18,7 +18,7 @@ func normalizeDNSAddr(customAddr string) string {
 	// commas/whitespace (e.g. ", 8.8.8.8:53") gracefully; an empty result means
 	// no usable server was provided.
 	first := ""
-	for _, part := range strings.Split(customAddr, ",") {
+	for part := range strings.SplitSeq(customAddr, ",") {
 		if p := strings.TrimSpace(part); p != "" {
 			first = p
 			break

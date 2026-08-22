@@ -249,7 +249,7 @@ func TestTaskTracker_ConcurrentAccess(t *testing.T) {
 	// 并发测试
 	done := make(chan bool, 10)
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		go func(idx int) {
 			gid := "gid-concurrent-" + string(rune('A'+idx))
 			active := []rpc.Task{createMockTask(gid, "active")}
@@ -260,7 +260,7 @@ func TestTaskTracker_ConcurrentAccess(t *testing.T) {
 		}(i)
 	}
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		<-done
 	}
 
@@ -497,14 +497,14 @@ func TestTaskTracker_CompletedTaskSnapshotSafeWhileGroupNameUpdates(t *testing.T
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 1000; i++ {
+		for range 1000 {
 			_ = snapshot.DownloadGroup.Name
 			_ = snapshot.DownloadGroup.NameStatus
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 1000; i++ {
+		for range 1000 {
 			tracker.UpdateTaskGroupName(group.ID, "Project Alpha", rpc.DownloadGroupNameStatusStable)
 			tracker.UpdateTaskGroupName(group.ID, group.Name, rpc.DownloadGroupNameStatusFallback)
 		}
@@ -1035,7 +1035,7 @@ func TestRecordPeakEfficiency_ConcurrentRace(t *testing.T) {
 	tracker.EnsureTrackedFromEvent("sg-peak-race", 100000000, "https://example.com/file.zip", 8, "active")
 
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

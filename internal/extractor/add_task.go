@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"path/filepath"
 	"runtime"
@@ -324,9 +325,7 @@ func resolvedItemsFromExtractOutput(sourceURL string, pack VerifiedPack, hostPol
 		}
 
 		metadata := make(map[string]string, len(ref.Metadata))
-		for key, value := range ref.Metadata {
-			metadata[key] = value
-		}
+		maps.Copy(metadata, ref.Metadata)
 
 		items = append(items, ResolvedAddItem{
 			SourceURL:        sourceURL,
@@ -354,9 +353,7 @@ func CloneResolvedAddItem(item ResolvedAddItem) ResolvedAddItem {
 	out.HostPolicy = cloneResolvedHostPolicyPtr(item.HostPolicy)
 	if item.Metadata != nil {
 		out.Metadata = make(map[string]string, len(item.Metadata))
-		for key, value := range item.Metadata {
-			out.Metadata[key] = value
-		}
+		maps.Copy(out.Metadata, item.Metadata)
 	}
 
 	return out

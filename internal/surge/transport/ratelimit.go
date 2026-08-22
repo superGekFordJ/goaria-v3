@@ -115,7 +115,7 @@ func (h *HostRateLimiter) PickMirror(hosts []string, startIdx int, now time.Time
 	var earliestDeadline time.Time
 
 	n := len(hosts)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		idx := (startIdx + i) % n
 		host := hosts[idx]
 		p, ok := h.hosts[host]
@@ -133,10 +133,7 @@ func (h *HostRateLimiter) PickMirror(hosts []string, startIdx int, now time.Time
 		return firstFree, 0
 	}
 
-	wait := earliestDeadline.Sub(now)
-	if wait < 0 {
-		wait = 0
-	}
+	wait := max(earliestDeadline.Sub(now), 0)
 	return earliestIdx, wait
 }
 

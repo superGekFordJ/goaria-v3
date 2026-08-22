@@ -506,7 +506,7 @@ func sensitiveSecretForms(kind AuthSecretKind, rawSecret string, storedSecret st
 		}
 	}
 	if kind == AuthSecretKindCookie {
-		for _, part := range strings.Split(storedSecret, ";") {
+		for part := range strings.SplitSeq(storedSecret, ";") {
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue

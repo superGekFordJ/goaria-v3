@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -76,12 +77,7 @@ func metadataHasValidPath(meta *TaskMetadata) bool {
 	if meta == nil {
 		return false
 	}
-	for _, path := range meta.Files {
-		if metadataPathValid(path) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(meta.Files, metadataPathValid)
 }
 
 func copyDownloadGroup(group *rpc.DownloadGroup) *rpc.DownloadGroup {

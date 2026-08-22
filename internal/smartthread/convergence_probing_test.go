@@ -1040,10 +1040,7 @@ func TestConvergence_E2E_MomentumChain(t *testing.T) {
 	step1 := s.lastStep
 
 	// Simulate successful scale-down: reduce worker count
-	newWorkers := 8 - step1
-	if newWorkers < 1 {
-		newWorkers = 1
-	}
+	newWorkers := max(8-step1, 1)
 
 	// Tick 4: settling → refresh baseline, transition to stable, no decision
 	ps, ok = process(160*1024*1024, newWorkers) // 50MB in 5s = 10MB/s
@@ -1076,10 +1073,7 @@ func TestConvergence_E2E_MomentumChain(t *testing.T) {
 	step2 := s.lastStep
 
 	// Simulate successful second scale-down
-	newWorkers2 := newWorkers - step2
-	if newWorkers2 < 1 {
-		newWorkers2 = 1
-	}
+	newWorkers2 := max(newWorkers-step2, 1)
 
 	// Tick 6: settling → refresh baseline, transition to stable
 	ps, ok = process(260*1024*1024, newWorkers2)

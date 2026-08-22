@@ -172,8 +172,7 @@ func TestScaleWorkers_Prewarm_WorkersActiveFalse_NoPrewarm(t *testing.T) {
 		DialHedgeCount: 0,
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	d.workerDepsPtr.Store(&workerDeps{
 		ctx:     ctx,

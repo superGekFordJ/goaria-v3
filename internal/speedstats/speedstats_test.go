@@ -20,7 +20,7 @@ func TestSaveAsyncCoalescing(t *testing.T) {
 	records = []SpeedRecord{}
 	mu.Unlock()
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		AddRecordV2(1000, 1, 1000, false, 0, "", "wan", "testenv1")
 	}
 

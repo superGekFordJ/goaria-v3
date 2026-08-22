@@ -17,8 +17,6 @@ import (
 	"goaria-v3/internal/surge/utils"
 )
 
-func boolPtr(v bool) *bool { return &v }
-
 func newRangeProbeServer(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var probes atomic.Int32
@@ -70,7 +68,7 @@ func drainProbeSem(mgr *LifecycleManager) int {
 }
 
 func restoreProbeSem(mgr *LifecycleManager, n int) {
-	for i := 0; i < n; i++ {
+	for range n {
 		mgr.probeSem <- struct{}{}
 	}
 }
@@ -94,7 +92,7 @@ func TestEnqueue_SkipTrustedMetadataNoProbeGET(t *testing.T) {
 		Filename:      "skip.bin",
 		Path:          destDir,
 		FileSize:      1024,
-		SupportsRange: boolPtr(false),
+		SupportsRange: new(false),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -151,7 +149,7 @@ func TestEnqueue_SkipMissingFilenameStillProbes(t *testing.T) {
 				Filename:      name,
 				Path:          t.TempDir(),
 				FileSize:      4096,
-				SupportsRange: boolPtr(false),
+				SupportsRange: new(false),
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -174,7 +172,7 @@ func TestEnqueue_SkipFileSizeZeroStillProbes(t *testing.T) {
 		Filename:      "zero.bin",
 		Path:          t.TempDir(),
 		FileSize:      0,
-		SupportsRange: boolPtr(false),
+		SupportsRange: new(false),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -222,7 +220,7 @@ func TestEnqueue_SkipKnownSizeIsPayloadFirstUnknown(t *testing.T) {
 			Filename:      "seq.bin",
 			Path:          t.TempDir(),
 			FileSize:      2048,
-			SupportsRange: boolPtr(false),
+			SupportsRange: new(false),
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -256,7 +254,7 @@ func TestEnqueue_SkipKnownSizeIsPayloadFirstUnknown(t *testing.T) {
 			Filename:      "range.bin",
 			Path:          t.TempDir(),
 			FileSize:      2048,
-			SupportsRange: boolPtr(true),
+			SupportsRange: new(true),
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -298,7 +296,7 @@ func TestEnqueue_SkipDiskPrecheckReject(t *testing.T) {
 		Filename:      "tight.bin",
 		Path:          destDir,
 		FileSize:      1024,
-		SupportsRange: boolPtr(false),
+		SupportsRange: new(false),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -334,7 +332,7 @@ func TestEnqueue_SkipPreservesAuthHeaders(t *testing.T) {
 		Filename:      "auth.bin",
 		Path:          t.TempDir(),
 		FileSize:      1024,
-		SupportsRange: boolPtr(false),
+		SupportsRange: new(false),
 		Headers: map[string]string{
 			"Cookie":        "sid=abc",
 			"Authorization": "Bearer tok",
@@ -379,7 +377,7 @@ func TestEnqueue_SkipDoesNotTakeProbeSem(t *testing.T) {
 		Filename:      "sem-skip.bin",
 		Path:          t.TempDir(),
 		FileSize:      1024,
-		SupportsRange: boolPtr(false),
+		SupportsRange: new(false),
 	}
 	skipCtx, skipCancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer skipCancel()

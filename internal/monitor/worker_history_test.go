@@ -31,7 +31,7 @@ func TestWorkerHistory_ObserveAndWindow(t *testing.T) {
 func TestWorkerHistory_RingOverflow(t *testing.T) {
 	h := NewWorkerHistory(3)
 	base := time.Now()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		h.Observe("sg_a", []types.WorkerSnapshot{{WorkerID: 1, EMASpeed: float64(i)}}, base.Add(time.Duration(i)*time.Second))
 	}
 	w := h.Window("sg_a", 1)
@@ -53,7 +53,7 @@ func TestWorkerHistory_EvictAbsent(t *testing.T) {
 	h.Observe("sg_a", []types.WorkerSnapshot{{WorkerID: 1}, {WorkerID: 2}}, now)
 
 	// Worker 1 keeps appearing; worker 2 goes absent.
-	for tick := 0; tick < cdnWorkerEvictTicks+1; tick++ {
+	for range cdnWorkerEvictTicks + 1 {
 		now = now.Add(time.Second)
 		h.Observe("sg_a", []types.WorkerSnapshot{{WorkerID: 1}}, now)
 		h.EvictAbsent("sg_a", map[int]bool{1: true}, cdnWorkerEvictTicks)

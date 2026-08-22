@@ -134,8 +134,7 @@ func TestSetSlowWorkerThreshold_Zero_StallStillFires(t *testing.T) {
 	d := NewConcurrentDownloader("stall-test", nil, state, runtime)
 	d.SetSlowWorkerThreshold(0)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	now := time.Now()
 
 	stallCtx, stallCancel := context.WithCancel(ctx)
@@ -161,8 +160,7 @@ func TestKillWorker_CancelsActiveTask(t *testing.T) {
 	d := NewConcurrentDownloader("kill-test", nil, nil, &types.RuntimeConfig{})
 	d.activeTasks = make(map[int]*ActiveTask)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	targetCtx, targetCancel := context.WithCancel(ctx)
 	d.activeTasks[5] = &ActiveTask{
 		Task:      types.Task{Offset: 0, Length: 1024},
@@ -244,11 +242,9 @@ func TestKillWorker_WorkerStaysAlive(t *testing.T) {
 	queue.Push(types.Task{Offset: 1024 * 1024, Length: 1024 * 1024})
 
 	workerID := int(d.nextWorkerID.Add(1)) - 1
-	d.workerWg.Add(1)
-	go func() {
-		defer d.workerWg.Done()
+	d.workerWg.Go(func() {
 		_ = d.worker(ctx, workerID, []string{server.URL()}, f, queue, fileSize, &http.Client{})
-	}()
+	})
 
 	waitForActiveTask(t, d, workerID, 2*time.Second)
 
@@ -324,15 +320,13 @@ func TestProgressState_KillAndSlowThresholdBridge_Concurrent(t *testing.T) {
 	state.SetSetSlowThresholdFn(func(v float64) {})
 
 	var wg sync.WaitGroup
-	for g := 0; g < 4; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 200; i++ {
+	for range 4 {
+		wg.Go(func() {
+			for i := range 200 {
 				_ = state.KillWorker(i)
 				state.SetSlowWorkerThreshold(0)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

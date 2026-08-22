@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -220,10 +221,5 @@ func dialAuthAckRaw(t *testing.T, port int, secret string) (extension.AuthAck, [
 }
 
 func hasCap(caps []string, want string) bool {
-	for _, c := range caps {
-		if c == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(caps, want)
 }

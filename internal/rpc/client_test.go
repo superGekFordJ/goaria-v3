@@ -462,7 +462,7 @@ func methodsFromRequests(requests []testRPCRequest) []string {
 func TestGetGlobalStat(t *testing.T) {
 	// Mock Aria2 server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := map[string]interface{}{
+		response := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      "goaria",
 			"result": map[string]string{
@@ -492,7 +492,7 @@ func BenchmarkGetGlobalStat(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Verify request if needed, but for benchmark we just want speed
 		// We can return a static response mimicking aria2.getGlobalStat
-		response := map[string]interface{}{
+		response := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      "goaria",
 			"result": map[string]string{
@@ -538,11 +538,11 @@ func TestTellActive(t *testing.T) {
 		}
 
 		if req.Method == "aria2.tellActive" {
-			response := map[string]interface{}{
+			response := map[string]any{
 				"jsonrpc": "2.0",
 				"id":      "goaria",
-				"result": []interface{}{
-					map[string]interface{}{
+				"result": []any{
+					map[string]any{
 						"gid":             "12345",
 						"status":          "active",
 						"totalLength":     "1000",
@@ -578,10 +578,10 @@ func TestTellActive(t *testing.T) {
 func TestTellActiveError(t *testing.T) {
 	// Mock Aria2 server returning error
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := map[string]interface{}{
+		response := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      "goaria",
-			"error": map[string]interface{}{
+			"error": map[string]any{
 				"code":    1,
 				"message": "some error",
 			},
@@ -647,11 +647,11 @@ func TestTellStatusMulti(t *testing.T) {
 
 				requests = append(requests, req)
 
-				response := map[string]interface{}{
+				response := map[string]any{
 					"jsonrpc": "2.0",
 					"id":      "goaria",
-					"result": []interface{}{
-						[]interface{}{map[string]interface{}{
+					"result": []any{
+						[]any{map[string]any{
 							"gid":             "gid-1",
 							"status":          "active",
 							"totalLength":     "100",
@@ -659,13 +659,13 @@ func TestTellStatusMulti(t *testing.T) {
 							"downloadSpeed":   "1",
 							"errorCode":       "",
 							"errorMessage":    "",
-							"files": []interface{}{map[string]interface{}{
+							"files": []any{map[string]any{
 								"path": "D:/Downloads/a.zip",
-								"uris": []interface{}{map[string]interface{}{"uri": "https://example.com/a.zip"}},
+								"uris": []any{map[string]any{"uri": "https://example.com/a.zip"}},
 							}},
 							"dir": "D:/Downloads",
 						}},
-						[]interface{}{map[string]interface{}{
+						[]any{map[string]any{
 							"gid":             "gid-2",
 							"status":          "waiting",
 							"totalLength":     "200",
@@ -673,9 +673,9 @@ func TestTellStatusMulti(t *testing.T) {
 							"downloadSpeed":   "2",
 							"errorCode":       "",
 							"errorMessage":    "",
-							"files": []interface{}{map[string]interface{}{
+							"files": []any{map[string]any{
 								"path": "D:/Downloads/b.zip",
-								"uris": []interface{}{map[string]interface{}{"uri": "https://example.com/b.zip"}},
+								"uris": []any{map[string]any{"uri": "https://example.com/b.zip"}},
 							}},
 							"dir": "D:/Downloads",
 						}},
@@ -775,10 +775,10 @@ func TestTellStatusMultiDoesNotRequestDownloadGroupKey(t *testing.T) {
 
 func TestTellStatusMultiError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := map[string]interface{}{
+		response := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      "goaria",
-			"error": map[string]interface{}{
+			"error": map[string]any{
 				"code":    1,
 				"message": "multicall failed",
 			},
@@ -805,7 +805,7 @@ func TestTellStatusMultiEmpty(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		response := map[string]interface{}{
+		response := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      "goaria",
 			"result":  "OK",
@@ -871,17 +871,17 @@ func TestPauseMulti(t *testing.T) {
 
 				switch req.Method {
 				case "system.multicall":
-					response := map[string]interface{}{
+					response := map[string]any{
 						"jsonrpc": "2.0",
 						"id":      "goaria",
-						"result": []interface{}{
-							[]interface{}{"OK"},
-							[]interface{}{"OK"},
+						"result": []any{
+							[]any{"OK"},
+							[]any{"OK"},
 						},
 					}
 					json.NewEncoder(w).Encode(response)
 				case "aria2.saveSession":
-					response := map[string]interface{}{
+					response := map[string]any{
 						"jsonrpc": "2.0",
 						"id":      "goaria",
 						"result":  "OK",
@@ -988,17 +988,17 @@ func TestUnpauseMulti(t *testing.T) {
 
 				switch req.Method {
 				case "system.multicall":
-					response := map[string]interface{}{
+					response := map[string]any{
 						"jsonrpc": "2.0",
 						"id":      "goaria",
-						"result": []interface{}{
-							[]interface{}{"OK"},
-							[]interface{}{"OK"},
+						"result": []any{
+							[]any{"OK"},
+							[]any{"OK"},
 						},
 					}
 					json.NewEncoder(w).Encode(response)
 				case "aria2.saveSession":
-					response := map[string]interface{}{
+					response := map[string]any{
 						"jsonrpc": "2.0",
 						"id":      "goaria",
 						"result":  "OK",
@@ -1069,7 +1069,7 @@ func TestPauseMultiEmpty(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		response := map[string]interface{}{
+		response := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      "goaria",
 			"result":  "OK",
@@ -1095,7 +1095,7 @@ func TestUnpauseMultiEmpty(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		response := map[string]interface{}{
+		response := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      "goaria",
 			"result":  "OK",

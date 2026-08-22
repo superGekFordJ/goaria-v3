@@ -5,6 +5,7 @@ package monitor
 import (
 	"net"
 	"os/exec"
+	"slices"
 	"strings"
 	"syscall"
 )
@@ -45,18 +46,12 @@ func arpLookup(ifaceName string, gw net.IP) string {
 // (never fall back to an arbitrary host's MAC).
 // Windows uses dash-separated MACs (aa-bb-cc-dd-ee-ff).
 func parseMACFromArpOutputWindows(output string, ipStr string) string {
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(output, "\n")
+	for line := range lines {
 		fields := strings.Fields(line)
 		// Exact field match avoids treating 192.168.1.1 as a
 		// substring of 192.168.1.10 in the full ARP table.
-		ipMatched := false
-		for _, f := range fields {
-			if f == ipStr {
-				ipMatched = true
-				break
-			}
-		}
+		ipMatched := slices.Contains(fields, ipStr)
 		if !ipMatched {
 			continue
 		}

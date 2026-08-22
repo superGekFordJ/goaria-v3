@@ -128,9 +128,9 @@ func zipEntryBytes(t *testing.T, data []byte) map[string][]byte {
 }
 
 func stdoutPublicKey(stdout string) string {
-	for _, line := range strings.Split(stdout, "\n") {
-		if strings.HasPrefix(line, "public_key: ") {
-			return strings.TrimPrefix(line, "public_key: ")
+	for line := range strings.SplitSeq(stdout, "\n") {
+		if after, ok := strings.CutPrefix(line, "public_key: "); ok {
+			return after
 		}
 	}
 

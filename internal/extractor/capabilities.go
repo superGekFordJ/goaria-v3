@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -35,13 +36,7 @@ type CapabilityContext struct {
 }
 
 func ManifestHasCapability(manifest Manifest, capability Capability) bool {
-	for _, declared := range manifest.Capabilities {
-		if declared == capability {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(manifest.Capabilities, capability)
 }
 
 func ValidateCapabilityURL(ctx CapabilityContext, rawURL string) error {

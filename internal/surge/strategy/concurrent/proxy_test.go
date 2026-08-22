@@ -3,6 +3,7 @@ package concurrent
 import (
 	"context"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"testing"
@@ -36,9 +37,7 @@ func TestConcurrentDownloader_ProxySupport(t *testing.T) {
 		}
 
 		// Copy headers
-		for k, v := range r.Header {
-			req.Header[k] = v
-		}
+		maps.Copy(req.Header, r.Header)
 
 		// Execute
 		client := &http.Client{}
@@ -51,9 +50,7 @@ func TestConcurrentDownloader_ProxySupport(t *testing.T) {
 		defer func() { _ = resp.Body.Close() }()
 
 		// Copy response
-		for k, v := range resp.Header {
-			w.Header()[k] = v
-		}
+		maps.Copy(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
 	}))

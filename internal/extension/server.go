@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -215,10 +216,7 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 		s.mu.Lock()
 		delete(s.activeConns, sc)
 		s.connectedClients--
-		c := s.connectedClients
-		if c < 0 {
-			c = 0
-		}
+		c := max(s.connectedClients, 0)
 		s.mu.Unlock()
 		s.emitStatus(c)
 	}()
@@ -259,8 +257,9 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 		ProtocolVersion: ProtocolVersion,
 		HostVersion:     hostVersion,
 		Capabilities:    caps,
+
+		Match: s.matchWireForAck(caps),
 	}
-	ack.Match = s.matchWireForAck(caps)
 	if err := sc.writeJSON(ack); err != nil {
 		return
 	}
@@ -747,12 +746,7 @@ func (s *Server) digestsReady() bool {
 }
 
 func containsCap(caps []string, want string) bool {
-	for _, c := range caps {
-		if c == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(caps, want)
 }
 
 func validMatchSaltHex(s string) bool {

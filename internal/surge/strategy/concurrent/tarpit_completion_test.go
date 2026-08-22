@@ -42,10 +42,7 @@ func (h *tarpitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.WriteHeader(http.StatusPartialContent)
 
-	toSend := h.partialBytes
-	if toSend > length {
-		toSend = length
-	}
+	toSend := min(h.partialBytes, length)
 	if toSend > 0 {
 		data := make([]byte, toSend)
 		n, _ := w.Write(data)
@@ -114,8 +111,7 @@ func TestTarpitCompletion_PartialDataHang(t *testing.T) {
 	}
 	d := NewConcurrentDownloader("tarpit-partial", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	err := downloadWithTimeout(t, d, ctx, tarpitSrv.URL, destPath, fileSize,
 		[]string{normalSrv.URL()}, 15*time.Second)
@@ -159,8 +155,7 @@ func TestTarpitCompletion_TrickleEvadesStall(t *testing.T) {
 	}
 	d := NewConcurrentDownloader("tarpit-trickle", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	err := downloadWithTimeout(t, d, ctx, tarpitSrv.URL, destPath, fileSize,
 		[]string{normalSrv.URL()}, 15*time.Second)
@@ -201,8 +196,7 @@ func TestTarpitCompletion_RequeueGuard(t *testing.T) {
 	}
 	d := NewConcurrentDownloader("tarpit-guard", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	err := downloadWithTimeout(t, d, ctx, tarpitSrv.URL, destPath, fileSize,
 		[]string{normalSrv.URL()}, 15*time.Second)
@@ -241,8 +235,7 @@ func TestTarpitCompletion_NormalServerUnaffected(t *testing.T) {
 	}
 	d := NewConcurrentDownloader("normal-test", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	err := downloadWithTimeout(t, d, ctx, server.URL(), destPath, fileSize, nil, 15*time.Second)
 	if err != nil {
@@ -278,8 +271,7 @@ func TestRunCompletionMonitor_KillWorkerAt100Percent(t *testing.T) {
 	queue := NewTaskQueue()
 	queue.Push(types.Task{Offset: 0, Length: 500})
 
-	ctx, monCancel := context.WithCancel(context.Background())
-	defer monCancel()
+	ctx := t.Context()
 
 	done := make(chan struct{})
 	go func() {
@@ -312,8 +304,7 @@ func TestRunCompletionMonitor_NormalCompletionNoKill(t *testing.T) {
 
 	state.Bytes.VerifiedProgress.Store(fileSize)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	done := make(chan struct{})
 	go func() {
@@ -342,8 +333,7 @@ func TestRunCompletionMonitor_VPGuard_HangsWhenVPBelowFileSize(t *testing.T) {
 
 	state.Bytes.VerifiedProgress.Store(500)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	done := make(chan struct{})
 	go func() {
@@ -373,8 +363,7 @@ func TestRunCompletionMonitor_DrainsQueueAt100Percent(t *testing.T) {
 	queue.Push(types.Task{Offset: 0, Length: 500})
 	queue.Push(types.Task{Offset: 500, Length: 500})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	done := make(chan struct{})
 	go func() {
@@ -421,8 +410,7 @@ func TestTarpitCompletion_DeadSilentTarpitMutexFix(t *testing.T) {
 	}
 	d := NewConcurrentDownloader("tarpit-deadsilent", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	err := downloadWithTimeout(t, d, ctx, tarpitSrv.URL, destPath, fileSize,
 		[]string{normalSrv.URL()}, 10*time.Second)
@@ -461,8 +449,7 @@ func TestRunCompletionMonitor_MutexCancelKillsAllActive(t *testing.T) {
 	state.Bytes.VerifiedProgress.Store(fileSize)
 
 	queue := NewTaskQueue()
-	ctx, monCancel := context.WithCancel(context.Background())
-	defer monCancel()
+	ctx := t.Context()
 
 	done := make(chan struct{})
 	go func() {
@@ -492,8 +479,7 @@ func TestWorker_VPGuardExitsBeforeRegistration(t *testing.T) {
 	queue := NewTaskQueue()
 	queue.Push(types.Task{Offset: 0, Length: 500})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	client := &http.Client{}
 	err := d.worker(ctx, 0, []string{"http://localhost:1"}, nil, queue, fileSize, client)
@@ -540,8 +526,7 @@ func TestWorker_ActiveWorkersCountCorrectOnMutexExit(t *testing.T) {
 	}
 	d := NewConcurrentDownloader("aw-count", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	err := downloadWithTimeout(t, d, ctx, normalSrv.URL(), destPath, fileSize, nil, 15*time.Second)
 	if err != nil {

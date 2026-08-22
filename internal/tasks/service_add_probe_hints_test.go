@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"slices"
 	"sync"
 	"testing"
 
@@ -239,12 +240,7 @@ func ptrBool(v *bool) any {
 }
 
 func containsHeader(headers []string, want string) bool {
-	for _, h := range headers {
-		if h == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(headers, want)
 }
 
 func TestAddUriFromExtension_ReservedFilenameIsRenamed(t *testing.T) {

@@ -69,10 +69,7 @@ type CDNDetector struct {
 // NewCDNDetector builds a detector. windowCap is the per-worker ring size
 // (defaults to cdnHistoryWindow/cdnDetectorInterval).
 func NewCDNDetector(control cdnSurgeControl, history *WorkerHistory, getActiveGids func() []string) *CDNDetector {
-	windowCap := int(cdnHistoryWindow / cdnDetectorInterval)
-	if windowCap < 1 {
-		windowCap = 1
-	}
+	windowCap := max(int(cdnHistoryWindow/cdnDetectorInterval), 1)
 	if history == nil {
 		history = NewWorkerHistory(windowCap)
 	}

@@ -27,7 +27,7 @@ func TestResumeOnRetryOffset_TaskPublishRace(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			off := int64(i % 1024)
 			active.CurrentOffset.Store(off)
 			task := types.Task{Offset: 0, Length: 1 << 20}
@@ -37,14 +37,11 @@ func TestResumeOnRetryOffset_TaskPublishRace(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for range iterations {
 			// Mimic checkWorkerHealth: read Task.Offset under activeMu.
 			d.activeMu.Lock()
 			_ = active.Task.Offset
-			downloaded := active.CurrentOffset.Load() - active.Task.Offset
-			if downloaded < 0 {
-				downloaded = 0
-			}
+			downloaded := max(active.CurrentOffset.Load()-active.Task.Offset, 0)
 			_ = downloaded
 			d.activeMu.Unlock()
 		}

@@ -33,7 +33,7 @@ func TestExtensionResolver_HostCallFixtureOpaqueAck(t *testing.T) {
 			Value:    "browser-sid",
 			Domain:   ".fixture.invalid",
 			Path:     "/",
-			Secure:   boolPtr(true),
+			Secure:   new(true),
 			HostOnly: &hostOnly,
 		}},
 	})
@@ -59,7 +59,7 @@ func TestExtensionResolver_HostCallFixtureOpaqueAck(t *testing.T) {
 
 	ackRaw := mustJSON(t, extension.ExtractorResolveAck{
 		Type:       extension.MsgTypeExtractorResolveAck,
-		Matched:    boolPtr(result.Matched),
+		Matched:    new(result.Matched),
 		SessionID:  result.SessionID,
 		TotalCount: result.TotalCount,
 		TotalBytes: result.TotalBytes,
@@ -136,14 +136,14 @@ func TestExtensionResolver_SingleflightAndCookieSplit(t *testing.T) {
 		Type:      extension.MsgTypeExtractorResolve,
 		SourceURL: packbuilder.HostCallFixtureShareURL,
 		Cookies: []extension.BrowserCookie{{
-			Name: "sid", Value: "one", Domain: ".fixture.invalid", Path: "/", Secure: boolPtr(true), HostOnly: &hostOnly,
+			Name: "sid", Value: "one", Domain: ".fixture.invalid", Path: "/", Secure: new(true), HostOnly: &hostOnly,
 		}},
 	})
 	payloadB := mustJSON(t, extension.ExtractorResolveRequest{
 		Type:      extension.MsgTypeExtractorResolve,
 		SourceURL: packbuilder.HostCallFixtureShareURL,
 		Cookies: []extension.BrowserCookie{{
-			Name: "sid", Value: "two", Domain: ".fixture.invalid", Path: "/", Secure: boolPtr(true), HostOnly: &hostOnly,
+			Name: "sid", Value: "two", Domain: ".fixture.invalid", Path: "/", Secure: new(true), HostOnly: &hostOnly,
 		}},
 	})
 
@@ -190,7 +190,7 @@ func TestExtensionResolver_InvalidateDropsLeaseAndRewritesCache(t *testing.T) {
 		Type:      extension.MsgTypeExtractorResolve,
 		SourceURL: packbuilder.HostCallFixtureShareURL,
 		Cookies: []extension.BrowserCookie{{
-			Name: "sid", Value: "browser-sid", Domain: ".fixture.invalid", Path: "/", Secure: boolPtr(true), HostOnly: &hostOnly,
+			Name: "sid", Value: "browser-sid", Domain: ".fixture.invalid", Path: "/", Secure: new(true), HostOnly: &hostOnly,
 		}},
 	})
 	result := adapter.HandleResolve(context.Background(), extension.RequestEnvelope{}, raw)
@@ -200,7 +200,7 @@ func TestExtensionResolver_InvalidateDropsLeaseAndRewritesCache(t *testing.T) {
 	cached := mustJSON(t, extension.ExtractorResolveAck{
 		Type:      extension.MsgTypeExtractorResolveAck,
 		RequestID: "r1",
-		Matched:   boolPtr(true),
+		Matched:   new(true),
 		SessionID: result.SessionID,
 		Items:     []extension.ExtractorResolveAckItem{{ItemID: result.Items[0].ItemID, Filename: result.Items[0].Filename}},
 	})
@@ -290,7 +290,7 @@ func TestExtensionResolver_InvalidateDoesNotJoinDyingFlight(t *testing.T) {
 		Type:      extension.MsgTypeExtractorResolve,
 		SourceURL: packbuilder.HostCallFixtureShareURL,
 		Cookies: []extension.BrowserCookie{{
-			Name: "sid", Value: "browser-sid", Domain: ".fixture.invalid", Path: "/", Secure: boolPtr(true), HostOnly: &hostOnly,
+			Name: "sid", Value: "browser-sid", Domain: ".fixture.invalid", Path: "/", Secure: new(true), HostOnly: &hostOnly,
 		}},
 	})
 
@@ -327,14 +327,14 @@ func TestExtensionResolver_CanonicalCookieDomainsShareFlight(t *testing.T) {
 		Type:      extension.MsgTypeExtractorResolve,
 		SourceURL: packbuilder.HostCallFixtureShareURL,
 		Cookies: []extension.BrowserCookie{{
-			Name: "sid", Value: "same", Domain: ".fixture.invalid", Path: "/", Secure: boolPtr(true), HostOnly: &hostOnly,
+			Name: "sid", Value: "same", Domain: ".fixture.invalid", Path: "/", Secure: new(true), HostOnly: &hostOnly,
 		}},
 	})
 	payloadBare := mustJSON(t, extension.ExtractorResolveRequest{
 		Type:      extension.MsgTypeExtractorResolve,
 		SourceURL: packbuilder.HostCallFixtureShareURL,
 		Cookies: []extension.BrowserCookie{{
-			Name: "sid", Value: "same", Domain: "fixture.invalid", Path: "/", Secure: boolPtr(true), HostOnly: &hostOnly,
+			Name: "sid", Value: "same", Domain: "fixture.invalid", Path: "/", Secure: new(true), HostOnly: &hostOnly,
 		}},
 	})
 
@@ -372,7 +372,7 @@ func TestExtensionResolver_WaitersShareLastStatus(t *testing.T) {
 		Type:      extension.MsgTypeExtractorResolve,
 		SourceURL: packbuilder.HostCallFixtureShareURL,
 		Cookies: []extension.BrowserCookie{{
-			Name: "sid", Value: "expired", Domain: ".fixture.invalid", Path: "/", Secure: boolPtr(true), HostOnly: &hostOnly,
+			Name: "sid", Value: "expired", Domain: ".fixture.invalid", Path: "/", Secure: new(true), HostOnly: &hostOnly,
 		}},
 	})
 	firstDone := make(chan extension.ResolveResult, 1)
@@ -416,7 +416,7 @@ func TestExtensionResolver_LookupEvictsExpiredSession(t *testing.T) {
 		Type:      extension.MsgTypeExtractorResolve,
 		SourceURL: packbuilder.HostCallFixtureShareURL,
 		Cookies: []extension.BrowserCookie{{
-			Name: "sid", Value: "browser-sid", Domain: ".fixture.invalid", Path: "/", Secure: boolPtr(true), HostOnly: &hostOnly,
+			Name: "sid", Value: "browser-sid", Domain: ".fixture.invalid", Path: "/", Secure: new(true), HostOnly: &hostOnly,
 		}},
 	})
 	result := adapter.HandleResolve(context.Background(), extension.RequestEnvelope{}, raw)
@@ -442,7 +442,7 @@ func TestExtensionResolver_InsertSessionEvictsLeastRecentlyUsedAtLimit(t *testin
 	adapter := newExtensionResolveAdapter(nil)
 	base := time.Now()
 	adapter.mu.Lock()
-	for i := 0; i < maxResolveSessions; i++ {
+	for i := range maxResolveSessions {
 		id := string(rune('a' + i))
 		adapter.insertSessionLocked(id, &leasedResolveSession{
 			inserted: base,
@@ -642,8 +642,4 @@ func mustJSON(t *testing.T, value any) []byte {
 	}
 
 	return raw
-}
-
-func boolPtr(v bool) *bool {
-	return &v
 }

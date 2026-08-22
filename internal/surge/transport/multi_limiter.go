@@ -22,7 +22,7 @@ func (m *MultiLimiter) WaitN(ctx context.Context, n int64) error {
 	}
 	for i, l := range m.limiters {
 		if err := l.WaitN(ctx, n); err != nil {
-			for j := 0; j < i; j++ {
+			for j := range i {
 				m.limiters[j].Refund(n)
 			}
 			return err

@@ -33,10 +33,7 @@ func normalizeConnectedGUAPrefix(p netip.Prefix) (netip.Prefix, bool) {
 	if bits < connectedGUAPrefixMinBits {
 		return netip.Prefix{}, false
 	}
-	wantBits := bits
-	if wantBits > connectedGUAPrefixWidenBits {
-		wantBits = connectedGUAPrefixWidenBits
-	}
+	wantBits := min(bits, connectedGUAPrefixWidenBits)
 	out, err := addr.Prefix(wantBits)
 	if err != nil {
 		return netip.Prefix{}, false

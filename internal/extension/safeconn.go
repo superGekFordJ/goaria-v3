@@ -1,6 +1,7 @@
 package extension
 
 import (
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -71,12 +72,7 @@ func (c *safeConn) setGrantedCaps(caps []string) {
 func (c *safeConn) hasGranted(cap string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, x := range c.grantedCaps {
-		if x == cap {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.grantedCaps, cap)
 }
 
 func (c *safeConn) Close() error {

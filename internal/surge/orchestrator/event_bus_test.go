@@ -14,7 +14,7 @@ import (
 // fillSubscriber publishes non-progress events until the Subscribe buffer is full.
 func fillSubscriber(t *testing.T, eb *EventBus, sub <-chan types.DownloadEvent, target int) {
 	t.Helper()
-	for i := 0; i < target; i++ {
+	for i := range target {
 		err := eb.Publish(types.DownloadEvent{
 			Type:       types.EventStarted,
 			DownloadID: fmt.Sprintf("fill-%d", i),
@@ -215,7 +215,7 @@ func TestEventBus_Unsubscribe(t *testing.T) {
 	cleanup()
 
 	// Wait for the asynchronous unsubscribe to be processed by broadcastLoop
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		eb.listenerMu.Lock()
 		count = len(eb.listeners)
 		eb.listenerMu.Unlock()

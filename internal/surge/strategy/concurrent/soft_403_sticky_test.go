@@ -688,7 +688,7 @@ func TestSoft403Guard_NoVerifiedProgressConfirmsAfterWindow(t *testing.T) {
 	d.primeSoft403Guard()
 
 	now := time.Unix(100, 0)
-	for i := 0; i < Soft403StickyExhaustions; i++ {
+	for i := range Soft403StickyExhaustions {
 		if d.recordSoft403Exhaustion(now) {
 			t.Fatalf("exhaustion %d escalated while arming", i+1)
 		}
@@ -713,7 +713,7 @@ func TestSoft403Guard_FinalRecheckSeesVerifiedProgress(t *testing.T) {
 	d.primeSoft403Guard()
 
 	now := time.Unix(150, 0)
-	for i := 0; i < Soft403StickyExhaustions; i++ {
+	for i := range Soft403StickyExhaustions {
 		if d.recordSoft403Exhaustion(now) {
 			t.Fatalf("exhaustion %d escalated while arming", i+1)
 		}
@@ -743,7 +743,7 @@ func TestSoft403Guard_ProgressChangesClearCandidate(t *testing.T) {
 	d.primeSoft403Guard()
 
 	now := time.Unix(200, 0)
-	for i := 0; i < Soft403StickyExhaustions; i++ {
+	for i := range Soft403StickyExhaustions {
 		if d.recordSoft403Exhaustion(now) {
 			t.Fatalf("exhaustion %d escalated while arming", i+1)
 		}
@@ -790,7 +790,7 @@ func TestSoft403Guard_RestoredBaselineAndSessionReset(t *testing.T) {
 	if guard.observedVerifiedProgress != 512 || guard.exhaustionCount != 0 || !guard.candidateSince.IsZero() {
 		t.Fatalf("guard after restored baseline = %+v", guard)
 	}
-	for i := 0; i < Soft403StickyExhaustions; i++ {
+	for i := range Soft403StickyExhaustions {
 		if d.recordSoft403Exhaustion(now) {
 			t.Fatalf("exhaustion %d escalated while arming", i+1)
 		}
@@ -812,7 +812,7 @@ func TestSoft403Guard_NilStateFallbackEscalatesAtLimit(t *testing.T) {
 	d.resetSoft403Guard()
 
 	now := time.Unix(400, 0)
-	for i := 0; i < Soft403StickyExhaustions-1; i++ {
+	for i := range Soft403StickyExhaustions - 1 {
 		if d.recordSoft403Exhaustion(now) {
 			t.Fatalf("fallback escalated at exhaustion %d", i+1)
 		}
@@ -831,12 +831,10 @@ func TestSoft403Guard_ConcurrentRecord(t *testing.T) {
 	now := time.Unix(500, 0)
 	results := make(chan bool, Soft403StickyExhaustions*2)
 	var wg sync.WaitGroup
-	for i := 0; i < Soft403StickyExhaustions*2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range Soft403StickyExhaustions * 2 {
+		wg.Go(func() {
 			results <- d.recordSoft403Exhaustion(now)
-		}()
+		})
 	}
 	wg.Wait()
 	close(results)
@@ -865,7 +863,7 @@ func TestSoft403_Empty206DoesNotResetProgressGuard(t *testing.T) {
 	d.primeSoft403Guard()
 
 	now := time.Unix(600, 0)
-	for i := 0; i < Soft403StickyExhaustions; i++ {
+	for i := range Soft403StickyExhaustions {
 		if d.recordSoft403Exhaustion(now) {
 			t.Fatalf("exhaustion %d escalated while arming", i+1)
 		}
@@ -1063,7 +1061,7 @@ func TestSoft403_SlowVerifiedBodyPreventsFalseTerminal(t *testing.T) {
 		w.Header().Set("Content-Length", strconv.FormatInt(rangeSize, 10))
 		w.WriteHeader(http.StatusPartialContent)
 		flusher, _ := w.(http.Flusher)
-		for part := int64(0); part < 4; part++ {
+		for part := range int64(4) {
 			if part > 0 {
 				select {
 				case <-advanceBody:

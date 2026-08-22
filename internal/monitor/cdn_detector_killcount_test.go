@@ -12,7 +12,7 @@ import (
 func fireAndKill(t *testing.T, d *CDNDetector, clock *time.Time, ctrl *mockCDNControl) {
 	t.Helper()
 	prev := ctrl.killsCount()
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		advanceTick(d, clock)
 		if ctrl.killsCount() > prev {
 			return
@@ -32,7 +32,7 @@ func TestCDNDetector_KillCountCap_DegradesToDrain(t *testing.T) {
 	d, clock := newTestDetector(ctrl)
 
 	// Kill 3 times (cdnMaxKillCount=3). Each kill requires sustain(5s) + cooldown(10s) = 15s.
-	for i := 0; i < cdnMaxKillCount; i++ {
+	for range cdnMaxKillCount {
 		fireAndKill(t, d, clock, ctrl)
 	}
 
@@ -42,7 +42,7 @@ func TestCDNDetector_KillCountCap_DegradesToDrain(t *testing.T) {
 
 	// Advance past cooldown for the next fire, which should be a drain.
 	prevDrains := ctrl.drainsCount()
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		advanceTick(d, clock)
 		if ctrl.drainsCount() > prevDrains {
 			break
@@ -68,7 +68,7 @@ func TestCDNDetector_KillCountReset_OnRecovery(t *testing.T) {
 	d, clock := newTestDetector(ctrl)
 
 	// Kill 2 times (killCount=2, below cap).
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		fireAndKill(t, d, clock, ctrl)
 	}
 	if got := ctrl.killsCount(); got != 2 {
@@ -80,7 +80,7 @@ func TestCDNDetector_KillCountReset_OnRecovery(t *testing.T) {
 		matureWorker(1, 5*utils.MiB, 206),
 		matureWorker(2, 5*utils.MiB, 206),
 	)
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		advanceTick(d, clock)
 	}
 
@@ -92,7 +92,7 @@ func TestCDNDetector_KillCountReset_OnRecovery(t *testing.T) {
 
 	prevKills := ctrl.killsCount()
 	prevDrains := ctrl.drainsCount()
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		advanceTick(d, clock)
 		if ctrl.killsCount() > prevKills {
 			break
@@ -121,7 +121,7 @@ func TestCDNDetector_KillCountNotReset_OnWarmup(t *testing.T) {
 	d, clock := newTestDetector(ctrl)
 
 	// Kill 3 times to reach killCount cap (cdnMaxKillCount=3).
-	for i := 0; i < cdnMaxKillCount; i++ {
+	for range cdnMaxKillCount {
 		fireAndKill(t, d, clock, ctrl)
 	}
 	if got := ctrl.killsCount(); got != cdnMaxKillCount {
@@ -134,7 +134,7 @@ func TestCDNDetector_KillCountNotReset_OnWarmup(t *testing.T) {
 	warmup.WorkerStartUnix = d.now().UnixNano()
 	warmup.SessionBytes = 0
 	setStats(ctrl, warmup, matureWorker(2, 5*utils.MiB, 206))
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		advanceTick(d, clock)
 	}
 
@@ -145,7 +145,7 @@ func TestCDNDetector_KillCountNotReset_OnWarmup(t *testing.T) {
 
 	prevKills := ctrl.killsCount()
 	prevDrains := ctrl.drainsCount()
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		advanceTick(d, clock)
 		if ctrl.drainsCount() > prevDrains {
 			break
@@ -174,13 +174,13 @@ func TestCDNDetector_KillCountAbsentEviction(t *testing.T) {
 	d, clock := newTestDetector(ctrl)
 
 	// Kill 2 times.
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		fireAndKill(t, d, clock, ctrl)
 	}
 
 	// Remove worker 1 from stats (simulating drain/exit).
 	setStats(ctrl, matureWorker(2, 5*utils.MiB, 206))
-	for i := 0; i < cdnWorkerEvictTicks+2; i++ {
+	for range cdnWorkerEvictTicks + 2 {
 		advanceTick(d, clock)
 	}
 
@@ -203,7 +203,7 @@ func TestCDNDetector_KillCountAbsentEviction(t *testing.T) {
 
 	prevKills := ctrl.killsCount()
 	prevDrains := ctrl.drainsCount()
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		advanceTick(d, clock)
 		if ctrl.killsCount() > prevKills {
 			break
@@ -229,7 +229,7 @@ func TestCDNDetector_DrainAtMostOnePerGidPerTick(t *testing.T) {
 	d, clock := newTestDetector(ctrl)
 
 	// Kill worker 1 three times to reach killCount cap.
-	for i := 0; i < cdnMaxKillCount; i++ {
+	for range cdnMaxKillCount {
 		fireAndKill(t, d, clock, ctrl)
 	}
 
@@ -237,7 +237,7 @@ func TestCDNDetector_DrainAtMostOnePerGidPerTick(t *testing.T) {
 	// killed 3 times first. Let's just verify that after enough ticks, at most
 	// one drain happens per tick.
 	prevDrains := 0
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		advanceTick(d, clock)
 		nowDrains := ctrl.drainsCount()
 		if nowDrains-prevDrains > 1 {

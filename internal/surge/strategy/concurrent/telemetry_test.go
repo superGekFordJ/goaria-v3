@@ -92,7 +92,7 @@ func TestCheckWorkerHealth_TelemetryRace(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 500; i++ {
+		for range 500 {
 			d.checkWorkerHealth()
 			time.Sleep(time.Microsecond)
 		}
@@ -100,7 +100,7 @@ func TestCheckWorkerHealth_TelemetryRace(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 500; i++ {
+		for range 500 {
 			_ = state.GetWorkerStats()
 			time.Sleep(time.Microsecond)
 		}

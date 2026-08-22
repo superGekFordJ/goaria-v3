@@ -125,10 +125,7 @@ func preallocateZeroFill(file *os.File, size int64) error {
 	buf := make([]byte, chunkSize)
 	remaining := size
 	for remaining > 0 {
-		toWrite := int64(chunkSize)
-		if remaining < toWrite {
-			toWrite = remaining
-		}
+		toWrite := min(remaining, int64(chunkSize))
 		if _, err := file.Write(buf[:toWrite]); err != nil {
 			return err
 		}

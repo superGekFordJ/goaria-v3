@@ -1,9 +1,9 @@
 package wailsapp
 
-type hostAuthProfileStore interface{}
+type hostAuthProfileStore any
 
-type hostAuthRuntime interface{}
+type hostAuthRuntime any
 
-type hostAuthDriver interface{}
+type hostAuthDriver any
 
-type hostAuthCallbackRegistry interface{}
+type hostAuthCallbackRegistry any

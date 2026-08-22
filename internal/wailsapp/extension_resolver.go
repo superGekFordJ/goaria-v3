@@ -647,8 +647,8 @@ func canonicalFlightSourceURL(raw string) string {
 }
 
 func stripURLFragment(raw string) string {
-	if i := strings.Index(raw, "#"); i >= 0 {
-		return raw[:i]
+	if before, _, ok := strings.Cut(raw, "#"); ok {
+		return before
 	}
 
 	return raw

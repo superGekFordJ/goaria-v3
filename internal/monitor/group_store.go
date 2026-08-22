@@ -3,6 +3,7 @@ package monitor
 import (
 	"encoding/json"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,9 +107,7 @@ func ListStoredTaskGroups() map[string]rpc.DownloadGroup {
 	groupStore.mu.RLock()
 	defer groupStore.mu.RUnlock()
 	groups := make(map[string]rpc.DownloadGroup, len(groupStore.groups))
-	for gid, group := range groupStore.groups {
-		groups[gid] = group
-	}
+	maps.Copy(groups, groupStore.groups)
 	return groups
 }
 

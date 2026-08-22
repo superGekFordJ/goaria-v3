@@ -49,7 +49,7 @@ func NewRemoteDownloadService(baseURL string, token string, opts HTTPClientOptio
 	}, nil
 }
 
-func (s *RemoteDownloadService) doRequest(method, path string, body interface{}) (*http.Response, error) {
+func (s *RemoteDownloadService) doRequest(method, path string, body any) (*http.Response, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		jsonBody, err := json.Marshal(body)
@@ -131,7 +131,7 @@ func (s *RemoteDownloadService) GetStatus(id string) (*types.DownloadStatus, err
 
 // Add queues a new download.
 func (s *RemoteDownloadService) Add(url string, path string, filename string, mirrors []string, headers map[string]string, isExplicitCategory bool, workers int, minChunkSize int64) (string, error) {
-	req := map[string]interface{}{
+	req := map[string]any{
 		"url":                  url,
 		"path":                 path,
 		"filename":             filename,
@@ -162,7 +162,7 @@ func (s *RemoteDownloadService) Add(url string, path string, filename string, mi
 
 // AddWithID queues a new download with a caller-provided id.
 func (s *RemoteDownloadService) AddWithID(url string, path string, filename string, mirrors []string, headers map[string]string, id string, isExplicitCategory bool, workers int, minChunkSize int64) (string, error) {
-	req := map[string]interface{}{
+	req := map[string]any{
 		"url":                  url,
 		"path":                 path,
 		"filename":             filename,
@@ -417,12 +417,12 @@ func (s *RemoteDownloadService) connectSSE(ctx context.Context, ch chan types.Do
 			if strings.HasPrefix(line, ":") {
 				continue
 			}
-			if strings.HasPrefix(line, "event:") {
-				eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			if after, ok := strings.CutPrefix(line, "event:"); ok {
+				eventType = strings.TrimSpace(after)
 				continue
 			}
-			if strings.HasPrefix(line, "data:") {
-				dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			if after, ok := strings.CutPrefix(line, "data:"); ok {
+				dataLines = append(dataLines, strings.TrimSpace(after))
 				continue
 			}
 		}

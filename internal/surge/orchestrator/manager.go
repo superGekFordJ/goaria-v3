@@ -292,9 +292,8 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 		if probeErr != nil {
 			// Distinguish between terminal client errors (invalid scheme, etc.) and
 			// server-side rejections or timeouts that we can optimistically ignore.
-			var urlErr *neturl.Error
 			var isTerminal bool
-			if errors.As(probeErr, &urlErr) {
+			if urlErr, ok := errors.AsType[*neturl.Error](probeErr); ok {
 				var opErr *net.OpError
 				isTerminal = !errors.As(probeErr, &opErr) && // not a network-layer error
 					strings.Contains(urlErr.Error(), "unsupported protocol scheme")
@@ -319,7 +318,7 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 
 	isNameActive := mgr.buildIsNameActive()
 
-	for attempt := 0; attempt < maxWorkingFileReservationAttempts; attempt++ {
+	for range maxWorkingFileReservationAttempts {
 		if ctx.Err() != nil {
 			return "", "", fmt.Errorf("enqueue aborted: %w", ctx.Err())
 		}

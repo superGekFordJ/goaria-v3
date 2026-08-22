@@ -130,7 +130,7 @@ func buildRemovalBenchmarkFixtures(size int) ([]string, []rpc.Task, []rpc.Task, 
 	stopped := make([]rpc.Task, 0, size/3+1)
 	historyMap := make(map[string]history.HistoryEntry, size)
 
-	for i := 0; i < size; i++ {
+	for i := range size {
 		gid := fmt.Sprintf("gid-%d", i)
 		path := fmt.Sprintf("D:/Downloads/%s.bin", gid)
 		task := rpc.Task{

@@ -153,7 +153,7 @@ func TestRemoveGroupCompletedTaskReappears_ConcurrentInvalidateTask(t *testing.T
 	// has time to set deletedGids before the target's iteration.
 	const numFillers = 50000
 	allStopped := make([]rpc.Task, 0, numFillers+1)
-	for i := 0; i < numFillers; i++ {
+	for i := range numFillers {
 		allStopped = append(allStopped, rpc.Task{
 			GID:             fmt.Sprintf("ar_filler-%d", i),
 			Status:          "complete",
@@ -165,9 +165,9 @@ func TestRemoveGroupCompletedTaskReappears_ConcurrentInvalidateTask(t *testing.T
 	allStopped = append(allStopped, targetTask)
 
 	engine := &blockingStoppedEngine{
-		mockStoppedEngine: mockStoppedEngine{stopped: nil}, // engine reports no stopped tasks
-		called:            make(chan struct{}, 1),
-		release:           make(chan struct{}),
+		stopped: nil, // engine reports no stopped tasks
+		called:  make(chan struct{}, 1),
+		release: make(chan struct{}),
 	}
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)

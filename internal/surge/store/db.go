@@ -81,7 +81,7 @@ func CloseDB() {
 	cleanupMu.Unlock()
 }
 
-func atomicWrite(targetPath string, data interface{}) error {
+func atomicWrite(targetPath string, data any) error {
 	dir := filepath.Dir(targetPath)
 	f, err := os.CreateTemp(dir, ".tmp-*.gob")
 	if err != nil {
@@ -104,7 +104,7 @@ func atomicWrite(targetPath string, data interface{}) error {
 	return os.Rename(tmpName, targetPath)
 }
 
-func loadGob(path string, v interface{}) error {
+func loadGob(path string, v any) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err

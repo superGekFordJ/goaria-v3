@@ -113,14 +113,8 @@ func NewBandwidthLedger(activeTasks []TrackedTaskInfo) *BandwidthLedger {
 // Surge: !MacroReady → max(Target, telem); MacroReady → telem.
 // Aria2: within aria2ColdSeedWindow → max(Target, telem); else telem.
 func hybridSeedContrib(t TrackedTaskInfo, now time.Time) int64 {
-	telem := t.TelemetryBps
-	if telem < 0 {
-		telem = 0
-	}
-	target := t.TargetBandwidth
-	if target < 0 {
-		target = 0
-	}
+	telem := max(t.TelemetryBps, 0)
+	target := max(t.TargetBandwidth, 0)
 	if strings.HasPrefix(t.GID, "sg_") {
 		if !t.MacroReady {
 			return max64(target, telem)
@@ -174,10 +168,7 @@ func (l *BandwidthLedger) Release(scope, envKey string, bandwidth int64) {
 	key := scope + envKey
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	v := l.reserved[key] - bandwidth
-	if v < 0 {
-		v = 0
-	}
+	v := max(l.reserved[key]-bandwidth, 0)
 	l.reserved[key] = v
 }
 
@@ -221,10 +212,7 @@ func (l *BandwidthLedger) ReleaseByDomain(scope, domain string, bandwidth int64)
 	key := limitKey(scope, domain)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	v := l.reservedByDomain[key] - bandwidth
-	if v < 0 {
-		v = 0
-	}
+	v := max(l.reservedByDomain[key]-bandwidth, 0)
 	l.reservedByDomain[key] = v
 }
 
@@ -274,9 +262,6 @@ func (l *BandwidthLedger) ReleaseWorkers(scope, domain string, count int) {
 	key := limitKey(scope, domain)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	v := l.reservedWorkers[key] - count
-	if v < 0 {
-		v = 0
-	}
+	v := max(l.reservedWorkers[key]-count, 0)
 	l.reservedWorkers[key] = v
 }

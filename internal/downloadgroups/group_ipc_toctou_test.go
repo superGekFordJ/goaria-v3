@@ -49,11 +49,9 @@ func TestPauseDownloadGroup_TerminalDuringRPC_DoesNotRevive(t *testing.T) {
 
 	var result DownloadGroupOperationResult
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		result = PauseDownloadGroup(group.ID)
-	}()
+	})
 	<-entered
 
 	// Terminal lands while PauseMulti is in flight.
@@ -63,7 +61,7 @@ func TestPauseDownloadGroup_TerminalDuringRPC_DoesNotRevive(t *testing.T) {
 	}
 	history.Add(history.HistoryEntry{GID: gid, Path: "/tmp/pause_toctou.bin", Status: "error"})
 
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		runtime.Gosched()
 	}
 	close(release)
@@ -139,11 +137,9 @@ func TestResumeDownloadGroup_TerminalDuringRPC_DoesNotRevive(t *testing.T) {
 
 	var result DownloadGroupOperationResult
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		result = ResumeDownloadGroup(group.ID)
-	}()
+	})
 	<-entered
 
 	monitor.Cache.MoveTaskToStoppedWithError(gid, "error", "1", "rpc-terminal")
@@ -152,7 +148,7 @@ func TestResumeDownloadGroup_TerminalDuringRPC_DoesNotRevive(t *testing.T) {
 	}
 	history.Add(history.HistoryEntry{GID: gid, Path: "/tmp/resume_toctou.bin", Status: "error"})
 
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		runtime.Gosched()
 	}
 	close(release)

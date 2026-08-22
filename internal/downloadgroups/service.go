@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -637,10 +638,7 @@ func (b *downloadGroupBucket) shouldIncludeCard() bool {
 func (b *downloadGroupBucket) buildCard() DownloadGroupCard {
 	counts, total, completed, speed, missingMetadata, statusBuckets, updatedAt := b.memberStats()
 	counts.Expected = maxInt(b.itemCount, counts.Resolved, len(b.staleStoreGID))
-	counts.Missing = counts.Expected - counts.Resolved
-	if counts.Missing < 0 {
-		counts.Missing = 0
-	}
+	counts.Missing = max(counts.Expected-counts.Resolved, 0)
 
 	group := b.group
 	if group.ItemCount < b.itemCount {
@@ -891,12 +889,7 @@ func isSafeDownloadGroupFolderPathHint(path string) bool {
 	if strings.ContainsAny(path, "?#&") {
 		return false
 	}
-	for _, segment := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
-		if downloadGroupSecretLikeSegment(segment) {
-			return false
-		}
-	}
-	return true
+	return !slices.ContainsFunc(strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }), downloadGroupSecretLikeSegment)
 }
 
 func downloadGroupSecretLikeSegment(segment string) bool {

@@ -7,16 +7,16 @@ import (
 )
 
 type TaskDelta struct {
-	Type    string      `json:"type"`
-	GID     string      `json:"gid"`
-	Payload interface{} `json:"payload,omitempty"`
+	Type    string `json:"type"`
+	GID     string `json:"gid"`
+	Payload any    `json:"payload,omitempty"`
 }
 
 type TaskMove struct {
-	GID  string      `json:"gid"`
-	From string      `json:"from"` // "active", "waiting", "stopped"
-	To   string      `json:"to"`
-	Task interface{} `json:"task"` // Full task with metadata
+	GID  string `json:"gid"`
+	From string `json:"from"` // "active", "waiting", "stopped"
+	To   string `json:"to"`
+	Task any    `json:"task"` // Full task with metadata
 }
 
 type Hub struct {
@@ -90,7 +90,7 @@ func (h *Hub) EmitConnectionStatus(connected bool) {
 }
 
 // EmitTraySnapshot 推送托盘状态快照（用于前端同步）
-func (h *Hub) EmitTraySnapshot(snapshot interface{}) {
+func (h *Hub) EmitTraySnapshot(snapshot any) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	if h.app != nil && h.app.Event != nil {
@@ -139,11 +139,11 @@ func (h *Hub) EmitTaskMove(move TaskMove) {
 }
 
 // EmitUpdateStatus 推送更新状态变化
-func (h *Hub) EmitUpdateStatus(status string, payload interface{}) {
+func (h *Hub) EmitUpdateStatus(status string, payload any) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	if h.app != nil && h.app.Event != nil {
-		h.app.Event.Emit("update:status", map[string]interface{}{
+		h.app.Event.Emit("update:status", map[string]any{
 			"status":  status,
 			"payload": payload,
 		})
@@ -164,7 +164,7 @@ func (h *Hub) EmitUpdateProgress(downloaded, total, speed int64) {
 }
 
 // EmitExtensionStatus pushes extension connection status to the frontend.
-func (h *Hub) EmitExtensionStatus(status interface{}) {
+func (h *Hub) EmitExtensionStatus(status any) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	if h.app != nil && h.app.Event != nil {

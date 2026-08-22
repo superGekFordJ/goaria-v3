@@ -67,11 +67,11 @@ func TestMasterCache_ConcurrentReadWrite(t *testing.T) {
 	stop := make(chan struct{})
 
 	// Writers: upsert and remove entries.
-	for w := 0; w < 4; w++ {
+	for w := range 4 {
 		writerWG.Add(1)
 		go func(w int) {
 			defer writerWG.Done()
-			for i := 0; i < 200; i++ {
+			for i := range 200 {
 				id := "dl-" + string(rune('A'+w)) + "-" + string(rune('0'+i%10))
 				e.UpsertMasterCacheEntry(types.DownloadRecord{ID: id, Status: "completed"})
 				if i%5 == 0 {
@@ -83,9 +83,7 @@ func TestMasterCache_ConcurrentReadWrite(t *testing.T) {
 
 	// Readers: buildDownloadList under RLock until writers finish.
 	var readerWG sync.WaitGroup
-	readerWG.Add(1)
-	go func() {
-		defer readerWG.Done()
+	readerWG.Go(func() {
 		for {
 			select {
 			case <-stop:
@@ -94,7 +92,7 @@ func TestMasterCache_ConcurrentReadWrite(t *testing.T) {
 				_ = e.buildDownloadList()
 			}
 		}
-	}()
+	})
 
 	writerWG.Wait()
 	close(stop)
@@ -160,7 +158,7 @@ func TestMasterCache_GetDownloadListNoGobDecode(t *testing.T) {
 	e.masterCache = []types.DownloadRecord{{ID: "dl-cached", URL: "http://x/a", Status: "completed"}}
 
 	// Multiple calls should return the cached entry without touching gob.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		list, err := e.getDownloadList()
 		if err != nil {
 			t.Fatalf("call %d getDownloadList: %v", i, err)

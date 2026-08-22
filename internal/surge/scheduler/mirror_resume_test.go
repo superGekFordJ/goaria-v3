@@ -65,11 +65,9 @@ func TestIntegration_MirrorResume(t *testing.T) {
 	// Wire event persistence worker because pause state is persisted in processing layer.
 	mgr := orchestrator.NewLifecycleManager(nil, nil, nil)
 	var eventWG sync.WaitGroup
-	eventWG.Add(1)
-	go func() {
-		defer eventWG.Done()
+	eventWG.Go(func() {
 		mgr.StartEventWorker(progressCh)
-	}()
+	})
 	defer func() {
 		close(progressCh)
 		eventWG.Wait()

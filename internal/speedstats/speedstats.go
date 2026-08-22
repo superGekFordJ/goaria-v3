@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -210,9 +211,7 @@ func GetRecentPeakByScope(scope string, envKey string) (vSingleEst int64, ok boo
 	}
 
 	// 计算 p75 基准 (Baseline)
-	sort.Slice(vValues, func(i, j int) bool {
-		return vValues[i] < vValues[j]
-	})
+	slices.Sort(vValues)
 	return p75SortedAsc(vValues), true
 }
 
@@ -261,9 +260,7 @@ func GetRecentPeakByDomain(domain, scope string, envKey string) (vSingleEst int6
 	}
 
 	// 计算 p75 基准 (Baseline)
-	sort.Slice(vValues, func(i, j int) bool {
-		return vValues[i] < vValues[j]
-	})
+	slices.Sort(vValues)
 	return p75SortedAsc(vValues), true
 }
 

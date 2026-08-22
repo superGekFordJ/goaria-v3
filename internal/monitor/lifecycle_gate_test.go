@@ -50,22 +50,18 @@ func TestLifecycle_Interleave_ReopenThenTerminalThenRemove(t *testing.T) {
 	t.Cleanup(func() { tracker.retireBetweenReopenAndRemove = nil })
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		m.RetireHistoryIfResumedFromStopped(gid, "stopped")
-	}()
+	})
 
 	<-started
 	terminalScheduled := make(chan struct{})
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		close(terminalScheduled)
 		m.markCompleteAndHandle(gid, "complete", nil)
-	}()
+	})
 	<-terminalScheduled
-	for i := 0; i < 64; i++ {
+	for range 64 {
 		runtime.Gosched()
 	}
 	close(release)
@@ -113,22 +109,18 @@ func TestLifecycle_Interleave_RemoveThenTerminalConcurrent(t *testing.T) {
 	t.Cleanup(func() { tracker.retireBetweenReopenAndRemove = nil })
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		m.RetireHistoryIfResumedFromStopped(gid, "stopped")
-	}()
+	})
 	<-started
 
 	terminalScheduled := make(chan struct{})
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		close(terminalScheduled)
 		m.markCompleteAndHandle(gid, "error", nil)
-	}()
+	})
 	<-terminalScheduled
-	for i := 0; i < 64; i++ {
+	for range 64 {
 		runtime.Gosched()
 	}
 	close(release)
@@ -450,25 +442,21 @@ func TestLifecycle_CacheMoveRetire_SerializesWithTerminal(t *testing.T) {
 	t.Cleanup(func() { tracker.afterMoveBeforeRetire = nil })
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		from := m.moveToActiveAndRetireIfStopped(gid, "active")
 		if from != "stopped" {
 			t.Errorf("from=%q, want stopped", from)
 		}
-	}()
+	})
 	<-started
 
 	terminalScheduled := make(chan struct{})
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		close(terminalScheduled)
 		m.moveToStoppedAndHandle(gid, "complete", "", "", 1000, nil)
-	}()
+	})
 	<-terminalScheduled
-	for i := 0; i < 64; i++ {
+	for range 64 {
 		runtime.Gosched()
 	}
 	close(release)

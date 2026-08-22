@@ -37,7 +37,7 @@ func TestRaceCondition(t *testing.T) {
 	iterations := 50
 	failures := 0
 
-	for i := 0; i < iterations; i++ {
+	for i := range iterations {
 		Clear()
 		Add(entry)
 		Remove(gid)
@@ -74,7 +74,7 @@ func TestPerformance(t *testing.T) {
 
 	start := time.Now()
 	n := 1000
-	for i := 0; i < n; i++ {
+	for i := range n {
 		Add(HistoryEntry{GID: fmt.Sprintf("%d", i)})
 	}
 
@@ -624,16 +624,14 @@ func TestHistoryDownloadGroupNameUpdateConcurrentReaders(t *testing.T) {
 	Add(HistoryEntry{GID: "gid-race", Title: "Grouped", Source: "https://example.com/group.bin", DownloadGroup: group})
 
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 100; j++ {
+	for range 16 {
+		wg.Go(func() {
+			for range 100 {
 				_ = GetAll()
 				UpdateDownloadGroupName(group.ID, "Project Alpha", rpc.DownloadGroupNameStatusStable)
 				UpdateDownloadGroupName(group.ID, group.Name, rpc.DownloadGroupNameStatusFallback)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

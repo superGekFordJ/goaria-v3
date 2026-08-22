@@ -214,7 +214,7 @@ func TestStop_CleansListener(t *testing.T) {
 	l.Close()
 }
 
-func mustMarshal(t *testing.T, v interface{}) []byte {
+func mustMarshal(t *testing.T, v any) []byte {
 	t.Helper()
 	data, err := json.Marshal(v)
 	if err != nil {

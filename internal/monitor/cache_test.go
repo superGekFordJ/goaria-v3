@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -249,16 +250,14 @@ func TestTaskCache_UpdateTaskGroupNameConcurrentReaders(t *testing.T) {
 	cache.UpdateFromAria2([]rpc.Task{{GID: "gid-race", Status: "active", DownloadGroup: &group}}, nil, nil)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 100; j++ {
+	for range 16 {
+		wg.Go(func() {
+			for range 100 {
 				_ = cache.GetActive()
 				cache.UpdateTaskGroupName(group.ID, "Project Alpha", rpc.DownloadGroupNameStatusStable)
 				cache.UpdateTaskGroupName(group.ID, group.Name, rpc.DownloadGroupNameStatusFallback)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }
@@ -682,7 +681,7 @@ func TestTaskCache_ConcurrentSurgeEventAndAria2Tick(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			cache.MoveTaskToStopped("sg_a1", "complete")
 			cache.MoveTaskToWaiting("sg_a2", "paused")
 			cache.MoveTaskToActive("sg_a2", "active")
@@ -692,7 +691,7 @@ func TestTaskCache_ConcurrentSurgeEventAndAria2Tick(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			cache.UpdateFromAria2(
 				[]rpc.Task{
 					{GID: "ar_a1", Status: "active", DownloadSpeed: "50"},
@@ -1026,12 +1025,7 @@ func gidsFromTasks(tasks []rpc.Task) []string {
 }
 
 func containsGid(gids []string, gid string) bool {
-	for _, g := range gids {
-		if g == gid {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(gids, gid)
 }
 
 // --- AddSgTask tests ---

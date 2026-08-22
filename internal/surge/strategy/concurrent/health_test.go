@@ -67,8 +67,7 @@ func TestHealth_MultipleWorkers(t *testing.T) {
 	state := progress.New("test", 1000)
 	d := NewConcurrentDownloader("test", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	now := time.Now()
 
@@ -120,8 +119,7 @@ func TestHealth_GracePeriod(t *testing.T) {
 	state := progress.New("test", 1000)
 	d := NewConcurrentDownloader("test", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	now := time.Now()
 
@@ -165,8 +163,7 @@ func TestHealth_StallDetection(t *testing.T) {
 	state := progress.New("test", 1000)
 	d := NewConcurrentDownloader("test", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	now := time.Now()
 
@@ -202,8 +199,7 @@ func TestHealth_ZeroStallTimeoutDisablesStallDetection(t *testing.T) {
 	state := progress.New("test", 1000)
 	d := NewConcurrentDownloader("test", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	now := time.Now()
 
@@ -236,8 +232,7 @@ func TestHealth_ZeroSlowWorkerThresholdDisablesSlowCheck(t *testing.T) {
 	state := progress.New("test", 1000)
 	d := NewConcurrentDownloader("test", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	now := time.Now()
 

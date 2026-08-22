@@ -541,7 +541,7 @@ func TestUniqueFilePath_LongFilename(t *testing.T) {
 
 	// Create a file with a long name (within OS limits)
 	longName := ""
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		longName += "a"
 	}
 	longName += ".txt"

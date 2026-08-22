@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -175,11 +176,5 @@ func assertGenericUnavailable(
 }
 
 func hasGenericCapability(capabilities []string, want string) bool {
-	for _, capability := range capabilities {
-		if capability == want {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(capabilities, want)
 }

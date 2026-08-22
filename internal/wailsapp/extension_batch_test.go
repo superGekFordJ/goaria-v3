@@ -150,7 +150,7 @@ func resolveFixtureSession(t *testing.T, lease *extensionResolveAdapter) extensi
 			Value:    "browser-sid",
 			Domain:   ".fixture.invalid",
 			Path:     "/",
-			Secure:   boolPtr(true),
+			Secure:   new(true),
 			HostOnly: &hostOnly,
 		}},
 	})

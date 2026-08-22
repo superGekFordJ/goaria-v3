@@ -58,11 +58,9 @@ func TestIntegration_PauseResume(t *testing.T) {
 	// DB/state persistence now lives in processing event worker.
 	mgr := orchestrator.NewLifecycleManager(nil, nil, nil)
 	var eventWG sync.WaitGroup
-	eventWG.Add(1)
-	go func() {
-		defer eventWG.Done()
+	eventWG.Go(func() {
 		mgr.StartEventWorker(progressCh)
-	}()
+	})
 	defer func() {
 		close(progressCh)
 		eventWG.Wait()

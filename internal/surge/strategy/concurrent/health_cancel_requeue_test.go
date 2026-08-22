@@ -1,7 +1,6 @@
 package concurrent
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -38,10 +37,7 @@ func (h *nonzeroTarpitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.WriteHeader(http.StatusPartialContent)
 
-	toSend := h.partialBytes
-	if toSend > length {
-		toSend = length
-	}
+	toSend := min(h.partialBytes, length)
 	if toSend > 0 {
 		data := make([]byte, toSend)
 		for i := range data {
@@ -86,11 +82,8 @@ func (h *patternHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	remaining := length
 	offset := start
 	for remaining > 0 {
-		n := int64(len(buf))
-		if n > remaining {
-			n = remaining
-		}
-		for i := int64(0); i < n; i++ {
+		n := min(int64(len(buf)), remaining)
+		for i := range n {
 			buf[i] = byte((offset+i)%251) + 1 // 1..251, never 0
 		}
 		_, _ = w.Write(buf[:n])
@@ -123,7 +116,7 @@ func verifyNoZeroHoles(t *testing.T, path string, fileSize int64) {
 		if err != nil && n == 0 {
 			t.Fatalf("read at %d: %v", offset, err)
 		}
-		for i := 0; i < n; i++ {
+		for i := range n {
 			if buf[i] == 0 {
 				t.Errorf("zero byte at offset %d — preallocate hole not overwritten", offset+int64(i))
 				return
@@ -167,8 +160,7 @@ func TestHealthCancelRequeue_PreservesSharedMaxOffset(t *testing.T) {
 	}
 	d := NewConcurrentDownloader("health-requeue", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	err := downloadWithTimeout(t, d, ctx, tarpitSrv.URL, destPath, fileSize,
 		[]string{normalSrv.URL}, 15*time.Second)
@@ -229,8 +221,7 @@ func TestHealthCancelRequeue_NilSharedMaxOffset_NoOvercount(t *testing.T) {
 	}
 	d := NewConcurrentDownloader("nil-shared", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	err := downloadWithTimeout(t, d, ctx, tarpitSrv.URL, destPath, fileSize,
 		[]string{normalSrv.URL}, 30*time.Second)

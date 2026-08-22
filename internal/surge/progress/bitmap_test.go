@@ -99,12 +99,12 @@ func TestBitmapTracker_ConcurrentUpdates(t *testing.T) {
 
 	var wg sync.WaitGroup
 	// Simulate 100 workers hammering the same chunks
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
 			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)))
-			for j := 0; j < 1000; j++ {
+			for range 1000 {
 				offset := rng.Int63n(totalSize)
 				length := int64(1024) // 1 KB writes
 				bt.UpdateChunkStatus(totalSize, offset, length, types.ChunkCompleted)
@@ -194,24 +194,12 @@ func (b *OldBitmapTracker) UpdateChunkStatus(totalSize, offset, length int64, st
 	var totalIncrement int64
 	for i := startIdx; i <= endIdx; i++ {
 		chunkStart := int64(i) * b.actualChunkSize
-		chunkEnd := chunkStart + b.actualChunkSize
-		if chunkEnd > totalSize {
-			chunkEnd = totalSize
-		}
+		chunkEnd := min(chunkStart+b.actualChunkSize, totalSize)
 
-		updateStart := offset
-		if updateStart < chunkStart {
-			updateStart = chunkStart
-		}
-		updateEnd := offset + length
-		if updateEnd > chunkEnd {
-			updateEnd = chunkEnd
-		}
+		updateStart := max(offset, chunkStart)
+		updateEnd := min(offset+length, chunkEnd)
 
-		overlap := updateEnd - updateStart
-		if overlap < 0 {
-			overlap = 0
-		}
+		overlap := max(updateEnd-updateStart, 0)
 
 		if status == types.ChunkCompleted {
 			inc := overlap

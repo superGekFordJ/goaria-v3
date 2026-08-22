@@ -1,7 +1,6 @@
 package concurrent
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -40,10 +39,7 @@ func (h *earlyEOFHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.WriteHeader(http.StatusPartialContent)
 
-	toSend := h.partialBytes
-	if toSend > length {
-		toSend = length
-	}
+	toSend := min(h.partialBytes, length)
 	data := make([]byte, toSend)
 	for i := range data {
 		data[i] = 0xFF
@@ -101,8 +97,7 @@ func TestEarlyEOF_TaskRequeuedNotLost(t *testing.T) {
 	}
 	d := NewConcurrentDownloader("early-eof", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	// Primary mirror is the early-EOF server; normal server is the failover.
 	err := downloadWithTimeout(t, d, ctx, eofSrv.URL, destPath, fileSize,
@@ -149,8 +144,7 @@ func TestEarlyEOF_NormalCompletion_Unaffected(t *testing.T) {
 	}
 	d := NewConcurrentDownloader("normal-complete", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	err := downloadWithTimeout(t, d, ctx, normalSrv.URL(), destPath, fileSize,
 		nil, 15*time.Second)

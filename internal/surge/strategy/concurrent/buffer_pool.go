@@ -45,7 +45,7 @@ type TieredBufferPool struct {
 // functions that allocate full-length slices at the tier's size.
 func NewTieredBufferPool() *TieredBufferPool {
 	p := &TieredBufferPool{}
-	for i := bufferTier(0); i < tierCount; i++ {
+	for i := range tierCount {
 		size := tierSizes[i]
 		p.pools[i].New = func() any {
 			buf := make([]byte, size)
@@ -69,7 +69,7 @@ func (p *TieredBufferPool) Put(bufPtr *[]byte) {
 	if c > types.MaxPoolBufferCap {
 		return // discard oversized buffer, let GC collect
 	}
-	for i := bufferTier(0); i < tierCount; i++ {
+	for i := range tierCount {
 		if c == tierSizes[i] {
 			p.pools[i].Put(bufPtr)
 			return
@@ -103,7 +103,7 @@ func TierForBufferSize(size int) bufferTier {
 // TierForCap maps a buffer capacity to its tier. The second return value
 // is false if the capacity doesn't match any tier.
 func TierForCap(c int) (bufferTier, bool) {
-	for i := bufferTier(0); i < tierCount; i++ {
+	for i := range tierCount {
 		if c == tierSizes[i] {
 			return i, true
 		}

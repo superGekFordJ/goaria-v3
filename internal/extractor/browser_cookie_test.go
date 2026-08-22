@@ -1,6 +1,9 @@
 package extractor
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestCookieMatchesRequest_DomainCookieAttachesToSubdomain(t *testing.T) {
 	cookie := SessionCookie{Name: "sid", Domain: ".alpha.test", Path: "/", HostOnly: false}
@@ -194,13 +197,7 @@ func TestCookiesForRequest_EmptyFilteredList(t *testing.T) {
 }
 
 func containsCookiePair(header, pair string) bool {
-	for _, part := range splitCookieHeader(header) {
-		if part == pair {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(splitCookieHeader(header), pair)
 }
 
 func splitCookieHeader(header string) []string {

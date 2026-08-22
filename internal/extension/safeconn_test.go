@@ -61,7 +61,7 @@ func TestSafeConn_ConcurrentWrites(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
@@ -77,7 +77,7 @@ func TestSafeConn_ConcurrentWrites(t *testing.T) {
 	}
 
 	client.SetReadDeadline(time.Now().Add(2 * time.Second))
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		_, _, err := client.ReadMessage()
 		if err != nil {
 			t.Fatalf("read %d: %v", i, err)

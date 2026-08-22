@@ -128,10 +128,7 @@ func (d *ConcurrentDownloader) checkWorkerHealth() {
 		// Task.Offset is the attempt-start snapshot (published under activeMu);
 		// CurrentOffset advances atomically during the attempt — grace is
 		// bytes since this attempt began, not since the original chunk start.
-		downloadedBytes := active.CurrentOffset.Load() - active.Task.Offset
-		if downloadedBytes < 0 {
-			downloadedBytes = 0
-		}
+		downloadedBytes := max(active.CurrentOffset.Load()-active.Task.Offset, 0)
 		if downloadedBytes < int64(utils.MiB) {
 			continue
 		}

@@ -37,7 +37,7 @@ func TestChunkAccuracy(t *testing.T) {
 		return types.ChunkStatus(val) == types.ChunkDownloading || types.ChunkStatus(val) == types.ChunkCompleted
 	}
 
-	for i := 0; i < width; i++ {
+	for i := range width {
 		if getComp(i) {
 			activeCount++
 		}

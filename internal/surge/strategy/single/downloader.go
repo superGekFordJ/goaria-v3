@@ -144,10 +144,7 @@ func (d *SingleDownloader) Download(ctx context.Context, rawurl, destPath string
 			now := time.Now()
 			ra, ok := transport.ParseRetryAfter(resp.Header.Get("Retry-After"), now)
 			until := transport.DefaultHostRateLimiter.Penalize(transport.MirrorHost(rawurl), ra, ok, now)
-			sleepDur := until.Sub(now)
-			if sleepDur < 0 {
-				sleepDur = 0
-			}
+			sleepDur := max(until.Sub(now), 0)
 
 			utils.Debug("Single downloader: rate limited (%d), waiting %v (retry %d/%d)", resp.StatusCode, sleepDur, rlRetries, maxRlRetries)
 			if d.State != nil {

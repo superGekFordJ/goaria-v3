@@ -158,7 +158,7 @@ func TestDownloadGroupNamer_DeterministicAcrossMemberOrder(t *testing.T) {
 		filepath.Join("downloads", "Project Alpha Part 02.bin"),
 	}
 	var names []string
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		func(i int) {
 			ResetDownloadGroupNamerForTest()
 			Cache = &TaskCache{

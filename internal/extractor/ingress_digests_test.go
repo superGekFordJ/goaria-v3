@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -176,12 +177,7 @@ func decodeSaltHex(s string) ([]byte, error) {
 }
 
 func containsString(list []string, want string) bool {
-	for _, item := range list {
-		if item == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, want)
 }
 
 type countingFailReader struct {

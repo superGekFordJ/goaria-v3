@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -242,12 +243,7 @@ func assertBatchAddStringsUnordered(t *testing.T, name string, got []string, wan
 }
 
 func containsString(values []string, needle string) bool {
-	for _, value := range values {
-		if value == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, needle)
 }
 
 func assertGroupNameIsGeneric(t *testing.T, group rpc.DownloadGroup) {

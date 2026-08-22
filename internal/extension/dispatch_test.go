@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -199,12 +200,7 @@ func readRaw(t *testing.T, conn *websocket.Conn, timeout time.Duration) []byte {
 }
 
 func hasCap(caps []string, want string) bool {
-	for _, c := range caps {
-		if c == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(caps, want)
 }
 
 func writeResolve(t *testing.T, conn *websocket.Conn, id string, extra string) {
@@ -888,7 +884,7 @@ func TestExtractorResolve_BusyQueueDepthZero(t *testing.T) {
 
 	writeResolve(t, conn, "r-busy-1", `"n":1`)
 	writeResolve(t, conn, "r-busy-2", `"n":2`)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
 		case <-started:
 		case <-time.After(2 * time.Second):
@@ -924,7 +920,7 @@ func TestExtractorResolve_PerConnInFlightBusy(t *testing.T) {
 	for i := 1; i <= 4; i++ {
 		writeResolve(t, conn, "r-slot-"+string(rune('0'+i)), `"n":`+string(rune('0'+i)))
 	}
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		select {
 		case <-started:
 		case <-time.After(2 * time.Second):
@@ -1098,7 +1094,7 @@ func TestExtractorResolve_ConcurrentStubWrites(t *testing.T) {
 
 	writeResolve(t, conn, "r-conc-1", `"n":1`)
 	writeResolve(t, conn, "r-conc-2", `"n":2`)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
 		case <-started:
 		case <-time.After(2 * time.Second):

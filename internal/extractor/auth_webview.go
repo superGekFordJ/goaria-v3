@@ -81,7 +81,7 @@ type WebViewAuthResult struct {
 	Status   WebViewAuthStatus   `json:"status"`
 	PackID   string              `json:"pack_id"`
 	Profile  AuthProfileID       `json:"profile_id"`
-	Snapshot AuthProfileSnapshot `json:"snapshot,omitempty"`
+	Snapshot AuthProfileSnapshot `json:"snapshot,omitzero"`
 	Message  string              `json:"message,omitempty"`
 }
 
@@ -421,7 +421,7 @@ func firstWebViewCaptureSecret(payload map[string]any, capture WebViewAuthCaptur
 
 func webViewCaptureValueAtPath(payload map[string]any, path string) (any, bool) {
 	current := any(payload)
-	for _, part := range strings.Split(path, ".") {
+	for part := range strings.SplitSeq(path, ".") {
 		object, ok := current.(map[string]any)
 		if !ok {
 			return "", false

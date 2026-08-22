@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/tetratelabs/wazero"
@@ -236,13 +237,7 @@ func validateRunnablePack(pack VerifiedPack) error {
 }
 
 func manifestHasCapability(manifest Manifest, capability Capability) bool {
-	for _, candidate := range manifest.Capabilities {
-		if candidate == capability {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(manifest.Capabilities, capability)
 }
 
 func validateGuestExports(mod api.Module, operation abiOperation) (abiInvocation, error) {

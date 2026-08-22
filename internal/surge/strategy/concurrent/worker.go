@@ -262,8 +262,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 				break
 			}
 
-			var rlErr *rateLimitError
-			if errors.As(lastErr, &rlErr) {
+			if rlErr, ok := errors.AsType[*rateLimitError](lastErr); ok {
 				d.hostLimiter.Penalize(mirrorHosts[currentMirrorIdx], rlErr.retryAfter, rlErr.explicit, time.Now())
 				d.ReportMirrorError(currentURL)
 				rlRetries++
@@ -522,10 +521,7 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 			return nil
 		}
 
-		readSize := int64(len(buf))
-		if readSize > remaining {
-			readSize = remaining
-		}
+		readSize := min(int64(len(buf)), remaining)
 
 		// FORK-PATCH: Flush pending progress before entering a potentially unbounded network block.
 		// Since the batch time interval is checked synchronously during the active read/write loop,
@@ -770,10 +766,7 @@ func (d *ConcurrentDownloader) StealWork(queue *TaskQueue) bool {
 	finalCurrent := active.CurrentOffset.Load()
 
 	// The actual start of the stolen chunk must be after where the worker effectively stops.
-	stolenStart := newStopAt
-	if finalCurrent > newStopAt {
-		stolenStart = finalCurrent
-	}
+	stolenStart := max(finalCurrent, newStopAt)
 
 	// Double check: ensure we didn't race and lose the chunk
 	currentStopAt := active.StopAt.Load()
@@ -888,15 +881,9 @@ func (d *ConcurrentDownloader) resumeOnRetryOffset(task *types.Task, activeTask 
 	// (retry with no progress), task.Length must shrink; otherwise the next retry
 	// resets StopAt back to the original end, resurrecting the stolen range and
 	// causing double-counting.
-	effectiveEnd := task.Offset + task.Length
-	if stopAt < effectiveEnd {
-		effectiveEnd = stopAt
-	}
+	effectiveEnd := min(stopAt, task.Offset+task.Length)
 	task.Offset = current
-	task.Length = effectiveEnd - current
-	if task.Length < 0 {
-		task.Length = 0
-	}
+	task.Length = max(effectiveEnd-current, 0)
 	activeTask.SharedMaxOffsetMu.RLock()
 	task.SharedMaxOffset = activeTask.SharedMaxOffset
 	activeTask.SharedMaxOffsetMu.RUnlock()

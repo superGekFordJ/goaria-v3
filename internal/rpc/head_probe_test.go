@@ -435,7 +435,7 @@ func TestHeadProbe_ConcurrentSameHostDoesNotQueueOnIdleCap(t *testing.T) {
 		}(i)
 	}
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		select {
 		case <-started:
 		case <-time.After(2 * time.Second):

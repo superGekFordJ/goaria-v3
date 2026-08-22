@@ -81,7 +81,7 @@ type DownloadRecord struct {
 	// Runtime / Transient Configuration (Not persisted)
 	IsResume           bool                 `json:"-" gob:"-"`
 	ProgressCh         chan<- DownloadEvent `json:"-" gob:"-"`
-	ProgressState      interface{}          `json:"-" gob:"-"` // typically *progress.DownloadProgress
+	ProgressState      any                  `json:"-" gob:"-"` // typically *progress.DownloadProgress
 	Runtime            *RuntimeConfig       `json:"-" gob:"-"`
 	Headers            map[string]string    `json:"-" gob:"-"`
 	Limiter            ByteLimiter          `json:"-" gob:"-"`

@@ -7,19 +7,17 @@ import (
 	"testing"
 )
 
-func boolPtr(v bool) *bool { return &v }
-
 func TestResolveRangeAcquisitionMode(t *testing.T) {
 	if got := ResolveRangeAcquisitionMode("", nil); got != RangeAcquireProbeAtEnqueue {
 		t.Fatalf("nil pointer = %q, want empty", got)
 	}
-	if got := ResolveRangeAcquisitionMode("", boolPtr(true)); got != RangeAcquireRangeSupported {
+	if got := ResolveRangeAcquisitionMode("", new(true)); got != RangeAcquireRangeSupported {
 		t.Fatalf("*true = %q, want range_supported", got)
 	}
-	if got := ResolveRangeAcquisitionMode("", boolPtr(false)); got != RangeAcquirePayloadFirstUnknown {
+	if got := ResolveRangeAcquisitionMode("", new(false)); got != RangeAcquirePayloadFirstUnknown {
 		t.Fatalf("*false = %q, want payload_first_unknown (unknown, not sequential)", got)
 	}
-	if got := ResolveRangeAcquisitionMode(RangeAcquireRangeUnsupported, boolPtr(true)); got != RangeAcquireRangeUnsupported {
+	if got := ResolveRangeAcquisitionMode(RangeAcquireRangeUnsupported, new(true)); got != RangeAcquireRangeUnsupported {
 		t.Fatalf("explicit mode must win, got %q", got)
 	}
 }
@@ -28,7 +26,7 @@ func TestShouldSkipServerProbe(t *testing.T) {
 	if ShouldSkipServerProbe("", nil) {
 		t.Fatal("empty mode + nil pointer must not skip")
 	}
-	if !ShouldSkipServerProbe("", boolPtr(false)) {
+	if !ShouldSkipServerProbe("", new(false)) {
 		t.Fatal("286 *false must still skip ProbeServer")
 	}
 	if !ShouldSkipServerProbe(RangeAcquirePayloadFirstUnknown, nil) {

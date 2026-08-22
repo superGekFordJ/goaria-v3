@@ -692,10 +692,7 @@ func (c *ConvergenceTicker) settlePendingReleases(
 			observedEff = electedLastRaw / int64(cw)
 		}
 
-		gap := targetDomainBps - currentDomainBps
-		if gap < 0 {
-			gap = 0
-		}
+		gap := max(targetDomainBps-currentDomainBps, 0)
 
 		delta := 0
 		switch {
@@ -717,10 +714,7 @@ func (c *ConvergenceTicker) settlePendingReleases(
 			continue
 		default:
 			desired := int(ceilDiv(gap, observedEff))
-			delta = minInt(desired, cw)
-			if delta < 1 {
-				delta = 1
-			}
+			delta = max(minInt(desired, cw), 1)
 		}
 
 		// Clamp chain: N_max → V_available → maxConnections → rateLimited.
@@ -986,10 +980,7 @@ func (c *ConvergenceTicker) checkVAvailableWithCompensation(scope, domain, envKe
 	if globalPeak, ok := speedstats.GetGlobalPeak(scope, envKey); ok && globalPeak > 0 {
 		activeBw := activeBandwidthProvider(scope, envKey)
 		effectiveScope := activeBw + int64(approvedDelta[approvedScopeKey(scope, envKey)])*vThreadAvg
-		compensatedScope := effectiveScope - disappearedSpeed
-		if compensatedScope < 0 {
-			compensatedScope = 0
-		}
+		compensatedScope := max(effectiveScope-disappearedSpeed, 0)
 		scopeOK = globalPeak-compensatedScope >= neededHeadroom
 	}
 
@@ -1086,10 +1077,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			if s.prevCompleted > 0 && !s.prevSampleAt.IsZero() {
 				dt := time.Since(s.prevSampleAt)
 				if dt > 0 {
-					finalRawBps := int64(float64(task.CompletedLength-s.prevCompleted) / dt.Seconds())
-					if finalRawBps < 0 {
-						finalRawBps = 0
-					}
+					finalRawBps := max(int64(float64(task.CompletedLength-s.prevCompleted)/dt.Seconds()), 0)
 					s.lastRawBps = finalRawBps
 					s.macroReady = true
 					if finalRawBps > 0 && currentWorkers > 0 && c.peakRecorder != nil {
@@ -1127,10 +1115,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	if dt <= 0 {
 		return pendingScale{}, false
 	}
-	rawBps := int64(float64(task.CompletedLength-s.prevCompleted) / dt.Seconds())
-	if rawBps < 0 {
-		rawBps = 0
-	}
+	rawBps := max(int64(float64(task.CompletedLength-s.prevCompleted)/dt.Seconds()), 0)
 	s.lastRawBps = rawBps
 	s.macroReady = true
 
@@ -1220,10 +1205,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			// Fall through to Probe-Up trigger below
 		} else {
 			// Ceiling hit — rebound -(probeUpDelta+1)/2 + CeilingHit lock
-			rebound := (probeDelta + 1) / 2
-			if rebound < 1 {
-				rebound = 1
-			}
+			rebound := max((probeDelta+1)/2, 1)
 			if c.peakRecorder != nil && rawBps > 0 && currentWorkers > 0 {
 				c.peakRecorder.RecordPeakEfficiency(gid, rawBps, currentWorkers)
 			}
@@ -1265,10 +1247,9 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 				gid, rawBps, s.probeBaseline, dropRatio)
 		} else {
 			// Knee crossed — actual drop matches/exceeds expected, threads were productive
-			rebound := (s.lastStep + 1) / 2 // ceil(lastStep/2)
-			if rebound < 1 {
-				rebound = 1
-			}
+			rebound := max(
+				// ceil(lastStep/2)
+				(s.lastStep+1)/2, 1)
 			// N_max clamp: rebound must not push domain workers above N_max.
 			// Knee rebound intentionally skips V_available (known non-goal): it
 			// restores productive workers after Probe-Down overshoot, not a free ScaleUp.
@@ -1492,10 +1473,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 					return pendingScale{}, false
 				}
 
-				step := currentWorkers / 8
-				if step < 1 {
-					step = 1
-				}
+				step := max(currentWorkers/8, 1)
 				// Don't cross probeFloor
 				if currentWorkers-step < probeFloor {
 					step = currentWorkers - probeFloor

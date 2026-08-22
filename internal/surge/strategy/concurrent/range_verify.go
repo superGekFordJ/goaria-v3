@@ -52,15 +52,15 @@ func parseSingleContentRange(header string) (start, end, total int64, err error)
 		return 0, 0, 0, fmt.Errorf("invalid Content-Range total")
 	}
 	rangePart := rest[:slash]
-	dash := strings.IndexByte(rangePart, '-')
-	if dash < 0 {
+	before, after, ok := strings.Cut(rangePart, "-")
+	if !ok {
 		return 0, 0, 0, fmt.Errorf("invalid Content-Range span")
 	}
-	start, err = strconv.ParseInt(rangePart[:dash], 10, 64)
+	start, err = strconv.ParseInt(before, 10, 64)
 	if err != nil || start < 0 {
 		return 0, 0, 0, fmt.Errorf("invalid Content-Range start")
 	}
-	end, err = strconv.ParseInt(rangePart[dash+1:], 10, 64)
+	end, err = strconv.ParseInt(after, 10, 64)
 	if err != nil || end < start {
 		return 0, 0, 0, fmt.Errorf("invalid Content-Range end")
 	}

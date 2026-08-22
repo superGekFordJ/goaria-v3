@@ -774,7 +774,7 @@ func TestEventDriven_RapidPauseResume(t *testing.T) {
 	}, "active")
 
 	// Rapid pause-resume-pause-resume cycle
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		// Pause
 		m.BumpPauseResumeIntention("sg_rapid-1", PauseResumeIntentionPause)
 		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "rapid-1"})
@@ -875,7 +875,7 @@ func TestEventDriven_RapidAddRemove(t *testing.T) {
 		Cache.sgStopped = nil
 	}()
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		// Add
 		m.handleSurgeEvent(surgeEvents.DownloadEvent{
 			Type:       surgeEvents.EventStarted,

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -384,7 +385,7 @@ func appHostAuthSensitiveForms(kind extractor.AuthSecretKind, secret string) []s
 		forms = append(forms, "Bearer "+secret)
 	}
 	if kind == extractor.AuthSecretKindCookie {
-		for _, part := range strings.Split(secret, ";") {
+		for part := range strings.SplitSeq(secret, ";") {
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue
@@ -689,7 +690,7 @@ func appHostAuthCORSHeadersAllowed(values []string) bool {
 	}
 	seen := make(map[string]struct{})
 	for _, value := range values {
-		for _, part := range strings.Split(value, ",") {
+		for part := range strings.SplitSeq(value, ",") {
 			header := strings.ToLower(strings.TrimSpace(part))
 			if header == "" {
 				return false
@@ -713,13 +714,7 @@ func appHostAuthContentTypeAllowed(header string, allowed []string) bool {
 	if err != nil || mediaType == "" {
 		return false
 	}
-	for _, value := range allowed {
-		if mediaType == value {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(allowed, mediaType)
 }
 
 func appHostAuthTokenMatches(got string, want string) bool {

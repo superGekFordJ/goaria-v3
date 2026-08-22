@@ -94,7 +94,7 @@ func TestDrainWorker_ExitsAfterCurrentChunk(t *testing.T) {
 
 	queue := NewTaskQueue()
 	chunkSize := fileSize / 4
-	for i := int64(0); i < 4; i++ {
+	for i := range int64(4) {
 		length := chunkSize
 		if i == 3 {
 			length = fileSize - chunkSize*3
@@ -105,11 +105,9 @@ func TestDrainWorker_ExitsAfterCurrentChunk(t *testing.T) {
 	client := &http.Client{Transport: http.DefaultTransport}
 
 	workerID := int(d.nextWorkerID.Add(1)) - 1
-	d.workerWg.Add(1)
-	go func() {
-		defer d.workerWg.Done()
+	d.workerWg.Go(func() {
 		_ = d.worker(ctx, workerID, []string{server.URL()}, f, queue, fileSize, client)
-	}()
+	})
 
 	waitForActiveTask(t, d, workerID, 2*time.Second)
 
@@ -181,11 +179,9 @@ func TestDrainWorker_IdleWorker_DesignLimit(t *testing.T) {
 	queue := NewTaskQueue()
 
 	workerID := int(d.nextWorkerID.Add(1)) - 1
-	d.workerWg.Add(1)
-	go func() {
-		defer d.workerWg.Done()
+	d.workerWg.Go(func() {
 		_ = d.worker(ctx, workerID, []string{server.URL()}, f, queue, fileSize, &http.Client{})
-	}()
+	})
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -229,11 +225,9 @@ func TestDrainWorker_IdleWorker_QueueClose(t *testing.T) {
 	queue := NewTaskQueue()
 
 	workerID := int(d.nextWorkerID.Add(1)) - 1
-	d.workerWg.Add(1)
-	go func() {
-		defer d.workerWg.Done()
+	d.workerWg.Go(func() {
 		_ = d.worker(ctx, workerID, []string{"http://localhost:1"}, nil, queue, 0, &http.Client{})
-	}()
+	})
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -264,8 +258,7 @@ func TestGracePeriod_DownloadVolumeCheck(t *testing.T) {
 	state := progress.New("test", 1000)
 	d := NewConcurrentDownloader("test", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	now := time.Now()
 
@@ -317,8 +310,7 @@ func TestStallDetection_NotBlockedByVolumeGrace(t *testing.T) {
 	state := progress.New("test", 1000)
 	d := NewConcurrentDownloader("test", nil, state, runtime)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	now := time.Now()
 
@@ -499,10 +491,9 @@ func TestScaleWorkers_NilContext(t *testing.T) {
 func TestDrain_ConcurrentAccess(t *testing.T) {
 	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		_, ccancel := context.WithCancel(ctx)
 		d.activeTasks[i] = &ActiveTask{
 			Task:      types.Task{Offset: int64(i * 100), Length: 100},
@@ -516,7 +507,7 @@ func TestDrain_ConcurrentAccess(t *testing.T) {
 	d.workersActive.Store(true)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
@@ -554,8 +545,7 @@ func waitForActiveTask(t *testing.T, d *ConcurrentDownloader, workerID int, time
 func TestScaleWorkers_WaitGroupReuseProtection(t *testing.T) {
 	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	d.workerDepsPtr.Store(&workerDeps{ctx: ctx})
 	d.workersActive.Store(false)
@@ -608,11 +598,9 @@ func TestScaleWorkers_UpDuringActiveWorkers(t *testing.T) {
 
 	d.workersActive.Store(true)
 
-	d.workerWg.Add(1)
-	go func() {
-		defer d.workerWg.Done()
+	d.workerWg.Go(func() {
 		time.Sleep(200 * time.Millisecond)
-	}()
+	})
 
 	result := d.ScaleWorkers(1)
 	if result != 1 {
@@ -750,12 +738,10 @@ func TestScaleWorkers_ConcurrentScaleUp(t *testing.T) {
 	d.workersActive.Store(true)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 5 {
+		wg.Go(func() {
 			d.ScaleWorkers(1)
-		}()
+		})
 	}
 	wg.Wait()
 

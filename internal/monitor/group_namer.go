@@ -455,10 +455,7 @@ func longestCommonPrefixDownloadGroupName(stems []downloadGroupStem) (string, bo
 	for _, stem := range stems[1:] {
 		candidateRunes := []rune(stem.Lower)
 		firstLowerRunes := []rune(strings.ToLower(string(firstRunes)))
-		limit := commonLen
-		if len(candidateRunes) < limit {
-			limit = len(candidateRunes)
-		}
+		limit := min(len(candidateRunes), commonLen)
 		index := 0
 		for index < limit && firstLowerRunes[index] == candidateRunes[index] {
 			index++
@@ -494,7 +491,7 @@ func longestCommonSubstringDownloadGroupName(stems []downloadGroupStem) (string,
 	bestLower := ""
 	bestStart := 0
 
-	for start := 0; start < len(baseLower); start++ {
+	for start := range baseLower {
 		for end := start + 1; end <= len(baseLower); end++ {
 			candidateLower := string(baseLower[start:end])
 			if !downloadGroupSubstringInAll(candidateLower, stems) {
@@ -660,7 +657,7 @@ func sanitizeDownloadGroupBasenameStem(raw string) (string, bool) {
 }
 
 func isUnsafeDownloadGroupRawIdentifier(stem string) bool {
-	for _, field := range strings.Fields(stem) {
+	for field := range strings.FieldsSeq(stem) {
 		field = strings.Trim(field, "._-–—()[]{}<>:;,+*/|\\\"'`~!@#$%^&=")
 		if field == "" {
 			continue

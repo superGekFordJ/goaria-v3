@@ -91,7 +91,7 @@ func TestToRuntimeConfig_RateLimitParsed(t *testing.T) {
 // fields in types.RuntimeConfig. When upstream adds a field, update this
 // count and ensure ToRuntimeConfig assigns it.
 func TestRuntimeConfig_FieldCount(t *testing.T) {
-	rcType := reflect.TypeOf(types.RuntimeConfig{})
+	rcType := reflect.TypeFor[types.RuntimeConfig]()
 	expected := 16
 	if got := rcType.NumField(); got != expected {
 		t.Errorf("RuntimeConfig has %d fields, expected %d; if upstream added a field, "+
