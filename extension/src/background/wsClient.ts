@@ -1,6 +1,6 @@
 import { sendMessage } from 'webext-bridge/background'
 import browser from 'webextension-polyfill'
-import { hasCapability, parseAuthAck, shouldShowLegacyHostHint } from './capabilities'
+import { deriveLegacyHostState, hasCapability, parseAuthAck } from './capabilities'
 import { createPendingMap } from './requestAssociation'
 import { createReplayStore, type ReplayStorage } from './replayStore'
 import { mintRequestId } from './mintRequestId'
@@ -474,7 +474,7 @@ export class WsClient {
       connectionState.capabilities = parsed.capabilities
       connectionState.protocolVersion = parsed.protocolVersion
       connectionState.hostVersion = parsed.hostVersion
-      connectionState.legacyHost = shouldShowLegacyHostHint(parsed)
+      connectionState.legacyHost = deriveLegacyHostState(parsed)
       if (parsed.match && hasCapability(parsed.capabilities, CAP_EXTRACTOR_RESOLVE)) {
         applyParsedMatch(parsed.match)
         void rescanHttpTabs().catch(() => undefined)
@@ -652,7 +652,7 @@ export class WsClient {
     connectionState.capabilities = undefined
     connectionState.protocolVersion = 0
     connectionState.hostVersion = ''
-    connectionState.legacyHost = undefined
+    connectionState.legacyHost = deriveLegacyHostState()
     clearMatchSnapshot()
     notifyExtractorHostDown('disconnect')
   }

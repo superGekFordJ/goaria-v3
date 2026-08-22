@@ -12,8 +12,9 @@ export type AuthAckInput = {
 export type ParsedAuthAck = {
   protocolVersion: number
   hostVersion: string
-  // undefined means the field was missing or JSON null (legacy host).
+  // undefined is fail-closed; wireState distinguishes legacy absence from malformed data.
   capabilities: string[] | undefined
+  capabilitiesWireState: 'missing' | 'valid' | 'malformed'
   match?: MatchDigestSnapshot
 }
 
@@ -22,15 +23,28 @@ export function parseAuthAck(msg: AuthAckInput): ParsedAuthAck {
   const hostVersion = typeof msg.host_version === 'string' ? msg.host_version : ''
   const match = parseMatchObject(msg.match)
   if (msg.capabilities == null) {
-    return { protocolVersion, hostVersion, capabilities: undefined, match }
+    return {
+      protocolVersion,
+      hostVersion,
+      capabilities: undefined,
+      capabilitiesWireState: 'missing',
+      match,
+    }
   }
   if (!Array.isArray(msg.capabilities)) {
-    return { protocolVersion, hostVersion, capabilities: undefined, match }
+    return {
+      protocolVersion,
+      hostVersion,
+      capabilities: undefined,
+      capabilitiesWireState: 'malformed',
+      match,
+    }
   }
   return {
     protocolVersion,
     hostVersion,
     capabilities: msg.capabilities.filter((c): c is string => typeof c === 'string'),
+    capabilitiesWireState: 'valid',
     match,
   }
 }
@@ -58,11 +72,12 @@ function parseMatchObject(raw: unknown): MatchDigestSnapshot | undefined {
 }
 
 export function isLegacyHost(ack: ParsedAuthAck): boolean {
-  return ack.protocolVersion === 0 || ack.capabilities === undefined
+  return deriveLegacyHostState(ack) === true
 }
 
-export function shouldShowLegacyHostHint(ack: ParsedAuthAck): boolean {
-  return isLegacyHost(ack)
+export function deriveLegacyHostState(ack?: ParsedAuthAck): boolean | undefined {
+  if (!ack || ack.capabilitiesWireState === 'malformed') return undefined
+  return ack.protocolVersion === 0 || ack.capabilitiesWireState === 'missing'
 }
 
 export function hasCapability(capabilities: string[] | undefined | null, name: string): boolean {

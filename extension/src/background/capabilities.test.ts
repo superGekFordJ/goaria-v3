@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  deriveLegacyHostState,
   hasCapability,
   isLegacyHost,
   parseAuthAck,
-  shouldShowLegacyHostHint,
 } from './capabilities'
 
 describe('parseAuthAck / isLegacyHost', () => {
@@ -11,8 +11,9 @@ describe('parseAuthAck / isLegacyHost', () => {
     const parsed = parseAuthAck({ type: 'auth_ack' })
     expect(parsed.protocolVersion).toBe(0)
     expect(parsed.capabilities).toBeUndefined()
+    expect(parsed.capabilitiesWireState).toBe('missing')
     expect(isLegacyHost(parsed)).toBe(true)
-    expect(shouldShowLegacyHostHint(parsed)).toBe(true)
+    expect(deriveLegacyHostState(parsed)).toBe(true)
   })
 
   it('treats JSON null capabilities as missing/legacy', () => {
@@ -22,8 +23,9 @@ describe('parseAuthAck / isLegacyHost', () => {
       capabilities: null,
     })
     expect(parsed.capabilities).toBeUndefined()
+    expect(parsed.capabilitiesWireState).toBe('missing')
     expect(isLegacyHost(parsed)).toBe(true)
-    expect(shouldShowLegacyHostHint(parsed)).toBe(true)
+    expect(deriveLegacyHostState(parsed)).toBe(true)
   })
 
   it('treats a missing protocol_version as legacy even when capabilities are present', () => {
@@ -33,7 +35,8 @@ describe('parseAuthAck / isLegacyHost', () => {
     })
     expect(parsed.protocolVersion).toBe(0)
     expect(parsed.capabilities).toEqual(['request_id'])
-    expect(shouldShowLegacyHostHint(parsed)).toBe(true)
+    expect(parsed.capabilitiesWireState).toBe('valid')
+    expect(deriveLegacyHostState(parsed)).toBe(true)
   })
 
   it('treats present empty capabilities as protocol-2, not legacy', () => {
@@ -46,8 +49,9 @@ describe('parseAuthAck / isLegacyHost', () => {
     expect(parsed.protocolVersion).toBe(2)
     expect(parsed.hostVersion).toBe('dev')
     expect(parsed.capabilities).toEqual([])
+    expect(parsed.capabilitiesWireState).toBe('valid')
     expect(isLegacyHost(parsed)).toBe(false)
-    expect(shouldShowLegacyHostHint(parsed)).toBe(false)
+    expect(deriveLegacyHostState(parsed)).toBe(false)
   })
 
   it('treats a 3.3.0 request-id-only host as modern limited without a hint', () => {
@@ -58,8 +62,9 @@ describe('parseAuthAck / isLegacyHost', () => {
       capabilities: ['request_id'],
     })
     expect(parsed.hostVersion).toBe('3.3.0')
+    expect(parsed.capabilitiesWireState).toBe('valid')
     expect(isLegacyHost(parsed)).toBe(false)
-    expect(shouldShowLegacyHostHint(parsed)).toBe(false)
+    expect(deriveLegacyHostState(parsed)).toBe(false)
     expect(hasCapability(parsed.capabilities, 'request_id')).toBe(true)
     expect(hasCapability(parsed.capabilities, 'extractor.resolve')).toBe(false)
     expect(hasCapability(parsed.capabilities, 'extractor.batch')).toBe(false)
@@ -72,9 +77,29 @@ describe('parseAuthAck / isLegacyHost', () => {
       host_version: '99.0.0',
       capabilities: [],
     })
-    expect(shouldShowLegacyHostHint(parsed)).toBe(false)
+    expect(deriveLegacyHostState(parsed)).toBe(false)
     expect(hasCapability(parsed.capabilities, 'extractor.resolve')).toBe(false)
     expect(hasCapability(parsed.capabilities, 'extractor.batch')).toBe(false)
+  })
+
+  it.each([
+    ['object', { request_id: true }],
+    ['string', 'request_id'],
+  ])('fails closed on malformed %s capabilities without a legacy hint', (_kind, capabilities) => {
+    const parsed = parseAuthAck({
+      type: 'auth_ack',
+      protocol_version: 2,
+      capabilities,
+    })
+    expect(parsed.capabilities).toBeUndefined()
+    expect(parsed.capabilitiesWireState).toBe('malformed')
+    expect(hasCapability(parsed.capabilities, 'request_id')).toBe(false)
+    expect(isLegacyHost(parsed)).toBe(false)
+    expect(deriveLegacyHostState(parsed)).toBeUndefined()
+  })
+
+  it('derives unknown before an ack or after protocol state is cleared', () => {
+    expect(deriveLegacyHostState()).toBeUndefined()
   })
 
   it('parses string capabilities including request_id', () => {
@@ -84,6 +109,7 @@ describe('parseAuthAck / isLegacyHost', () => {
       capabilities: ['request_id', 'extractor.resolve', 1, 'extractor.batch'],
     })
     expect(parsed.capabilities).toEqual(['request_id', 'extractor.resolve', 'extractor.batch'])
+    expect(parsed.capabilitiesWireState).toBe('valid')
     expect(isLegacyHost(parsed)).toBe(false)
   })
 

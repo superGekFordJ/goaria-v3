@@ -77,8 +77,20 @@ func TestConfigureExtensionLinkageGenericProtocol2KeepsDownloadAndOmitsExtractor
 		t.Fatalf("generic auth ack contains match: %s", raw)
 	}
 
-	assertGenericUnavailable(t, conn, extension.MsgTypeExtractorResolve, "resolve-fixture")
-	assertGenericUnavailable(t, conn, extension.MsgTypeBatchDownload, "batch-fixture")
+	assertGenericUnavailable(
+		t,
+		conn,
+		extension.MsgTypeExtractorResolve,
+		extension.MsgTypeExtractorResolveAck,
+		"resolve-fixture",
+	)
+	assertGenericUnavailable(
+		t,
+		conn,
+		extension.MsgTypeBatchDownload,
+		extension.MsgTypeBatchDownloadAck,
+		"batch-fixture",
+	)
 
 	writeGenericJSON(t, conn, extension.DownloadRequest{
 		Type:      extension.MsgTypeDownload,
@@ -87,7 +99,8 @@ func TestConfigureExtensionLinkageGenericProtocol2KeepsDownloadAndOmitsExtractor
 	})
 	var downloadAck extension.DownloadResponse
 	readGenericJSON(t, conn, &downloadAck)
-	if !downloadAck.Success || downloadAck.GID != "fixture-gid" ||
+	if downloadAck.Type != extension.MsgTypeDownloadAck ||
+		!downloadAck.Success || downloadAck.GID != "fixture-gid" ||
 		downloadAck.RequestID != "download-fixture" {
 		t.Fatalf("unexpected download ack: %+v", downloadAck)
 	}
@@ -143,12 +156,20 @@ func readGenericJSON(t *testing.T, conn *websocket.Conn, value any) []byte {
 	return raw
 }
 
-func assertGenericUnavailable(t *testing.T, conn *websocket.Conn, messageType, requestID string) {
+func assertGenericUnavailable(
+	t *testing.T,
+	conn *websocket.Conn,
+	messageType string,
+	ackType string,
+	requestID string,
+) {
 	t.Helper()
 	writeGenericJSON(t, conn, extension.RequestEnvelope{Type: messageType, RequestID: requestID})
 	var ack extension.TypedAck
 	readGenericJSON(t, conn, &ack)
-	if ack.RequestID != requestID || ack.ErrorCode != extension.ErrCodeUnavailable {
+	if ack.Type != ackType ||
+		ack.RequestID != requestID ||
+		ack.ErrorCode != extension.ErrCodeUnavailable {
 		t.Fatalf("%s ack: %+v", messageType, ack)
 	}
 }
