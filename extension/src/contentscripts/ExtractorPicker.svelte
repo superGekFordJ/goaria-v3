@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
-  import StaticGlassPanel from '../lib/glass/StaticGlassPanel.svelte'
+  import LiquidGlassPanel from '../lib/glass/LiquidGlassPanel.svelte'
   import { t } from '../lib/i18n'
   import { sanitizeDisplayFilename } from '../background/extractorKeys'
   import {
@@ -269,7 +269,7 @@
 >
   <button type="button" class="extractor-picker-scrim" tabindex="-1" aria-hidden="true" onclick={onScrim}></button>
   <div class="extractor-picker-panel">
-    <StaticGlassPanel radius="var(--radius-squircle-lg, 2rem)" {effects} class="extractor-picker-shell">
+    <LiquidGlassPanel radius="var(--radius-squircle-lg, 2rem)" {effects} class="extractor-picker-shell">
       <div class="extractor-picker-inner">
         <div class="extractor-picker-header">
           <h2 id={titleId} class="extractor-picker-title">{t('picker_title')}</h2>
@@ -357,6 +357,6 @@
           </button>
         </div>
       </div>
-    </StaticGlassPanel>
+    </LiquidGlassPanel>
   </div>
 </div>
