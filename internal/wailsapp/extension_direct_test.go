@@ -155,6 +155,31 @@ func TestDirectBatchAdapter_PendingThenComplete(t *testing.T) {
 	}
 }
 
+func TestDirectBatchAdapter_PendingDifferentDigestConflicts(t *testing.T) {
+	adapter, engine := setupDirectAdapter(t)
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	if !adapter.AdmitPending(id, "digest-a") {
+		t.Fatal("admit")
+	}
+	conflict := adapter.HandleDirectBatch(context.Background(), extension.RequestEnvelope{RequestID: id}, extension.DirectBatchRequest{
+		RequestID:     id,
+		PayloadDigest: "digest-b",
+		Items: []extension.DirectBatchItem{
+			{ClientItemID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", CanonicalURL: "https://download.fixture.invalid/a.bin"},
+		},
+	})
+	if conflict.ErrorCode != extension.ErrCodeIdempotencyConflict {
+		t.Fatalf("pending digest mismatch = %+v", conflict)
+	}
+	if engine.callCount() != 0 {
+		t.Fatalf("mismatch must not AddUri, calls=%d", engine.callCount())
+	}
+	snap, ok := adapter.LookupStatus(id)
+	if !ok || snap.Status != extension.DirectBatchStatusPending {
+		t.Fatalf("pending row must survive mismatch, snap=%+v ok=%v", snap, ok)
+	}
+}
+
 func TestDirectBatchAdapter_AbandonPendingLeavesComplete(t *testing.T) {
 	adapter, _ := setupDirectAdapter(t)
 	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"

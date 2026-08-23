@@ -101,7 +101,9 @@ func (a *directBatchAdapter) HandleDirectBatch(ctx context.Context, env extensio
 		}
 		return a.cloneStoredResult(env.RequestID)
 	case "pending":
-		// Submit on the in-flight marker written at admission.
+		if digest == "" || digest != req.PayloadDigest {
+			return extension.DirectCommitResult{ErrorCode: extension.ErrCodeIdempotencyConflict}
+		}
 	default:
 		if !a.AdmitPending(env.RequestID, req.PayloadDigest) {
 			empty.ErrorCode = extension.ErrCodeBusy
