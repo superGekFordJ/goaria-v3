@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -55,7 +56,7 @@ func (h *HybridEngine) AddUri(url string, options AddURIOptions) (string, error)
 			// and a doomed fallback task would burn the remaining free bytes.
 			return "", err
 		}
-		log.Printf("[Hybrid] Surge failed to add URI %s: %v, falling back to Aria2", url, err)
+		log.Printf("[Hybrid] Surge failed to add URI %s: %v, falling back to Aria2", sanitizeURLForLog(url), err)
 	}
 
 	// Aria2 hard limit: max-connection-per-server = 16.
@@ -546,4 +547,21 @@ func (h *HybridEngine) Close() {
 	if closer, ok := h.aria2Engine.(interface{ Close() }); ok {
 		closer.Close()
 	}
+}
+
+func sanitizeURLForLog(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" {
+		return "[redacted]"
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	host := parsed.Host
+	path := parsed.EscapedPath()
+	if parsed.RawPath != "" {
+		path = parsed.RawPath
+	}
+	if host == "" && path == "" {
+		return "[redacted]"
+	}
+	return scheme + "://" + host + path
 }

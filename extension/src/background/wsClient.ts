@@ -16,8 +16,16 @@ import {
   planRpcSend,
 } from './extractorRpc'
 import {
+  buildDirectBatchPayload,
+  DIRECT_BATCH_STATUS_TYPE,
+  DIRECT_BATCH_TYPE,
+  planDirectBatchSend,
+  planDirectBatchStatusSend,
+} from './directBatchRpc'
+import {
   CAP_EXTRACTOR_BATCH,
   CAP_EXTRACTOR_RESOLVE,
+  CAP_DOWNLOAD_BATCH,
   CLIENT_VERSION,
   DOWNLOAD_ACK_TIMEOUT_MS,
   EXTRACTOR_RESOLVE_ACK_TIMEOUT_MS,
@@ -26,6 +34,8 @@ import {
   MSG_TYPE_BATCH_DOWNLOAD,
   MSG_TYPE_BATCH_DOWNLOAD_ACK,
   MSG_TYPE_DOWNLOAD,
+  MSG_TYPE_DOWNLOAD_BATCH_ACK,
+  MSG_TYPE_DOWNLOAD_BATCH_STATUS_ACK,
   MSG_TYPE_EXTRACTOR_RESOLVE,
   MSG_TYPE_EXTRACTOR_RESOLVE_ACK,
   MSG_TYPE_PROTOCOL_ERROR,
@@ -214,6 +224,31 @@ export class WsClient {
     return this.doSendRequest(type, payload, requestId)
   }
 
+  /**
+   * Send download_batch correlated by caller request_id.
+   * Not serialized on the download sendChain. Fail-closed without download.batch.
+   */
+  sendDirectBatch(
+    payload: Record<string, unknown>,
+    requestId: string,
+  ): Promise<Record<string, unknown>> {
+    if (!hasCapability(connectionState.capabilities, CAP_DOWNLOAD_BATCH)) {
+      return Promise.reject(new Error('Host does not support download.batch'))
+    }
+    return this.doSendDirect(DIRECT_BATCH_TYPE, payload, requestId)
+  }
+
+  /**
+   * Send download_batch_status for a previously submitted batch request_id.
+   * Does not persist replay identity. Fail-closed without download.batch.
+   */
+  sendDirectBatchStatus(requestId: string): Promise<Record<string, unknown>> {
+    if (!hasCapability(connectionState.capabilities, CAP_DOWNLOAD_BATCH)) {
+      return Promise.reject(new Error('Host does not support download.batch'))
+    }
+    return this.doSendDirect(DIRECT_BATCH_STATUS_TYPE, {}, requestId)
+  }
+
   private async doSendRequest(
     type: string,
     payload: Record<string, unknown>,
@@ -263,6 +298,66 @@ export class WsClient {
         resolve as (value: unknown) => void,
         reject,
         timeoutMs,
+        persist,
+      )
+      if (!tracked) {
+        reject(new Error('Request already in flight'))
+        return
+      }
+      try {
+        socket.send(JSON.stringify(body))
+      } catch (err) {
+        this.clearPending(id)
+        void this.replay.remove(id)
+        reject(err instanceof Error ? err : new Error(String(err)))
+      }
+    })
+  }
+
+  private async doSendDirect(
+    type: string,
+    payload: Record<string, unknown>,
+    requestId: string,
+  ): Promise<Record<string, unknown>> {
+    const socket = this.ws
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('WebSocket is not connected'))
+    }
+    const planned =
+      type === DIRECT_BATCH_STATUS_TYPE
+        ? planDirectBatchStatusSend(requestId)
+        : planDirectBatchSend(requestId)
+    if ('error' in planned) {
+      return Promise.reject(new Error(planned.error))
+    }
+    const { id, persist } = planned
+    if (persist) {
+      await this.replay.persistOrReuse(type, id)
+    }
+    if (this.ws !== socket || socket.readyState !== WebSocket.OPEN) {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        void this.replay.remove(id)
+        return Promise.reject(new Error('WebSocket is not connected'))
+      }
+      return Promise.reject(new Error('WebSocket was replaced before send'))
+    }
+    let outbound: Record<string, unknown> = payload
+    if (type === DIRECT_BATCH_TYPE) {
+      const built = buildDirectBatchPayload(payload)
+      if ('error' in built) {
+        void this.replay.remove(id)
+        return Promise.reject(new Error(built.error))
+      }
+      outbound = built.payload
+    }
+    const body = { ...outbound, type, request_id: id }
+    return new Promise<Record<string, unknown>>((resolve, reject) => {
+      const tracked = this.trackPending(
+        id,
+        'direct_batch',
+        resolve as (value: unknown) => void,
+        reject,
+        REQUEST_ACK_TIMEOUT_MS,
         persist,
       )
       if (!tracked) {
@@ -537,9 +632,12 @@ export class WsClient {
       routed.entry.resolve(msg)
     }
     const msgType = typeof msg.type === 'string' ? msg.type : ''
-    if (msgType === MSG_TYPE_EXTRACTOR_RESOLVE_ACK) {
-      void this.replay.remove(routed.entry.id)
-    } else if (msgType === MSG_TYPE_BATCH_DOWNLOAD_ACK) {
+    if (
+      msgType === MSG_TYPE_EXTRACTOR_RESOLVE_ACK ||
+      msgType === MSG_TYPE_BATCH_DOWNLOAD_ACK ||
+      msgType === MSG_TYPE_DOWNLOAD_BATCH_ACK ||
+      msgType === MSG_TYPE_DOWNLOAD_BATCH_STATUS_ACK
+    ) {
       void this.replay.remove(routed.entry.id)
     }
   }
@@ -607,7 +705,7 @@ export class WsClient {
 
   private trackPending(
     id: string,
-    kind: 'download' | 'rpc',
+    kind: 'download' | 'rpc' | 'direct_batch',
     resolve: (value: unknown) => void,
     reject: (err: Error) => void,
     timeoutMs: number,

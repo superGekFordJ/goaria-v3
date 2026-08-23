@@ -10,12 +10,16 @@ const (
 	MsgTypeDownloadAck = "download_ack"
 	MsgTypePing        = "ping"
 
-	MsgTypeExtractorResolve    = "extractor_resolve"
-	MsgTypeExtractorResolveAck = "extractor_resolve_ack"
-	MsgTypeBatchDownload       = "batch_download"
-	MsgTypeBatchDownloadAck    = "batch_download_ack"
-	MsgTypeProtocolError       = "protocol_error"
-	MsgTypeCapabilityUpdate    = "capability_update"
+	MsgTypeExtractorResolve       = "extractor_resolve"
+	MsgTypeExtractorResolveAck    = "extractor_resolve_ack"
+	MsgTypeBatchDownload          = "batch_download"
+	MsgTypeBatchDownloadAck       = "batch_download_ack"
+	MsgTypeDownloadBatch          = "download_batch"
+	MsgTypeDownloadBatchAck       = "download_batch_ack"
+	MsgTypeDownloadBatchStatus    = "download_batch_status"
+	MsgTypeDownloadBatchStatusAck = "download_batch_status_ack"
+	MsgTypeProtocolError          = "protocol_error"
+	MsgTypeCapabilityUpdate       = "capability_update"
 
 	ProtocolVersion = 2
 
@@ -24,6 +28,11 @@ const (
 	CapRequestID        = "request_id"
 	CapExtractorResolve = "extractor.resolve"
 	CapExtractorBatch   = "extractor.batch"
+	CapDownloadBatch    = "download.batch"
+
+	DirectBatchStatusPending  = "pending"
+	DirectBatchStatusComplete = "complete"
+	DirectBatchStatusNotFound = "not_found"
 
 	ErrCodeUnsupported         = "unsupported"
 	ErrCodeUnavailable         = "unavailable"
@@ -134,6 +143,54 @@ type BatchDownloadRequest struct {
 	ItemIDs     []string `json:"item_ids"`
 	CreateGroup bool     `json:"create_group,omitempty"`
 	FolderName  string   `json:"folder_name,omitempty"`
+}
+
+// DirectBatchItem is one parsed download_batch member after strict allowlist.
+type DirectBatchItem struct {
+	ClientItemID  string
+	URL           string
+	CanonicalURL  string
+	FinalURL      string
+	Headers       []string
+	FileSize      int64
+	HasFileSize   bool
+	SkipHeadProbe bool
+	Filename      string
+	DownloadPage  string
+}
+
+// DirectBatchRequest is the parsed download_batch payload.
+type DirectBatchRequest struct {
+	Type        string
+	RequestID   string
+	Items       []DirectBatchItem
+	CreateGroup bool
+	FolderName  string
+}
+
+// DirectBatchAck is the download_batch success/partial wire ack.
+// Partition fields are never omitted and never JSON null.
+type DirectBatchAck struct {
+	Type             string            `json:"type"`
+	RequestID        string            `json:"request_id,omitempty"`
+	Success          bool              `json:"success"`
+	GroupKey         string            `json:"group_key,omitempty"`
+	SucceededItemIDs []string          `json:"succeeded_item_ids"`
+	DuplicateItemIDs []string          `json:"duplicate_item_ids"`
+	ErrorsByItemID   map[string]string `json:"errors_by_item_id"`
+}
+
+// DirectBatchStatusAck is the download_batch_status wire ack.
+type DirectBatchStatusAck struct {
+	Type             string            `json:"type"`
+	RequestID        string            `json:"request_id,omitempty"`
+	Status           string            `json:"status,omitempty"`
+	Success          bool              `json:"success,omitempty"`
+	GroupKey         string            `json:"group_key,omitempty"`
+	SucceededItemIDs []string          `json:"succeeded_item_ids,omitempty"`
+	DuplicateItemIDs []string          `json:"duplicate_item_ids,omitempty"`
+	ErrorsByItemID   map[string]string `json:"errors_by_item_id,omitempty"`
+	ErrorCode        string            `json:"error_code,omitempty"`
 }
 
 // BatchDownloadAck is the batch_download success/partial wire ack.

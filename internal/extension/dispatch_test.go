@@ -311,8 +311,9 @@ func TestAuthAck_MVPOmitsExtractorCaps(t *testing.T) {
 	store := NewSecretStore()
 	srv := newTestServer(t, nil, store)
 	srv.SetLinkage(Linkage{
-		Resolver:  &fakeResolver{ready: true},
-		Committer: &fakeCommitter{ready: true},
+		Resolver:        &fakeResolver{ready: true},
+		Committer:       &fakeCommitter{ready: true},
+		DirectCommitter: &fakeDirectCommitter{ready: true},
 	})
 	defer srv.Stop()
 	startSrv(t, srv)
@@ -327,8 +328,8 @@ func TestAuthAck_MVPOmitsExtractorCaps(t *testing.T) {
 	if !hasCap(ack.Capabilities, CapRequestID) {
 		t.Fatalf("MVP must still advertise request_id: %v", ack.Capabilities)
 	}
-	if hasCap(ack.Capabilities, CapExtractorResolve) || hasCap(ack.Capabilities, CapExtractorBatch) {
-		t.Fatalf("MVP empty secret must not advertise extractor caps: %v", ack.Capabilities)
+	if hasCap(ack.Capabilities, CapExtractorResolve) || hasCap(ack.Capabilities, CapExtractorBatch) || hasCap(ack.Capabilities, CapDownloadBatch) {
+		t.Fatalf("MVP empty secret must not advertise extractor or download.batch caps: %v", ack.Capabilities)
 	}
 	assertNoMatchKey(t, raw)
 }

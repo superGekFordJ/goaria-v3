@@ -64,7 +64,8 @@ func ConfigureExtensionLinkage(app *App, srv *extension.Server) {
 	pending := app.pendingExtensionLinkage
 	app.pendingMu.Unlock()
 	if pending == nil {
+		srv.SetLinkage(attachDirectBatchCommitter(extension.Linkage{}, app))
 		return
 	}
-	srv.SetLinkage(*pending)
+	srv.SetLinkage(attachDirectBatchCommitter(*pending, app))
 }

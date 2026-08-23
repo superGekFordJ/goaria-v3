@@ -1,10 +1,12 @@
 package rpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -227,6 +229,31 @@ func TestHybridEngine_DynamicFallback(t *testing.T) {
 	}
 	if len(aria2.addedUrls) != 1 {
 		t.Errorf("expected fallback to Aria2, got %d", len(aria2.addedUrls))
+	}
+}
+
+func TestHybridEngine_FallbackLogOmitsUserinfoAndQuery(t *testing.T) {
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	aria2 := &mockEngine{addResultGid: "ar_fallback_task"}
+	surge := &mockEngine{addResultErr: errors.New("unsupported range or network error")}
+	hybrid := NewHybridEngine(aria2, surge)
+	rawURL := "https://user:secret@cdn.fixture.invalid/file.bin?token=abc#frag"
+	if _, err := hybrid.AddUri(rawURL, AddURIOptions{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	logged := buf.String()
+	if strings.Contains(logged, rawURL) {
+		t.Fatalf("full URL logged: %s", logged)
+	}
+	if strings.Contains(logged, "user:secret") || strings.Contains(logged, "token=abc") {
+		t.Fatalf("userinfo or query leaked: %s", logged)
+	}
+	if !strings.Contains(logged, "https://cdn.fixture.invalid/file.bin") {
+		t.Fatalf("expected sanitized URL, got %s", logged)
 	}
 }
 

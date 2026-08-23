@@ -286,6 +286,10 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 			s.dispatchAsync(opCtx, connCtx, sc, env, raw, MsgTypeExtractorResolveAck, CapExtractorResolve, true)
 		case MsgTypeBatchDownload:
 			s.dispatchAsync(opCtx, connCtx, sc, env, raw, MsgTypeBatchDownloadAck, CapExtractorBatch, false)
+		case MsgTypeDownloadBatch:
+			s.dispatchDirectBatch(opCtx, connCtx, sc, env, raw)
+		case MsgTypeDownloadBatchStatus:
+			s.dispatchDirectBatchStatus(sc, env, raw)
 		case MsgTypeAuth, MsgTypePing:
 			// Post-handshake no-ops: the real client always sends auth after open,
 			// including in explicit test/development mode; tests also write ping first.
@@ -551,6 +555,224 @@ func (s *Server) runCommit(ctx context.Context, env RequestEnvelope, raw json.Ra
 	return c.HandleCommit(ctx, env, raw)
 }
 
+func (s *Server) dispatchDirectBatch(
+	opCtx context.Context,
+	connCtx context.Context,
+	sc *safeConn,
+	env RequestEnvelope,
+	raw []byte,
+) {
+	ackType := MsgTypeDownloadBatchAck
+	reqID := env.RequestID
+	if !validRequestID(reqID) {
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: echoRequestID(reqID), ErrorCode: ErrCodeInvalidRequest})
+		return
+	}
+	if !sc.hasGranted(CapDownloadBatch) {
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeUnavailable})
+		return
+	}
+	parsed, errCode := ParseDirectBatchRequest(raw)
+	if errCode != "" {
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeInvalidRequest})
+		return
+	}
+	reqID = parsed.RequestID
+
+	digest := canonicalDigest(raw)
+	gen := uint64(0)
+	if s.store != nil {
+		gen = s.store.Generation()
+	}
+	st, cached, wait := s.idemp.lookup(gen, env.Type, reqID, digest)
+	switch st {
+	case idempHit:
+		_ = sc.writeRaw(cached)
+		return
+	case idempConflict:
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeIdempotencyConflict})
+		return
+	case idempCoalesce:
+		go writeCoalescedAck(sc, wait)
+		return
+	case idempBusy:
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeBusy})
+		return
+	}
+
+	if !sc.tryAcquireInFlight() {
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeBusy})
+		return
+	}
+	if !s.tryAcquireGate(false) {
+		sc.releaseInFlight()
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeBusy})
+		return
+	}
+
+	st, cached, wait = s.idemp.begin(gen, env.Type, reqID, digest)
+	switch st {
+	case idempHit:
+		s.releaseGate(false)
+		sc.releaseInFlight()
+		_ = sc.writeRaw(cached)
+		return
+	case idempConflict:
+		s.releaseGate(false)
+		sc.releaseInFlight()
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeIdempotencyConflict})
+		return
+	case idempCoalesce:
+		s.releaseGate(false)
+		sc.releaseInFlight()
+		go writeCoalescedAck(sc, wait)
+		return
+	case idempBusy:
+		s.releaseGate(false)
+		sc.releaseInFlight()
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeBusy})
+		return
+	}
+
+	go func() {
+		defer s.releaseGate(false)
+		defer sc.releaseInFlight()
+		defer func() {
+			if rec := recover(); rec != nil {
+				func() {
+					defer func() { _ = recover() }()
+					log.Printf("[Extension] async handler panic: %T", rec)
+					busy := marshalBusyAck(ackType, reqID)
+					s.idemp.abandon(gen, env.Type, reqID, digest, busy)
+					if connCtx.Err() == nil {
+						_ = sc.writeRaw(busy)
+					}
+				}()
+			}
+		}()
+		result := s.runDirectBatch(opCtx, RequestEnvelope{Type: env.Type, RequestID: parsed.RequestID}, parsed)
+		if opCtx.Err() != nil {
+			busy := marshalBusyAck(ackType, reqID)
+			s.idemp.abandon(gen, env.Type, reqID, digest, busy)
+			if connCtx.Err() == nil {
+				_ = sc.writeRaw(busy)
+			}
+			return
+		}
+		data, err := marshalDirectBatchResult(ackType, reqID, result)
+		if err != nil {
+			busy := marshalBusyAck(ackType, reqID)
+			s.idemp.abandon(gen, env.Type, reqID, digest, busy)
+			if connCtx.Err() == nil {
+				_ = sc.writeRaw(busy)
+			}
+			return
+		}
+		if result.SkipIdempotency {
+			s.idemp.abandon(gen, env.Type, reqID, digest, data)
+		} else {
+			s.idemp.complete(gen, env.Type, reqID, digest, data)
+		}
+		if connCtx.Err() == nil {
+			_ = sc.writeRaw(data)
+		}
+	}()
+}
+
+func (s *Server) dispatchDirectBatchStatus(sc *safeConn, env RequestEnvelope, raw []byte) {
+	ackType := MsgTypeDownloadBatchStatusAck
+	reqID := env.RequestID
+	if !sc.hasGranted(CapDownloadBatch) {
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: echoRequestID(reqID), ErrorCode: ErrCodeUnavailable})
+		return
+	}
+	parsedID, errCode := ParseDirectBatchStatusRequest(raw)
+	if errCode != "" {
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: echoRequestID(reqID), ErrorCode: ErrCodeInvalidRequest})
+		return
+	}
+	s.mu.RLock()
+	d := s.linkage.DirectCommitter
+	s.mu.RUnlock()
+	if d == nil {
+		_ = sc.writeJSON(DirectBatchStatusAck{
+			Type:      ackType,
+			RequestID: parsedID,
+			Status:    DirectBatchStatusNotFound,
+		})
+		return
+	}
+	snap, ok := d.LookupStatus(parsedID)
+	if !ok {
+		_ = sc.writeJSON(DirectBatchStatusAck{
+			Type:      ackType,
+			RequestID: parsedID,
+			Status:    DirectBatchStatusNotFound,
+		})
+		return
+	}
+	ack := DirectBatchStatusAck{
+		Type:      ackType,
+		RequestID: parsedID,
+		Status:    snap.Status,
+	}
+	if snap.Status == DirectBatchStatusComplete {
+		ack.Success = snap.Success
+		ack.GroupKey = snap.GroupKey
+		ack.SucceededItemIDs = snap.SucceededItemIDs
+		if ack.SucceededItemIDs == nil {
+			ack.SucceededItemIDs = []string{}
+		}
+		ack.DuplicateItemIDs = snap.DuplicateItemIDs
+		if ack.DuplicateItemIDs == nil {
+			ack.DuplicateItemIDs = []string{}
+		}
+		if snap.ErrorsByItemID == nil {
+			ack.ErrorsByItemID = map[string]string{}
+		} else {
+			ack.ErrorsByItemID = SanitizeCommitItemErrors(snap.ErrorsByItemID)
+		}
+	}
+	_ = sc.writeJSON(ack)
+}
+
+func (s *Server) runDirectBatch(ctx context.Context, env RequestEnvelope, req DirectBatchRequest) DirectCommitResult {
+	s.mu.RLock()
+	d := s.linkage.DirectCommitter
+	s.mu.RUnlock()
+	if d == nil {
+		return DirectCommitResult{ErrorCode: ErrCodeUnavailable, SkipIdempotency: true}
+	}
+	return d.HandleDirectBatch(ctx, env, req)
+}
+
+func marshalDirectBatchResult(ackType, requestID string, result DirectCommitResult) ([]byte, error) {
+	if result.ErrorCode != "" {
+		return json.Marshal(TypedAck{Type: ackType, RequestID: requestID, ErrorCode: result.ErrorCode})
+	}
+	ack := DirectBatchAck{
+		Type:             ackType,
+		RequestID:        requestID,
+		Success:          result.Success,
+		GroupKey:         result.GroupKey,
+		SucceededItemIDs: result.SucceededItemIDs,
+		DuplicateItemIDs: result.DuplicateItemIDs,
+		ErrorsByItemID:   result.ErrorsByItemID,
+	}
+	if ack.SucceededItemIDs == nil {
+		ack.SucceededItemIDs = []string{}
+	}
+	if ack.DuplicateItemIDs == nil {
+		ack.DuplicateItemIDs = []string{}
+	}
+	if ack.ErrorsByItemID == nil {
+		ack.ErrorsByItemID = map[string]string{}
+	} else {
+		ack.ErrorsByItemID = SanitizeCommitItemErrors(ack.ErrorsByItemID)
+	}
+	return json.Marshal(ack)
+}
+
 func (s *Server) batchAckFromResult(ackType, requestID string, result CommitResult) BatchDownloadAck {
 	ack := BatchDownloadAck{
 		Type:      ackType,
@@ -675,6 +897,15 @@ func (s *Server) invalidateResolver() {
 	}
 }
 
+func (s *Server) invalidateDirect() {
+	s.mu.RLock()
+	d := s.linkage.DirectCommitter
+	s.mu.RUnlock()
+	if d != nil {
+		d.Invalidate()
+	}
+}
+
 func (s *Server) computeCapabilities(secret string) []string {
 	caps := []string{CapRequestID}
 	if secret == "" {
@@ -685,6 +916,9 @@ func (s *Server) computeCapabilities(secret string) []string {
 	}
 	if s.committerReady() {
 		caps = append(caps, CapExtractorBatch)
+	}
+	if s.directCommitterReady() {
+		caps = append(caps, CapDownloadBatch)
 	}
 	return caps
 }
@@ -736,6 +970,13 @@ func (s *Server) committerReady() bool {
 	c := s.linkage.Committer
 	s.mu.RUnlock()
 	return c != nil && c.Ready()
+}
+
+func (s *Server) directCommitterReady() bool {
+	s.mu.RLock()
+	d := s.linkage.DirectCommitter
+	s.mu.RUnlock()
+	return d != nil && d.Ready()
 }
 
 func (s *Server) digestsReady() bool {
@@ -835,6 +1076,7 @@ func (s *Server) Stop() {
 	}
 	s.replaceOpContext()
 	s.invalidateResolver()
+	s.invalidateDirect()
 	if s.idemp != nil {
 		s.idemp.clear()
 	}
@@ -912,6 +1154,7 @@ func (s *Server) NotifyUnpaired() {
 
 	s.replaceOpContext()
 	s.invalidateResolver()
+	s.invalidateDirect()
 
 	if s.store != nil {
 		newSecret := s.store.GenerateSecret()

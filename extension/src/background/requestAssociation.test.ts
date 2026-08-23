@@ -120,8 +120,12 @@ describe('requestAssociation', () => {
     const map = createPendingMap<string>()
     const first = deferred<string>()
     const second = deferred<string>()
-    expect(map.add({ id: 'dup', kind: 'rpc', resolve: first.resolve, reject: first.reject })).toBe(true)
-    expect(map.add({ id: 'dup', kind: 'rpc', resolve: second.resolve, reject: second.reject })).toBe(false)
+    expect(map.add({ id: 'dup', kind: 'rpc', resolve: first.resolve, reject: first.reject })).toBe(
+      true,
+    )
+    expect(
+      map.add({ id: 'dup', kind: 'rpc', resolve: second.resolve, reject: second.reject }),
+    ).toBe(false)
     expect(map.size()).toBe(1)
     expect(map.has('dup')).toBe(true)
 
@@ -135,8 +139,81 @@ describe('requestAssociation', () => {
   it('ignores extractor ack whose request_id matches a download pending', () => {
     const map = createPendingMap<string>()
     const download = deferred<string>()
-    map.add({ id: 'shared-id', kind: 'download', resolve: download.resolve, reject: download.reject })
+    map.add({
+      id: 'shared-id',
+      kind: 'download',
+      resolve: download.resolve,
+      reject: download.reject,
+    })
     const routed = map.routeMessage({ type: 'extractor_resolve_ack', request_id: 'shared-id' })
+    expect(routed.kind).toBe('ignored')
+    expect(map.size()).toBe(1)
+  })
+
+  it('routes download_batch_ack by exact request_id for direct_batch pending', async () => {
+    const map = createPendingMap<string>()
+    const batch = deferred<string>()
+    const download = deferred<string>()
+    map.add({ id: 'batch-id', kind: 'direct_batch', resolve: batch.resolve, reject: batch.reject })
+    map.add({ id: 'dl-1', kind: 'download', resolve: download.resolve, reject: download.reject })
+
+    const routed = map.routeMessage({ type: 'download_batch_ack', request_id: 'batch-id' })
+    expect(routed.kind).toBe('typed_ack')
+    if (routed.kind === 'typed_ack') routed.entry.resolve('batch-ok')
+    await expect(batch.promise).resolves.toBe('batch-ok')
+    expect(map.size()).toBe(1)
+
+    const fifo = map.routeMessage({ type: 'download_ack' })
+    expect(fifo.kind).toBe('download_ack')
+    if (fifo.kind === 'download_ack') fifo.entry.resolve('download-ok')
+    await expect(download.promise).resolves.toBe('download-ok')
+  })
+
+  it('routes download_batch_status_ack by exact request_id', async () => {
+    const map = createPendingMap<string>()
+    const status = deferred<string>()
+    map.add({
+      id: 'batch-id',
+      kind: 'direct_batch',
+      resolve: status.resolve,
+      reject: status.reject,
+    })
+    const routed = map.routeMessage({
+      type: 'download_batch_status_ack',
+      request_id: 'batch-id',
+      status: 'pending',
+    })
+    expect(routed.kind).toBe('typed_ack')
+    if (routed.kind === 'typed_ack') routed.entry.resolve('status-ok')
+    await expect(status.promise).resolves.toBe('status-ok')
+  })
+
+  it('does not FIFO-steal a direct_batch pending on download_ack without id', () => {
+    const map = createPendingMap<string>()
+    const batch = deferred<string>()
+    const download = deferred<string>()
+    map.add({ id: 'batch-id', kind: 'direct_batch', resolve: batch.resolve, reject: batch.reject })
+    map.add({ id: 'dl-1', kind: 'download', resolve: download.resolve, reject: download.reject })
+
+    const fifo = map.routeMessage({ type: 'download_ack' })
+    expect(fifo.kind).toBe('download_ack')
+    if (fifo.kind === 'download_ack') {
+      expect(fifo.entry.id).toBe('dl-1')
+    }
+    expect(map.size()).toBe(1)
+    expect(map.has('batch-id')).toBe(true)
+  })
+
+  it('ignores download_batch_ack whose request_id matches a download pending', () => {
+    const map = createPendingMap<string>()
+    const download = deferred<string>()
+    map.add({
+      id: 'shared-id',
+      kind: 'download',
+      resolve: download.resolve,
+      reject: download.reject,
+    })
+    const routed = map.routeMessage({ type: 'download_batch_ack', request_id: 'shared-id' })
     expect(routed.kind).toBe('ignored')
     expect(map.size()).toBe(1)
   })

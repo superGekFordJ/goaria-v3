@@ -63,6 +63,9 @@ func TestConfigureExtensionLinkageAppliesPending(t *testing.T) {
 	if !hasCap(ack.Capabilities, extension.CapExtractorResolve) {
 		t.Fatalf("pending linkage should advertise extractor.resolve, got %v", ack.Capabilities)
 	}
+	if !hasCap(ack.Capabilities, extension.CapDownloadBatch) {
+		t.Fatalf("pending linkage should advertise download.batch, got %v", ack.Capabilities)
+	}
 	if ack.Match == nil {
 		t.Fatal("match missing after pending linkage")
 	}
@@ -81,7 +84,10 @@ func TestConfigureExtensionLinkageNilPendingNoop(t *testing.T) {
 
 	ack := dialAuthAck(t, srv.GetStatus().WSPort, "link-secret")
 	if hasCap(ack.Capabilities, extension.CapExtractorResolve) {
-		t.Fatalf("nil pending must stay request_id-only, got %v", ack.Capabilities)
+		t.Fatalf("nil pending must omit extractor.resolve, got %v", ack.Capabilities)
+	}
+	if !hasCap(ack.Capabilities, extension.CapDownloadBatch) {
+		t.Fatalf("nil pending must still grant download.batch, got %v", ack.Capabilities)
 	}
 	if ack.Match != nil {
 		t.Fatal("match must be omitted without pending linkage")
@@ -147,6 +153,9 @@ func TestPendingLinkageFromDispatcherKeepsDigests(t *testing.T) {
 	if hasCap(ack.Capabilities, extension.CapExtractorBatch) {
 		t.Fatalf("extractor.batch must stay off, got %v", ack.Capabilities)
 	}
+	if !hasCap(ack.Capabilities, extension.CapDownloadBatch) {
+		t.Fatalf("download.batch missing after dispatcher linkage, got %v", ack.Capabilities)
+	}
 	if ack.Match == nil {
 		t.Fatal("match missing after dispatcher linkage")
 	}
@@ -178,6 +187,9 @@ func TestAttachBatchCommitterGrantsExtractorBatchAndKeepsMatch(t *testing.T) {
 	ack := dialAuthAck(t, srv.GetStatus().WSPort, "link-secret")
 	if !hasCap(ack.Capabilities, extension.CapExtractorResolve) || !hasCap(ack.Capabilities, extension.CapExtractorBatch) {
 		t.Fatalf("attach path should advertise resolve+batch, got %v", ack.Capabilities)
+	}
+	if !hasCap(ack.Capabilities, extension.CapDownloadBatch) {
+		t.Fatalf("attach path should advertise download.batch, got %v", ack.Capabilities)
 	}
 	if ack.Match == nil {
 		t.Fatal("match missing after attach; Digests must be preserved")

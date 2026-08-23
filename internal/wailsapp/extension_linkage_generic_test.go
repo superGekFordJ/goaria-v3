@@ -67,6 +67,9 @@ func TestConfigureExtensionLinkageGenericProtocol2KeepsDownloadAndOmitsExtractor
 		hasGenericCapability(ack.Capabilities, extension.CapExtractorBatch) {
 		t.Fatalf("unexpected extractor capabilities: %v", ack.Capabilities)
 	}
+	if !hasGenericCapability(ack.Capabilities, extension.CapDownloadBatch) {
+		t.Fatalf("download.batch missing: %v", ack.Capabilities)
+	}
 	if ack.Match != nil {
 		t.Fatal("generic auth ack must omit match")
 	}

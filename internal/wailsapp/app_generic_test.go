@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"goaria-v3/internal/extension"
 )
 
 func TestGenericNewAppNotNil(t *testing.T) {
@@ -22,10 +24,40 @@ func TestGenericConfigureEmbeddedExtractorDispatcherNoop(t *testing.T) {
 	}
 }
 
-func TestGenericConfigureExtensionLinkageNoop(t *testing.T) {
+func TestGenericConfigureExtensionLinkageAttachesDirect(t *testing.T) {
 	app := NewApp(Options{})
 	ConfigureExtensionLinkage(app, nil)
 	ConfigureExtensionLinkage(nil, nil)
+
+	store := extension.NewSecretStore()
+	store.SetSecret("generic-fixture-secret")
+	srv := extension.NewServer(nil, nil, store)
+	ConfigureExtensionLinkage(app, srv)
+	defer srv.Stop()
+	if err := srv.Start(0); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ack := dialGenericExtensionAuth(t, srv)
+	if !hasGenericCapability(ack.Capabilities, extension.CapDownloadBatch) {
+		t.Fatalf("generic configure must grant download.batch, got %v", ack.Capabilities)
+	}
+	if hasGenericCapability(ack.Capabilities, extension.CapExtractorResolve) ||
+		hasGenericCapability(ack.Capabilities, extension.CapExtractorBatch) {
+		t.Fatalf("generic configure must omit extractor caps, got %v", ack.Capabilities)
+	}
+}
+
+func dialGenericExtensionAuth(t *testing.T, srv *extension.Server) extension.AuthAck {
+	t.Helper()
+	conn := dialGenericExtension(t, srv.GetStatus().WSPort)
+	defer conn.Close()
+	writeGenericJSON(t, conn, extension.AuthMessage{
+		Type:   extension.MsgTypeAuth,
+		Secret: "generic-fixture-secret",
+	})
+	var ack extension.AuthAck
+	readGenericJSON(t, conn, &ack)
+	return ack
 }
 
 func TestGenericHostAuthCallbackMiddlewarePassthrough(t *testing.T) {

@@ -52,6 +52,36 @@ type BatchCommitter interface {
 	HandleCommit(ctx context.Context, env RequestEnvelope, raw json.RawMessage) CommitResult
 }
 
+// DirectCommitResult is the host-side direct-batch outcome. Keys are client_item_id.
+type DirectCommitResult struct {
+	ErrorCode        string
+	Error            string
+	Success          bool
+	GroupKey         string
+	SucceededItemIDs []string
+	DuplicateItemIDs []string
+	ErrorsByItemID   map[string]string
+	SkipIdempotency  bool `json:"-"`
+}
+
+// DirectStatusSnapshot is a URL-free receipt lookup result.
+type DirectStatusSnapshot struct {
+	Status           string
+	Success          bool
+	GroupKey         string
+	SucceededItemIDs []string
+	DuplicateItemIDs []string
+	ErrorsByItemID   map[string]string
+}
+
+// DirectBatchCommitter is the host-side raw-URL batch-commit seam.
+type DirectBatchCommitter interface {
+	Ready() bool
+	HandleDirectBatch(ctx context.Context, env RequestEnvelope, req DirectBatchRequest) DirectCommitResult
+	LookupStatus(requestID string) (DirectStatusSnapshot, bool)
+	Invalidate()
+}
+
 // MatchDigestProvider supplies a per-connection salted ingress digest snapshot.
 // Ready is independent of computeCapabilities; Snapshot is invoked only when
 // extractor.resolve is already in the computed cap list.
@@ -76,8 +106,9 @@ type ErrorRedactor interface {
 
 // Linkage is the optional DI bundle injected via SetLinkage after NewServer.
 type Linkage struct {
-	Resolver  ExtractorResolver
-	Digests   MatchDigestProvider
-	Committer BatchCommitter
-	Redactor  ErrorRedactor
+	Resolver        ExtractorResolver
+	Digests         MatchDigestProvider
+	Committer       BatchCommitter
+	DirectCommitter DirectBatchCommitter
+	Redactor        ErrorRedactor
 }

@@ -1,4 +1,4 @@
-export type PendingKind = 'download' | 'rpc'
+export type PendingKind = 'download' | 'rpc' | 'direct_batch'
 
 export type PendingEntry<T = unknown> = {
   id: string
@@ -23,6 +23,8 @@ const MSG_DOWNLOAD_ACK = 'download_ack'
 const MSG_PROTOCOL_ERROR = 'protocol_error'
 const MSG_EXTRACTOR_RESOLVE_ACK = 'extractor_resolve_ack'
 const MSG_BATCH_DOWNLOAD_ACK = 'batch_download_ack'
+const MSG_DOWNLOAD_BATCH_ACK = 'download_batch_ack'
+const MSG_DOWNLOAD_BATCH_STATUS_ACK = 'download_batch_status_ack'
 
 export function createPendingMap<T = unknown>() {
   const pending = new Map<string, PendingEntry<T>>()
@@ -91,6 +93,16 @@ export function createPendingMap<T = unknown>() {
       if (!id) return { kind: 'ignored' }
       const entry = pending.get(id)
       if (!entry || entry.kind !== 'rpc') {
+        return { kind: 'ignored' }
+      }
+      pending.delete(id)
+      return { kind: 'typed_ack', entry }
+    }
+
+    if (type === MSG_DOWNLOAD_BATCH_ACK || type === MSG_DOWNLOAD_BATCH_STATUS_ACK) {
+      if (!id) return { kind: 'ignored' }
+      const entry = pending.get(id)
+      if (!entry || entry.kind !== 'direct_batch') {
         return { kind: 'ignored' }
       }
       pending.delete(id)
