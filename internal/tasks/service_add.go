@@ -157,11 +157,12 @@ func (s *Service) AddUriFromExtension(req extension.DownloadRequest) (string, er
 	return gid, nil
 }
 
-// ensureRefererHeader adds a Referer header from the download page URL if none is present.
+// ensureRefererHeader adds a Referer header from the download page URL if no Referer line is present.
+// A Referrer line does not count: engines send the header name as given.
 func ensureRefererHeader(headers []string, downloadPage string) []string {
 	for _, h := range headers {
 		name, _, ok := strings.Cut(h, ":")
-		if ok && (strings.EqualFold(strings.TrimSpace(name), "Referer") || strings.EqualFold(strings.TrimSpace(name), "Referrer")) {
+		if ok && strings.EqualFold(strings.TrimSpace(name), "Referer") {
 			return headers
 		}
 	}

@@ -86,6 +86,13 @@ describe('WsClient direct batch', () => {
     )
   })
 
+  it('does not send download_batch_status through sendRequest', async () => {
+    const client = new WsClient()
+    await expect(client.sendRequest('download_batch_status', {}, 'id')).rejects.toThrow(
+      'sendRequest does not send download_batch_status',
+    )
+  })
+
   it('fail-closes sendDirectBatch without download.batch', async () => {
     const client = new WsClient()
     connection.capabilities = ['request_id', 'extractor.batch']

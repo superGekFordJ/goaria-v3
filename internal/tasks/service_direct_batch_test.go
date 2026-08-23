@@ -207,7 +207,7 @@ func TestAddPreparedDirectItems_RefererFromDownloadPage(t *testing.T) {
 	}
 }
 
-func TestAddPreparedDirectItems_ExistingReferrerSkipsInject(t *testing.T) {
+func TestAddPreparedDirectItems_ExistingReferrerStillInjectsReferer(t *testing.T) {
 	cap := &capturingAddURIEngine{}
 	service := setupDiskSpaceAddService(t, cap)
 	idA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -228,14 +228,66 @@ func TestAddPreparedDirectItems_ExistingReferrerSkipsInject(t *testing.T) {
 	if len(opts) != 1 {
 		t.Fatalf("AddUri calls = %d, want 1", len(opts))
 	}
+	hasReferrer := false
+	hasReferer := false
 	refererCount := 0
 	for _, h := range opts[0].Headers {
-		name, _, ok := strings.Cut(h, ":")
-		if ok && (strings.EqualFold(strings.TrimSpace(name), "Referer") || strings.EqualFold(strings.TrimSpace(name), "Referrer")) {
+		name, value, ok := strings.Cut(h, ":")
+		if !ok {
+			continue
+		}
+		n := strings.TrimSpace(name)
+		if strings.EqualFold(n, "Referrer") {
+			hasReferrer = true
+		}
+		if strings.EqualFold(n, "Referer") {
 			refererCount++
+			if strings.Contains(value, "https://page.fixture.invalid/view") {
+				hasReferer = true
+			}
 		}
 	}
-	if refererCount != 1 {
-		t.Fatalf("headers = %#v, want a single Referrer/Referer", opts[0].Headers)
+	if !hasReferrer || !hasReferer || refererCount != 1 {
+		t.Fatalf("headers = %#v, want existing Referrer plus one injected Referer", opts[0].Headers)
+	}
+}
+
+func TestAddPreparedDirectItems_ExistingRefererSkipsInject(t *testing.T) {
+	cap := &capturingAddURIEngine{}
+	service := setupDiskSpaceAddService(t, cap)
+	idA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	_, err := service.AddPreparedDirectItems(context.Background(), PreparedDirectAddRequest{
+		Items: []PreparedDirectAddItem{
+			{
+				ClientItemID: idA,
+				URL:          "https://files.alpha.test/downloads/b.bin",
+				DownloadPage: "https://page.fixture.invalid/view",
+				Headers:      []string{"Referer: https://keep.fixture.invalid/"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddPreparedDirectItems() error = %v", err)
+	}
+	opts := cap.snapshotOptions()
+	if len(opts) != 1 {
+		t.Fatalf("AddUri calls = %d, want 1", len(opts))
+	}
+	refererCount := 0
+	injected := false
+	for _, h := range opts[0].Headers {
+		name, value, ok := strings.Cut(h, ":")
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(name), "Referer") {
+			refererCount++
+			if strings.Contains(value, "https://page.fixture.invalid/view") {
+				injected = true
+			}
+		}
+	}
+	if refererCount != 1 || injected {
+		t.Fatalf("headers = %#v, want the existing Referer only", opts[0].Headers)
 	}
 }

@@ -41,10 +41,6 @@ export function planDirectBatchStatusSend(requestId: string | undefined): PlanDi
   return { id, persist: false }
 }
 
-export function shouldRemoveReplayIdentity(persist: boolean, kind: string): boolean {
-  return persist && kind !== 'direct_batch_status'
-}
-
 export function buildDirectBatchPayload(input: Record<string, unknown>): DirectBatchBuildResult {
   for (const key of Object.keys(input)) {
     if (!TOP_ALLOWED.has(key)) {
@@ -126,14 +122,19 @@ export function buildDirectBatchPayload(input: Record<string, unknown>): DirectB
       out.create_group = true
     }
   }
-  if (typeof input.folder_name === 'string' && input.folder_name.trim() !== '') {
-    if (input.folder_name !== input.folder_name.trim()) {
-      return { error: 'folder_name must be trimmed' }
+  if ('folder_name' in input) {
+    if (typeof input.folder_name !== 'string') {
+      return { error: 'folder_name must be a string' }
     }
-    if (/[\r\n\0]/.test(input.folder_name)) {
-      return { error: 'folder_name must be trimmed' }
+    if (input.folder_name.trim() !== '') {
+      if (input.folder_name !== input.folder_name.trim()) {
+        return { error: 'folder_name must be trimmed' }
+      }
+      if (/[\r\n\0]/.test(input.folder_name)) {
+        return { error: 'folder_name is invalid' }
+      }
+      out.folder_name = input.folder_name
     }
-    out.folder_name = input.folder_name
   }
   return { payload: out }
 }

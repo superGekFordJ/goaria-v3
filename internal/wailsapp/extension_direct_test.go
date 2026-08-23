@@ -142,6 +142,47 @@ func TestDirectBatchAdapter_PendingThenComplete(t *testing.T) {
 	if engine.callCount() != 1 {
 		t.Fatalf("conflict must not AddUri, calls=%d", engine.callCount())
 	}
+
+	emptyDigest := adapter.HandleDirectBatch(context.Background(), extension.RequestEnvelope{RequestID: id}, extension.DirectBatchRequest{
+		RequestID: id,
+		Items:     req.Items,
+	})
+	if emptyDigest.ErrorCode != extension.ErrCodeIdempotencyConflict {
+		t.Fatalf("empty digest = %+v", emptyDigest)
+	}
+	if engine.callCount() != 1 {
+		t.Fatalf("empty digest must not AddUri, calls=%d", engine.callCount())
+	}
+}
+
+func TestDirectBatchAdapter_AbandonPendingLeavesComplete(t *testing.T) {
+	adapter, _ := setupDirectAdapter(t)
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	if !adapter.AdmitPending(id, "digest-a") {
+		t.Fatal("admit")
+	}
+	adapter.storeComplete(id, extension.DirectCommitResult{Success: true, SucceededItemIDs: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, adapter.epoch, adapter.currentGenerationLocked(), "digest-a")
+	adapter.AbandonPending(id)
+	snap, ok := adapter.LookupStatus(id)
+	if !ok || snap.Status != extension.DirectBatchStatusComplete {
+		t.Fatalf("complete must survive AbandonPending, snap=%+v ok=%v", snap, ok)
+	}
+}
+
+func TestDirectBatchAdapter_AdmitPendingOnCompleteDoesNotOverwrite(t *testing.T) {
+	adapter, _ := setupDirectAdapter(t)
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	if !adapter.AdmitPending(id, "digest-a") {
+		t.Fatal("admit")
+	}
+	adapter.storeComplete(id, extension.DirectCommitResult{Success: true, SucceededItemIDs: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, adapter.epoch, adapter.currentGenerationLocked(), "digest-a")
+	if !adapter.AdmitPending(id, "digest-b") {
+		t.Fatal("complete admit must return true so HandleDirectBatch can replay or conflict")
+	}
+	snap, ok := adapter.LookupStatus(id)
+	if !ok || snap.Status != extension.DirectBatchStatusComplete {
+		t.Fatalf("AdmitPending must not flip complete to pending, snap=%+v ok=%v", snap, ok)
+	}
 }
 
 func TestDirectBatchAdapter_InvalidateClearsReceipts(t *testing.T) {

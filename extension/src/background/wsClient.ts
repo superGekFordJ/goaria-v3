@@ -239,6 +239,8 @@ export class WsClient {
 
   /**
    * Send download_batch_status for a previously submitted batch request_id.
+   * Call only after the matching submit ack, timeout, or disconnect — the same
+   * request_id cannot be in-flight as both submit and status.
    * Does not persist replay identity. Fail-closed without download.batch.
    */
   sendDirectBatchStatus(requestId: string): Promise<Record<string, unknown>> {

@@ -571,8 +571,27 @@ func sanitizeErrorForLog(err error, rawURL string) string {
 		return ""
 	}
 	msg := err.Error()
-	if rawURL != "" && strings.Contains(msg, rawURL) {
-		msg = strings.ReplaceAll(msg, rawURL, sanitizeURLForLog(rawURL))
+	sanitized := sanitizeURLForLog(rawURL)
+	if rawURL != "" {
+		msg = strings.ReplaceAll(msg, rawURL, sanitized)
+	}
+	parsed, perr := url.Parse(rawURL)
+	if perr != nil {
+		return msg
+	}
+	if parsed.User != nil {
+		if u := parsed.User.String(); u != "" {
+			msg = strings.ReplaceAll(msg, u, "[redacted]")
+		}
+		if p, ok := parsed.User.Password(); ok && p != "" {
+			msg = strings.ReplaceAll(msg, p, "[redacted]")
+		}
+	}
+	if q := parsed.RawQuery; q != "" {
+		msg = strings.ReplaceAll(msg, q, "[redacted]")
+	}
+	if f := parsed.Fragment; f != "" {
+		msg = strings.ReplaceAll(msg, f, "[redacted]")
 	}
 	return msg
 }

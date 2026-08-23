@@ -59,7 +59,16 @@ func (a *directBatchAdapter) AdmitPending(requestID, digest string) bool {
 }
 
 func (a *directBatchAdapter) AbandonPending(requestID string) {
-	a.deleteReceipt(requestID)
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	rec, ok := a.receipts[requestID]
+	if !ok || !rec.pending {
+		return
+	}
+	delete(a.receipts, requestID)
 }
 
 func (a *directBatchAdapter) HandleDirectBatch(ctx context.Context, env extension.RequestEnvelope, req extension.DirectBatchRequest) extension.DirectCommitResult {
@@ -79,7 +88,7 @@ func (a *directBatchAdapter) HandleDirectBatch(ctx context.Context, env extensio
 
 	defer func() {
 		if rec := recover(); rec != nil {
-			a.deleteReceipt(env.RequestID)
+			a.AbandonPending(env.RequestID)
 			panic(rec)
 		}
 	}()
@@ -87,7 +96,7 @@ func (a *directBatchAdapter) HandleDirectBatch(ctx context.Context, env extensio
 	epoch, generation, digest, state := a.receiptState(env.RequestID)
 	switch state {
 	case "complete":
-		if digest != "" && req.PayloadDigest != "" && digest != req.PayloadDigest {
+		if digest == "" || digest != req.PayloadDigest {
 			return extension.DirectCommitResult{ErrorCode: extension.ErrCodeIdempotencyConflict}
 		}
 		return a.cloneStoredResult(env.RequestID)
@@ -284,6 +293,7 @@ func (a *directBatchAdapter) admitPendingLocked(requestID, digest string) bool {
 			return false
 		}
 		if time.Since(rec.stored) < directReceiptTTL {
+			// Live complete: allow HandleDirectBatch to replay or conflict. Do not overwrite.
 			return true
 		}
 		delete(a.receipts, requestID)

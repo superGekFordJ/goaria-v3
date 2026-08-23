@@ -245,6 +245,93 @@ describe('requestAssociation', () => {
     expect(map.has('batch-id')).toBe(true)
   })
 
+  it('ignores late download_batch_status_ack while submit is pending', () => {
+    const map = createPendingMap<string>()
+    const batch = deferred<string>()
+    map.add({ id: 'batch-id', kind: 'direct_batch', resolve: batch.resolve, reject: batch.reject })
+    const late = map.routeMessage({
+      type: 'download_batch_status_ack',
+      request_id: 'batch-id',
+      status: 'complete',
+    })
+    expect(late.kind).toBe('ignored')
+    expect(map.size()).toBe(1)
+  })
+
+  it('ignores download_ack whose request_id matches a status pending', () => {
+    const map = createPendingMap<string>()
+    const status = deferred<string>()
+    map.add({
+      id: 'batch-id',
+      kind: 'direct_batch_status',
+      resolve: status.resolve,
+      reject: status.reject,
+    })
+    const routed = map.routeMessage({ type: 'download_ack', request_id: 'batch-id' })
+    expect(routed.kind).toBe('ignored')
+    expect(map.size()).toBe(1)
+  })
+
+  it('ignores FIFO download_ack when only a direct_batch pending exists', () => {
+    const map = createPendingMap<string>()
+    const batch = deferred<string>()
+    map.add({ id: 'batch-id', kind: 'direct_batch', resolve: batch.resolve, reject: batch.reject })
+    const fifo = map.routeMessage({ type: 'download_ack' })
+    expect(fifo.kind).toBe('ignored')
+    expect(map.size()).toBe(1)
+  })
+
+  it('ignores download_batch acks without request_id', () => {
+    const map = createPendingMap<string>()
+    const batch = deferred<string>()
+    const status = deferred<string>()
+    map.add({ id: 'batch-id', kind: 'direct_batch', resolve: batch.resolve, reject: batch.reject })
+    map.add({
+      id: 'status-id',
+      kind: 'direct_batch_status',
+      resolve: status.resolve,
+      reject: status.reject,
+    })
+    expect(map.routeMessage({ type: 'download_batch_ack' }).kind).toBe('ignored')
+    expect(map.routeMessage({ type: 'download_batch_status_ack' }).kind).toBe('ignored')
+    expect(map.size()).toBe(2)
+  })
+
+  it('ignores protocol_error while a status wait is pending', () => {
+    const map = createPendingMap<string>()
+    const status = deferred<string>()
+    map.add({
+      id: 'batch-id',
+      kind: 'direct_batch_status',
+      resolve: status.resolve,
+      reject: status.reject,
+    })
+    const routed = map.routeMessage({
+      type: 'protocol_error',
+      request_id: 'batch-id',
+      error_code: 'unsupported',
+    })
+    expect(routed.kind).toBe('ignored')
+    expect(map.size()).toBe(1)
+  })
+
+  it('still delivers protocol_error to a direct_batch submit wait', async () => {
+    const map = createPendingMap<string>()
+    const batch = deferred<string>()
+    map.add({ id: 'batch-id', kind: 'direct_batch', resolve: batch.resolve, reject: batch.reject })
+    const routed = map.routeMessage({
+      type: 'protocol_error',
+      request_id: 'batch-id',
+      error_code: 'unsupported',
+    })
+    expect(routed.kind).toBe('protocol_error')
+    if (routed.kind === 'protocol_error') {
+      routed.entry.reject(new Error('unsupported'))
+    }
+    await expect(batch.promise).rejects.toThrow('unsupported')
+    expect(map.size()).toBe(0)
+  })
+
   it('ignores download_batch_ack whose request_id matches a download pending', () => {
     const map = createPendingMap<string>()
     const download = deferred<string>()

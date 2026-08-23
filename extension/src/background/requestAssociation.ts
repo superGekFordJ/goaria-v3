@@ -84,8 +84,11 @@ export function createPendingMap<T = unknown>() {
 
     if (type === MSG_PROTOCOL_ERROR) {
       if (!id) return { kind: 'ignored' }
-      const entry = completeById(id)
-      if (!entry) return { kind: 'ignored' }
+      const entry = pending.get(id)
+      if (!entry || entry.kind === 'direct_batch_status') {
+        return { kind: 'ignored' }
+      }
+      pending.delete(id)
       return { kind: 'protocol_error', entry }
     }
 

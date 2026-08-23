@@ -7,7 +7,6 @@ import {
   DIRECT_BATCH_TYPE,
   planDirectBatchSend,
   planDirectBatchStatusSend,
-  shouldRemoveReplayIdentity,
 } from './directBatchRpc'
 
 const itemId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
@@ -128,23 +127,28 @@ describe('buildDirectBatchPayload', () => {
         folder_name: ' Album',
       }),
     ).toEqual({ error: 'folder_name must be trimmed' })
+  })
+
+  it('refuses folder_name with embedded control characters', () => {
     expect(
       buildDirectBatchPayload({
         items: [{ client_item_id: itemId, url }],
-        folder_name: 'Album\n',
+        folder_name: 'Alb\num',
       }),
-    ).toEqual({ error: 'folder_name must be trimmed' })
+    ).toEqual({ error: 'folder_name is invalid' })
+  })
+
+  it('refuses a non-string folder_name', () => {
+    expect(
+      buildDirectBatchPayload({
+        items: [{ client_item_id: itemId, url }],
+        folder_name: 1,
+      }),
+    ).toEqual({ error: 'folder_name must be a string' })
   })
 
   it('freezes allowlists', () => {
     expect(Object.isFrozen(DIRECT_BATCH_TOP_ALLOWLIST)).toBe(true)
     expect(Object.isFrozen(DIRECT_BATCH_ITEM_ALLOWLIST)).toBe(true)
-  })
-})
-
-describe('shouldRemoveReplayIdentity', () => {
-  it('keeps submit replay when a status send times out', () => {
-    expect(shouldRemoveReplayIdentity(true, 'direct_batch')).toBe(true)
-    expect(shouldRemoveReplayIdentity(false, 'direct_batch_status')).toBe(false)
   })
 })

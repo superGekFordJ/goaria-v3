@@ -249,22 +249,37 @@ func TestDownloadBatchStatus_NotFoundAfterInvalidate(t *testing.T) {
 	defer srv.Stop()
 	startSrv(t, srv)
 	conn := dialAuthed(t, srv, "prod-secret")
-	defer conn.Close()
 
-	direct.Invalidate()
 	writeDirectBatchStatus(t, conn, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 	raw := readRaw(t, conn, 2*time.Second)
 	var ack DirectBatchStatusAck
 	if err := json.Unmarshal(raw, &ack); err != nil {
 		t.Fatalf("status ack: %v raw=%s", err, raw)
 	}
-	if ack.Status != DirectBatchStatusNotFound {
-		t.Fatalf("want not_found after invalidate, got %+v raw=%s", ack, raw)
+	if ack.Status != DirectBatchStatusComplete {
+		t.Fatalf("pre-unpair status = %+v raw=%s", ack, raw)
 	}
 
 	srv.NotifyUnpaired()
-	if direct.invalidateCalls.Load() < 2 {
+	if direct.invalidateCalls.Load() < 1 {
 		t.Fatalf("unpair must Invalidate Direct receipts, calls=%d", direct.invalidateCalls.Load())
+	}
+	_ = conn.Close()
+
+	newSecret := store.GetSecret()
+	if newSecret == "" {
+		t.Fatal("expected a secret after unpair")
+	}
+	conn2 := dialAuthed(t, srv, newSecret)
+	defer conn2.Close()
+	writeDirectBatchStatus(t, conn2, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	raw2 := readRaw(t, conn2, 2*time.Second)
+	var ack2 DirectBatchStatusAck
+	if err := json.Unmarshal(raw2, &ack2); err != nil {
+		t.Fatalf("post-unpair status ack: %v raw=%s", err, raw2)
+	}
+	if ack2.Status != DirectBatchStatusNotFound {
+		t.Fatalf("want not_found after unpair wipe, got %+v raw=%s", ack2, raw2)
 	}
 }
 
@@ -334,6 +349,30 @@ func TestDirectBatchStatusAck_CompleteKeepsPartitions(t *testing.T) {
 	}
 	if !bytes.Contains(data, []byte(`"succeeded_item_ids":[]`)) || !bytes.Contains(data, []byte(`"duplicate_item_ids":[]`)) {
 		t.Fatalf("complete partitions must stay arrays, got %s", data)
+	}
+}
+
+func TestDirectBatchStatusAck_CompleteSuccessEmptyErrorsObject(t *testing.T) {
+	data, err := json.Marshal(DirectBatchStatusAck{
+		Type:             MsgTypeDownloadBatchStatusAck,
+		RequestID:        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		Status:           DirectBatchStatusComplete,
+		Success:          true,
+		SucceededItemIDs: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+		DuplicateItemIDs: []string{},
+		ErrorsByItemID:   map[string]string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"success":true`)) {
+		t.Fatalf("complete success must keep success:true, got %s", data)
+	}
+	if !bytes.Contains(data, []byte(`"errors_by_item_id":{}`)) {
+		t.Fatalf("complete success must emit empty errors object, got %s", data)
+	}
+	if bytes.Contains(data, []byte(`"errors_by_item_id":null`)) {
+		t.Fatalf("errors_by_item_id must not be null: %s", data)
 	}
 }
 

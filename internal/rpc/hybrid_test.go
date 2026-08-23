@@ -257,6 +257,25 @@ func TestHybridEngine_FallbackLogOmitsUserinfoAndQuery(t *testing.T) {
 	}
 }
 
+func TestHybridEngine_FallbackLogRedactsQueryEvenWithoutFullURL(t *testing.T) {
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	rawURL := "https://user:secret@cdn.fixture.invalid/file.bin?token=abc#frag"
+	aria2 := &mockEngine{addResultGid: "ar_fallback_task"}
+	surge := &mockEngine{addResultErr: errors.New("token=abc rejected for user:secret")}
+	hybrid := NewHybridEngine(aria2, surge)
+	if _, err := hybrid.AddUri(rawURL, AddURIOptions{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	logged := buf.String()
+	if strings.Contains(logged, "token=abc") || strings.Contains(logged, "user:secret") {
+		t.Fatalf("query or userinfo leaked from error text: %s", logged)
+	}
+}
+
 func TestHybridEngine_DiskSpaceNoFallback(t *testing.T) {
 	cases := []struct {
 		name string
