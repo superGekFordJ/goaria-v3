@@ -239,9 +239,9 @@ func TestHybridEngine_FallbackLogOmitsUserinfoAndQuery(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(prev) })
 
 	aria2 := &mockEngine{addResultGid: "ar_fallback_task"}
-	surge := &mockEngine{addResultErr: errors.New("unsupported range or network error")}
-	hybrid := NewHybridEngine(aria2, surge)
 	rawURL := "https://user:secret@cdn.fixture.invalid/file.bin?token=abc#frag"
+	surge := &mockEngine{addResultErr: fmt.Errorf("GET %s failed", rawURL)}
+	hybrid := NewHybridEngine(aria2, surge)
 	if _, err := hybrid.AddUri(rawURL, AddURIOptions{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -161,7 +161,7 @@ func (s *Service) AddUriFromExtension(req extension.DownloadRequest) (string, er
 func ensureRefererHeader(headers []string, downloadPage string) []string {
 	for _, h := range headers {
 		name, _, ok := strings.Cut(h, ":")
-		if ok && strings.EqualFold(strings.TrimSpace(name), "Referer") {
+		if ok && (strings.EqualFold(strings.TrimSpace(name), "Referer") || strings.EqualFold(strings.TrimSpace(name), "Referrer")) {
 			return headers
 		}
 	}

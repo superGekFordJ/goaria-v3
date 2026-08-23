@@ -56,7 +56,7 @@ func (h *HybridEngine) AddUri(url string, options AddURIOptions) (string, error)
 			// and a doomed fallback task would burn the remaining free bytes.
 			return "", err
 		}
-		log.Printf("[Hybrid] Surge failed to add URI %s: %v, falling back to Aria2", sanitizeURLForLog(url), err)
+		log.Printf("[Hybrid] Surge failed to add URI %s: %v, falling back to Aria2", sanitizeURLForLog(url), sanitizeErrorForLog(err, url))
 	}
 
 	// Aria2 hard limit: max-connection-per-server = 16.
@@ -564,4 +564,15 @@ func sanitizeURLForLog(raw string) string {
 		return "[redacted]"
 	}
 	return scheme + "://" + host + path
+}
+
+func sanitizeErrorForLog(err error, rawURL string) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if rawURL != "" && strings.Contains(msg, rawURL) {
+		msg = strings.ReplaceAll(msg, rawURL, sanitizeURLForLog(rawURL))
+	}
+	return msg
 }

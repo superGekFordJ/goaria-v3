@@ -77,6 +77,8 @@ type DirectStatusSnapshot struct {
 // DirectBatchCommitter is the host-side raw-URL batch-commit seam.
 type DirectBatchCommitter interface {
 	Ready() bool
+	AdmitPending(requestID, digest string) bool
+	AbandonPending(requestID string)
 	HandleDirectBatch(ctx context.Context, env RequestEnvelope, req DirectBatchRequest) DirectCommitResult
 	LookupStatus(requestID string) (DirectStatusSnapshot, bool)
 	Invalidate()

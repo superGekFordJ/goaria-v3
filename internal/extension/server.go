@@ -634,6 +634,19 @@ func (s *Server) dispatchDirectBatch(
 		return
 	}
 
+	parsed.PayloadDigest = digest
+	s.mu.RLock()
+	direct := s.linkage.DirectCommitter
+	s.mu.RUnlock()
+	if direct != nil && !direct.AdmitPending(reqID, digest) {
+		s.releaseGate(false)
+		sc.releaseInFlight()
+		busy := marshalBusyAck(ackType, reqID)
+		s.idemp.abandon(gen, env.Type, reqID, digest, busy)
+		_ = sc.writeRaw(busy)
+		return
+	}
+
 	go func() {
 		defer s.releaseGate(false)
 		defer sc.releaseInFlight()
@@ -642,6 +655,9 @@ func (s *Server) dispatchDirectBatch(
 				func() {
 					defer func() { _ = recover() }()
 					log.Printf("[Extension] async handler panic: %T", rec)
+					if direct != nil {
+						direct.AbandonPending(reqID)
+					}
 					busy := marshalBusyAck(ackType, reqID)
 					s.idemp.abandon(gen, env.Type, reqID, digest, busy)
 					if connCtx.Err() == nil {
@@ -652,6 +668,9 @@ func (s *Server) dispatchDirectBatch(
 		}()
 		result := s.runDirectBatch(opCtx, RequestEnvelope{Type: env.Type, RequestID: parsed.RequestID}, parsed)
 		if opCtx.Err() != nil {
+			if direct != nil && (result.SkipIdempotency || result.ErrorCode == ErrCodeBusy) {
+				direct.AbandonPending(reqID)
+			}
 			busy := marshalBusyAck(ackType, reqID)
 			s.idemp.abandon(gen, env.Type, reqID, digest, busy)
 			if connCtx.Err() == nil {
@@ -765,10 +784,10 @@ func marshalDirectBatchResult(ackType, requestID string, result DirectCommitResu
 	if ack.DuplicateItemIDs == nil {
 		ack.DuplicateItemIDs = []string{}
 	}
-	if ack.ErrorsByItemID == nil {
-		ack.ErrorsByItemID = map[string]string{}
-	} else {
+	if len(ack.ErrorsByItemID) > 0 {
 		ack.ErrorsByItemID = SanitizeCommitItemErrors(ack.ErrorsByItemID)
+	} else {
+		ack.ErrorsByItemID = map[string]string{}
 	}
 	return json.Marshal(ack)
 }

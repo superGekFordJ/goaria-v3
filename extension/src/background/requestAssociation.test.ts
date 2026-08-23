@@ -174,7 +174,7 @@ describe('requestAssociation', () => {
     const status = deferred<string>()
     map.add({
       id: 'batch-id',
-      kind: 'direct_batch',
+      kind: 'direct_batch_status',
       resolve: status.resolve,
       reject: status.reject,
     })
@@ -186,6 +186,47 @@ describe('requestAssociation', () => {
     expect(routed.kind).toBe('typed_ack')
     if (routed.kind === 'typed_ack') routed.entry.resolve('status-ok')
     await expect(status.promise).resolves.toBe('status-ok')
+  })
+
+  it('does not complete a status wait with a late download_batch_ack', async () => {
+    const map = createPendingMap<string>()
+    const status = deferred<string>()
+    map.add({
+      id: 'batch-id',
+      kind: 'direct_batch_status',
+      resolve: status.resolve,
+      reject: status.reject,
+    })
+    const late = map.routeMessage({
+      type: 'download_batch_ack',
+      request_id: 'batch-id',
+      success: true,
+    })
+    expect(late.kind).toBe('ignored')
+    expect(map.size()).toBe(1)
+
+    const routed = map.routeMessage({
+      type: 'download_batch_status_ack',
+      request_id: 'batch-id',
+      status: 'complete',
+    })
+    expect(routed.kind).toBe('typed_ack')
+    if (routed.kind === 'typed_ack') routed.entry.resolve('status-ok')
+    await expect(status.promise).resolves.toBe('status-ok')
+  })
+
+  it('ignores download_ack whose request_id matches a direct_batch pending', () => {
+    const map = createPendingMap<string>()
+    const batch = deferred<string>()
+    map.add({
+      id: 'shared-id',
+      kind: 'direct_batch',
+      resolve: batch.resolve,
+      reject: batch.reject,
+    })
+    const routed = map.routeMessage({ type: 'download_ack', request_id: 'shared-id' })
+    expect(routed.kind).toBe('ignored')
+    expect(map.size()).toBe(1)
   })
 
   it('does not FIFO-steal a direct_batch pending on download_ack without id', () => {

@@ -19,6 +19,7 @@ const (
 type directReceipt struct {
 	generation uint64
 	epoch      uint64
+	digest     string
 	pending    bool
 	stored     time.Time
 	result     extension.DirectCommitResult
@@ -48,24 +49,62 @@ func (a *directBatchAdapter) Ready() bool {
 	return a != nil && a.app != nil
 }
 
-func (a *directBatchAdapter) HandleDirectBatch(ctx context.Context, env extension.RequestEnvelope, req extension.DirectBatchRequest) extension.DirectCommitResult {
-	if a == nil || !a.Ready() {
-		return extension.DirectCommitResult{ErrorCode: extension.ErrCodeUnavailable, SkipIdempotency: true}
+func (a *directBatchAdapter) AdmitPending(requestID, digest string) bool {
+	if a == nil {
+		return false
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.admitPendingLocked(requestID, digest)
+}
 
+func (a *directBatchAdapter) AbandonPending(requestID string) {
+	a.deleteReceipt(requestID)
+}
+
+func (a *directBatchAdapter) HandleDirectBatch(ctx context.Context, env extension.RequestEnvelope, req extension.DirectBatchRequest) extension.DirectCommitResult {
 	empty := extension.DirectCommitResult{
 		SucceededItemIDs: []string{},
 		DuplicateItemIDs: []string{},
 		ErrorsByItemID:   map[string]string{},
 	}
-
-	if !a.admitPending(env.RequestID) {
-		empty.ErrorCode = extension.ErrCodeBusy
+	if a == nil || !a.Ready() {
+		empty.ErrorCode = extension.ErrCodeUnavailable
 		empty.SkipIdempotency = true
 		return empty
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			a.deleteReceipt(env.RequestID)
+			panic(rec)
+		}
+	}()
+
+	epoch, generation, digest, state := a.receiptState(env.RequestID)
+	switch state {
+	case "complete":
+		if digest != "" && req.PayloadDigest != "" && digest != req.PayloadDigest {
+			return extension.DirectCommitResult{ErrorCode: extension.ErrCodeIdempotencyConflict}
+		}
+		return a.cloneStoredResult(env.RequestID)
+	case "pending":
+		// Submit on the in-flight marker written at admission.
+	default:
+		if !a.AdmitPending(env.RequestID, req.PayloadDigest) {
+			empty.ErrorCode = extension.ErrCodeBusy
+			empty.SkipIdempotency = true
+			return empty
+		}
+		epoch, generation, digest, state = a.receiptState(env.RequestID)
+		if state != "pending" {
+			empty.ErrorCode = extension.ErrCodeBusy
+			empty.SkipIdempotency = true
+			return empty
+		}
 	}
 
 	svc := a.app.taskService()
@@ -97,6 +136,12 @@ func (a *directBatchAdapter) HandleDirectBatch(ctx context.Context, env extensio
 		CreateGroup: req.CreateGroup,
 		FolderName:  req.FolderName,
 	})
+	if ctx.Err() != nil {
+		a.deleteReceipt(env.RequestID)
+		empty.ErrorCode = extension.ErrCodeBusy
+		empty.SkipIdempotency = true
+		return empty
+	}
 	if err != nil {
 		a.deleteReceipt(env.RequestID)
 		empty.SkipIdempotency = true
@@ -147,7 +192,11 @@ func (a *directBatchAdapter) HandleDirectBatch(ctx context.Context, env extensio
 	if len(added.Groups) > 0 {
 		result.GroupKey = added.Groups[0].ID
 	}
-	a.storeComplete(env.RequestID, result)
+	storedDigest := digest
+	if storedDigest == "" {
+		storedDigest = req.PayloadDigest
+	}
+	a.storeComplete(env.RequestID, result, epoch, generation, storedDigest)
 	return result
 }
 
@@ -189,10 +238,56 @@ func (a *directBatchAdapter) Invalidate() {
 	a.receipts = make(map[string]directReceipt)
 }
 
-func (a *directBatchAdapter) admitPending(requestID string) bool {
+func (a *directBatchAdapter) receiptState(requestID string) (epoch, generation uint64, digest, state string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.pruneLocked()
+	rec, ok := a.receipts[requestID]
+	if !ok || rec.epoch != a.epoch || rec.generation != a.currentGenerationLocked() {
+		return 0, 0, "", "miss"
+	}
+	if rec.pending {
+		return rec.epoch, rec.generation, rec.digest, "pending"
+	}
+	if time.Since(rec.stored) >= directReceiptTTL {
+		delete(a.receipts, requestID)
+		return 0, 0, "", "miss"
+	}
+	return rec.epoch, rec.generation, rec.digest, "complete"
+}
+
+func (a *directBatchAdapter) cloneStoredResult(requestID string) extension.DirectCommitResult {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	rec := a.receipts[requestID]
+	cloned := rec.result
+	cloned.SkipIdempotency = false
+	cloned.SucceededItemIDs = append([]string{}, rec.result.SucceededItemIDs...)
+	cloned.DuplicateItemIDs = append([]string{}, rec.result.DuplicateItemIDs...)
+	cloned.ErrorsByItemID = copyStringMap(rec.result.ErrorsByItemID)
+	if cloned.SucceededItemIDs == nil {
+		cloned.SucceededItemIDs = []string{}
+	}
+	if cloned.DuplicateItemIDs == nil {
+		cloned.DuplicateItemIDs = []string{}
+	}
+	if cloned.ErrorsByItemID == nil {
+		cloned.ErrorsByItemID = map[string]string{}
+	}
+	return cloned
+}
+
+func (a *directBatchAdapter) admitPendingLocked(requestID, digest string) bool {
+	a.pruneLocked()
+	if rec, ok := a.receipts[requestID]; ok && rec.epoch == a.epoch && rec.generation == a.currentGenerationLocked() {
+		if rec.pending {
+			return false
+		}
+		if time.Since(rec.stored) < directReceiptTTL {
+			return true
+		}
+		delete(a.receipts, requestID)
+	}
 	if len(a.receipts) >= maxDirectReceipts {
 		if !a.evictOldestCompletedLocked() {
 			return false
@@ -201,23 +296,40 @@ func (a *directBatchAdapter) admitPending(requestID string) bool {
 	a.receipts[requestID] = directReceipt{
 		generation: a.currentGenerationLocked(),
 		epoch:      a.epoch,
+		digest:     digest,
 		pending:    true,
 		stored:     time.Now(),
 	}
 	return true
 }
 
-func (a *directBatchAdapter) storeComplete(requestID string, result extension.DirectCommitResult) {
+func (a *directBatchAdapter) storeComplete(requestID string, result extension.DirectCommitResult, epoch, generation uint64, digest string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	rec, ok := a.receipts[requestID]
+	if !ok || !rec.pending {
+		return
+	}
+	if rec.epoch != epoch || rec.generation != generation {
+		return
+	}
+	if rec.epoch != a.epoch || rec.generation != a.currentGenerationLocked() {
+		delete(a.receipts, requestID)
+		return
+	}
 	cloned := result
 	cloned.SkipIdempotency = false
 	cloned.SucceededItemIDs = append([]string{}, result.SucceededItemIDs...)
 	cloned.DuplicateItemIDs = append([]string{}, result.DuplicateItemIDs...)
 	cloned.ErrorsByItemID = copyStringMap(result.ErrorsByItemID)
+	storedDigest := digest
+	if storedDigest == "" {
+		storedDigest = rec.digest
+	}
 	a.receipts[requestID] = directReceipt{
-		generation: a.currentGenerationLocked(),
-		epoch:      a.epoch,
+		generation: rec.generation,
+		epoch:      rec.epoch,
+		digest:     storedDigest,
 		pending:    false,
 		stored:     time.Now(),
 		result:     cloned,
@@ -225,6 +337,9 @@ func (a *directBatchAdapter) storeComplete(requestID string, result extension.Di
 }
 
 func (a *directBatchAdapter) deleteReceipt(requestID string) {
+	if a == nil {
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.receipts, requestID)

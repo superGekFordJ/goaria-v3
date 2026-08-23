@@ -1,5 +1,7 @@
 package extension
 
+import "encoding/json"
+
 const (
 	DefaultWSPort      = 16801
 	PairPathPrefix     = "/__goaria_pair__/"
@@ -161,11 +163,12 @@ type DirectBatchItem struct {
 
 // DirectBatchRequest is the parsed download_batch payload.
 type DirectBatchRequest struct {
-	Type        string
-	RequestID   string
-	Items       []DirectBatchItem
-	CreateGroup bool
-	FolderName  string
+	Type          string
+	RequestID     string
+	Items         []DirectBatchItem
+	CreateGroup   bool
+	FolderName    string
+	PayloadDigest string
 }
 
 // DirectBatchAck is the download_batch success/partial wire ack.
@@ -191,6 +194,59 @@ type DirectBatchStatusAck struct {
 	DuplicateItemIDs []string          `json:"duplicate_item_ids,omitempty"`
 	ErrorsByItemID   map[string]string `json:"errors_by_item_id,omitempty"`
 	ErrorCode        string            `json:"error_code,omitempty"`
+}
+
+func (a DirectBatchStatusAck) MarshalJSON() ([]byte, error) {
+	if a.Status != DirectBatchStatusComplete {
+		type compactWire struct {
+			Type      string `json:"type"`
+			RequestID string `json:"request_id,omitempty"`
+			Status    string `json:"status,omitempty"`
+			ErrorCode string `json:"error_code,omitempty"`
+		}
+		return json.Marshal(compactWire{
+			Type:      a.Type,
+			RequestID: a.RequestID,
+			Status:    a.Status,
+			ErrorCode: a.ErrorCode,
+		})
+	}
+	succeeded := a.SucceededItemIDs
+	if succeeded == nil {
+		succeeded = []string{}
+	}
+	duplicates := a.DuplicateItemIDs
+	if duplicates == nil {
+		duplicates = []string{}
+	}
+	errorsByItem := a.ErrorsByItemID
+	if len(errorsByItem) > 0 {
+		errorsByItem = SanitizeCommitItemErrors(errorsByItem)
+	} else {
+		errorsByItem = map[string]string{}
+	}
+	type completeWire struct {
+		Type             string            `json:"type"`
+		RequestID        string            `json:"request_id,omitempty"`
+		Status           string            `json:"status"`
+		Success          bool              `json:"success"`
+		GroupKey         string            `json:"group_key,omitempty"`
+		SucceededItemIDs []string          `json:"succeeded_item_ids"`
+		DuplicateItemIDs []string          `json:"duplicate_item_ids"`
+		ErrorsByItemID   map[string]string `json:"errors_by_item_id"`
+		ErrorCode        string            `json:"error_code,omitempty"`
+	}
+	return json.Marshal(completeWire{
+		Type:             a.Type,
+		RequestID:        a.RequestID,
+		Status:           a.Status,
+		Success:          a.Success,
+		GroupKey:         a.GroupKey,
+		SucceededItemIDs: succeeded,
+		DuplicateItemIDs: duplicates,
+		ErrorsByItemID:   errorsByItem,
+		ErrorCode:        a.ErrorCode,
+	})
 }
 
 // BatchDownloadAck is the batch_download success/partial wire ack.

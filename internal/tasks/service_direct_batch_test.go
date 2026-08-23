@@ -206,3 +206,36 @@ func TestAddPreparedDirectItems_RefererFromDownloadPage(t *testing.T) {
 		t.Fatalf("headers = %#v, want Referer from download_page", opts[0].Headers)
 	}
 }
+
+func TestAddPreparedDirectItems_ExistingReferrerSkipsInject(t *testing.T) {
+	cap := &capturingAddURIEngine{}
+	service := setupDiskSpaceAddService(t, cap)
+	idA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	_, err := service.AddPreparedDirectItems(context.Background(), PreparedDirectAddRequest{
+		Items: []PreparedDirectAddItem{
+			{
+				ClientItemID: idA,
+				URL:          "https://files.alpha.test/downloads/b.bin",
+				DownloadPage: "https://page.fixture.invalid/view",
+				Headers:      []string{"Referrer: https://keep.fixture.invalid/"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddPreparedDirectItems() error = %v", err)
+	}
+	opts := cap.snapshotOptions()
+	if len(opts) != 1 {
+		t.Fatalf("AddUri calls = %d, want 1", len(opts))
+	}
+	refererCount := 0
+	for _, h := range opts[0].Headers {
+		name, _, ok := strings.Cut(h, ":")
+		if ok && (strings.EqualFold(strings.TrimSpace(name), "Referer") || strings.EqualFold(strings.TrimSpace(name), "Referrer")) {
+			refererCount++
+		}
+	}
+	if refererCount != 1 {
+		t.Fatalf("headers = %#v, want a single Referrer/Referer", opts[0].Headers)
+	}
+}

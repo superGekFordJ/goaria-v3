@@ -1,9 +1,13 @@
 export const DIRECT_BATCH_TYPE = 'download_batch'
 export const DIRECT_BATCH_STATUS_TYPE = 'download_batch_status'
 
-export const DIRECT_BATCH_TOP_ALLOWLIST = ['items', 'create_group', 'folder_name'] as const
+export const DIRECT_BATCH_TOP_ALLOWLIST = Object.freeze([
+  'items',
+  'create_group',
+  'folder_name',
+] as const)
 
-export const DIRECT_BATCH_ITEM_ALLOWLIST = [
+export const DIRECT_BATCH_ITEM_ALLOWLIST = Object.freeze([
   'client_item_id',
   'url',
   'final_url',
@@ -12,7 +16,7 @@ export const DIRECT_BATCH_ITEM_ALLOWLIST = [
   'skip_head_probe',
   'filename',
   'download_page',
-] as const
+] as const)
 
 export type DirectBatchBuildResult = { payload: Record<string, unknown> } | { error: string }
 
@@ -35,6 +39,10 @@ export function planDirectBatchStatusSend(requestId: string | undefined): PlanDi
     return { error: 'request_id is required' }
   }
   return { id, persist: false }
+}
+
+export function shouldRemoveReplayIdentity(persist: boolean, kind: string): boolean {
+  return persist && kind !== 'direct_batch_status'
 }
 
 export function buildDirectBatchPayload(input: Record<string, unknown>): DirectBatchBuildResult {
@@ -119,6 +127,12 @@ export function buildDirectBatchPayload(input: Record<string, unknown>): DirectB
     }
   }
   if (typeof input.folder_name === 'string' && input.folder_name.trim() !== '') {
+    if (input.folder_name !== input.folder_name.trim()) {
+      return { error: 'folder_name must be trimmed' }
+    }
+    if (/[\r\n\0]/.test(input.folder_name)) {
+      return { error: 'folder_name must be trimmed' }
+    }
     out.folder_name = input.folder_name
   }
   return { payload: out }

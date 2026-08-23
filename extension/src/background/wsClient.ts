@@ -35,7 +35,6 @@ import {
   MSG_TYPE_BATCH_DOWNLOAD_ACK,
   MSG_TYPE_DOWNLOAD,
   MSG_TYPE_DOWNLOAD_BATCH_ACK,
-  MSG_TYPE_DOWNLOAD_BATCH_STATUS_ACK,
   MSG_TYPE_EXTRACTOR_RESOLVE,
   MSG_TYPE_EXTRACTOR_RESOLVE_ACK,
   MSG_TYPE_PROTOCOL_ERROR,
@@ -336,7 +335,9 @@ export class WsClient {
     }
     if (this.ws !== socket || socket.readyState !== WebSocket.OPEN) {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        void this.replay.remove(id)
+        if (persist) {
+          void this.replay.remove(id)
+        }
         return Promise.reject(new Error('WebSocket is not connected'))
       }
       return Promise.reject(new Error('WebSocket was replaced before send'))
@@ -345,16 +346,19 @@ export class WsClient {
     if (type === DIRECT_BATCH_TYPE) {
       const built = buildDirectBatchPayload(payload)
       if ('error' in built) {
-        void this.replay.remove(id)
+        if (persist) {
+          void this.replay.remove(id)
+        }
         return Promise.reject(new Error(built.error))
       }
       outbound = built.payload
     }
+    const kind = type === DIRECT_BATCH_STATUS_TYPE ? 'direct_batch_status' : 'direct_batch'
     const body = { ...outbound, type, request_id: id }
     return new Promise<Record<string, unknown>>((resolve, reject) => {
       const tracked = this.trackPending(
         id,
-        'direct_batch',
+        kind,
         resolve as (value: unknown) => void,
         reject,
         REQUEST_ACK_TIMEOUT_MS,
@@ -368,7 +372,9 @@ export class WsClient {
         socket.send(JSON.stringify(body))
       } catch (err) {
         this.clearPending(id)
-        void this.replay.remove(id)
+        if (persist) {
+          void this.replay.remove(id)
+        }
         reject(err instanceof Error ? err : new Error(String(err)))
       }
     })
@@ -619,7 +625,9 @@ export class WsClient {
     }
 
     if (routed.kind === 'protocol_error') {
-      void this.replay.remove(routed.entry.id)
+      if (routed.entry.kind !== 'direct_batch_status') {
+        void this.replay.remove(routed.entry.id)
+      }
       const code = typeof msg.error_code === 'string' ? msg.error_code : MSG_TYPE_PROTOCOL_ERROR
       routed.entry.reject(new Error(code))
       return
@@ -635,8 +643,7 @@ export class WsClient {
     if (
       msgType === MSG_TYPE_EXTRACTOR_RESOLVE_ACK ||
       msgType === MSG_TYPE_BATCH_DOWNLOAD_ACK ||
-      msgType === MSG_TYPE_DOWNLOAD_BATCH_ACK ||
-      msgType === MSG_TYPE_DOWNLOAD_BATCH_STATUS_ACK
+      msgType === MSG_TYPE_DOWNLOAD_BATCH_ACK
     ) {
       void this.replay.remove(routed.entry.id)
     }
@@ -705,7 +712,7 @@ export class WsClient {
 
   private trackPending(
     id: string,
-    kind: 'download' | 'rpc' | 'direct_batch',
+    kind: 'download' | 'rpc' | 'direct_batch' | 'direct_batch_status',
     resolve: (value: unknown) => void,
     reject: (err: Error) => void,
     timeoutMs: number,
@@ -724,7 +731,7 @@ export class WsClient {
         return
       }
       const timed = noteRpcTimeout(persist, id)
-      if (timed.dropReplay) {
+      if (timed.dropReplay && kind !== 'direct_batch_status') {
         void this.replay.remove(id)
       }
       entry?.reject(timed.error)

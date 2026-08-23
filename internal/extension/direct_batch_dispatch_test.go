@@ -1,6 +1,7 @@
 package extension
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"sync/atomic"
@@ -23,6 +24,10 @@ type fakeDirectCommitter struct {
 }
 
 func (f *fakeDirectCommitter) Ready() bool { return f.ready }
+
+func (f *fakeDirectCommitter) AdmitPending(string, string) bool { return true }
+
+func (f *fakeDirectCommitter) AbandonPending(string) {}
 
 func (f *fakeDirectCommitter) HandleDirectBatch(ctx context.Context, _ RequestEnvelope, _ DirectBatchRequest) DirectCommitResult {
 	f.calls.Add(1)
@@ -52,6 +57,9 @@ func (f *fakeDirectCommitter) HandleDirectBatch(ctx context.Context, _ RequestEn
 
 func (f *fakeDirectCommitter) LookupStatus(string) (DirectStatusSnapshot, bool) {
 	f.lookupCalls.Add(1)
+	if f.invalidateCalls.Load() > 0 {
+		return DirectStatusSnapshot{}, false
+	}
 	if !f.statusOK {
 		return DirectStatusSnapshot{}, false
 	}
@@ -243,9 +251,20 @@ func TestDownloadBatchStatus_NotFoundAfterInvalidate(t *testing.T) {
 	conn := dialAuthed(t, srv, "prod-secret")
 	defer conn.Close()
 
+	direct.Invalidate()
+	writeDirectBatchStatus(t, conn, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	raw := readRaw(t, conn, 2*time.Second)
+	var ack DirectBatchStatusAck
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		t.Fatalf("status ack: %v raw=%s", err, raw)
+	}
+	if ack.Status != DirectBatchStatusNotFound {
+		t.Fatalf("want not_found after invalidate, got %+v raw=%s", ack, raw)
+	}
+
 	srv.NotifyUnpaired()
-	if direct.invalidateCalls.Load() == 0 {
-		t.Fatal("unpair must Invalidate Direct receipts")
+	if direct.invalidateCalls.Load() < 2 {
+		t.Fatalf("unpair must Invalidate Direct receipts, calls=%d", direct.invalidateCalls.Load())
 	}
 }
 
@@ -276,6 +295,45 @@ func TestDownloadBatch_SkipIdempotencyRetriesImmediately(t *testing.T) {
 	}
 	if direct.calls.Load() != 2 {
 		t.Fatalf("SkipIdempotency must re-run HandleDirectBatch, calls=%d", direct.calls.Load())
+	}
+}
+
+func TestMarshalDirectBatchResult_EmptyErrorsObject(t *testing.T) {
+	data, err := marshalDirectBatchResult(MsgTypeDownloadBatchAck, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", DirectCommitResult{
+		Success:          true,
+		SucceededItemIDs: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+		DuplicateItemIDs: []string{},
+		ErrorsByItemID:   map[string]string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"errors_by_item_id":{}`)) {
+		t.Fatalf("errors_by_item_id must be object, got %s", data)
+	}
+	if bytes.Contains(data, []byte(`"errors_by_item_id":null`)) {
+		t.Fatalf("errors_by_item_id must not be null: %s", data)
+	}
+}
+
+func TestDirectBatchStatusAck_CompleteKeepsPartitions(t *testing.T) {
+	data, err := json.Marshal(DirectBatchStatusAck{
+		Type:             MsgTypeDownloadBatchStatusAck,
+		RequestID:        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		Status:           DirectBatchStatusComplete,
+		Success:          false,
+		SucceededItemIDs: []string{},
+		DuplicateItemIDs: []string{},
+		ErrorsByItemID:   map[string]string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": CommitItemErrorAddFailed},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"success":false`)) {
+		t.Fatalf("complete failure must keep success:false, got %s", data)
+	}
+	if !bytes.Contains(data, []byte(`"succeeded_item_ids":[]`)) || !bytes.Contains(data, []byte(`"duplicate_item_ids":[]`)) {
+		t.Fatalf("complete partitions must stay arrays, got %s", data)
 	}
 }
 

@@ -93,7 +93,7 @@ func setupDirectAdapter(t *testing.T) (*directBatchAdapter, *recordingDirectEngi
 func TestDirectBatchAdapter_PendingThenComplete(t *testing.T) {
 	adapter, engine := setupDirectAdapter(t)
 	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-	if !adapter.admitPending(id) {
+	if !adapter.AdmitPending(id, "digest-a") {
 		t.Fatal("admit pending")
 	}
 	snap, ok := adapter.LookupStatus(id)
@@ -104,12 +104,14 @@ func TestDirectBatchAdapter_PendingThenComplete(t *testing.T) {
 		t.Fatal("pending lookup must not AddUri")
 	}
 
-	result := adapter.HandleDirectBatch(context.Background(), extension.RequestEnvelope{RequestID: id}, extension.DirectBatchRequest{
-		RequestID: id,
+	req := extension.DirectBatchRequest{
+		RequestID:     id,
+		PayloadDigest: "digest-a",
 		Items: []extension.DirectBatchItem{
 			{ClientItemID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", CanonicalURL: "https://download.fixture.invalid/a.bin"},
 		},
-	})
+	}
+	result := adapter.HandleDirectBatch(context.Background(), extension.RequestEnvelope{RequestID: id}, req)
 	if result.ErrorCode != "" || !result.Success {
 		t.Fatalf("commit result = %+v", result)
 	}
@@ -120,22 +122,69 @@ func TestDirectBatchAdapter_PendingThenComplete(t *testing.T) {
 	if !ok || snap.Status != extension.DirectBatchStatusComplete {
 		t.Fatalf("complete snapshot = %+v ok=%v", snap, ok)
 	}
+
+	replay := adapter.HandleDirectBatch(context.Background(), extension.RequestEnvelope{RequestID: id}, req)
+	if replay.ErrorCode != "" || !replay.Success {
+		t.Fatalf("replay result = %+v", replay)
+	}
+	if engine.callCount() != 1 {
+		t.Fatalf("same digest must not AddUri again, calls=%d", engine.callCount())
+	}
+
+	conflict := adapter.HandleDirectBatch(context.Background(), extension.RequestEnvelope{RequestID: id}, extension.DirectBatchRequest{
+		RequestID:     id,
+		PayloadDigest: "digest-b",
+		Items:         req.Items,
+	})
+	if conflict.ErrorCode != extension.ErrCodeIdempotencyConflict {
+		t.Fatalf("different digest = %+v", conflict)
+	}
+	if engine.callCount() != 1 {
+		t.Fatalf("conflict must not AddUri, calls=%d", engine.callCount())
+	}
 }
 
 func TestDirectBatchAdapter_InvalidateClearsReceipts(t *testing.T) {
 	adapter, _ := setupDirectAdapter(t)
 	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-	adapter.storeComplete(id, extension.DirectCommitResult{Success: true, SucceededItemIDs: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}})
+	if !adapter.AdmitPending(id, "digest-a") {
+		t.Fatal("admit")
+	}
+	adapter.storeComplete(id, extension.DirectCommitResult{Success: true, SucceededItemIDs: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, adapter.epoch, adapter.currentGenerationLocked(), "digest-a")
 	adapter.Invalidate()
 	if _, ok := adapter.LookupStatus(id); ok {
 		t.Fatal("invalidate must yield not_found")
 	}
 }
 
+func TestDirectBatchAdapter_StoreCompleteIgnoresStaleEpoch(t *testing.T) {
+	adapter, _ := setupDirectAdapter(t)
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	if !adapter.AdmitPending(id, "digest-a") {
+		t.Fatal("admit")
+	}
+	adapter.mu.Lock()
+	epoch := adapter.receipts[id].epoch
+	generation := adapter.receipts[id].generation
+	adapter.mu.Unlock()
+	adapter.Invalidate()
+	adapter.storeComplete(id, extension.DirectCommitResult{Success: true, SucceededItemIDs: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, epoch, generation, "digest-a")
+	if _, ok := adapter.LookupStatus(id); ok {
+		t.Fatal("stale storeComplete must not re-enter receipts")
+	}
+}
+
 func TestDirectBatchAdapter_ExpiredCompleteNotFound(t *testing.T) {
 	adapter, _ := setupDirectAdapter(t)
 	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-	adapter.storeComplete(id, extension.DirectCommitResult{Success: true})
+	if !adapter.AdmitPending(id, "digest-a") {
+		t.Fatal("admit")
+	}
+	adapter.mu.Lock()
+	epoch := adapter.receipts[id].epoch
+	generation := adapter.receipts[id].generation
+	adapter.mu.Unlock()
+	adapter.storeComplete(id, extension.DirectCommitResult{Success: true}, epoch, generation, "digest-a")
 	adapter.mu.Lock()
 	rec := adapter.receipts[id]
 	rec.stored = time.Now().Add(-directReceiptTTL - time.Second)
@@ -149,11 +198,11 @@ func TestDirectBatchAdapter_ExpiredCompleteNotFound(t *testing.T) {
 func TestDirectBatchAdapter_CapBusyNeverEvictsPending(t *testing.T) {
 	adapter, _ := setupDirectAdapter(t)
 	for i := range maxDirectReceipts {
-		if !adapter.admitPending(fmt.Sprintf("pending-%03d", i)) {
+		if !adapter.AdmitPending(fmt.Sprintf("pending-%03d", i), "d") {
 			t.Fatalf("admit %d failed early", i)
 		}
 	}
-	if adapter.admitPending("overflow") {
+	if adapter.AdmitPending("overflow", "d") {
 		t.Fatal("overflow pending must be busy")
 	}
 }
