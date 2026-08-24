@@ -4,8 +4,8 @@
     "completed": "Completado",
     "settings": "Ajustes",
     "liveSpeed": "Velocidad",
-    "aria2Online": "Aria2 En línea",
-    "aria2Offline": "Aria2 Desconectado"
+    "surgeReady": "Listo",
+    "aria2Offline": "Desconectado"
   },
   "titleBar": {
     "minimizeToTray": "Minimizar a la bandeja",

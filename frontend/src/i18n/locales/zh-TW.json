@@ -4,8 +4,8 @@
     "completed": "已完成",
     "settings": "偏好設定",
     "liveSpeed": "即時速度",
-    "aria2Online": "Aria2 線上",
-    "aria2Offline": "Aria2 離線"
+    "surgeReady": "就緒",
+    "aria2Offline": "離線"
   },
   "titleBar": {
     "minimizeToTray": "縮小至系統匣",

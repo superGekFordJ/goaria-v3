@@ -45,8 +45,6 @@
     const i = Math.floor(Math.log(bytes) / Math.log(1024))
     return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + ['B', 'KB', 'MB', 'GB', 'TB'][i] + '/s'
   })
-
-  const isConnected = computed(() => true) // Could be dynamic based on RPC status
 </script>
 
 <template>
@@ -185,32 +183,48 @@
       </LiquidGlassPanel>
     </nav>
 
-    <!-- Connection Status Footer -->
+    <!-- Dual Engine Status Footer -->
     <div class="p-4 mt-auto">
-      <StaticGlassPanel class="p-4" radius="rounded-[var(--radius-squircle-md)]">
-        <div class="flex flex-col space-y-2 relative z-10">
-          <div class="flex items-center gap-2">
-            <!-- Status indicator dot with glow -->
-            <div class="relative">
-              <div
-                :class="[
-                  'w-2 h-2 rounded-full transition-colors',
-                  isConnected ? 'bg-[var(--status-active)]' : 'bg-[var(--status-error)]',
-                ]"
-              ></div>
-              <div
-                v-if="isConnected"
-                class="absolute inset-0 w-2 h-2 rounded-full bg-[var(--status-active)] animate-ping opacity-50"
-              ></div>
+      <StaticGlassPanel class="p-3" radius="rounded-[var(--radius-squircle-md)]">
+        <div class="flex flex-col space-y-1.5 relative z-10 select-none">
+          <!-- Surge (In-Process Native) -->
+          <div class="flex items-center justify-between text-[11px]">
+            <div class="flex items-center gap-2 text-[var(--app-text-subtle)]">
+              <div class="w-1.5 h-1.5 rounded-full bg-[var(--status-active)]"></div>
+              <span class="font-medium">Surge</span>
             </div>
-            <span
-              class="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--app-text-subtle)]"
-            >
-              {{ isConnected ? t('sidebar.aria2Online') : t('sidebar.aria2Offline') }}
+            <span class="text-[10px] text-[var(--app-text-subtle)]/60">
+              {{ t('sidebar.surgeReady') }}
             </span>
           </div>
-          <div class="font-mono-data text-[10px] text-[var(--app-text-subtle)] truncate">
-            127.0.0.1:{{ configStore.settings.rpc_port }}
+
+          <!-- Aria2 (External Daemon) -->
+          <div class="flex items-center justify-between text-[11px]">
+            <div class="flex items-center gap-2 text-[var(--app-text-subtle)]">
+              <div
+                :class="[
+                  'w-1.5 h-1.5 rounded-full transition-colors duration-300',
+                  configStore.aria2Connected
+                    ? 'bg-[var(--status-active)]'
+                    : 'bg-[var(--status-error)]',
+                ]"
+              ></div>
+              <span class="font-medium">Aria2</span>
+            </div>
+            <span
+              :class="[
+                'text-[10px] font-mono-data transition-colors duration-300',
+                configStore.aria2Connected
+                  ? 'text-[var(--app-text-subtle)]/60'
+                  : 'text-[var(--status-error)] font-medium',
+              ]"
+            >
+              {{
+                configStore.aria2Connected
+                  ? configStore.settings.rpc_port
+                  : t('sidebar.aria2Offline')
+              }}
+            </span>
           </div>
         </div>
       </StaticGlassPanel>

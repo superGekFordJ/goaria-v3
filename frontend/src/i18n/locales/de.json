@@ -4,8 +4,8 @@
     "completed": "Fertig",
     "settings": "Einstellungen",
     "liveSpeed": "Geschwindigkeit",
-    "aria2Online": "Aria2 Online",
-    "aria2Offline": "Aria2 Offline"
+    "surgeReady": "Bereit",
+    "aria2Offline": "Offline"
   },
   "titleBar": {
     "minimizeToTray": "In System-Tray minimieren",

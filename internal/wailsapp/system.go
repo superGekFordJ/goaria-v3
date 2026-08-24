@@ -208,6 +208,11 @@ func (a *App) GetConfig() *config.AppConfig {
 	return config.Get()
 }
 
+// GetAria2Connected returns the current Aria2 WebSocket connection status
+func (a *App) GetAria2Connected() bool {
+	return rpc.IsAria2Connected()
+}
+
 // SaveConfig saves the configuration and restarts Aria2 if needed
 func (a *App) SaveConfig(newCfg config.AppConfig) string {
 	config.Update(func(c *config.AppConfig) { *c = newCfg })
@@ -216,7 +221,9 @@ func (a *App) SaveConfig(newCfg config.AppConfig) string {
 		return err.Error()
 	}
 	rpc.Init(cfg.RPCPort, cfg.RPCSecret)
-	_ = rpc.WaitForReady(4 * time.Second)
+	if err := rpc.WaitForReady(4 * time.Second); err == nil && a.eventHub != nil {
+		rpc.InitNotifier(a.eventHub, cfg.RPCPort, cfg.RPCSecret)
+	}
 	_ = a.downloadEngine.ChangeGlobalOption(map[string]string{
 		"max-concurrent-downloads":  cfg.MaxConcurrentDownloads,
 		"max-connection-per-server": cfg.MaxConnections,

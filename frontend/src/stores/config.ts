@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, reactive } from 'vue'
 import {
   GetConfig,
+  GetAria2Connected,
   SaveConfig,
   SelectDirectory,
 } from '../../bindings/goaria-v3/internal/wailsapp/app.js'
@@ -13,6 +14,26 @@ export const useConfigStore = defineStore(
     const settings = reactive<AppConfig>(new AppConfig())
     const isLoading = ref(false)
     const isSaving = ref(false)
+    const aria2Connected = ref(false)
+
+    function setAria2Connected(connected: boolean) {
+      aria2Connected.value = connected
+    }
+
+    /**
+     * Fetch current Aria2 WebSocket connection status from Go backend
+     */
+    async function refreshAria2Connected() {
+      try {
+        const ok = await GetAria2Connected()
+        aria2Connected.value = Boolean(ok)
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          console.warn('[Config] Failed to get Aria2 connection status:', err)
+        }
+        aria2Connected.value = false
+      }
+    }
 
     /**
      * Fetch configuration from Go backend
@@ -78,12 +99,17 @@ export const useConfigStore = defineStore(
       settings,
       isLoading,
       isSaving,
+      aria2Connected,
+      setAria2Connected,
+      refreshAria2Connected,
       fetchConfig,
       updateConfig,
       pickDirectory,
     }
   },
   {
-    persist: true, // Enable persistence via pinia-plugin-persistedstate
+    persist: {
+      pick: ['settings'],
+    },
   },
 )

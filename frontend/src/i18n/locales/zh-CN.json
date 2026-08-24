@@ -4,8 +4,8 @@
     "completed": "已完成",
     "settings": "偏好设置",
     "liveSpeed": "实时速度",
-    "aria2Online": "Aria2 在线",
-    "aria2Offline": "Aria2 离线"
+    "surgeReady": "就绪",
+    "aria2Offline": "离线"
   },
   "titleBar": {
     "minimizeToTray": "最小化到托盘",

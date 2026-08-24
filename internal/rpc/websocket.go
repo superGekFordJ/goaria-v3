@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"goaria-v3/internal/events"
@@ -20,10 +21,11 @@ type Aria2Notification struct {
 }
 
 type Notifier struct {
-	hub      *events.Hub
-	conn     *websocket.Conn
-	url      string
-	stopChan chan struct{}
+	hub       *events.Hub
+	conn      *websocket.Conn
+	url       string
+	stopChan  chan struct{}
+	connected atomic.Bool
 
 	mu     sync.Mutex
 	stopMu sync.Once
@@ -32,6 +34,9 @@ type Notifier struct {
 var notifier *Notifier
 
 func InitNotifier(hub *events.Hub, port, secret string) {
+	if notifier != nil {
+		StopNotifier()
+	}
 	url := fmt.Sprintf("ws://127.0.0.1:%s/jsonrpc", port)
 	notifier = &Notifier{
 		hub:      hub,
@@ -42,10 +47,27 @@ func InitNotifier(hub *events.Hub, port, secret string) {
 	_ = secret
 }
 
+// IsConnected returns whether the notifier is currently connected to Aria2.
+func (n *Notifier) IsConnected() bool {
+	if n == nil {
+		return false
+	}
+	return n.connected.Load()
+}
+
+// IsAria2Connected returns the global Aria2 websocket connection status.
+func IsAria2Connected() bool {
+	if notifier == nil {
+		return false
+	}
+	return notifier.IsConnected()
+}
+
 func StopNotifier() {
 	if notifier == nil {
 		return
 	}
+	notifier.connected.Store(false)
 	notifier.stopMu.Do(func() {
 		close(notifier.stopChan)
 	})
@@ -55,6 +77,7 @@ func StopNotifier() {
 		notifier.conn = nil
 	}
 	notifier.mu.Unlock()
+	notifier = nil
 }
 
 func (n *Notifier) connectWithRetry() {
@@ -67,11 +90,24 @@ func (n *Notifier) connectWithRetry() {
 		}
 
 		if err := n.connect(); err != nil {
+			// Only emit false if this notifier is still the active one
+			select {
+			case <-n.stopChan:
+				return
+			default:
+				n.hub.EmitConnectionStatus(false)
+			}
+
 			log.Printf("[WS] Connection failed: %v, retrying in 3s...", err)
-			time.Sleep(3 * time.Second)
+			select {
+			case <-n.stopChan:
+				return
+			case <-time.After(3 * time.Second):
+			}
 			continue
 		}
 
+		n.connected.Store(true)
 		n.hub.EmitConnectionStatus(true)
 		if wasConnected {
 			n.hub.EmitFullSync()
@@ -79,7 +115,15 @@ func (n *Notifier) connectWithRetry() {
 		wasConnected = true
 
 		n.listen()
-		n.hub.EmitConnectionStatus(false)
+		n.connected.Store(false)
+
+		// If this notifier was stopped (e.g. port switch), do NOT emit false to overwrite new connection
+		select {
+		case <-n.stopChan:
+			return
+		default:
+			n.hub.EmitConnectionStatus(false)
+		}
 	}
 }
 

@@ -4,8 +4,8 @@
     "completed": "完了",
     "settings": "設定",
     "liveSpeed": "現在の速度",
-    "aria2Online": "Aria2 オンライン",
-    "aria2Offline": "Aria2 オフライン"
+    "surgeReady": "準備完了",
+    "aria2Offline": "オフライン"
   },
   "titleBar": {
     "minimizeToTray": "トレイに最小化",

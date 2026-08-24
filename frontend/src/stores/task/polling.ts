@@ -1,5 +1,6 @@
 import { TaskState } from './state'
 import { TaskActions } from './actions'
+import { useConfigStore } from '../config'
 import {
   subscribeToTaskEvents,
   unsubscribeFromTaskEvents,
@@ -49,9 +50,21 @@ export function setupPolling(
       },
       connected => {
         if (import.meta.env.DEV) console.debug('[Events] Aria2 connection:', connected)
+        try {
+          useConfigStore().setAria2Connected(connected)
+        } catch {
+          // Pinia inactive in unit tests
+        }
         if (connected) fetchTasks()
       },
     )
+
+    // Bridge cold-boot timing: subscribe first, then immediately read initial status
+    try {
+      void useConfigStore().refreshAria2Connected()
+    } catch {
+      // Pinia inactive in unit tests
+    }
 
     subscribeToTaskMoveEvent((move: TaskMove) => {
       events.handleTaskMove(move)

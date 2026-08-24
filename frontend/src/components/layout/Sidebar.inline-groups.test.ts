@@ -22,6 +22,7 @@ const rawStoreMocks = vi.hoisted(() => ({
   },
   configStore: {
     settings: { rpc_port: 6800 },
+    aria2Connected: true,
   },
 }))
 
@@ -82,6 +83,16 @@ describe('Sidebar inline groups', () => {
     await buttons[1]?.trigger('click')
     expect(storeMocks.uiStore.setActiveTab).toHaveBeenCalledWith('stopped')
     expect(storeMocks.uiStore.setActiveTab).not.toHaveBeenCalledWith('groups')
+
+    // Connected state asserts port
+    expect(wrapper.text()).toContain('6800')
+    expect(wrapper.text()).not.toContain('sidebar.aria2Offline')
+
+    // Disconnected state asserts offline text
+    storeMocks.configStore.aria2Connected = false
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('sidebar.aria2Offline')
+
     wrapper.unmount()
   })
 })
