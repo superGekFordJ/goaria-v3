@@ -50,25 +50,8 @@
     class="h-10 flex items-center justify-between px-4 bg-transparent relative z-50 shrink-0 select-none"
     style="--wails-draggable: drag"
   >
-    <!-- Left: App branding (draggable area) -->
-    <div class="flex items-center gap-2 pointer-events-none">
-      <div class="flex items-center gap-1.5 opacity-50">
-        <div
-          class="w-2 h-2 rounded-full bg-[var(--neon-primary)] shadow-[0_0_6px_var(--neon-primary)]"
-        ></div>
-        <span class="text-[10px] font-bold tracking-widest uppercase text-[var(--app-text-muted)]">
-          GoAria
-        </span>
-      </div>
-    </div>
-
-    <!-- Center: Subtle drag indicator -->
-    <div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
-      <div class="w-10 h-1 rounded-full bg-[var(--btn-glass-bg)]"></div>
-    </div>
-
     <!-- Right: Window Controls (non-draggable) -->
-    <div class="flex items-center gap-0.5" style="--wails-draggable: no-drag">
+    <div class="flex items-center gap-0.5 ml-auto" style="--wails-draggable: no-drag">
       <!-- Minimize to Tray Button -->
       <button
         class="group w-9 h-9 flex items-center justify-center rounded-lg transition-all duration-200 hover:bg-[var(--neon-primary)]/10 active:bg-[var(--neon-primary)]/20"

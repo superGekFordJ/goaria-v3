@@ -53,18 +53,19 @@
   <aside
     class="sidebar-container w-56 flex flex-col shrink-0 z-20 bg-[var(--sidebar-bg)] border-r border-[var(--card-border)]"
   >
-    <!-- Logo Section -->
-    <div class="p-6 pt-2">
-      <div class="flex items-center gap-3 group cursor-default select-none">
-        <ThemeIcon :size="40" />
+    <!-- Logo Section (Draggable window anchor, exact 112px height preserves original Live Speed Y-position) -->
+    <div class="h-28 px-5 flex items-center shrink-0" style="--wails-draggable: drag">
+      <div class="flex items-center gap-3.5 group cursor-default select-none">
+        <ThemeIcon :size="42" />
         <div class="flex flex-col">
-          <span class="text-base font-black tracking-tight leading-none text-[var(--app-text)]/90">
+          <span class="text-[17px] font-extrabold tracking-tight leading-none text-[var(--app-text)]/90">
             GoAria
           </span>
           <span
-            class="sidebar-brand-text text-[9px] font-mono-data font-bold text-[var(--neon-primary)] tracking-widest mt-0.5"
+            class="sidebar-brand-text text-[9.5px] font-mono-data font-bold text-[var(--neon-primary)] tracking-wider leading-none mt-1.5 flex items-baseline gap-1"
           >
-            LUMINOUS
+            <span>SURGE</span>
+            <span class="text-[10.5px] font-normal tracking-normal leading-none select-none">𝓥𝓮𝓻.</span>
           </span>
         </div>
       </div>

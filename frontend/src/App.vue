@@ -162,18 +162,18 @@
   </Transition>
 
   <div
-    class="flex flex-col h-screen bg-[var(--color-app-bg)] text-[var(--color-app-text)] overflow-hidden"
+    class="flex h-screen bg-[var(--color-app-bg)] text-[var(--color-app-text)] overflow-hidden"
   >
-    <!-- Custom Frameless Titlebar -->
-    <TitleBar />
+    <!-- Sidebar: Full Height -->
+    <Sidebar />
 
-    <!-- Main Layout Container -->
-    <div class="flex flex-1 min-h-0">
-      <!-- Sidebar: Fused with background, low contrast -->
-      <Sidebar />
+    <!-- Main Layout Container (Right Column) -->
+    <div class="flex-1 flex flex-col min-w-0 min-h-0">
+      <!-- Custom Frameless Titlebar -->
+      <TitleBar />
 
       <!-- Floating Glass Content Panel -->
-      <main class="flex-1 flex flex-col min-w-0 p-3 pr-3 pb-3">
+      <main class="flex-1 flex flex-col min-w-0 px-3 pb-3 min-h-0">
         <div
           :class="[
             'flex-1 flex flex-col min-h-0 glass-panel rounded-[var(--radius-squircle-xl)] overflow-hidden',
