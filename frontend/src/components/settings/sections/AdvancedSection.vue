@@ -1,9 +1,13 @@
 <script setup lang="ts">
-  import { Layers, History } from '@lucide/vue'
+  import { Layers, History, PanelBottomClose } from '@lucide/vue'
   import { useI18n } from 'vue-i18n'
+  import { computed } from 'vue'
+  import { System } from '@wailsio/runtime'
   import SectionCard from './SectionCard.vue'
 
   const { t } = useI18n()
+  const isMac = System.IsMac()
+  const isLinux = System.IsLinux()
 
   const props = defineProps<{
     transparency: string
@@ -21,6 +25,55 @@
     emit('change')
   }
 
+  const isOptionActive = (optValue: string) => {
+    if (isMac) {
+      if (optValue === 'none') {
+        return props.transparency === 'none'
+      }
+      return props.transparency !== 'none'
+    }
+    return props.transparency === optValue
+  }
+
+  const transparencyOptions = computed(() => {
+    if (isMac) {
+      return [
+        {
+          value: 'none',
+          label: t('advanced.transparencyClose'),
+          desc: t('advanced.transparencyStandard'),
+        },
+        {
+          value: 'acrylic',
+          label: t('advanced.transparencyMacVibrancy'),
+          desc: t('advanced.transparencyMacVibrancyDesc'),
+        },
+      ]
+    }
+    return [
+      {
+        value: 'none',
+        label: t('advanced.transparencyClose'),
+        desc: t('advanced.transparencyStandard'),
+      },
+      {
+        value: 'acrylic',
+        label: t('advanced.transparencyAcrylic'),
+        desc: t('advanced.transparencyAcrylicBlur'),
+      },
+      {
+        value: 'mica',
+        label: t('advanced.transparencyMica'),
+        desc: t('advanced.transparencyMicaDesc'),
+      },
+      {
+        value: 'tabbed',
+        label: t('advanced.transparencyTabbed'),
+        desc: t('advanced.transparencyTabbedDesc'),
+      },
+    ]
+  })
+
   const toggleHistory = () => {
     emit('update:showHistory', !props.showHistory)
     emit('change')
@@ -29,37 +82,36 @@
 
 <template>
   <div class="space-y-4">
-    <!-- Window Transparency Card -->
+    <!-- Window Transparency Card (Hidden on Linux as desktop compositors lack unified blur APIs) -->
     <SectionCard
+      v-if="!isLinux"
       :title="t('advanced.transparencyTitle')"
-      :description="t('advanced.transparencyDesc')"
       :icon="Layers"
       icon-class="bg-cyan-500/10 text-cyan-400"
     >
+      <template #description>
+        <span v-if="isMac" class="leading-relaxed">
+          {{ t('advanced.transparencyDescMac') }}
+        </span>
+        <span v-else class="inline-flex items-center gap-1 flex-wrap leading-relaxed">
+          <span>{{ t('advanced.transparencyDescWinPrefix') }}</span>
+          <span
+            class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-[var(--neon-primary)]/10 text-[var(--neon-primary)] text-[9px] font-medium border border-[var(--neon-primary)]/20 align-middle select-none"
+          >
+            <PanelBottomClose :size="11" class="shrink-0" />
+            <span>{{ t('titleBar.minimizeToTray') }}</span>
+          </span>
+          <span>{{ t('advanced.transparencyDescWinSuffix') }}</span>
+        </span>
+      </template>
+
       <div class="grid grid-cols-2 gap-3">
         <button
-          v-for="opt in [
-            {
-              value: 'none',
-              label: t('advanced.transparencyClose'),
-              desc: t('advanced.transparencyStandard'),
-            },
-            {
-              value: 'acrylic',
-              label: t('advanced.transparencyAcrylic'),
-              desc: t('advanced.transparencyAcrylicBlur'),
-            },
-            {
-              value: 'mica',
-              label: t('advanced.transparencyMica'),
-              desc: t('advanced.transparencyMicaAlt'),
-            },
-            { value: 'tabbed', label: 'Tabbed', desc: t('advanced.transparencyTabbed') },
-          ]"
+          v-for="opt in transparencyOptions"
           :key="opt.value"
           :class="[
             'flex flex-col items-start p-4 rounded-xl border transition-all duration-200',
-            transparency === opt.value
+            isOptionActive(opt.value)
               ? 'bg-[var(--neon-primary)]/10 border-[var(--neon-primary)]/30'
               : 'bg-[var(--btn-glass-bg)] border-[var(--glass-border)] hover:border-[var(--neon-primary)]/20',
           ]"
@@ -68,7 +120,7 @@
           <span
             :class="[
               'text-xs font-semibold',
-              transparency === opt.value
+              isOptionActive(opt.value)
                 ? 'text-[var(--neon-primary)]'
                 : 'text-[var(--app-text)]/80',
             ]"

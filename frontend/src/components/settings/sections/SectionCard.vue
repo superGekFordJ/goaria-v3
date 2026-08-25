@@ -21,8 +21,11 @@
         </div>
         <div>
           <h3 class="text-sm font-semibold text-[var(--app-text)]/80">{{ title }}</h3>
-          <p v-if="description" class="text-[10px] text-[var(--app-text-subtle)]">
-            {{ description }}
+          <p
+            v-if="description || $slots.description"
+            class="text-[10px] text-[var(--app-text-subtle)] flex items-center gap-1 flex-wrap"
+          >
+            <slot name="description">{{ description }}</slot>
           </p>
         </div>
       </div>
