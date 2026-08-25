@@ -1,6 +1,7 @@
 <script setup lang="ts">
   import { computed } from 'vue'
   import { useI18n } from 'vue-i18n'
+  import { System } from '@wailsio/runtime'
   import { useUIStore } from '../../stores/ui'
   import { useConfigStore } from '../../stores/config'
   import { useTaskStore } from '../../stores/task'
@@ -15,6 +16,7 @@
   const configStore = useConfigStore()
   const taskStore = useTaskStore()
   const downloadGroupStore = useDownloadGroupStore()
+  const isMac = System.IsMac()
 
   // Navigation items with dynamic counts
   const navItems = computed(() => [
@@ -51,19 +53,29 @@
   <aside
     class="sidebar-container w-56 flex flex-col shrink-0 z-20 bg-[var(--sidebar-bg)] border-r border-[var(--card-border)]"
   >
-    <!-- Logo Section (Draggable window anchor, exact 112px height preserves original Live Speed Y-position) -->
-    <div class="h-28 px-5 flex items-center shrink-0" style="--wails-draggable: drag">
+    <!-- Logo Section (Draggable window anchor; on macOS, top padding ensures safe clearance for native traffic lights) -->
+    <div
+      :class="[
+        'px-5 flex shrink-0 select-none',
+        isMac ? 'h-32 pt-8 pb-3 items-end' : 'h-28 items-center',
+      ]"
+      style="--wails-draggable: drag"
+    >
       <div class="flex items-center gap-3.5 group cursor-default select-none">
         <ThemeIcon :size="42" />
         <div class="flex flex-col">
-          <span class="text-[17px] font-extrabold tracking-tight leading-none text-[var(--app-text)]/90">
+          <span
+            class="text-[17px] font-extrabold tracking-tight leading-none text-[var(--app-text)]/90"
+          >
             GoAria
           </span>
           <span
             class="sidebar-brand-text text-[9.5px] font-mono-data font-bold text-[var(--neon-primary)] tracking-wider leading-none mt-1.5 flex items-baseline gap-1"
           >
             <span>SURGE</span>
-            <span class="text-[10.5px] font-normal tracking-normal leading-none select-none">𝓥𝓮𝓻.</span>
+            <span class="text-[10.5px] font-normal tracking-normal leading-none select-none"
+              >𝓥𝓮𝓻.</span
+            >
           </span>
         </div>
       </div>

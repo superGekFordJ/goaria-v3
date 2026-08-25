@@ -1,6 +1,8 @@
+import { Clipboard } from '@wailsio/runtime'
+
 export async function copyToClipboard(text: string): Promise<boolean> {
   try {
-    await navigator.clipboard.writeText(text)
+    await Clipboard.SetText(text)
     return true
   } catch {
     return false
@@ -9,9 +11,9 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 
 export async function clearClipboardIfMatches(url: string): Promise<void> {
   try {
-    const current = await navigator.clipboard.readText()
-    if (current.includes(url)) {
-      await navigator.clipboard.writeText('')
+    const current = await Clipboard.Text()
+    if (current && current.includes(url)) {
+      await Clipboard.SetText('')
     }
   } catch {
     // Clipboard read may be denied; best-effort.

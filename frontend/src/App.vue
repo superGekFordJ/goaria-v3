@@ -161,9 +161,7 @@
     </div>
   </Transition>
 
-  <div
-    class="flex h-screen bg-[var(--color-app-bg)] text-[var(--color-app-text)] overflow-hidden"
-  >
+  <div class="flex h-screen bg-[var(--color-app-bg)] text-[var(--color-app-text)] overflow-hidden">
     <!-- Sidebar: Full Height -->
     <Sidebar />
 

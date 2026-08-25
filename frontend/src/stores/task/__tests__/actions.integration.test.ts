@@ -143,10 +143,7 @@ function watchMembership(state: ReturnType<typeof setupState>) {
   }
 }
 
-function wireMover(
-  state: ReturnType<typeof setupState>,
-  actions: ReturnType<typeof setupActions>,
-) {
+function wireMover(state: ReturnType<typeof setupState>, actions: ReturnType<typeof setupActions>) {
   const events = setupEvents(state, actions, {} as TaskPolling)
   actions.setMoveTasksToActive(events.moveTasksToActive)
   return events
@@ -1190,9 +1187,7 @@ describe('setupActions — integration', () => {
       state.tasks.value.waiting = ['A', 'B', 'C', 'D'].map(gid =>
         mockTask(gid, { status: 'paused' }),
       )
-      const deferred = createControlledPromise<
-        { gid: string; ok: boolean; error?: string }[]
-      >()
+      const deferred = createControlledPromise<{ gid: string; ok: boolean; error?: string }[]>()
       mockBatchResume.mockReturnValue(asCancellable(deferred.promise) as never)
       const events = wireMover(state, actions)
       const membership = watchMembership(state)
@@ -1269,9 +1264,7 @@ describe('setupActions — integration', () => {
       state.tasks.value.waiting = ['A', 'B', 'C', 'D'].map(gid =>
         mockTask(gid, { status: 'paused' }),
       )
-      const deferred = createControlledPromise<
-        { gid: string; ok: boolean; error?: string }[]
-      >()
+      const deferred = createControlledPromise<{ gid: string; ok: boolean; error?: string }[]>()
       mockBatchResume.mockReturnValue(asCancellable(deferred.promise) as never)
       mockGetActiveTasks.mockResolvedValue({
         active: ['A', 'B', 'C', 'D'].map(gid => mockTask(gid)),
@@ -1424,11 +1417,9 @@ describe('setupActions — integration', () => {
       const events = wireMover(state, actions)
       const membership = watchMembership(state)
 
-      const resumePromise = actions.runHeldResume(
-        ['A', 'B', 'C', 'D'],
-        () => deferred.promise,
-        { recoverSnapshot: false },
-      )
+      const resumePromise = actions.runHeldResume(['A', 'B', 'C', 'D'], () => deferred.promise, {
+        recoverSnapshot: false,
+      })
       await flushPromises()
       for (const gid of ['A', 'B', 'C', 'D']) {
         events.handleTaskMove({

@@ -427,9 +427,11 @@ describe('useFLIPAnimation', () => {
     b.dataset.layoutTop = '100'
     a.dataset.layoutTop = '200'
     const [c] = installLayoutRows(container, [{ key: 'c', layoutTop: 0 }])
-    vi.spyOn(container, 'querySelectorAll').mockReturnValue(
-      [c, b, a] as unknown as NodeListOf<HTMLElement>,
-    )
+    vi.spyOn(container, 'querySelectorAll').mockReturnValue([
+      c,
+      b,
+      a,
+    ] as unknown as NodeListOf<HTMLElement>)
 
     capture(['b', 'a'])
     play()

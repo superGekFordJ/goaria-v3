@@ -35,24 +35,40 @@ describe('isPairingUrl', () => {
 
 describe('isValidPairingUrl', () => {
   it('accepts valid pairing URLs on allowed fallback ports', () => {
-    expect(isValidPairingUrl('http://127.0.0.1:16810/__goaria_pair__/pair.html?nonce=abc')).toBe(true)
-    expect(isValidPairingUrl('http://127.0.0.1:16814/__goaria_pair__/pair.html?nonce=xyz')).toBe(true)
+    expect(isValidPairingUrl('http://127.0.0.1:16810/__goaria_pair__/pair.html?nonce=abc')).toBe(
+      true,
+    )
+    expect(isValidPairingUrl('http://127.0.0.1:16814/__goaria_pair__/pair.html?nonce=xyz')).toBe(
+      true,
+    )
   })
 
   it('rejects https scheme', () => {
-    expect(isValidPairingUrl('https://127.0.0.1:16810/__goaria_pair__/pair.html?nonce=abc')).toBe(false)
+    expect(isValidPairingUrl('https://127.0.0.1:16810/__goaria_pair__/pair.html?nonce=abc')).toBe(
+      false,
+    )
   })
 
   it('rejects invalid hostnames or domains', () => {
-    expect(isValidPairingUrl('http://localhost:16810/__goaria_pair__/pair.html?nonce=abc')).toBe(false)
-    expect(isValidPairingUrl('http://evil.com:16810/__goaria_pair__/pair.html?nonce=abc')).toBe(false)
-    expect(isValidPairingUrl('http://192.168.1.1:16810/__goaria_pair__/pair.html?nonce=abc')).toBe(false)
+    expect(isValidPairingUrl('http://localhost:16810/__goaria_pair__/pair.html?nonce=abc')).toBe(
+      false,
+    )
+    expect(isValidPairingUrl('http://evil.com:16810/__goaria_pair__/pair.html?nonce=abc')).toBe(
+      false,
+    )
+    expect(isValidPairingUrl('http://192.168.1.1:16810/__goaria_pair__/pair.html?nonce=abc')).toBe(
+      false,
+    )
   })
 
   it('rejects ports outside of fallback range', () => {
     expect(isValidPairingUrl('http://127.0.0.1:80/__goaria_pair__/pair.html?nonce=abc')).toBe(false)
-    expect(isValidPairingUrl('http://127.0.0.1:16809/__goaria_pair__/pair.html?nonce=abc')).toBe(false)
-    expect(isValidPairingUrl('http://127.0.0.1:16815/__goaria_pair__/pair.html?nonce=abc')).toBe(false)
+    expect(isValidPairingUrl('http://127.0.0.1:16809/__goaria_pair__/pair.html?nonce=abc')).toBe(
+      false,
+    )
+    expect(isValidPairingUrl('http://127.0.0.1:16815/__goaria_pair__/pair.html?nonce=abc')).toBe(
+      false,
+    )
   })
 
   it('rejects wrong paths', () => {
@@ -61,7 +77,9 @@ describe('isValidPairingUrl', () => {
   })
 
   it('rejects userinfo injection', () => {
-    expect(isValidPairingUrl('http://user:pass@127.0.0.1:16810/__goaria_pair__/pair.html')).toBe(false)
+    expect(isValidPairingUrl('http://user:pass@127.0.0.1:16810/__goaria_pair__/pair.html')).toBe(
+      false,
+    )
   })
 
   it('rejects empty and malformed inputs', () => {
@@ -76,9 +94,7 @@ describe('isValidReleaseNotesUrl', () => {
     expect(
       isValidReleaseNotesUrl('https://github.com/superGekFordJ/goaria-v3/releases/tag/v3.2.0'),
     ).toBe(true)
-    expect(
-      isValidReleaseNotesUrl('https://github.com/superGekFordJ/goaria-v3/releases'),
-    ).toBe(true)
+    expect(isValidReleaseNotesUrl('https://github.com/superGekFordJ/goaria-v3/releases')).toBe(true)
   })
 
   it('rejects non-https schemes', () => {
@@ -88,18 +104,14 @@ describe('isValidReleaseNotesUrl', () => {
   })
 
   it('rejects non-github.com hosts or domain spoofing', () => {
-    expect(
-      isValidReleaseNotesUrl('https://evil.com/superGekFordJ/goaria-v3/releases'),
-    ).toBe(false)
+    expect(isValidReleaseNotesUrl('https://evil.com/superGekFordJ/goaria-v3/releases')).toBe(false)
     expect(
       isValidReleaseNotesUrl('https://github.com.evil.com/superGekFordJ/goaria-v3/releases'),
     ).toBe(false)
   })
 
   it('rejects wrong repository paths', () => {
-    expect(
-      isValidReleaseNotesUrl('https://github.com/otherUser/otherRepo/releases'),
-    ).toBe(false)
+    expect(isValidReleaseNotesUrl('https://github.com/otherUser/otherRepo/releases')).toBe(false)
   })
 
   it('rejects userinfo and invalid strings', () => {

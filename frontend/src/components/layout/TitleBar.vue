@@ -2,16 +2,18 @@
   import { ref, onMounted } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { Minus, Square, X, PanelBottomClose } from '@lucide/vue'
-  import { Window, Application } from '@wailsio/runtime'
+  import { Window, Application, System } from '@wailsio/runtime'
   import { useTaskStore } from '../../stores/task'
 
   const { t } = useI18n()
   const taskStore = useTaskStore()
+  const isMac = System.IsMac()
 
   const isMaximized = ref(false)
 
-  // Check initial maximized state
+  // Check initial maximized state on non-Mac platforms
   onMounted(async () => {
+    if (isMac) return
     try {
       isMaximized.value = await Window.IsMaximised()
     } catch {
@@ -50,8 +52,8 @@
     class="h-10 flex items-center justify-between px-4 bg-transparent relative z-50 shrink-0 select-none"
     style="--wails-draggable: drag"
   >
-    <!-- Right: Window Controls (non-draggable) -->
-    <div class="flex items-center gap-0.5 ml-auto" style="--wails-draggable: no-drag">
+    <!-- Right: Window Controls (non-draggable, hidden on macOS as native traffic lights handle close/zoom) -->
+    <div v-if="!isMac" class="flex items-center gap-0.5 ml-auto" style="--wails-draggable: no-drag">
       <!-- Minimize to Tray Button -->
       <button
         class="group w-9 h-9 flex items-center justify-center rounded-lg transition-all duration-200 hover:bg-[var(--neon-primary)]/10 active:bg-[var(--neon-primary)]/20"

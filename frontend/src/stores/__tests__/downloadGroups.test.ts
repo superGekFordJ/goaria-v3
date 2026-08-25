@@ -13,10 +13,7 @@ import {
   buildInlineTaskListEntries,
   isTerminalDownloadGroupCard,
 } from '../downloadGroups'
-import {
-  snapshotGroupResumeHoldGids,
-  succeededOperationItemGids,
-} from '../downloadGroups/utils'
+import { snapshotGroupResumeHoldGids, succeededOperationItemGids } from '../downloadGroups/utils'
 import type {
   DownloadGroupCard,
   DownloadGroupDetailEnvelope,
@@ -1083,9 +1080,7 @@ describe('download group store', () => {
 
   it('resumeGroup unions open-detail paused waiting GIDs after task-store order', async () => {
     taskStoreMock.waitingTasks = [groupedTask('gid-paused-a', 'dg-op', { status: 'paused' })]
-    bindingMocks.ResumeDownloadGroup.mockResolvedValueOnce(
-      operationResult({ action: 'resume' }),
-    )
+    bindingMocks.ResumeDownloadGroup.mockResolvedValueOnce(operationResult({ action: 'resume' }))
     const store = useDownloadGroupStore()
     store.currentDetailKey = 'dg-op'
     store.currentDetail = {
@@ -1203,11 +1198,9 @@ describe('download group store', () => {
 
     await store.resumeGroup('dg-op')
 
-    expect(taskStoreMock.runHeldResume).toHaveBeenCalledWith(
-      [],
-      expect.any(Function),
-      { recoverSnapshot: false },
-    )
+    expect(taskStoreMock.runHeldResume).toHaveBeenCalledWith([], expect.any(Function), {
+      recoverSnapshot: false,
+    })
     expect(bindingMocks.ResumeDownloadGroup).toHaveBeenCalledWith('dg-op')
     expect(taskStoreMock.fetchTasks).toHaveBeenCalledTimes(1)
   })

@@ -161,7 +161,6 @@ export function applyLocalOrder(localList: Task[], incoming: Task[]): Task[] {
     const kept = t.gid ? _incomingKnown.get(t.gid) : undefined
     if (kept) ordered.push(kept)
   }
-  const unchanged =
-    ordered.length === incoming.length && ordered.every((t, i) => t === incoming[i])
+  const unchanged = ordered.length === incoming.length && ordered.every((t, i) => t === incoming[i])
   return unchanged ? incoming : ordered
 }
