@@ -5,10 +5,10 @@
   </picture>
   <h1>GoAria v3</h1>
   <p>
-    <strong>A Lightweight, Pure Native UI for Aria2c and Surge</strong>
+    <strong>Native Dual-Engine Architecture · Adaptive Thread Prediction · Liquid Glass Aesthetics</strong>
   </p>
   <p>
-    Stay focused. Return to the essence of downloading.
+    Inferring optimal concurrency through adaptive link heuristics for peak throughput and zero-configuration simplicity.
   </p>
 
   <p>
@@ -42,9 +42,9 @@
 
 ## 📖 Introduction
 
-**GoAria** is a modern graphical interface for Aria2 and Surge, built on [Wails v3](https://wails.io). Starting from v3.0, GoAria introduces a major dual-core architecture upgrade: while retaining `aria2c` as a fallback engine and keeping its RPC interface, we integrated the built-in `surge` engine (by SurgeDM) as the new default for HTTP(S), powered by a much smarter **thread scheduling brain**.
+**GoAria** is a modern, high-performance download manager built on [Wails v3](https://wails.io). Starting from v3.0, GoAria introduces a major dual-engine architecture upgrade: while retaining `aria2c` as a reliable fallback and standard RPC interface, it deeply integrates the in-process native `surge` engine optimized for HTTP(S), coupled with an **adaptive thread prediction system**.
 
-Unlike feature-heavy traditional download managers, GoAria's philosophy is rooted in **Pragmatism** and **Zero Interference**. The new architecture dynamically allocates optimal threads based on historical speeds and real-time conditions. It is designed to deliver a native app experience and significantly improved single-thread efficiency with minimal system resource consumption.
+GoAria is designed around the principles of **Pragmatism** and **Zero Interference**. Traditional static concurrency models often compromise between network congestion and bandwidth underutilization. By analyzing historical speed metrics and server response patterns, GoAria dynamically computes the optimal thread count and chunk granularity the moment a task begins—maximizing bandwidth saturation while preventing server rate-limits. Combined with a native Liquid Glass interface and minimal resource footprint, it provides a clean, refined, and exceptionally fast download experience.
 
 <div align="center">
   <!-- Replace with your actual application screenshot -->
@@ -54,13 +54,13 @@ Unlike feature-heavy traditional download managers, GoAria's philosophy is roote
 
 ## ✨ Key Features
 
-### 🚀 Smarter Adaptive Engine
+### 🧠 Intelligent Adaptive Thread Scheduling
 
-- **Seamless Dual-Core**: Uses the inline `surge` engine by default for blazing-fast HTTP(S) downloads, while fully retaining the `aria2c` daemon as a reliable fallback for other protocols.
-- **Smarter Thread Scheduling**: The engine monitors real-time network conditions and historical data to automatically calculate the optimal concurrency for each task. No more guessing threads manually.
-- **Leap in Single-Thread Efficiency**: The highly optimized architecture and tiered buffer pool, combined with a pure event-driven design featuring extremely low IPC costs, deliver single-thread performance surpassing traditional tools.
-- **LAN Saturation**: Completely refactored pre-allocation mechanism for Windows, instantly saturating the 2.5Gbps physical network card ceiling.
-- **Smart Grouping**: Batch downloads are automatically grouped into dedicated folders and condensed into a single "Group Card" for one-click management and background cleanup.
+- **Link-Aware Concurrency Prediction**: Calculates optimal thread counts and chunk sizes in milliseconds using historical speed records and host response metrics, achieving peak throughput without manual parameter tuning.
+- **Native Dual-Engine Synergy**: HTTP(S) downloads run through the embedded native `surge` engine to eliminate IPC overhead, while the standalone `aria2c` daemon serves as a reliable fallback and ecosystem RPC bridge.
+- **Enhanced Single-Thread & Concurrency Efficiency**: Optimized tiered memory pools and pure event-driven IPC significantly boost single-thread throughput, easily saturating 2.5Gbps network hardware.
+- **Fast Windows Pre-allocation**: Completely refactored pre-allocation mechanism for Windows, substantially reducing initialization delays for large files.
+- **Smart Task Grouping**: Batch tasks are automatically organized into dedicated directories and condensed into collapsible group cards for streamlined management.
 
 
 ### 🚀 Extreme Lightweight
