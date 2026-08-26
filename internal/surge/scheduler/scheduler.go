@@ -521,6 +521,10 @@ func (p *Scheduler) Cancel(downloadID string) types.CancelResult {
 	p.mu.Lock()
 	ad, activeExists := p.downloads[downloadID]
 	qCfg, queuedExists := p.queued[downloadID]
+	var queuedCfg types.DownloadRecord
+	if queuedExists {
+		queuedCfg = qCfg.cfg
+	}
 	if activeExists {
 		delete(p.downloads, downloadID)
 	}
@@ -571,8 +575,8 @@ func (p *Scheduler) Cancel(downloadID string) types.CancelResult {
 		// Cancelled is not completed: leave Done false so cleanup follows the
 		// error path rather than treating cancel as a successful finish.
 	} else if queuedExists {
-		result.Filename = qCfg.cfg.Filename
-		result.DestPath = resolveDestPath(&qCfg.cfg)
+		result.Filename = queuedCfg.Filename
+		result.DestPath = resolveDestPath(&queuedCfg)
 	}
 
 	return result
@@ -892,6 +896,10 @@ func (p *Scheduler) GetStatus(id string) *types.DownloadStatus {
 	p.mu.RLock()
 	ad, exists := p.downloads[id]
 	qCfg, qExists := p.queued[id]
+	var queuedCfg types.DownloadRecord
+	if qExists {
+		queuedCfg = qCfg.cfg
+	}
 	if exists {
 		adURL = ad.config.URL
 		adFilename = ad.config.Filename
@@ -909,14 +917,14 @@ func (p *Scheduler) GetStatus(id string) *types.DownloadStatus {
 	if qExists {
 		return &types.DownloadStatus{
 			ID:           id,
-			URL:          qCfg.cfg.URL,
-			Filename:     qCfg.cfg.Filename,
-			DestPath:     resolveDestPath(&qCfg.cfg),
+			URL:          queuedCfg.URL,
+			Filename:     queuedCfg.Filename,
+			DestPath:     resolveDestPath(&queuedCfg),
 			Status:       "queued",
 			Downloaded:   0,
 			TotalSize:    0, // Metadata not yet fetched
-			RateLimit:    qCfg.cfg.RateLimit,
-			RateLimitSet: qCfg.cfg.RateLimitSet,
+			RateLimit:    queuedCfg.RateLimit,
+			RateLimitSet: queuedCfg.RateLimitSet,
 		}
 	}
 

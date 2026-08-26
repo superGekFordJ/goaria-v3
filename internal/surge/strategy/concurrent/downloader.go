@@ -663,7 +663,7 @@ func (d *ConcurrentDownloader) setupNetwork() (*http.Client, *http.Transport) {
 		customDNS = d.Runtime.CustomDNS
 	}
 
-	httpTransport := transport.DefaultNetworkPool.AcquireTransport(proxyURL, customDNS, types.PoolMaxConnsPerHost)
+	httpTransport := transport.DefaultNetworkPool.AcquireTransport(proxyURL, customDNS, 0)
 	client := &http.Client{Transport: httpTransport}
 	d.applyClientSettings(client)
 	return client, httpTransport

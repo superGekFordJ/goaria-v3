@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"goaria-v3/internal/surge/probe"
+	"goaria-v3/internal/surge/types"
 )
 
 func TestProbeRedirectRange(t *testing.T) {
@@ -160,5 +161,40 @@ func TestProbeServer_RetryWithoutRangeReusesHeaderSetup(t *testing.T) {
 	}
 	if res.FileSize != 5 {
 		t.Fatalf("fileSize = %d, want 5", res.FileSize)
+	}
+}
+
+func TestProbeServerWithProxy_UsesRuntimeUserAgent(t *testing.T) {
+	const wantUserAgent = "SurgeProbeTest/1.0"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("User-Agent"); got != wantUserAgent {
+			t.Errorf("User-Agent = %q, want %q", got, wantUserAgent)
+		}
+		w.Header().Set("Content-Range", "bytes 0-0/1")
+		w.WriteHeader(http.StatusPartialContent)
+	}))
+	defer server.Close()
+
+	if _, err := probe.ProbeServerWithProxy(context.Background(), server.URL, "", nil, &types.RuntimeConfig{UserAgent: wantUserAgent}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProbeServerWithProxy_CustomHeaderUserAgentWins(t *testing.T) {
+	const headerUA = "CustomProbeHeader/2.0"
+	const runtimeUA = "RuntimeProbeUA/9.9"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("User-Agent"); got != headerUA {
+			t.Errorf("User-Agent = %q, want header %q", got, headerUA)
+		}
+		w.Header().Set("Content-Range", "bytes 0-0/1")
+		w.WriteHeader(http.StatusPartialContent)
+	}))
+	defer server.Close()
+
+	if _, err := probe.ProbeServerWithProxy(context.Background(), server.URL, "", map[string]string{
+		"User-Agent": headerUA,
+	}, &types.RuntimeConfig{UserAgent: runtimeUA}); err != nil {
+		t.Fatal(err)
 	}
 }
