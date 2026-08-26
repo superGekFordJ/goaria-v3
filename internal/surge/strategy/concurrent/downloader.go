@@ -663,6 +663,7 @@ func (d *ConcurrentDownloader) setupNetwork() (*http.Client, *http.Transport) {
 		customDNS = d.Runtime.CustomDNS
 	}
 
+	// Shared pool key 0; Transport cap remains PoolMaxConnsPerHost via network.go.
 	httpTransport := transport.DefaultNetworkPool.AcquireTransport(proxyURL, customDNS, 0)
 	client := &http.Client{Transport: httpTransport}
 	d.applyClientSettings(client)

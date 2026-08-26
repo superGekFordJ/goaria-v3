@@ -473,6 +473,66 @@ func TestScheduler_Cancel_QueuedDownload_RemovesFromQueueAndReturnsResult(t *tes
 	}
 }
 
+func TestScheduler_QueuedCfgSnapshot_GetStatusAndCancel(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 10)
+	const id = "snap-id"
+	pool := &Scheduler{
+		progressCh: ch,
+		downloads:  make(map[string]*activeDownload),
+		queued: map[string]*queuedTask{
+			id: {
+				cfg: types.DownloadRecord{
+					ID:           id,
+					URL:          "https://example.com/snap.bin",
+					Filename:     "snap.bin",
+					DestPath:     "/tmp/snap.bin",
+					RateLimit:    12345,
+					RateLimitSet: true,
+				},
+			},
+		},
+	}
+	pool.taskCond = sync.NewCond(&pool.mu)
+	pool.wg.Add(1)
+
+	status := pool.GetStatus(id)
+	if status == nil {
+		t.Fatal("expected queued status")
+	}
+	if status.Status != "queued" {
+		t.Fatalf("status.Status = %q, want queued", status.Status)
+	}
+	if status.URL != "https://example.com/snap.bin" {
+		t.Fatalf("status.URL = %q", status.URL)
+	}
+	if status.Filename != "snap.bin" {
+		t.Fatalf("status.Filename = %q, want snap.bin", status.Filename)
+	}
+	if status.DestPath != "/tmp/snap.bin" {
+		t.Fatalf("status.DestPath = %q, want /tmp/snap.bin", status.DestPath)
+	}
+	if status.RateLimit != 12345 {
+		t.Fatalf("status.RateLimit = %d, want 12345", status.RateLimit)
+	}
+	if !status.RateLimitSet {
+		t.Fatal("expected RateLimitSet")
+	}
+
+	result := pool.Cancel(id)
+	if !result.Found || !result.WasQueued {
+		t.Fatalf("Cancel result Found=%v WasQueued=%v", result.Found, result.WasQueued)
+	}
+	if result.Filename != "snap.bin" {
+		t.Fatalf("Cancel Filename = %q, want snap.bin", result.Filename)
+	}
+	if result.DestPath != "/tmp/snap.bin" {
+		t.Fatalf("Cancel DestPath = %q, want /tmp/snap.bin", result.DestPath)
+	}
+	if got := pool.GetStatus(id); got != nil {
+		t.Fatal("expected nil GetStatus after queued cancel")
+	}
+}
+
 // Resume orchestration (hot/cold path, DB hydration, event emission) was promoted to
 // LifecycleManager so the pool remains a pure executor with no knowledge of persistence
 // or types. Tests for pool-level extraction live below; LifecycleManager integration

@@ -866,7 +866,7 @@ func TestSingleDownloader_RecordSuccessClearsPenalty(t *testing.T) {
 
 	host := transport.MirrorHost(server.URL)
 	now := time.Now()
-	_ = limiter.Penalize(host, 0, false, now)
+	first := limiter.Penalize(host, 10*time.Second, true, now)
 	if limiter.BlockedUntil(host, now).IsZero() {
 		t.Fatal("expected non-zero BlockedUntil after manual Penalize")
 	}
@@ -885,8 +885,16 @@ func TestSingleDownloader_RecordSuccessClearsPenalty(t *testing.T) {
 	if err := downloader.Download(ctx, server.URL, destPath, fileSize, "rs.bin"); err != nil {
 		t.Fatalf("Download failed: %v", err)
 	}
-	if !limiter.BlockedUntil(host, time.Now()).IsZero() {
-		t.Fatal("BlockedUntil should be cleared after RecordSuccess on 200")
+
+	bu := limiter.BlockedUntil(host, now.Add(100*time.Millisecond))
+	if bu.IsZero() {
+		t.Fatal("expected overlapping 200 RecordSuccess to preserve the future cooldown")
+	}
+	if bu.Before(first) {
+		t.Fatalf("200 RecordSuccess shortened deadline from %v to %v", first, bu)
+	}
+	if !limiter.BlockedUntil(host, first).IsZero() {
+		t.Fatal("expected BlockedUntil to be zero at the kept deadline")
 	}
 }
 
