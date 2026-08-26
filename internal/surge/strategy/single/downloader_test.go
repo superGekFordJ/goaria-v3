@@ -842,7 +842,7 @@ func swapHostRateLimiter(t *testing.T) *transport.HostRateLimiter {
 	return isolated
 }
 
-func TestSingleDownloader_RecordSuccessClearsPenalty(t *testing.T) {
+func TestSingleDownloader_RecordSuccessPreservesUnexpiredCooldown(t *testing.T) {
 	limiter := swapHostRateLimiter(t)
 
 	tmpDir, cleanup, err := testutil.TempDir("surge-single-rs")
