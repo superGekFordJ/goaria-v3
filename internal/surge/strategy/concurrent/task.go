@@ -32,8 +32,9 @@ type ActiveTask struct {
 	// Protected by SharedMaxOffsetMu for safe concurrent initialization.
 	SharedMaxOffsetMu sync.RWMutex
 	SharedMaxOffset   *atomic.Int64
-	// Set while blocked on rate limiter so health monitor doesn't treat it as stalled
-	WaitingOnLimiter atomic.Bool
+	// FORK-PATCH: owning worker goroutine ID; set once at creation so
+	// downloadTask can locate the per-worker session for byte accounting.
+	workerID int
 
 	// FORK-PATCH: Per-worker retry count for telemetry
 	RetryCount atomic.Int32
@@ -43,9 +44,8 @@ type ActiveTask struct {
 	// snapshots read the current value.
 	LastHTTPStatus atomic.Int32
 
-	// FORK-PATCH: owning worker goroutine ID; set once at creation so
-	// downloadTask can locate the per-worker session for byte accounting.
-	workerID int
+	// Set while blocked on rate limiter so health monitor doesn't treat it as stalled
+	WaitingOnLimiter atomic.Bool
 
 	// FORK-PATCH: Drain flag for lightweight worker exit .
 	// When true, the worker finishes the current chunk and exits without

@@ -7,10 +7,11 @@ import (
 )
 
 // Task represents a byte range to download.
+// FORK-PATCH: fieldalignment pointer-first layout minimizes GC scan prefix (24B -> 8B).
 type Task struct {
+	SharedMaxOffset *atomic.Int64 `json:"-"`
 	Offset          int64         `json:"offset"`
 	Length          int64         `json:"length"`
-	SharedMaxOffset *atomic.Int64 `json:"-"`
 }
 
 func (t *Task) GobEncode() ([]byte, error) {

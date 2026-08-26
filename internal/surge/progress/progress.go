@@ -29,11 +29,13 @@ type DownloadProgress struct {
 	Bitmap  BitmapTracker
 
 	ActiveWorkers atomic.Int32
-	Done          atomic.Bool
-	Paused        atomic.Bool
-	Pausing       atomic.Bool // Intermediate state: Pause requested but workers not yet exited
-	RateLimited   atomic.Bool // Set when the downloader is backing off due to HTTP 429/rate-limit
-	Error         atomic.Pointer[error]
+	_             [60]byte // FORK-PATCH: isolate active workers counter from control flags to prevent false sharing
+
+	Done        atomic.Bool
+	Paused      atomic.Bool
+	Pausing     atomic.Bool // Intermediate state: Pause requested but workers not yet exited
+	RateLimited atomic.Bool // Set when the downloader is backing off due to HTTP 429/rate-limit
+	Error       atomic.Pointer[error]
 
 	mu         sync.Mutex // Protects metadata only (Mirrors, limits, strings)
 	cancelFunc context.CancelFunc
