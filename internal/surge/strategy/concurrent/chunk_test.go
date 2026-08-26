@@ -1,8 +1,10 @@
 package concurrent
 
 import (
+	"fmt"
 	"testing"
 
+	"goaria-v3/internal/surge/progress"
 	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/surge/utils"
 
@@ -24,6 +26,7 @@ func TestTaskRangeAssignment(t *testing.T) {
 		numConns  int
 		wantChunk int64
 		wantTasks int
+		wantLast  int64
 	}{
 		{
 			name:      "Exact division",
@@ -31,6 +34,7 @@ func TestTaskRangeAssignment(t *testing.T) {
 			numConns:  4,
 			wantChunk: 25 * utils.MiB,
 			wantTasks: 4,
+			wantLast:  25 * utils.MiB,
 		},
 		{
 			name:     "Uneven division",
@@ -39,11 +43,11 @@ func TestTaskRangeAssignment(t *testing.T) {
 			// 100MB / 4 = 25MB. 123 bytes remainder.
 			// Calculation: (104857600 + 123) / 4 = 26214430.
 			// Aligned: 26214430 / 4096 * 4096 = 26214400 (25MB).
-			// So chunk size is 25MB.
-			// 4 tasks of 25MB = 100MB.
-			// Remainder 123 bytes -> 5th task.
+			// So chunk size is 25MB. The final primary task absorbs the
+			// 123-byte remainder instead of creating a fifth request.
 			wantChunk: 25 * utils.MiB,
-			wantTasks: 5,
+			wantTasks: 4,
+			wantLast:  25*utils.MiB + 123,
 		},
 		{
 			name:      "Small file",
@@ -51,6 +55,31 @@ func TestTaskRangeAssignment(t *testing.T) {
 			numConns:  2,
 			wantChunk: 5 * utils.MiB,
 			wantTasks: 2,
+			wantLast:  5 * utils.MiB,
+		},
+		{
+			name:      "Tiny file",
+			fileSize:  512 * utils.KiB,
+			numConns:  4,
+			wantChunk: 1 * utils.MiB,
+			wantTasks: 1,
+			wantLast:  512 * utils.KiB,
+		},
+		{
+			name:      "One worker absorbs remainder",
+			fileSize:  10*utils.MiB + 123,
+			numConns:  1,
+			wantChunk: 10 * utils.MiB,
+			wantTasks: 1,
+			wantLast:  10*utils.MiB + 123,
+		},
+		{
+			name:      "Minimum chunk limits task count",
+			fileSize:  2 * utils.MiB,
+			numConns:  4,
+			wantChunk: 1 * utils.MiB,
+			wantTasks: 2,
+			wantLast:  1 * utils.MiB,
 		},
 	}
 
@@ -61,17 +90,17 @@ func TestTaskRangeAssignment(t *testing.T) {
 			// Verify chunk size is close to expected (allow for alignment)
 			assert.InDelta(t, tt.wantChunk, chunkSize, float64(types.AlignSize), "Chunk size mismatch")
 
-			// specific verification for task creation
-			tasks := createTasks(tt.fileSize, chunkSize)
+			tasks := createInitialTasks(tt.fileSize, chunkSize, tt.numConns)
 			assert.Equal(t, tt.wantTasks, len(tasks), "Task count mismatch")
 
-			// Verify task continuity
 			var total int64
 			for i, task := range tasks {
 				assert.Equal(t, total, task.Offset, "Task offset mismatch at index %d", i)
+				assert.Greater(t, task.Length, int64(0), "Task length must be positive at index %d", i)
 				total += task.Length
 			}
 			assert.Equal(t, tt.fileSize, total, "Total task length mismatch")
+			assert.Equal(t, tt.wantLast, tasks[len(tasks)-1].Length, "Final task length mismatch")
 		})
 	}
 }
@@ -162,4 +191,97 @@ func TestCalculateChunkSize_EdgeCases(t *testing.T) {
 		got := dSmall.calculateChunkSize(1*utils.KiB, 1)
 		assert.Equal(t, int64(types.AlignSize), got, "Should be bumped to AlignSize")
 	})
+}
+
+func TestCreateInitialTasks_NeverExceedsNumConns(t *testing.T) {
+	runtime := &types.RuntimeConfig{
+		MinChunkSize: 1 * utils.MiB,
+	}
+	d := &ConcurrentDownloader{
+		Runtime: runtime,
+	}
+
+	fileSizes := []int64{
+		1,
+		types.AlignSize - 1,
+		types.AlignSize,
+		1 * utils.MiB,
+		1*utils.MiB + 1,
+		10*utils.MiB + 12345,
+		100 * utils.MiB,
+		100*utils.MiB + types.AlignSize,
+		500*utils.MiB - 1,
+	}
+
+	conns := []int{1, 2, 3, 4, 7, 8, 15, 16, 32, 64}
+
+	for _, size := range fileSizes {
+		for _, numConns := range conns {
+			name := fmt.Sprintf("Size_%d_Conns_%d", size, numConns)
+			t.Run(name, func(t *testing.T) {
+				chunkSize := d.calculateChunkSize(size, numConns)
+				tasks := createInitialTasks(size, chunkSize, numConns)
+
+				if len(tasks) > numConns {
+					t.Fatalf("Strict violation: generated %d tasks, which exceeds numConns limit %d", len(tasks), numConns)
+				}
+				assert.LessOrEqual(t, len(tasks), numConns, "Task count must not exceed numConns")
+
+				var total int64
+				for _, task := range tasks {
+					total += task.Length
+				}
+				assert.Equal(t, size, total, "Total lengths of all tasks must equal file size (no data loss)")
+			})
+		}
+	}
+}
+
+func TestCreateInitialTasks_CrossSlotLastSpanVP(t *testing.T) {
+	runtime := &types.RuntimeConfig{
+		MinChunkSize: 1 * utils.MiB,
+	}
+	d := &ConcurrentDownloader{Runtime: runtime}
+
+	fileSize := int64(100*utils.MiB + 123)
+	numConns := 4
+	chunkSize := d.calculateChunkSize(fileSize, numConns)
+	if chunkSize != 25*utils.MiB {
+		t.Fatalf("chunkSize = %d, want %d", chunkSize, 25*utils.MiB)
+	}
+
+	split := createTasks(fileSize, chunkSize)
+	if len(split) != 5 {
+		t.Fatalf("createTasks produced %d shards, want 5", len(split))
+	}
+
+	tasks := createInitialTasks(fileSize, chunkSize, numConns)
+	if len(tasks) != 4 {
+		t.Fatalf("createInitialTasks produced %d tasks, want 4", len(tasks))
+	}
+	wantLast := int64(25*utils.MiB + 123)
+	if tasks[3].Length != wantLast {
+		t.Fatalf("last task length = %d, want %d", tasks[3].Length, wantLast)
+	}
+
+	state := progress.New("cross-slot-vp", fileSize)
+	state.InitBitmap(fileSize, chunkSize)
+	_, width, _, _, _ := state.GetBitmapSnapshot(false)
+	if width != 5 {
+		t.Fatalf("bitmap slots = %d, want 5 (chunk4 is the 123-byte tail)", width)
+	}
+
+	for _, task := range tasks {
+		state.UpdateChunkStatus(task.Offset, task.Length, types.ChunkCompleted)
+	}
+
+	if got := state.Bytes.VerifiedProgress.Load(); got != fileSize {
+		t.Fatalf("VerifiedProgress = %d, want %d", got, fileSize)
+	}
+	if got := state.GetChunkState(3); got != types.ChunkCompleted {
+		t.Fatalf("chunk 3 state = %v, want ChunkCompleted", got)
+	}
+	if got := state.GetChunkState(4); got != types.ChunkCompleted {
+		t.Fatalf("chunk 4 state = %v, want ChunkCompleted", got)
+	}
 }

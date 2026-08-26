@@ -10,6 +10,7 @@ import (
 	"goaria-v3/internal/surge/store"
 	"goaria-v3/internal/surge/testutil"
 	"goaria-v3/internal/surge/types"
+	"goaria-v3/internal/surge/utils"
 )
 
 func TestHandlePause_CompletionBoundary(t *testing.T) {
@@ -128,7 +129,7 @@ func TestSetupTasks_NewDownload(t *testing.T) {
 		Runtime: &types.RuntimeConfig{},
 	}
 
-	tasks, err := downloader.setupTasks(destPath, fileSize, chunkSize, f, nil, false)
+	tasks, err := downloader.setupTasks(destPath, fileSize, chunkSize, 2, f, nil, false)
 	if err != nil {
 		t.Fatalf("setupTasks failed: %v", err)
 	}
@@ -234,7 +235,7 @@ func TestSetupTasks_BitmapRestoration(t *testing.T) {
 	// 1. InitBitmap
 	progState.InitBitmap(fileSize, chunkSize)
 	// 2. setupTasks (which calls RestoreBitmap)
-	_, err := downloader.setupTasks(destPath, fileSize, chunkSize, f, savedState, true)
+	_, err := downloader.setupTasks(destPath, fileSize, chunkSize, 0, f, savedState, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,6 +247,57 @@ func TestSetupTasks_BitmapRestoration(t *testing.T) {
 	}
 	if bitmap[0] != 0xAA {
 		t.Errorf("Bitmap[0] should be 0xAA (all chunks completed), got 0x%02X", bitmap[0])
+	}
+}
+
+func TestSetupTasks_ResumeKeepsSavedTaskCount(t *testing.T) {
+	tmpDir := testutil.SetupStateDB(t)
+	fileSize := int64(100*utils.MiB + 123)
+	chunkSize := int64(25 * utils.MiB)
+	destPath := filepath.Join(tmpDir, "old_five_tasks.bin")
+
+	savedTasks := []types.Task{
+		{Offset: 0, Length: chunkSize},
+		{Offset: chunkSize, Length: chunkSize},
+		{Offset: 2 * chunkSize, Length: chunkSize},
+		{Offset: 3 * chunkSize, Length: chunkSize},
+		{Offset: 4 * chunkSize, Length: 123},
+	}
+	savedState := &types.DownloadRecord{
+		ID:         "old-five",
+		URL:        "http://example.com",
+		DestPath:   destPath,
+		TotalSize:  fileSize,
+		Downloaded: 0,
+		Tasks:      savedTasks,
+	}
+
+	f, err := os.Create(destPath + types.IncompleteSuffix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	d := &ConcurrentDownloader{
+		ID:    "old-five",
+		URL:   "http://example.com",
+		State: progress.New("old-five", fileSize),
+	}
+
+	tasks, err := d.setupTasks(destPath, fileSize, chunkSize, 4, f, savedState, true)
+	if err != nil {
+		t.Fatalf("setupTasks failed: %v", err)
+	}
+	if len(tasks) != 5 {
+		t.Fatalf("resume task count = %d, want 5 (must not re-slice saved Tasks)", len(tasks))
+	}
+	for i, want := range savedTasks {
+		if tasks[i].Offset != want.Offset || tasks[i].Length != want.Length {
+			t.Fatalf("task %d = {%d,%d}, want {%d,%d}", i, tasks[i].Offset, tasks[i].Length, want.Offset, want.Length)
+		}
+	}
+	if !d.isResume.Load() {
+		t.Fatal("isResume atomic should be true after resume setupTasks")
 	}
 }
 

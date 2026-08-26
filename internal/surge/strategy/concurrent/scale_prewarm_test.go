@@ -70,6 +70,61 @@ func TestScaleWorkers_Prewarm_InvokedBeforeSpawn(t *testing.T) {
 	waitScaledWorkers(t, d, cancel, 5*time.Second)
 }
 
+func TestScaleWorkers_Prewarm_SkippedWhenIsResume(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	var prewarmHits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") == "bytes=0-0" {
+			prewarmHits.Add(1)
+		}
+		w.Header().Set("Content-Range", "bytes 0-0/1024")
+		w.Header().Set("Content-Length", "1")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte{0})
+	}))
+	defer server.Close()
+
+	destPath := filepath.Join(tmpDir, "scale_prewarm_resume.bin")
+	f, err := os.Create(destPath + types.IncompleteSuffix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{
+		WorkerBufferSize: 32 * utils.KiB,
+		DialHedgeCount:   0,
+	})
+	d.isResume.Store(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	queue := NewTaskQueue()
+	d.workerDepsPtr.Store(&workerDeps{
+		ctx:       ctx,
+		mirrors:   []string{server.URL},
+		file:      f,
+		queue:     queue,
+		totalSize: 1024,
+		client:    server.Client(),
+	})
+	d.workersActive.Store(true)
+
+	added := d.ScaleWorkers(1)
+	if added != 1 {
+		t.Fatalf("ScaleWorkers(1) returned %d, want 1", added)
+	}
+	if prewarmHits.Load() != 0 {
+		t.Fatalf("resume ScaleUp prewarm hits = %d, want 0", prewarmHits.Load())
+	}
+
+	queue.Close()
+	waitScaledWorkers(t, d, cancel, 5*time.Second)
+}
+
 func TestScaleWorkers_Prewarm_BudgetTimeoutStillSpawns(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/surge/progress"
+	"goaria-v3/internal/surge/store"
 	"goaria-v3/internal/surge/testutil"
 	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/surge/utils"
@@ -93,6 +94,93 @@ func TestConcurrentDownloader_PrewarmConnections(t *testing.T) {
 
 	if !prewarmSeen {
 		t.Error("Expected to see pre-warm request (bytes=0-0), but none were recorded")
+	}
+	if !downloadSeen {
+		t.Error("Expected to see download requests, but none were recorded")
+	}
+}
+
+func TestConcurrentDownloader_ResumeSkipsZeroZeroPrewarm(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(1 * utils.MiB)
+	destPath := filepath.Join(tmpDir, "resume_prewarm_test.bin")
+	partialSize := int64(256 * utils.KiB)
+
+	var mu sync.Mutex
+	zeroZeroHits := 0
+	downloadSeen := false
+
+	data := make([]byte, fileSize)
+	server := testutil.NewMockServerT(t,
+		testutil.WithFileSize(fileSize),
+		testutil.WithRangeSupport(true),
+		testutil.WithHandler(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			rng := r.Header.Get("Range")
+			if rng == "bytes=0-0" {
+				zeroZeroHits++
+			} else if rng != "" {
+				downloadSeen = true
+			}
+			mu.Unlock()
+
+			start := int64(0)
+			end := fileSize - 1
+			if rng != "" {
+				var ok bool
+				start, end, ok = parseSimpleRange(rng, fileSize)
+				if !ok {
+					http.Error(w, "Invalid range", http.StatusRequestedRangeNotSatisfiable)
+					return
+				}
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
+				w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+				w.WriteHeader(http.StatusPartialContent)
+			} else {
+				w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
+				w.WriteHeader(http.StatusOK)
+			}
+			_, _ = w.Write(data[start : end+1])
+		}),
+	)
+	defer server.Close()
+
+	savedState := &types.DownloadRecord{
+		ID:         "resume-prewarm-id",
+		URL:        server.URL(),
+		DestPath:   destPath,
+		TotalSize:  fileSize,
+		Downloaded: partialSize,
+		Tasks:      []types.Task{{Offset: partialSize, Length: fileSize - partialSize}},
+		Filename:   "resume_prewarm_test.bin",
+		URLHash:    store.URLHash(server.URL()),
+	}
+	saveResumeState(t, "resume-prewarm-id", server.URL(), destPath, savedState, fileSize)
+
+	state := progress.New("resume-prewarm-test", fileSize)
+	runtime := &types.RuntimeConfig{
+		MaxConnectionsPerDownload: 2,
+		DialHedgeCount:            2,
+		MinChunkSize:              256 * utils.KiB,
+	}
+
+	downloader := NewConcurrentDownloader("resume-prewarm-id", nil, state, runtime)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := downloader.Download(ctx, server.URL(), []string{server.URL()}, []string{server.URL()}, destPath, fileSize)
+	if err != nil {
+		t.Fatalf("Resume download failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if zeroZeroHits != 0 {
+		t.Errorf("resume with DialHedgeCount>0 saw %d bytes=0-0 prewarm hits, want 0", zeroZeroHits)
 	}
 	if !downloadSeen {
 		t.Error("Expected to see download requests, but none were recorded")

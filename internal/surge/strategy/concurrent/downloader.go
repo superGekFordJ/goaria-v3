@@ -450,6 +450,18 @@ func createTasks(fileSize, chunkSize int64) []types.Task {
 	return tasks
 }
 
+// createInitialTasks keeps parallel downloads within their worker request
+// budget by assigning any alignment remainder to the last primary range.
+func createInitialTasks(fileSize, chunkSize int64, maxTasks int) []types.Task {
+	tasks := createTasks(fileSize, chunkSize)
+	if maxTasks <= 0 || len(tasks) <= maxTasks {
+		return tasks
+	}
+
+	tasks[maxTasks-1].Length = fileSize - tasks[maxTasks-1].Offset
+	return tasks[:maxTasks]
+}
+
 func (d *ConcurrentDownloader) applyClientSettings(client *http.Client) {
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
@@ -539,7 +551,7 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 
 	// Pre-warm connections if configured
 	hedgeCount := d.Runtime.GetDialHedgeCount()
-	if hedgeCount > 0 && !d.skipRangePrewarm.Load() {
+	if hedgeCount > 0 && !isResume && !d.skipRangePrewarm.Load() {
 		d.prewarmConnections(downloadCtx, client, numConns, hedgeCount, workerMirrors)
 	}
 
@@ -559,7 +571,7 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 		d.State.InitBitmap(fileSize, chunkSize)
 	}
 
-	tasks, err := d.setupTasks(destPath, fileSize, chunkSize, outFile, savedState, isResume)
+	tasks, err := d.setupTasks(destPath, fileSize, chunkSize, numConns, outFile, savedState, isResume)
 	if err != nil {
 		return err
 	}
@@ -692,7 +704,7 @@ func (d *ConcurrentDownloader) getEffectiveSizeForWorkers(fileSize int64, savedS
 	return fileSize
 }
 
-func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize int64, outFile *os.File, savedState *types.DownloadRecord, isResume bool) ([]types.Task, error) {
+func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize int64, numConns int, outFile *os.File, savedState *types.DownloadRecord, isResume bool) ([]types.Task, error) {
 	d.isResume.Store(isResume) // FORK-PATCH: suppress FirstByte on resume
 
 	if isResume {
@@ -736,7 +748,10 @@ func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize i
 		d.State.Bytes.Downloaded.Store(0)
 		d.State.SyncSessionStart()
 	}
-	return createTasks(fileSize, chunkSize), nil
+	if d.Runtime.SequentialDownload {
+		return createTasks(fileSize, chunkSize), nil
+	}
+	return createInitialTasks(fileSize, chunkSize, numConns), nil
 }
 
 func (d *ConcurrentDownloader) startHelpers(ctx context.Context, wg *sync.WaitGroup, queue *TaskQueue, fileSize int64, numConns int) {
@@ -1047,7 +1062,7 @@ func (d *ConcurrentDownloader) ScaleWorkers(delta int) int {
 		}
 
 		// FORK-PATCH: one batched ScaleUp prewarm before spawn (ignore DialHedgeCount)
-		if !d.skipRangePrewarm.Load() && deps.client != nil && len(deps.mirrors) > 0 {
+		if !d.skipRangePrewarm.Load() && !d.isResume.Load() && deps.client != nil && len(deps.mirrors) > 0 {
 			need := min(len(admitted), 128)
 			d.prewarmConnectionsBounded(deps.ctx, deps.client, need, deps.mirrors, scalePrewarmBudget)
 		}

@@ -1,9 +1,14 @@
 package concurrent
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
+	"goaria-v3/internal/surge/progress"
+	"goaria-v3/internal/surge/testutil"
 	"goaria-v3/internal/surge/types"
+	"goaria-v3/internal/surge/utils"
 )
 
 func TestSequentialVsParallelChunking(t *testing.T) {
@@ -58,5 +63,37 @@ func TestTaskGenerationRequestOrder(t *testing.T) {
 		if task.Offset != expectedOffset {
 			t.Errorf("Task %d: expected offset %d, got %d", i, expectedOffset, task.Offset)
 		}
+	}
+}
+
+func TestSetupTasks_SequentialDownloadUsesCreateTasks(t *testing.T) {
+	tmpDir := testutil.SetupStateDB(t)
+	fileSize := int64(100 * utils.MiB)
+	numConns := 4
+	destPath := filepath.Join(tmpDir, "sequential.bin")
+	workingPath := destPath + types.IncompleteSuffix
+
+	f, err := os.Create(workingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	d := &ConcurrentDownloader{
+		ID:    "seq-setup",
+		State: progress.New("seq-setup", fileSize),
+		Runtime: &types.RuntimeConfig{
+			SequentialDownload: true,
+			MinChunkSize:       2 * utils.MiB,
+		},
+	}
+
+	chunkSize := d.determineChunkSize(fileSize, numConns)
+	tasks, err := d.setupTasks(destPath, fileSize, chunkSize, numConns, f, nil, false)
+	if err != nil {
+		t.Fatalf("setupTasks failed: %v", err)
+	}
+	if len(tasks) != 50 {
+		t.Fatalf("sequential setupTasks produced %d tasks, want 50 (createTasks shards, not createInitialTasks)", len(tasks))
 	}
 }

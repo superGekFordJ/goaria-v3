@@ -95,7 +95,7 @@ func TestResume_BitmapTrust_InflatedDownloadedDoesNotOverrideVP(t *testing.T) {
 	}
 	defer func() { _ = f.Close() }()
 
-	tasks, err := d.setupTasks(destPath, fileSize, chunkSize, f, savedState, true)
+	tasks, err := d.setupTasks(destPath, fileSize, chunkSize, 0, f, savedState, true)
 	if err != nil {
 		t.Fatalf("setupTasks failed: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestResume_BitmapTrust_SingleChunkVPZeroInflatedDownloaded(t *testing.T) {
 	}
 	defer func() { _ = f.Close() }()
 
-	tasks, err := d.setupTasks(destPath, fileSize, chunkSize, f, savedState, true)
+	tasks, err := d.setupTasks(destPath, fileSize, chunkSize, 0, f, savedState, true)
 	if err != nil {
 		t.Fatalf("setupTasks failed: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestResume_NoBitmap_LegacyVPEqualsDownloaded(t *testing.T) {
 	}
 	defer func() { _ = f.Close() }()
 
-	if _, err := d.setupTasks(destPath, fileSize, chunkSize, f, savedState, true); err != nil {
+	if _, err := d.setupTasks(destPath, fileSize, chunkSize, 0, f, savedState, true); err != nil {
 		t.Fatalf("setupTasks failed: %v", err)
 	}
 
@@ -268,7 +268,7 @@ func TestResume_BitmapTrust_AllZeroBitmapBenignRegression(t *testing.T) {
 	}
 	defer func() { _ = f.Close() }()
 
-	if _, err := d.setupTasks(destPath, fileSize, chunkSize, f, savedState, true); err != nil {
+	if _, err := d.setupTasks(destPath, fileSize, chunkSize, 0, f, savedState, true); err != nil {
 		t.Fatalf("setupTasks failed: %v", err)
 	}
 
@@ -323,7 +323,7 @@ func TestResume_BitmapTrust_DownloadedNotGreaterThanVP(t *testing.T) {
 	}
 	defer func() { _ = f.Close() }()
 
-	if _, err := d.setupTasks(destPath, fileSize, chunkSize, f, savedState, true); err != nil {
+	if _, err := d.setupTasks(destPath, fileSize, chunkSize, 0, f, savedState, true); err != nil {
 		t.Fatalf("setupTasks failed: %v", err)
 	}
 
