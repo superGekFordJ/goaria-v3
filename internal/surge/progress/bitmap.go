@@ -268,7 +268,7 @@ func (b *BitmapTracker) RecalculateProgress(totalSize int64, remainingTasks []ty
 		}
 	}
 
-	// FORK-PATCH: Step 3 — Bitmap trust. Chunks marked ChunkCompleted have
+	// FORK-PATCH: Bitmap trust. Chunks marked ChunkCompleted have
 	// their bytes fully on disk even if remainingTasks still cover them
 	// (hedged bytes re-queued by KillWorker). Restore to full, overriding
 	// Step 2's subtraction.
