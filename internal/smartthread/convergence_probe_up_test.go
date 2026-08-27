@@ -391,7 +391,7 @@ func TestConvergence_ProbeUp_AtMaxConnectionsNoScale(t *testing.T) {
 
 	ct, tracker, telemetry := newTicker(8, 8)
 	ps, ok := probeUpProcess(ct, tracker, telemetry, "sg_probe_up_at_max", 60*1024*1024, 8)
-	if ok && ps.delta > 0 {
+	if ps.delta > 0 {
 		t.Fatalf("at max: expected no +delta, got ok=%v delta=%d", ok, ps.delta)
 	}
 	ct.mu.Lock()

@@ -207,6 +207,7 @@ func openFolderCommandSpecForGOOS(goos string, target openFolderLaunchTarget) (o
 
 const (
 	errCodePersistFailed           = "config_persist_failed"
+	errCodeNotLoaded               = "config_not_loaded"
 	errCodeDownloadDirUnavailable  = "download_dir_unavailable"
 	errCodeRPCExtensionPort        = "rpc_extension_port_conflict"
 	errCodeAriaRestartRolledBack   = "aria2_restart_failed_rolled_back"
@@ -215,6 +216,7 @@ const (
 	errCodeAriaRollbackFailed      = "aria2_rollback_failed"
 
 	msgPersistFailed          = "Failed to save configuration."
+	msgConfigNotLoaded        = "Configuration is not loaded."
 	msgDownloadDirUnavailable = "Download directory is unavailable."
 	msgRPCExtensionConflict   = "RPC port conflicts with the extension listener."
 	msgAriaRestartRolledBack  = "The download engine failed to restart. Previous settings were restored."
@@ -259,10 +261,14 @@ type ariaActivateError struct {
 }
 
 func (e ariaActivateError) Error() string {
-	if e.err == nil {
-		return e.kind
+	if e.err != nil {
+		return e.kind + ": " + e.err.Error()
 	}
-	return e.err.Error()
+	return e.kind
+}
+
+func (e ariaActivateError) Unwrap() error {
+	return e.err
 }
 
 func defaultConfigSaveDeps(a *App) configSaveDeps {
@@ -314,6 +320,36 @@ func requiresAppRestart(oldCfg, newCfg config.AppConfig) bool {
 		oldCfg.ExtensionWSPort != newCfg.ExtensionWSPort
 }
 
+func liveSnapshot(deps configSaveDeps, fallback config.AppConfig) config.AppConfig {
+	if ptr := deps.get(); ptr != nil {
+		return *ptr
+	}
+	return fallback
+}
+
+func daemonWasReplaced(activateErr error) bool {
+	var ae ariaActivateError
+	if !errors.As(activateErr, &ae) || ae.kind != "restart" {
+		return true
+	}
+	var re *process.Aria2RestartError
+	if errors.As(ae.err, &re) && re != nil && !re.Stopped {
+		return false
+	}
+	return true
+}
+
+func (a *App) bindRPC(deps configSaveDeps, cfg config.AppConfig) error {
+	deps.rpcInit(cfg.RPCPort, cfg.RPCSecret)
+	if err := deps.waitForReady(4 * time.Second); err != nil {
+		return err
+	}
+	if a.eventHub != nil && deps.initNotifier != nil {
+		deps.initNotifier(a.eventHub, cfg.RPCPort, cfg.RPCSecret)
+	}
+	return nil
+}
+
 func failedSaveResult(code string, cfg config.AppConfig, message string, old config.AppConfig) SaveConfigResult {
 	return SaveConfigResult{
 		Success:            false,
@@ -335,7 +371,12 @@ func successSaveResult(cfg config.AppConfig, ariaRestarted, appRestart bool) Sav
 
 // GetConfig returns the current configuration
 func (a *App) GetConfig() *config.AppConfig {
-	return config.Get()
+	cur := config.Get()
+	if cur == nil {
+		return nil
+	}
+	cp := *cur
+	return &cp
 }
 
 func (a *App) saveDeps() configSaveDeps {
@@ -354,25 +395,25 @@ func (a *App) SaveConfig(request config.AppConfig) SaveConfigResult {
 	deps := a.saveDeps()
 	oldPtr := deps.get()
 	if oldPtr == nil {
-		return failedSaveResult(errCodePersistFailed, config.AppConfig{}, msgPersistFailed, config.AppConfig{})
+		return failedSaveResult(errCodeNotLoaded, config.AppConfig{}, msgConfigNotLoaded, config.AppConfig{})
 	}
 	old := *oldPtr
 	candidate := config.ValidateAndSanitize(request)
 	candidate.ExtensionSecret = old.ExtensionSecret
 	if candidate == old {
-		return successSaveResult(old, false, false)
+		return successSaveResult(liveSnapshot(deps, old), false, false)
 	}
 
 	if candidate.DownloadDir != old.DownloadDir {
 		if err := deps.validateDir(candidate.DownloadDir); err != nil {
 			log.Printf("[Config] download dir preflight failed: %v", err)
-			return failedSaveResult(errCodeDownloadDirUnavailable, old, msgDownloadDirUnavailable, old)
+			return failedSaveResult(errCodeDownloadDirUnavailable, liveSnapshot(deps, old), msgDownloadDirUnavailable, old)
 		}
 	}
 
 	if wsPort, listening := deps.extensionStatus(); listening && wsPort != 0 {
 		if candidate.RPCPort == strconv.Itoa(wsPort) {
-			return failedSaveResult(errCodeRPCExtensionPort, old, msgRPCExtensionConflict, old)
+			return failedSaveResult(errCodeRPCExtensionPort, liveSnapshot(deps, old), msgRPCExtensionConflict, old)
 		}
 	}
 
@@ -382,34 +423,26 @@ func (a *App) SaveConfig(request config.AppConfig) SaveConfigResult {
 		current.ExtensionSecret = managedSecret
 	})
 	if err != nil {
-		snap := update.Current
-		if ptr := deps.get(); ptr != nil {
-			snap = *ptr
-		}
-		return failedSaveResult(errCodePersistFailed, snap, msgPersistFailed, old)
+		return failedSaveResult(errCodePersistFailed, liveSnapshot(deps, update.Current), msgPersistFailed, old)
 	}
 
 	committed := update.Current
 	needApp := requiresAppRestart(old, committed)
 	if ariaProjection(old) == ariaProjection(committed) {
-		return successSaveResult(committed, false, needApp)
+		return successSaveResult(liveSnapshot(deps, committed), false, needApp)
 	}
 	if err := a.activateAria(deps, committed); err != nil {
 		return a.rollbackConfigAndAria(deps, old, committed, err)
 	}
-	return successSaveResult(committed, true, needApp)
+	return successSaveResult(liveSnapshot(deps, committed), true, needApp)
 }
 
 func (a *App) activateAria(deps configSaveDeps, cfg config.AppConfig) error {
 	if err := deps.restartAria2(&cfg); err != nil {
 		return ariaActivateError{kind: "restart", err: err}
 	}
-	deps.rpcInit(cfg.RPCPort, cfg.RPCSecret)
-	if err := deps.waitForReady(4 * time.Second); err != nil {
+	if err := a.bindRPC(deps, cfg); err != nil {
 		return ariaActivateError{kind: "ready", err: err}
-	}
-	if a.eventHub != nil && deps.initNotifier != nil {
-		deps.initNotifier(a.eventHub, cfg.RPCPort, cfg.RPCSecret)
 	}
 	return nil
 }
@@ -429,20 +462,24 @@ func (a *App) rollbackConfigAndAria(deps configSaveDeps, old, candidate config.A
 		current.ExtensionSecret = managedSecret
 	})
 	if err != nil {
-		snap := candidate
-		if ptr := deps.get(); ptr != nil {
-			snap = *ptr
-		} else if rollback.Current != (config.AppConfig{}) {
+		snap := liveSnapshot(deps, candidate)
+		if snap == (config.AppConfig{}) && rollback.Current != (config.AppConfig{}) {
 			snap = rollback.Current
 		}
 		return failedSaveResult(errCodeConfigRollbackFailed, snap, msgConfigRollbackFailed, old)
 	}
 
 	restored := rollback.Current
-	if err := a.activateAria(deps, restored); err != nil {
-		return failedSaveResult(errCodeAriaRollbackFailed, restored, msgAriaRollbackFailed, old)
+	if daemonWasReplaced(activateErr) {
+		if err := deps.restartAria2(&restored); err != nil {
+			deps.rpcInit(restored.RPCPort, restored.RPCSecret)
+			return failedSaveResult(errCodeAriaRollbackFailed, liveSnapshot(deps, restored), msgAriaRollbackFailed, old)
+		}
 	}
-	return failedSaveResult(code, restored, msg, old)
+	if err := a.bindRPC(deps, restored); err != nil {
+		return failedSaveResult(errCodeAriaRollbackFailed, liveSnapshot(deps, restored), msgAriaRollbackFailed, old)
+	}
+	return failedSaveResult(code, liveSnapshot(deps, restored), msg, old)
 }
 
 // GetAria2Connected returns the current Aria2 WebSocket connection status

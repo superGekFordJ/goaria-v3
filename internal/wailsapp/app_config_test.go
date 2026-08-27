@@ -171,20 +171,22 @@ func TestSaveConfigResult_ValueSnapshot(t *testing.T) {
 }
 
 type saveHarness struct {
-	store         fakeConfigStore
-	log           []string
-	mu            sync.Mutex
-	validateErr   error
-	restartErr    error
-	readyErr      error
-	rollbackReady error
-	restarts      int
-	validates     int
-	rpcInits      int
-	notifiers     int
-	extPort       int
-	extListening  bool
-	lastRestart   config.AppConfig
+	store              fakeConfigStore
+	log                []string
+	mu                 sync.Mutex
+	validateErr        error
+	restartErr         error
+	rollbackRestartErr error
+	readyErr           error
+	rollbackReady      error
+	restarts           int
+	validates          int
+	rpcInits           int
+	notifiers          int
+	extPort            int
+	extListening       bool
+	lastRestart        config.AppConfig
+	lastRPCPort        string
 }
 
 type fakeConfigStore struct {
@@ -243,8 +245,10 @@ func (h *saveHarness) app() *App {
 	a.configDeps = configSaveDeps{
 		get: h.store.get,
 		updateChecked: func(mutate func(*config.AppConfig)) (config.UpdateResult, error) {
-			h.add("update")
-			return h.store.updateChecked(mutate)
+			h.add("update:start")
+			res, err := h.store.updateChecked(mutate)
+			h.add("update:end")
+			return res, err
 		},
 		validateDir: func(dir string) error {
 			h.add("preflight:" + dir)
@@ -260,11 +264,12 @@ func (h *saveHarness) app() *App {
 			if h.restarts == 1 {
 				return h.restartErr
 			}
-			return nil
+			return h.rollbackRestartErr
 		},
 		rpcInit: func(port, secret string) {
 			h.add("rpc")
 			h.rpcInits++
+			h.lastRPCPort = port
 		},
 		waitForReady: func(time.Duration) error {
 			h.add("ready")
@@ -293,7 +298,7 @@ func TestSaveConfig_ExactNoOp(t *testing.T) {
 		t.Fatalf("no-op result %+v", res)
 	}
 	for _, s := range h.steps() {
-		if strings.HasPrefix(s, "preflight") || s == "update" || s == "restart" || s == "rpc" || s == "notifier" {
+		if strings.HasPrefix(s, "preflight") || s == "update:start" || s == "restart" || s == "rpc" || s == "notifier" {
 			t.Fatalf("no-op invoked %s: %v", s, h.steps())
 		}
 	}
@@ -455,6 +460,9 @@ func TestSaveConfig_RestartFailureRollsBack(t *testing.T) {
 	if h.store.cur.RPCPort != cur.RPCPort {
 		t.Fatalf("config not rolled back: %q", h.store.cur.RPCPort)
 	}
+	if h.restarts < 2 {
+		t.Fatal("expected restore restart after a failed candidate restart")
+	}
 	if h.notifiers > 1 {
 		t.Fatalf("notifier calls %d", h.notifiers)
 	}
@@ -469,20 +477,67 @@ func TestSaveConfig_ReadinessFailureRollsBackNoEarlyNotifier(t *testing.T) {
 	if res.Success || res.Aria2Restarted || res.ErrorCode != errCodeAriaReadinessRolledBack {
 		t.Fatalf("%+v", res)
 	}
-	sawReady := false
+	readies := 0
 	for _, s := range h.steps() {
 		if s == "ready" {
-			sawReady = true
+			readies++
 		}
-		if s == "notifier" && !sawReady {
-			t.Fatalf("notifier before readiness: %v", h.steps())
+		if s == "notifier" && readies < 2 {
+			t.Fatalf("candidate notifier before rollback readiness: %v", h.steps())
 		}
 	}
-	if !sawReady {
-		t.Fatal("expected readiness check")
+	if readies < 2 {
+		t.Fatal("expected candidate then restore readiness checks")
 	}
 	if h.store.cur.RPCPort != cur.RPCPort {
 		t.Fatal("not rolled back")
+	}
+}
+
+func TestSaveConfig_ReadyFailRollbackRestartFailRebindsRPC(t *testing.T) {
+	cur := sampleCanonicalConfig()
+	h := &saveHarness{
+		store:              fakeConfigStore{cur: cur},
+		readyErr:           errors.New("not ready"),
+		rollbackRestartErr: errors.New("restore start fail"),
+	}
+	req := cur
+	req.RPCPort = "16810"
+	res := h.app().SaveConfig(req)
+	if res.Success || res.Aria2Restarted || res.ErrorCode != errCodeAriaRollbackFailed {
+		t.Fatalf("%+v", res)
+	}
+	if res.Config.RPCPort != cur.RPCPort {
+		t.Fatalf("config %q, want old", res.Config.RPCPort)
+	}
+	if h.lastRPCPort != cur.RPCPort {
+		t.Fatalf("last rpcInit %q, want old %q", h.lastRPCPort, cur.RPCPort)
+	}
+}
+
+func TestSaveConfig_RestartFailBeforeStopSkipsRestoreRestart(t *testing.T) {
+	cur := sampleCanonicalConfig()
+	h := &saveHarness{
+		store: fakeConfigStore{cur: cur},
+		restartErr: &process.Aria2RestartError{
+			Err:     errors.New("download dir unavailable"),
+			Stopped: false,
+		},
+	}
+	req := cur
+	req.RPCPort = "16810"
+	res := h.app().SaveConfig(req)
+	if res.Success || res.Aria2Restarted || res.ErrorCode != errCodeAriaRestartRolledBack {
+		t.Fatalf("%+v", res)
+	}
+	if h.restarts != 1 {
+		t.Fatalf("restore restart should be skipped, restarts=%d", h.restarts)
+	}
+	if h.lastRPCPort != cur.RPCPort {
+		t.Fatalf("rpc rebound %q, want old", h.lastRPCPort)
+	}
+	if h.store.cur.RPCPort != cur.RPCPort {
+		t.Fatal("config not rolled back")
 	}
 }
 
@@ -508,37 +563,22 @@ func TestSaveConfig_RollbackPersistFailureKeepsCandidate(t *testing.T) {
 
 func TestSaveConfig_RollbackDaemonFailureReturnsOldConfig(t *testing.T) {
 	cur := sampleCanonicalConfig()
-	h := &saveHarness{store: fakeConfigStore{cur: cur}, restartErr: errors.New("always fail")}
-	// both candidate activate and rollback activate fail
-	h.app() // placeholder
-	app := &App{eventHub: &events.Hub{}}
-	app.configDeps = h.app().configDeps
-	// override restart to always fail
-	orig := app.configDeps.restartAria2
-	app.configDeps.restartAria2 = func(cfg *config.AppConfig) error {
-		h.add("restart")
-		h.restarts++
-		h.lastRestart = *cfg
-		return orig(cfg)
-	}
-	// force both restarts to fail
-	h.restartErr = errors.New("fail")
-	app.configDeps.restartAria2 = func(cfg *config.AppConfig) error {
-		h.add("restart")
-		h.restarts++
-		if cfg != nil {
-			h.lastRestart = *cfg
-		}
-		return errors.New("fail")
+	h := &saveHarness{
+		store:              fakeConfigStore{cur: cur},
+		restartErr:         errors.New("fail"),
+		rollbackRestartErr: errors.New("fail"),
 	}
 	req := cur
 	req.RPCPort = "16810"
-	res := app.SaveConfig(req)
+	res := h.app().SaveConfig(req)
 	if res.Success || res.ErrorCode != errCodeAriaRollbackFailed {
 		t.Fatalf("%+v", res)
 	}
 	if res.Config.RPCPort != cur.RPCPort {
 		t.Fatalf("want old snapshot, got %q", res.Config.RPCPort)
+	}
+	if h.lastRPCPort != cur.RPCPort {
+		t.Fatalf("rpc rebound %q, want old", h.lastRPCPort)
 	}
 }
 
@@ -564,6 +604,9 @@ func TestSaveConfig_PreservesRotatedExtensionSecret(t *testing.T) {
 	if h.store.cur.ExtensionSecret != rotated {
 		t.Fatalf("secret overwritten: %q", h.store.cur.ExtensionSecret)
 	}
+	if res.Config.ExtensionSecret != rotated {
+		t.Fatalf("result snapshot missing rotated secret: %q", res.Config.ExtensionSecret)
+	}
 }
 
 func TestSaveConfig_ConcurrentSerialized(t *testing.T) {
@@ -588,21 +631,23 @@ func TestSaveConfig_ConcurrentSerialized(t *testing.T) {
 	steps := h.steps()
 	depth := 0
 	for _, s := range steps {
-		if s == "update" {
+		switch s {
+		case "update:start":
 			if depth != 0 {
 				t.Fatalf("interleaved updates: %v", steps)
 			}
 			depth++
-		}
-		if s == "restart" || s == "rpc" {
+		case "update:end":
+			if depth != 1 {
+				t.Fatalf("unbalanced update end: %v", steps)
+			}
+			depth--
+		case "restart", "rpc":
 			t.Fatalf("unexpected aria activation in non-aria saves: %v", steps)
 		}
-		if s == "extension" && depth > 1 {
-			t.Fatalf("nested save: %v", steps)
-		}
-		if s == "update" {
-			depth--
-		}
+	}
+	if depth != 0 {
+		t.Fatalf("unclosed update: %v", steps)
 	}
 }
 
@@ -615,5 +660,16 @@ func TestSaveConfig_ErrorMessageOmitsSecret(t *testing.T) {
 	res := h.app().SaveConfig(req)
 	if strings.Contains(res.Message, "super-secret-value") {
 		t.Fatalf("leaked secret: %q", res.Message)
+	}
+}
+
+func TestSaveConfig_NilCurrentUsesNotLoaded(t *testing.T) {
+	app := &App{}
+	app.configDeps = configSaveDeps{
+		get: func() *config.AppConfig { return nil },
+	}
+	res := app.SaveConfig(sampleCanonicalConfig())
+	if res.Success || res.ErrorCode != errCodeNotLoaded {
+		t.Fatalf("%+v", res)
 	}
 }

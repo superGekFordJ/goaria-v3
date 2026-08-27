@@ -2,6 +2,7 @@ package smartthread
 
 import (
 	"math"
+	"strconv"
 
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/speedstats"
@@ -28,7 +29,10 @@ type ThreadParams struct {
 func Calculate(p CalcParams) ThreadParams {
 	maxConn := p.MaxConnections
 	if maxConn <= 0 {
-		maxConn = 8
+		maxConn, _ = strconv.Atoi(config.DefaultMaxConnections)
+	}
+	if maxConn > config.MaxConnectionsUpper {
+		maxConn = config.MaxConnectionsUpper
 	}
 
 	// 未知大小：保守策略，跳过 BDP/带宽约束
@@ -189,7 +193,7 @@ func calculateLegacy(fileSize int64, maxConnections int, domain, scope, envKey s
 		Split:           nFinal,
 		MinSize:         minSize,
 		IsExploration:   isExploration,
-		TargetBandwidth: vSingleEst * int64(nFinal),
+		TargetBandwidth: saturatingMulPositive(vSingleEst, int64(nFinal)),
 		NSat:            intFromNonNegative(nLimit),
 	}
 }

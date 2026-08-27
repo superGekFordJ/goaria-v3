@@ -966,4 +966,8 @@ func TestClampPositiveDelta_MaxConnectionsBounds(t *testing.T) {
 	if ct.clampPositiveDelta(10, -2) != -2 {
 		t.Fatal("negative requested must pass through")
 	}
+	ct.maxConnections = 0
+	if ct.clampPositiveDelta(4, 2) != 0 {
+		t.Fatal("non-positive maxConnections must not apply a raise")
+	}
 }

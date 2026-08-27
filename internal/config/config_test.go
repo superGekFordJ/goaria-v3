@@ -1,12 +1,12 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -410,7 +410,7 @@ func TestLoad_MalformedDoesNotWipe(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !bytesEqual(data, original) {
+		if !bytes.Equal(data, original) {
 			t.Fatalf("bytes changed:\n got %q\n want %q", data, original)
 		}
 		if Get() == nil || Get().MaxConnections != DefaultMaxConnections {
@@ -443,8 +443,15 @@ func TestLoad_ReadErrorDoesNotReplace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytesEqual(data, original) {
+	if !bytes.Equal(data, original) {
 		t.Fatalf("file replaced on read error: %s", data)
+	}
+	got := Get()
+	if got == nil {
+		t.Fatal("expected published defaults")
+	}
+	if got.RPCPort != DefaultRPCPort || got.MaxConnections != DefaultMaxConnections {
+		t.Fatalf("published %+v, want defaults", got)
 	}
 }
 
@@ -460,7 +467,7 @@ func TestLoad_CorruptMissingSecretRemainsIdentical(t *testing.T) {
 	}
 	Load()
 	data, _ := os.ReadFile(path)
-	if !bytesEqual(data, original) {
+	if !bytes.Equal(data, original) {
 		t.Fatalf("corrupt file rewritten: %s", data)
 	}
 }
@@ -741,7 +748,7 @@ func TestUpdateChecked_RenameFailureLeavesOldFileAndNoTempLeak(t *testing.T) {
 		t.Fatal("expected rename error")
 	}
 	data, _ := os.ReadFile(GetConfigPath())
-	if !bytesEqual(data, original) {
+	if !bytes.Equal(data, original) {
 		t.Fatal("old JSON changed")
 	}
 	var leftover []string
@@ -775,25 +782,20 @@ func TestUpdate_CompatibilityPersistsAndLogsFailure(t *testing.T) {
 	}
 }
 
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func TestCanonicalBoundedIntRejectsNonDecimal(t *testing.T) {
 	if canonicalBoundedInt("1_6", 1, 256, "16") != "16" {
 		t.Fatal("underscore should fall back")
 	}
-	if canonicalBoundedInt("+8", 1, 256, "16") != "8" && canonicalBoundedInt("+8", 1, 256, "16") != "16" {
-		// Atoi accepts +8; either canonical 8 or conservative fallback is documented as decimal parse.
-		t.Fatal("unexpected +8 handling")
+	if canonicalBoundedInt("0x10", 1, 256, "16") != "16" {
+		t.Fatal("hex should fall back")
 	}
-	_ = strconv.Itoa(0)
+	if canonicalBoundedInt("8.0", 1, 256, "16") != "16" {
+		t.Fatal("float should fall back")
+	}
+	if canonicalBoundedInt("8abc", 1, 256, "16") != "16" {
+		t.Fatal("trailing junk should fall back")
+	}
+	if canonicalBoundedInt("+8", 1, 256, "16") != "8" {
+		t.Fatal("+8 is accepted by decimal Atoi and canonicalized to 8")
+	}
 }

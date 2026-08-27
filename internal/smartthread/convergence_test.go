@@ -36,6 +36,17 @@ func (m *mockTelemetry) Get(gid string) []types.WorkerSnapshot {
 	return m.data[gid]
 }
 
+func TestNewConvergenceTicker_DefaultMaxConnections(t *testing.T) {
+	ct := NewConvergenceTicker(nil, &mockTracker{}, &mockTelemetry{}, nil, nil, 0, 0)
+	if ct.maxConnections != 16 {
+		t.Fatalf("default maxConnections=%d, want 16", ct.maxConnections)
+	}
+	capped := NewConvergenceTicker(nil, &mockTracker{}, &mockTelemetry{}, nil, nil, 0, 999)
+	if capped.maxConnections != 256 {
+		t.Fatalf("capped maxConnections=%d, want 256", capped.maxConnections)
+	}
+}
+
 func TestConvergenceTicker_NoTelemetryNoOp(t *testing.T) {
 	gid := "sg_notelemetry"
 	tracker := &mockTracker{

@@ -509,6 +509,10 @@ func TestRestartAria2InvalidDirectoryDoesNotKill(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected invalid directory error")
 	}
+	var restartErr *Aria2RestartError
+	if !errors.As(err, &restartErr) || restartErr.Stopped {
+		t.Fatalf("expected Aria2RestartError Stopped=false, got %#v", err)
+	}
 	if killCalls != 0 {
 		t.Fatalf("killed old process before dir preflight, got %d", killCalls)
 	}

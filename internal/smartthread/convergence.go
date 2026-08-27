@@ -3,10 +3,12 @@ package smartthread
 import (
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"goaria-v3/internal/config"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/surge/types"
@@ -174,7 +176,11 @@ func NewConvergenceTicker(
 		interval = time.Duration(convergenceIntervalSec) * time.Second
 	}
 	if maxConnections <= 0 {
-		maxConnections = 8
+		n, _ := strconv.Atoi(config.DefaultMaxConnections)
+		maxConnections = n
+	}
+	if maxConnections > config.MaxConnectionsUpper {
+		maxConnections = config.MaxConnectionsUpper
 	}
 	return &ConvergenceTicker{
 		engine:            engine,
@@ -227,8 +233,11 @@ func (c *ConvergenceTicker) currentInterval() time.Duration {
 }
 
 func (c *ConvergenceTicker) clampPositiveDelta(currentWorkers, requested int) int {
-	if requested <= 0 || c.maxConnections <= 0 {
+	if requested <= 0 {
 		return requested
+	}
+	if c.maxConnections <= 0 {
+		return 0
 	}
 	headroom := c.maxConnections - currentWorkers
 	if headroom <= 0 {

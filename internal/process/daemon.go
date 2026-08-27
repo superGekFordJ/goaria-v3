@@ -105,6 +105,35 @@ func KillAllOldProcesses() {
 	time.Sleep(300 * time.Millisecond)
 }
 
+// Aria2RestartError reports a RestartAria2 failure and whether the previous
+// process was already stopped. Callers can skip a restore restart when Stopped
+// is false (prepare/dir validation failed before kill).
+type Aria2RestartError struct {
+	Err     error
+	Stopped bool
+}
+
+func (e *Aria2RestartError) Error() string {
+	if e == nil || e.Err == nil {
+		return "aria2 restart failed"
+	}
+	return e.Err.Error()
+}
+
+func (e *Aria2RestartError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func wrapRestartErr(err error, stopped bool) error {
+	if err == nil {
+		return nil
+	}
+	return &Aria2RestartError{Err: err, Stopped: stopped}
+}
+
 func RestartAria2(cfg *config.AppConfig) error {
 	aria2Mu.Lock()
 	defer aria2Mu.Unlock()
@@ -113,23 +142,23 @@ func RestartAria2(cfg *config.AppConfig) error {
 
 func restartAria2Locked(cfg *config.AppConfig) error {
 	if cfg == nil {
-		return fmt.Errorf("启动失败: 配置为空")
+		return wrapRestartErr(fmt.Errorf("启动失败: 配置为空"), false)
 	}
 
 	prepared, err := prepareBundledAria2Binary()
 	if err != nil {
-		return err
+		return wrapRestartErr(err, false)
 	}
 
 	if err := ValidateDownloadDir(cfg.DownloadDir); err != nil {
 		prepared.cleanup()
-		return err
+		return wrapRestartErr(err, false)
 	}
 
 	stopAria2Locked()
 	time.Sleep(1 * time.Second)
 
-	return startPreparedAria2Locked(cfg, prepared)
+	return wrapRestartErr(startPreparedAria2Locked(cfg, prepared), true)
 }
 
 func prepareBundledAria2Binary() (prepared preparedBundledAria2Binary, err error) {
@@ -223,6 +252,7 @@ func startAria2Locked(cfg *config.AppConfig) error {
 func startPreparedAria2Locked(cfg *config.AppConfig, prepared preparedBundledAria2Binary) error {
 	defer prepared.cleanup()
 
+	stopAria2Locked()
 	killAllAria2Processes()
 
 	aria2Path, err := activatePreparedBundledAria2Binary(prepared)

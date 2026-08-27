@@ -674,6 +674,12 @@ func TestCalculate_ExplorationCap_UnknownLegacyBBR(t *testing.T) {
 		if bbr.Split > explorationLimit(wMax) {
 			t.Fatalf("BBR W_max=%d split %d > cap", wMax, bbr.Split)
 		}
+		if bbr.TargetBandwidth < 0 {
+			t.Fatalf("BBR TargetBandwidth negative")
+		}
+		if bbr.Split > 0 && bbr.TargetBandwidth == 0 {
+			t.Fatalf("BBR capped split %d must recompute TargetBandwidth", bbr.Split)
+		}
 	}
 }
 
@@ -690,8 +696,8 @@ func TestCalculate_ExplorationCap_KnownDomainUnaffected(t *testing.T) {
 	if params.IsExploration {
 		t.Fatal("known domain must not explore")
 	}
-	if params.Split <= 8 && params.Split == explorationLimit(64) {
-		t.Fatalf("known domain should not be forced to 8-cap, split=%d", params.Split)
+	if params.Split < 1 || params.Split > 64 {
+		t.Fatalf("known domain split %d outside [1,64]", params.Split)
 	}
 }
 
@@ -729,15 +735,35 @@ func TestCalculate_OverflowSafeMinThreadLife(t *testing.T) {
 	}
 }
 
+func TestCalculate_DefaultAndUpperMaxConnections(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	zero := Calculate(CalcParams{FileSize: 0, MaxConnections: 0, Domain: "x", Scope: "wan", EnvKey: "e"})
+	def := Calculate(CalcParams{FileSize: 0, MaxConnections: 16, Domain: "x", Scope: "wan", EnvKey: "e"})
+	if zero.Split != def.Split || zero.NSat != 16 {
+		t.Fatalf("zero W_max should default to 16: %+v vs %+v", zero, def)
+	}
+	huge := Calculate(CalcParams{FileSize: 0, MaxConnections: 999, Domain: "x", Scope: "wan", EnvKey: "e"})
+	if huge.NSat != 256 {
+		t.Fatalf("NSat=%d, want clamped 256", huge.NSat)
+	}
+}
+
 func TestCalculate_LegacyNTminExample(t *testing.T) {
 	setupTestConfig(t)
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
-	// 72.32MB / (2MB/s * 5s) = 7.232 → ceil 8 before exploration; with W_max=8 explore cap 4.
-	// Spec cites 5MB/s thread avg for N_tmin=3 which is the BBR path, not 2MB legacy estimate.
+	// 20MB peak / 4 threads → 5MB/s V_thread_avg; extra record keeps global peak high so N_sat > N_tmin.
+	speedstats.AddRecordV2(20*1024*1024, 4, 200*1024*1024, false, 100, "ntmin.example", "wan", "testenv")
+	speedstats.AddRecordV2(200*1024*1024, 8, 200*1024*1024, false, 100, "bulk.example", "wan", "testenv")
 	size := int64(7232) * 1024 * 1024 / 100
-	legacy := Calculate(CalcParams{FileSize: size, MaxConnections: 16})
-	if legacy.Split < 1 || legacy.Split > 16 {
-		t.Fatalf("legacy split %d", legacy.Split)
+	params := Calculate(CalcParams{
+		FileSize: size, MaxConnections: 16,
+		Domain: "ntmin.example", Scope: "wan", EnvKey: "testenv",
+	})
+	// N_tmin = ceil(72.32MB / (5MB/s * 5s)) = 3
+	if params.Split != 3 {
+		t.Fatalf("N_tmin example split=%d, want 3 (params=%+v)", params.Split, params)
 	}
 }
