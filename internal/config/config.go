@@ -15,22 +15,21 @@ import (
 // (string/bool/int) — Update relies on shallow copy, so slice/map/pointer fields
 // would share state between old and new snapshots.
 type AppConfig struct {
-	RPCPort                         string `json:"rpc_port"`
-	RPCSecret                       string `json:"rpc_secret"`
-	DownloadDir                     string `json:"download_dir"`
-	MaxConnections                  string `json:"max_connections"`
-	MaxConcurrentDownloads          string `json:"max_concurrent_downloads"`
-	UserAgent                       string `json:"user_agent"`
-	ShowHistory                     bool   `json:"show_history"`
-	WindowTransparency              string `json:"window_transparency"`                 // "none", "acrylic", "mica", "tabbed"
-	SmartThreadMode                 bool   `json:"smart_thread_mode"`                   // 智能线程模式开关
-	MinThreadLife                   int    `json:"min_thread_life"`                     // T_min: 线程最小生存时间(秒), 默认 5
-	CloseToTray                     bool   `json:"close_to_tray"`                       // 关闭窗口时最小化到托盘（true）还是退出应用（false）
-	ConvergenceInterval             int    `json:"convergence_interval"`                // 收敛tick间隔(秒), 0=默认5秒
-	ExtensionEnabled                bool   `json:"extension_enabled"`                   // 浏览器扩展集成开关
-	ExtensionWSPort                 int    `json:"extension_ws_port"`                   // WebSocket 端口, 0=自动探测
-	ExtensionSecret                 string `json:"extension_secret"`                    // 浏览器扩展认证密钥, 持久化到 config.json
-	EnablePhysicalMacAwareBandwidth bool   `json:"enable_physical_mac_aware_bandwidth"` // 物理网卡感知带宽天花板开关（默认 false）
+	RPCPort                string `json:"rpc_port"`
+	RPCSecret              string `json:"rpc_secret"`
+	DownloadDir            string `json:"download_dir"`
+	MaxConnections         string `json:"max_connections"`
+	MaxConcurrentDownloads string `json:"max_concurrent_downloads"`
+	UserAgent              string `json:"user_agent"`
+	ShowHistory            bool   `json:"show_history"`
+	WindowTransparency     string `json:"window_transparency"`  // "none", "acrylic", "mica", "tabbed"
+	SmartThreadMode        bool   `json:"smart_thread_mode"`    // 智能线程模式开关
+	MinThreadLife          int    `json:"min_thread_life"`      // T_min: 线程最小生存时间(秒), 默认 5
+	CloseToTray            bool   `json:"close_to_tray"`        // 关闭窗口时最小化到托盘（true）还是退出应用（false）
+	ConvergenceInterval    int    `json:"convergence_interval"` // 收敛tick间隔(秒), 0=默认5秒
+	ExtensionEnabled       bool   `json:"extension_enabled"`    // 浏览器扩展集成开关
+	ExtensionWSPort        int    `json:"extension_ws_port"`    // WebSocket 端口, 0=自动探测
+	ExtensionSecret        string `json:"extension_secret"`     // 浏览器扩展认证密钥, 持久化到 config.json
 }
 
 var (

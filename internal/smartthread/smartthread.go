@@ -84,11 +84,9 @@ func Calculate(p CalcParams) ThreadParams {
 	// --- 全局带宽感知 ---
 	vAvailable := max(vGlobalPeak-p.ReservedBandwidth, 0)
 
-	// 物理天花板（前向碰撞 + 对称扣减）：仅当开关开启时应用，
+	// 物理天花板（前向碰撞 + 对称扣减）：内置默认启用，
 	// 降级时退回 vLogicalAvailable（原逻辑天花板），只收紧不放宽。
-	if config.Get().EnablePhysicalMacAwareBandwidth {
-		vAvailable = applyPhysicalCeiling(vAvailable, p)
-	}
+	vAvailable = applyPhysicalCeiling(vAvailable, p)
 
 	// V_target = min(domain remaining, V_available) when domain peak known.
 	// Domain-only exhaustion uses floor=1 (global V_available still healthy);
