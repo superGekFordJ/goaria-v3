@@ -81,7 +81,7 @@
 </script>
 
 <template>
-  <div class="space-y-4">
+  <div class="flex flex-col gap-4">
     <!-- Window Transparency Card (Hidden on Linux as desktop compositors lack unified blur APIs) -->
     <SectionCard
       v-if="!isLinux"

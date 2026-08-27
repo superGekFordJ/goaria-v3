@@ -168,7 +168,7 @@
 </script>
 
 <template>
-  <div class="etched-panel p-5 mt-6 relative overflow-hidden">
+  <div class="etched-panel p-5 relative overflow-hidden">
     <!-- Top Row: App Identity & Global Actions/Status -->
     <div class="flex items-center justify-between relative z-10">
       <!-- Left: App identity -->

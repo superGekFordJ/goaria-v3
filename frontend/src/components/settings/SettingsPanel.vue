@@ -358,9 +358,9 @@
         </button>
       </div>
 
-      <div class="space-y-4">
+      <div class="flex flex-col gap-4">
         <fieldset
-          class="min-w-0 space-y-4 border-0 p-0 m-0"
+          class="min-w-0 flex flex-col gap-4 border-0 p-0 m-0"
           :disabled="editorsLocked"
           :class="{ 'pointer-events-none opacity-60': editorsLocked }"
         >
@@ -381,15 +381,21 @@
           />
 
           <UASection v-model="formData.user_agent" @change="triggerSave" />
+        </fieldset>
 
+        <AppearanceSection />
+
+        <fieldset
+          class="min-w-0 flex flex-col gap-4 border-0 p-0 m-0"
+          :disabled="editorsLocked"
+          :class="{ 'pointer-events-none opacity-60': editorsLocked }"
+        >
           <AdvancedSection
             v-model:transparency="formData.window_transparency"
             v-model:show-history="formData.show_history"
             @change="triggerSave"
           />
         </fieldset>
-
-        <AppearanceSection />
 
         <ExtensionSection />
 
