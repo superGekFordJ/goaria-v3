@@ -249,6 +249,7 @@ type configSaveDeps struct {
 	updateChecked   func(func(*config.AppConfig)) (config.UpdateResult, error)
 	validateDir     func(string) error
 	restartAria2    func(*config.AppConfig) error
+	stopAria2       func()
 	rpcInit         func(port, secret string)
 	waitForReady    func(time.Duration) error
 	initNotifier    func(hub *events.Hub, port, secret string)
@@ -277,6 +278,7 @@ func defaultConfigSaveDeps(a *App) configSaveDeps {
 		updateChecked: config.UpdateChecked,
 		validateDir:   process.ValidateDownloadDir,
 		restartAria2:  process.RestartAria2,
+		stopAria2:     process.StopAria2,
 		rpcInit:       rpc.Init,
 		waitForReady:  rpc.WaitForReady,
 		initNotifier:  rpc.InitNotifier,
@@ -340,9 +342,13 @@ func daemonWasReplaced(activateErr error) bool {
 }
 
 func (a *App) bindRPC(deps configSaveDeps, cfg config.AppConfig) error {
-	deps.rpcInit(cfg.RPCPort, cfg.RPCSecret)
-	if err := deps.waitForReady(4 * time.Second); err != nil {
-		return err
+	if deps.rpcInit != nil {
+		deps.rpcInit(cfg.RPCPort, cfg.RPCSecret)
+	}
+	if deps.waitForReady != nil {
+		if err := deps.waitForReady(4 * time.Second); err != nil {
+			return err
+		}
 	}
 	if a.eventHub != nil && deps.initNotifier != nil {
 		deps.initNotifier(a.eventHub, cfg.RPCPort, cfg.RPCSecret)
@@ -472,7 +478,13 @@ func (a *App) rollbackConfigAndAria(deps configSaveDeps, old, candidate config.A
 	restored := rollback.Current
 	if daemonWasReplaced(activateErr) {
 		if err := deps.restartAria2(&restored); err != nil {
-			deps.rpcInit(restored.RPCPort, restored.RPCSecret)
+			var re *process.Aria2RestartError
+			if errors.As(err, &re) && re != nil && !re.Stopped && deps.stopAria2 != nil {
+				deps.stopAria2()
+			}
+			if deps.rpcInit != nil {
+				deps.rpcInit(restored.RPCPort, restored.RPCSecret)
+			}
 			return failedSaveResult(errCodeAriaRollbackFailed, liveSnapshot(deps, restored), msgAriaRollbackFailed, old)
 		}
 	}

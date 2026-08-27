@@ -12,6 +12,17 @@ const (
 	defaultMinThreadLife = 5 // 默认最小生存时间 5 秒
 )
 
+func defaultMaxConnections() int {
+	n, err := strconv.Atoi(config.DefaultMaxConnections)
+	if err != nil || n <= 0 {
+		return 16
+	}
+	if n > config.MaxConnectionsUpper {
+		return config.MaxConnectionsUpper
+	}
+	return n
+}
+
 // ThreadParams 计算结果
 type ThreadParams struct {
 	Split           int   // -x 参数：线程数
@@ -29,7 +40,7 @@ type ThreadParams struct {
 func Calculate(p CalcParams) ThreadParams {
 	maxConn := p.MaxConnections
 	if maxConn <= 0 {
-		maxConn, _ = strconv.Atoi(config.DefaultMaxConnections)
+		maxConn = defaultMaxConnections()
 	}
 	if maxConn > config.MaxConnectionsUpper {
 		maxConn = config.MaxConnectionsUpper

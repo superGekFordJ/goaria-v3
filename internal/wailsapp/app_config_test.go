@@ -183,6 +183,7 @@ type saveHarness struct {
 	validates          int
 	rpcInits           int
 	notifiers          int
+	stops              int
 	extPort            int
 	extListening       bool
 	lastRestart        config.AppConfig
@@ -265,6 +266,10 @@ func (h *saveHarness) app() *App {
 				return h.restartErr
 			}
 			return h.rollbackRestartErr
+		},
+		stopAria2: func() {
+			h.add("stop")
+			h.stops++
 		},
 		rpcInit: func(port, secret string) {
 			h.add("rpc")
@@ -515,6 +520,36 @@ func TestSaveConfig_ReadyFailRollbackRestartFailRebindsRPC(t *testing.T) {
 	}
 }
 
+func TestSaveConfig_ReadyFailRestoreStoppedFalseStopsCandidate(t *testing.T) {
+	cur := sampleCanonicalConfig()
+	h := &saveHarness{
+		store:    fakeConfigStore{cur: cur},
+		readyErr: errors.New("not ready"),
+		rollbackRestartErr: &process.Aria2RestartError{
+			Err:     errors.New("old download dir offline"),
+			Stopped: false,
+		},
+	}
+	req := cur
+	req.DownloadDir = `C:\new-downloads`
+	res := h.app().SaveConfig(req)
+	if res.Success || res.Aria2Restarted || res.ErrorCode != errCodeAriaRollbackFailed {
+		t.Fatalf("%+v", res)
+	}
+	if h.restarts != 2 {
+		t.Fatalf("candidate then restore restart, got %d", h.restarts)
+	}
+	if h.stops != 1 {
+		t.Fatalf("leftover candidate must be stopped, stops=%d", h.stops)
+	}
+	if h.lastRPCPort != cur.RPCPort {
+		t.Fatalf("rpc rebound %q, want old", h.lastRPCPort)
+	}
+	if res.Config.DownloadDir != cur.DownloadDir {
+		t.Fatalf("config %q, want old dir", res.Config.DownloadDir)
+	}
+}
+
 func TestSaveConfig_RestartFailBeforeStopSkipsRestoreRestart(t *testing.T) {
 	cur := sampleCanonicalConfig()
 	h := &saveHarness{
@@ -535,6 +570,9 @@ func TestSaveConfig_RestartFailBeforeStopSkipsRestoreRestart(t *testing.T) {
 	}
 	if h.lastRPCPort != cur.RPCPort {
 		t.Fatalf("rpc rebound %q, want old", h.lastRPCPort)
+	}
+	if h.stops != 0 {
+		t.Fatalf("old daemon was never killed, unexpected stop: %d", h.stops)
 	}
 	if h.store.cur.RPCPort != cur.RPCPort {
 		t.Fatal("config not rolled back")

@@ -3,7 +3,6 @@ package smartthread
 import (
 	"log"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -176,8 +175,7 @@ func NewConvergenceTicker(
 		interval = time.Duration(convergenceIntervalSec) * time.Second
 	}
 	if maxConnections <= 0 {
-		n, _ := strconv.Atoi(config.DefaultMaxConnections)
-		maxConnections = n
+		maxConnections = defaultMaxConnections()
 	}
 	if maxConnections > config.MaxConnectionsUpper {
 		maxConnections = config.MaxConnectionsUpper

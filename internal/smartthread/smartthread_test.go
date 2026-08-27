@@ -677,8 +677,9 @@ func TestCalculate_ExplorationCap_UnknownLegacyBBR(t *testing.T) {
 		if bbr.TargetBandwidth < 0 {
 			t.Fatalf("BBR TargetBandwidth negative")
 		}
-		if bbr.Split > 0 && bbr.TargetBandwidth == 0 {
-			t.Fatalf("BBR capped split %d must recompute TargetBandwidth", bbr.Split)
+		if bbr.TargetBandwidth != saturatingMulPositive(512*1024, int64(bbr.Split)) {
+			t.Fatalf("BBR W_max=%d TargetBandwidth %d want %d * split %d",
+				wMax, bbr.TargetBandwidth, 512*1024, bbr.Split)
 		}
 	}
 }
@@ -696,8 +697,11 @@ func TestCalculate_ExplorationCap_KnownDomainUnaffected(t *testing.T) {
 	if params.IsExploration {
 		t.Fatal("known domain must not explore")
 	}
-	if params.Split < 1 || params.Split > 64 {
-		t.Fatalf("known domain split %d outside [1,64]", params.Split)
+	if params.Split <= explorationLimit(64) {
+		t.Fatalf("known domain split %d must exceed 8-cap %d", params.Split, explorationLimit(64))
+	}
+	if params.Split > 64 {
+		t.Fatalf("known domain split %d above W_max", params.Split)
 	}
 }
 
