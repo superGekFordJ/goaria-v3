@@ -5,7 +5,8 @@
     "settings": "Settings",
     "liveSpeed": "Live Speed",
     "surgeReady": "Ready",
-    "aria2Offline": "Offline"
+    "aria2Offline": "Offline",
+    "aria2PortPending": "—"
   },
   "titleBar": {
     "minimizeToTray": "Minimize to Tray",
@@ -24,6 +25,11 @@
     "retry": "Retry",
     "requiresAppRestart": "Saved. Restart GoAria to apply all changes.",
     "restartNow": "Restart now",
+    "restartConfirm": {
+      "message": "Restart GoAria now?",
+      "confirm": "Restart",
+      "cancel": "Cancel"
+    },
     "autoSave": "Auto Save",
     "errors": {
       "persistFailed": "Could not save settings.",

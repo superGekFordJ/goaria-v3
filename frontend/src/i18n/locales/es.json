@@ -5,7 +5,8 @@
     "settings": "Ajustes",
     "liveSpeed": "Velocidad",
     "surgeReady": "Listo",
-    "aria2Offline": "Desconectado"
+    "aria2Offline": "Desconectado",
+    "aria2PortPending": "—"
   },
   "titleBar": {
     "minimizeToTray": "Minimizar a la bandeja",
@@ -24,6 +25,11 @@
     "retry": "Reintentar",
     "requiresAppRestart": "Guardado. Reinicia GoAria para aplicar todos los cambios.",
     "restartNow": "Reiniciar ahora",
+    "restartConfirm": {
+      "message": "¿Reiniciar GoAria ahora?",
+      "confirm": "Reiniciar",
+      "cancel": "Cancelar"
+    },
     "autoSave": "Autoguardado",
     "errors": {
       "persistFailed": "No se pudieron guardar los ajustes.",

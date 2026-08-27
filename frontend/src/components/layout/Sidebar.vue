@@ -235,7 +235,7 @@
                 configStore.aria2Connected
                   ? configStore.isHydrated
                     ? configStore.settings.rpc_port
-                    : ''
+                    : t('sidebar.aria2PortPending')
                   : t('sidebar.aria2Offline')
               }}
             </span>

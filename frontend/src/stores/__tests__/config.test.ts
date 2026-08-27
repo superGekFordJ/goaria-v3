@@ -230,6 +230,21 @@ describe('useConfigStore', () => {
     expect(store.needsAppRestart).toBe(true)
   })
 
+  it('latches needsAppRestart on a failed result that still requires restart', async () => {
+    const { useConfigStore } = await import('../config')
+    const store = useConfigStore()
+    bindingMocks.SaveConfig.mockResolvedValueOnce(
+      new SaveConfigResult({
+        success: false,
+        requires_app_restart: true,
+        error_code: 'config_rollback_failed',
+        config: sampleConfig({ window_transparency: 'mica' }),
+      }),
+    )
+    await store.updateConfig(sampleConfig({ window_transparency: 'mica' }))
+    expect(store.needsAppRestart).toBe(true)
+  })
+
   it('omits secrets from persistable settings', async () => {
     const { persistableSettings } = await import('../config')
     const stripped = persistableSettings(
@@ -238,5 +253,15 @@ describe('useConfigStore', () => {
     expect(stripped.rpc_secret).toBe('')
     expect(stripped.extension_secret).toBe('')
     expect(stripped.rpc_port).toBe('16800')
+  })
+
+  it('strips secrets when reviving persisted localStorage', async () => {
+    const { revivePersistedState } = await import('../config')
+    const revived = revivePersistedState({
+      settings: sampleConfig({ rpc_secret: 'secret', extension_secret: 'managed' }),
+    })
+    expect(revived.settings.rpc_secret).toBe('')
+    expect(revived.settings.extension_secret).toBe('')
+    expect(revived.settings.rpc_port).toBe('16800')
   })
 })

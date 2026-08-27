@@ -67,6 +67,9 @@ describe('Sidebar inline groups', () => {
     storeMocks.downloadGroupStore.inlineDownloadsCount = 1
     storeMocks.downloadGroupStore.inlineCompletedCount = 2
     storeMocks.downloadGroupStore.visibleGroupCount = 99
+    storeMocks.configStore.aria2Connected = true
+    storeMocks.configStore.isHydrated = true
+    storeMocks.configStore.settings.rpc_port = 6800
   })
 
   it('Sidebar renders no Groups nav and counts inline entries after group replacement', async () => {
@@ -94,6 +97,16 @@ describe('Sidebar inline groups', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('sidebar.aria2Offline')
 
+    wrapper.unmount()
+  })
+
+  it('shows a pending port placeholder while connected but unhydrated', async () => {
+    storeMocks.configStore.aria2Connected = true
+    storeMocks.configStore.isHydrated = false
+    const wrapper = mount(Sidebar)
+    expect(wrapper.text()).toContain('sidebar.aria2PortPending')
+    expect(wrapper.text()).not.toContain('6800')
+    expect(wrapper.text()).not.toContain('sidebar.aria2Offline')
     wrapper.unmount()
   })
 })

@@ -43,6 +43,8 @@
   const showHydrationError = computed(() => !configStore.isHydrated && configStore.hydrateFailed)
   const retryBusy = computed(() => configStore.isLoading)
   const lastErrorCode = ref('')
+  const restartConfirming = ref(false)
+  const restartBlocked = computed(() => saveStatus.value === 'saving' || configStore.isSaving)
   const saveErrorKey = computed(() => {
     switch (lastErrorCode.value) {
       case 'config_persist_failed':
@@ -157,7 +159,7 @@
     saveTimeout = setTimeout(async () => {
       try {
         const result = await configStore.updateConfig(snapshot)
-        if (result?.success && result.requires_app_restart) {
+        if (result?.requires_app_restart) {
           configStore.noteAppRestartRequired()
         }
         if (disposed || generation !== editGeneration) return
@@ -205,8 +207,19 @@
     void configStore.fetchConfig()
   }
 
-  const restartApp = () => {
+  const beginRestartConfirm = () => {
+    if (restartBlocked.value) return
+    restartConfirming.value = true
+  }
+
+  const confirmRestart = () => {
+    if (restartBlocked.value) return
+    restartConfirming.value = false
     void configStore.restartApp()
+  }
+
+  const cancelRestartConfirm = () => {
+    restartConfirming.value = false
   }
 
   onUnmounted(() => {
@@ -293,12 +306,34 @@
               {{ t('settings.requiresAppRestart') }}
             </span>
             <button
+              v-if="!restartConfirming"
               type="button"
-              class="restart-now shrink-0 px-2 py-0.5 rounded-md text-[10px] font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)]"
-              @click="restartApp"
+              class="restart-now shrink-0 px-2 py-0.5 rounded-md text-[10px] font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] disabled:opacity-50 disabled:cursor-not-allowed"
+              :disabled="restartBlocked"
+              @click="beginRestartConfirm"
             >
               {{ t('settings.restartNow') }}
             </button>
+            <template v-else>
+              <span class="text-[10px] font-mono-data text-[var(--app-text-muted)]">
+                {{ t('settings.restartConfirm.message') }}
+              </span>
+              <button
+                type="button"
+                class="restart-confirm shrink-0 px-2 py-0.5 rounded-md text-[10px] font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] disabled:opacity-50 disabled:cursor-not-allowed"
+                :disabled="restartBlocked"
+                @click="confirmRestart"
+              >
+                {{ t('settings.restartConfirm.confirm') }}
+              </button>
+              <button
+                type="button"
+                class="restart-cancel shrink-0 px-2 py-0.5 rounded-md text-[10px] font-mono-data text-[var(--app-text-muted)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)]"
+                @click="cancelRestartConfirm"
+              >
+                {{ t('settings.restartConfirm.cancel') }}
+              </button>
+            </template>
           </div>
         </div>
       </div>

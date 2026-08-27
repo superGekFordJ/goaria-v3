@@ -1,5 +1,6 @@
-import { defineStore } from 'pinia'
+import { defineStore, type StateTree } from 'pinia'
 import { computed, reactive, ref } from 'vue'
+import 'pinia-plugin-persistedstate'
 import {
   GetConfig,
   GetAria2Connected,
@@ -23,6 +24,15 @@ export function persistableSettings(settings: AppConfig): AppConfig {
   copy.rpc_secret = ''
   copy.extension_secret = ''
   return copy
+}
+
+export function revivePersistedState(value: unknown): { settings: AppConfig } {
+  const bag = value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+  const rawSettings = bag.settings && typeof bag.settings === 'object' ? bag.settings : {}
+  return {
+    ...bag,
+    settings: persistableSettings(new AppConfig(rawSettings as Partial<AppConfig>)),
+  }
 }
 
 export const useConfigStore = defineStore(
@@ -99,7 +109,7 @@ export const useConfigStore = defineStore(
       saveInFlight.value++
       try {
         const result = await SaveConfig(request)
-        if (result?.success && result.requires_app_restart) {
+        if (result?.requires_app_restart) {
           needsAppRestart.value = true
         }
         return result
@@ -122,7 +132,11 @@ export const useConfigStore = defineStore(
     }
 
     async function restartApp() {
-      await RestartApp()
+      try {
+        await RestartApp()
+      } catch {
+        // Process should be exiting.
+      }
     }
 
     return {
@@ -147,13 +161,23 @@ export const useConfigStore = defineStore(
     persist: {
       pick: ['settings'],
       serializer: {
-        serialize(value: { settings: AppConfig }) {
+        serialize(value: StateTree) {
+          const settings = (value as { settings?: AppConfig }).settings ?? new AppConfig()
           return JSON.stringify({
             ...value,
-            settings: persistableSettings(value.settings),
+            settings: persistableSettings(settings),
           })
         },
-        deserialize: JSON.parse,
+        deserialize(raw: string) {
+          try {
+            return revivePersistedState(JSON.parse(raw))
+          } catch {
+            return revivePersistedState(null)
+          }
+        },
+      },
+      afterHydrate(ctx) {
+        ctx.store.$persist()
       },
     },
   },

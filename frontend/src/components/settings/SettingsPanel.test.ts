@@ -40,6 +40,7 @@ const storeMock = reactive({
   settings: sampleConfig(),
   isHydrated: false,
   isLoading: false,
+  isSaving: false,
   hydrateFailed: false,
   needsAppRestart: false,
   updateConfig: vi.fn(),
@@ -208,6 +209,7 @@ describe('SettingsPanel', () => {
     vi.clearAllMocks()
     storeMock.isHydrated = false
     storeMock.isLoading = false
+    storeMock.isSaving = false
     storeMock.hydrateFailed = false
     storeMock.needsAppRestart = false
     storeMock.settings = sampleConfig()
@@ -439,6 +441,51 @@ describe('SettingsPanel', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('settings.requiresAppRestart')
     expect(wrapper.text()).toContain('settings.saved')
+    wrapper.unmount()
+  })
+
+  it('confirms Restart now and ignores it while a save is in flight', async () => {
+    storeMock.isHydrated = true
+    storeMock.needsAppRestart = true
+    const wrapper = mountPanel()
+    await flushHydration()
+    expect(wrapper.find('.restart-now').exists()).toBe(true)
+    await wrapper.find('.restart-now').trigger('click')
+    expect(storeMock.restartApp).not.toHaveBeenCalled()
+    expect(wrapper.find('.restart-confirm').exists()).toBe(true)
+    await wrapper.find('.restart-cancel').trigger('click')
+    expect(wrapper.find('.restart-now').exists()).toBe(true)
+
+    await wrapper.find('.restart-now').trigger('click')
+    await wrapper.find('.restart-confirm').trigger('click')
+    expect(storeMock.restartApp).toHaveBeenCalledTimes(1)
+
+    storeMock.needsAppRestart = true
+    await wrapper.find('.restart-now').trigger('click')
+    await wrapper.find('.ua-change').trigger('click')
+    expect(wrapper.find('.restart-confirm').attributes('disabled')).toBeDefined()
+    await wrapper.find('.restart-confirm').trigger('click')
+    expect(storeMock.restartApp).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('latches restart from a failed save when requires_app_restart is set', async () => {
+    storeMock.isHydrated = true
+    const wrapper = mountPanel()
+    await flushHydration()
+    storeMock.updateConfig.mockResolvedValue(
+      new SaveConfigResult({
+        success: false,
+        requires_app_restart: true,
+        error_code: 'config_rollback_failed',
+        config: sampleConfig({ window_transparency: 'mica' }),
+      }),
+    )
+    await wrapper.find('.transparency-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    expect(storeMock.noteAppRestartRequired).toHaveBeenCalled()
+    expect(wrapper.text()).toContain('settings.requiresAppRestart')
     wrapper.unmount()
   })
 

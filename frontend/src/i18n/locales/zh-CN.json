@@ -5,7 +5,8 @@
     "settings": "偏好设置",
     "liveSpeed": "实时速度",
     "surgeReady": "就绪",
-    "aria2Offline": "离线"
+    "aria2Offline": "离线",
+    "aria2PortPending": "—"
   },
   "titleBar": {
     "minimizeToTray": "最小化到托盘",
@@ -24,6 +25,11 @@
     "retry": "重试",
     "requiresAppRestart": "已保存。请重启 GoAria 以使全部更改生效。",
     "restartNow": "立即重启",
+    "restartConfirm": {
+      "message": "现在重启 GoAria？",
+      "confirm": "重启",
+      "cancel": "取消"
+    },
     "autoSave": "自动保存",
     "errors": {
       "persistFailed": "无法保存设置。",
