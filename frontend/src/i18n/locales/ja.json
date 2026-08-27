@@ -19,6 +19,7 @@
     "description": "ダウンロード設定の構成",
     "saving": "保存中...",
     "saved": "保存しました",
+    "saveFailed": "保存に失敗しました",
     "autoSave": "自動保存"
   },
   "appearance": {
@@ -81,7 +82,7 @@
     "maxConnections": "タスクごとの最大接続数",
     "threads": "スレッド",
     "maxConcurrent": "最大同時タスク数",
-    "surgeExclusiveTooltip": "16スレッド以上をご指定の場合、システムがSurgeエンジンへ自動的にルーティングし、Aria2も並行して正常に稼働いたしますのでご安心ください。"
+    "surgeExclusiveTooltip": "16を超える値はSurgeが使用し、Aria2は16接続のままです。UIのプリセットは意図的に控えめです。上級者はGoAriaを終了してから ~/.goaria/config.json を編集し、max_connections を最大256まで設定できます。再起動後に有効になり、既存タスクは遡って再設定されません。"
   },
   "ua": {
     "description": "カスタム User-Agent",

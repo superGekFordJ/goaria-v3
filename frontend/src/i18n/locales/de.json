@@ -19,6 +19,7 @@
     "description": "Konfigurieren Sie Ihre Download-Präferenzen",
     "saving": "Speichern...",
     "saved": "Gespeichert",
+    "saveFailed": "Speichern fehlgeschlagen",
     "autoSave": "Automatisches Speichern"
   },
   "appearance": {
@@ -81,7 +82,7 @@
     "maxConnections": "Max. Verbindungen pro Task",
     "threads": "Threads",
     "maxConcurrent": "Max. gleichzeitige Tasks",
-    "surgeExclusiveTooltip": "Bei mehr als 16 Threads leitet unser System automatisch intelligent weiter, während Aria2 reibungslos weiterläuft."
+    "surgeExclusiveTooltip": "Werte über 16 nutzt Surge; Aria2 bleibt auf 16 Verbindungen begrenzt. Die UI-Voreinstellungen bleiben bewusst konservativ. Fortgeschrittene Nutzer können GoAria beenden und ~/.goaria/config.json bearbeiten, um max_connections bis 256 zu setzen. Änderungen gelten nach einem Neustart; laufende Aufgaben werden nicht nachträglich umkonfiguriert."
   },
   "ua": {
     "description": "Benutzerdefinierter User-Agent",

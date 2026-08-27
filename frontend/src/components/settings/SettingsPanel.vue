@@ -1,10 +1,10 @@
 <script setup lang="ts">
-  import { ref, onMounted, onUnmounted } from 'vue'
+  import { onMounted, onUnmounted, ref, watch } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { useConfigStore } from '../../stores/config'
-  import { Settings as SettingsIcon, CheckCircle, Loader2 } from '@lucide/vue'
+  import { AppConfig } from '../../../bindings/goaria-v3/internal/config/models.js'
+  import { Settings as SettingsIcon, CheckCircle, Loader2, AlertCircle } from '@lucide/vue'
 
-  // Sections
   import DownloadSection from './sections/DownloadSection.vue'
   import RPCSection from './sections/RPCSection.vue'
   import PerformanceSection from './sections/PerformanceSection.vue'
@@ -17,7 +17,6 @@
   const { t } = useI18n()
   const configStore = useConfigStore()
 
-  // Local form state - decoupled from store to prevent reactivity issues
   const formData = ref({
     download_dir: '',
     rpc_port: '',
@@ -30,79 +29,124 @@
     smart_thread_mode: false,
   })
 
-  // Save status for UI feedback only
-  const saveStatus = ref<'idle' | 'saving' | 'saved'>('idle')
+  type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
+  const saveStatus = ref<SaveStatus>('idle')
   let saveTimeout: ReturnType<typeof setTimeout> | null = null
   let statusResetTimeout: ReturnType<typeof setTimeout> | null = null
-  let isInitialized = false
+  let isInitializedFromBackend = false
+  let isApplyingCanonical = false
+  let editGeneration = 0
+  let disposed = false
 
-  // Initialize form data from store
-  onMounted(() => {
-    const s = configStore.settings
-    formData.value = {
-      download_dir: s.download_dir || '',
-      rpc_port: String(s.rpc_port || ''),
-      rpc_secret: s.rpc_secret || '',
-      max_connections: String(s.max_connections || ''),
-      max_concurrent_downloads: String(s.max_concurrent_downloads || ''),
-      user_agent: s.user_agent || '',
-      show_history: Boolean(s.show_history),
-      window_transparency: ((s as Record<string, unknown>).window_transparency as string) || 'none',
-      smart_thread_mode: Boolean((s as Record<string, unknown>).smart_thread_mode),
+  const syncForm = (snapshot: AppConfig) => {
+    isApplyingCanonical = true
+    try {
+      formData.value = {
+        download_dir: snapshot.download_dir || '',
+        rpc_port: String(snapshot.rpc_port || ''),
+        rpc_secret: snapshot.rpc_secret || '',
+        max_connections: String(snapshot.max_connections || ''),
+        max_concurrent_downloads: String(snapshot.max_concurrent_downloads || ''),
+        user_agent: snapshot.user_agent || '',
+        show_history: Boolean(snapshot.show_history),
+        window_transparency: snapshot.window_transparency || 'none',
+        smart_thread_mode: Boolean(snapshot.smart_thread_mode),
+      }
+    } finally {
+      isApplyingCanonical = false
     }
-    // Mark as initialized after a tick to avoid triggering save on mount
-    setTimeout(() => {
-      isInitialized = true
-    }, 100)
+  }
+
+  const hydrateFromStore = () => {
+    syncForm(configStore.settings)
+    isInitializedFromBackend = true
+  }
+
+  onMounted(() => {
+    if (configStore.isHydrated) {
+      hydrateFromStore()
+    }
   })
 
-  // Non-blocking background save function
+  const stopHydrationWatch = watch(
+    () => configStore.isHydrated,
+    hydrated => {
+      if (hydrated && !isInitializedFromBackend) {
+        hydrateFromStore()
+      }
+    },
+  )
+
+  const clearPendingTimers = () => {
+    if (saveTimeout) {
+      clearTimeout(saveTimeout)
+      saveTimeout = null
+    }
+    if (statusResetTimeout) {
+      clearTimeout(statusResetTimeout)
+      statusResetTimeout = null
+    }
+  }
+
+  const buildCompleteSnapshot = () => {
+    return new AppConfig({
+      ...configStore.settings,
+      ...formData.value,
+    })
+  }
+
+  const scheduleReset = (generation: number) => {
+    statusResetTimeout = setTimeout(() => {
+      if (!disposed && generation === editGeneration) {
+        saveStatus.value = 'idle'
+      }
+    }, 1500)
+  }
+
   const triggerSave = () => {
-    if (!isInitialized) return
+    if (!isInitializedFromBackend || isApplyingCanonical || disposed) return
 
-    // Clear any pending operations
-    if (saveTimeout) clearTimeout(saveTimeout)
-    if (statusResetTimeout) clearTimeout(statusResetTimeout)
-
-    // Show saving indicator
+    const generation = ++editGeneration
+    const snapshot = buildCompleteSnapshot()
+    clearPendingTimers()
     saveStatus.value = 'saving'
 
-    // Debounce - fire and forget
-    saveTimeout = setTimeout(() => {
-      // Copy form data to store
-      Object.assign(configStore.settings, formData.value)
-
-      // Save in background - completely non-blocking
-      configStore
-        .updateConfig()
-        .then(() => {
-          saveStatus.value = 'saved'
-          statusResetTimeout = setTimeout(() => {
-            saveStatus.value = 'idle'
-          }, 1500)
-        })
-        .catch(() => {
-          saveStatus.value = 'idle'
-        })
+    saveTimeout = setTimeout(async () => {
+      try {
+        const result = await configStore.updateConfig(snapshot)
+        if (disposed || generation !== editGeneration) return
+        configStore.applyCanonicalConfig(result.config)
+        syncForm(result.config)
+        if (!result.success) {
+          saveStatus.value = 'error'
+          return
+        }
+        saveStatus.value = 'saved'
+        scheduleReset(generation)
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          console.warn('[Settings] save failed:', err)
+        }
+        if (disposed || generation !== editGeneration) return
+        saveStatus.value = 'error'
+      }
     }, 800)
   }
 
-  // Handle directory picker
   const handlePickDirectory = async () => {
     const selected = await configStore.pickDirectory()
     if (!selected) return
-    // Sync the new value
     formData.value.download_dir = selected
     triggerSave()
   }
 
-  // Cleanup timers on unmount
   onUnmounted(() => {
-    if (saveTimeout) clearTimeout(saveTimeout)
-    if (statusResetTimeout) clearTimeout(statusResetTimeout)
+    disposed = true
+    editGeneration++
+    clearPendingTimers()
+    stopHydrationWatch()
   })
 
-  // Connection options
   const connectionOptions = ['1', '4', '8', '16', '24', '32']
 </script>
 
@@ -149,6 +193,15 @@
               </span>
             </div>
             <div
+              v-else-if="saveStatus === 'error'"
+              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-error)]/10 border border-[var(--status-error)]/20"
+            >
+              <AlertCircle :size="12" class="text-[var(--status-error)]" />
+              <span class="text-[10px] font-mono-data text-[var(--status-error)]">
+                {{ t('settings.saveFailed') }}
+              </span>
+            </div>
+            <div
               v-else
               class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]"
             >
@@ -163,17 +216,14 @@
 
       <!-- Settings Cards Container -->
       <div class="space-y-4">
-        <!-- Download Directory -->
         <DownloadSection v-model="formData.download_dir" @pick="handlePickDirectory" />
 
-        <!-- RPC Configuration -->
         <RPCSection
           v-model:port="formData.rpc_port"
           v-model:secret="formData.rpc_secret"
           @change="triggerSave"
         />
 
-        <!-- Performance Settings -->
         <PerformanceSection
           v-model:connections="formData.max_connections"
           v-model:concurrent-downloads="formData.max_concurrent_downloads"
@@ -182,23 +232,18 @@
           @change="triggerSave"
         />
 
-        <!-- User Agent -->
         <UASection v-model="formData.user_agent" @change="triggerSave" />
 
-        <!-- Appearance Settings -->
         <AppearanceSection />
 
-        <!-- Advanced Settings (Transparency & History) -->
         <AdvancedSection
           v-model:transparency="formData.window_transparency"
           v-model:show-history="formData.show_history"
           @change="triggerSave"
         />
 
-        <!-- Browser Extension Pairing -->
         <ExtensionSection />
 
-        <!-- About / Version Info & Update -->
         <UpdateSection />
       </div>
     </div>
@@ -206,12 +251,10 @@
 </template>
 
 <style scoped>
-  /* Fade transition for save status */
   .fade-enter-active,
   .fade-leave-active {
     transition: opacity 0.2s ease;
   }
-
   .fade-enter-from,
   .fade-leave-to {
     opacity: 0;

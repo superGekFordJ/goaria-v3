@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, reactive } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import {
   GetConfig,
   GetAria2Connected,
@@ -7,17 +7,32 @@ import {
   SelectDirectory,
 } from '../../bindings/goaria-v3/internal/wailsapp/app.js'
 import { AppConfig } from '../../bindings/goaria-v3/internal/config/models.js'
+import { SaveConfigResult } from '../../bindings/goaria-v3/internal/wailsapp/models.js'
+
+function cloneConfig(candidate: AppConfig): AppConfig {
+  const cfg = new AppConfig({ ...candidate })
+  cfg.rpc_port = String(cfg.rpc_port ?? '')
+  cfg.max_connections = String(cfg.max_connections ?? '')
+  cfg.max_concurrent_downloads = String(cfg.max_concurrent_downloads ?? '')
+  return cfg
+}
 
 export const useConfigStore = defineStore(
   'config',
   () => {
     const settings = reactive<AppConfig>(new AppConfig())
     const isLoading = ref(false)
-    const isSaving = ref(false)
+    const isHydrated = ref(false)
+    const saveInFlight = ref(0)
+    const isSaving = computed(() => saveInFlight.value > 0)
     const aria2Connected = ref(false)
 
     function setAria2Connected(connected: boolean) {
       aria2Connected.value = connected
+    }
+
+    function applyCanonicalConfig(snapshot: AppConfig) {
+      Object.assign(settings, snapshot)
     }
 
     /**
@@ -43,7 +58,8 @@ export const useConfigStore = defineStore(
       try {
         const res = await GetConfig()
         if (res) {
-          Object.assign(settings, res)
+          applyCanonicalConfig(res)
+          isHydrated.value = true
         }
       } catch (err) {
         console.error('Failed to fetch config:', err)
@@ -53,42 +69,25 @@ export const useConfigStore = defineStore(
     }
 
     /**
-     * Save current settings to Go backend
+     * Save a complete candidate snapshot. Does not write result.config into settings.
      */
-    async function updateConfig() {
-      isSaving.value = true
+    async function updateConfig(candidate: AppConfig): Promise<SaveConfigResult> {
+      const request = cloneConfig(candidate)
+      saveInFlight.value++
       try {
-        // Ensure numeric fields are strings for the Go backend
-        const cfg = { ...settings }
-        cfg.rpc_port = String(cfg.rpc_port ?? '')
-        cfg.max_connections = String(cfg.max_connections ?? '')
-        cfg.max_concurrent_downloads = String(cfg.max_concurrent_downloads ?? '')
-
-        const result = await SaveConfig(cfg as AppConfig)
-        // Backend returns "success" or error message
-        if (result !== 'success') {
-          throw new Error(result)
-        }
-        return true
-      } catch (err) {
-        console.error('Failed to save config:', err)
-        return false
+        return await SaveConfig(request)
       } finally {
-        isSaving.value = false
+        saveInFlight.value--
       }
     }
 
     /**
-     * Open native directory picker and update download_dir
+     * Open native directory picker. Does not mutate settings.
      */
     async function pickDirectory(): Promise<string | null> {
       try {
         const path = await SelectDirectory()
-        if (path) {
-          settings.download_dir = path
-          return path
-        }
-        return null
+        return path || null
       } catch (err) {
         console.error('Failed to select directory:', err)
         return null
@@ -98,12 +97,14 @@ export const useConfigStore = defineStore(
     return {
       settings,
       isLoading,
+      isHydrated,
       isSaving,
       aria2Connected,
       setAria2Connected,
       refreshAria2Connected,
       fetchConfig,
       updateConfig,
+      applyCanonicalConfig,
       pickDirectory,
     }
   },

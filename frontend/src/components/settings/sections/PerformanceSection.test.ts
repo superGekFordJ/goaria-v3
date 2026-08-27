@@ -1,0 +1,104 @@
+import { defineComponent, nextTick } from 'vue'
+import { mount } from '@vue/test-utils'
+import { describe, expect, it, vi } from 'vitest'
+import PerformanceSection from './PerformanceSection.vue'
+
+vi.mock('vue-i18n', async importOriginal => {
+  const actual = await importOriginal<typeof import('vue-i18n')>()
+  return {
+    ...actual,
+    useI18n: () => ({
+      t: (key: string) => key,
+    }),
+  }
+})
+
+const TransitionStub = defineComponent({
+  name: 'Transition',
+  setup(_, { slots }) {
+    return () => slots.default?.()
+  },
+})
+
+const presets = ['1', '4', '8', '16', '24', '32']
+
+function mountSection(connections = '16') {
+  return mount(PerformanceSection, {
+    props: {
+      connections,
+      concurrentDownloads: '5',
+      connectionOptions: presets,
+      smartThreadMode: true,
+    },
+    global: {
+      stubs: { Transition: TransitionStub },
+    },
+  })
+}
+
+function connectionsTrigger(wrapper: ReturnType<typeof mountSection>) {
+  return wrapper.findAll('button').find(b => b.text().includes('performance.threads'))
+}
+
+describe('PerformanceSection', () => {
+  it('keeps preset order unchanged', () => {
+    const wrapper = mountSection()
+    expect(presets).toEqual(['1', '4', '8', '16', '24', '32'])
+    wrapper.unmount()
+  })
+
+  it.each(['64', '128', '256'])('shows custom %s in the trigger and menu as checked', async value => {
+    const wrapper = mountSection(value)
+    const trigger = connectionsTrigger(wrapper)
+    expect(trigger?.text()).toContain(value)
+    await trigger?.trigger('click')
+    await nextTick()
+    const menuItems = wrapper
+      .findAll('button')
+      .filter(b => b.classes().includes('p-3') && b.text().includes('performance.threads'))
+    const custom = menuItems.find(b => b.text().includes(`${value} `) || b.text().startsWith(value))
+    expect(custom?.text()).toContain(value)
+    expect(custom?.classes().join(' ')).toContain('bg-[var(--neon-primary)]/10')
+    wrapper.unmount()
+  })
+
+  it('emits the selected preset once', async () => {
+    const wrapper = mountSection()
+    await connectionsTrigger(wrapper)?.trigger('click')
+    await nextTick()
+    const eight = wrapper.findAll('button').find(b => /^\s*8\s/.test(b.text()) || b.text().startsWith('8 '))
+    await eight?.trigger('click')
+    expect(wrapper.emitted('update:connections')?.[0]).toEqual(['8'])
+    expect(wrapper.emitted('change')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('shows a Surge badge for custom values above 16 and ignores invalid input', async () => {
+    const wrapper = mountSection('64')
+    await connectionsTrigger(wrapper)?.trigger('click')
+    await nextTick()
+    expect(wrapper.text()).toContain('Surge')
+    wrapper.unmount()
+
+    const empty = mountSection('')
+    await connectionsTrigger(empty)?.trigger('click')
+    await nextTick()
+    const labels = empty.findAll('button').map(b => b.text())
+    expect(labels.some(text => text.includes('NaN'))).toBe(false)
+    expect(labels.filter(text => text.includes('performance.threads'))).toHaveLength(presets.length + 1)
+    empty.unmount()
+  })
+
+  it('sets concurrent input max to 32', () => {
+    const wrapper = mountSection()
+    expect(wrapper.find('input[type="number"]').attributes('max')).toBe('32')
+    wrapper.unmount()
+  })
+
+  it('renders the tooltip through an i18n key', () => {
+    const wrapper = mountSection()
+    expect(wrapper.text()).toContain('performance.surgeExclusiveTooltip')
+    expect(wrapper.text()).not.toContain('Aria2 is still limited')
+    wrapper.unmount()
+  })
+})

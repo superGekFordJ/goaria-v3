@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { ref, onMounted, onUnmounted } from 'vue'
+  import { computed, ref, onMounted, onUnmounted } from 'vue'
   import { Cpu, ChevronDown, Check, Info } from '@lucide/vue'
   import { useI18n } from 'vue-i18n'
   import SectionCard from './SectionCard.vue'
@@ -19,6 +19,21 @@
     (e: 'update:smartThreadMode', value: boolean): void
     (e: 'change'): void
   }>()
+
+  const displayedConnectionOptions = computed(() => {
+    const current = Number.parseInt(props.connections, 10)
+    if (!Number.isInteger(current) || current < 1 || current > 256) {
+      return props.connectionOptions
+    }
+    return props.connectionOptions.includes(String(current))
+      ? props.connectionOptions
+      : [...props.connectionOptions, String(current)]
+  })
+
+  const isSurgeExclusive = (value: string) => {
+    const n = Number.parseInt(value, 10)
+    return Number.isInteger(n) && n > 16
+  }
 
   const toggleSmartThreadMode = () => {
     emit('update:smartThreadMode', !props.smartThreadMode)
@@ -137,7 +152,7 @@
               class="absolute z-50 top-full left-0 right-0 mt-2 p-1 rounded-xl glass-panel-solid origin-top max-h-72 overflow-y-auto"
             >
               <button
-                v-for="n in connectionOptions"
+                v-for="n in displayedConnectionOptions"
                 :key="n"
                 type="button"
                 class="w-full flex items-center justify-between p-3 rounded-lg transition-all duration-200 group"
@@ -153,7 +168,7 @@
                     {{ n }} {{ t('performance.threads') }}
                   </span>
                   <span
-                    v-if="n === '24' || n === '32'"
+                    v-if="isSurgeExclusive(n)"
                     class="flex items-center gap-1 text-[9px] font-bold text-[var(--neon-primary)] bg-[var(--neon-primary)]/10 px-1.5 py-0.5 rounded uppercase tracking-wider"
                   >
                     Surge
@@ -177,7 +192,7 @@
           :value="concurrentDownloads"
           type="number"
           min="1"
-          max="10"
+          max="32"
           class="w-full bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl px-4 py-3 text-sm font-mono-data text-[var(--app-text)]/80 outline-none transition-all duration-200 focus:border-[var(--neon-primary)]/40 focus:shadow-[0_0_0_3px_var(--input-focus)]"
           @input="updateConcurrentDownloads"
         />

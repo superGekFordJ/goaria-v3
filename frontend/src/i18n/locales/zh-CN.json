@@ -19,6 +19,7 @@
     "description": "配置您的下载偏好",
     "saving": "保存中...",
     "saved": "已保存",
+    "saveFailed": "保存失败",
     "autoSave": "自动保存"
   },
   "appearance": {
@@ -81,7 +82,7 @@
     "maxConnections": "单任务最大连接数",
     "threads": "线程",
     "maxConcurrent": "最大并发任务",
-    "surgeExclusiveTooltip": "大于16线程时我们的系统会自动进行路由，Aria2 也会正常工作。"
+    "surgeExclusiveTooltip": "16 以上由 Surge 使用，Aria2 仍限制为 16 连接。界面预设有意保持保守。高级用户可先退出 GoAria，再编辑 ~/.goaria/config.json，将 max_connections 设为最高 256。重新启动后生效，现有任务不会追溯重配。"
   },
   "ua": {
     "description": "自定义浏览器标识",
