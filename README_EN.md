@@ -1,7 +1,7 @@
 <div align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="frontend/src/assets/icons/dark.svg">
-    <img src="frontend/src/assets/icons/light.svg" width="128" height="128" alt="GoAria Icon" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/superGekFordJ/goaria-assets/main/icons/dark.svg">
+    <img src="https://raw.githubusercontent.com/superGekFordJ/goaria-assets/main/icons/light.svg" width="128" height="128" alt="GoAria Icon" />
   </picture>
   <h1>GoAria v3</h1>
   <p>
