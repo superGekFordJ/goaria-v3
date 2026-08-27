@@ -51,6 +51,7 @@ describe('useConfigStore', () => {
     const store = useConfigStore()
     const pending = store.fetchConfig()
     expect(store.isHydrated).toBe(false)
+    expect(store.isLoading).toBe(true)
     const backend = sampleConfig({ max_connections: '64' })
     resolveConfig(backend)
     await pending
@@ -68,6 +69,41 @@ describe('useConfigStore', () => {
     expect(store.isHydrated).toBe(false)
     expect(store.settings.user_agent).toBe('kept-from-storage')
     expect(store.hydrateFailed).toBe(true)
+  })
+
+  it('keeps hydrateFailed until a retry succeeds and counts overlapping fetches', async () => {
+    const { useConfigStore } = await import('../config')
+    const store = useConfigStore()
+    bindingMocks.GetConfig.mockRejectedValueOnce(new Error('offline'))
+    await store.fetchConfig()
+    expect(store.hydrateFailed).toBe(true)
+
+    let releaseRetry: (value: AppConfig) => void = () => undefined
+    let releaseOverlap: () => void = () => undefined
+    bindingMocks.GetConfig.mockReturnValueOnce(
+      new Promise<AppConfig>(resolve => {
+        releaseRetry = resolve
+      }),
+    )
+    bindingMocks.GetConfig.mockReturnValueOnce(
+      new Promise<AppConfig>((_, reject) => {
+        releaseOverlap = () => reject(new Error('stale'))
+      }),
+    )
+    const retry = store.fetchConfig()
+    const overlap = store.fetchConfig()
+    expect(store.isLoading).toBe(true)
+    expect(store.hydrateFailed).toBe(true)
+    releaseRetry(sampleConfig({ max_connections: '64' }))
+    await retry
+    expect(store.isHydrated).toBe(true)
+    expect(store.hydrateFailed).toBe(false)
+    expect(store.isLoading).toBe(true)
+    releaseOverlap()
+    await overlap
+    expect(store.isLoading).toBe(false)
+    expect(store.isHydrated).toBe(true)
+    expect(store.hydrateFailed).toBe(false)
   })
 
   it('null GetConfig does not hydrate and marks hydrateFailed', async () => {

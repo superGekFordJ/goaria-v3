@@ -20,7 +20,7 @@
     "saving": "Speichern...",
     "saved": "Gespeichert",
     "saveFailed": "Speichern fehlgeschlagen",
-    "loadFailed": "Einstellungen konnten nicht geladen werden. Erneut versuchen oder prüfen, ob GoAria läuft.",
+    "loadFailed": "Einstellungen konnten nicht geladen werden. Bitte erneut versuchen.",
     "retry": "Erneut versuchen",
     "requiresAppRestart": "Gespeichert. Starten Sie GoAria neu, um alle Änderungen zu übernehmen.",
     "autoSave": "Automatisches Speichern"

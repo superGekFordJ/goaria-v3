@@ -40,9 +40,8 @@
   let disposed = false
 
   const editorsLocked = computed(() => !configStore.isHydrated)
-  const showHydrationError = computed(
-    () => !configStore.isHydrated && !configStore.isLoading && configStore.hydrateFailed,
-  )
+  const showHydrationError = computed(() => !configStore.isHydrated && configStore.hydrateFailed)
+  const retryBusy = computed(() => configStore.isLoading)
 
   const syncForm = (snapshot: AppConfig) => {
     const generation = ++applyGeneration
@@ -123,7 +122,9 @@
   }
 
   const triggerSave = () => {
-    if (!isInitializedFromBackend || isApplyingCanonical || disposed) return
+    if (!configStore.isHydrated || !isInitializedFromBackend || isApplyingCanonical || disposed) {
+      return
+    }
 
     const generation = ++editGeneration
     const snapshot = buildCompleteSnapshot()
@@ -169,11 +170,13 @@
   }
 
   const retryHydration = () => {
+    if (configStore.isLoading) return
     void configStore.fetchConfig()
   }
 
   onUnmounted(() => {
     disposed = true
+    isApplyingCanonical = false
     editGeneration++
     applyGeneration++
     clearPendingTimers()
@@ -205,14 +208,14 @@
         </div>
 
         <!-- Save Status Indicator -->
-        <div class="flex items-center gap-2" aria-live="polite">
+        <div class="flex items-center gap-2">
           <Transition name="fade" mode="out-in">
             <div
               v-if="saveStatus === 'saving'"
               class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]"
             >
               <Loader2 :size="12" class="animate-spin text-[var(--neon-primary)]" />
-              <span class="text-[10px] font-mono-data text-[var(--app-text-muted)]">
+              <span class="text-[10px] font-mono-data text-[var(--app-text-muted)]" aria-live="polite">
                 {{ t('settings.saving') }}
               </span>
             </div>
@@ -221,7 +224,7 @@
               class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
             >
               <CheckCircle :size="12" class="text-[var(--status-complete)]" />
-              <span class="text-[10px] font-mono-data text-[var(--status-complete)]">
+              <span class="text-[10px] font-mono-data text-[var(--status-complete)]" aria-live="polite">
                 {{ t('settings.saved') }}
               </span>
             </div>
@@ -229,8 +232,8 @@
               v-else-if="saveStatus === 'restart'"
               class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
             >
-              <AlertCircle :size="12" class="text-[var(--neon-primary)]" />
-              <span class="text-[10px] font-mono-data text-[var(--neon-primary)]">
+              <CheckCircle :size="12" class="text-[var(--neon-primary)]" />
+              <span class="text-[10px] font-mono-data text-[var(--neon-primary)]" aria-live="polite">
                 {{ t('settings.requiresAppRestart') }}
               </span>
             </div>
@@ -239,7 +242,7 @@
               class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-error)]/10 border border-[var(--status-error)]/20"
             >
               <AlertCircle :size="12" class="text-[var(--status-error)]" />
-              <span class="text-[10px] font-mono-data text-[var(--status-error)]">
+              <span class="text-[10px] font-mono-data text-[var(--status-error)]" aria-live="polite">
                 {{ t('settings.saveFailed') }}
               </span>
             </div>
@@ -263,49 +266,51 @@
         <p class="text-xs text-[var(--status-error)]">{{ t('settings.loadFailed') }}</p>
         <button
           type="button"
-          class="retry-hydrate shrink-0 px-3 py-1.5 rounded-lg text-[10px] font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)]"
+          class="retry-hydrate shrink-0 px-3 py-1.5 rounded-lg text-[10px] font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] disabled:opacity-50 disabled:cursor-not-allowed"
+          :disabled="retryBusy"
           @click="retryHydration"
         >
           {{ t('settings.retry') }}
         </button>
       </div>
 
-      <!-- Settings Cards Container -->
-      <fieldset
-        class="min-w-0 space-y-4 border-0 p-0 m-0"
-        :disabled="editorsLocked"
-        :class="{ 'pointer-events-none opacity-60': editorsLocked }"
-      >
-        <DownloadSection v-model="formData.download_dir" @pick="handlePickDirectory" />
+      <div class="space-y-4">
+        <fieldset
+          class="min-w-0 space-y-4 border-0 p-0 m-0"
+          :disabled="editorsLocked"
+          :class="{ 'pointer-events-none opacity-60': editorsLocked }"
+        >
+          <DownloadSection v-model="formData.download_dir" @pick="handlePickDirectory" />
 
-        <RPCSection
-          v-model:port="formData.rpc_port"
-          v-model:secret="formData.rpc_secret"
-          @change="triggerSave"
-        />
+          <RPCSection
+            v-model:port="formData.rpc_port"
+            v-model:secret="formData.rpc_secret"
+            @change="triggerSave"
+          />
 
-        <PerformanceSection
-          v-model:connections="formData.max_connections"
-          v-model:concurrent-downloads="formData.max_concurrent_downloads"
-          v-model:smart-thread-mode="formData.smart_thread_mode"
-          :connection-options="connectionOptions"
-          @change="triggerSave"
-        />
+          <PerformanceSection
+            v-model:connections="formData.max_connections"
+            v-model:concurrent-downloads="formData.max_concurrent_downloads"
+            v-model:smart-thread-mode="formData.smart_thread_mode"
+            :connection-options="connectionOptions"
+            @change="triggerSave"
+          />
 
-        <UASection v-model="formData.user_agent" @change="triggerSave" />
+          <UASection v-model="formData.user_agent" @change="triggerSave" />
+
+          <AdvancedSection
+            v-model:transparency="formData.window_transparency"
+            v-model:show-history="formData.show_history"
+            @change="triggerSave"
+          />
+        </fieldset>
 
         <AppearanceSection />
-
-        <AdvancedSection
-          v-model:transparency="formData.window_transparency"
-          v-model:show-history="formData.show_history"
-          @change="triggerSave"
-        />
 
         <ExtensionSection />
 
         <UpdateSection />
-      </fieldset>
+      </div>
     </div>
   </div>
 </template>
@@ -318,9 +323,5 @@
   .fade-enter-from,
   .fade-leave-to {
     opacity: 0;
-  }
-
-  fieldset:disabled {
-    opacity: 0.6;
   }
 </style>

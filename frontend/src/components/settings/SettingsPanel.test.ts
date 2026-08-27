@@ -105,6 +105,7 @@ const PerformanceStub = defineComponent({
     return () =>
       h('div', [
         h('span', { class: 'conn-display' }, String(props.connections)),
+        h('span', { class: 'conn-options' }, (props.connectionOptions as string[]).join(',')),
         h(
           'button',
           {
@@ -153,6 +154,13 @@ const AdvancedStub = defineComponent({
   },
 })
 
+const IndependentStub = defineComponent({
+  name: 'IndependentSection',
+  setup() {
+    return () => h('button', { class: 'independent-section', type: 'button' }, 'independent')
+  },
+})
+
 function mountPanel() {
   return mount(SettingsPanel, {
     global: {
@@ -162,10 +170,10 @@ function mountPanel() {
         RPCSection: RPCStub,
         PerformanceSection: PerformanceStub,
         UASection: UAStub,
-        AppearanceSection: true,
+        AppearanceSection: IndependentStub,
         AdvancedSection: AdvancedStub,
-        ExtensionSection: true,
-        UpdateSection: true,
+        ExtensionSection: IndependentStub,
+        UpdateSection: IndependentStub,
       },
     },
   })
@@ -208,6 +216,7 @@ describe('SettingsPanel', () => {
     storeMock.isHydrated = true
     await flushHydration()
     expect(wrapper.find('.conn-display').text()).toBe('64')
+    expect(wrapper.find('.conn-options').text()).toBe('1,4,8,16,24,32')
 
     storeMock.updateConfig.mockResolvedValue(
       new SaveConfigResult({
@@ -368,6 +377,8 @@ describe('SettingsPanel', () => {
     expect(wrapper.text()).toContain('settings.retry')
     expect(wrapper.find('.ua-value').text()).toBe('from-storage')
     expect(wrapper.find('fieldset').attributes('disabled')).toBeDefined()
+    expect(wrapper.findAll('.independent-section').length).toBeGreaterThan(0)
+    expect(wrapper.find('fieldset .independent-section').exists()).toBe(false)
     await wrapper.find('.rpc-change').trigger('click')
     await vi.advanceTimersByTimeAsync(800)
     expect(storeMock.updateConfig).not.toHaveBeenCalled()
@@ -427,5 +438,31 @@ describe('SettingsPanel', () => {
     await pending
     await flushPromises()
     expect(storeMock.updateConfig).not.toHaveBeenCalled()
+  })
+
+  it('keeps the load banner and disables retry while a fetch is in flight', async () => {
+    storeMock.isHydrated = false
+    storeMock.isLoading = true
+    storeMock.hydrateFailed = true
+    const wrapper = mountPanel()
+    await flushHydration()
+    expect(wrapper.text()).toContain('settings.loadFailed')
+    expect(wrapper.find('.retry-hydrate').attributes('disabled')).toBeDefined()
+    await wrapper.find('.retry-hydrate').trigger('click')
+    expect(storeMock.fetchConfig).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('unlocks config editors after a successful retry hydration', async () => {
+    storeMock.isHydrated = false
+    storeMock.hydrateFailed = true
+    const wrapper = mountPanel()
+    await flushHydration()
+    expect(wrapper.find('fieldset').attributes('disabled')).toBeDefined()
+    storeMock.isHydrated = true
+    storeMock.hydrateFailed = false
+    await flushHydration()
+    expect(wrapper.find('fieldset').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
   })
 })

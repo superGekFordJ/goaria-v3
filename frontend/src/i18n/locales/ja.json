@@ -20,7 +20,7 @@
     "saving": "保存中...",
     "saved": "保存しました",
     "saveFailed": "保存に失敗しました",
-    "loadFailed": "アプリから設定を読み込めませんでした。再試行するか、GoAria が起動しているか確認してください。",
+    "loadFailed": "設定を読み込めませんでした。再試行してください。",
     "retry": "再試行",
     "requiresAppRestart": "保存しました。すべての変更を適用するには GoAria を再起動してください。",
     "autoSave": "自動保存"

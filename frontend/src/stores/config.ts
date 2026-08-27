@@ -21,7 +21,8 @@ export const useConfigStore = defineStore(
   'config',
   () => {
     const settings = reactive<AppConfig>(new AppConfig())
-    const isLoading = ref(false)
+    const fetchInFlight = ref(0)
+    const isLoading = computed(() => fetchInFlight.value > 0)
     const isHydrated = ref(false)
     const hydrateFailed = ref(false)
     const saveInFlight = ref(0)
@@ -56,20 +57,24 @@ export const useConfigStore = defineStore(
      * Fetch configuration from Go backend
      */
     async function fetchConfig() {
-      isLoading.value = true
-      hydrateFailed.value = false
+      fetchInFlight.value++
       try {
         const res = await GetConfig()
         if (res) {
           applyCanonicalConfig(res)
           isHydrated.value = true
+          hydrateFailed.value = false
           return
         }
-        hydrateFailed.value = true
+        if (!isHydrated.value) {
+          hydrateFailed.value = true
+        }
       } catch {
-        hydrateFailed.value = true
+        if (!isHydrated.value) {
+          hydrateFailed.value = true
+        }
       } finally {
-        isLoading.value = false
+        fetchInFlight.value--
       }
     }
 

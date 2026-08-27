@@ -20,7 +20,7 @@
     "saving": "Saving...",
     "saved": "Saved",
     "saveFailed": "Save failed",
-    "loadFailed": "Could not load settings from the app. Retry, or check that GoAria is running.",
+    "loadFailed": "Could not load settings. Retry to try again.",
     "retry": "Retry",
     "requiresAppRestart": "Saved. Restart GoAria to apply all changes.",
     "autoSave": "Auto Save"

@@ -20,7 +20,7 @@
     "saving": "Guardando...",
     "saved": "Guardado",
     "saveFailed": "Error al guardar",
-    "loadFailed": "No se pudieron cargar los ajustes. Reintenta o comprueba que GoAria esté en ejecución.",
+    "loadFailed": "No se pudieron cargar los ajustes. Reintenta.",
     "retry": "Reintentar",
     "requiresAppRestart": "Guardado. Reinicia GoAria para aplicar todos los cambios.",
     "autoSave": "Autoguardado"

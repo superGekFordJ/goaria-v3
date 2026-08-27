@@ -20,7 +20,7 @@
     "saving": "保存中...",
     "saved": "已保存",
     "saveFailed": "保存失败",
-    "loadFailed": "无法从应用加载设置。请重试，或确认 GoAria 正在运行。",
+    "loadFailed": "无法加载设置。请重试。",
     "retry": "重试",
     "requiresAppRestart": "已保存。请重启 GoAria 以使全部更改生效。",
     "autoSave": "自动保存"
