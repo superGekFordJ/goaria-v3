@@ -52,6 +52,9 @@ type App struct {
 
 	pendingMu               sync.Mutex         //nolint:unused,nolintlint
 	pendingExtensionLinkage *extension.Linkage //nolint:unused,nolintlint
+
+	configSaveMu sync.Mutex
+	configDeps   configSaveDeps
 }
 
 type Options struct {
@@ -104,11 +107,13 @@ func NewApp(options Options) *App {
 		version = "dev"
 	}
 
-	return &App{
+	app := &App{
 		trayState:      tray.StateIdle,
 		version:        version,
 		downloadEngine: options.DownloadEngine,
 	}
+	app.configDeps = defaultConfigSaveDeps(app)
+	return app
 }
 
 func ConfigureUpdater(appService *App, eventHub *events.Hub) {

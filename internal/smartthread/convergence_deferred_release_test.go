@@ -711,7 +711,7 @@ func TestConvergence_DeferredRelease_NeededVAvailableRequiresMultiHeadroom(t *te
 
 	ct := NewConvergenceTicker(
 		rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
-		&mockTracker{}, &mockTelemetry{}, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0,
+		&mockTracker{}, &mockTelemetry{}, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256,
 	)
 	defer ct.Stop()
 
@@ -769,5 +769,33 @@ func TestConvergence_DeferredRelease_ArmPreservesPrevActiveSpeedsGuard(t *testin
 	c.mu.Unlock()
 	if got != 9*1024*1024 {
 		t.Fatalf("prevActiveSpeeds wiped on zero lastRawBps: got %d", got)
+	}
+}
+
+func TestConvergence_DeferredRelease_HeadroomClampsRequestedDelta(t *testing.T) {
+	ben := "sg_headroom_clamp"
+	ct, tracker, _ := deferredReleaseFixtureMaxConn(t, ben, 6, 8)
+	ct.mu.Lock()
+	ct.states[ben].lastRawBps = 20 * 1024 * 1024
+	ct.mu.Unlock()
+	lk := limitKey("wan", "example.com")
+	armPending(ct, lk, "testenv", 80*1024*1024)
+	activeGids := map[string]gidInfo{ben: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}}
+	dStats := map[string]*domainStats{lk: {activeWorkers: 6, tasksInDomain: 1}}
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, false)
+	if len(settles) != 1 || settles[0].delta != 2 {
+		t.Fatalf("requested 4 with headroom 2 want 2, got %+v", settles)
+	}
+
+	ct2, tracker2, _ := deferredReleaseFixtureMaxConn(t, ben+"z", 8, 8)
+	ct2.mu.Lock()
+	ct2.states[ben+"z"].lastRawBps = 20 * 1024 * 1024
+	ct2.mu.Unlock()
+	armPending(ct2, lk, "testenv", 80*1024*1024)
+	active2 := map[string]gidInfo{ben + "z": {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}}
+	dStats2 := map[string]*domainStats{lk: {activeWorkers: 8, tasksInDomain: 1}}
+	none := ct2.settlePendingReleases(tracker2.tasks, active2, map[string]bool{}, make(map[string]int), dStats2, false)
+	if len(none) != 0 {
+		t.Fatalf("headroom 0 should skip, got %+v", none)
 	}
 }

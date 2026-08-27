@@ -66,7 +66,7 @@ func TestConvergence_ProbeUp_BlockedByDomainNMaxMultiTask(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 	ct.limits.Clear(key)
 	ct.limits.SetNMax(key, 12) // 6+6=12; either +1 breaches
 
@@ -127,7 +127,7 @@ func TestConvergence_ProbeUp_DomainBudgetExhaustedScopeHealthy(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 	ct.limits.Clear(limitKey("wan", "example.com"))
 	setupDomainGateProbeReady(ct, gid, 1_310_720, 4)
 
@@ -164,7 +164,7 @@ func TestConvergence_ProbeUp_ScopeExhaustedDomainHealthy(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 	ct.limits.Clear(limitKey("wan", "example.com"))
 	setupDomainGateProbeReady(ct, gid, 1_310_720, 4)
 
@@ -197,7 +197,7 @@ func TestConvergence_ProbeUp_ColdDomainPeakAllows(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 	ct.limits.Clear(limitKey("wan", "new-domain.com"))
 	setupDomainGateProbeReady(ct, gid, 1_310_720, 4)
 
@@ -237,7 +237,7 @@ func TestConvergence_ApprovedDelta_SameTickDomainOversell(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 	ct.limits.Clear(limitKey("wan", "example.com"))
 	for _, gid := range []string{gid1, gid2} {
 		setupDomainGateProbeReady(ct, gid, 1_310_720, 4)
@@ -279,7 +279,7 @@ func TestConvergenceNMaxClamp_KneeCrossedRebound_DomainHeadroom0(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 	ct.limits.Clear(key)
 	ct.limits.SetNMax(key, 10)
 
@@ -337,7 +337,7 @@ func TestConvergence_BandwidthRelease_RespectsDomainApprovedDelta(t *testing.T) 
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 	ct.limits.Clear(key)
 	ct.limits.SetNMax(key, 6)
 
@@ -416,7 +416,7 @@ func TestConvergence_ProbeUp_CrossEnvNMaxPendingShared(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 	ct.limits.Clear(key)
 	ct.limits.SetNMax(key, 11) // 5+5=10; one +1 fills last slot
 
@@ -470,7 +470,7 @@ func TestConvergence_BandwidthRelease_DomainCompDoesNotFalseAllow(t *testing.T) 
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 	ct.limits.Clear(limitKey("wan", domain))
 
 	ct.mu.Lock()

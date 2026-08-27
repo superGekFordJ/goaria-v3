@@ -7,10 +7,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
 	"goaria-v3/internal/config"
+	"goaria-v3/internal/events"
 	"goaria-v3/internal/extension"
 	"goaria-v3/internal/process"
 	"goaria-v3/internal/rpc"
@@ -203,33 +205,249 @@ func openFolderCommandSpecForGOOS(goos string, target openFolderLaunchTarget) (o
 
 // --- Configuration ---
 
+const (
+	errCodePersistFailed           = "config_persist_failed"
+	errCodeDownloadDirUnavailable  = "download_dir_unavailable"
+	errCodeRPCExtensionPort        = "rpc_extension_port_conflict"
+	errCodeAriaRestartRolledBack   = "aria2_restart_failed_rolled_back"
+	errCodeAriaReadinessRolledBack = "aria2_readiness_failed_rolled_back"
+	errCodeConfigRollbackFailed    = "config_rollback_failed"
+	errCodeAriaRollbackFailed      = "aria2_rollback_failed"
+
+	msgPersistFailed          = "Failed to save configuration."
+	msgDownloadDirUnavailable = "Download directory is unavailable."
+	msgRPCExtensionConflict   = "RPC port conflicts with the extension listener."
+	msgAriaRestartRolledBack  = "The download engine failed to restart. Previous settings were restored."
+	msgAriaReadyRolledBack    = "The download engine was not ready. Previous settings were restored."
+	msgConfigRollbackFailed   = "Failed to restore the previous configuration."
+	msgAriaRollbackFailed     = "Failed to restore the previous download engine."
+)
+
+// SaveConfigResult is the structured outcome of a configuration save.
+type SaveConfigResult struct {
+	Success            bool             `json:"success"`
+	Config             config.AppConfig `json:"config"`
+	Aria2Restarted     bool             `json:"aria2_restarted"`
+	RequiresAppRestart bool             `json:"requires_app_restart"`
+	ErrorCode          string           `json:"error_code,omitempty"`
+	Message            string           `json:"message,omitempty"`
+}
+
+type aria2LaunchProjection struct {
+	RPCPort                string
+	RPCSecret              string
+	DownloadDir            string
+	MaxConcurrentDownloads string
+	UserAgent              string
+	MaxConnections         int
+}
+
+type configSaveDeps struct {
+	get             func() *config.AppConfig
+	updateChecked   func(func(*config.AppConfig)) (config.UpdateResult, error)
+	validateDir     func(string) error
+	restartAria2    func(*config.AppConfig) error
+	rpcInit         func(port, secret string)
+	waitForReady    func(time.Duration) error
+	initNotifier    func(hub *events.Hub, port, secret string)
+	extensionStatus func() (wsPort int, listening bool)
+}
+
+type ariaActivateError struct {
+	kind string
+	err  error
+}
+
+func (e ariaActivateError) Error() string {
+	if e.err == nil {
+		return e.kind
+	}
+	return e.err.Error()
+}
+
+func defaultConfigSaveDeps(a *App) configSaveDeps {
+	return configSaveDeps{
+		get:           config.Get,
+		updateChecked: config.UpdateChecked,
+		validateDir:   process.ValidateDownloadDir,
+		restartAria2:  process.RestartAria2,
+		rpcInit:       rpc.Init,
+		waitForReady:  rpc.WaitForReady,
+		initNotifier:  rpc.InitNotifier,
+		extensionStatus: func() (int, bool) {
+			return a.liveExtensionStatus()
+		},
+	}
+}
+
+func (a *App) liveExtensionStatus() (wsPort int, listening bool) {
+	if a == nil || a.extensionServer == nil {
+		return 0, false
+	}
+	st := a.extensionServer.GetStatus()
+	switch st.Status {
+	case "listening", "paired":
+		return st.WSPort, true
+	default:
+		return st.WSPort, false
+	}
+}
+
+func ariaProjection(cfg config.AppConfig) aria2LaunchProjection {
+	sanitized := config.ValidateAndSanitize(cfg)
+	return aria2LaunchProjection{
+		RPCPort:                sanitized.RPCPort,
+		RPCSecret:              sanitized.RPCSecret,
+		DownloadDir:            sanitized.DownloadDir,
+		MaxConcurrentDownloads: sanitized.MaxConcurrentDownloads,
+		UserAgent:              sanitized.UserAgent,
+		MaxConnections:         process.EffectiveAria2MaxConnections(sanitized.MaxConnections),
+	}
+}
+
+func requiresAppRestart(oldCfg, newCfg config.AppConfig) bool {
+	return oldCfg.WindowTransparency != newCfg.WindowTransparency ||
+		oldCfg.MaxConnections != newCfg.MaxConnections ||
+		oldCfg.ConvergenceInterval != newCfg.ConvergenceInterval ||
+		oldCfg.MaxConcurrentDownloads != newCfg.MaxConcurrentDownloads ||
+		oldCfg.ExtensionEnabled != newCfg.ExtensionEnabled ||
+		oldCfg.ExtensionWSPort != newCfg.ExtensionWSPort
+}
+
+func failedSaveResult(code string, cfg config.AppConfig, message string, old config.AppConfig) SaveConfigResult {
+	return SaveConfigResult{
+		Success:            false,
+		Config:             cfg,
+		ErrorCode:          code,
+		Message:            message,
+		RequiresAppRestart: requiresAppRestart(old, cfg),
+	}
+}
+
+func successSaveResult(cfg config.AppConfig, ariaRestarted, appRestart bool) SaveConfigResult {
+	return SaveConfigResult{
+		Success:            true,
+		Config:             cfg,
+		Aria2Restarted:     ariaRestarted,
+		RequiresAppRestart: appRestart,
+	}
+}
+
 // GetConfig returns the current configuration
 func (a *App) GetConfig() *config.AppConfig {
 	return config.Get()
 }
 
+func (a *App) saveDeps() configSaveDeps {
+	if a.configDeps.get != nil {
+		return a.configDeps
+	}
+	return defaultConfigSaveDeps(a)
+}
+
+// SaveConfig persists a canonical snapshot and restarts Aria2 only when the
+// effective launch projection changes.
+func (a *App) SaveConfig(request config.AppConfig) SaveConfigResult {
+	a.configSaveMu.Lock()
+	defer a.configSaveMu.Unlock()
+
+	deps := a.saveDeps()
+	oldPtr := deps.get()
+	if oldPtr == nil {
+		return failedSaveResult(errCodePersistFailed, config.AppConfig{}, msgPersistFailed, config.AppConfig{})
+	}
+	old := *oldPtr
+	candidate := config.ValidateAndSanitize(request)
+	candidate.ExtensionSecret = old.ExtensionSecret
+	if candidate == old {
+		return successSaveResult(old, false, false)
+	}
+
+	if candidate.DownloadDir != old.DownloadDir {
+		if err := deps.validateDir(candidate.DownloadDir); err != nil {
+			log.Printf("[Config] download dir preflight failed: %v", err)
+			return failedSaveResult(errCodeDownloadDirUnavailable, old, msgDownloadDirUnavailable, old)
+		}
+	}
+
+	if wsPort, listening := deps.extensionStatus(); listening && wsPort != 0 {
+		if candidate.RPCPort == strconv.Itoa(wsPort) {
+			return failedSaveResult(errCodeRPCExtensionPort, old, msgRPCExtensionConflict, old)
+		}
+	}
+
+	update, err := deps.updateChecked(func(current *config.AppConfig) {
+		managedSecret := current.ExtensionSecret
+		*current = candidate
+		current.ExtensionSecret = managedSecret
+	})
+	if err != nil {
+		snap := update.Current
+		if ptr := deps.get(); ptr != nil {
+			snap = *ptr
+		}
+		return failedSaveResult(errCodePersistFailed, snap, msgPersistFailed, old)
+	}
+
+	committed := update.Current
+	needApp := requiresAppRestart(old, committed)
+	if ariaProjection(old) == ariaProjection(committed) {
+		return successSaveResult(committed, false, needApp)
+	}
+	if err := a.activateAria(deps, committed); err != nil {
+		return a.rollbackConfigAndAria(deps, old, committed, err)
+	}
+	return successSaveResult(committed, true, needApp)
+}
+
+func (a *App) activateAria(deps configSaveDeps, cfg config.AppConfig) error {
+	if err := deps.restartAria2(&cfg); err != nil {
+		return ariaActivateError{kind: "restart", err: err}
+	}
+	deps.rpcInit(cfg.RPCPort, cfg.RPCSecret)
+	if err := deps.waitForReady(4 * time.Second); err != nil {
+		return ariaActivateError{kind: "ready", err: err}
+	}
+	if a.eventHub != nil && deps.initNotifier != nil {
+		deps.initNotifier(a.eventHub, cfg.RPCPort, cfg.RPCSecret)
+	}
+	return nil
+}
+
+func (a *App) rollbackConfigAndAria(deps configSaveDeps, old, candidate config.AppConfig, activateErr error) SaveConfigResult {
+	code := errCodeAriaRestartRolledBack
+	msg := msgAriaRestartRolledBack
+	var ae ariaActivateError
+	if errors.As(activateErr, &ae) && ae.kind == "ready" {
+		code = errCodeAriaReadinessRolledBack
+		msg = msgAriaReadyRolledBack
+	}
+
+	rollback, err := deps.updateChecked(func(current *config.AppConfig) {
+		managedSecret := current.ExtensionSecret
+		*current = old
+		current.ExtensionSecret = managedSecret
+	})
+	if err != nil {
+		snap := candidate
+		if ptr := deps.get(); ptr != nil {
+			snap = *ptr
+		} else if rollback.Current != (config.AppConfig{}) {
+			snap = rollback.Current
+		}
+		return failedSaveResult(errCodeConfigRollbackFailed, snap, msgConfigRollbackFailed, old)
+	}
+
+	restored := rollback.Current
+	if err := a.activateAria(deps, restored); err != nil {
+		return failedSaveResult(errCodeAriaRollbackFailed, restored, msgAriaRollbackFailed, old)
+	}
+	return failedSaveResult(code, restored, msg, old)
+}
+
 // GetAria2Connected returns the current Aria2 WebSocket connection status
 func (a *App) GetAria2Connected() bool {
 	return rpc.IsAria2Connected()
-}
-
-// SaveConfig saves the configuration and restarts Aria2 if needed
-func (a *App) SaveConfig(newCfg config.AppConfig) string {
-	config.Update(func(c *config.AppConfig) { *c = newCfg })
-	cfg := config.Get()
-	if err := process.RestartAria2(cfg); err != nil {
-		return err.Error()
-	}
-	rpc.Init(cfg.RPCPort, cfg.RPCSecret)
-	if err := rpc.WaitForReady(4 * time.Second); err == nil && a.eventHub != nil {
-		rpc.InitNotifier(a.eventHub, cfg.RPCPort, cfg.RPCSecret)
-	}
-	_ = a.downloadEngine.ChangeGlobalOption(map[string]string{
-		"max-concurrent-downloads":  cfg.MaxConcurrentDownloads,
-		"max-connection-per-server": cfg.MaxConnections,
-		"user-agent":                cfg.UserAgent,
-	})
-	return "success"
 }
 
 // --- Self-Update ---

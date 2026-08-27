@@ -226,6 +226,17 @@ func (c *ConvergenceTicker) currentInterval() time.Duration {
 	return c.interval
 }
 
+func (c *ConvergenceTicker) clampPositiveDelta(currentWorkers, requested int) int {
+	if requested <= 0 || c.maxConnections <= 0 {
+		return requested
+	}
+	headroom := c.maxConnections - currentWorkers
+	if headroom <= 0 {
+		return 0
+	}
+	return min(requested, headroom)
+}
+
 // pendingScale collects batched scale operations to execute after all tasks are processed.
 type pendingScale struct {
 	gid    string
@@ -573,6 +584,9 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 		if !vOK {
 			continue
 		}
+		if c.clampPositiveDelta(elected.currentWorkers, 1) <= 0 {
+			continue
+		}
 
 		releases = append(releases, pendingScale{gid: elected.gid, scope: elected.scope, domain: elected.domain, envKey: elected.envKey, delta: 1})
 		pendingGids[elected.gid] = true
@@ -748,13 +762,7 @@ func (c *ConvergenceTicker) settlePendingReleases(
 			continue // keep armed; headroom deny is not a dirty-window deferral
 		}
 
-		if c.maxConnections > 0 {
-			connHeadroom := c.maxConnections - cw
-			if connHeadroom <= 0 {
-				continue
-			}
-			delta = minInt(delta, connHeadroom)
-		}
+		delta = c.clampPositiveDelta(cw, delta)
 		if delta <= 0 {
 			continue
 		}
@@ -1266,6 +1274,9 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 					rebound = headroom
 				}
 			}
+			if rebound > 0 {
+				rebound = c.clampPositiveDelta(currentWorkers, rebound)
+			}
 			s.kneeFrozen = true
 			s.probeMomentum = false
 			s.phase = phaseFloorHit
@@ -1431,18 +1442,21 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 					return pendingScale{}, false
 				}
 				if vAvailable && !rateLimited {
-					if c.peakRecorder != nil && rawBps > 0 && currentWorkers > 0 {
-						c.peakRecorder.RecordPeakEfficiency(gid, rawBps, currentWorkers)
+					delta := c.clampPositiveDelta(currentWorkers, 1)
+					if delta > 0 {
+						if c.peakRecorder != nil && rawBps > 0 && currentWorkers > 0 {
+							c.peakRecorder.RecordPeakEfficiency(gid, rawBps, currentWorkers)
+						}
+						s.probeUpBaseline = rawBps
+						s.probeUpBaselineWorkers = currentWorkers
+						s.probeUpDelta = delta
+						s.phase = phaseProbingUp
+						s.prevCompleted = task.CompletedLength
+						s.prevSampleAt = now
+						log.Printf("[convergence] probe-up: gid=%s workers=%d baseline=%d",
+							gid, currentWorkers, rawBps)
+						return pendingScale{gid: gid, scope: task.Scope, domain: task.Domain, envKey: task.EnvKey, delta: delta}, true
 					}
-					s.probeUpBaseline = rawBps
-					s.probeUpBaselineWorkers = currentWorkers
-					s.probeUpDelta = 1
-					s.phase = phaseProbingUp
-					s.prevCompleted = task.CompletedLength
-					s.prevSampleAt = now
-					log.Printf("[convergence] probe-up: gid=%s workers=%d baseline=%d",
-						gid, currentWorkers, rawBps)
-					return pendingScale{gid: gid, scope: task.Scope, domain: task.Domain, envKey: task.EnvKey, delta: 1}, true
 				}
 			}
 		}

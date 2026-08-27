@@ -1,6 +1,8 @@
 package smartthread
 
 import (
+	"math"
+
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/speedstats"
 )
@@ -34,9 +36,9 @@ func Calculate(p CalcParams) ThreadParams {
 		isExploration := !speedstats.HasDomainScopeEnvRecord(p.Domain, p.Scope, p.EnvKey)
 		split := maxConn
 		if isExploration {
-			exploreLimit := max(maxConn/4, 4)
-			if split > exploreLimit {
-				split = exploreLimit
+			limit := explorationLimit(maxConn)
+			if split > limit {
+				split = limit
 			}
 		}
 		return ThreadParams{
@@ -101,13 +103,13 @@ func Calculate(p CalcParams) ThreadParams {
 
 	// --- 并发数计算 ---
 	// N_sat = ceil(V_target / V_thread_avg) + gamma
-	var nSat int
+	var nSat64 int64
 	if vThreadAvg > 0 {
-		nSat = int(ceilDiv(vTarget, vThreadAvg)) + gamma
+		nSat64 = ceilDivPositive(vTarget, vThreadAvg) + int64(gamma)
 	}
 
 	// N_tmin = ceil(fileSize / (V_thread_avg * T_min))
-	nTmin := int(ceilDiv(p.FileSize, vThreadAvg*int64(tMin)))
+	nTmin64 := ceilDivPositive(p.FileSize, saturatingMulPositive(vThreadAvg, int64(tMin)))
 
 	// floor: 拥塞时 1~2，其它 1
 	floor := 1
@@ -115,23 +117,25 @@ func Calculate(p CalcParams) ThreadParams {
 		floor = congestionFloor
 	}
 
-	// N_final = clamp(min(N_sat, N_tmin, MaxConnections), floor, MaxConnections)
-	nFinal := max(min(max(minInt(minInt(nSat, nTmin), maxConn), floor), maxConn), 1)
+	nFinal64 := min(nSat64, nTmin64)
+	nFinal64 = clampToConn(nFinal64, floor, maxConn)
 
 	// --- 探索标记（重新引入冷启动保守防护） ---
 	// 初见新域名时缺乏 BBR 历史指纹，为获取纯净的单线程效率（V_thread_avg）样本，
-	// 强制限制初始线程数：最高不超过 1/4 MaxConnections，且不低于 4 线程。
+	// 强制限制初始线程数：最高不超过 min(max(W_max/4, 4), 8)。
 	isExploration := !speedstats.HasDomainScopeEnvRecord(p.Domain, p.Scope, p.EnvKey)
 	if isExploration {
-		exploreLimit := max(maxConn/4, 4)
-		if nFinal > exploreLimit {
-			nFinal = exploreLimit
+		limit := explorationLimit(maxConn)
+		if nFinal64 > int64(limit) {
+			nFinal64 = int64(limit)
 		}
 	}
+	nFinal := int(nFinal64)
+	nSat := intFromNonNegative(nSat64)
 
 	// --- 初始切分（蓝图 §2.1） ---
 	// MinChunk = clamp(V_thread_avg * T_target_chunk, 1MB, 1GB)
-	minChunk := min(max(vThreadAvg*tTargetChunk, minChunkSize), maxChunkSize)
+	minChunk := min(max(saturatingMulPositive(vThreadAvg, tTargetChunk), minChunkSize), maxChunkSize)
 	// MinChunk = min(MinChunk, fileSize / N_final)
 	if nFinal > 0 {
 		perWorker := p.FileSize / int64(nFinal)
@@ -140,7 +144,7 @@ func Calculate(p CalcParams) ThreadParams {
 		}
 	}
 
-	targetBandwidth := vThreadAvg * int64(nFinal)
+	targetBandwidth := saturatingMulPositive(vThreadAvg, int64(nFinal))
 
 	return ThreadParams{
 		Split:           nFinal,
@@ -158,17 +162,18 @@ func calculateLegacy(fileSize int64, maxConnections int, domain, scope, envKey s
 		// 默认 2MB/s
 		int64(2*1024*1024), minThreadEfficiency)
 
-	nLimit := ceilDiv(fileSize, vSingleEst*int64(tMin))
-	nFinal := min(max(int(nLimit), 1), maxConnections)
+	nLimit := ceilDivPositive(fileSize, saturatingMulPositive(vSingleEst, int64(tMin)))
+	nFinal64 := clampToConn(nLimit, 1, maxConnections)
 
 	// --- 探索标记（重新引入冷启动保守防护） ---
 	isExploration := !speedstats.HasDomainScopeEnvRecord(domain, scope, envKey)
 	if isExploration {
-		exploreLimit := max(maxConnections/4, 4)
-		if nFinal > exploreLimit {
-			nFinal = exploreLimit
+		limit := explorationLimit(maxConnections)
+		if nFinal64 > int64(limit) {
+			nFinal64 = int64(limit)
 		}
 	}
+	nFinal := int(nFinal64)
 
 	var minSize int64
 	if nFinal > 0 {
@@ -185,15 +190,57 @@ func calculateLegacy(fileSize int64, maxConnections int, domain, scope, envKey s
 		MinSize:         minSize,
 		IsExploration:   isExploration,
 		TargetBandwidth: vSingleEst * int64(nFinal),
-		NSat:            int(nLimit),
+		NSat:            intFromNonNegative(nLimit),
 	}
 }
 
 func ceilDiv(a, b int64) int64 {
-	if b <= 0 {
+	return ceilDivPositive(a, b)
+}
+
+func explorationLimit(maxConnections int) int {
+	return min(max(maxConnections/4, 4), 8)
+}
+
+func ceilDivPositive(a, b int64) int64 {
+	if a <= 0 || b <= 0 {
 		return 0
 	}
-	return (a + b - 1) / b
+	return 1 + (a-1)/b
+}
+
+func saturatingMulPositive(a, b int64) int64 {
+	if a <= 0 || b <= 0 {
+		return 0
+	}
+	if a > math.MaxInt64/b {
+		return math.MaxInt64
+	}
+	return a * b
+}
+
+func clampToConn(n int64, floor, maxConn int) int64 {
+	out := max(n, int64(floor))
+	if maxConn > 0 && out > int64(maxConn) {
+		out = int64(maxConn)
+	}
+	if out < 1 && floor >= 1 {
+		out = 1
+	}
+	if out < 0 {
+		out = 0
+	}
+	return out
+}
+
+func intFromNonNegative(n int64) int {
+	if n <= 0 {
+		return 0
+	}
+	if n > math.MaxInt {
+		return math.MaxInt
+	}
+	return int(n)
 }
 
 func min64(a, b int64) int64 {

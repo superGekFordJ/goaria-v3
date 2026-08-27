@@ -35,7 +35,7 @@ func setupProbeUpState(t *testing.T, gid string, bestEff int64, peakWorkers int)
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	recorder := &monotonicMockPeakRecorder{}
-	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, recorder, &mockRateChecker{}, 0, 256)
 
 	// Clear any leftover N_max from previous tests (global singleton).
 	ct.limits.Clear(limitKey("wan", "example.com"))
@@ -159,7 +159,7 @@ func TestConvergence_ProbeUp_BlockedByRateLimit(t *testing.T) {
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
 	rateChecker := &mockRateChecker{limited: map[string]bool{gid: true}}
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, rateChecker, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, rateChecker, 0, 256)
 
 	ct.mu.Lock()
 	s := ct.getOrCreateState(gid)
@@ -360,5 +360,50 @@ func TestConvergence_ProbeUp_BlockedByVAvailable(t *testing.T) {
 	ct.mu.Unlock()
 	if s.phase == phaseProbingUp {
 		t.Fatal("expected phase != phaseProbingUp when V_available insufficient")
+	}
+}
+
+func TestConvergence_ProbeUp_AtMaxConnectionsNoScale(t *testing.T) {
+	newTicker := func(workers, maxConn int) (*ConvergenceTicker, *mockTracker, *mockTelemetry) {
+		t.Helper()
+		gid := "sg_probe_up_at_max"
+		tracker := &mockTracker{
+			tasks: []TrackedTaskInfo{
+				{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: false, CompletedLength: 0},
+			},
+		}
+		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{gid: makeWorkers(workers, 2*1024*1024)}}
+		ct := NewConvergenceTicker(
+			rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+			tracker, telemetry, &monotonicMockPeakRecorder{}, &mockRateChecker{}, 0, maxConn,
+		)
+		ct.limits.Clear(limitKey("wan", "example.com"))
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		s.phase = phaseStable
+		s.bestEff = 1_310_720
+		s.peakWorkers = workers
+		s.prevCompleted = 10 * 1024 * 1024
+		setPrevSampleAgoState(s, 5*time.Second)
+		ct.mu.Unlock()
+		return ct, tracker, telemetry
+	}
+
+	ct, tracker, telemetry := newTicker(8, 8)
+	ps, ok := probeUpProcess(ct, tracker, telemetry, "sg_probe_up_at_max", 60*1024*1024, 8)
+	if ok && ps.delta > 0 {
+		t.Fatalf("at max: expected no +delta, got ok=%v delta=%d", ok, ps.delta)
+	}
+	ct.mu.Lock()
+	phase := ct.states["sg_probe_up_at_max"].phase
+	ct.mu.Unlock()
+	if phase == phaseProbingUp {
+		t.Fatal("must not enter probe-up at W_max")
+	}
+
+	ct2, tracker2, telemetry2 := newTicker(7, 8)
+	ps2, ok2 := probeUpProcess(ct2, tracker2, telemetry2, "sg_probe_up_at_max", 60*1024*1024, 7)
+	if !ok2 || ps2.delta != 1 {
+		t.Fatalf("max-1 should +1, got ok=%v delta=%d", ok2, ps2.delta)
 	}
 }

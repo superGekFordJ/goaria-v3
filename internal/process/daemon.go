@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"goaria-v3/internal/config"
@@ -32,6 +33,7 @@ type preparedBundledAria2Binary struct {
 }
 
 var (
+	aria2Mu                    sync.Mutex
 	aria2Cmd                   *exec.Cmd
 	readFile                   = os.ReadFile
 	writeFile                  = os.WriteFile
@@ -104,6 +106,12 @@ func KillAllOldProcesses() {
 }
 
 func RestartAria2(cfg *config.AppConfig) error {
+	aria2Mu.Lock()
+	defer aria2Mu.Unlock()
+	return restartAria2Locked(cfg)
+}
+
+func restartAria2Locked(cfg *config.AppConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("启动失败: 配置为空")
 	}
@@ -113,10 +121,15 @@ func RestartAria2(cfg *config.AppConfig) error {
 		return err
 	}
 
-	StopAria2()
+	if err := ValidateDownloadDir(cfg.DownloadDir); err != nil {
+		prepared.cleanup()
+		return err
+	}
+
+	stopAria2Locked()
 	time.Sleep(1 * time.Second)
 
-	return startPreparedAria2(cfg, prepared)
+	return startPreparedAria2Locked(cfg, prepared)
 }
 
 func prepareBundledAria2Binary() (prepared preparedBundledAria2Binary, err error) {
@@ -184,6 +197,12 @@ func prepareBundledAria2Binary() (prepared preparedBundledAria2Binary, err error
 }
 
 func StartAria2(cfg *config.AppConfig) error {
+	aria2Mu.Lock()
+	defer aria2Mu.Unlock()
+	return startAria2Locked(cfg)
+}
+
+func startAria2Locked(cfg *config.AppConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("启动失败: 配置为空")
 	}
@@ -193,10 +212,15 @@ func StartAria2(cfg *config.AppConfig) error {
 		return err
 	}
 
-	return startPreparedAria2(cfg, prepared)
+	if err := ValidateDownloadDir(cfg.DownloadDir); err != nil {
+		prepared.cleanup()
+		return err
+	}
+
+	return startPreparedAria2Locked(cfg, prepared)
 }
 
-func startPreparedAria2(cfg *config.AppConfig, prepared preparedBundledAria2Binary) error {
+func startPreparedAria2Locked(cfg *config.AppConfig, prepared preparedBundledAria2Binary) error {
 	defer prepared.cleanup()
 
 	killAllAria2Processes()
@@ -231,10 +255,7 @@ func startPreparedAria2(cfg *config.AppConfig, prepared preparedBundledAria2Bina
 	// aria2c hard-codes max-connection-per-server to 16; values above 16
 	// are only meaningful for the Surge engine. Clamp here to prevent
 	// aria2c from rejecting the config and breaking all RPC requests.
-	aria2MaxConn := 16
-	if n, err := strconv.Atoi(cfg.MaxConnections); err == nil && n > 0 && n < 16 {
-		aria2MaxConn = n
-	}
+	aria2MaxConn := EffectiveAria2MaxConnections(cfg.MaxConnections)
 
 	args := []string{
 		"--enable-rpc",
@@ -273,11 +294,64 @@ func startPreparedAria2(cfg *config.AppConfig, prepared preparedBundledAria2Bina
 }
 
 func StopAria2() {
+	aria2Mu.Lock()
+	defer aria2Mu.Unlock()
+	stopAria2Locked()
+}
+
+func stopAria2Locked() {
 	if aria2Cmd != nil && aria2Cmd.Process != nil {
 		_ = aria2Cmd.Process.Kill()
 		_, _ = aria2Cmd.Process.Wait()
 		aria2Cmd = nil
 	}
+}
+
+// ValidateDownloadDir ensures dir exists, is a directory, and is writable.
+// Empty values are rejected; unreachable paths are not rewritten to Downloads.
+func ValidateDownloadDir(dir string) error {
+	if strings.TrimSpace(dir) == "" {
+		return fmt.Errorf("download directory is empty")
+	}
+	clean := filepath.Clean(dir)
+	info, err := statFile(clean)
+	switch {
+	case err == nil:
+		if !info.IsDir() {
+			return fmt.Errorf("download directory is not a directory")
+		}
+	case errors.Is(err, os.ErrNotExist):
+		if mkErr := mkdirAll(clean, 0o755); mkErr != nil {
+			return fmt.Errorf("download directory unavailable: %w", mkErr)
+		}
+	default:
+		return fmt.Errorf("download directory unavailable: %w", err)
+	}
+
+	probe, err := createTempFile(clean, ".goaria-dirprobe-*")
+	if err != nil {
+		return fmt.Errorf("download directory not writable: %w", err)
+	}
+	probeName := probe.Name()
+	closeErr := probe.Close()
+	_ = removeFile(probeName)
+	if closeErr != nil {
+		return fmt.Errorf("download directory not writable: %w", closeErr)
+	}
+	return nil
+}
+
+// EffectiveAria2MaxConnections returns the Aria2 launch value: min(parsed, 16).
+// Invalid input falls back to the product default (16).
+func EffectiveAria2MaxConnections(raw string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n <= 0 {
+		n, _ = strconv.Atoi(config.DefaultMaxConnections)
+	}
+	if n > config.Aria2MaxConnectionsPerServer {
+		return config.Aria2MaxConnectionsPerServer
+	}
+	return n
 }
 
 func defaultValidateBundledAria2Binary(path string, source bundledAria2Source) error {

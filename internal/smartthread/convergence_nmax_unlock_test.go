@@ -34,7 +34,7 @@ func TestConvergenceNMaxClamp_KneeCrossedRebound(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 
 	ct.limits.Clear(key)
 	ct.limits.SetNMax(key, 7)
@@ -86,7 +86,7 @@ func TestConvergenceNMaxClamp_KneeCrossedRebound(t *testing.T) {
 		telemetry2 := &mockTelemetry{
 			data: map[string][]types.WorkerSnapshot{gid2: makeWorkers(7, 2*1024*1024)},
 		}
-		ct2 := NewConvergenceTicker(he, tracker2, telemetry2, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+		ct2 := NewConvergenceTicker(he, tracker2, telemetry2, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 		ct2.limits.Clear(key2)
 		ct2.limits.SetNMax(key2, 8) // headroom = 8 - 7 = 1
 
@@ -136,7 +136,7 @@ func TestConvergenceNMaxClamp_BandwidthRelease(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 
 	ct.limits.Clear(key)
 	ct.limits.SetNMax(key, 6) // domain total = 6, +1 = 7 > 6 → skip
@@ -216,7 +216,7 @@ func TestConvergenceNMaxUnlock_RetryCountSumZero(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 
 	ct.limits.Clear(key)
 	ct.limits.SetNMax(key, 3)
@@ -268,7 +268,7 @@ func TestConvergenceNMaxUnlock_PartialRetryResetsCounter(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 
 	ct.limits.Clear(key)
 	ct.limits.SetNMax(key, 3)
@@ -342,7 +342,7 @@ func TestConvergenceNMaxUnlock_WorkersBelowNMaxStillUnlocks(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 
 	ct.limits.Clear(key)
 	ct.limits.SetNMax(key, 5) // nMax=5, currentWorkers=3 < 5
@@ -383,7 +383,7 @@ func TestConvergenceNMaxUnlock_ActiveSetChangeResetsCounter(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 
 	ct.limits.Clear(key)
 	ct.limits.SetNMax(key, 3)
@@ -455,7 +455,7 @@ func TestConvergenceNMaxFuse_MultiTaskDomainAggregation(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 
 	ct.limits.Clear(key)
 	ct.tick()
@@ -496,7 +496,7 @@ func TestConvergenceNMaxFuse_SingleTaskThresholdSensitivity(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 
 	ct.limits.Clear(key)
 	ct.tick()
@@ -531,7 +531,7 @@ func TestConvergenceNMaxUnlock_NoNMaxFloorRequirement(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 
 	ct.limits.Clear(key)
 	ct.limits.SetNMax(key, 10) // nMax=10, activeWorkers=6 < 10

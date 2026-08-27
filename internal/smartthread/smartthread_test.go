@@ -1,6 +1,7 @@
 package smartthread
 
 import (
+	"math"
 	"testing"
 
 	"goaria-v3/internal/config"
@@ -610,5 +611,133 @@ func TestCalculate_DifferentDomainUnaffected(t *testing.T) {
 	})
 	if paramsB.Split != 9 {
 		t.Errorf("b.com Split = %d, want 9 (unaffected by a.com domain reserve)", paramsB.Split)
+	}
+}
+
+func TestExplorationLimit_Matrix(t *testing.T) {
+	setupTestConfig(t)
+	cases := []struct {
+		wMax int
+		want int
+	}{
+		{1, 4}, {3, 4}, {4, 4}, {31, 7}, {32, 8}, {35, 8}, {36, 8}, {64, 8}, {128, 8}, {256, 8},
+	}
+	for _, tc := range cases {
+		if got := explorationLimit(tc.wMax); got != tc.want {
+			t.Errorf("explorationLimit(%d) = %d, want %d", tc.wMax, got, tc.want)
+		}
+	}
+	if explorationLimit(35) != explorationLimit(32) {
+		t.Fatal("35 should still match old uncapped /4 until 36")
+	}
+	old36 := max(36/4, 4)
+	if old36 != 9 {
+		t.Fatalf("precondition: old cap at 36 is 9, got %d", old36)
+	}
+	if explorationLimit(36) != 8 {
+		t.Fatal("first W_max changed by the 8-cap must be 36")
+	}
+}
+
+func TestCalculate_ExplorationCap_UnknownLegacyBBR(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	for _, wMax := range []int{35, 36, 64, 128, 256} {
+		unknown := Calculate(CalcParams{FileSize: 0, MaxConnections: wMax, Domain: "new.example", Scope: "wan", EnvKey: "e"})
+		if !unknown.IsExploration {
+			t.Fatalf("unknown size should explore")
+		}
+		if unknown.Split > explorationLimit(wMax) {
+			t.Fatalf("unknown W_max=%d split %d > cap", wMax, unknown.Split)
+		}
+		if unknown.MinSize != 0 || unknown.TargetBandwidth != 0 || unknown.NSat != wMax {
+			t.Fatalf("unknown-size extras: %+v", unknown)
+		}
+
+		legacy := Calculate(CalcParams{FileSize: 100 * 1024 * 1024, MaxConnections: wMax, Domain: "new.example", Scope: "wan", EnvKey: "e"})
+		if !legacy.IsExploration || legacy.Split > explorationLimit(wMax) {
+			t.Fatalf("legacy W_max=%d split %d", wMax, legacy.Split)
+		}
+	}
+
+	speedstats.AddRecordV2(8*1024*1024, 8, 200*1024*1024, false, 100, "other.com", "wan", "testenv")
+	for _, wMax := range []int{35, 36, 64, 128, 256} {
+		bbr := Calculate(CalcParams{
+			FileSize: 500 * 1024 * 1024, MaxConnections: wMax,
+			Domain: "brand-new.com", Scope: "wan", EnvKey: "testenv",
+		})
+		if !bbr.IsExploration {
+			t.Fatalf("BBR new domain should explore")
+		}
+		if bbr.Split > explorationLimit(wMax) {
+			t.Fatalf("BBR W_max=%d split %d > cap", wMax, bbr.Split)
+		}
+	}
+}
+
+func TestCalculate_ExplorationCap_KnownDomainUnaffected(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	speedstats.AddRecordV2(8*1024*1024, 8, 200*1024*1024, false, 100, "known.com", "wan", "testenv")
+
+	params := Calculate(CalcParams{
+		FileSize: 1 * 1024 * 1024 * 1024, MaxConnections: 64,
+		Domain: "known.com", Scope: "wan", EnvKey: "testenv",
+	})
+	if params.IsExploration {
+		t.Fatal("known domain must not explore")
+	}
+	if params.Split <= 8 && params.Split == explorationLimit(64) {
+		t.Fatalf("known domain should not be forced to 8-cap, split=%d", params.Split)
+	}
+}
+
+func TestCalculate_ExplorationCap_DoesNotRaiseBelowFour(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	unknown := Calculate(CalcParams{FileSize: 0, MaxConnections: 1, Domain: "x", Scope: "wan", EnvKey: "e"})
+	if unknown.Split != 1 {
+		t.Fatalf("W_max=1 unknown split=%d, want 1", unknown.Split)
+	}
+	// 2MiB cold start: N_tmin = ceil(2MiB / (2MiB/s * 5s)) = 1
+	small := Calculate(CalcParams{FileSize: 2 * 1024 * 1024, MaxConnections: 8})
+	if small.Split != 1 {
+		t.Fatalf("2MiB cold start split=%d, want 1", small.Split)
+	}
+}
+
+func TestCalculate_OverflowSafeMinThreadLife(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	config.SetTestConfig(&config.AppConfig{MinThreadLife: int(int64(^uint(0) >> 1))})
+
+	params := Calculate(CalcParams{
+		FileSize:       math.MaxInt64 / 4,
+		MaxConnections: 256,
+		Domain:         "huge.example",
+		Scope:          "wan",
+		EnvKey:         "e",
+	})
+	if params.Split < 1 || params.Split > 256 {
+		t.Fatalf("split %d outside [1,256]", params.Split)
+	}
+}
+
+func TestCalculate_LegacyNTminExample(t *testing.T) {
+	setupTestConfig(t)
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	// 72.32MB / (2MB/s * 5s) = 7.232 → ceil 8 before exploration; with W_max=8 explore cap 4.
+	// Spec cites 5MB/s thread avg for N_tmin=3 which is the BBR path, not 2MB legacy estimate.
+	size := int64(7232) * 1024 * 1024 / 100
+	legacy := Calculate(CalcParams{FileSize: size, MaxConnections: 16})
+	if legacy.Split < 1 || legacy.Split > 16 {
+		t.Fatalf("legacy split %d", legacy.Split)
 	}
 }

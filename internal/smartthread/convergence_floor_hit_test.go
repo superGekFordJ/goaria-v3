@@ -30,7 +30,7 @@ func setupFloorHitState(t *testing.T, gid string, floorMemory int64, cooldown in
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 
 	ct.mu.Lock()
 	s := ct.getOrCreateState(gid)
@@ -220,7 +220,7 @@ func TestConvergence_FloorHit_KneeFrozenSet(t *testing.T) {
 	aria2 := &rpc.Aria2Engine{}
 	surge := rpc.NewSurgeEngineForTesting(nil)
 	he := rpc.NewHybridEngine(aria2, surge)
-	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 0)
+	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 
 	// Clear any leftover N_max from previous tests (global singleton).
 	ct.limits.Clear(limitKey("wan", "example.com"))
@@ -283,5 +283,48 @@ func TestConvergence_FloorHit_KneeFrozenSet(t *testing.T) {
 		if r.gid == gid {
 			t.Fatal("expected bandwidthRelease to skip kneeFrozen task")
 		}
+	}
+}
+
+func TestConvergence_FloorHit_PartialDrainReboundRespectsMax(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	gid := "sg_floor_partial_max"
+	tracker := &mockTracker{
+		tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024},
+		},
+	}
+	telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{gid: makeWorkers(7, 2*1024*1024)}}
+	ct := NewConvergenceTicker(
+		rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+		tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 8,
+	)
+	ct.limits.Clear(limitKey("wan", "example.com"))
+	ct.mu.Lock()
+	s := ct.getOrCreateState(gid)
+	s.phase = phaseStable
+	s.lastStep = 8
+	s.probeBaseline = 32 * 1024 * 1024
+	s.probeBaselineWorkers = 8
+	s.probeMomentum = true
+	s.probeCooldown = 0
+	s.prevCompleted = 100 * 1024 * 1024
+	setPrevSampleAgoState(s, 5*time.Second)
+	ct.mu.Unlock()
+
+	telemetry.data[gid] = makeWorkers(7, 2*1024*1024)
+	tracker.tasks[0].CompletedLength = 114 * 1024 * 1024
+	ct.mu.Lock()
+	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
+	ct.mu.Unlock()
+
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil)
+	if !ok || ps.delta <= 0 {
+		t.Fatalf("expected clamped rebound, got ok=%v delta=%d", ok, ps.delta)
+	}
+	if 7+ps.delta > 8 {
+		t.Fatalf("rebound %d would exceed max from current 7", ps.delta)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -366,4 +367,210 @@ func bundledBinaryNameForTest() string {
 	}
 
 	return "aria2c"
+}
+
+func TestEffectiveAria2MaxConnections(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"1", 1},
+		{"8", 8},
+		{"16", 16},
+		{"17", 16},
+		{"64", 16},
+		{"128", 16},
+		{"256", 16},
+		{"", 16},
+		{"0", 16},
+		{"-4", 16},
+		{"abc", 16},
+		{" 8 ", 8},
+	}
+	for _, tc := range cases {
+		if got := EffectiveAria2MaxConnections(tc.in); got != tc.want {
+			t.Errorf("EffectiveAria2MaxConnections(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+		if got := EffectiveAria2MaxConnections(tc.in); got > 16 {
+			t.Errorf("Aria value %d exceeds 16", got)
+		}
+	}
+}
+
+func TestValidateDownloadDir_EmptyRejected(t *testing.T) {
+	if err := ValidateDownloadDir(""); err == nil {
+		t.Fatal("empty dir must fail")
+	}
+	if err := ValidateDownloadDir("   "); err == nil {
+		t.Fatal("whitespace dir must fail")
+	}
+}
+
+func TestValidateDownloadDir_CreatesMissingAndProbes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "new-dl")
+	if err := ValidateDownloadDir(dir); err != nil {
+		t.Fatalf("missing dir should be created: %v", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("dir not created: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "dirprobe") {
+			t.Fatalf("probe leftover: %s", e.Name())
+		}
+	}
+}
+
+func TestValidateDownloadDir_RejectsRegularFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateDownloadDir(path); err == nil {
+		t.Fatal("file path must fail")
+	}
+}
+
+func TestValidateDownloadDir_ProbeCreateFailure(t *testing.T) {
+	restore := stubBundledAria2Runtime(t, currentBundledAria2)
+	defer restore()
+	dir := t.TempDir()
+	createTempFile = func(dir, pattern string) (*os.File, error) {
+		return nil, errors.New("probe create denied")
+	}
+	if err := ValidateDownloadDir(dir); err == nil || !strings.Contains(err.Error(), "not writable") {
+		t.Fatalf("create failure: %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "dirprobe") {
+			t.Fatalf("leftover probe %s", e.Name())
+		}
+	}
+}
+
+func TestStartAria2NilConfigDoesNotKill(t *testing.T) {
+	restore := stubBundledAria2Runtime(t, currentBundledAria2)
+	defer restore()
+	killCalls := 0
+	killAllAria2Processes = func() { killCalls++ }
+	if err := StartAria2(nil); err == nil {
+		t.Fatal("expected nil config error")
+	}
+	if killCalls != 0 {
+		t.Fatalf("killed on nil config: %d", killCalls)
+	}
+}
+
+func TestRestartAria2NilConfigDoesNotKill(t *testing.T) {
+	restore := stubBundledAria2Runtime(t, currentBundledAria2)
+	defer restore()
+	killCalls := 0
+	killAllAria2Processes = func() { killCalls++ }
+	if err := RestartAria2(nil); err == nil {
+		t.Fatal("expected nil config error")
+	}
+	if killCalls != 0 {
+		t.Fatalf("killed on nil config: %d", killCalls)
+	}
+}
+
+func TestRestartAria2InvalidDirectoryDoesNotKill(t *testing.T) {
+	homeDir := t.TempDir()
+	restore := stubBundledAria2Runtime(t, bundledAria2Source{
+		targetOS:      runtime.GOOS,
+		embeddedPath:  "bundled/test/aria2c",
+		extractedName: bundledBinaryNameForTest(),
+		prepareHint:   "test prepare",
+		bytes:         []byte("fake aria2 payload"),
+	})
+	defer restore()
+	userHomeDir = func() (string, error) { return homeDir, nil }
+	validateBundledAria2Binary = func(path string, source bundledAria2Source) error { return nil }
+	killCalls := 0
+	killAllAria2Processes = func() { killCalls++ }
+	filePath := filepath.Join(homeDir, "not-dir")
+	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := RestartAria2(&config.AppConfig{
+		RPCPort:                "16800",
+		DownloadDir:            filePath,
+		MaxConcurrentDownloads: "1",
+		MaxConnections:         "8",
+		UserAgent:              "test-agent",
+	})
+	if err == nil {
+		t.Fatal("expected invalid directory error")
+	}
+	if killCalls != 0 {
+		t.Fatalf("killed old process before dir preflight, got %d", killCalls)
+	}
+}
+
+func TestStartAria2MissingBundleDoesNotKill(t *testing.T) {
+	homeDir := t.TempDir()
+	restore := stubBundledAria2Runtime(t, bundledAria2Source{
+		targetOS:      runtime.GOOS,
+		embeddedPath:  "bundled/test/aria2c",
+		extractedName: bundledBinaryNameForTest(),
+		prepareHint:   "test prepare",
+		loadErr:       os.ErrNotExist,
+	})
+	defer restore()
+	userHomeDir = func() (string, error) { return homeDir, nil }
+	killCalls := 0
+	killAllAria2Processes = func() { killCalls++ }
+	err := StartAria2(&config.AppConfig{
+		RPCPort:                "16800",
+		DownloadDir:            homeDir,
+		MaxConcurrentDownloads: "1",
+		MaxConnections:         "1",
+		UserAgent:              "test-agent",
+	})
+	if err == nil {
+		t.Fatal("expected missing bundle")
+	}
+	if killCalls != 0 {
+		t.Fatalf("killed on missing bundle: %d", killCalls)
+	}
+}
+
+func TestAria2LifecycleConcurrentNoDeadlock(t *testing.T) {
+	homeDir := t.TempDir()
+	restore := stubBundledAria2Runtime(t, bundledAria2Source{
+		targetOS:      runtime.GOOS,
+		embeddedPath:  "bundled/test/aria2c",
+		extractedName: bundledBinaryNameForTest(),
+		prepareHint:   "test prepare",
+		loadErr:       os.ErrNotExist,
+	})
+	defer restore()
+	userHomeDir = func() (string, error) { return homeDir, nil }
+	killAllAria2Processes = func() {}
+	cfg := &config.AppConfig{DownloadDir: homeDir, RPCPort: "16800", MaxConnections: "8", MaxConcurrentDownloads: "1", UserAgent: "t"}
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			_ = StartAria2(cfg)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = RestartAria2(cfg)
+		}()
+		go func() {
+			defer wg.Done()
+			StopAria2()
+		}()
+	}
+	wg.Wait()
 }
