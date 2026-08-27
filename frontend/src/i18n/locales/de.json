@@ -103,7 +103,7 @@
     "threads": "Threads",
     "maxConcurrent": "Max. gleichzeitige Tasks",
     "surgeBadge": "Surge",
-    "surgeExclusiveTooltip": "Werte über 16 nutzt Surge; Aria2 bleibt auf 16 Verbindungen begrenzt. Die UI-Voreinstellungen bleiben bewusst konservativ. Fortgeschrittene Nutzer können GoAria beenden und ~/.goaria/config.json bearbeiten, um max_connections bis 256 zu setzen. Änderungen gelten nach einem Neustart; laufende Aufgaben werden nicht nachträglich umkonfiguriert."
+    "surgeExclusiveTooltip": "Die Voreinstellungen sind für Highspeed-Netze optimiert, um Ratenbegrenzungen zu vermeiden. Wenn Sie eine höhere Parallelität benötigen, beenden Sie GoAria und setzen Sie max_connections in ~/.goaria/config.json auf bis zu 256 (gilt nach Neustart)."
   },
   "ua": {
     "description": "Benutzerdefinierter User-Agent",

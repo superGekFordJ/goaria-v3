@@ -103,7 +103,7 @@
     "threads": "线程",
     "maxConcurrent": "最大并发任务",
     "surgeBadge": "Surge",
-    "surgeExclusiveTooltip": "16 以上由 Surge 使用，Aria2 仍限制为 16 连接。界面预设有意保持保守。高级用户可先退出 GoAria，再编辑 ~/.goaria/config.json，将 max_connections 设为最高 256。重新启动后生效，现有任务不会追溯重配。"
+    "surgeExclusiveTooltip": "预设选项已针对多数高速网络优化以防止被限流。若您确信需要更高并发，可退出应用后在 ~/.goaria/config.json 中将 max_connections 修改为最高 256（重启后生效）。"
   },
   "ua": {
     "description": "自定义浏览器标识",

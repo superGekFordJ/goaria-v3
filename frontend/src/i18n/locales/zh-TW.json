@@ -103,7 +103,7 @@
     "threads": "執行緒",
     "maxConcurrent": "最大同時下載任務數",
     "surgeBadge": "Surge",
-    "surgeExclusiveTooltip": "16 以上由 Surge 使用，Aria2 仍限制為 16 連線。介面預設有意保持保守。進階使用者可先結束 GoAria，再編輯 ~/.goaria/config.json，將 max_connections 設為最高 256。重新啟動後生效，現有任務不會追溯重配。"
+    "surgeExclusiveTooltip": "預設選項已針對多數高速網路最佳化以防止被限流。若您確信需要更高並發，可結束應用程式後在 ~/.goaria/config.json 中將 max_connections 修改為最高 256（重新啟動後生效）。"
   },
   "ua": {
     "description": "自訂瀏覽器識別 (User-Agent)",

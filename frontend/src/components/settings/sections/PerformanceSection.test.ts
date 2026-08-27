@@ -82,11 +82,11 @@ describe('PerformanceSection', () => {
     wrapper.unmount()
   })
 
-  it('shows a Surge badge for custom values above 16 and ignores invalid input', async () => {
+  it('shows custom value in menu and ignores invalid input', async () => {
     const wrapper = mountSection('64')
     await connectionsTrigger(wrapper)?.trigger('click')
     await nextTick()
-    expect(wrapper.text()).toContain('performance.surgeBadge')
+    expect(menuConnectionValues(wrapper)).toEqual([...presets, '64'])
     wrapper.unmount()
 
     const empty = mountSection('')

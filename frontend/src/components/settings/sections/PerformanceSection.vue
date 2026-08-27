@@ -43,11 +43,6 @@
       : [...props.connectionOptions, token]
   })
 
-  const isSurgeExclusive = (value: string) => {
-    const n = parseExactConnection(value)
-    return n !== null && n > 16
-  }
-
   const toggleSmartThreadMode = () => {
     emit('update:smartThreadMode', !props.smartThreadMode)
     emit('change')
@@ -183,17 +178,9 @@
                 ]"
                 @click="selectConnections(n)"
               >
-                <div class="flex items-center gap-2">
-                  <span class="text-sm font-mono-data font-medium">
-                    {{ n }} {{ t('performance.threads') }}
-                  </span>
-                  <span
-                    v-if="isSurgeExclusive(n)"
-                    class="flex items-center gap-1 text-[9px] font-bold text-[var(--neon-primary)] bg-[var(--neon-primary)]/10 px-1.5 py-0.5 rounded uppercase tracking-wider"
-                  >
-                    {{ t('performance.surgeBadge') }}
-                  </span>
-                </div>
+                <span class="text-sm font-mono-data font-medium">
+                  {{ n }} {{ t('performance.threads') }}
+                </span>
                 <Check v-if="connections === n" :size="14" />
               </button>
             </div>

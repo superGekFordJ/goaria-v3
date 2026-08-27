@@ -103,7 +103,7 @@
     "threads": "Hilos",
     "maxConcurrent": "Tareas concurrentes máx.",
     "surgeBadge": "Surge",
-    "surgeExclusiveTooltip": "Los valores superiores a 16 los usa Surge; Aria2 sigue limitado a 16 conexiones. Los preajustes de la IU se mantienen conservadores a propósito. Los usuarios avanzados pueden cerrar GoAria y editar ~/.goaria/config.json para fijar max_connections hasta 256. Los cambios se aplican al reiniciar; las tareas existentes no se reconfiguran."
+    "surgeExclusiveTooltip": "Los preajustes están optimizados para redes de alta velocidad para evitar límites de tasa. Si necesita mayor concurrencia, cierre GoAria y configure max_connections hasta 256 en ~/.goaria/config.json (se aplica tras reiniciar)."
   },
   "ua": {
     "description": "User-Agent Personalizado",

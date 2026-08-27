@@ -3,7 +3,7 @@
   import { useI18n } from 'vue-i18n'
   import { useConfigStore } from '../../stores/config'
   import { AppConfig } from '../../../bindings/goaria-v3/internal/config/models.js'
-  import { Settings as SettingsIcon, CheckCircle, Loader2, AlertCircle } from '@lucide/vue'
+  import { Settings as SettingsIcon, CheckCircle, Loader2, AlertCircle, RotateCw } from '@lucide/vue'
 
   import DownloadSection from './sections/DownloadSection.vue'
   import RPCSection from './sections/RPCSection.vue'
@@ -340,17 +340,21 @@
 
       <div
         v-if="showHydrationError"
-        class="mb-4 flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-[var(--status-error)]/10 border border-[var(--status-error)]/20"
+        class="mb-4 flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-[var(--status-error)]/10 border border-[var(--status-error)]/20 animate-fade-in"
         aria-live="polite"
       >
-        <p class="text-xs text-[var(--status-error)]">{{ t('settings.loadFailed') }}</p>
+        <div class="flex items-center gap-2.5 min-w-0">
+          <AlertCircle :size="15" class="text-[var(--status-error)] shrink-0" />
+          <p class="text-xs text-[var(--status-error)] font-medium tracking-tight">{{ t('settings.loadFailed') }}</p>
+        </div>
         <button
           type="button"
-          class="retry-hydrate shrink-0 px-3 py-1.5 rounded-lg text-[10px] font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] disabled:opacity-50 disabled:cursor-not-allowed"
+          class="retry-hydrate flex items-center gap-1.5 shrink-0 px-3 py-1.5 rounded-lg text-[10px] font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:bg-[var(--glass-border)] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
           :disabled="retryBusy"
           @click="retryHydration"
         >
-          {{ t('settings.retry') }}
+          <RotateCw :size="11" class="transition-transform duration-500" :class="{ 'animate-spin': retryBusy }" />
+          <span>{{ t('settings.retry') }}</span>
         </button>
       </div>
 
