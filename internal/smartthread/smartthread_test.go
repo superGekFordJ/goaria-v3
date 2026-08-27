@@ -754,6 +754,20 @@ func TestCalculate_DefaultAndUpperMaxConnections(t *testing.T) {
 	}
 }
 
+func TestCalculate_NilPublishedConfigDoesNotPanic(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	config.SetTestConfig(nil)
+	t.Cleanup(func() {
+		cfg := config.DefaultConfig()
+		config.SetTestConfig(&cfg)
+	})
+	params := Calculate(CalcParams{FileSize: 2 * 1024 * 1024, MaxConnections: 8})
+	if params.Split < 1 {
+		t.Fatalf("split %d", params.Split)
+	}
+}
+
 func TestCalculate_LegacyNTminExample(t *testing.T) {
 	setupTestConfig(t)
 	speedstats.ResetRecordsForTest()

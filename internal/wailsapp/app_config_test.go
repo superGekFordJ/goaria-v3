@@ -184,6 +184,8 @@ type saveHarness struct {
 	rpcInits           int
 	notifiers          int
 	stops              int
+	notifierStops      int
+	portWaits          int
 	extPort            int
 	extListening       bool
 	lastRestart        config.AppConfig
@@ -271,6 +273,10 @@ func (h *saveHarness) app() *App {
 			h.add("stop")
 			h.stops++
 		},
+		afterDaemonStop: func() {
+			h.add("port-wait")
+			h.portWaits++
+		},
 		rpcInit: func(port, secret string) {
 			h.add("rpc")
 			h.rpcInits++
@@ -286,6 +292,10 @@ func (h *saveHarness) app() *App {
 		initNotifier: func(hub *events.Hub, port, secret string) {
 			h.add("notifier")
 			h.notifiers++
+		},
+		stopNotifier: func() {
+			h.add("stop-notifier")
+			h.notifierStops++
 		},
 		extensionStatus: func() (int, bool) {
 			h.add("extension")
@@ -542,6 +552,9 @@ func TestSaveConfig_ReadyFailRestoreStoppedFalseStopsCandidate(t *testing.T) {
 	if h.stops != 1 {
 		t.Fatalf("leftover candidate must be stopped, stops=%d", h.stops)
 	}
+	if h.portWaits != 1 {
+		t.Fatalf("port-release wait after leftover stop, waits=%d", h.portWaits)
+	}
 	if h.lastRPCPort != cur.RPCPort {
 		t.Fatalf("rpc rebound %q, want old", h.lastRPCPort)
 	}
@@ -558,6 +571,7 @@ func TestSaveConfig_RestartFailBeforeStopSkipsRestoreRestart(t *testing.T) {
 			Err:     errors.New("download dir unavailable"),
 			Stopped: false,
 		},
+		readyErr: errors.New("should not wait"),
 	}
 	req := cur
 	req.RPCPort = "16810"
@@ -576,6 +590,11 @@ func TestSaveConfig_RestartFailBeforeStopSkipsRestoreRestart(t *testing.T) {
 	}
 	if h.store.cur.RPCPort != cur.RPCPort {
 		t.Fatal("config not rolled back")
+	}
+	for _, s := range h.steps() {
+		if s == "ready" {
+			t.Fatalf("skip-restore must not WaitForReady: %v", h.steps())
+		}
 	}
 }
 
@@ -596,6 +615,9 @@ func TestSaveConfig_RollbackPersistFailureKeepsCandidate(t *testing.T) {
 	}
 	if h.store.cur.RPCPort != "16810" {
 		t.Fatal("current must remain candidate")
+	}
+	if h.notifierStops != 1 {
+		t.Fatalf("rollback persist fail should stop notifier, got %d", h.notifierStops)
 	}
 }
 

@@ -200,6 +200,9 @@ func TestValidateAndSanitize_RemainingFields(t *testing.T) {
 	if got := ValidateAndSanitize(AppConfig{WindowTransparency: "mica"}).WindowTransparency; got != "mica" {
 		t.Fatalf("mica retained, got %q", got)
 	}
+	if got := ValidateAndSanitize(AppConfig{WindowTransparency: " mica "}).WindowTransparency; got != "mica" {
+		t.Fatalf("trimmed mica retained, got %q", got)
+	}
 	if got := ValidateAndSanitize(AppConfig{WindowTransparency: "glass"}).WindowTransparency; got != "none" {
 		t.Fatalf("invalid transparency → %q", got)
 	}

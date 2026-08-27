@@ -250,9 +250,11 @@ type configSaveDeps struct {
 	validateDir     func(string) error
 	restartAria2    func(*config.AppConfig) error
 	stopAria2       func()
+	afterDaemonStop func()
 	rpcInit         func(port, secret string)
 	waitForReady    func(time.Duration) error
 	initNotifier    func(hub *events.Hub, port, secret string)
+	stopNotifier    func()
 	extensionStatus func() (wsPort int, listening bool)
 }
 
@@ -279,9 +281,13 @@ func defaultConfigSaveDeps(a *App) configSaveDeps {
 		validateDir:   process.ValidateDownloadDir,
 		restartAria2:  process.RestartAria2,
 		stopAria2:     process.StopAria2,
-		rpcInit:       rpc.Init,
-		waitForReady:  rpc.WaitForReady,
-		initNotifier:  rpc.InitNotifier,
+		afterDaemonStop: func() {
+			time.Sleep(time.Second)
+		},
+		rpcInit:      rpc.Init,
+		waitForReady: rpc.WaitForReady,
+		initNotifier: rpc.InitNotifier,
+		stopNotifier: rpc.StopNotifier,
 		extensionStatus: func() (int, bool) {
 			return a.liveExtensionStatus()
 		},
@@ -468,6 +474,9 @@ func (a *App) rollbackConfigAndAria(deps configSaveDeps, old, candidate config.A
 		current.ExtensionSecret = managedSecret
 	})
 	if err != nil {
+		if deps.stopNotifier != nil {
+			deps.stopNotifier()
+		}
 		snap := liveSnapshot(deps, candidate)
 		if snap == (config.AppConfig{}) && rollback.Current != (config.AppConfig{}) {
 			snap = rollback.Current
@@ -481,15 +490,23 @@ func (a *App) rollbackConfigAndAria(deps configSaveDeps, old, candidate config.A
 			var re *process.Aria2RestartError
 			if errors.As(err, &re) && re != nil && !re.Stopped && deps.stopAria2 != nil {
 				deps.stopAria2()
+				if deps.afterDaemonStop != nil {
+					deps.afterDaemonStop()
+				}
 			}
 			if deps.rpcInit != nil {
 				deps.rpcInit(restored.RPCPort, restored.RPCSecret)
 			}
 			return failedSaveResult(errCodeAriaRollbackFailed, liveSnapshot(deps, restored), msgAriaRollbackFailed, old)
 		}
+		if err := a.bindRPC(deps, restored); err != nil {
+			return failedSaveResult(errCodeAriaRollbackFailed, liveSnapshot(deps, restored), msgAriaRollbackFailed, old)
+		}
+		return failedSaveResult(code, liveSnapshot(deps, restored), msg, old)
 	}
-	if err := a.bindRPC(deps, restored); err != nil {
-		return failedSaveResult(errCodeAriaRollbackFailed, liveSnapshot(deps, restored), msgAriaRollbackFailed, old)
+
+	if deps.rpcInit != nil {
+		deps.rpcInit(restored.RPCPort, restored.RPCSecret)
 	}
 	return failedSaveResult(code, liveSnapshot(deps, restored), msg, old)
 }

@@ -66,9 +66,9 @@ func Calculate(p CalcParams) ThreadParams {
 	}
 
 	// 获取 T_min
-	tMin := config.Get().MinThreadLife
-	if tMin <= 0 {
-		tMin = defaultMinThreadLife
+	tMin := defaultMinThreadLife
+	if cur := config.Get(); cur != nil && cur.MinThreadLife > 0 {
+		tMin = cur.MinThreadLife
 	}
 
 	// --- 数据采集 ---
