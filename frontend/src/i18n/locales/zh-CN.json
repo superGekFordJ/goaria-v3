@@ -20,6 +20,9 @@
     "saving": "保存中...",
     "saved": "已保存",
     "saveFailed": "保存失败",
+    "loadFailed": "无法从应用加载设置。请重试，或确认 GoAria 正在运行。",
+    "retry": "重试",
+    "requiresAppRestart": "已保存。请重启 GoAria 以使全部更改生效。",
     "autoSave": "自动保存"
   },
   "appearance": {
@@ -82,6 +85,7 @@
     "maxConnections": "单任务最大连接数",
     "threads": "线程",
     "maxConcurrent": "最大并发任务",
+    "surgeBadge": "Surge",
     "surgeExclusiveTooltip": "16 以上由 Surge 使用，Aria2 仍限制为 16 连接。界面预设有意保持保守。高级用户可先退出 GoAria，再编辑 ~/.goaria/config.json，将 max_connections 设为最高 256。重新启动后生效，现有任务不会追溯重配。"
   },
   "ua": {

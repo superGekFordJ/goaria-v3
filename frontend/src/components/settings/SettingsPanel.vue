@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { onMounted, onUnmounted, ref, watch } from 'vue'
+  import { computed, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { useConfigStore } from '../../stores/config'
   import { AppConfig } from '../../../bindings/goaria-v3/internal/config/models.js'
@@ -29,32 +29,40 @@
     smart_thread_mode: false,
   })
 
-  type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
+  type SaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'restart'
   const saveStatus = ref<SaveStatus>('idle')
   let saveTimeout: ReturnType<typeof setTimeout> | null = null
   let statusResetTimeout: ReturnType<typeof setTimeout> | null = null
   let isInitializedFromBackend = false
   let isApplyingCanonical = false
+  let applyGeneration = 0
   let editGeneration = 0
   let disposed = false
 
+  const editorsLocked = computed(() => !configStore.isHydrated)
+  const showHydrationError = computed(
+    () => !configStore.isHydrated && !configStore.isLoading && configStore.hydrateFailed,
+  )
+
   const syncForm = (snapshot: AppConfig) => {
+    const generation = ++applyGeneration
     isApplyingCanonical = true
-    try {
-      formData.value = {
-        download_dir: snapshot.download_dir || '',
-        rpc_port: String(snapshot.rpc_port || ''),
-        rpc_secret: snapshot.rpc_secret || '',
-        max_connections: String(snapshot.max_connections || ''),
-        max_concurrent_downloads: String(snapshot.max_concurrent_downloads || ''),
-        user_agent: snapshot.user_agent || '',
-        show_history: Boolean(snapshot.show_history),
-        window_transparency: snapshot.window_transparency || 'none',
-        smart_thread_mode: Boolean(snapshot.smart_thread_mode),
-      }
-    } finally {
-      isApplyingCanonical = false
+    formData.value = {
+      download_dir: snapshot.download_dir || '',
+      rpc_port: String(snapshot.rpc_port || ''),
+      rpc_secret: snapshot.rpc_secret || '',
+      max_connections: String(snapshot.max_connections || ''),
+      max_concurrent_downloads: String(snapshot.max_concurrent_downloads || ''),
+      user_agent: snapshot.user_agent || '',
+      show_history: Boolean(snapshot.show_history),
+      window_transparency: snapshot.window_transparency || 'none',
+      smart_thread_mode: Boolean(snapshot.smart_thread_mode),
     }
+    void nextTick(() => {
+      if (!disposed && generation === applyGeneration) {
+        isApplyingCanonical = false
+      }
+    })
   }
 
   const hydrateFromStore = () => {
@@ -62,18 +70,29 @@
     isInitializedFromBackend = true
   }
 
+  const previewPersistedSettings = () => {
+    if (isInitializedFromBackend) return
+    syncForm(configStore.settings)
+  }
+
   onMounted(() => {
     if (configStore.isHydrated) {
       hydrateFromStore()
+    } else {
+      previewPersistedSettings()
     }
   })
 
   const stopHydrationWatch = watch(
-    () => configStore.isHydrated,
-    hydrated => {
-      if (hydrated && !isInitializedFromBackend) {
-        hydrateFromStore()
+    () => [configStore.isHydrated, configStore.isLoading, configStore.hydrateFailed] as const,
+    ([hydrated]) => {
+      if (hydrated) {
+        if (!isInitializedFromBackend) {
+          hydrateFromStore()
+        }
+        return
       }
+      previewPersistedSettings()
     },
   )
 
@@ -115,17 +134,26 @@
       try {
         const result = await configStore.updateConfig(snapshot)
         if (disposed || generation !== editGeneration) return
-        configStore.applyCanonicalConfig(result.config)
-        syncForm(result.config)
+        const canonical = result?.config
+        if (!canonical) {
+          saveStatus.value = 'error'
+          return
+        }
+        configStore.applyCanonicalConfig(canonical)
+        syncForm(canonical)
         if (!result.success) {
           saveStatus.value = 'error'
           return
         }
+        if (result.requires_app_restart) {
+          saveStatus.value = 'restart'
+          return
+        }
         saveStatus.value = 'saved'
         scheduleReset(generation)
-      } catch (err) {
+      } catch {
         if (import.meta.env.DEV) {
-          console.warn('[Settings] save failed:', err)
+          console.warn('[Settings] save failed')
         }
         if (disposed || generation !== editGeneration) return
         saveStatus.value = 'error'
@@ -135,14 +163,19 @@
 
   const handlePickDirectory = async () => {
     const selected = await configStore.pickDirectory()
-    if (!selected) return
+    if (!selected || disposed || !isInitializedFromBackend) return
     formData.value.download_dir = selected
     triggerSave()
+  }
+
+  const retryHydration = () => {
+    void configStore.fetchConfig()
   }
 
   onUnmounted(() => {
     disposed = true
     editGeneration++
+    applyGeneration++
     clearPendingTimers()
     stopHydrationWatch()
   })
@@ -172,7 +205,7 @@
         </div>
 
         <!-- Save Status Indicator -->
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2" aria-live="polite">
           <Transition name="fade" mode="out-in">
             <div
               v-if="saveStatus === 'saving'"
@@ -190,6 +223,15 @@
               <CheckCircle :size="12" class="text-[var(--status-complete)]" />
               <span class="text-[10px] font-mono-data text-[var(--status-complete)]">
                 {{ t('settings.saved') }}
+              </span>
+            </div>
+            <div
+              v-else-if="saveStatus === 'restart'"
+              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
+            >
+              <AlertCircle :size="12" class="text-[var(--neon-primary)]" />
+              <span class="text-[10px] font-mono-data text-[var(--neon-primary)]">
+                {{ t('settings.requiresAppRestart') }}
               </span>
             </div>
             <div
@@ -214,8 +256,26 @@
         </div>
       </div>
 
+      <div
+        v-if="showHydrationError"
+        class="mb-4 flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-[var(--status-error)]/10 border border-[var(--status-error)]/20"
+      >
+        <p class="text-xs text-[var(--status-error)]">{{ t('settings.loadFailed') }}</p>
+        <button
+          type="button"
+          class="retry-hydrate shrink-0 px-3 py-1.5 rounded-lg text-[10px] font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)]"
+          @click="retryHydration"
+        >
+          {{ t('settings.retry') }}
+        </button>
+      </div>
+
       <!-- Settings Cards Container -->
-      <div class="space-y-4">
+      <fieldset
+        class="min-w-0 space-y-4 border-0 p-0 m-0"
+        :disabled="editorsLocked"
+        :class="{ 'pointer-events-none opacity-60': editorsLocked }"
+      >
         <DownloadSection v-model="formData.download_dir" @pick="handlePickDirectory" />
 
         <RPCSection
@@ -245,7 +305,7 @@
         <ExtensionSection />
 
         <UpdateSection />
-      </div>
+      </fieldset>
     </div>
   </div>
 </template>
@@ -258,5 +318,9 @@
   .fade-enter-from,
   .fade-leave-to {
     opacity: 0;
+  }
+
+  fieldset:disabled {
+    opacity: 0.6;
   }
 </style>

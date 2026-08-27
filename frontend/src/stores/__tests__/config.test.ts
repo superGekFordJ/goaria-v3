@@ -55,6 +55,7 @@ describe('useConfigStore', () => {
     resolveConfig(backend)
     await pending
     expect(store.isHydrated).toBe(true)
+    expect(store.hydrateFailed).toBe(false)
     expect(store.settings.max_connections).toBe('64')
   })
 
@@ -66,6 +67,30 @@ describe('useConfigStore', () => {
     await store.fetchConfig()
     expect(store.isHydrated).toBe(false)
     expect(store.settings.user_agent).toBe('kept-from-storage')
+    expect(store.hydrateFailed).toBe(true)
+  })
+
+  it('null GetConfig does not hydrate and marks hydrateFailed', async () => {
+    const { useConfigStore } = await import('../config')
+    const store = useConfigStore()
+    store.settings.user_agent = 'kept-from-storage'
+    bindingMocks.GetConfig.mockResolvedValue(null)
+    await store.fetchConfig()
+    expect(store.isHydrated).toBe(false)
+    expect(store.hydrateFailed).toBe(true)
+    expect(store.settings.user_agent).toBe('kept-from-storage')
+  })
+
+  it('applyCanonicalConfig ignores null and clones the snapshot', async () => {
+    const { useConfigStore } = await import('../config')
+    const store = useConfigStore()
+    store.settings.user_agent = 'kept'
+    store.applyCanonicalConfig(undefined)
+    expect(store.settings.user_agent).toBe('kept')
+    const snapshot = sampleConfig({ user_agent: 'canonical' })
+    store.applyCanonicalConfig(snapshot)
+    snapshot.user_agent = 'mutated-later'
+    expect(store.settings.user_agent).toBe('canonical')
   })
 
   it('does not mutate the caller snapshot while awaiting SaveConfig', async () => {

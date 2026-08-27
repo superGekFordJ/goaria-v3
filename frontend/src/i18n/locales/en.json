@@ -20,6 +20,9 @@
     "saving": "Saving...",
     "saved": "Saved",
     "saveFailed": "Save failed",
+    "loadFailed": "Could not load settings from the app. Retry, or check that GoAria is running.",
+    "retry": "Retry",
+    "requiresAppRestart": "Saved. Restart GoAria to apply all changes.",
     "autoSave": "Auto Save"
   },
   "appearance": {
@@ -82,6 +85,7 @@
     "maxConnections": "Max Connections per Task",
     "threads": "Threads",
     "maxConcurrent": "Max Concurrent Tasks",
+    "surgeBadge": "Surge",
     "surgeExclusiveTooltip": "Values above 16 are used by Surge; Aria2 remains limited to 16 connections. UI presets stay conservative on purpose. Advanced users can quit GoAria and edit ~/.goaria/config.json to set max_connections up to 256. Changes take effect after restart; existing tasks are not reconfigured."
   },
   "ua": {

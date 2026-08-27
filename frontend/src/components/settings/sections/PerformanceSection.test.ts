@@ -40,10 +40,19 @@ function connectionsTrigger(wrapper: ReturnType<typeof mountSection>) {
   return wrapper.findAll('button').find(b => b.text().includes('performance.threads'))
 }
 
+function menuConnectionValues(wrapper: ReturnType<typeof mountSection>) {
+  return wrapper
+    .findAll('button')
+    .filter(b => b.classes().includes('p-3') && b.text().includes('performance.threads'))
+    .map(b => b.text().trim().split(/\s+/)[0])
+}
+
 describe('PerformanceSection', () => {
-  it('keeps preset order unchanged', () => {
+  it('keeps preset order unchanged', async () => {
     const wrapper = mountSection()
-    expect(presets).toEqual(['1', '4', '8', '16', '24', '32'])
+    await connectionsTrigger(wrapper)?.trigger('click')
+    await nextTick()
+    expect(menuConnectionValues(wrapper)).toEqual(presets)
     wrapper.unmount()
   })
 
@@ -77,7 +86,7 @@ describe('PerformanceSection', () => {
     const wrapper = mountSection('64')
     await connectionsTrigger(wrapper)?.trigger('click')
     await nextTick()
-    expect(wrapper.text()).toContain('Surge')
+    expect(wrapper.text()).toContain('performance.surgeBadge')
     wrapper.unmount()
 
     const empty = mountSection('')
@@ -85,8 +94,14 @@ describe('PerformanceSection', () => {
     await nextTick()
     const labels = empty.findAll('button').map(b => b.text())
     expect(labels.some(text => text.includes('NaN'))).toBe(false)
-    expect(labels.filter(text => text.includes('performance.threads'))).toHaveLength(presets.length + 1)
+    expect(menuConnectionValues(empty)).toEqual(presets)
     empty.unmount()
+
+    const garbage = mountSection('64abc')
+    await connectionsTrigger(garbage)?.trigger('click')
+    await nextTick()
+    expect(menuConnectionValues(garbage)).toEqual(presets)
+    garbage.unmount()
   })
 
   it('sets concurrent input max to 32', () => {
@@ -95,10 +110,11 @@ describe('PerformanceSection', () => {
     wrapper.unmount()
   })
 
-  it('renders the tooltip through an i18n key', () => {
+  it('renders the tooltip through an i18n key and a title fallback', () => {
     const wrapper = mountSection()
     expect(wrapper.text()).toContain('performance.surgeExclusiveTooltip')
     expect(wrapper.text()).not.toContain('Aria2 is still limited')
+    expect(wrapper.find('[title]').attributes('title')).toBe('performance.surgeExclusiveTooltip')
     wrapper.unmount()
   })
 })

@@ -39,11 +39,14 @@ function sampleConfig(overrides: Partial<AppConfig> = {}): AppConfig {
 const storeMock = reactive({
   settings: sampleConfig(),
   isHydrated: false,
+  isLoading: false,
+  hydrateFailed: false,
   updateConfig: vi.fn(),
   applyCanonicalConfig: vi.fn((snapshot: AppConfig) => {
     Object.assign(storeMock.settings, snapshot)
   }),
   pickDirectory: vi.fn(),
+  fetchConfig: vi.fn(),
 })
 
 vi.mock('../../stores/config', () => ({
@@ -168,15 +171,23 @@ function mountPanel() {
   })
 }
 
+async function flushHydration() {
+  await nextTick()
+  await nextTick()
+}
+
 describe('SettingsPanel', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.clearAllMocks()
     storeMock.isHydrated = false
+    storeMock.isLoading = false
+    storeMock.hydrateFailed = false
     storeMock.settings = sampleConfig()
     storeMock.updateConfig.mockReset()
     storeMock.applyCanonicalConfig.mockClear()
     storeMock.pickDirectory.mockReset()
+    storeMock.fetchConfig.mockReset()
   })
 
   afterEach(() => {
@@ -195,7 +206,7 @@ describe('SettingsPanel', () => {
     const wrapper = mountPanel()
     storeMock.settings = sampleConfig({ max_connections: '64' })
     storeMock.isHydrated = true
-    await nextTick()
+    await flushHydration()
     expect(wrapper.find('.conn-display').text()).toBe('64')
 
     storeMock.updateConfig.mockResolvedValue(
@@ -215,7 +226,7 @@ describe('SettingsPanel', () => {
   it('ignores a stale completion while a newer edit is debounced', async () => {
     storeMock.isHydrated = true
     const wrapper = mountPanel()
-    await nextTick()
+    await flushHydration()
 
     let resolveA: (value: SaveConfigResult) => void = () => undefined
     storeMock.updateConfig.mockImplementationOnce(
@@ -251,7 +262,7 @@ describe('SettingsPanel', () => {
   it('shows error not saved on business failure and syncs rollback config', async () => {
     storeMock.isHydrated = true
     const wrapper = mountPanel()
-    await nextTick()
+    await flushHydration()
     const rolled = sampleConfig({ user_agent: 'rolled-back' })
     storeMock.updateConfig.mockResolvedValue(
       new SaveConfigResult({ success: false, config: rolled, error_code: 'config_persist_failed' }),
@@ -269,7 +280,7 @@ describe('SettingsPanel', () => {
   it('keeps the user edit on transport failure', async () => {
     storeMock.isHydrated = true
     const wrapper = mountPanel()
-    await nextTick()
+    await flushHydration()
     storeMock.updateConfig.mockRejectedValue(new Error('ipc'))
     await wrapper.find('.ua-change').trigger('click')
     await vi.advanceTimersByTimeAsync(800)
@@ -283,7 +294,7 @@ describe('SettingsPanel', () => {
   it('syncs canonical backend values after a successful save', async () => {
     storeMock.isHydrated = true
     const wrapper = mountPanel()
-    await nextTick()
+    await flushHydration()
     storeMock.updateConfig.mockResolvedValue(
       new SaveConfigResult({
         success: true,
@@ -302,7 +313,7 @@ describe('SettingsPanel', () => {
     storeMock.isHydrated = true
     storeMock.pickDirectory.mockResolvedValue(null)
     const wrapper = mountPanel()
-    await nextTick()
+    await flushHydration()
     await wrapper.find('.dir-pick').trigger('click')
     await flushPromises()
     expect(storeMock.updateConfig).not.toHaveBeenCalled()
@@ -316,7 +327,7 @@ describe('SettingsPanel', () => {
       new SaveConfigResult({ success: true, config: sampleConfig({ download_dir: '/new-dir' }) }),
     )
     const wrapper = mountPanel()
-    await nextTick()
+    await flushHydration()
     await wrapper.find('.dir-pick').trigger('click')
     await flushPromises()
     expect(storeMock.updateConfig).not.toHaveBeenCalled()
@@ -337,12 +348,84 @@ describe('SettingsPanel', () => {
         }),
     )
     const wrapper = mountPanel()
-    await nextTick()
+    await flushHydration()
     await wrapper.find('.ua-change').trigger('click')
     await vi.advanceTimersByTimeAsync(800)
     wrapper.unmount()
     resolveSave(new SaveConfigResult({ success: true, config: sampleConfig({ user_agent: 'late' }) }))
     await flushPromises()
     expect(storeMock.settings.user_agent).not.toBe('late')
+  })
+
+  it('shows load error, persisted preview, and blocks saves when hydration failed', async () => {
+    storeMock.settings = sampleConfig({ user_agent: 'from-storage' })
+    storeMock.isHydrated = false
+    storeMock.isLoading = false
+    storeMock.hydrateFailed = true
+    const wrapper = mountPanel()
+    await flushHydration()
+    expect(wrapper.text()).toContain('settings.loadFailed')
+    expect(wrapper.text()).toContain('settings.retry')
+    expect(wrapper.find('.ua-value').text()).toBe('from-storage')
+    expect(wrapper.find('fieldset').attributes('disabled')).toBeDefined()
+    await wrapper.find('.rpc-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    expect(storeMock.updateConfig).not.toHaveBeenCalled()
+    await wrapper.find('.retry-hydrate').trigger('click')
+    expect(storeMock.fetchConfig).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('shows a restart hint instead of saved when the backend requires an app restart', async () => {
+    storeMock.isHydrated = true
+    const wrapper = mountPanel()
+    await flushHydration()
+    storeMock.updateConfig.mockResolvedValue(
+      new SaveConfigResult({
+        success: true,
+        requires_app_restart: true,
+        config: sampleConfig({ window_transparency: 'mica' }),
+      }),
+    )
+    await wrapper.find('.transparency-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    expect(wrapper.text()).toContain('settings.requiresAppRestart')
+    expect(wrapper.text()).not.toContain('settings.saved')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(wrapper.text()).toContain('settings.requiresAppRestart')
+    wrapper.unmount()
+  })
+
+  it('treats a successful save without config as an error', async () => {
+    storeMock.isHydrated = true
+    const wrapper = mountPanel()
+    await flushHydration()
+    storeMock.updateConfig.mockResolvedValue({ success: true, config: null } as unknown as SaveConfigResult)
+    await wrapper.find('.ua-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    expect(wrapper.text()).toContain('settings.saveFailed')
+    expect(storeMock.applyCanonicalConfig).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('ignores a directory pick that resolves after unmount', async () => {
+    storeMock.isHydrated = true
+    let resolvePick: (value: string | null) => void = () => undefined
+    storeMock.pickDirectory.mockImplementation(
+      () =>
+        new Promise<string | null>(resolve => {
+          resolvePick = resolve
+        }),
+    )
+    const wrapper = mountPanel()
+    await flushHydration()
+    const pending = wrapper.find('.dir-pick').trigger('click')
+    wrapper.unmount()
+    resolvePick('/late-dir')
+    await pending
+    await flushPromises()
+    expect(storeMock.updateConfig).not.toHaveBeenCalled()
   })
 })

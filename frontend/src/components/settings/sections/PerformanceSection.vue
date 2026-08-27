@@ -20,19 +20,32 @@
     (e: 'change'): void
   }>()
 
+  const parseExactConnection = (raw: string): number | null => {
+    const trimmed = raw.trim()
+    if (!/^[0-9]+$/.test(trimmed)) {
+      return null
+    }
+    const n = Number(trimmed)
+    if (!Number.isInteger(n) || n < 1 || n > 256) {
+      return null
+    }
+    return n
+  }
+
   const displayedConnectionOptions = computed(() => {
-    const current = Number.parseInt(props.connections, 10)
-    if (!Number.isInteger(current) || current < 1 || current > 256) {
+    const current = parseExactConnection(props.connections)
+    if (current === null) {
       return props.connectionOptions
     }
-    return props.connectionOptions.includes(String(current))
+    const token = String(current)
+    return props.connectionOptions.includes(token)
       ? props.connectionOptions
-      : [...props.connectionOptions, String(current)]
+      : [...props.connectionOptions, token]
   })
 
   const isSurgeExclusive = (value: string) => {
-    const n = Number.parseInt(value, 10)
-    return Number.isInteger(n) && n > 16
+    const n = parseExactConnection(value)
+    return n !== null && n > 16
   }
 
   const toggleSmartThreadMode = () => {
@@ -119,10 +132,15 @@
         >
           {{ t('performance.maxConnections') }}
           <div class="group relative flex items-center">
-            <Info :size="12" class="cursor-help hover:text-[var(--app-text)] transition-colors" />
+            <span :title="t('performance.surgeExclusiveTooltip')">
+              <Info
+                :size="12"
+                class="cursor-help hover:text-[var(--app-text)] transition-colors"
+              />
+            </span>
             <!-- Tooltip Popup -->
             <div
-              class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 rounded-lg glass-panel-solid opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[100] text-center text-[10px] font-medium normal-case tracking-normal pointer-events-none"
+              class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-80 max-w-[min(20rem,70vw)] p-2.5 rounded-lg glass-panel-solid opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[100] text-center text-[10px] font-medium normal-case tracking-normal pointer-events-none"
             >
               {{ t('performance.surgeExclusiveTooltip') }}
               <div
@@ -171,7 +189,7 @@
                     v-if="isSurgeExclusive(n)"
                     class="flex items-center gap-1 text-[9px] font-bold text-[var(--neon-primary)] bg-[var(--neon-primary)]/10 px-1.5 py-0.5 rounded uppercase tracking-wider"
                   >
-                    Surge
+                    {{ t('performance.surgeBadge') }}
                   </span>
                 </div>
                 <Check v-if="connections === n" :size="14" />

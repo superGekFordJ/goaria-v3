@@ -23,6 +23,7 @@ export const useConfigStore = defineStore(
     const settings = reactive<AppConfig>(new AppConfig())
     const isLoading = ref(false)
     const isHydrated = ref(false)
+    const hydrateFailed = ref(false)
     const saveInFlight = ref(0)
     const isSaving = computed(() => saveInFlight.value > 0)
     const aria2Connected = ref(false)
@@ -31,8 +32,9 @@ export const useConfigStore = defineStore(
       aria2Connected.value = connected
     }
 
-    function applyCanonicalConfig(snapshot: AppConfig) {
-      Object.assign(settings, snapshot)
+    function applyCanonicalConfig(snapshot: AppConfig | null | undefined) {
+      if (!snapshot) return
+      Object.assign(settings, cloneConfig(snapshot))
     }
 
     /**
@@ -55,14 +57,17 @@ export const useConfigStore = defineStore(
      */
     async function fetchConfig() {
       isLoading.value = true
+      hydrateFailed.value = false
       try {
         const res = await GetConfig()
         if (res) {
           applyCanonicalConfig(res)
           isHydrated.value = true
+          return
         }
-      } catch (err) {
-        console.error('Failed to fetch config:', err)
+        hydrateFailed.value = true
+      } catch {
+        hydrateFailed.value = true
       } finally {
         isLoading.value = false
       }
@@ -98,6 +103,7 @@ export const useConfigStore = defineStore(
       settings,
       isLoading,
       isHydrated,
+      hydrateFailed,
       isSaving,
       aria2Connected,
       setAria2Connected,
