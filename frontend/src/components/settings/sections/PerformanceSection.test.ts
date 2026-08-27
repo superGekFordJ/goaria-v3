@@ -110,11 +110,11 @@ describe('PerformanceSection', () => {
     wrapper.unmount()
   })
 
-  it('renders the tooltip through an i18n key and a title fallback', () => {
+  it('renders the tooltip through an i18n key without duplicate native title', () => {
     const wrapper = mountSection()
     expect(wrapper.text()).toContain('performance.surgeExclusiveTooltip')
     expect(wrapper.text()).not.toContain('Aria2 is still limited')
-    expect(wrapper.find('[title]').attributes('title')).toBe('performance.surgeExclusiveTooltip')
+    expect(wrapper.find('[title]').exists()).toBe(false)
     wrapper.unmount()
   })
 
