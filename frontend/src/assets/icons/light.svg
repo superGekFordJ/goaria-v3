@@ -1,26 +1,98 @@
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <filter id="frosted-noise" x="-20%" y="-20%" width="140%" height="140%">
-      <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="4" stitchTiles="stitch" result="noise"/>
-      <feColorMatrix values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.4 0" in="noise" result="heavyNoise"/>
-      <feComposite operator="atop" in="heavyNoise" in2="SourceGraphic"/>
+    <!-- 浅色极细丝雾微磨砂滤镜 (Alpha 0.04) -->
+    <filter id="light-silk-frost" x="-20%" y="-20%" width="140%" height="140%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.70" numOctaves="4" stitchTiles="stitch" result="noise"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.04 0" in="noise" result="silkNoise"/>
+      <feComposite operator="atop" in="silkNoise" in2="SourceGraphic"/>
     </filter>
-    <filter id="shadow-blur"><feGaussianBlur stdDeviation="12" result="blur"/><feComposite in="SourceGraphic" in2="blur"/></filter>
+
+    <!-- 柔和环境光阴影滤镜 -->
+    <filter id="shadow-blur" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur"/>
+    </filter>
+
+    <!-- 条纹立体微投影滤镜 -->
+    <filter id="bar-shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#059669" flood-opacity="0.25"/>
+    </filter>
+
+    <!-- 半透明磨砂亚克力底座渐变 -->
+    <linearGradient id="translucent-glass-bg" x1="0" y1="32" x2="0" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.36"/>
+      <stop offset="50%" stop-color="#f1f5fa" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="#d6e0ec" stop-opacity="0.22"/>
+    </linearGradient>
+
+    <!-- 顶部柔和漫反射微光 -->
+    <linearGradient id="top-specular" x1="0" y1="32" x2="0" y2="280" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="40%" stop-color="#ffffff" stop-opacity="0.04"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- 发丝级单向物理折射高光边框 -->
+    <linearGradient id="rim-gradient" x1="0" y1="32" x2="0" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.85"/>
+      <stop offset="35%" stop-color="#ffffff" stop-opacity="0.40"/>
+      <stop offset="70%" stop-color="#94a3b8" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#475569" stop-opacity="0.20"/>
+    </linearGradient>
+
+    <!-- 内倒角高光线 (Inner Bevel) -->
+    <linearGradient id="inner-bevel" x1="0" y1="32" x2="0" y2="240" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.45"/>
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- 玻璃内部霓虹背光漫射 (Subsurface Glow) -->
+    <radialGradient id="neon-subsurface" cx="256" cy="270" r="160" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#06ffd5" stop-opacity="0.24"/>
+      <stop offset="45%" stop-color="#10b981" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#10b981" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- 霓虹条渐变 -->
     <linearGradient id="bar-gradient" x1="152" y1="140" x2="360" y2="420" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#06ffd5"/><stop offset="50%" stop-color="#10b981"/><stop offset="100%" stop-color="#06ffd5"/>
+      <stop offset="0%" stop-color="#06ffd5"/>
+      <stop offset="50%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#06ffd5"/>
     </linearGradient>
-    <linearGradient id="bg-gradient" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#f4f4f5"/><stop offset="100%" stop-color="#d4d4d8"/>
-    </linearGradient>
+
+    <!-- 边缘曲面暗角 -->
     <radialGradient id="vignette" cx="256" cy="256" r="300" gradientUnits="userSpaceOnUse">
-      <stop offset="70%" stop-opacity="0"/><stop offset="100%" stop-opacity=".1"/>
+      <stop offset="70%" stop-opacity="0"/>
+      <stop offset="100%" stop-opacity="0.06"/>
     </radialGradient>
   </defs>
-  <rect x="52" y="64" width="408" height="384" rx="96" fill="#18181b" fill-opacity=".2" filter="url(#shadow-blur)"/>
-  <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#bg-gradient)" filter="url(#frosted-noise)"/>
-  <rect x="34" y="34" width="444" height="444" rx="110" stroke="#fff" stroke-opacity=".6" stroke-width="2" fill="none"/>
-  <g filter="url(#shadow-blur)" opacity=".95" fill="url(#bar-gradient)">
-    <rect x="156" y="165" width="48" height="150" rx="24"/><rect x="232" y="165" width="48" height="230" rx="24"/><rect x="308" y="165" width="48" height="150" rx="24"/>
-  </g>
+
+  <!-- 1. 底层柔和环境光阴影 -->
+  <rect x="52" y="64" width="408" height="384" rx="96" fill="#0f172a" fill-opacity=".06" filter="url(#shadow-blur)"/>
+
+  <!-- 2. 半透明磨砂亚克力主底座 -->
+  <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#translucent-glass-bg)" filter="url(#light-silk-frost)"/>
+
+  <!-- 3. 内部霓虹透光漫射晕 -->
+  <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#neon-subsurface)"/>
+
+  <!-- 4. 顶部镜面微光斜切层 -->
+  <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#top-specular)"/>
+
+  <!-- 5. 顶层暗角 -->
   <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#vignette)" pointer-events="none"/>
+
+  <!-- 6. 发丝级单向物理折射高光边框 -->
+  <rect x="33" y="33" width="446" height="446" rx="111" stroke="url(#rim-gradient)" stroke-width="2" fill="none"/>
+
+  <!-- 7. 内倒角高光线 (Inner Bevel) -->
+  <rect x="35" y="35" width="442" height="442" rx="109" stroke="url(#inner-bevel)" stroke-width="1.2" fill="none"/>
+
+  <!-- 8. 中间立体发光霓虹主体 -->
+  <g filter="url(#bar-shadow)" opacity="1" fill="url(#bar-gradient)">
+    <rect x="156" y="165" width="48" height="150" rx="24"/>
+    <rect x="232" y="165" width="48" height="230" rx="24"/>
+    <rect x="308" y="165" width="48" height="150" rx="24"/>
+  </g>
 </svg>

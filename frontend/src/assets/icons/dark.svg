@@ -1,51 +1,89 @@
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <filter id="frosted-noise" x="-20%" y="-20%" width="140%" height="140%">
-      <!-- 频率从 0.65 降至 0.55，使噪点更柔和 -->
-      <feTurbulence type="fractalNoise" baseFrequency="0.55" numOctaves="4" stitchTiles="stitch" result="noise"/>
-      <!-- Alpha 从 0.25 降至 0.12，显著减少噪点可见度 -->
-      <feColorMatrix values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 0.12 0" in="noise" result="lightNoise"/>
-      <feComposite operator="atop" in="lightNoise" in2="SourceGraphic"/>
+    <!-- 深色极细丝雾微磨砂滤镜 (Alpha 0.02) -->
+    <filter id="dark-silk-frost" x="-20%" y="-20%" width="140%" height="140%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.80" numOctaves="4" stitchTiles="stitch" result="noise"/>
+      <feColorMatrix values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.02 0" in="noise" result="silkNoise"/>
+      <feComposite operator="atop" in="silkNoise" in2="SourceGraphic"/>
     </filter>
-    
-    <filter id="shadow-blur">
-      <feGaussianBlur stdDeviation="12" result="blur"/>
+
+    <!-- 柔和环境光阴影滤镜 -->
+    <filter id="shadow-blur" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
       <feComposite in="SourceGraphic" in2="blur"/>
     </filter>
 
-    <linearGradient id="bg-gradient-dark" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#27272a"/>
-      <stop offset="100%" stop-color="#09090b"/>
+    <!-- 条纹发光滤镜 -->
+    <filter id="bar-glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10" result="glow"/>
+      <feComposite in="SourceGraphic" in2="glow" operator="over"/>
+    </filter>
+
+    <!-- 纯正深邃黑曜石半透底座渐变 -->
+    <linearGradient id="translucent-dark-glass" x1="0" y1="32" x2="0" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#242732" stop-opacity="0.55"/>
+      <stop offset="50%" stop-color="#161822" stop-opacity="0.48"/>
+      <stop offset="100%" stop-color="#0c0e14" stop-opacity="0.42"/>
     </linearGradient>
 
+    <!-- 顶部微弱镜面漫反射微光 -->
+    <linearGradient id="top-specular-dark" x1="0" y1="32" x2="0" y2="280" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.04"/>
+      <stop offset="40%" stop-color="#ffffff" stop-opacity="0.01"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- 发丝级单向物理折射高光边框 -->
+    <linearGradient id="rim-gradient-dark" x1="0" y1="32" x2="0" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="35%" stop-color="#ffffff" stop-opacity="0.08"/>
+      <stop offset="75%" stop-color="#ffffff" stop-opacity="0.02"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.05"/>
+    </linearGradient>
+
+    <!-- 玻璃内部霓虹背光漫射 (Subsurface Glow) -->
+    <radialGradient id="neon-subsurface-dark" cx="256" cy="270" r="160" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#06ffd5" stop-opacity="0.25"/>
+      <stop offset="50%" stop-color="#10b981" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#06ffd5" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- 霓虹条渐变 -->
     <linearGradient id="bar-gradient" x1="152" y1="140" x2="360" y2="420" gradientUnits="userSpaceOnUse">
       <stop offset="0%" stop-color="#06ffd5"/>
       <stop offset="50%" stop-color="#10b981"/>
       <stop offset="100%" stop-color="#06ffd5"/>
     </linearGradient>
 
+    <!-- 边缘曲面暗角 -->
     <radialGradient id="vignette" cx="256" cy="256" r="300" gradientUnits="userSpaceOnUse">
-      <stop offset="70%" stop-opacity="0"/>
-      <stop offset="100%" stop-opacity="0.5"/> <!-- 稍微加深了暗角，让中心更突出 -->
+      <stop offset="75%" stop-opacity="0"/>
+      <stop offset="100%" stop-opacity="0.20"/>
     </radialGradient>
   </defs>
 
-  <!-- 1. 底层阴影 -->
-  <rect x="52" y="64" width="408" height="384" rx="96" fill="#000" fill-opacity=".5" filter="url(#shadow-blur)"/>
+  <!-- 1. 底层柔和环境光阴影 -->
+  <rect x="52" y="68" width="408" height="384" rx="96" fill="#000" fill-opacity="0.22" filter="url(#shadow-blur)"/>
 
-  <!-- 2. 暗色主背景层（应用了减弱后的磨砂滤镜） -->
-  <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#bg-gradient-dark)" filter="url(#frosted-noise)"/>
+  <!-- 2. 半透明暗曜磨砂玻璃底座 -->
+  <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#translucent-dark-glass)" filter="url(#dark-silk-frost)"/>
 
-  <!-- 3. 边框线 -->
-  <rect x="34" y="34" width="444" height="444" rx="110" stroke="#fff" stroke-opacity=".15" stroke-width="2" fill="none"/>
+  <!-- 3. 内部霓虹透光漫射晕 -->
+  <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#neon-subsurface-dark)"/>
 
-  <!-- 4. 中间条纹主体 -->
-  <g filter="url(#shadow-blur)" opacity="1" fill="url(#bar-gradient)">
+  <!-- 4. 顶部超微弱反光层 -->
+  <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#top-specular-dark)"/>
+
+  <!-- 5. 顶层暗角 -->
+  <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#vignette)" pointer-events="none"/>
+
+  <!-- 6. 发丝级单向物理折射高光边框 -->
+  <rect x="33" y="33" width="446" height="446" rx="111" stroke="url(#rim-gradient-dark)" stroke-width="1.8" fill="none"/>
+
+  <!-- 7. 中间发光霓虹主体 -->
+  <g filter="url(#bar-glow)" opacity="1" fill="url(#bar-gradient)">
     <rect x="156" y="165" width="48" height="150" rx="24"/>
     <rect x="232" y="165" width="48" height="230" rx="24"/>
     <rect x="308" y="165" width="48" height="150" rx="24"/>
   </g>
-
-  <!-- 5. 顶层暗角 -->
-  <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#vignette)" pointer-events="none"/>
 </svg>
