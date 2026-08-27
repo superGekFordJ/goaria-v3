@@ -132,8 +132,9 @@ func ValidateAndSanitize(input AppConfig) AppConfig {
 	out.SmartThreadMode = input.SmartThreadMode
 	out.CloseToTray = input.CloseToTray
 	out.ExtensionEnabled = input.ExtensionEnabled
-	if _, ok := allowedWindowTransparency[strings.TrimSpace(input.WindowTransparency)]; ok {
-		out.WindowTransparency = strings.TrimSpace(input.WindowTransparency)
+	transparency := strings.TrimSpace(input.WindowTransparency)
+	if _, ok := allowedWindowTransparency[transparency]; ok {
+		out.WindowTransparency = transparency
 	} else {
 		out.WindowTransparency = defaults.WindowTransparency
 	}

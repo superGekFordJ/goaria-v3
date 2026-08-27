@@ -588,6 +588,9 @@ func TestSaveConfig_RestartFailBeforeStopSkipsRestoreRestart(t *testing.T) {
 	if h.stops != 0 {
 		t.Fatalf("old daemon was never killed, unexpected stop: %d", h.stops)
 	}
+	if h.notifierStops != 0 {
+		t.Fatalf("skip-restore must not stop notifier, got %d", h.notifierStops)
+	}
 	if h.store.cur.RPCPort != cur.RPCPort {
 		t.Fatal("config not rolled back")
 	}
@@ -595,6 +598,43 @@ func TestSaveConfig_RestartFailBeforeStopSkipsRestoreRestart(t *testing.T) {
 		if s == "ready" {
 			t.Fatalf("skip-restore must not WaitForReady: %v", h.steps())
 		}
+	}
+}
+
+func TestSaveConfig_RollbackPersistFailureSkipRestoreKeepsNotifier(t *testing.T) {
+	cur := sampleCanonicalConfig()
+	h := &saveHarness{
+		store: fakeConfigStore{cur: cur, rollbackErr: errors.New("rollback disk")},
+		restartErr: &process.Aria2RestartError{
+			Err:     errors.New("download dir unavailable"),
+			Stopped: false,
+		},
+	}
+	req := cur
+	req.RPCPort = "16810"
+	res := h.app().SaveConfig(req)
+	if res.Success || res.ErrorCode != errCodeConfigRollbackFailed {
+		t.Fatalf("%+v", res)
+	}
+	if h.notifierStops != 0 {
+		t.Fatalf("live daemon must keep notifier, got %d", h.notifierStops)
+	}
+}
+
+func TestSaveConfig_RollbackPersistFailureAfterReadyStopsNotifier(t *testing.T) {
+	cur := sampleCanonicalConfig()
+	h := &saveHarness{
+		store:    fakeConfigStore{cur: cur, rollbackErr: errors.New("rollback disk")},
+		readyErr: errors.New("not ready"),
+	}
+	req := cur
+	req.RPCPort = "16810"
+	res := h.app().SaveConfig(req)
+	if res.Success || res.ErrorCode != errCodeConfigRollbackFailed {
+		t.Fatalf("%+v", res)
+	}
+	if h.notifierStops != 1 {
+		t.Fatalf("replaced daemon should stop notifier, got %d", h.notifierStops)
 	}
 }
 

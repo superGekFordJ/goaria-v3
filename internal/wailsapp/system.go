@@ -34,6 +34,8 @@ type openFolderCommandSpec struct {
 
 var openFolderLauncher = launchOpenFolderTarget
 
+const aria2PortReleaseWait = time.Second
+
 // --- System Operations ---
 
 // OpenFolder opens the folder containing the downloaded file
@@ -282,7 +284,7 @@ func defaultConfigSaveDeps(a *App) configSaveDeps {
 		restartAria2:  process.RestartAria2,
 		stopAria2:     process.StopAria2,
 		afterDaemonStop: func() {
-			time.Sleep(time.Second)
+			time.Sleep(aria2PortReleaseWait)
 		},
 		rpcInit:      rpc.Init,
 		waitForReady: rpc.WaitForReady,
@@ -474,7 +476,7 @@ func (a *App) rollbackConfigAndAria(deps configSaveDeps, old, candidate config.A
 		current.ExtensionSecret = managedSecret
 	})
 	if err != nil {
-		if deps.stopNotifier != nil {
+		if daemonWasReplaced(activateErr) && deps.stopNotifier != nil {
 			deps.stopNotifier()
 		}
 		snap := liveSnapshot(deps, candidate)
