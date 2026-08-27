@@ -8,6 +8,7 @@ const bindingMocks = vi.hoisted(() => ({
   GetAria2Connected: vi.fn(),
   SaveConfig: vi.fn(),
   SelectDirectory: vi.fn(),
+  RestartApp: vi.fn(),
 }))
 
 vi.mock('../../../bindings/goaria-v3/internal/wailsapp/app.js', () => bindingMocks)
@@ -204,5 +205,38 @@ describe('useConfigStore', () => {
     const path = await store.pickDirectory()
     expect(path).toBe('/picked')
     expect(store.settings.download_dir).toBe('/old')
+  })
+
+  it('latches needsAppRestart on success and does not clear it later', async () => {
+    const { useConfigStore } = await import('../config')
+    const store = useConfigStore()
+    bindingMocks.SaveConfig.mockResolvedValueOnce(
+      new SaveConfigResult({
+        success: true,
+        requires_app_restart: true,
+        config: sampleConfig({ window_transparency: 'mica' }),
+      }),
+    )
+    await store.updateConfig(sampleConfig({ window_transparency: 'mica' }))
+    expect(store.needsAppRestart).toBe(true)
+    bindingMocks.SaveConfig.mockResolvedValueOnce(
+      new SaveConfigResult({
+        success: true,
+        requires_app_restart: false,
+        config: sampleConfig({ user_agent: 'later' }),
+      }),
+    )
+    await store.updateConfig(sampleConfig({ user_agent: 'later' }))
+    expect(store.needsAppRestart).toBe(true)
+  })
+
+  it('omits secrets from persistable settings', async () => {
+    const { persistableSettings } = await import('../config')
+    const stripped = persistableSettings(
+      sampleConfig({ rpc_secret: 'secret', extension_secret: 'managed' }),
+    )
+    expect(stripped.rpc_secret).toBe('')
+    expect(stripped.extension_secret).toBe('')
+    expect(stripped.rpc_port).toBe('16800')
   })
 })

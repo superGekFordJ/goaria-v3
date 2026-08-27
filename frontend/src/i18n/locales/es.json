@@ -20,10 +20,21 @@
     "saving": "Guardando...",
     "saved": "Guardado",
     "saveFailed": "Error al guardar",
-    "loadFailed": "No se pudieron cargar los ajustes. Reintenta.",
+    "loadFailed": "No se pudieron cargar los ajustes.",
     "retry": "Reintentar",
     "requiresAppRestart": "Guardado. Reinicia GoAria para aplicar todos los cambios.",
-    "autoSave": "Autoguardado"
+    "restartNow": "Reiniciar ahora",
+    "autoSave": "Autoguardado",
+    "errors": {
+      "persistFailed": "No se pudieron guardar los ajustes.",
+      "notLoaded": "Los ajustes aún no están cargados.",
+      "downloadDirUnavailable": "La carpeta de descargas no está disponible.",
+      "rpcExtensionConflict": "El puerto RPC entra en conflicto con la extensión.",
+      "ariaRestartRolledBack": "El motor de descargas no pudo reiniciarse. Se restauraron los ajustes anteriores.",
+      "ariaReadinessRolledBack": "El motor de descargas no estaba listo. Se restauraron los ajustes anteriores.",
+      "configRollbackFailed": "No se pudieron restaurar los ajustes anteriores.",
+      "ariaRollbackFailed": "No se pudo restaurar el motor de descargas anterior."
+    }
   },
   "appearance": {
     "title": "Apariencia",

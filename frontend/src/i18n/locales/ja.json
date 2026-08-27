@@ -20,10 +20,21 @@
     "saving": "保存中...",
     "saved": "保存しました",
     "saveFailed": "保存に失敗しました",
-    "loadFailed": "設定を読み込めませんでした。再試行してください。",
+    "loadFailed": "設定を読み込めませんでした。",
     "retry": "再試行",
     "requiresAppRestart": "保存しました。すべての変更を適用するには GoAria を再起動してください。",
-    "autoSave": "自動保存"
+    "restartNow": "今すぐ再起動",
+    "autoSave": "自動保存",
+    "errors": {
+      "persistFailed": "設定を保存できませんでした。",
+      "notLoaded": "設定はまだ読み込まれていません。",
+      "downloadDirUnavailable": "ダウンロードフォルダーを使用できません。",
+      "rpcExtensionConflict": "RPC ポートが拡張機能と衝突しています。",
+      "ariaRestartRolledBack": "ダウンロードエンジンの再起動に失敗し、以前の設定に戻しました。",
+      "ariaReadinessRolledBack": "ダウンロードエンジンの準備ができず、以前の設定に戻しました。",
+      "configRollbackFailed": "以前の設定を復元できませんでした。",
+      "ariaRollbackFailed": "以前のダウンロードエンジンを復元できませんでした。"
+    }
   },
   "appearance": {
     "title": "外観",

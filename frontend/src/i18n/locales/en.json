@@ -20,10 +20,21 @@
     "saving": "Saving...",
     "saved": "Saved",
     "saveFailed": "Save failed",
-    "loadFailed": "Could not load settings. Retry to try again.",
+    "loadFailed": "Could not load settings.",
     "retry": "Retry",
     "requiresAppRestart": "Saved. Restart GoAria to apply all changes.",
-    "autoSave": "Auto Save"
+    "restartNow": "Restart now",
+    "autoSave": "Auto Save",
+    "errors": {
+      "persistFailed": "Could not save settings.",
+      "notLoaded": "Settings are not loaded yet.",
+      "downloadDirUnavailable": "Download folder is unavailable.",
+      "rpcExtensionConflict": "RPC port conflicts with the extension.",
+      "ariaRestartRolledBack": "The download engine failed to restart. Previous settings were restored.",
+      "ariaReadinessRolledBack": "The download engine was not ready. Previous settings were restored.",
+      "configRollbackFailed": "Could not restore the previous settings.",
+      "ariaRollbackFailed": "Could not restore the previous download engine."
+    }
   },
   "appearance": {
     "title": "Appearance",

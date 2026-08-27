@@ -5,6 +5,7 @@ import {
   GetAria2Connected,
   SaveConfig,
   SelectDirectory,
+  RestartApp,
 } from '../../bindings/goaria-v3/internal/wailsapp/app.js'
 import { AppConfig } from '../../bindings/goaria-v3/internal/config/models.js'
 import { SaveConfigResult } from '../../bindings/goaria-v3/internal/wailsapp/models.js'
@@ -15,6 +16,13 @@ function cloneConfig(candidate: AppConfig): AppConfig {
   cfg.max_connections = String(cfg.max_connections ?? '')
   cfg.max_concurrent_downloads = String(cfg.max_concurrent_downloads ?? '')
   return cfg
+}
+
+export function persistableSettings(settings: AppConfig): AppConfig {
+  const copy = cloneConfig(settings)
+  copy.rpc_secret = ''
+  copy.extension_secret = ''
+  return copy
 }
 
 export const useConfigStore = defineStore(
@@ -28,9 +36,14 @@ export const useConfigStore = defineStore(
     const saveInFlight = ref(0)
     const isSaving = computed(() => saveInFlight.value > 0)
     const aria2Connected = ref(false)
+    const needsAppRestart = ref(false)
 
     function setAria2Connected(connected: boolean) {
       aria2Connected.value = connected
+    }
+
+    function noteAppRestartRequired() {
+      needsAppRestart.value = true
     }
 
     function applyCanonicalConfig(snapshot: AppConfig | null | undefined) {
@@ -85,7 +98,11 @@ export const useConfigStore = defineStore(
       const request = cloneConfig(candidate)
       saveInFlight.value++
       try {
-        return await SaveConfig(request)
+        const result = await SaveConfig(request)
+        if (result?.success && result.requires_app_restart) {
+          needsAppRestart.value = true
+        }
+        return result
       } finally {
         saveInFlight.value--
       }
@@ -104,6 +121,10 @@ export const useConfigStore = defineStore(
       }
     }
 
+    async function restartApp() {
+      await RestartApp()
+    }
+
     return {
       settings,
       isLoading,
@@ -111,17 +132,29 @@ export const useConfigStore = defineStore(
       hydrateFailed,
       isSaving,
       aria2Connected,
+      needsAppRestart,
       setAria2Connected,
+      noteAppRestartRequired,
       refreshAria2Connected,
       fetchConfig,
       updateConfig,
       applyCanonicalConfig,
       pickDirectory,
+      restartApp,
     }
   },
   {
     persist: {
       pick: ['settings'],
+      serializer: {
+        serialize(value: { settings: AppConfig }) {
+          return JSON.stringify({
+            ...value,
+            settings: persistableSettings(value.settings),
+          })
+        },
+        deserialize: JSON.parse,
+      },
     },
   },
 )

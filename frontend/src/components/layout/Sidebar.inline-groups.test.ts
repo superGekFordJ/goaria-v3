@@ -23,6 +23,7 @@ const rawStoreMocks = vi.hoisted(() => ({
   configStore: {
     settings: { rpc_port: 6800 },
     aria2Connected: true,
+    isHydrated: true,
   },
 }))
 

@@ -65,15 +65,14 @@
     // Global initialization: fetch config from Go backend
     await configStore.fetchConfig()
 
-    // Apply window transparency state to CSS (required for acrylic/mica to be visible)
-    applyWindowTransparency()
-
-    // Reactively apply on change (settings panel saves async)
     stopWindowTransparencyWatch = watch(
-      () => getWindowTransparency(),
-      () => {
-        applyWindowTransparency()
+      () => [configStore.isHydrated, getWindowTransparency()] as const,
+      ([hydrated]) => {
+        if (hydrated) {
+          applyWindowTransparency()
+        }
       },
+      { immediate: true },
     )
 
     // Small delay for smooth entrance animation

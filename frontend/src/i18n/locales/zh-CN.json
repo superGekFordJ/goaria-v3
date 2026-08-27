@@ -20,10 +20,21 @@
     "saving": "保存中...",
     "saved": "已保存",
     "saveFailed": "保存失败",
-    "loadFailed": "无法加载设置。请重试。",
+    "loadFailed": "无法加载设置。",
     "retry": "重试",
     "requiresAppRestart": "已保存。请重启 GoAria 以使全部更改生效。",
-    "autoSave": "自动保存"
+    "restartNow": "立即重启",
+    "autoSave": "自动保存",
+    "errors": {
+      "persistFailed": "无法保存设置。",
+      "notLoaded": "设置尚未加载。",
+      "downloadDirUnavailable": "下载目录不可用。",
+      "rpcExtensionConflict": "RPC 端口与扩展冲突。",
+      "ariaRestartRolledBack": "下载引擎重启失败，已恢复之前的设置。",
+      "ariaReadinessRolledBack": "下载引擎未就绪，已恢复之前的设置。",
+      "configRollbackFailed": "无法恢复之前的设置。",
+      "ariaRollbackFailed": "无法恢复之前的下载引擎。"
+    }
   },
   "appearance": {
     "title": "外观设置",

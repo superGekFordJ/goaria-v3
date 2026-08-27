@@ -20,10 +20,21 @@
     "saving": "Speichern...",
     "saved": "Gespeichert",
     "saveFailed": "Speichern fehlgeschlagen",
-    "loadFailed": "Einstellungen konnten nicht geladen werden. Bitte erneut versuchen.",
+    "loadFailed": "Einstellungen konnten nicht geladen werden.",
     "retry": "Erneut versuchen",
     "requiresAppRestart": "Gespeichert. Starten Sie GoAria neu, um alle Änderungen zu übernehmen.",
-    "autoSave": "Automatisches Speichern"
+    "restartNow": "Jetzt neu starten",
+    "autoSave": "Automatisches Speichern",
+    "errors": {
+      "persistFailed": "Einstellungen konnten nicht gespeichert werden.",
+      "notLoaded": "Einstellungen sind noch nicht geladen.",
+      "downloadDirUnavailable": "Der Download-Ordner ist nicht verfügbar.",
+      "rpcExtensionConflict": "Der RPC-Port kollidiert mit der Erweiterung.",
+      "ariaRestartRolledBack": "Die Download-Engine konnte nicht neu starten. Vorherige Einstellungen wurden wiederhergestellt.",
+      "ariaReadinessRolledBack": "Die Download-Engine war nicht bereit. Vorherige Einstellungen wurden wiederhergestellt.",
+      "configRollbackFailed": "Vorherige Einstellungen konnten nicht wiederhergestellt werden.",
+      "ariaRollbackFailed": "Die vorherige Download-Engine konnte nicht wiederhergestellt werden."
+    }
   },
   "appearance": {
     "title": "Erscheinungsbild",

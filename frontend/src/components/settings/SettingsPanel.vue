@@ -29,7 +29,7 @@
     smart_thread_mode: false,
   })
 
-  type SaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'restart'
+  type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
   const saveStatus = ref<SaveStatus>('idle')
   let saveTimeout: ReturnType<typeof setTimeout> | null = null
   let statusResetTimeout: ReturnType<typeof setTimeout> | null = null
@@ -42,6 +42,29 @@
   const editorsLocked = computed(() => !configStore.isHydrated)
   const showHydrationError = computed(() => !configStore.isHydrated && configStore.hydrateFailed)
   const retryBusy = computed(() => configStore.isLoading)
+  const lastErrorCode = ref('')
+  const saveErrorKey = computed(() => {
+    switch (lastErrorCode.value) {
+      case 'config_persist_failed':
+        return 'settings.errors.persistFailed'
+      case 'config_not_loaded':
+        return 'settings.errors.notLoaded'
+      case 'download_dir_unavailable':
+        return 'settings.errors.downloadDirUnavailable'
+      case 'rpc_extension_port_conflict':
+        return 'settings.errors.rpcExtensionConflict'
+      case 'aria2_restart_failed_rolled_back':
+        return 'settings.errors.ariaRestartRolledBack'
+      case 'aria2_readiness_failed_rolled_back':
+        return 'settings.errors.ariaReadinessRolledBack'
+      case 'config_rollback_failed':
+        return 'settings.errors.configRollbackFailed'
+      case 'aria2_rollback_failed':
+        return 'settings.errors.ariaRollbackFailed'
+      default:
+        return 'settings.saveFailed'
+    }
+  })
 
   const syncForm = (snapshot: AppConfig) => {
     const generation = ++applyGeneration
@@ -134,22 +157,29 @@
     saveTimeout = setTimeout(async () => {
       try {
         const result = await configStore.updateConfig(snapshot)
+        if (result?.success && result.requires_app_restart) {
+          configStore.noteAppRestartRequired()
+        }
         if (disposed || generation !== editGeneration) return
+        if (!result.success && result.error_code === 'config_not_loaded') {
+          lastErrorCode.value = result.error_code
+          saveStatus.value = 'error'
+          return
+        }
         const canonical = result?.config
-        if (!canonical) {
+        if (!canonical || (!result.success && !canonical.rpc_port)) {
+          lastErrorCode.value = result?.error_code || ''
           saveStatus.value = 'error'
           return
         }
         configStore.applyCanonicalConfig(canonical)
         syncForm(canonical)
         if (!result.success) {
+          lastErrorCode.value = result.error_code || ''
           saveStatus.value = 'error'
           return
         }
-        if (result.requires_app_restart) {
-          saveStatus.value = 'restart'
-          return
-        }
+        lastErrorCode.value = ''
         saveStatus.value = 'saved'
         scheduleReset(generation)
       } catch {
@@ -157,6 +187,7 @@
           console.warn('[Settings] save failed')
         }
         if (disposed || generation !== editGeneration) return
+        lastErrorCode.value = ''
         saveStatus.value = 'error'
       }
     }, 800)
@@ -164,7 +195,7 @@
 
   const handlePickDirectory = async () => {
     const selected = await configStore.pickDirectory()
-    if (!selected || disposed || !isInitializedFromBackend) return
+    if (!selected || disposed || !configStore.isHydrated || !isInitializedFromBackend) return
     formData.value.download_dir = selected
     triggerSave()
   }
@@ -172,6 +203,10 @@
   const retryHydration = () => {
     if (configStore.isLoading) return
     void configStore.fetchConfig()
+  }
+
+  const restartApp = () => {
+    void configStore.restartApp()
   }
 
   onUnmounted(() => {
@@ -208,7 +243,8 @@
         </div>
 
         <!-- Save Status Indicator -->
-        <div class="flex items-center gap-2">
+        <div class="flex flex-col items-end gap-2">
+          <div class="flex items-center gap-2">
           <Transition name="fade" mode="out-in">
             <div
               v-if="saveStatus === 'saving'"
@@ -229,21 +265,12 @@
               </span>
             </div>
             <div
-              v-else-if="saveStatus === 'restart'"
-              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
-            >
-              <CheckCircle :size="12" class="text-[var(--neon-primary)]" />
-              <span class="text-[10px] font-mono-data text-[var(--neon-primary)]" aria-live="polite">
-                {{ t('settings.requiresAppRestart') }}
-              </span>
-            </div>
-            <div
               v-else-if="saveStatus === 'error'"
               class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-error)]/10 border border-[var(--status-error)]/20"
             >
               <AlertCircle :size="12" class="text-[var(--status-error)]" />
               <span class="text-[10px] font-mono-data text-[var(--status-error)]" aria-live="polite">
-                {{ t('settings.saveFailed') }}
+                {{ t(saveErrorKey) }}
               </span>
             </div>
             <div
@@ -256,12 +283,30 @@
               </span>
             </div>
           </Transition>
+          </div>
+          <div
+            v-if="configStore.needsAppRestart"
+            class="restart-hint flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
+          >
+            <CheckCircle :size="12" class="text-[var(--neon-primary)]" />
+            <span class="text-[10px] font-mono-data text-[var(--neon-primary)]" aria-live="polite">
+              {{ t('settings.requiresAppRestart') }}
+            </span>
+            <button
+              type="button"
+              class="restart-now shrink-0 px-2 py-0.5 rounded-md text-[10px] font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)]"
+              @click="restartApp"
+            >
+              {{ t('settings.restartNow') }}
+            </button>
+          </div>
         </div>
       </div>
 
       <div
         v-if="showHydrationError"
         class="mb-4 flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-[var(--status-error)]/10 border border-[var(--status-error)]/20"
+        aria-live="polite"
       >
         <p class="text-xs text-[var(--status-error)]">{{ t('settings.loadFailed') }}</p>
         <button

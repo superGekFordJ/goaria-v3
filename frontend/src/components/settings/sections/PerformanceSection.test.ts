@@ -117,4 +117,10 @@ describe('PerformanceSection', () => {
     expect(wrapper.find('[title]').attributes('title')).toBe('performance.surgeExclusiveTooltip')
     wrapper.unmount()
   })
+
+  it('exposes the smart thread toggle as a switch', () => {
+    const wrapper = mountSection()
+    expect(wrapper.find('[role="switch"]').attributes('aria-checked')).toBe('true')
+    wrapper.unmount()
+  })
 })

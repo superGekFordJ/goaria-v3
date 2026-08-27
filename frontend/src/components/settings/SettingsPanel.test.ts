@@ -41,10 +41,15 @@ const storeMock = reactive({
   isHydrated: false,
   isLoading: false,
   hydrateFailed: false,
+  needsAppRestart: false,
   updateConfig: vi.fn(),
   applyCanonicalConfig: vi.fn((snapshot: AppConfig) => {
     Object.assign(storeMock.settings, snapshot)
   }),
+  noteAppRestartRequired: vi.fn(() => {
+    storeMock.needsAppRestart = true
+  }),
+  restartApp: vi.fn(),
   pickDirectory: vi.fn(),
   fetchConfig: vi.fn(),
 })
@@ -140,17 +145,30 @@ const AdvancedStub = defineComponent({
   emits: ['change', 'update:transparency', 'update:showHistory'],
   setup(_, { emit }) {
     return () =>
-      h(
-        'button',
-        {
-          class: 'transparency-change',
-          onClick: () => {
-            emit('update:transparency', 'mica')
-            emit('change')
+      h('div', [
+        h(
+          'button',
+          {
+            class: 'transparency-change',
+            onClick: () => {
+              emit('update:transparency', 'mica')
+              emit('change')
+            },
           },
-        },
-        'appearance',
-      )
+          'appearance',
+        ),
+        h(
+          'button',
+          {
+            class: 'history-change',
+            onClick: () => {
+              emit('update:showHistory', false)
+              emit('change')
+            },
+          },
+          'history',
+        ),
+      ])
   },
 })
 
@@ -191,9 +209,12 @@ describe('SettingsPanel', () => {
     storeMock.isHydrated = false
     storeMock.isLoading = false
     storeMock.hydrateFailed = false
+    storeMock.needsAppRestart = false
     storeMock.settings = sampleConfig()
     storeMock.updateConfig.mockReset()
     storeMock.applyCanonicalConfig.mockClear()
+    storeMock.noteAppRestartRequired.mockClear()
+    storeMock.restartApp.mockReset()
     storeMock.pickDirectory.mockReset()
     storeMock.fetchConfig.mockReset()
   })
@@ -279,7 +300,8 @@ describe('SettingsPanel', () => {
     await wrapper.find('.ua-change').trigger('click')
     await vi.advanceTimersByTimeAsync(800)
     await flushPromises()
-    expect(wrapper.text()).toContain('settings.saveFailed')
+    expect(wrapper.text()).toContain('settings.errors.persistFailed')
+    expect(wrapper.text()).not.toContain('settings.saveFailed')
     expect(wrapper.text()).not.toContain('settings.saved')
     expect(storeMock.settings.user_agent).toBe('rolled-back')
     expect(wrapper.find('.ua-value').text()).toBe('rolled-back')
@@ -387,7 +409,7 @@ describe('SettingsPanel', () => {
     wrapper.unmount()
   })
 
-  it('shows a restart hint instead of saved when the backend requires an app restart', async () => {
+  it('keeps a session restart latch after a later non-restart save', async () => {
     storeMock.isHydrated = true
     const wrapper = mountPanel()
     await flushHydration()
@@ -401,10 +423,79 @@ describe('SettingsPanel', () => {
     await wrapper.find('.transparency-change').trigger('click')
     await vi.advanceTimersByTimeAsync(800)
     await flushPromises()
+    expect(storeMock.noteAppRestartRequired).toHaveBeenCalled()
     expect(wrapper.text()).toContain('settings.requiresAppRestart')
-    expect(wrapper.text()).not.toContain('settings.saved')
-    await vi.advanceTimersByTimeAsync(2000)
+    expect(wrapper.find('.restart-now').exists()).toBe(true)
+
+    storeMock.updateConfig.mockResolvedValue(
+      new SaveConfigResult({
+        success: true,
+        requires_app_restart: false,
+        config: sampleConfig({ window_transparency: 'mica', show_history: false }),
+      }),
+    )
+    await wrapper.find('.history-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
     expect(wrapper.text()).toContain('settings.requiresAppRestart')
+    expect(wrapper.text()).toContain('settings.saved')
+    wrapper.unmount()
+  })
+
+  it('latches restart from a stale in-flight save while a newer edit completes', async () => {
+    storeMock.isHydrated = true
+    const wrapper = mountPanel()
+    await flushHydration()
+
+    let resolveA: (value: SaveConfigResult) => void = () => undefined
+    storeMock.updateConfig.mockImplementationOnce(
+      () =>
+        new Promise<SaveConfigResult>(resolve => {
+          resolveA = resolve
+        }),
+    )
+    await wrapper.find('.transparency-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+
+    storeMock.updateConfig.mockImplementationOnce(async (candidate: AppConfig) => {
+      return new SaveConfigResult({ success: true, requires_app_restart: false, config: candidate })
+    })
+    await wrapper.find('.ua-change').trigger('click')
+
+    resolveA(
+      new SaveConfigResult({
+        success: true,
+        requires_app_restart: true,
+        config: sampleConfig({ user_agent: 'stale-A', window_transparency: 'mica' }),
+      }),
+    )
+    await flushPromises()
+    expect(storeMock.noteAppRestartRequired).toHaveBeenCalled()
+    expect(storeMock.settings.user_agent).not.toBe('stale-A')
+
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    expect(wrapper.text()).toContain('settings.requiresAppRestart')
+    wrapper.unmount()
+  })
+
+  it('maps known error codes to i18n keys without backend strings', async () => {
+    storeMock.isHydrated = true
+    const wrapper = mountPanel()
+    await flushHydration()
+    storeMock.updateConfig.mockResolvedValue(
+      new SaveConfigResult({
+        success: false,
+        config: sampleConfig(),
+        error_code: 'download_dir_unavailable',
+        message: 'Download directory is unavailable.',
+      }),
+    )
+    await wrapper.find('.ua-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    expect(wrapper.text()).toContain('settings.errors.downloadDirUnavailable')
+    expect(wrapper.text()).not.toContain('Download directory is unavailable.')
     wrapper.unmount()
   })
 

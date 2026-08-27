@@ -20,10 +20,21 @@
     "saving": "儲存中...",
     "saved": "已儲存",
     "saveFailed": "儲存失敗",
-    "loadFailed": "無法載入設定。請重試。",
+    "loadFailed": "無法載入設定。",
     "retry": "重試",
     "requiresAppRestart": "已儲存。請重新啟動 GoAria 以使全部變更生效。",
-    "autoSave": "自動儲存"
+    "restartNow": "立即重新啟動",
+    "autoSave": "自動儲存",
+    "errors": {
+      "persistFailed": "無法儲存設定。",
+      "notLoaded": "設定尚未載入。",
+      "downloadDirUnavailable": "下載資料夾無法使用。",
+      "rpcExtensionConflict": "RPC 連接埠與擴充功能衝突。",
+      "ariaRestartRolledBack": "下載引擎重新啟動失敗，已還原先前設定。",
+      "ariaReadinessRolledBack": "下載引擎未就緒，已還原先前設定。",
+      "configRollbackFailed": "無法還原先前設定。",
+      "ariaRollbackFailed": "無法還原先前的下載引擎。"
+    }
   },
   "appearance": {
     "title": "外觀設定",
