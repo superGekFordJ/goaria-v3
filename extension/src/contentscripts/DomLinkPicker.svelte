@@ -359,7 +359,12 @@
         />
 
         <div class="extractor-picker-actions">
-          <button type="button" class="extractor-picker-btn" disabled={submitting} onclick={onCancel}>
+          <button
+            type="button"
+            class="extractor-picker-btn"
+            disabled={submitting && snapshot.banner !== 'pending'}
+            onclick={onCancel}
+          >
             {t('picker_cancel')}
           </button>
           <button

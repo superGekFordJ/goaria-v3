@@ -22,10 +22,14 @@ export async function broadcastDomClose(catalogId?: string): Promise<void> {
   }
 }
 
-export function notifyDomHostDown(): void {
-  bumpDirectConnectGeneration()
+export function dropDomCatalogsOnReconnect(): void {
   invalidateAllDomCatalogs()
   void broadcastDomClose()
+}
+
+export function notifyDomHostDown(): void {
+  bumpDirectConnectGeneration()
+  dropDomCatalogsOnReconnect()
 }
 
 export async function onDomUnpair(): Promise<void> {

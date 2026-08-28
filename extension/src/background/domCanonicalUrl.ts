@@ -23,9 +23,7 @@ function stripFragment(raw: string): string {
 function pathAndQueryAfterHost(noHash: string): { path: string; query?: string } | undefined {
   const sep = noHash.indexOf('://')
   if (sep < 0) return undefined
-  let after = noHash.slice(sep + 3)
-  const at = after.lastIndexOf('@')
-  if (at >= 0) after = after.slice(at + 1)
+  const after = noHash.slice(sep + 3)
   const slash = after.indexOf('/')
   const qmark = after.indexOf('?')
   if (slash < 0 && qmark < 0) return { path: '' }

@@ -71,6 +71,10 @@ function projectItems(items: unknown): DomPickerCatalogItem[] {
   return out
 }
 
+export function extractorBusyForDomMutex(phase: string, awaitingCatalog?: boolean): boolean {
+  return phase !== 'closed' || awaitingCatalog === true
+}
+
 export function applyDomPickerEvent(state: DomPickerState, event: DomPickerEvent): DomPickerState {
   switch (event.type) {
     case 'open': {

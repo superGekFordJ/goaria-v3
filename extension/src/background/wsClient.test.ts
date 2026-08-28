@@ -65,6 +65,7 @@ vi.mock('./extractorVisibility', () => ({
 
 vi.mock('./domHostDown', () => ({
   notifyDomHostDown: () => undefined,
+  dropDomCatalogsOnReconnect: () => undefined,
 }))
 
 vi.mock('./domConnectGeneration', () => ({

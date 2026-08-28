@@ -52,6 +52,15 @@ describe('canonicalizeDirectURL', () => {
   it('lowercases scheme and host', () => {
     expect(canonicalizeDirectURL('HTTPS://EXAMPLE.COM/A')).toBe('https://example.com/A')
   })
+
+  it('keeps @ in the path and in the query after userinfo is rejected', () => {
+    expect(canonicalizeDirectURL('https://example.com/foo@bar/file.bin')).toBe(
+      'https://example.com/foo@bar/file.bin',
+    )
+    expect(canonicalizeDirectURL('https://example.com/file.bin?email=a@b.com')).toBe(
+      'https://example.com/file.bin?email=a@b.com',
+    )
+  })
 })
 
 describe('urlPathIsM3uPlaylist', () => {

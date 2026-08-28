@@ -137,12 +137,19 @@ describe('collectDomLinks', () => {
       tagName: 'A',
       attrs: { href: 'https://example.com/visible.bin' },
     })
+    let shadowQueries = 0
     const result = collectDomLinks({
       querySelectorAll: () => [visible],
       baseURI: 'https://example.com/',
       title: '',
-      shadowRoot: { querySelectorAll: () => [hidden] },
+      shadowRoot: {
+        querySelectorAll: () => {
+          shadowQueries += 1
+          return [hidden]
+        },
+      },
     })
+    expect(shadowQueries).toBe(0)
     expect(result.items.map(row => row.url)).toEqual(['https://example.com/visible.bin'])
   })
 })

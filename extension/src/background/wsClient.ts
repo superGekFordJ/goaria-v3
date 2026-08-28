@@ -6,7 +6,7 @@ import { createReplayStore, type ReplayStorage } from './replayStore'
 import { mintRequestId } from './mintRequestId'
 import { notifyExtractorHostDown, notifyExtractorMatchCleared } from './extractorVisibility'
 import { bumpDirectConnectGeneration } from './domConnectGeneration'
-import { notifyDomHostDown } from './domHostDown'
+import { dropDomCatalogsOnReconnect, notifyDomHostDown } from './domHostDown'
 import { applyParsedMatch, clearMatchSnapshot } from './matchSnapshot'
 import { rescanHttpTabs } from './tabMatcher'
 import {
@@ -581,6 +581,7 @@ export class WsClient {
       connectionState.hostVersion = parsed.hostVersion
       connectionState.legacyHost = deriveLegacyHostState(parsed)
       bumpDirectConnectGeneration()
+      dropDomCatalogsOnReconnect()
       if (parsed.match && hasCapability(parsed.capabilities, CAP_EXTRACTOR_RESOLVE)) {
         applyParsedMatch(parsed.match)
         void rescanHttpTabs().catch(() => undefined)

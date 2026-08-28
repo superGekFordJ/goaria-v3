@@ -12,6 +12,7 @@ const harness = vi.hoisted(() => {
       extractor_picker_open: false,
       dom_picker_open: false,
     },
+    pingHold: null as Promise<void> | null,
     scan: {
       items: [
         {
@@ -86,7 +87,10 @@ vi.mock('../lib/i18n', () => ({
 vi.mock('webext-bridge/background', () => ({
   onMessage() {},
   sendMessage: async (type: string, data: Record<string, unknown>) => {
-    if (type === 'dom:ping') return { ...harness.ping }
+    if (type === 'dom:ping') {
+      if (harness.pingHold) await harness.pingHold
+      return { ...harness.ping }
+    }
     if (type === 'dom:scan') return { ...harness.scan }
     if (type === 'dom:open') {
       harness.opens.push(data)
@@ -156,6 +160,7 @@ describe('domFlow', () => {
   beforeEach(() => {
     harness.capabilities = ['download.batch']
     harness.ping.extractor_picker_open = false
+    harness.pingHold = null
     harness.ping.document_nonce = 'nonce-a'
     harness.ping.page_href = 'https://example.com/page#frag'
     harness.scan.document_nonce = 'nonce-a'
@@ -180,6 +185,8 @@ describe('domFlow', () => {
       },
     ]
     harness.storeId = 'store-a'
+    harness.tab.incognito = false
+    harness.tab.discarded = false
     harness.cookies = [{ name: 'sid', value: '1', secure: true, sameSite: 'lax' }]
     harness.cookieCalls = []
     harness.opens = []
@@ -275,6 +282,8 @@ describe('domFlow', () => {
     expect(second.error_code).toBe('busy')
     expect(harness.batch).toHaveLength(2)
     expect(harness.batch[0]?.requestId).toBe(harness.batch[1]?.requestId)
+    expect(harness.batch[0]?.payload.items).toEqual(harness.batch[1]?.payload.items)
+    expect(harness.cookieCalls).toHaveLength(1)
     expect(harness.batch[0]?.requestId).toHaveLength(36)
   })
 
@@ -350,5 +359,71 @@ describe('domFlow', () => {
     const headers = item?.headers as string[] | undefined
     expect(headers?.some(h => h.toLowerCase().startsWith('referer:'))).not.toBe(true)
     expect(typeof item?.download_page === 'string' || item?.download_page === undefined).toBe(true)
+  })
+
+  it('refuses iframe menu clicks', async () => {
+    await handleCollectPageLinks(
+      { frameId: 1, menuItemId: 'goaria-collect-page-links' } as never,
+      harness.tab as never,
+    )
+    expect(harness.opens).toEqual([])
+    expect(harness.notifications.some(n => n.message === 'dom_iframe_refused_body')).toBe(true)
+  })
+
+  it('refuses submit when the page fragment no longer matches', async () => {
+    const catalogId = await openCatalog()
+    harness.ping.page_href = 'https://example.com/page#other'
+    const reply = await handleDomSubmit({ catalog_id: catalogId, indices: [0] }, { tabId: 7 })
+    expect(reply).toEqual({ accepted: false, error_code: 'invalid_request' })
+    expect(harness.batch).toEqual([])
+    expect(getDomCatalog(catalogId)).toBeUndefined()
+  })
+
+  it('refuses submit when the tab is discarded', async () => {
+    const catalogId = await openCatalog()
+    harness.tab.discarded = true
+    const reply = await handleDomSubmit({ catalog_id: catalogId, indices: [0] }, { tabId: 7 })
+    expect(reply).toEqual({ accepted: false, error_code: 'invalid_request' })
+    expect(harness.batch).toEqual([])
+    expect(getDomCatalog(catalogId)).toBeUndefined()
+  })
+
+  it('refuses submit when incognito no longer matches the catalog', async () => {
+    const catalogId = await openCatalog()
+    harness.tab.incognito = true
+    const reply = await handleDomSubmit({ catalog_id: catalogId, indices: [0] }, { tabId: 7 })
+    expect(reply).toEqual({ accepted: false, error_code: 'invalid_request' })
+    expect(harness.batch).toEqual([])
+    expect(getDomCatalog(catalogId)).toBeUndefined()
+  })
+
+  it('keeps the catalog when status query throws after ack-loss', async () => {
+    harness.sendDirectBatch = async (payload, requestId) => {
+      harness.batch.push({ payload, requestId })
+      throw new RpcRequestError('timeout', requestId)
+    }
+    harness.sendDirectBatchStatus = async requestId => {
+      harness.status.push(requestId)
+      throw new Error('WebSocket is not connected')
+    }
+    const catalogId = await openCatalog()
+    const reply = await handleDomSubmit({ catalog_id: catalogId, indices: [0] }, { tabId: 7 })
+    expect(reply).toEqual({ accepted: false, error_code: 'pending' })
+    expect(harness.status).toEqual([harness.batch[0]?.requestId])
+    expect(getDomCatalog(catalogId)).toBeDefined()
+  })
+
+  it('serializes overlapping collects for one tab', async () => {
+    let release!: () => void
+    harness.pingHold = new Promise(resolve => {
+      release = resolve
+    })
+    const first = handleCollectPageLinks(clickInfo as never, harness.tab as never)
+    await Promise.resolve()
+    await handleCollectPageLinks(clickInfo as never, harness.tab as never)
+    expect(harness.opens).toEqual([])
+    release()
+    await first
+    expect(harness.opens).toHaveLength(1)
   })
 })

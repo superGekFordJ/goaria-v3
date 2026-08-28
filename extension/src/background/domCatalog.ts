@@ -23,6 +23,7 @@ export type DomLastSubmit = {
   requestId: string
   indicesKey: string
   folderKey: string
+  payload: Record<string, unknown>
 }
 
 export type DomCatalog = {

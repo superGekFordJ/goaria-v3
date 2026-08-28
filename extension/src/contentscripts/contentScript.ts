@@ -29,7 +29,7 @@ import { pickerView } from './pickerView.svelte'
 import { domPickerView } from './domPickerView.svelte'
 import type { CapsuleEvent } from './capsuleUiState'
 import { pickerEventForCapsuleUi, type PickerEvent } from './pickerUiState'
-import { type DomPickerEvent } from './domPickerUiState'
+import { extractorBusyForDomMutex, type DomPickerEvent } from './domPickerUiState'
 import glassCss from '../styles/index.css?inline'
 
 export async function pingBackground() {
@@ -151,6 +151,16 @@ function applyCapsule(event: CapsuleEvent): void {
 }
 
 function applyPicker(event: PickerEvent): void {
+  if (domPickerView.state.phase !== 'closed') {
+    if (
+      event.type === 'open' ||
+      event.type === 'catalog' ||
+      event.type === 'submit' ||
+      event.type === 'readyRestore'
+    ) {
+      return
+    }
+  }
   pickerView.apply(event)
 }
 
@@ -193,11 +203,11 @@ function startDomAlivePoll(): void {
     void sendMessage('dom:alive', { catalog_id: domCatalogId }, 'background')
       .then(reply => {
         if (!reply?.ok) {
-          applyDomPicker({ type: 'close' })
+          teardownDomOverlay()
         }
       })
       .catch(() => {
-        applyDomPicker({ type: 'close' })
+        teardownDomOverlay()
       })
   }, 1000)
 }
@@ -391,7 +401,7 @@ domPickerView.onSubmit = payload => {
       }
       applyDomPicker({ type: 'close' })
     } catch {
-      applyDomPicker({ type: 'close' })
+      teardownDomOverlay()
     }
   })()
 }
@@ -511,6 +521,7 @@ onMessage('extractor:hide', ({ data }: { data: ExtractorHideMessage }) => {
 })
 
 onMessage('extractor:picker-catalog', async ({ data }: { data: ExtractorPickerCatalogMessage }) => {
+  if (domPickerView.state.phase !== 'closed') return
   const token = await currentPageToken()
   if (!token || token !== data.page_token) return
   applyPicker({
@@ -554,7 +565,10 @@ onMessage('extractor:result', async ({ data }: { data: ExtractorResultMessage })
 onMessage('dom:ping', (): DomPingReply => ({
   document_nonce: documentNonce,
   page_href: location.href,
-  extractor_picker_open: pickerView.state.phase !== 'closed',
+  extractor_picker_open: extractorBusyForDomMutex(
+    pickerView.state.phase,
+    pickerView.state.awaitingCatalog,
+  ),
   dom_picker_open: domPickerView.state.phase !== 'closed',
 }))
 
@@ -577,7 +591,7 @@ onMessage('dom:scan', (): DomScanReply => {
 })
 
 onMessage('dom:open', ({ data }: { data: DomOpenMessage }) => {
-  if (pickerView.state.phase !== 'closed') return
+  if (extractorBusyForDomMutex(pickerView.state.phase, pickerView.state.awaitingCatalog)) return
   if (!data?.catalog_id || !Array.isArray(data.items) || data.items.length === 0) return
   applyDomPicker({
     type: 'open',

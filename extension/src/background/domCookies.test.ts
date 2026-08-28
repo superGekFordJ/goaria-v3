@@ -40,6 +40,20 @@ describe('cookieHeaderForItem', () => {
     expect(line).toBeUndefined()
   })
 
+  it('omits lax cookies on a cross-site target', () => {
+    const line = cookieHeaderForItem([cookie({ sameSite: 'lax' })], PAGE, CROSS)
+    expect(line).toBeUndefined()
+  })
+
+  it('includes none cookies on https when secure', () => {
+    const line = cookieHeaderForItem(
+      [cookie({ sameSite: 'none', secure: true })],
+      PAGE,
+      CROSS,
+    )
+    expect(line).toBe('Cookie: sid=one')
+  })
+
   it('drops the 65th cookie', () => {
     const cookies = Array.from({ length: 65 }, (_, i) =>
       cookie({ name: `n${String(i).padStart(2, '0')}`, value: 'v' }),

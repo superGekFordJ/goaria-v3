@@ -41,6 +41,7 @@ export { onDomUnpair, notifyDomHostDown } from './domHostDown'
 
 const PING_TIMEOUT_MS = 1000
 const inflightTabs = new Set<number>()
+const collectInflight = new Set<number>()
 
 type SenderTab = { tabId?: number }
 
@@ -90,6 +91,10 @@ function hostnamePrefill(pageHref: string): string | undefined {
   } catch {
     return undefined
   }
+}
+
+function clonePayload(payload: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(payload)) as Record<string, unknown>
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
@@ -184,51 +189,57 @@ export async function handleCollectPageLinks(
     return
   }
   const tabId = tab.id
-  const ping = await pingContentScript(tabId)
-  if (!ping || typeof ping.document_nonce !== 'string' || typeof ping.page_href !== 'string') {
-    notify('dom_no_cs_title', 'dom_no_cs_body')
-    return
-  }
-  if (ping.extractor_picker_open) {
-    notify('dom_mutex_title', 'dom_mutex_body')
-    return
-  }
-  const storeId = await resolveCookieStoreIdForTab(tab)
-  const storeUnproven = typeof storeId !== 'string' || storeId.trim() === ''
-  const previousId = invalidateDomCatalogByTab(tabId)
-  if (previousId) await closeOverlay(tabId, previousId)
-  const scan = await scanContentScript(tabId)
-  if (
-    !scan ||
-    scan.document_nonce !== ping.document_nonce ||
-    scan.page_href !== ping.page_href
-  ) {
-    notify('dom_no_cs_title', 'dom_no_cs_body')
-    return
-  }
-  const items = catalogItemsFromScan(scan)
-  if (items.length === 0) {
-    notify('dom_empty_scan_title', 'dom_empty_scan_body')
-    return
-  }
-  const folderPrefill = filterFolderName(scan.title) || hostnamePrefill(scan.page_href)
-  const catalog = putDomCatalog({
-    tabId,
-    documentNonce: scan.document_nonce,
-    pageHref: scan.page_href,
-    incognito: tab.incognito === true,
-    cookieStoreId: storeUnproven ? undefined : storeId,
-    storeUnproven,
-    truncated: scan.truncated === true,
-    items,
-    folderPrefill,
-  })
-  const projection = projectDomCatalog(catalog)
+  if (collectInflight.has(tabId) || inflightTabs.has(tabId)) return
+  collectInflight.add(tabId)
   try {
-    await sendMessage('dom:open', projection, `content-script@${tabId}`)
-  } catch {
-    invalidateDomCatalogById(catalog.catalogId)
-    notify('dom_no_cs_title', 'dom_no_cs_body')
+    const ping = await pingContentScript(tabId)
+    if (!ping || typeof ping.document_nonce !== 'string' || typeof ping.page_href !== 'string') {
+      notify('dom_no_cs_title', 'dom_no_cs_body')
+      return
+    }
+    if (ping.extractor_picker_open) {
+      notify('dom_mutex_title', 'dom_mutex_body')
+      return
+    }
+    const storeId = await resolveCookieStoreIdForTab(tab)
+    const storeUnproven = typeof storeId !== 'string' || storeId.trim() === ''
+    const previousId = invalidateDomCatalogByTab(tabId)
+    if (previousId) await closeOverlay(tabId, previousId)
+    const scan = await scanContentScript(tabId)
+    if (
+      !scan ||
+      scan.document_nonce !== ping.document_nonce ||
+      scan.page_href !== ping.page_href
+    ) {
+      notify('dom_no_cs_title', 'dom_no_cs_body')
+      return
+    }
+    const items = catalogItemsFromScan(scan)
+    if (items.length === 0) {
+      notify('dom_empty_scan_title', 'dom_empty_scan_body')
+      return
+    }
+    const folderPrefill = filterFolderName(scan.title) || hostnamePrefill(scan.page_href)
+    const catalog = putDomCatalog({
+      tabId,
+      documentNonce: scan.document_nonce,
+      pageHref: scan.page_href,
+      incognito: tab.incognito === true,
+      cookieStoreId: storeUnproven ? undefined : storeId,
+      storeUnproven,
+      truncated: scan.truncated === true,
+      items,
+      folderPrefill,
+    })
+    const projection = projectDomCatalog(catalog)
+    try {
+      await sendMessage('dom:open', projection, `content-script@${tabId}`)
+    } catch {
+      invalidateDomCatalogById(catalog.catalogId)
+      notify('dom_no_cs_title', 'dom_no_cs_body')
+    }
+  } finally {
+    collectInflight.delete(tabId)
   }
 }
 
@@ -244,6 +255,9 @@ async function revalidateForSubmit(
   }
   const tab = await liveTab(tabId)
   if (!tab) return { error: 'invalid_request' }
+  if (tab.incognito === true !== catalog.incognito) {
+    return { error: 'invalid_request' }
+  }
   const ping = await pingContentScript(tabId)
   if (
     !ping ||
@@ -254,10 +268,6 @@ async function revalidateForSubmit(
   }
   if (ping.extractor_picker_open) return { error: 'busy' }
   return { ping, tab }
-}
-
-async function cookieGetter(): Promise<(details: { url: string; storeId: string }) => Promise<unknown[]>> {
-  return details => browser.cookies.getAll(details) as Promise<unknown[]>
 }
 
 function buildItemsPayload(
@@ -306,9 +316,12 @@ async function queryStatus(requestId: string): Promise<DomSubmitReply> {
           : 0,
       }
     }
-    return { accepted: false, error_code: 'not_found' }
+    if (status === 'not_found') {
+      return { accepted: false, error_code: 'not_found' }
+    }
+    return { accepted: false, error_code: 'pending' }
   } catch {
-    return { accepted: false, error_code: 'not_found' }
+    return { accepted: false, error_code: 'pending' }
   }
 }
 
@@ -344,33 +357,39 @@ export async function handleDomSubmit(
     })
     const idxKey = indicesKeyOf(data.indices)
     const folderKey = folderKeyOf(fields.create_group, fields.folder_name)
-    let requestId = mintDirectBatchRequestId()
-    if (
-      catalog.lastSubmit &&
-      catalog.lastSubmit.indicesKey === idxKey &&
-      catalog.lastSubmit.folderKey === folderKey
-    ) {
-      requestId = catalog.lastSubmit.requestId
+    const last = catalog.lastSubmit
+    let requestId: string
+    let payload: Record<string, unknown>
+    if (last && last.indicesKey === idxKey && last.folderKey === folderKey) {
+      requestId = last.requestId
+      payload = clonePayload(last.payload)
+    } else {
+      requestId = mintDirectBatchRequestId()
+      const cookieLines = await collectCookieHeadersForUrls({
+        urls: mapped.items.map(item => item.url),
+        sourceHref: catalog.pageHref,
+        storeId: catalog.cookieStoreId,
+        storeUnproven: catalog.storeUnproven,
+        getAll: details => browser.cookies.getAll(details) as Promise<unknown[]>,
+      })
+      const items = buildItemsPayload(mapped.items, catalog.pageHref, cookieLines)
+      const built = buildDirectBatchPayload({
+        items,
+        ...fields,
+      })
+      if ('error' in built) {
+        return { accepted: false, error_code: 'invalid_request' }
+      }
+      payload = built.payload
+      rememberDomSubmit(catalog, {
+        requestId,
+        indicesKey: idxKey,
+        folderKey,
+        payload: clonePayload(payload),
+      })
     }
-    const getAll = await cookieGetter()
-    const cookieLines = await collectCookieHeadersForUrls({
-      urls: mapped.items.map(item => item.url),
-      sourceHref: catalog.pageHref,
-      storeId: catalog.cookieStoreId,
-      storeUnproven: catalog.storeUnproven,
-      getAll,
-    })
-    const items = buildItemsPayload(mapped.items, catalog.pageHref, cookieLines)
-    const built = buildDirectBatchPayload({
-      items,
-      ...fields,
-    })
-    if ('error' in built) {
-      return { accepted: false, error_code: 'invalid_request' }
-    }
-    rememberDomSubmit(catalog, { requestId, indicesKey: idxKey, folderKey })
     try {
-      const ack = await wsClient.sendDirectBatch(built.payload, requestId)
+      const ack = await wsClient.sendDirectBatch(payload, requestId)
       const succeeded = countList(ack.succeeded_item_ids)
       const duplicate = countList(ack.duplicate_item_ids)
       const error =
@@ -465,6 +484,7 @@ export function initDomFlow(): void {
 
 export function resetDomFlowForTests(): void {
   inflightTabs.clear()
+  collectInflight.clear()
   invalidateAllDomCatalogs()
 }
 

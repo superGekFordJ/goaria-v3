@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyDomPickerEvent,
+  extractorBusyForDomMutex,
   INITIAL_DOM_PICKER_STATE,
 } from './domPickerUiState'
 import type { DomPickerCatalogItem } from '../utils/messaging'
@@ -52,5 +53,14 @@ describe('applyDomPickerEvent', () => {
     expect('pageToken' in opened).toBe(false)
     expect('leaseDeadline' in opened).toBe(false)
     expect('readyRestore' in opened).toBe(false)
+  })
+})
+
+describe('extractorBusyForDomMutex', () => {
+  it('treats awaitingCatalog as extractor-busy even when phase is closed', () => {
+    expect(extractorBusyForDomMutex('closed')).toBe(false)
+    expect(extractorBusyForDomMutex('closed', true)).toBe(true)
+    expect(extractorBusyForDomMutex('open')).toBe(true)
+    expect(extractorBusyForDomMutex('submitting', false)).toBe(true)
   })
 })
