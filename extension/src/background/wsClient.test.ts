@@ -9,6 +9,11 @@ const connection = vi.hoisted(() => ({
   legacyHost: undefined as boolean | undefined,
 }))
 
+const domHostDown = vi.hoisted(() => ({
+  notifyDomHostDown: vi.fn(),
+  dropDomCatalogsOnReconnect: vi.fn(),
+}))
+
 vi.mock('../stores/config.svelte', () => ({
   CAP_EXTRACTOR_BATCH: 'extractor.batch',
   CAP_EXTRACTOR_RESOLVE: 'extractor.resolve',
@@ -64,8 +69,9 @@ vi.mock('./extractorVisibility', () => ({
 }))
 
 vi.mock('./domHostDown', () => ({
-  notifyDomHostDown: () => undefined,
-  dropDomCatalogsOnReconnect: () => undefined,
+  notifyDomHostDown: (...args: unknown[]) => domHostDown.notifyDomHostDown(...args),
+  dropDomCatalogsOnReconnect: (...args: unknown[]) =>
+    domHostDown.dropDomCatalogsOnReconnect(...args),
 }))
 
 vi.mock('./domConnectGeneration', () => ({
@@ -87,6 +93,10 @@ import { WsClient } from './wsClient'
 describe('WsClient direct batch', () => {
   beforeEach(() => {
     connection.capabilities = undefined
+    connection.status = 'disconnected'
+    connection.paired = false
+    domHostDown.notifyDomHostDown.mockClear()
+    domHostDown.dropDomCatalogsOnReconnect.mockClear()
   })
 
   it('does not send download_batch through sendRequest', async () => {
@@ -130,5 +140,16 @@ describe('WsClient direct batch', () => {
         'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
       ),
     ).rejects.toThrow('WebSocket is not connected')
+  })
+
+  it('drops DOM catalogs on auth_ack', () => {
+    const client = new WsClient()
+    ;(
+      client as unknown as { handleMessage: (ev: { data: string }) => void }
+    ).handleMessage({
+      data: JSON.stringify({ type: 'auth_ack', protocol_version: 2, capabilities: [] }),
+    })
+    expect(domHostDown.dropDomCatalogsOnReconnect).toHaveBeenCalledTimes(1)
+    expect(domHostDown.notifyDomHostDown).not.toHaveBeenCalled()
   })
 })

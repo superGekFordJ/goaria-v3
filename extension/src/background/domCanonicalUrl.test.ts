@@ -60,6 +60,15 @@ describe('canonicalizeDirectURL', () => {
     expect(canonicalizeDirectURL('https://example.com/file.bin?email=a@b.com')).toBe(
       'https://example.com/file.bin?email=a@b.com',
     )
+    expect(canonicalizeDirectURL('https://example.com?email=a@b.com')).toBe(
+      'https://example.com?email=a@b.com',
+    )
+    expect(canonicalizeDirectURL('https://[2001:db8::1]/foo@bar.bin')).toBe(
+      'https://[2001:db8::1]/foo@bar.bin',
+    )
+    expect(canonicalizeDirectURL('https://[2001:db8::1]/x?email=a@b.com')).toBe(
+      'https://[2001:db8::1]/x?email=a@b.com',
+    )
   })
 })
 

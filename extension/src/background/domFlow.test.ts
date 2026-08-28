@@ -47,6 +47,7 @@ const harness = vi.hoisted(() => {
     cookies: [] as unknown[],
     cookieCalls: [] as Array<{ url: string; storeId: string }>,
     opens: [] as Array<Record<string, unknown>>,
+    openReply: { ok: true } as { ok: boolean },
     closes: [] as string[],
     notifications: [] as Array<{ title: string; message: string }>,
     batch: [] as Array<{ payload: Record<string, unknown>; requestId: string }>,
@@ -94,7 +95,7 @@ vi.mock('webext-bridge/background', () => ({
     if (type === 'dom:scan') return { ...harness.scan }
     if (type === 'dom:open') {
       harness.opens.push(data)
-      return undefined
+      return { ...harness.openReply }
     }
     if (type === 'dom:close') {
       harness.closes.push(String(data.catalog_id ?? ''))
@@ -190,6 +191,7 @@ describe('domFlow', () => {
     harness.cookies = [{ name: 'sid', value: '1', secure: true, sameSite: 'lax' }]
     harness.cookieCalls = []
     harness.opens = []
+    harness.openReply = { ok: true }
     harness.closes = []
     harness.notifications = []
     harness.batch = []
@@ -425,5 +427,14 @@ describe('domFlow', () => {
     release()
     await first
     expect(harness.opens).toHaveLength(1)
+  })
+
+  it('drops the catalog when the content script refuses dom:open', async () => {
+    harness.openReply = { ok: false }
+    await handleCollectPageLinks(clickInfo as never, harness.tab as never)
+    const catalogId = String(harness.opens.at(-1)?.catalog_id ?? '')
+    expect(catalogId).not.toBe('')
+    expect(getDomCatalog(catalogId)).toBeUndefined()
+    expect(harness.notifications.some(n => n.message === 'dom_mutex_body')).toBe(true)
   })
 })

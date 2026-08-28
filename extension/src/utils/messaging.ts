@@ -32,7 +32,7 @@ declare module 'webext-bridge' {
     'interception:toggle': ProtocolWithReturn<InterceptionToggleMessage, InterceptionToggleResult>
     'dom:ping': ProtocolWithReturn<DomPingMessage, DomPingReply>
     'dom:scan': ProtocolWithReturn<DomScanMessage, DomScanReply>
-    'dom:open': DomOpenMessage
+    'dom:open': ProtocolWithReturn<DomOpenMessage, DomOpenReply>
     'dom:close': DomCloseMessage
     'dom:alive': ProtocolWithReturn<DomAliveMessage, DomAliveReply>
     'dom:submit': ProtocolWithReturn<DomSubmitMessage, DomSubmitReply>
@@ -237,6 +237,9 @@ export type DomOpenMessage = {
   truncated: boolean
   store_unproven: boolean
   folder_prefill?: string
+}
+export type DomOpenReply = {
+  ok: boolean
 }
 
 export type DomCloseMessage = {

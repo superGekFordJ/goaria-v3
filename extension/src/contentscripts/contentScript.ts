@@ -17,6 +17,7 @@ import type {
   ExtractorResultMessage,
   InterceptedReply,
   DomOpenMessage,
+  DomOpenReply,
   DomCloseMessage,
   DomPingReply,
   DomScanReply,
@@ -590,9 +591,13 @@ onMessage('dom:scan', (): DomScanReply => {
   }
 })
 
-onMessage('dom:open', ({ data }: { data: DomOpenMessage }) => {
-  if (extractorBusyForDomMutex(pickerView.state.phase, pickerView.state.awaitingCatalog)) return
-  if (!data?.catalog_id || !Array.isArray(data.items) || data.items.length === 0) return
+onMessage('dom:open', ({ data }: { data: DomOpenMessage }): DomOpenReply => {
+  if (extractorBusyForDomMutex(pickerView.state.phase, pickerView.state.awaitingCatalog)) {
+    return { ok: false }
+  }
+  if (!data?.catalog_id || !Array.isArray(data.items) || data.items.length === 0) {
+    return { ok: false }
+  }
   applyDomPicker({
     type: 'open',
     catalogId: data.catalog_id,
@@ -601,9 +606,13 @@ onMessage('dom:open', ({ data }: { data: DomOpenMessage }) => {
     storeUnproven: data.store_unproven,
     folderPrefill: data.folder_prefill,
   })
+  if (domPickerView.state.phase === 'closed' || domPickerView.state.catalogId !== data.catalog_id) {
+    return { ok: false }
+  }
   domCatalogId = data.catalog_id
   domOpenedHref = location.href
   startDomAlivePoll()
+  return { ok: true }
 })
 
 onMessage('dom:close', ({ data }: { data: DomCloseMessage }) => {

@@ -233,7 +233,13 @@ export async function handleCollectPageLinks(
     })
     const projection = projectDomCatalog(catalog)
     try {
-      await sendMessage('dom:open', projection, `content-script@${tabId}`)
+      const reply = (await sendMessage('dom:open', projection, `content-script@${tabId}`)) as
+        | { ok?: boolean }
+        | undefined
+      if (reply?.ok !== true) {
+        invalidateDomCatalogById(catalog.catalogId)
+        notify('dom_mutex_title', 'dom_mutex_body')
+      }
     } catch {
       invalidateDomCatalogById(catalog.catalogId)
       notify('dom_no_cs_title', 'dom_no_cs_body')
