@@ -45,20 +45,29 @@ function isHttpsToHttp(source: URL, target: URL): boolean {
 }
 
 function normalizePolicy(raw: string | undefined): ReferrerPolicyName {
-  const value = (raw || '').trim().toLowerCase()
-  switch (value) {
-    case 'no-referrer':
-    case 'unsafe-url':
-    case 'origin':
-    case 'origin-when-cross-origin':
-    case 'same-origin':
-    case 'strict-origin':
-    case 'strict-origin-when-cross-origin':
-    case 'no-referrer-when-downgrade':
-      return value
-    default:
-      return 'strict-origin-when-cross-origin'
+  const parts = (raw || '')
+    .toLowerCase()
+    .split(/[,\s]+/)
+    .map(part => part.trim())
+    .filter(part => part !== '')
+  let last: ReferrerPolicyName | undefined
+  for (const part of parts) {
+    switch (part) {
+      case 'no-referrer':
+      case 'unsafe-url':
+      case 'origin':
+      case 'origin-when-cross-origin':
+      case 'same-origin':
+      case 'strict-origin':
+      case 'strict-origin-when-cross-origin':
+      case 'no-referrer-when-downgrade':
+        last = part
+        break
+      default:
+        break
+    }
   }
+  return last ?? 'strict-origin-when-cross-origin'
 }
 
 function computeReferrerUrl(input: ReferrerInput): string | undefined {

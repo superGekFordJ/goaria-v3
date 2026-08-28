@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { isSchemefulSameSite } from './domSameSite'
 
 describe('isSchemefulSameSite', () => {
-  it('treats www and cdn under example.com as same-site', () => {
+  it('treats www and cdn under example.com as same-site only when hosts match exactly', () => {
+    expect(
+      isSchemefulSameSite('https://www.example.com/page', 'https://www.example.com/a.bin'),
+    ).toBe(true)
     expect(
       isSchemefulSameSite('https://www.example.com/page', 'https://cdn.example.com/a.bin'),
-    ).toBe(true)
+    ).toBe(false)
   })
 
   it('does not treat a.co.uk and b.co.uk as same-site', () => {
@@ -16,6 +19,12 @@ describe('isSchemefulSameSite', () => {
     expect(
       isSchemefulSameSite('https://user1.github.io/', 'https://user2.github.io/x'),
     ).toBe(false)
+  })
+
+  it('fail-closes unlisted ccSLDs instead of last-two-label merge', () => {
+    expect(isSchemefulSameSite('https://mail.163.com.cn/', 'https://evil.com.cn/x')).toBe(false)
+    expect(isSchemefulSameSite('https://a.co.in/', 'https://b.co.in/x')).toBe(false)
+    expect(isSchemefulSameSite('https://a.com.mx/', 'https://b.com.mx/x')).toBe(false)
   })
 
   it('is schemeful: http vs https is not same-site', () => {

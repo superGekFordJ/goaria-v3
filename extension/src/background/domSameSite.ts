@@ -48,9 +48,7 @@ function registrableDomain(hostname: string): string {
       return label ? `${label}.${suffix}` : suffix
     }
   }
-  const parts = host.split('.')
-  if (parts.length <= 2) return host
-  return parts.slice(-2).join('.')
+  return host
 }
 
 export function isSchemefulSameSite(sourceHref: string, targetHref: string): boolean {

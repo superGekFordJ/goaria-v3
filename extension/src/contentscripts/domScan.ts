@@ -43,6 +43,7 @@ export type CollectDomLinksOpts = {
   maxUnique?: number
   maxVisit?: number
   maxMs?: number
+  pageHref?: string
 }
 
 export type CollectDomLinksResult = {
@@ -131,6 +132,7 @@ export function collectDomLinks(
       ? root.referrerPolicy.trim()
       : ''
   const rootBase = typeof root.baseURI === 'string' && root.baseURI !== '' ? root.baseURI : undefined
+  const pageCanon = canonicalizeDirectURL(opts.pageHref || rootBase || '')
 
   for (let i = 0; i < length; i++) {
     if (i >= maxVisit) {
@@ -157,6 +159,7 @@ export function collectDomLinks(
     const canonical = canonicalizeDirectURL(absolute)
     if (!canonical) continue
     if (urlPathIsM3uPlaylist(canonical)) continue
+    if (pageCanon && canonical === pageCanon) continue
     if (seen.has(canonical)) continue
     if (seen.size >= maxUnique) {
       truncated = true

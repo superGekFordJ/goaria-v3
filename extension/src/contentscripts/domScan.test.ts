@@ -152,4 +152,18 @@ describe('collectDomLinks', () => {
     expect(shadowQueries).toBe(0)
     expect(result.items.map(row => row.url)).toEqual(['https://example.com/visible.bin'])
   })
+
+  it('drops fragment-only hrefs that canonicalize to the page URL', () => {
+    const result = collectDomLinks(
+      rootOf(
+        [
+          node({ tagName: 'A', attrs: { href: '#section' } }),
+          node({ tagName: 'A', attrs: { href: 'https://example.com/ok.bin' } }),
+        ],
+        { baseURI: 'https://example.com/page' },
+      ),
+      { pageHref: 'https://example.com/page#frag' },
+    )
+    expect(result.items.map(row => row.url)).toEqual(['https://example.com/ok.bin'])
+  })
 })

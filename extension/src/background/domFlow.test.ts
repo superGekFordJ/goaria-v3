@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { bumpDirectConnectGeneration, resetDirectConnectGenerationForTests } from './domConnectGeneration'
-import { getDomCatalog, resetDomCatalogsForTests } from './domCatalog'
+import { getDomCatalog, invalidateDomCatalogById, resetDomCatalogsForTests } from './domCatalog'
 import { RpcRequestError } from './extractorRpc'
 
 const harness = vi.hoisted(() => {
@@ -13,6 +13,7 @@ const harness = vi.hoisted(() => {
       dom_picker_open: false,
     },
     pingHold: null as Promise<void> | null,
+    onPing: null as null | (() => void),
     scan: {
       items: [
         {
@@ -90,6 +91,7 @@ vi.mock('webext-bridge/background', () => ({
   sendMessage: async (type: string, data: Record<string, unknown>) => {
     if (type === 'dom:ping') {
       if (harness.pingHold) await harness.pingHold
+      harness.onPing?.()
       return { ...harness.ping }
     }
     if (type === 'dom:scan') return { ...harness.scan }
@@ -144,6 +146,7 @@ import {
   handleCollectPageLinks,
   handleDomAlive,
   handleDomCancel,
+  handleDomStatus,
   handleDomSubmit,
   resetDomFlowForTests,
 } from './domFlow'
@@ -162,6 +165,7 @@ describe('domFlow', () => {
     harness.capabilities = ['download.batch']
     harness.ping.extractor_picker_open = false
     harness.pingHold = null
+    harness.onPing = null
     harness.ping.document_nonce = 'nonce-a'
     harness.ping.page_href = 'https://example.com/page#frag'
     harness.scan.document_nonce = 'nonce-a'
@@ -351,7 +355,7 @@ describe('domFlow', () => {
     const reply = await handleDomCancel({ catalog_id: catalogId }, { tabId: 7 })
     expect(reply).toEqual({ ok: true })
     expect(getDomCatalog(catalogId)).toBeUndefined()
-    expect(handleDomAlive({ catalog_id: catalogId })).toEqual({ ok: false })
+    expect(handleDomAlive({ catalog_id: catalogId }, { tabId: 7 })).toEqual({ ok: false })
   })
 
   it('does not send a Referer header alongside Cookie', async () => {
@@ -436,5 +440,56 @@ describe('domFlow', () => {
     expect(catalogId).not.toBe('')
     expect(getDomCatalog(catalogId)).toBeUndefined()
     expect(harness.notifications.some(n => n.message === 'dom_mutex_body')).toBe(true)
+  })
+
+  it('omits cookies when the live store no longer matches the catalog', async () => {
+    const catalogId = await openCatalog()
+    harness.storeId = 'store-other'
+    await handleDomSubmit({ catalog_id: catalogId, indices: [0] }, { tabId: 7 })
+    const item = (harness.batch[0]?.payload.items as Record<string, unknown>[])[0]
+    expect(item?.headers).toBeUndefined()
+    expect(harness.cookieCalls).toEqual([])
+  })
+
+  it('aborts send when the catalog is dropped after cookie collection', async () => {
+    const catalogId = await openCatalog()
+    let pings = 0
+    harness.onPing = () => {
+      pings += 1
+      if (pings >= 2) invalidateDomCatalogById(catalogId)
+    }
+    const reply = await handleDomSubmit({ catalog_id: catalogId, indices: [0] }, { tabId: 7 })
+    expect(reply).toEqual({ accepted: false, error_code: 'invalid_request' })
+    expect(harness.batch).toEqual([])
+  })
+
+  it('binds alive probes to the catalog tab', async () => {
+    const catalogId = await openCatalog()
+    expect(handleDomAlive({ catalog_id: catalogId }, { tabId: 99 })).toEqual({ ok: false })
+    expect(handleDomAlive({ catalog_id: catalogId }, { tabId: 7 })).toEqual({ ok: true })
+  })
+
+  it('re-polls status without minting a new id', async () => {
+    harness.sendDirectBatch = async (payload, requestId) => {
+      harness.batch.push({ payload, requestId })
+      throw new RpcRequestError('timeout', requestId)
+    }
+    const catalogId = await openCatalog()
+    const first = await handleDomSubmit({ catalog_id: catalogId, indices: [0] }, { tabId: 7 })
+    expect(first.error_code).toBe('pending')
+    harness.sendDirectBatchStatus = async requestId => {
+      harness.status.push(requestId)
+      return {
+        status: 'complete',
+        succeeded_item_ids: ['a'],
+        duplicate_item_ids: [],
+        errors_by_item_id: {},
+      }
+    }
+    const second = await handleDomStatus({ catalog_id: catalogId }, { tabId: 7 })
+    expect(second.accepted).toBe(true)
+    expect(harness.status[1]).toBe(harness.batch[0]?.requestId)
+    expect(harness.batch).toHaveLength(1)
+    expect(getDomCatalog(catalogId)).toBeUndefined()
   })
 })

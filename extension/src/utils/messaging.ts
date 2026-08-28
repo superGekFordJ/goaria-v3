@@ -35,6 +35,7 @@ declare module 'webext-bridge' {
     'dom:open': ProtocolWithReturn<DomOpenMessage, DomOpenReply>
     'dom:close': DomCloseMessage
     'dom:alive': ProtocolWithReturn<DomAliveMessage, DomAliveReply>
+    'dom:status': ProtocolWithReturn<DomAliveMessage, DomSubmitReply>
     'dom:submit': ProtocolWithReturn<DomSubmitMessage, DomSubmitReply>
     'dom:cancel': ProtocolWithReturn<DomCancelMessage, DomCancelReply>
   }
@@ -202,6 +203,7 @@ export type DomPickerCatalogItem = {
   index: number
   filename?: string
   origin?: string
+  path?: string
   kind?: DomLinkKind
   size_bytes?: number
 }

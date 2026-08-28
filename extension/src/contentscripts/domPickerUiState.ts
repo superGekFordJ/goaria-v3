@@ -52,6 +52,8 @@ function projectItems(items: unknown): DomPickerCatalogItem[] {
       if (filename) item.filename = filename
       const origin = sanitizeDisplayFilename(rec.origin)
       if (origin) item.origin = origin
+      const path = sanitizeDisplayFilename(rec.path)
+      if (path) item.path = path
       if (
         rec.kind === 'link' ||
         rec.kind === 'image' ||

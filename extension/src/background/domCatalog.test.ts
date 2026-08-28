@@ -92,6 +92,7 @@ describe('domCatalog', () => {
       index: 0,
       filename: 'a.bin',
       origin: 'https://example.com',
+      path: '/dir/a.bin',
       kind: 'link',
     })
   })

@@ -9,7 +9,6 @@
     EXTRACTOR_PICKER_WINDOW,
   } from '../background/extractorKeys'
   import {
-    defaultSelectedIndices,
     invert,
     selectAll,
     selectedBytes,
@@ -61,7 +60,7 @@
     const key = `${domPickerView.state.catalogId}:${next.map(row => row.index).join(',')}`
     if (key === lastCatalogKey) return
     lastCatalogKey = key
-    selected = new Set(defaultSelectedIndices(next.length))
+    selected = new Set<number>()
     activeIndex = 0
     createGroup = false
     folderRaw = domPickerView.state.folderPrefill
@@ -147,7 +146,8 @@
     })
   }
 
-  function onToggle(index: number): void {
+  function onToggle(index: number, event?: Event): void {
+    if (event && !event.isTrusted) return
     selected = toggleIndex(selected, index, selectable)
     activeIndex = index
   }
@@ -319,7 +319,7 @@
                 data-picker-index={item.index}
                 checked={selected.has(item.index)}
                 disabled={submitting}
-                onchange={() => onToggle(item.index)}
+                onchange={event => onToggle(item.index, event)}
                 onfocus={() => {
                   activeIndex = item.index
                 }}
@@ -330,6 +330,8 @@
               <span class="extractor-picker-size">
                 {sanitizeDisplayFilename(item.origin) || ''}
                 {item.origin ? ' · ' : ''}
+                {sanitizeDisplayFilename(item.path) || ''}
+                {item.path ? ' · ' : ''}
                 {kindLabel(item.kind)}
                 {typeof item.size_bytes === 'number' ? ` · ${formatBytes(item.size_bytes)}` : ''}
               </span>

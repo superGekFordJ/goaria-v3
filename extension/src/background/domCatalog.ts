@@ -47,6 +47,7 @@ export type DomPickerProjectionItem = {
   index: number
   filename?: string
   origin?: string
+  path?: string
   kind?: DomLinkKind
   size_bytes?: number
 }
@@ -182,6 +183,14 @@ export function mapDomCatalogIndices(
   return { items: mapped }
 }
 
+function pathOf(url: string): string | undefined {
+  try {
+    return sanitizeDisplayFilename(new URL(url).pathname)
+  } catch {
+    return undefined
+  }
+}
+
 export function projectDomCatalog(catalog: DomCatalog): DomPickerProjection {
   const items: DomPickerProjectionItem[] = catalog.items.map((item, index) => {
     const row: DomPickerProjectionItem = { index, kind: item.kind }
@@ -189,6 +198,8 @@ export function projectDomCatalog(catalog: DomCatalog): DomPickerProjection {
     if (filename) row.filename = filename
     const origin = originOf(item.url)
     if (origin) row.origin = origin
+    const path = pathOf(item.url)
+    if (path) row.path = path
     return row
   })
   const out: DomPickerProjection = {

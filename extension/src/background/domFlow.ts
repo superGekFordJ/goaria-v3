@@ -137,10 +137,12 @@ async function closeOverlay(tabId: number, catalogId?: string): Promise<void> {
 function catalogItemsFromScan(scan: DomScanReply): DomCatalogItem[] {
   const seen = new Set<string>()
   const items: DomCatalogItem[] = []
+  const pageCanon = canonicalizeDirectURL(scan.page_href)
   for (const hit of scan.items) {
     if (!hit || typeof hit.url !== 'string') continue
     const canonical = canonicalizeDirectURL(hit.url)
     if (!canonical || urlPathIsM3uPlaylist(canonical)) continue
+    if (pageCanon && canonical === pageCanon) continue
     if (seen.has(canonical)) continue
     if (items.length >= EXTRACTOR_MAX_SESSION_ITEMS) break
     seen.add(canonical)
@@ -276,6 +278,16 @@ async function revalidateForSubmit(
   return { ping, tab }
 }
 
+function storeStillProven(catalog: DomCatalog, liveStore: string | undefined): boolean {
+  return (
+    catalog.storeUnproven !== true &&
+    typeof catalog.cookieStoreId === 'string' &&
+    catalog.cookieStoreId !== '' &&
+    typeof liveStore === 'string' &&
+    liveStore.trim() === catalog.cookieStoreId
+  )
+}
+
 function buildItemsPayload(
   selected: DomCatalogItem[],
   pageHref: string,
@@ -353,6 +365,7 @@ export async function handleDomSubmit(
     }
     return { accepted: false, error_code: check.error }
   }
+  if (!check.tab) return { accepted: false, error_code: 'invalid_request' }
   if (inflightTabs.has(tabId)) return { accepted: false, error_code: 'busy' }
   inflightTabs.add(tabId)
   try {
@@ -363,10 +376,12 @@ export async function handleDomSubmit(
     })
     const idxKey = indicesKeyOf(data.indices)
     const folderKey = folderKeyOf(fields.create_group, fields.folder_name)
+    const liveStore = await resolveCookieStoreIdForTab(check.tab)
+    const storeLiveOk = storeStillProven(catalog, liveStore)
     const last = catalog.lastSubmit
     let requestId: string
     let payload: Record<string, unknown>
-    if (last && last.indicesKey === idxKey && last.folderKey === folderKey) {
+    if (last && last.indicesKey === idxKey && last.folderKey === folderKey && storeLiveOk) {
       requestId = last.requestId
       payload = clonePayload(last.payload)
     } else {
@@ -374,8 +389,8 @@ export async function handleDomSubmit(
       const cookieLines = await collectCookieHeadersForUrls({
         urls: mapped.items.map(item => item.url),
         sourceHref: catalog.pageHref,
-        storeId: catalog.cookieStoreId,
-        storeUnproven: catalog.storeUnproven,
+        storeId: storeLiveOk ? catalog.cookieStoreId : undefined,
+        storeUnproven: !storeLiveOk,
         getAll: details => browser.cookies.getAll(details) as Promise<unknown[]>,
       })
       const items = buildItemsPayload(mapped.items, catalog.pageHref, cookieLines)
@@ -393,6 +408,20 @@ export async function handleDomSubmit(
         folderKey,
         payload: clonePayload(payload),
       })
+    }
+    if (getDomCatalog(catalog.catalogId) !== catalog) {
+      return { accepted: false, error_code: 'invalid_request' }
+    }
+    const again = await revalidateForSubmit(catalog, tabId)
+    if (again.error) {
+      if (again.error === 'invalid_request' || again.error === 'unsupported') {
+        invalidateDomCatalogById(catalog.catalogId)
+        await closeOverlay(tabId, catalog.catalogId)
+      }
+      return { accepted: false, error_code: again.error }
+    }
+    if (getDomCatalog(catalog.catalogId) !== catalog) {
+      return { accepted: false, error_code: 'invalid_request' }
     }
     try {
       const ack = await wsClient.sendDirectBatch(payload, requestId)
@@ -454,9 +483,42 @@ export async function handleDomCancel(
   return { ok: true }
 }
 
-export function handleDomAlive(data: DomAliveMessage): { ok: boolean } {
-  if (typeof data?.catalog_id !== 'string' || data.catalog_id === '') return { ok: false }
+export function handleDomAlive(data: DomAliveMessage, sender: SenderTab): { ok: boolean } {
+  if (typeof sender.tabId !== 'number' || typeof data?.catalog_id !== 'string' || data.catalog_id === '') {
+    return { ok: false }
+  }
+  const catalog = getDomCatalog(data.catalog_id)
+  if (!catalog || catalog.tabId !== sender.tabId) return { ok: false }
   return { ok: isDomCatalogAlive(data.catalog_id) }
+}
+
+export async function handleDomStatus(
+  data: DomAliveMessage,
+  sender: SenderTab,
+): Promise<DomSubmitReply> {
+  const tabId = sender.tabId
+  if (typeof tabId !== 'number' || typeof data?.catalog_id !== 'string' || data.catalog_id === '') {
+    return { accepted: false, error_code: 'invalid_request' }
+  }
+  const catalog = getDomCatalog(data.catalog_id)
+  if (!catalog || catalog.tabId !== tabId || !catalog.lastSubmit) {
+    return { accepted: false, error_code: 'not_found' }
+  }
+  const status = await queryStatus(catalog.lastSubmit.requestId)
+  if (status.accepted) {
+    invalidateDomCatalogById(catalog.catalogId)
+    await closeOverlay(tabId, catalog.catalogId)
+    notify('dom_notif_title', 'dom_success_body', [
+      String(status.succeeded ?? 0),
+      String(status.duplicate ?? 0),
+      String(status.error ?? 0),
+    ])
+  } else if (status.error_code === 'not_found') {
+    invalidateDomCatalogById(catalog.catalogId)
+    await closeOverlay(tabId, catalog.catalogId)
+    notify('dom_notif_title', 'dom_not_found')
+  }
+  return status
 }
 
 function dropTab(tabId: number): void {
@@ -471,7 +533,12 @@ export function initDomFlow(): void {
   onMessage('dom:cancel', ({ data, sender }: { data: DomCancelMessage; sender: SenderTab }) =>
     handleDomCancel(data, sender),
   )
-  onMessage('dom:alive', ({ data }: { data: DomAliveMessage }) => handleDomAlive(data))
+  onMessage('dom:alive', ({ data, sender }: { data: DomAliveMessage; sender: SenderTab }) =>
+    handleDomAlive(data, sender),
+  )
+  onMessage('dom:status', ({ data, sender }: { data: DomAliveMessage; sender: SenderTab }) =>
+    handleDomStatus(data, sender),
+  )
   browser.tabs.onRemoved.addListener(tabId => {
     dropTab(tabId)
   })

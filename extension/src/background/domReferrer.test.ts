@@ -67,4 +67,14 @@ describe('referrerResult', () => {
       }),
     ).toBeUndefined()
   })
+
+  it('uses the last recognized token in a policy list', () => {
+    expect(
+      referrerResult({
+        pageHref: 'https://example.com/dir/page?q=1',
+        targetHref: 'https://cdn.fixture.invalid/a.bin',
+        documentPolicy: 'no-referrer, origin',
+      }),
+    ).toBe('https://example.com/')
+  })
 })

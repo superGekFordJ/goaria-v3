@@ -169,6 +169,7 @@ function applyDomPicker(event: DomPickerEvent): void {
   domPickerView.apply(event)
   if (event.type === 'close' || event.type === 'not_found') {
     stopDomAlivePoll()
+    stopDomStatusPoll()
     domCatalogId = ''
     domOpenedHref = ''
   }
@@ -178,6 +179,8 @@ let documentNonce = mintDirectBatchRequestId()
 let domCatalogId = ''
 let domOpenedHref = ''
 let domAliveTimer: ReturnType<typeof setInterval> | null = null
+let domStatusTimer: ReturnType<typeof setInterval> | null = null
+const DOM_STATUS_POLL_MS = 2000
 
 function stopDomAlivePoll(): void {
   if (domAliveTimer) {
@@ -211,6 +214,36 @@ function startDomAlivePoll(): void {
         teardownDomOverlay()
       })
   }, 1000)
+}
+
+function stopDomStatusPoll(): void {
+  if (domStatusTimer) {
+    clearInterval(domStatusTimer)
+    domStatusTimer = null
+  }
+}
+
+function startDomStatusPoll(): void {
+  stopDomStatusPoll()
+  const catalogId = domCatalogId
+  if (!catalogId) return
+  domStatusTimer = setInterval(() => {
+    if (domPickerView.state.banner !== 'pending' || !domCatalogId) {
+      stopDomStatusPoll()
+      return
+    }
+    void sendMessage('dom:status', { catalog_id: catalogId }, 'background')
+      .then(reply => {
+        if (reply?.accepted) {
+          applyDomPicker({ type: 'close' })
+          return
+        }
+        if (reply?.error_code === 'not_found') {
+          teardownDomOverlay()
+        }
+      })
+      .catch(() => undefined)
+  }, DOM_STATUS_POLL_MS)
 }
 
 function recastDocumentNonce(): void {
@@ -398,6 +431,7 @@ domPickerView.onSubmit = payload => {
       }
       if (reply?.error_code === 'pending') {
         applyDomPicker({ type: 'pending' })
+        startDomStatusPoll()
         return
       }
       applyDomPicker({ type: 'close' })
@@ -574,7 +608,7 @@ onMessage('dom:ping', (): DomPingReply => ({
 }))
 
 onMessage('dom:scan', (): DomScanReply => {
-  const result = collectDomLinks(document as unknown as DomScanRoot)
+  const result = collectDomLinks(document as unknown as DomScanRoot, { pageHref: location.href })
   return {
     items: result.items.map(item => ({
       url: item.url,

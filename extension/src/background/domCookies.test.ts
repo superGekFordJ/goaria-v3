@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { cookieHeaderForItem, collectCookieHeadersForUrls } from './domCookies'
 
 const PAGE = 'https://example.com/page'
-const SAME = 'https://cdn.example.com/a.bin'
+const SAME = 'https://example.com/a.bin'
 const CROSS = 'https://cdn.fixture.invalid/a.bin'
 const HTTP = 'http://example.com/a.bin'
 
@@ -91,7 +91,7 @@ describe('collectCookieHeadersForUrls', () => {
       return [cookie({ name: 'b', value: '2' })]
     }
     const headers = await collectCookieHeadersForUrls({
-      urls: [SAME, 'https://cdn.example.com/b.bin'],
+      urls: [SAME, 'https://example.com/b.bin'],
       sourceHref: PAGE,
       storeId: 'store-a',
       storeUnproven: false,
