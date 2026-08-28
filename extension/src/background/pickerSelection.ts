@@ -22,8 +22,16 @@ export function defaultSelectedIndices(
 export type PickerSelectPolicy = 'window' | 'empty'
 
 export function initialPickerSelection(policy: PickerSelectPolicy, length: number): number[] {
-  if (policy === 'empty') return []
-  return defaultSelectedIndices(length)
+  switch (policy) {
+    case 'empty':
+      return []
+    case 'window':
+      return defaultSelectedIndices(length)
+    default: {
+      const _exhaustive: never = policy
+      throw new Error(`unknown picker select policy: ${String(_exhaustive)}`)
+    }
+  }
 }
 
 export function toggleIndex(

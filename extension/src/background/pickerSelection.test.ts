@@ -7,6 +7,7 @@ import {
   selectedBytes,
   toggleIndex,
   visibleWindow,
+  type PickerSelectPolicy,
 } from './pickerSelection'
 
 describe('pickerSelection', () => {
@@ -24,6 +25,9 @@ describe('pickerSelection', () => {
     expect(initialPickerSelection('empty', 100)).toEqual([])
     expect(initialPickerSelection('empty', 0)).toEqual([])
     expect(defaultSelectedIndices(100)).toEqual(Array.from({ length: 80 }, (_, i) => i))
+    expect(() => initialPickerSelection('burst' as PickerSelectPolicy, 10)).toThrow(
+      /unknown picker select policy/,
+    )
   })
 
   it('inverts the full 100-item universe even when only 80 rows are visible', () => {
