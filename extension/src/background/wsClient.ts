@@ -5,6 +5,8 @@ import { createPendingMap } from './requestAssociation'
 import { createReplayStore, type ReplayStorage } from './replayStore'
 import { mintRequestId } from './mintRequestId'
 import { notifyExtractorHostDown, notifyExtractorMatchCleared } from './extractorVisibility'
+import { bumpDirectConnectGeneration } from './domConnectGeneration'
+import { notifyDomHostDown } from './domHostDown'
 import { applyParsedMatch, clearMatchSnapshot } from './matchSnapshot'
 import { rescanHttpTabs } from './tabMatcher'
 import {
@@ -578,6 +580,7 @@ export class WsClient {
       connectionState.protocolVersion = parsed.protocolVersion
       connectionState.hostVersion = parsed.hostVersion
       connectionState.legacyHost = deriveLegacyHostState(parsed)
+      bumpDirectConnectGeneration()
       if (parsed.match && hasCapability(parsed.capabilities, CAP_EXTRACTOR_RESOLVE)) {
         applyParsedMatch(parsed.match)
         void rescanHttpTabs().catch(() => undefined)
@@ -762,6 +765,7 @@ export class WsClient {
     connectionState.legacyHost = deriveLegacyHostState()
     clearMatchSnapshot()
     notifyExtractorHostDown('disconnect')
+    notifyDomHostDown()
   }
 
   private setStatus(status: WsStatusMessage['status'], lastError: string): void {

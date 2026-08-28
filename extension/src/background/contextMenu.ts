@@ -5,8 +5,14 @@ import { getDownloadPageUrl } from './refererCapture'
 import { getScheme } from '../interceptors/DownloadLinkInterceptor'
 import type { DownloadHandoffMessage } from '../utils/messaging'
 import { t } from '../lib/i18n'
+import { urlPathIsM3uPlaylist } from './domCanonicalUrl'
+import { handleCollectPageLinks } from './domFlow'
+import { hasCapability } from './capabilities'
+import { CAP_DOWNLOAD_BATCH } from '../stores/config.svelte'
+import { connectionState } from '../stores/connection.svelte'
 
 const MENU_ID = 'goaria-download-link'
+const COLLECT_MENU_ID = 'goaria-collect-page-links'
 
 /**
  * Register the right-click "Download with GoAria" context menu. The menu item
@@ -27,19 +33,14 @@ export function initContextMenu(): void {
         title: t('context_menu_download_with'),
         contexts: ['link', 'video', 'audio'],
       })
+      browser.contextMenus.create({
+        id: COLLECT_MENU_ID,
+        title: t('context_menu_collect_page_links'),
+        contexts: ['page'],
+      })
     })
   })
   browser.contextMenus.onClicked.addListener(handleContextMenuClick)
-}
-
-/** Detect HLS playlist URLs by pathname suffix (case-insensitive). */
-function isM3u8Url(url: string): boolean {
-  try {
-    const path = new URL(url).pathname.toLowerCase()
-    return path.endsWith('.m3u8') || path.endsWith('.m3u')
-  } catch {
-    return false
-  }
 }
 
 /** Show a system notification that HLS download is not yet supported. */
@@ -56,23 +57,33 @@ function showHlsUnsupportedPrompt(): void {
     })
 }
 
-/**
- * Context menu click handler: extract the link/media URL, gracefully block
- * m3u8 URLs (HLS engine not ready), otherwise forward a normal download
- * request through the WS pipeline. Honors user intent — no content-type or
- * MIME filtering (the user explicitly chose "Download with GoAria").
- */
 async function handleContextMenuClick(
   info: browser.Menus.OnClickData,
   tab: browser.Tabs.Tab | undefined,
 ): Promise<void> {
+  if (info.menuItemId === COLLECT_MENU_ID) {
+    if (!hasCapability(connectionState.capabilities, CAP_DOWNLOAD_BATCH)) {
+      void browser.notifications
+        .create({
+          type: 'basic',
+          iconUrl: browser.runtime.getURL('icons/icon-48.png'),
+          title: t('dom_missing_cap_title'),
+          message: t('dom_missing_cap_body'),
+        })
+        .catch(() => undefined)
+      return
+    }
+    await handleCollectPageLinks(info, tab)
+    return
+  }
+
   const url = info.linkUrl || info.srcUrl || ''
   if (!url) return
 
   const scheme = getScheme(url)
   if (scheme !== 'http:' && scheme !== 'https:') return
 
-  if (isM3u8Url(url)) {
+  if (urlPathIsM3uPlaylist(url)) {
     showHlsUnsupportedPrompt()
     return
   }

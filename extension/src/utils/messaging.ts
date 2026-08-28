@@ -30,6 +30,13 @@ declare module 'webext-bridge' {
     'extractor:fallback': ProtocolWithReturn<ExtractorFallbackMessage, ExtractorIgnoreReply>
     'extractor:result': ExtractorResultMessage
     'interception:toggle': ProtocolWithReturn<InterceptionToggleMessage, InterceptionToggleResult>
+    'dom:ping': ProtocolWithReturn<DomPingMessage, DomPingReply>
+    'dom:scan': ProtocolWithReturn<DomScanMessage, DomScanReply>
+    'dom:open': DomOpenMessage
+    'dom:close': DomCloseMessage
+    'dom:alive': ProtocolWithReturn<DomAliveMessage, DomAliveReply>
+    'dom:submit': ProtocolWithReturn<DomSubmitMessage, DomSubmitReply>
+    'dom:cancel': ProtocolWithReturn<DomCancelMessage, DomCancelReply>
   }
 }
 
@@ -187,6 +194,81 @@ export type ExtractorPickerCatalogMessage = {
   items: PickerCatalogItem[]
   lease_deadline?: number
   count?: number
+}
+
+export type DomLinkKind = 'link' | 'image' | 'video' | 'audio' | 'source'
+
+export type DomPickerCatalogItem = {
+  index: number
+  filename?: string
+  origin?: string
+  kind?: DomLinkKind
+  size_bytes?: number
+}
+
+export type DomPingMessage = Record<string, never>
+export type DomPingReply = {
+  document_nonce: string
+  page_href: string
+  extractor_picker_open: boolean
+  dom_picker_open: boolean
+}
+
+export type DomScanMessage = Record<string, never>
+export type DomScanHitMessage = {
+  url: string
+  kind: DomLinkKind
+  filename?: string
+  document_policy: string
+  element_policy: string
+  rel_noreferrer: boolean
+}
+export type DomScanReply = {
+  items: DomScanHitMessage[]
+  truncated: boolean
+  title: string
+  document_nonce: string
+  page_href: string
+}
+
+export type DomOpenMessage = {
+  catalog_id: string
+  items: DomPickerCatalogItem[]
+  truncated: boolean
+  store_unproven: boolean
+  folder_prefill?: string
+}
+
+export type DomCloseMessage = {
+  catalog_id?: string
+}
+
+export type DomAliveMessage = {
+  catalog_id: string
+}
+export type DomAliveReply = {
+  ok: boolean
+}
+
+export type DomSubmitMessage = {
+  catalog_id: string
+  indices: number[]
+  create_group?: boolean
+  folder_name?: string
+}
+export type DomSubmitReply = {
+  accepted: boolean
+  error_code?: string
+  succeeded?: number
+  duplicate?: number
+  error?: number
+}
+
+export type DomCancelMessage = {
+  catalog_id: string
+}
+export type DomCancelReply = {
+  ok: boolean
 }
 
 export type InterceptionToggleMessage = {

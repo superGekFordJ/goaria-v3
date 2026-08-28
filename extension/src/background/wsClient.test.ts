@@ -63,6 +63,15 @@ vi.mock('./extractorVisibility', () => ({
   notifyExtractorMatchCleared: () => undefined,
 }))
 
+vi.mock('./domHostDown', () => ({
+  notifyDomHostDown: () => undefined,
+}))
+
+vi.mock('./domConnectGeneration', () => ({
+  bumpDirectConnectGeneration: () => 1,
+  currentDirectConnectGeneration: () => 1,
+}))
+
 vi.mock('./matchSnapshot', () => ({
   applyParsedMatch: () => undefined,
   clearMatchSnapshot: () => undefined,

@@ -16,12 +16,20 @@ import type {
   ExtractorPickerCatalogMessage,
   ExtractorResultMessage,
   InterceptedReply,
+  DomOpenMessage,
+  DomCloseMessage,
+  DomPingReply,
+  DomScanReply,
 } from '../utils/messaging'
 import { pageTokenFromHref } from '../background/pageToken'
+import { mintDirectBatchRequestId } from '../background/mintRequestId'
+import { collectDomLinks, type DomScanRoot } from './domScan'
 import { capsuleView } from './capsuleView.svelte'
 import { pickerView } from './pickerView.svelte'
+import { domPickerView } from './domPickerView.svelte'
 import type { CapsuleEvent } from './capsuleUiState'
 import { pickerEventForCapsuleUi, type PickerEvent } from './pickerUiState'
+import { type DomPickerEvent } from './domPickerUiState'
 import glassCss from '../styles/index.css?inline'
 
 export async function pingBackground() {
@@ -146,12 +154,73 @@ function applyPicker(event: PickerEvent): void {
   pickerView.apply(event)
 }
 
+function applyDomPicker(event: DomPickerEvent): void {
+  domPickerView.apply(event)
+  if (event.type === 'close' || event.type === 'not_found') {
+    stopDomAlivePoll()
+    domCatalogId = ''
+    domOpenedHref = ''
+  }
+}
+
+let documentNonce = mintDirectBatchRequestId()
+let domCatalogId = ''
+let domOpenedHref = ''
+let domAliveTimer: ReturnType<typeof setInterval> | null = null
+
+function stopDomAlivePoll(): void {
+  if (domAliveTimer) {
+    clearInterval(domAliveTimer)
+    domAliveTimer = null
+  }
+}
+
+function startDomAlivePoll(): void {
+  stopDomAlivePoll()
+  domAliveTimer = setInterval(() => {
+    if (domPickerView.state.phase === 'closed' || !domCatalogId) {
+      stopDomAlivePoll()
+      return
+    }
+    if (location.href !== domOpenedHref) {
+      const id = domCatalogId
+      applyDomPicker({ type: 'close' })
+      if (id) {
+        void sendMessage('dom:cancel', { catalog_id: id }, 'background').catch(() => undefined)
+      }
+      return
+    }
+    void sendMessage('dom:alive', { catalog_id: domCatalogId }, 'background')
+      .then(reply => {
+        if (!reply?.ok) {
+          applyDomPicker({ type: 'close' })
+        }
+      })
+      .catch(() => {
+        applyDomPicker({ type: 'close' })
+      })
+  }, 1000)
+}
+
+function recastDocumentNonce(): void {
+  documentNonce = mintDirectBatchRequestId()
+}
+
+function teardownDomOverlay(): void {
+  const id = domCatalogId || domPickerView.state.catalogId
+  applyDomPicker({ type: 'close' })
+  if (id) {
+    void sendMessage('dom:cancel', { catalog_id: id }, 'background').catch(() => undefined)
+  }
+}
+
 async function currentPageToken(): Promise<string | undefined> {
   return pageTokenFromHref(location.href)
 }
 
 capsuleView.onClick = () => {
   void (async () => {
+    if (domPickerView.state.phase !== 'closed') return
     const ui = capsuleView.state.ui
     if (ui === 'resolving' || ui === 'committing') return
     const shownToken = capsuleView.state.pageToken
@@ -285,6 +354,46 @@ capsuleView.onIgnore = () => {
 
 pickerView.onCancel = () => {
   applyPicker({ type: 'close' })
+}
+
+domPickerView.onCancel = () => {
+  teardownDomOverlay()
+}
+
+domPickerView.onSubmit = payload => {
+  void (async () => {
+    if (domPickerView.state.phase === 'closed') return
+    const catalogId = domPickerView.state.catalogId
+    if (!catalogId) return
+    applyDomPicker({ type: 'submit' })
+    try {
+      const reply = await sendMessage(
+        'dom:submit',
+        {
+          catalog_id: catalogId,
+          indices: payload.indices,
+          create_group: payload.create_group,
+          folder_name: payload.folder_name,
+        },
+        'background',
+      )
+      if (reply?.accepted) {
+        applyDomPicker({ type: 'close' })
+        return
+      }
+      if (reply?.error_code === 'busy') {
+        applyDomPicker({ type: 'busy' })
+        return
+      }
+      if (reply?.error_code === 'pending') {
+        applyDomPicker({ type: 'pending' })
+        return
+      }
+      applyDomPicker({ type: 'close' })
+    } catch {
+      applyDomPicker({ type: 'close' })
+    }
+  })()
 }
 
 pickerView.onSubmit = payload => {
@@ -442,6 +551,52 @@ onMessage('extractor:result', async ({ data }: { data: ExtractorResultMessage })
   }
 })
 
+onMessage('dom:ping', (): DomPingReply => ({
+  document_nonce: documentNonce,
+  page_href: location.href,
+  extractor_picker_open: pickerView.state.phase !== 'closed',
+  dom_picker_open: domPickerView.state.phase !== 'closed',
+}))
+
+onMessage('dom:scan', (): DomScanReply => {
+  const result = collectDomLinks(document as unknown as DomScanRoot)
+  return {
+    items: result.items.map(item => ({
+      url: item.url,
+      kind: item.kind,
+      filename: item.filename,
+      document_policy: item.documentPolicy,
+      element_policy: item.elementPolicy,
+      rel_noreferrer: item.relNoreferrer,
+    })),
+    truncated: result.truncated,
+    title: result.title,
+    document_nonce: documentNonce,
+    page_href: location.href,
+  }
+})
+
+onMessage('dom:open', ({ data }: { data: DomOpenMessage }) => {
+  if (pickerView.state.phase !== 'closed') return
+  if (!data?.catalog_id || !Array.isArray(data.items) || data.items.length === 0) return
+  applyDomPicker({
+    type: 'open',
+    catalogId: data.catalog_id,
+    items: data.items,
+    truncated: data.truncated,
+    storeUnproven: data.store_unproven,
+    folderPrefill: data.folder_prefill,
+  })
+  domCatalogId = data.catalog_id
+  domOpenedHref = location.href
+  startDomAlivePoll()
+})
+
+onMessage('dom:close', ({ data }: { data: DomCloseMessage }) => {
+  if (data?.catalog_id && domCatalogId && data.catalog_id !== domCatalogId) return
+  applyDomPicker({ type: 'close' })
+})
+
 try {
   const shadowRoot = createShadowHost()
   if (shadowRoot) {
@@ -500,3 +655,18 @@ setInterval(() => {
     }
   })
 }, 1000)
+
+window.addEventListener('pagehide', () => {
+  teardownDomOverlay()
+})
+
+window.addEventListener('pageshow', event => {
+  if (event.persisted) {
+    recastDocumentNonce()
+    teardownDomOverlay()
+  }
+})
+
+window.addEventListener('hashchange', () => {
+  teardownDomOverlay()
+})

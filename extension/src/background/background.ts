@@ -9,6 +9,7 @@ import { ChromeDownloadsApiInterceptor } from '../interceptors/ChromeDownloadsAp
 import { initContextMenu } from './contextMenu'
 import { initTabMatcher } from './tabMatcher'
 import { initExtractorFlow, onExtractorUnpair } from './extractorFlow'
+import { initDomFlow, onDomUnpair } from './domFlow'
 import type {
   InterceptionToggleMessage,
   PairSecretMessage,
@@ -57,6 +58,7 @@ onMessage('pair:unpair', async () => {
   wsClient.disconnect()
   connectionState.paired = false
   await onExtractorUnpair()
+  await onDomUnpair()
   return { ok: true }
 })
 
@@ -67,6 +69,7 @@ onMessage('pair:unpair', async () => {
 initContextMenu()
 initTabMatcher()
 initExtractorFlow()
+initDomFlow()
 
 // SW startup: load persisted state before connecting so the interceptor
 // uses the user's saved autoCapture setting. Awaited before connect() and
