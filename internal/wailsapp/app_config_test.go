@@ -340,9 +340,6 @@ func TestSaveConfig_MaxConnections64To128NoRestart(t *testing.T) {
 	if !res.Success || res.Aria2Restarted {
 		t.Fatalf("%+v", res)
 	}
-	if res.RequiresAppRestart {
-		t.Fatal("64→128 must not require app restart")
-	}
 	if h.store.cur.MaxConnections != "128" {
 		t.Fatal("did not persist")
 	}

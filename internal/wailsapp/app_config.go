@@ -38,12 +38,11 @@ const (
 
 // SaveConfigResult is the structured outcome of a configuration save.
 type SaveConfigResult struct {
-	Success            bool             `json:"success"`
-	Config             config.AppConfig `json:"config"`
-	Aria2Restarted     bool             `json:"aria2_restarted"`
-	RequiresAppRestart bool             `json:"requires_app_restart"`
-	ErrorCode          string           `json:"error_code,omitempty"`
-	Message            string           `json:"message,omitempty"`
+	Success        bool             `json:"success"`
+	Config         config.AppConfig `json:"config"`
+	Aria2Restarted bool             `json:"aria2_restarted"`
+	ErrorCode      string           `json:"error_code,omitempty"`
+	Message        string           `json:"message,omitempty"`
 }
 
 type aria2LaunchProjection struct {
