@@ -173,7 +173,7 @@
       <main class="flex-1 flex flex-col min-w-0 px-3 pb-3 min-h-0">
         <div
           :class="[
-            'flex-1 flex flex-col min-h-0 glass-panel rounded-[var(--radius-squircle-xl)] overflow-hidden',
+            'flex-1 flex flex-col min-h-0 main-glass-viewport rounded-[var(--radius-squircle-xl)] overflow-hidden',
             'transition-opacity transition-transform duration-700 ease-out',
             isReady ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4',
           ]"
