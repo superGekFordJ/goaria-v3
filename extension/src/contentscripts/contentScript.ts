@@ -30,7 +30,7 @@ import { pickerView } from './pickerView.svelte'
 import { domPickerView } from './domPickerView.svelte'
 import type { CapsuleEvent } from './capsuleUiState'
 import { pickerEventForCapsuleUi, type PickerEvent } from './pickerUiState'
-import { extractorBusyForDomMutex, type DomPickerEvent } from './domPickerUiState'
+import { extractorBusyForDomMutex, isCurrentDomCatalog, type DomPickerEvent } from './domPickerUiState'
 import glassCss from '../styles/index.css?inline'
 
 export async function pingBackground() {
@@ -204,13 +204,16 @@ function startDomAlivePoll(): void {
       }
       return
     }
-    void sendMessage('dom:alive', { catalog_id: domCatalogId }, 'background')
+    const catalogId = domCatalogId
+    void sendMessage('dom:alive', { catalog_id: catalogId }, 'background')
       .then(reply => {
+        if (!isCurrentDomCatalog(catalogId, domCatalogId)) return
         if (!reply?.ok) {
           teardownDomOverlay()
         }
       })
       .catch(() => {
+        if (!isCurrentDomCatalog(catalogId, domCatalogId)) return
         teardownDomOverlay()
       })
   }, 1000)
@@ -234,6 +237,8 @@ function startDomStatusPoll(): void {
     }
     void sendMessage('dom:status', { catalog_id: catalogId }, 'background')
       .then(reply => {
+        if (!isCurrentDomCatalog(catalogId, domCatalogId)) return
+        if (domPickerView.state.banner !== 'pending') return
         if (reply?.accepted) {
           applyDomPicker({ type: 'close' })
           return
@@ -432,6 +437,10 @@ domPickerView.onSubmit = payload => {
       if (reply?.error_code === 'pending') {
         applyDomPicker({ type: 'pending' })
         startDomStatusPoll()
+        return
+      }
+      if (reply?.error_code === 'store_unproven') {
+        applyDomPicker({ type: 'storeUnproven' })
         return
       }
       applyDomPicker({ type: 'close' })

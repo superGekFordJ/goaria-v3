@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   applyDomPickerEvent,
   extractorBusyForDomMutex,
+  isCurrentDomCatalog,
   INITIAL_DOM_PICKER_STATE,
 } from './domPickerUiState'
 import type { DomPickerCatalogItem } from '../utils/messaging'
@@ -41,6 +42,11 @@ describe('applyDomPickerEvent', () => {
     expect(pending.phase).toBe('submitting')
     expect(pending.banner).toBe('pending')
 
+    const storeLost = applyDomPickerEvent(submitting, { type: 'storeUnproven' })
+    expect(storeLost.phase).toBe('open')
+    expect(storeLost.storeUnproven).toBe(true)
+    expect(storeLost.catalogId).toBe(opened.catalogId)
+
     expect(applyDomPickerEvent(busy, { type: 'close' })).toEqual(INITIAL_DOM_PICKER_STATE)
   })
 
@@ -62,5 +68,13 @@ describe('extractorBusyForDomMutex', () => {
     expect(extractorBusyForDomMutex('closed', true)).toBe(true)
     expect(extractorBusyForDomMutex('open')).toBe(true)
     expect(extractorBusyForDomMutex('submitting', false)).toBe(true)
+  })
+})
+
+describe('isCurrentDomCatalog', () => {
+  it('rejects empty or swapped catalog ids', () => {
+    expect(isCurrentDomCatalog('aaa', 'aaa')).toBe(true)
+    expect(isCurrentDomCatalog('aaa', 'bbb')).toBe(false)
+    expect(isCurrentDomCatalog('', 'aaa')).toBe(false)
   })
 })

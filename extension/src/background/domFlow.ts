@@ -378,6 +378,9 @@ export async function handleDomSubmit(
     const folderKey = folderKeyOf(fields.create_group, fields.folder_name)
     const liveStore = await resolveCookieStoreIdForTab(check.tab)
     const storeLiveOk = storeStillProven(catalog, liveStore)
+    if (!storeLiveOk && catalog.storeUnproven !== true) {
+      return { accepted: false, error_code: 'store_unproven' }
+    }
     const last = catalog.lastSubmit
     let requestId: string
     let payload: Record<string, unknown>

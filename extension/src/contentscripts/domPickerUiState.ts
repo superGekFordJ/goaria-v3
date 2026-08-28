@@ -37,6 +37,7 @@ export type DomPickerEvent =
   | { type: 'submit' }
   | { type: 'busy' }
   | { type: 'pending' }
+  | { type: 'storeUnproven' }
   | { type: 'not_found' }
   | { type: 'close' }
 
@@ -77,6 +78,10 @@ export function extractorBusyForDomMutex(phase: string, awaitingCatalog?: boolea
   return phase !== 'closed' || awaitingCatalog === true
 }
 
+export function isCurrentDomCatalog(requestedId: string, currentId: string): boolean {
+  return requestedId !== '' && requestedId === currentId
+}
+
 export function applyDomPickerEvent(state: DomPickerState, event: DomPickerEvent): DomPickerState {
   switch (event.type) {
     case 'open': {
@@ -104,6 +109,10 @@ export function applyDomPickerEvent(state: DomPickerState, event: DomPickerEvent
     case 'pending': {
       if (state.phase === 'closed') return state
       return { ...state, phase: 'submitting', banner: 'pending' }
+    }
+    case 'storeUnproven': {
+      if (state.phase === 'closed') return state
+      return { ...state, phase: 'open', storeUnproven: true, banner: '' }
     }
     case 'not_found':
     case 'close':

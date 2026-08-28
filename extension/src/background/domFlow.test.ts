@@ -442,13 +442,13 @@ describe('domFlow', () => {
     expect(harness.notifications.some(n => n.message === 'dom_mutex_body')).toBe(true)
   })
 
-  it('omits cookies when the live store no longer matches the catalog', async () => {
+  it('refuses send when the live store no longer matches a proven catalog', async () => {
     const catalogId = await openCatalog()
     harness.storeId = 'store-other'
-    await handleDomSubmit({ catalog_id: catalogId, indices: [0] }, { tabId: 7 })
-    const item = (harness.batch[0]?.payload.items as Record<string, unknown>[])[0]
-    expect(item?.headers).toBeUndefined()
-    expect(harness.cookieCalls).toEqual([])
+    const reply = await handleDomSubmit({ catalog_id: catalogId, indices: [0] }, { tabId: 7 })
+    expect(reply).toEqual({ accepted: false, error_code: 'store_unproven' })
+    expect(harness.batch).toEqual([])
+    expect(getDomCatalog(catalogId)).toBeDefined()
   })
 
   it('aborts send when the catalog is dropped after cookie collection', async () => {
