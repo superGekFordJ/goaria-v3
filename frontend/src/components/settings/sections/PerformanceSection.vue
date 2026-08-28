@@ -129,10 +129,7 @@
         >
           {{ t('performance.maxConnections') }}
           <div class="group relative flex items-center">
-            <Info
-              :size="12"
-              class="cursor-help hover:text-[var(--app-text)] transition-colors"
-            />
+            <Info :size="12" class="cursor-help hover:text-[var(--app-text)] transition-colors" />
             <!-- Tooltip Popup -->
             <div
               class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-80 max-w-[min(20rem,70vw)] p-2.5 rounded-lg glass-panel-solid opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[100] text-center text-[10px] font-medium normal-case tracking-normal pointer-events-none"

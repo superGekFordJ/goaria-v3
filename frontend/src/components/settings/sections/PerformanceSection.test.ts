@@ -56,26 +56,33 @@ describe('PerformanceSection', () => {
     wrapper.unmount()
   })
 
-  it.each(['64', '128', '256'])('shows custom %s in the trigger and menu as checked', async value => {
-    const wrapper = mountSection(value)
-    const trigger = connectionsTrigger(wrapper)
-    expect(trigger?.text()).toContain(value)
-    await trigger?.trigger('click')
-    await nextTick()
-    const menuItems = wrapper
-      .findAll('button')
-      .filter(b => b.classes().includes('p-3') && b.text().includes('performance.threads'))
-    const custom = menuItems.find(b => b.text().includes(`${value} `) || b.text().startsWith(value))
-    expect(custom?.text()).toContain(value)
-    expect(custom?.classes().join(' ')).toContain('bg-[var(--neon-primary)]/10')
-    wrapper.unmount()
-  })
+  it.each(['64', '128', '256'])(
+    'shows custom %s in the trigger and menu as checked',
+    async value => {
+      const wrapper = mountSection(value)
+      const trigger = connectionsTrigger(wrapper)
+      expect(trigger?.text()).toContain(value)
+      await trigger?.trigger('click')
+      await nextTick()
+      const menuItems = wrapper
+        .findAll('button')
+        .filter(b => b.classes().includes('p-3') && b.text().includes('performance.threads'))
+      const custom = menuItems.find(
+        b => b.text().includes(`${value} `) || b.text().startsWith(value),
+      )
+      expect(custom?.text()).toContain(value)
+      expect(custom?.classes().join(' ')).toContain('bg-[var(--neon-primary)]/10')
+      wrapper.unmount()
+    },
+  )
 
   it('emits the selected preset once', async () => {
     const wrapper = mountSection()
     await connectionsTrigger(wrapper)?.trigger('click')
     await nextTick()
-    const eight = wrapper.findAll('button').find(b => /^\s*8\s/.test(b.text()) || b.text().startsWith('8 '))
+    const eight = wrapper
+      .findAll('button')
+      .find(b => /^\s*8\s/.test(b.text()) || b.text().startsWith('8 '))
     await eight?.trigger('click')
     expect(wrapper.emitted('update:connections')?.[0]).toEqual(['8'])
     expect(wrapper.emitted('change')).toHaveLength(1)

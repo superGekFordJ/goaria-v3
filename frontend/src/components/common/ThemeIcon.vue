@@ -1,14 +1,19 @@
 <script setup lang="ts">
   import { computed, onMounted, onUnmounted, ref } from 'vue'
+  import LiquidGlassPanel from './LiquidGlassPanel.vue'
   import darkIcon from '../../assets/icons/dark.svg'
   import lightIcon from '../../assets/icons/light.svg'
 
   interface Props {
     size?: number
+    interactive?: boolean
+    radius?: string
   }
 
   const props = withDefaults(defineProps<Props>(), {
     size: 20,
+    interactive: false,
+    radius: 'rounded-[var(--radius-squircle-sm)]',
   })
 
   // Computed for template usage
@@ -43,7 +48,11 @@
 </script>
 
 <template>
-  <span
+  <LiquidGlassPanel
+    as="span"
+    :interactive="interactive"
+    :radius="radius"
+    base-color-class="bg-[var(--app-liquid-glass-bg)] dark:bg-[rgba(255,255,255,0.05)]"
     class="theme-icon-wrapper"
     :style="{ width: `${iconSize}px`, height: `${iconSize}px` }"
     role="img"
@@ -63,7 +72,7 @@
       alt=""
       aria-hidden="true"
     />
-  </span>
+  </LiquidGlassPanel>
 </template>
 
 <style scoped>
@@ -71,10 +80,7 @@
     position: relative;
     display: inline-block;
     flex-shrink: 0;
-    border-radius: var(--radius-squircle-sm);
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--glass-border) 70%, transparent),
-      0 10px 30px rgba(0, 0, 0, 0.18);
+    overflow: hidden;
   }
 
   .theme-icon {
@@ -86,6 +92,7 @@
     opacity: 0;
     transition: opacity 180ms ease;
     filter: drop-shadow(0 6px 16px rgba(0, 0, 0, 0.18));
+    pointer-events: none;
   }
 
   .theme-icon.is-active {
@@ -96,3 +103,4 @@
     transition: none !important;
   }
 </style>
+

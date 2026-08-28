@@ -70,8 +70,7 @@ const RPCStub = defineComponent({
   name: 'RPCSection',
   emits: ['change', 'update:port', 'update:secret'],
   setup(_, { emit }) {
-    return () =>
-      h('button', { class: 'rpc-change', onClick: () => emit('change') }, 'rpc')
+    return () => h('button', { class: 'rpc-change', onClick: () => emit('change') }, 'rpc')
   },
 })
 
@@ -142,7 +141,10 @@ const DownloadStub = defineComponent({
 
 const AdvancedStub = defineComponent({
   name: 'AdvancedSection',
-  props: { transparency: { type: String, default: 'none' }, showHistory: { type: Boolean, default: false } },
+  props: {
+    transparency: { type: String, default: 'none' },
+    showHistory: { type: Boolean, default: false },
+  },
   emits: ['change', 'update:transparency', 'update:showHistory'],
   setup(_, { emit }) {
     return () =>
@@ -385,7 +387,9 @@ describe('SettingsPanel', () => {
     await wrapper.find('.ua-change').trigger('click')
     await vi.advanceTimersByTimeAsync(800)
     wrapper.unmount()
-    resolveSave(new SaveConfigResult({ success: true, config: sampleConfig({ user_agent: 'late' }) }))
+    resolveSave(
+      new SaveConfigResult({ success: true, config: sampleConfig({ user_agent: 'late' }) }),
+    )
     await flushPromises()
     expect(storeMock.settings.user_agent).not.toBe('late')
   })
@@ -550,7 +554,10 @@ describe('SettingsPanel', () => {
     storeMock.isHydrated = true
     const wrapper = mountPanel()
     await flushHydration()
-    storeMock.updateConfig.mockResolvedValue({ success: true, config: null } as unknown as SaveConfigResult)
+    storeMock.updateConfig.mockResolvedValue({
+      success: true,
+      config: null,
+    } as unknown as SaveConfigResult)
     await wrapper.find('.ua-change').trigger('click')
     await vi.advanceTimersByTimeAsync(800)
     await flushPromises()
