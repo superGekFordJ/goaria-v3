@@ -19,6 +19,13 @@ export function defaultSelectedIndices(
   return out
 }
 
+export type PickerSelectPolicy = 'window' | 'empty'
+
+export function initialPickerSelection(policy: PickerSelectPolicy, length: number): number[] {
+  if (policy === 'empty') return []
+  return defaultSelectedIndices(length)
+}
+
 export function toggleIndex(
   selected: ReadonlySet<number>,
   index: number,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   defaultSelectedIndices,
+  initialPickerSelection,
   invert,
   selectAll,
   selectedBytes,
@@ -14,6 +15,15 @@ describe('pickerSelection', () => {
     expect(selectAll(128).size).toBe(128)
     expect(selectAll(128).has(127)).toBe(true)
     expect(selectAll(128).has(128)).toBe(false)
+  })
+
+  it('applies window vs empty initial-select policy without changing defaultSelectedIndices', () => {
+    const windowed = initialPickerSelection('window', 100)
+    expect(windowed).toEqual(defaultSelectedIndices(100))
+    expect(windowed).toHaveLength(80)
+    expect(initialPickerSelection('empty', 100)).toEqual([])
+    expect(initialPickerSelection('empty', 0)).toEqual([])
+    expect(defaultSelectedIndices(100)).toEqual(Array.from({ length: 80 }, (_, i) => i))
   })
 
   it('inverts the full 100-item universe even when only 80 rows are visible', () => {

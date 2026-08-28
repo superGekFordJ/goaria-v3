@@ -6,11 +6,16 @@
   import { capsuleView } from './capsuleView.svelte'
   import { pickerView } from './pickerView.svelte'
   import { domPickerView } from './domPickerView.svelte'
+  import { overlayHostOpen, paintOverlayKind } from './overlayCoordinator'
 
   const effects = $derived(capsuleView.effects)
-  const extractorOpen = $derived(pickerView.state.phase !== 'closed')
-  const domOpen = $derived(domPickerView.state.phase !== 'closed')
-  const overlayOpen = $derived(extractorOpen || domOpen)
+  const paint = $derived(
+    paintOverlayKind({
+      extractorPhase: pickerView.state.phase,
+      domPhase: domPickerView.state.phase,
+    }),
+  )
+  const overlayOpen = $derived(overlayHostOpen(paint))
 
   const HOST_CORNER = 'position:fixed;bottom:20px;right:20px;z-index:2147483647;pointer-events:none'
   const HOST_VIEWPORT = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none'
@@ -31,9 +36,9 @@
   {/if}
   <ExtractorCapsule {effects} />
 </div>
-{#if extractorOpen}
+{#if paint === 'extractor'}
   <ExtractorPicker {effects} />
 {/if}
-{#if domOpen}
+{#if paint === 'dom'}
   <DomLinkPicker {effects} />
 {/if}
