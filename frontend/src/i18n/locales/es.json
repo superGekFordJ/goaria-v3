@@ -23,13 +23,6 @@
     "saveFailed": "Error al guardar",
     "loadFailed": "No se pudieron cargar los ajustes.",
     "retry": "Reintentar",
-    "requiresAppRestart": "Guardado. Reinicia GoAria para aplicar todos los cambios.",
-    "restartNow": "Reiniciar ahora",
-    "restartConfirm": {
-      "message": "¿Reiniciar GoAria ahora?",
-      "confirm": "Reiniciar",
-      "cancel": "Cancelar"
-    },
     "autoSave": "Autoguardado",
     "errors": {
       "persistFailed": "No se pudieron guardar los ajustes.",

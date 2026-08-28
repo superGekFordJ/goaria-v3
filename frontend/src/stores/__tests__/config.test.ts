@@ -207,44 +207,6 @@ describe('useConfigStore', () => {
     expect(store.settings.download_dir).toBe('/old')
   })
 
-  it('latches needsAppRestart on success and does not clear it later', async () => {
-    const { useConfigStore } = await import('../config')
-    const store = useConfigStore()
-    bindingMocks.SaveConfig.mockResolvedValueOnce(
-      new SaveConfigResult({
-        success: true,
-        requires_app_restart: true,
-        config: sampleConfig({ window_transparency: 'mica' }),
-      }),
-    )
-    await store.updateConfig(sampleConfig({ window_transparency: 'mica' }))
-    expect(store.needsAppRestart).toBe(true)
-    bindingMocks.SaveConfig.mockResolvedValueOnce(
-      new SaveConfigResult({
-        success: true,
-        requires_app_restart: false,
-        config: sampleConfig({ user_agent: 'later' }),
-      }),
-    )
-    await store.updateConfig(sampleConfig({ user_agent: 'later' }))
-    expect(store.needsAppRestart).toBe(true)
-  })
-
-  it('latches needsAppRestart on a failed result that still requires restart', async () => {
-    const { useConfigStore } = await import('../config')
-    const store = useConfigStore()
-    bindingMocks.SaveConfig.mockResolvedValueOnce(
-      new SaveConfigResult({
-        success: false,
-        requires_app_restart: true,
-        error_code: 'config_rollback_failed',
-        config: sampleConfig({ window_transparency: 'mica' }),
-      }),
-    )
-    await store.updateConfig(sampleConfig({ window_transparency: 'mica' }))
-    expect(store.needsAppRestart).toBe(true)
-  })
-
   it('omits secrets from persistable settings', async () => {
     const { persistableSettings } = await import('../config')
     const stripped = persistableSettings(

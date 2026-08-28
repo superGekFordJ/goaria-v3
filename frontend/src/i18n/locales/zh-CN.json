@@ -23,13 +23,6 @@
     "saveFailed": "保存失败",
     "loadFailed": "无法加载设置。",
     "retry": "重试",
-    "requiresAppRestart": "已保存。请重启 GoAria 以使全部更改生效。",
-    "restartNow": "立即重启",
-    "restartConfirm": {
-      "message": "现在重启 GoAria？",
-      "confirm": "重启",
-      "cancel": "取消"
-    },
     "autoSave": "自动保存",
     "errors": {
       "persistFailed": "无法保存设置。",

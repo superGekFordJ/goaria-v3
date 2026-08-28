@@ -130,15 +130,6 @@ func ariaProjection(cfg config.AppConfig) aria2LaunchProjection {
 	}
 }
 
-func requiresAppRestart(oldCfg, newCfg config.AppConfig) bool {
-	return oldCfg.WindowTransparency != newCfg.WindowTransparency ||
-		oldCfg.MaxConnections != newCfg.MaxConnections ||
-		oldCfg.ConvergenceInterval != newCfg.ConvergenceInterval ||
-		oldCfg.MaxConcurrentDownloads != newCfg.MaxConcurrentDownloads ||
-		oldCfg.ExtensionEnabled != newCfg.ExtensionEnabled ||
-		oldCfg.ExtensionWSPort != newCfg.ExtensionWSPort
-}
-
 func liveSnapshot(deps configSaveDeps, fallback config.AppConfig) config.AppConfig {
 	if ptr := deps.get(); ptr != nil {
 		return *ptr
@@ -173,22 +164,20 @@ func (a *App) bindRPC(deps configSaveDeps, cfg config.AppConfig) error {
 	return nil
 }
 
-func failedSaveResult(code string, cfg config.AppConfig, message string, old config.AppConfig) SaveConfigResult {
+func failedSaveResult(code string, cfg config.AppConfig, message string) SaveConfigResult {
 	return SaveConfigResult{
-		Success:            false,
-		Config:             cfg,
-		ErrorCode:          code,
-		Message:            message,
-		RequiresAppRestart: requiresAppRestart(old, cfg),
+		Success:   false,
+		Config:    cfg,
+		ErrorCode: code,
+		Message:   message,
 	}
 }
 
-func successSaveResult(cfg config.AppConfig, ariaRestarted, appRestart bool) SaveConfigResult {
+func successSaveResult(cfg config.AppConfig, ariaRestarted bool) SaveConfigResult {
 	return SaveConfigResult{
-		Success:            true,
-		Config:             cfg,
-		Aria2Restarted:     ariaRestarted,
-		RequiresAppRestart: appRestart,
+		Success:        true,
+		Config:         cfg,
+		Aria2Restarted: ariaRestarted,
 	}
 }
 
@@ -218,25 +207,25 @@ func (a *App) SaveConfig(request config.AppConfig) SaveConfigResult {
 	deps := a.saveDeps()
 	oldPtr := deps.get()
 	if oldPtr == nil {
-		return failedSaveResult(errCodeNotLoaded, config.AppConfig{}, msgConfigNotLoaded, config.AppConfig{})
+		return failedSaveResult(errCodeNotLoaded, config.AppConfig{}, msgConfigNotLoaded)
 	}
 	old := *oldPtr
 	candidate := config.ValidateAndSanitize(request)
 	candidate.ExtensionSecret = old.ExtensionSecret
 	if candidate == old {
-		return successSaveResult(liveSnapshot(deps, old), false, false)
+		return successSaveResult(liveSnapshot(deps, old), false)
 	}
 
 	if candidate.DownloadDir != old.DownloadDir {
 		if err := deps.validateDir(candidate.DownloadDir); err != nil {
 			log.Printf("[Config] download dir preflight failed: %v", err)
-			return failedSaveResult(errCodeDownloadDirUnavailable, liveSnapshot(deps, old), msgDownloadDirUnavailable, old)
+			return failedSaveResult(errCodeDownloadDirUnavailable, liveSnapshot(deps, old), msgDownloadDirUnavailable)
 		}
 	}
 
 	if wsPort, listening := deps.extensionStatus(); listening && wsPort != 0 {
 		if candidate.RPCPort == strconv.Itoa(wsPort) {
-			return failedSaveResult(errCodeRPCExtensionPort, liveSnapshot(deps, old), msgRPCExtensionConflict, old)
+			return failedSaveResult(errCodeRPCExtensionPort, liveSnapshot(deps, old), msgRPCExtensionConflict)
 		}
 	}
 
@@ -246,18 +235,17 @@ func (a *App) SaveConfig(request config.AppConfig) SaveConfigResult {
 		current.ExtensionSecret = managedSecret
 	})
 	if err != nil {
-		return failedSaveResult(errCodePersistFailed, liveSnapshot(deps, update.Current), msgPersistFailed, old)
+		return failedSaveResult(errCodePersistFailed, liveSnapshot(deps, update.Current), msgPersistFailed)
 	}
 
 	committed := update.Current
-	needApp := requiresAppRestart(old, committed)
 	if ariaProjection(old) == ariaProjection(committed) {
-		return successSaveResult(liveSnapshot(deps, committed), false, needApp)
+		return successSaveResult(liveSnapshot(deps, committed), false)
 	}
 	if err := a.activateAria(deps, committed); err != nil {
 		return a.rollbackConfigAndAria(deps, old, committed, err)
 	}
-	return successSaveResult(liveSnapshot(deps, committed), true, needApp)
+	return successSaveResult(liveSnapshot(deps, committed), true)
 }
 
 func (a *App) activateAria(deps configSaveDeps, cfg config.AppConfig) error {
@@ -292,7 +280,7 @@ func (a *App) rollbackConfigAndAria(deps configSaveDeps, old, candidate config.A
 		if snap == (config.AppConfig{}) && rollback.Current != (config.AppConfig{}) {
 			snap = rollback.Current
 		}
-		return failedSaveResult(errCodeConfigRollbackFailed, snap, msgConfigRollbackFailed, old)
+		return failedSaveResult(errCodeConfigRollbackFailed, snap, msgConfigRollbackFailed)
 	}
 
 	restored := rollback.Current
@@ -308,16 +296,16 @@ func (a *App) rollbackConfigAndAria(deps configSaveDeps, old, candidate config.A
 			if deps.rpcInit != nil {
 				deps.rpcInit(restored.RPCPort, restored.RPCSecret)
 			}
-			return failedSaveResult(errCodeAriaRollbackFailed, liveSnapshot(deps, restored), msgAriaRollbackFailed, old)
+			return failedSaveResult(errCodeAriaRollbackFailed, liveSnapshot(deps, restored), msgAriaRollbackFailed)
 		}
 		if err := a.bindRPC(deps, restored); err != nil {
-			return failedSaveResult(errCodeAriaRollbackFailed, liveSnapshot(deps, restored), msgAriaRollbackFailed, old)
+			return failedSaveResult(errCodeAriaRollbackFailed, liveSnapshot(deps, restored), msgAriaRollbackFailed)
 		}
-		return failedSaveResult(code, liveSnapshot(deps, restored), msg, old)
+		return failedSaveResult(code, liveSnapshot(deps, restored), msg)
 	}
 
 	if deps.rpcInit != nil {
 		deps.rpcInit(restored.RPCPort, restored.RPCSecret)
 	}
-	return failedSaveResult(code, liveSnapshot(deps, restored), msg, old)
+	return failedSaveResult(code, liveSnapshot(deps, restored), msg)
 }

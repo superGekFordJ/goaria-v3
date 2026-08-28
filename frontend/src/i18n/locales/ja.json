@@ -23,13 +23,6 @@
     "saveFailed": "保存に失敗しました",
     "loadFailed": "設定を読み込めませんでした。",
     "retry": "再試行",
-    "requiresAppRestart": "保存しました。すべての変更を適用するには GoAria を再起動してください。",
-    "restartNow": "今すぐ再起動",
-    "restartConfirm": {
-      "message": "GoAria を今すぐ再起動しますか？",
-      "confirm": "再起動",
-      "cancel": "キャンセル"
-    },
     "autoSave": "自動保存",
     "errors": {
       "persistFailed": "設定を保存できませんでした。",

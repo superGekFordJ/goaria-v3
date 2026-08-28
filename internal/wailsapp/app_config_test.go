@@ -109,42 +109,10 @@ func TestAria2Projection_IgnoresNonAriaFields(t *testing.T) {
 	}
 }
 
-func TestRequiresAppRestart_Matrix(t *testing.T) {
+func TestAriaProjection_MaxConcurrentDownloads(t *testing.T) {
 	base := sampleCanonicalConfig()
-	type row struct {
-		mut  func(*config.AppConfig)
-		want bool
-	}
-	rows := []row{
-		{func(c *config.AppConfig) { c.ShowHistory = false }, false},
-		{func(c *config.AppConfig) { c.CloseToTray = true }, false},
-		{func(c *config.AppConfig) { c.SmartThreadMode = false }, false},
-		{func(c *config.AppConfig) { c.MinThreadLife = 9 }, false},
-		{func(c *config.AppConfig) { c.WindowTransparency = "acrylic" }, true},
-		{func(c *config.AppConfig) { c.MaxConnections = "64" }, true},
-		{func(c *config.AppConfig) { c.MaxConnections = "32" }, true},
-		{func(c *config.AppConfig) { c.ConvergenceInterval = 10 }, true},
-		{func(c *config.AppConfig) { c.MaxConcurrentDownloads = "8" }, true},
-		{func(c *config.AppConfig) { c.RPCPort = "16810" }, false},
-		{func(c *config.AppConfig) { c.RPCSecret = "n" }, false},
-		{func(c *config.AppConfig) { c.DownloadDir = `E:\dl` }, false},
-		{func(c *config.AppConfig) { c.UserAgent = "x" }, false},
-		{func(c *config.AppConfig) { c.ExtensionEnabled = false }, true},
-		{func(c *config.AppConfig) { c.ExtensionWSPort = 16802 }, true},
-	}
-	for i, r := range rows {
-		next := base
-		r.mut(&next)
-		next = config.ValidateAndSanitize(next)
-		if got := requiresAppRestart(base, next); got != r.want {
-			t.Errorf("row %d: got %v want %v", i, got, r.want)
-		}
-	}
 	conc := base
 	conc.MaxConcurrentDownloads = "8"
-	if !requiresAppRestart(base, conc) {
-		t.Fatal("MaxConcurrentDownloads requires app restart")
-	}
 	if ariaProjection(base) == ariaProjection(conc) {
 		t.Fatal("MaxConcurrentDownloads must also change Aria projection")
 	}
@@ -152,7 +120,7 @@ func TestRequiresAppRestart_Matrix(t *testing.T) {
 
 func TestSaveConfigResult_ValueSnapshot(t *testing.T) {
 	cfg := sampleCanonicalConfig()
-	res := successSaveResult(cfg, true, true)
+	res := successSaveResult(cfg, true)
 	data, err := json.Marshal(res)
 	if err != nil {
 		t.Fatal(err)
@@ -372,8 +340,8 @@ func TestSaveConfig_MaxConnections64To128NoRestart(t *testing.T) {
 	if !res.Success || res.Aria2Restarted {
 		t.Fatalf("%+v", res)
 	}
-	if !res.RequiresAppRestart {
-		t.Fatal("64→128 requires app restart")
+	if res.RequiresAppRestart {
+		t.Fatal("64→128 must not require app restart")
 	}
 	if h.store.cur.MaxConnections != "128" {
 		t.Fatal("did not persist")

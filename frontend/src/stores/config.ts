@@ -46,14 +46,9 @@ export const useConfigStore = defineStore(
     const saveInFlight = ref(0)
     const isSaving = computed(() => saveInFlight.value > 0)
     const aria2Connected = ref(false)
-    const needsAppRestart = ref(false)
 
     function setAria2Connected(connected: boolean) {
       aria2Connected.value = connected
-    }
-
-    function noteAppRestartRequired() {
-      needsAppRestart.value = true
     }
 
     function applyCanonicalConfig(snapshot: AppConfig | null | undefined) {
@@ -109,9 +104,6 @@ export const useConfigStore = defineStore(
       saveInFlight.value++
       try {
         const result = await SaveConfig(request)
-        if (result?.requires_app_restart) {
-          needsAppRestart.value = true
-        }
         return result
       } finally {
         saveInFlight.value--
@@ -146,9 +138,7 @@ export const useConfigStore = defineStore(
       hydrateFailed,
       isSaving,
       aria2Connected,
-      needsAppRestart,
       setAria2Connected,
-      noteAppRestartRequired,
       refreshAria2Connected,
       fetchConfig,
       updateConfig,

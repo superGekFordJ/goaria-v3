@@ -541,9 +541,9 @@ func TestBatchAddUri_SmartThreadOffPassesMaxConnectionsAsSplit(t *testing.T) {
 
 func TestBatchAddUri_SmartThreadOffFallsBackToDefaultWhenMaxConnectionsInvalid(t *testing.T) {
 	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
-	config.Update(func(c *config.AppConfig) {
-		c.SmartThreadMode = false
-		c.MaxConnections = "not-a-number"
+	config.SetTestConfig(&config.AppConfig{
+		SmartThreadMode: false,
+		MaxConnections:  "not-a-number",
 	})
 
 	url := "https://example.com/fallback.bin"

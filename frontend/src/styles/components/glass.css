@@ -52,8 +52,8 @@
   border-top-color: rgba(255, 255, 255, 0.85);
   border-bottom-color: rgba(71, 85, 105, 0.15);
   box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.80),
-    inset 0 -1px 0 0 rgba(71, 85, 105, 0.10),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.8),
+    inset 0 -1px 0 0 rgba(71, 85, 105, 0.1),
     var(--glass-shadow);
 }
 
@@ -72,7 +72,7 @@
   -webkit-backdrop-filter: saturate(135%);
   border: 1px solid rgba(255, 255, 255, 0.05);
   border-top-color: rgba(255, 255, 255, 0.15);
-  border-bottom-color: rgba(0, 0, 0, 0.30);
+  border-bottom-color: rgba(0, 0, 0, 0.3);
   box-shadow:
     inset 0 1px 0 0 rgba(255, 255, 255, 0.18),
     inset 0 -1px 0 0 rgba(0, 0, 0, 0.35),
@@ -88,7 +88,7 @@
     color-mix(in srgb, var(--skin-surface-tint) 10%, rgba(255, 255, 255, 0.88)) 0%,
     color-mix(in srgb, var(--skin-surface-tint) 8%, rgba(248, 250, 252, 0.75)) 15%,
     color-mix(in srgb, var(--skin-surface-tint) 6%, rgba(237, 242, 247, 0.65)) 50%,
-    color-mix(in srgb, var(--skin-surface-tint) 4%, rgba(223, 230, 239, 0.60)) 85%,
+    color-mix(in srgb, var(--skin-surface-tint) 4%, rgba(223, 230, 239, 0.6)) 85%,
     color-mix(in srgb, var(--skin-surface-tint) 3%, rgba(205, 215, 228, 0.68)) 100%
   );
   backdrop-filter: saturate(140%);
@@ -97,8 +97,8 @@
   border-top-color: rgba(255, 255, 255, 0.85);
   border-bottom-color: rgba(71, 85, 105, 0.15);
   box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.80),
-    inset 0 -1px 0 0 rgba(71, 85, 105, 0.10),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.8),
+    inset 0 -1px 0 0 rgba(71, 85, 105, 0.1),
     var(--glass-shadow);
 }
 

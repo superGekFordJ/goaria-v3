@@ -49,8 +49,6 @@
   const showHydrationError = computed(() => !configStore.isHydrated && configStore.hydrateFailed)
   const retryBusy = computed(() => configStore.isLoading)
   const lastErrorCode = ref('')
-  const restartConfirming = ref(false)
-  const restartBlocked = computed(() => saveStatus.value === 'saving' || configStore.isSaving)
   const saveErrorKey = computed(() => {
     switch (lastErrorCode.value) {
       case 'config_persist_failed':
@@ -165,9 +163,6 @@
     saveTimeout = setTimeout(async () => {
       try {
         const result = await configStore.updateConfig(snapshot)
-        if (result?.requires_app_restart) {
-          configStore.noteAppRestartRequired()
-        }
         if (disposed || generation !== editGeneration) return
         if (!result.success && result.error_code === 'config_not_loaded') {
           lastErrorCode.value = result.error_code
@@ -213,21 +208,6 @@
     void configStore.fetchConfig()
   }
 
-  const beginRestartConfirm = () => {
-    if (restartBlocked.value) return
-    restartConfirming.value = true
-  }
-
-  const confirmRestart = () => {
-    if (restartBlocked.value) return
-    restartConfirming.value = false
-    void configStore.restartApp()
-  }
-
-  const cancelRestartConfirm = () => {
-    restartConfirming.value = false
-  }
-
   onUnmounted(() => {
     disposed = true
     isApplyingCanonical = false
@@ -262,94 +242,54 @@
         </div>
 
         <!-- Save Status Indicator -->
-        <div class="flex flex-col items-end gap-2">
-          <div class="flex items-center gap-2">
-            <Transition name="fade" mode="out-in">
-              <div
-                v-if="saveStatus === 'saving'"
-                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]"
-              >
-                <Loader2 :size="12" class="animate-spin text-[var(--neon-primary)]" />
-                <span
-                  class="text-[10px] font-mono-data text-[var(--app-text-muted)]"
-                  aria-live="polite"
-                >
-                  {{ t('settings.saving') }}
-                </span>
-              </div>
-              <div
-                v-else-if="saveStatus === 'saved'"
-                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
-              >
-                <CheckCircle :size="12" class="text-[var(--status-complete)]" />
-                <span
-                  class="text-[10px] font-mono-data text-[var(--status-complete)]"
-                  aria-live="polite"
-                >
-                  {{ t('settings.saved') }}
-                </span>
-              </div>
-              <div
-                v-else-if="saveStatus === 'error'"
-                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-error)]/10 border border-[var(--status-error)]/20"
-              >
-                <AlertCircle :size="12" class="text-[var(--status-error)]" />
-                <span
-                  class="text-[10px] font-mono-data text-[var(--status-error)]"
-                  aria-live="polite"
-                >
-                  {{ t(saveErrorKey) }}
-                </span>
-              </div>
-              <div
-                v-else
-                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]"
-              >
-                <div class="w-1.5 h-1.5 rounded-full bg-[var(--app-text-subtle)]"></div>
-                <span class="text-[10px] font-mono-data text-[var(--app-text-subtle)]">
-                  {{ t('settings.autoSave') }}
-                </span>
-              </div>
-            </Transition>
-          </div>
-          <div
-            v-if="configStore.needsAppRestart"
-            class="restart-hint flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
-          >
-            <CheckCircle :size="12" class="text-[var(--neon-primary)]" />
-            <span class="text-[10px] font-mono-data text-[var(--neon-primary)]" aria-live="polite">
-              {{ t('settings.requiresAppRestart') }}
-            </span>
-            <button
-              v-if="!restartConfirming"
-              type="button"
-              class="restart-now shrink-0 px-2 py-0.5 rounded-md text-[10px] font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] disabled:opacity-50 disabled:cursor-not-allowed"
-              :disabled="restartBlocked"
-              @click="beginRestartConfirm"
+        <div class="flex items-center gap-2">
+          <Transition name="fade" mode="out-in">
+            <div
+              v-if="saveStatus === 'saving'"
+              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]"
             >
-              {{ t('settings.restartNow') }}
-            </button>
-            <template v-else>
-              <span class="text-[10px] font-mono-data text-[var(--app-text-muted)]">
-                {{ t('settings.restartConfirm.message') }}
+              <Loader2 :size="12" class="animate-spin text-[var(--neon-primary)]" />
+              <span
+                class="text-[10px] font-mono-data text-[var(--app-text-muted)]"
+                aria-live="polite"
+              >
+                {{ t('settings.saving') }}
               </span>
-              <button
-                type="button"
-                class="restart-confirm shrink-0 px-2 py-0.5 rounded-md text-[10px] font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] disabled:opacity-50 disabled:cursor-not-allowed"
-                :disabled="restartBlocked"
-                @click="confirmRestart"
+            </div>
+            <div
+              v-else-if="saveStatus === 'saved'"
+              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
+            >
+              <CheckCircle :size="12" class="text-[var(--status-complete)]" />
+              <span
+                class="text-[10px] font-mono-data text-[var(--status-complete)]"
+                aria-live="polite"
               >
-                {{ t('settings.restartConfirm.confirm') }}
-              </button>
-              <button
-                type="button"
-                class="restart-cancel shrink-0 px-2 py-0.5 rounded-md text-[10px] font-mono-data text-[var(--app-text-muted)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)]"
-                @click="cancelRestartConfirm"
+                {{ t('settings.saved') }}
+              </span>
+            </div>
+            <div
+              v-else-if="saveStatus === 'error'"
+              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-error)]/10 border border-[var(--status-error)]/20"
+            >
+              <AlertCircle :size="12" class="text-[var(--status-error)]" />
+              <span
+                class="text-[10px] font-mono-data text-[var(--status-error)]"
+                aria-live="polite"
               >
-                {{ t('settings.restartConfirm.cancel') }}
-              </button>
-            </template>
-          </div>
+                {{ t(saveErrorKey) }}
+              </span>
+            </div>
+            <div
+              v-else
+              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]"
+            >
+              <div class="w-1.5 h-1.5 rounded-full bg-[var(--app-text-subtle)]"></div>
+              <span class="text-[10px] font-mono-data text-[var(--app-text-subtle)]">
+                {{ t('settings.autoSave') }}
+              </span>
+            </div>
+          </Transition>
         </div>
       </div>
 

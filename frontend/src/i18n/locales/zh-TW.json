@@ -23,13 +23,6 @@
     "saveFailed": "儲存失敗",
     "loadFailed": "無法載入設定。",
     "retry": "重試",
-    "requiresAppRestart": "已儲存。請重新啟動 GoAria 以使全部變更生效。",
-    "restartNow": "立即重新啟動",
-    "restartConfirm": {
-      "message": "現在重新啟動 GoAria？",
-      "confirm": "重新啟動",
-      "cancel": "取消"
-    },
     "autoSave": "自動儲存",
     "errors": {
       "persistFailed": "無法儲存設定。",
