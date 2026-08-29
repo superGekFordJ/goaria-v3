@@ -181,7 +181,7 @@ export function parseBurstWindow(
   return window
 }
 
-export async function nextSyntheticBurstHoldId(): Promise<number> {
+export async function nextSyntheticBurstHoldId(): Promise<number | null> {
   try {
     const all = await browser.storage.session.get(null)
     let max = 0
@@ -192,7 +192,7 @@ export async function nextSyntheticBurstHoldId(): Promise<number> {
     }
     return max + 1
   } catch {
-    return 1
+    return null
   }
 }
 

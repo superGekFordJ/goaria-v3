@@ -32,7 +32,9 @@ const holds = vi.hoisted(() => {
       map.clear()
       window = null
       saveOk = true
+      this.windowLive = true
     },
+    windowLive: true,
     getWindow() {
       return window
     },
@@ -76,6 +78,18 @@ const messages = vi.hoisted(() => ({
   sent: [] as Array<{ type: string; data: unknown }>,
 }))
 
+const pingFlags = vi.hoisted(() => ({
+  burst: false,
+  extractor: false,
+  dom: false,
+  nonce: 'nonce',
+  href: 'https://example.test/page',
+}))
+
+const notices = vi.hoisted(() => ({
+  messages: [] as string[],
+}))
+
 vi.mock('../stores/config.svelte', () => ({
   BURST_HOLD_TTL_MS: 5 * 60 * 1000,
   BURST_MAX_DEADLINE_MS: 15_000,
@@ -103,11 +117,11 @@ vi.mock('webext-bridge/background', () => ({
     messages.sent.push({ type, data })
     if (type === 'dom:ping') {
       return {
-        document_nonce: 'nonce',
-        page_href: 'https://example.test/page',
-        extractor_picker_open: false,
-        dom_picker_open: false,
-        burst_picker_open: false,
+        document_nonce: pingFlags.nonce,
+        page_href: pingFlags.href,
+        extractor_picker_open: pingFlags.extractor,
+        dom_picker_open: pingFlags.dom,
+        burst_picker_open: pingFlags.burst,
       }
     }
     if (type === 'burst:open') return { ok: true }
@@ -118,7 +132,11 @@ vi.mock('webext-bridge/background', () => ({
 vi.mock('webextension-polyfill', () => ({
   default: {
     runtime: { getURL: (p: string) => p },
-    notifications: { create: async () => undefined },
+    notifications: {
+      create: async (opts: { message?: string }) => {
+        notices.messages.push(String(opts.message ?? ''))
+      },
+    },
     cookies: { getAll: async () => [] },
     downloads: {
       search: async ({ id }: { id: number }) => {
@@ -169,7 +187,7 @@ vi.mock('./burstHoldStore', () => ({
   removeBurstHold: async (id: number) => {
     holds.map.delete(id)
   },
-  getBurstWindow: async () => holds.getWindow(),
+  getBurstWindow: async () => (holds.windowLive ? holds.getWindow() : null),
   getBurstWindowIgnoringTtl: async () => holds.getWindow(),
   listExpiredBurstHoldIds: async () => {
     const ids: number[] = []
@@ -306,6 +324,12 @@ describe('burstFlow', () => {
     bridge.resume = []
     bridge.legacy = []
     messages.sent = []
+    notices.messages = []
+    pingFlags.burst = false
+    pingFlags.extractor = false
+    pingFlags.dom = false
+    pingFlags.nonce = 'nonce'
+    pingFlags.href = 'https://example.test/page'
     searchFail.ids.clear()
     pendingWrite.ok = true
     ws.sendDirectBatch.mockReset()
@@ -656,6 +680,7 @@ describe('burstFlow', () => {
   })
 
   it('isCoalescerEligible rejects a Firefox store mismatch and accepts a match', async () => {
+    firefoxMode.on = true
     sessionStore.session = { ...SESSION, storeUnproven: false, cookieStoreId: 'store-a' }
     const base = {
       url: 'https://cdn.example.test/a.bin',
@@ -665,6 +690,19 @@ describe('burstFlow', () => {
     }
     expect(await isCoalescerEligible({ ...base, cookieStoreId: 'other' } as never)).toBe(false)
     expect(await isCoalescerEligible({ ...base, cookieStoreId: 'store-a' } as never)).toBe(true)
+  })
+
+  it('isCoalescerEligible on Chrome ignores store even when frameId is set', async () => {
+    sessionStore.session = { ...SESSION, storeUnproven: false, cookieStoreId: 'store-a' }
+    expect(
+      await isCoalescerEligible({
+        url: 'https://cdn.example.test/a.bin',
+        referrer: 'https://example.test/page',
+        incognito: false,
+        frameId: 0,
+        cookieStoreId: 'other',
+      } as never),
+    ).toBe(true)
   })
 
   it('opens burst overlay for two Firefox admits after quiet', async () => {
@@ -750,5 +788,99 @@ describe('burstFlow', () => {
     expect(bridge.resume).toEqual([])
     expect(fx.legacy).toEqual([])
     expect(fx.cleaned).toEqual([9])
+  })
+
+  it('firefox recover reopens picker when the overlay is already showing', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    pingFlags.burst = true
+    holds.map.set(1, firefoxHold(1))
+    holds.map.set(2, firefoxHold(2))
+    holds.setWindow(
+      pickerWindow({
+        documentNonce: 'nonce',
+        pageHref: 'https://example.test/page',
+        pickerDeadline: Date.now() + 60_000,
+      }),
+    )
+    await recoverBurstState()
+    expect(messages.sent.filter(m => m.type === 'burst:open')).toHaveLength(1)
+    expect(fx.legacy).toEqual([])
+    expect(holds.getWindow()?.phase).toBe('picker')
+  })
+
+  it('firefox recover legacy-sends when picker ping nonce does not match', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    pingFlags.nonce = 'other-nonce'
+    holds.map.set(1, firefoxHold(1))
+    holds.map.set(2, firefoxHold(2))
+    holds.setWindow(pickerWindow({ documentNonce: 'nonce', pageHref: 'https://example.test/page' }))
+    await recoverBurstState()
+    await vi.waitFor(() => {
+      expect(fx.legacy.length).toBe(2)
+    })
+    expect(messages.sent.some(m => m.type === 'burst:open')).toBe(false)
+  })
+
+  it('firefox recover continues an expired coalescing window without silent drop', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    sessionStore.session = null
+    holds.windowLive = false
+    const expired = firefoxHold(1)
+    expired.startTime = Date.now() - 5 * 60 * 1000 - 1
+    const expired2 = firefoxHold(2)
+    expired2.startTime = Date.now() - 5 * 60 * 1000 - 1
+    holds.map.set(1, expired)
+    holds.map.set(2, expired2)
+    holds.setWindow({
+      captureId: SESSION.captureId,
+      downloadIds: [1, 2],
+      firstItemAt: 0,
+      lastItemAt: 0,
+      phase: 'coalescing',
+      tabId: 4,
+    })
+    await recoverBurstState()
+    await vi.waitFor(() => {
+      expect(fx.legacy.map(row => row.url).sort()).toEqual([
+        'https://cdn.example.test/1.bin',
+        'https://cdn.example.test/2.bin',
+      ])
+    })
+    expect(bridge.resume).toEqual([])
+  })
+
+  it('notifies cannot-resume when a Firefox picker row is unselected', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    holds.map.set(1, firefoxHold(1))
+    holds.map.set(2, firefoxHold(2))
+    holds.setWindow(pickerWindow())
+    ws.sendDirectBatch.mockImplementation(async (payload?: Record<string, unknown>) => {
+      const items = (payload?.items ?? []) as Array<{ client_item_id: string }>
+      return {
+        succeeded_item_ids: items.map(row => row.client_item_id),
+        duplicate_item_ids: [],
+        errors_by_item_id: {},
+      }
+    })
+    const reply = await handleBurstSubmit({
+      capture_id: SESSION.captureId as string,
+      indices: [0],
+    })
+    expect(reply.accepted).toBe(true)
+    expect(notices.messages).toContain('burst_firefox_cannot_resume')
+    expect(fx.cleaned).toContain(10)
+  })
+
+  it('does not notify cannot-resume when Firefox cancel finds nothing to release', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    sessionStore.session = null
+    await handleBurstCancel({ capture_id: SESSION.captureId as string })
+    expect(notices.messages).toEqual([])
+    expect(fx.legacy).toEqual([])
   })
 })

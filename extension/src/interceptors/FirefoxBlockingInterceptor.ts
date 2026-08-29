@@ -15,12 +15,15 @@ import {
   admitConfirmedDownload,
   enqueueCaptureWork,
   isCoalescerEligible,
-  migrateBurstHoldToLegacy,
   recoverBurstState,
+  scheduleFirefoxLegacyHandoff,
   setFirefoxBurstBridge,
 } from '../background/burstFlow'
 
-type ArmedRouteResult = { kind: 'pass' } | { kind: 'unarmed' } | { kind: 'cancel' }
+type ArmedRouteResult =
+  | { kind: 'pass' }
+  | { kind: 'unarmed' }
+  | { kind: 'cancel'; legacyId?: number }
 
 /**
  * Firefox MV3 interceptor. Uses webRequest.onHeadersReceived with the
@@ -159,6 +162,9 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
       }
       return { cancel: true }
     }
+    if (typeof result.legacyId === 'number') {
+      scheduleFirefoxLegacyHandoff(result.legacyId)
+    }
     return { cancel: true }
   }
 
@@ -169,6 +175,7 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
     const session = await getCaptureSession()
     if (!session) return { kind: 'unarmed' }
     const downloadId = await nextSyntheticBurstHoldId()
+    if (typeof downloadId !== 'number' || downloadId < 1) return { kind: 'pass' }
     const hold: BurstHold = {
       url: ctx.url,
       filename: ctx.filename,
@@ -195,11 +202,11 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
     }
     if (!saved) return { kind: 'pass' }
     if (await isCoalescerEligible(ctx)) {
-      await admitConfirmedDownload(downloadId, ctx)
-    } else {
-      await migrateBurstHoldToLegacy(downloadId)
+      const outcome = await admitConfirmedDownload(downloadId, ctx)
+      if (outcome !== 'coalesced') return { kind: 'cancel', legacyId: downloadId }
+      return { kind: 'cancel' }
     }
-    return { kind: 'cancel' }
+    return { kind: 'cancel', legacyId: downloadId }
   }
 
   private async handleInterception(ctx: InterceptionContext): Promise<void> {
@@ -218,9 +225,12 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
 
   async maybeRemoveBlankTab(
     tabId: number,
-    urls: { url?: string; finalUrl?: string; mainFrame?: boolean },
+    urls: { url?: string; finalUrl?: string; mainFrame?: boolean; skipTabId?: number },
   ): Promise<void> {
-    if (urls.mainFrame === false || tabId < 0) return
+    if (urls.mainFrame !== true || tabId < 0) return
+    if (typeof urls.skipTabId === 'number' && urls.skipTabId === tabId) return
+    const session = await getCaptureSession()
+    if (typeof session?.tabId === 'number' && session.tabId === tabId) return
     try {
       const tab = await browser.tabs.get(tabId)
       const isBlank =

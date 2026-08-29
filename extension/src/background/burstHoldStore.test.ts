@@ -2,9 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const session = vi.hoisted(() => {
   const data = new Map<string, unknown>()
+  let throwOnGet = false
   return {
     data,
+    get throwOnGet() {
+      return throwOnGet
+    },
+    set throwOnGet(v: boolean) {
+      throwOnGet = v
+    },
     async get(key: string | null) {
+      if (throwOnGet) throw new Error('session get failed')
       if (key === null) {
         const all: Record<string, unknown> = {}
         for (const [k, v] of data) all[k] = v
@@ -42,6 +50,7 @@ import {
   getAllBurstHolds,
   getBurstHold,
   listExpiredBurstHoldIds,
+  nextSyntheticBurstHoldId,
   parseBurstHold,
   parseBurstWindow,
   saveBurstHold,
@@ -51,6 +60,7 @@ import {
 describe('burstHoldStore', () => {
   beforeEach(() => {
     session.data.clear()
+    session.throwOnGet = false
   })
 
   it('keeps pending_ TTL at 30s and ignores burst prefixes in the pending reader', async () => {
@@ -178,5 +188,24 @@ describe('burstHoldStore', () => {
     await saveBurstHold(12, chromeHold)
     expect(await getBurstHold(12)).toMatchObject(chromeHold)
     expect((await getBurstHold(12))?.engine).toBeUndefined()
+  })
+
+  it('allocates the next synthetic hold id from existing keys', async () => {
+    expect(await nextSyntheticBurstHoldId()).toBe(1)
+    await saveBurstHold(4, {
+      url: 'https://cdn.example.test/a.bin',
+      filename: 'a.bin',
+      fileSize: 1,
+      startTime: Date.now(),
+      captureId: 'cap-1',
+      referrer: 'https://example.test/',
+      incognito: false,
+    })
+    expect(await nextSyntheticBurstHoldId()).toBe(5)
+  })
+
+  it('returns null when synthetic id allocation cannot read session storage', async () => {
+    session.throwOnGet = true
+    expect(await nextSyntheticBurstHoldId()).toBeNull()
   })
 })

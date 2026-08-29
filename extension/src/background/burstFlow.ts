@@ -76,12 +76,16 @@ export type ChromeBurstBridge = {
   handlePausedDownload(id: number, ctx: InterceptionContext): Promise<void>
 }
 
+type BlankTabUrls = {
+  url?: string
+  finalUrl?: string
+  mainFrame?: boolean
+  skipTabId?: number
+}
+
 export type FirefoxBurstBridge = {
   sendLegacy(ctx: InterceptionContext): Promise<void>
-  cleanupBlankTab(
-    tabId: number,
-    urls: { url?: string; finalUrl?: string; mainFrame?: boolean },
-  ): Promise<void>
+  cleanupBlankTab(tabId: number, urls: BlankTabUrls): Promise<void>
 }
 
 let bridge: ChromeBurstBridge | null = null
@@ -92,6 +96,7 @@ let pickerTimer: ReturnType<typeof setTimeout> | null = null
 let submitInflight = false
 let captureChain: Promise<unknown> = Promise.resolve()
 let exclusiveDepth = 0
+const firefoxLegacyClaimed = new Set<number>()
 
 type BurstSubmitContext = {
   captureId: string
@@ -278,10 +283,8 @@ export async function isCoalescerEligible(ctx: InterceptionContext): Promise<boo
   if (!session) return false
   if (!referrerOriginMatches(ctx.referrer, session.pageHref)) return false
   if ((ctx.incognito === true) !== session.incognito) return false
-  if (typeof ctx.frameId === 'number' || isFirefox()) {
-    if (session.storeUnproven !== true && session.cookieStoreId) {
-      if (ctx.cookieStoreId !== session.cookieStoreId) return false
-    }
+  if (isFirefox() && session.storeUnproven !== true && session.cookieStoreId) {
+    if (ctx.cookieStoreId !== session.cookieStoreId) return false
   }
   const window = await getBurstWindow()
   if (window && window.phase !== 'coalescing') return false
@@ -323,8 +326,26 @@ function armPickerClock(deadline: number): void {
   pickerTimer = setTimeout(fire, ms)
 }
 
-async function onCoalescerClock(): Promise<void> {
-  const window = await getBurstWindow()
+async function mergeExpiredHolds(
+  live: Map<number, BurstHold>,
+  extraIds: Iterable<number> = [],
+): Promise<Map<number, BurstHold>> {
+  const pending = new Set<number>(extraIds)
+  for (const id of live.keys()) pending.add(id)
+  for (const id of await listExpiredBurstHoldIds()) pending.add(id)
+  for (const id of pending) {
+    if (live.has(id)) continue
+    const hold = await getBurstHoldIgnoringTtl(id)
+    if (hold) live.set(id, hold)
+  }
+  return live
+}
+
+async function onCoalescerClock(seed?: BurstWindowRecord): Promise<void> {
+  const window =
+    seed ??
+    (await getBurstWindow()) ??
+    (usesFirefoxProcess() ? await getBurstWindowIgnoringTtl() : null)
   if (!window || window.phase !== 'coalescing') return
   const session = await getCaptureSession()
   const now = Date.now()
@@ -340,20 +361,32 @@ async function onCoalescerClock(): Promise<void> {
   await closeCoalescedWindow(window, false)
 }
 
-async function cleanupFirefoxHold(downloadId: number, hold?: BurstHold | null): Promise<void> {
+function blankTabUrls(hold: BurstHold, skipTabId?: number): BlankTabUrls {
+  const urls: BlankTabUrls = {
+    url: hold.url,
+    finalUrl: hold.finalUrl,
+    mainFrame: true,
+  }
+  if (typeof skipTabId === 'number') urls.skipTabId = skipTabId
+  return urls
+}
+
+async function cleanupFirefoxHold(
+  downloadId: number,
+  hold?: BurstHold | null,
+  skipTabId?: number,
+): Promise<void> {
   const b = firefoxBridge
   if (b && hold?.mainFrame === true && typeof hold.tabId === 'number' && hold.tabId >= 0) {
-    await b.cleanupBlankTab(hold.tabId, {
-      url: hold.url,
-      finalUrl: hold.finalUrl,
-      mainFrame: true,
-    })
+    await b.cleanupBlankTab(hold.tabId, blankTabUrls(hold, skipTabId))
   }
   await removeBurstHold(downloadId)
   await removePendingDecision(downloadId)
 }
 
-function queueFirefoxLegacySend(downloadId: number, hold: BurstHold): void {
+function queueFirefoxLegacySend(downloadId: number, hold: BurstHold, skipTabId?: number): void {
+  if (firefoxLegacyClaimed.has(downloadId)) return
+  firefoxLegacyClaimed.add(downloadId)
   const ctx = contextFromHold(hold)
   const tabId = typeof hold.tabId === 'number' ? hold.tabId : ctx.tabId
   const mainFrame = hold.mainFrame === true
@@ -364,21 +397,22 @@ function queueFirefoxLegacySend(downloadId: number, hold: BurstHold): void {
       else notify('capture_notif_title', 'burst_firefox_cannot_resume')
     } finally {
       if (b && mainFrame && tabId >= 0) {
-        await b.cleanupBlankTab(tabId, {
-          url: hold.url,
-          finalUrl: hold.finalUrl,
-          mainFrame: true,
-        })
+        await b.cleanupBlankTab(tabId, blankTabUrls(hold, skipTabId))
       }
       await removeBurstHold(downloadId)
       await removePendingDecision(downloadId)
+      firefoxLegacyClaimed.delete(downloadId)
     }
   })
 }
 
-async function migrateToLegacy(downloadId: number, hold: BurstHold): Promise<void> {
+async function migrateToLegacy(
+  downloadId: number,
+  hold: BurstHold,
+  skipTabId?: number,
+): Promise<void> {
   if (usesFirefoxRelease(hold)) {
-    queueFirefoxLegacySend(downloadId, hold)
+    queueFirefoxLegacySend(downloadId, hold, skipTabId)
     return
   }
   const saved = await savePendingDecision(downloadId, pendingFromHold(hold))
@@ -392,20 +426,31 @@ async function migrateToLegacy(downloadId: number, hold: BurstHold): Promise<voi
 }
 
 export async function migrateBurstHoldToLegacy(downloadId: number): Promise<void> {
-  const hold = await getBurstHold(downloadId)
+  const hold = (await getBurstHold(downloadId)) ?? (await getBurstHoldIgnoringTtl(downloadId))
   if (!hold) return
   await migrateToLegacy(downloadId, hold)
 }
 
+export function scheduleFirefoxLegacyHandoff(downloadId: number): void {
+  void Promise.resolve().then(async () => {
+    const hold = (await getBurstHold(downloadId)) ?? (await getBurstHoldIgnoringTtl(downloadId))
+    if (!hold) return
+    await migrateToLegacy(downloadId, hold)
+  })
+}
+
 async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: boolean): Promise<void> {
   clearClocks()
-  const holds = await getAllBurstHolds()
+  const skipTabId = window.tabId ?? (await getCaptureSession())?.tabId
+  const holds = usesFirefoxProcess()
+    ? await mergeExpiredHolds(await getAllBurstHolds(), window.downloadIds)
+    : await getAllBurstHolds()
   const ids = memberIdsForWindow(window, holds)
   if (forceLegacy || ids.filter(id => holds.has(id)).length <= 1) {
     await removeBurstWindow()
     for (const id of ids) {
       const hold = holds.get(id)
-      if (hold) await migrateToLegacy(id, hold)
+      if (hold) await migrateToLegacy(id, hold, skipTabId)
     }
     return
   }
@@ -414,7 +459,7 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
     await removeBurstWindow()
     for (const id of ids) {
       const hold = holds.get(id)
-      if (hold) await migrateToLegacy(id, hold)
+      if (hold) await migrateToLegacy(id, hold, skipTabId)
     }
     return
   }
@@ -429,7 +474,7 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
     await removeBurstWindow()
     for (const id of ids) {
       const hold = holds.get(id)
-      if (hold) await migrateToLegacy(id, hold)
+      if (hold) await migrateToLegacy(id, hold, skipTabId)
     }
     return
   }
@@ -444,7 +489,7 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
       await removeBurstWindow()
       for (const memberId of ids) {
         const member = holds.get(memberId)
-        if (member) await migrateToLegacy(memberId, member)
+        if (member) await migrateToLegacy(memberId, member, skipTabId)
       }
       return
     }
@@ -469,7 +514,7 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
     await removeBurstWindow()
     for (const id of ids) {
       const hold = holds.get(id)
-      if (hold) await migrateToLegacy(id, hold)
+      if (hold) await migrateToLegacy(id, hold, skipTabId)
     }
     return
   }
@@ -492,7 +537,7 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
     await removeBurstWindow()
     for (const id of ids) {
       const hold = holds.get(id)
-      if (hold) await migrateToLegacy(id, hold)
+      if (hold) await migrateToLegacy(id, hold, skipTabId)
     }
     return
   }
@@ -511,7 +556,7 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
       await removeBurstWindow()
       for (const id of ids) {
         const hold = holds.get(id)
-        if (hold) await migrateToLegacy(id, hold)
+        if (hold) await migrateToLegacy(id, hold, skipTabId)
       }
       return
     }
@@ -519,7 +564,7 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
     await removeBurstWindow()
     for (const id of ids) {
       const hold = holds.get(id)
-      if (hold) await migrateToLegacy(id, hold)
+      if (hold) await migrateToLegacy(id, hold, skipTabId)
     }
     return
   }
@@ -554,32 +599,30 @@ async function admitConfirmedDownloadLocked(
     }
     const hold = await getBurstHold(downloadId)
     if (!hold) {
-      if (usesFirefoxRelease(null) && firefoxBridge) void firefoxBridge.sendLegacy(ctx)
-      else if (bridge) void bridge.handlePausedDownload(downloadId, ctx)
+      if (!usesFirefoxRelease(null) && bridge) void bridge.handlePausedDownload(downloadId, ctx)
       return result.kind === 'legacy_overflow' ? 'overflow' : 'legacy'
     }
-    await migrateToLegacy(downloadId, hold)
+    if (!usesFirefoxRelease(hold)) await migrateToLegacy(downloadId, hold)
     return result.kind === 'legacy_overflow' ? 'overflow' : 'legacy'
   }
   const savedHold = await getBurstHold(downloadId)
   if (!savedHold) {
-    if (usesFirefoxRelease(null) && firefoxBridge) void firefoxBridge.sendLegacy(ctx)
-    else if (bridge) void bridge.handlePausedDownload(downloadId, ctx)
+    if (!usesFirefoxRelease(null) && bridge) void bridge.handlePausedDownload(downloadId, ctx)
     return 'legacy'
   }
   const savedWindow = await saveBurstWindow(result.window)
   if (!savedWindow) {
-    await migrateToLegacy(downloadId, savedHold)
+    if (!usesFirefoxRelease(savedHold)) await migrateToLegacy(downloadId, savedHold)
     return 'legacy'
   }
   scheduleClocks(result.window)
   return 'coalesced'
 }
 
-export async function resumeHeldDownload(downloadId: number): Promise<void> {
-  const hold = await getBurstHold(downloadId)
+export async function resumeHeldDownload(downloadId: number, skipTabId?: number): Promise<void> {
+  const hold = (await getBurstHold(downloadId)) ?? (await getBurstHoldIgnoringTtl(downloadId))
   if (usesFirefoxRelease(hold)) {
-    await cleanupFirefoxHold(downloadId, hold)
+    await cleanupFirefoxHold(downloadId, hold, skipTabId)
     return
   }
   const b = bridge
@@ -605,23 +648,26 @@ async function releaseAllBurstHoldsLocked(policy: 'cannot_resume' | 'send_legacy
   clearPickerClock()
   if (!usesFirefoxProcess()) await reapExpiredBurstState()
   const window = (await getBurstWindow()) ?? (await getBurstWindowIgnoringTtl())
-  const holds = await getAllBurstHolds()
+  const holds = usesFirefoxProcess()
+    ? await mergeExpiredHolds(await getAllBurstHolds(), window?.downloadIds ?? [])
+    : await getAllBurstHolds()
   const ids = new Set<number>([...holds.keys(), ...(window?.downloadIds ?? [])])
-  const tabId = window?.tabId ?? (await getCaptureSession())?.tabId
+  const skipTabId = window?.tabId ?? (await getCaptureSession())?.tabId
+  const tabId = skipTabId
   await removeBurstWindow()
   await disarmCaptureSession()
   if (usesFirefoxProcess()) {
     if (policy === 'cannot_resume') {
-      notify('capture_notif_title', 'burst_firefox_cannot_resume')
+      if (ids.size > 0) notify('capture_notif_title', 'burst_firefox_cannot_resume')
       for (const id of ids) {
         const hold = holds.get(id) ?? (await getBurstHoldIgnoringTtl(id))
-        await cleanupFirefoxHold(id, hold)
+        await cleanupFirefoxHold(id, hold, skipTabId)
       }
     } else {
       for (const id of ids) {
         const hold = holds.get(id) ?? (await getBurstHoldIgnoringTtl(id))
-        if (hold) await migrateToLegacy(id, hold)
-        else await cleanupFirefoxHold(id, hold)
+        if (hold) await migrateToLegacy(id, hold, skipTabId)
+        else await cleanupFirefoxHold(id, hold, skipTabId)
       }
     }
   } else {
@@ -778,6 +824,7 @@ function idSetOfAck(value: unknown): Set<string> {
 async function applyAckPartitions(
   items: Array<{ clientItemId: string; downloadId: number }>,
   ack: Record<string, unknown>,
+  skipTabId?: number,
 ): Promise<{ succeeded: number; duplicate: number; error: number }> {
   const succeeded = idSetOfAck(ack.succeeded_item_ids)
   const duplicate = idSetOfAck(ack.duplicate_item_ids)
@@ -790,7 +837,7 @@ async function applyAckPartitions(
       ok += 1
       continue
     }
-    await resumeHeldDownload(item.downloadId)
+    await resumeHeldDownload(item.downloadId, skipTabId)
     if (duplicate.has(item.clientItemId)) dup += 1
     else err += 1
   }
@@ -808,7 +855,7 @@ async function queryBurstStatus(requestId: string): Promise<BurstSubmitReply> {
     if (status === 'complete') {
       const window = await getBurstWindow()
       const items = window?.submitItems ?? []
-      const parts = await applyAckPartitions(items, ack)
+      const parts = await applyAckPartitions(items, ack, window?.tabId)
       return { accepted: true, ...parts }
     }
     if (status === 'not_found') return { accepted: false, error_code: 'not_found' }
@@ -872,19 +919,22 @@ async function handleBurstSubmitLocked(
         : window.downloadIds.map((downloadId, index) => ({ index, downloadId }))
     const selected = new Set(data.indices)
     const selectedHolds: Array<{ index: number; downloadId: number; hold: BurstHold }> = []
+    let firefoxUnselected = false
     for (const entry of catalog) {
       const hold = holds.get(entry.downloadId)
       if (!hold) continue
       if (selected.has(entry.index)) {
         selectedHolds.push({ index: entry.index, downloadId: entry.downloadId, hold })
       } else {
-        await resumeHeldDownload(entry.downloadId)
+        if (usesFirefoxRelease(hold)) firefoxUnselected = true
+        await resumeHeldDownload(entry.downloadId, window.tabId)
       }
     }
     if (selectedHolds.length === 0) {
       await resumeAllBurstHoldsLocked()
       return { accepted: true }
     }
+    if (firefoxUnselected) notify('capture_notif_title', 'burst_firefox_cannot_resume')
     const fields = folderFieldForSubmit({
       createGroup: data.create_group === true,
       selectedCount: selectedHolds.length,
@@ -915,7 +965,7 @@ async function handleBurstSubmitLocked(
     })
     try {
       const ack = await wsClient.sendDirectBatch(payload, requestId)
-      const parts = await applyAckPartitions(submitItems ?? [], ack)
+      const parts = await applyAckPartitions(submitItems ?? [], ack, ctx.tabId)
       await finishBurstSubmit(ctx.tabId, ctx.captureId)
       return { accepted: true, ...parts }
     } catch (err) {
@@ -927,7 +977,7 @@ async function handleBurstSubmitLocked(
         const status = await queryBurstStatus(requestId)
         if (status.accepted || status.error_code === 'not_found') {
           if (status.error_code === 'not_found') {
-            for (const item of submitItems ?? []) await resumeHeldDownload(item.downloadId)
+            for (const item of submitItems ?? []) await resumeHeldDownload(item.downloadId, ctx.tabId)
             notify('capture_notif_title', 'dom_not_found')
           }
           await finishBurstSubmit(ctx.tabId, ctx.captureId)
@@ -1004,6 +1054,9 @@ async function finishBurstSubmit(tabId: number, captureId: string): Promise<void
 export async function handleBurstCancel(data: BurstCancelMessage): Promise<{ ok: boolean }> {
   return runExclusive(async () => {
     const window = (await getBurstWindow()) ?? (await getBurstWindowIgnoringTtl())
+    const holds = await getAllBurstHolds()
+    const expired = await listExpiredBurstHoldIds()
+    if (!window && holds.size === 0 && expired.length === 0) return { ok: true }
     if (window && data.capture_id && data.capture_id !== window.captureId) return { ok: false }
     await resumeAllBurstHoldsLocked()
     return { ok: true }
@@ -1027,7 +1080,7 @@ export async function handleBurstStatus(data: BurstAliveMessage): Promise<BurstS
     if (status.accepted || status.error_code === 'not_found') {
       const ctx = submitContextFromWindow(window)
       if (status.error_code === 'not_found') {
-        for (const item of window.submitItems ?? []) await resumeHeldDownload(item.downloadId)
+        for (const item of window.submitItems ?? []) await resumeHeldDownload(item.downloadId, window.tabId)
         notify('capture_notif_title', 'dom_not_found')
       }
       if (ctx) await finishBurstSubmit(ctx.tabId, ctx.captureId)
@@ -1062,12 +1115,14 @@ async function recoverBurstStateLocked(): Promise<void> {
 
 async function recoverFirefoxBurstStateLocked(): Promise<void> {
   const window = (await getBurstWindow()) ?? (await getBurstWindowIgnoringTtl())
-  const holds = await getAllBurstHolds()
+  const holds = await mergeExpiredHolds(await getAllBurstHolds(), window?.downloadIds ?? [])
+  const skipTabId = window?.tabId ?? (await getCaptureSession())?.tabId
   const expiredIds = await listExpiredBurstHoldIds()
   for (const id of expiredIds) {
     if (window?.downloadIds.includes(id)) continue
-    const hold = await getBurstHoldIgnoringTtl(id)
-    if (hold) await migrateToLegacy(id, hold)
+    const hold = holds.get(id) ?? (await getBurstHoldIgnoringTtl(id))
+    holds.delete(id)
+    if (hold) await migrateToLegacy(id, hold, skipTabId)
     else await removeBurstHold(id)
   }
   const session = await getCaptureSession()
@@ -1077,7 +1132,7 @@ async function recoverFirefoxBurstStateLocked(): Promise<void> {
       if (status.error_code === 'not_found') {
         for (const item of window.submitItems ?? []) {
           const hold = holds.get(item.downloadId) ?? (await getBurstHoldIgnoringTtl(item.downloadId))
-          await cleanupFirefoxHold(item.downloadId, hold)
+          await cleanupFirefoxHold(item.downloadId, hold, skipTabId)
         }
         notify('capture_notif_title', 'dom_not_found')
       }
@@ -1093,14 +1148,33 @@ async function recoverFirefoxBurstStateLocked(): Promise<void> {
   for (const [id, hold] of holds) {
     if (window?.downloadIds.includes(id)) continue
     if (session && session.captureId === hold.captureId && (!window || window.phase === 'coalescing')) {
-      await admitConfirmedDownloadLocked(id, contextFromHold(hold))
+      const outcome = await admitConfirmedDownloadLocked(id, contextFromHold(hold))
+      if (outcome !== 'coalesced') {
+        const leftover = (await getBurstHold(id)) ?? (await getBurstHoldIgnoringTtl(id))
+        if (leftover) await migrateToLegacy(id, leftover, skipTabId)
+      }
     } else {
-      await migrateToLegacy(id, hold)
+      await migrateToLegacy(id, hold, skipTabId)
     }
   }
   if (window?.phase === 'coalescing') {
-    await onCoalescerClock()
+    await onCoalescerClock(window)
   }
+}
+
+function pingBlocksBurstReopen(
+  ping: DomPingReply | undefined,
+  window: BurstWindowRecord,
+): boolean {
+  if (!ping) return true
+  if (ping.extractor_picker_open || ping.dom_picker_open) return true
+  if (typeof window.documentNonce === 'string' && window.documentNonce !== '') {
+    if (ping.document_nonce !== window.documentNonce) return true
+  }
+  if (typeof window.pageHref === 'string' && window.pageHref !== '') {
+    if (ping.page_href !== window.pageHref) return true
+  }
+  return false
 }
 
 async function reopenOrLegacyFirefoxPicker(
@@ -1109,19 +1183,14 @@ async function reopenOrLegacyFirefoxPicker(
 ): Promise<void> {
   const ids = memberIdsForWindow(window, holds)
   const tabId = window.tabId
+  const skipTabId = tabId
   const ping = typeof tabId === 'number' ? await pingContentScript(tabId) : undefined
-  if (
-    typeof tabId !== 'number' ||
-    !ping ||
-    ping.extractor_picker_open ||
-    ping.dom_picker_open ||
-    ping.burst_picker_open
-  ) {
+  if (typeof tabId !== 'number' || pingBlocksBurstReopen(ping, window)) {
     notify('capture_notif_title', 'capture_reject_ping')
     await removeBurstWindow()
     for (const id of ids) {
-      const hold = holds.get(id)
-      if (hold) await migrateToLegacy(id, hold)
+      const hold = holds.get(id) ?? (await getBurstHoldIgnoringTtl(id))
+      if (hold) await migrateToLegacy(id, hold, skipTabId)
     }
     return
   }
@@ -1131,7 +1200,7 @@ async function reopenOrLegacyFirefoxPicker(
       : window.downloadIds.map((downloadId, index) => ({ index, downloadId }))
   const items: BurstPickerCatalogItem[] = []
   for (const entry of catalog) {
-    const hold = holds.get(entry.downloadId)
+    const hold = holds.get(entry.downloadId) ?? (await getBurstHoldIgnoringTtl(entry.downloadId))
     if (!hold) continue
     const row: BurstPickerCatalogItem = { index: entry.index }
     const filename = sanitizeDisplayFilename(hold.filename)
@@ -1151,8 +1220,8 @@ async function reopenOrLegacyFirefoxPicker(
   if (items.length < 2) {
     await removeBurstWindow()
     for (const id of ids) {
-      const hold = holds.get(id)
-      if (hold) await migrateToLegacy(id, hold)
+      const hold = holds.get(id) ?? (await getBurstHoldIgnoringTtl(id))
+      if (hold) await migrateToLegacy(id, hold, skipTabId)
     }
     return
   }
@@ -1171,8 +1240,8 @@ async function reopenOrLegacyFirefoxPicker(
       notify('capture_notif_title', 'capture_reject_ping')
       await removeBurstWindow()
       for (const id of ids) {
-        const hold = holds.get(id)
-        if (hold) await migrateToLegacy(id, hold)
+        const hold = holds.get(id) ?? (await getBurstHoldIgnoringTtl(id))
+        if (hold) await migrateToLegacy(id, hold, skipTabId)
       }
       return
     }
@@ -1180,8 +1249,8 @@ async function reopenOrLegacyFirefoxPicker(
     notify('capture_notif_title', 'capture_reject_ping')
     await removeBurstWindow()
     for (const id of ids) {
-      const hold = holds.get(id)
-      if (hold) await migrateToLegacy(id, hold)
+      const hold = holds.get(id) ?? (await getBurstHoldIgnoringTtl(id))
+      if (hold) await migrateToLegacy(id, hold, skipTabId)
     }
     return
   }
@@ -1231,4 +1300,5 @@ export function resetBurstFlowForTests(): void {
   exclusiveDepth = 0
   bridge = null
   firefoxBridge = null
+  firefoxLegacyClaimed.clear()
 }

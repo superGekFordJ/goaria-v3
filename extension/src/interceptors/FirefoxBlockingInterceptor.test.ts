@@ -20,6 +20,7 @@ const capture = vi.hoisted(() => ({
 const sessionStore = vi.hoisted(() => {
   const data = new Map<string, unknown>()
   let setOk = true
+  let getThrow = false
   return {
     data,
     get setOk() {
@@ -28,12 +29,20 @@ const sessionStore = vi.hoisted(() => {
     set setOk(v: boolean) {
       setOk = v
     },
+    get getThrow() {
+      return getThrow
+    },
+    set getThrow(v: boolean) {
+      getThrow = v
+    },
     reset() {
       data.clear()
       setOk = true
+      getThrow = false
     },
     api: {
       async get(key: string | null) {
+        if (getThrow) throw new Error('session get failed')
         if (key === null) {
           const all: Record<string, unknown> = {}
           for (const [k, v] of data) all[k] = v
@@ -268,7 +277,23 @@ describe('FirefoxBlockingInterceptor', () => {
   })
 
   it('recoverPendingDecisions continues burst recover instead of no-op', async () => {
-    await expect(interceptor.recoverPendingDecisions()).resolves.toBeUndefined()
+    sessionStore.data.set('bhold_7', {
+      url: 'https://cdn.example.test/7.bin',
+      filename: '7.bin',
+      fileSize: 10,
+      startTime: Date.now(),
+      captureId: SESSION.captureId,
+      referrer: 'https://example.test/page',
+      incognito: false,
+      engine: 'firefox',
+      tabId: 9,
+      mainFrame: true,
+    })
+    await interceptor.recoverPendingDecisions()
+    await vi.waitFor(() => {
+      expect(ws.sendDownloadRequest).toHaveBeenCalled()
+      expect(sessionStore.data.has('bhold_7')).toBe(false)
+    })
   })
 
   it('passes through shouldIntercept before boot', () => {
@@ -341,6 +366,9 @@ describe('FirefoxBlockingInterceptor', () => {
     const reply = await Promise.resolve(webRequest.headers[0].listener(interceptDetails()))
     expect(reply).toEqual({ cancel: true })
     expect(tabs.removed).toEqual([])
+    await vi.waitFor(() => {
+      expect(typeof release).toBe('function')
+    })
     release({ type: 'download_ack', success: true, gid: 'ar_test' })
     await vi.waitFor(() => {
       expect(tabs.removed).toEqual([3])
@@ -355,6 +383,42 @@ describe('FirefoxBlockingInterceptor', () => {
     expect(reply).toEqual({ cancel: true })
     await Promise.resolve()
     await Promise.resolve()
+    expect(tabs.removed).toEqual([])
+  })
+
+  it('does not cancel when synthetic hold id allocation fails', async () => {
+    capture.session = { ...SESSION }
+    sessionStore.getThrow = true
+    const reply = await Promise.resolve(webRequest.headers[0].listener(interceptDetails()))
+    expect(reply).toEqual({})
+    expect(tabs.removed).toEqual([])
+  })
+
+  it('admits an eligible armed intercept without removing tabs until outcome', async () => {
+    capture.session = { ...SESSION }
+    const reply = await Promise.resolve(
+      webRequest.headers[0].listener(
+        interceptDetails({
+          initiator: 'https://example.test/page',
+          originUrl: 'https://example.test/page',
+        }),
+      ),
+    )
+    expect(reply).toEqual({ cancel: true })
+    expect(tabs.removed).toEqual([])
+    expect([...sessionStore.data.keys()].some(k => k.startsWith('bhold_'))).toBe(true)
+    expect(sessionStore.data.has('bwin_window')).toBe(true)
+    expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
+  })
+
+  it('does not remove the armed page tab after an armed same-tab cancel', async () => {
+    capture.session = { ...SESSION }
+    tabs.setTab({ url: 'about:blank' })
+    const reply = await Promise.resolve(webRequest.headers[0].listener(interceptDetails({ tabId: 4 })))
+    expect(reply).toEqual({ cancel: true })
+    await vi.waitFor(() => {
+      expect(ws.sendDownloadRequest).toHaveBeenCalled()
+    })
     expect(tabs.removed).toEqual([])
   })
 })
