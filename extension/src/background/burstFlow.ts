@@ -242,7 +242,7 @@ function armSubmitStatusClock(requestId: string, captureId: string): void {
   submitStatusTimer = setTimeout(() => {
     submitStatusTimer = null
     void runExclusive(async () => {
-      const window = await getBurstWindow()
+      const window = (await getBurstWindow()) ?? (await getBurstWindowIgnoringTtl())
       if (!window || window.captureId !== captureId || window.requestId !== requestId) return
       if (window.phase !== 'submitting') return
       const status = await queryBurstStatus(requestId)
@@ -518,6 +518,7 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
   ) {
     notify('capture_notif_title', 'burst_mutex_body')
     await removeBurstWindow()
+    if (usesFirefoxProcess()) await closeBurstOverlay(session.tabId, window.captureId)
     for (const id of ids) {
       const hold = holds.get(id)
       if (hold) await migrateToLegacy(id, hold, skipTabId)
@@ -903,7 +904,7 @@ async function queryBurstStatus(requestId: string): Promise<BurstSubmitReply> {
     const status = typeof ack.status === 'string' ? ack.status : ''
     if (status === 'pending') return { accepted: false, error_code: 'pending' }
     if (status === 'complete') {
-      const window = await getBurstWindow()
+      const window = (await getBurstWindow()) ?? (await getBurstWindowIgnoringTtl())
       const items = window?.submitItems ?? []
       const parts = await applyAckPartitions(items, ack, window?.tabId)
       return { accepted: true, ...parts }
@@ -1115,7 +1116,7 @@ export async function handleBurstCancel(data: BurstCancelMessage): Promise<{ ok:
 }
 
 export async function handleBurstAlive(data: BurstAliveMessage): Promise<{ ok: boolean }> {
-  const window = await getBurstWindow()
+  const window = (await getBurstWindow()) ?? (await getBurstWindowIgnoringTtl())
   if (!window || window.captureId !== data.capture_id) return { ok: false }
   if (window.phase !== 'picker' && window.phase !== 'submitting') return { ok: false }
   return { ok: true }
@@ -1192,6 +1193,10 @@ async function recoverFirefoxBurstStateLocked(): Promise<void> {
       if (ctx) await finishBurstSubmit(ctx.tabId, ctx.captureId)
       return
     }
+    await saveBurstWindow({
+      ...window,
+      pickerDeadline: Date.now() + BURST_HOLD_TTL_MS,
+    })
     armSubmitStatusClock(window.requestId, window.captureId)
     return
   }
@@ -1238,6 +1243,20 @@ function pingBlocksBurstReopen(
   return false
 }
 
+async function sendLegacyAndClosePicker(
+  window: BurstWindowRecord,
+  holds: Map<number, BurstHold>,
+  ids: number[],
+  skipTabId?: number,
+): Promise<void> {
+  await removeBurstWindow()
+  if (typeof window.tabId === 'number') await closeBurstOverlay(window.tabId, window.captureId)
+  for (const id of ids) {
+    const hold = holds.get(id) ?? (await getBurstHoldIgnoringTtl(id))
+    if (hold) await migrateToLegacy(id, hold, skipTabId)
+  }
+}
+
 async function reopenOrLegacyFirefoxPicker(
   window: BurstWindowRecord,
   holds: Map<number, BurstHold>,
@@ -1248,11 +1267,7 @@ async function reopenOrLegacyFirefoxPicker(
   const ping = typeof tabId === 'number' ? await pingContentScript(tabId) : undefined
   if (typeof tabId !== 'number' || pingBlocksBurstReopen(ping, window)) {
     notify('capture_notif_title', 'capture_reject_ping')
-    await removeBurstWindow()
-    for (const id of ids) {
-      const hold = holds.get(id) ?? (await getBurstHoldIgnoringTtl(id))
-      if (hold) await migrateToLegacy(id, hold, skipTabId)
-    }
+    await sendLegacyAndClosePicker(window, holds, ids, skipTabId)
     return
   }
   const catalog =
@@ -1279,11 +1294,7 @@ async function reopenOrLegacyFirefoxPicker(
     items.push(row)
   }
   if (items.length < 2) {
-    await removeBurstWindow()
-    for (const id of ids) {
-      const hold = holds.get(id) ?? (await getBurstHoldIgnoringTtl(id))
-      if (hold) await migrateToLegacy(id, hold, skipTabId)
-    }
+    await sendLegacyAndClosePicker(window, holds, ids, skipTabId)
     return
   }
   const payload: BurstOpenMessage = {
@@ -1299,20 +1310,12 @@ async function reopenOrLegacyFirefoxPicker(
     )) as { ok?: boolean } | undefined
     if (reply?.ok !== true) {
       notify('capture_notif_title', 'capture_reject_ping')
-      await removeBurstWindow()
-      for (const id of ids) {
-        const hold = holds.get(id) ?? (await getBurstHoldIgnoringTtl(id))
-        if (hold) await migrateToLegacy(id, hold, skipTabId)
-      }
+      await sendLegacyAndClosePicker(window, holds, ids, skipTabId)
       return
     }
   } catch {
     notify('capture_notif_title', 'capture_reject_ping')
-    await removeBurstWindow()
-    for (const id of ids) {
-      const hold = holds.get(id) ?? (await getBurstHoldIgnoringTtl(id))
-      if (hold) await migrateToLegacy(id, hold, skipTabId)
-    }
+    await sendLegacyAndClosePicker(window, holds, ids, skipTabId)
     return
   }
   if (typeof window.pickerDeadline === 'number') armPickerClock(window.pickerDeadline)

@@ -66,7 +66,15 @@ const ws = vi.hoisted(() => ({
       errors_by_item_id: {} as Record<string, string>,
     }),
   ),
-  sendDirectBatchStatus: vi.fn(async () => ({ status: 'pending' })),
+  sendDirectBatchStatus: vi.fn(
+    async () =>
+      ({ status: 'pending' }) as {
+        status: string
+        succeeded_item_ids?: string[]
+        duplicate_item_ids?: string[]
+        errors_by_item_id?: Record<string, string>
+      },
+  ),
   getStatus: () => ({
     status: 'connected' as const,
     wsPort: 0,
@@ -830,6 +838,7 @@ describe('burstFlow', () => {
       expect(fx.legacy.length).toBe(2)
     })
     expect(messages.sent.some(m => m.type === 'burst:open')).toBe(false)
+    expect(messages.sent.some(m => m.type === 'burst:close')).toBe(true)
   })
 
   it('firefox recover continues an expired coalescing window without silent drop', async () => {
@@ -967,6 +976,7 @@ describe('burstFlow', () => {
       expect(fx.legacy.length).toBe(2)
     })
     expect(messages.sent.some(m => m.type === 'burst:open')).toBe(false)
+    expect(messages.sent.some(m => m.type === 'burst:close')).toBe(true)
   })
 
   it('firefox recover refuses picker reopen when ping omits nonce or href', async () => {
@@ -981,6 +991,7 @@ describe('burstFlow', () => {
       expect(fx.legacy.length).toBe(2)
     })
     expect(messages.sent.some(m => m.type === 'burst:open')).toBe(false)
+    expect(messages.sent.some(m => m.type === 'burst:close')).toBe(true)
   })
 
   it('does not stack cannot-resume notifies on unselect plus ack partition failure', async () => {
@@ -1088,5 +1099,39 @@ describe('burstFlow', () => {
     expect(holds.getWindow()?.requestId).toBe('req-keep')
     expect(messages.sent.some(m => m.type === 'burst:open')).toBe(false)
     expect(holds.map.has(1)).toBe(true)
+  })
+
+  it('submit-status timer still finishes after the live window TTL expires', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    vi.useFakeTimers()
+    holds.windowLive = false
+    holds.map.set(1, firefoxHold(1))
+    holds.map.set(2, firefoxHold(2))
+    holds.setWindow(
+      pickerWindow({
+        phase: 'submitting',
+        requestId: 'req-keep',
+        firstItemAt: 0,
+        lastItemAt: 0,
+        pickerDeadline: 1,
+        submitItems: [
+          { clientItemId: 'aa', downloadId: 1, index: 0 },
+          { clientItemId: 'bb', downloadId: 2, index: 1 },
+        ],
+      }),
+    )
+    ws.sendDirectBatchStatus.mockResolvedValue({ status: 'pending' })
+    await recoverBurstState()
+    expect(holds.getWindow()?.requestId).toBe('req-keep')
+    ws.sendDirectBatchStatus.mockResolvedValue({
+      status: 'complete',
+      succeeded_item_ids: ['aa', 'bb'],
+      duplicate_item_ids: [],
+      errors_by_item_id: {},
+    })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(holds.getWindow()).toBeNull()
+    expect(holds.map.has(1)).toBe(false)
   })
 })

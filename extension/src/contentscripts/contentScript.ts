@@ -294,7 +294,9 @@ function startBurstAlivePoll(): void {
     void sendMessage('burst:alive', { capture_id: captureId }, 'background')
       .then(reply => {
         if (!isCurrentBurstCapture(captureId, burstCaptureId)) return
-        if (!reply?.ok && burstAliveMissShouldCancel()) teardownBurstOverlay()
+        if (reply?.ok) return
+        if (burstAliveMissShouldCancel()) teardownBurstOverlay()
+        else applyBurstPicker({ type: 'close' })
       })
       .catch(() => {
         if (!isCurrentBurstCapture(captureId, burstCaptureId)) return
