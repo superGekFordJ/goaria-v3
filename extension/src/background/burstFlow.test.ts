@@ -126,6 +126,8 @@ vi.mock('./burstHoldStore', () => ({
     holds.map.delete(id)
   },
   getBurstWindow: async () => holds.getWindow(),
+  getBurstWindowIgnoringTtl: async () => holds.getWindow(),
+  listExpiredBurstHoldIds: async () => [] as number[],
   saveBurstWindow: async (win: Record<string, unknown>) => {
     holds.setWindow(win)
   },
@@ -158,6 +160,7 @@ vi.mock('./domConnectGeneration', () => ({
 import {
   admitConfirmedDownload,
   handleBurstSubmit,
+  isCoalescerEligible,
   recoverBurstState,
   referrerOriginMatches,
   resetBurstFlowForTests,
@@ -185,6 +188,25 @@ function holdOf(id: number, url = `https://cdn.example.test/${id}.bin`) {
     captureId: SESSION.captureId,
     referrer: 'https://example.test/page',
     incognito: false,
+  }
+}
+
+function pickerWindow(extra: Record<string, unknown> = {}) {
+  return {
+    captureId: SESSION.captureId,
+    downloadIds: [1, 2],
+    firstItemAt: 0,
+    lastItemAt: 0,
+    phase: 'picker',
+    tabId: 4,
+    pageHref: 'https://example.test/page',
+    incognito: false,
+    storeUnproven: true,
+    catalog: [
+      { index: 0, downloadId: 1 },
+      { index: 1, downloadId: 2 },
+    ],
+    ...extra,
   }
 }
 
@@ -244,6 +266,37 @@ describe('burstFlow', () => {
     ).toBe(false)
   })
 
+  it('isCoalescerEligible rejects empty, unparsable, and mismatched referrers', async () => {
+    const base = { url: 'https://cdn.example.test/a.bin', incognito: false }
+    expect(await isCoalescerEligible({ ...base, referrer: '' } as never)).toBe(false)
+    expect(await isCoalescerEligible({ ...base, referrer: '   ' } as never)).toBe(false)
+    expect(await isCoalescerEligible({ ...base, referrer: 'not-a-url' } as never)).toBe(false)
+    expect(
+      await isCoalescerEligible({ ...base, referrer: 'https://other.test/' } as never),
+    ).toBe(false)
+    expect(
+      await isCoalescerEligible({ ...base, referrer: 'https://example.test/x' } as never),
+    ).toBe(true)
+  })
+
+  it('isCoalescerEligible rejects incognito mismatch and picker-phase windows', async () => {
+    expect(
+      await isCoalescerEligible({
+        url: 'https://cdn.example.test/a.bin',
+        referrer: 'https://example.test/page',
+        incognito: true,
+      } as never),
+    ).toBe(false)
+    holds.setWindow(pickerWindow())
+    expect(
+      await isCoalescerEligible({
+        url: 'https://cdn.example.test/a.bin',
+        referrer: 'https://example.test/page',
+        incognito: false,
+      } as never),
+    ).toBe(false)
+  })
+
   it('does not merge without a session', async () => {
     sessionStore.session = null
     holds.map.set(1, holdOf(1))
@@ -275,17 +328,31 @@ describe('burstFlow', () => {
     expect(bridge.legacy).toEqual([])
   })
 
+  it('serializes concurrent admits onto one window', async () => {
+    holds.map.set(1, holdOf(1))
+    holds.map.set(2, holdOf(2))
+    await Promise.all([
+      admitConfirmedDownload(1, { url: holdOf(1).url } as never),
+      admitConfirmedDownload(2, { url: holdOf(2).url } as never),
+    ])
+    const ids = (holds.getWindow()?.downloadIds as number[] | undefined)?.slice().sort((a, b) => a - b)
+    expect(ids).toEqual([1, 2])
+  })
+
   it('resumes duplicates and errors, and erases only succeeded ids', async () => {
     holds.map.set(1, holdOf(1))
     holds.map.set(2, holdOf(2))
     holds.map.set(3, holdOf(3))
-    holds.setWindow({
-      captureId: SESSION.captureId,
-      downloadIds: [1, 2, 3],
-      firstItemAt: 0,
-      lastItemAt: 0,
-      phase: 'picker',
-    })
+    holds.setWindow(
+      pickerWindow({
+        downloadIds: [1, 2, 3],
+        catalog: [
+          { index: 0, downloadId: 1 },
+          { index: 1, downloadId: 2 },
+          { index: 2, downloadId: 3 },
+        ],
+      }),
+    )
     ws.sendDirectBatch.mockImplementation(async (payload?: Record<string, unknown>) => {
       const items = (payload?.items ?? []) as Array<{ client_item_id: string }>
       return {
@@ -306,13 +373,7 @@ describe('burstFlow', () => {
   it('keeps holds and the original request id on busy', async () => {
     holds.map.set(1, holdOf(1))
     holds.map.set(2, holdOf(2))
-    holds.setWindow({
-      captureId: SESSION.captureId,
-      downloadIds: [1, 2],
-      firstItemAt: 0,
-      lastItemAt: 0,
-      phase: 'picker',
-    })
+    holds.setWindow(pickerWindow())
     ws.sendDirectBatch.mockRejectedValue(new RpcRequestError('busy', 'req'))
     const first = await handleBurstSubmit({
       capture_id: SESSION.captureId as string,
@@ -331,19 +392,78 @@ describe('burstFlow', () => {
     expect(holds.getWindow()?.requestId).toBe(id)
   })
 
-  it('restores burst holds on recover without sending them through legacy handoff', async () => {
-    holds.map.set(9, holdOf(9))
-    holds.setWindow({
-      captureId: SESSION.captureId,
-      downloadIds: [9],
-      firstItemAt: Date.now(),
-      lastItemAt: Date.now(),
-      phase: 'picker',
-      pickerDeadline: Date.now() + 60_000,
+  it('submits from frozen window credentials after the arm session is gone', async () => {
+    sessionStore.session = null
+    holds.map.set(1, holdOf(1))
+    holds.map.set(2, holdOf(2))
+    holds.setWindow(pickerWindow())
+    ws.sendDirectBatch.mockResolvedValue({
+      succeeded_item_ids: ['aa', 'bb'],
+      duplicate_item_ids: [],
+      errors_by_item_id: {},
     })
+    const reply = await handleBurstSubmit({
+      capture_id: SESSION.captureId as string,
+      indices: [0, 1],
+    })
+    expect(reply.accepted).toBe(true)
+    expect(ws.sendDirectBatch).toHaveBeenCalled()
+  })
+
+  it('maps compacted catalog indices instead of downloadIds slots', async () => {
+    holds.map.set(1, holdOf(1))
+    holds.map.set(3, holdOf(3))
+    holds.setWindow(
+      pickerWindow({
+        downloadIds: [1, 2, 3],
+        catalog: [
+          { index: 0, downloadId: 1 },
+          { index: 1, downloadId: 3 },
+        ],
+      }),
+    )
+    ws.sendDirectBatch.mockImplementation(async (payload?: Record<string, unknown>) => {
+      const items = (payload?.items ?? []) as Array<{ client_item_id: string }>
+      return {
+        succeeded_item_ids: items.map(row => row.client_item_id),
+        duplicate_item_ids: [],
+        errors_by_item_id: {},
+      }
+    })
+    const reply = await handleBurstSubmit({
+      capture_id: SESSION.captureId as string,
+      indices: [1],
+    })
+    expect(reply.accepted).toBe(true)
+    expect(bridge.cancel).toEqual([3])
+    expect(bridge.resume).toEqual([1])
+  })
+
+  it('resumes remaining holds when submit is invalid_request', async () => {
+    holds.map.set(1, holdOf(1))
+    holds.map.set(2, holdOf(2))
+    holds.setWindow(pickerWindow())
+    const reply = await handleBurstSubmit({
+      capture_id: 'not-the-capture',
+      indices: [0, 1],
+    })
+    expect(reply.error_code).toBe('invalid_request')
+    expect(bridge.resume.sort()).toEqual([1, 2])
+  })
+
+  it('fail-closed resumes burst holds on recover without legacy handoff', async () => {
+    holds.map.set(9, holdOf(9))
+    holds.setWindow(
+      pickerWindow({
+        downloadIds: [9],
+        catalog: [{ index: 0, downloadId: 9 }],
+        pickerDeadline: Date.now() + 60_000,
+      }),
+    )
     await recoverBurstState()
-    expect(bridge.paused.has(9)).toBe(true)
+    expect(bridge.resume).toEqual([9])
     expect(bridge.legacy).toEqual([])
+    expect(messages.sent.some(m => m.type === 'burst:open')).toBe(false)
   })
 
   it('resumeAllBurstHolds resumes remaining Chrome downloads', async () => {

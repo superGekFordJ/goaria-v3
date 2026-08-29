@@ -20,7 +20,7 @@
   } from '../background/pickerSelection'
   import { folderFieldForSubmit } from '../background/pickerFolder'
   import { activeFromRoot, isTrapFocusable, restoreSelector, wrapTabIndex } from './pickerFocus'
-  import { formatPickerBytes } from './pickerChrome'
+  import { formatPickerBytes, pickerItemIdentity } from './pickerChrome'
 
   // Chrome caps (128/80/100) are shared display limits, not Extractor lease rules.
   let {
@@ -64,6 +64,7 @@
   let createGroup = $state(false)
   let folderRaw = $state('')
   let lastCatalogKey = ''
+  let lastItemIdentity = ''
 
   let selectable = $derived(selectableCount(items.length, EXTRACTOR_MAX_SESSION_ITEMS))
   let win = $derived(visibleWindow(activeIndex, items.length, EXTRACTOR_PICKER_WINDOW))
@@ -95,8 +96,10 @@
 
   $effect(() => {
     const key = catalogKey
-    if (key === lastCatalogKey) return
+    const identity = pickerItemIdentity(items)
+    if (key === lastCatalogKey && identity === lastItemIdentity) return
     lastCatalogKey = key
+    lastItemIdentity = identity
     selected = new Set(initialPickerSelection(selectPolicy, items.length))
     activeIndex = 0
     createGroup = false

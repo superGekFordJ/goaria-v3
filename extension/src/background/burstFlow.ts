@@ -25,9 +25,13 @@ import {
   getAllBurstHolds,
   getBurstHold,
   getBurstWindow,
+  getBurstWindowIgnoringTtl,
+  listExpiredBurstHoldIds,
   removeBurstHold,
   removeBurstWindow,
+  saveBurstHold,
   saveBurstWindow,
+  type BurstCatalogEntry,
   type BurstHold,
   type BurstWindowRecord,
 } from './burstHoldStore'
@@ -75,6 +79,25 @@ let quietTimer: ReturnType<typeof setTimeout> | null = null
 let maxTimer: ReturnType<typeof setTimeout> | null = null
 let pickerTimer: ReturnType<typeof setTimeout> | null = null
 let submitInflight = false
+let captureChain: Promise<unknown> = Promise.resolve()
+
+type BurstSubmitContext = {
+  captureId: string
+  tabId: number
+  pageHref: string
+  storeUnproven: boolean
+  cookieStoreId?: string
+  documentPolicy?: string
+}
+
+function runExclusive<T>(work: () => Promise<T>): Promise<T> {
+  const next = captureChain.then(work, work)
+  captureChain = next.then(
+    () => undefined,
+    () => undefined,
+  )
+  return next
+}
 
 export function setChromeBurstBridge(next: ChromeBurstBridge): void {
   bridge = next
@@ -182,6 +205,28 @@ function pendingFromHold(hold: BurstHold): PendingDecision {
   }
 }
 
+function submitContextFromWindow(window: BurstWindowRecord): BurstSubmitContext | null {
+  if (typeof window.tabId !== 'number' || typeof window.pageHref !== 'string' || window.pageHref === '') {
+    return null
+  }
+  return {
+    captureId: window.captureId,
+    tabId: window.tabId,
+    pageHref: window.pageHref,
+    storeUnproven: window.storeUnproven === true,
+    cookieStoreId: window.cookieStoreId,
+    documentPolicy: window.documentPolicy,
+  }
+}
+
+function memberIdsForWindow(window: BurstWindowRecord, holds: Map<number, BurstHold>): number[] {
+  const ids = new Set<number>(window.downloadIds)
+  for (const [id, hold] of holds) {
+    if (hold.captureId === window.captureId) ids.add(id)
+  }
+  return [...ids]
+}
+
 export async function isCoalescerEligible(ctx: InterceptionContext): Promise<boolean> {
   const session = await getCaptureSession()
   if (!session) return false
@@ -200,16 +245,16 @@ function scheduleClocks(window: BurstWindowState): void {
   if (quietIn > 0) {
     quietTimer = setTimeout(() => {
       quietTimer = null
-      void onCoalescerClock()
+      void runExclusive(() => onCoalescerClock())
     }, quietIn)
   }
   if (maxIn > 0) {
     maxTimer = setTimeout(() => {
       maxTimer = null
-      void onCoalescerClock()
+      void runExclusive(() => onCoalescerClock())
     }, maxIn)
   } else {
-    void onCoalescerClock()
+    void runExclusive(() => onCoalescerClock())
   }
 }
 
@@ -218,7 +263,7 @@ function armPickerClock(deadline: number): void {
   const ms = deadline - Date.now()
   const fire = (): void => {
     pickerTimer = null
-    void resumeAllBurstHolds()
+    void runExclusive(() => resumeAllBurstHoldsLocked())
   }
   if (ms <= 0) {
     fire()
@@ -253,9 +298,9 @@ async function migrateToLegacy(downloadId: number, hold: BurstHold): Promise<voi
 
 async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: boolean): Promise<void> {
   clearClocks()
-  const ids = [...window.downloadIds]
   const holds = await getAllBurstHolds()
-  if (forceLegacy || ids.length <= 1) {
+  const ids = memberIdsForWindow(window, holds)
+  if (forceLegacy || ids.filter(id => holds.has(id)).length <= 1) {
     await removeBurstWindow()
     for (const id of ids) {
       const hold = holds.get(id)
@@ -287,11 +332,16 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
     }
     return
   }
+  const catalog: BurstCatalogEntry[] = []
   const items: BurstPickerCatalogItem[] = []
-  for (let i = 0; i < ids.length; i++) {
-    const hold = holds.get(ids[i])
+  const snapshotAt = Date.now()
+  for (const id of ids) {
+    const hold = holds.get(id)
     if (!hold) continue
-    const row: BurstPickerCatalogItem = { index: items.length }
+    const index = catalog.length
+    catalog.push({ index, downloadId: id })
+    await saveBurstHold(id, { ...hold, startTime: snapshotAt })
+    const row: BurstPickerCatalogItem = { index }
     const filename = sanitizeDisplayFilename(hold.filename)
     if (filename) row.filename = filename
     try {
@@ -314,14 +364,21 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
     }
     return
   }
-  const pickerDeadline = Date.now() + BURST_HOLD_TTL_MS
+  const pickerDeadline = snapshotAt + BURST_HOLD_TTL_MS
   const next: BurstWindowRecord = {
     ...window,
+    downloadIds: catalog.map(entry => entry.downloadId),
     phase: 'picker',
     pickerDeadline,
+    catalog,
+    tabId: session.tabId,
+    pageHref: session.pageHref,
+    incognito: session.incognito,
     storeUnproven: session.storeUnproven,
     documentPolicy: session.documentPolicy,
+    documentNonce: session.documentNonce,
   }
+  if (session.cookieStoreId) next.cookieStoreId = session.cookieStoreId
   await saveBurstWindow(next)
   const payload: BurstOpenMessage = {
     capture_id: session.captureId,
@@ -354,6 +411,13 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
 }
 
 export async function admitConfirmedDownload(
+  downloadId: number,
+  ctx: InterceptionContext,
+): Promise<'legacy' | 'coalesced' | 'overflow'> {
+  return runExclusive(() => admitConfirmedDownloadLocked(downloadId, ctx))
+}
+
+async function admitConfirmedDownloadLocked(
   downloadId: number,
   ctx: InterceptionContext,
 ): Promise<'legacy' | 'coalesced' | 'overflow'> {
@@ -393,12 +457,17 @@ export async function resumeHeldDownload(downloadId: number): Promise<void> {
 }
 
 export async function resumeAllBurstHolds(): Promise<void> {
+  return runExclusive(() => resumeAllBurstHoldsLocked())
+}
+
+async function resumeAllBurstHoldsLocked(): Promise<void> {
   clearClocks()
   clearPickerClock()
-  const window = await getBurstWindow()
+  await reapExpiredBurstState()
+  const window = (await getBurstWindow()) ?? (await getBurstWindowIgnoringTtl())
   const holds = await getAllBurstHolds()
   const ids = new Set<number>([...holds.keys(), ...(window?.downloadIds ?? [])])
-  const tabId = (await getCaptureSession())?.tabId
+  const tabId = window?.tabId ?? (await getCaptureSession())?.tabId
   await removeBurstWindow()
   await disarmCaptureSession()
   for (const id of ids) {
@@ -407,6 +476,36 @@ export async function resumeAllBurstHolds(): Promise<void> {
   if (typeof tabId === 'number') {
     void sendMessage('burst:close', {}, `content-script@${tabId}`).catch(() => undefined)
   }
+}
+
+async function stillPaused(downloadId: number): Promise<boolean> {
+  try {
+    const items = await browser.downloads.search({ id: downloadId })
+    const item = items[0]
+    return Boolean(item && item.state === 'in_progress' && item.paused === true)
+  } catch {
+    return false
+  }
+}
+
+async function reapExpiredBurstState(): Promise<void> {
+  const expiredIds = await listExpiredBurstHoldIds()
+  for (const id of expiredIds) {
+    if (await stillPaused(id)) await resumeHeldDownload(id)
+    else await removeBurstHold(id)
+  }
+  const live = await getBurstWindow()
+  if (live) return
+  const expiredWindow = await getBurstWindowIgnoringTtl()
+  if (!expiredWindow) {
+    await removeBurstWindow()
+    return
+  }
+  for (const id of expiredWindow.downloadIds) {
+    if (await stillPaused(id)) await resumeHeldDownload(id)
+    else await removeBurstHold(id)
+  }
+  await removeBurstWindow()
 }
 
 export async function takeoverSuccess(downloadId: number): Promise<void> {
@@ -429,6 +528,10 @@ async function closeBurstOverlay(tabId: number, captureId?: string): Promise<voi
 }
 
 export async function handleCaptureArm(): Promise<{ ok: boolean; error?: string }> {
+  return runExclusive(() => handleCaptureArmLocked())
+}
+
+async function handleCaptureArmLocked(): Promise<{ ok: boolean; error?: string }> {
   if (connectionState.status !== 'connected' || !connectionState.paired) {
     notify('capture_notif_title', 'capture_reject_disconnected')
     return { ok: false, error: 'disconnected' }
@@ -544,42 +647,53 @@ async function queryBurstStatus(requestId: string): Promise<BurstSubmitReply> {
 export async function handleBurstSubmit(
   data: BurstSubmitMessage,
 ): Promise<BurstSubmitReply> {
+  return runExclusive(() => handleBurstSubmitLocked(data))
+}
+
+async function handleBurstSubmitLocked(
+  data: BurstSubmitMessage,
+): Promise<BurstSubmitReply> {
+  if (submitInflight) return { accepted: false, error_code: 'busy' }
   const window = await getBurstWindow()
-  const session = await getCaptureSession()
-  if (
-    !window ||
-    !session ||
-    data.capture_id !== session.captureId ||
-    data.capture_id !== window.captureId
-  ) {
+  if (!window || data.capture_id !== window.captureId) {
+    await resumeAllBurstHoldsLocked()
+    return { accepted: false, error_code: 'invalid_request' }
+  }
+  const ctx = submitContextFromWindow(window)
+  if (!ctx) {
+    await resumeAllBurstHoldsLocked()
     return { accepted: false, error_code: 'invalid_request' }
   }
   if (!Array.isArray(data.indices) || data.indices.length === 0) {
-    await resumeAllBurstHolds()
+    await resumeAllBurstHoldsLocked()
     return { accepted: true }
   }
   if (!hasCapability(connectionState.capabilities, CAP_DOWNLOAD_BATCH)) {
-    await resumeAllBurstHolds()
+    await resumeAllBurstHoldsLocked()
     return { accepted: false, error_code: 'unsupported' }
   }
-  const holds = await getAllBurstHolds()
-  const orderedIds = window.downloadIds
-  const selected = new Set(data.indices)
-  const selectedHolds: Array<{ index: number; downloadId: number; hold: BurstHold }> = []
-  for (let i = 0; i < orderedIds.length; i++) {
-    const id = orderedIds[i]
-    const hold = holds.get(id)
-    if (!hold) continue
-    if (selected.has(i)) selectedHolds.push({ index: i, downloadId: id, hold })
-    else await resumeHeldDownload(id)
-  }
-  if (selectedHolds.length === 0) {
-    await resumeAllBurstHolds()
-    return { accepted: true }
-  }
-  if (submitInflight) return { accepted: false, error_code: 'busy' }
   submitInflight = true
   try {
+    const holds = await getAllBurstHolds()
+    const catalog =
+      window.catalog && window.catalog.length > 0
+        ? window.catalog
+        : window.downloadIds.map((downloadId, index) => ({ index, downloadId }))
+    const selected = new Set(data.indices)
+    const selectedHolds: Array<{ index: number; downloadId: number; hold: BurstHold }> = []
+    for (const entry of catalog) {
+      const hold = holds.get(entry.downloadId)
+      if (!hold) continue
+      if (selected.has(entry.index)) {
+        selectedHolds.push({ index: entry.index, downloadId: entry.downloadId, hold })
+      } else {
+        await resumeHeldDownload(entry.downloadId)
+      }
+    }
+    if (selectedHolds.length === 0) {
+      await resumeAllBurstHoldsLocked()
+      return { accepted: true }
+    }
     const fields = folderFieldForSubmit({
       createGroup: data.create_group === true,
       selectedCount: selectedHolds.length,
@@ -590,13 +704,13 @@ export async function handleBurstSubmit(
         ? { requestId: window.requestId, submitItems: window.submitItems }
         : null
     const built = await buildBurstPayload(
-      session,
+      ctx,
       selectedHolds,
       fields,
       reuse?.submitItems,
     )
     if ('error' in built) {
-      await resumeAllBurstHolds()
+      await resumeAllBurstHoldsLocked()
       return { accepted: false, error_code: 'invalid_request' }
     }
     const requestId = reuse?.requestId ?? mintDirectBatchRequestId()
@@ -611,7 +725,7 @@ export async function handleBurstSubmit(
     try {
       const ack = await wsClient.sendDirectBatch(payload, requestId)
       const parts = await applyAckPartitions(submitItems ?? [], ack)
-      await finishBurstSubmit(session.tabId, session.captureId)
+      await finishBurstSubmit(ctx.tabId, ctx.captureId)
       return { accepted: true, ...parts }
     } catch (err) {
       const code = errorCodeOf(err)
@@ -625,11 +739,11 @@ export async function handleBurstSubmit(
             for (const item of submitItems ?? []) await resumeHeldDownload(item.downloadId)
             notify('capture_notif_title', 'dom_not_found')
           }
-          await finishBurstSubmit(session.tabId, session.captureId)
+          await finishBurstSubmit(ctx.tabId, ctx.captureId)
         }
         return status
       }
-      await resumeAllBurstHolds()
+      await resumeAllBurstHoldsLocked()
       return { accepted: false, error_code: code }
     }
   } finally {
@@ -638,7 +752,7 @@ export async function handleBurstSubmit(
 }
 
 async function buildBurstPayload(
-  session: CaptureSession,
+  ctx: BurstSubmitContext,
   selectedHolds: Array<{ index: number; downloadId: number; hold: BurstHold }>,
   fields: { create_group?: boolean; folder_name?: string },
   reuseIds?: Array<{ clientItemId: string; downloadId: number; index: number }>,
@@ -648,9 +762,9 @@ async function buildBurstPayload(
 > {
   const cookieLines = await collectCookieHeadersForUrls({
     urls: selectedHolds.map(row => row.hold.url),
-    sourceHref: session.pageHref,
-    storeId: session.cookieStoreId,
-    storeUnproven: session.storeUnproven,
+    sourceHref: ctx.pageHref,
+    storeId: ctx.cookieStoreId,
+    storeUnproven: ctx.storeUnproven,
     getAll: details => browser.cookies.getAll(details) as Promise<unknown[]>,
   })
   const reused = new Map((reuseIds ?? []).map(row => [row.downloadId, row.clientItemId]))
@@ -675,9 +789,9 @@ async function buildBurstPayload(
     const cookie = cookieLines[i]
     if (cookie) rec.headers = [cookie]
     const page = referrerResult({
-      pageHref: session.pageHref,
+      pageHref: ctx.pageHref,
       targetHref: row.hold.url,
-      documentPolicy: session.documentPolicy,
+      documentPolicy: ctx.documentPolicy,
     })
     if (page) rec.download_page = page
     items.push(rec)
@@ -697,10 +811,12 @@ async function finishBurstSubmit(tabId: number, captureId: string): Promise<void
 }
 
 export async function handleBurstCancel(data: BurstCancelMessage): Promise<{ ok: boolean }> {
-  const session = await getCaptureSession()
-  if (session && data.capture_id && data.capture_id !== session.captureId) return { ok: false }
-  await resumeAllBurstHolds()
-  return { ok: true }
+  return runExclusive(async () => {
+    const window = (await getBurstWindow()) ?? (await getBurstWindowIgnoringTtl())
+    if (window && data.capture_id && data.capture_id !== window.captureId) return { ok: false }
+    await resumeAllBurstHoldsLocked()
+    return { ok: true }
+  })
 }
 
 export async function handleBurstAlive(data: BurstAliveMessage): Promise<{ ok: boolean }> {
@@ -711,107 +827,54 @@ export async function handleBurstAlive(data: BurstAliveMessage): Promise<{ ok: b
 }
 
 export async function handleBurstStatus(data: BurstAliveMessage): Promise<BurstSubmitReply> {
-  const window = await getBurstWindow()
-  if (!window || window.captureId !== data.capture_id || !window.requestId) {
-    return { accepted: false, error_code: 'not_found' }
-  }
-  const status = await queryBurstStatus(window.requestId)
-  if (status.accepted || status.error_code === 'not_found') {
-    const session = await getCaptureSession()
-    if (status.error_code === 'not_found') {
-      for (const item of window.submitItems ?? []) await resumeHeldDownload(item.downloadId)
-      notify('capture_notif_title', 'dom_not_found')
+  return runExclusive(async () => {
+    const window = await getBurstWindow()
+    if (!window || window.captureId !== data.capture_id || !window.requestId) {
+      return { accepted: false, error_code: 'not_found' }
     }
-    if (session) await finishBurstSubmit(session.tabId, session.captureId)
-  }
-  return status
+    const status = await queryBurstStatus(window.requestId)
+    if (status.accepted || status.error_code === 'not_found') {
+      const ctx = submitContextFromWindow(window)
+      if (status.error_code === 'not_found') {
+        for (const item of window.submitItems ?? []) await resumeHeldDownload(item.downloadId)
+        notify('capture_notif_title', 'dom_not_found')
+      }
+      if (ctx) await finishBurstSubmit(ctx.tabId, ctx.captureId)
+    }
+    return status
+  })
 }
 
 export async function recoverBurstState(): Promise<void> {
+  return runExclusive(() => recoverBurstStateLocked())
+}
+
+async function recoverBurstStateLocked(): Promise<void> {
+  await reapExpiredBurstState()
   const holds = await getAllBurstHolds()
-  const window = await getBurstWindow()
-  const stillHeld: number[] = []
-  for (const [downloadId, hold] of holds) {
+  for (const [downloadId] of holds) {
     try {
       const items = await browser.downloads.search({ id: downloadId })
       const item = items[0]
       if (!item || item.state === 'complete' || !(item.state === 'in_progress' && item.paused)) {
         await removeBurstHold(downloadId)
-        continue
+      } else {
+        bridge?.restorePausedMemory(downloadId)
       }
-      bridge?.restorePausedMemory(downloadId)
-      stillHeld.push(downloadId)
-      void hold
     } catch {
       await removeBurstHold(downloadId)
     }
   }
-  if (!window) return
-  if (window.phase === 'coalescing') {
-    const live: BurstWindowRecord = {
-      ...window,
-      downloadIds: window.downloadIds.filter(id => stillHeld.includes(id)),
-    }
-    if (live.downloadIds.length === 0) {
-      await removeBurstWindow()
-      return
-    }
-    await saveBurstWindow(live)
-    const now = Date.now()
-    const closed = evaluateClose(live, now, BURST_QUIET_WINDOW_MS, BURST_MAX_DEADLINE_MS)
-    if (closed.kind === 'legacy_single' || closed.kind === 'burst') {
-      await closeCoalescedWindow(live, closed.kind === 'legacy_single')
-    } else {
-      scheduleClocks(live)
-    }
-    return
-  }
-  if (window.phase === 'picker') {
-    const session = await getCaptureSession()
-    if (!session) {
-      await resumeAllBurstHolds()
-      return
-    }
-    armPickerClock(window.pickerDeadline ?? Date.now() + BURST_HOLD_TTL_MS)
-    const holdsNow = await getAllBurstHolds()
-    const items: BurstPickerCatalogItem[] = []
-    for (const id of window.downloadIds) {
-      const hold = holdsNow.get(id)
-      if (!hold) continue
-      const row: BurstPickerCatalogItem = { index: items.length, filename: hold.filename }
-      items.push(row)
-    }
-    if (items.length >= 2) {
-      void sendMessage(
-        'burst:open',
-        {
-          capture_id: session.captureId,
-          items,
-          store_unproven: session.storeUnproven,
-        } satisfies BurstOpenMessage,
-        `content-script@${session.tabId}`,
-      ).catch(() => undefined)
-    }
-    return
-  }
-  if (window.phase === 'submitting' && window.requestId) {
-    const status = await queryBurstStatus(window.requestId)
-    if (status.accepted || status.error_code === 'not_found') {
-      const session = await getCaptureSession()
-      if (status.error_code === 'not_found') {
-        for (const item of window.submitItems ?? []) await resumeHeldDownload(item.downloadId)
-      }
-      if (session) await finishBurstSubmit(session.tabId, session.captureId)
-    }
-  }
+  await resumeAllBurstHoldsLocked()
 }
 
 function dropSessionTab(tabId: number): void {
-  void (async () => {
+  void runExclusive(async () => {
+    const window = (await getBurstWindow()) ?? (await getBurstWindowIgnoringTtl())
     const session = await getCaptureSession()
-    if (!session || session.tabId !== tabId) return
-    await resumeAllBurstHolds()
-  })()
+    if (window?.tabId !== tabId && session?.tabId !== tabId) return
+    await resumeAllBurstHoldsLocked()
+  })
 }
 
 export function initBurstFlow(): void {
@@ -843,5 +906,6 @@ export function resetBurstFlowForTests(): void {
   clearClocks()
   clearPickerClock()
   submitInflight = false
+  captureChain = Promise.resolve()
   bridge = null
 }

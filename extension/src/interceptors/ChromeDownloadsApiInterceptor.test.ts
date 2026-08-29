@@ -65,6 +65,7 @@ const downloads = vi.hoisted(() => {
     suggest: [] as number[],
   }
   let confirmPaused = true
+  let searchThrows = false
   return {
     created,
     filename,
@@ -73,11 +74,15 @@ const downloads = vi.hoisted(() => {
     setConfirmPaused(v: boolean) {
       confirmPaused = v
     },
+    setSearchThrows(v: boolean) {
+      searchThrows = v
+    },
     reset() {
       created.length = 0
       filename.length = 0
       items.clear()
       confirmPaused = true
+      searchThrows = false
       calls.pause = []
       calls.search = []
       calls.cancel = []
@@ -103,6 +108,7 @@ const downloads = vi.hoisted(() => {
       },
       search: async (query: { id: number }) => {
         calls.search.push(query.id)
+        if (searchThrows) throw new Error('search failed')
         const item = items.get(query.id)
         return item ? [item] : []
       },
@@ -392,7 +398,7 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
     expect(burst.admit).not.toHaveBeenCalled()
   })
 
-  it('takes immediate legacy on empty referrer even with a session', async () => {
+  it('takes immediate legacy when coalescer eligibility is false', async () => {
     burst.eligible = false
     const item = downloadItem({ referrer: '  ' })
     downloads.items.set(1, item)
@@ -425,7 +431,20 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
     expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
   })
 
-  it('recovers pending_ via legacy send and does not send burst holds through that path', async () => {
+  it('resumes a paused item when search cannot confirm the pause', async () => {
+    downloads.setSearchThrows(true)
+    const item = downloadItem()
+    downloads.items.set(1, item)
+    downloads.created[0](item)
+    await vi.waitFor(() => {
+      expect(downloads.calls.pause).toEqual([1])
+      expect(downloads.calls.resume).toEqual([1])
+    })
+    expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
+    expect(burst.admit).not.toHaveBeenCalled()
+  })
+
+  it('recovers pending_ via legacy send then calls recoverBurstState for holds', async () => {
     pending.map.set(3, {
       url: 'https://cdn.example.test/file.bin',
       filename: 'file.bin',

@@ -75,7 +75,7 @@ initContextMenu()
 initTabMatcher()
 initExtractorFlow()
 initDomFlow()
-initBurstFlow()
+if (!isFirefox()) initBurstFlow()
 
 // Download interception: fork by build target and register before any await so
 // cold-wake downloads/webRequest events are not missed. shouldIntercept still

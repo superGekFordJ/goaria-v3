@@ -4,9 +4,10 @@
   import { unpairFromPopup } from '../stores/connection-popup'
   import { sendMessage } from 'webext-bridge/popup'
   import LiquidGlassPanel from '../lib/glass/LiquidGlassPanel.svelte'
-import type { InterceptionToggleMessage, CaptureArmMessage } from '../utils/messaging'
-import { t } from '../lib/i18n'
-import { CAP_DOWNLOAD_BATCH } from '../stores/config.svelte'
+  import type { InterceptionToggleMessage, CaptureArmMessage, CaptureArmReply } from '../utils/messaging'
+  import { t } from '../lib/i18n'
+  import { CAP_DOWNLOAD_BATCH } from '../stores/config.svelte'
+  import { isFirefox } from '../utils/extensionInfo'
 
   let showSettings = $state(false)
   let showPairGuide = $state(false)
@@ -26,8 +27,11 @@ import { CAP_DOWNLOAD_BATCH } from '../stores/config.svelte'
   )
 
   let toggleDisabled = $derived(connectionState.status !== 'connected')
+  let sessionArmed = $state(false)
   let armDisabled = $derived(
-    connectionState.status !== 'connected' ||
+    isFirefox() ||
+      sessionArmed ||
+      connectionState.status !== 'connected' ||
       !connectionState.paired ||
       !configState.autoCapture ||
       !(connectionState.capabilities ?? []).includes(CAP_DOWNLOAD_BATCH),
@@ -36,7 +40,12 @@ import { CAP_DOWNLOAD_BATCH } from '../stores/config.svelte'
   async function armCapture() {
     if (armDisabled) return
     try {
-      await sendMessage('capture:arm', {} satisfies CaptureArmMessage, 'background')
+      const reply = (await sendMessage(
+        'capture:arm',
+        {} satisfies CaptureArmMessage,
+        'background',
+      )) as CaptureArmReply
+      if (reply?.ok === true) sessionArmed = true
     } catch {
       // background unavailable
     }
@@ -106,6 +115,7 @@ import { CAP_DOWNLOAD_BATCH } from '../stores/config.svelte'
     </LiquidGlassPanel>
   </div>
 
+  {#if !isFirefox()}
   <div class="popup-section">
     <LiquidGlassPanel
       as="button"
@@ -121,6 +131,7 @@ import { CAP_DOWNLOAD_BATCH } from '../stores/config.svelte'
       </span>
     </LiquidGlassPanel>
   </div>
+  {/if}
 
   {#if !connectionState.paired}
     <div class="popup-section">

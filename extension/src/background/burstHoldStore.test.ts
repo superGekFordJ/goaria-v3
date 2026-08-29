@@ -41,6 +41,7 @@ import { getAllPendingDecisions } from './pendingDecisionStore'
 import {
   getAllBurstHolds,
   getBurstHold,
+  listExpiredBurstHoldIds,
   parseBurstHold,
   parseBurstWindow,
   saveBurstHold,
@@ -112,6 +113,7 @@ describe('burstHoldStore', () => {
       incognito: false,
     })
     expect(await getBurstHold(4)).toBeNull()
+    expect(await listExpiredBurstHoldIds()).toEqual([4])
   })
 
   it('persists a burst window snapshot without Cookie', async () => {

@@ -162,5 +162,6 @@ describe('background interceptor registration order', () => {
     expect(registerIdx).toBeGreaterThan(-1)
     expect(awaitIdx).toBeGreaterThan(-1)
     expect(registerIdx).toBeLessThan(awaitIdx)
+    expect(src).toContain('if (!isFirefox()) initBurstFlow()')
   })
 })

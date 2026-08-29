@@ -237,9 +237,21 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
   }
 
   private async releaseUnconfirmed(downloadId: number): Promise<void> {
+    try {
+      const fresh = await browser.downloads.search({ id: downloadId })
+      const found = fresh[0]
+      if (found && found.state === 'in_progress' && found.paused === true) {
+        this.invokeSuggest(downloadId)
+        await this.resumeDownload(downloadId)
+      } else {
+        this.invokeSuggest(downloadId)
+      }
+    } catch {
+      this.invokeSuggest(downloadId)
+      await this.resumeDownload(downloadId)
+    }
     await removePendingDecision(downloadId)
     await removeBurstHold(downloadId)
-    this.invokeSuggest(downloadId)
     this.cleanupMemory(downloadId)
   }
 
@@ -311,9 +323,8 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       return
     }
     // pending or canceling — hold suggest; cancel/resume will resolve it.
-    // Store the callback so the resume path can release it via invokeSuggest.
-    // The cancel path doesn't call suggest (the download is erased), but
-    // cleanupMemory removes the entry to avoid leaks.
+    // Success takeover invokes suggest then cancel+erase. Resume also
+    // invokes suggest. cleanupMemory removes the entry to avoid leaks.
     this.suggestFns.set(item.id, suggest)
     return true
   }
@@ -321,12 +332,12 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
   private async cancelAndErase(downloadId: number): Promise<void> {
     try {
       await browser.downloads.cancel(downloadId)
-    } catch (e) {
+    } catch {
       // download may already be gone — ignore
     }
     try {
       await browser.downloads.erase({ id: downloadId })
-    } catch (e) {
+    } catch {
       // erase failure is non-fatal
     }
   }
@@ -352,7 +363,7 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       this.suggestFns.delete(downloadId)
       try {
         suggest()
-      } catch (e) {
+      } catch {
         // suggest may throw if the download is already gone — ignore.
       }
     }
