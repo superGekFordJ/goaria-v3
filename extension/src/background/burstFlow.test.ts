@@ -34,8 +34,10 @@ const holds = vi.hoisted(() => {
       window = null
       saveOk = true
       this.windowLive = true
+      this.allReadGate = null
     },
     windowLive: true,
+    allReadGate: null as null | { wait: Promise<void>; started: () => void },
     getWindow() {
       return window
     },
@@ -202,6 +204,12 @@ vi.mock('./burstHoldStore', () => ({
   },
   getBurstHoldIgnoringTtl: async (id: number) => holds.map.get(id) ?? null,
   getAllBurstHolds: async () => {
+    const gate = holds.allReadGate
+    if (gate) {
+      holds.allReadGate = null
+      gate.started()
+      await gate.wait
+    }
     const live = new Map<number, Record<string, unknown>>()
     for (const [id, hold] of holds.map) {
       if (!holds.expired(hold)) live.set(id, hold)
@@ -675,6 +683,37 @@ describe('burstFlow', () => {
     beginCaptureClaim()
     const queuedClaim = enqueueCaptureWork(async () => undefined)
     sessionStore.session = null
+    releaseRead()
+    await flushMicrotasks()
+    await queuedClaim
+
+    expect(pendingCaptureClaims()).toBe(1)
+    expect(bridge.legacy).toEqual([])
+    endCaptureClaim()
+    await vi.advanceTimersByTimeAsync(25)
+    expect(bridge.legacy).toEqual([1])
+  })
+
+  it('defers a legacy close when a claim arrives during hold lookup', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    holds.map.set(1, holdOf(1))
+    await admitConfirmedDownload(1, { url: holdOf(1).url } as never, Date.now())
+
+    let releaseRead!: () => void
+    let signalRead!: () => void
+    const readStarted = new Promise<void>(resolve => {
+      signalRead = resolve
+    })
+    const readGate = new Promise<void>(resolve => {
+      releaseRead = resolve
+    })
+    holds.allReadGate = { wait: readGate, started: signalRead }
+
+    vi.advanceTimersByTime(80)
+    await readStarted
+    beginCaptureClaim()
+    const queuedClaim = enqueueCaptureWork(async () => undefined)
     releaseRead()
     await flushMicrotasks()
     await queuedClaim

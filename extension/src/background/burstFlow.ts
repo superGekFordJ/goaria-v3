@@ -610,16 +610,28 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
     ? await mergeExpiredHolds(await getAllBurstHolds(), window.downloadIds)
     : await getAllBurstHolds()
   const ids = memberIdsForWindow(window, holds)
+  if (shouldDeferCoalescerClose(window, Date.now())) {
+    deferCoalescerClock()
+    return
+  }
   if (forceLegacy || ids.filter(id => holds.has(id)).length <= 1) {
     await abandonWindowToLegacy(window, ids, holds, skipTabId)
     return
   }
   const session = await getCaptureSession()
+  if (shouldDeferCoalescerClose(window, Date.now())) {
+    deferCoalescerClock()
+    return
+  }
   if (!session || session.captureId !== window.captureId) {
     await abandonWindowToLegacy(window, ids, holds, skipTabId)
     return
   }
   const ping = await pingContentScript(session.tabId)
+  if (shouldDeferCoalescerClose(window, Date.now())) {
+    deferCoalescerClock()
+    return
+  }
   if (
     !ping ||
     ping.extractor_picker_open ||

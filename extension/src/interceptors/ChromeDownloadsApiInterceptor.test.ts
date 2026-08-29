@@ -424,6 +424,8 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
       expect(ws.sendDownloadRequest).toHaveBeenCalledTimes(1)
     })
     expect(burst.admit).not.toHaveBeenCalled()
+    expect(burst.beginClaim).toHaveBeenCalledTimes(1)
+    expect(burst.endClaim).toHaveBeenCalledTimes(1)
   })
 
   it('takes immediate legacy on incognito mismatch', async () => {
@@ -435,6 +437,8 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
       expect(ws.sendDownloadRequest).toHaveBeenCalledTimes(1)
     })
     expect(burst.admit).not.toHaveBeenCalled()
+    expect(burst.beginClaim).toHaveBeenCalledTimes(1)
+    expect(burst.endClaim).toHaveBeenCalledTimes(1)
   })
 
   it('admits implicit-session items instead of sending legacy download', async () => {
@@ -462,6 +466,8 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
     })
     expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
     expect(burst.admit).not.toHaveBeenCalled()
+    expect(burst.beginClaim).toHaveBeenCalledTimes(1)
+    expect(burst.endClaim).toHaveBeenCalledTimes(1)
   })
 
   it('recovers pending_ via legacy send then calls recoverBurstState for holds', async () => {
