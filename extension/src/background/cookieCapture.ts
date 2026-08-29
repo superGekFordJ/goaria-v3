@@ -13,9 +13,11 @@ export { pickCookieStoreId, type CookieStoreHint } from './cookieStoreId'
  * header is omitted to avoid sending a malformed request to servers that treat
  * an empty Cookie as suspicious.
  */
-export async function getCookiesForUrl(url: string): Promise<string[]> {
+export async function getCookiesForUrl(url: string, storeId?: string): Promise<string[]> {
   try {
-    const cookies = await browser.cookies.getAll({ url })
+    const query: { url: string; storeId?: string } = { url }
+    if (typeof storeId === 'string' && storeId !== '') query.storeId = storeId
+    const cookies = await browser.cookies.getAll(query)
     if (cookies.length === 0) return []
     // Sort by name for a stable cookie string so duplicate detection on the
     // backend is not confused by ordering variance.

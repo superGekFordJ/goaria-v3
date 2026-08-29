@@ -35,6 +35,7 @@ import { domPickerView } from './domPickerView.svelte'
 import type { CapsuleEvent } from './capsuleUiState'
 import { pickerEventForCapsuleUi, type PickerEvent } from './pickerUiState'
 import { extractorBusyForDomMutex, isCurrentDomCatalog, type DomPickerEvent } from './domPickerUiState'
+import { burstAliveMissShouldCancel } from './burstAlivePolicy'
 import {
   burstBusyForOverlay,
   isCurrentBurstCapture,
@@ -293,11 +294,11 @@ function startBurstAlivePoll(): void {
     void sendMessage('burst:alive', { capture_id: captureId }, 'background')
       .then(reply => {
         if (!isCurrentBurstCapture(captureId, burstCaptureId)) return
-        if (!reply?.ok) teardownBurstOverlay()
+        if (!reply?.ok && burstAliveMissShouldCancel()) teardownBurstOverlay()
       })
       .catch(() => {
         if (!isCurrentBurstCapture(captureId, burstCaptureId)) return
-        teardownBurstOverlay()
+        if (burstAliveMissShouldCancel()) teardownBurstOverlay()
       })
   }, 1000)
 }

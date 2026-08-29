@@ -156,7 +156,7 @@ export abstract class DownloadLinkInterceptor {
     const cookies =
       ctx.incognito === true
         ? []
-        : await getCookiesForUrl(ctx.url)
+        : await getCookiesForUrl(ctx.url, ctx.cookieStoreId)
     const downloadPage = await getDownloadPageUrl({
       tabId: ctx.tabId,
       referrer: ctx.referrer,

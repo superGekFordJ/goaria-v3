@@ -223,6 +223,7 @@ vi.mock('./wsClient', () => ({
 
 vi.mock('./captureHostDown', () => ({
   setCaptureHostDownHook: () => undefined,
+  setCaptureReconnectHook: () => undefined,
 }))
 
 vi.mock('../utils/extensionInfo', () => ({
@@ -239,8 +240,10 @@ import {
   admitConfirmedDownload,
   claimFirefoxLegacyHandoff,
   enqueueCaptureWork,
+  handleBurstAlive,
   handleBurstCancel,
   handleBurstSubmit,
+  handleCaptureReconnect,
   isCoalescerEligible,
   recoverBurstState,
   referrerOriginMatches,
@@ -1000,5 +1003,90 @@ describe('burstFlow', () => {
     })
     expect(reply.accepted).toBe(true)
     expect(notices.messages.filter(m => m === 'burst_firefox_cannot_resume')).toHaveLength(1)
+  })
+
+  it('Firefox reconnect auth_ack does not cannot-resume recovered holds', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    holds.map.set(1, firefoxHold(1))
+    holds.map.set(2, firefoxHold(2))
+    holds.setWindow({
+      captureId: SESSION.captureId,
+      downloadIds: [1, 2],
+      firstItemAt: Date.now(),
+      lastItemAt: Date.now(),
+      phase: 'coalescing',
+      tabId: 4,
+    })
+    await recoverBurstState()
+    await handleCaptureReconnect()
+    expect(holds.map.has(1)).toBe(true)
+    expect(holds.map.has(2)).toBe(true)
+    expect(notices.messages).not.toContain('burst_firefox_cannot_resume')
+    expect(bridge.resume).toEqual([])
+  })
+
+  it('Chrome reconnect still fail-closed resumes burst holds', async () => {
+    holds.map.set(1, holdOf(1))
+    holds.setWindow(pickerWindow({ downloadIds: [1], catalog: [{ index: 0, downloadId: 1 }] }))
+    await handleCaptureReconnect()
+    expect(bridge.resume).toEqual([1])
+  })
+
+  it('a failed burst:alive does not cannot-resume Firefox holds', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    holds.map.set(1, firefoxHold(1))
+    holds.map.set(2, firefoxHold(2))
+    holds.setWindow(pickerWindow())
+    await expect(handleBurstAlive({ capture_id: 'missing' })).resolves.toEqual({ ok: false })
+    expect(holds.map.has(1)).toBe(true)
+    expect(holds.map.has(2)).toBe(true)
+    expect(holds.getWindow()).not.toBeNull()
+    expect(notices.messages).not.toContain('burst_firefox_cannot_resume')
+  })
+
+  it('firefox recover sendLegacy for an ineligible orphan instead of admitting', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    sessionStore.session = { ...SESSION, storeUnproven: false, cookieStoreId: 'store-a' }
+    holds.map.set(3, { ...firefoxHold(3), cookieStoreId: 'store-b' })
+    holds.map.set(4, {
+      ...firefoxHold(4),
+      cookieStoreId: 'store-a',
+      referrer: 'https://other.test/',
+    })
+    await recoverBurstState()
+    await vi.waitFor(() => {
+      expect(fx.legacy.map(row => row.url).sort()).toEqual([
+        'https://cdn.example.test/3.bin',
+        'https://cdn.example.test/4.bin',
+      ])
+    })
+    expect(holds.getWindow()).toBeNull()
+    expect(messages.sent.some(m => m.type === 'burst:open')).toBe(false)
+  })
+
+  it('firefox recover of submitting pending keeps the original request id', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    holds.map.set(1, firefoxHold(1))
+    holds.map.set(2, firefoxHold(2))
+    holds.setWindow(
+      pickerWindow({
+        phase: 'submitting',
+        requestId: 'req-keep',
+        submitItems: [
+          { clientItemId: 'aa', downloadId: 1, index: 0 },
+          { clientItemId: 'bb', downloadId: 2, index: 1 },
+        ],
+      }),
+    )
+    ws.sendDirectBatchStatus.mockResolvedValue({ status: 'pending' })
+    await recoverBurstState()
+    expect(holds.getWindow()?.phase).toBe('submitting')
+    expect(holds.getWindow()?.requestId).toBe('req-keep')
+    expect(messages.sent.some(m => m.type === 'burst:open')).toBe(false)
+    expect(holds.map.has(1)).toBe(true)
   })
 })

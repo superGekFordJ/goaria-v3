@@ -1,11 +1,16 @@
-let resumeHook: () => Promise<void> = async () => {}
+let downHook: () => Promise<void> = async () => {}
+let reconnectHook: () => Promise<void> = async () => {}
 
 export function setCaptureHostDownHook(fn: () => Promise<void>): void {
-  resumeHook = fn
+  downHook = fn
+}
+
+export function setCaptureReconnectHook(fn: () => Promise<void>): void {
+  reconnectHook = fn
 }
 
 export async function notifyCaptureHostDown(): Promise<void> {
-  await resumeHook()
+  await downHook()
 }
 
 export async function onCaptureUnpair(): Promise<void> {
@@ -13,5 +18,5 @@ export async function onCaptureUnpair(): Promise<void> {
 }
 
 export function dropCaptureOnReconnect(): void {
-  void notifyCaptureHostDown()
+  void reconnectHook()
 }

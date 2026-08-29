@@ -26,11 +26,11 @@ vi.mock('../background/wsClient', () => ({
 }))
 
 const cookies = vi.hoisted(() => ({
-  getCookiesForUrl: vi.fn(async (_url?: string) => ['Cookie: a=1']),
+  getCookiesForUrl: vi.fn(async (_url?: string, _storeId?: string) => ['Cookie: a=1']),
 }))
 
 vi.mock('../background/cookieCapture', () => ({
-  getCookiesForUrl: (url: string) => cookies.getCookiesForUrl(url),
+  getCookiesForUrl: (url: string, storeId?: string) => cookies.getCookiesForUrl(url, storeId),
 }))
 
 vi.mock('../background/refererCapture', () => ({
@@ -171,6 +171,17 @@ describe('constructDownloadRequest', () => {
   it('collects Cookie for a normal-profile download', async () => {
     const req = await interceptor.constructDownloadRequest(ctx({ incognito: false }))
     expect(cookies.getCookiesForUrl).toHaveBeenCalledTimes(1)
+    expect(cookies.getCookiesForUrl).toHaveBeenCalledWith('https://cdn.example.test/file.bin', undefined)
     expect(req.headers).toEqual(['Cookie: a=1'])
+  })
+
+  it('passes cookieStoreId into legacy cookie collection', async () => {
+    await interceptor.constructDownloadRequest(
+      ctx({ incognito: false, cookieStoreId: 'firefox-container-1' }),
+    )
+    expect(cookies.getCookiesForUrl).toHaveBeenCalledWith(
+      'https://cdn.example.test/file.bin',
+      'firefox-container-1',
+    )
   })
 })

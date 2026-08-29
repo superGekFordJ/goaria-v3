@@ -9,7 +9,7 @@ import { mintClientItemId, mintDirectBatchRequestId } from './mintRequestId'
 import { folderFieldForSubmit } from './pickerFolder'
 import { resolveCookieStoreIdForTab } from './cookieCapture'
 import { wsClient } from './wsClient'
-import { setCaptureHostDownHook } from './captureHostDown'
+import { setCaptureHostDownHook, setCaptureReconnectHook } from './captureHostDown'
 import {
   admitMember,
   evaluateClose,
@@ -226,6 +226,40 @@ function clearPickerClock(): void {
     clearTimeout(pickerTimer)
     pickerTimer = null
   }
+}
+
+let submitStatusTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearSubmitStatusClock(): void {
+  if (submitStatusTimer) {
+    clearTimeout(submitStatusTimer)
+    submitStatusTimer = null
+  }
+}
+
+function armSubmitStatusClock(requestId: string, captureId: string): void {
+  clearSubmitStatusClock()
+  submitStatusTimer = setTimeout(() => {
+    submitStatusTimer = null
+    void runExclusive(async () => {
+      const window = await getBurstWindow()
+      if (!window || window.captureId !== captureId || window.requestId !== requestId) return
+      if (window.phase !== 'submitting') return
+      const status = await queryBurstStatus(requestId)
+      if (status.accepted || status.error_code === 'not_found') {
+        const ctx = submitContextFromWindow(window)
+        if (status.error_code === 'not_found') {
+          for (const item of window.submitItems ?? []) {
+            await resumeHeldDownload(item.downloadId, window.tabId)
+          }
+          notify('capture_notif_title', 'dom_not_found')
+        }
+        if (ctx) await finishBurstSubmit(ctx.tabId, ctx.captureId)
+        return
+      }
+      armSubmitStatusClock(requestId, captureId)
+    })
+  }, 2000)
 }
 
 function contextFromHold(hold: BurstHold): InterceptionContext {
@@ -660,6 +694,7 @@ async function resumeAllBurstHoldsLocked(): Promise<void> {
 async function releaseAllBurstHoldsLocked(policy: 'cannot_resume' | 'send_legacy'): Promise<void> {
   clearClocks()
   clearPickerClock()
+  clearSubmitStatusClock()
   if (!usesFirefoxProcess()) await reapExpiredBurstState()
   const window = (await getBurstWindow()) ?? (await getBurstWindowIgnoringTtl())
   const holds = usesFirefoxProcess()
@@ -1061,6 +1096,7 @@ async function buildBurstPayload(
 async function finishBurstSubmit(tabId: number, captureId: string): Promise<void> {
   clearClocks()
   clearPickerClock()
+  clearSubmitStatusClock()
   await removeBurstWindow()
   await disarmCaptureSession()
   await closeBurstOverlay(tabId, captureId)
@@ -1142,7 +1178,7 @@ async function recoverFirefoxBurstStateLocked(): Promise<void> {
     else await removeBurstHold(id)
   }
   const session = await getCaptureSession()
-  if (window?.phase === 'submitting' && window.requestId) {
+  if (window?.requestId) {
     const status = await queryBurstStatus(window.requestId)
     if (status.accepted || status.error_code === 'not_found') {
       if (status.error_code === 'not_found') {
@@ -1154,9 +1190,12 @@ async function recoverFirefoxBurstStateLocked(): Promise<void> {
       }
       const ctx = submitContextFromWindow(window)
       if (ctx) await finishBurstSubmit(ctx.tabId, ctx.captureId)
+      return
     }
+    armSubmitStatusClock(window.requestId, window.captureId)
     return
   }
+  if (window?.phase === 'submitting') return
   if (window?.phase === 'picker') {
     await reopenOrLegacyFirefoxPicker(window, holds)
     return
@@ -1165,6 +1204,10 @@ async function recoverFirefoxBurstStateLocked(): Promise<void> {
     if (firefoxLegacyClaimed.has(id)) continue
     if (window?.downloadIds.includes(id)) continue
     if (session && session.captureId === hold.captureId && (!window || window.phase === 'coalescing')) {
+      if (!(await isCoalescerEligible(contextFromHold(hold)))) {
+        await migrateToLegacy(id, hold, skipTabId)
+        continue
+      }
       const outcome = await admitConfirmedDownloadLocked(id, contextFromHold(hold))
       if (outcome !== 'coalesced') {
         const leftover = (await getBurstHold(id)) ?? (await getBurstHoldIgnoringTtl(id))
@@ -1285,8 +1328,14 @@ function dropSessionTab(tabId: number): void {
   })
 }
 
+export async function handleCaptureReconnect(): Promise<void> {
+  if (usesFirefoxProcess()) return
+  await resumeAllBurstHolds()
+}
+
 export function initBurstFlow(): void {
   setCaptureHostDownHook(() => resumeAllBurstHolds())
+  setCaptureReconnectHook(() => handleCaptureReconnect())
   onMessage('capture:arm', () => handleCaptureArm())
   onMessage('burst:submit', ({ data }: { data: BurstSubmitMessage }) => handleBurstSubmit(data))
   onMessage('burst:cancel', ({ data }: { data: BurstCancelMessage }) => handleBurstCancel(data))
@@ -1313,6 +1362,7 @@ export function initBurstFlow(): void {
 export function resetBurstFlowForTests(): void {
   clearClocks()
   clearPickerClock()
+  clearSubmitStatusClock()
   submitInflight = false
   captureChain = Promise.resolve()
   exclusiveDepth = 0
