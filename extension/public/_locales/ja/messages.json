@@ -112,5 +112,6 @@
   "capture_reject_overlay": { "message": "先に開いている選択画面を閉じてください。" },
   "burst_picker_title": { "message": "キャプチャしたダウンロードを選ぶ" },
   "burst_overflow": { "message": "キャプチャがいっぱいです。追加ファイルは通常の引き継ぎになります。" },
-  "burst_mutex_body": { "message": "先に開いている選択画面を閉じてください。" }
+  "burst_mutex_body": { "message": "先に開いている選択画面を閉じてください。" },
+  "burst_firefox_cannot_resume": { "message": "Firefox はこのダウンロードをブラウザで復元できません。" }
 }

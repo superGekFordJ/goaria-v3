@@ -75,7 +75,7 @@ initContextMenu()
 initTabMatcher()
 initExtractorFlow()
 initDomFlow()
-if (!isFirefox()) initBurstFlow()
+initBurstFlow()
 
 // Download interception: fork by build target and register before any await so
 // cold-wake downloads/webRequest events are not missed. shouldIntercept still
@@ -95,8 +95,9 @@ void (async () => {
   wsClient.connect()
 
   // Chrome path B persists pending decisions in storage.session so a SW restart
-  // can resume an in-flight cancel/resume. Firefox is a no-op here. Recover only
-  // after boot so autoCapture/effects are loaded.
+  // can resume an in-flight cancel/resume. Firefox recover is no longer a no-op:
+  // it continues coalescer / legacy-sends persisted holds. Recover only after
+  // boot so autoCapture/effects are loaded.
   void interceptor.recoverPendingDecisions()
 })()
 

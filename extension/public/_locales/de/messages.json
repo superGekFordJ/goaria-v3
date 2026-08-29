@@ -112,5 +112,6 @@
   "capture_reject_overlay": { "message": "Bitte zuerst die offene Auswahl schließen." },
   "burst_picker_title": { "message": "Erfasste Downloads wählen" },
   "burst_overflow": { "message": "Erfassung ist voll. Weitere Dateien nutzen die normale Übernahme." },
-  "burst_mutex_body": { "message": "Bitte zuerst die offene Auswahl schließen." }
+  "burst_mutex_body": { "message": "Bitte zuerst die offene Auswahl schließen." },
+  "burst_firefox_cannot_resume": { "message": "Dieser Firefox-Download kann im Browser nicht wiederhergestellt werden." }
 }

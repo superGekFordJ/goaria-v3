@@ -22,7 +22,7 @@ export const MSG_TYPE_CAPABILITY_UPDATE = 'capability_update'
 
 export const PROTOCOL_VERSION = 2
 export const MATCH_DIGEST_VERSION = 1
-export const CLIENT_VERSION = '0.4.0'
+export const CLIENT_VERSION = '0.5.0'
 
 export const CAP_REQUEST_ID = 'request_id'
 export const CAP_EXTRACTOR_RESOLVE = 'extractor.resolve'

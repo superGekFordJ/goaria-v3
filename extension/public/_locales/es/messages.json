@@ -112,5 +112,6 @@
   "capture_reject_overlay": { "message": "Termine o cierre primero el selector abierto." },
   "burst_picker_title": { "message": "Elegir descargas capturadas" },
   "burst_overflow": { "message": "La captura está llena. Los archivos extra usan la toma normal." },
-  "burst_mutex_body": { "message": "Termine o cierre primero el selector abierto." }
+  "burst_mutex_body": { "message": "Termine o cierre primero el selector abierto." },
+  "burst_firefox_cannot_resume": { "message": "Esta descarga de Firefox no se puede restaurar en el navegador." }
 }

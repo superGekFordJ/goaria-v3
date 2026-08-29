@@ -6,7 +6,6 @@
   import LiquidGlassPanel from '../lib/glass/LiquidGlassPanel.svelte'
   import type { InterceptionToggleMessage, CaptureArmMessage, CaptureArmReply } from '../utils/messaging'
   import { t } from '../lib/i18n'
-  import { isFirefox } from '../utils/extensionInfo'
 
   let showSettings = $state(false)
   let showPairGuide = $state(false)
@@ -28,8 +27,7 @@
   let toggleDisabled = $derived(connectionState.status !== 'connected')
   let sessionArmed = $state(false)
   let armDisabled = $derived(
-    isFirefox() ||
-      sessionArmed ||
+    sessionArmed ||
       connectionState.status !== 'connected' ||
       !connectionState.paired ||
       !configState.autoCapture,
@@ -127,7 +125,6 @@
     </LiquidGlassPanel>
   </div>
 
-  {#if !isFirefox()}
   <div class="popup-section">
     <LiquidGlassPanel
       as="button"
@@ -143,7 +140,6 @@
       </span>
     </LiquidGlassPanel>
   </div>
-  {/if}
 
   {#if !connectionState.paired}
     <div class="popup-section">

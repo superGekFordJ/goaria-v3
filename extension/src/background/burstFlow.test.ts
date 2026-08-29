@@ -5,6 +5,8 @@ const sessionStore = vi.hoisted(() => ({
   session: null as null | Record<string, unknown>,
 }))
 
+const firefoxMode = vi.hoisted(() => ({ on: false }))
+
 const searchFail = vi.hoisted(() => ({
   ids: new Set<number>(),
 }))
@@ -46,6 +48,11 @@ const bridge = vi.hoisted(() => ({
   cancel: [] as number[],
   resume: [] as number[],
   legacy: [] as number[],
+}))
+
+const fx = vi.hoisted(() => ({
+  legacy: [] as Array<{ tabId: number; url: string }>,
+  cleaned: [] as number[],
 }))
 
 const ws = vi.hoisted(() => ({
@@ -146,6 +153,7 @@ vi.mock('./burstHoldStore', () => ({
     if (!hold || holds.expired(hold)) return null
     return hold
   },
+  getBurstHoldIgnoringTtl: async (id: number) => holds.map.get(id) ?? null,
   getAllBurstHolds: async () => {
     const live = new Map<number, Record<string, unknown>>()
     for (const [id, hold] of holds.map) {
@@ -198,6 +206,12 @@ vi.mock('./captureHostDown', () => ({
   setCaptureHostDownHook: () => undefined,
 }))
 
+vi.mock('../utils/extensionInfo', () => ({
+  isFirefox: () => firefoxMode.on,
+  isChrome: () => !firefoxMode.on,
+  getExtensionBrowserTarget: () => (firefoxMode.on ? 'firefox' : 'chrome'),
+}))
+
 vi.mock('./domConnectGeneration', () => ({
   currentDirectConnectGeneration: () => 1,
 }))
@@ -205,6 +219,7 @@ vi.mock('./domConnectGeneration', () => ({
 import {
   admitConfirmedDownload,
   enqueueCaptureWork,
+  handleBurstCancel,
   handleBurstSubmit,
   isCoalescerEligible,
   recoverBurstState,
@@ -212,6 +227,7 @@ import {
   resetBurstFlowForTests,
   resumeAllBurstHolds,
   setChromeBurstBridge,
+  setFirefoxBurstBridge,
 } from './burstFlow'
 
 const SESSION = {
@@ -237,6 +253,26 @@ function holdOf(id: number, url = `https://cdn.example.test/${id}.bin`) {
   }
 }
 
+function firefoxHold(id: number) {
+  return {
+    ...holdOf(id),
+    engine: 'firefox' as const,
+    tabId: 8 + id,
+    mainFrame: true,
+  }
+}
+
+function installFirefoxBridge() {
+  setFirefoxBurstBridge({
+    async sendLegacy(ctx) {
+      fx.legacy.push({ tabId: ctx.tabId, url: ctx.url })
+    },
+    async cleanupBlankTab(tabId) {
+      fx.cleaned.push(tabId)
+    },
+  })
+}
+
 function pickerWindow(extra: Record<string, unknown> = {}) {
   return {
     captureId: SESSION.captureId,
@@ -259,6 +295,9 @@ function pickerWindow(extra: Record<string, unknown> = {}) {
 describe('burstFlow', () => {
   beforeEach(() => {
     resetBurstFlowForTests()
+    firefoxMode.on = false
+    fx.legacy = []
+    fx.cleaned = []
     sessionStore.session = { ...SESSION }
     holds.reset()
     bridge.paused.clear()
@@ -598,5 +637,118 @@ describe('burstFlow', () => {
     expect(reply).toEqual({ accepted: false, error_code: 'store_unproven' })
     expect(ws.sendDirectBatch).not.toHaveBeenCalled()
     expect(bridge.resume).toEqual([])
+  })
+
+  it('resumes remaining Chrome holds on not_found without minting a new id', async () => {
+    holds.map.set(1, holdOf(1))
+    holds.map.set(2, holdOf(2))
+    holds.setWindow(pickerWindow())
+    ws.sendDirectBatch.mockRejectedValue(new RpcRequestError('timeout', 'req-keep'))
+    ws.sendDirectBatchStatus.mockResolvedValue({ status: 'not_found' })
+    const reply = await handleBurstSubmit({
+      capture_id: SESSION.captureId as string,
+      indices: [0, 1],
+    })
+    expect(reply.error_code).toBe('not_found')
+    expect(bridge.resume.sort()).toEqual([1, 2])
+    expect(bridge.cancel).toEqual([])
+    expect(ws.sendDirectBatchStatus).toHaveBeenCalled()
+  })
+
+  it('isCoalescerEligible rejects a Firefox store mismatch and accepts a match', async () => {
+    sessionStore.session = { ...SESSION, storeUnproven: false, cookieStoreId: 'store-a' }
+    const base = {
+      url: 'https://cdn.example.test/a.bin',
+      referrer: 'https://example.test/page',
+      incognito: false,
+      frameId: 0,
+    }
+    expect(await isCoalescerEligible({ ...base, cookieStoreId: 'other' } as never)).toBe(false)
+    expect(await isCoalescerEligible({ ...base, cookieStoreId: 'store-a' } as never)).toBe(true)
+  })
+
+  it('opens burst overlay for two Firefox admits after quiet', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    holds.map.set(1, firefoxHold(1))
+    holds.map.set(2, firefoxHold(2))
+    await admitConfirmedDownload(1, { url: holdOf(1).url, tabId: 9 } as never)
+    await admitConfirmedDownload(2, { url: holdOf(2).url, tabId: 10 } as never)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(messages.sent.some(m => m.type === 'burst:open')).toBe(true)
+    expect(bridge.legacy).toEqual([])
+    expect(bridge.resume).toEqual([])
+  })
+
+  it('firefox recover continues a coalescing window without silent drop', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    holds.map.set(1, firefoxHold(1))
+    holds.map.set(2, firefoxHold(2))
+    holds.setWindow({
+      captureId: SESSION.captureId,
+      downloadIds: [1, 2],
+      firstItemAt: Date.now(),
+      lastItemAt: Date.now(),
+      phase: 'coalescing',
+    })
+    await recoverBurstState()
+    expect(holds.map.has(1)).toBe(true)
+    expect(holds.map.has(2)).toBe(true)
+    expect(bridge.resume).toEqual([])
+  })
+
+  it('firefox recover legacy-sends an orphan hold when the session is gone', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    sessionStore.session = null
+    holds.map.set(5, firefoxHold(5))
+    await recoverBurstState()
+    await vi.waitFor(() => {
+      expect(fx.legacy.some(row => row.url.includes('/5.bin'))).toBe(true)
+    })
+    expect(bridge.resume).toEqual([])
+  })
+
+  it('does not call Chrome resume on Firefox not_found', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    holds.map.set(1, firefoxHold(1))
+    holds.map.set(2, firefoxHold(2))
+    holds.setWindow(pickerWindow())
+    ws.sendDirectBatch.mockRejectedValue(new RpcRequestError('timeout', 'req-keep'))
+    ws.sendDirectBatchStatus.mockResolvedValue({ status: 'not_found' })
+    const reply = await handleBurstSubmit({
+      capture_id: SESSION.captureId as string,
+      indices: [0, 1],
+    })
+    expect(reply.error_code).toBe('not_found')
+    expect(bridge.resume).toEqual([])
+    expect(bridge.cancel).toEqual([])
+  })
+
+  it('resumeAllBurstHolds on Firefox does not chrome-resume cancelled files', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    holds.map.set(1, firefoxHold(1))
+    holds.map.set(2, firefoxHold(2))
+    holds.setWindow(pickerWindow())
+    await resumeAllBurstHolds()
+    expect(bridge.resume).toEqual([])
+    expect(fx.cleaned.slice().sort((a, b) => a - b)).toEqual([9, 10])
+    expect(sessionStore.session).toBeNull()
+  })
+
+  it('Firefox cancel does not chrome-resume', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    holds.map.set(1, firefoxHold(1))
+    holds.setWindow(pickerWindow({ downloadIds: [1], catalog: [{ index: 0, downloadId: 1 }] }))
+    await handleBurstCancel({ capture_id: SESSION.captureId as string })
+    expect(bridge.resume).toEqual([])
+    expect(fx.legacy).toEqual([])
+    expect(fx.cleaned).toEqual([9])
   })
 })

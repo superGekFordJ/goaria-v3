@@ -18,6 +18,13 @@ export type BurstHold = {
   incognito: boolean
   mimeType?: string
   finalUrl?: string
+  engine?: 'chrome' | 'firefox'
+  requestId?: string
+  tabId?: number
+  frameId?: number
+  documentUrl?: string
+  cookieStoreId?: string
+  mainFrame?: boolean
 }
 
 export type BurstSubmitMapItem = {
@@ -83,6 +90,15 @@ export function parseBurstHold(
   }
   if (typeof rec.mimeType === 'string') hold.mimeType = rec.mimeType
   if (typeof rec.finalUrl === 'string') hold.finalUrl = rec.finalUrl
+  if (rec.engine === 'chrome' || rec.engine === 'firefox') hold.engine = rec.engine
+  if (typeof rec.requestId === 'string' && rec.requestId !== '') hold.requestId = rec.requestId
+  if (typeof rec.tabId === 'number' && Number.isInteger(rec.tabId)) hold.tabId = rec.tabId
+  if (typeof rec.frameId === 'number' && Number.isInteger(rec.frameId)) hold.frameId = rec.frameId
+  if (typeof rec.documentUrl === 'string' && rec.documentUrl !== '') hold.documentUrl = rec.documentUrl
+  if (typeof rec.cookieStoreId === 'string' && rec.cookieStoreId !== '') {
+    hold.cookieStoreId = rec.cookieStoreId
+  }
+  if (typeof rec.mainFrame === 'boolean') hold.mainFrame = rec.mainFrame
   return hold
 }
 
@@ -163,6 +179,30 @@ export function parseBurstWindow(
     if (items.length > 0) window.submitItems = items
   }
   return window
+}
+
+export async function nextSyntheticBurstHoldId(): Promise<number> {
+  try {
+    const all = await browser.storage.session.get(null)
+    let max = 0
+    for (const key of Object.keys(all)) {
+      if (!key.startsWith(STORAGE_KEY_BURST_HOLD_PREFIX)) continue
+      const id = Number(key.slice(STORAGE_KEY_BURST_HOLD_PREFIX.length))
+      if (Number.isInteger(id) && id > max) max = id
+    }
+    return max + 1
+  } catch {
+    return 1
+  }
+}
+
+export async function getBurstHoldIgnoringTtl(downloadId: number): Promise<BurstHold | null> {
+  try {
+    const result = await browser.storage.session.get(burstHoldKey(downloadId))
+    return parseBurstHold(result[burstHoldKey(downloadId)], Date.now(), { ignoreTtl: true })
+  } catch {
+    return null
+  }
 }
 
 export async function saveBurstHold(downloadId: number, hold: BurstHold): Promise<boolean> {

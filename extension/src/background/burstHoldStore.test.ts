@@ -143,4 +143,40 @@ describe('burstHoldStore', () => {
     expect(raw).not.toHaveProperty('cookie')
     expect(raw).not.toHaveProperty('headers')
   })
+
+  it('round-trips a Firefox-shaped hold and still loads Chrome records without extras', async () => {
+    const firefoxHold = {
+      url: 'https://cdn.example.test/ff.bin',
+      filename: 'ff.bin',
+      fileSize: 20,
+      startTime: Date.now(),
+      captureId: 'cap-ff',
+      referrer: 'https://example.test/',
+      incognito: false,
+      engine: 'firefox' as const,
+      requestId: 'req-1',
+      tabId: 7,
+      frameId: 0,
+      documentUrl: 'https://example.test/page',
+      cookieStoreId: 'firefox-default',
+      mainFrame: true,
+      finalUrl: 'https://cdn.example.test/ff.bin',
+    }
+    await saveBurstHold(11, firefoxHold)
+    const loaded = await getBurstHold(11)
+    expect(loaded).toMatchObject(firefoxHold)
+    expect(parseBurstHold({ ...firefoxHold, cookie: 'a=b' })).toBeNull()
+    const chromeHold = {
+      url: 'https://cdn.example.test/ch.bin',
+      filename: 'ch.bin',
+      fileSize: 8,
+      startTime: Date.now(),
+      captureId: 'cap-ch',
+      referrer: 'https://example.test/',
+      incognito: false,
+    }
+    await saveBurstHold(12, chromeHold)
+    expect(await getBurstHold(12)).toMatchObject(chromeHold)
+    expect((await getBurstHold(12))?.engine).toBeUndefined()
+  })
 })

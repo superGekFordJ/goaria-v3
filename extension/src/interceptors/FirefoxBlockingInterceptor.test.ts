@@ -13,6 +13,46 @@ const connection = vi.hoisted(() => ({
   status: 'connected',
 }))
 
+const capture = vi.hoisted(() => ({
+  session: null as null | Record<string, unknown>,
+}))
+
+const sessionStore = vi.hoisted(() => {
+  const data = new Map<string, unknown>()
+  let setOk = true
+  return {
+    data,
+    get setOk() {
+      return setOk
+    },
+    set setOk(v: boolean) {
+      setOk = v
+    },
+    reset() {
+      data.clear()
+      setOk = true
+    },
+    api: {
+      async get(key: string | null) {
+        if (key === null) {
+          const all: Record<string, unknown> = {}
+          for (const [k, v] of data) all[k] = v
+          return all
+        }
+        if (typeof key === 'string') return { [key]: data.get(key) }
+        return {}
+      },
+      async set(items: Record<string, unknown>) {
+        if (!setOk) throw new Error('persist failed')
+        for (const [k, v] of Object.entries(items)) data.set(k, v)
+      },
+      async remove(key: string) {
+        data.delete(key)
+      },
+    },
+  }
+})
+
 const webRequest = vi.hoisted(() => {
   type Filter = { urls: string[]; types?: string[] }
   const before: Array<{ filter: Filter }> = []
@@ -59,7 +99,48 @@ const webRequest = vi.hoisted(() => {
   }
 })
 
+const tabs = vi.hoisted(() => {
+  const removed: number[] = []
+  let tab: { url?: string } | undefined = { url: 'about:blank' }
+  return {
+    removed,
+    setTab(next: { url?: string } | undefined) {
+      tab = next
+    },
+    reset() {
+      removed.length = 0
+      tab = { url: 'about:blank' }
+    },
+    api: {
+      get: async () => tab,
+      query: async () => [],
+      remove: async (id: number) => {
+        removed.push(id)
+      },
+    },
+  }
+})
+
+const ws = vi.hoisted(() => ({
+  sendDownloadRequest: vi.fn(async () => ({ type: 'download_ack', success: true, gid: 'ar_test' })),
+  sendDirectBatch: vi.fn(async () => ({
+    succeeded_item_ids: [],
+    duplicate_item_ids: [],
+    errors_by_item_id: {},
+  })),
+  sendDirectBatchStatus: vi.fn(async () => ({ status: 'pending' })),
+}))
+
 vi.mock('../stores/config.svelte', () => ({
+  BURST_HOLD_TTL_MS: 5 * 60 * 1000,
+  BURST_MAX_DEADLINE_MS: 15_000,
+  BURST_QUIET_WINDOW_MS: 1_000,
+  CAP_DOWNLOAD_BATCH: 'download.batch',
+  EXTRACTOR_MAX_SESSION_ITEMS: 128,
+  STORAGE_KEY_BURST_HOLD_PREFIX: 'bhold_',
+  STORAGE_KEY_BURST_WINDOW: 'bwin_window',
+  PENDING_DECISION_TTL_MS: 30_000,
+  STORAGE_KEY_PENDING_PREFIX: 'pending_',
   configState: config,
 }))
 
@@ -67,12 +148,21 @@ vi.mock('../stores/connection.svelte', () => ({
   connectionState: connection,
 }))
 
+vi.mock('../background/captureSession', () => ({
+  getCaptureSession: async () => capture.session,
+  writeCaptureSession: async () => true,
+  disarmCaptureSession: async () => {
+    capture.session = null
+  },
+}))
+
 vi.mock('../background/wsClient', () => ({
-  wsClient: { sendDownloadRequest: vi.fn() },
+  wsClient: ws,
 }))
 
 vi.mock('../background/cookieCapture', () => ({
   getCookiesForUrl: async () => [],
+  resolveCookieStoreIdForTab: async () => undefined,
 }))
 
 vi.mock('../background/refererCapture', () => ({
@@ -80,17 +170,26 @@ vi.mock('../background/refererCapture', () => ({
 }))
 
 vi.mock('webext-bridge/background', () => ({
-  sendMessage: async () => undefined,
+  onMessage() {},
+  sendMessage: async () => ({
+    ok: true,
+    document_nonce: 'nonce',
+    page_href: 'https://example.test/page',
+    extractor_picker_open: false,
+    dom_picker_open: false,
+    burst_picker_open: false,
+  }),
 }))
 
 vi.mock('webextension-polyfill', () => ({
   default: {
     webRequest: webRequest.api,
     downloads: { search: vi.fn() },
-    storage: { session: { get: vi.fn(), set: vi.fn(), remove: vi.fn() } },
+    storage: { session: sessionStore.api },
     notifications: { create: async () => undefined },
+    cookies: { getAll: async () => [] },
     runtime: { getURL: (p: string) => p },
-    tabs: { get: async () => undefined, query: async () => [], remove: async () => undefined },
+    tabs: tabs.api,
   },
 }))
 
@@ -100,6 +199,34 @@ vi.mock('../lib/i18n', () => ({
 
 import { FirefoxBlockingInterceptor } from './FirefoxBlockingInterceptor'
 import { resetBootReadyForTests, setBootReady } from '../background/bootState'
+import { resetBurstFlowForTests } from '../background/burstFlow'
+
+const SESSION = {
+  captureId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+  tabId: 4,
+  documentNonce: 'nonce',
+  pageHref: 'https://example.test/page',
+  incognito: false,
+  storeUnproven: true,
+  directConnectGeneration: 1,
+  createdAt: Date.now(),
+}
+
+function interceptDetails(extra: Record<string, unknown> = {}) {
+  return {
+    requestId: '1',
+    url: 'https://cdn.example.test/file.bin',
+    statusCode: 200,
+    type: 'main_frame',
+    tabId: 3,
+    frameId: 0,
+    responseHeaders: [
+      { name: 'Content-Type', value: 'application/octet-stream' },
+      { name: 'Content-Disposition', value: 'attachment; filename="a.bin"' },
+    ],
+    ...extra,
+  }
+}
 
 describe('FirefoxBlockingInterceptor', () => {
   let interceptor: FirefoxBlockingInterceptor
@@ -107,10 +234,16 @@ describe('FirefoxBlockingInterceptor', () => {
   beforeEach(() => {
     resetBootReadyForTests()
     setBootReady(true)
+    resetBurstFlowForTests()
     config.autoCapture = true
     config.registeredFileTypes = []
     connection.interceptionEnabled = true
+    capture.session = null
+    sessionStore.reset()
     webRequest.reset()
+    tabs.reset()
+    ws.sendDownloadRequest.mockReset()
+    ws.sendDownloadRequest.mockResolvedValue({ type: 'download_ack', success: true, gid: 'ar_test' })
     interceptor = new FirefoxBlockingInterceptor()
     interceptor.register()
   })
@@ -122,6 +255,7 @@ describe('FirefoxBlockingInterceptor', () => {
       statusCode: 302,
       type: 'main_frame',
       tabId: 3,
+      frameId: 0,
       responseHeaders: [{ name: 'Content-Disposition', value: 'attachment; filename="a.bin"' }],
     })
     expect(reply).toEqual({})
@@ -133,35 +267,107 @@ describe('FirefoxBlockingInterceptor', () => {
     }
   })
 
-  it('recoverPendingDecisions is a no-op', async () => {
+  it('recoverPendingDecisions continues burst recover instead of no-op', async () => {
     await expect(interceptor.recoverPendingDecisions()).resolves.toBeUndefined()
   })
 
   it('passes through shouldIntercept before boot', () => {
     resetBootReadyForTests()
-    const reply = webRequest.headers[0].listener({
-      requestId: '1',
-      url: 'https://cdn.example.test/file.bin',
-      statusCode: 200,
-      type: 'main_frame',
-      tabId: 3,
-      responseHeaders: [
-        { name: 'Content-Type', value: 'application/octet-stream' },
-        { name: 'Content-Disposition', value: 'attachment; filename="a.bin"' },
-      ],
-    })
+    const reply = webRequest.headers[0].listener(interceptDetails())
     expect(reply).toEqual({})
+  })
+
+  it('copies incognito, store, document, and frame onto the persisted hold', async () => {
+    capture.session = { ...SESSION }
+    const reply = await Promise.resolve(
+      webRequest.headers[0].listener(
+        interceptDetails({
+          incognito: true,
+          cookieStoreId: 'firefox-container-1',
+          documentUrl: 'https://example.test/page',
+          frameId: 12,
+        }),
+      ),
+    )
+    expect(reply).toEqual({ cancel: true })
+    const hold = [...sessionStore.data.entries()].find(([k]) => k.startsWith('bhold_'))?.[1] as Record<
+      string,
+      unknown
+    >
+    expect(hold).toMatchObject({
+      incognito: true,
+      cookieStoreId: 'firefox-container-1',
+      documentUrl: 'https://example.test/page',
+      frameId: 12,
+      engine: 'firefox',
+    })
+  })
+
+  it('removes a blank main_frame tab immediately on unarmed intercept', async () => {
+    tabs.setTab({ url: 'about:blank' })
+    const reply = await Promise.resolve(webRequest.headers[0].listener(interceptDetails()))
+    expect(reply).toEqual({ cancel: true })
+    await vi.waitFor(() => {
+      expect(tabs.removed).toEqual([3])
+    })
+    expect([...sessionStore.data.keys()].some(k => k.startsWith('bhold_'))).toBe(false)
+  })
+
+  it('does not cancel when armed persist fails', async () => {
+    capture.session = { ...SESSION }
+    sessionStore.setOk = false
+    const reply = await Promise.resolve(webRequest.headers[0].listener(interceptDetails()))
+    expect(reply).toEqual({})
+    expect(tabs.removed).toEqual([])
+  })
+
+  it('cancels only after a successful armed persist', async () => {
+    capture.session = { ...SESSION }
+    const reply = await Promise.resolve(webRequest.headers[0].listener(interceptDetails()))
+    expect(reply).toEqual({ cancel: true })
+    expect([...sessionStore.data.keys()].some(k => k.startsWith('bhold_'))).toBe(true)
+  })
+
+  it('does not remove a blank tab during the armed cancel turn', async () => {
+    capture.session = { ...SESSION }
+    type Ack = { type: string; success: boolean; gid: string }
+    let release!: (value: Ack | PromiseLike<Ack>) => void
+    ws.sendDownloadRequest.mockImplementation(
+      () =>
+        new Promise<Ack>(resolve => {
+          release = resolve
+        }),
+    )
+    const reply = await Promise.resolve(webRequest.headers[0].listener(interceptDetails()))
+    expect(reply).toEqual({ cancel: true })
+    expect(tabs.removed).toEqual([])
+    release({ type: 'download_ack', success: true, gid: 'ar_test' })
+    await vi.waitFor(() => {
+      expect(tabs.removed).toEqual([3])
+    })
+  })
+
+  it('never removes a sub_frame parent tab', async () => {
+    capture.session = { ...SESSION }
+    const reply = await Promise.resolve(
+      webRequest.headers[0].listener(interceptDetails({ type: 'sub_frame', tabId: 9 })),
+    )
+    expect(reply).toEqual({ cancel: true })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(tabs.removed).toEqual([])
   })
 })
 
 describe('background interceptor registration order', () => {
-  it('registers before the config await', () => {
+  it('registers before the config await and always starts burst flow', () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../background/background.ts'), 'utf8')
     const registerIdx = src.indexOf('interceptor.register()')
     const awaitIdx = src.indexOf('await Promise.all([configState.loadEffects()')
     expect(registerIdx).toBeGreaterThan(-1)
     expect(awaitIdx).toBeGreaterThan(-1)
     expect(registerIdx).toBeLessThan(awaitIdx)
-    expect(src).toContain('if (!isFirefox()) initBurstFlow()')
+    expect(src).toContain('initBurstFlow()')
+    expect(src).not.toContain('if (!isFirefox()) initBurstFlow()')
   })
 })

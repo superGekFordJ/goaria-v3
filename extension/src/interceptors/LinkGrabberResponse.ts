@@ -33,6 +33,12 @@ export type InterceptionContext = {
   initiator?: string
   /** Origin URL (Firefox webRequest only), used as a Referer fallback. */
   originUrl?: string
-  /** Chrome DownloadItem.incognito; unused on Firefox. */
+  /** Chrome DownloadItem.incognito; Firefox webRequest `incognito === true`. */
   incognito?: boolean
+  /** Firefox webRequest cookie store; omitted when empty. Chrome does not set this. */
+  cookieStoreId?: string
+  /** Firefox webRequest document URL; omitted when empty. */
+  documentUrl?: string
+  /** Firefox webRequest frame id. */
+  frameId?: number
 }

@@ -5,16 +5,32 @@ import {
   extractMimeType,
 } from './DownloadLinkInterceptor'
 import type { InterceptionContext } from './LinkGrabberResponse'
+import { getCaptureSession } from '../background/captureSession'
+import {
+  nextSyntheticBurstHoldId,
+  saveBurstHold,
+  type BurstHold,
+} from '../background/burstHoldStore'
+import {
+  admitConfirmedDownload,
+  enqueueCaptureWork,
+  isCoalescerEligible,
+  migrateBurstHoldToLegacy,
+  recoverBurstState,
+  setFirefoxBurstBridge,
+} from '../background/burstFlow'
+
+type ArmedRouteResult = { kind: 'pass' } | { kind: 'unarmed' } | { kind: 'cancel' }
 
 /**
  * Firefox MV3 interceptor. Uses webRequest.onHeadersReceived with the
  * "blocking" + "responseHeaders" options (Firefox retains webRequestBlocking
- * in MV3) to synchronously cancel the request before the browser starts the
- * download, then asynchronously hands the URL off to GoAria.
+ * in MV3) to cancel the request before the browser starts the download, then
+ * asynchronously hands the URL off to GoAria.
  *
- * The cancel decision is synchronous so there is no race between the browser
- * starting the download and the backend accepting the handoff. Cookie/referer
- * capture and the WS request happen after the callback returns.
+ * Armed intercepts persist a URL hold and wait on that write before resolving
+ * `{ cancel: true }`. Persist failure must not cancel. Unarmed intercepts keep
+ * the immediate handoff + blank-tab cleanup.
  *
  * Original-URL capture: Firefox's onHeadersReceived fires for every hop in
  * a redirect chain, including 3xx responses (Mozilla bug 1448599). At the
@@ -39,6 +55,10 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
   private static readonly MAX_ORIGINAL_URLS = 512
 
   register(): void {
+    setFirefoxBurstBridge({
+      sendLegacy: ctx => this.handleInterception(ctx),
+      cleanupBlankTab: (tabId, urls) => this.maybeRemoveBlankTab(tabId, urls),
+    })
     browser.webRequest.onBeforeRequest.addListener(this.onBeforeRequest, {
       urls: ['<all_urls>'],
       types: ['main_frame', 'sub_frame'],
@@ -86,15 +106,13 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
     this.originalUrls.delete(details.requestId)
   }
 
-  // Firefox webRequestBlocking path has no pause/cancel state machine, so
-  // there is nothing to recover after a SW restart.
   async recoverPendingDecisions(): Promise<void> {
-    /* no-op */
+    await recoverBurstState()
   }
 
   private onHeadersReceived = (
     details: browser.WebRequest.OnHeadersReceivedDetailsType,
-  ): browser.WebRequest.BlockingResponse => {
+  ): browser.WebRequest.BlockingResponse | Promise<browser.WebRequest.BlockingResponse> => {
     // Look up the captured original URL (pre-redirect openlist URL). If the
     // entry is missing (SW restart mid-request, listener added late, or a
     // request that bypassed onBeforeRequest), fall back to details.url — no
@@ -116,29 +134,72 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
     const ctx = this.buildContext(details, originalUrl)
     const decision = this.shouldIntercept(ctx)
     if (decision !== 'intercept') return {}
-    // Cancel synchronously; the handoff runs after the callback returns.
-    void this.handleInterception(ctx)
-    // Firefox does not auto-close a tab whose main_frame request is
-    // cancelled. Remove the leftover blank tab to avoid content-process
-    // accumulation. Only do this for main_frame — a sub_frame interception
-    // (e.g. an iframe download link) must not close the parent tab.
-    // The tab may already be gone (user-closed), so swallow.
-    if (ctx.tabId >= 0 && details.type === 'main_frame') {
-      const tabIdToClose = ctx.tabId
-      void (async () => {
-        try {
-          const tab = await browser.tabs.get(tabIdToClose)
-          const isBlank =
-            !tab.url || tab.url === 'about:blank' || tab.url === ctx.url || tab.url === ctx.finalUrl
-          if (isBlank) {
-            await browser.tabs.remove(tabIdToClose)
-          }
-        } catch {
-          // Tab already gone or access denied.
-        }
-      })()
+    return this.routeIntercept(ctx, details)
+  }
+
+  private async routeIntercept(
+    ctx: InterceptionContext,
+    details: browser.WebRequest.OnHeadersReceivedDetailsType,
+  ): Promise<browser.WebRequest.BlockingResponse> {
+    let result: ArmedRouteResult
+    try {
+      result = await enqueueCaptureWork(() => this.persistAndRouteArmed(ctx, details))
+    } catch {
+      return {}
+    }
+    if (result.kind === 'pass') return {}
+    if (result.kind === 'unarmed') {
+      void this.handleInterception(ctx)
+      if (ctx.tabId >= 0 && details.type === 'main_frame') {
+        void this.maybeRemoveBlankTab(ctx.tabId, {
+          url: ctx.url,
+          finalUrl: ctx.finalUrl,
+          mainFrame: true,
+        })
+      }
+      return { cancel: true }
     }
     return { cancel: true }
+  }
+
+  private async persistAndRouteArmed(
+    ctx: InterceptionContext,
+    details: browser.WebRequest.OnHeadersReceivedDetailsType,
+  ): Promise<ArmedRouteResult> {
+    const session = await getCaptureSession()
+    if (!session) return { kind: 'unarmed' }
+    const downloadId = await nextSyntheticBurstHoldId()
+    const hold: BurstHold = {
+      url: ctx.url,
+      filename: ctx.filename,
+      fileSize: ctx.fileSize,
+      startTime: Date.now(),
+      captureId: session.captureId,
+      referrer: ctx.referrer,
+      incognito: ctx.incognito === true,
+      engine: 'firefox',
+      requestId: details.requestId,
+      tabId: ctx.tabId,
+      mainFrame: details.type === 'main_frame',
+    }
+    if (ctx.mimeType) hold.mimeType = ctx.mimeType
+    if (ctx.finalUrl) hold.finalUrl = ctx.finalUrl
+    if (typeof ctx.frameId === 'number') hold.frameId = ctx.frameId
+    if (ctx.documentUrl) hold.documentUrl = ctx.documentUrl
+    if (ctx.cookieStoreId) hold.cookieStoreId = ctx.cookieStoreId
+    let saved: boolean
+    try {
+      saved = await saveBurstHold(downloadId, hold)
+    } catch {
+      saved = false
+    }
+    if (!saved) return { kind: 'pass' }
+    if (await isCoalescerEligible(ctx)) {
+      await admitConfirmedDownload(downloadId, ctx)
+    } else {
+      await migrateBurstHoldToLegacy(downloadId)
+    }
+    return { kind: 'cancel' }
   }
 
   private async handleInterception(ctx: InterceptionContext): Promise<void> {
@@ -152,6 +213,21 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
       // the Firefox blocking path — surface the failure to the content script.
       const msg = err instanceof Error ? err.message : String(err)
       this.notifyIntercepted(ctx, false, msg)
+    }
+  }
+
+  async maybeRemoveBlankTab(
+    tabId: number,
+    urls: { url?: string; finalUrl?: string; mainFrame?: boolean },
+  ): Promise<void> {
+    if (urls.mainFrame === false || tabId < 0) return
+    try {
+      const tab = await browser.tabs.get(tabId)
+      const isBlank =
+        !tab.url || tab.url === 'about:blank' || tab.url === urls.url || tab.url === urls.finalUrl
+      if (isBlank) await browser.tabs.remove(tabId)
+    } catch {
+      // Tab already gone or access denied.
     }
   }
 
@@ -180,7 +256,7 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
     // details.url for both fields (pre-fix behavior).
     const url = originalUrl ?? details.url
     const finalUrl = details.url
-    return {
+    const ctx: InterceptionContext = {
       url,
       finalUrl,
       tabId: details.tabId,
@@ -191,7 +267,16 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
       referrer,
       initiator: details.initiator,
       originUrl: details.originUrl,
+      incognito: details.incognito === true,
+      frameId: details.frameId,
     }
+    if (typeof details.cookieStoreId === 'string' && details.cookieStoreId !== '') {
+      ctx.cookieStoreId = details.cookieStoreId
+    }
+    if (typeof details.documentUrl === 'string' && details.documentUrl !== '') {
+      ctx.documentUrl = details.documentUrl
+    }
+    return ctx
   }
 }
 

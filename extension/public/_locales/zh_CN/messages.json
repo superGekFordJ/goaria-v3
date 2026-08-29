@@ -112,5 +112,6 @@
   "capture_reject_overlay": { "message": "请先完成或关闭当前选择器。" },
   "burst_picker_title": { "message": "选择已捕获的下载" },
   "burst_overflow": { "message": "捕获已满。额外文件走普通接管。" },
-  "burst_mutex_body": { "message": "请先完成或关闭当前选择器。" }
+  "burst_mutex_body": { "message": "请先完成或关闭当前选择器。" },
+  "burst_firefox_cannot_resume": { "message": "Firefox 已取消该下载，无法在浏览器中恢复。" }
 }

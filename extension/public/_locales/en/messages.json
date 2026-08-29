@@ -112,5 +112,6 @@
   "capture_reject_overlay": { "message": "Finish or close the open chooser first." },
   "burst_picker_title": { "message": "Choose captured downloads" },
   "burst_overflow": { "message": "Capture is full. Extra files use ordinary takeover." },
-  "burst_mutex_body": { "message": "Finish or close the open chooser first." }
+  "burst_mutex_body": { "message": "Finish or close the open chooser first." },
+  "burst_firefox_cannot_resume": { "message": "This Firefox download cannot be restored in the browser." }
 }
