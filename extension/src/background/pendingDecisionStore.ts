@@ -47,16 +47,16 @@ function parseDecision(raw: unknown): PendingDecision | null {
   }
 }
 
-/** Persist a pending decision for a download id. */
+/** Persist a pending decision for a download id. Returns false when storage failed. */
 export async function savePendingDecision(
   downloadId: number,
   decision: PendingDecision,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await browser.storage.session.set({ [keyFor(downloadId)]: decision })
+    return true
   } catch {
-    // storage.session may be unavailable in rare environments; the in-memory
-    // flow still works, only SW-restart recovery is degraded.
+    return false
   }
 }
 
@@ -66,10 +66,7 @@ export async function getPendingDecision(downloadId: number): Promise<PendingDec
     const result = await browser.storage.session.get(keyFor(downloadId))
     const decision = parseDecision(result[keyFor(downloadId)])
     if (!decision) return null
-    if (isExpired(decision)) {
-      await removePendingDecision(downloadId)
-      return null
-    }
+    if (isExpired(decision)) return null
     return decision
   } catch {
     return null
@@ -116,14 +113,30 @@ export async function getAllPendingDecisions(): Promise<Map<number, PendingDecis
       if (!decision) continue
       const id = Number(key.slice(STORAGE_KEY_PENDING_PREFIX.length))
       if (Number.isNaN(id)) continue
-      if (isExpired(decision)) {
-        await removePendingDecision(id)
-        continue
-      }
+      if (isExpired(decision)) continue
       map.set(id, decision)
     }
   } catch {
     // ignore — best-effort
   }
   return map
+}
+
+/** Expired pending_ ids still in session storage (not deleted). */
+export async function listExpiredPendingDecisionIds(now = Date.now()): Promise<number[]> {
+  const ids: number[] = []
+  try {
+    const all = await browser.storage.session.get(null)
+    for (const [key, raw] of Object.entries(all)) {
+      if (!key.startsWith(STORAGE_KEY_PENDING_PREFIX)) continue
+      const decision = parseDecision(raw)
+      if (!decision) continue
+      const id = Number(key.slice(STORAGE_KEY_PENDING_PREFIX.length))
+      if (Number.isNaN(id)) continue
+      if (now - decision.startTime > PENDING_DECISION_TTL_MS) ids.push(id)
+    }
+  } catch {
+    // ignore
+  }
+  return ids
 }

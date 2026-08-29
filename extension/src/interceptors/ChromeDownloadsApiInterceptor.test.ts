@@ -22,6 +22,7 @@ const pending = vi.hoisted(() => {
     async savePendingDecision(id: number, decision: Record<string, unknown>) {
       if (hangSave) await hangSave
       map.set(id, { ...decision })
+      return true
     },
     async removePendingDecision(id: number) {
       map.delete(id)
@@ -31,6 +32,9 @@ const pending = vi.hoisted(() => {
     },
     async getAllPendingDecisions() {
       return new Map(map)
+    },
+    async listExpiredPendingDecisionIds() {
+      return [] as number[]
     },
     async updatePendingStatus(id: number, status: string) {
       const cur = map.get(id)
@@ -54,6 +58,7 @@ const ws = vi.hoisted(() => ({
 const downloads = vi.hoisted(() => {
   type Listener = (item: unknown) => void
   const created: Listener[] = []
+  const changed: Array<(delta: unknown) => void> = []
   const filename: Array<(item: unknown, suggest: (s?: unknown) => void) => boolean | void> = []
   const items = new Map<number, Record<string, unknown>>()
   const calls = {
@@ -68,6 +73,7 @@ const downloads = vi.hoisted(() => {
   let searchThrows = false
   return {
     created,
+    changed,
     filename,
     items,
     calls,
@@ -79,6 +85,7 @@ const downloads = vi.hoisted(() => {
     },
     reset() {
       created.length = 0
+      changed.length = 0
       filename.length = 0
       items.clear()
       confirmPaused = true
@@ -94,6 +101,11 @@ const downloads = vi.hoisted(() => {
       onCreated: {
         addListener(fn: Listener) {
           created.push(fn)
+        },
+      },
+      onChanged: {
+        addListener(fn: (delta: unknown) => void) {
+          changed.push(fn)
         },
       },
       onDeterminingFilename: {
@@ -145,6 +157,8 @@ const burst = vi.hoisted(() => ({
   admit: vi.fn(async (_id?: number, _ctx?: unknown) => 'legacy' as const),
   recover: vi.fn(async () => {}),
   setBridge: vi.fn(),
+  holds: new Map<number, unknown>(),
+  holdSaveOk: true,
 }))
 
 vi.mock('../background/burstFlow', () => ({
@@ -172,8 +186,9 @@ vi.mock('../background/captureSession', () => ({
 }))
 
 vi.mock('../background/burstHoldStore', () => ({
-  saveBurstHold: vi.fn(async () => undefined),
+  saveBurstHold: vi.fn(async () => burst.holdSaveOk),
   removeBurstHold: vi.fn(async () => undefined),
+  getAllBurstHolds: async () => new Map(burst.holds),
 }))
 
 vi.mock('../background/wsClient', () => ({
@@ -242,6 +257,8 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
     pending.map.clear()
     pending.hangSave(null)
     burst.eligible = false
+    burst.holdSaveOk = true
+    burst.holds.clear()
     burst.admit.mockClear()
     burst.recover.mockClear()
     burst.setBridge.mockClear()
@@ -460,5 +477,33 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
       expect(ws.sendDownloadRequest).toHaveBeenCalledTimes(1)
     })
     expect(burst.recover).toHaveBeenCalledTimes(1)
+  })
+
+  it('skips pending_ ids that still have a burst hold', async () => {
+    burst.holds.set(3, { url: 'https://cdn.example.test/file.bin' })
+    pending.map.set(3, {
+      url: 'https://cdn.example.test/file.bin',
+      filename: 'file.bin',
+      fileSize: 500_000,
+      startTime: Date.now(),
+      status: 'pending',
+    })
+    downloads.items.set(3, downloadItem({ id: 3, paused: true, state: 'in_progress' }))
+    await interceptor.recoverPendingDecisions()
+    await flush()
+    expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
+    expect(burst.recover).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases the claim when burst hold persist fails', async () => {
+    burst.eligible = true
+    burst.holdSaveOk = false
+    const item = downloadItem()
+    downloads.items.set(1, item)
+    downloads.created[0](item)
+    await flush()
+    expect(downloads.calls.pause).toEqual([])
+    expect(burst.admit).not.toHaveBeenCalled()
+    expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
   })
 })

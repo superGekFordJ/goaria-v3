@@ -37,7 +37,7 @@ vi.mock('webextension-polyfill', () => ({
 }))
 
 import { PENDING_DECISION_TTL_MS, STORAGE_KEY_PENDING_PREFIX } from '../stores/config.svelte'
-import { getAllPendingDecisions } from './pendingDecisionStore'
+import { getAllPendingDecisions, listExpiredPendingDecisionIds } from './pendingDecisionStore'
 import {
   getAllBurstHolds,
   getBurstHold,
@@ -78,6 +78,19 @@ describe('burstHoldStore', () => {
     const holds = await getAllBurstHolds()
     expect(holds.has(9)).toBe(true)
     expect(holds.has(3)).toBe(false)
+  })
+
+  it('lists expired pending_ for resume-before-delete without dropping the record', async () => {
+    session.data.set('pending_5', {
+      url: 'https://cdn.example.test/c.bin',
+      filename: 'c.bin',
+      fileSize: 10,
+      startTime: Date.now() - 30_000 - 1,
+      status: 'pending',
+    })
+    const pending = await getAllPendingDecisions()
+    expect(pending.has(5)).toBe(false)
+    expect(await listExpiredPendingDecisionIds()).toEqual([5])
   })
 
   it('lists expired holds for reap without deleting them from getBurstHold', async () => {

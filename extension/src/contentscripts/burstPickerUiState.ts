@@ -31,6 +31,7 @@ export type BurstPickerEvent =
   | { type: 'submit' }
   | { type: 'busy' }
   | { type: 'pending' }
+  | { type: 'storeUnproven' }
   | { type: 'close' }
 
 function projectItems(items: unknown): BurstPickerCatalogItem[] {
@@ -90,6 +91,10 @@ export function applyBurstPickerEvent(state: BurstPickerState, event: BurstPicke
     case 'pending': {
       if (state.phase === 'closed') return state
       return { ...state, phase: 'submitting', banner: 'pending' }
+    }
+    case 'storeUnproven': {
+      if (state.phase === 'closed') return state
+      return { ...state, phase: 'open', storeUnproven: true, banner: '' }
     }
     case 'close':
       return { ...INITIAL_BURST_PICKER_STATE }

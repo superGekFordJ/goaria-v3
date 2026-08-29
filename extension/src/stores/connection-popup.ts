@@ -22,7 +22,6 @@ export async function initStatusListener(): Promise<void> {
   if (!statusListenerBound) {
     onMessage('ws:status', ({ data }) => {
       connectionState.updateFromStatus(data as WsStatusMessage)
-      emitConnectionSignal()
     })
     onMessage('pair:status', ({ data }) => {
       const msg = data as PairStatusMessage
@@ -30,6 +29,8 @@ export async function initStatusListener(): Promise<void> {
       connectionState.status = msg.status
       connectionState.wsPort = msg.wsPort
       if (msg.status !== 'connected') connectionState.legacyHost = undefined
+    })
+    onMessage('capture:disarmed', () => {
       emitConnectionSignal()
     })
     statusListenerBound = true

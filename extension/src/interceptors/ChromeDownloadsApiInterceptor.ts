@@ -7,6 +7,7 @@ import type { InterceptionContext } from './LinkGrabberResponse'
 import { SMALL_FILE_THRESHOLD_BYTES } from '../stores/config.svelte'
 import {
   getAllPendingDecisions,
+  listExpiredPendingDecisionIds,
   removePendingDecision,
   savePendingDecision,
   updatePendingStatus,
@@ -14,7 +15,7 @@ import {
   type PendingDecision,
 } from '../background/pendingDecisionStore'
 import { getCaptureSession } from '../background/captureSession'
-import { removeBurstHold, saveBurstHold } from '../background/burstHoldStore'
+import { getAllBurstHolds, removeBurstHold, saveBurstHold } from '../background/burstHoldStore'
 import {
   admitConfirmedDownload,
   enqueueCaptureWork,
@@ -87,6 +88,9 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
   private onDeterminingListener: OnDeterminingFilenameListener = (item, suggest) => {
     return this.onDeterminingFilename(item, suggest)
   }
+  private onChangedListener = (delta: browser.Downloads.OnChangedDownloadDeltaType): void => {
+    this.onDownloadChanged(delta)
+  }
 
   register(): void {
     setChromeBurstBridge({
@@ -101,17 +105,24 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       handlePausedDownload: (id, ctx) => this.handlePausedDownload(id, ctx),
     })
     browser.downloads.onCreated.addListener(this.onCreatedListener)
+    browser.downloads.onChanged.addListener(this.onChangedListener)
     const ev = getOnDeterminingFilename()
     if (ev) ev.addListener(this.onDeterminingListener)
   }
 
   async recoverPendingDecisions(): Promise<void> {
+    const expired = await listExpiredPendingDecisionIds()
+    for (const downloadId of expired) {
+      await this.resumeThenDropPending(downloadId)
+    }
+    const holds = await getAllBurstHolds()
     const pending = await getAllPendingDecisions()
     for (const [downloadId, decision] of pending) {
+      if (holds.has(downloadId)) continue
       try {
         const items = await browser.downloads.search({ id: downloadId })
         const item = items[0]
-        if (!item || item.state === 'complete') {
+        if (!item || item.state === 'complete' || item.state === 'interrupted') {
           await removePendingDecision(downloadId)
           continue
         }
@@ -124,10 +135,40 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
           await removePendingDecision(downloadId)
         }
       } catch {
-        await removePendingDecision(downloadId)
+        await this.resumeThenDropPending(downloadId)
       }
     }
     await recoverBurstState()
+  }
+
+  private async resumeThenDropPending(downloadId: number): Promise<void> {
+    try {
+      const items = await browser.downloads.search({ id: downloadId })
+      const item = items[0]
+      if (item && item.state === 'in_progress' && item.paused === true) {
+        this.invokeSuggest(downloadId)
+        await this.resumeDownload(downloadId)
+      }
+    } catch {
+      this.invokeSuggest(downloadId)
+      await this.resumeDownload(downloadId)
+    }
+    this.cleanupMemory(downloadId)
+    await removePendingDecision(downloadId)
+  }
+
+  private onDownloadChanged(delta: browser.Downloads.OnChangedDownloadDeltaType): void {
+    if (!this.pausedIds.has(delta.id)) return
+    const status = this.statusMirror.get(delta.id)
+    if (status === 'canceling' || status === 'resuming') return
+    const state = delta.state?.current
+    if (state !== 'complete' && state !== 'interrupted') return
+    void enqueueCaptureWork(async () => {
+      if (!this.pausedIds.has(delta.id)) return
+      const st = this.statusMirror.get(delta.id)
+      if (st === 'canceling' || st === 'resuming') return
+      await this.releaseUnconfirmed(delta.id)
+    })
   }
 
   private async onDownloadCreated(item: browser.Downloads.DownloadItem): Promise<void> {
@@ -180,28 +221,28 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
     await enqueueCaptureWork(async () => {
       if (!this.pausedIds.has(item.id)) return
       const coalescerEligible = await isCoalescerEligible(ctx)
-      if (coalescerEligible) {
-        const session = await getCaptureSession()
-        await saveBurstHold(item.id, {
-          url: ctx.url,
-          filename: ctx.filename,
-          fileSize: ctx.fileSize,
-          startTime: Date.now(),
-          captureId: session?.captureId ?? '',
-          referrer: ctx.referrer,
-          incognito: ctx.incognito === true,
-          mimeType: ctx.mimeType,
-          finalUrl: ctx.finalUrl,
-        })
-      } else {
-        const pendingDecision: PendingDecision = {
-          url: ctx.url,
-          filename: ctx.filename,
-          fileSize: ctx.fileSize,
-          startTime: Date.now(),
-          status: 'pending',
-        }
-        await savePendingDecision(item.id, pendingDecision)
+      const persisted = coalescerEligible
+        ? await saveBurstHold(item.id, {
+            url: ctx.url,
+            filename: ctx.filename,
+            fileSize: ctx.fileSize,
+            startTime: Date.now(),
+            captureId: (await getCaptureSession())?.captureId ?? '',
+            referrer: ctx.referrer,
+            incognito: ctx.incognito === true,
+            mimeType: ctx.mimeType,
+            finalUrl: ctx.finalUrl,
+          })
+        : await savePendingDecision(item.id, {
+            url: ctx.url,
+            filename: ctx.filename,
+            fileSize: ctx.fileSize,
+            startTime: Date.now(),
+            status: 'pending',
+          })
+      if (!persisted) {
+        await this.releaseUnconfirmed(item.id)
+        return
       }
 
       const confirmed = await this.pauseAndConfirm(item.id)
@@ -211,7 +252,7 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       }
       if (!this.pausedIds.has(item.id)) return
       if (!coalescerEligible) {
-        await this.handlePausedDownload(item.id, ctx)
+        void this.handlePausedDownload(item.id, ctx)
         return
       }
       await admitConfirmedDownload(item.id, ctx)

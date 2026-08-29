@@ -537,6 +537,10 @@ burstPickerView.onSubmit = payload => {
         startBurstStatusPoll()
         return
       }
+      if (reply?.error_code === 'store_unproven') {
+        applyBurstPicker({ type: 'storeUnproven' })
+        return
+      }
       teardownBurstOverlay()
     } catch {
       teardownBurstOverlay()

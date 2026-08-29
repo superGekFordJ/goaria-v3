@@ -165,11 +165,12 @@ export function parseBurstWindow(
   return window
 }
 
-export async function saveBurstHold(downloadId: number, hold: BurstHold): Promise<void> {
+export async function saveBurstHold(downloadId: number, hold: BurstHold): Promise<boolean> {
   try {
     await browser.storage.session.set({ [burstHoldKey(downloadId)]: hold })
+    return true
   } catch {
-    // storage.session may be unavailable
+    return false
   }
 }
 
@@ -233,11 +234,12 @@ export async function listExpiredBurstHoldIds(now = Date.now()): Promise<number[
   return ids
 }
 
-export async function saveBurstWindow(window: BurstWindowRecord): Promise<void> {
+export async function saveBurstWindow(window: BurstWindowRecord): Promise<boolean> {
   try {
     await browser.storage.session.set({ [STORAGE_KEY_BURST_WINDOW]: window })
+    return true
   } catch {
-    // ignore
+    return false
   }
 }
 

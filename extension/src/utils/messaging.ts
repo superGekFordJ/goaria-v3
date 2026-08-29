@@ -39,6 +39,7 @@ declare module 'webext-bridge' {
     'dom:submit': ProtocolWithReturn<DomSubmitMessage, DomSubmitReply>
     'dom:cancel': ProtocolWithReturn<DomCancelMessage, DomCancelReply>
     'capture:arm': ProtocolWithReturn<CaptureArmMessage, CaptureArmReply>
+    'capture:disarmed': Record<string, never>
     'burst:open': ProtocolWithReturn<BurstOpenMessage, BurstOpenReply>
     'burst:close': BurstCloseMessage
     'burst:submit': ProtocolWithReturn<BurstSubmitMessage, BurstSubmitReply>

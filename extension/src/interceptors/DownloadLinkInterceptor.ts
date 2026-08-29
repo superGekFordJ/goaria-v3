@@ -153,15 +153,16 @@ export abstract class DownloadLinkInterceptor {
    * assemble the camelCase message the WS client converts to snake_case JSON.
    */
   async constructDownloadRequest(ctx: InterceptionContext): Promise<DownloadHandoffMessage> {
-    const [cookies, downloadPage] = await Promise.all([
-      getCookiesForUrl(ctx.url),
-      getDownloadPageUrl({
-        tabId: ctx.tabId,
-        referrer: ctx.referrer,
-        initiator: ctx.initiator,
-        originUrl: ctx.originUrl,
-      }),
-    ])
+    const cookies =
+      ctx.incognito === true
+        ? []
+        : await getCookiesForUrl(ctx.url)
+    const downloadPage = await getDownloadPageUrl({
+      tabId: ctx.tabId,
+      referrer: ctx.referrer,
+      initiator: ctx.initiator,
+      originUrl: ctx.originUrl,
+    })
     // When the size is already known, skip the backend HEAD probe to avoid
     // burning a presigned-CDN signature on an extra request.
     const skipHeadProbe = ctx.fileSize > 0

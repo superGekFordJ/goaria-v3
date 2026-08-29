@@ -25,8 +25,12 @@ vi.mock('../background/wsClient', () => ({
   },
 }))
 
+const cookies = vi.hoisted(() => ({
+  getCookiesForUrl: vi.fn(async (_url?: string) => ['Cookie: a=1']),
+}))
+
 vi.mock('../background/cookieCapture', () => ({
-  getCookiesForUrl: async () => [],
+  getCookiesForUrl: (url: string) => cookies.getCookiesForUrl(url),
 }))
 
 vi.mock('../background/refererCapture', () => ({
@@ -147,5 +151,26 @@ describe('shouldIntercept', () => {
   it('intercepts download MIME without a whitelist', () => {
     expect(interceptor.shouldIntercept(ctx({ mimeType: 'application/zip' }))).toBe('intercept')
     expect(interceptor.shouldIntercept(ctx({ mimeType: 'application/pdf' }))).toBe('intercept')
+  })
+})
+
+describe('constructDownloadRequest', () => {
+  const interceptor = new TestInterceptor()
+
+  beforeEach(() => {
+    cookies.getCookiesForUrl.mockClear()
+    cookies.getCookiesForUrl.mockResolvedValue(['Cookie: a=1'])
+  })
+
+  it('omits Cookie for incognito downloads', async () => {
+    const req = await interceptor.constructDownloadRequest(ctx({ incognito: true }))
+    expect(cookies.getCookiesForUrl).not.toHaveBeenCalled()
+    expect(req.headers).toEqual([])
+  })
+
+  it('collects Cookie for a normal-profile download', async () => {
+    const req = await interceptor.constructDownloadRequest(ctx({ incognito: false }))
+    expect(cookies.getCookiesForUrl).toHaveBeenCalledTimes(1)
+    expect(req.headers).toEqual(['Cookie: a=1'])
   })
 })

@@ -396,7 +396,14 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
     documentNonce: session.documentNonce,
   }
   if (session.cookieStoreId) next.cookieStoreId = session.cookieStoreId
-  await saveBurstWindow(next)
+  if (!(await saveBurstWindow(next))) {
+    await removeBurstWindow()
+    for (const id of ids) {
+      const hold = holds.get(id)
+      if (hold) await migrateToLegacy(id, hold)
+    }
+    return
+  }
   const payload: BurstOpenMessage = {
     capture_id: session.captureId,
     items,
@@ -454,11 +461,23 @@ async function admitConfirmedDownloadLocked(
       notify('capture_notif_title', 'burst_overflow')
     }
     const hold = await getBurstHold(downloadId)
-    if (hold) await migrateToLegacy(downloadId, hold)
-    else if (bridge) void bridge.handlePausedDownload(downloadId, ctx)
+    if (!hold) {
+      if (bridge) void bridge.handlePausedDownload(downloadId, ctx)
+      return result.kind === 'legacy_overflow' ? 'overflow' : 'legacy'
+    }
+    await migrateToLegacy(downloadId, hold)
     return result.kind === 'legacy_overflow' ? 'overflow' : 'legacy'
   }
-  await saveBurstWindow(result.window)
+  const savedHold = await getBurstHold(downloadId)
+  if (!savedHold) {
+    if (bridge) void bridge.handlePausedDownload(downloadId, ctx)
+    return 'legacy'
+  }
+  const savedWindow = await saveBurstWindow(result.window)
+  if (!savedWindow) {
+    await migrateToLegacy(downloadId, savedHold)
+    return 'legacy'
+  }
   scheduleClocks(result.window)
   return 'coalesced'
 }
@@ -494,24 +513,34 @@ async function resumeAllBurstHoldsLocked(): Promise<void> {
   if (typeof tabId === 'number') {
     void sendMessage('burst:close', {}, `content-script@${tabId}`).catch(() => undefined)
   }
-  void sendMessage('ws:status', wsClient.getStatus(), 'popup').catch(() => undefined)
+  void sendMessage('capture:disarmed', {}, 'popup').catch(() => undefined)
 }
 
-async function stillPaused(downloadId: number): Promise<boolean> {
+async function probePaused(downloadId: number): Promise<'paused' | 'gone' | 'unknown'> {
   try {
     const items = await browser.downloads.search({ id: downloadId })
     const item = items[0]
-    return Boolean(item && item.state === 'in_progress' && item.paused === true)
+    if (item && item.state === 'in_progress' && item.paused === true) return 'paused'
+    return 'gone'
   } catch {
-    return false
+    return 'unknown'
   }
+}
+
+async function resumeOrDropHold(downloadId: number): Promise<void> {
+  const probe = await probePaused(downloadId)
+  if (probe === 'gone') {
+    await removeBurstHold(downloadId)
+    await removePendingDecision(downloadId)
+    return
+  }
+  await resumeHeldDownload(downloadId)
 }
 
 async function reapExpiredBurstState(): Promise<void> {
   const expiredIds = await listExpiredBurstHoldIds()
   for (const id of expiredIds) {
-    if (await stillPaused(id)) await resumeHeldDownload(id)
-    else await removeBurstHold(id)
+    await resumeOrDropHold(id)
   }
   const live = await getBurstWindow()
   if (live) return
@@ -521,8 +550,7 @@ async function reapExpiredBurstState(): Promise<void> {
     return
   }
   for (const id of expiredWindow.downloadIds) {
-    if (await stillPaused(id)) await resumeHeldDownload(id)
-    else await removeBurstHold(id)
+    await resumeOrDropHold(id)
   }
   await removeBurstWindow()
 }
@@ -675,7 +703,6 @@ async function handleBurstSubmitLocked(
   if (submitInflight) return { accepted: false, error_code: 'busy' }
   const window = await getBurstWindow()
   if (!window || data.capture_id !== window.captureId) {
-    await resumeAllBurstHoldsLocked()
     return { accepted: false, error_code: 'invalid_request' }
   }
   const ctx = submitContextFromWindow(window)
@@ -690,6 +717,24 @@ async function handleBurstSubmitLocked(
   if (!hasCapability(connectionState.capabilities, CAP_DOWNLOAD_BATCH)) {
     await resumeAllBurstHoldsLocked()
     return { accepted: false, error_code: 'unsupported' }
+  }
+  if (ctx.storeUnproven !== true) {
+    let liveStore: string | undefined
+    try {
+      const tab = await browser.tabs.get(ctx.tabId)
+      liveStore = await resolveCookieStoreIdForTab(tab)
+    } catch {
+      liveStore = undefined
+    }
+    const frozen = ctx.cookieStoreId
+    const liveOk =
+      typeof frozen === 'string' &&
+      frozen !== '' &&
+      typeof liveStore === 'string' &&
+      liveStore.trim() === frozen
+    if (!liveOk) {
+      return { accepted: false, error_code: 'store_unproven' }
+    }
   }
   submitInflight = true
   try {
@@ -872,16 +917,13 @@ async function recoverBurstStateLocked(): Promise<void> {
   await reapExpiredBurstState()
   const holds = await getAllBurstHolds()
   for (const [downloadId] of holds) {
-    try {
-      const items = await browser.downloads.search({ id: downloadId })
-      const item = items[0]
-      if (!item || item.state === 'complete' || !(item.state === 'in_progress' && item.paused)) {
-        await removeBurstHold(downloadId)
-      } else {
-        bridge?.restorePausedMemory(downloadId)
-      }
-    } catch {
+    const probe = await probePaused(downloadId)
+    if (probe === 'gone') {
       await removeBurstHold(downloadId)
+    } else if (probe === 'paused') {
+      bridge?.restorePausedMemory(downloadId)
+    } else {
+      await resumeHeldDownload(downloadId)
     }
   }
   await resumeAllBurstHoldsLocked()

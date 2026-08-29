@@ -37,6 +37,19 @@ describe('applyBurstPickerEvent', () => {
 
     expect(applyBurstPickerEvent(busy, { type: 'close' })).toEqual(INITIAL_BURST_PICKER_STATE)
   })
+
+  it('keeps the overlay open when the cookie store is lost', () => {
+    const opened = applyBurstPickerEvent(INITIAL_BURST_PICKER_STATE, {
+      type: 'open',
+      captureId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      items: ITEMS,
+    })
+    const submitting = applyBurstPickerEvent(opened, { type: 'submit' })
+    const lost = applyBurstPickerEvent(submitting, { type: 'storeUnproven' })
+    expect(lost.phase).toBe('open')
+    expect(lost.storeUnproven).toBe(true)
+    expect(lost.captureId).toBe(opened.captureId)
+  })
 })
 
 describe('burstBusyForOverlay', () => {

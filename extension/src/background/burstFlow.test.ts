@@ -5,6 +5,10 @@ const sessionStore = vi.hoisted(() => ({
   session: null as null | Record<string, unknown>,
 }))
 
+const searchFail = vi.hoisted(() => ({
+  ids: new Set<number>(),
+}))
+
 const holds = vi.hoisted(() => {
   const map = new Map<number, Record<string, unknown>>()
   let window: Record<string, unknown> | null = null
@@ -102,12 +106,14 @@ vi.mock('webextension-polyfill', () => ({
     notifications: { create: async () => undefined },
     cookies: { getAll: async () => [] },
     downloads: {
-      search: async ({ id }: { id: number }) => [
-        { id, state: 'in_progress', paused: true },
-      ],
+      search: async ({ id }: { id: number }) => {
+        if (searchFail.ids.has(id)) throw new Error('search failed')
+        return [{ id, state: 'in_progress', paused: true }]
+      },
     },
     tabs: {
       query: async () => [{ id: 4, url: 'https://example.test/page', incognito: false }],
+      get: async (id: number) => ({ id, url: 'https://example.test/page', incognito: false }),
       onRemoved: { addListener() {} },
       onUpdated: { addListener() {} },
     },
@@ -141,6 +147,7 @@ vi.mock('./burstHoldStore', () => ({
   },
   saveBurstHold: async (id: number, hold: Record<string, unknown>) => {
     holds.map.set(id, hold)
+    return true
   },
   removeBurstHold: async (id: number) => {
     holds.map.delete(id)
@@ -156,6 +163,7 @@ vi.mock('./burstHoldStore', () => ({
   },
   saveBurstWindow: async (win: Record<string, unknown>) => {
     holds.setWindow(win)
+    return true
   },
   removeBurstWindow: async () => {
     holds.setWindow(null)
@@ -163,7 +171,7 @@ vi.mock('./burstHoldStore', () => ({
 }))
 
 vi.mock('./pendingDecisionStore', () => ({
-  savePendingDecision: async () => undefined,
+  savePendingDecision: async () => true,
   removePendingDecision: async () => undefined,
 }))
 
@@ -248,6 +256,7 @@ describe('burstFlow', () => {
     bridge.resume = []
     bridge.legacy = []
     messages.sent = []
+    searchFail.ids.clear()
     ws.sendDirectBatch.mockReset()
     ws.sendDirectBatchStatus.mockReset()
     ws.sendDirectBatch.mockResolvedValue({
@@ -473,7 +482,7 @@ describe('burstFlow', () => {
     expect(bridge.resume).toEqual([1])
   })
 
-  it('resumes remaining holds when submit is invalid_request', async () => {
+  it('ignores a mismatched capture_id without resuming the live window', async () => {
     holds.map.set(1, holdOf(1))
     holds.map.set(2, holdOf(2))
     holds.setWindow(pickerWindow())
@@ -482,7 +491,8 @@ describe('burstFlow', () => {
       indices: [0, 1],
     })
     expect(reply.error_code).toBe('invalid_request')
-    expect(bridge.resume.sort()).toEqual([1, 2])
+    expect(bridge.resume).toEqual([])
+    expect(holds.getWindow()).not.toBeNull()
   })
 
   it('fail-closed resumes burst holds on recover without legacy handoff', async () => {
@@ -524,5 +534,32 @@ describe('burstFlow', () => {
     expect(bridge.resume).toEqual([4])
     expect(holds.map.has(4)).toBe(false)
     expect(bridge.legacy).toEqual([])
+  })
+
+  it('resumes a hold when downloads.search throws', async () => {
+    holds.map.set(8, holdOf(8))
+    searchFail.ids.add(8)
+    await recoverBurstState()
+    expect(bridge.resume).toEqual([8])
+    expect(holds.map.has(8)).toBe(false)
+    expect(bridge.legacy).toEqual([])
+  })
+
+  it('refuses send when a proven cookie store cannot be re-proved', async () => {
+    holds.map.set(1, holdOf(1))
+    holds.map.set(2, holdOf(2))
+    holds.setWindow(
+      pickerWindow({
+        storeUnproven: false,
+        cookieStoreId: 'store-a',
+      }),
+    )
+    const reply = await handleBurstSubmit({
+      capture_id: SESSION.captureId as string,
+      indices: [0, 1],
+    })
+    expect(reply).toEqual({ accepted: false, error_code: 'store_unproven' })
+    expect(ws.sendDirectBatch).not.toHaveBeenCalled()
+    expect(bridge.resume).toEqual([])
   })
 })
