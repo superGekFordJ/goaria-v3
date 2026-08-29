@@ -307,7 +307,11 @@ async function onCoalescerClock(): Promise<void> {
 }
 
 async function migrateToLegacy(downloadId: number, hold: BurstHold): Promise<void> {
-  await savePendingDecision(downloadId, pendingFromHold(hold))
+  const saved = await savePendingDecision(downloadId, pendingFromHold(hold))
+  if (!saved) {
+    await resumeHeldDownload(downloadId)
+    return
+  }
   await removeBurstHold(downloadId)
   const b = bridge
   if (b) void b.handlePausedDownload(downloadId, contextFromHold(hold))
@@ -355,9 +359,17 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
   for (const id of ids) {
     const hold = holds.get(id)
     if (!hold) continue
+    const refreshed = await saveBurstHold(id, { ...hold, startTime: snapshotAt })
+    if (!refreshed) {
+      await removeBurstWindow()
+      for (const memberId of ids) {
+        const member = holds.get(memberId)
+        if (member) await migrateToLegacy(memberId, member)
+      }
+      return
+    }
     const index = catalog.length
     catalog.push({ index, downloadId: id })
-    await saveBurstHold(id, { ...hold, startTime: snapshotAt })
     const row: BurstPickerCatalogItem = { index }
     const filename = sanitizeDisplayFilename(hold.filename)
     if (filename) row.filename = filename

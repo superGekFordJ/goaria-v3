@@ -12,6 +12,7 @@ const searchFail = vi.hoisted(() => ({
 const holds = vi.hoisted(() => {
   const map = new Map<number, Record<string, unknown>>()
   let window: Record<string, unknown> | null = null
+  let saveOk = true
   const ttlMs = 5 * 60 * 1000
   const expired = (hold: Record<string, unknown>, now = Date.now()) =>
     typeof hold.startTime === 'number' && now - hold.startTime > ttlMs
@@ -19,9 +20,16 @@ const holds = vi.hoisted(() => {
     map,
     window,
     expired,
+    get saveOk() {
+      return saveOk
+    },
+    set saveOk(v: boolean) {
+      saveOk = v
+    },
     reset() {
       map.clear()
       window = null
+      saveOk = true
     },
     getWindow() {
       return window
@@ -146,6 +154,7 @@ vi.mock('./burstHoldStore', () => ({
     return live
   },
   saveBurstHold: async (id: number, hold: Record<string, unknown>) => {
+    if (!holds.saveOk) return false
     holds.map.set(id, hold)
     return true
   },
@@ -170,8 +179,10 @@ vi.mock('./burstHoldStore', () => ({
   },
 }))
 
+const pendingWrite = vi.hoisted(() => ({ ok: true }))
+
 vi.mock('./pendingDecisionStore', () => ({
-  savePendingDecision: async () => true,
+  savePendingDecision: async () => pendingWrite.ok,
   removePendingDecision: async () => undefined,
 }))
 
@@ -257,6 +268,7 @@ describe('burstFlow', () => {
     bridge.legacy = []
     messages.sent = []
     searchFail.ids.clear()
+    pendingWrite.ok = true
     ws.sendDirectBatch.mockReset()
     ws.sendDirectBatchStatus.mockReset()
     ws.sendDirectBatch.mockResolvedValue({
@@ -350,6 +362,31 @@ describe('burstFlow', () => {
     expect(bridge.legacy).toEqual([])
     await vi.advanceTimersByTimeAsync(1000)
     expect(bridge.legacy).toEqual([1])
+  })
+
+  it('resumes a held download when migrate cannot persist pending_', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    pendingWrite.ok = false
+    holds.map.set(1, holdOf(1))
+    await admitConfirmedDownload(1, { url: holdOf(1).url } as never)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(bridge.resume).toEqual([1])
+    expect(bridge.legacy).toEqual([])
+    expect(holds.map.has(1)).toBe(false)
+  })
+
+  it('migrates the window to legacy when snapshot TTL refresh fails', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    holds.map.set(1, holdOf(1))
+    holds.map.set(2, holdOf(2))
+    await admitConfirmedDownload(1, { url: holdOf(1).url } as never)
+    await admitConfirmedDownload(2, { url: holdOf(2).url } as never)
+    holds.saveOk = false
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(messages.sent.some(m => m.type === 'burst:open')).toBe(false)
+    expect(bridge.legacy.slice().sort((a, b) => a - b)).toEqual([1, 2])
   })
 
   it('opens burst overlay for two members after quiet', async () => {

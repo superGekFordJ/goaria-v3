@@ -13,9 +13,11 @@ const connection = vi.hoisted(() => ({
 
 const pending = vi.hoisted(() => {
   const map = new Map<number, Record<string, unknown>>()
+  const expiredIds: number[] = []
   let hangSave: Promise<void> | null = null
   return {
     map,
+    expiredIds,
     hangSave(p: Promise<void> | null) {
       hangSave = p
     },
@@ -34,7 +36,7 @@ const pending = vi.hoisted(() => {
       return new Map(map)
     },
     async listExpiredPendingDecisionIds() {
-      return [] as number[]
+      return [...expiredIds]
     },
     async updatePendingStatus(id: number, status: string) {
       const cur = map.get(id)
@@ -158,7 +160,9 @@ const burst = vi.hoisted(() => ({
   recover: vi.fn(async () => {}),
   setBridge: vi.fn(),
   holds: new Map<number, unknown>(),
+  expiredHoldIds: [] as number[],
   holdSaveOk: true,
+  captureId: 'cap-1',
 }))
 
 vi.mock('../background/burstFlow', () => ({
@@ -173,7 +177,7 @@ vi.mock('../background/captureSession', () => ({
   getCaptureSession: async () =>
     burst.eligible
       ? {
-          captureId: 'cap-1',
+          captureId: burst.captureId,
           tabId: 1,
           documentNonce: 'n',
           pageHref: 'https://example.test/page',
@@ -189,6 +193,7 @@ vi.mock('../background/burstHoldStore', () => ({
   saveBurstHold: vi.fn(async () => burst.holdSaveOk),
   removeBurstHold: vi.fn(async () => undefined),
   getAllBurstHolds: async () => new Map(burst.holds),
+  listExpiredBurstHoldIds: async () => [...burst.expiredHoldIds],
 }))
 
 vi.mock('../background/wsClient', () => ({
@@ -255,10 +260,13 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
     config.registeredFileTypes = []
     connection.interceptionEnabled = true
     pending.map.clear()
+    pending.expiredIds.length = 0
     pending.hangSave(null)
     burst.eligible = false
     burst.holdSaveOk = true
+    burst.captureId = 'cap-1'
     burst.holds.clear()
+    burst.expiredHoldIds.length = 0
     burst.admit.mockClear()
     burst.recover.mockClear()
     burst.setBridge.mockClear()
@@ -505,5 +513,96 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
     expect(downloads.calls.pause).toEqual([])
     expect(burst.admit).not.toHaveBeenCalled()
     expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
+  })
+
+  it('releases the claim when captureId is empty', async () => {
+    burst.eligible = true
+    burst.captureId = ''
+    const item = downloadItem()
+    downloads.items.set(1, item)
+    downloads.created[0](item)
+    await flush()
+    expect(downloads.calls.pause).toEqual([])
+    expect(burst.admit).not.toHaveBeenCalled()
+    expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
+  })
+
+  it('drops expired pending_ without resuming when a live hold owns the id', async () => {
+    burst.holds.set(3, { url: 'https://cdn.example.test/file.bin' })
+    pending.expiredIds.push(3)
+    pending.map.set(3, {
+      url: 'https://cdn.example.test/file.bin',
+      filename: 'file.bin',
+      fileSize: 500_000,
+      startTime: Date.now(),
+      status: 'pending',
+    })
+    downloads.items.set(3, downloadItem({ id: 3, paused: true, state: 'in_progress' }))
+    await interceptor.recoverPendingDecisions()
+    await flush()
+    expect(downloads.calls.resume).toEqual([])
+    expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
+    expect(pending.map.has(3)).toBe(false)
+    expect(burst.recover).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops expired pending_ without resuming when an expired hold still owns the id', async () => {
+    burst.expiredHoldIds.push(3)
+    pending.expiredIds.push(3)
+    pending.map.set(3, {
+      url: 'https://cdn.example.test/file.bin',
+      filename: 'file.bin',
+      fileSize: 500_000,
+      startTime: Date.now(),
+      status: 'pending',
+    })
+    downloads.items.set(3, downloadItem({ id: 3, paused: true, state: 'in_progress' }))
+    await interceptor.recoverPendingDecisions()
+    await flush()
+    expect(downloads.calls.resume).toEqual([])
+    expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
+    expect(pending.map.has(3)).toBe(false)
+  })
+
+  it('resumes expired pending_ that has no burst hold', async () => {
+    pending.expiredIds.push(3)
+    pending.map.set(3, {
+      url: 'https://cdn.example.test/file.bin',
+      filename: 'file.bin',
+      fileSize: 500_000,
+      startTime: Date.now(),
+      status: 'pending',
+    })
+    downloads.items.set(3, downloadItem({ id: 3, paused: true, state: 'in_progress' }))
+    await interceptor.recoverPendingDecisions()
+    await flush()
+    expect(downloads.calls.resume).toEqual([3])
+    expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
+    expect(pending.map.has(3)).toBe(false)
+  })
+
+  it('does not drop stores on complete while path-B send is in flight', async () => {
+    let finish!: (value: DownloadResponse) => void
+    ws.sendDownloadRequest.mockImplementation(
+      () =>
+        new Promise<DownloadResponse>(resolve => {
+          finish = resolve
+        }),
+    )
+    const item = downloadItem()
+    downloads.items.set(1, item)
+    downloads.created[0](item)
+    await vi.waitFor(() => {
+      expect(ws.sendDownloadRequest).toHaveBeenCalledTimes(1)
+    })
+    expect(pending.map.has(1)).toBe(true)
+    downloads.changed[0]({ id: 1, state: { current: 'complete' } })
+    await flush()
+    expect(pending.map.has(1)).toBe(true)
+    expect(downloads.calls.resume).toEqual([])
+    finish({ type: 'download_ack', success: true, gid: 'ar_test' })
+    await vi.waitFor(() => {
+      expect(downloads.calls.cancel).toEqual([1])
+    })
   })
 })
