@@ -1,12 +1,11 @@
 <script lang="ts">
   import { connectionState } from '../stores/connection.svelte'
   import { configState } from '../stores/config.svelte'
-  import { unpairFromPopup } from '../stores/connection-popup'
+  import { onPopupConnectionSignal, unpairFromPopup } from '../stores/connection-popup'
   import { sendMessage } from 'webext-bridge/popup'
   import LiquidGlassPanel from '../lib/glass/LiquidGlassPanel.svelte'
   import type { InterceptionToggleMessage, CaptureArmMessage, CaptureArmReply } from '../utils/messaging'
   import { t } from '../lib/i18n'
-  import { CAP_DOWNLOAD_BATCH } from '../stores/config.svelte'
   import { isFirefox } from '../utils/extensionInfo'
 
   let showSettings = $state(false)
@@ -33,9 +32,22 @@
       sessionArmed ||
       connectionState.status !== 'connected' ||
       !connectionState.paired ||
-      !configState.autoCapture ||
-      !(connectionState.capabilities ?? []).includes(CAP_DOWNLOAD_BATCH),
+      !configState.autoCapture,
   )
+
+  $effect(() => {
+    if (
+      connectionState.status !== 'connected' ||
+      !connectionState.paired ||
+      !configState.autoCapture
+    ) {
+      sessionArmed = false
+    }
+  })
+
+  onPopupConnectionSignal(() => {
+    sessionArmed = false
+  })
 
   async function armCapture() {
     if (armDisabled) return

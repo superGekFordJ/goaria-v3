@@ -17,6 +17,7 @@ import { getCaptureSession } from '../background/captureSession'
 import { removeBurstHold, saveBurstHold } from '../background/burstHoldStore'
 import {
   admitConfirmedDownload,
+  enqueueCaptureWork,
   isCoalescerEligible,
   recoverBurstState,
   setChromeBurstBridge,
@@ -176,41 +177,45 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
     this.pausedIds.add(item.id)
     this.statusMirror.set(item.id, 'pending')
 
-    const coalescerEligible = await isCoalescerEligible(ctx)
-    if (coalescerEligible) {
-      const session = await getCaptureSession()
-      await saveBurstHold(item.id, {
-        url: ctx.url,
-        filename: ctx.filename,
-        fileSize: ctx.fileSize,
-        startTime: Date.now(),
-        captureId: session?.captureId ?? '',
-        referrer: ctx.referrer,
-        incognito: ctx.incognito === true,
-        mimeType: ctx.mimeType,
-        finalUrl: ctx.finalUrl,
-      })
-    } else {
-      const pendingDecision: PendingDecision = {
-        url: ctx.url,
-        filename: ctx.filename,
-        fileSize: ctx.fileSize,
-        startTime: Date.now(),
-        status: 'pending',
+    await enqueueCaptureWork(async () => {
+      if (!this.pausedIds.has(item.id)) return
+      const coalescerEligible = await isCoalescerEligible(ctx)
+      if (coalescerEligible) {
+        const session = await getCaptureSession()
+        await saveBurstHold(item.id, {
+          url: ctx.url,
+          filename: ctx.filename,
+          fileSize: ctx.fileSize,
+          startTime: Date.now(),
+          captureId: session?.captureId ?? '',
+          referrer: ctx.referrer,
+          incognito: ctx.incognito === true,
+          mimeType: ctx.mimeType,
+          finalUrl: ctx.finalUrl,
+        })
+      } else {
+        const pendingDecision: PendingDecision = {
+          url: ctx.url,
+          filename: ctx.filename,
+          fileSize: ctx.fileSize,
+          startTime: Date.now(),
+          status: 'pending',
+        }
+        await savePendingDecision(item.id, pendingDecision)
       }
-      await savePendingDecision(item.id, pendingDecision)
-    }
 
-    const confirmed = await this.pauseAndConfirm(item.id)
-    if (!confirmed) {
-      await this.releaseUnconfirmed(item.id)
-      return
-    }
-    if (!coalescerEligible) {
-      void this.handlePausedDownload(item.id, ctx)
-      return
-    }
-    await admitConfirmedDownload(item.id, ctx)
+      const confirmed = await this.pauseAndConfirm(item.id)
+      if (!confirmed) {
+        await this.releaseUnconfirmed(item.id)
+        return
+      }
+      if (!this.pausedIds.has(item.id)) return
+      if (!coalescerEligible) {
+        await this.handlePausedDownload(item.id, ctx)
+        return
+      }
+      await admitConfirmedDownload(item.id, ctx)
+    })
   }
 
   private async pauseAndConfirm(downloadId: number): Promise<boolean> {

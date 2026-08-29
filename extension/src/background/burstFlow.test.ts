@@ -8,9 +8,13 @@ const sessionStore = vi.hoisted(() => ({
 const holds = vi.hoisted(() => {
   const map = new Map<number, Record<string, unknown>>()
   let window: Record<string, unknown> | null = null
+  const ttlMs = 5 * 60 * 1000
+  const expired = (hold: Record<string, unknown>, now = Date.now()) =>
+    typeof hold.startTime === 'number' && now - hold.startTime > ttlMs
   return {
     map,
     window,
+    expired,
     reset() {
       map.clear()
       window = null
@@ -41,6 +45,12 @@ const ws = vi.hoisted(() => ({
     }),
   ),
   sendDirectBatchStatus: vi.fn(async () => ({ status: 'pending' })),
+  getStatus: () => ({
+    status: 'connected' as const,
+    wsPort: 0,
+    paired: true,
+    lastError: '',
+  }),
 }))
 
 const messages = vi.hoisted(() => ({
@@ -117,8 +127,18 @@ vi.mock('./captureSession', () => ({
 }))
 
 vi.mock('./burstHoldStore', () => ({
-  getBurstHold: async (id: number) => holds.map.get(id) ?? null,
-  getAllBurstHolds: async () => new Map(holds.map),
+  getBurstHold: async (id: number) => {
+    const hold = holds.map.get(id)
+    if (!hold || holds.expired(hold)) return null
+    return hold
+  },
+  getAllBurstHolds: async () => {
+    const live = new Map<number, Record<string, unknown>>()
+    for (const [id, hold] of holds.map) {
+      if (!holds.expired(hold)) live.set(id, hold)
+    }
+    return live
+  },
   saveBurstHold: async (id: number, hold: Record<string, unknown>) => {
     holds.map.set(id, hold)
   },
@@ -127,7 +147,13 @@ vi.mock('./burstHoldStore', () => ({
   },
   getBurstWindow: async () => holds.getWindow(),
   getBurstWindowIgnoringTtl: async () => holds.getWindow(),
-  listExpiredBurstHoldIds: async () => [] as number[],
+  listExpiredBurstHoldIds: async () => {
+    const ids: number[] = []
+    for (const [id, hold] of holds.map) {
+      if (holds.expired(hold)) ids.push(id)
+    }
+    return ids
+  },
   saveBurstWindow: async (win: Record<string, unknown>) => {
     holds.setWindow(win)
   },
@@ -159,6 +185,7 @@ vi.mock('./domConnectGeneration', () => ({
 
 import {
   admitConfirmedDownload,
+  enqueueCaptureWork,
   handleBurstSubmit,
   isCoalescerEligible,
   recoverBurstState,
@@ -339,6 +366,13 @@ describe('burstFlow', () => {
     expect(ids).toEqual([1, 2])
   })
 
+  it('admits from inside enqueueCaptureWork without deadlocking', async () => {
+    holds.map.set(1, holdOf(1))
+    await expect(
+      enqueueCaptureWork(() => admitConfirmedDownload(1, { url: holdOf(1).url } as never)),
+    ).resolves.toBe('coalesced')
+  })
+
   it('resumes duplicates and errors, and erases only succeeded ids', async () => {
     holds.map.set(1, holdOf(1))
     holds.map.set(2, holdOf(2))
@@ -479,5 +513,16 @@ describe('burstFlow', () => {
     await resumeAllBurstHolds()
     expect(bridge.resume.sort()).toEqual([1, 2])
     expect(sessionStore.session).toBeNull()
+  })
+
+  it('reaps an expired still-paused hold by resuming then dropping the key', async () => {
+    holds.map.set(4, holdOf(4))
+    const expired = holds.map.get(4)
+    if (expired) expired.startTime = Date.now() - 5 * 60 * 1000 - 1
+    expect(holds.map.has(4)).toBe(true)
+    await recoverBurstState()
+    expect(bridge.resume).toEqual([4])
+    expect(holds.map.has(4)).toBe(false)
+    expect(bridge.legacy).toEqual([])
   })
 })

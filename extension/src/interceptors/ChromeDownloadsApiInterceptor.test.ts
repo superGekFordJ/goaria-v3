@@ -150,6 +150,7 @@ const burst = vi.hoisted(() => ({
 vi.mock('../background/burstFlow', () => ({
   isCoalescerEligible: async () => burst.eligible,
   admitConfirmedDownload: (id: number, ctx: unknown) => burst.admit(id, ctx),
+  enqueueCaptureWork: async <T>(work: () => Promise<T>) => work(),
   recoverBurstState: () => burst.recover(),
   setChromeBurstBridge: (next: unknown) => burst.setBridge(next),
 }))
@@ -410,6 +411,7 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
   })
 
   it('takes immediate legacy on incognito mismatch', async () => {
+    // Predicate coverage lives in burstFlow; this case stubs ineligible → path B.
     burst.eligible = false
     const item = downloadItem({ incognito: true })
     downloads.items.set(1, item)

@@ -80,7 +80,7 @@ describe('burstHoldStore', () => {
     expect(holds.has(3)).toBe(false)
   })
 
-  it('drops expired holds and rejects Cookie or header fields', async () => {
+  it('lists expired holds for reap without deleting them from getBurstHold', async () => {
     expect(
       parseBurstHold({
         url: 'https://cdn.example.test/a.bin',

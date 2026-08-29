@@ -80,6 +80,7 @@ let maxTimer: ReturnType<typeof setTimeout> | null = null
 let pickerTimer: ReturnType<typeof setTimeout> | null = null
 let submitInflight = false
 let captureChain: Promise<unknown> = Promise.resolve()
+let exclusiveDepth = 0
 
 type BurstSubmitContext = {
   captureId: string
@@ -90,13 +91,29 @@ type BurstSubmitContext = {
   documentPolicy?: string
 }
 
+async function enterExclusive<T>(work: () => Promise<T>): Promise<T> {
+  exclusiveDepth++
+  try {
+    return await work()
+  } finally {
+    exclusiveDepth--
+  }
+}
+
 function runExclusive<T>(work: () => Promise<T>): Promise<T> {
-  const next = captureChain.then(work, work)
+  const next = captureChain.then(
+    () => enterExclusive(work),
+    () => enterExclusive(work),
+  )
   captureChain = next.then(
     () => undefined,
     () => undefined,
   )
   return next
+}
+
+export function enqueueCaptureWork<T>(work: () => Promise<T>): Promise<T> {
+  return runExclusive(work)
 }
 
 export function setChromeBurstBridge(next: ChromeBurstBridge): void {
@@ -414,6 +431,7 @@ export async function admitConfirmedDownload(
   downloadId: number,
   ctx: InterceptionContext,
 ): Promise<'legacy' | 'coalesced' | 'overflow'> {
+  if (exclusiveDepth > 0) return admitConfirmedDownloadLocked(downloadId, ctx)
   return runExclusive(() => admitConfirmedDownloadLocked(downloadId, ctx))
 }
 
@@ -476,6 +494,7 @@ async function resumeAllBurstHoldsLocked(): Promise<void> {
   if (typeof tabId === 'number') {
     void sendMessage('burst:close', {}, `content-script@${tabId}`).catch(() => undefined)
   }
+  void sendMessage('ws:status', wsClient.getStatus(), 'popup').catch(() => undefined)
 }
 
 async function stillPaused(downloadId: number): Promise<boolean> {
@@ -907,5 +926,6 @@ export function resetBurstFlowForTests(): void {
   clearPickerClock()
   submitInflight = false
   captureChain = Promise.resolve()
+  exclusiveDepth = 0
   bridge = null
 }
