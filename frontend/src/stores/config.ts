@@ -6,7 +6,6 @@ import {
   GetAria2Connected,
   SaveConfig,
   SelectDirectory,
-  RestartApp,
 } from '../../bindings/goaria-v3/internal/wailsapp/app.js'
 import { AppConfig } from '../../bindings/goaria-v3/internal/config/models.js'
 import { SaveConfigResult } from '../../bindings/goaria-v3/internal/wailsapp/models.js'
@@ -123,14 +122,6 @@ export const useConfigStore = defineStore(
       }
     }
 
-    async function restartApp() {
-      try {
-        await RestartApp()
-      } catch {
-        // Process should be exiting.
-      }
-    }
-
     return {
       settings,
       isLoading,
@@ -144,7 +135,6 @@ export const useConfigStore = defineStore(
       updateConfig,
       applyCanonicalConfig,
       pickDirectory,
-      restartApp,
     }
   },
   {
