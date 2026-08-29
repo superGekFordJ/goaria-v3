@@ -410,6 +410,10 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
     })
     expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
     expect(burst.admit).not.toHaveBeenCalled()
+    expect(burst.beginClaim).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => {
+      expect(burst.endClaim).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('takes immediate legacy when the implicit session is unavailable', async () => {
@@ -442,6 +446,9 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
       expect(burst.admit).toHaveBeenCalledTimes(1)
     })
     expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
+    expect(burst.beginClaim).toHaveBeenCalledTimes(1)
+    expect(burst.endClaim).toHaveBeenCalledTimes(1)
+    expect(burst.admit.mock.calls[0]?.[2]).toEqual(expect.any(Number))
   })
 
   it('resumes a paused item when search cannot confirm the pause', async () => {
@@ -499,6 +506,8 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
     expect(downloads.calls.pause).toEqual([])
     expect(burst.admit).not.toHaveBeenCalled()
     expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
+    expect(burst.beginClaim).toHaveBeenCalledTimes(1)
+    expect(burst.endClaim).toHaveBeenCalledTimes(1)
   })
 
   it('falls back to legacy when the implicit session cannot be minted', async () => {

@@ -4,6 +4,11 @@ import { pickCookieStoreId, type CookieStoreHint } from './cookieStoreId'
 
 export { pickCookieStoreId, type CookieStoreHint } from './cookieStoreId'
 
+type CookieStoreTab = {
+  id?: number
+  cookieStoreId?: unknown
+}
+
 /**
  * Collect cookies for a URL (including HttpOnly) via the browser.cookies API
  * and fold them into a single "Cookie" header line matching the aria2
@@ -39,10 +44,10 @@ export async function getStructuredCookiesForUrl(
 }
 
 export async function resolveCookieStoreIdForTab(
-  tab: browser.Tabs.Tab,
+  tab: CookieStoreTab,
 ): Promise<string | undefined> {
   if (typeof tab.id !== 'number') return undefined
-  const fromTab = pickCookieStoreId(tab.id, (tab as { cookieStoreId?: unknown }).cookieStoreId, [])
+  const fromTab = pickCookieStoreId(tab.id, tab.cookieStoreId, [])
   if (fromTab) return fromTab
   try {
     const stores = (await browser.cookies.getAllCookieStores()) as CookieStoreHint[]

@@ -201,7 +201,7 @@ export async function mintImplicitCaptureSession(
   if (!tab) return null
   const rawStoreId = isFirefox()
     ? ctx.cookieStoreId
-    : await resolveCookieStoreIdForTab(tab as browser.Tabs.Tab)
+    : await resolveCookieStoreIdForTab(tab)
   const cookieStoreId =
     typeof rawStoreId === 'string' && rawStoreId.trim() !== '' ? rawStoreId.trim() : undefined
   const session: CaptureSession = {
@@ -450,6 +450,18 @@ async function mergeExpiredHolds(
   return live
 }
 
+function shouldDeferCoalescerClose(window: BurstWindowState, now: number): boolean {
+  return pendingCaptureClaims() > 0 && now < window.firstItemAt + BURST_MAX_DEADLINE_MS
+}
+
+function deferCoalescerClock(): void {
+  clearClocks()
+  quietTimer = setTimeout(() => {
+    quietTimer = null
+    void runExclusive(() => onCoalescerClock())
+  }, BURST_CLAIM_RETRY_MS)
+}
+
 async function onCoalescerClock(seed?: BurstWindowRecord): Promise<void> {
   const window =
     seed ??
@@ -457,26 +469,31 @@ async function onCoalescerClock(seed?: BurstWindowRecord): Promise<void> {
     (usesFirefoxProcess() ? await getBurstWindowIgnoringTtl() : null)
   if (!window || window.phase !== 'coalescing') return
   const now = Date.now()
-  if (pendingCaptureClaims() > 0 && now < window.firstItemAt + BURST_MAX_DEADLINE_MS) {
-    clearClocks()
-    quietTimer = setTimeout(() => {
-      quietTimer = null
-      void runExclusive(() => onCoalescerClock())
-    }, BURST_CLAIM_RETRY_MS)
+  if (shouldDeferCoalescerClose(window, now)) {
+    deferCoalescerClock()
     return
   }
   const session = await getCaptureSession()
+  const afterSession = Date.now()
+  if (shouldDeferCoalescerClose(window, afterSession)) {
+    deferCoalescerClock()
+    return
+  }
   if (!session) {
     await closeCoalescedWindow(window, true)
     return
   }
-  const result = evaluateClose(window, now, {
+  const result = evaluateClose(window, afterSession, {
     soloQuietMs: BURST_QUIET_SOLO_MS,
     groupQuietMs: BURST_QUIET_GROUP_MS,
     maxMs: BURST_MAX_DEADLINE_MS,
   })
   if (result.kind === 'open') {
     scheduleClocks(window)
+    return
+  }
+  if (shouldDeferCoalescerClose(window, Date.now())) {
+    deferCoalescerClock()
     return
   }
   await closeCoalescedWindow(window, false)

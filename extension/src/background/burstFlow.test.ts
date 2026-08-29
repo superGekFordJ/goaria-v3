@@ -3,6 +3,7 @@ import { RpcRequestError } from './extractorRpc'
 
 const sessionStore = vi.hoisted(() => ({
   session: null as null | Record<string, unknown>,
+  readGate: null as null | { wait: Promise<void>; started: () => void },
 }))
 
 const firefoxMode = vi.hoisted(() => ({ on: false }))
@@ -174,7 +175,15 @@ vi.mock('webextension-polyfill', () => ({
 }))
 
 vi.mock('./captureSession', () => ({
-  getCaptureSession: async () => sessionStore.session,
+  getCaptureSession: async () => {
+    const gate = sessionStore.readGate
+    if (gate) {
+      sessionStore.readGate = null
+      gate.started()
+      await gate.wait
+    }
+    return sessionStore.session
+  },
   writeCaptureSession: async (s: Record<string, unknown>) => {
     if (sessionStore.session) return false
     sessionStore.session = s
@@ -245,9 +254,11 @@ vi.mock('./captureTabResolver', () => ({
       return null
     }
   },
-  resolvePresentationTab: async (opts: unknown) => {
+  resolvePresentationTab: async (opts: { referrerOrigin: string; incognito: boolean }) => {
     presentationTab.calls.push(opts)
-    return presentationTab.candidate
+    const candidate = presentationTab.candidate
+    if (!candidate || candidate.incognito !== opts.incognito) return null
+    return new URL(candidate.url).origin === opts.referrerOrigin ? candidate : null
   },
 }))
 
@@ -368,6 +379,10 @@ function coalescingWindow(extra: Record<string, unknown> = {}) {
   }
 }
 
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 12; i++) await Promise.resolve()
+}
+
 describe('burstFlow', () => {
   beforeEach(() => {
     resetBurstFlowForTests()
@@ -376,6 +391,7 @@ describe('burstFlow', () => {
     fx.cleaned = []
     fx.skipTabIds = []
     sessionStore.session = { ...SESSION }
+    sessionStore.readGate = null
     holds.reset()
     bridge.paused.clear()
     bridge.suggest = []
@@ -558,6 +574,23 @@ describe('burstFlow', () => {
     expect(holds.getWindow()).toBeNull()
   })
 
+  it.each([
+    ['empty', '', 0],
+    ['unparsable', 'not-a-url', 0],
+    ['cross-origin', 'https://other.test/page', 1],
+  ])(
+    'does not mint or schedule a window for a %s referrer',
+    async (_kind, referrer, expectedResolverCalls) => {
+      vi.useFakeTimers()
+      sessionStore.session = null
+      await expect(resolveCoalescerAdmission({ referrer } as never)).resolves.toBeNull()
+      expect(sessionStore.session).toBeNull()
+      expect(holds.getWindow()).toBeNull()
+      expect(presentationTab.calls).toHaveLength(expectedResolverCalls)
+      expect(vi.getTimerCount()).toBe(0)
+    },
+  )
+
   it('refuses a second origin without disturbing the current coalescing window', async () => {
     holds.setWindow(coalescingWindow())
     await expect(
@@ -617,6 +650,38 @@ describe('burstFlow', () => {
     expect(bridge.legacy).toEqual([])
     endCaptureClaim()
     expect(pendingCaptureClaims()).toBe(0)
+    await vi.advanceTimersByTimeAsync(25)
+    expect(bridge.legacy).toEqual([1])
+  })
+
+  it('defers a force-legacy close when a claim arrives during session lookup', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    holds.map.set(1, holdOf(1))
+    await admitConfirmedDownload(1, { url: holdOf(1).url } as never, Date.now())
+
+    let releaseRead!: () => void
+    let signalRead!: () => void
+    const readStarted = new Promise<void>(resolve => {
+      signalRead = resolve
+    })
+    const readGate = new Promise<void>(resolve => {
+      releaseRead = resolve
+    })
+    sessionStore.readGate = { wait: readGate, started: signalRead }
+
+    vi.advanceTimersByTime(80)
+    await readStarted
+    beginCaptureClaim()
+    const queuedClaim = enqueueCaptureWork(async () => undefined)
+    sessionStore.session = null
+    releaseRead()
+    await flushMicrotasks()
+    await queuedClaim
+
+    expect(pendingCaptureClaims()).toBe(1)
+    expect(bridge.legacy).toEqual([])
+    endCaptureClaim()
     await vi.advanceTimersByTimeAsync(25)
     expect(bridge.legacy).toEqual([1])
   })
@@ -924,6 +989,18 @@ describe('burstFlow', () => {
       expect(fx.legacy.some(row => row.url.includes('/5.bin'))).toBe(true)
     })
     expect(bridge.resume).toEqual([])
+  })
+
+  it('firefox recover legacy-sends a matching orphan when the window is missing', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    holds.map.set(5, firefoxHold(5))
+    await recoverBurstState()
+    await vi.waitFor(() => {
+      expect(fx.legacy.some(row => row.url.includes('/5.bin'))).toBe(true)
+    })
+    expect(holds.getWindow()).toBeNull()
+    expect(presentationTab.calls).toEqual([])
   })
 
   it('does not call Chrome resume on Firefox not_found', async () => {
