@@ -384,8 +384,13 @@ async function cleanupFirefoxHold(
   await removePendingDecision(downloadId)
 }
 
-function queueFirefoxLegacySend(downloadId: number, hold: BurstHold, skipTabId?: number): void {
-  if (firefoxLegacyClaimed.has(downloadId)) return
+function queueFirefoxLegacySend(
+  downloadId: number,
+  hold: BurstHold,
+  skipTabId?: number,
+  reserved = false,
+): void {
+  if (!reserved && firefoxLegacyClaimed.has(downloadId)) return
   firefoxLegacyClaimed.add(downloadId)
   const ctx = contextFromHold(hold)
   const tabId = typeof hold.tabId === 'number' ? hold.tabId : ctx.tabId
@@ -431,11 +436,18 @@ export async function migrateBurstHoldToLegacy(downloadId: number): Promise<void
   await migrateToLegacy(downloadId, hold)
 }
 
+export function claimFirefoxLegacyHandoff(downloadId: number): void {
+  firefoxLegacyClaimed.add(downloadId)
+}
+
 export function scheduleFirefoxLegacyHandoff(downloadId: number): void {
   void Promise.resolve().then(async () => {
     const hold = (await getBurstHold(downloadId)) ?? (await getBurstHoldIgnoringTtl(downloadId))
-    if (!hold) return
-    await migrateToLegacy(downloadId, hold)
+    if (!hold) {
+      firefoxLegacyClaimed.delete(downloadId)
+      return
+    }
+    queueFirefoxLegacySend(downloadId, hold, undefined, true)
   })
 }
 
@@ -610,12 +622,14 @@ async function admitConfirmedDownloadLocked(
     if (!usesFirefoxRelease(null) && bridge) void bridge.handlePausedDownload(downloadId, ctx)
     return 'legacy'
   }
-  const savedWindow = await saveBurstWindow(result.window)
+  const record: BurstWindowRecord = { ...result.window }
+  if (typeof session?.tabId === 'number') record.tabId = session.tabId
+  const savedWindow = await saveBurstWindow(record)
   if (!savedWindow) {
     if (!usesFirefoxRelease(savedHold)) await migrateToLegacy(downloadId, savedHold)
     return 'legacy'
   }
-  scheduleClocks(result.window)
+  scheduleClocks(record)
   return 'coalesced'
 }
 
@@ -720,10 +734,10 @@ async function reapExpiredBurstState(): Promise<void> {
   await removeBurstWindow()
 }
 
-export async function takeoverSuccess(downloadId: number): Promise<void> {
-  const hold = await getBurstHold(downloadId)
+export async function takeoverSuccess(downloadId: number, skipTabId?: number): Promise<void> {
+  const hold = (await getBurstHold(downloadId)) ?? (await getBurstHoldIgnoringTtl(downloadId))
   if (usesFirefoxRelease(hold)) {
-    await cleanupFirefoxHold(downloadId, hold)
+    await cleanupFirefoxHold(downloadId, hold, skipTabId)
     return
   }
   const b = bridge
@@ -825,6 +839,7 @@ async function applyAckPartitions(
   items: Array<{ clientItemId: string; downloadId: number }>,
   ack: Record<string, unknown>,
   skipTabId?: number,
+  alreadyNotifiedCannotResume = false,
 ): Promise<{ succeeded: number; duplicate: number; error: number }> {
   const succeeded = idSetOfAck(ack.succeeded_item_ids)
   const duplicate = idSetOfAck(ack.duplicate_item_ids)
@@ -833,7 +848,7 @@ async function applyAckPartitions(
   let err = 0
   for (const item of items) {
     if (succeeded.has(item.clientItemId)) {
-      await takeoverSuccess(item.downloadId)
+      await takeoverSuccess(item.downloadId, skipTabId)
       ok += 1
       continue
     }
@@ -841,7 +856,7 @@ async function applyAckPartitions(
     if (duplicate.has(item.clientItemId)) dup += 1
     else err += 1
   }
-  if (usesFirefoxProcess() && dup + err > 0) {
+  if (usesFirefoxProcess() && dup + err > 0 && !alreadyNotifiedCannotResume) {
     notify('capture_notif_title', 'burst_firefox_cannot_resume')
   }
   return { succeeded: ok, duplicate: dup, error: err }
@@ -965,7 +980,7 @@ async function handleBurstSubmitLocked(
     })
     try {
       const ack = await wsClient.sendDirectBatch(payload, requestId)
-      const parts = await applyAckPartitions(submitItems ?? [], ack, ctx.tabId)
+      const parts = await applyAckPartitions(submitItems ?? [], ack, ctx.tabId, firefoxUnselected)
       await finishBurstSubmit(ctx.tabId, ctx.captureId)
       return { accepted: true, ...parts }
     } catch (err) {
@@ -1120,6 +1135,7 @@ async function recoverFirefoxBurstStateLocked(): Promise<void> {
   const expiredIds = await listExpiredBurstHoldIds()
   for (const id of expiredIds) {
     if (window?.downloadIds.includes(id)) continue
+    if (firefoxLegacyClaimed.has(id)) continue
     const hold = holds.get(id) ?? (await getBurstHoldIgnoringTtl(id))
     holds.delete(id)
     if (hold) await migrateToLegacy(id, hold, skipTabId)
@@ -1146,6 +1162,7 @@ async function recoverFirefoxBurstStateLocked(): Promise<void> {
     return
   }
   for (const [id, hold] of holds) {
+    if (firefoxLegacyClaimed.has(id)) continue
     if (window?.downloadIds.includes(id)) continue
     if (session && session.captureId === hold.captureId && (!window || window.phase === 'coalescing')) {
       const outcome = await admitConfirmedDownloadLocked(id, contextFromHold(hold))
@@ -1167,6 +1184,7 @@ function pingBlocksBurstReopen(
   window: BurstWindowRecord,
 ): boolean {
   if (!ping) return true
+  if (typeof ping.document_nonce !== 'string' || typeof ping.page_href !== 'string') return true
   if (ping.extractor_picker_open || ping.dom_picker_open) return true
   if (typeof window.documentNonce === 'string' && window.documentNonce !== '') {
     if (ping.document_nonce !== window.documentNonce) return true

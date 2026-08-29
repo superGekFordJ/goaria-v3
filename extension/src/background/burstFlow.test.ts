@@ -55,6 +55,7 @@ const bridge = vi.hoisted(() => ({
 const fx = vi.hoisted(() => ({
   legacy: [] as Array<{ tabId: number; url: string }>,
   cleaned: [] as number[],
+  skipTabIds: [] as number[],
 }))
 
 const ws = vi.hoisted(() => ({
@@ -236,6 +237,7 @@ vi.mock('./domConnectGeneration', () => ({
 
 import {
   admitConfirmedDownload,
+  claimFirefoxLegacyHandoff,
   enqueueCaptureWork,
   handleBurstCancel,
   handleBurstSubmit,
@@ -244,6 +246,7 @@ import {
   referrerOriginMatches,
   resetBurstFlowForTests,
   resumeAllBurstHolds,
+  scheduleFirefoxLegacyHandoff,
   setChromeBurstBridge,
   setFirefoxBurstBridge,
 } from './burstFlow'
@@ -285,8 +288,9 @@ function installFirefoxBridge() {
     async sendLegacy(ctx) {
       fx.legacy.push({ tabId: ctx.tabId, url: ctx.url })
     },
-    async cleanupBlankTab(tabId) {
+    async cleanupBlankTab(tabId, urls) {
       fx.cleaned.push(tabId)
+      if (typeof urls?.skipTabId === 'number') fx.skipTabIds.push(urls.skipTabId)
     },
   })
 }
@@ -316,6 +320,7 @@ describe('burstFlow', () => {
     firefoxMode.on = false
     fx.legacy = []
     fx.cleaned = []
+    fx.skipTabIds = []
     sessionStore.session = { ...SESSION }
     holds.reset()
     bridge.paused.clear()
@@ -714,6 +719,7 @@ describe('burstFlow', () => {
     holds.map.set(2, firefoxHold(2))
     await admitConfirmedDownload(1, { url: holdOf(1).url, tabId: 9 } as never)
     await admitConfirmedDownload(2, { url: holdOf(2).url, tabId: 10 } as never)
+    expect(holds.getWindow()?.tabId).toBe(4)
     await vi.advanceTimersByTimeAsync(1000)
     expect(messages.sent.some(m => m.type === 'burst:open')).toBe(true)
     expect(bridge.legacy).toEqual([])
@@ -882,5 +888,117 @@ describe('burstFlow', () => {
     await handleBurstCancel({ capture_id: SESSION.captureId as string })
     expect(notices.messages).toEqual([])
     expect(fx.legacy).toEqual([])
+  })
+
+  it('stamps the armed tabId on a coalescing window at admit', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    holds.map.set(1, { ...firefoxHold(1), tabId: 4 })
+    await admitConfirmedDownload(1, { url: holdOf(1).url, tabId: 4 } as never)
+    expect(holds.getWindow()?.tabId).toBe(4)
+  })
+
+  it('firefox recover session=null without window.tabId still sendLegacy', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    sessionStore.session = null
+    holds.map.set(1, { ...firefoxHold(1), tabId: 4, mainFrame: true })
+    holds.setWindow({
+      captureId: SESSION.captureId,
+      downloadIds: [1],
+      firstItemAt: Date.now(),
+      lastItemAt: Date.now(),
+      phase: 'coalescing',
+    })
+    await recoverBurstState()
+    await vi.waitFor(() => {
+      expect(fx.legacy.some(row => row.url.includes('/1.bin'))).toBe(true)
+    })
+    expect(bridge.resume).toEqual([])
+    expect(fx.skipTabIds).toEqual([])
+  })
+
+  it('firefox recover session=null uses window.tabId as skipTabId', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    sessionStore.session = null
+    holds.map.set(1, { ...firefoxHold(1), tabId: 4, mainFrame: true })
+    holds.setWindow({
+      captureId: SESSION.captureId,
+      downloadIds: [1],
+      firstItemAt: Date.now(),
+      lastItemAt: Date.now(),
+      phase: 'coalescing',
+      tabId: 4,
+    })
+    await recoverBurstState()
+    await vi.waitFor(() => {
+      expect(fx.legacy.some(row => row.url.includes('/1.bin'))).toBe(true)
+    })
+    expect(fx.skipTabIds).toContain(4)
+  })
+
+  it('claimed interceptor handoff skips recover send then reserved send still runs', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    holds.map.set(5, firefoxHold(5))
+    claimFirefoxLegacyHandoff(5)
+    await recoverBurstState()
+    expect(fx.legacy).toEqual([])
+    expect(holds.map.has(5)).toBe(true)
+    scheduleFirefoxLegacyHandoff(5)
+    await vi.waitFor(() => {
+      expect(fx.legacy.some(row => row.url.includes('/5.bin'))).toBe(true)
+    })
+  })
+
+  it('firefox recover legacy-sends when picker ping page_href does not match', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    pingFlags.href = 'https://other.test/page'
+    holds.map.set(1, firefoxHold(1))
+    holds.map.set(2, firefoxHold(2))
+    holds.setWindow(pickerWindow({ documentNonce: 'nonce', pageHref: 'https://example.test/page' }))
+    await recoverBurstState()
+    await vi.waitFor(() => {
+      expect(fx.legacy.length).toBe(2)
+    })
+    expect(messages.sent.some(m => m.type === 'burst:open')).toBe(false)
+  })
+
+  it('firefox recover refuses picker reopen when ping omits nonce or href', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    pingFlags.nonce = undefined as never
+    holds.map.set(1, firefoxHold(1))
+    holds.map.set(2, firefoxHold(2))
+    holds.setWindow(pickerWindow())
+    await recoverBurstState()
+    await vi.waitFor(() => {
+      expect(fx.legacy.length).toBe(2)
+    })
+    expect(messages.sent.some(m => m.type === 'burst:open')).toBe(false)
+  })
+
+  it('does not stack cannot-resume notifies on unselect plus ack partition failure', async () => {
+    firefoxMode.on = true
+    installFirefoxBridge()
+    holds.map.set(1, firefoxHold(1))
+    holds.map.set(2, firefoxHold(2))
+    holds.setWindow(pickerWindow())
+    ws.sendDirectBatch.mockImplementation(async (payload?: Record<string, unknown>) => {
+      const items = (payload?.items ?? []) as Array<{ client_item_id: string }>
+      return {
+        succeeded_item_ids: [],
+        duplicate_item_ids: [items[0]?.client_item_id],
+        errors_by_item_id: {},
+      }
+    })
+    const reply = await handleBurstSubmit({
+      capture_id: SESSION.captureId as string,
+      indices: [0],
+    })
+    expect(reply.accepted).toBe(true)
+    expect(notices.messages.filter(m => m === 'burst_firefox_cannot_resume')).toHaveLength(1)
   })
 })

@@ -13,6 +13,7 @@ import {
 } from '../background/burstHoldStore'
 import {
   admitConfirmedDownload,
+  claimFirefoxLegacyHandoff,
   enqueueCaptureWork,
   isCoalescerEligible,
   recoverBurstState,
@@ -163,7 +164,10 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
       return { cancel: true }
     }
     if (typeof result.legacyId === 'number') {
-      scheduleFirefoxLegacyHandoff(result.legacyId)
+      const id = result.legacyId
+      setTimeout(() => {
+        scheduleFirefoxLegacyHandoff(id)
+      }, 0)
     }
     return { cancel: true }
   }
@@ -203,9 +207,13 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
     if (!saved) return { kind: 'pass' }
     if (await isCoalescerEligible(ctx)) {
       const outcome = await admitConfirmedDownload(downloadId, ctx)
-      if (outcome !== 'coalesced') return { kind: 'cancel', legacyId: downloadId }
+      if (outcome !== 'coalesced') {
+        claimFirefoxLegacyHandoff(downloadId)
+        return { kind: 'cancel', legacyId: downloadId }
+      }
       return { kind: 'cancel' }
     }
+    claimFirefoxLegacyHandoff(downloadId)
     return { kind: 'cancel', legacyId: downloadId }
   }
 

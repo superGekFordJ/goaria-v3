@@ -408,6 +408,7 @@ describe('FirefoxBlockingInterceptor', () => {
     expect(tabs.removed).toEqual([])
     expect([...sessionStore.data.keys()].some(k => k.startsWith('bhold_'))).toBe(true)
     expect(sessionStore.data.has('bwin_window')).toBe(true)
+    expect((sessionStore.data.get('bwin_window') as { tabId?: number }).tabId).toBe(4)
     expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
   })
 
@@ -416,6 +417,36 @@ describe('FirefoxBlockingInterceptor', () => {
     tabs.setTab({ url: 'about:blank' })
     const reply = await Promise.resolve(webRequest.headers[0].listener(interceptDetails({ tabId: 4 })))
     expect(reply).toEqual({ cancel: true })
+    await vi.waitFor(() => {
+      expect(ws.sendDownloadRequest).toHaveBeenCalled()
+    })
+    expect(tabs.removed).toEqual([])
+  })
+
+  it('recover with no session skips the armed tab when coalescing window has tabId', async () => {
+    capture.session = null
+    tabs.setTab({ url: 'about:blank' })
+    sessionStore.data.set('bwin_window', {
+      captureId: SESSION.captureId,
+      downloadIds: [7],
+      firstItemAt: Date.now(),
+      lastItemAt: Date.now(),
+      phase: 'coalescing',
+      tabId: 4,
+    })
+    sessionStore.data.set('bhold_7', {
+      url: 'https://cdn.example.test/7.bin',
+      filename: '7.bin',
+      fileSize: 10,
+      startTime: Date.now(),
+      captureId: SESSION.captureId,
+      referrer: 'https://example.test/page',
+      incognito: false,
+      engine: 'firefox',
+      tabId: 4,
+      mainFrame: true,
+    })
+    await interceptor.recoverPendingDecisions()
     await vi.waitFor(() => {
       expect(ws.sendDownloadRequest).toHaveBeenCalled()
     })
