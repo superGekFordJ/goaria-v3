@@ -21,6 +21,10 @@ import type {
   DomCloseMessage,
   DomPingReply,
   DomScanReply,
+  BurstOpenMessage,
+  BurstOpenReply,
+  BurstCloseMessage,
+  BurstSubmitReply,
 } from '../utils/messaging'
 import { pageTokenFromHref } from '../background/pageToken'
 import { mintDirectBatchRequestId } from '../background/mintRequestId'
@@ -31,6 +35,12 @@ import { domPickerView } from './domPickerView.svelte'
 import type { CapsuleEvent } from './capsuleUiState'
 import { pickerEventForCapsuleUi, type PickerEvent } from './pickerUiState'
 import { extractorBusyForDomMutex, isCurrentDomCatalog, type DomPickerEvent } from './domPickerUiState'
+import {
+  burstBusyForOverlay,
+  isCurrentBurstCapture,
+  type BurstPickerEvent,
+} from './burstPickerUiState'
+import { burstPickerView } from './burstPickerView.svelte'
 import glassCss from '../styles/index.css?inline'
 
 export async function pingBackground() {
@@ -152,7 +162,7 @@ function applyCapsule(event: CapsuleEvent): void {
 }
 
 function applyPicker(event: PickerEvent): void {
-  if (domPickerView.state.phase !== 'closed') {
+  if (domPickerView.state.phase !== 'closed' || burstPickerView.state.phase !== 'closed') {
     if (
       event.type === 'open' ||
       event.type === 'catalog' ||
@@ -251,6 +261,85 @@ function startDomStatusPoll(): void {
   }, DOM_STATUS_POLL_MS)
 }
 
+function applyBurstPicker(event: BurstPickerEvent): void {
+  burstPickerView.apply(event)
+  if (event.type === 'close') {
+    stopBurstAlivePoll()
+    stopBurstStatusPoll()
+    burstCaptureId = ''
+  }
+}
+
+let burstCaptureId = ''
+let burstAliveTimer: ReturnType<typeof setInterval> | null = null
+let burstStatusTimer: ReturnType<typeof setInterval> | null = null
+const BURST_STATUS_POLL_MS = 2000
+
+function stopBurstAlivePoll(): void {
+  if (burstAliveTimer) {
+    clearInterval(burstAliveTimer)
+    burstAliveTimer = null
+  }
+}
+
+function startBurstAlivePoll(): void {
+  stopBurstAlivePoll()
+  burstAliveTimer = setInterval(() => {
+    if (burstPickerView.state.phase === 'closed' || !burstCaptureId) {
+      stopBurstAlivePoll()
+      return
+    }
+    const captureId = burstCaptureId
+    void sendMessage('burst:alive', { capture_id: captureId }, 'background')
+      .then(reply => {
+        if (!isCurrentBurstCapture(captureId, burstCaptureId)) return
+        if (!reply?.ok) teardownBurstOverlay()
+      })
+      .catch(() => {
+        if (!isCurrentBurstCapture(captureId, burstCaptureId)) return
+        teardownBurstOverlay()
+      })
+  }, 1000)
+}
+
+function stopBurstStatusPoll(): void {
+  if (burstStatusTimer) {
+    clearInterval(burstStatusTimer)
+    burstStatusTimer = null
+  }
+}
+
+function startBurstStatusPoll(): void {
+  stopBurstStatusPoll()
+  const captureId = burstCaptureId
+  if (!captureId) return
+  burstStatusTimer = setInterval(() => {
+    if (burstPickerView.state.banner !== 'pending' || !burstCaptureId) {
+      stopBurstStatusPoll()
+      return
+    }
+    void sendMessage('burst:status', { capture_id: captureId }, 'background')
+      .then(reply => {
+        if (!isCurrentBurstCapture(captureId, burstCaptureId)) return
+        if (burstPickerView.state.banner !== 'pending') return
+        if (reply?.accepted) {
+          applyBurstPicker({ type: 'close' })
+          return
+        }
+        if (reply?.error_code === 'not_found') teardownBurstOverlay()
+      })
+      .catch(() => undefined)
+  }, BURST_STATUS_POLL_MS)
+}
+
+function teardownBurstOverlay(): void {
+  const id = burstCaptureId || burstPickerView.state.captureId
+  applyBurstPicker({ type: 'close' })
+  if (id) {
+    void sendMessage('burst:cancel', { capture_id: id }, 'background').catch(() => undefined)
+  }
+}
+
 function recastDocumentNonce(): void {
   documentNonce = mintDirectBatchRequestId()
 }
@@ -270,6 +359,7 @@ async function currentPageToken(): Promise<string | undefined> {
 capsuleView.onClick = () => {
   void (async () => {
     if (domPickerView.state.phase !== 'closed') return
+    if (burstPickerView.state.phase !== 'closed') return
     const ui = capsuleView.state.ui
     if (ui === 'resolving' || ui === 'committing') return
     const shownToken = capsuleView.state.pageToken
@@ -407,6 +497,51 @@ pickerView.onCancel = () => {
 
 domPickerView.onCancel = () => {
   teardownDomOverlay()
+}
+
+burstPickerView.onCancel = () => {
+  teardownBurstOverlay()
+}
+
+burstPickerView.onSubmit = payload => {
+  void (async () => {
+    if (burstPickerView.state.phase === 'closed') return
+    const captureId = burstPickerView.state.captureId
+    if (!captureId) return
+    if (!payload.indices || payload.indices.length === 0) {
+      teardownBurstOverlay()
+      return
+    }
+    applyBurstPicker({ type: 'submit' })
+    try {
+      const reply = (await sendMessage(
+        'burst:submit',
+        {
+          capture_id: captureId,
+          indices: payload.indices,
+          create_group: payload.create_group,
+          folder_name: payload.folder_name,
+        },
+        'background',
+      )) as BurstSubmitReply | undefined
+      if (reply?.accepted) {
+        applyBurstPicker({ type: 'close' })
+        return
+      }
+      if (reply?.error_code === 'busy') {
+        applyBurstPicker({ type: 'busy' })
+        return
+      }
+      if (reply?.error_code === 'pending') {
+        applyBurstPicker({ type: 'pending' })
+        startBurstStatusPoll()
+        return
+      }
+      teardownBurstOverlay()
+    } catch {
+      teardownBurstOverlay()
+    }
+  })()
 }
 
 domPickerView.onSubmit = payload => {
@@ -566,6 +701,7 @@ onMessage('extractor:hide', ({ data }: { data: ExtractorHideMessage }) => {
 
 onMessage('extractor:picker-catalog', async ({ data }: { data: ExtractorPickerCatalogMessage }) => {
   if (domPickerView.state.phase !== 'closed') return
+  if (burstPickerView.state.phase !== 'closed') return
   const token = await currentPageToken()
   if (!token || token !== data.page_token) return
   applyPicker({
@@ -614,6 +750,7 @@ onMessage('dom:ping', (): DomPingReply => ({
     pickerView.state.awaitingCatalog,
   ),
   dom_picker_open: domPickerView.state.phase !== 'closed',
+  burst_picker_open: burstBusyForOverlay(burstPickerView.state.phase),
 }))
 
 onMessage('dom:scan', (): DomScanReply => {
@@ -636,6 +773,9 @@ onMessage('dom:scan', (): DomScanReply => {
 
 onMessage('dom:open', ({ data }: { data: DomOpenMessage }): DomOpenReply => {
   if (extractorBusyForDomMutex(pickerView.state.phase, pickerView.state.awaitingCatalog)) {
+    return { ok: false }
+  }
+  if (burstBusyForOverlay(burstPickerView.state.phase)) {
     return { ok: false }
   }
   if (!data?.catalog_id || !Array.isArray(data.items) || data.items.length === 0) {
@@ -661,6 +801,33 @@ onMessage('dom:open', ({ data }: { data: DomOpenMessage }): DomOpenReply => {
 onMessage('dom:close', ({ data }: { data: DomCloseMessage }) => {
   if (data?.catalog_id && domCatalogId && data.catalog_id !== domCatalogId) return
   applyDomPicker({ type: 'close' })
+})
+
+onMessage('burst:open', ({ data }: { data: BurstOpenMessage }): BurstOpenReply => {
+  if (extractorBusyForDomMutex(pickerView.state.phase, pickerView.state.awaitingCatalog)) {
+    return { ok: false }
+  }
+  if (domPickerView.state.phase !== 'closed') return { ok: false }
+  if (!data?.capture_id || !Array.isArray(data.items) || data.items.length === 0) {
+    return { ok: false }
+  }
+  applyBurstPicker({
+    type: 'open',
+    captureId: data.capture_id,
+    items: data.items,
+    storeUnproven: data.store_unproven,
+  })
+  if (burstPickerView.state.phase === 'closed' || burstPickerView.state.captureId !== data.capture_id) {
+    return { ok: false }
+  }
+  burstCaptureId = data.capture_id
+  startBurstAlivePoll()
+  return { ok: true }
+})
+
+onMessage('burst:close', ({ data }: { data: BurstCloseMessage }) => {
+  if (data?.capture_id && burstCaptureId && data.capture_id !== burstCaptureId) return
+  applyBurstPicker({ type: 'close' })
 })
 
 try {
@@ -723,16 +890,19 @@ setInterval(() => {
 }, 1000)
 
 window.addEventListener('pagehide', () => {
+  teardownBurstOverlay()
   teardownDomOverlay()
 })
 
 window.addEventListener('pageshow', event => {
   if (event.persisted) {
     recastDocumentNonce()
+    teardownBurstOverlay()
     teardownDomOverlay()
   }
 })
 
 window.addEventListener('hashchange', () => {
+  teardownBurstOverlay()
   teardownDomOverlay()
 })

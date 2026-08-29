@@ -41,7 +41,7 @@
     rowMeta,
   }: {
     effects?: 'full' | 'reduced'
-    source: 'extractor' | 'dom'
+    source: 'extractor' | 'dom' | 'burst'
     title: string
     titleId?: string
     items: ReadonlyArray<T>
@@ -75,7 +75,12 @@
   )
   let groupEnabled = $derived(selectedCount >= 2)
   let titleId = $derived(
-    titleIdProp ?? (source === 'extractor' ? 'extractor-picker-title' : 'dom-picker-title'),
+    titleIdProp ??
+      (source === 'extractor'
+        ? 'extractor-picker-title'
+        : source === 'burst'
+          ? 'burst-picker-title'
+          : 'dom-picker-title'),
   )
 
   $effect(() => {
@@ -288,6 +293,7 @@
   class="extractor-picker-overlay"
   data-extractor-picker={source === 'extractor' ? '1' : undefined}
   data-dom-picker={source === 'dom' ? '1' : undefined}
+  data-burst-picker={source === 'burst' ? '1' : undefined}
   data-theme={isSystemDark ? 'dark' : 'light'}
   role="dialog"
   aria-modal="true"

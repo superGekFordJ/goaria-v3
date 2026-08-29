@@ -11,6 +11,7 @@ const harness = vi.hoisted(() => {
       page_href: 'https://example.com/page#frag',
       extractor_picker_open: false,
       dom_picker_open: false,
+      burst_picker_open: false,
     },
     pingHold: null as Promise<void> | null,
     onPing: null as null | (() => void),
@@ -164,6 +165,7 @@ describe('domFlow', () => {
   beforeEach(() => {
     harness.capabilities = ['download.batch']
     harness.ping.extractor_picker_open = false
+    harness.ping.burst_picker_open = false
     harness.pingHold = null
     harness.onPing = null
     harness.ping.document_nonce = 'nonce-a'
@@ -229,6 +231,13 @@ describe('domFlow', () => {
     await handleCollectPageLinks(clickInfo as never, harness.tab as never)
     expect(harness.opens).toEqual([])
     expect(harness.notifications.some(n => n.message === 'dom_mutex_body')).toBe(true)
+  })
+
+  it('refuses when the burst picker is already open', async () => {
+    harness.ping.burst_picker_open = true
+    await handleCollectPageLinks(clickInfo as never, harness.tab as never)
+    expect(harness.opens).toEqual([])
+    expect(harness.notifications.some(n => n.message === 'burst_mutex_body')).toBe(true)
   })
 
   it('notifies and skips scan when download.batch is missing', async () => {

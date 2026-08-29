@@ -3,9 +3,11 @@
   import ExtractorCapsule from './ExtractorCapsule.svelte'
   import ExtractorPicker from './ExtractorPicker.svelte'
   import DomLinkPicker from './DomLinkPicker.svelte'
+  import BurstPicker from './BurstPicker.svelte'
   import { capsuleView } from './capsuleView.svelte'
   import { pickerView } from './pickerView.svelte'
   import { domPickerView } from './domPickerView.svelte'
+  import { burstPickerView } from './burstPickerView.svelte'
   import { overlayHostOpen, paintOverlayKind } from './overlayCoordinator'
 
   const effects = $derived(capsuleView.effects)
@@ -13,6 +15,7 @@
     paintOverlayKind({
       extractorPhase: pickerView.state.phase,
       domPhase: domPickerView.state.phase,
+      burstPhase: burstPickerView.state.phase,
     }),
   )
   const overlayOpen = $derived(overlayHostOpen(paint))
@@ -41,4 +44,7 @@
 {/if}
 {#if paint === 'dom'}
   <DomLinkPicker {effects} />
+{/if}
+{#if paint === 'burst'}
+  <BurstPicker {effects} />
 {/if}

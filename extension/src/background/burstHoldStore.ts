@@ -1,0 +1,203 @@
+import browser from 'webextension-polyfill'
+import type { BurstWindowState } from './burstCoalescer'
+import {
+  BURST_HOLD_TTL_MS,
+  STORAGE_KEY_BURST_HOLD_PREFIX,
+  STORAGE_KEY_BURST_WINDOW,
+} from '../stores/config.svelte'
+
+const FORBIDDEN = new Set(['cookie', 'cookies', 'header', 'headers'])
+
+export type BurstHold = {
+  url: string
+  filename: string
+  fileSize: number
+  startTime: number
+  captureId: string
+  referrer: string
+  incognito: boolean
+  mimeType?: string
+  finalUrl?: string
+}
+
+export type BurstSubmitMapItem = {
+  clientItemId: string
+  downloadId: number
+  index: number
+}
+
+export type BurstWindowRecord = BurstWindowState & {
+  pickerDeadline?: number
+  requestId?: string
+  submitItems?: BurstSubmitMapItem[]
+  storeUnproven?: boolean
+  documentPolicy?: string
+}
+
+function hasForbidden(rec: Record<string, unknown>): boolean {
+  for (const key of Object.keys(rec)) {
+    if (FORBIDDEN.has(key.toLowerCase())) return true
+  }
+  return false
+}
+
+export function burstHoldKey(downloadId: number): string {
+  return `${STORAGE_KEY_BURST_HOLD_PREFIX}${downloadId}`
+}
+
+export function parseBurstHold(raw: unknown, now = Date.now()): BurstHold | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const rec = raw as Record<string, unknown>
+  if (hasForbidden(rec)) return null
+  if (typeof rec.url !== 'string' || rec.url === '') return null
+  if (typeof rec.filename !== 'string') return null
+  if (typeof rec.fileSize !== 'number') return null
+  if (typeof rec.startTime !== 'number' || !Number.isFinite(rec.startTime)) return null
+  if (typeof rec.captureId !== 'string' || rec.captureId === '') return null
+  if (typeof rec.referrer !== 'string') return null
+  if (typeof rec.incognito !== 'boolean') return null
+  if (now - rec.startTime > BURST_HOLD_TTL_MS) return null
+  const hold: BurstHold = {
+    url: rec.url,
+    filename: rec.filename,
+    fileSize: rec.fileSize,
+    startTime: rec.startTime,
+    captureId: rec.captureId,
+    referrer: rec.referrer,
+    incognito: rec.incognito,
+  }
+  if (typeof rec.mimeType === 'string') hold.mimeType = rec.mimeType
+  if (typeof rec.finalUrl === 'string') hold.finalUrl = rec.finalUrl
+  return hold
+}
+
+export function parseBurstWindow(raw: unknown, now = Date.now()): BurstWindowRecord | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const rec = raw as Record<string, unknown>
+  if (hasForbidden(rec)) return null
+  if (typeof rec.captureId !== 'string' || rec.captureId === '') return null
+  if (!Array.isArray(rec.downloadIds)) return null
+  const downloadIds: number[] = []
+  for (const id of rec.downloadIds) {
+    if (typeof id !== 'number' || !Number.isInteger(id)) return null
+    downloadIds.push(id)
+  }
+  if (typeof rec.firstItemAt !== 'number' || !Number.isFinite(rec.firstItemAt)) return null
+  if (typeof rec.lastItemAt !== 'number' || !Number.isFinite(rec.lastItemAt)) return null
+  if (rec.phase !== 'coalescing' && rec.phase !== 'picker' && rec.phase !== 'submitting') {
+    return null
+  }
+  const deadline =
+    typeof rec.pickerDeadline === 'number' && Number.isFinite(rec.pickerDeadline)
+      ? rec.pickerDeadline
+      : rec.firstItemAt + BURST_HOLD_TTL_MS
+  if (rec.phase !== 'coalescing' && now > deadline) return null
+  if (rec.phase === 'coalescing' && now - rec.firstItemAt > BURST_HOLD_TTL_MS) return null
+  const window: BurstWindowRecord = {
+    captureId: rec.captureId,
+    downloadIds,
+    firstItemAt: rec.firstItemAt,
+    lastItemAt: rec.lastItemAt,
+    phase: rec.phase,
+  }
+  if (typeof rec.pickerDeadline === 'number') window.pickerDeadline = rec.pickerDeadline
+  if (typeof rec.requestId === 'string' && rec.requestId !== '') window.requestId = rec.requestId
+  if (typeof rec.storeUnproven === 'boolean') window.storeUnproven = rec.storeUnproven
+  if (typeof rec.documentPolicy === 'string') window.documentPolicy = rec.documentPolicy
+  if (Array.isArray(rec.submitItems)) {
+    const items: BurstSubmitMapItem[] = []
+    for (const row of rec.submitItems) {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) continue
+      const item = row as Record<string, unknown>
+      if (typeof item.clientItemId !== 'string' || typeof item.downloadId !== 'number') continue
+      if (typeof item.index !== 'number') continue
+      items.push({
+        clientItemId: item.clientItemId,
+        downloadId: item.downloadId,
+        index: item.index,
+      })
+    }
+    if (items.length > 0) window.submitItems = items
+  }
+  return window
+}
+
+export async function saveBurstHold(downloadId: number, hold: BurstHold): Promise<void> {
+  try {
+    await browser.storage.session.set({ [burstHoldKey(downloadId)]: hold })
+  } catch {
+    // storage.session may be unavailable
+  }
+}
+
+export async function removeBurstHold(downloadId: number): Promise<void> {
+  try {
+    await browser.storage.session.remove(burstHoldKey(downloadId))
+  } catch {
+    // best-effort
+  }
+}
+
+export async function getBurstHold(downloadId: number): Promise<BurstHold | null> {
+  try {
+    const result = await browser.storage.session.get(burstHoldKey(downloadId))
+    const parsed = parseBurstHold(result[burstHoldKey(downloadId)])
+    if (!parsed) {
+      await removeBurstHold(downloadId)
+      return null
+    }
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+export async function getAllBurstHolds(): Promise<Map<number, BurstHold>> {
+  const map = new Map<number, BurstHold>()
+  try {
+    const all = await browser.storage.session.get(null)
+    for (const [key, raw] of Object.entries(all)) {
+      if (!key.startsWith(STORAGE_KEY_BURST_HOLD_PREFIX)) continue
+      const parsed = parseBurstHold(raw)
+      const id = Number(key.slice(STORAGE_KEY_BURST_HOLD_PREFIX.length))
+      if (!parsed || Number.isNaN(id)) {
+        if (!Number.isNaN(id)) await removeBurstHold(id)
+        continue
+      }
+      map.set(id, parsed)
+    }
+  } catch {
+    // ignore
+  }
+  return map
+}
+
+export async function saveBurstWindow(window: BurstWindowRecord): Promise<void> {
+  try {
+    await browser.storage.session.set({ [STORAGE_KEY_BURST_WINDOW]: window })
+  } catch {
+    // ignore
+  }
+}
+
+export async function removeBurstWindow(): Promise<void> {
+  try {
+    await browser.storage.session.remove(STORAGE_KEY_BURST_WINDOW)
+  } catch {
+    // ignore
+  }
+}
+
+export async function getBurstWindow(): Promise<BurstWindowRecord | null> {
+  try {
+    const result = await browser.storage.session.get(STORAGE_KEY_BURST_WINDOW)
+    const parsed = parseBurstWindow(result[STORAGE_KEY_BURST_WINDOW])
+    if (!parsed) {
+      await removeBurstWindow()
+      return null
+    }
+    return parsed
+  } catch {
+    return null
+  }
+}

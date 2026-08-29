@@ -96,5 +96,21 @@
   "dom_kind_video": { "message": "Vídeo" },
   "dom_kind_audio": { "message": "Audio" },
   "dom_kind_source": { "message": "Fuente" },
-  "dom_success_body": { "message": "Enviados $1, duplicados $2, fallidos $3." }
+  "dom_success_body": { "message": "Enviados $1, duplicados $2, fallidos $3." },
+
+  "popup_btn_capture_arm": { "message": "Armar captura" },
+  "capture_notif_title": { "message": "GoAria" },
+  "capture_armed_body": { "message": "Captura armada en esta pestaña. Las descargas aptas del próximo minuto se pueden agrupar." },
+  "capture_reject_no_tab": { "message": "No hay pestaña activa para armar." },
+  "capture_reject_discarded": { "message": "Esta pestaña está descartada. Vuelva a cargarla." },
+  "capture_reject_scheme": { "message": "Arme la captura en una página http o https." },
+  "capture_reject_ping": { "message": "Esta página no puede ejecutar la captura." },
+  "capture_reject_cap": { "message": "Este host no admite descarga por lotes." },
+  "capture_reject_autocapture": { "message": "Active primero interceptar descargas." },
+  "capture_reject_disconnected": { "message": "Conecte y empareje GoAria primero." },
+  "capture_reject_session": { "message": "Ya hay una sesión de captura armada." },
+  "capture_reject_overlay": { "message": "Termine o cierre primero el selector abierto." },
+  "burst_picker_title": { "message": "Elegir descargas capturadas" },
+  "burst_overflow": { "message": "La captura está llena. Los archivos extra usan la toma normal." },
+  "burst_mutex_body": { "message": "Termine o cierre primero el selector abierto." }
 }

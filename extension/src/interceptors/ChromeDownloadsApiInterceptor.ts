@@ -13,6 +13,14 @@ import {
   updatePendingDownloadPage,
   type PendingDecision,
 } from '../background/pendingDecisionStore'
+import { getCaptureSession } from '../background/captureSession'
+import { removeBurstHold, saveBurstHold } from '../background/burstHoldStore'
+import {
+  admitConfirmedDownload,
+  isCoalescerEligible,
+  recoverBurstState,
+  setChromeBurstBridge,
+} from '../background/burstFlow'
 
 // onDeterminingFilename is Chrome-specific and absent from the
 // webextension-polyfill type definitions. The polyfill forwards it to
@@ -80,6 +88,17 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
   }
 
   register(): void {
+    setChromeBurstBridge({
+      invokeSuggest: id => this.invokeSuggest(id),
+      cancelAndErase: id => this.cancelAndErase(id),
+      resumeDownload: id => this.resumeDownload(id),
+      cleanupMemory: id => this.cleanupMemory(id),
+      restorePausedMemory: id => {
+        this.pausedIds.add(id)
+        this.statusMirror.set(id, 'pending')
+      },
+      handlePausedDownload: (id, ctx) => this.handlePausedDownload(id, ctx),
+    })
     browser.downloads.onCreated.addListener(this.onCreatedListener)
     const ev = getOnDeterminingFilename()
     if (ev) ev.addListener(this.onDeterminingListener)
@@ -96,19 +115,18 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
           continue
         }
         if (item.state === 'in_progress' && item.paused) {
-          // Still paused from before the SW died — re-run the decision.
           this.pausedIds.add(downloadId)
           this.statusMirror.set(downloadId, 'pending')
           const ctx = this.contextFromDecision(decision)
           void this.handlePausedDownload(downloadId, ctx)
         } else {
-          // SW death let the download auto-resume; abandon takeover.
           await removePendingDecision(downloadId)
         }
       } catch {
         await removePendingDecision(downloadId)
       }
     }
+    await recoverBurstState()
   }
 
   private async onDownloadCreated(item: browser.Downloads.DownloadItem): Promise<void> {
@@ -139,6 +157,7 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       fileSize: item.fileSize > 0 ? item.fileSize : item.totalBytes > 0 ? item.totalBytes : 0,
       filename,
       referrer: item.referrer ?? '',
+      incognito: item.incognito === true,
     }
 
     const decision = this.shouldIntercept(ctx)
@@ -157,40 +176,71 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
     this.pausedIds.add(item.id)
     this.statusMirror.set(item.id, 'pending')
 
-    // Persist the pending decision BEFORE pausing so a SW death between pause
-    // and save doesn't leave the download stuck paused with no recovery state.
-    const pendingDecision: PendingDecision = {
-      url: ctx.url,
-      filename: ctx.filename,
-      fileSize: ctx.fileSize,
-      startTime: Date.now(),
-      status: 'pending',
+    const coalescerEligible = await isCoalescerEligible(ctx)
+    if (coalescerEligible) {
+      const session = await getCaptureSession()
+      await saveBurstHold(item.id, {
+        url: ctx.url,
+        filename: ctx.filename,
+        fileSize: ctx.fileSize,
+        startTime: Date.now(),
+        captureId: session?.captureId ?? '',
+        referrer: ctx.referrer,
+        incognito: ctx.incognito === true,
+        mimeType: ctx.mimeType,
+        finalUrl: ctx.finalUrl,
+      })
+    } else {
+      const pendingDecision: PendingDecision = {
+        url: ctx.url,
+        filename: ctx.filename,
+        fileSize: ctx.fileSize,
+        startTime: Date.now(),
+        status: 'pending',
+      }
+      await savePendingDecision(item.id, pendingDecision)
     }
-    await savePendingDecision(item.id, pendingDecision)
 
+    const confirmed = await this.pauseAndConfirm(item.id)
+    if (!confirmed) {
+      await this.releaseUnconfirmed(item.id)
+      return
+    }
+    if (!coalescerEligible) {
+      void this.handlePausedDownload(item.id, ctx)
+      return
+    }
+    await admitConfirmedDownload(item.id, ctx)
+  }
+
+  private async pauseAndConfirm(downloadId: number): Promise<boolean> {
     try {
-      await browser.downloads.pause(item.id)
-    } catch (e) {
-      // pause may fail for completed/interrupted/small-file downloads.
+      await browser.downloads.pause(downloadId)
+    } catch {
       try {
-        const fresh = await browser.downloads.search({ id: item.id })
+        const fresh = await browser.downloads.search({ id: downloadId })
         const state = fresh[0]?.state
         if (state === 'complete' || state === 'interrupted') {
-          await removePendingDecision(item.id)
-          this.invokeSuggest(item.id)
-          this.cleanupMemory(item.id)
-          return
+          return false
         }
       } catch {
-        await removePendingDecision(item.id)
-        this.invokeSuggest(item.id)
-        this.cleanupMemory(item.id)
-        return
+        return false
       }
-      // Still in_progress despite pause error — onDeterminingFilename will
-      // delay completion; proceed with the handoff attempt.
     }
-    void this.handlePausedDownload(item.id, ctx)
+    try {
+      const fresh = await browser.downloads.search({ id: downloadId })
+      const found = fresh[0]
+      return Boolean(found && found.state === 'in_progress' && found.paused === true)
+    } catch {
+      return false
+    }
+  }
+
+  private async releaseUnconfirmed(downloadId: number): Promise<void> {
+    await removePendingDecision(downloadId)
+    await removeBurstHold(downloadId)
+    this.invokeSuggest(downloadId)
+    this.cleanupMemory(downloadId)
   }
 
   private async handlePausedDownload(downloadId: number, ctx: InterceptionContext): Promise<void> {

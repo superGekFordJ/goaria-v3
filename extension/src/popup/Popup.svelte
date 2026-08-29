@@ -4,8 +4,9 @@
   import { unpairFromPopup } from '../stores/connection-popup'
   import { sendMessage } from 'webext-bridge/popup'
   import LiquidGlassPanel from '../lib/glass/LiquidGlassPanel.svelte'
-  import type { InterceptionToggleMessage } from '../utils/messaging'
-  import { t } from '../lib/i18n'
+import type { InterceptionToggleMessage, CaptureArmMessage } from '../utils/messaging'
+import { t } from '../lib/i18n'
+import { CAP_DOWNLOAD_BATCH } from '../stores/config.svelte'
 
   let showSettings = $state(false)
   let showPairGuide = $state(false)
@@ -25,6 +26,21 @@
   )
 
   let toggleDisabled = $derived(connectionState.status !== 'connected')
+  let armDisabled = $derived(
+    connectionState.status !== 'connected' ||
+      !connectionState.paired ||
+      !configState.autoCapture ||
+      !(connectionState.capabilities ?? []).includes(CAP_DOWNLOAD_BATCH),
+  )
+
+  async function armCapture() {
+    if (armDisabled) return
+    try {
+      await sendMessage('capture:arm', {} satisfies CaptureArmMessage, 'background')
+    } catch {
+      // background unavailable
+    }
+  }
 
   async function toggleInterception() {
     if (toggleDisabled) return
@@ -86,6 +102,22 @@
       <span class="btn-inner">
         <span class="popup-toggle-label">{t('popup_toggle_intercept')}</span>
         <span>{configState.autoCapture ? 'ON' : 'OFF'}</span>
+      </span>
+    </LiquidGlassPanel>
+  </div>
+
+  <div class="popup-section">
+    <LiquidGlassPanel
+      as="button"
+      interactive={true}
+      hoverEffect="all"
+      effects={configState.effects}
+      class="popup-toggle-row"
+      disabled={armDisabled}
+      onclick={armCapture}
+    >
+      <span class="btn-inner">
+        <span class="popup-toggle-label">{t('popup_btn_capture_arm')}</span>
       </span>
     </LiquidGlassPanel>
   </div>

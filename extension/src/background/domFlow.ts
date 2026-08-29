@@ -199,8 +199,8 @@ export async function handleCollectPageLinks(
       notify('dom_no_cs_title', 'dom_no_cs_body')
       return
     }
-    if (ping.extractor_picker_open) {
-      notify('dom_mutex_title', 'dom_mutex_body')
+    if (ping.extractor_picker_open || ping.burst_picker_open) {
+      notify('dom_mutex_title', ping.burst_picker_open ? 'burst_mutex_body' : 'dom_mutex_body')
       return
     }
     const storeId = await resolveCookieStoreIdForTab(tab)
@@ -274,7 +274,7 @@ async function revalidateForSubmit(
   ) {
     return { error: 'invalid_request' }
   }
-  if (ping.extractor_picker_open) return { error: 'busy' }
+  if (ping.extractor_picker_open || ping.burst_picker_open) return { error: 'busy' }
   return { ping, tab }
 }
 

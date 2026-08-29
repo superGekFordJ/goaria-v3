@@ -38,6 +38,13 @@ declare module 'webext-bridge' {
     'dom:status': ProtocolWithReturn<DomAliveMessage, DomSubmitReply>
     'dom:submit': ProtocolWithReturn<DomSubmitMessage, DomSubmitReply>
     'dom:cancel': ProtocolWithReturn<DomCancelMessage, DomCancelReply>
+    'capture:arm': ProtocolWithReturn<CaptureArmMessage, CaptureArmReply>
+    'burst:open': ProtocolWithReturn<BurstOpenMessage, BurstOpenReply>
+    'burst:close': BurstCloseMessage
+    'burst:submit': ProtocolWithReturn<BurstSubmitMessage, BurstSubmitReply>
+    'burst:cancel': ProtocolWithReturn<BurstCancelMessage, BurstCancelReply>
+    'burst:alive': ProtocolWithReturn<BurstAliveMessage, BurstAliveReply>
+    'burst:status': ProtocolWithReturn<BurstAliveMessage, BurstSubmitReply>
   }
 }
 
@@ -214,6 +221,7 @@ export type DomPingReply = {
   page_href: string
   extractor_picker_open: boolean
   dom_picker_open: boolean
+  burst_picker_open: boolean
 }
 
 export type DomScanMessage = Record<string, never>
@@ -281,6 +289,65 @@ export type InterceptionToggleMessage = {
 }
 
 export type InterceptionToggleResult = {
+  ok: boolean
+}
+
+export type CaptureArmMessage = Record<string, never>
+export type CaptureArmReply = {
+  ok: boolean
+  error?: string
+}
+
+export type BurstPickerCatalogItem = {
+  index: number
+  filename?: string
+  origin?: string
+  path?: string
+  size_bytes?: number
+}
+
+export type BurstOpenMessage = {
+  capture_id: string
+  items: BurstPickerCatalogItem[]
+  store_unproven: boolean
+}
+
+export type BurstOpenReply = {
+  ok: boolean
+}
+
+export type BurstCloseMessage = {
+  capture_id?: string
+}
+
+export type BurstSubmitMessage = {
+  capture_id: string
+  indices: number[]
+  create_group?: boolean
+  folder_name?: string
+}
+
+export type BurstSubmitReply = {
+  accepted: boolean
+  error_code?: string
+  succeeded?: number
+  duplicate?: number
+  error?: number
+}
+
+export type BurstCancelMessage = {
+  capture_id: string
+}
+
+export type BurstCancelReply = {
+  ok: boolean
+}
+
+export type BurstAliveMessage = {
+  capture_id: string
+}
+
+export type BurstAliveReply = {
   ok: boolean
 }
 

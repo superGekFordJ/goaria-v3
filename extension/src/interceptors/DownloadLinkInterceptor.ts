@@ -1,5 +1,6 @@
 import { sendMessage } from 'webext-bridge/background'
 import browser from 'webextension-polyfill'
+import { isBootReady } from '../background/bootState'
 import { configState } from '../stores/config.svelte'
 import { connectionState } from '../stores/connection.svelte'
 import { wsClient } from '../background/wsClient'
@@ -85,6 +86,7 @@ export abstract class DownloadLinkInterceptor {
    * constructDownloadRequest.
    */
   shouldIntercept(ctx: InterceptionContext): InterceptionDecision {
+    if (!isBootReady()) return 'pass'
     if (!configState.autoCapture) return 'pass'
     if (!connectionState.interceptionEnabled) return 'pass'
 

@@ -7,6 +7,7 @@ import { mintRequestId } from './mintRequestId'
 import { notifyExtractorHostDown, notifyExtractorMatchCleared } from './extractorVisibility'
 import { bumpDirectConnectGeneration } from './domConnectGeneration'
 import { dropDomCatalogsOnReconnect, notifyDomHostDown } from './domHostDown'
+import { dropCaptureOnReconnect, notifyCaptureHostDown } from './captureHostDown'
 import { applyParsedMatch, clearMatchSnapshot } from './matchSnapshot'
 import { rescanHttpTabs } from './tabMatcher'
 import {
@@ -582,6 +583,7 @@ export class WsClient {
       connectionState.legacyHost = deriveLegacyHostState(parsed)
       bumpDirectConnectGeneration()
       dropDomCatalogsOnReconnect()
+      dropCaptureOnReconnect()
       if (parsed.match && hasCapability(parsed.capabilities, CAP_EXTRACTOR_RESOLVE)) {
         applyParsedMatch(parsed.match)
         void rescanHttpTabs().catch(() => undefined)
@@ -767,6 +769,7 @@ export class WsClient {
     clearMatchSnapshot()
     notifyExtractorHostDown('disconnect')
     notifyDomHostDown()
+    void notifyCaptureHostDown()
   }
 
   private setStatus(status: WsStatusMessage['status'], lastError: string): void {

@@ -4,12 +4,15 @@ import { wsClient } from './wsClient'
 import { configState, STORAGE_KEY_SECRET } from '../stores/config.svelte'
 import { connectionState } from '../stores/connection.svelte'
 import { isFirefox } from '../utils/extensionInfo'
+import { setBootReady } from './bootState'
 import { FirefoxBlockingInterceptor } from '../interceptors/FirefoxBlockingInterceptor'
 import { ChromeDownloadsApiInterceptor } from '../interceptors/ChromeDownloadsApiInterceptor'
 import { initContextMenu } from './contextMenu'
 import { initTabMatcher } from './tabMatcher'
 import { initExtractorFlow, onExtractorUnpair } from './extractorFlow'
 import { initDomFlow, onDomUnpair } from './domFlow'
+import { initBurstFlow } from './burstFlow'
+import { notifyCaptureHostDown, onCaptureUnpair } from './captureHostDown'
 import type {
   InterceptionToggleMessage,
   PairSecretMessage,
@@ -45,6 +48,7 @@ onMessage('pair:secret', async ({ data }: { data: PairSecretMessage }) => {
 onMessage('interception:toggle', async ({ data }: { data: InterceptionToggleMessage }) => {
   configState.autoCapture = data.enabled
   await configState.persistAutoCapture()
+  if (!data.enabled) await notifyCaptureHostDown()
   return { ok: true }
 })
 
@@ -59,6 +63,7 @@ onMessage('pair:unpair', async () => {
   connectionState.paired = false
   await onExtractorUnpair()
   await onDomUnpair()
+  await onCaptureUnpair()
   return { ok: true }
 })
 
@@ -70,31 +75,28 @@ initContextMenu()
 initTabMatcher()
 initExtractorFlow()
 initDomFlow()
+initBurstFlow()
 
-// SW startup: load persisted state before connecting so the interceptor
-// uses the user's saved autoCapture setting. Awaited before connect() and
-// interceptor registration to close the race where a freshly restarted SW
-// reads the default autoCapture before storage.local resolves.
+// Download interception: fork by build target and register before any await so
+// cold-wake downloads/webRequest events are not missed. shouldIntercept still
+// passes until bootReady (config loaded) and the WS link is up.
+const interceptor = isFirefox()
+  ? new FirefoxBlockingInterceptor()
+  : new ChromeDownloadsApiInterceptor()
+interceptor.register()
+
 void (async () => {
   await Promise.all([configState.loadEffects(), configState.loadAutoCapture()])
+  setBootReady(true)
 
-  // top-level code runs on every (re)start of the Chrome MV3 service worker.
   // connect() reads the secret from storage.local and authenticates, so a
   // restarted SW transparently recovers the link. No chrome.alarms keep-alive:
   // download/pairing events wake the SW.
   wsClient.connect()
 
-  // Download interception: fork by build target. Firefox MV3 uses
-  // webRequestBlocking (synchronous cancel); Chrome MV3 uses the downloads API
-  // path B (pause → handoff → cancel/resume). shouldIntercept checks the WS
-  // connection state, so registering before the socket is up is safe — events
-  // simply pass through until the link is established.
-  const interceptor = isFirefox()
-    ? new FirefoxBlockingInterceptor()
-    : new ChromeDownloadsApiInterceptor()
-  interceptor.register()
   // Chrome path B persists pending decisions in storage.session so a SW restart
-  // can resume an in-flight cancel/resume. Firefox is a no-op here.
+  // can resume an in-flight cancel/resume. Firefox is a no-op here. Recover only
+  // after boot so autoCapture/effects are loaded.
   void interceptor.recoverPendingDecisions()
 })()
 

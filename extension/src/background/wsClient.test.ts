@@ -9,6 +9,11 @@ const connection = vi.hoisted(() => ({
   legacyHost: undefined as boolean | undefined,
 }))
 
+const captureHostDown = vi.hoisted(() => ({
+  notifyCaptureHostDown: vi.fn(),
+  dropCaptureOnReconnect: vi.fn(),
+}))
+
 const domHostDown = vi.hoisted(() => ({
   notifyDomHostDown: vi.fn(),
   dropDomCatalogsOnReconnect: vi.fn(),
@@ -74,6 +79,12 @@ vi.mock('./domHostDown', () => ({
     domHostDown.dropDomCatalogsOnReconnect(...args),
 }))
 
+vi.mock('./captureHostDown', () => ({
+  notifyCaptureHostDown: (...args: unknown[]) => captureHostDown.notifyCaptureHostDown(...args),
+  dropCaptureOnReconnect: (...args: unknown[]) =>
+    captureHostDown.dropCaptureOnReconnect(...args),
+}))
+
 vi.mock('./domConnectGeneration', () => ({
   bumpDirectConnectGeneration: () => 1,
   currentDirectConnectGeneration: () => 1,
@@ -97,6 +108,8 @@ describe('WsClient direct batch', () => {
     connection.paired = false
     domHostDown.notifyDomHostDown.mockClear()
     domHostDown.dropDomCatalogsOnReconnect.mockClear()
+    captureHostDown.notifyCaptureHostDown.mockClear()
+    captureHostDown.dropCaptureOnReconnect.mockClear()
   })
 
   it('does not send download_batch through sendRequest', async () => {
@@ -151,5 +164,7 @@ describe('WsClient direct batch', () => {
     })
     expect(domHostDown.dropDomCatalogsOnReconnect).toHaveBeenCalledTimes(1)
     expect(domHostDown.notifyDomHostDown).not.toHaveBeenCalled()
+    expect(captureHostDown.dropCaptureOnReconnect).toHaveBeenCalledTimes(1)
+    expect(captureHostDown.notifyCaptureHostDown).not.toHaveBeenCalled()
   })
 })
