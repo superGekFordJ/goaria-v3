@@ -197,6 +197,7 @@ export async function mintImplicitCaptureSession(
     referrer: ctx.referrer,
     referrerOrigin,
     incognito: ctx.incognito === true,
+    cookieStoreId: isFirefox() ? ctx.cookieStoreId : undefined,
   })
   if (!tab) return null
   const rawStoreId = isFirefox()

@@ -262,7 +262,11 @@ vi.mock('./captureTabResolver', () => ({
       return null
     }
   },
-  resolvePresentationTab: async (opts: { referrerOrigin: string; incognito: boolean }) => {
+  resolvePresentationTab: async (opts: {
+    referrerOrigin: string
+    incognito: boolean
+    cookieStoreId?: string
+  }) => {
     presentationTab.calls.push(opts)
     const candidate = presentationTab.candidate
     if (!candidate || candidate.incognito !== opts.incognito) return null
@@ -538,6 +542,31 @@ describe('burstFlow', () => {
     expect(bridge.legacy).toEqual([1])
     expect(sessionStore.session).toBeNull()
     expect(holds.getWindow()).toBeNull()
+  })
+
+  it('passes the Firefox event store into presentation pick and keeps the mint store from the event', async () => {
+    firefoxMode.on = true
+    sessionStore.session = null
+    const ctx = {
+      url: holdOf(1).url,
+      referrer: 'https://example.test/page',
+      incognito: false,
+      cookieStoreId: 'firefox-container-work',
+    }
+    const session = await resolveCoalescerAdmission(ctx as never)
+    expect(presentationTab.calls).toEqual([
+      expect.objectContaining({
+        referrer: 'https://example.test/page',
+        referrerOrigin: 'https://example.test',
+        incognito: false,
+        cookieStoreId: 'firefox-container-work',
+      }),
+    ])
+    expect(session).toMatchObject({
+      tabId: 4,
+      cookieStoreId: 'firefox-container-work',
+      storeUnproven: false,
+    })
   })
 
   it('uses the browser event timestamp for the solo deadline', async () => {

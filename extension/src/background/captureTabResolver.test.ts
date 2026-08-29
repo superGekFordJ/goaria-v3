@@ -96,6 +96,40 @@ describe('captureTabResolver', () => {
     expect(result?.id).toBe(2)
   })
 
+  it('picks the candidate whose cookieStoreId matches when two same-origin tabs differ', () => {
+    const result = pickPresentationTab(
+      [
+        tab(1, `${ORIGIN}/page`, { cookieStoreId: 'firefox-default' }),
+        tab(2, `${ORIGIN}/page`, { cookieStoreId: 'firefox-container-work' }),
+      ],
+      {
+        referrer: `${ORIGIN}/download`,
+        referrerOrigin: ORIGIN,
+        incognito: false,
+        lastFocusedTabId: 1,
+        cookieStoreId: 'firefox-container-work',
+      },
+    )
+    expect(result?.id).toBe(2)
+  })
+
+  it('returns null when no candidate matches the requested cookieStoreId', () => {
+    const result = pickPresentationTab(
+      [
+        tab(1, `${ORIGIN}/page`, { cookieStoreId: 'firefox-default' }),
+        tab(2, `${ORIGIN}/other`, { cookieStoreId: 'firefox-container-personal' }),
+      ],
+      {
+        referrer: `${ORIGIN}/download`,
+        referrerOrigin: ORIGIN,
+        incognito: false,
+        lastFocusedTabId: 1,
+        cookieStoreId: 'firefox-container-work',
+      },
+    )
+    expect(result).toBeNull()
+  })
+
   it('filters incognito mismatches, discarded tabs, non-http(s), invalid URLs, and other origins', () => {
     const result = pickPresentationTab(
       [
@@ -126,6 +160,23 @@ describe('captureTabResolver', () => {
       }),
     ).resolves.toMatchObject({ id: 2 })
     expect(tabs.queries).toEqual([{}, { active: true, lastFocusedWindow: true }])
+  })
+
+  it('copies cookieStoreId from queried tabs and filters by store', async () => {
+    tabs.all = [
+      tab(1, `${ORIGIN}/page`, { cookieStoreId: 'firefox-default' }),
+      tab(2, `${ORIGIN}/page`, { cookieStoreId: 'firefox-container-work' }),
+    ]
+    tabs.focused = [tab(1, `${ORIGIN}/page`, { cookieStoreId: 'firefox-default' })]
+
+    await expect(
+      resolvePresentationTab({
+        referrer: `${ORIGIN}/download`,
+        referrerOrigin: ORIGIN,
+        incognito: false,
+        cookieStoreId: 'firefox-container-work',
+      }),
+    ).resolves.toMatchObject({ id: 2, cookieStoreId: 'firefox-container-work' })
   })
 
   it('fails closed when a tab query throws', async () => {

@@ -5,6 +5,7 @@ export type TabCandidate = {
   url: string
   incognito: boolean
   discarded?: boolean
+  cookieStoreId?: string
 }
 
 export function originOf(href: string): string | null {
@@ -31,15 +32,21 @@ export function pickPresentationTab(
     referrerOrigin: string
     incognito: boolean
     lastFocusedTabId?: number
+    cookieStoreId?: string
   },
 ): TabCandidate | null {
+  const storeId =
+    typeof opts.cookieStoreId === 'string' && opts.cookieStoreId !== ''
+      ? opts.cookieStoreId
+      : undefined
   const matching = candidates.filter(
     tab =>
       Number.isInteger(tab.id) &&
       tab.id >= 0 &&
       tab.discarded !== true &&
       tab.incognito === opts.incognito &&
-      originOf(tab.url) === opts.referrerOrigin,
+      originOf(tab.url) === opts.referrerOrigin &&
+      (storeId === undefined || tab.cookieStoreId === storeId),
   )
   const exact = matching.filter(
     tab =>
@@ -57,18 +64,24 @@ export function pickPresentationTab(
 
 function toCandidate(tab: browser.Tabs.Tab): TabCandidate | null {
   if (typeof tab.id !== 'number' || typeof tab.url !== 'string') return null
-  return {
+  const rawStoreId = (tab as { cookieStoreId?: unknown }).cookieStoreId
+  const candidate: TabCandidate = {
     id: tab.id,
     url: tab.url,
     incognito: tab.incognito === true,
     discarded: tab.discarded === true,
   }
+  if (typeof rawStoreId === 'string' && rawStoreId.trim() !== '') {
+    candidate.cookieStoreId = rawStoreId.trim()
+  }
+  return candidate
 }
 
 export async function resolvePresentationTab(opts: {
   referrer: string
   referrerOrigin: string
   incognito: boolean
+  cookieStoreId?: string
 }): Promise<TabCandidate | null> {
   try {
     const [allTabs, focusedTabs] = await Promise.all([
