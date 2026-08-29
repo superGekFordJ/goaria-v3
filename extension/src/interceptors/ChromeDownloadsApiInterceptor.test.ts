@@ -155,38 +155,25 @@ vi.mock('../stores/connection.svelte', () => ({
 vi.mock('../background/pendingDecisionStore', () => pending)
 
 const burst = vi.hoisted(() => ({
-  eligible: false,
-  admit: vi.fn(async (_id?: number, _ctx?: unknown) => 'legacy' as const),
+  session: null as null | { captureId: string },
+  admit: vi.fn(async (_id?: number, _ctx?: unknown, _eventAt?: number) => 'legacy' as const),
+  beginClaim: vi.fn(),
+  endClaim: vi.fn(),
   recover: vi.fn(async () => {}),
   setBridge: vi.fn(),
   holds: new Map<number, unknown>(),
   expiredHoldIds: [] as number[],
   holdSaveOk: true,
-  captureId: 'cap-1',
 }))
 
 vi.mock('../background/burstFlow', () => ({
-  isCoalescerEligible: async () => burst.eligible,
-  admitConfirmedDownload: (id: number, ctx: unknown) => burst.admit(id, ctx),
+  admitConfirmedDownload: (id: number, ctx: unknown, eventAt: number) => burst.admit(id, ctx, eventAt),
+  beginCaptureClaim: () => burst.beginClaim(),
+  endCaptureClaim: () => burst.endClaim(),
   enqueueCaptureWork: async <T>(work: () => Promise<T>) => work(),
   recoverBurstState: () => burst.recover(),
+  resolveCoalescerAdmission: async () => burst.session,
   setChromeBurstBridge: (next: unknown) => burst.setBridge(next),
-}))
-
-vi.mock('../background/captureSession', () => ({
-  getCaptureSession: async () =>
-    burst.eligible
-      ? {
-          captureId: burst.captureId,
-          tabId: 1,
-          documentNonce: 'n',
-          pageHref: 'https://example.test/page',
-          incognito: false,
-          storeUnproven: true,
-          directConnectGeneration: 1,
-          createdAt: Date.now(),
-        }
-      : null,
 }))
 
 vi.mock('../background/burstHoldStore', () => ({
@@ -262,12 +249,13 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
     pending.map.clear()
     pending.expiredIds.length = 0
     pending.hangSave(null)
-    burst.eligible = false
+    burst.session = null
     burst.holdSaveOk = true
-    burst.captureId = 'cap-1'
     burst.holds.clear()
     burst.expiredHoldIds.length = 0
     burst.admit.mockClear()
+    burst.beginClaim.mockClear()
+    burst.endClaim.mockClear()
     burst.recover.mockClear()
     burst.setBridge.mockClear()
     ws.sendDownloadRequest.mockClear()
@@ -424,8 +412,7 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
     expect(burst.admit).not.toHaveBeenCalled()
   })
 
-  it('takes immediate legacy when coalescer eligibility is false', async () => {
-    burst.eligible = false
+  it('takes immediate legacy when the implicit session is unavailable', async () => {
     const item = downloadItem({ referrer: '  ' })
     downloads.items.set(1, item)
     downloads.created[0](item)
@@ -436,8 +423,7 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
   })
 
   it('takes immediate legacy on incognito mismatch', async () => {
-    // Predicate coverage lives in burstFlow; this case stubs ineligible → path B.
-    burst.eligible = false
+    // Predicate coverage lives in burstFlow; this case stubs refused admission → path B.
     const item = downloadItem({ incognito: true })
     downloads.items.set(1, item)
     downloads.created[0](item)
@@ -447,8 +433,8 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
     expect(burst.admit).not.toHaveBeenCalled()
   })
 
-  it('admits coalescer-eligible items instead of sending legacy download', async () => {
-    burst.eligible = true
+  it('admits implicit-session items instead of sending legacy download', async () => {
+    burst.session = { captureId: 'cap-1' }
     const item = downloadItem()
     downloads.items.set(1, item)
     downloads.created[0](item)
@@ -504,7 +490,7 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
   })
 
   it('releases the claim when burst hold persist fails', async () => {
-    burst.eligible = true
+    burst.session = { captureId: 'cap-1' }
     burst.holdSaveOk = false
     const item = downloadItem()
     downloads.items.set(1, item)
@@ -515,16 +501,17 @@ describe('ChromeDownloadsApiInterceptor live path B', () => {
     expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
   })
 
-  it('releases the claim when captureId is empty', async () => {
-    burst.eligible = true
-    burst.captureId = ''
+  it('falls back to legacy when the implicit session cannot be minted', async () => {
     const item = downloadItem()
     downloads.items.set(1, item)
     downloads.created[0](item)
-    await flush()
-    expect(downloads.calls.pause).toEqual([])
+    await vi.waitFor(() => {
+      expect(ws.sendDownloadRequest).toHaveBeenCalledTimes(1)
+    })
+    expect(downloads.calls.pause).toEqual([1])
     expect(burst.admit).not.toHaveBeenCalled()
-    expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
+    expect(burst.beginClaim).toHaveBeenCalledTimes(1)
+    expect(burst.endClaim).toHaveBeenCalledTimes(1)
   })
 
   it('drops expired pending_ without resuming when a live hold owns the id', async () => {

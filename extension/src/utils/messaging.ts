@@ -38,8 +38,6 @@ declare module 'webext-bridge' {
     'dom:status': ProtocolWithReturn<DomAliveMessage, DomSubmitReply>
     'dom:submit': ProtocolWithReturn<DomSubmitMessage, DomSubmitReply>
     'dom:cancel': ProtocolWithReturn<DomCancelMessage, DomCancelReply>
-    'capture:arm': ProtocolWithReturn<CaptureArmMessage, CaptureArmReply>
-    'capture:disarmed': Record<string, never>
     'burst:open': ProtocolWithReturn<BurstOpenMessage, BurstOpenReply>
     'burst:close': BurstCloseMessage
     'burst:submit': ProtocolWithReturn<BurstSubmitMessage, BurstSubmitReply>
@@ -291,12 +289,6 @@ export type InterceptionToggleMessage = {
 
 export type InterceptionToggleResult = {
   ok: boolean
-}
-
-export type CaptureArmMessage = Record<string, never>
-export type CaptureArmReply = {
-  ok: boolean
-  error?: string
 }
 
 export type BurstPickerCatalogItem = {

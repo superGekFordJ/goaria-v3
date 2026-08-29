@@ -1,6 +1,7 @@
 import { onMessage, sendMessage } from 'webext-bridge/background'
 import browser from 'webextension-polyfill'
 import { hasCapability } from './capabilities'
+import { originOf, resolvePresentationTab } from './captureTabResolver'
 import { collectCookieHeadersForUrls } from './domCookies'
 import { currentDirectConnectGeneration } from './domConnectGeneration'
 import { referrerResult } from './domReferrer'
@@ -13,6 +14,7 @@ import { setCaptureHostDownHook, setCaptureReconnectHook } from './captureHostDo
 import {
   admitMember,
   evaluateClose,
+  quietWindowFor,
   type BurstWindowState,
 } from './burstCoalescer'
 import {
@@ -43,9 +45,11 @@ import {
   type PendingDecision,
 } from './pendingDecisionStore'
 import {
+  BURST_CLAIM_RETRY_MS,
   BURST_HOLD_TTL_MS,
   BURST_MAX_DEADLINE_MS,
-  BURST_QUIET_WINDOW_MS,
+  BURST_QUIET_GROUP_MS,
+  BURST_QUIET_SOLO_MS,
   CAP_DOWNLOAD_BATCH,
   EXTRACTOR_MAX_SESSION_ITEMS,
 } from '../stores/config.svelte'
@@ -96,6 +100,7 @@ let pickerTimer: ReturnType<typeof setTimeout> | null = null
 let submitInflight = false
 let captureChain: Promise<unknown> = Promise.resolve()
 let exclusiveDepth = 0
+let pendingClaims = 0
 const firefoxLegacyClaimed = new Set<number>()
 
 type BurstSubmitContext = {
@@ -132,6 +137,18 @@ export function enqueueCaptureWork<T>(work: () => Promise<T>): Promise<T> {
   return runExclusive(work)
 }
 
+export function beginCaptureClaim(): void {
+  pendingClaims++
+}
+
+export function endCaptureClaim(): void {
+  pendingClaims = Math.max(0, pendingClaims - 1)
+}
+
+export function pendingCaptureClaims(): number {
+  return pendingClaims
+}
+
 export function setChromeBurstBridge(next: ChromeBurstBridge): void {
   bridge = next
 }
@@ -158,6 +175,61 @@ export function referrerOriginMatches(referrer: string, pageHref: string): boole
   } catch {
     return false
   }
+}
+
+export function sessionMatchesContext(
+  session: CaptureSession,
+  ctx: InterceptionContext,
+): boolean {
+  if (!referrerOriginMatches(ctx.referrer, session.pageHref)) return false
+  if ((ctx.incognito === true) !== session.incognito) return false
+  if (isFirefox() && session.storeUnproven !== true && session.cookieStoreId) {
+    return ctx.cookieStoreId === session.cookieStoreId
+  }
+  return true
+}
+
+export async function mintImplicitCaptureSession(
+  ctx: InterceptionContext,
+  referrerOrigin: string,
+): Promise<CaptureSession | null> {
+  const tab = await resolvePresentationTab({
+    referrer: ctx.referrer,
+    referrerOrigin,
+    incognito: ctx.incognito === true,
+  })
+  if (!tab) return null
+  const rawStoreId = isFirefox()
+    ? ctx.cookieStoreId
+    : await resolveCookieStoreIdForTab(tab as browser.Tabs.Tab)
+  const cookieStoreId =
+    typeof rawStoreId === 'string' && rawStoreId.trim() !== '' ? rawStoreId.trim() : undefined
+  const session: CaptureSession = {
+    captureId: mintDirectBatchRequestId(),
+    tabId: tab.id,
+    pageHref: tab.url,
+    incognito: ctx.incognito === true,
+    storeUnproven: cookieStoreId === undefined,
+    directConnectGeneration: currentDirectConnectGeneration(),
+    createdAt: Date.now(),
+  }
+  if (cookieStoreId) session.cookieStoreId = cookieStoreId
+  return (await writeCaptureSession(session)) ? session : null
+}
+
+export async function resolveCoalescerAdmission(
+  ctx: InterceptionContext,
+): Promise<CaptureSession | null> {
+  if (!configState.autoCapture) return null
+  if (connectionState.status !== 'connected' || !connectionState.paired) return null
+  if (!hasCapability(connectionState.capabilities, CAP_DOWNLOAD_BATCH)) return null
+  const referrerOrigin = originOf(ctx.referrer)
+  if (!referrerOrigin) return null
+  const window = await getBurstWindow()
+  if (window && window.phase !== 'coalescing') return null
+  const session = await getCaptureSession()
+  if (session) return sessionMatchesContext(session, ctx) ? session : null
+  return mintImplicitCaptureSession(ctx, referrerOrigin)
 }
 
 function notify(titleKey: I18nKey, bodyKey: I18nKey, substitutions?: string[]): void {
@@ -315,20 +387,22 @@ function memberIdsForWindow(window: BurstWindowRecord, holds: Map<number, BurstH
 export async function isCoalescerEligible(ctx: InterceptionContext): Promise<boolean> {
   const session = await getCaptureSession()
   if (!session) return false
-  if (!referrerOriginMatches(ctx.referrer, session.pageHref)) return false
-  if ((ctx.incognito === true) !== session.incognito) return false
-  if (isFirefox() && session.storeUnproven !== true && session.cookieStoreId) {
-    if (ctx.cookieStoreId !== session.cookieStoreId) return false
-  }
+  if (!sessionMatchesContext(session, ctx)) return false
   const window = await getBurstWindow()
-  if (window && window.phase !== 'coalescing') return false
-  return true
+  return window?.phase === 'coalescing'
+}
+
+function quietMsForWindow(window: BurstWindowState): number {
+  return quietWindowFor(window.downloadIds.length, {
+    soloQuietMs: BURST_QUIET_SOLO_MS,
+    groupQuietMs: BURST_QUIET_GROUP_MS,
+  })
 }
 
 function scheduleClocks(window: BurstWindowState): void {
   clearClocks()
   const now = Date.now()
-  const quietIn = window.lastItemAt + BURST_QUIET_WINDOW_MS - now
+  const quietIn = window.lastItemAt + quietMsForWindow(window) - now
   const maxIn = window.firstItemAt + BURST_MAX_DEADLINE_MS - now
   if (quietIn > 0) {
     quietTimer = setTimeout(() => {
@@ -341,7 +415,8 @@ function scheduleClocks(window: BurstWindowState): void {
       maxTimer = null
       void runExclusive(() => onCoalescerClock())
     }, maxIn)
-  } else {
+  }
+  if (quietIn <= 0 || maxIn <= 0) {
     void runExclusive(() => onCoalescerClock())
   }
 }
@@ -381,13 +456,25 @@ async function onCoalescerClock(seed?: BurstWindowRecord): Promise<void> {
     (await getBurstWindow()) ??
     (usesFirefoxProcess() ? await getBurstWindowIgnoringTtl() : null)
   if (!window || window.phase !== 'coalescing') return
-  const session = await getCaptureSession()
   const now = Date.now()
+  if (pendingCaptureClaims() > 0 && now < window.firstItemAt + BURST_MAX_DEADLINE_MS) {
+    clearClocks()
+    quietTimer = setTimeout(() => {
+      quietTimer = null
+      void runExclusive(() => onCoalescerClock())
+    }, BURST_CLAIM_RETRY_MS)
+    return
+  }
+  const session = await getCaptureSession()
   if (!session) {
     await closeCoalescedWindow(window, true)
     return
   }
-  const result = evaluateClose(window, now, BURST_QUIET_WINDOW_MS, BURST_MAX_DEADLINE_MS)
+  const result = evaluateClose(window, now, {
+    soloQuietMs: BURST_QUIET_SOLO_MS,
+    groupQuietMs: BURST_QUIET_GROUP_MS,
+    maxMs: BURST_MAX_DEADLINE_MS,
+  })
   if (result.kind === 'open') {
     scheduleClocks(window)
     return
@@ -485,6 +572,20 @@ export function scheduleFirefoxLegacyHandoff(downloadId: number): void {
   })
 }
 
+async function abandonWindowToLegacy(
+  _window: BurstWindowRecord,
+  ids: number[],
+  holds: Map<number, BurstHold>,
+  skipTabId?: number,
+): Promise<void> {
+  await removeBurstWindow()
+  await disarmCaptureSession()
+  for (const id of ids) {
+    const hold = holds.get(id)
+    if (hold) await migrateToLegacy(id, hold, skipTabId)
+  }
+}
+
 async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: boolean): Promise<void> {
   clearClocks()
   const skipTabId = window.tabId ?? (await getCaptureSession())?.tabId
@@ -493,20 +594,12 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
     : await getAllBurstHolds()
   const ids = memberIdsForWindow(window, holds)
   if (forceLegacy || ids.filter(id => holds.has(id)).length <= 1) {
-    await removeBurstWindow()
-    for (const id of ids) {
-      const hold = holds.get(id)
-      if (hold) await migrateToLegacy(id, hold, skipTabId)
-    }
+    await abandonWindowToLegacy(window, ids, holds, skipTabId)
     return
   }
   const session = await getCaptureSession()
   if (!session || session.captureId !== window.captureId) {
-    await removeBurstWindow()
-    for (const id of ids) {
-      const hold = holds.get(id)
-      if (hold) await migrateToLegacy(id, hold, skipTabId)
-    }
+    await abandonWindowToLegacy(window, ids, holds, skipTabId)
     return
   }
   const ping = await pingContentScript(session.tabId)
@@ -517,12 +610,15 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
     ping.burst_picker_open
   ) {
     notify('capture_notif_title', 'burst_mutex_body')
-    await removeBurstWindow()
     if (usesFirefoxProcess()) await closeBurstOverlay(session.tabId, window.captureId)
-    for (const id of ids) {
-      const hold = holds.get(id)
-      if (hold) await migrateToLegacy(id, hold, skipTabId)
-    }
+    await abandonWindowToLegacy(window, ids, holds, skipTabId)
+    return
+  }
+  if (
+    typeof ping.page_href !== 'string' ||
+    !referrerOriginMatches(ping.page_href, session.pageHref)
+  ) {
+    await abandonWindowToLegacy(window, ids, holds, skipTabId)
     return
   }
   const catalog: BurstCatalogEntry[] = []
@@ -533,11 +629,7 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
     if (!hold) continue
     const refreshed = await saveBurstHold(id, { ...hold, startTime: snapshotAt })
     if (!refreshed) {
-      await removeBurstWindow()
-      for (const memberId of ids) {
-        const member = holds.get(memberId)
-        if (member) await migrateToLegacy(memberId, member, skipTabId)
-      }
+      await abandonWindowToLegacy(window, ids, holds, skipTabId)
       return
     }
     const index = catalog.length
@@ -558,11 +650,7 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
     items.push(row)
   }
   if (items.length < 2) {
-    await removeBurstWindow()
-    for (const id of ids) {
-      const hold = holds.get(id)
-      if (hold) await migrateToLegacy(id, hold, skipTabId)
-    }
+    await abandonWindowToLegacy(window, ids, holds, skipTabId)
     return
   }
   const pickerDeadline = snapshotAt + BURST_HOLD_TTL_MS
@@ -573,19 +661,19 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
     pickerDeadline,
     catalog,
     tabId: session.tabId,
-    pageHref: session.pageHref,
+    pageHref: ping.page_href,
     incognito: session.incognito,
     storeUnproven: session.storeUnproven,
     documentPolicy: session.documentPolicy,
-    documentNonce: session.documentNonce,
   }
   if (session.cookieStoreId) next.cookieStoreId = session.cookieStoreId
+  if (typeof ping.document_nonce === 'string' && ping.document_nonce !== '') {
+    next.documentNonce = ping.document_nonce
+  } else if (session.documentNonce) {
+    next.documentNonce = session.documentNonce
+  }
   if (!(await saveBurstWindow(next))) {
-    await removeBurstWindow()
-    for (const id of ids) {
-      const hold = holds.get(id)
-      if (hold) await migrateToLegacy(id, hold, skipTabId)
-    }
+    await abandonWindowToLegacy(window, ids, holds, skipTabId)
     return
   }
   const payload: BurstOpenMessage = {
@@ -600,19 +688,11 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
       `content-script@${session.tabId}`,
     )) as { ok?: boolean } | undefined
     if (reply?.ok !== true) {
-      await removeBurstWindow()
-      for (const id of ids) {
-        const hold = holds.get(id)
-        if (hold) await migrateToLegacy(id, hold, skipTabId)
-      }
+      await abandonWindowToLegacy(window, ids, holds, skipTabId)
       return
     }
   } catch {
-    await removeBurstWindow()
-    for (const id of ids) {
-      const hold = holds.get(id)
-      if (hold) await migrateToLegacy(id, hold, skipTabId)
-    }
+    await abandonWindowToLegacy(window, ids, holds, skipTabId)
     return
   }
   armPickerClock(pickerDeadline)
@@ -621,14 +701,16 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
 export async function admitConfirmedDownload(
   downloadId: number,
   ctx: InterceptionContext,
+  eventAt: number,
 ): Promise<'legacy' | 'coalesced' | 'overflow'> {
-  if (exclusiveDepth > 0) return admitConfirmedDownloadLocked(downloadId, ctx)
-  return runExclusive(() => admitConfirmedDownloadLocked(downloadId, ctx))
+  if (exclusiveDepth > 0) return admitConfirmedDownloadLocked(downloadId, ctx, eventAt)
+  return runExclusive(() => admitConfirmedDownloadLocked(downloadId, ctx, eventAt))
 }
 
 async function admitConfirmedDownloadLocked(
   downloadId: number,
   ctx: InterceptionContext,
+  eventAt: number,
 ): Promise<'legacy' | 'coalesced' | 'overflow'> {
   const session = await getCaptureSession()
   const window = await getBurstWindow()
@@ -637,7 +719,7 @@ async function admitConfirmedDownloadLocked(
     window,
     captureId: session?.captureId ?? '',
     downloadId,
-    now: Date.now(),
+    now: Math.min(eventAt, Date.now()),
     maxItems: EXTRACTOR_MAX_SESSION_ITEMS,
   })
   if (result.kind === 'legacy' || result.kind === 'legacy_overflow') {
@@ -728,7 +810,6 @@ async function releaseAllBurstHoldsLocked(policy: 'cannot_resume' | 'send_legacy
   if (typeof tabId === 'number') {
     void sendMessage('burst:close', {}, `content-script@${tabId}`).catch(() => undefined)
   }
-  void sendMessage('capture:disarmed', {}, 'popup').catch(() => undefined)
 }
 
 async function probePaused(downloadId: number): Promise<'paused' | 'gone' | 'unknown'> {
@@ -792,78 +873,6 @@ async function closeBurstOverlay(tabId: number, captureId?: string): Promise<voi
     captureId ? { capture_id: captureId } : {},
     `content-script@${tabId}`,
   ).catch(() => undefined)
-}
-
-export async function handleCaptureArm(): Promise<{ ok: boolean; error?: string }> {
-  return runExclusive(() => handleCaptureArmLocked())
-}
-
-async function handleCaptureArmLocked(): Promise<{ ok: boolean; error?: string }> {
-  if (connectionState.status !== 'connected' || !connectionState.paired) {
-    notify('capture_notif_title', 'capture_reject_disconnected')
-    return { ok: false, error: 'disconnected' }
-  }
-  if (!configState.autoCapture) {
-    notify('capture_notif_title', 'capture_reject_autocapture')
-    return { ok: false, error: 'autocapture' }
-  }
-  if (!hasCapability(connectionState.capabilities, CAP_DOWNLOAD_BATCH)) {
-    notify('capture_notif_title', 'capture_reject_cap')
-    return { ok: false, error: 'cap' }
-  }
-  if (await getCaptureSession()) {
-    notify('capture_notif_title', 'capture_reject_session')
-    return { ok: false, error: 'session' }
-  }
-  let tab: browser.Tabs.Tab | undefined
-  try {
-    const [found] = await browser.tabs.query({ active: true, lastFocusedWindow: true })
-    tab = found
-  } catch {
-    tab = undefined
-  }
-  if (typeof tab?.id !== 'number') {
-    notify('capture_notif_title', 'capture_reject_no_tab')
-    return { ok: false, error: 'no_tab' }
-  }
-  if (tab.discarded === true) {
-    notify('capture_notif_title', 'capture_reject_discarded')
-    return { ok: false, error: 'discarded' }
-  }
-  const href = typeof tab.url === 'string' ? tab.url : ''
-  if (!href.startsWith('http://') && !href.startsWith('https://')) {
-    notify('capture_notif_title', 'capture_reject_scheme')
-    return { ok: false, error: 'scheme' }
-  }
-  const ping = await pingContentScript(tab.id)
-  if (!ping || typeof ping.document_nonce !== 'string' || typeof ping.page_href !== 'string') {
-    notify('capture_notif_title', 'capture_reject_ping')
-    return { ok: false, error: 'ping' }
-  }
-  if (ping.extractor_picker_open || ping.dom_picker_open || ping.burst_picker_open) {
-    notify('capture_notif_title', 'capture_reject_overlay')
-    return { ok: false, error: 'overlay' }
-  }
-  const storeId = await resolveCookieStoreIdForTab(tab)
-  const storeUnproven = typeof storeId !== 'string' || storeId.trim() === ''
-  const session: CaptureSession = {
-    captureId: mintDirectBatchRequestId(),
-    tabId: tab.id,
-    documentNonce: ping.document_nonce,
-    pageHref: ping.page_href,
-    incognito: tab.incognito === true,
-    storeUnproven,
-    directConnectGeneration: currentDirectConnectGeneration(),
-    createdAt: Date.now(),
-  }
-  if (!storeUnproven && storeId) session.cookieStoreId = storeId
-  const wrote = await writeCaptureSession(session)
-  if (!wrote) {
-    notify('capture_notif_title', 'capture_reject_session')
-    return { ok: false, error: 'session' }
-  }
-  notify('capture_notif_title', 'capture_armed_body')
-  return { ok: true }
 }
 
 function idSetOfAck(value: unknown): Set<string> {
@@ -1213,7 +1222,7 @@ async function recoverFirefoxBurstStateLocked(): Promise<void> {
         await migrateToLegacy(id, hold, skipTabId)
         continue
       }
-      const outcome = await admitConfirmedDownloadLocked(id, contextFromHold(hold))
+      const outcome = await admitConfirmedDownloadLocked(id, contextFromHold(hold), Date.now())
       if (outcome !== 'coalesced') {
         const leftover = (await getBurstHold(id)) ?? (await getBurstHoldIgnoringTtl(id))
         if (leftover) await migrateToLegacy(id, leftover, skipTabId)
@@ -1250,6 +1259,7 @@ async function sendLegacyAndClosePicker(
   skipTabId?: number,
 ): Promise<void> {
   await removeBurstWindow()
+  await disarmCaptureSession()
   if (typeof window.tabId === 'number') await closeBurstOverlay(window.tabId, window.captureId)
   for (const id of ids) {
     const hold = holds.get(id) ?? (await getBurstHoldIgnoringTtl(id))
@@ -1339,7 +1349,6 @@ export async function handleCaptureReconnect(): Promise<void> {
 export function initBurstFlow(): void {
   setCaptureHostDownHook(() => resumeAllBurstHolds())
   setCaptureReconnectHook(() => handleCaptureReconnect())
-  onMessage('capture:arm', () => handleCaptureArm())
   onMessage('burst:submit', ({ data }: { data: BurstSubmitMessage }) => handleBurstSubmit(data))
   onMessage('burst:cancel', ({ data }: { data: BurstCancelMessage }) => handleBurstCancel(data))
   onMessage('burst:alive', ({ data }: { data: BurstAliveMessage }) => handleBurstAlive(data))
@@ -1369,6 +1378,7 @@ export function resetBurstFlowForTests(): void {
   submitInflight = false
   captureChain = Promise.resolve()
   exclusiveDepth = 0
+  pendingClaims = 0
   bridge = null
   firefoxBridge = null
   firefoxLegacyClaimed.clear()

@@ -25,7 +25,7 @@ const session = vi.hoisted(() => {
 vi.mock('../stores/config.svelte', () => ({
   STORAGE_KEY_CAPTURE_SESSION: 'cap_session',
   STORAGE_KEY_CAPTURE_PREFIX: 'cap_',
-  CAPTURE_SESSION_TTL_MS: 60_000,
+  CAPTURE_SESSION_TTL_MS: 10_000,
 }))
 
 vi.mock('webextension-polyfill', () => ({
@@ -73,7 +73,13 @@ describe('captureSession', () => {
     const fresh = { ...SAMPLE, createdAt: now }
     expect(parseCaptureSession({ ...fresh, cookie: 'a=b' }, now)).toBeNull()
     expect(parseCaptureSession({ ...fresh, headers: ['Cookie: a'] }, now)).toBeNull()
-    expect(parseCaptureSession(fresh, now + 60_001)).toBeNull()
-    expect(parseCaptureSession(fresh, now + 59_000)).toEqual(fresh)
+    expect(parseCaptureSession(fresh, now + 10_001)).toBeNull()
+    expect(parseCaptureSession(fresh, now + 9_000)).toEqual(fresh)
+  })
+
+  it('accepts a session before the snapshot nonce exists', () => {
+    const withoutNonce = { ...SAMPLE }
+    delete withoutNonce.documentNonce
+    expect(parseCaptureSession(withoutNonce, withoutNonce.createdAt)).toEqual(withoutNonce)
   })
 })

@@ -99,10 +99,21 @@ const notices = vi.hoisted(() => ({
   messages: [] as string[],
 }))
 
+const presentationTab = vi.hoisted(() => ({
+  candidate: {
+    id: 4,
+    url: 'https://example.test/page',
+    incognito: false,
+  } as null | { id: number; url: string; incognito: boolean; discarded?: boolean },
+  calls: [] as unknown[],
+}))
+
 vi.mock('../stores/config.svelte', () => ({
   BURST_HOLD_TTL_MS: 5 * 60 * 1000,
-  BURST_MAX_DEADLINE_MS: 15_000,
-  BURST_QUIET_WINDOW_MS: 1_000,
+  BURST_MAX_DEADLINE_MS: 5_000,
+  BURST_QUIET_SOLO_MS: 80,
+  BURST_QUIET_GROUP_MS: 500,
+  BURST_CLAIM_RETRY_MS: 25,
   CAP_DOWNLOAD_BATCH: 'download.batch',
   EXTRACTOR_MAX_SESSION_ITEMS: 128,
   configState: { autoCapture: true },
@@ -225,6 +236,21 @@ vi.mock('./cookieCapture', () => ({
   resolveCookieStoreIdForTab: async () => undefined,
 }))
 
+vi.mock('./captureTabResolver', () => ({
+  originOf: (href: string) => {
+    try {
+      const url = new URL(href.trim())
+      return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null
+    } catch {
+      return null
+    }
+  },
+  resolvePresentationTab: async (opts: unknown) => {
+    presentationTab.calls.push(opts)
+    return presentationTab.candidate
+  },
+}))
+
 vi.mock('./wsClient', () => ({
   wsClient: ws,
 }))
@@ -246,21 +272,27 @@ vi.mock('./domConnectGeneration', () => ({
 
 import {
   admitConfirmedDownload,
+  beginCaptureClaim,
   claimFirefoxLegacyHandoff,
+  endCaptureClaim,
   enqueueCaptureWork,
   handleBurstAlive,
   handleBurstCancel,
   handleBurstSubmit,
   handleCaptureReconnect,
   isCoalescerEligible,
+  pendingCaptureClaims,
   recoverBurstState,
   referrerOriginMatches,
+  resolveCoalescerAdmission,
   resetBurstFlowForTests,
   resumeAllBurstHolds,
   scheduleFirefoxLegacyHandoff,
   setChromeBurstBridge,
   setFirefoxBurstBridge,
 } from './burstFlow'
+import { configState } from '../stores/config.svelte'
+import { connectionState } from '../stores/connection.svelte'
 
 const SESSION = {
   captureId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
@@ -325,6 +357,17 @@ function pickerWindow(extra: Record<string, unknown> = {}) {
   }
 }
 
+function coalescingWindow(extra: Record<string, unknown> = {}) {
+  return {
+    captureId: SESSION.captureId,
+    downloadIds: [1],
+    firstItemAt: Date.now(),
+    lastItemAt: Date.now(),
+    phase: 'coalescing',
+    ...extra,
+  }
+}
+
 describe('burstFlow', () => {
   beforeEach(() => {
     resetBurstFlowForTests()
@@ -348,6 +391,16 @@ describe('burstFlow', () => {
     pingFlags.href = 'https://example.test/page'
     searchFail.ids.clear()
     pendingWrite.ok = true
+    presentationTab.candidate = {
+      id: 4,
+      url: 'https://example.test/page',
+      incognito: false,
+    }
+    presentationTab.calls = []
+    configState.autoCapture = true
+    connectionState.status = 'connected'
+    connectionState.paired = true
+    connectionState.capabilities = ['download.batch']
     ws.sendDirectBatch.mockReset()
     ws.sendDirectBatchStatus.mockReset()
     ws.sendDirectBatch.mockResolvedValue({
@@ -401,6 +454,7 @@ describe('burstFlow', () => {
     expect(
       await isCoalescerEligible({ ...base, referrer: 'https://other.test/' } as never),
     ).toBe(false)
+    holds.setWindow(coalescingWindow())
     expect(
       await isCoalescerEligible({ ...base, referrer: 'https://example.test/x' } as never),
     ).toBe(true)
@@ -427,20 +481,90 @@ describe('burstFlow', () => {
   it('does not merge without a session', async () => {
     sessionStore.session = null
     holds.map.set(1, holdOf(1))
-    await expect(admitConfirmedDownload(1, { url: holdOf(1).url } as never)).resolves.toBe(
+    await expect(
+      admitConfirmedDownload(1, { url: holdOf(1).url } as never, Date.now()),
+    ).resolves.toBe(
       'legacy',
     )
     expect(bridge.legacy).toEqual([1])
   })
 
-  it('closes a single member to legacy after the quiet window', async () => {
+  it('mints an implicit session and closes a single member after the solo quiet window', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)
+    sessionStore.session = null
     holds.map.set(1, holdOf(1))
-    await admitConfirmedDownload(1, { url: holdOf(1).url } as never)
+    const ctx = {
+      url: holdOf(1).url,
+      referrer: 'https://example.test/page',
+      incognito: false,
+    }
+    const session = await resolveCoalescerAdmission(ctx as never)
+    expect(session).toMatchObject({
+      tabId: 4,
+      pageHref: 'https://example.test/page',
+      storeUnproven: true,
+    })
+    expect(sessionStore.session).toEqual(session)
+    await admitConfirmedDownload(1, ctx as never, Date.now())
     expect(bridge.legacy).toEqual([])
-    await vi.advanceTimersByTimeAsync(1000)
+    await vi.advanceTimersByTimeAsync(79)
+    expect(bridge.legacy).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
     expect(bridge.legacy).toEqual([1])
+    expect(sessionStore.session).toBeNull()
+    expect(holds.getWindow()).toBeNull()
+  })
+
+  it('uses the browser event timestamp for the solo deadline', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(500)
+    holds.map.set(1, holdOf(1))
+    await admitConfirmedDownload(1, { url: holdOf(1).url } as never, 450)
+    expect(holds.getWindow()).toMatchObject({ firstItemAt: 450, lastItemAt: 450 })
+    await vi.advanceTimersByTimeAsync(29)
+    expect(bridge.legacy).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(bridge.legacy).toEqual([1])
+  })
+
+  it('refuses implicit admission when the capability, connection, or intercept setting is unavailable', async () => {
+    sessionStore.session = null
+    configState.autoCapture = false
+    await expect(
+      resolveCoalescerAdmission({ referrer: 'https://example.test/page' } as never),
+    ).resolves.toBeNull()
+    expect(sessionStore.session).toBeNull()
+    expect(holds.getWindow()).toBeNull()
+
+    configState.autoCapture = true
+    connectionState.status = 'disconnected'
+    await expect(
+      resolveCoalescerAdmission({ referrer: 'https://example.test/page' } as never),
+    ).resolves.toBeNull()
+
+    connectionState.status = 'connected'
+    connectionState.paired = false
+    await expect(
+      resolveCoalescerAdmission({ referrer: 'https://example.test/page' } as never),
+    ).resolves.toBeNull()
+
+    connectionState.paired = true
+    connectionState.capabilities = []
+    await expect(
+      resolveCoalescerAdmission({ referrer: 'https://example.test/page' } as never),
+    ).resolves.toBeNull()
+    expect(sessionStore.session).toBeNull()
+    expect(holds.getWindow()).toBeNull()
+  })
+
+  it('refuses a second origin without disturbing the current coalescing window', async () => {
+    holds.setWindow(coalescingWindow())
+    await expect(
+      resolveCoalescerAdmission({ referrer: 'https://other.test/page' } as never),
+    ).resolves.toBeNull()
+    expect(sessionStore.session).toEqual(SESSION)
+    expect(holds.getWindow()).toMatchObject({ captureId: SESSION.captureId, phase: 'coalescing' })
   })
 
   it('resumes a held download when migrate cannot persist pending_', async () => {
@@ -448,8 +572,8 @@ describe('burstFlow', () => {
     vi.setSystemTime(0)
     pendingWrite.ok = false
     holds.map.set(1, holdOf(1))
-    await admitConfirmedDownload(1, { url: holdOf(1).url } as never)
-    await vi.advanceTimersByTimeAsync(1000)
+    await admitConfirmedDownload(1, { url: holdOf(1).url } as never, Date.now())
+    await vi.advanceTimersByTimeAsync(80)
     expect(bridge.resume).toEqual([1])
     expect(bridge.legacy).toEqual([])
     expect(holds.map.has(1)).toBe(false)
@@ -460,10 +584,10 @@ describe('burstFlow', () => {
     vi.setSystemTime(0)
     holds.map.set(1, holdOf(1))
     holds.map.set(2, holdOf(2))
-    await admitConfirmedDownload(1, { url: holdOf(1).url } as never)
-    await admitConfirmedDownload(2, { url: holdOf(2).url } as never)
+    await admitConfirmedDownload(1, { url: holdOf(1).url } as never, Date.now())
+    await admitConfirmedDownload(2, { url: holdOf(2).url } as never, Date.now())
     holds.saveOk = false
-    await vi.advanceTimersByTimeAsync(1000)
+    await vi.advanceTimersByTimeAsync(500)
     expect(messages.sent.some(m => m.type === 'burst:open')).toBe(false)
     expect(bridge.legacy.slice().sort((a, b) => a - b)).toEqual([1, 2])
   })
@@ -473,19 +597,50 @@ describe('burstFlow', () => {
     vi.setSystemTime(0)
     holds.map.set(1, holdOf(1))
     holds.map.set(2, holdOf(2))
-    await admitConfirmedDownload(1, { url: holdOf(1).url } as never)
-    await admitConfirmedDownload(2, { url: holdOf(2).url } as never)
-    await vi.advanceTimersByTimeAsync(1000)
+    await admitConfirmedDownload(1, { url: holdOf(1).url } as never, Date.now())
+    await admitConfirmedDownload(2, { url: holdOf(2).url } as never, Date.now())
+    await vi.advanceTimersByTimeAsync(80)
+    expect(messages.sent.some(m => m.type === 'burst:open')).toBe(false)
+    await vi.advanceTimersByTimeAsync(420)
     expect(messages.sent.some(m => m.type === 'burst:open')).toBe(true)
     expect(bridge.legacy).toEqual([])
+  })
+
+  it('defers a solo close until queued capture claims drain', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    holds.map.set(1, holdOf(1))
+    await admitConfirmedDownload(1, { url: holdOf(1).url } as never, Date.now())
+    beginCaptureClaim()
+    expect(pendingCaptureClaims()).toBe(1)
+    await vi.advanceTimersByTimeAsync(80)
+    expect(bridge.legacy).toEqual([])
+    endCaptureClaim()
+    expect(pendingCaptureClaims()).toBe(0)
+    await vi.advanceTimersByTimeAsync(25)
+    expect(bridge.legacy).toEqual([1])
+  })
+
+  it('abandons a burst when the snapshot ping has navigated to another origin', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    pingFlags.href = 'https://other.test/page'
+    holds.map.set(1, holdOf(1))
+    holds.map.set(2, holdOf(2))
+    await admitConfirmedDownload(1, { url: holdOf(1).url } as never, Date.now())
+    await admitConfirmedDownload(2, { url: holdOf(2).url } as never, Date.now())
+    await vi.advanceTimersByTimeAsync(500)
+    expect(messages.sent.some(m => m.type === 'burst:open')).toBe(false)
+    expect(bridge.legacy.slice().sort((a, b) => a - b)).toEqual([1, 2])
+    expect(sessionStore.session).toBeNull()
   })
 
   it('serializes concurrent admits onto one window', async () => {
     holds.map.set(1, holdOf(1))
     holds.map.set(2, holdOf(2))
     await Promise.all([
-      admitConfirmedDownload(1, { url: holdOf(1).url } as never),
-      admitConfirmedDownload(2, { url: holdOf(2).url } as never),
+      admitConfirmedDownload(1, { url: holdOf(1).url } as never, Date.now()),
+      admitConfirmedDownload(2, { url: holdOf(2).url } as never, Date.now()),
     ])
     const ids = (holds.getWindow()?.downloadIds as number[] | undefined)?.slice().sort((a, b) => a - b)
     expect(ids).toEqual([1, 2])
@@ -494,7 +649,9 @@ describe('burstFlow', () => {
   it('admits from inside enqueueCaptureWork without deadlocking', async () => {
     holds.map.set(1, holdOf(1))
     await expect(
-      enqueueCaptureWork(() => admitConfirmedDownload(1, { url: holdOf(1).url } as never)),
+      enqueueCaptureWork(() =>
+        admitConfirmedDownload(1, { url: holdOf(1).url } as never, Date.now()),
+      ),
     ).resolves.toBe('coalesced')
   })
 
@@ -698,6 +855,7 @@ describe('burstFlow', () => {
   it('isCoalescerEligible rejects a Firefox store mismatch and accepts a match', async () => {
     firefoxMode.on = true
     sessionStore.session = { ...SESSION, storeUnproven: false, cookieStoreId: 'store-a' }
+    holds.setWindow(coalescingWindow())
     const base = {
       url: 'https://cdn.example.test/a.bin',
       referrer: 'https://example.test/page',
@@ -710,6 +868,7 @@ describe('burstFlow', () => {
 
   it('isCoalescerEligible on Chrome ignores store even when frameId is set', async () => {
     sessionStore.session = { ...SESSION, storeUnproven: false, cookieStoreId: 'store-a' }
+    holds.setWindow(coalescingWindow())
     expect(
       await isCoalescerEligible({
         url: 'https://cdn.example.test/a.bin',
@@ -728,10 +887,10 @@ describe('burstFlow', () => {
     vi.setSystemTime(0)
     holds.map.set(1, firefoxHold(1))
     holds.map.set(2, firefoxHold(2))
-    await admitConfirmedDownload(1, { url: holdOf(1).url, tabId: 9 } as never)
-    await admitConfirmedDownload(2, { url: holdOf(2).url, tabId: 10 } as never)
+    await admitConfirmedDownload(1, { url: holdOf(1).url, tabId: 9 } as never, Date.now())
+    await admitConfirmedDownload(2, { url: holdOf(2).url, tabId: 10 } as never, Date.now())
     expect(holds.getWindow()?.tabId).toBe(4)
-    await vi.advanceTimersByTimeAsync(1000)
+    await vi.advanceTimersByTimeAsync(500)
     expect(messages.sent.some(m => m.type === 'burst:open')).toBe(true)
     expect(bridge.legacy).toEqual([])
     expect(bridge.resume).toEqual([])
@@ -902,11 +1061,11 @@ describe('burstFlow', () => {
     expect(fx.legacy).toEqual([])
   })
 
-  it('stamps the armed tabId on a coalescing window at admit', async () => {
+  it('stamps the presentation tabId on a coalescing window at admit', async () => {
     firefoxMode.on = true
     installFirefoxBridge()
     holds.map.set(1, { ...firefoxHold(1), tabId: 4 })
-    await admitConfirmedDownload(1, { url: holdOf(1).url, tabId: 4 } as never)
+    await admitConfirmedDownload(1, { url: holdOf(1).url, tabId: 4 } as never, Date.now())
     expect(holds.getWindow()?.tabId).toBe(4)
   })
 

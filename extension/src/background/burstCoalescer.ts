@@ -18,6 +18,19 @@ export type CloseResult =
   | { kind: 'legacy_single'; window: BurstWindowState }
   | { kind: 'burst'; window: BurstWindowState }
 
+export type CloseOptions = {
+  soloQuietMs: number
+  groupQuietMs: number
+  maxMs: number
+}
+
+export function quietWindowFor(
+  memberCount: number,
+  opts: Pick<CloseOptions, 'soloQuietMs' | 'groupQuietMs'>,
+): number {
+  return memberCount <= 1 ? opts.soloQuietMs : opts.groupQuietMs
+}
+
 export function admitMember(opts: {
   sessionPresent: boolean
   window: BurstWindowState | null
@@ -63,12 +76,12 @@ export function admitMember(opts: {
 export function evaluateClose(
   window: BurstWindowState,
   now: number,
-  quietMs: number,
-  maxMs: number,
+  opts: CloseOptions,
 ): CloseResult {
   if (window.phase !== 'coalescing') return { kind: 'open' }
+  const quietMs = quietWindowFor(window.downloadIds.length, opts)
   const quietDue = now >= window.lastItemAt + quietMs
-  const maxDue = now >= window.firstItemAt + maxMs
+  const maxDue = now >= window.firstItemAt + opts.maxMs
   if (!quietDue && !maxDue) return { kind: 'open' }
   if (window.downloadIds.length <= 1) return { kind: 'legacy_single', window }
   return { kind: 'burst', window }

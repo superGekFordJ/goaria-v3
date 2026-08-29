@@ -11,6 +11,8 @@ const config = vi.hoisted(() => ({
 const connection = vi.hoisted(() => ({
   interceptionEnabled: true,
   status: 'connected',
+  paired: true,
+  capabilities: ['download.batch'],
 }))
 
 const capture = vi.hoisted(() => ({
@@ -122,7 +124,7 @@ const tabs = vi.hoisted(() => {
     },
     api: {
       get: async () => tab,
-      query: async () => [],
+      query: async () => [{ id: 4, url: 'https://example.test/page', incognito: false }],
       remove: async (id: number) => {
         removed.push(id)
       },
@@ -142,8 +144,10 @@ const ws = vi.hoisted(() => ({
 
 vi.mock('../stores/config.svelte', () => ({
   BURST_HOLD_TTL_MS: 5 * 60 * 1000,
-  BURST_MAX_DEADLINE_MS: 15_000,
-  BURST_QUIET_WINDOW_MS: 1_000,
+  BURST_MAX_DEADLINE_MS: 5_000,
+  BURST_QUIET_SOLO_MS: 80,
+  BURST_QUIET_GROUP_MS: 500,
+  BURST_CLAIM_RETRY_MS: 25,
   CAP_DOWNLOAD_BATCH: 'download.batch',
   EXTRACTOR_MAX_SESSION_ITEMS: 128,
   STORAGE_KEY_BURST_HOLD_PREFIX: 'bhold_',
@@ -159,7 +163,11 @@ vi.mock('../stores/connection.svelte', () => ({
 
 vi.mock('../background/captureSession', () => ({
   getCaptureSession: async () => capture.session,
-  writeCaptureSession: async () => true,
+  writeCaptureSession: async (session: Record<string, unknown>) => {
+    if (capture.session) return false
+    capture.session = session
+    return true
+  },
   disarmCaptureSession: async () => {
     capture.session = null
   },
@@ -247,6 +255,9 @@ describe('FirefoxBlockingInterceptor', () => {
     config.autoCapture = true
     config.registeredFileTypes = []
     connection.interceptionEnabled = true
+    connection.status = 'connected'
+    connection.paired = true
+    connection.capabilities = ['download.batch']
     capture.session = null
     sessionStore.reset()
     webRequest.reset()
@@ -303,10 +314,11 @@ describe('FirefoxBlockingInterceptor', () => {
   })
 
   it('copies incognito, store, document, and frame onto the persisted hold', async () => {
-    capture.session = { ...SESSION }
+    capture.session = { ...SESSION, incognito: true }
     const reply = await Promise.resolve(
       webRequest.headers[0].listener(
         interceptDetails({
+          initiator: 'https://example.test/page',
           incognito: true,
           cookieStoreId: 'firefox-container-1',
           documentUrl: 'https://example.test/page',
@@ -328,7 +340,7 @@ describe('FirefoxBlockingInterceptor', () => {
     })
   })
 
-  it('removes a blank main_frame tab immediately on unarmed intercept', async () => {
+  it('removes a blank main_frame tab immediately when admission is refused', async () => {
     tabs.setTab({ url: 'about:blank' })
     const reply = await Promise.resolve(webRequest.headers[0].listener(interceptDetails()))
     expect(reply).toEqual({ cancel: true })
@@ -338,22 +350,30 @@ describe('FirefoxBlockingInterceptor', () => {
     expect([...sessionStore.data.keys()].some(k => k.startsWith('bhold_'))).toBe(false)
   })
 
-  it('does not cancel when armed persist fails', async () => {
+  it('does not cancel when eligible hold persistence fails', async () => {
     capture.session = { ...SESSION }
     sessionStore.setOk = false
-    const reply = await Promise.resolve(webRequest.headers[0].listener(interceptDetails()))
+    const reply = await Promise.resolve(
+      webRequest.headers[0].listener(
+        interceptDetails({ initiator: 'https://example.test/page' }),
+      ),
+    )
     expect(reply).toEqual({})
     expect(tabs.removed).toEqual([])
   })
 
-  it('cancels only after a successful armed persist', async () => {
+  it('cancels only after a successful eligible persist', async () => {
     capture.session = { ...SESSION }
-    const reply = await Promise.resolve(webRequest.headers[0].listener(interceptDetails()))
+    const reply = await Promise.resolve(
+      webRequest.headers[0].listener(
+        interceptDetails({ initiator: 'https://example.test/page' }),
+      ),
+    )
     expect(reply).toEqual({ cancel: true })
     expect([...sessionStore.data.keys()].some(k => k.startsWith('bhold_'))).toBe(true)
   })
 
-  it('does not remove a blank tab during the armed cancel turn', async () => {
+  it('does not remove a blank tab during the eligible cancel turn', async () => {
     capture.session = { ...SESSION }
     type Ack = { type: string; success: boolean; gid: string }
     let release!: (value: Ack | PromiseLike<Ack>) => void
@@ -363,7 +383,11 @@ describe('FirefoxBlockingInterceptor', () => {
           release = resolve
         }),
     )
-    const reply = await Promise.resolve(webRequest.headers[0].listener(interceptDetails()))
+    const reply = await Promise.resolve(
+      webRequest.headers[0].listener(
+        interceptDetails({ initiator: 'https://example.test/page' }),
+      ),
+    )
     expect(reply).toEqual({ cancel: true })
     expect(tabs.removed).toEqual([])
     await vi.waitFor(() => {
@@ -378,7 +402,13 @@ describe('FirefoxBlockingInterceptor', () => {
   it('never removes a sub_frame parent tab', async () => {
     capture.session = { ...SESSION }
     const reply = await Promise.resolve(
-      webRequest.headers[0].listener(interceptDetails({ type: 'sub_frame', tabId: 9 })),
+      webRequest.headers[0].listener(
+        interceptDetails({
+          type: 'sub_frame',
+          tabId: 9,
+          initiator: 'https://example.test/page',
+        }),
+      ),
     )
     expect(reply).toEqual({ cancel: true })
     await Promise.resolve()
@@ -389,13 +419,16 @@ describe('FirefoxBlockingInterceptor', () => {
   it('does not cancel when synthetic hold id allocation fails', async () => {
     capture.session = { ...SESSION }
     sessionStore.getThrow = true
-    const reply = await Promise.resolve(webRequest.headers[0].listener(interceptDetails()))
+    const reply = await Promise.resolve(
+      webRequest.headers[0].listener(
+        interceptDetails({ initiator: 'https://example.test/page' }),
+      ),
+    )
     expect(reply).toEqual({})
     expect(tabs.removed).toEqual([])
   })
 
-  it('admits an eligible armed intercept without removing tabs until outcome', async () => {
-    capture.session = { ...SESSION }
+  it('mints and admits an eligible implicit intercept without removing tabs until outcome', async () => {
     const reply = await Promise.resolve(
       webRequest.headers[0].listener(
         interceptDetails({
@@ -409,13 +442,22 @@ describe('FirefoxBlockingInterceptor', () => {
     expect([...sessionStore.data.keys()].some(k => k.startsWith('bhold_'))).toBe(true)
     expect(sessionStore.data.has('bwin_window')).toBe(true)
     expect((sessionStore.data.get('bwin_window') as { tabId?: number }).tabId).toBe(4)
+    expect(capture.session).toMatchObject({
+      tabId: 4,
+      pageHref: 'https://example.test/page',
+    })
+    expect(capture.session).not.toHaveProperty('documentNonce')
     expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
   })
 
-  it('does not remove the armed page tab after an armed same-tab cancel', async () => {
+  it('does not remove the presentation tab after an eligible same-tab cancel', async () => {
     capture.session = { ...SESSION }
     tabs.setTab({ url: 'about:blank' })
-    const reply = await Promise.resolve(webRequest.headers[0].listener(interceptDetails({ tabId: 4 })))
+    const reply = await Promise.resolve(
+      webRequest.headers[0].listener(
+        interceptDetails({ tabId: 4, initiator: 'https://example.test/page' }),
+      ),
+    )
     expect(reply).toEqual({ cancel: true })
     await vi.waitFor(() => {
       expect(ws.sendDownloadRequest).toHaveBeenCalled()
@@ -423,7 +465,7 @@ describe('FirefoxBlockingInterceptor', () => {
     expect(tabs.removed).toEqual([])
   })
 
-  it('recover with no session skips the armed tab when coalescing window has tabId', async () => {
+  it('recover with no session skips the presentation tab when coalescing window has tabId', async () => {
     capture.session = null
     tabs.setTab({ url: 'about:blank' })
     sessionStore.data.set('bwin_window', {

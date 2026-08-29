@@ -1,9 +1,16 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { admitMember, evaluateClose, type BurstWindowState } from './burstCoalescer'
+import { describe, expect, it } from 'vitest'
+import {
+  admitMember,
+  evaluateClose,
+  quietWindowFor,
+  type BurstWindowState,
+} from './burstCoalescer'
 
-const QUIET = 1_000
-const MAX = 15_000
+const SOLO = 80
+const GROUP = 500
+const MAX = 5_000
 const CAP = 128
+const CLOSE_OPTIONS = { soloQuietMs: SOLO, groupQuietMs: GROUP, maxMs: MAX }
 
 function windowOf(ids: number[], first: number, last: number): BurstWindowState {
   return {
@@ -91,29 +98,29 @@ describe('admitMember', () => {
 })
 
 describe('evaluateClose', () => {
-  afterEach(() => {
-    vi.useRealTimers()
+  it('uses the solo window for one member and the group window otherwise', () => {
+    expect(quietWindowFor(0, CLOSE_OPTIONS)).toBe(SOLO)
+    expect(quietWindowFor(1, CLOSE_OPTIONS)).toBe(SOLO)
+    expect(quietWindowFor(2, CLOSE_OPTIONS)).toBe(GROUP)
   })
 
   it('stays open until quiet or max', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(500)
     const win = windowOf([1], 0, 0)
-    expect(evaluateClose(win, 500, QUIET, MAX).kind).toBe('open')
+    expect(evaluateClose(win, SOLO - 1, CLOSE_OPTIONS).kind).toBe('open')
   })
 
   it('closes a single member as legacy_single after quiet', () => {
     const win = windowOf([1], 0, 0)
-    expect(evaluateClose(win, QUIET, QUIET, MAX).kind).toBe('legacy_single')
+    expect(evaluateClose(win, SOLO, CLOSE_OPTIONS).kind).toBe('legacy_single')
   })
 
   it('closes two or more members as burst after quiet', () => {
     const win = windowOf([1, 2], 0, 200)
-    expect(evaluateClose(win, 200 + QUIET, QUIET, MAX).kind).toBe('burst')
+    expect(evaluateClose(win, 200 + GROUP, CLOSE_OPTIONS).kind).toBe('burst')
   })
 
   it('closes as burst at max even if quiet has not elapsed since the last item', () => {
     const win = windowOf([1, 2], 0, MAX - 10)
-    expect(evaluateClose(win, MAX, QUIET, MAX).kind).toBe('burst')
+    expect(evaluateClose(win, MAX, CLOSE_OPTIONS).kind).toBe('burst')
   })
 })

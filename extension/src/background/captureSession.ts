@@ -9,7 +9,7 @@ const FORBIDDEN = new Set(['cookie', 'cookies', 'header', 'headers'])
 export type CaptureSession = {
   captureId: string
   tabId: number
-  documentNonce: string
+  documentNonce?: string
   pageHref: string
   incognito: boolean
   cookieStoreId?: string
@@ -32,7 +32,6 @@ export function parseCaptureSession(raw: unknown, now = Date.now()): CaptureSess
   if (hasForbidden(rec)) return null
   if (typeof rec.captureId !== 'string' || rec.captureId === '') return null
   if (typeof rec.tabId !== 'number' || !Number.isInteger(rec.tabId) || rec.tabId < 0) return null
-  if (typeof rec.documentNonce !== 'string' || rec.documentNonce === '') return null
   if (typeof rec.pageHref !== 'string' || rec.pageHref === '') return null
   if (typeof rec.incognito !== 'boolean') return null
   if (typeof rec.storeUnproven !== 'boolean') return null
@@ -42,12 +41,14 @@ export function parseCaptureSession(raw: unknown, now = Date.now()): CaptureSess
   const session: CaptureSession = {
     captureId: rec.captureId,
     tabId: rec.tabId,
-    documentNonce: rec.documentNonce,
     pageHref: rec.pageHref,
     incognito: rec.incognito,
     storeUnproven: rec.storeUnproven,
     directConnectGeneration: rec.directConnectGeneration,
     createdAt: rec.createdAt,
+  }
+  if (typeof rec.documentNonce === 'string' && rec.documentNonce !== '') {
+    session.documentNonce = rec.documentNonce
   }
   if (typeof rec.cookieStoreId === 'string' && rec.cookieStoreId !== '') {
     session.cookieStoreId = rec.cookieStoreId

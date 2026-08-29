@@ -22,7 +22,7 @@ export const MSG_TYPE_CAPABILITY_UPDATE = 'capability_update'
 
 export const PROTOCOL_VERSION = 2
 export const MATCH_DIGEST_VERSION = 1
-export const CLIENT_VERSION = '0.5.0'
+export const CLIENT_VERSION = '0.6.0'
 
 export const CAP_REQUEST_ID = 'request_id'
 export const CAP_EXTRACTOR_RESOLVE = 'extractor.resolve'
@@ -75,12 +75,15 @@ export const STORAGE_KEY_PENDING_PREFIX = 'pending_'
 
 export const STORAGE_KEY_CAPTURE_PREFIX = 'cap_'
 export const STORAGE_KEY_CAPTURE_SESSION = 'cap_session'
-export const CAPTURE_SESSION_TTL_MS = 60_000
+// Must outlive BURST_MAX_DEADLINE_MS and nothing more.
+export const CAPTURE_SESSION_TTL_MS = 10_000
 
 export const STORAGE_KEY_BURST_HOLD_PREFIX = 'bhold_'
 export const STORAGE_KEY_BURST_WINDOW = 'bwin_window'
-export const BURST_QUIET_WINDOW_MS = 1_000
-export const BURST_MAX_DEADLINE_MS = 15_000
+export const BURST_QUIET_SOLO_MS = 80
+export const BURST_QUIET_GROUP_MS = 500
+export const BURST_MAX_DEADLINE_MS = 5_000
+export const BURST_CLAIM_RETRY_MS = 25
 
 // storage.session key prefix for replayable extractor request ids (SW restart).
 export const STORAGE_KEY_REPLAY_PREFIX = 'replay_'

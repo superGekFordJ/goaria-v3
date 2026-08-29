@@ -6,15 +6,6 @@ import { connectionState } from './connection.svelte'
 import type { WsStatusMessage, PairStatusMessage } from '../utils/messaging'
 
 let statusListenerBound = false
-const connectionSignals: Array<() => void> = []
-
-function emitConnectionSignal(): void {
-  for (const fn of connectionSignals) fn()
-}
-
-export function onPopupConnectionSignal(fn: () => void): void {
-  connectionSignals.push(fn)
-}
 
 // Register ws:status + pair:status listeners and query the current state.
 // Idempotent so repeated popup mounts don't stack handlers.
@@ -29,9 +20,6 @@ export async function initStatusListener(): Promise<void> {
       connectionState.status = msg.status
       connectionState.wsPort = msg.wsPort
       if (msg.status !== 'connected') connectionState.legacyHost = undefined
-    })
-    onMessage('capture:disarmed', () => {
-      emitConnectionSignal()
     })
     statusListenerBound = true
   }

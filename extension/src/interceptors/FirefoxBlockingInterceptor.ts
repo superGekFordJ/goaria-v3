@@ -13,15 +13,17 @@ import {
 } from '../background/burstHoldStore'
 import {
   admitConfirmedDownload,
+  beginCaptureClaim,
   claimFirefoxLegacyHandoff,
+  endCaptureClaim,
   enqueueCaptureWork,
-  isCoalescerEligible,
   recoverBurstState,
+  resolveCoalescerAdmission,
   scheduleFirefoxLegacyHandoff,
   setFirefoxBurstBridge,
 } from '../background/burstFlow'
 
-type ArmedRouteResult =
+type CaptureRouteResult =
   | { kind: 'pass' }
   | { kind: 'unarmed' }
   | { kind: 'cancel'; legacyId?: number }
@@ -32,8 +34,8 @@ type ArmedRouteResult =
  * in MV3) to cancel the request before the browser starts the download, then
  * asynchronously hands the URL off to GoAria.
  *
- * Armed intercepts persist a URL hold and wait on that write before resolving
- * `{ cancel: true }`. Persist failure must not cancel. Unarmed intercepts keep
+ * Eligible intercepts persist a URL hold and wait on that write before resolving
+ * `{ cancel: true }`. Persist failure must not cancel. Refused intercepts keep
  * the immediate handoff + blank-tab cleanup.
  *
  * Original-URL capture: Firefox's onHeadersReceived fires for every hop in
@@ -138,18 +140,23 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
     const ctx = this.buildContext(details, originalUrl)
     const decision = this.shouldIntercept(ctx)
     if (decision !== 'intercept') return {}
-    return this.routeIntercept(ctx, details)
+    const eventAt = Date.now()
+    beginCaptureClaim()
+    return this.routeIntercept(ctx, details, eventAt)
   }
 
   private async routeIntercept(
     ctx: InterceptionContext,
     details: browser.WebRequest.OnHeadersReceivedDetailsType,
+    eventAt: number,
   ): Promise<browser.WebRequest.BlockingResponse> {
-    let result: ArmedRouteResult
+    let result: CaptureRouteResult
     try {
-      result = await enqueueCaptureWork(() => this.persistAndRouteArmed(ctx, details))
+      result = await enqueueCaptureWork(() => this.persistAndRoute(ctx, details, eventAt))
     } catch {
       return {}
+    } finally {
+      endCaptureClaim()
     }
     if (result.kind === 'pass') return {}
     if (result.kind === 'unarmed') {
@@ -172,11 +179,12 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
     return { cancel: true }
   }
 
-  private async persistAndRouteArmed(
+  private async persistAndRoute(
     ctx: InterceptionContext,
     details: browser.WebRequest.OnHeadersReceivedDetailsType,
-  ): Promise<ArmedRouteResult> {
-    const session = await getCaptureSession()
+    eventAt: number,
+  ): Promise<CaptureRouteResult> {
+    const session = await resolveCoalescerAdmission(ctx)
     if (!session) return { kind: 'unarmed' }
     const downloadId = await nextSyntheticBurstHoldId()
     if (typeof downloadId !== 'number' || downloadId < 1) return { kind: 'pass' }
@@ -205,16 +213,12 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
       saved = false
     }
     if (!saved) return { kind: 'pass' }
-    if (await isCoalescerEligible(ctx)) {
-      const outcome = await admitConfirmedDownload(downloadId, ctx)
-      if (outcome !== 'coalesced') {
-        claimFirefoxLegacyHandoff(downloadId)
-        return { kind: 'cancel', legacyId: downloadId }
-      }
-      return { kind: 'cancel' }
+    const outcome = await admitConfirmedDownload(downloadId, ctx, eventAt)
+    if (outcome !== 'coalesced') {
+      claimFirefoxLegacyHandoff(downloadId)
+      return { kind: 'cancel', legacyId: downloadId }
     }
-    claimFirefoxLegacyHandoff(downloadId)
-    return { kind: 'cancel', legacyId: downloadId }
+    return { kind: 'cancel' }
   }
 
   private async handleInterception(ctx: InterceptionContext): Promise<void> {
