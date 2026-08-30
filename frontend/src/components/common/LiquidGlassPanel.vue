@@ -45,7 +45,7 @@
   <component
     :is="as"
     :disabled="props.disabled ? true : undefined"
-    class="relative isolate transition-all duration-300 overflow-visible group/liquid"
+    class="relative isolate [transform:translateZ(0)] [backface-visibility:hidden] transition-all duration-300 overflow-visible group/liquid"
     :class="[
       isInteractive ? 'cursor-pointer' : '',
       isInteractive &&

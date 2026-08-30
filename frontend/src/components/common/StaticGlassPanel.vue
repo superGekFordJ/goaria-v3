@@ -40,7 +40,7 @@
   <component
     :is="as"
     :disabled="props.disabled ? true : undefined"
-    class="relative isolate transition-all duration-300 overflow-visible group"
+    class="relative isolate [transform:translateZ(0)] [backface-visibility:hidden] transition-all duration-300 overflow-visible group"
     :class="[
       isInteractive ? 'cursor-pointer hover:scale-[1.01] active:scale-[0.99]' : '',
       radius,
