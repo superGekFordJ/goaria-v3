@@ -1,4 +1,13 @@
 import { watch, onBeforeUnmount, ref, type Ref } from 'vue'
+import { System } from '@wailsio/runtime'
+
+export function supportsUrlBackdropFilter(): boolean {
+  try {
+    return Boolean(System?.IsWindows?.())
+  } catch {
+    return false
+  }
+}
 
 /* ================= Presets ================= */
 export interface GlassParams {
@@ -251,6 +260,7 @@ export function useLiquidGlass(
   let entry: GlassEntry | null = null
 
   function register() {
+    if (!supportsUrlBackdropFilter()) return
     const layer = layerRef.value
     if (!layer) return
     const defs = ensureDefs()
@@ -332,6 +342,7 @@ let staticBlobUrl: string | null = null
 let staticMapGen = 0
 
 export function getStaticGlassFilterId(): string {
+  if (!supportsUrlBackdropFilter()) return ''
   if (staticFilterId && document.getElementById(staticFilterId)) return staticFilterId
 
   const size = 256

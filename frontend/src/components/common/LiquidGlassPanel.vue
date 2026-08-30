@@ -58,7 +58,7 @@
     ]"
   >
     <template v-if="uiStore.effectsTier === 'full'">
-      <!-- Layer 1: Central Translucency + Refraction (backdrop-filter → SVG SDF displacement) -->
+      <!-- Layer 1: Central Translucency + Refraction (backdrop-filter → SVG SDF displacement or WebKit blur fallback) -->
       <div
         v-if="active"
         ref="refractionLayer"
@@ -109,10 +109,17 @@
         v-if="active"
         class="absolute top-0 left-0 -z-10 h-full w-full overflow-hidden transition-all duration-300 pointer-events-none"
         :class="[radius, baseColorClass]"
-        :style="{
-          backdropFilter: `blur(var(--glass-blur)) url(#${staticFilterId})`,
-          WebkitBackdropFilter: `blur(var(--glass-blur)) url(#${staticFilterId})`,
-        }"
+        :style="
+          staticFilterId
+            ? {
+                backdropFilter: `blur(var(--glass-blur)) url(#${staticFilterId})`,
+                WebkitBackdropFilter: `blur(var(--glass-blur)) url(#${staticFilterId})`,
+              }
+            : {
+                backdropFilter: `blur(var(--glass-blur))`,
+                WebkitBackdropFilter: `blur(var(--glass-blur))`,
+              }
+        "
       ></div>
       <div
         v-else-if="isInteractive"
