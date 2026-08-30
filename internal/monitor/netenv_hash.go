@@ -11,10 +11,24 @@ const (
 	routeCodeProxy  = "1"
 )
 
-// NormalizeMAC lowercases the MAC and strips colons/dashes, leaving 12 hex chars.
+// NormalizeMAC canonicalizes six-byte separated MACs (zero-padding single-digit bytes to 12 hex chars) and preserves unseparated surrogate values.
 func NormalizeMAC(rawMAC string) string {
-	s := strings.ToLower(rawMAC)
-	s = strings.ReplaceAll(s, ":", "")
+	clean := strings.ToLower(strings.TrimSpace(rawMAC))
+	parts := strings.FieldsFunc(clean, func(r rune) bool {
+		return r == ':' || r == '-'
+	})
+	if len(parts) == 6 {
+		var sb strings.Builder
+		sb.Grow(12)
+		for _, p := range parts {
+			if len(p) == 1 {
+				sb.WriteByte('0')
+			}
+			sb.WriteString(p)
+		}
+		return sb.String()
+	}
+	s := strings.ReplaceAll(clean, ":", "")
 	s = strings.ReplaceAll(s, "-", "")
 	return s
 }

@@ -14,8 +14,13 @@ func TestNormalizeMAC(t *testing.T) {
 		{"dash upper", "AA-BB-CC-DD-EE-FF", "aabbccddeeff"},
 		{"mixed case", "Aa:Bb:Cc:Dd:Ee:Ff", "aabbccddeeff"},
 		{"mixed separators", "aa-bb:cc-dd:ee-ff", "aabbccddeeff"},
+		{"single digit zero pad", "0:11:22:33:44:55", "001122334455"},
+		{"multiple single digits", "0:1:2:3:4:5", "000102030405"},
+		{"single digit dash", "0-11-22-33-44-55", "001122334455"},
+		{"mixed single and double", "0:a:0b:c:d:ef", "000a0b0c0def"},
 		{"empty", "", ""},
 		{"no separators", "aabbccddeeff", "aabbccddeeff"},
+		{"16-hex ipv6 surrogate", "0123456789abcdef", "0123456789abcdef"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -24,6 +29,14 @@ func TestNormalizeMAC(t *testing.T) {
 				t.Errorf("NormalizeMAC(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestComputeEnvKey_SingleDigitMACInvariance(t *testing.T) {
+	k1 := ComputeEnvKey(routeCodeDirect, "0:11:22:33:44:55")
+	k2 := ComputeEnvKey(routeCodeDirect, "00:11:22:33:44:55")
+	if k1 != k2 {
+		t.Fatalf("single-digit MAC produced different key from zero-padded MAC: %q vs %q", k1, k2)
 	}
 }
 

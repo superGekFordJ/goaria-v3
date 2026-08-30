@@ -161,11 +161,19 @@ func isVirtualInterface(name string) bool {
 // gatewayMACForInterface resolves the gateway MAC for a given interface.
 // Uses OS-specific ARP lookup; falls back to empty string on failure.
 func gatewayMACForInterface(iface net.Interface) string {
+	// 1. Try OS-specific exact gateway discovery first (Linux /proc/net/route, Win iphlpapi, macOS route)
+	if gw := discoverGatewayIP(iface); gw != nil {
+		if mac := arpLookup(iface, gw); mac != "" {
+			return NormalizeMAC(mac)
+		}
+	}
+
 	addrs, err := iface.Addrs()
 	if err != nil {
 		return ""
 	}
 
+	// 2. Fallback: heuristic subnet first-usable-host (.1) guess
 	for _, addr := range addrs {
 		ipNet, ok := addr.(*net.IPNet)
 		if !ok {
@@ -179,7 +187,7 @@ func gatewayMACForInterface(iface net.Interface) string {
 		if gw == nil {
 			continue
 		}
-		mac := arpLookup(iface.Name, gw)
+		mac := arpLookup(iface, gw)
 		if mac != "" {
 			return NormalizeMAC(mac)
 		}
