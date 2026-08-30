@@ -6,12 +6,18 @@ import {
   createGlassFilter,
   ensureDefs,
   GLASS_PRESETS,
+  supportsUrlBackdropFilter,
   type GlassFilterHandle,
   type GlassParams,
 } from './glassMaterial'
 
 export type { GlassParams } from './glassMaterial'
-export { GLASS_PRESETS, getStaticGlassFilterUrl, supportsUrlBackdropFilter } from './glassMaterial'
+export {
+  GLASS_PRESETS,
+  getStaticGlassFilterUrl,
+  supportsUrlBackdropFilter,
+  _resetSupportsUrlBackdropFilterForTest,
+} from './glassMaterial'
 
 export interface UseLiquidGlassOptions {
   params?: GlassParams
@@ -29,7 +35,7 @@ export function useLiquidGlass(
 
   $effect(() => {
     const layer = layerGetter()
-    if (!layer) return
+    if (!layer || !supportsUrlBackdropFilter()) return
 
     // Create the handle with the initial params once, avoiding re-creation when reactive params change.
     const params = untrack(() => options.params ?? GLASS_PRESETS.clear)

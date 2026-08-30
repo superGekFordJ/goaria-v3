@@ -461,16 +461,30 @@ export function getStaticGlassFilterUrl(): string {
 }
 
 // Feature-detect whether backdrop-filter supports url() references.
-// Firefox does not support SVG filters as backdrop-filter values.
+// Firefox and Safari do not support SVG filters as backdrop-filter values.
 let urlBackdropSupported: boolean | null = null
 export function supportsUrlBackdropFilter(): boolean {
   if (urlBackdropSupported !== null) return urlBackdropSupported
   try {
-    urlBackdropSupported =
-      CSS.supports('backdrop-filter', 'url(#x)') ||
-      CSS.supports('-webkit-backdrop-filter', 'url(#x)')
+    if (typeof navigator === 'undefined') {
+      urlBackdropSupported = false
+      return false
+    }
+    const brands = (navigator as unknown as { userAgentData?: { brands?: Array<{ brand: string }> } })
+      .userAgentData?.brands
+    if (brands && Array.isArray(brands)) {
+      urlBackdropSupported = brands.some((b) => /chromium/i.test(b.brand))
+      return urlBackdropSupported
+    }
+    const ua = navigator.userAgent || ''
+    const isFirefox = /Firefox|FxiOS/i.test(ua)
+    urlBackdropSupported = /Chrome|Chromium|Edg|CriOS/i.test(ua) && !isFirefox
   } catch {
     urlBackdropSupported = false
   }
   return urlBackdropSupported
+}
+
+export function _resetSupportsUrlBackdropFilterForTest(value: boolean | null = null): void {
+  urlBackdropSupported = value
 }

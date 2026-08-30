@@ -72,24 +72,26 @@
   })
 
   let isInteractive = $derived(interactive && !disabled)
-  let hasGlow = $derived(isInteractive && (hoverEffect === 'all' || hoverEffect === 'glow'))
+  let hasGlow = $derived(
+    isInteractive && effects === 'full' && (hoverEffect === 'all' || hoverEffect === 'glow'),
+  )
   let hasScale = $derived(
     isInteractive && effects === 'full' && (hoverEffect === 'all' || hoverEffect === 'scale'),
   )
 
   let params = $derived(GLASS_PRESETS[theme])
 
-  const glassState = useLiquidGlass(() => layerEl, {
+  const glassState = useLiquidGlass(() => (effects === 'full' ? layerEl : null), {
     get params() {
       return params
     },
   })
 
-  let isFallback = $derived(!glassState.filterUrl || !supportsUrlBackdropFilter())
+  let isFallback = $derived(effects === 'reduced' || !glassState.filterUrl || !supportsUrlBackdropFilter())
 
   let backdropStyle = $derived.by(() => {
-    if (!glassState.filterUrl || !supportsUrlBackdropFilter()) {
-      return `backdrop-filter: blur(${params.blur}px) saturate(${params.sat}); -webkit-backdrop-filter: blur(${params.blur}px) saturate(${params.sat})`
+    if (effects === 'reduced' || !glassState.filterUrl || !supportsUrlBackdropFilter()) {
+      return `backdrop-filter: blur(8px) saturate(${params.sat}); -webkit-backdrop-filter: blur(8px) saturate(${params.sat})`
     }
     return `backdrop-filter: ${glassState.filterUrl}; -webkit-backdrop-filter: ${glassState.filterUrl}`
   })
@@ -107,24 +109,18 @@
     {disabled}
     {onclick}
   >
-    {#if effects === 'full' && active}
+    {#if active}
       <div
         bind:this={layerEl}
-        class="liquid-glass-refraction"
+        class="liquid-glass-refraction {effects === 'reduced' ? fallbackClass : ''}"
         style="{backdropStyle}; border-radius: {radius}; {overlayColor ? `background: ${overlayColor};` : ''}"
       >
         {#if hasGlow}
           <div class="liquid-glass-glow"></div>
         {/if}
       </div>
-    {:else if effects === 'full' && isInteractive}
+    {:else if isInteractive}
       <div class="liquid-glass-placeholder" style="border-radius: {radius}"></div>
-    {:else if effects === 'reduced'}
-      <div
-        class="liquid-glass-fallback {fallbackClass}"
-        class:lg-fallback-active={active}
-        style="border-radius: {radius}"
-      ></div>
     {/if}
 
     <div class="liquid-glass-content">
@@ -141,24 +137,18 @@
     class:lg-interactive={isInteractive}
     class:lg-scale={hasScale}
   >
-    {#if effects === 'full' && active}
+    {#if active}
       <div
         bind:this={layerEl}
-        class="liquid-glass-refraction"
+        class="liquid-glass-refraction {effects === 'reduced' ? fallbackClass : ''}"
         style="{backdropStyle}; border-radius: {radius}; {overlayColor ? `background: ${overlayColor};` : ''}"
       >
         {#if hasGlow}
           <div class="liquid-glass-glow"></div>
         {/if}
       </div>
-    {:else if effects === 'full' && isInteractive}
+    {:else if isInteractive}
       <div class="liquid-glass-placeholder" style="border-radius: {radius}"></div>
-    {:else if effects === 'reduced'}
-      <div
-        class="liquid-glass-fallback {fallbackClass}"
-        class:lg-fallback-active={active}
-        style="border-radius: {radius}"
-      ></div>
     {/if}
 
     <div class="liquid-glass-content">

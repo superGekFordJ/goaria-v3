@@ -61,8 +61,8 @@
   z-index: -10;
   pointer-events: none;
   transition: all 0.3s ease;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
 }
@@ -159,8 +159,8 @@
   pointer-events: none;
   opacity: 0;
   background: rgba(var(--tint-rgb), var(--tint));
-  backdrop-filter: blur(12px) saturate(1.4);
-  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  backdrop-filter: blur(8px) saturate(1.4);
+  -webkit-backdrop-filter: blur(8px) saturate(1.4);
 }
 
 .lg-fallback-active {

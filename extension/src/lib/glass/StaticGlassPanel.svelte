@@ -46,9 +46,9 @@
 
   let backdropStyle = $derived.by(() => {
     if (refractionFilterUrl) {
-      return `backdrop-filter: blur(16px) ${refractionFilterUrl}; -webkit-backdrop-filter: blur(16px) ${refractionFilterUrl}`
+      return `backdrop-filter: blur(8px) ${refractionFilterUrl}; -webkit-backdrop-filter: blur(8px) ${refractionFilterUrl}`
     }
-    return 'backdrop-filter: blur(16px) saturate(1.4); -webkit-backdrop-filter: blur(16px) saturate(1.4)'
+    return 'backdrop-filter: blur(8px) saturate(1.4); -webkit-backdrop-filter: blur(8px) saturate(1.4)'
   })
 </script>
 
@@ -60,17 +60,12 @@
     style="border-radius: {radius}"
     {disabled}
   >
+    <div
+      class="static-glass-bg {effects === 'reduced' ? fallbackClass : ''}"
+      style="{backdropStyle}; border-radius: {radius}; --overlay-color: {overlayColor}"
+    ></div>
     {#if effects === 'full'}
-      <div
-        class="static-glass-bg"
-        style="{backdropStyle}; border-radius: {radius}; --overlay-color: {overlayColor}"
-      ></div>
       <div class="static-glass-shadow" style="border-radius: {radius}"></div>
-    {:else if !fallbackClass}
-      <div class="static-glass-fallback" style="border-radius: {radius}"></div>
-    {/if}
-    {#if fallbackClass && effects === 'reduced'}
-      <div class={fallbackClass} style="border-radius: {radius}"></div>
     {/if}
     <div class="static-glass-content">
       {@render children?.()}
@@ -83,17 +78,12 @@
     class:lg-interactive={isInteractive}
     style="border-radius: {radius}"
   >
+    <div
+      class="static-glass-bg {effects === 'reduced' ? fallbackClass : ''}"
+      style="{backdropStyle}; border-radius: {radius}; --overlay-color: {overlayColor}"
+    ></div>
     {#if effects === 'full'}
-      <div
-        class="static-glass-bg"
-        style="{backdropStyle}; border-radius: {radius}; --overlay-color: {overlayColor}"
-      ></div>
       <div class="static-glass-shadow" style="border-radius: {radius}"></div>
-    {:else if !fallbackClass}
-      <div class="static-glass-fallback" style="border-radius: {radius}"></div>
-    {/if}
-    {#if fallbackClass && effects === 'reduced'}
-      <div class={fallbackClass} style="border-radius: {radius}"></div>
     {/if}
     <div class="static-glass-content">
       {@render children?.()}
