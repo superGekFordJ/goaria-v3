@@ -242,36 +242,81 @@ export function safeDecodeDisplayPath(path: string | undefined): string {
   if (!path) return ''
   const clean = path.split('?')[0]?.split('#')[0] ?? ''
   if (!clean) return ''
-  try {
-    const masked = clean
-      .replace(/%2[fF]/g, '__GOARIA_ESC_2F__')
-      .replace(/%5[cC]/g, '__GOARIA_ESC_5C__')
-    const decoded = decodeURIComponent(masked)
-    return decoded
-      .replace(/__GOARIA_ESC_2F__/g, '%2F')
-      .replace(/__GOARIA_ESC_5C__/g, '%5C')
-  } catch {
-    try {
-      return clean.replace(/(%[0-9A-Fa-f]{2})+/g, match => {
-        if (/^%(?:2[fF]|5[cC])$/i.test(match)) return match
-        try {
-          return decodeURIComponent(match)
-        } catch {
-          return match
+
+  let out = ''
+  let i = 0
+  const len = clean.length
+
+  while (i < len) {
+    const ch = clean[i]
+    if (ch === '%' && i + 2 < len) {
+      const hex = clean.slice(i + 1, i + 3)
+      if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
+        const upper = hex.toUpperCase()
+        if (upper === '2F' || upper === '5C') {
+          out += `%${upper}`
+          i += 3
+          continue
         }
-      })
-    } catch {
-      return clean
+
+        // Collect consecutive non-slash/non-backslash %XX bytes
+        let chunk = `%${hex}`
+        let j = i + 3
+        while (j + 2 < len && clean[j] === '%') {
+          const nextHex = clean.slice(j + 1, j + 3)
+          if (/^[0-9A-Fa-f]{2}$/.test(nextHex)) {
+            const nextUpper = nextHex.toUpperCase()
+            if (nextUpper === '2F' || nextUpper === '5C') {
+              break
+            }
+            chunk += `%${nextHex}`
+            j += 3
+          } else {
+            break
+          }
+        }
+
+        try {
+          out += decodeURIComponent(chunk)
+          i = j
+          continue
+        } catch {
+          try {
+            out += decodeURIComponent(`%${hex}`)
+            i += 3
+            continue
+          } catch {
+            out += `%${hex}`
+            i += 3
+            continue
+          }
+        }
+      }
     }
+
+    out += ch
+    i++
   }
+
+  return out
 }
 
 export function formatDisplayHost(origin: string | undefined): string {
   if (!origin) return ''
   const trimmed = origin.trim()
   if (!trimmed) return ''
-  const withoutScheme = trimmed.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, '')
-  return withoutScheme.replace(/\/+$/, '')
+
+  try {
+    const parsed = new URL(trimmed)
+    return parsed.host
+  } catch {
+    try {
+      const parsed = new URL(`http://${trimmed}`)
+      return parsed.host
+    } catch {
+      return ''
+    }
+  }
 }
 
 export function formatDisplaySecondary(item: {
@@ -297,9 +342,10 @@ export function isValidKnownSize(size: unknown): size is number {
 export function getDisplayFilename(
   filename: string | undefined,
   position: number,
-  fallbackLabel: string,
+  fallbackLabel?: string,
 ): string {
   const sanitized = sanitizeDisplayFilename(filename)
   if (sanitized) return sanitized
-  return `${fallbackLabel} #${position}`
+  if (fallbackLabel) return fallbackLabel
+  return `Item #${position}`
 }

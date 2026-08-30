@@ -26,20 +26,23 @@ const COLLECT_MENU_ID = 'goaria-collect-page-links'
  * language-change plumbing.
  */
 export function initContextMenu(): void {
-  browser.runtime.onInstalled.addListener(() => {
+  function registerMenus(): void {
     void browser.contextMenus.removeAll().then(() => {
       browser.contextMenus.create({
         id: MENU_ID,
         title: t('context_menu_download_with'),
-        contexts: ['link', 'video', 'audio'],
+        contexts: ['link', 'image', 'video', 'audio'],
       })
       browser.contextMenus.create({
         id: COLLECT_MENU_ID,
         title: t('context_menu_collect_page_links'),
-        contexts: ['page'],
+        contexts: ['page', 'frame'],
       })
-    })
-  })
+    }).catch(() => undefined)
+  }
+
+  browser.runtime.onInstalled.addListener(registerMenus)
+  registerMenus()
   browser.contextMenus.onClicked.addListener(handleContextMenuClick)
 }
 

@@ -92,6 +92,12 @@ describe('pickerPresentation', () => {
     expect(safeDecodeDisplayPath('/path/segment%5Cwith%5Cbackslash')).toBe(
       '/path/segment%5Cwith%5Cbackslash',
     )
+    // Preserves %2F even when mixed with unicode and malformed escape sequences
+    expect(safeDecodeDisplayPath('/%E4%BD%A0%2Ffile%ZZ')).toBe('/\u4f60%2Ffile%ZZ')
+    // Does not corrupt textual sentinel-like strings
+    expect(safeDecodeDisplayPath('/__GOARIA_ESC_2F__/path%2Fto%5Cfile')).toBe(
+      '/__GOARIA_ESC_2F__/path%2Fto%5Cfile',
+    )
     // Discards query/fragment by contract
     expect(safeDecodeDisplayPath('/path/file.mp4?token=secret#hash')).toBe('/path/file.mp4')
     // Malformed escape fallback
@@ -99,12 +105,15 @@ describe('pickerPresentation', () => {
     expect(safeDecodeDisplayPath(undefined)).toBe('')
   })
 
-  it('formats display host by removing scheme and preserving port', () => {
+  it('formats display host by removing scheme/credentials/path and preserving port', () => {
     expect(formatDisplayHost('https://example.com')).toBe('example.com')
     expect(formatDisplayHost('http://example.com:8080/')).toBe('example.com:8080')
     expect(formatDisplayHost('ftp://192.168.1.1:3000')).toBe('192.168.1.1:3000')
     expect(formatDisplayHost('subdomain.site.org')).toBe('subdomain.site.org')
+    expect(formatDisplayHost('https://user:pass@example.com/path?token=x')).toBe('example.com')
+    expect(formatDisplayHost('https://user:pass@example.com:8443/path?token=x')).toBe('example.com:8443')
     expect(formatDisplayHost(undefined)).toBe('')
+    expect(formatDisplayHost('')).toBe('')
   })
 
   it('formats secondary metadata combining host and decoded path', () => {
@@ -142,8 +151,9 @@ describe('pickerPresentation', () => {
   })
 
   it('generates display filename with 1-based position fallback', () => {
-    expect(getDisplayFilename('my_report.pdf', 1, 'Item')).toBe('my_report.pdf')
-    expect(getDisplayFilename('', 3, 'Item')).toBe('Item #3')
-    expect(getDisplayFilename(undefined, 5, 'Download')).toBe('Download #5')
+    expect(getDisplayFilename('my_report.pdf', 1, 'Item #1')).toBe('my_report.pdf')
+    expect(getDisplayFilename('', 3, 'Item #3')).toBe('Item #3')
+    expect(getDisplayFilename(undefined, 5, 'Download #5')).toBe('Download #5')
+    expect(getDisplayFilename(undefined, 2)).toBe('Item #2')
   })
 })

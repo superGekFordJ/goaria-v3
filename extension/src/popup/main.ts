@@ -3,6 +3,14 @@ import Popup from './Popup.svelte'
 import '../styles/index.css'
 import { initStatusListener } from '../stores/connection-popup'
 
+const mq = window.matchMedia('(prefers-color-scheme: light)')
+const applyTheme = (isLight: boolean) => {
+  document.documentElement.setAttribute('data-theme', isLight ? 'light' : 'dark')
+}
+applyTheme(mq.matches)
+mq.addEventListener('change', e => applyTheme(e.matches))
+
+
 // Permanent safety net: render a small message if the popup fails to mount.
 window.addEventListener('error', e => {
   const app = document.getElementById('app')

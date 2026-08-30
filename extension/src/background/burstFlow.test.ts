@@ -328,11 +328,16 @@ const SESSION = {
   createdAt: Date.now(),
 }
 
-function holdOf(id: number, url = `https://cdn.example.test/${id}.bin`) {
+function holdOf(
+  id: number,
+  url = `https://cdn.example.test/${id}.bin`,
+  mimeType = 'application/octet-stream',
+) {
   return {
     url,
     filename: `${id}.bin`,
     fileSize: 10,
+    mimeType,
     startTime: Date.now(),
     captureId: SESSION.captureId,
     referrer: 'https://example.test/page',
@@ -665,14 +670,21 @@ describe('burstFlow', () => {
   it('opens burst overlay for two members after quiet', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)
-    holds.map.set(1, holdOf(1))
-    holds.map.set(2, holdOf(2))
+    holds.map.set(1, holdOf(1, undefined, 'video/mp4'))
+    holds.map.set(2, holdOf(2, undefined, 'audio/mpeg'))
     await admitConfirmedDownload(1, { url: holdOf(1).url } as never, Date.now())
     await admitConfirmedDownload(2, { url: holdOf(2).url } as never, Date.now())
     await vi.advanceTimersByTimeAsync(80)
     expect(messages.sent.some(m => m.type === 'burst:open')).toBe(false)
     await vi.advanceTimersByTimeAsync(420)
-    expect(messages.sent.some(m => m.type === 'burst:open')).toBe(true)
+    const openMsg = messages.sent.find(m => m.type === 'burst:open') as {
+      type: string
+      data: { items: Array<{ index: number; filename?: string; mime_type?: string }> }
+    }
+    expect(openMsg).toBeDefined()
+    expect(openMsg.data.items).toHaveLength(2)
+    expect(openMsg.data.items[0].mime_type).toBe('video/mp4')
+    expect(openMsg.data.items[1].mime_type).toBe('audio/mpeg')
     expect(bridge.legacy).toEqual([])
   })
 
@@ -1125,7 +1137,13 @@ describe('burstFlow', () => {
       }),
     )
     await recoverBurstState()
-    expect(messages.sent.filter(m => m.type === 'burst:open')).toHaveLength(1)
+    const openMsgs = messages.sent.filter(m => m.type === 'burst:open') as Array<{
+      type: string
+      data: { items: Array<{ index: number; filename?: string; mime_type?: string }> }
+    }>
+    expect(openMsgs).toHaveLength(1)
+    expect(openMsgs[0]?.data.items).toHaveLength(2)
+    expect(openMsgs[0]?.data.items[0]?.mime_type).toBe('application/octet-stream')
     expect(fx.legacy).toEqual([])
     expect(holds.getWindow()?.phase).toBe('picker')
   })

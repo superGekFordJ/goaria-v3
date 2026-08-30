@@ -14,7 +14,6 @@
     invert,
     selectAll,
     selectedBytes,
-    selectableCount,
     toggleIndex,
     type PickerSelectPolicy,
   } from '../background/pickerSelection'
@@ -75,7 +74,10 @@
   let lastCatalogKey = ''
   let lastItemIdentity = ''
 
-  let selectable = $derived(selectableCount(items.length, EXTRACTOR_MAX_SESSION_ITEMS))
+  let selectableIndices = $derived(
+    new Set(items.slice(0, EXTRACTOR_MAX_SESSION_ITEMS).map(it => it.index)),
+  )
+  let itemPositionMap = $derived(new Map(items.map((item, idx) => [item.index, idx + 1])))
   let categoryCounts = $derived(getCategoryCounts(items))
   let availableCategories = $derived(getAvailableCategories(categoryCounts))
   let filteredItems = $derived(filterPickerItems(items, activeCategory))
@@ -201,7 +203,7 @@
 
   function onToggle(index: number, event?: Event): void {
     if (event && !event.isTrusted) return
-    selected = toggleIndex(selected, index, selectable)
+    selected = toggleIndex(selected, index, selectableIndices)
     activeIndex = index
   }
 
@@ -435,10 +437,11 @@
             {#each filteredItems as item (item.index)}
               {@const isSelected = selected.has(item.index)}
               {@const itemCat = categorizePickerItem(item)}
+              {@const pos = itemPositionMap.get(item.index) ?? 1}
               {@const displayName = getDisplayFilename(
                 item.filename,
-                item.index + 1,
-                t('capsule_item_generic'),
+                pos,
+                t('picker_fallback_item', [String(pos)]),
               )}
               {@const secondaryText = formatDisplaySecondary(item)}
               <label

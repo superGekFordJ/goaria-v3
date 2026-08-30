@@ -76,12 +76,18 @@ describe('pickerSelection', () => {
     const selected = toggleIndex(new Set([0]), 99, 3)
     expect([...selected]).toEqual([0])
 
-    // Sparse selectable indices
+    // Sparse selectable indices (array and Set)
     const sparseSelectable = [0, 2]
     const toggled = toggleIndex(new Set([0]), 2, sparseSelectable)
-    expect([...toggled].sort()).toEqual([0, 2])
+    expect([...toggled].sort((a, b) => a - b)).toEqual([0, 2])
     const noGhost = toggleIndex(new Set([0]), 1, sparseSelectable)
     expect([...noGhost]).toEqual([0])
+
+    const setSelectable = new Set([0, 2])
+    const toggledSet = toggleIndex(new Set([0]), 2, setSelectable)
+    expect([...toggledSet].sort((a, b) => a - b)).toEqual([0, 2])
+    const toggledOff = toggleIndex(toggledSet, 2, setSelectable)
+    expect([...toggledOff]).toEqual([0])
 
     const bytes = selectedBytes(
       [
