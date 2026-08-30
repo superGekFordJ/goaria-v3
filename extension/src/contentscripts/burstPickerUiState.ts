@@ -48,6 +48,8 @@ function projectItems(items: unknown): BurstPickerCatalogItem[] {
       if (origin) item.origin = origin
       const path = sanitizeDisplayFilename(rec.path)
       if (path) item.path = path
+      const mimeType = sanitizeDisplayFilename(rec.mime_type)
+      if (mimeType) item.mime_type = mimeType
       if (typeof rec.size_bytes === 'number' && Number.isFinite(rec.size_bytes)) {
         item.size_bytes = rec.size_bytes
       }

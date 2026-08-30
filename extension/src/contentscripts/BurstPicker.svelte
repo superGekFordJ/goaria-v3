@@ -1,7 +1,5 @@
 <script lang="ts">
   import { t } from '../lib/i18n'
-  import { sanitizeDisplayFilename } from '../background/extractorKeys'
-  import { formatPickerBytes } from './pickerChrome'
   import { burstPickerView } from './burstPickerView.svelte'
   import PickerShell from './PickerShell.svelte'
 
@@ -35,12 +33,5 @@
     {#if snapshot.banner === 'pending'}
       <div class="extractor-picker-hint">{t('dom_ack_pending')}</div>
     {/if}
-  {/snippet}
-  {#snippet rowMeta(item)}
-    {sanitizeDisplayFilename(item.origin) || ''}
-    {item.origin ? ' · ' : ''}
-    {sanitizeDisplayFilename(item.path) || ''}
-    {item.path ? ' · ' : ''}
-    {typeof item.size_bytes === 'number' ? formatPickerBytes(item.size_bytes) : t('picker_size_unknown')}
   {/snippet}
 </PickerShell>

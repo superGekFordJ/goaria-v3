@@ -667,6 +667,8 @@ async function closeCoalescedWindow(window: BurstWindowRecord, forceLegacy: bool
     const row: BurstPickerCatalogItem = { index }
     const filename = sanitizeDisplayFilename(hold.filename)
     if (filename) row.filename = filename
+    const mimeType = sanitizeDisplayFilename(hold.mimeType)
+    if (mimeType) row.mime_type = mimeType
     try {
       const u = new URL(hold.url)
       const origin = sanitizeDisplayFilename(u.origin)
@@ -1321,6 +1323,8 @@ async function reopenOrLegacyFirefoxPicker(
     const row: BurstPickerCatalogItem = { index: entry.index }
     const filename = sanitizeDisplayFilename(hold.filename)
     if (filename) row.filename = filename
+    const mimeType = sanitizeDisplayFilename(hold.mimeType)
+    if (mimeType) row.mime_type = mimeType
     try {
       const u = new URL(hold.url)
       const origin = sanitizeDisplayFilename(u.origin)

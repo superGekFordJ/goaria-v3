@@ -297,6 +297,7 @@ export type BurstPickerCatalogItem = {
   origin?: string
   path?: string
   size_bytes?: number
+  mime_type?: string
 }
 
 export type BurstOpenMessage = {

@@ -50,6 +50,34 @@ describe('applyBurstPickerEvent', () => {
     expect(lost.storeUnproven).toBe(true)
     expect(lost.captureId).toBe(opened.captureId)
   })
+
+  it('projects sanitized mime_type and omits sensitive fields', () => {
+    const rawItems = [
+      {
+        index: 0,
+        filename: 'song.mp3',
+        origin: 'https://example.com',
+        path: '/song.mp3',
+        mime_type: 'audio/mpeg',
+        url: 'https://example.com/song.mp3?token=secret',
+        headers: ['Authorization: Bearer xyz'],
+        cookies: 'session=123',
+      },
+    ]
+    const opened = applyBurstPickerEvent(INITIAL_BURST_PICKER_STATE, {
+      type: 'open',
+      captureId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      items: rawItems as unknown as BurstPickerCatalogItem[],
+    })
+    expect(opened.items).toHaveLength(1)
+    const item = opened.items[0]
+    expect(item.index).toBe(0)
+    expect(item.filename).toBe('song.mp3')
+    expect(item.mime_type).toBe('audio/mpeg')
+    expect('url' in item).toBe(false)
+    expect('headers' in item).toBe(false)
+    expect('cookies' in item).toBe(false)
+  })
 })
 
 describe('burstBusyForOverlay', () => {

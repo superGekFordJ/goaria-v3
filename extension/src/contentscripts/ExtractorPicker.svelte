@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from '../lib/i18n'
-  import { formatPickerBytes, pickerCatalogKey } from './pickerChrome'
+  import { pickerCatalogKey } from './pickerChrome'
   import { pickerView } from './pickerView.svelte'
   import PickerShell from './PickerShell.svelte'
 
@@ -29,8 +29,4 @@
   restoreFocus={true}
   onCancel={() => pickerView.onCancel()}
   onSubmit={payload => pickerView.onSubmit(payload)}
->
-  {#snippet rowMeta(item)}
-    {typeof item.size_bytes === 'number' ? formatPickerBytes(item.size_bytes) : t('picker_size_unknown')}
-  {/snippet}
-</PickerShell>
+/>
