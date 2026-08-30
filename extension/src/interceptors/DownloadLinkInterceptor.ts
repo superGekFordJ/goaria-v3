@@ -203,10 +203,26 @@ export abstract class DownloadLinkInterceptor {
     msg: DownloadInterceptedMessage,
   ): Promise<void> {
     const tabId = await this.resolveTabId(ctx)
-    if (tabId < 0) {
-      showInterceptedNotification(msg)
-      return
+    if (tabId >= 0) {
+      const shown = await this.trySendToTab(tabId, msg)
+      if (shown) return
     }
+
+    // Fallback: If primary tab was closed, blank, or unreachable, attempt delivery to the active tab
+    try {
+      const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true })
+      if (typeof activeTab?.id === 'number' && activeTab.id >= 0 && activeTab.id !== tabId) {
+        const shown = await this.trySendToTab(activeTab.id, msg)
+        if (shown) return
+      }
+    } catch {
+      // Active tab query failed
+    }
+
+    showInterceptedNotification(msg)
+  }
+
+  private async trySendToTab(tabId: number, msg: DownloadInterceptedMessage): Promise<boolean> {
     try {
       const sendPromise = sendMessage(
         'download:intercepted',
@@ -220,10 +236,9 @@ export abstract class DownloadLinkInterceptor {
           setTimeout(() => reject(new Error('sendMessage timeout')), 1000),
         ),
       ])
-      if (reply !== 'shown') showInterceptedNotification(msg)
+      return reply === 'shown'
     } catch {
-      // No content script in this tab (e.g. chrome:// pages), timed out or it threw.
-      showInterceptedNotification(msg)
+      return false
     }
   }
 
@@ -232,7 +247,14 @@ export abstract class DownloadLinkInterceptor {
     if (ctx.tabId >= 0) {
       try {
         const tab = await browser.tabs.get(ctx.tabId)
-        if (tab) return ctx.tabId
+        if (tab) {
+          const isBlank =
+            !tab.url || tab.url === 'about:blank' || tab.url === ctx.url || tab.url === ctx.finalUrl
+          if (isBlank && typeof tab.openerTabId === 'number' && tab.openerTabId >= 0) {
+            return tab.openerTabId
+          }
+          return ctx.tabId
+        }
       } catch {
         // Tab no longer exists.
       }
