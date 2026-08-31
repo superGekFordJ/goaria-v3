@@ -47,9 +47,11 @@
 GoAria is designed around the principles of **Pragmatism** and **Zero Interference**. Traditional static concurrency models often compromise between network congestion and bandwidth underutilization. By analyzing historical speed metrics and server response patterns, GoAria dynamically computes the optimal thread count and chunk granularity the moment a task begins—maximizing bandwidth saturation while preventing server rate-limits. Combined with a native Liquid Glass interface and minimal resource footprint, it provides a clean, refined, and exceptionally fast download experience.
 
 <div align="center">
-  <!-- Replace with your actual application screenshot -->
-  <img src="frontend/src/assets/images/display.png" alt="GoAria Screenshot" width="800" />
+  <img src="https://raw.githubusercontent.com/superGekFordJ/goaria-assets/main/README/dark.png" alt="GoAria Dark Mode" width="850" />
   <p><em>Dark Mode: A visual symphony of Obsidian and Laser</em></p>
+  <br />
+  <img src="https://raw.githubusercontent.com/superGekFordJ/goaria-assets/main/README/light.png" alt="GoAria Light Mode" width="850" />
+  <p><em>Light Mode: Refined elegance of E-paper and Ceramic</em></p>
 </div>
 
 ## ✨ Key Features

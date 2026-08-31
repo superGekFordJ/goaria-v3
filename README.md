@@ -47,8 +47,11 @@
 GoAria 秉持**实用主义**与**零干扰**的设计哲学。传统的固定线程配置往往在网络拥塞与吞吐不足之间妥协，而 GoAria 通过持续记录与分析历史测速数据及服务器响应特征，能够在任务创建时毫秒级推演最优并发数与分块策略，在充分释放带宽潜能的同时有效避免触发服务器频控限制。配合液态玻璃质感的原生界面与低资源占用，提供纯净、高效的现代下载体验。
 
 <div align="center">
-  <img src="frontend/src/assets/images/display.png" alt="GoAria Screenshot" width="800" />
+  <img src="https://raw.githubusercontent.com/superGekFordJ/goaria-assets/main/README/dark.png" alt="GoAria Dark Mode" width="850" />
   <p><em>深色模式：黑曜石与激光的视觉交响</em></p>
+  <br />
+  <img src="https://raw.githubusercontent.com/superGekFordJ/goaria-assets/main/README/light.png" alt="GoAria Light Mode" width="850" />
+  <p><em>浅色模式：电子纸与陶瓷的雅致呈现</em></p>
 </div>
 
 ## ✨ 核心特性
