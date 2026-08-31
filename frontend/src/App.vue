@@ -170,7 +170,7 @@
       <TitleBar />
 
       <!-- Floating Glass Content Panel -->
-      <main class="flex-1 flex flex-col min-w-0 px-3 pb-3 min-h-0">
+      <main class="flex-1 flex flex-col min-w-0 px-3 pt-2 pb-3 min-h-0">
         <div
           :class="[
             'flex-1 flex flex-col min-h-0 main-glass-viewport rounded-[var(--radius-squircle-xl)] overflow-hidden',
