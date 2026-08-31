@@ -23,6 +23,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1094,10 +1095,8 @@ func auditDecodedJSONValue(value any) bool {
 			}
 		}
 	case []any:
-		for _, nested := range typed {
-			if auditDecodedJSONValue(nested) {
-				return true
-			}
+		if slices.ContainsFunc(typed, auditDecodedJSONValue) {
+			return true
 		}
 	case string:
 		return containsForbiddenNoNameTerm(typed)
@@ -1461,12 +1460,12 @@ func hasUnsafeURLPath(urlPath string) bool {
 	if strings.Contains(urlPath, "\\") {
 		return true
 	}
-	segments := strings.Split(urlPath, "/")
-	for _, segment := range segments {
+	segments := strings.SplitSeq(urlPath, "/")
+	for segment := range segments {
 		if segment == "." || segment == ".." {
 			return true
 		}
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			value, err := url.PathUnescape(segment)
 			if err != nil {
 				return true

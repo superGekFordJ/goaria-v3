@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -767,9 +768,7 @@ func TestFullPackVerifyFailsClosedForAssetProblems(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			routes := make(map[string][]byte, len(tc.routes)+1)
-			for k, v := range tc.routes {
-				routes[k] = v
-			}
+			maps.Copy(routes, tc.routes)
 			if _, ok := routes["/assets/v0.0.0-alpha/asset-alpha002.pack.zip"]; !ok && tc.name != "missing asset" {
 				routes["/assets/v0.0.0-alpha/asset-alpha002.pack.zip"] = tc.assetTwo.bytes
 			}
