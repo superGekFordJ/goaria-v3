@@ -328,4 +328,3 @@ func TestComplete_ZeroTotalWithCachedTotal_PrefersCachedTotal(t *testing.T) {
 		t.Errorf("TotalLength = %q, want 1000", task.TotalLength)
 	}
 }
-

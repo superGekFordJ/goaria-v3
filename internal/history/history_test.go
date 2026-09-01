@@ -890,4 +890,3 @@ func TestToStoppedTask_ProjectsCompletedLengths(t *testing.T) {
 		t.Errorf("t3 = (%q, %q, %q), want (error, 0, 500000)", t3.Status, t3.TotalLength, t3.CompletedLength)
 	}
 }
-

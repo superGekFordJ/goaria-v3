@@ -635,4 +635,3 @@ func TestGetDownloadGroups_TerminalUnknownSizeGroup_AggregatesToFull(t *testing.
 		}
 	}
 }
-

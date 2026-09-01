@@ -761,4 +761,3 @@ func GetStoppedTasks() []rpc.Task {
 	svc := &Service{Engine: &rpc.Aria2Engine{}}
 	return svc.GetStoppedTasks()
 }
-

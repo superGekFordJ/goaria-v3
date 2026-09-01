@@ -945,4 +945,3 @@ func canonicalCompleteTotal(eventTotal, eventDownloaded int64, cached *rpc.Task)
 	}
 	return 0
 }
-
