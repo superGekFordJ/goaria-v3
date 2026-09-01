@@ -2,7 +2,6 @@ package monitor
 
 import (
 	"fmt"
-	"time"
 
 	"goaria-v3/internal/tray"
 )
@@ -70,24 +69,20 @@ func (m *Monitor) updateTrayIcon() {
 		state = tray.StateIdle
 	}
 
-	// 异步更新托盘，避免阻塞主循环
-	go func() {
-		m.systray.SetIcon(tray.GetIconForState(state))
-		time.Sleep(100 * time.Millisecond) // 在协程中等待，确保图标更新完成后再设置 tooltip
+	m.systray.SetIcon(tray.GetIconForState(state))
 
-		// 更新 tooltip
-		// 1. 下载中：GoAria - 3 个任务下载中
-		// 2. 仅等待/暂停：GoAria - 2 个任务等待中
-		// 3. 空闲：GoAria - Download Manager
-		var tooltip string
-		switch {
-		case activeCount > 0:
-			tooltip = fmt.Sprintf("GoAria - %d 个任务下载中", activeCount)
-		case waitingCount > 0:
-			tooltip = fmt.Sprintf("GoAria - %d 个任务等待中", waitingCount)
-		default:
-			tooltip = "GoAria - Download Manager"
-		}
-		m.systray.SetTooltip(tooltip)
-	}()
+	// 更新 tooltip
+	// 1. 下载中：GoAria - 3 个任务下载中
+	// 2. 仅等待/暂停：GoAria - 2 个任务等待中
+	// 3. 空闲：GoAria - Download Manager
+	var tooltip string
+	switch {
+	case activeCount > 0:
+		tooltip = fmt.Sprintf("GoAria - %d 个任务下载中", activeCount)
+	case waitingCount > 0:
+		tooltip = fmt.Sprintf("GoAria - %d 个任务等待中", waitingCount)
+	default:
+		tooltip = "GoAria - Download Manager"
+	}
+	m.systray.SetTooltip(tooltip)
 }
