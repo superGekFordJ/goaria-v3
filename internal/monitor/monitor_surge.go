@@ -448,6 +448,10 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			errCode, errMsg = errorCode, errorMessage
 		}
 		m.moveToStoppedAndHandle(gid, deltaType, errCode, errMsg, completeTotal, func(completed *TrackedTask) {
+			if deltaType == "complete" && completeTotal > 0 {
+				completed.TotalLength = completeTotal
+				completed.CompletedLength = completeTotal
+			}
 			// AvgSpeed substitutes for PeakSpeed when no peak-time accept occurred;
 			// acceptPeakSpeed refreshes PeakEnvKey to Current on this complete copy only.
 			if completed.PeakSpeed == 0 && completeAvgSpeed > 0 {
@@ -527,23 +531,25 @@ func keepRangeAcquisition(dst *types.DownloadRecord, src types.DownloadRecord) {
 	}
 }
 
-// findTaskInCache searches active+waiting+stopped cache slices for a task by GID.
+// findTaskInCache searches active+waiting+stopped cache slices for a task by GID
+// using a coherent snapshot.
 func findTaskInCache(gid string) *rpc.Task {
-	for _, task := range Cache.GetActive() {
-		if task.GID == gid {
-			t := task
+	active, waiting, stopped := Cache.GetTaskLists()
+	for i := range active {
+		if active[i].GID == gid {
+			t := active[i]
 			return &t
 		}
 	}
-	for _, task := range Cache.GetWaiting() {
-		if task.GID == gid {
-			t := task
+	for i := range waiting {
+		if waiting[i].GID == gid {
+			t := waiting[i]
 			return &t
 		}
 	}
-	for _, task := range Cache.GetStopped() {
-		if task.GID == gid {
-			t := task
+	for i := range stopped {
+		if stopped[i].GID == gid {
+			t := stopped[i]
 			return &t
 		}
 	}

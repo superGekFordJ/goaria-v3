@@ -1,9 +1,12 @@
 package monitor
 
 import (
+	"path/filepath"
 	"testing"
+	"time"
 
 	"goaria-v3/internal/events"
+	"goaria-v3/internal/history"
 	"goaria-v3/internal/rpc"
 	surgeEvents "goaria-v3/internal/surge/types"
 )
@@ -326,5 +329,124 @@ func TestComplete_ZeroTotalWithCachedTotal_PrefersCachedTotal(t *testing.T) {
 	}
 	if task.TotalLength != "1000" {
 		t.Errorf("TotalLength = %q, want 1000", task.TotalLength)
+	}
+}
+
+func TestComplete_UnknownLengthFastComplete_FullPipeline_TrackerHistoryMasterNN(t *testing.T) {
+	tmpDir := t.TempDir()
+	historyFile := filepath.Join(tmpDir, "history.json")
+	history.SetHistoryPath(historyFile)
+	history.DisableSaveForTest()
+	history.Clear()
+	defer history.Clear()
+
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	surgeEng := rpc.NewSurgeEngineForTesting(nil)
+	m := &Monitor{
+		hub:           hub,
+		pusher:        pusher,
+		tracker:       tracker,
+		surgeEng:      surgeEng,
+		forceTickChan: make(chan struct{}, 1),
+	}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	gid := "sg_fast_chunked"
+	filePath := filepath.Join(tmpDir, "archive.zip")
+
+	// 1. Task starts as unknown size 0/0
+	taskActive := rpc.Task{
+		GID:             gid,
+		Status:          "active",
+		CompletedLength: "0",
+		TotalLength:     "0",
+		DownloadSpeed:   "0",
+		Dir:             tmpDir,
+		Files:           []rpc.File{{Path: filePath}},
+	}
+	Cache.sgActive = []rpc.Task{taskActive}
+	defer resetCacheSg()
+
+	tracker.EnsureTrackedFromEvent(gid, 0, "https://example.com/archive.zip", 1, "active")
+	tracker.mu.Lock()
+	if tr := tracker.tasks[gid]; tr != nil {
+		tr.FilePath = filePath
+		tr.Dir = tmpDir
+	}
+	tracker.mu.Unlock()
+
+	// 2. Fast complete arrives with written total = 7520000, 0 interim progress ticks
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
+		DownloadID: "fast_chunked",
+		Total:      7520000,
+		Downloaded: 7520000,
+		Elapsed:    2 * time.Second,
+	})
+
+	// Assert Tracker
+	tracker.mu.RLock()
+	trackerTask := tracker.tasks[gid]
+	if trackerTask == nil {
+		tracker.mu.RUnlock()
+		t.Fatal("expected tracker task exists")
+	}
+	if trackerTask.TotalLength != 7520000 {
+		t.Errorf("tracker TotalLength = %d, want 7520000", trackerTask.TotalLength)
+	}
+	if trackerTask.CompletedLength != 7520000 {
+		t.Errorf("tracker CompletedLength = %d, want 7520000", trackerTask.CompletedLength)
+	}
+	tracker.mu.RUnlock()
+
+	// Assert History
+	entry, ok := history.Get(gid)
+	if !ok {
+		t.Fatal("expected history entry exists")
+	}
+	if entry.TotalLength != "7520000" {
+		t.Errorf("history TotalLength = %q, want 7520000", entry.TotalLength)
+	}
+	if entry.CompletedLength != "7520000" {
+		t.Errorf("history CompletedLength = %q, want 7520000", entry.CompletedLength)
+	}
+
+	// Assert Master Cache
+	masterEntry, ok := surgeEng.GetMasterCacheEntry("fast_chunked")
+	if !ok {
+		t.Fatal("expected master cache entry exists")
+	}
+	if masterEntry.TotalSize != 7520000 {
+		t.Errorf("master TotalSize = %d, want 7520000", masterEntry.TotalSize)
+	}
+	if masterEntry.Downloaded != 7520000 {
+		t.Errorf("master Downloaded = %d, want 7520000", masterEntry.Downloaded)
+	}
+
+	// Assert Cache Stopped
+	task := findSgStoppedTask(gid)
+	if task == nil {
+		t.Fatal("expected task in stopped cache")
+	}
+	if task.TotalLength != "7520000" || task.CompletedLength != "7520000" {
+		t.Errorf("cache stopped = (%q, %q), want (7520000, 7520000)", task.TotalLength, task.CompletedLength)
+	}
+
+	// Assert Delta Pusher
+	delta := findCompleteDelta(pusher, gid)
+	if delta == nil {
+		t.Fatal("expected complete delta in pusher queue")
+	}
+	payload, ok := delta.Payload.(map[string]string)
+	if !ok {
+		t.Fatalf("expected map[string]string delta payload, got %T", delta.Payload)
+	}
+	if payload["totalLength"] != "7520000" || payload["completedLength"] != "7520000" {
+		t.Errorf("delta payload = (%v, %v), want (7520000, 7520000)", payload["totalLength"], payload["completedLength"])
 	}
 }

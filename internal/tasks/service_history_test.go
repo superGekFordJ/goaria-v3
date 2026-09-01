@@ -731,8 +731,27 @@ func TestGetStoppedTasks_UnknownSizeComplete_ProjectsNN(t *testing.T) {
 		CompletedLength: "3145728",
 	}
 
-	monitor.Cache.UpdateFromAria2(nil, nil, []rpc.Task{cacheComplete, cacheError})
+	// 4. Cache-backed complete N/0 (e.g. from legacy or un-ticked tracker)
+	cacheCompleteN0 := rpc.Task{
+		GID:             "gid-cache-complete-n0",
+		Status:          "complete",
+		TotalLength:     "1048576",
+		CompletedLength: "0",
+		Files:           []rpc.File{{Path: "/tmp/legacy_n0.zip"}},
+	}
+
+	// 5. History-only complete N/0
+	historyCompleteN0 := history.HistoryEntry{
+		GID:             "gid-hist-complete-n0",
+		Status:          "complete",
+		Path:            "/tmp/hist_n0.zip",
+		TotalLength:     "2097152",
+		CompletedLength: "0",
+	}
+
+	monitor.Cache.UpdateFromAria2(nil, nil, []rpc.Task{cacheComplete, cacheError, cacheCompleteN0})
 	history.Add(historyComplete)
+	history.Add(historyCompleteN0)
 
 	tasks := GetStoppedTasks()
 
@@ -749,6 +768,16 @@ func TestGetStoppedTasks_UnknownSizeComplete_ProjectsNN(t *testing.T) {
 	t3 := mustFindTaskByGID(t, tasks, "gid-hist-complete-0n")
 	if t3.TotalLength != "3145728" || t3.CompletedLength != "3145728" {
 		t.Errorf("t3 lengths = (%q, %q), want (3145728, 3145728)", t3.TotalLength, t3.CompletedLength)
+	}
+
+	t4 := mustFindTaskByGID(t, tasks, "gid-cache-complete-n0")
+	if t4.TotalLength != "1048576" || t4.CompletedLength != "1048576" {
+		t.Errorf("t4 lengths = (%q, %q), want (1048576, 1048576)", t4.TotalLength, t4.CompletedLength)
+	}
+
+	t5 := mustFindTaskByGID(t, tasks, "gid-hist-complete-n0")
+	if t5.TotalLength != "2097152" || t5.CompletedLength != "2097152" {
+		t.Errorf("t5 lengths = (%q, %q), want (2097152, 2097152)", t5.TotalLength, t5.CompletedLength)
 	}
 }
 

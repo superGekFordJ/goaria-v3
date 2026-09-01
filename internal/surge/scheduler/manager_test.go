@@ -742,24 +742,35 @@ func TestRunDownload_ChunkedSingleEmitsFinalWrittenSize(t *testing.T) {
 
 	// Drain progress channel and check EventComplete
 	close(progressCh)
-	var completeEvent *types.DownloadEvent
+	var completeEvents []*types.DownloadEvent
 	for msg := range progressCh {
 		if msg.Type == types.EventError {
 			t.Fatalf("unexpected EventError: %+v", msg)
 		}
 		if msg.Type == types.EventComplete {
 			copy := msg
-			completeEvent = &copy
+			completeEvents = append(completeEvents, &copy)
 		}
 	}
 
-	if completeEvent == nil {
-		t.Fatal("expected EventComplete to be emitted, but was nil")
+	if len(completeEvents) != 1 {
+		t.Fatalf("expected exactly 1 EventComplete, got %d", len(completeEvents))
 	}
+	completeEvent := completeEvents[0]
 	if completeEvent.Total != wantBytes {
 		t.Errorf("EventComplete.Total = %d, want %d", completeEvent.Total, wantBytes)
 	}
 	if completeEvent.AvgSpeed <= 0 {
 		t.Errorf("EventComplete.AvgSpeed = %f, want > 0", completeEvent.AvgSpeed)
+	}
+
+	// Verify on-disk file content
+	workingPath := destPath + types.IncompleteSuffix
+	downloadedData, err := os.ReadFile(workingPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) failed: %v", workingPath, err)
+	}
+	if string(downloadedData) != string(body) {
+		t.Errorf("downloaded file content mismatch: got %q, want %q", string(downloadedData), string(body))
 	}
 }

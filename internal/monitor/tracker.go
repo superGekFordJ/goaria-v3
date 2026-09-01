@@ -432,6 +432,30 @@ func (t *TaskTracker) EnsureTrackedFromEvent(gid string, totalLength int64, sour
 	}
 }
 
+// EnsureTrackedComplete updates or initializes tracker entry on task completion.
+// Ensures both TotalLength and CompletedLength are synchronized to totalLength.
+func (t *TaskTracker) EnsureTrackedComplete(gid string, totalLength int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	tracked := t.tasks[gid]
+	if tracked != nil {
+		if totalLength > 0 {
+			tracked.TotalLength = totalLength
+			tracked.CompletedLength = totalLength
+		}
+		return
+	}
+
+	t.tasks[gid] = &TrackedTask{
+		GID:             gid,
+		Status:          "complete",
+		TotalLength:     totalLength,
+		CompletedLength: totalLength,
+		CreatedAt:       time.Now(),
+	}
+}
+
 // RunUnderLifecycle serializes stopped→live retirement with terminal acceptance
 // for a single GID. fn must not call RunUnderLifecycle for the same GID.
 // Lock order: acquire the GID lifecycle lock before TaskTracker.mu.

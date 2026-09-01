@@ -812,6 +812,22 @@ func TestProjectCompletedLengths(t *testing.T) {
 			wantCompleted: "0",
 		},
 		{
+			name:          "complete with known positive total and zero completed becomes N/N",
+			status:        "complete",
+			total:         "1048576",
+			completed:     "0",
+			wantTotal:     "1048576",
+			wantCompleted: "1048576",
+		},
+		{
+			name:          "complete with known positive total and empty completed becomes N/N",
+			status:        "complete",
+			total:         "1048576",
+			completed:     "",
+			wantTotal:     "1048576",
+			wantCompleted: "1048576",
+		},
+		{
 			name:          "complete with known positive total preserves mismatch",
 			status:        "complete",
 			total:         "2048",

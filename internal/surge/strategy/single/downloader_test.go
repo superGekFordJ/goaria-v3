@@ -1,6 +1,7 @@
 package single
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -1112,7 +1113,7 @@ func TestSingleDownloader_Download_UnknownLengthCancellationDoesNotFinalizeTotal
 	}
 	defer cleanup()
 
-	firstChunk := []byte("initial chunk data before cancel")
+	firstChunk := bytes.Repeat([]byte("stream-chunk-data-for-cancellation-test-"), 2000)
 	chunkSent := make(chan struct{})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1154,8 +1155,8 @@ func TestSingleDownloader_Download_UnknownLengthCancellationDoesNotFinalizeTotal
 		t.Fatal("timed out waiting for chunkSent")
 	}
 
-	// Give a brief moment for bytes to be processed and cancel
-	time.Sleep(20 * time.Millisecond)
+	// Give a brief moment for bytes to be written to disk before cancel
+	time.Sleep(30 * time.Millisecond)
 	cancel()
 
 	select {
@@ -1165,6 +1166,15 @@ func TestSingleDownloader_Download_UnknownLengthCancellationDoesNotFinalizeTotal
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for Download to return after cancel")
+	}
+
+	// Verify partial bytes were physically written to disk
+	fi, err := os.Stat(destPath + types.IncompleteSuffix)
+	if err != nil {
+		t.Fatalf("Stat(%q) failed: %v", destPath+types.IncompleteSuffix, err)
+	}
+	if fi.Size() == 0 {
+		t.Errorf("file size on disk = %d, expected partial bytes written before cancel", fi.Size())
 	}
 
 	// Total size should NOT be finalized to partial bytes

@@ -89,6 +89,8 @@ describe('TaskCard unknown-size handling', () => {
     })
 
     expect(wrapperPaused.text()).toContain('1.00 MB')
+    expect(wrapperPaused.text()).toContain('/')
+    expect(wrapperPaused.text()).toContain('--')
     expect(wrapperPaused.text()).toContain('--%')
     const pausedIndet = wrapperPaused.find('.progress-bar-indeterminate')
     expect(pausedIndet.exists()).toBe(true)
@@ -109,7 +111,7 @@ describe('TaskCard unknown-size handling', () => {
     expect(waitingIndet.classes()).toContain('opacity-50')
   })
 
-  it('renders complete unknown task with single final size and 100.0% without progress bar', () => {
+  it('renders complete unknown task with N / N progress format and 100.0% without progress bar', () => {
     const wrapper = mount(TaskCard, {
       props: {
         task: mockTask({
@@ -122,15 +124,14 @@ describe('TaskCard unknown-size handling', () => {
     })
 
     const text = wrapper.text()
-    expect(text).toContain('7.17 MB')
-    expect(text).not.toContain('7.17 MB /')
+    expect(text).toContain('7.17 MB/7.17 MB')
     expect(text).toContain('100.0%')
 
     const pbar = wrapper.find('[role="progressbar"]')
     expect(pbar.exists()).toBe(false)
   })
 
-  it('renders complete 0/0 task with 0 B and 100.0%', () => {
+  it('renders complete 0/0 task with 0 B / 0 B and 100.0%', () => {
     const wrapper = mount(TaskCard, {
       props: {
         task: mockTask({
@@ -143,7 +144,7 @@ describe('TaskCard unknown-size handling', () => {
     })
 
     const text = wrapper.text()
-    expect(text).toContain('0 B')
+    expect(text).toContain('0 B/0 B')
     expect(text).toContain('100.0%')
   })
 
@@ -191,6 +192,23 @@ describe('TaskCard unknown-size handling', () => {
     expect(wrapper.find('.progress-bar-indeterminate').exists()).toBe(false)
   })
 
+  it('clamps aria-valuenow to 99 for active task near 100%', () => {
+    const wrapper = mount(TaskCard, {
+      props: {
+        task: mockTask({
+          status: 'active',
+          totalLength: '1000',
+          completedLength: '999',
+          downloadSpeed: '100',
+        }),
+      },
+    })
+
+    const pbar = wrapper.find('[role="progressbar"]')
+    expect(pbar.exists()).toBe(true)
+    expect(pbar.attributes('aria-valuenow')).toBe('99')
+  })
+
   it('safely handles malformed, negative, and infinite values without rendering NaN or Infinity', () => {
     const wrapper = mount(TaskCard, {
       props: {
@@ -207,11 +225,11 @@ describe('TaskCard unknown-size handling', () => {
     expect(text).not.toContain('NaN')
     expect(text).not.toContain('Infinity')
     expect(text).not.toContain('undefined')
-    expect(text).toContain('0 B')
+    expect(text).toContain('0 B/--')
     expect(text).toContain('--%')
   })
 
-  it('smoothly transitions from active unknown to active known without flash', async () => {
+  it('smoothly transitions from active unknown to active known and re-anchors determinate transform', async () => {
     const wrapper = mount(TaskCard, {
       props: {
         task: mockTask({
@@ -225,7 +243,7 @@ describe('TaskCard unknown-size handling', () => {
 
     expect(wrapper.find('.progress-bar-indeterminate').exists()).toBe(true)
 
-    // Discover total size mid-transfer
+    // Discover total size mid-transfer (5 MB / 10 MB = 50%)
     await wrapper.setProps({
       task: mockTask({
         status: 'active',
@@ -238,6 +256,7 @@ describe('TaskCard unknown-size handling', () => {
     expect(wrapper.find('.progress-bar-indeterminate').exists()).toBe(false)
     const fill = wrapper.find('.progress-bar-fill')
     expect(fill.exists()).toBe(true)
+    expect(fill.attributes('style')).toContain('scaleX(0.5)')
     expect(wrapper.text()).toContain('50.0%')
   })
 
@@ -255,11 +274,11 @@ describe('TaskCard unknown-size handling', () => {
 
     expect(wrapper.find('.progress-bar-indeterminate').exists()).toBe(true)
 
-    // Complete event arrives
+    // Complete event arrives with unknown total in task prop (0 / 7520000)
     await wrapper.setProps({
       task: mockTask({
         status: 'complete',
-        totalLength: '7520000',
+        totalLength: '0',
         completedLength: '7520000',
         downloadSpeed: '0',
       }),
@@ -267,6 +286,6 @@ describe('TaskCard unknown-size handling', () => {
 
     expect(wrapper.find('[role="progressbar"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('100.0%')
-    expect(wrapper.text()).toContain('7.17 MB')
+    expect(wrapper.text()).toContain('7.17 MB/7.17 MB')
   })
 })

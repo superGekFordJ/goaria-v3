@@ -71,6 +71,14 @@
     { immediate: true },
   )
 
+  // When totalLength transitions from unknown to known, re-anchor displayDownloaded
+  // to avoid catching up from arbitrary smoothing lag.
+  watch(hasKnownTotal, (known, prevKnown) => {
+    if (known && !prevKnown) {
+      displayDownloaded.value = taskNumbers.value.downloaded
+    }
+  })
+
   // Extract filename from path
   const fileName = computed(() => {
     const path = props.task.files?.[0]?.path
@@ -351,7 +359,13 @@
       :aria-label="t('taskCard.progress')"
       :aria-valuemin="0"
       :aria-valuemax="100"
-      :aria-valuenow="hasKnownTotal && progress !== null ? Math.round(progress) : undefined"
+      :aria-valuenow="
+        hasKnownTotal && progress !== null
+          ? isCompleted
+            ? 100
+            : Math.min(Math.round(progress), 99)
+          : undefined
+      "
     >
       <div class="progress-bar-container">
         <template v-if="hasKnownTotal">
@@ -365,12 +379,7 @@
           ></div>
         </template>
         <template v-else>
-          <div
-            :class="[
-              'progress-bar-indeterminate',
-              { 'opacity-50': isPaused },
-            ]"
-          ></div>
+          <div :class="['progress-bar-indeterminate', { 'opacity-50': isPaused }]"></div>
         </template>
       </div>
     </div>
@@ -387,14 +396,15 @@
             {{ t('taskCard.progress') }}
           </span>
           <div class="font-mono-data text-xs text-[var(--app-text-muted)]">
-            <template v-if="isCompleted">
-              <span class="text-[var(--app-text)]/70">{{ formatSize(hasKnownTotal ? task.totalLength : task.completedLength) }}</span>
-            </template>
-            <template v-else>
-              <span class="text-[var(--app-text)]/70">{{ formatSize(task.completedLength) }}</span>
-              <span class="mx-1 text-[var(--app-text-subtle)]">/</span>
-              <span>{{ hasKnownTotal ? formatSize(task.totalLength) : '--' }}</span>
-            </template>
+            <span class="text-[var(--app-text)]/70">{{ formatSize(task.completedLength) }}</span>
+            <span class="mx-1 text-[var(--app-text-subtle)]">/</span>
+            <span>{{
+              hasKnownTotal
+                ? formatSize(task.totalLength)
+                : isCompleted
+                  ? formatSize(task.completedLength)
+                  : '--'
+            }}</span>
           </div>
         </div>
 
@@ -410,7 +420,8 @@
               100.0<span class="text-[10px] text-[var(--app-text-subtle)]">%</span>
             </template>
             <template v-else-if="hasKnownTotal && progress !== null">
-              {{ progress.toFixed(1) }}<span class="text-[10px] text-[var(--app-text-subtle)]">%</span>
+              {{ progress.toFixed(1)
+              }}<span class="text-[10px] text-[var(--app-text-subtle)]">%</span>
             </template>
             <template v-else>
               --<span class="text-[10px] text-[var(--app-text-subtle)]">%</span>

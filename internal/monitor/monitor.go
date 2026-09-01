@@ -377,7 +377,11 @@ func (m *Monitor) moveToStoppedAndHandle(gid, status, errorCode, errorMessage st
 			return
 		}
 		if ensureTotal > 0 {
-			m.tracker.EnsureTrackedFromEvent(gid, ensureTotal, "", 0, "")
+			if status == "complete" {
+				m.tracker.EnsureTrackedComplete(gid, ensureTotal)
+			} else {
+				m.tracker.EnsureTrackedFromEvent(gid, ensureTotal, "", 0, "")
+			}
 		}
 		m.markCompleteAndHandleLocked(gid, status, prep)
 	}
