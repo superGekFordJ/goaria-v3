@@ -285,7 +285,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		deltaType = "complete"
 		gid = "sg_" + ev.DownloadID
 		cached := findTaskInCache(gid)
-		completeTotal = canonicalCompleteTotal(ev.Total, ev.Downloaded, cached)
+		completeTotal = canonicalCompleteTotal(ev.Total, cached)
 		completeAvgSpeed = ev.AvgSpeed
 		if completeTotal > 0 && ev.Elapsed.Seconds() > 0 {
 			completeAvgSpeed = float64(completeTotal) / ev.Elapsed.Seconds()
@@ -923,26 +923,16 @@ func parsePositiveLength(s string) int64 {
 
 // canonicalCompleteTotal derives a definitive total length for completion events.
 // Priority:
-// 1. Positive event total
-// 2. Positive cached task total
-// 3. Positive event downloaded count
-// 4. Positive cached task completed count
-// 5. 0 (legal empty file or no safe evidence)
-func canonicalCompleteTotal(eventTotal, eventDownloaded int64, cached *rpc.Task) int64 {
+// 1. Positive event total (authoritative from engine completion event)
+// 2. Positive cached task total (preserves prior known total if event had non-positive total)
+// 3. 0 (legal empty file or unknown)
+func canonicalCompleteTotal(eventTotal int64, cached *rpc.Task) int64 {
 	if eventTotal > 0 {
 		return eventTotal
 	}
 	if cached != nil {
 		if total := parsePositiveLength(cached.TotalLength); total > 0 {
 			return total
-		}
-	}
-	if eventDownloaded > 0 {
-		return eventDownloaded
-	}
-	if cached != nil {
-		if completed := parsePositiveLength(cached.CompletedLength); completed > 0 {
-			return completed
 		}
 	}
 	return 0

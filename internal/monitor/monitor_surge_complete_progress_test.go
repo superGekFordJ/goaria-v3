@@ -206,89 +206,24 @@ func TestReconcile_CrossListStoppedSyncsProgress(t *testing.T) {
 
 func TestCanonicalCompleteTotal_PriorityMatrix(t *testing.T) {
 	// 1. Positive event total
-	if got := canonicalCompleteTotal(1000, 500, &rpc.Task{TotalLength: "2000", CompletedLength: "2000"}); got != 1000 {
+	if got := canonicalCompleteTotal(1000, &rpc.Task{TotalLength: "2000", CompletedLength: "2000"}); got != 1000 {
 		t.Errorf("canonicalCompleteTotal positive event total = %d, want 1000", got)
 	}
 
 	// 2. Positive cached task total
-	if got := canonicalCompleteTotal(0, 0, &rpc.Task{TotalLength: "2000", CompletedLength: "500"}); got != 2000 {
+	if got := canonicalCompleteTotal(0, &rpc.Task{TotalLength: "2000", CompletedLength: "500"}); got != 2000 {
 		t.Errorf("canonicalCompleteTotal positive cached total = %d, want 2000", got)
 	}
 
-	// 3. Positive event downloaded count
-	if got := canonicalCompleteTotal(0, 800, &rpc.Task{TotalLength: "0", CompletedLength: "300"}); got != 800 {
-		t.Errorf("canonicalCompleteTotal positive event downloaded = %d, want 800", got)
+	// 3. 0 for non-positive / missing evidence
+	if got := canonicalCompleteTotal(0, &rpc.Task{TotalLength: "0", CompletedLength: "750"}); got != 0 {
+		t.Errorf("canonicalCompleteTotal zero total = %d, want 0", got)
 	}
-
-	// 4. Positive cached task completed count
-	if got := canonicalCompleteTotal(0, 0, &rpc.Task{TotalLength: "0", CompletedLength: "750"}); got != 750 {
-		t.Errorf("canonicalCompleteTotal positive cached completed = %d, want 750", got)
-	}
-
-	// 5. 0 for empty/invalid
-	if got := canonicalCompleteTotal(0, 0, &rpc.Task{TotalLength: "0", CompletedLength: "0"}); got != 0 {
-		t.Errorf("canonicalCompleteTotal zero lengths = %d, want 0", got)
-	}
-	if got := canonicalCompleteTotal(0, 0, &rpc.Task{TotalLength: "invalid", CompletedLength: "bad"}); got != 0 {
+	if got := canonicalCompleteTotal(0, &rpc.Task{TotalLength: "invalid", CompletedLength: "bad"}); got != 0 {
 		t.Errorf("canonicalCompleteTotal invalid strings = %d, want 0", got)
 	}
-	if got := canonicalCompleteTotal(0, 0, nil); got != 0 {
+	if got := canonicalCompleteTotal(0, nil); got != 0 {
 		t.Errorf("canonicalCompleteTotal nil cached = %d, want 0", got)
-	}
-}
-
-func TestComplete_ZeroTotalWithCachedCompleted_SyncsToCompletedLength(t *testing.T) {
-	hub := events.NewHub(nil)
-	pusher := NewPusher(hub)
-	m := &Monitor{
-		hub:           hub,
-		pusher:        pusher,
-		forceTickChan: make(chan struct{}, 1),
-	}
-
-	prevWindow := State.HasWindow()
-	State.SetWindowExists(true)
-	defer State.SetWindowExists(prevWindow)
-
-	Cache.sgActive = []rpc.Task{{
-		GID:             "sg_chunked_zero_event",
-		Status:          "active",
-		CompletedLength: "7520000",
-		TotalLength:     "0",
-		DownloadSpeed:   "100000",
-	}}
-	defer resetCacheSg()
-
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{
-		Type:       surgeEvents.EventComplete,
-		DownloadID: "chunked_zero_event",
-		Total:      0,
-	})
-
-	task := findSgStoppedTask("sg_chunked_zero_event")
-	if task == nil {
-		t.Fatal("expected sg_chunked_zero_event in stopped after complete event")
-	}
-	if task.CompletedLength != "7520000" {
-		t.Errorf("CompletedLength = %q, want 7520000", task.CompletedLength)
-	}
-	if task.TotalLength != "7520000" {
-		t.Errorf("TotalLength = %q, want 7520000", task.TotalLength)
-	}
-
-	delta := findCompleteDelta(pusher, "sg_chunked_zero_event")
-	if delta == nil {
-		t.Fatal("expected complete delta in pusher pending queue")
-	}
-	payload, ok := delta.Payload.(map[string]string)
-	if !ok {
-		t.Fatalf("expected map[string]string payload, got %T", delta.Payload)
-	}
-	if payload["completedLength"] != "7520000" {
-		t.Errorf("payload completedLength = %v, want 7520000", payload["completedLength"])
-	}
-	if payload["totalLength"] != "7520000" {
-		t.Errorf("payload totalLength = %v, want 7520000", payload["totalLength"])
 	}
 }
 
