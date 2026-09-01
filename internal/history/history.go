@@ -5,7 +5,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,37 +36,6 @@ func ProjectedStoppedStatus(entry HistoryEntry) string {
 	return "complete"
 }
 
-func parseStrictLength(s string) (int64, bool) {
-	trimmed := strings.TrimSpace(s)
-	if trimmed == "" {
-		return 0, false
-	}
-	val, err := strconv.ParseInt(trimmed, 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return val, true
-}
-
-// ProjectCompletedLengths applies terminal completion repair to length strings.
-// When status is "complete" and completedLength is positive, an empty or non-positive
-// totalLength is projected to completedLength (0/N -> N/N).
-func ProjectCompletedLengths(status, total, completed string) (string, string) {
-	if status != "complete" {
-		return total, completed
-	}
-	completedBytes, completedOK := parseStrictLength(completed)
-	if !completedOK || completedBytes <= 0 {
-		return total, completed
-	}
-	totalBytes, totalOK := parseStrictLength(total)
-	if strings.TrimSpace(total) == "" || (totalOK && totalBytes <= 0) {
-		canonical := strconv.FormatInt(completedBytes, 10)
-		return canonical, canonical
-	}
-	return total, completed
-}
-
 // ToStoppedTask projects a history entry into a synthetic stopped rpc.Task.
 func ToStoppedTask(entry HistoryEntry) rpc.Task {
 	var uris []rpc.Uri
@@ -76,13 +44,11 @@ func ToStoppedTask(entry HistoryEntry) rpc.Task {
 	} else {
 		uris = []rpc.Uri{}
 	}
-	status := ProjectedStoppedStatus(entry)
-	total, completed := ProjectCompletedLengths(status, entry.TotalLength, entry.CompletedLength)
 	return rpc.Task{
 		GID:             entry.GID,
-		Status:          status,
-		TotalLength:     total,
-		CompletedLength: completed,
+		Status:          ProjectedStoppedStatus(entry),
+		TotalLength:     entry.TotalLength,
+		CompletedLength: entry.CompletedLength,
 		Dir:             entry.Dir,
 		Files:           []rpc.File{{Path: entry.Path, Uris: uris}},
 		DownloadGroup:   copyDownloadGroup(entry.DownloadGroup),
