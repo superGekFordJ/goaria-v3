@@ -1,7 +1,7 @@
 {
   "name": "goaria-browser-extension",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "scripts": {
     "dev": "cross-env EXTENSION_TARGET=chrome vite build --watch",
@@ -10,9 +10,9 @@
     "watch:chrome": "cross-env EXTENSION_TARGET=chrome vite build --watch",
     "watch:firefox": "cross-env EXTENSION_TARGET=firefox vite build --watch",
     "build": "pnpm run build:chrome && pnpm run build:firefox",
-    "zip:chrome": "cd dist/chrome && 7z a -tzip ../goaria-extension-chrome.zip *",
-    "zip:firefox": "cd dist/firefox && 7z a -tzip ../goaria-extension-firefox.zip *",
-    "package": "pnpm run build && pnpm run zip:chrome && pnpm run zip:firefox",
+    "zip:chrome": "node scripts/zip.js chrome",
+    "zip:firefox": "node scripts/zip.js firefox",
+    "package": "pnpm run build && node scripts/zip.js",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
     "gen:i18n": "node scripts/gen-i18n-types.js",

@@ -1,5 +1,6 @@
 // Must stay in sync with internal/extension/protocol.go — change one, update both.
 import browser from 'webextension-polyfill'
+import pkg from '../../package.json' with { type: 'json' }
 
 export const WS_PORT_FALLBACKS = [16801, 16802, 16803] as const
 export const DEFAULT_WS_PORT = 16801
@@ -22,7 +23,7 @@ export const MSG_TYPE_CAPABILITY_UPDATE = 'capability_update'
 
 export const PROTOCOL_VERSION = 2
 export const MATCH_DIGEST_VERSION = 1
-export const CLIENT_VERSION = '0.2.0'
+export const CLIENT_VERSION = pkg.version
 
 export const CAP_REQUEST_ID = 'request_id'
 export const CAP_EXTRACTOR_RESOLVE = 'extractor.resolve'

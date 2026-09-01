@@ -14,6 +14,8 @@ const captureHostDown = vi.hoisted(() => ({
   dropCaptureOnReconnect: vi.fn(),
 }))
 
+import pkg from '../../package.json' with { type: 'json' }
+
 const domHostDown = vi.hoisted(() => ({
   notifyDomHostDown: vi.fn(),
   dropDomCatalogsOnReconnect: vi.fn(),
@@ -23,7 +25,7 @@ vi.mock('../stores/config.svelte', () => ({
   CAP_EXTRACTOR_BATCH: 'extractor.batch',
   CAP_EXTRACTOR_RESOLVE: 'extractor.resolve',
   CAP_DOWNLOAD_BATCH: 'download.batch',
-  CLIENT_VERSION: '0.2.0',
+  CLIENT_VERSION: pkg.version,
   DOWNLOAD_ACK_TIMEOUT_MS: 10_000,
   EXTRACTOR_RESOLVE_ACK_TIMEOUT_MS: 30_000,
   MSG_TYPE_AUTH: 'auth',
