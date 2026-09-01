@@ -769,3 +769,125 @@ func TestHistoryLoadLegacyWithoutStatus(t *testing.T) {
 		t.Fatalf("expected legacy projection complete, got %q", ProjectedStoppedStatus(entry))
 	}
 }
+
+func TestProjectCompletedLengths(t *testing.T) {
+	tests := []struct {
+		name          string
+		status        string
+		total         string
+		completed     string
+		wantTotal     string
+		wantCompleted string
+	}{
+		{
+			name:          "complete with zero total and positive completed becomes N/N",
+			status:        "complete",
+			total:         "0",
+			completed:     "1048576",
+			wantTotal:     "1048576",
+			wantCompleted: "1048576",
+		},
+		{
+			name:          "complete with empty total and positive completed becomes N/N",
+			status:        "complete",
+			total:         "",
+			completed:     "1048576",
+			wantTotal:     "1048576",
+			wantCompleted: "1048576",
+		},
+		{
+			name:          "complete with negative total and positive completed becomes N/N",
+			status:        "complete",
+			total:         "-1",
+			completed:     "1048576",
+			wantTotal:     "1048576",
+			wantCompleted: "1048576",
+		},
+		{
+			name:          "complete with zero total and zero completed remains 0/0",
+			status:        "complete",
+			total:         "0",
+			completed:     "0",
+			wantTotal:     "0",
+			wantCompleted: "0",
+		},
+		{
+			name:          "complete with known positive total preserves mismatch",
+			status:        "complete",
+			total:         "2048",
+			completed:     "1024",
+			wantTotal:     "2048",
+			wantCompleted: "1024",
+		},
+		{
+			name:          "error with zero total and positive completed remains 0/N",
+			status:        "error",
+			total:         "0",
+			completed:     "512",
+			wantTotal:     "0",
+			wantCompleted: "512",
+		},
+		{
+			name:          "malformed total string is not used as evidence",
+			status:        "complete",
+			total:         "not-a-number",
+			completed:     "1024",
+			wantTotal:     "not-a-number",
+			wantCompleted: "1024",
+		},
+		{
+			name:          "malformed completed string is not promoted",
+			status:        "complete",
+			total:         "0",
+			completed:     "bad-bytes",
+			wantTotal:     "0",
+			wantCompleted: "bad-bytes",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotTotal, gotCompleted := ProjectCompletedLengths(tt.status, tt.total, tt.completed)
+			if gotTotal != tt.wantTotal || gotCompleted != tt.wantCompleted {
+				t.Errorf("ProjectCompletedLengths(%q, %q, %q) = (%q, %q), want (%q, %q)",
+					tt.status, tt.total, tt.completed, gotTotal, gotCompleted, tt.wantTotal, tt.wantCompleted)
+			}
+		})
+	}
+}
+
+func TestToStoppedTask_ProjectsCompletedLengths(t *testing.T) {
+	// Explicit complete 0/N
+	t1 := ToStoppedTask(HistoryEntry{
+		GID:             "gid-1",
+		Status:          "complete",
+		TotalLength:     "0",
+		CompletedLength: "7520000",
+	})
+	if t1.TotalLength != "7520000" || t1.CompletedLength != "7520000" {
+		t.Errorf("t1 lengths = (%q, %q), want (7520000, 7520000)", t1.TotalLength, t1.CompletedLength)
+	}
+
+	// Legacy empty status 0/N -> complete N/N
+	t2 := ToStoppedTask(HistoryEntry{
+		GID:             "gid-2",
+		Status:          "",
+		TotalLength:     "0",
+		CompletedLength: "1048576",
+	})
+	if t2.Status != "complete" || t2.TotalLength != "1048576" || t2.CompletedLength != "1048576" {
+		t.Errorf("t2 = (%q, %q, %q), want (complete, 1048576, 1048576)", t2.Status, t2.TotalLength, t2.CompletedLength)
+	}
+
+	// Error 0/N -> error 0/N
+	t3 := ToStoppedTask(HistoryEntry{
+		GID:             "gid-3",
+		Status:          "error",
+		TotalLength:     "0",
+		CompletedLength: "500000",
+	})
+	if t3.Status != "error" || t3.TotalLength != "0" || t3.CompletedLength != "500000" {
+		t.Errorf("t3 = (%q, %q, %q), want (error, 0, 500000)", t3.Status, t3.TotalLength, t3.CompletedLength)
+	}
+}
+

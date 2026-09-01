@@ -244,6 +244,14 @@ func (d *SingleDownloader) Download(ctx context.Context, rawurl, destPath string
 		return fmt.Errorf("sync error: %w", err)
 	}
 
+	// FORK-PATCH: publish written bytes as final total on successful sync when initial total is unknown
+	if d.TotalSize <= 0 {
+		d.TotalSize = written
+		if d.State != nil {
+			// ByteTracker setter does not reset SessionTimer.
+			d.State.Bytes.SetTotalSize(written)
+		}
+	}
 	if d.State != nil {
 		d.State.Bytes.Downloaded.Store(written)
 		d.State.Bytes.VerifiedProgress.Store(written)

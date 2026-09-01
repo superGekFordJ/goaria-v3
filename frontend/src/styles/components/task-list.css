@@ -91,6 +91,41 @@
   display: none;
 }
 
+/* === Indeterminate Unknown-Size Progress Bar === */
+.progress-bar-indeterminate {
+  height: 100%;
+  width: 40%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, var(--skin-accent-from), var(--skin-accent-to));
+  box-shadow:
+    0 0 12px var(--skin-ambient-glow),
+    0 0 24px color-mix(in srgb, var(--skin-accent-to) 30%, transparent);
+  animation: indeterminate-flow 1.8s ease-in-out infinite;
+}
+
+.progress-bar-indeterminate.opacity-50 {
+  animation: none;
+  width: 30%;
+  box-shadow: none;
+  background: linear-gradient(
+    90deg,
+    var(--status-paused),
+    color-mix(in srgb, var(--status-paused) 80%, var(--app-bg))
+  );
+}
+
+@keyframes indeterminate-flow {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(120%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
 /* === Data Typography === */
 .font-mono-data {
   font-family: var(--font-family-mono);

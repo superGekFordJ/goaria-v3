@@ -701,6 +701,57 @@ func TestGetStoppedTasks_LegacyStatusLessProjectsComplete(t *testing.T) {
 	}
 }
 
+func TestGetStoppedTasks_UnknownSizeComplete_ProjectsNN(t *testing.T) {
+	setupAppTaskHistoryTest(t)
+
+	// 1. Cache-backed complete 0/N without history
+	cacheComplete := rpc.Task{
+		GID:             "gid-cache-complete-0n",
+		Status:          "complete",
+		TotalLength:     "0",
+		CompletedLength: "7520000",
+		Files:           []rpc.File{{Path: "/tmp/chunked.zip"}},
+	}
+
+	// 2. Cache-backed error 0/N
+	cacheError := rpc.Task{
+		GID:             "gid-cache-error-0n",
+		Status:          "error",
+		TotalLength:     "0",
+		CompletedLength: "500000",
+		Files:           []rpc.File{{Path: "/tmp/failed.zip"}},
+	}
+
+	// 3. History-only complete 0/N
+	historyComplete := history.HistoryEntry{
+		GID:             "gid-hist-complete-0n",
+		Status:          "complete",
+		Path:            "/tmp/hist_chunked.zip",
+		TotalLength:     "0",
+		CompletedLength: "3145728",
+	}
+
+	monitor.Cache.UpdateFromAria2(nil, nil, []rpc.Task{cacheComplete, cacheError})
+	history.Add(historyComplete)
+
+	tasks := GetStoppedTasks()
+
+	t1 := mustFindTaskByGID(t, tasks, "gid-cache-complete-0n")
+	if t1.TotalLength != "7520000" || t1.CompletedLength != "7520000" {
+		t.Errorf("t1 lengths = (%q, %q), want (7520000, 7520000)", t1.TotalLength, t1.CompletedLength)
+	}
+
+	t2 := mustFindTaskByGID(t, tasks, "gid-cache-error-0n")
+	if t2.TotalLength != "0" || t2.CompletedLength != "500000" {
+		t.Errorf("t2 lengths = (%q, %q), want (0, 500000)", t2.TotalLength, t2.CompletedLength)
+	}
+
+	t3 := mustFindTaskByGID(t, tasks, "gid-hist-complete-0n")
+	if t3.TotalLength != "3145728" || t3.CompletedLength != "3145728" {
+		t.Errorf("t3 lengths = (%q, %q), want (3145728, 3145728)", t3.TotalLength, t3.CompletedLength)
+	}
+}
+
 func GetTasks() map[string][]rpc.Task {
 	svc := &Service{Engine: &rpc.Aria2Engine{}}
 	return svc.GetTasks()
@@ -710,3 +761,4 @@ func GetStoppedTasks() []rpc.Task {
 	svc := &Service{Engine: &rpc.Aria2Engine{}}
 	return svc.GetStoppedTasks()
 }
+

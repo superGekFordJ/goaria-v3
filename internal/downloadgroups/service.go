@@ -1046,6 +1046,11 @@ func stoppedTasksWithHistory(active, waiting, stopped []rpc.Task) []rpc.Task {
 		if entry, ok := history.Get(stopped[i].GID); ok {
 			backfillStoppedTaskFromHistory(&stopped[i], entry)
 		}
+		stopped[i].TotalLength, stopped[i].CompletedLength = history.ProjectCompletedLengths(
+			stopped[i].Status,
+			stopped[i].TotalLength,
+			stopped[i].CompletedLength,
+		)
 	}
 
 	for _, entry := range history.GetMissingByGID(existingGIDs) {

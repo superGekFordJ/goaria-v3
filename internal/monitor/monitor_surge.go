@@ -284,19 +284,20 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 	case types.EventComplete:
 		deltaType = "complete"
 		gid = "sg_" + ev.DownloadID
-		completeTotal = ev.Total
+		cached := findTaskInCache(gid)
+		completeTotal = canonicalCompleteTotal(ev.Total, ev.Downloaded, cached)
 		completeAvgSpeed = ev.AvgSpeed
+		if completeTotal > 0 && ev.Elapsed.Seconds() > 0 {
+			completeAvgSpeed = float64(completeTotal) / ev.Elapsed.Seconds()
+		}
 		// Complete lacks URL/DestPath/Mirrors/Workers; merge onto existing.
 		if surgeEng != nil {
-			var avgSpeed float64
-			if ev.Elapsed.Seconds() > 0 {
-				avgSpeed = float64(ev.Total) / ev.Elapsed.Seconds()
-			}
+			avgSpeed := completeAvgSpeed
 			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
 				merged := existing
 				merged.Status = "completed"
-				merged.TotalSize = ev.Total
-				merged.Downloaded = ev.Total
+				merged.TotalSize = completeTotal
+				merged.Downloaded = completeTotal
 				merged.CompletedAt = time.Now().Unix()
 				merged.TimeTaken = ev.Elapsed.Milliseconds()
 				merged.AvgSpeed = avgSpeed
@@ -308,8 +309,8 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 					ID:           ev.DownloadID,
 					Filename:     ev.Filename,
 					Status:       "completed",
-					TotalSize:    ev.Total,
-					Downloaded:   ev.Total,
+					TotalSize:    completeTotal,
+					Downloaded:   completeTotal,
 					CompletedAt:  time.Now().Unix(),
 					TimeTaken:    ev.Elapsed.Milliseconds(),
 					AvgSpeed:     avgSpeed,
@@ -909,3 +910,39 @@ func sourceURLFromTask(t rpc.Task) string {
 	}
 	return ""
 }
+
+func parsePositiveLength(s string) int64 {
+	val, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err == nil && val > 0 {
+		return val
+	}
+	return 0
+}
+
+// canonicalCompleteTotal derives a definitive total length for completion events.
+// Priority:
+// 1. Positive event total
+// 2. Positive cached task total
+// 3. Positive event downloaded count
+// 4. Positive cached task completed count
+// 5. 0 (legal empty file or no safe evidence)
+func canonicalCompleteTotal(eventTotal, eventDownloaded int64, cached *rpc.Task) int64 {
+	if eventTotal > 0 {
+		return eventTotal
+	}
+	if cached != nil {
+		if total := parsePositiveLength(cached.TotalLength); total > 0 {
+			return total
+		}
+	}
+	if eventDownloaded > 0 {
+		return eventDownloaded
+	}
+	if cached != nil {
+		if completed := parsePositiveLength(cached.CompletedLength); completed > 0 {
+			return completed
+		}
+	}
+	return 0
+}
+

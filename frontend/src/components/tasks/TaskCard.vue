@@ -31,6 +31,23 @@
     isSurgeTask ? SURGE_TASK_PROGRESS_CONFIG : TASK_PROGRESS_CONFIG,
   )
 
+  const nonNegativeFinite = (value: unknown): number => {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+  }
+
+  const hasKnownTotal = computed(() => {
+    const total = Number(props.task.totalLength)
+    return Number.isFinite(total) && total > 0
+  })
+
+  const taskNumbers = computed(() => {
+    const downloaded = nonNegativeFinite(props.task.completedLength)
+    const speed = nonNegativeFinite(props.task.downloadSpeed)
+    const total = hasKnownTotal.value ? Number(props.task.totalLength) : 0
+    return { downloaded, speed, total }
+  })
+
   // Sync with prop updates - optimized to watch specific fields
   watch(
     [
@@ -39,12 +56,16 @@
       () => props.task.totalLength,
       () => props.task.status,
     ],
-    ([downloaded, speed, total, status]) => {
+    () => {
+      const { downloaded, speed, total } = taskNumbers.value
+      // While visual total is unknown, supply max(downloaded, 1) as internal
+      // smoothing denominator so displayDownloaded does not collapse to 1 byte.
+      const internalTotal = hasKnownTotal.value ? total : Math.max(downloaded, 1)
       updateStats({
-        downloaded: Number(downloaded),
-        speed: Number(speed),
-        total: Number(total),
-        status: status as string,
+        downloaded,
+        speed,
+        total: internalTotal,
+        status: props.task.status as string,
       })
     },
     { immediate: true },
@@ -57,54 +78,64 @@
     return path.split(/[\\/]/).pop() || t('taskCard.unknownFile')
   })
 
-  // Calculate progress percentage for display
-  const progress = computed(() => {
-    const total = Number(props.task.totalLength)
-    const completed = Number(props.task.completedLength)
-    if (total <= 0) return 0
-    return Math.min((completed / total) * 100, 100)
+  // Calculate progress percentage for display (null when total is unknown)
+  const progress = computed<number | null>(() => {
+    if (isCompleted.value) return 100
+    if (!hasKnownTotal.value) return null
+    const { downloaded, total } = taskNumbers.value
+    if (total <= 0) return null
+    return Math.min(Math.max((downloaded / total) * 100, 0), 100)
   })
 
   // Calculate smooth progress scale (0-1) for GPU animation
   const progressScale = computed(() => {
+    if (!hasKnownTotal.value) return 0
     if (totalBytes.value <= 0) return 0
     const ratio = displayDownloaded.value / totalBytes.value
     return Math.min(Math.max(ratio, 0), 1)
   })
 
-  // Format bytes to human readable
+  // Format bytes to human readable with bounds safety
   const formatSize = (b: string | number | undefined) => {
-    if (!b || b === '0') return '0 B'
+    if (b === undefined || b === null || b === '') return '0 B'
     const bytes = Number(b)
-    if (bytes === 0) return '0 B'
-    const i = Math.floor(Math.log(bytes) / Math.log(1024))
-    return (bytes / Math.pow(1024, i)).toFixed(2) + ' ' + ['B', 'KB', 'MB', 'GB', 'TB'][i]
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+    const clampedI = Math.max(0, i)
+    return (bytes / Math.pow(1024, clampedI)).toFixed(2) + ' ' + units[clampedI]
   }
 
   // Format speed with neon styling consideration
   const formatSpeed = (b: string | number | undefined) => {
     if (!b || b === '0') return '0'
     const bytes = Number(b)
-    if (bytes === 0) return '0'
-    const i = Math.floor(Math.log(bytes) / Math.log(1024))
-    return (bytes / Math.pow(1024, i)).toFixed(1)
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0'
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+    const clampedI = Math.max(0, i)
+    return (bytes / Math.pow(1024, clampedI)).toFixed(1)
   }
 
   const speedUnit = (b: string | number | undefined) => {
     if (!b || b === '0') return 'B/s'
     const bytes = Number(b)
-    if (bytes === 0) return 'B/s'
-    const i = Math.floor(Math.log(bytes) / Math.log(1024))
-    return ['B', 'KB', 'MB', 'GB', 'TB'][i] + '/s'
+    if (!Number.isFinite(bytes) || bytes <= 0) return 'B/s'
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+    const clampedI = Math.max(0, i)
+    return units[clampedI] + '/s'
   }
 
   // Calculate ETA
   const estimatedTime = computed(() => {
-    const speed = Number(props.task.downloadSpeed)
-    const remaining = Number(props.task.totalLength) - Number(props.task.completedLength)
-    if (speed <= 0 || remaining <= 0) return '--'
+    if (!hasKnownTotal.value) return '--'
+    const speed = taskNumbers.value.speed
+    const remaining = taskNumbers.value.total - taskNumbers.value.downloaded
+    if (speed <= 0 || remaining <= 0 || !Number.isFinite(remaining)) return '--'
 
     const seconds = Math.floor(remaining / speed)
+    if (!Number.isFinite(seconds) || seconds < 0) return '--'
     if (seconds < 60) return `${seconds}s`
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
     const hours = Math.floor(seconds / 3600)
@@ -312,17 +343,35 @@
       </div>
     </div>
 
-    <!-- Progress Bar (Neon Style with Energy Flow) -->
-    <div v-if="statusConfig.showProgress" class="mb-4">
+    <!-- Progress Bar (Neon Style with Energy Flow / Indeterminate) -->
+    <div
+      v-if="statusConfig.showProgress"
+      class="mb-4"
+      role="progressbar"
+      :aria-label="t('taskCard.progress')"
+      :aria-valuemin="0"
+      :aria-valuemax="100"
+      :aria-valuenow="hasKnownTotal && progress !== null ? Math.round(progress) : undefined"
+    >
       <div class="progress-bar-container">
-        <div
-          :class="[
-            'progress-bar-fill',
-            { 'opacity-50': isPaused },
-            { 'progress-bar-energy': isActive },
-          ]"
-          :style="{ transform: `scaleX(${progressScale})` }"
-        ></div>
+        <template v-if="hasKnownTotal">
+          <div
+            :class="[
+              'progress-bar-fill',
+              { 'opacity-50': isPaused },
+              { 'progress-bar-energy': isActive },
+            ]"
+            :style="{ transform: `scaleX(${progressScale})` }"
+          ></div>
+        </template>
+        <template v-else>
+          <div
+            :class="[
+              'progress-bar-indeterminate',
+              { 'opacity-50': isPaused },
+            ]"
+          ></div>
+        </template>
       </div>
     </div>
 
@@ -338,9 +387,14 @@
             {{ t('taskCard.progress') }}
           </span>
           <div class="font-mono-data text-xs text-[var(--app-text-muted)]">
-            <span class="text-[var(--app-text)]/70">{{ formatSize(task.completedLength) }}</span>
-            <span class="mx-1 text-[var(--app-text-subtle)]">/</span>
-            <span>{{ formatSize(task.totalLength) }}</span>
+            <template v-if="isCompleted">
+              <span class="text-[var(--app-text)]/70">{{ formatSize(hasKnownTotal ? task.totalLength : task.completedLength) }}</span>
+            </template>
+            <template v-else>
+              <span class="text-[var(--app-text)]/70">{{ formatSize(task.completedLength) }}</span>
+              <span class="mx-1 text-[var(--app-text-subtle)]">/</span>
+              <span>{{ hasKnownTotal ? formatSize(task.totalLength) : '--' }}</span>
+            </template>
           </div>
         </div>
 
@@ -352,8 +406,15 @@
             {{ t('taskCard.done') }}
           </span>
           <div class="font-mono-data text-xs text-[var(--app-text-muted)]">
-            {{ progress.toFixed(1)
-            }}<span class="text-[10px] text-[var(--app-text-subtle)]">%</span>
+            <template v-if="isCompleted">
+              100.0<span class="text-[10px] text-[var(--app-text-subtle)]">%</span>
+            </template>
+            <template v-else-if="hasKnownTotal && progress !== null">
+              {{ progress.toFixed(1) }}<span class="text-[10px] text-[var(--app-text-subtle)]">%</span>
+            </template>
+            <template v-else>
+              --<span class="text-[10px] text-[var(--app-text-subtle)]">%</span>
+            </template>
           </div>
         </div>
 

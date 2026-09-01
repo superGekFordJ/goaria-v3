@@ -593,3 +593,46 @@ func TestGetDownloadGroups_ExcludesLiveActiveGIDFromHistoryOnly(t *testing.T) {
 		t.Fatal("expected GID present in active members")
 	}
 }
+
+func TestGetDownloadGroups_TerminalUnknownSizeGroup_AggregatesToFull(t *testing.T) {
+	setupDownloadGroupsTest(t)
+	group := groupReadTestGroup("dg-unknown-size-terminal", 2)
+
+	// Task 1: cache stopped complete 0/1000
+	t1 := groupReadTask("gid-dg-t1", "complete", &group, "0", "1000", "0")
+	monitor.Cache.UpdateFromAria2(nil, nil, []rpc.Task{t1})
+
+	// Task 2: history-only complete 0/2000
+	e2 := groupReadHistoryEntry("gid-dg-t2", &group, "0", "2000")
+	e2.Status = "complete"
+	history.Add(e2)
+
+	card := findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
+	if card.CompletedLength != "3000" {
+		t.Errorf("card.CompletedLength = %q, want 3000", card.CompletedLength)
+	}
+	if card.TotalLength != "3000" {
+		t.Errorf("card.TotalLength = %q, want 3000", card.TotalLength)
+	}
+	if math.Abs(card.Progress-1.0) > 1e-6 {
+		t.Errorf("card.Progress = %f, want 1.0", card.Progress)
+	}
+
+	detail := GetDownloadGroupDetail(group.ID)
+	if !detail.Found {
+		t.Fatal("expected group detail found")
+	}
+	for _, task := range detail.Tasks.Stopped {
+		if task.GID == "gid-dg-t1" {
+			if task.TotalLength != "1000" || task.CompletedLength != "1000" {
+				t.Errorf("gid-dg-t1 lengths = (%q, %q), want (1000, 1000)", task.TotalLength, task.CompletedLength)
+			}
+		}
+		if task.GID == "gid-dg-t2" {
+			if task.TotalLength != "2000" || task.CompletedLength != "2000" {
+				t.Errorf("gid-dg-t2 lengths = (%q, %q), want (2000, 2000)", task.TotalLength, task.CompletedLength)
+			}
+		}
+	}
+}
+

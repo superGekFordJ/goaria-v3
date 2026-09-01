@@ -234,3 +234,9 @@
 [data-effects='reduced'] .progress-bar-energy::before {
   animation: none !important;
 }
+
+[data-effects='reduced'] .progress-bar-indeterminate {
+  animation: none !important;
+  transform: translateX(30%) !important;
+}
+
