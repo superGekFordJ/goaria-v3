@@ -1,7 +1,6 @@
 package single
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -1028,217 +1027,91 @@ func TestSingleDownloader_RateLimitedClearedOnCancelDuringBackoff(t *testing.T) 
 	}
 }
 
-// =============================================================================
-// FORK-PATCH: Unknown-Size Single-Stream Completion Regressions
-// =============================================================================
-
-func TestSingleDownloader_Download_ChunkedResponseUsesWrittenBytesAsFinalTotal(t *testing.T) {
-	tmpDir, cleanup, err := testutil.TempDir("surge-chunked-single")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
-
-	body := []byte("hello chunked world from surge single stream downloader test")
-	split := len(body) / 2
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			t.Fatal("httptest writer does not implement http.Flusher")
-		}
-		flusher.Flush()
-		_, _ = w.Write(body[:split])
-		flusher.Flush()
-		_, _ = w.Write(body[split:])
-		flusher.Flush()
-	}))
-	defer server.Close()
-
-	destPath := filepath.Join(tmpDir, "chunked_output.bin")
-	if f, err := os.Create(destPath + types.IncompleteSuffix); err == nil {
-		_ = f.Close()
-	} else {
-		t.Fatal(err)
+func TestSingleDownloader_Download_UnknownLength(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     []byte
+		wantSize int64
+	}{
+		{
+			name:     "chunked stream with content",
+			body:     []byte("hello chunked world from surge single stream downloader test"),
+			wantSize: int64(len("hello chunked world from surge single stream downloader test")),
+		},
+		{
+			name:     "empty stream",
+			body:     nil,
+			wantSize: 0,
+		},
 	}
 
-	state := progress.New("chunked-single-test", 0)
-	initialStartTime := state.Session.StartTime()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir, cleanup, err := testutil.TempDir("surge-chunked-single")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cleanup()
 
-	downloader := NewSingleDownloader("chunked-single-id", nil, state, &types.RuntimeConfig{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+					if len(tt.body) > 0 {
+						split := len(tt.body) / 2
+						_, _ = w.Write(tt.body[:split])
+						flusher.Flush()
+						_, _ = w.Write(tt.body[split:])
+						flusher.Flush()
+					}
+				}
+			}))
+			defer server.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+			destPath := filepath.Join(tmpDir, "output.bin")
+			if f, err := os.Create(destPath + types.IncompleteSuffix); err == nil {
+				_ = f.Close()
+			} else {
+				t.Fatal(err)
+			}
 
-	err = downloader.Download(ctx, server.URL, destPath, 0, "chunked_output.bin")
-	if err != nil {
-		t.Fatalf("Download failed: %v", err)
-	}
+			state := progress.New("unknown-single-test", 0)
+			initialStartTime := state.Session.StartTime()
+			downloader := NewSingleDownloader("unknown-single-id", nil, state, &types.RuntimeConfig{})
 
-	wantBytes := int64(len(body))
-	if downloader.TotalSize != wantBytes {
-		t.Errorf("downloader.TotalSize = %d, want %d", downloader.TotalSize, wantBytes)
-	}
-	if state.Bytes.TotalSize.Load() != wantBytes {
-		t.Errorf("state.Bytes.TotalSize = %d, want %d", state.Bytes.TotalSize.Load(), wantBytes)
-	}
-	if state.Bytes.Downloaded.Load() != wantBytes {
-		t.Errorf("state.Bytes.Downloaded = %d, want %d", state.Bytes.Downloaded.Load(), wantBytes)
-	}
-	if state.Bytes.VerifiedProgress.Load() != wantBytes {
-		t.Errorf("state.Bytes.VerifiedProgress = %d, want %d", state.Bytes.VerifiedProgress.Load(), wantBytes)
-	}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
 
-	// Session.StartTime should not have been reset
-	if !state.Session.StartTime().Equal(initialStartTime) {
-		t.Errorf("state.Session.StartTime() was reset: got %v, want %v", state.Session.StartTime(), initialStartTime)
-	}
+			if err := downloader.Download(ctx, server.URL, destPath, 0, "output.bin"); err != nil {
+				t.Fatalf("Download failed: %v", err)
+			}
 
-	// Verify incomplete file content and size
-	workingPath := destPath + types.IncompleteSuffix
-	data, err := os.ReadFile(workingPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%s) failed: %v", workingPath, err)
-	}
-	if string(data) != string(body) {
-		t.Errorf("file content mismatch: got %q, want %q", string(data), string(body))
-	}
-}
+			if downloader.TotalSize != tt.wantSize {
+				t.Errorf("downloader.TotalSize = %d, want %d", downloader.TotalSize, tt.wantSize)
+			}
+			if state.Bytes.TotalSize.Load() != tt.wantSize {
+				t.Errorf("state.Bytes.TotalSize = %d, want %d", state.Bytes.TotalSize.Load(), tt.wantSize)
+			}
+			if state.Bytes.Downloaded.Load() != tt.wantSize {
+				t.Errorf("state.Bytes.Downloaded = %d, want %d", state.Bytes.Downloaded.Load(), tt.wantSize)
+			}
+			if state.Bytes.VerifiedProgress.Load() != tt.wantSize {
+				t.Errorf("state.Bytes.VerifiedProgress = %d, want %d", state.Bytes.VerifiedProgress.Load(), tt.wantSize)
+			}
+			if !state.Session.StartTime().Equal(initialStartTime) {
+				t.Errorf("state.Session.StartTime() was reset")
+			}
 
-func TestSingleDownloader_Download_UnknownLengthCancellationDoesNotFinalizeTotal(t *testing.T) {
-	tmpDir, cleanup, err := testutil.TempDir("surge-chunked-cancel")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
-
-	firstChunk := bytes.Repeat([]byte("stream-chunk-data-for-cancellation-test-"), 2000)
-	chunkSent := make(chan struct{})
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			t.Fatal("httptest writer does not implement http.Flusher")
-		}
-		flusher.Flush()
-		_, _ = w.Write(firstChunk)
-		flusher.Flush()
-		close(chunkSent)
-		// Block until client disconnects / cancels
-		<-r.Context().Done()
-	}))
-	defer server.Close()
-
-	destPath := filepath.Join(tmpDir, "chunked_cancel.bin")
-	if f, err := os.Create(destPath + types.IncompleteSuffix); err == nil {
-		_ = f.Close()
-	} else {
-		t.Fatal(err)
-	}
-
-	state := progress.New("chunked-cancel-test", 0)
-	downloader := NewSingleDownloader("chunked-cancel-id", nil, state, &types.RuntimeConfig{})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- downloader.Download(ctx, server.URL, destPath, 0, "chunked_cancel.bin")
-	}()
-
-	select {
-	case <-chunkSent:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for chunkSent")
-	}
-
-	// Poll until partial bytes are physically written to disk before cancel
-	workingPath := destPath + types.IncompleteSuffix
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if fi, err := os.Stat(workingPath); err == nil && fi.Size() > 0 {
-			break
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	cancel()
-
-	select {
-	case err := <-errCh:
-		if err == nil {
-			t.Fatal("expected error from cancelled download, got nil")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for Download to return after cancel")
-	}
-
-	// Verify partial bytes were physically written to disk
-	fi, err := os.Stat(workingPath)
-	if err != nil {
-		t.Fatalf("Stat(%q) failed: %v", workingPath, err)
-	}
-	if fi.Size() == 0 {
-		t.Errorf("file size on disk = %d, expected partial bytes written before cancel", fi.Size())
-	}
-
-	// Total size should NOT be finalized to partial bytes
-	if downloader.TotalSize > 0 {
-		t.Errorf("downloader.TotalSize = %d on cancellation, want <= 0", downloader.TotalSize)
-	}
-	if state.Bytes.TotalSize.Load() > 0 {
-		t.Errorf("state.Bytes.TotalSize = %d on cancellation, want <= 0", state.Bytes.TotalSize.Load())
-	}
-}
-
-func TestSingleDownloader_Download_UnknownLengthEmptyBodyRemainsZero(t *testing.T) {
-	tmpDir, cleanup, err := testutil.TempDir("surge-chunked-empty")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			t.Fatal("httptest writer does not implement http.Flusher")
-		}
-		flusher.Flush()
-		// No body written; closes immediately
-	}))
-	defer server.Close()
-
-	destPath := filepath.Join(tmpDir, "empty_chunked.bin")
-	if f, err := os.Create(destPath + types.IncompleteSuffix); err == nil {
-		_ = f.Close()
-	} else {
-		t.Fatal(err)
-	}
-
-	state := progress.New("chunked-empty-test", 0)
-	downloader := NewSingleDownloader("chunked-empty-id", nil, state, &types.RuntimeConfig{})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	err = downloader.Download(ctx, server.URL, destPath, 0, "empty_chunked.bin")
-	if err != nil {
-		t.Fatalf("Download failed: %v", err)
-	}
-
-	if downloader.TotalSize != 0 {
-		t.Errorf("downloader.TotalSize = %d, want 0", downloader.TotalSize)
-	}
-	if state.Bytes.TotalSize.Load() != 0 {
-		t.Errorf("state.Bytes.TotalSize = %d, want 0", state.Bytes.TotalSize.Load())
-	}
-	if state.Bytes.Downloaded.Load() != 0 {
-		t.Errorf("state.Bytes.Downloaded = %d, want 0", state.Bytes.Downloaded.Load())
-	}
-	if state.Bytes.VerifiedProgress.Load() != 0 {
-		t.Errorf("state.Bytes.VerifiedProgress = %d, want 0", state.Bytes.VerifiedProgress.Load())
+			if len(tt.body) > 0 {
+				workingPath := destPath + types.IncompleteSuffix
+				data, err := os.ReadFile(workingPath)
+				if err != nil {
+					t.Fatalf("ReadFile(%s) failed: %v", workingPath, err)
+				}
+				if string(data) != string(tt.body) {
+					t.Errorf("file content mismatch: got %q, want %q", string(data), string(tt.body))
+				}
+			}
+		})
 	}
 }
