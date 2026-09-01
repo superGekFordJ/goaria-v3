@@ -448,10 +448,6 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			errCode, errMsg = errorCode, errorMessage
 		}
 		m.moveToStoppedAndHandle(gid, deltaType, errCode, errMsg, completeTotal, func(completed *TrackedTask) {
-			if deltaType == "complete" && completeTotal > 0 {
-				completed.TotalLength = completeTotal
-				completed.CompletedLength = completeTotal
-			}
 			// AvgSpeed substitutes for PeakSpeed when no peak-time accept occurred;
 			// acceptPeakSpeed refreshes PeakEnvKey to Current on this complete copy only.
 			if completed.PeakSpeed == 0 && completeAvgSpeed > 0 {

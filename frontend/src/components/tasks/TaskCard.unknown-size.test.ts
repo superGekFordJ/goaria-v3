@@ -235,8 +235,8 @@ describe('TaskCard unknown-size handling', () => {
         task: mockTask({
           status: 'active',
           totalLength: '0',
-          completedLength: '5000000',
-          downloadSpeed: '1000000',
+          completedLength: '1000000',
+          downloadSpeed: '500000',
         }),
       },
     })

@@ -50,26 +50,20 @@ func parseStrictLength(s string) (int64, bool) {
 }
 
 // ProjectCompletedLengths applies terminal completion repair to length strings.
-// When status is "complete":
-// 1. If completedLength is positive and totalLength is non-positive/empty -> N/N.
-// 2. If totalLength is positive and completedLength is non-positive/empty -> T/T.
+// When status is "complete" and completedLength is positive, an empty or non-positive
+// totalLength is projected to completedLength (0/N -> N/N).
 func ProjectCompletedLengths(status, total, completed string) (string, string) {
 	if status != "complete" {
 		return total, completed
 	}
 	completedBytes, completedOK := parseStrictLength(completed)
+	if !completedOK || completedBytes <= 0 {
+		return total, completed
+	}
 	totalBytes, totalOK := parseStrictLength(total)
-
-	if completedOK && completedBytes > 0 {
-		if strings.TrimSpace(total) == "" || (totalOK && totalBytes <= 0) {
-			canonical := strconv.FormatInt(completedBytes, 10)
-			return canonical, canonical
-		}
-	} else if totalOK && totalBytes > 0 {
-		if strings.TrimSpace(completed) == "" || (completedOK && completedBytes <= 0) {
-			canonical := strconv.FormatInt(totalBytes, 10)
-			return canonical, canonical
-		}
+	if strings.TrimSpace(total) == "" || (totalOK && totalBytes <= 0) {
+		canonical := strconv.FormatInt(completedBytes, 10)
+		return canonical, canonical
 	}
 	return total, completed
 }

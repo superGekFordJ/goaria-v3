@@ -360,11 +360,7 @@
       :aria-valuemin="0"
       :aria-valuemax="100"
       :aria-valuenow="
-        hasKnownTotal && progress !== null
-          ? isCompleted
-            ? 100
-            : Math.min(Math.round(progress), 99)
-          : undefined
+        hasKnownTotal && progress !== null ? Math.min(Math.round(progress), 99) : undefined
       "
     >
       <div class="progress-bar-container">

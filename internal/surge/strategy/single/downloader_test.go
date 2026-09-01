@@ -1155,8 +1155,15 @@ func TestSingleDownloader_Download_UnknownLengthCancellationDoesNotFinalizeTotal
 		t.Fatal("timed out waiting for chunkSent")
 	}
 
-	// Give a brief moment for bytes to be written to disk before cancel
-	time.Sleep(30 * time.Millisecond)
+	// Poll until partial bytes are physically written to disk before cancel
+	workingPath := destPath + types.IncompleteSuffix
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if fi, err := os.Stat(workingPath); err == nil && fi.Size() > 0 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 	cancel()
 
 	select {
@@ -1169,9 +1176,9 @@ func TestSingleDownloader_Download_UnknownLengthCancellationDoesNotFinalizeTotal
 	}
 
 	// Verify partial bytes were physically written to disk
-	fi, err := os.Stat(destPath + types.IncompleteSuffix)
+	fi, err := os.Stat(workingPath)
 	if err != nil {
-		t.Fatalf("Stat(%q) failed: %v", destPath+types.IncompleteSuffix, err)
+		t.Fatalf("Stat(%q) failed: %v", workingPath, err)
 	}
 	if fi.Size() == 0 {
 		t.Errorf("file size on disk = %d, expected partial bytes written before cancel", fi.Size())
