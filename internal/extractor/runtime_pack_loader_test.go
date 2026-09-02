@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -114,6 +117,7 @@ func TestVerifyRuntimePackComponentsErrors(t *testing.T) {
 		return b
 	}
 	validLockJSON := mustMarshalJSON(freshLock())
+	badWASMManifest, badWASMPayload, badWASMSig, badWASMLock := buildPreflightFailingComponents()
 
 	tests := []struct {
 		name          string
@@ -230,6 +234,90 @@ func TestVerifyRuntimePackComponentsErrors(t *testing.T) {
 			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
 		},
 		{
+			name:      "percent escaped in asset_path rejected",
+			manifest:  assets.ManifestJSON,
+			payload:   assets.Payload,
+			signature: assets.Signature,
+			lock: func() []byte {
+				l := freshLock()
+				l.Packs[0].AssetPath = "foo%20bar.pack.zip"
+				return mustMarshalJSON(l)
+			}(),
+			zipBytes:      assets.PackZip,
+			isExplicitZip: true,
+			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
+		},
+		{
+			name:      "query in asset_path rejected",
+			manifest:  assets.ManifestJSON,
+			payload:   assets.Payload,
+			signature: assets.Signature,
+			lock: func() []byte {
+				l := freshLock()
+				l.Packs[0].AssetPath = "foo.pack.zip?bar=1"
+				return mustMarshalJSON(l)
+			}(),
+			zipBytes:      assets.PackZip,
+			isExplicitZip: true,
+			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
+		},
+		{
+			name:      "fragment in asset_path rejected",
+			manifest:  assets.ManifestJSON,
+			payload:   assets.Payload,
+			signature: assets.Signature,
+			lock: func() []byte {
+				l := freshLock()
+				l.Packs[0].AssetPath = "foo.pack.zip#frag"
+				return mustMarshalJSON(l)
+			}(),
+			zipBytes:      assets.PackZip,
+			isExplicitZip: true,
+			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
+		},
+		{
+			name:      "windows drive path in asset_path rejected",
+			manifest:  assets.ManifestJSON,
+			payload:   assets.Payload,
+			signature: assets.Signature,
+			lock: func() []byte {
+				l := freshLock()
+				l.Packs[0].AssetPath = "C:\\foo.pack.zip"
+				return mustMarshalJSON(l)
+			}(),
+			zipBytes:      assets.PackZip,
+			isExplicitZip: true,
+			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
+		},
+		{
+			name:      "unc path in asset_path rejected",
+			manifest:  assets.ManifestJSON,
+			payload:   assets.Payload,
+			signature: assets.Signature,
+			lock: func() []byte {
+				l := freshLock()
+				l.Packs[0].AssetPath = "\\\\server\\share\\foo.pack.zip"
+				return mustMarshalJSON(l)
+			}(),
+			zipBytes:      assets.PackZip,
+			isExplicitZip: true,
+			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
+		},
+		{
+			name:      "control characters in asset_path rejected",
+			manifest:  assets.ManifestJSON,
+			payload:   assets.Payload,
+			signature: assets.Signature,
+			lock: func() []byte {
+				l := freshLock()
+				l.Packs[0].AssetPath = "foo\x00bar.pack.zip"
+				return mustMarshalJSON(l)
+			}(),
+			zipBytes:      assets.PackZip,
+			isExplicitZip: true,
+			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
+		},
+		{
 			name:      "lock pack_id mismatch with manifest",
 			manifest:  assets.ManifestJSON,
 			payload:   assets.Payload,
@@ -286,6 +374,90 @@ func TestVerifyRuntimePackComponentsErrors(t *testing.T) {
 			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
 		},
 		{
+			name:      "uppercase public_keys in lock rejected",
+			manifest:  assets.ManifestJSON,
+			payload:   assets.Payload,
+			signature: assets.Signature,
+			lock: func() []byte {
+				l := freshLock()
+				l.Packs[0].PublicKeys[0] = strings.ToUpper(l.Packs[0].PublicKeys[0])
+				return mustMarshalJSON(l)
+			}(),
+			zipBytes:      assets.PackZip,
+			isExplicitZip: true,
+			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
+		},
+		{
+			name:      "non-hex public_keys in lock rejected",
+			manifest:  assets.ManifestJSON,
+			payload:   assets.Payload,
+			signature: assets.Signature,
+			lock: func() []byte {
+				l := freshLock()
+				l.Packs[0].PublicKeys[0] = strings.Repeat("z", 64)
+				return mustMarshalJSON(l)
+			}(),
+			zipBytes:      assets.PackZip,
+			isExplicitZip: true,
+			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
+		},
+		{
+			name:      "wrong length public_keys in lock rejected",
+			manifest:  assets.ManifestJSON,
+			payload:   assets.Payload,
+			signature: assets.Signature,
+			lock: func() []byte {
+				l := freshLock()
+				l.Packs[0].PublicKeys[0] = strings.Repeat("a", 63)
+				return mustMarshalJSON(l)
+			}(),
+			zipBytes:      assets.PackZip,
+			isExplicitZip: true,
+			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
+		},
+		{
+			name:      "uppercase manifest_sha256 in lock rejected",
+			manifest:  assets.ManifestJSON,
+			payload:   assets.Payload,
+			signature: assets.Signature,
+			lock: func() []byte {
+				l := freshLock()
+				l.Packs[0].ManifestSHA256 = strings.ToUpper(l.Packs[0].ManifestSHA256)
+				return mustMarshalJSON(l)
+			}(),
+			zipBytes:      assets.PackZip,
+			isExplicitZip: true,
+			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
+		},
+		{
+			name:      "non-hex manifest_sha256 in lock rejected",
+			manifest:  assets.ManifestJSON,
+			payload:   assets.Payload,
+			signature: assets.Signature,
+			lock: func() []byte {
+				l := freshLock()
+				l.Packs[0].ManifestSHA256 = strings.Repeat("z", 64)
+				return mustMarshalJSON(l)
+			}(),
+			zipBytes:      assets.PackZip,
+			isExplicitZip: true,
+			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
+		},
+		{
+			name:      "wrong length manifest_sha256 in lock rejected",
+			manifest:  assets.ManifestJSON,
+			payload:   assets.Payload,
+			signature: assets.Signature,
+			lock: func() []byte {
+				l := freshLock()
+				l.Packs[0].ManifestSHA256 = strings.Repeat("a", 63)
+				return mustMarshalJSON(l)
+			}(),
+			zipBytes:      assets.PackZip,
+			isExplicitZip: true,
+			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
+		},
+		{
 			name:      "lock manifest_sha256 mismatch",
 			manifest:  assets.ManifestJSON,
 			payload:   assets.Payload,
@@ -307,6 +479,20 @@ func TestVerifyRuntimePackComponentsErrors(t *testing.T) {
 			lock: func() []byte {
 				l := freshLock()
 				l.Packs[0].PayloadSHA256 = strings.Repeat("0", 64)
+				return mustMarshalJSON(l)
+			}(),
+			zipBytes:      assets.PackZip,
+			isExplicitZip: true,
+			wantCode:      extractor.RuntimePackLoadErrorHashMismatch,
+		},
+		{
+			name:      "manifest payload pin matches payload but lock payload pin differs",
+			manifest:  assets.ManifestJSON,
+			payload:   assets.Payload,
+			signature: assets.Signature,
+			lock: func() []byte {
+				l := freshLock()
+				l.Packs[0].PayloadSHA256 = strings.Repeat("1", 64)
 				return mustMarshalJSON(l)
 			}(),
 			zipBytes:      assets.PackZip,
@@ -365,6 +551,16 @@ func TestVerifyRuntimePackComponentsErrors(t *testing.T) {
 			zipBytes:      assets.PackZip,
 			isExplicitZip: true,
 			wantCode:      extractor.RuntimePackLoadErrorManifestInvalid,
+		},
+		{
+			name:          "wasm payload fails preflight",
+			manifest:      badWASMManifest,
+			payload:       badWASMPayload,
+			signature:     badWASMSig,
+			lock:          badWASMLock,
+			zipBytes:      nil,
+			isExplicitZip: false,
+			wantCode:      extractor.RuntimePackLoadErrorWASMInvalid,
 		},
 	}
 
@@ -451,8 +647,31 @@ func TestLoadLocalPackZip(t *testing.T) {
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorLockMissing)
 	})
 
+	t.Run("malformed sibling lock json", func(t *testing.T) {
+		isolatedDir := t.TempDir()
+		zipCopyPath := filepath.Join(isolatedDir, packbuilder.HostCallFixtureAssetName)
+		if err := os.WriteFile(zipCopyPath, writeRes.Assets.PackZip, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(isolatedDir, packbuilder.HostCallFixturePackID+".lock.json"), []byte("{malformed json"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := extractor.LoadLocalPackZip(context.Background(), zipCopyPath)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorLockInvalid)
+	})
+
 	t.Run("directory passed as zipPath", func(t *testing.T) {
 		_, err := extractor.LoadLocalPackZip(context.Background(), outDir)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
+	})
+
+	t.Run("symlink zip rejected", func(t *testing.T) {
+		symDir := t.TempDir()
+		symPath := filepath.Join(symDir, "sym.pack.zip")
+		if err := os.Symlink(writeRes.PackZipPath, symPath); err != nil {
+			t.Skip("symlinks not supported in environment")
+		}
+		_, err := extractor.LoadLocalPackZip(context.Background(), symPath)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
 	})
 
@@ -494,6 +713,10 @@ func TestLoadLocalPackDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteHostCallFixture() error = %v", err)
 	}
+	lockJSON, err := json.Marshal(writeRes.Lock)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	t.Run("valid local directory ignores extra files and sibling zip", func(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(outDir, "extra.txt"), []byte("ignore me"), 0o644); err != nil {
@@ -515,6 +738,30 @@ func TestLoadLocalPackDirectory(t *testing.T) {
 		}
 		if candidate.VerifiedPack.Identity.AssetSHA256 != writeRes.Assets.AssetSHA256 {
 			t.Fatalf("AssetSHA256 = %s, want %s", candidate.VerifiedPack.Identity.AssetSHA256, writeRes.Assets.AssetSHA256)
+		}
+	})
+
+	t.Run("sibling zip completely absent succeeds", func(t *testing.T) {
+		isolatedDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(isolatedDir, "manifest.json"), writeRes.Assets.ManifestJSON, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(isolatedDir, "payload.wasm"), writeRes.Assets.Payload, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(isolatedDir, "manifest.sig"), writeRes.Assets.Signature, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(isolatedDir, packbuilder.HostCallFixturePackID+".lock.json"), lockJSON, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		candidate, err := extractor.LoadLocalPackDirectory(context.Background(), isolatedDir)
+		if err != nil {
+			t.Fatalf("LoadLocalPackDirectory() error = %v", err)
+		}
+		if candidate.ZipBytes != nil {
+			t.Fatalf("ZipBytes must be nil for directory loader, got %#v", candidate.ZipBytes)
 		}
 	})
 
@@ -571,6 +818,64 @@ func TestLoadLocalPackDirectory(t *testing.T) {
 		}
 		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
+	})
+
+	t.Run("loose payload oversize exceeds 16MB", func(t *testing.T) {
+		dir := t.TempDir()
+		_ = os.WriteFile(filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON, 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "payload.wasm"), make([]byte, extractor.MaxPackPayloadBytes+1), 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature, 0o644)
+		_ = os.WriteFile(filepath.Join(dir, packbuilder.HostCallFixturePackID+".lock.json"), lockJSON, 0o644)
+		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
+	})
+
+	t.Run("loose signature oversize exceeds 128KB", func(t *testing.T) {
+		dir := t.TempDir()
+		_ = os.WriteFile(filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON, 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload, 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "manifest.sig"), make([]byte, extractor.MaxPackSignatureBytes+1), 0o644)
+		_ = os.WriteFile(filepath.Join(dir, packbuilder.HostCallFixturePackID+".lock.json"), lockJSON, 0o644)
+		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
+	})
+
+	t.Run("loose component hash tampered", func(t *testing.T) {
+		dir := t.TempDir()
+		tamperedPayload := append(append([]byte(nil), writeRes.Assets.Payload...), 0x00)
+		_ = os.WriteFile(filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON, 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "payload.wasm"), tamperedPayload, 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature, 0o644)
+		_ = os.WriteFile(filepath.Join(dir, packbuilder.HostCallFixturePackID+".lock.json"), lockJSON, 0o644)
+		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorHashMismatch)
+	})
+
+	t.Run("loose component signature invalid", func(t *testing.T) {
+		dir := t.TempDir()
+		tamperedSig := bytes.Repeat([]byte{0x55}, 64)
+		tamperedSigSHA := sha256.Sum256(tamperedSig)
+		tamperedLock := writeRes.Lock
+		tamperedLock.Packs[0].SignatureSHA256 = hex.EncodeToString(tamperedSigSHA[:])
+		tamperedLockJSON, _ := json.Marshal(tamperedLock)
+
+		_ = os.WriteFile(filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON, 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload, 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "manifest.sig"), tamperedSig, 0o644)
+		_ = os.WriteFile(filepath.Join(dir, packbuilder.HostCallFixturePackID+".lock.json"), tamperedLockJSON, 0o644)
+		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSignatureInvalid)
+	})
+
+	t.Run("manifest pack_id with path traversal rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		badManifest := []byte(`{"pack_id":"../bad_path","pack_version":"1.0.0","abi_version":1,"domains":[{"host":"example.invalid"}]}`)
+		_ = os.WriteFile(filepath.Join(dir, "manifest.json"), badManifest, 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload, 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature, 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "test.lock.json"), lockJSON, 0o644)
+		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorManifestInvalid)
 	})
 }
 
@@ -926,16 +1231,12 @@ func TestLoadRemotePackLock(t *testing.T) {
 		}
 	})
 
-	t.Run("pre-canceled context or timeout exhaustion fails with remote_failed", func(t *testing.T) {
+	t.Run("context cancellation fails with remote_failed", func(t *testing.T) {
 		transport := &fakeRemoteTransport{
 			responses: map[string]fakeHTTPResponse{
 				"/packs/" + packbuilder.HostCallFixturePackID + ".lock.json": {
 					statusCode: http.StatusOK,
 					body:       lockJSON,
-				},
-				"/packs/" + packbuilder.HostCallFixtureAssetName: {
-					statusCode: http.StatusOK,
-					body:       assets.PackZip,
 				},
 			},
 		}
@@ -943,6 +1244,25 @@ func TestLoadRemotePackLock(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
+
+		_, err := extractor.LoadRemotePackLockWithClientForTest(ctx, "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
+	})
+
+	t.Run("context deadline exceeded fails with remote_failed", func(t *testing.T) {
+		transport := &fakeRemoteTransport{
+			responses: map[string]fakeHTTPResponse{
+				"/packs/" + packbuilder.HostCallFixturePackID + ".lock.json": {
+					statusCode: http.StatusOK,
+					body:       lockJSON,
+				},
+			},
+		}
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Microsecond)
+		defer cancel()
+		time.Sleep(5 * time.Millisecond)
 
 		_, err := extractor.LoadRemotePackLockWithClientForTest(ctx, "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
@@ -988,19 +1308,38 @@ func TestLoadRemotePackLock(t *testing.T) {
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
 	})
 
-	t.Run("redirect target resolving to private IP rejected at transport dial layer", func(t *testing.T) {
-		fakeResolver := testIPResolver{
-			ips: map[string][]net.IPAddr{
-				"private.example.invalid": {{IP: net.ParseIP("127.0.0.1")}},
-			},
+	t.Run("redirect target re-resolving to private IP rejected at transport dial layer", func(t *testing.T) {
+		ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/initial.lock.json" {
+				w.Header().Set("Location", "https://rebound.example.invalid/target.lock.json")
+				w.Header().Set("Connection", "close")
+				w.WriteHeader(http.StatusFound)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer ts.Close()
+
+		resolver := &rebindingTestResolver{}
+		var dialCalls int
+		dialer := func(ctx context.Context, network string, address string) (net.Conn, error) {
+			dialCalls++
+			if dialCalls == 1 {
+				return net.Dial("tcp", ts.Listener.Addr().String())
+			}
+			t.Fatal("dialer should not be reached on private IP resolution")
+			return nil, errors.New("dial blocked")
 		}
-		guardedTransport := extractor.NewPrivateIPGuardedTransportForTest(fakeResolver, func(ctx context.Context, network string, address string) (net.Conn, error) {
-			return nil, errors.New("dial blocked by private IP check")
-		})
+
+		guardedTransport := extractor.NewPrivateIPGuardedTransportForTest(resolver, dialer)
+		guardedTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 		client := extractor.NewRuntimePackHTTPClientForTest(guardedTransport)
 
-		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://private.example.invalid/packs/test.lock.json", client)
+		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://rebound.example.invalid/initial.lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
+		if dialCalls != 1 {
+			t.Fatalf("expected exactly 1 dial before private IP block, got %d", dialCalls)
+		}
 	})
 
 	t.Run("URL validation rejections", func(t *testing.T) {
@@ -1092,6 +1431,21 @@ func TestLoadRemotePackLock(t *testing.T) {
 		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://private.example.invalid/packs/test.lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
 	})
+}
+
+type rebindingTestResolver struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (r *rebindingTestResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	if r.calls == 1 {
+		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+	}
+	return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
 }
 
 type testIPResolver struct {
@@ -1216,4 +1570,32 @@ func (r repeatingByteReader) Read(p []byte) (n int, err error) {
 		p[i] = byte(r)
 	}
 	return len(p), nil
+}
+
+func buildPreflightFailingComponents() ([]byte, []byte, []byte, []byte) {
+	badPayload := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0xff, 0xff}
+	manifest := packbuilder.HostCallFixtureManifest(badPayload)
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		panic(err)
+	}
+	publicKey, privateKey := packbuilder.DeterministicFixtureKeyPair()
+	sig := ed25519.Sign(privateKey, manifestJSON)
+	assets := packbuilder.SignedPackAssets{
+		Manifest:        manifest,
+		ManifestJSON:    manifestJSON,
+		Payload:         badPayload,
+		Signature:       sig,
+		PublicKey:       publicKey,
+		AssetSHA256:     strings.Repeat("0", 64),
+		ManifestSHA256:  packbuilder.SHA256Hex(manifestJSON),
+		PayloadSHA256:   packbuilder.SHA256Hex(badPayload),
+		SignatureSHA256: packbuilder.SHA256Hex(sig),
+	}
+	lock := packbuilder.LockForAssetPath(packbuilder.HostCallFixtureAssetName, assets)
+	lockJSON, err := json.Marshal(lock)
+	if err != nil {
+		panic(err)
+	}
+	return manifestJSON, badPayload, sig, lockJSON
 }

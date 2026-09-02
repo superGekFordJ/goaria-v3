@@ -454,8 +454,8 @@ func newRuntimePackHTTPClient(transport http.RoundTripper) *http.Client {
 }
 
 func loadRemotePackLockWithClient(ctx context.Context, rawLockURL string, client *http.Client) (RuntimePackCandidate, error) {
-	// Establish a single operation-level timeout covering both lock and asset fetches
-	opCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Establish a single operation-level timeout covering both lock and asset HTTP fetches
+	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	parsedURL, err := validateRemoteLockURL(rawLockURL)
@@ -463,7 +463,7 @@ func loadRemotePackLockWithClient(ctx context.Context, rawLockURL string, client
 		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorRemoteDenied, err)
 	}
 
-	lockReq, err := http.NewRequestWithContext(opCtx, http.MethodGet, parsedURL.String(), nil)
+	lockReq, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, parsedURL.String(), nil)
 	if err != nil {
 		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorRemoteFailed, err)
 	}
@@ -515,7 +515,7 @@ func loadRemotePackLockWithClient(ctx context.Context, rawLockURL string, client
 	resolvedAssetURL.RawQuery = ""
 	resolvedAssetURL.Fragment = ""
 
-	assetReq, err := http.NewRequestWithContext(opCtx, http.MethodGet, resolvedAssetURL.String(), nil)
+	assetReq, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, resolvedAssetURL.String(), nil)
 	if err != nil {
 		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorRemoteFailed, err)
 	}
@@ -544,7 +544,7 @@ func loadRemotePackLockWithClient(ctx context.Context, rawLockURL string, client
 		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorSourceShapeInvalid, err)
 	}
 
-	return VerifyRuntimePackComponents(opCtx, archive.ManifestJSON, archive.Payload, archive.Signature, lockBytes, assetBytes, true)
+	return VerifyRuntimePackComponents(ctx, archive.ManifestJSON, archive.Payload, archive.Signature, lockBytes, assetBytes, true)
 }
 
 func validateRemoteLockURL(rawLockURL string) (*url.URL, error) {

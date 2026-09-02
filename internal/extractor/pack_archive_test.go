@@ -234,6 +234,34 @@ func TestExtractStrictPackZipRejections(t *testing.T) {
 			errSubstr: "exceeds",
 		},
 		{
+			name: "manifest header claims small size but decompressed stream exceeds limit",
+			makeZip: func(t *testing.T) []byte {
+				return buildTestZip(t, map[string][]byte{
+					"manifest.json": bytes.Repeat([]byte("A"), extractor.MaxPackManifestBytes+1024),
+					"payload.wasm":  validPayload,
+					"manifest.sig":  validSig,
+				}, map[string]func(*zip.FileHeader){
+					"manifest.json": func(h *zip.FileHeader) {
+						h.Method = zip.Deflate
+						h.UncompressedSize64 = 100 // forged header claiming small size
+					},
+				})
+			},
+			errSubstr: "exceeds",
+		},
+		{
+			name: "payload header uncompressed size exceeds maxPayloadBytes",
+			makeZip: func(t *testing.T) []byte {
+				base := buildTestZip(t, map[string][]byte{
+					"manifest.json": validManifest,
+					"payload.wasm":  validPayload,
+					"manifest.sig":  validSig,
+				}, nil)
+				return patchZipEntryUncompressedSize(base, "payload.wasm", uint32(extractor.MaxPackPayloadBytes+1))
+			},
+			errSubstr: "exceeds",
+		},
+		{
 			name: "signature exceeds maxSignatureBytes",
 			makeZip: func(t *testing.T) []byte {
 				return buildTestZip(t, map[string][]byte{
@@ -285,4 +313,23 @@ func buildTestZip(t *testing.T, entries map[string][]byte, headerMod map[string]
 		t.Fatalf("close zip writer: %v", err)
 	}
 	return buf.Bytes()
+}
+
+func patchZipEntryUncompressedSize(zipBytes []byte, entryName string, size uint32) []byte {
+	out := append([]byte(nil), zipBytes...)
+	nameBytes := []byte(entryName)
+	// Central directory header signature is 0x02014b50 (PK\x01\x02)
+	for i := 0; i <= len(out)-46-len(nameBytes); i++ {
+		if out[i] == 'P' && out[i+1] == 'K' && out[i+2] == 0x01 && out[i+3] == 0x02 {
+			filenameLen := int(out[i+28]) | int(out[i+29])<<8
+			if filenameLen == len(nameBytes) && bytes.Equal(out[i+46:i+46+len(nameBytes)], nameBytes) {
+				// uncompressed size is at offset 24..27
+				out[i+24] = byte(size)
+				out[i+25] = byte(size >> 8)
+				out[i+26] = byte(size >> 16)
+				out[i+27] = byte(size >> 24)
+			}
+		}
+	}
+	return out
 }
