@@ -6,11 +6,15 @@ import (
 	"time"
 )
 
-// Windows tray reclaim: debounced GC + FreeOSMemory after successful DestroyWindow.
+// Windows tray reclaim: debounced GC + FreeOSMemory + WorkingSet trim after successful DestroyWindow.
 // Cancel on CreateWindow; never clear TaskCache / Tracker / Monitor.
 var (
-	windowReclaimDelay   = 2 * time.Second
-	windowReclaimFn      = func() { runtime.GC(); debug.FreeOSMemory() }
+	windowReclaimDelay = 2 * time.Second
+	windowReclaimFn    = func() {
+		runtime.GC()
+		debug.FreeOSMemory()
+		trimProcessWorkingSet()
+	}
 	windowReclaimEnabled = func() bool { return runtime.GOOS == "windows" }
 	// windowReclaimHeadless defaults to a.window == nil under windowMu; injectable for tests.
 	windowReclaimHeadless = func(a *App) bool {
