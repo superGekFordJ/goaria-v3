@@ -11,13 +11,13 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"goaria-v3/internal/extractor"
 	"goaria-v3/internal/extractor/packbuilder"
@@ -397,7 +397,7 @@ func TestVerifyRuntimePackComponentsErrors(t *testing.T) {
 			}
 			for _, leak := range []string{"/", "\\", "http", "pack.zip", "test", "sha256", "fixture"} {
 				if strings.Contains(strings.ToLower(msg), leak) {
-					t.Fatalf("Error() message %q leaked sensitive content %q", msg, leak)
+					t.Fatalf("Error() message leaked sensitive content")
 				}
 			}
 		})
@@ -595,7 +595,7 @@ func TestLoadRemotePackLock(t *testing.T) {
 				},
 			},
 		}
-		client := &http.Client{Transport: transport}
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
 		candidate, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
 		if err != nil {
@@ -612,15 +612,15 @@ func TestLoadRemotePackLock(t *testing.T) {
 		}
 
 		// Verify headers on recorded requests: Accept set, no Referer, Authorization, Cookie
-		for _, req := range transport.RecordedRequests() {
+		for i, req := range transport.RecordedRequests() {
 			if req.Header.Get("Referer") != "" {
-				t.Fatalf("unexpected Referer in request: %q", req.Header.Get("Referer"))
+				t.Fatalf("unexpected Referer in request %d", i)
 			}
 			if req.Header.Get("Authorization") != "" {
-				t.Fatalf("unexpected Authorization in request: %q", req.Header.Get("Authorization"))
+				t.Fatalf("unexpected Authorization in request %d", i)
 			}
 			if req.Header.Get("Cookie") != "" {
-				t.Fatalf("unexpected Cookie in request: %q", req.Header.Get("Cookie"))
+				t.Fatalf("unexpected Cookie in request %d", i)
 			}
 		}
 	})
@@ -639,7 +639,7 @@ func TestLoadRemotePackLock(t *testing.T) {
 				},
 			},
 		}
-		client := &http.Client{Transport: transport}
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
 		lockURL := "https://example.invalid/packs/" + packbuilder.HostCallFixturePackID + ".lock.json?token=" + secretToken
 		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), lockURL, client)
@@ -650,17 +650,17 @@ func TestLoadRemotePackLock(t *testing.T) {
 		if len(reqs) != 2 {
 			t.Fatalf("requests count = %d, want 2", len(reqs))
 		}
-		if !strings.Contains(reqs[0].URL.String(), "token="+secretToken) {
-			t.Fatalf("first request %q did not contain token", reqs[0].URL.String())
+		if !strings.Contains(reqs[0].URL.RawQuery, "token="+secretToken) {
+			t.Fatal("first request did not contain expected query parameter")
 		}
-		if strings.Contains(reqs[1].URL.String(), "token") || strings.Contains(reqs[1].URL.String(), secretToken) || reqs[1].URL.RawQuery != "" {
-			t.Fatalf("second request %q leaked token or query string", reqs[1].URL.String())
+		if strings.Contains(reqs[1].URL.RawQuery, "token") || strings.Contains(reqs[1].URL.RawQuery, secretToken) || reqs[1].URL.RawQuery != "" {
+			t.Fatal("second request leaked query string or token parameter")
 		}
 
 		// Assert error string does not leak the token or url
 		errMsg := err.Error()
 		if strings.Contains(errMsg, secretToken) || strings.Contains(errMsg, "token") || strings.Contains(errMsg, "example.invalid") {
-			t.Fatalf("error message %q leaked secret query or URL", errMsg)
+			t.Fatal("error message leaked secret query parameter or host URL")
 		}
 	})
 
@@ -685,8 +685,7 @@ func TestLoadRemotePackLock(t *testing.T) {
 				},
 			},
 		}
-		client := &http.Client{Transport: transport}
-		client = cloneRedirectClient(client, true)
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
 		candidate, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/source.lock.json?token="+secretToken, client)
 		if err != nil {
@@ -700,15 +699,15 @@ func TestLoadRemotePackLock(t *testing.T) {
 		if len(reqs) < 2 {
 			t.Fatalf("expected at least 2 requests, got %d", len(reqs))
 		}
-		for _, req := range reqs {
+		for i, req := range reqs {
 			if req.Header.Get("Referer") != "" {
-				t.Fatalf("Referer header %q leaked on request %s", req.Header.Get("Referer"), req.URL.String())
+				t.Fatalf("Referer header unexpectedly present on request index %d", i)
 			}
 			if req.Header.Get("Authorization") != "" {
-				t.Fatalf("Authorization header leaked on request %s", req.URL.String())
+				t.Fatalf("Authorization header unexpectedly present on request index %d", i)
 			}
 			if req.Header.Get("Cookie") != "" {
-				t.Fatalf("Cookie header leaked on request %s", req.URL.String())
+				t.Fatalf("Cookie header unexpectedly present on request index %d", i)
 			}
 		}
 	})
@@ -733,8 +732,7 @@ func TestLoadRemotePackLock(t *testing.T) {
 				},
 			},
 		}
-		client := &http.Client{Transport: transport}
-		client = cloneRedirectClient(client, true)
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
 		// Initial request has explicit default port :443
 		candidate, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid:443/initial.lock.json", client)
@@ -757,8 +755,7 @@ func TestLoadRemotePackLock(t *testing.T) {
 				},
 			},
 		}
-		client := &http.Client{Transport: transport}
-		client = cloneRedirectClient(client, true)
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
 		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/initial.lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
@@ -775,8 +772,7 @@ func TestLoadRemotePackLock(t *testing.T) {
 				"/r5.lock.json": {statusCode: http.StatusFound, headers: map[string]string{"Location": "https://example.invalid/r6.lock.json"}},
 			},
 		}
-		client := &http.Client{Transport: transport}
-		client = cloneRedirectClient(client, true)
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
 		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/r0.lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
@@ -806,7 +802,7 @@ func TestLoadRemotePackLock(t *testing.T) {
 				},
 			},
 		}
-		client := &http.Client{Transport: transport}
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
 		candidate, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
 		if err != nil {
@@ -827,7 +823,7 @@ func TestLoadRemotePackLock(t *testing.T) {
 				},
 			},
 		}
-		client := &http.Client{Transport: transport}
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
 		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
@@ -843,7 +839,7 @@ func TestLoadRemotePackLock(t *testing.T) {
 				},
 			},
 		}
-		client := &http.Client{Transport: transport}
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
 		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
@@ -863,13 +859,34 @@ func TestLoadRemotePackLock(t *testing.T) {
 				},
 			},
 		}
-		client := &http.Client{Transport: transport}
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
 		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
 	})
 
-	t.Run("total operation timeout", func(t *testing.T) {
+	t.Run("oversized asset streaming body rejected", func(t *testing.T) {
+		// Provide an asset stream exceeding 64 MiB (MaxPackAssetBytes) without Content-Length
+		overflowStream := io.LimitReader(repeatingByteReader('A'), extractor.MaxPackAssetBytes+1024)
+		transport := &fakeRemoteTransport{
+			responses: map[string]fakeHTTPResponse{
+				"/packs/" + packbuilder.HostCallFixturePackID + ".lock.json": {
+					statusCode: http.StatusOK,
+					body:       lockJSON,
+				},
+				"/packs/" + packbuilder.HostCallFixtureAssetName: {
+					statusCode: http.StatusOK,
+					bodyReader: overflowStream,
+				},
+			},
+		}
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
+
+		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
+	})
+
+	t.Run("total operation timeout establishes 30s deadline shared by lock and asset requests", func(t *testing.T) {
 		transport := &fakeRemoteTransport{
 			responses: map[string]fakeHTTPResponse{
 				"/packs/" + packbuilder.HostCallFixturePackID + ".lock.json": {
@@ -882,10 +899,50 @@ func TestLoadRemotePackLock(t *testing.T) {
 				},
 			},
 		}
-		client := &http.Client{Transport: transport}
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
+
+		start := time.Now()
+		candidate, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
+		if err != nil {
+			t.Fatalf("LoadRemotePackLock() unexpected error: %v", err)
+		}
+		if candidate.VerifiedPack.Manifest.PackID != packbuilder.HostCallFixturePackID {
+			t.Fatalf("PackID = %q", candidate.VerifiedPack.Manifest.PackID)
+		}
+
+		deadlines := transport.RecordedDeadlines()
+		if len(deadlines) != 2 {
+			t.Fatalf("expected 2 requests with recorded deadlines, got %d", len(deadlines))
+		}
+		if deadlines[0].IsZero() || deadlines[1].IsZero() {
+			t.Fatal("expected non-zero deadlines on both lock and asset requests")
+		}
+		if !deadlines[0].Equal(deadlines[1]) {
+			t.Fatalf("lock deadline %v and asset deadline %v are not identical", deadlines[0], deadlines[1])
+		}
+		remaining := time.Until(deadlines[0])
+		if remaining < 25*time.Second || remaining > 31*time.Second {
+			t.Fatalf("expected ~30s operation timeout, got remaining %v from %v", remaining, start)
+		}
+	})
+
+	t.Run("pre-canceled context or timeout exhaustion fails with remote_failed", func(t *testing.T) {
+		transport := &fakeRemoteTransport{
+			responses: map[string]fakeHTTPResponse{
+				"/packs/" + packbuilder.HostCallFixturePackID + ".lock.json": {
+					statusCode: http.StatusOK,
+					body:       lockJSON,
+				},
+				"/packs/" + packbuilder.HostCallFixtureAssetName: {
+					statusCode: http.StatusOK,
+					body:       assets.PackZip,
+				},
+			},
+		}
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // pre-cancel context
+		cancel()
 
 		_, err := extractor.LoadRemotePackLockWithClientForTest(ctx, "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
@@ -904,13 +961,13 @@ func TestLoadRemotePackLock(t *testing.T) {
 				},
 			},
 		}
-		client := &http.Client{Transport: transport}
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
 		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
 	})
 
-	t.Run("asset redirect to private IP rejected", func(t *testing.T) {
+	t.Run("asset redirect to IP literal rejected by check redirect", func(t *testing.T) {
 		transport := &fakeRemoteTransport{
 			responses: map[string]fakeHTTPResponse{
 				"/packs/" + packbuilder.HostCallFixturePackID + ".lock.json": {
@@ -925,10 +982,24 @@ func TestLoadRemotePackLock(t *testing.T) {
 				},
 			},
 		}
-		client := &http.Client{Transport: transport}
-		client = cloneRedirectClient(client, true)
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
 		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
+	})
+
+	t.Run("redirect target resolving to private IP rejected at transport dial layer", func(t *testing.T) {
+		fakeResolver := testIPResolver{
+			ips: map[string][]net.IPAddr{
+				"private.example.invalid": {{IP: net.ParseIP("127.0.0.1")}},
+			},
+		}
+		guardedTransport := extractor.NewPrivateIPGuardedTransportForTest(fakeResolver, func(ctx context.Context, network string, address string) (net.Conn, error) {
+			return nil, errors.New("dial blocked by private IP check")
+		})
+		client := extractor.NewRuntimePackHTTPClientForTest(guardedTransport)
+
+		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://private.example.invalid/packs/test.lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
 	})
 
@@ -987,7 +1058,7 @@ func TestLoadRemotePackLock(t *testing.T) {
 				},
 			},
 		}
-		client := &http.Client{Transport: transport}
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
 		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/wrong_name.lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorLockInvalid)
@@ -1002,7 +1073,7 @@ func TestLoadRemotePackLock(t *testing.T) {
 				},
 			},
 		}
-		client := &http.Client{Transport: transport}
+		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
 		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
@@ -1017,59 +1088,10 @@ func TestLoadRemotePackLock(t *testing.T) {
 		guardedTransport := extractor.NewPrivateIPGuardedTransportForTest(fakeResolver, func(ctx context.Context, network string, address string) (net.Conn, error) {
 			return nil, errors.New("dial should not be reached")
 		})
-		client := &http.Client{Transport: guardedTransport}
+		client := extractor.NewRuntimePackHTTPClientForTest(guardedTransport)
 		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://private.example.invalid/packs/test.lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
 	})
-}
-
-func cloneRedirectClient(client *http.Client, sameOrigin bool) *http.Client {
-	cloned := *client
-	cloned.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 5 {
-			return errors.New("too many redirects")
-		}
-		if !strings.EqualFold(req.URL.Scheme, "https") {
-			return errors.New("redirect target scheme is not https")
-		}
-		if req.URL.User != nil || req.URL.Fragment != "" {
-			return errors.New("redirect target has userinfo or fragment")
-		}
-		if net.ParseIP(req.URL.Hostname()) != nil {
-			return errors.New("redirect target host is ip literal")
-		}
-		if sameOrigin && len(via) > 0 && via[0] != nil && !sameOriginHosts(via[0].URL, req.URL) {
-			return errors.New("redirect target crosses origin")
-		}
-
-		req.Header.Del("Referer")
-		req.Header.Del("Authorization")
-		req.Header.Del("Cookie")
-
-		return nil
-	}
-	return &cloned
-}
-
-func sameOriginHosts(a, b *url.URL) bool {
-	if a == nil || b == nil {
-		return false
-	}
-	if !strings.EqualFold(a.Scheme, b.Scheme) {
-		return false
-	}
-	if !strings.EqualFold(a.Hostname(), b.Hostname()) {
-		return false
-	}
-	pA := a.Port()
-	if pA == "" && strings.EqualFold(a.Scheme, "https") {
-		pA = "443"
-	}
-	pB := b.Port()
-	if pB == "" && strings.EqualFold(b.Scheme, "https") {
-		pB = "443"
-	}
-	return pA == pB
 }
 
 type testIPResolver struct {
@@ -1088,13 +1110,17 @@ type fakeRemoteTransport struct {
 	mu        sync.Mutex
 	responses map[string]fakeHTTPResponse
 	requests  []*http.Request
+	deadlines []time.Time
 }
 
 type fakeHTTPResponse struct {
-	statusCode int
-	headers    map[string]string
-	body       []byte
-	err        error
+	statusCode    int
+	headers       map[string]string
+	body          []byte
+	bodyReader    io.Reader
+	hasExplicitCL bool
+	contentLength int64
+	err           error
 }
 
 func (t *fakeRemoteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -1104,6 +1130,11 @@ func (t *fakeRemoteTransport) RoundTrip(req *http.Request) (*http.Response, erro
 
 	t.mu.Lock()
 	t.requests = append(t.requests, req.Clone(req.Context()))
+	if dl, ok := req.Context().Deadline(); ok {
+		t.deadlines = append(t.deadlines, dl)
+	} else {
+		t.deadlines = append(t.deadlines, time.Time{})
+	}
 	t.mu.Unlock()
 
 	resp, ok := t.responses[req.URL.Path]
@@ -1126,17 +1157,27 @@ func (t *fakeRemoteTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		header.Set(k, v)
 	}
 
-	contentLen := int64(len(resp.body))
-	if clStr, ok := resp.headers["Content-Length"]; ok {
-		if cl, err := strconv.ParseInt(clStr, 10, 64); err == nil {
-			contentLen = cl
+	var bodyRC io.ReadCloser
+	contentLen := int64(-1)
+	if resp.bodyReader != nil {
+		bodyRC = io.NopCloser(resp.bodyReader)
+		if resp.hasExplicitCL {
+			contentLen = resp.contentLength
+		}
+	} else {
+		bodyRC = io.NopCloser(bytes.NewReader(resp.body))
+		contentLen = int64(len(resp.body))
+		if clStr, ok := resp.headers["Content-Length"]; ok {
+			if cl, err := strconv.ParseInt(clStr, 10, 64); err == nil {
+				contentLen = cl
+			}
 		}
 	}
 
 	return &http.Response{
 		StatusCode:    resp.statusCode,
 		Header:        header,
-		Body:          io.NopCloser(bytes.NewReader(resp.body)),
+		Body:          bodyRC,
 		ContentLength: contentLen,
 		Request:       req,
 	}, nil
@@ -1146,6 +1187,12 @@ func (t *fakeRemoteTransport) RecordedRequests() []*http.Request {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]*http.Request(nil), t.requests...)
+}
+
+func (t *fakeRemoteTransport) RecordedDeadlines() []time.Time {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]time.Time(nil), t.deadlines...)
 }
 
 func assertErrorCode(t *testing.T, err error, wantCode extractor.RuntimePackLoadErrorCode) {
@@ -1160,4 +1207,13 @@ func assertErrorCode(t *testing.T, err error, wantCode extractor.RuntimePackLoad
 	if loadErr.Code != wantCode {
 		t.Fatalf("loadErr.Code = %s, want %s (err = %v)", loadErr.Code, wantCode, err)
 	}
+}
+
+type repeatingByteReader byte
+
+func (r repeatingByteReader) Read(p []byte) (n int, err error) {
+	for i := range p {
+		p[i] = byte(r)
+	}
+	return len(p), nil
 }

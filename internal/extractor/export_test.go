@@ -9,6 +9,14 @@ func LoadRemotePackLockWithClientForTest(ctx context.Context, rawLockURL string,
 	return loadRemotePackLockWithClient(ctx, rawLockURL, client)
 }
 
+func NewRuntimePackHTTPClientForTest(transport http.RoundTripper) *http.Client {
+	return newRuntimePackHTTPClient(transport)
+}
+
+func CloneHTTPClientWithRedirectCheckForTest(client *http.Client, sameOrigin bool) *http.Client {
+	return cloneHTTPClientWithRedirectCheck(client, sameOrigin)
+}
+
 func NewPrivateIPGuardedTransportForTest(resolver ipResolver, dialer dialContextFunc) *http.Transport {
 	return newPrivateIPGuardedTransport(resolver, dialer)
 }

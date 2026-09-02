@@ -442,13 +442,15 @@ func readLocalComponentFile(dir string, name string, limit int64) ([]byte, error
 }
 
 func LoadRemotePackLock(ctx context.Context, lockURL string) (RuntimePackCandidate, error) {
-	transport := defaultSecureHTTPTransport()
+	client := newRuntimePackHTTPClient(defaultSecureHTTPTransport())
+	return loadRemotePackLockWithClient(ctx, lockURL, client)
+}
+
+func newRuntimePackHTTPClient(transport http.RoundTripper) *http.Client {
 	client := &http.Client{
 		Transport: transport,
 	}
-	client = cloneHTTPClientWithRedirectCheck(client, true)
-
-	return loadRemotePackLockWithClient(ctx, lockURL, client)
+	return cloneHTTPClientWithRedirectCheck(client, true)
 }
 
 func loadRemotePackLockWithClient(ctx context.Context, rawLockURL string, client *http.Client) (RuntimePackCandidate, error) {

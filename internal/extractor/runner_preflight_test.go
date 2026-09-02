@@ -39,6 +39,7 @@ func TestPreflightWASMModuleStartupIsolation(t *testing.T) {
 		wasm := buildRunnerFixtureWASM(wasmFixtureConfig{
 			abiVersion:     CurrentABIVersion,
 			trapMatch:      true,
+			trapExtract:    true,
 			memoryMinPages: 1,
 		})
 		pack := testVerifiedPack(wasm, []Capability{CapabilityParseWASM})

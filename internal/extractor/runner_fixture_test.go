@@ -45,6 +45,7 @@ type wasmFixtureConfig struct {
 	missingExports    map[string]bool
 	timeoutMatch      bool
 	trapMatch         bool
+	trapExtract       bool
 	hostImports       []hostImportFixture
 	extractHostCalls  []hostImportFixtureCall
 }
@@ -345,6 +346,9 @@ func buildCodeSection(config wasmFixtureConfig, matchLength uint32, indexes func
 }
 
 func extractInstructions(config wasmFixtureConfig, indexes functionIndexes) []byte {
+	if config.trapExtract {
+		return []byte{wasmOpUnreach, wasmOpI64Const, 0x00}
+	}
 	var instructions []byte
 	for _, call := range config.extractHostCalls {
 		fnIndex, ok := indexes.imports[call.Name]
