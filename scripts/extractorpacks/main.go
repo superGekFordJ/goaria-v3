@@ -1,7 +1,6 @@
 package main
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/ed25519"
@@ -20,11 +19,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -1837,83 +1834,16 @@ func sanitizeFetchError(err error) error {
 }
 
 func extractStrictPackZip(assetBytes []byte) (packParts, error) {
-	reader, err := zip.NewReader(bytes.NewReader(assetBytes), int64(len(assetBytes)))
+	archive, err := extractor.ExtractStrictPackZip(assetBytes)
 	if err != nil {
-		return packParts{}, fmt.Errorf("open pack zip: %w", err)
-	}
-
-	limits := map[string]int64{
-		"manifest.json": maxManifestBytes,
-		"payload.wasm":  maxPayloadBytes,
-		"manifest.sig":  maxSignatureBytes,
-	}
-	seen := make(map[string][]byte, len(limits))
-	for _, file := range reader.File {
-		name := file.Name
-		if err := validateZipEntryName(name); err != nil {
-			return packParts{}, err
-		}
-		limit, ok := limits[name]
-		if !ok {
-			return packParts{}, fmt.Errorf("unexpected zip entry %q", name)
-		}
-		if _, ok := seen[name]; ok {
-			return packParts{}, fmt.Errorf("duplicate zip entry %q", name)
-		}
-		if modeType := file.FileInfo().Mode() & os.ModeType; modeType != 0 {
-			return packParts{}, fmt.Errorf("zip entry %q must be a regular file", name)
-		}
-		if file.UncompressedSize64 > uint64(limit) {
-			return packParts{}, fmt.Errorf("zip entry %q exceeds %d bytes", name, limit)
-		}
-
-		entryBytes, err := readZipEntry(file, limit)
-		if err != nil {
-			return packParts{}, err
-		}
-		seen[name] = entryBytes
-	}
-
-	missing := make([]string, 0)
-	for name := range limits {
-		if _, ok := seen[name]; !ok {
-			missing = append(missing, name)
-		}
-	}
-	if len(missing) > 0 {
-		sort.Strings(missing)
-		return packParts{}, fmt.Errorf("pack zip missing required entries: %s", strings.Join(missing, ", "))
+		return packParts{}, err
 	}
 
 	return packParts{
-		ManifestJSON: seen["manifest.json"],
-		Payload:      seen["payload.wasm"],
-		Signature:    seen["manifest.sig"],
+		ManifestJSON: archive.ManifestJSON,
+		Payload:      archive.Payload,
+		Signature:    archive.Signature,
 	}, nil
-}
-
-func validateZipEntryName(name string) error {
-	if name == "" || strings.HasSuffix(name, "/") {
-		return fmt.Errorf("zip entry %q must be a file", name)
-	}
-	if strings.Contains(name, "\\") || strings.HasPrefix(name, "/") || strings.HasPrefix(name, "../") || strings.Contains(name, "/../") {
-		return fmt.Errorf("zip entry %q has an unsafe path", name)
-	}
-	if path.Clean(name) != name || strings.Contains(name, ":") {
-		return fmt.Errorf("zip entry %q has an unsafe path", name)
-	}
-
-	return nil
-}
-
-func readZipEntry(file *zip.File, limit int64) ([]byte, error) {
-	reader, err := file.Open()
-	if err != nil {
-		return nil, fmt.Errorf("open zip entry %q: %w", file.Name, err)
-	}
-	defer reader.Close()
-
-	return readLimited(reader, limit, fmt.Sprintf("zip entry %q", file.Name))
 }
 
 func readLimited(reader io.Reader, limit int64, label string) ([]byte, error) {

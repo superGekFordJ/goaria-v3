@@ -1,10 +1,12 @@
 package extractor_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -131,6 +133,117 @@ func TestHostCallFixtureSupplyChainLockVerifies(t *testing.T) {
 	if verified.Manifest.PackID != packbuilder.HostCallFixturePackID {
 		t.Fatalf("verified PackID = %q", verified.Manifest.PackID)
 	}
+}
+
+func TestSDKShapedFixtureLoadersInteroperability(t *testing.T) {
+	outDir := t.TempDir()
+	lockPath := filepath.Join(outDir, packbuilder.HostCallFixturePackID+".lock.json")
+	result, err := packbuilder.WriteHostCallFixture(outDir, lockPath)
+	if err != nil {
+		t.Fatalf("WriteHostCallFixture() error = %v", err)
+	}
+	lockJSON, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+
+	// 1. Local ZIP loader
+	candZip, err := extractor.LoadLocalPackZip(context.Background(), result.PackZipPath)
+	if err != nil {
+		t.Fatalf("LoadLocalPackZip() error = %v", err)
+	}
+	if len(candZip.ZipBytes) == 0 {
+		t.Fatal("candZip.ZipBytes is empty")
+	}
+	if candZip.VerifiedPack.Identity.AssetSHA256 != result.Assets.AssetSHA256 {
+		t.Fatalf("candZip AssetSHA256 = %s, want %s", candZip.VerifiedPack.Identity.AssetSHA256, result.Assets.AssetSHA256)
+	}
+
+	// 2. Local Directory loader
+	candDir, err := extractor.LoadLocalPackDirectory(context.Background(), outDir)
+	if err != nil {
+		t.Fatalf("LoadLocalPackDirectory() error = %v", err)
+	}
+	if candDir.ZipBytes != nil {
+		t.Fatalf("candDir.ZipBytes = %#v, want nil for directory loader", candDir.ZipBytes)
+	}
+	if candDir.VerifiedPack.Identity.AssetSHA256 != result.Assets.AssetSHA256 {
+		t.Fatalf("candDir AssetSHA256 = %s, want lock pin %s", candDir.VerifiedPack.Identity.AssetSHA256, result.Assets.AssetSHA256)
+	}
+
+	// 3. Remote Lock loader with fake transport
+	transport := &fixtureHTTPTransportWithResponses{
+		responses: map[string]fixtureHTTPResponseData{
+			"/dist/" + packbuilder.HostCallFixturePackID + ".lock.json": {
+				statusCode: http.StatusOK,
+				body:       lockJSON,
+			},
+			"/dist/" + packbuilder.HostCallFixtureAssetName: {
+				statusCode: http.StatusOK,
+				body:       result.Assets.PackZip,
+			},
+		},
+	}
+	client := &http.Client{Transport: transport}
+	candRemote, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/dist/"+packbuilder.HostCallFixturePackID+".lock.json", client)
+	if err != nil {
+		t.Fatalf("LoadRemotePackLockWithClientForTest() error = %v", err)
+	}
+	if len(candRemote.ZipBytes) == 0 {
+		t.Fatal("candRemote.ZipBytes is empty")
+	}
+	if candRemote.VerifiedPack.Identity.AssetSHA256 != result.Assets.AssetSHA256 {
+		t.Fatalf("candRemote AssetSHA256 = %s, want %s", candRemote.VerifiedPack.Identity.AssetSHA256, result.Assets.AssetSHA256)
+	}
+
+	// 4. Assert all three return identical identity and manifest
+	for name, cand := range map[string]extractor.RuntimePackCandidate{
+		"local_zip":  candZip,
+		"directory":  candDir,
+		"remote_url": candRemote,
+	} {
+		if cand.VerifiedPack.Manifest.PackID != result.Assets.Manifest.PackID {
+			t.Fatalf("%s PackID = %q, want %q", name, cand.VerifiedPack.Manifest.PackID, result.Assets.Manifest.PackID)
+		}
+		if cand.VerifiedPack.Manifest.PackVersion != result.Assets.Manifest.PackVersion {
+			t.Fatalf("%s PackVersion = %q, want %q", name, cand.VerifiedPack.Manifest.PackVersion, result.Assets.Manifest.PackVersion)
+		}
+		if cand.VerifiedPack.Identity.ManifestSHA256 != result.Assets.ManifestSHA256 {
+			t.Fatalf("%s ManifestSHA256 = %q, want %q", name, cand.VerifiedPack.Identity.ManifestSHA256, result.Assets.ManifestSHA256)
+		}
+		if cand.VerifiedPack.Identity.PayloadSHA256 != result.Assets.PayloadSHA256 {
+			t.Fatalf("%s PayloadSHA256 = %q, want %q", name, cand.VerifiedPack.Identity.PayloadSHA256, result.Assets.PayloadSHA256)
+		}
+		if cand.VerifiedPack.Identity.SignatureSHA256 != result.Assets.SignatureSHA256 {
+			t.Fatalf("%s SignatureSHA256 = %q, want %q", name, cand.VerifiedPack.Identity.SignatureSHA256, result.Assets.SignatureSHA256)
+		}
+	}
+}
+
+type fixtureHTTPResponseData struct {
+	statusCode int
+	body       []byte
+}
+
+type fixtureHTTPTransportWithResponses struct {
+	responses map[string]fixtureHTTPResponseData
+}
+
+func (t *fixtureHTTPTransportWithResponses) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, ok := t.responses[req.URL.Path]
+	if !ok {
+		return &http.Response{
+			StatusCode: http.StatusNotFound,
+			Body:       io.NopCloser(strings.NewReader("not found")),
+			Request:    req,
+		}, nil
+	}
+
+	return &http.Response{
+		StatusCode: resp.statusCode,
+		Body:       io.NopCloser(bytes.NewReader(resp.body)),
+		Request:    req,
+	}, nil
 }
 
 func verifiedHostCallFixturePack(t *testing.T) (packbuilder.SignedPackAssets, extractor.VerifiedPack) {
