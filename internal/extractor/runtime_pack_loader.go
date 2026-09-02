@@ -264,10 +264,10 @@ func validateAssetFilename(name string) error {
 }
 
 func LoadLocalPackZip(ctx context.Context, zipPath string) (RuntimePackCandidate, error) {
-	cleanPath := filepath.Clean(strings.TrimSpace(zipPath))
-	if cleanPath == "" {
+	if strings.TrimSpace(zipPath) == "" {
 		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorSourceUnreadable, errors.New("zip path is empty"))
 	}
+	cleanPath := filepath.Clean(zipPath)
 
 	info, err := os.Lstat(cleanPath)
 	if err != nil {
@@ -343,10 +343,10 @@ func LoadLocalPackZip(ctx context.Context, zipPath string) (RuntimePackCandidate
 }
 
 func LoadLocalPackDirectory(ctx context.Context, dirPath string) (RuntimePackCandidate, error) {
-	cleanDir := filepath.Clean(strings.TrimSpace(dirPath))
-	if cleanDir == "" {
+	if strings.TrimSpace(dirPath) == "" {
 		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorSourceUnreadable, errors.New("dir path is empty"))
 	}
+	cleanDir := filepath.Clean(dirPath)
 
 	dirInfo, err := os.Lstat(cleanDir)
 	if err != nil {
@@ -445,7 +445,6 @@ func LoadRemotePackLock(ctx context.Context, lockURL string) (RuntimePackCandida
 	transport := defaultSecureHTTPTransport()
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   30 * time.Second,
 	}
 	client = cloneHTTPClientWithRedirectCheck(client, true)
 
@@ -453,12 +452,16 @@ func LoadRemotePackLock(ctx context.Context, lockURL string) (RuntimePackCandida
 }
 
 func loadRemotePackLockWithClient(ctx context.Context, rawLockURL string, client *http.Client) (RuntimePackCandidate, error) {
+	// Establish a single operation-level timeout covering both lock and asset fetches
+	opCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	parsedURL, err := validateRemoteLockURL(rawLockURL)
 	if err != nil {
 		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorRemoteDenied, err)
 	}
 
-	lockReq, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
+	lockReq, err := http.NewRequestWithContext(opCtx, http.MethodGet, parsedURL.String(), nil)
 	if err != nil {
 		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorRemoteFailed, err)
 	}
@@ -510,7 +513,7 @@ func loadRemotePackLockWithClient(ctx context.Context, rawLockURL string, client
 	resolvedAssetURL.RawQuery = ""
 	resolvedAssetURL.Fragment = ""
 
-	assetReq, err := http.NewRequestWithContext(ctx, http.MethodGet, resolvedAssetURL.String(), nil)
+	assetReq, err := http.NewRequestWithContext(opCtx, http.MethodGet, resolvedAssetURL.String(), nil)
 	if err != nil {
 		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorRemoteFailed, err)
 	}
@@ -539,7 +542,7 @@ func loadRemotePackLockWithClient(ctx context.Context, rawLockURL string, client
 		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorSourceShapeInvalid, err)
 	}
 
-	return VerifyRuntimePackComponents(ctx, archive.ManifestJSON, archive.Payload, archive.Signature, lockBytes, assetBytes, true)
+	return VerifyRuntimePackComponents(opCtx, archive.ManifestJSON, archive.Payload, archive.Signature, lockBytes, assetBytes, true)
 }
 
 func validateRemoteLockURL(rawLockURL string) (*url.URL, error) {
@@ -606,13 +609,32 @@ func cloneHTTPClientWithRedirectCheck(client *http.Client, sameOrigin bool) *htt
 			return errors.New("redirect target crosses origin")
 		}
 
+		// Delete Referer, Authorization, and Cookie on redirect to prevent query or credential leakage
+		req.Header.Del("Referer")
+		req.Header.Del("Authorization")
+		req.Header.Del("Cookie")
+
 		return nil
-	}
-	if cloned.Timeout == 0 {
-		cloned.Timeout = 30 * time.Second
 	}
 
 	return &cloned
+}
+
+func urlEffectivePort(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	port := u.Port()
+	if port != "" {
+		return port
+	}
+	if strings.EqualFold(u.Scheme, "https") {
+		return "443"
+	}
+	if strings.EqualFold(u.Scheme, "http") {
+		return "80"
+	}
+	return ""
 }
 
 func sameURLOrigin(a *url.URL, b *url.URL) bool {
@@ -620,5 +642,11 @@ func sameURLOrigin(a *url.URL, b *url.URL) bool {
 		return false
 	}
 
-	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+	if !strings.EqualFold(a.Scheme, b.Scheme) {
+		return false
+	}
+	if !strings.EqualFold(a.Hostname(), b.Hostname()) {
+		return false
+	}
+	return urlEffectivePort(a) == urlEffectivePort(b)
 }

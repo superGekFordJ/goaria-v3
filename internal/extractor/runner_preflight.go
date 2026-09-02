@@ -1,6 +1,7 @@
 package extractor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,14 @@ import (
 func PreflightWASMModule(ctx context.Context, pack VerifiedPack) error {
 	if err := validateRunnablePack(pack); err != nil {
 		return err
+	}
+
+	hasStart, err := hasWASMStartSection(pack.Payload)
+	if err != nil {
+		return fmt.Errorf("check wasm start section: %w", err)
+	}
+	if hasStart {
+		return errors.New("wasm module contains forbidden start section")
 	}
 
 	preflightCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -145,8 +154,8 @@ func PreflightWASMModule(ctx context.Context, pack VerifiedPack) error {
 		return fmt.Errorf("instantiate inert host imports: %w", err)
 	}
 
-	// Instantiate guest module without start functions
-	moduleConfig := wazero.NewModuleConfig().WithName("preflight")
+	// Instantiate guest module without start functions (explicitly disable _start)
+	moduleConfig := wazero.NewModuleConfig().WithName("").WithStartFunctions()
 	mod, err := runtime.InstantiateModule(preflightCtx, compiled, moduleConfig)
 	if err != nil {
 		return fmt.Errorf("instantiate wasm module: %w", err)
@@ -170,4 +179,49 @@ func PreflightWASMModule(ctx context.Context, pack VerifiedPack) error {
 	}
 
 	return nil
+}
+
+func hasWASMStartSection(payload []byte) (bool, error) {
+	if len(payload) < 8 {
+		return false, errors.New("wasm binary too short")
+	}
+	if !bytes.Equal(payload[:4], []byte{0x00, 0x61, 0x73, 0x6d}) {
+		return false, errors.New("invalid wasm magic")
+	}
+
+	offset := 8
+	for offset < len(payload) {
+		sectionID := payload[offset]
+		offset++
+
+		// Decode unsigned LEB128 length
+		var size uint32
+		var shift uint
+		for {
+			if offset >= len(payload) {
+				return false, errors.New("truncated wasm section header")
+			}
+			b := payload[offset]
+			offset++
+			size |= uint32(b&0x7f) << shift
+			if b&0x80 == 0 {
+				break
+			}
+			shift += 7
+			if shift > 35 {
+				return false, errors.New("invalid leb128 in wasm section")
+			}
+		}
+
+		if sectionID == 8 { // WebAssembly binary Section 8 is the Start section
+			return true, nil
+		}
+
+		offset += int(size)
+		if offset > len(payload) {
+			return false, errors.New("truncated wasm section content")
+		}
+	}
+
+	return false, nil
 }

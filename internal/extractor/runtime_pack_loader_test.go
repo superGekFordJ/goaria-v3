@@ -11,8 +11,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -426,6 +428,14 @@ func TestLoadLocalPackZip(t *testing.T) {
 		}
 	})
 
+	t.Run("empty or whitespace zip path", func(t *testing.T) {
+		_, errEmpty := extractor.LoadLocalPackZip(context.Background(), "")
+		assertErrorCode(t, errEmpty, extractor.RuntimePackLoadErrorSourceUnreadable)
+
+		_, errWS := extractor.LoadLocalPackZip(context.Background(), "   ")
+		assertErrorCode(t, errWS, extractor.RuntimePackLoadErrorSourceUnreadable)
+	})
+
 	t.Run("missing zip file", func(t *testing.T) {
 		_, err := extractor.LoadLocalPackZip(context.Background(), filepath.Join(outDir, "nonexistent.pack.zip"))
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceUnreadable)
@@ -506,6 +516,14 @@ func TestLoadLocalPackDirectory(t *testing.T) {
 		if candidate.VerifiedPack.Identity.AssetSHA256 != writeRes.Assets.AssetSHA256 {
 			t.Fatalf("AssetSHA256 = %s, want %s", candidate.VerifiedPack.Identity.AssetSHA256, writeRes.Assets.AssetSHA256)
 		}
+	})
+
+	t.Run("empty or whitespace dir path", func(t *testing.T) {
+		_, errEmpty := extractor.LoadLocalPackDirectory(context.Background(), "")
+		assertErrorCode(t, errEmpty, extractor.RuntimePackLoadErrorSourceUnreadable)
+
+		_, errWS := extractor.LoadLocalPackDirectory(context.Background(), "   ")
+		assertErrorCode(t, errWS, extractor.RuntimePackLoadErrorSourceUnreadable)
 	})
 
 	t.Run("file passed as dirPath", func(t *testing.T) {
@@ -592,6 +610,19 @@ func TestLoadRemotePackLock(t *testing.T) {
 		if candidate.VerifiedPack.Identity.AssetSHA256 != assets.AssetSHA256 {
 			t.Fatalf("AssetSHA256 = %s, want %s", candidate.VerifiedPack.Identity.AssetSHA256, assets.AssetSHA256)
 		}
+
+		// Verify headers on recorded requests: Accept set, no Referer, Authorization, Cookie
+		for _, req := range transport.RecordedRequests() {
+			if req.Header.Get("Referer") != "" {
+				t.Fatalf("unexpected Referer in request: %q", req.Header.Get("Referer"))
+			}
+			if req.Header.Get("Authorization") != "" {
+				t.Fatalf("unexpected Authorization in request: %q", req.Header.Get("Authorization"))
+			}
+			if req.Header.Get("Cookie") != "" {
+				t.Fatalf("unexpected Cookie in request: %q", req.Header.Get("Cookie"))
+			}
+		}
 	})
 
 	t.Run("query bearing lock drops query on sibling asset and redacts errors", func(t *testing.T) {
@@ -615,15 +646,15 @@ func TestLoadRemotePackLock(t *testing.T) {
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
 
 		// Assert asset request had no query
-		reqs := transport.Requests()
+		reqs := transport.RecordedRequests()
 		if len(reqs) != 2 {
 			t.Fatalf("requests count = %d, want 2", len(reqs))
 		}
-		if !strings.Contains(reqs[0], "token="+secretToken) {
-			t.Fatalf("first request %q did not contain token", reqs[0])
+		if !strings.Contains(reqs[0].URL.String(), "token="+secretToken) {
+			t.Fatalf("first request %q did not contain token", reqs[0].URL.String())
 		}
-		if strings.Contains(reqs[1], "token") || strings.Contains(reqs[1], secretToken) || strings.Contains(reqs[1], "?") {
-			t.Fatalf("second request %q leaked token or query string", reqs[1])
+		if strings.Contains(reqs[1].URL.String(), "token") || strings.Contains(reqs[1].URL.String(), secretToken) || reqs[1].URL.RawQuery != "" {
+			t.Fatalf("second request %q leaked token or query string", reqs[1].URL.String())
 		}
 
 		// Assert error string does not leak the token or url
@@ -631,6 +662,274 @@ func TestLoadRemotePackLock(t *testing.T) {
 		if strings.Contains(errMsg, secretToken) || strings.Contains(errMsg, "token") || strings.Contains(errMsg, "example.invalid") {
 			t.Fatalf("error message %q leaked secret query or URL", errMsg)
 		}
+	})
+
+	t.Run("redirect strips Referer Authorization and Cookie headers", func(t *testing.T) {
+		secretToken := "sensitive_redirect_token_999"
+		targetLockPath := "/target/" + packbuilder.HostCallFixturePackID + ".lock.json"
+		transport := &fakeRemoteTransport{
+			responses: map[string]fakeHTTPResponse{
+				"/source.lock.json": {
+					statusCode: http.StatusFound,
+					headers: map[string]string{
+						"Location": "https://example.invalid" + targetLockPath,
+					},
+				},
+				targetLockPath: {
+					statusCode: http.StatusOK,
+					body:       lockJSON,
+				},
+				"/target/" + packbuilder.HostCallFixtureAssetName: {
+					statusCode: http.StatusOK,
+					body:       assets.PackZip,
+				},
+			},
+		}
+		client := &http.Client{Transport: transport}
+		client = cloneRedirectClient(client, true)
+
+		candidate, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/source.lock.json?token="+secretToken, client)
+		if err != nil {
+			t.Fatalf("LoadRemotePackLock failed on same-origin redirect: %v", err)
+		}
+		if candidate.VerifiedPack.Manifest.PackID != packbuilder.HostCallFixturePackID {
+			t.Fatalf("candidate PackID = %q", candidate.VerifiedPack.Manifest.PackID)
+		}
+
+		reqs := transport.RecordedRequests()
+		if len(reqs) < 2 {
+			t.Fatalf("expected at least 2 requests, got %d", len(reqs))
+		}
+		for _, req := range reqs {
+			if req.Header.Get("Referer") != "" {
+				t.Fatalf("Referer header %q leaked on request %s", req.Header.Get("Referer"), req.URL.String())
+			}
+			if req.Header.Get("Authorization") != "" {
+				t.Fatalf("Authorization header leaked on request %s", req.URL.String())
+			}
+			if req.Header.Get("Cookie") != "" {
+				t.Fatalf("Cookie header leaked on request %s", req.URL.String())
+			}
+		}
+	})
+
+	t.Run("same origin port varying redirect succeeds", func(t *testing.T) {
+		targetLockPath := "/packs/" + packbuilder.HostCallFixturePackID + ".lock.json"
+		transport := &fakeRemoteTransport{
+			responses: map[string]fakeHTTPResponse{
+				"/initial.lock.json": {
+					statusCode: http.StatusFound,
+					headers: map[string]string{
+						"Location": "https://example.invalid" + targetLockPath,
+					},
+				},
+				targetLockPath: {
+					statusCode: http.StatusOK,
+					body:       lockJSON,
+				},
+				"/packs/" + packbuilder.HostCallFixtureAssetName: {
+					statusCode: http.StatusOK,
+					body:       assets.PackZip,
+				},
+			},
+		}
+		client := &http.Client{Transport: transport}
+		client = cloneRedirectClient(client, true)
+
+		// Initial request has explicit default port :443
+		candidate, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid:443/initial.lock.json", client)
+		if err != nil {
+			t.Fatalf("LoadRemotePackLock failed on port-varying same-origin redirect: %v", err)
+		}
+		if candidate.VerifiedPack.Manifest.PackID != packbuilder.HostCallFixturePackID {
+			t.Fatalf("candidate PackID = %q", candidate.VerifiedPack.Manifest.PackID)
+		}
+	})
+
+	t.Run("cross origin redirect is rejected", func(t *testing.T) {
+		transport := &fakeRemoteTransport{
+			responses: map[string]fakeHTTPResponse{
+				"/initial.lock.json": {
+					statusCode: http.StatusFound,
+					headers: map[string]string{
+						"Location": "https://attacker.invalid/target.lock.json",
+					},
+				},
+			},
+		}
+		client := &http.Client{Transport: transport}
+		client = cloneRedirectClient(client, true)
+
+		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/initial.lock.json", client)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
+	})
+
+	t.Run("too many redirects is rejected", func(t *testing.T) {
+		transport := &fakeRemoteTransport{
+			responses: map[string]fakeHTTPResponse{
+				"/r0.lock.json": {statusCode: http.StatusFound, headers: map[string]string{"Location": "https://example.invalid/r1.lock.json"}},
+				"/r1.lock.json": {statusCode: http.StatusFound, headers: map[string]string{"Location": "https://example.invalid/r2.lock.json"}},
+				"/r2.lock.json": {statusCode: http.StatusFound, headers: map[string]string{"Location": "https://example.invalid/r3.lock.json"}},
+				"/r3.lock.json": {statusCode: http.StatusFound, headers: map[string]string{"Location": "https://example.invalid/r4.lock.json"}},
+				"/r4.lock.json": {statusCode: http.StatusFound, headers: map[string]string{"Location": "https://example.invalid/r5.lock.json"}},
+				"/r5.lock.json": {statusCode: http.StatusFound, headers: map[string]string{"Location": "https://example.invalid/r6.lock.json"}},
+			},
+		}
+		client := &http.Client{Transport: transport}
+		client = cloneRedirectClient(client, true)
+
+		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/r0.lock.json", client)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
+	})
+
+	t.Run("unicode asset leaf loads properly", func(t *testing.T) {
+		unicodeAssetName := "fixture_测试.pack.zip"
+		unicodeLock := packbuilder.LockForAssetPath(unicodeAssetName, assets)
+		unicodeLockJSON, err := json.Marshal(unicodeLock)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		transport := &fakeRemoteTransport{
+			responses: map[string]fakeHTTPResponse{
+				"/packs/" + packbuilder.HostCallFixturePackID + ".lock.json": {
+					statusCode: http.StatusOK,
+					body:       unicodeLockJSON,
+				},
+				"/packs/" + unicodeAssetName: {
+					statusCode: http.StatusOK,
+					body:       assets.PackZip,
+				},
+				"/packs/fixture_%E6%B5%8B%E8%AF%95.pack.zip": {
+					statusCode: http.StatusOK,
+					body:       assets.PackZip,
+				},
+			},
+		}
+		client := &http.Client{Transport: transport}
+
+		candidate, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
+		if err != nil {
+			t.Fatalf("LoadRemotePackLock failed for unicode asset leaf: %v", err)
+		}
+		if candidate.VerifiedPack.Manifest.PackID != packbuilder.HostCallFixturePackID {
+			t.Fatalf("PackID = %q", candidate.VerifiedPack.Manifest.PackID)
+		}
+	})
+
+	t.Run("oversized lock Content-Length rejected", func(t *testing.T) {
+		transport := &fakeRemoteTransport{
+			responses: map[string]fakeHTTPResponse{
+				"/packs/" + packbuilder.HostCallFixturePackID + ".lock.json": {
+					statusCode: http.StatusOK,
+					headers:    map[string]string{"Content-Length": "300000"},
+					body:       lockJSON,
+				},
+			},
+		}
+		client := &http.Client{Transport: transport}
+
+		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
+	})
+
+	t.Run("oversized lock streaming body rejected", func(t *testing.T) {
+		oversizedBody := append(append([]byte(nil), lockJSON...), bytes.Repeat([]byte(" "), 300000)...)
+		transport := &fakeRemoteTransport{
+			responses: map[string]fakeHTTPResponse{
+				"/packs/" + packbuilder.HostCallFixturePackID + ".lock.json": {
+					statusCode: http.StatusOK,
+					body:       oversizedBody,
+				},
+			},
+		}
+		client := &http.Client{Transport: transport}
+
+		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
+	})
+
+	t.Run("oversized asset Content-Length rejected", func(t *testing.T) {
+		transport := &fakeRemoteTransport{
+			responses: map[string]fakeHTTPResponse{
+				"/packs/" + packbuilder.HostCallFixturePackID + ".lock.json": {
+					statusCode: http.StatusOK,
+					body:       lockJSON,
+				},
+				"/packs/" + packbuilder.HostCallFixtureAssetName: {
+					statusCode: http.StatusOK,
+					headers:    map[string]string{"Content-Length": "70000000"},
+					body:       assets.PackZip,
+				},
+			},
+		}
+		client := &http.Client{Transport: transport}
+
+		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
+	})
+
+	t.Run("total operation timeout", func(t *testing.T) {
+		transport := &fakeRemoteTransport{
+			responses: map[string]fakeHTTPResponse{
+				"/packs/" + packbuilder.HostCallFixturePackID + ".lock.json": {
+					statusCode: http.StatusOK,
+					body:       lockJSON,
+				},
+				"/packs/" + packbuilder.HostCallFixtureAssetName: {
+					statusCode: http.StatusOK,
+					body:       assets.PackZip,
+				},
+			},
+		}
+		client := &http.Client{Transport: transport}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // pre-cancel context
+
+		_, err := extractor.LoadRemotePackLockWithClientForTest(ctx, "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
+	})
+
+	t.Run("truncated zip asset rejected", func(t *testing.T) {
+		transport := &fakeRemoteTransport{
+			responses: map[string]fakeHTTPResponse{
+				"/packs/" + packbuilder.HostCallFixturePackID + ".lock.json": {
+					statusCode: http.StatusOK,
+					body:       lockJSON,
+				},
+				"/packs/" + packbuilder.HostCallFixtureAssetName: {
+					statusCode: http.StatusOK,
+					body:       assets.PackZip[:20], // truncated zip
+				},
+			},
+		}
+		client := &http.Client{Transport: transport}
+
+		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
+	})
+
+	t.Run("asset redirect to private IP rejected", func(t *testing.T) {
+		transport := &fakeRemoteTransport{
+			responses: map[string]fakeHTTPResponse{
+				"/packs/" + packbuilder.HostCallFixturePackID + ".lock.json": {
+					statusCode: http.StatusOK,
+					body:       lockJSON,
+				},
+				"/packs/" + packbuilder.HostCallFixtureAssetName: {
+					statusCode: http.StatusFound,
+					headers: map[string]string{
+						"Location": "https://127.0.0.1/pack.zip",
+					},
+				},
+			},
+		}
+		client := &http.Client{Transport: transport}
+		client = cloneRedirectClient(client, true)
+
+		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
 	})
 
 	t.Run("URL validation rejections", func(t *testing.T) {
@@ -724,6 +1023,55 @@ func TestLoadRemotePackLock(t *testing.T) {
 	})
 }
 
+func cloneRedirectClient(client *http.Client, sameOrigin bool) *http.Client {
+	cloned := *client
+	cloned.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many redirects")
+		}
+		if !strings.EqualFold(req.URL.Scheme, "https") {
+			return errors.New("redirect target scheme is not https")
+		}
+		if req.URL.User != nil || req.URL.Fragment != "" {
+			return errors.New("redirect target has userinfo or fragment")
+		}
+		if net.ParseIP(req.URL.Hostname()) != nil {
+			return errors.New("redirect target host is ip literal")
+		}
+		if sameOrigin && len(via) > 0 && via[0] != nil && !sameOriginHosts(via[0].URL, req.URL) {
+			return errors.New("redirect target crosses origin")
+		}
+
+		req.Header.Del("Referer")
+		req.Header.Del("Authorization")
+		req.Header.Del("Cookie")
+
+		return nil
+	}
+	return &cloned
+}
+
+func sameOriginHosts(a, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if !strings.EqualFold(a.Scheme, b.Scheme) {
+		return false
+	}
+	if !strings.EqualFold(a.Hostname(), b.Hostname()) {
+		return false
+	}
+	pA := a.Port()
+	if pA == "" && strings.EqualFold(a.Scheme, "https") {
+		pA = "443"
+	}
+	pB := b.Port()
+	if pB == "" && strings.EqualFold(b.Scheme, "https") {
+		pB = "443"
+	}
+	return pA == pB
+}
+
 type testIPResolver struct {
 	ips map[string][]net.IPAddr
 }
@@ -739,7 +1087,7 @@ func (r testIPResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IP
 type fakeRemoteTransport struct {
 	mu        sync.Mutex
 	responses map[string]fakeHTTPResponse
-	requests  []string
+	requests  []*http.Request
 }
 
 type fakeHTTPResponse struct {
@@ -750,11 +1098,18 @@ type fakeHTTPResponse struct {
 }
 
 func (t *fakeRemoteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := req.Context().Err(); err != nil {
+		return nil, err
+	}
+
 	t.mu.Lock()
-	t.requests = append(t.requests, req.URL.String())
+	t.requests = append(t.requests, req.Clone(req.Context()))
 	t.mu.Unlock()
 
 	resp, ok := t.responses[req.URL.Path]
+	if !ok {
+		resp, ok = t.responses[req.URL.String()]
+	}
 	if !ok {
 		return &http.Response{
 			StatusCode: http.StatusNotFound,
@@ -771,18 +1126,26 @@ func (t *fakeRemoteTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		header.Set(k, v)
 	}
 
+	contentLen := int64(len(resp.body))
+	if clStr, ok := resp.headers["Content-Length"]; ok {
+		if cl, err := strconv.ParseInt(clStr, 10, 64); err == nil {
+			contentLen = cl
+		}
+	}
+
 	return &http.Response{
-		StatusCode: resp.statusCode,
-		Header:     header,
-		Body:       io.NopCloser(bytes.NewReader(resp.body)),
-		Request:    req,
+		StatusCode:    resp.statusCode,
+		Header:        header,
+		Body:          io.NopCloser(bytes.NewReader(resp.body)),
+		ContentLength: contentLen,
+		Request:       req,
 	}, nil
 }
 
-func (t *fakeRemoteTransport) Requests() []string {
+func (t *fakeRemoteTransport) RecordedRequests() []*http.Request {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return append([]string(nil), t.requests...)
+	return append([]*http.Request(nil), t.requests...)
 }
 
 func assertErrorCode(t *testing.T, err error, wantCode extractor.RuntimePackLoadErrorCode) {
