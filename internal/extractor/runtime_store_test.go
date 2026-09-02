@@ -290,13 +290,62 @@ func TestRuntimeStoreStagingFinalizeAndCleanup(t *testing.T) {
 	})
 
 	t.Run("finalize rejects existing generation", func(t *testing.T) {
-		// Attempting to finalize gen1 again should error
-		_, _ = store.writeCandidateToStaging(gen1, candidateZip)
-		err := store.finalizeCandidateGeneration("xpk-persisted", gen1)
+		genExisting := strings.Repeat("e", 32)
+		_, err := store.writeCandidateToStaging(genExisting, candidateZip)
+		if err != nil {
+			t.Fatalf("writeCandidateToStaging error: %v", err)
+		}
+		if err := store.finalizeCandidateGeneration("xpk-persisted", genExisting); err != nil {
+			t.Fatalf("first finalize error: %v", err)
+		}
+
+		// Staging a new candidate with same genExisting and trying to finalize to same pack must fail
+		genStaging := strings.Repeat("f", 32)
+		_, err = store.writeCandidateToStaging(genStaging, candidateZip)
+		if err != nil {
+			t.Fatalf("writeCandidateToStaging error: %v", err)
+		}
+		defer os.RemoveAll(filepath.Join(store.stagingDir(), genStaging))
+
+		// Rename into genExisting must error since destination exists
+		stagingGenDir := filepath.Join(store.stagingDir(), genStaging)
+		targetGenDir := filepath.Join(store.packsDir(), "xpk-persisted", genExisting)
+		if _, err := os.Lstat(targetGenDir); err != nil {
+			t.Fatalf("target should exist: %v", err)
+		}
+		// Attempting to finalize to genExisting
+		err = store.finalizeCandidateGeneration("xpk-persisted", genExisting)
 		if err == nil {
 			t.Fatal("expected error on existing generation")
 		}
-		_ = os.RemoveAll(filepath.Join(store.stagingDir(), gen1))
+		_ = os.RemoveAll(stagingGenDir)
+	})
+
+	t.Run("writeCandidateToStaging rejects existing staging generation", func(t *testing.T) {
+		genTest := strings.Repeat("d", 32)
+		stagingPath, err := store.writeCandidateToStaging(genTest, candidateZip)
+		if err != nil {
+			t.Fatalf("first write failed: %v", err)
+		}
+		defer os.RemoveAll(stagingPath)
+
+		// Second call with same gen must fail exclusively
+		_, err = store.writeCandidateToStaging(genTest, candidateZip)
+		if err == nil {
+			t.Fatal("expected error on duplicate staging generation")
+		}
+	})
+
+	t.Run("deleteGeneration validates arguments strictly", func(t *testing.T) {
+		if err := store.deleteGeneration("", strings.Repeat("a", 32)); err == nil {
+			t.Fatal("expected error for empty packID")
+		}
+		if err := store.deleteGeneration("xpk-test", "short"); err == nil {
+			t.Fatal("expected error for invalid cache_generation")
+		}
+		if err := store.deleteGeneration("xpk-test", strings.Repeat("A", 32)); err == nil {
+			t.Fatal("expected error for uppercase cache_generation")
+		}
 	})
 
 	t.Run("cleanup deletes only exact generation directory and preserves parent", func(t *testing.T) {

@@ -67,6 +67,12 @@ func (s *runtimeStore) stagingDir() string {
 }
 
 func (s *runtimeStore) generationDir(packID, gen string) string {
+	if err := validatePackID(packID); err != nil {
+		return ""
+	}
+	if err := validateLowerHex32Field("cache_generation", gen); err != nil {
+		return ""
+	}
 	return filepath.Join(s.packsDir(), packID, gen)
 }
 
@@ -239,10 +245,26 @@ func (s *runtimeStore) writeCandidateToStaging(gen string, candidate RuntimePack
 			return "", err
 		}
 	}
+	if err := validateLowerHex32Field("cache_generation", gen); err != nil {
+		return "", fmt.Errorf("staging invalid cache_generation: %w", err)
+	}
+	if err := os.MkdirAll(s.stagingDir(), 0o700); err != nil {
+		return "", fmt.Errorf("mkdir staging root: %w", err)
+	}
 
 	stagingGenDir := filepath.Join(s.stagingDir(), gen)
-	if err := os.MkdirAll(stagingGenDir, 0o700); err != nil {
+	if err := os.Mkdir(stagingGenDir, 0o700); err != nil {
 		return "", fmt.Errorf("mkdir staging: %w", err)
+	}
+
+	fi, err := os.Lstat(stagingGenDir)
+	if err != nil {
+		_ = os.Remove(stagingGenDir)
+		return "", fmt.Errorf("lstat staging: %w", err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		_ = os.Remove(stagingGenDir)
+		return "", errors.New("staging generation is a symlink or not a directory")
 	}
 
 	files := []struct {
@@ -391,12 +413,28 @@ func (s *runtimeStore) deleteGeneration(packID, gen string) error {
 			return err
 		}
 	}
+	if err := validatePackID(packID); err != nil {
+		return fmt.Errorf("delete generation invalid pack_id: %w", err)
+	}
+	if err := validateLowerHex32Field("cache_generation", gen); err != nil {
+		return fmt.Errorf("delete generation invalid cache_generation: %w", err)
+	}
 	targetDir := s.generationDir(packID, gen)
+	parentPackDir := filepath.Join(s.packsDir(), packID)
+	if targetDir == "" || targetDir == parentPackDir || targetDir == s.packsDir() || filepath.Dir(targetDir) != parentPackDir {
+		return errors.New("delete generation target is not a valid generation directory")
+	}
 	return os.RemoveAll(targetDir)
 }
 
 func (s *runtimeStore) readCachedCandidate(ctx context.Context, packID, gen string, kind RuntimeSourceKind) (RuntimePackCandidate, error) {
+	if ctx != nil && ctx.Err() != nil {
+		return RuntimePackCandidate{}, ctx.Err()
+	}
 	genDir := s.generationDir(packID, gen)
+	if genDir == "" {
+		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorSourceShapeInvalid, errors.New("invalid generation path"))
+	}
 	info, err := os.Lstat(genDir)
 	if err != nil {
 		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorSourceUnreadable, err)

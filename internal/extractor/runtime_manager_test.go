@@ -839,4 +839,114 @@ func TestRuntimeManagerCornerCases(t *testing.T) {
 			t.Fatalf("unexpected snap packs: %#v", snapPacks)
 		}
 	})
+
+	t.Run("safeDisplayName trims unicode runes without splitting multi-byte chars", func(t *testing.T) {
+		tempDir := t.TempDir()
+		longChineseName := strings.Repeat("中", 70) + ".zip"
+		res := safeDisplayName(RuntimeSourceKindLocalZip, filepath.Join(tempDir, longChineseName))
+		runes := []rune(res)
+		if len(runes) != 64 {
+			t.Fatalf("expected 64 runes, got %d", len(runes))
+		}
+		if !strings.HasPrefix(res, strings.Repeat("中", 64)) {
+			t.Fatalf("unexpected trimmed string: %s", res)
+		}
+	})
+
+	t.Run("reload rejects conflict with embedded pack", func(t *testing.T) {
+		tempDir := t.TempDir()
+		mgr, _ := NewExtractorRuntimeManager(context.Background(), ExtractorRuntimeManagerConfig{
+			DataRoot: tempDir,
+		})
+
+		c := makeTestCandidate(t, "xpk-reloaded", "1.0.0", privKey1, pubKey1, true, nil)
+		mgr.testLoaderOverride = func(ctx context.Context, spec RuntimeSourceSpec) (RuntimePackCandidate, error) {
+			return c, nil
+		}
+
+		loaded, err := mgr.LoadSource(context.Background(), RuntimeSourceSpec{
+			Kind:    RuntimeSourceKindLocalZip,
+			Locator: filepath.Join(tempDir, "reload.zip"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Inject embedded pack with same pack ID
+		mgr.embeddedPacks = append(mgr.embeddedPacks, c.VerifiedPack)
+
+		_, err = mgr.ReloadSource(context.Background(), loaded.SourceID)
+		var mgrErr *RuntimeManagerError
+		if !errors.As(err, &mgrErr) || mgrErr.Code != RuntimeManagerErrorPackIDConflict {
+			t.Fatalf("expected pack_id_conflict, got %v", err)
+		}
+	})
+
+	t.Run("remove source supports cancellation", func(t *testing.T) {
+		tempDir := t.TempDir()
+		mgr, _ := NewExtractorRuntimeManager(context.Background(), ExtractorRuntimeManagerConfig{
+			DataRoot: tempDir,
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := mgr.RemoveSource(ctx, strings.Repeat("a", 32))
+		var mgrErr *RuntimeManagerError
+		if !errors.As(err, &mgrErr) || mgrErr.Code != RuntimeManagerErrorCancelled {
+			t.Fatalf("expected cancelled error, got %v", err)
+		}
+	})
+
+	t.Run("cold start recovery respects context cancellation", func(t *testing.T) {
+		tempDir := t.TempDir()
+		store := newRuntimeStore(tempDir)
+
+		c1 := makeTestCandidate(t, "xpk-cancel", "1.0.0", privKey1, pubKey1, true, nil)
+		gen1 := strings.Repeat("1", 32)
+		_, _ = store.writeCandidateToStaging(gen1, c1)
+		_ = store.finalizeCandidateGeneration("xpk-cancel", gen1)
+
+		sources := []runtimeIndexSource{
+			{SourceID: strings.Repeat("a", 32), Kind: RuntimeSourceKindLocalZip, Locator: filepath.Join(tempDir, "1.zip"), PackID: "xpk-cancel", PackVersion: "1.0.0", SignerFingerprint: c1.VerifiedPack.Identity.PublicKeySHA256, CacheGeneration: gen1},
+		}
+		_ = store.replaceIndex(sources)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := NewExtractorRuntimeManager(ctx, ExtractorRuntimeManagerConfig{
+			DataRoot: tempDir,
+		})
+		var mgrErr *RuntimeManagerError
+		if !errors.As(err, &mgrErr) || mgrErr.Code != RuntimeManagerErrorCancelled {
+			t.Fatalf("expected cancelled error during recovery, got %v", err)
+		}
+	})
+
+	t.Run("pre-commit cancellation inside lock returns cancelled", func(t *testing.T) {
+		tempDir := t.TempDir()
+		mgr, _ := NewExtractorRuntimeManager(context.Background(), ExtractorRuntimeManagerConfig{
+			DataRoot: tempDir,
+		})
+
+		c := makeTestCandidate(t, "xpk-precommit", "1.0.0", privKey1, pubKey1, true, nil)
+		mgr.testLoaderOverride = func(ctx context.Context, spec RuntimeSourceSpec) (RuntimePackCandidate, error) {
+			return c, nil
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		mgr.testPreCommitHook = func() {
+			cancel()
+		}
+
+		_, err := mgr.LoadSource(ctx, RuntimeSourceSpec{
+			Kind:    RuntimeSourceKindLocalZip,
+			Locator: filepath.Join(tempDir, "precommit.zip"),
+		})
+		var mgrErr *RuntimeManagerError
+		if !errors.As(err, &mgrErr) || mgrErr.Code != RuntimeManagerErrorCancelled {
+			t.Fatalf("expected cancelled error, got %v", err)
+		}
+	})
 }

@@ -178,8 +178,9 @@ func safeDisplayName(kind RuntimeSourceKind, locator string) string {
 		if clean == "" || clean == "." || clean == "/" || clean == "\\" {
 			return "local"
 		}
-		if len(clean) > 64 {
-			clean = clean[:64]
+		runes := []rune(clean)
+		if len(runes) > 64 {
+			clean = string(runes[:64])
 		}
 		return clean
 	case RuntimeSourceKindRemoteLock:
@@ -272,8 +273,18 @@ func NewExtractorRuntimeManager(ctx context.Context, config ExtractorRuntimeMana
 				continue
 			}
 
+			if ctx != nil && ctx.Err() != nil {
+				return nil, newRuntimeManagerError(RuntimeManagerErrorCancelled, ctx.Err())
+			}
+
 			candidate, err := store.readCachedCandidate(ctx, raw.PackID, raw.CacheGeneration, raw.Kind)
 			if err != nil {
+				if ctx != nil && ctx.Err() != nil {
+					return nil, newRuntimeManagerError(RuntimeManagerErrorCancelled, ctx.Err())
+				}
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return nil, newRuntimeManagerError(RuntimeManagerErrorCancelled, err)
+				}
 				if loadErr, ok := errors.AsType[*RuntimePackLoadError](err); ok {
 					record.errorCode = string(loadErr.Code)
 				} else {
@@ -296,6 +307,9 @@ func NewExtractorRuntimeManager(ctx context.Context, config ExtractorRuntimeMana
 			}
 
 			if errCode, ok := checkRuntimeDependencies(ctx, vp, config); !ok {
+				if errCode == string(RuntimeManagerErrorCancelled) {
+					return nil, newRuntimeManagerError(RuntimeManagerErrorCancelled, ctx.Err())
+				}
 				record.errorCode = errCode
 				sourceRecords = append(sourceRecords, record)
 				continue
@@ -333,11 +347,20 @@ func NewExtractorRuntimeManager(ctx context.Context, config ExtractorRuntimeMana
 }
 
 func checkRuntimeDependencies(ctx context.Context, pack VerifiedPack, config ExtractorRuntimeManagerConfig) (string, bool) {
+	if ctx != nil && ctx.Err() != nil {
+		return string(RuntimeManagerErrorCancelled), false
+	}
 	if isAliasManifest(pack.Manifest) {
 		if config.HostPolicyResolver == nil {
 			return string(RuntimeManagerErrorPolicyUnavailable), false
 		}
 		if _, err := resolveAliasHostPolicy(ctx, config.HostPolicyResolver, pack.Identity, pack.Manifest); err != nil {
+			if ctx != nil && ctx.Err() != nil {
+				return string(RuntimeManagerErrorCancelled), false
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return string(RuntimeManagerErrorCancelled), false
+			}
 			return string(RuntimeManagerErrorPolicyUnavailable), false
 		}
 	}
@@ -505,6 +528,10 @@ func (m *ExtractorRuntimeManager) LoadSource(ctx context.Context, spec RuntimeSo
 	}
 
 	m.writeMu.Lock()
+	if ctx != nil && ctx.Err() != nil {
+		m.writeMu.Unlock()
+		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorCancelled, ctx.Err())
+	}
 	defer m.writeMu.Unlock()
 
 	curr = m.current.Load()
@@ -560,7 +587,7 @@ func (m *ExtractorRuntimeManager) LoadSource(ctx context.Context, spec RuntimeSo
 	nextSnapshotPacks := m.collectPacks(newSources)
 	nextSnapshot, err := buildSnapshot(curr.snapshot.revision+1, nextSnapshotPacks, m.config)
 	if err != nil {
-		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorPersistFailed, err)
+		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorStateInvalid, err)
 	}
 
 	_, err = m.store.writeCandidateToStaging(cacheGen, candidate)
@@ -650,7 +677,16 @@ func (m *ExtractorRuntimeManager) ReloadSource(ctx context.Context, sourceID str
 	}
 
 	m.writeMu.Lock()
-	defer m.writeMu.Unlock()
+	if ctx != nil && ctx.Err() != nil {
+		m.writeMu.Unlock()
+		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorCancelled, ctx.Err())
+	}
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			m.writeMu.Unlock()
+		}
+	}()
 
 	curr = m.current.Load()
 	if !curr.stateWritable {
@@ -671,6 +707,12 @@ func (m *ExtractorRuntimeManager) ReloadSource(ctx context.Context, sourceID str
 	if currentRec.cacheGeneration != captured.cacheGeneration || currentRec.packID != captured.packID ||
 		currentRec.signerFingerprint != captured.signerFingerprint || currentRec.locator != captured.locator {
 		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorConcurrentChange, errors.New("source changed concurrently"))
+	}
+
+	for _, ep := range m.embeddedPacks {
+		if ep.Identity.PackID == captured.packID {
+			return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorPackIDConflict, fmt.Errorf("pack id %s conflicts with embedded", captured.packID))
+		}
 	}
 
 	if candidate.VerifiedPack.Manifest.PackID != captured.packID {
@@ -709,7 +751,7 @@ func (m *ExtractorRuntimeManager) ReloadSource(ctx context.Context, sourceID str
 	nextSnapshotPacks := m.collectPacks(newSources)
 	nextSnapshot, err := buildSnapshot(curr.snapshot.revision+1, nextSnapshotPacks, m.config)
 	if err != nil {
-		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorPersistFailed, err)
+		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorStateInvalid, err)
 	}
 
 	_, err = m.store.writeCandidateToStaging(newGen, candidate)
@@ -748,22 +790,34 @@ func (m *ExtractorRuntimeManager) ReloadSource(ctx context.Context, sourceID str
 		stateWritable:  true,
 	}
 	m.current.Store(nextState)
+	m.writeMu.Unlock()
+	unlocked = true
 
-	// Best-effort post-publication cleanup of exact superseded generation
-	go func(pID, oldGen string) {
-		_ = m.store.deleteGeneration(pID, oldGen)
-	}(captured.packID, captured.cacheGeneration)
+	// Best-effort post-publication cleanup of exact superseded generation synchronously
+	_ = m.store.deleteGeneration(captured.packID, captured.cacheGeneration)
 
 	return updatedRecord.toSafeState(), nil
 }
 
 func (m *ExtractorRuntimeManager) RemoveSource(ctx context.Context, sourceID string) (RuntimeSourceState, error) {
+	if ctx != nil && ctx.Err() != nil {
+		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorCancelled, ctx.Err())
+	}
 	if err := validateLowerHex32Field("source_id", sourceID); err != nil {
 		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorInvalidSourceID, err)
 	}
 
 	m.writeMu.Lock()
-	defer m.writeMu.Unlock()
+	if ctx != nil && ctx.Err() != nil {
+		m.writeMu.Unlock()
+		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorCancelled, ctx.Err())
+	}
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			m.writeMu.Unlock()
+		}
+	}()
 
 	curr := m.current.Load()
 	if !curr.stateWritable {
@@ -793,7 +847,7 @@ func (m *ExtractorRuntimeManager) RemoveSource(ctx context.Context, sourceID str
 	nextSnapshotPacks := m.collectPacks(newSources)
 	nextSnapshot, err := buildSnapshot(curr.snapshot.revision+1, nextSnapshotPacks, m.config)
 	if err != nil {
-		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorPersistFailed, err)
+		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorStateInvalid, err)
 	}
 
 	indexRows := make([]runtimeIndexSource, len(newSources))
@@ -820,11 +874,11 @@ func (m *ExtractorRuntimeManager) RemoveSource(ctx context.Context, sourceID str
 		stateWritable:  true,
 	}
 	m.current.Store(nextState)
+	m.writeMu.Unlock()
+	unlocked = true
 
-	// Post-cleanup
-	go func(pID, oldGen string) {
-		_ = m.store.deleteGeneration(pID, oldGen)
-	}(targetRec.packID, targetRec.cacheGeneration)
+	// Post-cleanup synchronously after lock release
+	_ = m.store.deleteGeneration(targetRec.packID, targetRec.cacheGeneration)
 
 	return targetRec.toSafeState(), nil
 }
