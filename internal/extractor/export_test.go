@@ -2,6 +2,7 @@ package extractor
 
 import (
 	"context"
+	"io"
 	"net/http"
 )
 
@@ -19,4 +20,8 @@ func CloneHTTPClientWithRedirectCheckForTest(client *http.Client, sameOrigin boo
 
 func NewPrivateIPGuardedTransportForTest(resolver ipResolver, dialer dialContextFunc) *http.Transport {
 	return newPrivateIPGuardedTransport(resolver, dialer)
+}
+
+func ReadLimitedBytesForTest(reader io.Reader, limit int64, label string) ([]byte, error) {
+	return readLimitedBytes(reader, limit, label)
 }

@@ -118,6 +118,7 @@ func TestVerifyRuntimePackComponentsErrors(t *testing.T) {
 	}
 	validLockJSON := mustMarshalJSON(freshLock())
 	badWASMManifest, badWASMPayload, badWASMSig, badWASMLock := buildPreflightFailingComponents()
+	mismatchManifestJSON, mismatchPayload, mismatchSig, mismatchLockJSON := buildManifestPayloadHashMismatchFixture()
 
 	tests := []struct {
 		name          string
@@ -304,13 +305,41 @@ func TestVerifyRuntimePackComponentsErrors(t *testing.T) {
 			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
 		},
 		{
-			name:      "control characters in asset_path rejected",
+			name:      "control character NUL in asset_path rejected",
 			manifest:  assets.ManifestJSON,
 			payload:   assets.Payload,
 			signature: assets.Signature,
 			lock: func() []byte {
 				l := freshLock()
 				l.Packs[0].AssetPath = "foo\x00bar.pack.zip"
+				return mustMarshalJSON(l)
+			}(),
+			zipBytes:      assets.PackZip,
+			isExplicitZip: true,
+			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
+		},
+		{
+			name:      "unicode C1 control character NEL in asset_path rejected",
+			manifest:  assets.ManifestJSON,
+			payload:   assets.Payload,
+			signature: assets.Signature,
+			lock: func() []byte {
+				l := freshLock()
+				l.Packs[0].AssetPath = "foo\u0085bar.pack.zip"
+				return mustMarshalJSON(l)
+			}(),
+			zipBytes:      assets.PackZip,
+			isExplicitZip: true,
+			wantCode:      extractor.RuntimePackLoadErrorLockInvalid,
+		},
+		{
+			name:      "unicode C1 control character APC in asset_path rejected",
+			manifest:  assets.ManifestJSON,
+			payload:   assets.Payload,
+			signature: assets.Signature,
+			lock: func() []byte {
+				l := freshLock()
+				l.Packs[0].AssetPath = "foo\u009fbar.pack.zip"
 				return mustMarshalJSON(l)
 			}(),
 			zipBytes:      assets.PackZip,
@@ -486,17 +515,13 @@ func TestVerifyRuntimePackComponentsErrors(t *testing.T) {
 			wantCode:      extractor.RuntimePackLoadErrorHashMismatch,
 		},
 		{
-			name:      "manifest payload pin matches payload but lock payload pin differs",
-			manifest:  assets.ManifestJSON,
-			payload:   assets.Payload,
-			signature: assets.Signature,
-			lock: func() []byte {
-				l := freshLock()
-				l.Packs[0].PayloadSHA256 = strings.Repeat("1", 64)
-				return mustMarshalJSON(l)
-			}(),
-			zipBytes:      assets.PackZip,
-			isExplicitZip: true,
+			name:          "manifest payload pin mismatch with actual payload via VerifyEmbeddedPack",
+			manifest:      mismatchManifestJSON,
+			payload:       mismatchPayload,
+			signature:     mismatchSig,
+			lock:          mismatchLockJSON,
+			zipBytes:      nil,
+			isExplicitZip: false,
 			wantCode:      extractor.RuntimePackLoadErrorHashMismatch,
 		},
 		{
@@ -640,9 +665,7 @@ func TestLoadLocalPackZip(t *testing.T) {
 	t.Run("missing sibling lock", func(t *testing.T) {
 		isolatedDir := t.TempDir()
 		zipCopyPath := filepath.Join(isolatedDir, packbuilder.HostCallFixtureAssetName)
-		if err := os.WriteFile(zipCopyPath, writeRes.Assets.PackZip, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		mustWriteFile(t, zipCopyPath, writeRes.Assets.PackZip)
 		_, err := extractor.LoadLocalPackZip(context.Background(), zipCopyPath)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorLockMissing)
 	})
@@ -650,12 +673,8 @@ func TestLoadLocalPackZip(t *testing.T) {
 	t.Run("malformed sibling lock json", func(t *testing.T) {
 		isolatedDir := t.TempDir()
 		zipCopyPath := filepath.Join(isolatedDir, packbuilder.HostCallFixtureAssetName)
-		if err := os.WriteFile(zipCopyPath, writeRes.Assets.PackZip, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(isolatedDir, packbuilder.HostCallFixturePackID+".lock.json"), []byte("{malformed json"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		mustWriteFile(t, zipCopyPath, writeRes.Assets.PackZip)
+		mustWriteFile(t, filepath.Join(isolatedDir, packbuilder.HostCallFixturePackID+".lock.json"), []byte("{malformed json"))
 		_, err := extractor.LoadLocalPackZip(context.Background(), zipCopyPath)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorLockInvalid)
 	})
@@ -675,33 +694,74 @@ func TestLoadLocalPackZip(t *testing.T) {
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
 	})
 
+	t.Run("symlink lock rejected", func(t *testing.T) {
+		symDir := t.TempDir()
+		zipCopy := filepath.Join(symDir, packbuilder.HostCallFixtureAssetName)
+		mustWriteFile(t, zipCopy, writeRes.Assets.PackZip)
+		symLock := filepath.Join(symDir, packbuilder.HostCallFixturePackID+".lock.json")
+		if err := os.Symlink(writeRes.LockPath, symLock); err != nil {
+			t.Skip("symlinks not supported in environment")
+		}
+		_, err := extractor.LoadLocalPackZip(context.Background(), zipCopy)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
+	})
+
+	t.Run("truncated zip rejected", func(t *testing.T) {
+		truncDir := t.TempDir()
+		truncZipPath := filepath.Join(truncDir, packbuilder.HostCallFixtureAssetName)
+		mustWriteFile(t, truncZipPath, writeRes.Assets.PackZip[:30])
+		mustWriteFile(t, filepath.Join(truncDir, packbuilder.HostCallFixturePackID+".lock.json"), writeRes.Assets.ManifestJSON)
+		_, err := extractor.LoadLocalPackZip(context.Background(), truncZipPath)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
+	})
+
+	t.Run("oversized zip rejected", func(t *testing.T) {
+		oversizeDir := t.TempDir()
+		oversizeZipPath := filepath.Join(oversizeDir, packbuilder.HostCallFixtureAssetName)
+		f, err := os.Create(oversizeZipPath)
+		if err != nil {
+			t.Fatalf("create oversize zip: %v", err)
+		}
+		if err := f.Truncate(extractor.MaxPackAssetBytes + 1); err != nil {
+			_ = f.Close()
+			t.Fatalf("truncate oversize zip: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("close oversize zip: %v", err)
+		}
+		fi, err := os.Stat(oversizeZipPath)
+		if err != nil || fi.Size() != extractor.MaxPackAssetBytes+1 {
+			t.Fatalf("unexpected oversize zip size: %v", err)
+		}
+		_, err = extractor.LoadLocalPackZip(context.Background(), oversizeZipPath)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
+	})
+
 	t.Run("lock asset_path leaf mismatch", func(t *testing.T) {
 		mismatchDir := t.TempDir()
 		renamedZip := filepath.Join(mismatchDir, "other_name.pack.zip")
-		if err := os.WriteFile(renamedZip, writeRes.Assets.PackZip, 0o644); err != nil {
+		mustWriteFile(t, renamedZip, writeRes.Assets.PackZip)
+		lockData, err := os.ReadFile(lockPath)
+		if err != nil {
 			t.Fatal(err)
 		}
-		lockData, _ := os.ReadFile(lockPath)
-		if err := os.WriteFile(filepath.Join(mismatchDir, packbuilder.HostCallFixturePackID+".lock.json"), lockData, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		_, err := extractor.LoadLocalPackZip(context.Background(), renamedZip)
+		mustWriteFile(t, filepath.Join(mismatchDir, packbuilder.HostCallFixturePackID+".lock.json"), lockData)
+		_, err = extractor.LoadLocalPackZip(context.Background(), renamedZip)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorLockInvalid)
 	})
 
 	t.Run("lock asset_sha256 mismatch", func(t *testing.T) {
 		mismatchDir := t.TempDir()
 		zipCopy := filepath.Join(mismatchDir, packbuilder.HostCallFixtureAssetName)
-		if err := os.WriteFile(zipCopy, writeRes.Assets.PackZip, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		mustWriteFile(t, zipCopy, writeRes.Assets.PackZip)
 		tamperedLock := writeRes.Lock
 		tamperedLock.Packs[0].AssetSHA256 = strings.Repeat("e", 64)
-		tamperedJSON, _ := json.Marshal(tamperedLock)
-		if err := os.WriteFile(filepath.Join(mismatchDir, packbuilder.HostCallFixturePackID+".lock.json"), tamperedJSON, 0o644); err != nil {
+		tamperedJSON, err := json.Marshal(tamperedLock)
+		if err != nil {
 			t.Fatal(err)
 		}
-		_, err := extractor.LoadLocalPackZip(context.Background(), zipCopy)
+		mustWriteFile(t, filepath.Join(mismatchDir, packbuilder.HostCallFixturePackID+".lock.json"), tamperedJSON)
+		_, err = extractor.LoadLocalPackZip(context.Background(), zipCopy)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorHashMismatch)
 	})
 }
@@ -719,12 +779,8 @@ func TestLoadLocalPackDirectory(t *testing.T) {
 	}
 
 	t.Run("valid local directory ignores extra files and sibling zip", func(t *testing.T) {
-		if err := os.WriteFile(filepath.Join(outDir, "extra.txt"), []byte("ignore me"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(writeRes.PackZipPath, []byte("corrupted sibling zip bytes"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		mustWriteFile(t, filepath.Join(outDir, "extra.txt"), []byte("ignore me"))
+		mustWriteFile(t, writeRes.PackZipPath, []byte("corrupted sibling zip bytes"))
 
 		candidate, err := extractor.LoadLocalPackDirectory(context.Background(), outDir)
 		if err != nil {
@@ -743,18 +799,10 @@ func TestLoadLocalPackDirectory(t *testing.T) {
 
 	t.Run("sibling zip completely absent succeeds", func(t *testing.T) {
 		isolatedDir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(isolatedDir, "manifest.json"), writeRes.Assets.ManifestJSON, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(isolatedDir, "payload.wasm"), writeRes.Assets.Payload, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(isolatedDir, "manifest.sig"), writeRes.Assets.Signature, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(isolatedDir, packbuilder.HostCallFixturePackID+".lock.json"), lockJSON, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		mustWriteFile(t, filepath.Join(isolatedDir, "manifest.json"), writeRes.Assets.ManifestJSON)
+		mustWriteFile(t, filepath.Join(isolatedDir, "payload.wasm"), writeRes.Assets.Payload)
+		mustWriteFile(t, filepath.Join(isolatedDir, "manifest.sig"), writeRes.Assets.Signature)
+		mustWriteFile(t, filepath.Join(isolatedDir, packbuilder.HostCallFixturePackID+".lock.json"), lockJSON)
 
 		candidate, err := extractor.LoadLocalPackDirectory(context.Background(), isolatedDir)
 		if err != nil {
@@ -780,62 +828,97 @@ func TestLoadLocalPackDirectory(t *testing.T) {
 
 	t.Run("missing manifest.json in directory", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		mustWriteFile(t, filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload)
+		mustWriteFile(t, filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature)
 		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
 	})
 
 	t.Run("missing lock in directory", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		mustWriteFile(t, filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON)
+		mustWriteFile(t, filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload)
+		mustWriteFile(t, filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature)
 		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorLockMissing)
 	})
 
 	t.Run("empty component file in directory", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte{}, 0o644); err != nil {
-			t.Fatal(err)
+		mustWriteFile(t, filepath.Join(dir, "manifest.json"), []byte{})
+		mustWriteFile(t, filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload)
+		mustWriteFile(t, filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature)
+		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
+	})
+
+	t.Run("loose component is directory", func(t *testing.T) {
+		dir := t.TempDir()
+		mustWriteFile(t, filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON)
+		if err := os.Mkdir(filepath.Join(dir, "payload.wasm"), 0o755); err != nil {
+			t.Fatalf("mkdir non-regular component: %v", err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature, 0o644); err != nil {
-			t.Fatal(err)
+		mustWriteFile(t, filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature)
+		mustWriteFile(t, filepath.Join(dir, packbuilder.HostCallFixturePackID+".lock.json"), lockJSON)
+		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
+	})
+
+	t.Run("symlink loose component rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		mustWriteFile(t, filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON)
+		mustWriteFile(t, filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature)
+		mustWriteFile(t, filepath.Join(dir, packbuilder.HostCallFixturePackID+".lock.json"), lockJSON)
+		if err := os.Symlink(writeRes.PayloadPath, filepath.Join(dir, "payload.wasm")); err != nil {
+			t.Skip("symlinks not supported in environment")
 		}
 		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
 	})
 
-	t.Run("loose payload oversize exceeds 16MB", func(t *testing.T) {
+	t.Run("symlink lock in directory rejected", func(t *testing.T) {
 		dir := t.TempDir()
-		_ = os.WriteFile(filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON, 0o644)
-		_ = os.WriteFile(filepath.Join(dir, "payload.wasm"), make([]byte, extractor.MaxPackPayloadBytes+1), 0o644)
-		_ = os.WriteFile(filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature, 0o644)
-		_ = os.WriteFile(filepath.Join(dir, packbuilder.HostCallFixturePackID+".lock.json"), lockJSON, 0o644)
+		mustWriteFile(t, filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON)
+		mustWriteFile(t, filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload)
+		mustWriteFile(t, filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature)
+		if err := os.Symlink(writeRes.LockPath, filepath.Join(dir, packbuilder.HostCallFixturePackID+".lock.json")); err != nil {
+			t.Skip("symlinks not supported in environment")
+		}
 		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
 	})
 
-	t.Run("loose signature oversize exceeds 128KB", func(t *testing.T) {
+	t.Run("loose payload oversize exceeds 32MiB", func(t *testing.T) {
 		dir := t.TempDir()
-		_ = os.WriteFile(filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON, 0o644)
-		_ = os.WriteFile(filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload, 0o644)
-		_ = os.WriteFile(filepath.Join(dir, "manifest.sig"), make([]byte, extractor.MaxPackSignatureBytes+1), 0o644)
-		_ = os.WriteFile(filepath.Join(dir, packbuilder.HostCallFixturePackID+".lock.json"), lockJSON, 0o644)
+		mustWriteFile(t, filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON)
+		payloadPath := filepath.Join(dir, "payload.wasm")
+		f, err := os.Create(payloadPath)
+		if err != nil {
+			t.Fatalf("create oversize payload: %v", err)
+		}
+		if err := f.Truncate(extractor.MaxPackPayloadBytes + 1); err != nil {
+			_ = f.Close()
+			t.Fatalf("truncate oversize payload: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("close oversize payload: %v", err)
+		}
+		fi, err := os.Stat(payloadPath)
+		if err != nil || fi.Size() != extractor.MaxPackPayloadBytes+1 {
+			t.Fatalf("unexpected oversize payload size: %v", err)
+		}
+		mustWriteFile(t, filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature)
+		mustWriteFile(t, filepath.Join(dir, packbuilder.HostCallFixturePackID+".lock.json"), lockJSON)
+		_, err = extractor.LoadLocalPackDirectory(context.Background(), dir)
+		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
+	})
+
+	t.Run("loose signature oversize exceeds 64KiB", func(t *testing.T) {
+		dir := t.TempDir()
+		mustWriteFile(t, filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON)
+		mustWriteFile(t, filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload)
+		mustWriteFile(t, filepath.Join(dir, "manifest.sig"), make([]byte, extractor.MaxPackSignatureBytes+1))
+		mustWriteFile(t, filepath.Join(dir, packbuilder.HostCallFixturePackID+".lock.json"), lockJSON)
 		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSourceShapeInvalid)
 	})
@@ -843,10 +926,10 @@ func TestLoadLocalPackDirectory(t *testing.T) {
 	t.Run("loose component hash tampered", func(t *testing.T) {
 		dir := t.TempDir()
 		tamperedPayload := append(append([]byte(nil), writeRes.Assets.Payload...), 0x00)
-		_ = os.WriteFile(filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON, 0o644)
-		_ = os.WriteFile(filepath.Join(dir, "payload.wasm"), tamperedPayload, 0o644)
-		_ = os.WriteFile(filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature, 0o644)
-		_ = os.WriteFile(filepath.Join(dir, packbuilder.HostCallFixturePackID+".lock.json"), lockJSON, 0o644)
+		mustWriteFile(t, filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON)
+		mustWriteFile(t, filepath.Join(dir, "payload.wasm"), tamperedPayload)
+		mustWriteFile(t, filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature)
+		mustWriteFile(t, filepath.Join(dir, packbuilder.HostCallFixturePackID+".lock.json"), lockJSON)
 		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorHashMismatch)
 	})
@@ -857,23 +940,26 @@ func TestLoadLocalPackDirectory(t *testing.T) {
 		tamperedSigSHA := sha256.Sum256(tamperedSig)
 		tamperedLock := writeRes.Lock
 		tamperedLock.Packs[0].SignatureSHA256 = hex.EncodeToString(tamperedSigSHA[:])
-		tamperedLockJSON, _ := json.Marshal(tamperedLock)
+		tamperedLockJSON, err := json.Marshal(tamperedLock)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-		_ = os.WriteFile(filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON, 0o644)
-		_ = os.WriteFile(filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload, 0o644)
-		_ = os.WriteFile(filepath.Join(dir, "manifest.sig"), tamperedSig, 0o644)
-		_ = os.WriteFile(filepath.Join(dir, packbuilder.HostCallFixturePackID+".lock.json"), tamperedLockJSON, 0o644)
-		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
+		mustWriteFile(t, filepath.Join(dir, "manifest.json"), writeRes.Assets.ManifestJSON)
+		mustWriteFile(t, filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload)
+		mustWriteFile(t, filepath.Join(dir, "manifest.sig"), tamperedSig)
+		mustWriteFile(t, filepath.Join(dir, packbuilder.HostCallFixturePackID+".lock.json"), tamperedLockJSON)
+		_, err = extractor.LoadLocalPackDirectory(context.Background(), dir)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorSignatureInvalid)
 	})
 
 	t.Run("manifest pack_id with path traversal rejected", func(t *testing.T) {
 		dir := t.TempDir()
 		badManifest := []byte(`{"pack_id":"../bad_path","pack_version":"1.0.0","abi_version":1,"domains":[{"host":"example.invalid"}]}`)
-		_ = os.WriteFile(filepath.Join(dir, "manifest.json"), badManifest, 0o644)
-		_ = os.WriteFile(filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload, 0o644)
-		_ = os.WriteFile(filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature, 0o644)
-		_ = os.WriteFile(filepath.Join(dir, "test.lock.json"), lockJSON, 0o644)
+		mustWriteFile(t, filepath.Join(dir, "manifest.json"), badManifest)
+		mustWriteFile(t, filepath.Join(dir, "payload.wasm"), writeRes.Assets.Payload)
+		mustWriteFile(t, filepath.Join(dir, "manifest.sig"), writeRes.Assets.Signature)
+		mustWriteFile(t, filepath.Join(dir, "test.lock.json"), lockJSON)
 		_, err := extractor.LoadLocalPackDirectory(context.Background(), dir)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorManifestInvalid)
 	})
@@ -1260,9 +1346,9 @@ func TestLoadRemotePackLock(t *testing.T) {
 		}
 		client := extractor.NewRuntimePackHTTPClientForTest(transport)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Microsecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
 		defer cancel()
-		time.Sleep(5 * time.Millisecond)
+		<-ctx.Done()
 
 		_, err := extractor.LoadRemotePackLockWithClientForTest(ctx, "https://example.invalid/packs/"+packbuilder.HostCallFixturePackID+".lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
@@ -1321,14 +1407,18 @@ func TestLoadRemotePackLock(t *testing.T) {
 		defer ts.Close()
 
 		resolver := &rebindingTestResolver{}
+		var dialMu sync.Mutex
 		var dialCalls int
 		dialer := func(ctx context.Context, network string, address string) (net.Conn, error) {
+			dialMu.Lock()
 			dialCalls++
-			if dialCalls == 1 {
+			callNum := dialCalls
+			dialMu.Unlock()
+
+			if callNum == 1 {
 				return net.Dial("tcp", ts.Listener.Addr().String())
 			}
-			t.Fatal("dialer should not be reached on private IP resolution")
-			return nil, errors.New("dial blocked")
+			return nil, errors.New("dial blocked on subsequent call")
 		}
 
 		guardedTransport := extractor.NewPrivateIPGuardedTransportForTest(resolver, dialer)
@@ -1337,8 +1427,19 @@ func TestLoadRemotePackLock(t *testing.T) {
 
 		_, err := extractor.LoadRemotePackLockWithClientForTest(context.Background(), "https://rebound.example.invalid/initial.lock.json", client)
 		assertErrorCode(t, err, extractor.RuntimePackLoadErrorRemoteFailed)
-		if dialCalls != 1 {
-			t.Fatalf("expected exactly 1 dial before private IP block, got %d", dialCalls)
+
+		dialMu.Lock()
+		finalDialCalls := dialCalls
+		dialMu.Unlock()
+		if finalDialCalls != 1 {
+			t.Fatalf("expected exactly 1 dial before private IP block, got %d", finalDialCalls)
+		}
+
+		resolver.mu.Lock()
+		finalResolverCalls := resolver.calls
+		resolver.mu.Unlock()
+		if finalResolverCalls != 2 {
+			t.Fatalf("expected exactly 2 DNS resolver lookups, got %d", finalResolverCalls)
 		}
 	})
 
@@ -1563,6 +1664,13 @@ func assertErrorCode(t *testing.T, err error, wantCode extractor.RuntimePackLoad
 	}
 }
 
+func mustWriteFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write file %q: %v", path, err)
+	}
+}
+
 type repeatingByteReader byte
 
 func (r repeatingByteReader) Read(p []byte) (n int, err error) {
@@ -1598,4 +1706,41 @@ func buildPreflightFailingComponents() ([]byte, []byte, []byte, []byte) {
 		panic(err)
 	}
 	return manifestJSON, badPayload, sig, lockJSON
+}
+
+func buildManifestPayloadHashMismatchFixture() ([]byte, []byte, []byte, []byte) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	actualPayload := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+	sum := sha256.Sum256(actualPayload)
+	actualPayloadSHA := hex.EncodeToString(sum[:])
+
+	manifest := packbuilder.HostCallFixtureManifest(actualPayload)
+	manifest.PayloadSHA256 = strings.Repeat("d", 64)
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		panic(err)
+	}
+	sig := ed25519.Sign(priv, manifestJSON)
+	mH := sha256.Sum256(manifestJSON)
+	sH := sha256.Sum256(sig)
+	lock := packbuilder.LockFile{
+		SchemaVersion: 1,
+		Packs: []packbuilder.LockEntry{
+			{
+				PackID:          manifest.PackID,
+				PackVersion:     manifest.PackVersion,
+				AssetPath:       manifest.PackID + ".pack.zip",
+				AssetSHA256:     strings.Repeat("0", 64),
+				ManifestSHA256:  hex.EncodeToString(mH[:]),
+				PayloadSHA256:   actualPayloadSHA, // lock matches actual payload!
+				SignatureSHA256: hex.EncodeToString(sH[:]),
+				PublicKeys:      []string{hex.EncodeToString(pub)},
+			},
+		},
+	}
+	lockJSON, err := json.Marshal(lock)
+	if err != nil {
+		panic(err)
+	}
+	return manifestJSON, actualPayload, sig, lockJSON
 }

@@ -236,18 +236,28 @@ func TestExtractStrictPackZipRejections(t *testing.T) {
 		{
 			name: "manifest header claims small size but decompressed stream exceeds limit",
 			makeZip: func(t *testing.T) []byte {
-				return buildTestZip(t, map[string][]byte{
+				base := buildTestZip(t, map[string][]byte{
 					"manifest.json": bytes.Repeat([]byte("A"), extractor.MaxPackManifestBytes+1024),
 					"payload.wasm":  validPayload,
 					"manifest.sig":  validSig,
 				}, map[string]func(*zip.FileHeader){
 					"manifest.json": func(h *zip.FileHeader) {
 						h.Method = zip.Deflate
-						h.UncompressedSize64 = 100 // forged header claiming small size
 					},
 				})
+				patched := patchZipEntryUncompressedSize(base, "manifest.json", 100)
+				zr, err := zip.NewReader(bytes.NewReader(patched), int64(len(patched)))
+				if err != nil {
+					t.Fatalf("open patched zip: %v", err)
+				}
+				for _, f := range zr.File {
+					if f.Name == "manifest.json" && f.UncompressedSize64 != 100 {
+						t.Fatalf("manifest.json uncompressed size = %d, want 100", f.UncompressedSize64)
+					}
+				}
+				return patched
 			},
-			errSubstr: "exceeds",
+			errSubstr: "manifest.json",
 		},
 		{
 			name: "payload header uncompressed size exceeds maxPayloadBytes",
@@ -332,4 +342,32 @@ func patchZipEntryUncompressedSize(zipBytes []byte, entryName string, size uint3
 		}
 	}
 	return out
+}
+
+func TestExtractStrictPackZipReadLimitedBytesDirect(t *testing.T) {
+	t.Run("stream within limit reads exact data", func(t *testing.T) {
+		input := []byte("hello world")
+		got, err := extractor.ReadLimitedBytesForTest(bytes.NewReader(input), 20, "test")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !bytes.Equal(got, input) {
+			t.Fatalf("got %q, want %q", got, input)
+		}
+	})
+
+	t.Run("stream exceeding limit terminates at limit+1 and errors", func(t *testing.T) {
+		reader := bytes.NewReader(bytes.Repeat([]byte("X"), 1000))
+		_, err := extractor.ReadLimitedBytesForTest(reader, 100, "test")
+		if err == nil {
+			t.Fatal("expected error for stream exceeding limit")
+		}
+		if !strings.Contains(err.Error(), "exceeds 100 bytes") {
+			t.Fatalf("unexpected error string: %v", err)
+		}
+		// Assert that exactly limit+1 (101) bytes were consumed from the underlying reader
+		if consumed := 1000 - reader.Len(); consumed != 101 {
+			t.Fatalf("reader consumed %d bytes, want exactly 101", consumed)
+		}
+	})
 }

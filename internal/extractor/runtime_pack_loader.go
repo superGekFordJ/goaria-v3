@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type RuntimePackLoadErrorCode string
@@ -249,7 +250,7 @@ func validateAssetFilename(name string) error {
 		return errors.New("asset filename contains invalid path separators or special characters")
 	}
 	for _, r := range name {
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) {
 			return errors.New("asset filename contains control characters")
 		}
 	}
