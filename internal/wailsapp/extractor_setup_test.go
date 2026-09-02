@@ -52,7 +52,7 @@ func TestEmbeddedExtractorStartupGeneratedSourceProof(t *testing.T) {
 	hasPacks := extractor.HasEmbeddedReleasePacks()
 	policySource := extractor.PrivatePolicyBundleRuntimeSourceState()
 	authRuntimeSource := extractor.PrivateAuthRuntimeBundleRuntimeSourceState()
-	if !hasPacks && policySource != extractor.RuntimeSourceStateEmbedded && authRuntimeSource != extractor.RuntimeSourceStateEmbedded {
+	if !hasPacks && policySource != extractor.PrivateBundleSourceStateEmbedded && authRuntimeSource != extractor.PrivateBundleSourceStateEmbedded {
 		t.Skip("generated full-pack outputs are not present in source tree")
 	}
 	if !hasPacks {
@@ -61,10 +61,10 @@ func TestEmbeddedExtractorStartupGeneratedSourceProof(t *testing.T) {
 	if extractor.EmbeddedReleasePackCount() == 0 {
 		t.Fatal("embedded release pack count = 0, want generated source packs")
 	}
-	if policySource != extractor.RuntimeSourceStateEmbedded {
+	if policySource != extractor.PrivateBundleSourceStateEmbedded {
 		t.Fatalf("policy runtime source = %q, want embedded", policySource)
 	}
-	if authRuntimeSource != extractor.RuntimeSourceStateEmbedded {
+	if authRuntimeSource != extractor.PrivateBundleSourceStateEmbedded {
 		t.Fatalf("auth runtime source = %q, want embedded", authRuntimeSource)
 	}
 

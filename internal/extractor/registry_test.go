@@ -3,6 +3,8 @@ package extractor
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -262,4 +264,178 @@ func signedTestPack(t *testing.T, privateKey ed25519.PrivateKey, payload []byte,
 		Payload:      payload,
 		Signature:    ed25519.Sign(privateKey, manifestJSON),
 	}
+}
+
+func newTestVerifiedPackForRegistry(t *testing.T, packID, packVersion string, payload []byte, mutateManifest func(*Manifest)) VerifiedPack {
+	t.Helper()
+	payloadHash := sha256HexString(payload)
+	manifest := Manifest{
+		PackID:         packID,
+		PackVersion:    packVersion,
+		ABIVersion:     CurrentABIVersion,
+		PayloadSHA256:  payloadHash,
+		Capabilities:   []Capability{CapabilityParseWASM},
+		Domains:        []DomainRule{{Host: "fixture.invalid"}},
+		ResourceLimits: DefaultTrustPolicy().MaxResourceLimits,
+	}
+	if mutateManifest != nil {
+		mutateManifest(&manifest)
+	}
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	manifestHash := sha256HexString(manifestJSON)
+	return VerifiedPack{
+		Manifest: manifest,
+		Payload:  cloneBytes(payload),
+		Identity: VerifiedPackIdentity{
+			PackID:          manifest.PackID,
+			PackVersion:     manifest.PackVersion,
+			AssetSHA256:     sha256HexString([]byte("asset-zip")),
+			ManifestSHA256:  manifestHash,
+			PayloadSHA256:   payloadHash,
+			SignatureSHA256: sha256HexString([]byte("sig")),
+			PublicKeySHA256: sha256HexString([]byte("pubkey")),
+		},
+	}
+}
+
+func TestRegistryFromVerifiedPacks(t *testing.T) {
+	t.Run("empty input returns empty registry", func(t *testing.T) {
+		reg, err := NewRegistryFromVerifiedPacks(nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if reg == nil {
+			t.Fatal("expected non-nil registry")
+		}
+		if packs := reg.Packs(); len(packs) != 0 {
+			t.Fatalf("expected 0 packs, got %d", len(packs))
+		}
+	})
+
+	t.Run("preserves order of multiple packs", func(t *testing.T) {
+		p1 := newTestVerifiedPackForRegistry(t, "xpk-order1", "1.0.0", []byte("payload 1"), nil)
+		p2 := newTestVerifiedPackForRegistry(t, "xpk-order2", "1.0.0", []byte("payload 2"), nil)
+		p3 := newTestVerifiedPackForRegistry(t, "xpk-order3", "1.0.0", []byte("payload 3"), nil)
+
+		reg, err := NewRegistryFromVerifiedPacks([]VerifiedPack{p1, p2, p3}, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		packs := reg.Packs()
+		if len(packs) != 3 {
+			t.Fatalf("expected 3 packs, got %d", len(packs))
+		}
+		if packs[0].Identity.PackID != "xpk-order1" || packs[1].Identity.PackID != "xpk-order2" || packs[2].Identity.PackID != "xpk-order3" {
+			t.Fatalf("order not preserved: %s, %s, %s", packs[0].Identity.PackID, packs[1].Identity.PackID, packs[2].Identity.PackID)
+		}
+	})
+
+	t.Run("rejects duplicate pack IDs", func(t *testing.T) {
+		p1 := newTestVerifiedPackForRegistry(t, "xpk-dup", "1.0.0", []byte("payload 1"), nil)
+		p2 := newTestVerifiedPackForRegistry(t, "xpk-dup", "1.0.1", []byte("payload 2"), nil)
+
+		_, err := NewRegistryFromVerifiedPacks([]VerifiedPack{p1, p2}, nil)
+		if err == nil {
+			t.Fatal("expected duplicate pack id error, got nil")
+		}
+	})
+
+	t.Run("rejects manifest identity mismatch", func(t *testing.T) {
+		p := newTestVerifiedPackForRegistry(t, "xpk-mismatch", "1.0.0", []byte("payload"), nil)
+		p.Identity.PackID = "xpk-other"
+		if _, err := NewRegistryFromVerifiedPacks([]VerifiedPack{p}, nil); err == nil {
+			t.Fatal("expected pack id mismatch error")
+		}
+
+		p = newTestVerifiedPackForRegistry(t, "xpk-mismatch", "1.0.0", []byte("payload"), nil)
+		p.Identity.PackVersion = "2.0.0"
+		if _, err := NewRegistryFromVerifiedPacks([]VerifiedPack{p}, nil); err == nil {
+			t.Fatal("expected pack version mismatch error")
+		}
+
+		p = newTestVerifiedPackForRegistry(t, "xpk-mismatch", "1.0.0", []byte("payload"), nil)
+		p.Identity.PayloadSHA256 = sha256HexString([]byte("other"))
+		if _, err := NewRegistryFromVerifiedPacks([]VerifiedPack{p}, nil); err == nil {
+			t.Fatal("expected payload sha256 mismatch error")
+		}
+	})
+
+	t.Run("rejects payload bytes mismatch", func(t *testing.T) {
+		p := newTestVerifiedPackForRegistry(t, "xpk-tampered", "1.0.0", []byte("original payload"), nil)
+		p.Payload = []byte("tampered payload")
+		if _, err := NewRegistryFromVerifiedPacks([]VerifiedPack{p}, nil); err == nil {
+			t.Fatal("expected actual payload mismatch error")
+		}
+	})
+
+	t.Run("rejects malformed identity hashes", func(t *testing.T) {
+		p := newTestVerifiedPackForRegistry(t, "xpk-badhash", "1.0.0", []byte("payload"), nil)
+		p.Identity.ManifestSHA256 = strings.ToUpper(p.Identity.ManifestSHA256)
+		if _, err := NewRegistryFromVerifiedPacks([]VerifiedPack{p}, nil); err == nil {
+			t.Fatal("expected error on uppercase manifest sha256")
+		}
+
+		p = newTestVerifiedPackForRegistry(t, "xpk-badhash", "1.0.0", []byte("payload"), nil)
+		p.Identity.SignatureSHA256 = "invalid-len"
+		if _, err := NewRegistryFromVerifiedPacks([]VerifiedPack{p}, nil); err == nil {
+			t.Fatal("expected error on invalid signature sha256 length")
+		}
+
+		p = newTestVerifiedPackForRegistry(t, "xpk-badhash", "1.0.0", []byte("payload"), nil)
+		p.Identity.PublicKeySHA256 = "short"
+		if _, err := NewRegistryFromVerifiedPacks([]VerifiedPack{p}, nil); err == nil {
+			t.Fatal("expected error on invalid public key sha256")
+		}
+	})
+
+	t.Run("allows empty AssetSHA256 but rejects invalid non-empty", func(t *testing.T) {
+		p := newTestVerifiedPackForRegistry(t, "xpk-emptyasset", "1.0.0", []byte("payload"), nil)
+		p.Identity.AssetSHA256 = ""
+		if _, err := NewRegistryFromVerifiedPacks([]VerifiedPack{p}, nil); err != nil {
+			t.Fatalf("expected empty asset sha256 allowed, got: %v", err)
+		}
+
+		p.Identity.AssetSHA256 = "not-a-valid-sha256"
+		if _, err := NewRegistryFromVerifiedPacks([]VerifiedPack{p}, nil); err == nil {
+			t.Fatal("expected invalid asset sha256 error")
+		}
+	})
+
+	t.Run("defensive copy protects registry from external mutation", func(t *testing.T) {
+		payload := []byte("defensive payload")
+		p := newTestVerifiedPackForRegistry(t, "xpk-defensive", "1.0.0", payload, nil)
+		inputSlice := []VerifiedPack{p}
+
+		reg, err := NewRegistryFromVerifiedPacks(inputSlice, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Mutate input
+		inputSlice[0].Payload[0] = 'X'
+		inputSlice[0].Manifest.Domains[0].Host = "tampered.invalid"
+
+		packs := reg.Packs()
+		if string(packs[0].Payload) != "defensive payload" {
+			t.Fatalf("registry payload mutated via input: %q", packs[0].Payload)
+		}
+		if packs[0].Manifest.Domains[0].Host != "fixture.invalid" {
+			t.Fatalf("registry domain mutated via input: %q", packs[0].Manifest.Domains[0].Host)
+		}
+
+		// Mutate output
+		packs[0].Payload[0] = 'Y'
+		packs[0].Manifest.Domains[0].Host = "mutated.invalid"
+
+		packsAgain := reg.Packs()
+		if string(packsAgain[0].Payload) != "defensive payload" {
+			t.Fatalf("registry payload mutated via output: %q", packsAgain[0].Payload)
+		}
+		if packsAgain[0].Manifest.Domains[0].Host != "fixture.invalid" {
+			t.Fatalf("registry domain mutated via output: %q", packsAgain[0].Manifest.Domains[0].Host)
+		}
+	})
 }

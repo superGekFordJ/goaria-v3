@@ -13,13 +13,13 @@ const (
 	privatePolicyBundleSHA256Env = "GOARIA_EXTRACTOR_PRIVATE_POLICY_SHA256"
 )
 
-type RuntimeSourceState string
+type PrivateBundleSourceState string
 
 const (
-	RuntimeSourceStateNone      RuntimeSourceState = "none"
-	RuntimeSourceStateEnv       RuntimeSourceState = "env"
-	RuntimeSourceStateEmbedded  RuntimeSourceState = "embedded"
-	RuntimeSourceStateAmbiguous RuntimeSourceState = "ambiguous"
+	PrivateBundleSourceStateNone      PrivateBundleSourceState = "none"
+	PrivateBundleSourceStateEnv       PrivateBundleSourceState = "env"
+	PrivateBundleSourceStateEmbedded  PrivateBundleSourceState = "embedded"
+	PrivateBundleSourceStateAmbiguous PrivateBundleSourceState = "ambiguous"
 )
 
 var (
@@ -114,7 +114,7 @@ func LoadPrivatePolicyBundleResolverFromFile(path string, opts PrivatePolicyBund
 	return NewPrivatePolicyBundleResolver(raw, opts)
 }
 
-func PrivatePolicyBundleRuntimeSourceState() RuntimeSourceState {
+func PrivatePolicyBundleRuntimeSourceState() PrivateBundleSourceState {
 	return classifyRuntimeSourceState(os.Getenv(privatePolicyBundlePathEnv) != "", len(embeddedPrivatePolicyBundleJSON) > 0)
 }
 
@@ -123,13 +123,13 @@ func LoadPrivatePolicyBundleResolverFromRuntimeSources() (HostPolicyResolver, er
 	expectedSHA256 := os.Getenv(privatePolicyBundleSHA256Env)
 	sourceState := PrivatePolicyBundleRuntimeSourceState()
 
-	if sourceState == RuntimeSourceStateAmbiguous {
+	if sourceState == PrivateBundleSourceStateAmbiguous {
 		return nil, privatePolicyRuntimeSourceInvalidError()
 	}
-	if sourceState == RuntimeSourceStateNone {
+	if sourceState == PrivateBundleSourceStateNone {
 		return nil, nil
 	}
-	if sourceState == RuntimeSourceStateEnv {
+	if sourceState == PrivateBundleSourceStateEnv {
 		resolver, err := LoadPrivatePolicyBundleResolverFromFile(path, PrivatePolicyBundleLoadOptions{
 			ExpectedPolicyPrivateSHA256: expectedSHA256,
 		})
@@ -151,16 +151,16 @@ func LoadPrivatePolicyBundleResolverFromRuntimeSources() (HostPolicyResolver, er
 	return resolver, nil
 }
 
-func classifyRuntimeSourceState(hasEnvSource bool, hasEmbeddedSource bool) RuntimeSourceState {
+func classifyRuntimeSourceState(hasEnvSource bool, hasEmbeddedSource bool) PrivateBundleSourceState {
 	switch {
 	case hasEnvSource && hasEmbeddedSource:
-		return RuntimeSourceStateAmbiguous
+		return PrivateBundleSourceStateAmbiguous
 	case hasEnvSource:
-		return RuntimeSourceStateEnv
+		return PrivateBundleSourceStateEnv
 	case hasEmbeddedSource:
-		return RuntimeSourceStateEmbedded
+		return PrivateBundleSourceStateEmbedded
 	default:
-		return RuntimeSourceStateNone
+		return PrivateBundleSourceStateNone
 	}
 }
 

@@ -341,7 +341,7 @@ func TestPrivatePolicyRuntimeSourceState(t *testing.T) {
 	t.Run("none", func(t *testing.T) {
 		t.Setenv(privatePolicyBundlePathEnv, "")
 		withEmbeddedPrivatePolicyBundleState(t, nil, "", "")
-		if got := PrivatePolicyBundleRuntimeSourceState(); got != RuntimeSourceStateNone {
+		if got := PrivatePolicyBundleRuntimeSourceState(); got != PrivateBundleSourceStateNone {
 			t.Fatalf("PrivatePolicyBundleRuntimeSourceState() = %q, want none", got)
 		}
 	})
@@ -350,7 +350,7 @@ func TestPrivatePolicyRuntimeSourceState(t *testing.T) {
 		t.Setenv(privatePolicyBundlePathEnv, path)
 		t.Setenv(privatePolicyBundleSHA256Env, privateSHA)
 		withEmbeddedPrivatePolicyBundleState(t, nil, "", "")
-		if got := PrivatePolicyBundleRuntimeSourceState(); got != RuntimeSourceStateEnv {
+		if got := PrivatePolicyBundleRuntimeSourceState(); got != PrivateBundleSourceStateEnv {
 			t.Fatalf("PrivatePolicyBundleRuntimeSourceState() = %q, want env", got)
 		}
 	})
@@ -358,7 +358,7 @@ func TestPrivatePolicyRuntimeSourceState(t *testing.T) {
 	t.Run("embedded", func(t *testing.T) {
 		t.Setenv(privatePolicyBundlePathEnv, "")
 		withEmbeddedPrivatePolicyBundleState(t, raw, privateSHA, hashString('0'))
-		if got := PrivatePolicyBundleRuntimeSourceState(); got != RuntimeSourceStateEmbedded {
+		if got := PrivatePolicyBundleRuntimeSourceState(); got != PrivateBundleSourceStateEmbedded {
 			t.Fatalf("PrivatePolicyBundleRuntimeSourceState() = %q, want embedded", got)
 		}
 	})
@@ -367,7 +367,7 @@ func TestPrivatePolicyRuntimeSourceState(t *testing.T) {
 		t.Setenv(privatePolicyBundlePathEnv, path)
 		t.Setenv(privatePolicyBundleSHA256Env, privateSHA)
 		withEmbeddedPrivatePolicyBundleState(t, raw, privateSHA, hashString('0'))
-		if got := PrivatePolicyBundleRuntimeSourceState(); got != RuntimeSourceStateAmbiguous {
+		if got := PrivatePolicyBundleRuntimeSourceState(); got != PrivateBundleSourceStateAmbiguous {
 			t.Fatalf("PrivatePolicyBundleRuntimeSourceState() = %q, want ambiguous", got)
 		}
 	})

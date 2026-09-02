@@ -356,7 +356,7 @@ func TestPrivateAuthRuntimeRuntimeSourceState(t *testing.T) {
 	t.Run("none", func(t *testing.T) {
 		withPrivateAuthRuntimeEnv(t, "", "")
 		withEmbeddedPrivateAuthRuntimeBundleState(t, nil, "")
-		if got := PrivateAuthRuntimeBundleRuntimeSourceState(); got != RuntimeSourceStateNone {
+		if got := PrivateAuthRuntimeBundleRuntimeSourceState(); got != PrivateBundleSourceStateNone {
 			t.Fatalf("PrivateAuthRuntimeBundleRuntimeSourceState() = %q, want none", got)
 		}
 	})
@@ -364,7 +364,7 @@ func TestPrivateAuthRuntimeRuntimeSourceState(t *testing.T) {
 	t.Run("env", func(t *testing.T) {
 		withPrivateAuthRuntimeEnv(t, path, runtimeHash)
 		withEmbeddedPrivateAuthRuntimeBundleState(t, nil, "")
-		if got := PrivateAuthRuntimeBundleRuntimeSourceState(); got != RuntimeSourceStateEnv {
+		if got := PrivateAuthRuntimeBundleRuntimeSourceState(); got != PrivateBundleSourceStateEnv {
 			t.Fatalf("PrivateAuthRuntimeBundleRuntimeSourceState() = %q, want env", got)
 		}
 	})
@@ -372,7 +372,7 @@ func TestPrivateAuthRuntimeRuntimeSourceState(t *testing.T) {
 	t.Run("embedded", func(t *testing.T) {
 		withPrivateAuthRuntimeEnv(t, "", "")
 		withEmbeddedPrivateAuthRuntimeBundleState(t, raw, runtimeHash)
-		if got := PrivateAuthRuntimeBundleRuntimeSourceState(); got != RuntimeSourceStateEmbedded {
+		if got := PrivateAuthRuntimeBundleRuntimeSourceState(); got != PrivateBundleSourceStateEmbedded {
 			t.Fatalf("PrivateAuthRuntimeBundleRuntimeSourceState() = %q, want embedded", got)
 		}
 	})
@@ -380,7 +380,7 @@ func TestPrivateAuthRuntimeRuntimeSourceState(t *testing.T) {
 	t.Run("ambiguous", func(t *testing.T) {
 		withPrivateAuthRuntimeEnv(t, path, runtimeHash)
 		withEmbeddedPrivateAuthRuntimeBundleState(t, raw, runtimeHash)
-		if got := PrivateAuthRuntimeBundleRuntimeSourceState(); got != RuntimeSourceStateAmbiguous {
+		if got := PrivateAuthRuntimeBundleRuntimeSourceState(); got != PrivateBundleSourceStateAmbiguous {
 			t.Fatalf("PrivateAuthRuntimeBundleRuntimeSourceState() = %q, want ambiguous", got)
 		}
 	})

@@ -213,7 +213,7 @@ func LoadPrivateAuthRuntimeBundleFromFile(path string, opts PrivateAuthRuntimeBu
 	return NewPrivateAuthRuntimeBundle(raw, opts)
 }
 
-func PrivateAuthRuntimeBundleRuntimeSourceState() RuntimeSourceState {
+func PrivateAuthRuntimeBundleRuntimeSourceState() PrivateBundleSourceState {
 	return classifyRuntimeSourceState(os.Getenv(privateAuthRuntimeBundlePathEnv) != "", len(embeddedPrivateAuthRuntimeBundleJSON) > 0)
 }
 
@@ -223,15 +223,15 @@ func LoadPrivateAuthRuntimeBundleFromRuntimeSources() (*PrivateAuthRuntimeBundle
 	sourceState := PrivateAuthRuntimeBundleRuntimeSourceState()
 
 	switch sourceState {
-	case RuntimeSourceStateNone:
+	case PrivateBundleSourceStateNone:
 		return nil, nil
-	case RuntimeSourceStateAmbiguous:
+	case PrivateBundleSourceStateAmbiguous:
 		return nil, errors.New(privateAuthRuntimeBundleInvalidError)
-	case RuntimeSourceStateEnv:
+	case PrivateBundleSourceStateEnv:
 		return LoadPrivateAuthRuntimeBundleFromFile(envPath, PrivateAuthRuntimeBundleLoadOptions{
 			ExpectedAuthRuntimePrivateSHA256: envExpectedSHA256,
 		})
-	case RuntimeSourceStateEmbedded:
+	case PrivateBundleSourceStateEmbedded:
 		return NewPrivateAuthRuntimeBundle(embeddedPrivateAuthRuntimeBundleJSON, PrivateAuthRuntimeBundleLoadOptions{
 			ExpectedAuthRuntimePrivateSHA256: embeddedPrivateAuthRuntimeBundleSHA256,
 		})

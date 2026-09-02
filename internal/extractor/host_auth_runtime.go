@@ -1160,3 +1160,14 @@ func hostAuthRuntimeHashString(value string) string {
 
 	return hex.EncodeToString(hash[:])
 }
+
+func (r *HostAuthRuntime) SupportsPackIdentity(identity VerifiedPackIdentity) bool {
+	if r == nil {
+		return false
+	}
+	pack, ok := r.identityIndex[identity]
+	if !ok {
+		return false
+	}
+	return len(pack.StoreBinding.ProfileRefs) > 0 || len(pack.Materialization.ProfileRefs) > 0 || len(pack.Profiles) > 0
+}

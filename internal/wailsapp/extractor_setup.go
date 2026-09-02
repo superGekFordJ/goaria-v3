@@ -59,8 +59,8 @@ func ConfigureEmbeddedExtractorDispatcher(appService *App) error {
 type embeddedExtractorConfigDeps struct {
 	hasEmbeddedReleasePacks              func() bool
 	embeddedReleaseRequired              func() bool
-	privatePolicyRuntimeSourceState      func() extractor.RuntimeSourceState
-	privateAuthRuntimeRuntimeSourceState func() extractor.RuntimeSourceState
+	privatePolicyRuntimeSourceState      func() extractor.PrivateBundleSourceState
+	privateAuthRuntimeRuntimeSourceState func() extractor.PrivateBundleSourceState
 	loadHostPolicyResolver               func() (extractor.HostPolicyResolver, error)
 	loadAuthRuntimeBundle                func() (*extractor.PrivateAuthRuntimeBundle, error)
 	defaultAuthProfileStorePath          func() (string, error)

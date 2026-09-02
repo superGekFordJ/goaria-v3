@@ -3,6 +3,7 @@ package extractor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -44,6 +45,69 @@ func NewRegistryWithHostPolicyResolver(embedded []EmbeddedPack, policy TrustPoli
 	}
 
 	return registry, rejections
+}
+
+func NewRegistryFromVerifiedPacks(packs []VerifiedPack, resolver HostPolicyResolver) (*Registry, error) {
+	registry := &Registry{hostPolicyResolver: resolver}
+	if len(packs) == 0 {
+		return registry, nil
+	}
+
+	seenIDs := make(map[string]struct{}, len(packs))
+	for _, pack := range packs {
+		if err := validatePackID(pack.Manifest.PackID); err != nil {
+			return nil, fmt.Errorf("invalid pack id %q: %w", pack.Manifest.PackID, err)
+		}
+		if err := validatePackVersion(pack.Manifest.PackVersion); err != nil {
+			return nil, fmt.Errorf("invalid pack version %q: %w", pack.Manifest.PackVersion, err)
+		}
+		if _, exists := seenIDs[pack.Manifest.PackID]; exists {
+			return nil, fmt.Errorf("duplicate pack id: %s", pack.Manifest.PackID)
+		}
+		seenIDs[pack.Manifest.PackID] = struct{}{}
+
+		if pack.Manifest.PackID != pack.Identity.PackID {
+			return nil, errors.New("manifest pack_id does not match identity")
+		}
+		if pack.Manifest.PackVersion != pack.Identity.PackVersion {
+			return nil, errors.New("manifest pack_version does not match identity")
+		}
+		if pack.Manifest.PayloadSHA256 != pack.Identity.PayloadSHA256 {
+			return nil, errors.New("manifest payload_sha256 does not match identity")
+		}
+
+		if err := ValidateManifest(pack.Manifest, DefaultTrustPolicy()); err != nil {
+			return nil, fmt.Errorf("validate manifest %q: %w", pack.Manifest.PackID, err)
+		}
+
+		if err := validateLowerHexSHA256Field("manifest_sha256", pack.Identity.ManifestSHA256); err != nil {
+			return nil, err
+		}
+		if err := validateLowerHexSHA256Field("payload_sha256", pack.Identity.PayloadSHA256); err != nil {
+			return nil, err
+		}
+		if err := validateLowerHexSHA256Field("signature_sha256", pack.Identity.SignatureSHA256); err != nil {
+			return nil, err
+		}
+		if err := validateLowerHexSHA256Field("public_key_sha256", pack.Identity.PublicKeySHA256); err != nil {
+			return nil, err
+		}
+
+		if pack.Identity.AssetSHA256 != "" {
+			if err := validateLowerHexSHA256Field("asset_sha256", pack.Identity.AssetSHA256); err != nil {
+				return nil, err
+			}
+		}
+
+		actualPayloadSHA256 := sha256HexString(pack.Payload)
+		if actualPayloadSHA256 != pack.Identity.PayloadSHA256 {
+			return nil, errors.New("payload sha256 does not match identity")
+		}
+
+		registry.packs = append(registry.packs, cloneVerifiedPack(pack))
+	}
+
+	return registry, nil
 }
 
 func (r *Registry) Packs() []VerifiedPack {

@@ -707,8 +707,8 @@ func TestConfigureEmbeddedExtractorDispatcherStartupNoRuntimeInputs(t *testing.T
 	err := configureEmbeddedExtractorDispatcherWithDeps(app, embeddedExtractorConfigDeps{
 		hasEmbeddedReleasePacks:              func() bool { return false },
 		embeddedReleaseRequired:              func() bool { return false },
-		privatePolicyRuntimeSourceState:      func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateNone },
-		privateAuthRuntimeRuntimeSourceState: func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateNone },
+		privatePolicyRuntimeSourceState:      func() extractor.PrivateBundleSourceState { return extractor.PrivateBundleSourceStateNone },
+		privateAuthRuntimeRuntimeSourceState: func() extractor.PrivateBundleSourceState { return extractor.PrivateBundleSourceStateNone },
 		loadAuthRuntimeBundle:                func() (*extractor.PrivateAuthRuntimeBundle, error) { return nil, nil },
 		newFileAuthProfileStore: func(string) (extractor.AuthProfileStore, error) {
 			storeCreated = true
@@ -753,8 +753,8 @@ func TestConfigureEmbeddedExtractorDispatcherStartupActivationProved(t *testing.
 	err := configureEmbeddedExtractorDispatcherWithDeps(app, embeddedExtractorConfigDeps{
 		hasEmbeddedReleasePacks:              func() bool { return true },
 		embeddedReleaseRequired:              func() bool { return false },
-		privatePolicyRuntimeSourceState:      func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateEmbedded },
-		privateAuthRuntimeRuntimeSourceState: func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateEmbedded },
+		privatePolicyRuntimeSourceState:      func() extractor.PrivateBundleSourceState { return extractor.PrivateBundleSourceStateEmbedded },
+		privateAuthRuntimeRuntimeSourceState: func() extractor.PrivateBundleSourceState { return extractor.PrivateBundleSourceStateEmbedded },
 		loadHostPolicyResolver:               func() (extractor.HostPolicyResolver, error) { return fakeHostPolicyResolverForAppAuth{}, nil },
 		loadAuthRuntimeBundle:                func() (*extractor.PrivateAuthRuntimeBundle, error) { return bundle, nil },
 		defaultAuthProfileStorePath: func() (string, error) {
@@ -807,8 +807,8 @@ func TestConfigureEmbeddedExtractorDispatcherStartupActivationMissingOrSkipped(t
 	err := configureEmbeddedExtractorDispatcherWithDeps(app, embeddedExtractorConfigDeps{
 		hasEmbeddedReleasePacks:              func() bool { return true },
 		embeddedReleaseRequired:              func() bool { return false },
-		privatePolicyRuntimeSourceState:      func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateEmbedded },
-		privateAuthRuntimeRuntimeSourceState: func() extractor.RuntimeSourceState { return extractor.RuntimeSourceStateEmbedded },
+		privatePolicyRuntimeSourceState:      func() extractor.PrivateBundleSourceState { return extractor.PrivateBundleSourceStateEmbedded },
+		privateAuthRuntimeRuntimeSourceState: func() extractor.PrivateBundleSourceState { return extractor.PrivateBundleSourceStateEmbedded },
 		loadHostPolicyResolver:               func() (extractor.HostPolicyResolver, error) { return fakeHostPolicyResolverForAppAuth{}, nil },
 		loadAuthRuntimeBundle:                func() (*extractor.PrivateAuthRuntimeBundle, error) { return bundle, nil },
 		defaultAuthProfileStorePath: func() (string, error) {
