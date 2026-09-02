@@ -2,7 +2,7 @@ package monitor
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/speedstats"
@@ -28,7 +28,7 @@ type mockSafeEngine struct {
 }
 
 func (e *mockSafeEngine) TellStatus(gid string, keys []string) (rpc.Task, error) {
-	return rpc.Task{}, fmt.Errorf("mock: no engine")
+	return rpc.Task{}, errors.New("mock: no engine")
 }
 
 // mockTellStatusEngine returns a full rpc.Task from TellStatus, simulating
@@ -124,7 +124,7 @@ func (e *mockStoppedEngine) StreamEvents(ctx context.Context) (<-chan any, func(
 }
 
 func (e *mockStoppedEngine) TellStatus(gid string, keys []string) (rpc.Task, error) {
-	return rpc.Task{}, fmt.Errorf("mock: no engine")
+	return rpc.Task{}, errors.New("mock: no engine")
 }
 
 func (e *mockStoppedEngine) TellStatusMulti(gids []string, keys []string) ([]rpc.Task, error) {

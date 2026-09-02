@@ -21,7 +21,7 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Return valid JSON response
 	json := `{"jsonrpc": "2.0", "result": {"downloadSpeed": "1000"}, "id": "goaria"}`
 	return &http.Response{
-		StatusCode: 200,
+		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(bytes.NewBufferString(json)),
 		Header:     make(http.Header),
 	}, nil

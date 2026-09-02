@@ -52,7 +52,7 @@ func TestPairing_HostHeaderCheck(t *testing.T) {
 	defer ps.Stop()
 
 	// Replace 127.0.0.1 with evil.com in the Host header.
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

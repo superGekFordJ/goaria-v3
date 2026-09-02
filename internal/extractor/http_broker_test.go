@@ -34,7 +34,7 @@ func TestHTTPBrokerAllowsGETAndHEADToManifestDomains(t *testing.T) {
 			if seenMethod != method {
 				t.Fatalf("transport method = %q, want %q", seenMethod, method)
 			}
-			if resp.StatusCode != 200 || resp.FinalURL != "https://api.fixture.invalid/path" {
+			if resp.StatusCode != http.StatusOK || resp.FinalURL != "https://api.fixture.invalid/path" {
 				t.Fatalf("Fetch() response = %#v", resp)
 			}
 		})

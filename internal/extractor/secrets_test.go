@@ -3,6 +3,7 @@ package extractor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -106,7 +107,7 @@ func TestAuthProfileStoreSetIsAtomicWhenPersistenceFails(t *testing.T) {
 
 	store.mu.Lock()
 	store.persistFn = func(map[string]authProfileRecord) error {
-		return fmt.Errorf("forced persist failure with Authorization: Bearer new-token")
+		return errors.New("forced persist failure with Authorization: Bearer new-token")
 	}
 	store.mu.Unlock()
 

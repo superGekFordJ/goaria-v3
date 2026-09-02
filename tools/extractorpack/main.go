@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -20,7 +21,7 @@ func main() {
 
 func run(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: extractorpack hostcall-fixture --out-dir DIR --lock-out PATH")
+		return errors.New("usage: extractorpack hostcall-fixture --out-dir DIR --lock-out PATH")
 	}
 
 	switch args[0] {

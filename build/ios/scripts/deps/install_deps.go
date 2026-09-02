@@ -102,7 +102,7 @@ func main() {
 				}
 
 				// Check for UIKit framework (essential for iOS development)
-				uikitPath := fmt.Sprintf("%s/System/Library/Frameworks/UIKit.framework", sdkPath)
+				uikitPath := sdkPath + "/System/Library/Frameworks/UIKit.framework"
 				if _, err := os.Stat(uikitPath); err != nil {
 					return false, "UIKit.framework not found"
 				}

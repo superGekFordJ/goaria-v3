@@ -3,6 +3,7 @@ package tasks_test
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -781,7 +782,7 @@ func syntheticAuthRuntimeAliasTaskBundle(t *testing.T, identity extractor.Verifi
 		}
 	}
 	hash := sha256.Sum256(runtimeRaw)
-	envelope := []byte(`{"schema_version":1,"bundle_id":"arb-alpha001","bundle_version":"opaque-1","auth_runtime_private_sha256":"` + fmt.Sprintf("%x", hash[:]) + `","runtime":` + string(runtimeRaw) + `}`)
+	envelope := []byte(`{"schema_version":1,"bundle_id":"arb-alpha001","bundle_version":"opaque-1","auth_runtime_private_sha256":"` + hex.EncodeToString(hash[:]) + `","runtime":` + string(runtimeRaw) + `}`)
 	bundle, err := extractor.NewPrivateAuthRuntimeBundle(envelope, extractor.PrivateAuthRuntimeBundleLoadOptions{})
 	if err != nil {
 		t.Fatalf("NewPrivateAuthRuntimeBundle(alias task) error = %v", err)

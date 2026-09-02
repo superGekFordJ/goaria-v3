@@ -152,7 +152,7 @@ func isOpaquePolicyRefChar(c byte) bool {
 
 func validatePackID(id string) error {
 	if len(id) < 3 || len(id) > 64 {
-		return fmt.Errorf("pack_id length must be between 3 and 64 characters")
+		return errors.New("pack_id length must be between 3 and 64 characters")
 	}
 	if !isLowerSlugEdge(id[0]) || !isLowerSlugEdge(id[len(id)-1]) {
 		return errors.New("pack_id must start and end with a lowercase letter or digit")

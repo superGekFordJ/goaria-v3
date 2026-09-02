@@ -27,7 +27,7 @@ func TestHTTPBrokerAttachesDomainCookieWithoutAuthProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch() error = %v", err)
 	}
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 	if got := seen.Get("Cookie"); got != "sid=browser-sid" {
@@ -295,7 +295,7 @@ func TestHTTPBrokerShortCookieValuesDoNotTripReflection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch() error = %v", err)
 	}
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 }
@@ -388,7 +388,7 @@ func TestHTTPBrokerUnrelatedHTTPHopAllowedWithCtxCookies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch() error = %v", err)
 	}
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 	if _, ok := seen["Cookie"]; ok {

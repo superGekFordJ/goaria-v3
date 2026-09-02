@@ -2,7 +2,7 @@ package rpc
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log"
 	"path/filepath"
 	"strconv"
@@ -541,7 +541,7 @@ func (e *SurgeEngine) TellStatus(gid string, keys []string) (Task, error) {
 		return Task{}, err
 	}
 	if status == nil {
-		return Task{}, fmt.Errorf("task not found")
+		return Task{}, errors.New("task not found")
 	}
 	return convertTask(*status), nil
 }

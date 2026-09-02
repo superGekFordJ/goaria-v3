@@ -3,6 +3,7 @@ package update
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -39,7 +40,7 @@ func (u *Updater) Apply(info *ReleaseInfo) error {
 	u.mu.Lock()
 	if u.busy {
 		u.mu.Unlock()
-		return fmt.Errorf("update already in progress")
+		return errors.New("update already in progress")
 	}
 	u.busy = true
 	u.mu.Unlock()
@@ -52,7 +53,7 @@ func (u *Updater) Apply(info *ReleaseInfo) error {
 
 	if info.AssetURL == "" {
 		u.emitStatus(StatusError, "no asset URL provided")
-		return fmt.Errorf("no asset URL provided")
+		return errors.New("no asset URL provided")
 	}
 
 	// Emit downloading status
@@ -205,5 +206,5 @@ func extractExeFromZip(data []byte) (io.Reader, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("no .exe file found in zip archive")
+	return nil, errors.New("no .exe file found in zip archive")
 }

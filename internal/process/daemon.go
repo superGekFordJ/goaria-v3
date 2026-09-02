@@ -142,7 +142,7 @@ func RestartAria2(cfg *config.AppConfig) error {
 
 func restartAria2Locked(cfg *config.AppConfig) error {
 	if cfg == nil {
-		return wrapRestartErr(fmt.Errorf("启动失败: 配置为空"), false)
+		return wrapRestartErr(errors.New("启动失败: 配置为空"), false)
 	}
 
 	prepared, err := prepareBundledAria2Binary()
@@ -233,7 +233,7 @@ func StartAria2(cfg *config.AppConfig) error {
 
 func startAria2Locked(cfg *config.AppConfig) error {
 	if cfg == nil {
-		return fmt.Errorf("启动失败: 配置为空")
+		return errors.New("启动失败: 配置为空")
 	}
 
 	prepared, err := prepareBundledAria2Binary()
@@ -291,25 +291,25 @@ func startPreparedAria2Locked(cfg *config.AppConfig, prepared preparedBundledAri
 		"--enable-rpc",
 		"--rpc-allow-origin-all",
 		"--rpc-listen-all=false",
-		fmt.Sprintf("--rpc-listen-port=%s", cfg.RPCPort),
-		fmt.Sprintf("--dir=%s", cleanDir),
+		"--rpc-listen-port=" + cfg.RPCPort,
+		"--dir=" + cleanDir,
 		"--auto-file-renaming=true",
 		"--allow-overwrite=false",
-		fmt.Sprintf("--max-concurrent-downloads=%s", cfg.MaxConcurrentDownloads),
+		"--max-concurrent-downloads=" + cfg.MaxConcurrentDownloads,
 		fmt.Sprintf("--max-connection-per-server=%d", aria2MaxConn),
-		fmt.Sprintf("--user-agent=%s", cfg.UserAgent),
+		"--user-agent=" + cfg.UserAgent,
 		"--continue=true",
 		"--seed-time=0",            // 下载完立即停止做种
 		"--bt-save-metadata=false", // 防止元数据任务残留文件
-		fmt.Sprintf("--save-session=%s", sessionPath),
-		fmt.Sprintf("--input-file=%s", sessionPath),
+		"--save-session=" + sessionPath,
+		"--input-file=" + sessionPath,
 		"--save-session-interval=10",
 		"--force-save=false",
 		"--quiet=true",
 	}
 
 	if cfg.RPCSecret != "" {
-		args = append(args, fmt.Sprintf("--rpc-secret=%s", cfg.RPCSecret))
+		args = append(args, "--rpc-secret="+cfg.RPCSecret)
 	}
 
 	cmd := exec.Command(aria2Path, args...)
@@ -341,14 +341,14 @@ func stopAria2Locked() {
 // Empty values are rejected; unreachable paths are not rewritten to Downloads.
 func ValidateDownloadDir(dir string) error {
 	if strings.TrimSpace(dir) == "" {
-		return fmt.Errorf("download directory is empty")
+		return errors.New("download directory is empty")
 	}
 	clean := filepath.Clean(dir)
 	info, err := statFile(clean)
 	switch {
 	case err == nil:
 		if !info.IsDir() {
-			return fmt.Errorf("download directory is not a directory")
+			return errors.New("download directory is not a directory")
 		}
 	case errors.Is(err, os.ErrNotExist):
 		if mkErr := mkdirAll(clean, 0o755); mkErr != nil {

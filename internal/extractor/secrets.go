@@ -387,7 +387,7 @@ func normalizeLoadedAuthProfileRecord(record authProfileRecord) (authProfileReco
 func validateAuthProfileID(profileID AuthProfileID) error {
 	id := string(profileID)
 	if len(id) < 1 || len(id) > 64 {
-		return fmt.Errorf("auth profile_id length must be between 1 and 64 characters")
+		return errors.New("auth profile_id length must be between 1 and 64 characters")
 	}
 	if !isLowerSlugEdge(id[0]) || !isLowerSlugEdge(id[len(id)-1]) {
 		return errors.New("auth profile_id must start and end with a lowercase letter or digit")

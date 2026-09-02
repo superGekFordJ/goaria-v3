@@ -2,7 +2,7 @@ package rpc
 
 import (
 	"crypto/tls"
-	"fmt"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -69,7 +69,7 @@ func headProbe(rawURL string, timeout time.Duration, headers []string) HeadProbe
 		Transport: probeTransport,
 		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
+				return errors.New("too many redirects")
 			}
 			return nil
 		},

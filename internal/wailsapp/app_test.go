@@ -1,7 +1,7 @@
 package wailsapp
 
 import (
-	"fmt"
+	"errors"
 	"testing"
 
 	"goaria-v3/internal/downloadgroups"
@@ -120,7 +120,7 @@ func TestNewAppBaseEngineFallbackPropagatesErrors(t *testing.T) {
 
 	engine := &baseDownloadEngineFake{
 		Aria2Engine: &rpc.Aria2Engine{},
-		pauseErr:    fmt.Errorf("boom"),
+		pauseErr:    errors.New("boom"),
 	}
 	NewApp(Options{DownloadEngine: engine})
 

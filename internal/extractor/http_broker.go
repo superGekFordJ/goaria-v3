@@ -193,7 +193,7 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		}
 		hopAttachesCookies := request.AuthProfileID == "" && len(cookiesMatchingRequest(browserCookiesFromContext(ctx), currentURL)) > 0
 		if hopAttachesCookies && parsed.Scheme != "https" {
-			return HTTPFetchResponse{}, fmt.Errorf("cookie-authenticated request requires HTTPS")
+			return HTTPFetchResponse{}, errors.New("cookie-authenticated request requires HTTPS")
 		}
 		httpRequest, err := http.NewRequestWithContext(ctx, method, parsed.String(), nil)
 		if err != nil {
@@ -366,14 +366,14 @@ func (b *HTTPBroker) validatePackHeaders(headers map[string]string) (http.Header
 		return nil, nil
 	}
 	if len(headers) > b.policy.MaxHeaderCount {
-		return nil, fmt.Errorf("too many request headers")
+		return nil, errors.New("too many request headers")
 	}
 
 	validated := make(http.Header, len(headers))
 	for name, value := range headers {
 		canonical := http.CanonicalHeaderKey(strings.TrimSpace(name))
 		if canonical == "" || canonical != http.CanonicalHeaderKey(canonical) || strings.ContainsAny(name, "\r\n:") {
-			return nil, fmt.Errorf("invalid request header name")
+			return nil, errors.New("invalid request header name")
 		}
 		if isSecretHeaderName(canonical) || isForbiddenPackHeader(canonical) {
 			return nil, fmt.Errorf("request header %q is not allowed", canonical)
@@ -513,7 +513,7 @@ func isRedirectStatus(statusCode int) bool {
 
 func resolveRedirectURL(base *url.URL, location string) (string, error) {
 	if location == "" {
-		return "", fmt.Errorf("redirect response missing Location")
+		return "", errors.New("redirect response missing Location")
 	}
 	parsed, err := url.Parse(location)
 	if err != nil {
@@ -532,7 +532,7 @@ func readCappedBody(body io.ReadCloser, capBytes int64) ([]byte, error) {
 	}
 	defer body.Close()
 	if capBytes <= 0 {
-		return nil, fmt.Errorf("response body cap must be positive")
+		return nil, errors.New("response body cap must be positive")
 	}
 
 	limited := io.LimitReader(body, capBytes+1)

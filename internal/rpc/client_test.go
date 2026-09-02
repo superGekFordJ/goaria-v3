@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -372,7 +373,7 @@ func TestAddUriWithAria2OptionsHookErrorSkipsSaveSession(t *testing.T) {
 	initTestRPCServer(t, server.URL, "")
 
 	_, err := AddUriWithAria2OptionsHook("https://example.com/file.bin", AddURIOptions{Dir: "D:/Downloads"}, func(gid string) error {
-		return fmt.Errorf("hook failed")
+		return errors.New("hook failed")
 	})
 	if err == nil {
 		t.Fatal("expected hook error")

@@ -1,7 +1,6 @@
 package rpc
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
@@ -66,7 +65,7 @@ func TestConvertTask_ErrorCodeDiskSpace(t *testing.T) {
 		Filename: "big.bin",
 		DestPath: `/tmp/big.bin`,
 		Status:   "error",
-		Error:    fmt.Sprintf("annotate: %s", types.ErrInsufficientDiskSpace.Error()),
+		Error:    "annotate: " + types.ErrInsufficientDiskSpace.Error(),
 	})
 	if task.ErrorCode != "9" {
 		t.Fatalf("ErrorCode = %q, want 9", task.ErrorCode)

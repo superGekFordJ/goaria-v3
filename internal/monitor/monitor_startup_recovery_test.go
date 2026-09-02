@@ -3,7 +3,7 @@ package monitor
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"errors"
 	"log"
 	"strings"
 	"sync"
@@ -98,7 +98,7 @@ func (e *mockTickEngine) StreamEvents(ctx context.Context) (<-chan any, func(), 
 }
 
 func (e *mockTickEngine) TellStatus(gid string, keys []string) (rpc.Task, error) {
-	return rpc.Task{}, fmt.Errorf("mock: no engine")
+	return rpc.Task{}, errors.New("mock: no engine")
 }
 
 func (e *mockTickEngine) TellStatusMulti(gids []string, keys []string) ([]rpc.Task, error) {
@@ -188,7 +188,7 @@ func TestStartupRecovery_Aria2RecoveredOnFirstSuccessfulTick(t *testing.T) {
 // stays false when TellActiveLite returns an error.
 func TestStartupRecovery_Aria2NotRecoveredOnTickError(t *testing.T) {
 	engine := &mockTickEngine{}
-	engine.setActiveErr(fmt.Errorf("aria2c unreachable"))
+	engine.setActiveErr(errors.New("aria2c unreachable"))
 	m := newTickRecoveryMonitor(t, engine)
 
 	m.tick()
@@ -395,7 +395,7 @@ func TestStartupRecovery_Aria2BecameUnavailableLog(t *testing.T) {
 	}
 
 	// Second tick: failure (engine became unavailable).
-	engine.setActiveErr(fmt.Errorf("connection refused"))
+	engine.setActiveErr(errors.New("connection refused"))
 	m.tick()
 
 	// aria2Recovered should NOT be reset.
@@ -485,7 +485,7 @@ func TestStartupRecovery_Aria2UnavailableLoggedOnce(t *testing.T) {
 	}
 
 	// Second tick: failure (engine became unavailable) → warn-level log.
-	engine.setActiveErr(fmt.Errorf("connection refused"))
+	engine.setActiveErr(errors.New("connection refused"))
 	m.tick()
 
 	if !m.aria2UnavailableLogged.Load() {
@@ -678,7 +678,7 @@ func TestSwitchingRace_EventBridgeStartsImmediatelyNoWaitForTickRecovery(t *test
 	}()
 
 	engine := &mockTickEngine{}
-	engine.setActiveErr(fmt.Errorf("aria2c not ready"))
+	engine.setActiveErr(errors.New("aria2c not ready"))
 	hub := events.NewHub(nil)
 	m := &Monitor{
 		hub:              hub,

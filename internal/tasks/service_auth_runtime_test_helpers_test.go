@@ -2,7 +2,7 @@ package tasks_test
 
 import (
 	"crypto/sha256"
-	"fmt"
+	"encoding/hex"
 	"strings"
 	"testing"
 
@@ -24,5 +24,5 @@ func syntheticRootPrivateAuthRuntimeBundle(t *testing.T) *extractor.PrivateAuthR
 func sha256HexForAppHostAuthTest(raw []byte) string {
 	hash := sha256.Sum256(raw)
 
-	return fmt.Sprintf("%x", hash[:])
+	return hex.EncodeToString(hash[:])
 }

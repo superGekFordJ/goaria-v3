@@ -3,6 +3,7 @@ package rpc
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -243,27 +244,27 @@ func ValidateAddURIHeaders(headers []string) error {
 	for _, header := range headers {
 		line := strings.TrimSpace(header)
 		if line == "" {
-			return fmt.Errorf("aria2 header line must be non-empty")
+			return errors.New("aria2 header line must be non-empty")
 		}
 		if line != header {
-			return fmt.Errorf("aria2 header line must be trimmed")
+			return errors.New("aria2 header line must be trimmed")
 		}
 		if len(line) > maxAddURIHeaderLineSize {
 			return fmt.Errorf("aria2 header line exceeds %d bytes", maxAddURIHeaderLineSize)
 		}
 		if strings.ContainsAny(line, "\r\n") {
-			return fmt.Errorf("aria2 header line must not contain CR/LF")
+			return errors.New("aria2 header line must not contain CR/LF")
 		}
 		name, value, ok := strings.Cut(line, ":")
 		if !ok || strings.TrimSpace(name) == "" || strings.TrimSpace(value) == "" {
-			return fmt.Errorf("aria2 header line must be in name: value form")
+			return errors.New("aria2 header line must be in name: value form")
 		}
 		if strings.TrimSpace(name) != name {
-			return fmt.Errorf("aria2 header name must be trimmed")
+			return errors.New("aria2 header name must be trimmed")
 		}
 		for _, r := range name {
 			if r <= 0x20 || r >= 0x7f || strings.ContainsRune("()<>@,;:\\\"/[]?={}", r) {
-				return fmt.Errorf("aria2 header name contains invalid characters")
+				return errors.New("aria2 header name contains invalid characters")
 			}
 		}
 	}
@@ -513,7 +514,7 @@ func WaitForReady(timeout time.Duration) error {
 	for {
 		select {
 		case <-timeoutChan:
-			return fmt.Errorf("Aria2 无响应")
+			return errors.New("Aria2 无响应")
 		case <-ticker.C:
 			if _, err := GetGlobalStat(); err == nil {
 				return nil
@@ -592,7 +593,7 @@ func parseMultiCallItemResults(gids []string, resp []byte) ([]MultiCallItemResul
 		return nil, fmt.Errorf("system.multicall: rpc error %d: %s", result.Error.Code, result.Error.Message)
 	}
 	if result.Result == nil {
-		return nil, fmt.Errorf("system.multicall: missing result")
+		return nil, errors.New("system.multicall: missing result")
 	}
 
 	items := make([]MultiCallItemResult, 0, len(gids))

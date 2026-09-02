@@ -2,9 +2,9 @@ package history
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -75,7 +75,7 @@ func TestPerformance(t *testing.T) {
 	start := time.Now()
 	n := 1000
 	for i := range n {
-		Add(HistoryEntry{GID: fmt.Sprintf("%d", i)})
+		Add(HistoryEntry{GID: strconv.Itoa(i)})
 	}
 
 	duration := time.Since(start)

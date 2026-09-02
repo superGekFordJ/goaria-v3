@@ -1,8 +1,8 @@
 package monitor
 
 import (
-	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -350,8 +350,8 @@ func (m *Monitor) tick() {
 			fullTask := rpc.Task{
 				GID:             task.GID,
 				Status:          task.Status,
-				TotalLength:     fmt.Sprintf("%d", task.TotalLength),
-				CompletedLength: fmt.Sprintf("%d", task.CompletedLength),
+				TotalLength:     strconv.FormatInt(task.TotalLength, 10),
+				CompletedLength: strconv.FormatInt(task.CompletedLength, 10),
 				DownloadSpeed:   "0",
 				Dir:             task.Dir,
 				DownloadGroup:   copyDownloadGroup(task.DownloadGroup),

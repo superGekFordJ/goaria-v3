@@ -5,8 +5,8 @@ package wailsapp
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1169,7 +1169,7 @@ func syntheticRootAliasPrivateAuthRuntimeBundle(t *testing.T, identity extractor
 func sha256HexForAppHostAuthTest(raw []byte) string {
 	hash := sha256.Sum256(raw)
 
-	return fmt.Sprintf("%x", hash[:])
+	return hex.EncodeToString(hash[:])
 }
 
 func appHostAuthRuntimeCallbackJSONForTest() string {

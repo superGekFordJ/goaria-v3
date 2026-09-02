@@ -132,7 +132,7 @@ func (s *Server) RegeneratePairing() (string, error) {
 	ps := s.pairingService
 	s.mu.Unlock()
 	if ps == nil {
-		return "", fmt.Errorf("no active pairing service")
+		return "", errors.New("no active pairing service")
 	}
 	return ps.Regenerate()
 }

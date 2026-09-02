@@ -1,6 +1,7 @@
 package extension
 
 import (
+	"errors"
 	"fmt"
 	"html"
 	"net"
@@ -77,14 +78,14 @@ func (p *PairingService) Start() (string, error) {
 	nonce := p.store.GenerateNonce()
 	if nonce == "" {
 		p.mu.Unlock()
-		return "", fmt.Errorf("failed to generate pairing nonce")
+		return "", errors.New("failed to generate pairing nonce")
 	}
 	p.store.SetPairNonce(nonce)
 
 	secret := p.store.GetSecret()
 	if secret == "" {
 		p.mu.Unlock()
-		return "", fmt.Errorf("extension secret not initialized; ensure config.Load() has run")
+		return "", errors.New("extension secret not initialized; ensure config.Load() has run")
 	}
 
 	mux := http.NewServeMux()

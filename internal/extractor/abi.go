@@ -157,7 +157,7 @@ func ValidateMatchOutput(output MatchOutput) error {
 
 func ValidateExtractOutput(output ExtractOutput, limits ResourceLimits) error {
 	if uint32(len(output.Items)) > limits.MaxOutputItems {
-		return fmt.Errorf("extract output item count exceeds max_output_items")
+		return errors.New("extract output item count exceeds max_output_items")
 	}
 
 	for i, item := range output.Items {

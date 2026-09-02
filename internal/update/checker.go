@@ -60,7 +60,7 @@ func Check(currentVersion string, includePreRelease bool) (*UpdateResult, error)
 
 	// Fetch up to 30 releases from GitHub
 	url := fmt.Sprintf("%s/repos/%s/releases?per_page=30", apiBaseURL, GitHubRepo)
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		result.Error = err.Error()
 		return result, nil

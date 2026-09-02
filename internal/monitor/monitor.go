@@ -1,7 +1,6 @@
 package monitor
 
 import (
-	"fmt"
 	"log"
 	"path/filepath"
 	"strconv"
@@ -673,8 +672,8 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 		Title:           filepath.Base(task.FilePath),
 		Dir:             task.Dir,
 		Path:            task.FilePath,
-		TotalLength:     fmt.Sprintf("%d", task.TotalLength),
-		CompletedLength: fmt.Sprintf("%d", task.CompletedLength),
+		TotalLength:     strconv.FormatInt(task.TotalLength, 10),
+		CompletedLength: strconv.FormatInt(task.CompletedLength, 10),
 		Source:          task.SourceURL,
 		Status:          status,
 		DownloadGroup:   copyDownloadGroup(task.DownloadGroup),
