@@ -51,7 +51,7 @@
 
 <template>
   <aside
-    class="sidebar-container w-56 flex flex-col shrink-0 z-20 bg-[var(--sidebar-bg)] border-r border-[var(--card-border)]"
+    class="sidebar-container w-56 flex flex-col shrink-0 z-20 bg-[var(--sidebar-bg)]"
   >
     <!-- Logo Section (Draggable window anchor; on macOS, top padding ensures safe clearance for native traffic lights) -->
     <div
