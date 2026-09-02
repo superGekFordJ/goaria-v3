@@ -2,7 +2,6 @@ package utils
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -32,7 +31,7 @@ func HasSufficientDiskSpace(fileSize, freeBytes int64) bool {
 // the caller's free bytes from GetDiskFreeSpaceEx.
 func FreeDiskBytes(path string) (int64, error) {
 	if path == "" {
-		return 0, fmt.Errorf("empty path")
+		return 0, errors.New("empty path")
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {

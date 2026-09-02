@@ -91,12 +91,12 @@ func TestTaskRangeAssignment(t *testing.T) {
 			assert.InDelta(t, tt.wantChunk, chunkSize, float64(types.AlignSize), "Chunk size mismatch")
 
 			tasks := createInitialTasks(tt.fileSize, chunkSize, tt.numConns)
-			assert.Equal(t, tt.wantTasks, len(tasks), "Task count mismatch")
+			assert.Len(t, tasks, tt.wantTasks, "Task count mismatch")
 
 			var total int64
 			for i, task := range tasks {
 				assert.Equal(t, total, task.Offset, "Task offset mismatch at index %d", i)
-				assert.Greater(t, task.Length, int64(0), "Task length must be positive at index %d", i)
+				assert.Positive(t, task.Length, "Task length must be positive at index %d", i)
 				total += task.Length
 			}
 			assert.Equal(t, tt.fileSize, total, "Total task length mismatch")

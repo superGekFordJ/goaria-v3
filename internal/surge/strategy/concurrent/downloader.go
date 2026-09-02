@@ -1215,7 +1215,7 @@ func (d *ConcurrentDownloader) persistRangeSupportedBeforeWrite() error {
 		return nil
 	}
 	if d.DestPath == "" || d.URL == "" {
-		return fmt.Errorf("payload-first persist missing dest identity")
+		return errors.New("payload-first persist missing dest identity")
 	}
 
 	tasks := make([]types.Task, len(d.pfPlannedTasks))
@@ -1515,7 +1515,7 @@ func (d *ConcurrentDownloader) bootstrapMetadata(ctx context.Context, client *ht
 
 	contentRange := resp.Header.Get("Content-Range")
 	if contentRange == "" {
-		return 0, fmt.Errorf("concurrent bootstrap missing Content-Range header")
+		return 0, errors.New("concurrent bootstrap missing Content-Range header")
 	}
 	idx := strings.LastIndex(contentRange, "/")
 	if idx == -1 || idx+1 >= len(contentRange) {
@@ -1524,7 +1524,7 @@ func (d *ConcurrentDownloader) bootstrapMetadata(ctx context.Context, client *ht
 
 	sizeStr := contentRange[idx+1:]
 	if sizeStr == "*" {
-		return 0, fmt.Errorf("concurrent bootstrap returned unknown size")
+		return 0, errors.New("concurrent bootstrap returned unknown size")
 	}
 
 	fileSize, err := strconv.ParseInt(sizeStr, 10, 64)

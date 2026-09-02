@@ -113,7 +113,7 @@ func SaveStateWithOptions(url string, destPath string, state *types.DownloadReco
 
 	dir := baseDir
 	if dir == "" {
-		return fmt.Errorf("state backend not configured")
+		return errors.New("state backend not configured")
 	}
 
 	detailPath := getDetailPath(dir, state.ID)
@@ -368,7 +368,7 @@ func LoadMasterList() (*types.MasterList, error) {
 
 func saveMasterListLocked(list *types.MasterList) error {
 	if baseDir == "" {
-		return fmt.Errorf("state backend not configured")
+		return errors.New("state backend not configured")
 	}
 	if err := ensureDirsLocked(); err != nil {
 		return err

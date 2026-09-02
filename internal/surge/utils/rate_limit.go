@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -60,7 +61,7 @@ func ParseRateLimit(input string) (int64, error) {
 	}
 
 	if numEnd == 0 {
-		return 0, fmt.Errorf("rate limit missing numeric value")
+		return 0, errors.New("rate limit missing numeric value")
 	}
 
 	numStr := trimmed[:numEnd]
@@ -71,7 +72,7 @@ func ParseRateLimit(input string) (int64, error) {
 
 	value, err := strconv.ParseFloat(numStr, 64)
 	if err != nil {
-		return 0, fmt.Errorf("invalid rate limit value")
+		return 0, errors.New("invalid rate limit value")
 	}
 
 	unitStrLower := strings.ToLower(unitStr)
@@ -108,7 +109,7 @@ func ParseRateLimit(input string) (int64, error) {
 		return 0, nil
 	}
 	if bytes > float64(math.MaxInt64) {
-		return 0, fmt.Errorf("rate limit too large")
+		return 0, errors.New("rate limit too large")
 	}
 
 	return int64(math.Round(bytes)), nil
@@ -120,26 +121,26 @@ func ParseRateLimitValue(val any) (int64, error) {
 		return 0, nil
 	case int:
 		if v < 0 {
-			return 0, fmt.Errorf("rate limit must be non-negative")
+			return 0, errors.New("rate limit must be non-negative")
 		}
 		return int64(v), nil
 	case int64:
 		if v < 0 {
-			return 0, fmt.Errorf("rate limit must be non-negative")
+			return 0, errors.New("rate limit must be non-negative")
 		}
 		return v, nil
 	case float64:
 		if v < 0 {
-			return 0, fmt.Errorf("rate limit must be non-negative")
+			return 0, errors.New("rate limit must be non-negative")
 		}
 		if v > float64(math.MaxInt64) {
-			return 0, fmt.Errorf("rate limit too large")
+			return 0, errors.New("rate limit too large")
 		}
 		return int64(math.Round(v)), nil
 	case string:
 		return ParseRateLimit(v)
 	default:
-		return 0, fmt.Errorf("unsupported rate limit type")
+		return 0, errors.New("unsupported rate limit type")
 	}
 }
 

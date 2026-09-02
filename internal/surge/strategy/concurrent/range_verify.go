@@ -3,7 +3,7 @@ package concurrent
 // FORK-PATCH: payload-first Range header contract (206 + Content-Range) before body IO.
 
 import (
-	"fmt"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -12,7 +12,7 @@ import (
 	"goaria-v3/internal/surge/types"
 )
 
-var errPayloadFirstLegacyStatus = fmt.Errorf("payload-first: use legacy status handling")
+var errPayloadFirstLegacyStatus = errors.New("payload-first: use legacy status handling")
 
 type limitedReadCloser struct {
 	io.Reader
@@ -29,40 +29,40 @@ func limitResponseBody(resp *http.Response, n int64) {
 func parseSingleContentRange(header string) (start, end, total int64, err error) {
 	h := strings.TrimSpace(header)
 	if h == "" {
-		return 0, 0, 0, fmt.Errorf("missing Content-Range")
+		return 0, 0, 0, errors.New("missing Content-Range")
 	}
 	if strings.Contains(h, ",") {
-		return 0, 0, 0, fmt.Errorf("multipart Content-Range")
+		return 0, 0, 0, errors.New("multipart Content-Range")
 	}
 	lower := strings.ToLower(h)
 	if !strings.HasPrefix(lower, "bytes ") {
-		return 0, 0, 0, fmt.Errorf("invalid Content-Range unit")
+		return 0, 0, 0, errors.New("invalid Content-Range unit")
 	}
 	rest := strings.TrimSpace(h[6:])
 	slash := strings.LastIndex(rest, "/")
 	if slash <= 0 || slash+1 >= len(rest) {
-		return 0, 0, 0, fmt.Errorf("invalid Content-Range")
+		return 0, 0, 0, errors.New("invalid Content-Range")
 	}
 	totalStr := rest[slash+1:]
 	if totalStr == "*" {
-		return 0, 0, 0, fmt.Errorf("unknown Content-Range total")
+		return 0, 0, 0, errors.New("unknown Content-Range total")
 	}
 	total, err = strconv.ParseInt(totalStr, 10, 64)
 	if err != nil || total <= 0 {
-		return 0, 0, 0, fmt.Errorf("invalid Content-Range total")
+		return 0, 0, 0, errors.New("invalid Content-Range total")
 	}
 	rangePart := rest[:slash]
 	before, after, ok := strings.Cut(rangePart, "-")
 	if !ok {
-		return 0, 0, 0, fmt.Errorf("invalid Content-Range span")
+		return 0, 0, 0, errors.New("invalid Content-Range span")
 	}
 	start, err = strconv.ParseInt(before, 10, 64)
 	if err != nil || start < 0 {
-		return 0, 0, 0, fmt.Errorf("invalid Content-Range start")
+		return 0, 0, 0, errors.New("invalid Content-Range start")
 	}
 	end, err = strconv.ParseInt(after, 10, 64)
 	if err != nil || end < start {
-		return 0, 0, 0, fmt.Errorf("invalid Content-Range end")
+		return 0, 0, 0, errors.New("invalid Content-Range end")
 	}
 	return start, end, total, nil
 }
@@ -92,26 +92,26 @@ func contentRangeTotalIsStar(header string) bool {
 func parse416StarTotal(header string) (total int64, err error) {
 	h := strings.TrimSpace(header)
 	if h == "" {
-		return 0, fmt.Errorf("missing Content-Range")
+		return 0, errors.New("missing Content-Range")
 	}
 	if strings.Contains(h, ",") {
-		return 0, fmt.Errorf("multipart Content-Range")
+		return 0, errors.New("multipart Content-Range")
 	}
 	lower := strings.ToLower(h)
 	if !strings.HasPrefix(lower, "bytes ") {
-		return 0, fmt.Errorf("invalid Content-Range unit")
+		return 0, errors.New("invalid Content-Range unit")
 	}
 	rest := strings.TrimSpace(h[6:])
 	if !strings.HasPrefix(rest, "*/") {
-		return 0, fmt.Errorf("invalid 416 Content-Range")
+		return 0, errors.New("invalid 416 Content-Range")
 	}
 	totalStr := rest[2:]
 	if totalStr == "*" {
-		return 0, fmt.Errorf("unknown Content-Range total")
+		return 0, errors.New("unknown Content-Range total")
 	}
 	total, err = strconv.ParseInt(totalStr, 10, 64)
 	if err != nil || total <= 0 {
-		return 0, fmt.Errorf("invalid Content-Range total")
+		return 0, errors.New("invalid Content-Range total")
 	}
 	return total, nil
 }

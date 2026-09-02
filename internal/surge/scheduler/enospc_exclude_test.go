@@ -70,7 +70,7 @@ func TestShouldFallbackToSingle_PayloadFirst(t *testing.T) {
 	if shouldFallbackToSingle(errors.New("connection reset"), 0, mode) {
 		t.Fatal("transport must not be treated as Range-unsupported")
 	}
-	if shouldFallbackToSingle(fmt.Errorf("unexpected status: 403"), 0, mode) {
+	if shouldFallbackToSingle(errors.New("unexpected status: 403"), 0, mode) {
 		t.Fatal("403 must not fallback on payload-first")
 	}
 	if shouldFallbackToSingle(types.ErrRangeUnsupported, 0, types.RangeAcquireRangeSupported) {

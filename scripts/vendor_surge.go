@@ -356,13 +356,18 @@ linters:
     - nosprintfhostport
     - errchkjson
     - canonicalheader
-    - rowserrcheck
-    - sqlclosecheck
     - nilerr
     - nilnesserr
     - unconvert
     - gocritic
     - modernize
+    - asasalint
+    - fatcontext
+    - reassign
+    - usestdlibvars
+    - makezero
+    - testifylint
+    - perfsprint
   settings:
     copyloopvar:
       check-alias: true

@@ -2,6 +2,7 @@ package concurrent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -184,11 +185,11 @@ func TestDownloadTask_CompletesExactRangeWithoutFIN(t *testing.T) {
 func parseTestByteRange(header string) (int64, int64, error) {
 	value, ok := strings.CutPrefix(header, "bytes=")
 	if !ok {
-		return 0, 0, fmt.Errorf("missing bytes prefix")
+		return 0, 0, errors.New("missing bytes prefix")
 	}
 	startText, endText, ok := strings.Cut(value, "-")
 	if !ok {
-		return 0, 0, fmt.Errorf("missing range separator")
+		return 0, 0, errors.New("missing range separator")
 	}
 	start, err := strconv.ParseInt(startText, 10, 64)
 	if err != nil {

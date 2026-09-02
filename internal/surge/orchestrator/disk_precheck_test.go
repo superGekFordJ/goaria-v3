@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -164,7 +163,7 @@ func TestEnqueue_DiskPrecheckFailOpen(t *testing.T) {
 	orig := freeDiskBytes
 	t.Cleanup(func() { freeDiskBytes = orig })
 	freeDiskBytes = func(string) (int64, error) {
-		return 0, fmt.Errorf("statfs simulated failure")
+		return 0, errors.New("statfs simulated failure")
 	}
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -265,7 +266,7 @@ func (s *RemoteDownloadService) Shutdown() error {
 // SetRateLimit sets the speed limit for a specific download on the remote daemon
 func (s *RemoteDownloadService) SetRateLimit(id string, rate int64) error {
 	if rate < 0 {
-		return fmt.Errorf("rate limit must be non-negative")
+		return errors.New("rate limit must be non-negative")
 	}
 	resp, err := s.doRequest("POST", fmt.Sprintf("/rate-limit?id=%s&rate=%d", url.QueryEscape(id), rate), nil)
 	if err != nil {
@@ -288,7 +289,7 @@ func (s *RemoteDownloadService) ClearRateLimit(id string) error {
 // SetGlobalRateLimit sets the remote daemon's global speed limit.
 func (s *RemoteDownloadService) SetGlobalRateLimit(rate int64) error {
 	if rate < 0 {
-		return fmt.Errorf("rate limit must be non-negative")
+		return errors.New("rate limit must be non-negative")
 	}
 	resp, err := s.doRequest("POST", fmt.Sprintf("/rate-limit/global?rate=%d", rate), nil)
 	if err != nil {
@@ -301,7 +302,7 @@ func (s *RemoteDownloadService) SetGlobalRateLimit(rate int64) error {
 // SetDefaultRateLimit sets the remote daemon's inherited per-download speed limit.
 func (s *RemoteDownloadService) SetDefaultRateLimit(rate int64) error {
 	if rate < 0 {
-		return fmt.Errorf("rate limit must be non-negative")
+		return errors.New("rate limit must be non-negative")
 	}
 	resp, err := s.doRequest("POST", fmt.Sprintf("/rate-limit/default?rate=%d", rate), nil)
 	if err != nil {
@@ -328,7 +329,7 @@ func (s *RemoteDownloadService) StreamEvents(ctx context.Context) (<-chan types.
 // Publish emits an event into the service's event stream.
 // Remote services do not accept client-side event injection.
 func (s *RemoteDownloadService) Publish(msg types.DownloadEvent) error {
-	return fmt.Errorf("publish not supported for remote service")
+	return errors.New("publish not supported for remote service")
 }
 
 func (s *RemoteDownloadService) streamWithReconnect(ctx context.Context, ch chan types.DownloadEvent) {
@@ -377,7 +378,7 @@ func mergeContexts(contexts ...context.Context) (context.Context, context.Cancel
 }
 
 func (s *RemoteDownloadService) connectSSE(ctx context.Context, ch chan types.DownloadEvent) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", s.BaseURL+"/events", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.BaseURL+"/events", nil)
 	if err != nil {
 		return err
 	}
@@ -393,7 +394,7 @@ func (s *RemoteDownloadService) connectSSE(ctx context.Context, ch chan types.Do
 	}
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to connect to event stream: %s", resp.Status)
 	}
 

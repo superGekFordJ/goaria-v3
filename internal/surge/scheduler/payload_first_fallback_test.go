@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -35,12 +36,12 @@ func TestRunDownload_Later200DoesNotTruncateRangeSupported(t *testing.T) {
 				end = fileSize - 1
 			}
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+			w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 			w.WriteHeader(http.StatusPartialContent)
 			_, _ = w.Write(blob[start : end+1])
 			return
 		}
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
+		w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(blob)
 	}))

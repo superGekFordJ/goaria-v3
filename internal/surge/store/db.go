@@ -2,7 +2,7 @@ package store
 
 import (
 	"encoding/gob"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,7 +42,7 @@ func ensureDirsLocked() error {
 
 func ensureDirsInternal(isConfigured bool, dir string) error {
 	if !isConfigured || dir == "" {
-		return fmt.Errorf("state backend not configured")
+		return errors.New("state backend not configured")
 	}
 	detailsDir := filepath.Join(dir, "details")
 	if err := os.MkdirAll(detailsDir, 0o755); err != nil {

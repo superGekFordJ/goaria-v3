@@ -2,7 +2,6 @@ package concurrent
 
 import (
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"testing"
 
@@ -70,8 +69,8 @@ func TestIsConnLimitError(t *testing.T) {
 	}{
 		{nil, false},
 		{errors.New("unexpected status: 404"), false},
-		{fmt.Errorf("unexpected status: 429"), true},
-		{fmt.Errorf("unexpected status: 503"), true},
+		{errors.New("unexpected status: 429"), true},
+		{errors.New("unexpected status: 503"), true},
 		{errors.New("rate limited (429/503)"), true},
 		{errors.New("connection refused"), true},
 		{errors.New("connection reset by peer"), true},

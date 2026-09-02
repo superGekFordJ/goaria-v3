@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -127,7 +128,7 @@ func TestRunDownload_Heal206TotalSuccess(t *testing.T) {
 				end = trusted - 1
 			}
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, observed))
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+			w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 			w.WriteHeader(http.StatusPartialContent)
 			return
 		}
@@ -138,7 +139,7 @@ func TestRunDownload_Heal206TotalSuccess(t *testing.T) {
 			start = 0
 		}
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, observed))
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 		w.WriteHeader(http.StatusPartialContent)
 		_, _ = w.Write(blob[start : end+1])
 	}))
@@ -212,7 +213,7 @@ func TestRunDownload_Heal416StarTotalSuccess(t *testing.T) {
 			end = observed - 1
 		}
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, observed))
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 		w.WriteHeader(http.StatusPartialContent)
 		_, _ = w.Write(blob[start : end+1])
 	}))
@@ -264,7 +265,7 @@ func TestRunDownload_HealOnceDifferentTotalIsTerminal(t *testing.T) {
 			total = retryTotal
 		}
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, total))
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 		w.WriteHeader(http.StatusPartialContent)
 	}))
 	t.Cleanup(server.Close)
@@ -351,7 +352,7 @@ func TestRunDownload_200MatchingSizeFallsBackToSingle(t *testing.T) {
 		if r.Header.Get("Range") == "bytes=0-0" {
 			zeroZero.Add(1)
 		}
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
+		w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(blob)
 	}))
@@ -393,13 +394,13 @@ func TestRunDownload_PersistThen206WrongTotalNoTruncate(t *testing.T) {
 				end = fileSize - 1
 			}
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+			w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 			w.WriteHeader(http.StatusPartialContent)
 			_, _ = w.Write(blob[start : end+1])
 			return
 		}
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, 999999))
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 		w.WriteHeader(http.StatusPartialContent)
 	}))
 	t.Cleanup(server.Close)
@@ -446,7 +447,7 @@ func TestRunDownload_CanceledContextSkipsHeal(t *testing.T) {
 		}
 		cancel()
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, observed))
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 		w.WriteHeader(http.StatusPartialContent)
 	}))
 	t.Cleanup(server.Close)

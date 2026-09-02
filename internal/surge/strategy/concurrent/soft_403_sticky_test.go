@@ -3,6 +3,7 @@ package concurrent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -921,7 +922,7 @@ func TestSoft403_StaleStatusDoesNotClassifyTransportFailure(t *testing.T) {
 				Request:    r,
 			}, nil
 		case 2:
-			return nil, fmt.Errorf("pre-response transport failure")
+			return nil, errors.New("pre-response transport failure")
 		default:
 			queue.Close()
 			return &http.Response{

@@ -46,7 +46,7 @@ func (s *LocalDownloadService) ReloadSettings(settings *config.Settings) error {
 
 func (s *LocalDownloadService) StreamEvents(ctx context.Context) (<-chan types.DownloadEvent, func(), error) {
 	if s.lifecycle == nil || s.lifecycle.GetEventBus() == nil {
-		return nil, nil, fmt.Errorf("event bus not initialized")
+		return nil, nil, errors.New("event bus not initialized")
 	}
 	ch, cleanup := s.lifecycle.GetEventBus().Subscribe()
 	return ch, cleanup, nil
@@ -56,7 +56,7 @@ func (s *LocalDownloadService) Publish(msg types.DownloadEvent) error {
 	if s.lifecycle != nil && s.lifecycle.GetEventBus() != nil {
 		return s.lifecycle.GetEventBus().Publish(msg)
 	}
-	return fmt.Errorf("event bus not initialized")
+	return errors.New("event bus not initialized")
 }
 
 func (s *LocalDownloadService) Shutdown() error {
@@ -173,7 +173,7 @@ func (s *LocalDownloadService) Purge(id string) error {
 
 func (s *LocalDownloadService) GetStatus(id string) (*types.DownloadStatus, error) {
 	if id == "" {
-		return nil, fmt.Errorf("missing id")
+		return nil, errors.New("missing id")
 	}
 	if s.lifecycle != nil && s.lifecycle.GetScheduler() != nil {
 		if status := s.lifecycle.GetScheduler().GetStatus(id); status != nil {
@@ -223,7 +223,7 @@ func (s *LocalDownloadService) ClearFailed() (int64, error) {
 
 func (s *LocalDownloadService) SetRateLimit(id string, rate int64) error {
 	if rate < 0 {
-		return fmt.Errorf("rate limit must be non-negative")
+		return errors.New("rate limit must be non-negative")
 	}
 	if s.lifecycle == nil || s.lifecycle.GetScheduler() == nil {
 		return types.ErrPoolNotInit
@@ -280,7 +280,7 @@ func (s *LocalDownloadService) ClearRateLimit(id string) error {
 
 func (s *LocalDownloadService) SetGlobalRateLimit(rate int64) error {
 	if rate < 0 {
-		return fmt.Errorf("rate limit must be non-negative")
+		return errors.New("rate limit must be non-negative")
 	}
 	if s.lifecycle == nil || s.lifecycle.GetScheduler() == nil {
 		return types.ErrPoolNotInit
@@ -288,7 +288,7 @@ func (s *LocalDownloadService) SetGlobalRateLimit(rate int64) error {
 
 	settings := s.lifecycle.GetSettings()
 	if settings == nil {
-		return fmt.Errorf("settings not found")
+		return errors.New("settings not found")
 	}
 
 	if settings.Network.GlobalRateLimit == nil {
@@ -307,7 +307,7 @@ func (s *LocalDownloadService) SetGlobalRateLimit(rate int64) error {
 
 func (s *LocalDownloadService) SetDefaultRateLimit(rate int64) error {
 	if rate < 0 {
-		return fmt.Errorf("rate limit must be non-negative")
+		return errors.New("rate limit must be non-negative")
 	}
 	if s.lifecycle == nil || s.lifecycle.GetScheduler() == nil {
 		return types.ErrPoolNotInit
@@ -315,7 +315,7 @@ func (s *LocalDownloadService) SetDefaultRateLimit(rate int64) error {
 
 	settings := s.lifecycle.GetSettings()
 	if settings == nil {
-		return fmt.Errorf("settings not found")
+		return errors.New("settings not found")
 	}
 
 	if settings.Network.DefaultDownloadRateLimit == nil {

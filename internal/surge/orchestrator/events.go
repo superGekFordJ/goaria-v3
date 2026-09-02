@@ -113,7 +113,7 @@ func copyRangeAcquisition(dst *types.DownloadRecord, src *types.DownloadRecord) 
 
 func finalizeCompletedFile(finalPath string) error {
 	if finalPath == "" {
-		return fmt.Errorf("missing destination path for completed download")
+		return errors.New("missing destination path for completed download")
 	}
 
 	surgePath := finalPath + types.IncompleteSuffix
@@ -414,7 +414,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					msg = err.Error()
 				}
 				if settings := mgr.GetSettings(); settings != nil && config.Resolve[bool](settings.General.DownloadCompleteNotification) {
-					notify(fmt.Sprintf("Download failed: %s", filename), msg)
+					notify("Download failed: "+filename, msg)
 				}
 				triggerGC()
 				break
@@ -454,7 +454,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					filename = m.DownloadID
 				}
 
-				title := fmt.Sprintf("Download Complete: %s", filename)
+				title := "Download Complete: " + filename
 
 				if m.Elapsed.Seconds() <= 0 {
 					notify(title, "Download complete!")
@@ -627,7 +627,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					msg = m.Err.Error()
 				}
 
-				notify(fmt.Sprintf("Download failed: %s", filename), msg)
+				notify("Download failed: "+filename, msg)
 			}
 			triggerGC()
 

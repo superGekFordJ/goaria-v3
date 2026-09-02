@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -64,7 +65,7 @@ func servePayloadRange(t *testing.T, fileSize int64, mutate func(http.ResponseWr
 			start = 0
 		}
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 		w.Header().Set("Accept-Ranges", "bytes")
 		w.WriteHeader(http.StatusPartialContent)
 		_, _ = w.Write(blob[start : end+1])
@@ -175,7 +176,7 @@ func TestPayloadFirst_200FullFileZeroWrite(t *testing.T) {
 		if r.Header.Get("Range") == "bytes=0-0" {
 			zeroZero.Add(1)
 		}
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
+		w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(make([]byte, fileSize))
 	}))
@@ -223,7 +224,7 @@ func TestPayloadFirst_MismatchNoWrite(t *testing.T) {
 		{
 			name: "missing_cr",
 			mutate: func(w http.ResponseWriter, r *http.Request, start, end int64) bool {
-				w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+				w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 				w.WriteHeader(http.StatusPartialContent)
 				_, _ = w.Write(make([]byte, end-start+1))
 				return true
@@ -233,7 +234,7 @@ func TestPayloadFirst_MismatchNoWrite(t *testing.T) {
 			name: "total_mismatch",
 			mutate: func(w http.ResponseWriter, r *http.Request, start, end int64) bool {
 				w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, 999999))
-				w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+				w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 				w.WriteHeader(http.StatusPartialContent)
 				_, _ = w.Write(make([]byte, end-start+1))
 				return true
@@ -398,7 +399,7 @@ func TestPayloadFirst_Later200KeepsSnapshot(t *testing.T) {
 			firstDone.Store(true)
 			return false
 		}
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
+		w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(make([]byte, fileSize))
 		return true
@@ -434,7 +435,7 @@ func TestPayloadFirst_PersistBeforeWriteResume(t *testing.T) {
 	releaseBody := make(chan struct{})
 	server, zeroZero, _ := servePayloadRange(t, fileSize, func(w http.ResponseWriter, r *http.Request, start, end int64) bool {
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 		w.WriteHeader(http.StatusPartialContent)
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
@@ -611,7 +612,7 @@ func TestPayloadFirst_NoBodyBeforeValidate(t *testing.T) {
 	var bodyReads atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Range", "garbage")
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
+		w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
 		w.WriteHeader(http.StatusPartialContent)
 		n, _ := w.Write(make([]byte, fileSize))
 		if n > 0 {
@@ -683,7 +684,7 @@ func TestPayloadFirst_Shorter206Completes(t *testing.T) {
 		if start == 0 && end > short-1 {
 			end = short - 1
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+			w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 			w.WriteHeader(http.StatusPartialContent)
 			blob := make([]byte, end-start+1)
 			for i := range blob {
@@ -825,7 +826,7 @@ func TestPayloadFirst_Mirror200AfterVerifyRotates(t *testing.T) {
 	defer cleanup()
 	fileSize := int64(256 * 1024)
 	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
+		w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(make([]byte, fileSize))
 	}))

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -260,7 +262,7 @@ func TestRunDownload_OptimisticConcurrentFallsBackToSingle(t *testing.T) {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(content)
 	}))
@@ -541,9 +543,11 @@ func TestUniqueFilePath_LongFilename(t *testing.T) {
 
 	// Create a file with a long name (within OS limits)
 	longName := ""
+	var longNameSb544 strings.Builder
 	for range 50 {
-		longName += "a"
+		longNameSb544.WriteString("a")
 	}
+	longName += longNameSb544.String()
 	longName += ".txt"
 
 	existingFile := filepath.Join(tmpDir, longName)

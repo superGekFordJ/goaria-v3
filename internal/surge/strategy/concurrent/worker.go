@@ -454,7 +454,7 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 			// Valid only if we requested the full file
 			// If we wanted a partial range but got the whole file (200), that's an error because we can't handle the full stream at a non-zero offset
 			if task.Offset != 0 || task.Length != totalSize {
-				return fmt.Errorf("server indicated success (200) but ignored range request (expected 206)")
+				return errors.New("server indicated success (200) but ignored range request (expected 206)")
 			}
 		} else if resp.StatusCode != http.StatusPartialContent {
 			// FORK-PATCH: Poison defense — track 4xx/5xx for hedge disabling.

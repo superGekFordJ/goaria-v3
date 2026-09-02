@@ -105,7 +105,7 @@ func ProbeServerWithProxy(ctx context.Context, rawurl string, filenameHint strin
 		Transport: transport_,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
-				return fmt.Errorf("stopped after 10 redirects")
+				return errors.New("stopped after 10 redirects")
 			}
 			if len(via) > 0 {
 				utils.CopyRedirectHeaders(req, via[0])
@@ -314,7 +314,7 @@ func ProbeMirrorsWithProxy(ctx context.Context, mirrors []string, runCfg *types.
 			} else {
 				outcome.valid = result.SupportsRange
 				if !result.SupportsRange {
-					outcome.err = fmt.Errorf("does not support ranges")
+					outcome.err = errors.New("does not support ranges")
 				}
 			}
 			results[idx] = outcome

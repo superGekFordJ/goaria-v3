@@ -99,7 +99,7 @@ func TestNetworkPool_Reuse(t *testing.T) {
 	// First request
 	transport1 := pool.AcquireTransport(runtime.ProxyURL, runtime.CustomDNS, 0)
 	client1 := &http.Client{Transport: transport1}
-	req1, _ := http.NewRequest("GET", server.URL, nil)
+	req1, _ := http.NewRequest(http.MethodGet, server.URL, nil)
 	resp1, err := client1.Do(req1)
 	if err != nil {
 		t.Fatalf("First request failed: %v", err)
@@ -118,7 +118,7 @@ func TestNetworkPool_Reuse(t *testing.T) {
 			}
 		},
 	}
-	req2, _ := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace), "GET", server.URL, nil)
+	req2, _ := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace), http.MethodGet, server.URL, nil)
 	resp2, err := client2.Do(req2)
 	if err != nil {
 		t.Fatalf("Second request failed: %v", err)

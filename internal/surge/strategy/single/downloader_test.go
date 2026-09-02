@@ -3,12 +3,12 @@ package single
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -739,7 +739,7 @@ func TestSingleDownloader_Download_BootstrapSize(t *testing.T) {
 
 	expectedSize := int64(1024)
 	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", expectedSize))
+		w.Header().Set("Content-Length", strconv.FormatInt(expectedSize, 10))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(make([]byte, 1024))
 	}))
@@ -858,7 +858,7 @@ func TestSingleDownloader_RecordSuccessPreservesUnexpiredCooldown(t *testing.T) 
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
+		w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(body)
 	}))
@@ -918,7 +918,7 @@ func TestSingleDownloader_PenalizeOn429(t *testing.T) {
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
+		w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(body)
 	}))
