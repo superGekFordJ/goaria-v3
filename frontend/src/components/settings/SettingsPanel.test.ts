@@ -54,6 +54,18 @@ vi.mock('../../stores/config', () => ({
   useConfigStore: () => storeMock,
 }))
 
+vi.mock('../../stores/ui', () => ({
+  useUIStore: () => ({
+    effectsTier: 'full',
+    effectsLevel: 100,
+  }),
+}))
+
+vi.mock('../../composables/useLiquidGlass', () => ({
+  useLiquidGlass: () => ({ filterId: { value: 'lg-test' } }),
+  getStaticGlassFilterId: () => 'static-glass-filter',
+}))
+
 const TransitionStub = defineComponent({
   name: 'Transition',
   setup(_, { slots }) {
@@ -485,6 +497,80 @@ describe('SettingsPanel', () => {
     storeMock.hydrateFailed = false
     await flushHydration()
     expect(wrapper.find('fieldset').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('renders floating save status capsule only when scrolled past header and not idle', async () => {
+    storeMock.isHydrated = true
+    const wrapper = mountPanel()
+    await flushHydration()
+
+    // 1. Initial state: not scrolled, idle -> no floating capsule
+    expect(wrapper.find('[data-testid="floating-save-status"]').exists()).toBe(false)
+
+    // 2. Scroll past header while idle -> still no floating capsule
+    const scroller = wrapper.find('.overflow-y-auto')
+    Object.defineProperty(scroller.element, 'scrollTop', {
+      value: 100,
+      configurable: true,
+      writable: true,
+    })
+    await scroller.trigger('scroll')
+    expect(wrapper.find('[data-testid="floating-save-status"]').exists()).toBe(false)
+
+    // 3. Trigger an edit -> status becomes 'saving' -> floating capsule appears
+    storeMock.updateConfig.mockResolvedValue(
+      new SaveConfigResult({
+        success: true,
+        config: sampleConfig({ user_agent: 'edited-ua' }),
+      }),
+    )
+    await wrapper.find('.ua-change').trigger('click')
+    expect(wrapper.find('[data-testid="floating-save-status"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="floating-save-status"]').text()).toContain('settings.saving')
+
+    // 4. After debounce save completes -> floating capsule shows 'saved'
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="floating-save-status"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="floating-save-status"]').text()).toContain('settings.saved')
+
+    // 5. After scheduleReset (1500ms) -> saveStatus resets to idle -> floating capsule disappears
+    await vi.advanceTimersByTimeAsync(1500)
+    await nextTick()
+    expect(wrapper.find('[data-testid="floating-save-status"]').exists()).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('hides floating save status capsule when scrolled back to the top', async () => {
+    storeMock.isHydrated = true
+    const wrapper = mountPanel()
+    await flushHydration()
+
+    const scroller = wrapper.find('.overflow-y-auto')
+    Object.defineProperty(scroller.element, 'scrollTop', {
+      value: 100,
+      configurable: true,
+      writable: true,
+    })
+    await scroller.trigger('scroll')
+
+    storeMock.updateConfig.mockImplementation(
+      () => new Promise(() => undefined), // pending
+    )
+    await wrapper.find('.ua-change').trigger('click')
+    expect(wrapper.find('[data-testid="floating-save-status"]').exists()).toBe(true)
+
+    // Scroll back to top
+    Object.defineProperty(scroller.element, 'scrollTop', {
+      value: 0,
+      configurable: true,
+      writable: true,
+    })
+    await scroller.trigger('scroll')
+    expect(wrapper.find('[data-testid="floating-save-status"]').exists()).toBe(false)
+
     wrapper.unmount()
   })
 })

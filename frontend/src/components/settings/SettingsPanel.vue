@@ -19,6 +19,7 @@
   import AdvancedSection from './sections/AdvancedSection.vue'
   import ExtensionSection from './sections/ExtensionSection.vue'
   import UpdateSection from './sections/UpdateSection.vue'
+  import SettingsFloatingStatus from './SettingsFloatingStatus.vue'
 
   const { t } = useI18n()
   const configStore = useConfigStore()
@@ -104,6 +105,7 @@
   }
 
   onMounted(() => {
+    updateScrollThreshold()
     if (configStore.isHydrated) {
       hydrateFromStore()
     } else {
@@ -218,149 +220,175 @@
   })
 
   const connectionOptions = ['1', '4', '8', '16', '24', '32']
+
+  const isScrolledPastHeader = ref(false)
+  const headerRef = ref<HTMLElement | null>(null)
+  const scrollContainerRef = ref<HTMLElement | null>(null)
+  let scrollThreshold = 80
+
+  const updateScrollThreshold = () => {
+    if (headerRef.value?.offsetHeight) {
+      scrollThreshold = headerRef.value.offsetTop + headerRef.value.offsetHeight + 8
+    }
+  }
+
+  const handleScroll = (event: Event) => {
+    const target = event.target as HTMLElement | null
+    if (!target) return
+    isScrolledPastHeader.value = target.scrollTop > scrollThreshold
+  }
 </script>
 
 <template>
-  <div class="flex-1 overflow-y-auto p-6 animate-fade-in-up">
-    <div class="max-w-2xl mx-auto">
-      <!-- Header -->
-      <div class="flex items-center justify-between mb-8">
-        <div class="flex items-center gap-4">
-          <div
-            class="w-12 h-12 rounded-[var(--radius-squircle-md)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] flex items-center justify-center"
-          >
-            <SettingsIcon :size="22" class="text-[var(--app-text-muted)]" />
+  <div class="relative flex-1 flex flex-col min-h-0 overflow-hidden animate-fade-in-up">
+    <!-- Floating Save Status Capsule (Top-Center Dynamic Island) -->
+    <SettingsFloatingStatus
+      :visible="isScrolledPastHeader"
+      :status="saveStatus"
+      :error-key="saveErrorKey"
+    />
+
+    <div ref="scrollContainerRef" class="flex-1 overflow-y-auto p-6" @scroll.passive="handleScroll">
+      <div class="max-w-2xl mx-auto">
+        <!-- Header -->
+        <div ref="headerRef" class="flex items-center justify-between mb-8">
+          <div class="flex items-center gap-4">
+            <div
+              class="w-12 h-12 rounded-[var(--radius-squircle-md)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] flex items-center justify-center"
+            >
+              <SettingsIcon :size="22" class="text-[var(--app-text-muted)]" />
+            </div>
+            <div>
+              <h2 class="text-2xl font-bold text-[var(--app-text)] tracking-tight">
+                {{ t('settings.title') }}
+              </h2>
+              <p class="text-xs text-[var(--app-text-subtle)] mt-0.5">
+                {{ t('settings.description') }}
+              </p>
+            </div>
           </div>
-          <div>
-            <h2 class="text-2xl font-bold text-[var(--app-text)] tracking-tight">
-              {{ t('settings.title') }}
-            </h2>
-            <p class="text-xs text-[var(--app-text-subtle)] mt-0.5">
-              {{ t('settings.description') }}
+
+          <!-- Save Status Indicator -->
+          <div class="flex items-center gap-2">
+            <Transition name="fade" mode="out-in">
+              <div
+                v-if="saveStatus === 'saving'"
+                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]"
+              >
+                <Loader2 :size="12" class="animate-spin text-[var(--neon-primary)]" />
+                <span
+                  class="text-[10px] font-mono-data text-[var(--app-text-muted)]"
+                  aria-live="polite"
+                >
+                  {{ t('settings.saving') }}
+                </span>
+              </div>
+              <div
+                v-else-if="saveStatus === 'saved'"
+                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
+              >
+                <CheckCircle :size="12" class="text-[var(--status-complete)]" />
+                <span
+                  class="text-[10px] font-mono-data text-[var(--status-complete)]"
+                  aria-live="polite"
+                >
+                  {{ t('settings.saved') }}
+                </span>
+              </div>
+              <div
+                v-else-if="saveStatus === 'error'"
+                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-error)]/10 border border-[var(--status-error)]/20"
+              >
+                <AlertCircle :size="12" class="text-[var(--status-error)]" />
+                <span
+                  class="text-[10px] font-mono-data text-[var(--status-error)]"
+                  aria-live="polite"
+                >
+                  {{ t(saveErrorKey) }}
+                </span>
+              </div>
+              <div
+                v-else
+                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]"
+              >
+                <div class="w-1.5 h-1.5 rounded-full bg-[var(--app-text-subtle)]"></div>
+                <span class="text-[10px] font-mono-data text-[var(--app-text-subtle)]">
+                  {{ t('settings.autoSave') }}
+                </span>
+              </div>
+            </Transition>
+          </div>
+        </div>
+
+        <div
+          v-if="showHydrationError"
+          class="mb-4 flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-[var(--status-error)]/10 border border-[var(--status-error)]/20 animate-fade-in"
+          aria-live="polite"
+        >
+          <div class="flex items-center gap-2.5 min-w-0">
+            <AlertCircle :size="15" class="text-[var(--status-error)] shrink-0" />
+            <p class="text-xs text-[var(--status-error)] font-medium tracking-tight">
+              {{ t('settings.loadFailed') }}
             </p>
           </div>
+          <button
+            type="button"
+            class="retry-hydrate flex items-center gap-1.5 shrink-0 px-3 py-1.5 rounded-lg text-[10px] font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:bg-[var(--glass-border)] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+            :disabled="retryBusy"
+            @click="retryHydration"
+          >
+            <RotateCw
+              :size="11"
+              class="transition-transform duration-500"
+              :class="{ 'animate-spin': retryBusy }"
+            />
+            <span>{{ t('settings.retry') }}</span>
+          </button>
         </div>
 
-        <!-- Save Status Indicator -->
-        <div class="flex items-center gap-2">
-          <Transition name="fade" mode="out-in">
-            <div
-              v-if="saveStatus === 'saving'"
-              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]"
-            >
-              <Loader2 :size="12" class="animate-spin text-[var(--neon-primary)]" />
-              <span
-                class="text-[10px] font-mono-data text-[var(--app-text-muted)]"
-                aria-live="polite"
-              >
-                {{ t('settings.saving') }}
-              </span>
-            </div>
-            <div
-              v-else-if="saveStatus === 'saved'"
-              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
-            >
-              <CheckCircle :size="12" class="text-[var(--status-complete)]" />
-              <span
-                class="text-[10px] font-mono-data text-[var(--status-complete)]"
-                aria-live="polite"
-              >
-                {{ t('settings.saved') }}
-              </span>
-            </div>
-            <div
-              v-else-if="saveStatus === 'error'"
-              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-error)]/10 border border-[var(--status-error)]/20"
-            >
-              <AlertCircle :size="12" class="text-[var(--status-error)]" />
-              <span
-                class="text-[10px] font-mono-data text-[var(--status-error)]"
-                aria-live="polite"
-              >
-                {{ t(saveErrorKey) }}
-              </span>
-            </div>
-            <div
-              v-else
-              class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]"
-            >
-              <div class="w-1.5 h-1.5 rounded-full bg-[var(--app-text-subtle)]"></div>
-              <span class="text-[10px] font-mono-data text-[var(--app-text-subtle)]">
-                {{ t('settings.autoSave') }}
-              </span>
-            </div>
-          </Transition>
+        <div class="flex flex-col gap-4">
+          <fieldset
+            class="min-w-0 flex flex-col gap-4 border-0 p-0 m-0"
+            :disabled="editorsLocked"
+            :class="{ 'pointer-events-none opacity-60': editorsLocked }"
+          >
+            <DownloadSection v-model="formData.download_dir" @pick="handlePickDirectory" />
+
+            <RPCSection
+              v-model:port="formData.rpc_port"
+              v-model:secret="formData.rpc_secret"
+              @change="triggerSave"
+            />
+
+            <PerformanceSection
+              v-model:connections="formData.max_connections"
+              v-model:concurrent-downloads="formData.max_concurrent_downloads"
+              v-model:smart-thread-mode="formData.smart_thread_mode"
+              :connection-options="connectionOptions"
+              @change="triggerSave"
+            />
+
+            <UASection v-model="formData.user_agent" @change="triggerSave" />
+          </fieldset>
+
+          <AppearanceSection />
+
+          <fieldset
+            class="min-w-0 flex flex-col gap-4 border-0 p-0 m-0"
+            :disabled="editorsLocked"
+            :class="{ 'pointer-events-none opacity-60': editorsLocked }"
+          >
+            <AdvancedSection
+              v-model:transparency="formData.window_transparency"
+              v-model:show-history="formData.show_history"
+              @change="triggerSave"
+            />
+          </fieldset>
+
+          <ExtensionSection />
+
+          <UpdateSection />
         </div>
-      </div>
-
-      <div
-        v-if="showHydrationError"
-        class="mb-4 flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-[var(--status-error)]/10 border border-[var(--status-error)]/20 animate-fade-in"
-        aria-live="polite"
-      >
-        <div class="flex items-center gap-2.5 min-w-0">
-          <AlertCircle :size="15" class="text-[var(--status-error)] shrink-0" />
-          <p class="text-xs text-[var(--status-error)] font-medium tracking-tight">
-            {{ t('settings.loadFailed') }}
-          </p>
-        </div>
-        <button
-          type="button"
-          class="retry-hydrate flex items-center gap-1.5 shrink-0 px-3 py-1.5 rounded-lg text-[10px] font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:bg-[var(--glass-border)] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-          :disabled="retryBusy"
-          @click="retryHydration"
-        >
-          <RotateCw
-            :size="11"
-            class="transition-transform duration-500"
-            :class="{ 'animate-spin': retryBusy }"
-          />
-          <span>{{ t('settings.retry') }}</span>
-        </button>
-      </div>
-
-      <div class="flex flex-col gap-4">
-        <fieldset
-          class="min-w-0 flex flex-col gap-4 border-0 p-0 m-0"
-          :disabled="editorsLocked"
-          :class="{ 'pointer-events-none opacity-60': editorsLocked }"
-        >
-          <DownloadSection v-model="formData.download_dir" @pick="handlePickDirectory" />
-
-          <RPCSection
-            v-model:port="formData.rpc_port"
-            v-model:secret="formData.rpc_secret"
-            @change="triggerSave"
-          />
-
-          <PerformanceSection
-            v-model:connections="formData.max_connections"
-            v-model:concurrent-downloads="formData.max_concurrent_downloads"
-            v-model:smart-thread-mode="formData.smart_thread_mode"
-            :connection-options="connectionOptions"
-            @change="triggerSave"
-          />
-
-          <UASection v-model="formData.user_agent" @change="triggerSave" />
-        </fieldset>
-
-        <AppearanceSection />
-
-        <fieldset
-          class="min-w-0 flex flex-col gap-4 border-0 p-0 m-0"
-          :disabled="editorsLocked"
-          :class="{ 'pointer-events-none opacity-60': editorsLocked }"
-        >
-          <AdvancedSection
-            v-model:transparency="formData.window_transparency"
-            v-model:show-history="formData.show_history"
-            @change="triggerSave"
-          />
-        </fieldset>
-
-        <ExtensionSection />
-
-        <UpdateSection />
       </div>
     </div>
   </div>
