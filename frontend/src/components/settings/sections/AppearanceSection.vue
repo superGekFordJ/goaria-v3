@@ -60,14 +60,14 @@
 
 <template>
   <SectionCard
-    class="relative z-[70]"
+    :class="{ 'relative z-20': showLanguageDropdown }"
     :title="t('appearance.title')"
     :description="t('appearance.description')"
     :icon="Palette"
     icon-class="bg-indigo-500/10 text-indigo-400"
   >
     <!-- Language Selector -->
-    <div ref="languageDropdownRef" class="mb-6 relative z-50">
+    <div ref="languageDropdownRef" class="mb-6 relative z-10">
       <label
         class="text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-3 block"
       >
@@ -135,7 +135,7 @@
       <Transition name="slide-fade">
         <div
           v-if="showLanguageDropdown"
-          class="absolute z-50 top-full left-0 right-0 mt-2 p-1 rounded-xl glass-panel-solid origin-top"
+          class="absolute z-20 top-full left-0 right-0 mt-2 p-1 rounded-xl glass-panel-solid origin-top"
         >
           <button
             v-for="localeOption in [

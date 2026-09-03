@@ -18,7 +18,7 @@
   <Transition name="floating-capsule">
     <div
       v-if="visible && status !== 'idle'"
-      class="absolute top-3 left-0 right-0 z-[150] flex justify-center pointer-events-none px-6"
+      class="absolute top-3 left-0 right-0 z-30 flex justify-center pointer-events-none px-6"
       data-testid="floating-save-status"
     >
       <LiquidGlassPanel

@@ -84,7 +84,7 @@
 
 <template>
   <SectionCard
-    class="relative z-[80]"
+    :class="{ 'relative z-20': showConnectionsDropdown }"
     :title="t('performance.title')"
     :description="t('performance.description')"
     :icon="Cpu"
@@ -132,7 +132,7 @@
             <Info :size="12" class="cursor-help hover:text-[var(--app-text)] transition-colors" />
             <!-- Tooltip Popup -->
             <div
-              class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-80 max-w-[min(20rem,70vw)] p-2.5 rounded-lg glass-panel-solid opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[100] text-center text-[10px] font-medium normal-case tracking-normal pointer-events-none"
+              class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-80 max-w-[min(20rem,70vw)] p-2.5 rounded-lg glass-panel-solid opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-30 text-center text-[10px] font-medium normal-case tracking-normal pointer-events-none"
             >
               {{ t('performance.surgeExclusiveTooltip') }}
               <div
@@ -141,7 +141,7 @@
             </div>
           </div>
         </label>
-        <div ref="connectionsDropdownRef" class="relative z-50">
+        <div ref="connectionsDropdownRef" class="relative z-10">
           <button
             type="button"
             class="w-full flex items-center justify-between bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl px-4 py-3 text-sm font-mono-data text-[var(--app-text)]/80 outline-none cursor-pointer transition-all duration-200 hover:border-[var(--neon-primary)]/30"
@@ -159,7 +159,7 @@
           <Transition name="slide-fade">
             <div
               v-if="showConnectionsDropdown"
-              class="absolute z-50 top-full left-0 right-0 mt-2 p-1 rounded-xl glass-panel-solid origin-top max-h-72 overflow-y-auto"
+              class="absolute z-20 top-full left-0 right-0 mt-2 p-1 rounded-xl glass-panel-solid origin-top max-h-72 overflow-y-auto"
             >
               <button
                 v-for="n in displayedConnectionOptions"

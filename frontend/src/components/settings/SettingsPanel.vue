@@ -248,7 +248,11 @@
       :error-key="saveErrorKey"
     />
 
-    <div ref="scrollContainerRef" class="flex-1 overflow-y-auto p-6" @scroll.passive="handleScroll">
+    <div
+      ref="scrollContainerRef"
+      class="relative z-0 flex-1 overflow-y-auto p-6"
+      @scroll.passive="handleScroll"
+    >
       <div class="max-w-2xl mx-auto">
         <!-- Header -->
         <div ref="headerRef" class="flex items-center justify-between mb-8">
