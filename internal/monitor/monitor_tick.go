@@ -319,6 +319,11 @@ func (m *Monitor) tick() {
 				"errorCode":       task.ErrorCode,
 				"errorMessage":    task.ErrorMessage,
 			}
+			if m.tracker != nil {
+				if tc, _, ok := m.tracker.GetThreadInfo(task.GID); ok && tc > 0 {
+					payload["threads"] = strconv.Itoa(tc)
+				}
+			}
 
 			m.pusher.Queue(events.TaskDelta{
 				Type:    "progress",

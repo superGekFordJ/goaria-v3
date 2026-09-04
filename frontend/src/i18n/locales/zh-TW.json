@@ -164,7 +164,9 @@
     "groupFolder": "資料夾 {folder}",
     "groupItemCount": "{count} 個項目",
     "groupOrdinal": "{index}/{count}",
-    "groupHintLabel": "下載堆疊，{count} 個項目"
+    "groupHintLabel": "下載堆疊，{count} 個項目",
+    "threads": "線程",
+    "threadsTooltip": "目前並發連線數: {count}"
   },
   "taskHeader": {
     "clipboardFilled": "已從剪貼簿填入連結",

@@ -199,6 +199,39 @@ func TestTaskTracker_ThreadInfoTracking(t *testing.T) {
 	}
 }
 
+func TestTaskTracker_UpdateThreadCount(t *testing.T) {
+	tracker := NewTaskTracker()
+	gid := "sg_test_update"
+
+	// 1. Initial split set
+	tracker.SetThreadInfo(gid, 2, true)
+	tc, isExp, ok := tracker.GetThreadInfo(gid)
+	if !ok || tc != 2 || !isExp {
+		t.Fatalf("expected 2, true, true; got %d, %v, %v", tc, isExp, ok)
+	}
+
+	// 2. Dynamic update preserves exploration and updates count
+	tracker.UpdateThreadCount(gid, 6)
+	tc, isExp, ok = tracker.GetThreadInfo(gid)
+	if !ok || tc != 6 || !isExp {
+		t.Fatalf("expected 6, true, true; got %d, %v, %v", tc, isExp, ok)
+	}
+
+	// 3. UpdateThreadCount on unknown task creates it
+	tracker.UpdateThreadCount("sg_unknown", 4)
+	tc, isExp, ok = tracker.GetThreadInfo("sg_unknown")
+	if !ok || tc != 4 || isExp {
+		t.Fatalf("expected 4, false, true; got %d, %v, %v", tc, isExp, ok)
+	}
+
+	// 4. Non-positive count is ignored
+	tracker.UpdateThreadCount(gid, 0)
+	tc, _, _ = tracker.GetThreadInfo(gid)
+	if tc != 6 {
+		t.Fatalf("expected 6; got %d", tc)
+	}
+}
+
 func TestTaskTracker_ThreadInfoPersistence(t *testing.T) {
 	tracker := NewTaskTracker()
 

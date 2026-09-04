@@ -164,7 +164,9 @@
     "groupFolder": "Folder {folder}",
     "groupItemCount": "{count} items",
     "groupOrdinal": "{index}/{count}",
-    "groupHintLabel": "Download stack, {count} items"
+    "groupHintLabel": "Download stack, {count} items",
+    "threads": "Threads",
+    "threadsTooltip": "Active connections: {count}"
   },
   "taskHeader": {
     "clipboardFilled": "Link filled from clipboard",

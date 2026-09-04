@@ -164,7 +164,9 @@
     "groupFolder": "Carpeta {folder}",
     "groupItemCount": "{count} elementos",
     "groupOrdinal": "{index}/{count}",
-    "groupHintLabel": "Pila de descargas, {count} elementos"
+    "groupHintLabel": "Pila de descargas, {count} elementos",
+    "threads": "Hilos",
+    "threadsTooltip": "Conexiones activas: {count}"
   },
   "taskHeader": {
     "clipboardFilled": "Enlace pegado desde el portapapeles",

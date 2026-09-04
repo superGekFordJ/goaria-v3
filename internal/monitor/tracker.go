@@ -344,6 +344,28 @@ func (t *TaskTracker) GetThreadInfo(gid string) (threadCount int, isExploration 
 	return 0, false, false
 }
 
+// UpdateThreadCount 更新任务运行时的实际并发连接数（由进度遥测动态更新）
+func (t *TaskTracker) UpdateThreadCount(gid string, threadCount int) {
+	if threadCount <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if tracked := t.tasks[gid]; tracked != nil {
+		if tracked.ThreadCount == threadCount {
+			return
+		}
+		tracked.ThreadCount = threadCount
+	} else {
+		t.tasks[gid] = &TrackedTask{
+			GID:         gid,
+			ThreadCount: threadCount,
+			CreatedAt:   time.Now(),
+		}
+	}
+}
+
 func (t *TaskTracker) SetTaskGroup(gid string, group rpc.DownloadGroup) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

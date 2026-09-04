@@ -4,7 +4,7 @@
   import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
   import type { TaskGroupHint } from '../../stores/task/grouping'
   import { useTaskStore } from '../../stores/task'
-  import { Pause, Play, FolderOpen, Trash2, Clock, Zap, Layers3 } from '@lucide/vue'
+  import { Pause, Play, FolderOpen, Trash2, Clock, Zap, Layers3, Share2 } from '@lucide/vue'
   import FileIcon from '../common/FileIcon.vue'
   import {
     TASK_PROGRESS_CONFIG,
@@ -151,6 +151,16 @@
     return `${hours}h ${mins}m`
   })
 
+  // Concurrency threads count (real runtime telemetry only, no fake fallbacks)
+  const threadCount = computed<number | null>(() => {
+    const raw = (props.task as unknown as { threads?: string | number }).threads
+    if (raw !== undefined && raw !== null && raw !== '') {
+      const parsed = Number(raw)
+      if (Number.isFinite(parsed) && parsed > 0) return parsed
+    }
+    return null
+  })
+
   // Status styling with neon effects
   const statusConfig = computed(() => {
     switch (props.task.status) {
@@ -293,6 +303,15 @@
                 :class="statusConfig.labelClass"
               >
                 {{ statusConfig.label }}
+              </span>
+              <!-- Threads Chip (Active only, real telemetry only) -->
+              <span
+                v-if="isActive && threadCount !== null"
+                class="task-threads-chip"
+                :title="t('taskCard.threadsTooltip', { count: threadCount })"
+              >
+                <Share2 :size="10" class="task-threads-chip-icon" />
+                <span class="font-mono-data task-threads-chip-count">{{ threadCount }}</span>
               </span>
               <span
                 v-if="groupHint"
@@ -537,5 +556,42 @@
   .task-group-chip-count {
     flex: 0 0 auto;
     color: color-mix(in srgb, var(--neon-primary) 78%, var(--app-text));
+  }
+
+  .task-threads-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.09375rem 0.375rem;
+    border: 1px solid color-mix(in srgb, var(--glass-border) 60%, transparent);
+    border-radius: var(--radius-squircle-sm);
+    background: color-mix(in srgb, var(--app-text) 5%, transparent);
+    color: color-mix(in srgb, var(--app-text-muted) 90%, var(--neon-primary));
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--glass-highlight) 14%, transparent),
+      0 0 8px color-mix(in srgb, var(--neon-primary) 4%, transparent);
+    font-size: 0.625rem;
+    font-weight: 700;
+    line-height: 1;
+    transition: all 0.2s ease;
+  }
+
+  .task-threads-chip:hover {
+    border-color: color-mix(in srgb, var(--neon-primary) 35%, transparent);
+    background: color-mix(in srgb, var(--neon-primary) 8%, transparent);
+    color: var(--app-text);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--glass-highlight) 25%, transparent),
+      0 0 12px color-mix(in srgb, var(--neon-primary) 12%, transparent);
+  }
+
+  .task-threads-chip-icon {
+    flex: 0 0 auto;
+    color: color-mix(in srgb, var(--neon-primary) 75%, var(--app-text-muted));
+  }
+
+  .task-threads-chip-count {
+    font-size: 0.625rem;
+    line-height: 1;
   }
 </style>

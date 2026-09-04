@@ -164,7 +164,9 @@
     "groupFolder": "文件夹 {folder}",
     "groupItemCount": "{count} 项",
     "groupOrdinal": "{index}/{count}",
-    "groupHintLabel": "下载堆叠，{count} 项"
+    "groupHintLabel": "下载堆叠，{count} 项",
+    "threads": "线程",
+    "threadsTooltip": "当前并发连接数: {count}"
   },
   "taskHeader": {
     "clipboardFilled": "已从剪贴板填入链接",

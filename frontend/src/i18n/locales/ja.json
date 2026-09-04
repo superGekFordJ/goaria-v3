@@ -164,7 +164,9 @@
     "groupFolder": "フォルダー {folder}",
     "groupItemCount": "{count} 件",
     "groupOrdinal": "{index}/{count}",
-    "groupHintLabel": "ダウンロードスタック、{count} 件"
+    "groupHintLabel": "ダウンロードスタック、{count} 件",
+    "threads": "スレッド",
+    "threadsTooltip": "アクティブな接続数: {count}"
   },
   "taskHeader": {
     "clipboardFilled": "クリップボードからリンクを入力しました",

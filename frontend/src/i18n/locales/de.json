@@ -164,7 +164,9 @@
     "groupFolder": "Ordner {folder}",
     "groupItemCount": "{count} Elemente",
     "groupOrdinal": "{index}/{count}",
-    "groupHintLabel": "Download-Stapel, {count} Elemente"
+    "groupHintLabel": "Download-Stapel, {count} Elemente",
+    "threads": "Threads",
+    "threadsTooltip": "Aktive Verbindungen: {count}"
   },
   "taskHeader": {
     "clipboardFilled": "Link aus Zwischenablage eingefügt",

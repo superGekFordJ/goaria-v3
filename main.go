@@ -253,6 +253,7 @@ func main() {
 			}
 			if params.Split > 0 {
 				cfg.Runtime.Workers = params.Split
+				tracker.SetThreadInfo(gid, params.Split, false)
 			}
 			if params.MinSize > 0 {
 				cfg.Runtime.MinChunkSize = params.MinSize
