@@ -5,7 +5,9 @@ package wailsapp
 import (
 	"context"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"goaria-v3/internal/extension"
 	"goaria-v3/internal/extractor"
@@ -175,24 +177,99 @@ func TestExtensionCommitInvokesFixedOldTaskServiceAcrossSnapshotSwitch(t *testin
 		t.Fatalf("expected service adapter to match snap1 adapter")
 	}
 
-	// Now mutate manager to create snap2
+	// 1. Generate valid lease from snap1 resolver
+	resAdapter, ok := linkage1.Resolver.(*extensionResolveAdapter)
+	if !ok {
+		t.Fatalf("expected *extensionResolveAdapter, got %T", linkage1.Resolver)
+	}
+	resolveRes := resolveFixtureSession(t, resAdapter)
+	if len(resolveRes.Items) == 0 {
+		t.Fatal("expected resolved items")
+	}
+
+	// 2. Set up barrier on batchAdapter.service before AddPreparedExtractorItems
+	barrierEntered := make(chan struct{})
+	releaseBarrier := make(chan struct{})
+	barrierAdder := &barrierTasksAdder{
+		realService: batchAdapter.service,
+		beforeAdd: func() {
+			close(barrierEntered)
+			<-releaseBarrier
+		},
+	}
+	batchAdapter.service = barrierAdder
+
+	// 3. Start HandleCommit in background
+	commitPayload := commitRaw(resolveRes.SessionID, []string{resolveRes.Items[0].ItemID}, false, "")
+	var commitResult extension.CommitResult
+	commitDone := make(chan struct{})
+	go func() {
+		defer close(commitDone)
+		commitResult = batchAdapter.HandleCommit(context.Background(), extension.RequestEnvelope{
+			Type:      extension.MsgTypeBatchDownload,
+			RequestID: "req-commit-switch",
+		}, commitPayload)
+	}()
+
+	// 4. Wait for commit execution to reach barrier (items consumed from lease, ready to add)
+	select {
+	case <-barrierEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for commit to reach barrier")
+	}
+
+	// 5. While commit is in-flight, mutate manager to create snap2
 	_, err = mgr.ReloadSource(context.Background(), srcState.SourceID)
 	if err != nil {
 		t.Fatalf("ReloadSource: %v", err)
 	}
 	snap2 := mgr.CurrentSnapshot()
-	if snap2.Revision() == snap1.Revision() {
+	if snap2.Revision() <= snap1.Revision() {
 		t.Fatalf("expected snap2 revision > snap1 revision")
 	}
 
-	// Verify that app.taskService().Adapter now points to snap2
+	// Verify that current app.taskService() now points to snap2
 	currentService := app.taskService()
 	if currentService.Adapter != snap2.TasksAdapter() {
 		t.Fatalf("expected app.taskService() adapter to be snap2 adapter")
 	}
 
-	// But batchAdapter.service must still point to snap1 adapter!
+	// 6. Release barrier to let old commit finish
+	close(releaseBarrier)
+
+	select {
+	case <-commitDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for commit to complete")
+	}
+
+	// 7. Verify old commit completed successfully using snap1 fixed service
+	if !commitResult.Success {
+		t.Fatalf("expected commit success, got error %s: %s", commitResult.ErrorCode, commitResult.Error)
+	}
+	if barrierAdder.calls.Load() != 1 {
+		t.Fatalf("expected exactly 1 call to old fixed service, got %d", barrierAdder.calls.Load())
+	}
+	if engine.callCount() != 1 {
+		t.Fatalf("expected 1 engine add call, got %d", engine.callCount())
+	}
+
+	// batchAdapter.service must still point to snap1 adapter
 	if fixedService.Adapter != snap1.TasksAdapter() {
 		t.Fatalf("expected batchAdapter to maintain fixed snap1 adapter across switch")
 	}
+}
+
+type barrierTasksAdder struct {
+	realService tasksPreparedAdder
+	beforeAdd   func()
+	calls       atomic.Int32
+}
+
+func (b *barrierTasksAdder) AddPreparedExtractorItems(ctx context.Context, req tasks.PreparedAddRequest) (tasks.PreparedAddResult, error) {
+	b.calls.Add(1)
+	if b.beforeAdd != nil {
+		b.beforeAdd()
+	}
+	return b.realService.AddPreparedExtractorItems(ctx, req)
 }

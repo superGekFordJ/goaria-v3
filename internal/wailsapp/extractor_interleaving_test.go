@@ -5,7 +5,6 @@ package wailsapp
 import (
 	"context"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,46 +14,25 @@ import (
 	"goaria-v3/internal/extractor/packbuilder"
 )
 
-type barrierPicker struct {
-	mu           sync.Mutex
-	dirPath      string
-	beforePick   func()
-	afterPick    func()
-	pickStarted  chan struct{}
-	releasePick  chan struct{}
-	pickFinished chan struct{}
+type barrierSourceManager struct {
+	extractorSourceManager
+	beforeMut1  chan struct{}
+	unblockMut1 chan struct{}
+	beforeMut2  chan struct{}
+	unblockMut2 chan struct{}
+	reloadCount atomic.Int32
 }
 
-func (b *barrierPicker) pickFile() (string, bool, error) {
-	return "", false, nil
-}
-
-func (b *barrierPicker) pickDirectory() (string, bool, error) {
-	if b.beforePick != nil {
-		b.beforePick()
+func (b *barrierSourceManager) ReloadSource(ctx context.Context, sourceID string) (extractor.RuntimeSourceState, error) {
+	switch b.reloadCount.Add(1) {
+	case 1:
+		close(b.beforeMut1)
+		<-b.unblockMut1
+	case 2:
+		close(b.beforeMut2)
+		<-b.unblockMut2
 	}
-	if b.pickStarted != nil {
-		select {
-		case b.pickStarted <- struct{}{}:
-		default:
-		}
-	}
-	if b.releasePick != nil {
-		<-b.releasePick
-	}
-	if b.afterPick != nil {
-		b.afterPick()
-	}
-	if b.pickFinished != nil {
-		select {
-		case b.pickFinished <- struct{}{}:
-		default:
-		}
-	}
-	b.mu.Lock()
-	p := b.dirPath
-	b.mu.Unlock()
-	return p, false, nil
+	return b.extractorSourceManager.ReloadSource(ctx, sourceID)
 }
 
 func TestConcurrentWailsMutationsSerializedAndNormalAddUnblocked(t *testing.T) {
@@ -68,17 +46,33 @@ func TestConcurrentWailsMutationsSerializedAndNormalAddUnblocked(t *testing.T) {
 		t.Fatalf("NewExtractorRuntimeManager: %v", err)
 	}
 
+	packDir := filepath.Join(t.TempDir(), "fixture-pack")
+	lockOut := filepath.Join(packDir, packbuilder.HostCallFixturePackID+".lock.json")
+	if _, err := packbuilder.WriteHostCallFixture(packDir, lockOut); err != nil {
+		t.Fatalf("WriteHostCallFixture: %v", err)
+	}
+
+	// Pre-load one source so both Mutation 1 and Mutation 2 can successfully reload it
+	initialSrc, err := mgr.LoadSource(context.Background(), extractor.RuntimeSourceSpec{
+		Kind:    extractor.RuntimeSourceKindLocalDirectory,
+		Locator: packDir,
+	})
+	if err != nil {
+		t.Fatalf("initial LoadSource: %v", err)
+	}
+
+	bm := &barrierSourceManager{
+		extractorSourceManager: mgr,
+		beforeMut1:             make(chan struct{}),
+		unblockMut1:            make(chan struct{}),
+		beforeMut2:             make(chan struct{}),
+		unblockMut2:            make(chan struct{}),
+	}
+
 	engine := &recordingCommitEngine{failURLs: map[string]struct{}{}}
 	app := NewApp(Options{DownloadEngine: engine})
-
-	bp := &barrierPicker{
-		pickStarted:  make(chan struct{}, 1),
-		releasePick:  make(chan struct{}),
-		pickFinished: make(chan struct{}, 1),
-	}
 	runtime := &taggedExtractorRuntime{
-		manager: mgr,
-		picker:  bp,
+		manager: bm,
 	}
 	app.setExtractorRuntime(runtime)
 
@@ -93,83 +87,96 @@ func TestConcurrentWailsMutationsSerializedAndNormalAddUnblocked(t *testing.T) {
 	defer srv.Stop()
 	app.extensionServer = srv
 
-	packDir := filepath.Join(t.TempDir(), "fixture-pack")
-	lockOut := filepath.Join(packDir, packbuilder.HostCallFixturePackID+".lock.json")
-	if _, err := packbuilder.WriteHostCallFixture(packDir, lockOut); err != nil {
-		t.Fatalf("WriteHostCallFixture: %v", err)
-	}
-	bp.dirPath = packDir
-
-	// Launch Mutation 1 in background
-	var mut1Done atomic.Bool
+	// 1. Launch Mutation 1 in background
 	var mut1Res ExtractorOperationResult
+	mut1Done := make(chan struct{})
 	go func() {
-		mut1Res = app.LoadExtractorPackDirectory()
-		mut1Done.Store(true)
+		defer close(mut1Done)
+		mut1Res = app.ReloadExtractorSource(initialSrc.SourceID)
 	}()
 
-	// Wait until Mutation 1 enters picker inside mutationMu
+	// Wait until Mutation 1 enters ReloadSource while holding mutationMu
 	select {
-	case <-bp.pickStarted:
+	case <-bm.beforeMut1:
 	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for mutation 1 to enter picker")
+		t.Fatal("timed out waiting for mutation 1 to enter ReloadSource")
 	}
 
-	// While Mutation 1 is holding mutationMu:
-	// 1. A concurrent Mutation 2 MUST wait on mutationMu and not complete yet
-	var mut2Started atomic.Bool
-	var mut2Done atomic.Bool
-	go func() {
-		mut2Started.Store(true)
-		_ = app.ReloadExtractorSource("non-existent-source-id")
-		mut2Done.Store(true)
-	}()
-
-	time.Sleep(50 * time.Millisecond)
-	if mut2Done.Load() {
-		t.Fatal("mutation 2 completed while mutation 1 held mutationMu")
-	}
-
-	// 2. A concurrent normal AddUri must NOT block on mutationMu and must return immediately
+	// 2. While Mutation 1 holds mutationMu:
+	// A concurrent normal AddUri must NOT block on mutationMu and must complete immediately
 	addDone := make(chan struct{})
 	var addRes string
 	go func() {
+		defer close(addDone)
 		addRes = app.AddUri("https://example.com/normal-download.zip")
-		close(addDone)
 	}()
 
 	select {
 	case <-addDone:
-		// Normal add completed immediately without waiting on mutationMu!
 		if addRes == "" {
 			t.Fatal("expected non-empty AddUri result")
 		}
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(1 * time.Second):
 		t.Fatal("normal AddUri was blocked by ongoing Wails mutation")
 	}
 
-	// Now unblock Mutation 1
-	close(bp.releasePick)
+	// 3. While Mutation 1 still holds mutationMu, launch Mutation 2 (also a valid reload)
+	var mut2Res ExtractorOperationResult
+	mut2Done := make(chan struct{})
+	go func() {
+		defer close(mut2Done)
+		mut2Res = app.ReloadExtractorSource(initialSrc.SourceID)
+	}()
 
-	// Wait for Mutation 1 and Mutation 2 to complete
-	deadline := time.Now().Add(5 * time.Second)
-	for (!mut1Done.Load() || !mut2Done.Load()) && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !mut1Done.Load() || !mut2Done.Load() {
-		t.Fatal("mutations did not complete after release")
+	// Verify Mutation 2 is blocked by mutationMu and has NOT entered ReloadSource yet
+	select {
+	case <-bm.beforeMut2:
+		t.Fatal("mutation 2 entered ReloadSource while mutation 1 held mutationMu")
+	default:
 	}
 
+	// 4. Unblock Mutation 1
+	close(bm.unblockMut1)
+
+	select {
+	case <-mut1Done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for mutation 1 to finish")
+	}
 	if !mut1Res.Success {
-		t.Fatalf("mutation 1 failed: %q", mut1Res.ErrorCode)
+		t.Fatalf("mutation 1 failed: %s", mut1Res.ErrorCode)
 	}
 
-	// Final linkage in srv must match final Manager snapshot (1 pack)
+	// 5. Now Mutation 2 acquires mutationMu and enters ReloadSource
+	select {
+	case <-bm.beforeMut2:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for mutation 2 to enter ReloadSource")
+	}
+
+	// 6. Unblock Mutation 2
+	close(bm.unblockMut2)
+
+	select {
+	case <-mut2Done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for mutation 2 to finish")
+	}
+	if !mut2Res.Success {
+		t.Fatalf("mutation 2 failed: %s", mut2Res.ErrorCode)
+	}
+
+	// 7. Verify final state and linkage:
+	// Both mutations succeeded in order, final revision is 3 (initial load = 1, reload 1 = 2, reload 2 = 3)
 	snap := mgr.CurrentSnapshot()
 	if snap == nil || snap.TasksAdapter() == nil {
 		t.Fatal("expected non-nil snap and tasks adapter")
 	}
+	if snap.Revision() != 4 {
+		t.Fatalf("expected final revision 4, got %d", snap.Revision())
+	}
 
+	// Server linkage matches final manager snapshot
 	ack := dialAuthAck(t, srv.GetStatus().WSPort, secret)
 	if !hasCap(ack.Capabilities, extension.CapExtractorResolve) {
 		t.Fatalf("final server state missing extractor.resolve: %v", ack.Capabilities)

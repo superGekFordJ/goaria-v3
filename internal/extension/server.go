@@ -391,7 +391,9 @@ func (s *Server) dispatchAsync(
 	switch st {
 	case idempHit:
 		if isResolve && linkage.Resolver != nil {
-			cached = linkage.Resolver.RewriteCachedResolve(cached)
+			if rewritten := linkage.Resolver.RewriteCachedResolve(cached); len(rewritten) > 0 {
+				cached = rewritten
+			}
 		}
 		_ = sc.writeRaw(cached)
 		return
@@ -422,7 +424,9 @@ func (s *Server) dispatchAsync(
 		s.releaseGate(isResolve)
 		sc.releaseInFlight()
 		if isResolve && linkage.Resolver != nil {
-			cached = linkage.Resolver.RewriteCachedResolve(cached)
+			if rewritten := linkage.Resolver.RewriteCachedResolve(cached); len(rewritten) > 0 {
+				cached = rewritten
+			}
 		}
 		_ = sc.writeRaw(cached)
 		return

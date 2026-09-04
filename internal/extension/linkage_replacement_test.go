@@ -1,6 +1,7 @@
 package extension
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -348,4 +349,93 @@ func TestLinkageReplacement_BeforeStartOrWithoutActiveConns(t *testing.T) {
 		Resolver: &fakeResolver{ready: true},
 	})
 	srv.ReplaceExtractorLinkage(Linkage{})
+}
+
+type barrierCommitter struct {
+	ready   bool
+	started chan struct{}
+	block   chan struct{}
+	result  CommitResult
+}
+
+func (c *barrierCommitter) Ready() bool { return c.ready }
+
+func (c *barrierCommitter) HandleCommit(_ context.Context, _ RequestEnvelope, _ json.RawMessage) CommitResult {
+	if c.started != nil {
+		select {
+		case c.started <- struct{}{}:
+		default:
+		}
+	}
+	if c.block != nil {
+		<-c.block
+	}
+	return c.result
+}
+
+func TestLinkageReplacement_LateOldCommitCannotPolluteNewGeneration(t *testing.T) {
+	store := NewSecretStore()
+	secret := store.GenerateSecret()
+	store.SetSecret(secret)
+
+	blockCh := make(chan struct{})
+	startedCh := make(chan struct{}, 1)
+	comm1 := &barrierCommitter{
+		ready:   true,
+		started: startedCh,
+		block:   blockCh,
+		result: CommitResult{
+			Success:          true,
+			SucceededItemIDs: []string{"old-success-item"},
+		},
+	}
+	res1 := &fakeResolver{ready: true}
+
+	srv := NewServer(nil, nil, store)
+	srv.SetLinkage(Linkage{Resolver: res1, Committer: comm1})
+	if err := srv.Start(0); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer srv.Stop()
+
+	conn1 := dialAuthed(t, srv, secret)
+
+	// Send batch_download with req-commit-race
+	writeBatch(t, conn1, "req-commit-race", `"session_id":"s1","item_ids":["i1"]`)
+
+	// Wait until comm1 starts
+	select {
+	case <-startedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for old commit handler to start")
+	}
+
+	// While old commit handler is blocked in-flight, replace linkage with comm2
+	comm2 := &barrierCommitter{
+		ready: true,
+		result: CommitResult{
+			Success:          true,
+			SucceededItemIDs: []string{"new-success-item"},
+		},
+	}
+	res2 := &fakeResolver{ready: true}
+	srv.ReplaceExtractorLinkage(Linkage{Resolver: res2, Committer: comm2})
+
+	// Now unblock old handler so it finishes on old generation
+	close(blockCh)
+
+	// Connect new client
+	conn2 := dialAuthed(t, srv, secret)
+	defer conn2.Close()
+
+	// Send batch_download with the same request ID
+	writeBatch(t, conn2, "req-commit-race", `"session_id":"s1","item_ids":["i1"]`)
+	rawResp2 := readRaw(t, conn2, 2*time.Second)
+	var ack2 BatchDownloadAck
+	if err := json.Unmarshal(rawResp2, &ack2); err != nil || !ack2.Success {
+		t.Fatalf("commit on conn2 failed: %v, raw: %s", err, rawResp2)
+	}
+	if len(ack2.SucceededItemIDs) != 1 || ack2.SucceededItemIDs[0] != "new-success-item" {
+		t.Fatalf("expected commit on comm2 (new-success-item), got %#v (polluted by late old handler!)", ack2.SucceededItemIDs)
+	}
 }

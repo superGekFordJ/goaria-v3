@@ -18,13 +18,22 @@ type extractorFilePicker interface {
 	pickDirectory() (string, bool, error)
 }
 
+type extractorSourceManager interface {
+	CurrentSnapshot() *extractor.RuntimeSnapshot
+	ListSources() []extractor.RuntimeSourceState
+	RecoveryErrors() []string
+	LoadSource(ctx context.Context, spec extractor.RuntimeSourceSpec) (extractor.RuntimeSourceState, error)
+	ReloadSource(ctx context.Context, sourceID string) (extractor.RuntimeSourceState, error)
+	RemoveSource(ctx context.Context, sourceID string) (extractor.RuntimeSourceState, error)
+}
+
 type taggedExtractorRuntime struct {
-	manager    *extractor.ExtractorRuntimeManager
+	manager    extractorSourceManager
 	mutationMu sync.Mutex
 	picker     extractorFilePicker
 }
 
-func newTaggedExtractorRuntime(manager *extractor.ExtractorRuntimeManager) *taggedExtractorRuntime {
+func newTaggedExtractorRuntime(manager extractorSourceManager) *taggedExtractorRuntime {
 	return &taggedExtractorRuntime{
 		manager: manager,
 		picker:  defaultWailsFilePicker{},

@@ -37,6 +37,20 @@ func (m *mockFilePicker) pickDirectory() (string, bool, error) {
 	return m.dirPath, m.dirCancel, m.dirErr
 }
 
+type spyExtractorSourceManager struct {
+	extractorSourceManager
+	loadSourceFn func(ctx context.Context, spec extractor.RuntimeSourceSpec) (extractor.RuntimeSourceState, error)
+	lastSpec     extractor.RuntimeSourceSpec
+}
+
+func (s *spyExtractorSourceManager) LoadSource(ctx context.Context, spec extractor.RuntimeSourceSpec) (extractor.RuntimeSourceState, error) {
+	s.lastSpec = spec
+	if s.loadSourceFn != nil {
+		return s.loadSourceFn(ctx, spec)
+	}
+	return s.extractorSourceManager.LoadSource(ctx, spec)
+}
+
 func newTestAppWithManager(t *testing.T) (*App, *extractor.ExtractorRuntimeManager, *mockFilePicker, string) {
 	t.Helper()
 	dataRoot := t.TempDir()
@@ -217,30 +231,49 @@ func TestLoadExtractorPackFileCancel(t *testing.T) {
 }
 
 func TestLoadExtractorPackURLPassThroughQueryWithoutReflection(t *testing.T) {
-	app, _, _, _ := newTestAppWithManager(t)
+	app, mgr, _, _ := newTestAppWithManager(t)
+	spy := &spyExtractorSourceManager{
+		extractorSourceManager: mgr,
+		loadSourceFn: func(ctx context.Context, spec extractor.RuntimeSourceSpec) (extractor.RuntimeSourceState, error) {
+			return extractor.RuntimeSourceState{}, &extractor.RuntimePackLoadError{
+				Code: extractor.RuntimePackLoadErrorRemoteFailed,
+			}
+		},
+	}
+	app.taggedRuntime().manager = spy
 
 	// A private query URL
 	secretURL := "https://example.invalid:8443/dist/my-pack.lock.json?secret_token=super-secret-12345&internal=true"
 
 	res := app.LoadExtractorPackURL(secretURL)
-	// Even though the network request fails (or host is invalid), check error envelope and privacy
+
+	// 1. Assert full Locator was passed through to Manager intact without stripping query
+	if spy.lastSpec.Kind != extractor.RuntimeSourceKindRemoteLock {
+		t.Fatalf("expected remote_lock kind, got %s", spy.lastSpec.Kind)
+	}
+	if spy.lastSpec.Locator != secretURL {
+		t.Fatalf("expected exact locator pass-through %q, got %q", secretURL, spy.lastSpec.Locator)
+	}
+
+	// 2. Check error envelope
 	if res.Success {
-		t.Fatal("expected failure on unresolvable domain")
+		t.Fatal("expected failure on simulated error")
 	}
 	if res.Cancelled {
 		t.Fatal("expected cancelled: false")
 	}
-	if res.ErrorCode == "" {
-		t.Fatal("expected non-empty error code")
+	if res.ErrorCode != string(extractor.RuntimePackLoadErrorRemoteFailed) {
+		t.Fatalf("expected error code %s, got %s", extractor.RuntimePackLoadErrorRemoteFailed, res.ErrorCode)
 	}
 
+	// 3. Privacy: sensitive URL, query, or raw error not leaked
 	data, err := json.Marshal(res)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	jsonStr := string(data)
-	if strings.Contains(jsonStr, "super-secret-12345") || strings.Contains(jsonStr, "example.invalid") {
-		t.Fatalf("sensitive URL or query leaked into result JSON: %s", jsonStr)
+	if strings.Contains(jsonStr, "super-secret-12345") || strings.Contains(jsonStr, "example.invalid") || strings.Contains(jsonStr, "hermetic simulated") {
+		t.Fatalf("sensitive URL, query, or raw error leaked into result JSON: %s", jsonStr)
 	}
 }
 
@@ -333,7 +366,7 @@ func TestMapExtractorErrorKnownAndFallback(t *testing.T) {
 }
 
 func TestWailsMutationFailureDoesNotInvokeReplacement(t *testing.T) {
-	app, _, picker, _ := newTestAppWithManager(t)
+	app, mgr, picker, _ := newTestAppWithManager(t)
 
 	store := extension.NewSecretStore()
 	secret := store.GenerateSecret()
@@ -362,7 +395,17 @@ func TestWailsMutationFailureDoesNotInvokeReplacement(t *testing.T) {
 		t.Fatal("expected failure on invalid source reload")
 	}
 
-	// 3. Failed URL load
+	// 3. Failed URL load (hermetic)
+	spy := &spyExtractorSourceManager{
+		extractorSourceManager: mgr,
+		loadSourceFn: func(ctx context.Context, spec extractor.RuntimeSourceSpec) (extractor.RuntimeSourceState, error) {
+			return extractor.RuntimeSourceState{}, &extractor.RuntimePackLoadError{
+				Code: extractor.RuntimePackLoadErrorRemoteFailed,
+			}
+		},
+	}
+	app.taggedRuntime().manager = spy
+
 	urlRes := app.LoadExtractorPackURL("https://invalid.test/not-found.lock.json")
 	if urlRes.Success {
 		t.Fatal("expected failure on invalid URL load")
