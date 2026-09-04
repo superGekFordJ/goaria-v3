@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -208,11 +207,15 @@ type ExtractorRuntimeManager struct {
 	embeddedPacks []VerifiedPack
 	store         *runtimeStore
 
-	testLoaderOverride func(ctx context.Context, spec RuntimeSourceSpec) (RuntimePackCandidate, error)
-	testPreCommitHook  func()
+	testLoaderOverride       func(ctx context.Context, spec RuntimeSourceSpec) (RuntimePackCandidate, error)
+	testPreCommitHook        func()
+	testPreDurableCommitHook func()
 }
 
 func NewExtractorRuntimeManager(ctx context.Context, config ExtractorRuntimeManagerConfig) (*ExtractorRuntimeManager, error) {
+	if ctx != nil && ctx.Err() != nil {
+		return nil, newRuntimeManagerError(RuntimeManagerErrorCancelled, ctx.Err())
+	}
 	if config.DataRoot == "" {
 		return nil, errors.New("data root is empty")
 	}
@@ -362,6 +365,9 @@ func checkRuntimeDependencies(ctx context.Context, pack VerifiedPack, config Ext
 				return string(RuntimeManagerErrorCancelled), false
 			}
 			return string(RuntimeManagerErrorPolicyUnavailable), false
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return string(RuntimeManagerErrorCancelled), false
 		}
 	}
 
@@ -590,6 +596,15 @@ func (m *ExtractorRuntimeManager) LoadSource(ctx context.Context, spec RuntimeSo
 		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorStateInvalid, err)
 	}
 
+	if m.testPreDurableCommitHook != nil {
+		m.testPreDurableCommitHook()
+	}
+
+	// Final cancellation checkpoint right before entering durable commit
+	if ctx != nil && ctx.Err() != nil {
+		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorCancelled, ctx.Err())
+	}
+
 	_, err = m.store.writeCandidateToStaging(cacheGen, candidate)
 	if err != nil {
 		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorPersistFailed, err)
@@ -597,7 +612,7 @@ func (m *ExtractorRuntimeManager) LoadSource(ctx context.Context, spec RuntimeSo
 
 	err = m.store.finalizeCandidateGeneration(candidatePackID, cacheGen)
 	if err != nil {
-		_ = os.RemoveAll(filepath.Join(m.store.stagingDir(), cacheGen))
+		_ = m.store.deleteStagingGeneration(cacheGen)
 		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorPersistFailed, err)
 	}
 
@@ -754,6 +769,15 @@ func (m *ExtractorRuntimeManager) ReloadSource(ctx context.Context, sourceID str
 		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorStateInvalid, err)
 	}
 
+	if m.testPreDurableCommitHook != nil {
+		m.testPreDurableCommitHook()
+	}
+
+	// Final cancellation checkpoint right before entering durable commit
+	if ctx != nil && ctx.Err() != nil {
+		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorCancelled, ctx.Err())
+	}
+
 	_, err = m.store.writeCandidateToStaging(newGen, candidate)
 	if err != nil {
 		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorPersistFailed, err)
@@ -761,7 +785,7 @@ func (m *ExtractorRuntimeManager) ReloadSource(ctx context.Context, sourceID str
 
 	err = m.store.finalizeCandidateGeneration(captured.packID, newGen)
 	if err != nil {
-		_ = os.RemoveAll(filepath.Join(m.store.stagingDir(), newGen))
+		_ = m.store.deleteStagingGeneration(newGen)
 		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorPersistFailed, err)
 	}
 
@@ -861,6 +885,15 @@ func (m *ExtractorRuntimeManager) RemoveSource(ctx context.Context, sourceID str
 			SignerFingerprint: s.signerFingerprint,
 			CacheGeneration:   s.cacheGeneration,
 		}
+	}
+
+	if m.testPreDurableCommitHook != nil {
+		m.testPreDurableCommitHook()
+	}
+
+	// Final cancellation checkpoint right before entering durable commit
+	if ctx != nil && ctx.Err() != nil {
+		return RuntimeSourceState{}, newRuntimeManagerError(RuntimeManagerErrorCancelled, ctx.Err())
 	}
 
 	if err := m.store.replaceIndex(indexRows); err != nil {

@@ -76,7 +76,134 @@ func (s *runtimeStore) generationDir(packID, gen string) string {
 	return filepath.Join(s.packsDir(), packID, gen)
 }
 
+func validateDirectorySegment(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("path %s is not a regular directory or is a symlink/reparse point", path)
+	}
+	return nil
+}
+
+func ensureDirectorySegment(path string) error {
+	info, err := os.Lstat(path)
+	if err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path %s exists but is not a regular directory or is a symlink", path)
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		return err
+	}
+	info, err = os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("created path %s is not a regular directory", path)
+	}
+	return nil
+}
+
+func (s *runtimeStore) ensureDataRoot() error {
+	info, err := os.Lstat(s.dataRoot)
+	if err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("data root %s is not a regular directory or is a symlink", s.dataRoot)
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(s.dataRoot, 0o700); err != nil {
+		return fmt.Errorf("mkdir data root: %w", err)
+	}
+	info, err = os.Lstat(s.dataRoot)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("data root %s is not a regular directory", s.dataRoot)
+	}
+	return nil
+}
+
+func (s *runtimeStore) ensureStagingDir() error {
+	if err := s.ensureDataRoot(); err != nil {
+		return err
+	}
+	if err := ensureDirectorySegment(s.stagingDir()); err != nil {
+		return fmt.Errorf("ensure staging dir: %w", err)
+	}
+	return nil
+}
+
+func (s *runtimeStore) ensurePacksDir() error {
+	if err := s.ensureDataRoot(); err != nil {
+		return err
+	}
+	if err := ensureDirectorySegment(s.packsDir()); err != nil {
+		return fmt.Errorf("ensure packs dir: %w", err)
+	}
+	return nil
+}
+
+func (s *runtimeStore) ensurePackParentDir(packID string) (string, error) {
+	if err := s.ensurePacksDir(); err != nil {
+		return "", err
+	}
+	packDir := filepath.Join(s.packsDir(), packID)
+	if err := ensureDirectorySegment(packDir); err != nil {
+		return "", fmt.Errorf("ensure pack parent dir: %w", err)
+	}
+	return packDir, nil
+}
+
+func (s *runtimeStore) validatePacksHierarchy(packID string) error {
+	if err := validateDirectorySegment(s.dataRoot); err != nil {
+		return fmt.Errorf("validate data root: %w", err)
+	}
+	if err := validateDirectorySegment(s.packsDir()); err != nil {
+		return fmt.Errorf("validate packs dir: %w", err)
+	}
+	if packID != "" {
+		packDir := filepath.Join(s.packsDir(), packID)
+		if err := validateDirectorySegment(packDir); err != nil {
+			return fmt.Errorf("validate pack parent dir: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *runtimeStore) validateStagingHierarchy() error {
+	if err := validateDirectorySegment(s.dataRoot); err != nil {
+		return fmt.Errorf("validate data root: %w", err)
+	}
+	if err := validateDirectorySegment(s.stagingDir()); err != nil {
+		return fmt.Errorf("validate staging dir: %w", err)
+	}
+	return nil
+}
+
 func (s *runtimeStore) readIndex() ([]runtimeIndexSource, bool, error) {
+	rootInfo, err := os.Lstat(s.dataRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("stat data root: %w", err)
+	}
+	if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, false, errors.New("data root is not a regular directory or is a symlink")
+	}
+
 	path := s.indexPath()
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -248,8 +375,8 @@ func (s *runtimeStore) writeCandidateToStaging(gen string, candidate RuntimePack
 	if err := validateLowerHex32Field("cache_generation", gen); err != nil {
 		return "", fmt.Errorf("staging invalid cache_generation: %w", err)
 	}
-	if err := os.MkdirAll(s.stagingDir(), 0o700); err != nil {
-		return "", fmt.Errorf("mkdir staging root: %w", err)
+	if err := s.ensureStagingDir(); err != nil {
+		return "", fmt.Errorf("ensure staging root: %w", err)
 	}
 
 	stagingGenDir := filepath.Join(s.stagingDir(), gen)
@@ -257,14 +384,9 @@ func (s *runtimeStore) writeCandidateToStaging(gen string, candidate RuntimePack
 		return "", fmt.Errorf("mkdir staging: %w", err)
 	}
 
-	fi, err := os.Lstat(stagingGenDir)
-	if err != nil {
-		_ = os.Remove(stagingGenDir)
-		return "", fmt.Errorf("lstat staging: %w", err)
-	}
-	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
-		_ = os.Remove(stagingGenDir)
-		return "", errors.New("staging generation is a symlink or not a directory")
+	if err := validateDirectorySegment(stagingGenDir); err != nil {
+		_ = s.deleteStagingGeneration(gen)
+		return "", fmt.Errorf("validate staging generation: %w", err)
 	}
 
 	files := []struct {
@@ -288,28 +410,28 @@ func (s *runtimeStore) writeCandidateToStaging(gen string, candidate RuntimePack
 		filePath := filepath.Join(stagingGenDir, f.name)
 		handle, err := os.OpenFile(filePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err != nil {
-			_ = os.RemoveAll(stagingGenDir)
+			_ = s.deleteStagingGeneration(gen)
 			return "", fmt.Errorf("create %s: %w", f.name, err)
 		}
 		if _, err := handle.Write(f.data); err != nil {
 			_ = handle.Close()
-			_ = os.RemoveAll(stagingGenDir)
+			_ = s.deleteStagingGeneration(gen)
 			return "", fmt.Errorf("write %s: %w", f.name, err)
 		}
 		if testHookStagingSyncFail != nil {
 			if hookErr := testHookStagingSyncFail(); hookErr != nil {
 				_ = handle.Close()
-				_ = os.RemoveAll(stagingGenDir)
+				_ = s.deleteStagingGeneration(gen)
 				return "", hookErr
 			}
 		}
 		if err := handle.Sync(); err != nil {
 			_ = handle.Close()
-			_ = os.RemoveAll(stagingGenDir)
+			_ = s.deleteStagingGeneration(gen)
 			return "", fmt.Errorf("sync %s: %w", f.name, err)
 		}
 		if err := handle.Close(); err != nil {
-			_ = os.RemoveAll(stagingGenDir)
+			_ = s.deleteStagingGeneration(gen)
 			return "", fmt.Errorf("close %s: %w", f.name, err)
 		}
 	}
@@ -323,11 +445,25 @@ func (s *runtimeStore) finalizeCandidateGeneration(packID, gen string) error {
 			return err
 		}
 	}
+	if err := validatePackID(packID); err != nil {
+		return fmt.Errorf("finalize invalid pack_id: %w", err)
+	}
+	if err := validateLowerHex32Field("cache_generation", gen); err != nil {
+		return fmt.Errorf("finalize invalid cache_generation: %w", err)
+	}
+
+	if err := s.validateStagingHierarchy(); err != nil {
+		return fmt.Errorf("validate staging hierarchy: %w", err)
+	}
 
 	stagingGenDir := filepath.Join(s.stagingDir(), gen)
-	targetPackDir := filepath.Join(s.packsDir(), packID)
-	if err := os.MkdirAll(targetPackDir, 0o700); err != nil {
-		return fmt.Errorf("mkdir pack dir: %w", err)
+	if err := validateDirectorySegment(stagingGenDir); err != nil {
+		return fmt.Errorf("validate staging generation: %w", err)
+	}
+
+	targetPackDir, err := s.ensurePackParentDir(packID)
+	if err != nil {
+		return fmt.Errorf("ensure pack dir: %w", err)
 	}
 
 	targetGenDir := filepath.Join(targetPackDir, gen)
@@ -337,6 +473,11 @@ func (s *runtimeStore) finalizeCandidateGeneration(packID, gen string) error {
 
 	if err := os.Rename(stagingGenDir, targetGenDir); err != nil {
 		return fmt.Errorf("finalize generation: %w", err)
+	}
+
+	if err := validateDirectorySegment(targetGenDir); err != nil {
+		_ = s.deleteGeneration(packID, gen)
+		return fmt.Errorf("validate target generation: %w", err)
 	}
 
 	return nil
@@ -360,8 +501,16 @@ func (s *runtimeStore) replaceIndex(sources []runtimeIndexSource) error {
 	}
 	data = append(data, '\n')
 
-	if err := os.MkdirAll(s.dataRoot, 0o700); err != nil {
-		return fmt.Errorf("mkdir data root: %w", err)
+	if err := s.ensureDataRoot(); err != nil {
+		return fmt.Errorf("ensure data root: %w", err)
+	}
+
+	if sPath := s.indexPath(); sPath != "" {
+		if info, err := os.Lstat(sPath); err == nil {
+			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("sources.json exists but is not a regular file")
+			}
+		}
 	}
 
 	if testHookIndexTempCreateFail != nil {
@@ -407,6 +556,39 @@ func (s *runtimeStore) replaceIndex(sources []runtimeIndexSource) error {
 	return nil
 }
 
+func (s *runtimeStore) deleteStagingGeneration(gen string) error {
+	if testHookCleanupFail != nil {
+		if err := testHookCleanupFail(); err != nil {
+			return err
+		}
+	}
+	if err := validateLowerHex32Field("cache_generation", gen); err != nil {
+		return fmt.Errorf("delete staging invalid cache_generation: %w", err)
+	}
+
+	if err := s.validateStagingHierarchy(); err != nil {
+		return fmt.Errorf("refusing to delete staging generation due to unsafe staging hierarchy: %w", err)
+	}
+
+	targetDir := filepath.Join(s.stagingDir(), gen)
+	if targetDir == "" || targetDir == s.stagingDir() || targetDir == s.dataRoot || filepath.Dir(targetDir) != s.stagingDir() {
+		return errors.New("delete staging target is not a valid staging generation directory")
+	}
+
+	info, err := os.Lstat(targetDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat staging generation: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("staging generation %s is not a regular directory or is a symlink", targetDir)
+	}
+
+	return os.RemoveAll(targetDir)
+}
+
 func (s *runtimeStore) deleteGeneration(packID, gen string) error {
 	if testHookCleanupFail != nil {
 		if err := testHookCleanupFail(); err != nil {
@@ -419,11 +601,48 @@ func (s *runtimeStore) deleteGeneration(packID, gen string) error {
 	if err := validateLowerHex32Field("cache_generation", gen); err != nil {
 		return fmt.Errorf("delete generation invalid cache_generation: %w", err)
 	}
-	targetDir := s.generationDir(packID, gen)
+
+	if err := validateDirectorySegment(s.dataRoot); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("delete generation invalid data root: %w", err)
+	}
+	if err := validateDirectorySegment(s.packsDir()); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("delete generation invalid packs dir: %w", err)
+	}
+
 	parentPackDir := filepath.Join(s.packsDir(), packID)
+	info, err := os.Lstat(parentPackDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("delete generation stat pack parent: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("pack parent %s is not a regular directory or is a symlink", parentPackDir)
+	}
+
+	targetDir := s.generationDir(packID, gen)
 	if targetDir == "" || targetDir == parentPackDir || targetDir == s.packsDir() || filepath.Dir(targetDir) != parentPackDir {
 		return errors.New("delete generation target is not a valid generation directory")
 	}
+
+	info, err = os.Lstat(targetDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("delete generation stat target generation: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("target generation %s is not a regular directory or is a symlink", targetDir)
+	}
+
 	return os.RemoveAll(targetDir)
 }
 
@@ -431,6 +650,17 @@ func (s *runtimeStore) readCachedCandidate(ctx context.Context, packID, gen stri
 	if ctx != nil && ctx.Err() != nil {
 		return RuntimePackCandidate{}, ctx.Err()
 	}
+	if err := validatePackID(packID); err != nil {
+		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorSourceShapeInvalid, fmt.Errorf("invalid pack id: %w", err))
+	}
+	if err := validateLowerHex32Field("cache_generation", gen); err != nil {
+		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorSourceShapeInvalid, fmt.Errorf("invalid cache_generation: %w", err))
+	}
+
+	if err := s.validatePacksHierarchy(packID); err != nil {
+		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorSourceShapeInvalid, fmt.Errorf("validate packs hierarchy: %w", err))
+	}
+
 	genDir := s.generationDir(packID, gen)
 	if genDir == "" {
 		return RuntimePackCandidate{}, newRuntimePackLoadError(RuntimePackLoadErrorSourceShapeInvalid, errors.New("invalid generation path"))

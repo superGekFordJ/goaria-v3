@@ -394,6 +394,107 @@ func TestRuntimeStoreStagingFinalizeAndCleanup(t *testing.T) {
 			t.Fatalf("unexpected source id: %s", readBack[0].SourceID)
 		}
 	})
+
+	t.Run("hierarchy rejects non-directory or symlink in packs and staging", func(t *testing.T) {
+		tempDir2 := t.TempDir()
+		store2 := newRuntimeStore(tempDir2)
+
+		// 1. Pack parent is a regular file
+		packParentFile := filepath.Join(store2.packsDir(), "xpk-file")
+		if err := os.MkdirAll(store2.packsDir(), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(packParentFile, []byte("fake"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		genX := strings.Repeat("9", 32)
+		// Staging write works, but finalize to xpk-file must fail
+		stagedDir, err := store2.writeCandidateToStaging(genX, candidateZip)
+		if err != nil {
+			t.Fatalf("staging write failed: %v", err)
+		}
+		defer os.RemoveAll(stagedDir)
+
+		if err := store2.finalizeCandidateGeneration("xpk-file", genX); err == nil {
+			t.Fatal("expected error finalizing to file pack parent")
+		}
+
+		// readCachedCandidate must fail
+		if _, err := store2.readCachedCandidate(context.Background(), "xpk-file", genX, RuntimeSourceKindLocalZip); err == nil {
+			t.Fatal("expected error reading candidate with file pack parent")
+		}
+
+		// deleteGeneration must fail
+		if err := store2.deleteGeneration("xpk-file", genX); err == nil {
+			t.Fatal("expected error deleting generation with file pack parent")
+		}
+
+		// 2. Test with real symlink if OS permits
+		symlinkTarget := t.TempDir()
+		packParentSymlink := filepath.Join(store2.packsDir(), "xpk-symlink")
+		if err := os.Symlink(symlinkTarget, packParentSymlink); err == nil {
+			defer os.Remove(packParentSymlink)
+
+			// finalize into symlinked pack parent must fail
+			if err := store2.finalizeCandidateGeneration("xpk-symlink", genX); err == nil {
+				t.Fatal("expected error finalizing into symlinked pack parent")
+			}
+
+			// readCachedCandidate from symlinked pack parent must fail
+			if _, err := store2.readCachedCandidate(context.Background(), "xpk-symlink", genX, RuntimeSourceKindLocalZip); err == nil {
+				t.Fatal("expected error reading from symlinked pack parent")
+			}
+
+			// deleteGeneration on symlinked pack parent must fail
+			if err := store2.deleteGeneration("xpk-symlink", genX); err == nil {
+				t.Fatal("expected error deleting generation under symlinked pack parent")
+			}
+		}
+	})
+
+	t.Run("deleteStagingGeneration validates hierarchy and removes safely", func(t *testing.T) {
+		tempDir3 := t.TempDir()
+		store3 := newRuntimeStore(tempDir3)
+
+		genValid := strings.Repeat("8", 32)
+		stagedDir, err := store3.writeCandidateToStaging(genValid, candidateZip)
+		if err != nil {
+			t.Fatalf("staging write failed: %v", err)
+		}
+		if _, err := os.Stat(stagedDir); err != nil {
+			t.Fatalf("staged dir should exist: %v", err)
+		}
+
+		// Normal safe deletion
+		if err := store3.deleteStagingGeneration(genValid); err != nil {
+			t.Fatalf("deleteStagingGeneration error: %v", err)
+		}
+		if _, err := os.Stat(stagedDir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("staged dir should be deleted: %v", err)
+		}
+
+		// Staging parent is a regular file
+		tempDir4 := t.TempDir()
+		store4 := newRuntimeStore(tempDir4)
+		if err := os.WriteFile(store4.stagingDir(), []byte("not a dir"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := store4.deleteStagingGeneration(genValid); err == nil {
+			t.Fatal("expected error when staging is a regular file")
+		}
+
+		// Staging is a symlink
+		stagingSymlinkTarget := t.TempDir()
+		stagingSymlinkRoot := t.TempDir()
+		store5 := newRuntimeStore(stagingSymlinkRoot)
+		if err := os.Symlink(stagingSymlinkTarget, store5.stagingDir()); err == nil {
+			defer os.Remove(store5.stagingDir())
+			if err := store5.deleteStagingGeneration(genValid); err == nil {
+				t.Fatal("expected error when staging is a symlink")
+			}
+		}
+	})
 }
 
 func mustRuntimeLockJSON(t *testing.T, packID, packVersion, assetPath string, zipBytes, manifestJSON, payload, signature []byte, pubKey ed25519.PublicKey) []byte {

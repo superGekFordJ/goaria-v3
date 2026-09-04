@@ -949,4 +949,132 @@ func TestRuntimeManagerCornerCases(t *testing.T) {
 			t.Fatalf("expected cancelled error, got %v", err)
 		}
 	})
+
+	t.Run("alias resolver succeeds but cancels context returns cancelled and leaves zero commit", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		aliasCand := makeTestCandidate(t, "xpk-alias-cancel", "1.0.0", privKey1, pubKey1, true, func(m map[string]any) {
+			m["capabilities"] = []string{string(CapabilityParseWASM), string(CapabilityHTTPFetch)}
+			m["domains"] = []map[string]any{}
+			m["domain_policy_refs"] = []string{"dpr-alpha001"}
+			m["broker_policy_refs"] = []string{"bpr-alpha001"}
+		})
+
+		policy := ResolvedHostPolicy{
+			PolicyID:            "hpr-alpha001",
+			PolicyVersion:       "opaque-1",
+			PolicySHA256:        strings.Repeat("a", 64),
+			PackIdentity:        aliasCand.VerifiedPack.Identity,
+			DomainPolicyRefs:    []string{"dpr-alpha001"},
+			BrokerPolicyRefs:    []string{"bpr-alpha001"},
+			AllowedCapabilities: []Capability{CapabilityParseWASM, CapabilityHTTPFetch},
+			IngressDomains:      []DomainRule{{Host: "share.alpha.test"}},
+			BrokerDomains:       []DomainRule{{Host: "api.alpha.test"}, {Host: "files.alpha.test"}},
+			OutputDomains: []HostPolicyOutputRule{{
+				Host:              "files.alpha.test",
+				IncludeSubdomains: true,
+				PathPrefixes:      []string{"/downloads/"},
+			}},
+			Endpoints: []HostPolicyEndpoint{{
+				BrokerPolicyRef:  "bpr-alpha001",
+				EndpointRef:      "ep-alpha001",
+				URLTemplate:      "https://api.alpha.test/files/{id}",
+				Methods:          []string{"GET", "HEAD"},
+				TimeoutMillis:    100,
+				MaxResponseBytes: 512,
+			}},
+		}
+
+		resolverCalls := 0
+		resolver := hostPolicyResolverFunc(func(c context.Context, req HostPolicyRequest) (ResolvedHostPolicy, error) {
+			resolverCalls++
+			cancel()
+			return policy, nil
+		})
+
+		mgr, err := NewExtractorRuntimeManager(context.Background(), ExtractorRuntimeManagerConfig{
+			DataRoot:           tempDir,
+			HostPolicyResolver: resolver,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		mgr.testLoaderOverride = func(c context.Context, spec RuntimeSourceSpec) (RuntimePackCandidate, error) {
+			return aliasCand, nil
+		}
+
+		_, err = mgr.LoadSource(ctx, RuntimeSourceSpec{
+			Kind:    RuntimeSourceKindLocalZip,
+			Locator: filepath.Join(tempDir, "alias_cancel.zip"),
+		})
+		var mgrErr *RuntimeManagerError
+		if !errors.As(err, &mgrErr) || mgrErr.Code != RuntimeManagerErrorCancelled {
+			t.Fatalf("expected cancelled, got %v", err)
+		}
+
+		if resolverCalls != 1 {
+			t.Fatalf("expected resolver to be called 1 time, got %d", resolverCalls)
+		}
+
+		if len(mgr.ListSources()) != 0 {
+			t.Fatalf("expected zero sources, got %d", len(mgr.ListSources()))
+		}
+		if _, exists, _ := mgr.store.readIndex(); exists {
+			t.Fatal("sources.json should not exist")
+		}
+		packDir := filepath.Join(mgr.store.packsDir(), "xpk-alias-cancel")
+		if _, err := os.Stat(packDir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("pack directory should not exist: %v", err)
+		}
+	})
+
+	t.Run("remove source cancellation before replaceIndex leaves state intact", func(t *testing.T) {
+		tempDir := t.TempDir()
+		mgr, _ := NewExtractorRuntimeManager(context.Background(), ExtractorRuntimeManagerConfig{
+			DataRoot: tempDir,
+		})
+
+		c := makeTestCandidate(t, "xpk-rem-cancel", "1.0.0", privKey1, pubKey1, true, nil)
+		mgr.testLoaderOverride = func(ctx context.Context, spec RuntimeSourceSpec) (RuntimePackCandidate, error) {
+			return c, nil
+		}
+
+		loaded, err := mgr.LoadSource(context.Background(), RuntimeSourceSpec{
+			Kind:    RuntimeSourceKindLocalZip,
+			Locator: filepath.Join(tempDir, "rem_cancel.zip"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		hookCalled := false
+		mgr.testPreDurableCommitHook = func() {
+			hookCalled = true
+			cancel()
+		}
+
+		_, err = mgr.RemoveSource(ctx, loaded.SourceID)
+		var mgrErr *RuntimeManagerError
+		if !errors.As(err, &mgrErr) || mgrErr.Code != RuntimeManagerErrorCancelled {
+			t.Fatalf("expected cancelled, got %v", err)
+		}
+
+		if !hookCalled {
+			t.Fatal("expected testPreDurableCommitHook to be called immediately before replaceIndex")
+		}
+
+		srcs := mgr.ListSources()
+		if len(srcs) != 1 || srcs[0].SourceID != loaded.SourceID {
+			t.Fatalf("source should still be present, got %#v", srcs)
+		}
+
+		readBack, exists, err := mgr.store.readIndex()
+		if err != nil || !exists || len(readBack) != 1 || readBack[0].SourceID != loaded.SourceID {
+			t.Fatalf("persisted index should still contain the source, got %v, %v, %#v", exists, err, readBack)
+		}
+	})
 }
