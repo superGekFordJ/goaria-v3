@@ -41,14 +41,24 @@
     const detail = downloadGroupStore.currentDetail
     return detail?.group_key === selectedKey.value ? detail : null
   })
-  const detailTasks = computed(
-    () =>
-      currentDetail.value?.tasks ?? {
+  const detailTasks = computed(() => {
+    const raw = currentDetail.value?.tasks
+    if (!raw) {
+      return {
         active: [],
         waiting: [],
         stopped: [],
-      },
-  )
+      }
+    }
+    const activeMap = new Map((taskStore.activeTasks ?? []).map(t => [t.gid, t]))
+    const waitingMap = new Map((taskStore.waitingTasks ?? []).map(t => [t.gid, t]))
+    const stoppedMap = new Map((taskStore.stoppedTasks ?? []).map(t => [t.gid, t]))
+    return {
+      active: raw.active.map(t => activeMap.get(t.gid) ?? t),
+      waiting: raw.waiting.map(t => waitingMap.get(t.gid) ?? t),
+      stopped: raw.stopped.map(t => stoppedMap.get(t.gid) ?? t),
+    }
+  })
   const isRefreshing = computed(
     () => downloadGroupStore.isLoading || downloadGroupStore.isDetailLoading,
   )

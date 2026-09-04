@@ -350,7 +350,9 @@
       "cancel": "Abbrechen",
       "confirm": "Entfernen",
       "removing": "Entfernen..."
-    }
+    },
+    "threads": "Threads",
+    "threadsTooltip": "Aktive Verbindungen: {count}"
   },
   "taskSearch": {
     "placeholder": "Fertige Aufgaben suchen...",

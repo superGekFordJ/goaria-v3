@@ -350,7 +350,9 @@
       "cancel": "キャンセル",
       "confirm": "削除",
       "removing": "削除中..."
-    }
+    },
+    "threads": "スレッド",
+    "threadsTooltip": "アクティブな接続数: {count}"
   },
   "taskSearch": {
     "placeholder": "完了したタスクを検索...",

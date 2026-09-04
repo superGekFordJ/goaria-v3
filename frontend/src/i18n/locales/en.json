@@ -350,7 +350,9 @@
       "cancel": "Cancel",
       "confirm": "Remove",
       "removing": "Removing..."
-    }
+    },
+    "threads": "Threads",
+    "threadsTooltip": "Active connections: {count}"
   },
   "taskSearch": {
     "placeholder": "Search completed tasks...",

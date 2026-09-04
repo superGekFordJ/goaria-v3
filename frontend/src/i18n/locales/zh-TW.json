@@ -350,7 +350,9 @@
       "cancel": "取消",
       "confirm": "移除",
       "removing": "移除中..."
-    }
+    },
+    "threads": "線程",
+    "threadsTooltip": "目前並發連線數: {count}"
   },
   "taskSearch": {
     "placeholder": "搜尋已完成的任務...",

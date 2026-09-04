@@ -350,7 +350,9 @@
       "cancel": "Cancelar",
       "confirm": "Eliminar",
       "removing": "Eliminando..."
-    }
+    },
+    "threads": "Hilos",
+    "threadsTooltip": "Conexiones activas: {count}"
   },
   "taskSearch": {
     "placeholder": "Buscar tareas completadas...",

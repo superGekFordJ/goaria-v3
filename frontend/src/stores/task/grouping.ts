@@ -110,7 +110,8 @@ export function getDownloadGroupHint(group?: DownloadGroup | null): TaskGroupHin
 
   const folderName = cleanText(cloned.folder_name)
   const dir = cleanText(cloned.dir)
-  const folderLabel = folderName ?? (dir ? basename(dir) : cleanText(cloned.name))
+  const groupName = cleanText(cloned.name)
+  const folderLabel = groupName ?? folderName ?? (dir ? basename(dir) : undefined)
   const safeFolderPath = dir && isSafeFolderPathHint(dir) ? dir : undefined
 
   return {

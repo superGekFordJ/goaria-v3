@@ -350,7 +350,9 @@
       "cancel": "取消",
       "confirm": "移除",
       "removing": "移除中..."
-    }
+    },
+    "threads": "线程",
+    "threadsTooltip": "当前并发连接数: {count}"
   },
   "taskSearch": {
     "placeholder": "搜索已完成任务...",

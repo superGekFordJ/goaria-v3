@@ -324,7 +324,7 @@
                 <span v-if="groupHint.folderLabel" class="task-group-chip-folder">
                   {{ t('taskCard.groupFolder', { folder: groupHint.folderLabel }) }}
                 </span>
-                <span v-else class="task-group-chip-label">
+                <span v-else-if="!groupCountText" class="task-group-chip-label">
                   {{ t('taskCard.groupStack') }}
                 </span>
                 <span v-if="groupCountText" class="task-group-chip-count font-mono-data">

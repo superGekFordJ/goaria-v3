@@ -1,7 +1,16 @@
 <script setup lang="ts">
   import { computed, watch } from 'vue'
   import { useI18n } from 'vue-i18n'
-  import { AlertTriangle, Folder, Layers3, Pause, Play, Trash2, FolderOpen } from '@lucide/vue'
+  import {
+    AlertTriangle,
+    Folder,
+    Layers3,
+    Pause,
+    Play,
+    Trash2,
+    FolderOpen,
+    Share2,
+  } from '@lucide/vue'
   import {
     TASK_PROGRESS_CONFIG,
     SURGE_TASK_PROGRESS_CONFIG,
@@ -150,6 +159,25 @@
 
   const isActive = computed(() => statusKey.value === 'active')
   const isPaused = computed(() => statusKey.value === 'paused' || statusKey.value === 'waiting')
+
+  const activeThreads = computed<number | null>(() => {
+    if (!groupKey.value || !isActive.value) return null
+    let total = 0
+    let hasAny = false
+    for (const t of taskStore.activeTasks ?? []) {
+      if (t.download_group?.id === groupKey.value && t.status === 'active') {
+        const raw = (t as unknown as { threads?: string | number }).threads
+        if (raw !== undefined && raw !== null && raw !== '') {
+          const parsed = Number(raw)
+          if (Number.isFinite(parsed) && parsed > 0) {
+            total += parsed
+            hasAny = true
+          }
+        }
+      }
+    }
+    return hasAny && total > 0 ? total : null
+  })
 
   const folderLabel = computed(() => {
     if (card.value) return card.value.folder_label || ''
@@ -338,6 +366,15 @@
           <span class="inline-flex items-center gap-1.5">
             <span class="status-dot" :class="statusDotClass"></span>
             <span class="font-bold uppercase tracking-[0.14em]">{{ statusLabel }}</span>
+          </span>
+          <!-- Threads Chip (Active only, real telemetry only) -->
+          <span
+            v-if="isActive && activeThreads !== null"
+            class="task-threads-chip"
+            :title="t('downloadGroups.threadsTooltip', { count: activeThreads })"
+          >
+            <Share2 :size="10" class="task-threads-chip-icon" />
+            <span class="font-mono-data task-threads-chip-count">{{ activeThreads }}</span>
           </span>
           <span>{{ nameStatusLabel }}</span>
           <span v-if="folderLabel" class="download-group-folder" :title="folderTitle">
@@ -655,5 +692,42 @@
 
   .download-group-card-degraded {
     border-color: color-mix(in srgb, var(--status-paused) 24%, var(--glass-border));
+  }
+
+  .task-threads-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.09375rem 0.375rem;
+    border: 1px solid color-mix(in srgb, var(--glass-border) 60%, transparent);
+    border-radius: var(--radius-squircle-sm);
+    background: color-mix(in srgb, var(--app-text) 5%, transparent);
+    color: color-mix(in srgb, var(--app-text-muted) 90%, var(--neon-primary));
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--glass-highlight) 14%, transparent),
+      0 0 8px color-mix(in srgb, var(--neon-primary) 4%, transparent);
+    font-size: 0.625rem;
+    font-weight: 700;
+    line-height: 1;
+    transition: all 0.2s ease;
+  }
+
+  .task-threads-chip:hover {
+    border-color: color-mix(in srgb, var(--neon-primary) 35%, transparent);
+    background: color-mix(in srgb, var(--neon-primary) 8%, transparent);
+    color: var(--app-text);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--glass-highlight) 25%, transparent),
+      0 0 12px color-mix(in srgb, var(--neon-primary) 12%, transparent);
+  }
+
+  .task-threads-chip-icon {
+    flex: 0 0 auto;
+    color: color-mix(in srgb, var(--neon-primary) 85%, var(--app-text));
+  }
+
+  .task-threads-chip-count {
+    flex: 0 0 auto;
+    letter-spacing: -0.02em;
   }
 </style>

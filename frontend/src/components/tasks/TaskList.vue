@@ -179,6 +179,18 @@
   const useVirtualList = computed(() => displayEntries.value.length > 15)
   const groupHintsByGid = computed(() => buildVisibleTaskGroupHints(displayTasks.value))
 
+  const getTaskGroupHintForMode = (gid: string) => {
+    const hint = groupHintsByGid.value.get(gid)
+    if (!hint) return null
+    if (isGroupDetailMode.value) {
+      return {
+        ...hint,
+        folderLabel: undefined,
+      }
+    }
+    return hint
+  }
+
   // Empty state configuration
   const emptyStateConfig = computed(() => {
     if (isGroupDetailMode.value) {
@@ -649,7 +661,7 @@
             <TaskCard
               v-if="entry.type === 'task'"
               :task="entry.task"
-              :group-hint="groupHintsByGid.get(entry.task.gid)"
+              :group-hint="getTaskGroupHintForMode(entry.task.gid)"
               @confirm-delete="confirmDelete"
             />
             <DownloadGroupCard
@@ -701,7 +713,7 @@
             <TaskCard
               v-if="item.type === 'task'"
               :task="item.task"
-              :group-hint="groupHintsByGid.get(item.task.gid)"
+              :group-hint="getTaskGroupHintForMode(item.task.gid)"
               @confirm-delete="confirmDelete"
             />
             <DownloadGroupCard
