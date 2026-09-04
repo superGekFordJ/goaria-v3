@@ -9,8 +9,8 @@ import (
 
 func (a *App) taskService() *tasks.Service {
 	var adapter tasks.ExtractorAdapter
-	if a.extractorRuntime != nil {
-		adapter = a.extractorRuntime.currentTasksAdapter()
+	if rt := a.getExtractorRuntime(); rt != nil {
+		adapter = rt.currentTasksAdapter()
 	}
 	return &tasks.Service{
 		Adapter: adapter,

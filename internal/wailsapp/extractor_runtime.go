@@ -47,10 +47,11 @@ func (r *taggedExtractorRuntime) currentTasksAdapter() tasks.ExtractorAdapter {
 }
 
 func (a *App) taggedRuntime() *taggedExtractorRuntime {
-	if a == nil || a.extractorRuntime == nil {
+	rt := a.getExtractorRuntime()
+	if rt == nil {
 		return nil
 	}
-	if r, ok := a.extractorRuntime.(*taggedExtractorRuntime); ok {
+	if r, ok := rt.(*taggedExtractorRuntime); ok {
 		return r
 	}
 	return nil
@@ -59,7 +60,7 @@ func (a *App) taggedRuntime() *taggedExtractorRuntime {
 func (a *App) GetExtractorState() ExtractorState {
 	rt := a.taggedRuntime()
 	if rt == nil || rt.manager == nil {
-		return newEmptyExtractorState(true)
+		return newEmptyExtractorState(false)
 	}
 	sources := rt.manager.ListSources()
 	recoveryErrors := rt.manager.RecoveryErrors()

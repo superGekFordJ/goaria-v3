@@ -98,8 +98,8 @@ func ConfigureExtensionLinkage(app *App, srv *extension.Server) {
 	}
 
 	var snap *extractor.RuntimeSnapshot
-	if app.extractorRuntime != nil {
-		if rt, ok := app.extractorRuntime.(*taggedExtractorRuntime); ok && rt != nil && rt.manager != nil {
+	if app != nil {
+		if rt := app.taggedRuntime(); rt != nil && rt.manager != nil {
 			snap = rt.manager.CurrentSnapshot()
 		}
 	}

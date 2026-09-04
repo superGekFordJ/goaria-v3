@@ -32,12 +32,13 @@ type App struct {
 	trayState tray.TrayState
 	version   string
 
-	extractorRuntime  extractorRuntimeProvider
-	authMu            sync.RWMutex             //nolint:unused,nolintlint
-	authProfileStore  hostAuthProfileStore     //nolint:unused,nolintlint
-	hostAuthRuntime   hostAuthRuntime          //nolint:unused,nolintlint
-	authWebViewDriver hostAuthDriver           //nolint:unused,nolintlint
-	hostAuthCallbacks hostAuthCallbackRegistry //nolint:unused,nolintlint
+	extractorRuntimeMu sync.RWMutex
+	extractorRuntime   extractorRuntimeProvider
+	authMu             sync.RWMutex             //nolint:unused,nolintlint
+	authProfileStore   hostAuthProfileStore     //nolint:unused,nolintlint
+	hostAuthRuntime    hostAuthRuntime          //nolint:unused,nolintlint
+	authWebViewDriver  hostAuthDriver           //nolint:unused,nolintlint
+	hostAuthCallbacks  hostAuthCallbackRegistry //nolint:unused,nolintlint
 
 	windowMu       sync.Mutex // 保护窗口操作
 	lastToggleTime time.Time  // 上次切换窗口时间，用于全局防抖
@@ -164,10 +165,14 @@ func (a *App) SetExtensionServer(s *extension.Server) {
 }
 
 func (a *App) setExtractorRuntime(provider extractorRuntimeProvider) {
+	a.extractorRuntimeMu.Lock()
+	defer a.extractorRuntimeMu.Unlock()
 	a.extractorRuntime = provider
 }
 
 func (a *App) setExtractorAdapter(adapter tasks.ExtractorAdapter) { //nolint:unused,nolintlint
+	a.extractorRuntimeMu.Lock()
+	defer a.extractorRuntimeMu.Unlock()
 	if adapter == nil {
 		a.extractorRuntime = nil
 		return
@@ -175,11 +180,21 @@ func (a *App) setExtractorAdapter(adapter tasks.ExtractorAdapter) { //nolint:unu
 	a.extractorRuntime = simpleAdapterProvider{adapter: adapter}
 }
 
-func (a *App) extractorAdapterForTest() tasks.ExtractorAdapter { //nolint:unused,nolintlint
-	if a.extractorRuntime == nil {
+func (a *App) getExtractorRuntime() extractorRuntimeProvider {
+	if a == nil {
 		return nil
 	}
-	return a.extractorRuntime.currentTasksAdapter()
+	a.extractorRuntimeMu.RLock()
+	defer a.extractorRuntimeMu.RUnlock()
+	return a.extractorRuntime
+}
+
+func (a *App) extractorAdapterForTest() tasks.ExtractorAdapter { //nolint:unused,nolintlint
+	rt := a.getExtractorRuntime()
+	if rt == nil {
+		return nil
+	}
+	return rt.currentTasksAdapter()
 }
 
 func (a *App) setPendingExtensionLinkage(l extension.Linkage) { //nolint:unused,nolintlint

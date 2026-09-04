@@ -8,6 +8,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"goaria-v3/internal/extension"
@@ -83,6 +84,42 @@ func TestExtractorStateCanonicalProjectionAndOrdering(t *testing.T) {
 	if state.RecoveryErrors == nil || len(state.RecoveryErrors) != 0 {
 		t.Fatalf("expected non-nil empty recovery errors, got %#v", state.RecoveryErrors)
 	}
+}
+
+func TestExtractorState_UninitializedReturnsUnavailable(t *testing.T) {
+	app := &App{}
+	state := app.GetExtractorState()
+	if state.Available {
+		t.Fatal("expected available: false when app has no manager configured")
+	}
+	if state.Sources == nil || len(state.Sources) != 0 {
+		t.Fatalf("expected non-nil empty sources, got %#v", state.Sources)
+	}
+	if state.RecoveryErrors == nil || len(state.RecoveryErrors) != 0 {
+		t.Fatalf("expected non-nil empty recovery errors, got %#v", state.RecoveryErrors)
+	}
+}
+
+func TestAppExtractorRuntime_ConcurrentAccess(t *testing.T) {
+	app := &App{}
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				_ = app.GetExtractorState()
+				_ = app.taskService()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				app.setExtractorRuntime(nil)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestLoadExtractorPackDirectorySuccessAndPrivacy(t *testing.T) {

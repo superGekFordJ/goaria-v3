@@ -141,7 +141,9 @@ func (s *Server) ReplaceExtractorLinkage(l Linkage) {
 		s.idemp.retireExtractorGeneration(oldGen)
 	}
 	for _, conn := range conns {
-		_ = conn.Close()
+		go func(c *safeConn) {
+			_ = c.Close()
+		}(conn)
 	}
 }
 
