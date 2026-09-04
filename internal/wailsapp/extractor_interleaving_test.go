@@ -5,7 +5,6 @@ package wailsapp
 import (
 	"context"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,19 +19,18 @@ type barrierSourceManager struct {
 	unblockMut1 chan struct{}
 	beforeMut2  chan struct{}
 	unblockMut2 chan struct{}
-	reloadCount atomic.Int32
 }
 
 func (b *barrierSourceManager) ReloadSource(ctx context.Context, sourceID string) (extractor.RuntimeSourceState, error) {
-	switch b.reloadCount.Add(1) {
-	case 1:
-		close(b.beforeMut1)
-		<-b.unblockMut1
-	case 2:
-		close(b.beforeMut2)
-		<-b.unblockMut2
-	}
+	close(b.beforeMut1)
+	<-b.unblockMut1
 	return b.extractorSourceManager.ReloadSource(ctx, sourceID)
+}
+
+func (b *barrierSourceManager) RemoveSource(ctx context.Context, sourceID string) (extractor.RuntimeSourceState, error) {
+	close(b.beforeMut2)
+	<-b.unblockMut2
+	return b.extractorSourceManager.RemoveSource(ctx, sourceID)
 }
 
 func TestConcurrentWailsMutationsSerializedAndNormalAddUnblocked(t *testing.T) {
@@ -52,7 +50,7 @@ func TestConcurrentWailsMutationsSerializedAndNormalAddUnblocked(t *testing.T) {
 		t.Fatalf("WriteHostCallFixture: %v", err)
 	}
 
-	// Pre-load one source so both Mutation 1 and Mutation 2 can successfully reload it
+	// Pre-load one source: manager revision transitions from 1 (init) to 2
 	initialSrc, err := mgr.LoadSource(context.Background(), extractor.RuntimeSourceSpec{
 		Kind:    extractor.RuntimeSourceKindLocalDirectory,
 		Locator: packDir,
@@ -87,7 +85,7 @@ func TestConcurrentWailsMutationsSerializedAndNormalAddUnblocked(t *testing.T) {
 	defer srv.Stop()
 	app.extensionServer = srv
 
-	// 1. Launch Mutation 1 in background
+	// 1. Launch Mutation 1 in background: ReloadSource (ready state with extractor capability)
 	var mut1Res ExtractorOperationResult
 	mut1Done := make(chan struct{})
 	go func() {
@@ -100,6 +98,12 @@ func TestConcurrentWailsMutationsSerializedAndNormalAddUnblocked(t *testing.T) {
 	case <-bm.beforeMut1:
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for mutation 1 to enter ReloadSource")
+	}
+
+	// Confirm mutual exclusion: TryLock must return false while Mutation 1 holds mutationMu
+	if runtime.mutationMu.TryLock() {
+		runtime.mutationMu.Unlock()
+		t.Fatal("mutationMu was unexpectedly unlocked during Mutation 1 execution")
 	}
 
 	// 2. While Mutation 1 holds mutationMu:
@@ -120,20 +124,13 @@ func TestConcurrentWailsMutationsSerializedAndNormalAddUnblocked(t *testing.T) {
 		t.Fatal("normal AddUri was blocked by ongoing Wails mutation")
 	}
 
-	// 3. While Mutation 1 still holds mutationMu, launch Mutation 2 (also a valid reload)
+	// 3. While Mutation 1 still holds mutationMu, launch Mutation 2: RemoveSource (degrades to zero-pack)
 	var mut2Res ExtractorOperationResult
 	mut2Done := make(chan struct{})
 	go func() {
 		defer close(mut2Done)
-		mut2Res = app.ReloadExtractorSource(initialSrc.SourceID)
+		mut2Res = app.RemoveExtractorSource(initialSrc.SourceID)
 	}()
-
-	// Verify Mutation 2 is blocked by mutationMu and has NOT entered ReloadSource yet
-	select {
-	case <-bm.beforeMut2:
-		t.Fatal("mutation 2 entered ReloadSource while mutation 1 held mutationMu")
-	default:
-	}
 
 	// 4. Unblock Mutation 1
 	close(bm.unblockMut1)
@@ -147,11 +144,17 @@ func TestConcurrentWailsMutationsSerializedAndNormalAddUnblocked(t *testing.T) {
 		t.Fatalf("mutation 1 failed: %s", mut1Res.ErrorCode)
 	}
 
-	// 5. Now Mutation 2 acquires mutationMu and enters ReloadSource
+	// 5. Now Mutation 2 acquires mutationMu and enters RemoveSource
 	select {
 	case <-bm.beforeMut2:
 	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for mutation 2 to enter ReloadSource")
+		t.Fatal("timed out waiting for mutation 2 to enter RemoveSource")
+	}
+
+	// Confirm mutual exclusion: TryLock must return false while Mutation 2 holds mutationMu
+	if runtime.mutationMu.TryLock() {
+		runtime.mutationMu.Unlock()
+		t.Fatal("mutationMu was unexpectedly unlocked during Mutation 2 execution")
 	}
 
 	// 6. Unblock Mutation 2
@@ -167,18 +170,34 @@ func TestConcurrentWailsMutationsSerializedAndNormalAddUnblocked(t *testing.T) {
 	}
 
 	// 7. Verify final state and linkage:
-	// Both mutations succeeded in order, final revision is 3 (initial load = 1, reload 1 = 2, reload 2 = 3)
+	// Lifecycle revisions: init (1) -> initial load (2) -> reload (3) -> remove (4)
 	snap := mgr.CurrentSnapshot()
-	if snap == nil || snap.TasksAdapter() == nil {
-		t.Fatal("expected non-nil snap and tasks adapter")
+	if snap == nil {
+		t.Fatal("expected non-nil snapshot")
 	}
 	if snap.Revision() != 4 {
 		t.Fatalf("expected final revision 4, got %d", snap.Revision())
 	}
 
-	// Server linkage matches final manager snapshot
+	// Verify zero-pack state on App
+	state := app.GetExtractorState()
+	if !state.Available {
+		t.Fatal("expected manager available: true in zero-pack state")
+	}
+	if len(state.Sources) != 0 {
+		t.Fatalf("expected 0 sources after removal, got %d", len(state.Sources))
+	}
+
+	// Server linkage matches final manager snapshot: zero-pack means NO extractor capabilities.
+	// If Mutation 1 had installed its linkage after Mutation 2, extractor.resolve would be present.
 	ack := dialAuthAck(t, srv.GetStatus().WSPort, secret)
-	if !hasCap(ack.Capabilities, extension.CapExtractorResolve) {
-		t.Fatalf("final server state missing extractor.resolve: %v", ack.Capabilities)
+	if hasCap(ack.Capabilities, extension.CapExtractorResolve) {
+		t.Fatalf("final server state must not advertise extractor.resolve after removal (stale linkage bug): %v", ack.Capabilities)
+	}
+	if hasCap(ack.Capabilities, extension.CapExtractorBatch) {
+		t.Fatalf("final server state must not advertise extractor.batch after removal: %v", ack.Capabilities)
+	}
+	if !hasCap(ack.Capabilities, extension.CapDownloadBatch) {
+		t.Fatalf("final server state must preserve download.batch: %v", ack.Capabilities)
 	}
 }

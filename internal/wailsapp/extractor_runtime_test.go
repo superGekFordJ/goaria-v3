@@ -417,3 +417,50 @@ func TestWailsMutationFailureDoesNotInvokeReplacement(t *testing.T) {
 		t.Fatalf("expected resolver cap preserved after mutation failures, got %v", ack.Capabilities)
 	}
 }
+
+func TestTaggedExtractorRuntime_TypedNilSafety(t *testing.T) {
+	var typedNilMgr *extractor.ExtractorRuntimeManager
+	rt := newTaggedExtractorRuntime(typedNilMgr)
+	if rt.manager != nil {
+		t.Fatal("expected manager interface to be normalized to nil for typed nil pointer")
+	}
+	if rt.hasManager() {
+		t.Fatal("expected hasManager to return false")
+	}
+	if rt.currentTasksAdapter() != nil {
+		t.Fatal("expected nil tasks adapter")
+	}
+
+	app := NewApp(Options{})
+	app.setExtractorRuntime(rt)
+
+	state := app.GetExtractorState()
+	if state.Available {
+		t.Fatal("expected Available == false")
+	}
+
+	res := app.LoadExtractorPackFile()
+	if res.Success || res.ErrorCode != ExtractorErrorCodeUnavailable {
+		t.Fatalf("expected unavailable result, got %#v", res)
+	}
+
+	res = app.LoadExtractorPackDirectory()
+	if res.Success || res.ErrorCode != ExtractorErrorCodeUnavailable {
+		t.Fatalf("expected unavailable result, got %#v", res)
+	}
+
+	res = app.LoadExtractorPackURL("https://example.com")
+	if res.Success || res.ErrorCode != ExtractorErrorCodeUnavailable {
+		t.Fatalf("expected unavailable result, got %#v", res)
+	}
+
+	res = app.ReloadExtractorSource("s1")
+	if res.Success || res.ErrorCode != ExtractorErrorCodeUnavailable {
+		t.Fatalf("expected unavailable result, got %#v", res)
+	}
+
+	res = app.RemoveExtractorSource("s1")
+	if res.Success || res.ErrorCode != ExtractorErrorCodeUnavailable {
+		t.Fatalf("expected unavailable result, got %#v", res)
+	}
+}

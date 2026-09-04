@@ -190,11 +190,15 @@ func TestExtensionCommitInvokesFixedOldTaskServiceAcrossSnapshotSwitch(t *testin
 	// 2. Set up barrier on batchAdapter.service before AddPreparedExtractorItems
 	barrierEntered := make(chan struct{})
 	releaseBarrier := make(chan struct{})
+	finishedCh := make(chan struct{})
 	barrierAdder := &barrierTasksAdder{
 		realService: batchAdapter.service,
 		beforeAdd: func() {
 			close(barrierEntered)
 			<-releaseBarrier
+		},
+		afterAdd: func() {
+			close(finishedCh)
 		},
 	}
 	batchAdapter.service = barrierAdder
@@ -238,6 +242,12 @@ func TestExtensionCommitInvokesFixedOldTaskServiceAcrossSnapshotSwitch(t *testin
 	close(releaseBarrier)
 
 	select {
+	case <-finishedCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for AddPreparedExtractorItems to finish")
+	}
+
+	select {
 	case <-commitDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for commit to complete")
@@ -263,6 +273,7 @@ func TestExtensionCommitInvokesFixedOldTaskServiceAcrossSnapshotSwitch(t *testin
 type barrierTasksAdder struct {
 	realService tasksPreparedAdder
 	beforeAdd   func()
+	afterAdd    func()
 	calls       atomic.Int32
 }
 
@@ -271,5 +282,9 @@ func (b *barrierTasksAdder) AddPreparedExtractorItems(ctx context.Context, req t
 	if b.beforeAdd != nil {
 		b.beforeAdd()
 	}
-	return b.realService.AddPreparedExtractorItems(ctx, req)
+	res, err := b.realService.AddPreparedExtractorItems(ctx, req)
+	if b.afterAdd != nil {
+		b.afterAdd()
+	}
+	return res, err
 }

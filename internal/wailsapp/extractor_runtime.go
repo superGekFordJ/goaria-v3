@@ -5,6 +5,7 @@ package wailsapp
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 
 	"goaria-v3/internal/extractor"
@@ -33,7 +34,22 @@ type taggedExtractorRuntime struct {
 	picker     extractorFilePicker
 }
 
+func isNilSourceManager(mgr extractorSourceManager) bool {
+	if mgr == nil {
+		return true
+	}
+	v := reflect.ValueOf(mgr)
+	return v.Kind() == reflect.Pointer && v.IsNil()
+}
+
+func (r *taggedExtractorRuntime) hasManager() bool {
+	return r != nil && !isNilSourceManager(r.manager)
+}
+
 func newTaggedExtractorRuntime(manager extractorSourceManager) *taggedExtractorRuntime {
+	if isNilSourceManager(manager) {
+		manager = nil
+	}
 	return &taggedExtractorRuntime{
 		manager: manager,
 		picker:  defaultWailsFilePicker{},
@@ -41,7 +57,7 @@ func newTaggedExtractorRuntime(manager extractorSourceManager) *taggedExtractorR
 }
 
 func (r *taggedExtractorRuntime) currentTasksAdapter() tasks.ExtractorAdapter {
-	if r == nil || r.manager == nil {
+	if !r.hasManager() {
 		return nil
 	}
 	snap := r.manager.CurrentSnapshot()
@@ -68,7 +84,7 @@ func (a *App) taggedRuntime() *taggedExtractorRuntime {
 
 func (a *App) GetExtractorState() ExtractorState {
 	rt := a.taggedRuntime()
-	if rt == nil || rt.manager == nil {
+	if !rt.hasManager() {
 		return newEmptyExtractorState(false)
 	}
 	sources := rt.manager.ListSources()
@@ -170,7 +186,7 @@ func (a *App) refreshExtensionLinkage() {
 		return
 	}
 	rt := a.taggedRuntime()
-	if rt == nil || rt.manager == nil {
+	if !rt.hasManager() {
 		return
 	}
 	snap := rt.manager.CurrentSnapshot()
@@ -180,7 +196,7 @@ func (a *App) refreshExtensionLinkage() {
 
 func (a *App) LoadExtractorPackFile() ExtractorOperationResult {
 	rt := a.taggedRuntime()
-	if rt == nil || rt.manager == nil {
+	if !rt.hasManager() {
 		return newGenericUnavailableResult()
 	}
 	rt.mutationMu.Lock()
@@ -231,7 +247,7 @@ func (a *App) LoadExtractorPackFile() ExtractorOperationResult {
 
 func (a *App) LoadExtractorPackDirectory() ExtractorOperationResult {
 	rt := a.taggedRuntime()
-	if rt == nil || rt.manager == nil {
+	if !rt.hasManager() {
 		return newGenericUnavailableResult()
 	}
 	rt.mutationMu.Lock()
@@ -282,7 +298,7 @@ func (a *App) LoadExtractorPackDirectory() ExtractorOperationResult {
 
 func (a *App) LoadExtractorPackURL(lockURL string) ExtractorOperationResult {
 	rt := a.taggedRuntime()
-	if rt == nil || rt.manager == nil {
+	if !rt.hasManager() {
 		return newGenericUnavailableResult()
 	}
 	rt.mutationMu.Lock()
@@ -312,7 +328,7 @@ func (a *App) LoadExtractorPackURL(lockURL string) ExtractorOperationResult {
 
 func (a *App) ReloadExtractorSource(sourceID string) ExtractorOperationResult {
 	rt := a.taggedRuntime()
-	if rt == nil || rt.manager == nil {
+	if !rt.hasManager() {
 		return newGenericUnavailableResult()
 	}
 	rt.mutationMu.Lock()
@@ -339,7 +355,7 @@ func (a *App) ReloadExtractorSource(sourceID string) ExtractorOperationResult {
 
 func (a *App) RemoveExtractorSource(sourceID string) ExtractorOperationResult {
 	rt := a.taggedRuntime()
-	if rt == nil || rt.manager == nil {
+	if !rt.hasManager() {
 		return newGenericUnavailableResult()
 	}
 	rt.mutationMu.Lock()

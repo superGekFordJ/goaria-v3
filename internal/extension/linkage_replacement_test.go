@@ -352,10 +352,11 @@ func TestLinkageReplacement_BeforeStartOrWithoutActiveConns(t *testing.T) {
 }
 
 type barrierCommitter struct {
-	ready   bool
-	started chan struct{}
-	block   chan struct{}
-	result  CommitResult
+	ready    bool
+	started  chan struct{}
+	block    chan struct{}
+	finished chan struct{}
+	result   CommitResult
 }
 
 func (c *barrierCommitter) Ready() bool { return c.ready }
@@ -370,6 +371,9 @@ func (c *barrierCommitter) HandleCommit(_ context.Context, _ RequestEnvelope, _ 
 	if c.block != nil {
 		<-c.block
 	}
+	if c.finished != nil {
+		defer close(c.finished)
+	}
 	return c.result
 }
 
@@ -380,10 +384,12 @@ func TestLinkageReplacement_LateOldCommitCannotPolluteNewGeneration(t *testing.T
 
 	blockCh := make(chan struct{})
 	startedCh := make(chan struct{}, 1)
+	finishedCh := make(chan struct{})
 	comm1 := &barrierCommitter{
-		ready:   true,
-		started: startedCh,
-		block:   blockCh,
+		ready:    true,
+		started:  startedCh,
+		block:    blockCh,
+		finished: finishedCh,
 		result: CommitResult{
 			Success:          true,
 			SucceededItemIDs: []string{"old-success-item"},
@@ -423,6 +429,24 @@ func TestLinkageReplacement_LateOldCommitCannotPolluteNewGeneration(t *testing.T
 
 	// Now unblock old handler so it finishes on old generation
 	close(blockCh)
+
+	// Wait until old handler finishes execution
+	select {
+	case <-finishedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for old commit handler to finish")
+	}
+
+	// Ensure the server's batch gate has been fully released before sending new request
+	for range 50 {
+		if srv.batchInFlight.Load() == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if srv.batchInFlight.Load() != 0 {
+		t.Fatalf("batch gate was not released after old handler completion")
+	}
 
 	// Connect new client
 	conn2 := dialAuthed(t, srv, secret)
