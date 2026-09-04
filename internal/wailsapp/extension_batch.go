@@ -28,18 +28,22 @@ var batchCommitDenylist = []string{
 	"gids",
 }
 
+type tasksPreparedAdder interface {
+	AddPreparedExtractorItems(ctx context.Context, req tasks.PreparedAddRequest) (tasks.PreparedAddResult, error)
+}
+
 type extensionBatchAdapter struct {
-	lease  *extensionResolveAdapter
-	minter *extractor.TasksAdapter
-	app    *App
+	lease   *extensionResolveAdapter
+	minter  *extractor.TasksAdapter
+	service tasksPreparedAdder
 }
 
 func (a *extensionBatchAdapter) Ready() bool {
-	return a != nil && a.lease != nil && a.lease.Ready() && a.minter != nil
+	return a != nil && a.lease != nil && a.lease.Ready() && a.minter != nil && a.service != nil
 }
 
 func (a *extensionBatchAdapter) HandleCommit(ctx context.Context, env extension.RequestEnvelope, raw json.RawMessage) extension.CommitResult {
-	if a == nil || !a.Ready() || a.app == nil {
+	if a == nil || !a.Ready() {
 		return extension.CommitResult{ErrorCode: extension.ErrCodeUnavailable}
 	}
 	if ctx == nil {
@@ -110,7 +114,7 @@ func (a *extensionBatchAdapter) HandleCommit(ctx context.Context, env extension.
 		DuplicateItemIDs: []string{},
 	}
 	if len(prepared) > 0 {
-		added, err := a.app.taskService().AddPreparedExtractorItems(ctx, tasks.PreparedAddRequest{
+		added, err := a.service.AddPreparedExtractorItems(ctx, tasks.PreparedAddRequest{
 			Items:       prepared,
 			CreateGroup: req.CreateGroup,
 			FolderName:  req.FolderName,

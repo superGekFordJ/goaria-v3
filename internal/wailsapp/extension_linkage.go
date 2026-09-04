@@ -5,6 +5,8 @@ package wailsapp
 import (
 	"goaria-v3/internal/extension"
 	"goaria-v3/internal/extractor"
+	"goaria-v3/internal/rpc"
+	"goaria-v3/internal/tasks"
 )
 
 type ingressDigestAdapter struct {
@@ -39,6 +41,29 @@ func (a *ingressDigestAdapter) Snapshot() (extension.MatchDigestSnapshot, bool) 
 	}, true
 }
 
+func buildExtensionLinkageFromSnapshot(snap *extractor.RuntimeSnapshot, engine rpc.DownloadEngine) extension.Linkage {
+	if snap == nil || snap.Dispatcher() == nil || snap.TasksAdapter() == nil || snap.IngressDigests() == nil {
+		return extension.Linkage{}
+	}
+	resolver := newExtensionResolveAdapter(snap.Dispatcher())
+	digests := &ingressDigestAdapter{src: snap.IngressDigests()}
+	minter := snap.TasksAdapter()
+	service := &tasks.Service{
+		Adapter: minter,
+		Engine:  engine,
+	}
+	committer := &extensionBatchAdapter{
+		lease:   resolver,
+		minter:  minter,
+		service: service,
+	}
+	return extension.Linkage{
+		Resolver:  resolver,
+		Digests:   digests,
+		Committer: committer,
+	}
+}
+
 func pendingLinkageFromDispatcher(d *extractor.AddTaskDispatcher) extension.Linkage {
 	return extension.Linkage{
 		Resolver: newExtensionResolveAdapter(d),
@@ -51,7 +76,11 @@ func attachBatchCommitter(l extension.Linkage, minter *extractor.TasksAdapter, a
 	if !ok || minter == nil {
 		return l
 	}
-	l.Committer = &extensionBatchAdapter{lease: lease, minter: minter, app: app}
+	var svc tasksPreparedAdder
+	if app != nil {
+		svc = app.taskService()
+	}
+	l.Committer = &extensionBatchAdapter{lease: lease, minter: minter, service: svc}
 
 	return l
 }
@@ -63,9 +92,17 @@ func ConfigureExtensionLinkage(app *App, srv *extension.Server) {
 	app.pendingMu.Lock()
 	pending := app.pendingExtensionLinkage
 	app.pendingMu.Unlock()
-	if pending == nil {
-		srv.SetLinkage(attachDirectBatchCommitter(extension.Linkage{}, app))
+	if pending != nil {
+		srv.SetLinkage(attachDirectBatchCommitter(*pending, app))
 		return
 	}
-	srv.SetLinkage(attachDirectBatchCommitter(*pending, app))
+
+	var snap *extractor.RuntimeSnapshot
+	if app.extractorRuntime != nil {
+		if rt, ok := app.extractorRuntime.(*taggedExtractorRuntime); ok && rt != nil && rt.manager != nil {
+			snap = rt.manager.CurrentSnapshot()
+		}
+	}
+	linkage := buildExtensionLinkageFromSnapshot(snap, app.downloadEngine)
+	srv.SetLinkage(attachDirectBatchCommitter(linkage, app))
 }

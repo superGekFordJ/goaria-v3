@@ -19,7 +19,9 @@ type safeConn struct {
 	inFlight atomic.Int32
 	// grantedCaps is the auth_ack snapshot for this connection; never re-read
 	// live Ready() or store secret to admit extractor messages.
-	grantedCaps []string
+	grantedCaps  []string
+	linkage      Linkage
+	extractorGen uint64
 }
 
 func newSafeConn(conn *websocket.Conn) *safeConn {
@@ -73,6 +75,19 @@ func (c *safeConn) hasGranted(cap string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return slices.Contains(c.grantedCaps, cap)
+}
+
+func (c *safeConn) setLinkageSnapshot(l Linkage, gen uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.linkage = l
+	c.extractorGen = gen
+}
+
+func (c *safeConn) snapshotLinkage() (Linkage, uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.linkage, c.extractorGen
 }
 
 func (c *safeConn) Close() error {

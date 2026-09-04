@@ -65,44 +65,103 @@ func EmbeddedReleaseTrustedPublicKeys() []ed25519.PublicKey {
 	return keys
 }
 
-func NewEmbeddedReleaseAddTaskDispatcher(config EmbeddedReleaseDispatcherConfig) (*AddTaskDispatcher, error) {
+func cloneEmbeddedPack(pack EmbeddedPack) EmbeddedPack {
+	return EmbeddedPack{
+		ManifestJSON: cloneBytes(pack.ManifestJSON),
+		Payload:      cloneBytes(pack.Payload),
+		Signature:    cloneBytes(pack.Signature),
+		AssetSHA256:  pack.AssetSHA256,
+	}
+}
+
+func AcceptedEmbeddedPacks(packs []EmbeddedPack, keys []ed25519.PublicKey, config EmbeddedReleaseDispatcherConfig) ([]EmbeddedPack, error) {
 	required := embeddedReleaseRequired
 	if config.Required != nil {
 		required = *config.Required
 	}
 
-	packs := EmbeddedReleasePacks()
+	if packs == nil {
+		packs = EmbeddedReleasePacks()
+	}
 	if len(packs) == 0 {
 		if required {
 			return nil, redactErrorf("embedded extractor release packs are required but none are configured")
 		}
+		return nil, nil
+	}
 
+	policy := DefaultTrustPolicy()
+	if keys != nil {
+		policy.TrustedPublicKeys = keys
+	} else {
+		policy.TrustedPublicKeys = EmbeddedReleaseTrustedPublicKeys()
+	}
+
+	accepted := make([]EmbeddedPack, 0, len(packs))
+	acceptedVerified := make([]VerifiedPack, 0, len(packs))
+	rejections := make([]PackRejection, 0)
+	seenIDs := make(map[string]struct{}, len(packs))
+
+	for i, pack := range packs {
+		verified, err := VerifyEmbeddedPack(pack, policy)
+		if err != nil {
+			rejections = append(rejections, PackRejection{
+				PackID: bestEffortPackID(pack.ManifestJSON, i),
+				Reason: err.Error(),
+			})
+			continue
+		}
+		if _, duplicate := seenIDs[verified.Identity.PackID]; duplicate {
+			rejections = append(rejections, PackRejection{
+				PackID: verified.Identity.PackID,
+				Reason: "duplicate embedded pack id: " + verified.Identity.PackID,
+			})
+			continue
+		}
+		seenIDs[verified.Identity.PackID] = struct{}{}
+		accepted = append(accepted, cloneEmbeddedPack(pack))
+		acceptedVerified = append(acceptedVerified, cloneVerifiedPack(verified))
+	}
+
+	if required && len(rejections) > 0 {
+		return nil, redactedError(fmt.Errorf("embedded extractor release pack verification rejected configured packs: %s", summarizePackRejections(rejections)))
+	}
+
+	if len(acceptedVerified) == 0 {
+		if required {
+			return nil, redactedError(fmt.Errorf("all embedded extractor release packs were rejected: %s", summarizePackRejections(rejections)))
+		}
+		return nil, nil
+	}
+
+	if required {
+		if err := validateRequiredEmbeddedAliasHostPolicies(acceptedVerified, config.HostPolicyResolver); err != nil {
+			return nil, err
+		}
+		if err := validateRequiredEmbeddedAuthRuntime(acceptedVerified, config.AuthRuntimeBundle); err != nil {
+			return nil, err
+		}
+	}
+
+	return accepted, nil
+}
+
+func AcceptedEmbeddedReleasePacks(config EmbeddedReleaseDispatcherConfig) ([]EmbeddedPack, error) {
+	return AcceptedEmbeddedPacks(nil, nil, config)
+}
+
+func NewEmbeddedReleaseAddTaskDispatcher(config EmbeddedReleaseDispatcherConfig) (*AddTaskDispatcher, error) {
+	accepted, err := AcceptedEmbeddedReleasePacks(config)
+	if err != nil {
+		return nil, err
+	}
+	if len(accepted) == 0 {
 		return nil, nil
 	}
 
 	policy := DefaultTrustPolicy()
 	policy.TrustedPublicKeys = EmbeddedReleaseTrustedPublicKeys()
-	registry, rejections := NewRegistryWithHostPolicyResolver(packs, policy, config.HostPolicyResolver)
-	if required && len(rejections) > 0 {
-		return nil, redactedError(fmt.Errorf("embedded extractor release pack verification rejected configured packs: %s", summarizePackRejections(rejections)))
-	}
-
-	verified := registry.Packs()
-	if len(verified) == 0 {
-		if required {
-			return nil, redactedError(fmt.Errorf("all embedded extractor release packs were rejected: %s", summarizePackRejections(rejections)))
-		}
-
-		return nil, nil
-	}
-	if required {
-		if err := validateRequiredEmbeddedAliasHostPolicies(verified, config.HostPolicyResolver); err != nil {
-			return nil, err
-		}
-		if err := validateRequiredEmbeddedAuthRuntime(verified, config.AuthRuntimeBundle); err != nil {
-			return nil, err
-		}
-	}
+	registry, _ := NewRegistryWithHostPolicyResolver(accepted, policy, config.HostPolicyResolver)
 
 	return NewAddTaskDispatcher(AddTaskDispatcherConfig{
 		Registry: registry,

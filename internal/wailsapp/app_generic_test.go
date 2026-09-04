@@ -3,8 +3,10 @@
 package wailsapp
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"goaria-v3/internal/extension"
@@ -89,5 +91,149 @@ func TestGenericTaskServiceNilAdapter(t *testing.T) {
 	}
 	if svc.Adapter != nil {
 		t.Fatalf("expected nil Adapter in generic variant, got %v", svc.Adapter)
+	}
+}
+
+func TestGenericExtractorStateEmptyAndUnavailable(t *testing.T) {
+	app := NewApp(Options{})
+	state := app.GetExtractorState()
+
+	if state.Available {
+		t.Fatalf("expected available: false in generic build, got %v", state.Available)
+	}
+	if state.Sources == nil || len(state.Sources) != 0 {
+		t.Fatalf("expected non-nil empty sources array, got %#v", state.Sources)
+	}
+	if state.RecoveryErrors == nil || len(state.RecoveryErrors) != 0 {
+		t.Fatalf("expected non-nil empty recovery_errors array, got %#v", state.RecoveryErrors)
+	}
+
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	jsonStr := string(data)
+	if !strings.Contains(jsonStr, `"available":false`) {
+		t.Fatalf("expected available:false in JSON, got %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"sources":[]`) {
+		t.Fatalf("expected sources:[] in JSON, got %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"recovery_errors":[]`) {
+		t.Fatalf("expected recovery_errors:[] in JSON, got %s", jsonStr)
+	}
+}
+
+func TestGenericExtractorMutationsReturnUnavailable(t *testing.T) {
+	app := NewApp(Options{})
+
+	mutations := []struct {
+		name string
+		call func() ExtractorOperationResult
+	}{
+		{
+			name: "LoadExtractorPackFile",
+			call: func() ExtractorOperationResult {
+				return app.LoadExtractorPackFile()
+			},
+		},
+		{
+			name: "LoadExtractorPackDirectory",
+			call: func() ExtractorOperationResult {
+				return app.LoadExtractorPackDirectory()
+			},
+		},
+		{
+			name: "LoadExtractorPackURL",
+			call: func() ExtractorOperationResult {
+				return app.LoadExtractorPackURL("https://example.com/lock.json")
+			},
+		},
+		{
+			name: "ReloadExtractorSource",
+			call: func() ExtractorOperationResult {
+				return app.ReloadExtractorSource("opaque-source-1")
+			},
+		},
+		{
+			name: "RemoveExtractorSource",
+			call: func() ExtractorOperationResult {
+				return app.RemoveExtractorSource("opaque-source-1")
+			},
+		},
+	}
+
+	for _, tc := range mutations {
+		t.Run(tc.name, func(t *testing.T) {
+			res := tc.call()
+			if res.Success {
+				t.Fatalf("expected success: false in generic, got %v", res.Success)
+			}
+			if res.Cancelled {
+				t.Fatalf("expected cancelled: false in generic, got %v", res.Cancelled)
+			}
+			if res.ErrorCode != ExtractorErrorCodeUnavailable {
+				t.Fatalf("expected error_code: unavailable, got %q", res.ErrorCode)
+			}
+			if res.State.Available {
+				t.Fatalf("expected state.available: false, got %v", res.State.Available)
+			}
+			if res.State.Sources == nil || len(res.State.Sources) != 0 {
+				t.Fatalf("expected non-nil empty state.sources, got %#v", res.State.Sources)
+			}
+			if res.State.RecoveryErrors == nil || len(res.State.RecoveryErrors) != 0 {
+				t.Fatalf("expected non-nil empty state.recovery_errors, got %#v", res.State.RecoveryErrors)
+			}
+
+			data, err := json.Marshal(res)
+			if err != nil {
+				t.Fatalf("marshal result: %v", err)
+			}
+			jsonStr := string(data)
+			if !strings.Contains(jsonStr, `"success":false`) {
+				t.Fatalf("expected success:false in JSON, got %s", jsonStr)
+			}
+			if !strings.Contains(jsonStr, `"cancelled":false`) {
+				t.Fatalf("expected cancelled:false in JSON, got %s", jsonStr)
+			}
+			if !strings.Contains(jsonStr, `"error_code":"unavailable"`) {
+				t.Fatalf("expected error_code:unavailable in JSON, got %s", jsonStr)
+			}
+			if !strings.Contains(jsonStr, `"state":{`) {
+				t.Fatalf("expected state object in JSON, got %s", jsonStr)
+			}
+		})
+	}
+}
+
+func TestExtractorDTOJSONFieldNames(t *testing.T) {
+	source := ExtractorSource{
+		SourceID:          "src-1",
+		Kind:              ExtractorSourceKindLocalZip,
+		DisplayName:       "Test Pack",
+		PackID:            "pack.test",
+		PackVersion:       "1.0.0",
+		SignerFingerprint: "0123456789abcdef",
+		Status:            ExtractorSourceStatusReady,
+		ErrorCode:         "err_code",
+	}
+	sourceData, err := json.Marshal(source)
+	if err != nil {
+		t.Fatalf("marshal source: %v", err)
+	}
+	sourceJSON := string(sourceData)
+	for _, key := range []string{
+		`"source_id":`,
+		`"kind":`,
+		`"display_name":`,
+		`"pack_id":`,
+		`"pack_version":`,
+		`"signer_fingerprint":`,
+		`"status":`,
+		`"error_code":`,
+	} {
+		if !strings.Contains(sourceJSON, key) {
+			t.Fatalf("expected key %s in source JSON, got %s", key, sourceJSON)
+		}
 	}
 }

@@ -135,7 +135,7 @@ func setupBatchCommitHarness(t *testing.T) *batchCommitHarness {
 		lease:  lease,
 		minter: minter,
 		engine: engine,
-		commit: &extensionBatchAdapter{lease: lease, minter: minter, app: app},
+		commit: &extensionBatchAdapter{lease: lease, minter: minter, service: app.taskService()},
 	}
 }
 

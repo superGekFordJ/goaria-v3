@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -157,6 +158,36 @@ func (c *idempotencyCache) clear() {
 	}
 	c.entries = make(map[string]*idempEntry)
 	c.completed = nil
+}
+
+func (c *idempotencyCache) retireExtractorGeneration(oldGen uint64) {
+	if c == nil {
+		return
+	}
+	prefixResolve := strconv.FormatUint(oldGen, 10) + "\x00" + MsgTypeExtractorResolve + "\x00"
+	prefixBatch := strconv.FormatUint(oldGen, 10) + "\x00" + MsgTypeBatchDownload + "\x00"
+	c.mu.Lock()
+	var waitersToClose []chan []byte
+	for k, e := range c.entries {
+		if strings.HasPrefix(k, prefixResolve) || strings.HasPrefix(k, prefixBatch) {
+			waitersToClose = append(waitersToClose, e.waiters...)
+			delete(c.entries, k)
+		}
+	}
+	if len(c.completed) > 0 {
+		out := c.completed[:0]
+		for _, k := range c.completed {
+			if !strings.HasPrefix(k, prefixResolve) && !strings.HasPrefix(k, prefixBatch) {
+				out = append(out, k)
+			}
+		}
+		c.completed = out
+	}
+	c.mu.Unlock()
+
+	for _, ch := range waitersToClose {
+		close(ch)
+	}
 }
 
 func (c *idempotencyCache) hasCompleted(gen uint64, msgType, requestID string) bool {

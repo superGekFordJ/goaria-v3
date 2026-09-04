@@ -32,7 +32,7 @@ type App struct {
 	trayState tray.TrayState
 	version   string
 
-	extractorAdapter  tasks.ExtractorAdapter
+	extractorRuntime  extractorRuntimeProvider
 	authMu            sync.RWMutex             //nolint:unused,nolintlint
 	authProfileStore  hostAuthProfileStore     //nolint:unused,nolintlint
 	hostAuthRuntime   hostAuthRuntime          //nolint:unused,nolintlint
@@ -163,8 +163,23 @@ func (a *App) SetExtensionServer(s *extension.Server) {
 	a.extensionServer = s
 }
 
+func (a *App) setExtractorRuntime(provider extractorRuntimeProvider) {
+	a.extractorRuntime = provider
+}
+
 func (a *App) setExtractorAdapter(adapter tasks.ExtractorAdapter) { //nolint:unused,nolintlint
-	a.extractorAdapter = adapter
+	if adapter == nil {
+		a.extractorRuntime = nil
+		return
+	}
+	a.extractorRuntime = simpleAdapterProvider{adapter: adapter}
+}
+
+func (a *App) extractorAdapterForTest() tasks.ExtractorAdapter { //nolint:unused,nolintlint
+	if a.extractorRuntime == nil {
+		return nil
+	}
+	return a.extractorRuntime.currentTasksAdapter()
 }
 
 func (a *App) setPendingExtensionLinkage(l extension.Linkage) { //nolint:unused,nolintlint

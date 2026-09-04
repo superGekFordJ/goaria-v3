@@ -4,9 +4,12 @@ package wailsapp
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"path/filepath"
 
+	"goaria-v3/internal/config"
 	"goaria-v3/internal/extractor"
 	"goaria-v3/internal/tasks"
 )
@@ -67,6 +70,10 @@ type embeddedExtractorConfigDeps struct {
 	newFileAuthProfileStore              func(string) (extractor.AuthProfileStore, error)
 	newAuthWebViewDriver                 func(*App) extractor.AuthWebViewDriver
 	newEmbeddedReleaseAddTaskAdapter     func(extractor.EmbeddedReleaseDispatcherConfig, *extractor.HostAuthRuntime) (tasks.ExtractorAdapter, error)
+	dataRoot                             func() (string, error)
+	acceptedEmbeddedPacks                func(extractor.EmbeddedReleaseDispatcherConfig) ([]extractor.EmbeddedPack, error)
+	embeddedReleaseTrustedPublicKeys     func() []ed25519.PublicKey
+	newRuntimeManager                    func(context.Context, extractor.ExtractorRuntimeManagerConfig) (*extractor.ExtractorRuntimeManager, error)
 }
 
 func defaultEmbeddedExtractorConfigDeps(appService *App) embeddedExtractorConfigDeps {
@@ -84,20 +91,12 @@ func defaultEmbeddedExtractorConfigDeps(appService *App) embeddedExtractorConfig
 		newAuthWebViewDriver: func(appService *App) extractor.AuthWebViewDriver {
 			return newAppHostAuthDriver(appService)
 		},
-		newEmbeddedReleaseAddTaskAdapter: func(config extractor.EmbeddedReleaseDispatcherConfig, runtime *extractor.HostAuthRuntime) (tasks.ExtractorAdapter, error) {
-			dispatcher, err := extractor.NewEmbeddedReleaseAddTaskDispatcher(config)
-			if err != nil {
-				return nil, err
-			}
-			if dispatcher != nil && appService != nil {
-				adapter := extractor.NewTasksAdapter(dispatcher, runtime)
-				linkage := pendingLinkageFromDispatcher(dispatcher)
-				linkage = attachBatchCommitter(linkage, adapter, appService)
-				appService.setPendingExtensionLinkage(linkage)
-				return adapter, nil
-			}
-			return extractor.NewTasksAdapter(dispatcher, runtime), nil
+		dataRoot: func() (string, error) {
+			return filepath.Join(filepath.Dir(config.GetConfigPath()), "extractor"), nil
 		},
+		acceptedEmbeddedPacks:            extractor.AcceptedEmbeddedReleasePacks,
+		embeddedReleaseTrustedPublicKeys: extractor.EmbeddedReleaseTrustedPublicKeys,
+		newRuntimeManager:                extractor.NewExtractorRuntimeManager,
 	}
 }
 
@@ -120,8 +119,11 @@ func configureEmbeddedExtractorDispatcherWithDeps(appService *App, deps embedded
 	} else {
 		diagnostic.record("embedded_release", "optional")
 	}
-	diagnostic.record("policy_source", string(deps.privatePolicyRuntimeSourceState()))
-	diagnostic.record("auth_runtime_source", string(deps.privateAuthRuntimeRuntimeSourceState()))
+	policySourceState := deps.privatePolicyRuntimeSourceState()
+	diagnostic.record("policy_source", string(policySourceState))
+	authRuntimeSourceState := deps.privateAuthRuntimeRuntimeSourceState()
+	diagnostic.record("auth_runtime_source", string(authRuntimeSourceState))
+
 	authBundle, err := deps.loadAuthRuntimeBundle()
 	if err != nil {
 		diagnostic.record("auth_runtime_load", "invalid")
@@ -139,18 +141,9 @@ func configureEmbeddedExtractorDispatcherWithDeps(appService *App, deps embedded
 		diagnostic.record("auth_runtime_load", "loaded_zero")
 	}
 	hasAuthRuntime := authBundle != nil && authBundle.PackCount() > 0
-	if !hasPacks && !required && !hasAuthRuntime {
-		diagnostic.record("policy_load", "skipped")
-		diagnostic.record("auth_store", "skipped")
-		diagnostic.record("host_auth_runtime", "skipped")
-		diagnostic.record("driver", "skipped")
-		diagnostic.record("dispatcher", "skipped")
-		diagnostic.finish("no_runtime_inputs")
-		return nil
-	}
 
 	var hostPolicyResolver extractor.HostPolicyResolver
-	if hasPacks || required {
+	if hasPacks || required || policySourceState != extractor.PrivateBundleSourceStateNone {
 		hostPolicyResolver, err = deps.loadHostPolicyResolver()
 		if err != nil {
 			diagnostic.record("policy_load", "invalid")
@@ -170,7 +163,29 @@ func configureEmbeddedExtractorDispatcherWithDeps(appService *App, deps embedded
 		diagnostic.record("policy_load", "skipped")
 	}
 
+	var acceptedPacks []extractor.EmbeddedPack
+	if hasPacks || required {
+		acceptedPacks, err = deps.acceptedEmbeddedPacks(extractor.EmbeddedReleaseDispatcherConfig{
+			AuthResolver:       nil,
+			HostPolicyResolver: hostPolicyResolver,
+			AuthRuntimeBundle:  authBundle,
+			Required:           &required,
+		})
+		if err != nil {
+			diagnostic.record("auth_store", "skipped")
+			diagnostic.record("host_auth_runtime", "skipped")
+			diagnostic.record("driver", "skipped")
+			diagnostic.record("dispatcher", "failed")
+			diagnostic.finish("activation_missing_or_skipped")
+			return sanitizedEmbeddedExtractorConfigError("verify embedded release packs", err)
+		}
+	}
+
 	var store extractor.AuthProfileStore
+	var hostRuntime *extractor.HostAuthRuntime
+	var driver extractor.AuthWebViewDriver
+	var authResolver extractor.AuthProfileResolver
+
 	if hasPacks || hasAuthRuntime {
 		storePath, err := deps.defaultAuthProfileStorePath()
 		if err != nil {
@@ -182,7 +197,7 @@ func configureEmbeddedExtractorDispatcherWithDeps(appService *App, deps embedded
 			return sanitizedEmbeddedExtractorConfigError("locate auth profile store", err)
 		}
 		store, err = deps.newFileAuthProfileStore(storePath)
-		if err != nil {
+		if err != nil || store == nil {
 			diagnostic.record("auth_store", "skipped")
 			diagnostic.record("host_auth_runtime", "skipped")
 			diagnostic.record("driver", "skipped")
@@ -190,23 +205,12 @@ func configureEmbeddedExtractorDispatcherWithDeps(appService *App, deps embedded
 			diagnostic.finish("activation_missing_or_skipped")
 			return sanitizedEmbeddedExtractorConfigError("load auth profile store", err)
 		}
-		if store == nil {
-			diagnostic.record("auth_store", "skipped")
-			diagnostic.record("host_auth_runtime", "skipped")
-			diagnostic.record("driver", "skipped")
-			diagnostic.record("dispatcher", "skipped")
-			diagnostic.finish("activation_missing_or_skipped")
-			return sanitizedEmbeddedExtractorConfigError("load auth profile store", errors.New("auth profile store is nil"))
-		}
 		store = wrapDiagnosticAuthProfileStore(store)
 		diagnostic.record("auth_store", "configured")
 	} else {
 		diagnostic.record("auth_store", "skipped")
 	}
 
-	var authResolver extractor.AuthProfileResolver
-	var hostRuntime *extractor.HostAuthRuntime
-	var driver extractor.AuthWebViewDriver
 	switch {
 	case hasAuthRuntime:
 		driver = deps.newAuthWebViewDriver(appService)
@@ -215,9 +219,10 @@ func configureEmbeddedExtractorDispatcherWithDeps(appService *App, deps embedded
 			diagnostic.record("host_auth_runtime", "skipped")
 			diagnostic.record("dispatcher", "skipped")
 			diagnostic.finish("activation_missing_or_skipped")
-			return sanitizedEmbeddedExtractorConfigError("create auth webview driver", errors.New("auth webview driver is nil"))
+			return sanitizedEmbeddedExtractorConfigError("create auth webview driver", errors.New("driver is nil"))
 		}
 		diagnostic.record("driver", "configured")
+
 		coordinator := extractor.NewWebViewAuthCoordinator(store, driver)
 		coordinator.SetObserver(appHostAuthDiagnosticObserver{})
 		hostRuntime = extractor.NewHostAuthRuntime(extractor.HostAuthRuntimeConfig{
@@ -236,26 +241,79 @@ func configureEmbeddedExtractorDispatcherWithDeps(appService *App, deps embedded
 		diagnostic.record("driver", "skipped")
 		diagnostic.record("host_auth_runtime", "skipped")
 	}
+
 	appService.setHostAuthState(store, hostRuntime, driver)
 
-	adapter, err := deps.newEmbeddedReleaseAddTaskAdapter(extractor.EmbeddedReleaseDispatcherConfig{
-		AuthResolver:       authResolver,
-		HostPolicyResolver: hostPolicyResolver,
-		AuthRuntimeBundle:  authBundle,
-	}, hostRuntime)
+	if deps.newEmbeddedReleaseAddTaskAdapter != nil {
+		if !hasPacks && !required && !hasAuthRuntime {
+			diagnostic.record("dispatcher", "skipped")
+			diagnostic.finish("no_runtime_inputs")
+			return nil
+		}
+		dispConfig := extractor.EmbeddedReleaseDispatcherConfig{
+			AuthResolver:       authResolver,
+			HostPolicyResolver: hostPolicyResolver,
+			AuthRuntimeBundle:  authBundle,
+		}
+		adapter, err := deps.newEmbeddedReleaseAddTaskAdapter(dispConfig, hostRuntime)
+		if err != nil {
+			diagnostic.record("dispatcher", "failed")
+			diagnostic.finish("activation_missing_or_skipped")
+			return sanitizedEmbeddedExtractorConfigError("create embedded extractor dispatcher", err)
+		}
+		if adapter != nil {
+			appService.setExtractorAdapter(adapter)
+			diagnostic.record("dispatcher", "configured")
+			diagnostic.finish("activation_proved")
+			return nil
+		}
+		diagnostic.record("dispatcher", "skipped")
+		diagnostic.finish("activation_missing_or_skipped")
+		return nil
+	}
+
+	dataRoot, err := deps.dataRoot()
 	if err != nil {
 		diagnostic.record("dispatcher", "failed")
 		diagnostic.finish("activation_missing_or_skipped")
-		return sanitizedEmbeddedExtractorConfigError("create embedded extractor dispatcher", err)
+		return sanitizedEmbeddedExtractorConfigError("locate extractor data root", err)
 	}
-	if adapter != nil {
-		appService.setExtractorAdapter(adapter)
+
+	trustPolicy := extractor.DefaultTrustPolicy()
+	if deps.embeddedReleaseTrustedPublicKeys != nil {
+		trustPolicy.TrustedPublicKeys = deps.embeddedReleaseTrustedPublicKeys()
+	} else {
+		trustPolicy.TrustedPublicKeys = extractor.EmbeddedReleaseTrustedPublicKeys()
+	}
+
+	mgr, err := deps.newRuntimeManager(context.Background(), extractor.ExtractorRuntimeManagerConfig{
+		DataRoot:           dataRoot,
+		EmbeddedPacks:      acceptedPacks,
+		TrustPolicy:        trustPolicy,
+		HostPolicyResolver: hostPolicyResolver,
+		AuthResolver:       authResolver,
+		HostAuthRuntime:    hostRuntime,
+	})
+	if err != nil {
+		diagnostic.record("dispatcher", "failed")
+		diagnostic.finish("activation_missing_or_skipped")
+		return sanitizedEmbeddedExtractorConfigError("create extractor runtime manager", err)
+	}
+
+	runtime := newTaggedExtractorRuntime(mgr)
+	appService.setExtractorRuntime(runtime)
+
+	if mgr.CurrentSnapshot().TasksAdapter() != nil {
 		diagnostic.record("dispatcher", "configured")
 		diagnostic.finish("activation_proved")
-		return nil
+	} else {
+		diagnostic.record("dispatcher", "skipped")
+		if !hasPacks && !required && !hasAuthRuntime {
+			diagnostic.finish("no_runtime_inputs")
+		} else {
+			diagnostic.finish("activation_missing_or_skipped")
+		}
 	}
-	diagnostic.record("dispatcher", "skipped")
-	diagnostic.finish("activation_missing_or_skipped")
 
 	return nil
 }
@@ -291,6 +349,18 @@ func normalizeEmbeddedExtractorConfigDeps(deps embeddedExtractorConfigDeps) embe
 	}
 	if deps.newEmbeddedReleaseAddTaskAdapter == nil {
 		deps.newEmbeddedReleaseAddTaskAdapter = defaults.newEmbeddedReleaseAddTaskAdapter
+	}
+	if deps.dataRoot == nil {
+		deps.dataRoot = defaults.dataRoot
+	}
+	if deps.acceptedEmbeddedPacks == nil {
+		deps.acceptedEmbeddedPacks = defaults.acceptedEmbeddedPacks
+	}
+	if deps.embeddedReleaseTrustedPublicKeys == nil {
+		deps.embeddedReleaseTrustedPublicKeys = defaults.embeddedReleaseTrustedPublicKeys
+	}
+	if deps.newRuntimeManager == nil {
+		deps.newRuntimeManager = defaults.newRuntimeManager
 	}
 
 	return deps

@@ -434,7 +434,7 @@ func TestConfigureEmbeddedExtractorDispatcherWiresHostAuthRuntimeState(t *testin
 	if captured.HostPolicyResolver != policyResolver {
 		t.Fatalf("captured HostPolicyResolver = %#v, want shared resolver", captured.HostPolicyResolver)
 	}
-	if app.extractorAdapter == nil {
+	if app.extractorAdapterForTest() == nil {
 		t.Fatal("App extractor adapter = nil")
 	}
 }
@@ -691,7 +691,7 @@ func TestConfigureEmbeddedExtractorDispatcherNoPackNoRuntimeIsNoop(t *testing.T)
 	if err != nil {
 		t.Fatalf("configure helper error = %v", err)
 	}
-	if storeCreated || dispatcherCreated || app.extractorAdapter != nil || app.authProfileStoreForTest() != nil || app.hostAuthRuntimeForTest() != nil {
+	if storeCreated || dispatcherCreated || app.extractorAdapterForTest() != nil || app.authProfileStoreForTest() != nil || app.hostAuthRuntimeForTest() != nil {
 		t.Fatalf("no-op path created state: store=%t dispatcher=%t app=%#v", storeCreated, dispatcherCreated, app)
 	}
 }
@@ -722,7 +722,7 @@ func TestConfigureEmbeddedExtractorDispatcherStartupNoRuntimeInputs(t *testing.T
 	if err != nil {
 		t.Fatalf("configure helper error = %v", err)
 	}
-	if storeCreated || dispatcherCreated || app.extractorAdapter != nil || app.authProfileStoreForTest() != nil || app.hostAuthRuntimeForTest() != nil {
+	if storeCreated || dispatcherCreated || app.extractorAdapterForTest() != nil || app.authProfileStoreForTest() != nil || app.hostAuthRuntimeForTest() != nil {
 		t.Fatalf("startup no-runtime path created state: store=%t dispatcher=%t app=%#v", storeCreated, dispatcherCreated, app)
 	}
 	text := string(mustReadAppHostAuthTestFile(t, logPath))
@@ -777,8 +777,8 @@ func TestConfigureEmbeddedExtractorDispatcherStartupActivationProved(t *testing.
 	if app.authProfileStoreForTest() != store {
 		t.Fatalf("App store = %#v, want shared store", app.authProfileStoreForTest())
 	}
-	if app.hostAuthRuntimeForTest() == nil || app.authWebViewDriverForTest() == nil || app.extractorAdapter == nil {
-		t.Fatalf("startup activation proved path not fully configured: runtime=%#v driver=%#v adapter=%#v", app.hostAuthRuntimeForTest(), app.authWebViewDriverForTest(), app.extractorAdapter)
+	if app.hostAuthRuntimeForTest() == nil || app.authWebViewDriverForTest() == nil || app.extractorAdapterForTest() == nil {
+		t.Fatalf("startup activation proved path not fully configured: runtime=%#v driver=%#v adapter=%#v", app.hostAuthRuntimeForTest(), app.authWebViewDriverForTest(), app.extractorAdapterForTest())
 	}
 	text := string(mustReadAppHostAuthTestFile(t, logPath))
 	assertStartupDiagnosticCategories(t, text,

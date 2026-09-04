@@ -58,6 +58,7 @@ type Server struct {
 	activeConns      map[*safeConn]struct{}
 	hostVersion      string
 	linkage          Linkage
+	extractorGen     uint64
 	resolveInFlight  atomic.Int32
 	batchInFlight    atomic.Int32
 	idemp            *idempotencyCache
@@ -79,10 +80,11 @@ func NewServer(eventHub *events.Hub, taskAdder TaskAdder, store *SecretStore) *S
 			CheckOrigin:  checkOrigin,
 			Subprotocols: []string{"goaria-extension"},
 		},
-		activeConns: make(map[*safeConn]struct{}),
-		idemp:       newIdempotencyCache(),
-		opCtx:       opCtx,
-		opCancel:    opCancel,
+		activeConns:  make(map[*safeConn]struct{}),
+		idemp:        newIdempotencyCache(),
+		extractorGen: 1,
+		opCtx:        opCtx,
+		opCancel:     opCancel,
 	}
 }
 
@@ -106,6 +108,41 @@ func (s *Server) SetLinkage(l Linkage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.linkage = l
+	if s.extractorGen == 0 {
+		s.extractorGen = 1
+	}
+}
+
+// ReplaceExtractorLinkage atomically replaces the Extractor linkage fields,
+// advances the Extractor linkage generation, retires old Extractor idempotency,
+// invalidates the old resolver, and disconnects current clients.
+func (s *Server) ReplaceExtractorLinkage(l Linkage) {
+	s.mu.Lock()
+	oldResolver := s.linkage.Resolver
+	oldGen := s.extractorGen
+	if oldGen == 0 {
+		oldGen = 1
+	}
+	s.linkage.Resolver = l.Resolver
+	s.linkage.Digests = l.Digests
+	s.linkage.Committer = l.Committer
+	s.extractorGen = oldGen + 1
+
+	conns := make([]*safeConn, 0, len(s.activeConns))
+	for conn := range s.activeConns {
+		conns = append(conns, conn)
+	}
+	s.mu.Unlock()
+
+	if oldResolver != nil && oldResolver != l.Resolver {
+		oldResolver.Invalidate()
+	}
+	if s.idemp != nil {
+		s.idemp.retireExtractorGeneration(oldGen)
+	}
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
 }
 
 // StartPairing creates or reuses the pairing service and returns the pairing URL.
@@ -249,8 +286,13 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 
 	s.mu.RLock()
 	hostVersion := s.hostVersion
+	connLinkage := s.linkage
+	connExtractorGen := s.extractorGen
 	s.mu.RUnlock()
-	caps := s.computeCapabilities(secret)
+
+	sc.setLinkageSnapshot(connLinkage, connExtractorGen)
+
+	caps := computeConnectionCapabilities(secret, connLinkage)
 	sc.setGrantedCaps(caps)
 	ack := AuthAck{
 		Type:            MsgTypeAuthAck,
@@ -258,7 +300,7 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 		HostVersion:     hostVersion,
 		Capabilities:    caps,
 
-		Match: s.matchWireForAck(caps),
+		Match: matchWireFromProvider(caps, connLinkage.Digests),
 	}
 	if err := sc.writeJSON(ack); err != nil {
 		return
@@ -342,15 +384,12 @@ func (s *Server) dispatchAsync(
 		return
 	}
 	digest := canonicalDigest(raw)
-	gen := uint64(0)
-	if s.store != nil {
-		gen = s.store.Generation()
-	}
+	linkage, gen := sc.snapshotLinkage()
 	st, cached, wait := s.idemp.lookup(gen, env.Type, reqID, digest)
 	switch st {
 	case idempHit:
-		if isResolve {
-			cached = s.rewriteCachedResolve(cached)
+		if isResolve && linkage.Resolver != nil {
+			cached = linkage.Resolver.RewriteCachedResolve(cached)
 		}
 		_ = sc.writeRaw(cached)
 		return
@@ -380,8 +419,8 @@ func (s *Server) dispatchAsync(
 	case idempHit:
 		s.releaseGate(isResolve)
 		sc.releaseInFlight()
-		if isResolve {
-			cached = s.rewriteCachedResolve(cached)
+		if isResolve && linkage.Resolver != nil {
+			cached = linkage.Resolver.RewriteCachedResolve(cached)
 		}
 		_ = sc.writeRaw(cached)
 		return
@@ -422,7 +461,15 @@ func (s *Server) dispatchAsync(
 		var err error
 		skipIdemp := false
 		if isResolve {
-			result := s.runResolve(opCtx, env, json.RawMessage(raw))
+			if linkage.Resolver == nil || !linkage.Resolver.Ready() {
+				unavail := marshalUnavailableAck(ackType, reqID)
+				s.idemp.abandon(gen, env.Type, reqID, digest, unavail)
+				if connCtx.Err() == nil {
+					_ = sc.writeRaw(unavail)
+				}
+				return
+			}
+			result := linkage.Resolver.HandleResolve(opCtx, env, json.RawMessage(raw))
 			if opCtx.Err() != nil {
 				busy := marshalBusyAck(ackType, reqID)
 				s.idemp.abandon(gen, env.Type, reqID, digest, busy)
@@ -434,7 +481,15 @@ func (s *Server) dispatchAsync(
 			ack := s.resolveAckFromResult(ackType, reqID, result)
 			data, err = json.Marshal(ack)
 		} else {
-			result := s.runCommit(opCtx, env, json.RawMessage(raw))
+			if linkage.Committer == nil || !linkage.Committer.Ready() {
+				unavail := marshalUnavailableAck(ackType, reqID)
+				s.idemp.abandon(gen, env.Type, reqID, digest, unavail)
+				if connCtx.Err() == nil {
+					_ = sc.writeRaw(unavail)
+				}
+				return
+			}
+			result := linkage.Committer.HandleCommit(opCtx, env, json.RawMessage(raw))
 			if opCtx.Err() != nil {
 				busy := marshalBusyAck(ackType, reqID)
 				s.idemp.abandon(gen, env.Type, reqID, digest, busy)
@@ -454,7 +509,7 @@ func (s *Server) dispatchAsync(
 			}
 			return
 		}
-		if skipIdemp {
+		if skipIdemp || opCtx.Err() != nil {
 			s.idemp.abandon(gen, env.Type, reqID, digest, data)
 		} else {
 			s.idemp.complete(gen, env.Type, reqID, digest, data)
@@ -476,13 +531,21 @@ func writeCoalescedAck(sc *safeConn, wait <-chan []byte) {
 	_ = sc.writeRaw(ack)
 }
 
-func marshalBusyAck(ackType, requestID string) []byte {
-	ack := TypedAck{Type: ackType, RequestID: requestID, ErrorCode: ErrCodeBusy}
+func marshalTypedAck(ackType, requestID, errCode string) []byte {
+	ack := TypedAck{Type: ackType, RequestID: requestID, ErrorCode: errCode}
 	data, err := json.Marshal(ack)
 	if err != nil {
-		return []byte(`{"type":` + strconv.Quote(ackType) + `,"request_id":` + strconv.Quote(requestID) + `,"error_code":"busy"}`)
+		return []byte(`{"type":` + strconv.Quote(ackType) + `,"request_id":` + strconv.Quote(requestID) + `,"error_code":` + strconv.Quote(errCode) + `}`)
 	}
 	return data
+}
+
+func marshalBusyAck(ackType, requestID string) []byte {
+	return marshalTypedAck(ackType, requestID, ErrCodeBusy)
+}
+
+func marshalUnavailableAck(ackType, requestID string) []byte {
+	return marshalTypedAck(ackType, requestID, ErrCodeUnavailable)
 }
 
 func (s *Server) operationContext() context.Context {
@@ -531,28 +594,6 @@ func (s *Server) releaseGate(isResolve bool) {
 		return
 	}
 	s.batchInFlight.Add(-1)
-}
-
-func (s *Server) runResolve(ctx context.Context, env RequestEnvelope, raw json.RawMessage) ResolveResult {
-	s.mu.RLock()
-	r := s.linkage.Resolver
-	s.mu.RUnlock()
-	if r == nil {
-		return ResolveResult{ErrorCode: ErrCodeUnavailable}
-	}
-
-	return r.HandleResolve(ctx, env, raw)
-}
-
-func (s *Server) runCommit(ctx context.Context, env RequestEnvelope, raw json.RawMessage) CommitResult {
-	s.mu.RLock()
-	c := s.linkage.Committer
-	s.mu.RUnlock()
-	if c == nil {
-		return CommitResult{ErrorCode: ErrCodeUnavailable}
-	}
-
-	return c.HandleCommit(ctx, env, raw)
 }
 
 func (s *Server) dispatchDirectBatch(
@@ -853,21 +894,6 @@ func marshalBatchAck(ack BatchDownloadAck) ([]byte, error) {
 	})
 }
 
-func (s *Server) rewriteCachedResolve(cached []byte) []byte {
-	s.mu.RLock()
-	r := s.linkage.Resolver
-	s.mu.RUnlock()
-	if r == nil {
-		return cached
-	}
-	rewritten := r.RewriteCachedResolve(cached)
-	if len(rewritten) == 0 {
-		return cached
-	}
-
-	return rewritten
-}
-
 func (s *Server) resolveAckFromResult(ackType, requestID string, result ResolveResult) ExtractorResolveAck {
 	ack := ExtractorResolveAck{
 		Type:      ackType,
@@ -925,33 +951,25 @@ func (s *Server) invalidateDirect() {
 	}
 }
 
-func (s *Server) computeCapabilities(secret string) []string {
+func computeConnectionCapabilities(secret string, l Linkage) []string {
 	caps := []string{CapRequestID}
 	if secret == "" {
 		return caps
 	}
-	if s.resolverReady() {
+	if l.Resolver != nil && l.Resolver.Ready() {
 		caps = append(caps, CapExtractorResolve)
 	}
-	if s.committerReady() {
+	if l.Committer != nil && l.Committer.Ready() {
 		caps = append(caps, CapExtractorBatch)
 	}
-	if s.directCommitterReady() {
+	if l.DirectCommitter != nil && l.DirectCommitter.Ready() {
 		caps = append(caps, CapDownloadBatch)
 	}
 	return caps
 }
 
-// matchWireForAck attaches match when the publish gate passes. Snapshot
-// failure omits the object; auth_ack is still written and the socket stays open.
-func (s *Server) matchWireForAck(caps []string) *MatchDigestWire {
-	if !containsCap(caps, CapExtractorResolve) || !s.digestsReady() {
-		return nil
-	}
-	s.mu.RLock()
-	provider := s.linkage.Digests
-	s.mu.RUnlock()
-	if provider == nil {
+func matchWireFromProvider(caps []string, provider MatchDigestProvider) *MatchDigestWire {
+	if !containsCap(caps, CapExtractorResolve) || provider == nil || !provider.Ready() {
 		return nil
 	}
 	snap, ok := provider.Snapshot()
@@ -975,34 +993,6 @@ func (s *Server) matchWireForAck(caps []string) *MatchDigestWire {
 		ExactDigests:     exact,
 		SubdomainDigests: sub,
 	}
-}
-
-func (s *Server) resolverReady() bool {
-	s.mu.RLock()
-	r := s.linkage.Resolver
-	s.mu.RUnlock()
-	return r != nil && r.Ready()
-}
-
-func (s *Server) committerReady() bool {
-	s.mu.RLock()
-	c := s.linkage.Committer
-	s.mu.RUnlock()
-	return c != nil && c.Ready()
-}
-
-func (s *Server) directCommitterReady() bool {
-	s.mu.RLock()
-	d := s.linkage.DirectCommitter
-	s.mu.RUnlock()
-	return d != nil && d.Ready()
-}
-
-func (s *Server) digestsReady() bool {
-	s.mu.RLock()
-	d := s.linkage.Digests
-	s.mu.RUnlock()
-	return d != nil && d.Ready()
 }
 
 func containsCap(caps []string, want string) bool {

@@ -8,8 +8,12 @@ import (
 )
 
 func (a *App) taskService() *tasks.Service {
+	var adapter tasks.ExtractorAdapter
+	if a.extractorRuntime != nil {
+		adapter = a.extractorRuntime.currentTasksAdapter()
+	}
 	return &tasks.Service{
-		Adapter: a.extractorAdapter,
+		Adapter: adapter,
 		Engine:  a.downloadEngine,
 	}
 }
