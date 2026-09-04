@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // GitHubRepo is the owner/repo for GitHub Releases API
@@ -17,6 +19,24 @@ const GitHubRepo = "superGekFordJ/goaria-v3"
 var (
 	apiBaseURL = "https://api.github.com"
 	httpClient = &http.Client{Timeout: 10 * time.Second}
+)
+
+func defaultPlatform() string {
+	switch {
+	case application.System.IsPlatform(application.PlatformWindows):
+		return "windows"
+	case application.System.IsPlatform(application.PlatformMacOS):
+		return "darwin"
+	case application.System.IsPlatform(application.PlatformLinux):
+		return "linux"
+	default:
+		return runtime.GOOS
+	}
+}
+
+var (
+	targetGOOS   = defaultPlatform()
+	targetGOARCH = runtime.GOARCH
 )
 
 // githubAsset represents a single asset in a GitHub Release
@@ -48,13 +68,6 @@ func Check(currentVersion string, includePreRelease bool) (*UpdateResult, error)
 	if err != nil {
 		result.Latest = currentVersion
 		result.Error = "invalid current version: " + currentVersion
-		return result, nil
-	}
-
-	// Only support Windows for now
-	if runtime.GOOS != "windows" {
-		result.Latest = currentVersion
-		result.Error = "unsupported platform: " + runtime.GOOS
 		return result, nil
 	}
 
@@ -90,8 +103,14 @@ func Check(currentVersion string, includePreRelease bool) (*UpdateResult, error)
 		return result, nil
 	}
 
-	arch := runtime.GOARCH
-	var matchedReleases []ReleaseInfo
+	goos := targetGOOS
+	arch := targetGOARCH
+
+	type parsedRelease struct {
+		info ReleaseInfo
+		ver  *semver.Version
+	}
+	var parsedList []parsedRelease
 
 	for _, release := range releases {
 		// Skip prerelease if not included
@@ -112,22 +131,35 @@ func Check(currentVersion string, includePreRelease bool) (*UpdateResult, error)
 			continue
 		}
 
-		// Find matching windows asset
-		assetURL, assetSize := matchAsset(release.Assets, arch)
+		// Find matching platform asset
+		assetURL, assetSize := matchAsset(release.Assets, goos, arch)
 		if assetURL == "" {
-			// Skip if no matching windows installer asset is found
+			// Skip if no matching asset is found for current OS and architecture
 			continue
 		}
 
-		matchedReleases = append(matchedReleases, ReleaseInfo{
-			TagName:    release.TagName,
-			Name:       release.Name,
-			Body:       release.Body,
-			HTMLURL:    release.HTMLURL,
-			AssetURL:   assetURL,
-			AssetSize:  assetSize,
-			PreRelease: release.PreRelease,
+		parsedList = append(parsedList, parsedRelease{
+			info: ReleaseInfo{
+				TagName:    release.TagName,
+				Name:       release.Name,
+				Body:       release.Body,
+				HTMLURL:    release.HTMLURL,
+				AssetURL:   assetURL,
+				AssetSize:  assetSize,
+				PreRelease: release.PreRelease,
+			},
+			ver: remote,
 		})
+	}
+
+	// Sort matched releases in descending SemVer order (newest first)
+	sort.Slice(parsedList, func(i, j int) bool {
+		return parsedList[i].ver.GreaterThan(parsedList[j].ver)
+	})
+
+	matchedReleases := make([]ReleaseInfo, len(parsedList))
+	for i, pr := range parsedList {
+		matchedReleases[i] = pr.info
 	}
 
 	result.Releases = matchedReleases
@@ -142,22 +174,120 @@ func Check(currentVersion string, includePreRelease bool) (*UpdateResult, error)
 	return result, nil
 }
 
-// matchAsset finds the matching asset for the given architecture.
-// Expected naming: goaria-v{version}-windows-{arch}.zip
-func matchAsset(assets []githubAsset, arch string) (url string, size int64) {
-	pattern := fmt.Sprintf("windows-%s.zip", arch)
-	for _, a := range assets {
-		lower := strings.ToLower(a.Name)
-		if strings.Contains(lower, pattern) {
-			return a.BrowserDownloadURL, a.Size
+// hasConflictingArch checks whether assetName explicitly targets an architecture different from currentArch.
+func hasConflictingArch(assetName, currentArch string) bool {
+	lower := strings.ToLower(assetName)
+	currentArch = strings.ToLower(currentArch)
+
+	var conflicts []string
+	switch currentArch {
+	case "amd64", "x86_64", "x64":
+		conflicts = []string{"arm64", "aarch64", "armv8", "armv7", "armv6", "386", "i386"}
+	case "arm64", "aarch64", "armv8":
+		conflicts = []string{"amd64", "x86_64", "x64", "386", "i386", "armv7", "armv6"}
+	default:
+		known := []string{"amd64", "x86_64", "x64", "arm64", "aarch64", "386", "i386"}
+		for _, k := range known {
+			if k != currentArch {
+				conflicts = append(conflicts, k)
+			}
 		}
 	}
-	// Fallback: try any .zip asset containing "windows"
-	for _, a := range assets {
-		lower := strings.ToLower(a.Name)
-		if strings.Contains(lower, "windows") && strings.HasSuffix(lower, ".zip") {
-			return a.BrowserDownloadURL, a.Size
+
+	for _, c := range conflicts {
+		if strings.Contains(lower, c) {
+			return true
 		}
 	}
+	return false
+}
+
+// matchAsset finds the matching asset for the given OS and architecture.
+func matchAsset(assets []githubAsset, goos, arch string) (url string, size int64) {
+	goos = strings.ToLower(goos)
+	arch = strings.ToLower(arch)
+
+	switch goos {
+	case "windows":
+		pattern := fmt.Sprintf("windows-%s.zip", arch)
+		for _, a := range assets {
+			lower := strings.ToLower(a.Name)
+			if strings.Contains(lower, pattern) ||
+				(strings.Contains(lower, "windows") && strings.Contains(lower, arch) && strings.HasSuffix(lower, ".zip")) {
+				return a.BrowserDownloadURL, a.Size
+			}
+		}
+		// Fallback: try any .zip asset containing "windows", excluding conflicting architectures
+		for _, a := range assets {
+			lower := strings.ToLower(a.Name)
+			if strings.Contains(lower, "windows") && strings.HasSuffix(lower, ".zip") {
+				if !hasConflictingArch(lower, arch) {
+					return a.BrowserDownloadURL, a.Size
+				}
+			}
+		}
+
+	case "darwin":
+		targetZip := fmt.Sprintf("darwin-%s.zip", arch)
+		targetTar := fmt.Sprintf("darwin-%s.tar.gz", arch)
+		macosZip := fmt.Sprintf("macos-%s.zip", arch)
+		macosTar := fmt.Sprintf("macos-%s.tar.gz", arch)
+		for _, a := range assets {
+			lower := strings.ToLower(a.Name)
+			if strings.Contains(lower, targetZip) || strings.Contains(lower, targetTar) ||
+				strings.Contains(lower, macosZip) || strings.Contains(lower, macosTar) {
+				return a.BrowserDownloadURL, a.Size
+			}
+		}
+		// Fallback: try any zip or tar.gz containing "darwin" or "macos", excluding conflicting architectures
+		for _, a := range assets {
+			lower := strings.ToLower(a.Name)
+			if (strings.Contains(lower, "darwin") || strings.Contains(lower, "macos")) &&
+				(strings.HasSuffix(lower, ".zip") || strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz")) {
+				if !hasConflictingArch(lower, arch) {
+					return a.BrowserDownloadURL, a.Size
+				}
+			}
+		}
+
+	case "linux":
+		targetAppImage := fmt.Sprintf("linux-%s.appimage", arch)
+		targetTar := fmt.Sprintf("linux-%s.tar.gz", arch)
+		// 1. Priority: linux-{arch}.AppImage
+		for _, a := range assets {
+			lower := strings.ToLower(a.Name)
+			if strings.Contains(lower, targetAppImage) ||
+				(strings.Contains(lower, "linux") && strings.Contains(lower, arch) && strings.HasSuffix(lower, ".appimage")) {
+				return a.BrowserDownloadURL, a.Size
+			}
+		}
+		// 2. Priority: linux-{arch}.tar.gz
+		for _, a := range assets {
+			lower := strings.ToLower(a.Name)
+			if strings.Contains(lower, targetTar) ||
+				(strings.Contains(lower, "linux") && strings.Contains(lower, arch) && (strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz"))) {
+				return a.BrowserDownloadURL, a.Size
+			}
+		}
+		// 3. Fallback: linux AppImage without conflicting architecture
+		for _, a := range assets {
+			lower := strings.ToLower(a.Name)
+			if strings.Contains(lower, "linux") && strings.HasSuffix(lower, ".appimage") {
+				if !hasConflictingArch(lower, arch) {
+					return a.BrowserDownloadURL, a.Size
+				}
+			}
+		}
+		// 4. Fallback: linux tar.gz / tgz without conflicting architecture
+		for _, a := range assets {
+			lower := strings.ToLower(a.Name)
+			if strings.Contains(lower, "linux") && (strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz")) {
+				if !hasConflictingArch(lower, arch) {
+					return a.BrowserDownloadURL, a.Size
+				}
+			}
+		}
+	}
+
 	return "", 0
 }

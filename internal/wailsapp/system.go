@@ -267,9 +267,9 @@ func (a *App) RestartApp() {
 	if a.updater == nil {
 		return
 	}
-	// Restart either os.Exit(0) or returns a real error; it never returns nil.
-	err := a.updater.Restart()
-	log.Printf("[Update] Restart failed: %v", err)
+	if err := a.updater.Restart(); err != nil {
+		log.Printf("[Update] Restart failed: %v", err)
+	}
 }
 
 // SelectDirectory opens a directory picker dialog

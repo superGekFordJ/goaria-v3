@@ -188,11 +188,19 @@ func TestCheckReleases(t *testing.T) {
 	if !resWithPre.Available {
 		t.Error("expected update to be available")
 	}
-	if resWithPre.Latest != "1.3.1" {
-		t.Errorf("expected latest version to be 1.3.1, got %q", resWithPre.Latest)
+	// With descending SemVer sort, v1.4.0-beta.1 must be latest (ahead of v1.3.1)
+	if resWithPre.Latest != "1.4.0-beta.1" {
+		t.Errorf("expected latest version to be 1.4.0-beta.1, got %q", resWithPre.Latest)
 	}
 	if len(resWithPre.Releases) != 2 {
-		t.Errorf("expected exactly 2 releases (v1.3.1, v1.4.0-beta.1), got %d", len(resWithPre.Releases))
+		t.Errorf("expected exactly 2 releases (v1.4.0-beta.1, v1.3.1), got %d", len(resWithPre.Releases))
+	} else {
+		if resWithPre.Releases[0].TagName != "v1.4.0-beta.1" {
+			t.Errorf("expected first release to be v1.4.0-beta.1, got %q", resWithPre.Releases[0].TagName)
+		}
+		if resWithPre.Releases[1].TagName != "v1.3.1" {
+			t.Errorf("expected second release to be v1.3.1, got %q", resWithPre.Releases[1].TagName)
+		}
 	}
 
 	// 3. Test rate limiting handling
@@ -213,46 +221,342 @@ func TestCheckReleases(t *testing.T) {
 	}
 }
 
-func TestMatchAsset(t *testing.T) {
-	assets := []githubAsset{
-		{Name: "goaria-v1.3.1-windows-amd64.zip", BrowserDownloadURL: "https://example.com/amd64.zip", Size: 1000},
-		{Name: "goaria-v1.3.1-windows-arm64.zip", BrowserDownloadURL: "https://example.com/arm64.zip", Size: 2000},
-		{Name: "goaria-v1.3.1-linux-amd64.tar.gz", BrowserDownloadURL: "https://example.com/linux.tar.gz", Size: 3000},
+func TestMatchAssetMatrix(t *testing.T) {
+	tests := []struct {
+		name     string
+		goos     string
+		arch     string
+		assets   []githubAsset
+		wantURL  string
+		wantSize int64
+	}{
+		// Windows tests
+		{
+			name: "windows amd64 exact match",
+			goos: "windows",
+			arch: "amd64",
+			assets: []githubAsset{
+				{Name: "goaria-v1.3.1-windows-amd64.zip", BrowserDownloadURL: "https://example.com/win-amd64.zip", Size: 1000},
+				{Name: "goaria-v1.3.1-windows-arm64.zip", BrowserDownloadURL: "https://example.com/win-arm64.zip", Size: 2000},
+			},
+			wantURL:  "https://example.com/win-amd64.zip",
+			wantSize: 1000,
+		},
+		{
+			name: "windows arm64 exact match",
+			goos: "windows",
+			arch: "arm64",
+			assets: []githubAsset{
+				{Name: "goaria-v1.3.1-windows-amd64.zip", BrowserDownloadURL: "https://example.com/win-amd64.zip", Size: 1000},
+				{Name: "goaria-v1.3.1-windows-arm64.zip", BrowserDownloadURL: "https://example.com/win-arm64.zip", Size: 2000},
+			},
+			wantURL:  "https://example.com/win-arm64.zip",
+			wantSize: 2000,
+		},
+		{
+			name: "windows fallback to generic windows zip",
+			goos: "windows",
+			arch: "mips",
+			assets: []githubAsset{
+				{Name: "goaria-v1.3.1-linux-amd64.tar.gz", BrowserDownloadURL: "https://example.com/linux.tar.gz", Size: 3000},
+				{Name: "goaria-v1.3.1-windows-universal.zip", BrowserDownloadURL: "https://example.com/win-universal.zip", Size: 4000},
+			},
+			wantURL:  "https://example.com/win-universal.zip",
+			wantSize: 4000,
+		},
+		{
+			name: "windows amd64 rejects conflicting arm64 asset",
+			goos: "windows",
+			arch: "amd64",
+			assets: []githubAsset{
+				{Name: "goaria-v1.3.1-windows-arm64.zip", BrowserDownloadURL: "https://example.com/win-arm64.zip", Size: 2000},
+			},
+			wantURL:  "",
+			wantSize: 0,
+		},
+
+		// macOS (darwin) tests
+		{
+			name: "darwin arm64 zip priority match",
+			goos: "darwin",
+			arch: "arm64",
+			assets: []githubAsset{
+				{Name: "goaria-v1.3.1-darwin-arm64.zip", BrowserDownloadURL: "https://example.com/darwin-arm64.zip", Size: 1100},
+				{Name: "goaria-v1.3.1-darwin-amd64.zip", BrowserDownloadURL: "https://example.com/darwin-amd64.zip", Size: 1200},
+			},
+			wantURL:  "https://example.com/darwin-arm64.zip",
+			wantSize: 1100,
+		},
+		{
+			name: "darwin amd64 tar.gz match",
+			goos: "darwin",
+			arch: "amd64",
+			assets: []githubAsset{
+				{Name: "goaria-v1.3.1-darwin-amd64.tar.gz", BrowserDownloadURL: "https://example.com/darwin-amd64.tar.gz", Size: 1300},
+				{Name: "goaria-v1.3.1-darwin-arm64.tar.gz", BrowserDownloadURL: "https://example.com/darwin-arm64.tar.gz", Size: 1400},
+			},
+			wantURL:  "https://example.com/darwin-amd64.tar.gz",
+			wantSize: 1300,
+		},
+		{
+			name: "darwin macos naming convention match",
+			goos: "darwin",
+			arch: "arm64",
+			assets: []githubAsset{
+				{Name: "goaria-v1.3.1-macos-arm64.zip", BrowserDownloadURL: "https://example.com/macos-arm64.zip", Size: 1500},
+			},
+			wantURL:  "https://example.com/macos-arm64.zip",
+			wantSize: 1500,
+		},
+		{
+			name: "darwin fallback to generic macos zip",
+			goos: "darwin",
+			arch: "riscv64",
+			assets: []githubAsset{
+				{Name: "goaria-v1.3.1-macos-universal.zip", BrowserDownloadURL: "https://example.com/macos-universal.zip", Size: 1600},
+			},
+			wantURL:  "https://example.com/macos-universal.zip",
+			wantSize: 1600,
+		},
+		{
+			name: "darwin amd64 rejects conflicting arm64 asset",
+			goos: "darwin",
+			arch: "amd64",
+			assets: []githubAsset{
+				{Name: "goaria-v1.3.1-darwin-arm64.zip", BrowserDownloadURL: "https://example.com/darwin-arm64.zip", Size: 1100},
+			},
+			wantURL:  "",
+			wantSize: 0,
+		},
+
+		// Linux tests
+		{
+			name: "linux amd64 prefers AppImage over tar.gz",
+			goos: "linux",
+			arch: "amd64",
+			assets: []githubAsset{
+				{Name: "goaria-v1.3.1-linux-amd64.tar.gz", BrowserDownloadURL: "https://example.com/linux-amd64.tar.gz", Size: 2100},
+				{Name: "goaria-v1.3.1-linux-amd64.AppImage", BrowserDownloadURL: "https://example.com/linux-amd64.AppImage", Size: 2200},
+			},
+			wantURL:  "https://example.com/linux-amd64.AppImage",
+			wantSize: 2200,
+		},
+		{
+			name: "linux arm64 tar.gz secondary match when no AppImage",
+			goos: "linux",
+			arch: "arm64",
+			assets: []githubAsset{
+				{Name: "goaria-v1.3.1-linux-arm64.tar.gz", BrowserDownloadURL: "https://example.com/linux-arm64.tar.gz", Size: 2300},
+			},
+			wantURL:  "https://example.com/linux-arm64.tar.gz",
+			wantSize: 2300,
+		},
+		{
+			name: "linux fallback to generic linux archive",
+			goos: "linux",
+			arch: "loong64",
+			assets: []githubAsset{
+				{Name: "goaria-v1.3.1-linux-bundle.tar.gz", BrowserDownloadURL: "https://example.com/linux-bundle.tar.gz", Size: 2400},
+			},
+			wantURL:  "https://example.com/linux-bundle.tar.gz",
+			wantSize: 2400,
+		},
+		{
+			name: "linux arm64 rejects conflicting amd64 AppImage",
+			goos: "linux",
+			arch: "arm64",
+			assets: []githubAsset{
+				{Name: "goaria-v1.3.1-linux-amd64.AppImage", BrowserDownloadURL: "https://example.com/linux-amd64.AppImage", Size: 2200},
+			},
+			wantURL:  "",
+			wantSize: 0,
+		},
+		{
+			name: "linux rejects deb or rpm packages",
+			goos: "linux",
+			arch: "amd64",
+			assets: []githubAsset{
+				{Name: "goaria-v1.3.1-linux-amd64.deb", BrowserDownloadURL: "https://example.com/linux-amd64.deb", Size: 2500},
+				{Name: "goaria-v1.3.1-linux-amd64.rpm", BrowserDownloadURL: "https://example.com/linux-amd64.rpm", Size: 2600},
+			},
+			wantURL:  "",
+			wantSize: 0,
+		},
+
+		// Edge cases
+		{
+			name:     "empty assets",
+			goos:     "linux",
+			arch:     "amd64",
+			assets:   []githubAsset{},
+			wantURL:  "",
+			wantSize: 0,
+		},
+		{
+			name: "unsupported OS",
+			goos: "freebsd",
+			arch: "amd64",
+			assets: []githubAsset{
+				{Name: "goaria-v1.3.1-freebsd-amd64.tar.gz", BrowserDownloadURL: "https://example.com/freebsd.tar.gz", Size: 5000},
+			},
+			wantURL:  "",
+			wantSize: 0,
+		},
 	}
 
-	t.Run("match amd64", func(t *testing.T) {
-		url, size := matchAsset(assets, "amd64")
-		if url != "https://example.com/amd64.zip" {
-			t.Errorf("expected amd64 URL, got %s", url)
-		}
-		if size != 1000 {
-			t.Errorf("expected size 1000, got %d", size)
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotURL, gotSize := matchAsset(tt.assets, tt.goos, tt.arch)
+			if gotURL != tt.wantURL {
+				t.Errorf("matchAsset() URL = %q, want %q", gotURL, tt.wantURL)
+			}
+			if gotSize != tt.wantSize {
+				t.Errorf("matchAsset() size = %d, want %d", gotSize, tt.wantSize)
+			}
+		})
+	}
+}
 
-	t.Run("match arm64", func(t *testing.T) {
-		url, size := matchAsset(assets, "arm64")
-		if url != "https://example.com/arm64.zip" {
-			t.Errorf("expected arm64 URL, got %s", url)
-		}
-		if size != 2000 {
-			t.Errorf("expected size 2000, got %d", size)
-		}
-	})
+func TestCheckCrossPlatform(t *testing.T) {
+	mockReleases := []githubRelease{
+		{
+			TagName:    "v1.4.0",
+			Name:       "v1.4.0 Release",
+			PreRelease: false,
+			Assets: []githubAsset{
+				{Name: "goaria-v1.4.0-windows-amd64.zip", BrowserDownloadURL: "https://example.com/win.zip", Size: 1000},
+				{Name: "goaria-v1.4.0-darwin-arm64.zip", BrowserDownloadURL: "https://example.com/darwin.zip", Size: 2000},
+				{Name: "goaria-v1.4.0-linux-amd64.AppImage", BrowserDownloadURL: "https://example.com/linux.AppImage", Size: 3000},
+			},
+		},
+	}
 
-	t.Run("no match for unknown arch", func(t *testing.T) {
-		url, size := matchAsset(assets, "mips")
-		// Should fallback to any windows zip
-		if url == "" {
-			t.Error("expected fallback to a windows zip asset")
-		}
-		_ = size
-	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.github.v3+json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(mockReleases)
+	}))
+	defer server.Close()
 
-	t.Run("empty assets", func(t *testing.T) {
-		url, size := matchAsset([]githubAsset{}, "amd64")
-		if url != "" || size != 0 {
-			t.Error("expected empty result for empty assets")
+	origBaseURL := apiBaseURL
+	origClient := httpClient
+	origGOOS := targetGOOS
+	origGOARCH := targetGOARCH
+	defer func() {
+		apiBaseURL = origBaseURL
+		httpClient = origClient
+		targetGOOS = origGOOS
+		targetGOARCH = origGOARCH
+	}()
+
+	apiBaseURL = server.URL
+	httpClient = server.Client()
+
+	// 1. Test Darwin check does NOT return unsupported platform
+	targetGOOS = "darwin"
+	targetGOARCH = "arm64"
+	resDarwin, err := Check("1.3.0", false)
+	if err != nil {
+		t.Fatalf("Darwin Check failed: %v", err)
+	}
+	if resDarwin.Error != "" {
+		t.Fatalf("Darwin Check returned error: %s", resDarwin.Error)
+	}
+	if !resDarwin.Available {
+		t.Fatal("Darwin Check expected update available")
+	}
+	if len(resDarwin.Releases) != 1 || resDarwin.Releases[0].AssetURL != "https://example.com/darwin.zip" {
+		t.Errorf("Darwin Check unexpected releases: %+v", resDarwin.Releases)
+	}
+
+	// 2. Test Linux check does NOT return unsupported platform
+	targetGOOS = "linux"
+	targetGOARCH = "amd64"
+	resLinux, err := Check("1.3.0", false)
+	if err != nil {
+		t.Fatalf("Linux Check failed: %v", err)
+	}
+	if resLinux.Error != "" {
+		t.Fatalf("Linux Check returned error: %s", resLinux.Error)
+	}
+	if !resLinux.Available {
+		t.Fatal("Linux Check expected update available")
+	}
+	if len(resLinux.Releases) != 1 || resLinux.Releases[0].AssetURL != "https://example.com/linux.AppImage" {
+		t.Errorf("Linux Check unexpected releases: %+v", resLinux.Releases)
+	}
+}
+
+func TestCheckSemVerDescendingOrder(t *testing.T) {
+	// Releases intentionally in non-SemVer order
+	mockReleases := []githubRelease{
+		{
+			TagName: "v1.2.5",
+			Assets: []githubAsset{
+				{Name: "goaria-v1.2.5-windows-amd64.zip", BrowserDownloadURL: "https://example.com/125.zip", Size: 100},
+			},
+		},
+		{
+			TagName: "v1.5.0",
+			Assets: []githubAsset{
+				{Name: "goaria-v1.5.0-windows-amd64.zip", BrowserDownloadURL: "https://example.com/150.zip", Size: 100},
+			},
+		},
+		{
+			TagName: "v1.3.1",
+			Assets: []githubAsset{
+				{Name: "goaria-v1.3.1-windows-amd64.zip", BrowserDownloadURL: "https://example.com/131.zip", Size: 100},
+			},
+		},
+		{
+			TagName: "v1.4.0",
+			Assets: []githubAsset{
+				{Name: "goaria-v1.4.0-windows-amd64.zip", BrowserDownloadURL: "https://example.com/140.zip", Size: 100},
+			},
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.github.v3+json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(mockReleases)
+	}))
+	defer server.Close()
+
+	origBaseURL := apiBaseURL
+	origClient := httpClient
+	origGOOS := targetGOOS
+	origGOARCH := targetGOARCH
+	defer func() {
+		apiBaseURL = origBaseURL
+		httpClient = origClient
+		targetGOOS = origGOOS
+		targetGOARCH = origGOARCH
+	}()
+
+	apiBaseURL = server.URL
+	httpClient = server.Client()
+	targetGOOS = "windows"
+	targetGOARCH = "amd64"
+
+	res, err := Check("1.2.0", false)
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !res.Available {
+		t.Fatal("expected update available")
+	}
+	if res.Latest != "1.5.0" {
+		t.Errorf("expected latest to be 1.5.0, got %q", res.Latest)
+	}
+	if len(res.Releases) != 4 {
+		t.Fatalf("expected 4 releases, got %d", len(res.Releases))
+	}
+
+	expectedOrder := []string{"v1.5.0", "v1.4.0", "v1.3.1", "v1.2.5"}
+	for i, expected := range expectedOrder {
+		if res.Releases[i].TagName != expected {
+			t.Errorf("release at index %d: expected %s, got %s", i, expected, res.Releases[i].TagName)
 		}
-	})
+	}
 }
