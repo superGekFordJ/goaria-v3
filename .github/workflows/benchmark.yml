@@ -146,12 +146,19 @@ jobs:
             echo '```' >> $GITHUB_STEP_SUMMARY
           fi
 
+      - name: Extract median benchmarks for dashboard
+        if: (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.update_dashboard))
+        shell: bash
+        run: |
+          go run ./scripts/benchmedian current_bench.txt dashboard_bench.txt
+
       - name: Upload benchmark artifacts
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-results-${{ github.sha }}
           path: |
             current_bench.txt
+            dashboard_bench.txt
             base_bench.txt
             benchstat_diff.txt
           if-no-files-found: ignore
@@ -162,7 +169,7 @@ jobs:
         with:
           name: GoAria Core Engine Benchmarks
           tool: 'go'
-          output-file-path: current_bench.txt
+          output-file-path: dashboard_bench.txt
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           gh-pages-branch: gh-pages
