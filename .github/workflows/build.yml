@@ -106,13 +106,52 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+
       - name: Install Linux system libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev
 
-      - name: Create frontend dist placeholder
-        run: mkdir -p frontend/dist && echo '<html><body></body></html>' > frontend/dist/index.html
+      - name: Install Wails CLI
+        shell: bash
+        run: |
+          wails_version=$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)
+          echo "Installing wails3 CLI at $wails_version"
+          go install "github.com/wailsapp/wails/v3/cmd/wails3@$wails_version"
+
+      - name: Add Go bin to PATH
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Generate Wails bindings
+        shell: bash
+        run: |
+          wails3 generate bindings -clean=true -ts
+
+      - name: Build frontend and verify artifact closure (${{ matrix.variant }})
+        shell: bash
+        env:
+          EXTRACTOR_VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          vite_val="false"
+          if [ "${{ matrix.variant }}" = "full-pack" ]; then
+            vite_val="true"
+          fi
+          cd frontend
+          pnpm install
+          VITE_GOARIA_EXTRACTOR="$vite_val" pnpm run build
+          cd ..
+          node ./scripts/check_frontend_extractor_artifacts.mjs "${{ matrix.variant }}"
+          echo "${{ matrix.variant }} frontend artifact closure check passed"
 
       - name: Compile and closure check (${{ matrix.variant }})
         shell: bash

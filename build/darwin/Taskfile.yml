@@ -49,12 +49,13 @@ tasks:
             ref: .BUILD_FLAGS
           DEV:
             ref: .DEV
+          EXTRACTOR_VARIANT: '{{.EXTRACTOR_VARIANT}}'
       - task: common:generate:icons
       - go build {{.BUILD_FLAGS}} -o {{.OUTPUT}}
     vars:
       EXTRACTOR_BUILD_TAGS:
         sh: '. "{{.ROOT_DIR}}/scripts/extractor_tags.sh" "{{.EXTRACTOR_VARIANT}}"'
-      BUILD_FLAGS: '{{if eq .DEV "true"}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{end}}'
+      BUILD_FLAGS: '{{if eq .DEV "true"}}-buildvcs=false -gcflags=all="-l"{{if .EXTRACTOR_BUILD_TAGS}} -tags {{.EXTRACTOR_BUILD_TAGS}}{{end}}{{else}}-tags production{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{end}}'
       DEFAULT_OUTPUT: '{{.BIN_DIR}}/{{.APP_NAME}}'
       OUTPUT: '{{ .OUTPUT | default .DEFAULT_OUTPUT }}'
     env:

@@ -432,5 +432,70 @@
       "authFailed": "La extensión emparejada fue rechazada. Vuelva a emparejar la extensión.",
       "unpairRotated": "Clave de seguridad restablecida. Todas las extensiones desconectadas. Vuelva a emparejar."
     }
+  },
+  "extractor": {
+    "title": "Motor de Extracción",
+    "description": "Ejecutar paquetes de extracción localmente en un sandbox WASM aislado.",
+    "state": {
+      "available": "Motor listo",
+      "unavailable": "El motor de extracción no está disponible en esta compilación."
+    },
+    "actions": {
+      "loadZip": "Cargar ZIP",
+      "loadDirectory": "Cargar descomprimido",
+      "loadUrl": "Cargar desde URL",
+      "reload": "Recargar",
+      "remove": "Eliminar",
+      "retry": "Reintentar",
+      "loading": "Cargando..."
+    },
+    "urlInput": {
+      "placeholder": "https://example.com/pack.lock.json",
+      "label": "URL de lock del SDK",
+      "help": "Introduce una URL HTTPS válida de lock del SDK (.lock.json)."
+    },
+    "source": {
+      "kind": {
+        "local_zip": "ZIP local",
+        "local_directory": "Descomprimido",
+        "remote_lock": "Lock remoto"
+      },
+      "status": {
+        "ready": "Listo",
+        "unavailable": "No disponible"
+      },
+      "empty": "No hay paquetes de extracción instalados.",
+      "fingerprint": "Firmante"
+    },
+    "notices": {
+      "recoveryWarning": "Uno o más paquetes encontraron errores durante la recuperación."
+    },
+    "errors": {
+      "generic": "Ocurrió un error con el paquete de extracción.",
+      "ipcError": "Falló la comunicación con el servicio de la aplicación.",
+      "unavailable": "El motor de extracción no está disponible.",
+      "invalidSourceKind": "Tipo de origen no compatible.",
+      "invalidSourceSpec": "Especificación de paquete no válida.",
+      "invalidSourceId": "Origen del paquete no encontrado.",
+      "sourceLimitReached": "Se alcanzó el límite máximo de paquetes de extracción.",
+      "sourceUnreadable": "No se pudieron leer los datos del paquete.",
+      "sourceShapeInvalid": "La estructura o disposición del paquete no es válida.",
+      "lockMissing": "Falta el archivo lock del paquete.",
+      "lockInvalid": "El archivo lock del paquete no es válido.",
+      "hashMismatch": "Falló la verificación de integridad del paquete (discrepancia de hash).",
+      "signatureInvalid": "Falló la verificación de firma del paquete.",
+      "manifestInvalid": "El manifiesto del paquete no es válido.",
+      "wasmInvalid": "El archivo binario WASM del paquete no es válido o está dañado.",
+      "remoteDenied": "La política denegó el acceso a la URL remota.",
+      "remoteFailed": "Error al obtener el paquete desde la URL remota.",
+      "packIdConflict": "Ya está instalado un paquete con este identificador.",
+      "signerChanged": "Discrepancia en la clave del firmante. Recargar requiere la clave de firma persistente original; el autor debe recompilar con la misma clave, o el usuario puede eliminar y volver a agregar el paquete.",
+      "packIdentityChanged": "La identidad del paquete cambió. Recargar no puede modificar la identidad del paquete; elimínelo y vuelva a agregarlo.",
+      "policyUnavailable": "La política de host requerida no está disponible.",
+      "authRuntimeUnavailable": "El tiempo de ejecución de autenticación de host requerido no está disponible.",
+      "persistFailed": "Error al guardar la configuración del motor de extracción.",
+      "concurrentChange": "La configuración fue modificada concurrentemente.",
+      "stateInvalid": "El estado del motor de extracción no es válido."
+    }
   }
 }

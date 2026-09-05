@@ -28,6 +28,9 @@ export default defineConfig({
     // Output directory for Wails
     outDir: 'dist',
 
+    // Generate manifest.json for artifact closure verification
+    manifest: true,
+
     // Optimize chunk splitting
     rollupOptions: {
       output: {

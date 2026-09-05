@@ -39,6 +39,7 @@ tasks:
             ref: .BUILD_FLAGS
           DEV:
             ref: .DEV
+          EXTRACTOR_VARIANT: '{{.EXTRACTOR_VARIANT}}'
       - task: common:generate:icons
     cmds:
       - task: generate:syso
@@ -52,7 +53,7 @@ tasks:
         sh: 'powershell -NoProfile -Command "(Select-String -Path build/config.yml -Pattern ''^\s+version:'').Line.Split(''\"'')[1]"'
       EXTRACTOR_BUILD_TAGS:
         sh: '. "{{.ROOT_DIR}}/scripts/extractor_tags.sh" "{{.EXTRACTOR_VARIANT}}"'
-      BUILD_FLAGS: '{{if eq .DEV "true"}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui -X main.version={{.APP_VERSION}}"{{end}}'
+      BUILD_FLAGS: '{{if eq .DEV "true"}}-buildvcs=false -gcflags=all="-l"{{if .EXTRACTOR_BUILD_TAGS}} -tags {{.EXTRACTOR_BUILD_TAGS}}{{end}}{{else}}-tags production{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui -X main.version={{.APP_VERSION}}"{{end}}'
     env:
       GOOS: windows
       CGO_ENABLED: '{{.CGO_ENABLED | default "0"}}'

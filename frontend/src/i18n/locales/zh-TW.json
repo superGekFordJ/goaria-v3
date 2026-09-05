@@ -432,5 +432,70 @@
       "authFailed": "已配對的擴充功能被拒絕，請重新配對擴充功能。",
       "unpairRotated": "安全密鑰已重置，所有擴充功能已斷開連線，請重新配對。"
     }
+  },
+  "extractor": {
+    "title": "擷取器執行階段",
+    "description": "在受限的 WASM 沙盒中於本機執行擷取器規則套件。",
+    "state": {
+      "available": "執行階段就緒",
+      "unavailable": "目前的建置版本未包含擷取器執行階段。"
+    },
+    "actions": {
+      "loadZip": "載入 ZIP 套件",
+      "loadDirectory": "載入已解壓目錄",
+      "loadUrl": "從 URL 載入",
+      "reload": "重新載入",
+      "remove": "移除",
+      "retry": "重試",
+      "loading": "載入中..."
+    },
+    "urlInput": {
+      "placeholder": "https://example.com/pack.lock.json",
+      "label": "SDK Lock URL",
+      "help": "請輸入有效的 HTTPS SDK 鎖定檔案網址 (.lock.json)。"
+    },
+    "source": {
+      "kind": {
+        "local_zip": "本機 ZIP",
+        "local_directory": "已解壓目錄",
+        "remote_lock": "遠端鎖定來源"
+      },
+      "status": {
+        "ready": "就緒",
+        "unavailable": "無法使用"
+      },
+      "empty": "尚未安裝任何擷取器規則套件。",
+      "fingerprint": "簽章者"
+    },
+    "notices": {
+      "recoveryWarning": "部分規則套件於復原載入時發生錯誤。"
+    },
+    "errors": {
+      "generic": "擷取器規則套件發生錯誤。",
+      "ipcError": "與後端服務的通訊失敗。",
+      "unavailable": "擷取器執行階段無法使用。",
+      "invalidSourceKind": "不支援的來源類型。",
+      "invalidSourceSpec": "規則套件規格無效。",
+      "invalidSourceId": "找不到指定的規則套件來源。",
+      "sourceLimitReached": "已達允許安裝的擷取器規則套件數量上限。",
+      "sourceUnreadable": "讀取規則套件資料失敗。",
+      "sourceShapeInvalid": "規則套件結構或配置無效。",
+      "lockMissing": "缺少規則套件鎖定檔案。",
+      "lockInvalid": "規則套件鎖定檔案無效。",
+      "hashMismatch": "規則套件完整性校驗失敗（雜湊值不符）。",
+      "signatureInvalid": "規則套件簽章驗證失敗。",
+      "manifestInvalid": "規則套件清單無效。",
+      "wasmInvalid": "規則套件 WASM 二進位檔案無效或已損毀。",
+      "remoteDenied": "安全性原則拒絕存取此遠端 URL。",
+      "remoteFailed": "從遠端 URL 取得規則套件失敗。",
+      "packIdConflict": "已存在相同識別碼的規則套件。",
+      "signerChanged": "簽章金鑰不符。重新載入需要原始持續性簽章金鑰；作者需使用相同 sign key 重建，或由使用者移除後重新新增規則套件。",
+      "packIdentityChanged": "規則套件身分識別已變更。重新載入不支援更改規則套件識別，請先移除後再重新新增。",
+      "policyUnavailable": "所需的主機安全性原則無法使用。",
+      "authRuntimeUnavailable": "所需的主機驗證執行階段無法使用。",
+      "persistFailed": "儲存擷取器設定失敗。",
+      "concurrentChange": "設定被並行修改，請重試。",
+      "stateInvalid": "擷取器執行階段狀態異常。"
+    }
   }
 }

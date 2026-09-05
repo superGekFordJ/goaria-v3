@@ -432,5 +432,70 @@
       "authFailed": "已配对的扩展被拒绝，请重新配对扩展。",
       "unpairRotated": "安全密钥已重置，所有扩展已断开连接，请重新配对。"
     }
+  },
+  "extractor": {
+    "title": "提取器运行时",
+    "description": "在受限的 WASM 沙箱中本地运行提取器规则包。",
+    "state": {
+      "available": "运行时就绪",
+      "unavailable": "当前构建版本未包含提取器运行时。"
+    },
+    "actions": {
+      "loadZip": "加载 ZIP 包",
+      "loadDirectory": "加载已解压目录",
+      "loadUrl": "从 URL 加载",
+      "reload": "重载",
+      "remove": "移除",
+      "retry": "重试",
+      "loading": "加载中..."
+    },
+    "urlInput": {
+      "placeholder": "https://example.com/pack.lock.json",
+      "label": "SDK Lock URL",
+      "help": "请输入合法的 HTTPS SDK 锁定文件地址 (.lock.json)。"
+    },
+    "source": {
+      "kind": {
+        "local_zip": "本地 ZIP",
+        "local_directory": "已解压目录",
+        "remote_lock": "远程锁定源"
+      },
+      "status": {
+        "ready": "就绪",
+        "unavailable": "不可用"
+      },
+      "empty": "暂未安装任何提取器规则包。",
+      "fingerprint": "签名者"
+    },
+    "notices": {
+      "recoveryWarning": "部分规则包在恢复加载时出现错误。"
+    },
+    "errors": {
+      "generic": "提取器规则包发生错误。",
+      "ipcError": "与后端服务的通信失败。",
+      "unavailable": "提取器运行时不可用。",
+      "invalidSourceKind": "不支持的来源类型。",
+      "invalidSourceSpec": "规则包规格无效。",
+      "invalidSourceId": "未找到指定的规则包来源。",
+      "sourceLimitReached": "已达到允许安装的提取器规则包数量上限。",
+      "sourceUnreadable": "读取规则包数据失败。",
+      "sourceShapeInvalid": "规则包结构或布局无效。",
+      "lockMissing": "缺少规则包锁定文件。",
+      "lockInvalid": "规则包锁定文件无效。",
+      "hashMismatch": "规则包完整性校验失败（哈希不匹配）。",
+      "signatureInvalid": "规则包签名校验失败。",
+      "manifestInvalid": "规则包清单无效。",
+      "wasmInvalid": "规则包 WASM 二进制文件无效或已损坏。",
+      "remoteDenied": "安全策略拒绝访问此远程 URL。",
+      "remoteFailed": "从远程 URL 获取规则包失败。",
+      "packIdConflict": "已存在相同标识的规则包。",
+      "signerChanged": "签名密钥不匹配。重载需要原始持久化签名密钥；作者需使用相同 sign key 重新构建，或由用户移除后重新添加规则包。",
+      "packIdentityChanged": "规则包身份标识已变更。重载不支持更改规则包身份，请先移除后再重新添加。",
+      "policyUnavailable": "所需的主机安全策略不可用。",
+      "authRuntimeUnavailable": "所需的主机认证运行时不可用。",
+      "persistFailed": "保存提取器配置失败。",
+      "concurrentChange": "配置被并发修改，请重试。",
+      "stateInvalid": "提取器运行时状态异常。"
+    }
   }
 }

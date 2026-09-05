@@ -13,7 +13,8 @@
     "type-check": "vue-tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
-    "detect:i18n": "eslint -c eslint-i18n.config.js . --format json --output-file eslint-report.json --no-error-on-unmatched-pattern || node ../scripts/parse_eslint_report.js"
+    "detect:i18n": "eslint -c eslint-i18n.config.js . --format json --output-file eslint-report.json --no-error-on-unmatched-pattern || node ../scripts/parse_eslint_report.js",
+    "check:artifacts": "node ../scripts/check_frontend_extractor_artifacts.mjs"
   },
   "dependencies": {
     "@lucide/vue": "^1.27.0",

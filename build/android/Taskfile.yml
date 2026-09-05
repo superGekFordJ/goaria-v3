@@ -64,6 +64,7 @@ tasks:
             ref: .BUILD_FLAGS
           PRODUCTION:
             ref: .PRODUCTION
+          EXTRACTOR_VARIANT: '{{.EXTRACTOR_VARIANT}}'
       - task: common:generate:icons
     cmds:
       - echo "Building Android app {{.APP_NAME}}..."
@@ -74,7 +75,7 @@ tasks:
     vars:
       EXTRACTOR_BUILD_TAGS:
         sh: '. "{{.ROOT_DIR}}/scripts/extractor_tags.sh" "{{.EXTRACTOR_VARIANT}}"'
-      BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
+      BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -buildvcs=false -gcflags=all="-l"{{end}}'
     env:
       PRODUCTION: '{{.PRODUCTION | default "false"}}'
 
@@ -129,7 +130,7 @@ tasks:
     vars:
       EXTRACTOR_BUILD_TAGS:
         sh: '. "{{.ROOT_DIR}}/scripts/extractor_tags.sh" "{{.EXTRACTOR_VARIANT}}"'
-      BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
+      BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}} -buildvcs=false -gcflags=all="-l"{{end}}'
 
   compile:go:all-archs:
     summary: Compile Go code for all Android architectures (fat APK)

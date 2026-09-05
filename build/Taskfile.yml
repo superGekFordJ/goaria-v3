@@ -59,16 +59,44 @@ tasks:
     cmds:
       - pnpm install
 
+  prepare:frontend:variant:
+    summary: Validates extractor variant and updates frontend variant cache stamp
+    internal: true
+    cmds:
+      - |
+        mkdir -p build/extractor/cache
+        stamp_file="build/extractor/cache/.frontend_variant_stamp"
+        current_stamp=""
+        if [ -f "$stamp_file" ]; then
+          current_stamp="$(cat "$stamp_file")"
+        fi
+        desired_stamp="{{.VITE_GOARIA_EXTRACTOR}}"
+        if [ "$current_stamp" != "$desired_stamp" ]; then
+          printf "%s" "$desired_stamp" > "$stamp_file"
+          if [ -d "frontend/dist" ]; then
+            rm -rf frontend/dist
+          fi
+        fi
+    vars:
+      EXTRACTOR_BUILD_TAGS:
+        sh: '. "{{.ROOT_DIR}}/scripts/extractor_tags.sh" "{{.EXTRACTOR_VARIANT}}"'
+      VITE_GOARIA_EXTRACTOR: '{{if eq .EXTRACTOR_BUILD_TAGS "extractor"}}true{{else}}false{{end}}'
+
   build:frontend:
     label: build:frontend (DEV={{.DEV}})
     summary: Build the frontend project
     dir: frontend
     sources:
       - "**/*"
+      - "../build/extractor/cache/.frontend_variant_stamp"
     generates:
       - dist/**/*
     deps:
       - task: install:frontend:deps
+      - task: prepare:frontend:variant
+        vars:
+          EXTRACTOR_VARIANT:
+            ref: .EXTRACTOR_VARIANT
       - task: generate:bindings
         vars:
           BUILD_FLAGS:
@@ -77,8 +105,12 @@ tasks:
       - pnpm run {{.BUILD_COMMAND}}
     env:
       PRODUCTION: '{{if eq .DEV "true"}}false{{else}}true{{end}}'
+      VITE_GOARIA_EXTRACTOR: '{{.VITE_GOARIA_EXTRACTOR}}'
     vars:
       BUILD_COMMAND: '{{if eq .DEV "true"}}build:dev{{else}}build{{end}}'
+      EXTRACTOR_BUILD_TAGS:
+        sh: '. "{{.ROOT_DIR}}/scripts/extractor_tags.sh" "{{.EXTRACTOR_VARIANT}}"'
+      VITE_GOARIA_EXTRACTOR: '{{if eq .EXTRACTOR_BUILD_TAGS "extractor"}}true{{else}}false{{end}}'
 
 
   frontend:vendor:puppertino:
@@ -154,6 +186,12 @@ tasks:
       - task: install:frontend:deps
     cmds:
       - pnpm run dev -- --port {{.VITE_PORT}} --strictPort
+    env:
+      VITE_GOARIA_EXTRACTOR: '{{.VITE_GOARIA_EXTRACTOR}}'
+    vars:
+      EXTRACTOR_BUILD_TAGS:
+        sh: '. "{{.ROOT_DIR}}/scripts/extractor_tags.sh" "{{.EXTRACTOR_VARIANT}}"'
+      VITE_GOARIA_EXTRACTOR: '{{if eq .EXTRACTOR_BUILD_TAGS "extractor"}}true{{else}}false{{end}}'
 
   update:build-assets:
     summary: Updates the build assets

@@ -47,6 +47,8 @@ tasks:
     summary: Runs only the frontend dev server (uses VITE_PORT)
     cmds:
       - task: common:dev:frontend
+        vars:
+          EXTRACTOR_VARIANT: '{{.EXTRACTOR_VARIANT}}'
 
   # Code quality
   lint:go:

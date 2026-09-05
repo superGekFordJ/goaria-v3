@@ -432,5 +432,70 @@
       "authFailed": "The paired extension was rejected. Please re-pair the extension.",
       "unpairRotated": "Security key reset. All extensions disconnected. Please re-pair."
     }
+  },
+  "extractor": {
+    "title": "Extractor Runtime",
+    "description": "Locally execute extraction packs in a constrained WASM sandbox.",
+    "state": {
+      "available": "Runtime Ready",
+      "unavailable": "Extractor runtime is not available in this build."
+    },
+    "actions": {
+      "loadZip": "Load ZIP",
+      "loadDirectory": "Load Unpacked",
+      "loadUrl": "Load from URL",
+      "reload": "Reload",
+      "remove": "Remove",
+      "retry": "Retry",
+      "loading": "Loading..."
+    },
+    "urlInput": {
+      "placeholder": "https://example.com/pack.lock.json",
+      "label": "SDK Lock URL",
+      "help": "Enter a valid HTTPS SDK lock URL (.lock.json)."
+    },
+    "source": {
+      "kind": {
+        "local_zip": "Local ZIP",
+        "local_directory": "Unpacked",
+        "remote_lock": "Remote Lock"
+      },
+      "status": {
+        "ready": "Ready",
+        "unavailable": "Unavailable"
+      },
+      "empty": "No extractor packs installed.",
+      "fingerprint": "Signer"
+    },
+    "notices": {
+      "recoveryWarning": "One or more packs encountered errors during recovery."
+    },
+    "errors": {
+      "generic": "An error occurred with the extractor pack.",
+      "ipcError": "Communication with the application service failed.",
+      "unavailable": "Extractor runtime is unavailable.",
+      "invalidSourceKind": "Unsupported source type.",
+      "invalidSourceSpec": "Invalid pack specification.",
+      "invalidSourceId": "Pack source not found.",
+      "sourceLimitReached": "Maximum number of extractor packs reached.",
+      "sourceUnreadable": "Failed to read pack data.",
+      "sourceShapeInvalid": "Pack layout or structure is invalid.",
+      "lockMissing": "Pack lock file is missing.",
+      "lockInvalid": "Pack lock file is invalid.",
+      "hashMismatch": "Pack integrity check failed (hash mismatch).",
+      "signatureInvalid": "Pack signature verification failed.",
+      "manifestInvalid": "Pack manifest is invalid.",
+      "wasmInvalid": "Pack WASM binary is invalid or corrupted.",
+      "remoteDenied": "Remote URL access was denied by policy.",
+      "remoteFailed": "Failed to fetch pack from remote URL.",
+      "packIdConflict": "A pack with this identifier is already installed.",
+      "signerChanged": "Signer key mismatch. Reload requires the original signing key; author must rebuild with the same sign key, or user may remove and re-add the pack.",
+      "packIdentityChanged": "Pack identity changed. Reload cannot alter pack identity; please remove and re-add the pack.",
+      "policyUnavailable": "Required host policy is unavailable.",
+      "authRuntimeUnavailable": "Required host authentication runtime is unavailable.",
+      "persistFailed": "Failed to save extractor configuration.",
+      "concurrentChange": "Configuration was modified concurrently.",
+      "stateInvalid": "Extractor runtime state is invalid."
+    }
   }
 }

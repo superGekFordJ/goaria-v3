@@ -432,5 +432,70 @@
       "authFailed": "ペアリングされた拡張機能が拒否されました。拡張機能を再ペアリングしてください。",
       "unpairRotated": "セキュリティキーがリセットされ、すべての拡張機能が切断されました。再ペアリングしてください。"
     }
+  },
+  "extractor": {
+    "title": "エクストラクターランタイム",
+    "description": "制限された WASM サンドボックス内で抽出パックをローカル実行します。",
+    "state": {
+      "available": "ランタイム準備完了",
+      "unavailable": "このビルドではエクストラクターランタイムを利用できません。"
+    },
+    "actions": {
+      "loadZip": "ZIP を読み込む",
+      "loadDirectory": "展開済みを読み込む",
+      "loadUrl": "URL から読み込む",
+      "reload": "再読み込み",
+      "remove": "削除",
+      "retry": "再試行",
+      "loading": "読み込み中..."
+    },
+    "urlInput": {
+      "placeholder": "https://example.com/pack.lock.json",
+      "label": "SDK ロック URL",
+      "help": "有効な HTTPS SDK ロック URL (.lock.json) を入力してください。"
+    },
+    "source": {
+      "kind": {
+        "local_zip": "ローカル ZIP",
+        "local_directory": "展開済み",
+        "remote_lock": "リモートロック"
+      },
+      "status": {
+        "ready": "準備完了",
+        "unavailable": "利用不可"
+      },
+      "empty": "インストールされている抽出パックはありません。",
+      "fingerprint": "署名者"
+    },
+    "notices": {
+      "recoveryWarning": "回復処理中に 1 つ以上のパックでエラーが発生しました。"
+    },
+    "errors": {
+      "generic": "抽出パックでエラーが発生しました。",
+      "ipcError": "アプリケーションサービスとの通信に失敗しました。",
+      "unavailable": "エクストラクターランタイムは利用できません。",
+      "invalidSourceKind": "サポートされていないソースの種類です。",
+      "invalidSourceSpec": "無効なパック仕様です。",
+      "invalidSourceId": "パックソースが見つかりません。",
+      "sourceLimitReached": "抽出パックの上限数に達しました。",
+      "sourceUnreadable": "パックデータの読み込みに失敗しました。",
+      "sourceShapeInvalid": "パックの構成またはレイアウトが無効です。",
+      "lockMissing": "パックロックファイルが見つかりません。",
+      "lockInvalid": "パックロックファイルが無効です。",
+      "hashMismatch": "パック整合性チェックに失敗しました（ハッシュ不一致）。",
+      "signatureInvalid": "パック署名検証に失敗しました。",
+      "manifestInvalid": "パックマニフェストが無効です。",
+      "wasmInvalid": "パック WASM バイナリが無効または破損しています。",
+      "remoteDenied": "ポリシーによりリモート URL へのアクセスが拒否されました。",
+      "remoteFailed": "リモート URL からのパック取得に失敗しました。",
+      "packIdConflict": "同じ識別子のパックが既にインストールされています。",
+      "signerChanged": "署名鍵が一致しません。再読み込みには元の永続署名鍵が必要です。作成者が同じ鍵で再ビルドするか、削除して再追加してください。",
+      "packIdentityChanged": "パックの識別情報が変更されました。再読み込みでパック ID を変更することはできません。削除してから再度追加してください。",
+      "policyUnavailable": "必要なホストポリシーが利用できません。",
+      "authRuntimeUnavailable": "必要なホスト認証ランタイムが利用できません。",
+      "persistFailed": "エクストラクター設定の保存に失敗しました。",
+      "concurrentChange": "設定が競合して変更されました。再試行してください。",
+      "stateInvalid": "エクストラクターランタイムの状態が無効です。"
+    }
   }
 }

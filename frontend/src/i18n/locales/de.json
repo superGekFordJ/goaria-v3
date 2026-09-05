@@ -432,5 +432,70 @@
       "authFailed": "Die gekoppelte Erweiterung wurde abgewiesen. Bitte koppeln Sie die Erweiterung neu.",
       "unpairRotated": "Sicherheitsschlüssel zurückgesetzt. Alle Erweiterungen getrennt. Bitte neu koppeln."
     }
+  },
+  "extractor": {
+    "title": "Extractor-Laufzeit",
+    "description": "Extractor-Pakete lokal in einer isolierten WASM-Sandbox ausführen.",
+    "state": {
+      "available": "Laufzeit bereit",
+      "unavailable": "Extractor-Laufzeit ist in diesem Build nicht verfügbar."
+    },
+    "actions": {
+      "loadZip": "ZIP laden",
+      "loadDirectory": "Entpackt laden",
+      "loadUrl": "Von URL laden",
+      "reload": "Neu laden",
+      "remove": "Entfernen",
+      "retry": "Wiederholen",
+      "loading": "Wird geladen..."
+    },
+    "urlInput": {
+      "placeholder": "https://example.com/pack.lock.json",
+      "label": "SDK-Lock-URL",
+      "help": "Geben Sie eine gültige HTTPS-SDK-Lock-URL ein (.lock.json)."
+    },
+    "source": {
+      "kind": {
+        "local_zip": "Lokale ZIP",
+        "local_directory": "Entpackt",
+        "remote_lock": "Remote-Lock"
+      },
+      "status": {
+        "ready": "Bereit",
+        "unavailable": "Nicht verfügbar"
+      },
+      "empty": "Keine Extractor-Pakete installiert.",
+      "fingerprint": "Signaturgeber"
+    },
+    "notices": {
+      "recoveryWarning": "Bei der Wiederherstellung eines oder mehrerer Pakete sind Fehler aufgetreten."
+    },
+    "errors": {
+      "generic": "Ein Fehler beim Extractor-Paket ist aufgetreten.",
+      "ipcError": "Kommunikation mit dem Anwendungsdienst fehlgeschlagen.",
+      "unavailable": "Extractor-Laufzeit ist nicht verfügbar.",
+      "invalidSourceKind": "Nicht unterstützter Quelltyp.",
+      "invalidSourceSpec": "Ungültige Paketspezifikation.",
+      "invalidSourceId": "Paketquelle nicht gefunden.",
+      "sourceLimitReached": "Maximale Anzahl an Extractor-Paketen erreicht.",
+      "sourceUnreadable": "Paketdaten konnten nicht gelesen werden.",
+      "sourceShapeInvalid": "Paketstruktur oder -layout ist ungültig.",
+      "lockMissing": "Paket-Lock-Datei fehlt.",
+      "lockInvalid": "Paket-Lock-Datei ist ungültig.",
+      "hashMismatch": "Paketintegritätsprüfung fehlgeschlagen (Hash-Abweichung).",
+      "signatureInvalid": "Paketsignaturüberprüfung fehlgeschlagen.",
+      "manifestInvalid": "Paketmanifest ist ungültig.",
+      "wasmInvalid": "Paket-WASM-Binärdatei ist ungültig oder beschädigt.",
+      "remoteDenied": "Remote-URL-Zugriff durch Richtlinie verweigert.",
+      "remoteFailed": "Paket konnte nicht von Remote-URL geladen werden.",
+      "packIdConflict": "Ein Paket mit dieser Kennung ist bereits installiert.",
+      "signerChanged": "Signaturschlüssel stimmt nicht überein. Für das Neuladen ist der ursprüngliche Signaturschlüssel erforderlich; der Autor muss mit demselben Schlüssel neu bauen, oder das Paket muss entfernt und erneut hinzugefügt werden.",
+      "packIdentityChanged": "Paketidentität geändert. Neuladen kann die Paketidentität nicht ändern; bitte entfernen und erneut hinzufügen.",
+      "policyUnavailable": "Erforderliche Host-Richtlinie nicht verfügbar.",
+      "authRuntimeUnavailable": "Erforderliche Host-Authentifizierungslaufzeit nicht verfügbar.",
+      "persistFailed": "Extractor-Konfiguration konnte nicht gespeichert werden.",
+      "concurrentChange": "Konfiguration wurde gleichzeitig geändert.",
+      "stateInvalid": "Extractor-Laufzeitstatus ist ungültig."
+    }
   }
 }

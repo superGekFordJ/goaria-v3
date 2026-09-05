@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { computed, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
+  import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { useConfigStore } from '../../stores/config'
   import { AppConfig } from '../../../bindings/goaria-v3/internal/config/models.js'
@@ -20,6 +20,11 @@
   import ExtensionSection from './sections/ExtensionSection.vue'
   import UpdateSection from './sections/UpdateSection.vue'
   import SettingsFloatingStatus from './SettingsFloatingStatus.vue'
+
+  const isExtractorEnabled = import.meta.env.VITE_GOARIA_EXTRACTOR === 'true'
+  const ExtractorSection = isExtractorEnabled
+    ? defineAsyncComponent(() => import('../../features/extractor/ExtractorSection.vue'))
+    : null
 
   const { t } = useI18n()
   const configStore = useConfigStore()
@@ -390,6 +395,8 @@
           </fieldset>
 
           <ExtensionSection />
+
+          <component :is="ExtractorSection" v-if="ExtractorSection" />
 
           <UpdateSection />
         </div>

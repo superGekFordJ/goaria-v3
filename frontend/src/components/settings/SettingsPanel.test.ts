@@ -573,4 +573,13 @@ describe('SettingsPanel', () => {
 
     wrapper.unmount()
   })
+
+  it('does not render ExtractorSection in generic build', async () => {
+    storeMock.isHydrated = true
+    const wrapper = mountPanel()
+    await flushHydration()
+
+    expect(wrapper.find('[data-testid="load-zip-btn"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
 })
