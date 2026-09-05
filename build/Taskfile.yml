@@ -54,29 +54,16 @@ tasks:
     generates:
       - node_modules
     preconditions:
-      - sh: pnpm --version
+      - sh: '{{if eq OS "windows"}}cmd /c pnpm --version{{else}}pnpm --version{{end}}'
         msg: "Looks like pnpm isn't installed. Pnpm is required for the frontend."
     cmds:
-      - pnpm install
+      - '{{if eq OS "windows"}}cmd /c pnpm install{{else}}pnpm install{{end}}'
 
   prepare:frontend:variant:
     summary: Validates extractor variant and updates frontend variant cache stamp
     internal: true
     cmds:
-      - |
-        mkdir -p build/extractor/cache
-        stamp_file="build/extractor/cache/.frontend_variant_stamp"
-        current_stamp=""
-        if [ -f "$stamp_file" ]; then
-          current_stamp="$(cat "$stamp_file")"
-        fi
-        desired_stamp="{{.VITE_GOARIA_EXTRACTOR}}"
-        if [ "$current_stamp" != "$desired_stamp" ]; then
-          printf "%s" "$desired_stamp" > "$stamp_file"
-          if [ -d "frontend/dist" ]; then
-            rm -rf frontend/dist
-          fi
-        fi
+      - node scripts/prepare_frontend_variant.mjs "{{.VITE_GOARIA_EXTRACTOR}}"
     vars:
       EXTRACTOR_BUILD_TAGS:
         sh: '. "{{.ROOT_DIR}}/scripts/extractor_tags.sh" "{{.EXTRACTOR_VARIANT}}"'
@@ -102,7 +89,7 @@ tasks:
           BUILD_FLAGS:
             ref: .BUILD_FLAGS
     cmds:
-      - pnpm run {{.BUILD_COMMAND}}
+      - '{{if eq OS "windows"}}cmd /c pnpm run {{.BUILD_COMMAND}}{{else}}pnpm run {{.BUILD_COMMAND}}{{end}}'
     env:
       PRODUCTION: '{{if eq .DEV "true"}}false{{else}}true{{end}}'
       VITE_GOARIA_EXTRACTOR: '{{.VITE_GOARIA_EXTRACTOR}}'
@@ -185,7 +172,7 @@ tasks:
     deps:
       - task: install:frontend:deps
     cmds:
-      - pnpm run dev -- --port {{.VITE_PORT}} --strictPort
+      - '{{if eq OS "windows"}}cmd /c pnpm run dev -- --port {{.VITE_PORT}} --strictPort{{else}}pnpm run dev -- --port {{.VITE_PORT}} --strictPort{{end}}'
     env:
       VITE_GOARIA_EXTRACTOR: '{{.VITE_GOARIA_EXTRACTOR}}'
     vars:
