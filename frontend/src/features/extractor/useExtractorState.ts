@@ -36,11 +36,12 @@ const ERROR_CODE_TO_I18N_KEY: Record<string, string> = {
   persist_failed: 'extractor.errors.persistFailed',
   concurrent_change: 'extractor.errors.concurrentChange',
   state_invalid: 'extractor.errors.stateInvalid',
-  cancelled: '',
+  generic: 'extractor.errors.generic',
 }
 
 export function mapErrorCodeToI18nKey(errorCode?: string): string {
-  if (!errorCode || errorCode === 'cancelled') return ''
+  if (errorCode === 'cancelled') return ''
+  if (!errorCode) return 'extractor.errors.generic'
   return ERROR_CODE_TO_I18N_KEY[errorCode] || 'extractor.errors.generic'
 }
 

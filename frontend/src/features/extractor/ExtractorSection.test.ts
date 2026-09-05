@@ -48,7 +48,7 @@ vi.mock('./useExtractorState', () => ({
     remoteUrl: mockRemoteUrl,
     ...mockFns,
   }),
-  mapErrorCodeToI18nKey: (code?: string) => (code ? `extractor.errors.${code}` : ''),
+  mapErrorCodeToI18nKey: (code?: string) => (code ? `extractor.errors.${code}` : 'extractor.errors.generic'),
 }))
 
 function createSource(id: string, name: string, status = 'ready', errorCode = ''): ExtractorSource {
@@ -92,9 +92,19 @@ describe('ExtractorSection.vue', () => {
     expect(wrapper.find('[data-testid="load-zip-btn"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="load-directory-btn"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="load-url-btn"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="url-input"]').exists()).toBe(true)
+    const urlInput = wrapper.find('[data-testid="url-input"]')
+    expect(urlInput.exists()).toBe(true)
+    expect(urlInput.attributes('aria-label')).toBe('extractor.urlInput.label')
+    expect(urlInput.attributes('id')).toBe('extractor-url-input')
+    expect(urlInput.attributes('aria-describedby')).toBe('extractor-url-help')
 
-    expect(wrapper.find('[data-testid="url-input"]').attributes('aria-label')).toBe('extractor.urlInput.label')
+    const label = wrapper.find('label[for="extractor-url-input"]')
+    expect(label.exists()).toBe(true)
+    expect(label.text()).toBe('extractor.urlInput.label')
+
+    const help = wrapper.find('#extractor-url-help')
+    expect(help.exists()).toBe(true)
+    expect(help.text()).toBe('extractor.urlInput.help')
 
     expect(wrapper.find('[data-testid="empty-state"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="empty-state"]').text()).toContain('extractor.source.empty')
@@ -140,9 +150,11 @@ describe('ExtractorSection.vue', () => {
     // Shortened fingerprint (12 chars)
     expect(rows[0].text()).toContain('abcdef123456')
     expect(rows[0].find('[data-testid="status-light-ready"]').exists()).toBe(true)
+    expect(rows[0].find('[data-testid="status-light-ready"] .sr-only').text()).toBe('extractor.source.status.ready')
 
     expect(rows[1].text()).toContain('Second Pack')
     expect(rows[1].find('[data-testid="status-light-unavailable"]').exists()).toBe(true)
+    expect(rows[1].find('[data-testid="status-light-unavailable"] .sr-only').text()).toBe('extractor.source.status.unavailable')
     expect(rows[1].text()).toContain('extractor.errors.signer_changed')
   })
 
@@ -184,16 +196,35 @@ describe('ExtractorSection.vue', () => {
     expect(wrapper.find('[data-testid="remove-btn-s1"]').attributes('disabled')).toBeDefined()
   })
 
-  it('shows compact recovery warning when recovery_errors present', () => {
+  it('shows recovery warning and deduplicated mapped recovery errors', () => {
     mockState.value = new ExtractorState({
       available: true,
       sources: [],
-      recovery_errors: ['source_unreadable'],
+      recovery_errors: ['source_unreadable', 'source_unreadable', 'lock_invalid'],
     })
 
     const wrapper = mount(ExtractorSection)
-    expect(wrapper.find('[data-testid="recovery-warning"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="recovery-warning"]').text()).toContain('extractor.notices.recoveryWarning')
+    const warning = wrapper.find('[data-testid="recovery-warning"]')
+    expect(warning.exists()).toBe(true)
+    expect(warning.text()).toContain('extractor.notices.recoveryWarning')
+
+    const items = wrapper.findAll('[data-testid="recovery-error-item"]')
+    expect(items).toHaveLength(2)
+    expect(items[0].text()).toContain('extractor.errors.source_unreadable')
+    expect(items[1].text()).toContain('extractor.errors.lock_invalid')
+  })
+
+  it('falls back to generic error when unavailable source has empty error code', () => {
+    const s1 = createSource('s1', 'Broken Pack', 'unavailable', '')
+    mockState.value = new ExtractorState({
+      available: true,
+      sources: [s1],
+      recovery_errors: [],
+    })
+
+    const wrapper = mount(ExtractorSection)
+    const row = wrapper.find('[data-testid="source-row"]')
+    expect(row.text()).toContain('extractor.errors.generic')
   })
 
   it('shows unavailable banner and disables all actions when available is false', async () => {

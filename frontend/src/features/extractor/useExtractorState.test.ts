@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { useExtractorState } from './useExtractorState'
+import { useExtractorState, mapErrorCodeToI18nKey } from './useExtractorState'
 import {
   ExtractorOperationResult,
   ExtractorSource,
@@ -237,7 +237,13 @@ describe('useExtractorState', () => {
     expect(state.value.sources).toHaveLength(1)
   })
 
-  it('maps known error codes and falls back to generic key for unknown codes', async () => {
+  it('maps known error codes and falls back to generic key for empty or unknown codes', async () => {
+    expect(mapErrorCodeToI18nKey('signer_changed')).toBe('extractor.errors.signerChanged')
+    expect(mapErrorCodeToI18nKey('completely_unknown_code')).toBe('extractor.errors.generic')
+    expect(mapErrorCodeToI18nKey('')).toBe('extractor.errors.generic')
+    expect(mapErrorCodeToI18nKey(undefined)).toBe('extractor.errors.generic')
+    expect(mapErrorCodeToI18nKey('generic')).toBe('extractor.errors.generic')
+
     const initial = createSampleState()
 
     vi.mocked(AppBindings.ReloadExtractorSource).mockResolvedValue(
@@ -258,6 +264,18 @@ describe('useExtractorState', () => {
         success: false,
         cancelled: false,
         error_code: 'completely_unknown_code',
+        state: initial,
+      }),
+    )
+
+    await reloadSource('s1')
+    expect(error.value).toBe('extractor.errors.generic')
+
+    vi.mocked(AppBindings.ReloadExtractorSource).mockResolvedValue(
+      new ExtractorOperationResult({
+        success: false,
+        cancelled: false,
+        error_code: '',
         state: initial,
       }),
     )

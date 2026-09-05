@@ -43,6 +43,12 @@
   const isAvailable = computed(() => state.value.available)
   const actionsDisabled = computed(() => busy.value || !isAvailable.value)
 
+  const uniqueRecoveryErrors = computed(() => {
+    const list = state.value.recovery_errors || []
+    if (list.length === 0) return []
+    return [...new Set(list.map((code) => mapErrorCodeToI18nKey(code)).filter(Boolean))]
+  })
+
   const shortFingerprint = (fp?: string) => {
     if (!fp) return ''
     return fp.length > 12 ? fp.slice(0, 12) : fp
@@ -74,13 +80,24 @@
 
       <!-- Recovery warnings -->
       <div
-        v-if="state.recovery_errors && state.recovery_errors.length > 0"
+        v-if="uniqueRecoveryErrors.length > 0"
         data-testid="recovery-warning"
-        class="flex items-center gap-2 px-3 py-2 rounded-xl bg-[var(--status-error)]/10 border border-[var(--status-error)]/20 text-xs text-[var(--status-error)]"
+        class="flex flex-col gap-1.5 px-3 py-2 rounded-xl bg-[var(--status-error)]/10 border border-[var(--status-error)]/20 text-xs text-[var(--status-error)]"
         aria-live="polite"
       >
-        <AlertCircle :size="14" class="shrink-0" />
-        <span>{{ t('extractor.notices.recoveryWarning') }}</span>
+        <div class="flex items-center gap-2">
+          <AlertCircle :size="14" class="shrink-0" />
+          <span>{{ t('extractor.notices.recoveryWarning') }}</span>
+        </div>
+        <div
+          v-for="errKey in uniqueRecoveryErrors"
+          :key="errKey"
+          data-testid="recovery-error-item"
+          class="pl-5 text-[11px] opacity-90 flex items-center gap-1.5"
+        >
+          <span>•</span>
+          <span>{{ t(errKey) }}</span>
+        </div>
       </div>
 
       <!-- Operation / Transport error notice with optional retry -->
@@ -132,29 +149,42 @@
           </button>
         </div>
 
-        <div class="flex items-center gap-2">
-          <div class="relative flex-1">
-            <input
-              v-model="remoteUrl"
-              type="url"
-              data-testid="url-input"
-              :aria-label="t('extractor.urlInput.label')"
-              :placeholder="t('extractor.urlInput.placeholder')"
-              :disabled="actionsDisabled"
-              class="w-full px-3 py-1.5 rounded-lg text-xs font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] placeholder:text-[var(--app-text-subtle)]/50 focus:outline-none focus:border-[var(--neon-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
-              @keydown.enter.prevent="loadPackURL"
-            />
-          </div>
-          <button
-            type="button"
-            data-testid="load-url-btn"
-            class="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:bg-[var(--glass-border)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            :disabled="actionsDisabled || !remoteUrl.trim()"
-            @click="loadPackURL"
+        <div class="flex flex-col gap-1">
+          <label
+            for="extractor-url-input"
+            class="text-xs text-[var(--app-text-subtle)] block"
           >
-            <Globe :size="14" />
-            <span>{{ t('extractor.actions.loadUrl') }}</span>
-          </button>
+            {{ t('extractor.urlInput.label') }}
+          </label>
+          <div class="flex items-center gap-2">
+            <div class="relative flex-1">
+              <input
+                id="extractor-url-input"
+                v-model="remoteUrl"
+                type="url"
+                data-testid="url-input"
+                :aria-label="t('extractor.urlInput.label')"
+                aria-describedby="extractor-url-help"
+                :placeholder="t('extractor.urlInput.placeholder')"
+                :disabled="actionsDisabled"
+                class="w-full px-3 py-1.5 rounded-lg text-xs font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] placeholder:text-[var(--app-text-subtle)]/50 focus:outline-none focus:border-[var(--neon-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                @keydown.enter.prevent="loadPackURL"
+              />
+            </div>
+            <button
+              type="button"
+              data-testid="load-url-btn"
+              class="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] hover:bg-[var(--glass-border)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              :disabled="actionsDisabled || !remoteUrl.trim()"
+              @click="loadPackURL"
+            >
+              <Globe :size="14" />
+              <span>{{ t('extractor.actions.loadUrl') }}</span>
+            </button>
+          </div>
+          <p id="extractor-url-help" class="text-xs text-[var(--app-text-subtle)]">
+            {{ t('extractor.urlInput.help') }}
+          </p>
         </div>
       </div>
 
@@ -182,13 +212,17 @@
                 data-testid="status-light-ready"
                 class="w-2 h-2 rounded-full bg-[var(--status-complete)] shadow-[0_0_6px_var(--status-complete)] shrink-0"
                 :title="t('extractor.source.status.ready')"
-              />
+              >
+                <span class="sr-only">{{ t('extractor.source.status.ready') }}</span>
+              </span>
               <span
                 v-else
                 data-testid="status-light-unavailable"
                 class="w-2 h-2 rounded-full bg-[var(--status-error)] shadow-[0_0_6px_var(--status-error)] shrink-0"
                 :title="t('extractor.source.status.unavailable')"
-              />
+              >
+                <span class="sr-only">{{ t('extractor.source.status.unavailable') }}</span>
+              </span>
 
               <span class="text-xs font-medium text-[var(--app-text)] truncate">
                 {{ source.display_name }}
@@ -237,7 +271,7 @@
 
           <!-- Source-local error message if unavailable -->
           <div
-            v-if="source.status === 'unavailable' && source.error_code"
+            v-if="source.status === 'unavailable'"
             class="mt-1 text-[10px] text-[var(--status-error)] flex items-center gap-1"
           >
             <AlertCircle :size="11" class="shrink-0" />

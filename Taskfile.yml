@@ -82,6 +82,11 @@ tasks:
       - task: test:go
       - task: test:frontend
 
+  test:extractor:closure:
+    summary: Verify full variant closure, wrapper enforcement, and back-to-back switch
+    cmds:
+      - node scripts/verify_variant_closure.mjs
+
   vendor:surge:
     summary: Vendor Surge download engine core files
     cmds:

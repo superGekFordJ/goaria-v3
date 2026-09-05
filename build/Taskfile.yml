@@ -89,7 +89,7 @@ tasks:
           BUILD_FLAGS:
             ref: .BUILD_FLAGS
     cmds:
-      - '{{if eq OS "windows"}}cmd /c pnpm run {{.BUILD_COMMAND}}{{else}}pnpm run {{.BUILD_COMMAND}}{{end}}'
+      - '{{if eq OS "windows"}}cmd /c "set VITE_GOARIA_EXTRACTOR={{.VITE_GOARIA_EXTRACTOR}}&& pnpm run {{.BUILD_COMMAND}}"{{else}}VITE_GOARIA_EXTRACTOR="{{.VITE_GOARIA_EXTRACTOR}}" pnpm run {{.BUILD_COMMAND}}{{end}}'
     env:
       PRODUCTION: '{{if eq .DEV "true"}}false{{else}}true{{end}}'
       VITE_GOARIA_EXTRACTOR: '{{.VITE_GOARIA_EXTRACTOR}}'
@@ -172,7 +172,7 @@ tasks:
     deps:
       - task: install:frontend:deps
     cmds:
-      - '{{if eq OS "windows"}}cmd /c pnpm run dev -- --port {{.VITE_PORT}} --strictPort{{else}}pnpm run dev -- --port {{.VITE_PORT}} --strictPort{{end}}'
+      - '{{if eq OS "windows"}}cmd /c "set VITE_GOARIA_EXTRACTOR={{.VITE_GOARIA_EXTRACTOR}}&& pnpm run dev -- --port {{.VITE_PORT}} --strictPort"{{else}}VITE_GOARIA_EXTRACTOR="{{.VITE_GOARIA_EXTRACTOR}}" pnpm run dev -- --port {{.VITE_PORT}} --strictPort{{end}}'
     env:
       VITE_GOARIA_EXTRACTOR: '{{.VITE_GOARIA_EXTRACTOR}}'
     vars:

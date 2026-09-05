@@ -136,20 +136,15 @@ jobs:
         run: |
           wails3 generate bindings -clean=true -ts
 
-      - name: Build frontend and verify artifact closure (${{ matrix.variant }})
+      - name: Build frontend via Taskfile wrapper and verify closure (${{ matrix.variant }})
         shell: bash
         env:
           EXTRACTOR_VARIANT: ${{ matrix.variant }}
+          # Inject conflicting inherited env to prove Taskfile wrapper strictly overrides it
+          VITE_GOARIA_EXTRACTOR: ${{ matrix.variant == 'full-pack' && 'false' || 'true' }}
         run: |
           set -euo pipefail
-          vite_val="false"
-          if [ "${{ matrix.variant }}" = "full-pack" ]; then
-            vite_val="true"
-          fi
-          cd frontend
-          pnpm install
-          VITE_GOARIA_EXTRACTOR="$vite_val" pnpm run build
-          cd ..
+          wails3 task common:build:frontend EXTRACTOR_VARIANT="${{ matrix.variant }}"
           node ./scripts/check_frontend_extractor_artifacts.mjs "${{ matrix.variant }}"
           echo "${{ matrix.variant }} frontend artifact closure check passed"
 
