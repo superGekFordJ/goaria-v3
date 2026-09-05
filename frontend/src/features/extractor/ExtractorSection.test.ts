@@ -94,6 +94,8 @@ describe('ExtractorSection.vue', () => {
     expect(wrapper.find('[data-testid="load-url-btn"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="url-input"]').exists()).toBe(true)
 
+    expect(wrapper.find('[data-testid="url-input"]').attributes('aria-label')).toBe('extractor.urlInput.label')
+
     expect(wrapper.find('[data-testid="empty-state"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="empty-state"]').text()).toContain('extractor.source.empty')
   })
@@ -107,6 +109,10 @@ describe('ExtractorSection.vue', () => {
     mockLoading.value = false
     mockError.value = 'extractor.errors.ipcError'
     await nextTick()
+
+    const errorSpan = wrapper.find('[data-testid="error-notice"] span')
+    expect(errorSpan.classes()).toContain('break-words')
+    expect(errorSpan.attributes('title')).toBe('extractor.errors.ipcError')
 
     const retryBtn = wrapper.find('[data-testid="retry-btn"]')
     expect(retryBtn.exists()).toBe(true)
@@ -151,6 +157,10 @@ describe('ExtractorSection.vue', () => {
     const reloadBtn = wrapper.find('[data-testid="reload-btn-s1"]')
     const removeBtn = wrapper.find('[data-testid="remove-btn-s1"]')
 
+    // Accessibility attributes
+    expect(reloadBtn.attributes('aria-label')).toBe('extractor.actions.reload')
+    expect(removeBtn.attributes('aria-label')).toBe('extractor.actions.remove')
+
     await reloadBtn.trigger('click')
     expect(mockFns.reloadSource).toHaveBeenCalledWith('s1')
 
@@ -186,16 +196,26 @@ describe('ExtractorSection.vue', () => {
     expect(wrapper.find('[data-testid="recovery-warning"]').text()).toContain('extractor.notices.recoveryWarning')
   })
 
-  it('shows unavailable banner and disables actions when available is false', () => {
+  it('shows unavailable banner and disables all actions when available is false', async () => {
     mockState.value = new ExtractorState({
       available: false,
-      sources: [],
+      sources: [createSource('s1', 'Pack 1')],
       recovery_errors: [],
     })
 
     const wrapper = mount(ExtractorSection)
     expect(wrapper.find('[data-testid="unavailable-banner"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="load-zip-btn"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="load-directory-btn"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="load-url-btn"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="reload-btn-s1"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="remove-btn-s1"]').attributes('disabled')).toBeDefined()
+
+    // When error is present, unavailable banner is omitted to avoid dual-banner conflict
+    mockError.value = 'extractor.errors.ipcError'
+    await nextTick()
+    expect(wrapper.find('[data-testid="unavailable-banner"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="error-notice"]').exists()).toBe(true)
   })
 
   it('ensures sensitive markers never leak outside the active URL input', () => {

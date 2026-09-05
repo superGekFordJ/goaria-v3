@@ -64,7 +64,7 @@
     <div v-else class="flex flex-col gap-4">
       <!-- Unavailable banner when compile-gated runtime reports available: false -->
       <div
-        v-if="!isAvailable"
+        v-if="!isAvailable && !error"
         data-testid="unavailable-banner"
         class="flex items-center gap-2 px-3 py-2 rounded-xl bg-[var(--status-error)]/10 border border-[var(--status-error)]/20 text-xs text-[var(--status-error)]"
       >
@@ -92,7 +92,7 @@
       >
         <div class="flex items-center gap-2 min-w-0">
           <AlertCircle :size="14" class="shrink-0" />
-          <span class="truncate">{{ t(error) }}</span>
+          <span class="break-words leading-relaxed" :title="t(error)">{{ t(error) }}</span>
         </div>
         <button
           v-if="!state.sources.length"
@@ -138,6 +138,7 @@
               v-model="remoteUrl"
               type="url"
               data-testid="url-input"
+              :aria-label="t('extractor.urlInput.label')"
               :placeholder="t('extractor.urlInput.placeholder')"
               :disabled="actionsDisabled"
               class="w-full px-3 py-1.5 rounded-lg text-xs font-mono-data text-[var(--app-text)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] placeholder:text-[var(--app-text-subtle)]/50 focus:outline-none focus:border-[var(--neon-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
@@ -203,7 +204,8 @@
                 type="button"
                 :data-testid="`reload-btn-${source.source_id}`"
                 class="p-1 rounded-md text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--glass-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                :disabled="busy"
+                :disabled="actionsDisabled"
+                :aria-label="t('extractor.actions.reload')"
                 :title="t('extractor.actions.reload')"
                 @click="reloadSource(source.source_id)"
               >
@@ -214,7 +216,8 @@
                 type="button"
                 :data-testid="`remove-btn-${source.source_id}`"
                 class="p-1 rounded-md text-[var(--app-text-subtle)] hover:text-[var(--status-error)] hover:bg-[var(--glass-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                :disabled="busy"
+                :disabled="actionsDisabled"
+                :aria-label="t('extractor.actions.remove')"
                 :title="t('extractor.actions.remove')"
                 @click="removeSource(source.source_id)"
               >

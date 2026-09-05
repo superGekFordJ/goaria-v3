@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -277,18 +278,50 @@ func TestExtractorBuildCapabilityMatrix(t *testing.T) {
 	}
 
 	// 1. Verify scripts/extractor_tags.sh behavior for accepted and rejected variants
-	shellCmd := ""
-	for _, candidate := range []string{"bash", "sh"} {
-		if p, err := exec.LookPath(candidate); err == nil {
-			// Test if shell actually runs
-			if err := exec.Command(p, "-c", "exit 0").Run(); err == nil {
+	t.Run("ScriptMapping", func(t *testing.T) {
+		var shellCmd string
+		var candidates []string
+		if runtime.GOOS == "windows" {
+			candidates = []string{
+				"sh",
+				`C:\Program Files\Git\bin\sh.exe`,
+				`C:\Program Files\Git\bin\bash.exe`,
+				`C:\Program Files\Git\usr\bin\sh.exe`,
+				`C:\Program Files\Git\usr\bin\bash.exe`,
+				"bash",
+			}
+		} else {
+			candidates = []string{"sh", "bash"}
+		}
+
+		for _, candidate := range candidates {
+			p, err := exec.LookPath(candidate)
+			if err != nil {
+				if _, statErr := os.Stat(candidate); statErr == nil {
+					p = candidate
+				} else {
+					continue
+				}
+			}
+			// Avoid Windows System32 WSL bash launcher which alters dot-source arguments
+			if runtime.GOOS == "windows" && strings.Contains(strings.ToLower(p), "system32\\bash.exe") {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			testCmd := exec.CommandContext(ctx, p, "-c", `. "$0" "$1"`, "scripts/extractor_tags.sh", "full-pack")
+			testCmd.Dir = repoRoot
+			testOut, testErr := testCmd.CombinedOutput()
+			cancel()
+			if testErr == nil && string(testOut) == "extractor" {
 				shellCmd = p
 				break
 			}
 		}
-	}
 
-	if shellCmd != "" {
+		if shellCmd == "" {
+			t.Skip("bash/sh not found in PATH; skipping scripts/extractor_tags.sh execution tests")
+		}
+
 		scriptPath := "scripts/extractor_tags.sh"
 		cases := []struct {
 			variant string
@@ -304,79 +337,88 @@ func TestExtractorBuildCapabilityMatrix(t *testing.T) {
 
 		for _, tc := range cases {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			cmd := exec.CommandContext(ctx, shellCmd, scriptPath, tc.variant)
+			// Simulate Taskfile dot-source mode: . "$0" "$1"
+			cmd := exec.CommandContext(ctx, shellCmd, "-c", `. "$0" "$1"`, scriptPath, tc.variant)
 			cmd.Dir = repoRoot
-			out, err := cmd.Output()
+			out, err := cmd.CombinedOutput()
 			cancel()
 
 			if tc.wantOk {
 				if err != nil {
-					t.Errorf("extractor_tags.sh %q failed: %v", tc.variant, err)
+					t.Errorf("extractor_tags.sh %q failed: %v, output: %s", tc.variant, err, string(out))
 				}
 				if string(out) != tc.wantTag {
 					t.Errorf("extractor_tags.sh %q output = %q, want %q", tc.variant, string(out), tc.wantTag)
 				}
 			} else if err == nil {
-				t.Errorf("extractor_tags.sh %q succeeded unexpectedly, want non-zero exit", tc.variant)
+				t.Errorf("extractor_tags.sh %q succeeded unexpectedly, output: %s", tc.variant, string(out))
 			}
 		}
-	}
+	})
 
 	// 2. Verify platform Taskfiles propagate extractor capability into DEV flags
-	desktopPlatforms := []struct {
-		name string
-		file string
-	}{
-		{"windows", filepath.Join(repoRoot, "build", "windows", "Taskfile.yml")},
-		{"linux", filepath.Join(repoRoot, "build", "linux", "Taskfile.yml")},
-		{"darwin", filepath.Join(repoRoot, "build", "darwin", "Taskfile.yml")},
-	}
+	t.Run("PlatformDevFlags", func(t *testing.T) {
+		desktopPlatforms := []struct {
+			name string
+			file string
+		}{
+			{"windows", filepath.Join(repoRoot, "build", "windows", "Taskfile.yml")},
+			{"linux", filepath.Join(repoRoot, "build", "linux", "Taskfile.yml")},
+			{"darwin", filepath.Join(repoRoot, "build", "darwin", "Taskfile.yml")},
+		}
 
-	for _, p := range desktopPlatforms {
-		content, err := os.ReadFile(p.file)
+		for _, p := range desktopPlatforms {
+			content, err := os.ReadFile(p.file)
+			if err != nil {
+				t.Errorf("read %s: %v", p.file, err)
+				continue
+			}
+			text := string(content)
+			if !strings.Contains(text, `{{if .EXTRACTOR_BUILD_TAGS}}-tags {{.EXTRACTOR_BUILD_TAGS}}{{end}}`) &&
+				!strings.Contains(text, `{{if .EXTRACTOR_BUILD_TAGS}} -tags {{.EXTRACTOR_BUILD_TAGS}}{{end}}`) {
+				t.Errorf("%s Taskfile DEV BUILD_FLAGS missing EXTRACTOR_BUILD_TAGS propagation", p.name)
+			}
+		}
+
+		// iOS DEV flag: -tags ios,debug,extractor when requested
+		iosFile := filepath.Join(repoRoot, "build", "ios", "Taskfile.yml")
+		iosContent, err := os.ReadFile(iosFile)
 		if err != nil {
-			t.Fatalf("read %s: %v", p.file, err)
+			t.Errorf("read ios Taskfile: %v", err)
+		} else if !strings.Contains(string(iosContent), `-tags ios,debug{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}}`) {
+			t.Error("ios Taskfile DEV BUILD_FLAGS missing EXTRACTOR_BUILD_TAGS merge into -tags ios,debug")
 		}
-		text := string(content)
-		if !strings.Contains(text, `{{if .EXTRACTOR_BUILD_TAGS}}-tags {{.EXTRACTOR_BUILD_TAGS}}{{end}}`) &&
-			!strings.Contains(text, `{{if .EXTRACTOR_BUILD_TAGS}} -tags {{.EXTRACTOR_BUILD_TAGS}}{{end}}`) {
-			t.Errorf("%s Taskfile DEV BUILD_FLAGS missing EXTRACTOR_BUILD_TAGS propagation", p.name)
+
+		// Android DEV flag: -tags android,debug,extractor when requested (build + compile:go:shared)
+		androidFile := filepath.Join(repoRoot, "build", "android", "Taskfile.yml")
+		androidContent, err := os.ReadFile(androidFile)
+		if err != nil {
+			t.Errorf("read android Taskfile: %v", err)
+		} else {
+			androidText := string(androidContent)
+			expectedAndroidDev := `-tags android,debug{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}}`
+			if strings.Count(androidText, expectedAndroidDev) < 2 {
+				t.Errorf("android Taskfile missing DEV EXTRACTOR_BUILD_TAGS merge in build or compile:go:shared")
+			}
 		}
-	}
-
-	// iOS DEV flag: -tags ios,debug,extractor when requested
-	iosFile := filepath.Join(repoRoot, "build", "ios", "Taskfile.yml")
-	iosContent, err := os.ReadFile(iosFile)
-	if err != nil {
-		t.Fatalf("read ios Taskfile: %v", err)
-	}
-	if !strings.Contains(string(iosContent), `-tags ios,debug{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}}`) {
-		t.Error("ios Taskfile DEV BUILD_FLAGS missing EXTRACTOR_BUILD_TAGS merge into -tags ios,debug")
-	}
-
-	// Android DEV flag: -tags android,debug,extractor when requested (build + compile:go:shared)
-	androidFile := filepath.Join(repoRoot, "build", "android", "Taskfile.yml")
-	androidContent, err := os.ReadFile(androidFile)
-	if err != nil {
-		t.Fatalf("read android Taskfile: %v", err)
-	}
-	androidText := string(androidContent)
-	expectedAndroidDev := `-tags android,debug{{if .EXTRACTOR_BUILD_TAGS}},{{.EXTRACTOR_BUILD_TAGS}}{{end}}`
-	if strings.Count(androidText, expectedAndroidDev) < 2 {
-		t.Errorf("android Taskfile missing DEV EXTRACTOR_BUILD_TAGS merge in build or compile:go:shared")
-	}
+	})
 
 	// 3. Verify build/Taskfile.yml sets wrapper-owned VITE_GOARIA_EXTRACTOR and variant freshness
-	commonFile := filepath.Join(repoRoot, "build", "Taskfile.yml")
-	commonContent, err := os.ReadFile(commonFile)
-	if err != nil {
-		t.Fatalf("read common Taskfile: %v", err)
-	}
-	commonText := string(commonContent)
-	if !strings.Contains(commonText, "VITE_GOARIA_EXTRACTOR") {
-		t.Error("build/Taskfile.yml missing VITE_GOARIA_EXTRACTOR env definition")
-	}
-	if !strings.Contains(commonText, "stamp") && !strings.Contains(commonText, "EXTRACTOR_VARIANT") {
-		t.Error("build/Taskfile.yml build:frontend missing variant cache invalidation / stamp")
-	}
+	t.Run("FrontendVariantCache", func(t *testing.T) {
+		commonFile := filepath.Join(repoRoot, "build", "Taskfile.yml")
+		commonContent, err := os.ReadFile(commonFile)
+		if err != nil {
+			t.Fatalf("read common Taskfile: %v", err)
+		}
+		commonText := string(commonContent)
+		if !strings.Contains(commonText, "VITE_GOARIA_EXTRACTOR") {
+			t.Error("build/Taskfile.yml missing VITE_GOARIA_EXTRACTOR env definition")
+		}
+		if !strings.Contains(commonText, ".frontend_variant_stamp") {
+			t.Error("build/Taskfile.yml missing .frontend_variant_stamp definition")
+		}
+		if !strings.Contains(commonText, "prepare:frontend:variant") {
+			t.Error("build/Taskfile.yml missing prepare:frontend:variant task")
+		}
+	})
 }

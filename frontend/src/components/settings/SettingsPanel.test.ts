@@ -582,4 +582,39 @@ describe('SettingsPanel', () => {
     expect(wrapper.find('[data-testid="load-zip-btn"]').exists()).toBe(false)
     wrapper.unmount()
   })
+
+  it('renders ExtractorSection when VITE_GOARIA_EXTRACTOR is true', async () => {
+    vi.stubEnv('VITE_GOARIA_EXTRACTOR', 'true')
+    // Preload ExtractorSection module for async component resolution
+    await import('../../features/extractor/ExtractorSection.vue')
+    // @ts-expect-error query param is used for Vitest module cache busting
+    const { default: TaggedSettingsPanel } = await import('./SettingsPanel.vue?tagged=1')
+    storeMock.isHydrated = true
+    const wrapper = mount(TaggedSettingsPanel, {
+      global: {
+        stubs: {
+          Transition: TransitionStub,
+          DownloadSection: DownloadStub,
+          RPCSection: RPCStub,
+          PerformanceSection: PerformanceStub,
+          UASection: UAStub,
+          AppearanceSection: IndependentStub,
+          AdvancedSection: AdvancedStub,
+          ExtensionSection: IndependentStub,
+          UpdateSection: IndependentStub,
+        },
+      },
+    })
+    await flushHydration()
+    await flushPromises()
+
+    expect(
+      wrapper.find('[data-testid="load-zip-btn"]').exists() ||
+        wrapper.find('[data-testid="loading-indicator"]').exists() ||
+        wrapper.find('[data-testid="unavailable-banner"]').exists(),
+    ).toBe(true)
+
+    wrapper.unmount()
+    vi.unstubAllEnvs()
+  })
 })
