@@ -80,6 +80,9 @@ func main() {
 		filepath.Join("orchestrator", "main_test.go"): true,
 		filepath.Join("service", "main_test.go"):      true,
 		filepath.Join("scheduler", "main_test.go"):    true,
+
+		// GoAria-only benchmark tests
+		filepath.Join("store", "gob_bench_test.go"): true,
 	}
 
 	// Phase 1: Read source files, replace imports, and write pre-fmt content

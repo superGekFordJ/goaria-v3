@@ -1,90 +1,101 @@
 package monitor
 
 import (
-	"encoding/json"
-	"net"
-	"net/http"
-	"net/http/httptest"
-	"strings"
+	"fmt"
 	"testing"
 	"time"
 
 	"goaria-v3/internal/rpc"
 )
 
-// mockAria2Server handles RPC requests with simulated latency
-func mockAria2Server(delay time.Duration) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Simulate network latency
-		time.Sleep(delay)
+func makeBenchmarkTasks(n int, prefix string) []rpc.Task {
+	tasks := make([]rpc.Task, n)
+	for i := range n {
+		tasks[i] = rpc.Task{
+			GID:             fmt.Sprintf("%s%06d", prefix, i),
+			Status:          "active",
+			TotalLength:     "104857600",
+			CompletedLength: "52428800",
+			DownloadSpeed:   "1048576",
+			Dir:             "D:/Downloads",
+		}
+	}
+	return tasks
+}
 
-		var req struct {
-			Method string `json:"method"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+func setupBenchmarkCache(n int) (*TaskCache, []rpc.Task) {
+	cache := NewTaskCacheForTest()
+	tasks := makeBenchmarkTasks(n, "ar_")
 
-		// Simplified response structure
-		emptyListResponse := map[string]any{
-			"jsonrpc": "2.0",
-			"id":      "goaria",
-			"result":  []any{},
+	cache.mu.Lock()
+	for i := range n {
+		gid := fmt.Sprintf("ar_%06d", i)
+		cache.metadata[gid] = &TaskMetadata{
+			GID:         gid,
+			Title:       fmt.Sprintf("Download_File_%d.zip", i),
+			Dir:         "D:/Downloads",
+			TotalLength: 104857600,
+			Files:       []string{fmt.Sprintf("D:/Downloads/Download_File_%d.zip", i)},
+			SourceURL:   fmt.Sprintf("https://example.com/file_%d.zip", i),
+			FetchedAt:   time.Now(),
 		}
+	}
+	cache.mu.Unlock()
 
-		// Handle specific methods involved in tick()
-		if strings.Contains(req.Method, "tellActive") ||
-			strings.Contains(req.Method, "tellWaiting") ||
-			strings.Contains(req.Method, "tellStopped") {
-			json.NewEncoder(w).Encode(emptyListResponse)
-			return
-		}
+	return cache, tasks
+}
 
-		// Default success for other calls (e.g., tellStatus if called)
-		successResponse := map[string]any{
-			"jsonrpc": "2.0",
-			"id":      "goaria",
-			"result":  nil,
-		}
-		json.NewEncoder(w).Encode(successResponse)
+func BenchmarkTaskCache_EnrichTasks_100(b *testing.B) {
+	cache, tasks := setupBenchmarkCache(100)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		cache.EnrichTasks(tasks)
 	}
 }
 
-func BenchmarkMonitorTick(b *testing.B) {
-	// 1. Setup Mock Server
-	latency := 10 * time.Millisecond
-	// Use 127.0.0.1 to match rpc.Init hardcoded host
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		b.Fatal(err)
+func BenchmarkTaskCache_EnrichTasks_500(b *testing.B) {
+	cache, tasks := setupBenchmarkCache(500)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		cache.EnrichTasks(tasks)
 	}
-	server := httptest.NewUnstartedServer(mockAria2Server(latency))
-	server.Listener.Close()
-	server.Listener = l
-	server.Start()
-	defer server.Close()
+}
 
-	// 2. Configure RPC client
-	_, port, _ := net.SplitHostPort(server.Listener.Addr().String())
-	rpc.Init(port, "secret")
+func BenchmarkTaskCache_UpdateFromAria2_100(b *testing.B) {
+	cache := NewTaskCacheForTest()
+	active := makeBenchmarkTasks(50, "ar_act_")
+	waiting := makeBenchmarkTasks(25, "ar_wait_")
+	stopped := makeBenchmarkTasks(25, "ar_stop_")
 
-	// 3. Initialize Monitor with minimal dependencies
-	// We only need tracker to be non-nil for Update() call
-	m := &Monitor{
-		tracker: NewTaskTracker(),
-		// Ensure stopped tasks are fetched to maximize workload
-		shouldFetchStopped: true,
+	b.ReportAllocs()
+	for b.Loop() {
+		cache.UpdateFromAria2(active, waiting, stopped)
 	}
+}
 
-	// 4. Run Benchmark
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		// Force fetching stopped tasks every iteration to measure full impact
-		m.mu.Lock()
-		m.shouldFetchStopped = true
-		m.mu.Unlock()
+func BenchmarkTaskCache_GetLiveTaskLists(b *testing.B) {
+	cache := NewTaskCacheForTest()
+	active := makeBenchmarkTasks(50, "ar_act_")
+	waiting := makeBenchmarkTasks(25, "ar_wait_")
+	stopped := makeBenchmarkTasks(25, "ar_stop_")
+	cache.UpdateFromAria2(active, waiting, stopped)
 
-		m.tick()
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _ = cache.GetLiveTaskLists()
+	}
+}
+
+func BenchmarkTaskTracker_Update_100(b *testing.B) {
+	tracker := NewTaskTracker()
+	active := makeBenchmarkTasks(50, "ar_act_")
+	waiting := makeBenchmarkTasks(25, "ar_wait_")
+	stopped := makeBenchmarkTasks(25, "ar_stop_")
+
+	b.ReportAllocs()
+	for b.Loop() {
+		tracker.Update(active, waiting, stopped)
 	}
 }

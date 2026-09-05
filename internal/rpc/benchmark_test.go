@@ -49,21 +49,26 @@ func BenchmarkUnmarshalTasks(b *testing.B) {
 		]
 	}`
 
+	heavyBytes := []byte(heavyJson)
+	lightBytes := []byte(lightJson)
+
 	b.Run("HeavyPayload", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
+		b.ReportAllocs()
+		for b.Loop() {
 			var result struct {
 				Result []Task `json:"result"`
 			}
-			json.Unmarshal([]byte(heavyJson), &result)
+			_ = json.Unmarshal(heavyBytes, &result)
 		}
 	})
 
 	b.Run("LightPayload", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
+		b.ReportAllocs()
+		for b.Loop() {
 			var result struct {
 				Result []Task `json:"result"`
 			}
-			json.Unmarshal([]byte(lightJson), &result)
+			_ = json.Unmarshal(lightBytes, &result)
 		}
 	})
 }
@@ -88,8 +93,7 @@ func BenchmarkBatchPause_Sequential(b *testing.B) {
 		gids[i] = fmt.Sprintf("gid-%d", i)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for _, gid := range gids {
 			Pause(gid)
 		}
@@ -116,8 +120,7 @@ func BenchmarkBatchResume_Sequential(b *testing.B) {
 		gids[i] = fmt.Sprintf("gid-%d", i)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for _, gid := range gids {
 			Unpause(gid)
 		}
@@ -157,8 +160,7 @@ func BenchmarkGetTaskMetadata_Sequential(b *testing.B) {
 		gids[i] = fmt.Sprintf("gid-%d", i)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		result := make(map[string]Task)
 		for _, gid := range gids {
 			task, err := TellStatus(gid)
@@ -189,8 +191,8 @@ func BenchmarkBatchPause_Multi(b *testing.B) {
 		gids[i] = fmt.Sprintf("gid-%d", i)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		PauseMulti(gids)
 	}
 }
@@ -215,8 +217,8 @@ func BenchmarkBatchResume_Multi(b *testing.B) {
 		gids[i] = fmt.Sprintf("gid-%d", i)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		UnpauseMulti(gids)
 	}
 }
@@ -258,8 +260,8 @@ func BenchmarkGetTaskMetadata_Multi(b *testing.B) {
 		gids[i] = fmt.Sprintf("gid-%d", i)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		result := make(map[string]Task)
 		tasks, err := TellStatusMulti(gids)
 		if err == nil {

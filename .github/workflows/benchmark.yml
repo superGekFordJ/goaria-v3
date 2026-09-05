@@ -1,0 +1,170 @@
+name: Benchmark
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'internal/history/**'
+      - 'internal/monitor/**'
+      - 'internal/rpc/**'
+      - 'internal/surge/**'
+      - 'internal/wailsapp/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/benchmark.yml'
+  release:
+    types: [ published ]
+  workflow_dispatch:
+    inputs:
+      update_dashboard:
+        description: 'Push benchmark data to gh-pages performance dashboard'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  benchmark:
+    name: Run Core Benchmarks
+    runs-on: windows-latest
+    steps:
+      - name: Checkout PR / Current ref
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install benchstat
+        shell: bash
+        run: go install golang.org/x/perf/cmd/benchstat@latest
+
+      - name: Create frontend dist placeholder
+        shell: bash
+        run: mkdir -p frontend/dist && echo '<html><body></body></html>' > frontend/dist/index.html
+
+      - name: Run benchmarks on current ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Running core benchmark suite (count=5)..."
+          go test -run=^$ -bench=Benchmark \
+            ./internal/history \
+            ./internal/monitor \
+            ./internal/rpc \
+            ./internal/surge/store \
+            ./internal/wailsapp \
+            -benchmem -count=5 | tee current_bench.txt
+
+      - name: Checkout base branch for PR comparison
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}
+          path: base_repo
+
+      - name: Run benchmarks on base branch
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd base_repo
+          mkdir -p frontend/dist && echo '<html><body></body></html>' > frontend/dist/index.html
+          echo "Running core benchmark suite on base branch (count=5)..."
+          go test -run=^$ -bench=Benchmark \
+            ./internal/history \
+            ./internal/monitor \
+            ./internal/rpc \
+            ./internal/surge/store \
+            ./internal/wailsapp \
+            -benchmem -count=5 | tee ../base_bench.txt || true
+          cd ..
+
+      - name: Compare benchmarks with benchstat
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f base_bench.txt ]; then
+            benchstat base_bench.txt current_bench.txt | tee benchstat_diff.txt
+          fi
+
+      - name: Post PR comment with benchstat results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('benchstat_diff.txt')) return;
+            const diff = fs.readFileSync('benchstat_diff.txt', 'utf8').trim();
+            if (!diff) return;
+
+            const baseRef = context.payload.pull_request.base.ref;
+            const body = `### ⚡ Benchmark Performance Comparison (PR vs \`${baseRef}\`)\n\n\`\`\`text\n${diff}\n\`\`\`\n\n> *Measured on \`windows-latest\` runner across 5 iterations. Statistical significance calculated via Mann-Whitney U test (benchstat).*`;
+
+            try {
+              const { data: comments } = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+              });
+              const botComment = comments.find(c => c.user.type === 'Bot' && c.body.includes('Benchmark Performance Comparison'));
+              if (botComment) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: botComment.id,
+                  body: body,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: body,
+                });
+              }
+            } catch (err) {
+              console.error('Failed to post or update PR comment:', err);
+            }
+
+      - name: Record to Step Summary
+        shell: bash
+        run: |
+          if [ -f benchstat_diff.txt ]; then
+            echo "### ⚡ Performance Benchmark Comparison" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            cat benchstat_diff.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### 📊 Benchmark Results" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            cat current_bench.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: |
+            current_bench.txt
+            base_bench.txt
+            benchstat_diff.txt
+          if-no-files-found: ignore
+
+      - name: Update performance trend dashboard
+        if: (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.update_dashboard))
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: GoAria Core Engine Benchmarks
+          tool: 'go'
+          output-file-path: current_bench.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench
+          summary-always: true

@@ -82,15 +82,13 @@ func BenchmarkRemoveBatchCurrent(b *testing.B) {
 	for _, shape := range benchmarkRemoveShapes() {
 		b.Run(shape.name, func(b *testing.B) {
 			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				b.StopTimer()
 				setupBenchmarkHistoryEntries(shape.historyLen)
 				b.StartTimer()
 				for _, gid := range shape.removeGIDs {
 					Remove(gid)
 				}
-				b.StopTimer()
 			}
 		})
 	}
@@ -101,13 +99,11 @@ func BenchmarkRemoveManyBatch(b *testing.B) {
 	for _, shape := range benchmarkRemoveShapes() {
 		b.Run(shape.name, func(b *testing.B) {
 			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				b.StopTimer()
 				setupBenchmarkHistoryEntries(shape.historyLen)
 				b.StartTimer()
 				RemoveMany(shape.removeGIDs)
-				b.StopTimer()
 			}
 		})
 	}
@@ -129,9 +125,8 @@ func BenchmarkAdd_Update(b *testing.B) {
 	}
 	mu.Unlock()
 
-	// Reset timer to measure only the loop
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		// Update the last entry (worst case for linear scan)
 		Add(HistoryEntry{
 			GID: fmt.Sprintf("gid-%d", n-1),
@@ -158,8 +153,8 @@ func BenchmarkGetAll_Scan(b *testing.B) {
 
 	target := "http://example.com/non-existent.zip"
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		// Simulate app.go logic: get all and iterate
 		all := GetAll()
 		found := false
@@ -195,8 +190,8 @@ func BenchmarkContainsSource(b *testing.B) {
 
 	target := "http://example.com/non-existent.zip"
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	b.ReportAllocs()
+	for b.Loop() {
 		ContainsSource(target)
 	}
 }
@@ -217,13 +212,13 @@ func BenchmarkAdd_New(b *testing.B) {
 	}
 	mu.Unlock()
 
-	b.ResetTimer()
-	// Use modulo to limit growth - cycle through 1000 new GIDs
-	// This keeps the slice size bounded while still testing "add new" path
 	poolSize := 1000
-	for i := 0; i < b.N; i++ {
+	var i int
+	b.ReportAllocs()
+	for b.Loop() {
 		Add(HistoryEntry{
 			GID: fmt.Sprintf("new-gid-%d", i%poolSize),
 		})
+		i++
 	}
 }
