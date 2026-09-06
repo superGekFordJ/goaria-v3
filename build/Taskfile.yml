@@ -1,9 +1,13 @@
 version: '3'
 
+vars:
+  PNPM: '{{if eq OS "windows"}}cmd /c pnpm{{else}}pnpm{{end}}'
+
 tasks:
   go:mod:tidy:
     summary: Runs `go mod tidy`
     internal: true
+    run: once
     cmds:
       - go mod tidy
 
@@ -47,6 +51,7 @@ tasks:
 
   install:frontend:deps:
     summary: Install frontend dependencies
+    run: once
     dir: frontend
     sources:
       - package.json
@@ -54,10 +59,10 @@ tasks:
     generates:
       - node_modules
     preconditions:
-      - sh: '{{if eq OS "windows"}}cmd /c pnpm --version{{else}}pnpm --version{{end}}'
+      - sh: '{{.PNPM}} --version'
         msg: "Looks like pnpm isn't installed. Pnpm is required for the frontend."
     cmds:
-      - '{{if eq OS "windows"}}cmd /c pnpm install{{else}}pnpm install{{end}}'
+      - '{{.PNPM}} install'
 
   prepare:frontend:variant:
     summary: Validates extractor variant and updates frontend variant cache stamp
@@ -69,12 +74,24 @@ tasks:
         sh: '. "{{.ROOT_DIR}}/scripts/extractor_tags.sh" "{{.EXTRACTOR_VARIANT}}"'
       VITE_GOARIA_EXTRACTOR: '{{if eq .EXTRACTOR_BUILD_TAGS "extractor"}}true{{else}}false{{end}}'
 
+  frontend:run:
+    summary: Run frontend command with strictly enforced VITE_GOARIA_EXTRACTOR
+    internal: true
+    dir: frontend
+    cmds:
+      - '{{if eq OS "windows"}}cmd /c "set VITE_GOARIA_EXTRACTOR={{.VITE_GOARIA_EXTRACTOR}}&& pnpm run {{.SCRIPT}}"{{else}}VITE_GOARIA_EXTRACTOR="{{.VITE_GOARIA_EXTRACTOR}}" pnpm run {{.SCRIPT}}{{end}}'
+    vars:
+      SCRIPT: '{{.SCRIPT}}'
+      VITE_GOARIA_EXTRACTOR: '{{.VITE_GOARIA_EXTRACTOR}}'
+
   build:frontend:
     label: build:frontend (DEV={{.DEV}})
     summary: Build the frontend project
+    run: once
     dir: frontend
     sources:
       - "**/*"
+      - exclude: node_modules/**/*
       - "../build/extractor/cache/.frontend_variant_stamp"
     generates:
       - dist/**/*
@@ -89,7 +106,10 @@ tasks:
           BUILD_FLAGS:
             ref: .BUILD_FLAGS
     cmds:
-      - '{{if eq OS "windows"}}cmd /c "set VITE_GOARIA_EXTRACTOR={{.VITE_GOARIA_EXTRACTOR}}&& pnpm run {{.BUILD_COMMAND}}"{{else}}VITE_GOARIA_EXTRACTOR="{{.VITE_GOARIA_EXTRACTOR}}" pnpm run {{.BUILD_COMMAND}}{{end}}'
+      - task: frontend:run
+        vars:
+          SCRIPT: '{{.BUILD_COMMAND}}'
+          VITE_GOARIA_EXTRACTOR: '{{.VITE_GOARIA_EXTRACTOR}}'
     env:
       PRODUCTION: '{{if eq .DEV "true"}}false{{else}}true{{end}}'
       VITE_GOARIA_EXTRACTOR: '{{.VITE_GOARIA_EXTRACTOR}}'
@@ -98,7 +118,6 @@ tasks:
       EXTRACTOR_BUILD_TAGS:
         sh: '. "{{.ROOT_DIR}}/scripts/extractor_tags.sh" "{{.EXTRACTOR_VARIANT}}"'
       VITE_GOARIA_EXTRACTOR: '{{if eq .EXTRACTOR_BUILD_TAGS "extractor"}}true{{else}}false{{end}}'
-
 
   frontend:vendor:puppertino:
     summary: Fetches Puppertino CSS into frontend/public for consistent mobile styling
@@ -135,10 +154,10 @@ tasks:
           sed -E -i'' 's/class=\"btn\"/class=\"p-btn p-prim-col\"/g' "$INDEX_HTML" || true
         fi
 
-
   generate:bindings:
     label: generate:bindings (BUILD_FLAGS={{.BUILD_FLAGS}})
     summary: Generates bindings for the frontend
+    run: once
     deps:
       - task: go:mod:tidy
     sources:
@@ -157,6 +176,7 @@ tasks:
 
   generate:icons:
     summary: Generates Windows `.ico` and Mac `.icns` files from an image
+    run: once
     dir: build
     sources:
       - "appicon.png"
@@ -172,7 +192,10 @@ tasks:
     deps:
       - task: install:frontend:deps
     cmds:
-      - '{{if eq OS "windows"}}cmd /c "set VITE_GOARIA_EXTRACTOR={{.VITE_GOARIA_EXTRACTOR}}&& pnpm run dev -- --port {{.VITE_PORT}} --strictPort"{{else}}VITE_GOARIA_EXTRACTOR="{{.VITE_GOARIA_EXTRACTOR}}" pnpm run dev -- --port {{.VITE_PORT}} --strictPort{{end}}'
+      - task: frontend:run
+        vars:
+          SCRIPT: 'dev -- --port {{.VITE_PORT}} --strictPort'
+          VITE_GOARIA_EXTRACTOR: '{{.VITE_GOARIA_EXTRACTOR}}'
     env:
       VITE_GOARIA_EXTRACTOR: '{{.VITE_GOARIA_EXTRACTOR}}'
     vars:

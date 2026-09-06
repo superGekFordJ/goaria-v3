@@ -12,6 +12,8 @@ vars:
   APP_NAME: "goaria-v3"
   BIN_DIR: "bin"
   VITE_PORT: "{{.WAILS_VITE_PORT | default 9245}}"
+  GOOS: '{{.GOOS | default OS}}'
+  PNPM: '{{if eq OS "windows"}}cmd /c pnpm{{else}}pnpm{{end}}'
   EXTRACTOR_VARIANT:
     sh: 'printf "%s" "${EXTRACTOR_VARIANT:-}"'
   EXTRACTOR_BUILD_TAGS:
@@ -21,21 +23,21 @@ tasks:
   build:
     summary: Builds the application
     cmds:
-      - task: "{{OS}}:build"
+      - task: "{{.GOOS}}:build"
         vars:
           EXTRACTOR_VARIANT: '{{.EXTRACTOR_VARIANT}}'
 
   package:
     summary: Packages a production build of the application
     cmds:
-      - task: "{{OS}}:package"
+      - task: "{{.GOOS}}:package"
         vars:
           EXTRACTOR_VARIANT: '{{.EXTRACTOR_VARIANT}}'
 
   run:
     summary: Runs the application
     cmds:
-      - task: "{{OS}}:run"
+      - task: "{{.GOOS}}:run"
 
   dev:
     summary: Runs the application in development mode
@@ -62,7 +64,7 @@ tasks:
     summary: Run frontend lint (pnpm run lint)
     dir: frontend
     cmds:
-      - pnpm run lint
+      - '{{.PNPM}} run lint'
 
   test:go:
     summary: Run Go tests
@@ -74,7 +76,7 @@ tasks:
     summary: Run frontend tests (Vitest)
     dir: frontend
     cmds:
-      - pnpm test:run
+      - '{{.PNPM}} test:run'
 
   test:all:
     summary: Run all tests (Go + Frontend)
@@ -129,7 +131,7 @@ tasks:
     summary: Update frontend deps (respecting lockfile)
     dir: frontend
     cmds:
-      - pnpm update --latest
+      - '{{.PNPM}} update --latest'
 
   deps:update:go:
     summary: Update Go deps (tidy + check)
@@ -141,22 +143,25 @@ tasks:
   clean:dist:
     summary: Remove frontend build artifacts
     cmds:
-      - powershell -Command "if (Test-Path 'frontend/dist') { Remove-Item -Recurse -Force 'frontend/dist' }"
+      - cmd: powershell -NoProfile -Command "if (Test-Path 'frontend/dist') { Remove-Item -Recurse -Force 'frontend/dist' }"
+        platforms: [windows]
+      - cmd: rm -rf frontend/dist
+        platforms: [linux, darwin]
 
   clean:all:
-    summary: Remove frontend dist and binaries (non-destructive to cache)
+    summary: Remove frontend dist, binaries, and generated bindings (non-destructive to cache)
     cmds:
-      - powershell -Command "if (Test-Path 'frontend/dist') { Remove-Item -Recurse -Force 'frontend/dist' }"
-      - powershell -Command "if (Test-Path 'bin') { Remove-Item -Recurse -Force 'bin' }"
-      - powershell -Command "if (Test-Path 'frontend/bindings') { Remove-Item -Recurse -Force 'frontend/bindings' }"
+      - cmd: powershell -NoProfile -Command "if (Test-Path 'frontend/dist') { Remove-Item -Recurse -Force 'frontend/dist' }; if (Test-Path 'bin') { Remove-Item -Recurse -Force 'bin' }; if (Test-Path 'frontend/bindings') { Remove-Item -Recurse -Force 'frontend/bindings' }"
+        platforms: [windows]
+      - cmd: rm -rf frontend/dist bin frontend/bindings
+        platforms: [linux, darwin]
 
   setup:docker:
     summary: Builds Docker image for cross-compilation (~800MB download)
     cmds:
       - task: common:setup:docker
 
-  # ==================== Info ====================
-
+  # ==================== Info ====================\n
   info:
     desc: "Show project info"
     cmds:
