@@ -8,10 +8,10 @@ export default defineConfig({
 
   resolve: {
     alias: {
-      '@': resolve(__dirname, 'src'),
-      '@components': resolve(__dirname, 'src/components'),
-      '@stores': resolve(__dirname, 'src/stores'),
-      '@assets': resolve(__dirname, 'src/assets'),
+      '@': resolve(import.meta.dirname, 'src'),
+      '@components': resolve(import.meta.dirname, 'src/components'),
+      '@stores': resolve(import.meta.dirname, 'src/stores'),
+      '@assets': resolve(import.meta.dirname, 'src/assets'),
     },
   },
 
