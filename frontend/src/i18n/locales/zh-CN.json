@@ -24,6 +24,14 @@
     "loadFailed": "无法加载设置。",
     "retry": "重试",
     "autoSave": "自动保存",
+    "navigation": {
+      "label": "章节导航",
+      "toggle": "跳转设置章节，当前：{section}",
+      "loading": "正在读取设置",
+      "userAgent": "浏览器标识",
+      "advanced": "窗口与历史",
+      "updates": "软件更新"
+    },
     "errors": {
       "persistFailed": "无法保存设置。",
       "notLoaded": "设置尚未加载。",

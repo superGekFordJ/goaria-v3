@@ -24,6 +24,14 @@
     "loadFailed": "Could not load settings.",
     "retry": "Retry",
     "autoSave": "Auto Save",
+    "navigation": {
+      "label": "Jump to section",
+      "toggle": "Navigate settings, current section: {section}",
+      "loading": "Loading settings",
+      "userAgent": "User Agent",
+      "advanced": "Window & History",
+      "updates": "Software Updates"
+    },
     "errors": {
       "persistFailed": "Could not save settings.",
       "notLoaded": "Settings are not loaded yet.",

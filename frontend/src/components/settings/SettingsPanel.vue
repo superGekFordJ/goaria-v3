@@ -1,14 +1,31 @@
 <script setup lang="ts">
-  import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
+  import {
+    computed,
+    defineAsyncComponent,
+    onMounted,
+    onUnmounted,
+    onActivated,
+    onDeactivated,
+    ref,
+    watch,
+    nextTick,
+  } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { useConfigStore } from '../../stores/config'
   import { AppConfig } from '../../../bindings/goaria-v3/internal/config/models.js'
   import {
     Settings as SettingsIcon,
-    CheckCircle,
-    Loader2,
     AlertCircle,
     RotateCw,
+    FolderOpen,
+    Zap,
+    Cpu,
+    Globe,
+    Palette,
+    Layers,
+    Puzzle,
+    Package,
+    RefreshCw,
   } from '@lucide/vue'
 
   import DownloadSection from './sections/DownloadSection.vue'
@@ -19,7 +36,10 @@
   import AdvancedSection from './sections/AdvancedSection.vue'
   import ExtensionSection from './sections/ExtensionSection.vue'
   import UpdateSection from './sections/UpdateSection.vue'
-  import SettingsFloatingStatus from './SettingsFloatingStatus.vue'
+  import SettingsCommandCapsule, {
+    type SettingsNavigationSection,
+  } from './sections/SettingsCommandCapsule.vue'
+  import { useUIStore } from '../../stores/ui'
 
   const isExtractorEnabled = import.meta.env.VITE_GOARIA_EXTRACTOR === 'true'
   const ExtractorSection = isExtractorEnabled
@@ -110,7 +130,7 @@
   }
 
   onMounted(() => {
-    updateScrollThreshold()
+    startNavigation()
     if (configStore.isHydrated) {
       hydrateFromStore()
     } else {
@@ -222,35 +242,140 @@
     applyGeneration++
     clearPendingTimers()
     stopHydrationWatch()
+    stopNavigation()
   })
 
   const connectionOptions = ['1', '4', '8', '16', '24', '32']
 
-  const isScrolledPastHeader = ref(false)
-  const headerRef = ref<HTMLElement | null>(null)
+  const uiStore = useUIStore()
+  const sections: SettingsNavigationSection[] = [
+    { id: 'download', labelKey: 'download.title', icon: FolderOpen },
+    { id: 'rpc', labelKey: 'rpc.title', icon: Zap },
+    { id: 'performance', labelKey: 'performance.title', icon: Cpu },
+    { id: 'user-agent', labelKey: 'settings.navigation.userAgent', icon: Globe },
+    { id: 'appearance', labelKey: 'appearance.title', icon: Palette },
+    { id: 'advanced', labelKey: 'settings.navigation.advanced', icon: Layers },
+    { id: 'extension', labelKey: 'extension.title', icon: Puzzle },
+    ...(isExtractorEnabled
+      ? [{ id: 'extractor', labelKey: 'extractor.title', icon: Package }]
+      : []),
+    { id: 'update', labelKey: 'settings.navigation.updates', icon: RefreshCw },
+  ]
+  const activeSection = ref(sections[0].id)
+  const isFloating = ref(false)
+  const capsuleTop = ref(32)
+  const capsuleSpace = ref(360)
+  const sentinelRef = ref<HTMLElement | null>(null)
+  const contentRef = ref<HTMLElement | null>(null)
   const scrollContainerRef = ref<HTMLElement | null>(null)
-  let scrollThreshold = 80
+  let sectionElements: HTMLElement[] = []
+  let navigationObserver: ResizeObserver | null = null
+  let scrollFrame = 0
+  const landingOffset = 62
 
-  const updateScrollThreshold = () => {
-    if (headerRef.value?.offsetHeight) {
-      scrollThreshold = headerRef.value.offsetTop + headerRef.value.offsetHeight + 8
+  function updateNavigation() {
+    scrollFrame = 0
+    const scroller = scrollContainerRef.value
+    const sentinel = sentinelRef.value
+    if (!scroller || !sentinel) return
+
+    // 1. 批量读取 (Batch Read) - 集中读取布局尺寸，杜绝布局抖动与强制同步重排
+    const viewport = scroller.getBoundingClientRect()
+    const sentinelTop = sentinel.getBoundingClientRect().top - viewport.top
+    const scrollTop = scroller.scrollTop
+
+    const nextFloating = sentinelTop <= 12 && scrollTop > 0
+    const nextTop = nextFloating ? 12 : Math.max(12, sentinelTop)
+    const availableSpace = Math.max(34, scroller.clientHeight - nextTop - 12)
+
+    let current = sections[0].id
+    if (scrollTop > 0) {
+      for (const element of sectionElements) {
+        if (element.getBoundingClientRect().top - viewport.top > landingOffset + 2) break
+        current = element.dataset.settingsSection ?? current
+      }
+      if (scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2) {
+        current = sections[sections.length - 1].id
+      }
+    }
+
+    // 2. 批量写入 (Batch Write) - 仅在数值改变时才赋值，避免滚动期间逐帧触发 DOM Patch
+    if (isFloating.value !== nextFloating) {
+      isFloating.value = nextFloating
+    }
+    if (capsuleTop.value !== nextTop) {
+      capsuleTop.value = nextTop
+    }
+    if (capsuleSpace.value !== availableSpace) {
+      capsuleSpace.value = availableSpace
+    }
+    if (activeSection.value !== current) {
+      activeSection.value = current
     }
   }
 
-  const handleScroll = (event: Event) => {
-    const target = event.target as HTMLElement | null
-    if (!target) return
-    isScrolledPastHeader.value = target.scrollTop > scrollThreshold
+  function handleScroll() {
+    if (!scrollFrame) scrollFrame = requestAnimationFrame(updateNavigation)
   }
+
+  function startNavigation() {
+    if (navigationObserver || !scrollContainerRef.value || !contentRef.value || !sentinelRef.value)
+      return
+    sectionElements = Array.from(
+      contentRef.value.querySelectorAll<HTMLElement>('[data-settings-section]'),
+    )
+    navigationObserver = new ResizeObserver(handleScroll)
+    for (const element of [
+      scrollContainerRef.value,
+      contentRef.value,
+      sentinelRef.value,
+      ...sectionElements,
+    ]) {
+      navigationObserver.observe(element)
+    }
+    updateNavigation()
+  }
+
+  function stopNavigation() {
+    navigationObserver?.disconnect()
+    navigationObserver = null
+    cancelAnimationFrame(scrollFrame)
+    scrollFrame = 0
+    sectionElements = []
+  }
+
+  function navigateToSection(id: string) {
+    const scroller = scrollContainerRef.value
+    const target = sectionElements.find(element => element.dataset.settingsSection === id)
+    if (!scroller || !target) return
+    const top =
+      target.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop -
+      landingOffset
+    const reducedMotion =
+      uiStore.effectsTier === 'reduced' ||
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    target.focus({ preventScroll: true })
+    scroller.scrollTo({ top: Math.max(0, top), behavior: reducedMotion ? 'instant' : 'smooth' })
+    handleScroll()
+  }
+
+  onActivated(startNavigation)
+  onDeactivated(stopNavigation)
 </script>
 
 <template>
-  <div class="relative flex-1 flex flex-col min-h-0 overflow-hidden animate-fade-in-up">
+  <div class="settings-shell relative flex-1 flex flex-col min-h-0 overflow-hidden">
     <!-- Floating Save Status Capsule (Top-Center Dynamic Island) -->
-    <SettingsFloatingStatus
-      :visible="isScrolledPastHeader"
-      :status="saveStatus"
-      :error-key="saveErrorKey"
+    <SettingsCommandCapsule
+      :sections="sections"
+      :active-section="activeSection"
+      :floating="isFloating"
+      :status="showHydrationError ? 'error' : editorsLocked ? 'loading' : saveStatus"
+      :error-key="showHydrationError ? 'settings.loadFailed' : saveErrorKey"
+      :style="{ '--capsule-top': `${capsuleTop}px`, '--capsule-space': `${capsuleSpace}px` }"
+      @navigate="navigateToSection"
     />
 
     <div
@@ -258,10 +383,10 @@
       class="relative z-0 flex-1 overflow-y-auto p-6"
       @scroll.passive="handleScroll"
     >
-      <div class="max-w-2xl mx-auto">
+      <div ref="contentRef" class="max-w-2xl mx-auto">
         <!-- Header -->
-        <div ref="headerRef" class="flex items-center justify-between mb-8">
-          <div class="flex items-center gap-4">
+        <div class="settings-header mb-8">
+          <div class="settings-heading flex items-center gap-4">
             <div
               class="w-12 h-12 rounded-[var(--radius-squircle-md)] bg-[var(--btn-glass-bg)] border border-[var(--glass-border)] flex items-center justify-center"
             >
@@ -278,55 +403,7 @@
           </div>
 
           <!-- Save Status Indicator -->
-          <div class="flex items-center gap-2">
-            <Transition name="fade" mode="out-in">
-              <div
-                v-if="saveStatus === 'saving'"
-                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]"
-              >
-                <Loader2 :size="12" class="animate-spin text-[var(--neon-primary)]" />
-                <span
-                  class="text-[10px] font-mono-data text-[var(--app-text-muted)]"
-                  aria-live="polite"
-                >
-                  {{ t('settings.saving') }}
-                </span>
-              </div>
-              <div
-                v-else-if="saveStatus === 'saved'"
-                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20"
-              >
-                <CheckCircle :size="12" class="text-[var(--status-complete)]" />
-                <span
-                  class="text-[10px] font-mono-data text-[var(--status-complete)]"
-                  aria-live="polite"
-                >
-                  {{ t('settings.saved') }}
-                </span>
-              </div>
-              <div
-                v-else-if="saveStatus === 'error'"
-                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--status-error)]/10 border border-[var(--status-error)]/20"
-              >
-                <AlertCircle :size="12" class="text-[var(--status-error)]" />
-                <span
-                  class="text-[10px] font-mono-data text-[var(--status-error)]"
-                  aria-live="polite"
-                >
-                  {{ t(saveErrorKey) }}
-                </span>
-              </div>
-              <div
-                v-else
-                class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--btn-glass-bg)]"
-              >
-                <div class="w-1.5 h-1.5 rounded-full bg-[var(--app-text-subtle)]"></div>
-                <span class="text-[10px] font-mono-data text-[var(--app-text-subtle)]">
-                  {{ t('settings.autoSave') }}
-                </span>
-              </div>
-            </Transition>
-          </div>
+          <div ref="sentinelRef" class="settings-capsule-sentinel" aria-hidden="true"></div>
         </div>
 
         <div
@@ -361,44 +438,108 @@
             :disabled="editorsLocked"
             :class="{ 'pointer-events-none opacity-60': editorsLocked }"
           >
-            <DownloadSection v-model="formData.download_dir" @pick="handlePickDirectory" />
+            <div
+              id="settings-section-download"
+              data-settings-section="download"
+              tabindex="-1"
+              :aria-label="t('download.title')"
+            >
+              <DownloadSection v-model="formData.download_dir" @pick="handlePickDirectory" />
+            </div>
 
-            <RPCSection
-              v-model:port="formData.rpc_port"
-              v-model:secret="formData.rpc_secret"
-              @change="triggerSave"
-            />
+            <div
+              id="settings-section-rpc"
+              data-settings-section="rpc"
+              tabindex="-1"
+              :aria-label="t('rpc.title')"
+            >
+              <RPCSection
+                v-model:port="formData.rpc_port"
+                v-model:secret="formData.rpc_secret"
+                @change="triggerSave"
+              />
+            </div>
 
-            <PerformanceSection
-              v-model:connections="formData.max_connections"
-              v-model:concurrent-downloads="formData.max_concurrent_downloads"
-              v-model:smart-thread-mode="formData.smart_thread_mode"
-              :connection-options="connectionOptions"
-              @change="triggerSave"
-            />
+            <div
+              id="settings-section-performance"
+              data-settings-section="performance"
+              tabindex="-1"
+              :aria-label="t('performance.title')"
+            >
+              <PerformanceSection
+                v-model:connections="formData.max_connections"
+                v-model:concurrent-downloads="formData.max_concurrent_downloads"
+                v-model:smart-thread-mode="formData.smart_thread_mode"
+                :connection-options="connectionOptions"
+                @change="triggerSave"
+              />
+            </div>
 
-            <UASection v-model="formData.user_agent" @change="triggerSave" />
+            <div
+              id="settings-section-user-agent"
+              data-settings-section="user-agent"
+              tabindex="-1"
+              :aria-label="t('settings.navigation.userAgent')"
+            >
+              <UASection v-model="formData.user_agent" @change="triggerSave" />
+            </div>
           </fieldset>
 
-          <AppearanceSection />
+          <div
+            id="settings-section-appearance"
+            data-settings-section="appearance"
+            tabindex="-1"
+            :aria-label="t('appearance.title')"
+          >
+            <AppearanceSection />
+          </div>
 
           <fieldset
             class="min-w-0 flex flex-col gap-4 border-0 p-0 m-0"
             :disabled="editorsLocked"
             :class="{ 'pointer-events-none opacity-60': editorsLocked }"
           >
-            <AdvancedSection
-              v-model:transparency="formData.window_transparency"
-              v-model:show-history="formData.show_history"
-              @change="triggerSave"
-            />
+            <div
+              id="settings-section-advanced"
+              data-settings-section="advanced"
+              tabindex="-1"
+              :aria-label="t('settings.navigation.advanced')"
+            >
+              <AdvancedSection
+                v-model:transparency="formData.window_transparency"
+                v-model:show-history="formData.show_history"
+                @change="triggerSave"
+              />
+            </div>
           </fieldset>
 
-          <ExtensionSection />
+          <div
+            id="settings-section-extension"
+            data-settings-section="extension"
+            tabindex="-1"
+            :aria-label="t('extension.title')"
+          >
+            <ExtensionSection />
+          </div>
 
-          <component :is="ExtractorSection" v-if="ExtractorSection" />
+          <div
+            v-if="ExtractorSection"
+            id="settings-section-extractor"
+            data-settings-section="extractor"
+            tabindex="-1"
+            :aria-label="t('extractor.title')"
+          >
+            <component :is="ExtractorSection" />
+          </div>
 
-          <UpdateSection />
+          <div
+            id="settings-section-update"
+            data-settings-section="update"
+            tabindex="-1"
+            :aria-label="t('settings.navigation.updates')"
+          >
+            <UpdateSection />
+          </div>
         </div>
       </div>
     </div>
@@ -406,12 +547,41 @@
 </template>
 
 <style scoped>
-  .fade-enter-active,
-  .fade-leave-active {
-    transition: opacity 0.2s ease;
+  .settings-shell {
+    container-type: inline-size;
   }
-  .fade-enter-from,
-  .fade-leave-to {
-    opacity: 0;
+
+  .settings-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 164px minmax(0, 1fr);
+    align-items: center;
+    column-gap: 16px;
+  }
+
+  .settings-heading > div:first-child {
+    flex-shrink: 0;
+  }
+
+  .settings-capsule-sentinel {
+    width: 164px;
+    height: 34px;
+    justify-self: center;
+  }
+
+  [data-settings-section] {
+    scroll-margin-top: 62px;
+    border-radius: var(--radius-squircle-lg);
+  }
+
+  [data-settings-section]:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--neon-primary) 40%, transparent);
+    outline-offset: 3px;
+  }
+
+  @container (max-width: 620px) {
+    .settings-header {
+      grid-template-columns: 1fr;
+      row-gap: 18px;
+    }
   }
 </style>

@@ -191,6 +191,7 @@ const IndependentStub = defineComponent({
 
 function mountPanel() {
   return mount(SettingsPanel, {
+    attachTo: document.body,
     global: {
       stubs: {
         Transition: TransitionStub,
@@ -205,6 +206,40 @@ function mountPanel() {
       },
     },
   })
+}
+
+function mockNavigationGeometry(wrapper: ReturnType<typeof mountPanel>) {
+  const scroller = wrapper.get<HTMLElement>('.overflow-y-auto')
+  Object.defineProperties(scroller.element, {
+    clientHeight: { configurable: true, value: 500 },
+    scrollHeight: { configurable: true, value: 2560 },
+  })
+  vi.spyOn(scroller.element, 'getBoundingClientRect').mockImplementation(
+    () => new DOMRect(0, 0, 760, 500),
+  )
+  let dockTop = 32
+  vi.spyOn(
+    wrapper.get<HTMLElement>('.settings-capsule-sentinel').element,
+    'getBoundingClientRect',
+  ).mockImplementation(() => new DOMRect(298, dockTop - scroller.element.scrollTop, 164, 34))
+  wrapper.findAll<HTMLElement>('[data-settings-section]').forEach((section, index) => {
+    vi.spyOn(section.element, 'getBoundingClientRect').mockImplementation(
+      () => new DOMRect(24, 104 + index * 300 - scroller.element.scrollTop, 672, 280),
+    )
+  })
+  const scrollTo = vi.spyOn(scroller.element, 'scrollTo').mockImplementation(() => undefined)
+  return {
+    scroller,
+    scrollTo,
+    setDockTop(value: number) {
+      dockTop = value
+    },
+    async scroll(top: number) {
+      scroller.element.scrollTop = top
+      await scroller.trigger('scroll')
+      await vi.advanceTimersByTimeAsync(20)
+    },
+  }
 }
 
 async function flushHydration() {
@@ -229,6 +264,9 @@ describe('SettingsPanel', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
   })
 
   it('does not autosave before backend hydration even after 100ms', async () => {
@@ -500,15 +538,18 @@ describe('SettingsPanel', () => {
     wrapper.unmount()
   })
 
-  it('renders floating save status capsule only when scrolled past header and not idle', async () => {
+  it('keeps navigation visible at the top and while saving, saved or idle', async () => {
     storeMock.isHydrated = true
     const wrapper = mountPanel()
     await flushHydration()
 
-    // 1. Initial state: not scrolled, idle -> no floating capsule
-    expect(wrapper.find('[data-testid="floating-save-status"]').exists()).toBe(false)
+    // 1. Initial state: not scrolled, idle -> docked navigation is available
+    expect(wrapper.get('[data-docking]').attributes('data-docking')).toBe('docked')
+    expect(wrapper.get('[data-testid="settings-navigation-toggle"]').text()).toContain(
+      'download.title',
+    )
 
-    // 2. Scroll past header while idle -> still no floating capsule
+    // 2. Scroll past header while idle -> floating navigation stays available
     const scroller = wrapper.find('.overflow-y-auto')
     Object.defineProperty(scroller.element, 'scrollTop', {
       value: 100,
@@ -516,9 +557,10 @@ describe('SettingsPanel', () => {
       writable: true,
     })
     await scroller.trigger('scroll')
-    expect(wrapper.find('[data-testid="floating-save-status"]').exists()).toBe(false)
+    await vi.advanceTimersByTimeAsync(20)
+    expect(wrapper.get('[data-docking]').attributes('data-docking')).toBe('floating')
 
-    // 3. Trigger an edit -> status becomes 'saving' -> floating capsule appears
+    // 3. Trigger an edit -> status becomes 'saving' -> the same capsule announces it
     storeMock.updateConfig.mockResolvedValue(
       new SaveConfigResult({
         success: true,
@@ -528,6 +570,7 @@ describe('SettingsPanel', () => {
     await wrapper.find('.ua-change').trigger('click')
     expect(wrapper.find('[data-testid="floating-save-status"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="floating-save-status"]').text()).toContain('settings.saving')
+    expect(wrapper.find('.capsule-status .animate-spin').exists()).toBe(true)
 
     // 4. After debounce save completes -> floating capsule shows 'saved'
     await vi.advanceTimersByTimeAsync(800)
@@ -535,15 +578,16 @@ describe('SettingsPanel', () => {
     expect(wrapper.find('[data-testid="floating-save-status"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="floating-save-status"]').text()).toContain('settings.saved')
 
-    // 5. After scheduleReset (1500ms) -> saveStatus resets to idle -> floating capsule disappears
+    // 5. After scheduleReset (1500ms) -> saveStatus resets to idle -> navigation remains
     await vi.advanceTimersByTimeAsync(1500)
     await nextTick()
-    expect(wrapper.find('[data-testid="floating-save-status"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="floating-save-status"]').exists()).toBe(true)
+    expect(wrapper.find('.capsule-ready-dot').exists()).toBe(true)
 
     wrapper.unmount()
   })
 
-  it('hides floating save status capsule when scrolled back to the top', async () => {
+  it('redocks the same saving capsule when scrolled back to the top', async () => {
     storeMock.isHydrated = true
     const wrapper = mountPanel()
     await flushHydration()
@@ -569,8 +613,81 @@ describe('SettingsPanel', () => {
       writable: true,
     })
     await scroller.trigger('scroll')
-    expect(wrapper.find('[data-testid="floating-save-status"]').exists()).toBe(false)
+    await vi.advanceTimersByTimeAsync(20)
+    expect(wrapper.get('[data-docking]').attributes('data-docking')).toBe('docked')
+    expect(wrapper.get('[data-testid="floating-save-status"]').text()).toContain('settings.saving')
 
+    wrapper.unmount()
+  })
+
+  it('navigates inside the settings viewport from the initial dock and tracks manual scrolling', async () => {
+    storeMock.isHydrated = true
+    const wrapper = mountPanel()
+    const geometry = mockNavigationGeometry(wrapper)
+    await flushHydration()
+    await geometry.scroll(0)
+    expect(wrapper.get('[data-docking]').attributes('style')).toContain('--capsule-top: 32px')
+    await wrapper.get('[data-testid="settings-navigation-toggle"]').trigger('click')
+    expect(wrapper.findAll('[data-section-link]')).toHaveLength(8)
+    await wrapper.get('[data-section-link="appearance"]').trigger('click')
+    expect(geometry.scrollTo).toHaveBeenCalledWith({ top: 1242, behavior: 'smooth' })
+    expect(document.activeElement).toBe(wrapper.get('#settings-section-appearance').element)
+    expect(
+      wrapper.get('[data-testid="settings-navigation-toggle"]').attributes('aria-expanded'),
+    ).toBe('false')
+    expect(storeMock.updateConfig).not.toHaveBeenCalled()
+    await geometry.scroll(1242)
+    expect(wrapper.get('[data-docking]').attributes('data-docking')).toBe('floating')
+    expect(wrapper.get('[data-docking]').attributes('style')).toContain('--capsule-top: 12px')
+    expect(wrapper.get('[data-testid="settings-navigation-toggle"]').text()).toContain(
+      'appearance.title',
+    )
+    await geometry.scroll(2060)
+    expect(wrapper.get('[data-testid="settings-navigation-toggle"]').text()).toContain(
+      'settings.navigation.updates',
+    )
+    await geometry.scroll(0)
+    expect(wrapper.get('[data-testid="settings-navigation-toggle"]').text()).toContain(
+      'download.title',
+    )
+    expect(wrapper.get('[data-docking]').attributes('data-docking')).toBe('docked')
+    wrapper.unmount()
+  })
+
+  it('remeasures docking on resize and disconnects navigation observers on unmount', async () => {
+    const callbacks: Array<() => void> = []
+    const disconnect = vi.fn()
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: () => void) {
+          callbacks.push(callback)
+        }
+        observe() {}
+        disconnect = disconnect
+      },
+    )
+    const wrapper = mountPanel()
+    const geometry = mockNavigationGeometry(wrapper)
+    geometry.setDockTop(98)
+    callbacks.forEach(callback => callback())
+    await vi.advanceTimersByTimeAsync(20)
+    expect(wrapper.get('[data-docking]').attributes('style')).toContain('--capsule-top: 98px')
+    callbacks.forEach(callback => callback())
+    wrapper.unmount()
+    expect(disconnect).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(20)
+  })
+
+  it('keeps navigation available before hydration and respects reduced motion for anchor jumps', async () => {
+    const wrapper = mountPanel()
+    const geometry = mockNavigationGeometry(wrapper)
+    vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: true } as MediaQueryList)
+    await wrapper.get('[data-testid="settings-navigation-toggle"]').trigger('click')
+    await wrapper.get('[data-section-link="update"]').trigger('click')
+    expect(geometry.scrollTo).toHaveBeenCalledWith({ top: 2142, behavior: 'instant' })
+    expect(storeMock.updateConfig).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="status"]').text()).toBe('settings.navigation.loading')
     wrapper.unmount()
   })
 
@@ -580,6 +697,8 @@ describe('SettingsPanel', () => {
     await flushHydration()
 
     expect(wrapper.find('[data-testid="load-zip-btn"]').exists()).toBe(false)
+    expect(wrapper.find('[data-section-link="extractor"]').exists()).toBe(false)
+    expect(wrapper.find('#settings-section-extractor').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -614,6 +733,11 @@ describe('SettingsPanel', () => {
         wrapper.find('[data-testid="unavailable-banner"]').exists(),
     ).toBe(true)
 
+    expect(wrapper.findAll('[data-section-link]')).toHaveLength(9)
+    expect(wrapper.get('[data-section-link="extractor"]').attributes('href')).toBe(
+      '#settings-section-extractor',
+    )
+    expect(wrapper.find('#settings-section-extractor').exists()).toBe(true)
     wrapper.unmount()
     vi.unstubAllEnvs()
   })

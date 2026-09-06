@@ -24,6 +24,14 @@
     "loadFailed": "無法載入設定。",
     "retry": "重試",
     "autoSave": "自動儲存",
+    "navigation": {
+      "label": "章節導覽",
+      "toggle": "跳至設定章節，目前：{section}",
+      "loading": "正在讀取設定",
+      "userAgent": "瀏覽器識別",
+      "advanced": "視窗與歷史",
+      "updates": "軟體更新"
+    },
     "errors": {
       "persistFailed": "無法儲存設定。",
       "notLoaded": "設定尚未載入。",

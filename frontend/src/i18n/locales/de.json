@@ -24,6 +24,14 @@
     "loadFailed": "Einstellungen konnten nicht geladen werden.",
     "retry": "Erneut versuchen",
     "autoSave": "Automatisches Speichern",
+    "navigation": {
+      "label": "Abschnitt wählen",
+      "toggle": "Einstellungen navigieren, aktueller Abschnitt: {section}",
+      "loading": "Einstellungen laden",
+      "userAgent": "Browserkennung",
+      "advanced": "Fenster & Verlauf",
+      "updates": "Softwareupdates"
+    },
     "errors": {
       "persistFailed": "Einstellungen konnten nicht gespeichert werden.",
       "notLoaded": "Einstellungen sind noch nicht geladen.",

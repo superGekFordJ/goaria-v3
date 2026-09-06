@@ -24,6 +24,14 @@
     "loadFailed": "設定を読み込めませんでした。",
     "retry": "再試行",
     "autoSave": "自動保存",
+    "navigation": {
+      "label": "セクションへ移動",
+      "toggle": "設定を移動、現在のセクション：{section}",
+      "loading": "設定を読み込み中",
+      "userAgent": "ユーザーエージェント",
+      "advanced": "ウィンドウと履歴",
+      "updates": "ソフトウェア更新"
+    },
     "errors": {
       "persistFailed": "設定を保存できませんでした。",
       "notLoaded": "設定はまだ読み込まれていません。",

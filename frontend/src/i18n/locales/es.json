@@ -24,6 +24,14 @@
     "loadFailed": "No se pudieron cargar los ajustes.",
     "retry": "Reintentar",
     "autoSave": "Autoguardado",
+    "navigation": {
+      "label": "Ir a sección",
+      "toggle": "Navegar por los ajustes, sección actual: {section}",
+      "loading": "Cargando ajustes",
+      "userAgent": "Agente de usuario",
+      "advanced": "Ventana e historial",
+      "updates": "Actualizaciones"
+    },
     "errors": {
       "persistFailed": "No se pudieron guardar los ajustes.",
       "notLoaded": "Los ajustes aún no están cargados.",
