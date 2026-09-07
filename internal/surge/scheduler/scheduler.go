@@ -317,6 +317,10 @@ func (p *Scheduler) GetAll() []types.DownloadRecord {
 func (p *Scheduler) Pause(downloadID string) bool {
 	p.mu.RLock()
 	ad, exists := p.downloads[downloadID]
+	var configTotal int64
+	if exists && ad != nil {
+		configTotal = ad.config.TotalSize
+	}
 	p.mu.RUnlock()
 
 	if !exists || ad == nil {
@@ -333,7 +337,7 @@ func (p *Scheduler) Pause(downloadID string) bool {
 		}
 		total := prog.Bytes.TotalSize.Load()
 		if total <= 0 {
-			total = ad.config.TotalSize
+			total = configTotal
 		}
 		if total > 0 && prog.Bytes.VerifiedProgress.Load() >= total {
 			return true
@@ -752,6 +756,8 @@ func (p *Scheduler) worker() {
 			progress.CfgProgress(&localCfg).SetPausing(false)
 		}
 
+		isPauseResult := errors.Is(err, types.ErrPaused) || (isPaused && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)))
+
 		if err == nil {
 			// FORK-PATCH: Physical success takes precedence over late-arriving pause signals.
 			// Clear any stale paused flag, mark Done, and remove from tracking maps.
@@ -764,7 +770,7 @@ func (p *Scheduler) worker() {
 			delete(p.downloads, localCfg.ID)
 			delete(p.downloadLimiters, localCfg.ID)
 			p.mu.Unlock()
-		} else if errors.Is(err, types.ErrPaused) || isPaused {
+		} else if isPauseResult {
 			utils.Debug("Scheduler: Download %s paused cleanly", localCfg.ID)
 			// The concurrent downloader sends DownloadPausedMsg itself via handlePause().
 			// When a single-threaded download is paused, RunDownload returns an error,

@@ -1586,3 +1586,74 @@ drained:
 		t.Error("expected EventPaused to be emitted on normal pause")
 	}
 }
+
+func TestScheduler_WorkerRealErrorWithPauseFlagDoesNotSwallowError(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 100)
+	pool := New(ch, 1)
+	t.Cleanup(func() { pool.GracefulShutdown() })
+
+	// Server returning 403 Forbidden to trigger immediate permanent error
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	id := "test-worker-real-error-pause-flag"
+	state := progress.New(id, 0)
+	// Simulate isPaused == true when worker finishes with a real error
+	state.Paused.Store(true)
+
+	pool.Add(types.DownloadRecord{
+		ID:            id,
+		URL:           server.URL,
+		ProgressState: state,
+		ProgressCh:    ch,
+		Runtime:       types.DefaultRuntimeConfig(),
+	})
+
+	// Wait for worker to finish processing
+	deadline := time.After(5 * time.Second)
+	for {
+		pool.mu.RLock()
+		_, inActive := pool.downloads[id]
+		_, inQueue := pool.queued[id]
+		pool.mu.RUnlock()
+		if !inActive && !inQueue {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for worker to finish processing error download")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	// Drain events: must receive EventError, must NOT receive EventPaused
+	var errorReceived bool
+	drainDeadline := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case msg := <-ch:
+			if msg.Type == types.EventPaused {
+				t.Fatalf("real error with isPaused=true must not be swallowed into EventPaused, got: %+v", msg)
+			}
+			if msg.Type == types.EventError {
+				errorReceived = true
+			}
+		case <-drainDeadline:
+			goto drained
+		}
+	}
+drained:
+	if !errorReceived {
+		t.Error("expected EventError to be emitted for real error despite isPaused=true")
+	}
+
+	// Verify not retained as paused in downloads map
+	pool.mu.RLock()
+	_, inDownloads := pool.downloads[id]
+	pool.mu.RUnlock()
+	if inDownloads {
+		t.Error("failed download must not be retained in pool.downloads")
+	}
+}
