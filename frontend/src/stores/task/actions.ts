@@ -705,7 +705,6 @@ export function setupActions(state: TaskState) {
   async function pause(gid: string) {
     try {
       await PauseTask(gid)
-      await fetchTasks()
       immediateUpdateTrayIcon()
     } catch (err) {
       console.error(`Failed to pause task ${gid}:`, err)

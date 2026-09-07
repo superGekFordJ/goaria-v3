@@ -96,6 +96,10 @@ function waitingOrder(state: ReturnType<typeof setupState>) {
   return state.tasks.value.waiting.map(t => t.gid).join(',')
 }
 
+function stoppedOrder(state: ReturnType<typeof setupState>) {
+  return state.tasks.value.stopped.map(t => t.gid).join(',')
+}
+
 function createControlledPromise<T>() {
   let resolve!: (value: T) => void
   let reject!: (reason?: unknown) => void
@@ -744,23 +748,66 @@ describe('setupActions — integration', () => {
       expect(activeOrder(state)).toBe('c,a')
     })
 
-    it('pause keeps surviving active order and puts the paused GID at the top of waiting', async () => {
+    it('pause calls PauseTask without GetTasks, avoids stale snapshot overwrite, and allows lifecycle events to migrate', async () => {
+      const events = wireMover(state, actions)
       mockPauseTask.mockResolvedValue(undefined as never)
-      state.tasks.value = {
-        active: [mockTask('c'), mockTask('a'), mockTask('b')],
-        waiting: [mockTask('w1', { status: 'paused' })],
-        stopped: [],
-      }
       mockGetTasks.mockResolvedValue({
         active: [mockTask('b'), mockTask('c')],
         waiting: [mockTask('w1', { status: 'paused' }), mockTask('a', { status: 'paused' })],
         stopped: [],
       } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
 
+      state.tasks.value = {
+        active: [mockTask('c'), mockTask('a'), mockTask('b')],
+        waiting: [mockTask('w1', { status: 'paused' })],
+        stopped: [],
+      }
+
       await actions.pause('a')
 
+      // 1. PauseTask was called, but GetTasks was NOT called
+      expect(mockPauseTask).toHaveBeenCalledWith('a')
+      expect(mockGetTasks).not.toHaveBeenCalled()
+
+      // 2. IPC completion does NOT overwrite state with stale active snapshot
+      expect(activeOrder(state)).toBe('c,a,b')
+      expect(waitingOrder(state)).toBe('w1')
+
+      // 3. Subsequent real pause/task:move event migrates task 'a' to top of waiting in local order
+      events.handleTaskMove({ gid: 'a', from: 'active', to: 'waiting', task: {} })
       expect(activeOrder(state)).toBe('c,b')
       expect(waitingOrder(state)).toBe('a,w1')
+    })
+
+    it('pause followed by complete delta directly enters stopped without second pause or resume', async () => {
+      const events = wireMover(state, actions)
+      mockPauseTask.mockResolvedValue(undefined as never)
+
+      state.tasks.value = {
+        active: [mockTask('c'), mockTask('a'), mockTask('b')],
+        waiting: [mockTask('w1', { status: 'paused' })],
+        stopped: [],
+      }
+
+      await actions.pause('a')
+      expect(mockPauseTask).toHaveBeenCalledWith('a')
+      expect(mockGetTasks).not.toHaveBeenCalled()
+
+      // Late complete delta arrives: task 'a' completes and moves directly to stopped
+      await events.handleTaskDelta({
+        type: 'complete',
+        gid: 'a',
+        payload: {
+          status: 'complete',
+          completedLength: '1000',
+          totalLength: '1000',
+        },
+      })
+
+      expect(activeOrder(state)).toBe('c,b')
+      expect(waitingOrder(state)).toBe('w1')
+      expect(stoppedOrder(state)).toBe('a')
+      expect(state.tasks.value.stopped[0].status).toBe('complete')
     })
 
     it('waiting lists follow the same local-order rule on fetchTasks and fetchActiveTasks', async () => {
