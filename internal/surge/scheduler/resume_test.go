@@ -115,8 +115,8 @@ func TestIntegration_PauseResume(t *testing.T) {
 	// Wait for download to return
 	select {
 	case err := <-errCh:
-		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, types.ErrPaused) {
-			t.Logf("Download returned error: %v", err)
+		if !errors.Is(err, types.ErrPaused) {
+			t.Fatalf("expected ErrPaused, got %v", err)
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("Download did not return after cancellation")

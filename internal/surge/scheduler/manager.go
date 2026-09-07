@@ -438,15 +438,8 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 		}
 	}
 
-	// Only send completion if NO error AND not paused
-	// Check specifically for ErrPaused to avoid treating it as error
-	if errors.Is(downloadErr, types.ErrPaused) {
-		utils.Debug("Download paused cleanly")
-		return nil // Return nil so worker can remove it from active map
-	}
-
-	isPaused := progState != nil && progState.IsPaused()
-	if downloadErr == nil && !isPaused {
+	// FORK-PATCH: Physical success takes precedence; EventComplete is terminal-reliable (nil doneCh).
+	if downloadErr == nil {
 		var elapsed time.Duration
 		if progState != nil {
 			_, elapsed = progState.FinalizeSession(effectiveTotalSize)
@@ -454,7 +447,6 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 			elapsed = time.Since(start)
 		}
 
-		// Persist to history before sending event
 		// Compute average download speed in bytes/sec
 		var avgSpeed float64
 		if elapsed.Seconds() > 0 {
@@ -472,17 +464,20 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 				AvgSpeed:     avgSpeed,
 				RateLimit:    rateLimit,
 				RateLimitSet: rateLimitSet,
-			}, ctx.Done())
+			}, nil)
 		}
-	} else if downloadErr != nil && !isPaused {
-		// Verify it's not a cancellation error
-		if errors.Is(downloadErr, context.Canceled) || errors.Is(downloadErr, context.DeadlineExceeded) {
-			utils.Debug("Download canceled cleanly")
-			// FORK-PATCH: Return downloadErr so workers take the error cleanup path
-			// instead of treating cancel as a successful completion.
-			return downloadErr
-		}
-		// EventError is emitted by the scheduler's worker() after all retries are exhausted.
+		return nil
+	}
+
+	// FORK-PATCH: Return typed pause error rather than normalizing to nil.
+	if errors.Is(downloadErr, types.ErrPaused) {
+		utils.Debug("Download paused cleanly")
+		return downloadErr
+	}
+
+	if errors.Is(downloadErr, context.Canceled) || errors.Is(downloadErr, context.DeadlineExceeded) {
+		utils.Debug("Download canceled cleanly")
+		return downloadErr
 	}
 
 	return downloadErr

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -1294,5 +1295,294 @@ func TestScheduler_ControlAPIs_DelegateAndZeroValues(t *testing.T) {
 	}
 	if pool.ScaleWorkers("dl-nil", 1) != 0 {
 		t.Error("nil ProgressState: ScaleWorkers should be 0")
+	}
+}
+
+func TestScheduler_PauseAtVerified_EndgameMatrix(t *testing.T) {
+	tests := []struct {
+		name         string
+		done         bool
+		totalSize    int64
+		liveTotal    int64
+		vp           int64
+		wantReturn   bool
+		wantCanceled bool
+		wantPaused   bool
+		wantPausing  bool
+	}{
+		{
+			name:         "Done is true: no-op guard",
+			done:         true,
+			totalSize:    1000,
+			liveTotal:    1000,
+			vp:           500,
+			wantReturn:   true,
+			wantCanceled: false,
+			wantPaused:   false,
+			wantPausing:  false,
+		},
+		{
+			name:         "Live total known and VP >= total: no-op guard",
+			done:         false,
+			totalSize:    1000,
+			liveTotal:    1000,
+			vp:           1000,
+			wantReturn:   true,
+			wantCanceled: false,
+			wantPaused:   false,
+			wantPausing:  false,
+		},
+		{
+			name:         "VP < total: normal pause proceeds",
+			done:         false,
+			totalSize:    1000,
+			liveTotal:    1000,
+			vp:           900,
+			wantReturn:   true,
+			wantCanceled: true,
+			wantPaused:   true,
+			wantPausing:  true,
+		},
+		{
+			name:         "Total unknown: arbitrary VP must not be treated as complete",
+			done:         false,
+			totalSize:    0,
+			liveTotal:    0,
+			vp:           5000,
+			wantReturn:   true,
+			wantCanceled: true,
+			wantPaused:   true,
+			wantPausing:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			progState := progress.New("guard-test", tc.totalSize)
+			if tc.done {
+				progState.Done.Store(true)
+			}
+			if tc.liveTotal > 0 {
+				progState.Bytes.TotalSize.Store(tc.liveTotal)
+			}
+			if tc.vp > 0 {
+				progState.Bytes.VerifiedProgress.Store(tc.vp)
+			}
+
+			canceled := false
+			pool := NewSchedulerForTesting(map[string]types.DownloadRecord{
+				"guard-test": {
+					ID:            "guard-test",
+					TotalSize:     tc.totalSize,
+					ProgressState: progState,
+				},
+			})
+			pool.downloads["guard-test"].cancel = func() {
+				canceled = true
+			}
+
+			res := pool.Pause("guard-test")
+			if res != tc.wantReturn {
+				t.Errorf("Pause() = %v, want %v", res, tc.wantReturn)
+			}
+			if canceled != tc.wantCanceled {
+				t.Errorf("canceled = %v, want %v", canceled, tc.wantCanceled)
+			}
+			if progState.IsPaused() != tc.wantPaused {
+				t.Errorf("IsPaused() = %v, want %v", progState.IsPaused(), tc.wantPaused)
+			}
+			if progState.IsPausing() != tc.wantPausing {
+				t.Errorf("IsPausing() = %v, want %v", progState.IsPausing(), tc.wantPausing)
+			}
+		})
+	}
+}
+
+func TestScheduler_WorkerEndgameSuccessClearsPause(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 100)
+	pool := New(ch, 1)
+	t.Cleanup(func() { pool.GracefulShutdown() })
+
+	body := []byte("worker endgame success test payload")
+	id := "test-worker-endgame-success"
+	state := progress.New(id, int64(len(body)))
+
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	// Simulate late Pause arriving right as physical download completes
+	state.SetPausing(true)
+	state.Paused.Store(true)
+
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "worker_endgame.bin")
+	if f, err := os.Create(destPath + types.IncompleteSuffix); err == nil {
+		_ = f.Close()
+	}
+
+	pool.Add(types.DownloadRecord{
+		ID:                   id,
+		URL:                  server.URL,
+		OutputPath:           tmpDir,
+		Filename:             "worker_endgame.bin",
+		DestPath:             destPath,
+		ProgressState:        state,
+		ProgressCh:           ch,
+		Runtime:              types.DefaultRuntimeConfig(),
+		TotalSize:            int64(len(body)),
+		SupportsRange:        false,
+		RangeAcquisitionMode: types.RangeAcquireRangeUnsupported,
+	})
+
+	// Wait for worker to finish
+	deadline := time.After(5 * time.Second)
+	for {
+		pool.mu.RLock()
+		_, inActive := pool.downloads[id]
+		_, inQueue := pool.queued[id]
+		pool.mu.RUnlock()
+		if !inActive && !inQueue {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for worker to finish and clean up active downloads")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	if !state.Done.Load() {
+		t.Error("expected state.Done to be true on successful endgame completion")
+	}
+	if state.IsPaused() {
+		t.Error("expected stale Paused flag to be cleared on successful endgame completion")
+	}
+	if state.IsPausing() {
+		t.Error("expected Pausing flag to be cleared on successful endgame completion")
+	}
+
+	// Drain events to verify Complete was received and no error
+	var completeReceived bool
+	drainDeadline := time.After(200 * time.Millisecond)
+	for {
+		select {
+		case msg := <-ch:
+			if msg.Type == types.EventError {
+				t.Fatalf("unexpected EventError: %+v", msg)
+			}
+			if msg.Type == types.EventComplete {
+				completeReceived = true
+			}
+		case <-drainDeadline:
+			goto drained
+		}
+	}
+drained:
+	if !completeReceived {
+		t.Error("expected EventComplete to be emitted")
+	}
+}
+
+func TestScheduler_WorkerNormalPauseRetainsPoolEntry(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 100)
+	pool := New(ch, 1)
+	t.Cleanup(func() { pool.GracefulShutdown() })
+
+	id := "test-worker-normal-pause"
+	totalSize := int64(1048576)
+
+	entered := make(chan struct{})
+	var enterOnce sync.Once
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enterOnce.Do(func() { close(entered) })
+		w.Header().Set("Content-Length", "1048576")
+		w.WriteHeader(http.StatusOK)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(10 * time.Second):
+		}
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "normal_pause.bin")
+	if f, err := os.Create(destPath + types.IncompleteSuffix); err == nil {
+		_ = f.Close()
+	}
+
+	state := progress.New(id, totalSize)
+	pool.Add(types.DownloadRecord{
+		ID:                   id,
+		URL:                  server.URL,
+		OutputPath:           tmpDir,
+		Filename:             "normal_pause.bin",
+		DestPath:             destPath,
+		ProgressState:        state,
+		ProgressCh:           ch,
+		Runtime:              types.DefaultRuntimeConfig(),
+		TotalSize:            totalSize,
+		SupportsRange:        false,
+		RangeAcquisitionMode: types.RangeAcquireRangeUnsupported,
+	})
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for download to hit the server")
+	}
+
+	// Normal Pause
+	if !pool.Pause(id) {
+		t.Fatal("expected Pause to return true")
+	}
+
+	// Wait for worker to finish running
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		pool.mu.RLock()
+		ad, inActive := pool.downloads[id]
+		running := inActive && ad != nil && ad.running.Load()
+		pool.mu.RUnlock()
+		if inActive && !running {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Normal pause MUST retain the pool entry for resume
+	pool.mu.RLock()
+	ad, inActive := pool.downloads[id]
+	pool.mu.RUnlock()
+	if !inActive || ad == nil {
+		t.Fatal("expected paused download to remain in downloads pool for resume")
+	}
+
+	if state.Done.Load() {
+		t.Error("expected Done to remain false on normal pause")
+	}
+
+	// Verify EventPaused was emitted and NO EventError
+	var pausedReceived bool
+	drainDeadline := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case msg := <-ch:
+			if msg.Type == types.EventError {
+				t.Fatalf("normal pause must not emit EventError: %+v", msg)
+			}
+			if msg.Type == types.EventPaused {
+				pausedReceived = true
+			}
+		case <-drainDeadline:
+			goto drained
+		}
+	}
+drained:
+	if !pausedReceived {
+		t.Error("expected EventPaused to be emitted on normal pause")
 	}
 }
