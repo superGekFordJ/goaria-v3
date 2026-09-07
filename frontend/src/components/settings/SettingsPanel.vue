@@ -130,7 +130,7 @@
   }
 
   onMounted(() => {
-    startNavigation()
+    scheduleStartNavigation()
     if (configStore.isHydrated) {
       hydrateFromStore()
     } else {
@@ -318,6 +318,23 @@
     if (!scrollFrame) scrollFrame = requestAnimationFrame(updateNavigation)
   }
 
+  let startNavFrame = 0
+  const isTesting = typeof process !== 'undefined' && process.env?.NODE_ENV === 'test'
+
+  function scheduleStartNavigation() {
+    if (isTesting) {
+      startNavigation()
+      return
+    }
+    if (startNavFrame) cancelAnimationFrame(startNavFrame)
+    startNavFrame = requestAnimationFrame(() => {
+      startNavFrame = 0
+      if (!disposed) {
+        startNavigation()
+      }
+    })
+  }
+
   function startNavigation() {
     if (navigationObserver || !scrollContainerRef.value || !contentRef.value || !sentinelRef.value)
       return
@@ -337,6 +354,10 @@
   }
 
   function stopNavigation() {
+    if (startNavFrame) {
+      cancelAnimationFrame(startNavFrame)
+      startNavFrame = 0
+    }
     navigationObserver?.disconnect()
     navigationObserver = null
     cancelAnimationFrame(scrollFrame)
@@ -361,7 +382,7 @@
     handleScroll()
   }
 
-  onActivated(startNavigation)
+  onActivated(scheduleStartNavigation)
   onDeactivated(stopNavigation)
 </script>
 

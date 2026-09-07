@@ -4,6 +4,7 @@
     nextTick,
     onBeforeUnmount,
     onDeactivated,
+    onMounted,
     ref,
     useId,
     watch,
@@ -12,6 +13,7 @@
   import { useI18n } from 'vue-i18n'
   import { Loader2, CheckCircle, AlertCircle, ChevronDown, Compass } from '@lucide/vue'
   import LiquidGlassPanel from '../../common/LiquidGlassPanel.vue'
+  import { preloadDisplacementMap } from '../../../composables/useLiquidGlass'
 
   export type SaveStatus = 'idle' | 'loading' | 'saving' | 'saved' | 'error'
   export interface SettingsNavigationSection {
@@ -172,6 +174,14 @@
     },
     { flush: 'sync' },
   )
+  onMounted(() => {
+    if (typeof window !== 'undefined' && !isTesting) {
+      const schedule = window.requestIdleCallback || ((cb: () => void) => setTimeout(cb, 120))
+      schedule(() => {
+        preloadDisplacementMap(360, panelHeight.value, 24, 24)
+      })
+    }
+  })
   onDeactivated(() => {
     clearCollapseTimers()
     close()
@@ -343,20 +353,31 @@
     width: 100%;
     min-width: 0;
     height: 100%;
-    transition: background 0.3s ease;
-  }
-
-  /* 展开态：仅在内容层覆上自上而下的保真遮罩，上半部分实心保证文字绝对可读，底部羽化露出最底层真实的液态玻璃 */
-  .command-capsule.is-open .capsule-content {
+    border-radius: inherit;
     background: linear-gradient(
       180deg,
       var(--card-bg) 0%,
-      var(--card-bg) 62%,
-      color-mix(in srgb, var(--card-bg) 75%, transparent) 78%,
-      color-mix(in srgb, var(--card-bg) 18%, transparent) 90%,
+      var(--card-bg) 30%,
+      color-mix(in srgb, var(--card-bg) 75%, transparent) 38%,
+      color-mix(in srgb, var(--card-bg) 18%, transparent) 45%,
+      transparent 50%,
       transparent 100%
     );
-    border-radius: inherit;
+    background-size: 100% 200%;
+    background-repeat: no-repeat;
+    background-position: 0 100%;
+    transition: background-position 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* 展开态：背景遮罩自上而下平滑铺展；收起态：底部羽化顺滑向上吸入胶囊，彻底杜绝底色跳跃 */
+  .command-capsule.is-open .capsule-content {
+    background-position: 0 0%;
+    transition: background-position 0.32s cubic-bezier(0.34, 1.3, 0.64, 1);
+  }
+
+  .command-capsule.is-collapsing .capsule-content {
+    background-position: 0 100%;
+    transition: background-position 0.24s cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   .capsule-trigger {

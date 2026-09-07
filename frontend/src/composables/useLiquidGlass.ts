@@ -112,6 +112,66 @@ const FILTER_TEMPLATE = `
   <feColorMatrix in="soft" type="saturate" values="1" class="f-sat"/>
 `
 
+interface CachedMapEntry {
+  url: string
+  refCount: number
+  lastUsed: number
+}
+
+const globalMapCache = new Map<string, CachedMapEntry>()
+const MAX_GLOBAL_CACHE_SIZE = 32
+
+function getMapCacheKey(w: number, h: number, radius: number, bezel: number, dpr: number): string {
+  return `${w}:${h}:${radius}:${bezel}:${dpr}`
+}
+
+function acquireDisplacementMap(
+  w: number,
+  h: number,
+  radius: number,
+  bezel: number,
+  dpr: number,
+): Promise<string> {
+  const key = getMapCacheKey(w, h, radius, bezel, dpr)
+  const cached = globalMapCache.get(key)
+  if (cached) {
+    cached.refCount++
+    cached.lastUsed = Date.now()
+    return Promise.resolve(cached.url)
+  }
+
+  return buildDisplacementMap(w, h, radius, bezel, dpr).then(url => {
+    globalMapCache.set(key, { url, refCount: 1, lastUsed: Date.now() })
+    if (globalMapCache.size > MAX_GLOBAL_CACHE_SIZE) {
+      let oldestKey: string | null = null
+      let oldestTime = Infinity
+      for (const [k, v] of globalMapCache.entries()) {
+        if (v.refCount <= 0 && v.lastUsed < oldestTime) {
+          oldestTime = v.lastUsed
+          oldestKey = k
+        }
+      }
+      if (oldestKey) {
+        const evicted = globalMapCache.get(oldestKey)
+        if (evicted) {
+          URL.revokeObjectURL(evicted.url)
+          globalMapCache.delete(oldestKey)
+        }
+      }
+    }
+    return url
+  })
+}
+
+function releaseDisplacementMap(key: string | null) {
+  if (!key) return
+  const cached = globalMapCache.get(key)
+  if (cached) {
+    cached.refCount = Math.max(0, cached.refCount - 1)
+    cached.lastUsed = Date.now()
+  }
+}
+
 interface GlassEntry {
   key: string
   layer: HTMLElement
@@ -128,6 +188,7 @@ interface GlassEntry {
   pendingGeom: { w: number; h: number; bezel: number; radius: number; dpr: number } | null
   ro: ResizeObserver
   blobUrl: string | null
+  mapCacheKey: string | null
   mapGen: number
 }
 
@@ -142,12 +203,18 @@ function ensureDefs(): SVGDefsElement {
     for (const stale of registry.values()) {
       stale.mapGen++
       stale.pendingGeom = null
-      if (stale.blobUrl) {
-        URL.revokeObjectURL(stale.blobUrl)
-        stale.blobUrl = null
+      if (stale.mapCacheKey) {
+        releaseDisplacementMap(stale.mapCacheKey)
+        stale.mapCacheKey = null
       }
+      stale.blobUrl = null
     }
   }
+  for (const item of globalMapCache.values()) {
+    URL.revokeObjectURL(item.url)
+  }
+  globalMapCache.clear()
+
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
   svg.setAttribute('width', '0')
   svg.setAttribute('height', '0')
@@ -217,22 +284,27 @@ function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, be
   }
 
   const target = { w, h, bezel, radius, dpr }
+  const cacheKey = getMapCacheKey(w, h, radius, bezel, dpr)
   entry.pendingGeom = target
   entry.mapGen++
   const gen = entry.mapGen
-  buildDisplacementMap(w, h, radius, bezel, dpr)
+
+  acquireDisplacementMap(w, h, radius, bezel, dpr)
     .then(url => {
       if (gen !== entry.mapGen || !registry?.has(entry.key)) {
-        URL.revokeObjectURL(url)
+        releaseDisplacementMap(cacheKey)
         return
       }
-      const prev = entry.blobUrl
+      const prevKey = entry.mapCacheKey
       entry.blobUrl = url
+      entry.mapCacheKey = cacheKey
       entry.geom = target
       entry.pendingGeom = null
       entry.map.setAttribute('href', url)
       applyGlassAttrs(entry, params, dispMul, w, h)
-      if (prev) URL.revokeObjectURL(prev)
+      if (prevKey && prevKey !== cacheKey) {
+        releaseDisplacementMap(prevKey)
+      }
     })
     .catch(() => {
       if (gen === entry.mapGen) {
@@ -294,6 +366,7 @@ export function useLiquidGlass(
         if (entry) updateGlass(entry, params, dispMul, bezelMul)
       }),
       blobUrl: null,
+      mapCacheKey: null,
       mapGen: 0,
     }
 
@@ -309,10 +382,11 @@ export function useLiquidGlass(
     if (!entry) return
     entry.mapGen++
     entry.ro.disconnect()
-    if (entry.blobUrl) {
-      URL.revokeObjectURL(entry.blobUrl)
-      entry.blobUrl = null
+    if (entry.mapCacheKey) {
+      releaseDisplacementMap(entry.mapCacheKey)
+      entry.mapCacheKey = null
     }
+    entry.blobUrl = null
     entry.filter.remove()
     registry?.delete(entry.key)
     entry = null
@@ -409,3 +483,57 @@ export function getStaticGlassFilterId(): string {
 
   return id
 }
+
+/* ================= Pipeline Warmup =================
+ * Triggers GPU shader compilation and creates shared SVG filter definitions during app idle time.
+ * Prevents initial shader compilation stutter when opening modals or navigating to settings. */
+let hasWarmedUp = false
+
+export function warmupLiquidGlassPipeline(): void {
+  if (hasWarmedUp || typeof document === 'undefined' || !supportsUrlBackdropFilter()) return
+  hasWarmedUp = true
+  try {
+    // 1. Pre-warm static glass filter and its 256x256 SDF map
+    getStaticGlassFilterId()
+
+    // 2. Pre-warm full liquid glass filter template in DOM
+    const defs = ensureDefs()
+    const warmupId = 'lg-warmup-probe'
+    if (!document.getElementById(warmupId)) {
+      const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter')
+      filter.id = warmupId
+      filter.setAttribute('x', '0%')
+      filter.setAttribute('y', '0%')
+      filter.setAttribute('width', '100%')
+      filter.setAttribute('height', '100%')
+      filter.setAttribute('primitiveUnits', 'objectBoundingBox')
+      filter.setAttribute('color-interpolation-filters', 'sRGB')
+      filter.innerHTML = FILTER_TEMPLATE
+      defs.appendChild(filter)
+    }
+
+    // 3. Trigger GPU shader compilation with an offscreen 1px probe element
+    const probe = document.createElement('div')
+    probe.style.cssText =
+      'position:fixed;top:-9999px;left:-9999px;width:16px;height:16px;opacity:0.001;pointer-events:none;backdrop-filter:blur(2px) url(#lg-warmup-probe);-webkit-backdrop-filter:blur(2px) url(#lg-warmup-probe);'
+    document.body.appendChild(probe)
+    requestAnimationFrame(() => {
+      probe.remove()
+    })
+  } catch {
+    // Pipeline warmup is strictly best-effort
+  }
+}
+
+/** Pre-warms a specific geometry displacement map into the global LRU cache during idle time. */
+export function preloadDisplacementMap(
+  w: number,
+  h: number,
+  radius: number,
+  bezel: number,
+): void {
+  if (typeof window === 'undefined' || !supportsUrlBackdropFilter()) return
+  const dpr = Math.min(window.devicePixelRatio || 1, 2)
+  acquireDisplacementMap(w, h, radius, bezel, dpr).catch(() => {})
+}
+

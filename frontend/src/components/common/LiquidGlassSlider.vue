@@ -76,11 +76,12 @@
   let railWidth = 0
   let ro: ResizeObserver | null = null
   const mapCache = new Map<string, { blurX: number; blurY: number; url: string }>()
-  const mapDpr = Math.min(4, Math.max(3, (window.devicePixelRatio || 1) * 2))
+  const mapDpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1))
 
   let currentW = THUMB_W
   let currentH = THUMB_H
   let currentCapturePad = 0
+  let isUnmounted = false
 
   function buildDisplacementMap(
     w: number,
@@ -100,7 +101,8 @@
     const canvas = document.createElement('canvas')
     canvas.width = mapW
     canvas.height = mapH
-    const ctx = canvas.getContext('2d')!
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return ''
     const img = ctx.createImageData(mapW, mapH)
     const data = img.data
     const hw = lensW / 2
@@ -144,7 +146,11 @@
       }
     }
     ctx.putImageData(img, 0, 0)
-    return canvas.toDataURL('image/png')
+    try {
+      return canvas.toDataURL('image/png')
+    } catch {
+      return ''
+    }
   }
 
   function ensureFilter() {
@@ -188,22 +194,12 @@
     }
   }
 
-  function syncMap(shapeDef: number) {
-    if (!fMap || !fMapBlur) return
-    const bucket = Math.round(Math.min(0.32, Math.abs(shapeDef)) / 0.025) * 0.025
-    if (bucket === mapBucket) return
-    mapBucket = bucket
+  function getOrCreateEntry(bucket: number) {
     const key = bucket.toFixed(3)
     let entry = mapCache.get(key)
     if (!entry) {
       const mapShapeW = THUMB_W * MAX_LIFT * (1 + bucket)
       const mapShapeH = THUMB_H * MAX_LIFT * (1 - bucket * 0.55)
-      entry = {
-        blurX: 0.32 / (mapShapeW + MAP_PAD * 2),
-        blurY: 0.32 / (mapShapeH + MAP_PAD * 2),
-        url: '',
-      }
-      mapCache.set(key, entry)
       const url = buildDisplacementMap(
         mapShapeW,
         mapShapeH,
@@ -212,7 +208,54 @@
         MAP_PAD,
         mapDpr,
       )
-      entry.url = url
+      entry = {
+        blurX: 0.32 / (mapShapeW + MAP_PAD * 2),
+        blurY: 0.32 / (mapShapeH + MAP_PAD * 2),
+        url,
+      }
+      mapCache.set(key, entry)
+    }
+    return entry
+  }
+
+  function prebakeBuckets() {
+    const buckets: number[] = []
+    for (let b = 0; b <= 0.325; b += 0.025) {
+      buckets.push(Number(b.toFixed(3)))
+    }
+
+    let i = 0
+    function step() {
+      if (isUnmounted || i >= buckets.length) return
+      // Bake 2 buckets per idle tick
+      getOrCreateEntry(buckets[i++])
+      if (i < buckets.length) getOrCreateEntry(buckets[i++])
+      if (i < buckets.length) {
+        if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+          window.requestIdleCallback(step, { timeout: 200 })
+        } else {
+          setTimeout(step, 16)
+        }
+      }
+    }
+
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      window.requestIdleCallback(step, { timeout: 300 })
+    } else {
+      setTimeout(step, 16)
+    }
+  }
+
+  function syncMap(shapeDef: number) {
+    if (!fMap || !fMapBlur) return
+    const bucket = Math.round(Math.min(0.32, Math.abs(shapeDef)) / 0.025) * 0.025
+    if (bucket === mapBucket) return
+    mapBucket = bucket
+    const key = bucket.toFixed(3)
+    let entry = mapCache.get(key)
+    if (!entry) {
+      // If not yet baked, get or create immediately
+      entry = getOrCreateEntry(bucket)
     }
     fMapBlur.setAttribute('stdDeviation', `${entry.blurX} ${entry.blurY}`)
     if (entry.url) {
@@ -407,9 +450,11 @@
     ensureFilter()
     render()
     applyLens()
+    prebakeBuckets()
   })
 
   onBeforeUnmount(() => {
+    isUnmounted = true
     if (ro) ro.disconnect()
     if (raf) cancelAnimationFrame(raf)
     mapBucket = -1
@@ -422,7 +467,7 @@
     svgRoot = null
     defsEl = null
     for (const entry of mapCache.values()) {
-      if (entry.url) URL.revokeObjectURL(entry.url)
+      if (entry.url && entry.url.startsWith('blob:')) URL.revokeObjectURL(entry.url)
     }
     mapCache.clear()
   })

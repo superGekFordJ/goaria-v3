@@ -14,6 +14,7 @@
   import { useSmartInput } from './composables/useSmartInput'
   import { Download } from '@lucide/vue'
   import { useI18n } from 'vue-i18n'
+  import { warmupLiquidGlassPipeline } from './composables/useLiquidGlass'
 
   const DebugPanel = import.meta.env.DEV
     ? defineAsyncComponent(() => import('./components/debug/DebugPanel.vue'))
@@ -113,6 +114,13 @@
     downloadGroupStore.startAutoSync()
 
     void downloadGroupStore.fetchGroups()
+
+    // Warm up liquid glass SVG filters and shaders during initial idle period
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      window.requestIdleCallback(() => warmupLiquidGlassPipeline(), { timeout: 600 })
+    } else {
+      setTimeout(() => warmupLiquidGlassPipeline(), 300)
+    }
   })
 
   onUnmounted(() => {
