@@ -775,7 +775,7 @@ func (p *Scheduler) worker() {
 			// The concurrent downloader sends DownloadPausedMsg itself via handlePause().
 			// When a single-threaded download is paused, RunDownload returns an error,
 			// and the pool fills the gap.
-			if localCfg.ProgressCh != nil {
+			if !errors.Is(err, types.ErrPaused) && localCfg.ProgressCh != nil {
 				var downloaded int64
 				var rateLimit int64
 				var rateLimitSet bool
