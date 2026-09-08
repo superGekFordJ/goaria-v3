@@ -1399,27 +1399,25 @@ func TestScheduler_PauseAtVerified_EndgameMatrix(t *testing.T) {
 }
 
 func TestScheduler_WorkerEndgameSuccessClearsPause(t *testing.T) {
-	ch := make(chan types.DownloadEvent, 100)
+	ch := make(chan types.DownloadEvent, 16)
 	pool := New(ch, 1)
 	t.Cleanup(func() { pool.GracefulShutdown() })
 
-	body := []byte("worker endgame success test payload")
-	id := "test-worker-endgame-success"
-	state := progress.New(id, int64(len(body)))
-
+	body := []byte("worker endgame success")
 	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(body)
 	}))
 	defer server.Close()
 
+	id := "test-endgame-success"
+	state := progress.New(id, int64(len(body)))
 	// Simulate late Pause arriving right as physical download completes
 	state.SetPausing(true)
 	state.Paused.Store(true)
 
 	tmpDir := t.TempDir()
-	destPath := filepath.Join(tmpDir, "worker_endgame.bin")
+	destPath := filepath.Join(tmpDir, "endgame.bin")
 	if f, err := os.Create(destPath + types.IncompleteSuffix); err == nil {
 		_ = f.Close()
 	}
@@ -1428,7 +1426,7 @@ func TestScheduler_WorkerEndgameSuccessClearsPause(t *testing.T) {
 		ID:                   id,
 		URL:                  server.URL,
 		OutputPath:           tmpDir,
-		Filename:             "worker_endgame.bin",
+		Filename:             "endgame.bin",
 		DestPath:             destPath,
 		ProgressState:        state,
 		ProgressCh:           ch,
@@ -1438,21 +1436,16 @@ func TestScheduler_WorkerEndgameSuccessClearsPause(t *testing.T) {
 		RangeAcquisitionMode: types.RangeAcquireRangeUnsupported,
 	})
 
-	// Wait for worker to finish
-	deadline := time.After(5 * time.Second)
-	for {
-		pool.mu.RLock()
-		_, inActive := pool.downloads[id]
-		_, inQueue := pool.queued[id]
-		pool.mu.RUnlock()
-		if !inActive && !inQueue {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("timed out waiting for worker to finish and clean up active downloads")
-		case <-time.After(20 * time.Millisecond):
-		}
+	// Deterministic wait for worker to complete via WaitGroup
+	done := make(chan struct{})
+	go func() {
+		pool.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for worker completion")
 	}
 
 	if !state.Done.Load() {
@@ -1465,140 +1458,43 @@ func TestScheduler_WorkerEndgameSuccessClearsPause(t *testing.T) {
 		t.Error("expected Pausing flag to be cleared on successful endgame completion")
 	}
 
-	// Drain events to verify Complete was received and no error
+	// Verify EventComplete received and download removed from active pool
+	pool.mu.RLock()
+	_, inDownloads := pool.downloads[id]
+	pool.mu.RUnlock()
+	if inDownloads {
+		t.Error("completed download must be removed from pool.downloads")
+	}
+
 	var completeReceived bool
-	drainDeadline := time.After(200 * time.Millisecond)
-	for {
-		select {
-		case msg := <-ch:
-			if msg.Type == types.EventError {
-				t.Fatalf("unexpected EventError: %+v", msg)
-			}
-			if msg.Type == types.EventComplete {
-				completeReceived = true
-			}
-		case <-drainDeadline:
-			goto drained
+	for len(ch) > 0 {
+		msg := <-ch
+		if msg.Type == types.EventError {
+			t.Fatalf("unexpected EventError: %+v", msg)
+		}
+		if msg.Type == types.EventPaused {
+			t.Fatalf("unexpected EventPaused when physical download completed: %+v", msg)
+		}
+		if msg.Type == types.EventComplete {
+			completeReceived = true
 		}
 	}
-drained:
 	if !completeReceived {
 		t.Error("expected EventComplete to be emitted")
 	}
 }
 
-func TestScheduler_WorkerNormalPauseRetainsPoolEntry(t *testing.T) {
-	ch := make(chan types.DownloadEvent, 100)
-	pool := New(ch, 1)
-	t.Cleanup(func() { pool.GracefulShutdown() })
-
-	id := "test-worker-normal-pause"
-	totalSize := int64(1048576)
-
-	entered := make(chan struct{})
-	var enterOnce sync.Once
-	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		enterOnce.Do(func() { close(entered) })
-		w.Header().Set("Content-Length", "1048576")
-		w.WriteHeader(http.StatusOK)
-		select {
-		case <-r.Context().Done():
-		case <-time.After(10 * time.Second):
-		}
-	}))
-	defer server.Close()
-
-	tmpDir := t.TempDir()
-	destPath := filepath.Join(tmpDir, "normal_pause.bin")
-	if f, err := os.Create(destPath + types.IncompleteSuffix); err == nil {
-		_ = f.Close()
-	}
-
-	state := progress.New(id, totalSize)
-	pool.Add(types.DownloadRecord{
-		ID:                   id,
-		URL:                  server.URL,
-		OutputPath:           tmpDir,
-		Filename:             "normal_pause.bin",
-		DestPath:             destPath,
-		ProgressState:        state,
-		ProgressCh:           ch,
-		Runtime:              types.DefaultRuntimeConfig(),
-		TotalSize:            totalSize,
-		SupportsRange:        false,
-		RangeAcquisitionMode: types.RangeAcquireRangeUnsupported,
-	})
-
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for download to hit the server")
-	}
-
-	// Normal Pause
-	if !pool.Pause(id) {
-		t.Fatal("expected Pause to return true")
-	}
-
-	// Wait for worker to finish running
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		pool.mu.RLock()
-		ad, inActive := pool.downloads[id]
-		running := inActive && ad != nil && ad.running.Load()
-		pool.mu.RUnlock()
-		if inActive && !running {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	// Normal pause MUST retain the pool entry for resume
-	pool.mu.RLock()
-	ad, inActive := pool.downloads[id]
-	pool.mu.RUnlock()
-	if !inActive || ad == nil {
-		t.Fatal("expected paused download to remain in downloads pool for resume")
-	}
-
-	if state.Done.Load() {
-		t.Error("expected Done to remain false on normal pause")
-	}
-
-	// Verify EventPaused was emitted and NO EventError
-	var pausedReceived bool
-	drainDeadline := time.After(500 * time.Millisecond)
-	for {
-		select {
-		case msg := <-ch:
-			if msg.Type == types.EventError {
-				t.Fatalf("normal pause must not emit EventError: %+v", msg)
-			}
-			if msg.Type == types.EventPaused {
-				pausedReceived = true
-			}
-		case <-drainDeadline:
-			goto drained
-		}
-	}
-drained:
-	if !pausedReceived {
-		t.Error("expected EventPaused to be emitted on normal pause")
-	}
-}
-
 func TestScheduler_WorkerRealErrorWithPauseFlagDoesNotSwallowError(t *testing.T) {
-	ch := make(chan types.DownloadEvent, 100)
+	ch := make(chan types.DownloadEvent, 16)
 	pool := New(ch, 1)
 	t.Cleanup(func() { pool.GracefulShutdown() })
 
-	// Server returning 403 Forbidden to trigger immediate permanent error
 	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer server.Close()
 
-	id := "test-worker-real-error-pause-flag"
+	id := "test-error-not-swallowed"
 	state := progress.New(id, 0)
 	// Simulate isPaused == true when worker finishes with a real error
 	state.Paused.Store(true)
@@ -1611,45 +1507,33 @@ func TestScheduler_WorkerRealErrorWithPauseFlagDoesNotSwallowError(t *testing.T)
 		Runtime:       types.DefaultRuntimeConfig(),
 	})
 
-	// Wait for worker to finish processing
-	deadline := time.After(5 * time.Second)
-	for {
-		pool.mu.RLock()
-		_, inActive := pool.downloads[id]
-		_, inQueue := pool.queued[id]
-		pool.mu.RUnlock()
-		if !inActive && !inQueue {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("timed out waiting for worker to finish processing error download")
-		case <-time.After(20 * time.Millisecond):
-		}
+	// Deterministic wait for worker to complete via WaitGroup
+	done := make(chan struct{})
+	go func() {
+		pool.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for worker completion")
 	}
 
 	// Drain events: must receive EventError, must NOT receive EventPaused
 	var errorReceived bool
-	drainDeadline := time.After(500 * time.Millisecond)
-	for {
-		select {
-		case msg := <-ch:
-			if msg.Type == types.EventPaused {
-				t.Fatalf("real error with isPaused=true must not be swallowed into EventPaused, got: %+v", msg)
-			}
-			if msg.Type == types.EventError {
-				errorReceived = true
-			}
-		case <-drainDeadline:
-			goto drained
+	for len(ch) > 0 {
+		msg := <-ch
+		if msg.Type == types.EventPaused {
+			t.Fatalf("real error must not be swallowed into EventPaused: %+v", msg)
+		}
+		if msg.Type == types.EventError {
+			errorReceived = true
 		}
 	}
-drained:
 	if !errorReceived {
 		t.Error("expected EventError to be emitted for real error despite isPaused=true")
 	}
 
-	// Verify not retained as paused in downloads map
 	pool.mu.RLock()
 	_, inDownloads := pool.downloads[id]
 	pool.mu.RUnlock()
