@@ -121,23 +121,14 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		Cache.PatchTaskProgress(gid, completedStr, speedStr, totalStr)
 		if m.tracker != nil {
 			m.tracker.UpdateProgressFromEvent(gid, ev.Total, ev.Downloaded)
+			m.tracker.UpdateLiveConnections(gid, ev.Connections)
 		}
 		if State.HasWindow() {
 			payload := map[string]string{
 				"completedLength": completedStr,
 				"downloadSpeed":   speedStr,
 				"totalLength":     totalStr,
-			}
-			threads := ev.Connections
-			if threads <= 0 && m.tracker != nil {
-				if tc, _, ok := m.tracker.GetThreadInfo(gid); ok && tc > 0 {
-					threads = tc
-				}
-			} else if threads > 0 && m.tracker != nil {
-				m.tracker.UpdateThreadCount(gid, threads)
-			}
-			if threads > 0 {
-				payload["threads"] = strconv.Itoa(threads)
+				"threads":         strconv.Itoa(ev.Connections),
 			}
 			m.pusher.Queue(events.TaskDelta{
 				Type:    "progress",
@@ -156,23 +147,14 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			Cache.PatchTaskProgress(pgid, completedStr, speedStr, totalStr)
 			if m.tracker != nil {
 				m.tracker.UpdateProgressFromEvent(pgid, p.Total, p.Downloaded)
+				m.tracker.UpdateLiveConnections(pgid, p.Connections)
 			}
 			if State.HasWindow() {
 				payload := map[string]string{
 					"completedLength": completedStr,
 					"downloadSpeed":   speedStr,
 					"totalLength":     totalStr,
-				}
-				threads := p.Connections
-				if threads <= 0 && m.tracker != nil {
-					if tc, _, ok := m.tracker.GetThreadInfo(pgid); ok && tc > 0 {
-						threads = tc
-					}
-				} else if threads > 0 && m.tracker != nil {
-					m.tracker.UpdateThreadCount(pgid, threads)
-				}
-				if threads > 0 {
-					payload["threads"] = strconv.Itoa(threads)
+					"threads":         strconv.Itoa(p.Connections),
 				}
 				m.pusher.Queue(events.TaskDelta{
 					Type:    "progress",

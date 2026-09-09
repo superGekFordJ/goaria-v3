@@ -210,25 +210,57 @@ func TestTaskTracker_UpdateThreadCount(t *testing.T) {
 		t.Fatalf("expected 2, true, true; got %d, %v, %v", tc, isExp, ok)
 	}
 
-	// 2. Dynamic update preserves exploration and updates count
-	tracker.UpdateThreadCount(gid, 6)
+	// 2. UpdateLiveConnections updates live connections without mutating ThreadCount
+	tracker.UpdateLiveConnections(gid, 6)
 	tc, isExp, ok = tracker.GetThreadInfo(gid)
-	if !ok || tc != 6 || !isExp {
-		t.Fatalf("expected 6, true, true; got %d, %v, %v", tc, isExp, ok)
+	if !ok || tc != 2 || !isExp {
+		t.Fatalf("expected ThreadCount to remain 2, true, true; got %d, %v, %v", tc, isExp, ok)
+	}
+	if live := tracker.GetLiveConnections(gid); live != 6 {
+		t.Fatalf("expected live connections 6; got %d", live)
 	}
 
-	// 3. UpdateThreadCount on unknown task creates it
-	tracker.UpdateThreadCount("sg_unknown", 4)
-	tc, isExp, ok = tracker.GetThreadInfo("sg_unknown")
-	if !ok || tc != 4 || isExp {
-		t.Fatalf("expected 4, false, true; got %d, %v, %v", tc, isExp, ok)
+	// 3. Deprecated UpdateThreadCount delegates to UpdateLiveConnections and also preserves ThreadCount
+	tracker.UpdateThreadCount(gid, 8)
+	tc, isExp, ok = tracker.GetThreadInfo(gid)
+	if !ok || tc != 2 || !isExp {
+		t.Fatalf("expected ThreadCount to remain 2; got %d, %v, %v", tc, isExp, ok)
+	}
+	if live := tracker.GetLiveConnections(gid); live != 8 {
+		t.Fatalf("expected live connections 8; got %d", live)
 	}
 
-	// 4. Non-positive count is ignored
-	tracker.UpdateThreadCount(gid, 0)
-	tc, _, _ = tracker.GetThreadInfo(gid)
-	if tc != 6 {
-		t.Fatalf("expected 6; got %d", tc)
+	// 4. UpdateLiveConnections on unknown task creates it with LiveConnections, not ThreadCount
+	tracker.UpdateLiveConnections("sg_unknown", 4)
+	if live := tracker.GetLiveConnections("sg_unknown"); live != 4 {
+		t.Fatalf("expected 4 live connections on unknown; got %d", live)
+	}
+	if tc, _, ok := tracker.GetThreadInfo("sg_unknown"); ok || tc != 0 {
+		t.Fatalf("expected no ThreadCount on unknown task; got %d, %v", tc, ok)
+	}
+
+	// 5. Zero count updates live connections to 0 (worker drain) without touching ThreadCount
+	tracker.UpdateLiveConnections(gid, 0)
+	if live := tracker.GetLiveConnections(gid); live != 0 {
+		t.Fatalf("expected live connections to update to 0 on drain; got %d", live)
+	}
+	if tc, _, _ := tracker.GetThreadInfo(gid); tc != 2 {
+		t.Fatalf("expected ThreadCount to remain 2 after drain to 0; got %d", tc)
+	}
+
+	// 6. Negative count is ignored
+	tracker.UpdateLiveConnections(gid, -1)
+	if live := tracker.GetLiveConnections(gid); live != 0 {
+		t.Fatalf("expected negative count to be ignored, live remained 0; got %d", live)
+	}
+
+	// 7. Unknown task with connections=0 does not create a placeholder
+	tracker.UpdateLiveConnections("sg_nonexistent_zero", 0)
+	tracker.mu.RLock()
+	_, exists := tracker.tasks["sg_nonexistent_zero"]
+	tracker.mu.RUnlock()
+	if exists {
+		t.Fatal("expected connections=0 on unknown task to NOT create a TrackedTask placeholder")
 	}
 }
 

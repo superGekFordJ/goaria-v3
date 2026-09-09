@@ -36,6 +36,9 @@ type TrackedTask struct {
 	ThreadCount   int
 	IsExploration bool
 
+	// LiveConnections 记录由引擎进度遥测上报的当前瞬时活跃连接数
+	LiveConnections int
+
 	// 文件信息（用于历史记录）
 	FilePath      string
 	Dir           string
@@ -344,26 +347,44 @@ func (t *TaskTracker) GetThreadInfo(gid string) (threadCount int, isExploration 
 	return 0, false, false
 }
 
-// UpdateThreadCount 更新任务运行时的实际并发连接数（由进度遥测动态更新）
-func (t *TaskTracker) UpdateThreadCount(gid string, threadCount int) {
-	if threadCount <= 0 {
+// UpdateLiveConnections 更新任务运行时的实时瞬时活跃连接数（由引擎进度遥测上报动态更新）
+func (t *TaskTracker) UpdateLiveConnections(gid string, connections int) {
+	if connections < 0 {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if tracked := t.tasks[gid]; tracked != nil {
-		if tracked.ThreadCount == threadCount {
+		if tracked.LiveConnections == connections {
 			return
 		}
-		tracked.ThreadCount = threadCount
-	} else {
+		tracked.LiveConnections = connections
+	} else if connections > 0 {
 		t.tasks[gid] = &TrackedTask{
-			GID:         gid,
-			ThreadCount: threadCount,
-			CreatedAt:   time.Now(),
+			GID:             gid,
+			LiveConnections: connections,
+			CreatedAt:       time.Now(),
 		}
 	}
+}
+
+// GetLiveConnections 获取任务的实时瞬时活跃连接数
+func (t *TaskTracker) GetLiveConnections(gid string) int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if tracked := t.tasks[gid]; tracked != nil {
+		return tracked.LiveConnections
+	}
+	return 0
+}
+
+// UpdateThreadCount is deprecated: use UpdateLiveConnections instead.
+// Retained for compatibility; delegates to UpdateLiveConnections to ensure
+// ThreadCount is never mutated by progress updates.
+func (t *TaskTracker) UpdateThreadCount(gid string, threadCount int) {
+	t.UpdateLiveConnections(gid, threadCount)
 }
 
 func (t *TaskTracker) SetTaskGroup(gid string, group rpc.DownloadGroup) {

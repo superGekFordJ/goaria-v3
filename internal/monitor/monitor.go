@@ -600,7 +600,7 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 
 	// 1. 记录速度统计（仅 >50MB 文件）— 不依赖 FilePath，先于 history 执行
 	if task.TotalLength > speedstats.MinFileSize && task.PeakSpeed > 0 {
-		// Fallback chain: PeakThreadCount (D3) → ThreadCount (started workers) → config
+		// Fallback chain: PeakThreadCount (D3) → ThreadCount (allocated/started workers) → config
 		threadCount := task.PeakThreadCount
 		threadSource := "peakThreadCount"
 		if threadCount <= 0 {
