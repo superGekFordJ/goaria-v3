@@ -130,7 +130,11 @@ func TestScaleWorkers_Prewarm_BudgetTimeoutStillSpawns(t *testing.T) {
 	defer cleanup()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(2 * time.Second)
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
 		w.Header().Set("Content-Range", "bytes 0-0/1024")
 		w.Header().Set("Content-Length", "1")
 		w.WriteHeader(http.StatusPartialContent)

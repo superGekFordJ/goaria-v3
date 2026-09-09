@@ -302,7 +302,9 @@ func TestPayloadFirst_429NotRangeUnsupported(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 	fileSize := int64(32 * 1024)
+	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	t.Cleanup(server.Close)
@@ -311,9 +313,12 @@ func TestPayloadFirst_429NotRangeUnsupported(t *testing.T) {
 	d := newPayloadFirstDownloader(t, destPath, fileSize)
 	d.Runtime.Workers = 1
 	d.Runtime.MaxTaskRetries = 1
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 	err := d.Download(ctx, server.URL, nil, nil, destPath, fileSize)
+	if requests.Load() == 0 {
+		t.Fatal("expected at least one request to server before timeout")
+	}
 	if errors.Is(err, types.ErrRangeUnsupported) {
 		t.Fatal("429 must not be ErrRangeUnsupported")
 	}
@@ -329,7 +334,9 @@ func TestPayloadFirst_403NotRangeUnsupported(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 	fileSize := int64(32 * 1024)
+	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	t.Cleanup(server.Close)
@@ -337,9 +344,12 @@ func TestPayloadFirst_403NotRangeUnsupported(t *testing.T) {
 	d := newPayloadFirstDownloader(t, destPath, fileSize)
 	d.Runtime.Workers = 1
 	d.Runtime.MaxTaskRetries = 1
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 	err := d.Download(ctx, server.URL, nil, nil, destPath, fileSize)
+	if requests.Load() == 0 {
+		t.Fatal("expected at least one request to server before timeout")
+	}
 	if errors.Is(err, types.ErrRangeUnsupported) {
 		t.Fatal("403 must not be ErrRangeUnsupported")
 	}
@@ -357,9 +367,12 @@ func TestPayloadFirst_TransportNotRangeUnsupported(t *testing.T) {
 	d := newPayloadFirstDownloader(t, destPath, fileSize)
 	d.Runtime.Workers = 1
 	d.Runtime.MaxTaskRetries = 1
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 	err := d.Download(ctx, server.URL, nil, nil, destPath, fileSize)
+	if err == nil {
+		t.Fatal("expected download error on closed server")
+	}
 	if errors.Is(err, types.ErrRangeUnsupported) {
 		t.Fatal("transport error must not be ErrRangeUnsupported")
 	}

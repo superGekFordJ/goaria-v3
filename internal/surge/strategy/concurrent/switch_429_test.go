@@ -418,10 +418,12 @@ func TestConcurrentDownloader_Persistent429ExhaustsBudget(t *testing.T) {
 
 	fileSize := int64(64 * utils.KiB)
 
+	var requests atomic.Int64
 	server := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),
 		testutil.WithHandler(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
 			w.Header().Set("Retry-After", "0")
 			w.WriteHeader(http.StatusTooManyRequests)
 		}),
@@ -443,7 +445,7 @@ func TestConcurrentDownloader_Persistent429ExhaustsBudget(t *testing.T) {
 
 	mirrors := []string{}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if f, err := os.Create(destPath + ".surge"); err == nil {
@@ -458,6 +460,11 @@ func TestConcurrentDownloader_Persistent429ExhaustsBudget(t *testing.T) {
 	// returning ErrRateLimited directly; the download fails via context deadline.
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected context deadline exceeded, got: %v", err)
+	}
+
+	// Verify all rate-limit retries were actually attempted before deadline.
+	if n := requests.Load(); n < int64(types.RateLimitMaxRetries+1) {
+		t.Fatalf("expected at least %d requests to exhaust budget, got %d", types.RateLimitMaxRetries+1, n)
 	}
 }
 

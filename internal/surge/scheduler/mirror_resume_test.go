@@ -45,14 +45,16 @@ func TestIntegration_MirrorResume(t *testing.T) {
 	primary := testutil.NewStreamingMockServerT(t,
 		fileSize,
 		testutil.WithRangeSupport(true),
-		testutil.WithByteLatency(20*time.Microsecond), // Slow down to ensure we can pause
+		testutil.WithLatency(10*time.Millisecond),    // Small latency to allow interruption
+		testutil.WithByteLatency(1*time.Microsecond), // Streaming throttle guarantees 200MB cannot finish before pause
 	)
 	defer primary.Close()
 
 	mirror := testutil.NewStreamingMockServerT(t,
 		fileSize,
 		testutil.WithRangeSupport(true),
-		testutil.WithByteLatency(20*time.Microsecond),
+		testutil.WithLatency(10*time.Millisecond),
+		testutil.WithByteLatency(1*time.Microsecond),
 	)
 	defer mirror.Close()
 
@@ -115,8 +117,12 @@ func TestIntegration_MirrorResume(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if progState.Bytes.Downloaded.Load() == 0 {
+	downloaded := progState.Bytes.Downloaded.Load()
+	if downloaded == 0 {
 		t.Fatal("download did not make initial progress before pause")
+	}
+	if downloaded >= fileSize {
+		t.Fatalf("download already completed before pause (%d >= %d)", downloaded, fileSize)
 	}
 
 	// Interrupt!
@@ -201,6 +207,9 @@ func TestIntegration_MirrorResume(t *testing.T) {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	if resumeDownloaded := resumeState.Bytes.Downloaded.Load(); resumeDownloaded >= fileSize {
+		t.Fatalf("resumed download already completed before pause (%d >= %d)", resumeDownloaded, fileSize)
 	}
 	resumeState.Pause()
 	select {

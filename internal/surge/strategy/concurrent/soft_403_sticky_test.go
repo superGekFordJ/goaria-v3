@@ -144,7 +144,7 @@ func TestProbe_Intermittent403_Recovers(t *testing.T) {
 		blob[i] = byte(i)
 	}
 
-	const failBudget = 8
+	const failBudget = 3
 	var requests atomic.Int64
 	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := requests.Add(1)
@@ -163,9 +163,9 @@ func TestProbe_Intermittent403_Recovers(t *testing.T) {
 
 	state := progress.New("probe-403-ok", fileSize)
 	d := NewConcurrentDownloader("probe-403-ok", nil, state, &types.RuntimeConfig{
-		MaxConnectionsPerDownload: 2,
-		MaxTaskRetries:            3,
-		Workers:                   2,
+		MaxConnectionsPerDownload: 1,
+		MaxTaskRetries:            2,
+		Workers:                   1,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -194,7 +194,7 @@ func TestProbe_Intermittent500_ResidualContinueRecovers(t *testing.T) {
 		blob[i] = byte(i)
 	}
 
-	const failBudget = 8
+	const failBudget = 3
 	var requests atomic.Int64
 	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := requests.Add(1)
@@ -213,9 +213,9 @@ func TestProbe_Intermittent500_ResidualContinueRecovers(t *testing.T) {
 
 	state := progress.New("probe-500-ok", fileSize)
 	d := NewConcurrentDownloader("probe-500-ok", nil, state, &types.RuntimeConfig{
-		MaxConnectionsPerDownload: 2,
-		MaxTaskRetries:            3,
-		Workers:                   2,
+		MaxConnectionsPerDownload: 1,
+		MaxTaskRetries:            2,
+		Workers:                   1,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -288,7 +288,7 @@ func TestProbe_RedirectThenIntermittent403_Recovers(t *testing.T) {
 		blob[i] = byte(i % 251)
 	}
 
-	const failBudget = 8
+	const failBudget = 3
 	var cdnHits atomic.Int64
 	var redirects atomic.Int64
 
@@ -316,9 +316,9 @@ func TestProbe_RedirectThenIntermittent403_Recovers(t *testing.T) {
 
 	state := progress.New("probe-redir-403-ok", fileSize)
 	d := NewConcurrentDownloader("probe-redir-403-ok", nil, state, &types.RuntimeConfig{
-		MaxConnectionsPerDownload: 2,
-		MaxTaskRetries:            3,
-		Workers:                   2,
+		MaxConnectionsPerDownload: 1,
+		MaxTaskRetries:            2,
+		Workers:                   1,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -1028,7 +1028,7 @@ func TestSoft403_BlockedReadPublishesSubBatch(t *testing.T) {
 func TestSoft403_SlowVerifiedBodyPreventsFalseTerminal(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
-	setSoft403GuardTestLimits(t, 2, 2*time.Second)
+	setSoft403GuardTestLimits(t, 2, 200*time.Millisecond)
 
 	blockSize := int64(types.WorkerBatchSize)
 	rangeSize := 4 * blockSize

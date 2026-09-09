@@ -206,7 +206,6 @@ func TestRunDownload_ConcurrentBootstrapWithoutProbeMetadata(t *testing.T) {
 	server := testutil.NewStreamingMockServerT(t,
 		fileSize,
 		testutil.WithRangeSupport(true),
-		testutil.WithByteLatency(10*time.Microsecond),
 	)
 	defer server.Close()
 

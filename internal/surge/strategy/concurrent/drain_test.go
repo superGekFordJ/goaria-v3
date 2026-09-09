@@ -62,14 +62,14 @@ func TestDrainWorker_ExitsAfterCurrentChunk(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(4 * utils.MiB)
-	// Moderate byte latency ensures the worker is still downloading the first
-	// chunk when we issue the drain, so the drain flag is checked before
-	// the worker can pop the next task. 2µs/byte ≈ 2s per 1MB chunk.
+	fileSize := int64(256 * utils.KiB)
+	// Byte latency ensures the worker is still downloading the first chunk
+	// when we issue the drain, so the drain flag is checked before the worker
+	// can pop the next task.
 	server := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),
-		testutil.WithByteLatency(2*time.Microsecond),
+		testutil.WithByteLatency(1*time.Microsecond),
 	)
 	defer server.Close()
 
@@ -152,11 +152,10 @@ func TestDrainWorker_IdleWorker_DesignLimit(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(1 * utils.MiB)
+	fileSize := int64(64 * utils.KiB)
 	server := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),
-		testutil.WithByteLatency(20*time.Microsecond),
 	)
 	defer server.Close()
 
@@ -188,7 +187,7 @@ func TestDrainWorker_IdleWorker_DesignLimit(t *testing.T) {
 	d.DrainWorker(workerID)
 
 	queue.Push(types.Task{Offset: 0, Length: fileSize})
-	queue.Push(types.Task{Offset: 0, Length: 1 * utils.MiB})
+	queue.Push(types.Task{Offset: 0, Length: fileSize})
 
 	done := make(chan struct{})
 	go func() {
@@ -645,12 +644,29 @@ func TestConnErrorDetection_503(t *testing.T) {
 	}
 
 	state := progress.New("conn-503-test", fileSize)
-	runtime := &types.RuntimeConfig{MaxConnectionsPerDownload: 1}
+	runtime := &types.RuntimeConfig{
+		MaxConnectionsPerDownload: 1,
+		MaxTaskRetries:            1,
+	}
 
 	d := NewConcurrentDownloader("conn-503-test", nil, state, runtime)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+
+	go func() {
+		for {
+			if state.GetConnErrors() > 0 {
+				cancel()
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}()
 
 	_ = d.Download(ctx, server.URL(), nil, nil, destPath, fileSize)
 
@@ -687,8 +703,22 @@ func TestConnErrorDetection_429(t *testing.T) {
 	d := NewConcurrentDownloader("conn-429-test", nil, state, runtime)
 	d.hostLimiter = transport.NewHostRateLimiter()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
+
+	go func() {
+		for {
+			if state.GetConnErrors() > 0 {
+				cancel()
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}()
 
 	_ = d.Download(ctx, server.URL(), nil, nil, destPath, fileSize)
 

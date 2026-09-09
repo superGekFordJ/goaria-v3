@@ -489,9 +489,9 @@ func TestConcurrentDownloader_RetryOnFailure(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(256 * utils.KiB)
-	// Server fails after 50KB per-request, forcing retries
-	// With 64KB chunks, each request will fail mid-way
+	fileSize := int64(128 * utils.KiB)
+	// Server fails after 50KB in a request. With a 128KB file and 32KB write steps,
+	// the 128KB task fails after writing 64KB and retries the remaining 64KB successfully.
 	server := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),

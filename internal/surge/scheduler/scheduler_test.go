@@ -288,12 +288,15 @@ func TestScheduler_Cancel_RemovesFromMap(t *testing.T) {
 
 	state := progress.New("test-id", 1000)
 
+	done := make(chan struct{})
 	pool.mu.Lock()
 	ad := &activeDownload{
 		config: types.DownloadRecord{
 			ID:            "test-id",
 			ProgressState: state,
 		},
+		done:   done,
+		cancel: func() { close(done) },
 	}
 	ad.running.Store(true)
 	pool.downloads["test-id"] = ad
