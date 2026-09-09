@@ -475,6 +475,9 @@ func Clear() {
 
 func triggerSaveLocked() {
 	saveTriggerCount.Add(1)
+	if !SaveEnabled {
+		return
+	}
 	saverOnce.Do(func() {
 		go saveLoop()
 	})
