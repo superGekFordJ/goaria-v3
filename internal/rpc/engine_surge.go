@@ -49,6 +49,18 @@ func (e *SurgeEngine) getScheduler() *scheduler.Scheduler {
 	return nil
 }
 
+// ActiveCount returns the count of active or queued downloads in the scheduler.
+func (e *SurgeEngine) ActiveCount() int {
+	if e == nil {
+		return 0
+	}
+	sched := e.getScheduler()
+	if sched == nil {
+		return 0
+	}
+	return sched.ActiveCount()
+}
+
 // buildSurgeIsNameActive mirrors tip cmd.buildActiveDownloadChecker: treat
 // in-flight scheduler destinations as filename conflicts within a directory.
 func buildSurgeIsNameActive(pool *scheduler.Scheduler) orchestrator.IsNameActiveFunc {

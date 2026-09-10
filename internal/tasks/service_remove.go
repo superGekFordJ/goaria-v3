@@ -3,10 +3,7 @@ package tasks
 import (
 	"os"
 	"path/filepath"
-	"runtime"
-	"runtime/debug"
 	"strings"
-	"sync"
 	"time"
 
 	"goaria-v3/internal/config"
@@ -157,27 +154,6 @@ func (s *Service) removeTaskWithTarget(gid string, target removalTarget, deleteF
 	cleanupRemovedTask(gid, target, deleteFile)
 }
 
-// FORK-PATCH: Added debounced GC trigger on task removal for memory reclamation.
-// Called after file deletion and path-missing cleanup paths.
-var (
-	gcTimer   *time.Timer
-	gcTimerMu sync.Mutex
-)
-
-func triggerDebouncedGC() {
-	gcTimerMu.Lock()
-	defer gcTimerMu.Unlock()
-
-	if gcTimer != nil {
-		gcTimer.Stop()
-	}
-
-	gcTimer = time.AfterFunc(5*time.Second, func() {
-		runtime.GC()
-		debug.FreeOSMemory()
-	})
-}
-
 func cleanupRemovedTask(gid string, target removalTarget, deleteFile bool) {
 	if tracker := monitor.State.GetTracker(); tracker != nil {
 		tracker.RemoveTask(gid)
@@ -193,8 +169,9 @@ func cleanupRemovedTask(gid string, target removalTarget, deleteFile bool) {
 	}
 
 	if target.path == "" {
-		// Even if file path is missing, trigger memory reclamation
-		triggerDebouncedGC()
+		if mon := monitor.State.GetMonitor(); mon != nil {
+			mon.ScheduleIdleMemoryReclaim()
+		}
 		return
 	}
 
@@ -225,8 +202,9 @@ func cleanupRemovedTask(gid string, target removalTarget, deleteFile bool) {
 			_ = os.Remove(absPath)
 		}
 
-		// Trigger memory reclamation after file deletion processes are completed
-		triggerDebouncedGC()
+		if mon := monitor.State.GetMonitor(); mon != nil {
+			mon.ScheduleIdleMemoryReclaim()
+		}
 	}(target.path, target.dir)
 }
 

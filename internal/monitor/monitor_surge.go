@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"maps"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -519,6 +521,39 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 
 	log.Printf("[Monitor] Surge Event: %s -> %s (gid: %s)", deltaType, gid, gid)
 	log.Printf("[DEBUG-EVT-MON] handleSurgeEvent done: type=%s gid=%s", deltaType, gid)
+
+	if deltaType == "complete" || deltaType == "error" || deltaType == "remove" {
+		m.ScheduleIdleMemoryReclaim()
+	}
+}
+
+var (
+	idleReclaimDelay  = 3 * time.Second
+	idleReclaimAction = func() {
+		runtime.GC()
+		debug.FreeOSMemory()
+	}
+)
+
+// ScheduleIdleMemoryReclaim debounces runtime.GC and FreeOSMemory after Surge terminal events.
+func (m *Monitor) ScheduleIdleMemoryReclaim() {
+	if m == nil || m.surgeEng == nil {
+		return
+	}
+
+	m.idleReclaimMu.Lock()
+	defer m.idleReclaimMu.Unlock()
+
+	if m.idleReclaimTimer != nil {
+		m.idleReclaimTimer.Stop()
+	}
+
+	m.idleReclaimTimer = time.AfterFunc(idleReclaimDelay, func() {
+		if m.surgeEng == nil || m.surgeEng.ActiveCount() != 0 {
+			return
+		}
+		idleReclaimAction()
+	})
 }
 
 func keepRangeAcquisition(dst *types.DownloadRecord, src types.DownloadRecord) {

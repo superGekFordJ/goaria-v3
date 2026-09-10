@@ -21,7 +21,6 @@ func TestMain(m *testing.M) {
 		UserAgent:              "Mozilla/5.0 (test)",
 	})
 	code := m.Run()
-	stopPendingGC()
 	http.DefaultClient.CloseIdleConnections()
 	transport.DefaultNetworkPool.CloseAll()
 	if code == 0 {

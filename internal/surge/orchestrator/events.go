@@ -4,9 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"runtime"
-	"runtime/debug"
-	"sync"
 	"syscall"
 	"time"
 
@@ -21,35 +18,6 @@ var (
 	copyCompletedFile   = utils.CopyFile
 	notify              = utils.Notify
 )
-
-// FORK-PATCH: Debounced runtime.GC + FreeOSMemory after lifecycle terminal events.
-var (
-	gcTimer   *time.Timer
-	gcTimerMu sync.Mutex
-)
-
-func triggerGC() {
-	gcTimerMu.Lock()
-	defer gcTimerMu.Unlock()
-
-	if gcTimer != nil {
-		gcTimer.Stop()
-	}
-
-	gcTimer = time.AfterFunc(2*time.Second, func() {
-		runtime.GC()
-		debug.FreeOSMemory()
-	})
-}
-
-func stopPendingGC() {
-	gcTimerMu.Lock()
-	defer gcTimerMu.Unlock()
-	if gcTimer != nil {
-		gcTimer.Stop()
-		gcTimer = nil
-	}
-}
 
 // advanceRemainingTasks keeps saved chunk boundaries aligned when pause
 // recovery only knows aggregate downloaded bytes, not per-task progress.
@@ -416,7 +384,6 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				if settings := mgr.GetSettings(); settings != nil && config.Resolve[bool](settings.General.DownloadCompleteNotification) {
 					notify("Download failed: "+filename, msg)
 				}
-				triggerGC()
 				break
 			}
 
@@ -462,7 +429,6 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					notify(title, fmt.Sprintf("Download complete in %s (%.2f MiB/s)", m.Elapsed.Truncate(time.Second), avgSpeed/float64(utils.MiB)))
 				}
 			}
-			triggerGC()
 
 		case types.EventError:
 			existing, _ := store.GetDownload(m.DownloadID)
@@ -629,7 +595,6 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 
 				notify("Download failed: "+filename, msg)
 			}
-			triggerGC()
 
 		case types.EventRemoved:
 			// Remove resume metadata before touching files so a deleted download does not
@@ -647,7 +612,6 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					utils.Debug("Lifecycle: Failed to remove incomplete file: %v", err)
 				}
 			}
-			triggerGC()
 
 		case types.EventQueued:
 			// enqueueResolved already persisted this record synchronously.

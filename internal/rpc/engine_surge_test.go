@@ -712,3 +712,48 @@ func TestSurgeEngine_buildDownloadList_ErrorOverridesPausing(t *testing.T) {
 		t.Errorf("Error=%q, want 'worker failed while pausing'", found.Error)
 	}
 }
+
+func TestSurgeEngine_ActiveCount(t *testing.T) {
+	var nilEngine *SurgeEngine
+	if count := nilEngine.ActiveCount(); count != 0 {
+		t.Errorf("nilEngine.ActiveCount() = %d, want 0", count)
+	}
+
+	emptyEngine := &SurgeEngine{}
+	if count := emptyEngine.ActiveCount(); count != 0 {
+		t.Errorf("emptyEngine.ActiveCount() = %d, want 0", count)
+	}
+
+	pool := scheduler.NewSchedulerForTesting(nil)
+	engine := NewSurgeEngineForTesting(pool)
+	if count := engine.ActiveCount(); count != 0 {
+		t.Errorf("empty scheduler ActiveCount() = %d, want 0", count)
+	}
+
+	activeState := progress.New("active-task", 1000)
+	doneState := progress.New("done-task", 1000)
+	doneState.Done.Store(true)
+	pausedState := progress.New("paused-task", 1000)
+	pausedState.Paused.Store(true)
+
+	populatedPool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
+		"active-task": {
+			ID:            "active-task",
+			ProgressState: activeState,
+		},
+		"done-task": {
+			ID:            "done-task",
+			ProgressState: doneState,
+		},
+		"paused-task": {
+			ID:            "paused-task",
+			ProgressState: pausedState,
+		},
+	})
+	populatedPool.Add(types.DownloadRecord{ID: "queued-task"})
+
+	populatedEngine := NewSurgeEngineForTesting(populatedPool)
+	if count := populatedEngine.ActiveCount(); count != 2 {
+		t.Errorf("populatedEngine.ActiveCount() = %d, want 2 (1 active + 1 queued)", count)
+	}
+}
