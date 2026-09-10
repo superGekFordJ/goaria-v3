@@ -185,6 +185,33 @@ func NewMonitorForTest(hub *events.Hub) *Monitor {
 	return m
 }
 
+// NewMonitorWithSurgeEngineForTest creates a test Monitor configured with a SurgeEngine.
+func NewMonitorWithSurgeEngineForTest(se *rpc.SurgeEngine) *Monitor {
+	hub := events.NewHub(nil)
+	tracker := NewTaskTracker()
+	m := &Monitor{
+		hub:                   hub,
+		pusher:                NewPusher(hub),
+		tracker:               tracker,
+		surgeEng:              se,
+		stopChan:              make(chan struct{}),
+		deletedGids:           make(map[string]time.Time),
+		pauseResumeIntentions: make(map[string]string),
+	}
+	State.SetTracker(tracker)
+	return m
+}
+
+// HasPendingIdleReclaimForTesting reports whether an idle reclaim timer is currently pending.
+func (m *Monitor) HasPendingIdleReclaimForTesting() bool {
+	if m == nil {
+		return false
+	}
+	m.idleReclaimMu.Lock()
+	defer m.idleReclaimMu.Unlock()
+	return m.idleReclaimTimer != nil && !m.idleReclaimStopped
+}
+
 // Intention strings recorded by BumpPauseResumeIntention and checked by
 // shouldDiscardStalePause. Shared across packages to avoid stringly-typed drift.
 const (
@@ -537,7 +564,9 @@ func (m *Monitor) Stop() {
 	}
 	m.idleReclaimMu.Unlock()
 	m.stopOnce.Do(func() {
-		close(m.stopChan)
+		if m.stopChan != nil {
+			close(m.stopChan)
+		}
 	})
 }
 

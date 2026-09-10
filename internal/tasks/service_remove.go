@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"goaria-v3/internal/config"
@@ -154,6 +155,23 @@ func (s *Service) removeTaskWithTarget(gid string, target removalTarget, deleteF
 	cleanupRemovedTask(gid, target, deleteFile)
 }
 
+var (
+	removeFileCleanupDelayMu sync.RWMutex
+	removeFileCleanupDelay   = 1 * time.Second
+)
+
+func getRemoveFileCleanupDelay() time.Duration {
+	removeFileCleanupDelayMu.RLock()
+	defer removeFileCleanupDelayMu.RUnlock()
+	return removeFileCleanupDelay
+}
+
+func setRemoveFileCleanupDelay(d time.Duration) {
+	removeFileCleanupDelayMu.Lock()
+	defer removeFileCleanupDelayMu.Unlock()
+	removeFileCleanupDelay = d
+}
+
 func cleanupRemovedTask(gid string, target removalTarget, deleteFile bool) {
 	if tracker := monitor.State.GetTracker(); tracker != nil {
 		tracker.RemoveTask(gid)
@@ -176,7 +194,7 @@ func cleanupRemovedTask(gid string, target removalTarget, deleteFile bool) {
 	}
 
 	go func(p string, dir string) {
-		time.Sleep(1 * time.Second)
+		time.Sleep(getRemoveFileCleanupDelay())
 
 		cleanP := filepath.Clean(filepath.FromSlash(p))
 		absPath := cleanP

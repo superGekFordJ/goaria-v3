@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"maps"
-	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -530,12 +529,12 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 var (
 	idleReclaimDelay  = 3 * time.Second
 	idleReclaimAction = func() {
-		runtime.GC()
+		// FreeOSMemory internally triggers runtime.GC() before releasing memory to OS.
 		debug.FreeOSMemory()
 	}
 )
 
-// ScheduleIdleMemoryReclaim debounces runtime.GC and FreeOSMemory after Surge terminal events.
+// ScheduleIdleMemoryReclaim debounces FreeOSMemory after Surge terminal events.
 func (m *Monitor) ScheduleIdleMemoryReclaim() {
 	if m == nil || m.surgeEng == nil {
 		return

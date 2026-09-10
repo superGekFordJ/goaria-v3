@@ -8,10 +8,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
+	"goaria-v3/internal/surge/scheduler"
 )
 
 type appTaskRPCRequest struct {
@@ -423,4 +425,61 @@ func RemoveTask(gid string, deleteFile bool) {
 func BatchRemove(gids []string, deleteFiles bool) {
 	svc := &Service{Engine: &rpc.Aria2Engine{}}
 	svc.BatchRemove(gids, deleteFiles)
+}
+
+func TestCleanupRemovedTask_ForwardsIdleMemoryReclaimToMonitor(t *testing.T) {
+	origMonitor := monitor.State.GetMonitor()
+	origCache := monitor.Cache
+	origDelay := getRemoveFileCleanupDelay()
+	t.Cleanup(func() {
+		monitor.State.SetMonitor(origMonitor)
+		monitor.Cache = origCache
+		setRemoveFileCleanupDelay(origDelay)
+	})
+
+	monitor.Cache = monitor.NewTaskCacheForTest()
+
+	t.Run("empty path forwards immediately", func(t *testing.T) {
+		se := rpc.NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+		mon := monitor.NewMonitorWithSurgeEngineForTest(se)
+		t.Cleanup(func() { mon.Stop() })
+		monitor.State.SetMonitor(mon)
+
+		if mon.HasPendingIdleReclaimForTesting() {
+			t.Fatal("expected no pending idle reclaim initially")
+		}
+
+		cleanupRemovedTask("gid-empty-path", removalTarget{}, false)
+
+		if !mon.HasPendingIdleReclaimForTesting() {
+			t.Fatal("expected pending idle reclaim timer scheduled immediately for empty path")
+		}
+	})
+
+	t.Run("non-empty path forwards after file cleanup delay", func(t *testing.T) {
+		setRemoveFileCleanupDelay(20 * time.Millisecond)
+		se := rpc.NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+		mon := monitor.NewMonitorWithSurgeEngineForTest(se)
+		t.Cleanup(func() { mon.Stop() })
+		monitor.State.SetMonitor(mon)
+
+		if mon.HasPendingIdleReclaimForTesting() {
+			t.Fatal("expected no pending idle reclaim initially")
+		}
+
+		tempFile := filepath.Join(t.TempDir(), "test-file.bin")
+		cleanupRemovedTask("gid-with-path", removalTarget{path: tempFile}, false)
+
+		// Before cleanup delay expires, reclaim should not be scheduled yet
+		if mon.HasPendingIdleReclaimForTesting() {
+			t.Fatal("expected no pending idle reclaim before delay expires")
+		}
+
+		// Wait for the async cleanup goroutine to finish sleep and schedule reclaim
+		time.Sleep(60 * time.Millisecond)
+
+		if !mon.HasPendingIdleReclaimForTesting() {
+			t.Fatal("expected pending idle reclaim timer scheduled after cleanup delay")
+		}
+	})
 }
