@@ -71,6 +71,21 @@
         "name": "Ember",
         "description": "窯火餘燼與機械溫度",
         "concept": "銅火微熔、沉穩餘溫"
+      },
+      "titanium": {
+        "name": "Titanium",
+        "description": "冷鈦霜魄與無塵以太",
+        "concept": "霜白、肅穆、沉寂"
+      },
+      "surge": {
+        "name": "Surge",
+        "description": "紫曜激波與等離子湧",
+        "concept": "紫電、熾烈、瞬發"
+      },
+      "prism": {
+        "name": "Prism",
+        "description": "晶棱折射與流轉虹霓",
+        "concept": "色散、流光、無界"
       }
     },
     "language": "語言",

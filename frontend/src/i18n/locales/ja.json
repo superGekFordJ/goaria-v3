@@ -71,6 +71,21 @@
         "name": "Ember",
         "description": "窯火の余燼と機械的な温もり",
         "concept": "銅火の微溶・沈着な余熱"
+      },
+      "titanium": {
+        "name": "Titanium",
+        "description": "冷チタンの霜魄と無塵のエーテル",
+        "concept": "霜白・粛穆・沈寂"
+      },
+      "surge": {
+        "name": "Surge",
+        "description": "紫曜の衝撃波とプラズマの奔流",
+        "concept": "紫電・熾烈・瞬発"
+      },
+      "prism": {
+        "name": "Prism",
+        "description": "結晶プリズムの屈折と流転する虹彩",
+        "concept": "分散・流光・無界"
       }
     },
     "language": "言語",

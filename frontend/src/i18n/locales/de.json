@@ -71,6 +71,21 @@
         "name": "Ember",
         "description": "Ofenglut & mechanische Wärme",
         "concept": "Kupferglühen, Restwärme"
+      },
+      "titanium": {
+        "name": "Titanium",
+        "description": "Frostiges Titanleuchten & staubloser Äther",
+        "concept": "Frostweiß, feierlich, still"
+      },
+      "surge": {
+        "name": "Surge",
+        "description": "Ionisierte Violett-Stoßwelle & Plasmastrom",
+        "concept": "Elektrisch, feurig, instantan"
+      },
+      "prism": {
+        "name": "Prism",
+        "description": "Kristallprismen-Brechung & fließende Spektral-Iris",
+        "concept": "Dispersion, Strahlen, grenzenlos"
       }
     },
     "language": "Sprache",

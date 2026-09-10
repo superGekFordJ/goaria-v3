@@ -50,6 +50,39 @@ export const skinCatalog = [
     },
     sortOrder: 3,
   },
+  {
+    id: 'titanium',
+    labelKey: 'appearance.skins.titanium.name',
+    descriptionKey: 'appearance.skins.titanium.description',
+    conceptKey: 'appearance.skins.titanium.concept',
+    preview: {
+      dark: { from: '#f8fafc', to: '#94a3b8' },
+      light: { from: '#1e293b', to: '#64748b' },
+    },
+    sortOrder: 4,
+  },
+  {
+    id: 'surge',
+    labelKey: 'appearance.skins.surge.name',
+    descriptionKey: 'appearance.skins.surge.description',
+    conceptKey: 'appearance.skins.surge.concept',
+    preview: {
+      dark: { from: '#f43f5e', to: '#8b5cf6' },
+      light: { from: '#be123c', to: '#6d28d9' },
+    },
+    sortOrder: 5,
+  },
+  {
+    id: 'prism',
+    labelKey: 'appearance.skins.prism.name',
+    descriptionKey: 'appearance.skins.prism.description',
+    conceptKey: 'appearance.skins.prism.concept',
+    preview: {
+      dark: { from: '#a855f7', to: '#06b6d4' },
+      light: { from: '#7c3aed', to: '#0284c7' },
+    },
+    sortOrder: 6,
+  },
 ] as const
 
 /** Union type derived from the catalog — the single source of SkinId. */

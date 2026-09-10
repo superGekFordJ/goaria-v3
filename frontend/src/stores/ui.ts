@@ -34,6 +34,7 @@ export const useUIStore = defineStore(
     const locale = ref<LocalePreference>('auto')
     const themeMode = ref<ThemeMode>('system')
     const skinId = ref<SkinId>(DEFAULT_SKIN_ID)
+    const prismHue = ref<number>(280)
     const density = ref<Density>('comfortable')
     // Live visual level — drives CSS every tick; not in persist.pick.
     const effectsLevel = ref<number>(50)
@@ -124,6 +125,14 @@ export const useUIStore = defineStore(
       applySkin()
     }
 
+    function setPrismHue(hue: number) {
+      const clamped = Math.max(0, Math.min(360, Math.round(hue)))
+      prismHue.value = clamped
+      if (typeof document !== 'undefined') {
+        document.documentElement.style.setProperty('--prism-hue', String(clamped))
+      }
+    }
+
     function setDensity(newDensity: Density) {
       density.value = newDensity
       applyDensity()
@@ -189,6 +198,7 @@ export const useUIStore = defineStore(
     function applySkin() {
       const root = document.documentElement
       root.setAttribute('data-skin', skinId.value)
+      root.style.setProperty('--prism-hue', String(prismHue.value))
     }
 
     function applyDensity() {
@@ -289,6 +299,7 @@ export const useUIStore = defineStore(
       selectedDownloadGroupKey,
       themeMode,
       skinId,
+      prismHue,
       density,
       effectsLevel,
       effectsLevelPersisted,
@@ -307,6 +318,7 @@ export const useUIStore = defineStore(
       consumePendingPasteUris,
       setTheme,
       setSkin,
+      setPrismHue,
       setDensity,
       setEffectsLevel,
       commitEffectsLevel,
@@ -325,6 +337,7 @@ export const useUIStore = defineStore(
         'locale',
         'themeMode',
         'skinId',
+        'prismHue',
         'density',
         'effectsLevelPersisted',
       ],

@@ -71,6 +71,21 @@
         "name": "Ember",
         "description": "Brasa de horno y calidez mecánica",
         "concept": "Resplandor cobrizo, calor residual"
+      },
+      "titanium": {
+        "name": "Titanium",
+        "description": "Brillo de titanio gélido y éter puro",
+        "concept": "Escarchado, solemne, sereno"
+      },
+      "surge": {
+        "name": "Surge",
+        "description": "Onda de choque violeta ionizada y plasma",
+        "concept": "Eléctrico, ardiente, instantáneo"
+      },
+      "prism": {
+        "name": "Prism",
+        "description": "Refracción de prisma de cristal e iris espectral",
+        "concept": "Dispersión, fulgor, infinito"
       }
     },
     "language": "Idioma",

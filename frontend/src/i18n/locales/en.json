@@ -71,6 +71,21 @@
         "name": "Ember",
         "description": "Kiln fire & mechanical warmth",
         "concept": "Copper glow, residual heat"
+      },
+      "titanium": {
+        "name": "Titanium",
+        "description": "Frost-titanium sheen & dustless aether",
+        "concept": "Frosted, solemn, serene"
+      },
+      "surge": {
+        "name": "Surge",
+        "description": "Ionized violet shockwave & plasma current",
+        "concept": "Electric, fierce, instantaneous"
+      },
+      "prism": {
+        "name": "Prism",
+        "description": "Crystal prism refraction & flowing spectral iris",
+        "concept": "Dispersion, radiance, boundless"
       }
     },
     "language": "Language",

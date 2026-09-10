@@ -169,6 +169,171 @@
   --divider-glow: var(--neon-primary);
 }
 
+/* === Skin: Titanium — Cold-Rolled Titanium & Silent Purity === */
+
+/* Titanium / dark */
+[data-skin='titanium'][data-theme='dark'],
+[data-skin='titanium']:not([data-theme='light']) {
+  --neon-primary: #f8fafc;
+  --neon-secondary: #cbd5e1;
+  --neon-glow: rgba(248, 250, 252, 0.22);
+  --neon-btn-text: #09090b;
+
+  --status-active: #34d399;
+  --status-complete: #f8fafc;
+
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-complete: var(--neon-primary);
+
+  --skin-accent-from: #f8fafc;
+  --skin-accent-to: #94a3b8;
+  --skin-surface-tint: rgba(248, 250, 252, 0.03);
+  --skin-surface-border: rgba(248, 250, 252, 0.14);
+  --skin-focus-beam: #f8fafc;
+  --skin-ambient-glow: rgba(248, 250, 252, 0.16);
+
+  --selection-bg: rgba(248, 250, 252, 0.2);
+  --focus-ring: var(--neon-primary);
+  --divider-glow: #cbd5e1;
+}
+
+/* Titanium / light */
+[data-skin='titanium'][data-theme='light'] {
+  --neon-primary: #1e293b;
+  --neon-secondary: #475569;
+  --neon-glow: rgba(30, 41, 59, 0.12);
+  --neon-btn-text: #ffffff;
+
+  --status-active: #047857;
+  --status-complete: #1e293b;
+
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-complete: var(--neon-primary);
+
+  --skin-accent-from: #1e293b;
+  --skin-accent-to: #475569;
+  --skin-surface-tint: rgba(30, 41, 59, 0.04);
+  --skin-surface-border: rgba(30, 41, 59, 0.15);
+  --skin-focus-beam: #1e293b;
+  --skin-ambient-glow: rgba(30, 41, 59, 0.08);
+
+  --selection-bg: rgba(30, 41, 59, 0.15);
+  --focus-ring: var(--neon-primary);
+  --divider-glow: #475569;
+}
+
+/* === Skin: Surge — Speed Surge & Ionic Pulse === */
+
+/* Surge / dark */
+[data-skin='surge'][data-theme='dark'],
+[data-skin='surge']:not([data-theme='light']) {
+  --neon-primary: #f43f5e;
+  --neon-secondary: #8b5cf6;
+  --neon-glow: rgba(244, 63, 94, 0.32);
+  --neon-btn-text: #ffffff;
+
+  --status-active: #34d399;
+  --status-complete: #f43f5e;
+
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-complete: var(--neon-primary);
+
+  --skin-accent-from: #f43f5e;
+  --skin-accent-to: #8b5cf6;
+  --skin-surface-tint: rgba(244, 63, 94, 0.05);
+  --skin-surface-border: rgba(244, 63, 94, 0.14);
+  --skin-focus-beam: #f43f5e;
+  --skin-ambient-glow: rgba(244, 63, 94, 0.25);
+
+  --selection-bg: rgba(244, 63, 94, 0.25);
+  --focus-ring: var(--neon-primary);
+  --divider-glow: var(--neon-primary);
+}
+
+/* Surge / light */
+[data-skin='surge'][data-theme='light'] {
+  --neon-primary: #be123c;
+  --neon-secondary: #6d28d9;
+  --neon-glow: rgba(190, 18, 60, 0.15);
+  --neon-btn-text: #ffffff;
+
+  --status-active: #047857;
+  --status-complete: #be123c;
+
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-complete: var(--neon-primary);
+
+  --skin-accent-from: #be123c;
+  --skin-accent-to: #6d28d9;
+  --skin-surface-tint: rgba(190, 18, 60, 0.05);
+  --skin-surface-border: rgba(190, 18, 60, 0.14);
+  --skin-focus-beam: #be123c;
+  --skin-ambient-glow: rgba(190, 18, 60, 0.12);
+
+  --selection-bg: rgba(190, 18, 60, 0.12);
+  --focus-ring: var(--neon-primary);
+  --divider-glow: var(--neon-primary);
+}
+
+/* === Skin: Prism (Seat 7) — Continuous Spectrum & Refracted Chroma === */
+
+/* Prism / dark */
+[data-skin='prism'][data-theme='dark'],
+[data-skin='prism']:not([data-theme='light']) {
+  --neon-primary: hsl(var(--prism-hue, 280), 85%, 68%);
+  --neon-secondary: hsl(calc(var(--prism-hue, 280) + 25), 85%, 62%);
+  --neon-glow: hsla(var(--prism-hue, 280), 85%, 68%, 0.35);
+  --neon-btn-text: #09090b;
+
+  --status-active: #34d399;
+  --status-complete: var(--neon-primary);
+
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-complete: var(--neon-primary);
+
+  --skin-accent-from: hsl(var(--prism-hue, 280), 85%, 68%);
+  --skin-accent-to: hsl(calc(var(--prism-hue, 280) + 35), 85%, 62%);
+  --skin-surface-tint: hsla(var(--prism-hue, 280), 85%, 68%, 0.05);
+  --skin-surface-border: hsla(var(--prism-hue, 280), 85%, 68%, 0.15);
+  --skin-focus-beam: hsl(var(--prism-hue, 280), 85%, 68%);
+  --skin-ambient-glow: hsla(var(--prism-hue, 280), 85%, 68%, 0.25);
+
+  --selection-bg: hsla(var(--prism-hue, 280), 85%, 68%, 0.25);
+  --focus-ring: var(--neon-primary);
+  --divider-glow: var(--neon-primary);
+}
+
+/* Prism / light */
+[data-skin='prism'][data-theme='light'] {
+  --neon-primary: hsl(var(--prism-hue, 280), 85%, 38%);
+  --neon-secondary: hsl(calc(var(--prism-hue, 280) + 25), 85%, 32%);
+  --neon-glow: hsla(var(--prism-hue, 280), 85%, 38%, 0.15);
+  --neon-btn-text: #ffffff;
+
+  --status-active: #047857;
+  --status-complete: var(--neon-primary);
+
+  --glow-active: var(--status-active);
+  --glow-active-secondary: var(--neon-primary);
+  --glow-complete: var(--neon-primary);
+
+  --skin-accent-from: hsl(var(--prism-hue, 280), 85%, 38%);
+  --skin-accent-to: hsl(calc(var(--prism-hue, 280) + 35), 85%, 32%);
+  --skin-surface-tint: hsla(var(--prism-hue, 280), 85%, 38%, 0.05);
+  --skin-surface-border: hsla(var(--prism-hue, 280), 85%, 38%, 0.15);
+  --skin-focus-beam: hsl(var(--prism-hue, 280), 85%, 38%);
+  --skin-ambient-glow: hsla(var(--prism-hue, 280), 85%, 38%, 0.12);
+
+  --selection-bg: hsla(var(--prism-hue, 280), 85%, 38%, 0.12);
+  --focus-ring: var(--neon-primary);
+  --divider-glow: var(--neon-primary);
+}
+
 /* === Density Settings === */
 /* Compact: Higher information density */
 [data-density='compact'] {

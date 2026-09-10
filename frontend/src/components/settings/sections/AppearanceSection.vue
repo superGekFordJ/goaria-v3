@@ -56,6 +56,10 @@
   function onSliderCommit(v: number) {
     uiStore.commitEffectsLevel(v)
   }
+
+  const currentSkinMeta = computed(() => {
+    return skinCatalog.find(s => s.id === uiStore.skinId) ?? skinCatalog[0]
+  })
 </script>
 
 <template>
@@ -235,50 +239,188 @@
       </div>
     </div>
 
-    <!-- Skin Selector -->
+    <!-- Skin Selector: Orbital Swatches Track + The Specimen Stage -->
     <div class="mb-6">
       <label
         class="text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-3 block"
       >
         {{ t('appearance.skinStyle') }}
       </label>
-      <div class="grid grid-cols-2 gap-3">
-        <button
-          v-for="skin in skinCatalog"
-          :key="skin.id"
-          :class="[
-            'flex items-center gap-3 p-4 rounded-xl border transition-all duration-200 text-left',
-            uiStore.skinId === skin.id
-              ? 'bg-[var(--neon-primary)]/10 border-[var(--neon-primary)]/30'
-              : 'bg-[var(--btn-glass-bg)] border-[var(--glass-border)] hover:border-[var(--neon-primary)]/20',
-          ]"
-          @click="uiStore.setSkin(skin.id as SkinId)"
-        >
-          <div
-            class="w-8 h-8 rounded-lg shrink-0"
-            :style="{
-              background: `linear-gradient(135deg, ${resolvedTheme === 'light' ? skin.preview.light.from : skin.preview.dark.from}, ${resolvedTheme === 'light' ? skin.preview.light.to : skin.preview.dark.to})`,
-            }"
-          ></div>
-          <div class="min-w-0">
+
+      <!-- Upper: Orbital Swatches Track (Sleek Instrument Rail) -->
+      <div
+        class="p-1.5 rounded-2xl bg-black/[0.04] dark:bg-black/25 border border-black/5 dark:border-[var(--glass-border)] shadow-[inset_0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[inset_0_1px_3px_rgba(0,0,0,0.4)] mb-3"
+      >
+        <div class="grid grid-cols-7 gap-1">
+          <button
+            v-for="skin in skinCatalog"
+            :key="skin.id"
+            type="button"
+            :class="[
+              'group flex flex-col items-center gap-1.5 py-2 px-1 rounded-xl transition-all duration-200 cursor-pointer text-center relative',
+              uiStore.skinId === skin.id
+                ? 'bg-white/60 dark:bg-white/[0.08] border border-black/[0.06] dark:border-white/12 shadow-[0_1px_3px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.8)] backdrop-blur-xs'
+                : 'border border-transparent hover:bg-black/[0.03] dark:hover:bg-white/[0.04] opacity-75 hover:opacity-100',
+            ]"
+            @click="uiStore.setSkin(skin.id as SkinId)"
+          >
+            <!-- Swatch squircle container: keeps stable centered position (no vertical lift) -->
+            <div class="relative flex items-center justify-center shrink-0">
+              <!-- Prism active only: continuous 2px chromatic rainbow ring -->
+              <div
+                v-if="skin.id === 'prism' && uiStore.skinId === 'prism'"
+                class="absolute -inset-[2px] rounded-[14px] bg-[conic-gradient(from_180deg,#f43f5e,#fbbf24,#10b981,#06b6d4,#3b82f6,#8b5cf6,#f43f5e)] shadow-[0_0_12px_var(--neon-glow)] pointer-events-none"
+              ></div>
+
+              <!-- Swatch squircle: jewel appearance with specular rim (or rainbow-framed for Prism) -->
+              <div
+                :class="[
+                  'w-8 h-8 rounded-xl shrink-0 transition-all duration-200 flex items-center justify-center relative shadow-sm overflow-hidden',
+                  uiStore.skinId === skin.id
+                    ? skin.id === 'prism'
+                      ? 'shadow-[0_2px_8px_rgba(0,0,0,0.12)]'
+                      : 'ring-2 ring-white dark:ring-white/90 shadow-[0_2px_8px_rgba(0,0,0,0.12)] dark:shadow-[0_0_12px_var(--neon-glow)]'
+                    : 'ring-1 ring-black/10 dark:ring-white/15',
+                ]"
+                :style="{
+                  background:
+                    skin.id === 'prism'
+                      ? 'linear-gradient(135deg, #f43f5e, #fbbf24, #10b981, #06b6d4, #8b5cf6)'
+                      : `linear-gradient(135deg, ${resolvedTheme === 'light' ? skin.preview.light.from : skin.preview.dark.from}, ${resolvedTheme === 'light' ? skin.preview.light.to : skin.preview.dark.to})`,
+                }"
+              >
+                <!-- Prism: Celestial star flare with subtle hover micro-interaction -->
+                <span
+                  v-if="skin.id === 'prism'"
+                  class="text-[11px] text-white font-bold drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)] select-none transition-transform duration-200 group-hover:scale-110 group-hover:rotate-12"
+                >
+                  ✦
+                </span>
+              </div>
+            </div>
+
+            <!-- Name -->
             <span
               :class="[
-                'text-xs font-semibold block truncate',
+                'text-[10px] tracking-tight truncate w-full transition-colors duration-150',
                 uiStore.skinId === skin.id
-                  ? 'text-[var(--neon-primary)]'
-                  : 'text-[var(--app-text)]/80',
+                  ? 'text-[var(--neon-primary)] font-bold'
+                  : 'text-[var(--app-text-subtle)] group-hover:text-[var(--app-text)]',
               ]"
             >
               {{ t(skin.labelKey) }}
             </span>
-            <span class="text-[9px] text-[var(--app-text-subtle)] block truncate">
-              {{ t(skin.descriptionKey) }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Lower: The Specimen Stage (Unified 2-Column Architecture, Zero Layout Shift) -->
+      <div
+        class="relative p-4 rounded-xl border border-[var(--skin-surface-border)] bg-[var(--skin-surface-tint)] backdrop-blur-md transition-all duration-300 min-h-[122px] flex items-center justify-between gap-4 overflow-hidden shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05),0_1px_3px_rgba(0,0,0,0.03)] dark:shadow-[0_10px_25px_-10px_var(--neon-glow)]"
+      >
+        <!-- Left: Literary Poetry & Controls -->
+        <div class="min-w-0 flex-1 flex flex-col justify-center">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-base font-bold text-[var(--app-text)] tracking-tight">
+              {{ t(currentSkinMeta.labelKey) }}
             </span>
-            <span class="text-[8px] text-[var(--app-text-subtle)]/60 italic block truncate">
-              {{ t(skin.conceptKey) }}
+            <span
+              class="text-[9px] font-mono font-semibold tracking-wider uppercase px-2 py-0.5 rounded-full bg-[var(--neon-primary)]/15 text-[var(--neon-primary)] border border-[var(--neon-primary)]/30"
+            >
+              {{ currentSkinMeta.id }}
+            </span>
+            <!-- If Prism: Dynamic Hue Badge -->
+            <span
+              v-if="uiStore.skinId === 'prism'"
+              class="text-[9px] font-mono font-bold px-2 py-0.5 rounded-full bg-[var(--neon-primary)]/20 text-[var(--neon-primary)] border border-[var(--neon-primary)]/30"
+            >
+              {{ uiStore.prismHue }}°
             </span>
           </div>
-        </button>
+
+          <p class="text-xs text-[var(--app-text)]/90 mb-1 leading-relaxed truncate">
+            {{ t(currentSkinMeta.descriptionKey) }}
+          </p>
+
+          <!-- Non-Prism: Poetic Concept Keywords -->
+          <div
+            v-if="uiStore.skinId !== 'prism'"
+            class="text-[10px] text-[var(--neon-primary)]/80 font-medium tracking-wide flex items-center gap-1.5"
+          >
+            <span
+              class="w-1.5 h-1.5 rounded-full bg-[var(--neon-primary)]/70 shadow-[0_0_6px_var(--neon-primary)]"
+            ></span>
+            <span class="truncate">{{ t(currentSkinMeta.conceptKey).replace(/、/g, ' · ') }}</span>
+          </div>
+
+          <!-- Prism: Continuous Optical Spectrum Slider -->
+          <div v-else class="space-y-1 pt-0.5">
+            <div
+              class="flex items-center justify-between text-[10px] text-[var(--neon-primary)]/80 font-medium"
+            >
+              <div class="flex items-center gap-1.5">
+                <span
+                  class="w-1.5 h-1.5 rounded-full bg-[var(--neon-primary)]/70 shadow-[0_0_6px_var(--neon-primary)]"
+                ></span>
+                <span class="truncate">{{ t(currentSkinMeta.conceptKey).replace(/、/g, ' · ') }}</span>
+              </div>
+            </div>
+            <div class="flex items-center pr-3 pt-0.5">
+              <input
+                type="range"
+                min="0"
+                max="360"
+                :value="uiStore.prismHue"
+                class="w-full spectrum-slider cursor-pointer"
+                @input="
+                  (e: Event) => uiStore.setPrismHue(Number((e.target as HTMLInputElement).value))
+                "
+              />
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Living Specimen Instrument Card (Shared by All 7 Skins, Reacts LIVE in Prism) -->
+        <div
+          class="shrink-0 w-48 sm:w-52 p-3 rounded-xl bg-white/75 dark:bg-black/30 border border-black/5 dark:border-[var(--glass-border)] shadow-xs backdrop-blur-sm flex flex-col justify-between"
+        >
+          <div
+            class="flex items-center justify-between text-[9px] font-mono text-[var(--app-text-subtle)] font-medium"
+          >
+            <span class="tracking-wider uppercase">LIVE SPECIMEN</span>
+            <span class="font-mono font-bold text-[var(--neon-primary)]">28.4 MB/s</span>
+          </div>
+          <div class="my-1.5">
+            <div
+              class="h-1.5 w-full rounded-full bg-black/5 dark:bg-[var(--glass-border)] overflow-hidden"
+            >
+              <div
+                class="h-full rounded-full shadow-[0_0_10px_var(--skin-ambient-glow)] transition-all duration-200"
+                :style="{
+                  width: '76%',
+                  background:
+                    'linear-gradient(90deg, var(--skin-accent-from), var(--skin-accent-to))',
+                }"
+              ></div>
+            </div>
+          </div>
+          <div class="flex items-center justify-end">
+            <div
+              class="text-[10px] font-semibold px-3 py-1 rounded-md transition-all duration-200 select-none text-center truncate"
+              :style="{
+                background:
+                  'linear-gradient(135deg, var(--skin-accent-from), var(--skin-accent-to))',
+                color: 'var(--neon-btn-text)',
+                boxShadow:
+                  resolvedTheme === 'light'
+                    ? '0 1px 4px rgba(0,0,0,0.15)'
+                    : '0 2px 8px var(--neon-glow)',
+              }"
+            >
+              + {{ t('taskHeader.startDownload') }}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -327,5 +469,41 @@
   .slide-fade-leave-to {
     opacity: 0;
     transform: translateY(-8px) scale(0.98);
+  }
+
+  .spectrum-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 7px;
+    border-radius: 9999px;
+    background: linear-gradient(
+      to right,
+      #f43f5e 0%,
+      #fbbf24 18%,
+      #10b981 35%,
+      #06b6d4 52%,
+      #3b82f6 70%,
+      #8b5cf6 85%,
+      #f43f5e 100%
+    );
+    outline: none;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.1);
+  }
+
+  .spectrum-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 17px;
+    height: 17px;
+    border-radius: 50%;
+    background: #ffffff;
+    border: 2px solid rgba(255, 255, 255, 0.95);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 0 8px var(--neon-glow);
+    cursor: pointer;
+    transition: transform 0.15s ease;
+  }
+
+  .spectrum-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
   }
 </style>
