@@ -187,18 +187,9 @@ func NewMonitorForTest(hub *events.Hub) *Monitor {
 
 // NewMonitorWithSurgeEngineForTest creates a test Monitor configured with a SurgeEngine.
 func NewMonitorWithSurgeEngineForTest(se *rpc.SurgeEngine) *Monitor {
-	hub := events.NewHub(nil)
-	tracker := NewTaskTracker()
-	m := &Monitor{
-		hub:                   hub,
-		pusher:                NewPusher(hub),
-		tracker:               tracker,
-		surgeEng:              se,
-		stopChan:              make(chan struct{}),
-		deletedGids:           make(map[string]time.Time),
-		pauseResumeIntentions: make(map[string]string),
-	}
-	State.SetTracker(tracker)
+	m := NewMonitorForTest(events.NewHub(nil))
+	m.surgeEng = se
+	m.stopChan = make(chan struct{})
 	return m
 }
 

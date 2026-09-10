@@ -13,7 +13,6 @@ import (
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
-	"goaria-v3/internal/surge/scheduler"
 )
 
 type appTaskRPCRequest struct {
@@ -440,7 +439,7 @@ func TestCleanupRemovedTask_ForwardsIdleMemoryReclaimToMonitor(t *testing.T) {
 	monitor.Cache = monitor.NewTaskCacheForTest()
 
 	t.Run("empty path forwards immediately", func(t *testing.T) {
-		se := rpc.NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+		se := &rpc.SurgeEngine{}
 		mon := monitor.NewMonitorWithSurgeEngineForTest(se)
 		t.Cleanup(func() { mon.Stop() })
 		monitor.State.SetMonitor(mon)
@@ -458,7 +457,7 @@ func TestCleanupRemovedTask_ForwardsIdleMemoryReclaimToMonitor(t *testing.T) {
 
 	t.Run("non-empty path forwards after file cleanup delay", func(t *testing.T) {
 		setRemoveFileCleanupDelay(20 * time.Millisecond)
-		se := rpc.NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+		se := &rpc.SurgeEngine{}
 		mon := monitor.NewMonitorWithSurgeEngineForTest(se)
 		t.Cleanup(func() { mon.Stop() })
 		monitor.State.SetMonitor(mon)
