@@ -204,7 +204,7 @@ func TestWindowReclaim_StaleCallbackDoesNotOrphanNewerTimer(t *testing.T) {
 
 func TestWindowReclaim_DefaultFnNoPanic(t *testing.T) {
 	restoreWindowReclaimDefaults(t, nil)
-	// Smoke: real GC + FreeOSMemory + WorkingSet trim must not panic.
+	// Smoke: real FreeOSMemory + WorkingSet trim must not panic.
 	windowReclaimFn()
 }
 

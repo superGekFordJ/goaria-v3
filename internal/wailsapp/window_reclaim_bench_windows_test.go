@@ -3,7 +3,6 @@
 package wailsapp
 
 import (
-	"runtime"
 	"runtime/debug"
 	"testing"
 )
@@ -11,7 +10,6 @@ import (
 func BenchmarkWindowReclaim_TrimWorkingSet(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
-		runtime.GC()
 		debug.FreeOSMemory()
 		trimProcessWorkingSet()
 	}

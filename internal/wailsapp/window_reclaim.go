@@ -11,7 +11,7 @@ import (
 var (
 	windowReclaimDelay = 2 * time.Second
 	windowReclaimFn    = func() {
-		runtime.GC()
+		// FreeOSMemory internally forces a runtime.GC cycle before releasing physical pages to OS.
 		debug.FreeOSMemory()
 		trimProcessWorkingSet()
 	}
