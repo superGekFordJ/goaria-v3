@@ -544,6 +544,10 @@ func (m *Monitor) ScheduleIdleMemoryReclaim() {
 	m.idleReclaimMu.Lock()
 	defer m.idleReclaimMu.Unlock()
 
+	if m.idleReclaimStopped {
+		return
+	}
+
 	if m.idleReclaimTimer != nil {
 		m.idleReclaimTimer.Stop()
 	}

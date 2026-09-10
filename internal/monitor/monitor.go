@@ -77,8 +77,9 @@ type Monitor struct {
 	surgeEng *rpc.SurgeEngine
 
 	// Idle memory reclaim timer for Surge engine after terminal events.
-	idleReclaimMu    sync.Mutex
-	idleReclaimTimer *time.Timer
+	idleReclaimMu      sync.Mutex
+	idleReclaimTimer   *time.Timer
+	idleReclaimStopped bool
 
 	// Network environment fingerprint cache (MAC → envKey)
 	netEnv *NetEnvCache
@@ -529,6 +530,7 @@ func (m *Monitor) Stop() {
 		m.surgePollWg.Wait()
 	}
 	m.idleReclaimMu.Lock()
+	m.idleReclaimStopped = true
 	if m.idleReclaimTimer != nil {
 		m.idleReclaimTimer.Stop()
 		m.idleReclaimTimer = nil

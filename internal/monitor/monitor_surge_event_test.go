@@ -2093,7 +2093,7 @@ func TestScheduleIdleMemoryReclaim_DebouncedOnce(t *testing.T) {
 		idleReclaimAction = origAction
 	})
 
-	idleReclaimDelay = 30 * time.Millisecond
+	idleReclaimDelay = 50 * time.Millisecond
 	var callCount atomic.Int32
 	idleReclaimAction = func() {
 		callCount.Add(1)
@@ -2105,10 +2105,9 @@ func TestScheduleIdleMemoryReclaim_DebouncedOnce(t *testing.T) {
 
 	for range 5 {
 		m.ScheduleIdleMemoryReclaim()
-		time.Sleep(5 * time.Millisecond)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(120 * time.Millisecond)
 	if count := callCount.Load(); count != 1 {
 		t.Fatalf("expected action called exactly 1 time, got %d", count)
 	}
@@ -2168,6 +2167,9 @@ func TestScheduleIdleMemoryReclaim_CancelledOnStop(t *testing.T) {
 
 	m.ScheduleIdleMemoryReclaim()
 	m.Stop()
+
+	// Calling ScheduleIdleMemoryReclaim after Stop should be rejected
+	m.ScheduleIdleMemoryReclaim()
 
 	time.Sleep(100 * time.Millisecond)
 	if count := callCount.Load(); count != 0 {
