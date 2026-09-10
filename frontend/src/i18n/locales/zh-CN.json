@@ -54,36 +54,43 @@
     "skins": {
       "obsidian": {
         "name": "Obsidian",
+        "tag": "黑曜石",
         "description": "黑曜石与激光精密感",
         "concept": "冷冽、深邃、穿透"
       },
       "ceramic": {
         "name": "Celadon",
+        "tag": "青瓷",
         "description": "青瓷釉色与温润编辑感",
         "concept": "静谧、克制、温润"
       },
       "aurora": {
         "name": "Aurora",
+        "tag": "极光",
         "description": "极光频谱与夜空遥测",
         "concept": "光谱、极地、漂浮"
       },
       "ember": {
         "name": "Ember",
+        "tag": "窑火",
         "description": "窑火余烬与机械温度",
         "concept": "铜火微熔、沉稳余温"
       },
       "titanium": {
         "name": "Titanium",
+        "tag": "冷钛",
         "description": "冷钛霜魄与无尘以太",
         "concept": "霜白、肃穆、沉寂"
       },
       "surge": {
         "name": "Surge",
+        "tag": "紫曜",
         "description": "紫曜激波与等离子涌",
         "concept": "紫电、炽烈、瞬发"
       },
       "prism": {
         "name": "Prism",
+        "tag": "晶棱",
         "description": "晶棱折射与流转虹霓",
         "concept": "色散、流光、无界"
       }

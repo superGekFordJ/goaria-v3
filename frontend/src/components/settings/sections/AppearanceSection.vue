@@ -325,9 +325,9 @@
               {{ t(currentSkinMeta.labelKey) }}
             </span>
             <span
-              class="text-[9px] font-mono font-semibold tracking-wider uppercase px-2 py-0.5 rounded-full bg-[var(--neon-primary)]/15 text-[var(--neon-primary)] border border-[var(--neon-primary)]/30"
+              class="text-[9px] font-medium tracking-wider px-2 py-0.5 rounded-full bg-[var(--neon-primary)]/15 text-[var(--neon-primary)] border border-[var(--neon-primary)]/30"
             >
-              {{ currentSkinMeta.id }}
+              {{ t(currentSkinMeta.tagKey) }}
             </span>
             <!-- If Prism: Dynamic Hue Badge -->
             <span

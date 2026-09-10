@@ -9,6 +9,7 @@ export const skinCatalog = [
   {
     id: 'obsidian',
     labelKey: 'appearance.skins.obsidian.name',
+    tagKey: 'appearance.skins.obsidian.tag',
     descriptionKey: 'appearance.skins.obsidian.description',
     conceptKey: 'appearance.skins.obsidian.concept',
     preview: {
@@ -20,6 +21,7 @@ export const skinCatalog = [
   {
     id: 'ceramic',
     labelKey: 'appearance.skins.ceramic.name',
+    tagKey: 'appearance.skins.ceramic.tag',
     descriptionKey: 'appearance.skins.ceramic.description',
     conceptKey: 'appearance.skins.ceramic.concept',
     preview: {
@@ -31,6 +33,7 @@ export const skinCatalog = [
   {
     id: 'aurora',
     labelKey: 'appearance.skins.aurora.name',
+    tagKey: 'appearance.skins.aurora.tag',
     descriptionKey: 'appearance.skins.aurora.description',
     conceptKey: 'appearance.skins.aurora.concept',
     preview: {
@@ -42,6 +45,7 @@ export const skinCatalog = [
   {
     id: 'ember',
     labelKey: 'appearance.skins.ember.name',
+    tagKey: 'appearance.skins.ember.tag',
     descriptionKey: 'appearance.skins.ember.description',
     conceptKey: 'appearance.skins.ember.concept',
     preview: {
@@ -53,6 +57,7 @@ export const skinCatalog = [
   {
     id: 'titanium',
     labelKey: 'appearance.skins.titanium.name',
+    tagKey: 'appearance.skins.titanium.tag',
     descriptionKey: 'appearance.skins.titanium.description',
     conceptKey: 'appearance.skins.titanium.concept',
     preview: {
@@ -64,6 +69,7 @@ export const skinCatalog = [
   {
     id: 'surge',
     labelKey: 'appearance.skins.surge.name',
+    tagKey: 'appearance.skins.surge.tag',
     descriptionKey: 'appearance.skins.surge.description',
     conceptKey: 'appearance.skins.surge.concept',
     preview: {
@@ -75,6 +81,7 @@ export const skinCatalog = [
   {
     id: 'prism',
     labelKey: 'appearance.skins.prism.name',
+    tagKey: 'appearance.skins.prism.tag',
     descriptionKey: 'appearance.skins.prism.description',
     conceptKey: 'appearance.skins.prism.concept',
     preview: {

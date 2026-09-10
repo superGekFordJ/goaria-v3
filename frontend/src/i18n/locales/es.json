@@ -54,36 +54,43 @@
     "skins": {
       "obsidian": {
         "name": "Obsidian",
+        "tag": "Vidrio Obsidiana",
         "description": "Cristal de obsidiana y precisión láser",
         "concept": "Frío, profundo, penetrante"
       },
       "ceramic": {
         "name": "Celadon",
+        "tag": "Esmalte Celadón",
         "description": "Esmalte celadón y editorial serena",
         "concept": "Calma, contención cálida"
       },
       "aurora": {
         "name": "Aurora",
+        "tag": "Aurora Polar",
         "description": "Espectro polar y telemetría nocturna",
         "concept": "Espectral, polar, flotante"
       },
       "ember": {
         "name": "Ember",
+        "tag": "Brasa de Horno",
         "description": "Brasa de horno y calidez mecánica",
         "concept": "Resplandor cobrizo, calor residual"
       },
       "titanium": {
         "name": "Titanium",
+        "tag": "Titanio Frío",
         "description": "Brillo de titanio gélido y éter puro",
         "concept": "Escarchado, solemne, sereno"
       },
       "surge": {
         "name": "Surge",
+        "tag": "Plasma Iónico",
         "description": "Onda de choque violeta ionizada y plasma",
         "concept": "Eléctrico, ardiente, instantáneo"
       },
       "prism": {
         "name": "Prism",
+        "tag": "Prisma de Cristal",
         "description": "Refracción de prisma de cristal e iris espectral",
         "concept": "Dispersión, fulgor, infinito"
       }
