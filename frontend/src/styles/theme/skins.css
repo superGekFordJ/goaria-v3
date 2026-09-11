@@ -193,7 +193,7 @@
   --skin-focus-beam: #f8fafc;
   --skin-ambient-glow: rgba(248, 250, 252, 0.16);
 
-  --selection-bg: rgba(248, 250, 252, 0.2);
+  --selection-bg: var(--neon-primary);
   --focus-ring: var(--neon-primary);
   --divider-glow: #cbd5e1;
 }
@@ -219,7 +219,7 @@
   --skin-focus-beam: #1e293b;
   --skin-ambient-glow: rgba(30, 41, 59, 0.08);
 
-  --selection-bg: rgba(30, 41, 59, 0.15);
+  --selection-bg: var(--neon-primary);
   --focus-ring: var(--neon-primary);
   --divider-glow: #475569;
 }
@@ -235,20 +235,20 @@
   --neon-btn-text: #ffffff;
 
   --status-active: #34d399;
-  --status-complete: #f43f5e;
+  --status-complete: #8b5cf6;
 
   --glow-active: var(--status-active);
   --glow-active-secondary: var(--neon-primary);
-  --glow-complete: var(--neon-primary);
+  --glow-complete: var(--status-complete);
 
-  --skin-accent-from: #f43f5e;
-  --skin-accent-to: #8b5cf6;
+  --skin-accent-from: #e11d48;
+  --skin-accent-to: #7c3aed;
   --skin-surface-tint: rgba(244, 63, 94, 0.05);
   --skin-surface-border: rgba(244, 63, 94, 0.14);
   --skin-focus-beam: #f43f5e;
   --skin-ambient-glow: rgba(244, 63, 94, 0.25);
 
-  --selection-bg: rgba(244, 63, 94, 0.25);
+  --selection-bg: var(--neon-primary);
   --focus-ring: var(--neon-primary);
   --divider-glow: var(--neon-primary);
 }
@@ -261,11 +261,11 @@
   --neon-btn-text: #ffffff;
 
   --status-active: #047857;
-  --status-complete: #be123c;
+  --status-complete: #6d28d9;
 
   --glow-active: var(--status-active);
   --glow-active-secondary: var(--neon-primary);
-  --glow-complete: var(--neon-primary);
+  --glow-complete: var(--status-complete);
 
   --skin-accent-from: #be123c;
   --skin-accent-to: #6d28d9;
@@ -274,7 +274,7 @@
   --skin-focus-beam: #be123c;
   --skin-ambient-glow: rgba(190, 18, 60, 0.12);
 
-  --selection-bg: rgba(190, 18, 60, 0.12);
+  --selection-bg: var(--neon-primary);
   --focus-ring: var(--neon-primary);
   --divider-glow: var(--neon-primary);
 }
@@ -317,8 +317,7 @@
   --skin-ambient-glow: hsla(var(--prism-hue, 280), 85%, 68%, 0.25);
   --skin-ambient-glow: oklch(var(--prism-fill-l, 0.78) 0.17 var(--prism-hue, 280) / 0.25);
 
-  --selection-bg: hsla(var(--prism-hue, 280), 85%, 68%, 0.25);
-  --selection-bg: oklch(var(--prism-fill-l, 0.78) 0.17 var(--prism-hue, 280) / 0.25);
+  --selection-bg: var(--neon-primary);
   --focus-ring: var(--neon-primary);
   --divider-glow: var(--neon-primary);
 }
@@ -356,8 +355,7 @@
   --skin-ambient-glow: hsla(var(--prism-hue, 280), 85%, 38%, 0.12);
   --skin-ambient-glow: oklch(var(--prism-fill-l, 0.54) 0.19 var(--prism-hue, 280) / 0.12);
 
-  --selection-bg: hsla(var(--prism-hue, 280), 85%, 38%, 0.12);
-  --selection-bg: oklch(0.46 0.14 var(--prism-hue, 280) / 0.12);
+  --selection-bg: var(--neon-primary);
   --focus-ring: var(--neon-primary);
   --divider-glow: var(--neon-primary);
 }

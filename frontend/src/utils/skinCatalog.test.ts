@@ -49,7 +49,7 @@ describe('skinCatalog', () => {
     expect(surge?.tagKey).toBe('appearance.skins.surge.tag')
     expect(surge?.descriptionKey).toBe('appearance.skins.surge.description')
     expect(surge?.conceptKey).toBe('appearance.skins.surge.concept')
-    expect(surge?.preview.dark).toEqual({ from: '#f43f5e', to: '#8b5cf6' })
+    expect(surge?.preview.dark).toEqual({ from: '#e11d48', to: '#7c3aed' })
     expect(surge?.preview.light).toEqual({ from: '#be123c', to: '#6d28d9' })
   })
 

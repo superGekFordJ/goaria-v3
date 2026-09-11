@@ -73,7 +73,7 @@ export const skinCatalog = [
     descriptionKey: 'appearance.skins.surge.description',
     conceptKey: 'appearance.skins.surge.concept',
     preview: {
-      dark: { from: '#f43f5e', to: '#8b5cf6' },
+      dark: { from: '#e11d48', to: '#7c3aed' },
       light: { from: '#be123c', to: '#6d28d9' },
     },
     sortOrder: 5,
