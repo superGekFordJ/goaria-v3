@@ -1,6 +1,11 @@
 import { onMessage, sendMessage } from 'webext-bridge/background'
 import browser from 'webextension-polyfill'
 import { hasCapability } from './capabilities'
+import {
+  clearExtractorHeaderGrants,
+  clearExtractorHeaderGrantsForTab,
+  takeHeaderGrantsForResolve,
+} from './browserHeaderCapture'
 import { getStructuredCookiesForUrl, resolveCookieStoreIdForTab } from './cookieCapture'
 import {
   failedItemIds,
@@ -136,7 +141,7 @@ export function initExtractorFlow(): void {
   void restoreExtractorUi()
 }
 
-async function handleIgnore(
+export async function handleIgnore(
   data: ExtractorIgnoreMessage,
   sender: SenderTab,
 ): Promise<{ ok: boolean }> {
@@ -154,6 +159,7 @@ async function handleIgnore(
   if (!token || token !== data.page_token) return { ok: false }
   const sessions = getExtractorSessionStore()
   await sessions.setIgnored(tabId, token)
+  clearExtractorHeaderGrantsForTab(tabId)
   cancelTabClick(tabId)
   await sessions.deleteSession(tabId)
   void sendMessage(
@@ -173,6 +179,9 @@ export async function handleNav(
     return { ok: false }
   }
   const claimed = data.page_token
+  // The CS page context navigated or reloaded: drop armed capture state so
+  // grants bound to the previous page cannot leak into a later resolve.
+  clearExtractorHeaderGrantsForTab(tabId)
   const sessions = getExtractorSessionStore()
   const rec = await sessions.getSession(tabId)
   if (rec && rec.pageToken === claimed) {
@@ -510,6 +519,15 @@ async function runResolveThenMaybeBatch(
     return
   }
   if (await isClickStale(tabId, token, epoch)) return
+  // One-shot consume at the fresh resolve boundary. Consumed values are never
+  // restored on send error, timeout, or ack failure.
+  const grants = takeHeaderGrantsForResolve({
+    tabId,
+    pageToken: token,
+    incognito: tab.incognito,
+    cookieStoreId: storeId,
+  })
+  if (grants.length > 0) payload.browser_header_grants = grants
   const ack = await wsClient.sendRequest(MSG_TYPE_EXTRACTOR_RESOLVE, payload)
   await onResolveAck(tabId, token, previous, ack, resolveSentAt, epoch)
 }
@@ -919,6 +937,7 @@ async function restoreExtractorUi(): Promise<void> {
 
 export async function onExtractorUnpair(): Promise<void> {
   cancelAllClicks()
+  clearExtractorHeaderGrants()
   await getExtractorSessionStore().clearAll()
   await broadcastHide('unpair')
 }

@@ -9,6 +9,7 @@ import { FirefoxBlockingInterceptor } from '../interceptors/FirefoxBlockingInter
 import { ChromeDownloadsApiInterceptor } from '../interceptors/ChromeDownloadsApiInterceptor'
 import { initContextMenu } from './contextMenu'
 import { initTabMatcher } from './tabMatcher'
+import { initBrowserHeaderCapture } from './browserHeaderCapture'
 import { initExtractorFlow, onExtractorUnpair } from './extractorFlow'
 import { initDomFlow, onDomUnpair } from './domFlow'
 import { initBurstFlow } from './burstFlow'
@@ -73,6 +74,7 @@ onMessage('pair:unpair', async () => {
 // event and must be registered before any await to avoid missing dispatches.
 initContextMenu()
 initTabMatcher()
+initBrowserHeaderCapture()
 initExtractorFlow()
 initDomFlow()
 initBurstFlow()

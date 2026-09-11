@@ -10,6 +10,10 @@ import type {
 import { pageTokenFromHref } from './pageToken'
 import { createExtractorSessionStore, type ExtractorSessionStore } from './extractorSessionStore'
 import { cancelAllClicks, cancelTabClick } from './extractorClickLock'
+import {
+  armExtractorHeaderCandidate,
+  clearExtractorHeaderGrants,
+} from './browserHeaderCapture'
 import type { ReplayStorage } from './replayStore'
 
 const HIDE_TAB_CAP = 64
@@ -64,6 +68,9 @@ export async function deliverExtractorDetected(
     cancelTabClick(tabId)
     await sessions.deleteSession(tabId)
   }
+  // Arm only after token + ignore checks; arm failure must not block the
+  // detection message below.
+  await armExtractorHeaderCandidate(tabId, generation, tabUrl, token).catch(() => undefined)
   try {
     const sendPromise = sendMessage(
       'extractor:detected',
@@ -115,12 +122,14 @@ export async function broadcastHide(reason: ExtractorHideReason, pageToken?: str
 export function notifyExtractorHostDown(reason: 'disconnect'): void {
   // Cancel in-flight resolve/batch so a late ack cannot commit. A later user click may still show disconnected.
   cancelAllClicks()
+  clearExtractorHeaderGrants()
   void getExtractorSessionStore().clearAll()
   void broadcastHide(reason)
 }
 
 export function notifyExtractorMatchCleared(): void {
   cancelAllClicks()
+  clearExtractorHeaderGrants()
   void getExtractorSessionStore().clearSessions()
   void broadcastHide('generation')
 }

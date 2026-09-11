@@ -2,6 +2,7 @@
 // config.svelte.ts ERR_CODE_* and internal/extension/protocol.go.
 // This module stays polyfill-free for vitest (no config.svelte import).
 import { hasPartitionKey, type WireBrowserCookie } from './browserCookies'
+import { projectBrowserHeaderGrants } from './browserHeaderGrant'
 
 export const EXTRACTOR_RESOLVE_TYPE = 'extractor_resolve'
 export const EXTRACTOR_BATCH_TYPE = 'batch_download'
@@ -10,9 +11,14 @@ export const BATCH_DENYLIST = [
   'url',
   'final_url',
   'headers',
+  'extra_headers',
   'items',
   'cookies',
   'source_url',
+  'user_agent',
+  'accept_language',
+  'referer',
+  'browser_header_grants',
   'auth_profile_ref',
   'header_profile_ref',
   'gid',
@@ -119,10 +125,19 @@ function projectWireCookie(value: unknown): WireBrowserCookie | undefined {
   }
 }
 
+// browser_header_grants is admitted only when the caller asserts the exact
+// header-context capability; every item is re-validated through the pure
+// projection so a single malformed grant rejects the whole payload.
 export function buildExtractorResolvePayload(
   input: Record<string, unknown>,
+  headerContextGranted = false,
 ): BuildExtractorResolveResult {
-  if ('headers' in input || 'url' in input || 'final_url' in input) {
+  if (
+    'headers' in input ||
+    'extra_headers' in input ||
+    'url' in input ||
+    'final_url' in input
+  ) {
     return { error: 'forbidden resolve field' }
   }
   if (typeof input.source_url !== 'string' || input.source_url === '') {
@@ -142,6 +157,22 @@ export function buildExtractorResolvePayload(
   const out: Record<string, unknown> = {
     source_url: input.source_url,
     cookies,
+  }
+  if ('browser_header_grants' in input) {
+    if (!headerContextGranted) {
+      return { error: 'forbidden resolve field' }
+    }
+    const raw = input.browser_header_grants
+    if (Array.isArray(raw) && raw.length === 0) {
+      // An explicitly empty list projects to field omission, matching the
+      // wire contract that forbids an empty/non-null array.
+    } else {
+      const grants = projectBrowserHeaderGrants(raw)
+      if (grants === undefined) {
+        return { error: 'grant projection failed' }
+      }
+      out.browser_header_grants = grants
+    }
   }
   if (typeof input.user_agent === 'string') {
     out.user_agent = input.user_agent

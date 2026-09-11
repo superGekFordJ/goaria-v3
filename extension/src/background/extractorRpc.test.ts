@@ -88,7 +88,7 @@ describe('buildExtractorResolvePayload', () => {
     }
   })
 
-  it('refuses headers url and final_url instead of stripping them', () => {
+  it('refuses headers extra_headers url and final_url instead of stripping them', () => {
     expect(
       buildExtractorResolvePayload({
         source_url: 'https://share.alpha.test/s',
@@ -107,9 +107,131 @@ describe('buildExtractorResolvePayload', () => {
       buildExtractorResolvePayload({
         source_url: 'https://share.alpha.test/s',
         cookies: [validCookie],
+        extra_headers: { 'x-token': 'v' },
+      }),
+    ).toEqual({ error: 'forbidden resolve field' })
+    expect(
+      buildExtractorResolvePayload(
+        {
+          source_url: 'https://share.alpha.test/s',
+          cookies: [validCookie],
+          extra_headers: { 'x-token': 'v' },
+        },
+        true,
+      ),
+    ).toEqual({ error: 'forbidden resolve field' })
+    expect(
+      buildExtractorResolvePayload({
+        source_url: 'https://share.alpha.test/s',
+        cookies: [validCookie],
         final_url: 'https://share.alpha.test/s',
       }),
     ).toEqual({ error: 'forbidden resolve field' })
+  })
+
+  it('rejects browser_header_grants without the header-context capability', () => {
+    const grant = {
+      source_origin: 'https://share.alpha.test',
+      target_url: 'https://api.alpha.test/v1/item?id=fixture',
+      method: 'GET',
+      captured_at_unix_ms: 1_700_000_000_000,
+      expires_at_unix_ms: 1_700_000_060_000,
+      headers: [{ name: 'authorization', value: 'Bearer fixture-token' }],
+    }
+    expect(
+      buildExtractorResolvePayload({
+        source_url: 'https://share.alpha.test/s',
+        cookies: [validCookie],
+        browser_header_grants: [grant],
+      }),
+    ).toEqual({ error: 'forbidden resolve field' })
+  })
+
+  it('projects browser_header_grants when the capability is granted', () => {
+    const grant = {
+      source_origin: 'https://share.alpha.test',
+      target_url: 'https://api.alpha.test/v1/item?id=fixture',
+      method: 'GET',
+      captured_at_unix_ms: 1_700_000_000_000,
+      expires_at_unix_ms: 1_700_000_060_000,
+      headers: [
+        { name: 'x-request-proof', value: 'proof-fixture' },
+        { name: 'authorization', value: 'Bearer fixture-token' },
+      ],
+    }
+    const result = buildExtractorResolvePayload(
+      {
+        source_url: 'https://share.alpha.test/s',
+        cookies: [validCookie],
+        browser_header_grants: [grant],
+      },
+      true,
+    )
+    if (!('payload' in result)) {
+      throw new Error(`expected payload, got ${JSON.stringify(result)}`)
+    }
+    const grants = result.payload.browser_header_grants as Array<Record<string, unknown>>
+    expect(grants).toHaveLength(1)
+    expect(grants[0]).toMatchObject({
+      source_origin: 'https://share.alpha.test',
+      target_url: 'https://api.alpha.test/v1/item?id=fixture',
+      method: 'GET',
+    })
+    expect(grants[0]?.headers).toEqual([
+      { name: 'authorization', value: 'Bearer fixture-token' },
+      { name: 'x-request-proof', value: 'proof-fixture' },
+    ])
+  })
+
+  it('omits an explicitly empty browser_header_grants array when granted', () => {
+    const result = buildExtractorResolvePayload(
+      {
+        source_url: 'https://share.alpha.test/s',
+        cookies: [validCookie],
+        browser_header_grants: [],
+      },
+      true,
+    )
+    if (!('payload' in result)) {
+      throw new Error(`expected payload, got ${JSON.stringify(result)}`)
+    }
+    expect(result.payload).not.toHaveProperty('browser_header_grants')
+  })
+
+  it('still rejects an empty browser_header_grants array without the capability', () => {
+    expect(
+      buildExtractorResolvePayload({
+        source_url: 'https://share.alpha.test/s',
+        cookies: [validCookie],
+        browser_header_grants: [],
+      }),
+    ).toEqual({ error: 'forbidden resolve field' })
+  })
+
+  it.each([
+    ['non-array', 'x'],
+    ['malformed grant', [{ method: 'POST' }]],
+    ['denied header name', [
+      {
+        source_origin: 'https://share.alpha.test',
+        target_url: 'https://api.alpha.test/v1',
+        method: 'GET',
+        captured_at_unix_ms: 1,
+        expires_at_unix_ms: 2,
+        headers: [{ name: 'x-forwarded-for', value: '10.0.0.1' }],
+      },
+    ]],
+  ])('rejects browser_header_grants with %s even when granted', (_kind, grants) => {
+    expect(
+      buildExtractorResolvePayload(
+        {
+          source_url: 'https://share.alpha.test/s',
+          cookies: [validCookie],
+          browser_header_grants: grants,
+        },
+        true,
+      ),
+    ).toEqual({ error: 'grant projection failed' })
   })
 
   it('refuses a missing source_url', () => {
@@ -271,9 +393,14 @@ describe('buildExtractorBatchPayload', () => {
       'url',
       'final_url',
       'headers',
+      'extra_headers',
       'items',
       'cookies',
       'source_url',
+      'user_agent',
+      'accept_language',
+      'referer',
+      'browser_header_grants',
       'auth_profile_ref',
       'header_profile_ref',
       'gid',

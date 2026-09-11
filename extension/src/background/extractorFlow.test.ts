@@ -155,13 +155,39 @@ vi.mock('./capabilities', () => ({
   hasCapability: () => true,
 }))
 
+const headerGrants = vi.hoisted(() => ({
+  taken: [] as Array<Record<string, unknown>>,
+  takeCalls: [] as Array<Record<string, unknown>>,
+  clearedTabs: [] as number[],
+  clearedAll: 0,
+}))
+
+vi.mock('./browserHeaderCapture', () => ({
+  initBrowserHeaderCapture: () => {},
+  armExtractorHeaderCandidate: async () => {},
+  clearExtractorHeaderGrants: () => {
+    headerGrants.clearedAll += 1
+  },
+  clearExtractorHeaderGrantsForTab: (tabId: number) => {
+    headerGrants.clearedTabs.push(tabId)
+  },
+  takeHeaderGrantsForResolve: (input: Record<string, unknown>) => {
+    headerGrants.takeCalls.push(input)
+    const taken = headerGrants.taken
+    headerGrants.taken = []
+    return taken.map(g => ({ ...g }))
+  },
+}))
+
 import {
   handleClick,
   handleFallback,
   handleFlowError,
+  handleIgnore,
   handleNav,
   handlePickerOpen,
   handlePickerSubmit,
+  onExtractorUnpair,
 } from './extractorFlow'
 import { getExtractorSessionStore } from './extractorVisibility'
 import { canReuseBatch } from './extractorBatchReuse'
@@ -588,5 +614,138 @@ describe('handleClick', () => {
     expect(serialized).not.toContain(oldSessionId)
     expect(serialized).not.toContain(oldItemId)
     expect(serialized).not.toContain(oldRequestId)
+  })
+})
+
+describe('browser header grants', () => {
+  const grant = {
+    source_origin: 'https://share.alpha.test',
+    target_url: 'https://api.alpha.test/v1/item?id=fixture',
+    method: 'GET',
+    captured_at_unix_ms: 1_700_000_000_000,
+    expires_at_unix_ms: 1_700_000_060_000,
+    headers: [{ name: 'authorization', value: 'Bearer fixture-token' }],
+  }
+
+  beforeEach(() => {
+    harness.data.clear()
+    harness.fallbackCalls = []
+    harness.results = []
+    harness.catalogs = []
+    harness.order = []
+    harness.rpc = []
+    harness.rpcImpl = async () => ({ matched: false, items: [] })
+    harness.tabUrl = harness.hrefAaa
+    harness.cookieStoreId = 'fixture-store-a'
+    harness.cookies = []
+    harness.tabReads = []
+    harness.storeReads = []
+    harness.cookieReads = []
+    headerGrants.taken = []
+    headerGrants.takeCalls = []
+    headerGrants.clearedTabs = []
+    headerGrants.clearedAll = 0
+    cancelAllClicks()
+  })
+
+  it('attaches captured grants to the fresh extractor_resolve payload only', async () => {
+    headerGrants.taken = [grant]
+    const reply = await handleClick({ page_token: TOKEN }, { tabId: 70 })
+    expect(reply).toEqual({ accepted: true })
+    await waitUntil(() => harness.rpc.length === 1)
+    expect(headerGrants.takeCalls).toEqual([
+      {
+        tabId: 70,
+        pageToken: TOKEN,
+        incognito: undefined,
+        cookieStoreId: 'fixture-store-a',
+      },
+    ])
+    const payload = harness.rpc[0]?.payload as Record<string, unknown>
+    expect(harness.rpc[0]?.type).toBe('extractor_resolve')
+    expect(payload.browser_header_grants).toEqual([grant])
+  })
+
+  it('omits the field entirely when nothing was captured', async () => {
+    const reply = await handleClick({ page_token: TOKEN }, { tabId: 71 })
+    expect(reply).toEqual({ accepted: true })
+    await waitUntil(() => harness.rpc.length === 1)
+    const payload = harness.rpc[0]?.payload as Record<string, unknown>
+    expect(payload).not.toHaveProperty('browser_header_grants')
+  })
+
+  it('never attaches grants to the follow-up batch_download', async () => {
+    headerGrants.taken = [grant]
+    harness.rpcImpl = async (type: string) =>
+      type === 'extractor_resolve'
+        ? {
+            matched: true,
+            session_id: 'sess-9',
+            total_count: 1,
+            total_bytes: 5,
+            items: [{ item_id: 'itm_solo', filename: 'solo.bin', size_bytes: 5 }],
+          }
+        : { success: true }
+    const reply = await handleClick({ page_token: TOKEN }, { tabId: 72 })
+    expect(reply).toEqual({ accepted: true })
+    await waitUntil(() => harness.rpc.length === 2)
+    expect(harness.rpc[0]?.type).toBe('extractor_resolve')
+    expect(harness.rpc[1]?.type).toBe('batch_download')
+    expect(
+      (harness.rpc[0]?.payload as Record<string, unknown>).browser_header_grants,
+    ).toEqual([grant])
+    expect(harness.rpc[1]?.payload).not.toHaveProperty('browser_header_grants')
+  })
+
+  it('does not consume grants on a direct batch path without resolve', async () => {
+    await getExtractorSessionStore().putSession({
+      tabId: 73,
+      pageToken: TOKEN,
+      generation: 1,
+      state: 'ready',
+      sessionId: 'sess-1',
+      itemIds: ['itm_solo'],
+      displayItems: [{ filename: 'solo.bin' }],
+    })
+    const reply = await handleClick({ page_token: TOKEN }, { tabId: 73 })
+    expect(reply).toEqual({ accepted: true })
+    await waitUntil(() => harness.rpc.length === 1)
+    expect(harness.rpc[0]?.type).toBe('batch_download')
+    expect(headerGrants.takeCalls).toEqual([])
+    expect(harness.rpc[0]?.payload).not.toHaveProperty('browser_header_grants')
+  })
+
+  it('does not restore consumed grants after a resolve send failure', async () => {
+    headerGrants.taken = [grant]
+    harness.rpcImpl = async () => {
+      throw new RpcRequestError('timeout', 'req-x')
+    }
+    const reply = await handleClick({ page_token: TOKEN }, { tabId: 74 })
+    expect(reply).toEqual({ accepted: true })
+    await waitUntil(() => harness.rpc.length === 1)
+    expect(headerGrants.takeCalls).toHaveLength(1)
+    // A second click performs a fresh resolve; the earlier grant is gone.
+    const second = await handleClick({ page_token: TOKEN }, { tabId: 74 })
+    expect(second).toEqual({ accepted: true })
+    await waitUntil(() => harness.rpc.length === 2)
+    expect(headerGrants.takeCalls).toHaveLength(2)
+    const payload = harness.rpc[1]?.payload as Record<string, unknown>
+    expect(payload).not.toHaveProperty('browser_header_grants')
+  })
+
+  it('clears the tab capture state on nav and ignore', async () => {
+    await getExtractorSessionStore().putSession(committingRow(75))
+    expect(await handleNav({ page_token: TOKEN }, { tabId: 75 })).toEqual({ ok: true })
+    expect(headerGrants.clearedTabs).toContain(75)
+
+    // handleIgnore requires the live page token to match the claimed token.
+    const reply = await handleIgnore({ page_token: TOKEN }, { tabId: 76 })
+    expect(reply).toEqual({ ok: true })
+    expect(headerGrants.clearedTabs).toContain(76)
+  })
+
+  it('clears all capture state on unpair', async () => {
+    await onExtractorUnpair()
+    expect(headerGrants.clearedAll).toBeGreaterThanOrEqual(1)
   })
 })

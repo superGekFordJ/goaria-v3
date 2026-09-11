@@ -9,6 +9,7 @@ import { bumpDirectConnectGeneration } from './domConnectGeneration'
 import { dropDomCatalogsOnReconnect, notifyDomHostDown } from './domHostDown'
 import { dropCaptureOnReconnect, notifyCaptureHostDown } from './captureHostDown'
 import { applyParsedMatch, clearMatchSnapshot } from './matchSnapshot'
+import { clearExtractorHeaderGrants } from './browserHeaderCapture'
 import { rescanHttpTabs } from './tabMatcher'
 import {
   ackTimeoutMs,
@@ -27,6 +28,7 @@ import {
 } from './directBatchRpc'
 import {
   CAP_EXTRACTOR_BATCH,
+  CAP_EXTRACTOR_HEADER_CONTEXT,
   CAP_EXTRACTOR_RESOLVE,
   CAP_DOWNLOAD_BATCH,
   CLIENT_VERSION,
@@ -279,7 +281,10 @@ export class WsClient {
     }
     let outbound: Record<string, unknown> = payload
     if (type === MSG_TYPE_EXTRACTOR_RESOLVE) {
-      const built = buildExtractorResolvePayload(payload)
+      const built = buildExtractorResolvePayload(
+        payload,
+        hasCapability(connectionState.capabilities, CAP_EXTRACTOR_HEADER_CONTEXT),
+      )
       if ('error' in built) {
         void this.replay.remove(id)
         return Promise.reject(new Error(built.error))
@@ -584,6 +589,9 @@ export class WsClient {
       bumpDirectConnectGeneration()
       dropDomCatalogsOnReconnect()
       dropCaptureOnReconnect()
+      // Every auth_ack replaces capability and match state; drop armed
+      // header-capture candidates before any rescan can re-arm them.
+      clearExtractorHeaderGrants()
       if (parsed.match && hasCapability(parsed.capabilities, CAP_EXTRACTOR_RESOLVE)) {
         applyParsedMatch(parsed.match)
         void rescanHttpTabs().catch(() => undefined)
@@ -767,6 +775,7 @@ export class WsClient {
     connectionState.hostVersion = ''
     connectionState.legacyHost = deriveLegacyHostState()
     clearMatchSnapshot()
+    clearExtractorHeaderGrants()
     notifyExtractorHostDown('disconnect')
     notifyDomHostDown()
     void notifyCaptureHostDown()

@@ -31,6 +31,10 @@ const (
 	CapExtractorResolve = "extractor.resolve"
 	CapExtractorBatch   = "extractor.batch"
 	CapDownloadBatch    = "download.batch"
+	// CapExtractorHeaderContext gates the optional browser_header_grants field.
+	// It is deliberately not advertised by computeConnectionCapabilities yet;
+	// publication waits for the host-side consumption path.
+	CapExtractorHeaderContext = "extractor.header_context"
 
 	DirectBatchStatusPending  = "pending"
 	DirectBatchStatusComplete = "complete"
@@ -274,6 +278,24 @@ type BrowserCookie struct {
 	HostOnly *bool  `json:"host_only"`
 }
 
+// BrowserHeader is one normalized name/value pair inside a BrowserHeaderGrant.
+type BrowserHeader struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// BrowserHeaderGrant is one ephemeral, exact-target browser header
+// observation. Wire-only in this slice: the host must not trust or consume it
+// until strict validation lands.
+type BrowserHeaderGrant struct {
+	SourceOrigin     string          `json:"source_origin"`
+	TargetURL        string          `json:"target_url"`
+	Method           string          `json:"method"`
+	CapturedAtUnixMs int64           `json:"captured_at_unix_ms"`
+	ExpiresAtUnixMs  int64           `json:"expires_at_unix_ms"`
+	Headers          []BrowserHeader `json:"headers"`
+}
+
 // ExtractorResolveRequest is the inbound extractor_resolve payload.
 type ExtractorResolveRequest struct {
 	Type           string          `json:"type"`
@@ -283,6 +305,9 @@ type ExtractorResolveRequest struct {
 	UserAgent      string          `json:"user_agent,omitempty"`
 	AcceptLanguage string          `json:"accept_language,omitempty"`
 	Referer        string          `json:"referer,omitempty"`
+	// BrowserHeaderGrants is omitted entirely when empty; it is only
+	// meaningful when the connection advertised CapExtractorHeaderContext.
+	BrowserHeaderGrants []BrowserHeaderGrant `json:"browser_header_grants,omitempty"`
 }
 
 // ExtractorResolveAckItem is display-only; it must never carry URLs or refs.

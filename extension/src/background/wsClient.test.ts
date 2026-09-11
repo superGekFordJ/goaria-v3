@@ -14,6 +14,10 @@ const captureHostDown = vi.hoisted(() => ({
   dropCaptureOnReconnect: vi.fn(),
 }))
 
+const headerCapture = vi.hoisted(() => ({
+  clearExtractorHeaderGrants: vi.fn(),
+}))
+
 import pkg from '../../package.json' with { type: 'json' }
 
 const domHostDown = vi.hoisted(() => ({
@@ -23,6 +27,7 @@ const domHostDown = vi.hoisted(() => ({
 
 vi.mock('../stores/config.svelte', () => ({
   CAP_EXTRACTOR_BATCH: 'extractor.batch',
+  CAP_EXTRACTOR_HEADER_CONTEXT: 'extractor.header_context',
   CAP_EXTRACTOR_RESOLVE: 'extractor.resolve',
   CAP_DOWNLOAD_BATCH: 'download.batch',
   CLIENT_VERSION: pkg.version,
@@ -101,6 +106,15 @@ vi.mock('./tabMatcher', () => ({
   rescanHttpTabs: async () => undefined,
 }))
 
+vi.mock('./browserHeaderCapture', () => ({
+  clearExtractorHeaderGrants: (...args: unknown[]) =>
+    headerCapture.clearExtractorHeaderGrants(...args),
+  clearExtractorHeaderGrantsForTab: () => {},
+  takeHeaderGrantsForResolve: () => [],
+  armExtractorHeaderCandidate: async () => {},
+  initBrowserHeaderCapture: () => {},
+}))
+
 import { WsClient } from './wsClient'
 
 describe('WsClient direct batch', () => {
@@ -168,5 +182,126 @@ describe('WsClient direct batch', () => {
     expect(domHostDown.notifyDomHostDown).not.toHaveBeenCalled()
     expect(captureHostDown.dropCaptureOnReconnect).toHaveBeenCalledTimes(1)
     expect(captureHostDown.notifyCaptureHostDown).not.toHaveBeenCalled()
+  })
+})
+
+describe('WsClient browser header grants', () => {
+  const grant = {
+    source_origin: 'https://share.alpha.test',
+    target_url: 'https://api.alpha.test/v1/item?id=fixture',
+    method: 'GET',
+    captured_at_unix_ms: 1_700_000_000_000,
+    expires_at_unix_ms: 1_700_000_060_000,
+    headers: [{ name: 'authorization', value: 'Bearer fixture-token' }],
+  }
+  let sent: string[]
+
+  function attachSocket(client: WsClient): void {
+    sent = []
+    ;(
+      client as unknown as {
+        ws: { readyState: number; send(data: string): void }
+      }
+    ).ws = {
+      readyState: 1,
+      send(data: string) {
+        sent.push(data)
+      },
+    }
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal('WebSocket', { OPEN: 1, CLOSED: 3 })
+    connection.capabilities = undefined
+    connection.status = 'disconnected'
+    connection.paired = false
+    headerCapture.clearExtractorHeaderGrants.mockClear()
+    sent = []
+  })
+
+  it('clears armed grants on every auth_ack', () => {
+    const client = new WsClient()
+    ;(
+      client as unknown as { handleMessage: (ev: { data: string }) => void }
+    ).handleMessage({
+      data: JSON.stringify({ type: 'auth_ack', protocol_version: 2, capabilities: [] }),
+    })
+    expect(headerCapture.clearExtractorHeaderGrants).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears armed grants on disconnect', () => {
+    const client = new WsClient()
+    client.disconnect()
+    expect(headerCapture.clearExtractorHeaderGrants).toHaveBeenCalled()
+  })
+
+  it('rejects browser_header_grants on resolve without the exact capability', async () => {
+    const client = new WsClient()
+    attachSocket(client)
+    connection.capabilities = ['request_id', 'extractor.resolve', 'extractor.batch']
+    await expect(
+      client.sendRequest('extractor_resolve', {
+        source_url: 'https://share.alpha.test/s',
+        cookies: [],
+        browser_header_grants: [grant],
+      }),
+    ).rejects.toThrow('forbidden resolve field')
+    expect(sent).toEqual([])
+  })
+
+  it('rejects browser_header_grants on resolve under a near-match capability', async () => {
+    const client = new WsClient()
+    attachSocket(client)
+    connection.capabilities = [
+      'request_id',
+      'extractor.resolve',
+      'extractor.header_context.extra',
+    ]
+    await expect(
+      client.sendRequest('extractor_resolve', {
+        source_url: 'https://share.alpha.test/s',
+        cookies: [],
+        browser_header_grants: [grant],
+      }),
+    ).rejects.toThrow('forbidden resolve field')
+    expect(sent).toEqual([])
+  })
+
+  it('sends projected grants with a fresh request_id when the capability is granted', async () => {
+    const client = new WsClient()
+    attachSocket(client)
+    connection.capabilities = [
+      'request_id',
+      'extractor.resolve',
+      'extractor.batch',
+      'extractor.header_context',
+    ]
+    const pending = client.sendRequest('extractor_resolve', {
+      source_url: 'https://share.alpha.test/s',
+      cookies: [],
+      request_id: 'caller-supplied-id',
+      browser_header_grants: [grant],
+    })
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    const body = JSON.parse(sent[0]!) as Record<string, unknown>
+    expect(body.type).toBe('extractor_resolve')
+    expect(body.request_id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    )
+    expect(body.request_id).not.toBe('caller-supplied-id')
+    expect(body.browser_header_grants).toEqual([grant])
+    expect(body).not.toHaveProperty('headers')
+    expect(body).not.toHaveProperty('url')
+    ;(
+      client as unknown as { handleMessage: (ev: { data: string }) => void }
+    ).handleMessage({
+      data: JSON.stringify({
+        type: 'extractor_resolve_ack',
+        request_id: body.request_id,
+        matched: false,
+        items: [],
+      }),
+    })
+    await expect(pending).resolves.toMatchObject({ matched: false })
   })
 })

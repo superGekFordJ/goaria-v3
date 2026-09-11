@@ -15,7 +15,15 @@ export {
   EXTRACTOR_SESSION_PREFIX,
 }
 
-const FORBIDDEN_FIELDS = new Set(['source_url', 'cookies', 'href', 'url'])
+const FORBIDDEN_FIELDS = new Set([
+  'source_url',
+  'cookies',
+  'href',
+  'url',
+  'headers',
+  'extra_headers',
+  'browser_header_grants',
+])
 
 export type ExtractorUiState =
   | 'idle'

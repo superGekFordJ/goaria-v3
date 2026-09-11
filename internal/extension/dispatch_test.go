@@ -570,6 +570,85 @@ func TestAuthAck_TwoConnectionsDifferentSalts(t *testing.T) {
 	}
 }
 
+func TestAuthAck_HeaderContextNeverAdvertised(t *testing.T) {
+	run := func(t *testing.T, srv *Server, sendAuth bool) []byte {
+		conn := dialWS(t, srv.GetStatus().WSPort, "chrome-extension://abc")
+		defer conn.Close()
+		if sendAuth {
+			conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+			_ = conn.WriteMessage(websocket.TextMessage, mustMarshal(t, AuthMessage{Type: MsgTypeAuth, Secret: "cap-secret"}))
+		}
+		return readRaw(t, conn, 2*time.Second)
+	}
+	assertAbsent := func(t *testing.T, raw []byte) {
+		var ack AuthAck
+		if err := json.Unmarshal(raw, &ack); err != nil {
+			t.Fatalf("unmarshal auth_ack: %v", err)
+		}
+		if hasCap(ack.Capabilities, CapExtractorHeaderContext) {
+			t.Fatalf("header context capability must stay unpublished: %v", ack.Capabilities)
+		}
+		if bytes.Contains(raw, []byte("extractor.header_context")) {
+			t.Fatalf("auth_ack must not mention the header capability: %s", raw)
+		}
+	}
+
+	t.Run("ReadyFullLinkage", func(t *testing.T) {
+		store := NewSecretStore()
+		store.SetSecret("cap-secret")
+		srv := newTestServer(t, nil, store)
+		srv.SetLinkage(Linkage{
+			Resolver:        &fakeResolver{ready: true},
+			Committer:       &fakeCommitter{ready: true},
+			DirectCommitter: &fakeDirectCommitter{ready: true},
+			Digests:         &fakeDigests{ready: true, ok: true},
+		})
+		defer srv.Stop()
+		startSrv(t, srv)
+		raw := run(t, srv, true)
+		assertAbsent(t, raw)
+		var ack AuthAck
+		if err := json.Unmarshal(raw, &ack); err != nil {
+			t.Fatal(err)
+		}
+		if !hasCap(ack.Capabilities, CapExtractorResolve) || !hasCap(ack.Capabilities, CapExtractorBatch) || !hasCap(ack.Capabilities, CapDownloadBatch) {
+			t.Fatalf("ready linkage must still advertise existing caps: %v", ack.Capabilities)
+		}
+	})
+
+	t.Run("GenericNoLinkage", func(t *testing.T) {
+		store := NewSecretStore()
+		store.SetSecret("cap-secret")
+		srv := newTestServer(t, nil, store)
+		defer srv.Stop()
+		startSrv(t, srv)
+		raw := run(t, srv, true)
+		assertAbsent(t, raw)
+		var ack AuthAck
+		if err := json.Unmarshal(raw, &ack); err != nil {
+			t.Fatal(err)
+		}
+		if !hasCap(ack.Capabilities, CapRequestID) {
+			t.Fatalf("generic host must still advertise request_id: %v", ack.Capabilities)
+		}
+	})
+
+	t.Run("MVPEmptySecret", func(t *testing.T) {
+		withAllowEmptySecret(t, true)
+		store := NewSecretStore()
+		srv := newTestServer(t, nil, store)
+		srv.SetLinkage(Linkage{
+			Resolver:        &fakeResolver{ready: true},
+			Committer:       &fakeCommitter{ready: true},
+			DirectCommitter: &fakeDirectCommitter{ready: true},
+		})
+		defer srv.Stop()
+		startSrv(t, srv)
+		raw := run(t, srv, false)
+		assertAbsent(t, raw)
+	})
+}
+
 func TestExtractorResolve_LateSetLinkageDoesNotPushMatch(t *testing.T) {
 	store := NewSecretStore()
 	store.SetSecret("prod-secret")

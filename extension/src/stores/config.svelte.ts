@@ -29,6 +29,9 @@ export const CAP_REQUEST_ID = 'request_id'
 export const CAP_EXTRACTOR_RESOLVE = 'extractor.resolve'
 export const CAP_EXTRACTOR_BATCH = 'extractor.batch'
 export const CAP_DOWNLOAD_BATCH = 'download.batch'
+// Reserved connection capability. Hosts never advertise it yet; capture and
+// consumption both fail closed without the exact string.
+export const CAP_EXTRACTOR_HEADER_CONTEXT = 'extractor.header_context'
 
 export const ERR_CODE_UNSUPPORTED = 'unsupported'
 export const ERR_CODE_UNAVAILABLE = 'unavailable'
