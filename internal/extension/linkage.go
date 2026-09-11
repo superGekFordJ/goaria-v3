@@ -34,6 +34,36 @@ type ExtractorResolver interface {
 	RewriteCachedResolve(cached []byte) []byte
 }
 
+// HeaderContextResolver is the optional Resolver extension that reports the
+// full browser header-context consumption chain is live: strict wire parse,
+// request-scoped context, and broker enforcement. Without it the host must
+// not advertise extractor.header_context.
+type HeaderContextResolver interface {
+	ExtractorResolver
+	HeaderContextReady() bool
+}
+
+type headerContextGrantKey struct{}
+
+// WithHeaderContextGrant marks whether the connection's handshake capabilities
+// authorized browser header grants. Missing marker reads as not granted.
+func WithHeaderContextGrant(ctx context.Context, granted bool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, headerContextGrantKey{}, granted)
+}
+
+// HeaderContextGranted reports whether the connection granted the
+// header-context capability at handshake.
+func HeaderContextGranted(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	granted, _ := ctx.Value(headerContextGrantKey{}).(bool)
+	return granted
+}
+
 // CommitResult is the host-side batch-commit outcome. Keys are item_id only.
 type CommitResult struct {
 	ErrorCode        string

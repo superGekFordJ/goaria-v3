@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"strings"
 
 	"goaria-v3/internal/extension"
 	"goaria-v3/internal/extractor"
@@ -179,9 +180,11 @@ func parseBatchDownloadRequest(raw json.RawMessage) (extension.BatchDownloadRequ
 	if err := json.Unmarshal(raw, &extra); err != nil {
 		return extension.BatchDownloadRequest{}, extension.ErrCodeInvalidRequest
 	}
-	for _, key := range batchCommitDenylist {
-		if _, ok := extra[key]; ok {
-			return extension.BatchDownloadRequest{}, extension.ErrCodeInvalidRequest
+	for key := range extra {
+		for _, denied := range batchCommitDenylist {
+			if strings.EqualFold(key, denied) {
+				return extension.BatchDownloadRequest{}, extension.ErrCodeInvalidRequest
+			}
 		}
 	}
 

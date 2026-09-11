@@ -11,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -385,6 +386,12 @@ func (s *Server) dispatchAsync(
 		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeUnavailable})
 		return
 	}
+	// Reject unsolicited browser header grants before idempotency begins so a
+	// same-request_id retry without grants still resolves normally.
+	if isResolve && !sc.hasGranted(CapExtractorHeaderContext) && rawHasBrowserHeaderGrants(raw) {
+		_ = sc.writeJSON(TypedAck{Type: ackType, RequestID: reqID, ErrorCode: ErrCodeInvalidRequest})
+		return
+	}
 	digest := canonicalDigest(raw)
 	linkage, gen := sc.snapshotLinkage()
 	st, cached, wait := s.idemp.lookup(gen, env.Type, reqID, digest)
@@ -475,7 +482,7 @@ func (s *Server) dispatchAsync(
 				}
 				return
 			}
-			result := linkage.Resolver.HandleResolve(opCtx, env, json.RawMessage(raw))
+			result := linkage.Resolver.HandleResolve(WithHeaderContextGrant(opCtx, sc.hasGranted(CapExtractorHeaderContext)), env, json.RawMessage(raw))
 			if opCtx.Err() != nil {
 				busy := marshalBusyAck(ackType, reqID)
 				s.idemp.abandon(gen, env.Type, reqID, digest, busy)
@@ -964,6 +971,9 @@ func computeConnectionCapabilities(secret string, l Linkage) []string {
 	}
 	if l.Resolver != nil && l.Resolver.Ready() {
 		caps = append(caps, CapExtractorResolve)
+		if hc, ok := l.Resolver.(HeaderContextResolver); ok && hc.HeaderContextReady() {
+			caps = append(caps, CapExtractorHeaderContext)
+		}
 	}
 	if l.Committer != nil && l.Committer.Ready() {
 		caps = append(caps, CapExtractorBatch)
@@ -1003,6 +1013,24 @@ func matchWireFromProvider(caps []string, provider MatchDigestProvider) *MatchDi
 
 func containsCap(caps []string, want string) bool {
 	return slices.Contains(caps, want)
+}
+
+// rawHasBrowserHeaderGrants reports whether the raw resolve payload carries a
+// top-level browser_header_grants key. It is a presence pre-scan only; a
+// payload that fails to parse counts as absent (strict parsing happens in the
+// resolver).
+func rawHasBrowserHeaderGrants(raw []byte) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || len(fields) == 0 {
+		return false
+	}
+	for key := range fields {
+		if strings.EqualFold(key, "browser_header_grants") {
+			return true
+		}
+	}
+
+	return false
 }
 
 func validMatchSaltHex(s string) bool {

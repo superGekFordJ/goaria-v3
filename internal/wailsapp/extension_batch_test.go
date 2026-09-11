@@ -354,6 +354,29 @@ func TestExtensionBatch_ExtraDeputyKeysInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestExtensionBatch_DeputyKeyCaseVariantsInvalidRequest(t *testing.T) {
+	h := setupBatchCommitHarness(t)
+	resolved := resolveFixtureSession(t, h.lease)
+	itemID := resolved.Items[0].ItemID
+	for _, extra := range []string{
+		`"Headers":["Cookie: sid=x"]`,
+		`"URL":"https://download.fixture.invalid/x"`,
+		`"Browser_Header_Grants":[]`,
+		`"Cookies":[]`,
+		`"SOURCE_URL":"https://share.fixture.invalid/s"`,
+		`"User_Agent":"fixture-ua"`,
+	} {
+		raw := []byte(`{"type":"batch_download","session_id":"` + resolved.SessionID + `","item_ids":["` + itemID + `"],` + extra + `}`)
+		result := h.commit.HandleCommit(context.Background(), extension.RequestEnvelope{RequestID: "req-variant"}, json.RawMessage(raw))
+		if result.ErrorCode != extension.ErrCodeInvalidRequest {
+			t.Fatalf("variant extra %s error_code = %q", extra, result.ErrorCode)
+		}
+	}
+	if _, ok := h.lease.lookupLeasedItem(resolved.SessionID, itemID); !ok {
+		t.Fatal("lease must stay intact after variant-key reject")
+	}
+}
+
 func TestExtensionBatch_CreateGroupTwoHandlesOneURLOmitsGroupKey(t *testing.T) {
 	h := setupBatchCommitHarness(t)
 	resolved := resolveFixtureSession(t, h.lease)

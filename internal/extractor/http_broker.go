@@ -181,6 +181,7 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 	if err != nil {
 		return HTTPFetchResponse{}, err
 	}
+	browserCtx := browserContextFromContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, b.effectiveTimeout(request))
 	defer cancel()
 
@@ -191,7 +192,9 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		if err != nil {
 			return HTTPFetchResponse{}, err
 		}
-		hopAttachesCookies := request.AuthProfileID == "" && len(cookiesMatchingRequest(browserCookiesFromContext(ctx), currentURL)) > 0
+		grant := browserGrantMatch(browserCtx.Grants, method, currentURL, time.Now())
+		grantScopedHop := grant != nil
+		hopAttachesCookies := request.AuthProfileID == "" && !grantScopedHop && len(cookiesMatchingRequest(browserCtx.Cookies, currentURL)) > 0
 		if hopAttachesCookies && parsed.Scheme != "https" {
 			return HTTPFetchResponse{}, errors.New("cookie-authenticated request requires HTTPS")
 		}
@@ -205,14 +208,53 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 			}
 		}
 
-		if request.AuthProfileID != "" {
+		var grantReflection []string
+		switch {
+		case grantScopedHop:
+			// A scoped browser grant hop never mixes with host auth profiles,
+			// browser cookies, pack-owned privileged headers, or a request
+			// body (HostHTTPFetchRequest has no body field).
+			if request.AuthProfileID != "" {
+				return HTTPFetchResponse{}, errors.New("grant-scoped request must not use an auth profile")
+			}
+			for _, header := range grant.Headers {
+				if _, collision := validatedHeaders[http.CanonicalHeaderKey(header.Name)]; collision {
+					return HTTPFetchResponse{}, errors.New("grant-scoped header collides with pack header")
+				}
+			}
+			httpRequest.Header.Del("Cookie")
+			if browserCtx.UserAgent != "" {
+				httpRequest.Header.Set("User-Agent", browserCtx.UserAgent)
+			}
+			if browserCtx.AcceptLanguage != "" {
+				httpRequest.Header.Set("Accept-Language", browserCtx.AcceptLanguage)
+			}
+			if browserCtx.RefererOrigin != "" {
+				httpRequest.Header.Set("Referer", browserCtx.RefererOrigin+"/")
+			}
+			for _, header := range grant.Headers {
+				httpRequest.Header.Set(header.Name, header.Value)
+				*knownSecrets = appendNonEmptySecrets(*knownSecrets, header.Value)
+				if len(header.Value) >= minSecretReflectionBytes {
+					grantReflection = append(grantReflection, header.Value)
+				}
+				if header.Name == "authorization" {
+					if _, credentials, ok := strings.Cut(header.Value, " "); ok {
+						*knownSecrets = appendNonEmptySecrets(*knownSecrets, credentials)
+						if len(credentials) >= minSecretReflectionBytes {
+							grantReflection = append(grantReflection, credentials)
+						}
+					}
+				}
+			}
+		case request.AuthProfileID != "":
 			if err := validateAliasAuthProfileScopeForURL(policy, request.AuthProfileID, currentURL); err != nil {
 				return HTTPFetchResponse{}, err
 			}
 			if err := b.injectAuth(ctx, httpRequest, request, currentURL, knownSecrets); err != nil {
 				return HTTPFetchResponse{}, err
 			}
-		} else {
+		default:
 			cookieReflection = append(cookieReflection, attachBrowserCookies(ctx, httpRequest, currentURL, knownSecrets)...)
 		}
 
@@ -227,6 +269,9 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		if isRedirectStatus(response.StatusCode) {
 			if response.Body != nil {
 				_ = response.Body.Close()
+			}
+			if grantScopedHop {
+				return HTTPFetchResponse{}, errors.New("grant-scoped request must not redirect")
 			}
 			location := response.Header.Get("Location")
 			if redirects >= b.policy.RedirectLimit {
@@ -243,7 +288,7 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 			if request.AuthProfileID != "" && parsedNext.Scheme != "https" {
 				return HTTPFetchResponse{}, fmt.Errorf("authenticated redirect to non-HTTPS url denied: %s", nextURL)
 			}
-			nextAttachesCookies := request.AuthProfileID == "" && len(cookiesMatchingRequest(browserCookiesFromContext(ctx), nextURL)) > 0
+			nextAttachesCookies := request.AuthProfileID == "" && len(cookiesMatchingRequest(browserCtx.Cookies, nextURL)) > 0
 			if nextAttachesCookies && parsedNext.Scheme != "https" {
 				return HTTPFetchResponse{}, fmt.Errorf("cookie-authenticated redirect to non-HTTPS url denied: %s", nextURL)
 			}
@@ -257,7 +302,9 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		}
 		safeHeaders := b.safeResponseHeaders(response.Header)
 		reflectionSecrets := cookieReflection
-		if request.AuthProfileID != "" {
+		if grantScopedHop {
+			reflectionSecrets = grantReflection
+		} else if request.AuthProfileID != "" {
 			reflectionSecrets = *knownSecrets
 		}
 		if err := rejectSecretReflection(body, safeHeaders, reflectionSecrets); err != nil {

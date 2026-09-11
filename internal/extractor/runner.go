@@ -40,6 +40,14 @@ func NewRunnerWithConfig(config RunnerConfig) *Runner {
 	return &Runner{hostImports: HostImportConfig(config)}
 }
 
+// HTTPBroker exposes the broker used by host imports, or nil when absent.
+func (r *Runner) HTTPBroker() *HTTPBroker {
+	if r == nil {
+		return nil
+	}
+	return r.hostImports.HTTPBroker
+}
+
 func (r *Runner) Match(ctx context.Context, pack VerifiedPack, input MatchInput) (MatchOutput, error) {
 	if err := ValidateMatchInput(input); err != nil {
 		return MatchOutput{}, err

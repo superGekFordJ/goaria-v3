@@ -3,6 +3,7 @@
 package wailsapp
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -98,6 +100,13 @@ func (a *extensionResolveAdapter) Ready() bool {
 	return a != nil && a.dispatcher != nil
 }
 
+// HeaderContextReady reports the full header-context chain is live: strict
+// wire parse, request context, and broker enforcement all exist on this
+// dispatcher.
+func (a *extensionResolveAdapter) HeaderContextReady() bool {
+	return a != nil && a.dispatcher != nil && a.dispatcher.HeaderContextCapable()
+}
+
 func (a *extensionResolveAdapter) Invalidate() {
 	if a == nil {
 		return
@@ -159,13 +168,13 @@ func (a *extensionResolveAdapter) HandleResolve(ctx context.Context, _ extension
 		defer stop()
 	}
 
-	sourceURL, cookies, errCode := parseExtractorResolveRequest(raw)
+	input, errCode := parseExtractorResolveRequest(ctx, raw)
 	if errCode != "" {
 		return extension.ResolveResult{ErrorCode: errCode}
 	}
-	ctx = extractor.WithBrowserCookies(ctx, cookies)
+	ctx = extractor.WithBrowserContext(ctx, input.Browser)
 
-	resolution, lastStatus, err := a.resolveOnce(ctx, sourceURL, cookies)
+	resolution, lastStatus, err := a.resolveOnce(ctx, input)
 	if ctx.Err() != nil {
 		return mapResolveError(ctx.Err(), lastStatus)
 	}
@@ -182,8 +191,8 @@ func (a *extensionResolveAdapter) HandleResolve(ctx context.Context, _ extension
 	return a.mintSession(resolution, startEpoch)
 }
 
-func (a *extensionResolveAdapter) resolveOnce(ctx context.Context, sourceURL string, cookies []extractor.SessionCookie) (res extractor.AddTaskResolution, lastStatus int, err error) {
-	key := a.flightKey(sourceURL, cookies)
+func (a *extensionResolveAdapter) resolveOnce(ctx context.Context, input parsedResolveInput) (res extractor.AddTaskResolution, lastStatus int, err error) {
+	key := a.flightKey(input)
 	a.mu.Lock()
 	if existing, ok := a.flights[key]; ok {
 		a.mu.Unlock()
@@ -221,7 +230,7 @@ func (a *extensionResolveAdapter) resolveOnce(ctx context.Context, sourceURL str
 		close(flight.done)
 	}()
 
-	res, err = a.dispatcher.Resolve(ctx, sourceURL)
+	res, err = a.dispatcher.Resolve(ctx, input.SourceURL)
 	lastStatus = extractor.LastHTTPFetchStatus(ctx)
 	flight.res = res
 	flight.err = err
@@ -471,72 +480,121 @@ func (a *extensionResolveAdapter) storeReceipt(requestID, digest string, result 
 	}
 }
 
-func (a *extensionResolveAdapter) flightKey(sourceURL string, cookies []extractor.SessionCookie) string {
-	return canonicalFlightSourceURL(sourceURL) + "\n" + cookieFingerprint(cookies) + "\n" + policyIdentity(a.dispatcher)
+type parsedResolveInput struct {
+	SourceURL string
+	Browser   extractor.BrowserRequestContext
 }
 
-func parseExtractorResolveRequest(raw json.RawMessage) (string, []extractor.SessionCookie, string) {
+func (a *extensionResolveAdapter) flightKey(input parsedResolveInput) string {
+	parts := []string{
+		canonicalFlightSourceURL(input.SourceURL),
+		cookieFingerprint(input.Browser.Cookies),
+	}
+	if fp := extractor.BrowserContextFingerprint(input.Browser); fp != "" {
+		parts = append(parts, fp)
+	}
+	parts = append(parts, policyIdentity(a.dispatcher))
+
+	return strings.Join(parts, "\n")
+}
+
+var browserHeaderGrantFieldKeys = []string{
+	"source_origin", "target_url", "method",
+	"captured_at_unix_ms", "expires_at_unix_ms", "headers",
+}
+
+var browserHeaderFieldKeys = []string{"name", "value"}
+
+func parseExtractorResolveRequest(ctx context.Context, raw json.RawMessage) (parsedResolveInput, string) {
 	var extra map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &extra); err != nil {
-		return "", nil, extension.ErrCodeInvalidRequest
+		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 	}
-	if _, ok := extra["headers"]; ok {
-		return "", nil, extension.ErrCodeInvalidRequest
+	var grantRaw json.RawMessage
+	grantKeys := 0
+	grantKeyExact := false
+	for key := range extra {
+		if strings.EqualFold(key, "headers") || strings.EqualFold(key, "extra_headers") ||
+			strings.EqualFold(key, "url") || strings.EqualFold(key, "final_url") {
+			return parsedResolveInput{}, extension.ErrCodeInvalidRequest
+		}
+		if strings.EqualFold(key, "browser_header_grants") {
+			grantKeys++
+			grantRaw = extra[key]
+			if key == "browser_header_grants" {
+				grantKeyExact = true
+			}
+		}
 	}
-	if _, ok := extra["extra_headers"]; ok {
-		return "", nil, extension.ErrCodeInvalidRequest
+	if grantKeys > 1 || (grantKeys == 1 && !grantKeyExact) {
+		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 	}
-	if _, ok := extra["url"]; ok {
-		return "", nil, extension.ErrCodeInvalidRequest
-	}
-	if _, ok := extra["final_url"]; ok {
-		return "", nil, extension.ErrCodeInvalidRequest
+	if grantKeys == 1 && !extension.HeaderContextGranted(ctx) {
+		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 	}
 
 	var req extension.ExtractorResolveRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
-		return "", nil, extension.ErrCodeInvalidRequest
+		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 	}
 	if req.SourceURL == "" || len(req.SourceURL) > maxSourceURLBytes || hasCRLF(req.SourceURL) {
-		return "", nil, extension.ErrCodeInvalidRequest
+		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 	}
 	sourceURL := stripURLFragment(req.SourceURL)
 	if _, ok := extractor.ParseHTTPURLHost(sourceURL); !ok {
-		return "", nil, extension.ErrCodeInvalidRequest
+		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 	}
+	input := parsedResolveInput{SourceURL: sourceURL}
+	srcOrigin, _ := canonicalOrigin(sourceURL)
+
 	if hasCRLF(req.UserAgent) || len(req.UserAgent) > maxOptionalFieldBytes {
-		return "", nil, extension.ErrCodeInvalidRequest
+		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 	}
+	input.Browser.UserAgent = req.UserAgent
 	if hasCRLF(req.AcceptLanguage) || len(req.AcceptLanguage) > maxOptionalFieldBytes {
-		return "", nil, extension.ErrCodeInvalidRequest
+		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 	}
+	input.Browser.AcceptLanguage = req.AcceptLanguage
 	if req.Referer != "" {
 		if hasCRLF(req.Referer) || len(req.Referer) > maxOptionalFieldBytes {
-			return "", nil, extension.ErrCodeInvalidRequest
+			return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 		}
-		srcOrigin, srcOK := canonicalOrigin(sourceURL)
 		refOrigin, refOK := canonicalOrigin(req.Referer)
-		if !srcOK || !refOK || srcOrigin != refOrigin {
-			return "", nil, extension.ErrCodeInvalidRequest
+		if srcOrigin == "" || !refOK || srcOrigin != refOrigin {
+			return parsedResolveInput{}, extension.ErrCodeInvalidRequest
+		}
+		input.Browser.RefererOrigin = srcOrigin
+	}
+	if grantKeys == 1 {
+		specs, ok := decodeBrowserHeaderGrantSpecs(grantRaw)
+		if !ok {
+			return parsedResolveInput{}, extension.ErrCodeInvalidRequest
+		}
+		if len(specs) > 0 {
+			grants, err := extractor.ValidateBrowserHeaderGrants(specs, srcOrigin, time.Now())
+			if err != nil {
+				return parsedResolveInput{}, extension.ErrCodeInvalidRequest
+			}
+			input.Browser.Grants = grants
 		}
 	}
 	if len(req.Cookies) > maxResolveCookies {
-		return "", nil, extension.ErrCodeInvalidRequest
+		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 	}
 	cookies := make([]extractor.SessionCookie, 0, len(req.Cookies))
 	for _, cookie := range req.Cookies {
 		if cookie.HostOnly == nil || cookie.Secure == nil {
-			return "", nil, extension.ErrCodeInvalidRequest
+			return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 		}
 		if hasCRLF(cookie.Name) || hasCRLF(cookie.Value) || hasCRLF(cookie.Domain) || hasCRLF(cookie.Path) {
-			return "", nil, extension.ErrCodeInvalidRequest
+			return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 		}
 		if len(cookie.Name) > maxCookieNameBytes || len(cookie.Value) > maxCookieValueBytes ||
 			len(cookie.Domain) > maxCookieDomainBytes || len(cookie.Path) > maxCookiePathBytes {
-			return "", nil, extension.ErrCodeInvalidRequest
+			return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 		}
 		if cookie.Name == "" {
-			return "", nil, extension.ErrCodeInvalidRequest
+			return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 		}
 		if !extractor.ValidCookieName(cookie.Name) || !extractor.ValidCookieValue(cookie.Value) {
 			continue
@@ -553,8 +611,108 @@ func parseExtractorResolveRequest(raw json.RawMessage) (string, []extractor.Sess
 			HostOnly: *cookie.HostOnly,
 		})
 	}
+	input.Browser.Cookies = cookies
 
-	return sourceURL, cookies, ""
+	return input, ""
+}
+
+// decodeBrowserHeaderGrantSpecs strictly decodes the browser_header_grants
+// array. Each grant must be an object with exactly the six wire keys and each
+// header an object with exactly name/value; duplicate keys are rejected. An
+// empty array decodes to nil (treated as absent by the caller).
+func decodeBrowserHeaderGrantSpecs(raw json.RawMessage) ([]extractor.BrowserHeaderGrantSpec, bool) {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, false
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, false
+	}
+	if len(items) == 0 {
+		return nil, true
+	}
+	specs := make([]extractor.BrowserHeaderGrantSpec, 0, len(items))
+	for _, item := range items {
+		fields, ok := strictObjectFields(item, browserHeaderGrantFieldKeys)
+		if !ok {
+			return nil, false
+		}
+		var grant extension.BrowserHeaderGrant
+		if err := json.Unmarshal(item, &grant); err != nil {
+			return nil, false
+		}
+		var headerItems []json.RawMessage
+		if err := json.Unmarshal(fields["headers"], &headerItems); err != nil {
+			return nil, false
+		}
+		spec := extractor.BrowserHeaderGrantSpec{
+			SourceOrigin:     grant.SourceOrigin,
+			TargetURL:        grant.TargetURL,
+			Method:           grant.Method,
+			CapturedAtUnixMs: grant.CapturedAtUnixMs,
+			ExpiresAtUnixMs:  grant.ExpiresAtUnixMs,
+			Headers:          make([]extractor.BrowserHeaderSpec, 0, len(headerItems)),
+		}
+		for _, headerRaw := range headerItems {
+			if _, ok := strictObjectFields(headerRaw, browserHeaderFieldKeys); !ok {
+				return nil, false
+			}
+			var header extension.BrowserHeader
+			if err := json.Unmarshal(headerRaw, &header); err != nil {
+				return nil, false
+			}
+			spec.Headers = append(spec.Headers, extractor.BrowserHeaderSpec{Name: header.Name, Value: header.Value})
+		}
+		specs = append(specs, spec)
+	}
+
+	return specs, true
+}
+
+// strictObjectFields decodes one JSON object and requires its key set to be
+// exactly want with no duplicate keys and no trailing data.
+func strictObjectFields(raw json.RawMessage, want []string) (map[string]json.RawMessage, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return nil, false
+	}
+	fields := make(map[string]json.RawMessage, len(want))
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return nil, false
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return nil, false
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, false
+		}
+		if _, dup := fields[key]; dup {
+			return nil, false
+		}
+		fields[key] = value
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, false
+	}
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, false
+	}
+	if len(fields) != len(want) {
+		return nil, false
+	}
+	for _, key := range want {
+		if _, ok := fields[key]; !ok {
+			return nil, false
+		}
+	}
+
+	return fields, true
 }
 
 func mapResolveError(err error, lastStatus int) extension.ResolveResult {
@@ -657,27 +815,10 @@ func stripURLFragment(raw string) string {
 	return raw
 }
 
+// canonicalOrigin shares the extractor's grant source-origin canonicalizer so
+// referer validation and grant source binding can never drift apart.
 func canonicalOrigin(raw string) (string, bool) {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return "", false
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", false
-	}
-	host := strings.ToLower(parsed.Hostname())
-	if host == "" {
-		return "", false
-	}
-	port := parsed.Port()
-	if (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
-		port = ""
-	}
-	if port != "" {
-		return parsed.Scheme + "://" + host + ":" + port, true
-	}
-
-	return parsed.Scheme + "://" + host, true
+	return extractor.CanonicalBrowserGrantSourceOrigin(raw)
 }
 
 func hasCRLF(value string) bool {

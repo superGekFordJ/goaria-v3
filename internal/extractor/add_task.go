@@ -83,6 +83,12 @@ func (d *AddTaskDispatcher) Registry() *Registry {
 	return d.registry
 }
 
+// HeaderContextCapable reports whether the resolve chain has a live broker,
+// the precondition for advertising the header-context capability.
+func (d *AddTaskDispatcher) HeaderContextCapable() bool {
+	return d != nil && d.runner != nil && d.runner.HTTPBroker() != nil
+}
+
 func (d *AddTaskDispatcher) AuthRuntimeRequestsForSource(ctx context.Context, rawURL string) ([]HostAuthRuntimeRequest, error) {
 	if ctx == nil {
 		ctx = context.Background()

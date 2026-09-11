@@ -570,6 +570,7 @@ type recordingCookieTransport struct {
 	calls      int
 	cookies    []string
 	urls       []string
+	headers    []http.Header
 }
 
 func (t *recordingCookieTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -578,6 +579,7 @@ func (t *recordingCookieTransport) RoundTrip(req *http.Request) (*http.Response,
 	cookie := ""
 	if req != nil {
 		cookie = req.Header.Get("Cookie")
+		t.headers = append(t.headers, req.Header.Clone())
 		if req.URL != nil {
 			t.urls = append(t.urls, req.URL.String())
 		}
@@ -606,6 +608,14 @@ func (t *recordingCookieTransport) Count() int {
 	defer t.mu.Unlock()
 
 	return t.calls
+}
+
+func (t *recordingCookieTransport) Headers() []http.Header {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]http.Header, len(t.headers))
+	copy(out, t.headers)
+	return out
 }
 
 func (t *recordingCookieTransport) LastURL() string {
