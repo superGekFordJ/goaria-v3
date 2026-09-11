@@ -15,7 +15,8 @@ const (
 // BrowserRequestContext carries the browser-derived, request-scoped inputs
 // for one resolve: cookies, typed UA/language/referer fields, and validated
 // header grants. It lives only on the request context; nothing here is
-// persisted or echoed back to the caller.
+// persisted or echoed back to the caller. Once attached, treat it as
+// immutable — ctx values are shared by all readers on the chain.
 type BrowserRequestContext struct {
 	Cookies        []SessionCookie
 	UserAgent      string
@@ -51,17 +52,17 @@ func WithBrowserCookies(ctx context.Context, cookies []SessionCookie) context.Co
 
 // LastHTTPFetchStatus returns the final non-redirect fetch status for ctx, or 0.
 func LastHTTPFetchStatus(ctx context.Context) int {
-	if ctx == nil {
-		return 0
-	}
-	slot, _ := ctx.Value(lastHTTPFetchStatusContextKey).(*int32)
-	if slot == nil {
-		return 0
+	if slot := lastHTTPFetchStatusSlot(ctx); slot != nil {
+		return int(slot.Load())
 	}
 
-	return int(atomic.LoadInt32(slot))
+	return 0
 }
 
+// browserContextFromContext returns the stored context value. The returned
+// struct shares slice backings with the stored copy: treat it as immutable.
+// Producers copy at attach time (WithBrowserContext); consumers must not
+// mutate.
 func browserContextFromContext(ctx context.Context) BrowserRequestContext {
 	if ctx == nil {
 		return BrowserRequestContext{}
@@ -79,28 +80,30 @@ func withLastHTTPFetchStatusSlot(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if slot, ok := ctx.Value(lastHTTPFetchStatusContextKey).(*int32); ok && slot != nil {
+	if lastHTTPFetchStatusSlot(ctx) != nil {
 		return ctx
 	}
-	var slot int32
 
-	return context.WithValue(ctx, lastHTTPFetchStatusContextKey, &slot)
+	return context.WithValue(ctx, lastHTTPFetchStatusContextKey, &atomic.Int32{})
+}
+
+func lastHTTPFetchStatusSlot(ctx context.Context) *atomic.Int32 {
+	if ctx == nil {
+		return nil
+	}
+	slot, _ := ctx.Value(lastHTTPFetchStatusContextKey).(*atomic.Int32)
+
+	return slot
 }
 
 func resetLastHTTPFetchStatus(ctx context.Context) {
-	if ctx == nil {
-		return
-	}
-	if slot, ok := ctx.Value(lastHTTPFetchStatusContextKey).(*int32); ok && slot != nil {
-		atomic.StoreInt32(slot, 0)
+	if slot := lastHTTPFetchStatusSlot(ctx); slot != nil {
+		slot.Store(0)
 	}
 }
 
 func recordLastHTTPFetchStatus(ctx context.Context, statusCode int) {
-	if ctx == nil {
-		return
-	}
-	if slot, ok := ctx.Value(lastHTTPFetchStatusContextKey).(*int32); ok && slot != nil {
-		atomic.StoreInt32(slot, int32(statusCode))
+	if slot := lastHTTPFetchStatusSlot(ctx); slot != nil {
+		slot.Store(int32(statusCode))
 	}
 }

@@ -198,7 +198,13 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		if hopAttachesCookies && parsed.Scheme != "https" {
 			return HTTPFetchResponse{}, errors.New("cookie-authenticated request requires HTTPS")
 		}
-		httpRequest, err := http.NewRequestWithContext(ctx, method, parsed.String(), nil)
+		wireTarget := parsed.String()
+		if grantScopedHop {
+			// Send the validated canonical grant target, not the request
+			// spelling (host case, default port, bare query marker, fragment).
+			wireTarget = grant.TargetURL
+		}
+		httpRequest, err := http.NewRequestWithContext(ctx, method, wireTarget, nil)
 		if err != nil {
 			return HTTPFetchResponse{}, fmt.Errorf("construct request: %w", err)
 		}
@@ -303,7 +309,9 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		safeHeaders := b.safeResponseHeaders(response.Header)
 		reflectionSecrets := cookieReflection
 		if grantScopedHop {
-			reflectionSecrets = grantReflection
+			// Union, not replacement: earlier hops may have attached cookie
+			// secrets this response could replay (debug/history endpoints).
+			reflectionSecrets = append(append([]string(nil), cookieReflection...), grantReflection...)
 		} else if request.AuthProfileID != "" {
 			reflectionSecrets = *knownSecrets
 		}

@@ -208,16 +208,16 @@ func TestExtensionResolver_GrantHeadersReachTransport(t *testing.T) {
 		}
 	}
 	if grantHop == nil {
-		t.Fatalf("no hop carried grant headers: %#v", headers)
+		t.Fatal("no hop carried grant headers")
 	}
 	if grantHop.Get("Authorization") != "Bearer fixture-grant-secret" {
-		t.Fatalf("Authorization = %q", grantHop.Get("Authorization"))
+		t.Fatal("Authorization header mismatch")
 	}
 	if grantHop.Get("X-Fixture-Token") != "fixture-x-token-value" {
-		t.Fatalf("X-Fixture-Token = %q", grantHop.Get("X-Fixture-Token"))
+		t.Fatal("X-Fixture-Token header mismatch")
 	}
 	if grantHop.Get("Cookie") != "" {
-		t.Fatalf("grant hop must not carry Cookie: %q", grantHop.Get("Cookie"))
+		t.Fatal("grant hop must not carry Cookie")
 	}
 	if grantHop.Get("Referer") != "https://share.fixture.invalid/" {
 		t.Fatalf("Referer = %q, want source origin with trailing slash", grantHop.Get("Referer"))
@@ -313,6 +313,45 @@ func TestExtensionResolver_IdenticalGrantPayloadsStillMerge(t *testing.T) {
 	}
 }
 
+func TestExtensionResolver_TypedFieldControlBytesRejected(t *testing.T) {
+	dispatcher, _ := newHostCallFixtureDispatcher(t, &recordingCookieTransport{body: `{"ok":true,"item":"fixture-item"}`})
+	lease := newExtensionResolveAdapter(dispatcher)
+
+	for _, field := range []string{"user_agent", "accept_language", "referer"} {
+		for _, bad := range []string{"\x00", "\x1f", "\x7f", "\x05abc"} {
+			value := "fixture" + bad + "value"
+			if field == "referer" {
+				value = "https://share.fixture.invalid/" + bad + "r"
+			}
+			valueJSON, err := json.Marshal(value)
+			if err != nil {
+				t.Fatalf("marshal value: %v", err)
+			}
+			raw := fmt.Sprintf(`{"type":"extractor_resolve","request_id":"r-ctl","source_url":%q,"%s":%s}`,
+				packbuilder.HostCallFixtureShareURL, field, string(valueJSON))
+			result := lease.HandleResolve(grantedResolveCtx(), extension.RequestEnvelope{}, json.RawMessage(raw))
+			if result.ErrorCode != extension.ErrCodeInvalidRequest {
+				t.Fatalf("%s with control byte %q error_code = %q, want invalid_request", field, bad, result.ErrorCode)
+			}
+		}
+	}
+}
+
+func TestExtensionResolver_LongSourceURLWithRefererAccepted(t *testing.T) {
+	dispatcher, _ := newHostCallFixtureDispatcher(t, &recordingCookieTransport{body: `{"ok":true,"item":"fixture-item"}`})
+	lease := newExtensionResolveAdapter(dispatcher)
+
+	// ~640B source URL plus a same-origin referer: the canonical-origin path
+	// must not reject inputs longer than the wire source_origin field cap.
+	longSource := "https://share.fixture.invalid/s/" + strings.Repeat("p", 600)
+	raw := fmt.Sprintf(`{"type":"extractor_resolve","request_id":"r-long","source_url":%q,"referer":%q}`,
+		longSource, packbuilder.HostCallFixtureShareURL)
+	result := lease.HandleResolve(grantedResolveCtx(), extension.RequestEnvelope{}, json.RawMessage(raw))
+	if result.ErrorCode == extension.ErrCodeInvalidRequest {
+		t.Fatalf("long source_url + referer must not be rejected as invalid_request")
+	}
+}
+
 func TestExtensionResolver_FlightKeyFormatCompatibility(t *testing.T) {
 	dispatcher, _ := newHostCallFixtureDispatcher(t, &recordingCookieTransport{body: `{"ok":true,"item":"fixture-item"}`})
 	lease := newExtensionResolveAdapter(dispatcher)
@@ -344,6 +383,7 @@ func TestExtensionResolver_CanonicalOriginConsistency(t *testing.T) {
 		{raw: "http://share.fixture.invalid:8080/s", want: "http://share.fixture.invalid:8080", ok: true},
 		{raw: "https://127.0.0.1/x", ok: false},
 		{raw: "ftp://share.fixture.invalid", ok: false},
+		{raw: "https://share.fixture.invalid/" + strings.Repeat("p", 600), want: "https://share.fixture.invalid", ok: true},
 	} {
 		got, ok := canonicalOrigin(tc.raw)
 		if ok != tc.ok || got != tc.want {

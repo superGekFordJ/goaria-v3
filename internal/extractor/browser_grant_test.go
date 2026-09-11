@@ -392,6 +392,9 @@ func TestCanonicalBrowserGrantSourceOrigin(t *testing.T) {
 		{name: "trailing dot rejected", raw: "https://share.fixture.invalid.", ok: false},
 		{name: "no host rejected", raw: "https://", ok: false},
 		{name: "over 512 rejected", raw: "https://" + strings.Repeat("a", 510), ok: false},
+		// A long *input* URL is fine: only the canonical origin output is capped.
+		{name: "long input url canonicalizes", raw: "https://share.fixture.invalid/" + strings.Repeat("p", 600), want: "https://share.fixture.invalid", ok: true},
+		{name: "over 2048 input rejected", raw: "https://share.fixture.invalid/" + strings.Repeat("p", 2048), ok: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

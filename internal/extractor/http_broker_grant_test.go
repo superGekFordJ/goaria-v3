@@ -71,13 +71,13 @@ func TestHTTPBrokerGrantHitInjectsScopedHeaders(t *testing.T) {
 	}
 	got := seen[0]
 	if got.Get("Authorization") != "Bearer "+grantSecretA {
-		t.Fatalf("Authorization = %q, want grant value", got.Get("Authorization"))
+		t.Fatal("Authorization header mismatch")
 	}
 	if got.Get("X-Fixture-Token") != grantSecretB {
-		t.Fatalf("X-Fixture-Token = %q, want grant value", got.Get("X-Fixture-Token"))
+		t.Fatal("X-Fixture-Token header mismatch")
 	}
 	if _, ok := got["Cookie"]; ok {
-		t.Fatalf("grant hop must not carry browser Cookie: %q", got.Get("Cookie"))
+		t.Fatal("grant hop must not carry browser Cookie")
 	}
 }
 
@@ -149,10 +149,10 @@ func TestHTTPBrokerGrantMethodMismatchLeavesBasicPath(t *testing.T) {
 		t.Fatalf("Fetch() error = %v", err)
 	}
 	if _, ok := seen["Authorization"]; ok {
-		t.Fatalf("GET request must not inject HEAD grant: %q", seen.Get("Authorization"))
+		t.Fatal("GET request must not inject HEAD grant")
 	}
 	if seen.Get("Cookie") != "sid=browser-sid" {
-		t.Fatalf("non-matching grant must leave cookie path intact, Cookie = %q", seen.Get("Cookie"))
+		t.Fatal("non-matching grant must leave cookie path intact")
 	}
 }
 
@@ -174,10 +174,10 @@ func TestHTTPBrokerGrantExpiredLeavesBasicPath(t *testing.T) {
 		t.Fatalf("Fetch() error = %v", err)
 	}
 	if _, ok := seen["Authorization"]; ok {
-		t.Fatalf("expired grant must not inject: %q", seen.Get("Authorization"))
+		t.Fatal("expired grant must not inject")
 	}
 	if seen.Get("Cookie") != "sid=browser-sid" {
-		t.Fatalf("expired grant must leave cookie path intact, Cookie = %q", seen.Get("Cookie"))
+		t.Fatal("expired grant must leave cookie path intact")
 	}
 }
 
@@ -200,10 +200,10 @@ func TestHTTPBrokerGrantSuppressesCookiesOnlyOnHit(t *testing.T) {
 		t.Fatalf("transport calls = %d, want 1", len(seen))
 	}
 	if seen[0].Get("Cookie") != "sid=browser-sid" {
-		t.Fatalf("non-hit hop must keep cookie path, Cookie = %q", seen[0].Get("Cookie"))
+		t.Fatal("non-hit hop must keep cookie path")
 	}
 	if seen[0].Get("X-Fixture-Token") != "" {
-		t.Fatalf("non-hit hop must not inject grant headers: %q", seen[0].Get("X-Fixture-Token"))
+		t.Fatal("non-hit hop must not inject grant headers")
 	}
 }
 
@@ -224,6 +224,117 @@ func TestHTTPBrokerGrantRejectsAuthProfileCombination(t *testing.T) {
 	}
 	if transport.Count() != 0 {
 		t.Fatalf("transport calls = %d, want 0 (reject before transport)", transport.Count())
+	}
+}
+
+func TestHTTPBrokerGrantHitUsesCanonicalTargetOnWire(t *testing.T) {
+	// The wire request must carry the canonical grant target, not the raw
+	// request spelling (host case, default port, bare query marker, fragment).
+	for _, variant := range []string{
+		"https://API.ALPHA.TEST/x",
+		"https://api.alpha.test:443/x",
+		"https://api.alpha.test/x?",
+		"https://api.alpha.test/x#frag",
+	} {
+		t.Run(variant, func(t *testing.T) {
+			var seenURL string
+			var seen http.Header
+			broker := testHTTPBroker(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				seenURL = req.URL.String()
+				seen = req.Header.Clone()
+				return textResponse(200, "ok"), nil
+			}), nil)
+			ctx := WithBrowserContext(t.Context(), grantBrokerContext(liveBrokerGrant(grantBrokerTarget, "GET",
+				BrowserHeader{Name: "x-fixture-token", Value: grantSecretB},
+			)))
+			req := grantFetchRequest()
+			req.URL = variant
+
+			_, err := broker.Fetch(ctx, req)
+			if err != nil {
+				t.Fatalf("Fetch() error = %v", err)
+			}
+			if seenURL != grantBrokerTarget {
+				t.Fatalf("wire URL = %q, want canonical grant target %q", seenURL, grantBrokerTarget)
+			}
+			if seen.Get("X-Fixture-Token") != grantSecretB {
+				t.Fatal("grant header must be injected on canonical match")
+			}
+		})
+	}
+}
+
+func TestHTTPBrokerGrantHeadMethodHitInjects(t *testing.T) {
+	var seen http.Header
+	broker := testHTTPBroker(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		seen = req.Header.Clone()
+		return textResponse(200, "ok"), nil
+	}), nil)
+	ctx := WithBrowserContext(t.Context(), grantBrokerContext(liveBrokerGrant(grantBrokerTarget, "HEAD",
+		BrowserHeader{Name: "authorization", Value: "Bearer " + grantSecretA},
+	)))
+	req := grantFetchRequest()
+	req.Method = http.MethodHead
+
+	_, err := broker.Fetch(ctx, req)
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if seen.Get("Authorization") != "Bearer "+grantSecretA {
+		t.Fatal("HEAD grant must inject on HEAD request")
+	}
+	if _, ok := seen["Cookie"]; ok {
+		t.Fatal("grant hop must suppress Cookie")
+	}
+}
+
+func TestHTTPBrokerGrantRejectsPackHeaderCollision(t *testing.T) {
+	transport := &recordingTransport{}
+	policy := testHTTPPolicy()
+	policy.AllowedRequestHeaders["X-Fixture-Token"] = struct{}{}
+	broker := NewHTTPBroker(HTTPBrokerConfig{Policy: policy, Transport: transport})
+	ctx := WithBrowserContext(t.Context(), grantBrokerContext(liveBrokerGrant(grantBrokerTarget, "GET",
+		BrowserHeader{Name: "x-fixture-token", Value: grantSecretB},
+	)))
+	req := grantFetchRequest()
+	req.Headers = map[string]string{"x-fixture-token": "pack-owned"}
+
+	_, err := broker.Fetch(ctx, req)
+	if err == nil {
+		t.Fatal("Fetch() error = nil, want grant/pack header collision rejection")
+	}
+	if transport.Count() != 0 {
+		t.Fatalf("transport calls = %d, want 0 (reject before transport)", transport.Count())
+	}
+}
+
+func TestHTTPBrokerGrantReflectionChecksCookieSecretsAcrossHops(t *testing.T) {
+	// Hop 1 is not grant-scoped and attaches the browser cookie; it redirects
+	// to the grant target. The hop-2 response echoing the earlier cookie value
+	// must still be rejected — the grant hop's reflection set is a union.
+	calls := 0
+	broker := testHTTPBroker(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return redirectResponse(grantBrokerTarget), nil
+		}
+		return textResponse(200, `{"debug":"sid=browser-sid"}`), nil
+	}), nil)
+	ctx := WithBrowserContext(t.Context(), grantBrokerContext(liveBrokerGrant(grantBrokerTarget, "GET",
+		BrowserHeader{Name: "x-fixture-token", Value: grantSecretB},
+	)))
+	req := grantFetchRequest()
+	req.URL = "https://api.alpha.test/start"
+
+	_, err := broker.Fetch(ctx, req)
+	if err == nil {
+		t.Fatal("Fetch() error = nil, want reflected cookie secret rejection on grant hop")
+	}
+	if calls != 2 {
+		t.Fatalf("transport calls = %d, want 2", calls)
+	}
+	if strings.Contains(err.Error(), "browser-sid") {
+		t.Fatalf("Fetch() leaked cookie value: %v", err)
 	}
 }
 
@@ -278,13 +389,13 @@ func TestHTTPBrokerGrantRedirectDoesNotLeakToNextHop(t *testing.T) {
 		t.Fatal("non-scoped first hop must not carry grant headers")
 	}
 	if hops[0].Get("Cookie") != "sid=browser-sid" {
-		t.Fatalf("non-scoped first hop keeps cookie path, Cookie = %q", hops[0].Get("Cookie"))
+		t.Fatal("non-scoped first hop keeps cookie path")
 	}
 	if hops[1].Get("Authorization") != "Bearer "+grantSecretA {
-		t.Fatalf("scoped second hop must inject grant, Authorization = %q", hops[1].Get("Authorization"))
+		t.Fatal("scoped second hop must inject grant")
 	}
 	if _, ok := hops[1]["Cookie"]; ok {
-		t.Fatalf("scoped second hop must suppress Cookie: %q", hops[1].Get("Cookie"))
+		t.Fatal("scoped second hop must suppress Cookie")
 	}
 }
 

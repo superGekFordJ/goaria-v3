@@ -32,8 +32,9 @@ const (
 	CapExtractorBatch   = "extractor.batch"
 	CapDownloadBatch    = "download.batch"
 	// CapExtractorHeaderContext gates the optional browser_header_grants field.
-	// It is deliberately not advertised by computeConnectionCapabilities yet;
-	// publication waits for the host-side consumption path.
+	// computeConnectionCapabilities advertises it only when the resolver
+	// implements HeaderContextResolver and the full host consumption path
+	// (strict parse, request context, broker enforcement) is ready.
 	CapExtractorHeaderContext = "extractor.header_context"
 
 	DirectBatchStatusPending  = "pending"

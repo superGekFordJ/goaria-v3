@@ -14,6 +14,8 @@ type ResolveDisplayItem struct {
 }
 
 // ResolveResult is the host-side resolve outcome. Display fields only.
+// Error must never carry fetch/transport error text: upstream failures may
+// embed grant or cookie material and only static codes cross the ack boundary.
 type ResolveResult struct {
 	ErrorCode  string
 	Error      string

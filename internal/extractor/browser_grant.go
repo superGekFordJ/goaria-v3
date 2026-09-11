@@ -24,6 +24,7 @@ const (
 	maxBrowserHeaderValueBytes          = 4096
 	maxBrowserHeaderAggregateValueBytes = 8192
 	maxBrowserGrantSourceOriginBytes    = 512
+	maxBrowserGrantSourceInputBytes     = 2048
 	maxBrowserGrantTargetURLBytes       = 4096
 	browserHeaderGrantTTLMillis         = 60_000
 	browserHeaderGrantClockSkewMillis   = 30_000
@@ -77,7 +78,7 @@ type BrowserHeaderGrant struct {
 	Headers          []BrowserHeader
 }
 
-// BrowserHeaderSpec is the unvalidated wire shape of one grant.
+// BrowserHeaderGrantSpec is the unvalidated wire shape of one grant.
 type BrowserHeaderGrantSpec struct {
 	SourceOrigin     string
 	TargetURL        string
@@ -95,9 +96,11 @@ type BrowserHeaderSpec struct {
 
 // CanonicalBrowserGrantSourceOrigin returns the canonical scheme://host[:port]
 // form of a source origin. Inputs must be http(s), have no userinfo, and pass
-// the same host rules as broker ingress URLs.
+// the same host rules as broker ingress URLs. The input cap bounds
+// pre-canonicalization URLs (source_url/referer); the canonical origin output
+// is itself capped at maxBrowserGrantSourceOriginBytes.
 func CanonicalBrowserGrantSourceOrigin(raw string) (string, bool) {
-	if raw == "" || len(raw) > maxBrowserGrantSourceOriginBytes {
+	if raw == "" || len(raw) > maxBrowserGrantSourceInputBytes {
 		return "", false
 	}
 	parsed, err := url.Parse(raw)
@@ -327,6 +330,10 @@ func validBrowserGrantAuthorizationValue(value string) bool {
 func browserGrantMatch(grants []BrowserHeaderGrant, method, rawURL string, now time.Time) *BrowserHeaderGrant {
 	if len(grants) == 0 {
 		return nil
+	}
+	// Fragments never reach the wire; match on the fragment-free spelling.
+	if i := strings.IndexByte(rawURL, '#'); i >= 0 {
+		rawURL = rawURL[:i]
 	}
 	canonical, ok := CanonicalBrowserGrantTargetURL(rawURL)
 	if !ok {

@@ -537,6 +537,9 @@ func parseExtractorResolveRequest(ctx context.Context, raw json.RawMessage) (par
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 	}
+	// req.BrowserHeaderGrants is intentionally never read: grants only enter
+	// through grantRaw + decodeBrowserHeaderGrantSpecs (key-set/duplicate-key
+	// strictness the typed decoder cannot express).
 	if req.SourceURL == "" || len(req.SourceURL) > maxSourceURLBytes || hasCRLF(req.SourceURL) {
 		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 	}
@@ -547,16 +550,16 @@ func parseExtractorResolveRequest(ctx context.Context, raw json.RawMessage) (par
 	input := parsedResolveInput{SourceURL: sourceURL}
 	srcOrigin, _ := canonicalOrigin(sourceURL)
 
-	if hasCRLF(req.UserAgent) || len(req.UserAgent) > maxOptionalFieldBytes {
+	if hasControlBytes(req.UserAgent) || len(req.UserAgent) > maxOptionalFieldBytes {
 		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 	}
 	input.Browser.UserAgent = req.UserAgent
-	if hasCRLF(req.AcceptLanguage) || len(req.AcceptLanguage) > maxOptionalFieldBytes {
+	if hasControlBytes(req.AcceptLanguage) || len(req.AcceptLanguage) > maxOptionalFieldBytes {
 		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 	}
 	input.Browser.AcceptLanguage = req.AcceptLanguage
 	if req.Referer != "" {
-		if hasCRLF(req.Referer) || len(req.Referer) > maxOptionalFieldBytes {
+		if hasControlBytes(req.Referer) || len(req.Referer) > maxOptionalFieldBytes {
 			return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 		}
 		refOrigin, refOK := canonicalOrigin(req.Referer)
@@ -823,6 +826,18 @@ func canonicalOrigin(raw string) (string, bool) {
 
 func hasCRLF(value string) bool {
 	return strings.ContainsAny(value, "\r\n")
+}
+
+// hasControlBytes rejects C0 controls and DEL so typed fields can never reach
+// the wire or produce ambiguous fingerprint separators.
+func hasControlBytes(value string) bool {
+	for i := range len(value) {
+		if value[i] < 0x20 || value[i] == 0x7f {
+			return true
+		}
+	}
+
+	return false
 }
 
 func sanitizeAckMime(mime string) string {
