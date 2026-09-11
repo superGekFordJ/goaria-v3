@@ -529,6 +529,11 @@ func parseExtractorResolveRequest(ctx context.Context, raw json.RawMessage) (par
 	if grantKeys > 1 || (grantKeys == 1 && !grantKeyExact) {
 		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 	}
+	// Map decoding folds exact duplicate keys (last wins); the streaming pass
+	// makes "at most one grant-bearing key" hold for exact duplicates too.
+	if grantKeys == 1 && countTopLevelJSONKey(raw, "browser_header_grants") != 1 {
+		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
+	}
 	if grantKeys == 1 && !extension.HeaderContextGranted(ctx) {
 		return parsedResolveInput{}, extension.ErrCodeInvalidRequest
 	}
@@ -716,6 +721,37 @@ func strictObjectFields(raw json.RawMessage, want []string) (map[string]json.Raw
 	}
 
 	return fields, true
+}
+
+// countTopLevelJSONKey streams the top-level object and counts exact
+// occurrences of key. Map decoding folds duplicate keys (last wins), so a
+// repeated key cannot be counted from the map alone.
+func countTopLevelJSONKey(raw json.RawMessage, want string) int {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return -1
+	}
+	count := 0
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return -1
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return -1
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return -1
+		}
+		if key == want {
+			count++
+		}
+	}
+
+	return count
 }
 
 func mapResolveError(err error, lastStatus int) extension.ResolveResult {

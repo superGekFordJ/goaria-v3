@@ -313,10 +313,14 @@ func isValidBrowserGrantHeaderValue(value string) bool {
 }
 
 // validBrowserGrantAuthorizationValue requires "<scheme><SP><credentials>"
-// form and rejects ambient schemes the browser would auto-send.
+// form and rejects ambient schemes the browser would auto-send. Consecutive
+// spaces are rejected so the wire value is canonical: "Bearer  <token>" would
+// otherwise split into credentials " <token>", while an endpoint that
+// normalizes whitespace echoes only the bare token — escaping redaction and
+// reflection checks that key on the extracted credentials.
 func validBrowserGrantAuthorizationValue(value string) bool {
 	scheme, credentials, ok := strings.Cut(value, " ")
-	if !ok || scheme == "" || !isHTTPToken(scheme) || credentials == "" {
+	if !ok || scheme == "" || !isHTTPToken(scheme) || credentials == "" || strings.Contains(value, "  ") {
 		return false
 	}
 	_, ambient := ambientBrowserGrantAuthSchemes[strings.ToLower(scheme)]
@@ -367,8 +371,7 @@ func BrowserContextFingerprint(bc BrowserRequestContext) string {
 		return strings.Compare(a.Method+" "+a.TargetURL, b.Method+" "+b.TargetURL)
 	})
 	sum := sha256.New()
-	sum.Write([]byte("v1"))
-	sum.Write([]byte{0})
+	writeFingerprintField(sum, "v2")
 	writeFingerprintField(sum, bc.UserAgent)
 	writeFingerprintField(sum, bc.AcceptLanguage)
 	writeFingerprintField(sum, bc.RefererOrigin)
@@ -382,6 +385,9 @@ func BrowserContextFingerprint(bc BrowserRequestContext) string {
 		slices.SortFunc(headers, func(a, b BrowserHeader) int {
 			return strings.Compare(a.Name, b.Name)
 		})
+		// Explicit arity keeps the field stream self-delimiting: a grant's
+		// header region can never be repartitioned into a different shape.
+		writeFingerprintField(sum, strconv.Itoa(len(headers)))
 		for _, header := range headers {
 			writeFingerprintField(sum, header.Name)
 			writeFingerprintField(sum, header.Value)
@@ -391,7 +397,11 @@ func BrowserContextFingerprint(bc BrowserRequestContext) string {
 	return hex.EncodeToString(sum.Sum(nil))
 }
 
+// writeFingerprintField emits a length-prefixed field so the concatenated
+// stream is injective for arbitrary content — no field can smuggle a fake
+// boundary regardless of what bytes it contains.
 func writeFingerprintField(sum hash.Hash, field string) {
+	_, _ = sum.Write([]byte(strconv.Itoa(len(field))))
+	_, _ = sum.Write([]byte{':'})
 	_, _ = sum.Write([]byte(field))
-	_, _ = sum.Write([]byte{0})
 }

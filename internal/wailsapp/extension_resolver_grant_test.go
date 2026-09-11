@@ -70,6 +70,7 @@ func TestExtensionResolver_BrowserHeaderGrantWireShapes(t *testing.T) {
 		{name: "duplicate header key", grantsRaw: `[{"source_origin":"https://share.fixture.invalid","target_url":"https://api.fixture.invalid/resolve/fixture-item","method":"GET","captured_at_unix_ms":1,"expires_at_unix_ms":2,"headers":[{"name":"x-a","name":"x-a","value":"v"}]}]`, wantErr: extension.ErrCodeInvalidRequest},
 		{name: "variant key name", raw: `{"type":"extractor_resolve","request_id":"r-g","source_url":"https://share.fixture.invalid/s/fixture-item","Browser_Header_Grants":[]}`, wantErr: extension.ErrCodeInvalidRequest},
 		{name: "two variant keys", raw: `{"type":"extractor_resolve","request_id":"r-g","source_url":"https://share.fixture.invalid/s/fixture-item","browser_header_grants":[],"Browser_Header_Grants":[]}`, wantErr: extension.ErrCodeInvalidRequest},
+		{name: "exact duplicate top-level grant key", raw: `{"type":"extractor_resolve","request_id":"r-g","source_url":"https://share.fixture.invalid/s/fixture-item","browser_header_grants":[],"browser_header_grants":[]}`, wantErr: extension.ErrCodeInvalidRequest},
 		{name: "string captured", grantsRaw: `[{"source_origin":"https://share.fixture.invalid","target_url":"https://api.fixture.invalid/resolve/fixture-item","method":"GET","captured_at_unix_ms":"1","expires_at_unix_ms":2,"headers":[{"name":"x-a","value":"v"}]}]`, wantErr: extension.ErrCodeInvalidRequest},
 	}
 	for _, tc := range cases {

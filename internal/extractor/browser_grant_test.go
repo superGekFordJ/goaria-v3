@@ -180,6 +180,12 @@ func TestValidateBrowserHeaderGrants_Invalid(t *testing.T) {
 		{name: "authorization no scheme separator", mutate: func(s *BrowserHeaderGrantSpec) {
 			s.Headers = []BrowserHeaderSpec{{Name: "authorization", Value: "justtoken"}}
 		}},
+		{name: "authorization double space before credentials", mutate: func(s *BrowserHeaderGrantSpec) {
+			s.Headers = []BrowserHeaderSpec{{Name: "authorization", Value: "Bearer  fixture-grant-secret"}}
+		}},
+		{name: "authorization double space inside credentials", mutate: func(s *BrowserHeaderGrantSpec) {
+			s.Headers = []BrowserHeaderSpec{{Name: "authorization", Value: "Bearer fixture  token"}}
+		}},
 		{name: "method lower get", mutate: func(s *BrowserHeaderGrantSpec) { s.Method = "get" }},
 		{name: "method mixed", mutate: func(s *BrowserHeaderGrantSpec) { s.Method = "Get" }},
 		{name: "method post", mutate: func(s *BrowserHeaderGrantSpec) { s.Method = "POST" }},
@@ -538,6 +544,34 @@ func TestBrowserContextFingerprint_FieldSensitivity(t *testing.T) {
 				t.Fatalf("fingerprint must differ from base: %q", got)
 			}
 		})
+	}
+}
+
+func TestBrowserContextFingerprint_FieldBoundariesAreInjective(t *testing.T) {
+	// Length-prefixed fields make the stream self-delimiting: "a\x00b" inside
+	// one field must not alias the two-field pair "a","b" regardless of what
+	// bytes a field contains.
+	one := BrowserContextFingerprint(BrowserRequestContext{UserAgent: "a\x00b"})
+	two := BrowserContextFingerprint(BrowserRequestContext{UserAgent: "a", AcceptLanguage: "b"})
+	if one == "" || one == two {
+		t.Fatalf("fingerprints must differ: %q vs %q", one, two)
+	}
+}
+
+func TestBrowserContextFingerprint_HeaderArityDelimitsGrants(t *testing.T) {
+	grant := validateGrantForMatch(t, func(s *BrowserHeaderGrantSpec) {
+		s.Headers = []BrowserHeaderSpec{{Name: "x-a", Value: "1"}, {Name: "x-b", Value: "2"}}
+	})
+	one := BrowserContextFingerprint(BrowserRequestContext{Grants: []BrowserHeaderGrant{grant}})
+	// The same header multiset repartitioned across two same-scoped grants
+	// must not alias the single-grant stream.
+	half1, half2 := grant, grant
+	half1.Headers = grant.Headers[:1]
+	half2.Headers = grant.Headers[1:]
+	half2.CapturedAtUnixMs++
+	two := BrowserContextFingerprint(BrowserRequestContext{Grants: []BrowserHeaderGrant{half1, half2}})
+	if one == "" || one == two {
+		t.Fatal("repartitioned grants must produce a different fingerprint")
 	}
 }
 

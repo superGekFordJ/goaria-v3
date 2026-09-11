@@ -2,6 +2,7 @@ package extractor
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -285,6 +286,65 @@ func TestHTTPBrokerGrantHeadMethodHitInjects(t *testing.T) {
 	}
 	if _, ok := seen["Cookie"]; ok {
 		t.Fatal("grant hop must suppress Cookie")
+	}
+}
+
+// Opaque Content-Encoding makes reflection checks blind: the transport only
+// transparently decodes gzip it requested itself, so br/zstd/deflate — or any
+// still-encoded body from a custom RoundTripper — must fail closed whenever
+// secret-bearing requests produced an inspectable-looking body.
+func TestHTTPBrokerOpaqueContentEncodingFailsClosed(t *testing.T) {
+	cases := []struct {
+		name         string
+		url          string // non-grant URL exercises the cookie channel
+		encoding     string
+		uncompressed bool
+		body         string
+		wantErr      string
+	}{
+		{name: "brotli hides grant-secret reflection", encoding: "br", body: "raw compressed bytes", wantErr: "opaque content encoding"},
+		{name: "undecoded gzip from custom transport", encoding: "gzip", body: "raw compressed bytes", wantErr: "opaque content encoding"},
+		{name: "zstd", encoding: "zstd", body: "raw compressed bytes", wantErr: "opaque content encoding"},
+		{name: "mixed-case encoding name", encoding: "Br", body: "raw compressed bytes", wantErr: "opaque content encoding"},
+		{name: "brotli on cookie channel", url: "https://api.alpha.test/other", encoding: "br", body: "raw", wantErr: "opaque content encoding"},
+		{name: "transport claims decoded body", encoding: "br", uncompressed: true, body: "plain ok"},
+		{name: "identity encoding", encoding: "identity", body: "ok"},
+		{name: "no encoding header", body: "ok"},
+		{name: "declared encoding with empty body", encoding: "br", body: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			broker := testHTTPBroker(roundTripFunc(func(*http.Request) (*http.Response, error) {
+				header := http.Header{"Content-Type": []string{"text/plain"}}
+				if tc.encoding != "" {
+					header.Set("Content-Encoding", tc.encoding)
+				}
+				return &http.Response{
+					StatusCode:   http.StatusOK,
+					Header:       header,
+					Body:         io.NopCloser(strings.NewReader(tc.body)),
+					Uncompressed: tc.uncompressed,
+				}, nil
+			}), nil)
+			ctx := WithBrowserContext(t.Context(), grantBrokerContext(liveBrokerGrant(grantBrokerTarget, "GET",
+				BrowserHeader{Name: "authorization", Value: "Bearer " + grantSecretA},
+			)))
+			req := grantFetchRequest()
+			if tc.url != "" {
+				req.URL = tc.url
+			}
+
+			_, err := broker.Fetch(ctx, req)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Fetch() error = %v, want success", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Fetch() error = %v, want %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 

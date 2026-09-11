@@ -247,6 +247,9 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 				}
 				if header.Name == "authorization" {
 					if _, credentials, ok := strings.Cut(header.Value, " "); ok {
+						// Trim so a non-canonical spacing variant still keys
+						// on the credential form an endpoint would echo.
+						credentials = strings.TrimSpace(credentials)
 						*knownSecrets = appendNonEmptySecrets(*knownSecrets, credentials)
 						if len(credentials) >= minSecretReflectionBytes {
 							grantReflection = append(grantReflection, credentials)
@@ -315,6 +318,17 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 			reflectionSecrets = append(append([]string(nil), cookieReflection...), grantReflection...)
 		} else if request.AuthProfileID != "" {
 			reflectionSecrets = *knownSecrets
+		}
+		if len(reflectionSecrets) > 0 && len(body) > 0 {
+			// Reflection can only be checked on bytes we can read. The
+			// transport only transparently decodes the gzip encoding it
+			// requested itself; any other declared encoding — or an
+			// undecoded body from a custom RoundTripper — hides secret
+			// echoes inside compressed bytes. Fail closed.
+			enc := strings.ToLower(strings.TrimSpace(response.Header.Get("Content-Encoding")))
+			if enc != "" && enc != "identity" && !response.Uncompressed {
+				return HTTPFetchResponse{}, errors.New("opaque content encoding on secret-carrying response")
+			}
 		}
 		if err := rejectSecretReflection(body, safeHeaders, reflectionSecrets); err != nil {
 			return HTTPFetchResponse{}, err

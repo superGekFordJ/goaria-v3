@@ -286,8 +286,9 @@ type BrowserHeader struct {
 }
 
 // BrowserHeaderGrant is one ephemeral, exact-target browser header
-// observation. Wire-only in this slice: the host must not trust or consume it
-// until strict validation lands.
+// observation. The host consumes it only after strict validation and only
+// through request-scoped context; the typed decoder field is never read — the
+// adapter re-decodes the raw key with exact key-set and duplicate-key checks.
 type BrowserHeaderGrant struct {
 	SourceOrigin     string          `json:"source_origin"`
 	TargetURL        string          `json:"target_url"`
