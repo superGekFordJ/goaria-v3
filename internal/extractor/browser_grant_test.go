@@ -426,35 +426,36 @@ func TestBrowserGrantMatch_MethodAndTarget(t *testing.T) {
 	grant := validateGrantForMatch(t, nil)
 	grants := []BrowserHeaderGrant{grant}
 
-	if got := browserGrantMatch(grants, "GET", grant.TargetURL, grantTestNow); got == nil || got.TargetURL != grant.TargetURL || got.Method != grant.Method {
+	if got, _ := browserGrantMatch(grants, "GET", grant.TargetURL, grantTestNow); got == nil || got.TargetURL != grant.TargetURL || got.Method != grant.Method {
 		t.Fatalf("match = %#v, want hit", got)
 	}
-	if got := browserGrantMatch(grants, "HEAD", grant.TargetURL, grantTestNow); got != nil {
+	if got, _ := browserGrantMatch(grants, "HEAD", grant.TargetURL, grantTestNow); got != nil {
 		t.Fatalf("HEAD request must not match GET grant: %#v", got)
 	}
 
 	head := validateGrantForMatch(t, func(s *BrowserHeaderGrantSpec) { s.Method = "HEAD" })
-	if got := browserGrantMatch([]BrowserHeaderGrant{head}, "HEAD", head.TargetURL, grantTestNow); got == nil {
+	if got, _ := browserGrantMatch([]BrowserHeaderGrant{head}, "HEAD", head.TargetURL, grantTestNow); got == nil {
 		t.Fatal("HEAD request must match HEAD grant")
 	}
-	if got := browserGrantMatch([]BrowserHeaderGrant{head}, "GET", head.TargetURL, grantTestNow); got != nil {
+	if got, _ := browserGrantMatch([]BrowserHeaderGrant{head}, "GET", head.TargetURL, grantTestNow); got != nil {
 		t.Fatal("GET request must not match HEAD grant")
 	}
 
-	// Non-canonical request URL that canonicalizes to the grant target hits.
-	if got := browserGrantMatch(grants, "GET", "https://api.fixture.invalid:443/resolve/fixture-item", grantTestNow); got == nil {
-		t.Fatal("request URL with redundant port must canonicalize and match")
+	// Non-canonical request URL that canonicalizes to the grant target hits,
+	// and the returned wire target is the canonical form of the request URL.
+	if got, target := browserGrantMatch(grants, "GET", "https://api.fixture.invalid:443/resolve/fixture-item", grantTestNow); got == nil || target != grant.TargetURL {
+		t.Fatalf("match = %#v target = %q, want canonical hit", got, target)
 	}
-	if got := browserGrantMatch(grants, "GET", "https://api.fixture.invalid/resolve/other", grantTestNow); got != nil {
+	if got, _ := browserGrantMatch(grants, "GET", "https://api.fixture.invalid/resolve/other", grantTestNow); got != nil {
 		t.Fatalf("different path must not match: %#v", got)
 	}
-	if got := browserGrantMatch(grants, "GET", grant.TargetURL+"?extra=1", grantTestNow); got != nil {
+	if got, _ := browserGrantMatch(grants, "GET", grant.TargetURL+"?extra=1", grantTestNow); got != nil {
 		t.Fatalf("different query must not match: %#v", got)
 	}
-	if got := browserGrantMatch(nil, "GET", grant.TargetURL, grantTestNow); got != nil {
+	if got, _ := browserGrantMatch(nil, "GET", grant.TargetURL, grantTestNow); got != nil {
 		t.Fatalf("nil grants must not match: %#v", got)
 	}
-	if got := browserGrantMatch(grants, "GET", "not a url", grantTestNow); got != nil {
+	if got, _ := browserGrantMatch(grants, "GET", "not a url", grantTestNow); got != nil {
 		t.Fatalf("unparseable request URL must not match: %#v", got)
 	}
 }
@@ -463,11 +464,11 @@ func TestBrowserGrantMatch_TTLBoundary(t *testing.T) {
 	grant := validateGrantForMatch(t, nil)
 	grants := []BrowserHeaderGrant{grant}
 	atExpiry := time.UnixMilli(grant.ExpiresAtUnixMs)
-	if got := browserGrantMatch(grants, "GET", grant.TargetURL, atExpiry); got != nil {
+	if got, _ := browserGrantMatch(grants, "GET", grant.TargetURL, atExpiry); got != nil {
 		t.Fatalf("expired grant must not match at expires_at: %#v", got)
 	}
 	beforeExpiry := time.UnixMilli(grant.ExpiresAtUnixMs - 1)
-	if got := browserGrantMatch(grants, "GET", grant.TargetURL, beforeExpiry); got == nil {
+	if got, _ := browserGrantMatch(grants, "GET", grant.TargetURL, beforeExpiry); got == nil {
 		t.Fatal("live grant must match one ms before expiry")
 	}
 }

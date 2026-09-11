@@ -291,17 +291,22 @@ func TestHTTPBrokerGrantHeadMethodHitInjects(t *testing.T) {
 func TestHTTPBrokerGrantRejectsPackHeaderCollision(t *testing.T) {
 	transport := &recordingTransport{}
 	policy := testHTTPPolicy()
-	policy.AllowedRequestHeaders["X-Fixture-Token"] = struct{}{}
+	// x-fixture-flag survives validatePackHeaders (no secret-name substring, not
+	// forbidden, allowlisted here) so the grant collision check is what fires.
+	policy.AllowedRequestHeaders["X-Fixture-Flag"] = struct{}{}
 	broker := NewHTTPBroker(HTTPBrokerConfig{Policy: policy, Transport: transport})
 	ctx := WithBrowserContext(t.Context(), grantBrokerContext(liveBrokerGrant(grantBrokerTarget, "GET",
-		BrowserHeader{Name: "x-fixture-token", Value: grantSecretB},
+		BrowserHeader{Name: "x-fixture-flag", Value: grantSecretB},
 	)))
 	req := grantFetchRequest()
-	req.Headers = map[string]string{"x-fixture-token": "pack-owned"}
+	req.Headers = map[string]string{"x-fixture-flag": "pack-owned"}
 
 	_, err := broker.Fetch(ctx, req)
 	if err == nil {
 		t.Fatal("Fetch() error = nil, want grant/pack header collision rejection")
+	}
+	if err.Error() != "grant-scoped header collides with pack header" {
+		t.Fatalf("error = %q, want the collision check, not earlier header validation", err.Error())
 	}
 	if transport.Count() != 0 {
 		t.Fatalf("transport calls = %d, want 0 (reject before transport)", transport.Count())

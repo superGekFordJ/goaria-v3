@@ -325,11 +325,13 @@ func validBrowserGrantAuthorizationValue(value string) bool {
 }
 
 // browserGrantMatch returns the live grant whose method and canonical target
-// exactly match the current hop, or nil. Matching is deliberately exact: no
-// eTLD+1, suffix, or same-origin broadening.
-func browserGrantMatch(grants []BrowserHeaderGrant, method, rawURL string, now time.Time) *BrowserHeaderGrant {
+// exactly match the current hop, plus the canonical target computed from the
+// (policy-checked) request URL — callers should send that form, not the stored
+// grant field, so wire bytes always derive from the checked input. Matching is
+// deliberately exact: no eTLD+1, suffix, or same-origin broadening.
+func browserGrantMatch(grants []BrowserHeaderGrant, method, rawURL string, now time.Time) (*BrowserHeaderGrant, string) {
 	if len(grants) == 0 {
-		return nil
+		return nil, ""
 	}
 	// Fragments never reach the wire; match on the fragment-free spelling.
 	if i := strings.IndexByte(rawURL, '#'); i >= 0 {
@@ -337,7 +339,7 @@ func browserGrantMatch(grants []BrowserHeaderGrant, method, rawURL string, now t
 	}
 	canonical, ok := CanonicalBrowserGrantTargetURL(rawURL)
 	if !ok {
-		return nil
+		return nil, ""
 	}
 	nowMs := now.UnixMilli()
 	for i := range grants {
@@ -346,11 +348,11 @@ func browserGrantMatch(grants []BrowserHeaderGrant, method, rawURL string, now t
 			continue
 		}
 		if grant.TargetURL == canonical {
-			return grant
+			return grant, canonical
 		}
 	}
 
-	return nil
+	return nil, ""
 }
 
 // BrowserContextFingerprint is an irreversible, deterministic fingerprint of

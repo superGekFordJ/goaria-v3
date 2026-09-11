@@ -192,7 +192,7 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		if err != nil {
 			return HTTPFetchResponse{}, err
 		}
-		grant := browserGrantMatch(browserCtx.Grants, method, currentURL, time.Now())
+		grant, grantTarget := browserGrantMatch(browserCtx.Grants, method, currentURL, time.Now())
 		grantScopedHop := grant != nil
 		hopAttachesCookies := request.AuthProfileID == "" && !grantScopedHop && len(cookiesMatchingRequest(browserCtx.Cookies, currentURL)) > 0
 		if hopAttachesCookies && parsed.Scheme != "https" {
@@ -200,9 +200,10 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		}
 		wireTarget := parsed.String()
 		if grantScopedHop {
-			// Send the validated canonical grant target, not the request
-			// spelling (host case, default port, bare query marker, fragment).
-			wireTarget = grant.TargetURL
+			// Send the canonical form of the policy-checked URL, not the
+			// request spelling (host case, default port, bare query marker,
+			// fragment) and not the stored grant field.
+			wireTarget = grantTarget
 		}
 		httpRequest, err := http.NewRequestWithContext(ctx, method, wireTarget, nil)
 		if err != nil {
