@@ -145,7 +145,7 @@ interface CachedMapEntry {
 }
 
 const globalMapCache = new Map<string, CachedMapEntry>()
-const MAX_GLOBAL_CACHE_SIZE = 32
+const MAX_GLOBAL_CACHE_SIZE = 16
 
 function getMapCacheKey(w: number, h: number, radius: number, bezel: number, dpr: number): string {
   return `${w}:${h}:${radius}:${bezel}:${dpr}`
@@ -615,9 +615,29 @@ export function warmupLiquidGlassPipeline(): void {
   }
 }
 
-/** Pre-warms a specific geometry displacement map into the global LRU cache during idle time. */
-export function preloadDisplacementMap(w: number, h: number, radius: number, bezel: number): void {
-  if (typeof window === 'undefined' || !supportsUrlBackdropFilter()) return
+/** Pre-warms a specific geometry displacement map into the global LRU cache during idle time.
+ * Returns a disposer that releases the acquired cache entry; consumers must invoke it on
+ * unmount, otherwise the pre-baked map stays at refCount >= 1 and can never be evicted. */
+export function preloadDisplacementMap(
+  w: number,
+  h: number,
+  radius: number,
+  bezel: number,
+): () => void {
+  if (typeof window === 'undefined' || !supportsUrlBackdropFilter()) return () => {}
   const dpr = Math.min(window.devicePixelRatio || 1, 2)
-  acquireDisplacementMap(w, h, radius, bezel, dpr).catch(() => {})
+  const key = getMapCacheKey(w, h, radius, bezel, dpr)
+  let released = false
+  acquireDisplacementMap(w, h, radius, bezel, dpr)
+    .then(() => {
+      /* The cache entry lands asynchronously — if the consumer already disposed
+       * before the build resolved, release it here so it isn't pinned forever. */
+      if (released) releaseDisplacementMap(key)
+    })
+    .catch(() => {})
+  return () => {
+    if (released) return
+    released = true
+    releaseDisplacementMap(key)
+  }
 }

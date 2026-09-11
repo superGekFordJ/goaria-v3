@@ -39,6 +39,8 @@
   const isNavVisible = ref(false)
   let collapseTimeout: ReturnType<typeof setTimeout> | null = null
   let navHideTimeout: ReturnType<typeof setTimeout> | null = null
+  let releasePreloadedMap: (() => void) | null = null
+  let unmounted = false
 
   const surfaceRef = ref<HTMLElement | null>(null)
   const triggerRef = ref<HTMLButtonElement | null>(null)
@@ -178,7 +180,8 @@
     if (typeof window !== 'undefined' && !isTesting) {
       const schedule = window.requestIdleCallback || ((cb: () => void) => setTimeout(cb, 120))
       schedule(() => {
-        preloadDisplacementMap(360, panelHeight.value, 24, 24)
+        if (unmounted) return
+        releasePreloadedMap = preloadDisplacementMap(360, panelHeight.value, 24, 24)
       })
     }
   })
@@ -187,6 +190,9 @@
     close()
   })
   onBeforeUnmount(() => {
+    unmounted = true
+    releasePreloadedMap?.()
+    releasePreloadedMap = null
     clearCollapseTimers()
     removeListeners()
   })
