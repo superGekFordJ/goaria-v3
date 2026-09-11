@@ -5,7 +5,7 @@
   import SectionCard from './SectionCard.vue'
   import LiquidGlassSlider from '../../common/LiquidGlassSlider.vue'
   import { useUIStore, type ThemeMode, type LocalePreference } from '../../../stores/ui'
-  import { skinCatalog, type SkinId } from '../../../utils/skinCatalog'
+  import { skinCatalog, getSkinMeta, type SkinId } from '../../../utils/skinCatalog'
 
   const uiStore = useUIStore()
   const { t } = useI18n()
@@ -58,7 +58,15 @@
   }
 
   const currentSkinMeta = computed(() => {
-    return skinCatalog.find(s => s.id === uiStore.skinId) ?? skinCatalog[0]
+    return getSkinMeta(uiStore.skinId) ?? skinCatalog[0]
+  })
+
+  const currentConceptLine = computed(() => {
+    return t(currentSkinMeta.value.conceptKey)
+      .split(/[、・,，]/)
+      .map(w => w.trim())
+      .filter(Boolean)
+      .join(' · ')
   })
 </script>
 
@@ -350,7 +358,7 @@
             <span
               class="w-1.5 h-1.5 rounded-full bg-[var(--neon-primary)]/70 shadow-[0_0_6px_var(--neon-primary)]"
             ></span>
-            <span class="truncate">{{ t(currentSkinMeta.conceptKey).replace(/、/g, ' · ') }}</span>
+            <span class="truncate">{{ currentConceptLine }}</span>
           </div>
 
           <!-- Prism: Continuous Optical Spectrum Slider -->
@@ -362,7 +370,7 @@
                 <span
                   class="w-1.5 h-1.5 rounded-full bg-[var(--neon-primary)]/70 shadow-[0_0_6px_var(--neon-primary)]"
                 ></span>
-                <span class="truncate">{{ t(currentSkinMeta.conceptKey).replace(/、/g, ' · ') }}</span>
+                <span class="truncate">{{ currentConceptLine }}</span>
               </div>
             </div>
             <div class="flex items-center pr-3 pt-0.5">
@@ -374,6 +382,9 @@
                 class="w-full spectrum-slider cursor-pointer"
                 @input="
                   (e: Event) => uiStore.setPrismHue(Number((e.target as HTMLInputElement).value))
+                "
+                @change="
+                  (e: Event) => uiStore.commitPrismHue(Number((e.target as HTMLInputElement).value))
                 "
               />
             </div>
@@ -485,6 +496,11 @@
       #3b82f6 70%,
       #8b5cf6 85%,
       #f43f5e 100%
+    );
+    background: linear-gradient(
+      to right in oklch longer hue,
+      oklch(0.7 0.19 0),
+      oklch(0.7 0.19 0)
     );
     outline: none;
     box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.1);

@@ -176,3 +176,95 @@ describe('uiStore applyEffects', () => {
     expect(document.documentElement.getAttribute('data-effects-glow')).toBe('static')
   })
 })
+
+describe('uiStore prismHue', () => {
+  beforeEach(() => {
+    document.documentElement.style.removeProperty('--prism-hue')
+    localStorage.clear()
+  })
+
+  it('clamps hue to 0-360 and sets --prism-hue CSS var', async () => {
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { useUIStore } = await import('../ui')
+    setActivePinia(createPinia())
+    const store = useUIStore()
+
+    store.setPrismHue(266)
+    expect(store.prismHue).toBe(266)
+    expect(document.documentElement.style.getPropertyValue('--prism-hue')).toBe('266')
+
+    store.setPrismHue(400)
+    expect(store.prismHue).toBe(360)
+    store.setPrismHue(-20)
+    expect(store.prismHue).toBe(0)
+    store.setPrismHue(150.6)
+    expect(store.prismHue).toBe(151)
+  })
+
+  it('setPrismHue updates live hue without touching prismHuePersisted', async () => {
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { useUIStore } = await import('../ui')
+    setActivePinia(createPinia())
+    const store = useUIStore()
+
+    store.setPrismHue(10)
+    store.setPrismHue(120)
+    store.setPrismHue(300)
+
+    expect(store.prismHue).toBe(300)
+    expect(store.prismHuePersisted).toBe(280)
+  })
+
+  it('commitPrismHue flushes persisted hue immediately', async () => {
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { useUIStore } = await import('../ui')
+    setActivePinia(createPinia())
+    const store = useUIStore()
+
+    store.setPrismHue(66)
+    expect(store.prismHuePersisted).toBe(280)
+
+    store.commitPrismHue()
+    expect(store.prismHuePersisted).toBe(66)
+
+    store.commitPrismHue(180)
+    expect(store.prismHue).toBe(180)
+    expect(store.prismHuePersisted).toBe(180)
+  })
+
+  it('hydrates legacy persisted prismHue key into both refs', async () => {
+    localStorage.setItem('ui', JSON.stringify({ prismHue: 266 }))
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { useUIStore } = await import('../ui')
+    setActivePinia(createPinia())
+    const store = useUIStore()
+
+    store.initTheme()
+    expect(store.prismHue).toBe(266)
+    expect(store.prismHuePersisted).toBe(266)
+    expect(document.documentElement.style.getPropertyValue('--prism-hue')).toBe('266')
+  })
+
+  it('prefers prismHuePersisted over legacy prismHue key', async () => {
+    localStorage.setItem('ui', JSON.stringify({ prismHue: 100, prismHuePersisted: 200 }))
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { useUIStore } = await import('../ui')
+    setActivePinia(createPinia())
+    const store = useUIStore()
+
+    store.initTheme()
+    expect(store.prismHue).toBe(200)
+    expect(store.prismHuePersisted).toBe(200)
+  })
+
+  it('defaults to 280 when no persisted hue exists', async () => {
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { useUIStore } = await import('../ui')
+    setActivePinia(createPinia())
+    const store = useUIStore()
+
+    store.initTheme()
+    expect(store.prismHue).toBe(280)
+    expect(store.prismHuePersisted).toBe(280)
+  })
+})

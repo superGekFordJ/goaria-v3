@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { resolveLocale, setI18nLocale } from '../i18n'
 import { type SkinId, DEFAULT_SKIN_ID, normaliseSkinId } from '../utils/skinCatalog'
+import { prismButtonText, prismFillLightness } from '../utils/prismSpectrum'
 
 export type LocalePreference = 'auto' | 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'es' | 'de'
 export type ThemeMode = 'system' | 'light' | 'dark'
@@ -19,7 +20,7 @@ export function levelToTier(level: number): EffectsTier {
 let systemThemeMedia: MediaQueryList | null = null
 let detachSystemThemeListener: (() => void) | null = null
 
-let effectsUnloadBound = false
+let livePersistUnloadBound = false
 
 function clampEffectsLevel(level: number): number {
   return Math.max(0, Math.min(100, Math.round(level)))
@@ -34,7 +35,10 @@ export const useUIStore = defineStore(
     const locale = ref<LocalePreference>('auto')
     const themeMode = ref<ThemeMode>('system')
     const skinId = ref<SkinId>(DEFAULT_SKIN_ID)
+    // Live hue — drives --prism-hue every tick; not in persist.pick.
     const prismHue = ref<number>(280)
+    // Committed mirror — pinia persist only watches this (slider commit / unload).
+    const prismHuePersisted = ref<number>(280)
     const density = ref<Density>('comfortable')
     // Live visual level — drives CSS every tick; not in persist.pick.
     const effectsLevel = ref<number>(50)
@@ -125,12 +129,46 @@ export const useUIStore = defineStore(
       applySkin()
     }
 
-    function setPrismHue(hue: number) {
-      const clamped = Math.max(0, Math.min(360, Math.round(hue)))
-      prismHue.value = clamped
-      if (typeof document !== 'undefined') {
-        document.documentElement.style.setProperty('--prism-hue', String(clamped))
+    function clampPrismHue(hue: number): number {
+      return Math.max(0, Math.min(360, Math.round(hue)))
+    }
+
+    function resolvedThemeNow(): 'light' | 'dark' {
+      if (themeMode.value === 'system') {
+        return typeof window !== 'undefined' &&
+          window.matchMedia('(prefers-color-scheme: light)').matches
+          ? 'light'
+          : 'dark'
       }
+      return themeMode.value
+    }
+
+    function applyPrismChrome() {
+      if (typeof document === 'undefined') return
+      const theme = resolvedThemeNow()
+      const root = document.documentElement
+      root.style.setProperty('--prism-hue', String(prismHue.value))
+      root.style.setProperty('--prism-fill-l', String(prismFillLightness(prismHue.value, theme)))
+      root.style.setProperty('--prism-btn-text', prismButtonText(prismHue.value, theme))
+    }
+
+    function setPrismHue(hue: number) {
+      prismHue.value = clampPrismHue(hue)
+      applyPrismChrome()
+    }
+
+    function flushPrismHuePersist() {
+      const clamped = clampPrismHue(prismHue.value)
+      if (prismHuePersisted.value !== clamped) {
+        prismHuePersisted.value = clamped
+      }
+    }
+
+    function commitPrismHue(hue?: number) {
+      if (hue !== undefined) {
+        setPrismHue(hue)
+      }
+      flushPrismHuePersist()
     }
 
     function setDensity(newDensity: Density) {
@@ -160,11 +198,16 @@ export const useUIStore = defineStore(
       flushEffectsLevelPersist()
     }
 
-    function bindEffectsPersistFlush() {
-      if (effectsUnloadBound || typeof window === 'undefined') return
-      effectsUnloadBound = true
-      window.addEventListener('beforeunload', flushEffectsLevelPersist)
-      window.addEventListener('pagehide', flushEffectsLevelPersist)
+    function flushLivePersist() {
+      flushEffectsLevelPersist()
+      flushPrismHuePersist()
+    }
+
+    function bindLivePersistFlush() {
+      if (livePersistUnloadBound || typeof window === 'undefined') return
+      livePersistUnloadBound = true
+      window.addEventListener('beforeunload', flushLivePersist)
+      window.addEventListener('pagehide', flushLivePersist)
     }
 
     function applyTheme() {
@@ -182,6 +225,7 @@ export const useUIStore = defineStore(
           const resolved = systemThemeMedia?.matches ? 'light' : 'dark'
           root.setAttribute('data-theme', resolved)
           root.setAttribute('data-theme-mode', 'system')
+          applyPrismChrome()
         }
         applySystemTheme()
         const listener = () => applySystemTheme()
@@ -192,13 +236,14 @@ export const useUIStore = defineStore(
       } else {
         root.setAttribute('data-theme', themeMode.value)
         root.setAttribute('data-theme-mode', 'explicit')
+        applyPrismChrome()
       }
     }
 
     function applySkin() {
       const root = document.documentElement
       root.setAttribute('data-skin', skinId.value)
-      root.style.setProperty('--prism-hue', String(prismHue.value))
+      applyPrismChrome()
     }
 
     function applyDensity() {
@@ -281,12 +326,39 @@ export const useUIStore = defineStore(
       effectsLevelPersisted.value = 50
     }
 
+    function normalizePrismHue() {
+      let hue: number | undefined
+      try {
+        const raw = localStorage.getItem('ui')
+        if (raw) {
+          const parsed = JSON.parse(raw) as Record<string, unknown>
+          const committed = parsed.prismHuePersisted
+          const legacy = parsed.prismHue
+          if (typeof committed === 'number' && !Number.isNaN(committed)) {
+            hue = committed
+          } else if (typeof legacy === 'number' && !Number.isNaN(legacy)) {
+            // Pre-split blobs persisted the live `prismHue` key directly.
+            hue = legacy
+          }
+        }
+      } catch {
+        // ignore parse errors
+      }
+      if (hue === undefined && !Number.isNaN(prismHuePersisted.value)) {
+        hue = prismHuePersisted.value
+      }
+      const clamped = hue === undefined ? 280 : clampPrismHue(hue)
+      prismHue.value = clamped
+      prismHuePersisted.value = clamped
+    }
+
     function initTheme() {
       normalizeNavigationState()
       // Defensive: normalise persisted skinId in case it was set to an unknown value
       skinId.value = normaliseSkinId(skinId.value)
       normalizeEffectsLevel()
-      bindEffectsPersistFlush()
+      normalizePrismHue()
+      bindLivePersistFlush()
       applyTheme()
       applySkin()
       applyDensity()
@@ -300,6 +372,7 @@ export const useUIStore = defineStore(
       themeMode,
       skinId,
       prismHue,
+      prismHuePersisted,
       density,
       effectsLevel,
       effectsLevelPersisted,
@@ -319,6 +392,7 @@ export const useUIStore = defineStore(
       setTheme,
       setSkin,
       setPrismHue,
+      commitPrismHue,
       setDensity,
       setEffectsLevel,
       commitEffectsLevel,
@@ -337,7 +411,7 @@ export const useUIStore = defineStore(
         'locale',
         'themeMode',
         'skinId',
-        'prismHue',
+        'prismHuePersisted',
         'density',
         'effectsLevelPersisted',
       ],
