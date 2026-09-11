@@ -267,7 +267,7 @@
             :class="[
               'group flex flex-col items-center gap-1.5 py-2 px-1 rounded-xl transition-all duration-200 cursor-pointer text-center relative',
               uiStore.skinId === skin.id
-                ? 'bg-white/60 dark:bg-white/[0.08] border border-black/[0.06] dark:border-white/12 shadow-[0_1px_3px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.8)] backdrop-blur-xs'
+                ? 'swatch-active bg-white/60 dark:bg-white/[0.08] border border-black/[0.06] dark:border-white/12 shadow-[0_1px_3px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.8)] backdrop-blur-xs'
                 : 'border border-transparent hover:bg-black/[0.03] dark:hover:bg-white/[0.04] opacity-75 hover:opacity-100',
             ]"
             @click="uiStore.setSkin(skin.id as SkinId)"
@@ -393,7 +393,7 @@
 
         <!-- Right: Living Specimen Instrument Card (Shared by All 7 Skins, Reacts LIVE in Prism) -->
         <div
-          class="shrink-0 w-48 sm:w-52 p-3 rounded-xl bg-white/75 dark:bg-black/30 border border-black/5 dark:border-[var(--glass-border)] shadow-xs backdrop-blur-sm flex flex-col justify-between"
+          class="specimen-card shrink-0 w-48 sm:w-52 p-3 rounded-xl bg-white/75 dark:bg-black/30 border border-black/5 dark:border-[var(--glass-border)] shadow-xs backdrop-blur-sm flex flex-col justify-between"
         >
           <div
             class="flex items-center justify-between text-[9px] font-mono text-[var(--app-text-subtle)] font-medium"
@@ -521,5 +521,23 @@
 
   .spectrum-slider::-webkit-slider-thumb:hover {
     transform: scale(1.2);
+  }
+
+  /* Light window-transparency anti-fog: the selected swatch and specimen card
+     must stay near the OS material like the sidebar liquid glass
+     (visual_system §5.1a) instead of stacking milky white. */
+  :root[data-window-transparency='acrylic'][data-theme='light'] .swatch-active,
+  :root[data-window-transparency='mica'][data-theme='light'] .swatch-active,
+  :root[data-window-transparency='tabbed'][data-theme='light'] .swatch-active {
+    background: rgba(255, 255, 255, 0.22);
+    box-shadow:
+      0 1px 3px rgba(0, 0, 0, 0.04),
+      inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  }
+
+  :root[data-window-transparency='acrylic'][data-theme='light'] .specimen-card,
+  :root[data-window-transparency='mica'][data-theme='light'] .specimen-card,
+  :root[data-window-transparency='tabbed'][data-theme='light'] .specimen-card {
+    background: rgba(255, 255, 255, 0.38);
   }
 </style>
