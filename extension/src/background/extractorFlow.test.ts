@@ -159,6 +159,7 @@ const headerGrants = vi.hoisted(() => ({
   taken: [] as Array<Record<string, unknown>>,
   takeCalls: [] as Array<Record<string, unknown>>,
   clearedTabs: [] as number[],
+  clearedTokenTabs: [] as Array<{ tabId: number; pageToken: string }>,
   clearedAll: 0,
 }))
 
@@ -170,6 +171,9 @@ vi.mock('./browserHeaderCapture', () => ({
   },
   clearExtractorHeaderGrantsForTab: (tabId: number) => {
     headerGrants.clearedTabs.push(tabId)
+  },
+  clearExtractorHeaderGrantsIfToken: (tabId: number, pageToken: string) => {
+    headerGrants.clearedTokenTabs.push({ tabId, pageToken })
   },
   takeHeaderGrantsForResolve: (input: Record<string, unknown>) => {
     headerGrants.takeCalls.push(input)
@@ -644,6 +648,7 @@ describe('browser header grants', () => {
     headerGrants.taken = []
     headerGrants.takeCalls = []
     headerGrants.clearedTabs = []
+    headerGrants.clearedTokenTabs = []
     headerGrants.clearedAll = 0
     cancelAllClicks()
   })
@@ -736,7 +741,9 @@ describe('browser header grants', () => {
   it('clears the tab capture state on nav and ignore', async () => {
     await getExtractorSessionStore().putSession(committingRow(75))
     expect(await handleNav({ page_token: TOKEN }, { tabId: 75 })).toEqual({ ok: true })
-    expect(headerGrants.clearedTabs).toContain(75)
+    // The nav reports the page it left; clearing stays scoped to that token
+    // so a stale message cannot wipe a candidate armed for the next page.
+    expect(headerGrants.clearedTokenTabs).toContainEqual({ tabId: 75, pageToken: TOKEN })
 
     // handleIgnore requires the live page token to match the claimed token.
     const reply = await handleIgnore({ page_token: TOKEN }, { tabId: 76 })

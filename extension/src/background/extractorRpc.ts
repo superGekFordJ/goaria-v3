@@ -167,7 +167,7 @@ export function buildExtractorResolvePayload(
       // An explicitly empty list projects to field omission, matching the
       // wire contract that forbids an empty/non-null array.
     } else {
-      const grants = projectBrowserHeaderGrants(raw)
+      const grants = projectBrowserHeaderGrants(raw, Date.now())
       if (grants === undefined) {
         return { error: 'grant projection failed' }
       }

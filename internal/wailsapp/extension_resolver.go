@@ -483,6 +483,9 @@ func parseExtractorResolveRequest(raw json.RawMessage) (string, []extractor.Sess
 	if _, ok := extra["headers"]; ok {
 		return "", nil, extension.ErrCodeInvalidRequest
 	}
+	if _, ok := extra["extra_headers"]; ok {
+		return "", nil, extension.ErrCodeInvalidRequest
+	}
 	if _, ok := extra["url"]; ok {
 		return "", nil, extension.ErrCodeInvalidRequest
 	}

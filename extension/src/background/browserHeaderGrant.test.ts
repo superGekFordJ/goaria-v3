@@ -123,6 +123,45 @@ describe('arm', () => {
     expect(store.arm(armInput({ sourceUrl: 'ftp://share.alpha.test/' }))).toBe(false)
     expect(store.arm(armInput({ incognito: undefined }))).toBe(false)
     expect(store.arm(armInput({ cookieStoreId: '   ' }))).toBe(false)
+    expect(store.arm(armInput({ cookieStoreId: ' firefox-default ' }))).toBe(false)
+  })
+
+  it('keeps captured grants on an identical re-arm', () => {
+    const { store, advance } = harness()
+    store.arm(armInput())
+    store.observe(xhr())
+    advance(30_000)
+    // A re-delivery of the same binding refreshes the live candidate
+    // instead of wiping the grants captured during page load.
+    expect(store.arm(armInput())).toBe(true)
+    expect(store.take({ tabId: 1, pageToken: 'token-a', incognito: false })).toHaveLength(1)
+  })
+
+  it('refreshes the observation window on an identical re-arm', () => {
+    const { store, advance } = harness()
+    store.arm(armInput())
+    advance(HEADER_GRANT_OBSERVE_WINDOW_MS - 1)
+    expect(store.arm(armInput())).toBe(true)
+    // The original deadline has passed; the refreshed window still accepts.
+    advance(1)
+    expect(store.observe(xhr())).toBe(true)
+  })
+
+  it('wipes captured grants when the re-arm binding differs', () => {
+    const { store } = harness()
+    store.arm(armInput())
+    store.observe(xhr())
+    expect(store.arm(armInput({ pageToken: 'token-b' }))).toBe(true)
+    expect(store.take({ tabId: 1, pageToken: 'token-b', incognito: false })).toEqual([])
+  })
+
+  it('rebuilds instead of refreshing when the old candidate already expired', () => {
+    const { store, advance } = harness()
+    store.arm(armInput())
+    store.observe(xhr())
+    advance(HEADER_GRANT_OBSERVE_WINDOW_MS)
+    expect(store.arm(armInput())).toBe(true)
+    expect(store.take({ tabId: 1, pageToken: 'token-a', incognito: false })).toEqual([])
   })
 
   it('refuses to arm a stale generation', () => {
@@ -140,6 +179,25 @@ describe('arm', () => {
     // tab 1 was evicted: its observation is refused even though the input is valid.
     expect(store.observe(xhr({ tabId: 1 }))).toBe(false)
     expect(store.observe(xhr({ tabId: 99, initiator: PAGE_ORIGIN }))).toBe(true)
+  })
+
+  it('evicts the soonest-expiring candidate rather than the insertion slot', () => {
+    const { store, advance } = harness()
+    for (let tabId = 1; tabId < HEADER_GRANT_MAX_CANDIDATES; tabId += 1) {
+      expect(store.arm(armInput({ tabId, pageToken: `tok-${tabId}` }))).toBe(true)
+    }
+    advance(5_000)
+    // The identical re-arm refreshes tab 1 past its original deadline while
+    // keeping its early insertion slot.
+    expect(store.arm(armInput({ tabId: 1, pageToken: 'tok-1' }))).toBe(true)
+    expect(
+      store.arm(armInput({ tabId: HEADER_GRANT_MAX_CANDIDATES, pageToken: 'tok-max' })),
+    ).toBe(true)
+    expect(store.arm(armInput({ tabId: 99, pageToken: 'tok-99' }))).toBe(true)
+    // tab 2 expired soonest and was evicted; the refreshed tab 1 survives.
+    expect(store.observe(xhr({ tabId: 2 }))).toBe(false)
+    expect(store.observe(xhr({ tabId: 1 }))).toBe(true)
+    expect(store.observe(xhr({ tabId: 99 }))).toBe(true)
   })
 })
 
@@ -213,6 +271,10 @@ describe('observe eligibility', () => {
     'x-http-method',
     'x-http-method-override',
     'x-method-override',
+    'x-original-host',
+    'x-original-path',
+    'x-original-method',
+    'x-override-method',
     'x-proxy-auth',
     'x-goaria-internal',
   ])('never copies denied routing/proxy name %s into a grant', name => {
@@ -255,6 +317,9 @@ describe('observe eligibility', () => {
     ['CR injection', 'Bearer fixture\rX'],
     ['LF injection', 'Bearer fixture\nX'],
     ['NUL injection', 'Bearer fixture\0X'],
+    ['interior tab', 'Bearer fixture\tX'],
+    ['interior control byte', 'Bearer fixture' + String.fromCharCode(1) + 'X'],
+    ['DEL byte', 'Bearer fixture' + String.fromCharCode(0x7f) + 'X'],
   ])('rejects the whole observation on %s in an eligible value', (_kind, value) => {
     const { store } = harness()
     store.arm(armInput())
@@ -436,6 +501,13 @@ describe('firefox source and store association', () => {
     expect(store.observe(fxXhr({ originUrl: 'https://other.alpha.test/x' }))).toBe(false)
   })
 
+  it('fails closed on present-but-non-string source signals', () => {
+    const { store } = harness({ target: 'firefox' })
+    store.arm(fxArm())
+    expect(store.observe(fxXhr({ originUrl: 42 }))).toBe(false)
+    expect(store.observe(fxXhr({ documentUrl: '' }))).toBe(false)
+  })
+
   it('requires both candidate and event cookie stores to be non-empty and equal', () => {
     const { store } = harness({ target: 'firefox' })
     store.arm(fxArm())
@@ -534,6 +606,18 @@ describe('clearTab / clearAll', () => {
     expect(store.take({ tabId: 1, pageToken: 'token-a', incognito: false })).toEqual([])
     expect(store.take({ tabId: 2, pageToken: 'token-b', incognito: false })).toEqual([])
   })
+
+  it('clearTabIfToken drops only the candidate still bound to that token', () => {
+    const { store } = harness()
+    store.arm(armInput({ tabId: 1, pageToken: 'token-a' }))
+    store.observe(xhr({ tabId: 1 }))
+    // A nav report for a different (older) page must not touch it.
+    store.clearTabIfToken(1, 'token-old')
+    expect(store.take({ tabId: 1, pageToken: 'token-a', incognito: false })).toHaveLength(1)
+    store.arm(armInput({ tabId: 1, pageToken: 'token-a' }))
+    store.clearTabIfToken(1, 'token-a')
+    expect(store.take({ tabId: 1, pageToken: 'token-a', incognito: false })).toEqual([])
+  })
 })
 
 describe('projectBrowserHeaderGrants outbound gate', () => {
@@ -580,8 +664,18 @@ describe('projectBrowserHeaderGrants outbound gate', () => {
     ['denied x-* name', [{ ...validGrant, headers: [{ name: 'x-forwarded-for', value: '1.2.3.4' }] }]],
     ['crlf value', [{ ...validGrant, headers: [{ name: 'authorization', value: 'a\nb' }] }]],
     ['padded value', [{ ...validGrant, headers: [{ name: 'authorization', value: ' v' }] }]],
+    ['denied cousin name', [{ ...validGrant, headers: [{ name: 'x-original-host', value: 'h' }] }]],
+    ['interior ctl value', [{ ...validGrant, headers: [{ name: 'authorization', value: 'a' + String.fromCharCode(2) + 'b' }] }]],
   ])('rejects %s', (_kind, value) => {
     expect(projectBrowserHeaderGrants(value)).toBeUndefined()
+  })
+
+  it('rejects an already-expired grant only when a clock is supplied', () => {
+    const expired = { ...validGrant, expires_at_unix_ms: START + 10 }
+    expect(projectBrowserHeaderGrants([expired], START + 20)).toBeUndefined()
+    expect(projectBrowserHeaderGrants([validGrant], START + 1)).toHaveLength(1)
+    // Without a clock the shape-only contract still validates.
+    expect(projectBrowserHeaderGrants([expired])).toHaveLength(1)
   })
 })
 
@@ -589,6 +683,6 @@ describe('module surface', () => {
   it('exposes only synchronous in-memory operations', () => {
     const { store } = harness()
     const keys = Object.keys(store).sort()
-    expect(keys).toEqual(['arm', 'clearAll', 'clearTab', 'observe', 'take'])
+    expect(keys).toEqual(['arm', 'clearAll', 'clearTab', 'clearTabIfToken', 'observe', 'take'])
   })
 })

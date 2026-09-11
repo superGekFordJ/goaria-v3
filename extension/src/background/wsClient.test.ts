@@ -110,6 +110,7 @@ vi.mock('./browserHeaderCapture', () => ({
   clearExtractorHeaderGrants: (...args: unknown[]) =>
     headerCapture.clearExtractorHeaderGrants(...args),
   clearExtractorHeaderGrantsForTab: () => {},
+  clearExtractorHeaderGrantsIfToken: () => {},
   takeHeaderGrantsForResolve: () => [],
   armExtractorHeaderCandidate: async () => {},
   initBrowserHeaderCapture: () => {},
@@ -190,8 +191,8 @@ describe('WsClient browser header grants', () => {
     source_origin: 'https://share.alpha.test',
     target_url: 'https://api.alpha.test/v1/item?id=fixture',
     method: 'GET',
-    captured_at_unix_ms: 1_700_000_000_000,
-    expires_at_unix_ms: 1_700_000_060_000,
+    captured_at_unix_ms: Date.now() - 1_000,
+    expires_at_unix_ms: Date.now() + 59_000,
     headers: [{ name: 'authorization', value: 'Bearer fixture-token' }],
   }
   let sent: string[]

@@ -123,6 +123,12 @@ func TestExtensionResolver_RejectsInboundHeadersAndURL(t *testing.T) {
 	if result.ErrorCode != extension.ErrCodeInvalidRequest {
 		t.Fatalf("url key: %+v", result)
 	}
+	result = adapter.HandleResolve(context.Background(), extension.RequestEnvelope{}, []byte(
+		`{"source_url":"https://share.alpha.test/nope","extra_headers":{"x-test":"v"}}`,
+	))
+	if result.ErrorCode != extension.ErrCodeInvalidRequest {
+		t.Fatalf("extra_headers key: %+v", result)
+	}
 }
 
 func TestExtensionResolver_SingleflightAndCookieSplit(t *testing.T) {

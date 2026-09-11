@@ -4,6 +4,7 @@ import { hasCapability } from './capabilities'
 import {
   clearExtractorHeaderGrants,
   clearExtractorHeaderGrantsForTab,
+  clearExtractorHeaderGrantsIfToken,
   takeHeaderGrantsForResolve,
 } from './browserHeaderCapture'
 import { getStructuredCookiesForUrl, resolveCookieStoreIdForTab } from './cookieCapture'
@@ -179,9 +180,10 @@ export async function handleNav(
     return { ok: false }
   }
   const claimed = data.page_token
-  // The CS page context navigated or reloaded: drop armed capture state so
-  // grants bound to the previous page cannot leak into a later resolve.
-  clearExtractorHeaderGrantsForTab(tabId)
+  // The CS reports the page it left: drop capture state only when the armed
+  // candidate still carries that token, so a stale nav cannot wipe a newer
+  // candidate armed for the reloaded/next page.
+  clearExtractorHeaderGrantsIfToken(tabId, claimed)
   const sessions = getExtractorSessionStore()
   const rec = await sessions.getSession(tabId)
   if (rec && rec.pageToken === claimed) {

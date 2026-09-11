@@ -43,9 +43,14 @@ export function initBrowserHeaderCapture(): void {
     : ['requestHeaders', 'extraHeaders']
   browser.webRequest.onSendHeaders.addListener(onSendHeaders, OBSERVE_FILTER, options)
   // Navigation replaces the page identity: drop armed state before any
-  // re-detection can arm a new candidate for the tab.
+  // re-detection can arm a new candidate for the tab. 'loading' covers
+  // same-URL reloads, which carry no url change.
   browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (typeof changeInfo.url === 'string' && changeInfo.url !== '') store.clearTab(tabId)
+    if (typeof changeInfo.url === 'string' && changeInfo.url !== '') {
+      store.clearTab(tabId)
+      return
+    }
+    if (changeInfo.status === 'loading') store.clearTab(tabId)
   })
   browser.tabs.onRemoved.addListener(tabId => store.clearTab(tabId))
 }
@@ -75,6 +80,7 @@ export async function armExtractorHeaderCandidate(
   generation: number,
   tabUrl: string | undefined,
   pageToken: string,
+  isIgnored: () => Promise<boolean>,
 ): Promise<void> {
   if (!headerContextGranted() || !isMatchGenerationCurrent(generation)) return
   if (typeof pageToken !== 'string' || pageToken === '') return
@@ -86,9 +92,13 @@ export async function armExtractorHeaderCandidate(
     return
   }
   if (!headerContextGranted() || !isMatchGenerationCurrent(generation)) return
-  const liveToken = await pageTokenFromHref(tab.url ?? '')
+  const liveUrl = tab.url ?? ''
+  const liveToken = await pageTokenFromHref(liveUrl)
   if (liveToken === undefined || liveToken !== pageToken) return
   if (typeof tab.incognito !== 'boolean') return
+  // Last gate before commit: the page may have been ignored while the
+  // awaited lookups above were in flight.
+  if (await isIgnored()) return
   const cookieStoreId =
     typeof tab.cookieStoreId === 'string' && tab.cookieStoreId !== ''
       ? tab.cookieStoreId
@@ -96,7 +106,7 @@ export async function armExtractorHeaderCandidate(
   store.arm({
     tabId,
     pageToken,
-    sourceUrl: tab.url ?? tabUrl,
+    sourceUrl: liveUrl,
     generation,
     incognito: tab.incognito,
     cookieStoreId,
@@ -121,4 +131,8 @@ export function clearExtractorHeaderGrants(): void {
 
 export function clearExtractorHeaderGrantsForTab(tabId: number): void {
   store.clearTab(tabId)
+}
+
+export function clearExtractorHeaderGrantsIfToken(tabId: number, pageToken: string): void {
+  store.clearTabIfToken(tabId, pageToken)
 }

@@ -152,8 +152,8 @@ describe('buildExtractorResolvePayload', () => {
       source_origin: 'https://share.alpha.test',
       target_url: 'https://api.alpha.test/v1/item?id=fixture',
       method: 'GET',
-      captured_at_unix_ms: 1_700_000_000_000,
-      expires_at_unix_ms: 1_700_000_060_000,
+      captured_at_unix_ms: Date.now() - 1_000,
+      expires_at_unix_ms: Date.now() + 59_000,
       headers: [
         { name: 'x-request-proof', value: 'proof-fixture' },
         { name: 'authorization', value: 'Bearer fixture-token' },
@@ -181,6 +181,27 @@ describe('buildExtractorResolvePayload', () => {
       { name: 'authorization', value: 'Bearer fixture-token' },
       { name: 'x-request-proof', value: 'proof-fixture' },
     ])
+  })
+
+  it('rejects an already-expired grant even when the capability is granted', () => {
+    const grant = {
+      source_origin: 'https://share.alpha.test',
+      target_url: 'https://api.alpha.test/v1/item?id=fixture',
+      method: 'GET',
+      captured_at_unix_ms: Date.now() - 30_000,
+      expires_at_unix_ms: Date.now() - 1,
+      headers: [{ name: 'authorization', value: 'Bearer fixture-token' }],
+    }
+    expect(
+      buildExtractorResolvePayload(
+        {
+          source_url: 'https://share.alpha.test/s',
+          cookies: [validCookie],
+          browser_header_grants: [grant],
+        },
+        true,
+      ),
+    ).toEqual({ error: 'grant projection failed' })
   })
 
   it('omits an explicitly empty browser_header_grants array when granted', () => {

@@ -45,6 +45,9 @@ const tabsMock = vi.hoisted(() => {
     fireUrlChange(tabId: number, url: string) {
       for (const fn of updatedListeners) fn(tabId, { url }, { id: tabId })
     },
+    fireUpdated(tabId: number, changeInfo: Record<string, unknown>) {
+      for (const fn of updatedListeners) fn(tabId, changeInfo, { id: tabId })
+    },
     fireRemoved(tabId: number) {
       for (const fn of removedListeners) fn(tabId)
     },
@@ -152,6 +155,7 @@ import { pageTokenFromHref } from './pageToken'
 const PAGE_URL = 'https://share.alpha.test/item/aaa'
 const PAGE_ORIGIN = 'https://share.alpha.test'
 const CAPS = ['request_id', 'extractor.resolve', 'extractor.batch', 'extractor.header_context']
+const notIgnored = () => Promise.resolve(false)
 
 const MATCH = {
   digest_version: 1,
@@ -219,7 +223,7 @@ describe('observer gating', () => {
     tabsMock.setTab({ url: PAGE_URL, incognito: false })
     const token = await pageTokenFromHref(PAGE_URL)
     connection.capabilities = ['request_id', 'extractor.resolve', 'extractor.batch']
-    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!)
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!, notIgnored)
     webRequest.fire(xhrDetails())
     expect(
       takeHeaderGrantsForResolve({ tabId: 1, pageToken: token!, incognito: false }),
@@ -237,7 +241,7 @@ describe('observer gating', () => {
       ['extractor.resolve', 'extractor.header_context.extra'],
     ]) {
       connection.capabilities = caps
-      await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!)
+      await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!, notIgnored)
       webRequest.fire(xhrDetails())
       expect(
         takeHeaderGrantsForResolve({ tabId: 1, pageToken: token!, incognito: false }),
@@ -251,7 +255,7 @@ describe('observer gating', () => {
     tabsMock.setTab({ url: PAGE_URL, incognito: false })
     const token = await pageTokenFromHref(PAGE_URL)
     connection.capabilities = CAPS
-    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!)
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!, notIgnored)
     expect(tabsMock.getCalls).toEqual([1])
     webRequest.fire(xhrDetails())
     const grants = takeHeaderGrantsForResolve({ tabId: 1, pageToken: token!, incognito: false })
@@ -270,7 +274,7 @@ describe('observer gating', () => {
     tabsMock.setTab({ url: PAGE_URL, incognito: false })
     const token = await pageTokenFromHref(PAGE_URL)
     connection.capabilities = CAPS
-    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!)
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!, notIgnored)
     webRequest.fire(xhrDetails({ tabId: -1 }))
     webRequest.fire(xhrDetails({ initiator: 'https://unrelated.beta.test' }))
     webRequest.fire(xhrDetails({ url: 'http://api.alpha.test/v1/item' }))
@@ -286,7 +290,7 @@ describe('observer gating', () => {
     tabsMock.setTab({ url: PAGE_URL, incognito: false })
     const token = await pageTokenFromHref(PAGE_URL)
     connection.capabilities = CAPS
-    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!)
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!, notIgnored)
     // Chrome may omit details.incognito; a split-mode non-incognito context
     // cannot see incognito events, so absence is treated as false here.
     const noField = xhrDetails()
@@ -303,7 +307,7 @@ describe('observer gating', () => {
     tabsMock.setTab({ url: PAGE_URL, incognito: false })
     const token = await pageTokenFromHref(PAGE_URL)
     connection.capabilities = CAPS
-    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!)
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!, notIgnored)
     webRequest.fire(xhrDetails({ incognito: true }))
     expect(
       takeHeaderGrantsForResolve({ tabId: 1, pageToken: token!, incognito: false }),
@@ -317,7 +321,7 @@ describe('observer gating', () => {
     tabsMock.setTab({ url: PAGE_URL, incognito: false, cookieStoreId: 'firefox-default' })
     const token = await pageTokenFromHref(PAGE_URL)
     connection.capabilities = CAPS
-    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!)
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!, notIgnored)
     const noField = xhrDetails()
     delete noField.incognito
     webRequest.fire(noField)
@@ -340,20 +344,88 @@ describe('observer gating', () => {
     ).toHaveLength(1)
   })
 
+  it('keeps captured grants when the same page re-detects at load complete', async () => {
+    initBrowserHeaderCapture()
+    const generation = applyMatch()
+    tabsMock.setTab({ url: PAGE_URL, incognito: false })
+    const token = await pageTokenFromHref(PAGE_URL)
+    connection.capabilities = CAPS
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!, notIgnored)
+    webRequest.fire(xhrDetails())
+    // status:'complete' re-delivers the identical binding; the live
+    // candidate is refreshed, not wiped.
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!, notIgnored)
+    expect(
+      takeHeaderGrantsForResolve({ tabId: 1, pageToken: token!, incognito: false }),
+    ).toHaveLength(1)
+  })
+
+  it('wipes captured grants when a re-arm binds a different page token', async () => {
+    initBrowserHeaderCapture()
+    const generation = applyMatch()
+    tabsMock.setTab({ url: PAGE_URL, incognito: false })
+    const token = await pageTokenFromHref(PAGE_URL)
+    const nextUrl = 'https://share.alpha.test/item/bbb'
+    const nextToken = (await pageTokenFromHref(nextUrl))!
+    connection.capabilities = CAPS
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!, notIgnored)
+    webRequest.fire(xhrDetails())
+    tabsMock.setTab({ url: nextUrl, incognito: false })
+    await armExtractorHeaderCandidate(1, generation, nextUrl, nextToken, notIgnored)
+    expect(
+      takeHeaderGrantsForResolve({ tabId: 1, pageToken: nextToken, incognito: false }),
+    ).toEqual([])
+  })
+
+  it('clears captured grants when a same-url reload starts loading', async () => {
+    initBrowserHeaderCapture()
+    const generation = applyMatch()
+    tabsMock.setTab({ url: PAGE_URL, incognito: false })
+    const token = await pageTokenFromHref(PAGE_URL)
+    connection.capabilities = CAPS
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!, notIgnored)
+    webRequest.fire(xhrDetails())
+    // A reload fires status:'loading' with no url change.
+    tabsMock.fireUpdated(1, { status: 'loading' })
+    expect(
+      takeHeaderGrantsForResolve({ tabId: 1, pageToken: token!, incognito: false }),
+    ).toEqual([])
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!, notIgnored)
+    webRequest.fire(xhrDetails())
+    expect(
+      takeHeaderGrantsForResolve({ tabId: 1, pageToken: token!, incognito: false }),
+    ).toHaveLength(1)
+  })
+
+  it('does not commit an arm when the page is ignored during the tab read', async () => {
+    initBrowserHeaderCapture()
+    const generation = applyMatch()
+    tabsMock.setTab({ url: PAGE_URL, incognito: false })
+    const token = await pageTokenFromHref(PAGE_URL)
+    connection.capabilities = CAPS
+    // The predicate is consulted after the awaited tab/token lookups, so a
+    // true result models an ignore that landed while they were in flight.
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!, () => Promise.resolve(true))
+    webRequest.fire(xhrDetails())
+    expect(
+      takeHeaderGrantsForResolve({ tabId: 1, pageToken: token!, incognito: false }),
+    ).toEqual([])
+  })
+
   it('clears the candidate when the tab navigates or is removed', async () => {
     initBrowserHeaderCapture()
     const generation = applyMatch()
     tabsMock.setTab({ url: PAGE_URL, incognito: false })
     const token = await pageTokenFromHref(PAGE_URL)
     connection.capabilities = CAPS
-    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!)
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!, notIgnored)
     webRequest.fire(xhrDetails())
     tabsMock.fireUrlChange(1, 'https://share.alpha.test/other')
     expect(
       takeHeaderGrantsForResolve({ tabId: 1, pageToken: token!, incognito: false }),
     ).toEqual([])
 
-    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!)
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token!, notIgnored)
     webRequest.fire(xhrDetails())
     tabsMock.fireRemoved(1)
     expect(
@@ -376,7 +448,7 @@ describe('arm gating', () => {
       over.tab === undefined ? { url: PAGE_URL, incognito: false } : over.tab,
     )
     connection.capabilities = over.caps === undefined ? CAPS : over.caps
-    await armExtractorHeaderCandidate(1, generation, over.sourceUrl ?? PAGE_URL, token)
+    await armExtractorHeaderCandidate(1, generation, over.sourceUrl ?? PAGE_URL, token, notIgnored)
     return token
   }
 
@@ -411,7 +483,7 @@ describe('arm gating', () => {
     const token = (await pageTokenFromHref(PAGE_URL))!
     tabsMock.setTab({ url: PAGE_URL, incognito: false })
     connection.capabilities = CAPS
-    const pending = armExtractorHeaderCandidate(1, generation, PAGE_URL, token)
+    const pending = armExtractorHeaderCandidate(1, generation, PAGE_URL, token, notIgnored)
     connection.capabilities = ['extractor.resolve']
     await pending
     webRequest.fire(xhrDetails())
@@ -461,13 +533,13 @@ describe('detection integration', () => {
     tabsMock.setTab({ url: PAGE_URL, incognito: false })
     connection.capabilities = CAPS
     const token = (await pageTokenFromHref(PAGE_URL))!
-    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token)
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token, notIgnored)
     webRequest.fire(xhrDetails())
 
     notifyExtractorHostDown('disconnect')
     expect(takeHeaderGrantsForResolve({ tabId: 1, pageToken: token, incognito: false })).toEqual([])
 
-    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token)
+    await armExtractorHeaderCandidate(1, generation, PAGE_URL, token, notIgnored)
     webRequest.fire(xhrDetails())
     notifyExtractorMatchCleared()
     expect(takeHeaderGrantsForResolve({ tabId: 1, pageToken: token, incognito: false })).toEqual([])

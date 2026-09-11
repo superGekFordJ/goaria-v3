@@ -30,8 +30,10 @@ export type WireBrowserHeaderGrant = {
   headers: WireBrowserHeader[]
 }
 
+const utf8Encoder = new TextEncoder()
+
 function utf8Bytes(value: string): number {
-  return new TextEncoder().encode(value).length
+  return utf8Encoder.encode(value).length
 }
 
 // canonicalSourceOrigin returns the canonical http(s) origin for a page URL or
@@ -78,11 +80,14 @@ const DENIED_X_EXACT = new Set([
   'x-client-ip',
   'x-host',
   'x-original-url',
+  'x-original-host',
+  'x-original-path',
+  'x-original-method',
   'x-rewrite-url',
   'x-method-override',
 ])
 
-const DENIED_X_PREFIXES = ['x-forwarded-', 'x-http-method', 'x-proxy-', 'x-goaria-']
+const DENIED_X_PREFIXES = ['x-forwarded-', 'x-http-method', 'x-proxy-', 'x-goaria-', 'x-override-']
 
 // isEligibleHeaderName is the capture allowlist: authorization plus business
 // x-* names, minus routing/proxy/method-override/reserved families. Denied
@@ -98,9 +103,13 @@ function isEligibleHeaderName(lowerName: string): boolean {
   return true
 }
 
+// Field-content-safe bytes only: any C0 control or DEL rejects the header.
 function isValidGrantHeaderValue(value: string): boolean {
   if (value === '' || value !== value.trim()) return false
-  if (value.includes('\r') || value.includes('\n') || value.includes('\0')) return false
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i)
+    if (code < 0x20 || code === 0x7f) return false
+  }
   return utf8Bytes(value) <= HEADER_GRANT_MAX_VALUE_BYTES
 }
 
@@ -148,6 +157,7 @@ function isSafePositiveInt(value: unknown): value is number {
 // outbound resolve allowlist. One malformed item rejects the whole list.
 export function projectBrowserHeaderGrants(
   value: unknown,
+  now?: number,
 ): WireBrowserHeaderGrant[] | undefined {
   if (!Array.isArray(value) || value.length === 0 || value.length > HEADER_GRANT_MAX_PER_RESOLVE) {
     return undefined
@@ -155,7 +165,7 @@ export function projectBrowserHeaderGrants(
   const out: WireBrowserHeaderGrant[] = []
   const scopes = new Set<string>()
   for (const item of value) {
-    const grant = projectBrowserHeaderGrant(item)
+    const grant = projectBrowserHeaderGrant(item, now)
     if (!grant) return undefined
     const scope = `${grant.method} ${grant.target_url}`
     if (scopes.has(scope)) return undefined
@@ -167,7 +177,10 @@ export function projectBrowserHeaderGrants(
 
 const GRANT_KEYS = ['captured_at_unix_ms', 'expires_at_unix_ms', 'headers', 'method', 'source_origin', 'target_url']
 
-function projectBrowserHeaderGrant(value: unknown): WireBrowserHeaderGrant | undefined {
+function projectBrowserHeaderGrant(
+  value: unknown,
+  now?: number,
+): WireBrowserHeaderGrant | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const rec = value as Record<string, unknown>
   const keys = Object.keys(rec).sort()
@@ -187,6 +200,7 @@ function projectBrowserHeaderGrant(value: unknown): WireBrowserHeaderGrant | und
   const captured = rec.captured_at_unix_ms
   const expires = rec.expires_at_unix_ms
   if (expires <= captured || expires - captured > HEADER_GRANT_TTL_MS) return undefined
+  if (now !== undefined && expires <= now) return undefined
   const headers = projectWireHeaders(rec.headers)
   if (headers === undefined) return undefined
   return {
@@ -297,15 +311,39 @@ export function createHeaderGrantStore(deps: HeaderGrantStoreDeps) {
     if (sourceOrigin === undefined) return false
     let cookieStoreId: string | undefined
     if (input.cookieStoreId !== undefined) {
-      if (typeof input.cookieStoreId !== 'string' || input.cookieStoreId.trim() === '') {
+      if (typeof input.cookieStoreId !== 'string' || input.cookieStoreId === '') {
         return false
       }
+      if (input.cookieStoreId !== input.cookieStoreId.trim()) return false
       cookieStoreId = input.cookieStoreId
+    }
+    // An identical live binding is a re-delivery of the same detection (e.g.
+    // status:'complete' after the url event): refresh the window, keep grants.
+    const existing = candidates.get(input.tabId)
+    if (
+      existing !== undefined &&
+      candidateLive(existing) &&
+      existing.pageToken === input.pageToken &&
+      existing.sourceOrigin === sourceOrigin &&
+      existing.generation === input.generation &&
+      existing.incognito === input.incognito &&
+      existing.cookieStoreId === cookieStoreId
+    ) {
+      existing.expiresAt = now() + HEADER_GRANT_OBSERVE_WINDOW_MS
+      return true
     }
     candidates.delete(input.tabId)
     if (candidates.size >= HEADER_GRANT_MAX_CANDIDATES) {
-      const oldest = candidates.keys().next().value
-      if (oldest !== undefined) candidates.delete(oldest)
+      // Refreshed candidates keep their insertion slot, so evict by expiry.
+      let oldestKey: number | undefined
+      let oldestExpiry = Number.POSITIVE_INFINITY
+      for (const [id, c] of candidates) {
+        if (c.expiresAt < oldestExpiry) {
+          oldestExpiry = c.expiresAt
+          oldestKey = id
+        }
+      }
+      if (oldestKey !== undefined) candidates.delete(oldestKey)
     }
     candidates.set(input.tabId, {
       pageToken: input.pageToken,
@@ -326,7 +364,8 @@ export function createHeaderGrantStore(deps: HeaderGrantStoreDeps) {
     if (deps.isFirefoxTarget()) {
       const origins: string[] = []
       for (const raw of [event.originUrl, event.documentUrl]) {
-        if (typeof raw !== 'string' || raw === '') continue
+        if (raw === undefined) continue
+        if (typeof raw !== 'string' || raw === '') return false
         const origin = canonicalSourceOrigin(raw)
         if (origin === undefined) return false
         origins.push(origin)
@@ -433,11 +472,20 @@ export function createHeaderGrantStore(deps: HeaderGrantStoreDeps) {
     candidates.delete(tabId)
   }
 
+  // clearTabIfToken drops the candidate only when it still belongs to the
+  // reported page token, so a stale nav signal cannot wipe a newer candidate.
+  function clearTabIfToken(tabId: number, pageToken: string): void {
+    const candidate = candidates.get(tabId)
+    if (candidate !== undefined && candidate.pageToken === pageToken) {
+      candidates.delete(tabId)
+    }
+  }
+
   function clearAll(): void {
     candidates.clear()
   }
 
-  return { arm, observe, take, clearTab, clearAll }
+  return { arm, observe, take, clearTab, clearTabIfToken, clearAll }
 }
 
 export type HeaderGrantStore = ReturnType<typeof createHeaderGrantStore>

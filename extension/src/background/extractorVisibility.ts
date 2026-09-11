@@ -69,8 +69,11 @@ export async function deliverExtractorDetected(
     await sessions.deleteSession(tabId)
   }
   // Arm only after token + ignore checks; arm failure must not block the
-  // detection message below.
-  await armExtractorHeaderCandidate(tabId, generation, tabUrl, token).catch(() => undefined)
+  // detection message below. The ignore predicate is re-checked inside the
+  // arm so an ignore landing during its async tab read cannot commit.
+  await armExtractorHeaderCandidate(tabId, generation, tabUrl, token, () =>
+    sessions.isIgnored(tabId, token),
+  ).catch(() => undefined)
   try {
     const sendPromise = sendMessage(
       'extractor:detected',
