@@ -156,6 +156,10 @@
   function ensureFilter() {
     const uid = `lgs-${Math.random().toString(36).slice(2, 9)}`
     filterId.value = uid
+    // Skip the SVG filter DOM entirely on non-Chromium engines — the url()
+    // backdrop-filter is never applied there, and building canvas maps would
+    // still trigger Firefox's canvas-extraction permission prompt.
+    if (!SUPPORTS_URL_FILTER) return
 
     svgRoot = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
     svgRoot.setAttribute('width', '0')
@@ -219,6 +223,7 @@
   }
 
   function prebakeBuckets() {
+    if (!SUPPORTS_URL_FILTER) return
     const buckets: number[] = []
     for (let b = 0; b <= 0.325; b += 0.025) {
       buckets.push(Number(b.toFixed(3)))
@@ -247,7 +252,7 @@
   }
 
   function syncMap(shapeDef: number) {
-    if (!fMap || !fMapBlur) return
+    if (!SUPPORTS_URL_FILTER || !fMap || !fMapBlur) return
     const bucket = Math.round(Math.min(0.32, Math.abs(shapeDef)) / 0.025) * 0.025
     if (bucket === mapBucket) return
     mapBucket = bucket

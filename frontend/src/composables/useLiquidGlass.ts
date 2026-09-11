@@ -1,9 +1,20 @@
 import { watch, onBeforeUnmount, ref, type Ref } from 'vue'
-import { System } from '@wailsio/runtime'
 
+/* `backdrop-filter: url(#filter)` is a Chromium-engine capability, so gate on
+ * the engine — never on window._wails.environment: Wails injects it via execJS
+ * in NavigationCompleted, i.e. AFTER the Vue app has already mounted, and it is
+ * absent entirely in plain-browser dev previews. A one-shot false here would
+ * permanently disarm refraction until a remount. WebView2 reports Chromium/Edge
+ * brands; WKWebView/WebKitGTK correctly fail this check. */
 export function supportsUrlBackdropFilter(): boolean {
   try {
-    return Boolean(System?.IsWindows?.())
+    const brands = (navigator as Navigator & { userAgentData?: { brands?: { brand: string }[] } })
+      .userAgentData?.brands
+    if (brands?.some(b => /chromium/i.test(b.brand))) return true
+    return (
+      /Chrom(e|ium)/.test(navigator.userAgent) ||
+      Boolean((window as unknown as { chrome?: unknown }).chrome)
+    )
   } catch {
     return false
   }
@@ -96,6 +107,21 @@ function buildDisplacementMap(
   return canvasToBlobUrl(canvas)
 }
 
+/* feImage fetches blob: URLs asynchronously, and a url() backdrop-filter whose
+ * first raster sees a still-loading feImage is never reliably re-invalidated by
+ * Blink — the refraction stays dead until the backdrop-filter property itself
+ * changes. Pre-decoding through Image.decode() places the pixels in Blink's
+ * memory cache so the feImage fetch resolves synchronously at raster time. */
+async function preloadMapImage(url: string): Promise<void> {
+  try {
+    const img = new Image()
+    img.src = url
+    await img.decode()
+  } catch {
+    /* best effort — a failed decode still leaves the href bound */
+  }
+}
+
 /* ================= SVG Filter Pipeline ================= */
 const FILTER_TEMPLATE = `
   <feImage x="0" y="0" width="1" height="1" result="map" preserveAspectRatio="none" class="f-map"/>
@@ -137,10 +163,11 @@ function acquireDisplacementMap(
   if (cached) {
     cached.refCount++
     cached.lastUsed = Date.now()
-    return Promise.resolve(cached.url)
+    return preloadMapImage(cached.url).then(() => cached.url)
   }
 
-  return buildDisplacementMap(w, h, radius, bezel, dpr).then(url => {
+  return buildDisplacementMap(w, h, radius, bezel, dpr).then(async url => {
+    await preloadMapImage(url)
     globalMapCache.set(key, { url, refCount: 1, lastUsed: Date.now() })
     if (globalMapCache.size > MAX_GLOBAL_CACHE_SIZE) {
       let oldestKey: string | null = null
@@ -172,9 +199,7 @@ function releaseDisplacementMap(key: string | null) {
   }
 }
 
-interface GlassEntry {
-  key: string
-  layer: HTMLElement
+interface GlassFilterParts {
   filter: SVGFilterElement
   map: SVGFEImageElement
   dr: SVGFEDisplacementMapElement
@@ -182,14 +207,23 @@ interface GlassEntry {
   db: SVGFEDisplacementMapElement
   blur: SVGFEGaussianBlurElement
   sat: SVGFEColorMatrixElement
+}
+
+/* Filter primitives stay null until a decoded map is bound; the consumer's
+ * backdrop-filter only references the filter after bind (see expose()). */
+interface GlassEntry extends Partial<Omit<GlassFilterParts, 'filter'>> {
+  key: string
+  filter: SVGFilterElement | null
+  layer: HTMLElement
   /** Geometry matching the currently bound map (attrs-safe). */
   geom: { w: number; h: number; bezel: number; radius: number; dpr: number }
   /** Target of an in-flight blob rebuild; null when idle. */
   pendingGeom: { w: number; h: number; bezel: number; radius: number; dpr: number } | null
   ro: ResizeObserver
-  blobUrl: string | null
   mapCacheKey: string | null
   mapGen: number
+  /** Publishes the live filter id to the bound element (or clears it). */
+  expose: () => void
 }
 
 /* Global singleton: one SVG <defs> for all glass elements */
@@ -207,7 +241,10 @@ function ensureDefs(): SVGDefsElement {
         releaseDisplacementMap(stale.mapCacheKey)
         stale.mapCacheKey = null
       }
-      stale.blobUrl = null
+      stale.filter = null
+      stale.map = stale.dr = stale.dg = stale.db = stale.blur = stale.sat = undefined
+      stale.geom = { w: 0, h: 0, bezel: 0, radius: 0, dpr: 0 }
+      stale.expose()
     }
   }
   for (const item of globalMapCache.values()) {
@@ -239,6 +276,28 @@ function geomEquals(
   return a.w === w && a.h === h && a.bezel === bezel && a.radius === radius && a.dpr === dpr
 }
 
+function createGlassFilter(defs: SVGDefsElement, id: string): GlassFilterParts {
+  const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter')
+  filter.id = id
+  filter.setAttribute('x', '0%')
+  filter.setAttribute('y', '0%')
+  filter.setAttribute('width', '100%')
+  filter.setAttribute('height', '100%')
+  filter.setAttribute('primitiveUnits', 'objectBoundingBox')
+  filter.setAttribute('color-interpolation-filters', 'sRGB')
+  filter.innerHTML = FILTER_TEMPLATE
+  defs.appendChild(filter)
+  return {
+    filter,
+    map: filter.querySelector('.f-map') as unknown as SVGFEImageElement,
+    dr: filter.querySelector('.f-dr') as unknown as SVGFEDisplacementMapElement,
+    dg: filter.querySelector('.f-dg') as unknown as SVGFEDisplacementMapElement,
+    db: filter.querySelector('.f-db') as unknown as SVGFEDisplacementMapElement,
+    blur: filter.querySelector('.f-blur') as unknown as SVGFEGaussianBlurElement,
+    sat: filter.querySelector('.f-sat') as unknown as SVGFEColorMatrixElement,
+  }
+}
+
 function applyGlassAttrs(
   entry: GlassEntry,
   params: GlassParams,
@@ -246,18 +305,20 @@ function applyGlassAttrs(
   w: number,
   h: number,
 ) {
+  const { dr, dg, db, blur, sat } = entry
+  if (!dr || !dg || !db || !blur || !sat) return
   const minDim = Math.min(w, h)
   const dispPx = Math.min(params.disp * dispMul, minDim * 0.35)
   const diag = Math.sqrt((w * w + h * h) / 2)
   const scale = (2 * dispPx) / diag
-  entry.dr.setAttribute('scale', (scale * (1 - params.ca)).toFixed(5))
-  entry.dg.setAttribute('scale', scale.toFixed(5))
-  entry.db.setAttribute('scale', (scale * (1 + params.ca)).toFixed(5))
-  entry.blur.setAttribute(
+  dr.setAttribute('scale', (scale * (1 - params.ca)).toFixed(5))
+  dg.setAttribute('scale', scale.toFixed(5))
+  db.setAttribute('scale', (scale * (1 + params.ca)).toFixed(5))
+  blur.setAttribute(
     'stdDeviation',
     `${(params.blur / w).toFixed(5)} ${(params.blur / h).toFixed(5)}`,
   )
-  entry.sat.setAttribute('values', params.sat.toFixed(2))
+  sat.setAttribute('values', params.sat.toFixed(2))
 }
 
 function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, bezelMul: number) {
@@ -273,15 +334,17 @@ function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, be
   const dpr = Math.min(window.devicePixelRatio || 1, 2)
 
   // Attrs are only safe when the bound map matches this geometry.
-  if (geomEquals(entry.geom, w, h, bezel, radius, dpr)) {
+  if (entry.filter && geomEquals(entry.geom, w, h, bezel, radius, dpr)) {
     applyGlassAttrs(entry, params, dispMul, w, h)
     return
   }
 
-  // Same target already rebuilding — keep last coherent map+attrs.
-  if (entry.pendingGeom && geomEquals(entry.pendingGeom, w, h, bezel, radius, dpr)) {
-    return
-  }
+  /* One map build in flight per element: during size animations the RO fires
+   * every frame with a different target, so naive per-tick rebuilds would run
+   * an O(W·H) canvas loop per frame. The completion path below re-measures and
+   * starts a single catch-up build for the settled size (usually a cache hit
+   * on the pre-baked geometry). */
+  if (entry.pendingGeom) return
 
   const target = { w, h, bezel, radius, dpr }
   const cacheKey = getMapCacheKey(w, h, radius, bezel, dpr)
@@ -295,16 +358,35 @@ function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, be
         releaseDisplacementMap(cacheKey)
         return
       }
+      /* Swap in a fresh filter element whose feImage is already bound to a
+       * decoded map. The consumer's `backdrop-filter: url(#id)` string changes,
+       * forcing Blink to re-resolve and raster with the real map on the first
+       * pass — mutating href on an already-referenced filter races its async
+       * blob fetch and can leave the refraction stuck empty. */
+      const parts = createGlassFilter(ensureDefs(), `lgf-${++uidCounter}`)
+      parts.map.setAttribute('href', url)
+      const old = entry.filter
+      entry.filter = parts.filter
+      entry.map = parts.map
+      entry.dr = parts.dr
+      entry.dg = parts.dg
+      entry.db = parts.db
+      entry.blur = parts.blur
+      entry.sat = parts.sat
       const prevKey = entry.mapCacheKey
-      entry.blobUrl = url
       entry.mapCacheKey = cacheKey
       entry.geom = target
       entry.pendingGeom = null
-      entry.map.setAttribute('href', url)
       applyGlassAttrs(entry, params, dispMul, w, h)
+      entry.expose()
+      old?.remove()
       if (prevKey && prevKey !== cacheKey) {
         releaseDisplacementMap(prevKey)
       }
+      // Re-measure: if geometry drifted while this map was building, start one
+      // catch-up build for the settled size; otherwise this returns via the
+      // geom-equal attrs path at trivial cost.
+      updateGlass(entry, params, dispMul, bezelMul)
     })
     .catch(() => {
       if (gen === entry.mapGen) {
@@ -335,43 +417,28 @@ export function useLiquidGlass(
     if (!supportsUrlBackdropFilter()) return
     const layer = layerRef.value
     if (!layer) return
-    const defs = ensureDefs()
+    ensureDefs()
     if (!registry) registry = new Map()
 
     const key = `lg-${++uidCounter}`
-    const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter')
-    filter.id = key
-    filter.setAttribute('x', '0%')
-    filter.setAttribute('y', '0%')
-    filter.setAttribute('width', '100%')
-    filter.setAttribute('height', '100%')
-    filter.setAttribute('primitiveUnits', 'objectBoundingBox')
-    filter.setAttribute('color-interpolation-filters', 'sRGB')
-    filter.innerHTML = FILTER_TEMPLATE
-    defs.appendChild(filter)
 
     entry = {
       key,
       layer,
-      filter,
-      map: filter.querySelector('.f-map') as unknown as SVGFEImageElement,
-      dr: filter.querySelector('.f-dr') as unknown as SVGFEDisplacementMapElement,
-      dg: filter.querySelector('.f-dg') as unknown as SVGFEDisplacementMapElement,
-      db: filter.querySelector('.f-db') as unknown as SVGFEDisplacementMapElement,
-      blur: filter.querySelector('.f-blur') as unknown as SVGFEGaussianBlurElement,
-      sat: filter.querySelector('.f-sat') as unknown as SVGFEColorMatrixElement,
+      filter: null,
       geom: { w: 0, h: 0, bezel: 0, radius: 0, dpr: 0 },
       pendingGeom: null,
       ro: new ResizeObserver(() => {
         if (entry) updateGlass(entry, params, dispMul, bezelMul)
       }),
-      blobUrl: null,
       mapCacheKey: null,
       mapGen: 0,
+      expose: () => {
+        filterId.value = entry?.filter?.id ?? ''
+      },
     }
 
     registry.set(key, entry)
-    filterId.value = key
     entry.ro.observe(layer)
     requestAnimationFrame(() => {
       if (entry) updateGlass(entry, params, dispMul, bezelMul)
@@ -386,8 +453,7 @@ export function useLiquidGlass(
       releaseDisplacementMap(entry.mapCacheKey)
       entry.mapCacheKey = null
     }
-    entry.blobUrl = null
-    entry.filter.remove()
+    entry.filter?.remove()
     registry?.delete(entry.key)
     entry = null
     filterId.value = ''
@@ -414,10 +480,20 @@ export function useLiquidGlass(
 let staticFilterId: string | null = null
 let staticBlobUrl: string | null = null
 let staticMapGen = 0
+let staticBuilding = false
+/* Readiness gate: consumers read this ref inside computed(), so flipping it
+ * re-applies `url(#id)` only after the map is bound and decoded — the same
+ * bind-before-expose rule as the dynamic pipeline. */
+const staticReady = ref(false)
 
 export function getStaticGlassFilterId(): string {
   if (!supportsUrlBackdropFilter()) return ''
-  if (staticFilterId && document.getElementById(staticFilterId)) return staticFilterId
+  if (staticReady.value && staticFilterId && document.getElementById(staticFilterId)) {
+    return staticFilterId
+  }
+  if (staticBuilding) return ''
+  staticBuilding = true
+  staticReady.value = false
 
   const size = 256
   const id = 'static-glass-refraction'
@@ -457,7 +533,7 @@ export function getStaticGlassFilterId(): string {
   staticFilterId = id
 
   buildDisplacementMap(size, size, 64, 36, 1)
-    .then(url => {
+    .then(async url => {
       if (gen !== staticMapGen || staticFilterId !== id) {
         URL.revokeObjectURL(url)
         return
@@ -468,11 +544,17 @@ export function getStaticGlassFilterId(): string {
         URL.revokeObjectURL(url)
         return
       }
+      await preloadMapImage(url)
+      if (gen !== staticMapGen || staticFilterId !== id) {
+        URL.revokeObjectURL(url)
+        return
+      }
       const prev = staticBlobUrl
       staticBlobUrl = url
       mapEl.setAttribute('href', url)
       dispEl.setAttribute('scale', '0.01')
       if (prev) URL.revokeObjectURL(prev)
+      staticReady.value = true
     })
     .catch(() => {
       if (gen === staticMapGen) {
@@ -480,8 +562,11 @@ export function getStaticGlassFilterId(): string {
         svg.remove()
       }
     })
+    .finally(() => {
+      if (gen === staticMapGen) staticBuilding = false
+    })
 
-  return id
+  return ''
 }
 
 /* ================= Pipeline Warmup =================
@@ -500,40 +585,39 @@ export function warmupLiquidGlassPipeline(): void {
     const defs = ensureDefs()
     const warmupId = 'lg-warmup-probe'
     if (!document.getElementById(warmupId)) {
-      const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter')
-      filter.id = warmupId
-      filter.setAttribute('x', '0%')
-      filter.setAttribute('y', '0%')
-      filter.setAttribute('width', '100%')
-      filter.setAttribute('height', '100%')
-      filter.setAttribute('primitiveUnits', 'objectBoundingBox')
-      filter.setAttribute('color-interpolation-filters', 'sRGB')
-      filter.innerHTML = FILTER_TEMPLATE
-      defs.appendChild(filter)
+      createGlassFilter(defs, warmupId)
     }
 
-    // 3. Trigger GPU shader compilation with an offscreen 1px probe element
-    const probe = document.createElement('div')
-    probe.style.cssText =
-      'position:fixed;top:-9999px;left:-9999px;width:16px;height:16px;opacity:0.001;pointer-events:none;backdrop-filter:blur(2px) url(#lg-warmup-probe);-webkit-backdrop-filter:blur(2px) url(#lg-warmup-probe);'
-    document.body.appendChild(probe)
-    requestAnimationFrame(() => {
-      probe.remove()
-    })
+    // 3. Trigger GPU shader compilation with an offscreen probe element.
+    // The probe binds a real decoded map + nonzero displacement so the warmup
+    // exercises the true pipeline instead of rasterizing an empty feImage.
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    acquireDisplacementMap(32, 32, 8, 8, dpr)
+      .then(url => {
+        const filter = document.getElementById(warmupId)
+        const mapEl = filter?.querySelector('.f-map')
+        if (!filter || !mapEl) return
+        mapEl.setAttribute('href', url)
+        for (const cls of ['.f-dr', '.f-dg', '.f-db']) {
+          filter.querySelector(cls)?.setAttribute('scale', '0.02')
+        }
+        const probe = document.createElement('div')
+        probe.style.cssText =
+          'position:fixed;top:-9999px;left:-9999px;width:16px;height:16px;opacity:0.001;pointer-events:none;backdrop-filter:blur(2px) url(#lg-warmup-probe);-webkit-backdrop-filter:blur(2px) url(#lg-warmup-probe);'
+        document.body.appendChild(probe)
+        requestAnimationFrame(() => {
+          probe.remove()
+        })
+      })
+      .catch(() => {})
   } catch {
     // Pipeline warmup is strictly best-effort
   }
 }
 
 /** Pre-warms a specific geometry displacement map into the global LRU cache during idle time. */
-export function preloadDisplacementMap(
-  w: number,
-  h: number,
-  radius: number,
-  bezel: number,
-): void {
+export function preloadDisplacementMap(w: number, h: number, radius: number, bezel: number): void {
   if (typeof window === 'undefined' || !supportsUrlBackdropFilter()) return
   const dpr = Math.min(window.devicePixelRatio || 1, 2)
   acquireDisplacementMap(w, h, radius, bezel, dpr).catch(() => {})
 }
-
