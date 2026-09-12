@@ -42,7 +42,7 @@ func TestHTTPBrokerAllowsGETAndHEADToManifestDomains(t *testing.T) {
 }
 
 func TestHTTPBrokerRejectsUnsupportedMethodsByDefault(t *testing.T) {
-	for _, method := range []string{http.MethodPost, http.MethodPut, "BREW"} {
+	for _, method := range []string{http.MethodPut, "BREW"} {
 		t.Run(method, func(t *testing.T) {
 			transport := &recordingTransport{}
 			broker := testHTTPBroker(transport, nil)
@@ -60,6 +60,26 @@ func TestHTTPBrokerRejectsUnsupportedMethodsByDefault(t *testing.T) {
 				t.Fatalf("transport invoked %d times, want 0", transport.Count())
 			}
 		})
+	}
+}
+
+func TestHTTPBrokerRejectsPOSTWithoutExtendedCapability(t *testing.T) {
+	// POST is inside the default method vocabulary; on a basic manifest it
+	// must die at the extended-capability gate, not the vocabulary gate.
+	transport := &recordingTransport{}
+	broker := testHTTPBroker(transport, nil)
+
+	_, err := broker.Fetch(context.Background(), HTTPFetchRequest{
+		PackID:   "xpk-fixture01",
+		Manifest: httpBrokerManifest(),
+		Method:   http.MethodPost,
+		URL:      "https://fixture.invalid/d/abc",
+	})
+	if err == nil || !strings.Contains(err.Error(), "extended fetch capability") {
+		t.Fatalf("Fetch() error = %v, want extended-capability rejection", err)
+	}
+	if transport.Count() != 0 {
+		t.Fatalf("transport invoked %d times, want 0", transport.Count())
 	}
 }
 

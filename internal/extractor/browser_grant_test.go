@@ -260,6 +260,7 @@ func TestValidateBrowserHeaderGrants_Invalid(t *testing.T) {
 		"x-real-ip", "x-real-host", "x-client-ip", "x-client-hostname",
 		"x-cluster-client-ip", "x-originating-ip",
 		"x-scheme", "x-forwarded", "x-host",
+		"x-true-client-ip", "x-scope-orgid", "x-credential-identifier",
 	} {
 		cases = append(cases, table{name: "denied exact " + denied, mutate: func(s *BrowserHeaderGrantSpec) {
 			s.Headers = []BrowserHeaderSpec{{Name: denied, Value: "v"}}
@@ -279,6 +280,11 @@ func TestValidateBrowserHeaderGrants_Invalid(t *testing.T) {
 		"x-ms-client-principal", "x-ms-client-principal-id", "x-ms-client-principal-name",
 		"x-envoy-external-address", "x-envoy-original-path", "x-envoy-internal",
 		"x-arr-ssl", "x-authenticated-user", "x-authenticated-email",
+		"x-middleware-subrequest", "x-amzn-oidc-identity", "x-amzn-oidc-data",
+		"x-goog-authenticated-user-email", "x-goog-iap-jwt-assertion",
+		"x-authentik-username", "x-pomerium-jwt-assertion",
+		"x-vercel-forwarded-for", "x-vercel-ip-country", "x-webauth-user",
+		"x-consumer-id", "x-consumer-username", "x-consumer-groups",
 		"x-proxy-auth", "x-goaria-internal", "x-override-anything",
 	} {
 		cases = append(cases, table{name: "denied prefix " + denied, mutate: func(s *BrowserHeaderGrantSpec) {

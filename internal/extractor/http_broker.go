@@ -69,12 +69,13 @@ func DefaultHTTPBrokerPolicy() HTTPBrokerPolicy {
 }
 
 type HTTPFetchRequest struct {
-	PackID           string
-	Manifest         Manifest
-	PackIdentity     VerifiedPackIdentity
-	Method           string
-	URL              string
-	Headers          map[string]string
+	PackID       string
+	Manifest     Manifest
+	PackIdentity VerifiedPackIdentity
+	Method       string
+	URL          string
+	Headers      map[string]string
+	// Body must not be mutated by the caller for the duration of Fetch.
 	Body             []byte
 	AuthProfileID    AuthProfileID
 	Timeout          time.Duration
@@ -124,6 +125,9 @@ func NewHTTPBroker(config HTTPBrokerConfig) *HTTPBroker {
 	}
 }
 
+// Fetch is the single entry point for pack-originated fetches. The
+// host-import bridge is the sole intended caller: alias endpoint-method and
+// auth_profile_ref scoping are enforced there, upstream of this API.
 func (b *HTTPBroker) Fetch(ctx context.Context, request HTTPFetchRequest) (HTTPFetchResponse, error) {
 	if ctx == nil {
 		ctx = context.Background()

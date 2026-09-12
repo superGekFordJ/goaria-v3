@@ -251,6 +251,16 @@ func TestHTTPBrokerExtendedRejectsDeniedXHeaderNames(t *testing.T) {
 		"X-Envoy-External-Address", "X-Envoy-Original-Path", "X-Envoy-Internal",
 		"X-Arr-Ssl", "X-Arr-Clientcert",
 		"X-Authenticated-User", "X-Authenticated-Userid",
+		"X-Middleware-Subrequest",
+		"X-Amzn-Oidc-Identity", "X-Amzn-Oidc-Data", "X-Amzn-Oidc-Accesstoken",
+		"X-Goog-Authenticated-User-Email", "X-Goog-Authenticated-User-Id",
+		"X-Goog-Iap-Jwt-Assertion",
+		"X-Authentik-Username", "X-Authentik-Groups",
+		"X-Pomerium-Jwt-Assertion", "X-Pomerium-Claim-Email",
+		"X-Vercel-Forwarded-For", "X-Vercel-Ip-Country",
+		"X-Webauth-User",
+		"X-Consumer-Id", "X-Consumer-Username", "X-Consumer-Groups",
+		"X-True-Client-Ip", "X-Scope-Orgid", "X-Credential-Identifier",
 	} {
 		t.Run(name, func(t *testing.T) {
 			transport := &recordingTransport{}

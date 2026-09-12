@@ -67,6 +67,10 @@ func isAliasManifest(manifest Manifest) bool {
 	return len(manifest.DomainPolicyRefs) > 0 && len(manifest.Domains) == 0
 }
 
+// resolveAliasHostPolicy may be called several times within a single fetch
+// (bridge gate, broker gate, capability URL check). Resolvers must return an
+// equivalent policy across those calls; the production resolver serves
+// immutable clones, so a mid-fetch policy change cannot split the checks.
 func resolveAliasHostPolicy(ctx context.Context, resolver HostPolicyResolver, identity VerifiedPackIdentity, manifest Manifest) (ResolvedHostPolicy, error) {
 	if !isAliasManifest(manifest) {
 		return ResolvedHostPolicy{}, errors.New("host policy resolution requires an alias manifest")

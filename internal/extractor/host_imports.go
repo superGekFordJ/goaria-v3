@@ -154,7 +154,7 @@ func (b *hostImportBridge) executeHTTPFetch(ctx context.Context, requestBytes []
 	}
 
 	if mode == hostImportModeAliasRef {
-		return b.executeHTTPFetchRefMode(ctx, request, params, body, wantsExtended)
+		return b.executeHTTPFetchRefMode(ctx, request, params, method, body, wantsExtended)
 	}
 
 	if wantsExtended && !ManifestHasCapability(b.manifest, CapabilityHTTPFetchExtended) {
@@ -194,7 +194,7 @@ func (b *hostImportBridge) executeHTTPFetch(ctx context.Context, requestBytes []
 	}, b.responseCap())
 }
 
-func (b *hostImportBridge) executeHTTPFetchRefMode(ctx context.Context, request HostHTTPFetchRequest, params map[string]string, body []byte, wantsExtended bool) []byte {
+func (b *hostImportBridge) executeHTTPFetchRefMode(ctx context.Context, request HostHTTPFetchRequest, params map[string]string, method string, body []byte, wantsExtended bool) []byte {
 	policy, err := resolveAliasHostPolicy(ctx, b.effectiveHostPolicyResolver(), b.packIdentity, b.manifest)
 	if err != nil {
 		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "policy_denied", Message: "alias host policy denied request"}, b.responseCap())
@@ -203,7 +203,7 @@ func (b *hostImportBridge) executeHTTPFetchRefMode(ctx context.Context, request 
 	if !ok {
 		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "policy_denied", Message: "host policy endpoint is not available"}, b.responseCap())
 	}
-	method, endpointTimeoutMillis, endpointMaxResponseBytes, err := validateHostPolicyEndpointRequest(endpoint, request.Method, AuthProfileID(request.AuthProfileRef), b.manifest, b.httpBroker.policy)
+	method, endpointTimeoutMillis, endpointMaxResponseBytes, err := validateHostPolicyEndpointRequest(endpoint, method, AuthProfileID(request.AuthProfileRef), b.manifest, b.httpBroker.policy)
 	if err != nil {
 		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "policy_denied", Message: RedactSensitive(err.Error())}, b.responseCap())
 	}

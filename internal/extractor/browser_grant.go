@@ -35,20 +35,26 @@ const (
 // list is the authoritative superset: names the capture side still accepts
 // fail closed here at grant validation and at the extended pack-header gate.
 var deniedBrowserGrantHeaderExact = map[string]struct{}{
-	"x-real-ip":           {},
-	"x-real-host":         {},
-	"x-client-ip":         {},
-	"x-client-hostname":   {},
-	"x-cluster-client-ip": {},
-	"x-originating-ip":    {},
-	"x-scheme":            {},
-	"x-forwarded":         {},
-	"x-host":              {},
+	"x-real-ip":               {},
+	"x-real-host":             {},
+	"x-client-ip":             {},
+	"x-client-hostname":       {},
+	"x-cluster-client-ip":     {},
+	"x-originating-ip":        {},
+	"x-scheme":                {},
+	"x-forwarded":             {},
+	"x-host":                  {},
+	"x-true-client-ip":        {},
+	"x-scope-orgid":           {},
+	"x-credential-identifier": {},
 }
 
 // Prefixes deliberately include or omit the trailing dash: bare x-client-cert,
 // x-client-dn, x-auth-user, and x-ms-client-principal are themselves asserted
 // names, so those prefixes cover the bare form plus every suffixed variant.
+// Broad vendor namespaces (x-amzn-*, x-goog-*, x-azure-*) stay open on
+// purpose: they carry legitimate business API surface, so only their
+// identity-asserting sub-families are denied.
 var deniedBrowserGrantHeaderPrefixes = []string{
 	"x-forwarded-",
 	"x-http-method",
@@ -65,6 +71,15 @@ var deniedBrowserGrantHeaderPrefixes = []string{
 	"x-ms-client-principal",
 	"x-envoy-",
 	"x-arr-",
+	"x-middleware-",
+	"x-amzn-oidc-",
+	"x-goog-authenticated-",
+	"x-goog-iap-",
+	"x-authentik-",
+	"x-pomerium-",
+	"x-vercel-",
+	"x-webauth-",
+	"x-consumer-",
 	"x-proxy-",
 	"x-goaria-",
 	"x-override-",

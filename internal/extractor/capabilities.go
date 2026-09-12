@@ -58,6 +58,10 @@ func ValidateCapabilityURL(ctx CapabilityContext, rawURL string) error {
 
 func allowedHTTPURLForCapability(ctx CapabilityContext, rawURL string) (*url.URL, error) {
 	if isAliasManifest(ctx.Manifest) {
+		// CapabilityContext carries no request context, so this policy read is
+		// not request-cancelable. The resolver contract (see
+		// resolveAliasHostPolicy) requires an equivalent policy across the
+		// multiple resolutions within one fetch.
 		return allowedHTTPURLForAliasPolicy(context.Background(), ctx.Manifest, ctx.PackIdentity, ctx.HostPolicyResolver, ctx.Capability, rawURL)
 	}
 
