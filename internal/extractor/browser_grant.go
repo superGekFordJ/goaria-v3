@@ -31,22 +31,29 @@ const (
 )
 
 // Keep in sync with DENIED_X_EXACT / DENIED_X_PREFIXES and the ambient auth
-// scheme list in extension/src/background/browserHeaderGrant.ts.
+// scheme list in extension/src/background/browserHeaderGrant.ts. The host
+// list is the authoritative superset: names the capture side still accepts
+// fail closed here at grant validation and at the extended pack-header gate.
 var deniedBrowserGrantHeaderExact = map[string]struct{}{
-	"x-real-ip":         {},
-	"x-client-ip":       {},
-	"x-host":            {},
-	"x-original-url":    {},
-	"x-original-host":   {},
-	"x-original-path":   {},
-	"x-original-method": {},
-	"x-rewrite-url":     {},
-	"x-method-override": {},
+	"x-real-ip":           {},
+	"x-real-host":         {},
+	"x-client-ip":         {},
+	"x-client-hostname":   {},
+	"x-cluster-client-ip": {},
+	"x-remote-addr":       {},
+	"x-remote-ip":         {},
+	"x-originating-ip":    {},
+	"x-scheme":            {},
+	"x-forwarded":         {},
+	"x-host":              {},
 }
 
 var deniedBrowserGrantHeaderPrefixes = []string{
 	"x-forwarded-",
 	"x-http-method",
+	"x-method-override",
+	"x-original-",
+	"x-rewrite-",
 	"x-proxy-",
 	"x-goaria-",
 	"x-override-",

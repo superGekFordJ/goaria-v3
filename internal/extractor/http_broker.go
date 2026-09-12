@@ -187,6 +187,11 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		return HTTPFetchResponse{}, err
 	}
 	wantsExtended := method == http.MethodPost || len(request.Body) > 0 || headersContainPrivilegedName(validatedHeaders)
+	if wantsExtended && method != http.MethodGet && method != http.MethodHead && method != http.MethodPost {
+		// A wider host-configured method vocabulary must not smuggle
+		// extended features onto verbs outside the frozen channel set.
+		return HTTPFetchResponse{}, errors.New("extended fetch features require GET, HEAD, or POST")
+	}
 	if wantsExtended && !extendedCapable {
 		return HTTPFetchResponse{}, errors.New("extended fetch features require the extended fetch capability")
 	}
@@ -591,10 +596,12 @@ func isDeniedExtendedPackHeaderName(lower string) bool {
 // validatePackOwnedAuthorizationValue requires "<scheme><SP><credentials>"
 // form. Unlike browser grants, ambient schemes are allowed: the value is a
 // pack-owned secret, never browser-negotiated state. Edge-trimmed credentials
-// keep the extracted credential form exact for redaction/reflection keys.
+// keep the extracted credential form exact for redaction/reflection keys, and
+// consecutive spaces are rejected like on the grant side so a whitespace-
+// normalizing endpoint cannot echo a credential form we did not register.
 func validatePackOwnedAuthorizationValue(value string) bool {
 	scheme, credentials, ok := strings.Cut(value, " ")
-	if !ok || scheme == "" || !isHTTPToken(scheme) || credentials == "" {
+	if !ok || scheme == "" || !isHTTPToken(scheme) || credentials == "" || strings.Contains(value, "  ") {
 		return false
 	}
 

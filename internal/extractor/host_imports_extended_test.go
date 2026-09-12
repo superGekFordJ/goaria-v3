@@ -88,8 +88,12 @@ func TestHostImportHTTPFetchBodyBase64OmissionMeansNoBody(t *testing.T) {
 }
 
 func TestHostImportHTTPFetchRejectsMalformedBodyBase64(t *testing.T) {
+	// The \\u000a / \\u000d / \\u0009 entries carry escaped control characters
+	// through JSON so the base64 layer itself has to reject the whitespace the
+	// decoder would otherwise skip.
 	for _, body := range []string{
-		"!!!!", "e30", "e30=-_", "e3 0=", "e30=\n", "e30= e30=", "####",
+		"!!!!", "e30", "e30=-_", "e3 0=", "e30=\\u000a", "e30=\\u000d\\u000a",
+		"e30=\\u0009", "e30= e30=", "####",
 	} {
 		t.Run(body, func(t *testing.T) {
 			transport := &hostImportRecordingTransport{statusCode: 200, body: "ok"}
@@ -106,10 +110,14 @@ func TestHostImportHTTPFetchRejectsMalformedBodyBase64(t *testing.T) {
 }
 
 func TestHostImportHTTPFetchBodyBase64Cap(t *testing.T) {
-	transport := &hostImportRecordingTransport{statusCode: 200, body: "ok"}
-	bridge := newTestHostImportBridge(t, hostImportExtendedManifest(), testHTTPBroker(transport, nil), nil, 4)
+	newBridge := func(t *testing.T) (*hostImportBridge, *hostImportRecordingTransport) {
+		transport := &hostImportRecordingTransport{statusCode: 200, body: "ok"}
+
+		return newTestHostImportBridge(t, hostImportExtendedManifest(), testHTTPBroker(transport, nil), nil, 4), transport
+	}
 
 	t.Run("exactly 16KiB passes", func(t *testing.T) {
+		bridge, transport := newBridge(t)
 		body := base64.StdEncoding.EncodeToString(make([]byte, 16*1024))
 		response := executeHostHTTPFetch(t, bridge, []byte(`{"url":"https://api.fixture.invalid/path","method":"POST","headers":{"Content-Type":"application/json"},"body_base64":"`+body+`"}`))
 		if !response.OK {
@@ -121,13 +129,14 @@ func TestHostImportHTTPFetchBodyBase64Cap(t *testing.T) {
 	})
 
 	t.Run("16KiB plus one byte fails", func(t *testing.T) {
+		bridge, transport := newBridge(t)
 		body := base64.StdEncoding.EncodeToString(make([]byte, 16*1024+1))
 		response := executeHostHTTPFetch(t, bridge, []byte(`{"url":"https://api.fixture.invalid/path","method":"POST","headers":{"Content-Type":"application/json"},"body_base64":"`+body+`"}`))
 		if response.OK || response.ErrorCode != "invalid_request" {
 			t.Fatalf("response = %+v, want invalid_request", response)
 		}
-		if transport.Count() != 1 {
-			t.Fatalf("transport calls = %d, want 1 (only the accepted request)", transport.Count())
+		if transport.Count() != 0 {
+			t.Fatalf("transport calls = %d, want 0", transport.Count())
 		}
 	})
 }
@@ -406,6 +415,51 @@ func TestHostImportHTTPFetchRefModeRejectsPOSTWithoutExtendedPolicyCapability(t 
 	}
 	if transport.Count() != 0 {
 		t.Fatalf("transport calls = %d, want 0", transport.Count())
+	}
+}
+
+func TestHostImportHTTPFetchRefModeRejectsAuthProfileWithExtendedFeatures(t *testing.T) {
+	pack := syntheticExtendedAliasPack()
+	for _, tt := range []struct {
+		name string
+		req  HostHTTPFetchRequest
+	}{
+		{name: "post", req: HostHTTPFetchRequest{
+			BrokerPolicyRef: "bpr-alpha001", EndpointRef: "ep-alpha001",
+			Method: "POST", AuthProfileRef: "alpha-secret",
+		}},
+		{name: "body", req: HostHTTPFetchRequest{
+			BrokerPolicyRef: "bpr-alpha001", EndpointRef: "ep-alpha001",
+			Method: "POST", AuthProfileRef: "alpha-secret",
+			Headers: map[string]string{"Content-Type": "application/json"}, BodyBase64: "e30=",
+		}},
+		{name: "privileged authorization", req: HostHTTPFetchRequest{
+			BrokerPolicyRef: "bpr-alpha001", EndpointRef: "ep-alpha001",
+			AuthProfileRef: "alpha-secret",
+			Headers:        map[string]string{"Authorization": "Bearer fixture-pack-auth"},
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := &fakeHostPolicyResolver{policy: syntheticExtendedHostPolicy(pack.Identity)}
+			transport := &hostImportRecordingTransport{statusCode: 200, body: "ok"}
+			broker := NewHTTPBroker(HTTPBrokerConfig{Policy: testHTTPPolicy(), Transport: transport, HostPolicyResolver: resolver})
+			bridge := newTestHostImportBridgeForPack(t, pack, broker, hostImportAuthResolver{secret: ResolvedAuthSecret{
+				HeaderName: "Authorization", HeaderValue: "Bearer profile-secret", Kind: AuthSecretKindBearer,
+			}}, resolver, 4)
+
+			response := executeHostHTTPFetch(t, bridge, mustHostImportJSON(t, tt.req))
+			if response.OK || response.ErrorCode != "invalid_request" {
+				t.Fatalf("response = %+v, want invalid_request", response)
+			}
+			// The credential-channel mutex fires in local shape validation
+			// before mode dispatch, so the policy resolver is never consulted.
+			if resolver.calls != 0 {
+				t.Fatalf("resolver calls = %d, want 0", resolver.calls)
+			}
+			if transport.Count() != 0 {
+				t.Fatalf("transport calls = %d, want 0", transport.Count())
+			}
+		})
 	}
 }
 

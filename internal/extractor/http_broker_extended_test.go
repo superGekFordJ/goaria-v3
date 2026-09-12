@@ -226,9 +226,14 @@ func TestHTTPBrokerExtendedBusinessXHeadersReachWire(t *testing.T) {
 
 func TestHTTPBrokerExtendedRejectsDeniedXHeaderNames(t *testing.T) {
 	for _, name := range []string{
-		"X-Real-Ip", "X-Forwarded-For", "X-Forwarded-Host", "X-Goaria-Debug",
-		"X-Http-Method-Override", "X-Method-Override", "X-Original-Url",
-		"X-Proxy-Url", "X-Override-Foo", "X-Rewrite-Url", "X-Host", "X-Client-Ip",
+		"X-Real-Ip", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded",
+		"X-Goaria-Debug", "X-Http-Method-Override", "X-Http-Method",
+		"X-Method-Override", "X-Method-Override-Extra", "X-Original-Url",
+		"X-Original-Uri", "X-Original-Remote-Addr", "X-Original-Scheme",
+		"X-Original-Forwarded-For", "X-Proxy-Url", "X-Override-Foo",
+		"X-Rewrite-Url", "X-Rewrite-Url-Path", "X-Host", "X-Client-Ip",
+		"X-Client-Hostname", "X-Remote-Addr", "X-Remote-Ip", "X-Originating-Ip",
+		"X-Cluster-Client-Ip", "X-Real-Host", "X-Scheme",
 	} {
 		t.Run(name, func(t *testing.T) {
 			transport := &recordingTransport{}
@@ -275,7 +280,7 @@ func TestHTTPBrokerExtendedStillRejectsAmbientAndHopHeaders(t *testing.T) {
 func TestHTTPBrokerExtendedRejectsMalformedAuthorizationValues(t *testing.T) {
 	for _, value := range []string{
 		"bare-token", "Bearer", "Bearer ", " Bearer x", "Bearer  x", "Bearer x ",
-		"Bearer x\ty", "Bearer x\x7f", "\tBearer x",
+		"Bearer a  b", "Bearer x\ty", "Bearer x\x7f", "\tBearer x",
 	} {
 		t.Run(value, func(t *testing.T) {
 			transport := &recordingTransport{}
@@ -514,22 +519,81 @@ func TestHTTPBrokerExtendedFailsClosedOnAnyRedirect(t *testing.T) {
 }
 
 func TestHTTPBrokerExtendedRequiresHTTPS(t *testing.T) {
-	transport := &recordingTransport{}
-	broker := testHTTPBroker(transport, nil)
-	req := extendedFetchRequest()
-	req.URL = "http://api.fixture.invalid/submit"
-	req.Body = []byte(`{"k":"v"}`)
-	req.Headers = map[string]string{"Content-Type": "application/json"}
+	t.Run("post with body", func(t *testing.T) {
+		transport := &recordingTransport{}
+		broker := testHTTPBroker(transport, nil)
+		req := extendedFetchRequest()
+		req.URL = "http://api.fixture.invalid/submit"
+		req.Body = []byte(`{"k":"v"}`)
+		req.Headers = map[string]string{"Content-Type": "application/json"}
 
-	_, err := broker.Fetch(context.Background(), req)
-	if err == nil {
-		t.Fatal("Fetch() error = nil, want https rejection")
-	}
-	if !strings.Contains(err.Error(), "HTTPS") {
-		t.Fatalf("error = %q, want HTTPS requirement", err.Error())
-	}
-	if transport.Count() != 0 {
-		t.Fatalf("transport calls = %d, want 0", transport.Count())
+		_, err := broker.Fetch(context.Background(), req)
+		if err == nil {
+			t.Fatal("Fetch() error = nil, want https rejection")
+		}
+		if !strings.Contains(err.Error(), "HTTPS") {
+			t.Fatalf("error = %q, want HTTPS requirement", err.Error())
+		}
+		if transport.Count() != 0 {
+			t.Fatalf("transport calls = %d, want 0", transport.Count())
+		}
+	})
+
+	t.Run("get with privileged header", func(t *testing.T) {
+		transport := &recordingTransport{}
+		broker := testHTTPBroker(transport, nil)
+		req := extendedFetchRequest()
+		req.Method = http.MethodGet
+		req.URL = "http://api.fixture.invalid/submit"
+		req.Headers = map[string]string{"Authorization": "Bearer fixture-pack-auth"}
+
+		_, err := broker.Fetch(context.Background(), req)
+		if err == nil {
+			t.Fatal("Fetch() error = nil, want https rejection")
+		}
+		if !strings.Contains(err.Error(), "HTTPS") {
+			t.Fatalf("error = %q, want HTTPS requirement", err.Error())
+		}
+		if transport.Count() != 0 {
+			t.Fatalf("transport calls = %d, want 0", transport.Count())
+		}
+	})
+}
+
+func TestHTTPBrokerExtendedFeaturesStayOnFrozenMethodSet(t *testing.T) {
+	// A host-configured policy may widen the method vocabulary; extended
+	// features must still refuse to ride verbs outside GET/HEAD/POST.
+	policy := testHTTPPolicy()
+	policy.AllowedMethods[http.MethodPut] = struct{}{}
+	transport := &recordingTransport{}
+	broker := NewHTTPBroker(HTTPBrokerConfig{Policy: policy, Transport: transport})
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(*HTTPFetchRequest)
+	}{
+		{name: "put with privileged header", mutate: func(r *HTTPFetchRequest) {
+			r.Method = http.MethodPut
+			r.Headers = map[string]string{"Authorization": "Bearer fixture-pack-auth"}
+		}},
+		{name: "put with body", mutate: func(r *HTTPFetchRequest) {
+			r.Method = http.MethodPut
+			r.Body = []byte("x")
+			r.Headers = map[string]string{"Content-Type": "application/json"}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := extendedFetchRequest()
+			tt.mutate(&req)
+
+			_, err := broker.Fetch(context.Background(), req)
+			if err == nil {
+				t.Fatal("Fetch() error = nil, want frozen-method rejection")
+			}
+			if transport.Count() != 0 {
+				t.Fatalf("transport calls = %d, want 0", transport.Count())
+			}
+		})
 	}
 }
 

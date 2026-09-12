@@ -257,8 +257,9 @@ func TestValidateBrowserHeaderGrants_Invalid(t *testing.T) {
 	}
 
 	for _, denied := range []string{
-		"x-real-ip", "x-client-ip", "x-host", "x-original-url", "x-original-host",
-		"x-original-path", "x-original-method", "x-rewrite-url", "x-method-override",
+		"x-real-ip", "x-real-host", "x-client-ip", "x-client-hostname",
+		"x-cluster-client-ip", "x-remote-addr", "x-remote-ip", "x-originating-ip",
+		"x-scheme", "x-forwarded", "x-host",
 	} {
 		cases = append(cases, table{name: "denied exact " + denied, mutate: func(s *BrowserHeaderGrantSpec) {
 			s.Headers = []BrowserHeaderSpec{{Name: denied, Value: "v"}}
@@ -266,6 +267,10 @@ func TestValidateBrowserHeaderGrants_Invalid(t *testing.T) {
 	}
 	for _, denied := range []string{
 		"x-forwarded-for", "x-forwarded-host", "x-http-method-override", "x-http-method",
+		"x-method-override", "x-method-override-extra", "x-original-url", "x-original-host",
+		"x-original-path", "x-original-method", "x-original-uri",
+		"x-original-remote-addr", "x-original-scheme", "x-original-forwarded-for",
+		"x-rewrite-url", "x-rewrite-url-path",
 		"x-proxy-auth", "x-goaria-internal", "x-override-anything",
 	} {
 		cases = append(cases, table{name: "denied prefix " + denied, mutate: func(s *BrowserHeaderGrantSpec) {

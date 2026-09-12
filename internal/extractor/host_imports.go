@@ -607,6 +607,11 @@ func decodeExtendedBody(encoded string) ([]byte, error) {
 	if encoded == "" {
 		return nil, nil
 	}
+	// The base64 decoder silently skips CR/LF even in Strict mode; reject
+	// whitespace up front so the padded alphabet is the only accepted spelling.
+	if strings.ContainsAny(encoded, " \t\r\n") {
+		return nil, errors.New("body_base64 is not valid padded base64")
+	}
 	body, err := base64.StdEncoding.Strict().DecodeString(encoded)
 	if err != nil {
 		return nil, errors.New("body_base64 is not valid padded base64")
