@@ -601,6 +601,15 @@
     contain-intrinsic-size: auto 300px;
   }
 
+  /* content-visibility: auto implies paint containment, which clips the
+   * dropdown menu at the section edge and traps the card's z-20 dynamic
+   * elevation inside a forced stacking context. An interacted section is
+   * on-screen anyway, so lifting containment here costs nothing. */
+  [data-settings-section]:hover,
+  [data-settings-section]:focus-within {
+    content-visibility: visible;
+  }
+
   [data-settings-section]:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--neon-primary) 40%, transparent);
     outline-offset: 3px;
