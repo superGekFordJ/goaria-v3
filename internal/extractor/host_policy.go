@@ -138,7 +138,9 @@ func validateResolvedHostPolicy(identity VerifiedPackIdentity, manifest Manifest
 	if err := validateHostPolicyOutputDomains(policy.OutputDomains); err != nil {
 		return err
 	}
-	requiresBroker := ManifestHasCapability(manifest, CapabilityHTTPFetch) || ManifestHasCapability(manifest, CapabilityAuthProfile)
+	requiresBroker := ManifestHasCapability(manifest, CapabilityHTTPFetch) ||
+		ManifestHasCapability(manifest, CapabilityHTTPFetchExtended) ||
+		ManifestHasCapability(manifest, CapabilityAuthProfile)
 	if requiresBroker {
 		if len(policy.BrokerDomains) == 0 {
 			return errors.New("resolved host policy broker domain rules are required")
@@ -455,6 +457,11 @@ func validateHostPolicyEndpointRequest(endpoint HostPolicyEndpoint, method strin
 		return "", 0, 0, err
 	}
 	if len(normalizedEndpointMethods) > 0 && !stringSliceContains(normalizedEndpointMethods, normalizedMethod) {
+		return "", 0, 0, errors.New("http method is not allowed by host policy endpoint")
+	}
+	// POST must be listed explicitly; an empty method list only relaxes
+	// GET/HEAD, never unlocks extended verbs.
+	if normalizedMethod == http.MethodPost && !stringSliceContains(normalizedEndpointMethods, http.MethodPost) {
 		return "", 0, 0, errors.New("http method is not allowed by host policy endpoint")
 	}
 	if authProfileRef != "" && !hostPolicyEndpointAllowsAuthProfile(endpoint, authProfileRef) {

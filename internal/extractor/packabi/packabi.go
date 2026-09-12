@@ -19,9 +19,10 @@ const (
 type Capability string
 
 const (
-	CapabilityParseWASM   Capability = "cap.parse.wasm"
-	CapabilityHTTPFetch   Capability = "cap.http.fetch"
-	CapabilityAuthProfile Capability = "cap.auth.profile"
+	CapabilityParseWASM         Capability = "cap.parse.wasm"
+	CapabilityHTTPFetch         Capability = "cap.http.fetch"
+	CapabilityHTTPFetchExtended Capability = "cap.http.fetch.extended"
+	CapabilityAuthProfile       Capability = "cap.auth.profile"
 )
 
 type AuthSecretKind string
@@ -67,6 +68,7 @@ type HostHTTPFetchRequest struct {
 	EndpointRef      string            `json:"endpoint_ref,omitempty"`
 	Params           map[string]string `json:"params,omitempty"`
 	Headers          map[string]string `json:"headers,omitempty"`
+	BodyBase64       string            `json:"body_base64,omitempty"`
 	AuthProfileRef   string            `json:"auth_profile_ref,omitempty"`
 	TimeoutMillis    int               `json:"timeout_millis,omitempty"`
 	MaxResponseBytes int64             `json:"max_response_bytes,omitempty"`

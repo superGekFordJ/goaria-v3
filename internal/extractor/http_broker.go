@@ -1,6 +1,7 @@
 package extractor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -54,6 +55,7 @@ func DefaultHTTPBrokerPolicy() HTTPBrokerPolicy {
 		AllowedMethods: map[string]struct{}{
 			http.MethodGet:  {},
 			http.MethodHead: {},
+			http.MethodPost: {},
 		},
 		AllowedRequestHeaders: cloneStringSet(defaultSafeRequestHeaders),
 		SafeResponseHeaders:   cloneStringSet(defaultSafeResponseHeaders),
@@ -73,6 +75,7 @@ type HTTPFetchRequest struct {
 	Method           string
 	URL              string
 	Headers          map[string]string
+	Body             []byte
 	AuthProfileID    AuthProfileID
 	Timeout          time.Duration
 	MaxResponseBytes int64
@@ -177,9 +180,29 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 	if err != nil {
 		return HTTPFetchResponse{}, err
 	}
-	validatedHeaders, err := b.validatePackHeaders(request.Headers)
+	extendedCapable := ManifestHasCapability(request.Manifest, CapabilityHTTPFetchExtended) &&
+		(policy == nil || policyAllowsCapability(*policy, CapabilityHTTPFetchExtended))
+	validatedHeaders, err := b.validatePackHeaders(request.Headers, extendedCapable)
 	if err != nil {
 		return HTTPFetchResponse{}, err
+	}
+	wantsExtended := method == http.MethodPost || len(request.Body) > 0 || headersContainPrivilegedName(validatedHeaders)
+	if wantsExtended && !extendedCapable {
+		return HTTPFetchResponse{}, errors.New("extended fetch features require the extended fetch capability")
+	}
+	if wantsExtended && request.AuthProfileID != "" {
+		return HTTPFetchResponse{}, errors.New("extended fetch request must not use an auth profile")
+	}
+	if len(request.Body) > 0 {
+		if method != http.MethodPost {
+			return HTTPFetchResponse{}, errors.New("request body requires the POST method")
+		}
+		if len(request.Body) > maxExtendedFetchBodyBytes {
+			return HTTPFetchResponse{}, fmt.Errorf("request body exceeds the %d byte cap", maxExtendedFetchBodyBytes)
+		}
+		if !isExtendedBodyContentTypeAllowed(validatedHeaders.Get("Content-Type")) {
+			return HTTPFetchResponse{}, errors.New("request body requires a single application/json or application/x-www-form-urlencoded content type")
+		}
 	}
 	browserCtx := browserContextFromContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, b.effectiveTimeout(request))
@@ -194,9 +217,12 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		}
 		grant, grantTarget := browserGrantMatch(browserCtx.Grants, method, currentURL, time.Now())
 		grantScopedHop := grant != nil
-		hopAttachesCookies := request.AuthProfileID == "" && !grantScopedHop && len(cookiesMatchingRequest(browserCtx.Cookies, currentURL)) > 0
+		hopAttachesCookies := request.AuthProfileID == "" && !wantsExtended && !grantScopedHop && len(cookiesMatchingRequest(browserCtx.Cookies, currentURL)) > 0
 		if hopAttachesCookies && parsed.Scheme != "https" {
 			return HTTPFetchResponse{}, errors.New("cookie-authenticated request requires HTTPS")
+		}
+		if wantsExtended && parsed.Scheme != "https" {
+			return HTTPFetchResponse{}, errors.New("extended fetch request requires HTTPS")
 		}
 		wireTarget := parsed.String()
 		if grantScopedHop {
@@ -205,7 +231,11 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 			// fragment) and not the stored grant field.
 			wireTarget = grantTarget
 		}
-		httpRequest, err := http.NewRequestWithContext(ctx, method, wireTarget, nil)
+		var requestBody io.Reader
+		if len(request.Body) > 0 {
+			requestBody = bytes.NewReader(request.Body)
+		}
+		httpRequest, err := http.NewRequestWithContext(ctx, method, wireTarget, requestBody)
 		if err != nil {
 			return HTTPFetchResponse{}, fmt.Errorf("construct request: %w", err)
 		}
@@ -216,11 +246,16 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		}
 
 		var grantReflection []string
+		var extendedReflection []string
 		switch {
 		case grantScopedHop:
 			// A scoped browser grant hop never mixes with host auth profiles,
-			// browser cookies, pack-owned privileged headers, or a request
-			// body (HostHTTPFetchRequest has no body field).
+			// browser cookies, or pack-owned extended features (body/privileged
+			// headers); the extended guard is checked first, the pack-header
+			// collision scan below is unreachable depth for such requests.
+			if wantsExtended {
+				return HTTPFetchResponse{}, errors.New("grant-scoped request must not use extended fetch features")
+			}
 			if request.AuthProfileID != "" {
 				return HTTPFetchResponse{}, errors.New("grant-scoped request must not use an auth profile")
 			}
@@ -257,6 +292,31 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 					}
 				}
 			}
+		case wantsExtended:
+			// Extended requests never attach ambient credentials: browser
+			// cookies are suppressed (hopAttachesCookies already excludes this
+			// hop) and pack-owned privileged values register as secrets.
+			httpRequest.Header.Del("Cookie")
+			for name, values := range validatedHeaders {
+				if !packHeaderNeedsExtended(name) {
+					continue
+				}
+				for _, value := range values {
+					*knownSecrets = appendNonEmptySecrets(*knownSecrets, value)
+					if len(value) >= minSecretReflectionBytes {
+						extendedReflection = append(extendedReflection, value)
+					}
+					if name == "Authorization" {
+						if _, credentials, ok := strings.Cut(value, " "); ok {
+							credentials = strings.TrimSpace(credentials)
+							*knownSecrets = appendNonEmptySecrets(*knownSecrets, credentials)
+							if len(credentials) >= minSecretReflectionBytes {
+								extendedReflection = append(extendedReflection, credentials)
+							}
+						}
+					}
+				}
+			}
 		case request.AuthProfileID != "":
 			if err := validateAliasAuthProfileScopeForURL(policy, request.AuthProfileID, currentURL); err != nil {
 				return HTTPFetchResponse{}, err
@@ -280,8 +340,13 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 			if response.Body != nil {
 				_ = response.Body.Close()
 			}
-			if grantScopedHop {
+			switch {
+			case grantScopedHop:
 				return HTTPFetchResponse{}, errors.New("grant-scoped request must not redirect")
+			case wantsExtended:
+				// Single hop only: a pack-owned credential must not follow an
+				// origin-controlled redirect target.
+				return HTTPFetchResponse{}, errors.New("extended fetch request must not redirect")
 			}
 			location := response.Header.Get("Location")
 			if redirects >= b.policy.RedirectLimit {
@@ -312,11 +377,14 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		}
 		safeHeaders := b.safeResponseHeaders(response.Header)
 		reflectionSecrets := cookieReflection
-		if grantScopedHop {
+		switch {
+		case grantScopedHop:
 			// Union, not replacement: earlier hops may have attached cookie
 			// secrets this response could replay (debug/history endpoints).
 			reflectionSecrets = append(append([]string(nil), cookieReflection...), grantReflection...)
-		} else if request.AuthProfileID != "" {
+		case wantsExtended:
+			reflectionSecrets = extendedReflection
+		case request.AuthProfileID != "":
 			reflectionSecrets = *knownSecrets
 		}
 		if len(reflectionSecrets) > 0 && len(body) > 0 {
@@ -431,7 +499,7 @@ func (b *HTTPBroker) validateMethod(method string) (string, error) {
 	return method, nil
 }
 
-func (b *HTTPBroker) validatePackHeaders(headers map[string]string) (http.Header, error) {
+func (b *HTTPBroker) validatePackHeaders(headers map[string]string, extendedCapable bool) (http.Header, error) {
 	if len(headers) == 0 {
 		return nil, nil
 	}
@@ -440,10 +508,37 @@ func (b *HTTPBroker) validatePackHeaders(headers map[string]string) (http.Header
 	}
 
 	validated := make(http.Header, len(headers))
+	seen := make(map[string]struct{}, len(headers))
 	for name, value := range headers {
-		canonical := http.CanonicalHeaderKey(strings.TrimSpace(name))
-		if canonical == "" || canonical != http.CanonicalHeaderKey(canonical) || strings.ContainsAny(name, "\r\n:") {
+		trimmed := strings.TrimSpace(name)
+		canonical := http.CanonicalHeaderKey(trimmed)
+		if canonical == "" || !isHTTPToken(trimmed) {
 			return nil, errors.New("invalid request header name")
+		}
+		if _, dup := seen[canonical]; dup {
+			return nil, errors.New("request header names must be unique after canonicalization")
+		}
+		seen[canonical] = struct{}{}
+		if packHeaderNeedsExtended(canonical) {
+			// Privileged names bypass the name-level secret heuristic: business
+			// x-* token headers are the legitimate use of the extended channel.
+			if isDeniedExtendedPackHeaderName(strings.ToLower(canonical)) {
+				return nil, fmt.Errorf("request header %q is not allowed", canonical)
+			}
+			if !extendedCapable {
+				return nil, fmt.Errorf("request header %q requires the extended fetch capability", canonical)
+			}
+			if len(value) > b.policy.MaxHeaderValueBytes {
+				return nil, fmt.Errorf("request header %q value is too large", canonical)
+			}
+			if stringContainsControl(value) {
+				return nil, fmt.Errorf("request header %q value contains control bytes", canonical)
+			}
+			if canonical == "Authorization" && !validatePackOwnedAuthorizationValue(value) {
+				return nil, errors.New("request header \"Authorization\" value must be a scheme followed by credentials")
+			}
+			validated.Set(canonical, value)
+			continue
 		}
 		if isSecretHeaderName(canonical) || isForbiddenPackHeader(canonical) {
 			return nil, fmt.Errorf("request header %q is not allowed", canonical)
@@ -461,6 +556,49 @@ func (b *HTTPBroker) validatePackHeaders(headers map[string]string) (http.Header
 	}
 
 	return validated, nil
+}
+
+func headersContainPrivilegedName(headers http.Header) bool {
+	for name := range headers {
+		if packHeaderNeedsExtended(name) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// packHeaderNeedsExtended reports whether a canonicalized pack header name is
+// part of the extended channel's privileged set: Authorization or any x-*
+// business header (the deny list narrows that set afterwards).
+func packHeaderNeedsExtended(canonical string) bool {
+	return canonical == "Authorization" || strings.HasPrefix(canonical, "X-")
+}
+
+func isDeniedExtendedPackHeaderName(lower string) bool {
+	if _, denied := deniedBrowserGrantHeaderExact[lower]; denied {
+		return true
+	}
+	for _, prefix := range deniedBrowserGrantHeaderPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// validatePackOwnedAuthorizationValue requires "<scheme><SP><credentials>"
+// form. Unlike browser grants, ambient schemes are allowed: the value is a
+// pack-owned secret, never browser-negotiated state. Edge-trimmed credentials
+// keep the extracted credential form exact for redaction/reflection keys.
+func validatePackOwnedAuthorizationValue(value string) bool {
+	scheme, credentials, ok := strings.Cut(value, " ")
+	if !ok || scheme == "" || !isHTTPToken(scheme) || credentials == "" {
+		return false
+	}
+
+	return credentials == strings.TrimSpace(credentials)
 }
 
 func (b *HTTPBroker) injectAuth(ctx context.Context, httpRequest *http.Request, request HTTPFetchRequest, targetURL string, knownSecrets *[]string) error {

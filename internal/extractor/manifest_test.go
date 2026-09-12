@@ -31,6 +31,58 @@ func TestValidateManifestAcceptsAliasManifestWithoutBrokerRefsForParseOnly(t *te
 	}
 }
 
+func TestValidateManifestAcceptsExtendedFetchCapability(t *testing.T) {
+	t.Run("legacy manifest with extended and basic fetch", func(t *testing.T) {
+		manifest := validTestManifest()
+		manifest.Capabilities = []Capability{CapabilityParseWASM, CapabilityHTTPFetch, CapabilityHTTPFetchExtended}
+
+		if err := ValidateManifest(manifest, DefaultTrustPolicy()); err != nil {
+			t.Fatalf("ValidateManifest() error = %v", err)
+		}
+	})
+
+	t.Run("alias manifest with extended fetch and broker refs", func(t *testing.T) {
+		manifest := validAliasTestManifest()
+		manifest.Capabilities = append(manifest.Capabilities, CapabilityHTTPFetchExtended)
+
+		if err := ValidateManifest(manifest, DefaultTrustPolicy()); err != nil {
+			t.Fatalf("ValidateManifest() error = %v", err)
+		}
+	})
+}
+
+func TestValidateManifestRejectsExtendedFetchWithoutBasic(t *testing.T) {
+	t.Run("legacy manifest", func(t *testing.T) {
+		manifest := validTestManifest()
+		manifest.Capabilities = []Capability{CapabilityParseWASM, CapabilityHTTPFetchExtended}
+
+		err := ValidateManifest(manifest, DefaultTrustPolicy())
+		if err == nil {
+			t.Fatal("ValidateManifest() error = nil, want extended-requires-basic rejection")
+		}
+	})
+
+	t.Run("alias manifest", func(t *testing.T) {
+		manifest := validAliasTestManifest()
+		manifest.Capabilities = []Capability{CapabilityParseWASM, CapabilityHTTPFetchExtended, CapabilityAuthProfile}
+
+		err := ValidateManifest(manifest, DefaultTrustPolicy())
+		if err == nil {
+			t.Fatal("ValidateManifest() error = nil, want extended-requires-basic rejection")
+		}
+	})
+}
+
+func TestValidateManifestRejectsAliasExtendedFetchWithoutBrokerRefs(t *testing.T) {
+	manifest := validAliasTestManifest()
+	manifest.Capabilities = []Capability{CapabilityParseWASM, CapabilityHTTPFetch, CapabilityHTTPFetchExtended}
+	manifest.BrokerPolicyRefs = nil
+
+	if err := ValidateManifest(manifest, DefaultTrustPolicy()); err == nil {
+		t.Fatal("ValidateManifest() error = nil, want broker-ref requirement for extended fetch")
+	}
+}
+
 func TestValidateManifestRejectsRequiredFieldFailures(t *testing.T) {
 	validHash := strings.Repeat("0123456789abcdef", 4)
 

@@ -5,9 +5,12 @@ const CurrentABIVersion uint32 = 1
 type Capability string
 
 const (
-	CapabilityParseWASM   Capability = "cap.parse.wasm"
-	CapabilityHTTPFetch   Capability = "cap.http.fetch"
-	CapabilityAuthProfile Capability = "cap.auth.profile"
+	CapabilityParseWASM Capability = "cap.parse.wasm"
+	CapabilityHTTPFetch Capability = "cap.http.fetch"
+	// CapabilityHTTPFetchExtended unlocks POST/body/pack-owned privileged
+	// headers on top of basic fetch; declaring it requires cap.http.fetch.
+	CapabilityHTTPFetchExtended Capability = "cap.http.fetch.extended"
+	CapabilityAuthProfile       Capability = "cap.auth.profile"
 )
 
 type Manifest struct {

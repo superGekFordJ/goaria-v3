@@ -31,6 +31,44 @@ func TestPrivatePolicyBundleLoadsAndResolvesSyntheticPolicy(t *testing.T) {
 	}
 }
 
+func TestPrivatePolicyBundlePreservesExtendedCapabilityAndPOSTMethod(t *testing.T) {
+	pack := syntheticExtendedAliasPack()
+	raw := mustMutatedPrivatePolicyBundleJSON(t, pack.Identity, func(envelope map[string]any) {
+		entry := mustPrivatePolicyBundlePackMap(pack.Identity)
+		entry["allowed_capabilities"] = []string{
+			string(CapabilityParseWASM),
+			string(CapabilityHTTPFetch),
+			string(CapabilityHTTPFetchExtended),
+			string(CapabilityAuthProfile),
+		}
+		entry["endpoints"].([]map[string]any)[0]["methods"] = []string{"GET", "HEAD", "POST"}
+		envelope["policy"] = map[string]any{"packs": []any{entry}}
+	})
+
+	resolver, err := NewPrivatePolicyBundleResolver(raw, PrivatePolicyBundleLoadOptions{})
+	if err != nil {
+		t.Fatalf("NewPrivatePolicyBundleResolver() error = %v", err)
+	}
+	resolved, err := resolver.ResolveHostPolicy(context.Background(), HostPolicyRequest{PackIdentity: pack.Identity, Manifest: pack.Manifest})
+	if err != nil {
+		t.Fatalf("ResolveHostPolicy() error = %v", err)
+	}
+	if !policyAllowsCapability(resolved, CapabilityHTTPFetchExtended) {
+		t.Fatalf("resolved policy dropped extended capability: %#v", resolved.AllowedCapabilities)
+	}
+	endpoint, ok := resolveHostPolicyEndpoint(resolved, "bpr-alpha001", "ep-alpha001")
+	if !ok {
+		t.Fatal("resolveHostPolicyEndpoint() ok = false")
+	}
+	method, _, _, err := validateHostPolicyEndpointRequest(endpoint, "POST", "", pack.Manifest, DefaultHTTPBrokerPolicy())
+	if err != nil {
+		t.Fatalf("validateHostPolicyEndpointRequest(POST) error = %v", err)
+	}
+	if method != "POST" {
+		t.Fatalf("normalized method = %q, want POST", method)
+	}
+}
+
 func TestPrivatePolicyBundleResolverReturnsDefensiveCopies(t *testing.T) {
 	pack := syntheticAliasVerifiedPack()
 	raw, _ := mustPrivatePolicyBundleJSON(t, pack.Identity, nil)

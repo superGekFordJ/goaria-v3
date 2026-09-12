@@ -142,6 +142,93 @@ func TestRunnerHostImportBudgetIsPerOperation(t *testing.T) {
 	}
 }
 
+func TestRunnerHostImportExtendedPOSTCarriesBody(t *testing.T) {
+	request := string(mustHostImportJSON(t, HostHTTPFetchRequest{
+		Method: "POST",
+		URL:    "https://api.fixture.invalid/path",
+		Headers: map[string]string{
+			"Content-Type":  "application/json",
+			"Authorization": "Bearer fixture-pack-auth",
+			"X-Foo":         "fixture-foo",
+		},
+		BodyBase64: "eyJrIjoidiJ9",
+	}))
+	pack := verifiedRunnerPack(t, httpFetchImportFixtureWASM(request), func(values map[string]any) {
+		values["capabilities"] = []string{string(CapabilityParseWASM), string(CapabilityHTTPFetch), string(CapabilityHTTPFetchExtended)}
+	})
+	transport := &hostImportRecordingTransport{statusCode: http.StatusOK, body: "host import ok"}
+	runner := NewRunnerWithConfig(RunnerConfig{HTTPBroker: testHTTPBroker(transport, nil)})
+
+	if _, err := runner.Extract(context.Background(), pack, ExtractInput{URL: "https://share.fixture.invalid/s/abc"}); err != nil {
+		t.Fatalf("Runner.Extract() error = %v", err)
+	}
+	if transport.Count() != 1 {
+		t.Fatalf("transport calls = %d, want 1", transport.Count())
+	}
+	wire := transport.LastRequest()
+	if wire.Method != http.MethodPost {
+		t.Fatalf("transport method = %q, want POST", wire.Method)
+	}
+	if wire.Header.Get("Authorization") != "Bearer fixture-pack-auth" || wire.Header.Get("X-Foo") != "fixture-foo" {
+		t.Fatalf("transport headers = %#v, want pack-owned extended headers", wire.Header)
+	}
+	if body := transportRequestBody(t, wire); string(body) != `{"k":"v"}` {
+		t.Fatalf("transport body = %q, want decoded body", body)
+	}
+}
+
+func TestRunnerHostImportExtendedRequiresCapability(t *testing.T) {
+	request := string(mustHostImportJSON(t, HostHTTPFetchRequest{
+		Method: "POST",
+		URL:    "https://api.fixture.invalid/path",
+		Headers: map[string]string{
+			"Content-Type": "application/json",
+		},
+		BodyBase64: "e30=",
+	}))
+	pack := verifiedRunnerPack(t, httpFetchImportFixtureWASM(request), func(values map[string]any) {
+		values["capabilities"] = []string{string(CapabilityParseWASM), string(CapabilityHTTPFetch)}
+	})
+	transport := &hostImportRecordingTransport{statusCode: http.StatusOK, body: "should not call"}
+	runner := NewRunnerWithConfig(RunnerConfig{HTTPBroker: testHTTPBroker(transport, nil)})
+
+	// The fixture ignores the host import result; the failure must stay a
+	// fail-closed response with no transport call, never a panic.
+	if _, err := runner.Extract(context.Background(), pack, ExtractInput{URL: "https://share.fixture.invalid/s/abc"}); err != nil {
+		t.Fatalf("Runner.Extract() error = %v, want no-panic fixture fallback", err)
+	}
+	if transport.Count() != 0 {
+		t.Fatalf("transport calls = %d, want 0", transport.Count())
+	}
+}
+
+func TestBrowserContextFingerprintIgnoresPackSideExtendedInputs(t *testing.T) {
+	bc := grantBrokerContext(liveBrokerGrant(grantBrokerTarget, "GET",
+		BrowserHeader{Name: "x-fixture-token", Value: grantSecretB},
+	))
+	fingerprint := BrowserContextFingerprint(bc)
+	if fingerprint == "" {
+		t.Fatal("BrowserContextFingerprint() = empty for a grant-bearing context")
+	}
+	ctx := WithBrowserContext(context.Background(), bc)
+	transport := &hostImportRecordingTransport{statusCode: http.StatusOK, body: "ok"}
+	broker := testHTTPBroker(transport, nil)
+
+	// Two different extended requests on the same browser context must not
+	// perturb the fingerprint: it only binds browser-owned state.
+	for _, request := range []HTTPFetchRequest{
+		{PackID: "xpk-fixture01", Manifest: extendedBrokerManifest(), Method: http.MethodPost, URL: "https://api.fixture.invalid/one", Headers: map[string]string{"Authorization": "Bearer a-secret"}},
+		{PackID: "xpk-fixture01", Manifest: extendedBrokerManifest(), Method: http.MethodPost, URL: "https://api.fixture.invalid/two", Headers: map[string]string{"Content-Type": "application/json"}, Body: []byte(`{"k":2}`)},
+	} {
+		if _, err := broker.Fetch(ctx, request); err != nil {
+			t.Fatalf("Fetch() error = %v", err)
+		}
+	}
+	if got := BrowserContextFingerprint(browserContextFromContext(ctx)); got != fingerprint {
+		t.Fatalf("BrowserContextFingerprint() changed after extended fetches: %q → %q", fingerprint, got)
+	}
+}
+
 func TestRunnerNoImportFixturesStillPass(t *testing.T) {
 	pack := verifiedRunnerPack(t, validRunnerFixtureWASM(), nil)
 	runner := NewRunnerWithConfig(RunnerConfig{})

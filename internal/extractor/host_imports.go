@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/tetratelabs/wazero"
@@ -18,6 +20,7 @@ import (
 const (
 	maxHostImportRequestBytes  = 64 * 1024
 	maxHostImportResponseBytes = 2 * 1024 * 1024
+	maxExtendedFetchBodyBytes  = 16 * 1024
 )
 
 type RunnerConfig struct {
@@ -39,6 +42,7 @@ type HostHTTPFetchRequest struct {
 	EndpointRef      string            `json:"endpoint_ref,omitempty"`
 	Params           map[string]string `json:"params,omitempty"`
 	Headers          map[string]string `json:"headers,omitempty"`
+	BodyBase64       string            `json:"body_base64,omitempty"`
 	AuthProfileRef   string            `json:"auth_profile_ref,omitempty"`
 	TimeoutMillis    int               `json:"timeout_millis,omitempty"`
 	MaxResponseBytes int64             `json:"max_response_bytes,omitempty"`
@@ -132,6 +136,10 @@ func (b *hostImportBridge) executeHTTPFetch(ctx context.Context, requestBytes []
 	if request.MaxResponseBytes < 0 {
 		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "invalid_request", Message: "max_response_bytes must not be negative"}, b.responseCap())
 	}
+	method, body, wantsExtended, err := validateExtendedFetchShape(request)
+	if err != nil {
+		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
+	}
 	mode, params, err := determineHostImportRequestMode(b.manifest, hostImportModeFields{
 		URL:             request.URL,
 		BrokerPolicyRef: request.BrokerPolicyRef,
@@ -146,7 +154,11 @@ func (b *hostImportBridge) executeHTTPFetch(ctx context.Context, requestBytes []
 	}
 
 	if mode == hostImportModeAliasRef {
-		return b.executeHTTPFetchRefMode(ctx, request, params)
+		return b.executeHTTPFetchRefMode(ctx, request, params, body, wantsExtended)
+	}
+
+	if wantsExtended && !ManifestHasCapability(b.manifest, CapabilityHTTPFetchExtended) {
+		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "policy_denied", Message: "extended fetch features require the extended fetch capability"}, b.responseCap())
 	}
 
 	var timeout time.Duration
@@ -157,9 +169,10 @@ func (b *hostImportBridge) executeHTTPFetch(ctx context.Context, requestBytes []
 		PackID:           b.packID,
 		Manifest:         b.manifest,
 		PackIdentity:     b.packIdentity,
-		Method:           request.Method,
+		Method:           method,
 		URL:              request.URL,
 		Headers:          request.Headers,
+		Body:             body,
 		AuthProfileID:    AuthProfileID(request.AuthProfileRef),
 		Timeout:          timeout,
 		MaxResponseBytes: request.MaxResponseBytes,
@@ -181,7 +194,7 @@ func (b *hostImportBridge) executeHTTPFetch(ctx context.Context, requestBytes []
 	}, b.responseCap())
 }
 
-func (b *hostImportBridge) executeHTTPFetchRefMode(ctx context.Context, request HostHTTPFetchRequest, params map[string]string) []byte {
+func (b *hostImportBridge) executeHTTPFetchRefMode(ctx context.Context, request HostHTTPFetchRequest, params map[string]string, body []byte, wantsExtended bool) []byte {
 	policy, err := resolveAliasHostPolicy(ctx, b.effectiveHostPolicyResolver(), b.packIdentity, b.manifest)
 	if err != nil {
 		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "policy_denied", Message: "alias host policy denied request"}, b.responseCap())
@@ -193,6 +206,9 @@ func (b *hostImportBridge) executeHTTPFetchRefMode(ctx context.Context, request 
 	method, endpointTimeoutMillis, endpointMaxResponseBytes, err := validateHostPolicyEndpointRequest(endpoint, request.Method, AuthProfileID(request.AuthProfileRef), b.manifest, b.httpBroker.policy)
 	if err != nil {
 		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "policy_denied", Message: RedactSensitive(err.Error())}, b.responseCap())
+	}
+	if wantsExtended && (!ManifestHasCapability(b.manifest, CapabilityHTTPFetchExtended) || !policyAllowsCapability(policy, CapabilityHTTPFetchExtended)) {
+		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "policy_denied", Message: "extended fetch features are not allowed by host policy"}, b.responseCap())
 	}
 	expandedURL, err := expandHostPolicyEndpointURL(policy, endpoint, params)
 	if err != nil {
@@ -212,6 +228,7 @@ func (b *hostImportBridge) executeHTTPFetchRefMode(ctx context.Context, request 
 		Method:           method,
 		URL:              expandedURL,
 		Headers:          request.Headers,
+		Body:             body,
 		AuthProfileID:    AuthProfileID(request.AuthProfileRef),
 		Timeout:          timeout,
 		MaxResponseBytes: maxResponseBytes,
@@ -554,4 +571,88 @@ func safeHeaderMap(headers http.Header) map[string][]string {
 	}
 
 	return safe
+}
+
+// validateExtendedFetchShape performs local-only checks that must happen
+// before mode dispatch: method normalization, strict body decoding, and the
+// shape rules that pin down whether the request needs the extended fetch
+// capability. Capability checks themselves stay inside the mode paths so
+// alias resolver call ordering is preserved.
+func validateExtendedFetchShape(request HostHTTPFetchRequest) (method string, body []byte, wantsExtended bool, err error) {
+	method, err = normalizeHostImportMethod(request.Method)
+	if err != nil {
+		return "", nil, false, err
+	}
+	body, err = decodeExtendedBody(request.BodyBase64)
+	if err != nil {
+		return "", nil, false, err
+	}
+	if len(body) > 0 {
+		if method != http.MethodPost {
+			return "", nil, false, errors.New("request body requires the POST method")
+		}
+		if !extendedBodyContentTypeOK(request.Headers) {
+			return "", nil, false, errors.New("request body requires a single application/json or application/x-www-form-urlencoded content type")
+		}
+	}
+	wantsExtended = requestUsesExtendedFetch(method, request.Headers, len(body) > 0)
+	if wantsExtended && request.AuthProfileRef != "" {
+		return "", nil, false, errors.New("extended fetch request must not use an auth profile")
+	}
+
+	return method, body, wantsExtended, nil
+}
+
+func decodeExtendedBody(encoded string) ([]byte, error) {
+	if encoded == "" {
+		return nil, nil
+	}
+	body, err := base64.StdEncoding.Strict().DecodeString(encoded)
+	if err != nil {
+		return nil, errors.New("body_base64 is not valid padded base64")
+	}
+	if len(body) > maxExtendedFetchBodyBytes {
+		return nil, fmt.Errorf("body_base64 exceeds the %d byte decoded cap", maxExtendedFetchBodyBytes)
+	}
+
+	return body, nil
+}
+
+func requestUsesExtendedFetch(method string, headers map[string]string, hasBody bool) bool {
+	if method == http.MethodPost || hasBody {
+		return true
+	}
+	for name := range headers {
+		if packHeaderNeedsExtended(http.CanonicalHeaderKey(strings.TrimSpace(name))) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func extendedBodyContentTypeOK(headers map[string]string) bool {
+	found := 0
+	value := ""
+	for name, headerValue := range headers {
+		if http.CanonicalHeaderKey(strings.TrimSpace(name)) == "Content-Type" {
+			found++
+			value = headerValue
+		}
+	}
+
+	return found == 1 && isExtendedBodyContentTypeAllowed(value)
+}
+
+func isExtendedBodyContentTypeAllowed(value string) bool {
+	mediaType, _, err := mime.ParseMediaType(value)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(mediaType) {
+	case "application/json", "application/x-www-form-urlencoded":
+		return true
+	default:
+		return false
+	}
 }

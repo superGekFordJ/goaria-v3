@@ -18,9 +18,10 @@ func DefaultTrustPolicy() TrustPolicy {
 	return TrustPolicy{
 		CurrentABIVersion: CurrentABIVersion,
 		AllowedCapabilities: map[Capability]struct{}{
-			CapabilityParseWASM:   {},
-			CapabilityHTTPFetch:   {},
-			CapabilityAuthProfile: {},
+			CapabilityParseWASM:         {},
+			CapabilityHTTPFetch:         {},
+			CapabilityHTTPFetchExtended: {},
+			CapabilityAuthProfile:       {},
 		},
 		MaxResourceLimits: ResourceLimits{
 			TimeoutMillis:    10_000,
@@ -79,7 +80,9 @@ func validateDomainPolicyMode(manifest Manifest) error {
 	hasDomains := len(manifest.Domains) > 0
 	hasDomainRefs := len(manifest.DomainPolicyRefs) > 0
 	hasBrokerRefs := len(manifest.BrokerPolicyRefs) > 0
-	requiresBrokerRefs := ManifestHasCapability(manifest, CapabilityHTTPFetch) || ManifestHasCapability(manifest, CapabilityAuthProfile)
+	requiresBrokerRefs := ManifestHasCapability(manifest, CapabilityHTTPFetch) ||
+		ManifestHasCapability(manifest, CapabilityHTTPFetchExtended) ||
+		ManifestHasCapability(manifest, CapabilityAuthProfile)
 
 	if hasDomains {
 		if hasDomainRefs || hasBrokerRefs {
@@ -228,6 +231,11 @@ func validateCapabilities(capabilities []Capability, allowed map[Capability]stru
 
 		if _, ok := allowed[capability]; !ok {
 			return fmt.Errorf("capability %q is not allowed", capability)
+		}
+	}
+	if _, ok := seen[CapabilityHTTPFetchExtended]; ok {
+		if _, basic := seen[CapabilityHTTPFetch]; !basic {
+			return fmt.Errorf("capability %q requires %q", CapabilityHTTPFetchExtended, CapabilityHTTPFetch)
 		}
 	}
 

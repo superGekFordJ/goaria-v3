@@ -350,23 +350,24 @@ func TestHTTPBrokerOpaqueContentEncodingFailsClosed(t *testing.T) {
 
 func TestHTTPBrokerGrantRejectsPackHeaderCollision(t *testing.T) {
 	transport := &recordingTransport{}
-	policy := testHTTPPolicy()
-	// x-fixture-flag survives validatePackHeaders (no secret-name substring, not
-	// forbidden, allowlisted here) so the grant collision check is what fires.
-	policy.AllowedRequestHeaders["X-Fixture-Flag"] = struct{}{}
-	broker := NewHTTPBroker(HTTPBrokerConfig{Policy: policy, Transport: transport})
+	broker := testHTTPBroker(transport, nil)
 	ctx := WithBrowserContext(t.Context(), grantBrokerContext(liveBrokerGrant(grantBrokerTarget, "GET",
 		BrowserHeader{Name: "x-fixture-flag", Value: grantSecretB},
 	)))
+	manifest := alphaCookieManifest()
+	manifest.Capabilities = append(manifest.Capabilities, CapabilityHTTPFetchExtended)
 	req := grantFetchRequest()
+	req.Manifest = manifest
 	req.Headers = map[string]string{"x-fixture-flag": "pack-owned"}
 
 	_, err := broker.Fetch(ctx, req)
 	if err == nil {
-		t.Fatal("Fetch() error = nil, want grant/pack header collision rejection")
+		t.Fatal("Fetch() error = nil, want grant/extended mutual-exclusion rejection")
 	}
-	if err.Error() != "grant-scoped header collides with pack header" {
-		t.Fatalf("error = %q, want the collision check, not earlier header validation", err.Error())
+	// The extended channel can never become grant-scoped: the hop-level guard
+	// fires before the pack/grant header collision scan it subsumes.
+	if err.Error() != "grant-scoped request must not use extended fetch features" {
+		t.Fatalf("error = %q, want the grant/extended mutex guard", err.Error())
 	}
 	if transport.Count() != 0 {
 		t.Fatalf("transport calls = %d, want 0 (reject before transport)", transport.Count())

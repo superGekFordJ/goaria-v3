@@ -27,7 +27,7 @@ func TestPackABIConstantsMatchFrozenContract(t *testing.T) {
 	if HostImportModule != "goaria_host" || HostImportHTTPFetch != "http_fetch" || HostImportAuthProfileStatus != "auth_profile_status" {
 		t.Fatalf("host import names = %q/%q/%q", HostImportModule, HostImportHTTPFetch, HostImportAuthProfileStatus)
 	}
-	if CapabilityParseWASM != "cap.parse.wasm" || CapabilityHTTPFetch != "cap.http.fetch" || CapabilityAuthProfile != "cap.auth.profile" {
+	if CapabilityParseWASM != "cap.parse.wasm" || CapabilityHTTPFetch != "cap.http.fetch" || CapabilityHTTPFetchExtended != "cap.http.fetch.extended" || CapabilityAuthProfile != "cap.auth.profile" {
 		t.Fatalf("capability constants drifted")
 	}
 }
@@ -57,10 +57,11 @@ func TestPackABIJSONShapesUseStableSnakeCase(t *testing.T) {
 		Method:           "GET",
 		URL:              "https://api.fixture.invalid/resolve/fixture-item",
 		Headers:          map[string]string{"Accept": "application/json"},
+		BodyBase64:       "e30=",
 		AuthProfileRef:   "fixture-auth",
 		TimeoutMillis:    100,
 		MaxResponseBytes: 512,
-	}, []string{`"method"`, `"url"`, `"headers"`, `"auth_profile_ref"`, `"timeout_millis"`, `"max_response_bytes"`})
+	}, []string{`"method"`, `"url"`, `"headers"`, `"body_base64"`, `"auth_profile_ref"`, `"timeout_millis"`, `"max_response_bytes"`})
 	assertJSONAbsent(t, HostHTTPFetchRequest{
 		Method:           "GET",
 		BrokerPolicyRef:  "bpr-alpha001",

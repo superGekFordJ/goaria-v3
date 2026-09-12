@@ -58,6 +58,16 @@ func TestPreflightWASMModuleWithApprovedHostImports(t *testing.T) {
 		}
 	})
 
+	t.Run("http_fetch with basic and extended capabilities", func(t *testing.T) {
+		// Extended fetch is a request-shape capability: the http_fetch import
+		// itself still only requires cap.http.fetch at preflight time.
+		wasm := httpFetchImportFixtureWASM(`{"url":"https://example.invalid","method":"POST"}`)
+		pack := testVerifiedPack(wasm, []Capability{CapabilityParseWASM, CapabilityHTTPFetch, CapabilityHTTPFetchExtended})
+		if err := PreflightWASMModule(context.Background(), pack); err != nil {
+			t.Fatalf("PreflightWASMModule() error: %v", err)
+		}
+	})
+
 	t.Run("http_fetch without capability", func(t *testing.T) {
 		wasm := httpFetchImportFixtureWASM(`{"url":"https://example.invalid"}`)
 		pack := testVerifiedPack(wasm, []Capability{CapabilityParseWASM})
