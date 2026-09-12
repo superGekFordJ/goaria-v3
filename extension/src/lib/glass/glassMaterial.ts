@@ -296,7 +296,10 @@ function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, be
   const radius = parseFloat(style.borderTopLeftRadius) || Math.min(w, h) / 2
   const minDim = Math.min(w, h)
   const bezel = Math.min(Math.max(2, params.bezel * bezelMul), minDim * 0.5)
-  const dpr = Math.min(window.devicePixelRatio || 1, 2)
+  // Map is blurred before sampling — device-pixel fidelity is invisible.
+  // dpr=1 halves the SDF loop and the synchronous toDataURL encode, which run
+  // on the host page's main thread (content scripts share it).
+  const dpr = Math.min(window.devicePixelRatio || 1, 1)
 
   const g = entry.geom
   if (g.w !== w || g.h !== h || g.bezel !== bezel || g.radius !== radius || g.dpr !== dpr) {
