@@ -208,6 +208,11 @@ func TestHTTPBrokerExtendedBusinessXHeadersReachWire(t *testing.T) {
 		"X-Website-Token": "fixture-website-token",
 		"X-Api-Key":       "fixture-api-key",
 		"X-Foo":           "fixture-foo",
+		// Generic identity-sounding names stay allowed: no dominant
+		// machine-asserting convention, and they are plausible business headers.
+		"X-User":     "fixture-user",
+		"X-Username": "fixture-username",
+		"X-Uid":      "fixture-uid",
 	}
 
 	if _, err := broker.Fetch(context.Background(), req); err != nil {
@@ -217,6 +222,9 @@ func TestHTTPBrokerExtendedBusinessXHeadersReachWire(t *testing.T) {
 		"X-Website-Token": "fixture-website-token",
 		"X-Api-Key":       "fixture-api-key",
 		"X-Foo":           "fixture-foo",
+		"X-User":          "fixture-user",
+		"X-Username":      "fixture-username",
+		"X-Uid":           "fixture-uid",
 	} {
 		if got := seen.Get(name); got != want {
 			t.Fatalf("header %s = %q, want %q", name, got, want)
@@ -234,6 +242,15 @@ func TestHTTPBrokerExtendedRejectsDeniedXHeaderNames(t *testing.T) {
 		"X-Rewrite-Url", "X-Rewrite-Url-Path", "X-Host", "X-Client-Ip",
 		"X-Client-Hostname", "X-Remote-Addr", "X-Remote-Ip", "X-Originating-Ip",
 		"X-Cluster-Client-Ip", "X-Real-Host", "X-Scheme",
+		"X-Remote-User", "X-Remote-Host", "X-Remote-Port",
+		"X-Ssl-Client-Verify", "X-Ssl-Client-S-Dn", "X-Ssl-Client-Cert",
+		"X-Client-Cert", "X-Client-Cert-Dn", "X-Client-Dn",
+		"X-Auth-Request-User", "X-Auth-Request-Email", "X-Auth-Request-Groups",
+		"X-Auth-Request-Access-Token", "X-Auth-User",
+		"X-Ms-Client-Principal", "X-Ms-Client-Principal-Id", "X-Ms-Client-Principal-Name",
+		"X-Envoy-External-Address", "X-Envoy-Original-Path", "X-Envoy-Internal",
+		"X-Arr-Ssl", "X-Arr-Clientcert",
+		"X-Authenticated-User", "X-Authenticated-Userid",
 	} {
 		t.Run(name, func(t *testing.T) {
 			transport := &recordingTransport{}

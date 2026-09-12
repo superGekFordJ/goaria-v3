@@ -258,7 +258,7 @@ func TestValidateBrowserHeaderGrants_Invalid(t *testing.T) {
 
 	for _, denied := range []string{
 		"x-real-ip", "x-real-host", "x-client-ip", "x-client-hostname",
-		"x-cluster-client-ip", "x-remote-addr", "x-remote-ip", "x-originating-ip",
+		"x-cluster-client-ip", "x-originating-ip",
 		"x-scheme", "x-forwarded", "x-host",
 	} {
 		cases = append(cases, table{name: "denied exact " + denied, mutate: func(s *BrowserHeaderGrantSpec) {
@@ -271,6 +271,14 @@ func TestValidateBrowserHeaderGrants_Invalid(t *testing.T) {
 		"x-original-path", "x-original-method", "x-original-uri",
 		"x-original-remote-addr", "x-original-scheme", "x-original-forwarded-for",
 		"x-rewrite-url", "x-rewrite-url-path",
+		"x-remote-addr", "x-remote-ip", "x-remote-user", "x-remote-host", "x-remote-port",
+		"x-ssl-client-verify", "x-ssl-client-s-dn", "x-ssl-client-cert",
+		"x-client-cert", "x-client-cert-dn", "x-client-dn",
+		"x-auth-request-user", "x-auth-request-email", "x-auth-request-groups",
+		"x-auth-request-access-token", "x-auth-user", "x-auth-userid",
+		"x-ms-client-principal", "x-ms-client-principal-id", "x-ms-client-principal-name",
+		"x-envoy-external-address", "x-envoy-original-path", "x-envoy-internal",
+		"x-arr-ssl", "x-authenticated-user", "x-authenticated-email",
 		"x-proxy-auth", "x-goaria-internal", "x-override-anything",
 	} {
 		cases = append(cases, table{name: "denied prefix " + denied, mutate: func(s *BrowserHeaderGrantSpec) {

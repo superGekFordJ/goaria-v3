@@ -40,20 +40,31 @@ var deniedBrowserGrantHeaderExact = map[string]struct{}{
 	"x-client-ip":         {},
 	"x-client-hostname":   {},
 	"x-cluster-client-ip": {},
-	"x-remote-addr":       {},
-	"x-remote-ip":         {},
 	"x-originating-ip":    {},
 	"x-scheme":            {},
 	"x-forwarded":         {},
 	"x-host":              {},
 }
 
+// Prefixes deliberately include or omit the trailing dash: bare x-client-cert,
+// x-client-dn, x-auth-user, and x-ms-client-principal are themselves asserted
+// names, so those prefixes cover the bare form plus every suffixed variant.
 var deniedBrowserGrantHeaderPrefixes = []string{
 	"x-forwarded-",
 	"x-http-method",
 	"x-method-override",
 	"x-original-",
 	"x-rewrite-",
+	"x-remote-",
+	"x-ssl-client-",
+	"x-client-cert",
+	"x-client-dn",
+	"x-auth-request-",
+	"x-authenticated-",
+	"x-auth-user",
+	"x-ms-client-principal",
+	"x-envoy-",
+	"x-arr-",
 	"x-proxy-",
 	"x-goaria-",
 	"x-override-",
