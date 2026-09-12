@@ -115,11 +115,15 @@
 
     void downloadGroupStore.fetchGroups()
 
-    // Warm up liquid glass SVG filters and shaders during initial idle period
-    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
-      window.requestIdleCallback(() => warmupLiquidGlassPipeline(), { timeout: 600 })
+    // Warm up liquid glass SVG filters and shaders right after first paint —
+    // an idle deadline can slip past TaskList init churn, and a click that
+    // lands before the maps bake pays the SDF+encode cost inside the INP window
+    if (typeof window !== 'undefined' && 'requestAnimationFrame' in window) {
+      window.requestAnimationFrame(() =>
+        window.requestAnimationFrame(() => warmupLiquidGlassPipeline()),
+      )
     } else {
-      setTimeout(() => warmupLiquidGlassPipeline(), 300)
+      setTimeout(() => warmupLiquidGlassPipeline(), 100)
     }
   })
 

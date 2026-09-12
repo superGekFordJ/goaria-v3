@@ -75,8 +75,11 @@
   let mapBucket = -1
   let railWidth = 0
   let ro: ResizeObserver | null = null
+  let prebakeTimer: ReturnType<typeof setTimeout> | null = null
   const mapCache = new Map<string, { blurX: number; blurY: number; url: string }>()
-  const mapDpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1))
+  /* DPR 1 is enough: the SDF field is smooth and gets blurred by f-map-blur
+   * before sampling, so device-res maps buy nothing but 4x the bake cost. */
+  const mapDpr = 1
 
   let currentW = THUMB_W
   let currentH = THUMB_H
@@ -255,13 +258,16 @@
     if (!SUPPORTS_URL_FILTER || !fMap || !fMapBlur) return
     const bucket = Math.round(Math.min(0.32, Math.abs(shapeDef)) / 0.025) * 0.025
     if (bucket === mapBucket) return
-    mapBucket = bucket
     const key = bucket.toFixed(3)
     let entry = mapCache.get(key)
     if (!entry) {
-      // If not yet baked, get or create immediately
+      /* At rest the displacement scale is 0, so the map is never sampled —
+       * skip the synchronous canvas build during mount. prebakeBuckets() fills
+       * the cache during idle; first press builds on demand. */
+      if (!pressed && p < 0.002) return
       entry = getOrCreateEntry(bucket)
     }
+    mapBucket = bucket
     fMapBlur.setAttribute('stdDeviation', `${entry.blurX} ${entry.blurY}`)
     if (entry.url) {
       fMap.setAttribute('href', entry.url)
@@ -441,25 +447,30 @@
   )
 
   onMounted(() => {
-    if (railRef.value) {
-      railWidth = railRef.value.getBoundingClientRect().width
-      ro = new ResizeObserver(entries => {
-        if (entries[0]) {
-          railWidth = entries[0].contentRect.width
-          if (!raf) applyStyles()
-        }
-      })
-      ro.observe(railRef.value)
-    }
+    /* railWidth comes from the RO initial notification (post-layout) — a
+     * getBoundingClientRect here would force a synchronous layout mid-mount. */
+    ro = new ResizeObserver(entries => {
+      if (entries[0]) {
+        railWidth = entries[0].contentRect.width
+        if (!raf) applyStyles()
+      }
+    })
+    if (railRef.value) ro.observe(railRef.value)
 
     ensureFilter()
     render()
     applyLens()
-    prebakeBuckets()
+    /* Defer bucket baking past the panel's first-paint window so the canvas
+     * work can't extend the opening interaction's latency. */
+    prebakeTimer = setTimeout(prebakeBuckets, 700)
   })
 
   onBeforeUnmount(() => {
     isUnmounted = true
+    if (prebakeTimer) {
+      clearTimeout(prebakeTimer)
+      prebakeTimer = null
+    }
     if (ro) ro.disconnect()
     if (raf) cancelAnimationFrame(raf)
     mapBucket = -1

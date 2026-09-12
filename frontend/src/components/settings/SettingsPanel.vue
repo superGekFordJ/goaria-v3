@@ -49,23 +49,31 @@
   const { t } = useI18n()
   const configStore = useConfigStore()
 
-  const formData = ref({
-    download_dir: '',
-    rpc_port: '',
-    rpc_secret: '',
-    max_connections: '',
-    max_concurrent_downloads: '',
-    user_agent: '',
-    show_history: false,
-    window_transparency: 'none',
-    smart_thread_mode: false,
+  const toFormData = (snapshot: AppConfig) => ({
+    download_dir: snapshot.download_dir || '',
+    rpc_port: String(snapshot.rpc_port || ''),
+    rpc_secret: snapshot.rpc_secret || '',
+    max_connections: String(snapshot.max_connections || ''),
+    max_concurrent_downloads: String(snapshot.max_concurrent_downloads || ''),
+    user_agent: snapshot.user_agent || '',
+    show_history: Boolean(snapshot.show_history),
+    window_transparency: snapshot.window_transparency || 'none',
+    smart_thread_mode: Boolean(snapshot.smart_thread_mode),
   })
+
+  /* Prefill from the already-hydrated store so bound values land while the
+   * subtree is still detached — patching `value`/`checked` onto attached
+   * inputs later forces a synchronous layout per control (Blink eagerly
+   * updates the inner text control). */
+  const formData = ref(
+    configStore.isHydrated ? toFormData(configStore.settings) : toFormData(new AppConfig()),
+  )
 
   type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
   const saveStatus = ref<SaveStatus>('idle')
   let saveTimeout: ReturnType<typeof setTimeout> | null = null
   let statusResetTimeout: ReturnType<typeof setTimeout> | null = null
-  let isInitializedFromBackend = false
+  let isInitializedFromBackend = configStore.isHydrated
   let isApplyingCanonical = false
   let applyGeneration = 0
   let editGeneration = 0
@@ -101,17 +109,7 @@
   const syncForm = (snapshot: AppConfig) => {
     const generation = ++applyGeneration
     isApplyingCanonical = true
-    formData.value = {
-      download_dir: snapshot.download_dir || '',
-      rpc_port: String(snapshot.rpc_port || ''),
-      rpc_secret: snapshot.rpc_secret || '',
-      max_connections: String(snapshot.max_connections || ''),
-      max_concurrent_downloads: String(snapshot.max_concurrent_downloads || ''),
-      user_agent: snapshot.user_agent || '',
-      show_history: Boolean(snapshot.show_history),
-      window_transparency: snapshot.window_transparency || 'none',
-      smart_thread_mode: Boolean(snapshot.smart_thread_mode),
-    }
+    formData.value = toFormData(snapshot)
     void nextTick(() => {
       if (!disposed && generation === applyGeneration) {
         isApplyingCanonical = false
@@ -131,10 +129,12 @@
 
   onMounted(() => {
     scheduleStartNavigation()
-    if (configStore.isHydrated) {
-      hydrateFromStore()
-    } else {
-      previewPersistedSettings()
+    if (!isInitializedFromBackend) {
+      if (configStore.isHydrated) {
+        hydrateFromStore()
+      } else {
+        previewPersistedSettings()
+      }
     }
   })
 
@@ -350,7 +350,10 @@
     ]) {
       navigationObserver.observe(element)
     }
-    updateNavigation()
+    /* No synchronous updateNavigation() here: the RO initial notification for
+     * each observed element already routes through handleScroll → rAF. Reading
+     * geometry inside the mount frame's rAF would force a synchronous layout of
+     * the freshly inserted subtree. */
   }
 
   function stopNavigation() {
@@ -592,6 +595,10 @@
   [data-settings-section] {
     scroll-margin-top: 62px;
     border-radius: var(--radius-squircle-lg);
+    /* Off-screen sections skip layout/paint on first mount; the intrinsic
+     * estimate keeps the scrollbar stable until each real size is rendered. */
+    content-visibility: auto;
+    contain-intrinsic-size: auto 300px;
   }
 
   [data-settings-section]:focus-visible {

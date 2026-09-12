@@ -38,7 +38,9 @@ export const GLASS_PRESETS: Record<string, GlassParams> = {
 /* ================= SDF Displacement Map Generator =================
  * Rounded-rect SDF: center = neutral gray (no displacement);
  * rim band = inward displacement along SDF normal with circular lens profile.
- * R encodes dx, G encodes dy; 0.5 (128) is neutral. Encoded at half amplitude. */
+ * R encodes dx, G encodes dy; 0.5 (128) is neutral. Encoded at half amplitude.
+ * Maps are built at DPR 1 (callers clamp): the field is smooth, so feImage
+ * upscaling is visually lossless while cutting the O(W·H) pixel loop ~4x. */
 function canvasToBlobUrl(canvas: HTMLCanvasElement): Promise<string> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(blob => {
@@ -331,7 +333,7 @@ function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, be
   const radius = parseFloat(style.borderTopLeftRadius) || Math.min(w, h) / 2
   const minDim = Math.min(w, h)
   const bezel = Math.min(Math.max(2, params.bezel * bezelMul), minDim * 0.5)
-  const dpr = Math.min(window.devicePixelRatio || 1, 2)
+  const dpr = Math.min(window.devicePixelRatio || 1, 1)
 
   // Attrs are only safe when the bound map matches this geometry.
   if (entry.filter && geomEquals(entry.geom, w, h, bezel, radius, dpr)) {
@@ -439,10 +441,10 @@ export function useLiquidGlass(
     }
 
     registry.set(key, entry)
+    /* The RO initial notification (post-layout, pre-paint) performs the first
+     * measure — no rAF needed, and reading geometry there avoids forcing a
+     * synchronous layout inside the consumer's mount frame. */
     entry.ro.observe(layer)
-    requestAnimationFrame(() => {
-      if (entry) updateGlass(entry, params, dispMul, bezelMul)
-    })
   }
 
   function unregister() {
@@ -588,10 +590,17 @@ export function warmupLiquidGlassPipeline(): void {
       createGlassFilter(defs, warmupId)
     }
 
-    // 3. Trigger GPU shader compilation with an offscreen probe element.
+    // 3. Pre-bake the settings command-capsule geometries so first-open and
+    // first-expand hit the cache. Disposers are intentionally dropped — the
+    // entries stay pinned for the app's lifetime.
+    preloadDisplacementMap(164, 34, 17, 17) // docked: bezel clamps to minDim*0.5
+    preloadDisplacementMap(360, 228, 24, 24) // expanded, generic build (8 sections)
+    preloadDisplacementMap(360, 274, 24, 24) // expanded, extractor build (9 sections)
+
+    // 4. Trigger GPU shader compilation with an offscreen probe element.
     // The probe binds a real decoded map + nonzero displacement so the warmup
     // exercises the true pipeline instead of rasterizing an empty feImage.
-    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    const dpr = Math.min(window.devicePixelRatio || 1, 1)
     acquireDisplacementMap(32, 32, 8, 8, dpr)
       .then(url => {
         const filter = document.getElementById(warmupId)
@@ -625,7 +634,7 @@ export function preloadDisplacementMap(
   bezel: number,
 ): () => void {
   if (typeof window === 'undefined' || !supportsUrlBackdropFilter()) return () => {}
-  const dpr = Math.min(window.devicePixelRatio || 1, 2)
+  const dpr = Math.min(window.devicePixelRatio || 1, 1)
   const key = getMapCacheKey(w, h, radius, bezel, dpr)
   let released = false
   acquireDisplacementMap(w, h, radius, bezel, dpr)
