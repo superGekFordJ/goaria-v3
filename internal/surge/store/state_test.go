@@ -819,7 +819,7 @@ func TestValidateIntegrity_ValidFile(t *testing.T) {
 		Filename: "valid.zip",
 		FileHash: expectedHash,
 	}
-	ds := DetailState{Version: 1, State: state}
+	ds := legacyDetailState{Version: 1, State: state}
 	_ = atomicWrite(getDetailPath(tmpDir, "integrity-valid"), ds)
 
 	// Run integrity check - file exists with matching hash, should keep it
@@ -875,7 +875,7 @@ func TestValidateIntegrity_TamperedFile(t *testing.T) {
 		Filename: "tampered.zip",
 		FileHash: "0000000000000000000000000000000000000000000000000000000000000000",
 	}
-	ds := DetailState{Version: 1, State: state}
+	ds := legacyDetailState{Version: 1, State: state}
 	_ = atomicWrite(getDetailPath(tmpDir, "integrity-tampered"), ds)
 
 	// Run integrity check - hash mismatch, entry AND file should be removed

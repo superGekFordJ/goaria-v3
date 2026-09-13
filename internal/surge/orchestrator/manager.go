@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	neturl "net/url"
 	"os"
@@ -399,6 +400,37 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 			SkipServerProbe:      cfg.SkipServerProbe,
 		}); err != nil {
 			utils.Debug("Lifecycle: Failed to persist queued download synchronously: %v", err)
+		}
+		// FORK-PATCH: seed a minimal detail gob when the request carries
+		// headers or mirrors — credentials must survive a kill before the
+		// first worker snapshot. SkipFileHash is required: hashing the
+		// precreated 0-byte .surge would plant a hash ValidateIntegrity
+		// later flags as tampering, deleting the file plus master/detail
+		// state. Best-effort: enqueue must not fail on it.
+		if len(req.Headers) > 0 || len(req.Mirrors) > 0 {
+			mirrors := queuedEvent.Mirrors
+			if len(mirrors) == 0 {
+				mirrors = []string{req.URL}
+			}
+			if err := store.SaveStateWithOptions(queuedEvent.URL, queuedEvent.DestPath, &types.DownloadRecord{
+				ID:                   cfg.ID,
+				URL:                  queuedEvent.URL,
+				URLHash:              store.URLHash(queuedEvent.URL),
+				DestPath:             queuedEvent.DestPath,
+				Filename:             queuedEvent.Filename,
+				Status:               "queued",
+				TotalSize:            cfg.TotalSize,
+				Mirrors:              append([]string(nil), mirrors...),
+				RateLimit:            queuedEvent.RateLimit,
+				RateLimitSet:         queuedEvent.RateLimitSet,
+				Workers:              queuedEvent.Workers,
+				MinChunkSize:         queuedEvent.MinChunkSize,
+				RangeAcquisitionMode: cfg.RangeAcquisitionMode,
+				SkipServerProbe:      cfg.SkipServerProbe,
+				Headers:              maps.Clone(req.Headers),
+			}, store.SaveStateOptions{SkipFileHash: true}); err != nil {
+				utils.Debug("Lifecycle: failed to persist queued detail state: %v", err)
+			}
 		}
 		if mgr.eventBus != nil {
 			_ = mgr.eventBus.Publish(queuedEvent)

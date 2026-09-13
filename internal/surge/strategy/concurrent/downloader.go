@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"os"
@@ -530,6 +531,11 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 
 	// Load saved state early to determine remaining size for connection count heuristic
 	savedState, err := store.LoadState(d.URL, destPath)
+	// FORK-PATCH: cold-resume header fallback — detail state is the credential
+	// store; a non-empty runtime map always wins.
+	if len(d.Headers) == 0 && savedState != nil && len(savedState.Headers) > 0 {
+		d.Headers = maps.Clone(savedState.Headers)
+	}
 	isResume := err == nil && savedState != nil && len(savedState.Tasks) > 0
 
 	effectiveSizeForWorkers := d.getEffectiveSizeForWorkers(fileSize, savedState, isResume)
@@ -1256,6 +1262,9 @@ func (d *ConcurrentDownloader) persistRangeSupportedBeforeWrite() error {
 		MinChunkSize:         minChunkSize,
 		RangeAcquisitionMode: types.RangeAcquireRangeSupported,
 		SkipServerProbe:      d.SkipServerProbe,
+		// FORK-PATCH: persist request headers (credential store is the detail
+		// gob); clone so later live-map mutation can't corrupt the snapshot.
+		Headers: maps.Clone(d.Headers),
 	}
 	if d.State != nil {
 		s.RateLimit, s.RateLimitSet = d.State.GetRateLimit()
@@ -1437,6 +1446,9 @@ func (d *ConcurrentDownloader) saveStateSnapshot(destPath string, fileSize int64
 		MinChunkSize:         minChunkSize,
 		RangeAcquisitionMode: d.RangeAcquisitionMode,
 		SkipServerProbe:      d.SkipServerProbe,
+		// FORK-PATCH: persist request headers (credential store is the detail
+		// gob); clone so later live-map mutation can't corrupt the snapshot.
+		Headers: maps.Clone(d.Headers),
 	}
 
 	if emitPauseEvent {

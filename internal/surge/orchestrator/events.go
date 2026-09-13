@@ -410,8 +410,10 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 			if err := store.AddToMasterList(entry); err != nil {
 				utils.Debug("Lifecycle: Failed to persist completed download: %v", err)
 			}
-			if err := store.DeleteTasks(m.DownloadID); err != nil {
-				utils.Debug("Lifecycle: Failed to delete completed tasks: %v", err)
+			// FORK-PATCH: completed downloads keep no detail — the gob may
+			// carry persisted request headers and must not linger.
+			if err := store.DeleteDetail(m.DownloadID); err != nil {
+				utils.Debug("Lifecycle: Failed to delete completed detail state: %v", err)
 			}
 			if settings := mgr.GetSettings(); settings != nil && config.Resolve[bool](settings.General.DownloadCompleteNotification) {
 				if filename == "" {

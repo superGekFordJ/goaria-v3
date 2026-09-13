@@ -36,9 +36,112 @@ type MasterState struct {
 	Downloads []types.DownloadRecord
 }
 
+// persistedDetailRecord is the detail-gob wire shape: an explicit whitelist
+// projection of types.DownloadRecord. Field names and types must stay
+// identical to DownloadRecord — gob matches fields by name both directions,
+// so old files (which embedded DownloadRecord directly) decode cleanly here
+// and new files still decode in older builds.
+// FORK-PATCH: detail state is the per-task credential store — Headers must
+// persist so cold resume can re-authenticate — while runtime-only fields
+// (ProgressState, Runtime, Limiter, ProgressCh, SupportsRange, IsResume,
+// OutputPath…) are structurally excluded and can never reach disk. This also
+// means an unregistered ProgressState can no longer fail the whole encode.
+type persistedDetailRecord struct {
+	ID                   string
+	URLHash              string
+	URL                  string
+	Filename             string
+	DestPath             string
+	Status               string
+	Error                string
+	TotalSize            int64
+	Downloaded           int64
+	Elapsed              int64
+	CreatedAt            int64
+	PausedAt             int64
+	Tasks                []types.Task
+	ChunkBitmap          []byte
+	ActualChunkSize      int64
+	FileHash             string
+	Mirrors              []string
+	RateLimit            int64
+	RateLimitSet         bool
+	Workers              int
+	MinChunkSize         int64
+	RangeAcquisitionMode types.RangeAcquisitionMode
+	SkipServerProbe      bool
+	Headers              map[string]string
+}
+
+func toPersisted(s *types.DownloadRecord) *persistedDetailRecord {
+	if s == nil {
+		return nil
+	}
+	return &persistedDetailRecord{
+		ID:                   s.ID,
+		URLHash:              s.URLHash,
+		URL:                  s.URL,
+		Filename:             s.Filename,
+		DestPath:             s.DestPath,
+		Status:               s.Status,
+		Error:                s.Error,
+		TotalSize:            s.TotalSize,
+		Downloaded:           s.Downloaded,
+		Elapsed:              s.Elapsed,
+		CreatedAt:            s.CreatedAt,
+		PausedAt:             s.PausedAt,
+		Tasks:                s.Tasks,
+		ChunkBitmap:          s.ChunkBitmap,
+		ActualChunkSize:      s.ActualChunkSize,
+		FileHash:             s.FileHash,
+		Mirrors:              s.Mirrors,
+		RateLimit:            s.RateLimit,
+		RateLimitSet:         s.RateLimitSet,
+		Workers:              s.Workers,
+		MinChunkSize:         s.MinChunkSize,
+		RangeAcquisitionMode: s.RangeAcquisitionMode,
+		SkipServerProbe:      s.SkipServerProbe,
+		Headers:              s.Headers,
+	}
+}
+
+func toRecord(s *persistedDetailRecord) *types.DownloadRecord {
+	if s == nil {
+		return nil
+	}
+	return &types.DownloadRecord{
+		ID:                   s.ID,
+		URLHash:              s.URLHash,
+		URL:                  s.URL,
+		Filename:             s.Filename,
+		DestPath:             s.DestPath,
+		Status:               s.Status,
+		Error:                s.Error,
+		TotalSize:            s.TotalSize,
+		Downloaded:           s.Downloaded,
+		Elapsed:              s.Elapsed,
+		CreatedAt:            s.CreatedAt,
+		PausedAt:             s.PausedAt,
+		Tasks:                s.Tasks,
+		ChunkBitmap:          s.ChunkBitmap,
+		ActualChunkSize:      s.ActualChunkSize,
+		FileHash:             s.FileHash,
+		Mirrors:              s.Mirrors,
+		RateLimit:            s.RateLimit,
+		RateLimitSet:         s.RateLimitSet,
+		Workers:              s.Workers,
+		MinChunkSize:         s.MinChunkSize,
+		RangeAcquisitionMode: s.RangeAcquisitionMode,
+		SkipServerProbe:      s.SkipServerProbe,
+		Headers:              s.Headers,
+	}
+}
+
+// DetailState is the detail-gob envelope, stored per download at
+// <baseDir>/details/<downloadID>.gob
 type DetailState struct {
 	Version int
-	State   *types.DownloadRecord
+	State   *persistedDetailRecord
 }
 
 func URLHash(url string) string {
@@ -97,7 +200,7 @@ func SaveStateWithOptions(url string, destPath string, state *types.DownloadReco
 
 	ds := DetailState{
 		Version: 2,
-		State:   state,
+		State:   toPersisted(state),
 	}
 
 	if err := ensureDirs(); err != nil {
@@ -271,7 +374,7 @@ func LoadState(url string, destPath string) (*types.DownloadRecord, error) {
 		ds.State.ChunkBitmap = []byte{}
 	}
 
-	return ds.State, nil
+	return toRecord(ds.State), nil
 }
 
 func LoadStates(ids []string) (map[string]*types.DownloadRecord, error) {
@@ -295,15 +398,15 @@ func LoadStates(ids []string) (map[string]*types.DownloadRecord, error) {
 			if ds.State.ChunkBitmap == nil {
 				ds.State.ChunkBitmap = []byte{}
 			}
-			states[id] = ds.State
+			states[id] = toRecord(ds.State)
 		}
 	}
 	return states, errors.Join(errs...)
 }
 
 // DeleteDetail removes only the detail gob for id (master list untouched).
-// Used when abandoning a concurrent zero-progress session before single-threaded
-// fallback so Resume cannot reload range Tasks that Truncate discarded.
+// Used on EventComplete so persisted credentials do not linger past
+// completion; pause/error paths keep the detail for resume.
 func DeleteDetail(id string) error {
 	masterMu.Lock()
 	defer masterMu.Unlock()
@@ -359,6 +462,41 @@ func DeleteTasks(id string) error {
 	return nil
 }
 
+// InvalidateResumeState drops the persisted resume payload (Tasks, bitmap,
+// chunk size, file hash) while keeping identity, credentials, and Mirrors.
+// RangeAcquisitionMode is cleared so a later cold resume follows the master
+// row's mode — buildResumeConfig prefers the detail mode, and a stale
+// range-supported/payload-first detail must not resurrect a strategy that
+// range→single fallback just proved wrong.
+// FORK-PATCH: used instead of DeleteDetail where credentials must survive;
+// deleting the detail would drop persisted Headers needed by the fallback.
+// Returns nil when no detail file exists.
+func InvalidateResumeState(id string) error {
+	masterMu.Lock()
+	defer masterMu.Unlock()
+
+	var ds DetailState
+	detailPath := getDetailPath(baseDir, id)
+	if err := loadGob(detailPath, &ds); err != nil {
+		if os.IsNotExist(err) {
+			return nil // nothing to invalidate
+		}
+		return fmt.Errorf("failed to load detail state: %w", err)
+	}
+	if ds.State == nil {
+		return nil
+	}
+	ds.State.Tasks = []types.Task{}
+	ds.State.ChunkBitmap = nil
+	ds.State.ActualChunkSize = 0
+	ds.State.FileHash = ""
+	ds.State.RangeAcquisitionMode = types.RangeAcquireProbeAtEnqueue
+	if err := atomicWrite(detailPath, ds); err != nil {
+		return fmt.Errorf("failed to invalidate resume state: %w", err)
+	}
+	return nil
+}
+
 func LoadMasterList() (*types.MasterList, error) {
 	masterMu.RLock()
 	defer masterMu.RUnlock()
@@ -390,6 +528,18 @@ func AddToMasterList(entry types.DownloadRecord) error {
 	if entry.Mirrors == nil {
 		entry.Mirrors = []string{}
 	}
+	// FORK-PATCH: master.gob is the global index — it must never carry
+	// per-task credentials or runtime-only fields. Scrub the value copy so
+	// Headers stay confined to details/<id>.gob, and an unregistered
+	// ProgressState can no longer fail the whole master write.
+	entry.Headers = nil
+	entry.ProgressState = nil
+	entry.ProgressCh = nil
+	entry.Runtime = nil
+	entry.Limiter = nil
+	entry.IsResume = false
+	entry.IsExplicitCategory = false
+	entry.SupportsRange = false
 
 	list, err := loadMasterListUnlocked()
 	if err != nil {
@@ -817,6 +967,31 @@ func ValidateIntegrity() (int, error) {
 			}
 			_ = utils.RemoveFile(surgePath)
 			utils.Debug("Integrity: removed orphan .surge file %s", surgePath)
+		}
+	}
+
+	// FORK-PATCH: sweep orphan detail gobs. A detail whose ID has no master
+	// row (e.g. RemoveFromMasterList without DeleteState) or whose row is
+	// completed has no consumer, yet may still carry persisted credentials.
+	// "error" rows keep theirs — the detail is the credential source for
+	// retry/resume. Uses the post-cleanup `list` so freshly removed entries
+	// count as absent.
+	detailsDir := filepath.Join(baseDir, "details")
+	if detailFiles, err := os.ReadDir(detailsDir); err == nil {
+		liveStatus := make(map[string]string, len(list.Downloads))
+		for _, e := range list.Downloads {
+			liveStatus[e.ID] = e.Status
+		}
+		for _, f := range detailFiles {
+			name := f.Name()
+			if f.IsDir() || strings.HasPrefix(name, ".tmp-") || !strings.HasSuffix(name, ".gob") {
+				continue
+			}
+			id := strings.TrimSuffix(name, ".gob")
+			if status, known := liveStatus[id]; !known || status == "completed" {
+				_ = utils.RemoveFile(filepath.Join(detailsDir, name))
+				utils.Debug("Integrity: removed orphan detail file %s", name)
+			}
 		}
 	}
 

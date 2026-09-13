@@ -50,8 +50,10 @@ func shouldFallbackToSingle(downloadErr error, downloaded int64, mode types.Rang
 }
 
 // abandonConcurrentResumeForSingleFallback clears in-memory pending resume
-// snapshot (via SessionReset) and deletes the detail gob so Truncate+single
-// cannot later re-SaveState abandoned concurrent range Tasks.
+// snapshot (via SessionReset) and invalidates the persisted range payload so
+// Truncate+single cannot later re-SaveState abandoned concurrent range Tasks.
+// FORK-PATCH: InvalidateResumeState (not DeleteDetail) — the detail gob is
+// the credential store and its Headers/Mirrors must survive the fallback.
 func abandonConcurrentResumeForSingleFallback(progState *progress.DownloadProgress, downloadID string) {
 	if progState != nil {
 		progState.SessionReset()
@@ -59,7 +61,7 @@ func abandonConcurrentResumeForSingleFallback(progState *progress.DownloadProgre
 	if downloadID == "" {
 		return
 	}
-	if err := store.DeleteDetail(downloadID); err != nil {
+	if err := store.InvalidateResumeState(downloadID); err != nil {
 		utils.Debug("Failed to invalidate concurrent detail on single fallback: %v", err)
 	}
 }

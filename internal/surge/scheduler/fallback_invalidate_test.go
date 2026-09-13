@@ -31,13 +31,16 @@ func TestAbandonConcurrentResumeForSingleFallback(t *testing.T) {
 	})
 
 	stale := &types.DownloadRecord{
-		ID:         id,
-		URL:        url,
-		DestPath:   destPath,
-		TotalSize:  1000,
-		Downloaded: 0,
-		Tasks:      []types.Task{{Offset: 0, Length: 1000}},
-		Filename:   filepath.Base(destPath),
+		ID:                   id,
+		URL:                  url,
+		DestPath:             destPath,
+		TotalSize:            1000,
+		Downloaded:           0,
+		Tasks:                []types.Task{{Offset: 0, Length: 1000}},
+		Filename:             filepath.Base(destPath),
+		RangeAcquisitionMode: types.RangeAcquireRangeSupported,
+		Mirrors:              []string{url, "http://mirror.example.com/fallback.bin"},
+		Headers:              map[string]string{"Cookie": "session=keepme"},
 	}
 	if err := store.SaveStateWithOptions(url, destPath, stale, store.SaveStateOptions{SkipFileHash: true}); err != nil {
 		t.Fatalf("SaveStateWithOptions: %v", err)
@@ -57,7 +60,25 @@ func TestAbandonConcurrentResumeForSingleFallback(t *testing.T) {
 	}
 
 	saved, err := store.LoadState(url, destPath)
-	if err == nil && saved != nil && len(saved.Tasks) > 0 {
-		t.Fatalf("LoadState revived abandoned concurrent Tasks: %+v", saved.Tasks)
+	if err != nil {
+		t.Fatalf("detail must survive fallback — it carries credentials: %v", err)
+	}
+	if len(saved.Tasks) > 0 {
+		t.Fatalf("abandoned concurrent Tasks must be cleared, got %+v", saved.Tasks)
+	}
+	if len(saved.ChunkBitmap) > 0 || saved.ActualChunkSize != 0 || saved.FileHash != "" {
+		t.Fatalf("resume payload must be cleared: bitmap=%v chunkSize=%d hash=%q",
+			saved.ChunkBitmap, saved.ActualChunkSize, saved.FileHash)
+	}
+	if saved.RangeAcquisitionMode != "" {
+		t.Fatalf("stale mode must be cleared so master row decides, got %q", saved.RangeAcquisitionMode)
+	}
+	// Credentials and mirrors survive — the single-stream fallback still
+	// needs them to re-authenticate.
+	if saved.Headers["Cookie"] != "session=keepme" {
+		t.Fatalf("Headers lost on fallback invalidation: %v", saved.Headers)
+	}
+	if len(saved.Mirrors) != 2 {
+		t.Fatalf("Mirrors lost on fallback invalidation: %v", saved.Mirrors)
 	}
 }

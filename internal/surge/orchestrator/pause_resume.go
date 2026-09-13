@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"maps"
 	"time"
 
 	"goaria-v3/internal/surge/config"
@@ -74,6 +75,11 @@ func hydrateConfigFromDisk(cfg *types.DownloadRecord) {
 		cfg.RangeAcquisitionMode = types.UpgradeLegacyRangeMode("", true)
 	}
 	cfg.SkipServerProbe = cfg.SkipServerProbe || saved.SkipServerProbe
+	// FORK-PATCH: cold-resume credential fallback — a non-empty runtime map
+	// is authoritative; detail state only fills in when cfg has none.
+	if len(cfg.Headers) == 0 && len(saved.Headers) > 0 {
+		cfg.Headers = maps.Clone(saved.Headers)
+	}
 	if len(saved.Tasks) > 0 {
 		cfg.SupportsRange = types.ShouldUseConcurrent(cfg.RangeAcquisitionMode, true)
 		cfg.Tasks = saved.Tasks
@@ -441,6 +447,13 @@ func buildResumeConfig(id, outputPath string, entry *types.DownloadRecord, saved
 		dmState.Bytes.VerifiedProgress.Store(downloaded)
 		dmState.SetDestPath(destPath)
 		dmState.SyncSessionStart()
+	}
+	// FORK-PATCH: mirror fallback chain detail → master entry → primary URL,
+	// so cold resume keeps user mirrors and never builds a nil mirror list.
+	if len(mirrorURLs) == 0 && entry != nil && len(entry.Mirrors) > 0 {
+		mirrorURLs = append([]string(nil), entry.Mirrors...)
+	}
+	if len(mirrorURLs) == 0 && url != "" {
 		mirrorURLs = []string{url}
 	}
 	dmState.SetRateLimit(rateLimit, rateLimitSet)
@@ -448,10 +461,13 @@ func buildResumeConfig(id, outputPath string, entry *types.DownloadRecord, saved
 	var tasks []types.Task
 	var chunkBitmap []byte
 	var actualChunkSize int64
+	var headers map[string]string
 	if savedState != nil {
 		tasks = savedState.Tasks
 		chunkBitmap = savedState.ChunkBitmap
 		actualChunkSize = savedState.ActualChunkSize
+		// FORK-PATCH: restore persisted request headers for cold resume.
+		headers = savedState.Headers
 	}
 
 	var mode types.RangeAcquisitionMode
@@ -491,5 +507,6 @@ func buildResumeConfig(id, outputPath string, entry *types.DownloadRecord, saved
 		Tasks:                tasks,
 		ChunkBitmap:          chunkBitmap,
 		ActualChunkSize:      actualChunkSize,
+		Headers:              headers,
 	}
 }

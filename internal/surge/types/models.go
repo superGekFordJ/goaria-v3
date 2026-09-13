@@ -71,23 +71,27 @@ type DownloadRecord struct {
 	Workers      int      `json:"workers,omitempty"`
 	MinChunkSize int64    `json:"min_chunk_size,omitempty"`
 
-	// FORK-PATCH: persisted Range acquisition policy. Empty is ProbeAtEnqueue
-	// (gob zero-value). Must not be gob:"-": cold resume cannot reconstruct it
-	// from SupportsRange.
+	// FORK-PATCH: persisted Range acquisition policy, kept inside the detail
+	// whitelist projection. Empty is ProbeAtEnqueue (gob zero-value); cold
+	// resume cannot reconstruct it from SupportsRange.
 	RangeAcquisitionMode RangeAcquisitionMode `json:"range_acquisition_mode,omitempty"`
 	// FORK-PATCH: sticky skip-origin so resume HEAD does not burn presigned URLs
-	// after mode promotes to RangeSupported. Headers stay gob:"-".
+	// after mode promotes to RangeSupported. Persisted via the detail whitelist.
 	SkipServerProbe bool `json:"skip_server_probe,omitempty"`
 
-	// Runtime / Transient Configuration (Not persisted)
-	IsResume           bool                 `json:"-" gob:"-"`
-	ProgressCh         chan<- DownloadEvent `json:"-" gob:"-"`
-	ProgressState      any                  `json:"-" gob:"-"` // typically *progress.DownloadProgress
-	Runtime            *RuntimeConfig       `json:"-" gob:"-"`
-	Headers            map[string]string    `json:"-" gob:"-"`
-	Limiter            ByteLimiter          `json:"-" gob:"-"`
-	IsExplicitCategory bool                 `json:"-" gob:"-"`
-	SupportsRange      bool                 `json:"-" gob:"-"`
+	// Runtime / Transient fields. Persistence is controlled by the store
+	// layer's explicit whitelist projection plus master-index scrubbing —
+	// gob ignores struct tags, so the old gob:"-" markers were dead letters.
+	// Headers is the deliberate exception: it persists inside per-task
+	// detail state only (the credential store), never in master.gob.
+	IsResume           bool                 `json:"-"`
+	ProgressCh         chan<- DownloadEvent `json:"-"`
+	ProgressState      any                  `json:"-"` // typically *progress.DownloadProgress
+	Runtime            *RuntimeConfig       `json:"-"`
+	Headers            map[string]string    `json:"-"`
+	Limiter            ByteLimiter          `json:"-"`
+	IsExplicitCategory bool                 `json:"-"`
+	SupportsRange      bool                 `json:"-"`
 }
 
 // MasterList holds all tracked downloads.
