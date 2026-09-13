@@ -13,6 +13,9 @@ export function useSmartInput() {
 
   let lastClipboardCandidate = ''
   let dragCounter = 0
+  // dragstart/dragend only fire for drags originating inside this document;
+  // external (OS/browser) drops never produce them, so this flags in-app drags
+  let internalDrag = false
 
   const processDroppedText = (text: string) => {
     const lines = text
@@ -79,19 +82,29 @@ export function useSmartInput() {
     }
   }
 
+  const handleDragStart = () => {
+    internalDrag = true
+  }
+
+  const handleDragEnd = () => {
+    internalDrag = false
+  }
+
   const handleDragEnter = (e: DragEvent) => {
     e.preventDefault()
+    if (internalDrag) return
     dragCounter++
     if (dragCounter === 1) isDragging.value = true
   }
 
   const handleDragOver = (e: DragEvent) => {
     e.preventDefault()
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+    if (e.dataTransfer) e.dataTransfer.dropEffect = internalDrag ? 'none' : 'copy'
   }
 
   const handleDragLeave = (e: DragEvent) => {
     e.preventDefault()
+    if (internalDrag) return
     dragCounter--
     if (dragCounter <= 0) {
       dragCounter = 0
@@ -101,6 +114,10 @@ export function useSmartInput() {
 
   const handleDrop = (e: DragEvent) => {
     e.preventDefault()
+    if (internalDrag) {
+      internalDrag = false
+      return
+    }
     dragCounter = 0
     isDragging.value = false
 
@@ -143,12 +160,16 @@ export function useSmartInput() {
       },
     )
 
+    document.addEventListener('dragstart', handleDragStart)
+    document.addEventListener('dragend', handleDragEnd)
     document.addEventListener('dragenter', handleDragEnter)
     document.addEventListener('dragover', handleDragOver)
     document.addEventListener('dragleave', handleDragLeave)
     document.addEventListener('drop', handleDrop)
 
     unsubs.push(() => {
+      document.removeEventListener('dragstart', handleDragStart)
+      document.removeEventListener('dragend', handleDragEnd)
       document.removeEventListener('dragenter', handleDragEnter)
       document.removeEventListener('dragover', handleDragOver)
       document.removeEventListener('dragleave', handleDragLeave)
