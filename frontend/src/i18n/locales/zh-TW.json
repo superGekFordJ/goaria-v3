@@ -95,6 +95,12 @@
         "concept": "色散、流光、無界"
       }
     },
+    "prismTone": {
+      "label": "光譜質感",
+      "vivid": "晶豔",
+      "lucid": "澄光",
+      "mist": "煙嵐"
+    },
     "language": "語言",
     "auto": "自動",
     "advancedMaterials": "進階材質",

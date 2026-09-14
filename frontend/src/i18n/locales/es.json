@@ -95,6 +95,12 @@
         "concept": "Dispersión, fulgor, infinito"
       }
     },
+    "prismTone": {
+      "label": "Tono espectral",
+      "vivid": "Vívido",
+      "lucid": "Claro",
+      "mist": "Bruma"
+    },
     "language": "Idioma",
     "auto": "Auto",
     "advancedMaterials": "Materiales Avanzados",

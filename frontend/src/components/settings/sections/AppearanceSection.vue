@@ -6,6 +6,7 @@
   import LiquidGlassSlider from '../../common/LiquidGlassSlider.vue'
   import { useUIStore, type ThemeMode, type LocalePreference } from '../../../stores/ui'
   import { skinCatalog, getSkinMeta, type SkinId } from '../../../utils/skinCatalog'
+  import { PRISM_TONES } from '../../../utils/prismSpectrum'
 
   const uiStore = useUIStore()
   const { t } = useI18n()
@@ -364,13 +365,34 @@
           <!-- Prism: Continuous Optical Spectrum Slider -->
           <div v-else class="space-y-1 pt-0.5">
             <div
-              class="flex items-center justify-between text-[10px] text-[var(--neon-primary)]/80 font-medium"
+              class="flex items-center justify-between gap-3 text-[10px] text-[var(--neon-primary)]/80 font-medium"
             >
-              <div class="flex items-center gap-1.5">
+              <div class="flex items-center gap-1.5 min-w-0">
                 <span
                   class="w-1.5 h-1.5 rounded-full bg-[var(--neon-primary)]/70 shadow-[0_0_6px_var(--neon-primary)]"
                 ></span>
                 <span class="truncate">{{ currentConceptLine }}</span>
+              </div>
+              <!-- Spectrum tone: three curated chroma stops (晶艳 · 澄光 · 烟岚) -->
+              <div
+                role="group"
+                :aria-label="t('appearance.prismTone.label')"
+                class="flex items-center gap-0.5 p-0.5 rounded-full shrink-0 bg-black/[0.04] dark:bg-black/25 border border-black/5 dark:border-[var(--glass-border)]"
+              >
+                <button
+                  v-for="tone in PRISM_TONES"
+                  :key="tone"
+                  type="button"
+                  :class="[
+                    'px-2 py-0.5 rounded-full text-[9px] font-semibold tracking-wide transition-all duration-200 cursor-pointer',
+                    uiStore.prismTone === tone
+                      ? 'bg-[var(--neon-primary)]/15 text-[var(--neon-primary)] shadow-[0_0_8px_var(--neon-glow)]'
+                      : 'text-[var(--app-text-subtle)] hover:text-[var(--app-text)]',
+                  ]"
+                  @click="uiStore.setPrismTone(tone)"
+                >
+                  {{ t(`appearance.prismTone.${tone}`) }}
+                </button>
               </div>
             </div>
             <div class="flex items-center pr-3 pt-0.5">
@@ -499,9 +521,12 @@
     );
     background: linear-gradient(
       to right in oklch longer hue,
-      oklch(0.7 0.19 0),
-      oklch(0.7 0.19 0)
+      oklch(0.7 var(--prism-c-fill, 0.19) 0),
+      oklch(0.7 var(--prism-c-fill, 0.19) 0)
     );
+    /* WYSIWYG: track chroma follows the active prism tone; the registered
+       <number> var eases the rainbow between stops (晶艳 · 澄光 · 烟岚). */
+    transition: --prism-c-fill 0.3s ease;
     outline: none;
     box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.1);
   }

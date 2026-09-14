@@ -95,6 +95,12 @@
         "concept": "分散・流光・無界"
       }
     },
+    "prismTone": {
+      "label": "光の質感",
+      "vivid": "晶艶",
+      "lucid": "澄光",
+      "mist": "霞"
+    },
     "language": "言語",
     "auto": "自動",
     "advancedMaterials": "高度なマテリアル",

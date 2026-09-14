@@ -280,21 +280,33 @@
 }
 
 /* === Skin: Prism (Seat 7) — Continuous Spectrum & Refracted Chroma === */
-/* OKLCH dual guardrail: --prism-hue / --prism-fill-l / --prism-btn-text are
-   written per-tick from ui.ts via utils/prismSpectrum.ts. Constants there and
-   here must stay in sync. hsl() declarations are fallbacks for engines
-   without oklch() support; the following oklch() line wins where supported. */
+/* OKLCH dual guardrail: --prism-hue / --prism-fill-l / --prism-btn-text /
+   --prism-c-ink / --prism-c-fill / --prism-hsl-s are written per-tick from
+   ui.ts via utils/prismSpectrum.ts. The --prism-c-* chroma vars ride the
+   curated tone stops (vivid/lucid/mist). Constants there and here must stay
+   in sync. hsl() declarations are fallbacks for engines without oklch()
+   support; the following oklch() line wins where supported. */
+
+/* Registered as a typed <number> so consumers (e.g. the spectrum slider track)
+   can ease between tone stops — unregistered custom properties only flip
+   discretely. initial-value is required by Lightning CSS when syntax isn't
+   '*'; it's only a pre-init default, per-theme fallbacks live at each var(). */
+@property --prism-c-fill {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0.17;
+}
 
 /* Prism / dark — single perceptual ruler: oklch(0.78, 0.17) keeps every hue
    ≥8.4:1 as text on Smoked Obsidian and ≥9:1 for ink text on fills. */
 [data-skin='prism'][data-theme='dark'],
 [data-skin='prism']:not([data-theme='light']) {
-  --neon-primary: hsl(var(--prism-hue, 280), 85%, 68%);
-  --neon-primary: oklch(0.78 0.17 var(--prism-hue, 280));
-  --neon-secondary: hsl(calc(var(--prism-hue, 280) + 25), 85%, 62%);
-  --neon-secondary: oklch(0.74 0.17 calc(var(--prism-hue, 280) + 25));
-  --neon-glow: hsla(var(--prism-hue, 280), 85%, 68%, 0.35);
-  --neon-glow: oklch(var(--prism-fill-l, 0.78) 0.17 var(--prism-hue, 280) / 0.35);
+  --neon-primary: hsl(var(--prism-hue, 280), var(--prism-hsl-s, 85%), 68%);
+  --neon-primary: oklch(0.78 var(--prism-c-ink, 0.17) var(--prism-hue, 280));
+  --neon-secondary: hsl(calc(var(--prism-hue, 280) + 25), var(--prism-hsl-s, 85%), 62%);
+  --neon-secondary: oklch(0.74 var(--prism-c-ink, 0.17) calc(var(--prism-hue, 280) + 25));
+  --neon-glow: hsla(var(--prism-hue, 280), var(--prism-hsl-s, 85%), 68%, 0.35);
+  --neon-glow: oklch(var(--prism-fill-l, 0.78) var(--prism-c-fill, 0.17) var(--prism-hue, 280) / 0.35);
   --neon-btn-text: var(--prism-btn-text, #0c0c0f);
 
   --status-active: #34d399;
@@ -304,18 +316,18 @@
   --glow-active-secondary: var(--neon-primary);
   --glow-complete: var(--neon-primary);
 
-  --skin-accent-from: hsl(var(--prism-hue, 280), 85%, 68%);
-  --skin-accent-from: oklch(var(--prism-fill-l, 0.78) 0.17 var(--prism-hue, 280));
-  --skin-accent-to: hsl(calc(var(--prism-hue, 280) + 35), 85%, 62%);
-  --skin-accent-to: oklch(var(--prism-fill-l, 0.78) 0.17 calc(var(--prism-hue, 280) + 35));
-  --skin-surface-tint: hsla(var(--prism-hue, 280), 85%, 68%, 0.05);
-  --skin-surface-tint: oklch(var(--prism-fill-l, 0.78) 0.17 var(--prism-hue, 280) / 0.05);
-  --skin-surface-border: hsla(var(--prism-hue, 280), 85%, 68%, 0.15);
-  --skin-surface-border: oklch(var(--prism-fill-l, 0.78) 0.17 var(--prism-hue, 280) / 0.15);
-  --skin-focus-beam: hsl(var(--prism-hue, 280), 85%, 68%);
+  --skin-accent-from: hsl(var(--prism-hue, 280), var(--prism-hsl-s, 85%), 68%);
+  --skin-accent-from: oklch(var(--prism-fill-l, 0.78) var(--prism-c-fill, 0.17) var(--prism-hue, 280));
+  --skin-accent-to: hsl(calc(var(--prism-hue, 280) + 35), var(--prism-hsl-s, 85%), 62%);
+  --skin-accent-to: oklch(var(--prism-fill-l, 0.78) var(--prism-c-fill, 0.17) calc(var(--prism-hue, 280) + 35));
+  --skin-surface-tint: hsla(var(--prism-hue, 280), var(--prism-hsl-s, 85%), 68%, 0.05);
+  --skin-surface-tint: oklch(var(--prism-fill-l, 0.78) var(--prism-c-fill, 0.17) var(--prism-hue, 280) / 0.05);
+  --skin-surface-border: hsla(var(--prism-hue, 280), var(--prism-hsl-s, 85%), 68%, 0.15);
+  --skin-surface-border: oklch(var(--prism-fill-l, 0.78) var(--prism-c-fill, 0.17) var(--prism-hue, 280) / 0.15);
+  --skin-focus-beam: hsl(var(--prism-hue, 280), var(--prism-hsl-s, 85%), 68%);
   --skin-focus-beam: var(--neon-primary);
-  --skin-ambient-glow: hsla(var(--prism-hue, 280), 85%, 68%, 0.25);
-  --skin-ambient-glow: oklch(var(--prism-fill-l, 0.78) 0.17 var(--prism-hue, 280) / 0.25);
+  --skin-ambient-glow: hsla(var(--prism-hue, 280), var(--prism-hsl-s, 85%), 68%, 0.25);
+  --skin-ambient-glow: oklch(var(--prism-fill-l, 0.78) var(--prism-c-fill, 0.17) var(--prism-hue, 280) / 0.25);
 
   --selection-bg: var(--neon-primary);
   --focus-ring: var(--neon-primary);
@@ -327,12 +339,12 @@
    branch plateaus (deep hues ~0.51–0.54 with white text, bright hues
    ~0.67–0.71 with dark ink text) so yellow stays golden instead of olive. */
 [data-skin='prism'][data-theme='light'] {
-  --neon-primary: hsl(var(--prism-hue, 280), 85%, 38%);
-  --neon-primary: oklch(0.46 0.14 var(--prism-hue, 280));
-  --neon-secondary: hsl(calc(var(--prism-hue, 280) + 25), 85%, 32%);
-  --neon-secondary: oklch(0.43 0.14 calc(var(--prism-hue, 280) + 25));
-  --neon-glow: hsla(var(--prism-hue, 280), 85%, 38%, 0.15);
-  --neon-glow: oklch(var(--prism-fill-l, 0.54) 0.19 var(--prism-hue, 280) / 0.15);
+  --neon-primary: hsl(var(--prism-hue, 280), var(--prism-hsl-s, 85%), 38%);
+  --neon-primary: oklch(0.46 var(--prism-c-ink, 0.14) var(--prism-hue, 280));
+  --neon-secondary: hsl(calc(var(--prism-hue, 280) + 25), var(--prism-hsl-s, 85%), 32%);
+  --neon-secondary: oklch(0.43 var(--prism-c-ink, 0.14) calc(var(--prism-hue, 280) + 25));
+  --neon-glow: hsla(var(--prism-hue, 280), var(--prism-hsl-s, 85%), 38%, 0.15);
+  --neon-glow: oklch(var(--prism-fill-l, 0.54) var(--prism-c-fill, 0.19) var(--prism-hue, 280) / 0.15);
   --neon-btn-text: var(--prism-btn-text, #ffffff);
 
   --status-active: #047857;
@@ -342,18 +354,18 @@
   --glow-active-secondary: var(--neon-primary);
   --glow-complete: var(--neon-primary);
 
-  --skin-accent-from: hsl(var(--prism-hue, 280), 85%, 38%);
-  --skin-accent-from: oklch(var(--prism-fill-l, 0.54) 0.19 var(--prism-hue, 280));
-  --skin-accent-to: hsl(calc(var(--prism-hue, 280) + 35), 85%, 32%);
-  --skin-accent-to: oklch(var(--prism-fill-l, 0.54) 0.19 calc(var(--prism-hue, 280) + 35));
-  --skin-surface-tint: hsla(var(--prism-hue, 280), 85%, 38%, 0.05);
-  --skin-surface-tint: oklch(var(--prism-fill-l, 0.54) 0.19 var(--prism-hue, 280) / 0.05);
-  --skin-surface-border: hsla(var(--prism-hue, 280), 85%, 38%, 0.15);
-  --skin-surface-border: oklch(var(--prism-fill-l, 0.54) 0.19 var(--prism-hue, 280) / 0.15);
-  --skin-focus-beam: hsl(var(--prism-hue, 280), 85%, 38%);
+  --skin-accent-from: hsl(var(--prism-hue, 280), var(--prism-hsl-s, 85%), 38%);
+  --skin-accent-from: oklch(var(--prism-fill-l, 0.54) var(--prism-c-fill, 0.19) var(--prism-hue, 280));
+  --skin-accent-to: hsl(calc(var(--prism-hue, 280) + 35), var(--prism-hsl-s, 85%), 32%);
+  --skin-accent-to: oklch(var(--prism-fill-l, 0.54) var(--prism-c-fill, 0.19) calc(var(--prism-hue, 280) + 35));
+  --skin-surface-tint: hsla(var(--prism-hue, 280), var(--prism-hsl-s, 85%), 38%, 0.05);
+  --skin-surface-tint: oklch(var(--prism-fill-l, 0.54) var(--prism-c-fill, 0.19) var(--prism-hue, 280) / 0.05);
+  --skin-surface-border: hsla(var(--prism-hue, 280), var(--prism-hsl-s, 85%), 38%, 0.15);
+  --skin-surface-border: oklch(var(--prism-fill-l, 0.54) var(--prism-c-fill, 0.19) var(--prism-hue, 280) / 0.15);
+  --skin-focus-beam: hsl(var(--prism-hue, 280), var(--prism-hsl-s, 85%), 38%);
   --skin-focus-beam: var(--neon-primary);
-  --skin-ambient-glow: hsla(var(--prism-hue, 280), 85%, 38%, 0.12);
-  --skin-ambient-glow: oklch(var(--prism-fill-l, 0.54) 0.19 var(--prism-hue, 280) / 0.12);
+  --skin-ambient-glow: hsla(var(--prism-hue, 280), var(--prism-hsl-s, 85%), 38%, 0.12);
+  --skin-ambient-glow: oklch(var(--prism-fill-l, 0.54) var(--prism-c-fill, 0.19) var(--prism-hue, 280) / 0.12);
 
   --selection-bg: var(--neon-primary);
   --focus-ring: var(--neon-primary);

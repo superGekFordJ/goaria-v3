@@ -95,6 +95,12 @@
         "concept": "Dispersion, radiance, boundless"
       }
     },
+    "prismTone": {
+      "label": "Spectrum Tone",
+      "vivid": "Vivid",
+      "lucid": "Lucid",
+      "mist": "Mist"
+    },
     "language": "Language",
     "auto": "Auto",
     "advancedMaterials": "Advanced Materials",

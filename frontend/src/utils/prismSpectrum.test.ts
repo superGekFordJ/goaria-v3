@@ -1,25 +1,28 @@
 import { describe, expect, it } from 'vitest'
 import {
+  normalisePrismTone,
   oklchRelativeLuminance,
   prismButtonText,
+  prismChroma,
+  prismChromaticInk,
   prismFillLightness,
+  prismHslSaturation,
   srgbRelativeLuminance,
   wcagContrastRatio,
   PRISM_ACCENT_HUE_OFFSET,
-  PRISM_BTN_TEXT_DARK,
-  PRISM_BTN_TEXT_LIGHT,
   PRISM_BTN_TEXT_WHITE,
   PRISM_DARK,
-  PRISM_LIGHT_FILL_C,
   PRISM_LIGHT_INK,
+  PRISM_TONES,
+  type PrismTone,
 } from './prismSpectrum'
 
 const SLATE_LIGHT = srgbRelativeLuminance('#e2e8f0') // Platinum Slate surface
 const OBSIDIAN_DARK = srgbRelativeLuminance('#15151b') // dark card over app bg
 
-function fillEndYs(hue: number, theme: 'light' | 'dark') {
+function fillEndYs(hue: number, theme: 'light' | 'dark', tone: PrismTone) {
   const L = prismFillLightness(hue, theme)
-  const C = theme === 'dark' ? PRISM_DARK.C : PRISM_LIGHT_FILL_C
+  const C = prismChroma(theme, tone).fill
   return [
     oklchRelativeLuminance(L, C, hue),
     oklchRelativeLuminance(L, C, hue + PRISM_ACCENT_HUE_OFFSET),
@@ -62,45 +65,103 @@ describe('prismFillLightness', () => {
   })
 })
 
-describe('prismButtonText', () => {
-  it('returns white on the deep branch and dark ink on the bright branch', () => {
-    expect(prismButtonText(265, 'light')).toBe(PRISM_BTN_TEXT_WHITE) // deep blue
-    expect(prismButtonText(95, 'light')).toBe(PRISM_BTN_TEXT_LIGHT) // golden yellow
-    expect(prismButtonText(280, 'dark')).toBe(PRISM_BTN_TEXT_DARK)
+describe('prismTone chroma stops', () => {
+  it('orders chroma vivid > lucid > mist for both families and themes', () => {
+    for (const theme of ['light', 'dark'] as const) {
+      const v = prismChroma(theme, 'vivid')
+      const l = prismChroma(theme, 'lucid')
+      const m = prismChroma(theme, 'mist')
+      expect(v.ink).toBeGreaterThan(l.ink)
+      expect(l.ink).toBeGreaterThan(m.ink)
+      expect(v.fill).toBeGreaterThan(l.fill)
+      expect(l.fill).toBeGreaterThan(m.fill)
+    }
+    // mist keeps hues legible — never collapses toward the gray dead zone
+    expect(prismChroma('light', 'mist').fill).toBeGreaterThan(0.06)
+  })
+
+  it('normalisePrismTone falls back to vivid on unknown values', () => {
+    expect(normalisePrismTone('vivid')).toBe('vivid')
+    expect(normalisePrismTone('lucid')).toBe('lucid')
+    expect(normalisePrismTone('mist')).toBe('mist')
+    expect(normalisePrismTone('neon')).toBe('vivid')
+    expect(normalisePrismTone(undefined)).toBe('vivid')
+    expect(normalisePrismTone(42)).toBe('vivid')
+  })
+
+  it('scales the hsl fallback saturation with tone', () => {
+    expect(prismHslSaturation('vivid')).toBe('85%')
+    expect(prismHslSaturation('lucid')).toBe('59%')
+    expect(prismHslSaturation('mist')).toBe('38%')
   })
 })
 
-describe('guardrail invariants — full hue wheel sweep', () => {
+describe('prismChromaticInk', () => {
+  it('stays deep enough for strong contrast on bright fills', () => {
+    for (let h = 0; h < 360; h += 15) {
+      expect(srgbRelativeLuminance(prismChromaticInk(h))).toBeLessThan(0.04)
+    }
+  })
+
+  it('tints toward the accent hue family instead of neutral black', () => {
+    const inks = new Set([0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330].map(prismChromaticInk))
+    // every hue family yields a distinct ink — not a shared near-black
+    expect(inks.size).toBe(12)
+    expect(prismChromaticInk(0)).toMatch(/^#[0-9a-f]{6}$/)
+  })
+})
+
+describe('prismButtonText', () => {
+  it('returns white on the deep branch and chromatic ink on the bright branch', () => {
+    for (const tone of PRISM_TONES) {
+      expect(prismButtonText(265, 'light', tone)).toBe(PRISM_BTN_TEXT_WHITE) // deep blue
+      expect(prismButtonText(95, 'light', tone)).toBe(prismChromaticInk(95)) // golden yellow
+      expect(prismButtonText(280, 'dark', tone)).toBe(prismChromaticInk(280))
+    }
+  })
+})
+
+describe('guardrail invariants — full hue wheel sweep, all tones', () => {
   it('light ink tokens keep ≥4.5:1 text contrast on Platinum Slate', () => {
-    for (let h = 0; h < 360; h++) {
-      const y = oklchRelativeLuminance(PRISM_LIGHT_INK.L, PRISM_LIGHT_INK.C, h)
-      expect(wcagContrastRatio(y, SLATE_LIGHT)).toBeGreaterThanOrEqual(4.5)
+    for (const tone of PRISM_TONES) {
+      const C = prismChroma('light', tone).ink
+      for (let h = 0; h < 360; h++) {
+        const y = oklchRelativeLuminance(PRISM_LIGHT_INK.L, C, h)
+        expect(wcagContrastRatio(y, SLATE_LIGHT)).toBeGreaterThanOrEqual(4.5)
+      }
     }
   })
 
   it('light button text keeps ≥4.5:1 on both gradient ends', () => {
-    for (let h = 0; h < 360; h++) {
-      const text = prismButtonText(h, 'light')
-      const textY = srgbRelativeLuminance(text)
-      for (const endY of fillEndYs(h, 'light')) {
-        expect(wcagContrastRatio(textY, endY)).toBeGreaterThanOrEqual(4.5)
+    for (const tone of PRISM_TONES) {
+      for (let h = 0; h < 360; h++) {
+        const text = prismButtonText(h, 'light', tone)
+        const textY = srgbRelativeLuminance(text)
+        for (const endY of fillEndYs(h, 'light', tone)) {
+          expect(wcagContrastRatio(textY, endY)).toBeGreaterThanOrEqual(4.5)
+        }
       }
     }
   })
 
   it('dark primary keeps ≥4.5:1 as text on Smoked Obsidian', () => {
-    for (let h = 0; h < 360; h++) {
-      const y = oklchRelativeLuminance(PRISM_DARK.L, PRISM_DARK.C, h)
-      expect(wcagContrastRatio(y, OBSIDIAN_DARK)).toBeGreaterThanOrEqual(4.5)
+    for (const tone of PRISM_TONES) {
+      const C = prismChroma('dark', tone).ink
+      for (let h = 0; h < 360; h++) {
+        const y = oklchRelativeLuminance(PRISM_DARK.L, C, h)
+        expect(wcagContrastRatio(y, OBSIDIAN_DARK)).toBeGreaterThanOrEqual(4.5)
+      }
     }
   })
 
   it('dark button text keeps ≥4.5:1 on both gradient ends', () => {
-    for (let h = 0; h < 360; h++) {
-      const text = prismButtonText(h, 'dark')
-      const textY = srgbRelativeLuminance(text)
-      for (const endY of fillEndYs(h, 'dark')) {
-        expect(wcagContrastRatio(textY, endY)).toBeGreaterThanOrEqual(4.5)
+    for (const tone of PRISM_TONES) {
+      for (let h = 0; h < 360; h++) {
+        const text = prismButtonText(h, 'dark', tone)
+        const textY = srgbRelativeLuminance(text)
+        for (const endY of fillEndYs(h, 'dark', tone)) {
+          expect(wcagContrastRatio(textY, endY)).toBeGreaterThanOrEqual(4.5)
+        }
       }
     }
   })

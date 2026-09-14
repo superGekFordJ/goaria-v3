@@ -2,11 +2,20 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { resolveLocale, setI18nLocale } from '../i18n'
 import { type SkinId, DEFAULT_SKIN_ID, normaliseSkinId } from '../utils/skinCatalog'
-import { prismButtonText, prismFillLightness } from '../utils/prismSpectrum'
+import {
+  prismButtonText,
+  prismChroma,
+  prismFillLightness,
+  prismHslSaturation,
+  normalisePrismTone,
+  DEFAULT_PRISM_TONE,
+  type PrismTone,
+} from '../utils/prismSpectrum'
 
 export type LocalePreference = 'auto' | 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'es' | 'de'
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type { SkinId } from '../utils/skinCatalog'
+export type { PrismTone } from '../utils/prismSpectrum'
 export type Density = 'compact' | 'comfortable'
 export type EffectsTier = 'reduced' | 'balanced' | 'full'
 export type ActiveTab = 'downloads' | 'stopped' | 'settings'
@@ -39,6 +48,8 @@ export const useUIStore = defineStore(
     const prismHue = ref<number>(280)
     // Committed mirror — pinia persist only watches this (slider commit / unload).
     const prismHuePersisted = ref<number>(280)
+    // Curated chroma stop (晶艳/澄光/烟岚) — discrete control, persisted directly.
+    const prismTone = ref<PrismTone>(DEFAULT_PRISM_TONE)
     const density = ref<Density>('comfortable')
     // Live visual level — drives CSS every tick; not in persist.pick.
     const effectsLevel = ref<number>(50)
@@ -147,13 +158,22 @@ export const useUIStore = defineStore(
       if (typeof document === 'undefined') return
       const theme = resolvedThemeNow()
       const root = document.documentElement
+      const { ink, fill } = prismChroma(theme, prismTone.value)
       root.style.setProperty('--prism-hue', String(prismHue.value))
       root.style.setProperty('--prism-fill-l', String(prismFillLightness(prismHue.value, theme)))
-      root.style.setProperty('--prism-btn-text', prismButtonText(prismHue.value, theme))
+      root.style.setProperty('--prism-btn-text', prismButtonText(prismHue.value, theme, prismTone.value))
+      root.style.setProperty('--prism-c-ink', ink.toFixed(4))
+      root.style.setProperty('--prism-c-fill', fill.toFixed(4))
+      root.style.setProperty('--prism-hsl-s', prismHslSaturation(prismTone.value))
     }
 
     function setPrismHue(hue: number) {
       prismHue.value = clampPrismHue(hue)
+      applyPrismChrome()
+    }
+
+    function setPrismTone(tone: unknown) {
+      prismTone.value = normalisePrismTone(tone)
       applyPrismChrome()
     }
 
@@ -356,6 +376,7 @@ export const useUIStore = defineStore(
       normalizeNavigationState()
       // Defensive: normalise persisted skinId in case it was set to an unknown value
       skinId.value = normaliseSkinId(skinId.value)
+      prismTone.value = normalisePrismTone(prismTone.value)
       normalizeEffectsLevel()
       normalizePrismHue()
       bindLivePersistFlush()
@@ -373,6 +394,7 @@ export const useUIStore = defineStore(
       skinId,
       prismHue,
       prismHuePersisted,
+      prismTone,
       density,
       effectsLevel,
       effectsLevelPersisted,
@@ -393,6 +415,7 @@ export const useUIStore = defineStore(
       setSkin,
       setPrismHue,
       commitPrismHue,
+      setPrismTone,
       setDensity,
       setEffectsLevel,
       commitEffectsLevel,
@@ -412,6 +435,7 @@ export const useUIStore = defineStore(
         'themeMode',
         'skinId',
         'prismHuePersisted',
+        'prismTone',
         'density',
         'effectsLevelPersisted',
       ],

@@ -268,3 +268,58 @@ describe('uiStore prismHue', () => {
     expect(store.prismHuePersisted).toBe(280)
   })
 })
+
+describe('uiStore prismTone', () => {
+  beforeEach(() => {
+    document.documentElement.style.removeProperty('--prism-c-ink')
+    document.documentElement.style.removeProperty('--prism-c-fill')
+    document.documentElement.style.removeProperty('--prism-hsl-s')
+    localStorage.clear()
+  })
+
+  it('defaults to vivid and injects scaled chroma CSS vars', async () => {
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { useUIStore } = await import('../ui')
+    setActivePinia(createPinia())
+    const store = useUIStore()
+
+    store.setTheme('dark')
+    expect(store.prismTone).toBe('vivid')
+    expect(document.documentElement.style.getPropertyValue('--prism-c-ink')).toBe('0.1700')
+    expect(document.documentElement.style.getPropertyValue('--prism-c-fill')).toBe('0.1700')
+    expect(document.documentElement.style.getPropertyValue('--prism-hsl-s')).toBe('85%')
+
+    store.setTheme('light')
+    expect(document.documentElement.style.getPropertyValue('--prism-c-ink')).toBe('0.1400')
+    expect(document.documentElement.style.getPropertyValue('--prism-c-fill')).toBe('0.1900')
+  })
+
+  it('setPrismTone rescales chroma vars and rejects unknown tones', async () => {
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { useUIStore } = await import('../ui')
+    setActivePinia(createPinia())
+    const store = useUIStore()
+
+    store.setTheme('light')
+    store.setPrismTone('mist')
+    expect(store.prismTone).toBe('mist')
+    expect(document.documentElement.style.getPropertyValue('--prism-c-ink')).toBe('0.0630')
+    expect(document.documentElement.style.getPropertyValue('--prism-c-fill')).toBe('0.0855')
+    expect(document.documentElement.style.getPropertyValue('--prism-hsl-s')).toBe('38%')
+
+    store.setPrismTone('neon')
+    expect(store.prismTone).toBe('vivid')
+    expect(document.documentElement.style.getPropertyValue('--prism-c-fill')).toBe('0.1900')
+  })
+
+  it('normalises an invalid persisted tone back to vivid on init', async () => {
+    localStorage.setItem('ui', JSON.stringify({ prismTone: 'psychedelic' }))
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { useUIStore } = await import('../ui')
+    setActivePinia(createPinia())
+    const store = useUIStore()
+
+    store.initTheme()
+    expect(store.prismTone).toBe('vivid')
+  })
+})

@@ -95,6 +95,12 @@
         "concept": "Dispersion, Strahlen, grenzenlos"
       }
     },
+    "prismTone": {
+      "label": "Farbstärke",
+      "vivid": "Kräftig",
+      "lucid": "Klar",
+      "mist": "Nebel"
+    },
     "language": "Sprache",
     "auto": "Auto",
     "advancedMaterials": "Erweiterte Materialien",
