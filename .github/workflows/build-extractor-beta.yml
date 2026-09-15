@@ -1,0 +1,350 @@
+name: build-extractor-beta
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      base_tag:
+        description: "Base release tag, e.g. v1.2.3"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: extractor-beta-${{ github.event.release.tag_name || inputs.base_tag }}
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    # Recursion & prerelease guard:
+    # 1. Automatic trigger only runs on non-prerelease formal releases, skipping pre-releases.
+    # 2. Never triggers on tags ending in -beta-extractor.
+    # 3. workflow_dispatch allows manual builds for any base tag (including prereleases).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'release' && github.event.release.prerelease == false && !endsWith(github.event.release.tag_name, '-beta-extractor'))
+    outputs:
+      extractor_tag: ${{ steps.resolve.outputs.extractor_tag }}
+      checkout_ref: ${{ steps.resolve.outputs.checkout_ref }}
+      target_sha: ${{ steps.resolve.outputs.target_sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve extractor beta target
+        id: resolve
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_BASE_TAG: ${{ inputs.base_tag }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            base_tag="${RELEASE_TAG}"
+          else
+            base_tag="${INPUT_BASE_TAG}"
+          fi
+          case "$base_tag" in
+            *-beta-extractor)
+              echo "base tag is already an extractor beta tag: $base_tag" >&2
+              exit 1
+              ;;
+          esac
+          if [ -z "$base_tag" ]; then
+            echo "base tag cannot be empty" >&2
+            exit 1
+          fi
+          target_sha="$(git rev-list -n1 "refs/tags/${base_tag}" 2>/dev/null || git rev-list -n1 "${base_tag}" 2>/dev/null || true)"
+          if [ -z "$target_sha" ]; then
+            echo "could not resolve a commit for base tag: $base_tag" >&2
+            exit 1
+          fi
+          extractor_tag="${base_tag}-beta-extractor"
+          printf 'extractor_tag=%s\n' "$extractor_tag" >> "$GITHUB_OUTPUT"
+          printf 'checkout_ref=%s\n' "$base_tag" >> "$GITHUB_OUTPUT"
+          printf 'target_sha=%s\n' "$target_sha" >> "$GITHUB_OUTPUT"
+          printf 'base_tag=%s extractor_tag=%s target_sha=%s\n' "$base_tag" "$extractor_tag" "$target_sha"
+
+  linux-package:
+    runs-on: ubuntu-latest
+    needs: resolve
+    env:
+      EXTRACTOR_VARIANT: full-pack
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.checkout_ref }}
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+
+      - name: Install Linux system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev aria2
+
+      - name: Install Wails CLI
+        shell: bash
+        run: |
+          wails_version=$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)
+          echo "Installing wails3 CLI at $wails_version"
+          go install "github.com/wailsapp/wails/v3/cmd/wails3@$wails_version"
+
+      - name: Add Go bin to PATH
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Generate Wails bindings
+        shell: bash
+        run: |
+          wails3 generate bindings -clean=true -ts
+
+      - name: Prepare local AppImage runtime file
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64|aarch64) ;;
+            *) echo "unsupported AppImage runtime architecture: $arch" >&2; exit 1 ;;
+          esac
+          runtime_path="build/extractor/cache/appimage/runtime-${arch}"
+          printf 'APPIMAGE_RUNTIME_FILE=%s\n' "$runtime_path" >> "$GITHUB_ENV"
+          APPIMAGE_RUNTIME_FILE="$runtime_path" wails3 task linux:prepare:appimage:runtime
+
+      - name: Package Linux artifact
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: wails3 task linux:package
+
+      - name: Rename Linux artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(awk -F'"' '/^[[:space:]]+version:/ {print $2; exit}' build/config.yml)
+          arch=$(uname -m); case "$arch" in x86_64) arch=amd64;; aarch64) arch=arm64;; esac
+          cd bin
+          for ext in AppImage deb rpm; do
+            for f in *.$ext; do
+              [ -f "$f" ] || continue
+              mv "$f" "goaria-v${version}-linux-${arch}-extractor.${ext}"
+            done
+          done
+          for f in *.pkg.tar.zst; do
+            [ -f "$f" ] || continue
+            mv "$f" "goaria-v${version}-linux-${arch}-extractor.pkg.tar.zst"
+          done
+          ls -la
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-linux-packages
+          path: |
+            bin/*-extractor.AppImage
+            bin/*-extractor.deb
+            bin/*-extractor.rpm
+            bin/*-extractor.pkg.tar.zst
+
+  darwin-package:
+    runs-on: macos-latest
+    needs: resolve
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      EXTRACTOR_VARIANT: full-pack
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.checkout_ref }}
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+
+      - name: Install Wails CLI
+        shell: bash
+        run: |
+          wails_version=$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)
+          echo "Installing wails3 CLI at $wails_version"
+          go install "github.com/wailsapp/wails/v3/cmd/wails3@$wails_version"
+
+      - name: Add Go bin to PATH
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Generate Wails bindings
+        shell: bash
+        run: |
+          wails3 generate bindings -clean=true -ts
+
+      - name: Install macOS bundled aria2 source
+        run: brew install aria2
+
+      - name: Package macOS artifact
+        run: wails3 task darwin:package
+
+      - name: Zip macOS artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd bin
+          version=$(awk -F'"' '/^[[:space:]]+version:/ {print $2; exit}' ../build/config.yml)
+          arch=$(uname -m); case "$arch" in x86_64) arch=amd64;; aarch64) arch=arm64;; esac
+          zip -r "goaria-v${version}-darwin-${arch}-extractor.zip" goaria-v3.app
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-darwin-packages
+          path: bin/*-extractor.zip
+
+  windows-package:
+    runs-on: windows-latest
+    needs: resolve
+    env:
+      EXTRACTOR_VARIANT: full-pack
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.checkout_ref }}
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+
+      - name: Install Wails CLI
+        shell: bash
+        run: |
+          wails_version=$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)
+          echo "Installing wails3 CLI at $wails_version"
+          go install "github.com/wailsapp/wails/v3/cmd/wails3@$wails_version"
+
+      - name: Add Go bin to PATH
+        run: echo "$(go env GOPATH)/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Generate Wails bindings
+        shell: bash
+        run: |
+          wails3 generate bindings -clean=true -ts
+
+      - name: Stage bundled aria2c
+        run: .\setup.ps1
+
+      - name: Build and package
+        run: .\build.ps1
+
+      - name: Rename Windows artifacts
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path bin -Filter "*.zip" | ForEach-Object {
+            $newName = $_.BaseName + "-extractor" + $_.Extension
+            Rename-Item -Path $_.FullName -NewName $newName
+          }
+          Get-ChildItem -Path bin -Filter "*-extractor.zip" | Select-Object Name, Length
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-windows-packages
+          path: bin/*-extractor.zip
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [resolve, linux-package, darwin-package, windows-package]
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXTRACTOR_TAG: ${{ needs.resolve.outputs.extractor_tag }}
+      TARGET_SHA: ${{ needs.resolve.outputs.target_sha }}
+      BASE_TAG: ${{ needs.resolve.outputs.checkout_ref }}
+    steps:
+      - name: Download beta package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: beta-*-packages
+          path: dist
+          merge-multiple: true
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > notes.md <<'EOF'
+          ## 中文说明
+
+          本版本额外内置了**站点提取器运行时（Extractor Runtime）**，用于从受支持的分享站点解析下载链接；除此之外与正式版完全一致，属于 beta 版本。
+
+          > **内存说明**：由于内置了 WebAssembly (Wasm) 运行时，后台空置内存会相较于标准版略多约 5–10 MB（以 Windows 平台为例，后台静置内存由 ~12–14 MB 增加至 ~18–20 MB）。
+
+          如果你没有网站链接提取需求，或追求更极致的轻量与低内存，请直接下载正式版本：[{base_tag}](../../releases/tag/{base_tag})
+
+          ---
+
+          ## English
+
+          This build additionally bundles the optional **extractor runtime** for resolving download links from supported share sites. It is otherwise identical to the regular release, and is published as a beta.
+
+          > **Memory Note**: Due to the embedded WebAssembly (Wasm) runtime, idle background memory usage is approximately 5–10 MB higher than the standard release (e.g., on Windows, idle background memory increases from ~12–14 MB to ~18–20 MB).
+
+          If you don't need site-link extraction or prefer the lowest possible memory footprint, please download the regular release instead: [{base_tag}](../../releases/tag/{base_tag})
+          EOF
+          sed -i "s|{base_tag}|${BASE_TAG}|g" notes.md
+          cat notes.md
+
+      - name: Create prerelease and upload assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$EXTRACTOR_TAG" >/dev/null 2>&1; then
+            echo "release $EXTRACTOR_TAG already exists; skipping create"
+          else
+            gh release create "$EXTRACTOR_TAG" --prerelease --target "$TARGET_SHA" --title "$EXTRACTOR_TAG" --notes-file notes.md
+          fi
+          shopt -s nullglob
+          files=(dist/*)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no downloaded package files to upload" >&2
+            exit 1
+          fi
+          gh release upload "$EXTRACTOR_TAG" "${files[@]}" --clobber

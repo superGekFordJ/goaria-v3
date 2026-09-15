@@ -20,6 +20,9 @@ permissions:
 jobs:
   resolve-package-variant:
     runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'release' && !endsWith(github.event.release.tag_name, '-beta-extractor'))
     outputs:
       extractor_variant: ${{ steps.resolve.outputs.extractor_variant }}
       release_tag: ${{ steps.resolve.outputs.release_tag }}
@@ -52,6 +55,7 @@ jobs:
 
   dual-tag-lint:
     runs-on: ubuntu-latest
+    needs: resolve-package-variant
     steps:
       - name: Checkout
         uses: actions/checkout@v4
