@@ -34,6 +34,9 @@ const (
 	fixtureMatchPtr   = 2048
 	fixtureExtractPtr = 4096
 	fixtureHostReqPtr = 6144
+	// Each host call's request JSON lives in its own 2KiB slot so a guest
+	// can issue different requests to different imports in one extract.
+	fixtureHostReqStride = 2048
 )
 
 type wasmFixtureConfig struct {
@@ -350,7 +353,7 @@ func extractInstructions(config wasmFixtureConfig, indexes functionIndexes) []by
 		return []byte{wasmOpUnreach, wasmOpI64Const, 0x00}
 	}
 	var instructions []byte
-	for _, call := range config.extractHostCalls {
+	for callIndex, call := range config.extractHostCalls {
 		fnIndex, ok := indexes.imports[call.Name]
 		if !ok {
 			continue
@@ -360,8 +363,9 @@ func extractInstructions(config wasmFixtureConfig, indexes functionIndexes) []by
 			count = 1
 		}
 		requestLen := uint32(len(call.Request))
+		requestPtr := uint32(fixtureHostReqPtr + callIndex*fixtureHostReqStride)
 		for i := uint32(0); i < count; i++ {
-			instructions = append(instructions, i32ConstInstructions(fixtureHostReqPtr)...)
+			instructions = append(instructions, i32ConstInstructions(requestPtr)...)
 			instructions = append(instructions, i32ConstInstructions(requestLen)...)
 			instructions = append(instructions, wasmOpCall)
 			instructions = appendU32(instructions, fnIndex)
@@ -413,15 +417,11 @@ func i64ConstInstructions(value uint64) []byte {
 
 func buildDataSection(matchJSON string, extractJSON string, hostCalls []hostImportFixtureCall) []byte {
 	var section []byte
-	segmentCount := uint32(2)
-	if len(hostCalls) > 0 {
-		segmentCount++
-	}
-	section = appendU32(section, segmentCount)
+	section = appendU32(section, uint32(2+len(hostCalls)))
 	section = appendDataSegment(section, fixtureMatchPtr, []byte(matchJSON))
 	section = appendDataSegment(section, fixtureExtractPtr, []byte(extractJSON))
-	if len(hostCalls) > 0 {
-		section = appendDataSegment(section, fixtureHostReqPtr, []byte(hostCalls[0].Request))
+	for i, call := range hostCalls {
+		section = appendDataSegment(section, uint32(fixtureHostReqPtr+i*fixtureHostReqStride), []byte(call.Request))
 	}
 
 	return section

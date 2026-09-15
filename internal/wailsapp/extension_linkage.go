@@ -71,6 +71,10 @@ func pendingLinkageFromDispatcher(d *extractor.AddTaskDispatcher) extension.Link
 	}
 }
 
+// attachBatchCommitter wires a committer onto an existing linkage; kept for
+// tests that exercise the commit path with an injected minter. Production
+// linkage builds its committer in buildExtensionLinkageFromSnapshot and the
+// pending-dispatcher path in attachDirectBatchCommitter.
 func attachBatchCommitter(l extension.Linkage, minter *extractor.TasksAdapter, app *App) extension.Linkage {
 	lease, ok := l.Resolver.(*extensionResolveAdapter)
 	if !ok || minter == nil {

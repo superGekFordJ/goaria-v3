@@ -21,8 +21,12 @@ type TasksAdapter struct {
 	dispatcher addTaskDispatcherInterface
 	runtime    *HostAuthRuntime
 
-	mu             sync.Mutex
-	nextRef        int64
+	mu      sync.Mutex
+	nextRef int64
+	// These maps hold non-secret metadata for refs not yet consumed by a
+	// submission; entries live at most until the adapter dies with its
+	// runtime snapshot. The secrets they point at stay bounded by the
+	// download-auth registry TTL regardless of map retention.
 	sourceRequests map[string]HostAuthRuntimeRequest
 	resolvedItems  map[string]ResolvedAddItem
 }

@@ -90,8 +90,11 @@ func (a *extensionBatchAdapter) HandleCommit(ctx context.Context, env extension.
 	}
 	defer func() {
 		if rec := recover(); rec != nil {
-			ids := make([]string, 0, len(clones))
-			for id := range clones {
+			// Only items still needing restore go back: already submitted or
+			// duplicated ids must not be re-leased, or a retry would submit
+			// them twice.
+			ids := make([]string, 0, len(needsRestore))
+			for id := range needsRestore {
 				ids = append(ids, id)
 			}
 			a.lease.restoreLeasedItems(token, ids, clones)

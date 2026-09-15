@@ -716,7 +716,10 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 
 func (s *Service) buildCandidateHeaders(ctx context.Context, candidate addTaskCandidate) ([]string, error) {
 	// Scan external-header conflicts before materializing: a conflicting
-	// request must fail without ever touching the registry secret.
+	// request must fail without ever touching the registry secret. Extracted
+	// candidates do not populate externalHeaders today, so this is a
+	// defensive invariant for future or alternate callers rather than a
+	// currently reachable conflict path.
 	if len(candidate.externalHeaders) > 0 && candidate.item.DownloadAuthRef != "" {
 		for _, line := range candidate.externalHeaders {
 			name, _, ok := strings.Cut(line, ":")

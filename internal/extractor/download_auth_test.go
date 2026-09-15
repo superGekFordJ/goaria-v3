@@ -13,6 +13,8 @@ func testDownloadAuthPack(t *testing.T, mutate func(*Manifest)) VerifiedPack {
 	t.Helper()
 	return newTestVerifiedPackForRegistry(t, "xpk-alpha001", "opaque-1", []byte("download-auth-payload"), func(m *Manifest) {
 		m.Capabilities = []Capability{CapabilityParseWASM, CapabilityHTTPFetch, CapabilityDownloadAuth}
+		// Credentialed fixture items live on fixture.invalid subdomains.
+		m.Domains = []DomainRule{{Host: "fixture.invalid", IncludeSubdomains: true}}
 		if mutate != nil {
 			mutate(m)
 		}
@@ -783,4 +785,128 @@ func TestTasksAdapterClaimsAndReleasesDownloadAuth(t *testing.T) {
 	if _, err := adapter.Mint(item); err == nil {
 		t.Fatal("Mint() error = nil, want claim failure on stale ref")
 	}
+}
+
+func TestDownloadAuthRegistryBindRejectsEmptyHost(t *testing.T) {
+	pack := testDownloadAuthPack(t, nil)
+	reg := NewDownloadAuthRegistry()
+	ref, err := reg.Register(6, pack.Identity, []byte("token"))
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if err := reg.Bind(6, ref, pack.Identity, ""); err == nil {
+		t.Fatal("Bind() error = nil, want empty-host rejection")
+	}
+	// A rejected bind leaves the entry unbound, so a committed end purges it.
+	reg.EndInvocation(6, true)
+	if reg.EntryCount() != 0 {
+		t.Fatalf("EntryCount() = %d, want unbound entry purged", reg.EntryCount())
+	}
+}
+
+func TestDownloadAuthRegistryReleaseSweepsExpired(t *testing.T) {
+	pack := testDownloadAuthPack(t, nil)
+	reg := NewDownloadAuthRegistry()
+	start := time.Now()
+	reg.now = func() time.Time { return start }
+
+	retainedDownloadAuthRef(t, reg, 12, pack.Identity, "files.fixture.invalid", "token")
+	reg.now = func() time.Time { return start.Add(downloadAuthEntryTTL + time.Second) }
+
+	// Release on an unrelated ref still performs the lazy expiry sweep.
+	reg.Release("dar-"+strings.Repeat("f", 32), "holder")
+	if reg.EntryCount() != 0 {
+		t.Fatalf("EntryCount() = %d, want expired entry swept by Release", reg.EntryCount())
+	}
+}
+
+func TestDownloadAuthTokenMaxFitsMaterializedHeaderLine(t *testing.T) {
+	token := strings.Repeat("a", downloadAuthTokenMaxBytes)
+	if err := ValidateAria2HeaderLine("Authorization: Bearer " + token); err != nil {
+		t.Fatalf("max-size token must materialize within the header-line cap: %v", err)
+	}
+	if err := validateDownloadAuthToken([]byte(token + "x")); err == nil {
+		t.Fatal("validateDownloadAuthToken() accepted a token that cannot materialize")
+	}
+}
+
+func TestDispatcherCredentialedLegacyItemDomainAdmission(t *testing.T) {
+	pack := testDownloadAuthPack(t, nil)
+	bindOutput := func(url string, mutate func(*ExtractedItemRef), invocation uint64) ExtractOutput {
+		ref := ExtractedItemRef{URL: url}
+		if mutate != nil {
+			mutate(&ref)
+		}
+		output := ExtractOutput{Items: []ExtractedItemRef{ref}}
+		output.SetInvocationID(invocation)
+		return output
+	}
+
+	t.Run("download auth ref inside declared domains accepted", func(t *testing.T) {
+		reg := NewDownloadAuthRegistry()
+		dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{DownloadAuth: reg})
+		ref, err := reg.Register(1, pack.Identity, []byte("token"))
+		if err != nil {
+			t.Fatalf("Register() error = %v", err)
+		}
+		output := bindOutput("https://files.fixture.invalid/file.bin", func(item *ExtractedItemRef) {
+			item.DownloadAuthRef = ref
+		}, 1)
+		items, err := dispatcher.boundItemsFromExtractOutput("https://share.fixture.invalid/x", pack, nil, output)
+		if err != nil {
+			t.Fatalf("binding error = %v, want in-domain item accepted", err)
+		}
+		if len(items) != 1 || reg.EntryCount() != 1 {
+			t.Fatalf("items = %#v entries = %d", items, reg.EntryCount())
+		}
+	})
+
+	t.Run("download auth ref outside declared domains rejected", func(t *testing.T) {
+		reg := NewDownloadAuthRegistry()
+		dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{DownloadAuth: reg})
+		ref, err := reg.Register(1, pack.Identity, []byte("token"))
+		if err != nil {
+			t.Fatalf("Register() error = %v", err)
+		}
+		output := bindOutput("https://attacker.example/x", func(item *ExtractedItemRef) {
+			item.DownloadAuthRef = ref
+		}, 1)
+		if _, err := dispatcher.boundItemsFromExtractOutput("https://share.fixture.invalid/x", pack, nil, output); err == nil || !strings.Contains(err.Error(), "declared domains") {
+			t.Fatalf("binding error = %v, want declared-domains rejection", err)
+		}
+		if reg.EntryCount() != 0 {
+			t.Fatalf("EntryCount() = %d, want failed invocation purged", reg.EntryCount())
+		}
+	})
+
+	t.Run("auth profile ref outside declared domains rejected", func(t *testing.T) {
+		dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{DownloadAuth: NewDownloadAuthRegistry()})
+		output := bindOutput("https://attacker.example/x", func(item *ExtractedItemRef) {
+			item.AuthProfileRef = "apr-fixture01"
+		}, 1)
+		if _, err := dispatcher.boundItemsFromExtractOutput("https://share.fixture.invalid/x", pack, nil, output); err == nil || !strings.Contains(err.Error(), "declared domains") {
+			t.Fatalf("binding error = %v, want declared-domains rejection", err)
+		}
+	})
+
+	t.Run("header profile ref outside declared domains rejected", func(t *testing.T) {
+		dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{DownloadAuth: NewDownloadAuthRegistry()})
+		output := bindOutput("https://attacker.example/x", func(item *ExtractedItemRef) {
+			item.HeaderProfileRef = "hpr-fixture01"
+		}, 1)
+		if _, err := dispatcher.boundItemsFromExtractOutput("https://share.fixture.invalid/x", pack, nil, output); err == nil || !strings.Contains(err.Error(), "declared domains") {
+			t.Fatalf("binding error = %v, want declared-domains rejection", err)
+		}
+	})
+
+	t.Run("uncredentialed item outside declared domains stays free", func(t *testing.T) {
+		dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{DownloadAuth: NewDownloadAuthRegistry()})
+		items, err := dispatcher.boundItemsFromExtractOutput("https://share.fixture.invalid/x", pack, nil, bindOutput("https://cdn.unrelated.test/file.bin", nil, 1))
+		if err != nil {
+			t.Fatalf("binding error = %v, want uncredentialed cross-domain item accepted", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("items = %#v", items)
+		}
+	})
 }

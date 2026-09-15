@@ -11,7 +11,10 @@ import (
 )
 
 const (
-	downloadAuthTokenMaxBytes     = 8192
+	// The materialized "Authorization: Bearer <token>" line must fit the
+	// aria2 header-line cap; the 22-byte prefix is reserved from the token
+	// budget so a registered token can always materialize.
+	downloadAuthTokenMaxBytes     = maxAria2HeaderLineBytes - len("Authorization: Bearer ")
 	downloadAuthRegistryCapacity  = 256
 	downloadAuthPendingPerInvoke  = 8
 	downloadAuthEntryTTL          = 10 * time.Minute
@@ -118,9 +121,10 @@ func (r *DownloadAuthRegistry) Bind(invocation uint64, ref string, pack Verified
 	if entry.pack != pack {
 		return errors.New("download auth ref does not belong to this pack")
 	}
-	if host != "" {
-		entry.boundHosts[host] = struct{}{}
+	if host == "" {
+		return errors.New("download auth bind requires a non-empty host")
 	}
+	entry.boundHosts[host] = struct{}{}
 	entry.bound = true
 
 	return nil
@@ -180,6 +184,7 @@ func (r *DownloadAuthRegistry) Release(ref string, holderKey string) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.sweepExpiredLocked(r.now())
 
 	entry, ok := r.entries[ref]
 	if !ok {

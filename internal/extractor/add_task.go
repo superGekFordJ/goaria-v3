@@ -446,6 +446,15 @@ func (d *AddTaskDispatcher) resolvedItemsFromExtractOutput(sourceURL string, pac
 			if parsed, err := url.Parse(ref.URL); err != nil || parsed.Scheme != "https" {
 				return nil, fmt.Errorf("item %d url must use https for credentialed downloads", i)
 			}
+			// Legacy manifests scope pack-issued credentials to the declared
+			// domains; alias manifests already passed the resolved host
+			// output policy above. Uncredentialed items keep domain freedom.
+			if !isAliasManifest(pack.Manifest) {
+				host, ok := ParseHTTPURLHost(ref.URL)
+				if !ok || !manifestMatchesHost(pack.Manifest, host) {
+					return nil, fmt.Errorf("item %d url host is outside the pack's declared domains for credentialed downloads", i)
+				}
+			}
 		}
 		if ref.DownloadAuthRef != "" {
 			if err := validateDownloadAuthRef(ref.DownloadAuthRef); err != nil {
@@ -532,6 +541,14 @@ func ValidateLeaseOutputURL(item ResolvedAddItem) error {
 	}
 	if item.HostPolicy != nil {
 		return policyAllowsOutputURL(*item.HostPolicy, item.URL)
+	}
+	if item.DownloadAuthRef != "" || item.AuthProfileRef != "" || item.HeaderProfileRef != "" {
+		// Mirror the extract-admission scope for legacy manifests: a
+		// pack-issued credential may only target the declared domains.
+		host, ok := ParseHTTPURLHost(item.URL)
+		if !ok || !manifestMatchesHost(item.PackManifest, host) {
+			return errors.New("credentialed item url host is outside the pack's declared domains")
+		}
 	}
 
 	return nil

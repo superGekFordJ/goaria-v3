@@ -416,3 +416,46 @@ func TestRunnerExtractRejectsMalformedDownloadAuthRef(t *testing.T) {
 		t.Fatal("Runner.Extract() error = nil, want malformed download_auth_ref rejection")
 	}
 }
+
+type panickingAuthResolver struct{}
+
+func (panickingAuthResolver) ResolveAuthProfile(context.Context, string, AuthProfileID, string) (ResolvedAuthSecret, error) {
+	panic("auth resolver exploded")
+}
+
+// A host-import panic mid-invocation is recovered by wazero into a call
+// error; the pending download-auth registration must still be purged rather
+// than stranded until TTL.
+func TestRunnerExtractHostImportPanicPurgesInvocationEntries(t *testing.T) {
+	fixture := buildRunnerFixtureWASM(wasmFixtureConfig{
+		abiVersion:     CurrentABIVersion,
+		matchJSON:      `{"matched":true}`,
+		extractJSON:    `{"items":[]}`,
+		memoryMinPages: 1,
+		hostImports:    []hostImportFixture{hostImportFixtureRegisterDownloadAuth, hostImportFixtureHTTPFetch},
+		extractHostCalls: []hostImportFixtureCall{
+			{Name: hostImportFixtureRegisterDownloadAuth, Request: `{"kind":"bearer","token":"guest-token"}`, Count: 1},
+			{Name: hostImportFixtureHTTPFetch, Request: `{"url":"https://api.fixture.invalid/x","auth_profile_ref":"apr-fixture01"}`, Count: 1},
+		},
+	})
+	pack := verifiedRunnerPack(t, fixture, func(values map[string]any) {
+		values["capabilities"] = []string{
+			string(CapabilityParseWASM),
+			string(CapabilityHTTPFetch),
+			string(CapabilityAuthProfile),
+			string(CapabilityDownloadAuth),
+		}
+	})
+	registry := NewDownloadAuthRegistry()
+	runner := NewRunnerWithConfig(RunnerConfig{
+		HTTPBroker:   testHTTPBroker(&hostImportRecordingTransport{statusCode: http.StatusOK}, panickingAuthResolver{}),
+		DownloadAuth: registry,
+	})
+
+	if _, err := runner.Extract(context.Background(), pack, ExtractInput{URL: "https://share.fixture.invalid/s/abc"}); err == nil {
+		t.Fatal("Runner.Extract() error = nil, want panicking host import surfaced as error")
+	}
+	if registry.EntryCount() != 0 {
+		t.Fatalf("EntryCount() = %d, want pending registration purged after host-import panic", registry.EntryCount())
+	}
+}

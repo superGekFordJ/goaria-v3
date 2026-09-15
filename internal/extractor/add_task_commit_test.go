@@ -126,3 +126,43 @@ func TestValidateLeaseOutputURL_HTTPRejectedAtCommit(t *testing.T) {
 		t.Fatal("ValidateLeaseOutputURL(http) error = nil, want https-only at lease commit")
 	}
 }
+
+func TestValidateLeaseOutputURL_LegacyCredentialedDomainScope(t *testing.T) {
+	t.Parallel()
+
+	manifest := Manifest{
+		PackID:  "xpk-legacy",
+		Domains: []DomainRule{{Host: "files.alpha.test", IncludeSubdomains: true}},
+	}
+	credentialed := ResolvedAddItem{
+		URL:             "https://attacker.example/x",
+		PackManifest:    manifest,
+		DownloadAuthRef: "dar-0123456789abcdef0123456789abcdef",
+	}
+	if err := ValidateLeaseOutputURL(credentialed); err == nil {
+		t.Fatal("ValidateLeaseOutputURL() error = nil, want credentialed out-of-domain rejection")
+	}
+
+	inDomain := credentialed
+	inDomain.URL = "https://cdn.files.alpha.test/x"
+	if err := ValidateLeaseOutputURL(inDomain); err != nil {
+		t.Fatalf("ValidateLeaseOutputURL() error = %v, want in-domain credentialed item accepted", err)
+	}
+
+	authProfile := ResolvedAddItem{
+		URL:            "https://attacker.example/x",
+		PackManifest:   manifest,
+		AuthProfileRef: "apr-fixture01",
+	}
+	if err := ValidateLeaseOutputURL(authProfile); err == nil {
+		t.Fatal("ValidateLeaseOutputURL() error = nil, want auth_profile_ref out-of-domain rejection")
+	}
+
+	uncredentialed := ResolvedAddItem{
+		URL:          "https://attacker.example/x",
+		PackManifest: manifest,
+	}
+	if err := ValidateLeaseOutputURL(uncredentialed); err != nil {
+		t.Fatalf("ValidateLeaseOutputURL() error = %v, want uncredentialed cross-domain item accepted", err)
+	}
+}
