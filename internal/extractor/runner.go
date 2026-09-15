@@ -2,6 +2,8 @@ package extractor
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +34,13 @@ type abiInvocation struct {
 	op     api.Function
 }
 
+// invocationScope identifies one runOperation for download-auth ownership:
+// entries registered by the guest are tagged with it and purged or retained
+// when the invocation ends.
+type invocationScope struct {
+	id uint64
+}
+
 func NewRunner() *Runner {
 	return NewRunnerWithConfig(RunnerConfig{})
 }
@@ -57,7 +66,8 @@ func (r *Runner) Match(ctx context.Context, pack VerifiedPack, input MatchInput)
 	if err != nil {
 		return MatchOutput{}, fmt.Errorf("encode match input: %w", err)
 	}
-	outputBytes, err := r.runOperation(ctx, pack, abiOperationMatch, inputBytes)
+	outputBytes, scope, err := r.runOperation(ctx, pack, abiOperationMatch, inputBytes)
+	defer r.endInvocation(scope, false)
 	if err != nil {
 		return MatchOutput{}, err
 	}
@@ -83,40 +93,58 @@ func (r *Runner) Extract(ctx context.Context, pack VerifiedPack, input ExtractIn
 	if err != nil {
 		return ExtractOutput{}, fmt.Errorf("encode extract input: %w", err)
 	}
-	outputBytes, err := r.runOperation(ctx, pack, abiOperationExtract, inputBytes)
+	outputBytes, scope, err := r.runOperation(ctx, pack, abiOperationExtract, inputBytes)
 	if err != nil {
+		r.endInvocation(scope, false)
 		return ExtractOutput{}, err
 	}
 
 	output, err := DecodeExtractOutputStrict(outputBytes)
 	if err != nil {
+		r.endInvocation(scope, false)
 		return ExtractOutput{}, fmt.Errorf("decode extract output: %w", err)
 	}
 	if err := ValidateExtractOutput(output, pack.Manifest.ResourceLimits); err != nil {
+		r.endInvocation(scope, false)
 		return ExtractOutput{}, fmt.Errorf("validate extract output: %w", err)
 	}
 	if isAliasManifest(pack.Manifest) && len(output.Items) > 0 {
 		policy, err := resolveAliasHostPolicy(ctx, r.hostImports.HostPolicyResolver, pack.Identity, pack.Manifest)
 		if err != nil {
+			r.endInvocation(scope, false)
 			return ExtractOutput{}, fmt.Errorf("validate extract output: %w", err)
 		}
 		for i, item := range output.Items {
 			if err := policyAllowsOutputURL(policy, item.URL); err != nil {
+				r.endInvocation(scope, false)
 				return ExtractOutput{}, fmt.Errorf("validate extract output: item %d url: %w", i, err)
 			}
 		}
 	}
 
+	output.SetInvocationID(scope.id)
 	return output, nil
 }
 
-func (r *Runner) runOperation(ctx context.Context, pack VerifiedPack, operation abiOperation, inputBytes []byte) ([]byte, error) {
+func (r *Runner) endInvocation(scope *invocationScope, committed bool) {
+	if r == nil || scope == nil || r.hostImports.DownloadAuth == nil {
+		return
+	}
+	r.hostImports.DownloadAuth.EndInvocation(scope.id, committed)
+}
+
+func (r *Runner) runOperation(ctx context.Context, pack VerifiedPack, operation abiOperation, inputBytes []byte) ([]byte, *invocationScope, error) {
 	if err := validateRunnablePack(pack); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(inputBytes) == 0 || len(inputBytes) > maxABIInputBytes {
-		return nil, fmt.Errorf("abi input length must be between 1 and %d bytes", maxABIInputBytes)
+		return nil, nil, fmt.Errorf("abi input length must be between 1 and %d bytes", maxABIInputBytes)
 	}
+	invocationID, err := mintInvocationID()
+	if err != nil {
+		return nil, nil, fmt.Errorf("mint invocation id: %w", err)
+	}
+	scope := &invocationScope{id: invocationID}
 
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(pack.Manifest.ResourceLimits.TimeoutMillis)*time.Millisecond)
 	defer cancel()
@@ -138,30 +166,30 @@ func (r *Runner) runOperation(ctx context.Context, pack VerifiedPack, operation 
 
 	budget, err := NewHostCallBudget(pack.Manifest.ResourceLimits.MaxHostCalls)
 	if err != nil {
-		return nil, err
+		return nil, scope, err
 	}
-	bridge := newHostImportBridge(pack, budget, r.hostImports)
+	bridge := newHostImportBridge(pack, budget, r.hostImports, scope.id)
 	if err := bridge.instantiateHostImports(execCtx, runtime); err != nil {
-		return nil, fmt.Errorf("instantiate host imports: %w", err)
+		return nil, scope, fmt.Errorf("instantiate host imports: %w", err)
 	}
 
 	moduleConfig := wazero.NewModuleConfig().WithName("").WithStartFunctions()
 	mod, err := runtime.InstantiateWithConfig(execCtx, pack.Payload, moduleConfig)
 	if err != nil {
-		return nil, fmt.Errorf("instantiate wasm module: %w", err)
+		return nil, scope, fmt.Errorf("instantiate wasm module: %w", err)
 	}
 
 	invocation, err := validateGuestExports(mod, operation)
 	if err != nil {
-		return nil, err
+		return nil, scope, err
 	}
 	if err := verifyGuestABIVersion(execCtx, mod); err != nil {
-		return nil, err
+		return nil, scope, err
 	}
 
 	inputPtr, err := allocGuestBuffer(execCtx, invocation.alloc, uint32(len(inputBytes)))
 	if err != nil {
-		return nil, fmt.Errorf("allocate input buffer: %w", err)
+		return nil, scope, fmt.Errorf("allocate input buffer: %w", err)
 	}
 	inputAllocated := true
 	var primaryErr error
@@ -172,44 +200,56 @@ func (r *Runner) runOperation(ctx context.Context, pack VerifiedPack, operation 
 	}()
 
 	if !invocation.memory.Write(inputPtr, inputBytes) {
-		return nil, errors.New("write input buffer: invalid guest memory range")
+		return nil, scope, errors.New("write input buffer: invalid guest memory range")
 	}
 
 	results, err := invocation.op.Call(execCtx, uint64(inputPtr), uint64(uint32(len(inputBytes))))
 	if err != nil {
 		primaryErr = fmt.Errorf("call %s: %w", operation, err)
-		return nil, primaryErr
+		return nil, scope, primaryErr
 	}
 	if len(results) != 1 {
-		return nil, fmt.Errorf("call %s returned %d results, want 1", operation, len(results))
+		return nil, scope, fmt.Errorf("call %s returned %d results, want 1", operation, len(results))
 	}
 
 	outputPtr, outputLen := unpackABIResult(results[0])
 	if outputLen == 0 {
-		return nil, errors.New("guest returned empty output")
+		return nil, scope, errors.New("guest returned empty output")
 	}
 	if int64(outputLen) > pack.Manifest.ResourceLimits.MaxOutputBytes {
-		return nil, errors.New("guest output exceeds max_output_bytes")
+		return nil, scope, errors.New("guest output exceeds max_output_bytes")
 	}
 	if outputPtr == 0 {
-		return nil, errors.New("guest returned null output pointer")
+		return nil, scope, errors.New("guest returned null output pointer")
 	}
 
 	outputView, ok := invocation.memory.Read(outputPtr, outputLen)
 	if !ok {
-		return nil, errors.New("read output buffer: invalid guest memory range")
+		return nil, scope, errors.New("read output buffer: invalid guest memory range")
 	}
 	outputBytes := cloneBytes(outputView)
 
 	if err := callGuestFree(execCtx, invocation.free, outputPtr, outputLen); err != nil {
-		return nil, fmt.Errorf("free output buffer: %w", err)
+		return nil, scope, fmt.Errorf("free output buffer: %w", err)
 	}
 	if err := callGuestFree(execCtx, invocation.free, inputPtr, uint32(len(inputBytes))); err != nil {
-		return nil, fmt.Errorf("free input buffer: %w", err)
+		return nil, scope, fmt.Errorf("free input buffer: %w", err)
 	}
 	inputAllocated = false
 
-	return outputBytes, primaryErr
+	return outputBytes, scope, primaryErr
+}
+
+func mintInvocationID() (uint64, error) {
+	var raw [8]byte
+	for {
+		if _, err := rand.Read(raw[:]); err != nil {
+			return 0, err
+		}
+		if id := binary.LittleEndian.Uint64(raw[:]); id != 0 {
+			return id, nil
+		}
+	}
 }
 
 func validateRunnablePack(pack VerifiedPack) error {

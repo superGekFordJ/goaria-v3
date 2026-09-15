@@ -163,6 +163,8 @@ func NewEmbeddedReleaseAddTaskDispatcher(config EmbeddedReleaseDispatcherConfig)
 	policy.TrustedPublicKeys = EmbeddedReleaseTrustedPublicKeys()
 	registry, _ := NewRegistryWithHostPolicyResolver(accepted, policy, config.HostPolicyResolver)
 
+	downloadAuth := NewDownloadAuthRegistry()
+
 	return NewAddTaskDispatcher(AddTaskDispatcherConfig{
 		Registry: registry,
 		Runner: NewRunnerWithConfig(RunnerConfig{
@@ -172,9 +174,11 @@ func NewEmbeddedReleaseAddTaskDispatcher(config EmbeddedReleaseDispatcherConfig)
 			}),
 			AuthResolver:       config.AuthResolver,
 			HostPolicyResolver: config.HostPolicyResolver,
+			DownloadAuth:       downloadAuth,
 		}),
 		AuthResolver:   config.AuthResolver,
 		HeaderResolver: config.HeaderResolver,
+		DownloadAuth:   downloadAuth,
 	}), nil
 }
 

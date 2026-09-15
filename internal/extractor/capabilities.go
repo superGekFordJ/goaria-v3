@@ -2,6 +2,7 @@ package extractor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -17,6 +18,7 @@ var tokenLikeQueryKeys = map[string]struct{}{
 	"auth":         {},
 	"credential":   {},
 	"key":          {},
+	"password":     {},
 	"policy":       {},
 	"secret":       {},
 	"sig":          {},
@@ -37,6 +39,29 @@ type CapabilityContext struct {
 
 func ManifestHasCapability(manifest Manifest, capability Capability) bool {
 	return slices.Contains(manifest.Capabilities, capability)
+}
+
+const (
+	downloadAuthRefPrefix   = "dar-"
+	downloadAuthRefHexBytes = 32
+)
+
+// validateDownloadAuthRef enforces the opaque ref wire shape: "dar-" plus
+// 32 lowercase hex characters. Raw tokens must never appear in this field.
+func validateDownloadAuthRef(ref string) error {
+	if len(ref) != len(downloadAuthRefPrefix)+downloadAuthRefHexBytes {
+		return errors.New("download_auth_ref must be dar- followed by 32 lowercase hex characters")
+	}
+	if !strings.HasPrefix(ref, downloadAuthRefPrefix) {
+		return errors.New("download_auth_ref must start with dar-")
+	}
+	for _, r := range ref[len(downloadAuthRefPrefix):] {
+		if !isLowerHex(r) {
+			return fmt.Errorf("download_auth_ref contains invalid character %q", r)
+		}
+	}
+
+	return nil
 }
 
 func ValidateCapabilityURL(ctx CapabilityContext, rawURL string) error {

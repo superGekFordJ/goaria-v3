@@ -77,6 +77,7 @@ func (a *extensionBatchAdapter) HandleCommit(ctx context.Context, env extension.
 		for _, ref := range mintedRefs {
 			a.minter.Release(ref)
 		}
+		a.lease.releaseConsumedClaims(token)
 	}()
 
 	needsRestore := make(map[string]struct{}, len(clones))
@@ -110,7 +111,11 @@ func (a *extensionBatchAdapter) HandleCommit(ctx context.Context, env extension.
 			errorsByItem[id] = extension.CommitItemErrorNotAllowed
 			continue
 		}
-		minted := a.minter.Mint(item)
+		minted, err := a.minter.Mint(item)
+		if err != nil {
+			errorsByItem[id] = extension.CommitItemErrorNotAllowed
+			continue
+		}
 		mintedRefs = append(mintedRefs, minted.Ref)
 		prepared = append(prepared, tasks.PreparedAddItem{Item: minted, DisplayKey: id})
 	}

@@ -132,6 +132,12 @@ func PreflightWASMModule(ctx context.Context, pack VerifiedPack) error {
 			if !manifestHasCapability(pack.Manifest, CapabilityAuthProfile) {
 				return fmt.Errorf("wasm module imports %s without manifest capability %s", HostImportAuthProfileStatus, CapabilityAuthProfile)
 			}
+		case HostImportRegisterDownloadAuth:
+			if !manifestHasCapability(pack.Manifest, CapabilityDownloadAuth) {
+				return fmt.Errorf("wasm module imports %s without manifest capability %s", HostImportRegisterDownloadAuth, CapabilityDownloadAuth)
+			}
+		case HostImportHostTime:
+			// No capability required: the snapshot carries no secrets.
 		default:
 			return fmt.Errorf("unexpected import function %q", fnName)
 		}
@@ -149,6 +155,16 @@ func PreflightWASMModule(ctx context.Context, pack VerifiedPack) error {
 			stack[0] = 0
 		}
 	}), []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{api.ValueTypeI64}).Export(HostImportAuthProfileStatus).
+		NewFunctionBuilder().WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		if len(stack) > 0 {
+			stack[0] = 0
+		}
+	}), []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{api.ValueTypeI64}).Export(HostImportRegisterDownloadAuth).
+		NewFunctionBuilder().WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		if len(stack) > 0 {
+			stack[0] = 0
+		}
+	}), []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{api.ValueTypeI64}).Export(HostImportHostTime).
 		Instantiate(preflightCtx)
 	if err != nil {
 		return fmt.Errorf("instantiate inert host imports: %w", err)

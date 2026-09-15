@@ -80,6 +80,10 @@ type HTTPFetchRequest struct {
 	AuthProfileID    AuthProfileID
 	Timeout          time.Duration
 	MaxResponseBytes int64
+	// OmitBrowserContext replaces the request-scoped browser context with an
+	// empty one for this fetch: no grant match, no cookie attach, no typed
+	// UA/Accept-Language/Referer fields.
+	OmitBrowserContext bool
 }
 
 type HTTPFetchResponse struct {
@@ -212,6 +216,14 @@ func (b *HTTPBroker) fetch(ctx context.Context, request HTTPFetchRequest, knownS
 		if !isExtendedBodyContentTypeAllowed(validatedHeaders.Get("Content-Type")) {
 			return HTTPFetchResponse{}, errors.New("request body requires a single application/json or application/x-www-form-urlencoded content type")
 		}
+	}
+	if request.OmitBrowserContext && request.AuthProfileID != "" {
+		return HTTPFetchResponse{}, errors.New("omit_browser_context forbids auth_profile_ref")
+	}
+	if request.OmitBrowserContext {
+		// Overwrite the context value so every reader — grant matching,
+		// cookie attach, typed fields — sees an empty browser context.
+		ctx = WithBrowserContext(ctx, BrowserRequestContext{})
 	}
 	browserCtx := browserContextFromContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, b.effectiveTimeout(request))

@@ -961,7 +961,7 @@ func newTestHostImportBridgeForPack(t *testing.T, pack VerifiedPack, broker *HTT
 		HTTPBroker:         broker,
 		AuthResolver:       resolver,
 		HostPolicyResolver: hostPolicy,
-	})
+	}, 1)
 }
 
 func hostImportManifest() Manifest {

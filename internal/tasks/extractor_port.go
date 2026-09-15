@@ -21,13 +21,16 @@ type ResolvedItem struct {
 	SizeBytes        int64
 	AuthProfileRef   string
 	HeaderProfileRef string
-	PackID           string
-	PackVersion      string
-	AssetSHA256      string
-	ManifestSHA256   string
-	PayloadSHA256    string
-	SignatureSHA256  string
-	PublicKeySHA256  string
+	// DownloadAuthRef carries the opaque pack-registered download-auth ref;
+	// the bearer token itself never crosses this boundary.
+	DownloadAuthRef string `json:"download_auth_ref,omitempty"`
+	PackID          string
+	PackVersion     string
+	AssetSHA256     string
+	ManifestSHA256  string
+	PayloadSHA256   string
+	SignatureSHA256 string
+	PublicKeySHA256 string
 }
 
 // Resolution is the neutral result of resolving a URL through the extractor.
@@ -96,6 +99,9 @@ type ExtractorAdapter interface {
 	RefreshOnRecoverablePreflightFailure(ctx context.Context, request AuthRequest, guard RefreshGuard) (RefreshResult, error)
 	RefreshOnGenericFailure(ctx context.Context, request AuthRequest, guard RefreshGuard) (RefreshResult, error)
 	ValidateItemAuthPolicy(item ResolvedItem) error
+	// Release drops the adapter-internal state held under an item ref,
+	// including any download-auth holder claim.
+	Release(ref string)
 	NewRefreshGuard() RefreshGuard
 	RedactError(err error) string
 }

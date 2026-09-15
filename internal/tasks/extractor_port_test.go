@@ -45,6 +45,8 @@ func (a *fakePortAdapter) ValidateItemAuthPolicy(_ ResolvedItem) error {
 	return nil
 }
 
+func (a *fakePortAdapter) Release(_ string) {}
+
 func (a *fakePortAdapter) NewRefreshGuard() RefreshGuard {
 	return nil
 }

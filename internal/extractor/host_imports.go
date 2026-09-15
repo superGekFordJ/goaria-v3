@@ -27,12 +27,14 @@ type RunnerConfig struct {
 	HTTPBroker         *HTTPBroker
 	AuthResolver       AuthProfileResolver
 	HostPolicyResolver HostPolicyResolver
+	DownloadAuth       *DownloadAuthRegistry
 }
 
 type HostImportConfig struct {
 	HTTPBroker         *HTTPBroker
 	AuthResolver       AuthProfileResolver
 	HostPolicyResolver HostPolicyResolver
+	DownloadAuth       *DownloadAuthRegistry
 }
 
 type HostHTTPFetchRequest struct {
@@ -46,6 +48,9 @@ type HostHTTPFetchRequest struct {
 	AuthProfileRef   string            `json:"auth_profile_ref,omitempty"`
 	TimeoutMillis    int               `json:"timeout_millis,omitempty"`
 	MaxResponseBytes int64             `json:"max_response_bytes,omitempty"`
+	// OmitBrowserContext opts a self-authenticated fetch out of browser
+	// grant/cookie matching and typed browser fields.
+	OmitBrowserContext bool `json:"omit_browser_context,omitempty"`
 }
 
 type HostHTTPFetchResponse struct {
@@ -75,6 +80,28 @@ type HostAuthProfileStatusResponse struct {
 	Message         string         `json:"message,omitempty"`
 }
 
+type HostRegisterDownloadAuthRequest struct {
+	Kind  string `json:"kind"`
+	Token string `json:"token"`
+}
+
+type HostRegisterDownloadAuthResponse struct {
+	OK              bool   `json:"ok"`
+	DownloadAuthRef string `json:"download_auth_ref,omitempty"`
+	ErrorCode       string `json:"error_code,omitempty"`
+	Message         string `json:"message,omitempty"`
+}
+
+// HostTimeRequest is intentionally empty: any field is an invalid_request.
+type HostTimeRequest struct{}
+
+type HostTimeResponse struct {
+	OK        bool   `json:"ok"`
+	UnixSecs  int64  `json:"unix_secs,omitempty"`
+	ErrorCode string `json:"error_code,omitempty"`
+	Message   string `json:"message,omitempty"`
+}
+
 type hostImportBridge struct {
 	manifest         Manifest
 	packIdentity     VerifiedPackIdentity
@@ -83,6 +110,9 @@ type hostImportBridge struct {
 	httpBroker       *HTTPBroker
 	authResolver     AuthProfileResolver
 	hostPolicy       HostPolicyResolver
+	downloadAuth     *DownloadAuthRegistry
+	invocation       uint64
+	hostTimeSecs     int64
 	maxRequestBytes  int
 	maxResponseBytes int
 }
@@ -102,7 +132,7 @@ type hostImportModeFields struct {
 	Params          map[string]string
 }
 
-func newHostImportBridge(pack VerifiedPack, budget *HostCallBudget, config HostImportConfig) *hostImportBridge {
+func newHostImportBridge(pack VerifiedPack, budget *HostCallBudget, config HostImportConfig, invocation uint64) *hostImportBridge {
 	return &hostImportBridge{
 		manifest:         pack.Manifest,
 		packIdentity:     pack.Identity,
@@ -111,6 +141,9 @@ func newHostImportBridge(pack VerifiedPack, budget *HostCallBudget, config HostI
 		httpBroker:       config.HTTPBroker,
 		authResolver:     config.AuthResolver,
 		hostPolicy:       config.HostPolicyResolver,
+		downloadAuth:     config.DownloadAuth,
+		invocation:       invocation,
+		hostTimeSecs:     time.Now().Unix(),
 		maxRequestBytes:  maxHostImportRequestBytes,
 		maxResponseBytes: maxHostImportResponseBytes,
 	}
@@ -140,6 +173,9 @@ func (b *hostImportBridge) executeHTTPFetch(ctx context.Context, requestBytes []
 	if err != nil {
 		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
 	}
+	if request.OmitBrowserContext && request.AuthProfileRef != "" {
+		return encodeHostHTTPFetchResponse(HostHTTPFetchResponse{OK: false, ErrorCode: "invalid_request", Message: "omit_browser_context forbids auth_profile_ref"}, b.responseCap())
+	}
 	mode, params, err := determineHostImportRequestMode(b.manifest, hostImportModeFields{
 		URL:             request.URL,
 		BrokerPolicyRef: request.BrokerPolicyRef,
@@ -166,16 +202,17 @@ func (b *hostImportBridge) executeHTTPFetch(ctx context.Context, requestBytes []
 		timeout = time.Duration(request.TimeoutMillis) * time.Millisecond
 	}
 	response, err := b.httpBroker.Fetch(ctx, HTTPFetchRequest{
-		PackID:           b.packID,
-		Manifest:         b.manifest,
-		PackIdentity:     b.packIdentity,
-		Method:           method,
-		URL:              request.URL,
-		Headers:          request.Headers,
-		Body:             body,
-		AuthProfileID:    AuthProfileID(request.AuthProfileRef),
-		Timeout:          timeout,
-		MaxResponseBytes: request.MaxResponseBytes,
+		PackID:             b.packID,
+		Manifest:           b.manifest,
+		PackIdentity:       b.packIdentity,
+		Method:             method,
+		URL:                request.URL,
+		Headers:            request.Headers,
+		Body:               body,
+		AuthProfileID:      AuthProfileID(request.AuthProfileRef),
+		Timeout:            timeout,
+		MaxResponseBytes:   request.MaxResponseBytes,
+		OmitBrowserContext: request.OmitBrowserContext,
 	})
 	if err != nil {
 		if request.AuthProfileRef != "" {
@@ -222,16 +259,17 @@ func (b *hostImportBridge) executeHTTPFetchRefMode(ctx context.Context, request 
 	}
 	maxResponseBytes := minPositiveInt64(request.MaxResponseBytes, endpointMaxResponseBytes)
 	response, err := b.httpBroker.Fetch(ctx, HTTPFetchRequest{
-		PackID:           b.packID,
-		Manifest:         b.manifest,
-		PackIdentity:     b.packIdentity,
-		Method:           method,
-		URL:              expandedURL,
-		Headers:          request.Headers,
-		Body:             body,
-		AuthProfileID:    AuthProfileID(request.AuthProfileRef),
-		Timeout:          timeout,
-		MaxResponseBytes: maxResponseBytes,
+		PackID:             b.packID,
+		Manifest:           b.manifest,
+		PackIdentity:       b.packIdentity,
+		Method:             method,
+		URL:                expandedURL,
+		Headers:            request.Headers,
+		Body:               body,
+		AuthProfileID:      AuthProfileID(request.AuthProfileRef),
+		Timeout:            timeout,
+		MaxResponseBytes:   maxResponseBytes,
+		OmitBrowserContext: request.OmitBrowserContext,
 	})
 	if err != nil {
 		if request.AuthProfileRef != "" {
@@ -356,6 +394,58 @@ func (b *hostImportBridge) executeAuthProfileStatusRefMode(ctx context.Context, 
 	}, b.responseCap())
 }
 
+func (b *hostImportBridge) executeRegisterDownloadAuth(ctx context.Context, requestBytes []byte) []byte {
+	if err := b.consumeBudget(); err != nil {
+		return encodeBoundedHostImportResponse(HostRegisterDownloadAuthResponse{OK: false, ErrorCode: "budget_exhausted", Message: RedactSensitive(err.Error())}, b.responseCap())
+	}
+
+	var request HostRegisterDownloadAuthRequest
+	if err := b.decodeRequestStrict(requestBytes, &request); err != nil {
+		return encodeBoundedHostImportResponse(HostRegisterDownloadAuthResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
+	}
+	if request.Kind != string(AuthSecretKindBearer) {
+		return encodeBoundedHostImportResponse(HostRegisterDownloadAuthResponse{OK: false, ErrorCode: "invalid_request", Message: "kind must be bearer"}, b.responseCap())
+	}
+	if err := validateDownloadAuthToken([]byte(request.Token)); err != nil {
+		return encodeBoundedHostImportResponse(HostRegisterDownloadAuthResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
+	}
+	if !ManifestHasCapability(b.manifest, CapabilityDownloadAuth) {
+		return encodeBoundedHostImportResponse(HostRegisterDownloadAuthResponse{OK: false, ErrorCode: "policy_denied", Message: "pack is not allowed to register download auth"}, b.responseCap())
+	}
+	if isAliasManifest(b.manifest) {
+		policy, err := resolveAliasHostPolicy(ctx, b.effectiveHostPolicyResolver(), b.packIdentity, b.manifest)
+		if err != nil || !policyAllowsCapability(policy, CapabilityDownloadAuth) {
+			return encodeBoundedHostImportResponse(HostRegisterDownloadAuthResponse{OK: false, ErrorCode: "policy_denied", Message: "download auth registration is not allowed by alias host policy"}, b.responseCap())
+		}
+	}
+	if b.downloadAuth == nil {
+		return encodeBoundedHostImportResponse(HostRegisterDownloadAuthResponse{OK: false, ErrorCode: "not_configured", Message: "download auth registry is not configured"}, b.responseCap())
+	}
+
+	ref, err := b.downloadAuth.Register(b.invocation, b.packIdentity, []byte(request.Token))
+	if err != nil {
+		if errors.Is(err, ErrDownloadAuthRegistryFull) {
+			return encodeBoundedHostImportResponse(HostRegisterDownloadAuthResponse{OK: false, ErrorCode: "registry_full", Message: "download auth registry is full"}, b.responseCap())
+		}
+		return encodeBoundedHostImportResponse(HostRegisterDownloadAuthResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
+	}
+
+	return encodeBoundedHostImportResponse(HostRegisterDownloadAuthResponse{OK: true, DownloadAuthRef: ref}, b.responseCap())
+}
+
+func (b *hostImportBridge) executeHostTime(_ context.Context, requestBytes []byte) []byte {
+	if err := b.consumeBudget(); err != nil {
+		return encodeBoundedHostImportResponse(HostTimeResponse{OK: false, ErrorCode: "budget_exhausted", Message: RedactSensitive(err.Error())}, b.responseCap())
+	}
+
+	var request HostTimeRequest
+	if err := b.decodeRequestStrict(requestBytes, &request); err != nil {
+		return encodeBoundedHostImportResponse(HostTimeResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
+	}
+
+	return encodeBoundedHostImportResponse(HostTimeResponse{OK: true, UnixSecs: b.hostTimeSecs}, b.responseCap())
+}
+
 func (b *hostImportBridge) instantiateHostImports(ctx context.Context, runtime wazero.Runtime) error {
 	if b == nil {
 		return errors.New("host import bridge is nil")
@@ -368,6 +458,12 @@ func (b *hostImportBridge) instantiateHostImports(ctx context.Context, runtime w
 		NewFunctionBuilder().WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
 		b.callHostImport(ctx, mod, stack, b.executeAuthProfileStatus)
 	}), []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{api.ValueTypeI64}).Export(HostImportAuthProfileStatus).
+		NewFunctionBuilder().WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		b.callHostImport(ctx, mod, stack, b.executeRegisterDownloadAuth)
+	}), []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{api.ValueTypeI64}).Export(HostImportRegisterDownloadAuth).
+		NewFunctionBuilder().WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, mod api.Module, stack []uint64) {
+		b.callHostImport(ctx, mod, stack, b.executeHostTime)
+	}), []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{api.ValueTypeI64}).Export(HostImportHostTime).
 		Instantiate(ctx)
 
 	return err

@@ -11,6 +11,9 @@ const (
 	// headers on top of basic fetch; declaring it requires cap.http.fetch.
 	CapabilityHTTPFetchExtended Capability = "cap.http.fetch.extended"
 	CapabilityAuthProfile       Capability = "cap.auth.profile"
+	// CapabilityDownloadAuth lets a pack register a self-minted bearer
+	// credential for the materialized download Authorization header.
+	CapabilityDownloadAuth Capability = "cap.download.auth"
 )
 
 type Manifest struct {

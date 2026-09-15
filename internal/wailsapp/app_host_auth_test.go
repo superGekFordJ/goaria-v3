@@ -1236,6 +1236,8 @@ func (fakeExtractorAdapter) ValidateItemAuthPolicy(tasks.ResolvedItem) error {
 	return nil
 }
 
+func (fakeExtractorAdapter) Release(string) {}
+
 func (fakeExtractorAdapter) NewRefreshGuard() tasks.RefreshGuard {
 	return nil
 }

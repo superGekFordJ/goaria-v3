@@ -22,6 +22,7 @@ func DefaultTrustPolicy() TrustPolicy {
 			CapabilityHTTPFetch:         {},
 			CapabilityHTTPFetchExtended: {},
 			CapabilityAuthProfile:       {},
+			CapabilityDownloadAuth:      {},
 		},
 		MaxResourceLimits: ResourceLimits{
 			TimeoutMillis:    10_000,

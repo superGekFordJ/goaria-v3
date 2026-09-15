@@ -63,10 +63,16 @@ type commitReceipt struct {
 	result extension.CommitResult
 }
 
+type downloadAuthClaim struct {
+	ref string
+	key string
+}
+
 type leaseRestoreToken struct {
-	sessionID string
-	inserted  time.Time
-	epoch     uint64
+	sessionID      string
+	inserted       time.Time
+	epoch          uint64
+	consumedClaims []downloadAuthClaim
 }
 
 const (
@@ -113,6 +119,9 @@ func (a *extensionResolveAdapter) Invalidate() {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	for sessionID, session := range a.sessions {
+		a.releaseSessionItemsLocked(sessionID, session)
+	}
 	a.epoch++
 	a.sessions = make(map[string]*leasedResolveSession)
 	a.receipts = make(map[string]commitReceipt)
@@ -121,6 +130,7 @@ func (a *extensionResolveAdapter) Invalidate() {
 		a.extractCancel()
 	}
 	a.extractCtx, a.extractCancel = context.WithCancel(context.Background())
+	a.dispatcher.InvalidateDownloadAuth()
 }
 
 func (a *extensionResolveAdapter) RewriteCachedResolve(cached []byte) []byte {
@@ -271,7 +281,10 @@ func (a *extensionResolveAdapter) mintSession(resolution extractor.AddTaskResolu
 		return extension.ResolveResult{ErrorCode: extension.ErrCodeUnavailable}
 	}
 	leased.epoch = a.epoch
-	a.insertSessionLocked(sessionID, leased)
+	if err := a.insertSessionLocked(sessionID, leased); err != nil {
+		a.mu.Unlock()
+		return extension.ResolveResult{ErrorCode: extension.ErrCodeUnavailable}
+	}
 	a.mu.Unlock()
 
 	return extension.ResolveResult{
@@ -283,18 +296,44 @@ func (a *extensionResolveAdapter) mintSession(resolution extractor.AddTaskResolu
 	}
 }
 
-func (a *extensionResolveAdapter) insertSessionLocked(id string, session *leasedResolveSession) {
+// insertSessionLocked stores the session and claims one "sess:" download-auth
+// holder per item. A claim failure drops the session and releases the claims
+// already taken for it.
+func (a *extensionResolveAdapter) insertSessionLocked(id string, session *leasedResolveSession) error {
 	now := time.Now()
 	a.evictExpiredLocked(now)
 	for len(a.sessions) >= maxResolveSessions {
 		a.evictLRULocked()
 	}
 	a.sessions[id] = session
+	for itemID, item := range session.items {
+		if err := a.claimSessionItemLocked(id, itemID, item); err != nil {
+			a.releaseSessionItemsLocked(id, session)
+			delete(a.sessions, id)
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (a *extensionResolveAdapter) claimSessionItemLocked(sessionID, itemID string, item extractor.ResolvedAddItem) error {
+	return a.dispatcher.ClaimDownloadAuth(item.DownloadAuthRef, "sess:"+sessionID+":"+itemID)
+}
+
+func (a *extensionResolveAdapter) releaseSessionItemsLocked(sessionID string, session *leasedResolveSession) {
+	if session == nil {
+		return
+	}
+	for itemID, item := range session.items {
+		a.dispatcher.ReleaseDownloadAuth(item.DownloadAuthRef, "sess:"+sessionID+":"+itemID)
+	}
 }
 
 func (a *extensionResolveAdapter) evictExpiredLocked(now time.Time) {
 	for id, session := range a.sessions {
 		if now.Sub(session.inserted) >= resolveSessionTTL {
+			a.releaseSessionItemsLocked(id, session)
 			delete(a.sessions, id)
 		}
 	}
@@ -321,6 +360,7 @@ func (a *extensionResolveAdapter) evictLRULocked() {
 		}
 	}
 	if oldestID != "" {
+		a.releaseSessionItemsLocked(oldestID, a.sessions[oldestID])
 		delete(a.sessions, oldestID)
 	}
 }
@@ -336,6 +376,7 @@ func (a *extensionResolveAdapter) sessionLive(sessionID string) bool {
 		return false
 	}
 	if session.epoch != a.epoch || time.Since(session.inserted) >= resolveSessionTTL {
+		a.releaseSessionItemsLocked(sessionID, session)
 		delete(a.sessions, sessionID)
 		return false
 	}
@@ -355,6 +396,7 @@ func (a *extensionResolveAdapter) lookupLeasedItem(sessionID, itemID string) (ex
 		return extractor.ResolvedAddItem{}, false
 	}
 	if session.epoch != a.epoch || time.Since(session.inserted) >= resolveSessionTTL {
+		a.releaseSessionItemsLocked(sessionID, session)
 		delete(a.sessions, sessionID)
 		return extractor.ResolvedAddItem{}, false
 	}
@@ -378,6 +420,7 @@ func (a *extensionResolveAdapter) consumeLeasedItems(sessionID string, itemIDs [
 		return nil, leaseRestoreToken{}, extension.ErrCodeSessionExpired
 	}
 	if session.epoch != a.epoch || time.Since(session.inserted) >= resolveSessionTTL {
+		a.releaseSessionItemsLocked(sessionID, session)
 		delete(a.sessions, sessionID)
 		return nil, leaseRestoreToken{}, extension.ErrCodeSessionExpired
 	}
@@ -386,18 +429,51 @@ func (a *extensionResolveAdapter) consumeLeasedItems(sessionID string, itemIDs [
 			return nil, leaseRestoreToken{}, extension.ErrCodeInvalidRequest
 		}
 	}
+	// Claim-transfer: each consumed item's holder moves from its "sess:" key
+	// to a "commit:" key inside this lock, so the claim follows the item out
+	// of the session with no zero-claim gap. A failed claim rolls back the
+	// commit keys already taken; the session keys still hold their items.
+	consumed := make([]downloadAuthClaim, 0, len(itemIDs))
+	for _, id := range itemIDs {
+		item := session.items[id]
+		if item.DownloadAuthRef == "" {
+			continue
+		}
+		claim := downloadAuthClaim{ref: item.DownloadAuthRef, key: "commit:" + sessionID + ":" + id}
+		if err := a.dispatcher.ClaimDownloadAuth(item.DownloadAuthRef, claim.key); err != nil {
+			for _, c := range consumed {
+				a.dispatcher.ReleaseDownloadAuth(c.ref, c.key)
+			}
+			return nil, leaseRestoreToken{}, extension.ErrCodeUnavailable
+		}
+		consumed = append(consumed, claim)
+	}
 	clones := make(map[string]extractor.ResolvedAddItem, len(itemIDs))
 	for _, id := range itemIDs {
-		clones[id] = extractor.CloneResolvedAddItem(session.items[id])
+		item := session.items[id]
+		a.dispatcher.ReleaseDownloadAuth(item.DownloadAuthRef, "sess:"+sessionID+":"+id)
+		clones[id] = extractor.CloneResolvedAddItem(item)
 		delete(session.items, id)
 	}
 	session.lastUsed = time.Now()
-	token := leaseRestoreToken{sessionID: sessionID, inserted: session.inserted, epoch: session.epoch}
+	token := leaseRestoreToken{sessionID: sessionID, inserted: session.inserted, epoch: session.epoch, consumedClaims: consumed}
 	if len(session.items) == 0 {
 		delete(a.sessions, sessionID)
 	}
 
 	return clones, token, ""
+}
+
+// releaseConsumedClaims drops the "commit:" holders a consume transferred to
+// the lease token. Called from the commit path's terminal defer regardless
+// of outcome; restored items re-claim fresh "sess:" holders independently.
+func (a *extensionResolveAdapter) releaseConsumedClaims(token leaseRestoreToken) {
+	if a == nil {
+		return
+	}
+	for _, c := range token.consumedClaims {
+		a.dispatcher.ReleaseDownloadAuth(c.ref, c.key)
+	}
 }
 
 func (a *extensionResolveAdapter) restoreLeasedItems(token leaseRestoreToken, failedIDs []string, clones map[string]extractor.ResolvedAddItem) {
@@ -417,7 +493,9 @@ func (a *extensionResolveAdapter) restoreLeasedItems(token leaseRestoreToken, fa
 			lastUsed: time.Now(),
 			items:    make(map[string]extractor.ResolvedAddItem, len(failedIDs)),
 		}
-		a.insertSessionLocked(token.sessionID, session)
+		if err := a.insertSessionLocked(token.sessionID, session); err != nil {
+			return
+		}
 		session = a.sessions[token.sessionID]
 		if session == nil {
 			return
@@ -431,6 +509,10 @@ func (a *extensionResolveAdapter) restoreLeasedItems(token leaseRestoreToken, fa
 		if !exists {
 			continue
 		}
+		// The consume-time transfer already detached the old session key, so
+		// a fresh "sess:" claim is ordering-safe; a dead ref stays restorable
+		// and fails again at the next consume.
+		_ = a.claimSessionItemLocked(token.sessionID, id, item)
 		session.items[id] = extractor.CloneResolvedAddItem(item)
 	}
 	session.lastUsed = time.Now()

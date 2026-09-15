@@ -36,6 +36,7 @@ type fakeAddTaskDispatcher struct {
 	resolvedInputs  []string
 	itemRefs        map[string]extractor.ResolvedAddItem
 	requestRefs     map[string]extractor.HostAuthRuntimeRequest
+	releasedRefs    []string
 	refCounter      int64
 }
 
@@ -102,6 +103,7 @@ func (d *fakeAddTaskDispatcher) toNeutralItem(item extractor.ResolvedAddItem) ta
 		SizeBytes:        item.SizeBytes,
 		AuthProfileRef:   item.AuthProfileRef,
 		HeaderProfileRef: item.HeaderProfileRef,
+		DownloadAuthRef:  item.DownloadAuthRef,
 		PackID:           item.PackManifest.PackID,
 		PackVersion:      item.PackIdentity.PackVersion,
 		AssetSHA256:      item.PackIdentity.AssetSHA256,
@@ -177,6 +179,21 @@ func (d *fakeAddTaskDispatcher) RefreshOnGenericFailure(ctx context.Context, req
 
 func (d *fakeAddTaskDispatcher) ValidateItemAuthPolicy(item tasks.ResolvedItem) error {
 	return nil
+}
+
+func (d *fakeAddTaskDispatcher) Release(ref string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.itemRefs, ref)
+	if ref != "" {
+		d.releasedRefs = append(d.releasedRefs, ref)
+	}
+}
+
+func (d *fakeAddTaskDispatcher) releasedRefsSnapshot() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.releasedRefs...)
 }
 
 func (d *fakeAddTaskDispatcher) NewRefreshGuard() tasks.RefreshGuard {

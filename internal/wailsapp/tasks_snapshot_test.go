@@ -63,6 +63,8 @@ func (b *barrierExtractorAdapter) ValidateItemAuthPolicy(tasks.ResolvedItem) err
 	return nil
 }
 
+func (b *barrierExtractorAdapter) Release(string) {}
+
 func (b *barrierExtractorAdapter) NewRefreshGuard() tasks.RefreshGuard {
 	return nil
 }

@@ -21,9 +21,11 @@ const (
 )
 
 const (
-	HostImportModule            = "goaria_host"
-	HostImportHTTPFetch         = "http_fetch"
-	HostImportAuthProfileStatus = "auth_profile_status"
+	HostImportModule               = "goaria_host"
+	HostImportHTTPFetch            = "http_fetch"
+	HostImportAuthProfileStatus    = "auth_profile_status"
+	HostImportRegisterDownloadAuth = "register_download_auth"
+	HostImportHostTime             = "host_time"
 )
 
 const (
@@ -54,6 +56,22 @@ type ExtractInput struct {
 
 type ExtractOutput struct {
 	Items []ExtractedItemRef `json:"items"`
+
+	// invocationID is the host-side extract invocation that produced this
+	// output. It is internal bookkeeping for download-auth binding and never
+	// serialized onto the ABI wire.
+	invocationID uint64
+}
+
+func (o *ExtractOutput) SetInvocationID(id uint64) {
+	if o == nil {
+		return
+	}
+	o.invocationID = id
+}
+
+func (o ExtractOutput) InvocationID() uint64 {
+	return o.invocationID
 }
 
 type ExtractedItemRef struct {
@@ -64,6 +82,7 @@ type ExtractedItemRef struct {
 	MimeType         string            `json:"mime_type,omitempty"`
 	AuthProfileRef   string            `json:"auth_profile_ref,omitempty"`
 	HeaderProfileRef string            `json:"header_profile_ref,omitempty"`
+	DownloadAuthRef  string            `json:"download_auth_ref,omitempty"`
 	Metadata         map[string]string `json:"metadata,omitempty"`
 }
 
@@ -206,12 +225,18 @@ func validateExtractedItemRef(item ExtractedItemRef) error {
 		{name: "mime_type", value: item.MimeType},
 		{name: "auth_profile_ref", value: item.AuthProfileRef},
 		{name: "header_profile_ref", value: item.HeaderProfileRef},
+		{name: "download_auth_ref", value: item.DownloadAuthRef},
 	}
 	for _, field := range stringFields {
 		if len(field.value) > maxABIStringFieldBytes {
 			return fmt.Errorf("%s exceeds %d bytes", field.name, maxABIStringFieldBytes)
 		}
 		if err := validateSafeString(field.value, field.name); err != nil {
+			return err
+		}
+	}
+	if item.DownloadAuthRef != "" {
+		if err := validateDownloadAuthRef(item.DownloadAuthRef); err != nil {
 			return err
 		}
 	}

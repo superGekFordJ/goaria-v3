@@ -12,6 +12,9 @@ type addTaskDispatcherInterface interface {
 	Resolve(ctx context.Context, rawURL string) (AddTaskResolution, error)
 	BuildAria2Headers(ctx context.Context, item ResolvedAddItem) ([]string, error)
 	AuthRuntimeRequestsForSource(ctx context.Context, rawURL string) ([]HostAuthRuntimeRequest, error)
+	ClaimDownloadAuth(ref string, holderKey string) error
+	ReleaseDownloadAuth(ref string, holderKey string)
+	ValidateDownloadAuthBinding(item ResolvedAddItem) error
 }
 
 type TasksAdapter struct {
@@ -48,7 +51,11 @@ func (a *TasksAdapter) Resolve(ctx context.Context, rawURL string) (tasks.Resolu
 	}
 	items := make([]tasks.ResolvedItem, 0, len(resolution.Items))
 	for _, item := range resolution.Items {
-		items = append(items, a.toNeutralItem(item))
+		neutral, err := a.toNeutralItem(item)
+		if err != nil {
+			return tasks.Resolution{}, err
+		}
+		items = append(items, neutral)
 	}
 
 	return tasks.Resolution{
@@ -58,7 +65,7 @@ func (a *TasksAdapter) Resolve(ctx context.Context, rawURL string) (tasks.Resolu
 	}, nil
 }
 
-func (a *TasksAdapter) Mint(item ResolvedAddItem) tasks.ResolvedItem {
+func (a *TasksAdapter) Mint(item ResolvedAddItem) (tasks.ResolvedItem, error) {
 	return a.toNeutralItem(CloneResolvedAddItem(item))
 }
 
@@ -67,14 +74,24 @@ func (a *TasksAdapter) Release(ref string) {
 		return
 	}
 	a.mu.Lock()
+	item, ok := a.resolvedItems[ref]
 	delete(a.resolvedItems, ref)
 	a.mu.Unlock()
+	if ok {
+		a.dispatcher.ReleaseDownloadAuth(item.DownloadAuthRef, "ref:"+ref)
+	}
 }
 
-func (a *TasksAdapter) toNeutralItem(item ResolvedAddItem) tasks.ResolvedItem {
+func (a *TasksAdapter) toNeutralItem(item ResolvedAddItem) (tasks.ResolvedItem, error) {
 	a.mu.Lock()
 	a.nextRef++
 	ref := fmt.Sprintf("r-%d", a.nextRef)
+	a.mu.Unlock()
+
+	if err := a.dispatcher.ClaimDownloadAuth(item.DownloadAuthRef, "ref:"+ref); err != nil {
+		return tasks.ResolvedItem{}, err
+	}
+	a.mu.Lock()
 	a.resolvedItems[ref] = item
 	a.mu.Unlock()
 
@@ -87,6 +104,7 @@ func (a *TasksAdapter) toNeutralItem(item ResolvedAddItem) tasks.ResolvedItem {
 		SizeBytes:        item.SizeBytes,
 		AuthProfileRef:   item.AuthProfileRef,
 		HeaderProfileRef: item.HeaderProfileRef,
+		DownloadAuthRef:  item.DownloadAuthRef,
 		PackID:           item.PackManifest.PackID,
 		PackVersion:      item.PackIdentity.PackVersion,
 		AssetSHA256:      item.PackIdentity.AssetSHA256,
@@ -94,7 +112,7 @@ func (a *TasksAdapter) toNeutralItem(item ResolvedAddItem) tasks.ResolvedItem {
 		PayloadSHA256:    item.PackIdentity.PayloadSHA256,
 		SignatureSHA256:  item.PackIdentity.SignatureSHA256,
 		PublicKeySHA256:  item.PackIdentity.PublicKeySHA256,
-	}
+	}, nil
 }
 
 func (a *TasksAdapter) BuildHeaders(ctx context.Context, item tasks.ResolvedItem) ([]string, error) {
@@ -200,6 +218,9 @@ func (a *TasksAdapter) ValidateItemAuthPolicy(item tasks.ResolvedItem) error {
 	a.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("resolved item not found for ref %q", item.Ref)
+	}
+	if fullItem.DownloadAuthRef != "" {
+		return a.dispatcher.ValidateDownloadAuthBinding(fullItem)
 	}
 	return validateResolvedAddItemAuthPolicy(fullItem)
 }

@@ -352,6 +352,11 @@ func submitCandidatesConcurrently(s *Service, ctx context.Context, candidates []
 }
 
 func (s *Service) submitAddCandidate(ctx context.Context, candidate addTaskCandidate, batchState *addCandidateBatchState, historyDuplicates map[string]bool, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) {
+	if s.Adapter != nil && candidate.item.Ref != "" {
+		// Release the neutral ref claim once submission settles — covers
+		// success, failure, and the duplicate-skip below.
+		defer s.Adapter.Release(candidate.item.Ref)
+	}
 	displayKey := candidateDisplayKey(candidate)
 	unlock := batchState.lockForUrl(candidate.url)
 	defer unlock()
@@ -464,7 +469,7 @@ func extractorAddTaskCandidate(item ResolvedItem) addTaskCandidate {
 		out:        item.Filename,
 		sizeBytes:  item.SizeBytes,
 		extracted:  true,
-		protected:  item.AuthProfileRef != "" || item.HeaderProfileRef != "",
+		protected:  item.AuthProfileRef != "" || item.HeaderProfileRef != "" || item.DownloadAuthRef != "",
 		displayKey: displayKey,
 		item:       item,
 	}
@@ -691,6 +696,18 @@ func (s *Service) buildCandidateHeaders(ctx context.Context, candidate addTaskCa
 	if len(candidate.externalHeaders) == 0 {
 		return extractorHeaders, nil
 	}
+	if candidate.item.DownloadAuthRef != "" {
+		for _, line := range candidate.externalHeaders {
+			name, _, ok := strings.Cut(line, ":")
+			if !ok {
+				continue
+			}
+			switch strings.ToLower(strings.TrimSpace(name)) {
+			case "authorization", "cookie", "cookie2":
+				return nil, errors.New("external authorization or cookie headers conflict with pack download auth")
+			}
+		}
+	}
 	if len(extractorHeaders) == 0 {
 		return candidate.externalHeaders, nil
 	}
@@ -869,10 +886,18 @@ func (s *Service) refreshSourceAuthAfterGenericFailure(ctx context.Context, auth
 }
 
 func (s *Service) preflightCandidateAuth(ctx context.Context, candidate addTaskCandidate, authState *addTaskAuthBatchState) error {
-	if !candidate.extracted || candidate.item.AuthProfileRef == "" {
+	if !candidate.extracted || (candidate.item.AuthProfileRef == "" && candidate.item.DownloadAuthRef == "") {
 		return nil
 	}
 	if s == nil || s.Adapter == nil {
+		return nil
+	}
+	if candidate.item.DownloadAuthRef != "" {
+		// Download-auth items only need the registry admission check; the
+		// auth-profile preflight machinery does not apply to them.
+		if err := s.Adapter.ValidateItemAuthPolicy(candidate.item); err != nil {
+			return addTaskAuthUnavailableError()
+		}
 		return nil
 	}
 	if candidate.item.PackID == "" {

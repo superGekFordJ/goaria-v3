@@ -11,9 +11,11 @@ const (
 )
 
 const (
-	HostImportModule            = "goaria_host"
-	HostImportHTTPFetch         = "http_fetch"
-	HostImportAuthProfileStatus = "auth_profile_status"
+	HostImportModule               = "goaria_host"
+	HostImportHTTPFetch            = "http_fetch"
+	HostImportAuthProfileStatus    = "auth_profile_status"
+	HostImportRegisterDownloadAuth = "register_download_auth"
+	HostImportHostTime             = "host_time"
 )
 
 type Capability string
@@ -23,6 +25,7 @@ const (
 	CapabilityHTTPFetch         Capability = "cap.http.fetch"
 	CapabilityHTTPFetchExtended Capability = "cap.http.fetch.extended"
 	CapabilityAuthProfile       Capability = "cap.auth.profile"
+	CapabilityDownloadAuth      Capability = "cap.download.auth"
 )
 
 type AuthSecretKind string
@@ -58,6 +61,7 @@ type ExtractedItemRef struct {
 	MimeType         string            `json:"mime_type,omitempty"`
 	AuthProfileRef   string            `json:"auth_profile_ref,omitempty"`
 	HeaderProfileRef string            `json:"header_profile_ref,omitempty"`
+	DownloadAuthRef  string            `json:"download_auth_ref,omitempty"`
 	Metadata         map[string]string `json:"metadata,omitempty"`
 }
 
@@ -72,6 +76,9 @@ type HostHTTPFetchRequest struct {
 	AuthProfileRef   string            `json:"auth_profile_ref,omitempty"`
 	TimeoutMillis    int               `json:"timeout_millis,omitempty"`
 	MaxResponseBytes int64             `json:"max_response_bytes,omitempty"`
+	// OmitBrowserContext opts a self-authenticated fetch out of browser
+	// grant/cookie matching and typed browser fields.
+	OmitBrowserContext bool `json:"omit_browser_context,omitempty"`
 }
 
 type HostHTTPFetchResponse struct {
@@ -99,6 +106,25 @@ type HostAuthProfileStatusResponse struct {
 	RedactedDisplay string         `json:"redacted_display,omitempty"`
 	ErrorCode       string         `json:"error_code,omitempty"`
 	Message         string         `json:"message,omitempty"`
+}
+
+type HostRegisterDownloadAuthRequest struct {
+	Kind  string `json:"kind"`
+	Token string `json:"token"`
+}
+
+type HostRegisterDownloadAuthResponse struct {
+	OK              bool   `json:"ok"`
+	DownloadAuthRef string `json:"download_auth_ref,omitempty"`
+	ErrorCode       string `json:"error_code,omitempty"`
+	Message         string `json:"message,omitempty"`
+}
+
+type HostTimeResponse struct {
+	OK        bool   `json:"ok"`
+	UnixSecs  int64  `json:"unix_secs,omitempty"`
+	ErrorCode string `json:"error_code,omitempty"`
+	Message   string `json:"message,omitempty"`
 }
 
 func PackResult(ptr, length uint32) uint64 {

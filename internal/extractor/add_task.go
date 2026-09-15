@@ -35,6 +35,7 @@ type AddTaskDispatcherConfig struct {
 	Runner         *Runner
 	AuthResolver   AuthProfileResolver
 	HeaderResolver HeaderProfileResolver
+	DownloadAuth   *DownloadAuthRegistry
 }
 
 type AddTaskDispatcher struct {
@@ -42,6 +43,7 @@ type AddTaskDispatcher struct {
 	runner         *Runner
 	authResolver   AuthProfileResolver
 	headerResolver HeaderProfileResolver
+	downloadAuth   *DownloadAuthRegistry
 }
 
 type AddTaskResolution struct {
@@ -63,6 +65,7 @@ type ResolvedAddItem struct {
 	SizeBytes        int64
 	AuthProfileRef   string
 	HeaderProfileRef string
+	DownloadAuthRef  string
 	MimeType         string
 	Metadata         map[string]string
 }
@@ -73,6 +76,7 @@ func NewAddTaskDispatcher(config AddTaskDispatcherConfig) *AddTaskDispatcher {
 		runner:         config.Runner,
 		authResolver:   config.AuthResolver,
 		headerResolver: config.HeaderResolver,
+		downloadAuth:   config.DownloadAuth,
 	}
 }
 
@@ -165,12 +169,13 @@ func (d *AddTaskDispatcher) Resolve(ctx context.Context, rawURL string) (AddTask
 		if isAliasManifest(pack.Manifest) {
 			policy, err := resolveAliasHostPolicy(ctx, d.registry.hostPolicyResolver, pack.Identity, pack.Manifest)
 			if err != nil {
+				d.endDownloadAuthInvocation(extracted.InvocationID(), false)
 				errorsByPack = append(errorsByPack, safePackError(packID, err))
 				continue
 			}
 			hostPolicy = &policy
 		}
-		items, err := resolvedItemsFromExtractOutput(rawURL, pack, hostPolicy, extracted)
+		items, err := d.boundItemsFromExtractOutput(rawURL, pack, hostPolicy, extracted)
 		if err != nil {
 			return AddTaskResolution{}, redactedError(fmt.Errorf("extractor pack %q returned invalid add item: %w", packID, err))
 		}
@@ -196,6 +201,74 @@ func (d *AddTaskDispatcher) Resolve(ctx context.Context, rawURL string) (AddTask
 	}
 
 	return resolution, nil
+}
+
+// boundItemsFromExtractOutput converts pack output into resolved items and
+// ends the extract invocation exactly once: committed output retains bound
+// download-auth entries and purges unreferenced ones; any binding failure
+// purges the whole invocation.
+func (d *AddTaskDispatcher) boundItemsFromExtractOutput(sourceURL string, pack VerifiedPack, hostPolicy *ResolvedHostPolicy, output ExtractOutput) ([]ResolvedAddItem, error) {
+	committed := false
+	defer func() {
+		d.endDownloadAuthInvocation(output.InvocationID(), committed)
+	}()
+
+	items, err := d.resolvedItemsFromExtractOutput(sourceURL, pack, hostPolicy, output)
+	if err != nil {
+		return nil, err
+	}
+	committed = true
+
+	return items, nil
+}
+
+func (d *AddTaskDispatcher) endDownloadAuthInvocation(invocation uint64, committed bool) {
+	if d == nil || d.downloadAuth == nil {
+		return
+	}
+	d.downloadAuth.EndInvocation(invocation, committed)
+}
+
+// ClaimDownloadAuth records an outstanding holder for a bound ref. Empty ref
+// is a no-op; a missing registry fails closed.
+func (d *AddTaskDispatcher) ClaimDownloadAuth(ref string, holderKey string) error {
+	if ref == "" {
+		return nil
+	}
+	if d == nil || d.downloadAuth == nil {
+		return errors.New("download auth registry is not configured")
+	}
+
+	return d.downloadAuth.Claim(ref, holderKey)
+}
+
+func (d *AddTaskDispatcher) ReleaseDownloadAuth(ref string, holderKey string) {
+	if d == nil || d.downloadAuth == nil {
+		return
+	}
+	d.downloadAuth.Release(ref, holderKey)
+}
+
+// ValidateDownloadAuthBinding applies the materialization admission checks
+// for an item's ref without revealing the token.
+func (d *AddTaskDispatcher) ValidateDownloadAuthBinding(item ResolvedAddItem) error {
+	if d == nil || d.downloadAuth == nil {
+		return errors.New("download auth registry is not configured")
+	}
+	host, ok := ParseHTTPURLHost(item.URL)
+	if !ok {
+		return errors.New("item url has an unsafe or unsupported host")
+	}
+
+	return d.downloadAuth.ValidateRef(item.PackIdentity, item.DownloadAuthRef, host)
+}
+
+// InvalidateDownloadAuth drops every registry entry and zeroes the secrets.
+func (d *AddTaskDispatcher) InvalidateDownloadAuth() {
+	if d == nil || d.downloadAuth == nil {
+		return
+	}
+	d.downloadAuth.Invalidate()
 }
 
 func IsGenericAuthResolutionError(err error) bool {
@@ -255,6 +328,26 @@ func (d *AddTaskDispatcher) BuildAria2Headers(ctx context.Context, item Resolved
 		}
 	}
 
+	if item.DownloadAuthRef != "" {
+		if d.downloadAuth == nil {
+			return nil, redactErrorf("download auth registry is not configured")
+		}
+		host, ok := ParseHTTPURLHost(item.URL)
+		if !ok {
+			return nil, redactErrorf("item url has an unsafe or unsupported host")
+		}
+		token, err := d.downloadAuth.Materialize(item.PackIdentity, item.DownloadAuthRef, host)
+		if err != nil {
+			return nil, redactedError(fmt.Errorf("materialize download auth: %w", err), knownSecrets...)
+		}
+		line := "Authorization: Bearer " + token
+		if err := ValidateAria2HeaderLine(line); err != nil {
+			return nil, redactedError(fmt.Errorf("materialize download auth: %w", err), appendNonEmptySecrets(knownSecrets, token, "Bearer "+token)...)
+		}
+		headers = append(headers, line)
+		knownSecrets = appendNonEmptySecrets(knownSecrets, token, "Bearer "+token)
+	}
+
 	if item.HeaderProfileRef != "" {
 		if d.headerResolver == nil {
 			return nil, redactErrorf("header profile resolver is not configured for ref %q", item.HeaderProfileRef)
@@ -309,7 +402,7 @@ func validateResolvedAddItemAuthPolicy(item ResolvedAddItem) error {
 	return nil
 }
 
-func resolvedItemsFromExtractOutput(sourceURL string, pack VerifiedPack, hostPolicy *ResolvedHostPolicy, output ExtractOutput) ([]ResolvedAddItem, error) {
+func (d *AddTaskDispatcher) resolvedItemsFromExtractOutput(sourceURL string, pack VerifiedPack, hostPolicy *ResolvedHostPolicy, output ExtractOutput) ([]ResolvedAddItem, error) {
 	items := make([]ResolvedAddItem, 0, len(output.Items))
 	for i, ref := range output.Items {
 		if err := validateABIURL(ref.URL, "item url"); err != nil {
@@ -318,6 +411,24 @@ func resolvedItemsFromExtractOutput(sourceURL string, pack VerifiedPack, hostPol
 		if hostPolicy != nil {
 			if err := policyAllowsOutputURL(*hostPolicy, ref.URL); err != nil {
 				return nil, fmt.Errorf("item %d url: %w", i, err)
+			}
+		}
+		if ref.DownloadAuthRef != "" {
+			if err := validateDownloadAuthRef(ref.DownloadAuthRef); err != nil {
+				return nil, fmt.Errorf("item %d download_auth_ref: %w", i, err)
+			}
+			if !manifestHasCapability(pack.Manifest, CapabilityDownloadAuth) {
+				return nil, fmt.Errorf("item %d download_auth_ref requires capability %s", i, CapabilityDownloadAuth)
+			}
+			if ref.AuthProfileRef != "" || ref.HeaderProfileRef != "" {
+				return nil, fmt.Errorf("item %d download_auth_ref must not combine with auth_profile_ref or header_profile_ref", i)
+			}
+			host, ok := ParseHTTPURLHost(ref.URL)
+			if !ok {
+				return nil, fmt.Errorf("item %d url has an unsafe or unsupported host", i)
+			}
+			if err := d.bindDownloadAuth(output.InvocationID(), ref.DownloadAuthRef, pack.Identity, host); err != nil {
+				return nil, fmt.Errorf("item %d download_auth_ref: %w", i, err)
 			}
 		}
 
@@ -345,12 +456,21 @@ func resolvedItemsFromExtractOutput(sourceURL string, pack VerifiedPack, hostPol
 			SizeBytes:        ref.SizeBytes,
 			AuthProfileRef:   ref.AuthProfileRef,
 			HeaderProfileRef: ref.HeaderProfileRef,
+			DownloadAuthRef:  ref.DownloadAuthRef,
 			MimeType:         ref.MimeType,
 			Metadata:         metadata,
 		})
 	}
 
 	return items, nil
+}
+
+func (d *AddTaskDispatcher) bindDownloadAuth(invocation uint64, ref string, pack VerifiedPackIdentity, host string) error {
+	if d == nil || d.downloadAuth == nil {
+		return errors.New("download auth registry is not configured")
+	}
+
+	return d.downloadAuth.Bind(invocation, ref, pack, host)
 }
 
 func CloneResolvedAddItem(item ResolvedAddItem) ResolvedAddItem {

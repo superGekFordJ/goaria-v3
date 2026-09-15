@@ -46,6 +46,16 @@ func (d *fakeDispatcherForAdapter) AuthRuntimeRequestsForSource(ctx context.Cont
 	return nil, nil
 }
 
+func (d *fakeDispatcherForAdapter) ClaimDownloadAuth(ref string, holderKey string) error {
+	return nil
+}
+
+func (d *fakeDispatcherForAdapter) ReleaseDownloadAuth(ref string, holderKey string) {}
+
+func (d *fakeDispatcherForAdapter) ValidateDownloadAuthBinding(item ResolvedAddItem) error {
+	return nil
+}
+
 func TestTasksAdapter_NilRuntimePreflightReturnsAvailable(t *testing.T) {
 	adapter := NewTasksAdapter(&fakeDispatcherForAdapter{}, nil)
 	result, err := adapter.Preflight(context.Background(), tasks.AuthRequest{})
@@ -203,10 +213,13 @@ func TestTasksAdapter_MintBuildHeadersThenRelease(t *testing.T) {
 		},
 	}
 	adapter := NewTasksAdapter(dispatcher, nil)
-	minted := adapter.Mint(ResolvedAddItem{
+	minted, err := adapter.Mint(ResolvedAddItem{
 		URL: "https://download.fixture.invalid/files/a.bin",
 		ID:  "item-1",
 	})
+	if err != nil {
+		t.Fatalf("Mint() error = %v", err)
+	}
 	if minted.Ref == "" {
 		t.Fatal("Mint() Ref is empty")
 	}
@@ -246,7 +259,10 @@ func TestTasksAdapter_MintStoresClonedItem(t *testing.T) {
 		URL:        "https://download.fixture.invalid/files/a.bin",
 		HostPolicy: policy,
 	}
-	minted := adapter.Mint(item)
+	minted, err := adapter.Mint(item)
+	if err != nil {
+		t.Fatalf("Mint() error = %v", err)
+	}
 	policy.OutputDomains[0].Host = "mutated.fixture.invalid"
 	if _, err := adapter.BuildHeaders(context.Background(), minted); err != nil {
 		t.Fatalf("BuildHeaders() error = %v", err)

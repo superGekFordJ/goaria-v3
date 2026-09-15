@@ -406,6 +406,7 @@ func buildSnapshot(revision uint64, packs []VerifiedPack, config ExtractorRuntim
 		authResolver = config.HostAuthRuntime
 	}
 
+	downloadAuth := NewDownloadAuthRegistry()
 	runner := NewRunnerWithConfig(RunnerConfig{
 		HTTPBroker: NewHTTPBroker(HTTPBrokerConfig{
 			AuthResolver:       authResolver,
@@ -413,6 +414,7 @@ func buildSnapshot(revision uint64, packs []VerifiedPack, config ExtractorRuntim
 		}),
 		AuthResolver:       authResolver,
 		HostPolicyResolver: config.HostPolicyResolver,
+		DownloadAuth:       downloadAuth,
 	})
 
 	dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{
@@ -420,6 +422,7 @@ func buildSnapshot(revision uint64, packs []VerifiedPack, config ExtractorRuntim
 		Runner:         runner,
 		AuthResolver:   authResolver,
 		HeaderResolver: config.HeaderResolver,
+		DownloadAuth:   downloadAuth,
 	})
 
 	tasksAdapter := NewTasksAdapter(dispatcher, config.HostAuthRuntime)
@@ -641,6 +644,7 @@ func (m *ExtractorRuntimeManager) LoadSource(ctx context.Context, spec RuntimeSo
 		stateWritable:  true,
 	}
 	m.current.Store(nextState)
+	curr.snapshot.dispatcher.InvalidateDownloadAuth()
 
 	return newRecord.toSafeState(), nil
 }
@@ -814,6 +818,7 @@ func (m *ExtractorRuntimeManager) ReloadSource(ctx context.Context, sourceID str
 		stateWritable:  true,
 	}
 	m.current.Store(nextState)
+	curr.snapshot.dispatcher.InvalidateDownloadAuth()
 	m.writeMu.Unlock()
 	unlocked = true
 
@@ -907,6 +912,7 @@ func (m *ExtractorRuntimeManager) RemoveSource(ctx context.Context, sourceID str
 		stateWritable:  true,
 	}
 	m.current.Store(nextState)
+	curr.snapshot.dispatcher.InvalidateDownloadAuth()
 	m.writeMu.Unlock()
 	unlocked = true
 

@@ -972,6 +972,16 @@ func (d *authRuntimeTaskDispatcher) BuildAria2Headers(ctx context.Context, item 
 	return append([]string(nil), d.headers[item.URL]...), nil
 }
 
+func (d *authRuntimeTaskDispatcher) ClaimDownloadAuth(ref string, holderKey string) error {
+	return nil
+}
+
+func (d *authRuntimeTaskDispatcher) ReleaseDownloadAuth(ref string, holderKey string) {}
+
+func (d *authRuntimeTaskDispatcher) ValidateDownloadAuthBinding(item extractor.ResolvedAddItem) error {
+	return nil
+}
+
 func (d *authRuntimeTaskDispatcher) resolveCount(rawURL string) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
