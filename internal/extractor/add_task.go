@@ -166,6 +166,11 @@ func (d *AddTaskDispatcher) Resolve(ctx context.Context, rawURL string) (AddTask
 			errorsByPack = append(errorsByPack, safePackError(packID, err))
 			continue
 		}
+		// Backstop for the window before boundItemsFromExtractOutput's own
+		// defer registers: a panic in alias policy resolution must still
+		// purge this invocation's pending entries. Ending an already-ended
+		// invocation is a no-op, so this is inert on every normal path.
+		defer d.endDownloadAuthInvocation(extracted.InvocationID(), false)
 
 		var hostPolicy *ResolvedHostPolicy
 		if isAliasManifest(pack.Manifest) {

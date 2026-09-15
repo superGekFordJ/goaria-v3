@@ -321,9 +321,9 @@ func mintDownloadAuthRef() (string, error) {
 }
 
 // validateDownloadAuthToken re-checks the frozen wire constraints for the
-// registered bearer token: 1..8192 bytes, valid UTF-8, no CR/LF, and never
-// already prefixed with a "bearer " scheme (which would double-prefix the
-// materialized header).
+// registered bearer token: 1..downloadAuthTokenMaxBytes bytes, valid UTF-8,
+// no CR/LF, and never already prefixed with a "bearer " scheme (which would
+// double-prefix the materialized header).
 func validateDownloadAuthToken(token []byte) error {
 	if len(token) == 0 || len(token) > downloadAuthTokenMaxBytes {
 		return fmt.Errorf("token length must be between 1 and %d bytes", downloadAuthTokenMaxBytes)
