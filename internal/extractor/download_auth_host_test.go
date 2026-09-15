@@ -191,11 +191,16 @@ func TestBridgeHostTimeReturnsCachedSnapshot(t *testing.T) {
 }
 
 func TestBridgeHostTimeRejectsNonEmptyRequest(t *testing.T) {
-	bridge := newDownloadAuthTestBridge(t, downloadAuthBridgeManifest(), nil, 4)
+	bridge := newDownloadAuthTestBridge(t, downloadAuthBridgeManifest(), nil, 16)
 	for _, raw := range [][]byte{
 		[]byte(`{"zone":"utc"}`),
 		[]byte(`{} {}`),
 		[]byte(``),
+		[]byte(`null`),
+		[]byte(`[]`),
+		[]byte(`"now"`),
+		[]byte(`5`),
+		[]byte(`[{}]`),
 	} {
 		response := bridge.executeHostTime(context.Background(), raw)
 		var decoded HostTimeResponse

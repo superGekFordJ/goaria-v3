@@ -15,11 +15,14 @@ type BatchAddResult struct {
 }
 
 type addTaskCandidate struct {
-	sourceURL              string
-	url                    string
-	out                    string
-	sizeBytes              int64
-	extracted              bool
+	sourceURL string
+	url       string
+	out       string
+	sizeBytes int64
+	extracted bool
+	// protected marks credential-bearing items; extracted items already
+	// skip probes unconditionally, so this is belt-and-suspenders should a
+	// future probe path ever include them.
 	protected              bool
 	displayKey             string
 	item                   ResolvedItem

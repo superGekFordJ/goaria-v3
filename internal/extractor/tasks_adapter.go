@@ -53,6 +53,11 @@ func (a *TasksAdapter) Resolve(ctx context.Context, rawURL string) (tasks.Resolu
 	for _, item := range resolution.Items {
 		neutral, err := a.toNeutralItem(item)
 		if err != nil {
+			// Roll back claims minted for earlier items so a partial
+			// conversion cannot strand holders in the registry.
+			for _, minted := range items {
+				a.Release(minted.Ref)
+			}
 			return tasks.Resolution{}, err
 		}
 		items = append(items, neutral)

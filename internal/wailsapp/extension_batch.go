@@ -29,6 +29,7 @@ var batchCommitDenylist = []string{
 	"referer",
 	"browser_header_grants",
 	"auth_profile_ref",
+	"download_auth_ref",
 	"header_profile_ref",
 	"gid",
 	"gids",
@@ -73,6 +74,9 @@ func (a *extensionBatchAdapter) HandleCommit(ctx context.Context, env extension.
 	}
 
 	mintedRefs := make([]string, 0, len(req.ItemIDs))
+	// Defers run LIFO: the restore defer below executes first so failed
+	// items re-claim their "sess:" holders before this one drops the
+	// "commit:" claims — restored entries never sit holderless.
 	defer func() {
 		for _, ref := range mintedRefs {
 			a.minter.Release(ref)

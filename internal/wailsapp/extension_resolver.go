@@ -512,7 +512,9 @@ func (a *extensionResolveAdapter) restoreLeasedItems(token leaseRestoreToken, fa
 		// The consume-time transfer already detached the old session key, so
 		// a fresh "sess:" claim is ordering-safe; a dead ref stays restorable
 		// and fails again at the next consume.
-		_ = a.claimSessionItemLocked(token.sessionID, id, item)
+		if err := a.claimSessionItemLocked(token.sessionID, id, item); err != nil {
+			log.Printf("[Extension] restore download-auth claim failed for item %q", id)
+		}
 		session.items[id] = extractor.CloneResolvedAddItem(item)
 	}
 	session.lastUsed = time.Now()

@@ -340,6 +340,7 @@ func TestExtensionBatch_ExtraDeputyKeysInvalidRequest(t *testing.T) {
 		`"browser_header_grants":[]`,
 		`"auth_profile_ref":"apr-x"`,
 		`"header_profile_ref":"hpr-x"`,
+		`"download_auth_ref":"dar-x"`,
 		`"gid":"g1"`,
 		`"gids":["g1"]`,
 	} {
@@ -362,6 +363,7 @@ func TestExtensionBatch_DeputyKeyCaseVariantsInvalidRequest(t *testing.T) {
 		`"Headers":["Cookie: sid=x"]`,
 		`"URL":"https://download.fixture.invalid/x"`,
 		`"Browser_Header_Grants":[]`,
+		`"Download_Auth_Ref":"dar-x"`,
 		`"Cookies":[]`,
 		`"SOURCE_URL":"https://share.fixture.invalid/s"`,
 		`"User_Agent":"fixture-ua"`,

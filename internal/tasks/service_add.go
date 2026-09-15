@@ -418,7 +418,33 @@ func (s *Service) resolveAddCandidates(ctx context.Context, normalizedURL string
 			return nil, err
 		}
 	}
-	return addCandidatesFromResolution(normalizedURL, resolution)
+	candidates, err := addCandidatesFromResolution(normalizedURL, resolution)
+	if err != nil {
+		// Items already carry minted neutral refs; conversion failure
+		// must drop their adapter claims so no holder is stranded.
+		s.releaseResolutionClaims(resolution)
+		return nil, err
+	}
+	if resolution.Status != ResolutionStatusMatched {
+		// An unmatched resolution never becomes candidates; drop any
+		// refs the adapter still minted for its items.
+		s.releaseResolutionClaims(resolution)
+	}
+
+	return candidates, nil
+}
+
+// releaseResolutionClaims drops the adapter-side refs minted for a
+// resolution that could not be converted into candidates.
+func (s *Service) releaseResolutionClaims(resolution Resolution) {
+	if s == nil || s.Adapter == nil {
+		return
+	}
+	for _, item := range resolution.Items {
+		if item.Ref != "" {
+			s.Adapter.Release(item.Ref)
+		}
+	}
 }
 
 func addCandidatesFromResolution(normalizedURL string, resolution Resolution) ([]addTaskCandidate, error) {
@@ -689,14 +715,9 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 }
 
 func (s *Service) buildCandidateHeaders(ctx context.Context, candidate addTaskCandidate) ([]string, error) {
-	extractorHeaders, err := s.buildExtractorHeaders(ctx, candidate)
-	if err != nil {
-		return nil, err
-	}
-	if len(candidate.externalHeaders) == 0 {
-		return extractorHeaders, nil
-	}
-	if candidate.item.DownloadAuthRef != "" {
+	// Scan external-header conflicts before materializing: a conflicting
+	// request must fail without ever touching the registry secret.
+	if len(candidate.externalHeaders) > 0 && candidate.item.DownloadAuthRef != "" {
 		for _, line := range candidate.externalHeaders {
 			name, _, ok := strings.Cut(line, ":")
 			if !ok {
@@ -707,6 +728,13 @@ func (s *Service) buildCandidateHeaders(ctx context.Context, candidate addTaskCa
 				return nil, errors.New("external authorization or cookie headers conflict with pack download auth")
 			}
 		}
+	}
+	extractorHeaders, err := s.buildExtractorHeaders(ctx, candidate)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidate.externalHeaders) == 0 {
+		return extractorHeaders, nil
 	}
 	if len(extractorHeaders) == 0 {
 		return candidate.externalHeaders, nil
@@ -886,11 +914,14 @@ func (s *Service) refreshSourceAuthAfterGenericFailure(ctx context.Context, auth
 }
 
 func (s *Service) preflightCandidateAuth(ctx context.Context, candidate addTaskCandidate, authState *addTaskAuthBatchState) error {
-	if !candidate.extracted || (candidate.item.AuthProfileRef == "" && candidate.item.DownloadAuthRef == "") {
+	hasAuthRef := candidate.item.AuthProfileRef != "" || candidate.item.DownloadAuthRef != "" || candidate.item.HeaderProfileRef != ""
+	if !candidate.extracted || !hasAuthRef {
 		return nil
 	}
 	if s == nil || s.Adapter == nil {
-		return nil
+		// An extracted candidate carrying credential refs without an
+		// adapter would submit bare — fail closed instead.
+		return addTaskAuthUnavailableError()
 	}
 	if candidate.item.DownloadAuthRef != "" {
 		// Download-auth items only need the registry admission check; the
@@ -898,6 +929,11 @@ func (s *Service) preflightCandidateAuth(ctx context.Context, candidate addTaskC
 		if err := s.Adapter.ValidateItemAuthPolicy(candidate.item); err != nil {
 			return addTaskAuthUnavailableError()
 		}
+		return nil
+	}
+	if candidate.item.AuthProfileRef == "" {
+		// Header-profile-only items need adapter headers but no runtime
+		// profile preflight.
 		return nil
 	}
 	if candidate.item.PackID == "" {

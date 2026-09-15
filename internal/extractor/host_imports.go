@@ -27,14 +27,18 @@ type RunnerConfig struct {
 	HTTPBroker         *HTTPBroker
 	AuthResolver       AuthProfileResolver
 	HostPolicyResolver HostPolicyResolver
-	DownloadAuth       *DownloadAuthRegistry
+	// DownloadAuth must be the registry instance shared with the paired
+	// AddTaskDispatcher so refs minted here bind and materialize there.
+	DownloadAuth *DownloadAuthRegistry
 }
 
 type HostImportConfig struct {
 	HTTPBroker         *HTTPBroker
 	AuthResolver       AuthProfileResolver
 	HostPolicyResolver HostPolicyResolver
-	DownloadAuth       *DownloadAuthRegistry
+	// DownloadAuth must be the registry instance shared with the paired
+	// AddTaskDispatcher so refs minted here bind and materialize there.
+	DownloadAuth *DownloadAuthRegistry
 }
 
 type HostHTTPFetchRequest struct {
@@ -424,6 +428,9 @@ func (b *hostImportBridge) executeRegisterDownloadAuth(ctx context.Context, requ
 
 	ref, err := b.downloadAuth.Register(b.invocation, b.packIdentity, []byte(request.Token))
 	if err != nil {
+		if errors.Is(err, ErrDownloadAuthInvocationLimit) {
+			return encodeBoundedHostImportResponse(HostRegisterDownloadAuthResponse{OK: false, ErrorCode: "registry_full", Message: "download auth per-invocation registration limit reached"}, b.responseCap())
+		}
 		if errors.Is(err, ErrDownloadAuthRegistryFull) {
 			return encodeBoundedHostImportResponse(HostRegisterDownloadAuthResponse{OK: false, ErrorCode: "registry_full", Message: "download auth registry is full"}, b.responseCap())
 		}
@@ -438,6 +445,12 @@ func (b *hostImportBridge) executeHostTime(_ context.Context, requestBytes []byt
 		return encodeBoundedHostImportResponse(HostTimeResponse{OK: false, ErrorCode: "budget_exhausted", Message: RedactSensitive(err.Error())}, b.responseCap())
 	}
 
+	// The wire shape is exactly an empty object; decoding into an empty
+	// struct alone would let non-object JSON like null slide through.
+	trimmed := bytes.TrimSpace(requestBytes)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return encodeBoundedHostImportResponse(HostTimeResponse{OK: false, ErrorCode: "invalid_request", Message: "request must be an empty object"}, b.responseCap())
+	}
 	var request HostTimeRequest
 	if err := b.decodeRequestStrict(requestBytes, &request); err != nil {
 		return encodeBoundedHostImportResponse(HostTimeResponse{OK: false, ErrorCode: "invalid_request", Message: RedactSensitive(err.Error())}, b.responseCap())
@@ -627,12 +640,12 @@ func encodeBoundedHostImportResponse(response any, capBytes int) []byte {
 	if capBytes <= 0 {
 		capBytes = maxHostImportResponseBytes
 	}
-	bytes, err := json.Marshal(response)
+	encoded, err := json.Marshal(response)
 	if err != nil {
-		bytes = []byte(`{"ok":false,"error_code":"internal_error","message":"encode host import response"}`)
+		encoded = []byte(`{"ok":false,"error_code":"internal_error","message":"encode host import response"}`)
 	}
-	if len(bytes) <= capBytes {
-		return bytes
+	if len(encoded) <= capBytes {
+		return encoded
 	}
 
 	truncated, err := json.Marshal(struct {

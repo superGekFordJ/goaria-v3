@@ -235,8 +235,8 @@ func TestDownloadAuthRegistryPerInvocationLimit(t *testing.T) {
 			t.Fatalf("Register() #%d error = %v", i, err)
 		}
 	}
-	if _, err := reg.Register(21, pack.Identity, []byte("token")); !errors.Is(err, ErrDownloadAuthRegistryFull) {
-		t.Fatalf("Register() error = %v, want ErrDownloadAuthRegistryFull", err)
+	if _, err := reg.Register(21, pack.Identity, []byte("token")); !errors.Is(err, ErrDownloadAuthInvocationLimit) {
+		t.Fatalf("Register() error = %v, want ErrDownloadAuthInvocationLimit", err)
 	}
 	if _, err := reg.Register(22, pack.Identity, []byte("token")); err != nil {
 		t.Fatalf("Register() for other invocation error = %v", err)
@@ -277,24 +277,24 @@ func TestDownloadAuthRegistryMaterializeAdmission(t *testing.T) {
 	if err := reg.Bind(31, pendingRef, pack.Identity, "files.fixture.invalid"); err != nil {
 		t.Fatalf("Bind() error = %v", err)
 	}
-	if _, err := reg.Materialize(pack.Identity, pendingRef, "files.fixture.invalid"); !errors.Is(err, ErrDownloadAuthNotMaterializ) {
+	if _, err := reg.Materialize(pack.Identity, pendingRef, "files.fixture.invalid"); !errors.Is(err, ErrDownloadAuthNotMaterializable) {
 		t.Fatalf("Materialize() error = %v, want invocation-scoped rejection", err)
 	}
 	reg.EndInvocation(31, true)
 
 	// Retained but unclaimed.
-	if _, err := reg.Materialize(pack.Identity, pendingRef, "files.fixture.invalid"); !errors.Is(err, ErrDownloadAuthNotMaterializ) {
+	if _, err := reg.Materialize(pack.Identity, pendingRef, "files.fixture.invalid"); !errors.Is(err, ErrDownloadAuthNotMaterializable) {
 		t.Fatalf("Materialize() error = %v, want no-holders rejection", err)
 	}
 	if err := reg.Claim(pendingRef, "h"); err != nil {
 		t.Fatalf("Claim() error = %v", err)
 	}
 	// Wrong host.
-	if _, err := reg.Materialize(pack.Identity, pendingRef, "evil.fixture.invalid"); !errors.Is(err, ErrDownloadAuthNotMaterializ) {
+	if _, err := reg.Materialize(pack.Identity, pendingRef, "evil.fixture.invalid"); !errors.Is(err, ErrDownloadAuthNotMaterializable) {
 		t.Fatalf("Materialize() error = %v, want host rejection", err)
 	}
 	// Wrong pack identity.
-	if _, err := reg.Materialize(other.Identity, pendingRef, "files.fixture.invalid"); !errors.Is(err, ErrDownloadAuthNotMaterializ) {
+	if _, err := reg.Materialize(other.Identity, pendingRef, "files.fixture.invalid"); !errors.Is(err, ErrDownloadAuthNotMaterializable) {
 		t.Fatalf("Materialize() error = %v, want pack rejection", err)
 	}
 	// ValidateRef mirrors the checks without returning the token.
@@ -303,6 +303,38 @@ func TestDownloadAuthRegistryMaterializeAdmission(t *testing.T) {
 	}
 	if err := reg.ValidateRef(other.Identity, pendingRef, "files.fixture.invalid"); err == nil {
 		t.Fatal("ValidateRef() error = nil, want pack rejection")
+	}
+}
+
+func TestDownloadAuthRegistryReleaseIgnoresUnknownHolder(t *testing.T) {
+	pack := testDownloadAuthPack(t, nil)
+	reg := NewDownloadAuthRegistry()
+	ref := retainedDownloadAuthRef(t, reg, 45, pack.Identity, "files.fixture.invalid", "token")
+
+	// A retained entry with zero holders survives a foreign-key release.
+	reg.Release(ref, "never-claimed")
+	if reg.EntryCount() != 1 {
+		t.Fatalf("EntryCount() = %d, want unknown-holder release to be a no-op", reg.EntryCount())
+	}
+
+	if err := reg.Claim(ref, "holder-a"); err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if err := reg.Claim(ref, "holder-b"); err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	// Unknown keys must not count as a release of the real holders.
+	reg.Release(ref, "bogus")
+	if reg.EntryCount() != 1 {
+		t.Fatalf("EntryCount() = %d, want entry retained with live holders", reg.EntryCount())
+	}
+	reg.Release(ref, "holder-a")
+	if reg.EntryCount() != 1 {
+		t.Fatalf("EntryCount() = %d, want retained until last holder", reg.EntryCount())
+	}
+	reg.Release(ref, "holder-b")
+	if reg.EntryCount() != 0 {
+		t.Fatalf("EntryCount() = %d, want freed after last holder release", reg.EntryCount())
 	}
 }
 
@@ -548,6 +580,169 @@ func TestDispatcherBuildAria2HeadersDownloadAuthErrors(t *testing.T) {
 	item.DownloadAuthRef = "dar-" + strings.Repeat("f", 32)
 	if _, err := dispatcher.BuildAria2Headers(context.Background(), item); err == nil {
 		t.Fatal("BuildAria2Headers() error = nil, want unknown ref rejection")
+	}
+}
+
+func TestDispatcherCredentialedItemRequiresHTTPS(t *testing.T) {
+	pack := testDownloadAuthPack(t, nil)
+
+	bindOutput := func(url string, mutate func(*ExtractedItemRef), invocation uint64) ExtractOutput {
+		ref := ExtractedItemRef{URL: url}
+		if mutate != nil {
+			mutate(&ref)
+		}
+		output := ExtractOutput{Items: []ExtractedItemRef{ref}}
+		output.SetInvocationID(invocation)
+		return output
+	}
+
+	t.Run("http download_auth_ref rejected at binding", func(t *testing.T) {
+		reg := NewDownloadAuthRegistry()
+		dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{DownloadAuth: reg})
+		ref, err := reg.Register(1, pack.Identity, []byte("token"))
+		if err != nil {
+			t.Fatalf("Register() error = %v", err)
+		}
+		output := bindOutput("http://files.fixture.invalid/file.bin", func(item *ExtractedItemRef) {
+			item.DownloadAuthRef = ref
+		}, 1)
+		if _, err := dispatcher.boundItemsFromExtractOutput("https://share.fixture.invalid/x", pack, nil, output); err == nil {
+			t.Fatal("binding error = nil, want http credentialed url rejection")
+		}
+		if reg.EntryCount() != 0 {
+			t.Fatalf("EntryCount() = %d, want failed invocation purged", reg.EntryCount())
+		}
+	})
+
+	t.Run("http auth_profile_ref rejected at binding", func(t *testing.T) {
+		dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{DownloadAuth: NewDownloadAuthRegistry()})
+		output := bindOutput("http://files.fixture.invalid/file.bin", func(item *ExtractedItemRef) {
+			item.AuthProfileRef = "apr-fixture01"
+		}, 1)
+		if _, err := dispatcher.boundItemsFromExtractOutput("https://share.fixture.invalid/x", pack, nil, output); err == nil {
+			t.Fatal("binding error = nil, want http credentialed url rejection")
+		}
+	})
+
+	t.Run("http header_profile_ref rejected at binding", func(t *testing.T) {
+		dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{DownloadAuth: NewDownloadAuthRegistry()})
+		output := bindOutput("http://files.fixture.invalid/file.bin", func(item *ExtractedItemRef) {
+			item.HeaderProfileRef = "hpr-fixture01"
+		}, 1)
+		if _, err := dispatcher.boundItemsFromExtractOutput("https://share.fixture.invalid/x", pack, nil, output); err == nil {
+			t.Fatal("binding error = nil, want http credentialed url rejection")
+		}
+	})
+
+	t.Run("plain http item without refs still allowed", func(t *testing.T) {
+		dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{DownloadAuth: NewDownloadAuthRegistry()})
+		items, err := dispatcher.boundItemsFromExtractOutput("https://share.fixture.invalid/x", pack, nil, bindOutput("http://files.fixture.invalid/file.bin", nil, 1))
+		if err != nil {
+			t.Fatalf("binding error = %v, want plain http item accepted", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("items = %#v", items)
+		}
+	})
+
+	t.Run("materialize rejects http credentialed item", func(t *testing.T) {
+		reg := NewDownloadAuthRegistry()
+		dispatcher := NewAddTaskDispatcher(AddTaskDispatcherConfig{DownloadAuth: reg})
+		ref := retainedDownloadAuthRef(t, reg, 2, pack.Identity, "files.fixture.invalid", "token")
+		if err := reg.Claim(ref, "holder"); err != nil {
+			t.Fatalf("Claim() error = %v", err)
+		}
+		item := ResolvedAddItem{
+			PackManifest:    pack.Manifest,
+			PackIdentity:    pack.Identity,
+			URL:             "http://files.fixture.invalid/file.bin",
+			DownloadAuthRef: ref,
+		}
+		if _, err := dispatcher.BuildAria2Headers(context.Background(), item); err == nil {
+			t.Fatal("BuildAria2Headers() error = nil, want http credentialed rejection")
+		}
+		if err := dispatcher.ValidateDownloadAuthBinding(item); err == nil {
+			t.Fatal("ValidateDownloadAuthBinding() error = nil, want http credentialed rejection")
+		}
+	})
+}
+
+// rollbackFakeDispatcher records claim/release calls so partial-mint
+// rollback is observable without a real registry.
+type rollbackFakeDispatcher struct {
+	items    []ResolvedAddItem
+	claims   map[string]string // holderKey → downloadAuthRef
+	releases map[string]string
+	failRef  string
+}
+
+func (f *rollbackFakeDispatcher) Resolve(_ context.Context, rawURL string) (AddTaskResolution, error) {
+	return AddTaskResolution{Matched: true, SourceURL: rawURL, Items: f.items}, nil
+}
+
+func (f *rollbackFakeDispatcher) BuildAria2Headers(_ context.Context, _ ResolvedAddItem) ([]string, error) {
+	return nil, nil
+}
+
+func (f *rollbackFakeDispatcher) AuthRuntimeRequestsForSource(_ context.Context, _ string) ([]HostAuthRuntimeRequest, error) {
+	return nil, nil
+}
+
+func (f *rollbackFakeDispatcher) ClaimDownloadAuth(ref string, holderKey string) error {
+	if ref == "" {
+		return nil
+	}
+	if ref == f.failRef {
+		return errors.New("download auth ref is unknown")
+	}
+	f.claims[holderKey] = ref
+	return nil
+}
+
+func (f *rollbackFakeDispatcher) ReleaseDownloadAuth(ref string, holderKey string) {
+	if ref == "" {
+		return
+	}
+	f.releases[holderKey] = ref
+}
+
+func (f *rollbackFakeDispatcher) ValidateDownloadAuthBinding(_ ResolvedAddItem) error {
+	return nil
+}
+
+func TestTasksAdapterResolveRollsBackMintedClaims(t *testing.T) {
+	firstRef := "dar-" + strings.Repeat("a", 32)
+	secondRef := "dar-" + strings.Repeat("b", 32)
+	dispatcher := &rollbackFakeDispatcher{
+		claims:   make(map[string]string),
+		releases: make(map[string]string),
+		failRef:  secondRef,
+		items: []ResolvedAddItem{
+			{URL: "https://files.fixture.invalid/a.bin", DownloadAuthRef: firstRef},
+			{URL: "https://files.fixture.invalid/b.bin", DownloadAuthRef: secondRef},
+		},
+	}
+	adapter := NewTasksAdapter(dispatcher, nil)
+
+	if _, err := adapter.Resolve(context.Background(), "https://share.fixture.invalid/s/abc"); err == nil {
+		t.Fatal("Resolve() error = nil, want second-item claim failure")
+	}
+	if len(dispatcher.claims) != 1 {
+		t.Fatalf("claims = %#v, want exactly the first item claimed", dispatcher.claims)
+	}
+	if len(dispatcher.releases) != 1 {
+		t.Fatalf("releases = %#v, want the minted claim rolled back", dispatcher.releases)
+	}
+	for key, ref := range dispatcher.releases {
+		if ref != firstRef {
+			t.Fatalf("released ref = %q, want %q", ref, firstRef)
+		}
+		if !strings.HasPrefix(key, "ref:") {
+			t.Fatalf("released holder key = %q, want ref: prefix", key)
+		}
+	}
+	if len(adapter.resolvedItems) != 0 {
+		t.Fatalf("resolvedItems = %d entries, want rollback emptied the map", len(adapter.resolvedItems))
 	}
 }
 

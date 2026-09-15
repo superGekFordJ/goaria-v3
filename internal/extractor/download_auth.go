@@ -19,9 +19,10 @@ const (
 )
 
 var (
-	ErrDownloadAuthRegistryFull  = errors.New("download auth registry is full")
-	ErrDownloadAuthUnknownRef    = errors.New("download auth ref is unknown")
-	ErrDownloadAuthNotMaterializ = errors.New("download auth ref is not usable")
+	ErrDownloadAuthRegistryFull      = errors.New("download auth registry is full")
+	ErrDownloadAuthInvocationLimit   = errors.New("download auth per-invocation registration limit reached")
+	ErrDownloadAuthUnknownRef        = errors.New("download auth ref is unknown")
+	ErrDownloadAuthNotMaterializable = errors.New("download auth ref is not usable")
 )
 
 type downloadAuthEntry struct {
@@ -73,7 +74,7 @@ func (r *DownloadAuthRegistry) Register(invocation uint64, pack VerifiedPackIden
 		}
 	}
 	if pending >= downloadAuthPendingPerInvoke {
-		return "", ErrDownloadAuthRegistryFull
+		return "", ErrDownloadAuthInvocationLimit
 	}
 	if len(r.entries) >= downloadAuthRegistryCapacity {
 		return "", ErrDownloadAuthRegistryFull
@@ -184,6 +185,9 @@ func (r *DownloadAuthRegistry) Release(ref string, holderKey string) {
 	if !ok {
 		return
 	}
+	if _, ok := entry.holders[holderKey]; !ok {
+		return
+	}
 	delete(entry.holders, holderKey)
 	if len(entry.holders) == 0 && entry.invocation == 0 {
 		r.deleteLocked(ref)
@@ -266,19 +270,19 @@ func (r *DownloadAuthRegistry) EntryCount() int {
 
 func materializableDownloadAuthEntry(entry *downloadAuthEntry, pack VerifiedPackIdentity, host string) error {
 	if entry.invocation != 0 {
-		return fmt.Errorf("%w: ref is still invocation-scoped", ErrDownloadAuthNotMaterializ)
+		return fmt.Errorf("%w: ref is still invocation-scoped", ErrDownloadAuthNotMaterializable)
 	}
 	if !entry.bound {
-		return fmt.Errorf("%w: ref was never bound to an output item", ErrDownloadAuthNotMaterializ)
+		return fmt.Errorf("%w: ref was never bound to an output item", ErrDownloadAuthNotMaterializable)
 	}
 	if entry.pack != pack {
-		return fmt.Errorf("%w: pack identity mismatch", ErrDownloadAuthNotMaterializ)
+		return fmt.Errorf("%w: pack identity mismatch", ErrDownloadAuthNotMaterializable)
 	}
 	if _, ok := entry.boundHosts[host]; !ok {
-		return fmt.Errorf("%w: host is not bound to this ref", ErrDownloadAuthNotMaterializ)
+		return fmt.Errorf("%w: host is not bound to this ref", ErrDownloadAuthNotMaterializable)
 	}
 	if len(entry.holders) == 0 {
-		return fmt.Errorf("%w: ref has no outstanding holders", ErrDownloadAuthNotMaterializ)
+		return fmt.Errorf("%w: ref has no outstanding holders", ErrDownloadAuthNotMaterializable)
 	}
 
 	return nil

@@ -35,7 +35,9 @@ type AddTaskDispatcherConfig struct {
 	Runner         *Runner
 	AuthResolver   AuthProfileResolver
 	HeaderResolver HeaderProfileResolver
-	DownloadAuth   *DownloadAuthRegistry
+	// DownloadAuth must be the registry instance shared with the paired
+	// Runner's host imports so refs minted there bind and materialize here.
+	DownloadAuth *DownloadAuthRegistry
 }
 
 type AddTaskDispatcher struct {
@@ -255,6 +257,9 @@ func (d *AddTaskDispatcher) ValidateDownloadAuthBinding(item ResolvedAddItem) er
 	if d == nil || d.downloadAuth == nil {
 		return errors.New("download auth registry is not configured")
 	}
+	if err := credentialedItemRequiresHTTPS(item); err != nil {
+		return err
+	}
 	host, ok := ParseHTTPURLHost(item.URL)
 	if !ok {
 		return errors.New("item url has an unsafe or unsupported host")
@@ -289,6 +294,11 @@ func (d *AddTaskDispatcher) BuildAria2Headers(ctx context.Context, item Resolved
 	}
 
 	knownSecrets := querySecretValues(item.URL)
+	// Credential materialization is https-only: a bearer or cookie header
+	// must never be written onto a plaintext transport.
+	if err := credentialedItemRequiresHTTPS(item); err != nil {
+		return nil, err
+	}
 	headers := make([]string, 0, 2)
 	if item.AuthProfileRef != "" {
 		if err := validateResolvedAddItemAuthPolicy(item); err != nil {
@@ -379,7 +389,26 @@ func ValidateResolvedAddItemAuthPolicy(item ResolvedAddItem) error {
 	return validateResolvedAddItemAuthPolicy(item)
 }
 
+// credentialedItemRequiresHTTPS fails closed when an item carrying any
+// credential ref does not target https. Materialized Authorization and
+// cookie headers must never be written onto a plaintext transport; this
+// check backs both the admission and materialization paths.
+func credentialedItemRequiresHTTPS(item ResolvedAddItem) error {
+	if item.DownloadAuthRef == "" && item.AuthProfileRef == "" && item.HeaderProfileRef == "" {
+		return nil
+	}
+	parsed, err := url.Parse(item.URL)
+	if err != nil || parsed.Scheme != "https" {
+		return redactErrorf("credentialed item url must use https")
+	}
+
+	return nil
+}
+
 func validateResolvedAddItemAuthPolicy(item ResolvedAddItem) error {
+	if err := credentialedItemRequiresHTTPS(item); err != nil {
+		return err
+	}
 	if item.HostPolicy == nil {
 		if isAliasManifest(item.PackManifest) {
 			return redactErrorf("alias host policy is required for auth profile expansion")
@@ -411,6 +440,11 @@ func (d *AddTaskDispatcher) resolvedItemsFromExtractOutput(sourceURL string, pac
 		if hostPolicy != nil {
 			if err := policyAllowsOutputURL(*hostPolicy, ref.URL); err != nil {
 				return nil, fmt.Errorf("item %d url: %w", i, err)
+			}
+		}
+		if ref.DownloadAuthRef != "" || ref.AuthProfileRef != "" || ref.HeaderProfileRef != "" {
+			if parsed, err := url.Parse(ref.URL); err != nil || parsed.Scheme != "https" {
+				return nil, fmt.Errorf("item %d url must use https for credentialed downloads", i)
 			}
 		}
 		if ref.DownloadAuthRef != "" {
