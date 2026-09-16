@@ -25,10 +25,18 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: benchmark-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   benchmark:
     name: Run Core Benchmarks
     runs-on: windows-latest
+    if: >-
+      github.event_name == 'pull_request' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'release' && !endsWith(github.event.release.tag_name, '-beta-extractor'))
     steps:
       - name: Checkout PR / Current ref
         uses: actions/checkout@v4
