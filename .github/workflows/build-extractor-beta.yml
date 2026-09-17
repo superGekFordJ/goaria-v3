@@ -296,6 +296,7 @@ jobs:
     needs: [resolve, linux-package, darwin-package, windows-package]
     env:
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
       EXTRACTOR_TAG: ${{ needs.resolve.outputs.extractor_tag }}
       TARGET_SHA: ${{ needs.resolve.outputs.target_sha }}
       BASE_TAG: ${{ needs.resolve.outputs.checkout_ref }}
@@ -336,10 +337,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if gh release view "$EXTRACTOR_TAG" >/dev/null 2>&1; then
+          if gh release view "$EXTRACTOR_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
             echo "release $EXTRACTOR_TAG already exists; skipping create"
           else
-            gh release create "$EXTRACTOR_TAG" --prerelease --target "$TARGET_SHA" --title "$EXTRACTOR_TAG" --notes-file notes.md
+            gh release create "$EXTRACTOR_TAG" --repo "$GH_REPO" --prerelease --target "$TARGET_SHA" --title "$EXTRACTOR_TAG" --notes-file notes.md
           fi
           shopt -s nullglob
           files=(dist/*)
@@ -347,4 +348,4 @@ jobs:
             echo "no downloaded package files to upload" >&2
             exit 1
           fi
-          gh release upload "$EXTRACTOR_TAG" "${files[@]}" --clobber
+          gh release upload "$EXTRACTOR_TAG" --repo "$GH_REPO" "${files[@]}" --clobber
