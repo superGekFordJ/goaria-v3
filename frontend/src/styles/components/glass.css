@@ -254,7 +254,7 @@
 /* Dark mode (default): dim highlights, dark inset borders — matches original dark aesthetic */
 .lg-bevel {
   background: linear-gradient(
-    115deg,
+    180deg,
     rgba(255, 255, 255, 0.04) 0%,
     rgba(255, 255, 255, 0) 34%,
     rgba(255, 255, 255, 0) 76%,
@@ -272,30 +272,35 @@
 /* Light mode: bright crisp highlights */
 :root[data-theme='light'] .lg-bevel {
   background: linear-gradient(
-    115deg,
+    180deg,
     rgba(255, 255, 255, 0.5) 0%,
     rgba(255, 255, 255, 0) 34%,
     rgba(255, 255, 255, 0) 76%,
     rgba(255, 255, 255, 0.3) 100%
   );
   box-shadow:
-    inset 0 0 0 1px rgba(0, 0, 0, 0.16),
+    inset 0 0 0 0.75px rgba(0, 0, 0, 0.26),
     inset 0 1px 0 rgba(255, 255, 255, 0.8),
-    inset 0 -1px 1px rgba(0, 0, 0, 0.16),
+    inset 0 10px 14px -8px rgba(255, 255, 255, 0.18),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.1),
+    inset 0 -14px 20px -12px rgba(0, 0, 0, 0.08),
     0 2px 4px rgba(0, 0, 0, 0.05),
     0 8px 24px rgba(0, 0, 0, 0.08);
 }
 
 /* Layer 2b: Hairline specular ring — conic-gradient masked border */
-/* Dark mode (default): very subtle dim ring, not bright white */
+/* Dark mode (default): very subtle dim ring, not bright white.
+ * Bottom arc carries a dark "shadow specular" (iOS darkSpecular analogue):
+ * the rim's dark side should read as shadowed edge, not absent edge. */
 .lg-specular {
   padding: 1.4px;
   background: conic-gradient(
     from 0deg,
     rgba(255, 255, 255, 0.15) 0deg,
     rgba(255, 255, 255, 0.04) 65deg,
-    rgba(255, 255, 255, 0.08) 135deg,
-    rgba(255, 255, 255, 0.02) 200deg,
+    rgba(0, 0, 0, 0.1) 135deg,
+    rgba(0, 0, 0, 0.22) 200deg,
+    rgba(0, 0, 0, 0.08) 245deg,
     rgba(255, 255, 255, 0.1) 280deg,
     rgba(255, 255, 255, 0.15) 360deg
   );
@@ -309,14 +314,18 @@
   mask-composite: exclude;
 }
 
-/* Light mode: bright crisp specular ring */
+/* Light mode edge stack (outside → in): 0.75px dark hairline silhouette
+ * (lg-bevel inset stroke) → this directional white arc at top → dark bottom
+ * anchor + broad dark Fresnel band inside. The ring's bottom arc stays
+ * near-transparent so the bevel shadows carry the dark side. */
 :root[data-theme='light'] .lg-specular {
   background: conic-gradient(
     from 0deg,
     rgba(255, 255, 255, 0.9) 0deg,
     rgba(255, 255, 255, 0.18) 65deg,
-    rgba(255, 255, 255, 0.38) 135deg,
-    rgba(255, 255, 255, 0.08) 200deg,
+    rgba(0, 0, 0, 0.03) 135deg,
+    rgba(0, 0, 0, 0.07) 200deg,
+    rgba(0, 0, 0, 0.03) 245deg,
     rgba(255, 255, 255, 0.45) 280deg,
     rgba(255, 255, 255, 0.9) 360deg
   );
@@ -328,16 +337,17 @@
 :root[data-window-transparency='mica'][data-theme='light'] .lg-bevel,
 :root[data-window-transparency='tabbed'][data-theme='light'] .lg-bevel {
   background: linear-gradient(
-    115deg,
+    180deg,
     rgba(255, 255, 255, 0.08) 0%,
     rgba(255, 255, 255, 0) 34%,
     rgba(255, 255, 255, 0) 76%,
     rgba(255, 255, 255, 0.04) 100%
   );
   box-shadow:
-    inset 0 0 0 1px rgba(0, 0, 0, 0.12),
+    inset 0 0 0 0.75px rgba(0, 0, 0, 0.18),
     inset 0 1px 0 rgba(255, 255, 255, 0.35),
-    inset 0 -1px 1px rgba(0, 0, 0, 0.08),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.1),
+    inset 0 -10px 16px -8px rgba(0, 0, 0, 0.06),
     0 2px 4px rgba(0, 0, 0, 0.06),
     0 6px 16px rgba(0, 0, 0, 0.08);
 }
