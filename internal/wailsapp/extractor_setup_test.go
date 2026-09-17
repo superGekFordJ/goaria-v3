@@ -228,6 +228,9 @@ func TestConfigureEmbeddedExtractorRecoversUserSource(t *testing.T) {
 	deps.hasEmbeddedReleasePacks = func() bool { return false }
 	deps.embeddedReleaseRequired = func() bool { return false }
 	deps.dataRoot = func() (string, error) { return dataRoot, nil }
+	deps.privatePolicyRuntimeSourceState = func() extractor.PrivateBundleSourceState {
+		return extractor.PrivateBundleSourceStateEnv
+	}
 	deps.loadHostPolicyResolver = func() (extractor.HostPolicyResolver, error) {
 		return policyResolver, nil
 	}
