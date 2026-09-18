@@ -9,8 +9,10 @@
   import { buildBatchGroupResultHints, type TaskGroupHint } from '../../stores/task/grouping'
   import { Link, Plus, Loader2, ChevronUp, Layers3 } from '@lucide/vue'
   import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
+  import { System } from '@wailsio/runtime'
 
   const { t } = useI18n()
+  const isMac = System.IsMac()
   const taskStore = useTaskStore()
   const uiStore = useUIStore()
   const downloadGroupStore = useDownloadGroupStore()
@@ -324,6 +326,7 @@
           @focus="inputFocused = true"
           @blur="inputFocused = false"
           @keydown.ctrl.enter.prevent="handleBatchAdd"
+          @keydown.meta.enter.prevent="handleBatchAdd"
           @keydown.escape="collapseToSingleLine"
           @paste="handlePaste"
         />
@@ -443,7 +446,7 @@
             <kbd
               class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]"
             >
-              Ctrl+Enter
+              {{ isMac ? 'Cmd+Enter' : 'Ctrl+Enter' }}
             </kbd>
             <span>{{ t('taskHeader.submitAll') }}</span>
             <kbd
@@ -487,9 +490,17 @@
             <kbd
               class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]"
             >
-              Ctrl+V
+              {{ isMac ? 'Cmd+V' : 'Ctrl+V' }}
             </kbd>
             <span>{{ t('taskHeader.pasteLink') }}</span>
+          </div>
+          <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
+            <kbd
+              class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]"
+            >
+              {{ isMac ? 'Cmd+A' : 'Ctrl+A' }}
+            </kbd>
+            <span>{{ t('taskHeader.selectAllTasks') }}</span>
           </div>
         </div>
       </Transition>

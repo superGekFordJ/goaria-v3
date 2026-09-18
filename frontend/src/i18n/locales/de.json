@@ -217,6 +217,7 @@
     "insufficientDiskSpaceBatch": "{count} fehlgeschlagen: nicht genug Speicherplatz",
     "quickAdd": "Schnell hinzufügen",
     "pasteLink": "Einfügen",
+    "selectAllTasks": "Alle Aufgaben auswählen",
     "multilinePlaceholder": "Ein Link pro Zeile",
     "addAll": "Alle hinzufügen ({count})",
     "submitAll": "Alle senden",

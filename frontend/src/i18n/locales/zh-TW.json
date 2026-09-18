@@ -217,6 +217,7 @@
     "insufficientDiskSpaceBatch": "{count} 個因磁碟空間不足失敗",
     "quickAdd": "快速新增",
     "pasteLink": "貼上連結",
+    "selectAllTasks": "選取全部卡片",
     "multilinePlaceholder": "每行一個連結",
     "addAll": "全部新增 ({count})",
     "submitAll": "提交全部",

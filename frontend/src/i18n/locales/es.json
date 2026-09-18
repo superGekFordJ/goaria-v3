@@ -217,6 +217,7 @@
     "insufficientDiskSpaceBatch": "{count} fallidos: espacio en disco insuficiente",
     "quickAdd": "Añadir rápido",
     "pasteLink": "Pegar enlace",
+    "selectAllTasks": "Seleccionar todas las tareas",
     "multilinePlaceholder": "Un enlace por línea",
     "addAll": "Añadir todo ({count})",
     "submitAll": "Enviar todo",

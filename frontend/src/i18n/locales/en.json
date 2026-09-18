@@ -217,6 +217,7 @@
     "insufficientDiskSpaceBatch": "{count} failed: insufficient disk space",
     "quickAdd": "Quick Add",
     "pasteLink": "Paste Link",
+    "selectAllTasks": "Select All Tasks",
     "multilinePlaceholder": "One link per line",
     "addAll": "Add All ({count})",
     "submitAll": "Submit All",

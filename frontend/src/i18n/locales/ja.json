@@ -217,6 +217,7 @@
     "insufficientDiskSpaceBatch": "{count} 件がディスク容量不足で失敗",
     "quickAdd": "クイック追加",
     "pasteLink": "リンクを貼り付け",
+    "selectAllTasks": "すべてのカードを選択",
     "multilinePlaceholder": "1行に1つのリンク",
     "addAll": "すべて追加 ({count})",
     "submitAll": "すべて送信",
