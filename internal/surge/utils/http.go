@@ -113,6 +113,9 @@ func mergeRedirectCookies(dst *http.Request) {
 	// Carry-over: replay the previous hop's accumulated Cookie only when
 	// this hop stays same-site and same-scheme (same gate as the restore
 	// above). Cross-site hops never inherit accumulated credentials.
+	// Flattened pairs carry no Domain/Path metadata, so per-cookie scope is
+	// not re-checked here — a host-only cookie set earlier may ride to a
+	// sibling subdomain (accepted ceiling, locked by test).
 	if prev != nil && prev.URL != nil &&
 		strings.EqualFold(dst.URL.Scheme, prev.URL.Scheme) &&
 		SameSite(dst.URL.Host, prev.URL.Host) {

@@ -389,6 +389,17 @@ func TestCopyRedirectHeaders_RedirectCookieMerge(t *testing.T) {
 			setCookies: []string{"own=1; Path=/"},
 			wantCookie: "own=1",
 		},
+		{
+			// Locked ceiling: a host-only cookie planted on an earlier hop
+			// loses its scope metadata once flattened, so carry-over replays
+			// it to a same-site sibling subdomain (a real jar would not).
+			name:       "carry-over does not re-check per-cookie scope",
+			dstURL:     "https://b.example.com/",
+			prevURL:    "https://a.example.com/",
+			prevCookie: "h=1",
+			srcURL:     "https://a.example.com/",
+			wantCookie: "h=1",
+		},
 	}
 
 	for _, tt := range tests {
