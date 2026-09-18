@@ -400,6 +400,38 @@ func TestCopyRedirectHeaders_RedirectCookieMerge(t *testing.T) {
 			srcURL:     "https://a.example.com/",
 			wantCookie: "h=1",
 		},
+		{
+			// No effective change on this hop: the raw header passes through
+			// byte-identical — pairs the parser cannot read stay on the wire.
+			name:       "no merge keeps raw Cookie header byte-identical",
+			dstURL:     "https://a.example.com/dl",
+			dstHeaders: http.Header{"Cookie": []string{"init=1; orphan; bad name=x"}},
+			prevURL:    "https://a.example.com/dl",
+			prevCookie: "init=1", // same value as seed — carry-over is a no-op
+			srcURL:     "https://a.example.com/dl",
+			wantCookie: "init=1; orphan; bad name=x",
+		},
+		{
+			// A Set-Cookie echoing the same name+value is a no-op — no rebuild.
+			name:       "same-value Set-Cookie leaves raw header untouched",
+			dstURL:     "https://a.example.com/dl",
+			dstHeaders: http.Header{"Cookie": []string{"init=1; orphan"}},
+			prevURL:    "https://a.example.com/dl",
+			srcURL:     "https://a.example.com/dl",
+			setCookies: []string{"init=1; Path=/"},
+			wantCookie: "init=1; orphan",
+		},
+		{
+			// Trade-off: a real merge rebuilds from parsed pairs — segments
+			// the parser rejects (here a space in the name) are dropped.
+			name:       "merge rebuild drops unparseable segments",
+			dstURL:     "https://a.example.com/dl",
+			dstHeaders: http.Header{"Cookie": []string{"init=1; bad name=x"}},
+			prevURL:    "https://a.example.com/dl",
+			srcURL:     "https://a.example.com/dl",
+			setCookies: []string{"s=1; Path=/"},
+			wantCookie: "init=1; s=1",
+		},
 	}
 
 	for _, tt := range tests {

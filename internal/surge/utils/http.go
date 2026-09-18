@@ -84,30 +84,44 @@ func mergeRedirectCookies(dst *http.Request) {
 	now := time.Now()
 
 	// Ordered name->value set seeded from dst's current Cookie header
-	// (initial-header copy + the same-site restore above).
+	// (initial-header copy + the same-site restore above). Seeding is not a
+	// change: hops that merge nothing leave the raw header byte-identical,
+	// preserving pairs the parser cannot read.
 	var names []string
 	vals := make(map[string]string)
-	upsert := func(c *http.Cookie) {
+	for _, c := range dst.Cookies() {
 		if _, ok := vals[c.Name]; !ok {
 			names = append(names, c.Name)
 		}
 		vals[c.Name] = c.Value
+	}
+
+	changed := false
+	upsert := func(c *http.Cookie) {
+		old, ok := vals[c.Name]
+		if ok {
+			if old != c.Value {
+				vals[c.Name] = c.Value
+				changed = true
+			}
+			return
+		}
+		names = append(names, c.Name)
+		vals[c.Name] = c.Value
+		changed = true
 	}
 	remove := func(name string) {
 		if _, ok := vals[name]; !ok {
 			return
 		}
 		delete(vals, name)
+		changed = true
 		for i, n := range names {
 			if n == name {
 				names = append(names[:i], names[i+1:]...)
 				return
 			}
 		}
-	}
-
-	for _, c := range dst.Cookies() {
-		upsert(c)
 	}
 
 	// Carry-over: replay the previous hop's accumulated Cookie only when
@@ -143,7 +157,12 @@ func mergeRedirectCookies(dst *http.Request) {
 		}
 	}
 
-	// Rebuild a single flat Cookie header; drop the key entirely if empty.
+	// Rebuild only on a real change; otherwise the raw Cookie header passes
+	// through untouched. Rebuild collapses to a single flat header and drops
+	// the key entirely when empty.
+	if !changed {
+		return
+	}
 	pairs := make([]string, 0, len(names))
 	for _, n := range names {
 		if s := (&http.Cookie{Name: n, Value: vals[n]}).String(); s != "" {
