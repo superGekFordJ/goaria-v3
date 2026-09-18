@@ -333,7 +333,11 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 				}
 			}
 			utils.Debug("Worker %d: task at offset %d failed after %d retries: %v", id, task.Offset, maxRetries, lastErr)
-			if errors.Is(lastErr, types.ErrPermanentHTTP) {
+			// FORK-PATCH: ErrMaxRedirects is terminal like ErrPermanentHTTP —
+			// a redirect loop (e.g. cookie-bounce not cleared) cannot be
+			// resolved by requeuing; without this the residual shard would
+			// rotate through workers forever at 0 bytes.
+			if errors.Is(lastErr, types.ErrPermanentHTTP) || errors.Is(lastErr, types.ErrMaxRedirects) {
 				return lastErr
 			}
 			if activeTask.LastHTTPStatus.Load() == http.StatusForbidden && d.recordSoft403Exhaustion(time.Now()) {

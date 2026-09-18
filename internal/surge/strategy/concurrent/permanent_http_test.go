@@ -2,6 +2,7 @@ package concurrent
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -211,6 +212,65 @@ func TestPermanentHTTP_B1_RequeueThenReturn(t *testing.T) {
 	}
 	if queue.Len() < 1 {
 		t.Fatal("B1 requires residual requeue before return; queue empty")
+	}
+	remaining, ok := queue.Pop()
+	if !ok {
+		t.Fatal("expected residual task on queue")
+	}
+	if remaining.Offset != 0 || remaining.Length != fileSize {
+		t.Fatalf("residual range = [%d+%d), want [0+%d)", remaining.Offset, remaining.Length, fileSize)
+	}
+	queue.Close()
+}
+
+// TestMaxRedirects_FuseReturnsTerminal asserts a redirect loop that never
+// clears (e.g. a cookie-bounce endpoint the merge cannot satisfy) is terminal
+// for the worker: after MaxTaskRetries the residual shard is requeued (B1
+// ordering preserved) and ErrMaxRedirects is returned instead of rotating
+// the shard through workers forever at 0 bytes.
+func TestMaxRedirects_FuseReturnsTerminal(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(32 * utils.KiB)
+	// Always-302 self-redirect with no Set-Cookie — the loop never resolves.
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "/loop")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer server.Close()
+
+	workingPath := filepath.Join(tmpDir, "maxredir.surge")
+	f, err := os.Create(workingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	d := NewConcurrentDownloader("maxredir", nil, nil, &types.RuntimeConfig{
+		MaxTaskRetries:   2,
+		WorkerBufferSize: 32 * utils.KiB,
+	})
+	client := &http.Client{}
+	d.applyClientSettings(client) // production redirect cap + CopyRedirectHeaders
+
+	queue := NewTaskQueue()
+	queue.Push(types.Task{Offset: 0, Length: fileSize})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	err = d.worker(ctx, 0, []string{server.URL}, f, queue, fileSize, client)
+	if !errors.Is(err, types.ErrMaxRedirects) {
+		t.Fatalf("expected ErrMaxRedirects, got: %v", err)
+	}
+	// Pre-fuse behavior: the residual shard is requeued and popped in a loop
+	// until ctx deadline — distinguishable from a real fuse return.
+	if ctx.Err() != nil {
+		t.Fatalf("worker only returned on ctx timeout — fuse did not fire: %v", ctx.Err())
+	}
+	if queue.Len() < 1 {
+		t.Fatal("expected residual requeue before return (B1 ordering)")
 	}
 	remaining, ok := queue.Pop()
 	if !ok {
