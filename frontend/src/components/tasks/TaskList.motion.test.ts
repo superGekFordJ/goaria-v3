@@ -1,4 +1,3 @@
- 
 import { mount } from '@vue/test-utils'
 import { defineComponent, h, type PropType } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'

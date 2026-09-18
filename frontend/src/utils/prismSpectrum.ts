@@ -37,9 +37,7 @@ export const PRISM_TONE_CHROMA_SCALE: Record<PrismTone, number> = {
 } as const
 
 export function normalisePrismTone(tone: unknown): PrismTone {
-  return tone === 'vivid' || tone === 'lucid' || tone === 'mist'
-    ? tone
-    : DEFAULT_PRISM_TONE
+  return tone === 'vivid' || tone === 'lucid' || tone === 'mist' ? tone : DEFAULT_PRISM_TONE
 }
 
 /** Effective per-family chroma after tone scaling. */
@@ -87,10 +85,9 @@ export const PRISM_ACCENT_HUE_OFFSET = 35
  * Y∈(0.18,0.22) dead zone where neither text clears 4.5:1.
  */
 const FILL_L_TABLE = [
-  0.519, 0.519, 0.519, 0.519, 0.537, 0.72, 0.755, 0.79, 0.799, 0.795, 0.791,
-  0.788, 0.783, 0.794, 0.794, 0.794, 0.773, 0.775, 0.776, 0.778, 0.779, 0.781,
-  0.783, 0.76, 0.715, 0.52, 0.519, 0.519, 0.519, 0.519, 0.519, 0.519, 0.519,
-  0.519, 0.519, 0.519,
+  0.519, 0.519, 0.519, 0.519, 0.537, 0.72, 0.755, 0.79, 0.799, 0.795, 0.791, 0.788, 0.783, 0.794,
+  0.794, 0.794, 0.773, 0.775, 0.776, 0.778, 0.779, 0.781, 0.783, 0.76, 0.715, 0.52, 0.519, 0.519,
+  0.519, 0.519, 0.519, 0.519, 0.519, 0.519, 0.519, 0.519,
 ] as const
 
 function normaliseHue(hue: number): number {

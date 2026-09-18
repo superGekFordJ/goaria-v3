@@ -104,7 +104,9 @@ describe('prismChromaticInk', () => {
   })
 
   it('tints toward the accent hue family instead of neutral black', () => {
-    const inks = new Set([0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330].map(prismChromaticInk))
+    const inks = new Set(
+      [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330].map(prismChromaticInk),
+    )
     // every hue family yields a distinct ink — not a shared near-black
     expect(inks.size).toBe(12)
     expect(prismChromaticInk(0)).toMatch(/^#[0-9a-f]{6}$/)

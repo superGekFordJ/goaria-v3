@@ -71,7 +71,9 @@ function toTask(task: Partial<Task> | undefined): Task {
   }
   if (task?.title !== undefined) result.title = task.title
   if ((task as unknown as { threads?: string })?.threads !== undefined) {
-    ;(result as unknown as { threads?: string }).threads = (task as unknown as { threads?: string }).threads
+    ;(result as unknown as { threads?: string }).threads = (
+      task as unknown as { threads?: string }
+    ).threads
   }
   const group = cloneTaskGroupMetadata(task)
   if (group) result.download_group = group
@@ -109,9 +111,13 @@ function mergeTaskPreservingRichData(
   if (incoming.errorCode !== undefined) merged.errorCode = incoming.errorCode
   if (incoming.errorMessage !== undefined) merged.errorMessage = incoming.errorMessage
   if ((incoming as unknown as { threads?: string })?.threads !== undefined) {
-    ;(merged as unknown as { threads?: string }).threads = (incoming as unknown as { threads?: string }).threads
+    ;(merged as unknown as { threads?: string }).threads = (
+      incoming as unknown as { threads?: string }
+    ).threads
   } else if ((existing as unknown as { threads?: string })?.threads !== undefined) {
-    ;(merged as unknown as { threads?: string }).threads = (existing as unknown as { threads?: string }).threads
+    ;(merged as unknown as { threads?: string }).threads = (
+      existing as unknown as { threads?: string }
+    ).threads
   }
   Object.assign(merged, mergeTaskGroupMetadata(existing, incoming))
 

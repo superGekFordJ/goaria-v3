@@ -46,7 +46,7 @@
   const uniqueRecoveryErrors = computed(() => {
     const list = state.value.recovery_errors || []
     if (list.length === 0) return []
-    return [...new Set(list.map((code) => mapErrorCodeToI18nKey(code)).filter(Boolean))]
+    return [...new Set(list.map(code => mapErrorCodeToI18nKey(code)).filter(Boolean))]
   })
 
   const shortFingerprint = (fp?: string) => {
@@ -62,7 +62,11 @@
     :icon="Package"
     icon-class="bg-[var(--neon-primary)]/10 text-[var(--neon-primary)]"
   >
-    <div v-if="loading" data-testid="loading-indicator" class="flex items-center justify-center gap-2 py-6 text-xs font-mono-data text-[var(--app-text-subtle)]">
+    <div
+      v-if="loading"
+      data-testid="loading-indicator"
+      class="flex items-center justify-center gap-2 py-6 text-xs font-mono-data text-[var(--app-text-subtle)]"
+    >
       <Loader2 class="animate-spin text-[var(--neon-primary)]" :size="16" />
       <span>{{ t('extractor.actions.loading') }}</span>
     </div>
@@ -150,10 +154,7 @@
         </div>
 
         <div class="flex flex-col gap-1">
-          <label
-            for="extractor-url-input"
-            class="text-xs text-[var(--app-text-subtle)] block"
-          >
+          <label for="extractor-url-input" class="text-xs text-[var(--app-text-subtle)] block">
             {{ t('extractor.urlInput.label') }}
           </label>
           <div class="flex items-center gap-2">
@@ -228,7 +229,9 @@
                 {{ source.display_name }}
               </span>
 
-              <span class="text-[10px] px-1.5 py-0.5 rounded bg-[var(--glass-border)]/40 text-[var(--app-text-subtle)]">
+              <span
+                class="text-[10px] px-1.5 py-0.5 rounded bg-[var(--glass-border)]/40 text-[var(--app-text-subtle)]"
+              >
                 {{ t(`extractor.source.kind.${source.kind}`) }}
               </span>
             </div>
@@ -261,11 +264,14 @@
           </div>
 
           <!-- Metadata: Pack ID, Version, Signer Fingerprint -->
-          <div class="flex items-center gap-3 text-[10px] font-mono-data text-[var(--app-text-subtle)] flex-wrap">
+          <div
+            class="flex items-center gap-3 text-[10px] font-mono-data text-[var(--app-text-subtle)] flex-wrap"
+          >
             <span>{{ source.pack_id }}</span>
             <span>{{ 'v' + source.pack_version }}</span>
             <span v-if="source.signer_fingerprint" class="text-[var(--app-text-subtle)]/70">
-              {{ t('extractor.source.fingerprint') }}: {{ shortFingerprint(source.signer_fingerprint) }}
+              {{ t('extractor.source.fingerprint') }}:
+              {{ shortFingerprint(source.signer_fingerprint) }}
             </span>
           </div>
 

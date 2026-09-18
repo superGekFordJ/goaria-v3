@@ -528,7 +528,9 @@
        <number> var eases the rainbow between stops (晶艳 · 澄光 · 烟岚). */
     transition: --prism-c-fill 0.3s ease;
     outline: none;
-    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.1);
+    box-shadow:
+      inset 0 1px 3px rgba(0, 0, 0, 0.5),
+      0 0 0 1px rgba(255, 255, 255, 0.1);
   }
 
   .spectrum-slider::-webkit-slider-thumb {
@@ -539,7 +541,9 @@
     border-radius: 50%;
     background: #ffffff;
     border: 2px solid rgba(255, 255, 255, 0.95);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 0 8px var(--neon-glow);
+    box-shadow:
+      0 1px 3px rgba(0, 0, 0, 0.25),
+      0 0 8px var(--neon-glow);
     cursor: pointer;
     transition: transform 0.15s ease;
   }

@@ -383,6 +383,6 @@
 :root[data-window-transparency='acrylic'][data-theme='light'] .sidebar-container .text-\[9px\],
 :root[data-window-transparency='mica'][data-theme='light'] .sidebar-container .text-\[9px\],
 :root[data-window-transparency='tabbed'][data-theme='light'] .sidebar-container .text-\[9px\] {
-  color: rgba(30, 41, 59, 0.60);
+  color: rgba(30, 41, 59, 0.6);
   font-weight: normal;
 }

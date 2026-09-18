@@ -161,7 +161,10 @@ export const useUIStore = defineStore(
       const { ink, fill } = prismChroma(theme, prismTone.value)
       root.style.setProperty('--prism-hue', String(prismHue.value))
       root.style.setProperty('--prism-fill-l', String(prismFillLightness(prismHue.value, theme)))
-      root.style.setProperty('--prism-btn-text', prismButtonText(prismHue.value, theme, prismTone.value))
+      root.style.setProperty(
+        '--prism-btn-text',
+        prismButtonText(prismHue.value, theme, prismTone.value),
+      )
       root.style.setProperty('--prism-c-ink', ink.toFixed(4))
       root.style.setProperty('--prism-c-fill', fill.toFixed(4))
       root.style.setProperty('--prism-hsl-s', prismHslSaturation(prismTone.value))

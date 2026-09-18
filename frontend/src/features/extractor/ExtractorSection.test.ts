@@ -48,7 +48,8 @@ vi.mock('./useExtractorState', () => ({
     remoteUrl: mockRemoteUrl,
     ...mockFns,
   }),
-  mapErrorCodeToI18nKey: (code?: string) => (code ? `extractor.errors.${code}` : 'extractor.errors.generic'),
+  mapErrorCodeToI18nKey: (code?: string) =>
+    code ? `extractor.errors.${code}` : 'extractor.errors.generic',
 }))
 
 function createSource(id: string, name: string, status = 'ready', errorCode = ''): ExtractorSource {
@@ -150,11 +151,15 @@ describe('ExtractorSection.vue', () => {
     // Shortened fingerprint (12 chars)
     expect(rows[0].text()).toContain('abcdef123456')
     expect(rows[0].find('[data-testid="status-light-ready"]').exists()).toBe(true)
-    expect(rows[0].find('[data-testid="status-light-ready"] .sr-only').text()).toBe('extractor.source.status.ready')
+    expect(rows[0].find('[data-testid="status-light-ready"] .sr-only').text()).toBe(
+      'extractor.source.status.ready',
+    )
 
     expect(rows[1].text()).toContain('Second Pack')
     expect(rows[1].find('[data-testid="status-light-unavailable"]').exists()).toBe(true)
-    expect(rows[1].find('[data-testid="status-light-unavailable"] .sr-only').text()).toBe('extractor.source.status.unavailable')
+    expect(rows[1].find('[data-testid="status-light-unavailable"] .sr-only').text()).toBe(
+      'extractor.source.status.unavailable',
+    )
     expect(rows[1].text()).toContain('extractor.errors.signer_changed')
   })
 

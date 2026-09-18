@@ -384,7 +384,6 @@
   --neon-text-glow: 0 1px 2px rgba(255, 255, 255, 0.9), 0 0 8px rgba(255, 255, 255, 0.5);
 }
 
-
 /* === Neon Text Contrast Enhancement for Transparency Mode === */
 /* Ensure fluorescent text remains readable against variable OS backgrounds */
 :root[data-window-transparency='acrylic'] .text-neon,

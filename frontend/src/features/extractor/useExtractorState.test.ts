@@ -17,7 +17,10 @@ vi.mock('../../../bindings/goaria-v3/internal/wailsapp/app', () => ({
   RemoveExtractorSource: vi.fn(),
 }))
 
-function createSampleState(sources: ExtractorSource[] = [], recoveryErrors: string[] = []): ExtractorState {
+function createSampleState(
+  sources: ExtractorSource[] = [],
+  recoveryErrors: string[] = [],
+): ExtractorState {
   return new ExtractorState({
     available: true,
     sources,
@@ -25,7 +28,12 @@ function createSampleState(sources: ExtractorSource[] = [], recoveryErrors: stri
   })
 }
 
-function createSampleSource(id: string, name: string, status = 'ready', errorCode = ''): ExtractorSource {
+function createSampleSource(
+  id: string,
+  name: string,
+  status = 'ready',
+  errorCode = '',
+): ExtractorSource {
   return new ExtractorSource({
     source_id: id,
     kind: 'local_zip',
@@ -63,7 +71,9 @@ describe('useExtractorState', () => {
 
   it('handles transport failure on initial mount without exposing raw error', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    vi.mocked(AppBindings.GetExtractorState).mockRejectedValue(new Error('SensitiveHostPathError: C:\\secret\\path'))
+    vi.mocked(AppBindings.GetExtractorState).mockRejectedValue(
+      new Error('SensitiveHostPathError: C:\\secret\\path'),
+    )
 
     const { state, loading, error, loadInitialState } = useExtractorState()
     await loadInitialState()
