@@ -29,6 +29,12 @@ const (
 	KeepAliveDuration            = 30 * time.Second
 	ProbeTimeout                 = 30 * time.Second
 
+	// FORK-PATCH: single-stream body-read idle watchdog. ResponseHeaderTimeout
+	// only bounds TTFB; a mid-body tarpit (headers sent, then silence) has no
+	// transport-level bound. A single Read silent longer than this closes the
+	// response body, surfacing a bounded copy error instead of a permanent hang.
+	DefaultBodyIdleTimeout = 30 * time.Second
+
 	PoolMaxIdleConns        = 512
 	PoolMaxIdleConnsPerHost = 128
 	PoolMaxConnsPerHost     = 512

@@ -92,6 +92,10 @@ type ConcurrentDownloader struct {
 	// FORK-PATCH: session-local Soft-403 pressure state.
 	soft403Guard soft403ProgressGuard
 
+	// FORK-PATCH: session-local no-progress fuse state (residual requeues
+	// counted while VerifiedProgress is frozen).
+	noProgressGuard noProgressGuard
+
 	// FORK-PATCH: TTFB one-shot guard — only the first non-hedged 206 sends FirstByte.
 	ttfbSent atomic.Bool
 	// FORK-PATCH: resume flag — suppresses FirstByte on resume (setupTasks wiring later).
@@ -106,9 +110,19 @@ const Soft403StickyExhaustions = 16
 // Soft403NoProgressConfirmWindow is the confirmation window after pressure arms.
 const Soft403NoProgressConfirmWindow = 5 * time.Second
 
+// NoProgressResidualExhaustions is the residual-requeue fuse limit: worker
+// requeues of unverified work while VerifiedProgress stays frozen. Must
+// exceed Soft403StickyExhaustions so pure-403 streams trip the dedicated
+// sticky-403 channel first.
+const NoProgressResidualExhaustions = 32
+
 var (
 	soft403StickyExhaustions       = Soft403StickyExhaustions
 	soft403NoProgressConfirmWindow = Soft403NoProgressConfirmWindow
+
+	// FORK-PATCH: test-overridable no-progress fuse limit (same pattern as
+	// soft403StickyExhaustions).
+	noProgressResidualExhaustions = NoProgressResidualExhaustions
 )
 
 type soft403ProgressGuard struct {
@@ -226,6 +240,68 @@ func (g *soft403ProgressGuard) increment(limit int) {
 }
 
 func normalizedSoft403Limit(limit int) int {
+	if limit < 1 {
+		return 1
+	}
+	return limit
+}
+
+// FORK-PATCH: no-progress fuse state. Counts worker residual requeues that
+// return unverified work to the queue while VerifiedProgress has not
+// advanced past the primed baseline; any VP delta clears the count.
+type noProgressGuard struct {
+	mu          sync.Mutex
+	primed      bool
+	baselineVP  int64
+	exhaustions int
+}
+
+func (d *ConcurrentDownloader) resetNoProgressGuard() {
+	g := &d.noProgressGuard
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.primed = false
+	g.baselineVP = 0
+	g.exhaustions = 0
+}
+
+func (d *ConcurrentDownloader) primeNoProgressGuard() {
+	vp := int64(-1)
+	if d.State != nil {
+		vp = d.State.Bytes.VerifiedProgress.Load()
+	}
+	g := &d.noProgressGuard
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.primed = true
+	g.baselineVP = vp
+	g.exhaustions = 0
+}
+
+// recordNoProgressRequeue reports whether the fuse tripped. Call only at
+// worker residual-requeue sites (post-exhaustion and health-cancel Push).
+func (d *ConcurrentDownloader) recordNoProgressRequeue() bool {
+	vp := int64(-1)
+	if d.State != nil {
+		vp = d.State.Bytes.VerifiedProgress.Load()
+	}
+	g := &d.noProgressGuard
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.primed {
+		g.primed = true
+		g.baselineVP = vp
+	}
+	if vp > g.baselineVP {
+		g.baselineVP = vp
+		g.exhaustions = 0
+		return false
+	}
+	g.exhaustions++
+	return g.exhaustions >= normalizedNoProgressLimit(noProgressResidualExhaustions)
+}
+
+func normalizedNoProgressLimit(limit int) int {
 	if limit < 1 {
 		return 1
 	}
@@ -485,6 +561,7 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 	}
 
 	d.resetSoft403Guard()
+	d.resetNoProgressGuard()
 
 	payloadFirst := d.RangeAcquisitionMode.IsPayloadFirst()
 	if payloadFirst {
@@ -582,9 +659,19 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 		return err
 	}
 	d.primeSoft403Guard()
+	d.primeNoProgressGuard()
 
 	queue := NewTaskQueue()
 	queue.PushMultiple(tasks)
+
+	// FORK-PATCH: resident health monitor for the whole Download() — including
+	// the payload-first verify window. The worker registers its ActiveTask on
+	// Pop; a tarpit during client.Do/redirect chain/persistRangeSupportedBeforeWrite
+	// would otherwise have no cancel path until the first WriteAt. Balancer and
+	// completion monitor still start via startHelpers (fanout stage).
+	wgHelpers.Go(func() {
+		d.runHealthMonitor(downloadCtx)
+	})
 
 	verifyConns := numConns
 	if payloadFirst {
@@ -760,6 +847,9 @@ func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize i
 	return createInitialTasks(fileSize, chunkSize, numConns), nil
 }
 
+// startHelpers launches the fanout-stage helpers. The health monitor is
+// started unconditionally by Download() itself (resident for the whole
+// download, including the payload-first verify window) — do not add it here.
 func (d *ConcurrentDownloader) startHelpers(ctx context.Context, wg *sync.WaitGroup, queue *TaskQueue, fileSize int64, numConns int) {
 	// Balancer for dynamic chunk splitting and work stealing
 	wg.Go(func() {
@@ -769,11 +859,6 @@ func (d *ConcurrentDownloader) startHelpers(ctx context.Context, wg *sync.WaitGr
 	// Monitor for download completion
 	wg.Go(func() {
 		d.runCompletionMonitor(ctx, queue, fileSize, numConns)
-	})
-
-	// Health monitor for detecting slow workers
-	wg.Go(func() {
-		d.runHealthMonitor(ctx)
 	})
 }
 

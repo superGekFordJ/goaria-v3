@@ -242,6 +242,21 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 							queue.Push(*remaining)
 							utils.Debug("Worker %d: health-cancelled task requeued (remaining: %d bytes from offset %d)",
 								id, remaining.Length, remaining.Offset)
+							// FORK-PATCH: no-progress fuse — a persistent tarpit
+							// or slow TTFB during verify/body-read would otherwise
+							// cycle cancel→requeue forever at frozen VP. Clean up
+							// per the early-exit convention; do NOT fall through
+							// to break (post-loop would re-Push the same residual).
+							if d.recordNoProgressRequeue() {
+								d.activeMu.Lock()
+								delete(d.activeTasks, id)
+								d.activeMu.Unlock()
+								if d.State != nil {
+									d.State.ActiveWorkers.Add(-1)
+								}
+								utils.Debug("Worker %d: no-progress fuse tripped on health-cancel requeue", id)
+								return fmt.Errorf("%w: %d residual requeues without verified progress", types.ErrNoProgress, noProgressResidualExhaustions)
+							}
 						}
 					}
 				}
@@ -342,6 +357,14 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			}
 			if activeTask.LastHTTPStatus.Load() == http.StatusForbidden && d.recordSoft403Exhaustion(time.Now()) {
 				return fmt.Errorf("unexpected status: 403: %w", types.ErrPermanentHTTP)
+			}
+			// FORK-PATCH: no-progress fuse — post-exhaustion failures that keep
+			// cycling shards while VerifiedProgress is frozen must not rotate
+			// forever (e.g. a non-permanent 5xx wall, or a persistent tarpit).
+			// Residual Push already ran above (pause-grade snapshot ordering kept).
+			if d.recordNoProgressRequeue() {
+				utils.Debug("Worker %d: no-progress fuse tripped (%d residual requeues, VP frozen)", id, noProgressResidualExhaustions)
+				return fmt.Errorf("%w: %d residual requeues without verified progress", types.ErrNoProgress, noProgressResidualExhaustions)
 			}
 		}
 	}

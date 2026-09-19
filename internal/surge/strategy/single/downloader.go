@@ -38,6 +38,10 @@ var bufPool = sync.Pool{
 	},
 }
 
+// FORK-PATCH: test-overridable body idle timeout (same pattern as the
+// concurrent package's soft403StickyExhaustions).
+var bodyIdleTimeout = types.DefaultBodyIdleTimeout
+
 // putBufferSafe returns a buffer to the pool, discarding oversized buffers
 // to prevent memory leaks (Go Issue #23199).
 func putBufferSafe(pool *sync.Pool, bufPtr *[]byte) {
@@ -214,9 +218,13 @@ func (d *SingleDownloader) Download(ctx context.Context, rawurl, destPath string
 	buf := *bufPtr
 	defer putBufferSafe(&bufPool, bufPtr) // FORK-PATCH: cap-filtered put
 
-	reader := io.Reader(resp.Body)
+	// FORK-PATCH: idle watchdog wraps resp.Body at the innermost layer so
+	// throttledReader's WaitN time never consumes the idle budget.
+	// Stack: io.CopyBuffer → progressReader → throttledReader → idleTimeoutReader → resp.Body.
+	idleBody := &idleTimeoutReader{body: resp.Body, timeout: bodyIdleTimeout}
+	var reader io.Reader = idleBody
 	if d.Limiter != nil {
-		reader = &throttledReader{reader: resp.Body, limiter: d.Limiter, ctx: ctx}
+		reader = &throttledReader{reader: idleBody, limiter: d.Limiter, ctx: ctx}
 	}
 
 	if d.State == nil {
@@ -269,6 +277,28 @@ func (d *SingleDownloader) Download(ctx context.Context, rawurl, destPath string
 	)
 
 	return nil
+}
+
+// FORK-PATCH: body-read idle watchdog. Transport only bounds TTFB
+// (ResponseHeaderTimeout); a mid-body tarpit hangs io.CopyBuffer forever.
+// Wraps resp.Body at the innermost layer so throttledReader's WaitN time
+// never consumes the idle budget. Zero goroutines: per-Read AfterFunc.
+type idleTimeoutReader struct {
+	body    io.ReadCloser
+	timeout time.Duration
+}
+
+func (r *idleTimeoutReader) Read(p []byte) (int, error) {
+	if r.timeout <= 0 {
+		return r.body.Read(p)
+	}
+	t := time.AfterFunc(r.timeout, func() {
+		utils.Debug("single: body idle >%v, closing stalled body", r.timeout)
+		_ = r.body.Close()
+	})
+	n, err := r.body.Read(p)
+	t.Stop()
+	return n, err
 }
 
 type throttledReader struct {

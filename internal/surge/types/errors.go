@@ -48,6 +48,11 @@ var (
 	// FORK-PATCH: payload-first persist of RangeSupported failed. No body
 	// write, no residual requeue, no whole-download retry.
 	ErrPayloadFirstPersist = errors.New("payload-first persist failed")
+
+	// FORK-PATCH: residual shards rotated through workers with zero
+	// VerifiedProgress delta past the fuse limit. NOT ErrRangeUnsupported —
+	// aliasing it would falsely trigger shouldFallbackToSingle Truncate+single.
+	ErrNoProgress = errors.New("no verified progress across residual rotations")
 )
 
 // PayloadFirstMismatchKind classifies why payload-first headers failed the
