@@ -45,7 +45,7 @@
   <component
     :is="as"
     :disabled="props.disabled ? true : undefined"
-    class="relative isolate [transform:translateZ(0)] [backface-visibility:hidden] transition-all duration-300 overflow-visible group/liquid"
+    class="relative isolate [transform:translateZ(0)] [backface-visibility:hidden] transition-all duration-300 overflow-visible group/liquid outline-none focus:outline-none focus-visible:outline-none"
     :class="[
       isInteractive ? 'cursor-pointer' : '',
       isInteractive &&
@@ -82,10 +82,10 @@
           class="absolute inset-0 bg-gradient-to-t from-transparent to-white/20 dark:to-white/10 opacity-0 group-hover/liquid:opacity-100 transition-opacity duration-300 pointer-events-none"
         ></div>
       </div>
-      <!-- Non-active interactive: transparent placeholder for hover reveal -->
+      <!-- Non-active interactive: micro-glass hover reveal (zero layer-demotion, anti-flicker) -->
       <div
         v-else-if="isInteractive"
-        class="absolute top-0 left-0 -z-10 h-full w-full overflow-hidden transition-all duration-300 pointer-events-none bg-transparent opacity-0 group-hover/liquid:bg-[var(--app-liquid-glass-hover)] group-hover/liquid:opacity-100"
+        class="glass-hover-surface -z-10"
         :class="[radius]"
       ></div>
 
@@ -123,7 +123,7 @@
       ></div>
       <div
         v-else-if="isInteractive"
-        class="absolute top-0 left-0 -z-10 h-full w-full overflow-hidden transition-all duration-300 pointer-events-none bg-transparent opacity-0 group-hover/liquid:bg-[var(--app-liquid-glass-hover)] group-hover/liquid:opacity-100"
+        class="glass-hover-surface -z-10"
         :class="[radius]"
       ></div>
       <div
@@ -135,7 +135,7 @@
     <template v-else-if="!fallbackClass">
       <!-- Lightweight fallback for reduced mode -->
       <div
-        class="absolute top-0 left-0 -z-10 h-full w-full overflow-hidden transition-all duration-300 pointer-events-none"
+        class="absolute top-0 left-0 -z-10 h-full w-full overflow-hidden transition-all duration-200 pointer-events-none"
         :style="{
           backdropFilter: `blur(var(--glass-blur))`,
           WebkitBackdropFilter: `blur(var(--glass-blur))`,
@@ -143,10 +143,10 @@
         :class="[
           radius,
           active
-            ? `${baseColorClass} opacity-100 border border-[var(--glass-border)]`
+            ? `${baseColorClass} opacity-100 shadow-[inset_0_0_0_1px_var(--glass-border)]`
             : isInteractive
-              ? 'bg-transparent opacity-0 group-hover:bg-[var(--app-liquid-glass-hover)]'
-              : 'bg-transparent opacity-0',
+              ? 'glass-hover-surface'
+              : 'bg-transparent',
         ]"
       ></div>
     </template>

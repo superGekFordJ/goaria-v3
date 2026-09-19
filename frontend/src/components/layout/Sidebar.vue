@@ -116,10 +116,7 @@
         as="button"
         :active="uiStore.activeTab === item.id"
         :interactive="true"
-        :class="[
-          'w-full transition-all duration-300 group',
-          uiStore.activeTab === item.id ? '' : 'hover:bg-[var(--sidebar-hover)]',
-        ]"
+        class="w-full group"
         @click="handleNavClick(item.id)"
       >
         <div class="w-full h-full flex items-center justify-between px-4 py-3">
@@ -127,20 +124,20 @@
             <!-- Icon with conditional neon glow -->
             <div
               :class="[
-                'w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-300',
+                'w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-200',
                 uiStore.activeTab === item.id
                   ? 'bg-[var(--neon-primary)]/10 text-[var(--neon-primary)]'
-                  : 'bg-[var(--btn-glass-bg)] text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]/60',
+                  : 'bg-[var(--btn-glass-bg)] text-[var(--app-text-muted)] group-hover:text-[var(--app-text)] group-hover:bg-[var(--btn-glass-hover)]',
               ]"
             >
               <component :is="item.icon" :size="16" />
             </div>
             <span
               :class="[
-                'text-sm font-semibold transition-colors duration-300',
+                'text-sm font-semibold transition-colors duration-200',
                 uiStore.activeTab === item.id
                   ? 'text-[var(--app-text)]/90'
-                  : 'text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]/60',
+                  : 'text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]',
               ]"
             >
               {{ item.name }}
@@ -151,10 +148,10 @@
           <div
             v-if="item.count > 0"
             :class="[
-              'min-w-[24px] h-6 px-2 rounded-lg flex items-center justify-center font-mono-data text-xs font-bold transition-all duration-300',
+              'min-w-[24px] h-6 px-2 rounded-lg flex items-center justify-center font-mono-data text-xs font-bold transition-all duration-200',
               uiStore.activeTab === item.id
                 ? 'bg-[var(--neon-primary)]/20 text-[var(--neon-primary)]'
-                : 'bg-[var(--btn-glass-bg)] text-[var(--app-text-subtle)]',
+                : 'bg-[var(--btn-glass-bg)] text-[var(--app-text-subtle)] group-hover:bg-[var(--btn-glass-hover)] group-hover:text-[var(--app-text)]/80',
             ]"
           >
             {{ item.count }}
@@ -172,29 +169,26 @@
         as="button"
         :active="uiStore.activeTab === 'settings'"
         :interactive="true"
-        :class="[
-          'w-full transition-all duration-300 group',
-          uiStore.activeTab === 'settings' ? '' : 'hover:bg-[var(--sidebar-hover)]',
-        ]"
+        class="w-full group"
         @click="uiStore.setActiveTab('settings')"
       >
         <div class="w-full h-full flex items-center gap-3 px-4 py-3">
           <div
             :class="[
-              'w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-300',
+              'w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-200',
               uiStore.activeTab === 'settings'
                 ? 'bg-[var(--btn-glass-hover)] text-[var(--app-text)]/80'
-                : 'bg-[var(--btn-glass-bg)] text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]/60',
+                : 'bg-[var(--btn-glass-bg)] text-[var(--app-text-muted)] group-hover:text-[var(--app-text)] group-hover:bg-[var(--btn-glass-hover)]',
             ]"
           >
             <SettingsIcon :size="16" />
           </div>
           <span
             :class="[
-              'text-sm font-semibold transition-colors duration-300',
+              'text-sm font-semibold transition-colors duration-200',
               uiStore.activeTab === 'settings'
                 ? 'text-[var(--app-text)]/80'
-                : 'text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]/60',
+                : 'text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]',
             ]"
           >
             {{ t('sidebar.settings') }}
