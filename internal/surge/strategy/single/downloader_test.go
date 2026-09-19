@@ -1115,3 +1115,85 @@ func TestSingleDownloader_Download_UnknownLength(t *testing.T) {
 		})
 	}
 }
+
+// TestSingleDownloader_UserAgentInjection locks the caller-UA invariant shared
+// with the concurrent worker/probe paths: a User-Agent carried in d.Headers
+// (RPC header option, browser handoff) must reach the server untouched; the
+// runtime-config UA only fills in when the request carries none.
+func TestSingleDownloader_UserAgentInjection(t *testing.T) {
+	tests := []struct {
+		name      string
+		headers   map[string]string
+		runtimeUA string
+		wantUA    string
+	}{
+		{
+			name:      "caller-supplied UA is preserved",
+			headers:   map[string]string{"User-Agent": "CustomBrowser/1.0"},
+			runtimeUA: "SurgeRuntime/1.0",
+			wantUA:    "CustomBrowser/1.0",
+		},
+		{
+			name:      "runtime UA fills in when headers lack one",
+			headers:   map[string]string{"Cookie": "s=1"},
+			runtimeUA: "SurgeRuntime/1.0",
+			wantUA:    "SurgeRuntime/1.0",
+		},
+		{
+			name:      "package default UA when neither supplies one",
+			headers:   nil,
+			runtimeUA: "",
+			wantUA:    types.DefaultUserAgent,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir, cleanup, err := testutil.TempDir("surge-single-ua")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cleanup()
+
+			fileSize := int64(4 * utils.KiB)
+			uaCh := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				select {
+				case uaCh <- r.Header.Get("User-Agent"):
+				default:
+				}
+				w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(make([]byte, fileSize))
+			}))
+			defer server.Close()
+
+			destPath := filepath.Join(tmpDir, "ua.bin")
+			state := progress.New("ua-test", fileSize)
+			downloader := NewSingleDownloader("ua-id", nil, state, &types.RuntimeConfig{UserAgent: tt.runtimeUA})
+			downloader.Headers = tt.headers
+
+			if f, err := os.Create(destPath + types.IncompleteSuffix); err == nil {
+				_ = f.Close()
+			} else {
+				t.Fatal(err)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			if err := downloader.Download(ctx, server.URL, destPath, fileSize, "ua.bin"); err != nil {
+				t.Fatalf("Download failed: %v", err)
+			}
+
+			select {
+			case got := <-uaCh:
+				if got != tt.wantUA {
+					t.Errorf("User-Agent = %q, want %q", got, tt.wantUA)
+				}
+			default:
+				t.Error("server never received a request")
+			}
+		})
+	}
+}

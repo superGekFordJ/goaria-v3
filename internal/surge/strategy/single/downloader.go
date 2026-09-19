@@ -112,7 +112,12 @@ func (d *SingleDownloader) Download(ctx context.Context, rawurl, destPath string
 			}
 			req.Header.Set(key, val)
 		}
-		req.Header.Set("User-Agent", d.Runtime.GetUserAgent())
+		// FORK-PATCH: Set User-Agent from config only if not provided in custom
+		// headers — a caller-supplied UA (RPC header option, browser handoff)
+		// must not be clobbered.
+		if req.Header.Get("User-Agent") == "" {
+			req.Header.Set("User-Agent", d.Runtime.GetUserAgent())
+		}
 		return req, nil
 	}
 

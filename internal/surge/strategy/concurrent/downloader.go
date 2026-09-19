@@ -1613,8 +1613,12 @@ func (d *ConcurrentDownloader) bootstrapMetadata(ctx context.Context, client *ht
 			req.Header.Set(key, val)
 		}
 	}
+	// FORK-PATCH: Set User-Agent from config only if not provided in custom
+	// headers — a caller-supplied UA must not be clobbered.
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", d.Runtime.GetUserAgent())
+	}
 	// Range must come after custom headers so a caller-supplied Range can't override the probe byte
-	req.Header.Set("User-Agent", d.Runtime.GetUserAgent())
 	req.Header.Set("Range", "bytes=0-0")
 
 	resp, err := client.Do(req)
