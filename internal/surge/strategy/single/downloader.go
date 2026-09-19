@@ -283,6 +283,8 @@ func (d *SingleDownloader) Download(ctx context.Context, rawurl, destPath string
 // (ResponseHeaderTimeout); a mid-body tarpit hangs io.CopyBuffer forever.
 // Wraps resp.Body at the innermost layer so throttledReader's WaitN time
 // never consumes the idle budget. Zero goroutines: per-Read AfterFunc.
+// Bounds single-Read silence, not throughput — a drip-feed below any byte
+// rate still counts as active.
 type idleTimeoutReader struct {
 	body    io.ReadCloser
 	timeout time.Duration

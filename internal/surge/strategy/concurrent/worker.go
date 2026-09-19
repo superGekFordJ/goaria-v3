@@ -247,7 +247,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 							// cycle cancel→requeue forever at frozen VP. Clean up
 							// per the early-exit convention; do NOT fall through
 							// to break (post-loop would re-Push the same residual).
-							if d.recordNoProgressRequeue() {
+							if d.recordNoProgressRequeue(time.Now()) {
 								d.activeMu.Lock()
 								delete(d.activeTasks, id)
 								d.activeMu.Unlock()
@@ -290,11 +290,16 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			}
 
 			genericAttempt++
+			// FORK-PATCH: report and rotate the mirror preference even when the
+			// retry budget is just exhausted. Without this a worker stays pinned
+			// to the mirror that failed for every later Pop — with a 1-try budget
+			// it becomes a fast residual-requeue pump that never leaves the bad
+			// mirror. resumeOnRetryOffset stays below the break.
+			d.ReportMirrorError(mirrors[currentMirrorIdx])
+			currentMirrorIdx = (currentMirrorIdx + 1) % len(mirrors)
 			if genericAttempt >= maxRetries {
 				break
 			}
-			d.ReportMirrorError(mirrors[currentMirrorIdx])
-			currentMirrorIdx = (currentMirrorIdx + 1) % len(mirrors)
 			if len(mirrors) == 1 {
 				activeTask.WaitingOnLimiter.Store(true)
 				if !interruptibleSleep(ctx, time.Duration(1<<genericAttempt)*types.RetryBaseDelay) {
@@ -361,8 +366,15 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			// FORK-PATCH: no-progress fuse — post-exhaustion failures that keep
 			// cycling shards while VerifiedProgress is frozen must not rotate
 			// forever (e.g. a non-permanent 5xx wall, or a persistent tarpit).
-			// Residual Push already ran above (pause-grade snapshot ordering kept).
-			if d.recordNoProgressRequeue() {
+			// Residual Push already ran above (pause-grade snapshot ordering
+			// kept); the count also covers the exhausted-range tail with no Push
+			// — the same zero-VP rotation class. Events whose last status is 403
+			// belong to the sticky-403 channel evaluated just above, so they are
+			// skipped here and that dedicated channel always decides first.
+			// The sentinel reaches executeWorkers for initial workers; scaled
+			// workers forward it best-effort (existing non-blocking send).
+			if activeTask.LastHTTPStatus.Load() != http.StatusForbidden &&
+				d.recordNoProgressRequeue(time.Now()) {
 				utils.Debug("Worker %d: no-progress fuse tripped (%d residual requeues, VP frozen)", id, noProgressResidualExhaustions)
 				return fmt.Errorf("%w: %d residual requeues without verified progress", types.ErrNoProgress, noProgressResidualExhaustions)
 			}

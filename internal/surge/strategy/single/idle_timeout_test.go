@@ -204,3 +204,19 @@ func TestSingleDownloader_IdleReaderInsideThrottle(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// TestIdleTimeoutReader_DisabledWhenNonPositive: a non-positive timeout
+// passes Read straight through with no timer arming (defensive guard).
+func TestIdleTimeoutReader_DisabledWhenNonPositive(t *testing.T) {
+	for _, timeout := range []time.Duration{0, -time.Second} {
+		body := &instantBody{data: []byte("ab")}
+		r := &idleTimeoutReader{body: body, timeout: timeout}
+		n, err := r.Read(make([]byte, 8))
+		if n != 2 || err != nil {
+			t.Fatalf("timeout=%v: Read = (%d, %v), want (2, nil)", timeout, n, err)
+		}
+		if body.closed.Load() {
+			t.Fatalf("timeout=%v: body closed on passthrough path", timeout)
+		}
+	}
+}

@@ -112,17 +112,24 @@ const Soft403NoProgressConfirmWindow = 5 * time.Second
 
 // NoProgressResidualExhaustions is the residual-requeue fuse limit: worker
 // requeues of unverified work while VerifiedProgress stays frozen. Must
-// exceed Soft403StickyExhaustions so pure-403 streams trip the dedicated
-// sticky-403 channel first.
+// exceed Soft403StickyExhaustions; events the sticky-403 channel evaluates
+// are also excluded at the counting site, so that dedicated channel always
+// decides pure-403 streams first.
 const NoProgressResidualExhaustions = 32
+
+// NoProgressDwellWindow is the frozen-VP dwell required after the fuse arms:
+// fast residual pumps must not outrun discrete VerifiedProgress deltas, so
+// the trip additionally requires VP to stay frozen for this window.
+const NoProgressDwellWindow = 2 * time.Second
 
 var (
 	soft403StickyExhaustions       = Soft403StickyExhaustions
 	soft403NoProgressConfirmWindow = Soft403NoProgressConfirmWindow
 
-	// FORK-PATCH: test-overridable no-progress fuse limit (same pattern as
-	// soft403StickyExhaustions).
+	// FORK-PATCH: test-overridable no-progress fuse limit and dwell window
+	// (same pattern as soft403StickyExhaustions).
 	noProgressResidualExhaustions = NoProgressResidualExhaustions
+	noProgressDwellWindow         = NoProgressDwellWindow
 )
 
 type soft403ProgressGuard struct {
@@ -248,12 +255,16 @@ func normalizedSoft403Limit(limit int) int {
 
 // FORK-PATCH: no-progress fuse state. Counts worker residual requeues that
 // return unverified work to the queue while VerifiedProgress has not
-// advanced past the primed baseline; any VP delta clears the count.
+// advanced past the primed baseline; any VP delta clears the count. Once
+// the limit is reached the fuse arms a candidate and only trips after a
+// frozen-VP dwell — a fast requeue pump must not outrun slower siblings
+// still making discrete VP deltas.
 type noProgressGuard struct {
-	mu          sync.Mutex
-	primed      bool
-	baselineVP  int64
-	exhaustions int
+	mu             sync.Mutex
+	primed         bool
+	baselineVP     int64
+	exhaustions    int
+	candidateSince time.Time
 }
 
 func (d *ConcurrentDownloader) resetNoProgressGuard() {
@@ -263,6 +274,7 @@ func (d *ConcurrentDownloader) resetNoProgressGuard() {
 	g.primed = false
 	g.baselineVP = 0
 	g.exhaustions = 0
+	g.candidateSince = time.Time{}
 }
 
 func (d *ConcurrentDownloader) primeNoProgressGuard() {
@@ -276,11 +288,12 @@ func (d *ConcurrentDownloader) primeNoProgressGuard() {
 	g.primed = true
 	g.baselineVP = vp
 	g.exhaustions = 0
+	g.candidateSince = time.Time{}
 }
 
 // recordNoProgressRequeue reports whether the fuse tripped. Call only at
 // worker residual-requeue sites (post-exhaustion and health-cancel Push).
-func (d *ConcurrentDownloader) recordNoProgressRequeue() bool {
+func (d *ConcurrentDownloader) recordNoProgressRequeue(now time.Time) bool {
 	vp := int64(-1)
 	if d.State != nil {
 		vp = d.State.Bytes.VerifiedProgress.Load()
@@ -295,10 +308,18 @@ func (d *ConcurrentDownloader) recordNoProgressRequeue() bool {
 	if vp > g.baselineVP {
 		g.baselineVP = vp
 		g.exhaustions = 0
+		g.candidateSince = time.Time{}
 		return false
 	}
 	g.exhaustions++
-	return g.exhaustions >= normalizedNoProgressLimit(noProgressResidualExhaustions)
+	if g.exhaustions < normalizedNoProgressLimit(noProgressResidualExhaustions) {
+		return false
+	}
+	if g.candidateSince.IsZero() {
+		g.candidateSince = now
+		return false
+	}
+	return !now.Before(g.candidateSince.Add(noProgressDwellWindow))
 }
 
 func normalizedNoProgressLimit(limit int) int {
@@ -667,8 +688,10 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 	// FORK-PATCH: resident health monitor for the whole Download() — including
 	// the payload-first verify window. The worker registers its ActiveTask on
 	// Pop; a tarpit during client.Do/redirect chain/persistRangeSupportedBeforeWrite
-	// would otherwise have no cancel path until the first WriteAt. Balancer and
-	// completion monitor still start via startHelpers (fanout stage).
+	// would otherwise have no cancel path until the first WriteAt. The verify-phase
+	// TTFB bound is therefore grace+stall+tick (~5-6s defaults), tighter than the
+	// transport ResponseHeaderTimeout — same semantics as the body phase.
+	// Balancer and completion monitor still start via startHelpers (fanout stage).
 	wgHelpers.Go(func() {
 		d.runHealthMonitor(downloadCtx)
 	})
