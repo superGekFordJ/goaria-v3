@@ -331,7 +331,7 @@ func (p *Scheduler) Pause(downloadID string) bool {
 	if ad.config.ProgressState != nil {
 		prog := progress.CfgProgress(&ad.config)
 
-		// FORK-PATCH: Completion boundary guard: if done or verified progress reached positive total, no-op return true.
+		// Completion boundary guard: if done or verified progress reached positive total, no-op return true.
 		if prog.Done.Load() {
 			return true
 		}
@@ -759,7 +759,7 @@ func (p *Scheduler) worker() {
 		isPauseResult := errors.Is(err, types.ErrPaused) || (isPaused && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)))
 
 		if err == nil {
-			// FORK-PATCH: Physical success takes precedence over late-arriving pause signals.
+			// Physical success takes precedence over late-arriving pause signals.
 			// Clear any stale paused flag, mark Done, and remove from tracking maps.
 			if localCfg.ProgressState != nil {
 				prog := progress.CfgProgress(&localCfg)

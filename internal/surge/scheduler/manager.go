@@ -442,7 +442,7 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 		}
 	}
 
-	// FORK-PATCH: Physical success takes precedence; EventComplete is terminal-reliable (nil doneCh).
+	// Physical success takes precedence; EventComplete is terminal-reliable (nil doneCh).
 	if downloadErr == nil {
 		var elapsed time.Duration
 		if progState != nil {
@@ -473,7 +473,7 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 		return nil
 	}
 
-	// FORK-PATCH: Return typed pause error rather than normalizing to nil.
+	// Return typed pause error rather than normalizing to nil.
 	if errors.Is(downloadErr, types.ErrPaused) {
 		utils.Debug("Download paused cleanly")
 		return downloadErr
