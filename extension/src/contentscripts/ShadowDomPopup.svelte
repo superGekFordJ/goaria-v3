@@ -3,28 +3,51 @@
   import { popupQueue } from '../stores/popupQueue.svelte'
   import LiquidGlassPanel from '../lib/glass/LiquidGlassPanel.svelte'
   import { t } from '../lib/i18n'
+  import { detectPageDarkness } from './pageTheme'
 
   let { effects = 'full' }: { effects?: 'full' | 'reduced' } = $props()
 
   let message = $derived(popupQueue.current)
   let dismissTimer: ReturnType<typeof setTimeout> | null = null
 
-  let isSystemDark = $state(true)
+  let isDark = $state(true)
 
   $effect(() => {
+    isDark = detectPageDarkness()
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    isSystemDark = mq.matches
-    const listener = (e: MediaQueryListEvent) => {
-      isSystemDark = e.matches
+    const update = () => {
+      isDark = detectPageDarkness()
     }
-    mq.addEventListener('change', listener)
+    mq.addEventListener('change', update)
 
-    if (message && message.success) {
-      dismissTimer = setTimeout(() => popupQueue.dismiss(), 5000)
+    const observer = new MutationObserver(update)
+    if (document.documentElement) {
+      observer.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'data-theme', 'data-color-mode'],
+      })
+    }
+    if (document.body) {
+      observer.observe(document.body, {
+        attributes: true,
+        attributeFilter: ['class', 'data-theme', 'data-color-mode'],
+      })
     }
 
     return () => {
-      mq.removeEventListener('change', listener)
+      mq.removeEventListener('change', update)
+      observer.disconnect()
+    }
+  })
+
+  $effect(() => {
+    if (message) {
+      isDark = detectPageDarkness()
+      if (message.success) {
+        dismissTimer = setTimeout(() => popupQueue.dismiss(), 5000)
+      }
+    }
+    return () => {
       if (dismissTimer) clearTimeout(dismissTimer)
     }
   })
@@ -44,9 +67,9 @@
 </script>
 
 {#if message}
-  <div class="shadow-dom-popup-wrapper" data-theme={isSystemDark ? 'dark' : 'light'} transition:fly={{ x: 300, duration: 300 }}>
+  <div class="shadow-dom-popup-wrapper" data-theme={isDark ? 'dark' : 'light'} transition:fly={{ x: 300, duration: 300 }}>
     <LiquidGlassPanel
-      radius="var(--radius-squircle-lg, 2rem)"
+      radius="var(--radius-squircle-lg, 1.25rem)"
       {effects}
       class="shadow-dom-popup"
     >
@@ -60,7 +83,7 @@
           </span>
         </div>
 
-        <div class="etched-panel popup-filename">
+        <div class="popup-filename">
           {message.filename || hostUrl}
         </div>
 

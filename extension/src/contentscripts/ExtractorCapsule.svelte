@@ -5,6 +5,7 @@
   import { sanitizeDisplayFilename } from '../background/extractorKeys'
   import type { I18nKey } from '../lib/i18n-keys'
   import { capsuleView } from './capsuleView.svelte'
+  import { detectPageDarkness } from './pageTheme'
   import {
     EXTRACTOR_SUCCESS_HOLD_MS,
     EXTRACTOR_SUCCESS_OUT_MS,
@@ -12,7 +13,7 @@
 
   let { effects = 'full' }: { effects?: 'full' | 'reduced' } = $props()
 
-  let isSystemDark = $state(true)
+  let isDark = $state(true)
   let successTimer: ReturnType<typeof setTimeout> | null = null
 
   let snapshot = $derived(capsuleView.state)
@@ -20,13 +21,31 @@
   let showSuccess = $derived(snapshot.ui === 'success')
 
   $effect(() => {
+    isDark = detectPageDarkness()
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    isSystemDark = mq.matches
-    const listener = (e: MediaQueryListEvent) => {
-      isSystemDark = e.matches
+    const update = () => {
+      isDark = detectPageDarkness()
     }
-    mq.addEventListener('change', listener)
-    return () => mq.removeEventListener('change', listener)
+    mq.addEventListener('change', update)
+
+    const observer = new MutationObserver(update)
+    if (document.documentElement) {
+      observer.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'data-theme', 'data-color-mode'],
+      })
+    }
+    if (document.body) {
+      observer.observe(document.body, {
+        attributes: true,
+        attributeFilter: ['class', 'data-theme', 'data-color-mode'],
+      })
+    }
+
+    return () => {
+      mq.removeEventListener('change', update)
+      observer.disconnect()
+    }
   })
 
   $effect(() => {
@@ -83,8 +102,13 @@
       case 'resolving':
       case 'committing':
         return t('capsule_resolving')
-      case 'ready':
-        return snapshot.count > 1 ? t('capsule_ready_action') : t('capsule_ready', [String(snapshot.count || 0)])
+      case 'ready': {
+        if (snapshot.count > 1) {
+          return t('capsule_ready', [String(snapshot.count)])
+        }
+        const name = sanitizeDisplayFilename(snapshot.filename)
+        return name || t('capsule_ready', [String(snapshot.count || 1)])
+      }
       case 'success':
         return t('capsule_success')
       case 'error':
@@ -94,13 +118,15 @@
     }
   }
 
-  function chipText(): string {
-    const name = sanitizeDisplayFilename(snapshot.filename)
-    if (name) return name
-    if (snapshot.ui === 'ready' && snapshot.count > 1) {
-      return t('capsule_ready', [String(snapshot.count)])
+  function subtitleText(): string {
+    switch (snapshot.ui) {
+      case 'idle':
+        return t('capsule_idle_action')
+      case 'ready':
+        return snapshot.count > 1 ? t('capsule_ready_action') : t('capsule_idle_action')
+      default:
+        return ''
     }
-    return t('capsule_item_generic')
   }
 
   function onPrimary(event: MouseEvent) {
@@ -120,12 +146,12 @@
     class="extractor-capsule-wrapper"
     class:extractor-capsule-success={showSuccess}
     data-extractor-capsule="1"
-    data-theme={isSystemDark ? 'dark' : 'light'}
+    data-theme={isDark ? 'dark' : 'light'}
     data-ui={snapshot.ui}
     in:fly={{ x: 280, duration: 300, opacity: 1 }}
     out:fly={{ x: 280, duration: EXTRACTOR_SUCCESS_OUT_MS, opacity: 1 }}
   >
-    <LiquidGlassPanel radius="var(--radius-squircle-lg, 2rem)" {effects} class="extractor-capsule">
+    <LiquidGlassPanel radius="var(--radius-squircle-pill, 9999px)" {effects} class="extractor-capsule">
       <div class="extractor-capsule-inner">
         {#if snapshot.ui === 'resolving' || snapshot.ui === 'committing'}
           <div class="extractor-capsule-beam" aria-hidden="true"></div>
@@ -134,32 +160,57 @@
           <div class="extractor-capsule-complete" aria-hidden="true"></div>
         {/if}
 
-        <div class="extractor-capsule-row">
-          <button
-            type="button"
-            class="extractor-capsule-action"
-            disabled={snapshot.ui === 'resolving' || snapshot.ui === 'committing'}
-            data-extractor-capsule-action="1"
-            aria-busy={snapshot.ui === 'resolving' || snapshot.ui === 'committing'}
-            onclick={onPrimary}
-          >
-            {titleText()}
-          </button>
-          <button
-            type="button"
-            class="extractor-capsule-dismiss"
-            aria-label={t('capsule_dismiss_aria')}
-            onclick={onDismiss}
-          >
-            ✕
-          </button>
-        </div>
+        <button
+          type="button"
+          class="extractor-capsule-action"
+          disabled={snapshot.ui === 'resolving' || snapshot.ui === 'committing'}
+          data-extractor-capsule-action="1"
+          aria-busy={snapshot.ui === 'resolving' || snapshot.ui === 'committing'}
+          onclick={onPrimary}
+        >
+          <div class="extractor-capsule-icon-box" aria-hidden="true">
+            {#if snapshot.ui === 'resolving' || snapshot.ui === 'committing'}
+              <svg class="extractor-capsule-spin" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83" />
+              </svg>
+            {:else if showSuccess}
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 6L9 17l-5-5" />
+              </svg>
+            {:else if snapshot.ui === 'error'}
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="12" />
+                <line x1="12" y1="16" x2="12.01" y2="16" />
+              </svg>
+            {:else if snapshot.ui === 'ready' && snapshot.count > 1}
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+              </svg>
+            {:else}
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 3v12m0 0l-4-4m4 4l4-4" />
+                <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+              </svg>
+            {/if}
+          </div>
 
-        {#if snapshot.ui === 'idle'}
-          <div class="extractor-capsule-hint">{t('capsule_idle_action')}</div>
-        {/if}
+          <div class="extractor-capsule-text">
+            <span class="extractor-capsule-title">{titleText()}</span>
+            {#if subtitleText()}
+              <span class="extractor-capsule-hint">{subtitleText()}</span>
+            {/if}
+          </div>
+        </button>
 
-        <div class="etched-panel extractor-capsule-chip">{chipText()}</div>
+        <button
+          type="button"
+          class="extractor-capsule-dismiss"
+          aria-label={t('capsule_dismiss_aria')}
+          onclick={onDismiss}
+        >
+          ✕
+        </button>
       </div>
     </LiquidGlassPanel>
   </div>

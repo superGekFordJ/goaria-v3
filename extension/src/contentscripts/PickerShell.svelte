@@ -5,6 +5,7 @@
   import { onMount, tick, type Snippet } from 'svelte'
   import LiquidGlassPanel from '../lib/glass/LiquidGlassPanel.svelte'
   import { t } from '../lib/i18n'
+  import { detectPageDarkness } from './pageTheme'
   import {
     EXTRACTOR_FOLDER_MAX_RUNES,
     EXTRACTOR_MAX_SESSION_ITEMS,
@@ -65,7 +66,7 @@
   } = $props()
 
   let overlayEl = $state<HTMLElement | null>(null)
-  let isSystemDark = $state(true)
+  let isDark = $state(true)
   let selected = $state(new Set<number>())
   let activeIndex = $state(0)
   let activeCategory = $state<PickerCategory>('all')
@@ -99,13 +100,31 @@
   )
 
   $effect(() => {
+    isDark = detectPageDarkness()
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    isSystemDark = mq.matches
-    const listener = (e: MediaQueryListEvent) => {
-      isSystemDark = e.matches
+    const update = () => {
+      isDark = detectPageDarkness()
     }
-    mq.addEventListener('change', listener)
-    return () => mq.removeEventListener('change', listener)
+    mq.addEventListener('change', update)
+
+    const observer = new MutationObserver(update)
+    if (document.documentElement) {
+      observer.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'data-theme', 'data-color-mode'],
+      })
+    }
+    if (document.body) {
+      observer.observe(document.body, {
+        attributes: true,
+        attributeFilter: ['class', 'data-theme', 'data-color-mode'],
+      })
+    }
+
+    return () => {
+      mq.removeEventListener('change', update)
+      observer.disconnect()
+    }
   })
 
   $effect(() => {
@@ -353,7 +372,7 @@
   data-extractor-picker={source === 'extractor' ? '1' : undefined}
   data-dom-picker={source === 'dom' ? '1' : undefined}
   data-burst-picker={source === 'burst' ? '1' : undefined}
-  data-theme={isSystemDark ? 'dark' : 'light'}
+  data-theme={isDark ? 'dark' : 'light'}
   data-effects={effects}
   role="dialog"
   aria-modal="true"
