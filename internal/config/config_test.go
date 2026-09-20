@@ -802,3 +802,48 @@ func TestCanonicalBoundedIntRejectsNonDecimal(t *testing.T) {
 		t.Fatal("+8 is accepted by decimal Atoi and canonicalized to 8")
 	}
 }
+
+func writeConfigFixture(t *testing.T, body string) string {
+	t.Helper()
+	path := GetConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestLoad_GeneratesRPCSecretOnAbsentFile(t *testing.T) {
+	isolateConfigHome(t)
+	Load()
+	if got := len(Get().RPCSecret); got != 64 {
+		t.Fatalf("RPCSecret should be generated on fresh install, got %d chars", got)
+	}
+}
+
+func TestLoad_PreservesExistingRPCSecret(t *testing.T) {
+	isolateConfigHome(t)
+	writeConfigFixture(t, `{"rpc_secret":"user-chosen"}`)
+
+	Load()
+	if Get().RPCSecret != "user-chosen" {
+		t.Fatalf("existing RPCSecret not preserved: %q", Get().RPCSecret)
+	}
+}
+
+func TestLoad_PreservesExplicitEmptyRPCSecret(t *testing.T) {
+	isolateConfigHome(t)
+	writeConfigFixture(t, `{"rpc_secret":""}`)
+
+	Load()
+	if Get().RPCSecret != "" {
+		t.Fatalf("explicit empty RPCSecret overwritten: %q", Get().RPCSecret)
+	}
+	// Explicit empty must stay empty across reloads — never regenerated.
+	Load()
+	if Get().RPCSecret != "" {
+		t.Fatalf("explicit empty RPCSecret regenerated on reload: %q", Get().RPCSecret)
+	}
+}

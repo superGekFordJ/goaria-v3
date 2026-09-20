@@ -252,6 +252,9 @@ func Load() {
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		mayWrite, needsWrite = true, true
+		// Fresh install only. A stored rpc_secret — even user-emptied — is
+		// a user choice and is never regenerated.
+		cfg.RPCSecret = generateSecretHex()
 	case err != nil:
 		log.Printf("[Config] failed to read config (not overwriting): %v", err)
 	default:
