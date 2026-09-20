@@ -58,13 +58,16 @@
 
   let stopWindowTransparencyWatch: (() => void) | null = null
 
-  onMounted(async () => {
+  onMounted(() => {
     // Initialize theme and skin from persisted state
     uiStore.initTheme()
     uiStore.initLocale()
+    // Apply persisted transparency before first paint; the watch below
+    // re-applies the canonical value once config hydration lands
+    applyWindowTransparency()
 
     // Global initialization: fetch config from Go backend
-    await configStore.fetchConfig()
+    void configStore.fetchConfig()
 
     stopWindowTransparencyWatch = watch(
       () => [configStore.isHydrated, getWindowTransparency()] as const,
@@ -76,10 +79,13 @@
       { immediate: true },
     )
 
-    // Small delay for smooth entrance animation
-    setTimeout(() => {
-      isReady.value = true
-    }, 100)
+    // Reveal once the first frame lands — the opacity/transform entrance is
+    // compositor-driven and stays smooth while mount work continues
+    window.requestAnimationFrame(() =>
+      window.requestAnimationFrame(() => {
+        isReady.value = true
+      }),
+    )
 
     // Listen to page visibility changes (Browser tab switching)
     document.addEventListener('visibilitychange', handleVisibilityChange)
