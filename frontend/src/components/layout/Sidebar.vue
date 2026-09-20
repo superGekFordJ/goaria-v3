@@ -116,7 +116,7 @@
         as="button"
         :active="uiStore.activeTab === item.id"
         :interactive="true"
-        class="w-full group"
+        class="w-full group sidebar-nav-item"
         @click="handleNavClick(item.id)"
       >
         <div class="w-full h-full flex items-center justify-between px-4 py-3">
@@ -169,7 +169,7 @@
         as="button"
         :active="uiStore.activeTab === 'settings'"
         :interactive="true"
-        class="w-full group"
+        class="w-full group sidebar-nav-item"
         @click="uiStore.setActiveTab('settings')"
       >
         <div class="w-full h-full flex items-center gap-3 px-4 py-3">

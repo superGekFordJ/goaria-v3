@@ -74,6 +74,7 @@
   --glass-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.4);
   --app-liquid-glass-bg: rgba(0, 0, 0, calc(var(--glass-opacity, 0.3571) * 0.2));
   --app-liquid-glass-hover: rgba(0, 0, 0, calc(var(--glass-opacity, 0.3571) * 0.2));
+  --app-static-glass-bg: rgba(255, 255, 255, calc(0.02 + var(--glass-opacity, 0.3) * 0.03));
 
   /* Sidebar - Fused with background, more transparent */
   --sidebar-bg: transparent;
@@ -171,6 +172,7 @@
     --glass-hover: rgba(0, 0, 0, 0.03);
     --app-liquid-glass-bg: rgba(0, 0, 0, calc(var(--glass-opacity, 0.3571) * 0.04));
     --app-liquid-glass-hover: rgba(0, 0, 0, calc(var(--glass-opacity, 0.3571) * 0.025));
+    --app-static-glass-bg: rgba(255, 255, 255, calc(0.14 + var(--glass-opacity, 0.3) * 0.1));
 
     /* Sidebar */
     --sidebar-bg: rgba(245, 245, 248, 0.7);
@@ -272,6 +274,7 @@
   --glass-shadow: 0 8px 32px -8px rgba(0, 0, 0, 0.12);
   --app-liquid-glass-bg: rgba(0, 0, 0, calc(var(--glass-opacity, 0.3571) * 0.04));
   --app-liquid-glass-hover: rgba(0, 0, 0, calc(var(--glass-opacity, 0.3571) * 0.025));
+  --app-static-glass-bg: rgba(255, 255, 255, calc(0.14 + var(--glass-opacity, 0.3) * 0.1));
 
   /* Sidebar - Subtle separation with better text contrast */
   --sidebar-bg: transparent;

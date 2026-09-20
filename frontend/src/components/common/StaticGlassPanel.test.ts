@@ -72,7 +72,7 @@ describe('StaticGlassPanel', () => {
 
     // Glass layer renders (v-if="effectsTier !== 'reduced'" passes)
     const html = wrapper.html()
-    expect(html).toContain('blur(var(--glass-blur))')
+    expect(html).toContain('blur(max(var(--glass-blur), 12px))')
 
     // Static refraction filter id is applied
     expect(html).toContain('static-glass-refraction')
@@ -86,7 +86,7 @@ describe('StaticGlassPanel', () => {
 
     // Glass layer still renders
     const html = wrapper.html()
-    expect(html).toContain('blur(var(--glass-blur))')
+    expect(html).toContain('blur(max(var(--glass-blur), 12px))')
 
     // No refraction filter id applied
     expect(html).not.toContain('static-glass-refraction')

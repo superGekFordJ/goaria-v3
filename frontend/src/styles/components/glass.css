@@ -330,6 +330,49 @@
   );
 }
 
+/* === Floating Liquid Glass Capsules & Tags: Dedicated Crystal Glass ===
+ * Scoped strictly to floating pills, docks, and chips (.sidebar-nav-item, .command-capsule,
+ * .batch-action-bar, .error-filter-tag) so generic action buttons (modals, shells, etc.)
+ * retain their bright, tactile white frosted ceramic glass elevation. */
+:root[data-theme='light'] .sidebar-nav-item .lg-bevel,
+:root[data-theme='light'] .command-capsule .lg-bevel,
+:root[data-theme='light'] .batch-action-bar .lg-bevel,
+:root[data-theme='light'] .error-filter-tag .lg-bevel {
+  background: rgba(0, 0, 0, 0.045);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.95),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.08),
+    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.05),
+    0 2px 6px -1px rgba(0, 0, 0, 0.07);
+}
+
+:root[data-theme='light'] .sidebar-nav-item .lg-specular,
+:root[data-theme='light'] .command-capsule .lg-specular,
+:root[data-theme='light'] .batch-action-bar .lg-specular,
+:root[data-theme='light'] .error-filter-tag .lg-specular {
+  display: none;
+}
+
+:root[data-window-transparency='acrylic'][data-theme='light'] .sidebar-nav-item .lg-bevel,
+:root[data-window-transparency='acrylic'][data-theme='light'] .command-capsule .lg-bevel,
+:root[data-window-transparency='acrylic'][data-theme='light'] .batch-action-bar .lg-bevel,
+:root[data-window-transparency='acrylic'][data-theme='light'] .error-filter-tag .lg-bevel,
+:root[data-window-transparency='mica'][data-theme='light'] .sidebar-nav-item .lg-bevel,
+:root[data-window-transparency='mica'][data-theme='light'] .command-capsule .lg-bevel,
+:root[data-window-transparency='mica'][data-theme='light'] .batch-action-bar .lg-bevel,
+:root[data-window-transparency='mica'][data-theme='light'] .error-filter-tag .lg-bevel,
+:root[data-window-transparency='tabbed'][data-theme='light'] .sidebar-nav-item .lg-bevel,
+:root[data-window-transparency='tabbed'][data-theme='light'] .command-capsule .lg-bevel,
+:root[data-window-transparency='tabbed'][data-theme='light'] .batch-action-bar .lg-bevel,
+:root[data-window-transparency='tabbed'][data-theme='light'] .error-filter-tag .lg-bevel {
+  background: rgba(0, 0, 0, 0.035);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.9),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.07),
+    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.04),
+    0 2px 6px -1px rgba(0, 0, 0, 0.06);
+}
+
 /* === Window Transparency Overrides (Light Mode) === */
 /* Avoids the 50% milky white wash over transparent windows while preserving edge reflections */
 :root[data-window-transparency='acrylic'][data-theme='light'] .lg-bevel,
@@ -365,14 +408,64 @@
   );
 }
 
+/* === Static Glass Panel (Frosted Tray / Data Dock Aesthetic) === */
+.static-glass-backdrop {
+  background: var(--app-static-glass-bg);
+}
+
+.static-glass-edge {
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.8),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.05),
+    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.04),
+    0 2px 6px -1px rgba(0, 0, 0, 0.05);
+}
+
+:root:not([data-theme='light']) .static-glass-edge {
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.14),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04),
+    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.4),
+    0 2px 8px -2px rgba(0, 0, 0, 0.4);
+}
+
+/* Static Glass: Window Transparency Mode (Acrylic / Mica / Tabbed)
+ * Eliminates milky-white wash in light mode and heavy dark blackout in dark mode.
+ * Matches the crystal optical transparency of the sidebar navigation elements. */
+:root[data-window-transparency='acrylic'] .static-glass-backdrop,
+:root[data-window-transparency='mica'] .static-glass-backdrop,
+:root[data-window-transparency='tabbed'] .static-glass-backdrop {
+  background: rgba(255, 255, 255, 0.035) !important;
+  backdrop-filter: saturate(130%) blur(max(var(--glass-blur), 8px)) !important;
+  -webkit-backdrop-filter: saturate(130%) blur(max(var(--glass-blur), 8px)) !important;
+}
+
+:root[data-window-transparency='acrylic'] .static-glass-edge,
+:root[data-window-transparency='mica'] .static-glass-edge,
+:root[data-window-transparency='tabbed'] .static-glass-edge {
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.14),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04),
+    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.3),
+    0 2px 6px -1px rgba(0, 0, 0, 0.25) !important;
+}
+
+:root[data-window-transparency='acrylic'][data-theme='light'] .static-glass-backdrop,
+:root[data-window-transparency='mica'][data-theme='light'] .static-glass-backdrop,
+:root[data-window-transparency='tabbed'][data-theme='light'] .static-glass-backdrop {
+  background: rgba(0, 0, 0, 0.03) !important;
+  backdrop-filter: saturate(130%) blur(max(var(--glass-blur), 8px)) !important;
+  -webkit-backdrop-filter: saturate(130%) blur(max(var(--glass-blur), 8px)) !important;
+}
+
 :root[data-window-transparency='acrylic'][data-theme='light'] .static-glass-edge,
 :root[data-window-transparency='mica'][data-theme='light'] .static-glass-edge,
 :root[data-window-transparency='tabbed'][data-theme='light'] .static-glass-edge {
   box-shadow:
-    inset 0px 0px 0px 1px rgba(0, 0, 0, 0.12),
-    inset 0px 1px 0px rgba(255, 255, 255, 0.35),
-    inset 0px -1px 1px rgba(0, 0, 0, 0.06),
-    0px 4px 16px rgba(0, 0, 0, 0.08) !important;
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.9),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.07),
+    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.04),
+    0 2px 6px -1px rgba(0, 0, 0, 0.05) !important;
 }
 
 /* Legibility enhancements for sidebar caption and status text on transparent background */
