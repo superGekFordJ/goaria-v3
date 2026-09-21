@@ -1544,3 +1544,82 @@ func TestScheduler_WorkerRealErrorWithPauseFlagDoesNotSwallowError(t *testing.T)
 		t.Error("failed download must not be retained in pool.downloads")
 	}
 }
+
+// Retry eligibility gate — real timers required (NOT synctest: the fake
+// clock fires the armed AfterFunc instantly and voids the gate check).
+func TestSchedulerRetryNotRunnableBeforeRetryAt(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 100)
+	pool := &Scheduler{
+		progressCh:       ch,
+		progressDone:     make(chan struct{}),
+		downloads:        make(map[string]*activeDownload),
+		queued:           make(map[string]*queuedTask),
+		maxDownloads:     1,
+		globalLimiter:    transport.NewRateLimiter(0, 0),
+		downloadLimiters: make(map[string]*transport.RateLimiter),
+	}
+	pool.taskCond = sync.NewCond(&pool.mu)
+	// Armed retry timer callbacks are real goroutines; disarm + wg settle via
+	// shutdown (runs last — cleanups are LIFO).
+	t.Cleanup(func() { pool.GracefulShutdown() })
+
+	pool.mu.Lock()
+	id := "delayed-task"
+	retryDelay := 150 * time.Millisecond
+	qt := &queuedTask{
+		cfg: types.DownloadRecord{
+			ID:  id,
+			URL: "http://example.com/delayed.bin",
+		},
+		retries:  1,
+		inFlight: false,
+		retryAt:  time.Now().Add(retryDelay),
+	}
+	pool.queued[id] = qt
+	pool.queueOrder = append(pool.queueOrder, id)
+	pool.wg.Add(1)
+	pool.mu.Unlock()
+
+	// Scrub fallback for failure paths: if the task was never dequeued (or was
+	// picked up and left inFlight), GracefulShutdown's sweep would skip its
+	// wg.Done and hang — remove it here first (runs before shutdown, LIFO).
+	t.Cleanup(func() {
+		pool.mu.Lock()
+		if _, ok := pool.queued[id]; ok {
+			delete(pool.queued, id)
+			pool.wg.Done()
+		}
+		pool.mu.Unlock()
+	})
+
+	gotID := make(chan string, 1)
+	go func() {
+		gotID <- pool.waitForTask()
+	}()
+
+	// At 40ms (before retryAt), task should NOT be popped yet
+	select {
+	case res := <-gotID:
+		t.Fatalf("task %s was popped before retryAt elapsed", res)
+	case <-time.After(40 * time.Millisecond):
+		// Expected: still waiting
+	}
+
+	// Wait for retryAt to pass (after 250ms total)
+	select {
+	case res := <-gotID:
+		if res != id {
+			t.Fatalf("got task ID %s, want %s", res, id)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for delayed task to become runnable after retryAt")
+	}
+
+	pool.mu.Lock()
+	if q, ok := pool.queued[id]; ok {
+		q.inFlight = false
+		delete(pool.queued, id)
+		pool.wg.Done()
+	}
+	pool.mu.Unlock()
+}

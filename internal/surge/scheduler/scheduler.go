@@ -30,6 +30,7 @@ type queuedTask struct {
 	cfg      types.DownloadRecord
 	retries  int
 	inFlight bool
+	retryAt  time.Time // task not eligible for pickup until this time
 }
 
 // shouldRetryFailedDownload reports whether a whole-download failure should be
@@ -65,6 +66,12 @@ type Scheduler struct {
 	wg             sync.WaitGroup // We use this to wait for all active downloads to pause before exiting the program
 	maxDownloads   int
 	isShuttingDown bool
+
+	// Non-blocking retry backoff: a single timer wakes waitForTask when the
+	// earliest pending retry becomes eligible.
+	retryTimer           *time.Timer
+	retryWakeAt          time.Time
+	retryTimerGeneration uint64
 
 	globalLimiter               *transport.RateLimiter
 	downloadLimiters            map[string]*transport.RateLimiter
@@ -662,6 +669,51 @@ func (p *Scheduler) UpdateURL(downloadID string, newURL string) error {
 	return nil
 }
 
+// armRetryTimerLocked schedules a Broadcast for when the earliest pending
+// retry becomes eligible. Caller must hold p.mu.
+// retryWakeAt gives idempotent early-out for a stale post-disarm callback;
+// retryTimerGeneration discriminates callbacks from an older re-armed timer.
+func (p *Scheduler) armRetryTimerLocked(earliest time.Time) {
+	if earliest.IsZero() {
+		if p.retryTimer != nil {
+			p.retryTimer.Stop()
+			p.retryTimer = nil
+		}
+		p.retryWakeAt = time.Time{}
+		return
+	}
+
+	if !p.retryWakeAt.IsZero() && p.retryWakeAt.Equal(earliest) {
+		return
+	}
+
+	if p.retryTimer != nil {
+		p.retryTimer.Stop()
+	}
+
+	p.retryTimerGeneration++
+	gen := p.retryTimerGeneration
+	p.retryWakeAt = earliest
+
+	delay := time.Until(earliest)
+	if delay < 0 {
+		delay = 0
+	}
+
+	p.retryTimer = time.AfterFunc(delay, func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+
+		if p.isShuttingDown || gen != p.retryTimerGeneration || !p.retryWakeAt.Equal(earliest) {
+			return
+		}
+
+		p.retryWakeAt = time.Time{}
+		p.retryTimer = nil
+		p.taskCond.Broadcast()
+	})
+}
+
 func (p *Scheduler) waitForTask() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -670,12 +722,24 @@ func (p *Scheduler) waitForTask() string {
 		if p.isShuttingDown {
 			return ""
 		}
+		now := time.Now()
+		var earliestPending time.Time
+
+		// Skip tasks whose retryAt is still in the future; arm the wake timer
+		// for the earliest pending one.
 		for _, id := range p.queueOrder {
 			if qt, ok := p.queued[id]; ok && !qt.inFlight {
-				qt.inFlight = true
-				return id
+				if qt.retryAt.IsZero() || !now.Before(qt.retryAt) {
+					qt.inFlight = true
+					return id
+				}
+				if earliestPending.IsZero() || qt.retryAt.Before(earliestPending) {
+					earliestPending = qt.retryAt
+				}
 			}
 		}
+
+		p.armRetryTimerLocked(earliestPending)
 		p.taskCond.Wait()
 	}
 }
@@ -806,6 +870,10 @@ func (p *Scheduler) worker() {
 
 			if shouldRetryFailedDownload(err, p.isShuttingDown, qt.retries) {
 				qt.retries++
+				// Defer eligibility instead of blocking this worker; the
+				// retry timer wakes waitForTask at retryAt.
+				retryDelay := time.Second * time.Duration(qt.retries)
+				qt.retryAt = time.Now().Add(retryDelay)
 				qt.inFlight = true // Keep in-flight while sending progress outside lock
 				qt.cfg = localCfg
 				p.queued[localCfg.ID] = qt
@@ -834,19 +902,26 @@ func (p *Scheduler) worker() {
 				if _, ok := p.queued[localCfg.ID]; ok {
 					qt.inFlight = false
 					p.queued[localCfg.ID] = qt
+
+					now := time.Now()
+					var earliestPending time.Time
+					for _, qid := range p.queueOrder {
+						if t, ok := p.queued[qid]; ok && !t.inFlight && !t.retryAt.IsZero() {
+							if t.retryAt.After(now) {
+								if earliestPending.IsZero() || t.retryAt.Before(earliestPending) {
+									earliestPending = t.retryAt
+								}
+							}
+						}
+					}
+					p.armRetryTimerLocked(earliestPending)
 				} else {
 					// GracefulShutdown or Cancel removed it while we were unlocked.
 					// Since we were in-flight, they didn't decrement wg, so we must.
 					p.wg.Done()
 				}
-				p.taskCond.Signal()
+				p.taskCond.Broadcast()
 				p.mu.Unlock()
-				// ponytail: naive backoff blocks worker thread, but naturally limits retry storms
-				select {
-				case <-time.After(time.Second * time.Duration(qt.retries)):
-				case <-p.progressDone:
-					// Wake up early if shutting down
-				}
 				continue
 			}
 
@@ -1096,6 +1171,7 @@ func (p *Scheduler) GracefulShutdown() {
 		// Workers already guard against this with the p.queued check at loop entry,
 		// so clearing the map here is sufficient; draining taskChan is belt-and-suspenders.
 		p.mu.Lock()
+		p.armRetryTimerLocked(time.Time{})
 		for id, qt := range p.queued {
 			delete(p.queued, id)
 			if !qt.inFlight {
