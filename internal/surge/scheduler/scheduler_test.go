@@ -1623,3 +1623,127 @@ func TestSchedulerRetryNotRunnableBeforeRetryAt(t *testing.T) {
 	}
 	pool.mu.Unlock()
 }
+
+// A task waiting out its retry backoff must not hold the worker slot: with a
+// single worker, a queued task is still picked up while the failed task's
+// retryAt is pending (pre-patch the worker blocked on time.After instead).
+func TestWorker_RetryBackoffDoesNotHoldWorkerSlot(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 100)
+	pool := New(ch, 1)
+	t.Cleanup(func() { pool.GracefulShutdown() })
+
+	// Always-503 without Retry-After: non-permanent, so the worker requeues
+	// with retryAt ≈ now+1s instead of reporting a terminal error.
+	serverA := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer serverA.Close()
+
+	serverB := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1")
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer serverB.Close()
+
+	pool.Add(types.DownloadRecord{
+		ID:            "retrying-task",
+		URL:           serverA.URL,
+		ProgressState: progress.New("retrying-task", 0),
+		Runtime:       &types.RuntimeConfig{},
+	})
+
+	tmpDir := t.TempDir()
+	bFinal := filepath.Join(tmpDir, "b.bin")
+	if err := os.WriteFile(bFinal+types.IncompleteSuffix, nil, 0o644); err != nil {
+		t.Fatalf("failed to pre-create incomplete file: %v", err)
+	}
+	pool.Add(types.DownloadRecord{
+		ID:            "queued-task",
+		URL:           serverB.URL,
+		OutputPath:    tmpDir,
+		Filename:      "b.bin",
+		ProgressState: progress.New("queued-task", 0),
+		Runtime:       &types.RuntimeConfig{},
+	})
+
+	// A's first retry waits 1s; B's EventStarted must arrive well before that.
+	// Require A's EventQueued first so the test only passes if A actually
+	// re-entered the queue (a terminal error would free the slot trivially).
+	var sawRequeue bool
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case msg := <-ch:
+			if msg.Type == types.EventQueued && msg.DownloadID == "retrying-task" {
+				sawRequeue = true
+			}
+			if msg.Type == types.EventStarted && msg.DownloadID == "queued-task" {
+				if !sawRequeue {
+					t.Fatal("queued task started before the failed task was requeued")
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("queued task did not start while the failed task sat in retry backoff")
+		}
+	}
+}
+
+// A task parked in retry backoff arms the wake timer; GracefulShutdown must
+// disarm it and return promptly instead of waiting for retryAt.
+func TestSchedulerGracefulShutdownDisarmsRetryTimer(t *testing.T) {
+	pool := &Scheduler{
+		progressCh:       make(chan types.DownloadEvent, 8),
+		progressDone:     make(chan struct{}),
+		downloads:        make(map[string]*activeDownload),
+		queued:           make(map[string]*queuedTask),
+		maxDownloads:     1,
+		globalLimiter:    transport.NewRateLimiter(0, 0),
+		downloadLimiters: make(map[string]*transport.RateLimiter),
+	}
+	pool.taskCond = sync.NewCond(&pool.mu)
+
+	pool.mu.Lock()
+	id := "pending-retry"
+	pool.queued[id] = &queuedTask{
+		cfg:     types.DownloadRecord{ID: id, URL: "http://example.com/pending.bin"},
+		retries: 1,
+		retryAt: time.Now().Add(time.Hour),
+	}
+	pool.queueOrder = append(pool.queueOrder, id)
+	pool.wg.Add(1)
+	pool.mu.Unlock()
+
+	waited := make(chan string, 1)
+	go func() { waited <- pool.waitForTask() }()
+
+	// Wait until the scan has actually armed the timer.
+	armDeadline := time.Now().Add(2 * time.Second)
+	for {
+		pool.mu.Lock()
+		armed := pool.retryTimer != nil
+		pool.mu.Unlock()
+		if armed {
+			break
+		}
+		if time.Now().After(armDeadline) {
+			t.Fatal("retry timer was never armed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		pool.GracefulShutdown()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("GracefulShutdown hung with an armed retry timer")
+	}
+
+	if got := <-waited; got != "" {
+		t.Fatalf("waitForTask returned %q after shutdown, want \"\"", got)
+	}
+}
