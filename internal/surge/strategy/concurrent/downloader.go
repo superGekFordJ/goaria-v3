@@ -1640,17 +1640,20 @@ func (d *ConcurrentDownloader) saveStateSnapshot(destPath string, fileSize int64
 
 	if emitPauseEvent {
 		if d.ProgressChan != nil {
-			d.ProgressChan <- types.DownloadEvent{
-				Type:         types.EventPaused,
-				DownloadID:   d.ID,
-				Filename:     filepath.Base(destPath),
-				Downloaded:   computedDownloaded,
-				State:        s,
-				RateLimit:    rateLimit,
-				RateLimitSet: rateLimitSet,
-				Workers:      workers,
-				MinChunkSize: minChunkSize,
-			}
+			func() {
+				defer func() { _ = recover() }()
+				d.ProgressChan <- types.DownloadEvent{
+					Type:         types.EventPaused,
+					DownloadID:   d.ID,
+					Filename:     filepath.Base(destPath),
+					Downloaded:   computedDownloaded,
+					State:        s,
+					RateLimit:    rateLimit,
+					RateLimitSet: rateLimitSet,
+					Workers:      workers,
+					MinChunkSize: minChunkSize,
+				}
+			}()
 		}
 
 		utils.Debug("Download paused, state saved (Downloaded=%d, RemainingTasks=%d, RemainingBytes=%d)",

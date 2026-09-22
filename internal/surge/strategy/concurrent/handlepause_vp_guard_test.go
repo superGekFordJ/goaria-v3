@@ -360,3 +360,34 @@ func TestSaveStateSnapshot_NilState_RemainingTasksNoPanic(t *testing.T) {
 		t.Fatalf("emit=true nil State: got %v, want ErrPaused", err)
 	}
 }
+
+// TestHandlePause_ClosedProgressChan_NoPanic verifies that emitting EventPaused
+// does not panic if ProgressChan is closed (e.g. during graceful shutdown race).
+func TestHandlePause_ClosedProgressChan_NoPanic(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	fileSize := int64(1000)
+	destPath := filepath.Join(tmpDir, "closed_ch.bin")
+	state := progress.New("closed-ch", fileSize)
+	state.InitBitmap(fileSize, 250)
+
+	progressCh := make(chan types.DownloadEvent, 1)
+	close(progressCh) // closed to simulate shutdown race
+
+	d := &ConcurrentDownloader{
+		ID:           "closed-ch",
+		State:        state,
+		ProgressChan: progressCh,
+		Runtime:      &types.RuntimeConfig{},
+	}
+
+	queue := NewTaskQueue()
+	queue.Push(types.Task{Offset: 250, Length: 750})
+
+	// Must not panic on closed ProgressChan
+	err := d.handlePause(destPath, fileSize, queue, nil)
+	if !errors.Is(err, types.ErrPaused) {
+		t.Fatalf("handlePause on closed channel = %v, want ErrPaused", err)
+	}
+}
