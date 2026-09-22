@@ -3,6 +3,7 @@ package concurrent
 import (
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"goaria-v3/internal/surge/progress"
@@ -10,9 +11,10 @@ import (
 )
 
 // TestHandlePause_RemainingZeroButVPLessThanFileSize_SavesStateNotFinalize
-// verifies that when remainingBytes == 0 but VP < fileSize, handlePause falls
-// through to the standard pause path (returns ErrPaused) instead of finalizing
-// an incomplete file as completed.
+// verifies the no-bitmap gap case: remainingBytes == 0 with VP < fileSize and
+// no bitmap to rebuild from → handlePause must not persist a Tasks=nil record
+// (resume would treat it as fresh) and must not finalize. It returns ErrPaused
+// without emitting EventPaused and leaves VP untouched.
 func TestHandlePause_RemainingZeroButVPLessThanFileSize_SavesStateNotFinalize(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
@@ -22,18 +24,30 @@ func TestHandlePause_RemainingZeroButVPLessThanFileSize_SavesStateNotFinalize(t 
 	progState := progress.New("vp-guard", fileSize)
 	progState.Bytes.VerifiedProgress.Store(500) // VP < fileSize
 
+	progressCh := make(chan types.DownloadEvent, 1)
 	d := &ConcurrentDownloader{
-		ID:      "vp-guard",
-		State:   progState,
-		Runtime: &types.RuntimeConfig{},
+		ID:           "vp-guard",
+		State:        progState,
+		ProgressChan: progressCh,
+		Runtime:      &types.RuntimeConfig{},
 	}
 
 	queue := NewTaskQueue()
-	// No tasks → remainingBytes == 0, but VP=500 < fileSize=1000.
+	// No tasks → remainingBytes == 0, but VP=500 < fileSize=1000 and no
+	// bitmap → nothing resumable, skip persistence.
 
 	err := d.handlePause(destPath, fileSize, queue, nil)
 	if !errors.Is(err, types.ErrPaused) {
-		t.Fatalf("expected ErrPaused (save state for resume), got %v", err)
+		t.Fatalf("expected ErrPaused, got %v", err)
+	}
+	if len(progressCh) != 0 {
+		t.Fatal("no-bitmap gap must not emit EventPaused")
+	}
+	if snapshot := progState.TakePendingResumeState(); snapshot != nil {
+		t.Fatalf("unexpected pending resume snapshot: %+v", snapshot)
+	}
+	if got := progState.Bytes.VerifiedProgress.Load(); got != 500 {
+		t.Fatalf("VP = %d, want 500 (must not raise to fileSize)", got)
 	}
 }
 
@@ -89,6 +103,106 @@ func TestHandlePause_RemainingZeroAndVPGreaterThanFileSize_Finalizes(t *testing.
 		t.Fatalf("expected nil (finalize), got %v", err)
 	}
 	if progState.IsPaused() {
+		t.Error("state should not be paused — should be finalized as completed")
+	}
+}
+
+// TestHandlePause_RebuildsTasksFromBitmap verifies the bitmap-gap case:
+// remainingBytes == 0 with VP < fileSize while the persisted bitmap still
+// holds unverified chunks → rebuild resumable ranges from the bitmap so the
+// saved record's Tasks stay non-empty (resume keys off len(Tasks) > 0).
+func TestHandlePause_RebuildsTasksFromBitmap(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	const fileSize, chunkSize int64 = 1000, 250
+	destPath := filepath.Join(tmpDir, "bitmap-resume.bin")
+	state := progress.New("bitmap-resume", fileSize)
+	state.InitBitmap(fileSize, chunkSize)
+	state.UpdateChunkStatus(0, chunkSize, types.ChunkCompleted)
+	state.UpdateChunkStatus(2*chunkSize, chunkSize, types.ChunkCompleted)
+	// VP=500, chunks 0 and 2 completed; chunks 1 and 3 unverified.
+
+	progressCh := make(chan types.DownloadEvent, 1)
+	d := &ConcurrentDownloader{
+		ID:           "bitmap-resume",
+		State:        state,
+		ProgressChan: progressCh,
+		Runtime:      &types.RuntimeConfig{},
+	}
+
+	want := []types.Task{
+		{Offset: chunkSize, Length: chunkSize},
+		{Offset: 3 * chunkSize, Length: chunkSize},
+	}
+
+	err := d.handlePause(destPath, fileSize, NewTaskQueue(), nil)
+	if !errors.Is(err, types.ErrPaused) {
+		t.Fatalf("handlePause = %v, want ErrPaused", err)
+	}
+	ev := <-progressCh
+	if ev.State == nil {
+		t.Fatal("expected pause State on EventPaused")
+	}
+	if !reflect.DeepEqual(ev.State.Tasks, want) {
+		t.Fatalf("resume tasks = %+v, want %+v", ev.State.Tasks, want)
+	}
+	if ev.State.Downloaded != 500 {
+		t.Fatalf("Downloaded = %d, want 500", ev.State.Downloaded)
+	}
+
+	// emit=false path rebuilds from the same bitmap and stashes pending state.
+	if err := d.saveStateSnapshot(destPath, fileSize, NewTaskQueue(), nil, false); err != nil {
+		t.Fatalf("saveStateSnapshot(false) = %v, want nil", err)
+	}
+	snapshot := state.TakePendingResumeState()
+	if snapshot == nil {
+		t.Fatal("missing pending resume snapshot")
+	}
+	if !reflect.DeepEqual(snapshot.Tasks, want) {
+		t.Fatalf("pending resume tasks = %+v, want %+v", snapshot.Tasks, want)
+	}
+}
+
+// TestHandlePause_CompleteBitmapDoesNotSaveIncompleteState verifies the
+// complete-bitmap gap case: all chunks marked completed while VP lags
+// (status-store/VP-add window) → finalize heals VP instead of persisting an
+// incomplete record.
+func TestHandlePause_CompleteBitmapDoesNotSaveIncompleteState(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	const fileSize, chunkSize int64 = 1000, 250
+	destPath := filepath.Join(tmpDir, "bitmap-complete.bin")
+	state := progress.New("bitmap-complete", fileSize)
+	state.InitBitmap(fileSize, chunkSize)
+	for offset := int64(0); offset < fileSize; offset += chunkSize {
+		state.SetChunkState(int(offset/chunkSize), types.ChunkCompleted)
+	}
+	// Bitmap fully complete but VP stays 0 — simulates the lag window.
+
+	progressCh := make(chan types.DownloadEvent, 1)
+	d := &ConcurrentDownloader{
+		ID:           "bitmap-complete",
+		State:        state,
+		ProgressChan: progressCh,
+		Runtime:      &types.RuntimeConfig{},
+	}
+
+	err := d.handlePause(destPath, fileSize, NewTaskQueue(), nil)
+	if err != nil {
+		t.Fatalf("handlePause = %v, want nil", err)
+	}
+	if len(progressCh) != 0 {
+		t.Fatal("complete-bitmap finalize must not emit EventPaused")
+	}
+	if snapshot := state.TakePendingResumeState(); snapshot != nil {
+		t.Fatalf("unexpected incomplete resume snapshot: %+v", snapshot)
+	}
+	if got := state.Bytes.VerifiedProgress.Load(); got != fileSize {
+		t.Fatalf("VerifiedProgress = %d, want %d", got, fileSize)
+	}
+	if state.IsPaused() {
 		t.Error("state should not be paused — should be finalized as completed")
 	}
 }
