@@ -5,17 +5,18 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"goaria-v3/internal/surge/progress"
 	"goaria-v3/internal/surge/types"
 )
 
-// TestHandlePause_RemainingZeroButVPLessThanFileSize_SavesStateNotFinalize
+// TestHandlePause_RemainingZeroButVPLessThanFileSize_SkipsSaveNotFinalize
 // verifies the no-bitmap gap case: remainingBytes == 0 with VP < fileSize and
 // no bitmap to rebuild from → handlePause must not persist a Tasks=nil record
 // (resume would treat it as fresh) and must not finalize. It returns ErrPaused
 // without emitting EventPaused and leaves VP untouched.
-func TestHandlePause_RemainingZeroButVPLessThanFileSize_SavesStateNotFinalize(t *testing.T) {
+func TestHandlePause_RemainingZeroButVPLessThanFileSize_SkipsSaveNotFinalize(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
@@ -140,7 +141,12 @@ func TestHandlePause_RebuildsTasksFromBitmap(t *testing.T) {
 	if !errors.Is(err, types.ErrPaused) {
 		t.Fatalf("handlePause = %v, want ErrPaused", err)
 	}
-	ev := <-progressCh
+	var ev types.DownloadEvent
+	select {
+	case ev = <-progressCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for EventPaused")
+	}
 	if ev.State == nil {
 		t.Fatal("expected pause State on EventPaused")
 	}
@@ -204,6 +210,106 @@ func TestHandlePause_CompleteBitmapDoesNotSaveIncompleteState(t *testing.T) {
 	}
 	if state.IsPaused() {
 		t.Error("state should not be paused — should be finalized as completed")
+	}
+}
+
+// TestHandlePause_BitmapRebuildFloorsDownloadedAtVerifiedProgress verifies
+// the strict inequality in the Downloaded floor: chunk-granular rebuild can
+// overstate remaining bytes, so the record must never report less than
+// VerifiedProgress on disk.
+func TestHandlePause_BitmapRebuildFloorsDownloadedAtVerifiedProgress(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	const fileSize, chunkSize int64 = 1000, 250
+	destPath := filepath.Join(tmpDir, "bitmap-floor.bin")
+	state := progress.New("bitmap-floor", fileSize)
+	state.InitBitmap(fileSize, chunkSize)
+	// Bitmap-complete chunks without VP credit (status-store/VP-add window):
+	// rebuild leaves 500 bytes remaining while VP already stands at 700.
+	state.SetChunkState(0, types.ChunkCompleted)
+	state.SetChunkState(2, types.ChunkCompleted)
+	state.Bytes.VerifiedProgress.Store(700)
+
+	progressCh := make(chan types.DownloadEvent, 1)
+	d := &ConcurrentDownloader{
+		ID:           "bitmap-floor",
+		State:        state,
+		ProgressChan: progressCh,
+		Runtime:      &types.RuntimeConfig{},
+	}
+
+	err := d.handlePause(destPath, fileSize, NewTaskQueue(), nil)
+	if !errors.Is(err, types.ErrPaused) {
+		t.Fatalf("handlePause = %v, want ErrPaused", err)
+	}
+	var ev types.DownloadEvent
+	select {
+	case ev = <-progressCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for EventPaused")
+	}
+	if ev.State == nil {
+		t.Fatal("expected pause State on EventPaused")
+	}
+	want := []types.Task{
+		{Offset: chunkSize, Length: chunkSize},
+		{Offset: 3 * chunkSize, Length: chunkSize},
+	}
+	if !reflect.DeepEqual(ev.State.Tasks, want) {
+		t.Fatalf("resume tasks = %+v, want %+v", ev.State.Tasks, want)
+	}
+	if ev.State.Downloaded != 700 {
+		t.Fatalf("Downloaded = %d, want 700 (VP floor over rebuilt remaining)", ev.State.Downloaded)
+	}
+}
+
+// TestHandlePause_BitmapRebuildCapsTailChunkAtFileSize verifies the tail
+// clamp: when fileSize % chunkSize != 0, the last unverified range must be
+// capped at fileSize, not extended to a full chunk.
+func TestHandlePause_BitmapRebuildCapsTailChunkAtFileSize(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	const fileSize, chunkSize int64 = 1100, 250 // 4 full chunks + 100-byte tail
+	destPath := filepath.Join(tmpDir, "bitmap-tail.bin")
+	state := progress.New("bitmap-tail", fileSize)
+	state.InitBitmap(fileSize, chunkSize)
+	state.UpdateChunkStatus(0, chunkSize, types.ChunkCompleted)
+	state.UpdateChunkStatus(chunkSize, chunkSize, types.ChunkCompleted)
+	state.UpdateChunkStatus(3*chunkSize, chunkSize, types.ChunkCompleted)
+	// VP=750; chunks 2 and the 100-byte tail chunk stay unverified.
+
+	progressCh := make(chan types.DownloadEvent, 1)
+	d := &ConcurrentDownloader{
+		ID:           "bitmap-tail",
+		State:        state,
+		ProgressChan: progressCh,
+		Runtime:      &types.RuntimeConfig{},
+	}
+
+	err := d.handlePause(destPath, fileSize, NewTaskQueue(), nil)
+	if !errors.Is(err, types.ErrPaused) {
+		t.Fatalf("handlePause = %v, want ErrPaused", err)
+	}
+	var ev types.DownloadEvent
+	select {
+	case ev = <-progressCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for EventPaused")
+	}
+	if ev.State == nil {
+		t.Fatal("expected pause State on EventPaused")
+	}
+	want := []types.Task{
+		{Offset: 2 * chunkSize, Length: chunkSize},
+		{Offset: 4 * chunkSize, Length: fileSize - 4*chunkSize}, // capped: 100
+	}
+	if !reflect.DeepEqual(ev.State.Tasks, want) {
+		t.Fatalf("resume tasks = %+v, want %+v", ev.State.Tasks, want)
+	}
+	if ev.State.Downloaded != 750 {
+		t.Fatalf("Downloaded = %d, want 750", ev.State.Downloaded)
 	}
 }
 

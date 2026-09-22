@@ -1445,9 +1445,6 @@ func (d *ConcurrentDownloader) sendFirstByteOnce(ttfbStart time.Time, activeTask
 }
 
 // unverifiedTasksFromBitmap rebuilds resumable work from the persisted bitmap.
-// FORK-PATCH (#633 port): decode order matches GetBitmapSnapshot (2 bits per
-// chunk, LSB-first, 4 chunks per byte); any status != ChunkCompleted counts as
-// unverified. Returns disjoint chunk-granular ranges covering [0, fileSize).
 func unverifiedTasksFromBitmap(bitmap []byte, fileSize, chunkSize int64) []types.Task {
 	if fileSize <= 0 || chunkSize <= 0 {
 		return nil
@@ -1480,7 +1477,9 @@ func unverifiedTasksFromBitmap(bitmap []byte, fileSize, chunkSize int64) []types
 // saveStateSnapshot builds a pause-grade DownloadRecord from active tasks +
 // queue remaining work. emitPauseEvent=true mirrors historical handlePause
 // (EventPaused + ErrPaused). emitPauseEvent=false best-effort persists via
-// SaveStateWithOptions and stashes the record for EventError.State.
+// SaveStateWithOptions and stashes the record for EventError.State. Either
+// mode may skip persistence entirely when nothing resumable remains (see the
+// remainingBytes==0 gap handling below).
 func (d *ConcurrentDownloader) saveStateSnapshot(destPath string, fileSize int64, queue *TaskQueue, candidateMirrors []string, emitPauseEvent bool) error {
 	// 1. Collect active RemainingTask copies, drain abandoned ENOSPC stash
 	// (off-queue residuals), then drain the live queue (active-first).
@@ -1520,11 +1519,8 @@ func (d *ConcurrentDownloader) saveStateSnapshot(destPath string, fileSize int64
 			}
 			return nil
 		}
-		// FORK-PATCH (#633 port): task lists can drain to empty during
-		// cancellation while chunks stay unverified. Rebuild resumable
-		// ranges from the bitmap — resume keys off len(Tasks) > 0, so a
-		// Tasks=nil record would restart fresh and re-download verified
-		// ranges.
+		// If tasks drained before chunks were verified, rebuild remaining tasks from bitmap
+		// so the record stays resumable.
 		gapBitmap, _, _, gapChunkSize, _ := d.State.GetBitmapSnapshot(false)
 		if len(gapBitmap) > 0 && gapChunkSize > 0 {
 			if unverified := unverifiedTasksFromBitmap(gapBitmap, fileSize, gapChunkSize); len(unverified) > 0 {
@@ -1533,9 +1529,7 @@ func (d *ConcurrentDownloader) saveStateSnapshot(destPath string, fileSize int64
 					remainingBytes += task.Length
 				}
 			} else {
-				// Bitmap fully complete while VP lags (status-store/VP-add
-				// window): the file is physically complete — finalize
-				// heals VP.
+				// All chunks are completed in the bitmap; finalize directly.
 				utils.Debug("Download pause at remainingBytes=0 with complete bitmap; finalizing as completed")
 				d.State.Resume()
 				_, _ = d.State.FinalizeSession(fileSize)
@@ -1543,8 +1537,7 @@ func (d *ConcurrentDownloader) saveStateSnapshot(destPath string, fileSize int64
 			}
 		}
 		if remainingBytes == 0 {
-			// No bitmap / nothing resumable: don't persist a Tasks=nil
-			// record that resume would treat as a fresh download.
+			// Skip saving if no resumable ranges exist to avoid persisting an unresumable record.
 			utils.Debug("Download pause with VP=%d < fileSize=%d and no resumable ranges; skipping state save",
 				d.State.Bytes.VerifiedProgress.Load(), fileSize)
 			if emitPauseEvent {
