@@ -719,6 +719,32 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 	// Handle pause request: must return types.ErrPaused to prevent finalization
 	if d.State != nil && d.State.IsPaused() {
 		if d.payloadFirstSession.Load() && !d.payloadFirstVerified.Load() {
+			// FORK-PATCH: Notify UI/eventBus that payload-first session paused before
+			// verification. Must emit sparse EventPaused (State=nil) so orchestrator
+			// updates master list without persisting unverified range state to disk,
+			// and Scheduler won't double-silence this pause.
+			if d.ProgressChan != nil {
+				rateLimit, rateLimitSet := d.State.GetRateLimit()
+				var workers int
+				var minChunkSize int64
+				if d.Runtime != nil {
+					workers = d.Runtime.Workers
+					minChunkSize = d.Runtime.MinChunkSize
+				}
+				func() {
+					defer func() { _ = recover() }()
+					d.ProgressChan <- types.DownloadEvent{
+						Type:         types.EventPaused,
+						DownloadID:   d.ID,
+						Filename:     filepath.Base(destPath),
+						Downloaded:   d.State.Bytes.VerifiedProgress.Load(),
+						RateLimit:    rateLimit,
+						RateLimitSet: rateLimitSet,
+						Workers:      workers,
+						MinChunkSize: minChunkSize,
+					}
+				}()
+			}
 			return types.ErrPaused
 		}
 		pauseErr := d.handlePause(destPath, fileSize, queue, candidateMirrors)

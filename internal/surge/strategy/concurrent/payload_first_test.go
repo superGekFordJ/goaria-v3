@@ -834,6 +834,92 @@ func TestPayloadFirst_UnverifiedPauseDoesNotSnapshot(t *testing.T) {
 	}
 }
 
+func TestPayloadFirst_UnverifiedPauseEmitsEventWithoutState(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+	fileSize := int64(64 * 1024)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(server.Close)
+	destPath := filepath.Join(tmpDir, "pf_unverified_pause_event.bin")
+	seedPayloadFirstMaster(t, server.URL, destPath, fileSize)
+
+	if f, err := os.Create(destPath + types.IncompleteSuffix); err == nil {
+		_ = f.Close()
+	} else {
+		t.Fatal(err)
+	}
+
+	state := progress.New("pf-pause-event", fileSize)
+	progressCh := make(chan types.DownloadEvent, 4)
+	rt := payloadFirstRuntime()
+	rt.Workers = 1
+	d := NewConcurrentDownloader("pf-pause-event", progressCh, state, rt)
+	d.RangeAcquisitionMode = types.RangeAcquirePayloadFirstUnknown
+	d.SkipServerProbe = true
+
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	go func() {
+		errCh <- d.Download(ctx, server.URL, nil, nil, destPath, fileSize)
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for first request")
+	}
+	d.State.Pause()
+	close(release)
+	err := <-errCh
+	if !errors.Is(err, types.ErrPaused) {
+		t.Fatalf("unverified pause err = %v, want ErrPaused", err)
+	}
+
+	select {
+	case ev := <-progressCh:
+		if ev.Type != types.EventPaused {
+			t.Fatalf("event type = %v, want EventPaused", ev.Type)
+		}
+		if ev.State != nil {
+			t.Fatalf("event state must be nil for unverified payload-first pause, got %+v", ev.State)
+		}
+		if ev.DownloadID != "pf-pause-event" {
+			t.Fatalf("DownloadID = %q, want pf-pause-event", ev.DownloadID)
+		}
+		if ev.Filename != filepath.Base(destPath) {
+			t.Fatalf("Filename = %q, want %q", ev.Filename, filepath.Base(destPath))
+		}
+		if ev.Downloaded != 0 {
+			t.Fatalf("Downloaded = %d, want 0", ev.Downloaded)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for EventPaused")
+	}
+
+	if len(progressCh) != 0 {
+		t.Fatalf("unexpected extra events in progressCh: %d", len(progressCh))
+	}
+
+	saved, loadErr := store.LoadState(server.URL, destPath)
+	if loadErr == nil && saved != nil && len(saved.Tasks) > 0 {
+		t.Fatalf("unverified pause must not persist a task snapshot: %+v", saved)
+	}
+}
+
 func TestPayloadFirst_Mirror200AfterVerifyRotates(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
