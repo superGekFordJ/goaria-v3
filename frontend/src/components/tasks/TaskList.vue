@@ -105,15 +105,64 @@
     return active.concat(waiting)
   })
 
+  // First-seen anchor order for group-detail mode: preserves stable natural member
+  // index across state transitions (waiting -> active -> stopped) without card jumping.
+  let groupDetailAnchorGids: string[] = []
+  let anchoredDetailKey: string | null = null
+
   const detailDisplayTasks = computed(() => {
-    if (isGroupDetailMode.value) {
-      return [
-        ...(props.detailTasks?.active ?? []),
-        ...(props.detailTasks?.waiting ?? []),
-        ...(props.detailTasks?.stopped ?? []),
-      ]
+    if (!isGroupDetailMode.value) {
+      groupDetailAnchorGids = []
+      anchoredDetailKey = null
+      return []
     }
-    return []
+
+    const currentKey = props.detailKey || ''
+    if (anchoredDetailKey !== currentKey) {
+      anchoredDetailKey = currentKey
+      groupDetailAnchorGids = []
+    }
+
+    const all = [
+      ...(props.detailTasks?.active ?? []),
+      ...(props.detailTasks?.waiting ?? []),
+      ...(props.detailTasks?.stopped ?? []),
+    ]
+    if (all.length === 0) {
+      return []
+    }
+
+    const taskMap = new Map<string, Task>()
+    const incomingGids: string[] = []
+    for (const t of all) {
+      if (t.gid) {
+        taskMap.set(t.gid, t)
+        incomingGids.push(t.gid)
+      }
+    }
+
+    // Retain previously anchored GIDs that still exist in the incoming lists
+    const incomingSet = new Set(incomingGids)
+    const nextAnchor = groupDetailAnchorGids.filter(gid => incomingSet.has(gid))
+
+    // Append newly discovered GIDs in their initial arrival order
+    const anchoredSet = new Set(nextAnchor)
+    for (const gid of incomingGids) {
+      if (!anchoredSet.has(gid)) {
+        nextAnchor.push(gid)
+        anchoredSet.add(gid)
+      }
+    }
+
+    groupDetailAnchorGids = nextAnchor
+
+    // Return tasks strictly ordered by the stable anchor
+    const result: Task[] = []
+    for (const gid of nextAnchor) {
+      const task = taskMap.get(gid)
+      if (task) result.push(task)
+    }
+    return result
   })
 
   type DisplayEntry = InlineTaskListEntry & { size: number }

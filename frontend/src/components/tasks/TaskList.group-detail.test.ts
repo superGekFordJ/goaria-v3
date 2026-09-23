@@ -311,4 +311,93 @@ describe('TaskList group detail mode', () => {
     expect(storeMocks.taskStore.fetchStoppedTasks).not.toHaveBeenCalled()
     wrapper.unmount()
   })
+
+  it('preserves stable first-seen anchored order across member state transitions', async () => {
+    // Initial state: all 3 tasks in waiting in natural order 1, 2, 3
+    const wrapper = mountList({
+      mode: 'group-detail',
+      detailKey: 'dg-bundle',
+      detailTasks: {
+        active: [],
+        waiting: [task('gid-1', 'waiting'), task('gid-2', 'waiting'), task('gid-3', 'waiting')],
+        stopped: [],
+      },
+    })
+
+    const initialGids = wrapper
+      .findAll('.task-card-stub')
+      .map(node => node.attributes('data-card-gid'))
+    expect(initialGids).toEqual(['gid-1', 'gid-2', 'gid-3'])
+
+    // State transition 1: gid-2 probes first and becomes active, while gid-1 & gid-3 are still waiting
+    await wrapper.setProps({
+      detailTasks: {
+        active: [task('gid-2', 'active')],
+        waiting: [task('gid-1', 'waiting'), task('gid-3', 'waiting')],
+        stopped: [],
+      },
+    })
+    await nextTick()
+
+    // Without first-seen anchor, gid-2 would jump to the top because active is concatenated before waiting.
+    // With first-seen anchor, order is preserved strictly as 1, 2, 3.
+    const transition1Gids = wrapper
+      .findAll('.task-card-stub')
+      .map(node => node.attributes('data-card-gid'))
+    expect(transition1Gids).toEqual(['gid-1', 'gid-2', 'gid-3'])
+
+    // State transition 2: gid-1 completes (stopped), gid-3 becomes active, gid-2 stays active
+    await wrapper.setProps({
+      detailTasks: {
+        active: [task('gid-2', 'active'), task('gid-3', 'active')],
+        waiting: [],
+        stopped: [task('gid-1', 'complete')],
+      },
+    })
+    await nextTick()
+
+    const transition2Gids = wrapper
+      .findAll('.task-card-stub')
+      .map(node => node.attributes('data-card-gid'))
+    expect(transition2Gids).toEqual(['gid-1', 'gid-2', 'gid-3'])
+
+    // Transient empty: detailTasks temporarily clears during network re-fetch
+    await wrapper.setProps({
+      detailTasks: { active: [], waiting: [], stopped: [] },
+    })
+    await nextTick()
+    expect(wrapper.findAll('.task-card-stub')).toHaveLength(0)
+
+    // Repopulate: anchor is retained for the same group, order self-heals
+    await wrapper.setProps({
+      detailTasks: {
+        active: [task('gid-3', 'active')],
+        waiting: [task('gid-1', 'waiting'), task('gid-2', 'waiting')],
+        stopped: [],
+      },
+    })
+    await nextTick()
+    const repopulatedGids = wrapper
+      .findAll('.task-card-stub')
+      .map(node => node.attributes('data-card-gid'))
+    expect(repopulatedGids).toEqual(['gid-1', 'gid-2', 'gid-3'])
+
+    // Group switch: switching to a new group resets the anchor and establishes new first-seen order
+    await wrapper.setProps({
+      detailKey: 'dg-new-bundle',
+      detailTasks: {
+        active: [task('gid-b', 'active')],
+        waiting: [task('gid-a', 'waiting')],
+        stopped: [],
+      },
+    })
+    await nextTick()
+
+    const newGroupGids = wrapper
+      .findAll('.task-card-stub')
+      .map(node => node.attributes('data-card-gid'))
+    expect(newGroupGids).toEqual(['gid-b', 'gid-a'])
+
+    wrapper.unmount()
+  })
 })
