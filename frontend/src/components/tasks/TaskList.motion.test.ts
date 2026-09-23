@@ -224,4 +224,19 @@ describe('TaskList virtualized row motion', () => {
 
     wrapper.unmount()
   })
+
+  it('computes structured slot sizes including explicit 16px gap', () => {
+    const tasks = createTasks(16)
+    const wrapper = mountTaskList(tasks)
+
+    const scroller = wrapper.findComponent({ name: 'RecycleScroller' })
+    expect(scroller.exists()).toBe(true)
+
+    const items = scroller.props('items') as Array<{ size: number }>
+    expect(items).toHaveLength(16)
+    // active task: 168 (base) + 16 (gap) = 184
+    expect(items[0].size).toBe(184)
+
+    wrapper.unmount()
+  })
 })

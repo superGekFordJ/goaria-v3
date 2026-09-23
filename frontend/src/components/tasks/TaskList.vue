@@ -118,6 +118,14 @@
 
   type DisplayEntry = InlineTaskListEntry & { size: number }
 
+  // Structured row gap and card base height constants (aligned with Tailwind gap-4 / 16px)
+  const TASK_LIST_GAP = 16
+  const TASK_CARD_COMPLETED_BASE_HEIGHT = 138 // completed / error / unknown
+  const TASK_CARD_INACTIVE_BASE_HEIGHT = 162 // paused / waiting (has progress bar, no speed/ETA)
+  const TASK_CARD_ACTIVE_BASE_HEIGHT = 168 // active (has progress bar + speed + ETA)
+  const DOWNLOAD_GROUP_CARD_COMPLETE_BASE_HEIGHT = 234
+  const DOWNLOAD_GROUP_CARD_ACTIVE_BASE_HEIGHT = 252
+
   const displayEntries = computed<DisplayEntry[]>(() => {
     let rawEntries: InlineTaskListEntry[]
     if (isGroupDetailMode.value) {
@@ -143,21 +151,23 @@
     }
 
     return rawEntries.map(entry => {
-      let size = 150 // completed / error / unknown tasks size
+      let baseHeight = TASK_CARD_COMPLETED_BASE_HEIGHT
       if (entry.type === 'group') {
         const isComplete = entry.item.type === 'backend' && entry.item.card.status === 'complete'
-        size = isComplete ? 250 : 268 // DownloadGroupCard size
+        baseHeight = isComplete
+          ? DOWNLOAD_GROUP_CARD_COMPLETE_BASE_HEIGHT
+          : DOWNLOAD_GROUP_CARD_ACTIVE_BASE_HEIGHT
       } else {
         const status = entry.task.status
         if (status === 'active') {
-          size = 198 // TaskCard with active progress size (has speed/ETA)
+          baseHeight = TASK_CARD_ACTIVE_BASE_HEIGHT
         } else if (status === 'paused' || status === 'waiting') {
-          size = 180 // TaskCard with inactive progress size (no speed/ETA)
+          baseHeight = TASK_CARD_INACTIVE_BASE_HEIGHT
         }
       }
       return {
         ...entry,
-        size,
+        size: baseHeight + TASK_LIST_GAP,
       }
     })
   })
@@ -291,19 +301,18 @@
     return true
   }
 
-  // Downloads-only: same key+size sequence is a new array, not a reorder.
+  // Downloads & Group-Detail: same key+size sequence is a new array, not a reorder.
   // A second capture/play on that identity replays Invert on every yielder
   // (viewport-bottom looks like a late drop; the enterer clips above the port).
   // Stopped tab is excluded so error-tag header growth still FLIPs.
-  function isDownloadsIdentitySkip(
+  function isIdentitySkip(
     next: DisplayEntry[] | undefined,
     prev: DisplayEntry[] | undefined,
   ): boolean {
-    return (
-      !isGroupDetailMode.value &&
-      uiStore.activeTab === 'downloads' &&
-      sameDisplayIdentity(next, prev)
-    )
+    if (isGroupDetailMode.value) {
+      return sameDisplayIdentity(next, prev)
+    }
+    return uiStore.activeTab === 'downloads' && sameDisplayIdentity(next, prev)
   }
 
   // Pre-watcher captures First rects before Vue patches DOM
@@ -311,7 +320,7 @@
     displayEntries,
     (newList, oldList) => {
       if (!isPanelActive.value) return
-      if (isDownloadsIdentitySkip(newList, oldList)) return
+      if (isIdentitySkip(newList, oldList)) return
       capture(oldList?.map(entry => entry.key))
     },
     { flush: 'pre' },
@@ -374,7 +383,7 @@
       if (!oldList || oldList.length === 0) return
       // Reduced effects: snap to new positions instantly, no FLIP transition.
       if (uiStore.effectsTier === 'reduced') return
-      if (isDownloadsIdentitySkip(newList, oldList)) return
+      if (isIdentitySkip(newList, oldList)) return
       nextTick(() => {
         play()
       })
@@ -780,6 +789,13 @@
   /* Virtual scroller customization */
   :deep(.vue-recycle-scroller__item-wrapper) {
     overflow: visible !important;
+  }
+
+  /* Virtual scroller row wrapper: explicit bottom padding provides the 16px (1rem) gap
+     matching the non-virtual flex-col gap-4 spacing without card overlap or collapse. */
+  .task-list-virtual-row {
+    padding-bottom: 1rem;
+    box-sizing: border-box;
   }
 
   /* Sticky header for virtual scroller — applied to the slot wrapper div itself */
