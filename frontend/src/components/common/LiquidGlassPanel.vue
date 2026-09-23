@@ -83,11 +83,7 @@
         ></div>
       </div>
       <!-- Non-active interactive: micro-glass hover reveal (zero layer-demotion, anti-flicker) -->
-      <div
-        v-else-if="isInteractive"
-        class="glass-hover-surface -z-10"
-        :class="[radius]"
-      ></div>
+      <div v-else-if="isInteractive" class="glass-hover-surface -z-10" :class="[radius]"></div>
 
       <!-- Layer 2: Specular Bevel — inner sheen + inset shadows + outer drop shadow -->
       <div
@@ -121,11 +117,7 @@
               }
         "
       ></div>
-      <div
-        v-else-if="isInteractive"
-        class="glass-hover-surface -z-10"
-        :class="[radius]"
-      ></div>
+      <div v-else-if="isInteractive" class="glass-hover-surface -z-10" :class="[radius]"></div>
       <div
         v-if="active"
         class="absolute inset-0 z-0 pointer-events-none transition-all duration-300 lg-bevel"
