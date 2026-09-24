@@ -11,6 +11,7 @@
     SURGE_TASK_PROGRESS_CONFIG,
     useSmoothProgress,
   } from '../../composables/useSmoothProgress'
+  import { useTaskEta } from '../../composables/useTaskEta'
   import { isInsufficientDiskSpaceFailure } from '../../utils/diskSpaceError'
 
   const { t } = useI18n()
@@ -35,6 +36,12 @@
     const parsed = Number(value)
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
   }
+
+  // Check task statuses
+  const isActive = computed(() => props.task.status === 'active')
+  const isPaused = computed(() => props.task.status === 'paused' || props.task.status === 'waiting')
+  const isCompleted = computed(() => props.task.status === 'complete')
+  const isError = computed(() => props.task.status === 'error')
 
   const hasKnownTotal = computed(() => {
     const total = Number(props.task.totalLength)
@@ -135,20 +142,14 @@
     return units[clampedI] + '/s'
   }
 
-  // Calculate ETA
-  const estimatedTime = computed(() => {
-    if (!hasKnownTotal.value) return '--'
-    const speed = taskNumbers.value.speed
-    const remaining = taskNumbers.value.total - taskNumbers.value.downloaded
-    if (speed <= 0 || remaining <= 0 || !Number.isFinite(remaining)) return '--'
-
-    const seconds = Math.floor(remaining / speed)
-    if (!Number.isFinite(seconds) || seconds < 0) return '--'
-    if (seconds < 60) return `${seconds}s`
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
-    const hours = Math.floor(seconds / 3600)
-    const mins = Math.floor((seconds % 3600) / 60)
-    return `${hours}h ${mins}m`
+  // Calculate ETA (5s sliding window average for Surge; 1s direct tick for Aria2)
+  const estimatedTime = useTaskEta({
+    isSurge: isSurgeTask,
+    hasKnownTotal,
+    totalBytes: computed(() => taskNumbers.value.total),
+    downloadedBytes: computed(() => taskNumbers.value.downloaded),
+    rawSpeed: computed(() => taskNumbers.value.speed),
+    isActive,
   })
 
   // Concurrency threads count (real runtime telemetry only, no fake fallbacks)
@@ -211,11 +212,6 @@
     }
   })
 
-  // Check if task is active/downloading
-  const isActive = computed(() => props.task.status === 'active')
-  const isPaused = computed(() => props.task.status === 'paused' || props.task.status === 'waiting')
-  const isCompleted = computed(() => props.task.status === 'complete')
-  const isError = computed(() => props.task.status === 'error')
 
   // Status-based card glow class
   const cardGlowClass = computed(() => {
