@@ -151,25 +151,32 @@
       color-mix(in srgb, var(--neon-blue) 10%, transparent);
 }
 
-/* === Etched Micro-Glass Panel (Recessed Groove & Matte Grain) === */
+/* === Precision Keyline Crystal Panel (精密 1px 结构骨架面板 / 零黑雾纯净态) === */
 .etched-panel {
   position: relative;
   isolation: isolate;
   border-radius: var(--radius-squircle-lg);
-  background: color-mix(in srgb, var(--app-bg) 60%, transparent);
-  border: 1px solid rgba(0, 0, 0, 0.45);
-  border-bottom-color: rgba(255, 255, 255, 0.08);
-  border-right-color: rgba(255, 255, 255, 0.08);
+  /* 清澈深邃的黑曜微渐变：不发白发脏，也绝不死黑遮光，自然承托深色输入框 */
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.32) 0%,
+    rgba(0, 0, 0, 0.18) 100%
+  );
+  /* 1px 收敛中层结构线 (Subordinated Keylines)：保持刀刻锋利，避免多层嵌套线条噪点 */
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  border-top-color: rgba(0, 0, 0, 0.52);
+  border-bottom-color: rgba(255, 255, 255, 0.07);
+  /* 0 模糊半径精密物理微光线：适度收敛暗切与反光对比度，画面更加沉静 */
   box-shadow:
-    inset 1px 1px 3px 0 rgba(0, 0, 0, 0.55),
-    inset -1px -1px 2px 0 rgba(255, 255, 255, 0.04),
+    inset 0 1px 0 0 rgba(0, 0, 0, 0.48),
+    inset 0 -1px 0 0 rgba(255, 255, 255, 0.035),
     0 1px 0 0 rgba(255, 255, 255, 0.03);
   transition:
     border-color 0.25s ease,
     box-shadow 0.25s ease;
 }
 
-/* Local noise overlay simulating physical micro-pitted matte/frosted texture */
+/* Local noise overlay simulating physical micro-pitted matte/frosted texture (纳米微磨砂颗粒) */
 .etched-panel::before {
   content: '';
   position: absolute;
@@ -177,47 +184,32 @@
   border-radius: inherit;
   pointer-events: none;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
-  opacity: 0.025; /* Very subtle matte grain in dark mode */
+  opacity: 0.015; /* 极细微米磨砂质感 */
   mix-blend-mode: overlay;
   z-index: -1;
 }
 
-.etched-panel:hover {
-  border-color: rgba(0, 0, 0, 0.55);
-  border-bottom-color: color-mix(in srgb, var(--skin-surface-border) 40%, transparent);
-  border-right-color: color-mix(in srgb, var(--skin-surface-border) 40%, transparent);
-  box-shadow:
-    inset 1px 1px 4px 0 rgba(0, 0, 0, 0.65),
-    inset -1px -1px 3px 0 color-mix(in srgb, var(--skin-surface-border) 25%, transparent),
-    0 1px 2px 0 color-mix(in srgb, var(--skin-ambient-glow) 15%, transparent);
-}
-
-/* Ceramic (Light Theme) Overrides */
+/* Ceramic (Light Theme) Inset Micro-Etching - 白瓷物理微雕槽 */
 :root[data-theme='light'] .etched-panel {
-  background: color-mix(in srgb, var(--app-bg) 70%, transparent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--app-bg) 65%, rgba(0, 0, 0, 0.04)) 0%,
+    color-mix(in srgb, var(--app-bg) 50%, rgba(0, 0, 0, 0.015)) 100%
+  );
   border: 1px solid rgba(0, 0, 0, 0.06);
-  border-bottom-color: rgba(255, 255, 255, 0.85);
-  border-right-color: rgba(255, 255, 255, 0.85);
+  border-top-color: rgba(0, 0, 0, 0.11);
+  border-bottom-color: rgba(255, 255, 255, 0.9);
   box-shadow:
-    inset 1px 1px 3px 0 rgba(0, 0, 0, 0.05),
-    inset -1px -1px 2px 0 rgba(255, 255, 255, 0.7),
-    0 1px 1px 0 rgba(255, 255, 255, 0.6);
+    inset 0 1px 0 0 rgba(0, 0, 0, 0.06),
+    inset 0 -1px 0 0 rgba(255, 255, 255, 0.75),
+    0 1px 0 0 rgba(255, 255, 255, 0.6);
 }
 
 :root[data-theme='light'] .etched-panel::before {
-  opacity: 0.04; /* Slightly higher opacity in light mode for visible grain */
+  opacity: 0.035;
   mix-blend-mode: multiply;
 }
 
-:root[data-theme='light'] .etched-panel:hover {
-  border-color: rgba(0, 0, 0, 0.08);
-  border-bottom-color: color-mix(in srgb, var(--skin-surface-border) 80%, transparent);
-  border-right-color: color-mix(in srgb, var(--skin-surface-border) 80%, transparent);
-  box-shadow:
-    inset 1px 1px 4px 0 rgba(0, 0, 0, 0.08),
-    inset -1px -1px 3px 0 color-mix(in srgb, var(--skin-surface-border) 50%, transparent),
-    0 1px 2px 0 color-mix(in srgb, var(--skin-ambient-glow) 20%, transparent);
-}
 
 /* === Solid Glass Panel / High-Opacity Popups (Dropdowns, Tooltips) === */
 .glass-panel-solid {
@@ -408,7 +400,7 @@
   );
 }
 
-/* === Static Glass Panel (Frosted Tray / Data Dock Aesthetic) === */
+/* === Static Glass Panel (Frosted Tray / Ambient Integrated Telemetry) === */
 .static-glass-backdrop {
   background: var(--app-static-glass-bg);
 }
@@ -416,44 +408,41 @@
 .static-glass-edge {
   box-shadow:
     inset 0 1px 0 0 rgba(255, 255, 255, 0.8),
-    inset 0 0 0 1px rgba(0, 0, 0, 0.05),
-    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.04),
-    0 2px 6px -1px rgba(0, 0, 0, 0.05);
+    inset 0 0 0 1px rgba(0, 0, 0, 0.04),
+    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.03),
+    0 2px 6px -1px rgba(0, 0, 0, 0.04);
 }
 
 :root:not([data-theme='light']) .static-glass-edge {
   box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.14),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.04),
-    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.4),
-    0 2px 8px -2px rgba(0, 0, 0, 0.4);
+    inset 0 0 0 1px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.15),
+    0 2px 8px 0 rgba(0, 0, 0, 0.3);
 }
 
 /* Static Glass: Window Transparency Mode (Acrylic / Mica / Tabbed)
- * Eliminates milky-white wash in light mode and heavy dark blackout in dark mode.
- * Matches the crystal optical transparency of the sidebar navigation elements. */
+ * High-transparency integration: seamless environmental fusion without harsh cutout tiles. */
 :root[data-window-transparency='acrylic'] .static-glass-backdrop,
 :root[data-window-transparency='mica'] .static-glass-backdrop,
 :root[data-window-transparency='tabbed'] .static-glass-backdrop {
-  background: rgba(255, 255, 255, 0.035) !important;
-  backdrop-filter: saturate(130%) blur(max(var(--glass-blur), 8px)) !important;
-  -webkit-backdrop-filter: saturate(130%) blur(max(var(--glass-blur), 8px)) !important;
+  background: rgba(0, 0, 0, calc(var(--glass-opacity, 0.3571) * 0.2)) !important;
+  backdrop-filter: saturate(125%) blur(max(var(--glass-blur), 8px)) !important;
+  -webkit-backdrop-filter: saturate(125%) blur(max(var(--glass-blur), 8px)) !important;
 }
 
 :root[data-window-transparency='acrylic'] .static-glass-edge,
 :root[data-window-transparency='mica'] .static-glass-edge,
 :root[data-window-transparency='tabbed'] .static-glass-edge {
   box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.14),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.04),
-    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.3),
-    0 2px 6px -1px rgba(0, 0, 0, 0.25) !important;
+    inset 0 0 0 1px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.15),
+    0 2px 8px 0 rgba(0, 0, 0, 0.3) !important;
 }
 
 :root[data-window-transparency='acrylic'][data-theme='light'] .static-glass-backdrop,
 :root[data-window-transparency='mica'][data-theme='light'] .static-glass-backdrop,
 :root[data-window-transparency='tabbed'][data-theme='light'] .static-glass-backdrop {
-  background: rgba(0, 0, 0, 0.03) !important;
+  background: rgba(0, 0, 0, 0.025) !important;
   backdrop-filter: saturate(130%) blur(max(var(--glass-blur), 8px)) !important;
   -webkit-backdrop-filter: saturate(130%) blur(max(var(--glass-blur), 8px)) !important;
 }
@@ -462,10 +451,10 @@
 :root[data-window-transparency='mica'][data-theme='light'] .static-glass-edge,
 :root[data-window-transparency='tabbed'][data-theme='light'] .static-glass-edge {
   box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.9),
-    inset 0 0 0 1px rgba(0, 0, 0, 0.07),
-    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.04),
-    0 2px 6px -1px rgba(0, 0, 0, 0.05) !important;
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.85),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.05),
+    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.03),
+    0 2px 6px -1px rgba(0, 0, 0, 0.04) !important;
 }
 
 /* Legibility enhancements for sidebar caption and status text on transparent background */
