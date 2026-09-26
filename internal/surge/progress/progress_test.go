@@ -392,7 +392,7 @@ func TestDownloadProgress_SessionResetThenInitBitmapFollowsNewSize(t *testing.T)
 	}
 }
 
-// FORK-PATCH: verify bitmap trust restores Completed chunks covered by
+// Verify bitmap trust restores Completed chunks covered by
 // remainingTasks (hedged bytes re-queued after KillWorker).
 func TestRecalculateProgress_BitmapTrust_RestoresHedgedChunks(t *testing.T) {
 	totalSize := int64(80)
@@ -431,7 +431,7 @@ func TestRecalculateProgress_BitmapTrust_RestoresHedgedChunks(t *testing.T) {
 	}
 }
 
-// FORK-PATCH: verify bitmap trust is a no-op for normal resume (remaining
+// Verify bitmap trust is a no-op for normal resume (remaining
 // tasks don't cover completed chunks).
 func TestRecalculateProgress_BitmapTrust_NoOpForNonHedge(t *testing.T) {
 	totalSize := int64(80)
@@ -498,7 +498,7 @@ func TestGetProgress_NoClampWhenVPUnderTotal(t *testing.T) {
 	}
 }
 
-// FORK-PATCH: verify RecalculateProgress trusts the bitmap so re-queued
+// Verify RecalculateProgress trusts the bitmap so re-queued
 // hedged chunks don't undershoot VP (which would let a re-download overshoot).
 func TestRecalculateProgress_BitmapTrust_PreventsOvershootOnReDownload(t *testing.T) {
 	totalSize := int64(80)

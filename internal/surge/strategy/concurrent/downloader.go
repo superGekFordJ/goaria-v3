@@ -856,7 +856,7 @@ func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize i
 			if len(savedState.ChunkBitmap) > 0 && savedState.ActualChunkSize > 0 {
 				d.State.RestoreBitmap(savedState.ChunkBitmap, savedState.ActualChunkSize)
 				d.State.RecalculateProgress(savedState.Tasks)
-				// FORK-PATCH: Unconditionally trust bitmap-recalculated VP.
+				// Unconditionally trust bitmap-recalculated VP.
 				// savedState.Downloaded may be inflated by task-loss paths;
 				// overriding VP with it causes false completion. Restore
 				// Downloaded to max(saved, VP) for counter consistency —
@@ -869,12 +869,12 @@ func (d *ConcurrentDownloader) setupTasks(destPath string, fileSize, chunkSize i
 				}
 				utils.Debug("Restored chunk map: size %d", savedState.ActualChunkSize)
 			} else {
-				// FORK-PATCH: Legacy .surge files without bitmap — keep
+				// Legacy .surge files without bitmap — keep
 				// historical behavior: VP = Downloaded = savedState.Downloaded.
 				d.State.Bytes.VerifiedProgress.Store(savedState.Downloaded)
 				d.State.Bytes.Downloaded.Store(savedState.Downloaded)
 			}
-			// FORK-PATCH: Sync session start after VP is finalized in both
+			// Sync session start after VP is finalized in both
 			// branches so SessionStartBytes captures the correct VP.
 			d.State.SyncSessionStart()
 		}
@@ -1025,16 +1025,16 @@ func (d *ConcurrentDownloader) runCompletionMonitor(ctx context.Context, queue *
 			queue.Close()
 			return
 		case <-ticker.C:
-			// FORK-PATCH: When all bytes are accounted for, force-exit any
+			// When all bytes are accounted for, force-exit any
 			// workers still stuck in resp.Body.Read() (tarpit servers that
 			// hold/trickle connections after partial data). Closing the queue
 			// only unblocks queue.Pop() waiters; stuck readers need taskCtx
 			// cancellation. Requeued hedged tasks may leave queue.Len() > 0,
 			// so byte-count completion must NOT gate on an empty queue.
-			// FORK-PATCH: use VerifiedProgress (chunk-level dedup) instead of
+			// Use VerifiedProgress (chunk-level dedup) instead of
 			// Downloaded, which can overcount when SharedMaxOffset is nil.
 			if d.State != nil && d.State.Bytes.VerifiedProgress.Load() >= fileSize {
-				// FORK-PATCH: Cancel all active workers under activeMu to close
+				// Cancel all active workers under activeMu to close
 				// the snapshot gap. Holding the lock during cancel is safe:
 				// Cancel() is a non-blocking channel close. The worker-side VP
 				// re-check under the same lock ensures workers that haven't
@@ -1047,7 +1047,7 @@ func (d *ConcurrentDownloader) runCompletionMonitor(ctx context.Context, queue *
 				}
 				d.activeMu.Unlock()
 				queue.Close()
-				// FORK-PATCH: drain remaining queued tasks — Close() only sets
+				// Drain remaining queued tasks — Close() only sets
 				// done=true + Broadcast; Pop() still returns already-queued tasks.
 				queue.DrainRemaining()
 				return
@@ -1062,7 +1062,7 @@ func (d *ConcurrentDownloader) runCompletionMonitor(ctx context.Context, queue *
 				effectiveConns = numConns
 			}
 			isDone := queue.Len() == 0 && int(queue.IdleWorkers()) == effectiveConns
-			// FORK-PATCH: VP guard — prevent silent corruption. When tasks are
+			// VP guard — prevent silent corruption. When tasks are
 			// lost, VP stalls below fileSize but queue is empty and all workers
 			// idle. Without this guard the monitor would return "success" with
 			// incomplete content → zero-fill holes. Converts silent corruption
@@ -1573,7 +1573,7 @@ func (d *ConcurrentDownloader) saveStateSnapshot(destPath string, fileSize int64
 		}
 	}
 	computedDownloaded := fileSize - remainingBytes
-	// FORK-PATCH: Trust the chunk-level dedup counter over the recompute.
+	// Trust the chunk-level dedup counter over the recompute.
 	// remainingBytes can still overstate work when hedged partners share a
 	// pointer (queued-stale duplicates / bitmap already counted bytes), so
 	// the recompute can undercount even though RemainingTask carries

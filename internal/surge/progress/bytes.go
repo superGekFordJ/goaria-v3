@@ -3,7 +3,7 @@ package progress
 import "sync/atomic"
 
 // ByteTracker handles thread-safe lock-free byte counting.
-// FORK-PATCH: cache line padding (64 bytes) to isolate the high-frequency write counter
+// Cache line padding (64 bytes) isolates the high-frequency write counter
 // (Downloaded) from read-mostly counters (VerifiedProgress, TotalSize), eliminating
 // multicore false sharing / MESI cache line bouncing during batch flushes.
 type ByteTracker struct {

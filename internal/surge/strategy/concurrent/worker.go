@@ -58,7 +58,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			return nil
 		}
 
-		// FORK-PATCH: VP guard — if all bytes are already verified on disk,
+		// VP guard — if all bytes are already verified on disk,
 		// skip this task without entering downloadTask(). Returns before
 		// ActiveWorkers.Add(1), so no Add(-1) pairing is needed.
 		if d.State != nil && d.State.Bytes.VerifiedProgress.Load() >= totalSize {
@@ -89,7 +89,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 		activeTask.LastActivity.Store(now.UnixNano())
 
 		d.activeMu.Lock()
-		// FORK-PATCH: Final VP re-check under activeMu before registration.
+		// Final VP re-check under activeMu before registration.
 		// Fail path never inserts; Cancel is assigned per attempt inside the loop.
 		if d.State != nil && d.State.Bytes.VerifiedProgress.Load() >= totalSize {
 			d.activeMu.Unlock()
@@ -659,7 +659,7 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 				newlyWritten = int64(readSoFar)
 			}
 
-			// FORK-PATCH: clamp offset and newlyWritten to the current StopAt together.
+			// Clamp offset and newlyWritten to the current StopAt together.
 			// StealWork may reduce StopAt between the read-loop's stopAt check and this
 			// count point. Clamping offset (not just newlyWritten) keeps CurrentOffset at
 			// the effective completion boundary.
@@ -726,7 +726,7 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 		}
 	}
 
-	// FORK-PATCH: early-EOF guard. A partial-data + io.EOF (n>0) path breaks
+	// Early-EOF guard. A partial-data + io.EOF (n>0) path breaks
 	// out of the read loop with offset < StopAt. Without this guard the task
 	// silently returns nil, dropping undownloaded bytes.
 	if offset < activeTask.StopAt.Load() {
@@ -916,7 +916,7 @@ func (d *ConcurrentDownloader) HedgeWork(queue *TaskQueue) bool {
 func (d *ConcurrentDownloader) resumeOnRetryOffset(task *types.Task, activeTask *ActiveTask) {
 	current := activeTask.CurrentOffset.Load()
 	stopAt := activeTask.StopAt.Load()
-	// FORK-PATCH: unconditionally clamp to StopAt — even when current == task.Offset
+	// Unconditionally clamp to StopAt — even when current == task.Offset
 	// (retry with no progress), task.Length must shrink; otherwise the next retry
 	// resets StopAt back to the original end, resurrecting the stolen range and
 	// causing double-counting.

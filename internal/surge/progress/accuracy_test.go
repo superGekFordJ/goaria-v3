@@ -129,7 +129,7 @@ func TestRestoreBitmap_ShortBitmapRecoversWithoutPanic(t *testing.T) {
 	// Completed → bitmap trust restores it to full despite remaining coverage.
 	state.RecalculateProgress([]types.Task{{Offset: 0, Length: totalSize}})
 
-	// FORK-PATCH: RecalculateProgress trusts the restored bitmap's
+	// RecalculateProgress trusts the restored bitmap's
 	// ChunkCompleted chunks: chunk 0 stays Completed even though a remaining
 	// task covers it (bitmap indicates bytes on disk). Non-verified chunks
 	// are fully subtracted by remaining → Pending.
