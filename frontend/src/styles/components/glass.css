@@ -271,8 +271,8 @@
   );
   box-shadow:
     inset 0 0 0 0.75px rgba(0, 0, 0, 0.26),
-    inset 0 1px 0 rgba(255, 255, 255, 0.8),
-    inset 0 10px 14px -8px rgba(255, 255, 255, 0.18),
+    inset 0 1px 0 rgba(240, 241, 244, 0.8),
+    inset 0 10px 14px -8px rgba(240, 241, 244, 0.18),
     inset 0 -1px 1px rgba(0, 0, 0, 0.1),
     inset 0 -14px 20px -12px rgba(0, 0, 0, 0.08),
     0 2px 4px rgba(0, 0, 0, 0.05),
@@ -312,13 +312,13 @@
 :root[data-theme='light'] .lg-specular {
   background: conic-gradient(
     from 0deg,
-    rgba(255, 255, 255, 0.9) 0deg,
-    rgba(255, 255, 255, 0.18) 65deg,
+    rgba(240, 241, 244, 0.9) 0deg,
+    rgba(240, 241, 244, 0.18) 65deg,
     rgba(0, 0, 0, 0.03) 135deg,
     rgba(0, 0, 0, 0.07) 200deg,
     rgba(0, 0, 0, 0.03) 245deg,
-    rgba(255, 255, 255, 0.45) 280deg,
-    rgba(255, 255, 255, 0.9) 360deg
+    rgba(240, 241, 244, 0.45) 280deg,
+    rgba(240, 241, 244, 0.9) 360deg
   );
 }
 
@@ -332,7 +332,7 @@
 :root[data-theme='light'] .error-filter-tag .lg-bevel {
   background: rgba(0, 0, 0, 0.045);
   box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.95),
+    inset 0 1px 0 0 rgba(240, 241, 244, 0.95),
     inset 0 0 0 1px rgba(0, 0, 0, 0.08),
     inset 0 -1px 1px 0 rgba(0, 0, 0, 0.05),
     0 2px 6px -1px rgba(0, 0, 0, 0.07);
@@ -359,10 +359,39 @@
 :root[data-window-transparency='tabbed'][data-theme='light'] .error-filter-tag .lg-bevel {
   background: rgba(0, 0, 0, 0.035);
   box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.9),
+    inset 0 1px 0 0 rgba(240, 241, 244, 0.75),
     inset 0 0 0 1px rgba(0, 0, 0, 0.07),
-    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.04),
+    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.06),
     0 2px 6px -1px rgba(0, 0, 0, 0.06);
+}
+
+/* On transparent windows the uniform hard top line reads as glare rather than
+ * refraction — soften the tangent and re-enable the directional specular ring.
+ * Narrowed variant of the generic conic below: same 0.5 peak but the hot arc
+ * collapses by ~35deg so the top sparkle reads tight, not smeared, on small pills. */
+:root[data-window-transparency='acrylic'][data-theme='light'] .sidebar-nav-item .lg-specular,
+:root[data-window-transparency='acrylic'][data-theme='light'] .command-capsule .lg-specular,
+:root[data-window-transparency='acrylic'][data-theme='light'] .batch-action-bar .lg-specular,
+:root[data-window-transparency='acrylic'][data-theme='light'] .error-filter-tag .lg-specular,
+:root[data-window-transparency='mica'][data-theme='light'] .sidebar-nav-item .lg-specular,
+:root[data-window-transparency='mica'][data-theme='light'] .command-capsule .lg-specular,
+:root[data-window-transparency='mica'][data-theme='light'] .batch-action-bar .lg-specular,
+:root[data-window-transparency='mica'][data-theme='light'] .error-filter-tag .lg-specular,
+:root[data-window-transparency='tabbed'][data-theme='light'] .sidebar-nav-item .lg-specular,
+:root[data-window-transparency='tabbed'][data-theme='light'] .command-capsule .lg-specular,
+:root[data-window-transparency='tabbed'][data-theme='light'] .batch-action-bar .lg-specular,
+:root[data-window-transparency='tabbed'][data-theme='light'] .error-filter-tag .lg-specular {
+  display: block;
+  background: conic-gradient(
+    from 0deg,
+    rgba(240, 241, 244, 0.5) 0deg,
+    rgba(240, 241, 244, 0.22) 35deg,
+    rgba(240, 241, 244, 0.08) 70deg,
+    rgba(240, 241, 244, 0.2) 135deg,
+    rgba(240, 241, 244, 0.04) 200deg,
+    rgba(240, 241, 244, 0.2) 285deg,
+    rgba(240, 241, 244, 0.5) 360deg
+  );
 }
 
 /* === Window Transparency Overrides (Light Mode) === */
@@ -379,7 +408,7 @@
   );
   box-shadow:
     inset 0 0 0 0.75px rgba(0, 0, 0, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    inset 0 1px 0 rgba(240, 241, 244, 0.35),
     inset 0 -1px 1px rgba(0, 0, 0, 0.1),
     inset 0 -10px 16px -8px rgba(0, 0, 0, 0.06),
     0 2px 4px rgba(0, 0, 0, 0.06),
@@ -391,12 +420,51 @@
 :root[data-window-transparency='tabbed'][data-theme='light'] .lg-specular {
   background: conic-gradient(
     from 0deg,
-    rgba(255, 255, 255, 0.5) 0deg,
-    rgba(255, 255, 255, 0.1) 65deg,
-    rgba(255, 255, 255, 0.22) 135deg,
-    rgba(255, 255, 255, 0.04) 200deg,
-    rgba(255, 255, 255, 0.25) 280deg,
-    rgba(255, 255, 255, 0.5) 360deg
+    rgba(240, 241, 244, 0.5) 0deg,
+    rgba(240, 241, 244, 0.1) 65deg,
+    rgba(240, 241, 244, 0.22) 135deg,
+    rgba(240, 241, 244, 0.04) 200deg,
+    rgba(240, 241, 244, 0.25) 280deg,
+    rgba(240, 241, 244, 0.5) 360deg
+  );
+}
+
+/* === Neon Glass Button — Transparency Light Exemption ===
+ * The anti-milk dimming above exists for clear glass over an OS backdrop, but
+ * bg-neon-glass carries a 60% colored gradient fill — white sheen on a colored
+ * base cannot go milky, so the button keeps the full opaque-light material. */
+:root[data-window-transparency='acrylic'][data-theme='light'] .btn-neon-glass .lg-bevel,
+:root[data-window-transparency='mica'][data-theme='light'] .btn-neon-glass .lg-bevel,
+:root[data-window-transparency='tabbed'][data-theme='light'] .btn-neon-glass .lg-bevel {
+  background: linear-gradient(
+    180deg,
+    rgba(240, 241, 244, 0.5) 0%,
+    rgba(240, 241, 244, 0) 34%,
+    rgba(240, 241, 244, 0) 76%,
+    rgba(240, 241, 244, 0.3) 100%
+  );
+  box-shadow:
+    inset 0 0 0 0.75px rgba(0, 0, 0, 0.26),
+    inset 0 1px 0 rgba(240, 241, 244, 0.8),
+    inset 0 10px 14px -8px rgba(240, 241, 244, 0.18),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.1),
+    inset 0 -14px 20px -12px rgba(0, 0, 0, 0.08),
+    0 2px 4px rgba(0, 0, 0, 0.05),
+    0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+:root[data-window-transparency='acrylic'][data-theme='light'] .btn-neon-glass .lg-specular,
+:root[data-window-transparency='mica'][data-theme='light'] .btn-neon-glass .lg-specular,
+:root[data-window-transparency='tabbed'][data-theme='light'] .btn-neon-glass .lg-specular {
+  background: conic-gradient(
+    from 0deg,
+    rgba(240, 241, 244, 0.9) 0deg,
+    rgba(240, 241, 244, 0.18) 65deg,
+    rgba(0, 0, 0, 0.03) 135deg,
+    rgba(0, 0, 0, 0.07) 200deg,
+    rgba(0, 0, 0, 0.03) 245deg,
+    rgba(240, 241, 244, 0.45) 280deg,
+    rgba(240, 241, 244, 0.9) 360deg
   );
 }
 
@@ -407,7 +475,7 @@
 
 .static-glass-edge {
   box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.8),
+    inset 0 1px 0 0 rgba(240, 241, 244, 0.8),
     inset 0 0 0 1px rgba(0, 0, 0, 0.04),
     inset 0 -1px 1px 0 rgba(0, 0, 0, 0.03),
     0 2px 6px -1px rgba(0, 0, 0, 0.04);
@@ -451,9 +519,9 @@
 :root[data-window-transparency='mica'][data-theme='light'] .static-glass-edge,
 :root[data-window-transparency='tabbed'][data-theme='light'] .static-glass-edge {
   box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.85),
+    inset 0 1px 0 0 rgba(240, 241, 244, 0.7),
     inset 0 0 0 1px rgba(0, 0, 0, 0.05),
-    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.03),
+    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.05),
     0 2px 6px -1px rgba(0, 0, 0, 0.04) !important;
 }
 
@@ -521,12 +589,38 @@
 }
 
 /* 3. Light mode (The Ceramic):
- * Crisp ceramic rim + ambient lift shadow. Works universally well on both solid and transparent modes. */
+ * Crisp ceramic rim + ambient lift shadow for solid/opaque windows. */
 :root[data-theme='light'] .group\/liquid:hover .glass-hover-surface,
 :root[data-theme='light'] .group:hover .glass-hover-surface {
   background-color: rgba(0, 0, 0, 0.04);
   box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.85),
+    inset 0 1px 0 0 rgba(240, 241, 244, 0.85),
     inset 0 0 0 1px rgba(0, 0, 0, 0.06),
     0 1px 2px 0 rgba(0, 0, 0, 0.04);
+}
+
+/* 4. Light mode - Window Transparency Overrides (Acrylic / Mica / Tabbed):
+ * The ceramic 0.85 uniform tangent glares over an OS backdrop — soften it to
+ * match the resting capsule edge and carry the lift with a deeper ambient tint. */
+:root[data-window-transparency='acrylic'][data-theme='light']
+  .group\/liquid:hover
+  .glass-hover-surface,
+:root[data-window-transparency='acrylic'][data-theme='light']
+  .group:hover
+  .glass-hover-surface,
+:root[data-window-transparency='mica'][data-theme='light']
+  .group\/liquid:hover
+  .glass-hover-surface,
+:root[data-window-transparency='mica'][data-theme='light'] .group:hover .glass-hover-surface,
+:root[data-window-transparency='tabbed'][data-theme='light']
+  .group\/liquid:hover
+  .glass-hover-surface,
+:root[data-window-transparency='tabbed'][data-theme='light']
+  .group:hover
+  .glass-hover-surface {
+  background-color: rgba(0, 0, 0, 0.045);
+  box-shadow:
+    inset 0 1px 0 0 rgba(240, 241, 244, 0.65),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.05),
+    0 2px 4px -1px rgba(0, 0, 0, 0.05);
 }
