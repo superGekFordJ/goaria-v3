@@ -187,6 +187,51 @@ func TestScheduler_Pause_NilState(t *testing.T) {
 	}
 }
 
+func TestScheduler_Pause_QueuedDownload_RemovesItBeforeStart(t *testing.T) {
+	state := progress.New("queued-id", 1000)
+	state.Bytes.VerifiedProgress.Store(321)
+	state.SetRateLimit(2048, true)
+	pool := &Scheduler{
+		downloads:        make(map[string]*activeDownload),
+		queued:           make(map[string]*queuedTask),
+		downloadLimiters: make(map[string]*transport.RateLimiter),
+	}
+	pool.taskCond = sync.NewCond(&pool.mu)
+	pool.queued["queued-id"] = &queuedTask{cfg: types.DownloadRecord{
+		ID:            "queued-id",
+		ProgressState: state,
+	}}
+	pool.queueOrder = []string{"queued-id"}
+	pool.wg.Add(1)
+
+	result := pool.Pause("queued-id")
+	if !result.Found || result.QueuedConfig == nil {
+		t.Fatalf("Pause() = %+v, want queued download to be paused", result)
+	}
+	if result.QueuedConfig.Downloaded != 321 || result.QueuedConfig.RateLimit != 2048 || !result.QueuedConfig.RateLimitSet {
+		t.Fatalf("queued metadata = %+v, want downloaded=321 rate=2048 explicit=true", result.QueuedConfig)
+	}
+
+	pool.mu.RLock()
+	_, queued := pool.queued["queued-id"]
+	queueOrder := append([]string(nil), pool.queueOrder...)
+	pool.mu.RUnlock()
+	if queued || len(queueOrder) != 0 {
+		t.Fatalf("queued state remains after pause: queued=%v queueOrder=%v", queued, queueOrder)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		pool.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Pause did not balance the queued task wait group")
+	}
+}
+
 func TestScheduler_PauseAll_NoDownloads(t *testing.T) {
 	ch := make(chan types.DownloadEvent, 10)
 	pool := New(ch, 3)
@@ -1385,8 +1430,8 @@ func TestScheduler_PauseAtVerified_EndgameMatrix(t *testing.T) {
 			}
 
 			res := pool.Pause("guard-test")
-			if res != tc.wantReturn {
-				t.Errorf("Pause() = %v, want %v", res, tc.wantReturn)
+			if res.Found != tc.wantReturn {
+				t.Errorf("Pause() = %v, want %v", res.Found, tc.wantReturn)
 			}
 			if canceled != tc.wantCanceled {
 				t.Errorf("canceled = %v, want %v", canceled, tc.wantCanceled)
@@ -1592,7 +1637,7 @@ func TestSchedulerRetryNotRunnableBeforeRetryAt(t *testing.T) {
 		pool.mu.Unlock()
 	})
 
-	gotID := make(chan string, 1)
+	gotID := make(chan *queuedTask, 1)
 	go func() {
 		gotID <- pool.waitForTask()
 	}()
@@ -1600,7 +1645,7 @@ func TestSchedulerRetryNotRunnableBeforeRetryAt(t *testing.T) {
 	// At 40ms (before retryAt), task should NOT be popped yet
 	select {
 	case res := <-gotID:
-		t.Fatalf("task %s was popped before retryAt elapsed", res)
+		t.Fatalf("task %v was popped before retryAt elapsed", res)
 	case <-time.After(40 * time.Millisecond):
 		// Expected: still waiting
 	}
@@ -1608,8 +1653,8 @@ func TestSchedulerRetryNotRunnableBeforeRetryAt(t *testing.T) {
 	// Wait for retryAt to pass (after 250ms total)
 	select {
 	case res := <-gotID:
-		if res != id {
-			t.Fatalf("got task ID %s, want %s", res, id)
+		if res == nil || res.cfg.ID != id {
+			t.Fatalf("got task %v, want %s", res, id)
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("timed out waiting for delayed task to become runnable after retryAt")
@@ -1714,7 +1759,7 @@ func TestSchedulerGracefulShutdownDisarmsRetryTimer(t *testing.T) {
 	pool.wg.Add(1)
 	pool.mu.Unlock()
 
-	waited := make(chan string, 1)
+	waited := make(chan *queuedTask, 1)
 	go func() { waited <- pool.waitForTask() }()
 
 	// Wait until the scan has actually armed the timer.
@@ -1743,7 +1788,225 @@ func TestSchedulerGracefulShutdownDisarmsRetryTimer(t *testing.T) {
 		t.Fatal("GracefulShutdown hung with an armed retry timer")
 	}
 
-	if got := <-waited; got != "" {
-		t.Fatalf("waitForTask returned %q after shutdown, want \"\"", got)
+	if got := <-waited; got != nil {
+		t.Fatalf("waitForTask returned %v after shutdown, want nil", got)
+	}
+}
+
+// Pickup ABA: a worker that claimed qt1 but has not registered it yet must not
+// adopt a same-ID replacement (qt2) queued in between; it settles qt1's wait
+// group and lets a fresh pickup own qt2.
+func TestScheduler_PickupABA_PauseAddSameID(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 16)
+	pool := New(ch, 1)
+
+	oldGate := workerClaimedGate
+	// LIFO: shutdown runs before the restore so no worker reads the gate var
+	// concurrently with the write.
+	t.Cleanup(func() { workerClaimedGate = oldGate })
+	t.Cleanup(pool.GracefulShutdown)
+
+	claimed := make(chan struct{})
+	release := make(chan struct{})
+	workerClaimedGate = func() {
+		workerClaimedGate = nil
+		close(claimed)
+		<-release
+	}
+	var releaseOnce sync.Once
+	releaseWorker := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseWorker()
+
+	serverB := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1")
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer serverB.Close()
+
+	const id = "aba-pickup"
+	tmpDir := t.TempDir()
+	pool.Add(types.DownloadRecord{
+		ID:            id,
+		URL:           "http://example.com/stale.bin",
+		OutputPath:    tmpDir,
+		Filename:      "aba.bin",
+		ProgressState: progress.New(id, 0),
+		Runtime:       &types.RuntimeConfig{},
+	})
+
+	select {
+	case <-claimed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker never claimed the queued task")
+	}
+
+	// The worker is parked between claim and registration with qt1 in-flight.
+	result := pool.Pause(id)
+	if !result.Found || result.QueuedConfig == nil {
+		t.Fatalf("Pause() = %+v, want queued removal of the claimed task", result)
+	}
+	pool.Add(types.DownloadRecord{
+		ID:            id,
+		URL:           serverB.URL,
+		OutputPath:    tmpDir,
+		Filename:      "aba2.bin",
+		ProgressState: progress.New(id, 0),
+		Runtime:       &types.RuntimeConfig{},
+	})
+	pool.mu.RLock()
+	qt2 := pool.queued[id]
+	pool.mu.RUnlock()
+	if qt2 == nil {
+		t.Fatal("same-ID replacement was not queued")
+	}
+
+	releaseWorker()
+
+	// The stale claim must not start or clobber qt2; a fresh pickup starts the
+	// replacement URL.
+	startDeadline := time.After(10 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == types.EventStarted && ev.DownloadID == id {
+				if ev.URL != serverB.URL {
+					t.Fatalf("started URL = %q, want replacement %q", ev.URL, serverB.URL)
+				}
+				goto started
+			}
+		case <-startDeadline:
+			t.Fatal("replacement task never started")
+		}
+	}
+started:
+
+	done := make(chan struct{})
+	go func() {
+		pool.GracefulShutdown()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("GracefulShutdown hung; claimed task wait group was not settled")
+	}
+}
+
+// Retry-publish ABA: a worker that requeued qt1 in-flight and is parked in the
+// EventQueued send must not overwrite a same-ID replacement (qt2) on re-lock;
+// it settles qt1's wait group instead.
+func TestScheduler_RetryPublishABA_PauseAddSameID(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 16)
+	pool := New(ch, 1)
+	t.Cleanup(pool.GracefulShutdown)
+
+	serverA := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer serverA.Close()
+	serverB := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1")
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer serverB.Close()
+
+	// Unbuffered: every send on the task's progress channel parks the worker
+	// until the test receives it.
+	gateCh := make(chan types.DownloadEvent)
+
+	const id = "aba-retry"
+	tmpDir := t.TempDir()
+	pool.Add(types.DownloadRecord{
+		ID:            id,
+		URL:           serverA.URL,
+		OutputPath:    tmpDir,
+		Filename:      "retry.bin",
+		ProgressState: progress.New(id, 0),
+		ProgressCh:    gateCh,
+		Runtime:       &types.RuntimeConfig{},
+	})
+
+	// Admit EventStarted; the worker then fails (503), requeues qt1 in-flight,
+	// and parks in the EventQueued send.
+	select {
+	case ev := <-gateCh:
+		if ev.Type != types.EventStarted || ev.DownloadID != id {
+			t.Fatalf("first send = %+v, want EventStarted for %s", ev, id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker never sent EventStarted")
+	}
+
+	requeueDeadline := time.Now().Add(10 * time.Second)
+	for {
+		pool.mu.RLock()
+		qt, ok := pool.queued[id]
+		requeued := ok && qt.inFlight && !qt.retryAt.IsZero()
+		pool.mu.RUnlock()
+		if requeued {
+			break
+		}
+		if time.Now().After(requeueDeadline) {
+			t.Fatal("worker never requeued the failed download")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	result := pool.Pause(id)
+	if !result.Found || result.QueuedConfig == nil {
+		t.Fatalf("Pause() = %+v, want queued removal of the in-flight task", result)
+	}
+	pool.Add(types.DownloadRecord{
+		ID:            id,
+		URL:           serverB.URL,
+		OutputPath:    tmpDir,
+		Filename:      "retry2.bin",
+		ProgressState: progress.New(id, 0),
+		Runtime:       &types.RuntimeConfig{},
+	})
+	pool.mu.RLock()
+	qt2 := pool.queued[id]
+	pool.mu.RUnlock()
+	if qt2 == nil {
+		t.Fatal("same-ID replacement was not queued")
+	}
+
+	// Release the held EventQueued send; on re-lock the worker must see qt2,
+	// not overwrite it with its stale qt1.
+	select {
+	case ev := <-gateCh:
+		if ev.Type != types.EventQueued || ev.DownloadID != id {
+			t.Fatalf("held send = %+v, want EventQueued for %s", ev, id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker was not parked on the EventQueued send")
+	}
+
+	// qt2 survives intact: a fresh pickup starts the replacement URL.
+	startDeadline := time.After(10 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == types.EventStarted && ev.DownloadID == id {
+				if ev.URL != serverB.URL {
+					t.Fatalf("started URL = %q, want replacement %q", ev.URL, serverB.URL)
+				}
+				goto started
+			}
+		case <-startDeadline:
+			t.Fatal("replacement task never started")
+		}
+	}
+started:
+
+	done := make(chan struct{})
+	go func() {
+		pool.GracefulShutdown()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("GracefulShutdown hung; requeued task wait group was not settled")
 	}
 }

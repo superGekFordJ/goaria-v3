@@ -84,6 +84,12 @@ type Scheduler struct {
 	tightenOnPickup func(*types.DownloadRecord)
 }
 
+// PauseResult describes the download state that Pause changed.
+type PauseResult struct {
+	Found        bool
+	QueuedConfig *types.DownloadRecord
+}
+
 var (
 	// gracefulShutdownPauseSoftTimeout controls when we emit a warning that
 	// pausing is taking longer than expected. It is intentionally soft; shutdown
@@ -319,19 +325,41 @@ func (p *Scheduler) GetAll() []types.DownloadRecord {
 	return configs
 }
 
-// Pause pauses a specific download by ID. Returns true if found and pause initiated
-// (or already paused), false otherwise. Pure mechanical operation - no events emitted.
-func (p *Scheduler) Pause(downloadID string) bool {
-	p.mu.RLock()
+// Pause pauses a specific download by ID. A queued download is removed before a
+// worker can start it; an in-flight worker will observe its removal and balance
+// the wait group itself. No lifecycle events are emitted by the scheduler.
+func (p *Scheduler) Pause(downloadID string) PauseResult {
+	p.mu.Lock()
+	if queued, exists := p.queued[downloadID]; exists {
+		queuedConfig := queued.cfg
+		if queuedConfig.ProgressState != nil {
+			state := progress.CfgProgress(&queuedConfig)
+			queuedConfig.Downloaded, _, _, _, _, _ = state.GetProgress()
+			queuedConfig.RateLimit, queuedConfig.RateLimitSet = state.GetRateLimit()
+		}
+		queuedConfig.Limiter = nil
+
+		delete(p.queued, downloadID)
+		p.removeQueueOrderLocked(downloadID)
+		delete(p.downloadLimiters, downloadID)
+		inFlight := queued.inFlight
+		p.mu.Unlock()
+
+		if !inFlight {
+			p.wg.Done()
+		}
+		return PauseResult{Found: true, QueuedConfig: &queuedConfig}
+	}
+
 	ad, exists := p.downloads[downloadID]
 	var configTotal int64
 	if exists && ad != nil {
 		configTotal = ad.config.TotalSize
 	}
-	p.mu.RUnlock()
+	p.mu.Unlock()
 
 	if !exists || ad == nil {
-		return false
+		return PauseResult{}
 	}
 
 	// Set paused flag and cancel context
@@ -340,26 +368,26 @@ func (p *Scheduler) Pause(downloadID string) bool {
 
 		// Completion boundary guard: if done or verified progress reached positive total, no-op return true.
 		if prog.Done.Load() {
-			return true
+			return PauseResult{Found: true}
 		}
 		total := prog.Bytes.TotalSize.Load()
 		if total <= 0 {
 			total = configTotal
 		}
 		if total > 0 && prog.Bytes.VerifiedProgress.Load() >= total {
-			return true
+			return PauseResult{Found: true}
 		}
 
 		// Idempotency: If already paused, do nothing.
 		if prog.IsPaused() {
-			return true
+			return PauseResult{Found: true}
 		}
 		// If transition is already in progress, still ensure worker context is canceled.
 		if prog.IsPausing() {
 			if ad.cancel != nil {
 				ad.cancel()
 			}
-			return true
+			return PauseResult{Found: true}
 		}
 		prog.SetPausing(true) // Mark as transitioning to pause
 		prog.Pause()
@@ -371,7 +399,7 @@ func (p *Scheduler) Pause(downloadID string) bool {
 
 	// Send pause message is now exclusively handled by worker return paths
 	// to ensure fully synchronized byte counts.
-	return true
+	return PauseResult{Found: true}
 }
 
 // SetGlobalRateLimit updates the global rate limiter (bytes/sec). Use 0 to disable.
@@ -714,13 +742,13 @@ func (p *Scheduler) armRetryTimerLocked(earliest time.Time) {
 	})
 }
 
-func (p *Scheduler) waitForTask() string {
+func (p *Scheduler) waitForTask() *queuedTask {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	for {
 		if p.isShuttingDown {
-			return ""
+			return nil
 		}
 		now := time.Now()
 		var earliestPending time.Time
@@ -731,7 +759,7 @@ func (p *Scheduler) waitForTask() string {
 			if qt, ok := p.queued[id]; ok && !qt.inFlight {
 				if qt.retryAt.IsZero() || !now.Before(qt.retryAt) {
 					qt.inFlight = true
-					return id
+					return qt
 				}
 				if earliestPending.IsZero() || qt.retryAt.Before(earliestPending) {
 					earliestPending = qt.retryAt
@@ -744,19 +772,30 @@ func (p *Scheduler) waitForTask() string {
 	}
 }
 
+// workerClaimedGate is a test-only seam invoked after waitForTask hands a
+// claimed task to a worker and before the worker re-locks p.mu to register it.
+// Production code leaves it nil.
+var workerClaimedGate func()
+
 func (p *Scheduler) worker() {
 	for {
-		id := p.waitForTask()
-		if id == "" {
+		qt := p.waitForTask()
+		if qt == nil {
 			return
+		}
+		id := qt.cfg.ID
+
+		if workerClaimedGate != nil {
+			workerClaimedGate()
 		}
 
 		// Create cancellable context
 		ctx, cancel := context.WithCancel(context.Background())
 
 		p.mu.Lock()
-		qt, stillQueued := p.queued[id]
-		if !stillQueued {
+		// The claim is tied to this exact queuedTask: a Pause/Cancel/shutdown
+		// removal plus a same-ID re-add must not be adopted by this worker.
+		if qtNow, stillQueued := p.queued[id]; !stillQueued || qtNow != qt {
 			p.mu.Unlock()
 			cancel()
 			p.wg.Done()
@@ -899,9 +938,10 @@ func (p *Scheduler) worker() {
 				}
 
 				p.mu.Lock()
-				if _, ok := p.queued[localCfg.ID]; ok {
+				// Identity check: the requeued entry must still be the task this
+				// worker owns. A same-ID replacement belongs to a different claim.
+				if current, ok := p.queued[localCfg.ID]; ok && current == qt {
 					qt.inFlight = false
-					p.queued[localCfg.ID] = qt
 
 					now := time.Now()
 					var earliestPending time.Time
@@ -916,8 +956,9 @@ func (p *Scheduler) worker() {
 					}
 					p.armRetryTimerLocked(earliestPending)
 				} else {
-					// GracefulShutdown or Cancel removed it while we were unlocked.
-					// Since we were in-flight, they didn't decrement wg, so we must.
+					// GracefulShutdown, Cancel, or Pause removed it while we were
+					// unlocked. Since we were in-flight, they didn't decrement
+					// wg, so we must; never overwrite a same-ID replacement.
 					p.wg.Done()
 				}
 				p.taskCond.Broadcast()
