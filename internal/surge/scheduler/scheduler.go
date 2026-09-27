@@ -585,6 +585,7 @@ func (p *Scheduler) Cancel(downloadID string) types.CancelResult {
 	var droppedQueued bool
 	if queuedExists {
 		delete(p.queued, downloadID)
+		p.removeQueueOrderLocked(downloadID)
 		if !qCfg.inFlight {
 			droppedQueued = true
 		}

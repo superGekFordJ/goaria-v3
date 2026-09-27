@@ -272,8 +272,13 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 				}
 				merged.RateLimit = ev.RateLimit
 				merged.RateLimitSet = ev.RateLimitSet
-				merged.Workers = ev.Workers
-				merged.MinChunkSize = ev.MinChunkSize
+				// Sparse pause events omit worker params; keep cached values.
+				if ev.Workers != 0 {
+					merged.Workers = ev.Workers
+				}
+				if ev.MinChunkSize != 0 {
+					merged.MinChunkSize = ev.MinChunkSize
+				}
 				surgeEng.UpsertMasterCacheEntry(merged)
 			} else {
 				surgeEng.UpsertMasterCacheEntry(types.DownloadRecord{

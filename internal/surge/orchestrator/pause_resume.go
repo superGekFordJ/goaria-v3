@@ -33,13 +33,17 @@ func (mgr *LifecycleManager) Pause(id string) error {
 
 	if result := mgr.pool.Pause(id); result.Found {
 		if result.QueuedConfig != nil && mgr.eventBus != nil {
-			_ = mgr.eventBus.Publish(types.DownloadEvent{
+			// This sparse event is the only carrier of a queued pause; a dropped
+			// publish means the persisted status stays queued, so log drops.
+			if err := mgr.eventBus.Publish(types.DownloadEvent{
 				Type:         types.EventPaused,
 				DownloadID:   id,
 				Downloaded:   result.QueuedConfig.Downloaded,
 				RateLimit:    result.QueuedConfig.RateLimit,
 				RateLimitSet: result.QueuedConfig.RateLimitSet,
-			})
+			}); err != nil {
+				utils.Debug("queued pause event publish failed for %s: %v", id, err)
+			}
 		}
 		return nil
 	}
