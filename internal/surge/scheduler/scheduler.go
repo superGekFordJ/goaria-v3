@@ -783,16 +783,18 @@ func (p *Scheduler) worker() {
 		if qt == nil {
 			return
 		}
-		id := qt.cfg.ID
 
-		if workerClaimedGate != nil {
-			workerClaimedGate()
+		if g := workerClaimedGate; g != nil {
+			g()
 		}
 
 		// Create cancellable context
 		ctx, cancel := context.WithCancel(context.Background())
 
 		p.mu.Lock()
+		// qt.cfg is mutated under p.mu elsewhere (e.g. SetDefaultDownloadRateLimit),
+		// so the ID is read inside this critical section.
+		id := qt.cfg.ID
 		// The claim is tied to this exact queuedTask: a Pause/Cancel/shutdown
 		// removal plus a same-ID re-add must not be adopted by this worker.
 		if qtNow, stillQueued := p.queued[id]; !stillQueued || qtNow != qt {
