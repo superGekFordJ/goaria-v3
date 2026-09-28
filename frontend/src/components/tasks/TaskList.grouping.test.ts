@@ -598,4 +598,34 @@ describe('TaskList visible grouping', () => {
 
     wrapper.unmount()
   })
+
+  it('Escape falls through to clearSelection when the open marker sits in a different card', async () => {
+    storeMocks.uiStore.openDetailGid = 'gid-01'
+    const wrapper = mountList([createTask(1, false), createTask(2, false)])
+
+    const container = wrapper.find('[data-task-scroll-root]').element.parentElement as HTMLElement
+    // The trigger for the open gid exists, but its own card carries no
+    // overlay; a ghost [data-detail-open] in a different card must not count.
+    const triggerCard = document.createElement('div')
+    triggerCard.className = 'task-card'
+    const trigger = document.createElement('button')
+    trigger.setAttribute('data-detail-trigger', 'gid-01')
+    triggerCard.appendChild(trigger)
+    const ghostCard = document.createElement('div')
+    ghostCard.className = 'task-card'
+    const marker = document.createElement('div')
+    marker.setAttribute('data-detail-open', '')
+    ghostCard.appendChild(marker)
+    container.append(triggerCard, ghostCard)
+    storeMocks.taskStore.clearSelection.mockClear()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await wrapper.vm.$nextTick()
+
+    expect(storeMocks.uiStore.closeTaskDetail).toHaveBeenCalledTimes(1)
+    expect(storeMocks.uiStore.closeTaskDetail).toHaveBeenCalledWith('gid-01')
+    expect(storeMocks.taskStore.clearSelection).toHaveBeenCalledTimes(1)
+
+    wrapper.unmount()
+  })
 })

@@ -303,7 +303,12 @@
     emit('close', false)
   }
 
+  // A twin mounted inside a KeepAlive-suspended (detached) card must not fetch,
+  // tick, or listen: it would race the visible copy's request ordering.
+  let detachedMount = false
+
   function fetchDetail() {
+    if (detachedMount) return
     void taskStore.fetchTaskDetail(props.task.gid, status.value)
   }
 
@@ -322,14 +327,31 @@
     () => status.value === 'active' && taskStore.isWindowVisible,
     shouldRefresh => {
       stopRefresh()
-      if (shouldRefresh) refreshTimer = setInterval(fetchDetail, ACTIVE_REFRESH_MS)
+      if (shouldRefresh && !detachedMount) {
+        refreshTimer = setInterval(fetchDetail, ACTIVE_REFRESH_MS)
+      }
     },
     { immediate: true },
   )
+  // A time cell appearing while the tick was gated needs a fresh baseline.
+  watch(hasTimeCell, v => {
+    if (v) nowMs.value = Date.now()
+  })
 
   onMounted(() => {
+    const card = rootRef.value?.closest('.task-card')
+    if (card && !card.isConnected) {
+      detachedMount = true
+      stopRefresh()
+      return
+    }
     fetchDetail()
-    closeButtonRef.value?.focus({ preventScroll: true })
+    // Steal focus only for user-initiated opens (nothing focused yet, or the
+    // user activated something in this card); never on passive remounts.
+    const active = document.activeElement
+    if (!active || active === document.body || !!(card && card.contains(active))) {
+      closeButtonRef.value?.focus({ preventScroll: true })
+    }
     document.addEventListener('pointerdown', onDocumentPointerDown, true)
     relativeTimer = setInterval(() => {
       if (hasTimeCell.value) nowMs.value = Date.now()
