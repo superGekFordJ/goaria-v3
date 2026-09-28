@@ -71,7 +71,26 @@ type TrackedTask struct {
 	// GetOccupancyTrackedTasks see the claim without treating long-paused
 	// tasks as holding bandwidth. Cleared whenever status changes.
 	resumeOccupancyHold bool
+
+	// AddedAt is when this session observed the user add (MarkAdded). Zero
+	// means unknown (restart recovery, external RPC add). Unlike CreatedAt,
+	// placeholders and grace-period refreshes never touch it.
+	AddedAt time.Time
+
+	// Active time observed on the aria2 tick path; gaps above
+	// activeSampleGapCap are dropped, maxActiveGap bounds the error.
+	activeElapsed time.Duration
+	lastActiveAt  time.Time
+	maxActiveGap  time.Duration
+
+	// Set only on terminal copies by the Surge complete prep.
+	terminalElapsed     time.Duration
+	peakFromAvgFallback bool
 }
+
+// activeSampleGapCap is 2x the headless tick; longer gaps mean aria2 was
+// unreachable or the host slept, so they are not counted as active time.
+const activeSampleGapCap = 10 * time.Second
 
 // lifecycleState is the per-GID gate for stopped→live retirement vs terminal
 // accept/history write. generation bumps only on ReopenAfterStoppedToLive;
@@ -127,6 +146,8 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 	for _, task := range waiting {
 		currentGids[task.GID] = true
 		t.ensureTracked(task)
+		// Paused and queued aria2 tasks both sit in tellWaiting; stop the clock.
+		t.tasks[task.GID].lastActiveAt = time.Time{}
 	}
 
 	// 处理已停止任务：检测新完成
@@ -185,6 +206,17 @@ func (t *TaskTracker) updateActiveTask(task rpc.Task) {
 		tracked = t.createTrackedTask(task)
 		t.tasks[task.GID] = tracked
 	}
+
+	now := time.Now()
+	if !tracked.lastActiveAt.IsZero() {
+		if gap := now.Sub(tracked.lastActiveAt); gap > 0 && gap <= activeSampleGapCap {
+			tracked.activeElapsed += gap
+			if gap > tracked.maxActiveGap {
+				tracked.maxActiveGap = gap
+			}
+		}
+	}
+	tracked.lastActiveAt = now
 
 	// 更新进度
 	tracked.Status = task.Status
@@ -334,6 +366,43 @@ func (t *TaskTracker) SetThreadInfo(gid string, threadCount int, isExploration b
 			CreatedAt:     time.Now(),
 		}
 	}
+}
+
+// MarkAdded records that this session observed the user add of gid. The
+// clock starts now so add→first active tick counts; a waiting tick clears it.
+func (t *TaskTracker) MarkAdded(gid string) {
+	if gid == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	now := time.Now()
+	tracked := t.tasks[gid]
+	if tracked == nil {
+		tracked = &TrackedTask{GID: gid, CreatedAt: now}
+		t.tasks[gid] = tracked
+	}
+	tracked.AddedAt = now
+	tracked.lastActiveAt = now
+	tracked.activeElapsed = 0
+	tracked.maxActiveGap = 0
+	tracked.terminalElapsed = 0
+	tracked.peakFromAvgFallback = false
+}
+
+// GetTrackedTask returns a value copy of the tracked entry.
+func (t *TaskTracker) GetTrackedTask(gid string) (TrackedTask, bool) {
+	if t == nil {
+		return TrackedTask{}, false
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	tracked := t.tasks[gid]
+	if tracked == nil {
+		return TrackedTask{}, false
+	}
+	return *copyTrackedTask(tracked), true
 }
 
 // GetThreadInfo 获取任务的线程信息

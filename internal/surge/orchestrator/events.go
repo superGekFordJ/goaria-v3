@@ -79,6 +79,14 @@ func copyRangeAcquisition(dst *types.DownloadRecord, src *types.DownloadRecord) 
 	}
 }
 
+// FORK-PATCH: same whole-record rule for the enqueue-stamped CreatedAt.
+func copyCreatedAt(dst *types.DownloadRecord, src *types.DownloadRecord) {
+	if dst == nil || src == nil || dst.CreatedAt != 0 {
+		return
+	}
+	dst.CreatedAt = src.CreatedAt
+}
+
 func finalizeCompletedFile(finalPath string) error {
 	if finalPath == "" {
 		return errors.New("missing destination path for completed download")
@@ -137,6 +145,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					entry.TimeTaken = existing.TimeTaken
 				}
 				copyRangeAcquisition(&entry, existing)
+				copyCreatedAt(&entry, existing)
 			}
 			if entry.RangeAcquisitionMode == "" {
 				copyRangeAcquisition(&entry, m.State)
@@ -304,6 +313,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				entry.URLHash = existing.URLHash
 				copyRangeAcquisition(&entry, &snapshot)
 				copyRangeAcquisition(&entry, existing)
+				copyCreatedAt(&entry, existing)
 			} else {
 				entry.URL = url
 				entry.URLHash = store.URLHash(url)
@@ -370,6 +380,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					errEntry.Workers = existing.Workers
 					errEntry.MinChunkSize = existing.MinChunkSize
 					copyRangeAcquisition(&errEntry, existing)
+					copyCreatedAt(&errEntry, existing)
 				}
 				if err := store.AddToMasterList(errEntry); err != nil {
 					utils.Debug("Lifecycle: Failed to persist finalization error state: %v", err)
@@ -406,6 +417,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				entry.Workers = existing.Workers
 				entry.MinChunkSize = existing.MinChunkSize
 				copyRangeAcquisition(&entry, existing)
+				copyCreatedAt(&entry, existing)
 			}
 			if err := store.AddToMasterList(entry); err != nil {
 				utils.Debug("Lifecycle: Failed to persist completed download: %v", err)
@@ -531,6 +543,7 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					entry.Mirrors = append([]string(nil), existing.Mirrors...)
 					copyRangeAcquisition(&entry, &snapshot)
 					copyRangeAcquisition(&entry, existing)
+					copyCreatedAt(&entry, existing)
 				} else if url != "" {
 					entry.URLHash = store.URLHash(url)
 					copyRangeAcquisition(&entry, &snapshot)

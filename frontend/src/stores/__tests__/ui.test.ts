@@ -323,3 +323,68 @@ describe('uiStore prismTone', () => {
     expect(store.prismTone).toBe('vivid')
   })
 })
+
+describe('uiStore openDetailGid', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  async function freshStore(withPersist = false) {
+    const { setActivePinia, createPinia } = await import('pinia')
+    const { useUIStore } = await import('../ui')
+    const pinia = createPinia()
+    if (withPersist) {
+      const { default: persist } = await import('pinia-plugin-persistedstate')
+      const { createApp } = await import('vue')
+      pinia.use(persist)
+      // Plugins are applied only once pinia is installed into an app.
+      createApp({}).use(pinia)
+    }
+    setActivePinia(pinia)
+    return useUIStore()
+  }
+
+  it('opens a single trimmed gid and ignores blanks', async () => {
+    const store = await freshStore()
+    store.openTaskDetail('  ar_1 ')
+    expect(store.openDetailGid).toBe('ar_1')
+    store.openTaskDetail('ar_2')
+    expect(store.openDetailGid).toBe('ar_2')
+    store.openTaskDetail('   ')
+    expect(store.openDetailGid).toBe('ar_2')
+  })
+
+  it('closeTaskDetail(otherGid) is a no-op; bare close clears', async () => {
+    const store = await freshStore()
+    store.openTaskDetail('ar_new')
+    store.closeTaskDetail('ar_old')
+    expect(store.openDetailGid).toBe('ar_new')
+    store.closeTaskDetail('ar_new')
+    expect(store.openDetailGid).toBeNull()
+    store.openTaskDetail('ar_x')
+    store.closeTaskDetail()
+    expect(store.openDetailGid).toBeNull()
+  })
+
+  it.each([
+    ['setActiveTab', (s: Awaited<ReturnType<typeof freshStore>>) => s.setActiveTab('stopped')],
+    ['openDownloadGroupDetail', (s: Awaited<ReturnType<typeof freshStore>>) => s.openDownloadGroupDetail('dg-1')],
+    ['closeDownloadGroupDetail', (s: Awaited<ReturnType<typeof freshStore>>) => s.closeDownloadGroupDetail()],
+    ['clearDownloadGroupSelection', (s: Awaited<ReturnType<typeof freshStore>>) => s.clearDownloadGroupSelection()],
+  ])('%s clears the open detail', async (_name, act) => {
+    const store = await freshStore()
+    store.openTaskDetail('ar_1')
+    act(store)
+    expect(store.openDetailGid).toBeNull()
+  })
+
+  it('never persists openDetailGid', async () => {
+    const store = await freshStore(true)
+    store.openTaskDetail('ar_persist')
+    store.setDensity('compact')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const raw = localStorage.getItem('ui')
+    expect(raw).toBeTruthy()
+    expect(JSON.parse(raw as string)).not.toHaveProperty('openDetailGid')
+  })
+})

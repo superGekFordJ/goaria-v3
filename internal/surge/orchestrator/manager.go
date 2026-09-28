@@ -383,6 +383,7 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 		// even if the event bus is full and Publish returns DeadlineExceeded.
 		// Doing this BEFORE pool.Add prevents EventStarted from racing with this
 		// persistence and corrupting the status to "queued" if it starts instantly.
+		// FORK-PATCH: CreatedAt is stamped here once; lifecycle rewrites carry it.
 		if err := store.AddToMasterList(types.DownloadRecord{
 			ID:                   queuedEvent.DownloadID,
 			URL:                  queuedEvent.URL,
@@ -391,6 +392,7 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 			Filename:             queuedEvent.Filename,
 			Mirrors:              append([]string(nil), queuedEvent.Mirrors...),
 			Status:               "queued",
+			CreatedAt:            time.Now().Unix(),
 			TotalSize:            cfg.TotalSize,
 			RateLimit:            queuedEvent.RateLimit,
 			RateLimitSet:         queuedEvent.RateLimitSet,

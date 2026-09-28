@@ -3,6 +3,7 @@ import { setupState } from './state'
 import { setupActions } from './actions'
 import { setupPolling, TaskPolling } from './polling'
 import { setupEvents } from './events'
+import { setupTaskDetail } from './detail'
 
 export const useTaskStore = defineStore('task', () => {
   // 1. Setup State
@@ -24,6 +25,9 @@ export const useTaskStore = defineStore('task', () => {
     polling.stopPolling, // stop
   )
   actions.setMoveTasksToActive(events.moveTasksToActive)
+
+  // On-demand card detail (pull-only, outside the delta hot path)
+  const detail = setupTaskDetail()
 
   // Events (if setupEvents needed polling, which it doesn't currently, but type says so in plan)
   // Actually setupEvents doesn't use polling in implementation above, but good to be consistent.
@@ -82,6 +86,10 @@ export const useTaskStore = defineStore('task', () => {
     // System Actions
     syncFromSnapshot: actions.syncFromSnapshot,
     minimizeToTray: actions.minimizeToTray,
+
+    // Detail
+    taskDetail: detail.taskDetail,
+    fetchTaskDetail: detail.fetchTaskDetail,
 
     // Polling Actions
     startPolling: polling.startPolling,

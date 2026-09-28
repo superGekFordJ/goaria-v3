@@ -13,6 +13,15 @@ const storeMocks = vi.hoisted(() => ({
   },
 }))
 
+vi.mock('../../stores/ui', () => ({
+  useUIStore: () => ({
+    openDetailGid: null,
+    effectsTier: 'balanced',
+    openTaskDetail: vi.fn(),
+    closeTaskDetail: vi.fn(),
+  }),
+}))
+
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string, params?: Record<string, unknown>) => {
@@ -54,11 +63,11 @@ describe('TaskCard insufficient disk space', () => {
     expect(wrapper.text()).toContain('taskCard.insufficientDiskSpace')
     expect(wrapper.text()).not.toContain('taskCard.error')
     const buttons = wrapper.findAll('button')
-    expect(buttons).toHaveLength(3)
+    expect(buttons).toHaveLength(4)
 
-    await buttons[0].trigger('click')
+    await wrapper.get('button[title="taskCard.resume"]').trigger('click')
     expect(storeMocks.taskStore.resume).toHaveBeenCalledWith('sg_disk')
-    await buttons[1].trigger('click')
+    await wrapper.get('button[title="taskCard.openFolder"]').trigger('click')
     expect(storeMocks.taskStore.openTaskFolder).toHaveBeenCalled()
     wrapper.unmount()
   })

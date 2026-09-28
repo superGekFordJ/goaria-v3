@@ -57,6 +57,12 @@ func (a *App) GetTaskMetadata(gids []string) map[string]rpc.Task {
 	return a.taskService().GetTaskMetadata(gids)
 }
 
+// GetTaskDetails returns on-demand detail facts for the given GIDs from
+// in-memory sources only (no engine RPC).
+func (a *App) GetTaskDetails(gids []string) map[string]tasks.TaskDetailEnvelope {
+	return a.taskService().GetTaskDetails(gids)
+}
+
 // PauseTask pauses a download task
 func (a *App) PauseTask(gid string) {
 	if mon := monitor.State.GetMonitor(); mon != nil {

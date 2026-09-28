@@ -25,6 +25,10 @@ type HistoryEntry struct {
 	Source          string             `json:"source,omitempty"` // magnet/http
 	Status          string             `json:"status,omitempty"` // terminal: "complete" | "error"; empty = legacy → complete
 	DownloadGroup   *rpc.DownloadGroup `json:"download_group,omitempty"`
+	// Terminal timing (complete only); zero = unknown, never fabricated.
+	DurationMs int64 `json:"durationMs,omitempty"`
+	AvgSpeed   int64 `json:"avgSpeed,omitempty"`  // B/s
+	PeakSpeed  int64 `json:"peakSpeed,omitempty"` // B/s
 }
 
 // ProjectedStoppedStatus resolves the stopped-list status for a history entry.
@@ -216,6 +220,11 @@ func Add(entry HistoryEntry) {
 		if entry.DownloadGroup == nil && entries[i].DownloadGroup != nil {
 			entry.DownloadGroup = copyDownloadGroup(entries[i].DownloadGroup)
 		}
+		// Restart replay re-adds without timing; zero means "unknown", keep old.
+		keepIfZero(&entry.CompletedAt, entries[i].CompletedAt)
+		keepIfZero(&entry.DurationMs, entries[i].DurationMs)
+		keepIfZero(&entry.AvgSpeed, entries[i].AvgSpeed)
+		keepIfZero(&entry.PeakSpeed, entries[i].PeakSpeed)
 		// Update sourceIndex if source changes
 		oldSource := entries[i].Source
 		if oldSource != entry.Source {
@@ -244,6 +253,12 @@ func Add(entry HistoryEntry) {
 		sourceIndex[entry.Source]++
 	}
 	triggerSaveLocked()
+}
+
+func keepIfZero(dst *int64, old int64) {
+	if *dst == 0 {
+		*dst = old
+	}
 }
 
 // Remove removes an entry by GID

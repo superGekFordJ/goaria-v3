@@ -1,11 +1,29 @@
 <script setup lang="ts">
-  import { computed, watch } from 'vue'
+  import { computed, nextTick, ref, watch } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
   import type { TaskGroupHint } from '../../stores/task/grouping'
   import { useTaskStore } from '../../stores/task'
-  import { Pause, Play, FolderOpen, Trash2, Clock, Zap, Layers3, Share2 } from '@lucide/vue'
+  import { useUIStore } from '../../stores/ui'
+  import {
+    Pause,
+    Play,
+    FolderOpen,
+    Trash2,
+    Clock,
+    Zap,
+    Layers3,
+    Share2,
+    Info,
+  } from '@lucide/vue'
   import FileIcon from '../common/FileIcon.vue'
+  import TaskDetailOverlay from './TaskDetailOverlay.vue'
+  import {
+    formatSize,
+    formatSpeed,
+    speedUnit,
+    parseLiveThreadCount,
+  } from '../../utils/taskDisplay'
   import {
     TASK_PROGRESS_CONFIG,
     SURGE_TASK_PROGRESS_CONFIG,
@@ -26,6 +44,7 @@
   }>()
 
   const taskStore = useTaskStore()
+  const uiStore = useUIStore()
 
   const isSurgeTask = props.task.gid.startsWith('sg_')
   const { displayDownloaded, totalBytes, updateStats } = useSmoothProgress(
@@ -110,38 +129,6 @@
     return Math.min(Math.max(ratio, 0), 1)
   })
 
-  // Format bytes to human readable with bounds safety
-  const formatSize = (b: string | number | undefined) => {
-    if (b === undefined || b === null || b === '') return '0 B'
-    const bytes = Number(b)
-    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
-    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
-    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-    const clampedI = Math.max(0, i)
-    return (bytes / Math.pow(1024, clampedI)).toFixed(2) + ' ' + units[clampedI]
-  }
-
-  // Format speed with neon styling consideration
-  const formatSpeed = (b: string | number | undefined) => {
-    if (!b || b === '0') return '0'
-    const bytes = Number(b)
-    if (!Number.isFinite(bytes) || bytes <= 0) return '0'
-    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
-    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-    const clampedI = Math.max(0, i)
-    return (bytes / Math.pow(1024, clampedI)).toFixed(1)
-  }
-
-  const speedUnit = (b: string | number | undefined) => {
-    if (!b || b === '0') return 'B/s'
-    const bytes = Number(b)
-    if (!Number.isFinite(bytes) || bytes <= 0) return 'B/s'
-    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
-    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-    const clampedI = Math.max(0, i)
-    return units[clampedI] + '/s'
-  }
-
   // Calculate ETA (5s sliding window average for Surge; 1s direct tick for Aria2)
   const estimatedTime = useTaskEta({
     isSurge: isSurgeTask,
@@ -153,14 +140,7 @@
   })
 
   // Concurrency threads count (real runtime telemetry only, no fake fallbacks)
-  const threadCount = computed<number | null>(() => {
-    const raw = (props.task as unknown as { threads?: string | number }).threads
-    if (raw !== undefined && raw !== null && raw !== '') {
-      const parsed = Number(raw)
-      if (Number.isFinite(parsed) && parsed > 0) return parsed
-    }
-    return null
-  })
+  const threadCount = computed<number | null>(() => parseLiveThreadCount(props.task))
 
   // Status styling with neon effects
   const statusConfig = computed(() => {
@@ -244,6 +224,34 @@
     if (hint.visibleCount) return t('taskCard.groupItemCount', { count: hint.visibleCount })
     return ''
   })
+
+  // Detail visibility is a pure function of the ui store: RecycleScroller
+  // reuses card views, so no per-card detail state may live here.
+  const isDetailOpen = computed(() => uiStore.openDetailGid === props.task.gid)
+  const detailRegionId = computed(() => `task-detail-${props.task.gid}`)
+  const detailTransitionName = computed(() =>
+    uiStore.effectsTier === 'reduced' ? '' : 'task-detail-fade',
+  )
+  const infoButtonRef = ref<HTMLButtonElement | null>(null)
+
+  function openDetail() {
+    uiStore.openTaskDetail(props.task.gid)
+  }
+
+  function handleCardClick(event: MouseEvent) {
+    if (isDetailOpen.value) return
+    const target = event.target as HTMLElement | null
+    if (target?.closest('input, button, a, [data-detail-open]')) return
+    // Drag-selecting the filename must not open the detail.
+    if (window.getSelection()?.toString()) return
+    openDetail()
+  }
+
+  function closeDetail(restoreFocus: boolean) {
+    uiStore.closeTaskDetail(props.task.gid)
+    if (!restoreFocus) return
+    void nextTick(() => infoButtonRef.value?.focus({ preventScroll: true }))
+  }
 </script>
 
 <template>
@@ -253,7 +261,15 @@
       cardGlowClass,
       { 'task-card-selected': isSelected },
     ]"
+    @click="handleCardClick"
   >
+    <!-- Face: stays in layout while the detail is open so height/FLIP are stable -->
+    <div
+      data-task-face
+      class="task-card-face"
+      :class="{ 'is-detail-hidden': isDetailOpen }"
+      :aria-hidden="isDetailOpen ? 'true' : undefined"
+    >
     <!-- Top Row: Filename & Actions -->
     <div class="flex items-start justify-between gap-4 mb-4">
       <!-- File Info -->
@@ -332,6 +348,27 @@
         </div>
       </div>
 
+      <div class="flex gap-1.5 shrink-0">
+      <!-- Detail trigger: own reveal target so error cards keep it visible -->
+      <div
+        class="hover-reveal-target shrink-0"
+        :class="{ 'always-visible': isError }"
+      >
+        <button
+          ref="infoButtonRef"
+          type="button"
+          class="btn-glass w-10 h-10 rounded-xl flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--neon-primary)] hover:border-[var(--neon-primary)]/30"
+          :title="t('taskDetail.open')"
+          :aria-label="t('taskDetail.open')"
+          :aria-expanded="isDetailOpen"
+          :aria-controls="detailRegionId"
+          :data-detail-trigger="task.gid"
+          @click="openDetail"
+        >
+          <Info :size="16" />
+        </button>
+      </div>
+
       <!-- Action Buttons (Hover Reveal) -->
       <div class="flex gap-1.5 hover-reveal-target shrink-0">
         <!-- Pause/Resume Button -->
@@ -363,6 +400,7 @@
         >
           <Trash2 :size="16" />
         </button>
+      </div>
       </div>
     </div>
 
@@ -484,6 +522,17 @@
         </div>
       </div>
     </div>
+    </div>
+
+    <Transition :name="detailTransitionName">
+      <TaskDetailOverlay
+        v-if="isDetailOpen"
+        :key="task.gid"
+        :task="task"
+        :eta="estimatedTime"
+        @close="closeDetail"
+      />
+    </Transition>
   </div>
 </template>
 
@@ -506,6 +555,36 @@
 
   .task-card:hover::before {
     opacity: 1;
+  }
+
+  /* Face fades out, then hides (visibility delay) so text never doubles
+     through the transparent detail layer; reopening shows it at once. */
+  .task-card-face {
+    transition:
+      opacity 180ms ease,
+      visibility 0s linear 0s;
+  }
+
+  .task-card-face.is-detail-hidden {
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      opacity 180ms ease,
+      visibility 0s linear 180ms;
+  }
+
+  :global([data-effects='reduced']) .task-card-face {
+    transition: none;
+  }
+
+  .task-detail-fade-enter-active,
+  .task-detail-fade-leave-active {
+    transition: opacity 180ms ease;
+  }
+
+  .task-detail-fade-enter-from,
+  .task-detail-fade-leave-to {
+    opacity: 0;
   }
 
   .task-group-chip {

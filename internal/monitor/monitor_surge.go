@@ -188,6 +188,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			}
 			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
 				keepRangeAcquisition(&entry, existing)
+				entry.CreatedAt = existing.CreatedAt
 			}
 			surgeEng.UpsertMasterCacheEntry(entry)
 		}
@@ -230,6 +231,8 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 				if existing.TimeTaken > 0 {
 					entry.TimeTaken = existing.TimeTaken
 				}
+				// master.gob stamps CreatedAt at enqueue; never synthesize it here.
+				entry.CreatedAt = existing.CreatedAt
 				keepRangeAcquisition(&entry, existing)
 			}
 			surgeEng.UpsertMasterCacheEntry(entry)
@@ -460,10 +463,15 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			errCode, errMsg = errorCode, errorMessage
 		}
 		m.moveToStoppedAndHandle(gid, deltaType, errCode, errMsg, completeTotal, func(completed *TrackedTask) {
+			if deltaType == "complete" {
+				completed.terminalElapsed = ev.Elapsed
+			}
 			// AvgSpeed substitutes for PeakSpeed when no peak-time accept occurred;
 			// acceptPeakSpeed refreshes PeakEnvKey to Current on this complete copy only.
 			if completed.PeakSpeed == 0 && completeAvgSpeed > 0 {
 				acceptPeakSpeed(completed, int64(completeAvgSpeed))
+				// Speedstats only: history must not persist this as a peak.
+				completed.peakFromAvgFallback = true
 			}
 		})
 		if State.HasWindow() {

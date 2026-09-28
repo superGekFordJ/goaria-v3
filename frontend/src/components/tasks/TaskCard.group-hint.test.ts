@@ -14,6 +14,15 @@ const storeMocks = vi.hoisted(() => ({
   },
 }))
 
+vi.mock('../../stores/ui', () => ({
+  useUIStore: () => ({
+    openDetailGid: null,
+    effectsTier: 'balanced',
+    openTaskDetail: vi.fn(),
+    closeTaskDetail: vi.fn(),
+  }),
+}))
+
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string, params?: Record<string, unknown>) => {
@@ -70,7 +79,7 @@ describe('TaskCard group hint chip', () => {
     expect(chip.attributes('aria-label')).toContain('taskCard.groupHintLabel')
 
     expect(wrapper.find('input.task-checkbox').exists()).toBe(true)
-    expect(wrapper.findAll('button')).toHaveLength(3)
+    expect(wrapper.findAll('button')).toHaveLength(4)
 
     wrapper.unmount()
   })
@@ -82,7 +91,7 @@ describe('TaskCard group hint chip', () => {
 
     expect(wrapper.find('.task-group-chip').exists()).toBe(false)
     expect(wrapper.find('input.task-checkbox').exists()).toBe(true)
-    expect(wrapper.findAll('button')).toHaveLength(3)
+    expect(wrapper.findAll('button')).toHaveLength(4)
 
     wrapper.unmount()
   })

@@ -10,6 +10,17 @@
   transform: translateX(0);
 }
 
+/* Keyboard reach: Tab onto an action reveals its bar (not mouse focus). */
+.hover-reveal-container .hover-reveal-target:has(:focus-visible) {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.hover-reveal-container .hover-reveal-target.always-visible {
+  opacity: 1;
+  transform: none;
+}
+
 /* === Modal Backdrop === */
 .modal-backdrop {
   background: rgba(0, 0, 0, 0.7);

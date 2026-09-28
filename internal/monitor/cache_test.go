@@ -1296,3 +1296,52 @@ func TestTaskCache_CleanupMetadata_KeepsActiveInAllLists(t *testing.T) {
 		t.Fatal("expected all retained")
 	}
 }
+
+func TestTaskCache_GetTaskFindsListAndReturnsCopy(t *testing.T) {
+	cache := NewTaskCacheForTest()
+	cache.arActive = []rpc.Task{{GID: "ar_a", Status: "active", Files: []rpc.File{{Path: "/a", Uris: []rpc.Uri{{Uri: "http://a"}}}}}}
+	cache.arWaiting = []rpc.Task{{GID: "ar_w", Status: "paused"}}
+	cache.sgStopped = []rpc.Task{{GID: "sg_s", Status: "complete", DownloadGroup: &rpc.DownloadGroup{ID: "g", Name: "orig"}}}
+
+	cases := []struct{ gid, list string }{{"ar_a", "active"}, {"ar_w", "waiting"}, {"sg_s", "stopped"}}
+	for _, tc := range cases {
+		task, list, ok := cache.GetTask(tc.gid)
+		if !ok || list != tc.list || task.GID != tc.gid {
+			t.Fatalf("GetTask(%s) = (%s, %q, %v), want list %q", tc.gid, task.GID, list, ok, tc.list)
+		}
+	}
+
+	task, _, _ := cache.GetTask("ar_a")
+	task.Files[0].Uris[0].Uri = "mutated"
+	sg, _, _ := cache.GetTask("sg_s")
+	sg.DownloadGroup.Name = "mutated"
+	if cache.arActive[0].Files[0].Uris[0].Uri != "http://a" || cache.sgStopped[0].DownloadGroup.Name != "orig" {
+		t.Fatal("GetTask leaked a reference into the cache")
+	}
+
+	// Engine prefix scopes the lookup: an sg_ gid is never found in ar lists.
+	cache.arActive = append(cache.arActive, rpc.Task{GID: "sg_misplaced"})
+	for _, gid := range []string{"", "missing", "sg_misplaced"} {
+		if _, _, ok := cache.GetTask(gid); ok {
+			t.Fatalf("GetTask(%q) ok=true, want false", gid)
+		}
+	}
+}
+
+func TestTaskCache_GetTaskConcurrentWithWrites(t *testing.T) {
+	cache := NewTaskCacheForTest()
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for range 500 {
+			cache.arMu.Lock()
+			cache.arActive = []rpc.Task{{GID: "ar_x", Status: "active"}}
+			cache.arMu.Unlock()
+		}
+	})
+	wg.Go(func() {
+		for range 500 {
+			_, _, _ = cache.GetTask("ar_x")
+		}
+	})
+	wg.Wait()
+}

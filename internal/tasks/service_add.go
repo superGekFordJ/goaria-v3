@@ -665,6 +665,9 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 		}
 
 		if gid != "" {
+			if tracker := monitor.State.GetTracker(); tracker != nil {
+				tracker.MarkAdded(gid)
+			}
 			if params.Split > 0 {
 				if tracker := monitor.State.GetTracker(); tracker != nil {
 					tracker.SetThreadInfo(gid, params.Split, params.IsExploration)
@@ -692,6 +695,7 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 		}
 		if gid != "" {
 			if tracker := monitor.State.GetTracker(); tracker != nil {
+				tracker.MarkAdded(gid)
 				tracker.SetThreadInfo(gid, maxConn, false)
 			}
 			classificationURL := candidate.finalURL

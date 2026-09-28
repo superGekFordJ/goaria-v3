@@ -699,7 +699,7 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 	if status == "" {
 		status = "complete"
 	}
-	history.Add(history.HistoryEntry{
+	entry := history.HistoryEntry{
 		GID:             task.GID,
 		Title:           filepath.Base(task.FilePath),
 		Dir:             task.Dir,
@@ -709,13 +709,59 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 		Source:          task.SourceURL,
 		Status:          status,
 		DownloadGroup:   copyDownloadGroup(task.DownloadGroup),
-	})
+	}
+	if status == "complete" {
+		entry.DurationMs, entry.AvgSpeed = terminalTiming(task)
+		if task.PeakSpeed > 0 && !task.peakFromAvgFallback {
+			entry.PeakSpeed = task.PeakSpeed
+		}
+	}
+	history.Add(entry)
 	if task.DownloadGroup != nil {
 		RemoveTaskGroup(task.GID)
 		QueueDownloadGroupName(task.DownloadGroup.ID)
 	}
 
 	log.Printf("[Monitor] History recorded: %s", task.GID)
+}
+
+// minActiveSamplesPerGap bounds the unsampled last interval to <=10% of the
+// observed active time.
+const minActiveSamplesPerGap = 10
+
+// terminalTiming returns the measured active duration (ms) and average speed
+// (B/s) of a completed task, or zeros when no trustworthy source exists
+// (restart replay, missing events, external adds).
+func terminalTiming(task *TrackedTask) (durationMs, avgSpeed int64) {
+	if task == nil {
+		return 0, 0
+	}
+	var elapsed time.Duration
+	switch {
+	case task.terminalElapsed > 0:
+		// Surge complete event: engine-accumulated active time.
+		elapsed = task.terminalElapsed
+	case !IsSgGid(task.GID) &&
+		!task.AddedAt.IsZero() &&
+		task.activeElapsed > 0 &&
+		task.activeElapsed >= minActiveSamplesPerGap*task.maxActiveGap:
+		elapsed = task.activeElapsed
+	}
+	if elapsed <= 0 {
+		return 0, 0
+	}
+	durationMs = elapsed.Milliseconds()
+	if durationMs <= 0 {
+		return 0, 0
+	}
+	bytes := task.TotalLength
+	if bytes <= 0 {
+		bytes = task.CompletedLength
+	}
+	if secs := elapsed.Seconds(); bytes > 0 && secs > 0 {
+		avgSpeed = int64(float64(bytes) / secs)
+	}
+	return durationMs, avgSpeed
 }
 
 // sequentialSpeedstatsSkip is true only for proven ignore-Range sequential

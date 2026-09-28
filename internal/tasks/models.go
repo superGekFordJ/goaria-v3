@@ -14,6 +14,24 @@ type BatchAddResult struct {
 	Groups     []rpc.DownloadGroup `json:"groups,omitempty"`
 }
 
+// TaskDetailEnvelope is the per-gid result of GetTaskDetails.
+type TaskDetailEnvelope struct {
+	Found  bool        `json:"found"`
+	Detail *TaskDetail `json:"detail,omitempty"`
+}
+
+// TaskDetail carries on-demand facts absent from the delta hot path. Zero
+// fields mean unknown and are omitted; the UI hides them.
+type TaskDetail struct {
+	GID         string   `json:"gid"`
+	AddedAt     int64    `json:"added_at,omitempty"`     // unix seconds
+	CompletedAt int64    `json:"completed_at,omitempty"` // unix seconds
+	TimeTakenMs int64    `json:"time_taken_ms,omitempty"`
+	AvgSpeed    int64    `json:"avg_speed,omitempty"`  // B/s, terminal only
+	PeakSpeed   int64    `json:"peak_speed,omitempty"` // B/s
+	URIs        []string `json:"uris,omitempty"`       // primary first, deduped
+}
+
 type addTaskCandidate struct {
 	sourceURL string
 	url       string

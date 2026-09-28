@@ -809,3 +809,67 @@ func TestToStoppedTask_ProjectsFields(t *testing.T) {
 		t.Errorf("t3 = (%q, %q, %q), want (error, 1048576, 500000)", t3.Status, t3.TotalLength, t3.CompletedLength)
 	}
 }
+
+func TestAddMergeKeepsTimingOnZeroInput(t *testing.T) {
+	setupTest(t)
+	Add(HistoryEntry{GID: "t1", Title: "a", DurationMs: 5000, AvgSpeed: 200, PeakSpeed: 300})
+	first, _ := Get("t1")
+	if first.CompletedAt == 0 {
+		t.Fatal("new entry must stamp CompletedAt")
+	}
+
+	// Restart replay: same GID, no timing.
+	Add(HistoryEntry{GID: "t1", Title: "a-replayed"})
+	got, _ := Get("t1")
+	if got.Title != "a-replayed" {
+		t.Fatalf("Title = %q, non-timing fields must still be replaced", got.Title)
+	}
+	if got.CompletedAt != first.CompletedAt || got.DurationMs != 5000 || got.AvgSpeed != 200 || got.PeakSpeed != 300 {
+		t.Fatalf("zero input erased timing: %+v", got)
+	}
+
+	Add(HistoryEntry{GID: "t1", CompletedAt: 42, DurationMs: 1, AvgSpeed: 2, PeakSpeed: 3})
+	got, _ = Get("t1")
+	if got.CompletedAt != 42 || got.DurationMs != 1 || got.AvgSpeed != 2 || got.PeakSpeed != 3 {
+		t.Fatalf("non-zero input must overwrite: %+v", got)
+	}
+}
+
+func TestTimingFieldsJSONShape(t *testing.T) {
+	data, err := json.Marshal(HistoryEntry{GID: "j", DurationMs: 1500, AvgSpeed: 10, PeakSpeed: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	_ = json.Unmarshal(data, &raw)
+	for _, key := range []string{"durationMs", "avgSpeed", "peakSpeed"} {
+		if _, ok := raw[key]; !ok {
+			t.Fatalf("missing camelCase key %q in %s", key, data)
+		}
+	}
+
+	data, _ = json.Marshal(HistoryEntry{GID: "z"})
+	raw = map[string]any{}
+	_ = json.Unmarshal(data, &raw)
+	for _, key := range []string{"durationMs", "avgSpeed", "peakSpeed"} {
+		if _, ok := raw[key]; ok {
+			t.Fatalf("zero %q must be omitted: %s", key, data)
+		}
+	}
+}
+
+func TestLoadLegacyFileWithoutTimingFields(t *testing.T) {
+	historyFile := setupTest(t)
+	legacy := `[{"gid":"old","title":"old.iso","dir":"/d","path":"/d/old.iso","totalLength":"10","completedLength":"10","completedAt":1700000000}]`
+	if err := os.WriteFile(historyFile, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	Load()
+	got, ok := Get("old")
+	if !ok || got.CompletedAt != 1700000000 {
+		t.Fatalf("legacy load failed: %+v ok=%v", got, ok)
+	}
+	if got.DurationMs != 0 || got.AvgSpeed != 0 || got.PeakSpeed != 0 {
+		t.Fatalf("legacy entry grew timing: %+v", got)
+	}
+}

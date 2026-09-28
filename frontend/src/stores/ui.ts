@@ -57,6 +57,8 @@ export const useUIStore = defineStore(
     const effectsLevelPersisted = ref<number>(50)
     const pendingPasteUri = ref('')
     const pendingPasteUris = ref<string[]>([])
+    // Transient: at most one card detail open; never persisted.
+    const openDetailGid = ref<string | null>(null)
 
     // Actions
     function normalizeActiveTab(tab: unknown): ActiveTab {
@@ -81,9 +83,23 @@ export const useUIStore = defineStore(
       }
     }
 
+    function openTaskDetail(gid: string) {
+      const normalized = gid.trim()
+      if (!normalized) return
+      openDetailGid.value = normalized
+    }
+
+    // A gid-scoped close is a no-op when another card is already open, so a
+    // leaving overlay cannot close its successor.
+    function closeTaskDetail(gid?: string) {
+      if (gid !== undefined && openDetailGid.value !== gid) return
+      openDetailGid.value = null
+    }
+
     function setActiveTab(tab: string) {
       activeTab.value = normalizeActiveTab(tab)
       selectedDownloadGroupKey.value = null
+      openDetailGid.value = null
     }
 
     function openDownloadGroupDetail(groupKey: string) {
@@ -93,14 +109,17 @@ export const useUIStore = defineStore(
         activeTab.value = 'downloads'
       }
       selectedDownloadGroupKey.value = normalizedKey
+      openDetailGid.value = null
     }
 
     function closeDownloadGroupDetail() {
       selectedDownloadGroupKey.value = null
+      openDetailGid.value = null
     }
 
     function clearDownloadGroupSelection() {
       selectedDownloadGroupKey.value = null
+      openDetailGid.value = null
     }
 
     function setPendingPasteUri(uri: string) {
@@ -404,7 +423,10 @@ export const useUIStore = defineStore(
       effectsTier,
       pendingPasteUri,
       pendingPasteUris,
+      openDetailGid,
       // Actions
+      openTaskDetail,
+      closeTaskDetail,
       setActiveTab,
       normalizeNavigationState,
       openDownloadGroupDetail,

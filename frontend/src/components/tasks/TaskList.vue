@@ -467,6 +467,22 @@
         cancelBatchDelete()
         return
       }
+      const detailGid = uiStore.openDetailGid
+      if (detailGid) {
+        // Scoped to this list: a KeepAlive-suspended twin must not match.
+        const openInView = !!taskContainer.value?.querySelector('[data-detail-open]')
+        uiStore.closeTaskDetail(detailGid)
+        if (openInView) {
+          void nextTick(() => {
+            const trigger = Array.from(
+              taskContainer.value?.querySelectorAll<HTMLElement>('[data-detail-trigger]') ?? [],
+            ).find(el => el.dataset.detailTrigger === detailGid)
+            trigger?.focus({ preventScroll: true })
+          })
+          return
+        }
+        // Open state scrolled out / moved away: don't swallow this Esc.
+      }
       taskStore.clearSelection()
     },
     onSelectAll: () => {

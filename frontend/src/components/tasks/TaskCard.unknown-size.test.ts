@@ -13,6 +13,15 @@ const storeMocks = vi.hoisted(() => ({
   },
 }))
 
+vi.mock('../../stores/ui', () => ({
+  useUIStore: () => ({
+    openDetailGid: null,
+    effectsTier: 'balanced',
+    openTaskDetail: vi.fn(),
+    closeTaskDetail: vi.fn(),
+  }),
+}))
+
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string, params?: Record<string, unknown>) => {

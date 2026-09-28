@@ -693,6 +693,32 @@ func (c *TaskCache) IsInStopped(gid string) bool {
 	return containsTaskGID(c.arStopped, gid)
 }
 
+// GetTask returns a copy of gid and the list holding it ("active",
+// "waiting" or "stopped"). Only the owning engine's lock is taken.
+func (c *TaskCache) GetTask(gid string) (task rpc.Task, list string, ok bool) {
+	if gid == "" {
+		return rpc.Task{}, "", false
+	}
+	mu := &c.arMu
+	lists := [3]*[]rpc.Task{&c.arActive, &c.arWaiting, &c.arStopped}
+	if enginePrefix(gid) == "sg" {
+		mu = &c.sgMu
+		lists = [3]*[]rpc.Task{&c.sgActive, &c.sgWaiting, &c.sgStopped}
+	}
+	names := [3]string{"active", "waiting", "stopped"}
+
+	mu.RLock()
+	defer mu.RUnlock()
+	for i, l := range lists {
+		for j := range *l {
+			if (*l)[j].GID == gid {
+				return copyTask((*l)[j]), names[i], true
+			}
+		}
+	}
+	return rpc.Task{}, "", false
+}
+
 func containsTaskGID(tasks []rpc.Task, gid string) bool {
 	for i := range tasks {
 		if tasks[i].GID == gid {
