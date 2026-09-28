@@ -1054,6 +1054,7 @@ func (p *Scheduler) worker() {
 				p.wg.Done()
 				p.taskCond.Broadcast()
 				p.mu.Unlock()
+				utils.Debug("Scheduler: worker for %s settles stale claim: ID taken by same-ID replacement", localCfg.ID)
 				continue
 			}
 
