@@ -427,10 +427,12 @@ func BatchRemove(gids []string, deleteFiles bool) {
 }
 
 func TestCleanupRemovedTask_ForwardsIdleMemoryReclaimToMonitor(t *testing.T) {
+	monitor.ResetDownloadGroupNamerForTest()
 	origMonitor := monitor.State.GetMonitor()
 	origCache := monitor.Cache
 	origDelay := getRemoveFileCleanupDelay()
 	t.Cleanup(func() {
+		monitor.ResetDownloadGroupNamerForTest()
 		monitor.State.SetMonitor(origMonitor)
 		monitor.Cache = origCache
 		setRemoveFileCleanupDelay(origDelay)

@@ -14,6 +14,7 @@ import (
 func setupAppTaskHistoryTest(t *testing.T) {
 	t.Helper()
 
+	monitor.ResetDownloadGroupNamerForTest()
 	originalCache := monitor.Cache
 	originalSaveEnabled := history.SaveEnabled
 	originalConfig := config.Get()
@@ -25,6 +26,7 @@ func setupAppTaskHistoryTest(t *testing.T) {
 	config.SetTestConfig(&config.AppConfig{ShowHistory: true})
 
 	t.Cleanup(func() {
+		monitor.ResetDownloadGroupNamerForTest()
 		history.Clear()
 		monitor.ResetTaskGroupStoreForTest("", true)
 		history.SetSaveEnabled(originalSaveEnabled)
