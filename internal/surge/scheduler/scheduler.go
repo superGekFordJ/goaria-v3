@@ -90,7 +90,9 @@ type Scheduler struct {
 	// p.mu — it must sit after close(ad.done) so Cancel never waits on a
 	// parked worker. Per-pool atomics keep the seams race-free and confined:
 	// workers only ever consult their own pool's gates, so a leaked worker
-	// from another pool can neither observe nor consume them. nil = no-op.
+	// from another pool can neither observe nor consume them. A gate is a
+	// single-entry contract: only one worker may enter an armed instance —
+	// the Load+Store(nil) self-clear in gate fns is not atomic. nil = no-op.
 	workerClaimedGate atomic.Pointer[func()]
 	workerDoneGate    atomic.Pointer[func()]
 }
