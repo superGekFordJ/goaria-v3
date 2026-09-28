@@ -438,7 +438,15 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 			_ = mgr.eventBus.Publish(queuedEvent)
 		}
 
-		mgr.pool.Add(*cfg)
+		// FORK-PATCH: first-writer-wins at the pool gate. A same-ID task that
+		// slipped past the GetStatus guard owns the ID now; release only this
+		// attempt's .surge reservation. The master row / EventQueued residue
+		// self-heals through the winner's own lifecycle events — deleting them
+		// here could clobber the winner's freshly restored state.
+		if !mgr.pool.Add(*cfg) {
+			_ = os.Remove(surgePath)
+			return "", "", types.ErrIDExists
+		}
 
 		return cfg.ID, finalFilename, nil
 	}

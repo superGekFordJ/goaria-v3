@@ -181,6 +181,8 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 				Filename:     ev.Filename,
 				Mirrors:      append([]string(nil), ev.Mirrors...),
 				Status:       "queued",
+				TotalSize:    ev.Total,
+				Downloaded:   ev.Downloaded,
 				RateLimit:    ev.RateLimit,
 				RateLimitSet: ev.RateLimitSet,
 				Workers:      ev.Workers,
@@ -189,15 +191,33 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
 				keepRangeAcquisition(&entry, existing)
 				entry.CreatedAt = existing.CreatedAt
+				// A retry requeue re-publishes EventQueued; sparse/zero
+				// fields must not erase the totals and progress the row
+				// already carries.
+				if entry.TotalSize <= 0 {
+					entry.TotalSize = existing.TotalSize
+				}
+				if entry.Downloaded <= 0 {
+					entry.Downloaded = existing.Downloaded
+				}
 			}
 			surgeEng.UpsertMasterCacheEntry(entry)
 		}
-		Cache.AddSgTask(rpc.Task{
+		// mergeTaskFields only applies non-empty fields, so TotalLength /
+		// CompletedLength are set only when the event carries real values —
+		// a retry EventQueued must not wipe an existing task's progress.
+		queuedTask := rpc.Task{
 			GID:           gid,
 			Status:        "waiting",
-			TotalLength:   "0",
 			DownloadSpeed: "0",
-		}, "waiting")
+		}
+		if ev.Total > 0 {
+			queuedTask.TotalLength = strconv.FormatInt(ev.Total, 10)
+		}
+		if ev.Downloaded > 0 {
+			queuedTask.CompletedLength = strconv.FormatInt(ev.Downloaded, 10)
+		}
+		Cache.AddSgTask(queuedTask, "waiting")
 		Cache.PrefetchMetadata(gid)
 	case types.EventStarted:
 		deltaType = "add"

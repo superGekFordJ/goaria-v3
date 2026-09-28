@@ -137,7 +137,11 @@ func (mgr *LifecycleManager) Resume(id string) error {
 			hooks.RecomputeResumeParams(cfg)
 		}
 
-		mgr.pool.Add(*cfg)
+		if !mgr.pool.Add(*cfg) {
+			// A same-ID task won the race between extract and re-add; the
+			// winner's own lifecycle events stand, so no EventResumed here.
+			return types.ErrAlreadyActive
+		}
 
 		if mgr.eventBus != nil {
 			_ = mgr.eventBus.Publish(types.DownloadEvent{
@@ -183,7 +187,11 @@ func (mgr *LifecycleManager) Resume(id string) error {
 		hooks.RecomputeResumeParams(&cfg)
 	}
 
-	mgr.pool.Add(cfg)
+	if !mgr.pool.Add(cfg) {
+		// Same as the hot path: a same-ID task registered first; its own
+		// lifecycle events stand, so no EventResumed here.
+		return types.ErrAlreadyActive
+	}
 
 	if mgr.eventBus != nil {
 		_ = mgr.eventBus.Publish(types.DownloadEvent{
@@ -216,7 +224,16 @@ func (mgr *LifecycleManager) ResumeBatch(ids []string) []error {
 	var coldIDs []string
 	coldIdx := make(map[string]int)
 
+	// Duplicate IDs in one batch must not double-enqueue: only the first
+	// occurrence goes through hot/cold resume; repeats race the winner.
+	seen := make(map[string]struct{}, len(ids))
 	for i, id := range ids {
+		if _, dup := seen[id]; dup {
+			errs[i] = types.ErrAlreadyActive
+			continue
+		}
+		seen[id] = struct{}{}
+
 		if st := mgr.pool.GetStatus(id); st != nil {
 			switch st.Status {
 			case "pausing":
@@ -243,7 +260,11 @@ func (mgr *LifecycleManager) ResumeBatch(ids []string) []error {
 				hooks.RecomputeResumeParams(cfg)
 			}
 
-			mgr.pool.Add(*cfg)
+			if !mgr.pool.Add(*cfg) {
+				// Lost a same-ID race; the winner's events stand.
+				errs[i] = types.ErrAlreadyActive
+				continue
+			}
 
 			if mgr.eventBus != nil {
 				_ = mgr.eventBus.Publish(types.DownloadEvent{
@@ -308,7 +329,12 @@ func (mgr *LifecycleManager) ResumeBatch(ids []string) []error {
 			hooks.RecomputeResumeParams(&cfg)
 		}
 
-		mgr.pool.Add(cfg)
+		if !mgr.pool.Add(cfg) {
+			// A same-ID task registered between the cold load and this add;
+			// the winner's lifecycle events stand.
+			errs[idx] = types.ErrAlreadyActive
+			continue
+		}
 
 		if mgr.eventBus != nil {
 			_ = mgr.eventBus.Publish(types.DownloadEvent{

@@ -1800,19 +1800,20 @@ func TestScheduler_PickupABA_PauseAddSameID(t *testing.T) {
 	ch := make(chan types.DownloadEvent, 16)
 	pool := New(ch, 1)
 
-	oldGate := workerClaimedGate
-	// LIFO: shutdown runs before the restore so no worker reads the gate var
+	oldGate := pool.workerClaimedGate.Load()
+	// LIFO: shutdown runs before the restore so no worker reads the gate
 	// concurrently with the write.
-	t.Cleanup(func() { workerClaimedGate = oldGate })
+	t.Cleanup(func() { pool.workerClaimedGate.Store(oldGate) })
 	t.Cleanup(pool.GracefulShutdown)
 
 	claimed := make(chan struct{})
 	release := make(chan struct{})
-	workerClaimedGate = func() {
-		workerClaimedGate = nil
+	gateFn := func() {
+		pool.workerClaimedGate.Store(nil)
 		close(claimed)
 		<-release
 	}
+	pool.workerClaimedGate.Store(&gateFn)
 	var releaseOnce sync.Once
 	releaseWorker := func() { releaseOnce.Do(func() { close(release) }) }
 	defer releaseWorker()

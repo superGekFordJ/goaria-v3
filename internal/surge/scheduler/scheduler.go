@@ -82,6 +82,17 @@ type Scheduler struct {
 	// Separate mutex so the callback runs after p.mu.Unlock without nesting.
 	tightenMu       sync.RWMutex
 	tightenOnPickup func(*types.DownloadRecord)
+
+	// FORK-PATCH: test-only seams for pinning worker windows. workerClaimedGate
+	// fires after waitForTask hands a claimed task to a worker, before it
+	// re-locks p.mu to register it. workerDoneGate fires after RunDownload
+	// returns and ad.done is closed, before terminal bookkeeping re-locks
+	// p.mu — it must sit after close(ad.done) so Cancel never waits on a
+	// parked worker. Per-pool atomics keep the seams race-free and confined:
+	// workers only ever consult their own pool's gates, so a leaked worker
+	// from another pool can neither observe nor consume them. nil = no-op.
+	workerClaimedGate atomic.Pointer[func()]
+	workerDoneGate    atomic.Pointer[func()]
 }
 
 // PauseResult describes the download state that Pause changed.
@@ -201,13 +212,35 @@ func resolveDestPath(cfg *types.DownloadRecord) string {
 	return destPath
 }
 
-// Add adds a new download task to the pool. The caller (LifecycleManager) is
-// responsible for emitting any lifecycle events (e.g. DownloadQueuedMsg).
-func (p *Scheduler) Add(cfg types.DownloadRecord) {
+// Add adds a new download task to the pool and reports whether it was
+// accepted. An ID is owned by at most one queued or active entry at a time:
+// a same-ID add, or one racing the shutdown sweep, is refused without
+// touching queue state, limiters, or the wait group.
+// The caller (LifecycleManager) is responsible for emitting any lifecycle
+// events (e.g. DownloadQueuedMsg).
+func (p *Scheduler) Add(cfg types.DownloadRecord) bool {
 	if cfg.ProgressCh == nil {
 		cfg.ProgressCh = p.progressCh
 	}
 	p.mu.Lock()
+	if p.isShuttingDown {
+		p.mu.Unlock()
+		utils.Debug("Scheduler: Add refused for %s: shutting down", cfg.ID)
+		return false
+	}
+	// FORK-PATCH: first-writer-wins. A queued entry already owns the ID even
+	// when inFlight — the claiming worker settles its wait-group count, so a
+	// refused add must not disturb it.
+	if _, exists := p.queued[cfg.ID]; exists {
+		p.mu.Unlock()
+		utils.Debug("Scheduler: Add refused for %s: ID already queued", cfg.ID)
+		return false
+	}
+	if _, exists := p.downloads[cfg.ID]; exists {
+		p.mu.Unlock()
+		utils.Debug("Scheduler: Add refused for %s: ID already active", cfg.ID)
+		return false
+	}
 	p.ensureLimiterForConfigLocked(&cfg)
 	qt := &queuedTask{cfg: cfg}
 	p.queued[cfg.ID] = qt
@@ -215,6 +248,7 @@ func (p *Scheduler) Add(cfg types.DownloadRecord) {
 	p.wg.Add(1)
 	p.taskCond.Signal()
 	p.mu.Unlock()
+	return true
 }
 
 func (p *Scheduler) ensureLimiterForConfigLocked(cfg *types.DownloadRecord) {
@@ -773,11 +807,6 @@ func (p *Scheduler) waitForTask() *queuedTask {
 	}
 }
 
-// workerClaimedGate is a test-only seam invoked after waitForTask hands a
-// claimed task to a worker and before the worker re-locks p.mu to register it.
-// Production code leaves it nil.
-var workerClaimedGate func()
-
 func (p *Scheduler) worker() {
 	for {
 		qt := p.waitForTask()
@@ -785,8 +814,8 @@ func (p *Scheduler) worker() {
 			return
 		}
 
-		if g := workerClaimedGate; g != nil {
-			g()
+		if g := p.workerClaimedGate.Load(); g != nil {
+			(*g)()
 		}
 
 		// Create cancellable context
@@ -802,6 +831,21 @@ func (p *Scheduler) worker() {
 			p.mu.Unlock()
 			cancel()
 			p.wg.Done()
+			continue
+		}
+
+		// FORK-PATCH: last line of defense against two RunDownloads sharing one
+		// destination — a same-ID active entry registered during the claim
+		// window already owns the ID, so this claim is voided. The queued entry
+		// is ours; drop it so it cannot linger as a ghost, then settle the
+		// wait-group count like the refusal above.
+		if _, occupied := p.downloads[id]; occupied {
+			delete(p.queued, id)
+			p.removeQueueOrderLocked(id)
+			p.mu.Unlock()
+			cancel()
+			p.wg.Done()
+			utils.Debug("Scheduler: claim for %s dropped: ID already has an active download", id)
 			continue
 		}
 
@@ -839,9 +883,14 @@ func (p *Scheduler) worker() {
 		ad.running.Store(false)
 		close(ad.done) // unblock any Cancel caller waiting for this worker to exit
 
-		// Sync back mutated fields cleanly under lock
+		if g := p.workerDoneGate.Load(); g != nil {
+			(*g)()
+		}
+
+		// Sync back mutated fields cleanly under lock — only when the slot is
+		// still ours; the write target is this ad's own config.
 		p.mu.Lock()
-		if _, exists := p.downloads[localCfg.ID]; exists {
+		if p.downloads[localCfg.ID] == ad {
 			ad.config.TotalSize = localCfg.TotalSize
 			ad.config.SupportsRange = localCfg.SupportsRange
 			ad.config.RangeAcquisitionMode = localCfg.RangeAcquisitionMode
@@ -873,8 +922,13 @@ func (p *Scheduler) worker() {
 				prog.Done.Store(true)
 			}
 			p.mu.Lock()
-			delete(p.downloads, localCfg.ID)
-			delete(p.downloadLimiters, localCfg.ID)
+			// FORK-PATCH: delete only the slot this worker still owns — a
+			// same-ID replacement registered after our claim keeps its own
+			// entry and its limiter.
+			if p.downloads[localCfg.ID] == ad {
+				delete(p.downloads, localCfg.ID)
+				delete(p.downloadLimiters, localCfg.ID)
+			}
 			p.mu.Unlock()
 		} else if isPauseResult {
 			utils.Debug("Scheduler: Download %s paused cleanly", localCfg.ID)
@@ -908,9 +962,20 @@ func (p *Scheduler) worker() {
 			}
 		} else {
 			p.mu.Lock()
-			delete(p.downloads, localCfg.ID)
+			// FORK-PATCH: delete the slot only when this worker still owns it;
+			// a same-ID replacement registered during the run keeps its entry.
+			ownedSlot := p.downloads[localCfg.ID] == ad
+			if ownedSlot {
+				delete(p.downloads, localCfg.ID)
+			}
+			// FORK-PATCH: any surviving same-ID entry belongs to a replacement
+			// that arrived while we were running — our stale task must neither
+			// requeue over a queued replacement nor emit events for a foreign
+			// active owner.
+			_, slotTaken := p.queued[localCfg.ID]
+			foreignActive := p.downloads[localCfg.ID] != nil
 
-			if shouldRetryFailedDownload(err, p.isShuttingDown, qt.retries) {
+			if shouldRetryFailedDownload(err, p.isShuttingDown, qt.retries) && !slotTaken && !foreignActive {
 				qt.retries++
 				// Defer eligibility instead of blocking this worker; the
 				// retry timer wakes waitForTask at retryAt.
@@ -926,6 +991,16 @@ func (p *Scheduler) worker() {
 				p.mu.Unlock()
 
 				if localCfg.ProgressCh != nil {
+					var workers int
+					var minChunkSize int64
+					var downloaded int64
+					if localCfg.ProgressState != nil {
+						downloaded = progress.CfgProgress(&localCfg).Bytes.Downloaded.Load()
+					}
+					if localCfg.Runtime != nil {
+						workers = localCfg.Runtime.Workers
+						minChunkSize = localCfg.Runtime.MinChunkSize
+					}
 					safeSendProgress(localCfg.ProgressCh, types.DownloadEvent{
 						Type:         types.EventQueued,
 						DownloadID:   localCfg.ID,
@@ -933,10 +1008,12 @@ func (p *Scheduler) worker() {
 						URL:          localCfg.URL,
 						DestPath:     localCfg.DestPath,
 						Mirrors:      localCfg.Mirrors,
+						Downloaded:   downloaded,
+						Total:        localCfg.TotalSize,
 						RateLimit:    localCfg.RateLimit,
 						RateLimitSet: localCfg.RateLimitSet,
-						Workers:      localCfg.Workers,
-						MinChunkSize: localCfg.MinChunkSize,
+						Workers:      workers,
+						MinChunkSize: minChunkSize,
 					}, p.progressDone)
 				}
 
@@ -964,6 +1041,17 @@ func (p *Scheduler) worker() {
 					// wg, so we must; never overwrite a same-ID replacement.
 					p.wg.Done()
 				}
+				p.taskCond.Broadcast()
+				p.mu.Unlock()
+				continue
+			}
+
+			if slotTaken || foreignActive {
+				// The same-ID replacement owns this ID and its event stream;
+				// settle our own wait-group count silently — no EventQueued or
+				// EventError from a stale task may leak into it. The limiter
+				// entry also belongs to the replacement, so it is kept.
+				p.wg.Done()
 				p.taskCond.Broadcast()
 				p.mu.Unlock()
 				continue
@@ -1012,7 +1100,9 @@ func (p *Scheduler) worker() {
 			if !isCancel && localCfg.ProgressState != nil {
 				progress.CfgProgress(&localCfg).SetError(err)
 			}
-			delete(p.downloadLimiters, localCfg.ID)
+			if ownedSlot {
+				delete(p.downloadLimiters, localCfg.ID)
+			}
 			p.mu.Unlock()
 
 			// Send outside the lock: safeSendProgress may block on a full
