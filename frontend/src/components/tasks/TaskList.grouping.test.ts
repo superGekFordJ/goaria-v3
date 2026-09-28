@@ -51,6 +51,8 @@ const rawStoreMocks = vi.hoisted(() => ({
   uiStore: {
     activeTab: 'downloads' as 'downloads' | 'stopped',
     openDownloadGroupDetail: vi.fn(),
+    openDetailGid: null as string | null,
+    closeTaskDetail: vi.fn(),
   },
 }))
 
@@ -204,6 +206,11 @@ describe('TaskList visible grouping', () => {
     storeMocks.taskStore.getSelectedGroupKeys = []
     storeMocks.downloadGroupStore.masterItems = []
     storeMocks.downloadGroupStore.backendCards = []
+    storeMocks.uiStore.openDetailGid = null
+    storeMocks.uiStore.closeTaskDetail.mockImplementation((gid?: string) => {
+      if (gid !== undefined && storeMocks.uiStore.openDetailGid !== gid) return
+      storeMocks.uiStore.openDetailGid = null
+    })
   })
 
   it('passes grouped hints to cards and leaves ungrouped cards without hints in non-virtual list', () => {
@@ -529,5 +536,61 @@ describe('TaskList visible grouping', () => {
     ).toBe(true)
     expect(completedWrapper.find('[data-card-gid="gid-01"]').exists()).toBe(false)
     completedWrapper.unmount()
+  })
+
+  it('Escape resolves in order: modal -> visible detail -> clearSelection', async () => {
+    storeMocks.taskStore.selectedCount = 1
+    storeMocks.uiStore.openDetailGid = 'gid-01'
+    const wrapper = mountList([createTask(1, false), createTask(2, false)])
+
+    // A visible overlay marker inside this list's container.
+    const container = wrapper.find('[data-task-scroll-root]').element
+      .parentElement as HTMLElement
+    const marker = document.createElement('div')
+    marker.setAttribute('data-detail-open', '')
+    container.appendChild(marker)
+    // Mount clears selection via mode watchers; only post-mount Esc matters.
+    storeMocks.taskStore.clearSelection.mockClear()
+
+    await wrapper.find('[data-test="batch-action-bar-stub"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(document.body.querySelector('.fixed.inset-0')).toBeTruthy()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await wrapper.vm.$nextTick()
+    // The modal consumes the first Escape; detail + selection stay untouched.
+    expect(storeMocks.uiStore.closeTaskDetail).not.toHaveBeenCalled()
+    expect(storeMocks.taskStore.clearSelection).not.toHaveBeenCalled()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await wrapper.vm.$nextTick()
+    // The visible detail consumes the second Escape; selection is preserved.
+    expect(storeMocks.uiStore.closeTaskDetail).toHaveBeenCalledTimes(1)
+    expect(storeMocks.uiStore.closeTaskDetail).toHaveBeenCalledWith('gid-01')
+    expect(storeMocks.taskStore.clearSelection).not.toHaveBeenCalled()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await wrapper.vm.$nextTick()
+    // Nothing left open: this Escape reaches clearSelection.
+    expect(storeMocks.taskStore.clearSelection).toHaveBeenCalledTimes(1)
+
+    wrapper.unmount()
+  })
+
+  it('Escape still clears selection when openDetailGid has no overlay inside this list', async () => {
+    storeMocks.uiStore.openDetailGid = 'gid-scrolled-out'
+    const wrapper = mountList([createTask(1, false)])
+    storeMocks.taskStore.clearSelection.mockClear()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await wrapper.vm.$nextTick()
+
+    // No [data-detail-open] under taskContainer: one Escape closes the stale
+    // open state and falls through to clearSelection.
+    expect(storeMocks.uiStore.closeTaskDetail).toHaveBeenCalledTimes(1)
+    expect(storeMocks.uiStore.closeTaskDetail).toHaveBeenCalledWith('gid-scrolled-out')
+    expect(storeMocks.taskStore.clearSelection).toHaveBeenCalledTimes(1)
+
+    wrapper.unmount()
   })
 })
