@@ -848,7 +848,10 @@ func TestTimingFieldsJSONShape(t *testing.T) {
 		}
 	}
 
-	data, _ = json.Marshal(HistoryEntry{GID: "z"})
+	data, err = json.Marshal(HistoryEntry{GID: "z"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	raw = map[string]any{}
 	_ = json.Unmarshal(data, &raw)
 	for _, key := range []string{"durationMs", "avgSpeed", "peakSpeed"} {
