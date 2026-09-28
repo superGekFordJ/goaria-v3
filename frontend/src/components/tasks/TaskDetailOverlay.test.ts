@@ -207,7 +207,7 @@ describe('TaskDetailOverlay', () => {
       const w = mountOverlay(task, { detail: ready(task, { uris: ['https://d.example.com/f', 'https://m.example.com/f'] }) })
       const src = w.get('[data-cell="source"]')
       expect(src.text()).toContain('d.example.com')
-      expect(src.text()).toContain('+1')
+      expect(src.text()).toContain('taskDetail.mirrorBadge {"count":1}')
       w.unmount()
       wrapper = null
       const w2 = mountOverlay(task, { detail: null })

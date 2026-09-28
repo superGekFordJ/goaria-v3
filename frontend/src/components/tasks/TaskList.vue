@@ -470,13 +470,15 @@
       const detailGid = uiStore.openDetailGid
       if (detailGid) {
         // Scoped to this list: a KeepAlive-suspended twin must not match.
-        const openInView = !!taskContainer.value?.querySelector('[data-detail-open]')
+        const trigger = Array.from(
+          taskContainer.value?.querySelectorAll<HTMLElement>('[data-detail-trigger]') ?? [],
+        ).find(el => el.dataset.detailTrigger === detailGid)
+        // A leaving overlay keeps [data-detail-open] briefly; anchor the check
+        // to the trigger's own card so a ghost elsewhere cannot satisfy it.
+        const openInView = !!trigger?.closest('.task-card')?.querySelector('[data-detail-open]')
         uiStore.closeTaskDetail(detailGid)
         if (openInView) {
           void nextTick(() => {
-            const trigger = Array.from(
-              taskContainer.value?.querySelectorAll<HTMLElement>('[data-detail-trigger]') ?? [],
-            ).find(el => el.dataset.detailTrigger === detailGid)
             trigger?.focus({ preventScroll: true })
           })
           return

@@ -220,6 +220,7 @@
     "avgSpeed": "Ø Geschw.",
     "copy": "Kopieren",
     "copied": "Kopiert",
+    "mirrorBadge": "+{count}",
     "mirrorCount": "{count} weitere Spiegel",
     "justNow": "Gerade eben",
     "errors": {

@@ -220,6 +220,7 @@
     "avgSpeed": "Avg speed",
     "copy": "Copy",
     "copied": "Copied",
+    "mirrorBadge": "+{count}",
     "mirrorCount": "{count} more mirrors",
     "justNow": "Just now",
     "errors": {

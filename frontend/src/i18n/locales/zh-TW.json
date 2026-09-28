@@ -220,6 +220,7 @@
     "avgSpeed": "平均速度",
     "copy": "複製",
     "copied": "已複製",
+    "mirrorBadge": "+{count}",
     "mirrorCount": "另有 {count} 個鏡像",
     "justNow": "剛剛",
     "errors": {

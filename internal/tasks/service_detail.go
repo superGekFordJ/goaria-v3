@@ -65,6 +65,9 @@ func buildTaskDetail(gid string, tracker *monitor.TaskTracker, surgeEng *rpc.Sur
 		return TaskDetailEnvelope{Found: false}
 	}
 
+	// The four sources above are read under independent locks, so the snapshot
+	// can mix epochs; the per-field zero checks below degrade a mixed read to
+	// hidden cells rather than wrong values.
 	d := &TaskDetail{GID: gid}
 	// Master completion fields are only meaningful once Surge marked it done.
 	masterDone := inMaster && master.Status == "completed"

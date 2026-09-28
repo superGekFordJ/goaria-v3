@@ -543,12 +543,17 @@ describe('TaskList visible grouping', () => {
     storeMocks.uiStore.openDetailGid = 'gid-01'
     const wrapper = mountList([createTask(1, false), createTask(2, false)])
 
-    // A visible overlay marker inside this list's container.
-    const container = wrapper.find('[data-task-scroll-root]').element
-      .parentElement as HTMLElement
+    // A visible overlay anchored to the gid-01 card: the Esc check scopes the
+    // marker to the card holding the matching detail trigger.
+    const container = wrapper.find('[data-task-scroll-root]').element.parentElement as HTMLElement
+    const card = document.createElement('div')
+    card.className = 'task-card'
+    const trigger = document.createElement('button')
+    trigger.setAttribute('data-detail-trigger', 'gid-01')
     const marker = document.createElement('div')
     marker.setAttribute('data-detail-open', '')
-    container.appendChild(marker)
+    card.append(trigger, marker)
+    container.appendChild(card)
     // Mount clears selection via mode watchers; only post-mount Esc matters.
     storeMocks.taskStore.clearSelection.mockClear()
 

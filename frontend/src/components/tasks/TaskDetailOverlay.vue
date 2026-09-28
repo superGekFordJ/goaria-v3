@@ -45,10 +45,7 @@
   const nowMs = ref(Date.now())
   const copiedKey = ref<string | null>(null)
 
-  const localeTag = computed(() => {
-    const value = (i18n as { locale?: { value?: unknown } }).locale?.value
-    return typeof value === 'string' && value ? value : 'en'
-  })
+  const localeTag = computed(() => i18n.locale.value || 'en')
 
   const status = computed(() => props.task.status)
   const isSurge = computed(() => props.task.gid.startsWith('sg_'))
@@ -273,6 +270,11 @@
     t(explainTaskErrorKey(props.task.errorCode, props.task.errorMessage)),
   )
 
+  // nowMs only feeds relative-time cells; without one the tick is wasted work.
+  const hasTimeCell = computed(() =>
+    cells.value.some(cell => cell.kind === 'addedAt' || cell.kind === 'completedAt'),
+  )
+
   let copiedTimer: ReturnType<typeof setTimeout> | null = null
   async function copyValue(key: string, text: string | undefined) {
     if (!text) return
@@ -330,7 +332,7 @@
     closeButtonRef.value?.focus({ preventScroll: true })
     document.addEventListener('pointerdown', onDocumentPointerDown, true)
     relativeTimer = setInterval(() => {
-      nowMs.value = Date.now()
+      if (hasTimeCell.value) nowMs.value = Date.now()
     }, RELATIVE_TICK_MS)
   })
 
@@ -456,7 +458,7 @@
               class="font-mono-data text-[10px] leading-4 text-[var(--app-text-subtle)] shrink-0"
               :title="t('taskDetail.mirrorCount', { count: source.extraCount })"
             >
-              +{{ source.extraCount }}
+              {{ t('taskDetail.mirrorBadge', { count: source.extraCount }) }}
             </span>
             <button
               type="button"

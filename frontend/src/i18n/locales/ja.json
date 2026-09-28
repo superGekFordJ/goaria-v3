@@ -220,6 +220,7 @@
     "avgSpeed": "平均速度",
     "copy": "コピー",
     "copied": "コピーしました",
+    "mirrorBadge": "+{count}",
     "mirrorCount": "ほか {count} 件のミラー",
     "justNow": "たった今",
     "errors": {

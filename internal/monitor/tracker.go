@@ -370,6 +370,8 @@ func (t *TaskTracker) SetThreadInfo(gid string, threadCount int, isExploration b
 
 // MarkAdded records that this session observed the user add of gid. The
 // clock starts now so add→first active tick counts; a waiting tick clears it.
+// Re-marking an already tracked gid intentionally re-anchors measurement to
+// the latest observed add; the discarded window is at most one tick.
 func (t *TaskTracker) MarkAdded(gid string) {
 	if gid == "" {
 		return

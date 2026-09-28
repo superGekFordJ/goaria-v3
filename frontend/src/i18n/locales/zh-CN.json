@@ -220,6 +220,7 @@
     "avgSpeed": "均速",
     "copy": "复制",
     "copied": "已复制",
+    "mirrorBadge": "+{count}",
     "mirrorCount": "另有 {count} 个镜像",
     "justNow": "刚刚",
     "errors": {

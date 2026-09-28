@@ -220,6 +220,7 @@
     "avgSpeed": "Vel. media",
     "copy": "Copiar",
     "copied": "Copiado",
+    "mirrorBadge": "+{count}",
     "mirrorCount": "{count} espejos más",
     "justNow": "Ahora mismo",
     "errors": {
