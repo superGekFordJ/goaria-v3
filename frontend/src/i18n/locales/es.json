@@ -223,6 +223,8 @@
     "mirrorBadge": "+{count}",
     "mirrorCount": "{count} espejos más",
     "justNow": "Ahora mismo",
+    "chunkMap": "Mapa de fragmentos: {count} fragmentos · {size} cada uno",
+    "chunkMapNoSize": "Mapa de fragmentos: {count} fragmentos",
     "errors": {
       "timeout": "Tiempo de conexión agotado",
       "notFound": "Archivo no encontrado en el servidor",

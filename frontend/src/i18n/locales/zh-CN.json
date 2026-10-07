@@ -223,6 +223,8 @@
     "mirrorBadge": "+{count}",
     "mirrorCount": "另有 {count} 个镜像",
     "justNow": "刚刚",
+    "chunkMap": "分块状态：{count} 块 · 每块 {size}",
+    "chunkMapNoSize": "分块状态：{count} 块",
     "errors": {
       "timeout": "连接超时",
       "notFound": "服务器上找不到该文件",

@@ -212,13 +212,28 @@
   // Detail visibility is a pure function of the ui store: RecycleScroller
   // reuses card views, so no per-card detail state may live here.
   const isDetailOpen = computed(() => uiStore.openDetailGid === props.task.gid)
+  // Live = active and fed by the delta stream, so the stats row is worth
+  // revealing under the detail. Group-detail snapshot members are not in the
+  // store: no live telemetry. The gid scan only runs for the one open card.
+  const detailLive = computed(
+    () =>
+      isDetailOpen.value &&
+      isActive.value &&
+      taskStore.activeTasks.some((task: Task) => task.gid === props.task.gid),
+  )
+  const isStatsHidden = computed(() => isDetailOpen.value && !detailLive.value)
   const detailRegionId = computed(() => `task-detail-${props.task.gid}`)
   const detailTransitionName = computed(() =>
     uiStore.effectsTier === 'reduced' ? '' : 'task-detail-fade',
   )
   const infoButtonRef = ref<HTMLButtonElement | null>(null)
+  // One-shot focus claim for the overlay, armed only by a user-initiated
+  // open here. The overlay consumes it on its first mount, so recycled
+  // remounts (this flag already spent, or a fresh pooled card) stay silent.
+  const detailFocusArmed = ref(false)
 
   function openDetail() {
+    detailFocusArmed.value = true
     uiStore.openTaskDetail(props.task.gid)
   }
 
@@ -244,10 +259,14 @@
       'task-card glass-panel rounded-[var(--radius-squircle-xl)] p-5 group hover-reveal-container',
       cardGlowClass,
       { 'task-card-selected': isSelected },
+      { 'task-card-detail-open': isDetailOpen },
     ]"
     @click="handleCardClick"
   >
-    <!-- Face: stays in layout while the detail is open so height/FLIP are stable -->
+    <!-- Face: stays in layout while the detail is open so height/FLIP are stable.
+         The stats row below is a sibling so it can stay visible under a live
+         detail panel; the progress bar's bottom margin collapses through this
+         wrapper, keeping the original spacing. -->
     <div
       data-task-face
       class="task-card-face"
@@ -333,8 +352,8 @@
         </div>
 
         <div class="flex gap-1.5 shrink-0">
-          <!-- Detail trigger: own reveal target so error cards keep it visible -->
-          <div class="hover-reveal-target shrink-0" :class="{ 'always-visible': isError }">
+          <!-- Detail trigger (Hover Reveal) -->
+          <div class="hover-reveal-target shrink-0">
             <button
               ref="infoButtonRef"
               type="button"
@@ -413,96 +432,99 @@
           </template>
         </div>
       </div>
+    </div>
 
-      <!-- Stats Row -->
-      <div class="flex items-end justify-between gap-4">
-        <!-- Left: Progress Stats -->
-        <div class="flex items-center gap-6">
-          <!-- Size Progress -->
-          <div class="flex flex-col">
-            <span
-              class="text-[9px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-1"
-            >
-              {{ t('taskCard.progress') }}
-            </span>
-            <div class="font-mono-data text-xs text-[var(--app-text-muted)]">
-              <span class="text-[var(--app-text)]/70">{{ formatSize(task.completedLength) }}</span>
-              <span class="mx-1 text-[var(--app-text-subtle)]">/</span>
-              <span>{{
-                hasKnownTotal
-                  ? formatSize(task.totalLength)
-                  : isCompleted
-                    ? formatSize(task.completedLength)
-                    : '--'
-              }}</span>
-            </div>
-          </div>
-
-          <!-- Progress Percentage -->
-          <div class="flex flex-col">
-            <span
-              class="text-[9px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-1"
-            >
-              {{ t('taskCard.done') }}
-            </span>
-            <div class="font-mono-data text-xs text-[var(--app-text-muted)]">
-              <template v-if="isCompleted">
-                100.0<span class="text-[10px] text-[var(--app-text-subtle)]">%</span>
-              </template>
-              <template v-else-if="hasKnownTotal && progress !== null">
-                {{ progress.toFixed(1)
-                }}<span class="text-[10px] text-[var(--app-text-subtle)]">%</span>
-              </template>
-              <template v-else>
-                --<span class="text-[10px] text-[var(--app-text-subtle)]">%</span>
-              </template>
-            </div>
-          </div>
-
-          <!-- ETA (only when downloading) -->
-          <div v-if="isActive" class="flex flex-col">
-            <span
-              class="text-[9px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-1"
-            >
-              {{ t('taskCard.remaining') }}
-            </span>
-            <div
-              class="flex items-center gap-1 font-mono-data text-xs text-[var(--app-text-muted)]"
-            >
-              <Clock :size="10" class="text-[var(--app-text-subtle)]" />
-              {{ estimatedTime }}
-            </div>
-          </div>
-        </div>
-
-        <!-- Right: Speed Display (Neon) -->
-        <div v-if="isActive" class="flex flex-col items-end">
+    <!-- Stats Row -->
+    <div
+      data-task-stats
+      class="task-card-face flex items-end justify-between gap-4"
+      :class="{ 'is-detail-hidden': isStatsHidden }"
+      :aria-hidden="isStatsHidden ? 'true' : undefined"
+    >
+      <!-- Left: Progress Stats -->
+      <div class="flex items-center gap-6">
+        <!-- Size Progress -->
+        <div class="flex flex-col">
           <span
             class="text-[9px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-1"
           >
-            {{ t('taskCard.speed') }}
+            {{ t('taskCard.progress') }}
           </span>
-          <div class="flex items-baseline gap-1">
-            <Zap :size="12" class="text-[var(--neon-primary)]/60 mb-0.5" />
-            <span class="font-mono-data text-xl font-bold text-neon leading-none">
-              {{ formatSpeed(task.downloadSpeed) }}
-            </span>
-            <span class="font-mono-data text-[10px] text-[var(--neon-primary)]/60">
-              {{ speedUnit(task.downloadSpeed) }}
-            </span>
+          <div class="font-mono-data text-xs text-[var(--app-text-muted)]">
+            <span class="text-[var(--app-text)]/70">{{ formatSize(task.completedLength) }}</span>
+            <span class="mx-1 text-[var(--app-text-subtle)]">/</span>
+            <span>{{
+              hasKnownTotal
+                ? formatSize(task.totalLength)
+                : isCompleted
+                  ? formatSize(task.completedLength)
+                  : '--'
+            }}</span>
           </div>
         </div>
 
-        <!-- Completed Badge -->
-        <div v-else-if="isCompleted" class="flex items-center gap-2">
-          <div
-            class="px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20 flex items-center gap-2"
+        <!-- Progress Percentage -->
+        <div class="flex flex-col">
+          <span
+            class="text-[9px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-1"
           >
-            <div class="w-1.5 h-1.5 rounded-full bg-[var(--status-complete)]"></div>
-            <span class="font-mono-data text-[10px] font-bold text-[var(--status-complete)]">
-              {{ t('taskCard.downloadComplete') }}
-            </span>
+            {{ t('taskCard.done') }}
+          </span>
+          <div class="font-mono-data text-xs text-[var(--app-text-muted)]">
+            <template v-if="isCompleted">
+              100.0<span class="text-[10px] text-[var(--app-text-subtle)]">%</span>
+            </template>
+            <template v-else-if="hasKnownTotal && progress !== null">
+              {{ progress.toFixed(1)
+              }}<span class="text-[10px] text-[var(--app-text-subtle)]">%</span>
+            </template>
+            <template v-else>
+              --<span class="text-[10px] text-[var(--app-text-subtle)]">%</span>
+            </template>
           </div>
+        </div>
+
+        <!-- ETA (only when downloading) -->
+        <div v-if="isActive" class="flex flex-col">
+          <span
+            class="text-[9px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-1"
+          >
+            {{ t('taskCard.remaining') }}
+          </span>
+          <div class="flex items-center gap-1 font-mono-data text-xs text-[var(--app-text-muted)]">
+            <Clock :size="10" class="text-[var(--app-text-subtle)]" />
+            {{ estimatedTime }}
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Speed Display (Neon) -->
+      <div v-if="isActive" class="flex flex-col items-end">
+        <span
+          class="text-[9px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-1"
+        >
+          {{ t('taskCard.speed') }}
+        </span>
+        <div class="flex items-baseline gap-1">
+          <Zap :size="12" class="text-[var(--neon-primary)]/60 mb-0.5" />
+          <span class="font-mono-data text-xl font-bold text-neon leading-none">
+            {{ formatSpeed(task.downloadSpeed) }}
+          </span>
+          <span class="font-mono-data text-[10px] text-[var(--neon-primary)]/60">
+            {{ speedUnit(task.downloadSpeed) }}
+          </span>
+        </div>
+      </div>
+
+      <!-- Completed Badge -->
+      <div v-else-if="isCompleted" class="flex items-center gap-2">
+        <div
+          class="px-3 py-1.5 rounded-lg bg-[var(--status-complete)]/10 border border-[var(--status-complete)]/20 flex items-center gap-2"
+        >
+          <div class="w-1.5 h-1.5 rounded-full bg-[var(--status-complete)]"></div>
+          <span class="font-mono-data text-[10px] font-bold text-[var(--status-complete)]">
+            {{ t('taskCard.downloadComplete') }}
+          </span>
         </div>
       </div>
     </div>
@@ -512,7 +534,9 @@
         v-if="isDetailOpen"
         :key="task.gid"
         :task="task"
-        :eta="estimatedTime"
+        :live="detailLive"
+        :focus-on-mount="detailFocusArmed"
+        @focus-claimed="detailFocusArmed = false"
         @close="closeDetail"
       />
     </Transition>
@@ -523,6 +547,17 @@
   /* Card hover glow effect */
   .task-card {
     position: relative;
+  }
+
+  /* Detail open suppresses the harsh rectangular outer border glow so the
+     internal liquid meniscus and bottom-up aura can breathe naturally. */
+  .task-card.task-card-detail-open {
+    border-color: color-mix(in srgb, var(--neon-primary) 22%, transparent);
+    box-shadow: var(--glass-shadow);
+  }
+
+  .task-card.task-card-detail-open::after {
+    display: none !important;
   }
 
   .task-card::before {
@@ -556,18 +591,28 @@
       visibility 0s linear 180ms;
   }
 
-  :global([data-effects='reduced']) .task-card-face {
+  [data-effects='reduced'] .task-card-face {
     transition: none;
   }
 
-  .task-detail-fade-enter-active,
+  /* The panel settles down a few pixels on entry and lifts back on exit; it
+     only ever moves upward from its resting edge, never over the stats row. */
+  .task-detail-fade-enter-active {
+    transition:
+      opacity 180ms cubic-bezier(0.16, 1, 0.3, 1),
+      transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
   .task-detail-fade-leave-active {
-    transition: opacity 180ms ease;
+    transition:
+      opacity 140ms ease-in,
+      transform 140ms ease-in;
   }
 
   .task-detail-fade-enter-from,
   .task-detail-fade-leave-to {
     opacity: 0;
+    transform: translateY(-4px);
   }
 
   .task-group-chip {

@@ -223,6 +223,8 @@
     "mirrorBadge": "+{count}",
     "mirrorCount": "{count} weitere Spiegel",
     "justNow": "Gerade eben",
+    "chunkMap": "Chunk-Übersicht: {count} Chunks · je {size}",
+    "chunkMapNoSize": "Chunk-Übersicht: {count} Chunks",
     "errors": {
       "timeout": "Zeitüberschreitung der Verbindung",
       "notFound": "Datei auf dem Server nicht gefunden",

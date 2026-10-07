@@ -1,9 +1,10 @@
 <script setup lang="ts">
-  import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+  import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { Pause, Play, X, Copy, CheckCircle } from '@lucide/vue'
   import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
   import { useTaskStore } from '../../stores/task'
+  import TaskChunkMap from './TaskChunkMap.vue'
   import { copyToClipboard } from '../../utils/clipboard'
   import { formatDuration } from '../../composables/useTaskEta'
   import {
@@ -24,16 +25,22 @@
   const GRID_COLUMNS = 4
   const GRID_MAX_ROWS = 2
   const ACTIVE_REFRESH_MS = 5000
+  const LIVE_REFRESH_MS = 1000
   const RELATIVE_TICK_MS = 30_000
   const COPIED_FEEDBACK_MS = 1200
 
   const props = defineProps<{
     task: Task
-    eta: string
+    // Single source of truth from the card: active and backed by live telemetry.
+    live: boolean
+    // One-shot claim armed by a user-initiated open on the card; a mount that
+    // finds it may move focus, then reports back so it cannot fire twice.
+    focusOnMount?: boolean
   }>()
 
   const emit = defineEmits<{
     (e: 'close', restoreFocus: boolean): void
+    (e: 'focus-claimed'): void
   }>()
 
   const i18n = useI18n()
@@ -49,12 +56,7 @@
 
   const status = computed(() => props.task.status)
   const isSurge = computed(() => props.task.gid.startsWith('sg_'))
-  // Group-detail snapshot members are not in the store: no live telemetry.
-  const isLive = computed(
-    () =>
-      status.value === 'active' &&
-      taskStore.activeTasks.some((task: Task) => task.gid === props.task.gid),
-  )
+  const isLive = computed(() => props.live && status.value === 'active')
 
   const fileName = computed(() => {
     const path = props.task.files?.[0]?.path
@@ -87,21 +89,6 @@
   const downloadedText = computed(() => {
     const done = formatSize(props.task.completedLength)
     return `${done} / ${hasKnownTotal.value ? formatSize(props.task.totalLength) : '--'}`
-  })
-
-  const primaryMetric = computed(() => {
-    if (status.value === 'active' && isLive.value) {
-      return {
-        kind: 'speed' as const,
-        value: formatSpeed(props.task.downloadSpeed),
-        unit: speedUnit(props.task.downloadSpeed),
-      }
-    }
-    if (status.value === 'complete') {
-      const size = hasKnownTotal.value ? props.task.totalLength : props.task.completedLength
-      return { kind: 'text' as const, value: formatSize(size), unit: '' }
-    }
-    return { kind: 'text' as const, value: downloadedText.value, unit: '' }
   })
 
   const primaryAction = computed<'pause' | 'resume' | null>(() => {
@@ -145,7 +132,6 @@
   const hasErrorInfo = computed(() => !!(props.task.errorCode || props.task.errorMessage))
 
   type CellKind =
-    | 'remaining'
     | 'downloaded'
     | 'peak'
     | 'connections'
@@ -186,13 +172,16 @@
     }
   }
 
+  // The grid only carries facts the card face cannot show. Live cards reveal
+  // their own stats row, so progress numbers stay out of the grid; peak is a
+  // terminal-only fact (it appears late and would reflow a running task).
   const cells = computed<Cell[]>(() => {
     const d = detail.value
-    const peak = () => t1Cell('peak', d?.peak_speed, v => speedCell('peak', v))
     const addedAt = () => t1Cell('addedAt', d?.added_at, v => timeCell('addedAt', v))
     const sourceCell = (): Cell | null => (source.value ? { kind: 'source', span: 2 } : null)
     const saveCell = (): Cell | null =>
       saveLocation.value ? { kind: 'saveLocation', span: 2 } : null
+    const downloaded: Cell = { kind: 'downloaded', span: 2, value: downloadedText.value }
     const engine: Cell = {
       kind: 'engine',
       span: 1,
@@ -202,28 +191,33 @@
     let ordered: Array<Cell | null>
     switch (status.value) {
       case 'active': {
+        if (!isLive.value) {
+          ordered = [downloaded, sourceCell(), engine, addedAt()]
+          break
+        }
         const threads = parseLiveThreadCount(props.task)
         ordered = [
-          isLive.value ? { kind: 'remaining', span: 1, value: props.eta } : null,
-          { kind: 'downloaded', span: 2, value: downloadedText.value },
-          peak(),
-          isLive.value && isSurge.value && threads !== null
+          sourceCell(),
+          saveCell(),
+          isSurge.value && threads !== null
             ? { kind: 'connections', span: 1, value: String(threads) }
             : null,
-          sourceCell(),
           engine,
           addedAt(),
         ]
         break
       }
       case 'waiting':
-        ordered = [sourceCell(), saveCell(), engine, addedAt()]
-        break
       case 'paused':
-        ordered = [sourceCell(), saveCell(), peak(), engine, addedAt()]
+        ordered = [downloaded, sourceCell(), saveCell(), engine, addedAt()]
         break
       case 'error':
-        ordered = [hasErrorInfo.value ? { kind: 'error', span: 4 } : null, sourceCell(), saveCell()]
+        ordered = [
+          hasErrorInfo.value ? { kind: 'error', span: 4 } : null,
+          downloaded,
+          sourceCell(),
+          saveCell(),
+        ]
         break
       case 'complete':
         ordered = [
@@ -233,7 +227,7 @@
             value: formatDuration(Math.max(1, Math.round(v / 1000))),
           })),
           t1Cell('avgSpeed', d?.avg_speed, v => speedCell('avgSpeed', v)),
-          peak(),
+          t1Cell('peak', d?.peak_speed, v => speedCell('peak', v)),
           t1Cell('completedAt', d?.completed_at, v => timeCell('completedAt', v)),
           sourceCell(),
           saveCell(),
@@ -242,15 +236,11 @@
       default:
         ordered = [sourceCell(), saveCell(), engine]
     }
-    return packGridCells(
-      ordered.filter((c): c is Cell => c !== null),
-      GRID_COLUMNS,
-      GRID_MAX_ROWS,
-    )
+    const kept = ordered.filter((c): c is Cell => c !== null)
+    return packGridCells(kept, GRID_COLUMNS, GRID_MAX_ROWS)
   })
 
   const cellLabelKey: Record<Exclude<CellKind, 'error'>, string> = {
-    remaining: 'taskCard.remaining',
     downloaded: 'taskDetail.downloaded',
     peak: 'taskDetail.peak',
     connections: 'taskDetail.connections',
@@ -263,8 +253,54 @@
     avgSpeed: 'taskDetail.avgSpeed',
   }
 
-  const spanClass = (span: Cell['span']) =>
-    span === 4 ? 'col-span-4' : span === 2 ? 'col-span-2' : 'col-span-1'
+  const spanClass = (span: Cell['span']) => {
+    return span === 4 ? 'col-span-4' : span === 2 ? 'col-span-2' : 'col-span-1'
+  }
+
+  // A twin mounted inside a KeepAlive-suspended (detached) card must not fetch,
+  // tick, listen, or draw: it would race the visible copy's request ordering.
+  const detachedMount = ref(false)
+
+  interface ChunkFrame {
+    states: readonly number[]
+    count?: number
+    size?: number
+  }
+
+  // Chunk maps exist for Surge tasks that are downloading or paused (frozen).
+  // Snapshot members qualify too: their frames come from the same monitor cache.
+  const chunkEligible = computed(
+    () => isSurge.value && (status.value === 'active' || status.value === 'paused'),
+  )
+  const readyChunkFrame = computed<ChunkFrame | null>(() => {
+    const d = detail.value
+    const states = d?.chunk_states
+    if (!d || !states || states.length === 0) return null
+    return { states, count: d.chunk_count, size: d.chunk_size }
+  })
+  // The last trusted frame bridges fetch gaps — a status refetch's pending
+  // phase and the empty window right after a resume or silent retry clears
+  // the engine's snapshot — so the map recolors in place instead of blinking.
+  const lastChunkFrame = shallowRef<ChunkFrame | null>(null)
+  watch(
+    [t1Phase, readyChunkFrame],
+    ([phase, frame]) => {
+      // Only a real frame may replace the fallback; an empty ready response
+      // must not erase it.
+      if (phase !== 'pending' && frame) lastChunkFrame.value = frame
+    },
+    { immediate: true },
+  )
+  // undefined: no chunk column. null: box reserved while the first fetch is
+  // pending, so the fact grid does not shift sideways when data lands.
+  const chunkFrame = computed<ChunkFrame | null | undefined>(() => {
+    if (!chunkEligible.value || detachedMount.value) return undefined
+    if (t1Phase.value === 'pending') return lastChunkFrame.value
+    if (t1Phase.value !== 'ready') return undefined
+    // A ready pull that comes back empty keeps the last real frame; a task
+    // that never produced one keeps the column hidden.
+    return readyChunkFrame.value ?? lastChunkFrame.value ?? undefined
+  })
 
   const errorExplanation = computed(() =>
     t(explainTaskErrorKey(props.task.errorCode, props.task.errorMessage)),
@@ -276,10 +312,12 @@
   )
 
   let copiedTimer: ReturnType<typeof setTimeout> | null = null
+  let disposed = false
   async function copyValue(key: string, text: string | undefined) {
     if (!text) return
     const ok = await copyToClipboard(text)
-    if (!ok) return
+    // A resolve landing after unmount must not arm a dangling timer.
+    if (!ok || disposed) return
     copiedKey.value = key
     if (copiedTimer) clearTimeout(copiedTimer)
     copiedTimer = setTimeout(() => {
@@ -303,12 +341,8 @@
     emit('close', false)
   }
 
-  // A twin mounted inside a KeepAlive-suspended (detached) card must not fetch,
-  // tick, or listen: it would race the visible copy's request ordering.
-  let detachedMount = false
-
   function fetchDetail() {
-    if (detachedMount) return
+    if (detachedMount.value) return
     void taskStore.fetchTaskDetail(props.task.gid, status.value)
   }
 
@@ -323,15 +357,30 @@
   }
 
   watch(status, () => fetchDetail())
+  // Live overlays pull near the engine's own snapshot cadence so the chunk
+  // map keeps moving; snapshot members keep the slower rhythm. Paused and
+  // hidden windows never poll.
+  const refreshMs = computed(() => {
+    if (status.value !== 'active' || !taskStore.isWindowVisible) return 0
+    return isLive.value ? LIVE_REFRESH_MS : ACTIVE_REFRESH_MS
+  })
   watch(
-    () => status.value === 'active' && taskStore.isWindowVisible,
-    shouldRefresh => {
+    refreshMs,
+    ms => {
       stopRefresh()
-      if (shouldRefresh && !detachedMount) {
-        refreshTimer = setInterval(fetchDetail, ACTIVE_REFRESH_MS)
+      if (ms > 0 && !detachedMount.value) {
+        refreshTimer = setInterval(fetchDetail, ms)
       }
     },
     { immediate: true },
+  )
+  // Hidden windows pause polling; on return, pull once so the overlay does
+  // not serve the stale frame until the next interval tick.
+  watch(
+    () => taskStore.isWindowVisible,
+    visible => {
+      if (visible && refreshMs.value > 0) fetchDetail()
+    },
   )
   // A time cell appearing while the tick was gated needs a fresh baseline.
   watch(hasTimeCell, v => {
@@ -341,16 +390,20 @@
   onMounted(() => {
     const card = rootRef.value?.closest('.task-card')
     if (card && !card.isConnected) {
-      detachedMount = true
+      detachedMount.value = true
       stopRefresh()
       return
     }
     fetchDetail()
-    // Steal focus only for user-initiated opens (nothing focused yet, or the
-    // user activated something in this card); never on passive remounts.
-    const active = document.activeElement
-    if (!active || active === document.body || !!(card && card.contains(active))) {
-      closeButtonRef.value?.focus({ preventScroll: true })
+    // Steal focus only when the card armed this mount from a user open (and
+    // focus is free or inside this card); recycled remounts arrive with the
+    // claim consumed, so they never move focus.
+    if (props.focusOnMount) {
+      emit('focus-claimed')
+      const active = document.activeElement
+      if (!active || active === document.body || !!(card && card.contains(active))) {
+        closeButtonRef.value?.focus({ preventScroll: true })
+      }
     }
     document.addEventListener('pointerdown', onDocumentPointerDown, true)
     relativeTimer = setInterval(() => {
@@ -359,6 +412,7 @@
   })
 
   onUnmounted(() => {
+    disposed = true
     document.removeEventListener('pointerdown', onDocumentPointerDown, true)
     stopRefresh()
     if (relativeTimer) clearInterval(relativeTimer)
@@ -375,162 +429,404 @@
     data-detail-open
     role="region"
     :aria-label="t('taskDetail.regionLabel', { name: fileName })"
-    class="task-detail-overlay absolute inset-0 z-10 p-3.5 flex flex-col"
+    :data-detail-reveal="isLive ? '' : undefined"
+    class="task-detail-overlay absolute inset-0 z-10"
   >
-    <!-- Identity strip -->
-    <div class="flex items-center gap-2 h-7 shrink-0">
-      <span class="status-dot shrink-0" :class="statusMeta.dot" :title="statusMeta.label"></span>
-      <span class="sr-only">{{ statusMeta.label }}</span>
-      <h3
-        class="flex-1 min-w-0 font-semibold text-sm text-[var(--app-text)]/90 truncate"
-        :title="fileName"
-      >
-        {{ fileName }}
-      </h3>
-      <div data-detail-primary class="shrink-0 flex items-baseline gap-1">
-        <template v-if="primaryMetric.kind === 'speed'">
-          <span class="font-mono-data text-sm font-bold text-neon leading-none">
-            {{ primaryMetric.value }}
-          </span>
-          <span class="font-mono-data text-[10px] text-[var(--neon-primary)]/60">
-            {{ primaryMetric.unit }}
-          </span>
-        </template>
-        <span v-else class="font-mono-data text-xs text-[var(--app-text-muted)]">
-          {{ primaryMetric.value }}
-        </span>
-      </div>
-      <button
-        v-if="primaryAction"
-        type="button"
-        data-detail-action
-        class="btn-glass w-7 h-7 rounded-[var(--radius-squircle-sm)] flex items-center justify-center shrink-0 text-[var(--app-text-muted)] hover:text-[var(--neon-primary)]"
-        :title="primaryAction === 'pause' ? t('taskCard.pause') : t('taskCard.resume')"
-        :aria-label="primaryAction === 'pause' ? t('taskCard.pause') : t('taskCard.resume')"
-        @click="runPrimaryAction"
-      >
-        <Pause v-if="primaryAction === 'pause'" :size="14" />
-        <Play v-else :size="14" class="ml-0.5" />
-      </button>
-      <button
-        ref="closeButtonRef"
-        type="button"
-        data-detail-close
-        class="btn-glass w-7 h-7 rounded-[var(--radius-squircle-sm)] flex items-center justify-center shrink-0 text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
-        :title="t('taskDetail.close')"
-        :aria-label="t('taskDetail.close')"
-        @click="onCloseClick"
-      >
-        <X :size="14" />
-      </button>
+    <!-- Surface: always the whole card. Live cards fade it out over the stats
+         labels so the card's own running numbers show through the bottom.
+         Both variants stay mounted so a status flip crossfades. -->
+    <div class="task-detail-surface" aria-hidden="true">
+      <div class="task-detail-slab task-detail-slab-solid" :class="{ 'is-shown': !isLive }"></div>
+      <div class="task-detail-slab task-detail-slab-reveal" :class="{ 'is-shown': isLive }"></div>
+      <div class="task-detail-bottom-glow" :class="{ 'is-shown': isLive }"></div>
     </div>
 
-    <!-- Fact grid: at most two rows, never scrolls -->
-    <div class="grid grid-cols-4 gap-x-3 gap-y-1.5 mt-2 min-w-0">
-      <div
-        v-for="cell in cells"
-        :key="cell.kind"
-        :data-cell="cell.kind"
-        :class="[spanClass(cell.span), 'min-w-0']"
-      >
-        <template v-if="cell.kind === 'error'">
-          <div class="text-xs leading-4 text-[var(--app-text)] truncate">
-            {{ errorExplanation }}
-          </div>
-          <div v-if="task.errorMessage" class="flex items-center gap-1 min-w-0">
-            <span
-              class="font-mono-data text-[11px] leading-4 text-[var(--app-text-subtle)] truncate"
-              :title="task.errorMessage"
-            >
-              {{ task.errorMessage }}
-            </span>
-            <button
-              type="button"
-              class="task-detail-copy"
-              :title="copyLabel('error')"
-              :aria-label="copyLabel('error')"
-              @click="copyValue('error', task.errorMessage)"
-            >
-              <CheckCircle v-if="copiedKey === 'error'" :size="11" class="task-detail-copied" />
-              <Copy v-else :size="11" />
-            </button>
-          </div>
-        </template>
+    <div class="relative h-full p-3.5 flex flex-col">
+      <!-- Identity strip -->
+      <div class="flex items-center gap-2 h-7 shrink-0">
+        <span class="status-dot shrink-0" :class="statusMeta.dot" :title="statusMeta.label"></span>
+        <span class="sr-only">{{ statusMeta.label }}</span>
+        <h3
+          class="flex-1 min-w-0 font-semibold text-sm text-[var(--app-text)]/90 truncate"
+          :title="fileName"
+        >
+          {{ fileName }}
+        </h3>
+        <button
+          v-if="primaryAction"
+          type="button"
+          data-detail-action
+          class="btn-glass w-7 h-7 rounded-[var(--radius-squircle-sm)] flex items-center justify-center shrink-0 text-[var(--app-text-muted)] hover:text-[var(--neon-primary)]"
+          :title="primaryAction === 'pause' ? t('taskCard.pause') : t('taskCard.resume')"
+          :aria-label="primaryAction === 'pause' ? t('taskCard.pause') : t('taskCard.resume')"
+          @click="runPrimaryAction"
+        >
+          <Pause v-if="primaryAction === 'pause'" :size="14" />
+          <Play v-else :size="14" class="ml-0.5" />
+        </button>
+        <button
+          ref="closeButtonRef"
+          type="button"
+          data-detail-close
+          class="btn-glass w-7 h-7 rounded-[var(--radius-squircle-sm)] flex items-center justify-center shrink-0 text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+          :title="t('taskDetail.close')"
+          :aria-label="t('taskDetail.close')"
+          @click="onCloseClick"
+        >
+          <X :size="14" />
+        </button>
+      </div>
 
-        <template v-else>
-          <span
-            class="block text-[9px] leading-3 font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-0.5 truncate"
+      <div class="flex items-start gap-3 mt-2 min-w-0">
+        <!-- Fact grid: at most two rows, never scrolls -->
+        <div
+          data-detail-facts
+          class="flex-1 min-w-0 grid grid-cols-4 gap-x-3 gap-y-1.5"
+        >
+          <div
+            v-for="cell in cells"
+            :key="cell.kind"
+            :data-cell="cell.kind"
+            :class="[spanClass(cell.span), 'min-w-0']"
           >
-            {{ t(cellLabelKey[cell.kind]) }}
-          </span>
+            <template v-if="cell.kind === 'error'">
+              <div class="text-xs leading-4 text-[var(--app-text)] truncate">
+                {{ errorExplanation }}
+              </div>
+              <div v-if="task.errorMessage" class="flex items-center gap-1 min-w-0">
+                <span
+                  class="font-mono-data text-[11px] leading-4 text-[var(--app-text-subtle)] truncate"
+                  :title="task.errorMessage"
+                >
+                  {{ task.errorMessage }}
+                </span>
+                <button
+                  type="button"
+                  class="task-detail-copy"
+                  :title="copyLabel('error')"
+                  :aria-label="copyLabel('error')"
+                  @click="copyValue('error', task.errorMessage)"
+                >
+                  <CheckCircle v-if="copiedKey === 'error'" :size="11" class="task-detail-copied" />
+                  <Copy v-else :size="11" />
+                </button>
+              </div>
+            </template>
 
+            <template v-else>
+              <span
+                class="block text-[9px] leading-3 font-bold uppercase tracking-widest text-[var(--app-text-subtle)] mb-0.5 truncate"
+              >
+                {{ t(cellLabelKey[cell.kind]) }}
+              </span>
+
+              <span
+                v-if="cell.pending"
+                data-detail-placeholder
+                class="task-detail-placeholder"
+                aria-hidden="true"
+              ></span>
+
+              <div
+                v-else-if="cell.kind === 'source' && source"
+                class="flex items-center gap-1 min-w-0"
+              >
+                <span
+                  class="text-xs leading-4 text-[var(--app-text-muted)] truncate"
+                  :title="source.title"
+                >
+                  {{ source.label }}
+                </span>
+                <span
+                  v-if="source.extraCount > 0"
+                  class="font-mono-data text-[10px] leading-4 text-[var(--app-text-subtle)] shrink-0"
+                  :title="t('taskDetail.mirrorCount', { count: source.extraCount })"
+                >
+                  {{ t('taskDetail.mirrorBadge', { count: source.extraCount }) }}
+                </span>
+                <button
+                  type="button"
+                  class="task-detail-copy"
+                  :title="copyLabel('source')"
+                  :aria-label="copyLabel('source')"
+                  @click="copyValue('source', source.raw)"
+                >
+                  <CheckCircle
+                    v-if="copiedKey === 'source'"
+                    :size="11"
+                    class="task-detail-copied"
+                  />
+                  <Copy v-else :size="11" />
+                </button>
+              </div>
+
+              <div v-else-if="cell.kind === 'saveLocation'" class="flex items-center gap-1 min-w-0">
+                <span
+                  class="text-xs leading-4 text-[var(--app-text-muted)] truncate"
+                  :title="saveLocation"
+                >
+                  {{ saveLocation }}
+                </span>
+                <button
+                  type="button"
+                  class="task-detail-copy"
+                  :title="copyLabel('saveLocation')"
+                  :aria-label="copyLabel('saveLocation')"
+                  @click="copyValue('saveLocation', saveLocation)"
+                >
+                  <CheckCircle
+                    v-if="copiedKey === 'saveLocation'"
+                    :size="11"
+                    class="task-detail-copied"
+                  />
+                  <Copy v-else :size="11" />
+                </button>
+              </div>
+
+              <div
+                v-else
+                class="font-mono-data text-xs leading-4 text-[var(--app-text-muted)] truncate"
+                :title="cell.title"
+              >
+                {{ cell.value }}
+                <span v-if="cell.unit" class="text-[10px] text-[var(--app-text-subtle)]">
+                  {{ cell.unit }}
+                </span>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div v-if="chunkFrame !== undefined" data-chunk-slot class="task-detail-chunk-slot">
+          <TaskChunkMap
+            v-if="chunkFrame"
+            :states="chunkFrame.states"
+            :count="chunkFrame.count"
+            :chunk-size="chunkFrame.size"
+            :frozen="status === 'paused'"
+          />
           <span
-            v-if="cell.pending"
-            data-detail-placeholder
-            class="task-detail-placeholder"
+            v-else
+            data-chunk-reserve
+            class="task-detail-chunk-reserve"
             aria-hidden="true"
           ></span>
-
-          <div v-else-if="cell.kind === 'source' && source" class="flex items-center gap-1 min-w-0">
-            <span class="text-xs leading-4 text-[var(--app-text-muted)] truncate" :title="source.title">
-              {{ source.label }}
-            </span>
-            <span
-              v-if="source.extraCount > 0"
-              class="font-mono-data text-[10px] leading-4 text-[var(--app-text-subtle)] shrink-0"
-              :title="t('taskDetail.mirrorCount', { count: source.extraCount })"
-            >
-              {{ t('taskDetail.mirrorBadge', { count: source.extraCount }) }}
-            </span>
-            <button
-              type="button"
-              class="task-detail-copy"
-              :title="copyLabel('source')"
-              :aria-label="copyLabel('source')"
-              @click="copyValue('source', source.raw)"
-            >
-              <CheckCircle v-if="copiedKey === 'source'" :size="11" class="task-detail-copied" />
-              <Copy v-else :size="11" />
-            </button>
-          </div>
-
-          <div v-else-if="cell.kind === 'saveLocation'" class="flex items-center gap-1 min-w-0">
-            <span class="text-xs leading-4 text-[var(--app-text-muted)] truncate" :title="saveLocation">
-              {{ saveLocation }}
-            </span>
-            <button
-              type="button"
-              class="task-detail-copy"
-              :title="copyLabel('saveLocation')"
-              :aria-label="copyLabel('saveLocation')"
-              @click="copyValue('saveLocation', saveLocation)"
-            >
-              <CheckCircle
-                v-if="copiedKey === 'saveLocation'"
-                :size="11"
-                class="task-detail-copied"
-              />
-              <Copy v-else :size="11" />
-            </button>
-          </div>
-
-          <div
-            v-else
-            class="font-mono-data text-xs leading-4 text-[var(--app-text-muted)] truncate"
-            :title="cell.title"
-          >
-            {{ cell.value }}
-            <span v-if="cell.unit" class="text-[10px] text-[var(--app-text-subtle)]">
-              {{ cell.unit }}
-            </span>
-          </div>
-        </template>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+  .task-detail-overlay {
+    /* Inner radius of the card's padding box: card squircle minus its border. */
+    --detail-radius: calc(var(--radius-squircle-xl) - 1px);
+    /* Live reveal, anchored to the card bottom because the stats row hugs it.
+       The mask stays fully transparent for the first 1.75rem (bottom padding
+       20px + digit bodies), so the numbers read sharp; a soft ramp to ~25%
+       at --detail-clear only grazes the digit tops, then --detail-fade
+       (~18px) veils the labels row above the figures. */
+    --detail-clear: 2.375rem;
+    --detail-fade: 1.125rem;
+    /* Obsidian glass: deep smoked tone that shares the card's glass DNA rather
+       than opaque flat black paint. No blur. */
+    --detail-slab-fill:
+      linear-gradient(color-mix(in srgb, var(--overlay-bg) 75%, var(--card-bg)) 0 0), var(--card-bg);
+    /* Light caught by the glass: lip rim, faint full edge, inner top glow, and
+       one soft specular sweep from the top-left. */
+    --detail-rim: color-mix(in srgb, var(--app-text) 38%, transparent);
+    --detail-edge: color-mix(in srgb, var(--app-text) 7%, transparent);
+    --detail-glow: color-mix(in srgb, var(--app-text) 12%, transparent);
+    --detail-sheen: color-mix(in srgb, var(--app-text) 6%, transparent);
+    --detail-surface:
+      linear-gradient(160deg, var(--detail-sheen), transparent 45%), var(--detail-slab-fill);
+    border-radius: var(--detail-radius);
+  }
+
+  /* Ceramic glass: a clean, denser white than the card (no grey wash), defined
+     by its edge rather than by tint. */
+  [data-theme='light'] .task-detail-overlay {
+    --detail-slab-fill: linear-gradient(var(--card-bg) 0 0), var(--glass-bg);
+    --detail-rim: var(--glass-border-highlight);
+    --detail-edge: color-mix(in srgb, var(--app-text) 9%, transparent);
+    --detail-glow: color-mix(in srgb, var(--glass-border-highlight) 70%, transparent);
+    --detail-sheen: transparent;
+  }
+
+  .task-detail-surface {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+  }
+
+  .task-detail-slab {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--detail-surface);
+    box-shadow:
+      inset 0 0 0 1px var(--detail-edge),
+      inset 0 14px 22px -18px var(--detail-glow);
+  }
+
+  /* Specular lip: bright along the top edge and corners, fading down the
+     walls. This also restores the card's own 12 o'clock hairline. */
+  .task-detail-slab::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    padding: 1px;
+    border-radius: inherit;
+    background: linear-gradient(
+      180deg,
+      var(--detail-rim),
+      color-mix(in srgb, var(--detail-rim) 20%, transparent) 45%,
+      transparent 80%
+    );
+    mask:
+      linear-gradient(black 0 0) content-box,
+      linear-gradient(black 0 0);
+    mask-composite: exclude;
+  }
+
+  /* Status flips crossfade the two surfaces: the incoming one rises quickly
+     while the outgoing one lingers briefly, so the panel never thins out. */
+  .task-detail-slab-solid,
+  .task-detail-slab-reveal {
+    opacity: 0;
+    transition: opacity 220ms ease 60ms;
+  }
+
+  .task-detail-slab-solid.is-shown,
+  .task-detail-slab-reveal.is-shown {
+    opacity: 1;
+    transition: opacity 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  [data-effects='reduced'] .task-detail-slab-solid,
+  [data-effects='reduced'] .task-detail-slab-reveal {
+    transition: none;
+  }
+
+  /* Live: liquid meniscus transition. Solid across the upper panel and fact
+     grid, easing over the stats labels into a translucent glass floor at the
+     bottom figures. An elliptical mask gently arches the meniscus, retaining
+     the organic liquid lens boundary. */
+  .task-detail-slab-reveal {
+    mask-image:
+      linear-gradient(
+        to top,
+        transparent 0,
+        transparent 1.75rem,
+        color-mix(in srgb, black 25%, transparent) var(--detail-clear),
+        color-mix(in srgb, black 65%, transparent)
+          calc(var(--detail-clear) + var(--detail-fade) * 0.4),
+        color-mix(in srgb, black 90%, transparent)
+          calc(var(--detail-clear) + var(--detail-fade) * 0.8),
+        black calc(var(--detail-clear) + var(--detail-fade))
+      ),
+      radial-gradient(110% 100% at 50% 0, black 82%, transparent);
+    mask-composite: intersect;
+  }
+
+  /* Fluid colored aura at the card bottom, radiating upwards into the glass
+     like an ambient light pool. Kept soft and subtle to prevent text glare. */
+  .task-detail-bottom-glow {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3.25rem;
+    border-radius: inherit;
+    /* The light pool breathes up from the card edge, not from its center. */
+    transform-origin: bottom;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 220ms ease 60ms;
+    background: radial-gradient(
+      ellipse 80% 100% at 50% 100%,
+      color-mix(in srgb, var(--neon-primary) 18%, transparent),
+      color-mix(in srgb, var(--neon-primary) 5%, transparent) 55%,
+      transparent 85%
+    );
+  }
+
+  .task-detail-bottom-glow.is-shown {
+    opacity: 0.35;
+    transition: opacity 200ms cubic-bezier(0.16, 1, 0.3, 1);
+    animation: detail-bottom-breathe 4s ease-in-out infinite;
+  }
+
+  [data-theme='light'] .task-detail-bottom-glow {
+    background: radial-gradient(
+      ellipse 80% 100% at 50% 100%,
+      color-mix(in srgb, var(--neon-primary) 10%, transparent),
+      transparent 65%
+    );
+  }
+
+  [data-theme='light'] .task-detail-bottom-glow.is-shown {
+    opacity: 0.18;
+  }
+
+  @keyframes detail-bottom-breathe {
+    0%,
+    100% {
+      opacity: 0.25;
+      transform: scaleY(0.95);
+    }
+    50% {
+      opacity: 0.42;
+      transform: scaleY(1.04);
+    }
+  }
+
+  [data-theme='light'] .task-detail-bottom-glow.is-shown {
+    animation-name: detail-bottom-breathe-light;
+  }
+
+  @keyframes detail-bottom-breathe-light {
+    0%,
+    100% {
+      opacity: 0.12;
+      transform: scaleY(0.95);
+    }
+    50% {
+      opacity: 0.22;
+      transform: scaleY(1.04);
+    }
+  }
+
+  [data-effects='reduced'] .task-detail-bottom-glow {
+    animation: none;
+    transition: none;
+  }
+
+  /* Static tier only silences the breathe; opacity stays with the .is-shown
+     rules above so a hidden glow never paints on non-live panels. */
+  [data-effects-glow='static'] .task-detail-bottom-glow.is-shown {
+    animation: none;
+  }
+
+  .task-detail-chunk-slot {
+    flex: 0 0 auto;
+    /* Elastic between ~120px and 176px; at the 800px minimum window the fact
+       grid keeps enough width for a full downloaded/total pair. */
+    width: clamp(7.5rem, 24%, 11rem);
+    /* Just under the two-row fact band (~66px), so on live cards the map's
+       bottom edge clears the revealed stats row. */
+    height: 3.5rem;
+  }
+
+  .task-detail-chunk-reserve {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border-radius: var(--radius-squircle-sm);
+    background: color-mix(in srgb, var(--app-text) 6%, transparent);
+  }
+
   .task-detail-placeholder {
     display: block;
     width: 3rem;

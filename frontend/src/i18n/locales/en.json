@@ -223,6 +223,8 @@
     "mirrorBadge": "+{count}",
     "mirrorCount": "{count} more mirrors",
     "justNow": "Just now",
+    "chunkMap": "Chunk map: {count} chunks · {size} each",
+    "chunkMapNoSize": "Chunk map: {count} chunks",
     "errors": {
       "timeout": "Connection timed out",
       "notFound": "File not found on the server",

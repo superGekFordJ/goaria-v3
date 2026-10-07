@@ -223,6 +223,8 @@
     "mirrorBadge": "+{count}",
     "mirrorCount": "另有 {count} 個鏡像",
     "justNow": "剛剛",
+    "chunkMap": "分塊狀態：{count} 塊 · 每塊 {size}",
+    "chunkMapNoSize": "分塊狀態：{count} 塊",
     "errors": {
       "timeout": "連線逾時",
       "notFound": "伺服器上找不到該檔案",

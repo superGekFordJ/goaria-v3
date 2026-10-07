@@ -223,6 +223,8 @@
     "mirrorBadge": "+{count}",
     "mirrorCount": "ほか {count} 件のミラー",
     "justNow": "たった今",
+    "chunkMap": "チャンク状況：{count} 個 · 各 {size}",
+    "chunkMapNoSize": "チャンク状況：{count} 個",
     "errors": {
       "timeout": "接続がタイムアウトしました",
       "notFound": "サーバー上にファイルが見つかりません",
