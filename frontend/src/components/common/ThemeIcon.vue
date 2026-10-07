@@ -99,7 +99,7 @@
     opacity: 1;
   }
 
-  :global(:root[data-effects='reduced']) .theme-icon {
+  [data-effects='reduced'] .theme-icon {
     transition: none !important;
   }
 </style>

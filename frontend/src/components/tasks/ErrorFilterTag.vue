@@ -76,8 +76,8 @@
     transition: all 0.3s ease;
   }
 
-  :global([data-theme='dark']) .error-filter-tag-active,
-  :global(html:not([data-theme='light'])) .error-filter-tag-active {
+  [data-theme='dark'] .error-filter-tag-active,
+  html:not([data-theme='light']) .error-filter-tag-active {
     background-color: transparent;
     box-shadow:
       0 0 16px color-mix(in srgb, var(--glow-error) 12%, transparent),
@@ -101,21 +101,21 @@
   }
 
   /* Light mode: reduce dot glow to stay flat/ceramic */
-  :global([data-theme='light']) .error-status-dot {
+  [data-theme='light'] .error-status-dot {
     box-shadow: none;
   }
 
-  :global([data-theme='light']) .error-status-dot-active {
+  [data-theme='light'] .error-status-dot-active {
     box-shadow: none;
   }
 
   /* reduced effects: disable glow, keep static border */
-  :global([data-effects='reduced']) .error-filter-tag-active {
+  [data-effects='reduced'] .error-filter-tag-active {
     box-shadow: none;
   }
 
-  :global([data-effects='reduced']) .error-status-dot,
-  :global([data-effects='reduced']) .error-status-dot-active {
+  [data-effects='reduced'] .error-status-dot,
+  [data-effects='reduced'] .error-status-dot-active {
     box-shadow: none;
   }
 </style>
