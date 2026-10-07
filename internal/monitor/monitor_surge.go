@@ -540,9 +540,10 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		m.pauseResumeVersionMu.Unlock()
 	case "remove":
 		// Group delete operations on sg_ GIDs go through RemoveDownloadGroup
-		// -> BatchRemove -> cleanupRemovedTask, which already removed the task
-		// from Cache, tracker, and emitted a remove delta. The cleanup and
-		// pusher.Queue below are therefore idempotent no-ops for those GIDs.
+		// -> BatchRemove -> cleanupRemovedTask -> InvalidateTask, which
+		// already removed the task from Cache, tracker, and per-GID caches
+		// (telemetry, chunk snapshots) and emitted a remove delta. The
+		// cleanup and pusher.Queue below are idempotent no-ops for those GIDs.
 		if m.tracker != nil {
 			m.tracker.RemoveTask(gid)
 		}
@@ -767,6 +768,18 @@ func (m *Monitor) reconcileSurgeCache() {
 		log.Printf("[Monitor] Surge poll: removed stale task %s (was in %s)", gid, cacheList)
 	}
 
+	// Snapshot keys absent from every engine list are orphans: their
+	// start/remove events were both lost, so nothing else will ever
+	// visit them. Runs only on a full three-list read (early returns
+	// above protect partial reads).
+	if m.chunkSnapshots != nil {
+		for _, gid := range m.chunkSnapshots.GIDs() {
+			if _, ok := engineAll[gid]; !ok {
+				m.chunkSnapshots.Remove(gid)
+			}
+		}
+	}
+
 	for gid, engineTask := range engineAll {
 		cacheList, inCache := cacheAll[gid]
 		if !inCache {
@@ -779,6 +792,11 @@ func (m *Monitor) reconcileSurgeCache() {
 					termStatus := history.ProjectedStoppedStatus(entry)
 					stoppedTask := history.ToStoppedTask(entry)
 					Cache.AddSgTask(stoppedTask, "stopped")
+					// Terminal accept bypassing markCompleteAndHandleLocked;
+					// the snapshot dies with the generation here too.
+					if m.chunkSnapshots != nil {
+						m.chunkSnapshots.Remove(gid)
+					}
 					if m.tracker != nil {
 						m.tracker.EnsureTrackedFromEvent(
 							gid,

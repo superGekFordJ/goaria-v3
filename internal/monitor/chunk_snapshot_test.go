@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/events"
+	"goaria-v3/internal/history"
 	"goaria-v3/internal/rpc"
 	surgeEvents "goaria-v3/internal/surge/types"
 )
@@ -46,11 +47,15 @@ func TestChunkSnapshotCache_SetGetCopyRemove(t *testing.T) {
 	c.Set("", []byte{1}, 4, 10)
 	c.Set("sg_x", nil, 4, 10)
 	c.Set("sg_x", []byte{1}, 0, 10)
+	c.Set("sg_x", []byte{1}, 4, 0)  // zero size: same-frame contract
+	c.Set("sg_x", []byte{1}, 5, 10) // count exceeds what one byte encodes
 	if _, ok := c.Get("sg_x"); ok {
 		t.Fatal("defensive Set inputs must be ignored")
 	}
 
-	c.Set("sg_x", []byte{26, 36}, 8, 1<<20)
+	src := []byte{26, 36}
+	c.Set("sg_x", src, 8, 1<<20)
+	src[0] = 0xFF // mutating the caller buffer must not leak into the store
 	snap, ok := c.Get("sg_x")
 	if !ok {
 		t.Fatal("expected snapshot hit")
@@ -91,9 +96,26 @@ func TestChunkSnapshotCache_NilSafe(t *testing.T) {
 	if _, ok := c.UpdatedAt("sg_x"); ok {
 		t.Fatal("nil cache UpdatedAt must miss")
 	}
+	if c.GIDs() != nil {
+		t.Fatal("nil cache GIDs must return nil")
+	}
 	var m *Monitor
 	if m.GetChunkSnapshots() != nil {
 		t.Fatal("nil monitor must return nil cache")
+	}
+}
+
+// A zero-value cache (not built via NewChunkSnapshotCache) must not panic on
+// first write: the map initializes lazily under the lock.
+func TestChunkSnapshotCache_ZeroValue(t *testing.T) {
+	var c ChunkSnapshotCache
+	c.Set("sg_x", []byte{1}, 4, 512)
+	if _, ok := c.Get("sg_x"); !ok {
+		t.Fatal("zero-value cache must accept Set")
+	}
+	c.Remove("sg_x")
+	if _, ok := c.Get("sg_x"); ok {
+		t.Fatal("expected miss after Remove")
 	}
 }
 
@@ -204,6 +226,18 @@ func TestMarkCompleteAndHandleLocked_UntrackedStillClearsSnapshot(t *testing.T) 
 	}
 }
 
+// The non-Locked wrapper matches: with no tracker there is no gate to take,
+// but the snapshot still dies with the generation.
+func TestMarkCompleteAndHandle_NilTrackerStillClearsSnapshot(t *testing.T) {
+	m := &Monitor{chunkSnapshots: NewChunkSnapshotCache()}
+	m.chunkSnapshots.Set("sg_ghost", []byte{0x55}, 4, 512)
+
+	m.markCompleteAndHandle("sg_ghost", "complete", nil)
+	if _, ok := m.chunkSnapshots.Get("sg_ghost"); ok {
+		t.Fatal("terminal accept must clear snapshot even with nil tracker")
+	}
+}
+
 func TestInvalidateTask_ClearsChunkSnapshot(t *testing.T) {
 	m := newChunkTestMonitor()
 	m.chunkSnapshots.Set("sg_rm", []byte{0x55}, 4, 512)
@@ -248,6 +282,63 @@ func TestReconcileSurgeCache_MissedTerminalClearsChunkSnapshot(t *testing.T) {
 
 	if _, ok := m.chunkSnapshots.Get("sg_task1"); ok {
 		t.Fatal("reconcile terminal accept must clear the chunk snapshot")
+	}
+}
+
+// A snapshot key absent from every engine list is orphaned (its start and
+// remove events were both lost); reconcile sweeps it. Engine-live keys
+// survive: their generation can still produce frames.
+func TestReconcileSurgeCache_OrphanSnapshotSweep(t *testing.T) {
+	m, reader, _, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+	m.chunkSnapshots = NewChunkSnapshotCache()
+
+	m.chunkSnapshots.Set("sg_orphan", []byte{0x55}, 4, 512)
+	m.chunkSnapshots.Set("sg_task1", []byte{0x55}, 4, 512)
+	reader.setLists([]rpc.Task{{GID: "task1", Status: "downloading", TotalLength: "1000"}}, nil, nil)
+
+	m.reconcileSurgeCache()
+	if _, ok := m.chunkSnapshots.Get("sg_orphan"); ok {
+		t.Fatal("orphaned snapshot must be swept")
+	}
+	if _, ok := m.chunkSnapshots.Get("sg_task1"); !ok {
+		t.Fatal("engine-live snapshot must survive the sweep")
+	}
+}
+
+// The reconcile stopped-admit (gid missing from cache, engine reports
+// stopped) funnels through markCompleteAndHandleLocked and clears too.
+func TestReconcileSurgeCache_StoppedAdmitClearsChunkSnapshot(t *testing.T) {
+	m, reader, _, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+	m.chunkSnapshots = NewChunkSnapshotCache()
+
+	m.chunkSnapshots.Set("sg_task1", []byte{0x55}, 4, 512)
+	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
+
+	m.reconcileSurgeCache()
+	if _, ok := m.chunkSnapshots.Get("sg_task1"); ok {
+		t.Fatal("reconcile stopped-admit must clear the chunk snapshot")
+	}
+}
+
+// The history-terminal waiting admit bypasses the terminal funnel but is
+// still a terminal accept: a snapshot left by a lost-event generation dies.
+func TestReconcileSurgeCache_WaitingAdmitClearsChunkSnapshot(t *testing.T) {
+	m, reader, _, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+	m.chunkSnapshots = NewChunkSnapshotCache()
+
+	history.Add(history.HistoryEntry{GID: "sg_task1", Path: "/tmp/f.zip", Status: "complete"})
+	m.chunkSnapshots.Set("sg_task1", []byte{0x55}, 4, 512)
+	reader.setLists(nil, []rpc.Task{{GID: "task1", Status: "waiting"}}, nil)
+
+	m.reconcileSurgeCache()
+	if _, ok := m.chunkSnapshots.Get("sg_task1"); ok {
+		t.Fatal("history-terminal waiting admit must clear the chunk snapshot")
 	}
 }
 

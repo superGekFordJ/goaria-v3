@@ -28,14 +28,18 @@ func NewChunkSnapshotCache() *ChunkSnapshotCache {
 }
 
 // Set stores the latest snapshot for the given GID, copying the bitmap so
-// callers may reuse their buffer. Empty gid, empty bitmap, or non-positive
-// count are ignored.
+// callers may reuse their buffer. Malformed frames are ignored: empty gid or
+// bitmap, non-positive count/size, or a count the bitmap cannot encode
+// (2 bits per chunk, 4 per byte — also bounds the pull-side unpack alloc).
 func (c *ChunkSnapshotCache) Set(gid string, bitmap []byte, count int, chunkSize int64) {
-	if c == nil || gid == "" || len(bitmap) == 0 || count <= 0 {
+	if c == nil || gid == "" || len(bitmap) == 0 || count <= 0 || chunkSize <= 0 || count > len(bitmap)*4 {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.data == nil {
+		c.data = make(map[string]ChunkSnapshot)
+	}
 	stored := make([]byte, len(bitmap))
 	copy(stored, bitmap)
 	c.data[gid] = ChunkSnapshot{
@@ -84,4 +88,18 @@ func (c *ChunkSnapshotCache) UpdatedAt(gid string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return snap.UpdatedAt, true
+}
+
+// GIDs returns the set of GIDs currently holding snapshots.
+func (c *ChunkSnapshotCache) GIDs() []string {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	gids := make([]string, 0, len(c.data))
+	for gid := range c.data {
+		gids = append(gids, gid)
+	}
+	return gids
 }

@@ -354,13 +354,19 @@ func (m *Monitor) markCompleteAndHandleLocked(gid, status string, prep func(*Tra
 
 // markCompleteAndHandle accepts a terminal event under the per-GID lifecycle
 // lock so it cannot race history retirement's reopen+remove critical section.
+// With no tracker there is no gate to take; the Locked body still runs so the
+// snapshot dies with the generation either way.
 func (m *Monitor) markCompleteAndHandle(gid, status string, prep func(*TrackedTask)) {
-	if m == nil || m.tracker == nil || gid == "" {
+	if m == nil || gid == "" {
 		return
 	}
-	m.tracker.RunUnderLifecycle(gid, func() {
-		m.markCompleteAndHandleLocked(gid, status, prep)
-	})
+	if m.tracker != nil {
+		m.tracker.RunUnderLifecycle(gid, func() {
+			m.markCompleteAndHandleLocked(gid, status, prep)
+		})
+		return
+	}
+	m.markCompleteAndHandleLocked(gid, status, prep)
 }
 
 // moveToActiveAndRetireIfStopped serializes SetStatus + MoveTaskToActive with
