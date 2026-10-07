@@ -116,6 +116,9 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 	switch ev.Type {
 	case types.EventProgress:
 		gid = "sg_" + ev.DownloadID
+		if ev.BitmapWidth > 0 && len(ev.ChunkBitmap) > 0 && m.chunkSnapshots != nil {
+			m.chunkSnapshots.Set(gid, ev.ChunkBitmap, ev.BitmapWidth, ev.ChunkSize)
+		}
 		completedStr := strconv.FormatInt(ev.Downloaded, 10)
 		speedStr := strconv.FormatInt(int64(ev.Speed), 10)
 		totalStr := strconv.FormatInt(ev.Total, 10)
@@ -142,6 +145,12 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 	case types.EventBatchProgress:
 		for _, p := range ev.BatchEvents {
 			pgid := "sg_" + p.DownloadID
+			// Snapshot writes are unconditional: chunk fields ride the
+			// engine's slower attach throttle, so most batch frames carry
+			// none and must not clear the stored snapshot.
+			if p.BitmapWidth > 0 && len(p.ChunkBitmap) > 0 && m.chunkSnapshots != nil {
+				m.chunkSnapshots.Set(pgid, p.ChunkBitmap, p.BitmapWidth, p.ChunkSize)
+			}
 			completedStr := strconv.FormatInt(p.Downloaded, 10)
 			speedStr := strconv.FormatInt(int64(p.Speed), 10)
 			totalStr := strconv.FormatInt(p.Total, 10)
@@ -222,6 +231,11 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 	case types.EventStarted:
 		deltaType = "add"
 		gid = "sg_" + ev.DownloadID
+		// A fresh download generation must not render a stale bitmap left
+		// under the same gid (engine ID reuse, requeue after odd ordering).
+		if m.chunkSnapshots != nil {
+			m.chunkSnapshots.Remove(gid)
+		}
 		if m.tracker != nil {
 			m.tracker.EnsureTrackedFromEvent(gid, ev.Total, ev.URL, ev.Workers, "active")
 		}
@@ -535,6 +549,9 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		if m.telemetry != nil {
 			m.telemetry.Remove(gid)
 		}
+		if m.chunkSnapshots != nil {
+			m.chunkSnapshots.Remove(gid)
+		}
 		if m.convergence != nil {
 			m.convergence.RemoveTask(gid)
 		}
@@ -731,6 +748,9 @@ func (m *Monitor) reconcileSurgeCache() {
 		}
 		if m.telemetry != nil {
 			m.telemetry.Remove(gid)
+		}
+		if m.chunkSnapshots != nil {
+			m.chunkSnapshots.Remove(gid)
 		}
 		if m.convergence != nil {
 			m.convergence.RemoveTask(gid)

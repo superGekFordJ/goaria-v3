@@ -66,6 +66,9 @@ type Monitor struct {
 	// Per-worker telemetry cache
 	telemetry *TelemetryCache
 
+	// Per-GID latest engine chunk bitmap snapshot (Surge EventBatchProgress)
+	chunkSnapshots *ChunkSnapshotCache
+
 	// Convergence tick for runtime scale up/down
 	convergence *smartthread.ConvergenceTicker
 
@@ -125,6 +128,7 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 		prevActiveGids:        make(map[string]bool),
 		prevWaitingGids:       make(map[string]bool),
 		telemetry:             NewTelemetryCache(),
+		chunkSnapshots:        NewChunkSnapshotCache(),
 		pauseResumeIntentions: make(map[string]string),
 		surgePollInterval:     10 * time.Second,
 	}
@@ -180,6 +184,7 @@ func NewMonitorForTest(hub *events.Hub) *Monitor {
 		tracker:               tracker,
 		deletedGids:           make(map[string]time.Time),
 		pauseResumeIntentions: make(map[string]string),
+		chunkSnapshots:        NewChunkSnapshotCache(),
 	}
 	State.SetTracker(tracker)
 	return m
@@ -326,7 +331,15 @@ func retireHistoryAndReopen(tracker *TaskTracker, gid string) {
 // markCompleteAndHandleLocked accepts terminal + history write. Caller must
 // already hold the GID lifecycle lock.
 func (m *Monitor) markCompleteAndHandleLocked(gid, status string, prep func(*TrackedTask)) {
-	if m == nil || m.tracker == nil || gid == "" {
+	if m == nil || gid == "" {
+		return
+	}
+	// Snapshots die with the download generation on every terminal accept,
+	// including repeat terminals where MarkCompleteFromEvent returns nil.
+	if m.chunkSnapshots != nil {
+		m.chunkSnapshots.Remove(gid)
+	}
+	if m.tracker == nil {
 		return
 	}
 	completed := m.tracker.MarkCompleteFromEvent(gid, status)
@@ -849,6 +862,9 @@ func (m *Monitor) InvalidateTask(gid string) {
 	if m.telemetry != nil {
 		m.telemetry.Remove(gid)
 	}
+	if m.chunkSnapshots != nil {
+		m.chunkSnapshots.Remove(gid)
+	}
 
 	// 5. 清理 convergence state
 	if m.convergence != nil {
@@ -931,6 +947,15 @@ func (m *Monitor) collectTelemetry() {
 // GetTelemetry returns the telemetry cache for external consumers.
 func (m *Monitor) GetTelemetry() *TelemetryCache {
 	return m.telemetry
+}
+
+// GetChunkSnapshots returns the chunk bitmap snapshot cache for pull readers
+// (GetTaskDetails). Nil-receiver safe.
+func (m *Monitor) GetChunkSnapshots() *ChunkSnapshotCache {
+	if m == nil {
+		return nil
+	}
+	return m.chunkSnapshots
 }
 
 // LastRawBps returns Convergence macro-band occupancy for gid.

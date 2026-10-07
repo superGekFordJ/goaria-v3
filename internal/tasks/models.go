@@ -30,6 +30,11 @@ type TaskDetail struct {
 	AvgSpeed    int64    `json:"avg_speed,omitempty"`  // B/s, terminal only
 	PeakSpeed   int64    `json:"peak_speed,omitempty"` // B/s
 	URIs        []string `json:"uris,omitempty"`       // primary first, deduped
+	// ChunkStates is the unpacked per-chunk status map (0 pending / 1
+	// downloading / 2 completed), sg_ only, len == ChunkCount when present.
+	ChunkStates []int `json:"chunk_states,omitempty"`
+	ChunkCount  int   `json:"chunk_count,omitempty"` // total engine chunks
+	ChunkSize   int64 `json:"chunk_size,omitempty"`  // bytes per chunk
 }
 
 type addTaskCandidate struct {

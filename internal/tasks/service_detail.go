@@ -17,6 +17,10 @@ func (s *Service) GetTaskDetails(gids []string) map[string]TaskDetailEnvelope {
 	out := make(map[string]TaskDetailEnvelope, len(gids))
 	tracker := monitor.State.GetTracker()
 	surgeEng := s.surgeEngineRef()
+	var snaps *monitor.ChunkSnapshotCache
+	if mon := monitor.State.GetMonitor(); mon != nil {
+		snaps = mon.GetChunkSnapshots()
+	}
 
 	for _, raw := range gids {
 		gid := strings.TrimSpace(raw)
@@ -26,7 +30,7 @@ func (s *Service) GetTaskDetails(gids []string) map[string]TaskDetailEnvelope {
 		if _, seen := out[gid]; seen {
 			continue
 		}
-		out[gid] = buildTaskDetail(gid, tracker, surgeEng)
+		out[gid] = buildTaskDetail(gid, tracker, surgeEng, snaps)
 	}
 	return out
 }
@@ -46,7 +50,7 @@ func (s *Service) surgeEngineRef() *rpc.SurgeEngine {
 	return se
 }
 
-func buildTaskDetail(gid string, tracker *monitor.TaskTracker, surgeEng *rpc.SurgeEngine) TaskDetailEnvelope {
+func buildTaskDetail(gid string, tracker *monitor.TaskTracker, surgeEng *rpc.SurgeEngine, snaps *monitor.ChunkSnapshotCache) TaskDetailEnvelope {
 	cached, _, inCache := monitor.Cache.GetTask(gid)
 	hist, inHistory := history.Get(gid)
 	var tracked monitor.TrackedTask
@@ -108,7 +112,35 @@ func buildTaskDetail(gid string, tracker *monitor.TaskTracker, surgeEng *rpc.Sur
 		d.URIs = fallbackURIs(gid, cached, inCache, tracked, inTracker, hist, inHistory)
 	}
 
+	// A snapshot presence alone fills the chunk fields: no live/active gate.
+	// Paused tasks legitimately serve their last (frozen) bitmap.
+	if isSurge && snaps != nil {
+		if snap, ok := snaps.Get(gid); ok {
+			d.ChunkStates = unpackChunkStates(snap.Bitmap, snap.ChunkCount)
+			d.ChunkCount = snap.ChunkCount
+			d.ChunkSize = snap.ChunkSize
+		}
+	}
+
 	return TaskDetailEnvelope{Found: true, Detail: d}
+}
+
+// unpackChunkStates decodes the engine's packed chunk bitmap (2 bits per
+// chunk, 4 chunks per byte, LSB-first) into a per-chunk status array. Short
+// bitmaps pad with 0 (pending), matching the engine's restore default.
+func unpackChunkStates(packed []byte, count int) []int {
+	if count <= 0 || len(packed) == 0 {
+		return nil
+	}
+	states := make([]int, count)
+	for i := range count {
+		byteIndex := i / 4
+		if byteIndex >= len(packed) {
+			break
+		}
+		states[i] = int((packed[byteIndex] >> ((i % 4) * 2)) & 3)
+	}
+	return states
 }
 
 func fallbackURIs(gid string, cached rpc.Task, inCache bool, tracked monitor.TrackedTask, inTracker bool, hist history.HistoryEntry, inHistory bool) []string {
