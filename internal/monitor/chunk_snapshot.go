@@ -8,7 +8,7 @@ import (
 // ChunkSnapshot is the latest per-GID engine chunk bitmap, kept in packed
 // wire form (2 bits per chunk, LSB-first). Consumers unpack on demand.
 type ChunkSnapshot struct {
-	Bitmap     []byte    // packed 2-bit/chunk LSB-first; len == ceil(ChunkCount/4)
+	Bitmap     []byte    // packed 2-bit/chunk LSB-first; len >= ceil(ChunkCount/4) (engine bitmap may stay wider across a totalSize grow)
 	ChunkCount int       // total chunk count (engine BitmapWidth)
 	ChunkSize  int64     // bytes per chunk (engine actualChunkSize)
 	UpdatedAt  time.Time // host-side write time; diagnostics only, never emitted

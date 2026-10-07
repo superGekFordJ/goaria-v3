@@ -403,7 +403,9 @@ func (m *Monitor) moveToActiveAndRetireIfStopped(gid, status string) (from strin
 }
 
 // moveToStoppedAndHandle serializes cache stopped membership with terminal
-// acceptance and history.Add under one lifecycle gate.
+// acceptance and history.Add under one lifecycle gate. With no tracker there
+// is no gate to take; the Locked body still runs so the snapshot dies with
+// the generation either way.
 func (m *Monitor) moveToStoppedAndHandle(gid, status, errorCode, errorMessage string, ensureTotal int64, prep func(*TrackedTask)) {
 	if m == nil || gid == "" {
 		return
@@ -414,10 +416,7 @@ func (m *Monitor) moveToStoppedAndHandle(gid, status, errorCode, errorMessage st
 		} else {
 			Cache.MoveTaskToStopped(gid, status)
 		}
-		if m.tracker == nil {
-			return
-		}
-		if ensureTotal > 0 {
+		if m.tracker != nil && ensureTotal > 0 {
 			if status == "complete" {
 				m.tracker.EnsureTrackedComplete(gid, ensureTotal)
 			} else {

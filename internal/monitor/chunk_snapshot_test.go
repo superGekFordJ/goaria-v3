@@ -238,6 +238,26 @@ func TestMarkCompleteAndHandle_NilTrackerStillClearsSnapshot(t *testing.T) {
 	}
 }
 
+// The stopped-move path matches: no tracker skips the gate and seeding, but
+// the Locked body still runs so the snapshot dies with the generation.
+func TestMoveToStoppedAndHandle_NilTrackerStillClearsSnapshot(t *testing.T) {
+	resetCacheSg()
+	t.Cleanup(resetCacheSg)
+	Cache.AddSgTask(rpc.Task{GID: "sg_ghost", Status: "active", TotalLength: "1000"}, "active")
+
+	m := &Monitor{chunkSnapshots: NewChunkSnapshotCache()}
+	m.chunkSnapshots.Set("sg_ghost", []byte{0x55}, 4, 512)
+
+	m.moveToStoppedAndHandle("sg_ghost", "complete", "", "", 0, nil)
+	if _, ok := m.chunkSnapshots.Get("sg_ghost"); ok {
+		t.Fatal("stopped move must clear snapshot even with nil tracker")
+	}
+	stopped := Cache.GetStopped()
+	if len(stopped) != 1 || stopped[0].GID != "sg_ghost" || stopped[0].Status != "complete" {
+		t.Fatalf("cache stopped move must still run: %#v", stopped)
+	}
+}
+
 func TestInvalidateTask_ClearsChunkSnapshot(t *testing.T) {
 	m := newChunkTestMonitor()
 	m.chunkSnapshots.Set("sg_rm", []byte{0x55}, 4, 512)
