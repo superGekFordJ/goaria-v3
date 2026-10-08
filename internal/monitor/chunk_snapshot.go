@@ -8,10 +8,13 @@ import (
 // ChunkSnapshot is the latest per-GID engine chunk bitmap, kept in packed
 // wire form (2 bits per chunk, LSB-first). Consumers unpack on demand.
 type ChunkSnapshot struct {
-	Bitmap     []byte    // packed 2-bit/chunk LSB-first; len >= ceil(ChunkCount/4) (engine bitmap may stay wider across a totalSize grow)
-	ChunkCount int       // total chunk count (engine BitmapWidth)
-	ChunkSize  int64     // bytes per chunk (engine actualChunkSize)
-	UpdatedAt  time.Time // host-side write time; diagnostics only, never emitted
+	Bitmap     []byte // packed 2-bit/chunk LSB-first; len >= ceil(ChunkCount/4) (engine bitmap may stay wider across a totalSize grow)
+	ChunkCount int    // total chunk count (engine BitmapWidth)
+	ChunkSize  int64  // bytes per chunk (engine actualChunkSize)
+	// Per-chunk downloaded bytes; normally len == ChunkCount, but consumers
+	// must index with i < len guards rather than trusting the length.
+	ChunkProgress []int64
+	UpdatedAt     time.Time // host-side write time; diagnostics only, never emitted
 }
 
 // ChunkSnapshotCache stores per-GID chunk bitmap snapshots written by the
@@ -31,7 +34,9 @@ func NewChunkSnapshotCache() *ChunkSnapshotCache {
 // callers may reuse their buffer. Malformed frames are ignored: empty gid or
 // bitmap, non-positive count/size, or a count the bitmap cannot encode
 // (2 bits per chunk, 4 per byte — also bounds the pull-side unpack alloc).
-func (c *ChunkSnapshotCache) Set(gid string, bitmap []byte, count int, chunkSize int64) {
+// progress is optional and stored verbatim-copy when present; its length is
+// not required to match count.
+func (c *ChunkSnapshotCache) Set(gid string, bitmap []byte, count int, chunkSize int64, progress []int64) {
 	if c == nil || gid == "" || len(bitmap) == 0 || count <= 0 || chunkSize <= 0 || count > len(bitmap)*4 {
 		return
 	}
@@ -42,11 +47,17 @@ func (c *ChunkSnapshotCache) Set(gid string, bitmap []byte, count int, chunkSize
 	}
 	stored := make([]byte, len(bitmap))
 	copy(stored, bitmap)
+	var storedProgress []int64
+	if len(progress) > 0 {
+		storedProgress = make([]int64, len(progress))
+		copy(storedProgress, progress)
+	}
 	c.data[gid] = ChunkSnapshot{
-		Bitmap:     stored,
-		ChunkCount: count,
-		ChunkSize:  chunkSize,
-		UpdatedAt:  time.Now(),
+		Bitmap:        stored,
+		ChunkCount:    count,
+		ChunkSize:     chunkSize,
+		ChunkProgress: storedProgress,
+		UpdatedAt:     time.Now(),
 	}
 }
 
@@ -63,6 +74,7 @@ func (c *ChunkSnapshotCache) Get(gid string) (ChunkSnapshot, bool) {
 	}
 	out := snap
 	out.Bitmap = append([]byte(nil), snap.Bitmap...)
+	out.ChunkProgress = append([]int64(nil), snap.ChunkProgress...)
 	return out, true
 }
 

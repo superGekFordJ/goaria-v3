@@ -3,6 +3,7 @@ import {
   CHUNK_COMPLETE,
   CHUNK_DOWNLOADING,
   CHUNK_PENDING,
+  bucketChunkProgress,
   bucketChunkStates,
   chunkBucketRange,
   layoutChunkGrid,
@@ -133,6 +134,121 @@ describe('bucketChunkStates', () => {
     const out = bucketChunkStates(states, B)
     expect(performance.now() - started).toBeLessThan(50)
     expect(out.every(v => v === CHUNK_COMPLETE)).toBe(true)
+  })
+})
+
+describe('bucketChunkProgress', () => {
+  it('returns null when the byte track is unusable', () => {
+    const states = [CHUNK_DOWNLOADING]
+    expect(bucketChunkProgress(states, null, 100, 400, 4)).toBeNull()
+    expect(bucketChunkProgress(states, undefined, 100, 400, 4)).toBeNull()
+    expect(bucketChunkProgress(states, [], 100, 400, 4)).toBeNull()
+    expect(bucketChunkProgress(states, [10], 0, 400, 4)).toBeNull()
+    expect(bucketChunkProgress(states, [10], -1, 400, 4)).toBeNull()
+    expect(bucketChunkProgress(states, [10], 100, 0, 4)).toBeNull()
+    expect(bucketChunkProgress(states, [10], 100, -5, 4)).toBeNull()
+    expect(bucketChunkProgress(states, [10], 100, Number.NaN, 4)).toBeNull()
+    expect(bucketChunkProgress([], [10], 100, 400, 4)).toBeNull()
+    expect(bucketChunkProgress(states, [10], 100, 400, 0)).toBeNull()
+    expect(bucketChunkProgress(states, [10], 100, 400, -3)).toBeNull()
+    expect(bucketChunkProgress(states, [10], 100, 400, Number.NaN)).toBeNull()
+  })
+
+  it('a half-filled single chunk lights only the buckets its bytes cover', () => {
+    // One 100B chunk in a 400B file: bucket 0 is [0,100), the rest are
+    // outside the chunk entirely.
+    const states = [CHUNK_DOWNLOADING]
+    const out = bucketChunkProgress(states, [50], 100, 400, 4)!
+    expect(Array.from(out)).toEqual([CHUNK_DOWNLOADING, CHUNK_PENDING, CHUNK_PENDING, CHUNK_PENDING])
+    // Full recorded bytes complete the bucket even while status lags behind.
+    const full = bucketChunkProgress(states, [100], 100, 400, 4)!
+    expect(full[0]).toBe(CHUNK_COMPLETE)
+  })
+
+  it('a continuous multi-chunk frontier grades complete → downloading → pending', () => {
+    const states = [CHUNK_COMPLETE, CHUNK_DOWNLOADING, CHUNK_PENDING, CHUNK_PENDING]
+    const out = bucketChunkProgress(states, [100, 50, 0, 0], 100, 400, 4)!
+    expect(Array.from(out)).toEqual([
+      CHUNK_COMPLETE,
+      CHUNK_DOWNLOADING,
+      CHUNK_PENDING,
+      CHUNK_PENDING,
+    ])
+  })
+
+  it('sub-chunk buckets share a chunk by byte range', () => {
+    const states = [CHUNK_COMPLETE, CHUNK_DOWNLOADING, CHUNK_PENDING, CHUNK_PENDING]
+    // B=8 over T=400: every bucket covers 50B, half a chunk each.
+    const out = bucketChunkProgress(states, [100, 50, 0, 0], 100, 400, 8)!
+    // chunk0 complete → buckets 0-1 complete. chunk1 has 50B → bucket 2
+    // ([100,150)) is fully downloaded, bucket 3 ([150,200)) sees nothing.
+    expect(Array.from(out)).toEqual([
+      CHUNK_COMPLETE,
+      CHUNK_COMPLETE,
+      CHUNK_COMPLETE,
+      CHUNK_PENDING,
+      CHUNK_PENDING,
+      CHUNK_PENDING,
+      CHUNK_PENDING,
+      CHUNK_PENDING,
+    ])
+  })
+
+  it('clamps the tail chunk to its real extent', () => {
+    // T=350 with 100B chunks: chunk3 covers only [300,350).
+    const states = [CHUNK_COMPLETE, CHUNK_COMPLETE, CHUNK_COMPLETE, CHUNK_DOWNLOADING]
+    const out = bucketChunkProgress(states, [100, 100, 100, 25], 100, 350, 4)!
+    // bucket3 = [262,350): chunk2 contributes [262,300)=38, chunk3 25B → 63/88.
+    expect(out[3]).toBe(CHUNK_DOWNLOADING)
+    // A bogus progress beyond the tail extent is clamped: 50B real caps the
+    // overlap at [300,350)=50 → 38+50 = 88 fills the bucket.
+    const clamped = bucketChunkProgress(states, [100, 100, 100, 100], 100, 350, 4)!
+    expect(clamped[3]).toBe(CHUNK_COMPLETE)
+  })
+
+  it('counts bytes for a non-complete state even when the status says pending', () => {
+    // A rescale may mark a chunk with real bytes pending; the bytes still count.
+    const out = bucketChunkProgress([CHUNK_PENDING], [50], 100, 100, 1)!
+    expect(out[0]).toBe(CHUNK_DOWNLOADING)
+  })
+
+  it('treats missing, negative and NaN progress as unknown; downloading keeps a +1 approx', () => {
+    // progress shorter than states: chunk1 has no entry.
+    const short = bucketChunkProgress([CHUNK_DOWNLOADING, CHUNK_DOWNLOADING], [100], 100, 200, 2)!
+    expect(short[0]).toBe(CHUNK_COMPLETE)
+    expect(short[1]).toBe(CHUNK_DOWNLOADING) // approx +1
+    // Invalid entries behave the same as missing.
+    for (const bad of [-1, Number.NaN]) {
+      const out = bucketChunkProgress([CHUNK_DOWNLOADING], [bad], 100, 100, 1)!
+      expect(out[0]).toBe(CHUNK_DOWNLOADING)
+    }
+    // The +1 approx grant lights every bucket the chunk overlaps.
+    const out = bucketChunkProgress([CHUNK_DOWNLOADING], [0], 100, 100, 2)!
+    expect(Array.from(out)).toEqual([CHUNK_DOWNLOADING, CHUNK_DOWNLOADING])
+  })
+
+  it('unknown state values count as non-complete and contribute no bytes', () => {
+    const out = bucketChunkProgress([7, CHUNK_COMPLETE], [undefined as never, 100], 100, 200, 2)!
+    expect(Array.from(out)).toEqual([CHUNK_PENDING, CHUNK_COMPLETE])
+  })
+
+  it('a uniform complete map stays complete at any bucket count', () => {
+    for (const b of [1, 4, B]) {
+      const states = filled(10, CHUNK_COMPLETE)
+      const out = bucketChunkProgress(states, filled(10, 100), 100, 1000, b)!
+      expect(out).toHaveLength(b)
+      expect(out.every(v => v === CHUNK_COMPLETE)).toBe(true)
+    }
+  })
+
+  it('handles 10k chunks x 128 buckets in a single pass', () => {
+    const states = filled(10000, CHUNK_DOWNLOADING)
+    const progress = filled(10000, 12345)
+    const started = performance.now()
+    const out = bucketChunkProgress(states, progress, 2 * 1024 * 1024, 10000 * 2 * 1024 * 1024, B)!
+    expect(performance.now() - started).toBeLessThan(50)
+    expect(out).toHaveLength(B)
+    expect(out.every(v => v === CHUNK_DOWNLOADING)).toBe(true)
   })
 })
 

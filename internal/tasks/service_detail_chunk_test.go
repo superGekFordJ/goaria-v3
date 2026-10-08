@@ -30,7 +30,7 @@ func TestTaskDetail_SgChunkSnapshotExposed(t *testing.T) {
 
 	// packed: byte0 chunks 0..3 = {0,1,2,0} -> 4+32 = 36;
 	//         byte1 chunks 4..7 = {2,2,1,0} -> 2+8+16 = 26.
-	mon.GetChunkSnapshots().Set(gid, []byte{36, 26}, 8, 1<<20)
+	mon.GetChunkSnapshots().Set(gid, []byte{36, 26}, 8, 1<<20, []int64{0, 64, 1 << 20, 0, 1 << 20, 1 << 20, 7, 0})
 
 	d := detailFor(t, f.svc, gid)
 	if want := []int{0, 1, 2, 0, 2, 2, 1, 0}; !reflect.DeepEqual(d.ChunkStates, want) {
@@ -42,6 +42,9 @@ func TestTaskDetail_SgChunkSnapshotExposed(t *testing.T) {
 	if d.ChunkSize != 1<<20 {
 		t.Fatalf("ChunkSize = %d, want %d", d.ChunkSize, 1<<20)
 	}
+	if want := []int64{0, 64, 1 << 20, 0, 1 << 20, 1 << 20, 7, 0}; !reflect.DeepEqual(d.ChunkProgress, want) {
+		t.Fatalf("ChunkProgress = %v, want %v", d.ChunkProgress, want)
+	}
 }
 
 func TestTaskDetail_ChunkFieldsAbsentWithoutSnapshot(t *testing.T) {
@@ -50,17 +53,29 @@ func TestTaskDetail_ChunkFieldsAbsentWithoutSnapshot(t *testing.T) {
 
 	// ar_ never exposes chunk fields, even if a stray entry exists.
 	monitor.Cache.UpdateFromAria2([]rpc.Task{arTask("ar_c", "active", "http://a/x")}, nil, nil)
-	mon.GetChunkSnapshots().Set("ar_c", []byte{36}, 4, 512)
+	mon.GetChunkSnapshots().Set("ar_c", []byte{36}, 4, 512, []int64{1, 2, 3, 4})
 	d := detailFor(t, f.svc, "ar_c")
-	if d.ChunkStates != nil || d.ChunkCount != 0 || d.ChunkSize != 0 {
+	if d.ChunkStates != nil || d.ChunkCount != 0 || d.ChunkSize != 0 || d.ChunkProgress != nil {
 		t.Fatalf("ar_ leaked chunk fields: %+v", d)
 	}
 
 	// sg_ without a snapshot stays silent (no fabrication on cold start).
 	monitor.Cache.AddSgTask(rpc.Task{GID: "sg_nosnap", Status: "active"}, "active")
 	d = detailFor(t, f.svc, "sg_nosnap")
-	if d.ChunkStates != nil || d.ChunkCount != 0 || d.ChunkSize != 0 {
+	if d.ChunkStates != nil || d.ChunkCount != 0 || d.ChunkSize != 0 || d.ChunkProgress != nil {
 		t.Fatalf("sg_ without snapshot fabricated chunk fields: %+v", d)
+	}
+
+	// A snapshot without progress data still fills the states but leaves
+	// ChunkProgress absent (missing means omitted, not zeroed).
+	monitor.Cache.AddSgTask(rpc.Task{GID: "sg_noprog", Status: "active"}, "active")
+	mon.GetChunkSnapshots().Set("sg_noprog", []byte{36}, 4, 512, nil)
+	d = detailFor(t, f.svc, "sg_noprog")
+	if d.ChunkStates == nil {
+		t.Fatal("expected chunk states for sg_noprog")
+	}
+	if d.ChunkProgress != nil {
+		t.Fatalf("progress-less snapshot must not fabricate ChunkProgress: %+v", d)
 	}
 }
 
@@ -72,14 +87,14 @@ func TestTaskDetail_ChunkFieldsAbsentAfterClear(t *testing.T) {
 	gid := "sg_gone"
 	monitor.Cache.AddSgTask(rpc.Task{GID: gid, Status: "complete"}, "stopped")
 
-	mon.GetChunkSnapshots().Set(gid, []byte{0x55}, 4, 512)
-	if d := detailFor(t, f.svc, gid); d.ChunkStates == nil {
+	mon.GetChunkSnapshots().Set(gid, []byte{0x55}, 4, 512, []int64{5, 6, 7, 8})
+	if d := detailFor(t, f.svc, gid); d.ChunkStates == nil || d.ChunkProgress == nil {
 		t.Fatal("setup: expected chunk fields before clear")
 	}
 
 	mon.GetChunkSnapshots().Remove(gid)
 	d := detailFor(t, f.svc, gid)
-	if d.ChunkStates != nil || d.ChunkCount != 0 || d.ChunkSize != 0 {
+	if d.ChunkStates != nil || d.ChunkCount != 0 || d.ChunkSize != 0 || d.ChunkProgress != nil {
 		t.Fatalf("cleared snapshot still surfaced: %+v", d)
 	}
 }

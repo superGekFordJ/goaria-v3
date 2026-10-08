@@ -265,6 +265,7 @@
     states: readonly number[]
     count?: number
     size?: number
+    progress?: readonly number[]
   }
 
   // Chunk maps exist for Surge tasks that are downloading or paused (frozen).
@@ -276,7 +277,13 @@
     const d = detail.value
     const states = d?.chunk_states
     if (!d || !states || states.length === 0) return null
-    return { states, count: d.chunk_count, size: d.chunk_size }
+    return { states, count: d.chunk_count, size: d.chunk_size, progress: d.chunk_progress }
+  })
+  // Real file length anchors the byte-range buckets; an unusable total makes
+  // the byte track decline and fall back to the discrete states.
+  const totalBytes = computed(() => {
+    const n = Number(props.task.totalLength)
+    return Number.isFinite(n) && n > 0 ? n : 0
   })
   // The last trusted frame bridges fetch gaps — a status refetch's pending
   // phase and the empty window right after a resume or silent retry clears
@@ -603,6 +610,8 @@
             :states="chunkFrame.states"
             :count="chunkFrame.count"
             :chunk-size="chunkFrame.size"
+            :progress="chunkFrame.progress"
+            :total-size="totalBytes"
             :frozen="status === 'paused'"
           />
           <span

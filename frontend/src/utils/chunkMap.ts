@@ -51,6 +51,96 @@ export function bucketChunkStates(states: ArrayLike<number>, bucketCount: number
   return out
 }
 
+/**
+ * Byte-level downsampling: bucket `b` covers the byte range
+ * `[floor(b·T/B), floor((b+1)·T/B))` of the real file, and a chunk
+ * contributes its downloaded bytes ∩ that range instead of a flat state —
+ * so a partially filled chunk lights only the share of buckets it truly
+ * occupies. `progress[c] > 0` counts bytes for any non-complete state (the
+ * recorded byte count is a higher truth than a status that lags or was
+ * rescaled), and is clamped to the chunk's real extent so a short tail
+ * chunk cannot spill past the file end.
+ *
+ * Returns null when the byte track is unusable — missing/empty progress,
+ * non-positive chunkSize, invalid totalSize, no states, or an unusable
+ * bucket count — so callers fall back to the discrete `bucketChunkStates`.
+ */
+export function bucketChunkProgress(
+  states: ArrayLike<number>,
+  progress: ArrayLike<number> | null | undefined,
+  chunkSize: number,
+  totalSize: number,
+  bucketCount: number,
+): Uint8Array | null {
+  const chunkCount = states?.length ?? 0
+  const buckets = Number.isFinite(bucketCount) ? Math.floor(bucketCount) : 0
+  if (
+    chunkCount === 0 ||
+    buckets <= 0 ||
+    !progress ||
+    progress.length === 0 ||
+    !(chunkSize > 0) ||
+    !Number.isFinite(totalSize) ||
+    totalSize <= 0
+  ) {
+    return null
+  }
+
+  const out = new Uint8Array(buckets)
+  for (let b = 0; b < buckets; b++) {
+    const blockStart = Math.floor((b * totalSize) / buckets)
+    const blockEnd = Math.min(Math.floor(((b + 1) * totalSize) / buckets), totalSize)
+    const blockSize = blockEnd - blockStart
+    if (blockSize <= 0) {
+      out[b] = CHUNK_PENDING
+      continue
+    }
+
+    const startChunk = Math.min(Math.floor(blockStart / chunkSize), chunkCount - 1)
+    const endChunk = Math.min(Math.floor((blockEnd - 1) / chunkSize), chunkCount - 1)
+    let downloaded = 0
+    let allCompleted = true
+    let approx = false
+
+    for (let c = startChunk; c <= endChunk; c++) {
+      const state = states[c]
+      if (state !== CHUNK_COMPLETE) allCompleted = false
+
+      const chunkStart = c * chunkSize
+      const chunkEnd = chunkStart + chunkSize
+      const is = Math.max(blockStart, chunkStart)
+      const ie = Math.min(blockEnd, chunkEnd)
+      if (ie - is <= 0) continue
+
+      if (state === CHUNK_COMPLETE) {
+        downloaded += ie - is
+        continue
+      }
+      const p = c < progress.length && Number.isFinite(progress[c]) ? progress[c] : null
+      if (p !== null && p > 0) {
+        const extent = Math.min(chunkSize, totalSize - chunkStart)
+        const validEnd = chunkStart + Math.min(p, extent)
+        const vo = Math.min(ie, validEnd) - is
+        if (vo > 0) downloaded += vo
+      } else if (state === CHUNK_DOWNLOADING) {
+        // No byte count for a downloading chunk: grant one byte so the
+        // bucket reads active, and flag it so an approximate sliver can
+        // never promote the whole bucket to complete on byte math alone.
+        downloaded += 1
+        approx = true
+      }
+    }
+
+    out[b] =
+      allCompleted || (!approx && downloaded >= blockSize)
+        ? CHUNK_COMPLETE
+        : downloaded > 0
+          ? CHUNK_DOWNLOADING
+          : CHUNK_PENDING
+  }
+  return out
+}
+
 // Fiber-column geometry in CSS pixels: slim vertical capsules on a 5px pitch,
 // grouped into beats of four columns, each column split into stacked segments.
 const COLUMN_WIDTH = 2.8

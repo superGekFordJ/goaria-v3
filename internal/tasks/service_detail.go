@@ -119,6 +119,9 @@ func buildTaskDetail(gid string, tracker *monitor.TaskTracker, surgeEng *rpc.Sur
 			d.ChunkStates = unpackChunkStates(snap.Bitmap, snap.ChunkCount)
 			d.ChunkCount = snap.ChunkCount
 			d.ChunkSize = snap.ChunkSize
+			if len(snap.ChunkProgress) > 0 {
+				d.ChunkProgress = snap.ChunkProgress
+			}
 		}
 	}
 

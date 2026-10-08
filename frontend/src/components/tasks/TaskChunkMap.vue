@@ -7,6 +7,7 @@
     CHUNK_COMPLETE,
     CHUNK_DOWNLOADING,
     CHUNK_PENDING,
+    bucketChunkProgress,
     bucketChunkStates,
     layoutChunkGrid,
     type ChunkMapGrid,
@@ -17,6 +18,10 @@
     count?: number
     chunkSize?: number
     frozen?: boolean
+    // Per-chunk downloaded bytes for the continuous byte-range track; absent
+    // (Aria2, field-less frames) keeps the discrete three-state track.
+    progress?: readonly number[]
+    totalSize?: number
   }>()
 
   // The canvases overhang the box so the frontier glow is never cut flat by
@@ -225,8 +230,21 @@
     const grid = layoutChunkGrid(cssWidth - BLEED * 2, cssHeight - BLEED * 2, dpr)
     palette ??= resolvePalette()
     if (!grid || !palette) return
-    // toRaw: walk the plain array, not the reactive proxy, element by element.
-    const buckets = bucketChunkStates(toRaw(props.states), grid.columns * grid.rows)
+    // toRaw: walk the plain arrays, not the reactive proxies, element by
+    // element. Byte-level track needs real geometry; it returns null and the
+    // discrete track takes over whenever progress or totals are unusable.
+    const states = toRaw(props.states)
+    const progress = props.progress ? toRaw(props.progress) : undefined
+    const bucketCount = grid.columns * grid.rows
+    const buckets = progress?.length
+      ? (bucketChunkProgress(
+          states,
+          progress,
+          props.chunkSize ?? 0,
+          props.totalSize ?? 0,
+          bucketCount,
+        ) ?? bucketChunkStates(states, bucketCount))
+      : bucketChunkStates(states, bucketCount)
     drawGrid(base, glow, buckets, grid, palette, dpr)
   }
 
@@ -263,6 +281,8 @@
   }
 
   watch(() => props.states, schedule)
+  watch(() => props.progress, schedule)
+  watch(() => props.totalSize, schedule)
   watch(() => props.frozen, schedule)
   watch([() => uiStore.prismHue, () => uiStore.prismTone], invalidatePalette)
 

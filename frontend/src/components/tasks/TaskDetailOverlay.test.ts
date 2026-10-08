@@ -86,7 +86,12 @@ function mountOverlay(
 
 const cellKinds = (w: VueWrapper) => w.findAll('[data-cell]').map(c => c.attributes('data-cell'))
 const isRevealed = (w: VueWrapper) => w.get('[data-detail-open]').attributes('data-detail-reveal') !== undefined
-const CHUNKS = { chunk_states: [2, 2, 1, 0, 0], chunk_count: 5, chunk_size: 4 * 1024 * 1024 }
+const CHUNKS = {
+  chunk_states: [2, 2, 1, 0, 0],
+  chunk_count: 5,
+  chunk_size: 4 * 1024 * 1024,
+  chunk_progress: [4 * 1024 * 1024, 4 * 1024 * 1024, 1024 * 1024, 0, 0],
+}
 
 describe('TaskDetailOverlay', () => {
   beforeEach(() => {
@@ -309,7 +314,7 @@ describe('TaskDetailOverlay', () => {
   describe('chunk map', () => {
     const chunkMap = (w: VueWrapper) => w.findComponent(TaskChunkMap)
 
-    it('sg_ active with data: shows the map with count and size', () => {
+    it('sg_ active with data: shows the map with count, size and byte progress', () => {
       const task = makeTask()
       const w = mountOverlay(task, { detail: ready(task, CHUNKS) })
       expect(chunkMap(w).exists()).toBe(true)
@@ -317,8 +322,22 @@ describe('TaskDetailOverlay', () => {
         states: CHUNKS.chunk_states,
         count: 5,
         chunkSize: 4 * 1024 * 1024,
+        progress: CHUNKS.chunk_progress,
+        totalSize: 1000,
         frozen: false,
       })
+    })
+
+    it('without chunk_progress the progress prop stays undefined', () => {
+      const task = makeTask()
+      const noProgress = {
+        chunk_states: CHUNKS.chunk_states,
+        chunk_count: CHUNKS.chunk_count,
+        chunk_size: CHUNKS.chunk_size,
+      }
+      const w = mountOverlay(task, { detail: ready(task, noProgress) })
+      expect(chunkMap(w).props('progress')).toBeUndefined()
+      expect(chunkMap(w).props('totalSize')).toBe(1000)
     })
 
     it('sg_ paused with data: frozen map', () => {

@@ -33,26 +33,34 @@ interface FakeCtx {
   fillRect: ReturnType<typeof vi.fn>
   globalAlpha: number
   styles: string[]
+  // Each shape call tagged with the fillStyle active at that moment, so a
+  // test can count how many capsules a given state produced.
+  drawCalls: Array<{ fn: string; style: string }>
   fillStyle: string
 }
 
 function makeCtx(): FakeCtx {
   const styles: string[] = []
+  const drawCalls: Array<{ fn: string; style: string }> = []
+  let current = ''
+  const tag = (fn: string) => vi.fn(() => drawCalls.push({ fn, style: current }))
   return {
     setTransform: vi.fn(),
     clearRect: vi.fn(),
     beginPath: vi.fn(),
-    roundRect: vi.fn(),
-    rect: vi.fn(),
+    roundRect: tag('roundRect'),
+    rect: tag('rect'),
     fill: vi.fn(),
-    fillRect: vi.fn(),
+    fillRect: tag('fillRect'),
     globalAlpha: 1,
     styles,
+    drawCalls,
     set fillStyle(value: string) {
+      current = value
       styles.push(value)
     },
     get fillStyle() {
-      return styles[styles.length - 1] ?? ''
+      return current
     },
   }
 }
@@ -299,6 +307,67 @@ describe('TaskChunkMap', () => {
       expect(FakeResizeObserver.instances).toHaveLength(0)
       await w.setProps({ states: [1] })
       expect(pendingFrames()).toBe(0)
+    })
+  })
+
+  describe('byte progress track', () => {
+    const DOWNLOADING_COLOR = 'rgb(2, 2, 2)'
+    // One downloading capsule per bucket on the base layer, tagged by the
+    // downloading fillStyle that was active while the shapes were recorded.
+    const downloadingCapsules = (w: VueWrapper) =>
+      contexts
+        .get(canvases(w)[0])!
+        .drawCalls.filter(c => c.fn === 'roundRect' && c.style === DOWNLOADING_COLOR).length
+
+    it('a partial chunk lights only the buckets its bytes reach, incl. one straddling frontier', () => {
+      const props = { states: [2, 1, 0, 0], chunkSize: 100, totalSize: 400 }
+      const w = mountMap(props)
+      observer().resize(168, 38)
+      flushFrames()
+      const discrete = downloadingCapsules(w)
+      w.unmount()
+
+      // chunk1 has 55/100B: the byte track paints [100,155) as complete and
+      // keeps only the bucket straddling 155 downloading, while the discrete
+      // track marks the whole chunk's bucket span.
+      const w2 = mountMap({ ...props, progress: [100, 55, 0, 0] })
+      observer().resize(168, 38)
+      flushFrames()
+      const byteLevel = downloadingCapsules(w2)
+
+      expect(discrete).toBeGreaterThan(0)
+      expect(byteLevel).toBeGreaterThan(0)
+      expect(byteLevel).toBeLessThan(discrete)
+    })
+
+    it('unusable geometry falls back to the discrete track', () => {
+      const props = { states: [2, 1, 0, 0], chunkSize: 100 }
+      const w = mountMap(props)
+      observer().resize(168, 38)
+      flushFrames()
+      const discrete = downloadingCapsules(w)
+      w.unmount()
+
+      // totalSize unknown → the byte track declines; the outcome must match
+      // the discrete rendering capsule for capsule.
+      const w2 = mountMap({ ...props, progress: [100, 50, 0, 0] })
+      observer().resize(168, 38)
+      flushFrames()
+      expect(downloadingCapsules(w2)).toBe(discrete)
+    })
+
+    it('a new progress or totalSize reference schedules a repaint', async () => {
+      const progress = [100, 50, 0, 0]
+      const w = mountMap({ states: [2, 1, 0, 0], chunkSize: 100, totalSize: 400, progress })
+      observer().resize(168, 38)
+      flushFrames()
+      await w.setProps({ progress })
+      expect(pendingFrames()).toBe(0)
+      await w.setProps({ progress: [...progress] })
+      expect(pendingFrames()).toBe(1)
+      flushFrames()
+      await w.setProps({ totalSize: 800 })
+      expect(pendingFrames()).toBe(1)
     })
   })
 

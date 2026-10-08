@@ -35,6 +35,9 @@ type TaskDetail struct {
 	ChunkStates []int `json:"chunk_states,omitempty"`
 	ChunkCount  int   `json:"chunk_count,omitempty"` // total engine chunks
 	ChunkSize   int64 `json:"chunk_size,omitempty"`  // bytes per chunk
+	// ChunkProgress is the per-chunk downloaded byte count, sg_ only;
+	// normally len == ChunkCount when present, consumers index defensively.
+	ChunkProgress []int64 `json:"chunk_progress,omitempty"`
 }
 
 type addTaskCandidate struct {

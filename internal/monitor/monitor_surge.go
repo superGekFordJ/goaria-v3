@@ -117,7 +117,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 	case types.EventProgress:
 		gid = "sg_" + ev.DownloadID
 		if ev.BitmapWidth > 0 && len(ev.ChunkBitmap) > 0 && m.chunkSnapshots != nil {
-			m.chunkSnapshots.Set(gid, ev.ChunkBitmap, ev.BitmapWidth, ev.ChunkSize)
+			m.chunkSnapshots.Set(gid, ev.ChunkBitmap, ev.BitmapWidth, ev.ChunkSize, ev.ChunkProgress)
 		}
 		completedStr := strconv.FormatInt(ev.Downloaded, 10)
 		speedStr := strconv.FormatInt(int64(ev.Speed), 10)
@@ -149,7 +149,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			// engine's slower attach throttle, so most batch frames carry
 			// none and must not clear the stored snapshot.
 			if p.BitmapWidth > 0 && len(p.ChunkBitmap) > 0 && m.chunkSnapshots != nil {
-				m.chunkSnapshots.Set(pgid, p.ChunkBitmap, p.BitmapWidth, p.ChunkSize)
+				m.chunkSnapshots.Set(pgid, p.ChunkBitmap, p.BitmapWidth, p.ChunkSize, p.ChunkProgress)
 			}
 			completedStr := strconv.FormatInt(p.Downloaded, 10)
 			speedStr := strconv.FormatInt(int64(p.Speed), 10)
@@ -233,7 +233,10 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		gid = "sg_" + ev.DownloadID
 		// A fresh download generation must not render a stale bitmap left
 		// under the same gid (engine ID reuse, requeue after odd ordering).
-		if m.chunkSnapshots != nil {
+		// A self-reported resume is the same generation: its frozen frame
+		// stays valid until the next attached frame replaces it atomically.
+		resume := ev.State != nil && ev.State.IsResume
+		if m.chunkSnapshots != nil && !resume {
 			m.chunkSnapshots.Remove(gid)
 		}
 		if m.tracker != nil {
