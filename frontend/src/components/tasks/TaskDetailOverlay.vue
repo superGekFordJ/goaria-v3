@@ -454,7 +454,7 @@
         <span class="status-dot shrink-0" :class="statusMeta.dot" :title="statusMeta.label"></span>
         <span class="sr-only">{{ statusMeta.label }}</span>
         <h3
-          class="flex-1 min-w-0 font-semibold text-sm text-[var(--app-text)]/90 truncate"
+          class="task-detail-title flex-1 min-w-0 font-semibold text-sm text-[var(--app-text)]/90 truncate"
           :title="fileName"
         >
           {{ fileName }}
@@ -468,8 +468,10 @@
           :aria-label="primaryAction === 'pause' ? t('taskCard.pause') : t('taskCard.resume')"
           @click="runPrimaryAction"
         >
-          <Pause v-if="primaryAction === 'pause'" :size="14" />
-          <Play v-else :size="14" class="ml-0.5" />
+          <Transition name="action-icon" mode="out-in">
+            <Pause v-if="primaryAction === 'pause'" key="pause" :size="14" />
+            <Play v-else key="play" :size="14" class="ml-0.5" />
+          </Transition>
         </button>
         <button
           ref="closeButtonRef"
@@ -652,14 +654,25 @@
     border-radius: var(--detail-radius);
   }
 
-  /* Ceramic glass: a clean, denser white than the card (no grey wash), defined
-     by its edge rather than by tint. */
+  /* Ceramic crystal (白瓷晶): real cool platinum ceramic body (#f8fafc -> #ebeff4),
+     crisp pure-white 12 o'clock specular rim, subtle cold slate hairline edge,
+     and deep slate ink typography for high-contrast porcelain readability. */
   [data-theme='light'] .task-detail-overlay {
-    --detail-slab-fill: linear-gradient(var(--card-bg) 0 0), var(--glass-bg);
-    --detail-rim: var(--glass-border-highlight);
-    --detail-edge: color-mix(in srgb, var(--app-text) 9%, transparent);
-    --detail-glow: color-mix(in srgb, var(--glass-border-highlight) 70%, transparent);
+    --detail-slab-fill:
+      linear-gradient(
+        180deg,
+        rgba(248, 250, 252, 0.98) 0%,
+        rgba(235, 239, 244, 0.96) 100%
+      );
+    --detail-rim: rgba(255, 255, 255, 1);
+    --detail-edge: rgba(15, 23, 42, 0.12);
+    --detail-glow: rgba(255, 255, 255, 0.95);
     --detail-sheen: transparent;
+
+    /* Deep slate ink typography: high-contrast, razor-sharp on porcelain backplate */
+    --app-text: rgba(15, 23, 42, 0.96);
+    --app-text-muted: rgba(30, 41, 59, 0.90);
+    --app-text-subtle: rgba(71, 85, 105, 0.82);
   }
 
   .task-detail-surface {
@@ -770,13 +783,14 @@
   [data-theme='light'] .task-detail-bottom-glow {
     background: radial-gradient(
       ellipse 80% 100% at 50% 100%,
-      color-mix(in srgb, var(--neon-primary) 10%, transparent),
-      transparent 65%
+      color-mix(in srgb, var(--neon-primary) 18%, transparent),
+      color-mix(in srgb, var(--neon-primary) 4%, transparent) 55%,
+      transparent 75%
     );
   }
 
   [data-theme='light'] .task-detail-bottom-glow.is-shown {
-    opacity: 0.18;
+    opacity: 0.26;
   }
 
   @keyframes detail-bottom-breathe {
@@ -798,11 +812,11 @@
   @keyframes detail-bottom-breathe-light {
     0%,
     100% {
-      opacity: 0.12;
+      opacity: 0.16;
       transform: scaleY(0.95);
     }
     50% {
-      opacity: 0.22;
+      opacity: 0.30;
       transform: scaleY(1.04);
     }
   }
@@ -864,5 +878,48 @@
 
   .task-detail-copied {
     color: var(--status-complete);
+  }
+
+  /* Title spatial anchor: prepares GPU compositor layer for coordinated entrance */
+  .task-detail-title {
+    will-change: transform;
+    transform-origin: left center;
+  }
+
+  /* Primary action button icon micro-interaction */
+  .action-icon-enter-active,
+  .action-icon-leave-active {
+    transition:
+      transform 120ms cubic-bezier(0.16, 1, 0.3, 1),
+      opacity 120ms ease;
+  }
+
+  .action-icon-enter-from {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+
+  .action-icon-leave-to {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+
+  [data-effects='reduced'] .action-icon-enter-active,
+  [data-effects='reduced'] .action-icon-leave-active {
+    transition: none;
+  }
+
+  /* Light mode ceramic action button affordance */
+  [data-theme='light'] [data-detail-action],
+  [data-theme='light'] [data-detail-close] {
+    background: rgba(255, 255, 255, 0.72);
+    border: 1px solid rgba(15, 23, 42, 0.1);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  }
+
+  [data-theme='light'] [data-detail-action]:hover,
+  [data-theme='light'] [data-detail-close]:hover {
+    background: rgba(255, 255, 255, 0.95);
+    border-color: rgba(15, 23, 42, 0.18);
   }
 </style>

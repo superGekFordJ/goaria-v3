@@ -269,6 +269,7 @@ describe('TaskDetailOverlay', () => {
     expect(w.find('[data-detail-primary]').exists()).toBe(false)
     expect(w.find('.text-neon').exists()).toBe(false)
     expect(w.find('[data-detail-close]').exists()).toBe(true)
+    expect(w.find('.task-detail-title').exists()).toBe(true)
   })
 
   it('primary action follows status', async () => {

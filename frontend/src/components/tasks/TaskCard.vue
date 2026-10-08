@@ -305,7 +305,7 @@
             <!-- Filename -->
             <div class="min-w-0 flex-1">
               <h3
-                class="font-semibold text-sm text-[var(--app-text)]/90 truncate leading-tight mb-1"
+                class="task-card-title font-semibold text-sm text-[var(--app-text)]/90 truncate leading-tight mb-1"
                 :title="fileName"
               >
                 {{ fileName }}
@@ -378,8 +378,10 @@
                 :title="isActive ? t('taskCard.pause') : t('taskCard.resume')"
                 @click="isActive ? taskStore.pause(task.gid) : taskStore.resume(task.gid)"
               >
-                <Pause v-if="isActive" :size="16" />
-                <Play v-else :size="16" class="ml-0.5" />
+                <Transition name="action-icon" mode="out-in">
+                  <Pause v-if="isActive" key="pause" :size="16" />
+                  <Play v-else key="play" :size="16" class="ml-0.5" />
+                </Transition>
               </button>
             </template>
 
@@ -613,6 +615,71 @@
   .task-detail-fade-leave-to {
     opacity: 0;
     transform: translateY(-4px);
+  }
+
+  /* Title spatial anchor: coordinates with the overlay entrance so the title
+     glides smoothly from the card face's original position into the identity strip. */
+  .task-detail-fade-enter-active :deep(.task-detail-title) {
+    transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .task-detail-fade-enter-from :deep(.task-detail-title) {
+    transform: translate(38px, 4px);
+  }
+
+  .task-detail-fade-leave-active :deep(.task-detail-title) {
+    transition: transform 140ms ease-in;
+  }
+
+  .task-detail-fade-leave-to :deep(.task-detail-title) {
+    transform: translate(38px, 4px);
+  }
+
+  [data-effects='reduced'] .task-detail-fade-enter-active :deep(.task-detail-title),
+  [data-effects='reduced'] .task-detail-fade-leave-active :deep(.task-detail-title) {
+    transform: none;
+    transition: none;
+  }
+
+  /* Card face title spatial anchor: on detail close, glides back from the overlay identity strip position */
+  .task-card-title {
+    will-change: transform;
+    transform-origin: left center;
+    transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .task-card-face.is-detail-hidden .task-card-title {
+    transform: translate(-38px, -4px);
+    transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  [data-effects='reduced'] .task-card-title,
+  [data-effects='reduced'] .task-card-face.is-detail-hidden .task-card-title {
+    transform: none !important;
+    transition: none !important;
+  }
+
+  /* Card action button icon micro-interaction */
+  .action-icon-enter-active,
+  .action-icon-leave-active {
+    transition:
+      transform 120ms cubic-bezier(0.16, 1, 0.3, 1),
+      opacity 120ms ease;
+  }
+
+  .action-icon-enter-from {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+
+  .action-icon-leave-to {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+
+  [data-effects='reduced'] .action-icon-enter-active,
+  [data-effects='reduced'] .action-icon-leave-active {
+    transition: none;
   }
 
   .task-group-chip {
