@@ -80,8 +80,10 @@ type TrackedTaskInfo struct {
 	// fixed at first establishment; reads/writes never extend it.
 	AddAnchorAt time.Time
 	// AdmissionReserved is the explicit admitted-not-started fact for a
-	// future admission pipeline. No production writer sets it in S1; it is
-	// evaluated only as an explicit scalar input.
+	// future admission pipeline. The claim reuses ActivatedAt as its anchor
+	// and the same 45s/15s lease — a reservation without an anchor or past
+	// its lease contributes telemetry only and falls back to ordinary
+	// eligibility. No production writer sets it in S1.
 	AdmissionReserved bool
 }
 
@@ -332,8 +334,10 @@ func (c *ConvergenceTicker) tick() {
 	// Unified occupancy snapshot: includes Aria2 tasks, waiting claims, and
 	// add placeholders — wider than the active set but never widens
 	// processTask. Falls back to the active snapshot when no occupancy
-	// provider is wired (unit tests).
-	occTasks := activeTasks
+	// provider is wired (unit tests). Copy so the Surge raw overlay below
+	// cannot alias-mutate the active-set input.
+	occTasks := make([]TrackedTaskInfo, len(activeTasks))
+	copy(occTasks, activeTasks)
 	if c.occupancy != nil {
 		if occ := c.occupancy.GetOccupancyTrackedTasks(); occ != nil {
 			occTasks = occ

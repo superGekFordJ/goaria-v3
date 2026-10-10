@@ -991,14 +991,20 @@ type trackerAdapter struct {
 
 // activeCacheSpeedByGID snapshots measured cache speeds keyed by gid. Reads
 // only the cache's own lock; safe on the c.mu→adapter path because the
-// cache never calls back into Convergence.
+// cache never calls back into Convergence. Only parse-valid non-negative
+// values count as measured — "0" is a real zero, while empty/invalid/negative
+// strings are absent from the map so callers see them as missing telemetry.
 func activeCacheSpeedByGID() map[string]int64 {
 	speeds := make(map[string]int64)
 	if Cache == nil {
 		return speeds
 	}
 	for _, t := range Cache.GetActive() {
-		speeds[t.GID] = parseInt64(t.DownloadSpeed)
+		v, err := strconv.ParseInt(strings.TrimSpace(t.DownloadSpeed), 10, 64)
+		if err != nil || v < 0 {
+			continue
+		}
+		speeds[t.GID] = v
 	}
 	return speeds
 }

@@ -193,6 +193,10 @@ func TestHandleSurgeEvent_StartedOnTerminalWithResumeIntention(t *testing.T) {
 	if tt.ActivatedAt.IsZero() {
 		t.Error("reopened started must stamp fresh ActivatedAt")
 	}
+	// The legitimate resume-intended path moved the stopped row to live.
+	if Cache.IsInStopped("sg_x") {
+		t.Error("resume-intended started must move the row out of stopped")
+	}
 }
 
 // TestHandleSurgeEvent_StartedOnTerminalWithoutIntention verifies a spurious
@@ -220,6 +224,14 @@ func TestHandleSurgeEvent_StartedOnTerminalWithoutIntention(t *testing.T) {
 	}
 	if tt != nil && !tt.ActivatedAt.IsZero() {
 		t.Error("no activation may be stamped on a still-terminal row")
+	}
+	// The stopped cache membership and its full metadata must survive — the
+	// sparse add must not run.
+	if !Cache.IsInStopped("sg_x") {
+		t.Error("non-intended started must not evict the stopped row")
+	}
+	if task := findTaskInCache("sg_x"); task == nil || task.Status != "complete" {
+		t.Errorf("stopped row clobbered: %#v", task)
 	}
 }
 
@@ -291,7 +303,7 @@ func TestReconcileSurgeCache_WaitingClearsActivation(t *testing.T) {
 	tracker.SetTargetBandwidth("sg_w", 4_000_000)
 	tracker.ObserveActivation("sg_w", 0, true)
 
-	reader.setLists(nil, []rpc.Task{{GID: "w", Status: "waiting", TotalLength: "1000"}}, nil)
+	reader.setLists(nil, []rpc.Task{{GID: "w", Status: "waiting", CompletedLength: "400", TotalLength: "1000"}}, nil)
 	m.reconcileSurgeCache()
 
 	tt := tracker.tasks["sg_w"]
@@ -300,6 +312,14 @@ func TestReconcileSurgeCache_WaitingClearsActivation(t *testing.T) {
 	}
 	if tt.Status != "waiting" {
 		t.Errorf("status = %q, want waiting", tt.Status)
+	}
+	// The polled completed value seeds the next run's baseline source —
+	// checkpoint only, never growth.
+	if tt.CompletedLength != 400 {
+		t.Errorf("CompletedLength = %d, want 400 checkpointed from poll", tt.CompletedLength)
+	}
+	if !tt.FirstProgressAt.IsZero() {
+		t.Error("waiting checkpoint must not stamp FirstProgressAt")
 	}
 	// The retained waiting claim keeps the task occupancy-visible.
 	found := false

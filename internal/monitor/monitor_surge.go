@@ -308,8 +308,11 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		}
 		// The recorded-resume path already moved the existing row to active
 		// under the lifecycle gate; only when it found no row at all do we
-		// add one here. Other starts keep the original add semantics.
-		if startMovedFrom == "" {
+		// add one here. Other starts keep the original add semantics — except
+		// a stopped row: without recorded resume evidence a started event must
+		// not clobber the terminal membership (or its full metadata) ahead of
+		// the legitimate resume/poll reopen.
+		if startMovedFrom == "" && !Cache.IsInStopped(gid) {
 			Cache.AddSgTask(rpc.Task{
 				GID:           gid,
 				Status:        "active",
@@ -927,6 +930,12 @@ func (m *Monitor) reconcileSurgeCache() {
 					m.tracker.UpdateProgressFromEvent(gid, parseInt64(engineTask.TotalLength), completed)
 				case "waiting":
 					m.tracker.EnsureTrackedFromEvent(gid, parseInt64(engineTask.TotalLength), sourceURLFromTask(engineTask), 0, engineStatusForTask(engineTask.Status))
+					// A reliable completed value on a waiting/paused row is
+					// only baseline source for the next run — never growth,
+					// matching the queued/paused event checkpoint rule.
+					if completed := parseInt64(engineTask.CompletedLength); completed > 0 {
+						m.tracker.UpdateProgressFromEvent(gid, parseInt64(engineTask.TotalLength), completed)
+					}
 				}
 			}
 			continue
@@ -993,6 +1002,11 @@ func (m *Monitor) reconcileSurgeCache() {
 			}
 			if m.tracker != nil {
 				m.tracker.SetStatusFromEvent(gid, engineStatusForTask(engineTask.Status))
+				// Same checkpoint rule as the same-list waiting row: the
+				// polled completed value seeds the next run's baseline only.
+				if completed := parseInt64(engineTask.CompletedLength); completed > 0 {
+					m.tracker.UpdateProgressFromEvent(gid, parseInt64(engineTask.TotalLength), completed)
+				}
 			}
 			from := Cache.MoveTaskToWaitingFromLive(gid, "paused")
 			if from != "" && from != "waiting" {

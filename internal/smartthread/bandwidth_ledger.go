@@ -200,11 +200,16 @@ func TaskOccupancy(t TrackedTaskInfo, now time.Time) int64 {
 	}
 	telem := taskOccupancyTelemetry(t)
 	if t.AdmissionReserved {
-		// Explicit admitted-not-started: the reservation claims regardless
-		// of the (non-terminal) list status — a waiting/admitted row counts
-		// without entering processTask. Scalar expression only; TTL expiry
-		// drops the contribution, never the dispatch identity.
-		return claimContribution(t, telem)
+		// Explicit admitted-not-started reuses ActivatedAt as its anchor and
+		// the same 45s/15s lease: while live the reservation claims its
+		// Target floor regardless of the (non-terminal) list status — a
+		// waiting/admitted row counts without entering processTask. Lease
+		// expiry drops the contribution, never the dispatch identity; with
+		// no anchor the row falls through to ordinary eligibility so a
+		// retained waiting claim can still apply.
+		if activationLeaseActive(t.ActivatedAt, t.FirstProgressAt, now) {
+			return claimContribution(t, telem)
+		}
 	}
 	surge := strings.HasPrefix(t.GID, "sg_")
 	switch t.Status {

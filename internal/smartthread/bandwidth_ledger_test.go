@@ -333,9 +333,10 @@ func TestBandwidthLedger_ConcurrentAlloc_SerializesDomainClaim(t *testing.T) {
 
 func TestTaskOccupancy_ActivationLeaseEdges(t *testing.T) {
 	base := time.Now()
+	const noActivation = time.Duration(-1) // sentinel: no activation fact
 	cases := []struct {
 		name           string
-		activatedAgo   time.Duration // -1 => no activation fact
+		activatedAgo   time.Duration // noActivation => no fact; negative => activation in the future
 		progressOffset time.Duration // -1 => no first progress; else offset after activation
 		nowOffset      time.Duration
 		wantClaim      bool
@@ -348,7 +349,8 @@ func TestTaskOccupancy_ActivationLeaseEdges(t *testing.T) {
 		{"growth-at-44s-expired-at-59s", 59 * time.Second, 44 * time.Second, 0, false},
 		{"growth-at-45s-no-revival", 50 * time.Second, 45 * time.Second, 0, false},
 		{"growth-after-45s-no-revival", 60 * time.Second, 50 * time.Second, 0, false},
-		{"now-before-activation", -time.Second, -1, 0, false},
+		{"no-activation-fact", noActivation, -1, 0, false},
+		{"activation-in-future", -5 * time.Second, -1, 0, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -360,10 +362,10 @@ func TestTaskOccupancy_ActivationLeaseEdges(t *testing.T) {
 				Domain:          "a.com",
 				TargetBandwidth: 5_000_000,
 			}
-			if tc.activatedAgo >= 0 {
+			if tc.activatedAgo != noActivation {
 				info.ActivatedAt = base.Add(-tc.activatedAgo)
 			}
-			if tc.progressOffset >= 0 && tc.activatedAgo >= 0 {
+			if tc.progressOffset >= 0 && tc.activatedAgo != noActivation {
 				info.FirstProgressAt = info.ActivatedAt.Add(tc.progressOffset)
 			}
 			got := TaskOccupancy(info, base.Add(tc.nowOffset))
@@ -505,12 +507,35 @@ func TestTaskOccupancy_Aria2AddPlaceholderWindow(t *testing.T) {
 
 func TestTaskOccupancy_AdmissionReservedScalar(t *testing.T) {
 	now := time.Now()
+	// The reservation needs an anchor: ActivatedAt is reused as the
+	// admission instant, and the same 45s/15s lease bounds the claim.
 	reserved := TrackedTaskInfo{
 		GID: "sg_adm", Status: "waiting", Scope: "wan", EnvKey: "e", Domain: "a.com",
-		TargetBandwidth: 5_000_000, AdmissionReserved: true,
+		TargetBandwidth: 5_000_000, AdmissionReserved: true, ActivatedAt: now,
 	}
 	if got := TaskOccupancy(reserved, now); got != 5_000_000 {
 		t.Errorf("admitted waiting = %d, want 5000000", got)
+	}
+	// A lease-expired reservation falls through to ordinary eligibility —
+	// here the retained Surge waiting claim still holds the Target floor.
+	expiredWaiting := reserved
+	expiredWaiting.ActivatedAt = now.Add(-time.Minute)
+	if got := TaskOccupancy(expiredWaiting, now); got != 5_000_000 {
+		t.Errorf("expired admitted waiting = %d, want 5000000 via waiting claim", got)
+	}
+	// ...but a status without a retained claim drops to telemetry only.
+	expiredActive := expiredWaiting
+	expiredActive.Status = "active"
+	expiredActive.TelemetryBps, expiredActive.TelemetryValid = 500_000, true
+	if got := TaskOccupancy(expiredActive, now); got != 500_000 {
+		t.Errorf("expired admitted active = %d, want 500000 (telem only)", got)
+	}
+	// Ordinary paused stays excluded at eligibility even while admitted.
+	expiredPaused := expiredWaiting
+	expiredPaused.Status = "paused"
+	expiredPaused.TelemetryBps, expiredPaused.TelemetryValid = 500_000, true
+	if got := TaskOccupancy(expiredPaused, now); got != 0 {
+		t.Errorf("expired admitted paused = %d, want 0", got)
 	}
 	// Terminal always excluded, even with the explicit input.
 	terminal := reserved
