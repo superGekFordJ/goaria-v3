@@ -311,9 +311,11 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		// add one here. Other starts keep the original add semantics — except
 		// a stopped row: without recorded resume evidence a started event must
 		// not clobber the terminal membership (or its full metadata) ahead of
-		// the legitimate resume/poll reopen.
-		if startMovedFrom == "" && !Cache.IsInStopped(gid) {
-			Cache.AddSgTask(rpc.Task{
+		// the legitimate resume/poll reopen. The unless-stopped variant keeps
+		// the check and the add in one sgMu section so a concurrent terminal
+		// poll cannot slip a stopped row in between.
+		if startMovedFrom == "" {
+			Cache.AddSgTaskUnlessStopped(rpc.Task{
 				GID:           gid,
 				Status:        "active",
 				TotalLength:   strconv.FormatInt(ev.Total, 10),

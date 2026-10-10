@@ -548,7 +548,24 @@ func detachTask(list *[]rpc.Task, gid string) (rpc.Task, bool) {
 func (c *TaskCache) AddSgTask(task rpc.Task, list string) {
 	c.sgMu.Lock()
 	defer c.sgMu.Unlock()
+	c.addSgTaskLocked(task, list)
+}
 
+// AddSgTaskUnlessStopped is AddSgTask with an atomic refuse-stopped guard:
+// when the GID currently sits in sgStopped the write is skipped entirely, so
+// a caller's stopped check cannot be raced by a concurrent move into stopped
+// (same single-mutex critical section). Used by event paths where a
+// non-authoritative started must never evict a terminal row.
+func (c *TaskCache) AddSgTaskUnlessStopped(task rpc.Task, list string) {
+	c.sgMu.Lock()
+	defer c.sgMu.Unlock()
+	if containsTaskGID(c.sgStopped, task.GID) {
+		return
+	}
+	c.addSgTaskLocked(task, list)
+}
+
+func (c *TaskCache) addSgTaskLocked(task rpc.Task, list string) {
 	var target *[]rpc.Task
 	removeFrom := func(slice []rpc.Task, gid string) []rpc.Task {
 		for i := range slice {

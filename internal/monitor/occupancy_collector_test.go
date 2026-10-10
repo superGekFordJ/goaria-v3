@@ -91,6 +91,10 @@ func TestMacroOccupancyByScope_UsesUnifiedFormula(t *testing.T) {
 	tracker.SetScopeAndEnv("sg_l", "wan", 0, "a.com", "env1")
 	tracker.SetTargetBandwidth("sg_l", 5_000_000)
 	tracker.ObserveActivation("sg_l", 0, true)
+	// ObserveActivation stamps its own time.Now() which may land after the
+	// now captured above (now.Before(activatedAt) → lease dead). Pin the
+	// stamp to now so the live-lease assertion is deterministic.
+	tracker.tasks["sg_l"].ActivatedAt = now
 	tracker.EnsureTrackedFromEvent("ar_l", 1000, "https://y", 4, "active")
 	tracker.SetScopeAndEnv("ar_l", "wan", 0, "b.com", "env1")
 

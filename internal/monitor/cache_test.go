@@ -1141,6 +1141,54 @@ func TestTaskCache_AddSgTask_MovesBetweenSlices(t *testing.T) {
 	}
 }
 
+// TestTaskCache_AddSgTaskUnlessStopped covers the atomic refuse-stopped
+// variant used by the Surge started path: a gid already in stopped is left
+// untouched (full row preserved), while absent/live gids add normally.
+func TestTaskCache_AddSgTaskUnlessStopped(t *testing.T) {
+	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+	cache.AddSgTask(rpc.Task{
+		GID: "sg_term-1", Status: "complete", TotalLength: "2000",
+		CompletedLength: "2000", DownloadSpeed: "0",
+	}, "stopped")
+
+	// Stopped gid: refused — row and metadata must survive intact.
+	cache.AddSgTaskUnlessStopped(rpc.Task{
+		GID: "sg_term-1", Status: "active",
+	}, "active")
+
+	if !cache.IsInStopped("sg_term-1") {
+		t.Fatal("stopped row must survive the refused add")
+	}
+	if containsGid(gidsFromTasks(cache.GetActive()), "sg_term-1") {
+		t.Fatal("refused add must not create an active row")
+	}
+	for _, task := range cache.GetStopped() {
+		if task.GID == "sg_term-1" && (task.Status != "complete" || task.CompletedLength != "2000") {
+			t.Fatalf("stopped row clobbered: %#v", task)
+		}
+	}
+
+	// Absent gid: adds normally.
+	cache.AddSgTaskUnlessStopped(rpc.Task{
+		GID: "sg_new-1", Status: "active", TotalLength: "500",
+	}, "active")
+	if !containsGid(gidsFromTasks(cache.GetActive()), "sg_new-1") {
+		t.Fatal("new gid must be added when not stopped")
+	}
+
+	// Live (waiting) gid: still adds — only stopped refuses.
+	cache.AddSgTask(rpc.Task{GID: "sg_wait-1", Status: "paused"}, "waiting")
+	cache.AddSgTaskUnlessStopped(rpc.Task{
+		GID: "sg_wait-1", Status: "active",
+	}, "active")
+	if !containsGid(gidsFromTasks(cache.GetActive()), "sg_wait-1") {
+		t.Fatal("live gid must move to active")
+	}
+	if containsGid(gidsFromTasks(cache.GetWaiting()), "sg_wait-1") {
+		t.Fatal("moved gid must leave waiting")
+	}
+}
+
 func TestTaskCache_AddSgTask_DoesNotTouchAriaSlices(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
 	cache.UpdateFromAria2(
