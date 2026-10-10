@@ -258,3 +258,163 @@ func TestConvergence_CeilingHit_ReboundRefusedByEngine(t *testing.T) {
 		t.Fatalf("expected frozenCooldown=%d (preserved), got %d", ceilingHitCooldownCycles, s.frozenCooldown)
 	}
 }
+
+// TestConvergence_LocalWindow_LockEvidenceAndCooldown proves lock evidence is
+// never erased by a dirty tick: ceiling/floor/frozen phases keep memory,
+// smart-unlock counters freeze, cooldowns decrement exactly once saturated
+// at zero — a cooldown reaching zero on a dirty tick does not unlock; the
+// next clean tick performs the normal expiry transition.
+func TestConvergence_LocalWindow_LockEvidenceAndCooldown(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	mb := int64(1024 * 1024)
+	gid := "sg_lock_dirty"
+	// fixture primes state under lock, then runs one processTask call.
+	prime := func(mut func(*convergenceState)) (*ConvergenceTicker, TrackedTaskInfo, time.Time) {
+		tracker := &mockTracker{tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+				CompletedLength: 60 * mb},
+		}}
+		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
+			gid: makeWorkers(4, 2*1024*1024),
+		}}
+		ct := newTestConvergenceTicker(
+			rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+			tracker, telemetry,
+		)
+		t.Cleanup(func() { ct.Stop() })
+		now := time.Now()
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		s.prevCompleted = 50 * mb
+		s.prevSampleAt = now.Add(-5 * time.Second)
+		s.macroReady = true
+		s.lastRawBps = 10 * mb
+		s.sustainCount = 5
+		s.peakSpeed = 30 * mb
+		s.peakWorkers = 8
+		s.bestEff = 7 * mb
+		if mut != nil {
+			mut(s)
+		}
+		ct.mu.Unlock()
+		return ct, tracker.tasks[0], now
+	}
+	load := func(ct *ConvergenceTicker) *convergenceState {
+		ct.mu.Lock()
+		defer ct.mu.Unlock()
+		return ct.states[gid]
+	}
+
+	// Each locked phase: dirty tick freezes counters, decrements cooldowns
+	// once, keeps memory + phase.
+	for _, tc := range []struct {
+		name  string
+		mut   func(*convergenceState)
+		check func(*testing.T, *convergenceState)
+	}{
+		{"ceiling_hit", func(s *convergenceState) {
+			s.phase = phaseCeilingHit
+			s.ceilingMemory = 9 * mb
+			s.ceilingHitCount = 1
+			s.kneeFrozen = true
+			s.frozenCooldown = 5
+			s.probeCooldown = 3
+		}, func(t *testing.T, s *convergenceState) {
+			if s.phase != phaseCeilingHit || s.ceilingMemory != 9*mb || s.ceilingHitCount != 1 {
+				t.Errorf("ceiling evidence frozen: phase=%d mem=%d count=%d", s.phase, s.ceilingMemory, s.ceilingHitCount)
+			}
+			if !s.kneeFrozen || s.frozenCooldown != 4 || s.probeCooldown != 2 {
+				t.Errorf("cooldowns must tick once, lock kept: knee=%v fc=%d pc=%d", s.kneeFrozen, s.frozenCooldown, s.probeCooldown)
+			}
+		}},
+		{"floor_hit", func(s *convergenceState) {
+			s.phase = phaseFloorHit
+			s.floorMemory = 11 * mb
+			s.floorHitCount = 1
+			s.kneeFrozen = true
+			s.frozenCooldown = 5
+			s.probeCooldown = 1
+		}, func(t *testing.T, s *convergenceState) {
+			if s.phase != phaseFloorHit || s.floorMemory != 11*mb || s.floorHitCount != 1 {
+				t.Errorf("floor evidence frozen: phase=%d mem=%d count=%d", s.phase, s.floorMemory, s.floorHitCount)
+			}
+			if !s.kneeFrozen || s.frozenCooldown != 4 || s.probeCooldown != 0 {
+				t.Errorf("cooldowns must tick once saturated at 0: knee=%v fc=%d pc=%d", s.kneeFrozen, s.frozenCooldown, s.probeCooldown)
+			}
+		}},
+		{"frozen", func(s *convergenceState) {
+			s.phase = phaseFrozen
+			s.kneeFrozen = true
+			s.probeMomentum = true
+			s.frozenCooldown = 5
+			s.probeCooldown = 0
+		}, func(t *testing.T, s *convergenceState) {
+			if s.phase != phaseFrozen || !s.kneeFrozen || !s.probeMomentum {
+				t.Errorf("frozen lock kept: phase=%d knee=%v momentum=%v", s.phase, s.kneeFrozen, s.probeMomentum)
+			}
+			if s.frozenCooldown != 4 || s.probeCooldown != 0 {
+				t.Errorf("cooldowns must tick once: fc=%d pc=%d", s.frozenCooldown, s.probeCooldown)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ct, task, now := prime(tc.mut)
+			ct.processTask(task, true, nil, nil, nil, now)
+			s := load(ct)
+			tc.check(t, s)
+			// Common to all locked phases: memory preserved, D2 published.
+			if s.sustainCount != 5 || s.peakSpeed != 30*mb || s.bestEff != 7*mb {
+				t.Errorf("memory must survive dirty tick: sustain=%d peak=%d bestEff=%d", s.sustainCount, s.peakSpeed, s.bestEff)
+			}
+			if s.lastRawBps != 2*mb || !s.macroReady {
+				t.Errorf("D2 must publish on dirty tick: raw=%d ready=%v", s.lastRawBps, s.macroReady)
+			}
+		})
+	}
+
+	// A dirty tick that lands the cooldown on zero does not unlock — the
+	// transition belongs to the next clean observation.
+	t.Run("dirty_to_zero_no_unlock_then_clean_expiry", func(t *testing.T) {
+		ct, task, now := prime(func(s *convergenceState) {
+			s.phase = phaseFrozen
+			s.kneeFrozen = true
+			s.frozenCooldown = 1
+		})
+		ct.processTask(task, true, nil, nil, nil, now)
+		s := load(ct)
+		if s.frozenCooldown != 0 || s.phase != phaseFrozen || !s.kneeFrozen {
+			t.Fatalf("dirty tick must decrement without unlocking: fc=%d phase=%d knee=%v",
+				s.frozenCooldown, s.phase, s.kneeFrozen)
+		}
+		ct.processTask(task, false, nil, nil, nil, now.Add(5*time.Second))
+		s = load(ct)
+		if s.phase != phaseStable || s.kneeFrozen {
+			t.Fatalf("clean tick must run normal expiry: phase=%d knee=%v", s.phase, s.kneeFrozen)
+		}
+		if s.probeCooldown != probeIntervalCycles {
+			t.Fatalf("expiry must arm probe cooldown: pc=%d want %d", s.probeCooldown, probeIntervalCycles)
+		}
+	})
+
+	// Clean control: identical ceiling fixture, unaffected → counters advance
+	// and the second consecutive speed-up confirm unlocks on schedule.
+	t.Run("clean_tick_advances_counters", func(t *testing.T) {
+		ct, task, now := prime(func(s *convergenceState) {
+			s.phase = phaseCeilingHit
+			s.ceilingMemory = 9 * mb
+			s.ceilingHitCount = 1
+			s.kneeFrozen = true
+			s.frozenCooldown = 5
+		})
+		// raw=10MB > 9MB*1.05 → second consecutive speed-up confirm → unlock.
+		task.CompletedLength = 50*mb + 50*mb
+		ct.processTask(task, false, nil, nil, nil, now)
+		s := load(ct)
+		if s.phase != phaseStable || s.ceilingHitCount != 0 || s.kneeFrozen {
+			t.Fatalf("clean speed-up must unlock on schedule: phase=%d count=%d knee=%v",
+				s.phase, s.ceilingHitCount, s.kneeFrozen)
+		}
+	})
+}

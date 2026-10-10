@@ -343,3 +343,100 @@ func TestConvergence_Blackout_SkipsRecordPeakEfficiencyOnNoBaseline(t *testing.T
 		t.Error("expected no RecordPeakEfficiency call when prevCompleted=0 (no baseline)")
 	}
 }
+
+// TestConvergence_LocalWindow_BlackoutNoDirtyPeak proves the blackout carve-
+// out under local invalidation: a first-blackout dirty or anomalous sample
+// still latches usable raw/ready evidence but never emits the terminal
+// peak record. The permanent latch and the clean final record are unchanged.
+func TestConvergence_LocalWindow_BlackoutNoDirtyPeak(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	mb := int64(1024 * 1024)
+	gid := "sg_blackout_dirty"
+	newFixture := func(prevCompleted int64, prevRaw int64) (*ConvergenceTicker, *mockPeakRecorder, TrackedTaskInfo, time.Time) {
+		tracker := &mockTracker{tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com",
+				IsKeepAlive: true, CompletedLength: 100 * mb, MinChunk: mb},
+		}}
+		// Tail zone: 4 workers × 256KB remaining < 4 × 1MB minChunk.
+		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
+			gid: makeChunkWorkers(4, 2*1024*1024, []int64{256 * 1024, 256 * 1024, 256 * 1024, 256 * 1024}),
+		}}
+		recorder := &mockPeakRecorder{}
+		ct := NewConvergenceTicker(
+			rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+			tracker, telemetry, recorder, &mockRateChecker{}, 0, 256,
+		)
+		t.Cleanup(func() { ct.Stop() })
+		now := time.Now()
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		s.prevCompleted = prevCompleted
+		s.prevSampleAt = now.Add(-5 * time.Second)
+		s.lastRawBps = prevRaw
+		s.macroReady = prevRaw > 0
+		ct.mu.Unlock()
+		return ct, recorder, tracker.tasks[0], now
+	}
+	records := func(r *mockPeakRecorder) int { return len(r.records) }
+
+	t.Run("dirty_first_blackout_latches_raw_no_record", func(t *testing.T) {
+		// Valid 10MB/5s window → raw latches; dirty → no terminal record.
+		ct, recorder, task, now := newFixture(90*mb, 0)
+		ct.processTask(task, true, nil, nil, nil, now)
+		ct.mu.Lock()
+		s := ct.states[gid]
+		ct.mu.Unlock()
+		if !s.blackout {
+			t.Fatal("blackout must latch even on a dirty tick")
+		}
+		if s.lastRawBps != 2*mb || !s.macroReady {
+			t.Errorf("usable evidence must latch: raw=%d ready=%v", s.lastRawBps, s.macroReady)
+		}
+		if records(recorder) != 0 {
+			t.Errorf("dirty blackout must not emit final record, got %d", records(recorder))
+		}
+	})
+
+	t.Run("anomalous_first_blackout_keeps_prior_raw_no_record", func(t *testing.T) {
+		// Regression endpoint → no new measurement; prior raw evidence kept.
+		ct, recorder, task, now := newFixture(110*mb, 8*mb)
+		ct.processTask(task, true, nil, nil, nil, now)
+		ct.mu.Lock()
+		s := ct.states[gid]
+		ct.mu.Unlock()
+		if !s.blackout {
+			t.Fatal("blackout must latch even on an anomalous window")
+		}
+		if s.lastRawBps != 8*mb || !s.macroReady {
+			t.Errorf("prior evidence must be kept: raw=%d ready=%v", s.lastRawBps, s.macroReady)
+		}
+		if records(recorder) != 0 {
+			t.Errorf("anomalous blackout must not emit final record, got %d", records(recorder))
+		}
+	})
+
+	t.Run("clean_first_blackout_records_final", func(t *testing.T) {
+		ct, recorder, task, now := newFixture(90*mb, 0)
+		ct.processTask(task, false, nil, nil, nil, now)
+		ct.mu.Lock()
+		s := ct.states[gid]
+		ct.mu.Unlock()
+		if !s.blackout || s.lastRawBps != 2*mb {
+			t.Fatalf("clean blackout: blackout=%v raw=%d", s.blackout, s.lastRawBps)
+		}
+		if records(recorder) != 1 {
+			t.Fatalf("clean blackout must emit exactly one final record, got %d", records(recorder))
+		}
+		// Permanent: a follow-up tick never re-measures or re-records.
+		before := records(recorder)
+		ct.processTask(task, false, nil, nil, nil, now.Add(5*time.Second))
+		ct.mu.Lock()
+		s = ct.states[gid]
+		ct.mu.Unlock()
+		if !s.blackout || records(recorder) != before {
+			t.Fatalf("blackout is permanent: blackout=%v records=%d→%d", s.blackout, before, records(recorder))
+		}
+	})
+}

@@ -407,3 +407,107 @@ func TestConvergence_ProbeUp_AtMaxConnectionsNoScale(t *testing.T) {
 		t.Fatalf("max-1 should +1, got ok=%v delta=%d", ok2, ps2.delta)
 	}
 }
+
+// TestConvergence_LocalWindow_ProbeUpVerdictCancelled verifies a dirty tick
+// cancels the in-flight Probe-Up verdict unjudged: no success chain, no
+// ceiling rebound, no new probe — and the workers already added are never
+// rolled back. Clean controls prove each fixture's verdict would have run.
+func TestConvergence_LocalWindow_ProbeUpVerdictCancelled(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	mb := int64(1024 * 1024)
+	gid := "sg_pu_cancel"
+	newFixture := func(baselineBps, deltaCompleted int64) (*ConvergenceTicker, TrackedTaskInfo, time.Time) {
+		tracker := &mockTracker{tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+				CompletedLength: deltaCompleted},
+		}}
+		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
+			gid: makeWorkers(9, 2*1024*1024),
+		}}
+		ct := newTestConvergenceTicker(
+			rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+			tracker, telemetry,
+		)
+		t.Cleanup(func() { ct.Stop() })
+		now := time.Now()
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		s.phase = phaseProbingUp
+		s.probeUpBaseline = baselineBps
+		s.probeUpBaselineWorkers = 8
+		s.probeUpDelta = 1
+		s.prevCompleted = 10 * mb
+		s.prevSampleAt = now.Add(-5 * time.Second)
+		ct.mu.Unlock()
+		return ct, tracker.tasks[0], now
+	}
+
+	// Success fixture: raw=45MB vs baseline 40MB → gainRatio=1.0 ≥ 0.5.
+	t.Run("dirty_cancels_would_be_success", func(t *testing.T) {
+		ct, task, now := newFixture(40*mb, 10*mb+45*mb*5)
+		ps, ok := ct.processTask(task, true, nil, nil, nil, now)
+		if ok || ps.delta != 0 {
+			t.Fatalf("dirty tick must not emit a verdict scale: ok=%v delta=%d", ok, ps.delta)
+		}
+		ct.mu.Lock()
+		s := ct.states[gid]
+		ct.mu.Unlock()
+		if s.phase != phaseStable || s.probeUpBaseline != 0 || s.probeUpDelta != 0 {
+			t.Fatalf("up verdict must cancel unjudged: phase=%d baseline=%d delta=%d",
+				s.phase, s.probeUpBaseline, s.probeUpDelta)
+		}
+		if s.ceilingMemory != 0 || s.phase == phaseCeilingHit {
+			t.Error("cancelled verdict must not produce ceiling evidence")
+		}
+		// D2 published; physical +1 already applied is not rolled back.
+		if s.lastRawBps != 45*mb || !s.macroReady {
+			t.Errorf("raw=%d ready=%v, want (45MB,true)", s.lastRawBps, s.macroReady)
+		}
+	})
+
+	// Failure fixture: raw=41MB → gainRatio≈0.2 → would rebound −1 + CeilingHit.
+	t.Run("dirty_cancels_would_be_failure", func(t *testing.T) {
+		ct, task, now := newFixture(40*mb, 10*mb+41*mb*5)
+		ps, ok := ct.processTask(task, true, nil, nil, nil, now)
+		if ok || ps.delta != 0 {
+			t.Fatalf("dirty tick must not emit a rebound: ok=%v delta=%d", ok, ps.delta)
+		}
+		ct.mu.Lock()
+		s := ct.states[gid]
+		ct.mu.Unlock()
+		if s.phase != phaseStable || s.ceilingMemory != 0 || s.frozenCooldown != 0 {
+			t.Fatalf("cancelled failure must not latch ceiling lock: phase=%d ceiling=%d cooldown=%d",
+				s.phase, s.ceilingMemory, s.frozenCooldown)
+		}
+	})
+
+	// Clean controls: identical fixtures, affected=false → verdicts run.
+	t.Run("clean_success_verdict_runs", func(t *testing.T) {
+		ct, task, now := newFixture(40*mb, 10*mb+45*mb*5)
+		ct.processTask(task, false, nil, nil, nil, now)
+		ct.mu.Lock()
+		s := ct.states[gid]
+		ct.mu.Unlock()
+		// Success falls through to the Probe-Up trigger (or at minimum did
+		// not latch a ceiling) — the GainRatio path executed.
+		if s.phase == phaseProbingUp && s.probeUpDelta == 1 && s.probeUpBaseline == 40*mb {
+			t.Error("clean verdict must evaluate — baseline/delta unchanged")
+		}
+	})
+
+	t.Run("clean_failure_verdict_runs", func(t *testing.T) {
+		ct, task, now := newFixture(40*mb, 10*mb+41*mb*5)
+		ps, ok := ct.processTask(task, false, nil, nil, nil, now)
+		if !ok || ps.delta >= 0 {
+			t.Fatalf("clean failure must rebound: ok=%v delta=%d", ok, ps.delta)
+		}
+		ct.mu.Lock()
+		s := ct.states[gid]
+		ct.mu.Unlock()
+		if s.phase != phaseCeilingHit || s.ceilingMemory != 41*mb {
+			t.Fatalf("clean failure must latch ceiling: phase=%d ceiling=%d", s.phase, s.ceilingMemory)
+		}
+	})
+}

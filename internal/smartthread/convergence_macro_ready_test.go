@@ -66,16 +66,22 @@ func TestConvergence_MacroReady_SampledZero(t *testing.T) {
 	}
 }
 
+// TestConvergence_MacroReady_SurvivesWindowInvalidate verifies the local
+// contract: a dirty membership tick still runs D2, so lastRawBps/macroReady
+// are refreshed — never reset. A real zero increment publishes a measured
+// zero with ready=true through the same dirty window.
 func TestConvergence_MacroReady_SurvivesWindowInvalidate(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	gid1 := "sg_macro_inv_1"
 	gid2 := "sg_macro_inv_2"
+	gid3 := "sg_macro_inv_3"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "env1", Domain: "example.com", CompletedLength: 10 * 1024 * 1024, MinChunk: 1024 * 1024},
-			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "env1", Domain: "example.com", CompletedLength: 10 * 1024 * 1024, MinChunk: 1024 * 1024},
+			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "env1", Domain: "example.com", CompletedLength: 10 * 1024 * 1024, MinChunk: 1024 * 1024,
+				TelemetryBps: 10 * 1024 * 1024, TelemetryValid: true},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -90,24 +96,22 @@ func TestConvergence_MacroReady_SurvivesWindowInvalidate(t *testing.T) {
 	)
 	defer ct.Stop()
 
-	ct.tick()
+	t0 := time.Now()
+	ct.tickAt(t0)
 	tracker.tasks[0].CompletedLength = 60 * 1024 * 1024
-	ct.mu.Lock()
-	if s, ok := ct.states[gid1]; ok {
-		setPrevSampleAgoState(s, 5*time.Second)
-	}
-	ct.mu.Unlock()
-	ct.tick()
+	ct.tickAt(t0.Add(5 * time.Second))
 
 	bps, ready := ct.LastRawBps(gid1)
 	if !ready || bps <= 0 {
 		t.Fatalf("pre-invalidate: LastRawBps=(%d,%v), want (bps>0,true)", bps, ready)
 	}
 
-	// Drop gid2 → active-set change clears lastRawBps but must keep macroReady.
-	tracker.tasks = []TrackedTaskInfo{tracker.tasks[0]}
+	// Drop gid2 (10MB occupancy) → E≥margin → dirty tick for gid1. D2 still
+	// publishes: (70-60)MB / 5s — the measurement survives verdict cancel.
+	tracker.tasks[0].CompletedLength = 70 * 1024 * 1024
+	tracker.tasks = tracker.tasks[:1]
 	delete(telemetry.data, gid2)
-	ct.tick()
+	ct.tickAt(t0.Add(10 * time.Second))
 
 	ct.mu.Lock()
 	s := ct.states[gid1]
@@ -115,15 +119,28 @@ func TestConvergence_MacroReady_SurvivesWindowInvalidate(t *testing.T) {
 	if s == nil {
 		t.Fatal("expected state after invalidate")
 	}
-	if s.lastRawBps != 0 {
-		t.Errorf("after invalidate: lastRawBps=%d, want 0", s.lastRawBps)
-	}
-	if !s.macroReady {
-		t.Error("after invalidate: macroReady cleared; must survive window invalidate")
+	if s.lastRawBps != 2*1024*1024 || !s.macroReady {
+		t.Errorf("after dirty tick: lastRawBps=%d macroReady=%v, want (%d,true) — D2 must not be suppressed",
+			s.lastRawBps, s.macroReady, 2*1024*1024)
 	}
 	bps, ready = ct.LastRawBps(gid1)
+	if !ready || bps != 2*1024*1024 {
+		t.Errorf("after dirty tick: LastRawBps=(%d,%v), want (%d,true)", bps, ready, 2*1024*1024)
+	}
+
+	// Real zero increment through a second dirty window: gid3 enters with
+	// occupancy → E>0 → gid1 dirty; completed unchanged → measured zero.
+	tracker.tasks = append(tracker.tasks, TrackedTaskInfo{
+		GID: gid3, Status: "active", Scope: "wan", EnvKey: "env1", Domain: "example.com",
+		CompletedLength: 5 * 1024 * 1024, MinChunk: 1024 * 1024,
+		TelemetryBps: 10 * 1024 * 1024, TelemetryValid: true,
+	})
+	telemetry.data[gid3] = makeChunkWorkers(4, 2*1024*1024, []int64{10 * 1024 * 1024, 10 * 1024 * 1024, 10 * 1024 * 1024, 10 * 1024 * 1024})
+	ct.tickAt(t0.Add(15 * time.Second))
+
+	bps, ready = ct.LastRawBps(gid1)
 	if !ready || bps != 0 {
-		t.Errorf("after invalidate: LastRawBps=(%d,%v), want (0,true)", bps, ready)
+		t.Errorf("zero-increment dirty tick: LastRawBps=(%d,%v), want (0,true)", bps, ready)
 	}
 }
 

@@ -357,27 +357,35 @@ func TestConvergenceNMaxUnlock_WorkersBelowNMaxStillUnlocks(t *testing.T) {
 	}
 }
 
-// TestConvergenceNMaxUnlock_ActiveSetChangeResetsCounter verifies that an
-// active-set change resets domainUnlockTicks to 0.
+// TestConvergenceNMaxUnlock_ActiveSetChangeResetsCounter verifies
+// domain-local reset: a membership change resets only the changed domain's
+// confirm counter — to 0, without counting that dirty tick as a clean
+// observation — while an unchanged domain keeps confirming normally.
 func TestConvergenceNMaxUnlock_ActiveSetChangeResetsCounter(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
-	gid := "sg_nmax_activeset"
-	domain := "example.com"
-	key := limitKey("wan", domain)
+	gidA := "sg_nmax_activeset"
+	gidB := "sg_nmax_otherdom"
+	keyA := limitKey("wan", "example.com")
+	keyB := limitKey("wan", "other.com")
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
+			{GID: gidA, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
+			{GID: gidB, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "other.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024},
 		},
+	}
+	zeroRetry := func() []types.WorkerSnapshot {
+		return []types.WorkerSnapshot{
+			{WorkerID: 0, EMASpeed: 2 * 1024 * 1024},
+			{WorkerID: 1, EMASpeed: 2 * 1024 * 1024},
+			{WorkerID: 2, EMASpeed: 2 * 1024 * 1024},
+		}
 	}
 	telemetry := &mockTelemetry{
 		data: map[string][]types.WorkerSnapshot{
-			gid: {
-				{WorkerID: 0, EMASpeed: 2 * 1024 * 1024, RetryCount: 0},
-				{WorkerID: 1, EMASpeed: 2 * 1024 * 1024, RetryCount: 0},
-				{WorkerID: 2, EMASpeed: 2 * 1024 * 1024, RetryCount: 0},
-			},
+			gidA: zeroRetry(),
+			gidB: zeroRetry(),
 		},
 	}
 	aria2 := &rpc.Aria2Engine{}
@@ -385,38 +393,48 @@ func TestConvergenceNMaxUnlock_ActiveSetChangeResetsCounter(t *testing.T) {
 	he := rpc.NewHybridEngine(aria2, surge)
 	ct := NewConvergenceTicker(he, tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256)
 
-	ct.limits.Clear(key)
-	ct.limits.SetNMax(key, 3)
+	ct.limits.Clear(keyA)
+	ct.limits.Clear(keyB)
+	ct.limits.SetNMax(keyA, 3)
+	ct.limits.SetNMax(keyB, 3)
 
-	// Tick 1: domainUnlockTicks=1
+	// Tick 1: both domains confirm once.
 	ct.tick()
-	if ct.domainUnlockTicks[key] != 1 {
-		t.Fatalf("expected domainUnlockTicks=1 after tick 1, got %d", ct.domainUnlockTicks[key])
+	if ct.domainUnlockTicks[keyA] != 1 || ct.domainUnlockTicks[keyB] != 1 {
+		t.Fatalf("expected both counters=1, got A=%d B=%d", ct.domainUnlockTicks[keyA], ct.domainUnlockTicks[keyB])
 	}
 
-	// Add a second task → active set changes → windowInvalidated → domainUnlockTicks reset.
-	gid2 := "sg_nmax_activeset_2"
+	// Join a second task in domain A only → changedDomains = {A}.
+	gidA2 := "sg_nmax_activeset_2"
 	tracker.tasks = append(tracker.tasks, TrackedTaskInfo{
-		GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: domain, IsKeepAlive: true, CompletedLength: 20 * 1024 * 1024,
+		GID: gidA2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 20 * 1024 * 1024,
 	})
-	telemetry.data[gid2] = makeWorkers(3, 2*1024*1024)
-
-	tracker.tasks[0].CompletedLength = 60 * 1024 * 1024
+	telemetry.data[gidA2] = zeroRetry()
 	ct.tick()
 
-	// After reset + re-increment, domainUnlockTicks should be 1 (not 2).
-	if ct.domainUnlockTicks[key] != 1 {
-		t.Fatalf("expected domainUnlockTicks=1 after active-set change (reset then re-incremented), got %d", ct.domainUnlockTicks[key])
+	// A resets to 0 — the dirty tick is not itself a clean confirmation.
+	// B is untouched and completes its second clean confirm → unlocked.
+	if ct.domainUnlockTicks[keyA] != 0 {
+		t.Fatalf("expected domainUnlockTicks[A]=0 after membership change, got %d", ct.domainUnlockTicks[keyA])
 	}
-	if _, hasLimit := ct.limits.GetNMax(key); !hasLimit {
-		t.Fatal("N_max should still be locked after active-set change (needs 1 more tick)")
+	if _, hasLimit := ct.limits.GetNMax(keyA); !hasLimit {
+		t.Fatal("changed domain must stay locked (needs 2 fresh clean ticks)")
+	}
+	if _, hasLimit := ct.limits.GetNMax(keyB); hasLimit {
+		t.Fatal("unchanged domain must unlock normally after 2 clean ticks")
 	}
 
-	// One more tick → domainUnlockTicks=2 → unlock
-	tracker.tasks[0].CompletedLength = 70 * 1024 * 1024
+	// Clean ticks rebuild A's confirmation: 1 then unlock.
 	ct.tick()
-	if _, hasLimit := ct.limits.GetNMax(key); hasLimit {
-		t.Fatal("expected N_max to be cleared after 2 consecutive zero-retry ticks post-reset")
+	if ct.domainUnlockTicks[keyA] != 1 {
+		t.Fatalf("expected domainUnlockTicks[A]=1 after first clean tick, got %d", ct.domainUnlockTicks[keyA])
+	}
+	if _, hasLimit := ct.limits.GetNMax(keyA); !hasLimit {
+		t.Fatal("A must still be locked after only 1 clean confirm")
+	}
+	ct.tick()
+	if _, hasLimit := ct.limits.GetNMax(keyA); hasLimit {
+		t.Fatal("expected A unlocked after 2 consecutive clean ticks post-reset")
 	}
 }
 
@@ -545,4 +563,147 @@ func TestConvergenceNMaxUnlock_NoNMaxFloorRequirement(t *testing.T) {
 	if _, hasLimit := ct.limits.GetNMax(key); hasLimit {
 		t.Fatal("expected N_max to be cleared even when activeWorkers < nMax (no floor requirement)")
 	}
+}
+
+// TestConvergence_LocalWindow_DomainMembership covers the changed-domain
+// contract: reset is driven by membership, not perturbation size — a zero-
+// occupancy join still resets its domain; scope|domain keys are never
+// conflated; Aria2 members count for membership too; unattributed rows mint
+// no wildcard keys; a same-GID reclassification resets both old and new
+// domains; env-only churn is not membership.
+func TestConvergence_LocalWindow_DomainMembership(t *testing.T) {
+	mb := int64(1024 * 1024)
+	now := time.Now()
+	info := func(scope, domain, env string) gidInfo {
+		return gidInfo{Scope: scope, Domain: domain, EnvKey: env}
+	}
+	row := func(gid, scope, domain, env string, occ int64) TrackedTaskInfo {
+		return TrackedTaskInfo{
+			GID: gid, Status: "active", Scope: scope, Domain: domain, EnvKey: env,
+			TelemetryBps: occ, TelemetryValid: occ > 0,
+		}
+	}
+	diff := func(cur []TrackedTaskInfo, prev map[string]gidInfo, prevOcc map[string]int64) map[string]bool {
+		active := make(map[string]gidInfo, len(cur))
+		for _, r := range cur {
+			active[r.GID] = gidInfo{Scope: r.Scope, Domain: r.Domain, EnvKey: r.EnvKey}
+		}
+		_, changed, _ := occupancyDelta(cur, active, prev, prevOcc, now)
+		return changed
+	}
+
+	t.Run("scope_isolation_no_conflation", func(t *testing.T) {
+		prev := map[string]gidInfo{"sg_wan": info("wan", "example.com", "testenv")}
+		cur := []TrackedTaskInfo{
+			row("sg_wan", "wan", "example.com", "testenv", 5*mb),
+			row("sg_lan", "lan", "example.com", "testenv", 5*mb),
+		}
+		changed := diff(cur, prev, map[string]int64{"sg_wan": 5 * mb})
+		if !changed[limitKey("lan", "example.com")] {
+			t.Fatal("lan join must mark its own limitKey")
+		}
+		if changed[limitKey("wan", "example.com")] {
+			t.Fatal("same domain in a different scope must not mark wan|example.com")
+		}
+	})
+
+	t.Run("aria2_join_exit_are_membership", func(t *testing.T) {
+		prev := map[string]gidInfo{
+			"sg_a": info("wan", "a.com", "testenv"),
+			"ar_x": info("wan", "x.com", "testenv"),
+		}
+		prevOcc := map[string]int64{"sg_a": 5 * mb, "ar_x": 5 * mb}
+		cur := []TrackedTaskInfo{
+			row("sg_a", "wan", "a.com", "testenv", 5*mb),
+			row("ar_y", "wan", "y.com", "testenv", 5*mb),
+		}
+		changed := diff(cur, prev, prevOcc)
+		if !changed[limitKey("wan", "x.com")] || !changed[limitKey("wan", "y.com")] {
+			t.Fatalf("aria2 exit/join must mark membership: %v", changed)
+		}
+	})
+
+	t.Run("unknown_ownership_no_wildcard", func(t *testing.T) {
+		prev := map[string]gidInfo{"sg_a": info("wan", "a.com", "testenv")}
+		cur := []TrackedTaskInfo{
+			row("sg_a", "wan", "a.com", "testenv", 5*mb),
+			row("ar_none", "", "", "", 5*mb),
+		}
+		changed := diff(cur, prev, map[string]int64{"sg_a": 5 * mb})
+		if len(changed) != 0 {
+			t.Fatalf("unattributed member must mint no wildcard keys: %v", changed)
+		}
+	})
+
+	t.Run("same_gid_reclassified_resets_both", func(t *testing.T) {
+		prev := map[string]gidInfo{"sg_a": info("wan", "a.com", "testenv")}
+		cur := []TrackedTaskInfo{row("sg_a", "wan", "b.com", "testenv", 5*mb)}
+		changed := diff(cur, prev, map[string]int64{"sg_a": 5 * mb})
+		if !changed[limitKey("wan", "a.com")] || !changed[limitKey("wan", "b.com")] {
+			t.Fatalf("A→B reclassification must reset both domains: %v", changed)
+		}
+	})
+
+	t.Run("env_only_change_is_not_membership", func(t *testing.T) {
+		prev := map[string]gidInfo{"sg_a": info("wan", "a.com", "envA")}
+		cur := []TrackedTaskInfo{row("sg_a", "wan", "a.com", "envB", 5*mb)}
+		changed := diff(cur, prev, map[string]int64{"sg_a": 5 * mb})
+		if len(changed) != 0 {
+			t.Fatalf("env-only churn is not membership: %v", changed)
+		}
+	})
+
+	// Real tick: a zero-occupancy join resets only its own domain counter;
+	// an env-only re-key does not reset anything.
+	t.Run("e0_join_resets_changed_domain_only", func(t *testing.T) {
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
+		gidA := "sg_dm_a"
+		gidB := "sg_dm_b"
+		keyA := limitKey("wan", "a.com")
+		keyB := limitKey("wan", "b.com")
+		tracker := &mockTracker{tasks: []TrackedTaskInfo{
+			{GID: gidA, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com", CompletedLength: 10 * mb},
+			{GID: gidB, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "b.com", CompletedLength: 10 * mb},
+		}}
+		zeroRetry := func() []types.WorkerSnapshot {
+			return []types.WorkerSnapshot{{WorkerID: 0, EMASpeed: 2 * 1024 * 1024}}
+		}
+		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
+			gidA: zeroRetry(), gidB: zeroRetry(),
+		}}
+		ct := NewConvergenceTicker(
+			rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+			tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 256,
+		)
+		defer ct.Stop()
+		ct.limits.SetNMax(keyA, 3)
+		ct.limits.SetNMax(keyB, 3)
+		ct.tick()
+		if ct.domainUnlockTicks[keyA] != 1 || ct.domainUnlockTicks[keyB] != 1 {
+			t.Fatalf("counters after tick 1: A=%d B=%d", ct.domainUnlockTicks[keyA], ct.domainUnlockTicks[keyB])
+		}
+
+		// Zero-occupancy join into domain A → E=0 but membership changed.
+		tracker.tasks = append(tracker.tasks, TrackedTaskInfo{
+			GID: "sg_dm_zero", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com",
+		})
+		telemetry.data["sg_dm_zero"] = zeroRetry()
+		ct.tick()
+		if ct.domainUnlockTicks[keyA] != 0 {
+			t.Fatalf("zero-occ join must still reset its domain, A=%d", ct.domainUnlockTicks[keyA])
+		}
+		// B finished its second clean confirm → unlocked.
+		if _, has := ct.limits.GetNMax(keyB); has {
+			t.Fatal("unchanged domain must unlock normally")
+		}
+
+		// Env-only reclassification of the same GID: not membership — the
+		// rebuilt counter must not be reset again.
+		tracker.tasks[0].EnvKey = "envB"
+		ct.tick()
+		if ct.domainUnlockTicks[keyA] != 1 {
+			t.Fatalf("env-only churn must not reset: A=%d", ct.domainUnlockTicks[keyA])
+		}
+	})
 }

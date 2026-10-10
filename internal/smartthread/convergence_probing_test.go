@@ -1,6 +1,7 @@
 package smartthread
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -206,68 +207,112 @@ func TestConvergence_Settling_NoDecision(t *testing.T) {
 	}
 }
 
-// TestConvergence_MultiTask_WindowInvalidation verifies that when the active set changes,
-// all states get prevCompleted reset and no probe decisions are made.
+// TestConvergence_MultiTask_WindowInvalidation verifies local-window
+// invalidation: a member exit dirties a survivor only when its occupancy
+// reaches the survivor's decision-window margin. D2 always measures across
+// the pre-existing baseline — the survivor keeps raw/ready and long-term
+// memory; only the in-flight verdict is cancelled on a dirty tick.
 func TestConvergence_MultiTask_WindowInvalidation(t *testing.T) {
-	speedstats.ResetRecordsForTest()
-	t.Cleanup(speedstats.ResetRecordsForTest)
-
 	gid1 := "sg_multi_1"
-	gid2 := "sg_multi_2"
+	// Aria2 donor: two-engine occupancy drives the perturbation while its
+	// exit never arms bandwidthRelease or elects a Surge free +1 — keeps
+	// the survivor's verdict fields attributable to invalidation alone.
+	gid2 := "ar_multi_2"
 
-	tracker := &mockTracker{
-		tasks: []TrackedTaskInfo{
-			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
-			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024},
-		},
-	}
-	telemetry := &mockTelemetry{
-		data: map[string][]types.WorkerSnapshot{
-			gid1: makeWorkers(4, 2*1024*1024),
-			gid2: makeWorkers(4, 2*1024*1024),
-		},
-	}
+	// setup arms gid1 with a pending down-probe verdict (margin 5MB/s) plus
+	// long-term memory, then drops gid2 while gid1 progresses 50MB in 5s.
+	setup := func(t *testing.T, donorOcc int64) *convergenceState {
+		t.Helper()
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
 
-	aria2 := &rpc.Aria2Engine{}
-	surge := rpc.NewSurgeEngineForTesting(nil)
-	he := rpc.NewHybridEngine(aria2, surge)
-	ct := newTestConvergenceTicker(he, tracker, telemetry)
-	defer ct.Stop()
-
-	// First tick: establish prevActiveGids with both tasks
-	ct.tick()
-
-	// Set up state with prevCompleted for both
-	ct.mu.Lock()
-	for _, g := range []string{gid1, gid2} {
-		if s, ok := ct.states[g]; ok {
-			s.prevCompleted = 10 * 1024 * 1024
-			setPrevSampleAgoState(s, 5*time.Second)
+		tracker := &mockTracker{
+			tasks: []TrackedTaskInfo{
+				{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
+				{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024,
+					TelemetryBps: donorOcc, TelemetryValid: donorOcc > 0},
+			},
 		}
-	}
-	ct.mu.Unlock()
+		telemetry := &mockTelemetry{
+			data: map[string][]types.WorkerSnapshot{
+				gid1: makeWorkers(4, 2*1024*1024),
+				gid2: makeWorkers(4, 2*1024*1024),
+			},
+		}
+		ct := newTestConvergenceTicker(
+			rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+			tracker, telemetry,
+		)
+		t.Cleanup(func() { ct.Stop() })
 
-	// Remove gid2 — active set changes
-	tracker.tasks = []TrackedTaskInfo{
-		{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 60 * 1024 * 1024},
-	}
-	telemetry.data = map[string][]types.WorkerSnapshot{
-		gid1: makeWorkers(4, 2*1024*1024),
+		t0 := time.Now()
+		ct.tickAt(t0)
+
+		ct.mu.Lock()
+		s := ct.states[gid1]
+		s.prevCompleted = 10 * 1024 * 1024
+		s.prevSampleAt = t0 // exact 5s measurement window below
+		s.phase = phaseSettling
+		s.lastStep = 1
+		s.probeBaseline = 40 * 1024 * 1024
+		s.probeBaselineWorkers = 4
+		s.sustainCount = 5
+		s.peakSpeed = 30 * 1024 * 1024
+		s.peakWorkers = 8
+		s.bestEff = 8 * 1024 * 1024
+		ct.mu.Unlock()
+
+		tracker.tasks = tracker.tasks[:1]
+		tracker.tasks[0].CompletedLength = 60 * 1024 * 1024
+		delete(telemetry.data, gid2)
+		ct.tickAt(t0.Add(5 * time.Second))
+
+		ct.mu.Lock()
+		defer ct.mu.Unlock()
+		return ct.states[gid1]
 	}
 
-	// This tick should detect active set change and invalidate windows
-	ct.tick()
+	t.Run("tiny_churn_keeps_window", func(t *testing.T) {
+		s := setup(t, 0) // donor occupancy 0 → E=0 → unaffected
+		if s == nil {
+			t.Fatal("expected state for gid1")
+		}
+		// D2 crossed the old baseline: (60-10)MB / 5s, not a rebased sample.
+		if s.lastRawBps != 10*1024*1024 {
+			t.Errorf("lastRawBps=%d, want %d (D2 must span the old window)", s.lastRawBps, 10*1024*1024)
+		}
+		// Clean settling: verdict still pending for next tick — not cancelled.
+		if s.phase != phaseStable || s.lastStep != 1 {
+			t.Errorf("clean tick must keep pending verdict: phase=%d lastStep=%d", s.phase, s.lastStep)
+		}
+		if s.probeBaseline != 40*1024*1024 {
+			t.Errorf("probeBaseline=%d, want kept 40MB", s.probeBaseline)
+		}
+	})
 
-	ct.mu.Lock()
-	s := ct.states[gid1]
-	ct.mu.Unlock()
-	if s == nil {
-		t.Fatal("expected state for gid1")
-	}
-	// After invalidation, processTask sets prevCompleted as first sample (baseline)
-	if s.prevSampleAt.IsZero() {
-		t.Error("expected prevSampleAt to be set after invalidation tick (first sample re-baseline)")
-	}
+	t.Run("large_churn_cancels_verdict_keeps_memory", func(t *testing.T) {
+		s := setup(t, 10*1024*1024) // E=10MB ≥ 5MB margin → dirty
+		if s == nil {
+			t.Fatal("expected state for gid1")
+		}
+		// Verdict cancelled unjudged — phase settles without a decision.
+		if s.lastStep != 0 || s.phase != phaseStable || s.probeBaseline != 0 {
+			t.Errorf("dirty tick must cancel pending verdict: lastStep=%d phase=%d probeBaseline=%d",
+				s.lastStep, s.phase, s.probeBaseline)
+		}
+		// D2 still measured across the old baseline — raw is not erased.
+		if s.lastRawBps != 10*1024*1024 || !s.macroReady {
+			t.Errorf("lastRawBps=%d macroReady=%v, want (%d,true)", s.lastRawBps, s.macroReady, 10*1024*1024)
+		}
+		// Long-term memory survives — no global reset.
+		if s.sustainCount != 5 || s.peakSpeed != 30*1024*1024 || s.peakWorkers != 8 || s.bestEff != 8*1024*1024 {
+			t.Errorf("memory wiped on dirty tick: sustain=%d peak=%d@%d bestEff=%d",
+				s.sustainCount, s.peakSpeed, s.peakWorkers, s.bestEff)
+		}
+		if s.prevCompleted != 60*1024*1024 || s.prevSampleAt.IsZero() {
+			t.Error("dirty tick must advance the sample baseline")
+		}
+	})
 }
 
 // TestConvergence_RateLimitSkip_SkipsProbeButRecordsPeak verifies a true positive
@@ -735,78 +780,115 @@ func TestConvergence_C3_SustainCountResetOnFrozenExpiry(t *testing.T) {
 	}
 }
 
-// TestConvergence_m2_InvalidationResetsLastStepAndPhase verifies that window
-// invalidation resets lastStep and phase (m2 fix), preventing spurious probe
-// evaluation against probeBaseline=0.
+// TestConvergence_m2_InvalidationResetsLastStepAndPhase verifies that a dirty
+// window cancels the pending Probe-Down verdict — settling and the following
+// stable+lastStep verdict tick — without touching raw measurement or
+// long-term memory (m2 fix: no spurious verdict against a cleared baseline).
+// A control with a zero-occupancy exit proves the verdict is only cancelled
+// when the perturbation actually reaches the window margin.
 func TestConvergence_m2_InvalidationResetsLastStepAndPhase(t *testing.T) {
-	speedstats.ResetRecordsForTest()
-	t.Cleanup(speedstats.ResetRecordsForTest)
-
 	gid1 := "sg_inval_1"
-	gid2 := "sg_inval_2"
+	// Aria2 donor: drives E via occupancy without arming a Surge release.
+	gid2 := "ar_inval_2"
 
-	tracker := &mockTracker{
-		tasks: []TrackedTaskInfo{
-			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
-			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024},
-		},
-	}
-	telemetry := &mockTelemetry{
-		data: map[string][]types.WorkerSnapshot{
-			gid1: makeWorkers(4, 2*1024*1024),
-			gid2: makeWorkers(4, 2*1024*1024),
-		},
-	}
+	// setup: donor occupancy 10MB → E=10MB ≥ the 5MB verdict margin → dirty.
+	// phase arms the pending down verdict, then gid1 progresses 50MB in 5s.
+	setup := func(t *testing.T, donorOcc int64, phase int) *convergenceState {
+		t.Helper()
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
 
-	aria2 := &rpc.Aria2Engine{}
-	surge := rpc.NewSurgeEngineForTesting(nil)
-	he := rpc.NewHybridEngine(aria2, surge)
-	ct := newTestConvergenceTicker(he, tracker, telemetry)
-	defer ct.Stop()
+		tracker := &mockTracker{
+			tasks: []TrackedTaskInfo{
+				{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
+				{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024,
+					TelemetryBps: donorOcc, TelemetryValid: donorOcc > 0},
+			},
+		}
+		telemetry := &mockTelemetry{
+			data: map[string][]types.WorkerSnapshot{
+				gid1: makeWorkers(4, 2*1024*1024),
+				gid2: makeWorkers(4, 2*1024*1024),
+			},
+		}
+		ct := newTestConvergenceTicker(
+			rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+			tracker, telemetry,
+		)
+		t.Cleanup(func() { ct.Stop() })
 
-	// First tick: establish prevActiveGids with both tasks
-	ct.tick()
+		t0 := time.Now()
+		ct.tickAt(t0)
 
-	// Set up state with probe in-flight (settling phase, lastStep=-1)
-	ct.mu.Lock()
-	for _, g := range []string{gid1, gid2} {
-		if s, ok := ct.states[g]; ok {
+		ct.mu.Lock()
+		if s, ok := ct.states[gid1]; ok {
 			s.prevCompleted = 10 * 1024 * 1024
-			setPrevSampleAgoState(s, 5*time.Second)
-			s.phase = phaseSettling
+			s.prevSampleAt = t0
+			s.phase = phase
 			s.lastStep = 1
 			s.probeBaseline = 40 * 1024 * 1024
 			s.probeBaselineWorkers = 4
+			s.sustainCount = 4
+			s.peakSpeed = 30 * 1024 * 1024
 		}
-	}
-	ct.mu.Unlock()
+		ct.mu.Unlock()
 
-	// Remove gid2 — active set changes, triggers window invalidation
-	tracker.tasks = []TrackedTaskInfo{
-		{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 60 * 1024 * 1024},
-	}
-	telemetry.data = map[string][]types.WorkerSnapshot{
-		gid1: makeWorkers(4, 2*1024*1024),
+		tracker.tasks = tracker.tasks[:1]
+		tracker.tasks[0].CompletedLength = 60 * 1024 * 1024
+		delete(telemetry.data, gid2)
+		ct.tickAt(t0.Add(5 * time.Second))
+
+		ct.mu.Lock()
+		defer ct.mu.Unlock()
+		return ct.states[gid1]
 	}
 
-	ct.tick()
+	for _, phase := range []int{phaseSettling, phaseStable} {
+		name := "settling_window"
+		if phase == phaseStable {
+			name = "stable_lastStep_window"
+		}
+		t.Run(name, func(t *testing.T) {
+			s := setup(t, 10*1024*1024, phase)
+			if s == nil {
+				t.Fatal("expected state for gid1")
+			}
+			if s.lastStep != 0 || s.phase != phaseStable || s.probeBaseline != 0 {
+				t.Errorf("dirty tick must cancel pending verdict: lastStep=%d phase=%d probeBaseline=%d",
+					s.lastStep, s.phase, s.probeBaseline)
+			}
+			if s.probeMomentum {
+				t.Error("dirty cancel must drop unfinished-combo momentum")
+			}
+			// D2 measured across the old baseline; memory is not a global reset.
+			if s.lastRawBps != 10*1024*1024 || !s.macroReady {
+				t.Errorf("lastRawBps=%d macroReady=%v, want (%d,true)", s.lastRawBps, s.macroReady, 10*1024*1024)
+			}
+			if s.sustainCount != 4 || s.peakSpeed != 30*1024*1024 {
+				t.Errorf("memory wiped on dirty tick: sustain=%d peak=%d", s.sustainCount, s.peakSpeed)
+			}
+		})
+	}
 
-	ct.mu.Lock()
-	s := ct.states[gid1]
-	ct.mu.Unlock()
-	if s.lastStep != 0 {
-		t.Errorf("expected lastStep=0 after invalidation (m2 fix), got %d", s.lastStep)
-	}
-	if s.phase != phaseStable {
-		t.Errorf("expected phase=phaseStable after invalidation (m2 fix), got %d", s.phase)
-	}
+	t.Run("zero_occ_exit_keeps_verdict", func(t *testing.T) {
+		s := setup(t, 0, phaseSettling)
+		if s == nil {
+			t.Fatal("expected state for gid1")
+		}
+		// Clean settling: phase resolves but the pending verdict is kept.
+		if s.phase != phaseStable || s.lastStep != 1 || s.probeBaseline != 40*1024*1024 {
+			t.Errorf("clean tick must keep pending verdict: phase=%d lastStep=%d probeBaseline=%d",
+				s.phase, s.lastStep, s.probeBaseline)
+		}
+	})
 }
 
-// TestConvergence_C4_InvalidationResetsKneeFrozen verifies that window
-// invalidation resets kneeFrozen, frozenCooldown, probeMomentum, and
-// probeCooldown — preventing permanent ScaleUp suppression when the active
-// set changes while a task is in frozen state.
-func TestConvergence_C4_InvalidationResetsKneeFrozen(t *testing.T) {
+// TestConvergence_C4_InvalidationPreservesFrozenLock verifies that a dirty
+// tick keeps lock evidence: a frozen task's kneeFrozen, momentum and peak
+// memory are never cleared by local invalidation — the frozen cooldown only
+// ticks down once and the normal clean-tick expiry path still unlocks, so a
+// membership perturbation can neither orphan nor accelerate the lock.
+func TestConvergence_C4_InvalidationPreservesFrozenLock(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
@@ -816,7 +898,8 @@ func TestConvergence_C4_InvalidationResetsKneeFrozen(t *testing.T) {
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
-			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024},
+			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024,
+				TelemetryBps: 10 * 1024 * 1024, TelemetryValid: true},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -832,10 +915,10 @@ func TestConvergence_C4_InvalidationResetsKneeFrozen(t *testing.T) {
 	ct := newTestConvergenceTicker(he, tracker, telemetry)
 	defer ct.Stop()
 
-	// First tick: establish prevActiveGids with both tasks
-	ct.tick()
+	t0 := time.Now()
+	ct.tickAt(t0)
 
-	// Set up gid1 in frozen state with kneeFrozen=true
+	// gid1 frozen with lock evidence + long-term memory.
 	ct.mu.Lock()
 	s := ct.states[gid1]
 	s.phase = phaseFrozen
@@ -844,34 +927,61 @@ func TestConvergence_C4_InvalidationResetsKneeFrozen(t *testing.T) {
 	s.probeMomentum = true
 	s.probeCooldown = 0
 	s.prevCompleted = 40 * 1024 * 1024
-	setPrevSampleAgoState(s, 5*time.Second)
+	s.prevSampleAt = t0
+	s.macroReady = true
+	s.lastRawBps = 40 * 1024 * 1024
+	s.peakSpeed = 45 * 1024 * 1024
+	s.peakWorkers = 8
+	s.bestEff = 11 * 1024 * 1024
+	s.sustainCount = 6
 	ct.mu.Unlock()
 
-	// Remove gid2 — active set changes, triggers window invalidation
-	tracker.tasks = []TrackedTaskInfo{
-		{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 60 * 1024 * 1024},
-	}
-	telemetry.data = map[string][]types.WorkerSnapshot{
-		gid1: makeWorkers(4, 2*1024*1024),
-	}
-
-	ct.tick()
+	// Remove gid2 — E=10MB ≥ margin → dirty tick.
+	tracker.tasks = tracker.tasks[:1]
+	tracker.tasks[0].CompletedLength = 60 * 1024 * 1024
+	delete(telemetry.data, gid2)
+	ct.tickAt(t0.Add(5 * time.Second))
 
 	ct.mu.Lock()
 	s = ct.states[gid1]
 	ct.mu.Unlock()
 
-	if s.kneeFrozen {
-		t.Error("expected kneeFrozen=false after invalidation (C4 fix)")
+	if !s.kneeFrozen {
+		t.Error("kneeFrozen must survive a dirty tick (lock evidence)")
 	}
-	if s.frozenCooldown != 0 {
-		t.Errorf("expected frozenCooldown=0 after invalidation (C4 fix), got %d", s.frozenCooldown)
+	if s.frozenCooldown != 7 {
+		t.Errorf("frozenCooldown=%d, want 7 (decrements once, no unlock on dirty)", s.frozenCooldown)
 	}
-	if s.probeMomentum {
-		t.Error("expected probeMomentum=false after invalidation (C4 fix)")
+	if !s.probeMomentum {
+		t.Error("probeMomentum must survive — frozen is not a pending verdict")
+	}
+	if s.phase != phaseFrozen {
+		t.Errorf("phase=%d, want phaseFrozen (no expiry transition on dirty tick)", s.phase)
+	}
+	if s.peakSpeed != 45*1024*1024 || s.bestEff != 11*1024*1024 || s.sustainCount != 6 {
+		t.Errorf("memory wiped on dirty tick: peak=%d bestEff=%d sustain=%d",
+			s.peakSpeed, s.bestEff, s.sustainCount)
+	}
+	// D2 still measured: (60-40)MB / 5s — raw stays a live measurement.
+	if s.lastRawBps != 4*1024*1024 || !s.macroReady {
+		t.Errorf("lastRawBps=%d macroReady=%v, want (%d,true)", s.lastRawBps, s.macroReady, 4*1024*1024)
+	}
+
+	// Clean ticks run the normal expiry path: cooldown 7→0 unlocks on the
+	// seventh clean tick — the lock cannot outlive its own schedule.
+	for i := 1; i <= 7; i++ {
+		tracker.tasks[0].CompletedLength += 10 * 1024 * 1024
+		ct.tickAt(t0.Add(time.Duration(5+5*i) * time.Second))
+	}
+	ct.mu.Lock()
+	s = ct.states[gid1]
+	ct.mu.Unlock()
+	if s.phase != phaseStable || s.kneeFrozen || s.probeMomentum {
+		t.Errorf("clean expiry must unlock: phase=%d kneeFrozen=%v momentum=%v",
+			s.phase, s.kneeFrozen, s.probeMomentum)
 	}
 	if s.probeCooldown != probeIntervalCycles {
-		t.Errorf("expected probeCooldown=%d after invalidation (C4 fix), got %d", probeIntervalCycles, s.probeCooldown)
+		t.Errorf("probeCooldown=%d, want %d after clean expiry", s.probeCooldown, probeIntervalCycles)
 	}
 }
 
@@ -1358,4 +1468,437 @@ func TestConvergence_E2E_LinearZoneKneeViaSettling(t *testing.T) {
 	if s.phase != phaseFloorHit {
 		t.Fatalf("tick 5: expected phase=phaseFloorHit, got %d", s.phase)
 	}
+}
+
+// TestConvergence_LocalWindow_MarginAndDegrades covers the verdict-margin
+// contract: Probe-Up uses its own delta (including >1 jumps), Probe-Down
+// uses the pre-probe worker count (not current), ordinary windows use prev
+// raw — and every malformed/degraded input (nil state, ready-zero, missing
+// baseline/workers, unknown exit, sum overflow) degrades to conservatively
+// affected once perturbation is non-zero.
+func TestConvergence_LocalWindow_MarginAndDegrades(t *testing.T) {
+	mb := int64(1024 * 1024)
+
+	margins := []struct {
+		name    string
+		s       *convergenceState
+		workers int
+		want    float64
+		ok      bool
+	}{
+		// Probe-Up: margin spans its own delta — a +3 jump has a 7.5MB window.
+		{"up_delta_gt1", &convergenceState{
+			phase: phaseProbingUp, probeUpDelta: 3,
+			probeUpBaseline: 40 * mb, probeUpBaselineWorkers: 8,
+		}, 8, 7.5 * 1024 * 1024, true},
+		// Probe-Down: refWorkers is the pre-probe count (10), not current (7).
+		{"down_uses_original_workers", &convergenceState{
+			phase: phaseStable, lastStep: 2,
+			probeBaseline: 40 * mb, probeBaselineWorkers: 10,
+		}, 7, 4 * 1024 * 1024, true},
+		// Ordinary stable window: half of one worker's measured throughput.
+		{"ordinary_prev_raw", &convergenceState{
+			phase: phaseStable, lastRawBps: 20 * mb, macroReady: true,
+		}, 4, 2.5 * 1024 * 1024, true},
+		// Degrades → ok=false → conservatively affected under E>0.
+		{"nil_state", nil, 4, 0, false},
+		{"ready_zero", &convergenceState{
+			phase: phaseStable, macroReady: true, lastRawBps: 0,
+		}, 4, 0, false},
+		{"missing_baseline", &convergenceState{
+			phase: phaseStable, lastStep: 1, probeBaseline: 0, probeBaselineWorkers: 4,
+		}, 4, 0, false},
+		{"missing_workers", &convergenceState{
+			phase: phaseProbingUp, probeUpDelta: 1,
+			probeUpBaseline: 40 * mb, probeUpBaselineWorkers: 0,
+		}, 0, 0, false},
+	}
+	for _, tc := range margins {
+		t.Run(tc.name, func(t *testing.T) {
+			margin, ok := probeMarginThreshold(verdictMargin(tc.s, tc.workers))
+			if ok != tc.ok {
+				t.Fatalf("ok=%v, want %v", ok, tc.ok)
+			}
+			if ok && margin != tc.want {
+				t.Fatalf("margin=%f, want %f", margin, tc.want)
+			}
+		})
+	}
+
+	// affected rule used by the tick: unknown || !ok || E >= margin.
+	affected := func(unknown, ok bool, e, margin float64) bool {
+		return unknown || !ok || e >= margin
+	}
+	t.Run("threshold_boundaries", func(t *testing.T) {
+		if !affected(false, true, 5, 5) {
+			t.Error("E==margin must be affected (>=)")
+		}
+		if affected(false, true, 5-1, 5) {
+			t.Error("E just below margin must stay clean")
+		}
+		if affected(false, true, 0, 5) {
+			t.Error("net-zero E must stay clean")
+		}
+		if !affected(true, true, 0.1, 5) {
+			t.Error("unknown perturbation must degrade to affected")
+		}
+		if !affected(false, false, 1, 0) {
+			t.Error("missing margin must degrade to affected under E>0")
+		}
+	})
+
+	// Real-tick proof for the two threshold sides: identical verdicts,
+	// donor occupancy straddling the 5MB margin.
+	for _, tc := range []struct {
+		name     string
+		donorOcc int64
+		dirty    bool
+	}{
+		{"equal_is_dirty", 5 * mb, true},
+		{"just_below_is_clean", 5*mb - 1, false},
+		{"net_zero_is_clean", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			speedstats.ResetRecordsForTest()
+			t.Cleanup(speedstats.ResetRecordsForTest)
+			gid := "sg_margin_ben"
+			donor := "ar_margin_donor"
+			tracker := &mockTracker{tasks: []TrackedTaskInfo{
+				{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com", CompletedLength: 10 * mb},
+				{GID: donor, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "b.com",
+					TelemetryBps: tc.donorOcc, TelemetryValid: tc.donorOcc > 0},
+			}}
+			telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
+				gid: makeWorkers(4, 2*1024*1024),
+			}}
+			ct := newTestConvergenceTicker(
+				rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+				tracker, telemetry,
+			)
+			defer ct.Stop()
+			t0 := time.Now()
+			ct.tickAt(t0)
+
+			ct.mu.Lock()
+			s := ct.states[gid]
+			s.phase = phaseSettling
+			s.lastStep = 1
+			s.probeBaseline = 40 * mb
+			s.probeBaselineWorkers = 4 // margin = 0.5*(40/4)*1 = 5MB
+			s.prevCompleted = 10 * mb
+			s.prevSampleAt = t0
+			ct.mu.Unlock()
+
+			tracker.tasks = tracker.tasks[:1]
+			tracker.tasks[0].CompletedLength = 60 * mb
+			ct.tickAt(t0.Add(5 * time.Second))
+
+			ct.mu.Lock()
+			s = ct.states[gid]
+			ct.mu.Unlock()
+			if tc.dirty && (s.lastStep != 0 || s.probeBaseline != 0) {
+				t.Errorf("E=%d at/above margin must cancel verdict: lastStep=%d baseline=%d",
+					tc.donorOcc, s.lastStep, s.probeBaseline)
+			}
+			if !tc.dirty && s.lastStep != 1 {
+				t.Errorf("E=%d below margin must keep verdict: lastStep=%d", tc.donorOcc, s.lastStep)
+			}
+		})
+	}
+}
+
+// TestConvergence_LocalWindow_ProbeDownBothWindows covers both Probe-Down
+// invalidation windows in one dirty tick: the settling window and the
+// following stable+lastStep verdict tick both cancel unjudged — no knee,
+// no momentum success, no new probe — while D2/raw/sustain/peak survive and
+// a high-margin task under the same perturbation keeps its verdict.
+func TestConvergence_LocalWindow_ProbeDownBothWindows(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	mb := int64(1024 * 1024)
+	settle := "sg_pd_settle" // margin 0.5*(40/4)*1 = 5MB → affected by E=10MB
+	stable := "sg_pd_stable" // margin 5MB → affected
+	high := "sg_pd_highm"    // margin 0.5*(40/1)*8 = 160MB → unaffected
+	donor := "ar_pd_donor"   // 10MB exit → E=10MB
+	t0 := time.Now()
+	tracker := &mockTracker{tasks: []TrackedTaskInfo{
+		{GID: settle, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com", CompletedLength: 10 * mb},
+		{GID: stable, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com", CompletedLength: 10 * mb},
+		{GID: high, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com", CompletedLength: 10 * mb},
+		{GID: donor, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "b.com",
+			TelemetryBps: 10 * mb, TelemetryValid: true},
+	}}
+	telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
+		settle: makeWorkers(4, 2*1024*1024),
+		stable: makeWorkers(4, 2*1024*1024),
+		// Above the probe floor so a successful verdict keeps momentum.
+		high: makeWorkers(4, 2*1024*1024),
+	}}
+	ct := newTestConvergenceTicker(
+		rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+		tracker, telemetry,
+	)
+	defer ct.Stop()
+	ct.tickAt(t0)
+
+	arm := func(gid string, phase, step int, baseline, baselineWorkers int64) {
+		s := ct.states[gid]
+		s.phase = phase
+		s.lastStep = step
+		s.probeBaseline = baseline
+		s.probeBaselineWorkers = int(baselineWorkers)
+		s.prevCompleted = 10 * mb
+		s.prevSampleAt = t0
+		s.sustainCount = 4
+		s.peakSpeed = 50 * mb
+		s.peakWorkers = 8
+	}
+	ct.mu.Lock()
+	arm(settle, phaseSettling, 1, 40*mb, 4)
+	arm(stable, phaseStable, 1, 40*mb, 4)
+	arm(high, phaseStable, 8, 40*mb, 1)
+	ct.mu.Unlock()
+
+	// Drop donor → E=10MB. All survivors progress 50MB in 5s → raw=10MB/s.
+	tracker.tasks = tracker.tasks[:3]
+	for i := range tracker.tasks {
+		tracker.tasks[i].CompletedLength = 60 * mb
+	}
+	ct.tickAt(t0.Add(5 * time.Second))
+
+	ct.mu.Lock()
+	sSettle := ct.states[settle]
+	sStable := ct.states[stable]
+	sHigh := ct.states[high]
+	ct.mu.Unlock()
+
+	for _, tc := range []struct {
+		name string
+		s    *convergenceState
+	}{
+		{"settling_window", sSettle},
+		{"stable_lastStep_window", sStable},
+	} {
+		if tc.s == nil {
+			t.Fatalf("%s: state missing", tc.name)
+		}
+		if tc.s.lastStep != 0 || tc.s.phase != phaseStable || tc.s.probeBaseline != 0 {
+			t.Errorf("%s: verdict must cancel: lastStep=%d phase=%d baseline=%d",
+				tc.name, tc.s.lastStep, tc.s.phase, tc.s.probeBaseline)
+		}
+		if tc.s.kneeFrozen || tc.s.probeMomentum {
+			t.Errorf("%s: no knee/momentum verdict may be produced: knee=%v momentum=%v",
+				tc.name, tc.s.kneeFrozen, tc.s.probeMomentum)
+		}
+		// No new probe: fields stay disarmed, phase rests at stable.
+		if tc.s.probeUpBaseline != 0 || tc.s.phase == phaseSettling {
+			t.Errorf("%s: dirty tick must not arm a new probe", tc.name)
+		}
+		// D2/raw/sustain/peak all preserved.
+		if tc.s.lastRawBps != 10*mb || !tc.s.macroReady {
+			t.Errorf("%s: D2 must publish: raw=%d ready=%v", tc.name, tc.s.lastRawBps, tc.s.macroReady)
+		}
+		if tc.s.sustainCount != 4 || tc.s.peakSpeed != 50*mb || tc.s.peakWorkers != 8 {
+			t.Errorf("%s: long-term memory must survive", tc.name)
+		}
+	}
+
+	// Same perturbation, high margin: the verdict still evaluates.
+	// raw=10MB vs baseline=40MB → actualDrop 0.75, expectedDrop 8 →
+	// dropRatio ≈ 0.09 ≤ 0.5 → plateau success → momentum set.
+	if sHigh == nil {
+		t.Fatal("high-margin state missing")
+	}
+	if !sHigh.probeMomentum || sHigh.lastStep != 0 {
+		t.Errorf("high-margin verdict must still evaluate: momentum=%v lastStep=%d",
+			sHigh.probeMomentum, sHigh.lastStep)
+	}
+	if sHigh.lastRawBps != 10*mb || !sHigh.macroReady {
+		t.Errorf("unaffected task D2 unaffected: raw=%d ready=%v", sHigh.lastRawBps, sHigh.macroReady)
+	}
+}
+
+// TestConvergence_LocalWindow_SamplingDegrades covers every degrade branch of
+// the D2 window — none of them may produce a verdict: a CompletedLength=0
+// first sample is a valid baseline, a real zero increment publishes a
+// measured zero, a cold state only baselines, dt<=0 re-bases without a
+// verdict, counter regressions/negative endpoints reset the window, and a
+// speed overflow clamps instead of wrapping.
+func TestConvergence_LocalWindow_SamplingDegrades(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	mb := int64(1024 * 1024)
+	gid := "sg_degrade"
+	newFixture := func() (*ConvergenceTicker, TrackedTaskInfo) {
+		tracker := &mockTracker{tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com"},
+		}}
+		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
+			gid: makeWorkers(4, 2*1024*1024),
+		}}
+		ct := newTestConvergenceTicker(
+			rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+			tracker, telemetry,
+		)
+		t.Cleanup(func() { ct.Stop() })
+		return ct, tracker.tasks[0]
+	}
+	// armedVerdict marks a pending down verdict every branch must not judge.
+	armedVerdict := func(s *convergenceState) {
+		s.phase = phaseStable
+		s.lastStep = 1
+		s.probeBaseline = 40 * mb
+		s.probeBaselineWorkers = 4
+	}
+
+	t.Run("completed_zero_is_valid_baseline", func(t *testing.T) {
+		ct, task := newFixture()
+		task.CompletedLength = 0
+		t0 := time.Now()
+		if _, ok := ct.processTask(task, false, nil, nil, nil, t0); ok {
+			t.Fatal("first sample must not produce a scale")
+		}
+		ct.mu.Lock()
+		s := ct.states[gid]
+		ct.mu.Unlock()
+		if s.prevCompleted != 0 || s.prevSampleAt != t0 {
+			t.Fatalf("zero baseline must be stored: prev=%d at=%v", s.prevCompleted, s.prevSampleAt)
+		}
+		// Next tick measures normally from the zero baseline.
+		task.CompletedLength = 50 * mb
+		ct.processTask(task, false, nil, nil, nil, t0.Add(5*time.Second))
+		ct.mu.Lock()
+		s = ct.states[gid]
+		ct.mu.Unlock()
+		if s.lastRawBps != 10*mb || !s.macroReady {
+			t.Fatalf("zero baseline must measure next tick: raw=%d ready=%v", s.lastRawBps, s.macroReady)
+		}
+	})
+
+	t.Run("real_zero_increment_is_measured", func(t *testing.T) {
+		ct, task := newFixture()
+		t0 := time.Now()
+		task.CompletedLength = 50 * mb
+		ct.processTask(task, false, nil, nil, nil, t0)
+		ct.processTask(task, false, nil, nil, nil, t0.Add(5*time.Second))
+		ct.mu.Lock()
+		s := ct.states[gid]
+		ct.mu.Unlock()
+		if s.lastRawBps != 0 || !s.macroReady {
+			t.Fatalf("zero increment must publish (0,true): raw=%d ready=%v", s.lastRawBps, s.macroReady)
+		}
+	})
+
+	t.Run("cold_state_baselines_no_verdict", func(t *testing.T) {
+		ct, task := newFixture()
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		armedVerdict(s)
+		s.prevCompleted = 50 * mb
+		// prevSampleAt zero → cold: re-baseline, no verdict judgment.
+		s.prevSampleAt = time.Time{}
+		ct.mu.Unlock()
+		task.CompletedLength = 60 * mb
+		if _, ok := ct.processTask(task, false, nil, nil, nil, time.Now()); ok {
+			t.Fatal("cold first-state must not produce a scale")
+		}
+		ct.mu.Lock()
+		s = ct.states[gid]
+		ct.mu.Unlock()
+		if s.lastStep != 1 {
+			t.Fatalf("cold baseline must keep pending verdict unjudged: lastStep=%d", s.lastStep)
+		}
+		if s.prevCompleted != 60*mb || s.prevSampleAt.IsZero() {
+			t.Fatal("cold state must re-baseline")
+		}
+	})
+
+	t.Run("dt_le_zero_rebases_without_verdict", func(t *testing.T) {
+		ct, task := newFixture()
+		t0 := time.Now()
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		armedVerdict(s)
+		s.prevCompleted = 50 * mb
+		s.prevSampleAt = t0.Add(time.Second) // future → dt<0
+		s.lastRawBps = 7 * mb
+		s.macroReady = true
+		ct.mu.Unlock()
+		task.CompletedLength = 60 * mb
+		if _, ok := ct.processTask(task, false, nil, nil, nil, t0); ok {
+			t.Fatal("dt<=0 must not produce a scale")
+		}
+		ct.mu.Lock()
+		s = ct.states[gid]
+		ct.mu.Unlock()
+		if s.lastStep != 0 || s.probeBaseline != 0 {
+			t.Fatalf("broken window must drop pending verdict: lastStep=%d baseline=%d", s.lastStep, s.probeBaseline)
+		}
+		if s.lastRawBps != 7*mb {
+			t.Fatalf("dt<=0 keeps last measurement: raw=%d", s.lastRawBps)
+		}
+		if s.prevCompleted != 60*mb || s.prevSampleAt != t0 {
+			t.Fatal("dt<=0 must re-base from now")
+		}
+	})
+
+	regressions := []struct {
+		name      string
+		prev      int64
+		completed int64
+	}{
+		{"counter_regression", 50 * mb, 40 * mb},
+		{"negative_prev", -5, 10 * mb},
+		{"both_endpoints_negative", -5, -1},
+	}
+	for _, tc := range regressions {
+		t.Run(tc.name, func(t *testing.T) {
+			ct, task := newFixture()
+			t0 := time.Now()
+			ct.mu.Lock()
+			s := ct.getOrCreateState(gid)
+			armedVerdict(s)
+			s.prevCompleted = tc.prev
+			s.prevSampleAt = t0.Add(-5 * time.Second)
+			s.lastRawBps = 7 * mb
+			s.macroReady = true
+			ct.mu.Unlock()
+			task.CompletedLength = tc.completed
+			if _, ok := ct.processTask(task, false, nil, nil, nil, t0); ok {
+				t.Fatal("regression must not produce a scale")
+			}
+			ct.mu.Lock()
+			s = ct.states[gid]
+			ct.mu.Unlock()
+			if s.lastStep != 0 || s.probeBaseline != 0 {
+				t.Fatalf("regression must drop pending verdict: lastStep=%d baseline=%d", s.lastStep, s.probeBaseline)
+			}
+			if s.lastRawBps != 0 || !s.macroReady {
+				t.Fatalf("regression publishes measured zero: raw=%d ready=%v", s.lastRawBps, s.macroReady)
+			}
+			if s.prevCompleted != max(tc.completed, 0) || s.prevSampleAt != t0 {
+				t.Fatalf("regression must re-base to non-negative endpoint: prev=%d", s.prevCompleted)
+			}
+		})
+	}
+
+	t.Run("speed_overflow_clamps", func(t *testing.T) {
+		ct, task := newFixture()
+		t0 := time.Now()
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		s.prevCompleted = 0
+		s.prevSampleAt = t0.Add(-time.Nanosecond) // dt≈0 → huge ratio
+		ct.mu.Unlock()
+		task.CompletedLength = math.MaxInt64 - 1
+		ct.processTask(task, false, nil, nil, nil, t0)
+		ct.mu.Lock()
+		s = ct.states[gid]
+		ct.mu.Unlock()
+		if s.lastRawBps != math.MaxInt64 {
+			t.Fatalf("overflow must clamp to MaxInt64, got %d", s.lastRawBps)
+		}
+	})
 }

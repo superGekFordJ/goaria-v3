@@ -80,7 +80,7 @@ func TestConvergence_DeferredRelease_OneThreadFillsDomain(t *testing.T) {
 	approved := make(map[string]int)
 	dStats := map[string]*domainStats{lk: {activeWorkers: 1, tasksInDomain: 1}}
 
-	settles := ct.settlePendingReleases(tracker.tasks, activeGids, pendingGids, approved, dStats, false, tracker.tasks, time.Now())
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, pendingGids, approved, dStats, nil, tracker.tasks, time.Now())
 	if len(settles) != 0 {
 		t.Fatalf("expected no settle scale when gap < observedEff, got %+v", settles)
 	}
@@ -110,7 +110,7 @@ func TestConvergence_DeferredRelease_BoundedDoubling(t *testing.T) {
 	approved := make(map[string]int)
 	dStats := map[string]*domainStats{lk: {activeWorkers: 2, tasksInDomain: 1}}
 
-	settles := ct.settlePendingReleases(tracker.tasks, activeGids, pendingGids, approved, dStats, false, tracker.tasks, time.Now())
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, pendingGids, approved, dStats, nil, tracker.tasks, time.Now())
 	if len(settles) != 1 || settles[0].delta != 2 {
 		t.Fatalf("expected delta=2 (bounded doubling), got %+v", settles)
 	}
@@ -129,7 +129,7 @@ func TestConvergence_DeferredRelease_BoundedDoubling(t *testing.T) {
 	dStats[lk].activeWorkers = 4
 	approved = make(map[string]int)
 
-	settles2 := ct.settlePendingReleases(tracker.tasks, activeGids, pendingGids, approved, dStats, false, tracker.tasks, time.Now())
+	settles2 := ct.settlePendingReleases(tracker.tasks, activeGids, pendingGids, approved, dStats, nil, tracker.tasks, time.Now())
 	if len(settles2) != 1 {
 		t.Fatalf("expected second settle, got %+v", settles2)
 	}
@@ -169,7 +169,7 @@ func TestConvergence_DeferredRelease_ReElectsWhenBeneficiaryGone(t *testing.T) {
 	dStats := map[string]*domainStats{lk: {activeWorkers: 4, tasksInDomain: 1}}
 	approved := make(map[string]int)
 
-	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, approved, dStats, false, tracker.tasks, time.Now())
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, approved, dStats, nil, tracker.tasks, time.Now())
 	if len(settles) != 1 || settles[0].gid != peerB {
 		t.Fatalf("expected re-elect peerB, got %+v", settles)
 	}
@@ -195,6 +195,11 @@ func TestConvergence_DeferredRelease_PrunesWhenDomainEmpty(t *testing.T) {
 	}
 }
 
+// TestConvergence_DeferredRelease_InvalidateDefersThenDrops verifies per-
+// beneficiary dirty deferral: while the elected beneficiary sits inside the
+// perturbation margin the arm postpones (no settle, arm kept), and the fourth
+// consecutive dirty observation drops it. Unaffected elections never consume
+// the deferral budget.
 func TestConvergence_DeferredRelease_InvalidateDefersThenDrops(t *testing.T) {
 	ben := "sg_defer_ben"
 	ct, tracker, _ := deferredReleaseFixture(t, ben, 2)
@@ -203,11 +208,12 @@ func TestConvergence_DeferredRelease_InvalidateDefersThenDrops(t *testing.T) {
 
 	activeGids := map[string]gidInfo{ben: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}}
 	dStats := map[string]*domainStats{lk: {activeWorkers: 2, tasksInDomain: 1}}
+	affected := map[string]bool{ben: true}
 
 	for i := 1; i <= pendingReleaseMaxDeferrals; i++ {
-		settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, true, tracker.tasks, time.Now())
+		settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, affected, tracker.tasks, time.Now())
 		if len(settles) != 0 {
-			t.Fatalf("invalidate tick %d: expected no settle, got %+v", i, settles)
+			t.Fatalf("dirty tick %d: expected no settle, got %+v", i, settles)
 		}
 		ct.mu.Lock()
 		pr := ct.pendingReleases[lk]
@@ -217,7 +223,7 @@ func TestConvergence_DeferredRelease_InvalidateDefersThenDrops(t *testing.T) {
 		}
 	}
 	// Cap exceeded → drop.
-	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, true, tracker.tasks, time.Now())
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, affected, tracker.tasks, time.Now())
 	if len(settles) != 0 {
 		t.Fatalf("expected no settle on drop tick, got %+v", settles)
 	}
@@ -258,7 +264,7 @@ func TestConvergence_DeferredRelease_JoinDuringArmNoVoucher(t *testing.T) {
 	dStats := map[string]*domainStats{lk: {activeWorkers: 2, tasksInDomain: 2}}
 	approved := make(map[string]int)
 
-	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, approved, dStats, false, tracker.tasks, time.Now())
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, approved, dStats, nil, tracker.tasks, time.Now())
 	// currentDomainBps = 5+5 = 10; gap=12; elected is lowest workers (tie → rotation).
 	// Not a voucher for preDeath: gap accounts for joiner's fresh rawBps.
 	if len(settles) != 1 {
@@ -328,7 +334,7 @@ func TestConvergence_DeferredRelease_ObservedEffZeroDegradesToOne(t *testing.T) 
 	dStats := map[string]*domainStats{lk: {activeWorkers: 2, tasksInDomain: 1}}
 	approved := make(map[string]int)
 
-	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, approved, dStats, false, tracker.tasks, time.Now())
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, approved, dStats, nil, tracker.tasks, time.Now())
 	if len(settles) != 1 || settles[0].delta != 1 {
 		t.Fatalf("expected degrade to delta=1, got %+v", settles)
 	}
@@ -365,7 +371,7 @@ func TestConvergence_DeferredRelease_GapZeroBeforeColdDegrade(t *testing.T) {
 	dStats := map[string]*domainStats{lk: {activeWorkers: 5, tasksInDomain: 2}}
 	approved := make(map[string]int)
 
-	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, approved, dStats, false, tracker.tasks, time.Now())
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, approved, dStats, nil, tracker.tasks, time.Now())
 	if len(settles) != 0 {
 		t.Fatalf("gap==0 must disarm before cold +1, got %+v", settles)
 	}
@@ -392,7 +398,7 @@ func TestConvergence_DeferredRelease_SkipsPhaseProbingUpElect(t *testing.T) {
 	activeGids := map[string]gidInfo{ben: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}}
 	dStats := map[string]*domainStats{lk: {activeWorkers: 2, tasksInDomain: 1}}
 
-	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, false, tracker.tasks, time.Now())
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, nil, tracker.tasks, time.Now())
 	if len(settles) != 0 {
 		t.Fatalf("phaseProbingUp must be skipped in elect, got %+v", settles)
 	}
@@ -418,7 +424,7 @@ func TestConvergence_DeferredRelease_MaxConnectionsClampsSettle(t *testing.T) {
 	activeGids := map[string]gidInfo{ben: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}}
 	dStats := map[string]*domainStats{lk: {activeWorkers: 4, tasksInDomain: 1}}
 
-	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, false, tracker.tasks, time.Now())
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, nil, tracker.tasks, time.Now())
 	if len(settles) != 0 {
 		t.Fatalf("maxConnections headroom 0 should skip settle, got %+v", settles)
 	}
@@ -448,7 +454,7 @@ func TestConvergence_DeferredRelease_RateLimitedKeepsArm(t *testing.T) {
 	activeGids := map[string]gidInfo{ben: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}}
 	dStats := map[string]*domainStats{lk: {activeWorkers: 2, tasksInDomain: 1}}
 
-	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, false, tracker.tasks, time.Now())
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, nil, tracker.tasks, time.Now())
 	if len(settles) != 0 {
 		t.Fatalf("rateLimited should skip settle, got %+v", settles)
 	}
@@ -497,7 +503,7 @@ func TestConvergence_DeferredRelease_ApprovedDeltaFullDelta(t *testing.T) {
 	approved := make(map[string]int)
 	dStats := map[string]*domainStats{lk: {activeWorkers: 4, tasksInDomain: 1}}
 
-	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, approved, dStats, false, tracker.tasks, time.Now())
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, approved, dStats, nil, tracker.tasks, time.Now())
 	if len(settles) != 1 || settles[0].delta != 4 {
 		t.Fatalf("expected delta=4, got %+v", settles)
 	}
@@ -540,7 +546,7 @@ func TestConvergence_DeferredRelease_AntiHerdOnePerDomain(t *testing.T) {
 	approved := make(map[string]int)
 	pendingGids := map[string]bool{}
 
-	settles := ct.settlePendingReleases(tracker.tasks, activeGids, pendingGids, approved, dStats, false, tracker.tasks, time.Now())
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, pendingGids, approved, dStats, nil, tracker.tasks, time.Now())
 	if len(settles) != 1 {
 		t.Fatalf("anti-herd: expected exactly 1 settle, got %+v", settles)
 	}
@@ -568,7 +574,7 @@ func TestConvergence_DeferredRelease_SettleSeesAdvancedRawAfterPrePass(t *testin
 	approved := make(map[string]int)
 	pendingGids := map[string]bool{}
 
-	settles := ct.settlePendingReleases(tracker.tasks, activeGids, pendingGids, approved, dStats, false, tracker.tasks, time.Now())
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, pendingGids, approved, dStats, nil, tracker.tasks, time.Now())
 	if len(settles) != 1 {
 		t.Fatalf("low raw: expected settle emit into gap, got %+v", settles)
 	}
@@ -587,7 +593,7 @@ func TestConvergence_DeferredRelease_SettleSeesAdvancedRawAfterPrePass(t *testin
 
 	// Fresh per-tick maps: call 1 already marked ben in pendingGids, which
 	// would exclude it from election and hide the disarm.
-	settles = ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, false, tracker.tasks, time.Now())
+	settles = ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, nil, tracker.tasks, time.Now())
 	if len(settles) != 0 {
 		t.Fatalf("advanced raw must fill the domain gap; settle would overshoot: %+v", settles)
 	}
@@ -746,7 +752,7 @@ func TestConvergence_DeferredRelease_TickCountHandoverImproves(t *testing.T) {
 		dStats := map[string]*domainStats{lk: {activeWorkers: workers, tasksInDomain: 1}}
 		approved := make(map[string]int)
 
-		settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, approved, dStats, false, tracker.tasks, time.Now())
+		settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, approved, dStats, nil, tracker.tasks, time.Now())
 		settleTicks++
 		if len(settles) == 0 {
 			break
@@ -791,7 +797,7 @@ func TestConvergence_DeferredRelease_NilElectedAfterUnlock(t *testing.T) {
 	dStats := map[string]*domainStats{lk: {activeWorkers: 2, tasksInDomain: 1}}
 
 	// Must not panic; may skip approval after nil recheck.
-	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, false, tracker.tasks, time.Now())
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, nil, tracker.tasks, time.Now())
 	for _, ps := range settles {
 		if ps.gid == ben {
 			t.Fatalf("should not approve scale for removed elected state, got %+v", settles)
@@ -851,12 +857,14 @@ func TestConvergence_ProbeUp_GainRatioDeltaOneEquivalence(t *testing.T) {
 }
 
 func TestConvergence_DeferredRelease_ArmPreservesPrevActiveSpeedsGuard(t *testing.T) {
-	// Document/lock: tick must not write zeros into prevActiveSpeeds on invalidate.
+	// Document/lock: tick must not write zeros into prevActiveSpeeds — the
+	// map is delay compensation for pre-death domain sums, so it keeps the
+	// last positive raw as capability evidence even when live raw is zero.
 	ben := "sg_speed_guard"
 	ct, _, _ := deferredReleaseFixture(t, ben, 2)
 	ct.mu.Lock()
 	ct.prevActiveSpeeds[ben] = 9 * 1024 * 1024
-	ct.states[ben].lastRawBps = 0 // wiped
+	ct.states[ben].lastRawBps = 0 // zero measurement does not clobber evidence
 	ct.mu.Unlock()
 
 	// Mimic tick update guard.
@@ -870,6 +878,31 @@ func TestConvergence_DeferredRelease_ArmPreservesPrevActiveSpeedsGuard(t *testin
 	if got != 9*1024*1024 {
 		t.Fatalf("prevActiveSpeeds wiped on zero lastRawBps: got %d", got)
 	}
+
+	// prevActiveOccupancy has the opposite contract: every sampled GID gets
+	// a stored value, zero included, and a live zero must overwrite the
+	// previous positive — exits consume the stored number verbatim.
+	ct.mu.Lock()
+	ct.states[ben].lastRawBps = 10 * 1024 * 1024
+	ct.states[ben].macroReady = true
+	ct.mu.Unlock()
+	ct.tick()
+	ct.mu.Lock()
+	gotOcc, okOcc := ct.prevActiveOccupancy[ben]
+	ct.mu.Unlock()
+	if !okOcc || gotOcc != 10*1024*1024 {
+		t.Fatalf("prevActiveOccupancy=(%d,%v), want (%d,true)", gotOcc, okOcc, 10*1024*1024)
+	}
+	ct.mu.Lock()
+	ct.states[ben].lastRawBps = 0 // measured zero → occupancy 0 next tick
+	ct.mu.Unlock()
+	ct.tick()
+	ct.mu.Lock()
+	gotOcc, okOcc = ct.prevActiveOccupancy[ben]
+	ct.mu.Unlock()
+	if !okOcc || gotOcc != 0 {
+		t.Fatalf("live zero must overwrite previous occupancy: got (%d,%v), want (0,true)", gotOcc, okOcc)
+	}
 }
 
 func TestConvergence_DeferredRelease_HeadroomClampsRequestedDelta(t *testing.T) {
@@ -882,7 +915,7 @@ func TestConvergence_DeferredRelease_HeadroomClampsRequestedDelta(t *testing.T) 
 	armPending(ct, lk, "testenv", 80*1024*1024)
 	activeGids := map[string]gidInfo{ben: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}}
 	dStats := map[string]*domainStats{lk: {activeWorkers: 6, tasksInDomain: 1}}
-	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, false, tracker.tasks, time.Now())
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, nil, tracker.tasks, time.Now())
 	if len(settles) != 1 || settles[0].delta != 2 {
 		t.Fatalf("requested 4 with headroom 2 want 2, got %+v", settles)
 	}
@@ -894,8 +927,280 @@ func TestConvergence_DeferredRelease_HeadroomClampsRequestedDelta(t *testing.T) 
 	armPending(ct2, lk, "testenv", 80*1024*1024)
 	active2 := map[string]gidInfo{ben + "z": {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}}
 	dStats2 := map[string]*domainStats{lk: {activeWorkers: 8, tasksInDomain: 1}}
-	none := ct2.settlePendingReleases(tracker2.tasks, active2, map[string]bool{}, make(map[string]int), dStats2, false, tracker2.tasks, time.Now())
+	none := ct2.settlePendingReleases(tracker2.tasks, active2, map[string]bool{}, make(map[string]int), dStats2, nil, tracker2.tasks, time.Now())
 	if len(none) != 0 {
 		t.Fatalf("headroom 0 should skip, got %+v", none)
+	}
+}
+
+// localDeferralFixture builds a ticker whose tracker rows span the given
+// (gid, domain, env, workers) tuples — each state primed stable+ready.
+func localDeferralFixture(t *testing.T, rows []struct {
+	gid, domain, env string
+	workers          int
+}) (*ConvergenceTicker, *mockTracker) {
+	t.Helper()
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	var tasks []TrackedTaskInfo
+	telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{}}
+	for _, r := range rows {
+		tasks = append(tasks, TrackedTaskInfo{
+			GID: r.gid, Status: "active", Scope: "wan", EnvKey: r.env,
+			Domain: r.domain, CompletedLength: 10 * 1024 * 1024,
+		})
+		telemetry.data[r.gid] = makeWorkers(r.workers, 2*1024*1024)
+	}
+	tracker := &mockTracker{tasks: tasks}
+	ct := NewConvergenceTicker(
+		rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+		tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 32,
+	)
+	t.Cleanup(func() { ct.Stop() })
+	orig := activeBandwidthProvider
+	t.Cleanup(func() { activeBandwidthProvider = orig })
+	activeBandwidthProvider = func(scope, envKey string, n time.Time) int64 { return 0 }
+	ct.mu.Lock()
+	for _, r := range rows {
+		s := ct.getOrCreateState(r.gid)
+		s.phase = phaseStable
+		s.macroReady = true
+		s.lastRawBps = 10 * 1024 * 1024
+	}
+	ct.mu.Unlock()
+	return ct, tracker
+}
+
+// TestConvergence_DeferredRelease_LocalDeferral proves per-beneficiary dirty
+// deferral: only the domain whose elected beneficiary is affected postpones;
+// a dirty elected winner is never swapped for a cleaner peer; no-candidate
+// elections and denied paths keep the arm without consuming deferrals; a
+// dirty gap==0 still keeps the arm; same-domain re-arms keep the count.
+func TestConvergence_DeferredRelease_LocalDeferral(t *testing.T) {
+	now := time.Now()
+	ben := "sg_local_ben"
+	other := "sg_local_other"
+	lk := limitKey("wan", "example.com")
+	lkOther := limitKey("wan", "other.com")
+	ct, tracker := localDeferralFixture(t, []struct {
+		gid, domain, env string
+		workers          int
+	}{
+		{ben, "example.com", "testenv", 2},
+		{other, "other.com", "testenv", 1},
+	})
+	activeGids := map[string]gidInfo{
+		ben:   {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
+		other: {Domain: "other.com", Scope: "wan", EnvKey: "testenv"},
+	}
+	dStats := map[string]*domainStats{
+		lk:      {activeWorkers: 2, tasksInDomain: 1},
+		lkOther: {activeWorkers: 1, tasksInDomain: 1},
+	}
+
+	// Arm both domains. other's target is already met by live domain
+	// occupancy → clean gap==0 disarm; ben's arm defers because its elected
+	// beneficiary is affected — unaffected elections never consume the count.
+	armPending(ct, lk, "testenv", 20*1024*1024)
+	armPending(ct, lkOther, "testenv", 5*1024*1024)
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{},
+		make(map[string]int), dStats, map[string]bool{ben: true}, tracker.tasks, now)
+	if len(settles) != 0 {
+		t.Fatalf("affected election must defer, other must disarm: settles=%+v", settles)
+	}
+	ct.mu.Lock()
+	prBen := ct.pendingReleases[lk]
+	_, otherArmed := ct.pendingReleases[lkOther]
+	ct.mu.Unlock()
+	if prBen == nil || prBen.deferrals != 1 {
+		t.Fatalf("affected arm must keep+count: %+v", prBen)
+	}
+	if otherArmed {
+		t.Fatal("unaffected arm must settle/disarm this tick")
+	}
+}
+
+// TestConvergence_DeferredRelease_LocalDeferral_NoSwapAndGuards covers: the
+// dirty elected winner is never swapped for a cleaner peer; no-candidate
+// keeps the arm without consuming deferrals; dirty gap==0 keeps the arm;
+// same-domain re-arm preserves the accumulated count.
+func TestConvergence_DeferredRelease_LocalDeferral_NoSwapAndGuards(t *testing.T) {
+	lk := limitKey("wan", "example.com")
+	now := time.Now()
+	ben1 := "sg_ns_1" // 1 worker — lowest → always elected first
+	ben2 := "sg_ns_2" // 9 workers — the would-be clean swap target
+	ct, tracker := localDeferralFixture(t, []struct {
+		gid, domain, env string
+		workers          int
+	}{
+		{ben1, "example.com", "testenv", 1},
+		{ben2, "example.com", "testenv", 9},
+	})
+	activeGids := map[string]gidInfo{
+		ben1: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
+		ben2: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
+	}
+	dStats := map[string]*domainStats{lk: {activeWorkers: 10, tasksInDomain: 2}}
+	affected := map[string]bool{ben1: true}
+
+	// No-swap: elected ben1 is dirty → defer; clean ben2 is never substituted.
+	armPending(ct, lk, "testenv", 40*1024*1024)
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{},
+		make(map[string]int), dStats, affected, tracker.tasks, now)
+	if len(settles) != 0 {
+		t.Fatalf("dirty elected winner must defer, not swap: settles=%+v", settles)
+	}
+	ct.mu.Lock()
+	pr := ct.pendingReleases[lk]
+	ct.mu.Unlock()
+	if pr == nil || pr.deferrals != 1 {
+		t.Fatalf("deferrals=%+v, want 1", pr)
+	}
+
+	// No-candidate: every candidate burned by pendingGids → keep arm, no
+	// deferral consumed.
+	settles = ct.settlePendingReleases(tracker.tasks, activeGids,
+		map[string]bool{ben1: true, ben2: true}, make(map[string]int), dStats, affected, tracker.tasks, now)
+	if len(settles) != 0 {
+		t.Fatalf("no-candidate must produce nothing: %+v", settles)
+	}
+	ct.mu.Lock()
+	pr = ct.pendingReleases[lk]
+	ct.mu.Unlock()
+	if pr == nil || pr.deferrals != 1 {
+		t.Fatalf("no-candidate keep must not consume deferrals: %+v", pr)
+	}
+
+	// Dirty gap==0 still keeps: the domain is already filled, which would
+	// disarm a clean arm — but the dirty defer runs first.
+	ct.mu.Lock()
+	ct.pendingReleases[lk].preDeathDomainBps = 1 // gap guaranteed <= 0
+	ct.mu.Unlock()
+	settles = ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{},
+		make(map[string]int), dStats, affected, tracker.tasks, now)
+	ct.mu.Lock()
+	pr = ct.pendingReleases[lk]
+	ct.mu.Unlock()
+	if len(settles) != 0 || pr == nil || pr.deferrals != 2 {
+		t.Fatalf("dirty gap=0 must keep+count (defer wins over disarm): settles=%v pr=%+v", settles, pr)
+	}
+
+	// Same-domain re-arm keeps the accumulated count (arm updated, not
+	// replaced). Simulate a second disappearance re-arming the live arm.
+	ct.mu.Lock()
+	ct.prevActiveGids = map[string]gidInfo{
+		ben1:          {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
+		ben2:          {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
+		"sg_ns_donor": {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
+	}
+	ct.prevActiveSpeeds = map[string]int64{"sg_ns_donor": 5 * 1024 * 1024}
+	ct.mu.Unlock()
+	ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil, now)
+	ct.mu.Lock()
+	pr = ct.pendingReleases[lk]
+	ct.mu.Unlock()
+	if pr == nil || pr.deferrals != 2 {
+		t.Fatalf("same-domain re-arm must keep deferrals: %+v", pr)
+	}
+}
+
+// TestConvergence_DeferredRelease_CrossEnvConservativeOneShot covers the
+// cross-env conservative settle: an envA arm targets envA evidence (preDeath
+// or the env-matched domain peak) while currentDomainBps counts envA+envB
+// occupancy; clean gap==0 or gap<eff disarms permanently (no self re-arm),
+// gap==eff still permits +1, dirty defers before any disarm check, and a
+// peak recorded under another env is never summed into the envA target.
+func TestConvergence_DeferredRelease_CrossEnvConservativeOneShot(t *testing.T) {
+	lk := limitKey("wan", "example.com")
+	now := time.Now()
+	benA := "sg_ce_a"  // envA beneficiary
+	peerB := "sg_ce_b" // envB peer sharing the domain
+	ct, tracker := localDeferralFixture(t, []struct {
+		gid, domain, env string
+		workers          int
+	}{
+		{benA, "example.com", "envA", 2},
+		{peerB, "example.com", "envB", 3},
+	})
+	// Domain fill = envA 10MB + envB 15MB = 25MB (settle re-overlays states).
+	ct.mu.Lock()
+	ct.states[peerB].lastRawBps = 15 * 1024 * 1024
+	ct.mu.Unlock()
+	activeGids := map[string]gidInfo{
+		benA:  {Domain: "example.com", Scope: "wan", EnvKey: "envA"},
+		peerB: {Domain: "example.com", Scope: "wan", EnvKey: "envB"},
+	}
+	dStats := map[string]*domainStats{lk: {activeWorkers: 5, tasksInDomain: 2}}
+
+	// envA target = preDeath 20MB; domain already holds 25MB → clean gap==0
+	// disarm — envB occupancy counts toward the domain fill.
+	armPending(ct, lk, "envA", 20*1024*1024)
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{},
+		make(map[string]int), dStats, nil, tracker.tasks, now)
+	if len(settles) != 0 {
+		t.Fatalf("cross-env gap==0 must disarm, got %+v", settles)
+	}
+	ct.mu.Lock()
+	_, armed := ct.pendingReleases[lk]
+	ct.mu.Unlock()
+	if armed {
+		t.Fatal("gap==0 must disarm (envB occupancy counts toward the domain fill)")
+	}
+
+	// Re-settle: no arm exists → nothing rebuilds it (one-shot, not a
+	// persistent speed chaser).
+	settles = ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{},
+		make(map[string]int), dStats, nil, tracker.tasks, now)
+	if len(settles) != 0 {
+		t.Fatalf("disarmed domain must not resurrect, got %+v", settles)
+	}
+
+	// gap<observedEff disarms too: target 29 vs domain 25 → gap 4 < eff 5.
+	armPending(ct, lk, "envA", 29*1024*1024)
+	settles = ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{},
+		make(map[string]int), dStats, nil, tracker.tasks, now)
+	ct.mu.Lock()
+	_, armed = ct.pendingReleases[lk]
+	ct.mu.Unlock()
+	if len(settles) != 0 || armed {
+		t.Fatalf("gap<eff must disarm: settles=%+v armed=%v", settles, armed)
+	}
+
+	// gap==eff boundary still permits +1: target 30, domain 25 → gap 5 = eff.
+	armPending(ct, lk, "envA", 30*1024*1024)
+	settles = ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{},
+		make(map[string]int), dStats, nil, tracker.tasks, now)
+	if len(settles) != 1 || settles[0].delta != 1 || settles[0].gid != benA {
+		t.Fatalf("gap==eff must settle +1 on the envA beneficiary, got %+v", settles)
+	}
+
+	// Dirty elected beneficiary defers before any gap/disarm evaluation.
+	armPending(ct, lk, "envA", 20*1024*1024) // gap==0 conditions again
+	settles = ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{},
+		make(map[string]int), dStats, map[string]bool{benA: true}, tracker.tasks, now)
+	ct.mu.Lock()
+	pr := ct.pendingReleases[lk]
+	ct.mu.Unlock()
+	if len(settles) != 0 || pr == nil || pr.deferrals != 1 {
+		t.Fatalf("dirty must defer before disarm: settles=%v pr=%+v", settles, pr)
+	}
+
+	// Voucher rule: an envA-matched peak (10MB, below the 25MB domain fill)
+	// sets the target — the larger envB peak (50MB) is never summed in nor
+	// used as the envA voucher. target = max(preDeath, envA peak) = 10MB
+	// → gap == 0 → disarm; any foreign-env leak would produce a settle.
+	ct.mu.Lock()
+	delete(ct.pendingReleases, lk)
+	ct.mu.Unlock()
+	speedstats.AddRecordV2(10*1024*1024, 2, 10*1024*1024, false, 50, "example.com", "wan", "envA")
+	speedstats.AddRecordV2(50*1024*1024, 9, 10*1024*1024, false, 50, "example.com", "wan", "envB")
+	armPending(ct, lk, "envA", 5*1024*1024)
+	settles = ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{},
+		make(map[string]int), dStats, nil, tracker.tasks, now)
+	ct.mu.Lock()
+	_, armed = ct.pendingReleases[lk]
+	ct.mu.Unlock()
+	if len(settles) != 0 || armed {
+		t.Fatalf("envA target must ignore summed/foreign envB peak: settles=%+v armed=%v", settles, armed)
 	}
 }

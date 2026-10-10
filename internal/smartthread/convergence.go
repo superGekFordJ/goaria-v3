@@ -2,6 +2,7 @@ package smartthread
 
 import (
 	"log"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -182,10 +183,13 @@ type convergenceState struct {
 type pendingRelease struct {
 	envKey            string // arming disappearance env (election filter)
 	preDeathDomainBps int64  // capability lower-bound evidence, NOT a voucher
-	deferrals         int
+	// deferrals counts dirty ticks where the elected beneficiary sat inside
+	// the perturbation margin. Clean ticks do not decrement it; same-domain
+	// re-arms keep it; a fresh arm starts at zero.
+	deferrals int
 }
 
-// Cap on nested invalidate deferrals before dropping the arm (degrade to Probe-Up).
+// Cap on dirty-window deferrals before dropping the arm (degrade to Probe-Up).
 const pendingReleaseMaxDeferrals = 3
 
 type ConvergenceTicker struct {
@@ -204,9 +208,15 @@ type ConvergenceTicker struct {
 	prevActiveSpeeds  map[string]int64           // gid → last known rawBps, for delay compensation
 	domainUnlockTicks map[string]int             // limitKey → consecutive zero-retry ticks, for domain-level N_max unlock
 	pendingReleases   map[string]*pendingRelease // limitKey → deferred bandwidth handover
-	stopChan          chan struct{}
-	stopOnce          sync.Once
-	wg                sync.WaitGroup
+	// prevActiveOccupancy stores each sampled-active GID's unified occupancy
+	// contribution as of the previous completed tick — zero values included.
+	// nil means no sampled tick has completed yet (bootstrap); a tick that saw
+	// an empty set stores a non-nil empty map. Exit-side perturbation uses the
+	// stored values verbatim and never re-evaluates old leases at a new now.
+	prevActiveOccupancy map[string]int64
+	stopChan            chan struct{}
+	stopOnce            sync.Once
+	wg                  sync.WaitGroup
 
 	// Injected at construction to avoid background goroutine reads of config.
 	interval       time.Duration
@@ -315,13 +325,16 @@ type pendingScale struct {
 }
 
 func (c *ConvergenceTicker) tick() {
+	c.tickAt(time.Now())
+}
+
+// tickAt runs one convergence pass at the supplied instant. One now per tick:
+// lease checks, provider evaluation, D2 sampling and release/settle all share
+// it so TTL edges cannot flicker mid-tick.
+func (c *ConvergenceTicker) tickAt(now time.Time) {
 	if c.engine == nil || c.tracker == nil || c.telemetry == nil {
 		return
 	}
-
-	// One evaluation instant for the whole tick: lease checks, provider and
-	// release/settle all share it so TTL edges cannot flicker mid-tick.
-	now := time.Now()
 
 	activeTasks := c.tracker.GetActiveTrackedTasks()
 	activeGids := make(map[string]gidInfo) // gid → gidInfo
@@ -331,6 +344,36 @@ func (c *ConvergenceTicker) tick() {
 	// Keys: approvedScopeKey / approvedDomainKey (env-blind BW) /
 	// approvedNMaxKey (env-blind N_max pending, aligned with limitKey).
 	approvedDelta := make(map[string]int)
+
+	// Sampled-active: genuinely-started tasks on both engines, deduped by GID
+	// (first row wins). Waiting claims, admission reservations and synthetic
+	// actives stay out of the membership diff and Surge processing — they
+	// still occupy budget through the wider occupancy snapshot below.
+	sampled := make([]TrackedTaskInfo, 0, len(activeTasks))
+	seenSampled := make(map[string]struct{}, len(activeTasks))
+	for _, t := range activeTasks {
+		if !sampledActiveTask(t) {
+			continue
+		}
+		if _, dup := seenSampled[t.GID]; dup {
+			continue
+		}
+		seenSampled[t.GID] = struct{}{}
+		sampled = append(sampled, t)
+	}
+	var surgeTasks []TrackedTaskInfo
+	for _, t := range sampled {
+		activeGids[t.GID] = gidInfo{Domain: t.Domain, Scope: t.Scope, EnvKey: t.EnvKey}
+		if strings.HasPrefix(t.GID, "sg_") {
+			surgeTasks = append(surgeTasks, t)
+		}
+	}
+	// One telemetry observation per Surge task this tick: margin evaluation
+	// and processTask share it so the same worker count gates both.
+	surgeStats := make([][]types.WorkerSnapshot, len(surgeTasks))
+	for i := range surgeTasks {
+		surgeStats[i] = c.telemetry.Get(surgeTasks[i].GID)
+	}
 
 	// Unified occupancy snapshot: includes Aria2 tasks, waiting claims, and
 	// add placeholders — wider than the active set but never widens
@@ -346,57 +389,54 @@ func (c *ConvergenceTicker) tick() {
 		copy(occTasks, activeTasks)
 	}
 
-	for _, task := range activeTasks {
-		if !strings.HasPrefix(task.GID, "sg_") {
+	// Freeze everything the diff and per-task margins need in one lock:
+	// previous membership maps, pre-D2 state raw/ready overlaid onto the
+	// sampled inputs, and pre-D2 verdict-margin parameters.
+	c.mu.Lock()
+	prevGids := c.prevActiveGids
+	prevOcc := c.prevActiveOccupancy
+	for i := range sampled {
+		if !strings.HasPrefix(sampled[i].GID, "sg_") {
 			continue
 		}
-		activeGids[task.GID] = gidInfo{Domain: task.Domain, Scope: task.Scope, EnvKey: task.EnvKey}
-	}
-
-	// Detect active-set changes (Edge Case 3: multi-task bandwidth confusion).
-	// Only invalidate when we had a previous active set — going from empty to non-empty
-	// is initialization, not a change.
-	windowInvalidated := false
-	c.mu.Lock()
-	if len(c.prevActiveGids) > 0 {
-		if !sameActiveSet(c.prevActiveGids, activeGids) {
-			windowInvalidated = true
-			c.domainUnlockTicks = make(map[string]int)
-			for _, s := range c.states {
-				s.prevCompleted = 0
-				s.prevSampleAt = time.Time{}
-				s.probeBaseline = 0
-				s.probeBaselineWorkers = 0
-				s.lastStep = 0
-				s.phase = phaseStable
-				s.sustainCount = 0
-				s.kneeFrozen = false
-				s.frozenCooldown = 0
-				s.probeMomentum = false
-				s.probeCooldown = probeIntervalCycles
-				s.probeUpBaseline = 0
-				s.probeUpBaselineWorkers = 0
-				s.probeUpDelta = 0
-				s.ceilingMemory = 0
-				s.ceilingHitCount = 0
-				s.floorMemory = 0
-				s.floorHitCount = 0
-				// Blackout never re-enters D2; clearing lastRawBps would leave
-				// macroReady+(0) forever while workers still move bytes.
-				if !s.blackout {
-					s.lastRawBps = 0
-				}
-			}
+		if s, ok := c.states[sampled[i].GID]; ok && s != nil {
+			sampled[i].RawBps = s.lastRawBps
+			sampled[i].MacroReady = s.macroReady
 		}
+	}
+	margins := make([]verdictMarginRef, len(surgeTasks))
+	for i := range surgeTasks {
+		margins[i] = verdictMargin(c.states[surgeTasks[i].GID], len(surgeStats[i]))
+	}
+	var netDelta int64
+	var changedDomains map[string]bool
+	var perturbUnknown bool
+	if prevOcc == nil {
+		// Bootstrap: no completed sampled tick yet — no membership
+		// perturbation, and no domain counter reset on first sight.
+		changedDomains = make(map[string]bool)
+	} else {
+		netDelta, changedDomains, perturbUnknown = occupancyDelta(sampled, activeGids, prevGids, prevOcc, now)
 	}
 	c.mu.Unlock()
 
+	// A task is affected only when the net occupancy shift reaches half the
+	// throughput its pending decision window can move. Margin-less windows
+	// degrade conservatively once perturbation is non-zero or unknown.
+	var affected map[string]bool
+	if perturbUnknown || netDelta > 0 {
+		affected = make(map[string]bool, len(surgeTasks))
+		for i := range surgeTasks {
+			margin, ok := probeMarginThreshold(margins[i])
+			if perturbUnknown || !ok || float64(netDelta) >= margin {
+				affected[surgeTasks[i].GID] = true
+			}
+		}
+	}
+
 	// Domain Pre-pass: aggregate retryCountSum and activeWorkers per limitKey.
 	dStats := make(map[string]*domainStats)
-	for _, task := range activeTasks {
-		if !strings.HasPrefix(task.GID, "sg_") {
-			continue
-		}
+	for i, task := range surgeTasks {
 		if task.Scope == "" || task.Domain == "" {
 			continue
 		}
@@ -405,7 +445,7 @@ func (c *ConvergenceTicker) tick() {
 		if task.TotalLength > 0 && task.CompletedLength >= task.TotalLength {
 			continue
 		}
-		stats := c.telemetry.Get(task.GID)
+		stats := surgeStats[i]
 		if len(stats) == 0 {
 			continue
 		}
@@ -422,7 +462,11 @@ func (c *ConvergenceTicker) tick() {
 		}
 	}
 
-	// Domain-level N_max fuse and unlock.
+	// Domain-level N_max fuse and unlock under c.mu (domainUnlockTicks is
+	// shared state). A domain whose member set actually changed also resets
+	// its unlock confirmation — without recounting this dirty tick as
+	// confirmation one. The fuse stays independent of per-task dirty windows.
+	c.mu.Lock()
 	for lk, ds := range dStats {
 		threshold := int32(connErrorThreshold)
 		if scaled := int32(2 * ds.tasksInDomain); scaled > threshold {
@@ -435,6 +479,8 @@ func (c *ConvergenceTicker) tick() {
 				log.Printf("[convergence] server-limit-fuse: limitKey=%s N_max=%d locked (retryCountSum=%d tasksInDomain=%d)",
 					lk, ds.activeWorkers, ds.retryCountSum, ds.tasksInDomain)
 			}
+			c.domainUnlockTicks[lk] = 0
+		case changedDomains[lk]:
 			c.domainUnlockTicks[lk] = 0
 		case ds.retryCountSum == 0:
 			nMax, hasLimit := c.limits.GetNMax(lk)
@@ -462,7 +508,6 @@ func (c *ConvergenceTicker) tick() {
 	}
 
 	// Prune pendingReleases when the domain has no remaining active tasks.
-	c.mu.Lock()
 	for lk := range c.pendingReleases {
 		if _, ok := dStats[lk]; !ok {
 			delete(c.pendingReleases, lk)
@@ -497,11 +542,8 @@ func (c *ConvergenceTicker) tick() {
 		}
 	}
 
-	for _, task := range activeTasks {
-		if !strings.HasPrefix(task.GID, "sg_") {
-			continue
-		}
-		if ps, ok := c.processTask(task, windowInvalidated, approvedDelta, dStats, domainMacroBps, now); ok {
+	for i, task := range surgeTasks {
+		if ps, ok := c.processTaskStats(task, surgeStats[i], affected[task.GID], approvedDelta, dStats, domainMacroBps, now); ok {
 			if ps.delta > 0 {
 				approvedDelta[approvedScopeKey(ps.scope, ps.envKey)] += ps.delta
 				if ps.domain != "" {
@@ -515,25 +557,38 @@ func (c *ConvergenceTicker) tick() {
 	}
 
 	// Update prevActiveSpeeds for bandwidthRelease delay compensation.
-	// Preserve lastRawBps > 0 guard so invalidate ticks do not wipe pre-death
+	// Preserve lastRawBps > 0 guard so dirty ticks do not wipe pre-death
 	// domain sums needed for pendingReleases.preDeathDomainBps.
+	// Post-D2, the same state overlay also feeds next tick's exit-side
+	// occupancy: every sampled-active GID (both engines) gets a stored
+	// value, zero included, evaluated at this tick's now.
 	c.mu.Lock()
-	for _, task := range activeTasks {
-		if !strings.HasPrefix(task.GID, "sg_") {
-			continue
-		}
+	for _, task := range surgeTasks {
 		if s, ok := c.states[task.GID]; ok && s.lastRawBps > 0 {
 			c.prevActiveSpeeds[task.GID] = s.lastRawBps
 		}
 	}
+	for i := range sampled {
+		if !strings.HasPrefix(sampled[i].GID, "sg_") {
+			continue
+		}
+		if s, ok := c.states[sampled[i].GID]; ok && s != nil {
+			sampled[i].RawBps = s.lastRawBps
+			sampled[i].MacroReady = s.macroReady
+		}
+	}
 	c.mu.Unlock()
+	nextPrevOcc := make(map[string]int64, len(sampled))
+	for i := range sampled {
+		nextPrevOcc[sampled[i].GID] = TaskOccupancy(sampled[i], now)
+	}
 
 	// Deferred settle of previously armed domains first, then arm new
 	// disappearances (never settle an entry created earlier in this call).
-	pending = append(pending, c.settlePendingReleases(activeTasks, activeGids, pendingGids, approvedDelta, dStats, windowInvalidated, occTasks, now)...)
-	pending = append(pending, c.bandwidthRelease(activeTasks, activeGids, pendingGids, approvedDelta, dStats, domainMacroBps, now)...)
+	pending = append(pending, c.settlePendingReleases(surgeTasks, activeGids, pendingGids, approvedDelta, dStats, affected, occTasks, now)...)
+	pending = append(pending, c.bandwidthRelease(surgeTasks, activeGids, pendingGids, approvedDelta, dStats, domainMacroBps, now)...)
 
-	// Self-cleanup: remove states for GIDs no longer active.
+	// Self-cleanup: remove states for GIDs no longer sampled-active.
 	// prevActiveSpeeds must prune by activeGids (not only via states): RemoveTask
 	// deletes states early while intentionally keeping speeds until this tick.
 	c.mu.Lock()
@@ -547,8 +602,10 @@ func (c *ConvergenceTicker) tick() {
 			delete(c.prevActiveSpeeds, gid)
 		}
 	}
-	// Update prevActiveGids for next tick's bandwidth borrowing diff
+	// Replace previous membership + occupancy snapshots only after this
+	// tick's diff, settle and release consumers have run.
 	c.prevActiveGids = activeGids
+	c.prevActiveOccupancy = nextPrevOcc
 	c.mu.Unlock()
 
 	// Batch: execute all pending scale operations after processing all tasks.
@@ -628,6 +685,11 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 	var releases []pendingScale
 	for _, d := range disappeared {
 		gid, info := d.gid, d.info
+		// Only Surge donors arm/elect handovers: Aria2 exits feed the net
+		// perturbation and domain membership diff, never bandwidth releases.
+		if !strings.HasPrefix(gid, "sg_") {
+			continue
+		}
 		// Unknown ownership: empty Domain must not wildcard across domains.
 		if info.Domain == "" {
 			continue
@@ -701,14 +763,18 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 }
 
 // settlePendingReleases settles previously armed domains using post-processTask
-// fresh lastRawBps. Never settles using wiped arm-tick occupancy.
+// fresh lastRawBps. Never settles using wiped arm-tick occupancy. An arm whose
+// elected beneficiary sits inside this tick's perturbation margin defers in
+// place — at most pendingReleaseMaxDeferrals times before the arm drops. The
+// beneficiary is never swapped for a cleaner peer, and no-candidate / denied
+// paths keep the arm without consuming deferrals.
 func (c *ConvergenceTicker) settlePendingReleases(
 	activeTasks []TrackedTaskInfo,
 	activeGids map[string]gidInfo,
 	pendingGids map[string]bool,
 	approvedDelta map[string]int,
 	dStats map[string]*domainStats,
-	windowInvalidated bool,
+	affected map[string]bool,
 	occTasks []TrackedTaskInfo,
 	now time.Time,
 ) []pendingScale {
@@ -726,21 +792,6 @@ func (c *ConvergenceTicker) settlePendingReleases(
 			continue
 		}
 		armedKeys = append(armedKeys, lk)
-	}
-
-	if windowInvalidated {
-		for _, lk := range armedKeys {
-			pr := c.pendingReleases[lk]
-			if pr == nil {
-				continue
-			}
-			pr.deferrals++
-			if pr.deferrals > pendingReleaseMaxDeferrals {
-				delete(c.pendingReleases, lk)
-				log.Printf("[convergence] bandwidth-borrow-drop: limitKey=%s deferrals exceeded (%d)", lk, pr.deferrals)
-			}
-		}
-		return nil
 	}
 
 	// Re-overlay Surge raw/ready onto the occupancy snapshot: processTask
@@ -775,6 +826,18 @@ func (c *ConvergenceTicker) settlePendingReleases(
 		elected, okElect := c.electReleaseBeneficiary(activeTasks, scope, domain, envKey, pendingGids, approvedDelta, dStats, 1)
 		if !okElect {
 			// Keep armed unless prune already dropped idle domains.
+			continue
+		}
+		if affected[elected.gid] {
+			// The elected beneficiary sits inside the dirty window: keep the
+			// arm but postpone judgment — never swap to a cleaner peer, never
+			// disarm on a dirty gap read. Cap postponements so a stale arm
+			// cannot park forever.
+			pr.deferrals++
+			if pr.deferrals > pendingReleaseMaxDeferrals {
+				delete(c.pendingReleases, lk)
+				log.Printf("[convergence] bandwidth-borrow-drop: limitKey=%s deferrals exceeded (%d)", lk, pr.deferrals)
+			}
 			continue
 		}
 
@@ -1010,6 +1073,166 @@ func sameActiveSet(a, b map[string]gidInfo) bool {
 	return true
 }
 
+// sampledActiveTask reports whether a tracker row is real engine activity for
+// the two-engine membership diff and Surge processing. Waiting claims,
+// admission reservations and explicit synthetic actives (a compat claim with
+// no activation anchor) are excluded; legacy actives without an anchor stay
+// telemetry-only members.
+func sampledActiveTask(t TrackedTaskInfo) bool {
+	if t.GID == "" || t.Status != "active" || t.AdmissionReserved {
+		return false
+	}
+	if t.ActivatedAt.IsZero() && t.CompatClaim != CompatNone {
+		return false
+	}
+	return true
+}
+
+// saturatingAddChecked accumulates non-negative occupancy like
+// saturatingAdd64 but also reports when the true sum overflowed int64 — the
+// caller then treats the whole perturbation window as unknown.
+func saturatingAddChecked(a, b int64) (int64, bool) {
+	if b < 0 {
+		return a, false
+	}
+	sum := a + b
+	if sum < a {
+		return math.MaxInt64, true
+	}
+	return sum, false
+}
+
+// verdictMarginRef holds the pre-D2 decision parameters gating a task's
+// pending probe verdict. ok=false means no trustworthy margin exists — a
+// non-zero or unknown membership perturbation then counts the task
+// conservatively as affected.
+type verdictMarginRef struct {
+	step       int
+	refBps     int64
+	refWorkers int
+	ok         bool
+}
+
+// verdictMargin picks the parameters of the decision window a membership
+// perturbation could plausibly flip: the in-flight Probe-Up, the pending
+// Probe-Down (settling or the following stable+lastStep verdict tick), or the
+// ordinary per-sample margin of one worker. Caller holds c.mu; workers is
+// this tick's observed worker count.
+func verdictMargin(s *convergenceState, workers int) verdictMarginRef {
+	switch {
+	case s == nil:
+		return verdictMarginRef{}
+	case s.phase == phaseProbingUp:
+		step := s.probeUpDelta
+		if step <= 0 {
+			step = 1
+		}
+		return verdictMarginRef{
+			step:       step,
+			refBps:     s.probeUpBaseline,
+			refWorkers: s.probeUpBaselineWorkers,
+			ok:         s.probeUpBaseline > 0 && s.probeUpBaselineWorkers > 0,
+		}
+	case s.phase == phaseSettling || (s.phase == phaseStable && s.lastStep > 0):
+		return verdictMarginRef{
+			step:       s.lastStep,
+			refBps:     s.probeBaseline,
+			refWorkers: s.probeBaselineWorkers,
+			ok:         s.lastStep > 0 && s.probeBaseline > 0 && s.probeBaselineWorkers > 0,
+		}
+	default:
+		return verdictMarginRef{
+			step:       1,
+			refBps:     s.lastRawBps,
+			refWorkers: workers,
+			ok:         s.macroReady && s.lastRawBps > 0 && workers > 0,
+		}
+	}
+}
+
+// probeMarginThreshold is the occupancy shift that could plausibly flip the
+// gated verdict — half the throughput the decision window can move by.
+// Malformed windows report ok=false so callers can degrade conservatively.
+func probeMarginThreshold(m verdictMarginRef) (float64, bool) {
+	if !m.ok {
+		return 0, false
+	}
+	margin := 0.5 * (float64(m.refBps) / float64(m.refWorkers)) * float64(m.step)
+	if !(margin > 0) || math.IsInf(margin, 0) || math.IsNaN(margin) {
+		return 0, false
+	}
+	return margin, true
+}
+
+// occupancyDelta computes the net membership perturbation between the
+// previous and current sampled-active sets:
+// E = |Σ entry current occupancy − Σ exit previous-tick occupancy|.
+// Entries evaluate TaskOccupancy on this tick's overlaid inputs; exits use
+// the stored previous values verbatim. unknown is set when an exit lacks its
+// stored value or a side saturates. changedDomains collects every limitKey
+// whose member set actually changed — including zero-net perturbations and
+// same-GID scope/domain reclassification; env-only churn is not membership.
+func occupancyDelta(sampled []TrackedTaskInfo, activeGids map[string]gidInfo,
+	prevGids map[string]gidInfo, prevOcc map[string]int64, now time.Time,
+) (delta int64, changedDomains map[string]bool, unknown bool) {
+	changedDomains = make(map[string]bool)
+	var entrySum, exitSum int64
+	var ovf bool
+	for i := range sampled {
+		t := sampled[i]
+		prev, existed := prevGids[t.GID]
+		if !existed {
+			entrySum, ovf = saturatingAddChecked(entrySum, TaskOccupancy(t, now))
+			unknown = unknown || ovf
+			if t.Scope != "" && t.Domain != "" {
+				changedDomains[limitKey(t.Scope, t.Domain)] = true
+			}
+			continue
+		}
+		if prev.Scope != t.Scope || prev.Domain != t.Domain {
+			if prev.Scope != "" && prev.Domain != "" {
+				changedDomains[limitKey(prev.Scope, prev.Domain)] = true
+			}
+			if t.Scope != "" && t.Domain != "" {
+				changedDomains[limitKey(t.Scope, t.Domain)] = true
+			}
+		}
+	}
+	for gid, prev := range prevGids {
+		if _, still := activeGids[gid]; still {
+			continue
+		}
+		v, ok := prevOcc[gid]
+		if !ok {
+			unknown = true
+		} else {
+			exitSum, ovf = saturatingAddChecked(exitSum, v)
+			unknown = unknown || ovf
+		}
+		if prev.Scope != "" && prev.Domain != "" {
+			changedDomains[limitKey(prev.Scope, prev.Domain)] = true
+		}
+	}
+	if entrySum >= exitSum {
+		delta = entrySum - exitSum
+	} else {
+		delta = exitSum - entrySum
+	}
+	return delta, changedDomains, unknown
+}
+
+// clampedBps converts a non-negative bytes/sec measurement to int64, clamping
+// overflow to MaxInt64 instead of letting float→int wrap produce a fake zero.
+func clampedBps(v float64) int64 {
+	if v <= 0 {
+		return 0
+	}
+	if v >= float64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+	return int64(v)
+}
+
 // domainNMaxHeadroom returns remaining N_max slots for scope|domain after
 // counting domainWorkers and same-tick approvedNMaxKey pending.
 // hasLimit false → unlimited (caller skips clamp). Empty scope/domain → no limit.
@@ -1077,14 +1300,21 @@ func (c *ConvergenceTicker) checkVAvailable(scope, domain, envKey string, approv
 	return scopeOK && domainOK
 }
 
-// processTask evaluates a single task and returns a pending scale operation if one is needed.
-// windowInvalidated indicates the active set changed this tick — skip probe/ratchet decisions.
-// dStats / domainMacroBps / approvedDelta may be nil in unit tests (degrade safely).
-// occNow is the tick-captured evaluation instant shared by occupancy checks.
-func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated bool, approvedDelta map[string]int, dStats map[string]*domainStats, domainMacroBps map[string]int64, occNow time.Time) (pendingScale, bool) {
+// processTask evaluates a single task and returns a pending scale operation
+// if one is needed. affected marks a task inside this tick's net membership-
+// perturbation margin: it still runs D2 measurement and advances its sample
+// baseline, but the pending probe verdict is cancelled unjudged and D3 /
+// smart-unlock / new-probe decisions are skipped for the dirty tick.
+// dStats / domainMacroBps / approvedDelta may be nil in unit tests (degrade
+// safely). now is the tick-captured evaluation instant shared by occupancy
+// checks and sampling.
+func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, affected bool, approvedDelta map[string]int, dStats map[string]*domainStats, domainMacroBps map[string]int64, now time.Time) (pendingScale, bool) {
+	return c.processTaskStats(task, c.telemetry.Get(task.GID), affected, approvedDelta, dStats, domainMacroBps, now)
+}
+
+func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types.WorkerSnapshot, affected bool, approvedDelta map[string]int, dStats map[string]*domainStats, domainMacroBps map[string]int64, now time.Time) (pendingScale, bool) {
 	gid := task.GID
 
-	stats := c.telemetry.Get(gid)
 	if len(stats) == 0 {
 		return pendingScale{}, false
 	}
@@ -1119,11 +1349,10 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 	defer c.mu.Unlock()
 
 	// Tail blackout zone: per-gid permanent sleep when totalRemaining <
-	// activeWorkers × effectiveMinChunk. Runs before windowInvalidated
-	// early-return because blackout is permanent.
+	// activeWorkers × effectiveMinChunk. Blackout is permanent — never reset.
 	if s.blackout {
 		s.prevCompleted = task.CompletedLength
-		s.prevSampleAt = time.Now()
+		s.prevSampleAt = now
 		return pendingScale{}, false
 	}
 
@@ -1154,42 +1383,34 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 			log.Printf("[convergence] blackout-triggered: gid=%s totalRemaining=%d chunkWorkers=%d minChunk=%d",
 				gid, totalRemaining, chunkWorkers, effectiveMinChunk)
 
-			// Final RecordPeakEfficiency before permanent sleep — blackout
-			// early-return is before D3 ratchet, so ratchet is permanently
-			// skipped. Compute rawBps from last tick's baseline and latch
-			// macro occupancy so ledger still counts this gid (SPEC-180).
-			if s.prevCompleted > 0 && !s.prevSampleAt.IsZero() {
-				dt := time.Since(s.prevSampleAt)
-				if dt > 0 {
-					finalRawBps := max(int64(float64(task.CompletedLength-s.prevCompleted)/dt.Seconds()), 0)
+			// Final measurement before permanent sleep — same validity rules
+			// as D2: a real window only (no fake raw from a broken baseline).
+			// A dirty or anomalous tick skips the terminal record but still
+			// latches usable raw/ready evidence (SPEC-180 occupancy).
+			if !s.prevSampleAt.IsZero() {
+				if dt := now.Sub(s.prevSampleAt); dt > 0 &&
+					s.prevCompleted >= 0 && task.CompletedLength >= s.prevCompleted {
+					finalRawBps := clampedBps(float64(task.CompletedLength-s.prevCompleted) / dt.Seconds())
 					s.lastRawBps = finalRawBps
 					s.macroReady = true
-					if finalRawBps > 0 && currentWorkers > 0 && c.peakRecorder != nil {
+					if !affected && finalRawBps > 0 && currentWorkers > 0 && c.peakRecorder != nil {
 						c.peakRecorder.RecordPeakEfficiency(gid, finalRawBps, currentWorkers)
 					}
 				}
 			}
 
 			s.prevCompleted = task.CompletedLength
-			s.prevSampleAt = time.Now()
+			s.prevSampleAt = now
 			return pendingScale{}, false
 		}
 	}
 
-	// Window invalidation: skip D2/D3 and reset sustain. Rate-limit does not
-	// participate — it only gates Probe-Up/Probe-Down below.
-	if windowInvalidated {
-		s.sustainCount = 0
-		s.prevCompleted = task.CompletedLength
-		s.prevSampleAt = time.Now()
-		return pendingScale{}, false
-	}
-
-	now := time.Now()
-
-	// D2: Compute raw throughput from CompletedLength delta.
-	if s.prevSampleAt.IsZero() || s.prevCompleted == 0 {
-		// First sample — store baseline, no decision
+	// D2 runs before any verdict work: raw throughput and macroReady must
+	// stay fresh even on a dirty tick — occupancy consumers and the next
+	// tick's exit-side values read them.
+	if s.prevSampleAt.IsZero() {
+		// First sample — store baseline, no decision. A zero prevCompleted
+		// with a real timestamp is a valid baseline, not a missing one.
 		s.prevCompleted = task.CompletedLength
 		s.prevSampleAt = now
 		return pendingScale{}, false
@@ -1197,11 +1418,46 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 
 	dt := now.Sub(s.prevSampleAt)
 	if dt <= 0 {
+		// Broken time window: keep the last measurement, re-base from a
+		// non-negative endpoint, and drop any pending verdict unjudged —
+		// the baseline it spanned no longer exists.
+		s.cancelPendingVerdict()
+		s.prevCompleted = max(task.CompletedLength, 0)
+		s.prevSampleAt = now
 		return pendingScale{}, false
 	}
-	rawBps := max(int64(float64(task.CompletedLength-s.prevCompleted)/dt.Seconds()), 0)
+	if s.prevCompleted < 0 || task.CompletedLength < 0 || task.CompletedLength < s.prevCompleted {
+		// Counter discontinuity (regression or negative endpoint): publish a
+		// measured zero for occupancy consumers, re-base to a non-negative
+		// endpoint, and produce no knee/ceiling verdict from a broken window.
+		s.lastRawBps = 0
+		s.macroReady = true
+		s.cancelPendingVerdict()
+		s.prevCompleted = max(task.CompletedLength, 0)
+		s.prevSampleAt = now
+		return pendingScale{}, false
+	}
+	rawBps := clampedBps(float64(task.CompletedLength-s.prevCompleted) / dt.Seconds())
 	s.lastRawBps = rawBps
 	s.macroReady = true
+
+	if affected {
+		// Dirty window: cancel the pending probe verdict unjudged and skip
+		// settling/D3/smart-unlock/new probes this round while keeping all
+		// long-term memory. Cooldowns tick down once, saturated at zero — a
+		// lock whose cooldown lands on zero here holds until the next clean
+		// tick performs the normal expiry transition.
+		s.cancelPendingVerdict()
+		if s.probeCooldown > 0 {
+			s.probeCooldown--
+		}
+		if s.frozenCooldown > 0 {
+			s.frozenCooldown--
+		}
+		s.prevCompleted = task.CompletedLength
+		s.prevSampleAt = now
+		return pendingScale{}, false
+	}
 
 	// D2: Settling — transition to stable, no decision this tick.
 	// Do NOT overwrite probeBaseline — it must retain the pre-probe throughput
@@ -1511,7 +1767,7 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 				}
 				// Provider (occupancy → LastRawBps) locks c.mu; release before call.
 				c.mu.Unlock()
-				vAvailable := c.checkVAvailable(scope, domain, envKey, approvedDelta, domainOcc, 1, occNow)
+				vAvailable := c.checkVAvailable(scope, domain, envKey, approvedDelta, domainOcc, 1, now)
 				c.mu.Lock()
 				s = c.states[gid]
 				if s == nil {
@@ -1609,10 +1865,32 @@ func (c *ConvergenceTicker) getOrCreateState(gid string) *convergenceState {
 	return s
 }
 
+// cancelPendingVerdict drops the in-flight probe verdict without judging it:
+// an open Probe-Up window loses its baseline fields; an open Probe-Down
+// window (settling, or the stable+lastStep verdict tick) loses step, baseline
+// and the unfinished combo's momentum. Long-term memory — peaks, locks,
+// sustain, raw — is untouched, and physical worker changes already executed
+// are never rolled back.
+func (s *convergenceState) cancelPendingVerdict() {
+	switch {
+	case s.phase == phaseProbingUp:
+		s.probeUpBaseline = 0
+		s.probeUpBaselineWorkers = 0
+		s.probeUpDelta = 0
+		s.phase = phaseStable
+	case s.phase == phaseSettling || (s.phase == phaseStable && s.lastStep > 0):
+		s.lastStep = 0
+		s.probeBaseline = 0
+		s.probeBaselineWorkers = 0
+		s.probeMomentum = false
+		s.phase = phaseStable
+	}
+}
+
 // RemoveTask clears per-gid convergence state immediately so LastRawBps
-// returns (0, false). prevActiveGids / prevActiveSpeeds are preserved until the
-// next tick replaces/prunes them, so complete/delete can still participate in
-// disappearance diff and windowInvalidated.
+// returns (0, false). prevActiveGids / prevActiveSpeeds / prevActiveOccupancy
+// are preserved until the next tick replaces/prunes them, so complete/delete
+// can still participate in the disappearance diff and exit-side occupancy.
 func (c *ConvergenceTicker) RemoveTask(gid string) {
 	c.mu.Lock()
 	delete(c.states, gid)
