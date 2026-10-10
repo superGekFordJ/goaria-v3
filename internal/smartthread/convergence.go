@@ -28,8 +28,29 @@ type domainStats struct {
 	tasksInDomain int
 }
 
-// TrackedTaskInfo is a minimal view of monitor.TrackedTask for convergence
-// and BandwidthLedger hybrid occupancy seeding.
+// CompatKind identifies a retained pre-S1 occupancy claim source. A claim is
+// compatibility protection only — it is not activation and not admission.
+type CompatKind uint8
+
+const (
+	// CompatNone: no legacy claim; plain eligibility + real-lease rules apply.
+	CompatNone CompatKind = iota
+	// CompatSurgeClaim: legacy Surge Target claim — synthetic/empty-status
+	// active at add or an early resume-ack active. Counts on empty/active
+	// statuses until real activation, an authoritative non-active status,
+	// or a terminal boundary ends it.
+	CompatSurgeClaim
+	// CompatSurgeResume: resume-hold lineage — the paused resume-hold write
+	// or its post-transition transfer. Counts on paused/active statuses so
+	// a just-resumed task keeps its Target floor until the real start.
+	CompatSurgeResume
+	// CompatAria2Add: bounded confirmed-AddUri placeholder for non-Surge
+	// tasks, anchored at AddAnchorAt for aria2AddPlaceholderWindow.
+	CompatAria2Add
+)
+
+// TrackedTaskInfo is a minimal scalar view of monitor.TrackedTask for
+// convergence, BandwidthLedger seeding, and unified occupancy evaluation.
 type TrackedTaskInfo struct {
 	GID             string
 	Status          string
@@ -43,14 +64,41 @@ type TrackedTaskInfo struct {
 	ThreadCount     int
 	TargetBandwidth int64
 	AllocatedAt     time.Time
-	TelemetryBps    int64 // Cache EMA / DownloadSpeed pad, or LastRawBps when ready
+	TelemetryBps    int64 // Cache DownloadSpeed pad; measured value incl. 0
+	TelemetryValid  bool  // TelemetryBps holds a measured cache value
+	RawBps          int64 // Surge engine raw sample; used only when MacroReady
 	MacroReady      bool  // Surge: Convergence macroReady latch
+	// ActivatedAt is the tracker's real activation fact for this run; zero
+	// for old active snapshots (telemetry-only). Getters never infer it.
+	ActivatedAt time.Time
+	// FirstProgressAt is the first completed growth above this activation's
+	// baseline; zero when no growth has been recorded yet.
+	FirstProgressAt time.Time
+	// CompatClaim marks the retained legacy claim source, if any.
+	CompatClaim CompatKind
+	// AddAnchorAt is the confirmed-add anchor for CompatAria2Add. It is
+	// fixed at first establishment; reads/writes never extend it.
+	AddAnchorAt time.Time
+	// AdmissionReserved is the explicit admitted-not-started fact for a
+	// future admission pipeline. No production writer sets it in S1; it is
+	// evaluated only as an explicit scalar input.
+	AdmissionReserved bool
 }
 
 // TrackerProvider provides task tracking data to the convergence ticker.
 type TrackerProvider interface {
 	GetActiveTrackedTasks() []TrackedTaskInfo
 	GetScopeAndEnv(gid string) (scope, domain, envKey string, ok bool)
+}
+
+// OccupancyProvider supplies the unified occupancy snapshot (active tasks
+// plus retained claims and add placeholders). Implemented by
+// monitor.trackerAdapter. It MUST NOT call back into ConvergenceTicker
+// methods that acquire c.mu — tick overlays Surge raw/ready from c.states
+// itself. When unset, tick degrades to the active snapshot so existing
+// tests keep working without an extra provider.
+type OccupancyProvider interface {
+	GetOccupancyTrackedTasks() []TrackedTaskInfo
 }
 
 // TelemetryProvider provides per-worker telemetry snapshots.
@@ -140,6 +188,7 @@ const pendingReleaseMaxDeferrals = 3
 type ConvergenceTicker struct {
 	engine       *rpc.HybridEngine
 	tracker      TrackerProvider
+	occupancy    OccupancyProvider // nil → occupancy snapshot = active snapshot
 	telemetry    TelemetryProvider
 	peakRecorder PeakEfficiencyRecorder
 	rateChecker  RateLimitChecker
@@ -196,6 +245,15 @@ func NewConvergenceTicker(
 		interval:          interval,
 		maxConnections:    maxConnections,
 	}
+}
+
+// SetOccupancyProvider wires the unified occupancy snapshot used by the tick
+// for domain occupancy. Must be called before Start; nil is a safe no-op.
+func (c *ConvergenceTicker) SetOccupancyProvider(p OccupancyProvider) {
+	if c == nil || p == nil {
+		return
+	}
+	c.occupancy = p
 }
 
 func (c *ConvergenceTicker) Start() {
@@ -258,14 +316,29 @@ func (c *ConvergenceTicker) tick() {
 		return
 	}
 
+	// One evaluation instant for the whole tick: lease checks, provider and
+	// release/settle all share it so TTL edges cannot flicker mid-tick.
+	now := time.Now()
+
 	activeTasks := c.tracker.GetActiveTrackedTasks()
 	activeGids := make(map[string]gidInfo) // gid → gidInfo
 	var pending []pendingScale
 	pendingGids := make(map[string]bool) // GIDs already scaled this tick
 	// approvedDelta: same-tick positive ScaleUp accumulator.
-	// Keys: approvedScopeKey / approvedDomainKey (env-aware BW) /
+	// Keys: approvedScopeKey / approvedDomainKey (env-blind BW) /
 	// approvedNMaxKey (env-blind N_max pending, aligned with limitKey).
 	approvedDelta := make(map[string]int)
+
+	// Unified occupancy snapshot: includes Aria2 tasks, waiting claims, and
+	// add placeholders — wider than the active set but never widens
+	// processTask. Falls back to the active snapshot when no occupancy
+	// provider is wired (unit tests).
+	occTasks := activeTasks
+	if c.occupancy != nil {
+		if occ := c.occupancy.GetOccupancyTrackedTasks(); occ != nil {
+			occTasks = occ
+		}
+	}
 
 	for _, task := range activeTasks {
 		if !strings.HasPrefix(task.GID, "sg_") {
@@ -391,35 +464,42 @@ func (c *ConvergenceTicker) tick() {
 	}
 	c.mu.Unlock()
 
-	// Domain macro occupancy snapshot (env-aware). Separate short lock — no
-	// telemetry/provider calls. Still-listed complete peers may contribute
-	// lastRawBps while excluded from dStats workers (physical occupancy).
-	domainMacroBps := make(map[string]int64)
+	// Domain macro occupancy (env-blind, keyed by limitKey). Overlay Surge
+	// raw/ready from c.states under lock — never via the public lock-taking
+	// accessors — then evaluate the same per-task occupancy helper outside
+	// the lock. Still-listed complete peers may contribute while excluded
+	// from dStats workers (physical occupancy).
 	c.mu.Lock()
-	for _, task := range activeTasks {
-		if !strings.HasPrefix(task.GID, "sg_") {
+	for i := range occTasks {
+		if !strings.HasPrefix(occTasks[i].GID, "sg_") {
 			continue
 		}
+		if s, ok := c.states[occTasks[i].GID]; ok && s != nil {
+			occTasks[i].RawBps = s.lastRawBps
+			occTasks[i].MacroReady = s.macroReady
+		}
+	}
+	c.mu.Unlock()
+	domainMacroBps := make(map[string]int64)
+	for _, task := range occTasks {
 		if task.Scope == "" || task.Domain == "" {
 			continue
 		}
-		s, ok := c.states[task.GID]
-		if !ok || s == nil || !s.macroReady {
-			continue
+		if occ := TaskOccupancy(task, now); occ > 0 {
+			lk := limitKey(task.Scope, task.Domain)
+			domainMacroBps[lk] = saturatingAdd64(domainMacroBps[lk], occ)
 		}
-		domainMacroBps[approvedDomainKey(task.Scope, task.Domain, task.EnvKey)] += s.lastRawBps
 	}
-	c.mu.Unlock()
 
 	for _, task := range activeTasks {
 		if !strings.HasPrefix(task.GID, "sg_") {
 			continue
 		}
-		if ps, ok := c.processTask(task, windowInvalidated, approvedDelta, dStats, domainMacroBps); ok {
+		if ps, ok := c.processTask(task, windowInvalidated, approvedDelta, dStats, domainMacroBps, now); ok {
 			if ps.delta > 0 {
 				approvedDelta[approvedScopeKey(ps.scope, ps.envKey)] += ps.delta
 				if ps.domain != "" {
-					approvedDelta[approvedDomainKey(ps.scope, ps.domain, ps.envKey)] += ps.delta
+					approvedDelta[approvedDomainKey(ps.scope, ps.domain)] += ps.delta
 					approvedDelta[approvedNMaxKey(ps.scope, ps.domain)] += ps.delta
 				}
 			}
@@ -444,8 +524,8 @@ func (c *ConvergenceTicker) tick() {
 
 	// Deferred settle of previously armed domains first, then arm new
 	// disappearances (never settle an entry created earlier in this call).
-	pending = append(pending, c.settlePendingReleases(activeTasks, activeGids, pendingGids, approvedDelta, dStats, windowInvalidated)...)
-	pending = append(pending, c.bandwidthRelease(activeTasks, activeGids, pendingGids, approvedDelta, dStats, domainMacroBps)...)
+	pending = append(pending, c.settlePendingReleases(activeTasks, activeGids, pendingGids, approvedDelta, dStats, windowInvalidated, occTasks, now)...)
+	pending = append(pending, c.bandwidthRelease(activeTasks, activeGids, pendingGids, approvedDelta, dStats, domainMacroBps, now)...)
 
 	// Self-cleanup: remove states for GIDs no longer active.
 	// prevActiveSpeeds must prune by activeGids (not only via states): RemoveTask
@@ -514,7 +594,7 @@ func (c *ConvergenceTicker) adjustProbeUpDeltaAfterPartialScale(gid string, actu
 // pendingRelease for deferred settle, and elects a same-domain beneficiary for
 // a free +1 (non-probing) to prevent thundering-herd ScaleUp.
 // GIDs already scaled this tick (pendingGids) are skipped.
-func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, activeGids map[string]gidInfo, pendingGids map[string]bool, approvedDelta map[string]int, dStats map[string]*domainStats, domainMacroBps map[string]int64) []pendingScale {
+func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, activeGids map[string]gidInfo, pendingGids map[string]bool, approvedDelta map[string]int, dStats map[string]*domainStats, domainMacroBps map[string]int64, now time.Time) []pendingScale {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -574,15 +654,19 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 			continue
 		}
 
-		disappearedSpeed := d.speed
 		scope, domain, envKey := elected.scope, elected.domain, elected.envKey
 		domainOcc := int64(0)
 		if domainMacroBps != nil {
-			domainOcc = domainMacroBps[approvedDomainKey(scope, domain, envKey)]
+			domainOcc = domainMacroBps[limitKey(scope, domain)]
 		}
-		// Provider (Macro → LastRawBps) locks c.mu; must not call under our lock.
+		// The departed gid is normally already absent from the tracker, so
+		// unified occupancy no longer counts it — subtracting its last raw
+		// speed here would cancel surviving peers or claims. Run the normal
+		// headroom check; residual lag conservatively defers to next tick.
+		// Provider (occupancy → LastRawBps) locks c.mu; must not call under
+		// our lock.
 		c.mu.Unlock()
-		vOK := c.checkVAvailableWithCompensation(scope, domain, envKey, approvedDelta, domainOcc, disappearedSpeed, 1)
+		vOK := c.checkVAvailable(scope, domain, envKey, approvedDelta, domainOcc, 1, now)
 		c.mu.Lock()
 		// Elected state may vanish during unlock (RemoveTask).
 		if c.states[elected.gid] == nil {
@@ -600,7 +684,7 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 		if approvedDelta != nil {
 			approvedDelta[approvedScopeKey(elected.scope, elected.envKey)] += 1
 			if elected.domain != "" {
-				approvedDelta[approvedDomainKey(elected.scope, elected.domain, elected.envKey)] += 1
+				approvedDelta[approvedDomainKey(elected.scope, elected.domain)] += 1
 				approvedDelta[approvedNMaxKey(elected.scope, elected.domain)] += 1
 			}
 		}
@@ -619,6 +703,8 @@ func (c *ConvergenceTicker) settlePendingReleases(
 	approvedDelta map[string]int,
 	dStats map[string]*domainStats,
 	windowInvalidated bool,
+	occTasks []TrackedTaskInfo,
+	now time.Time,
 ) []pendingScale {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -651,6 +737,19 @@ func (c *ConvergenceTicker) settlePendingReleases(
 		return nil
 	}
 
+	// Re-overlay Surge raw/ready onto the occupancy snapshot: processTask
+	// just advanced lastRawBps, so the pre-pass values are stale. Unified
+	// domain occupancy must settle on post-processTask measurements.
+	for i := range occTasks {
+		if !strings.HasPrefix(occTasks[i].GID, "sg_") {
+			continue
+		}
+		if s, ok := c.states[occTasks[i].GID]; ok && s != nil {
+			occTasks[i].RawBps = s.lastRawBps
+			occTasks[i].MacroReady = s.macroReady
+		}
+	}
+
 	var settles []pendingScale
 	for _, lk := range armedKeys {
 		pr := c.pendingReleases[lk]
@@ -673,20 +772,15 @@ func (c *ConvergenceTicker) settlePendingReleases(
 			continue
 		}
 
-		// Fresh occupancy: env-matched macroReady lastRawBps after processTask.
+		// Fresh unified domain occupancy (env-blind): both engines, compat
+		// claims and placeholders count toward the post-processTask domain
+		// fill level. Beneficiary election above stays env-matched.
 		var currentDomainBps int64
-		for _, t := range activeTasks {
-			if !strings.HasPrefix(t.GID, "sg_") {
+		for _, t := range occTasks {
+			if t.Scope != scope || t.Domain != domain {
 				continue
 			}
-			if t.Scope != scope || t.Domain != domain || t.EnvKey != envKey {
-				continue
-			}
-			s := c.states[t.GID]
-			if s == nil || !s.macroReady {
-				continue
-			}
-			currentDomainBps += s.lastRawBps
+			currentDomainBps = saturatingAdd64(currentDomainBps, TaskOccupancy(t, now))
 		}
 
 		targetDomainBps := preDeath
@@ -759,7 +853,7 @@ func (c *ConvergenceTicker) settlePendingReleases(
 
 		domainOcc := currentDomainBps
 		c.mu.Unlock()
-		vOK := c.checkVAvailable(scope, domain, envKey, approvedDelta, domainOcc, delta)
+		vOK := c.checkVAvailable(scope, domain, envKey, approvedDelta, domainOcc, delta, now)
 		c.mu.Lock()
 		s := c.states[elected.gid]
 		if s == nil {
@@ -795,7 +889,7 @@ func (c *ConvergenceTicker) settlePendingReleases(
 		if approvedDelta != nil {
 			approvedDelta[approvedScopeKey(elected.scope, elected.envKey)] += delta
 			if elected.domain != "" {
-				approvedDelta[approvedDomainKey(elected.scope, elected.domain, elected.envKey)] += delta
+				approvedDelta[approvedDomainKey(elected.scope, elected.domain)] += delta
 				approvedDelta[approvedNMaxKey(elected.scope, elected.domain)] += delta
 			}
 		}
@@ -951,9 +1045,9 @@ func (c *ConvergenceTicker) computeVThreadAvg(domain, scope, envKey string) int6
 // counts already-approved workers via approvedScopeKey / approvedDomainKey
 // (not multiplied by needed).
 //
-// Lock topology: must NOT be called while holding c.mu. The activeBandwidth
-// provider (MacroBandwidthByScope) may call LastRawBps which locks c.mu.
-func (c *ConvergenceTicker) checkVAvailable(scope, domain, envKey string, approvedDelta map[string]int, domainOcc int64, needed int) bool {
+// Lock topology: must NOT be called while holding c.mu. The occupancy
+// provider (MacroOccupancyByScope) may call LastRawBps which locks c.mu.
+func (c *ConvergenceTicker) checkVAvailable(scope, domain, envKey string, approvedDelta map[string]int, domainOcc int64, needed int, now time.Time) bool {
 	if needed <= 0 {
 		return false
 	}
@@ -962,7 +1056,7 @@ func (c *ConvergenceTicker) checkVAvailable(scope, domain, envKey string, approv
 
 	scopeOK := true
 	if globalPeak, ok := speedstats.GetGlobalPeak(scope, envKey); ok && globalPeak > 0 {
-		activeBw := activeBandwidthProvider(scope, envKey)
+		activeBw := activeBandwidthProvider(scope, envKey, now)
 		effectiveScope := activeBw + int64(approvedDelta[approvedScopeKey(scope, envKey)])*vThreadAvg
 		scopeOK = globalPeak-effectiveScope >= neededHeadroom
 	}
@@ -970,39 +1064,7 @@ func (c *ConvergenceTicker) checkVAvailable(scope, domain, envKey string, approv
 	domainOK := true
 	if domain != "" {
 		if domainPeak, ok := speedstats.GetDomainPeak(domain, scope, envKey); ok && domainPeak > 0 {
-			effectiveDomain := domainOcc + int64(approvedDelta[approvedDomainKey(scope, domain, envKey)])*vThreadAvg
-			domainOK = domainPeak-effectiveDomain >= neededHeadroom
-		}
-	}
-	return scopeOK && domainOK
-}
-
-// checkVAvailableWithCompensation is like checkVAvailable but subtracts
-// disappearedSpeed from the scope dim only. activeBandwidthProvider may still
-// count a disappeared task for 1–5s; domainMacroBps is built from activeTasks
-// and already excludes the disappeared gid, so compensating the domain dim
-// would over-allow. When disappearedSpeed is 0, this degrades to checkVAvailable.
-//
-// Lock topology: must NOT be called while holding c.mu (same as checkVAvailable).
-func (c *ConvergenceTicker) checkVAvailableWithCompensation(scope, domain, envKey string, approvedDelta map[string]int, domainOcc int64, disappearedSpeed int64, needed int) bool {
-	if needed <= 0 {
-		return false
-	}
-	vThreadAvg := c.computeVThreadAvg(domain, scope, envKey)
-	neededHeadroom := int64(needed) * vThreadAvg
-
-	scopeOK := true
-	if globalPeak, ok := speedstats.GetGlobalPeak(scope, envKey); ok && globalPeak > 0 {
-		activeBw := activeBandwidthProvider(scope, envKey)
-		effectiveScope := activeBw + int64(approvedDelta[approvedScopeKey(scope, envKey)])*vThreadAvg
-		compensatedScope := max(effectiveScope-disappearedSpeed, 0)
-		scopeOK = globalPeak-compensatedScope >= neededHeadroom
-	}
-
-	domainOK := true
-	if domain != "" {
-		if domainPeak, ok := speedstats.GetDomainPeak(domain, scope, envKey); ok && domainPeak > 0 {
-			effectiveDomain := domainOcc + int64(approvedDelta[approvedDomainKey(scope, domain, envKey)])*vThreadAvg
+			effectiveDomain := domainOcc + int64(approvedDelta[approvedDomainKey(scope, domain)])*vThreadAvg
 			domainOK = domainPeak-effectiveDomain >= neededHeadroom
 		}
 	}
@@ -1012,7 +1074,8 @@ func (c *ConvergenceTicker) checkVAvailableWithCompensation(scope, domain, envKe
 // processTask evaluates a single task and returns a pending scale operation if one is needed.
 // windowInvalidated indicates the active set changed this tick — skip probe/ratchet decisions.
 // dStats / domainMacroBps / approvedDelta may be nil in unit tests (degrade safely).
-func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated bool, approvedDelta map[string]int, dStats map[string]*domainStats, domainMacroBps map[string]int64) (pendingScale, bool) {
+// occNow is the tick-captured evaluation instant shared by occupancy checks.
+func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated bool, approvedDelta map[string]int, dStats map[string]*domainStats, domainMacroBps map[string]int64, occNow time.Time) (pendingScale, bool) {
 	gid := task.GID
 
 	stats := c.telemetry.Get(gid)
@@ -1438,11 +1501,11 @@ func (c *ConvergenceTicker) processTask(task TrackedTaskInfo, windowInvalidated 
 				scope, domain, envKey := task.Scope, task.Domain, task.EnvKey
 				domainOcc := int64(0)
 				if domainMacroBps != nil {
-					domainOcc = domainMacroBps[approvedDomainKey(scope, domain, envKey)]
+					domainOcc = domainMacroBps[limitKey(scope, domain)]
 				}
-				// Provider (Macro → LastRawBps) locks c.mu; release before call.
+				// Provider (occupancy → LastRawBps) locks c.mu; release before call.
 				c.mu.Unlock()
-				vAvailable := c.checkVAvailable(scope, domain, envKey, approvedDelta, domainOcc, 1)
+				vAvailable := c.checkVAvailable(scope, domain, envKey, approvedDelta, domainOcc, 1, occNow)
 				c.mu.Lock()
 				s = c.states[gid]
 				if s == nil {

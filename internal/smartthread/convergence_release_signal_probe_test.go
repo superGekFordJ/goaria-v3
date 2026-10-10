@@ -84,7 +84,7 @@ func TestConvergence_RemoveTask_PreservesDisappearanceSignal(t *testing.T) {
 		activeGids := map[string]gidInfo{
 			beneficiary: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 		}
-		releases := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil)
+		releases := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil, time.Now())
 		if len(releases) != 1 || releases[0].gid != beneficiary || releases[0].delta != 1 {
 			t.Fatalf("complete-path release: got %#v, want beneficiary +1", releases)
 		}
@@ -233,7 +233,7 @@ func TestConvergence_PausePath_DisappearanceVisibleWithoutRemoveTask(t *testing.
 	activeGids := map[string]gidInfo{
 		beneficiary: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 	}
-	releases := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil)
+	releases := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil, time.Now())
 	if len(releases) != 1 || releases[0].gid != beneficiary || releases[0].delta != 1 {
 		t.Fatalf("pause-path release: got %#v, want beneficiary +1", releases)
 	}
@@ -285,7 +285,7 @@ func TestConvergence_UserDelete_RemoveTaskStillReleasesBandwidth(t *testing.T) {
 	activeGids := map[string]gidInfo{
 		beneficiary: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 	}
-	releases := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil)
+	releases := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil, time.Now())
 	if len(releases) != 1 || releases[0].gid != beneficiary || releases[0].delta != 1 {
 		t.Fatalf("user-delete release: got %#v, want beneficiary +1", releases)
 	}
@@ -339,7 +339,7 @@ func TestConvergence_BandwidthRelease_ZeroTelemetrySkipped(t *testing.T) {
 		emptyGid: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 		realGid:  {Domain: "example.com", Scope: "wan", EnvKey: "testenv"},
 	}
-	releases := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil)
+	releases := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil, time.Now())
 	if len(releases) != 1 {
 		t.Fatalf("expected 1 release, got %d", len(releases))
 	}
@@ -394,8 +394,8 @@ func TestConvergence_BandwidthRelease_AllZeroTelemetryNoRelease(t *testing.T) {
 		pendingGids,
 		nil,
 		nil,
-		nil,
-	)
+		nil, time.Now())
+
 	if len(releases) != 0 {
 		t.Fatalf("all-zero telemetry must produce no release, got %#v", releases)
 	}
@@ -479,8 +479,8 @@ func TestConvergence_DStats_ExcludesCompleteStillListed(t *testing.T) {
 			map[string]bool{},
 			nil,
 			map[string]*domainStats{key: {activeWorkers: 2}},
-			nil,
-		)
+			nil, time.Now())
+
 		if len(releases) != 1 || releases[0].gid != living {
 			t.Fatalf("dying workers must not block release via clamp, got %#v", releases)
 		}
@@ -494,8 +494,8 @@ func TestConvergence_DStats_ExcludesCompleteStillListed(t *testing.T) {
 			map[string]bool{},
 			nil,
 			map[string]*domainStats{key: {activeWorkers: 10}},
-			nil,
-		)
+			nil, time.Now())
+
 		if len(blocked) != 0 {
 			t.Fatalf("control: inflated dStats should block release, got %#v", blocked)
 		}
@@ -554,8 +554,8 @@ func TestConvergence_DStats_ExcludesCompleteStillListed(t *testing.T) {
 			map[string]bool{},
 			nil,
 			map[string]*domainStats{key: {activeWorkers: 3}},
-			nil,
-		)
+			nil, time.Now())
+
 		if len(releases) != 0 {
 			t.Fatalf("TotalLength==0 workers must still count toward clamp, got %#v", releases)
 		}
@@ -619,8 +619,8 @@ func TestConvergence_DStats_ExcludesCompleteStillListed(t *testing.T) {
 			pendingGids,
 			nil,
 			nil,
-			nil,
-		)
+			nil, time.Now())
+
 		if len(releases) != 1 || releases[0].gid != living || releases[0].delta != 1 {
 			t.Fatalf("living peer must win over dying candidate, got %#v", releases)
 		}

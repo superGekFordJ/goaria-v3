@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/rpc"
+	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
 )
 
@@ -77,6 +78,34 @@ type TrackedTask struct {
 	// placeholders and grace-period refreshes never touch it.
 	AddedAt time.Time
 
+	// --- Unified-occupancy run facts (read via smartthread.TaskOccupancy) ---
+	// ActivatedAt is the first real activation observation of the current
+	// run: authoritative active-list membership or an engine start event
+	// admitted past the lifecycle gates. Cleared on real non-active and
+	// terminal boundaries; rebuilt by the next real start. Readers,
+	// parameter writes, TTFB, and duplicate active events never touch it.
+	ActivatedAt time.Time
+	// FirstProgressAt stamps the first CompletedLength growth above this
+	// run's baseline. Recorded once per run as a fact — including after the
+	// lease ends — and never revived by replays or completed regressions.
+	FirstProgressAt time.Time
+	// progressBaseline is the completed length pinned at activation;
+	// progressBaselineKnown is false until a reliable checkpoint exists —
+	// the first reliable observation then establishes the baseline without
+	// counting as growth.
+	progressBaseline      int64
+	progressBaselineKnown bool
+	// compatClaim marks a retained legacy occupancy claim source (synthetic
+	// Surge claim, bounded Aria2 confirmed-add placeholder, transferred
+	// resume hold). A real activation clears it.
+	compatClaim smartthread.CompatKind
+	// addAnchorAt pins the confirmed-add instant for CompatAria2Add. Fixed
+	// once at establishment; reads and parameter writes never extend it.
+	addAnchorAt time.Time
+	// admittedNotStarted is the explicit admitted-not-started reservation
+	// fact. No production writer sets it yet.
+	admittedNotStarted bool
+
 	// Active time observed on the aria2 tick path; gaps above
 	// activeSampleGapCap are dropped, maxActiveGap bounds the error.
 	activeElapsed time.Duration
@@ -146,8 +175,17 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 	for _, task := range waiting {
 		currentGids[task.GID] = true
 		t.ensureTracked(task)
+		tracked := t.tasks[task.GID]
+		// Authoritative aria2 waiting/paused: record the observed status and
+		// a reliable completed value (baseline source for the next run), and
+		// end any synthetic-active claim or add placeholder — an engine-queued
+		// row never counts occupancy.
+		applyAuthoritativeStatusLocked(tracked, task.Status)
+		if cl := parseInt64(task.CompletedLength); cl > 0 {
+			tracked.CompletedLength = cl
+		}
 		// Paused and queued aria2 tasks both sit in tellWaiting; stop the clock.
-		t.tasks[task.GID].lastActiveAt = time.Time{}
+		tracked.lastActiveAt = time.Time{}
 	}
 
 	// 处理已停止任务：检测新完成
@@ -162,8 +200,7 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 			if tracked := t.tasks[task.GID]; tracked != nil {
 				if tracked.Status != "complete" && tracked.Status != "error" {
 					// 状态变为完成，触发完成处理
-					tracked.Status = task.Status
-					tracked.resumeOccupancyHold = false
+					applyAuthoritativeStatusLocked(tracked, task.Status)
 					t.fillTaskInfo(tracked, task)
 					completed = append(completed, copyTrackedTask(tracked))
 					t.markTerminalAcceptedLocked(task.GID)
@@ -171,8 +208,7 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 			} else {
 				// 新发现的已完成任务（可能是重启后）
 				tracked = t.createTrackedTask(task)
-				tracked.Status = task.Status
-				tracked.resumeOccupancyHold = false
+				applyAuthoritativeStatusLocked(tracked, task.Status)
 				t.tasks[task.GID] = tracked
 				completed = append(completed, copyTrackedTask(tracked))
 				t.markTerminalAcceptedLocked(task.GID)
@@ -218,10 +254,17 @@ func (t *TaskTracker) updateActiveTask(task rpc.Task) {
 	}
 	tracked.lastActiveAt = now
 
+	// Authoritative active-list membership is real start evidence: the
+	// observation's own completed value is the reliable run baseline, and
+	// it also ends any confirmed-add placeholder for this gid.
+	completed := parseInt64(task.CompletedLength)
+	t.observeActivationLocked(tracked, now, completed, true)
+	t.observeCompletedLocked(tracked, now, completed)
+
 	// 更新进度
 	tracked.Status = task.Status
 	tracked.resumeOccupancyHold = false
-	tracked.CompletedLength = parseInt64(task.CompletedLength)
+	tracked.CompletedLength = completed
 	tracked.TotalLength = parseInt64(task.TotalLength)
 
 	// 如果 FilePath 为空但 task 有文件信息，补充之
@@ -372,6 +415,10 @@ func (t *TaskTracker) SetThreadInfo(gid string, threadCount int, isExploration b
 // clock starts now so add→first active tick counts; a waiting tick clears it.
 // Re-marking an already tracked gid intentionally re-anchors measurement to
 // the latest observed add; the discarded window is at most one tick.
+// For non-Surge gids it also pins the bounded confirmed-add placeholder —
+// only while no authoritative status or real activation exists, so a late
+// MarkAdded can never resurrect or extend a placeholder the engine already
+// superseded.
 func (t *TaskTracker) MarkAdded(gid string) {
 	if gid == "" {
 		return
@@ -386,11 +433,142 @@ func (t *TaskTracker) MarkAdded(gid string) {
 		t.tasks[gid] = tracked
 	}
 	tracked.AddedAt = now
+	if !strings.HasPrefix(gid, "sg_") && tracked.ActivatedAt.IsZero() &&
+		!t.isTerminalAcceptedLocked(gid) &&
+		(tracked.Status == "" || (tracked.Status == "active" && tracked.compatClaim == smartthread.CompatNone)) {
+		if tracked.compatClaim == smartthread.CompatNone {
+			tracked.compatClaim = smartthread.CompatAria2Add
+		}
+		if tracked.addAnchorAt.IsZero() {
+			tracked.addAnchorAt = now
+		}
+	}
 	tracked.lastActiveAt = now
 	tracked.activeElapsed = 0
 	tracked.maxActiveGap = 0
 	tracked.terminalElapsed = 0
 	tracked.peakFromAvgFallback = false
+}
+
+// observeActivationLocked records a real start for the current run. Only the
+// first observation of a run establishes the lease anchor and baseline;
+// later real-start evidence is idempotent, except that a reliable baseline
+// may still upgrade an unknown one. A live activation ends compat claims —
+// they existed only to bridge until this genuine start. Caller holds t.mu.
+func (t *TaskTracker) observeActivationLocked(tt *TrackedTask, now time.Time, baseline int64, baselineKnown bool) {
+	if tt.ActivatedAt.IsZero() {
+		tt.ActivatedAt = now
+		tt.FirstProgressAt = time.Time{}
+		tt.progressBaseline = baseline
+		tt.progressBaselineKnown = baselineKnown
+		tt.compatClaim = smartthread.CompatNone
+		tt.addAnchorAt = time.Time{}
+		tt.resumeOccupancyHold = false
+		return
+	}
+	if baselineKnown && !tt.progressBaselineKnown {
+		tt.progressBaseline = baseline
+		tt.progressBaselineKnown = true
+	}
+}
+
+// observeCompletedLocked folds a reliable completed-length observation into
+// the current run's facts. Without a live activation it is a no-op (the
+// value still updates CompletedLength via the caller, which is the baseline
+// source for the next activation). While activated it establishes an
+// unknown baseline — not growth — or stamps the first genuine growth above
+// the known baseline. Regressions and replayed values never rewind the
+// baseline or mint growth. Caller holds t.mu.
+func (t *TaskTracker) observeCompletedLocked(tt *TrackedTask, now time.Time, completed int64) {
+	if tt.ActivatedAt.IsZero() {
+		return
+	}
+	if !tt.progressBaselineKnown {
+		tt.progressBaseline = completed
+		tt.progressBaselineKnown = true
+		return
+	}
+	if completed > tt.progressBaseline && tt.FirstProgressAt.IsZero() {
+		tt.FirstProgressAt = now
+	}
+}
+
+// clearActivationFactsLocked ends the current run's activation eligibility.
+// Compat claims are the caller's decision (terminal also releases them;
+// retry/pause keeps the Surge claim). Caller holds t.mu.
+func clearActivationFactsLocked(tt *TrackedTask) {
+	tt.ActivatedAt = time.Time{}
+	tt.FirstProgressAt = time.Time{}
+	tt.progressBaseline = 0
+	tt.progressBaselineKnown = false
+}
+
+// applyAuthoritativeStatusLocked writes an observed status and settles the
+// per-run occupancy facts: a non-active boundary ends activation eligibility;
+// a terminal status additionally releases compat claims; an authoritative
+// Aria2 (non-sg_) waiting/paused ends the add placeholder; and any
+// non-terminal transition transfers a private resume hold into the explicit
+// compat claim so the claim survives until the real start. Writing "active"
+// never creates activation — that requires ObserveActivation evidence.
+// Caller holds t.mu.
+func applyAuthoritativeStatusLocked(tt *TrackedTask, status string) {
+	tt.Status = status
+	switch status {
+	case "complete", "error":
+		clearActivationFactsLocked(tt)
+		tt.compatClaim = smartthread.CompatNone
+		tt.addAnchorAt = time.Time{}
+		tt.resumeOccupancyHold = false
+		return
+	case "active":
+		// Status alone is not start evidence — keep any live activation.
+		// But a legacy resume-ack / synthetic active write on a Surge task
+		// without activation claims the Target floor until the genuine
+		// start (or an authoritative non-active boundary ends it).
+		if tt.ActivatedAt.IsZero() && tt.compatClaim == smartthread.CompatNone &&
+			strings.HasPrefix(tt.GID, "sg_") && tt.TargetBandwidth > 0 {
+			tt.compatClaim = smartthread.CompatSurgeResume
+		}
+	default:
+		clearActivationFactsLocked(tt)
+		if !strings.HasPrefix(tt.GID, "sg_") {
+			// Authoritative Aria2 waiting/paused ends the add placeholder
+			// immediately; a later re-add must anchor anew.
+			tt.compatClaim = smartthread.CompatNone
+			tt.addAnchorAt = time.Time{}
+		}
+	}
+	if tt.resumeOccupancyHold {
+		tt.resumeOccupancyHold = false
+		if strings.HasPrefix(tt.GID, "sg_") && tt.TargetBandwidth > 0 &&
+			tt.ActivatedAt.IsZero() && tt.compatClaim == smartthread.CompatNone {
+			tt.compatClaim = smartthread.CompatSurgeResume
+		}
+	}
+}
+
+// ObserveActivation records a real engine start for gid — a Surge started
+// event that passed the lifecycle gates or an authoritative engine-active
+// poll row. baseline is the reliable completed length at start;
+// baselineKnown=false when no trustworthy checkpoint exists (the first
+// reliable observation then establishes the baseline without growth).
+// Idempotent within a run; never writes status or reopens a terminal —
+// callers own lifecycle gating and ordering.
+func (t *TaskTracker) ObserveActivation(gid string, baseline int64, baselineKnown bool) {
+	if t == nil || gid == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.isTerminalAcceptedLocked(gid) {
+		return
+	}
+	tt := t.tasks[gid]
+	if tt == nil {
+		tt = &TrackedTask{GID: gid, CreatedAt: time.Now()}
+		t.tasks[gid] = tt
+	}
+	t.observeActivationLocked(tt, time.Now(), baseline, baselineKnown)
 }
 
 // GetTrackedTask returns a value copy of the tracked entry.
@@ -527,8 +705,7 @@ func (t *TaskTracker) EnsureTrackedFromEvent(gid string, totalLength int64, sour
 		// Don't resurrect a terminal task (complete/error) back to a
 		// non-terminal status from a late/out-of-order event or reconcile.
 		if status != "" && !t.isTerminalAcceptedLocked(gid) {
-			tracked.Status = status
-			tracked.resumeOccupancyHold = false
+			applyAuthoritativeStatusLocked(tracked, status)
 		}
 		return
 	}
@@ -668,10 +845,10 @@ func (t *TaskTracker) SetStatusFromEvent(gid string, status string) {
 		return
 	}
 	if tracked := t.tasks[gid]; tracked != nil {
-		tracked.Status = status
-		// Resume claims while paused use resumeOccupancyHold; any status
-		// transition (EventResumed→active, user pause, terminal) clears it.
-		tracked.resumeOccupancyHold = false
+		// Status alone never creates activation; a non-active boundary ends
+		// this run's eligibility and a resume hold transfers to its compat
+		// claim so protection survives until the real start.
+		applyAuthoritativeStatusLocked(tracked, status)
 	}
 }
 
@@ -679,6 +856,8 @@ func (t *TaskTracker) SetStatusFromEvent(gid string, status string) {
 // resume can accept a later complete/error. Call only from authoritative
 // resume paths (alongside history retirement), never from generic pause/status.
 // Bumps lifecycle generation and clears the generation-scoped terminal marker.
+// The explicit reopen ends the previous run's lease facts but keeps a legit
+// resume claim; "active" here never counts as real start evidence.
 func (t *TaskTracker) ReopenAfterStoppedToLive(gid, status string) {
 	if t == nil || gid == "" {
 		return
@@ -693,8 +872,8 @@ func (t *TaskTracker) ReopenAfterStoppedToLive(gid, status string) {
 		status = "active"
 	}
 	if tracked := t.tasks[gid]; tracked != nil {
-		tracked.Status = status
-		tracked.resumeOccupancyHold = false
+		clearActivationFactsLocked(tracked)
+		applyAuthoritativeStatusLocked(tracked, status)
 	}
 }
 
@@ -715,6 +894,10 @@ func (t *TaskTracker) UpdateProgressFromEvent(gid string, totalLength, completed
 		tracked.TotalLength = totalLength
 	}
 	if completedLength > 0 {
+		// Growth is a fact only inside a live activation run; queued/paused
+		// checkpoints and terminal length fills merely seed the stored
+		// completed value used as the next run's baseline source.
+		t.observeCompletedLocked(tracked, time.Now(), completedLength)
 		tracked.CompletedLength = completedLength
 	}
 }
@@ -733,8 +916,7 @@ func (t *TaskTracker) MarkCompleteFromEvent(gid string, status string) *TrackedT
 		return nil
 	}
 
-	tracked.Status = status
-	tracked.resumeOccupancyHold = false
+	applyAuthoritativeStatusLocked(tracked, status)
 	t.markTerminalAcceptedLocked(gid)
 	return copyTrackedTask(tracked)
 }
@@ -865,6 +1047,14 @@ func (t *TaskTracker) SetTargetBandwidth(gid string, bw int64) {
 		switch tracked.Status {
 		case "":
 			tracked.Status = "active"
+			// The synthetic pre-event active is a compat claim, not real
+			// activation — mark the source explicitly so occupancy keeps
+			// the Target floor until a genuine start/authoritative row.
+			// A task that already activated keeps its real lease.
+			if strings.HasPrefix(gid, "sg_") && tracked.ActivatedAt.IsZero() &&
+				tracked.compatClaim == smartthread.CompatNone {
+				tracked.compatClaim = smartthread.CompatSurgeClaim
+			}
 		case "paused":
 			tracked.resumeOccupancyHold = true
 		}
@@ -884,31 +1074,46 @@ func (t *TaskTracker) GetActiveTrackedTasks() []TrackedTask {
 	return result
 }
 
-// GetOccupancyTrackedTasks returns tasks that should seed BandwidthLedger
-// occupancy. Includes Status=="active", AddURI placeholders
-// (Status=="" && TargetBandwidth>0), waiting claims with TargetBandwidth>0
-// (queued Surge hold), and just-resumed claims still marked paused
-// (resumeOccupancyHold). Excludes ordinary paused (no hold), waiting with
-// bw==0, complete, error, and empty-status without bw.
-// Does not change Convergence GetActiveTrackedTasks filter semantics.
+// GetOccupancyTrackedTasks returns tracker copies that feed the unified
+// occupancy snapshot: real active tasks, retained Surge waiting claims and
+// paused resume claims, empty-status placeholders (Surge claim evidence or
+// the bounded confirmed-add marker), and any explicit admitted-not-started
+// reservation. Ordinary Aria2 waiting, ordinary paused, and terminal tasks
+// are excluded. The getter never writes times, consumes holds, or widens
+// the active-set semantics used by GetActiveTrackedTasks.
 func (t *TaskTracker) GetOccupancyTrackedTasks() []TrackedTask {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	result := make([]TrackedTask, 0, len(t.tasks))
 	for _, tt := range t.tasks {
+		surge := strings.HasPrefix(tt.GID, "sg_")
+		switch tt.Status {
+		case "complete", "error":
+			continue
+		}
+		if tt.admittedNotStarted {
+			result = append(result, *tt)
+			continue
+		}
 		switch tt.Status {
 		case "active":
 			result = append(result, *tt)
 		case "":
-			if tt.TargetBandwidth > 0 {
+			if tt.TargetBandwidth > 0 &&
+				(surge || tt.compatClaim == smartthread.CompatAria2Add) {
 				result = append(result, *tt)
 			}
 		case "waiting":
-			if tt.TargetBandwidth > 0 {
+			// Only the retained Surge queued claim counts; an authoritative
+			// Aria2 waiting row contributes zero immediately.
+			if surge && tt.TargetBandwidth > 0 {
 				result = append(result, *tt)
 			}
 		case "paused":
-			if tt.resumeOccupancyHold && tt.TargetBandwidth > 0 {
+			// The resume-hold/compat claim survives paused; ordinary or
+			// long-paused tasks without it contribute zero.
+			if surge && tt.TargetBandwidth > 0 &&
+				(tt.resumeOccupancyHold || tt.compatClaim == smartthread.CompatSurgeResume) {
 				result = append(result, *tt)
 			}
 		}

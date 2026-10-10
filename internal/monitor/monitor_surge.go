@@ -180,6 +180,12 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		gid = "sg_" + ev.DownloadID
 		if m.tracker != nil {
 			m.tracker.EnsureTrackedFromEvent(gid, 0, ev.URL, ev.Workers, "waiting")
+			// A queued checkpoint only seeds the stored completed value (the
+			// next run's baseline source); it is not growth and never
+			// restarts a lease.
+			if ev.Downloaded > 0 {
+				m.tracker.UpdateProgressFromEvent(gid, ev.Total, ev.Downloaded)
+			}
 		}
 		if surgeEng != nil {
 			entry := types.DownloadRecord{
@@ -239,8 +245,34 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		if m.chunkSnapshots != nil && !resume {
 			m.chunkSnapshots.Remove(gid)
 		}
+		// Read the recorded resume intention as a scalar under its own
+		// mutex; never hold it while taking tracker/lifecycle locks. Only a
+		// user-recorded resume that no later terminal cleared justifies
+		// reopening a stale stopped row at started time — State.IsResume
+		// alone is not new-generation authorization.
+		m.pauseResumeVersionMu.Lock()
+		resumeIntended := m.pauseResumeIntentions[gid] == PauseResumeIntentionResume
+		m.pauseResumeVersionMu.Unlock()
+		startMovedFrom := ""
+		if resumeIntended {
+			startMovedFrom = m.moveToActiveAndRetireIfStopped(gid, "active")
+			if startMovedFrom != "" && startMovedFrom != "active" {
+				if task := findTaskInCache(gid); task != nil {
+					m.hub.EmitTaskMove(events.TaskMove{
+						GID: gid, From: startMovedFrom, To: "active", Task: task,
+					})
+				}
+			}
+		}
 		if m.tracker != nil {
 			m.tracker.EnsureTrackedFromEvent(gid, ev.Total, ev.URL, ev.Workers, "active")
+			var engineCompleted int64
+			engineKnown := ev.State != nil
+			if engineKnown {
+				engineCompleted = ev.State.Downloaded
+			}
+			baseline, known := surgeActivationBaseline(m.tracker, gid, engineCompleted, engineKnown)
+			m.tracker.ObserveActivation(gid, baseline, known)
 		}
 		if surgeEng != nil {
 			entry := types.DownloadRecord{
@@ -274,12 +306,17 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			}
 			surgeEng.UpsertMasterCacheEntry(entry)
 		}
-		Cache.AddSgTask(rpc.Task{
-			GID:           gid,
-			Status:        "active",
-			TotalLength:   strconv.FormatInt(ev.Total, 10),
-			DownloadSpeed: "0",
-		}, "active")
+		// The recorded-resume path already moved the existing row to active
+		// under the lifecycle gate; only when it found no row at all do we
+		// add one here. Other starts keep the original add semantics.
+		if startMovedFrom == "" {
+			Cache.AddSgTask(rpc.Task{
+				GID:           gid,
+				Status:        "active",
+				TotalLength:   strconv.FormatInt(ev.Total, 10),
+				DownloadSpeed: "0",
+			}, "active")
+		}
 		Cache.PrefetchMetadata(gid)
 	case types.EventFirstByte:
 		gid = "sg_" + ev.DownloadID
@@ -444,8 +481,11 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		}
 		if m.tracker != nil {
 			m.tracker.SetStatusFromEvent(gid, "paused")
+			// Same checkpoint rule as EventQueued: baseline source only.
+			if ev.Downloaded > 0 {
+				m.tracker.UpdateProgressFromEvent(gid, 0, ev.Downloaded)
+			}
 		}
-		// Atomic refuse-stopped move: never clear ErrorCode on a concurrent
 		// complete/error that lands between the IsInStopped check and this call.
 		from := Cache.MoveTaskToWaitingFromLive(gid, "paused")
 		if from == "" {
@@ -823,6 +863,11 @@ func (m *Monitor) reconcileSurgeCache() {
 						Cache.AddSgTask(engineTask, list)
 						m.tracker.EnsureTrackedFromEvent(gid, parseInt64(engineTask.TotalLength), sourceURLFromTask(engineTask), 0, engineStatusForTask(engineTask.Status))
 						retireHistoryAndReopenLocked(m.tracker, gid)
+						// Reopen first, then this run's real facts.
+						completed := parseInt64(engineTask.CompletedLength)
+						baseline, known := surgeActivationBaseline(m.tracker, gid, completed, strings.TrimSpace(engineTask.CompletedLength) != "")
+						m.tracker.ObserveActivation(gid, baseline, known)
+						m.tracker.UpdateProgressFromEvent(gid, parseInt64(engineTask.TotalLength), completed)
 					})
 				} else {
 					Cache.AddSgTask(engineTask, list)
@@ -866,6 +911,24 @@ func (m *Monitor) reconcileSurgeCache() {
 
 		engineList := engineListForStatus(engineTask.Status)
 		if cacheList == engineList {
+			// Same-list rows still carry authoritative facts that events may
+			// have missed: engine-active membership repairs activation and
+			// folds in the polled completed value; a waiting/paused row ends
+			// this run's activation. Idempotent — repeated polls never renew
+			// the lease. Terminal rows are already handled by the gates
+			// above and need no fact writes here.
+			if m.tracker != nil {
+				switch engineList {
+				case "active":
+					m.tracker.EnsureTrackedFromEvent(gid, parseInt64(engineTask.TotalLength), sourceURLFromTask(engineTask), 0, engineStatusForTask(engineTask.Status))
+					completed := parseInt64(engineTask.CompletedLength)
+					baseline, known := surgeActivationBaseline(m.tracker, gid, completed, strings.TrimSpace(engineTask.CompletedLength) != "")
+					m.tracker.ObserveActivation(gid, baseline, known)
+					m.tracker.UpdateProgressFromEvent(gid, parseInt64(engineTask.TotalLength), completed)
+				case "waiting":
+					m.tracker.EnsureTrackedFromEvent(gid, parseInt64(engineTask.TotalLength), sourceURLFromTask(engineTask), 0, engineStatusForTask(engineTask.Status))
+				}
+			}
 			continue
 		}
 
@@ -946,6 +1009,15 @@ func (m *Monitor) reconcileSurgeCache() {
 			log.Printf("[Monitor] Surge poll: moved task %s from %s to waiting (missed pause)", gid, cacheList)
 		case "active":
 			from := m.moveToActiveAndRetireIfStopped(gid, engineStatusForTask(engineTask.Status))
+			if m.tracker != nil {
+				// The engine-active row is authoritative start evidence even
+				// without a recorded resume intention — the poll itself is
+				// the legitimate reopen, so facts follow the retire.
+				completed := parseInt64(engineTask.CompletedLength)
+				baseline, known := surgeActivationBaseline(m.tracker, gid, completed, strings.TrimSpace(engineTask.CompletedLength) != "")
+				m.tracker.ObserveActivation(gid, baseline, known)
+				m.tracker.UpdateProgressFromEvent(gid, parseInt64(engineTask.TotalLength), completed)
+			}
 			if from != "" && from != "active" {
 				if task := findTaskInCache(gid); task != nil {
 					m.hub.EmitTaskMove(events.TaskMove{
@@ -1022,6 +1094,24 @@ func engineStatusForTask(status string) string {
 	default:
 		return "active"
 	}
+}
+
+// surgeActivationBaseline picks the run baseline for a real Surge start or
+// authoritative engine-active poll row: prefer the engine-supplied completed
+// value when it is a reliable observation, then the tracker's stored
+// checkpoint — a sparse engine zero must not erase an already-known resume
+// amount. known=false when no trustworthy checkpoint exists; the first
+// reliable completed observation then becomes the baseline without counting
+// as growth.
+func surgeActivationBaseline(tracker *TaskTracker, gid string, engineCompleted int64, engineKnown bool) (int64, bool) {
+	baseline, known := engineCompleted, engineKnown
+	if tracker != nil {
+		if tt, ok := tracker.GetTrackedTask(gid); ok && tt.CompletedLength > baseline {
+			baseline = tt.CompletedLength
+			known = true
+		}
+	}
+	return baseline, known
 }
 
 func sourceURLFromTask(t rpc.Task) string {

@@ -54,7 +54,7 @@ func floorHitProcess(ct *ConvergenceTicker, tracker *mockTracker, telemetry *moc
 		setPrevSampleAgoState(s, 5*time.Second)
 	}
 	ct.mu.Unlock()
-	return ct.processTask(tracker.tasks[0], false, nil, nil, nil)
+	return ct.processTask(tracker.tasks[0], false, nil, nil, nil, time.Now())
 }
 
 // TestConvergence_FloorHit_SmartUnlock verifies consecutive 2 ticks with
@@ -245,7 +245,7 @@ func TestConvergence_FloorHit_KneeFrozenSet(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil, time.Now())
 	if !ok || ps.delta <= 0 {
 		t.Fatalf("expected rebound (delta>0) after knee crossing, got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -277,8 +277,8 @@ func TestConvergence_FloorHit_KneeFrozenSet(t *testing.T) {
 		map[string]bool{},
 		nil,
 		nil,
-		nil,
-	)
+		nil, time.Now())
+
 	for _, r := range releases {
 		if r.gid == gid {
 			t.Fatal("expected bandwidthRelease to skip kneeFrozen task")
@@ -320,7 +320,7 @@ func TestConvergence_FloorHit_PartialDrainReboundRespectsMax(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil, time.Now())
 	if !ok || ps.delta <= 0 {
 		t.Fatalf("expected clamped rebound, got ok=%v delta=%d", ok, ps.delta)
 	}

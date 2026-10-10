@@ -292,10 +292,12 @@ func approvedScopeKey(scope, envKey string) string {
 	return scope + "|" + envKey
 }
 
-// approvedDomainKey is the tick-local approvedDelta / domainMacroBps key for
-// bandwidth gates. Format: scope + "|" + domain + "|" + envKey — env-aware.
-func approvedDomainKey(scope, domain, envKey string) string {
-	return scope + "|" + domain + "|" + envKey
+// approvedDomainKey is the tick-local approvedDelta key for domain bandwidth
+// headroom. Domain occupancy is environment-blind: same-domain tasks in any
+// env share the budget, so the pending key is env-blind too. The "bw-domain|"
+// prefix keeps it distinct from approvedScopeKey and approvedNMaxKey.
+func approvedDomainKey(scope, domain string) string {
+	return "bw-domain|" + scope + "|" + domain
 }
 
 // approvedNMaxKey is the tick-local approvedDelta key for N_max pending counts.

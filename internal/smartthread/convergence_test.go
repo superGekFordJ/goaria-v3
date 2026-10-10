@@ -456,7 +456,7 @@ func TestConvergenceTicker_PendingGidsPreventsBandwidthReleaseScaleUp(t *testing
 	// Scenario 1: pendingGids contains keepAliveGid (processTask already scaled it).
 	// bandwidthRelease must skip it — no ScaleUp issued.
 	pendingGids := map[string]bool{keepAliveGid: true}
-	releases := ct.bandwidthRelease(tracker.tasks, activeGids, pendingGids, nil, nil, nil)
+	releases := ct.bandwidthRelease(tracker.tasks, activeGids, pendingGids, nil, nil, nil, time.Now())
 	if len(releases) != 0 {
 		t.Errorf("expected 0 releases when pendingGids contains keepAliveGid, got %d: %+v", len(releases), releases)
 	}
@@ -468,7 +468,7 @@ func TestConvergenceTicker_PendingGidsPreventsBandwidthReleaseScaleUp(t *testing
 	}
 
 	// Scenario 2 (control): pendingGids is empty — bandwidthRelease should issue ScaleUp.
-	releases = ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil)
+	releases = ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil, time.Now())
 	if len(releases) != 1 {
 		t.Fatalf("expected 1 release without pendingGids, got %d: %+v", len(releases), releases)
 	}

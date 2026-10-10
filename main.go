@@ -172,7 +172,7 @@ func main() {
 	monitor.State.SetMonitor(mon) // 注册到全局状态，供 RemoveTask 调用
 	mon.Start()
 
-	smartthread.SetActiveBandwidthProvider(monitor.MacroBandwidthByScope)
+	smartthread.SetActiveBandwidthProvider(monitor.MacroOccupancyByScope)
 
 	if surgeEng, ok := hybrid.SurgeEngineRef(); ok {
 		surgeEng.SetResumeParamsHook(func(cfg *types.DownloadRecord) {
@@ -233,20 +233,24 @@ func main() {
 				maxConn = 8
 			}
 
-			occupancyLedger := smartthread.NewBandwidthLedger(tasks.BuildOccupancyTaskInfos())
+			// One unified occupancy ledger for both reserved dims. The
+			// resuming gid is self-excluded so an already-fired start event
+			// or stale claim cannot charge this task against itself; other
+			// tasks' holds/claims still count.
+			occupancyLedger := smartthread.NewBandwidthLedger(tasks.BuildOccupancyTaskInfosExcluding(gid))
 			params := smartthread.Calculate(smartthread.CalcParams{
 				FileSize:                remaining,
 				MaxConnections:          maxConn,
 				Scope:                   scope,
 				Domain:                  domain,
 				EnvKey:                  envKey,
-				ReservedBandwidth:       monitor.MacroBandwidthByScope(scope, envKey),
+				ReservedBandwidth:       occupancyLedger.Reserved(scope, envKey),
 				ReservedDomainBandwidth: occupancyLedger.ReservedByDomain(scope, domain),
 				// Ledger/ActiveMACsFunc/ComputeEnvKeyFunc left nil:
 				// Resume path degrades to logical-only ceiling (no batch ledger).
 			})
 			params = smartthread.ClampToServerLimit(params, remaining, scope, domain,
-				tasks.ExistingDomainWorkersFromTelemetry(scope, domain),
+				tasks.ExistingDomainWorkersFromTelemetryExcluding(scope, domain, gid),
 				smartthread.GetDefaultServerLimits())
 			if cfg.Runtime == nil {
 				cfg.Runtime = &types.RuntimeConfig{}

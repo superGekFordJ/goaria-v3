@@ -63,7 +63,7 @@ func probeUpProcess(ct *ConvergenceTicker, tracker *mockTracker, telemetry *mock
 		setPrevSampleAgoState(s, 5*time.Second)
 	}
 	ct.mu.Unlock()
-	return ct.processTask(tracker.tasks[0], false, nil, nil, nil)
+	return ct.processTask(tracker.tasks[0], false, nil, nil, nil, time.Now())
 }
 
 // TestConvergence_ProbeUp_TriggersWhenStableAndEfficient verifies that
@@ -209,7 +209,7 @@ func TestConvergence_ProbeUp_SuccessContinuesChain(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok = ct.processTask(tracker.tasks[0], false, nil, nil, nil)
+	ps, ok = ct.processTask(tracker.tasks[0], false, nil, nil, nil, time.Now())
 	if !ok || ps.delta != 1 {
 		t.Fatalf("expected chain probe-up +1 after success, got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -254,7 +254,7 @@ func TestConvergence_ProbeUp_GainRatioZeroRawBps(t *testing.T) {
 	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
 	ct.mu.Unlock()
 
-	ps, ok = ct.processTask(tracker.tasks[0], false, nil, nil, nil)
+	ps, ok = ct.processTask(tracker.tasks[0], false, nil, nil, nil, time.Now())
 	if !ok || ps.delta != -1 {
 		t.Fatalf("expected ceiling-hit rebound -1, got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -289,7 +289,7 @@ func TestConvergence_ProbeUp_MacroProviderNoDeadlock(t *testing.T) {
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
 	var providerCalls atomic.Int32
-	activeBandwidthProvider = func(scope, envKey string) int64 {
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 {
 		providerCalls.Add(1)
 		bps, ready := ct.LastRawBps(gid)
 		if ready {
@@ -338,7 +338,7 @@ func TestConvergence_ProbeUp_BlockedByVAvailable(t *testing.T) {
 	// activeBw = 10 MB/s → globalPeak - activeBw = 0 < vThreadAvg(10MB) → blocked.
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope, envKey string) int64 {
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 {
 		return 10 * 1024 * 1024
 	}
 

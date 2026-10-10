@@ -33,65 +33,11 @@ func collectActiveTaskInfos() []smartthread.TrackedTaskInfo {
 	return BuildOccupancyTaskInfos()
 }
 
-// BuildOccupancyTaskInfos builds hybrid-seed inputs for NewBandwidthLedger.
-// Shared by AddURI/BatchAddURI and Resume so seed policy cannot drift.
+// BuildOccupancyTaskInfos builds unified-seed inputs for NewBandwidthLedger.
+// Delegates to the monitor collector so AddURI/BatchAddURI, Resume and pickup
+// share one eligibility/engine-selection implementation.
 func BuildOccupancyTaskInfos() []smartthread.TrackedTaskInfo {
-	tr := monitor.State.GetTracker()
-	if tr == nil {
-		return nil
-	}
-	occupied := tr.GetOccupancyTrackedTasks()
-	if len(occupied) == 0 {
-		return nil
-	}
-
-	speedByGID := map[string]int64{}
-	if monitor.Cache != nil {
-		for _, t := range monitor.Cache.GetActive() {
-			speedByGID[t.GID] = parseDownloadSpeed(t.DownloadSpeed)
-		}
-	}
-
-	mon := monitor.State.GetMonitor()
-	result := make([]smartthread.TrackedTaskInfo, 0, len(occupied))
-	for _, t := range occupied {
-		info := smartthread.TrackedTaskInfo{
-			GID:             t.GID,
-			Status:          t.Status,
-			Scope:           t.Scope,
-			Domain:          t.Domain,
-			EnvKey:          t.CurrentEnvKey,
-			ThreadCount:     t.ThreadCount,
-			TargetBandwidth: t.TargetBandwidth,
-			AllocatedAt:     t.AllocatedAt,
-		}
-		cacheSpeed := speedByGID[t.GID]
-		if strings.HasPrefix(t.GID, "sg_") {
-			if mon != nil {
-				bps, ready := mon.LastRawBps(t.GID)
-				info.MacroReady = ready
-				if ready {
-					info.TelemetryBps = bps
-				} else {
-					info.TelemetryBps = cacheSpeed
-				}
-			} else {
-				info.TelemetryBps = cacheSpeed
-			}
-		} else {
-			info.TelemetryBps = cacheSpeed
-		}
-		result = append(result, info)
-	}
-	return result
-}
-
-func parseDownloadSpeed(s string) int64 {
-	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || v < 0 {
-		return 0
-	}
-	return v
+	return monitor.OccupancyTaskInfos()
 }
 
 // ExistingDomainWorkersFromTelemetry returns the total occupancy worker count

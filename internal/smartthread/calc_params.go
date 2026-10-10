@@ -35,10 +35,22 @@ const (
 	frozenCooldownCycles  = 12   // ~60s @ 5s interval; must be < IdleConnTimeout(90s)/interval
 	probeFloorWorkers     = 2    // hard lower bound for probing (aligns with congestionFloor)
 
-	// aria2ColdSeedWindow is the wall-clock window during which Aria2 tasks
-	// seed ledger occupancy from max(TargetBandwidth, TelemetryBps).
-	// Surge uses macroReady instead; this age window is Aria2-only.
-	aria2ColdSeedWindow = 15 * time.Second
+	// activationNoProgressTTL is the TargetBandwidth floor granted to a
+	// genuinely activated task that has not yet recorded first effective
+	// progress. At exactly this age the lease is already expired.
+	activationNoProgressTTL = 45 * time.Second
+
+	// progressLeaseTTL is the TargetBandwidth floor measured from
+	// firstProgressAt once first growth lands inside the initial
+	// activationNoProgressTTL window. It is not capped by the original
+	// 45s expiry; growth at or after 45s does not revive a dead lease.
+	progressLeaseTTL = 15 * time.Second
+
+	// aria2AddPlaceholderWindow bounds the confirmed-add claim window for
+	// non-Surge tasks: from the recorded add anchor until the first
+	// authoritative engine observation. It is a compat marker, not an
+	// activation lease — same 15s value, deliberately a separate knob.
+	aria2AddPlaceholderWindow = 15 * time.Second
 
 	// Probe-Up / CeilingHit / FloorHit tunables
 	gainRatioThreshold       = 0.50 // GainRatio >= 0.5 → up-probe success; < 0.5 → ceiling hit rebound

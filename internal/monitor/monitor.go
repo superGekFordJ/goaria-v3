@@ -528,6 +528,7 @@ func (m *Monitor) Start() {
 			maxConn = v
 		}
 		m.convergence = smartthread.NewConvergenceTicker(he, adapter, m.telemetry, adapter, adapter, convIntervalSec, maxConn)
+		m.convergence.SetOccupancyProvider(adapter)
 		m.convergence.Start()
 		// CDN throttle detector: only for HybridEngine (needs Surge control).
 		if se, ok := he.SurgeEngineRef(); ok && se != nil {
@@ -982,29 +983,72 @@ func NewMonitorWithTelemetryForTest(tc *TelemetryCache) *Monitor {
 }
 
 // trackerAdapter wraps TaskTracker to satisfy smartthread.TrackerProvider,
-// PeakEfficiencyRecorder, and RateLimitChecker interfaces.
+// OccupancyProvider, PeakEfficiencyRecorder, and RateLimitChecker interfaces.
 type trackerAdapter struct {
 	*TaskTracker
 	engine *rpc.HybridEngine
 }
 
-func (a *trackerAdapter) GetActiveTrackedTasks() []smartthread.TrackedTaskInfo {
-	tasks := a.TaskTracker.GetActiveTrackedTasks()
-	result := make([]smartthread.TrackedTaskInfo, len(tasks))
-	for i, t := range tasks {
-		result[i] = smartthread.TrackedTaskInfo{
-			GID:             t.GID,
-			Status:          t.Status,
-			Scope:           t.Scope,
-			Domain:          t.Domain,
-			EnvKey:          t.CurrentEnvKey,
-			IsKeepAlive:     t.IsKeepAlive,
-			CompletedLength: t.CompletedLength,
-			MinChunk:        t.MinChunk,
-			TotalLength:     t.TotalLength,
+// activeCacheSpeedByGID snapshots measured cache speeds keyed by gid. Reads
+// only the cache's own lock; safe on the c.mu→adapter path because the
+// cache never calls back into Convergence.
+func activeCacheSpeedByGID() map[string]int64 {
+	speeds := make(map[string]int64)
+	if Cache == nil {
+		return speeds
+	}
+	for _, t := range Cache.GetActive() {
+		speeds[t.GID] = parseInt64(t.DownloadSpeed)
+	}
+	return speeds
+}
+
+// trackedTaskInfos maps tracker copies to smartthread occupancy inputs. It
+// takes no locks itself and never touches Convergence state — Surge raw/ready
+// is intentionally absent here; Convergence overlays it from its own states
+// under c.mu, and the external collector overlays it after releasing locks.
+func trackedTaskInfos(tasks []TrackedTask, speedByGID map[string]int64) []smartthread.TrackedTaskInfo {
+	result := make([]smartthread.TrackedTaskInfo, 0, len(tasks))
+	for _, t := range tasks {
+		speed, measured := speedByGID[t.GID]
+		compat := t.compatClaim
+		if compat == smartthread.CompatNone && t.resumeOccupancyHold {
+			compat = smartthread.CompatSurgeResume
 		}
+		result = append(result, smartthread.TrackedTaskInfo{
+			GID:               t.GID,
+			Status:            t.Status,
+			Scope:             t.Scope,
+			Domain:            t.Domain,
+			EnvKey:            t.CurrentEnvKey,
+			IsKeepAlive:       t.IsKeepAlive,
+			CompletedLength:   t.CompletedLength,
+			MinChunk:          t.MinChunk,
+			TotalLength:       t.TotalLength,
+			ThreadCount:       t.ThreadCount,
+			TargetBandwidth:   t.TargetBandwidth,
+			AllocatedAt:       t.AllocatedAt,
+			TelemetryBps:      speed,
+			TelemetryValid:    measured,
+			ActivatedAt:       t.ActivatedAt,
+			FirstProgressAt:   t.FirstProgressAt,
+			CompatClaim:       compat,
+			AddAnchorAt:       t.addAnchorAt,
+			AdmissionReserved: t.admittedNotStarted,
+		})
 	}
 	return result
+}
+
+func (a *trackerAdapter) GetActiveTrackedTasks() []smartthread.TrackedTaskInfo {
+	return trackedTaskInfos(a.TaskTracker.GetActiveTrackedTasks(), activeCacheSpeedByGID())
+}
+
+// GetOccupancyTrackedTasks implements smartthread.OccupancyProvider. Lock-free
+// with respect to c.mu: tracker copies are immutable scalars, the cache read
+// holds only the cache lock, and no Convergence method is invoked.
+func (a *trackerAdapter) GetOccupancyTrackedTasks() []smartthread.TrackedTaskInfo {
+	return trackedTaskInfos(a.TaskTracker.GetOccupancyTrackedTasks(), activeCacheSpeedByGID())
 }
 
 // GetRateLimit implements RateLimitChecker by delegating to the HybridEngine.

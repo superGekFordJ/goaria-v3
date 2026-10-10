@@ -34,7 +34,7 @@ func accumulatePending(approved map[string]int, ps pendingScale) {
 	}
 	approved[approvedScopeKey(ps.scope, ps.envKey)] += ps.delta
 	if ps.domain != "" {
-		approved[approvedDomainKey(ps.scope, ps.domain, ps.envKey)] += ps.delta
+		approved[approvedDomainKey(ps.scope, ps.domain)] += ps.delta
 		approved[approvedNMaxKey(ps.scope, ps.domain)] += ps.delta
 	}
 }
@@ -79,7 +79,7 @@ func TestConvergence_ProbeUp_BlockedByDomainNMaxMultiTask(t *testing.T) {
 	}
 	approved := make(map[string]int)
 
-	ps1, ok1 := ct.processTask(tracker.tasks[0], false, approved, dStats, nil)
+	ps1, ok1 := ct.processTask(tracker.tasks[0], false, approved, dStats, nil, time.Now())
 	if ok1 && ps1.delta > 0 {
 		t.Fatalf("expected first peer blocked by domain N_max (12+1>12), got ok=%v delta=%d", ok1, ps1.delta)
 	}
@@ -90,13 +90,13 @@ func TestConvergence_ProbeUp_BlockedByDomainNMaxMultiTask(t *testing.T) {
 	dStats[key].activeWorkers = 11
 	approved = make(map[string]int)
 
-	psOK, okOK := ct.processTask(tracker.tasks[0], false, approved, dStats, nil)
+	psOK, okOK := ct.processTask(tracker.tasks[0], false, approved, dStats, nil, time.Now())
 	if !okOK || psOK.delta != 1 {
 		t.Fatalf("expected Probe-Up when domainWorkers=11 < nMax=12, got ok=%v delta=%d", okOK, psOK.delta)
 	}
 	accumulatePending(approved, psOK)
 
-	ps2, ok2 := ct.processTask(tracker.tasks[1], false, approved, dStats, nil)
+	ps2, ok2 := ct.processTask(tracker.tasks[1], false, approved, dStats, nil, time.Now())
 	if ok2 && ps2.delta > 0 {
 		t.Fatalf("expected second peer blocked by domain approvedDelta, got delta=%d", ps2.delta)
 	}
@@ -115,7 +115,7 @@ func TestConvergence_ProbeUp_DomainBudgetExhaustedScopeHealthy(t *testing.T) {
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope, envKey string) int64 { return 0 }
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 { return 0 }
 
 	gid := "sg_domain_bw_gate"
 	tracker := &mockTracker{
@@ -133,9 +133,9 @@ func TestConvergence_ProbeUp_DomainBudgetExhaustedScopeHealthy(t *testing.T) {
 
 	// Domain occupancy near peak (5MB); vThreadAvg ≈ 5MB → no room for +1.
 	domainMacro := map[string]int64{
-		approvedDomainKey("wan", "example.com", "testenv"): 5 * 1024 * 1024,
+		limitKey("wan", "example.com"): 5 * 1024 * 1024,
 	}
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, domainMacro)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, domainMacro, time.Now())
 	if ok && ps.delta > 0 {
 		t.Fatalf("expected Probe-Up denied by domain budget, got delta=%d", ps.delta)
 	}
@@ -152,7 +152,7 @@ func TestConvergence_ProbeUp_ScopeExhaustedDomainHealthy(t *testing.T) {
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
 	// Scope fully occupied; domain occupancy 0 so domain dim would allow.
-	activeBandwidthProvider = func(scope, envKey string) int64 { return 10 * 1024 * 1024 }
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 { return 10 * 1024 * 1024 }
 
 	gid := "sg_scope_bw_gate"
 	tracker := &mockTracker{
@@ -168,7 +168,7 @@ func TestConvergence_ProbeUp_ScopeExhaustedDomainHealthy(t *testing.T) {
 	ct.limits.Clear(limitKey("wan", "example.com"))
 	setupDomainGateProbeReady(ct, gid, 1_310_720, 4)
 
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil, time.Now())
 	if ok && ps.delta > 0 {
 		t.Fatalf("expected Probe-Up denied by exhausted scope, got delta=%d", ps.delta)
 	}
@@ -185,7 +185,7 @@ func TestConvergence_ProbeUp_ColdDomainPeakAllows(t *testing.T) {
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope, envKey string) int64 { return 0 }
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 { return 0 }
 
 	gid := "sg_cold_domain"
 	tracker := &mockTracker{
@@ -201,7 +201,7 @@ func TestConvergence_ProbeUp_ColdDomainPeakAllows(t *testing.T) {
 	ct.limits.Clear(limitKey("wan", "new-domain.com"))
 	setupDomainGateProbeReady(ct, gid, 1_310_720, 4)
 
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil, time.Now())
 	if !ok || ps.delta != 1 {
 		t.Fatalf("expected Probe-Up allowed on cold domain, got ok=%v delta=%d", ok, ps.delta)
 	}
@@ -218,7 +218,7 @@ func TestConvergence_ApprovedDelta_SameTickDomainOversell(t *testing.T) {
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope, envKey string) int64 { return 0 }
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 { return 0 }
 
 	gid1 := "sg_dom_oversell_1"
 	gid2 := "sg_dom_oversell_2"
@@ -246,13 +246,13 @@ func TestConvergence_ApprovedDelta_SameTickDomainOversell(t *testing.T) {
 	approved := make(map[string]int)
 	domainMacro := map[string]int64{} // occupancy 0; first +1 fills domain budget
 
-	ps1, ok1 := ct.processTask(tracker.tasks[0], false, approved, nil, domainMacro)
+	ps1, ok1 := ct.processTask(tracker.tasks[0], false, approved, nil, domainMacro, time.Now())
 	if !ok1 || ps1.delta != 1 {
 		t.Fatalf("expected first Probe-Up +1, got ok=%v delta=%d", ok1, ps1.delta)
 	}
 	accumulatePending(approved, ps1)
 
-	ps2, ok2 := ct.processTask(tracker.tasks[1], false, approved, nil, domainMacro)
+	ps2, ok2 := ct.processTask(tracker.tasks[1], false, approved, nil, domainMacro, time.Now())
 	if ok2 && ps2.delta > 0 {
 		t.Fatalf("expected second blocked by domain approvedDelta, got delta=%d", ps2.delta)
 	}
@@ -297,7 +297,7 @@ func TestConvergenceNMaxClamp_KneeCrossedRebound_DomainHeadroom0(t *testing.T) {
 
 	// Domain already at nMax via peers; this task alone has only 3 workers.
 	dStats := map[string]*domainStats{key: {activeWorkers: 10, tasksInDomain: 3}}
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil, dStats, nil)
+	ps, ok := ct.processTask(tracker.tasks[0], false, nil, dStats, nil, time.Now())
 	if ok && ps.delta > 0 {
 		t.Fatalf("expected rebound=0 from domain headroom, got delta=%d", ps.delta)
 	}
@@ -321,7 +321,7 @@ func TestConvergence_BandwidthRelease_RespectsDomainApprovedDelta(t *testing.T) 
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope, envKey string) int64 { return 0 }
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 { return 0 }
 
 	domain := "example.com"
 	key := limitKey("wan", domain)
@@ -353,9 +353,9 @@ func TestConvergence_BandwidthRelease_RespectsDomainApprovedDelta(t *testing.T) 
 
 	dStats := map[string]*domainStats{key: {activeWorkers: 5}}
 	approved := map[string]int{
-		approvedNMaxKey("wan", domain):              1, // prior Probe-Up filled last slot (env-blind)
-		approvedDomainKey("wan", domain, "testenv"): 1,
-		approvedScopeKey("wan", "testenv"):          1,
+		approvedNMaxKey("wan", domain):     1, // prior Probe-Up filled last slot (env-blind)
+		approvedDomainKey("wan", domain):   1,
+		approvedScopeKey("wan", "testenv"): 1,
 	}
 
 	releases := ct.bandwidthRelease(
@@ -364,8 +364,8 @@ func TestConvergence_BandwidthRelease_RespectsDomainApprovedDelta(t *testing.T) 
 		map[string]bool{},
 		approved,
 		dStats,
-		nil,
-	)
+		nil, time.Now())
+
 	if len(releases) != 0 {
 		t.Fatalf("expected release blocked by domain approvedDelta (5+1+1>6), got %#v", releases)
 	}
@@ -377,8 +377,8 @@ func TestConvergence_BandwidthRelease_RespectsDomainApprovedDelta(t *testing.T) 
 		map[string]bool{},
 		nil,
 		dStats,
-		nil,
-	)
+		nil, time.Now())
+
 	if len(releasesOK) != 1 {
 		t.Fatalf("control: expected 1 release without approvedDelta, got %#v", releasesOK)
 	}
@@ -395,7 +395,7 @@ func TestConvergence_ProbeUp_CrossEnvNMaxPendingShared(t *testing.T) {
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope, envKey string) int64 { return 0 }
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 { return 0 }
 
 	domain := "example.com"
 	key := limitKey("wan", domain)
@@ -426,7 +426,7 @@ func TestConvergence_ProbeUp_CrossEnvNMaxPendingShared(t *testing.T) {
 	dStats := map[string]*domainStats{key: {activeWorkers: 10, tasksInDomain: 2}}
 	approved := make(map[string]int)
 
-	psA, okA := ct.processTask(tracker.tasks[0], false, approved, dStats, nil)
+	psA, okA := ct.processTask(tracker.tasks[0], false, approved, dStats, nil, time.Now())
 	if !okA || psA.delta != 1 {
 		t.Fatalf("expected envA Probe-Up +1, got ok=%v delta=%d", okA, psA.delta)
 	}
@@ -435,15 +435,16 @@ func TestConvergence_ProbeUp_CrossEnvNMaxPendingShared(t *testing.T) {
 		t.Fatalf("expected env-blind nmax pending=1, got %d", approved[approvedNMaxKey("wan", domain)])
 	}
 
-	psB, okB := ct.processTask(tracker.tasks[1], false, approved, dStats, nil)
+	psB, okB := ct.processTask(tracker.tasks[1], false, approved, dStats, nil, time.Now())
 	if okB && psB.delta > 0 {
 		t.Fatalf("expected envB blocked by shared N_max pending, got delta=%d", psB.delta)
 	}
 }
 
-// TestConvergence_BandwidthRelease_DomainCompDoesNotFalseAllow verifies
-// disappearedSpeed compensates scope only: domainMacroBps already excludes
-// the disappeared task, so domain must still deny when occupancy is at peak.
+// TestConvergence_BandwidthRelease_DomainCompDoesNotFalseAllow verifies the
+// domain dim denies on its own occupancy facts: domainMacroBps already
+// excludes the disappeared task, so domain must still deny when occupancy is
+// at peak even though the scope count is momentarily stale.
 func TestConvergence_BandwidthRelease_DomainCompDoesNotFalseAllow(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
@@ -453,9 +454,9 @@ func TestConvergence_BandwidthRelease_DomainCompDoesNotFalseAllow(t *testing.T) 
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	// Scope still counts disappeared 10MB; without compensation scope would deny.
-	// With scope-only compensation, scope allows — domain must still deny.
-	activeBandwidthProvider = func(scope, envKey string) int64 { return 10 * 1024 * 1024 }
+	// Scope still counts the departed 10MB, but scope peak (50MB) leaves
+	// headroom, so the allow/deny decision rests solely on the domain dim.
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 { return 10 * 1024 * 1024 }
 
 	domain := "example.com"
 	beneficiary := "sg_comp_ben"
@@ -486,9 +487,9 @@ func TestConvergence_BandwidthRelease_DomainCompDoesNotFalseAllow(t *testing.T) 
 	}
 	ct.mu.Unlock()
 
-	// Living peer already occupies full domain peak; disappeared is NOT in occ.
+	// Living peer already occupies full domain peak; departed gid is NOT in occ.
 	domainMacro := map[string]int64{
-		approvedDomainKey("wan", domain, "testenv"): 10 * 1024 * 1024,
+		limitKey("wan", domain): 10 * 1024 * 1024,
 	}
 
 	releases := ct.bandwidthRelease(
@@ -497,8 +498,8 @@ func TestConvergence_BandwidthRelease_DomainCompDoesNotFalseAllow(t *testing.T) 
 		map[string]bool{},
 		nil,
 		nil,
-		domainMacro,
-	)
+		domainMacro, time.Now())
+
 	if len(releases) != 0 {
 		t.Fatalf("domain compensation must not false-allow when occ already excludes donor, got %#v", releases)
 	}

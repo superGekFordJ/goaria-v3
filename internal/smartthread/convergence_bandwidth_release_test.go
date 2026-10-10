@@ -54,8 +54,8 @@ func TestConvergence_BandwidthRelease_SkipsCeilingHit(t *testing.T) {
 		map[string]bool{},
 		nil,
 		nil,
-		nil,
-	)
+		nil, time.Now())
+
 	for _, r := range releases {
 		if r.gid == gid {
 			t.Fatal("expected bandwidthRelease to skip phaseCeilingHit task")
@@ -105,8 +105,8 @@ func TestConvergence_BandwidthRelease_SkipsBlackout(t *testing.T) {
 		map[string]bool{},
 		nil,
 		nil,
-		nil,
-	)
+		nil, time.Now())
+
 	for _, r := range releases {
 		if r.gid == gid {
 			t.Fatal("expected bandwidthRelease to skip blackout task")
@@ -156,8 +156,8 @@ func TestConvergence_BandwidthRelease_NonKeepAliveTaskBenefits(t *testing.T) {
 		map[string]bool{},
 		approvedDelta,
 		nil,
-		nil,
-	)
+		nil, time.Now())
+
 	found := false
 	for _, r := range releases {
 		if r.gid == beneficiaryGid {
@@ -170,8 +170,8 @@ func TestConvergence_BandwidthRelease_NonKeepAliveTaskBenefits(t *testing.T) {
 	if approvedDelta[approvedScopeKey("wan", "testenv")] != 1 {
 		t.Fatalf("expected approvedDelta[scope]=1, got %d", approvedDelta[approvedScopeKey("wan", "testenv")])
 	}
-	if approvedDelta[approvedDomainKey("wan", "example.com", "testenv")] != 1 {
-		t.Fatalf("expected approvedDelta[domain]=1, got %d", approvedDelta[approvedDomainKey("wan", "example.com", "testenv")])
+	if approvedDelta[approvedDomainKey("wan", "example.com")] != 1 {
+		t.Fatalf("expected approvedDelta[domain]=1, got %d", approvedDelta[approvedDomainKey("wan", "example.com")])
 	}
 	if approvedDelta[approvedNMaxKey("wan", "example.com")] != 1 {
 		t.Fatalf("expected approvedDelta[nmax]=1, got %d", approvedDelta[approvedNMaxKey("wan", "example.com")])
@@ -196,7 +196,7 @@ func TestConvergence_ApprovedDelta_PreventsSameTickOversell(t *testing.T) {
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope, envKey string) int64 { return 0 }
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 { return 0 }
 
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
@@ -238,14 +238,14 @@ func TestConvergence_ApprovedDelta_PreventsSameTickOversell(t *testing.T) {
 		setPrevSampleAgoState(s, 5*time.Second)
 	}
 	ct.mu.Unlock()
-	ps1, ok1 := ct.processTask(tracker.tasks[0], false, approvedDelta, nil, nil)
+	ps1, ok1 := ct.processTask(tracker.tasks[0], false, approvedDelta, nil, nil, time.Now())
 	if !ok1 || ps1.delta != 1 {
 		t.Fatalf("expected first task probe-up +1, got ok=%v delta=%d", ok1, ps1.delta)
 	}
 	if ps1.delta > 0 {
 		approvedDelta[approvedScopeKey(ps1.scope, ps1.envKey)] += ps1.delta
 		if ps1.domain != "" {
-			approvedDelta[approvedDomainKey(ps1.scope, ps1.domain, ps1.envKey)] += ps1.delta
+			approvedDelta[approvedDomainKey(ps1.scope, ps1.domain)] += ps1.delta
 			approvedDelta[approvedNMaxKey(ps1.scope, ps1.domain)] += ps1.delta
 		}
 	}
@@ -258,7 +258,7 @@ func TestConvergence_ApprovedDelta_PreventsSameTickOversell(t *testing.T) {
 		setPrevSampleAgoState(s, 5*time.Second)
 	}
 	ct.mu.Unlock()
-	ps2, ok2 := ct.processTask(tracker.tasks[1], false, approvedDelta, nil, nil)
+	ps2, ok2 := ct.processTask(tracker.tasks[1], false, approvedDelta, nil, nil, time.Now())
 	if ok2 && ps2.delta > 0 {
 		t.Fatalf("expected second task blocked by approvedDelta, got delta=%d", ps2.delta)
 	}
@@ -282,7 +282,7 @@ func TestConvergence_BandwidthRelease_BlockedByVAvailable(t *testing.T) {
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope, envKey string) int64 { return 10 * 1024 * 1024 }
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 { return 10 * 1024 * 1024 }
 
 	beneficiaryGid := "sg_bwrelease_vavail"
 	tracker := &mockTracker{
@@ -318,8 +318,8 @@ func TestConvergence_BandwidthRelease_BlockedByVAvailable(t *testing.T) {
 		map[string]bool{},
 		nil,
 		nil,
-		nil,
-	)
+		nil, time.Now())
+
 	for _, r := range releases {
 		if r.gid == beneficiaryGid {
 			t.Fatal("expected bandwidthRelease to skip task when V_available insufficient")
@@ -372,8 +372,8 @@ func TestConvergence_BandwidthRelease_DomainScopeMatching(t *testing.T) {
 		map[string]bool{},
 		nil,
 		nil,
-		nil,
-	)
+		nil, time.Now())
+
 	if len(releases) != 1 {
 		t.Fatalf("expected 1 release (same-domain only), got %d: %+v", len(releases), releases)
 	}
@@ -432,8 +432,8 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 			map[string]bool{},
 			nil,
 			nil,
-			nil,
-		)
+			nil, time.Now())
+
 		if len(releases) != 0 {
 			t.Fatalf("SPEC-243: empty-Domain disappearance must skip release, got %d: %+v", len(releases), releases)
 		}
@@ -475,8 +475,8 @@ func TestConvergence_BandwidthRelease_EmptyDomainFallbackToScopeOnly(t *testing.
 			map[string]bool{},
 			nil,
 			nil,
-			nil,
-		)
+			nil, time.Now())
+
 		if len(releases) != 0 {
 			t.Fatalf("SPEC-243: empty-Domain disappearance must skip release, got %d: %+v", len(releases), releases)
 		}
@@ -531,8 +531,8 @@ func TestConvergence_BandwidthRelease_SingleBeneficiaryElection(t *testing.T) {
 		map[string]bool{},
 		nil,
 		nil,
-		nil,
-	)
+		nil, time.Now())
+
 	if len(releases) != 1 {
 		t.Fatalf("expected exactly 1 release (single beneficiary), got %d: %+v", len(releases), releases)
 	}
@@ -593,7 +593,7 @@ func TestConvergence_BandwidthRelease_FairRotation(t *testing.T) {
 	ct.rotationCounter = 0
 	ct.mu.Unlock()
 
-	releases1 := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil)
+	releases1 := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil, time.Now())
 	if len(releases1) != 1 {
 		t.Fatalf("expected 1 release on first call, got %d", len(releases1))
 	}
@@ -606,7 +606,7 @@ func TestConvergence_BandwidthRelease_FairRotation(t *testing.T) {
 	}
 	ct.mu.Unlock()
 
-	releases2 := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil)
+	releases2 := ct.bandwidthRelease(tracker.tasks, activeGids, map[string]bool{}, nil, nil, nil, time.Now())
 	if len(releases2) != 1 {
 		t.Fatalf("expected 1 release on second call, got %d", len(releases2))
 	}
@@ -642,7 +642,7 @@ func TestConvergence_BandwidthRelease_MacroProviderNoDeadlock(t *testing.T) {
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
 	var providerCalls atomic.Int32
-	activeBandwidthProvider = func(scope, envKey string) int64 {
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 {
 		providerCalls.Add(1)
 		// Concurrent RemoveTask while bandwidthRelease is unlocked for the
 		// provider — must not race a live range over prevActiveGids.
@@ -676,8 +676,8 @@ func TestConvergence_BandwidthRelease_MacroProviderNoDeadlock(t *testing.T) {
 			map[string]bool{},
 			nil,
 			nil,
-			nil,
-		)
+			nil, time.Now())
+
 	}()
 	select {
 	case <-done:
@@ -721,7 +721,7 @@ func TestConvergence_BandwidthRelease_SnapshotSurvivesConcurrentRemove(t *testin
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
 	var removes atomic.Int32
-	activeBandwidthProvider = func(scope, envKey string) int64 {
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 {
 		// Delete both disappearance keys while unlocked — live range would fatal.
 		ct.RemoveTask(done1)
 		ct.RemoveTask(done2)
@@ -754,8 +754,8 @@ func TestConvergence_BandwidthRelease_SnapshotSurvivesConcurrentRemove(t *testin
 			map[string]bool{},
 			nil,
 			nil,
-			nil,
-		)
+			nil, time.Now())
+
 	}()
 	select {
 	case <-done:
@@ -771,18 +771,19 @@ func TestConvergence_BandwidthRelease_SnapshotSurvivesConcurrentRemove(t *testin
 	}
 }
 
-func TestConvergence_BandwidthRelease_DelayCompensation(t *testing.T) {
+func TestConvergence_BandwidthRelease_StaleProviderDefers(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	// globalPeak = 10 MB/s, vThreadAvg = 10 MB/s.
-	// activeBw = 10 MB/s (cache lag: disappeared task still counted).
-	// disappearedSpeed = 10 MB/s → compensatedBw = 0 → headroom = 10 MB >= 10 MB → pass.
+	// Unified occupancy no longer subtracts departed-gid speed from the scope
+	// count: if the provider still counts it (occupancy lag), scope headroom
+	// is 0 → deny conservatively and let the next tick converge.
 	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope, envKey string) int64 { return 10 * 1024 * 1024 }
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 { return 10 * 1024 * 1024 }
 
 	beneficiaryGid := "sg_delay_comp_beneficiary"
 	tracker := &mockTracker{
@@ -821,16 +822,12 @@ func TestConvergence_BandwidthRelease_DelayCompensation(t *testing.T) {
 		map[string]bool{},
 		nil,
 		nil,
-		nil,
-	)
-	found := false
+		nil, time.Now())
+
 	for _, r := range releases {
 		if r.gid == beneficiaryGid {
-			found = true
+			t.Fatal("expected conservative deny while scope occupancy still counts the departed gid")
 		}
-	}
-	if !found {
-		t.Fatal("expected delay compensation to allow ScaleUp despite cache lag")
 	}
 }
 
@@ -844,7 +841,7 @@ func TestConvergence_BandwidthRelease_NoCompensationWhenSpeedZero(t *testing.T) 
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope, envKey string) int64 { return 10 * 1024 * 1024 }
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 { return 10 * 1024 * 1024 }
 
 	beneficiaryGid := "sg_no_comp_beneficiary"
 	tracker := &mockTracker{
@@ -881,8 +878,8 @@ func TestConvergence_BandwidthRelease_NoCompensationWhenSpeedZero(t *testing.T) 
 		map[string]bool{},
 		nil,
 		nil,
-		nil,
-	)
+		nil, time.Now())
+
 	for _, r := range releases {
 		if r.gid == beneficiaryGid {
 			t.Fatal("expected no ScaleUp when disappearedSpeed=0 and V_available insufficient")
@@ -923,8 +920,8 @@ func TestConvergence_BandwidthRelease_AtMaxSkipsApprovedDelta(t *testing.T) {
 		map[string]bool{},
 		approved,
 		nil,
-		nil,
-	)
+		nil, time.Now())
+
 	if len(releases) != 0 {
 		t.Fatalf("at max must not release, got %+v", releases)
 	}
@@ -939,8 +936,8 @@ func TestConvergence_BandwidthRelease_AtMaxSkipsApprovedDelta(t *testing.T) {
 		map[string]bool{},
 		approved,
 		nil,
-		nil,
-	)
+		nil, time.Now())
+
 	if len(releases) != 1 || releases[0].delta != 1 {
 		t.Fatalf("max-1 should +1, got %+v", releases)
 	}

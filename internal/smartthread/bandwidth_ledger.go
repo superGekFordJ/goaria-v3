@@ -1,18 +1,19 @@
 package smartthread
 
 import (
+	"math"
 	"strings"
 	"sync"
 	"time"
 )
 
-// ActiveBandwidthFunc returns the current total download speed for a given scope+envKey.
-// This is injected from outside (monitor.MacroBandwidthByScope) to avoid an
+// ActiveBandwidthFunc returns the unified occupancy sum for a scope+envKey
+// bucket evaluated at the given instant. Injected from monitor to avoid an
 // import cycle between smartthread and monitor.
-type ActiveBandwidthFunc func(scope, envKey string) int64
+type ActiveBandwidthFunc func(scope, envKey string, now time.Time) int64
 
 // noActiveBandwidth is the default when no injector is set.
-func noActiveBandwidth(scope, envKey string) int64 { return 0 }
+func noActiveBandwidth(scope, envKey string, now time.Time) int64 { return 0 }
 
 var (
 	// activeBandwidthProvider is read by the convergence tick without a lock.
@@ -83,48 +84,173 @@ func (l *BandwidthLedger) WithAlloc(fn func()) {
 	fn()
 }
 
-// NewBandwidthLedger creates a ledger seeded with hybrid per-task occupancy.
-// Each task contributes independently (no once-per-key MacroBandwidth lump).
+// NewBandwidthLedger creates a ledger seeded with the unified per-task
+// occupancy evaluated at a single captured instant.
 func NewBandwidthLedger(activeTasks []TrackedTaskInfo) *BandwidthLedger {
+	return NewBandwidthLedgerAt(activeTasks, time.Now())
+}
+
+// NewBandwidthLedgerAt seeds the ledger evaluating every task's occupancy at
+// the same instant. Each task contributes independently (no once-per-key
+// MacroBandwidth lump). Scope sums stay env-exact; domain sums stay
+// environment-blind under scope|domain.
+func NewBandwidthLedgerAt(activeTasks []TrackedTaskInfo, now time.Time) *BandwidthLedger {
 	l := &BandwidthLedger{
 		reserved:         make(map[string]int64),
 		reservedByDomain: make(map[string]int64),
 		reservedWorkers:  make(map[string]int),
 	}
-	now := time.Now()
 	for _, t := range activeTasks {
 		if t.Scope == "" {
 			continue
 		}
-		contrib := hybridSeedContrib(t, now)
+		contrib := TaskOccupancy(t, now)
 		if contrib <= 0 {
 			continue
 		}
 		key := t.Scope + t.EnvKey
-		l.reserved[key] += contrib
+		l.reserved[key] = saturatingAdd64(l.reserved[key], contrib)
 		if t.Domain != "" {
-			l.reservedByDomain[limitKey(t.Scope, t.Domain)] += contrib
+			lk := limitKey(t.Scope, t.Domain)
+			l.reservedByDomain[lk] = saturatingAdd64(l.reservedByDomain[lk], contrib)
 		}
 	}
 	return l
 }
 
-// hybridSeedContrib returns the occupancy contribution for one task.
-// Surge: !MacroReady → max(Target, telem); MacroReady → telem.
-// Aria2: within aria2ColdSeedWindow → max(Target, telem); else telem.
-func hybridSeedContrib(t TrackedTaskInfo, now time.Time) int64 {
-	telem := max(t.TelemetryBps, 0)
-	target := max(t.TargetBandwidth, 0)
-	if strings.HasPrefix(t.GID, "sg_") {
-		if !t.MacroReady {
-			return max64(target, telem)
+// saturatingAdd64 adds non-negative occupancy values without overflow into
+// the negative range.
+func saturatingAdd64(a, b int64) int64 {
+	if b < 0 {
+		return a
+	}
+	sum := a + b
+	if sum < a {
+		return math.MaxInt64
+	}
+	return sum
+}
+
+// taskOccupancyTelemetry selects the single measured-throughput input for a
+// task. Surge tasks with a latched macroReady use the raw engine sample —
+// including a measured zero, which never falls back to cache. All other
+// tasks use the cache speed when it is a valid measurement. Missing or
+// invalid measurements contribute zero; they are distinct from a measured 0
+// only through the caller's validity flag, never through bps>0 inference.
+func taskOccupancyTelemetry(t TrackedTaskInfo) int64 {
+	if strings.HasPrefix(t.GID, "sg_") && t.MacroReady {
+		return max(t.RawBps, 0)
+	}
+	if t.TelemetryValid {
+		return max(t.TelemetryBps, 0)
+	}
+	return 0
+}
+
+// claimContribution is the compat/lease formula shared by every claim source:
+// max(max(Target, 0), telem). It never stacks Target on top of telem.
+func claimContribution(t TrackedTaskInfo, telem int64) int64 {
+	return max(max(t.TargetBandwidth, 0), telem)
+}
+
+// activationLeaseActive reports whether the real Target floor still holds at
+// now: up to activationNoProgressTTL without growth, or progressLeaseTTL
+// past a first growth recorded inside the initial window. Invalid instants
+// (now before activation, first-progress before activation or in the future)
+// never grant a floor; a first growth at/after the initial TTL does not
+// revive the lease.
+func activationLeaseActive(activatedAt, firstProgressAt, now time.Time) bool {
+	if activatedAt.IsZero() || now.Before(activatedAt) {
+		return false
+	}
+	if firstProgressAt.IsZero() || firstProgressAt.Before(activatedAt) || firstProgressAt.After(now) {
+		return now.Sub(activatedAt) < activationNoProgressTTL
+	}
+	if firstProgressAt.Sub(activatedAt) >= activationNoProgressTTL {
+		return false
+	}
+	return now.Sub(firstProgressAt) < progressLeaseTTL
+}
+
+// addPlaceholderLive reports whether the bounded Aria2 confirmed-add claim is
+// still inside its window. A zero anchor is not a valid placeholder.
+func addPlaceholderLive(anchor, now time.Time) bool {
+	if anchor.IsZero() || now.Before(anchor) {
+		return false
+	}
+	return now.Sub(anchor) < aria2AddPlaceholderWindow
+}
+
+// TaskOccupancy is the single per-task occupancy formula shared by ledger
+// seeding, the scope provider, domain aggregation, release/settle, and
+// Calculate inputs. Order of evaluation: eligibility/claim source first,
+// then one telemetry pick, then exactly one contribution.
+//
+// Real active tasks contribute telem, upgraded to the claim formula while a
+// lease/placeholder/compat claim is live. Ordinary waiting/paused and
+// terminal tasks contribute zero. Explicit AdmissionReserved inputs
+// contribute their reservation regardless of status (scalar expression
+// only — no production writer or gate exists yet).
+func TaskOccupancy(t TrackedTaskInfo, now time.Time) int64 {
+	if t.GID == "" {
+		return 0
+	}
+	if t.Status == "complete" || t.Status == "error" {
+		return 0
+	}
+	telem := taskOccupancyTelemetry(t)
+	if t.AdmissionReserved {
+		// Explicit admitted-not-started: the reservation claims regardless
+		// of the (non-terminal) list status — a waiting/admitted row counts
+		// without entering processTask. Scalar expression only; TTL expiry
+		// drops the contribution, never the dispatch identity.
+		return claimContribution(t, telem)
+	}
+	surge := strings.HasPrefix(t.GID, "sg_")
+	switch t.Status {
+	case "waiting":
+		// Surge keeps the retained queued claim (never lease-expired);
+		// authoritative Aria2 waiting is immediately zero even when a
+		// synthetic-active placeholder or cache speed still exists.
+		if surge && t.TargetBandwidth > 0 {
+			return claimContribution(t, telem)
+		}
+		return 0
+	case "paused":
+		// Only the resume-hold compat lineage claims occupancy while paused;
+		// an add-time claim that merely transitioned to paused, ordinary or
+		// long-paused tasks, and non-Surge paused tasks contribute zero.
+		if surge && t.CompatClaim == CompatSurgeResume {
+			return claimContribution(t, telem)
+		}
+		return 0
+	case "active":
+		if activationLeaseActive(t.ActivatedAt, t.FirstProgressAt, now) {
+			return claimContribution(t, telem)
+		}
+		if surge && (t.CompatClaim == CompatSurgeClaim || t.CompatClaim == CompatSurgeResume) {
+			return claimContribution(t, telem)
+		}
+		if !surge && t.CompatClaim == CompatAria2Add && addPlaceholderLive(t.AddAnchorAt, now) {
+			return claimContribution(t, telem)
 		}
 		return telem
+	case "":
+		// Pre-status placeholder: the Target itself is the Surge claim
+		// evidence; Aria2 needs the bounded confirmed-add marker.
+		if t.TargetBandwidth <= 0 {
+			return 0
+		}
+		if surge {
+			return claimContribution(t, telem)
+		}
+		if t.CompatClaim == CompatAria2Add && addPlaceholderLive(t.AddAnchorAt, now) {
+			return claimContribution(t, telem)
+		}
+		return 0
+	default:
+		return 0
 	}
-	if !t.AllocatedAt.IsZero() && now.Sub(t.AllocatedAt) < aria2ColdSeedWindow {
-		return max64(target, telem)
-	}
-	return telem
 }
 
 // Reserved returns the total reserved bandwidth for the given scope+envKey

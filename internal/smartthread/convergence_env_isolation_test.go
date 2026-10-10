@@ -11,25 +11,27 @@ import (
 
 // TestConvergence_CrossEnvIsolation_ApprovedDelta verifies that approvedDelta
 // keys on delimited scope|envKey, so two tasks in the same scope but different
-// envKeys accumulate independently — a ScaleUp in envA does not consume envB's headroom.
+// envKeys accumulate independently — a ScaleUp in envA does not consume envB's
+// scope headroom. The tasks use different domains because domain pending is
+// intentionally env-blind on the same scope|domain.
 func TestConvergence_CrossEnvIsolation_ApprovedDelta(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 
 	// globalPeak = 10 MB/s per env. vThreadAvg = 10 MB/s (1 thread).
 	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "envA")
-	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "envB")
+	speedstats.AddRecordV2(10*1024*1024, 1, 10*1024*1024, false, 50, "other.com", "wan", "envB")
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope, envKey string) int64 { return 0 }
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 { return 0 }
 
 	gidA := "sg_env_a"
 	gidB := "sg_env_b"
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: gidA, Status: "active", Scope: "wan", EnvKey: "envA", Domain: "example.com", IsKeepAlive: false, CompletedLength: 60 * 1024 * 1024},
-			{GID: gidB, Status: "active", Scope: "wan", EnvKey: "envB", Domain: "example.com", IsKeepAlive: false, CompletedLength: 60 * 1024 * 1024},
+			{GID: gidB, Status: "active", Scope: "wan", EnvKey: "envB", Domain: "other.com", IsKeepAlive: false, CompletedLength: 60 * 1024 * 1024},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -58,7 +60,7 @@ func TestConvergence_CrossEnvIsolation_ApprovedDelta(t *testing.T) {
 	approvedDelta := make(map[string]int)
 
 	// Process task A (envA): should get +1 and consume envA's headroom.
-	psA, okA := ct.processTask(tracker.tasks[0], false, approvedDelta, nil, nil)
+	psA, okA := ct.processTask(tracker.tasks[0], false, approvedDelta, nil, nil, time.Now())
 	if !okA || psA.delta != 1 {
 		t.Fatalf("expected envA task probe-up +1, got ok=%v delta=%d", okA, psA.delta)
 	}
@@ -68,14 +70,14 @@ func TestConvergence_CrossEnvIsolation_ApprovedDelta(t *testing.T) {
 	if psA.delta > 0 {
 		approvedDelta[approvedScopeKey(psA.scope, psA.envKey)] += psA.delta
 		if psA.domain != "" {
-			approvedDelta[approvedDomainKey(psA.scope, psA.domain, psA.envKey)] += psA.delta
+			approvedDelta[approvedDomainKey(psA.scope, psA.domain)] += psA.delta
 			approvedDelta[approvedNMaxKey(psA.scope, psA.domain)] += psA.delta
 		}
 	}
 
 	// Process task B (envB): should also get +1 because approvedDelta key is
 	// delimited scope|envB, independent from scope|envA.
-	psB, okB := ct.processTask(tracker.tasks[1], false, approvedDelta, nil, nil)
+	psB, okB := ct.processTask(tracker.tasks[1], false, approvedDelta, nil, nil, time.Now())
 	if !okB || psB.delta != 1 {
 		t.Fatalf("expected envB task probe-up +1 (independent approvedDelta), got ok=%v delta=%d", okB, psB.delta)
 	}
@@ -85,12 +87,12 @@ func TestConvergence_CrossEnvIsolation_ApprovedDelta(t *testing.T) {
 	if psB.delta > 0 {
 		approvedDelta[approvedScopeKey(psB.scope, psB.envKey)] += psB.delta
 		if psB.domain != "" {
-			approvedDelta[approvedDomainKey(psB.scope, psB.domain, psB.envKey)] += psB.delta
+			approvedDelta[approvedDomainKey(psB.scope, psB.domain)] += psB.delta
 			approvedDelta[approvedNMaxKey(psB.scope, psB.domain)] += psB.delta
 		}
 	}
 
-	// Verify approvedDelta has two separate scope keys (and domain keys).
+	// Verify approvedDelta has two separate scope keys.
 	if approvedDelta[approvedScopeKey("wan", "envA")] != 1 {
 		t.Errorf("approvedDelta[wan|envA] = %d, want 1", approvedDelta[approvedScopeKey("wan", "envA")])
 	}
@@ -112,7 +114,7 @@ func TestConvergence_BandwidthRelease_CrossEnvNoBeneficiary(t *testing.T) {
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope, envKey string) int64 { return 0 }
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 { return 0 }
 
 	// Only task B (envB) is active; completed task was in envA.
 	beneficiaryGid := "sg_env_b_only"
@@ -150,8 +152,8 @@ func TestConvergence_BandwidthRelease_CrossEnvNoBeneficiary(t *testing.T) {
 		map[string]bool{},
 		nil,
 		nil,
-		nil,
-	)
+		nil, time.Now())
+
 	for _, r := range releases {
 		if r.gid == beneficiaryGid {
 			t.Fatal("expected bandwidthRelease to NOT elect envB task when completed task was envA (cross-env isolation)")
@@ -170,7 +172,7 @@ func TestConvergence_BandwidthRelease_SameEnvBeneficiary(t *testing.T) {
 
 	orig := activeBandwidthProvider
 	t.Cleanup(func() { activeBandwidthProvider = orig })
-	activeBandwidthProvider = func(scope, envKey string) int64 { return 0 }
+	activeBandwidthProvider = func(scope, envKey string, now time.Time) int64 { return 0 }
 
 	beneficiaryGid := "sg_env_a_beneficiary"
 	tracker := &mockTracker{
@@ -206,8 +208,8 @@ func TestConvergence_BandwidthRelease_SameEnvBeneficiary(t *testing.T) {
 		map[string]bool{},
 		nil,
 		nil,
-		nil,
-	)
+		nil, time.Now())
+
 	found := false
 	for _, r := range releases {
 		if r.gid == beneficiaryGid {

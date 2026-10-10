@@ -48,6 +48,9 @@ func TestMacroBandwidthByScope_EnvAndScopeIsolation(t *testing.T) {
 	tracker.SetScopeAndEnv("sg_wan_e2", "wan", 100, "b.com", "env2")
 	tracker.SetScopeAndEnv("sg_lan_e1", "lan", 80, "c.local", "env1")
 	tracker.SetScopeAndEnv("ar_wan_e1", "wan", 90, "d.com", "env1")
+	for _, gid := range []string{"sg_wan_e1", "sg_wan_e2", "sg_lan_e1", "ar_wan_e1"} {
+		tracker.EnsureTrackedFromEvent(gid, 0, "", 0, "active")
+	}
 
 	Cache.sgMu.Lock()
 	Cache.sgActive = []rpc.Task{
@@ -82,6 +85,7 @@ func TestMacroBandwidthByScope_SurgeColdPadThenPermanentCut(t *testing.T) {
 
 	gid := "sg_macro_cut"
 	tracker.SetScopeAndEnv(gid, "wan", 100, "a.com", "env1")
+	tracker.EnsureTrackedFromEvent(gid, 0, "", 0, "active")
 	Cache.sgMu.Lock()
 	Cache.sgActive = []rpc.Task{{GID: gid, DownloadSpeed: "9000000"}}
 	Cache.sgMu.Unlock()
@@ -121,6 +125,7 @@ func TestMacroBandwidthByScope_NoDoubleCount(t *testing.T) {
 
 	gid := "sg_nodouble"
 	tracker.SetScopeAndEnv(gid, "wan", 100, "a.com", "env1")
+	tracker.EnsureTrackedFromEvent(gid, 0, "", 0, "active")
 	Cache.sgMu.Lock()
 	Cache.sgActive = []rpc.Task{{GID: gid, DownloadSpeed: "5000000"}}
 	Cache.sgMu.Unlock()
@@ -140,6 +145,7 @@ func TestMacroBandwidthByScope_Aria2UsesCacheSpeed(t *testing.T) {
 	defer cleanup()
 
 	tracker.SetScopeAndEnv("ar_aria", "wan", 100, "a.com", "env1")
+	tracker.EnsureTrackedFromEvent("ar_aria", 0, "", 0, "active")
 	Cache.arMu.Lock()
 	Cache.arActive = []rpc.Task{{GID: "ar_aria", DownloadSpeed: "4500000"}}
 	Cache.arMu.Unlock()
@@ -157,6 +163,8 @@ func TestMacroBandwidthByScope_HybridSameBucket(t *testing.T) {
 	ar := "ar_hybrid"
 	tracker.SetScopeAndEnv(sg, "wan", 100, "a.com", "env1")
 	tracker.SetScopeAndEnv(ar, "wan", 100, "b.com", "env1")
+	tracker.EnsureTrackedFromEvent(sg, 0, "", 0, "active")
+	tracker.EnsureTrackedFromEvent(ar, 0, "", 0, "active")
 	Cache.sgMu.Lock()
 	Cache.sgActive = []rpc.Task{{GID: sg, DownloadSpeed: "9999999"}}
 	Cache.sgMu.Unlock()
@@ -180,6 +188,7 @@ func TestActiveBandwidthByScope_StillCacheOnly(t *testing.T) {
 
 	gid := "sg_legacy"
 	tracker.SetScopeAndEnv(gid, "wan", 100, "a.com", "env1")
+	tracker.EnsureTrackedFromEvent(gid, 0, "", 0, "active")
 	Cache.sgMu.Lock()
 	Cache.sgActive = []rpc.Task{{GID: gid, DownloadSpeed: "7000000"}}
 	Cache.sgMu.Unlock()
