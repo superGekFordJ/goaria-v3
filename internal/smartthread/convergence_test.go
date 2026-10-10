@@ -413,10 +413,10 @@ func TestConvergenceTicker_PrevActiveGidsCarriesDomain(t *testing.T) {
 // pendingGids mechanism prevents bandwidthRelease from issuing a ScaleUp on a task
 // that processTask already scaled this tick.
 //
-// In the current architecture, when a task disappears (triggering bandwidthRelease),
-// window-invalidation suppresses all processTask scale decisions, so pendingGids is
-// naturally empty during bandwidthRelease. This test exercises the pendingGids skip
-// check directly via the extracted bandwidthRelease method to cover the defensive guard.
+// Post-S2 a disappearance only cancels margin-affected verdicts — clean tasks
+// can still fill pendingGids via processTask scales on the same tick, so the
+// guard is live. This test exercises the pendingGids skip check directly via
+// the extracted bandwidthRelease method.
 func TestConvergenceTicker_PendingGidsPreventsBandwidthReleaseScaleUp(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	speedstats.AddRecordV2(2*1024*1024, 1, 10*1024*1024, false, 50, "example.com", "wan", "testenv")

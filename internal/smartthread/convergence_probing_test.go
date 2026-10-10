@@ -1525,28 +1525,6 @@ func TestConvergence_LocalWindow_MarginAndDegrades(t *testing.T) {
 		})
 	}
 
-	// affected rule used by the tick: unknown || !ok || E >= margin.
-	affected := func(unknown, ok bool, e, margin float64) bool {
-		return unknown || !ok || e >= margin
-	}
-	t.Run("threshold_boundaries", func(t *testing.T) {
-		if !affected(false, true, 5, 5) {
-			t.Error("E==margin must be affected (>=)")
-		}
-		if affected(false, true, 5-1, 5) {
-			t.Error("E just below margin must stay clean")
-		}
-		if affected(false, true, 0, 5) {
-			t.Error("net-zero E must stay clean")
-		}
-		if !affected(true, true, 0.1, 5) {
-			t.Error("unknown perturbation must degrade to affected")
-		}
-		if !affected(false, false, 1, 0) {
-			t.Error("missing margin must degrade to affected under E>0")
-		}
-	})
-
 	// Real-tick proof for the two threshold sides: identical verdicts,
 	// donor occupancy straddling the 5MB margin.
 	for _, tc := range []struct {

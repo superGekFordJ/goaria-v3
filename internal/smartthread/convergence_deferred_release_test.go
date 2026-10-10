@@ -174,17 +174,18 @@ func TestConvergence_DeferredRelease_ReElectsWhenBeneficiaryGone(t *testing.T) {
 
 func TestConvergence_DeferredRelease_PrunesWhenDomainEmpty(t *testing.T) {
 	ben := "sg_prune_ben"
-	ct, _, _ := deferredReleaseFixture(t, ben, 2)
+	ct, tracker, _ := deferredReleaseFixture(t, ben, 2)
 	lk := limitKey("wan", "example.com")
 	armPending(ct, lk, "testenv", 20*1024*1024)
 
-	// Mimic tick prune: empty dStats → drop pendingReleases.
+	// Real tick drives the production prune: ben re-homes to another domain,
+	// so dStats has no wan|example.com entry and the mid-tick prune must drop
+	// the arm. Re-home (not exit) keeps the GID in membership — no
+	// disappearance donor can re-arm the domain later in the same tick.
+	tracker.tasks[0].Domain = "other.com"
+	ct.tickAt(time.Now())
+
 	ct.mu.Lock()
-	for key := range ct.pendingReleases {
-		if _, ok := (map[string]*domainStats{})[key]; !ok {
-			delete(ct.pendingReleases, key)
-		}
-	}
 	_, still := ct.pendingReleases[lk]
 	ct.mu.Unlock()
 	if still {
@@ -838,19 +839,16 @@ func TestConvergence_DeferredRelease_ArmPreservesPrevActiveSpeedsGuard(t *testin
 	// last positive raw as capability evidence even when live raw is zero.
 	ben := "sg_speed_guard"
 	ct, _, _ := deferredReleaseFixture(t, ben, 2)
+	// Real tick drives the production guard: a zero lastRawBps must not
+	// clobber stored positive evidence (D2 first-sample keeps it at 0).
 	ct.mu.Lock()
 	ct.prevActiveSpeeds[ben] = 9 * 1024 * 1024
-	ct.states[ben].lastRawBps = 0 // zero measurement does not clobber evidence
+	ct.states[ben].lastRawBps = 0
 	ct.mu.Unlock()
-
-	// Mimic tick update guard.
-	c := ct
-	c.mu.Lock()
-	if s, ok := c.states[ben]; ok && s.lastRawBps > 0 {
-		c.prevActiveSpeeds[ben] = s.lastRawBps
-	}
-	got := c.prevActiveSpeeds[ben]
-	c.mu.Unlock()
+	ct.tickAt(time.Now())
+	ct.mu.Lock()
+	got := ct.prevActiveSpeeds[ben]
+	ct.mu.Unlock()
 	if got != 9*1024*1024 {
 		t.Fatalf("prevActiveSpeeds wiped on zero lastRawBps: got %d", got)
 	}

@@ -521,7 +521,9 @@ func (c *ConvergenceTicker) tickAt(now time.Time) {
 	// raw/ready from c.states under lock — never via the public lock-taking
 	// accessors — then evaluate the same per-task occupancy helper outside
 	// the lock. Still-listed complete peers may contribute while excluded
-	// from dStats workers (physical occupancy).
+	// from dStats workers (physical occupancy). Deliberately pre-D2: Probe-Up
+	// headroom judges this tick's domain fill on the as-entered snapshot;
+	// settle re-overlays post-D2 values at its own site.
 	c.mu.Lock()
 	for i := range occTasks {
 		if !strings.HasPrefix(occTasks[i].GID, "sg_") {
@@ -1007,6 +1009,10 @@ func (c *ConvergenceTicker) electReleaseBeneficiary(
 		if t.TotalLength > 0 && t.CompletedLength >= t.TotalLength {
 			continue
 		}
+		// Fresh telemetry read (not the tick-frozen surgeStats): worker count
+		// only orders candidates and pre-filters zero-telemetry rows; the
+		// elected delta is re-clamped downstream, so a mid-tick drift is
+		// bounded and harmless.
 		cw := len(c.telemetry.Get(t.GID))
 		if cw == 0 {
 			continue
@@ -1304,6 +1310,26 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 	gid := task.GID
 
 	if len(stats) == 0 {
+		if affected {
+			// Telemetry gap on a dirty tick: an armed verdict must not
+			// survive to be judged across a pollution-spanning window.
+			// Cancel it and re-base the sample window so the next measured
+			// tick cannot double-count the gap. Existing state only —
+			// never create state on a no-telemetry path.
+			c.mu.Lock()
+			if s := c.states[gid]; s != nil {
+				s.cancelPendingVerdict()
+				if s.probeCooldown > 0 {
+					s.probeCooldown--
+				}
+				if s.frozenCooldown > 0 {
+					s.frozenCooldown--
+				}
+				s.prevCompleted = max(task.CompletedLength, 0)
+				s.prevSampleAt = now
+			}
+			c.mu.Unlock()
+		}
 		return pendingScale{}, false
 	}
 

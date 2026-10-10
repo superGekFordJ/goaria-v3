@@ -1302,3 +1302,80 @@ func TestConvergence_LocalWindow_ConcurrentRemove(t *testing.T) {
 		t.Fatalf("post-tick prevOcc must hold only the two survivors, got %+v", prevOcc)
 	}
 }
+
+// TestConvergence_LocalWindow_TelemetryGapCancelsArmedVerdict covers the
+// no-telemetry corner of the dirty window: a task whose armed verdict is
+// flagged affected but whose worker stats are transiently absent still gets
+// its verdict cancelled (never judged across a pollution-spanning window),
+// its sample window re-based so the next measured tick can't double-count
+// the gap, and its cooldowns ticked once. A clean (unaffected) no-stats tick
+// leaves everything untouched.
+func TestConvergence_LocalWindow_TelemetryGapCancelsArmedVerdict(t *testing.T) {
+	now := time.Now()
+	dirty := "sg_gap_dirty"
+	clean := "sg_gap_clean"
+	tracker := &mockTracker{tasks: []TrackedTaskInfo{
+		{GID: dirty, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", CompletedLength: 120 * mb},
+		{GID: clean, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", CompletedLength: 120 * mb},
+	}}
+	ct := newTestConvergenceTicker(
+		rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+		tracker, &mockTelemetry{data: map[string][]types.WorkerSnapshot{}},
+	)
+	defer ct.Stop()
+
+	prime := func(gid string) {
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		s.phase = phaseProbingUp
+		s.probeUpBaseline = 10 * mb
+		s.probeUpBaselineWorkers = 2
+		s.probeUpDelta = 1
+		s.probeCooldown = 2
+		s.prevCompleted = 100 * mb
+		s.prevSampleAt = now.Add(-5 * time.Second)
+		ct.mu.Unlock()
+	}
+	prime(dirty)
+	prime(clean)
+
+	// Dirty tick with no worker stats: armed verdict must be cancelled and
+	// the sample window re-based to this tick's endpoint.
+	if _, ok := ct.processTaskStats(tracker.tasks[0], nil, true, nil, nil, nil, now); ok {
+		t.Fatal("no-stats dirty tick must not produce a scale")
+	}
+	ct.mu.Lock()
+	s := ct.states[dirty]
+	dirtyBase := s.probeUpBaseline
+	dirtyPhase := s.phase
+	dirtyPrevAt := s.prevSampleAt
+	dirtyPrevC := s.prevCompleted
+	dirtyCd := s.probeCooldown
+	ct.mu.Unlock()
+	if dirtyBase != 0 || dirtyPhase != phaseStable {
+		t.Fatalf("dirty gap tick must cancel armed verdict: baseline=%d phase=%d", dirtyBase, dirtyPhase)
+	}
+	if !dirtyPrevAt.Equal(now) || dirtyPrevC != 120*mb {
+		t.Fatalf("sample window must re-base to the dirty tick: at=%v completed=%d", dirtyPrevAt, dirtyPrevC)
+	}
+	if dirtyCd != 1 {
+		t.Fatalf("dirty gap tick must decrement cooldown once: got %d", dirtyCd)
+	}
+
+	// Clean control: same no-stats shape but unaffected → nothing touched.
+	if _, ok := ct.processTaskStats(tracker.tasks[1], nil, false, nil, nil, nil, now); ok {
+		t.Fatal("no-stats clean tick must not produce a scale")
+	}
+	ct.mu.Lock()
+	s = ct.states[clean]
+	cleanBase := s.probeUpBaseline
+	cleanPrevAt := s.prevSampleAt
+	cleanCd := s.probeCooldown
+	ct.mu.Unlock()
+	if cleanBase != 10*mb {
+		t.Fatalf("clean gap tick must keep the armed verdict: baseline=%d", cleanBase)
+	}
+	if !cleanPrevAt.Equal(now.Add(-5*time.Second)) || cleanCd != 2 {
+		t.Fatalf("clean gap tick must not re-base or decrement: at=%v cd=%d", cleanPrevAt, cleanCd)
+	}
+}
