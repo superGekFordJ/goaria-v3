@@ -361,6 +361,8 @@ func (c *ConvergenceTicker) tickAt(now time.Time) {
 		seenSampled[t.GID] = struct{}{}
 		sampled = append(sampled, t)
 	}
+	// surgeTasks copies pre-overlay structs: raw/ready overlays later land on
+	// sampled[i]/occTasks[i] only — never read .RawBps/.MacroReady here.
 	var surgeTasks []TrackedTaskInfo
 	for _, t := range sampled {
 		activeGids[t.GID] = gidInfo{Domain: t.Domain, Scope: t.Scope, EnvKey: t.EnvKey}
@@ -585,7 +587,7 @@ func (c *ConvergenceTicker) tickAt(now time.Time) {
 
 	// Deferred settle of previously armed domains first, then arm new
 	// disappearances (never settle an entry created earlier in this call).
-	pending = append(pending, c.settlePendingReleases(surgeTasks, activeGids, pendingGids, approvedDelta, dStats, affected, occTasks, now)...)
+	pending = append(pending, c.settlePendingReleases(surgeTasks, pendingGids, approvedDelta, dStats, affected, occTasks, now)...)
 	pending = append(pending, c.bandwidthRelease(surgeTasks, activeGids, pendingGids, approvedDelta, dStats, domainMacroBps, now)...)
 
 	// Self-cleanup: remove states for GIDs no longer sampled-active.
@@ -770,7 +772,6 @@ func (c *ConvergenceTicker) bandwidthRelease(activeTasks []TrackedTaskInfo, acti
 // paths keep the arm without consuming deferrals.
 func (c *ConvergenceTicker) settlePendingReleases(
 	activeTasks []TrackedTaskInfo,
-	activeGids map[string]gidInfo,
 	pendingGids map[string]bool,
 	approvedDelta map[string]int,
 	dStats map[string]*domainStats,
@@ -1058,19 +1059,6 @@ func (c *ConvergenceTicker) electReleaseBeneficiary(
 	elected := candidates[electedIdx]
 	elected.candidateCount = len(candidates)
 	return elected, true
-}
-
-// sameActiveSet compares two gid→gidInfo maps by key set only.
-func sameActiveSet(a, b map[string]gidInfo) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k := range a {
-		if _, ok := b[k]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 // sampledActiveTask reports whether a tracker row is real engine activity for
@@ -1411,7 +1399,8 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 	if s.prevSampleAt.IsZero() {
 		// First sample — store baseline, no decision. A zero prevCompleted
 		// with a real timestamp is a valid baseline, not a missing one.
-		s.prevCompleted = task.CompletedLength
+		// Clamp a pathological negative like the anomaly re-base does.
+		s.prevCompleted = max(task.CompletedLength, 0)
 		s.prevSampleAt = now
 		return pendingScale{}, false
 	}

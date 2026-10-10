@@ -175,7 +175,8 @@ func TestConvergenceTicker_RemoveTask(t *testing.T) {
 		t.Error("expected convergence state to be removed")
 	}
 	// SPEC-243: RemoveTask preserves prevActiveGids / prevActiveSpeeds so the
-	// next tick can observe disappearance + windowInvalidated on complete/delete.
+	// next tick can observe the disappearance as an exit-side perturbation
+	// (dirty margin cancel + release arm) on complete/delete.
 	if !prevExists {
 		t.Error("expected prevActiveGids retained after RemoveTask until tick replace")
 	}
@@ -405,18 +406,6 @@ func TestConvergenceTicker_PrevActiveGidsCarriesDomain(t *testing.T) {
 	}
 	if info2.Domain != "b.com" || info2.Scope != "wan" {
 		t.Errorf("prevActiveGids[%s] = %+v, want {Domain:b.com Scope:wan}", gid2, info2)
-	}
-
-	// sameActiveSet compares by key set only — same keys with different values must return true.
-	a := map[string]gidInfo{"g1": {Domain: "x.com", Scope: "wan"}, "g2": {Domain: "y.com", Scope: "lan"}}
-	b := map[string]gidInfo{"g1": {Domain: "z.com", Scope: "lan"}, "g2": {Domain: "w.com", Scope: "wan"}}
-	if !sameActiveSet(a, b) {
-		t.Error("sameActiveSet should return true for identical key sets regardless of values")
-	}
-	// Different key sets must return false.
-	c := map[string]gidInfo{"g1": {Domain: "x.com", Scope: "wan"}, "g3": {Domain: "y.com", Scope: "lan"}}
-	if sameActiveSet(a, c) {
-		t.Error("sameActiveSet should return false for different key sets")
 	}
 }
 
