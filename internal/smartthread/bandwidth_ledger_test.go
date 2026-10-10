@@ -441,6 +441,10 @@ func TestTaskOccupancy_MeasuredZeroDistinctFromMissing(t *testing.T) {
 }
 
 func TestTaskOccupancy_WaitingAndPausedRules(t *testing.T) {
+	// TRIPWIRE: the "never lease-expired" waiting claim and the paused
+	// resume-hold assertions below encode transitional retained semantics.
+	// When the waiting claim is retired the expectations must flip — the
+	// retirement diff should land here first, not silently pass.
 	now := time.Now()
 	surgeWaiting := TrackedTaskInfo{
 		GID: "sg_w", Status: "waiting", Scope: "wan", EnvKey: "e", Domain: "a.com",
@@ -518,6 +522,8 @@ func TestTaskOccupancy_AdmissionReservedScalar(t *testing.T) {
 	}
 	// A lease-expired reservation falls through to ordinary eligibility —
 	// here the retained Surge waiting claim still holds the Target floor.
+	// TRIPWIRE: transitional semantics — once the waiting claim retires this
+	// expectation flips to telemetry-only/zero, and the diff must surface.
 	expiredWaiting := reserved
 	expiredWaiting.ActivatedAt = now.Add(-time.Minute)
 	if got := TaskOccupancy(expiredWaiting, now); got != 5_000_000 {

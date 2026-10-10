@@ -27,6 +27,20 @@ func (m *mockTracker) GetScopeAndEnv(gid string) (scope, domain, envKey string, 
 	return "", "", "", false
 }
 
+// mockOccupancy implements OccupancyProvider for testing — returns the wider
+// occupancy set (claims, placeholders, aria2) that need not equal the active
+// set returned by the tracker provider. Per-call copy like the real adapter:
+// the tick overlays Surge raw/ready onto the snapshot it receives.
+type mockOccupancy struct {
+	tasks []TrackedTaskInfo
+}
+
+func (m *mockOccupancy) GetOccupancyTrackedTasks() []TrackedTaskInfo {
+	out := make([]TrackedTaskInfo, len(m.tasks))
+	copy(out, m.tasks)
+	return out
+}
+
 // mockTelemetry implements TelemetryProvider for testing
 type mockTelemetry struct {
 	data map[string][]types.WorkerSnapshot

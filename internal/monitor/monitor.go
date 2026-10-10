@@ -994,6 +994,10 @@ type trackerAdapter struct {
 // cache never calls back into Convergence. Only parse-valid non-negative
 // values count as measured — "0" is a real zero, while empty/invalid/negative
 // strings are absent from the map so callers see them as missing telemetry.
+// Only GetActive() is scanned, deliberately: a tracker-active task whose
+// cache row is still in waiting sees TelemetryValid=false until the move
+// lands — degrading to missing telemetry (zero contribution) is the safe
+// direction and self-corrects once the cache catches up.
 func activeCacheSpeedByGID() map[string]int64 {
 	speeds := make(map[string]int64)
 	if Cache == nil {

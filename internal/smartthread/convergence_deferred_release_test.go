@@ -549,6 +549,106 @@ func TestConvergence_DeferredRelease_AntiHerdOnePerDomain(t *testing.T) {
 	}
 }
 
+// TestConvergence_DeferredRelease_SettleSeesAdvancedRawAfterPrePass proves
+// the settle re-overlay reads post-processTask lastRawBps, not the pre-pass
+// snapshot: the same occTasks argument carries deliberately stale fields, so
+// only a re-read of c.states can flip the outcome. Without the re-overlay the
+// second call would still see the stale 5MB and settle a +1 into a full domain.
+func TestConvergence_DeferredRelease_SettleSeesAdvancedRawAfterPrePass(t *testing.T) {
+	ben := "sg_stale_ben"
+	ct, tracker, _ := deferredReleaseFixture(t, ben, 1)
+
+	lk := limitKey("wan", "example.com")
+	armPending(ct, lk, "testenv", 40*1024*1024)
+
+	// occTasks deliberately carries NO raw fields — a stale pre-pass snapshot
+	// shape. State lastRawBps=5MB → occ 5MB → gap=35 → settle emits.
+	activeGids := map[string]gidInfo{ben: {Domain: "example.com", Scope: "wan", EnvKey: "testenv"}}
+	dStats := map[string]*domainStats{lk: {activeWorkers: 1, tasksInDomain: 1}}
+	approved := make(map[string]int)
+	pendingGids := map[string]bool{}
+
+	settles := ct.settlePendingReleases(tracker.tasks, activeGids, pendingGids, approved, dStats, false, tracker.tasks, time.Now())
+	if len(settles) != 1 {
+		t.Fatalf("low raw: expected settle emit into gap, got %+v", settles)
+	}
+	ct.mu.Lock()
+	_, armed := ct.pendingReleases[lk]
+	ct.mu.Unlock()
+	if !armed {
+		t.Fatal("arm must persist after a partial settle")
+	}
+
+	// processTask advanced lastRawBps to 40MB between pre-pass and settle —
+	// simulate the fresh measurement directly (same field the tick writes).
+	ct.mu.Lock()
+	ct.states[ben].lastRawBps = 40 * 1024 * 1024
+	ct.mu.Unlock()
+
+	// Fresh per-tick maps: call 1 already marked ben in pendingGids, which
+	// would exclude it from election and hide the disarm.
+	settles = ct.settlePendingReleases(tracker.tasks, activeGids, map[string]bool{}, make(map[string]int), dStats, false, tracker.tasks, time.Now())
+	if len(settles) != 0 {
+		t.Fatalf("advanced raw must fill the domain gap; settle would overshoot: %+v", settles)
+	}
+	ct.mu.Lock()
+	_, armed = ct.pendingReleases[lk]
+	ct.mu.Unlock()
+	if armed {
+		t.Fatal("gap==0 on post-processTask raw must disarm")
+	}
+}
+
+// TestConvergence_Tick_OccupancyProviderClaimsFeedDomainSettle drives a real
+// tick() with the occupancy-provider seam: a waiting-claim task present only
+// in the occupancy set (not the active set) must flow through TaskOccupancy
+// into the settle domain evaluation — not via an injected domainMacro map.
+// Control without the claim proves the disarm came from the claim.
+func TestConvergence_Tick_OccupancyProviderClaimsFeedDomainSettle(t *testing.T) {
+	lk := limitKey("wan", "example.com")
+
+	claimTask := TrackedTaskInfo{
+		GID: "sg_wait_claim", Status: "waiting", Scope: "wan", EnvKey: "testenv",
+		Domain: "example.com", TargetBandwidth: 35 * 1024 * 1024,
+	}
+
+	// With the claim: 5MB raw + 35MB claim occupancy = target → gap=0 → disarm.
+	t.Run("claim-fills-domain", func(t *testing.T) {
+		ben := "sg_tickocc_ben"
+		ct, tracker, _ := deferredReleaseFixture(t, ben, 1)
+		ct.SetOccupancyProvider(&mockOccupancy{
+			tasks: append([]TrackedTaskInfo{tracker.tasks[0]}, claimTask),
+		})
+		armPending(ct, lk, "testenv", 40*1024*1024)
+
+		ct.tick()
+
+		ct.mu.Lock()
+		_, armed := ct.pendingReleases[lk]
+		ct.mu.Unlock()
+		if armed {
+			t.Fatal("claim occupancy must fill the domain gap and disarm the release")
+		}
+	})
+
+	// Without the claim: only 5MB raw → gap=35 → settle emits, arm kept.
+	t.Run("no-claim-arm-survives", func(t *testing.T) {
+		ben := "sg_tickocc_ben2"
+		ct, tracker, _ := deferredReleaseFixture(t, ben, 1)
+		ct.SetOccupancyProvider(&mockOccupancy{tasks: tracker.tasks})
+		armPending(ct, lk, "testenv", 40*1024*1024)
+
+		ct.tick()
+
+		ct.mu.Lock()
+		_, armed := ct.pendingReleases[lk]
+		ct.mu.Unlock()
+		if !armed {
+			t.Fatal("without claim occupancy the release must stay armed (gap>0)")
+		}
+	})
+}
+
 func TestConvergence_DeferredRelease_ArmKeepsFreePlusOneNonProbing(t *testing.T) {
 	ben := "sg_arm_free"
 	ct, tracker, _ := deferredReleaseFixture(t, ben, 2)

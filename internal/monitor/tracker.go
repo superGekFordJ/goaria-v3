@@ -179,7 +179,11 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 		// Authoritative aria2 waiting/paused: record the observed status and
 		// a reliable completed value (baseline source for the next run), and
 		// end any synthetic-active claim or add placeholder — an engine-queued
-		// row never counts occupancy.
+		// row never counts occupancy. No isTerminalAcceptedLocked gate here,
+		// by ordering: Cache.UpdateFromAria2 runs earlier in the same tick and
+		// already reopened every gid legitimately leaving stopped (clearing
+		// the accepted marker), so a still-accepted terminal has no live-list
+		// authority to protect. Reordering those calls would break that.
 		applyAuthoritativeStatusLocked(tracked, task.Status)
 		if cl := parseInt64(task.CompletedLength); cl > 0 {
 			tracked.CompletedLength = cl

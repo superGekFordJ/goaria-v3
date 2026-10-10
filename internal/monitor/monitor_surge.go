@@ -232,6 +232,10 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		if ev.Downloaded > 0 {
 			queuedTask.CompletedLength = strconv.FormatInt(ev.Downloaded, 10)
 		}
+		// Deliberately NOT AddSgTaskUnlessStopped: queued is unambiguous
+		// new-generation evidence and retry-requeue legitimately needs a
+		// stopped→waiting move — unlike a bare `started`, which must never
+		// evict a terminal row on its own.
 		Cache.AddSgTask(queuedTask, "waiting")
 		Cache.PrefetchMetadata(gid)
 	case types.EventStarted:
