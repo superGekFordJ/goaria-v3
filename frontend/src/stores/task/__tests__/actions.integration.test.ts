@@ -1780,11 +1780,47 @@ describe('setupActions — integration', () => {
         stopped: [mockTask('stale-loser', { status: 'complete' })],
       })
       await stale
+      await flushPromises()
 
       expect(state.tasks.value.active.map(t => t.gid)).toEqual(['fresh-winner'])
       expect(state.tasks.value.stopped).toHaveLength(0)
-      // 'superseded' verdicts do not schedule recovery reads.
+      // A superseded full read coalesces exactly one recovery re-read; the
+      // newer response stays authoritative.
+      expect(mockGetTasks).toHaveBeenCalledTimes(3)
+    })
+
+    it('SNAPSHOT-FRESHNESS: a full read superseded by a narrower read recovers uncovered buckets', async () => {
+      state.tasks.value = { active: [mockTask('a1')], waiting: [], stopped: [] }
+      const first = createControlledPromise<{
+        active: Task[]
+        waiting: Task[]
+        stopped: Task[]
+      }>()
+      const completed = mockTask('a1', { status: 'complete', downloadSpeed: '0' })
+      mockGetTasks.mockReturnValueOnce(asCancellable(first.promise) as never).mockResolvedValue({
+        active: [],
+        waiting: [],
+        stopped: [completed],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      mockGetStoppedTasks.mockResolvedValue([completed] as Task[])
+
+      const pending = actions.fetchTasks()
+      // A narrower stopped read lands mid-flight; its response cannot cover
+      // the active/waiting buckets the dropped full read still owned.
+      await actions.fetchStoppedTasks()
+      first.resolve({
+        active: [],
+        waiting: [],
+        stopped: [completed],
+      })
+      await pending
+      await flushPromises()
+
+      // One coalesced full recovery re-read removes the lingering terminal row.
       expect(mockGetTasks).toHaveBeenCalledTimes(2)
+      expect(mockGetStoppedTasks).toHaveBeenCalledTimes(1)
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['a1'])
     })
 
     it('METADATA-FRESHNESS: a late metadata response cannot poison a removed-and-reopened row', async () => {

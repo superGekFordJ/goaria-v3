@@ -736,6 +736,8 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     } else if (actions.isResumePending(gid)) {
       // Held while the resume op is in flight: stash the rich folded row as
       // generation-owned evidence; settlement applies it exactly once.
+      // Superseded (-gen) pendings also pass this check; recordResumeEvidence
+      // no-ops there, so newer nonterminal twins are dropped by design.
       const snapshot = computeMergedSnapshot(gid, incoming)
       const status = payload?.status === 'paused' ? 'paused' : dest
       actions.recordResumeEvidence(gid, status, snapshot)

@@ -819,7 +819,9 @@ export function setupActions(state: TaskState) {
       const res = await GetTasks()
       const verdict = classifyRead(read)
       if (verdict !== 'admit') {
-        if (verdict === 'stale' && !isRecovery) scheduleReadRecovery('full')
+        // A superseded full read can still own buckets the narrower winner
+        // never covers; it takes the same coalesced recovery as a stale read.
+        if (!isRecovery) scheduleReadRecovery('full')
         return
       }
       consecutiveErrors.value = 0
@@ -1133,7 +1135,9 @@ export function setupActions(state: TaskState) {
       const snapshot = await GetFullSnapshot()
       const verdict = classifyRead(read)
       if (verdict !== 'admit') {
-        if (verdict === 'stale' && !isRecovery) scheduleReadRecovery('full')
+        // A superseded full read can still own buckets the narrower winner
+        // never covers; it takes the same coalesced recovery as a stale read.
+        if (!isRecovery) scheduleReadRecovery('full')
         return
       }
       clearStoppedSuppression()
