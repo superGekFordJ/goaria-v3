@@ -120,11 +120,21 @@ describe('PerformanceSection', () => {
     wrapper.unmount()
   })
 
-  it('renders the tooltip through an i18n key without duplicate native title', () => {
+  it('renders the tooltips through i18n keys without duplicate native title', () => {
     const wrapper = mountSection()
     expect(wrapper.text()).toContain('performance.surgeExclusiveTooltip')
+    expect(wrapper.text()).toContain('performance.concurrentTooltip')
     expect(wrapper.text()).not.toContain('Aria2 is still limited')
     expect(wrapper.find('[title]').exists()).toBe(false)
+
+    // Both labels expose a hover-revealed info tooltip, not inline paragraphs
+    expect(wrapper.findAll('.cursor-help')).toHaveLength(2)
+    const popups = wrapper
+      .findAll('[class*="group-hover:visible"]')
+      .filter(el => el.text().includes('performance.'))
+    expect(popups).toHaveLength(2)
+    expect(popups.some(el => el.text().includes('performance.surgeExclusiveTooltip'))).toBe(true)
+    expect(popups.some(el => el.text().includes('performance.concurrentTooltip'))).toBe(true)
     wrapper.unmount()
   })
 
@@ -149,12 +159,13 @@ describe('PerformanceSection', () => {
     expect(wrapper.emitted('update:concurrentDownloads')).toBeUndefined()
     expect(wrapper.emitted('change')).toBeUndefined()
 
-    expect(wrapper.text()).toContain('performance.concurrentManagedHint')
-    expect(wrapper.text()).toContain('performance.concurrentRestartHint')
+    // The managed/restart copy moved into the always-rendered label tooltip
+    expect(wrapper.text()).toContain('performance.concurrentTooltip')
+    expect(wrapper.findAll('p.leading-relaxed')).toHaveLength(0)
     wrapper.unmount()
   })
 
-  it('edits the same raw value and still shows the restart hint when smart mode is off', async () => {
+  it('edits the same raw value and still shows the concurrency tooltip when smart mode is off', async () => {
     const wrapper = mountSection('16', { concurrentDownloads: '8', smartThreadMode: false })
     const input = wrapper.find('input[type="number"]')
     expect(input.attributes('disabled')).toBeUndefined()
@@ -166,8 +177,8 @@ describe('PerformanceSection', () => {
     expect(wrapper.emitted('update:concurrentDownloads')).toEqual([['8']])
     expect(wrapper.emitted('change')).toHaveLength(1)
 
-    expect(wrapper.text()).not.toContain('performance.concurrentManagedHint')
-    expect(wrapper.text()).toContain('performance.concurrentRestartHint')
+    expect(wrapper.text()).toContain('performance.concurrentTooltip')
+    expect(wrapper.findAll('p.leading-relaxed')).toHaveLength(0)
     wrapper.unmount()
   })
 })

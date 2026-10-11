@@ -133,8 +133,7 @@
     "maxConcurrent": "Max. gleichzeitige Tasks",
     "surgeBadge": "Surge",
     "surgeExclusiveTooltip": "Die Voreinstellungen sind für Highspeed-Netze optimiert, um Ratenbegrenzungen zu vermeiden. Wenn Sie eine höhere Parallelität benötigen, beenden Sie GoAria und setzen Sie max_connections in ~/.goaria/config.json auf bis zu 256 (gilt nach Neustart).",
-    "concurrentManagedHint": "Vom Smart-Thread-Modus verwaltet – die Engine nutzt vorerst ihre eingebaute Parallelität. Ihr Wert bleibt gespeichert und wird nach dem Ausschalten wiederhergestellt.",
-    "concurrentRestartHint": "Änderungen der effektiven Parallelität können die Download-Engine neu starten und aktive Download-Verbindungen neu aufbauen."
+    "concurrentTooltip": "Bei aktivem Smart-Thread-Modus wird die maximale Parallelität automatisch durch die Systemrichtlinie optimiert – Ihr Wert bleibt gespeichert und wird beim Ausschalten wiederhergestellt. Wenn Sie den Modus manuell umschalten und die Einstellungen speichern, wird der Aria2-Daemon nur neu geladen, wenn sich die effektive Parallelität ändert."
   },
   "ua": {
     "description": "Benutzerdefinierter User-Agent",

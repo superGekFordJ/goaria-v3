@@ -133,8 +133,7 @@
     "maxConcurrent": "最大并发任务",
     "surgeBadge": "Surge",
     "surgeExclusiveTooltip": "预设选项已针对多数高速网络优化以防止被限流。若您确信需要更高并发，可退出应用后在 ~/.goaria/config.json 中将 max_connections 修改为最高 256（重启后生效）。",
-    "concurrentManagedHint": "由智能线程模式接管——引擎暂时使用内置并发数。您的设置会被保留，关闭该模式后恢复。",
-    "concurrentRestartHint": "有效并发数变化时，下载引擎可能重启并重建进行中的下载连接。"
+    "concurrentTooltip": "开启智能模式时，最大并发任务由系统策略自动优化调度（您的自定义数值会被保留）。手动切换该模式并保存设置时，若生效并发发生改变，Aria2 守护进程将自动重新加载。"
   },
   "ua": {
     "description": "自定义浏览器标识",

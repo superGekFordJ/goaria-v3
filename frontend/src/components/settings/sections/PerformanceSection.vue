@@ -189,9 +189,21 @@
       <!-- Max Concurrent Downloads -->
       <div class="space-y-2">
         <label
-          class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)]"
+          class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)]"
         >
           {{ t('performance.maxConcurrent') }}
+          <div class="group relative flex items-center">
+            <Info :size="12" class="cursor-help hover:text-[var(--app-text)] transition-colors" />
+            <!-- Tooltip Popup -->
+            <div
+              class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-80 max-w-[min(20rem,70vw)] p-2.5 rounded-lg glass-panel-solid opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-30 text-center text-[10px] font-medium normal-case tracking-normal pointer-events-none"
+            >
+              {{ t('performance.concurrentTooltip') }}
+              <div
+                class="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 glass-panel-solid-arrow transform rotate-45"
+              ></div>
+            </div>
+          </div>
         </label>
         <input
           :value="concurrentDownloads"
@@ -202,12 +214,6 @@
           class="w-full bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl px-4 py-3 text-sm font-mono-data text-[var(--app-text)]/80 outline-none transition-all duration-200 focus:border-[var(--neon-primary)]/40 focus:shadow-[0_0_0_3px_var(--input-focus)] disabled:opacity-50 disabled:cursor-not-allowed"
           @input="updateConcurrentDownloads"
         />
-        <p v-if="smartThreadMode" class="text-[10px] leading-relaxed text-[var(--app-text-subtle)]">
-          {{ t('performance.concurrentManagedHint') }}
-        </p>
-        <p class="text-[10px] leading-relaxed text-[var(--app-text-subtle)]">
-          {{ t('performance.concurrentRestartHint') }}
-        </p>
       </div>
     </div>
   </SectionCard>

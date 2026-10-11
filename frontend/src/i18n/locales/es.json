@@ -133,8 +133,7 @@
     "maxConcurrent": "Tareas concurrentes máx.",
     "surgeBadge": "Surge",
     "surgeExclusiveTooltip": "Los preajustes están optimizados para redes de alta velocidad para evitar límites de tasa. Si necesita mayor concurrencia, cierre GoAria y configure max_connections hasta 256 en ~/.goaria/config.json (se aplica tras reiniciar).",
-    "concurrentManagedHint": "Gestionado por Hilos Inteligentes: el motor usa su concurrencia integrada por ahora. Su valor se conserva y se restaura al desactivar el modo.",
-    "concurrentRestartHint": "Los cambios en la concurrencia efectiva pueden reiniciar el motor de descarga y reconstruir las conexiones de descarga activas."
+    "concurrentTooltip": "Con Hilos Inteligentes activados, la concurrencia máxima se optimiza automáticamente según la política del sistema; su valor personalizado se conserva y se restaura al desactivar el modo. Al cambiar el modo manualmente y guardar los ajustes, el daemon de Aria2 se recarga solo si cambia la concurrencia efectiva."
   },
   "ua": {
     "description": "User-Agent Personalizado",
