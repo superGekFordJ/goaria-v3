@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"goaria-v3/internal/history"
 	"goaria-v3/internal/rpc"
 )
 
@@ -198,21 +199,32 @@ func (c *TaskCache) UpdateFromAria2(active, waiting, stopped []rpc.Task) {
 	c.arWaiting = retainMetadata(arWaiting, c.arWaiting)
 	c.arStopped = retainMetadata(arStopped, c.arStopped)
 
-	var resumedFromStopped []string
+	var resumedFromStopped []rpc.Task
 	for _, task := range c.arActive {
 		if _, wasStopped := prevStopped[task.GID]; wasStopped {
-			resumedFromStopped = append(resumedFromStopped, task.GID)
+			resumedFromStopped = append(resumedFromStopped, task)
 		}
 	}
 	for _, task := range c.arWaiting {
 		if _, wasStopped := prevStopped[task.GID]; wasStopped {
-			resumedFromStopped = append(resumedFromStopped, task.GID)
+			resumedFromStopped = append(resumedFromStopped, task)
 		}
 	}
 	c.arMu.Unlock()
 
-	for _, gid := range resumedFromStopped {
-		RetireHistoryIfResumedFromStopped(gid, "stopped")
+	for _, task := range resumedFromStopped {
+		var tracker *TaskTracker
+		if mon := State.GetMonitor(); mon != nil {
+			tracker = mon.tracker
+		}
+		tracker.RunUnderLifecycle(task.GID, func() {
+			current, list, ok := c.GetTask(task.GID)
+			_, historied := history.Get(task.GID)
+			if ok && list != "stopped" && current.Status == task.Status &&
+				(historied || tracker.TerminalAcceptedInCurrentGeneration(task.GID)) {
+				retireHistoryAndReopenToStatusLocked(tracker, task.GID, current.Status)
+			}
+		})
 	}
 
 	c.mu.Lock()

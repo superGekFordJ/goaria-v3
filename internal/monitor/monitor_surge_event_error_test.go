@@ -191,6 +191,7 @@ func TestHandleSurgeEvent_ErrorResumeError_AllowsSecondTerminal(t *testing.T) {
 	}
 	history.Add(history.HistoryEntry{GID: "sg_reerr", Path: "/tmp/reerr.bin", Status: "error"})
 
+	m.BeginPauseResumeRequest("sg_reerr", PauseResumeIntentionResume)
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventResumed, DownloadID: "reerr"})
 
 	if tracker.processedComplete["sg_reerr"] {

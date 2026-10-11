@@ -8,12 +8,77 @@ import (
 	surgeEvents "goaria-v3/internal/surge/types"
 )
 
+func TestResumeBackend_EventAcceptance(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, live, action string
+		event                      surgeEvents.EventType
+		want                       string
+	}{
+		{"early queued", "", "", "", surgeEvents.EventQueued, "waiting"},
+		{"terminal queued refused", "error", "", "", surgeEvents.EventQueued, "error"},
+		{"terminal real queued", "error", "queued", "", surgeEvents.EventQueued, "waiting"},
+		{"running late queued", "active", "downloading", "", surgeEvents.EventQueued, "active"},
+		{"terminal residual start", "error", "", "legacy", surgeEvents.EventStarted, "error"},
+		{"terminal real start", "error", "downloading", "", surgeEvents.EventStarted, "active"},
+		{"resume queued ack", "paused", "", "resume", surgeEvents.EventResumed, "waiting"},
+		{"late ack after start", "active", "queued", "resume", surgeEvents.EventResumed, "active"},
+		{"pause superseded", "active", "", "resume", surgeEvents.EventPaused, "active"},
+		{"pause against running", "active", "downloading", "", surgeEvents.EventPaused, "active"},
+		{"resume superseded", "paused", "queued", "pause", surgeEvents.EventResumed, "paused"},
+		{"queued superseded", "paused", "queued", "pause", surgeEvents.EventQueued, "paused"},
+		{"resume already running", "paused", "downloading", "resume", surgeEvents.EventResumed, "active"},
+		{"resume live unknown row", "", "queued", "", surgeEvents.EventResumed, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetHistoryForTest(t)
+			m, reader, pusher, tracker := newReconcileTestMonitor(t)
+			m.surgeEng = &rpc.SurgeEngine{}
+			full := fullRowForTest("sg_accept")
+			full.Status = tc.source
+			if tc.source != "" {
+				Cache.AddSgTask(full, engineListForStatus(tc.source))
+			}
+			if tc.source == "error" {
+				tracker.MarkCompleteFromEvent(full.GID, "error")
+			}
+			m.chunkSnapshots = NewChunkSnapshotCache()
+			m.chunkSnapshots.Set(full.GID, []byte{1}, 4, 100, nil)
+			m.surgeEng.UpsertMasterCacheEntry(surgeEvents.DownloadRecord{ID: "accept", Status: "old", URL: "https://example.com/full", DestPath: "/dl/full", Filename: "full", TotalSize: 1000, Downloaded: 200, CreatedAt: 42, SkipServerProbe: true})
+			reader.setLiveStatus("accept", rpc.SurgeLiveStatus{Status: tc.live, Known: tc.live != ""})
+			if tc.action == "legacy" {
+				m.BumpPauseResumeIntention(full.GID, "resume")
+			} else if tc.action != "" {
+				m.BeginPauseResumeRequest(full.GID, tc.action)
+			}
+			m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: tc.event, DownloadID: "accept"})
+			got, _, _ := Cache.GetTask(full.GID)
+			if got.Status != tc.want {
+				t.Fatalf("got %s want %s", got.Status, tc.want)
+			}
+			master, _ := m.surgeEng.GetMasterCacheEntry("accept")
+			if master.URL == "" || master.CreatedAt != 42 || master.Downloaded != 200 || !master.SkipServerProbe {
+				t.Fatal("sparse event lost master")
+			}
+			if tc.source == tc.want {
+				if master.Status != "old" || len(pusher.pending) != 0 {
+					t.Fatal("rejected event wrote facts/UI")
+				}
+				if _, ok := m.chunkSnapshots.Get(full.GID); !ok {
+					t.Fatal("rejected event cleared chunk")
+				}
+			} else if tc.source != "" {
+				assertFullRowMetadata(t, got, full)
+			}
+		})
+	}
+}
+
 func TestHandleSurgeEvent_PauseEvent_QueuesPauseDeltaAndPatchesCache(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
 	se := &rpc.SurgeEngine{}
 	hybrid := rpc.NewHybridEngine(nil, se)
-	m := &Monitor{hub: hub, pusher: pusher, engine: hybrid}
+	m := &Monitor{hub: hub, pusher: pusher, engine: hybrid, tracker: NewTaskTracker()}
 
 	prevWindow := State.HasWindow()
 	State.SetWindowExists(true)
@@ -74,7 +139,7 @@ func TestHandleSurgeEvent_ResumeEvent_QueuesResumeDeltaAndPatchesCache(t *testin
 	pusher := NewPusher(hub)
 	se := &rpc.SurgeEngine{}
 	hybrid := rpc.NewHybridEngine(nil, se)
-	m := &Monitor{hub: hub, pusher: pusher, engine: hybrid}
+	m := &Monitor{hub: hub, pusher: pusher, engine: hybrid, tracker: NewTaskTracker()}
 
 	prevWindow := State.HasWindow()
 	State.SetWindowExists(true)
@@ -84,6 +149,7 @@ func TestHandleSurgeEvent_ResumeEvent_QueuesResumeDeltaAndPatchesCache(t *testin
 	Cache.sgWaiting = []rpc.Task{{GID: "sg_test-resume", Status: "paused"}}
 	defer func() { Cache.sgWaiting = nil }()
 
+	m.BeginPauseResumeRequest("sg_test-resume", PauseResumeIntentionResume)
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{
 		Type:       surgeEvents.EventResumed,
 		DownloadID: "test-resume",
@@ -103,27 +169,9 @@ func TestHandleSurgeEvent_ResumeEvent_QueuesResumeDeltaAndPatchesCache(t *testin
 		t.Error("expected resume delta in pusher pending queue")
 	}
 
-	// Verify task was moved from waiting to active with status=active
-	Cache.sgMu.RLock()
-	for _, task := range Cache.sgWaiting {
-		if task.GID == "sg_test-resume" {
-			Cache.sgMu.RUnlock()
-			t.Fatal("expected task removed from waiting list")
-		}
-	}
-	foundInActive := false
-	for _, task := range Cache.sgActive {
-		if task.GID == "sg_test-resume" {
-			if task.Status != "active" {
-				t.Errorf("expected status 'active', got %q", task.Status)
-			}
-			foundInActive = true
-			break
-		}
-	}
-	Cache.sgMu.RUnlock()
-	if !foundInActive {
-		t.Error("expected task in active list after resume")
+	task, list, _ := Cache.GetTask("sg_test-resume")
+	if list != "waiting" || task.Status != "waiting" {
+		t.Fatalf("expected waiting acknowledgement: %#v", task)
 	}
 }
 
@@ -132,7 +180,7 @@ func TestHandleSurgeEvent_ResumeEvent_FromStopped_EmitsStoppedFrom(t *testing.T)
 	pusher := NewPusher(hub)
 	se := &rpc.SurgeEngine{}
 	hybrid := rpc.NewHybridEngine(nil, se)
-	m := &Monitor{hub: hub, pusher: pusher, engine: hybrid}
+	m := &Monitor{hub: hub, pusher: pusher, engine: hybrid, tracker: NewTaskTracker()}
 
 	prevWindow := State.HasWindow()
 	State.SetWindowExists(true)
@@ -157,6 +205,7 @@ func TestHandleSurgeEvent_ResumeEvent_FromStopped_EmitsStoppedFrom(t *testing.T)
 		gotMove = &cp
 	})
 
+	m.BeginPauseResumeRequest("sg_test-resume-stopped", PauseResumeIntentionResume)
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{
 		Type:       surgeEvents.EventResumed,
 		DownloadID: "test-resume-stopped",
@@ -166,10 +215,10 @@ func TestHandleSurgeEvent_ResumeEvent_FromStopped_EmitsStoppedFrom(t *testing.T)
 		t.Fatalf("expected stopped empty, got %#v", Cache.GetStopped())
 	}
 	found := false
-	for _, task := range Cache.GetActive() {
+	for _, task := range Cache.GetWaiting() {
 		if task.GID == "sg_test-resume-stopped" {
 			found = true
-			if task.Status != "active" {
+			if task.Status != "waiting" {
 				t.Errorf("Status = %q, want active", task.Status)
 			}
 			if task.ErrorCode != "" || task.ErrorMessage != "" {
@@ -183,7 +232,7 @@ func TestHandleSurgeEvent_ResumeEvent_FromStopped_EmitsStoppedFrom(t *testing.T)
 	if gotMove == nil {
 		t.Fatal("expected task:move emission")
 	}
-	if gotMove.From != "stopped" || gotMove.To != "active" {
+	if gotMove.From != "stopped" || gotMove.To != "waiting" {
 		t.Errorf("move From/To = %q/%q, want stopped/active", gotMove.From, gotMove.To)
 	}
 }
@@ -193,7 +242,7 @@ func TestHandleSurgeEvent_ResumeEvent_UnknownGID_NoMove(t *testing.T) {
 	pusher := NewPusher(hub)
 	se := &rpc.SurgeEngine{}
 	hybrid := rpc.NewHybridEngine(nil, se)
-	m := &Monitor{hub: hub, pusher: pusher, engine: hybrid}
+	m := &Monitor{hub: hub, pusher: pusher, engine: hybrid, tracker: NewTaskTracker()}
 
 	prevWindow := State.HasWindow()
 	State.SetWindowExists(true)

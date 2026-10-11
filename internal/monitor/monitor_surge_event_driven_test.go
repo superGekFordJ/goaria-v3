@@ -314,13 +314,18 @@ func TestEventDriven_ResumeMovesTaskToActive(t *testing.T) {
 
 	Cache.sgWaiting = []rpc.Task{{GID: "sg_evt-resume-1", Status: "paused", DownloadSpeed: "0"}}
 	tracker.EnsureTrackedFromEvent("sg_evt-resume-1", 0, "", 0, "paused")
+	m.BeginPauseResumeRequest("sg_evt-resume-1", PauseResumeIntentionResume)
 
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{
 		Type:       surgeEvents.EventResumed,
 		DownloadID: "evt-resume-1",
 	})
 
-	// Verify task moved to active
+	if task, list, _ := Cache.GetTask("sg_evt-resume-1"); list != "waiting" || task.Status != "waiting" || recordedMove != nil {
+		t.Fatal("resume acknowledgement must stay waiting without a move")
+	}
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, DownloadID: "evt-resume-1"})
+	// Verify the real start moved to active.
 	Cache.sgMu.RLock()
 	foundActive := false
 	for _, task := range Cache.sgActive {
@@ -802,8 +807,12 @@ func TestEventDriven_RapidPauseResume(t *testing.T) {
 		}
 
 		// Resume
-		m.BumpPauseResumeIntention("sg_rapid-1", PauseResumeIntentionResume)
+		m.BeginPauseResumeRequest("sg_rapid-1", PauseResumeIntentionResume)
 		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventResumed, DownloadID: "rapid-1"})
+		if task, list, _ := Cache.GetTask("sg_rapid-1"); list != "waiting" || task.Status != "waiting" {
+			t.Fatal("ack activated")
+		}
+		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, DownloadID: "rapid-1"})
 
 		// Verify in active
 		Cache.sgMu.RLock()

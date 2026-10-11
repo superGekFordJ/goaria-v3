@@ -11,6 +11,8 @@ import (
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/surge/scheduler"
+	"goaria-v3/internal/surge/store"
+	"goaria-v3/internal/surge/testutil"
 	surgeEvents "goaria-v3/internal/surge/types"
 )
 
@@ -48,14 +50,12 @@ func (m *mockSurgeListReader) setLiveStatus(id string, live rpc.SurgeLiveStatus)
 
 func (m *mockSurgeListReader) TellActive() ([]rpc.Task, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.activeFn != nil {
-		return m.activeFn()
+	fn, err, active := m.activeFn, m.err, copyTaskSlice(m.active)
+	m.mu.Unlock()
+	if fn != nil {
+		return fn()
 	}
-	if m.err != nil {
-		return nil, m.err
-	}
-	return m.active, nil
+	return active, err
 }
 
 func (m *mockSurgeListReader) TellWaiting(offset, num int) ([]rpc.Task, error) {
@@ -64,7 +64,7 @@ func (m *mockSurgeListReader) TellWaiting(offset, num int) ([]rpc.Task, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	return m.waiting, nil
+	return copyTaskSlice(m.waiting), nil
 }
 
 func (m *mockSurgeListReader) TellStopped(offset, num int) ([]rpc.Task, error) {
@@ -73,7 +73,7 @@ func (m *mockSurgeListReader) TellStopped(offset, num int) ([]rpc.Task, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	return m.stopped, nil
+	return copyTaskSlice(m.stopped), nil
 }
 
 func (m *mockSurgeListReader) setLists(active, waiting, stopped []rpc.Task) {
@@ -82,6 +82,242 @@ func (m *mockSurgeListReader) setLists(active, waiting, stopped []rpc.Task) {
 	m.active = active
 	m.waiting = waiting
 	m.stopped = stopped
+}
+
+func TestResumePollSafety_RealPoolConfirmedResume(t *testing.T) {
+	testutil.SetupStateDB(t)
+	m, _, _, tracker := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+	setupTaskGroupStoreTest(t)
+	full := fullRowForTest("sg_pool_resume")
+	full.Files[0].Uris[0].Status = "used"
+	Cache.AddSgTask(full, "stopped")
+	tracker.Update(nil, nil, []rpc.Task{full})
+	history.Add(history.HistoryEntry{GID: full.GID, Path: full.Files[0].Path, Status: "error", DownloadGroup: full.DownloadGroup})
+	testutil.SeedMasterList(t, surgeEvents.DownloadRecord{ID: "pool_resume", URL: full.Files[0].Uris[0].Uri,
+		DestPath: full.Files[0].Path, Filename: "a", Status: "error", TotalSize: 1000, Downloaded: 500})
+	testutil.SeedMasterList(t, surgeEvents.DownloadRecord{ID: "master_only", URL: "https://example.com/history", Status: "queued"})
+	history.Add(history.HistoryEntry{GID: "sg_master_only", Path: "/downloads/history", Status: "error"})
+	pool := scheduler.NewSchedulerForTesting(nil)
+	se := rpc.NewSurgeEngineForTesting(pool)
+	t.Cleanup(se.Close)
+	m.surgeEng, m.surgePollReader = se, se
+	m.engine = rpc.NewHybridEngine(nil, se)
+	ticket := m.BeginPauseResumeRequest(full.GID, "resume")
+	if err := se.Resume("pool_resume"); err != nil {
+		t.Fatal(err)
+	}
+	m.ConfirmPauseResumeRequest(ticket)
+	if live := se.ReadLiveStatus("pool_resume"); !live.Known || live.Status != "queued" {
+		t.Fatalf("not actually queued: %#v", live)
+	}
+	for range 2 {
+		m.reconcileSurgeCache()
+		got, list, _ := Cache.GetTask(full.GID)
+		assertFullRowMetadata(t, got, full)
+		tracked, _ := tracker.GetTrackedTask(full.GID)
+		if list != "waiting" || got.Status != "waiting" || got.TotalLength != "1000" || got.CompletedLength != "500" ||
+			got.ErrorCode != "" || tracked.Status != "waiting" || !tracked.ActivatedAt.IsZero() || tracker.LifecycleGeneration(full.GID) != 1 {
+			t.Fatalf("confirmed queue regressed: %#v / %#v", got, tracked)
+		}
+		if _, ok := history.Get(full.GID); ok {
+			t.Fatal("H0 restored")
+		}
+		if group := GetStoredTaskGroup(full.GID); group == nil || group.ID != full.DownloadGroup.ID {
+			t.Fatal("group not re-homed")
+		}
+		if se.ReadLiveStatus("master_only").Known || !Cache.IsInStopped("sg_master_only") {
+			t.Fatal("master-only row admitted")
+		}
+		if _, ok := history.Get("sg_master_only"); !ok {
+			t.Fatal("master-only history retired")
+		}
+		master, _ := se.GetMasterCacheEntry("pool_resume")
+		if master.Status != "error" {
+			t.Fatal("old disk mirror was not exercised")
+		}
+	}
+	if disk, err := store.GetDownload("pool_resume"); err != nil || disk == nil || disk.Status != "error" {
+		t.Fatalf("disk status changed: %#v %v", disk, err)
+	}
+	retry := fullRowForTest("sg_pool_retry")
+	Cache.AddSgTask(retry, "stopped")
+	Cache.mu.Lock()
+	Cache.ensureMetadata(retry)
+	Cache.mu.Unlock()
+	tracker.Update(nil, nil, []rpc.Task{retry})
+	history.Add(history.HistoryEntry{GID: retry.GID, Path: retry.Files[0].Path, Status: "error", DownloadGroup: retry.DownloadGroup})
+	if !pool.Add(surgeEvents.DownloadRecord{ID: "pool_retry"}) {
+		t.Fatal("real Add refused")
+	}
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventQueued, DownloadID: "pool_retry"})
+	got, list, _ := Cache.GetTask(retry.GID)
+	assertFullRowMetadata(t, got, retry)
+	if list != "waiting" || got.Status != "waiting" || tracker.LifecycleGeneration(retry.GID) != 1 {
+		t.Fatal("real queued event did not reopen full stopped row")
+	}
+	if _, ok := history.Get(retry.GID); ok {
+		t.Fatal("queued event retained H0")
+	}
+}
+
+func TestResumePollSafety_StaleReadBarriers(t *testing.T) {
+	for _, before := range []string{"paused", "error", "waiting", "empty"} {
+		t.Run(before, func(t *testing.T) {
+			m, reader, pusher, tracker := newReconcileTestMonitor(t)
+			resetCacheSg()
+			resetHistoryForTest(t)
+			full := fullRowForTest("sg_poll_barrier")
+			full.Status = before
+			m.chunkSnapshots = NewChunkSnapshotCache()
+			m.chunkSnapshots.Set(full.GID, []byte{1}, 4, 100, nil)
+			if before != "empty" {
+				Cache.AddSgTask(full, engineListForStatus(before))
+				tracker.EnsureTrackedFromEvent(full.GID, 1000, "", 1, before)
+				if before == "error" {
+					tracker.MarkCompleteFromEvent(full.GID, "error")
+					history.Add(history.HistoryEntry{GID: full.GID, Path: full.Files[0].Path, Status: "error", DownloadGroup: full.DownloadGroup})
+					reader.setLists(nil, nil, []rpc.Task{{GID: "poll_barrier", Status: "error"}})
+				} else {
+					reader.setLists(nil, []rpc.Task{{GID: "poll_barrier", Status: before}}, nil)
+				}
+			}
+			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			releasePoll := sync.OnceFunc(func() { close(release) })
+			reader.activeFn = func() ([]rpc.Task, error) {
+				close(entered)
+				select {
+				case <-release:
+					return nil, nil
+				case <-time.After(2 * time.Second):
+					return nil, context.DeadlineExceeded
+				}
+			}
+			t.Cleanup(func() {
+				releasePoll()
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					t.Error("poll did not exit")
+				}
+			})
+			go func() { m.reconcileSurgeCache(); close(done) }()
+			select {
+			case <-entered:
+			case <-time.After(2 * time.Second):
+				t.Fatal("poll did not reach bulk read")
+			}
+			m.surgeEng = &rpc.SurgeEngine{}
+			m.surgeEng.UpsertMasterCacheEntry(surgeEvents.DownloadRecord{ID: "poll_barrier", Status: "old"})
+			want, masterStatus := "waiting", "old"
+			if before == "waiting" {
+				m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, DownloadID: "poll_barrier"})
+				want, masterStatus = "active", "downloading"
+			} else {
+				if before == "empty" {
+					full.Status = "paused"
+					Cache.AddSgTask(full, "waiting")
+				}
+				m.ConfirmPauseResumeRequest(m.BeginPauseResumeRequest(full.GID, "resume"))
+			}
+			m.chunkSnapshots.Set(full.GID, []byte{2}, 4, 100, nil)
+			m.chunkSnapshots.Set("sg_new_chunk", []byte{2}, 4, 100, nil)
+			intention := m.pauseResumeIntentions[full.GID]
+			releasePoll()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("poll stuck")
+			}
+			got, list, _ := Cache.GetTask(full.GID)
+			assertFullRowMetadata(t, got, full)
+			tracked, _ := tracker.GetTrackedTask(full.GID)
+			master, _ := m.surgeEng.GetMasterCacheEntry("poll_barrier")
+			if got.Status != want || list != want || tracked.Status != want || master.Status != masterStatus ||
+				m.pauseResumeIntentions[full.GID] != intention {
+				t.Fatal("old poll overwrote accepted facts")
+			}
+			if _, ok := history.Get(full.GID); ok {
+				t.Fatal("old poll restored H0")
+			}
+			for _, gid := range []string{full.GID, "sg_new_chunk"} {
+				if snap, ok := m.chunkSnapshots.Get(gid); !ok || snap.Bitmap[0] != 2 {
+					t.Fatal("old poll removed new chunk")
+				}
+			}
+			for _, delta := range pusher.pending {
+				if delta.GID == full.GID {
+					if task, ok := delta.Payload.(rpc.Task); !ok || task.Status != want {
+						t.Fatalf("stale payload: %#v", delta)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestResumePollSafety_MasterPausedIsNotLive(t *testing.T) {
+	m, reader, pusher, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+	full := fullRowForTest("sg_retained_waiting")
+	full.Status = "waiting"
+	Cache.AddSgTask(full, "waiting")
+	reader.setLists(nil, []rpc.Task{{GID: "retained_waiting", Status: "paused"}}, nil)
+	m.reconcileSurgeCache()
+	got, list, _ := Cache.GetTask(full.GID)
+	assertFullRowMetadata(t, got, full)
+	if got.Status != "waiting" || list != "waiting" || len(pusher.pending) != 0 {
+		t.Fatal("master-only paused downgraded waiting")
+	}
+}
+
+func TestResumePollSafety_CurrentLiveFacts(t *testing.T) {
+	m, reader, pusher, tracker := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+	full := fullRowForTest("sg_poll_live")
+	full.Status = "paused"
+	Cache.AddSgTask(full, "waiting")
+	m.ConfirmPauseResumeRequest(m.BeginPauseResumeRequest(full.GID, "resume"))
+	reader.setLists(nil, nil, []rpc.Task{{GID: "poll_live", Status: "error", CompletedLength: "0"}})
+	var activated time.Time
+	for _, status := range []string{"queued", "downloading", "downloading", "paused"} {
+		if status == "paused" {
+			m.BeginPauseResumeRequest(full.GID, "pause")
+		}
+		reader.setLiveStatus("poll_live", rpc.SurgeLiveStatus{Known: true, Status: status})
+		m.reconcileSurgeCache()
+		got, _, _ := Cache.GetTask(full.GID)
+		assertFullRowMetadata(t, got, full)
+		tracked, _ := tracker.GetTrackedTask(full.GID)
+		if got.Status != m.readSurgeLiveStatus(full.GID).Status || tracked.Status != got.Status || got.CompletedLength != full.CompletedLength {
+			t.Fatal("list projection overrode live status/checkpoint")
+		}
+		if status == "downloading" {
+			if tracked.ActivatedAt.IsZero() {
+				t.Fatal("running did not activate")
+			}
+			if !activated.IsZero() && !activated.Equal(tracked.ActivatedAt) {
+				t.Fatal("duplicate poll renewed activation")
+			}
+			activated = tracked.ActivatedAt
+		} else if !tracked.ActivatedAt.IsZero() {
+			t.Fatal("queue/pause retained activation")
+		}
+		if _, ok := history.Get(full.GID); ok {
+			t.Fatal("old terminal list wrote history")
+		}
+	}
+	reader.setLiveStatus("poll_live", rpc.SurgeLiveStatus{Known: true, Status: "queued"})
+	m.reconcileSurgeCache()
+	if got, _, _ := Cache.GetTask(full.GID); got.Status != "paused" {
+		t.Fatal("queued snapshot undid current Pause")
+	}
+	if task, ok := pusher.pending[len(pusher.pending)-1].Payload.(rpc.Task); !ok || task.Status != "paused" {
+		t.Fatal("missing actual-status delta")
+	}
 }
 
 func TestSurgeLiveStatus_IndependentStrictFacts(t *testing.T) {
@@ -127,6 +363,7 @@ func TestSurgeLiveStatus_IndependentStrictFacts(t *testing.T) {
 	pool := scheduler.NewSchedulerForTesting(nil)
 	pool.Add(surgeEvents.DownloadRecord{ID: "live_facts"})
 	se := rpc.NewSurgeEngineForTesting(pool)
+	t.Cleanup(se.Close)
 	if (&Monitor{surgeEng: se}).readSurgeLiveStatus(full.GID).Status != "waiting" {
 		t.Fatal("engine fallback did not read raw ID")
 	}
@@ -331,15 +568,15 @@ func TestReconcileSurgeCache_MissedComplete_EmitsDeltaWithPayload(t *testing.T) 
 	if delta == nil {
 		t.Fatal("expected complete delta with payload")
 	}
-	payload, ok := delta.Payload.(map[string]string)
+	payload, ok := delta.Payload.(rpc.Task)
 	if !ok {
-		t.Fatalf("expected map[string]string payload, got %T", delta.Payload)
+		t.Fatalf("expected rpc.Task payload, got %T", delta.Payload)
 	}
-	if payload["completedLength"] != "1000" {
-		t.Errorf("completedLength = %v, want 1000", payload["completedLength"])
+	if payload.CompletedLength != "1000" {
+		t.Errorf("completedLength = %v, want 1000", payload.CompletedLength)
 	}
-	if payload["totalLength"] != "1000" {
-		t.Errorf("totalLength = %v, want 1000", payload["totalLength"])
+	if payload.TotalLength != "1000" {
+		t.Errorf("totalLength = %v, want 1000", payload.TotalLength)
 	}
 }
 
@@ -402,15 +639,15 @@ func TestReconcileSurgeCache_MissedError_StampsErrorCode(t *testing.T) {
 	if delta == nil {
 		t.Fatal("expected error delta from poll")
 	}
-	payload, ok := delta.Payload.(map[string]string)
+	payload, ok := delta.Payload.(rpc.Task)
 	if !ok {
-		t.Fatalf("payload type = %T, want map[string]string", delta.Payload)
+		t.Fatalf("payload type = %T, want rpc.Task", delta.Payload)
 	}
-	if payload["errorCode"] != "9" {
-		t.Fatalf("delta errorCode = %q, want 9", payload["errorCode"])
+	if payload.ErrorCode != "9" {
+		t.Fatalf("delta errorCode = %q, want 9", payload.ErrorCode)
 	}
-	if payload["errorMessage"] != surgeEvents.ErrInsufficientDiskSpace.Error() {
-		t.Fatalf("delta errorMessage = %q, want sentinel", payload["errorMessage"])
+	if payload.ErrorMessage != surgeEvents.ErrInsufficientDiskSpace.Error() {
+		t.Fatalf("delta errorMessage = %q, want sentinel", payload.ErrorMessage)
 	}
 }
 
@@ -472,8 +709,9 @@ func TestReconcileSurgeCache_MissedComplete_EmptyTotalLength(t *testing.T) {
 	for _, d := range pusher.pending {
 		if d.Type == "complete" && d.GID == "sg_task1" {
 			foundDelta = true
-			if d.Payload != nil {
-				t.Errorf("expected nil payload for empty TotalLength, got %v", d.Payload)
+			payload, ok := d.Payload.(rpc.Task)
+			if !ok || payload.Status != "complete" || payload.TotalLength != "" {
+				t.Errorf("unexpected unmeasured terminal payload: %v", d.Payload)
 			}
 		}
 	}
@@ -641,6 +879,7 @@ func TestReconcileSurgeCache_MissedResume_EmitsDelta(t *testing.T) {
 		}
 	})
 
+	reader.setLiveStatus("task1", rpc.SurgeLiveStatus{Known: true, Status: "downloading"})
 	reader.setLists([]rpc.Task{{GID: "task1", Status: "downloading"}}, nil, nil)
 
 	m.reconcileSurgeCache()
@@ -722,6 +961,7 @@ func TestReconcileSurgeCache_MissedResume(t *testing.T) {
 	Cache.AddSgTask(rpc.Task{GID: "sg_task1", Status: "paused"}, "waiting")
 	tracker.EnsureTrackedFromEvent("sg_task1", 0, "", 0, "paused")
 
+	reader.setLiveStatus("task1", rpc.SurgeLiveStatus{Known: true, Status: "downloading"})
 	reader.setLists([]rpc.Task{{GID: "task1", Status: "downloading"}}, nil, nil)
 
 	m.reconcileSurgeCache()
@@ -860,6 +1100,7 @@ func TestReconcileSurgeCache_ErrorResumeError_AllowsSecondTerminal(t *testing.T)
 		Dir:   "/tmp",
 	}
 
+	reader.setLiveStatus("task1", rpc.SurgeLiveStatus{Known: true, Status: "downloading"})
 	reader.setLists([]rpc.Task{{GID: "task1", Status: "downloading", TotalLength: "1000"}}, nil, nil)
 	m.reconcileSurgeCache()
 
@@ -870,6 +1111,7 @@ func TestReconcileSurgeCache_ErrorResumeError_AllowsSecondTerminal(t *testing.T)
 		t.Fatal("expected history retired on resume")
 	}
 
+	reader.setLiveStatus("task1", rpc.SurgeLiveStatus{})
 	reader.setLists(nil, nil, []rpc.Task{{
 		GID: "task1", Status: "error", TotalLength: "1000",
 		ErrorCode: "1", ErrorMessage: "again",
@@ -905,6 +1147,7 @@ func TestReconcileSurgeCache_MissedResume_FromStopped_RetiresHistory(t *testing.
 	}, "stopped")
 	history.Add(history.HistoryEntry{GID: "sg_task1", Path: "/tmp/a.bin", Status: "error"})
 
+	reader.setLiveStatus("task1", rpc.SurgeLiveStatus{Known: true, Status: "downloading"})
 	reader.setLists([]rpc.Task{{GID: "task1", Status: "downloading"}}, nil, nil)
 	m.reconcileSurgeCache()
 
@@ -931,6 +1174,7 @@ func TestReconcileSurgeCache_MissedResume_FromStopped_Converges(t *testing.T) {
 		}
 	})
 
+	reader.setLiveStatus("task1", rpc.SurgeLiveStatus{Known: true, Status: "downloading"})
 	reader.setLists([]rpc.Task{{GID: "task1", Status: "downloading"}}, nil, nil)
 
 	m.reconcileSurgeCache()
@@ -1026,11 +1270,12 @@ func TestReconcileSurgeCache_MissedRemove(t *testing.T) {
 }
 
 // TestReconcileSurgeCache_MissedAdd verifies that a task in the engine but not
-// in Cache is added to the correct list. No add delta is pushed.
+// in Cache is added with its accepted active status.
 func TestReconcileSurgeCache_MissedAdd(t *testing.T) {
 	m, reader, pusher, _ := newReconcileTestMonitor(t)
 	resetCacheSg()
 
+	reader.setLiveStatus("task1", rpc.SurgeLiveStatus{Known: true, Status: "downloading"})
 	reader.setLists([]rpc.Task{{GID: "task1", Status: "downloading", TotalLength: "5000"}}, nil, nil)
 
 	m.reconcileSurgeCache()
@@ -1046,12 +1291,16 @@ func TestReconcileSurgeCache_MissedAdd(t *testing.T) {
 	}
 
 	pusher.mu.Lock()
+	defer pusher.mu.Unlock()
 	for _, d := range pusher.pending {
 		if d.Type == "add" && d.GID == "sg_task1" {
-			t.Error("did not expect add delta from poll")
+			if task, ok := d.Payload.(rpc.Task); !ok || task.Status != "active" {
+				t.Errorf("unexpected add payload: %v", d.Payload)
+			}
+			return
 		}
 	}
-	pusher.mu.Unlock()
+	t.Fatal("missing accepted add delta")
 }
 
 // TestReconcileSurgeCache_MissedAddWithComplete verifies that a task the engine
@@ -1159,6 +1408,7 @@ func TestReconcileSurgeCache_NoDiscrepancy(t *testing.T) {
 	Cache.AddSgTask(rpc.Task{GID: "sg_task3", Status: "complete"}, "stopped")
 	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "", 4, "active")
 
+	reader.setLiveStatus("task1", rpc.SurgeLiveStatus{Known: true, Status: "downloading"})
 	reader.setLists(
 		[]rpc.Task{{GID: "task1", Status: "downloading"}},
 		[]rpc.Task{{GID: "task2", Status: "paused"}},
@@ -1266,6 +1516,7 @@ func TestSurgePollLoop_StartupWindow(t *testing.T) {
 	m, reader, _, _ := newReconcileTestMonitor(t)
 	resetCacheSg()
 
+	reader.setLiveStatus("task1", rpc.SurgeLiveStatus{Known: true, Status: "downloading"})
 	reader.setLists(
 		[]rpc.Task{{GID: "task1", Status: "downloading"}},
 		[]rpc.Task{{GID: "task2", Status: "paused"}},

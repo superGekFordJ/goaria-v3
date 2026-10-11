@@ -791,10 +791,20 @@ func (t *TaskTracker) RunUnderLifecycle(gid string, fn func()) {
 		fn()
 		return
 	}
-	ls := t.getLifecycle(gid)
-	ls.mu.Lock()
-	defer ls.mu.Unlock()
-	fn()
+	for {
+		ls := t.getLifecycle(gid)
+		ls.mu.Lock()
+		t.lifecycleMu.Lock()
+		current := t.lifecycle[gid] == ls
+		t.lifecycleMu.Unlock()
+		if !current {
+			ls.mu.Unlock()
+			continue
+		}
+		defer ls.mu.Unlock()
+		fn()
+		return
+	}
 }
 
 func (t *TaskTracker) getLifecycle(gid string) *lifecycleState {
@@ -1024,11 +1034,15 @@ func (t *TaskTracker) GetScopeAndEnv(gid string) (scope, domain, envKey string, 
 
 // RemoveTask 从追踪器中移除任务
 func (t *TaskTracker) RemoveTask(gid string) {
+	t.RunUnderLifecycle(gid, func() { t.removeTaskLocked(gid) })
+}
+
+// Caller holds the GID gate; removal is its last local write.
+func (t *TaskTracker) removeTaskLocked(gid string) {
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	delete(t.tasks, gid)
 	delete(t.processedComplete, gid)
-	t.mu.Unlock()
-
 	t.lifecycleMu.Lock()
 	delete(t.lifecycle, gid)
 	t.lifecycleMu.Unlock()

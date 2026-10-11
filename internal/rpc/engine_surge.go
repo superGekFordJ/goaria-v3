@@ -838,6 +838,7 @@ func NewSurgeEngineForTesting(pool *scheduler.Scheduler) *SurgeEngine {
 		service:     service.NewLocalDownloadService(mgr),
 		manager:     mgr,
 		scheduler:   pool,
+		cleanup:     mgr.Shutdown,
 		masterCache: masterEntries,
 	}
 }

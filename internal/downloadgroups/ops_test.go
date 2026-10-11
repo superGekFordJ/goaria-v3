@@ -71,6 +71,8 @@ func mockBatchRemove(gids []string, deleteFiles bool) {
 func setupGroupOpsRPCTest(t *testing.T, handler func(req appTaskRPCRequest, recorder *groupOpsRPCRecorder) map[string]any) *groupOpsRPCRecorder {
 	t.Helper()
 	setupDownloadGroupsTest(t)
+	_, cleanup := mixedGroupTestMonitor(t)
+	t.Cleanup(cleanup)
 	recorder := &groupOpsRPCRecorder{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
@@ -295,7 +297,7 @@ func TestDownloadGroupOperation_NoActionablePauseResumeIsNoopSuccess(t *testing.
 	terminalGroup := groupReadTestGroup("dg-terminal", 2)
 	monitor.Cache.UpdateFromAria2(nil,
 		[]rpc.Task{groupReadTask("gid-paused-one", "paused", &pausedGroup, "100", "0", "0"), groupReadTask("gid-paused-two", "paused", &pausedGroup, "100", "0", "0")},
-		[]rpc.Task{groupReadTask("gid-terminal-one", "complete", &terminalGroup, "100", "100", "0"), groupReadTask("gid-terminal-two", "error", &terminalGroup, "100", "50", "0")},
+		[]rpc.Task{groupReadTask("gid-terminal-one", "complete", &terminalGroup, "100", "100", "0"), groupReadTask("gid-terminal-two", "complete", &terminalGroup, "100", "100", "0")},
 	)
 
 	resumePaused := ResumeDownloadGroup(pausedGroup.ID)
@@ -304,7 +306,7 @@ func TestDownloadGroupOperation_NoActionablePauseResumeIsNoopSuccess(t *testing.
 	}
 	monitor.Cache.UpdateFromAria2(nil,
 		[]rpc.Task{groupReadTask("gid-paused-one", "paused", &pausedGroup, "100", "0", "0"), groupReadTask("gid-paused-two", "paused", &pausedGroup, "100", "0", "0")},
-		[]rpc.Task{groupReadTask("gid-terminal-one", "complete", &terminalGroup, "100", "100", "0"), groupReadTask("gid-terminal-two", "error", &terminalGroup, "100", "50", "0")},
+		[]rpc.Task{groupReadTask("gid-terminal-one", "complete", &terminalGroup, "100", "100", "0"), groupReadTask("gid-terminal-two", "complete", &terminalGroup, "100", "100", "0")},
 	)
 	pausedNoop := PauseDownloadGroup(pausedGroup.ID)
 	if !pausedNoop.OK || !pausedNoop.Noop || pausedNoop.Skipped != 2 || pausedNoop.TotalTargets != 0 {
@@ -664,8 +666,8 @@ func TestResumeDownloadGroup_PatchesWaitingSliceCounts(t *testing.T) {
 	}
 
 	card = findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
-	if card.Counts.Active != 2 || card.Counts.Paused != 0 {
-		t.Fatalf("post-resume: expected 2 active 0 paused, got active=%d paused=%d", card.Counts.Active, card.Counts.Paused)
+	if card.Counts.Waiting != 2 || card.Counts.Active != 0 || card.Counts.Paused != 0 {
+		t.Fatalf("post-resume: expected 2 waiting: %#v", card.Counts)
 	}
 }
 
@@ -704,8 +706,8 @@ func TestPauseThenResume_ActiveSliceRoundTrip(t *testing.T) {
 		t.Fatalf("expected 2 multicalls (pause+resume), got %d", recorder.count("system.multicall"))
 	}
 	card = findDownloadGroupCard(t, GetDownloadGroups().Groups, group.ID)
-	if card.Counts.Active != 2 || card.Counts.Paused != 0 {
-		t.Fatalf("post-resume: expected 2 active 0 paused, got active=%d paused=%d", card.Counts.Active, card.Counts.Paused)
+	if card.Counts.Waiting != 2 || card.Counts.Active != 0 || card.Counts.Paused != 0 {
+		t.Fatalf("post-resume: expected 2 waiting: %#v", card.Counts)
 	}
 }
 

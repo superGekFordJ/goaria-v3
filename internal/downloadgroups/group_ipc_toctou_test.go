@@ -11,6 +11,50 @@ import (
 	"goaria-v3/internal/rpc"
 )
 
+func TestResumeDownloadGroup_StoppedErrorAndPartialConfirmation(t *testing.T) {
+	setupDownloadGroupsTest(t)
+	_, cleanup := mixedGroupTestMonitor(t)
+	defer cleanup()
+	group := groupReadTestGroup("dg-error-resume", 4)
+	for _, gid := range []string{"sg_error_ok", "sg_error_fail", "sg_error_missing"} {
+		task := groupReadTask(gid, "error", &group, "1000", "200", "0")
+		monitor.Cache.AddSgTask(task, "stopped")
+		monitor.RegisterTaskGroup(gid, group)
+		history.Add(history.HistoryEntry{GID: gid, Status: "error", Path: task.Files[0].Path, DownloadGroup: &group})
+	}
+	monitor.Cache.AddSgTask(groupReadTask("sg_complete", "complete", &group, "1000", "1000", "0"), "stopped")
+	monitor.Cache.UpdateFromAria2(nil, nil, monitor.Cache.GetStopped())
+	original := ResumeMultiResults
+	defer func() { ResumeMultiResults = original }()
+	var newer monitor.PauseResumeTicket
+	ResumeMultiResults = func(gids []string) ([]rpc.MultiCallItemResult, error) {
+		if len(gids) != 3 {
+			t.Fatalf("wrong eligibility: %v", gids)
+		}
+		newer = monitor.State.GetMonitor().BeginPauseResumeRequest("sg_error_missing", "pause")
+		return []rpc.MultiCallItemResult{{GID: "sg_error_ok", OK: true}, {GID: "sg_error_ok", Error: "duplicate"}, {GID: "sg_complete", OK: true}, {GID: "sg_error_fail", Error: "failed"}}, nil
+	}
+	result := ResumeDownloadGroup(group.ID)
+	if result.Succeeded != 1 || result.Failed != 2 || result.Skipped != 1 {
+		t.Fatalf("partial: %#v", result)
+	}
+	got, list, _ := monitor.Cache.GetTask("sg_error_ok")
+	if list != "waiting" || got.Status != "waiting" || got.CompletedLength != "200" || got.DownloadGroup == nil {
+		t.Fatalf("full confirmation: %#v", got)
+	}
+	if _, ok := history.Get(got.GID); ok {
+		t.Fatal("H0 retained")
+	}
+	for _, gid := range []string{"sg_error_fail", "sg_error_missing", "sg_complete"} {
+		if !taskInCacheList(gid, "stopped") {
+			t.Fatal("failed/unknown moved")
+		}
+	}
+	if !monitor.State.GetMonitor().RunIfPauseResumeRequestCurrent(newer, func() {}) {
+		t.Fatal("missing cleared newer")
+	}
+}
+
 func TestPauseDownloadGroup_TerminalDuringRPC_DoesNotRevive(t *testing.T) {
 	setupDownloadGroupsTest(t)
 	hub, cleanup := mixedGroupTestMonitor(t)

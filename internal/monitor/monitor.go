@@ -290,6 +290,103 @@ func (m *Monitor) ClearPauseResumeIntentionIfCurrent(ticket PauseResumeTicket) (
 	return
 }
 
+type acceptedTaskChange struct {
+	task rpc.Task
+	from string
+	to   string
+	kind string
+}
+
+// ConfirmPauseResumeRequest folds a successful engine acknowledgement, not a start.
+func (m *Monitor) ConfirmPauseResumeRequest(ticket PauseResumeTicket) {
+	var change acceptedTaskChange
+	m.RunIfPauseResumeRequestCurrent(ticket, func() {
+		change = m.confirmPauseResumeRequestLocked(ticket.gid)
+	})
+	m.publishAcceptedTaskChange(change)
+}
+
+// Caller has accepted the request under the GID gate.
+func (m *Monitor) confirmPauseResumeRequestLocked(gid string) acceptedTaskChange {
+	m.pauseResumeVersionMu.RLock()
+	action := m.pauseResumeIntentions[gid].action
+	m.pauseResumeVersionMu.RUnlock()
+	task, source, exists := Cache.GetTask(gid)
+	status, kind := "paused", "pause"
+	if action == PauseResumeIntentionResume {
+		status, kind = "waiting", "resume"
+		if exists && source != "stopped" && (source != "waiting" || task.Status != "paused") {
+			return acceptedTaskChange{}
+		}
+		if !exists {
+			entry, ok := history.Get(gid)
+			if !ok {
+				return acceptedTaskChange{}
+			}
+			task = history.ToStoppedTask(entry)
+			task.Title = entry.Title
+			if IsSgGid(gid) {
+				Cache.AddSgTask(task, "stopped")
+			} else {
+				Cache.arMu.Lock()
+				Cache.arStopped = append(Cache.arStopped, task)
+				Cache.arMu.Unlock()
+			}
+			source = "stopped"
+		}
+	} else if action != PauseResumeIntentionPause || !exists || source == "stopped" || task.Status == "paused" ||
+		(task.Status != "active" && task.Status != "waiting") || m.tracker.TerminalAcceptedInCurrentGeneration(gid) {
+		return acceptedTaskChange{}
+	}
+	from := Cache.MoveTaskToWaiting(gid, status)
+	if from == "stopped" {
+		if m.tracker.afterMoveBeforeRetire != nil {
+			m.tracker.afterMoveBeforeRetire(gid)
+		}
+		retireHistoryAndReopenToStatusLocked(m.tracker, gid, status)
+	}
+	m.tracker.EnsureTrackedFromEvent(gid, parseInt64(task.TotalLength), sourceURLFromTask(task), 0, status)
+	m.tracker.SetStatusFromEvent(gid, status)
+	if completed := parseInt64(task.CompletedLength); completed > 0 {
+		m.tracker.UpdateProgressFromEvent(gid, parseInt64(task.TotalLength), completed)
+	}
+	task, _, _ = Cache.GetTask(gid)
+	return acceptedTaskChange{task: task, from: from, to: "waiting", kind: kind}
+}
+
+func (m *Monitor) publishAcceptedTaskChange(change acceptedTaskChange) {
+	if m == nil || m.hub == nil || change.task.GID == "" {
+		return
+	}
+	if change.from != "" && change.from != change.to {
+		m.hub.EmitTaskMove(events.TaskMove{GID: change.task.GID, From: change.from, To: change.to, Task: change.task})
+	}
+	if State.HasWindow() && m.pusher != nil {
+		m.pusher.Queue(events.TaskDelta{Type: change.kind, GID: change.task.GID, Payload: change.task})
+	}
+	m.hub.NotifyInternal(events.TaskDelta{Type: change.kind, GID: change.task.GID, Payload: change.task})
+}
+
+func (m *Monitor) clearPauseResumeIntentionLocked(gid string) {
+	m.pauseResumeVersionMu.Lock()
+	delete(m.pauseResumeIntentions, gid)
+	m.pauseResumeVersionMu.Unlock()
+}
+
+func (m *Monitor) removeLocalTaskLocked(gid string) {
+	Cache.RemoveTask(gid)
+	m.clearPauseResumeIntentionLocked(gid)
+	if m.telemetry != nil {
+		m.telemetry.Remove(gid)
+	}
+	if m.chunkSnapshots != nil {
+		m.chunkSnapshots.Remove(gid)
+	}
+	if m.tracker != nil {
+		m.tracker.removeTaskLocked(gid)
+	}
+}
+
 type surgeLiveStatusReader interface {
 	ReadLiveStatus(id string) rpc.SurgeLiveStatus
 }
@@ -443,7 +540,16 @@ func retireHistoryAndReopenToStatusLocked(tracker *TaskTracker, gid, targetStatu
 
 func retireHistoryAndReopen(tracker *TaskTracker, gid string) {
 	body := func() {
-		retireHistoryAndReopenLocked(tracker, gid)
+		task, list, ok := Cache.GetTask(gid)
+		if !ok || (list != "active" && list != "waiting") {
+			return
+		}
+		if tracker != nil && !tracker.TerminalAcceptedInCurrentGeneration(gid) {
+			if _, exists := history.Get(gid); !exists {
+				return
+			}
+		}
+		retireHistoryAndReopenToStatusLocked(tracker, gid, task.Status)
 	}
 	if tracker != nil {
 		tracker.RunUnderLifecycle(gid, body)
@@ -965,49 +1071,39 @@ func (m *Monitor) masterCacheRangeMode(rawID string) types.RangeAcquisitionMode 
 // InvalidateTask 使指定任务的缓存失效并发送删除事件
 // 用于 RemoveTask 后确保前端和缓存同步
 func (m *Monitor) InvalidateTask(gid string) {
-	// 1. 清理元数据缓存
-	Cache.InvalidateMetadata(gid)
-	RemoveTaskGroup(gid)
+	m.tracker.RunUnderLifecycle(gid, func() {
+		// 1. 清理元数据缓存
+		Cache.InvalidateMetadata(gid)
+		RemoveTaskGroup(gid)
 
-	// 2. 从 lastStopped 缓存中移除
-	m.mu.Lock()
-	m.deletedGids[gid] = time.Now()
+		// 2. 从 lastStopped 缓存中移除
+		m.mu.Lock()
+		m.deletedGids[gid] = time.Now()
 
-	newStopped := make([]rpc.Task, 0, len(m.lastStopped))
-	for _, t := range m.lastStopped {
-		if t.GID != gid {
-			newStopped = append(newStopped, t)
+		newStopped := make([]rpc.Task, 0, len(m.lastStopped))
+		for _, t := range m.lastStopped {
+			if t.GID != gid {
+				newStopped = append(newStopped, t)
+			}
 		}
-	}
-	m.lastStopped = newStopped
-	m.shouldFetchStopped = true // 标记需要重新获取
-	m.mu.Unlock()
+		m.lastStopped = newStopped
+		m.shouldFetchStopped = true // 标记需要重新获取
+		m.mu.Unlock()
 
-	// 3. 发送删除事件通知前端
-	if m.hub != nil {
-		m.hub.EmitTaskDelta(events.TaskDelta{
-			Type: "remove",
-			GID:  gid,
-		})
-	}
-
-	// 4. 清理遥测缓存
-	if m.telemetry != nil {
-		m.telemetry.Remove(gid)
-	}
-	if m.chunkSnapshots != nil {
-		m.chunkSnapshots.Remove(gid)
-	}
-
-	// 5. 清理 convergence state
+		m.clearPauseResumeIntentionLocked(gid)
+		if m.telemetry != nil {
+			m.telemetry.Remove(gid)
+		}
+		if m.chunkSnapshots != nil {
+			m.chunkSnapshots.Remove(gid)
+		}
+	})
 	if m.convergence != nil {
 		m.convergence.RemoveTask(gid)
 	}
-
-	// 6. 清理 pause/resume intention，避免长期运行内存泄漏
-	m.pauseResumeVersionMu.Lock()
-	delete(m.pauseResumeIntentions, gid)
-	m.pauseResumeVersionMu.Unlock()
+	if m.hub != nil {
+		m.hub.EmitTaskDelta(events.TaskDelta{Type: "remove", GID: gid})
+	}
 
 	log.Printf("[Monitor] Task invalidated: %s", gid)
 }

@@ -17,6 +17,7 @@ func newCacheTestEngine(t *testing.T) *SurgeEngine {
 	testutil.SetupStateDB(t)
 	pool := scheduler.NewSchedulerForTesting(nil)
 	e := NewSurgeEngineForTesting(pool)
+	t.Cleanup(e.Close)
 	e.masterCache = []types.DownloadRecord{}
 	return e
 }
@@ -109,6 +110,7 @@ func TestMasterCache_CrashRecovery(t *testing.T) {
 	}
 
 	first := NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+	t.Cleanup(first.Close)
 	first.masterCache = []types.DownloadRecord{}
 	first.RefreshMasterCache()
 	if got, ok := first.GetMasterCacheEntry("dl-recover"); !ok || got.URL != "http://x/a" {
@@ -117,6 +119,7 @@ func TestMasterCache_CrashRecovery(t *testing.T) {
 
 	// Simulate restart: new SurgeEngine loads master list at construction.
 	second := NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+	t.Cleanup(second.Close)
 	second.masterCache = loadMasterEntriesForTest(t)
 	if got, ok := second.GetMasterCacheEntry("dl-recover"); !ok || got.Status != "completed" {
 		t.Fatalf("second instance (restart) cache missing entry: %+v ok=%v", got, ok)
@@ -138,6 +141,7 @@ func TestMasterCache_FileCorruption(t *testing.T) {
 	}
 
 	e := NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+	t.Cleanup(e.Close)
 	e.masterCache = []types.DownloadRecord{{ID: "stale"}}
 	// RefreshMasterCache logs the error and leaves cache unchanged (best-effort).
 	e.RefreshMasterCache()
@@ -155,6 +159,7 @@ func TestMasterCache_GetDownloadListNoGobDecode(t *testing.T) {
 	}
 
 	e := NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+	t.Cleanup(e.Close)
 	e.masterCache = []types.DownloadRecord{{ID: "dl-cached", URL: "http://x/a", Status: "completed"}}
 
 	// Multiple calls should return the cached entry without touching gob.
@@ -179,6 +184,7 @@ func TestMasterCache_NonEventWriteConsistency(t *testing.T) {
 	testutil.SetupStateDB(t)
 
 	e := NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+	t.Cleanup(e.Close)
 	e.masterCache = []types.DownloadRecord{}
 
 	// Simulate a non-event-driven write directly to store (e.g. removeDownloadsByStatus peer).

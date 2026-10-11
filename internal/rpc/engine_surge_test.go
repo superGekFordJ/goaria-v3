@@ -9,11 +9,41 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"goaria-v3/internal/surge/progress"
 	"goaria-v3/internal/surge/scheduler"
 	"goaria-v3/internal/surge/types"
 )
+
+func TestSurgeEngine_TestingClose(t *testing.T) {
+	pool := scheduler.NewSchedulerForTesting(nil)
+	engine := NewSurgeEngineForTesting(pool)
+	t.Cleanup(engine.Close)
+	stream, unsubscribe := engine.manager.GetEventBus().Subscribe()
+	t.Cleanup(unsubscribe)
+	if !pool.Add(types.DownloadRecord{ID: "close_queued"}) {
+		t.Fatal("Add refused")
+	}
+	done := make(chan struct{})
+	go func() { engine.Close(); engine.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not finish")
+	}
+	select {
+	case _, open := <-stream:
+		if open {
+			t.Fatal("EventBus listener still open")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("EventBus did not stop")
+	}
+	if pool.ActiveCount() != 0 || pool.GetStatus("close_queued") != nil || pool.Add(types.DownloadRecord{ID: "after_close"}) {
+		t.Fatal("closed pool retained or accepted queued work")
+	}
+}
 
 func TestSurgeEngine_ReadLiveStatus(t *testing.T) {
 	for _, engine := range []*SurgeEngine{nil, {}} {
@@ -23,6 +53,7 @@ func TestSurgeEngine_ReadLiveStatus(t *testing.T) {
 	}
 	pool := scheduler.NewSchedulerForTesting(nil)
 	engine := NewSurgeEngineForTesting(pool)
+	t.Cleanup(engine.Close)
 	engine.SetMasterCacheForTesting([]types.DownloadRecord{{ID: "master-wait", Status: "queued"}, {ID: "master-run", Status: "downloading"}})
 	if _, err := engine.getDownloadList(); err != nil {
 		t.Fatal(err)
@@ -57,6 +88,7 @@ func TestSurgeEngine_ReadLiveStatus(t *testing.T) {
 			}
 			pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{"live": {ID: "live", ProgressState: ps}})
 			engine := NewSurgeEngineForTesting(pool)
+			t.Cleanup(engine.Close)
 			if _, err := engine.getDownloadList(); err != nil {
 				t.Fatal(err)
 			}
@@ -371,6 +403,7 @@ func TestSurgeEngine_SetResumeParamsHook_NilHook_PreservesValues(t *testing.T) {
 func TestSurgeEngine_SetTightenOnPickupHook(t *testing.T) {
 	pool := scheduler.NewSchedulerForTesting(nil)
 	engine := NewSurgeEngineForTesting(pool)
+	t.Cleanup(engine.Close)
 
 	var called bool
 	engine.SetTightenOnPickupHook(func(cfg *types.DownloadRecord) {
@@ -451,6 +484,7 @@ func TestSurgeEngine_SetResumeParamsHook_PreservesTighten(t *testing.T) {
 func TestSurgeEngine_SetTightenOnPickupHook_NilClears(t *testing.T) {
 	pool := scheduler.NewSchedulerForTesting(nil)
 	engine := NewSurgeEngineForTesting(pool)
+	t.Cleanup(engine.Close)
 
 	engine.SetTightenOnPickupHook(func(cfg *types.DownloadRecord) {})
 	if !pool.TightenOnPickupInstalled() {
@@ -488,6 +522,7 @@ func TestSurgeEngine_KillWorker_Delegation(t *testing.T) {
 		"dl-x": {ID: "dl-x", ProgressState: state},
 	})
 	engine := NewSurgeEngineForTesting(pool)
+	t.Cleanup(engine.Close)
 
 	if ok := engine.KillWorker("dl-x", 9); !ok {
 		t.Error("KillWorker(dl-x, 9) = false, want true")
@@ -520,6 +555,7 @@ func TestSurgeEngine_SetSlowWorkerThreshold_Delegation(t *testing.T) {
 		"dl-y": {ID: "dl-y", ProgressState: state},
 	})
 	engine := NewSurgeEngineForTesting(pool)
+	t.Cleanup(engine.Close)
 
 	engine.SetSlowWorkerThreshold("dl-y", 0.0)
 	mu.Lock()
@@ -537,6 +573,7 @@ func TestSurgeEngine_InvalidateListCache_ForcesFreshFetch(t *testing.T) {
 		"dl-cache-1": {ID: "dl-cache-1"},
 	})
 	engine := NewSurgeEngineForTesting(pool)
+	t.Cleanup(engine.Close)
 
 	// Populate the cache
 	first, err := engine.getDownloadList()
@@ -637,6 +674,7 @@ func TestNewSurgeEngineForTesting_IsNameActiveRenamesMemoryOnlyCollision(t *test
 		},
 	})
 	engine := NewSurgeEngineForTesting(pool)
+	t.Cleanup(engine.Close)
 
 	if !engine.manager.IsNameActive(dir, "memory.bin") {
 		t.Fatal("expected seeded in-memory name to be active")
@@ -683,6 +721,7 @@ func TestSurgeEngine_GetRateLimit_ZeroUnlimitedNotLimited(t *testing.T) {
 		},
 	})
 	engine := NewSurgeEngineForTesting(pool)
+	t.Cleanup(engine.Close)
 
 	bps, limited := engine.GetRateLimit("unlimited-set")
 	if limited || bps != 0 {
@@ -719,6 +758,7 @@ func TestSurgeEngine_buildDownloadList_ActiveErrorAfterDone(t *testing.T) {
 		},
 	})
 	engine := NewSurgeEngineForTesting(pool)
+	t.Cleanup(engine.Close)
 
 	list, err := engine.getDownloadList()
 	if err != nil {
@@ -762,6 +802,7 @@ func TestSurgeEngine_buildDownloadList_ErrorOverridesPausing(t *testing.T) {
 		},
 	})
 	engine := NewSurgeEngineForTesting(pool)
+	t.Cleanup(engine.Close)
 
 	list, err := engine.getDownloadList()
 	if err != nil {
@@ -800,6 +841,7 @@ func TestSurgeEngine_ActiveCount(t *testing.T) {
 
 	pool := scheduler.NewSchedulerForTesting(nil)
 	engine := NewSurgeEngineForTesting(pool)
+	t.Cleanup(engine.Close)
 	if count := engine.ActiveCount(); count != 0 {
 		t.Errorf("empty scheduler ActiveCount() = %d, want 0", count)
 	}
@@ -827,6 +869,7 @@ func TestSurgeEngine_ActiveCount(t *testing.T) {
 	populatedPool.Add(types.DownloadRecord{ID: "queued-task"})
 
 	populatedEngine := NewSurgeEngineForTesting(populatedPool)
+	t.Cleanup(populatedEngine.Close)
 	if count := populatedEngine.ActiveCount(); count != 2 {
 		t.Errorf("populatedEngine.ActiveCount() = %d, want 2 (1 active + 1 queued)", count)
 	}

@@ -37,13 +37,15 @@ func TestHandleSurgeEvent_ResumeFromStopped_RetiresHistory(t *testing.T) {
 		GID: "sg_hist-1", Path: "/tmp/hist.bin", Status: "error",
 	})
 
+	m.tracker = NewTaskTracker()
+	m.BeginPauseResumeRequest("sg_hist-1", PauseResumeIntentionResume)
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventResumed, DownloadID: "hist-1"})
 
 	if Cache.IsInStopped("sg_hist-1") {
 		t.Fatal("expected task moved out of stopped on resume")
 	}
 	foundActive := false
-	for _, task := range Cache.GetActive() {
+	for _, task := range Cache.GetWaiting() {
 		if task.GID == "sg_hist-1" {
 			foundActive = true
 		}

@@ -77,6 +77,8 @@ func TestHandleSurgeEvent_InvalidatesListCacheOnResume(t *testing.T) {
 		t.Fatalf("TellWaiting to populate cache: %v", err)
 	}
 
+	m.tracker = NewTaskTracker()
+	m.BeginPauseResumeRequest("sg_inv-2", PauseResumeIntentionResume)
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventResumed, DownloadID: "inv-2"})
 
 	surgeEng.ListCacheMuForTesting().Lock()

@@ -183,7 +183,7 @@ func TestHandleSurgeEvent_StartedOnTerminalWithResumeIntention(t *testing.T) {
 		t.Fatal("precondition: task should be in cache stopped")
 	}
 
-	m.BumpPauseResumeIntention("sg_x", PauseResumeIntentionResume)
+	m.BeginPauseResumeRequest("sg_x", PauseResumeIntentionResume)
 	m.handleSurgeEvent(startedEvent(0, true))
 
 	tt := tracker.tasks["sg_x"]
@@ -251,6 +251,7 @@ func TestReconcileSurgeCache_SameListActiveRepairsMissedStarted(t *testing.T) {
 		t.Fatal("precondition: no activation yet")
 	}
 
+	reader.setLiveStatus("rep", rpc.SurgeLiveStatus{Known: true, Status: "downloading", CompletedKnown: true, CompletedLength: 300})
 	reader.setLists([]rpc.Task{{GID: "rep", Status: "active", CompletedLength: "300", TotalLength: "1000"}}, nil, nil)
 	m.reconcileSurgeCache()
 
@@ -275,6 +276,7 @@ func TestReconcileSurgeCache_MismatchActiveRepairsFacts(t *testing.T) {
 	Cache.AddSgTask(rpc.Task{GID: "sg_mm", Status: "paused", CompletedLength: "700", TotalLength: "1000"}, "waiting")
 	tracker.EnsureTrackedFromEvent("sg_mm", 1000, "https://e/f", 4, "paused")
 
+	reader.setLiveStatus("mm", rpc.SurgeLiveStatus{Known: true, Status: "downloading", CompletedKnown: true, CompletedLength: 700})
 	reader.setLists([]rpc.Task{{GID: "mm", Status: "active", CompletedLength: "700", TotalLength: "1000"}}, nil, nil)
 	m.reconcileSurgeCache()
 
@@ -303,6 +305,9 @@ func TestReconcileSurgeCache_WaitingClearsActivation(t *testing.T) {
 	tracker.SetTargetBandwidth("sg_w", 4_000_000)
 	tracker.ObserveActivation("sg_w", 0, true)
 
+	Cache.PatchTaskProgress("sg_w", "400", "0", "1000")
+	tracker.UpdateProgressFromEvent("sg_w", 1000, 400)
+	reader.setLiveStatus("w", rpc.SurgeLiveStatus{Known: true, Status: "queued"})
 	reader.setLists(nil, []rpc.Task{{GID: "w", Status: "waiting", CompletedLength: "400", TotalLength: "1000"}}, nil)
 	m.reconcileSurgeCache()
 

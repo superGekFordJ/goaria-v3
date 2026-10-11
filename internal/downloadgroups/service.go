@@ -1314,20 +1314,18 @@ func pauseResumeDownloadGroup(groupKey string, action string) DownloadGroupOpera
 		gids[i] = target.gid
 	}
 	result.markAttempted()
-	if mon := monitor.State.GetMonitor(); mon != nil {
-		intention := action
-		switch action {
-		case DownloadGroupOperationActionPause:
-			intention = monitor.PauseResumeIntentionPause
-		case DownloadGroupOperationActionResume:
-			intention = monitor.PauseResumeIntentionResume
-		}
-		for _, gid := range gids {
-			mon.BumpPauseResumeIntention(gid, intention)
+	mon := monitor.State.GetMonitor()
+	tickets := make(map[string]monitor.PauseResumeTicket, len(gids))
+	for _, gid := range gids {
+		if _, exists := tickets[gid]; !exists {
+			tickets[gid] = mon.BeginPauseResumeRequest(gid, action)
 		}
 	}
 	multiResults, err := callDownloadGroupPauseResumeRPC(action, gids)
 	if err != nil {
+		for _, ticket := range tickets {
+			mon.ClearPauseResumeIntentionIfCurrent(ticket)
+		}
 		for _, target := range actionable {
 			result.addItem(DownloadGroupOperationItemResult{GID: target.gid, Status: DownloadGroupOperationItemFailed, Code: DownloadGroupOperationCodeRPCError, Message: downloadGroupOperationMessage(DownloadGroupOperationCodeRPCError)})
 		}
@@ -1338,30 +1336,22 @@ func pauseResumeDownloadGroup(groupKey string, action string) DownloadGroupOpera
 
 	multiByGID := make(map[string]rpc.MultiCallItemResult, len(multiResults))
 	for _, item := range multiResults {
-		multiByGID[item.GID] = item
+		if previous, exists := multiByGID[item.GID]; !exists || !previous.OK {
+			multiByGID[item.GID] = item
+		}
 	}
 	successCode := DownloadGroupOperationCodePaused
-	patchStatus := DownloadGroupStatusPaused
-	moveFunc := monitor.MoveTaskToWaitingFromLive
-	toList := "waiting"
 	if action == DownloadGroupOperationActionResume {
 		successCode = DownloadGroupOperationCodeResumed
-		patchStatus = DownloadGroupStatusActive
-		moveFunc = monitor.MoveTaskToActiveFromLive
-		toList = "active"
 	}
 	for _, target := range actionable {
 		item, ok := multiByGID[target.gid]
 		if ok && item.OK {
 			result.addItem(DownloadGroupOperationItemResult{GID: target.gid, Status: DownloadGroupOperationItemSucceeded, Code: successCode})
-			from := moveFunc(target.gid, patchStatus)
-			if from != "" && from != toList && monitor.IsSgGid(target.gid) {
-				if mon := monitor.State.GetMonitor(); mon != nil {
-					mon.EmitTaskMoveForGroupOp(target.gid, from, toList)
-				}
-			}
+			mon.ConfirmPauseResumeRequest(tickets[target.gid])
 			continue
 		}
+		mon.ClearPauseResumeIntentionIfCurrent(tickets[target.gid])
 		result.addItem(DownloadGroupOperationItemResult{GID: target.gid, Status: DownloadGroupOperationItemFailed, Code: DownloadGroupOperationCodeRPCError, Message: downloadGroupOperationMessage(DownloadGroupOperationCodeRPCError)})
 	}
 	result.Refresh = downloadGroupRefreshHint(true, true, true, action)
@@ -1503,6 +1493,9 @@ func downloadGroupPauseResumeSkipCode(action string, target downloadGroupOperati
 		return DownloadGroupOperationCodeHistoryOnly, true
 	}
 	if target.source == "stopped" {
+		if action == DownloadGroupOperationActionResume && target.status == DownloadGroupStatusError {
+			return "", false
+		}
 		return DownloadGroupOperationCodeTerminalState, true
 	}
 	if action == DownloadGroupOperationActionPause {

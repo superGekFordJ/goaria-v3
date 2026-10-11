@@ -125,8 +125,9 @@ func TestMixedGroup_PauseResume_CacheMoveAndTaskMove(t *testing.T) {
 		t.Fatalf("unexpected resume result: %#v", result)
 	}
 	for _, gid := range gids {
-		if !taskInCacheList(gid, "active") {
-			t.Errorf("expected gid %s in active after resume", gid)
+		task, list, _ := monitor.Cache.GetTask(gid)
+		if list != "waiting" || task.Status != "waiting" {
+			t.Errorf("expected gid %s waiting after resume: %#v", gid, task)
 		}
 	}
 	sgMoves = 0
@@ -135,8 +136,8 @@ func TestMixedGroup_PauseResume_CacheMoveAndTaskMove(t *testing.T) {
 			sgMoves++
 		}
 	}
-	if sgMoves != 2 {
-		t.Errorf("expected 2 sg_ task:move events on resume, got %d (events=%v)", sgMoves, moveEvents)
+	if len(moveEvents) != 0 {
+		t.Errorf("same-list confirmation emitted moves: %v", moveEvents)
 	}
 }
 
