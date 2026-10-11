@@ -23,7 +23,7 @@ func TestHandleSurgeEvent_InvalidatesListCacheOnPause(t *testing.T) {
 		pusher:                pusher,
 		engine:                hybrid,
 		surgeEng:              surgeEng,
-		pauseResumeIntentions: make(map[string]string),
+		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 	}
 
 	prevWindow := State.HasWindow()

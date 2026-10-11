@@ -88,9 +88,8 @@ type Monitor struct {
 	netEnv *NetEnvCache
 
 	// Per-GID last intention for stale pause event defense (last-intention-wins).
-	pauseResumeIntentions map[string]string
+	pauseResumeIntentions map[string]pauseResumeIntention
 	pauseResumeVersionMu  sync.RWMutex
-	pauseResumeRequests   map[string]PauseResumeTicket
 	pauseResumeSequence   uint64
 
 	// Surge polling fallback: periodic reconciliation + event stream reconnect.
@@ -131,7 +130,7 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 		prevWaitingGids:       make(map[string]bool),
 		telemetry:             NewTelemetryCache(),
 		chunkSnapshots:        NewChunkSnapshotCache(),
-		pauseResumeIntentions: make(map[string]string),
+		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 		surgePollInterval:     10 * time.Second,
 	}
 
@@ -185,7 +184,7 @@ func NewMonitorForTest(hub *events.Hub) *Monitor {
 		pusher:                NewPusher(hub),
 		tracker:               tracker,
 		deletedGids:           make(map[string]time.Time),
-		pauseResumeIntentions: make(map[string]string),
+		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 		chunkSnapshots:        NewChunkSnapshotCache(),
 	}
 	State.SetTracker(tracker)
@@ -217,18 +216,17 @@ const (
 	PauseResumeIntentionResume = "resume"
 )
 
-// PauseResumeTicket is an opaque, monitor-local request version, not resume authority.
-type PauseResumeTicket struct {
-	owner              *Monitor
-	gid, action        string
-	version            uint64
-	sourceList, status string
-	stamp              lifecycleStamp
+type pauseResumeIntention struct {
+	action string
+	seq    uint64
 }
 
-// Source returns the initial cache/history projection; empty means unknown.
-func (ticket PauseResumeTicket) Source() (list, status string) {
-	return ticket.sourceList, ticket.status
+// PauseResumeTicket carries request freshness, not resume authority.
+// Pass it back to the Monitor that began the request.
+type PauseResumeTicket struct {
+	gid   string
+	seq   uint64
+	stamp lifecycleStamp
 }
 
 // BeginPauseResumeRequest records a new request without moving cache or history.
@@ -239,45 +237,29 @@ func (m *Monitor) BeginPauseResumeRequest(gid, action string) (ticket PauseResum
 		return
 	}
 	m.tracker.RunUnderLifecycle(gid, func() {
-		row, list, ok := Cache.GetTask(gid)
-		if !ok {
-			if entry, exists := history.Get(gid); exists {
-				list, row.Status = "stopped", history.ProjectedStoppedStatus(entry)
-			}
-		}
 		stamp := m.tracker.captureLifecycleStamp(gid)
 		m.pauseResumeVersionMu.Lock()
 		defer m.pauseResumeVersionMu.Unlock()
-		if m.pauseResumeSequence == ^uint64(0) {
-			return
-		}
 		m.pauseResumeSequence++
-		if m.pauseResumeRequests == nil {
-			m.pauseResumeRequests = make(map[string]PauseResumeTicket)
-		}
 		if m.pauseResumeIntentions == nil {
-			m.pauseResumeIntentions = make(map[string]string)
+			m.pauseResumeIntentions = make(map[string]pauseResumeIntention)
 		}
-		ticket = PauseResumeTicket{owner: m, gid: gid, action: action, version: m.pauseResumeSequence,
-			sourceList: list, status: row.Status, stamp: stamp}
-		m.pauseResumeRequests[gid] = ticket
-		m.pauseResumeIntentions[gid] = action
+		ticket = PauseResumeTicket{gid: gid, seq: m.pauseResumeSequence, stamp: stamp}
+		m.pauseResumeIntentions[gid] = pauseResumeIntention{action: action, seq: ticket.seq}
 	})
 	return
 }
 
 // Caller holds pauseResumeVersionMu; lifecycle freshness is checked separately.
 func (m *Monitor) pauseResumeRequestCurrentLocked(ticket PauseResumeTicket) bool {
-	current, ok := m.pauseResumeRequests[ticket.gid]
-	return ok && ticket.owner == m && ticket.version != 0 && current.version == ticket.version &&
-		current.action == ticket.action && m.pauseResumeIntentions[ticket.gid] == ticket.action
+	return ticket.seq != 0 && m.pauseResumeIntentions[ticket.gid].seq == ticket.seq
 }
 
 // RunIfPauseResumeRequestCurrent runs only local fact writes under the GID gate.
 // fn must not reenter that gate, call RPC, emit events or invoke business callbacks.
 // true means freshness accepted, not engine success or permission to reopen.
 func (m *Monitor) RunIfPauseResumeRequestCurrent(ticket PauseResumeTicket, fn func()) (accepted bool) {
-	if m == nil || m.tracker == nil || ticket.owner != m || ticket.gid == "" || fn == nil {
+	if m == nil || m.tracker == nil || ticket.gid == "" || fn == nil {
 		return false
 	}
 	m.tracker.RunUnderLifecycle(ticket.gid, func() {
@@ -294,7 +276,7 @@ func (m *Monitor) RunIfPauseResumeRequestCurrent(ticket PauseResumeTicket, fn fu
 
 // ClearPauseResumeIntentionIfCurrent may clean an expired lifecycle, never a newer request.
 func (m *Monitor) ClearPauseResumeIntentionIfCurrent(ticket PauseResumeTicket) (cleared bool) {
-	if m == nil || m.tracker == nil || ticket.owner != m || ticket.gid == "" {
+	if m == nil || m.tracker == nil || ticket.gid == "" {
 		return false
 	}
 	m.tracker.RunUnderLifecycle(ticket.gid, func() {
@@ -302,7 +284,6 @@ func (m *Monitor) ClearPauseResumeIntentionIfCurrent(ticket PauseResumeTicket) (
 		defer m.pauseResumeVersionMu.Unlock()
 		if m.pauseResumeRequestCurrentLocked(ticket) {
 			delete(m.pauseResumeIntentions, ticket.gid)
-			delete(m.pauseResumeRequests, ticket.gid)
 			cleared = true
 		}
 	})
@@ -356,10 +337,9 @@ func (m *Monitor) BumpPauseResumeIntention(gid string, action string) {
 		m.pauseResumeVersionMu.Lock()
 		defer m.pauseResumeVersionMu.Unlock()
 		if m.pauseResumeIntentions == nil {
-			m.pauseResumeIntentions = make(map[string]string)
+			m.pauseResumeIntentions = make(map[string]pauseResumeIntention)
 		}
-		m.pauseResumeIntentions[gid] = action
-		delete(m.pauseResumeRequests, gid)
+		m.pauseResumeIntentions[gid] = pauseResumeIntention{action: action}
 	})
 }
 
@@ -376,7 +356,7 @@ func (m *Monitor) shouldDiscardStalePause(gid string) bool {
 	if !exists {
 		return false
 	}
-	return intention == PauseResumeIntentionResume
+	return intention.action == PauseResumeIntentionResume
 }
 
 // shouldDiscardPauseAgainstStopped discards every event-path pause while the
@@ -400,7 +380,6 @@ func (m *Monitor) ClearPauseResumeIntention(gid string) {
 		m.pauseResumeVersionMu.Lock()
 		defer m.pauseResumeVersionMu.Unlock()
 		delete(m.pauseResumeIntentions, gid)
-		delete(m.pauseResumeRequests, gid)
 	})
 }
 
@@ -489,7 +468,7 @@ func (m *Monitor) markCompleteAndHandleLocked(gid, status string, prep func(*Tra
 	}
 	completed := m.tracker.MarkCompleteFromEvent(gid, status)
 	m.pauseResumeVersionMu.Lock()
-	delete(m.pauseResumeRequests, gid)
+	delete(m.pauseResumeIntentions, gid)
 	m.pauseResumeVersionMu.Unlock()
 	if completed == nil {
 		return
@@ -1028,7 +1007,6 @@ func (m *Monitor) InvalidateTask(gid string) {
 	// 6. 清理 pause/resume intention，避免长期运行内存泄漏
 	m.pauseResumeVersionMu.Lock()
 	delete(m.pauseResumeIntentions, gid)
-	delete(m.pauseResumeRequests, gid)
 	m.pauseResumeVersionMu.Unlock()
 
 	log.Printf("[Monitor] Task invalidated: %s", gid)

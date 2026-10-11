@@ -15,7 +15,7 @@ func TestHandleSurgeEvent_ResumeFromStopped_RetiresHistory(t *testing.T) {
 	m := &Monitor{
 		hub:                   hub,
 		pusher:                pusher,
-		pauseResumeIntentions: make(map[string]string),
+		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 	}
 
 	prevWindow := State.HasWindow()

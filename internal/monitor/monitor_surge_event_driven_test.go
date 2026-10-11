@@ -205,7 +205,7 @@ func TestEventDriven_PauseMovesTaskToWaiting(t *testing.T) {
 		hub:                   hub,
 		pusher:                pusher,
 		tracker:               tracker,
-		pauseResumeIntentions: make(map[string]string),
+		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 	}
 
 	var recordedMove *events.TaskMove
@@ -755,7 +755,7 @@ func TestEventDriven_RapidPauseResume(t *testing.T) {
 		pusher:                pusher,
 		tracker:               tracker,
 		engine:                hybrid,
-		pauseResumeIntentions: make(map[string]string),
+		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 	}
 
 	prevWindow := State.HasWindow()

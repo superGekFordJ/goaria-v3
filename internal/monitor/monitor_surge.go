@@ -255,7 +255,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		// reopening a stale stopped row at started time — State.IsResume
 		// alone is not new-generation authorization.
 		m.pauseResumeVersionMu.Lock()
-		resumeIntended := m.pauseResumeIntentions[gid] == PauseResumeIntentionResume
+		resumeIntended := m.pauseResumeIntentions[gid].action == PauseResumeIntentionResume
 		m.pauseResumeVersionMu.Unlock()
 		startMovedFrom := ""
 		if resumeIntended {

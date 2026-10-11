@@ -18,7 +18,7 @@ func TestHandleSurgeEvent_DiscardsStalePauseAfterResume(t *testing.T) {
 	m := &Monitor{
 		hub:                   hub,
 		pusher:                pusher,
-		pauseResumeIntentions: make(map[string]string),
+		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 	}
 
 	prevWindow := State.HasWindow()
@@ -58,7 +58,7 @@ func TestHandleSurgeEvent_AcceptsPauseWhenLastIntentionIsPause(t *testing.T) {
 	m := &Monitor{
 		hub:                   hub,
 		pusher:                pusher,
-		pauseResumeIntentions: make(map[string]string),
+		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 	}
 
 	prevWindow := State.HasWindow()
@@ -105,7 +105,7 @@ func TestHandleSurgeEvent_AcceptsPauseWithNoPriorIntention(t *testing.T) {
 	m := &Monitor{
 		hub:                   hub,
 		pusher:                pusher,
-		pauseResumeIntentions: make(map[string]string),
+		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 	}
 
 	prevWindow := State.HasWindow()
@@ -137,7 +137,7 @@ func TestHandleSurgeEvent_DiscardsPauseAgainstStoppedWithoutIntention(t *testing
 	m := &Monitor{
 		hub:                   hub,
 		pusher:                pusher,
-		pauseResumeIntentions: make(map[string]string),
+		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 	}
 
 	prevWindow := State.HasWindow()
@@ -168,7 +168,7 @@ func TestHandleSurgeEvent_DiscardsPauseAgainstStoppedEvenWithPauseIntention(t *t
 	m := &Monitor{
 		hub:                   hub,
 		pusher:                pusher,
-		pauseResumeIntentions: make(map[string]string),
+		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 	}
 
 	prevWindow := State.HasWindow()

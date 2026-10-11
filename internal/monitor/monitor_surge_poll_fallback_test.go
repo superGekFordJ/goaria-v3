@@ -1428,7 +1428,7 @@ func TestReconcileSurgeCache_MissedComplete_ClearsPauseResumeIntention(t *testin
 	resetCacheSg()
 	resetHistoryForTest(t)
 
-	m.pauseResumeIntentions = map[string]string{"sg_task1": "pause"}
+	m.pauseResumeIntentions = map[string]pauseResumeIntention{"sg_task1": {action: "pause"}}
 
 	Cache.AddSgTask(rpc.Task{
 		GID:         "sg_task1",
@@ -1461,7 +1461,7 @@ func TestReconcileSurgeCache_MissedRemove_ClearsPauseResumeIntention(t *testing.
 	m, reader, _, _ := newReconcileTestMonitor(t)
 	resetCacheSg()
 
-	m.pauseResumeIntentions = map[string]string{"sg_task1": "pause"}
+	m.pauseResumeIntentions = map[string]pauseResumeIntention{"sg_task1": {action: "pause"}}
 
 	Cache.AddSgTask(rpc.Task{GID: "sg_task1", Status: "complete"}, "stopped")
 
@@ -1485,7 +1485,7 @@ func TestReconcileSurgeCache_MissedAddWithComplete_ClearsPauseResumeIntention(t 
 	resetCacheSg()
 	resetHistoryForTest(t)
 
-	m.pauseResumeIntentions = map[string]string{"sg_task1": "pause"}
+	m.pauseResumeIntentions = map[string]pauseResumeIntention{"sg_task1": {action: "pause"}}
 
 	Cache.metadata["sg_task1"] = &TaskMetadata{
 		GID:   "sg_task1",

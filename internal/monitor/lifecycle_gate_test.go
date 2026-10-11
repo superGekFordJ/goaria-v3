@@ -4,6 +4,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/history"
@@ -57,7 +58,9 @@ func TestPauseResumeTicket_CurrentAndStale(t *testing.T) {
 			delete(m.pauseResumeIntentions, gid)
 			m.pauseResumeVersionMu.Unlock()
 		}},
+		{"invalidate", false, func(m *Monitor, gid string) { m.InvalidateTask(gid) }},
 		{"terminal", false, func(m *Monitor, gid string) { m.tracker.MarkCompleteFromEvent(gid, "error") }},
+		{"dedup tracker terminal", true, func(m *Monitor, gid string) { m.tracker.MarkCompleteFromEvent(gid, "error") }},
 		{"dedup terminal", true, func(m *Monitor, gid string) { m.markCompleteAndHandle(gid, "error", nil) }},
 		{"poll terminal", false, func(m *Monitor, gid string) { m.tracker.Update(nil, nil, []rpc.Task{{GID: gid, Status: "error"}}) }},
 		{"dedup poll terminal", true, func(m *Monitor, gid string) { m.tracker.Update(nil, nil, []rpc.Task{{GID: gid, Status: "error"}}) }},
@@ -71,7 +74,7 @@ func TestPauseResumeTicket_CurrentAndStale(t *testing.T) {
 	for _, tc := range changes {
 		t.Run(tc.name, func(t *testing.T) {
 			resetHistoryForTest(t)
-			m := &Monitor{tracker: NewTaskTracker()}
+			m := &Monitor{tracker: NewTaskTracker(), deletedGids: make(map[string]time.Time)}
 			full := fullRowForTest("sg_ticket")
 			cleanupSgCache(t, full.GID)
 			list := "waiting"
@@ -86,8 +89,8 @@ func TestPauseResumeTicket_CurrentAndStale(t *testing.T) {
 			}
 			history.Add(history.HistoryEntry{GID: full.GID, Path: full.Files[0].Path, Status: "error"})
 			ticket := m.BeginPauseResumeRequest(full.GID, "resume")
-			if source, status := ticket.Source(); source != list || status != full.Status || !m.RunIfPauseResumeRequestCurrent(ticket, func() {}) {
-				t.Fatal("initial live/stopped ticket rejected or wrong source")
+			if !m.RunIfPauseResumeRequestCurrent(ticket, func() {}) {
+				t.Fatal("initial live/stopped ticket rejected")
 			}
 			tc.change(m, full.GID)
 			if m.RunIfPauseResumeRequestCurrent(ticket, func() { Cache.RemoveTask(full.GID); history.Remove(full.GID) }) {
@@ -102,7 +105,7 @@ func TestPauseResumeTicket_CurrentAndStale(t *testing.T) {
 				t.Fatal("stale callback deleted H0")
 			}
 			newTicket := m.BeginPauseResumeRequest(full.GID, "pause")
-			if newTicket.version <= ticket.version || m.ClearPauseResumeIntentionIfCurrent(ticket) || !m.RunIfPauseResumeRequestCurrent(newTicket, func() {}) {
+			if newTicket.seq <= ticket.seq || m.ClearPauseResumeIntentionIfCurrent(ticket) || !m.RunIfPauseResumeRequestCurrent(newTicket, func() {}) {
 				t.Fatal("old failure cleared newer request or version reused")
 			}
 			m.tracker.MarkCompleteFromEvent(full.GID, "error")
@@ -162,12 +165,12 @@ func TestPauseResumeTicket_Barriers(t *testing.T) {
 		t.Fatal("current guard failed")
 	}
 	next := <-begun
-	if source, status := next.Source(); source != "active" || status != "active" || next.version <= ticket.version {
-		t.Fatal("Begin did not serialize after callback")
+	if next.seq <= ticket.seq || m.RunIfPauseResumeRequestCurrent(ticket, func() {}) || !m.RunIfPauseResumeRequestCurrent(next, func() {}) {
+		t.Fatal("Begin did not supersede the guarded request")
 	}
 }
 
-func TestPauseResumeTicket_FailClosedAndUnknownSource(t *testing.T) {
+func TestPauseResumeTicket_FailClosedAndNoDataWrites(t *testing.T) {
 	resetHistoryForTest(t)
 	m := &Monitor{tracker: NewTaskTracker()}
 	for _, mon := range []*Monitor{nil, {}, m} {
@@ -179,7 +182,7 @@ func TestPauseResumeTicket_FailClosedAndUnknownSource(t *testing.T) {
 		}
 	}
 	noTracker := &Monitor{}
-	if ticket := noTracker.BeginPauseResumeRequest("sg_missing", "resume"); ticket.owner != nil {
+	if ticket := noTracker.BeginPauseResumeRequest("sg_missing", "resume"); ticket != (PauseResumeTicket{}) {
 		t.Fatal("missing gate accepted")
 	}
 	noTracker.BumpPauseResumeIntention("sg_missing", "resume")
@@ -196,19 +199,14 @@ func TestPauseResumeTicket_FailClosedAndUnknownSource(t *testing.T) {
 			history.Add(history.HistoryEntry{GID: gid, Path: "/old", Status: "error"})
 		}
 		ticket := m.BeginPauseResumeRequest(gid, "resume")
-		list, status := ticket.Source()
-		if (list == "stopped" && status == "error") != withHistory {
-			t.Fatal("history source projection wrong")
-		}
 		if _, _, ok := Cache.GetTask(gid); ok {
 			t.Fatal("Begin manufactured cache")
 		}
 		if _, ok := history.Get(gid); ok != withHistory {
 			t.Fatal("Begin changed history")
 		}
-		other := &Monitor{tracker: m.tracker}
-		if other.RunIfPauseResumeRequestCurrent(ticket, func() {}) || other.ClearPauseResumeIntentionIfCurrent(ticket) || m.RunIfPauseResumeRequestCurrent(ticket, nil) {
-			t.Fatal("foreign/nil callback accepted")
+		if m.RunIfPauseResumeRequestCurrent(ticket, nil) {
+			t.Fatal("nil callback accepted")
 		}
 		if !m.ClearPauseResumeIntentionIfCurrent(ticket) {
 			t.Fatal("current cleanup failed")
@@ -523,7 +521,7 @@ func TestLifecycle_ErrorResumeError_ViaMarkCompleteAndHandle(t *testing.T) {
 		hub:                   hub,
 		pusher:                NewPusher(hub),
 		tracker:               tracker,
-		pauseResumeIntentions: make(map[string]string),
+		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 	}
 	prevMon := State.GetMonitor()
 	State.SetMonitor(m)
