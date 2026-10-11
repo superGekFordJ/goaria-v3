@@ -1831,6 +1831,57 @@ describe('setupActions — integration', () => {
       expect(row?.totalLength).not.toBe('9')
     })
 
+    it('METADATA-FRESHNESS: a late metadata response cannot write stale lifecycle fields onto a reopened row', async () => {
+      wireMover(state, actions)
+      state.tasks.value.stopped = [
+        mockTask('gid-reopen-meta', {
+          status: 'error',
+          errorCode: '9',
+          errorMessage: 'disk full',
+          downloadSpeed: '0',
+          files: [],
+          dir: '',
+          title: '',
+        }),
+      ]
+      const stoppedRow = state.tasks.value.stopped[0]
+      const metaPromise = createControlledPromise<Record<string, Task>>()
+      mockGetTaskMetadata.mockReturnValue(metaPromise.promise as never)
+      mockBatchResume.mockResolvedValue([{ gid: 'gid-reopen-meta', ok: true }] as never)
+
+      actions.queueMetadataRecovery('gid-reopen-meta')
+      expect(mockGetTaskMetadata).toHaveBeenCalledWith(['gid-reopen-meta'])
+
+      // The same row object reopens stopped -> waiting while the metadata
+      // IPC is in flight; its lifecycle fields now belong to a newer fact.
+      await actions.batchResume(['gid-reopen-meta'])
+      const reopened = state.tasks.value.waiting.find(t => t.gid === 'gid-reopen-meta')
+      expect(reopened).toBe(stoppedRow)
+      expect(reopened?.status).toBe('waiting')
+
+      metaPromise.resolve({
+        'gid-reopen-meta': mockTask('gid-reopen-meta', {
+          title: 'Hydrated Title',
+          files: [{ path: '/downloads/hydrated.bin', uris: [] }],
+          dir: '/downloads/hydrated',
+          errorCode: '9',
+          errorMessage: 'stale disk full',
+          downloadSpeed: '888',
+        }),
+      })
+      await flushPromises()
+
+      const row = state.tasks.value.waiting.find(t => t.gid === 'gid-reopen-meta')
+      expect(row?.status).toBe('waiting')
+      // Metadata fields hydrate; stale lifecycle fields stay rejected.
+      expect(row?.files[0]?.path).toBe('/downloads/hydrated.bin')
+      expect(row?.dir).toBe('/downloads/hydrated')
+      expect(row?.title).toBe('Hydrated Title')
+      expect(row?.errorCode).toBe('')
+      expect(row?.errorMessage).toBe('')
+      expect(row?.downloadSpeed).toBe('0')
+    })
+
     it('PAUSE-VOID: transport rejection does not fabricate paused status or corrupt membership', async () => {
       state.tasks.value.active = [mockTask('sg_pv', { status: 'active' })]
       mockPauseTask.mockRejectedValue(new Error('transport down'))

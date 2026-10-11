@@ -463,28 +463,52 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     }
 
     const purge = (list: Task[]) => list.filter(t => t.gid !== gid)
-    let active: Task[]
-    let waiting: Task[]
-    let stopped: Task[]
+    // A duplicate twin that changes neither fields nor membership is a no-op:
+    // it must not bump the lifecycle revision or rebuild list identities.
+    const membershipChanged = !destRow || copyList.length > 1
+    let rowChanged = false
+    let active = tasks.value.active
+    let waiting = tasks.value.waiting
+    let stopped = tasks.value.stopped
     if (destRow) {
+      const before = { ...destRow }
       Object.assign(destRow, mergeTaskPreservingRichData(merged, destRow))
       clearStaleTerminalErrors(destRow)
       if (incoming) applyAuthoritativeIncoming(destRow, incoming, dest)
-      active = dest === 'active' ? tasks.value.active : purge(tasks.value.active)
-      waiting = dest === 'waiting' ? tasks.value.waiting : purge(tasks.value.waiting)
-      stopped = dest === 'stopped' ? tasks.value.stopped : purge(tasks.value.stopped)
+      rowChanged =
+        before.status !== destRow.status ||
+        before.title !== destRow.title ||
+        before.totalLength !== destRow.totalLength ||
+        before.completedLength !== destRow.completedLength ||
+        before.downloadSpeed !== destRow.downloadSpeed ||
+        before.errorCode !== destRow.errorCode ||
+        before.errorMessage !== destRow.errorMessage ||
+        before.dir !== destRow.dir ||
+        before.files !== destRow.files ||
+        (before as Record<string, unknown>).threads !==
+          (destRow as unknown as Record<string, unknown>).threads ||
+        !isTaskGroupEqual(before.download_group, destRow.download_group)
+      if (membershipChanged) {
+        if (dest !== 'active') active = purge(active)
+        if (dest !== 'waiting') waiting = purge(waiting)
+        if (dest !== 'stopped') stopped = purge(stopped)
+      }
     } else {
       clearStaleTerminalErrors(merged)
       if (incoming) applyAuthoritativeIncoming(merged, incoming, dest)
-      active = purge(tasks.value.active)
-      waiting = purge(tasks.value.waiting)
-      stopped = purge(tasks.value.stopped)
+      active = purge(active)
+      waiting = purge(waiting)
+      stopped = purge(stopped)
       if (dest === 'active') active = [merged, ...active]
       else if (dest === 'waiting') waiting = [merged, ...waiting]
       else stopped = [merged, ...stopped]
     }
-    tasks.value = { active, waiting, stopped }
-    actions.markLifecycleChanged()
+    if (membershipChanged) {
+      tasks.value = { active, waiting, stopped }
+    } else if (rowChanged) {
+      tasks.value = { ...tasks.value }
+    }
+    if (membershipChanged || rowChanged) actions.markLifecycleChanged()
 
     if (dest === 'stopped') {
       scheduleStoppedMetadataCleanup(gid)
@@ -506,6 +530,9 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       return
     }
     if (actions.isResumePending(gid)) {
+      // Superseded (-gen) pendings also pass this check; recordResumeEvidence
+      // no-ops there, so newer nonterminal twins are dropped by design while a
+      // terminal/superseding fact owns the row.
       const snapshot = computeMergedSnapshot(gid, incoming)
       const status = incoming?.status === 'paused' ? 'paused' : dest
       actions.recordResumeEvidence(gid, status, snapshot)

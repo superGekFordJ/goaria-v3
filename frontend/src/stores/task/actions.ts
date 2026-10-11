@@ -456,13 +456,17 @@ export function setupActions(state: TaskState) {
     return String(incoming)
   }
 
-  function mergeRecoveredMetadata(existing: Task, meta: Task): Task {
+  function mergeRecoveredMetadata(existing: Task, meta: Task, metadataOnly = false): Task {
     const merged = { ...existing }
 
     if (isNonEmptyString(meta.title)) merged.title = meta.title
     if (hasValidFiles(meta)) merged.files = meta.files
     if (isNonEmptyString(meta.dir)) merged.dir = meta.dir
     Object.assign(merged, mergeTaskGroupMetadata(existing, meta))
+
+    // A status flip since capture makes counters/speed/errors from the old
+    // opportunity stale; only plain metadata fields may still hydrate.
+    if (metadataOnly) return merged
 
     merged.totalLength = preserveNonZeroValue(existing.totalLength, meta.totalLength)
     merged.completedLength = preserveNonZeroValue(existing.completedLength, meta.completedLength)
@@ -484,7 +488,7 @@ export function setupActions(state: TaskState) {
 
   function applyRecoveredMetadata(
     metadata: Record<string, Task | undefined>,
-    before: Map<string, Task>,
+    before: Map<string, { row: Task; status: string }>,
   ) {
     let newActive = tasks.value.active
     let newWaiting = tasks.value.waiting
@@ -495,9 +499,10 @@ export function setupActions(state: TaskState) {
       const meta = metadata[gid]
       if (!meta || (!hasValidFiles(meta) && !cloneTaskGroupMetadata(meta))) continue
       // Late metadata must not poison a removed/reopened/replaced row: the
-      // live row must be the same object captured before the IPC.
+      // live row must be the same object captured before the IPC, and a
+      // status flip since capture narrows the merge to metadata fields.
       const prev = before.get(gid)
-      if (!prev || findTaskRow(gid) !== prev) continue
+      if (!prev || findTaskRow(gid) !== prev.row) continue
       cacheMetadata(meta)
 
       const activeIdx = newActive.findIndex(t => t.gid === gid)
@@ -508,7 +513,7 @@ export function setupActions(state: TaskState) {
           newActive = [...newActive]
           activeChanged = true
         }
-        newActive[activeIdx] = mergeRecoveredMetadata(existing, meta)
+        newActive[activeIdx] = mergeRecoveredMetadata(existing, meta, existing.status !== prev.status)
       }
 
       const waitingIdx = newWaiting.findIndex(t => t.gid === gid)
@@ -519,7 +524,7 @@ export function setupActions(state: TaskState) {
           newWaiting = [...newWaiting]
           waitingChanged = true
         }
-        newWaiting[waitingIdx] = mergeRecoveredMetadata(existing, meta)
+        newWaiting[waitingIdx] = mergeRecoveredMetadata(existing, meta, existing.status !== prev.status)
       }
     }
 
@@ -539,10 +544,10 @@ export function setupActions(state: TaskState) {
     const batch = Array.from(metadataPending)
     metadataPending.clear()
 
-    const before = new Map<string, Task>()
+    const before = new Map<string, { row: Task; status: string }>()
     for (const gid of batch) {
       const row = findTaskRow(gid)
-      if (row) before.set(gid, row)
+      if (row) before.set(gid, { row, status: row.status })
     }
 
     void GetTaskMetadata(batch)

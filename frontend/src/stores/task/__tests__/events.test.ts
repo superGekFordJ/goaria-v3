@@ -1608,36 +1608,80 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active.map(t => t.gid)).toEqual(['gid-twin'])
       expect(state.tasks.value.waiting).toHaveLength(0)
       expect(state.tasks.value.stopped).toHaveLength(0)
+      // Only the first delivery changed anything; no-op twins skip the
+      // lifecycle bump so in-flight reads are not flagged stale.
+      expect(actions.markLifecycleChanged).toHaveBeenCalledTimes(1)
     })
 
-    it('IDENTITY-HOT-PATH: progress bursts patch in place without rebuilding row identity', async () => {
+    it('FULL-MOVE-TWIN-FOLD: move-then-delta twins converge to exactly one row', async () => {
+      state.tasks.value.waiting = [mockTask('gid-twin-md', { status: 'paused' })]
+
+      events.handleTaskMove({
+        gid: 'gid-twin-md',
+        from: 'waiting',
+        to: 'active',
+        task: { gid: 'gid-twin-md', status: 'active', files: [], dir: '' },
+      })
+      const movedRow = state.tasks.value.active[0]
+      await events.handleTaskDelta({
+        type: 'resume',
+        gid: 'gid-twin-md',
+        payload: { gid: 'gid-twin-md', status: 'active' },
+      })
+      // Duplicate delivery of the same delta is a no-op.
+      await events.handleTaskDelta({
+        type: 'resume',
+        gid: 'gid-twin-md',
+        payload: { gid: 'gid-twin-md', status: 'active' },
+      })
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['gid-twin-md'])
+      // The delta twin folds into the row the move created, not a rebuild.
+      expect(state.tasks.value.active[0]).toBe(movedRow)
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.stopped).toHaveLength(0)
+      // The move was the only real change; identical delta twins are no-ops.
+      expect(actions.markLifecycleChanged).toHaveBeenCalledTimes(1)
+    })
+
+    it('IDENTITY-HOT-PATH: progress bursts patch in place and identical deltas are no-ops', async () => {
       state.tasks.value.active = [
         mockTask('gid-burst', {
           status: 'active',
           completedLength: '0',
           downloadSpeed: '0',
         }),
+        mockTask('gid-neighbor', { status: 'active' }),
       ]
       const task = state.tasks.value.active[0]
+      const neighbor = state.tasks.value.active[1]
       const activeList = state.tasks.value.active
+      const files = task.files
 
-      for (let i = 1; i <= 20; i++) {
-        await events.handleTaskDelta({
-          type: 'add',
-          gid: 'gid-burst',
-          payload: {
-            status: 'active',
-            completedLength: String(i * 50),
-            downloadSpeed: '999',
-          },
-        })
+      for (let i = 1; i <= 10; i++) {
+        const payload = { completedLength: String(i * 100), downloadSpeed: '999' }
+        const before = state.tasks.value
+        await events.handleTaskDelta({ type: 'progress', gid: 'gid-burst', payload })
+        // A changed delta shallow-patches: new tasks object, same rows/arrays.
+        expect(state.tasks.value).not.toBe(before)
+        const settled = state.tasks.value
+        // A byte-identical redelivery is a no-op: tasks.value keeps identity.
+        await events.handleTaskDelta({ type: 'progress', gid: 'gid-burst', payload })
+        expect(state.tasks.value).toBe(settled)
       }
 
+      expect(state.tasks.value.active).toBe(activeList)
+      expect(state.tasks.value.active).toHaveLength(2)
       expect(state.tasks.value.active[0]).toBe(task)
+      expect(state.tasks.value.active[0].files).toBe(files)
       expect(state.tasks.value.active[0].completedLength).toBe('1000')
       expect(state.tasks.value.active[0].downloadSpeed).toBe('999')
-      expect(state.tasks.value.active).toBe(activeList)
+      expect(state.tasks.value.active[1]).toBe(neighbor)
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.stopped).toHaveLength(0)
       expect(actions.fetchTasks).not.toHaveBeenCalled()
+      expect(actions.queueMetadataRecovery).not.toHaveBeenCalled()
+      expect(actions.markLifecycleChanged).not.toHaveBeenCalled()
     })
   })
 })
