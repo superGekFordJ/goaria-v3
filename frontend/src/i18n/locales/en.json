@@ -132,7 +132,9 @@
     "threads": "Threads",
     "maxConcurrent": "Max Concurrent Tasks",
     "surgeBadge": "Surge",
-    "surgeExclusiveTooltip": "Preset options are optimized for high-speed networks to avoid rate limits. If you require higher concurrency, quit GoAria and set max_connections up to 256 in ~/.goaria/config.json (takes effect after restart)."
+    "surgeExclusiveTooltip": "Preset options are optimized for high-speed networks to avoid rate limits. If you require higher concurrency, quit GoAria and set max_connections up to 256 in ~/.goaria/config.json (takes effect after restart).",
+    "concurrentManagedHint": "Managed by Smart Thread Mode — the engine uses its built-in concurrency for now. Your value is kept and restored when the mode is off.",
+    "concurrentRestartHint": "Changing the effective concurrency may restart the download engine and rebuild active download connections."
   },
   "ua": {
     "description": "Custom User Agent",

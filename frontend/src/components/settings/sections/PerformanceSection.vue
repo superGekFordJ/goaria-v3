@@ -76,6 +76,9 @@
   }
 
   const updateConcurrentDownloads = (event: Event) => {
+    // Smart mode manages the effective concurrency; the raw value stays
+    // untouched and becomes editable again when the mode is turned off.
+    if (props.smartThreadMode) return
     const value = (event.target as HTMLInputElement).value
     emit('update:concurrentDownloads', value)
     emit('change')
@@ -195,9 +198,16 @@
           type="number"
           min="1"
           max="32"
-          class="w-full bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl px-4 py-3 text-sm font-mono-data text-[var(--app-text)]/80 outline-none transition-all duration-200 focus:border-[var(--neon-primary)]/40 focus:shadow-[0_0_0_3px_var(--input-focus)]"
+          :disabled="smartThreadMode"
+          class="w-full bg-[var(--input-bg)] border border-[var(--input-border)] rounded-xl px-4 py-3 text-sm font-mono-data text-[var(--app-text)]/80 outline-none transition-all duration-200 focus:border-[var(--neon-primary)]/40 focus:shadow-[0_0_0_3px_var(--input-focus)] disabled:opacity-50 disabled:cursor-not-allowed"
           @input="updateConcurrentDownloads"
         />
+        <p v-if="smartThreadMode" class="text-[10px] leading-relaxed text-[var(--app-text-subtle)]">
+          {{ t('performance.concurrentManagedHint') }}
+        </p>
+        <p class="text-[10px] leading-relaxed text-[var(--app-text-subtle)]">
+          {{ t('performance.concurrentRestartHint') }}
+        </p>
       </div>
     </div>
   </SectionCard>

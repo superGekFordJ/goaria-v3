@@ -48,6 +48,7 @@ const storeMock = reactive({
   }),
   pickDirectory: vi.fn(),
   fetchConfig: vi.fn(),
+  readConfigSnapshot: vi.fn(),
 })
 
 vi.mock('../../stores/config', () => ({
@@ -260,6 +261,8 @@ describe('SettingsPanel', () => {
     storeMock.applyCanonicalConfig.mockClear()
     storeMock.pickDirectory.mockReset()
     storeMock.fetchConfig.mockReset()
+    storeMock.readConfigSnapshot.mockReset()
+    storeMock.readConfigSnapshot.mockResolvedValue(null)
   })
 
   afterEach(() => {
@@ -354,18 +357,203 @@ describe('SettingsPanel', () => {
     wrapper.unmount()
   })
 
-  it('keeps the user edit on transport failure', async () => {
+  it('keeps the user edit on transport failure when the canonical re-read is empty', async () => {
     storeMock.isHydrated = true
     const wrapper = mountPanel()
     await flushHydration()
     storeMock.updateConfig.mockRejectedValue(new Error('ipc'))
+    storeMock.readConfigSnapshot.mockResolvedValue(null)
+    await wrapper.find('.ua-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    expect(storeMock.readConfigSnapshot).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('.ua-value').text()).toBe('edited-ua')
+    expect(wrapper.text()).toContain('settings.saveFailed')
+    expect(wrapper.text()).not.toContain('settings.saved')
+    wrapper.unmount()
+  })
+
+  it('keeps the user edit when the canonical re-read also fails', async () => {
+    storeMock.isHydrated = true
+    const wrapper = mountPanel()
+    await flushHydration()
+    storeMock.updateConfig.mockRejectedValue(new Error('ipc'))
+    storeMock.readConfigSnapshot.mockRejectedValue(new Error('ipc-read'))
     await wrapper.find('.ua-change').trigger('click')
     await vi.advanceTimersByTimeAsync(800)
     await flushPromises()
     expect(wrapper.find('.ua-value').text()).toBe('edited-ua')
     expect(wrapper.text()).toContain('settings.saveFailed')
-    expect(wrapper.text()).not.toContain('settings.saved')
+    expect(storeMock.applyCanonicalConfig).not.toHaveBeenCalled()
     wrapper.unmount()
+  })
+
+  it('syncs committed canonical values after an ambiguous save reject', async () => {
+    storeMock.isHydrated = true
+    const wrapper = mountPanel()
+    await flushHydration()
+    const committed = sampleConfig({ smart_thread_mode: false, max_concurrent_downloads: '8' })
+    storeMock.updateConfig.mockRejectedValueOnce(new Error('ipc'))
+    storeMock.readConfigSnapshot.mockResolvedValue(committed)
+    await wrapper.find('.concurrent-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+
+    expect(storeMock.readConfigSnapshot).toHaveBeenCalledTimes(1)
+    expect(storeMock.settings.smart_thread_mode).toBe(false)
+    expect(storeMock.settings.max_concurrent_downloads).toBe('8')
+    expect(wrapper.text()).toContain('settings.saveFailed')
+    expect(wrapper.text()).not.toContain('settings.saved')
+
+    // A later unrelated edit must submit the canonical smart/raw, not stale form values
+    storeMock.updateConfig.mockResolvedValue(
+      new SaveConfigResult({ success: true, config: committed }),
+    )
+    await wrapper.find('.ua-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    const resent = storeMock.updateConfig.mock.calls[1][0] as AppConfig
+    expect(resent.smart_thread_mode).toBe(false)
+    expect(resent.max_concurrent_downloads).toBe('8')
+    wrapper.unmount()
+  })
+
+  it('drops a canonical re-read superseded by a newer debounced edit', async () => {
+    storeMock.isHydrated = true
+    const wrapper = mountPanel()
+    await flushHydration()
+    storeMock.updateConfig.mockRejectedValueOnce(new Error('ipc'))
+    let resolveRead: (value: AppConfig | null) => void = () => undefined
+    storeMock.readConfigSnapshot.mockReturnValue(
+      new Promise<AppConfig | null>(resolve => {
+        resolveRead = resolve
+      }),
+    )
+    await wrapper.find('.ua-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+
+    storeMock.updateConfig.mockResolvedValue(
+      new SaveConfigResult({
+        success: true,
+        config: sampleConfig({ window_transparency: 'mica' }),
+      }),
+    )
+    await wrapper.find('.transparency-change').trigger('click')
+    resolveRead(sampleConfig({ user_agent: 'stale-read' }))
+    await flushPromises()
+    expect(storeMock.settings.user_agent).not.toBe('stale-read')
+
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    expect(storeMock.settings.window_transparency).toBe('mica')
+    wrapper.unmount()
+  })
+
+  it('drops a canonical re-read superseded by a completed save', async () => {
+    storeMock.isHydrated = true
+    const wrapper = mountPanel()
+    await flushHydration()
+    storeMock.updateConfig.mockRejectedValueOnce(new Error('ipc'))
+    let resolveRead: (value: AppConfig | null) => void = () => undefined
+    storeMock.readConfigSnapshot.mockReturnValue(
+      new Promise<AppConfig | null>(resolve => {
+        resolveRead = resolve
+      }),
+    )
+    await wrapper.find('.ua-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+
+    storeMock.updateConfig.mockResolvedValue(
+      new SaveConfigResult({
+        success: true,
+        config: sampleConfig({ window_transparency: 'mica' }),
+      }),
+    )
+    await wrapper.find('.transparency-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+
+    resolveRead(sampleConfig({ user_agent: 'stale-read', window_transparency: 'none' }))
+    await flushPromises()
+    expect(storeMock.settings.user_agent).not.toBe('stale-read')
+    expect(storeMock.settings.window_transparency).toBe('mica')
+    wrapper.unmount()
+  })
+
+  it('drops a canonical re-read resolved after unmount', async () => {
+    storeMock.isHydrated = true
+    storeMock.updateConfig.mockRejectedValueOnce(new Error('ipc'))
+    let resolveRead: (value: AppConfig | null) => void = () => undefined
+    storeMock.readConfigSnapshot.mockReturnValue(
+      new Promise<AppConfig | null>(resolve => {
+        resolveRead = resolve
+      }),
+    )
+    const wrapper = mountPanel()
+    await flushHydration()
+    await wrapper.find('.ua-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    wrapper.unmount()
+    resolveRead(sampleConfig({ user_agent: 'late-read' }))
+    await flushPromises()
+    expect(storeMock.settings.user_agent).not.toBe('late-read')
+    expect(storeMock.applyCanonicalConfig).not.toHaveBeenCalled()
+  })
+
+  it('syncs the retained candidate config on unrecoverable failure', async () => {
+    storeMock.isHydrated = true
+    const wrapper = mountPanel()
+    await flushHydration()
+    const retained = sampleConfig({ user_agent: 'edited-ua', window_transparency: 'mica' })
+    storeMock.updateConfig.mockResolvedValue(
+      new SaveConfigResult({
+        success: false,
+        config: retained,
+        error_code: 'config_rollback_failed',
+      }),
+    )
+    await wrapper.find('.ua-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    expect(wrapper.text()).toContain('settings.errors.configRollbackFailed')
+    expect(wrapper.text()).not.toContain('settings.saved')
+    expect(storeMock.settings.user_agent).toBe('edited-ua')
+    expect(wrapper.find('.ua-value').text()).toBe('edited-ua')
+    wrapper.unmount()
+  })
+
+  it('keeps raw concurrency through a committed save and across remount with smart off', async () => {
+    storeMock.settings = sampleConfig({
+      smart_thread_mode: false,
+      max_concurrent_downloads: '8',
+    })
+    storeMock.isHydrated = true
+    const wrapper = mountPanel()
+    await flushHydration()
+    storeMock.updateConfig.mockResolvedValue(
+      new SaveConfigResult({ success: true, config: storeMock.settings }),
+    )
+    await wrapper.find('.ua-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    const sent = storeMock.updateConfig.mock.calls[0][0] as AppConfig
+    expect(sent.max_concurrent_downloads).toBe('8')
+    expect(storeMock.settings.max_concurrent_downloads).toBe('8')
+    expect(storeMock.settings.smart_thread_mode).toBe(false)
+    wrapper.unmount()
+
+    const remounted = mountPanel()
+    await flushHydration()
+    await remounted.find('.ua-change').trigger('click')
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    const resent = storeMock.updateConfig.mock.calls[1][0] as AppConfig
+    expect(resent.max_concurrent_downloads).toBe('8')
+    expect(resent.smart_thread_mode).toBe(false)
+    remounted.unmount()
   })
 
   it('syncs canonical backend values after a successful save', async () => {

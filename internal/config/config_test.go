@@ -123,6 +123,40 @@ func TestValidateAndSanitize_MaxConcurrentDownloads(t *testing.T) {
 	}
 }
 
+func TestEffectiveMaxConcurrentDownloads(t *testing.T) {
+	cases := []struct {
+		name  string
+		smart bool
+		raw   string
+		want  string
+	}{
+		{"smart overrides user 8", true, "8", "5"},
+		{"smart keeps default", true, "5", "5"},
+		{"smart ignores empty", true, "", "5"},
+		{"smart ignores invalid", true, "nope", "5"},
+		{"off keeps 1", false, "1", "1"},
+		{"off keeps 5", false, "5", "5"},
+		{"off keeps 8", false, "8", "8"},
+		{"off keeps 32", false, "32", "32"},
+		{"off empty falls back", false, "", "5"},
+		{"off zero falls back", false, "0", "5"},
+		{"off negative falls back", false, "-3", "5"},
+		{"off over upper falls back", false, "33", "5"},
+		{"off invalid falls back", false, "nope", "5"},
+		{"off trims spaces", false, " 8 ", "8"},
+		{"off strips leading zeros", false, "08", "8"},
+	}
+	for _, tc := range cases {
+		in := AppConfig{SmartThreadMode: tc.smart, MaxConcurrentDownloads: tc.raw}
+		if got := EffectiveMaxConcurrentDownloads(in); got != tc.want {
+			t.Errorf("%s: effective = %q, want %q", tc.name, got, tc.want)
+		}
+		if in.SmartThreadMode != tc.smart || in.MaxConcurrentDownloads != tc.raw {
+			t.Errorf("%s: input mutated to %+v", tc.name, in)
+		}
+	}
+}
+
 func TestValidateAndSanitize_RPCPort(t *testing.T) {
 	isolateConfigHome(t)
 	cases := []struct {

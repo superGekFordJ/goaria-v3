@@ -160,6 +160,17 @@ func ValidateAndSanitize(input AppConfig) AppConfig {
 	return out
 }
 
+// EffectiveMaxConcurrentDownloads returns the daemon launch value: the
+// built-in default while SmartThreadMode manages task concurrency, else the
+// canonicalized user value. Pure; the raw field is never rewritten, so the
+// user value survives the mode toggle.
+func EffectiveMaxConcurrentDownloads(cfg AppConfig) string {
+	if cfg.SmartThreadMode {
+		return DefaultMaxConcurrentDownloads
+	}
+	return canonicalBoundedInt(cfg.MaxConcurrentDownloads, 1, MaxConcurrentDownloadsUpper, DefaultMaxConcurrentDownloads)
+}
+
 func canonicalPort(raw, fallback string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {

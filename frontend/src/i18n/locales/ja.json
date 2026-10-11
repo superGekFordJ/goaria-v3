@@ -132,7 +132,9 @@
     "threads": "スレッド",
     "maxConcurrent": "最大同時タスク数",
     "surgeBadge": "Surge",
-    "surgeExclusiveTooltip": "プリセットは速度制限を防ぐため高速ネットワーク向けに最適化されています。より高い並列数が必要な場合は、GoAriaを終了後に ~/.goaria/config.json で max_connections を最大256まで設定できます（再起動後に有効）。"
+    "surgeExclusiveTooltip": "プリセットは速度制限を防ぐため高速ネットワーク向けに最適化されています。より高い並列数が必要な場合は、GoAriaを終了後に ~/.goaria/config.json で max_connections を最大256まで設定できます（再起動後に有効）。",
+    "concurrentManagedHint": "スマートスレッドモードが管理中——エンジンは組み込みの同時タスク数を使用します。設定値は保持され、モードをオフにすると復元されます。",
+    "concurrentRestartHint": "有効な同時タスク数が変わると、ダウンロードエンジンが再起動し、ダウンロード接続が再構築される場合があります。"
   },
   "ua": {
     "description": "カスタム User-Agent",

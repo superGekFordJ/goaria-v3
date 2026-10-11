@@ -82,6 +82,7 @@ func TestAria2Projection_Inequality(t *testing.T) {
 	dir.DownloadDir = `D:\alt-downloads`
 	cases = append(cases, dir)
 	conc := base
+	conc.SmartThreadMode = false
 	conc.MaxConcurrentDownloads = "8"
 	cases = append(cases, conc)
 	ua := base
@@ -110,11 +111,23 @@ func TestAria2Projection_IgnoresNonAriaFields(t *testing.T) {
 }
 
 func TestAriaProjection_MaxConcurrentDownloads(t *testing.T) {
-	base := sampleCanonicalConfig()
-	conc := base
-	conc.MaxConcurrentDownloads = "8"
-	if ariaProjection(base) == ariaProjection(conc) {
-		t.Fatal("MaxConcurrentDownloads must also change Aria projection")
+	base := sampleCanonicalConfig() // smart on, raw 5 -> effective 5
+
+	smartRaw8 := base
+	smartRaw8.MaxConcurrentDownloads = "8"
+	if ariaProjection(base) != ariaProjection(smartRaw8) {
+		t.Fatal("smart mode must project the builtin 5 regardless of raw")
+	}
+
+	off5 := base
+	off5.SmartThreadMode = false
+	off8 := off5
+	off8.MaxConcurrentDownloads = "8"
+	if ariaProjection(off5) == ariaProjection(off8) {
+		t.Fatal("off mode must project the user raw value")
+	}
+	if ariaProjection(smartRaw8) == ariaProjection(off8) {
+		t.Fatal("smart raw8 (effective 5) vs off raw8 (effective 8) must differ")
 	}
 }
 
@@ -158,6 +171,7 @@ type saveHarness struct {
 	extListening       bool
 	lastRestart        config.AppConfig
 	lastRPCPort        string
+	lastNotifierPort   string
 }
 
 type fakeConfigStore struct {
@@ -260,6 +274,7 @@ func (h *saveHarness) app() *App {
 		initNotifier: func(hub *events.Hub, port, secret string) {
 			h.add("notifier")
 			h.notifiers++
+			h.lastNotifierPort = port
 		},
 		stopNotifier: func() {
 			h.add("stop-notifier")
@@ -360,6 +375,118 @@ func TestSaveConfig_MaxConnections8To32RestartsAt16(t *testing.T) {
 	}
 	if process.EffectiveAria2MaxConnections(h.lastRestart.MaxConnections) != 16 {
 		t.Fatal("effective must be 16")
+	}
+}
+
+func TestSaveConfig_SmartToggleRestartFollowsEffective(t *testing.T) {
+	base := sampleCanonicalConfig()
+	off := func(raw string) config.AppConfig {
+		c := base
+		c.SmartThreadMode = false
+		c.MaxConcurrentDownloads = raw
+		return c
+	}
+	on := func(raw string) config.AppConfig {
+		c := base
+		c.MaxConcurrentDownloads = raw
+		return c
+	}
+	cases := []struct {
+		name        string
+		cur         config.AppConfig
+		mutate      func(*config.AppConfig)
+		wantRestart bool
+		wantRaw     string
+		wantSmart   bool
+	}{
+		{
+			name: "off raw5 to smart keeps effective 5",
+			cur:  off("5"),
+			mutate: func(c *config.AppConfig) {
+				c.SmartThreadMode = true
+			},
+			wantRestart: false, wantRaw: "5", wantSmart: true,
+		},
+		{
+			name: "smart raw5 to off keeps effective 5",
+			cur:  on("5"),
+			mutate: func(c *config.AppConfig) {
+				c.SmartThreadMode = false
+			},
+			wantRestart: false, wantRaw: "5", wantSmart: false,
+		},
+		{
+			name: "smart raw8 to raw12 stays effective 5",
+			cur:  on("8"),
+			mutate: func(c *config.AppConfig) {
+				c.MaxConcurrentDownloads = "12"
+			},
+			wantRestart: false, wantRaw: "12", wantSmart: true,
+		},
+		{
+			name: "off raw8 to smart restarts effective 8 to 5",
+			cur:  off("8"),
+			mutate: func(c *config.AppConfig) {
+				c.SmartThreadMode = true
+			},
+			wantRestart: true, wantRaw: "8", wantSmart: true,
+		},
+		{
+			name: "smart raw8 to off restarts effective 5 to 8",
+			cur:  on("8"),
+			mutate: func(c *config.AppConfig) {
+				c.SmartThreadMode = false
+			},
+			wantRestart: true, wantRaw: "8", wantSmart: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &saveHarness{store: fakeConfigStore{cur: tc.cur}}
+			req := tc.cur
+			tc.mutate(&req)
+			res := h.app().SaveConfig(req)
+			if !res.Success || res.Aria2Restarted != tc.wantRestart {
+				t.Fatalf("%+v", res)
+			}
+			wantRestarts := 0
+			if tc.wantRestart {
+				wantRestarts = 1
+			}
+			if h.restarts != wantRestarts {
+				t.Fatalf("restarts = %d, want %d", h.restarts, wantRestarts)
+			}
+			if h.store.cur.MaxConcurrentDownloads != tc.wantRaw || h.store.cur.SmartThreadMode != tc.wantSmart {
+				t.Fatalf("store raw=%q smart=%v", h.store.cur.MaxConcurrentDownloads, h.store.cur.SmartThreadMode)
+			}
+			if res.Config.MaxConcurrentDownloads != tc.wantRaw {
+				t.Fatalf("result raw %q, want %q", res.Config.MaxConcurrentDownloads, tc.wantRaw)
+			}
+			if tc.wantRestart && h.lastRestart.MaxConcurrentDownloads != tc.wantRaw {
+				t.Fatalf("restart cfg raw %q, want %q (raw must survive)", h.lastRestart.MaxConcurrentDownloads, tc.wantRaw)
+			}
+		})
+	}
+}
+
+func TestSaveConfig_SmartToggleReadinessFailureRestoresRawAndFlag(t *testing.T) {
+	cur := sampleCanonicalConfig()
+	cur.SmartThreadMode = false
+	cur.MaxConcurrentDownloads = "8"
+	h := &saveHarness{store: fakeConfigStore{cur: cur}, readyErr: errors.New("not ready")}
+	req := cur
+	req.SmartThreadMode = true
+	res := h.app().SaveConfig(req)
+	if res.Success || res.ErrorCode != errCodeAriaReadinessRolledBack {
+		t.Fatalf("%+v", res)
+	}
+	if h.store.cur.SmartThreadMode || h.store.cur.MaxConcurrentDownloads != "8" {
+		t.Fatalf("rollback must restore off/raw8, got smart=%v raw=%q",
+			h.store.cur.SmartThreadMode, h.store.cur.MaxConcurrentDownloads)
+	}
+	if res.Config.SmartThreadMode || res.Config.MaxConcurrentDownloads != "8" {
+		t.Fatalf("result must be old off/raw8, got smart=%v raw=%q",
+			res.Config.SmartThreadMode, res.Config.MaxConcurrentDownloads)
 	}
 }
 
@@ -736,5 +863,172 @@ func TestSaveConfig_NilCurrentUsesNotLoaded(t *testing.T) {
 	res := app.SaveConfig(sampleCanonicalConfig())
 	if res.Success || res.ErrorCode != errCodeNotLoaded {
 		t.Fatalf("%+v", res)
+	}
+}
+
+func TestAriaStartup_ReadyCompletionInitsNotifierOnce(t *testing.T) {
+	h := &saveHarness{store: fakeConfigStore{cur: sampleCanonicalConfig()}}
+	app := h.app()
+	launch := sampleCanonicalConfig()
+	id := RegisterAriaStartup(app)
+	CompleteAriaStartup(app, &events.Hub{}, id, launch, nil)
+	if h.notifiers != 1 || h.lastNotifierPort != launch.RPCPort {
+		t.Fatalf("notifiers=%d port=%q", h.notifiers, h.lastNotifierPort)
+	}
+}
+
+func TestAriaStartup_FailedReadinessSkipsNotifier(t *testing.T) {
+	h := &saveHarness{store: fakeConfigStore{cur: sampleCanonicalConfig()}}
+	app := h.app()
+	id := RegisterAriaStartup(app)
+	CompleteAriaStartup(app, &events.Hub{}, id, sampleCanonicalConfig(), errors.New("not ready"))
+	if h.notifiers != 0 {
+		t.Fatalf("notifiers=%d", h.notifiers)
+	}
+}
+
+func TestAriaStartup_SameEffectiveSaveKeepsLaunchAttempt(t *testing.T) {
+	launch := sampleCanonicalConfig() // smart on, raw 5
+	h := &saveHarness{store: fakeConfigStore{cur: launch}}
+	app := h.app()
+	id := RegisterAriaStartup(app)
+	req := launch
+	req.SmartThreadMode = false // effective stays 5
+	res := app.SaveConfig(req)
+	if !res.Success || res.Aria2Restarted {
+		t.Fatalf("%+v", res)
+	}
+	CompleteAriaStartup(app, &events.Hub{}, id, launch, nil)
+	if h.notifiers != 1 {
+		t.Fatalf("startup completion wrongly invalidated, notifiers=%d", h.notifiers)
+	}
+	if h.store.cur.SmartThreadMode != false {
+		t.Fatal("completion must not write back launch-era raw values")
+	}
+}
+
+func TestAriaStartup_PreflightOrPersistFailureKeepsAttempt(t *testing.T) {
+	launch := sampleCanonicalConfig()
+	cases := []struct {
+		name   string
+		h      *saveHarness
+		mutate func(*config.AppConfig)
+	}{
+		{
+			name: "preflight",
+			h: &saveHarness{
+				store:       fakeConfigStore{cur: launch},
+				validateErr: errors.New("offline"),
+			},
+			mutate: func(c *config.AppConfig) { c.DownloadDir = `Z:\offline` },
+		},
+		{
+			name: "persist",
+			h: &saveHarness{
+				store: fakeConfigStore{cur: launch, persistErr: errors.New("disk")},
+			},
+			mutate: func(c *config.AppConfig) { c.UserAgent = "x" },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := tc.h.app()
+			id := RegisterAriaStartup(app)
+			req := launch
+			tc.mutate(&req)
+			res := app.SaveConfig(req)
+			if res.Success {
+				t.Fatalf("%+v", res)
+			}
+			CompleteAriaStartup(app, &events.Hub{}, id, launch, nil)
+			if tc.h.notifiers != 1 {
+				t.Fatalf("failed save must not invalidate launch attempt, notifiers=%d", tc.h.notifiers)
+			}
+		})
+	}
+}
+
+func TestAriaStartup_NewActivationRejectsStaleCompletion(t *testing.T) {
+	launch := sampleCanonicalConfig()
+	h := &saveHarness{store: fakeConfigStore{cur: launch}}
+	app := h.app()
+	id := RegisterAriaStartup(app)
+	req := launch
+	req.RPCPort = "16810"
+	res := app.SaveConfig(req)
+	if !res.Success || !res.Aria2Restarted {
+		t.Fatalf("%+v", res)
+	}
+	CompleteAriaStartup(app, &events.Hub{}, id, launch, nil)
+	if h.notifiers != 1 {
+		t.Fatalf("stale completion must not rebuild notifier, notifiers=%d", h.notifiers)
+	}
+	if h.lastNotifierPort != "16810" {
+		t.Fatalf("notifier bound to %q, want new endpoint 16810", h.lastNotifierPort)
+	}
+}
+
+func TestAriaStartup_RollbackToSameProjectionStillRejects(t *testing.T) {
+	launch := sampleCanonicalConfig()
+	h := &saveHarness{
+		store:      fakeConfigStore{cur: launch},
+		restartErr: errors.New("start fail"),
+	}
+	app := h.app()
+	id := RegisterAriaStartup(app)
+	req := launch
+	req.RPCPort = "16810"
+	res := app.SaveConfig(req)
+	if res.Success || res.ErrorCode != errCodeAriaRestartRolledBack {
+		t.Fatalf("%+v", res)
+	}
+	CompleteAriaStartup(app, &events.Hub{}, id, launch, nil)
+	if h.notifiers != 1 {
+		t.Fatalf("stale completion must stay rejected after rollback, notifiers=%d", h.notifiers)
+	}
+	if h.lastNotifierPort != launch.RPCPort {
+		t.Fatalf("notifier bound to %q, want restored endpoint", h.lastNotifierPort)
+	}
+}
+
+func TestAriaStartup_CompletionSerializedWithActivation(t *testing.T) {
+	launch := sampleCanonicalConfig()
+	h := &saveHarness{store: fakeConfigStore{cur: launch}}
+	app := h.app()
+	enteredRestart := make(chan struct{})
+	releaseRestart := make(chan struct{})
+	origRestart := app.configDeps.restartAria2
+	app.configDeps.restartAria2 = func(cfg *config.AppConfig) error {
+		close(enteredRestart)
+		<-releaseRestart
+		return origRestart(cfg)
+	}
+	id := RegisterAriaStartup(app)
+
+	saveDone := make(chan SaveConfigResult, 1)
+	go func() {
+		req := launch
+		req.RPCPort = "16810"
+		saveDone <- app.SaveConfig(req)
+	}()
+	<-enteredRestart // SaveConfig holds configSaveMu inside the restart call
+
+	completeDone := make(chan struct{})
+	go func() {
+		CompleteAriaStartup(app, &events.Hub{}, id, launch, nil)
+		close(completeDone)
+	}()
+	close(releaseRestart)
+	res := <-saveDone
+	<-completeDone
+
+	if !res.Success || !res.Aria2Restarted {
+		t.Fatalf("%+v", res)
+	}
+	if h.notifiers != 1 {
+		t.Fatalf("only the current activation may init the notifier, got %d", h.notifiers)
+	}
+	if h.lastNotifierPort != "16810" {
+		t.Fatalf("old endpoint rebuilt, notifier port %q", h.lastNotifierPort)
 	}
 }

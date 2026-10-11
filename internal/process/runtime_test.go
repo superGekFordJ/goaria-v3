@@ -398,6 +398,33 @@ func TestEffectiveAria2MaxConnections(t *testing.T) {
 	}
 }
 
+func TestAria2ConcurrencyArgUsesEffectiveValue(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		smart bool
+		raw   string
+		want  string
+	}{
+		{false, "1", "--max-concurrent-downloads=1"},
+		{false, "8", "--max-concurrent-downloads=8"},
+		{false, "32", "--max-concurrent-downloads=32"},
+		{false, "", "--max-concurrent-downloads=5"},
+		{false, "33", "--max-concurrent-downloads=5"},
+		{false, "abc", "--max-concurrent-downloads=5"},
+		{true, "8", "--max-concurrent-downloads=5"},
+		{true, "32", "--max-concurrent-downloads=5"},
+	}
+	for _, tc := range cases {
+		cfg := &config.AppConfig{SmartThreadMode: tc.smart, MaxConcurrentDownloads: tc.raw}
+		if got := aria2ConcurrencyArg(cfg); got != tc.want {
+			t.Errorf("smart=%v raw=%q -> %q, want %q", tc.smart, tc.raw, got, tc.want)
+		}
+		if cfg.MaxConcurrentDownloads != tc.raw {
+			t.Errorf("raw %q rewritten to %q", tc.raw, cfg.MaxConcurrentDownloads)
+		}
+	}
+}
+
 func TestValidateDownloadDir_EmptyRejected(t *testing.T) {
 	if err := ValidateDownloadDir(""); err == nil {
 		t.Fatal("empty dir must fail")

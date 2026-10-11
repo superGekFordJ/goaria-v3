@@ -118,6 +118,36 @@ describe('useConfigStore', () => {
     expect(store.settings.user_agent).toBe('kept-from-storage')
   })
 
+  it('readConfigSnapshot returns a clone without applying or touching hydration state', async () => {
+    const { useConfigStore } = await import('../config')
+    const store = useConfigStore()
+    store.settings.user_agent = 'local-edit'
+    store.settings.max_concurrent_downloads = '5'
+    bindingMocks.GetConfig.mockResolvedValue(
+      sampleConfig({ user_agent: 'canonical', max_concurrent_downloads: '8' }),
+    )
+    const snap = await store.readConfigSnapshot()
+    expect(snap?.user_agent).toBe('canonical')
+    expect(snap?.max_concurrent_downloads).toBe('8')
+    expect(store.settings.user_agent).toBe('local-edit')
+    expect(store.settings.max_concurrent_downloads).toBe('5')
+    expect(store.isHydrated).toBe(false)
+    expect(store.isLoading).toBe(false)
+    snap!.user_agent = 'mutated-later'
+    expect(store.settings.user_agent).toBe('local-edit')
+  })
+
+  it('readConfigSnapshot passes null through and propagates rejections', async () => {
+    const { useConfigStore } = await import('../config')
+    const store = useConfigStore()
+    bindingMocks.GetConfig.mockResolvedValue(null)
+    expect(await store.readConfigSnapshot()).toBeNull()
+    bindingMocks.GetConfig.mockRejectedValue(new Error('ipc'))
+    await expect(store.readConfigSnapshot()).rejects.toThrow('ipc')
+    expect(store.isSaving).toBe(false)
+    expect(store.isHydrated).toBe(false)
+  })
+
   it('applyCanonicalConfig ignores null and clones the snapshot', async () => {
     const { useConfigStore } = await import('../config')
     const store = useConfigStore()

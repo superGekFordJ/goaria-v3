@@ -22,13 +22,16 @@ const TransitionStub = defineComponent({
 
 const presets = ['1', '4', '8', '16', '24', '32']
 
-function mountSection(connections = '16') {
+function mountSection(
+  connections = '16',
+  overrides: { concurrentDownloads?: string; smartThreadMode?: boolean } = {},
+) {
   return mount(PerformanceSection, {
     props: {
       connections,
-      concurrentDownloads: '5',
+      concurrentDownloads: overrides.concurrentDownloads ?? '5',
       connectionOptions: presets,
-      smartThreadMode: true,
+      smartThreadMode: overrides.smartThreadMode ?? true,
     },
     global: {
       stubs: { Transition: TransitionStub },
@@ -128,6 +131,43 @@ describe('PerformanceSection', () => {
   it('exposes the smart thread toggle as a switch', () => {
     const wrapper = mountSection()
     expect(wrapper.find('[role="switch"]').attributes('aria-checked')).toBe('true')
+    wrapper.unmount()
+  })
+
+  it('locks the concurrent input under smart mode and keeps the raw value', async () => {
+    const wrapper = mountSection('16', { concurrentDownloads: '8', smartThreadMode: true })
+    const input = wrapper.find('input[type="number"]')
+    expect(input.attributes('disabled')).toBeDefined()
+    expect((input.element as HTMLInputElement).value).toBe('8')
+    expect(input.attributes('min')).toBe('1')
+    expect(input.attributes('max')).toBe('32')
+
+    // A manually dispatched input event must not emit either
+    const el = input.element as HTMLInputElement
+    el.value = '12'
+    await input.trigger('input')
+    expect(wrapper.emitted('update:concurrentDownloads')).toBeUndefined()
+    expect(wrapper.emitted('change')).toBeUndefined()
+
+    expect(wrapper.text()).toContain('performance.concurrentManagedHint')
+    expect(wrapper.text()).toContain('performance.concurrentRestartHint')
+    wrapper.unmount()
+  })
+
+  it('edits the same raw value and still shows the restart hint when smart mode is off', async () => {
+    const wrapper = mountSection('16', { concurrentDownloads: '8', smartThreadMode: false })
+    const input = wrapper.find('input[type="number"]')
+    expect(input.attributes('disabled')).toBeUndefined()
+    expect((input.element as HTMLInputElement).value).toBe('8')
+
+    const el = input.element as HTMLInputElement
+    el.value = '8'
+    await input.trigger('input')
+    expect(wrapper.emitted('update:concurrentDownloads')).toEqual([['8']])
+    expect(wrapper.emitted('change')).toHaveLength(1)
+
+    expect(wrapper.text()).not.toContain('performance.concurrentManagedHint')
+    expect(wrapper.text()).toContain('performance.concurrentRestartHint')
     wrapper.unmount()
   })
 })

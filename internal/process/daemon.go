@@ -295,7 +295,7 @@ func startPreparedAria2Locked(cfg *config.AppConfig, prepared preparedBundledAri
 		"--dir=" + cleanDir,
 		"--auto-file-renaming=true",
 		"--allow-overwrite=false",
-		"--max-concurrent-downloads=" + cfg.MaxConcurrentDownloads,
+		aria2ConcurrencyArg(cfg),
 		fmt.Sprintf("--max-connection-per-server=%d", aria2MaxConn),
 		"--user-agent=" + cfg.UserAgent,
 		"--continue=true",
@@ -369,6 +369,12 @@ func ValidateDownloadDir(dir string) error {
 		return fmt.Errorf("download directory not writable: %w", closeErr)
 	}
 	return nil
+}
+
+// aria2ConcurrencyArg builds the launch flag from the effective concurrency:
+// SmartThreadMode projects the built-in default without touching the raw value.
+func aria2ConcurrencyArg(cfg *config.AppConfig) string {
+	return "--max-concurrent-downloads=" + config.EffectiveMaxConcurrentDownloads(*cfg)
 }
 
 // EffectiveAria2MaxConnections returns the Aria2 launch value: min(parsed, 16).

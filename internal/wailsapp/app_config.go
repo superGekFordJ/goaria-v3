@@ -123,7 +123,7 @@ func ariaProjection(cfg config.AppConfig) aria2LaunchProjection {
 		RPCPort:                sanitized.RPCPort,
 		RPCSecret:              sanitized.RPCSecret,
 		DownloadDir:            sanitized.DownloadDir,
-		MaxConcurrentDownloads: sanitized.MaxConcurrentDownloads,
+		MaxConcurrentDownloads: config.EffectiveMaxConcurrentDownloads(sanitized),
 		UserAgent:              sanitized.UserAgent,
 		MaxConnections:         process.EffectiveAria2MaxConnections(sanitized.MaxConnections),
 	}
@@ -247,7 +247,39 @@ func (a *App) SaveConfig(request config.AppConfig) SaveConfigResult {
 	return successSaveResult(liveSnapshot(deps, committed), true)
 }
 
+// RegisterAriaStartup records the initial daemon launch as an activation
+// attempt and returns its identity for the deferred readiness completion.
+// Call before StartAria2.
+func RegisterAriaStartup(a *App) uint64 {
+	a.configSaveMu.Lock()
+	defer a.configSaveMu.Unlock()
+	a.ariaActivationEpoch++
+	return a.ariaActivationEpoch
+}
+
+// CompleteAriaStartup applies the startup readiness result: the notifier is
+// initialized only while the launch attempt is still the current activation,
+// so a save-time restart that already bound its own notifier is not torn down
+// by a stale completion. The identity check and notifier init share one
+// configSaveMu hold.
+func CompleteAriaStartup(a *App, hub *events.Hub, attempt uint64, launch config.AppConfig, readyErr error) {
+	if readyErr != nil || hub == nil {
+		return
+	}
+	a.configSaveMu.Lock()
+	defer a.configSaveMu.Unlock()
+	if attempt != a.ariaActivationEpoch {
+		return
+	}
+	if init := a.saveDeps().initNotifier; init != nil {
+		init(hub, launch.RPCPort, launch.RPCSecret)
+	}
+}
+
 func (a *App) activateAria(deps configSaveDeps, cfg config.AppConfig) error {
+	// Any restart attempt invalidates older startup completions, even when it
+	// fails before stopping the previous daemon.
+	a.ariaActivationEpoch++
 	if err := deps.restartAria2(&cfg); err != nil {
 		return ariaActivateError{kind: "restart", err: err}
 	}
@@ -284,6 +316,9 @@ func (a *App) rollbackConfigAndAria(deps configSaveDeps, old, candidate config.A
 
 	restored := rollback.Current
 	if daemonWasReplaced(activateErr) {
+		// Issuing a restore restart is another activation attempt; it
+		// invalidates the failed candidate identity too.
+		a.ariaActivationEpoch++
 		if err := deps.restartAria2(&restored); err != nil {
 			var re *process.Aria2RestartError
 			if errors.As(err, &re) && re != nil && !re.Stopped && deps.stopAria2 != nil {

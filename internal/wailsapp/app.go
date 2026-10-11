@@ -56,6 +56,11 @@ type App struct {
 
 	configSaveMu sync.Mutex
 	configDeps   configSaveDeps
+
+	// Activation attempt identity; read/written only under configSaveMu.
+	// Bumped on every daemon launch/restart so a deferred startup
+	// completion can reject identities superseded by a newer attempt.
+	ariaActivationEpoch uint64
 }
 
 type Options struct {

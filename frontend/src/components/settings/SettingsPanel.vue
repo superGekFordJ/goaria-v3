@@ -177,6 +177,24 @@
     }, 1500)
   }
 
+  /* A rejected save may still have committed; re-read the canonical config
+   * once so the next full snapshot does not silently write stale form values
+   * back. Guarded by the same edit/apply/disposed markers as the save path. */
+  const recoverCanonicalConfig = async (generation: number) => {
+    if (disposed || generation !== editGeneration) return
+    const applyAtStart = applyGeneration
+    let canonical: AppConfig | null
+    try {
+      canonical = await configStore.readConfigSnapshot()
+    } catch {
+      canonical = null
+    }
+    if (disposed || generation !== editGeneration || applyGeneration !== applyAtStart) return
+    if (!canonical) return
+    configStore.applyCanonicalConfig(canonical)
+    syncForm(canonical)
+  }
+
   const triggerSave = () => {
     if (!configStore.isHydrated || !isInitializedFromBackend || isApplyingCanonical || disposed) {
       return
@@ -219,6 +237,7 @@
         if (disposed || generation !== editGeneration) return
         lastErrorCode.value = ''
         saveStatus.value = 'error'
+        void recoverCanonicalConfig(generation)
       }
     }, 800)
   }

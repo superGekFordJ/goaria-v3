@@ -89,8 +89,10 @@ func main() {
 		log.Fatalf("failed to configure embedded extractor runtime: %v", err)
 	}
 
-	rpc.Init(config.Get().RPCPort, config.Get().RPCSecret)
-	if err := process.StartAria2(config.Get()); err != nil {
+	launchCfg := *config.Get()
+	launchAttempt := wailsapp.RegisterAriaStartup(appService)
+	rpc.Init(launchCfg.RPCPort, launchCfg.RPCSecret)
+	if err := process.StartAria2(&launchCfg); err != nil {
 		log.Fatalf("failed to start bundled aria2: %v", err)
 	}
 
@@ -136,11 +138,10 @@ func main() {
 	// Initialize Event Hub (after app is created)
 	eventHub := events.NewHub(app)
 
-	// Start Aria2 WebSocket listener (after Aria2 is ready)
+	// Start Aria2 WebSocket listener (after Aria2 is ready). The notifier is
+	// only initialized if no newer activation superseded this launch meanwhile.
 	go func() {
-		if err := rpc.WaitForReady(5 * time.Second); err == nil {
-			rpc.InitNotifier(eventHub, config.Get().RPCPort, config.Get().RPCSecret)
-		}
+		wailsapp.CompleteAriaStartup(appService, eventHub, launchAttempt, launchCfg, rpc.WaitForReady(5*time.Second))
 	}()
 
 	// Store app and event hub references for window creation

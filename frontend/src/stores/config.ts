@@ -96,6 +96,16 @@ export const useConfigStore = defineStore(
     }
 
     /**
+     * Read the canonical backend snapshot without applying it or touching
+     * hydration state/counters. Null and IPC rejections pass through; callers
+     * decide how to handle them.
+     */
+    async function readConfigSnapshot(): Promise<AppConfig | null> {
+      const res = await GetConfig()
+      return res ? cloneConfig(res) : null
+    }
+
+    /**
      * Save a complete candidate snapshot. Does not write result.config into settings.
      */
     async function updateConfig(candidate: AppConfig): Promise<SaveConfigResult> {
@@ -133,6 +143,7 @@ export const useConfigStore = defineStore(
       refreshAria2Connected,
       fetchConfig,
       updateConfig,
+      readConfigSnapshot,
       applyCanonicalConfig,
       pickDirectory,
     }
