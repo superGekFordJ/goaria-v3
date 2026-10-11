@@ -63,6 +63,26 @@ func TestSurgeEngine_ReadLiveStatus(t *testing.T) {
 			t.Fatalf("list/master manufactured live: %s %#v", id, got)
 		}
 	}
+	// Absence is explicit: the scheduler confirms non-membership. The empty id
+	// and a nil-state worker stay unknown — never Absent.
+	for _, id := range []string{"missing", "master-wait", "master-run"} {
+		if got := engine.ReadLiveStatus(id); !got.Absent {
+			t.Fatalf("scheduler-missing id must answer absent: %s %#v", id, got)
+		}
+	}
+	if got := engine.ReadLiveStatus(""); got.Absent {
+		t.Fatal("empty id is unknown, not absent")
+	}
+	poolNil := NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
+		"nilworker": {ID: "nilworker", TotalSize: 1000},
+	}))
+	t.Cleanup(poolNil.Close)
+	if got := poolNil.ReadLiveStatus("nilworker"); got.Known || got.Absent {
+		t.Fatalf("existing nil-state worker must read unknown, not absent: %#v", got)
+	}
+	if got := poolNil.ReadLiveStatus("gone"); !got.Absent || got.Known {
+		t.Fatalf("pool-missing id must read absent: %#v", got)
+	}
 	queuedState := progress.New("queued", 1000)
 	queuedState.Bytes.VerifiedProgress.Store(500)
 	queuedState.Done.Store(true)
@@ -113,10 +133,100 @@ func TestSurgeEngine_ReadLiveStatus(t *testing.T) {
 				t.Fatalf("live status/zero measurement wrong: %#v", got)
 			}
 			cached, _ := engine.getDownloadList()
-			if len(cached) != 1 || cached[0].Status != "downloading" {
-				t.Fatal("live read wrote list cache")
+			// A nil-state worker projects "unknown", never a manufactured
+			// "downloading"; for real states the cached row keeps the
+			// pre-mutation status — ReadLiveStatus must not write the cache.
+			wantCached := "downloading"
+			if tc.status == "nil-state" {
+				wantCached = "unknown"
+			}
+			if len(cached) != 1 || cached[0].Status != wantCached {
+				t.Fatalf("live read wrote list cache: %#v", cached)
 			}
 		})
+	}
+}
+
+// buildDownloadList resume projection: a real queued entry is queue truth —
+// stale paused/done/error overlays must not reclassify it; nil-state workers
+// project "unknown" rather than a manufactured "downloading"; checkpoints
+// fill from cfg/progress/master mirror, and master-only rows stay visible
+// without becoming live evidence.
+func TestSurgeEngine_buildDownloadList_ResumeProjection(t *testing.T) {
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{
+		"nilworker": {ID: "nilworker", URL: "https://x/n", Filename: "n.bin", DestPath: "/d/n.bin", TotalSize: 700, Downloaded: 100},
+		// Running row with a live but zero-measurement progress state:
+		// reliable zeros are authoritative, not backfilled.
+		"running": {ID: "running", URL: "https://x/r", Filename: "r.bin", DestPath: "/d/r.bin", TotalSize: 5000, ProgressState: progress.New("running", 0)},
+	})
+	engine := NewSurgeEngineForTesting(pool)
+	t.Cleanup(engine.Close)
+
+	// Requeue carries a stale Done overlay from its previous run — the row
+	// must still project as queued with the cfg checkpoint, never complete.
+	staleDone := progress.New("requeue", 0)
+	staleDone.Done.Store(true)
+	staleDone.Bytes.VerifiedProgress.Store(900)
+	stalePaused := progress.New("repaused", 0)
+	stalePaused.Paused.Store(true)
+	stalePaused.Bytes.VerifiedProgress.Store(300)
+	staleErr := progress.New("reerror", 0)
+	staleErr.Done.Store(true)
+	staleErr.SetError(errors.New("old terminal"))
+	if !pool.Add(types.DownloadRecord{
+		ID: "requeue", URL: "https://x/q", Filename: "q.bin", DestPath: "/d/q.bin",
+		TotalSize: 2000, Downloaded: 900, ProgressState: staleDone,
+		RateLimit: 0, RateLimitSet: true, // explicit rate-limit clear must survive
+	}) || !pool.Add(types.DownloadRecord{
+		ID: "repaused", URL: "https://x/p", Filename: "p.bin", DestPath: "/d/p.bin",
+		TotalSize: 800, Downloaded: 300, ProgressState: stalePaused,
+	}) || !pool.Add(types.DownloadRecord{
+		ID: "reerror", URL: "https://x/e", Filename: "e.bin", DestPath: "/d/e.bin",
+		TotalSize: 500, ProgressState: staleErr,
+	}) {
+		t.Fatal("Add refused")
+	}
+	// Mirror rows: a master-only entry and a stale same-ID row that must not
+	// override the queued cfg identity/checkpoint.
+	engine.SetMasterCacheForTesting([]types.DownloadRecord{
+		{ID: "master-only", URL: "https://x/m", Filename: "m.bin", DestPath: "/d/m.bin", Status: "paused", TotalSize: 4000, Downloaded: 1500},
+		{ID: "requeue", Filename: "q-old.bin", DestPath: "/d/old", TotalSize: 9999, Downloaded: 1},
+	})
+
+	list, err := engine.getDownloadList()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]types.DownloadStatus, len(list))
+	for _, s := range list {
+		byID[s.ID] = s
+	}
+	if s := byID["requeue"]; s.Status != "queued" || s.TotalSize != 2000 || s.Downloaded != 900 ||
+		s.Filename != "q.bin" || s.DestPath != "/d/q.bin" || !s.RateLimitSet || s.RateLimit != 0 {
+		t.Fatalf("queued requeue misprojected (stale done/mirror leaked): %#v", s)
+	}
+	if s := byID["repaused"]; s.Status != "queued" || s.TotalSize != 800 {
+		t.Fatalf("queued row reclassified by stale paused overlay: %#v", s)
+	}
+	if s := byID["reerror"]; s.Status != "queued" || s.Error != "" {
+		t.Fatalf("queued row reclassified by stale error overlay: %#v", s)
+	}
+	if s := byID["nilworker"]; s.Status != "unknown" || s.TotalSize != 700 || s.Downloaded != 100 {
+		t.Fatalf("nil-state worker must project unknown with cfg checkpoint: %#v", s)
+	}
+	if s := byID["master-only"]; s.Status != "paused" || s.TotalSize != 4000 || s.Downloaded != 1500 {
+		t.Fatalf("master-only row must stay listable: %#v", s)
+	}
+	// Running keeps its reliable zero measurement — no mirror/cfg backfill.
+	if s := byID["running"]; s.Status != "downloading" || s.TotalSize != 0 || s.Downloaded != 0 {
+		t.Fatalf("running zero measurement must stay authoritative: %#v", s)
+	}
+	// ...but master-only is never live evidence (no pool membership).
+	if got := engine.ReadLiveStatus("master-only"); got.Known {
+		t.Fatalf("master-only became live: %#v", got)
+	}
+	if got := engine.ReadLiveStatus("requeue"); !got.Known || got.Status != "queued" {
+		t.Fatalf("real queued must be live-known: %#v", got)
 	}
 }
 

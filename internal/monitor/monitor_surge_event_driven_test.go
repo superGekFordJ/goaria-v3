@@ -781,7 +781,7 @@ func TestEventDriven_RapidPauseResume(t *testing.T) {
 	// Rapid pause-resume-pause-resume cycle
 	for i := range 10 {
 		// Pause
-		m.BumpPauseResumeIntention("sg_rapid-1", PauseResumeIntentionPause)
+		m.BeginPauseResumeRequest("sg_rapid-1", "pause")
 		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "rapid-1"})
 
 		// Verify in waiting

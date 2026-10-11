@@ -219,6 +219,15 @@ const (
 type pauseResumeIntention struct {
 	action string
 	seq    uint64
+	// protectedUntil bounds how long the request shields facts (stale-pause
+	// discard / delayed-delete). The ticket itself never expires; expiry only
+	// ends fact protection so a forgotten request cannot pin a row forever.
+	protectedUntil time.Time
+	// extended marks a one-shot renewal already consumed by a successful
+	// confirm; duplicate confirmations must not renew the deadline again.
+	extended bool
+	// confirmed marks that the engine acknowledged the request once.
+	confirmed bool
 }
 
 // PauseResumeTicket carries request freshness, not resume authority.
@@ -245,7 +254,7 @@ func (m *Monitor) BeginPauseResumeRequest(gid, action string) (ticket PauseResum
 			m.pauseResumeIntentions = make(map[string]pauseResumeIntention)
 		}
 		ticket = PauseResumeTicket{gid: gid, seq: m.pauseResumeSequence, stamp: stamp}
-		m.pauseResumeIntentions[gid] = pauseResumeIntention{action: action, seq: ticket.seq}
+		m.pauseResumeIntentions[gid] = pauseResumeIntention{action: action, seq: ticket.seq, protectedUntil: time.Now().Add(TaskGracePeriod)}
 	})
 	return
 }
@@ -351,6 +360,17 @@ func (m *Monitor) confirmPauseResumeRequestLocked(gid string) acceptedTaskChange
 		m.tracker.UpdateProgressFromEvent(gid, parseInt64(task.TotalLength), completed)
 	}
 	task, _, _ = Cache.GetTask(gid)
+	// A real acknowledgement renews the fact shield once, so a slow
+	// queue/start pipeline stays protected while the ticket remains the only
+	// authority for whether follow-up callbacks may run.
+	m.pauseResumeVersionMu.Lock()
+	if intention, ok := m.pauseResumeIntentions[gid]; ok && intention.seq != 0 && !intention.extended {
+		intention.extended = true
+		intention.confirmed = true
+		intention.protectedUntil = time.Now().Add(TaskGracePeriod)
+		m.pauseResumeIntentions[gid] = intention
+	}
+	m.pauseResumeVersionMu.Unlock()
 	return acceptedTaskChange{task: task, from: from, to: "waiting", kind: kind}
 }
 
@@ -407,7 +427,9 @@ func (m *Monitor) readSurgeLiveStatus(gid string) rpc.SurgeLiveStatus {
 		live = m.surgeEng.ReadLiveStatus(id)
 	}
 	if !live.Known {
-		return rpc.SurgeLiveStatus{}
+		// Unknown stays unknown; an explicit absent answer must survive so
+		// callers can distinguish "not tracked" from "status indeterminate".
+		return rpc.SurgeLiveStatus{Absent: live.Absent}
 	}
 	switch live.Status {
 	case "queued":
@@ -426,6 +448,8 @@ func (m *Monitor) readSurgeLiveStatus(gid string) rpc.SurgeLiveStatus {
 	return live
 }
 
+// BumpPauseResumeIntention is a legacy compat record (no ticket). Its fact
+// shield is bounded like a real request so a forgotten bump cannot pin a row.
 func (m *Monitor) BumpPauseResumeIntention(gid string, action string) {
 	if m == nil || gid == "" {
 		return
@@ -436,24 +460,41 @@ func (m *Monitor) BumpPauseResumeIntention(gid string, action string) {
 		if m.pauseResumeIntentions == nil {
 			m.pauseResumeIntentions = make(map[string]pauseResumeIntention)
 		}
-		m.pauseResumeIntentions[gid] = pauseResumeIntention{action: action}
+		m.pauseResumeIntentions[gid] = pauseResumeIntention{action: action, protectedUntil: time.Now().Add(TaskGracePeriod)}
 	})
+}
+
+// pauseResumeProtectedLocked returns the recorded intention while its fact
+// shield is still inside its deadline. An expired or deadline-less record no
+// longer shields; the ticket validity check stays seq-based elsewhere.
+func (m *Monitor) pauseResumeProtectedLocked(gid string) (pauseResumeIntention, bool) {
+	intention, ok := m.pauseResumeIntentions[gid]
+	if !ok || intention.protectedUntil.IsZero() || !time.Now().Before(intention.protectedUntil) {
+		return pauseResumeIntention{}, false
+	}
+	return intention, true
+}
+
+// pauseResumeProtectedAction is the bounded variant of the raw map read: the
+// action only shields while the protection window is live.
+func (m *Monitor) pauseResumeProtectedAction(gid string) string {
+	m.pauseResumeVersionMu.RLock()
+	defer m.pauseResumeVersionMu.RUnlock()
+	if m.pauseResumeIntentions == nil {
+		return ""
+	}
+	intention, ok := m.pauseResumeProtectedLocked(gid)
+	if !ok {
+		return ""
+	}
+	return intention.action
 }
 
 func (m *Monitor) shouldDiscardStalePause(gid string) bool {
 	if m == nil || gid == "" {
 		return false
 	}
-	m.pauseResumeVersionMu.RLock()
-	defer m.pauseResumeVersionMu.RUnlock()
-	if m.pauseResumeIntentions == nil {
-		return false
-	}
-	intention, exists := m.pauseResumeIntentions[gid]
-	if !exists {
-		return false
-	}
-	return intention.action == PauseResumeIntentionResume
+	return m.pauseResumeProtectedAction(gid) == PauseResumeIntentionResume
 }
 
 // shouldDiscardPauseAgainstStopped discards every event-path pause while the
@@ -558,11 +599,12 @@ func retireHistoryAndReopen(tracker *TaskTracker, gid string) {
 	body()
 }
 
-// markCompleteAndHandleLocked accepts terminal + history write. Caller must
-// already hold the GID lifecycle lock.
-func (m *Monitor) markCompleteAndHandleLocked(gid, status string, prep func(*TrackedTask)) {
+// markCompleteAndHandleLocked accepts terminal under the GID gate and returns
+// the stamped terminal copy for post-gate finishing. Caller must already hold
+// the GID lifecycle lock.
+func (m *Monitor) markCompleteAndHandleLocked(gid, status string, prep func(*TrackedTask)) *TrackedTask {
 	if m == nil || gid == "" {
-		return
+		return nil
 	}
 	// Snapshots die with the download generation on every terminal accept,
 	// including repeat terminals where MarkCompleteFromEvent returns nil.
@@ -570,19 +612,19 @@ func (m *Monitor) markCompleteAndHandleLocked(gid, status string, prep func(*Tra
 		m.chunkSnapshots.Remove(gid)
 	}
 	if m.tracker == nil {
-		return
+		return nil
 	}
 	completed := m.tracker.MarkCompleteFromEvent(gid, status)
 	m.pauseResumeVersionMu.Lock()
 	delete(m.pauseResumeIntentions, gid)
 	m.pauseResumeVersionMu.Unlock()
 	if completed == nil {
-		return
+		return nil
 	}
 	if prep != nil {
 		prep(completed)
 	}
-	m.handleTaskComplete(completed)
+	return completed
 }
 
 // markCompleteAndHandle accepts a terminal event under the per-GID lifecycle
@@ -593,13 +635,15 @@ func (m *Monitor) markCompleteAndHandle(gid, status string, prep func(*TrackedTa
 	if m == nil || gid == "" {
 		return
 	}
+	var accepted *TrackedTask
 	if m.tracker != nil {
 		m.tracker.RunUnderLifecycle(gid, func() {
-			m.markCompleteAndHandleLocked(gid, status, prep)
+			accepted = m.markCompleteAndHandleLocked(gid, status, prep)
 		})
+		m.finishTerminalCopy(accepted)
 		return
 	}
-	m.markCompleteAndHandleLocked(gid, status, prep)
+	m.finishTerminalCopy(m.markCompleteAndHandleLocked(gid, status, prep))
 }
 
 // moveToActiveAndRetireIfStopped serializes SetStatus + MoveTaskToActive with
@@ -640,29 +684,48 @@ func (m *Monitor) moveToActiveAndRetireIfStopped(gid, status string) (from strin
 // is no gate to take; the Locked body still runs so the snapshot dies with
 // the generation either way.
 func (m *Monitor) moveToStoppedAndHandle(gid, status, errorCode, errorMessage string, ensureTotal int64, prep func(*TrackedTask)) {
+	m.moveToStoppedAndHandleGate(gid, status, errorCode, errorMessage, ensureTotal, nil, prep)
+}
+
+// moveToStoppedAndHandleGate is moveToStoppedAndHandle plus gateFn, extra
+// in-gate bookkeeping (e.g. the terminal master-mirror merge) that must run
+// inside the acceptance section even for already-accepted repeats.
+func (m *Monitor) moveToStoppedAndHandleGate(gid, status, errorCode, errorMessage string, ensureTotal int64, gateFn func(), prep func(*TrackedTask)) {
 	if m == nil || gid == "" {
 		return
 	}
+	var accepted *TrackedTask
 	body := func() {
-		if status == "error" {
-			Cache.MoveTaskToStoppedWithError(gid, status, errorCode, errorMessage)
-		} else {
-			Cache.MoveTaskToStopped(gid, status)
+		if gateFn != nil {
+			gateFn()
 		}
-		if m.tracker != nil && ensureTotal > 0 {
-			if status == "complete" {
-				m.tracker.EnsureTrackedComplete(gid, ensureTotal)
-			} else {
-				m.tracker.EnsureTrackedFromEvent(gid, ensureTotal, "", 0, "")
+		total := ensureTotal
+		if status == "complete" && total <= 0 {
+			// In-gate canonical fallback: the current full row, not the
+			// caller's pre-gate read.
+			if task, _, ok := Cache.GetTask(gid); ok {
+				total = parsePositiveLength(task.TotalLength)
 			}
 		}
-		m.markCompleteAndHandleLocked(gid, status, prep)
+		// One critical section: the move and the terminal-only field commit
+		// (canonical total=completed for complete; code/message for error).
+		Cache.MoveTaskToStoppedTerminal(gid, status, errorCode, errorMessage, total)
+		if m.tracker != nil {
+			if status == "complete" && total > 0 {
+				m.tracker.EnsureTrackedComplete(gid, total)
+			} else {
+				m.tracker.EnsureTrackedFromEvent(gid, total, "", 0, "")
+			}
+		}
+		accepted = m.markCompleteAndHandleLocked(gid, status, prep)
 	}
 	if m.tracker != nil {
 		m.tracker.RunUnderLifecycle(gid, body)
+		m.finishTerminalCopy(accepted)
 		return
 	}
 	body()
+	m.finishTerminalCopy(accepted)
 }
 
 // MoveTaskToWaitingFromLive is the group-IPC post-RPC pause move: under the
@@ -834,12 +897,44 @@ func (m *Monitor) runLoop() {
 	}
 }
 
-// handleTaskComplete 处理任务完成
+// handleTaskComplete 处理任务完成：恢复信息 + 速度统计 + 历史写入，全部在
+// 调用方当前上下文中执行（在 GID gate 内被调用时，兜底 RPC 随之在 gate 内）。
 func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 	if task == nil {
 		return
 	}
+	m.recoverTerminalInfo(task)
+	m.recordTerminalSpeedStats(task)
+	m.writeTerminalHistoryLocked(task)
+}
 
+// finishTerminalCopy performs the post-gate finish for a copy accepted under
+// the GID gate: blocking recovery runs ungated, then speed stats and the
+// history write re-enter the gate and validate the copy so a post-accept
+// reopen/remove/re-add drops the stale snapshot instead of recording stats
+// or history for a retired generation.
+func (m *Monitor) finishTerminalCopy(task *TrackedTask) {
+	if task == nil {
+		return
+	}
+	m.recoverTerminalInfo(task)
+	if m.tracker != nil {
+		m.tracker.RunUnderLifecycle(task.GID, func() {
+			if task.terminalEntry == nil || m.tracker.TerminalCopyCurrent(task.GID, task) {
+				m.recordTerminalSpeedStats(task)
+				m.writeTerminalHistoryLocked(task)
+			}
+		})
+		return
+	}
+	m.recordTerminalSpeedStats(task)
+	m.writeTerminalHistoryLocked(task)
+}
+
+// recoverTerminalInfo fills missing file/dir/group fields from the metadata
+// cache and, as a last resort, a blocking TellStatus call. Call it outside the
+// GID lifecycle gate whenever possible.
+func (m *Monitor) recoverTerminalInfo(task *TrackedTask) {
 	// 清理 convergence state（无论后续路径如何，都应清理）
 	if m.convergence != nil {
 		m.convergence.RemoveTask(task.GID)
@@ -881,7 +976,11 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 			log.Printf("[Monitor] Recovered file info from RPC for task: %s -> %s", task.GID, task.FilePath)
 		}
 	}
+}
 
+// recordTerminalSpeedStats writes the >50MB peak-speed record without
+// depending on FilePath; safe outside the GID gate.
+func (m *Monitor) recordTerminalSpeedStats(task *TrackedTask) {
 	// 1. 记录速度统计（仅 >50MB 文件）— 不依赖 FilePath，先于 history 执行
 	if task.TotalLength > speedstats.MinFileSize && task.PeakSpeed > 0 {
 		// Fallback chain: PeakThreadCount (D3) → ThreadCount (allocated/started workers) → config
@@ -938,7 +1037,12 @@ func (m *Monitor) handleTaskComplete(task *TrackedTask) {
 				task.PeakSpeed, threadCount, threadSource, isExploration, task.Scope, task.PeakEnvKey, task.Domain, task.TTFBMs)
 		}
 	}
+}
 
+// writeTerminalHistoryLocked writes the durable history entry. For Surge
+// copies accepted under the gate, callers re-validate via finishTerminalCopy;
+// direct callers (tick, tests) run it in their current context.
+func (m *Monitor) writeTerminalHistoryLocked(task *TrackedTask) {
 	if task.FilePath == "" {
 		log.Printf("[Monitor] Task %s completed but no file path available, skipping history", task.GID)
 		return

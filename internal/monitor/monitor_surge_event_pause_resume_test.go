@@ -271,6 +271,7 @@ func TestHandleSurgeEvent_PauseResumePauseSequence(t *testing.T) {
 	m := &Monitor{
 		hub:                   hub,
 		pusher:                pusher,
+		tracker:               NewTaskTracker(),
 		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 	}
 
@@ -281,9 +282,9 @@ func TestHandleSurgeEvent_PauseResumePauseSequence(t *testing.T) {
 	Cache.sgActive = []rpc.Task{{GID: "sg_test-4", Status: "active", DownloadSpeed: "100"}}
 	defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil }()
 
-	m.BumpPauseResumeIntention("sg_test-4", PauseResumeIntentionPause)
-	m.BumpPauseResumeIntention("sg_test-4", PauseResumeIntentionResume)
-	m.BumpPauseResumeIntention("sg_test-4", PauseResumeIntentionPause)
+	m.BeginPauseResumeRequest("sg_test-4", "pause")
+	m.BeginPauseResumeRequest("sg_test-4", "resume")
+	m.BeginPauseResumeRequest("sg_test-4", "pause")
 
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "test-4"})
 

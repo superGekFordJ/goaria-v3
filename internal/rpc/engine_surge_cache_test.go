@@ -266,3 +266,58 @@ func loadMasterEntriesForTest(t *testing.T) []types.DownloadRecord {
 	}
 	return list.Downloads
 }
+
+// An old disk read must not clobber event writes that landed between the
+// LoadMasterList and the install: upserts survive, removes are not
+// resurrected, remove+re-add keeps the new entry. With no interleaved
+// mutation a later refresh still picks up fresh disk changes.
+func TestMasterCache_RefreshConcurrentMutation(t *testing.T) {
+	testutil.SetupStateDB(t)
+	e := newCacheTestEngine(t)
+
+	seed := []types.DownloadRecord{
+		{ID: "keep", Status: "queued", TotalSize: 1},
+		{ID: "victim", Status: "queued", TotalSize: 1},
+		{ID: "readd", Status: "queued", TotalSize: 1},
+	}
+	for _, rec := range seed {
+		if err := store.AddToMasterList(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.SetMasterCacheForTesting(seed)
+
+	// The hook fires after the disk read and before install; all mutations
+	// bump the mirror revision so the install merges instead of replacing.
+	e.SetMasterRefreshHookForTesting(func() {
+		e.UpsertMasterCacheEntry(types.DownloadRecord{ID: "keep", Status: "downloading", TotalSize: 7, Downloaded: 3})
+		e.RemoveMasterCacheEntry("victim")
+		e.RemoveMasterCacheEntry("readd")
+		e.UpsertMasterCacheEntry(types.DownloadRecord{ID: "readd", Status: "paused", TotalSize: 9})
+		e.UpsertMasterCacheEntry(types.DownloadRecord{ID: "newevent", Status: "queued", TotalSize: 2})
+	})
+	e.RefreshMasterCache()
+	e.SetMasterRefreshHookForTesting(nil)
+
+	if got, ok := e.GetMasterCacheEntry("keep"); !ok || got.Status != "downloading" || got.TotalSize != 7 || got.Downloaded != 3 {
+		t.Fatalf("accepted event row clobbered by old disk read: %#v", got)
+	}
+	if _, ok := e.GetMasterCacheEntry("victim"); ok {
+		t.Fatal("old disk read resurrected a mid-read remove")
+	}
+	if got, ok := e.GetMasterCacheEntry("readd"); !ok || got.Status != "paused" || got.TotalSize != 9 {
+		t.Fatalf("remove+re-add must keep the new entry: %#v", got)
+	}
+	if got, ok := e.GetMasterCacheEntry("newevent"); !ok || got.TotalSize != 2 {
+		t.Fatalf("mid-read upsert lost by refresh install: %#v", got)
+	}
+
+	// Uninterleaved refresh still reloads disk state.
+	if err := store.AddToMasterList(types.DownloadRecord{ID: "later", Status: "completed", TotalSize: 5}); err != nil {
+		t.Fatal(err)
+	}
+	e.RefreshMasterCache()
+	if got, ok := e.GetMasterCacheEntry("later"); !ok || got.Status != "completed" {
+		t.Fatalf("fresh disk change not refreshed: %#v", got)
+	}
+}

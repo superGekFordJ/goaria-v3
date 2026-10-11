@@ -344,6 +344,7 @@ func TestReconcileSurgeCache_VanishClearsChunkSnapshot(t *testing.T) {
 
 	Cache.AddSgTask(rpc.Task{GID: "sg_task1", Status: "active"}, "active")
 	m.chunkSnapshots.Set("sg_task1", []byte{0x55}, 4, 512, nil)
+	reader.setLiveStatus("task1", rpc.SurgeLiveStatus{Absent: true})
 	reader.setLists(nil, nil, nil)
 
 	m.reconcileSurgeCache()
@@ -385,6 +386,8 @@ func TestReconcileSurgeCache_OrphanSnapshotSweep(t *testing.T) {
 
 	m.chunkSnapshots.Set("sg_orphan", []byte{0x55}, 4, 512, nil)
 	m.chunkSnapshots.Set("sg_task1", []byte{0x55}, 4, 512, nil)
+	// Only an explicit absent answer sweeps the orphan; unknown is not removal.
+	reader.setLiveStatus("orphan", rpc.SurgeLiveStatus{Absent: true})
 	reader.setLists([]rpc.Task{{GID: "task1", Status: "downloading", TotalLength: "1000"}}, nil, nil)
 
 	m.reconcileSurgeCache()

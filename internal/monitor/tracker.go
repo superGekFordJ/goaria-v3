@@ -115,6 +115,13 @@ type TrackedTask struct {
 	// Set only on terminal copies by the Surge complete prep.
 	terminalElapsed     time.Duration
 	peakFromAvgFallback bool
+
+	// terminalEntry/terminalGeneration identify the lifecycle entry and
+	// generation that accepted this terminal copy. Set only at acceptance;
+	// private so delayed consumers cannot forge identity — a reopen bumps the
+	// generation, and remove/re-add replaces the entry pointer.
+	terminalEntry      *lifecycleState
+	terminalGeneration uint64
 }
 
 // activeSampleGapCap is 2x the headless tick; longer gaps mean aria2 was
@@ -235,16 +242,20 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 					// 状态变为完成，触发完成处理
 					applyAuthoritativeStatusLocked(tracked, task.Status)
 					t.fillTaskInfo(tracked, task)
-					completed = append(completed, copyTrackedTask(tracked))
+					cp := copyTrackedTask(tracked)
 					t.markTerminalAcceptedLocked(task.GID)
+					t.stampTerminalCopyLocked(task.GID, cp)
+					completed = append(completed, cp)
 				}
 			} else {
 				// 新发现的已完成任务（可能是重启后）
 				tracked = t.createTrackedTask(task)
 				applyAuthoritativeStatusLocked(tracked, task.Status)
 				t.tasks[task.GID] = tracked
-				completed = append(completed, copyTrackedTask(tracked))
+				cp := copyTrackedTask(tracked)
 				t.markTerminalAcceptedLocked(task.GID)
+				t.stampTerminalCopyLocked(task.GID, cp)
+				completed = append(completed, cp)
 			}
 		}
 	}
@@ -832,6 +843,53 @@ func (t *TaskTracker) markTerminalAcceptedLocked(gid string) {
 	ls.terminalHandled = true
 }
 
+// stampTerminalCopyLocked tags an accepted terminal copy with the accepting
+// lifecycle entry and generation. Caller holds tracker.mu.
+func (t *TaskTracker) stampTerminalCopyLocked(gid string, copy *TrackedTask) {
+	if copy == nil {
+		return
+	}
+	ls := t.getLifecycle(gid)
+	copy.terminalEntry = ls
+	copy.terminalGeneration = ls.generation
+}
+
+// TerminalCopyCurrent reports whether task is still the accepted terminal copy
+// of its generation: same lifecycle entry, same generation, still accepted.
+// Call under RunUnderLifecycle for gate ordering; stale copies produced before
+// a reopen/remove/re-add are rejected even when the numeric generation matches.
+func (t *TaskTracker) TerminalCopyCurrent(gid string, task *TrackedTask) bool {
+	if t == nil || task == nil || task.terminalEntry == nil {
+		return false
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if !t.processedComplete[gid] {
+		return false
+	}
+	t.lifecycleMu.Lock()
+	current := t.lifecycle[gid]
+	t.lifecycleMu.Unlock()
+	return current == task.terminalEntry && current.generation == task.terminalGeneration && current.terminalHandled
+}
+
+// SurgeGIDs snapshots tracked Surge GIDs so poll reconciliation can union
+// tracker-only candidates (cache lost the row but tracker still tracks it).
+func (t *TaskTracker) SurgeGIDs() []string {
+	if t == nil {
+		return nil
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	out := make([]string, 0, len(t.tasks))
+	for gid := range t.tasks {
+		if IsSgGid(gid) {
+			out = append(out, gid)
+		}
+	}
+	return out
+}
+
 // isTerminalAcceptedLocked reports whether gid already accepted a terminal for
 // the current generation. Caller must hold tracker.mu (or RLock).
 func (t *TaskTracker) isTerminalAcceptedLocked(gid string) bool {
@@ -963,7 +1021,9 @@ func (t *TaskTracker) MarkCompleteFromEvent(gid string, status string) *TrackedT
 
 	applyAuthoritativeStatusLocked(tracked, status)
 	t.markTerminalAcceptedLocked(gid)
-	return copyTrackedTask(tracked)
+	copy := copyTrackedTask(tracked)
+	t.stampTerminalCopyLocked(gid, copy)
+	return copy
 }
 
 // SetScope sets the task's scope/TTFB/domain info (backward-compatible wrapper).

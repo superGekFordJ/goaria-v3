@@ -18,6 +18,7 @@ func TestHandleSurgeEvent_DiscardsStalePauseAfterResume(t *testing.T) {
 	m := &Monitor{
 		hub:                   hub,
 		pusher:                pusher,
+		tracker:               NewTaskTracker(),
 		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 	}
 
@@ -28,8 +29,8 @@ func TestHandleSurgeEvent_DiscardsStalePauseAfterResume(t *testing.T) {
 	Cache.sgActive = []rpc.Task{{GID: "sg_test-1", Status: "active", DownloadSpeed: "100"}}
 	defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil }()
 
-	m.BumpPauseResumeIntention("sg_test-1", PauseResumeIntentionPause)
-	m.BumpPauseResumeIntention("sg_test-1", PauseResumeIntentionResume)
+	m.BeginPauseResumeRequest("sg_test-1", "pause")
+	m.BeginPauseResumeRequest("sg_test-1", "resume")
 
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "test-1"})
 
@@ -58,6 +59,7 @@ func TestHandleSurgeEvent_AcceptsPauseWhenLastIntentionIsPause(t *testing.T) {
 	m := &Monitor{
 		hub:                   hub,
 		pusher:                pusher,
+		tracker:               NewTaskTracker(),
 		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 	}
 
@@ -68,7 +70,7 @@ func TestHandleSurgeEvent_AcceptsPauseWhenLastIntentionIsPause(t *testing.T) {
 	Cache.sgActive = []rpc.Task{{GID: "sg_test-2", Status: "active", DownloadSpeed: "100"}}
 	defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil }()
 
-	m.BumpPauseResumeIntention("sg_test-2", PauseResumeIntentionPause)
+	m.BeginPauseResumeRequest("sg_test-2", "pause")
 
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "test-2"})
 
@@ -168,6 +170,7 @@ func TestHandleSurgeEvent_DiscardsPauseAgainstStoppedEvenWithPauseIntention(t *t
 	m := &Monitor{
 		hub:                   hub,
 		pusher:                pusher,
+		tracker:               NewTaskTracker(),
 		pauseResumeIntentions: make(map[string]pauseResumeIntention),
 	}
 
@@ -182,7 +185,7 @@ func TestHandleSurgeEvent_DiscardsPauseAgainstStoppedEvenWithPauseIntention(t *t
 	defer func() { Cache.sgStopped = nil; Cache.sgWaiting = nil; Cache.sgActive = nil }()
 
 	// BatchPause re-arms pause intention on terminal GIDs; must still discard.
-	m.BumpPauseResumeIntention("sg_term-batch", PauseResumeIntentionPause)
+	m.BeginPauseResumeRequest("sg_term-batch", "pause")
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "term-batch"})
 
 	if !Cache.IsInStopped("sg_term-batch") {

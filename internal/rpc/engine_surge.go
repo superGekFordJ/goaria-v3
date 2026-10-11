@@ -35,8 +35,10 @@ type SurgeEngine struct {
 	// (stopped/waiting/paused/queued). Active entries are served live from the
 	// scheduler and are not stored here. Kept in sync by handleSurgeEvent on
 	// status-transition events and refreshed periodically by tick().
-	masterCacheMu sync.RWMutex
-	masterCache   []types.DownloadRecord
+	masterCacheMu  sync.RWMutex
+	masterCache    []types.DownloadRecord
+	masterCacheRev uint64
+	refreshHook    func()
 }
 
 func (e *SurgeEngine) getScheduler() *scheduler.Scheduler {
@@ -50,9 +52,12 @@ func (e *SurgeEngine) getScheduler() *scheduler.Scheduler {
 }
 
 // SurgeLiveStatus is a Go-only scalar pool snapshot, independent of retained lists.
+// Absent is the scheduler's explicit answer that the ID is not tracked at all;
+// it differs from unknown (nil-state worker): unknown is never removal evidence.
 type SurgeLiveStatus struct {
 	Status                       string
 	Known                        bool
+	Absent                       bool
 	TotalLength, CompletedLength int64
 	TotalKnown, CompletedKnown   bool
 }
@@ -69,16 +74,23 @@ func (e *SurgeEngine) ReadLiveStatus(id string) SurgeLiveStatus {
 	}
 	status := pool.GetStatus(id)
 	if status == nil {
-		return SurgeLiveStatus{}
+		for _, cfg := range pool.GetAll() {
+			if cfg.ID == id {
+				return SurgeLiveStatus{}
+			}
+		}
+		return SurgeLiveStatus{Absent: true}
 	}
 	if status.Status == "queued" {
 		return SurgeLiveStatus{Status: "queued", Known: true}
 	}
 	switch status.Status {
 	case "downloading", "pausing", "paused", "completed", "error":
-		return SurgeLiveStatus{Status: status.Status, Known: true,
+		return SurgeLiveStatus{
+			Status: status.Status, Known: true,
 			TotalLength: status.TotalSize, CompletedLength: status.Downloaded,
-			TotalKnown: status.TotalSize > 0, CompletedKnown: status.Downloaded >= 0}
+			TotalKnown: status.TotalSize > 0, CompletedKnown: status.Downloaded >= 0,
+		}
 	default:
 		return SurgeLiveStatus{}
 	}
@@ -253,22 +265,48 @@ func (e *SurgeEngine) getDownloadList() ([]types.DownloadStatus, error) {
 func (e *SurgeEngine) buildDownloadList() []types.DownloadStatus {
 	var statuses []types.DownloadStatus
 
+	e.masterCacheMu.RLock()
+	cache := make([]types.DownloadRecord, len(e.masterCache))
+	copy(cache, e.masterCache)
+	e.masterCacheMu.RUnlock()
+	masterByID := make(map[string]types.DownloadRecord, len(cache))
+	for _, d := range cache {
+		masterByID[d.ID] = d
+	}
+
 	pool := e.getScheduler()
 	if pool != nil {
 		activeConfigs := pool.GetAll()
 		for _, cfg := range activeConfigs {
-			statusStr := "downloading"
-			if st := pool.GetStatus(cfg.ID); st != nil {
-				statusStr = st.Status
-			}
+			st := pool.GetStatus(cfg.ID)
 			status := types.DownloadStatus{
 				ID:           cfg.ID,
 				URL:          cfg.URL,
 				Filename:     cfg.Filename,
-				Status:       statusStr,
+				Status:       "downloading",
 				RateLimit:    cfg.RateLimit,
 				RateLimitSet: cfg.RateLimitSet,
 			}
+			if st == nil {
+				// Nil-state worker: tracked but no authoritative status. Keep
+				// the row in the union as "unknown" instead of manufacturing
+				// downloading — unknown is never removal or live evidence.
+				status.Status = "unknown"
+				fillStaticStatusCheckpoint(&status, &cfg, masterByID[cfg.ID])
+				statuses = append(statuses, status)
+				continue
+			}
+			if st.Status == "queued" {
+				// Queued is queue truth: a stale ProgressState must not
+				// reclassify it via Done/paused/error overlays. Checkpoint
+				// backfill comes from cfg, the stale progress read, and the
+				// retained master mirror — never from a run error.
+				status.Status = "queued"
+				fillStaticStatusCheckpoint(&status, &cfg, masterByID[cfg.ID])
+				statuses = append(statuses, status)
+				continue
+			}
+			status.Status = st.Status
 
 			if cfg.ProgressState != nil {
 				cp := progress.CfgProgress(&cfg)
@@ -319,11 +357,6 @@ func (e *SurgeEngine) buildDownloadList() []types.DownloadStatus {
 			statuses = append(statuses, status)
 		}
 	}
-
-	e.masterCacheMu.RLock()
-	cache := make([]types.DownloadRecord, len(e.masterCache))
-	copy(cache, e.masterCache)
-	e.masterCacheMu.RUnlock()
 
 	existingIDs := make(map[string]bool, len(statuses))
 	for _, s := range statuses {
@@ -377,6 +410,56 @@ func completedSpeedBps(entry types.DownloadRecord) float64 {
 	return 0
 }
 
+// fillStaticStatusCheckpoint fills a list status that has no live worker
+// overlay (queued / unknown rows) from cfg fields, then a stale progress read,
+// then the retained master mirror — measured lengths prefer the first
+// positive source.
+func fillStaticStatusCheckpoint(status *types.DownloadStatus, cfg *types.DownloadRecord, master types.DownloadRecord) {
+	status.TotalSize = cfg.TotalSize
+	status.Downloaded = cfg.Downloaded
+	status.DestPath = cfg.DestPath
+	if cfg.ProgressState != nil {
+		if cp := progress.CfgProgress(cfg); cp != nil {
+			downloaded, totalSize, _, _, _, _ := cp.GetProgress()
+			if status.TotalSize <= 0 {
+				status.TotalSize = totalSize
+			}
+			if status.Downloaded <= 0 {
+				status.Downloaded = downloaded
+			}
+			if status.DestPath == "" {
+				if dp := cp.GetDestPath(); dp != "" {
+					status.DestPath = dp
+				}
+			}
+		}
+	}
+	if status.URL == "" {
+		status.URL = master.URL
+	}
+	if status.Filename == "" {
+		status.Filename = master.Filename
+	}
+	if status.DestPath == "" {
+		status.DestPath = master.DestPath
+	}
+	if status.TotalSize <= 0 {
+		status.TotalSize = master.TotalSize
+	}
+	if status.Downloaded <= 0 {
+		status.Downloaded = master.Downloaded
+	}
+	if status.AvgSpeed == 0 {
+		status.AvgSpeed = master.AvgSpeed
+	}
+	if status.TimeTaken == 0 {
+		status.TimeTaken = master.TimeTaken
+	}
+	if status.TotalSize > 0 {
+		status.Progress = float64(status.Downloaded) * 100 / float64(status.TotalSize)
+	}
+}
+
 // InvalidateListCache clears the 1s TTL list cache so the next getDownloadList
 // call fetches fresh data.
 func (e *SurgeEngine) InvalidateListCache() {
@@ -414,6 +497,15 @@ func (e *SurgeEngine) MasterCacheForTesting() []types.DownloadRecord {
 func (e *SurgeEngine) SetMasterCacheForTesting(entries []types.DownloadRecord) {
 	e.masterCacheMu.Lock()
 	e.masterCache = entries
+	e.masterCacheRev++
+	e.masterCacheMu.Unlock()
+}
+
+// SetMasterRefreshHookForTesting installs a hook invoked after each
+// RefreshMasterCache write attempt; nil clears it.
+func (e *SurgeEngine) SetMasterRefreshHookForTesting(hook func()) {
+	e.masterCacheMu.Lock()
+	e.refreshHook = hook
 	e.masterCacheMu.Unlock()
 }
 
@@ -424,10 +516,12 @@ func (e *SurgeEngine) UpsertMasterCacheEntry(entry types.DownloadRecord) {
 	for i, existing := range e.masterCache {
 		if existing.ID == entry.ID {
 			e.masterCache[i] = entry
+			e.masterCacheRev++
 			return
 		}
 	}
 	e.masterCache = append(e.masterCache, entry)
+	e.masterCacheRev++
 }
 
 // GetMasterCacheEntry returns a copy of the masterCache entry for the given ID.
@@ -449,6 +543,7 @@ func (e *SurgeEngine) GetMasterCacheEntry(id string) (types.DownloadRecord, bool
 func (e *SurgeEngine) RemoveMasterCacheEntry(id string) {
 	e.masterCacheMu.Lock()
 	defer e.masterCacheMu.Unlock()
+	e.masterCacheRev++
 	out := e.masterCache[:0]
 	for _, existing := range e.masterCache {
 		if existing.ID != id {
@@ -459,14 +554,62 @@ func (e *SurgeEngine) RemoveMasterCacheEntry(id string) {
 }
 
 // RefreshMasterCache reloads masterCache from master.gob via store.LoadMasterList.
+// Entries upserted/removed between the disk read and the write are preserved:
+// when the in-memory revision changed mid-read the disk rows are merged under
+// the current snapshot instead of clobbering newer event writes.
 func (e *SurgeEngine) RefreshMasterCache() {
+	e.masterCacheMu.Lock()
+	rev := e.masterCacheRev
+	snapshot := make([]types.DownloadRecord, len(e.masterCache))
+	copy(snapshot, e.masterCache)
+	e.masterCacheMu.Unlock()
+
 	list, err := store.LoadMasterList()
 	if err != nil {
 		log.Printf("[Surge] Failed to refresh master cache: %v", err)
 		return
 	}
+	// Test-only post-read hook: runs after the disk read and before install,
+	// never under masterCacheMu, so tests can inject mid-read mutations.
+	e.masterCacheMu.RLock()
+	hook := e.refreshHook
+	e.masterCacheMu.RUnlock()
+	if hook != nil {
+		hook()
+	}
 	e.masterCacheMu.Lock()
-	e.masterCache = list.Downloads
+	if e.masterCacheRev == rev {
+		e.masterCache = list.Downloads
+	} else {
+		current := make(map[string]types.DownloadRecord, len(e.masterCache))
+		for _, d := range e.masterCache {
+			current[d.ID] = d
+		}
+		removed := make(map[string]bool, len(snapshot))
+		for _, d := range snapshot {
+			if _, ok := current[d.ID]; !ok {
+				removed[d.ID] = true
+			}
+		}
+		merged := make([]types.DownloadRecord, 0, len(list.Downloads)+len(current))
+		onDisk := make(map[string]bool, len(list.Downloads))
+		for _, d := range list.Downloads {
+			if removed[d.ID] {
+				continue
+			}
+			if cur, ok := current[d.ID]; ok {
+				d = cur
+			}
+			onDisk[d.ID] = true
+			merged = append(merged, d)
+		}
+		for _, d := range e.masterCache {
+			if !onDisk[d.ID] {
+				merged = append(merged, d)
+			}
+		}
+		e.masterCache = merged
+	}
 	e.masterCacheMu.Unlock()
 }
 

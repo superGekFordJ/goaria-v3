@@ -279,14 +279,18 @@ func (m *Monitor) tick() {
 
 	// 处理已完成任务（写入历史和速度统计）
 	for _, task := range completedTasks {
+		// Update accepted under tracker.mu without the lifecycle lock.
+		// Validate the stamped copy under the gate (entry identity +
+		// generation) so a concurrent retire/reopen drops this snapshot —
+		// do not re-mark it onto the new generation. The finish itself runs
+		// post-gate so blocking recovery never holds the lock.
+		accepted := false
 		m.tracker.RunUnderLifecycle(task.GID, func() {
-			// Update accepted under tracker.mu without the lifecycle lock.
-			// If a concurrent retire bumped generation and cleared acceptance,
-			// drop this snapshot — do not re-mark it onto the new generation.
-			if m.tracker.TerminalAcceptedInCurrentGeneration(task.GID) {
-				m.handleTaskComplete(task)
-			}
+			accepted = m.tracker.TerminalCopyCurrent(task.GID, task)
 		})
+		if accepted {
+			m.finishTerminalCopy(task)
+		}
 	}
 
 	// Periodic eviction of orphaned Aria2 metadata entries. Runs at most every
@@ -334,6 +338,16 @@ func (m *Monitor) tick() {
 
 		// 2. 推送任务完成事件（通过 pusher 批量推送，携带完整 rpc.Task payload）
 		for _, task := range completedTasks {
+			// Re-validate the stamped copy under the gate: a reopen or
+			// remove+same-ID rebuild between Update and now retires the copy —
+			// stale generations must not emit terminal deltas.
+			copyCurrent := false
+			m.tracker.RunUnderLifecycle(task.GID, func() {
+				copyCurrent = m.tracker.TerminalCopyCurrent(task.GID, task)
+			})
+			if !copyCurrent {
+				continue
+			}
 			// 关键修复：快速完成的小文件，通过 Tracker 拿到的 TotalLength 可能仍为 0
 			// 必须在压入 Pusher 前利用 TellStatus 获取真正的数据负载，防止 0B 覆盖前端
 			if (task.Status == "complete" || task.Status == "error") && (task.TotalLength == 0 || task.CompletedLength == 0) {
@@ -352,20 +366,42 @@ func (m *Monitor) tick() {
 				eventType = "error"
 			}
 
-			fullTask := rpc.Task{
-				GID:             task.GID,
-				Status:          task.Status,
-				TotalLength:     strconv.FormatInt(task.TotalLength, 10),
-				CompletedLength: strconv.FormatInt(task.CompletedLength, 10),
-				DownloadSpeed:   "0",
-				Dir:             task.Dir,
-				DownloadGroup:   copyDownloadGroup(task.DownloadGroup),
-			}
-			if task.FilePath != "" {
-				fullTask.Files = []rpc.File{{
-					Path: task.FilePath,
-					Uris: []rpc.Uri{{Uri: task.SourceURL}},
-				}}
+			// The emitted payload is the accepted full cache row (multi-Files/
+			// Uris/Title/group survive), not a single-file rebuild from the
+			// sparse tracked copy.
+			var fullTask rpc.Task
+			if cached, _, ok := Cache.GetTask(task.GID); ok {
+				fullTask = cached
+				fullTask.Status = task.Status
+				fullTask.DownloadSpeed = "0"
+				if parseInt64(fullTask.TotalLength) <= 0 && task.TotalLength > 0 {
+					fullTask.TotalLength = strconv.FormatInt(task.TotalLength, 10)
+				}
+				if parseInt64(fullTask.CompletedLength) <= 0 && task.CompletedLength > 0 {
+					fullTask.CompletedLength = strconv.FormatInt(task.CompletedLength, 10)
+				}
+				if task.Status == "complete" && task.CompletedLength > 0 {
+					fullTask.CompletedLength = strconv.FormatInt(task.CompletedLength, 10)
+				}
+				if fullTask.DownloadGroup == nil {
+					fullTask.DownloadGroup = copyDownloadGroup(task.DownloadGroup)
+				}
+			} else {
+				fullTask = rpc.Task{
+					GID:             task.GID,
+					Status:          task.Status,
+					TotalLength:     strconv.FormatInt(task.TotalLength, 10),
+					CompletedLength: strconv.FormatInt(task.CompletedLength, 10),
+					DownloadSpeed:   "0",
+					Dir:             task.Dir,
+					DownloadGroup:   copyDownloadGroup(task.DownloadGroup),
+				}
+				if task.FilePath != "" {
+					fullTask.Files = []rpc.File{{
+						Path: task.FilePath,
+						Uris: []rpc.Uri{{Uri: task.SourceURL}},
+					}}
+				}
 			}
 
 			m.pusher.Queue(events.TaskDelta{

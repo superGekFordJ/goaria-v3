@@ -383,17 +383,51 @@ func (c *TaskCache) moveTaskToStopped(gid, status, errorCode, errorMessage strin
 		return
 	}
 	moveTaskBetweenLists(active, waiting, stopped, gid, status, "stopped", false)
-	for i := range *stopped {
-		if (*stopped)[i].GID == gid {
-			if errorCode != "" {
-				(*stopped)[i].ErrorCode = errorCode
-			}
-			if errorMessage != "" {
-				(*stopped)[i].ErrorMessage = errorMessage
-			}
-			return
+	stampStoppedTerminal(*stopped, gid, status, errorCode, errorMessage, 0)
+}
+
+// stampStoppedTerminal fills terminal-only fields on a row that just landed
+// in stopped. Complete commits the canonical total as total=completed and
+// zeroes speed; error keeps its checkpoint and stamps code/message only.
+func stampStoppedTerminal(stopped []rpc.Task, gid, status, errorCode, errorMessage string, canonicalTotal int64) {
+	for i := range stopped {
+		if stopped[i].GID != gid {
+			continue
 		}
+		t := &stopped[i]
+		if errorCode != "" {
+			t.ErrorCode = errorCode
+		}
+		if errorMessage != "" {
+			t.ErrorMessage = errorMessage
+		}
+		if status == "complete" && canonicalTotal > 0 {
+			totalStr := strconv.FormatInt(canonicalTotal, 10)
+			t.TotalLength = totalStr
+			t.CompletedLength = totalStr
+			t.DownloadSpeed = "0"
+		}
+		return
 	}
+}
+
+// MoveTaskToStoppedTerminal is the accepted-terminal counterpart of
+// moveTaskToStopped: the move and the terminal field commit share one critical
+// section so a waiting-source fast-complete cannot lose its canonical total.
+func (c *TaskCache) MoveTaskToStoppedTerminal(gid, status, errorCode, errorMessage string, canonicalTotal int64) {
+	mu := &c.arMu
+	active, waiting, stopped := &c.arActive, &c.arWaiting, &c.arStopped
+	if enginePrefix(gid) == "sg" {
+		mu = &c.sgMu
+		active, waiting, stopped = &c.sgActive, &c.sgWaiting, &c.sgStopped
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !containsTaskGID(*active, gid) && !containsTaskGID(*waiting, gid) {
+		return
+	}
+	moveTaskBetweenLists(active, waiting, stopped, gid, status, "stopped", false)
+	stampStoppedTerminal(*stopped, gid, status, errorCode, errorMessage, canonicalTotal)
 }
 
 // MoveTaskToWaiting moves a task into the waiting list from any of the three

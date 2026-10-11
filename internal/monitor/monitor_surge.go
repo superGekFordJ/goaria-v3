@@ -194,63 +194,12 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		if completeTotal > 0 && ev.Elapsed.Seconds() > 0 {
 			completeAvgSpeed = float64(completeTotal) / ev.Elapsed.Seconds()
 		}
-		// Complete lacks URL/DestPath/Mirrors/Workers; merge onto existing.
-		if surgeEng != nil {
-			avgSpeed := completeAvgSpeed
-			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
-				merged := existing
-				merged.Status = "completed"
-				merged.TotalSize = completeTotal
-				merged.Downloaded = completeTotal
-				merged.CompletedAt = time.Now().Unix()
-				merged.TimeTaken = ev.Elapsed.Milliseconds()
-				merged.AvgSpeed = avgSpeed
-				merged.RateLimit = ev.RateLimit
-				merged.RateLimitSet = ev.RateLimitSet
-				surgeEng.UpsertMasterCacheEntry(merged)
-			} else {
-				surgeEng.UpsertMasterCacheEntry(types.DownloadRecord{
-					ID:           ev.DownloadID,
-					Filename:     ev.Filename,
-					Status:       "completed",
-					TotalSize:    completeTotal,
-					Downloaded:   completeTotal,
-					CompletedAt:  time.Now().Unix(),
-					TimeTaken:    ev.Elapsed.Milliseconds(),
-					AvgSpeed:     avgSpeed,
-					RateLimit:    ev.RateLimit,
-					RateLimitSet: ev.RateLimitSet,
-				})
-			}
-		}
 	case types.EventError:
 		deltaType = "error"
 		gid = "sg_" + ev.DownloadID
 		if ev.Err != nil {
 			errorMessage = ev.Err.Error()
 			errorCode = rpc.ClassifySurgeErrorCode(errorMessage, true)
-		}
-		// Error is minimal; merge onto existing to preserve URL/Mirrors/etc.
-		if surgeEng != nil {
-			if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
-				merged := existing
-				merged.Status = "error"
-				if ev.DestPath != "" {
-					merged.DestPath = ev.DestPath
-				}
-				if errorMessage != "" {
-					merged.Error = errorMessage
-				}
-				surgeEng.UpsertMasterCacheEntry(merged)
-			} else {
-				surgeEng.UpsertMasterCacheEntry(types.DownloadRecord{
-					ID:       ev.DownloadID,
-					Filename: ev.Filename,
-					DestPath: ev.DestPath,
-					Status:   "error",
-					Error:    errorMessage,
-				})
-			}
 		}
 	case types.EventRemoved:
 		deltaType = "remove"
@@ -275,17 +224,16 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		if surgeEng != nil {
 			surgeEng.InvalidateListCache()
 		}
-		// Sync progress before MoveTaskToStopped: PatchTaskProgress only
-		// scans sgActive, so it must run while the task is still active.
-		if deltaType == "complete" && completeTotal > 0 {
-			totalStr := strconv.FormatInt(completeTotal, 10)
-			Cache.PatchTaskProgress(gid, totalStr, "0", totalStr)
-		}
 		errCode, errMsg := "", ""
 		if deltaType == "error" {
 			errCode, errMsg = errorCode, errorMessage
 		}
-		m.moveToStoppedAndHandle(gid, deltaType, errCode, errMsg, completeTotal, func(completed *TrackedTask) {
+		// Accepted terminal transaction under the GID gate: narrow master
+		// mirror merge (identity/range/rate preserved) + cache move +
+		// terminal field commit + acceptance, then post-gate finish.
+		m.moveToStoppedAndHandleGate(gid, deltaType, errCode, errMsg, completeTotal, func() {
+			mergeSurgeTerminalMaster(surgeEng, ev, deltaType, completeTotal, completeAvgSpeed, errorMessage)
+		}, func(completed *TrackedTask) {
 			if deltaType == "complete" {
 				completed.terminalElapsed = ev.Elapsed
 			}
@@ -348,6 +296,65 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 	}
 }
 
+// mergeSurgeTerminalMaster performs the narrow master-mirror merge of an
+// accepted terminal event, preserving identity/range/rate fields. Caller
+// holds the GID lifecycle gate; runs only on accepted copies.
+func mergeSurgeTerminalMaster(surgeEng *rpc.SurgeEngine, ev types.DownloadEvent, deltaType string, completeTotal int64, completeAvgSpeed float64, errorMessage string) {
+	if surgeEng == nil {
+		return
+	}
+	switch deltaType {
+	case "complete":
+		// Complete lacks URL/DestPath/Mirrors/Workers; merge onto existing.
+		if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
+			merged := existing
+			merged.Status = "completed"
+			merged.TotalSize = completeTotal
+			merged.Downloaded = completeTotal
+			merged.CompletedAt = time.Now().Unix()
+			merged.TimeTaken = ev.Elapsed.Milliseconds()
+			merged.AvgSpeed = completeAvgSpeed
+			merged.RateLimit = ev.RateLimit
+			merged.RateLimitSet = ev.RateLimitSet
+			surgeEng.UpsertMasterCacheEntry(merged)
+		} else {
+			surgeEng.UpsertMasterCacheEntry(types.DownloadRecord{
+				ID:           ev.DownloadID,
+				Filename:     ev.Filename,
+				Status:       "completed",
+				TotalSize:    completeTotal,
+				Downloaded:   completeTotal,
+				CompletedAt:  time.Now().Unix(),
+				TimeTaken:    ev.Elapsed.Milliseconds(),
+				AvgSpeed:     completeAvgSpeed,
+				RateLimit:    ev.RateLimit,
+				RateLimitSet: ev.RateLimitSet,
+			})
+		}
+	case "error":
+		// Error is minimal; merge onto existing to preserve URL/Mirrors/etc.
+		if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
+			merged := existing
+			merged.Status = "error"
+			if ev.DestPath != "" {
+				merged.DestPath = ev.DestPath
+			}
+			if errorMessage != "" {
+				merged.Error = errorMessage
+			}
+			surgeEng.UpsertMasterCacheEntry(merged)
+		} else {
+			surgeEng.UpsertMasterCacheEntry(types.DownloadRecord{
+				ID:       ev.DownloadID,
+				Filename: ev.Filename,
+				DestPath: ev.DestPath,
+				Status:   "error",
+				Error:    errorMessage,
+			})
+		}
+	}
+}
+
 func (m *Monitor) handleSurgeLifecycleEvent(ev types.DownloadEvent) {
 	gid := "sg_" + ev.DownloadID
 	var ticket PauseResumeTicket
@@ -364,9 +371,9 @@ func (m *Monitor) handleSurgeLifecycleEvent(ev types.DownloadEvent) {
 		task, source, exists := Cache.GetTask(gid)
 		entry, historied := history.Get(gid)
 		terminal := source == "stopped" || historied || m.tracker.TerminalAcceptedInCurrentGeneration(gid)
-		m.pauseResumeVersionMu.RLock()
-		intention := m.pauseResumeIntentions[gid]
-		m.pauseResumeVersionMu.RUnlock()
+		// Only a still-protected request shields facts; an expired or
+		// ticket-less record no longer authorizes recovery or pause refusal.
+		intention := pauseResumeIntention{action: m.pauseResumeProtectedAction(gid)}
 		resume := ticket.seq != 0 && intention.action == PauseResumeIntentionResume
 		live := m.readSurgeLiveStatus(gid)
 		status, kind := "waiting", "add"
@@ -396,6 +403,9 @@ func (m *Monitor) handleSurgeLifecycleEvent(ev types.DownloadEvent) {
 				return
 			}
 			if intention.action == PauseResumeIntentionPause && task.Status == "paused" && live.Status != "active" {
+				return
+			}
+			if live.Known && live.Status == "paused" {
 				return
 			}
 		case types.EventQueued:
@@ -624,6 +634,33 @@ func (m *Monitor) reconcileSurgeCache() {
 			observations[gid] = m.captureSurgePollObservation(gid)
 		}
 	}
+	// Union candidates: tracker rows, durable history, and in-flight requests
+	// keep a GID recoverable even when its cache row was lost.
+	if m.tracker != nil {
+		for _, gid := range m.tracker.SurgeGIDs() {
+			if _, exists := observations[gid]; !exists {
+				observations[gid] = m.captureSurgePollObservation(gid)
+			}
+		}
+	}
+	for _, gid := range historySurgeGIDs() {
+		if _, exists := observations[gid]; !exists {
+			observations[gid] = m.captureSurgePollObservation(gid)
+		}
+	}
+	var requestGids []string
+	m.pauseResumeVersionMu.RLock()
+	for gid := range m.pauseResumeIntentions {
+		if IsSgGid(gid) {
+			requestGids = append(requestGids, gid)
+		}
+	}
+	m.pauseResumeVersionMu.RUnlock()
+	for _, gid := range requestGids {
+		if _, exists := observations[gid]; !exists {
+			observations[gid] = m.captureSurgePollObservation(gid)
+		}
+	}
 
 	// Sync the in-memory masterCache mirror from master.gob and clear the
 	// 1s TTL list cache before reading, so a dropped complete/error event
@@ -683,7 +720,19 @@ func (m *Monitor) reconcileSurgeCache() {
 		cacheAll[t.GID] = "stopped"
 	}
 
-	for gid, cacheList := range cacheAll {
+	// Deletion requires an explicit absent answer from the scheduler, a fresh
+	// observation, and no live request shield. Unknown (nil-state) is not
+	// absence and never removes anything.
+	deleteCandidates := make(map[string]string, len(cacheAll))
+	maps.Copy(deleteCandidates, cacheAll)
+	if m.tracker != nil {
+		for _, gid := range m.tracker.SurgeGIDs() {
+			if _, ok := deleteCandidates[gid]; !ok {
+				deleteCandidates[gid] = ""
+			}
+		}
+	}
+	for gid, cacheList := range deleteCandidates {
 		if _, exists := engineAll[gid]; exists {
 			continue
 		}
@@ -694,11 +743,31 @@ func (m *Monitor) reconcileSurgeCache() {
 			}
 			live := m.readSurgeLiveStatus(gid)
 			if live.Known {
-				engineAll[gid], _, _ = Cache.GetTask(gid)
+				liveTask, _, _ := Cache.GetTask(gid)
+				liveTask.GID = gid
+				engineAll[gid] = liveTask
 				return
 			}
-			if m.surgeResumeLiveLocked(gid) {
+			if !live.Absent {
 				return
+			}
+			// A bounded in-flight resume shields the row: engine absence can
+			// be a transient gap between scheduler remove and re-add.
+			if m.shouldDiscardStalePause(gid) {
+				return
+			}
+			if m.surgeEng != nil {
+				id := strings.TrimPrefix(gid, "sg_")
+				if rec, ok := m.surgeEng.GetMasterCacheEntry(id); ok {
+					switch rec.Status {
+					case "queued", "downloading", "pausing", "paused", "completed", "error":
+						// A projectable mirror row is engine-side evidence the
+						// bulk read raced an event write; defer to it.
+						return
+					default:
+						m.surgeEng.RemoveMasterCacheEntry(id)
+					}
+				}
 			}
 			m.removeLocalTaskLocked(gid)
 			removed = true
@@ -709,22 +778,23 @@ func (m *Monitor) reconcileSurgeCache() {
 		if m.convergence != nil {
 			m.convergence.RemoveTask(gid)
 		}
-		if State.HasWindow() && m.pusher != nil {
+		if cacheList != "" && State.HasWindow() && m.pusher != nil {
 			m.pusher.Queue(events.TaskDelta{Type: "remove", GID: gid})
 		}
-
-		log.Printf("[Monitor] Surge poll: removed stale task %s (was in %s)", gid, cacheList)
+		if cacheList != "" {
+			log.Printf("[Monitor] Surge poll: removed stale task %s (was in %s)", gid, cacheList)
+		}
 	}
 
 	// Snapshot keys absent from every engine list are orphans: their
 	// start/remove events were both lost, so nothing else will ever
 	// visit them. Runs only on a full three-list read (early returns
-	// above protect partial reads).
+	// above protect partial reads) and only on an explicit absent answer.
 	if m.chunkSnapshots != nil {
 		for _, gid := range chunkKeys {
 			if _, ok := engineAll[gid]; !ok {
 				m.tracker.RunUnderLifecycle(gid, func() {
-					if !m.surgePollObservationCurrentLocked(gid, observations) || m.readSurgeLiveStatus(gid).Known || m.surgeResumeLiveLocked(gid) {
+					if !m.surgePollObservationCurrentLocked(gid, observations) || !m.readSurgeLiveStatus(gid).Absent || m.surgeResumeLiveLocked(gid) {
 						return
 					}
 					if snap, exists := m.chunkSnapshots.Get(gid); exists && snap.UpdatedAt.Equal(observations[gid].chunkAt) {
@@ -737,6 +807,7 @@ func (m *Monitor) reconcileSurgeCache() {
 
 	for gid, engineTask := range engineAll {
 		var change acceptedTaskChange
+		var accepted *TrackedTask
 		prefetch := false
 		m.tracker.RunUnderLifecycle(gid, func() {
 			if !m.surgePollObservationCurrentLocked(gid, observations) {
@@ -761,17 +832,29 @@ func (m *Monitor) reconcileSurgeCache() {
 				return
 			}
 			list := engineListForStatus(status)
-			if !live.Known && (list == "active" || m.surgeResumeLiveLocked(gid) ||
+			// A stopped-list row is terminal evidence: the engine union only
+			// projects an ID into stopped when its pool no longer tracks the
+			// task, so it wins over a bounded resume shield. The shield still
+			// defers stale non-terminal echoes of a just-confirmed request.
+			resumeLive := list != "stopped" && m.surgeResumeLiveLocked(gid)
+			if !live.Known && (list == "active" || resumeLive ||
 				status == "waiting" && source == "active" || status == "paused" && task.Status == "waiting") {
 				return
 			}
 			if status == "paused" && m.shouldDiscardStalePause(gid) ||
-				status == "waiting" && task.Status == "paused" && observations[gid].intention.action == PauseResumeIntentionPause {
+				status == "waiting" && task.Status == "paused" && observations[gid].protectedAction == PauseResumeIntentionPause {
 				return
 			}
-			if !exists && list == "waiting" {
-				if entry, ok := history.Get(gid); ok {
-					stoppedTask := history.ToStoppedTask(entry)
+			histEntry, historied := history.Get(gid)
+			freshResume := m.shouldDiscardStalePause(gid)
+			realQueued := live.Known && live.Status == "waiting"
+			if list == "waiting" {
+				switch {
+				case !exists && historied && !realQueued && !freshResume:
+					// A durable terminal row must never rejoin waiting on
+					// mirror evidence alone; seed stopped and mark it terminal.
+					stoppedTask := history.ToStoppedTask(histEntry)
+					stoppedTask.Title = histEntry.Title
 					Cache.AddSgTask(stoppedTask, "stopped")
 					m.clearPauseResumeIntentionLocked(gid)
 					if m.chunkSnapshots != nil {
@@ -782,10 +865,21 @@ func (m *Monitor) reconcileSurgeCache() {
 						m.tracker.MarkCompleteFromEvent(gid, stoppedTask.Status)
 					}
 					return
+				case !exists && !live.Known && !freshResume:
+					// A mirror-only waiting/paused row is not enqueue evidence.
+					return
+				case source == "stopped" && !realQueued && !freshResume:
+					// Stale waiting/paused projections must not revive a
+					// terminal stopped row.
+					return
 				}
 			}
-			if source == "stopped" && list == "waiting" {
-				return
+			if !exists && historied {
+				// Cache-loss restore: carry the durable projection's metadata
+				// under the engine identity/checkpoint.
+				stoppedTask := history.ToStoppedTask(histEntry)
+				stoppedTask.Title = histEntry.Title
+				fillTaskMetadata(&engineTask, stoppedTask)
 			}
 			if exists {
 				fillTaskMetadata(&task, engineTask)
@@ -800,24 +894,27 @@ func (m *Monitor) reconcileSurgeCache() {
 				if source == "stopped" {
 					return
 				}
-				if status == "complete" && engineTask.TotalLength != "" {
-					Cache.PatchTaskProgress(gid, engineTask.TotalLength, "0", engineTask.TotalLength)
-				}
 				if status == "error" && engineTask.ErrorCode == "" {
 					engineTask.ErrorCode = rpc.ClassifySurgeErrorCode(engineTask.ErrorMessage, true)
 				}
 				if exists {
-					Cache.MoveTaskToStoppedWithError(gid, status, engineTask.ErrorCode, engineTask.ErrorMessage)
+					// Terminal move commits the canonical total in the same
+					// critical section — waiting-source rows included.
+					Cache.MoveTaskToStoppedTerminal(gid, status, engineTask.ErrorCode, engineTask.ErrorMessage, parseInt64(engineTask.TotalLength))
 				} else {
+					if status == "complete" && engineTask.TotalLength != "" {
+						engineTask.CompletedLength = engineTask.TotalLength
+						engineTask.DownloadSpeed = "0"
+					}
 					Cache.AddSgTask(engineTask, list)
 				}
 				if m.tracker != nil {
 					m.tracker.EnsureTrackedFromEvent(gid, parseInt64(engineTask.TotalLength), sourceURLFromTask(engineTask), 0, status)
 				}
-				m.markCompleteAndHandleLocked(gid, status, nil)
+				accepted = m.markCompleteAndHandleLocked(gid, status, nil)
 			} else {
 				Cache.AddSgTask(engineTask, list)
-				if source == "stopped" || !exists && list == "active" {
+				if source == "stopped" || !exists && (list == "active" || historied) {
 					if m.tracker != nil && m.tracker.afterMoveBeforeRetire != nil {
 						m.tracker.afterMoveBeforeRetire(gid)
 					}
@@ -852,6 +949,9 @@ func (m *Monitor) reconcileSurgeCache() {
 				change = acceptedTaskChange{task: task, from: source, to: list, kind: kind}
 			}
 		})
+		if accepted != nil {
+			m.finishTerminalCopy(accepted)
+		}
 		if prefetch {
 			Cache.PrefetchMetadata(gid)
 		}
@@ -860,10 +960,14 @@ func (m *Monitor) reconcileSurgeCache() {
 }
 
 type surgePollObservation struct {
-	stamp        lifecycleStamp
-	intention    pauseResumeIntention
-	list, status string
-	chunkAt      time.Time
+	stamp     lifecycleStamp
+	intention pauseResumeIntention
+	// protectedAction is the still-bounded shield action at capture time;
+	// an expired or unconfirmed-after-expiry record reads as "".
+	protectedAction string
+	list, status    string
+	chunkAt         time.Time
+	historied       bool
 }
 
 func (m *Monitor) captureSurgePollObservation(gid string) (observation surgePollObservation) {
@@ -873,6 +977,9 @@ func (m *Monitor) captureSurgePollObservation(gid string) (observation surgePoll
 		}
 		m.pauseResumeVersionMu.RLock()
 		observation.intention = m.pauseResumeIntentions[gid]
+		if protected, ok := m.pauseResumeProtectedLocked(gid); ok {
+			observation.protectedAction = protected.action
+		}
 		m.pauseResumeVersionMu.RUnlock()
 		task, list, _ := Cache.GetTask(gid)
 		observation.list, observation.status = list, task.Status
@@ -881,6 +988,7 @@ func (m *Monitor) captureSurgePollObservation(gid string) (observation surgePoll
 				observation.chunkAt = snap.UpdatedAt
 			}
 		}
+		_, observation.historied = history.Get(gid)
 	})
 	return
 }
@@ -891,12 +999,51 @@ func (m *Monitor) surgePollObservationCurrentLocked(gid string, observations map
 	intention := m.pauseResumeIntentions[gid]
 	m.pauseResumeVersionMu.RUnlock()
 	task, list, exists := Cache.GetTask(gid)
+	_, historied := history.Get(gid)
 	observation, captured := observations[gid]
 	if !captured {
-		return !exists && intention.seq == 0
+		// Uncaptured candidates have no captured truth to compare; admit only
+		// a genuinely empty pre-read state so a mid-read fact (request,
+		// history, terminal acceptance, chunk write) cannot slip through.
+		if exists || historied || intention.seq != 0 {
+			return false
+		}
+		if m.tracker != nil && m.tracker.TerminalAcceptedInCurrentGeneration(gid) {
+			return false
+		}
+		if m.chunkSnapshots != nil {
+			if _, ok := m.chunkSnapshots.Get(gid); ok {
+				return false
+			}
+		}
+		return true
 	}
-	return intention == observation.intention && list == observation.list && task.Status == observation.status &&
+	if intention != observation.intention || historied != observation.historied {
+		return false
+	}
+	if list != observation.list || task.Status != observation.status {
+		return false
+	}
+	var snapAt time.Time
+	if m.chunkSnapshots != nil {
+		if snap, ok := m.chunkSnapshots.Get(gid); ok {
+			snapAt = snap.UpdatedAt
+		}
+	}
+	return snapAt.Equal(observation.chunkAt) &&
 		(m.tracker == nil || m.tracker.lifecycleStampCurrent(gid, observation.stamp))
+}
+
+// historySurgeGIDs lists durable history entries belonging to the Surge engine.
+func historySurgeGIDs() []string {
+	entries := history.GetAll()
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if IsSgGid(e.GID) {
+			out = append(out, e.GID)
+		}
+	}
+	return out
 }
 
 func (m *Monitor) surgeResumeLiveLocked(gid string) bool {

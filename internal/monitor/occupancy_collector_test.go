@@ -166,11 +166,11 @@ func TestTrackerAdapter_OccupancyPassThrough(t *testing.T) {
 	go func() {
 		defer close(done)
 		var wg sync.WaitGroup
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			wg.Add(1)
 			go func(n int) {
 				defer wg.Done()
-				for j := 0; j < 200; j++ {
+				for j := range 200 {
 					switch n % 4 {
 					case 0:
 						_ = ct.SumLastRawBps("wan", "env1") // c.mu→adapter path

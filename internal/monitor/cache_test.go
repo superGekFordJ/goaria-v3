@@ -69,8 +69,10 @@ func TestTaskCache_FullRowMerge(t *testing.T) {
 		for _, add := range []bool{false, true} {
 			c := NewTaskCacheForTest()
 			full := fullRowForTest("sg_full")
-			c.sgWaiting = []rpc.Task{{GID: "sg_before"}, {GID: full.GID, Status: "paused", Title: "target", Dir: "/target",
-				DownloadGroup: &rpc.DownloadGroup{ID: full.DownloadGroup.ID, Name: "target group"}}, {GID: "sg_after"}, full}
+			c.sgWaiting = []rpc.Task{{GID: "sg_before"}, {
+				GID: full.GID, Status: "paused", Title: "target", Dir: "/target",
+				DownloadGroup: &rpc.DownloadGroup{ID: full.DownloadGroup.ID, Name: "target group"},
+			}, {GID: "sg_after"}, full}
 			c.sgActive = []rpc.Task{{GID: "sg_other"}, full, full}
 			c.sgStopped = []rpc.Task{full, {GID: "sg_tail"}, full}
 			if add {
@@ -96,16 +98,20 @@ func TestTaskCache_FullRowMerge(t *testing.T) {
 		full := fullRowForTest("sg_sparse")
 		c.AddSgTask(full, "active")
 		for _, value := range []string{"", "0", "-1", "invalid", "9223372036854775808"} {
-			c.AddSgTask(rpc.Task{GID: full.GID, TotalLength: value, CompletedLength: value, Title: " ", Dir: " ",
-				Files: []rpc.File{{Path: " "}, {Path: full.Files[0].Path, Uris: []rpc.Uri{{Uri: ""}}}}, DownloadGroup: &rpc.DownloadGroup{}}, "active")
+			c.AddSgTask(rpc.Task{
+				GID: full.GID, TotalLength: value, CompletedLength: value, Title: " ", Dir: " ",
+				Files: []rpc.File{{Path: " "}, {Path: full.Files[0].Path, Uris: []rpc.Uri{{Uri: ""}}}}, DownloadGroup: &rpc.DownloadGroup{},
+			}, "active")
 			got, _, _ := c.GetTask(full.GID)
 			assertFullRowMetadata(t, got, full)
 			if got.TotalLength != "1000" || got.CompletedLength != "500" {
 				t.Fatalf("sparse length=%q/%q", got.TotalLength, got.CompletedLength)
 			}
 		}
-		patch := rpc.Task{GID: full.GID, Title: "new", TotalLength: "900", CompletedLength: "400", DownloadSpeed: "0",
-			Files: []rpc.File{{Path: "/downloads/c", Uris: []rpc.Uri{{Uri: "https://example.com/c"}}}}, DownloadGroup: &rpc.DownloadGroup{ID: "new-group"}}
+		patch := rpc.Task{
+			GID: full.GID, Title: "new", TotalLength: "900", CompletedLength: "400", DownloadSpeed: "0",
+			Files: []rpc.File{{Path: "/downloads/c", Uris: []rpc.Uri{{Uri: "https://example.com/c"}}}}, DownloadGroup: &rpc.DownloadGroup{ID: "new-group"},
+		}
 		c.AddSgTask(patch, "active")
 		patch.Files[0].Uris[0].Uri = "mutated"
 		patch.Files[0].Path = "mutated"
@@ -135,8 +141,10 @@ func TestTaskCache_AriaLiteSnapshotPreservesFullRow(t *testing.T) {
 	full := fullRowForTest("ar_full")
 	c.UpdateFromAria2([]rpc.Task{full, {GID: "ar_removed"}}, nil, nil)
 	c.arWaiting = []rpc.Task{{GID: full.GID, Title: "waiting target"}}
-	lite := rpc.Task{GID: full.GID, Status: "paused", TotalLength: "0", CompletedLength: "0", DownloadSpeed: "0", ErrorCode: "1",
-		Files: []rpc.File{{Path: full.Files[1].Path}}}
+	lite := rpc.Task{
+		GID: full.GID, Status: "paused", TotalLength: "0", CompletedLength: "0", DownloadSpeed: "0", ErrorCode: "1",
+		Files: []rpc.File{{Path: full.Files[1].Path}},
+	}
 	c.UpdateFromAria2(nil, []rpc.Task{lite}, nil)
 	full.Title = "waiting target"
 	got, list, _ := c.GetTask(full.GID)
