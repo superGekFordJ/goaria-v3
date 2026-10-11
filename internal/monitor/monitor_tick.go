@@ -338,12 +338,18 @@ func (m *Monitor) tick() {
 
 		// 2. 推送任务完成事件（通过 pusher 批量推送，携带完整 rpc.Task payload）
 		for _, task := range completedTasks {
-			// Re-validate the stamped copy under the gate: a reopen or
-			// remove+same-ID rebuild between Update and now retires the copy —
-			// stale generations must not emit terminal deltas.
+			// Re-validate the stamped copy and capture the row to emit in the
+			// same gate pass: a reopen or remove+same-ID rebuild between
+			// Update and now retires the copy — stale generations must not
+			// emit terminal deltas or leak the next generation's row.
 			copyCurrent := false
+			var cachedTask rpc.Task
+			haveCached := false
 			m.tracker.RunUnderLifecycle(task.GID, func() {
 				copyCurrent = m.tracker.TerminalCopyCurrent(task.GID, task)
+				if copyCurrent {
+					cachedTask, _, haveCached = Cache.GetTask(task.GID)
+				}
 			})
 			if !copyCurrent {
 				continue
@@ -367,11 +373,11 @@ func (m *Monitor) tick() {
 			}
 
 			// The emitted payload is the accepted full cache row (multi-Files/
-			// Uris/Title/group survive), not a single-file rebuild from the
-			// sparse tracked copy.
+			// Uris/Title/group survive), captured under the gate above — not a
+			// post-gate reread that could belong to the next generation.
 			var fullTask rpc.Task
-			if cached, _, ok := Cache.GetTask(task.GID); ok {
-				fullTask = cached
+			if haveCached {
+				fullTask = cachedTask
 				fullTask.Status = task.Status
 				fullTask.DownloadSpeed = "0"
 				if parseInt64(fullTask.TotalLength) <= 0 && task.TotalLength > 0 {

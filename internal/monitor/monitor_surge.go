@@ -898,9 +898,18 @@ func (m *Monitor) reconcileSurgeCache() {
 					engineTask.ErrorCode = rpc.ClassifySurgeErrorCode(engineTask.ErrorMessage, true)
 				}
 				if exists {
+					total := parseInt64(engineTask.TotalLength)
+					if status == "complete" && total <= 0 {
+						// Same in-gate canonical fallback as the event path: a
+						// stopped row with empty TotalLength must still commit
+						// the cached checkpoint's total=completed.
+						if task, _, ok := Cache.GetTask(gid); ok {
+							total = parsePositiveLength(task.TotalLength)
+						}
+					}
 					// Terminal move commits the canonical total in the same
 					// critical section — waiting-source rows included.
-					Cache.MoveTaskToStoppedTerminal(gid, status, engineTask.ErrorCode, engineTask.ErrorMessage, parseInt64(engineTask.TotalLength))
+					Cache.MoveTaskToStoppedTerminal(gid, status, engineTask.ErrorCode, engineTask.ErrorMessage, total)
 				} else {
 					if status == "complete" && engineTask.TotalLength != "" {
 						engineTask.CompletedLength = engineTask.TotalLength

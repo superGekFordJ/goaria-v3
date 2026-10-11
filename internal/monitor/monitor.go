@@ -226,8 +226,6 @@ type pauseResumeIntention struct {
 	// extended marks a one-shot renewal already consumed by a successful
 	// confirm; duplicate confirmations must not renew the deadline again.
 	extended bool
-	// confirmed marks that the engine acknowledged the request once.
-	confirmed bool
 }
 
 // PauseResumeTicket carries request freshness, not resume authority.
@@ -366,7 +364,6 @@ func (m *Monitor) confirmPauseResumeRequestLocked(gid string) acceptedTaskChange
 	m.pauseResumeVersionMu.Lock()
 	if intention, ok := m.pauseResumeIntentions[gid]; ok && intention.seq != 0 && !intention.extended {
 		intention.extended = true
-		intention.confirmed = true
 		intention.protectedUntil = time.Now().Add(TaskGracePeriod)
 		m.pauseResumeIntentions[gid] = intention
 	}
