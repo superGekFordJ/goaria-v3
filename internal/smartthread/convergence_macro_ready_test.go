@@ -80,8 +80,10 @@ func TestConvergence_MacroReady_SurvivesWindowInvalidate(t *testing.T) {
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "env1", Domain: "example.com", CompletedLength: 10 * 1024 * 1024, MinChunk: 1024 * 1024},
-			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "env1", Domain: "example.com", CompletedLength: 10 * 1024 * 1024, MinChunk: 1024 * 1024,
-				TelemetryBps: 10 * 1024 * 1024, TelemetryValid: true},
+			{
+				GID: gid2, Status: "active", Scope: "wan", EnvKey: "env1", Domain: "example.com", CompletedLength: 10 * 1024 * 1024, MinChunk: 1024 * 1024,
+				TelemetryBps: 10 * 1024 * 1024, TelemetryValid: true,
+			},
 		},
 	}
 	telemetry := &mockTelemetry{

@@ -22,6 +22,7 @@ func (e *controlledResumeEngine) Pause(gid string) error  { return e.single(gid)
 func (e *controlledResumeEngine) ResumeMultiResults(gids []string) ([]rpc.MultiCallItemResult, error) {
 	return e.batch(gids)
 }
+
 func (e *controlledResumeEngine) PauseMultiResults(gids []string) ([]rpc.MultiCallItemResult, error) {
 	return e.batch(gids)
 }

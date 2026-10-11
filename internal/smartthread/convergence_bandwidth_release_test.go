@@ -677,7 +677,6 @@ func TestConvergence_BandwidthRelease_MacroProviderNoDeadlock(t *testing.T) {
 			nil,
 			nil,
 			nil, time.Now())
-
 	}()
 	select {
 	case <-done:
@@ -755,7 +754,6 @@ func TestConvergence_BandwidthRelease_SnapshotSurvivesConcurrentRemove(t *testin
 			nil,
 			nil,
 			nil, time.Now())
-
 	}()
 	select {
 	case <-done:

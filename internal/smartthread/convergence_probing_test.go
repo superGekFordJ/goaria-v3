@@ -229,8 +229,10 @@ func TestConvergence_MultiTask_WindowInvalidation(t *testing.T) {
 		tracker := &mockTracker{
 			tasks: []TrackedTaskInfo{
 				{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
-				{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024,
-					TelemetryBps: donorOcc, TelemetryValid: donorOcc > 0},
+				{
+					GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024,
+					TelemetryBps: donorOcc, TelemetryValid: donorOcc > 0,
+				},
 			},
 		}
 		telemetry := &mockTelemetry{
@@ -801,8 +803,10 @@ func TestConvergence_m2_InvalidationResetsLastStepAndPhase(t *testing.T) {
 		tracker := &mockTracker{
 			tasks: []TrackedTaskInfo{
 				{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
-				{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024,
-					TelemetryBps: donorOcc, TelemetryValid: donorOcc > 0},
+				{
+					GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024,
+					TelemetryBps: donorOcc, TelemetryValid: donorOcc > 0,
+				},
 			},
 		}
 		telemetry := &mockTelemetry{
@@ -898,8 +902,10 @@ func TestConvergence_C4_InvalidationPreservesFrozenLock(t *testing.T) {
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 50 * 1024 * 1024},
-			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024,
-				TelemetryBps: 10 * 1024 * 1024, TelemetryValid: true},
+			{
+				GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 30 * 1024 * 1024,
+				TelemetryBps: 10 * 1024 * 1024, TelemetryValid: true,
+			},
 		},
 	}
 	telemetry := &mockTelemetry{
@@ -1543,8 +1549,10 @@ func TestConvergence_LocalWindow_MarginAndDegrades(t *testing.T) {
 			donor := "ar_margin_donor"
 			tracker := &mockTracker{tasks: []TrackedTaskInfo{
 				{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com", CompletedLength: 10 * mb},
-				{GID: donor, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "b.com",
-					TelemetryBps: tc.donorOcc, TelemetryValid: tc.donorOcc > 0},
+				{
+					GID: donor, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "b.com",
+					TelemetryBps: tc.donorOcc, TelemetryValid: tc.donorOcc > 0,
+				},
 			}}
 			telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
 				gid: makeWorkers(4, 2*1024*1024),
@@ -1604,8 +1612,10 @@ func TestConvergence_LocalWindow_ProbeDownBothWindows(t *testing.T) {
 		{GID: settle, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com", CompletedLength: 10 * mb},
 		{GID: stable, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com", CompletedLength: 10 * mb},
 		{GID: high, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com", CompletedLength: 10 * mb},
-		{GID: donor, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "b.com",
-			TelemetryBps: 10 * mb, TelemetryValid: true},
+		{
+			GID: donor, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "b.com",
+			TelemetryBps: 10 * mb, TelemetryValid: true,
+		},
 	}}
 	telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
 		settle: makeWorkers(4, 2*1024*1024),

@@ -1,6 +1,7 @@
 package smartthread
 
 import (
+	"maps"
 	"math"
 	"sync"
 	"testing"
@@ -30,8 +31,10 @@ func TestConvergence_RemoveTask_PreservesDisappearanceSignal(t *testing.T) {
 			tasks: []TrackedTaskInfo{
 				// Donor carries real occupancy so its exit produces a
 				// non-zero perturbation on the disappearance tick.
-				{GID: donor, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", CompletedLength: 50 * 1024 * 1024, TotalLength: 100 * 1024 * 1024,
-					TelemetryBps: 10 * 1024 * 1024, TelemetryValid: true},
+				{
+					GID: donor, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", CompletedLength: 50 * 1024 * 1024, TotalLength: 100 * 1024 * 1024,
+					TelemetryBps: 10 * 1024 * 1024, TelemetryValid: true,
+				},
 				{GID: beneficiary, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", CompletedLength: 10 * 1024 * 1024, TotalLength: 100 * 1024 * 1024},
 			},
 		}
@@ -825,9 +828,11 @@ func TestConvergence_LocalWindow_PreviousOccSurvivesRemove(t *testing.T) {
 	tracker := &mockTracker{
 		tasks: []TrackedTaskInfo{
 			{GID: ben, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", CompletedLength: 10 * 1024 * 1024},
-			{GID: donor, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "other.com",
+			{
+				GID: donor, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "other.com",
 				ActivatedAt: t0, TargetBandwidth: 20 * 1024 * 1024,
-				TelemetryBps: 10 * 1024 * 1024, TelemetryValid: true},
+				TelemetryBps: 10 * 1024 * 1024, TelemetryValid: true,
+			},
 			{GID: zero, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "zero.com"},
 		},
 	}
@@ -939,16 +944,26 @@ func TestConvergence_LocalWindow_ReservationsExcluded(t *testing.T) {
 
 	t0 := time.Now()
 	rows := []TrackedTaskInfo{
-		{GID: "sg_wait", Status: "waiting", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-			TargetBandwidth: 5 * 1024 * 1024, TelemetryBps: 1024 * 1024, TelemetryValid: true},
-		{GID: "sg_syn", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-			CompatClaim: CompatSurgeClaim, TargetBandwidth: 6 * 1024 * 1024},
-		{GID: "sg_resv", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-			AdmissionReserved: true, ActivatedAt: t0, TargetBandwidth: 7 * 1024 * 1024},
-		{GID: "sg_old", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-			TelemetryBps: 3 * 1024 * 1024, TelemetryValid: true},
-		{GID: "sg_start", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-			ActivatedAt: t0, TelemetryBps: 2 * 1024 * 1024, TelemetryValid: true},
+		{
+			GID: "sg_wait", Status: "waiting", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+			TargetBandwidth: 5 * 1024 * 1024, TelemetryBps: 1024 * 1024, TelemetryValid: true,
+		},
+		{
+			GID: "sg_syn", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+			CompatClaim: CompatSurgeClaim, TargetBandwidth: 6 * 1024 * 1024,
+		},
+		{
+			GID: "sg_resv", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+			AdmissionReserved: true, ActivatedAt: t0, TargetBandwidth: 7 * 1024 * 1024,
+		},
+		{
+			GID: "sg_old", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+			TelemetryBps: 3 * 1024 * 1024, TelemetryValid: true,
+		},
+		{
+			GID: "sg_start", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+			ActivatedAt: t0, TelemetryBps: 2 * 1024 * 1024, TelemetryValid: true,
+		},
 	}
 	tracker := &mockTracker{tasks: append([]TrackedTaskInfo(nil), rows...)}
 	// Even with workers, excluded rows must not reach Surge processing.
@@ -970,9 +985,7 @@ func TestConvergence_LocalWindow_ReservationsExcluded(t *testing.T) {
 		states[gid] = true
 	}
 	membership := make(map[string]gidInfo, len(ct.prevActiveGids))
-	for gid, gi := range ct.prevActiveGids {
-		membership[gid] = gi
-	}
+	maps.Copy(membership, ct.prevActiveGids)
 	ct.mu.Unlock()
 	for _, excluded := range []string{"sg_wait", "sg_syn", "sg_resv"} {
 		if states[excluded] {
@@ -1039,8 +1052,10 @@ func TestConvergence_LocalWindow_SnapshotCostAndFallback(t *testing.T) {
 		t.Cleanup(speedstats.ResetRecordsForTest)
 		var calls int32
 		tracker := &mockTracker{tasks: []TrackedTaskInfo{
-			{GID: "sg_a", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com",
-				CompletedLength: 10 * mb},
+			{
+				GID: "sg_a", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com",
+				CompletedLength: 10 * mb,
+			},
 		}}
 		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
 			"sg_a": makeWorkers(2, 2*1024*1024),
@@ -1051,8 +1066,8 @@ func TestConvergence_LocalWindow_SnapshotCostAndFallback(t *testing.T) {
 		)
 		defer ct.Stop()
 		ct.SetOccupancyProvider(&countingOccupancy{
-			mockOccupancy: mockOccupancy{tasks: tracker.tasks},
-			calls:         &calls,
+			tasks: tracker.tasks,
+			calls: &calls,
 		})
 		ct.tick()
 		ct.tick()
@@ -1065,8 +1080,10 @@ func TestConvergence_LocalWindow_SnapshotCostAndFallback(t *testing.T) {
 		speedstats.ResetRecordsForTest()
 		t.Cleanup(speedstats.ResetRecordsForTest)
 		tracker := &mockTracker{tasks: []TrackedTaskInfo{
-			{GID: "sg_a", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com",
-				CompletedLength: 10 * mb},
+			{
+				GID: "sg_a", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com",
+				CompletedLength: 10 * mb,
+			},
 		}}
 		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
 			"sg_a": makeWorkers(2, 2*1024*1024),
@@ -1095,12 +1112,18 @@ func TestConvergence_LocalWindow_SnapshotCostAndFallback(t *testing.T) {
 		prevOcc := map[string]int64{"sg_a": 10 * mb}
 		mk := func() []TrackedTaskInfo {
 			return []TrackedTaskInfo{
-				{GID: "sg_a", Status: "active", Scope: "wan", Domain: "a.com", EnvKey: "testenv",
-					TelemetryBps: 10 * mb, TelemetryValid: true},
-				{GID: "ar_b", Status: "active", Scope: "wan", Domain: "b.com", EnvKey: "testenv",
-					TelemetryBps: 8 * mb, TelemetryValid: true},
-				{GID: "sg_c", Status: "active", Scope: "wan", Domain: "c.com", EnvKey: "testenv",
-					TelemetryBps: 4 * mb, TelemetryValid: true},
+				{
+					GID: "sg_a", Status: "active", Scope: "wan", Domain: "a.com", EnvKey: "testenv",
+					TelemetryBps: 10 * mb, TelemetryValid: true,
+				},
+				{
+					GID: "ar_b", Status: "active", Scope: "wan", Domain: "b.com", EnvKey: "testenv",
+					TelemetryBps: 8 * mb, TelemetryValid: true,
+				},
+				{
+					GID: "sg_c", Status: "active", Scope: "wan", Domain: "c.com", EnvKey: "testenv",
+					TelemetryBps: 4 * mb, TelemetryValid: true,
+				},
 			}
 		}
 		mkActive := func(cur []TrackedTaskInfo) map[string]gidInfo {
@@ -1122,10 +1145,14 @@ func TestConvergence_LocalWindow_SnapshotCostAndFallback(t *testing.T) {
 		speedstats.ResetRecordsForTest()
 		t.Cleanup(speedstats.ResetRecordsForTest)
 		tracker := &mockTracker{tasks: []TrackedTaskInfo{
-			{GID: "sg_dup", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "first.com",
-				TelemetryBps: 5 * mb, TelemetryValid: true},
-			{GID: "sg_dup", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "second.com",
-				TelemetryBps: 7 * mb, TelemetryValid: true},
+			{
+				GID: "sg_dup", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "first.com",
+				TelemetryBps: 5 * mb, TelemetryValid: true,
+			},
+			{
+				GID: "sg_dup", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "second.com",
+				TelemetryBps: 7 * mb, TelemetryValid: true,
+			},
 			{GID: "sg_peer", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "peer.com"},
 		}}
 		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
@@ -1186,8 +1213,10 @@ func TestConvergence_LocalWindow_ConcurrentRemove(t *testing.T) {
 	lowGid := "sg_cr_low"   // margin below victim exit → dirty either way
 	highGid := "sg_cr_high" // margin above stored exit → dirty ONLY if wiped
 	mkTask := func(gid, domain string, completed int64) TrackedTaskInfo {
-		return TrackedTaskInfo{GID: gid, Status: "active", Scope: "wan",
-			EnvKey: "testenv", Domain: domain, CompletedLength: completed}
+		return TrackedTaskInfo{
+			GID: gid, Status: "active", Scope: "wan",
+			EnvKey: "testenv", Domain: domain, CompletedLength: completed,
+		}
 	}
 	tracker := &mockTracker{tasks: []TrackedTaskInfo{
 		mkTask(victim, "victim.com", 10*mb),
@@ -1274,9 +1303,7 @@ func TestConvergence_LocalWindow_ConcurrentRemove(t *testing.T) {
 	low := ct.states[lowGid]
 	high := ct.states[highGid]
 	prevOcc := make(map[string]int64, len(ct.prevActiveOccupancy))
-	for k, v := range ct.prevActiveOccupancy {
-		prevOcc[k] = v
-	}
+	maps.Copy(prevOcc, ct.prevActiveOccupancy)
 	ct.mu.Unlock()
 
 	if resurrected {

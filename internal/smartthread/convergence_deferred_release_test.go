@@ -910,7 +910,8 @@ func TestConvergence_DeferredRelease_HeadroomClampsRequestedDelta(t *testing.T) 
 func localDeferralFixture(t *testing.T, rows []struct {
 	gid, domain, env string
 	workers          int
-}) (*ConvergenceTicker, *mockTracker) {
+},
+) (*ConvergenceTicker, *mockTracker) {
 	t.Helper()
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)

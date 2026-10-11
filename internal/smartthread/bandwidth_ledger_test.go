@@ -394,7 +394,7 @@ func TestTaskOccupancy_OldActiveNoFactsIsTelemOnly(t *testing.T) {
 		TelemetryBps:    1_000_000,
 		TelemetryValid:  true,
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if got := TaskOccupancy(info, now); got != 1_000_000 {
 			t.Fatalf("read %d: got %d, want telem 1000000 (no write/no grant)", i, got)
 		}

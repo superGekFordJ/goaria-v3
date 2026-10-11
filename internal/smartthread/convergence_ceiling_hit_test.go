@@ -273,8 +273,10 @@ func TestConvergence_LocalWindow_LockEvidenceAndCooldown(t *testing.T) {
 	// fixture primes state under lock, then runs one processTask call.
 	prime := func(mut func(*convergenceState)) (*ConvergenceTicker, TrackedTaskInfo, time.Time) {
 		tracker := &mockTracker{tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-				CompletedLength: 60 * mb},
+			{
+				GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+				CompletedLength: 60 * mb,
+			},
 		}}
 		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
 			gid: makeWorkers(4, 2*1024*1024),

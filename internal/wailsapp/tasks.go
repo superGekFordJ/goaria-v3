@@ -1,11 +1,12 @@
 package wailsapp
 
 import (
+	"log"
+
 	"goaria-v3/internal/downloadgroups"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/tasks"
-	"log"
 )
 
 func (a *App) taskService() *tasks.Service {

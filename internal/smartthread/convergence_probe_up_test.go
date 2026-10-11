@@ -420,8 +420,10 @@ func TestConvergence_LocalWindow_ProbeUpVerdictCancelled(t *testing.T) {
 	gid := "sg_pu_cancel"
 	newFixture := func(baselineBps, deltaCompleted int64) (*ConvergenceTicker, TrackedTaskInfo, time.Time) {
 		tracker := &mockTracker{tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-				CompletedLength: deltaCompleted},
+			{
+				GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+				CompletedLength: deltaCompleted,
+			},
 		}}
 		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
 			gid: makeWorkers(9, 2*1024*1024),

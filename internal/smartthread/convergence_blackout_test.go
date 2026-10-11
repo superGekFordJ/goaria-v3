@@ -356,8 +356,10 @@ func TestConvergence_LocalWindow_BlackoutNoDirtyPeak(t *testing.T) {
 	gid := "sg_blackout_dirty"
 	newFixture := func(prevCompleted int64, prevRaw int64) (*ConvergenceTicker, *mockPeakRecorder, TrackedTaskInfo, time.Time) {
 		tracker := &mockTracker{tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com",
-				IsKeepAlive: true, CompletedLength: 100 * mb, MinChunk: mb},
+			{
+				GID: gid, Status: "active", Scope: "wan", Domain: "example.com",
+				IsKeepAlive: true, CompletedLength: 100 * mb, MinChunk: mb,
+			},
 		}}
 		// Tail zone: 4 workers × 256KB remaining < 4 × 1MB minChunk.
 		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
