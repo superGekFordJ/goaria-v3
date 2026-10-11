@@ -60,7 +60,7 @@ func TestResumeBackend_EventAcceptance(t *testing.T) {
 				t.Fatal("sparse event lost master")
 			}
 			if tc.source == tc.want {
-				if master.Status != "old" || len(pusher.pending) != 0 {
+				if master.Status != "old" || len(pusher.pendingSnapshot()) != 0 {
 					t.Fatal("rejected event wrote facts/UI")
 				}
 				if _, ok := m.chunkSnapshots.Get(full.GID); !ok {
@@ -94,15 +94,13 @@ func TestHandleSurgeEvent_PauseEvent_QueuesPauseDeltaAndPatchesCache(t *testing.
 	})
 
 	// Verify pusher queued a pause delta
-	pusher.mu.Lock()
 	found := false
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "pause" && d.GID == "sg_test-pause" {
 			found = true
 			break
 		}
 	}
-	pusher.mu.Unlock()
 	if !found {
 		t.Error("expected pause delta in pusher pending queue")
 	}
@@ -156,15 +154,13 @@ func TestHandleSurgeEvent_ResumeEvent_QueuesResumeDeltaAndPatchesCache(t *testin
 	})
 
 	// Verify pusher queued a resume delta
-	pusher.mu.Lock()
 	found := false
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "resume" && d.GID == "sg_test-resume" {
 			found = true
 			break
 		}
 	}
-	pusher.mu.Unlock()
 	if !found {
 		t.Error("expected resume delta in pusher pending queue")
 	}
@@ -291,15 +287,13 @@ func TestHandleSurgeEvent_PauseResumePauseSequence(t *testing.T) {
 
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "test-4"})
 
-	pusher.mu.Lock()
 	found := false
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "pause" && d.GID == "sg_test-4" {
 			found = true
 			break
 		}
 	}
-	pusher.mu.Unlock()
 	if !found {
 		t.Fatal("expected pause delta when last intention is pause in pause-resume-pause sequence")
 	}
@@ -319,15 +313,13 @@ func TestHandleSurgeEvent_NilMonitorIntentionMaps(t *testing.T) {
 
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "test-5"})
 
-	pusher.mu.Lock()
 	found := false
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "pause" && d.GID == "sg_test-5" {
 			found = true
 			break
 		}
 	}
-	pusher.mu.Unlock()
 	if !found {
 		t.Fatal("expected pause delta with nil intention maps (accept by default)")
 	}

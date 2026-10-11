@@ -223,7 +223,9 @@ func TestResumePollSafety_StaleReadBarriers(t *testing.T) {
 			}
 			m.chunkSnapshots.Set(full.GID, []byte{2}, 4, 100, nil)
 			m.chunkSnapshots.Set("sg_new_chunk", []byte{2}, 4, 100, nil)
+			m.pauseResumeVersionMu.RLock()
 			intention := m.pauseResumeIntentions[full.GID]
+			m.pauseResumeVersionMu.RUnlock()
 			releasePoll()
 			select {
 			case <-done:
@@ -234,8 +236,11 @@ func TestResumePollSafety_StaleReadBarriers(t *testing.T) {
 			assertFullRowMetadata(t, got, full)
 			tracked, _ := tracker.GetTrackedTask(full.GID)
 			master, _ := m.surgeEng.GetMasterCacheEntry("poll_barrier")
+			m.pauseResumeVersionMu.RLock()
+			intentionStable := m.pauseResumeIntentions[full.GID] == intention
+			m.pauseResumeVersionMu.RUnlock()
 			if got.Status != want || list != want || tracked.Status != want || master.Status != masterStatus ||
-				m.pauseResumeIntentions[full.GID] != intention {
+				!intentionStable {
 				t.Fatal("old poll overwrote accepted facts")
 			}
 			if _, ok := history.Get(full.GID); ok {
@@ -246,7 +251,7 @@ func TestResumePollSafety_StaleReadBarriers(t *testing.T) {
 					t.Fatal("old poll removed new chunk")
 				}
 			}
-			for _, delta := range pusher.pending {
+			for _, delta := range pusher.pendingSnapshot() {
 				if delta.GID == full.GID {
 					if task, ok := delta.Payload.(rpc.Task); !ok || task.Status != want {
 						t.Fatalf("stale payload: %#v", delta)
@@ -268,7 +273,7 @@ func TestResumePollSafety_MasterPausedIsNotLive(t *testing.T) {
 	m.reconcileSurgeCache()
 	got, list, _ := Cache.GetTask(full.GID)
 	assertFullRowMetadata(t, got, full)
-	if got.Status != "waiting" || list != "waiting" || len(pusher.pending) != 0 {
+	if got.Status != "waiting" || list != "waiting" || len(pusher.pendingSnapshot()) != 0 {
 		t.Fatal("master-only paused downgraded waiting")
 	}
 }
@@ -315,7 +320,11 @@ func TestResumePollSafety_CurrentLiveFacts(t *testing.T) {
 	if got, _, _ := Cache.GetTask(full.GID); got.Status != "paused" {
 		t.Fatal("queued snapshot undid current Pause")
 	}
-	if task, ok := pusher.pending[len(pusher.pending)-1].Payload.(rpc.Task); !ok || task.Status != "paused" {
+	pending := pusher.pendingSnapshot()
+	if len(pending) == 0 {
+		t.Fatal("missing actual-status delta")
+	}
+	if task, ok := pending[len(pending)-1].Payload.(rpc.Task); !ok || task.Status != "paused" {
 		t.Fatal("missing actual-status delta")
 	}
 }
@@ -414,17 +423,35 @@ func newReconcileTestMonitor(t *testing.T) (*Monitor, *mockSurgeListReader, *Pus
 	State.SetWindowExists(true)
 	t.Cleanup(func() {
 		State.SetWindowExists(prevWindow)
-		Cache.sgActive = nil
-		Cache.sgWaiting = nil
-		Cache.sgStopped = nil
+		// Drain armed namer timers so a debounced snapshot cannot leak into
+		// the next test's cache writes.
+		ResetDownloadGroupNamerForTest()
+		resetCacheSg()
 	})
 	return m, reader, pusher, tracker
 }
 
 func resetCacheSg() {
+	Cache.sgMu.Lock()
 	Cache.sgActive = nil
 	Cache.sgWaiting = nil
 	Cache.sgStopped = nil
+	Cache.sgMu.Unlock()
+}
+
+// pendingSnapshot drains the queued deltas and disarms the debounce timer so
+// a scheduled flush cannot mutate the queue while a test asserts on it.
+func (p *Pusher) pendingSnapshot() []events.TaskDelta {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.timer != nil {
+		p.timer.Stop()
+		p.timer = nil
+	}
+	pending := append([]events.TaskDelta(nil), p.pending...)
+	p.pending = nil
+	p.dedupMap = make(map[string]int)
+	return pending
 }
 
 // historyCount returns the current number of history entries.
@@ -494,14 +521,12 @@ func TestReconcileSurgeCache_MissedComplete(t *testing.T) {
 		t.Error("expected processedComplete[sg_task1] = true")
 	}
 
-	pusher.mu.Lock()
 	foundComplete := false
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "complete" && d.GID == "sg_task1" {
 			foundComplete = true
 		}
 	}
-	pusher.mu.Unlock()
 	if !foundComplete {
 		t.Error("expected complete delta from poll (reconcile now emits deltas matching event path)")
 	}
@@ -555,16 +580,14 @@ func TestReconcileSurgeCache_MissedComplete_EmitsDeltaWithPayload(t *testing.T) 
 
 	m.reconcileSurgeCache()
 
-	pusher.mu.Lock()
 	var delta *events.TaskDelta
-	for i := range pusher.pending {
-		if pusher.pending[i].Type == "complete" && pusher.pending[i].GID == "sg_task1" {
-			d := pusher.pending[i]
-			delta = &d
+	for _, d := range pusher.pendingSnapshot() {
+		if d.Type == "complete" && d.GID == "sg_task1" {
+			cp := d
+			delta = &cp
 			break
 		}
 	}
-	pusher.mu.Unlock()
 	if delta == nil {
 		t.Fatal("expected complete delta with payload")
 	}
@@ -626,16 +649,14 @@ func TestReconcileSurgeCache_MissedError_StampsErrorCode(t *testing.T) {
 		t.Fatalf("ErrorMessage = %q, want sentinel", stopped.ErrorMessage)
 	}
 
-	pusher.mu.Lock()
 	var delta *events.TaskDelta
-	for i := range pusher.pending {
-		if pusher.pending[i].Type == "error" && pusher.pending[i].GID == "sg_disk1" {
-			d := pusher.pending[i]
-			delta = &d
+	for _, d := range pusher.pendingSnapshot() {
+		if d.Type == "error" && d.GID == "sg_disk1" {
+			cp := d
+			delta = &cp
 			break
 		}
 	}
-	pusher.mu.Unlock()
 	if delta == nil {
 		t.Fatal("expected error delta from poll")
 	}
@@ -704,9 +725,8 @@ func TestReconcileSurgeCache_MissedComplete_EmptyTotalLength(t *testing.T) {
 
 	m.reconcileSurgeCache()
 
-	pusher.mu.Lock()
 	foundDelta := false
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "complete" && d.GID == "sg_task1" {
 			foundDelta = true
 			payload, ok := d.Payload.(rpc.Task)
@@ -715,7 +735,6 @@ func TestReconcileSurgeCache_MissedComplete_EmptyTotalLength(t *testing.T) {
 			}
 		}
 	}
-	pusher.mu.Unlock()
 	if !foundDelta {
 		t.Fatal("expected complete delta even with empty TotalLength")
 	}
@@ -757,13 +776,11 @@ func TestReconcileSurgeCache_MissedComplete_HeadlessNoDelta(t *testing.T) {
 
 	m.reconcileSurgeCache()
 
-	pusher.mu.Lock()
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "complete" && d.GID == "sg_task1" {
 			t.Error("did not expect complete delta in headless mode")
 		}
 	}
-	pusher.mu.Unlock()
 
 	if !internalFired.Load() {
 		t.Error("expected NotifyInternal to fire even in headless mode")
@@ -803,14 +820,12 @@ func TestReconcileSurgeCache_MissedComplete_DuplicateDeltaDedup(t *testing.T) {
 
 	m.reconcileSurgeCache()
 
-	pusher.mu.Lock()
 	count := 0
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.GID == "sg_task1" && d.Type == "complete" {
 			count++
 		}
 	}
-	pusher.mu.Unlock()
 	if count != 1 {
 		t.Errorf("expected exactly 1 complete delta for sg_task1 (dedup), got %d", count)
 	}
@@ -838,14 +853,12 @@ func TestReconcileSurgeCache_MissedPause_EmitsDelta(t *testing.T) {
 
 	m.reconcileSurgeCache()
 
-	pusher.mu.Lock()
 	foundPause := false
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "pause" && d.GID == "sg_task1" {
 			foundPause = true
 		}
 	}
-	pusher.mu.Unlock()
 	if !foundPause {
 		t.Error("expected pause delta from poll")
 	}
@@ -884,14 +897,12 @@ func TestReconcileSurgeCache_MissedResume_EmitsDelta(t *testing.T) {
 
 	m.reconcileSurgeCache()
 
-	pusher.mu.Lock()
 	foundResume := false
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "resume" && d.GID == "sg_task1" {
 			foundResume = true
 		}
 	}
-	pusher.mu.Unlock()
 	if !foundResume {
 		t.Error("expected resume delta from poll")
 	}
@@ -1201,22 +1212,18 @@ func TestReconcileSurgeCache_MissedResume_FromStopped_Converges(t *testing.T) {
 		t.Errorf("move From/To = %q/%q, want stopped/active", moves[0].From, moves[0].To)
 	}
 
-	pusher.mu.Lock()
 	resumeCount := 0
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "resume" && d.GID == "sg_task1" {
 			resumeCount++
 		}
 	}
-	pusher.mu.Unlock()
 	if resumeCount != 1 {
 		t.Fatalf("expected 1 resume delta on first pass, got %d", resumeCount)
 	}
 
 	// Second pass: cache already active — no further move or resume delta.
-	pusher.mu.Lock()
-	pusher.pending = nil
-	pusher.mu.Unlock()
+	pusher.pendingSnapshot()
 	moves = nil
 
 	m.reconcileSurgeCache()
@@ -1224,13 +1231,11 @@ func TestReconcileSurgeCache_MissedResume_FromStopped_Converges(t *testing.T) {
 	if len(moves) != 0 {
 		t.Fatalf("expected no move on second reconcile, got %d (%#v)", len(moves), moves)
 	}
-	pusher.mu.Lock()
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "resume" && d.GID == "sg_task1" {
 			t.Fatal("expected no resume delta on second reconcile")
 		}
 	}
-	pusher.mu.Unlock()
 }
 
 // TestReconcileSurgeCache_MissedRemove verifies that a task in Cache but not
@@ -1252,14 +1257,12 @@ func TestReconcileSurgeCache_MissedRemove(t *testing.T) {
 		}
 	}
 
-	pusher.mu.Lock()
 	deltaFound := false
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "remove" && d.GID == "sg_task1" {
 			deltaFound = true
 		}
 	}
-	pusher.mu.Unlock()
 	if !deltaFound {
 		t.Fatal("expected remove delta pushed for sg_task1")
 	}
@@ -1290,9 +1293,7 @@ func TestReconcileSurgeCache_MissedAdd(t *testing.T) {
 		t.Fatal("expected sg_task1 in active after reconcile")
 	}
 
-	pusher.mu.Lock()
-	defer pusher.mu.Unlock()
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "add" && d.GID == "sg_task1" {
 			if task, ok := d.Payload.(rpc.Task); !ok || task.Status != "active" {
 				t.Errorf("unexpected add payload: %v", d.Payload)
@@ -1422,11 +1423,9 @@ func TestReconcileSurgeCache_NoDiscrepancy(t *testing.T) {
 		t.Errorf("history count changed: %d != %d", historyCount(), before)
 	}
 
-	pusher.mu.Lock()
-	if len(pusher.pending) > 0 {
-		t.Errorf("expected no deltas, got %d", len(pusher.pending))
+	if pending := pusher.pendingSnapshot(); len(pending) > 0 {
+		t.Errorf("expected no deltas, got %d", len(pending))
 	}
-	pusher.mu.Unlock()
 }
 
 // TestReconcileSurgeCache_NilSurgeEng verifies that reconcileSurgeCache
@@ -1679,7 +1678,9 @@ func TestReconcileSurgeCache_MissedComplete_ClearsPauseResumeIntention(t *testin
 	resetCacheSg()
 	resetHistoryForTest(t)
 
+	m.pauseResumeVersionMu.Lock()
 	m.pauseResumeIntentions = map[string]pauseResumeIntention{"sg_task1": {action: "pause"}}
+	m.pauseResumeVersionMu.Unlock()
 
 	Cache.AddSgTask(rpc.Task{
 		GID:         "sg_task1",
@@ -1712,7 +1713,9 @@ func TestReconcileSurgeCache_MissedRemove_ClearsPauseResumeIntention(t *testing.
 	m, reader, _, _ := newReconcileTestMonitor(t)
 	resetCacheSg()
 
+	m.pauseResumeVersionMu.Lock()
 	m.pauseResumeIntentions = map[string]pauseResumeIntention{"sg_task1": {action: "pause"}}
+	m.pauseResumeVersionMu.Unlock()
 
 	Cache.AddSgTask(rpc.Task{GID: "sg_task1", Status: "complete"}, "stopped")
 
@@ -1736,7 +1739,9 @@ func TestReconcileSurgeCache_MissedAddWithComplete_ClearsPauseResumeIntention(t 
 	resetCacheSg()
 	resetHistoryForTest(t)
 
+	m.pauseResumeVersionMu.Lock()
 	m.pauseResumeIntentions = map[string]pauseResumeIntention{"sg_task1": {action: "pause"}}
+	m.pauseResumeVersionMu.Unlock()
 
 	Cache.metadata["sg_task1"] = &TaskMetadata{
 		GID:   "sg_task1",

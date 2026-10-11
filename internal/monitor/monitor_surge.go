@@ -131,7 +131,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			m.tracker.UpdateProgressFromEvent(gid, ev.Total, ev.Downloaded)
 			m.tracker.UpdateLiveConnections(gid, ev.Connections)
 		}
-		if State.HasWindow() {
+		if State.HasWindow() && m.pusher != nil {
 			payload := map[string]string{
 				"completedLength": completedStr,
 				"downloadSpeed":   speedStr,
@@ -163,7 +163,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 				m.tracker.UpdateProgressFromEvent(pgid, p.Total, p.Downloaded)
 				m.tracker.UpdateLiveConnections(pgid, p.Connections)
 			}
-			if State.HasWindow() {
+			if State.HasWindow() && m.pusher != nil {
 				payload := map[string]string{
 					"completedLength": completedStr,
 					"downloadSpeed":   speedStr,
@@ -297,7 +297,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 				completed.peakFromAvgFallback = true
 			}
 		})
-		if State.HasWindow() {
+		if State.HasWindow() && m.pusher != nil {
 			switch {
 			case deltaType == "complete" && completeTotal > 0:
 				totalStr := strconv.FormatInt(completeTotal, 10)
@@ -332,7 +332,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		if m.convergence != nil {
 			m.convergence.RemoveTask(gid)
 		}
-		if State.HasWindow() {
+		if State.HasWindow() && m.pusher != nil {
 			m.pusher.Queue(events.TaskDelta{Type: "remove", GID: gid})
 		}
 
@@ -709,7 +709,7 @@ func (m *Monitor) reconcileSurgeCache() {
 		if m.convergence != nil {
 			m.convergence.RemoveTask(gid)
 		}
-		if State.HasWindow() {
+		if State.HasWindow() && m.pusher != nil {
 			m.pusher.Queue(events.TaskDelta{Type: "remove", GID: gid})
 		}
 
