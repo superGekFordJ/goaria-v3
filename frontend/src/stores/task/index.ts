@@ -24,7 +24,7 @@ export const useTaskStore = defineStore('task', () => {
     polling.startPolling, // restart
     polling.stopPolling, // stop
   )
-  actions.setMoveTasksToActive(events.moveTasksToActive)
+  actions.setTaskMover(events.moveTasks)
 
   // On-demand card detail (pull-only, outside the delta hot path)
   const detail = setupTaskDetail()

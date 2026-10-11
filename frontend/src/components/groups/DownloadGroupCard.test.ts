@@ -141,4 +141,36 @@ describe('DownloadGroupCard', () => {
     expect(wrapper.find('.progress-bar-fill').attributes('style')).toContain('scaleX(0.2)')
     wrapper.unmount()
   })
+
+  it('GROUP-ERROR-RESUME: resume stays enabled on error members alone and emits the group key', async () => {
+    const errorCard = backendCard('dg-error')
+    errorCard.counts.paused = 0
+    errorCard.counts.error = 2
+    errorCard.counts.active = 0
+    const wrapper = mount(DownloadGroupCard, {
+      props: { item: { type: 'backend', group_key: 'dg-error', card: errorCard } },
+    })
+    const resumeButton = wrapper.findAll<HTMLButtonElement>('.download-group-action-btn')[1]
+
+    expect(resumeButton.element.disabled).toBe(false)
+    await resumeButton.trigger('click')
+
+    expect(wrapper.emitted('resume')).toEqual([['dg-error']])
+    wrapper.unmount()
+  })
+
+  it('GROUP-ERROR-RESUME: complete-only groups keep resume disabled', () => {
+    const completeCard = backendCard('dg-complete')
+    completeCard.counts.paused = 0
+    completeCard.counts.error = 0
+    completeCard.counts.active = 0
+    completeCard.counts.complete = 2
+    const wrapper = mount(DownloadGroupCard, {
+      props: { item: { type: 'backend', group_key: 'dg-complete', card: completeCard } },
+    })
+
+    const resumeButton = wrapper.findAll<HTMLButtonElement>('.download-group-action-btn')[1]
+    expect(resumeButton.element.disabled).toBe(true)
+    wrapper.unmount()
+  })
 })

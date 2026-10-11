@@ -21,6 +21,7 @@ import type { BatchAddResult } from '../../../bindings/goaria-v3/internal/tasks/
 import { cacheMetadata, applyMetadataFromCache } from './metadata'
 import { mergeTasks, dedupByGid, applyLocalOrder } from './utils'
 import { cloneTaskGroupMetadata, mergeTaskGroupMetadata } from './grouping'
+import type { TaskMovePlacement } from './events'
 import { useDownloadGroupStore } from '../downloadGroups'
 
 export function setupActions(state: TaskState) {
@@ -57,23 +58,78 @@ export function setupActions(state: TaskState) {
   // Callback to restart polling if needed (will be injected by index.ts or polling.ts)
   let _restartPollingCallback: (() => void) | null = null
   let _stopPollingCallback: ((disableContext: boolean) => void) | null = null
-  let _moveTasksToActive: ((gids: string[]) => { missing: boolean }) | null = null
+  let _moveTasks: ((placements: TaskMovePlacement[]) => { missing: boolean }) | null = null
   // Per-GID resume op generation: terminal events during IPC stamp superseded as -gen
-  // so optimistic move does not overwrite a completed/error transition.
+  // so optimistic moves do not overwrite a completed/error transition.
   let _resumeOpGen = 0
   const _resumePendingGids = new Map<string, number>()
+  // Generation-owned deferred authoritative row/status observed while the
+  // resume IPC is in flight (move/delta/read evidence). Settled once the op
+  // resolves; never inherited by a newer generation.
+  const _resumeEvidence = new Map<string, { gen: number; status: string; task: Task }>()
+
+  // One store-local lifecycle revision plus per-bucket read tickets. A covered
+  // read applies only while its ticket is still the newest for every covered
+  // bucket and no lifecycle mutation has crossed since issue.
+  let _lifecycleRev = 0
+  let _readTicketSeq = 0
+  const _bucketReadTickets = { active: 0, waiting: 0, stopped: 0 }
+  type ReadScope = 'live' | 'stopped' | 'full'
+  const _readScopeBuckets: Record<ReadScope, ('active' | 'waiting' | 'stopped')[]> = {
+    live: ['active', 'waiting'],
+    stopped: ['stopped'],
+    full: ['active', 'waiting', 'stopped'],
+  }
+  const _recoveryInFlight = { live: false, stopped: false, full: false }
+
+  function markLifecycleChanged() {
+    _lifecycleRev++
+  }
+
+  function beginRead(scope: ReadScope) {
+    const ticket = ++_readTicketSeq
+    for (const bucket of _readScopeBuckets[scope]) _bucketReadTickets[bucket] = ticket
+    return { scope, ticket, rev: _lifecycleRev }
+  }
+
+  type ReadVerdict = 'admit' | 'superseded' | 'stale'
+
+  function classifyRead(read: { scope: ReadScope; ticket: number; rev: number }): ReadVerdict {
+    for (const bucket of _readScopeBuckets[read.scope]) {
+      if (_bucketReadTickets[bucket] !== read.ticket) return 'superseded'
+    }
+    return read.rev === _lifecycleRev ? 'admit' : 'stale'
+  }
+
+  // A stale response triggers at most one coalesced re-read per scope; the
+  // recovery read itself is never rescheduled.
+  function scheduleReadRecovery(scope: ReadScope) {
+    if (_recoveryInFlight[scope]) return
+    _recoveryInFlight[scope] = true
+    queueMicrotask(() => {
+      _recoveryInFlight[scope] = false
+      if (scope === 'live') void fetchActiveTasks(true)
+      else if (scope === 'stopped') void fetchStoppedTasks(true)
+      else void fetchTasks(undefined, true)
+    })
+  }
 
   function setPollingCallbacks(restart: () => void, stop: (disable: boolean) => void) {
     _restartPollingCallback = restart
     _stopPollingCallback = stop
   }
 
-  function setMoveTasksToActive(fn: (gids: string[]) => { missing: boolean }) {
-    _moveTasksToActive = fn
+  function setTaskMover(fn: (placements: TaskMovePlacement[]) => { missing: boolean }) {
+    _moveTasks = fn
   }
 
   function isResumePending(gid: string): boolean {
     return Boolean(gid) && _resumePendingGids.has(gid)
+  }
+
+  function isPositiveResumePending(gid: string): boolean {
+    const pending = _resumePendingGids.get(gid)
+    return pending !== undefined && pending > 0
   }
 
   function markResumeSuperseded(gid: string) {
@@ -81,13 +137,19 @@ export function setupActions(state: TaskState) {
     const pending = _resumePendingGids.get(gid)
     if (pending === undefined || pending < 0) return
     _resumePendingGids.set(gid, -pending)
+    _resumeEvidence.delete(gid)
+    markLifecycleChanged()
   }
 
   function beginResumePending(gids: string[]): number {
     const gen = ++_resumeOpGen
     for (const gid of gids) {
-      if (gid) _resumePendingGids.set(gid, gen)
+      if (gid) {
+        _resumePendingGids.set(gid, gen)
+        _resumeEvidence.delete(gid)
+      }
     }
+    markLifecycleChanged()
     return gen
   }
 
@@ -100,7 +162,123 @@ export function setupActions(state: TaskState) {
       if (!gid) continue
       const pending = _resumePendingGids.get(gid)
       if (pending === gen || pending === -gen) _resumePendingGids.delete(gid)
+      const evidence = _resumeEvidence.get(gid)
+      if (evidence && evidence.gen === gen) _resumeEvidence.delete(gid)
     }
+    markLifecycleChanged()
+  }
+
+  function mergeEvidenceRow(base: Task | undefined, incoming: Partial<Task> | undefined): Task {
+    const merged: Task = base
+      ? { ...base }
+      : {
+          gid: '',
+          status: '',
+          totalLength: '0',
+          completedLength: '0',
+          downloadSpeed: '0',
+          errorCode: '',
+          errorMessage: '',
+          dir: '',
+          files: [],
+        }
+    if (!incoming) return merged
+    if (incoming.gid !== undefined) merged.gid = incoming.gid
+    if (incoming.title !== undefined) merged.title = incoming.title
+    if (incoming.status !== undefined) merged.status = incoming.status
+    if (incoming.totalLength !== undefined) merged.totalLength = incoming.totalLength
+    if (incoming.completedLength !== undefined) merged.completedLength = incoming.completedLength
+    if (incoming.downloadSpeed !== undefined) merged.downloadSpeed = incoming.downloadSpeed
+    if (incoming.errorCode !== undefined) merged.errorCode = incoming.errorCode
+    if (incoming.errorMessage !== undefined) merged.errorMessage = incoming.errorMessage
+    if (incoming.dir !== undefined) merged.dir = incoming.dir
+    if (incoming.files?.length && incoming.files[0]?.path) merged.files = incoming.files
+    const group = cloneTaskGroupMetadata(incoming)
+    if (group) merged.download_group = group
+    const threads = (incoming as Record<string, unknown>).threads
+    if (threads !== undefined) (merged as unknown as Record<string, unknown>).threads = threads
+    return merged
+  }
+
+  // Observed active/queued facts during the pending window are recorded per
+  // generation; an already-observed active fact is never downgraded by a
+  // later waiting acknowledgement.
+  function recordResumeEvidence(gid: string, status: string, task?: Partial<Task>) {
+    if (!gid) return
+    const pending = _resumePendingGids.get(gid)
+    if (pending === undefined || pending <= 0) return
+    const normalized = status === 'active' ? 'active' : status === 'paused' ? 'paused' : 'waiting'
+    const prev = _resumeEvidence.get(gid)
+    _resumeEvidence.set(gid, {
+      gen: pending,
+      status: prev?.status === 'active' && normalized !== 'active' ? 'active' : normalized,
+      task: mergeEvidenceRow(prev?.gen === pending ? prev.task : undefined, task),
+    })
+    markLifecycleChanged()
+  }
+
+  // Rows owned by a still-positive resume hold are kept out of read results
+  // and reinserted afterwards; superseded (-gen) rows are released so the
+  // newer terminal/paused fact can land.
+  function takeResumeHold(): Map<string, { bucket: 'active' | 'waiting' | 'stopped'; task: Task }> {
+    const hold = new Map<string, { bucket: 'active' | 'waiting' | 'stopped'; task: Task }>()
+    if (_resumePendingGids.size === 0) return hold
+    for (const bucket of ['active', 'waiting', 'stopped'] as const) {
+      for (const t of tasks.value[bucket]) {
+        if (t.gid && isPositiveResumePending(t.gid) && !hold.has(t.gid)) {
+          hold.set(t.gid, { bucket, task: t })
+        }
+      }
+    }
+    return hold
+  }
+
+  // Reinsert held rows at their local positions after a read. Active/waiting
+  // lead with not-yet-local incoming rows (same order as applyLocalOrder);
+  // stopped keeps local order and appends unseen incoming rows.
+  function restoreHeldRows(
+    hold: Map<string, { bucket: 'active' | 'waiting' | 'stopped'; task: Task }>,
+    next: { active: Task[]; waiting: Task[]; stopped: Task[] },
+  ): { active: Task[]; waiting: Task[]; stopped: Task[] } {
+    const heldGids = new Set(hold.keys())
+    const out = { active: [] as Task[], waiting: [] as Task[], stopped: [] as Task[] }
+    for (const bucket of ['active', 'waiting', 'stopped'] as const) {
+      const incoming = next[bucket].filter(t => !(t.gid && heldGids.has(t.gid)))
+      const mergedByGid = new Map(incoming.map(t => [t.gid, t]))
+      const localGids = new Set<string>()
+      for (const t of tasks.value[bucket]) {
+        if (t.gid) localGids.add(t.gid)
+      }
+      const restored: Task[] = []
+      const seen = new Set<string>()
+      if (bucket !== 'stopped') {
+        for (const t of incoming) {
+          if (!t.gid || localGids.has(t.gid)) continue
+          restored.push(t)
+          seen.add(t.gid)
+        }
+      }
+      for (const t of tasks.value[bucket]) {
+        const held = t.gid ? hold.get(t.gid) : undefined
+        if (held && held.bucket === bucket) {
+          restored.push(held.task)
+          if (t.gid) seen.add(t.gid)
+          continue
+        }
+        const merged = t.gid ? mergedByGid.get(t.gid) : undefined
+        if (merged && !(t.gid && heldGids.has(t.gid))) {
+          restored.push(merged)
+          if (t.gid) seen.add(t.gid)
+        }
+      }
+      for (const t of incoming) {
+        if (!t.gid || seen.has(t.gid)) continue
+        restored.push(t)
+        seen.add(t.gid)
+      }
+      out[bucket] = restored
+    }
+    return out
   }
 
   async function recoverResumeSnapshot(gids: string[], gen: number) {
@@ -111,12 +289,15 @@ export function setupActions(state: TaskState) {
     }
   }
 
+  // Fail closed: only explicit ok === true entries for requested GIDs count.
+  // Non-array, malformed entries, unknown/missing GIDs and non-boolean truthy
+  // values all mean "not a success".
   function batchResumeOkGids(results: unknown, requested: string[]): string[] {
-    if (!Array.isArray(results)) return requested
+    if (!Array.isArray(results)) return []
     const ok = new Set<string>()
     for (const item of results) {
       if (!item || typeof item !== 'object') continue
-      const row = item as { gid?: string; ok?: boolean }
+      const row = item as { gid?: unknown; ok?: unknown }
       if (row.ok === true && typeof row.gid === 'string' && row.gid) ok.add(row.gid)
     }
     return requested.filter(gid => ok.has(gid))
@@ -175,14 +356,44 @@ export function setupActions(state: TaskState) {
     return list.map(t => t.gid).join(',')
   }
 
-  async function applyOptimisticResume(gids: string[]): Promise<'fetched' | 'ok' | 'needs-fetch'> {
-    if (!_moveTasksToActive) {
-      await fetchTasks()
-      return 'fetched'
+  // Settlement: owned evidence applies first (active/queued facts observed
+  // during IPC), then optimistic waiting for confirmed GIDs with no newer
+  // fact. Superseded or missing entries keep their current row.
+  async function settleResume(
+    requested: string[],
+    gen: number,
+    confirmed: Set<string> | null,
+  ): Promise<'moved' | 'needs-fetch' | 'idle'> {
+    const placements: TaskMovePlacement[] = []
+    for (const gid of requested) {
+      if (_resumePendingGids.get(gid) !== gen) continue
+      const evidence = _resumeEvidence.get(gid)
+      if (evidence) {
+        const status =
+          evidence.status === 'active'
+            ? 'active'
+            : evidence.status === 'paused'
+              ? 'paused'
+              : 'waiting'
+        placements.push({
+          gid,
+          dest: status === 'active' ? 'active' : 'waiting',
+          status,
+          row: { ...evidence.task, gid, status },
+        })
+      } else if (confirmed?.has(gid)) {
+        placements.push({ gid, dest: 'waiting' })
+      }
     }
-    for (const gid of gids) clearStoppedSuppression(gid)
-    const result = _moveTasksToActive(gids)
-    return result.missing ? 'needs-fetch' : 'ok'
+    if (placements.length === 0) return 'idle'
+    if (!_moveTasks) {
+      // No mover to place rows: release this generation's hold first so the
+      // authoritative read can reconcile membership instead of freezing it.
+      clearResumePending(requested, gen)
+      await fetchTasks()
+      return 'moved'
+    }
+    return _moveTasks(placements).missing ? 'needs-fetch' : 'moved'
   }
 
   // --- Core Fetch Logic ---
@@ -263,7 +474,18 @@ export function setupActions(state: TaskState) {
     return merged
   }
 
-  function applyRecoveredMetadata(metadata: Record<string, Task | undefined>) {
+  function findTaskRow(gid: string): Task | undefined {
+    return (
+      tasks.value.active.find(t => t.gid === gid) ??
+      tasks.value.waiting.find(t => t.gid === gid) ??
+      tasks.value.stopped.find(t => t.gid === gid)
+    )
+  }
+
+  function applyRecoveredMetadata(
+    metadata: Record<string, Task | undefined>,
+    before: Map<string, Task>,
+  ) {
     let newActive = tasks.value.active
     let newWaiting = tasks.value.waiting
     let activeChanged = false
@@ -272,6 +494,10 @@ export function setupActions(state: TaskState) {
     for (const gid of Object.keys(metadata)) {
       const meta = metadata[gid]
       if (!meta || (!hasValidFiles(meta) && !cloneTaskGroupMetadata(meta))) continue
+      // Late metadata must not poison a removed/reopened/replaced row: the
+      // live row must be the same object captured before the IPC.
+      const prev = before.get(gid)
+      if (!prev || findTaskRow(gid) !== prev) continue
       cacheMetadata(meta)
 
       const activeIdx = newActive.findIndex(t => t.gid === gid)
@@ -313,10 +539,16 @@ export function setupActions(state: TaskState) {
     const batch = Array.from(metadataPending)
     metadataPending.clear()
 
+    const before = new Map<string, Task>()
+    for (const gid of batch) {
+      const row = findTaskRow(gid)
+      if (row) before.set(gid, row)
+    }
+
     void GetTaskMetadata(batch)
       .then((metadata: Record<string, Task | undefined>) => {
         if (!metadata) return
-        applyRecoveredMetadata(metadata)
+        applyRecoveredMetadata(metadata, before)
       })
       .catch(err => {
         console.warn('Failed to recover task metadata:', err)
@@ -345,9 +577,20 @@ export function setupActions(state: TaskState) {
     if (gids.length > 0) queueMetadataRecovery(gids)
   }
 
-  async function fetchActiveTasks(): Promise<{ hasActiveTasks: boolean; taskCompleted: boolean }> {
+  async function fetchActiveTasks(
+    isRecovery = false,
+  ): Promise<{ hasActiveTasks: boolean; taskCompleted: boolean }> {
+    const read = beginRead('live')
     try {
       const res = await GetActiveTasks()
+      const verdict = classifyRead(read)
+      if (verdict !== 'admit') {
+        if (verdict === 'stale' && !isRecovery) scheduleReadRecovery('live')
+        return {
+          hasActiveTasks: tasks.value.active.length + tasks.value.waiting.length > 0,
+          taskCompleted: false,
+        }
+      }
       consecutiveErrors.value = 0
 
       // Deduplicate stopped tasks (skip rebuild if reference unchanged)
@@ -377,26 +620,19 @@ export function setupActions(state: TaskState) {
         return false
       }
 
-      const resumeHold = new Map<string, { bucket: 'waiting' | 'stopped'; task: Task }>()
-      if (_resumePendingGids.size > 0) {
-        for (const t of tasks.value.waiting) {
-          if (t.gid && _resumePendingGids.has(t.gid)) {
-            resumeHold.set(t.gid, { bucket: 'waiting', task: t })
-          }
-        }
-        for (const t of tasks.value.stopped) {
-          if (t.gid && _resumePendingGids.has(t.gid) && !resumeHold.has(t.gid)) {
-            resumeHold.set(t.gid, { bucket: 'stopped', task: t })
-          }
-        }
-      }
+      const resumeHold = takeResumeHold()
 
       const active: Task[] = []
       _activeGidSet.clear()
       for (const t of res.active || []) {
         const gid = t?.gid
         if (!gid || _activeGidSet.has(gid)) continue
-        if (resumeHold.has(gid)) continue
+        if (resumeHold.has(gid)) {
+          // Held membership stays frozen, but the observed active fact is
+          // still recorded as owned evidence for settlement.
+          recordResumeEvidence(gid, 'active', t)
+          continue
+        }
         if (!shouldAdmitStoppedGid(gid)) continue
         _activeGidSet.add(gid)
         active.push(t)
@@ -407,7 +643,10 @@ export function setupActions(state: TaskState) {
       for (const t of res.waiting || []) {
         const gid = t?.gid
         if (!gid || _activeGidSet.has(gid) || _waitingGidSet.has(gid)) continue
-        if (resumeHold.has(gid)) continue
+        if (resumeHold.has(gid)) {
+          recordResumeEvidence(gid, t?.status === 'paused' ? 'paused' : 'waiting', t)
+          continue
+        }
         if (!shouldAdmitStoppedGid(gid)) continue
         _waitingGidSet.add(gid)
         waiting.push(t)
@@ -435,54 +674,14 @@ export function setupActions(state: TaskState) {
       let nextStopped = admittedStopped
 
       if (resumeHold.size > 0) {
-        const heldGids = new Set(resumeHold.keys())
-        nextActive = nextActive.filter(t => !heldGids.has(t.gid))
-
-        const mergedWaiting = new Map(nextWaiting.map(t => [t.gid, t]))
-        const restoredWaiting: Task[] = []
-        const localWaitingGids = new Set<string>()
-        for (const t of tasks.value.waiting) {
-          if (t.gid) localWaitingGids.add(t.gid)
-        }
-        for (const t of nextWaiting) {
-          if (!t.gid || localWaitingGids.has(t.gid) || heldGids.has(t.gid)) continue
-          restoredWaiting.push(t)
-        }
-        for (const t of tasks.value.waiting) {
-          const hold = resumeHold.get(t.gid)
-          if (hold?.bucket === 'waiting') {
-            restoredWaiting.push(hold.task)
-            continue
-          }
-          const merged = t.gid ? mergedWaiting.get(t.gid) : undefined
-          if (merged && !heldGids.has(t.gid)) {
-            restoredWaiting.push(merged)
-          }
-        }
-        nextWaiting = restoredWaiting
-
-        const mergedStopped = new Map(nextStopped.map(t => [t.gid, t]))
-        const restoredStopped: Task[] = []
-        const seenStopped = new Set<string>()
-        for (const t of tasks.value.stopped) {
-          const hold = resumeHold.get(t.gid)
-          if (hold?.bucket === 'stopped') {
-            restoredStopped.push(hold.task)
-            seenStopped.add(t.gid)
-            continue
-          }
-          const merged = t.gid ? mergedStopped.get(t.gid) : undefined
-          if (merged && !heldGids.has(t.gid)) {
-            restoredStopped.push(merged)
-            seenStopped.add(t.gid)
-          }
-        }
-        for (const t of nextStopped) {
-          if (!t.gid || seenStopped.has(t.gid) || heldGids.has(t.gid)) continue
-          restoredStopped.push(t)
-          seenStopped.add(t.gid)
-        }
-        nextStopped = restoredStopped
+        const restored = restoreHeldRows(resumeHold, {
+          active: nextActive,
+          waiting: nextWaiting,
+          stopped: nextStopped,
+        })
+        nextActive = restored.active
+        nextWaiting = restored.waiting
+        nextStopped = restored.stopped
       }
 
       const newCount = nextActive.length + nextWaiting.length
@@ -531,9 +730,15 @@ export function setupActions(state: TaskState) {
     }
   }
 
-  async function fetchStoppedTasks() {
+  async function fetchStoppedTasks(isRecovery = false) {
+    const read = beginRead('stopped')
     try {
       const res = await GetStoppedTasks()
+      const verdict = classifyRead(read)
+      if (verdict !== 'admit') {
+        if (verdict === 'stale' && !isRecovery) scheduleReadRecovery('stopped')
+        return
+      }
       const stopped = dedupByGid(res || [])
 
       _activeGidSet.clear()
@@ -546,7 +751,7 @@ export function setupActions(state: TaskState) {
         for (const t of tasks.value.stopped) {
           if (
             t.gid &&
-            _resumePendingGids.has(t.gid) &&
+            isPositiveResumePending(t.gid) &&
             !_activeGidSet.has(t.gid) &&
             !_waitingGidSet.has(t.gid)
           ) {
@@ -600,11 +805,32 @@ export function setupActions(state: TaskState) {
     }
   }
 
-  async function fetchTasks(options?: { prependUnknownFrom?: Set<string> }) {
+  async function fetchTasks(
+    options?: { prependUnknownFrom?: Set<string> },
+    isRecovery = false,
+  ) {
+    const read = beginRead('full')
     try {
       const res = await GetTasks()
+      const verdict = classifyRead(read)
+      if (verdict !== 'admit') {
+        if (verdict === 'stale' && !isRecovery) scheduleReadRecovery('full')
+        return
+      }
       consecutiveErrors.value = 0
       clearStoppedSuppression()
+
+      const resumeHold = takeResumeHold()
+      if (resumeHold.size > 0) {
+        for (const t of res.active || []) {
+          if (t?.gid && resumeHold.has(t.gid)) recordResumeEvidence(t.gid, 'active', t)
+        }
+        for (const t of res.waiting || []) {
+          if (t?.gid && resumeHold.has(t.gid)) {
+            recordResumeEvidence(t.gid, t.status === 'paused' ? 'paused' : 'waiting', t)
+          }
+        }
+      }
 
       const { active, waiting, stopped } = partitionTaskLists(res.active, res.waiting, res.stopped)
 
@@ -612,7 +838,7 @@ export function setupActions(state: TaskState) {
 
       let nextActive = applyLocalOrder(tasks.value.active, active).map(applyMetadataFromCache)
       let nextWaiting = applyLocalOrder(tasks.value.waiting, waiting).map(applyMetadataFromCache)
-      const nextStopped = stopped.map(applyMetadataFromCache)
+      let nextStopped = stopped.map(applyMetadataFromCache)
 
       // Prepend in THIS assign. await fetchTasks() then a second tasks.value=
       // (prependNewTasks) is two Vue flushes: TaskList capture/plays append,
@@ -623,11 +849,17 @@ export function setupActions(state: TaskState) {
         nextWaiting = prependUnknownGids(nextWaiting, known)
       }
 
-      const newTasks = {
-        active: nextActive,
-        waiting: nextWaiting,
-        stopped: nextStopped,
-      }
+      const newTasks = resumeHold.size
+        ? restoreHeldRows(resumeHold, {
+            active: nextActive,
+            waiting: nextWaiting,
+            stopped: nextStopped,
+          })
+        : {
+            active: nextActive,
+            waiting: nextWaiting,
+            stopped: nextStopped,
+          }
 
       // Assign tasks FIRST so the async metadata callback operates on current state
       tasks.value = newTasks
@@ -703,6 +935,10 @@ export function setupActions(state: TaskState) {
   }
 
   async function pause(gid: string) {
+    // PauseTask resolves void — the stream is authoritative. A newly issued
+    // pause fences any outstanding resume opportunity for this GID.
+    markResumeSuperseded(gid)
+    markLifecycleChanged()
     try {
       await PauseTask(gid)
       immediateUpdateTrayIcon()
@@ -717,31 +953,35 @@ export function setupActions(state: TaskState) {
     options?: { recoverSnapshot?: boolean },
   ): Promise<void> {
     const recoverSnapshot = options?.recoverSnapshot !== false
-    const gen = beginResumePending(requestedGids)
+    const requested: string[] = []
+    const requestedSeen = new Set<string>()
+    for (const gid of requestedGids) {
+      if (!gid || requestedSeen.has(gid)) continue
+      requestedSeen.add(gid)
+      requested.push(gid)
+    }
+    const gen = beginResumePending(requested)
     try {
       const engineOk = await getEngineOkGids()
-      const confirmed = confirmedResumeGids(engineOk, gen)
-      if (confirmed.length === 0) {
-        if (recoverSnapshot) await recoverResumeSnapshot(requestedGids, gen)
-        else clearResumePending(requestedGids, gen)
+      const confirmed = new Set(confirmedResumeGids(engineOk, gen))
+      const outcome = await settleResume(requested, gen, confirmed)
+      if (outcome !== 'moved') {
+        if (recoverSnapshot) await recoverResumeSnapshot(requested, gen)
+        else clearResumePending(requested, gen)
         return
       }
-      const outcome = await applyOptimisticResume(confirmed)
-      if (outcome === 'fetched') {
-        clearResumePending(requestedGids, gen)
-        immediateUpdateTrayIcon()
-        return
-      }
-      if (outcome === 'needs-fetch') {
-        if (recoverSnapshot) await recoverResumeSnapshot(requestedGids, gen)
-        else clearResumePending(requestedGids, gen)
-        return
-      }
-      clearResumePending(requestedGids, gen)
+      clearResumePending(requested, gen)
       immediateUpdateTrayIcon()
     } catch (err) {
-      if (recoverSnapshot) await recoverResumeSnapshot(requestedGids, gen)
-      else clearResumePending(requestedGids, gen)
+      // Owned authoritative evidence applies on failure too; only this
+      // generation is cleared afterwards.
+      try {
+        await settleResume(requested, gen, null)
+      } catch {
+        // Settlement is best-effort on the failure path; recovery/clear owns cleanup.
+      }
+      if (recoverSnapshot) await recoverResumeSnapshot(requested, gen)
+      else clearResumePending(requested, gen)
       throw err
     }
   }
@@ -758,11 +998,13 @@ export function setupActions(state: TaskState) {
   }
 
   async function remove(gid: string, deleteFile: boolean) {
+    markResumeSuperseded(gid)
     tasks.value = {
       active: tasks.value.active.filter(t => t.gid !== gid),
       waiting: tasks.value.waiting.filter(t => t.gid !== gid),
       stopped: tasks.value.stopped.filter(t => t.gid !== gid),
     }
+    markLifecycleChanged()
 
     if (selectedGids.value.has(gid)) {
       selectedGids.value.delete(gid)
@@ -827,6 +1069,10 @@ export function setupActions(state: TaskState) {
   }
 
   async function batchPause(gids: string[]) {
+    // Void-returning batch pause stays stream-authoritative; issuing it
+    // fences any outstanding resume opportunities for these GIDs.
+    for (const gid of gids) markResumeSuperseded(gid)
+    markLifecycleChanged()
     try {
       await BatchPause(gids)
       await fetchTasks()
@@ -856,11 +1102,13 @@ export function setupActions(state: TaskState) {
   // preserved per AGENTS.md high-sensitivity rule.
   async function batchRemove(gids: string[], deleteFiles: boolean) {
     const gidSet = new Set(gids)
+    for (const gid of gidSet) markResumeSuperseded(gid)
     tasks.value = {
       active: tasks.value.active.filter(t => !gidSet.has(t.gid)),
       waiting: tasks.value.waiting.filter(t => !gidSet.has(t.gid)),
       stopped: tasks.value.stopped.filter(t => !gidSet.has(t.gid)),
     }
+    markLifecycleChanged()
     selectedGids.value = new Set()
     immediateUpdateTrayIcon()
 
@@ -874,10 +1122,28 @@ export function setupActions(state: TaskState) {
 
   // --- System Actions ---
 
-  async function syncFromSnapshot() {
+  async function syncFromSnapshot(isRecovery = false) {
+    const read = beginRead('full')
     try {
       const snapshot = await GetFullSnapshot()
+      const verdict = classifyRead(read)
+      if (verdict !== 'admit') {
+        if (verdict === 'stale' && !isRecovery) scheduleReadRecovery('full')
+        return
+      }
       clearStoppedSuppression()
+
+      const resumeHold = takeResumeHold()
+      if (resumeHold.size > 0) {
+        for (const t of snapshot.tasks?.active || []) {
+          if (t?.gid && resumeHold.has(t.gid)) recordResumeEvidence(t.gid, 'active', t)
+        }
+        for (const t of snapshot.tasks?.waiting || []) {
+          if (t?.gid && resumeHold.has(t.gid)) {
+            recordResumeEvidence(t.gid, t.status === 'paused' ? 'paused' : 'waiting', t)
+          }
+        }
+      }
 
       const { active, waiting, stopped } = partitionTaskLists(
         snapshot.tasks.active,
@@ -887,11 +1153,13 @@ export function setupActions(state: TaskState) {
 
       for (const t of [...active, ...waiting, ...stopped]) cacheMetadata(t)
 
-      tasks.value = {
+      let nextTasks = {
         active: applyLocalOrder(tasks.value.active, active).map(applyMetadataFromCache),
         waiting: applyLocalOrder(tasks.value.waiting, waiting).map(applyMetadataFromCache),
         stopped: stopped.map(applyMetadataFromCache),
       }
+      if (resumeHold.size > 0) nextTasks = restoreHeldRows(resumeHold, nextTasks)
+      tasks.value = nextTasks
       lastStoppedTasksRef = tasks.value.stopped
 
       if (!pollingEnabled.value && _restartPollingCallback) {
@@ -930,9 +1198,11 @@ export function setupActions(state: TaskState) {
     syncFromSnapshot,
     minimizeToTray,
     setPollingCallbacks,
-    setMoveTasksToActive,
+    setTaskMover,
     isResumePending,
     markResumeSuperseded,
+    recordResumeEvidence,
+    markLifecycleChanged,
     clearStoppedSuppression,
     metadataPending, // Shared with events
     metadataInFlight: () => metadataInFlight, // Getter

@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { computed, defineComponent, nextTick, watch } from 'vue'
 import { mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import type { CancellablePromise } from '@wailsio/runtime'
 import { setupState } from '../state'
 import { setupActions } from '../actions'
 import { setupEvents } from '../events'
 import { setupPolling, type TaskPolling } from '../polling'
-import { clearMetadataCache } from '../metadata'
+import { clearMetadataCache, getMetadataCacheSize } from '../metadata'
 import type { Task } from '../../../../bindings/goaria-v3/internal/rpc/models'
 
 const mockGroup = {
@@ -36,6 +37,9 @@ vi.mock('../../../../bindings/goaria-v3/internal/wailsapp/app.js', () => ({
   GetFullSnapshot: vi.fn(),
   MinimizeToTray: vi.fn(),
   UpdateTrayState: vi.fn(),
+  ResumeDownloadGroup: vi.fn(),
+  GetDownloadGroups: vi.fn(),
+  GetDownloadGroupDetail: vi.fn(),
 }))
 
 vi.mock('../../events', () => ({
@@ -55,7 +59,11 @@ import {
   ResumeTask,
   BatchResume,
   GetFullSnapshot,
+  ResumeDownloadGroup,
 } from '../../../../bindings/goaria-v3/internal/wailsapp/app.js'
+import { useTaskStore } from '../../task'
+import { useDownloadGroupStore } from '../../downloadGroups'
+import { subscribeToTaskMoveEvent } from '../../events'
 
 const mockGetActiveTasks = vi.mocked(GetActiveTasks)
 const mockGetStoppedTasks = vi.mocked(GetStoppedTasks)
@@ -66,6 +74,7 @@ const mockPauseTask = vi.mocked(PauseTask)
 const mockResumeTask = vi.mocked(ResumeTask)
 const mockBatchResume = vi.mocked(BatchResume)
 const mockGetFullSnapshot = vi.mocked(GetFullSnapshot)
+const mockResumeDownloadGroup = vi.mocked(ResumeDownloadGroup)
 
 // --- Helpers ---
 
@@ -149,7 +158,7 @@ function watchMembership(state: ReturnType<typeof setupState>) {
 
 function wireMover(state: ReturnType<typeof setupState>, actions: ReturnType<typeof setupActions>) {
   const events = setupEvents(state, actions, {} as TaskPolling)
-  actions.setMoveTasksToActive(events.moveTasksToActive)
+  actions.setTaskMover(events.moveTasks)
   return events
 }
 
@@ -163,6 +172,7 @@ describe('setupActions — integration', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     clearMetadataCache()
+    setActivePinia(createPinia())
     state = setupState()
     actions = setupActions(state)
     stopPollingCalled = false
@@ -414,7 +424,10 @@ describe('setupActions — integration', () => {
       await resumePromise
       membership.stop()
 
-      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['sg_s1', 'sg_s2'])
+      // A resume acknowledgement lands in waiting; only authoritative active
+      // evidence may move a task to active.
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['sg_s1', 'sg_s2'])
+      expect(state.tasks.value.active).toHaveLength(0)
       expect(state.tasks.value.stopped).toHaveLength(0)
       expect(mockGetTasks).not.toHaveBeenCalled()
     })
@@ -748,7 +761,7 @@ describe('setupActions — integration', () => {
       expect(activeOrder(state)).toBe('c,a')
     })
 
-    it('pause calls PauseTask without GetTasks, avoids stale snapshot overwrite, and allows lifecycle events to migrate', async () => {
+    it('PAUSE-VOID: pause calls PauseTask without GetTasks, avoids stale snapshot overwrite, and allows lifecycle events to migrate', async () => {
       const events = wireMover(state, actions)
       mockPauseTask.mockResolvedValue(undefined as never)
       mockGetTasks.mockResolvedValue({
@@ -863,10 +876,18 @@ describe('setupActions — integration', () => {
       await resumePromise
       membership.stop()
 
-      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A', 'B', 'C', 'D'])
-      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['fresh'])
+      // No active evidence was observed, so confirmed GIDs acknowledge
+      // waiting in place behind the never-seen lead row.
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual([
+        'fresh',
+        'A',
+        'B',
+        'C',
+        'D',
+      ])
       expect(mockGetTasks).not.toHaveBeenCalled()
-      expect(membership.changes).toBe(1)
+      expect(membership.changes).toBe(0)
     })
 
     it('addUri restart poll cannot flatten order (real setupPolling)', async () => {
@@ -977,7 +998,7 @@ describe('setupActions — integration', () => {
   // resume / syncFromSnapshot
   // =====================================================
   describe('resume', () => {
-    it('should optimistically move stopped task to active via real moveTaskToActive', async () => {
+    it('ACK-NOT-START: resume reopens a stopped error row into waiting with cleared errors', async () => {
       state.tasks.value.stopped = [
         mockTask('sg_r1', { status: 'error', errorCode: '1', errorMessage: 'fail' }),
       ]
@@ -988,9 +1009,12 @@ describe('setupActions — integration', () => {
 
       expect(mockResumeTask).toHaveBeenCalledWith('sg_r1')
       expect(mockGetTasks).not.toHaveBeenCalled()
-      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['sg_r1'])
-      expect(state.tasks.value.active[0].status).toBe('active')
-      expect(state.tasks.value.active[0].errorCode).toBe('')
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['sg_r1'])
+      expect(state.tasks.value.waiting[0].status).toBe('waiting')
+      expect(state.tasks.value.waiting[0].errorCode).toBe('')
+      expect(state.tasks.value.waiting[0].errorMessage).toBe('')
+      expect(state.tasks.value.waiting[0].downloadSpeed).toBe('0')
       expect(state.tasks.value.stopped.some(t => t.gid === 'sg_r1')).toBe(false)
     })
 
@@ -1150,7 +1174,7 @@ describe('setupActions — integration', () => {
       expect(mockGetTasks).toHaveBeenCalled()
     })
 
-    it('holds dest-active moves during ResumeTask then moves once on success', async () => {
+    it('HELD-ACTIVE-BOTH-OUTCOMES: holds dest-active moves during ResumeTask then moves once on success', async () => {
       state.tasks.value.waiting = [mockTask('sg_one', { status: 'paused' })]
       const deferred = createControlledPromise<void>()
       mockResumeTask.mockReturnValue(asCancellable(deferred.promise) as never)
@@ -1181,7 +1205,7 @@ describe('setupActions — integration', () => {
   })
 
   describe('batchResume', () => {
-    it('should optimistically move each GID via real moveTaskToActive without fetchTasks', async () => {
+    it('should optimistically move each GID into waiting via the real mover without fetchTasks', async () => {
       state.tasks.value.stopped = [
         mockTask('sg_b1', { status: 'error' }),
         mockTask('sg_b2', { status: 'error' }),
@@ -1195,7 +1219,9 @@ describe('setupActions — integration', () => {
       await actions.batchResume(['sg_b1', 'sg_b2'])
 
       expect(mockGetTasks).not.toHaveBeenCalled()
-      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['sg_b1', 'sg_b2'])
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['sg_b1', 'sg_b2'])
+      expect(state.tasks.value.waiting.every(t => t.status === 'waiting')).toBe(true)
       expect(state.tasks.value.stopped).toHaveLength(0)
     })
 
@@ -1213,7 +1239,9 @@ describe('setupActions — integration', () => {
       await actions.batchResume(['sg_ok', 'sg_fail'])
 
       expect(mockGetTasks).not.toHaveBeenCalled()
-      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['sg_ok'])
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['sg_ok'])
+      expect(state.tasks.value.waiting[0].status).toBe('waiting')
       expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['sg_fail'])
     })
 
@@ -1269,7 +1297,7 @@ describe('setupActions — integration', () => {
       expect(membership.changes).toBe(1)
     })
 
-    it('moves only OK GIDs from a mixed paused batch in one assign', async () => {
+    it('STRICT-OK-SET: only explicit-ok GIDs acknowledge waiting in a mixed paused batch', async () => {
       state.tasks.value.waiting = ['A', 'B', 'C', 'D'].map(gid =>
         mockTask(gid, { status: 'paused' }),
       )
@@ -1286,9 +1314,17 @@ describe('setupActions — integration', () => {
       membership.stop()
 
       expect(mockGetTasks).not.toHaveBeenCalled()
-      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A', 'C'])
-      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['B', 'D'])
-      expect(membership.changes).toBe(1)
+      // Paused waiting rows stay in place; only successful acks flip to
+      // 'waiting', failures keep 'paused'. No active without evidence.
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A', 'B', 'C', 'D'])
+      expect(state.tasks.value.waiting.map(t => t.status)).toEqual([
+        'waiting',
+        'paused',
+        'waiting',
+        'paused',
+      ])
+      expect(membership.changes).toBe(0)
     })
 
     it('does not assign or fetch when every confirmed GID is already active', async () => {
@@ -1349,7 +1385,7 @@ describe('setupActions — integration', () => {
       expect(state.tasks.value.active.map(t => t.gid)).toEqual(['ghost'])
     })
 
-    it('does not clear a newer overlapping resume gen when the batch finishes', async () => {
+    it('GENERATION-SUPERSESSION: does not clear a newer overlapping resume gen when the batch finishes', async () => {
       state.tasks.value.waiting = [
         mockTask('A', { status: 'paused' }),
         mockTask('B', { status: 'paused' }),
@@ -1379,8 +1415,10 @@ describe('setupActions — integration', () => {
       ])
       await batchPromise
 
-      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['B'])
-      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A'])
+      // A stays held by the newer generation; B acknowledges waiting only.
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A', 'B'])
+      expect(state.tasks.value.waiting[1].status).toBe('waiting')
       expect(actions.isResumePending('A')).toBe(true)
       expect(mockGetTasks).not.toHaveBeenCalled()
 
@@ -1390,13 +1428,13 @@ describe('setupActions — integration', () => {
         to: 'active',
         task: { gid: 'A', status: 'active' },
       })
-      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A'])
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A', 'B'])
 
       resumeIpc.resolve(undefined)
       await resumePromise
 
-      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A', 'B'])
-      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A'])
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['B'])
       expect(actions.isResumePending('A')).toBe(false)
     })
 
@@ -1504,9 +1542,17 @@ describe('setupActions — integration', () => {
       membership.stop()
 
       expect(mockGetTasks).not.toHaveBeenCalled()
-      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A', 'C'])
-      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['B', 'D'])
-      expect(membership.changes).toBe(1)
+      // Confirmed rows acknowledge waiting in place (same row, new status);
+      // unconfirmed rows keep 'paused'. No active without active evidence.
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A', 'B', 'C', 'D'])
+      expect(state.tasks.value.waiting.map(t => t.status)).toEqual([
+        'waiting',
+        'paused',
+        'waiting',
+        'paused',
+      ])
+      expect(membership.changes).toBe(0)
     })
 
     it('clears pending without fetching when confirmed is empty and recoverSnapshot is false', async () => {
@@ -1569,8 +1615,8 @@ describe('setupActions — integration', () => {
       ])
       await batchPromise
 
-      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['B'])
-      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A'])
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A', 'B'])
       expect(actions.isResumePending('A')).toBe(true)
       expect(mockGetTasks).not.toHaveBeenCalled()
 
@@ -1580,13 +1626,13 @@ describe('setupActions — integration', () => {
         to: 'active',
         task: { gid: 'A', status: 'active' },
       })
-      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A'])
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['A', 'B'])
 
       heldIpc.resolve(['A'])
       await heldPromise
 
-      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A', 'B'])
-      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['A'])
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['B'])
       expect(actions.isResumePending('A')).toBe(false)
     })
   })
@@ -1606,6 +1652,378 @@ describe('setupActions — integration', () => {
 
       expect(state.tasks.value.active.map(t => t.gid)).toEqual(['twin'])
       expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['only-stopped'])
+    })
+  })
+
+  describe('acceptance matrix', () => {
+    it('HELD-ACTIVE-BOTH-OUTCOMES: held active evidence applies once on IPC rejection', async () => {
+      state.tasks.value.waiting = [mockTask('sg_held_fail', { status: 'paused' })]
+      const deferred = createControlledPromise<void>()
+      mockResumeTask.mockReturnValue(asCancellable(deferred.promise) as never)
+      mockGetTasks.mockResolvedValue({
+        active: [mockTask('sg_held_fail', { status: 'active' })],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      const events = wireMover(state, actions)
+      const membership = watchMembership(state)
+
+      const resumePromise = actions.resume('sg_held_fail')
+      await flushPromises()
+      events.handleTaskMove({
+        gid: 'sg_held_fail',
+        from: 'waiting',
+        to: 'active',
+        task: { gid: 'sg_held_fail', status: 'active' },
+      })
+
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['sg_held_fail'])
+      expect(state.tasks.value.active).toHaveLength(0)
+
+      deferred.reject(new Error('resume failed'))
+      await resumePromise
+      membership.stop()
+
+      // Owned evidence applies even on rejection; the recovery read confirms
+      // the same active membership without a second assign or rollback.
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['sg_held_fail'])
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(mockGetTasks).toHaveBeenCalled()
+      expect(actions.isResumePending('sg_held_fail')).toBe(false)
+      expect(membership.changes).toBe(1)
+    })
+
+    it('HELD-ACTIVE-BOTH-OUTCOMES: a later waiting ack does not demote observed active evidence', async () => {
+      state.tasks.value.waiting = [mockTask('sg_demote', { status: 'paused' })]
+      const deferred = createControlledPromise<void>()
+      mockResumeTask.mockReturnValue(asCancellable(deferred.promise) as never)
+      const events = wireMover(state, actions)
+
+      const resumePromise = actions.resume('sg_demote')
+      await flushPromises()
+      events.handleTaskMove({
+        gid: 'sg_demote',
+        from: 'waiting',
+        to: 'active',
+        task: { gid: 'sg_demote', status: 'active' },
+      })
+      await events.handleTaskDelta({
+        type: 'resume',
+        gid: 'sg_demote',
+        payload: { gid: 'sg_demote', status: 'waiting' },
+      })
+
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['sg_demote'])
+
+      deferred.resolve(undefined)
+      await resumePromise
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['sg_demote'])
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(mockGetTasks).not.toHaveBeenCalled()
+    })
+
+    it('SNAPSHOT-FRESHNESS: a stale full read is rejected and the coalesced recovery applies fresh data', async () => {
+      state.tasks.value = { active: [mockTask('a1')], waiting: [], stopped: [] }
+      const first = createControlledPromise<{
+        active: Task[]
+        waiting: Task[]
+        stopped: Task[]
+      }>()
+      mockGetTasks.mockReturnValueOnce(asCancellable(first.promise) as never).mockResolvedValue({
+        active: [mockTask('a1')],
+        waiting: [],
+        stopped: [mockTask('stale-only', { status: 'complete' })],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+
+      const pending = actions.fetchTasks()
+      // A lifecycle mutation crosses before the response lands.
+      actions.markLifecycleChanged()
+      first.resolve({
+        active: [],
+        waiting: [],
+        stopped: [mockTask('stale-only', { status: 'complete' })],
+      })
+      await pending
+
+      // The stale response never overwrote membership or cached its rows.
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['a1'])
+      expect(state.tasks.value.stopped).toHaveLength(0)
+      expect(getMetadataCacheSize()).toBe(0)
+
+      // Exactly one coalesced recovery read runs and its fresh data lands.
+      await flushPromises()
+
+      expect(mockGetTasks).toHaveBeenCalledTimes(2)
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['stale-only'])
+      expect(getMetadataCacheSize()).toBeGreaterThan(0)
+    })
+
+    it('SNAPSHOT-FRESHNESS: an overlapping older response cannot overwrite the newer read', async () => {
+      const first = createControlledPromise<{
+        active: Task[]
+        waiting: Task[]
+        stopped: Task[]
+      }>()
+      mockGetTasks.mockReturnValueOnce(asCancellable(first.promise) as never)
+
+      const stale = actions.fetchTasks()
+      mockGetTasks.mockResolvedValue({
+        active: [mockTask('fresh-winner')],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      await actions.fetchTasks()
+      first.resolve({
+        active: [],
+        waiting: [],
+        stopped: [mockTask('stale-loser', { status: 'complete' })],
+      })
+      await stale
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['fresh-winner'])
+      expect(state.tasks.value.stopped).toHaveLength(0)
+      // 'superseded' verdicts do not schedule recovery reads.
+      expect(mockGetTasks).toHaveBeenCalledTimes(2)
+    })
+
+    it('METADATA-FRESHNESS: a late metadata response cannot poison a removed-and-reopened row', async () => {
+      const events = wireMover(state, actions)
+      state.tasks.value.active = [
+        mockTask('gid-meta', { status: 'active', files: [], dir: '', title: '' }),
+      ]
+      const metaPromise = createControlledPromise<Record<string, Task>>()
+      mockGetTaskMetadata.mockReturnValue(metaPromise.promise as never)
+
+      actions.queueMetadataRecovery('gid-meta')
+      expect(mockGetTaskMetadata).toHaveBeenCalledWith(['gid-meta'])
+
+      await events.handleTaskDelta({ type: 'remove', gid: 'gid-meta' })
+      await events.handleTaskDelta({
+        type: 'add',
+        gid: 'gid-meta',
+        payload: {
+          gid: 'gid-meta',
+          status: 'active',
+          files: [{ path: '/downloads/new.bin', uris: [] }],
+          dir: '/new',
+        },
+      })
+      const replacement = state.tasks.value.active.find(t => t.gid === 'gid-meta')
+      expect(replacement?.files[0]?.path).toBe('/downloads/new.bin')
+
+      metaPromise.resolve({
+        'gid-meta': mockTask('gid-meta', {
+          title: 'STALE TITLE',
+          files: [{ path: '/downloads/stale.bin', uris: [] }],
+          dir: '/stale',
+          totalLength: '9',
+          completedLength: '0',
+        }),
+      })
+      await flushPromises()
+
+      const row = state.tasks.value.active.find(t => t.gid === 'gid-meta')
+      expect(row).toBe(replacement)
+      expect(row?.title).not.toBe('STALE TITLE')
+      expect(row?.files[0]?.path).toBe('/downloads/new.bin')
+      expect(row?.dir).toBe('/new')
+      expect(row?.totalLength).not.toBe('9')
+    })
+
+    it('PAUSE-VOID: transport rejection does not fabricate paused status or corrupt membership', async () => {
+      state.tasks.value.active = [mockTask('sg_pv', { status: 'active' })]
+      mockPauseTask.mockRejectedValue(new Error('transport down'))
+
+      await actions.pause('sg_pv')
+
+      // Resolved-void semantics are stream-authoritative: no local paused
+      // fabrication, no blanket read, no membership corruption.
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['sg_pv'])
+      expect(state.tasks.value.active[0].status).toBe('active')
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(mockGetTasks).not.toHaveBeenCalled()
+    })
+
+    it('GENERATION-SUPERSESSION: a newer pause fences an outstanding resume opportunity', async () => {
+      state.tasks.value.waiting = [mockTask('sg_fence', { status: 'paused' })]
+      const deferred = createControlledPromise<void>()
+      mockResumeTask.mockReturnValue(asCancellable(deferred.promise) as never)
+      mockPauseTask.mockResolvedValue(undefined as never)
+      mockGetTasks.mockResolvedValue({
+        active: [],
+        waiting: [mockTask('sg_fence', { status: 'paused' })],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      wireMover(state, actions)
+
+      const resumePromise = actions.resume('sg_fence')
+      await flushPromises()
+      await actions.pause('sg_fence')
+      deferred.resolve(undefined)
+      await resumePromise
+
+      // The fenced gen cannot push the paused gid to waiting-ack or active.
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['sg_fence'])
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(actions.isResumePending('sg_fence')).toBe(false)
+    })
+
+    it('DELTA-ONLY-FLIP: real actions/events reopen an ar_ stopped row into waiting without a move', async () => {
+      const events = wireMover(state, actions)
+      state.tasks.value.stopped = [
+        mockTask('ar_flip', { status: 'error', errorCode: '1', errorMessage: 'fail' }),
+      ]
+
+      await events.handleTaskDelta({
+        type: 'resume',
+        gid: 'ar_flip',
+        payload: { gid: 'ar_flip', status: 'waiting' },
+      })
+
+      expect(state.tasks.value.stopped).toHaveLength(0)
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['ar_flip'])
+      expect(state.tasks.value.waiting[0].status).toBe('waiting')
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(mockGetTasks).not.toHaveBeenCalled()
+    })
+
+    it('QUEUED-THEN-STARTED: real actions/events place a queued add into waiting then a started add into active', async () => {
+      const events = wireMover(state, actions)
+
+      await events.handleTaskDelta({
+        type: 'add',
+        gid: 'ar_q',
+        payload: mockTask('ar_q', { status: 'waiting' }) as unknown as Record<string, unknown>,
+      })
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['ar_q'])
+      expect(state.tasks.value.active).toHaveLength(0)
+
+      await events.handleTaskDelta({
+        type: 'add',
+        gid: 'ar_q',
+        payload: { gid: 'ar_q', status: 'active' },
+      })
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['ar_q'])
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(mockGetTasks).not.toHaveBeenCalled()
+    })
+
+    it('POLL-RECOVERY-10S: a withheld start transition self-heals through the next authoritative read', async () => {
+      wireMover(state, actions)
+      state.tasks.value.waiting = [mockTask('ar_heal', { status: 'paused' })]
+      mockResumeTask.mockResolvedValue(undefined as never)
+
+      await actions.resume('ar_heal')
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['ar_heal'])
+      expect(state.tasks.value.active).toHaveLength(0)
+
+      // No delta/move arrives; the next cache read is authoritative.
+      mockGetTasks.mockResolvedValue({
+        active: [mockTask('ar_heal', { status: 'active' })],
+        waiting: [],
+        stopped: [],
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      await actions.fetchTasks()
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['ar_heal'])
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(mockResumeTask).toHaveBeenCalledTimes(1)
+      expect(actions.isResumePending('ar_heal')).toBe(false)
+    })
+
+    it('GROUP-ERROR-RESUME: real task/group stores admit stopped-error candidates and settle strictly on succeeded items', async () => {
+      const group = {
+        id: 'dg-mixed',
+        kind: 'batch',
+        name: 'Mixed',
+        folder_name: 'Mixed',
+        dir: '/downloads/mixed',
+        item_count: 4,
+        created_at: 1,
+      }
+      const taskStore = useTaskStore()
+      const groupStore = useDownloadGroupStore()
+      taskStore.tasks = {
+        active: [],
+        waiting: [
+          mockTask('g_paused', { status: 'paused', download_group: group }),
+          mockTask('g_queued', { status: 'waiting', download_group: group }),
+        ],
+        stopped: [
+          mockTask('g_err_a', { status: 'error', errorCode: '9', download_group: group }),
+          mockTask('g_err_b', { status: 'error', errorCode: '8', download_group: group }),
+          mockTask('g_done', { status: 'complete', download_group: group }),
+        ],
+      }
+
+      let moveHandler: ((move: unknown) => void) | undefined
+      vi.mocked(subscribeToTaskMoveEvent).mockImplementation(cb => {
+        moveHandler = cb as (move: unknown) => void
+      })
+      // The initial sync reads report the same members, so subscription
+      // start-up does not disturb the scenario.
+      const liveRead = {
+        active: [] as Task[],
+        waiting: [
+          mockTask('g_paused', { status: 'paused', download_group: group }),
+          mockTask('g_queued', { status: 'waiting', download_group: group }),
+        ],
+      }
+      const stoppedRead = [
+        mockTask('g_err_a', { status: 'error', errorCode: '9', download_group: group }),
+        mockTask('g_err_b', { status: 'error', errorCode: '8', download_group: group }),
+        mockTask('g_done', { status: 'complete', download_group: group }),
+      ]
+      mockGetActiveTasks.mockResolvedValue(liveRead as never)
+      mockGetStoppedTasks.mockResolvedValue(stoppedRead as never)
+      mockGetTasks.mockResolvedValue({
+        ...liveRead,
+        stopped: stoppedRead,
+      } as unknown as { active: Task[]; waiting: Task[]; stopped: Task[] })
+      taskStore.startPolling(1000)
+      expect(moveHandler).toBeDefined()
+      await flushPromises()
+      // Post-seed: the group op itself must not issue extra task reads.
+      mockGetTasks.mockClear()
+      mockGetActiveTasks.mockClear()
+
+      const ipc = createControlledPromise<{
+        items: { gid: string; status: string }[]
+      }>()
+      mockResumeDownloadGroup.mockReturnValue(asCancellable(ipc.promise) as never)
+
+      const opPromise = groupStore.resumeGroup('dg-mixed')
+      await flushPromises()
+      expect(mockResumeDownloadGroup).toHaveBeenCalledWith('dg-mixed')
+
+      // Held active evidence during the group IPC.
+      moveHandler?.({
+        gid: 'g_err_a',
+        from: 'stopped',
+        to: 'active',
+        task: { gid: 'g_err_a', status: 'active' },
+      })
+
+      ipc.resolve({
+        items: [
+          { gid: 'g_paused', status: 'succeeded' },
+          { gid: 'g_err_a', status: 'succeeded' },
+          { gid: 'g_err_b', status: 'failed' },
+        ],
+      })
+      await opPromise
+
+      const waiting = taskStore.waitingTasks.map(t => t.gid)
+      const active = taskStore.activeTasks.map(t => t.gid)
+      const stopped = taskStore.stoppedTasks.map(t => t.gid)
+      expect(waiting).toEqual(['g_paused', 'g_queued'])
+      expect(active).toEqual(['g_err_a'])
+      expect(stopped).toEqual(['g_err_b', 'g_done'])
+      // The failed item and non-candidates were never moved or re-requested.
+      expect(mockGetTasks).not.toHaveBeenCalled()
+      expect(mockGetActiveTasks).not.toHaveBeenCalled()
+      taskStore.stopPolling(true)
     })
   })
 })

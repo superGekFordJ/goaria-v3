@@ -1,9 +1,16 @@
 import { Events } from '@wailsio/runtime'
+import type { Task } from '../../bindings/goaria-v3/internal/rpc/models.js'
+
+// Wire payloads are path-dependent: Surge event deltas arrive as historical
+// string maps, poll/tick/confirm deltas as generated Task rows. Both spell
+// status as `status`; `threads` and other non-model fields ride along on the
+// record side of this union.
+export type TaskDeltaPayload = Partial<Task> & Record<string, unknown>
 
 export type TaskDelta = {
-  type: 'add' | 'update' | 'remove' | 'complete' | 'error' | 'pause' | 'resume' | 'progress'
+  type: 'add' | 'remove' | 'complete' | 'error' | 'pause' | 'resume' | 'progress'
   gid: string
-  payload?: Record<string, unknown>
+  payload?: TaskDeltaPayload
 }
 
 type DeltaHandler = (delta: TaskDelta) => void
@@ -99,7 +106,7 @@ export type TaskMove = {
   gid: string
   from: 'active' | 'waiting' | 'stopped'
   to: 'active' | 'waiting' | 'stopped'
-  task: Record<string, unknown>
+  task: TaskDeltaPayload
 }
 
 let taskMoveUnsubscribe: (() => void) | null = null

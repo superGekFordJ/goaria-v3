@@ -85,9 +85,11 @@ function createMockActions(): TaskActions {
     syncFromSnapshot: vi.fn(),
     minimizeToTray: vi.fn(),
     setPollingCallbacks: vi.fn(),
-    setMoveTasksToActive: vi.fn(),
+    setTaskMover: vi.fn(),
     isResumePending: vi.fn(() => false),
     markResumeSuperseded: vi.fn(),
+    recordResumeEvidence: vi.fn(),
+    markLifecycleChanged: vi.fn(),
     clearStoppedSuppression: vi.fn(),
     metadataPending: new Set<string>(),
     metadataInFlight: vi.fn().mockReturnValue(false),
@@ -101,10 +103,9 @@ function createMockEvents(): TaskEvents {
   return {
     handleTaskDelta: vi.fn(),
     handleTaskMove: vi.fn(),
-    moveTaskToActive: vi.fn(),
-    moveTasksToActive: vi.fn(),
+    moveTasks: vi.fn(),
     moveTaskToStopped: vi.fn(),
-  }
+  } as unknown as TaskEvents
 }
 
 // --- Tests ---

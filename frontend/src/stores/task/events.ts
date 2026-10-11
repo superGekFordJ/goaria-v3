@@ -13,6 +13,35 @@ import {
   mergeTaskGroupMetadata,
 } from './grouping'
 
+export type TaskBucket = 'active' | 'waiting' | 'stopped'
+
+export type TaskMovePlacement = {
+  gid: string
+  dest: 'active' | 'waiting'
+  row?: Task
+  // Authoritative status for held evidence (e.g. 'paused'); defaults to dest.
+  status?: string
+}
+
+// Recognized payload.status owns the destination bucket; delta type and the
+// move's `to` field are only hints. Unknown/empty status returns null so the
+// caller can recover via a guarded read instead of guessing.
+function bucketForStatusValue(status: unknown): TaskBucket | null {
+  if (typeof status !== 'string') return null
+  switch (status) {
+    case 'active':
+      return 'active'
+    case 'waiting':
+    case 'paused':
+      return 'waiting'
+    case 'complete':
+    case 'error':
+      return 'stopped'
+    default:
+      return null
+  }
+}
+
 function hasValidFiles(task?: Partial<Task>): boolean {
   const path = task?.files?.[0]?.path
   return typeof path === 'string' && path.trim().length > 0
@@ -128,34 +157,34 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
   const { tasks, selectedGids, throttledUpdateTrayIcon, immediateUpdateTrayIcon } = state
   const { fetchTasks } = actions
 
-  function moveTaskToStopped(gid: string) {
-    const activeIdx = tasks.value.active.findIndex(t => t.gid === gid)
-    const waitingIdx = activeIdx === -1 ? tasks.value.waiting.findIndex(t => t.gid === gid) : -1
-
-    if (activeIdx !== -1) {
-      const task = tasks.value.active[activeIdx]
-      if (task.status !== 'error') task.status = 'complete'
-      tasks.value = {
-        active: tasks.value.active.filter(t => t.gid !== gid),
-        waiting: tasks.value.waiting,
-        stopped: [task, ...tasks.value.stopped],
-      }
-    } else if (waitingIdx !== -1) {
-      const task = tasks.value.waiting[waitingIdx]
-      if (task.status !== 'error') task.status = 'complete'
-      tasks.value = {
-        active: tasks.value.active,
-        waiting: tasks.value.waiting.filter(t => t.gid !== gid),
-        stopped: [task, ...tasks.value.stopped],
-      }
+  function collectCopies(gid: string) {
+    return {
+      active: tasks.value.active.find(t => t.gid === gid),
+      waiting: tasks.value.waiting.find(t => t.gid === gid),
+      stopped: tasks.value.stopped.find(t => t.gid === gid),
     }
+  }
 
-    // Delayed metadata cleanup — stopped tasks no longer need cached metadata
+  function scheduleStoppedMetadataCleanup(gid: string) {
     setTimeout(() => {
       if (tasks.value.stopped.some(t => t.gid === gid)) {
         removeMetadata(gid)
       }
     }, 5000)
+  }
+
+  function moveTaskToStopped(gid: string) {
+    const { active: activeTask, waiting: waitingTask } = collectCopies(gid)
+    const task = activeTask ?? waitingTask
+    if (!task) return
+    if (task.status !== 'error') task.status = 'complete'
+    tasks.value = {
+      active: tasks.value.active.filter(t => t.gid !== gid),
+      waiting: tasks.value.waiting.filter(t => t.gid !== gid),
+      stopped: [task, ...tasks.value.stopped],
+    }
+    actions.markLifecycleChanged()
+    scheduleStoppedMetadataCleanup(gid)
   }
 
   function backfillRichFields(retained: Task, donor: Task) {
@@ -178,90 +207,148 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     )
   }
 
-  function prepareResumeSurvivor(gid: string): { survivor: Task; alreadyActive: boolean } | null {
-    const activeTask = tasks.value.active.find(t => t.gid === gid)
-    const waitingTask = tasks.value.waiting.find(t => t.gid === gid)
-    const stoppedTask = tasks.value.stopped.find(t => t.gid === gid)
-    const sourceTask = waitingTask ?? stoppedTask
-    const task = activeTask ?? sourceTask
-    if (!task) return null
+  type SurvivorPlan = {
+    row: Task
+    dest: 'active' | 'waiting'
+    prepend: boolean
+    patched: boolean
+  }
 
-    if (activeTask && sourceTask) {
-      backfillRichFields(activeTask, sourceTask)
+  function prepareResumeSurvivor(gid: string, target: 'active' | 'waiting'): SurvivorPlan | null {
+    const { active: activeTask, waiting: waitingTask, stopped: stoppedTask } = collectCopies(gid)
+
+    if (target === 'waiting' && activeTask) {
+      // Optimistic waiting never demotes an already-active row; stray
+      // duplicate copies still get collapsed by the caller.
+      if (waitingTask || stoppedTask) {
+        backfillRichFields(activeTask, (waitingTask ?? stoppedTask) as Task)
+      }
+      if (hasValidFiles(activeTask) || hasTaskGroupMetadata(activeTask)) {
+        cacheMetadata(activeTask)
+      }
+      actions.clearStoppedSuppression(gid)
+      return { row: activeTask, dest: 'active', prepend: false, patched: false }
+    }
+
+    const survivor =
+      target === 'active'
+        ? (activeTask ?? waitingTask ?? stoppedTask)
+        : (waitingTask ?? stoppedTask)
+    if (!survivor) return null
+
+    if (activeTask && (waitingTask || stoppedTask)) {
+      backfillRichFields(activeTask, (waitingTask ?? stoppedTask) as Task)
     } else if (waitingTask && stoppedTask) {
       backfillRichFields(waitingTask, stoppedTask)
     }
 
-    const surviving = activeTask ?? task
-    surviving.status = 'active'
-    if (stoppedTask) {
-      surviving.errorCode = ''
-      surviving.errorMessage = ''
+    let patched = false
+    if (survivor.status !== target) {
+      survivor.status = target
+      patched = true
+    }
+    if (target === 'waiting' && !isNumericZero(survivor.downloadSpeed)) {
+      // Waiting/paused rows carry no live speed; checkpoint bytes stay intact.
+      survivor.downloadSpeed = '0'
+      patched = true
+    }
+    if (stoppedTask && (survivor.errorCode || survivor.errorMessage)) {
+      survivor.errorCode = ''
+      survivor.errorMessage = ''
+      patched = true
     }
 
-    if (hasValidFiles(surviving) || hasTaskGroupMetadata(surviving)) {
-      cacheMetadata(surviving)
+    if (hasValidFiles(survivor) || hasTaskGroupMetadata(survivor)) {
+      cacheMetadata(survivor)
     }
-
     actions.clearStoppedSuppression(gid)
-    return { survivor: surviving, alreadyActive: Boolean(activeTask) }
+
+    const inDest = target === 'active' ? survivor === activeTask : survivor === waitingTask
+    return { row: survivor, dest: target, prepend: !inDest, patched }
   }
 
-  function moveTasksToActive(gids: string[]): { missing: boolean } {
-    const requested: string[] = []
-    const requestedSet = new Set<string>()
-    for (const gid of gids) {
-      if (!gid || requestedSet.has(gid)) continue
-      requestedSet.add(gid)
-      requested.push(gid)
+  // Batched mover shared by optimistic waiting and held active evidence.
+  // One GID lands in exactly one list; moved rows keep their identity and
+  // prepend in source-relative order (waiting scan, then stopped).
+  function moveTasks(placements: TaskMovePlacement[]): { missing: boolean } {
+    const byGid = new Map<string, TaskMovePlacement>()
+    for (const p of placements) {
+      if (!p?.gid || byGid.has(p.gid)) continue
+      byGid.set(p.gid, p)
     }
+    if (byGid.size === 0) return { missing: false }
 
-    const known = new Set<string>()
-    for (const list of [tasks.value.active, tasks.value.waiting, tasks.value.stopped]) {
+    const resolved = new Map<string, SurvivorPlan>()
+    let patchedOnly = false
+    for (const list of [tasks.value.waiting, tasks.value.stopped, tasks.value.active]) {
       for (const t of list) {
-        if (t.gid) known.add(t.gid)
+        const p = t.gid ? byGid.get(t.gid) : undefined
+        if (!p || resolved.has(t.gid)) continue
+        const plan = prepareResumeSurvivor(t.gid, p.dest)
+        if (!plan) continue
+        if (p.status !== undefined && plan.row.status !== p.status) {
+          plan.row.status = p.status
+          plan.patched = true
+        }
+        resolved.set(t.gid, plan)
+        if (plan.patched && !plan.prepend) patchedOnly = true
       }
     }
-    const missing = requested.some(gid => !known.has(gid))
+    for (const [gid, p] of byGid) {
+      if (resolved.has(gid) || !p.row) continue
+      const row = applyMetadataFromCache(toTask({ ...p.row, gid }))
+      if (p.status !== undefined) row.status = p.status
+      resolved.set(gid, { row, dest: p.dest, prepend: true, patched: false })
+    }
 
-    const moverGids = new Set<string>()
-    const prependBlock: Task[] = []
-    let collapse = false
+    // Unresolved placements are unknown GIDs that arrived without a donor row.
+    const missing = [...byGid.keys()].some(gid => !resolved.has(gid))
+    if (resolved.size === 0) return { missing }
 
-    const consider = (gid: string) => {
-      if (moverGids.has(gid)) return
-      const prepared = prepareResumeSurvivor(gid)
-      if (!prepared) return
-      moverGids.add(gid)
-      if (prepared.alreadyActive) {
-        collapse = true
-        return
+    const destByGid = new Map<string, 'active' | 'waiting'>()
+    for (const [gid, plan] of resolved) destByGid.set(gid, plan.dest)
+
+    const prependRows = (dest: 'active' | 'waiting') => {
+      const rows: Task[] = []
+      for (const plan of resolved.values()) {
+        if (plan.dest === dest && plan.prepend) rows.push(plan.row)
       }
-      prependBlock.push(prepared.survivor)
+      return rows
+    }
+    const prependActive = prependRows('active')
+    const prependWaiting = prependRows('waiting')
+
+    let membershipChanged = prependActive.length > 0 || prependWaiting.length > 0
+    if (!membershipChanged) {
+      for (const [gid, dest] of destByGid) {
+        const copies = collectCopies(gid)
+        if (
+          (dest === 'active' && (copies.waiting || copies.stopped)) ||
+          (dest === 'waiting' && (copies.active || copies.stopped))
+        ) {
+          membershipChanged = true
+          break
+        }
+      }
     }
 
-    for (const t of tasks.value.waiting) {
-      if (t.gid && requestedSet.has(t.gid)) consider(t.gid)
+    if (membershipChanged) {
+      const keepIn = (list: Task[], dest: TaskBucket) =>
+        list.filter(t => {
+          const d = t.gid ? destByGid.get(t.gid) : undefined
+          return d === undefined || d === dest
+        })
+      tasks.value = {
+        active: [...prependActive, ...keepIn(tasks.value.active, 'active')],
+        waiting: [...prependWaiting, ...keepIn(tasks.value.waiting, 'waiting')],
+        stopped: keepIn(tasks.value.stopped, 'stopped'),
+      }
+    } else if (patchedOnly) {
+      tasks.value = { ...tasks.value }
     }
-    for (const t of tasks.value.stopped) {
-      if (t.gid && requestedSet.has(t.gid)) consider(t.gid)
-    }
+    if (membershipChanged || patchedOnly) actions.markLifecycleChanged()
 
-    if (prependBlock.length === 0 && !collapse) {
-      return { missing }
-    }
-
-    const prependGids = new Set(prependBlock.map(t => t.gid))
-    tasks.value = {
-      active: [...prependBlock, ...tasks.value.active.filter(t => !prependGids.has(t.gid))],
-      waiting: tasks.value.waiting.filter(t => !moverGids.has(t.gid)),
-      stopped: tasks.value.stopped.filter(t => !moverGids.has(t.gid)),
-    }
     return { missing }
-  }
-
-  function moveTaskToActive(gid: string) {
-    moveTasksToActive([gid])
   }
 
   function removeTaskFromState(gid: string) {
@@ -275,6 +362,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
         waiting: inWaiting ? tasks.value.waiting.filter(t => t.gid !== gid) : tasks.value.waiting,
         stopped: inStopped ? tasks.value.stopped.filter(t => t.gid !== gid) : tasks.value.stopped,
       }
+      actions.markLifecycleChanged()
     }
     if (selectedGids.value.has(gid)) {
       selectedGids.value.delete(gid)
@@ -289,65 +377,235 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       if (task && task.status !== status) {
         task.status = status
         tasks.value = { ...tasks.value }
+        actions.markLifecycleChanged()
         return
       }
     }
+  }
+
+  // Fold every local copy plus the incoming row into one snapshot, preserving
+  // richer donors when incoming metadata is absent or sparse.
+  function computeMergedSnapshot(gid: string, incoming: Partial<Task> | undefined): Task {
+    const copies = collectCopies(gid)
+    let acc: Task | undefined
+    for (const copy of [copies.active, copies.waiting, copies.stopped]) {
+      if (!copy) continue
+      acc = acc ? mergeTaskPreservingRichData(acc, copy) : toTask(copy)
+    }
+    return applyMetadataFromCache(mergeTaskPreservingRichData(acc, incoming ?? { gid }))
+  }
+
+  // Fields the payload explicitly carries win over folded/kept values:
+  // status and cleared errors anywhere, zero live speed off the active
+  // bucket, and canonical totals/errors on terminal rows.
+  function applyAuthoritativeIncoming(row: Task, incoming: Partial<Task>, dest: TaskBucket) {
+    if (incoming.status !== undefined) row.status = incoming.status
+    if (incoming.errorCode !== undefined) row.errorCode = incoming.errorCode
+    if (incoming.errorMessage !== undefined) row.errorMessage = incoming.errorMessage
+    const threads = (incoming as Record<string, unknown>).threads
+    if (threads !== undefined) {
+      ;(row as unknown as Record<string, unknown>).threads = threads
+    }
+    if (incoming.downloadSpeed !== undefined) {
+      row.downloadSpeed =
+        dest === 'active'
+          ? preserveNonZeroValue(row.downloadSpeed, incoming.downloadSpeed)
+          : incoming.downloadSpeed
+    }
+    if (dest === 'stopped') {
+      if (!isEmptyLength(incoming.totalLength)) row.totalLength = String(incoming.totalLength)
+      if (!isEmptyLength(incoming.completedLength)) {
+        row.completedLength = String(incoming.completedLength)
+      }
+    } else {
+      // Wire-carried progress wins over folded values; sparse/empty fields
+      // still fall back to the existing row so Lite payloads never wipe data.
+      row.totalLength = preserveNonZeroValue(row.totalLength, incoming.totalLength)
+      row.completedLength = preserveNonZeroValue(row.completedLength, incoming.completedLength)
+    }
+  }
+
+  // Fold all copies + incoming into the destination bucket. The destination
+  // row keeps its identity; duplicate copies are purged without touching
+  // unaffected lists. Returns false when there is no local row and no
+  // meaningful payload — the caller then recovers via a guarded read instead
+  // of creating an empty placeholder.
+  function foldIntoBucket(
+    gid: string,
+    dest: TaskBucket,
+    incoming: Partial<Task> | undefined,
+  ): boolean {
+    const copies = collectCopies(gid)
+    const copyList = [copies.active, copies.waiting, copies.stopped].filter(
+      (t): t is Task => Boolean(t),
+    )
+    const destRow = copies[dest]
+    const richIncoming = Boolean(
+      incoming && (hasValidFiles(incoming) || hasTaskGroupMetadata(incoming)),
+    )
+    if (!destRow && copyList.length === 0 && !richIncoming) return false
+
+    let acc: Task | undefined
+    for (const copy of copyList) {
+      if (copy === destRow) continue
+      acc = acc ? mergeTaskPreservingRichData(acc, copy) : toTask(copy)
+    }
+    const merged = applyMetadataFromCache(
+      mergeTaskPreservingRichData(acc ?? destRow, incoming ?? { gid }),
+    )
+
+    // A row landing on a non-terminal bucket sheds stale error state unless
+    // the payload itself carries error fields.
+    const clearStaleTerminalErrors = (row: Task) => {
+      if (dest === 'stopped') return
+      if (incoming?.errorCode === undefined && row.errorCode) row.errorCode = ''
+      if (incoming?.errorMessage === undefined && row.errorMessage) row.errorMessage = ''
+    }
+
+    const purge = (list: Task[]) => list.filter(t => t.gid !== gid)
+    let active: Task[]
+    let waiting: Task[]
+    let stopped: Task[]
+    if (destRow) {
+      Object.assign(destRow, mergeTaskPreservingRichData(merged, destRow))
+      clearStaleTerminalErrors(destRow)
+      if (incoming) applyAuthoritativeIncoming(destRow, incoming, dest)
+      active = dest === 'active' ? tasks.value.active : purge(tasks.value.active)
+      waiting = dest === 'waiting' ? tasks.value.waiting : purge(tasks.value.waiting)
+      stopped = dest === 'stopped' ? tasks.value.stopped : purge(tasks.value.stopped)
+    } else {
+      clearStaleTerminalErrors(merged)
+      if (incoming) applyAuthoritativeIncoming(merged, incoming, dest)
+      active = purge(tasks.value.active)
+      waiting = purge(tasks.value.waiting)
+      stopped = purge(tasks.value.stopped)
+      if (dest === 'active') active = [merged, ...active]
+      else if (dest === 'waiting') waiting = [merged, ...waiting]
+      else stopped = [merged, ...stopped]
+    }
+    tasks.value = { active, waiting, stopped }
+    actions.markLifecycleChanged()
+
+    if (dest === 'stopped') {
+      scheduleStoppedMetadataCleanup(gid)
+    } else {
+      actions.clearStoppedSuppression(gid)
+      const row = destRow ?? merged
+      if (!hasValidFiles(row)) actions.queueMetadataRecovery(gid)
+    }
+    return true
+  }
+
+  // Status-bearing deltas and moves route by bucket; while a resume op is
+  // pending, nonterminal facts become generation-owned evidence instead of
+  // mutating membership directly.
+  function routeOrHold(gid: string, dest: TaskBucket, incoming: Partial<Task> | undefined) {
+    if (dest === 'stopped') {
+      actions.markResumeSuperseded(gid)
+      if (!foldIntoBucket(gid, 'stopped', incoming)) void fetchTasks()
+      return
+    }
+    if (actions.isResumePending(gid)) {
+      const snapshot = computeMergedSnapshot(gid, incoming)
+      const status = incoming?.status === 'paused' ? 'paused' : dest
+      actions.recordResumeEvidence(gid, status, snapshot)
+      return
+    }
+    if (!foldIntoBucket(gid, dest, incoming)) void fetchTasks()
+  }
+
+  // Status-less terminal notification: patch the fields that are present and
+  // let a guarded read settle status/membership. Never invent a destination
+  // or a status field from the delta type alone.
+  function patchStatuslessTerminal(gid: string, payload: TaskDelta['payload']) {
+    const copies = collectCopies(gid)
+    const row = copies.active ?? copies.waiting ?? copies.stopped
+    let updated = false
+    if (row && payload) {
+      const assignField = (
+        key: 'completedLength' | 'totalLength' | 'downloadSpeed' | 'errorCode' | 'errorMessage',
+      ) => {
+        const value = payload[key]
+        if (value !== undefined && row[key] !== value) {
+          ;(row as unknown as Record<string, unknown>)[key] = value
+          updated = true
+        }
+      }
+      assignField('completedLength')
+      assignField('totalLength')
+      assignField('downloadSpeed')
+      assignField('errorCode')
+      assignField('errorMessage')
+      const threads = payload.threads
+      if (threads !== undefined && (row as unknown as Record<string, unknown>).threads !== threads) {
+        ;(row as unknown as Record<string, unknown>).threads = threads
+        updated = true
+      }
+      const beforeGroup = cloneTaskGroupMetadata(row)
+      Object.assign(row, mergeTaskGroupMetadata(row, payload))
+      if (!isTaskGroupEqual(beforeGroup, cloneTaskGroupMetadata(row))) updated = true
+      if (updated) tasks.value = { ...tasks.value }
+    }
+    actions.markLifecycleChanged()
   }
 
   async function handleTaskDelta(delta: TaskDelta) {
     if (import.meta.env.DEV) {
       console.debug('[Events] Handling delta:', delta)
     }
+    const gid = delta.gid
+    const payload = delta.payload
+    const incoming = payload ? { ...payload, gid: payload.gid || gid } : undefined
+    const dest = bucketForStatusValue(payload?.status)
 
     switch (delta.type) {
       case 'progress': {
-        const payload = delta.payload as Partial<Task> | undefined
-        if (payload) {
-          const task = tasks.value.active.find(t => t.gid === delta.gid)
-          if (task) {
-            let hasUpdate = false
-            if (
-              payload.completedLength !== undefined &&
-              task.completedLength !== payload.completedLength
-            ) {
-              task.completedLength = payload.completedLength
-              hasUpdate = true
-            }
-            if (
-              payload.downloadSpeed !== undefined &&
-              task.downloadSpeed !== payload.downloadSpeed
-            ) {
-              task.downloadSpeed = payload.downloadSpeed
-              hasUpdate = true
-            }
-            if (payload.totalLength !== undefined && task.totalLength !== payload.totalLength) {
-              task.totalLength = payload.totalLength
-              hasUpdate = true
-            }
-            if (payload.errorCode !== undefined) task.errorCode = payload.errorCode
-            if (payload.errorMessage !== undefined) task.errorMessage = payload.errorMessage
-            const incomingThreads = (payload as Record<string, unknown>).threads as
-              string | undefined
-            const currentThreads = (task as unknown as Record<string, unknown>).threads
-            if (incomingThreads !== undefined && currentThreads !== incomingThreads) {
-              ;(task as unknown as Record<string, unknown>).threads = incomingThreads
-              hasUpdate = true
-            }
-
-            if (hasUpdate) tasks.value = { ...tasks.value }
-
-            if (!hasValidFiles(task)) {
-              actions.queueMetadataRecovery(delta.gid)
-            }
+        if (dest && dest !== 'active') {
+          routeOrHold(gid, dest, incoming)
+          break
+        }
+        const task = tasks.value.active.find(t => t.gid === gid)
+        if (task && payload) {
+          let hasUpdate = false
+          if (
+            payload.completedLength !== undefined &&
+            task.completedLength !== payload.completedLength
+          ) {
+            task.completedLength = payload.completedLength
+            hasUpdate = true
           }
+          if (
+            payload.downloadSpeed !== undefined &&
+            task.downloadSpeed !== payload.downloadSpeed
+          ) {
+            task.downloadSpeed = payload.downloadSpeed
+            hasUpdate = true
+          }
+          if (payload.totalLength !== undefined && task.totalLength !== payload.totalLength) {
+            task.totalLength = payload.totalLength
+            hasUpdate = true
+          }
+          if (payload.errorCode !== undefined) task.errorCode = payload.errorCode
+          if (payload.errorMessage !== undefined) task.errorMessage = payload.errorMessage
+          const incomingThreads = payload.threads as string | undefined
+          const currentThreads = (task as unknown as Record<string, unknown>).threads
+          if (incomingThreads !== undefined && currentThreads !== incomingThreads) {
+            ;(task as unknown as Record<string, unknown>).threads = incomingThreads
+            hasUpdate = true
+          }
+
+          if (hasUpdate) tasks.value = { ...tasks.value }
+
+          if (!hasValidFiles(task)) {
+            actions.queueMetadataRecovery(gid)
+          }
+        } else if (!task && dest === 'active') {
+          routeOrHold(gid, 'active', incoming)
         }
         break
       }
 
       case 'add': {
-        const payload = delta.payload as Partial<Task> | undefined
-        const incoming = payload ? { ...payload, gid: payload.gid || delta.gid } : undefined
-
         if (incoming?.download_group && getActivePinia()) {
           const downloadGroupStore = useDownloadGroupStore()
           downloadGroupStore.addPlaceholdersFromDownloadGroups(
@@ -355,223 +613,73 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
             'websocket',
           )
         }
-
-        if (hasValidFiles(incoming) || hasTaskGroupMetadata(incoming)) {
+        if (incoming && (hasValidFiles(incoming) || hasTaskGroupMetadata(incoming))) {
           cacheMetadata(toTask(incoming))
         }
 
-        const activeIdx = tasks.value.active.findIndex(t => t.gid === delta.gid)
-        const waitingIdx = tasks.value.waiting.findIndex(t => t.gid === delta.gid)
-        const existsInStopped = tasks.value.stopped.some(t => t.gid === delta.gid)
-
-        if (activeIdx !== -1) {
-          const merged = applyMetadataFromCache(
-            mergeTaskPreservingRichData(tasks.value.active[activeIdx], incoming),
+        if (dest) {
+          routeOrHold(gid, dest, incoming)
+          break
+        }
+        // Status-less add: merge into an existing non-stopped row, keep stopped
+        // duplicate suppression, otherwise recover via a guarded read.
+        const copies = collectCopies(gid)
+        if (copies.stopped) break
+        const existing = copies.active ?? copies.waiting
+        if (existing && incoming) {
+          Object.assign(
+            existing,
+            applyMetadataFromCache(mergeTaskPreservingRichData(existing, incoming)),
           )
-          const nextActive = [...tasks.value.active]
-          nextActive[activeIdx] = merged
-          tasks.value = {
-            ...tasks.value,
-            active: nextActive,
-            waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
-          }
-          if (!hasValidFiles(merged)) actions.queueMetadataRecovery(delta.gid)
-        } else if (waitingIdx !== -1) {
-          const merged = applyMetadataFromCache(
-            mergeTaskPreservingRichData(tasks.value.waiting[waitingIdx], incoming),
-          )
-          const shouldMoveToActive = merged.status === 'active' || incoming?.status === 'active'
-          tasks.value = {
-            ...tasks.value,
-            active: shouldMoveToActive ? [merged, ...tasks.value.active] : tasks.value.active,
-            waiting: shouldMoveToActive
-              ? tasks.value.waiting.filter(t => t.gid !== delta.gid)
-              : tasks.value.waiting.map((t, index) => (index === waitingIdx ? merged : t)),
-          }
-          if (!hasValidFiles(merged)) actions.queueMetadataRecovery(delta.gid)
-        } else if (existsInStopped) {
-          // Keep stopped duplicate suppression semantics unchanged.
-        } else if (hasValidFiles(incoming)) {
-          const taskToAdd = applyMetadataFromCache(mergeTaskPreservingRichData(undefined, incoming))
-          tasks.value = {
-            ...tasks.value,
-            active: [taskToAdd, ...tasks.value.active],
-            waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
-          }
+          tasks.value = { ...tasks.value }
+          actions.markLifecycleChanged()
+          if (!hasValidFiles(existing)) actions.queueMetadataRecovery(gid)
         } else {
-          if (import.meta.env.DEV) {
-            console.debug(
-              `[Events] add: payload incomplete for ${delta.gid}, falling back to fetchTasks`,
-            )
-          }
           await fetchTasks()
         }
         break
       }
 
-      case 'complete': {
-        actions.markResumeSuperseded(delta.gid)
-        const payload = delta.payload as Task | undefined
-
-        // 对于已经进入 stopped 的任务，应用随后到来的带精确 payload 的 Pusher 推送
-        const stoppedTask = tasks.value.stopped.find(t => t.gid === delta.gid)
-        if (stoppedTask && payload) {
-          let updated = false
-          const beforeGroup = cloneTaskGroupMetadata(stoppedTask)
-          const incomingPayload = { ...payload, gid: payload.gid || delta.gid }
-          if (
-            payload.completedLength !== undefined &&
-            stoppedTask.completedLength !== payload.completedLength
-          ) {
-            stoppedTask.completedLength = payload.completedLength
-            updated = true
-          }
-          if (
-            payload.totalLength !== undefined &&
-            stoppedTask.totalLength !== payload.totalLength
-          ) {
-            stoppedTask.totalLength = payload.totalLength
-            updated = true
-          }
-          if (
-            payload.downloadSpeed !== undefined &&
-            stoppedTask.downloadSpeed !== payload.downloadSpeed
-          ) {
-            stoppedTask.downloadSpeed = payload.downloadSpeed
-            updated = true
-          }
-          Object.assign(stoppedTask, mergeTaskGroupMetadata(stoppedTask, incomingPayload))
-          if (!isTaskGroupEqual(beforeGroup, cloneTaskGroupMetadata(stoppedTask))) updated = true
-          if (hasValidFiles(incomingPayload) || hasTaskGroupMetadata(incomingPayload)) {
-            cacheMetadata(toTask(incomingPayload))
-          }
-          if (payload.errorCode !== undefined) stoppedTask.errorCode = payload.errorCode
-          if (payload.errorMessage !== undefined) stoppedTask.errorMessage = payload.errorMessage
-          if (updated) tasks.value = { ...tasks.value }
-          break
-        }
-
-        // 尝试在 active/waiting 中找到任务
-        const existingTask =
-          tasks.value.active.find(t => t.gid === delta.gid) ??
-          tasks.value.waiting.find(t => t.gid === delta.gid)
-
-        if (existingTask) {
-          // 正常路径：任务已在列表中，应用 payload 后移到 stopped
-          if (payload) {
-            if (payload.completedLength !== undefined)
-              existingTask.completedLength = payload.completedLength
-            if (payload.totalLength !== undefined) existingTask.totalLength = payload.totalLength
-            if (payload.downloadSpeed !== undefined)
-              existingTask.downloadSpeed = payload.downloadSpeed
-            Object.assign(existingTask, mergeTaskGroupMetadata(existingTask, payload))
-          }
-          moveTaskToStopped(delta.gid)
-        } else if (!tasks.value.stopped.some(t => t.gid === delta.gid)) {
-          // 小文件竞态路径：任务不在任何列表中，直接从 payload 构建 stopped 任务
-          if (payload && (payload.files?.[0]?.path || hasTaskGroupMetadata(payload))) {
-            cacheMetadata(payload)
-            const taskToAdd = applyMetadataFromCache(payload)
-            taskToAdd.status = 'complete'
-            tasks.value = {
-              active: tasks.value.active.filter(t => t.gid !== delta.gid),
-              waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
-              stopped: [taskToAdd, ...tasks.value.stopped],
-            }
-          } else {
-            if (import.meta.env.DEV) {
-              console.debug(
-                `[Events] complete: payload incomplete for ${delta.gid}, falling back to fetchTasks`,
-              )
-            }
-            await fetchTasks()
-          }
-        }
-        // 如果已经在 stopped 中，忽略重复的 complete 事件
-        break
-      }
-
-      case 'pause': {
-        patchTaskStatus(delta.gid, 'paused')
-        useDownloadGroupStore().scheduleAutoSyncImmediate('pause-delta')
-        break
-      }
-
       case 'resume': {
-        if (!actions.isResumePending(delta.gid)) {
-          moveTaskToActive(delta.gid)
+        if (dest) {
+          routeOrHold(gid, dest, incoming)
+        } else if (!actions.isResumePending(gid)) {
+          await fetchTasks()
         }
         useDownloadGroupStore().scheduleAutoSyncImmediate('resume-delta')
         break
       }
 
-      case 'error': {
-        actions.markResumeSuperseded(delta.gid)
-        const errorPayload = delta.payload as Task | undefined
-
-        // 尝试在 active/waiting 中找到任务
-        const errorTask =
-          tasks.value.active.find(t => t.gid === delta.gid) ??
-          tasks.value.waiting.find(t => t.gid === delta.gid)
-
-        if (errorTask) {
-          // 正常路径：任务在列表中，应用 payload 后移到 stopped
-          if (errorPayload) {
-            if (errorPayload.completedLength !== undefined)
-              errorTask.completedLength = errorPayload.completedLength
-            if (errorPayload.totalLength !== undefined)
-              errorTask.totalLength = errorPayload.totalLength
-            if (errorPayload.errorCode !== undefined) errorTask.errorCode = errorPayload.errorCode
-            if (errorPayload.errorMessage !== undefined)
-              errorTask.errorMessage = errorPayload.errorMessage
-            Object.assign(errorTask, mergeTaskGroupMetadata(errorTask, errorPayload))
-          }
-          patchTaskStatus(delta.gid, 'error')
-          moveTaskToStopped(delta.gid)
-        } else if (!tasks.value.stopped.some(t => t.gid === delta.gid)) {
-          // 小文件竞态路径：任务不在任何列表中，直接从 payload 构建 stopped 任务
-          if (
-            errorPayload &&
-            (errorPayload.files?.[0]?.path || hasTaskGroupMetadata(errorPayload))
-          ) {
-            cacheMetadata(errorPayload)
-            const taskToAdd = applyMetadataFromCache(errorPayload)
-            taskToAdd.status = 'error'
-            tasks.value = {
-              active: tasks.value.active.filter(t => t.gid !== delta.gid),
-              waiting: tasks.value.waiting.filter(t => t.gid !== delta.gid),
-              stopped: [taskToAdd, ...tasks.value.stopped],
-            }
-          } else {
-            if (import.meta.env.DEV) {
-              console.debug(
-                `[Events] error: payload incomplete for ${delta.gid}, falling back to fetchTasks`,
-              )
-            }
-            await fetchTasks()
-          }
+      case 'pause': {
+        // An authoritative paused transition invalidates older resume optimism.
+        actions.markResumeSuperseded(gid)
+        if (dest) {
+          if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
         } else {
-          const stoppedTask = tasks.value.stopped.find(t => t.gid === delta.gid)
-          if (stoppedTask && errorPayload) {
-            const beforeGroup = cloneTaskGroupMetadata(stoppedTask)
-            const incomingPayload = { ...errorPayload, gid: errorPayload.gid || delta.gid }
-            Object.assign(stoppedTask, mergeTaskGroupMetadata(stoppedTask, incomingPayload))
-            if (errorPayload.errorCode !== undefined) stoppedTask.errorCode = errorPayload.errorCode
-            if (errorPayload.errorMessage !== undefined)
-              stoppedTask.errorMessage = errorPayload.errorMessage
-            if (hasValidFiles(incomingPayload) || hasTaskGroupMetadata(incomingPayload)) {
-              cacheMetadata(toTask(incomingPayload))
-            }
-            if (!isTaskGroupEqual(beforeGroup, cloneTaskGroupMetadata(stoppedTask))) {
-              tasks.value = { ...tasks.value }
-            }
-          }
+          patchTaskStatus(gid, 'paused')
+        }
+        useDownloadGroupStore().scheduleAutoSyncImmediate('pause-delta')
+        break
+      }
+
+      case 'complete':
+      case 'error': {
+        // Terminal notifications immediately supersede any pending resume.
+        actions.markResumeSuperseded(gid)
+        if (dest === 'stopped') {
+          if (!foldIntoBucket(gid, 'stopped', incoming)) await fetchTasks()
+        } else if (dest) {
+          routeOrHold(gid, dest, incoming)
+        } else {
+          patchStatuslessTerminal(gid, payload)
+          if (!collectCopies(gid).stopped) await fetchTasks()
         }
         break
       }
 
       case 'remove': {
-        removeTaskFromState(delta.gid)
+        actions.markResumeSuperseded(gid)
+        removeTaskFromState(gid)
         break
       }
     }
@@ -580,94 +688,35 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
   }
 
   function handleTaskMove(move: TaskMove) {
-    const { gid, from, to, task: taskData } = move
+    const { gid, to, task: taskData } = move
     const payload = taskData as Partial<Task> | undefined
     const incoming = payload ? { ...payload, gid: payload.gid || gid } : undefined
-    if (hasValidFiles(incoming) || hasTaskGroupMetadata(incoming)) {
+    if (incoming && (hasValidFiles(incoming) || hasTaskGroupMetadata(incoming))) {
       cacheMetadata(toTask(incoming))
     }
 
-    if (to === 'active' && actions.isResumePending(gid)) {
+    const statusDest = bucketForStatusValue(payload?.status)
+    const wireDest = to === 'active' || to === 'waiting' || to === 'stopped' ? to : null
+    const dest = statusDest ?? wireDest
+    if (!dest) {
+      // Malformed/mismatched destinations recover through a guarded read.
+      void fetchTasks()
       return
     }
-    if (to === 'stopped') {
+
+    if (dest === 'stopped') {
       actions.markResumeSuperseded(gid)
+    } else if (actions.isResumePending(gid)) {
+      // Held while the resume op is in flight: stash the rich folded row as
+      // generation-owned evidence; settlement applies it exactly once.
+      const snapshot = computeMergedSnapshot(gid, incoming)
+      const status = payload?.status === 'paused' ? 'paused' : dest
+      actions.recordResumeEvidence(gid, status, snapshot)
+      return
     }
-
-    const byName = {
-      active: tasks.value.active,
-      waiting: tasks.value.waiting,
-      stopped: tasks.value.stopped,
-    } as const
-
-    const copies: Task[] = []
-    for (const name of ['active', 'waiting', 'stopped'] as const) {
-      const copy = byName[name].find(t => t.gid === gid)
-      if (copy) copies.push(copy)
-    }
-
-    // from is a hint for the preferred non-dest base; fall back across lists
-    let movedTask: Task | undefined
-    if (from === 'active' || from === 'waiting' || from === 'stopped') {
-      movedTask = byName[from].find(t => t.gid === gid)
-    }
-    if (!movedTask) {
-      movedTask = copies[0]
-    }
-
-    const destRow =
-      (to === 'active' && tasks.value.active.find(t => t.gid === gid)) ||
-      (to === 'waiting' && tasks.value.waiting.find(t => t.gid === gid)) ||
-      (to === 'stopped' && tasks.value.stopped.find(t => t.gid === gid)) ||
-      undefined
-
-    // Fold every non-destination copy + incoming, then prefer dest fields last
-    let acc: Task | undefined
-    for (const copy of copies) {
-      if (destRow && copy === destRow) continue
-      acc = acc ? mergeTaskPreservingRichData(acc, copy) : toTask(copy)
-    }
-    if (!acc && movedTask && movedTask !== destRow) {
-      acc = toTask(movedTask)
-    }
-    const merged = applyMetadataFromCache(
-      mergeTaskPreservingRichData(acc ?? destRow ?? movedTask, incoming ?? { gid }),
-    )
-
-    const purge = (list: Task[]) => list.filter(t => t.gid !== gid)
-    let active: Task[]
-    let waiting: Task[]
-    let stopped: Task[]
-
-    if (destRow) {
-      Object.assign(destRow, mergeTaskPreservingRichData(merged, destRow))
-      // Dest-last merge keeps rich files/lengths; payload still owns terminal fields.
-      if (incoming?.status !== undefined) destRow.status = incoming.status
-      if (incoming?.errorCode !== undefined) destRow.errorCode = incoming.errorCode
-      if (incoming?.errorMessage !== undefined) destRow.errorMessage = incoming.errorMessage
-      active = to === 'active' ? tasks.value.active : purge(tasks.value.active)
-      waiting = to === 'waiting' ? tasks.value.waiting : purge(tasks.value.waiting)
-      stopped = to === 'stopped' ? tasks.value.stopped : purge(tasks.value.stopped)
-    } else {
-      active = purge(tasks.value.active)
-      waiting = purge(tasks.value.waiting)
-      stopped = purge(tasks.value.stopped)
-      if (to === 'active') active = [merged, ...active]
-      else if (to === 'waiting') waiting = [merged, ...waiting]
-      else if (to === 'stopped') stopped = [merged, ...stopped]
-    }
-
-    if (to === 'stopped') {
-      setTimeout(() => {
-        if (tasks.value.stopped.some(t => t.gid === gid)) {
-          removeMetadata(gid)
-        }
-      }, 5000)
-    }
-
-    tasks.value = { active, waiting, stopped }
-    if (to === 'active' || to === 'waiting') {
-      actions.clearStoppedSuppression(gid)
+    if (!foldIntoBucket(gid, dest, incoming)) {
+      void fetchTasks()
+      return
     }
     immediateUpdateTrayIcon()
   }
@@ -675,8 +724,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
   return {
     handleTaskDelta,
     handleTaskMove,
-    moveTaskToActive,
-    moveTasksToActive,
+    moveTasks,
     moveTaskToStopped, // Exposed for tests/polling
   }
 }

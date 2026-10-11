@@ -36,6 +36,9 @@ const rawStoreMocks = vi.hoisted(() => ({
   taskStore: {
     clearSelection: vi.fn(),
     getSelectedGids: ['gid-selected'],
+    activeTasks: [] as Task[],
+    waitingTasks: [] as Task[],
+    stoppedTasks: [] as Task[],
   },
 }))
 
@@ -123,6 +126,7 @@ const TaskListStub = defineComponent({
     :data-active="detailTasks?.active?.length || 0"
     :data-active-progress="detailTasks?.active?.[0]?.completedLength || ''"
     :data-active-speed="detailTasks?.active?.[0]?.downloadSpeed || ''"
+    :data-waiting="detailTasks?.waiting?.length || 0"
     :data-stopped="detailTasks?.stopped?.length || 0"
   ></div>`,
 })
@@ -198,6 +202,9 @@ describe('DownloadGroupShell', () => {
     storeMocks.groupStore.operationNotice = null
     storeMocks.groupStore.isGroupOperationBusy.mockReturnValue(false)
     storeMocks.taskStore.getSelectedGids = ['gid-selected']
+    storeMocks.taskStore.activeTasks = []
+    storeMocks.taskStore.waitingTasks = []
+    storeMocks.taskStore.stoppedTasks = []
   })
 
   it('DownloadGroupShell renders detail only and does not render a Groups master list', () => {
@@ -406,6 +413,74 @@ describe('DownloadGroupShell', () => {
 
     expect(storeMocks.groupStore.pauseGroup).toHaveBeenCalledWith('dg-boundary')
     expect(storeMocks.groupStore.pauseGroup).not.toHaveBeenCalledWith('gid-selected')
+    wrapper.unmount()
+  })
+
+  it('GROUP-ERROR-RESUME: detail resume stays enabled on error members alone', async () => {
+    storeMocks.uiStore.selectedDownloadGroupKey = 'dg-error'
+    storeMocks.groupStore.currentDetail = detailEnvelope('dg-error')
+    storeMocks.groupStore.currentDetail.group.counts.paused = 0
+    storeMocks.groupStore.currentDetail.group.counts.error = 2
+    storeMocks.groupStore.currentDetail.group.counts.active = 0
+    const wrapper = mountShell()
+    const resumeButton = wrapper.findAll<HTMLButtonElement>('.download-group-detail-action')[1]
+
+    expect(resumeButton.element.disabled).toBe(false)
+    await resumeButton.trigger('click')
+
+    expect(storeMocks.groupStore.resumeGroup).toHaveBeenCalledWith('dg-error')
+    wrapper.unmount()
+  })
+
+  it('GROUP-ERROR-RESUME: complete-only detail keeps resume disabled', () => {
+    storeMocks.uiStore.selectedDownloadGroupKey = 'dg-complete'
+    storeMocks.groupStore.currentDetail = detailEnvelope('dg-complete')
+    storeMocks.groupStore.currentDetail.group.counts.paused = 0
+    storeMocks.groupStore.currentDetail.group.counts.error = 0
+    storeMocks.groupStore.currentDetail.group.counts.active = 0
+    storeMocks.groupStore.currentDetail.group.counts.complete = 2
+    const wrapper = mountShell()
+
+    const resumeButton = wrapper.findAll<HTMLButtonElement>('.download-group-detail-action')[1]
+    expect(resumeButton.element.disabled).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('GROUP-ERROR-RESUME: cross-bucket overlay re-buckets a resumed member to its live row exactly once', async () => {
+    const liveRow = {
+      gid: 'gid-moved',
+      status: 'active',
+      completedLength: '42',
+      downloadSpeed: '7',
+      download_group: { id: 'dg-detail' },
+    } as Task
+    storeMocks.taskStore.activeTasks = [liveRow]
+    storeMocks.groupStore.currentDetail = {
+      ...detailEnvelope('dg-detail'),
+      tasks: {
+        active: [],
+        waiting: [],
+        stopped: [
+          {
+            gid: 'gid-moved',
+            status: 'error',
+            completedLength: '10',
+            downloadSpeed: '0',
+            download_group: { id: 'dg-detail' },
+          } as Task,
+        ],
+      },
+    } as DownloadGroupDetailEnvelope
+    const wrapper = mountShell()
+    await wrapper.vm.$nextTick()
+    const detail = wrapper.find('[data-test="task-list-detail"]')
+
+    // The stale stopped detail member renders once, in the live row's bucket.
+    expect(detail.attributes('data-active')).toBe('1')
+    expect(detail.attributes('data-active-progress')).toBe('42')
+    expect(detail.attributes('data-active-speed')).toBe('7')
+    expect(detail.attributes('data-waiting')).toBe('0')
+    expect(detail.attributes('data-stopped')).toBe('0')
     wrapper.unmount()
   })
 

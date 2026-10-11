@@ -170,7 +170,11 @@ describe('duplicate URI lookup index', () => {
       stopped: [task('stopped', 'complete', stoppedUri)],
     }
 
-    await events.handleTaskDelta({ type: 'complete', gid: 'active' })
+    await events.handleTaskDelta({
+      type: 'complete',
+      gid: 'active',
+      payload: { gid: 'active', status: 'complete' },
+    })
     expect(state.allUris.value.has(activeUri)).toBe(true)
     expect(state.tasks.value.stopped.some(item => item.gid === 'active')).toBe(true)
 

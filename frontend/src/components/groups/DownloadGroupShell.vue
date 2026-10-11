@@ -22,6 +22,7 @@
   import DownloadGroupRemoveDialog from './DownloadGroupRemoveDialog.vue'
   import TaskList from '../tasks/TaskList.vue'
   import type { DownloadGroupCard as BackendDownloadGroupCard } from '../../../bindings/goaria-v3/internal/downloadgroups/models'
+  import type { Task } from '../../../bindings/goaria-v3/internal/rpc/models'
   import StaticGlassPanel from '../common/StaticGlassPanel.vue'
   import LiquidGlassPanel from '../common/LiquidGlassPanel.vue'
 
@@ -41,23 +42,52 @@
     const detail = downloadGroupStore.currentDetail
     return detail?.group_key === selectedKey.value ? detail : null
   })
+  // Cross-bucket overlay: each raw member renders with the current live row
+  // exactly once, in the bucket the live row's own status places it. A live
+  // row that explicitly belongs to another group is not borrowed.
   const detailTasks = computed(() => {
     const raw = currentDetail.value?.tasks
-    if (!raw) {
-      return {
-        active: [],
-        waiting: [],
-        stopped: [],
+    const out = { active: [] as Task[], waiting: [] as Task[], stopped: [] as Task[] }
+    if (!raw) return out
+
+    const liveByGid = new Map<string, Task>()
+    for (const list of [
+      taskStore.activeTasks ?? [],
+      taskStore.waitingTasks ?? [],
+      taskStore.stoppedTasks ?? [],
+    ]) {
+      for (const task of list) {
+        if (task?.gid && !liveByGid.has(task.gid)) liveByGid.set(task.gid, task)
       }
     }
-    const activeMap = new Map((taskStore.activeTasks ?? []).map(t => [t.gid, t]))
-    const waitingMap = new Map((taskStore.waitingTasks ?? []).map(t => [t.gid, t]))
-    const stoppedMap = new Map((taskStore.stoppedTasks ?? []).map(t => [t.gid, t]))
-    return {
-      active: raw.active.map(t => activeMap.get(t.gid) ?? t),
-      waiting: raw.waiting.map(t => waitingMap.get(t.gid) ?? t),
-      stopped: raw.stopped.map(t => stoppedMap.get(t.gid) ?? t),
+
+    const seen = new Set<string>()
+    const bucketForStatus = (status: unknown, fallback: 'active' | 'waiting' | 'stopped') => {
+      if (status === 'active') return 'active' as const
+      if (status === 'waiting' || status === 'paused') return 'waiting' as const
+      if (status === 'complete' || status === 'error') return 'stopped' as const
+      return fallback
     }
+    const place = (
+      members: Task[] | undefined,
+      rawBucket: 'active' | 'waiting' | 'stopped',
+    ) => {
+      for (const member of members ?? []) {
+        const gid = member?.gid
+        if (!gid || seen.has(gid)) continue
+        seen.add(gid)
+        const live = liveByGid.get(gid)
+        const liveGroup = live?.download_group?.id
+        const usable =
+          live && (typeof liveGroup !== 'string' || !liveGroup || liveGroup === selectedKey.value)
+        const row = usable ? live : member
+        out[bucketForStatus(row.status, rawBucket)].push(row)
+      }
+    }
+    place(raw.active, 'active')
+    place(raw.waiting, 'waiting')
+    place(raw.stopped, 'stopped')
+    return out
   })
   const isRefreshing = computed(
     () => downloadGroupStore.isLoading || downloadGroupStore.isDetailLoading,
@@ -124,7 +154,7 @@
 
   function canResume(card?: BackendDownloadGroupCard | null) {
     if (!card?.group_key || isBusy(card.group_key, 'resume')) return false
-    return (card.counts.paused ?? 0) > 0
+    return (card.counts.paused ?? 0) > 0 || (card.counts.error ?? 0) > 0
   }
 
   function canOpenFolder(card?: BackendDownloadGroupCard | null) {

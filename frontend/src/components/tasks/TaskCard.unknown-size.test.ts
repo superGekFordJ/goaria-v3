@@ -120,6 +120,31 @@ describe('TaskCard unknown-size handling', () => {
     expect(waitingIndet.classes()).toContain('opacity-50')
   })
 
+  it('renders the waiting label without active stats, then active stats after start', async () => {
+    const wrapper = mount(TaskCard, {
+      props: {
+        task: mockTask({
+          status: 'waiting',
+          downloadSpeed: '0',
+        }),
+      },
+    })
+
+    // Waiting label and paused card chrome; no active-only stat blocks.
+    expect(wrapper.text()).toContain('taskCard.waiting')
+    expect(wrapper.text()).not.toContain('taskCard.downloading')
+    expect(wrapper.classes()).toContain('task-card-paused')
+    expect(wrapper.classes()).not.toContain('task-card-active')
+
+    await wrapper.setProps({
+      task: mockTask({ status: 'active', downloadSpeed: '512000' }),
+    })
+
+    expect(wrapper.text()).toContain('taskCard.downloading')
+    expect(wrapper.classes()).toContain('task-card-active')
+    wrapper.unmount()
+  })
+
   it('renders complete unknown task with N / N progress format and 100.0% without progress bar', () => {
     const wrapper = mount(TaskCard, {
       props: {

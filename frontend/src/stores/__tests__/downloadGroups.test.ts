@@ -1078,6 +1078,31 @@ describe('download group store', () => {
     await resumePromise
   })
 
+  it('GROUP-ERROR-RESUME: resumeGroup snapshots stopped-error and paused candidates and still sends only group_key', async () => {
+    taskStoreMock.waitingTasks = [
+      groupedTask('gid-paused', 'dg-op', { status: 'paused' }),
+      groupedTask('gid-queued', 'dg-op', { status: 'waiting' }),
+    ]
+    taskStoreMock.stoppedTasks = [
+      groupedTask('gid-err', 'dg-op', { status: 'error' }),
+      groupedTask('gid-done', 'dg-op', { status: 'complete' }),
+      groupedTask('gid-err-other', 'dg-other', { status: 'error' }),
+    ]
+    bindingMocks.ResumeDownloadGroup.mockResolvedValueOnce(
+      operationResult({
+        action: 'resume',
+        refresh: { tasks: true, groups: false, detail: false },
+      }),
+    )
+    const store = useDownloadGroupStore()
+
+    await store.resumeGroup('dg-op')
+
+    expect(taskStoreMock.runHeldResume.mock.calls[0][0]).toEqual(['gid-paused', 'gid-err'])
+    expect(bindingMocks.ResumeDownloadGroup).toHaveBeenCalledWith('dg-op')
+    expect(bindingMocks.ResumeDownloadGroup.mock.calls[0]).toHaveLength(1)
+  })
+
   it('resumeGroup unions open-detail paused waiting GIDs after task-store order', async () => {
     taskStoreMock.waitingTasks = [groupedTask('gid-paused-a', 'dg-op', { status: 'paused' })]
     bindingMocks.ResumeDownloadGroup.mockResolvedValueOnce(operationResult({ action: 'resume' }))
@@ -1143,7 +1168,7 @@ describe('download group store', () => {
     expect(store.operationNotice?.code).toBe('partial_failure')
   })
 
-  it('resumeGroup clears via recoverSnapshot false and fetches tasks only after the hold returns', async () => {
+  it('GROUP-REFRESH-ORDER: resumeGroup clears via recoverSnapshot false and fetches tasks only after the hold returns', async () => {
     const order: string[] = []
     const ipc = deferred<DownloadGroupOperationResult>()
     bindingMocks.ResumeDownloadGroup.mockReturnValueOnce(ipc.promise)
@@ -1336,7 +1361,7 @@ describe('group resume hold snapshot helpers', () => {
     expect(snapshotGroupResumeHoldGids('dg-op', undefined)).toEqual([])
   })
 
-  it('maps only succeeded items with a non-empty gid', () => {
+  it('STRICT-OK-SET: maps only succeeded items with a non-empty gid', () => {
     expect(
       succeededOperationItemGids(
         operationResult({
@@ -1350,5 +1375,67 @@ describe('group resume hold snapshot helpers', () => {
         }),
       ),
     ).toEqual(['gid-ok'])
+    // Aggregate result.ok never implies per-GID success.
+    expect(
+      succeededOperationItemGids(operationResult({ ok: true, items: [] })),
+    ).toEqual([])
+    expect(succeededOperationItemGids(null)).toEqual([])
+    expect(succeededOperationItemGids(undefined)).toEqual([])
+  })
+
+  it('GROUP-ERROR-RESUME: unions stopped-error and paused candidates, excluding complete/queued/wrong-key', () => {
+    expect(
+      snapshotGroupResumeHoldGids(
+        'dg-op',
+        [
+          groupedTask('gid-paused', 'dg-op', { status: 'paused' }),
+          groupedTask('gid-queued', 'dg-op', { status: 'waiting' }),
+          groupedTask('gid-other', 'dg-other', { status: 'paused' }),
+        ],
+        undefined,
+        undefined,
+        {
+          stoppedTasks: [
+            groupedTask('gid-err-a', 'dg-op', { status: 'error' }),
+            groupedTask('gid-done', 'dg-op', { status: 'complete' }),
+            groupedTask('gid-err-b', 'dg-op', { status: 'error' }),
+            groupedTask('gid-err-other', 'dg-other', { status: 'error' }),
+          ],
+        },
+      ),
+    ).toEqual(['gid-paused', 'gid-err-a', 'gid-err-b'])
+  })
+
+  it('GROUP-ERROR-RESUME: local facts veto stale detail candidates and detail-only paused/error members remain eligible', () => {
+    expect(
+      snapshotGroupResumeHoldGids(
+        'dg-op',
+        [groupedTask('gid-paused', 'dg-op', { status: 'paused' })],
+        'dg-op',
+        [groupedTask('gid-detail-paused', 'dg-op', { status: 'paused' })],
+        {
+          stoppedTasks: [groupedTask('gid-err', 'dg-op', { status: 'error' })],
+          detailStopped: [
+            groupedTask('gid-detail-err', 'dg-op', { status: 'error' }),
+            groupedTask('gid-stale-err', 'dg-op', { status: 'error' }),
+          ],
+          localActiveTasks: [groupedTask('gid-stale-err', 'dg-op', { status: 'active' })],
+        },
+      ),
+    ).toEqual(['gid-paused', 'gid-err', 'gid-detail-paused', 'gid-detail-err'])
+  })
+
+  it('GROUP-ERROR-RESUME: a stale detail key contributes no candidates', () => {
+    expect(
+      snapshotGroupResumeHoldGids(
+        'dg-op',
+        [],
+        'dg-other',
+        [groupedTask('gid-detail-paused', 'dg-op', { status: 'paused' })],
+        {
+          detailStopped: [groupedTask('gid-detail-err', 'dg-op', { status: 'error' })],
+        },
+      ),
+    ).toEqual([])
   })
 })

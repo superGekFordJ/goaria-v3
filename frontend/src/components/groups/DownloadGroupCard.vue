@@ -219,7 +219,7 @@
       isBackendCard.value &&
       !props.readonlyActions &&
       !isResumeBusy.value &&
-      (card.value?.counts.paused ?? 0) > 0,
+      ((card.value?.counts.paused ?? 0) > 0 || (card.value?.counts.error ?? 0) > 0),
   )
   const canOpenFolder = computed(
     () =>

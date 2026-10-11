@@ -121,11 +121,17 @@ export function useDownloadGroupOperations(
   function resumeGroup(groupKey: string) {
     return runGroupOperation('resume', groupKey, async normalizedKey => {
       const taskStore = useTaskStore()
+      const detail = currentDetail.value
       const requested = snapshotGroupResumeHoldGids(
         normalizedKey,
         taskStore.waitingTasks,
         currentDetailKey.value,
-        currentDetail.value?.tasks?.waiting,
+        detail?.tasks?.waiting,
+        {
+          stoppedTasks: taskStore.stoppedTasks,
+          detailStopped: detail?.tasks?.stopped,
+          localActiveTasks: taskStore.activeTasks,
+        },
       )
       let result: DownloadGroupOperationResult | undefined
       await taskStore.runHeldResume(
