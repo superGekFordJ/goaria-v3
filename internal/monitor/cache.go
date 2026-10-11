@@ -3,6 +3,7 @@ package monitor
 import (
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -158,9 +159,44 @@ func (c *TaskCache) UpdateFromAria2(active, waiting, stopped []rpc.Task) {
 			prevStopped[gid] = struct{}{}
 		}
 	}
-	c.arActive = copyTaskSlice(arActive)
-	c.arWaiting = copyTaskSlice(arWaiting)
-	c.arStopped = copyTaskSlice(arStopped)
+	old := make(map[string]rpc.Task)
+	for _, list := range [][]rpc.Task{c.arActive, c.arWaiting, c.arStopped} {
+		for _, task := range list {
+			row, exists := old[task.GID]
+			if !exists {
+				row = copyTask(task)
+			} else {
+				fillTaskMetadata(&row, task)
+			}
+			old[task.GID] = row
+		}
+	}
+	retainMetadata := func(tasks, previous []rpc.Task) []rpc.Task {
+		sameList := make(map[string]rpc.Task, len(previous))
+		for _, task := range previous {
+			row, exists := sameList[task.GID]
+			if !exists {
+				row = copyTask(task)
+			} else {
+				fillTaskMetadata(&row, task)
+			}
+			sameList[task.GID] = row
+		}
+		rows := copyTaskSlice(tasks)
+		for i := range rows {
+			previous := sameList[rows[i].GID]
+			fillTaskMetadata(&previous, old[rows[i].GID])
+			rows[i].Files = mergeTaskFiles(rows[i].Files, nil)
+			if len(rows[i].Files) < len(previous.Files) {
+				rows[i].Files = mergeTaskFiles(previous.Files, rows[i].Files)
+			}
+			fillTaskMetadata(&rows[i], previous)
+		}
+		return rows
+	}
+	c.arActive = retainMetadata(arActive, c.arActive)
+	c.arWaiting = retainMetadata(arWaiting, c.arWaiting)
+	c.arStopped = retainMetadata(arStopped, c.arStopped)
 
 	var resumedFromStopped []string
 	for _, task := range c.arActive {
@@ -323,74 +359,26 @@ func (c *TaskCache) MoveTaskToStoppedWithError(gid, status, errorCode, errorMess
 }
 
 func (c *TaskCache) moveTaskToStopped(gid, status, errorCode, errorMessage string) {
+	mu := &c.arMu
+	active, waiting, stopped := &c.arActive, &c.arWaiting, &c.arStopped
 	if enginePrefix(gid) == "sg" {
-		c.sgMu.Lock()
-		defer c.sgMu.Unlock()
-		for i := range c.sgActive {
-			if c.sgActive[i].GID == gid {
-				task := c.sgActive[i]
-				task.Status = status
-				task.DownloadSpeed = "0"
-				if errorCode != "" {
-					task.ErrorCode = errorCode
-				}
-				if errorMessage != "" {
-					task.ErrorMessage = errorMessage
-				}
-				c.sgStopped = append(c.sgStopped, task)
-				c.sgActive = append(c.sgActive[:i], c.sgActive[i+1:]...)
-				return
-			}
-		}
-		for i := range c.sgWaiting {
-			if c.sgWaiting[i].GID == gid {
-				task := c.sgWaiting[i]
-				task.Status = status
-				task.DownloadSpeed = "0"
-				if errorCode != "" {
-					task.ErrorCode = errorCode
-				}
-				if errorMessage != "" {
-					task.ErrorMessage = errorMessage
-				}
-				c.sgStopped = append(c.sgStopped, task)
-				c.sgWaiting = append(c.sgWaiting[:i], c.sgWaiting[i+1:]...)
-				return
-			}
-		}
+		mu = &c.sgMu
+		active, waiting, stopped = &c.sgActive, &c.sgWaiting, &c.sgStopped
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !containsTaskGID(*active, gid) && !containsTaskGID(*waiting, gid) {
 		return
 	}
-	c.arMu.Lock()
-	defer c.arMu.Unlock()
-	for i := range c.arActive {
-		if c.arActive[i].GID == gid {
-			task := c.arActive[i]
-			task.Status = status
-			task.DownloadSpeed = "0"
+	moveTaskBetweenLists(active, waiting, stopped, gid, status, "stopped", false)
+	for i := range *stopped {
+		if (*stopped)[i].GID == gid {
 			if errorCode != "" {
-				task.ErrorCode = errorCode
+				(*stopped)[i].ErrorCode = errorCode
 			}
 			if errorMessage != "" {
-				task.ErrorMessage = errorMessage
+				(*stopped)[i].ErrorMessage = errorMessage
 			}
-			c.arStopped = append(c.arStopped, task)
-			c.arActive = append(c.arActive[:i], c.arActive[i+1:]...)
-			return
-		}
-	}
-	for i := range c.arWaiting {
-		if c.arWaiting[i].GID == gid {
-			task := c.arWaiting[i]
-			task.Status = status
-			task.DownloadSpeed = "0"
-			if errorCode != "" {
-				task.ErrorCode = errorCode
-			}
-			if errorMessage != "" {
-				task.ErrorMessage = errorMessage
-			}
-			c.arStopped = append(c.arStopped, task)
-			c.arWaiting = append(c.arWaiting[:i], c.arWaiting[i+1:]...)
 			return
 		}
 	}
@@ -457,9 +445,13 @@ func moveTaskBetweenLists(active, waiting, stopped *[]rpc.Task, gid, status, des
 		return ""
 	}
 
+	row, found := foldTaskRows(gid, *dest, *active, *waiting, *stopped)
+	if !found || (refuseStopped && !containsTaskGID(*active, gid) && !containsTaskGID(*waiting, gid)) {
+		return ""
+	}
 	if updateTaskInPlace(dest, gid, status) {
-		// Sibling copies are discarded (not merged): cache dest is already the
-		// live engine-facing row; frontend richest-merge is the UI safety net.
+		row.Status, row.DownloadSpeed = status, "0"
+		storeFoldedTask(dest, row)
 		sweepGIDFromOtherLists(active, waiting, stopped, gid, destName)
 		return destName
 	}
@@ -475,10 +467,11 @@ func moveTaskBetweenLists(active, waiting, stopped *[]rpc.Task, gid, status, des
 		if src == nil {
 			continue
 		}
-		task, ok := detachTask(src, gid)
+		_, ok := detachTask(src, gid)
 		if !ok {
 			continue
 		}
+		task := row
 		task.Status = status
 		task.DownloadSpeed = "0"
 		if srcName == "stopped" {
@@ -529,15 +522,59 @@ func updateTaskInPlace(list *[]rpc.Task, gid, status string) bool {
 	return false
 }
 
-func detachTask(list *[]rpc.Task, gid string) (rpc.Task, bool) {
-	for i := range *list {
-		if (*list)[i].GID == gid {
-			task := (*list)[i]
-			*list = append((*list)[:i], (*list)[i+1:]...)
-			return task, true
+func detachTask(list *[]rpc.Task, gid string) (task rpc.Task, found bool) {
+	kept := (*list)[:0]
+	for _, row := range *list {
+		if row.GID == gid {
+			if !found {
+				task, found = row, true
+			}
+		} else {
+			kept = append(kept, row)
 		}
 	}
-	return rpc.Task{}, false
+	clear((*list)[len(kept):])
+	*list = kept
+	return
+}
+
+// foldTaskRows keeps the first row's facts and fills only missing sibling data.
+func foldTaskRows(gid string, lists ...[]rpc.Task) (row rpc.Task, found bool) {
+	for _, list := range lists {
+		for _, task := range list {
+			if task.GID != gid {
+				continue
+			}
+			if !found {
+				row, found = copyTask(task), true
+			} else {
+				fillTaskMetadata(&row, task)
+				if parseInt64(row.TotalLength) <= 0 && parseInt64(task.TotalLength) > 0 {
+					row.TotalLength = task.TotalLength
+				}
+				if parseInt64(row.CompletedLength) <= 0 && parseInt64(task.CompletedLength) > 0 {
+					row.CompletedLength = task.CompletedLength
+				}
+			}
+		}
+	}
+	return
+}
+
+func storeFoldedTask(list *[]rpc.Task, task rpc.Task) {
+	kept, stored := (*list)[:0], false
+	for _, row := range *list {
+		if row.GID != task.GID {
+			kept = append(kept, row)
+		} else if !stored {
+			kept, stored = append(kept, task), true
+		}
+	}
+	clear((*list)[len(kept):])
+	if !stored {
+		kept = append(kept, task)
+	}
+	*list = kept
 }
 
 // AddSgTask inserts or updates a Surge task in the specified sg slice.
@@ -566,65 +603,121 @@ func (c *TaskCache) AddSgTaskUnlessStopped(task rpc.Task, list string) {
 }
 
 func (c *TaskCache) addSgTaskLocked(task rpc.Task, list string) {
-	var target *[]rpc.Task
-	removeFrom := func(slice []rpc.Task, gid string) []rpc.Task {
-		for i := range slice {
-			if slice[i].GID == gid {
-				return append(slice[:i], slice[i+1:]...)
-			}
-		}
-		return slice
-	}
-
-	switch list {
-	case "active":
-		target = &c.sgActive
-		c.sgWaiting = removeFrom(c.sgWaiting, task.GID)
-		c.sgStopped = removeFrom(c.sgStopped, task.GID)
-	case "waiting":
-		target = &c.sgWaiting
-		c.sgActive = removeFrom(c.sgActive, task.GID)
-		c.sgStopped = removeFrom(c.sgStopped, task.GID)
-	case "stopped":
-		target = &c.sgStopped
-		c.sgActive = removeFrom(c.sgActive, task.GID)
-		c.sgWaiting = removeFrom(c.sgWaiting, task.GID)
-	default:
+	target := listPtrByName(&c.sgActive, &c.sgWaiting, &c.sgStopped, list)
+	if target == nil {
 		return
 	}
-
-	for i := range *target {
-		if (*target)[i].GID == task.GID {
-			mergeTaskFields(&(*target)[i], task)
-			return
-		}
+	inTarget := containsTaskGID(*target, task.GID)
+	row, found := foldTaskRows(task.GID, *target, c.sgActive, c.sgWaiting, c.sgStopped)
+	if !found {
+		row = copyTask(task)
+	} else {
+		mergeTaskFields(&row, task)
 	}
-	*target = append(*target, copyTask(task))
+	if !inTarget {
+		row.ErrorCode, row.ErrorMessage = task.ErrorCode, task.ErrorMessage
+	}
+	storeFoldedTask(target, row)
+	sweepGIDFromOtherLists(&c.sgActive, &c.sgWaiting, &c.sgStopped, task.GID, list)
 }
 
-// mergeTaskFields shallow-merges non-empty fields from src into dst.
+// mergeTaskFields accepts sparse metadata and reliable positive checkpoints.
 func mergeTaskFields(dst *rpc.Task, src rpc.Task) {
 	if src.Status != "" {
 		dst.Status = src.Status
 	}
-	if src.TotalLength != "" {
-		dst.TotalLength = src.TotalLength
+	mergeLength := func(dst *string, value string) {
+		if n, err := strconv.ParseInt(value, 10, 64); err == nil && (n > 0 || n == 0 && parseInt64(*dst) <= 0) {
+			*dst = value
+		}
 	}
-	if src.CompletedLength != "" {
-		dst.CompletedLength = src.CompletedLength
-	}
+	mergeLength(&dst.TotalLength, src.TotalLength)
+	mergeLength(&dst.CompletedLength, src.CompletedLength)
 	if src.DownloadSpeed != "" {
 		dst.DownloadSpeed = src.DownloadSpeed
 	}
-	if src.Dir != "" {
+	if metadataPathValid(src.Title) {
+		dst.Title = src.Title
+	}
+	if metadataPathValid(src.Dir) {
 		dst.Dir = src.Dir
 	}
-	if len(src.Files) > 0 {
-		dst.Files = src.Files
+	dst.Files = mergeTaskFiles(dst.Files, src.Files)
+	if src.DownloadGroup != nil && metadataPathValid(src.DownloadGroup.ID) {
+		group := copyDownloadGroup(src.DownloadGroup)
+		fillDownloadGroup(group, dst.DownloadGroup)
+		dst.DownloadGroup = group
 	}
-	if src.DownloadGroup != nil {
-		dst.DownloadGroup = copyDownloadGroup(src.DownloadGroup)
+}
+
+func fillBlank(dst *string, src string) {
+	if !metadataPathValid(*dst) && metadataPathValid(src) {
+		*dst = src
 	}
+}
+
+func fillDownloadGroup(dst, src *rpc.DownloadGroup) {
+	if dst == nil || src == nil || dst.ID != src.ID {
+		return
+	}
+	fillBlank(&dst.Kind, src.Kind)
+	fillBlank(&dst.Name, src.Name)
+	fillBlank(&dst.NameStatus, src.NameStatus)
+	fillBlank(&dst.FolderName, src.FolderName)
+	fillBlank(&dst.Dir, src.Dir)
+	if dst.ItemCount == 0 {
+		dst.ItemCount = src.ItemCount
+	}
+	if dst.CreatedAt == 0 {
+		dst.CreatedAt = src.CreatedAt
+	}
+}
+
+// fillTaskMetadata never takes status, errors or measured progress from siblings.
+func fillTaskMetadata(dst *rpc.Task, src rpc.Task) {
+	fillBlank(&dst.Title, src.Title)
+	fillBlank(&dst.Dir, src.Dir)
+	dst.Files = mergeTaskFiles(dst.Files, src.Files)
+	if src.DownloadGroup != nil && metadataPathValid(src.DownloadGroup.ID) {
+		if dst.DownloadGroup == nil || !metadataPathValid(dst.DownloadGroup.ID) {
+			dst.DownloadGroup = copyDownloadGroup(src.DownloadGroup)
+		} else {
+			dst.DownloadGroup = copyDownloadGroup(dst.DownloadGroup)
+			fillDownloadGroup(dst.DownloadGroup, src.DownloadGroup)
+		}
+	}
+}
+
+func mergeTaskFiles(dst, src []rpc.File) []rpc.File {
+	files := copyTask(rpc.Task{Files: dst}).Files
+	files = slices.DeleteFunc(files, func(old rpc.File) bool { return !metadataPathValid(old.Path) })
+	for i := range files {
+		files[i].Uris = slices.DeleteFunc(files[i].Uris, func(old rpc.Uri) bool { return !metadataPathValid(old.Uri) })
+	}
+	for _, file := range src {
+		if !metadataPathValid(file.Path) {
+			continue
+		}
+		i := slices.IndexFunc(files, func(old rpc.File) bool { return old.Path == file.Path })
+		if i < 0 {
+			files = slices.DeleteFunc(files, func(old rpc.File) bool { return !metadataPathValid(old.Path) })
+			files = append(files, rpc.File{Path: file.Path})
+			i = len(files) - 1
+		}
+		for _, uri := range file.Uris {
+			if !metadataPathValid(uri.Uri) {
+				continue
+			}
+			j := slices.IndexFunc(files[i].Uris, func(old rpc.Uri) bool { return old.Uri == uri.Uri })
+			if j < 0 {
+				files[i].Uris = slices.DeleteFunc(files[i].Uris, func(old rpc.Uri) bool { return !metadataPathValid(old.Uri) })
+				files[i].Uris = append(files[i].Uris, uri)
+			} else {
+				fillBlank(&files[i].Uris[j].Status, uri.Status)
+			}
+		}
+	}
+	return files
 }
 
 // GetActive 获取活跃任务（合并 sg+ar 切片，防御性拷贝）
@@ -766,26 +859,16 @@ func (c *TaskCache) EnrichTasks(tasks []rpc.Task) {
 			tasks[i].DownloadGroup = GetStoredTaskGroup(tasks[i].GID)
 		}
 		if metadataHasValidPath(meta) {
-			tasks[i].Title = meta.Title
-			// 构造一个包含首个文件信息的 Files 列表，满足前端和 Tracker 的基本需求
-			if len(meta.Files) > 0 {
-				path := ""
-				for _, candidate := range meta.Files {
-					if metadataPathValid(candidate) {
-						path = candidate
-						break
-					}
-				}
-				if path == "" {
-					continue
-				}
-				tasks[i].Files = []rpc.File{
-					{
-						Path: path,
-						Uris: []rpc.Uri{{Uri: meta.SourceURL}},
-					},
-				}
+			fillBlank(&tasks[i].Title, meta.Title)
+			fillBlank(&tasks[i].Dir, meta.Dir)
+			files := make([]rpc.File, 0, len(meta.Files))
+			for _, path := range meta.Files {
+				files = append(files, rpc.File{Path: path})
 			}
+			if len(files) > 0 && metadataPathValid(meta.SourceURL) {
+				files[0].Uris = []rpc.Uri{{Uri: meta.SourceURL}}
+			}
+			tasks[i].Files = mergeTaskFiles(tasks[i].Files, files)
 		}
 	}
 }
@@ -1053,17 +1136,28 @@ func (c *TaskCache) enrichSgEntry(gid string, full rpc.Task) {
 			if slice[i].GID != gid {
 				continue
 			}
-			if full.Dir != "" {
+			if metadataPathValid(full.Dir) {
 				slice[i].Dir = full.Dir
 			}
-			if len(full.Files) > 0 {
-				slice[i].Files = full.Files
+			completeFiles := len(full.Files) > 0 && len(full.Files) >= len(slice[i].Files)
+			for _, file := range full.Files {
+				completeFiles = completeFiles && metadataPathValid(file.Path) && len(file.Uris) > 0
+				for _, uri := range file.Uris {
+					completeFiles = completeFiles && metadataPathValid(uri.Uri)
+				}
 			}
-			if full.Title != "" {
+			if completeFiles {
+				slice[i].Files = copyTask(full).Files
+			} else {
+				slice[i].Files = mergeTaskFiles(slice[i].Files, full.Files)
+			}
+			if metadataPathValid(full.Title) {
 				slice[i].Title = full.Title
 			}
-			if full.DownloadGroup != nil {
-				slice[i].DownloadGroup = copyDownloadGroup(full.DownloadGroup)
+			if full.DownloadGroup != nil && metadataPathValid(full.DownloadGroup.ID) {
+				group := copyDownloadGroup(full.DownloadGroup)
+				fillDownloadGroup(group, slice[i].DownloadGroup)
+				slice[i].DownloadGroup = group
 			}
 			return true
 		}

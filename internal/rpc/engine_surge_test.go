@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,79 @@ import (
 	"goaria-v3/internal/surge/scheduler"
 	"goaria-v3/internal/surge/types"
 )
+
+func TestSurgeEngine_ReadLiveStatus(t *testing.T) {
+	for _, engine := range []*SurgeEngine{nil, {}} {
+		if got := engine.ReadLiveStatus("missing"); got != (SurgeLiveStatus{}) {
+			t.Fatalf("nil pool: %#v", got)
+		}
+	}
+	pool := scheduler.NewSchedulerForTesting(nil)
+	engine := NewSurgeEngineForTesting(pool)
+	engine.SetMasterCacheForTesting([]types.DownloadRecord{{ID: "master-wait", Status: "queued"}, {ID: "master-run", Status: "downloading"}})
+	if _, err := engine.getDownloadList(); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"", "missing", "master-wait", "master-run"} {
+		if got := engine.ReadLiveStatus(id); got.Known {
+			t.Fatalf("list/master manufactured live: %s %#v", id, got)
+		}
+	}
+	queuedState := progress.New("queued", 1000)
+	queuedState.Bytes.VerifiedProgress.Store(500)
+	queuedState.Done.Store(true)
+	if !pool.Add(types.DownloadRecord{ID: "queued", TotalSize: 1000, Downloaded: 500, ProgressState: queuedState}) {
+		t.Fatal("Add refused")
+	}
+	if got := engine.ReadLiveStatus("queued"); got != (SurgeLiveStatus{Status: "queued", Known: true}) {
+		t.Fatalf("queued priority/measurements: %#v", got)
+	}
+	pool.Cancel("queued")
+
+	for _, tc := range []struct {
+		status string
+		total  int64
+	}{
+		{"downloading", 1000}, {"downloading", 0}, {"pausing", 1000}, {"paused", 1000}, {"error", 1000}, {"completed", 1000}, {"nil-state", 1000},
+	} {
+		t.Run(tc.status+"/"+strconv.FormatInt(tc.total, 10), func(t *testing.T) {
+			state := progress.New("live", tc.total)
+			var ps any = state
+			if tc.status == "nil-state" {
+				ps = nil
+			}
+			pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{"live": {ID: "live", ProgressState: ps}})
+			engine := NewSurgeEngineForTesting(pool)
+			if _, err := engine.getDownloadList(); err != nil {
+				t.Fatal(err)
+			}
+			switch tc.status {
+			case "pausing":
+				state.SetPausing(true)
+			case "paused":
+				state.Paused.Store(true)
+			case "error":
+				state.Done.Store(true)
+				state.SetPausing(true)
+				state.SetError(errors.New("terminal"))
+			case "completed":
+				state.Done.Store(true)
+			}
+			got := engine.ReadLiveStatus("live")
+			if tc.status == "nil-state" {
+				if got.Known {
+					t.Fatal("nil state became running")
+				}
+			} else if got.Status != tc.status || !got.Known || got.TotalLength != tc.total || got.CompletedLength != 0 || got.TotalKnown != (tc.total > 0) || !got.CompletedKnown {
+				t.Fatalf("live status/zero measurement wrong: %#v", got)
+			}
+			cached, _ := engine.getDownloadList()
+			if len(cached) != 1 || cached[0].Status != "downloading" {
+				t.Fatal("live read wrote list cache")
+			}
+		})
+	}
+}
 
 func TestSurgeEngine_MapStatus(t *testing.T) {
 	tests := []struct {

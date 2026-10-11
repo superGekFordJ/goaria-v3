@@ -2,13 +2,203 @@ package monitor
 
 import (
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"goaria-v3/internal/history"
 	"goaria-v3/internal/rpc"
 )
+
+func fullRowForTest(gid string) rpc.Task {
+	group := testDownloadGroup("dg-full-row")
+	return rpc.Task{
+		GID: gid, Title: "retained title", Status: "error", Dir: "/downloads",
+		TotalLength: "1000", CompletedLength: "500", DownloadSpeed: "123",
+		ErrorCode: "9", ErrorMessage: "old error", DownloadGroup: &group,
+		Files: []rpc.File{
+			{Path: "/downloads/a", Uris: []rpc.Uri{{Uri: "https://example.com/a"}, {Uri: "https://mirror.com/a"}}},
+			{Path: "/downloads/b", Uris: []rpc.Uri{{Uri: "https://example.com/b"}}},
+		},
+	}
+}
+
+func assertFullRowMetadata(t *testing.T, got, want rpc.Task) {
+	t.Helper()
+	if got.Title != want.Title || got.Dir != want.Dir || !reflect.DeepEqual(got.Files, want.Files) ||
+		!reflect.DeepEqual(got.DownloadGroup, want.DownloadGroup) {
+		t.Fatalf("full metadata lost: got=%#v files=%#v want=%#v", got, got.Files, want)
+	}
+}
+
+func TestTaskCache_FullRowMerge(t *testing.T) {
+	for _, src := range []string{"active", "waiting", "stopped"} {
+		for _, dest := range []string{"active", "waiting", "stopped"} {
+			for _, add := range []bool{false, true} {
+				if !add && dest == "stopped" {
+					continue
+				}
+				t.Run(src+"/"+dest+"/add="+strconv.FormatBool(add), func(t *testing.T) {
+					c := NewTaskCacheForTest()
+					full := fullRowForTest("sg_full")
+					c.AddSgTask(full, src)
+					if add {
+						c.AddSgTask(rpc.Task{GID: full.GID, Status: dest, TotalLength: "0", CompletedLength: "0", DownloadSpeed: "0"}, dest)
+					} else {
+						from := moveTaskBetweenLists(&c.sgActive, &c.sgWaiting, &c.sgStopped, full.GID, dest, dest, false)
+						if from != src {
+							t.Fatalf("from=%q want=%q", from, src)
+						}
+					}
+					got, list, _ := c.GetTask(full.GID)
+					assertFullRowMetadata(t, got, full)
+					if list != dest || got.Status != dest || got.CompletedLength != "500" || got.TotalLength != "1000" || got.DownloadSpeed != "0" {
+						t.Fatalf("bad move/patch: %#v list=%s", got, list)
+					}
+					if !add && src == "stopped" && (got.ErrorCode != "" || got.ErrorMessage != "") {
+						t.Fatal("stopped move did not clear errors")
+					}
+				})
+			}
+		}
+	}
+	t.Run("twins and ordering", func(t *testing.T) {
+		for _, add := range []bool{false, true} {
+			c := NewTaskCacheForTest()
+			full := fullRowForTest("sg_full")
+			c.sgWaiting = []rpc.Task{{GID: "sg_before"}, {GID: full.GID, Status: "paused", Title: "target", Dir: "/target",
+				DownloadGroup: &rpc.DownloadGroup{ID: full.DownloadGroup.ID, Name: "target group"}}, {GID: "sg_after"}, full}
+			c.sgActive = []rpc.Task{{GID: "sg_other"}, full, full}
+			c.sgStopped = []rpc.Task{full, {GID: "sg_tail"}, full}
+			if add {
+				c.AddSgTask(rpc.Task{GID: full.GID, Status: "waiting"}, "waiting")
+			} else if from := c.MoveTaskToWaitingFromLive(full.GID, "waiting"); from != "waiting" {
+				t.Fatalf("from=%s", from)
+			}
+			full.Title, full.Dir = "target", "/target"
+			full.DownloadGroup.Name = "target group"
+			got, _, _ := c.GetTask(full.GID)
+			assertFullRowMetadata(t, got, full)
+			if got.ErrorCode != "" || got.ErrorMessage != "" {
+				t.Fatal("sibling errors granted authority")
+			}
+			if !reflect.DeepEqual(gidsFromTasks(c.sgWaiting), []string{"sg_before", full.GID, "sg_after"}) ||
+				!reflect.DeepEqual(gidsFromTasks(c.sgActive), []string{"sg_other"}) || !reflect.DeepEqual(gidsFromTasks(c.sgStopped), []string{"sg_tail"}) {
+				t.Fatalf("siblings/order lost: %v %v %v", c.sgActive, c.sgWaiting, c.sgStopped)
+			}
+		}
+	})
+	t.Run("sparse and copied fields", func(t *testing.T) {
+		c := NewTaskCacheForTest()
+		full := fullRowForTest("sg_sparse")
+		c.AddSgTask(full, "active")
+		for _, value := range []string{"", "0", "-1", "invalid", "9223372036854775808"} {
+			c.AddSgTask(rpc.Task{GID: full.GID, TotalLength: value, CompletedLength: value, Title: " ", Dir: " ",
+				Files: []rpc.File{{Path: " "}, {Path: full.Files[0].Path, Uris: []rpc.Uri{{Uri: ""}}}}, DownloadGroup: &rpc.DownloadGroup{}}, "active")
+			got, _, _ := c.GetTask(full.GID)
+			assertFullRowMetadata(t, got, full)
+			if got.TotalLength != "1000" || got.CompletedLength != "500" {
+				t.Fatalf("sparse length=%q/%q", got.TotalLength, got.CompletedLength)
+			}
+		}
+		patch := rpc.Task{GID: full.GID, Title: "new", TotalLength: "900", CompletedLength: "400", DownloadSpeed: "0",
+			Files: []rpc.File{{Path: "/downloads/c", Uris: []rpc.Uri{{Uri: "https://example.com/c"}}}}, DownloadGroup: &rpc.DownloadGroup{ID: "new-group"}}
+		c.AddSgTask(patch, "active")
+		patch.Files[0].Uris[0].Uri = "mutated"
+		patch.Files[0].Path = "mutated"
+		patch.DownloadGroup.ID = "mutated"
+		got, _, _ := c.GetTask(full.GID)
+		if got.Title != "new" || got.TotalLength != "900" || got.CompletedLength != "400" || got.DownloadSpeed != "0" || len(got.Files) != 3 ||
+			got.Files[2].Path != "/downloads/c" || got.Files[2].Uris[0].Uri != "https://example.com/c" || got.DownloadGroup.ID != "new-group" {
+			t.Fatalf("reliable patch/copy failed: %#v files=%#v", got, got.Files)
+		}
+	})
+	t.Run("UnlessStopped is mutation free", func(t *testing.T) {
+		c := NewTaskCacheForTest()
+		full := fullRowForTest("sg_refused")
+		c.sgStopped = []rpc.Task{full, full}
+		c.sgWaiting = []rpc.Task{{GID: full.GID, Title: "live twin"}}
+		a, w, s := c.GetTaskLists()
+		c.AddSgTaskUnlessStopped(rpc.Task{GID: full.GID, Status: "active", Title: "new"}, "active")
+		afterA, afterW, afterS := c.GetTaskLists()
+		if !reflect.DeepEqual(a, afterA) || !reflect.DeepEqual(w, afterW) || !reflect.DeepEqual(s, afterS) {
+			t.Fatal("refused write mutated lists")
+		}
+	})
+}
+
+func TestTaskCache_AriaLiteSnapshotPreservesFullRow(t *testing.T) {
+	c := NewTaskCacheForTest()
+	full := fullRowForTest("ar_full")
+	c.UpdateFromAria2([]rpc.Task{full, {GID: "ar_removed"}}, nil, nil)
+	c.arWaiting = []rpc.Task{{GID: full.GID, Title: "waiting target"}}
+	lite := rpc.Task{GID: full.GID, Status: "paused", TotalLength: "0", CompletedLength: "0", DownloadSpeed: "0", ErrorCode: "1",
+		Files: []rpc.File{{Path: full.Files[1].Path}}}
+	c.UpdateFromAria2(nil, []rpc.Task{lite}, nil)
+	full.Title = "waiting target"
+	got, list, _ := c.GetTask(full.GID)
+	assertFullRowMetadata(t, got, full)
+	if list != "waiting" || got.Status != "paused" || got.TotalLength != "0" || got.CompletedLength != "0" || got.DownloadSpeed != "0" || got.ErrorCode != "1" || got.ErrorMessage != "" {
+		t.Fatalf("snapshot authority lost: %#v", got)
+	}
+	if _, _, ok := c.GetTask("ar_removed"); ok {
+		t.Fatal("deleted snapshot member retained")
+	}
+	c.UpdateFromAria2(nil, nil, []rpc.Task{{GID: full.GID, Status: "complete"}})
+	got, _, _ = c.GetTask(full.GID)
+	assertFullRowMetadata(t, got, full)
+}
+
+func TestTaskCache_EnrichmentPreservesFullRow(t *testing.T) {
+	c := NewTaskCacheForTest()
+	full := fullRowForTest("sg_enrich_full")
+	c.ensureMetadata(full)
+	c.metadata[full.GID].Title = ""
+	tasks := []rpc.Task{copyTask(full)}
+	c.EnrichTasks(tasks)
+	assertFullRowMetadata(t, tasks[0], full)
+	c.AddSgTask(full, "waiting")
+	c.enrichSgEntry(full.GID, rpc.Task{Files: []rpc.File{{Path: full.Files[0].Path}}, Title: ""})
+	got, _, _ := c.GetTask(full.GID)
+	assertFullRowMetadata(t, got, full)
+	fetched := rpc.Task{Files: []rpc.File{{Path: "/downloads/renamed", Uris: []rpc.Uri{{Uri: "https://new"}}}, full.Files[1]}, Title: "new title"}
+	c.enrichSgEntry(full.GID, fetched)
+	fetched.Files[0].Uris[0].Uri = "mutated"
+	got, _, _ = c.GetTask(full.GID)
+	if got.Title != "new title" || got.Files[0].Path != "/downloads/renamed" || got.Files[0].Uris[0].Uri != "https://new" {
+		t.Fatalf("trusted fetch not applied/copied: %#v", got)
+	}
+}
+
+func TestTaskCache_WaitingFastCompletePreservesFullRow(t *testing.T) {
+	resetHistoryForTest(t)
+	c := NewTaskCacheForTest()
+	full := fullRowForTest("sg_wait_fast_full")
+	full.Status = "waiting"
+	c.AddSgTask(full, "waiting")
+	c.AddSgTask(rpc.Task{GID: full.GID, Status: "complete", TotalLength: "1000", CompletedLength: "1000"}, "stopped")
+	got, list, _ := c.GetTask(full.GID)
+	assertFullRowMetadata(t, got, full)
+	assertFullRowMetadata(t, c.GetStopped()[0], full)
+	if list != "stopped" || len(c.GetActive()) != 0 || len(c.GetWaiting()) != 0 || got.CompletedLength != "1000" {
+		t.Fatal("waiting fast complete did not move directly to stopped")
+	}
+	tracker := NewTaskTracker()
+	completed := tracker.Update(nil, nil, c.GetStopped())
+	if len(completed) != 1 {
+		t.Fatalf("completed=%v", completed)
+	}
+	m := &Monitor{tracker: tracker}
+	m.handleTaskComplete(completed[0])
+	entry, ok := history.Get(full.GID)
+	if !ok || entry.Path != full.Files[0].Path || entry.Source != full.Files[0].Uris[0].Uri || entry.Dir != full.Dir ||
+		entry.TotalLength != "1000" || entry.CompletedLength != "1000" || !reflect.DeepEqual(entry.DownloadGroup, full.DownloadGroup) {
+		t.Fatalf("history projection lost full: %#v", entry)
+	}
+}
 
 func TestTaskCache_HasValidMetadataRequiresNonEmptyPath(t *testing.T) {
 	const gid = "gid-empty-path"

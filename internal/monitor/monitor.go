@@ -90,6 +90,8 @@ type Monitor struct {
 	// Per-GID last intention for stale pause event defense (last-intention-wins).
 	pauseResumeIntentions map[string]string
 	pauseResumeVersionMu  sync.RWMutex
+	pauseResumeRequests   map[string]PauseResumeTicket
+	pauseResumeSequence   uint64
 
 	// Surge polling fallback: periodic reconciliation + event stream reconnect.
 	surgePollInterval    time.Duration
@@ -215,16 +217,150 @@ const (
 	PauseResumeIntentionResume = "resume"
 )
 
+// PauseResumeTicket is an opaque, monitor-local request version, not resume authority.
+type PauseResumeTicket struct {
+	owner              *Monitor
+	gid, action        string
+	version            uint64
+	sourceList, status string
+	stamp              lifecycleStamp
+}
+
+// Source returns the initial cache/history projection; empty means unknown.
+func (ticket PauseResumeTicket) Source() (list, status string) {
+	return ticket.sourceList, ticket.status
+}
+
+// BeginPauseResumeRequest records a new request without moving cache or history.
+// A zero ticket is inert; an existing stopped marker does not veto a new request.
+func (m *Monitor) BeginPauseResumeRequest(gid, action string) (ticket PauseResumeTicket) {
+	if m == nil || m.tracker == nil || strings.TrimSpace(gid) == "" ||
+		(action != PauseResumeIntentionPause && action != PauseResumeIntentionResume) {
+		return
+	}
+	m.tracker.RunUnderLifecycle(gid, func() {
+		row, list, ok := Cache.GetTask(gid)
+		if !ok {
+			if entry, exists := history.Get(gid); exists {
+				list, row.Status = "stopped", history.ProjectedStoppedStatus(entry)
+			}
+		}
+		stamp := m.tracker.captureLifecycleStamp(gid)
+		m.pauseResumeVersionMu.Lock()
+		defer m.pauseResumeVersionMu.Unlock()
+		if m.pauseResumeSequence == ^uint64(0) {
+			return
+		}
+		m.pauseResumeSequence++
+		if m.pauseResumeRequests == nil {
+			m.pauseResumeRequests = make(map[string]PauseResumeTicket)
+		}
+		if m.pauseResumeIntentions == nil {
+			m.pauseResumeIntentions = make(map[string]string)
+		}
+		ticket = PauseResumeTicket{owner: m, gid: gid, action: action, version: m.pauseResumeSequence,
+			sourceList: list, status: row.Status, stamp: stamp}
+		m.pauseResumeRequests[gid] = ticket
+		m.pauseResumeIntentions[gid] = action
+	})
+	return
+}
+
+// Caller holds pauseResumeVersionMu; lifecycle freshness is checked separately.
+func (m *Monitor) pauseResumeRequestCurrentLocked(ticket PauseResumeTicket) bool {
+	current, ok := m.pauseResumeRequests[ticket.gid]
+	return ok && ticket.owner == m && ticket.version != 0 && current.version == ticket.version &&
+		current.action == ticket.action && m.pauseResumeIntentions[ticket.gid] == ticket.action
+}
+
+// RunIfPauseResumeRequestCurrent runs only local fact writes under the GID gate.
+// fn must not reenter that gate, call RPC, emit events or invoke business callbacks.
+// true means freshness accepted, not engine success or permission to reopen.
+func (m *Monitor) RunIfPauseResumeRequestCurrent(ticket PauseResumeTicket, fn func()) (accepted bool) {
+	if m == nil || m.tracker == nil || ticket.owner != m || ticket.gid == "" || fn == nil {
+		return false
+	}
+	m.tracker.RunUnderLifecycle(ticket.gid, func() {
+		m.pauseResumeVersionMu.RLock()
+		current := m.pauseResumeRequestCurrentLocked(ticket)
+		m.pauseResumeVersionMu.RUnlock()
+		if current && m.tracker.lifecycleStampCurrent(ticket.gid, ticket.stamp) {
+			fn()
+			accepted = true
+		}
+	})
+	return
+}
+
+// ClearPauseResumeIntentionIfCurrent may clean an expired lifecycle, never a newer request.
+func (m *Monitor) ClearPauseResumeIntentionIfCurrent(ticket PauseResumeTicket) (cleared bool) {
+	if m == nil || m.tracker == nil || ticket.owner != m || ticket.gid == "" {
+		return false
+	}
+	m.tracker.RunUnderLifecycle(ticket.gid, func() {
+		m.pauseResumeVersionMu.Lock()
+		defer m.pauseResumeVersionMu.Unlock()
+		if m.pauseResumeRequestCurrentLocked(ticket) {
+			delete(m.pauseResumeIntentions, ticket.gid)
+			delete(m.pauseResumeRequests, ticket.gid)
+			cleared = true
+		}
+	})
+	return
+}
+
+type surgeLiveStatusReader interface {
+	ReadLiveStatus(id string) rpc.SurgeLiveStatus
+}
+
+// readSurgeLiveStatus converts only Surge GIDs and recognized raw pool statuses.
+// An explicit list reader without the optional seam remains unknown, not engine fallback.
+func (m *Monitor) readSurgeLiveStatus(gid string) rpc.SurgeLiveStatus {
+	if m == nil || !strings.HasPrefix(gid, "sg_") || gid == "sg_" {
+		return rpc.SurgeLiveStatus{}
+	}
+	var live rpc.SurgeLiveStatus
+	id := strings.TrimPrefix(gid, "sg_")
+	if m.surgePollReader != nil {
+		if reader, ok := m.surgePollReader.(surgeLiveStatusReader); ok {
+			live = reader.ReadLiveStatus(id)
+		}
+	} else {
+		live = m.surgeEng.ReadLiveStatus(id)
+	}
+	if !live.Known {
+		return rpc.SurgeLiveStatus{}
+	}
+	switch live.Status {
+	case "queued":
+		live.Status = "waiting"
+	case "downloading":
+		live.Status = "active"
+	case "pausing", "paused":
+		live.Status = "paused"
+	case "completed":
+		live.Status = "complete"
+	case "error":
+		live.Status = "error"
+	default:
+		return rpc.SurgeLiveStatus{}
+	}
+	return live
+}
+
 func (m *Monitor) BumpPauseResumeIntention(gid string, action string) {
 	if m == nil || gid == "" {
 		return
 	}
-	m.pauseResumeVersionMu.Lock()
-	defer m.pauseResumeVersionMu.Unlock()
-	if m.pauseResumeIntentions == nil {
-		m.pauseResumeIntentions = make(map[string]string)
-	}
-	m.pauseResumeIntentions[gid] = action
+	m.tracker.RunUnderLifecycle(gid, func() {
+		m.pauseResumeVersionMu.Lock()
+		defer m.pauseResumeVersionMu.Unlock()
+		if m.pauseResumeIntentions == nil {
+			m.pauseResumeIntentions = make(map[string]string)
+		}
+		m.pauseResumeIntentions[gid] = action
+		delete(m.pauseResumeRequests, gid)
+	})
 }
 
 func (m *Monitor) shouldDiscardStalePause(gid string) bool {
@@ -260,11 +396,12 @@ func (m *Monitor) ClearPauseResumeIntention(gid string) {
 	if m == nil || gid == "" {
 		return
 	}
-	m.pauseResumeVersionMu.Lock()
-	defer m.pauseResumeVersionMu.Unlock()
-	if m.pauseResumeIntentions != nil {
+	m.tracker.RunUnderLifecycle(gid, func() {
+		m.pauseResumeVersionMu.Lock()
+		defer m.pauseResumeVersionMu.Unlock()
 		delete(m.pauseResumeIntentions, gid)
-	}
+		delete(m.pauseResumeRequests, gid)
+	})
 }
 
 // RetireHistoryIfResumedFromStopped removes durable history when a GID leaves
@@ -301,11 +438,19 @@ func (m *Monitor) RetireHistoryIfResumedFromStopped(gid, from string) {
 	retireHistoryAndReopen(tracker, gid)
 }
 
-// retireHistoryAndReopenLocked performs reopen + group re-home + history remove.
-// Caller must already hold the GID lifecycle lock (or accept no serialization).
+// retireHistoryAndReopenLocked retains the legacy active reopening target.
 func retireHistoryAndReopenLocked(tracker *TaskTracker, gid string) {
+	retireHistoryAndReopenToStatusLocked(tracker, gid, "active")
+}
+
+// Caller holds the GID gate and has accepted a real stopped→live transition.
+// This helper supplies neither authorization nor duplicate-ack detection.
+func retireHistoryAndReopenToStatusLocked(tracker *TaskTracker, gid, targetStatus string) {
+	if gid == "" || (targetStatus != "active" && targetStatus != "waiting" && targetStatus != "paused") {
+		return
+	}
 	if tracker != nil {
-		tracker.ReopenAfterStoppedToLive(gid, "active")
+		tracker.ReopenAfterStoppedToLive(gid, targetStatus)
 		if tracker.retireBetweenReopenAndRemove != nil {
 			tracker.retireBetweenReopenAndRemove(gid)
 		}
@@ -343,6 +488,9 @@ func (m *Monitor) markCompleteAndHandleLocked(gid, status string, prep func(*Tra
 		return
 	}
 	completed := m.tracker.MarkCompleteFromEvent(gid, status)
+	m.pauseResumeVersionMu.Lock()
+	delete(m.pauseResumeRequests, gid)
+	m.pauseResumeVersionMu.Unlock()
 	if completed == nil {
 		return
 	}
@@ -879,9 +1027,8 @@ func (m *Monitor) InvalidateTask(gid string) {
 
 	// 6. 清理 pause/resume intention，避免长期运行内存泄漏
 	m.pauseResumeVersionMu.Lock()
-	if m.pauseResumeIntentions != nil {
-		delete(m.pauseResumeIntentions, gid)
-	}
+	delete(m.pauseResumeIntentions, gid)
+	delete(m.pauseResumeRequests, gid)
 	m.pauseResumeVersionMu.Unlock()
 
 	log.Printf("[Monitor] Task invalidated: %s", gid)

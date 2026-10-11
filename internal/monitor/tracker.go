@@ -128,6 +128,34 @@ type lifecycleState struct {
 	mu              sync.Mutex
 	generation      uint64
 	terminalHandled bool
+	revision        uint64
+}
+
+// lifecycleStamp includes entry identity, so deletion and same-ID re-add differ.
+type lifecycleStamp struct {
+	entry    *lifecycleState
+	revision uint64
+}
+
+func (t *TaskTracker) captureLifecycleStamp(gid string) lifecycleStamp {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	entry := t.getLifecycle(gid)
+	return lifecycleStamp{entry: entry, revision: entry.revision}
+}
+
+func (t *TaskTracker) lifecycleStampCurrent(gid string, stamp lifecycleStamp) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	t.lifecycleMu.Lock()
+	entry := t.lifecycle[gid]
+	t.lifecycleMu.Unlock()
+	return entry != nil && entry == stamp.entry && entry.revision == stamp.revision
+}
+
+// Caller holds tracker.mu; even a deduplicated terminal invalidates older reads.
+func (t *TaskTracker) advanceLifecycleRevisionLocked(gid string) {
+	t.getLifecycle(gid).revision++
 }
 
 // TaskTracker 后端任务追踪器
@@ -196,6 +224,7 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 	for _, task := range stopped {
 		currentGids[task.GID] = true
 		if task.Status == "complete" || task.Status == "error" {
+			t.advanceLifecycleRevisionLocked(task.GID)
 			// Generation-scoped: do not take lifecycle lock here (holds tracker.mu).
 			if t.isTerminalAcceptedLocked(task.GID) {
 				continue
@@ -870,6 +899,7 @@ func (t *TaskTracker) ReopenAfterStoppedToLive(gid, status string) {
 	defer t.mu.Unlock()
 	ls := t.getLifecycle(gid)
 	ls.generation++
+	ls.revision++
 	ls.terminalHandled = false
 	delete(t.processedComplete, gid)
 	if status == "" {
@@ -911,6 +941,7 @@ func (t *TaskTracker) UpdateProgressFromEvent(gid string, totalLength, completed
 func (t *TaskTracker) MarkCompleteFromEvent(gid string, status string) *TrackedTask {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.advanceLifecycleRevisionLocked(gid)
 
 	tracked := t.tasks[gid]
 	if tracked == nil {

@@ -10,6 +10,7 @@ import (
 	"goaria-v3/internal/events"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/rpc"
+	"goaria-v3/internal/surge/scheduler"
 	surgeEvents "goaria-v3/internal/surge/types"
 )
 
@@ -22,6 +23,27 @@ type mockSurgeListReader struct {
 	stopped  []rpc.Task
 	activeFn func() ([]rpc.Task, error)
 	err      error
+	live     map[string]rpc.SurgeLiveStatus
+	liveFn   func(string) rpc.SurgeLiveStatus
+}
+
+func (m *mockSurgeListReader) ReadLiveStatus(id string) rpc.SurgeLiveStatus {
+	m.mu.Lock()
+	live, fn := m.live[id], m.liveFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(id)
+	}
+	return live
+}
+
+func (m *mockSurgeListReader) setLiveStatus(id string, live rpc.SurgeLiveStatus) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.live == nil {
+		m.live = make(map[string]rpc.SurgeLiveStatus)
+	}
+	m.live[id] = live
 }
 
 func (m *mockSurgeListReader) TellActive() ([]rpc.Task, error) {
@@ -60,6 +82,75 @@ func (m *mockSurgeListReader) setLists(active, waiting, stopped []rpc.Task) {
 	m.active = active
 	m.waiting = waiting
 	m.stopped = stopped
+}
+
+func TestSurgeLiveStatus_IndependentStrictFacts(t *testing.T) {
+	m, reader, _, tracker := newReconcileTestMonitor(t)
+	resetHistoryForTest(t)
+	full := fullRowForTest("sg_live_facts")
+	Cache.AddSgTask(full, "waiting")
+	reader.setLists([]rpc.Task{{GID: "live_facts", Status: "active"}}, nil, nil)
+	if m.readSurgeLiveStatus(full.GID).Known {
+		t.Fatal("list active became live evidence")
+	}
+	for raw, want := range map[string]string{"queued": "waiting", "downloading": "active", "pausing": "paused", "paused": "paused", "completed": "complete", "error": "error", "unknown": "", "waiting": ""} {
+		reader.setLiveStatus("live_facts", rpc.SurgeLiveStatus{Status: raw, Known: true, TotalLength: 1000, TotalKnown: true, CompletedKnown: true})
+		live := m.readSurgeLiveStatus(full.GID)
+		if live.Known != (want != "") || live.Status != want || (live.Known && (!live.TotalKnown || !live.CompletedKnown || live.CompletedLength != 0)) {
+			t.Fatalf("strict %s: %#v", raw, live)
+		}
+	}
+	reader.setLists(nil, []rpc.Task{{GID: "live_facts", Status: "waiting"}}, nil)
+	reader.setLiveStatus("live_facts", rpc.SurgeLiveStatus{Status: "downloading", Known: true})
+	if live := m.readSurgeLiveStatus(full.GID); !live.Known || live.Status != "active" {
+		t.Fatal("waiting list overrode running live")
+	}
+	reader.setLists([]rpc.Task{{GID: "live_facts", Status: "active"}}, nil, nil)
+	reader.setLiveStatus("live_facts", rpc.SurgeLiveStatus{Status: "queued", Known: true})
+	if live := m.readSurgeLiveStatus(full.GID); live.Status != "waiting" || live.TotalKnown || live.CompletedKnown {
+		t.Fatal("active list overrode queued live")
+	}
+	for _, gid := range []string{"", "sg_", "ar_live_facts", "live_facts"} {
+		if m.readSurgeLiveStatus(gid).Known {
+			t.Fatalf("non-Surge prefix accepted: %s", gid)
+		}
+	}
+	reader.setLiveStatus("live_facts", rpc.SurgeLiveStatus{})
+	if m.readSurgeLiveStatus(full.GID).Known {
+		t.Fatal("unknown live fell back to list")
+	}
+	got, list, _ := Cache.GetTask(full.GID)
+	assertFullRowMetadata(t, got, full)
+	if list != "waiting" || got.Status != full.Status || tracker.HasLifecycleEntry(full.GID) || historyCount() != 0 {
+		t.Fatal("read had lifecycle/cache/history side effects")
+	}
+	pool := scheduler.NewSchedulerForTesting(nil)
+	pool.Add(surgeEvents.DownloadRecord{ID: "live_facts"})
+	se := rpc.NewSurgeEngineForTesting(pool)
+	if (&Monitor{surgeEng: se}).readSurgeLiveStatus(full.GID).Status != "waiting" {
+		t.Fatal("engine fallback did not read raw ID")
+	}
+	if (&Monitor{surgeEng: se, surgePollReader: &mockSafeEngine{}}).readSurgeLiveStatus(full.GID).Known || (*Monitor)(nil).readSurgeLiveStatus(full.GID).Known {
+		t.Fatal("missing seam/nil monitor not unknown")
+	}
+	pool.Cancel("live_facts")
+}
+
+func TestSurgeLiveStatus_FixtureCallbackOutsideMutex(t *testing.T) {
+	reader := &mockSurgeListReader{}
+	reader.liveFn = func(id string) rpc.SurgeLiveStatus {
+		reader.setLiveStatus(id, rpc.SurgeLiveStatus{Status: "queued", Known: true})
+		return rpc.SurgeLiveStatus{Status: "downloading", Known: true}
+	}
+	if live := reader.ReadLiveStatus("raw"); live.Status != "downloading" {
+		t.Fatal("callback ignored")
+	}
+	reader.mu.Lock()
+	reader.liveFn = nil
+	reader.mu.Unlock()
+	if live := reader.ReadLiveStatus("raw"); live.Status != "queued" {
+		t.Fatal("independent live map lost")
+	}
 }
 
 // newReconcileTestMonitor builds a Monitor wired with a mockSurgeListReader,

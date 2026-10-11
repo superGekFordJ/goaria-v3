@@ -49,6 +49,41 @@ func (e *SurgeEngine) getScheduler() *scheduler.Scheduler {
 	return nil
 }
 
+// SurgeLiveStatus is a Go-only scalar pool snapshot, independent of retained lists.
+type SurgeLiveStatus struct {
+	Status                       string
+	Known                        bool
+	TotalLength, CompletedLength int64
+	TotalKnown, CompletedKnown   bool
+}
+
+// ReadLiveStatus takes a raw engine ID and never reads or writes list/master caches.
+// Queued lengths are unmeasured; progress zero is measured except unknown total size.
+func (e *SurgeEngine) ReadLiveStatus(id string) SurgeLiveStatus {
+	if e == nil || id == "" {
+		return SurgeLiveStatus{}
+	}
+	pool := e.getScheduler()
+	if pool == nil {
+		return SurgeLiveStatus{}
+	}
+	status := pool.GetStatus(id)
+	if status == nil {
+		return SurgeLiveStatus{}
+	}
+	if status.Status == "queued" {
+		return SurgeLiveStatus{Status: "queued", Known: true}
+	}
+	switch status.Status {
+	case "downloading", "pausing", "paused", "completed", "error":
+		return SurgeLiveStatus{Status: status.Status, Known: true,
+			TotalLength: status.TotalSize, CompletedLength: status.Downloaded,
+			TotalKnown: status.TotalSize > 0, CompletedKnown: status.Downloaded >= 0}
+	default:
+		return SurgeLiveStatus{}
+	}
+}
+
 // ActiveCount returns the count of active or queued downloads in the scheduler.
 func (e *SurgeEngine) ActiveCount() int {
 	if e == nil {
