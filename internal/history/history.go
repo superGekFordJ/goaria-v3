@@ -84,6 +84,7 @@ var (
 	maxBurstNanos       atomic.Int64
 	saveTriggerCount    atomic.Int64
 	saveWriteCount      atomic.Int64
+	lastSavedTrigger    atomic.Int64
 	saverOnce           sync.Once
 	SaveEnabled         = true
 	hooksMu             sync.RWMutex
@@ -184,17 +185,22 @@ func GetHistoryPath() string {
 }
 
 func cleanOrphanTemps(dir string) {
-	matches, err := filepath.Glob(filepath.Join(dir, ".history-*.tmp"))
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
-	for _, match := range matches {
-		_ = os.Remove(match)
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), ".history-") && strings.HasSuffix(entry.Name(), ".tmp") {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
 	}
 }
 
 // Load reads history from disk
 func Load() {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -272,6 +278,7 @@ func performDurableSave(requireSaveEnabled bool) error {
 		mu.RUnlock()
 		return nil
 	}
+	triggerSnap := saveTriggerCount.Load()
 	toMarshal := entries
 	if toMarshal == nil {
 		toMarshal = []HistoryEntry{}
@@ -289,6 +296,7 @@ func performDurableSave(requireSaveEnabled bool) error {
 	}
 
 	saveWriteCount.Add(1)
+	lastSavedTrigger.Store(triggerSnap)
 	return nil
 }
 
@@ -643,6 +651,10 @@ func saveLoop() {
 		select {
 		case <-saveChan:
 		default:
+		}
+
+		if saveTriggerCount.Load() <= lastSavedTrigger.Load() {
+			continue
 		}
 
 		doSave()

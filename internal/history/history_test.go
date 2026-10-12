@@ -931,6 +931,24 @@ func TestHistory_AtomicWrite_PreservesTargetAndCleansTemp(t *testing.T) {
 	if !ok || entry.Title != "Atomic" {
 		t.Fatalf("expected entry atom-1 restored by Load(), got %#v", entry)
 	}
+
+	// 3. Simulated failure: atomicWrite to an invalid target (existing directory)
+	// verifies deferred os.Remove(tmpName) cleans up the temporary file on error.
+	dirTarget := filepath.Join(dir, "target_is_dir")
+	if err := os.Mkdir(dirTarget, 0o755); err != nil {
+		t.Fatalf("failed to create dirTarget: %v", err)
+	}
+	if err := atomicWrite(dirTarget, []byte(`[{"gid":"fail-1"}]`)); err == nil {
+		t.Fatal("expected atomicWrite to fail when target is an existing directory")
+	}
+
+	matchesAfterFailure, err := filepath.Glob(filepath.Join(dir, ".history-*.tmp"))
+	if err != nil {
+		t.Fatalf("Glob failed: %v", err)
+	}
+	if len(matchesAfterFailure) != 0 {
+		t.Fatalf("expected temp file to be cleaned up on write failure, found %v", matchesAfterFailure)
+	}
 }
 
 func TestHistory_Flush_SynchronousDurability(t *testing.T) {
@@ -1024,20 +1042,20 @@ func TestHistory_AdaptiveDebounce_MaxBurstHardCap(t *testing.T) {
 	SetSaveEnabled(true)
 	defer DisableSaveForTest()
 
-	SetDebounceDuration(25 * time.Millisecond)
+	SetDebounceDuration(100 * time.Millisecond)
 	SetMaxBurstDuration(50 * time.Millisecond)
 
 	beforeWrites := saveWriteCount.Load()
 
-	// Feed an Add() every 10ms for 80ms (continuously resetting idleTimer)
+	// Feed an Add() every 15ms for ~90ms (stream interval 15ms << 100ms debounce)
 	done := make(chan struct{})
 	var midWrites atomic.Int64
 
 	go func() {
-		for i := range 8 {
+		for i := range 6 {
 			Add(HistoryEntry{GID: strconv.Itoa(3000 + i), Title: "Stream " + strconv.Itoa(i)})
-			time.Sleep(10 * time.Millisecond)
-			if i == 5 { // at ~60ms, stream is still active
+			time.Sleep(15 * time.Millisecond)
+			if i == 3 { // at ~60ms, stream is still active
 				midWrites.Store(saveWriteCount.Load() - beforeWrites)
 			}
 		}
@@ -1050,8 +1068,8 @@ func TestHistory_AdaptiveDebounce_MaxBurstHardCap(t *testing.T) {
 		t.Fatalf("expected hard cap to force at least 1 write before 60ms during continuous stream, got %d", midWrites.Load())
 	}
 
-	// Allow final idle window to settle
-	time.Sleep(50 * time.Millisecond)
+	// Allow final idle window to settle (debounce duration is 100ms, wait 150ms)
+	time.Sleep(150 * time.Millisecond)
 
 	totalWrites := saveWriteCount.Load() - beforeWrites
 	if totalWrites < 2 {
