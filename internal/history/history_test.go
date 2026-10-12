@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ func setupTest(t *testing.T) string {
 	historyFile := filepath.Join(tmpDir, "history.json")
 	SetHistoryPath(historyFile)
 	SetDebounceDuration(10 * time.Millisecond)
+	SetMaxBurstDuration(50 * time.Millisecond)
 	DisableSaveForTest()
 	Clear()
 	return historyFile
@@ -874,5 +876,248 @@ func TestLoadLegacyFileWithoutTimingFields(t *testing.T) {
 	}
 	if got.DurationMs != 0 || got.AvgSpeed != 0 || got.PeakSpeed != 0 {
 		t.Fatalf("legacy entry grew timing: %+v", got)
+	}
+}
+
+func TestHistory_AtomicWrite_PreservesTargetAndCleansTemp(t *testing.T) {
+	historyFile := setupTest(t)
+	dir := filepath.Dir(historyFile)
+
+	// 1. Direct atomicWrite verification
+	testData := []byte(`[{"gid":"atom-1","title":"Atomic"}]`)
+	if err := atomicWrite(historyFile, testData); err != nil {
+		t.Fatalf("atomicWrite failed: %v", err)
+	}
+
+	content, err := os.ReadFile(historyFile)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if string(content) != string(testData) {
+		t.Fatalf("content mismatch: got %s, want %s", string(content), string(testData))
+	}
+
+	// Verify no .history-*.tmp files exist in directory
+	matches, err := filepath.Glob(filepath.Join(dir, ".history-*.tmp"))
+	if err != nil {
+		t.Fatalf("Glob failed: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected 0 leftover temp files, found %v", matches)
+	}
+
+	// 2. Orphaned temp file cleanup on Load()
+	orphan1 := filepath.Join(dir, ".history-12345.tmp")
+	orphan2 := filepath.Join(dir, ".history-67890.tmp")
+	if err := os.WriteFile(orphan1, []byte("junk1"), 0o644); err != nil {
+		t.Fatalf("failed to create orphan1: %v", err)
+	}
+	if err := os.WriteFile(orphan2, []byte("junk2"), 0o644); err != nil {
+		t.Fatalf("failed to create orphan2: %v", err)
+	}
+
+	Load()
+
+	matchesAfterLoad, err := filepath.Glob(filepath.Join(dir, ".history-*.tmp"))
+	if err != nil {
+		t.Fatalf("Glob failed: %v", err)
+	}
+	if len(matchesAfterLoad) != 0 {
+		t.Fatalf("expected orphan files to be cleaned up by Load(), found %v", matchesAfterLoad)
+	}
+
+	// Ensure valid target file remained intact and readable
+	entry, ok := Get("atom-1")
+	if !ok || entry.Title != "Atomic" {
+		t.Fatalf("expected entry atom-1 restored by Load(), got %#v", entry)
+	}
+}
+
+func TestHistory_Flush_SynchronousDurability(t *testing.T) {
+	historyFile := setupTest(t)
+	SetSaveEnabled(true)
+	defer DisableSaveForTest()
+
+	// 1. When SaveEnabled is true, Flush writes synchronously
+	entry := HistoryEntry{GID: "flush-1", Title: "Flush Item"}
+	Add(entry)
+
+	if err := Flush(); err != nil {
+		t.Fatalf("Flush() failed: %v", err)
+	}
+
+	data, err := os.ReadFile(historyFile)
+	if err != nil {
+		t.Fatalf("failed to read flushed file: %v", err)
+	}
+
+	var loaded []HistoryEntry
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatalf("flushed content is not valid JSON: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].GID != "flush-1" {
+		t.Fatalf("expected 1 flushed entry with GID flush-1, got %#v", loaded)
+	}
+
+	// 2. When SaveEnabled is false, Flush is a no-op and respects SaveEnabled
+	SetSaveEnabled(false)
+	Add(HistoryEntry{GID: "flush-2", Title: "Unsaved Item"})
+
+	if err := Flush(); err != nil {
+		t.Fatalf("Flush() with SaveEnabled=false should succeed (no-op), got: %v", err)
+	}
+
+	// Target file should still only contain the first entry
+	dataAfterDisabled, err := os.ReadFile(historyFile)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+	var loadedAfter []HistoryEntry
+	if err := json.Unmarshal(dataAfterDisabled, &loadedAfter); err != nil {
+		t.Fatalf("content is not valid JSON: %v", err)
+	}
+	if len(loadedAfter) != 1 || loadedAfter[0].GID != "flush-1" {
+		t.Fatalf("expected file to remain unchanged when SaveEnabled=false, got %#v", loadedAfter)
+	}
+}
+
+func TestHistory_AdaptiveDebounce_BurstCoalescing(t *testing.T) {
+	historyFile := setupTest(t)
+	SetSaveEnabled(true)
+	defer DisableSaveForTest()
+
+	// Debounce 30ms, MaxBurst 200ms
+	SetDebounceDuration(30 * time.Millisecond)
+	SetMaxBurstDuration(200 * time.Millisecond)
+
+	beforeWrites := saveWriteCount.Load()
+
+	// Rapidly add 20 entries in tight loop (< 5ms)
+	for i := range 20 {
+		Add(HistoryEntry{GID: strconv.Itoa(1000 + i), Title: "Burst " + strconv.Itoa(i)})
+	}
+
+	// Wait for idle window to settle (30ms debounce + safety margin)
+	time.Sleep(80 * time.Millisecond)
+
+	delta := saveWriteCount.Load() - beforeWrites
+	if delta != 1 {
+		t.Fatalf("expected exactly 1 coalesced write for 20 rapid modifications, got %d", delta)
+	}
+
+	// Verify on disk that all 20 entries were persisted in that single write
+	data, err := os.ReadFile(historyFile)
+	if err != nil {
+		t.Fatalf("failed to read history file: %v", err)
+	}
+	var loaded []HistoryEntry
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(loaded) != 20 {
+		t.Fatalf("expected all 20 entries on disk, got %d", len(loaded))
+	}
+}
+
+func TestHistory_AdaptiveDebounce_MaxBurstHardCap(t *testing.T) {
+	_ = setupTest(t)
+	SetSaveEnabled(true)
+	defer DisableSaveForTest()
+
+	SetDebounceDuration(25 * time.Millisecond)
+	SetMaxBurstDuration(50 * time.Millisecond)
+
+	beforeWrites := saveWriteCount.Load()
+
+	// Feed an Add() every 10ms for 80ms (continuously resetting idleTimer)
+	done := make(chan struct{})
+	var midWrites atomic.Int64
+
+	go func() {
+		for i := range 8 {
+			Add(HistoryEntry{GID: strconv.Itoa(3000 + i), Title: "Stream " + strconv.Itoa(i)})
+			time.Sleep(10 * time.Millisecond)
+			if i == 5 { // at ~60ms, stream is still active
+				midWrites.Store(saveWriteCount.Load() - beforeWrites)
+			}
+		}
+		close(done)
+	}()
+
+	<-done
+
+	if midWrites.Load() < 1 {
+		t.Fatalf("expected hard cap to force at least 1 write before 60ms during continuous stream, got %d", midWrites.Load())
+	}
+
+	// Allow final idle window to settle
+	time.Sleep(50 * time.Millisecond)
+
+	totalWrites := saveWriteCount.Load() - beforeWrites
+	if totalWrites < 2 {
+		t.Fatalf("expected at least 2 writes (1 hard cap + 1 trailing idle), got %d", totalWrites)
+	}
+}
+
+func TestHistory_ConcurrentWrites_NoSnapshotRegression(t *testing.T) {
+	historyFile := setupTest(t)
+	SetSaveEnabled(true)
+	defer DisableSaveForTest()
+
+	SetDebounceDuration(10 * time.Millisecond)
+	SetMaxBurstDuration(30 * time.Millisecond)
+
+	const goroutines = 10
+	const opsPerGoroutine = 30
+	var wg sync.WaitGroup
+
+	for g := range goroutines {
+		wg.Add(1)
+		go func(routineID int) {
+			defer wg.Done()
+			for i := range opsPerGoroutine {
+				gid := strconv.Itoa(routineID*1000 + i)
+				Add(HistoryEntry{GID: gid, Title: "Concurrent " + gid})
+				if i%5 == 0 {
+					_ = Flush()
+				}
+				if i%10 == 0 {
+					RemoveMany([]string{strconv.Itoa(routineID*1000 + (i - 2))})
+				}
+			}
+		}(g)
+	}
+
+	wg.Wait()
+
+	// Final flush to ensure all surviving entries are written to disk
+	if err := Flush(); err != nil {
+		t.Fatalf("final Flush failed: %v", err)
+	}
+
+	data, err := os.ReadFile(historyFile)
+	if err != nil {
+		t.Fatalf("failed to read history file: %v", err)
+	}
+
+	var loaded []HistoryEntry
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatalf("history file corrupted, not valid JSON: %v", err)
+	}
+
+	// In-memory entries must match on-disk entries
+	inMem := GetAll()
+	if len(loaded) != len(inMem) {
+		t.Fatalf("entry count mismatch: disk has %d, memory has %d", len(loaded), len(inMem))
+	}
+
+	diskMap := make(map[string]bool, len(loaded))
+	for _, e := range loaded {
+		diskMap[e.GID] = true
+	}
+	for _, e := range inMem {
+		if !diskMap[e.GID] {
+			t.Fatalf("entry %s present in memory but missing on disk", e.GID)
+		}
 	}
 }

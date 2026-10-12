@@ -77,10 +77,13 @@ var (
 	gidIndex            map[string]int
 	sourceIndex         map[string]int
 	mu                  sync.RWMutex
-	historyPath         string
+	writeMu             sync.Mutex
+	historyPath         atomic.Value
 	saveChan            = make(chan struct{}, 1)
 	debounceNanos       atomic.Int64
+	maxBurstNanos       atomic.Int64
 	saveTriggerCount    atomic.Int64
+	saveWriteCount      atomic.Int64
 	saverOnce           sync.Once
 	SaveEnabled         = true
 	hooksMu             sync.RWMutex
@@ -90,19 +93,26 @@ var (
 )
 
 func init() {
-	debounceNanos.Store(int64(500 * time.Millisecond))
+	debounceNanos.Store(int64(300 * time.Millisecond))
+	maxBurstNanos.Store(int64(1500 * time.Millisecond))
 }
 
 // SetHistoryPath overrides the default history file path.
 // This is primarily used for testing to isolate test data.
 func SetHistoryPath(path string) {
-	historyPath = path
+	historyPath.Store(path)
 }
 
 // SetDebounceDuration configures the debounce interval for batch saving.
-// Default is 500ms. This is primarily used for testing.
+// Default is 300ms. This is primarily used for testing.
 func SetDebounceDuration(d time.Duration) {
 	debounceNanos.Store(int64(d))
+}
+
+// SetMaxBurstDuration configures the maximum burst coalescing window hard cap.
+// Default is 1500ms. This is primarily used for testing.
+func SetMaxBurstDuration(d time.Duration) {
+	maxBurstNanos.Store(int64(d))
 }
 
 // SetSaveEnabled sets the SaveEnabled flag under the write lock.
@@ -162,8 +172,10 @@ func DisableSaveForTest() {
 
 // GetHistoryPath returns the path to history.json
 func GetHistoryPath() string {
-	if historyPath != "" {
-		return historyPath
+	if val := historyPath.Load(); val != nil {
+		if path, ok := val.(string); ok && path != "" {
+			return path
+		}
 	}
 	home, _ := os.UserHomeDir()
 	dir := filepath.Join(home, ".goaria")
@@ -171,15 +183,28 @@ func GetHistoryPath() string {
 	return filepath.Join(dir, "history.json")
 }
 
+func cleanOrphanTemps(dir string) {
+	matches, err := filepath.Glob(filepath.Join(dir, ".history-*.tmp"))
+	if err != nil {
+		return
+	}
+	for _, match := range matches {
+		_ = os.Remove(match)
+	}
+}
+
 // Load reads history from disk
 func Load() {
 	mu.Lock()
 	defer mu.Unlock()
 
+	targetPath := GetHistoryPath()
+	cleanOrphanTemps(filepath.Dir(targetPath))
+
 	entries = []HistoryEntry{}
 	gidIndex = make(map[string]int)
 	sourceIndex = make(map[string]int)
-	data, err := os.ReadFile(GetHistoryPath())
+	data, err := os.ReadFile(targetPath)
 	if err == nil {
 		_ = json.Unmarshal(data, &entries)
 		for i, e := range entries {
@@ -191,16 +216,90 @@ func Load() {
 	}
 }
 
-// Save writes history to disk
-func Save() error {
-	mu.Lock()
-	defer mu.Unlock()
+func atomicWrite(targetPath string, data []byte) error {
+	dir := filepath.Dir(targetPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
 
-	data, err := json.MarshalIndent(entries, "", "  ")
+	tmp, err := os.CreateTemp(dir, ".history-*.tmp")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(GetHistoryPath(), data, 0o644)
+	tmpName := tmp.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = tmp.Close()
+		}
+		_ = os.Remove(tmpName)
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+
+	_ = tmp.Chmod(0o644)
+
+	closed = true
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	backoffs := []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond, 15 * time.Millisecond}
+	var renameErr error
+	for _, sleep := range backoffs {
+		if sleep > 0 {
+			time.Sleep(sleep)
+		}
+		if renameErr = os.Rename(tmpName, targetPath); renameErr == nil {
+			return nil
+		}
+	}
+	return renameErr
+}
+
+func performDurableSave(requireSaveEnabled bool) error {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+
+	mu.RLock()
+	if requireSaveEnabled && !SaveEnabled {
+		mu.RUnlock()
+		return nil
+	}
+	toMarshal := entries
+	if toMarshal == nil {
+		toMarshal = []HistoryEntry{}
+	}
+	data, err := json.MarshalIndent(toMarshal, "", "  ")
+	mu.RUnlock()
+
+	if err != nil {
+		return err
+	}
+
+	targetPath := GetHistoryPath()
+	if err := atomicWrite(targetPath, data); err != nil {
+		return err
+	}
+
+	saveWriteCount.Add(1)
+	return nil
+}
+
+// Save writes history to disk
+func Save() error {
+	return performDurableSave(false)
+}
+
+// Flush synchronously writes pending history entries to disk if SaveEnabled is true.
+func Flush() error {
+	return performDurableSave(true)
 }
 
 // Add adds a new entry to history (deduplicates by GID)
@@ -505,8 +604,42 @@ func triggerSaveLocked() {
 func saveLoop() {
 	for {
 		<-saveChan
-		time.Sleep(time.Duration(debounceNanos.Load()))
-		// drain extra signals
+
+		idleTimer := time.NewTimer(time.Duration(debounceNanos.Load()))
+		maxTimer := time.NewTimer(time.Duration(maxBurstNanos.Load()))
+
+	coalesce:
+		for {
+			select {
+			case <-saveChan:
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
+				}
+				idleTimer.Reset(time.Duration(debounceNanos.Load()))
+			case <-idleTimer.C:
+				break coalesce
+			case <-maxTimer.C:
+				break coalesce
+			}
+		}
+
+		if !idleTimer.Stop() {
+			select {
+			case <-idleTimer.C:
+			default:
+			}
+		}
+		if !maxTimer.Stop() {
+			select {
+			case <-maxTimer.C:
+			default:
+			}
+		}
+
+		// Drain redundant pending signal before snapshotting to prevent double-save
 		select {
 		case <-saveChan:
 		default:
@@ -518,20 +651,7 @@ func saveLoop() {
 
 // doSave performs the actual save operation
 func doSave() {
-	mu.RLock()
-	if !SaveEnabled {
-		mu.RUnlock()
-		return
-	}
-	data, err := json.MarshalIndent(entries, "", "  ")
-	mu.RUnlock()
-
-	if err != nil {
-		log.Printf("[history] Failed to marshal entries: %v", err)
-		return
-	}
-
-	if err := os.WriteFile(GetHistoryPath(), data, 0o644); err != nil {
-		log.Printf("[history] Failed to write file: %v", err)
+	if err := performDurableSave(true); err != nil {
+		log.Printf("[history] Background save failed: %v", err)
 	}
 }

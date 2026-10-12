@@ -287,6 +287,13 @@ func main() {
 		// Gracefully clean up Surge engine background workers
 		hybrid.Close()
 
+		// Flush download history store to disk. Placed after all engine
+		// and monitor workers stop, ensuring all terminal task events
+		// have been delivered to history.Add prior to disk flush.
+		if err := history.Flush(); err != nil {
+			log.Printf("[Shutdown] Failed to flush history: %v", err)
+		}
+
 		time.Sleep(500 * time.Millisecond)
 		process.StopAria2()
 	})
