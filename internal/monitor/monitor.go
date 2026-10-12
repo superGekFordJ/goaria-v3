@@ -339,7 +339,6 @@ func (m *Monitor) confirmPauseResumeRequestLocked(gid string) acceptedTaskChange
 				Cache.arStopped = append(Cache.arStopped, task)
 				Cache.arMu.Unlock()
 			}
-			source = "stopped"
 		}
 	} else if action != PauseResumeIntentionPause || !exists || source == "stopped" || task.Status == "paused" ||
 		(task.Status != "active" && task.Status != "waiting") || m.tracker.TerminalAcceptedInCurrentGeneration(gid) {
@@ -492,17 +491,6 @@ func (m *Monitor) shouldDiscardStalePause(gid string) bool {
 		return false
 	}
 	return m.pauseResumeProtectedAction(gid) == PauseResumeIntentionResume
-}
-
-// shouldDiscardPauseAgainstStopped discards every event-path pause while the
-// GID is still in cache stopped. Intention is ignored: BatchPause can re-arm
-// pause intention on terminal GIDs, and active→waiting never needs this hatch.
-// Reconcile also refuses stopped→waiting for terminal rows (Round-2).
-func (m *Monitor) shouldDiscardPauseAgainstStopped(gid string) bool {
-	if m == nil || gid == "" {
-		return false
-	}
-	return Cache.IsInStopped(gid)
 }
 
 // ClearPauseResumeIntention drops a stale intention after a failed user resume

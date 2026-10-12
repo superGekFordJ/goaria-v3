@@ -634,9 +634,9 @@ func TestResumeTerminal_TickCopyGeneration(t *testing.T) {
 	setup := func(t *testing.T, gid string, stopped []rpc.Task) (*Monitor, *TaskTracker, *Pusher, *terminalCopyBlockingEngine) {
 		m, _, pusher, tracker := newReconcileTestMonitor(t)
 		eng := &terminalCopyBlockingEngine{
-			mockStoppedEngine: mockStoppedEngine{stopped: stopped},
-			entered:           make(chan struct{}, 1),
-			release:           make(chan struct{}),
+			stopped: stopped,
+			entered: make(chan struct{}, 1),
+			release: make(chan struct{}),
 			task: rpc.Task{
 				Dir:   "/dl",
 				Files: []rpc.File{{Path: "/dl/f.bin", Uris: []rpc.Uri{{Uri: "https://x/f.bin"}}}},
