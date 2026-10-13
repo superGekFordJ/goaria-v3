@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -50,7 +51,8 @@ func admissionTestPool(t *testing.T, capacity int) (*scheduler.Scheduler, *rpc.S
 // queueManagedWaiting registers a queued managed candidate plus its
 // monitor-accepted waiting tracker row with settled scope/env metadata.
 func queueManagedWaiting(t *testing.T, pool *scheduler.Scheduler, tr *monitor.TaskTracker,
-	id, url, scope, domain, envKey string, workers int) scheduler.AdmissionKey {
+	id, url, scope, domain, envKey string, workers int,
+) scheduler.AdmissionKey {
 	t.Helper()
 	gid := "sg_" + id
 	tr.EnsureTrackedFromEvent(gid, 4096, url, workers, "waiting")
@@ -242,7 +244,7 @@ func TestAdmissionRuntime_BlockedGateKeepsPendingTicket(t *testing.T) {
 
 	// Saturate the domain connection budget: eight active rows each holding
 	// one worker consume the whole default domain allowance (maxConn=8).
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		gid := "sg_busy" + string(rune('a'+i))
 		tr.EnsureTrackedFromEvent(gid, 100, "http://h/"+gid, 1, "active")
 		tr.ObserveActivation(gid, 0, false)
@@ -348,33 +350,55 @@ func TestAdmissionRuntime_MetadataUnsettledWaits(t *testing.T) {
 
 // Off mode is a manual policy: EvaluateAdmission with Smart=false applies the
 // user's own normalized count as the global cap — no smart resource checks
-// and no reservation written for candidates beyond the cap.
+// and no reservation written for candidates beyond the cap. The boundary
+// values sweep raw=1 through the 32 ceiling.
 func TestAdmissionRuntime_OffModeUserCap(t *testing.T) {
-	tr := admissionSwapTracker(t)
-	admissionTestConfig(t, false, "2")
-	pool, _, ctl, _ := admissionTestPool(t, 32)
+	for _, raw := range []int{1, 5, 8, 32} {
+		t.Run(strconv.Itoa(raw), func(t *testing.T) {
+			tr := admissionSwapTracker(t)
+			admissionTestConfig(t, false, strconv.Itoa(raw))
+			pool, _, ctl, _ := admissionTestPool(t, 32)
 
-	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", "4096")
-		w.WriteHeader(http.StatusOK)
-		time.Sleep(1200 * time.Millisecond)
-		_, _ = w.Write(make([]byte, 4096))
-	}))
-	defer server.Close()
+			server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Length", "4096")
+				w.WriteHeader(http.StatusOK)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				<-r.Context().Done()
+			}))
+			defer server.Close()
 
-	queueManagedWaiting(t, pool, tr, "m1", server.URL+"/1", "wan", "a.com", "env1", 2)
-	queueManagedWaiting(t, pool, tr, "m2", server.URL+"/2", "wan", "a.com", "env1", 2)
-	queueManagedWaiting(t, pool, tr, "m3", server.URL+"/3", "wan", "a.com", "env1", 2)
+			// Queue one candidate beyond the cap; the tail must stay unreserved.
+			for i := 0; i <= raw; i++ {
+				id := "m" + strconv.Itoa(i)
+				queueManagedWaiting(t, pool, tr, id, server.URL+"/"+id, "wan", "a.com", "env1", 2)
+			}
 
-	ctl.evaluate(time.Now())
-	// Admitted candidates may already be claimed as busy; committed slots is
-	// the invariant the manual cap actually bounds.
-	if snap := pool.AdmissionSnapshot(); snap.CommittedSlots != 2 {
-		t.Fatalf("off-mode committed = %d, want 2 (user cap)", snap.CommittedSlots)
-	}
-	// The third never reached Reserve — zero headroom skips the write path.
-	if _, pending := tr.PendingAdmissionTicket("sg_m3"); pending {
-		t.Fatal("over-cap manual candidate holds a reservation")
+			ctl.evaluate(time.Now())
+			// The cap invariant: committed never exceeds the user count, no
+			// matter how worker claims settle (a failed claim may requeue and
+			// drop its admitted flag before the snapshot).
+			if snap := pool.AdmissionSnapshot(); snap.CommittedSlots > raw {
+				t.Fatalf("off-mode committed = %d exceeds user cap %d", snap.CommittedSlots, raw)
+			}
+			// Admission-write evidence is the deterministic half: exactly raw
+			// tracker reservations were created this round, regardless of how
+			// physical claims fare afterwards.
+			reserved := 0
+			for i := 0; i <= raw; i++ {
+				if _, ok := tr.PendingAdmissionTicket("sg_m" + strconv.Itoa(i)); ok {
+					reserved++
+				}
+			}
+			if reserved != raw {
+				t.Fatalf("off-mode reservations = %d, want %d (user cap)", reserved, raw)
+			}
+			// The tail never reached Reserve — zero headroom skips the write.
+			if _, pending := tr.PendingAdmissionTicket("sg_m" + strconv.Itoa(raw)); pending {
+				t.Fatal("over-cap manual candidate holds a reservation")
+			}
+		})
 	}
 }
 
@@ -405,7 +429,7 @@ func TestAdmissionRuntime_SmartColdScopeStopsFlood(t *testing.T) {
 	}))
 	defer server.Close()
 
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		id := "cold" + string(rune('a'+i))
 		queueManagedWaiting(t, pool, tr, id, server.URL+"/"+id, "wan", "cold.com", "envx", 2)
 	}
@@ -589,4 +613,72 @@ func TestAdmissionRuntime_RetainedShortLatchesBucket(t *testing.T) {
 			t.Fatal("second short candidate admitted despite held bucket")
 		}
 	}
+}
+
+// Scale evidence: a thousand gate-blocked candidates must not stop the FIFO
+// scan from reaching a qualified tail. Blocked prefixes are rejected by the
+// gate before Reserve/Admit, so the sweep stays in-memory and never dials —
+// only the tail performs a real fetch.
+func TestAdmissionRuntime_LargeQueueScansAll(t *testing.T) {
+	tr := admissionSwapTracker(t)
+	admissionTestConfig(t, true, "32")
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	pool, _, ctl, ch := admissionTestPool(t, 4)
+
+	var hits atomic.Int64
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Length", "1024")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(make([]byte, 1024))
+	}))
+	defer server.Close()
+
+	// Scope+env peak 1MB/s fully reserved by a foreign-domain commitment:
+	// every flood.com candidate is scope-blocked before the Admit write path.
+	speedstats.AddRecordV2(1<<20, 1, 1<<20, false, 50, "peer.com", "wan", "envx")
+	tr.EnsureTrackedFromEvent("sg_sat", 100, "http://h/sat", 1, "active")
+	tr.ObserveActivation("sg_sat", 0, false)
+	tr.SetThreadInfo("sg_sat", 1, false)
+	tr.SetScopeAndEnv("sg_sat", "wan", 0, "other.com", "envx")
+	tr.SetTargetBandwidth("sg_sat", 1<<20)
+
+	const prefixN = 1000
+	for i := range prefixN {
+		id := "lq" + strconv.Itoa(i)
+		// Unroutable URL: even a mistaken admit fails fast instead of
+		// reaching the instrumented server.
+		queueManagedWaiting(t, pool, tr, id, "http://127.0.0.1:1/"+id, "wan", "flood.com", "envx", 1)
+	}
+	// Tail lives in an untouched bucket — no measured block at all.
+	keyTail := queueManagedWaiting(t, pool, tr, "lqtail", server.URL+"/tail", "wan", "tail.com", "envy", 1)
+
+	start := time.Now()
+	ctl.evaluate(time.Now())
+	elapsed := time.Since(start)
+
+	// Real dispatch of the tail: the scheduler worker performs the GET.
+	admissionWaitEvent(t, ch, types.EventStarted, keyTail.ID)
+	deadline := time.Now().Add(3 * time.Second)
+	for hits.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if hits.Load() == 0 {
+		t.Fatal("admitted tail never reached the server")
+	}
+
+	// Every prefix candidate stayed unreserved and unadmitted.
+	for i := range prefixN {
+		if _, pending := tr.PendingAdmissionTicket("sg_lq" + strconv.Itoa(i)); pending {
+			t.Fatalf("blocked prefix lq%d holds a reservation", i)
+		}
+	}
+	for _, c := range pool.AdmissionSnapshot().Candidates {
+		if c.Key != keyTail && (c.Admitted || c.InFlight) {
+			t.Fatalf("blocked prefix %s reached the write path", c.Key.ID)
+		}
+	}
+	t.Logf("large queue: blocked=%d tail=%s evaluate=%s httpHits=%d",
+		prefixN, keyTail.ID, elapsed, hits.Load())
 }
