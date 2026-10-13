@@ -86,7 +86,7 @@
       >
         {{ t('appearance.language') }}
       </label>
-      
+
       <!-- Trigger Button -->
       <button
         type="button"
@@ -94,7 +94,7 @@
         @click="showLanguageDropdown = !showLanguageDropdown"
       >
         <div class="flex items-center gap-3">
-          <div 
+          <div
             class="flex items-center justify-center w-8 h-8 rounded-lg bg-[var(--app-text)]/5 text-[var(--app-text)] group-hover:text-[var(--neon-primary)] transition-colors duration-200"
           >
             <Monitor v-if="uiStore.locale === 'auto'" :size="18" />
@@ -119,11 +119,11 @@
               }}
             </span>
             <span class="text-[10px] text-[var(--app-text-subtle)] block">
-              {{ 
-                uiStore.locale === 'auto' 
-                  ? t('appearance.language') 
-                  : uiStore.locale === 'zh-CN' 
-                    ? 'Chinese (Simplified)' 
+              {{
+                uiStore.locale === 'auto'
+                  ? t('appearance.language')
+                  : uiStore.locale === 'zh-CN'
+                    ? 'Chinese (Simplified)'
                     : uiStore.locale === 'zh-TW'
                       ? 'Chinese (Traditional)'
                       : uiStore.locale === 'ja'
@@ -132,13 +132,13 @@
                           ? 'Spanish'
                           : uiStore.locale === 'de'
                             ? 'German'
-                            : 'English' 
+                            : 'English'
               }}
             </span>
           </div>
         </div>
-        <ChevronDown 
-          :size="16" 
+        <ChevronDown
+          :size="16"
           class="text-[var(--app-text-subtle)] transition-transform duration-200"
           :class="{ 'rotate-180': showLanguageDropdown }"
         />

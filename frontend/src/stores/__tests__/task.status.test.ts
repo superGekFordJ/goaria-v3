@@ -138,7 +138,7 @@ describe('Status Preservation Tests', () => {
     /**
      * 这些测试确保如果未来添加新的非 complete 状态，
      * 当前的逻辑不会错误地将它们覆盖为 complete
-     * 
+     *
      * 当前逻辑：只有 status === 'error' 时保留
      * 如果需要保留更多状态，需要修改 moveTaskToStopped
      */

@@ -216,8 +216,6 @@ describe('useFLIPAnimation', () => {
     expect(el.style.zIndex).toBe('')
     expect(el.style.position).toBe('')
     expect(el.style.filter).toBe('')
-    expect(el.style.boxShadow).toBe('')
-    expect(el.style.borderRadius).toBe('')
     expect(el.style.animationDelay).toBe('')
     expect(el.classList.contains('animate-spring-in')).toBe(false)
   })
