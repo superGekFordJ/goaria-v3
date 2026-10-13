@@ -106,6 +106,11 @@ func ConfigureDownloadGroupNamerForTest(debounceDelay, retryDelay time.Duration,
 	}
 }
 
+// StopDownloadGroupNamer cancels pending namer timers and waits for in-flight naming jobs.
+func StopDownloadGroupNamer() {
+	ResetDownloadGroupNamerForTest()
+}
+
 func ResetDownloadGroupNamerForTest() {
 	defaultDownloadGroupNamer.mu.Lock()
 	for key, timer := range defaultDownloadGroupNamer.timers {

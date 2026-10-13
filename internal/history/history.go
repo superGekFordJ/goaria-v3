@@ -84,6 +84,7 @@ var (
 	maxBurstNanos       atomic.Int64
 	saveTriggerCount    atomic.Int64
 	saveWriteCount      atomic.Int64
+	saveRetryCount      atomic.Int32
 	lastSavedTrigger    atomic.Int64
 	saverOnce           sync.Once
 	SaveEnabled         = true
@@ -219,9 +220,11 @@ func Load() {
 	sourceIndex = make(map[string]int)
 	data, err := os.ReadFile(targetPath)
 	if err == nil {
-		if err := json.Unmarshal(data, &entries); err != nil {
+		var loaded []HistoryEntry
+		if err := json.Unmarshal(data, &loaded); err != nil {
 			log.Printf("[history] Failed to unmarshal history file: %v", err)
 		} else {
+			entries = loaded
 			for i, e := range entries {
 				gidIndex[e.GID] = i
 				if e.Source != "" {
@@ -306,6 +309,7 @@ func performDurableSave(requireSaveEnabled bool) error {
 	}
 
 	saveWriteCount.Add(1)
+	saveRetryCount.Store(0)
 	lastSavedTrigger.Store(triggerSnap)
 	return nil
 }
@@ -675,12 +679,16 @@ func saveLoop() {
 // doSave performs the actual save operation
 func doSave() {
 	if err := performDurableSave(true); err != nil {
-		log.Printf("[history] Background save failed: %v", err)
-		time.AfterFunc(1*time.Second, func() {
-			select {
-			case saveChan <- struct{}{}:
-			default:
-			}
-		})
+		if retries := saveRetryCount.Add(1); retries <= 3 {
+			log.Printf("[history] Background save failed: %v; retrying in 1s (attempt %d/3)", err, retries)
+			time.AfterFunc(1*time.Second, func() {
+				select {
+				case saveChan <- struct{}{}:
+				default:
+				}
+			})
+		} else {
+			log.Printf("[history] Background save failed: %v; retry limit exceeded", err)
+		}
 	}
 }

@@ -15,13 +15,16 @@ import (
 
 func setupTest(t *testing.T) string {
 	// Quiesce: wait for any background saveLoop from a prior test to settle.
-	deadline := time.Now().Add(50 * time.Millisecond)
+	deadline := time.Now().Add(100 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		if saveTriggerCount.Load() == lastSavedTrigger.Load() {
 			break
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
+	writeMu.Lock()
+	_ = saveWriteCount.Load()
+	writeMu.Unlock()
 
 	tmpDir := t.TempDir()
 	historyFile := filepath.Join(tmpDir, "history.json")
