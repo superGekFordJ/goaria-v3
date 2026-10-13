@@ -39,6 +39,7 @@ type downloadGroupNamer struct {
 	debounceDelay time.Duration
 	retryDelay    time.Duration
 	maxRetries    int
+	stopped       bool
 }
 
 type downloadGroupNameSnapshot struct {
@@ -108,11 +109,25 @@ func ConfigureDownloadGroupNamerForTest(debounceDelay, retryDelay time.Duration,
 
 // StopDownloadGroupNamer cancels pending namer timers and waits for in-flight naming jobs.
 func StopDownloadGroupNamer() {
-	ResetDownloadGroupNamerForTest()
+	defaultDownloadGroupNamer.mu.Lock()
+	defaultDownloadGroupNamer.stopped = true
+	for key, timer := range defaultDownloadGroupNamer.timers {
+		if timer != nil {
+			if timer.Stop() {
+				defaultDownloadGroupNamer.wg.Done()
+			}
+		}
+		delete(defaultDownloadGroupNamer.timers, key)
+	}
+	defaultDownloadGroupNamer.attempts = make(map[string]int)
+	defaultDownloadGroupNamer.mu.Unlock()
+
+	defaultDownloadGroupNamer.wg.Wait()
 }
 
 func ResetDownloadGroupNamerForTest() {
 	defaultDownloadGroupNamer.mu.Lock()
+	defaultDownloadGroupNamer.stopped = false
 	for key, timer := range defaultDownloadGroupNamer.timers {
 		if timer != nil {
 			if timer.Stop() {
@@ -144,6 +159,9 @@ func (n *downloadGroupNamer) queue(groupKey string, delay time.Duration) {
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if n.stopped {
+		return
+	}
 	if timer := n.timers[groupKey]; timer != nil {
 		if !timer.Reset(delay) {
 			n.wg.Add(1)

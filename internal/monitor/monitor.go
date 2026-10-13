@@ -839,7 +839,6 @@ func (m *Monitor) Start() {
 }
 
 func (m *Monitor) Stop() {
-	StopDownloadGroupNamer()
 	if m.netEnv != nil {
 		m.netEnv.Stop()
 	}
@@ -866,6 +865,7 @@ func (m *Monitor) Stop() {
 		}
 		m.runLoopWg.Wait()
 		m.surgeBridgeWg.Wait()
+		StopDownloadGroupNamer()
 	})
 }
 

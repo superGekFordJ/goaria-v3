@@ -15,7 +15,7 @@ import (
 
 func setupTest(t *testing.T) string {
 	// Quiesce: wait for any background saveLoop from a prior test to settle.
-	deadline := time.Now().Add(100 * time.Millisecond)
+	deadline := time.Now().Add(250 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		if saveTriggerCount.Load() == lastSavedTrigger.Load() {
 			break
