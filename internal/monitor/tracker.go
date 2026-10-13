@@ -641,7 +641,9 @@ type AdmissionTicket struct {
 // is a per-pool monotonic identity: a lower or already-consumed token is a
 // stale opportunity and refuses. The same ticket applied twice is an
 // idempotent no-op that still reports its ticket. now/anchor must be valid;
-// a zero anchor would lose its lease immediately on every read.
+// a zero anchor would lose its lease immediately on every read. baseline
+// is always >= 0 — pass 0 when the caller has no reliable checkpoint
+// (baselineKnown=false).
 //
 // created=false + zero ticket means the call left no reservation; callers
 // may ReleaseAdmission only when created=true.

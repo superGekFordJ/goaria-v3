@@ -286,7 +286,9 @@ func (p *Scheduler) releaseBusyLocked(key AdmissionKey) func() {
 
 // SetAdmissionWake installs a notification invoked outside the pool lock each
 // time a physical claim is released and the freed slot is already visible to
-// AdmissionSnapshot. Nil-safe; nil clears the hook.
+// AdmissionSnapshot. Nil-safe; nil clears the hook. Clearing does not
+// synchronize with an in-flight release: a callback already loaded before the
+// clear may still fire once — acceptable for a notification edge.
 func (p *Scheduler) SetAdmissionWake(fn func()) {
 	if p == nil {
 		return

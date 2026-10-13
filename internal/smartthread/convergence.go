@@ -84,8 +84,9 @@ type TrackedTaskInfo struct {
 	// fact (monitor.ReserveAdmission). The reservation reuses ActivatedAt as
 	// its anchor and the same 45s/15s lease, and terminates occupancy
 	// evaluation on its own: a live lease claims the Target floor, while an
-	// expired or anchor-less reservation contributes only telemetry —
-	// never falling back into a legacy waiting/compat claim.
+	// expired or anchor-less reservation contributes telemetry-or-zero by
+	// row status (waiting/paused rows contribute zero) — never falling
+	// back into a legacy waiting/compat claim.
 	AdmissionReserved bool
 }
 

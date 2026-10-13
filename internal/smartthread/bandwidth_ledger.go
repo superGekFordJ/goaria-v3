@@ -119,7 +119,8 @@ func NewBandwidthLedgerAt(activeTasks []TrackedTaskInfo, now time.Time) *Bandwid
 }
 
 // saturatingAdd64 adds non-negative occupancy values without overflow into
-// the negative range.
+// the negative range. Caller contract: b is always non-negative; a negative
+// delta is dropped silently rather than decrementing the total.
 func saturatingAdd64(a, b int64) int64 {
 	if b < 0 {
 		return a
@@ -205,6 +206,8 @@ func TaskOccupancy(t TrackedTaskInfo, now time.Time) int64 {
 		// expired or anchor-less reservation must never harden into a legacy
 		// waiting/compat claim. While its lease is live the reservation
 		// claims its Target floor; the floor only, never Target+telem.
+		// Terminal rows are unreachable here (entry filter above, and the
+		// tracker clears the pending flag on terminal acceptance).
 		switch t.Status {
 		case "paused":
 			return 0
@@ -395,6 +398,8 @@ func (l *BandwidthLedger) ReserveWorkers(scope, domain string, count int) {
 }
 
 // saturatingAddInt adds non-negative worker counts without overflow.
+// Caller contract: b is always non-negative; a negative delta is dropped
+// silently rather than decrementing the total.
 func saturatingAddInt(a, b int) int {
 	if b < 0 {
 		return a
