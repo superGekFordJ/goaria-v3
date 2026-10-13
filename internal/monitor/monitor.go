@@ -99,6 +99,9 @@ type Monitor struct {
 	surgePollWg          sync.WaitGroup
 	surgePollReader      surgeListReader
 
+	runLoopWg     sync.WaitGroup
+	surgeBridgeWg sync.WaitGroup
+
 	// Startup recovery flags: set once after the first successful tick
 	// (aria2c) / reconcileSurgeCache (Surge) round. Used for recovery
 	// completion logging and fast-retry interval before first success.
@@ -830,7 +833,9 @@ func (m *Monitor) Start() {
 		})
 	}
 
-	go m.runLoop()
+	m.runLoopWg.Go(func() {
+		m.runLoop()
+	})
 }
 
 func (m *Monitor) Stop() {
@@ -858,6 +863,8 @@ func (m *Monitor) Stop() {
 		if m.stopChan != nil {
 			close(m.stopChan)
 		}
+		m.runLoopWg.Wait()
+		m.surgeBridgeWg.Wait()
 	})
 }
 

@@ -28,7 +28,9 @@ func (m *Monitor) startSurgeEventBridge() {
 	if m.surgeEng == nil {
 		return
 	}
-	go m.surgeEventBridgeLoop()
+	m.surgeBridgeWg.Go(func() {
+		m.surgeEventBridgeLoop()
+	})
 }
 
 // surgeEventBridgeLoop maintains a reconnect loop around the Surge event

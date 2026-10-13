@@ -107,12 +107,18 @@ func SetHistoryPath(path string) {
 // SetDebounceDuration configures the debounce interval for batch saving.
 // Default is 300ms. This is primarily used for testing.
 func SetDebounceDuration(d time.Duration) {
+	if d <= 0 {
+		d = 1 * time.Millisecond
+	}
 	debounceNanos.Store(int64(d))
 }
 
 // SetMaxBurstDuration configures the maximum burst coalescing window hard cap.
 // Default is 1500ms. This is primarily used for testing.
 func SetMaxBurstDuration(d time.Duration) {
+	if d <= 0 {
+		d = 1 * time.Millisecond
+	}
 	maxBurstNanos.Store(int64(d))
 }
 
@@ -169,6 +175,7 @@ func DisableSaveForTest() {
 	mu.Lock()
 	defer mu.Unlock()
 	SaveEnabled = false
+	lastSavedTrigger.Store(saveTriggerCount.Load())
 }
 
 // GetHistoryPath returns the path to history.json
@@ -212,11 +219,14 @@ func Load() {
 	sourceIndex = make(map[string]int)
 	data, err := os.ReadFile(targetPath)
 	if err == nil {
-		_ = json.Unmarshal(data, &entries)
-		for i, e := range entries {
-			gidIndex[e.GID] = i
-			if e.Source != "" {
-				sourceIndex[e.Source]++
+		if err := json.Unmarshal(data, &entries); err != nil {
+			log.Printf("[history] Failed to unmarshal history file: %v", err)
+		} else {
+			for i, e := range entries {
+				gidIndex[e.GID] = i
+				if e.Source != "" {
+					sourceIndex[e.Source]++
+				}
 			}
 		}
 	}
@@ -245,11 +255,11 @@ func atomicWrite(targetPath string, data []byte) error {
 		return err
 	}
 
+	_ = tmp.Chmod(0o644)
+
 	if err := tmp.Sync(); err != nil {
 		return err
 	}
-
-	_ = tmp.Chmod(0o644)
 
 	closed = true
 	if err := tmp.Close(); err != nil {
@@ -598,6 +608,7 @@ func Clear() {
 func triggerSaveLocked() {
 	saveTriggerCount.Add(1)
 	if !SaveEnabled {
+		lastSavedTrigger.Store(saveTriggerCount.Load())
 		return
 	}
 	saverOnce.Do(func() {
@@ -665,5 +676,11 @@ func saveLoop() {
 func doSave() {
 	if err := performDurableSave(true); err != nil {
 		log.Printf("[history] Background save failed: %v", err)
+		time.AfterFunc(1*time.Second, func() {
+			select {
+			case saveChan <- struct{}{}:
+			default:
+			}
+		})
 	}
 }

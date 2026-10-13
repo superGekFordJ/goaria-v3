@@ -14,6 +14,15 @@ import (
 )
 
 func setupTest(t *testing.T) string {
+	// Quiesce: wait for any background saveLoop from a prior test to settle.
+	deadline := time.Now().Add(50 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if saveTriggerCount.Load() == lastSavedTrigger.Load() {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
 	tmpDir := t.TempDir()
 	historyFile := filepath.Join(tmpDir, "history.json")
 	SetHistoryPath(historyFile)
@@ -1038,7 +1047,7 @@ func TestHistory_AdaptiveDebounce_BurstCoalescing(t *testing.T) {
 }
 
 func TestHistory_AdaptiveDebounce_MaxBurstHardCap(t *testing.T) {
-	_ = setupTest(t)
+	historyFile := setupTest(t)
 	SetSaveEnabled(true)
 	defer DisableSaveForTest()
 
@@ -1074,6 +1083,25 @@ func TestHistory_AdaptiveDebounce_MaxBurstHardCap(t *testing.T) {
 	totalWrites := saveWriteCount.Load() - beforeWrites
 	if totalWrites < 2 {
 		t.Fatalf("expected at least 2 writes (1 hard cap + 1 trailing idle), got %d", totalWrites)
+	}
+
+	// Verify that historyFile contains valid unmarshaled JSON with all 6 streamed entries
+	data, err := os.ReadFile(historyFile)
+	if err != nil {
+		t.Fatalf("failed to read history file: %v", err)
+	}
+	var loaded []HistoryEntry
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatalf("history file corrupted, not valid JSON: %v", err)
+	}
+	if len(loaded) != 6 {
+		t.Fatalf("expected 6 entries in history file, got %d", len(loaded))
+	}
+	for i := range 6 {
+		wantGID := strconv.Itoa(3000 + i)
+		if loaded[i].GID != wantGID {
+			t.Errorf("entry %d: got GID %s, want %s", i, loaded[i].GID, wantGID)
+		}
 	}
 }
 
