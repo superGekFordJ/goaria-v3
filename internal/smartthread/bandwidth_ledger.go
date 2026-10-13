@@ -192,7 +192,7 @@ func addPlaceholderLive(anchor, now time.Time) bool {
 // lease/placeholder/compat claim is live. Ordinary waiting/paused and
 // terminal tasks contribute zero. Explicit AdmissionReserved inputs
 // contribute their reservation regardless of status (scalar expression
-// only — no production writer or gate exists yet).
+// only — the writer exists but has no production caller yet).
 func TaskOccupancy(t TrackedTaskInfo, now time.Time) int64 {
 	if t.GID == "" {
 		return 0

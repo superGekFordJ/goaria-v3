@@ -647,6 +647,10 @@ type AdmissionTicket struct {
 //
 // created=false + zero ticket means the call left no reservation; callers
 // may ReleaseAdmission only when created=true.
+//
+// Locking: runs under the gid lifecycle gate plus t.mu — NOT reentrant.
+// Callers must not invoke it while already holding the same gid's
+// lifecycle gate (RunUnderLifecycle would deadlock on ls.mu).
 func (t *TaskTracker) ReserveAdmission(
 	gid string, token uint64, params smartthread.ThreadParams,
 	now time.Time, baseline int64, baselineKnown bool,
