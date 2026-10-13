@@ -14,9 +14,11 @@ func TestBandwidthLedger_SeedsFromActiveBandwidth(t *testing.T) {
 	// reservation seeds its per-task Target floor while its lease is live,
 	// not from activeBandwidthProvider.
 	ledger := NewBandwidthLedger([]TrackedTaskInfo{
-		{GID: "sg_1", Status: "waiting", Scope: "wan", EnvKey: "env1", Domain: "a.com",
+		{
+			GID: "sg_1", Status: "waiting", Scope: "wan", EnvKey: "env1", Domain: "a.com",
 			TargetBandwidth: 5_000_000, MacroReady: false,
-			AdmissionReserved: true, ActivatedAt: time.Now()},
+			AdmissionReserved: true, ActivatedAt: time.Now(),
+		},
 	})
 	reserved := ledger.Reserved("wan", "env1")
 	if reserved != 5_000_000 {
@@ -256,8 +258,10 @@ func TestBandwidthLedger_NoProviderLumpDoubleCount(t *testing.T) {
 		return 99_000_000 // must not be lumped on top of hybrid seed
 	}
 	ledger := NewBandwidthLedger([]TrackedTaskInfo{
-		{GID: "sg_1", Status: "waiting", Scope: "wan", EnvKey: "env1", Domain: "a.com", TargetBandwidth: 1_000_000, MacroReady: false,
-			AdmissionReserved: true, ActivatedAt: time.Now()},
+		{
+			GID: "sg_1", Status: "waiting", Scope: "wan", EnvKey: "env1", Domain: "a.com", TargetBandwidth: 1_000_000, MacroReady: false,
+			AdmissionReserved: true, ActivatedAt: time.Now(),
+		},
 	})
 	if got := ledger.Reserved("wan", "env1"); got != 1_000_000 {
 		t.Errorf("Reserved = %d, want 1000000 (hybrid only, no provider lump)", got)

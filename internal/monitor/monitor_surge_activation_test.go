@@ -332,7 +332,7 @@ func TestReconcileSurgeCache_WaitingClearsActivation(t *testing.T) {
 	// With an explicit pending reservation the same row re-enters the set.
 	if _, created := tracker.ReserveAdmission("sg_w", 7,
 		smartthread.ThreadParams{Split: 4, MinSize: 1 << 20, TargetBandwidth: 4_000_000},
-		time.Now(), int64(tt.CompletedLength), true); !created {
+		time.Now(), tt.CompletedLength, true); !created {
 		t.Fatal("reservation on waiting row refused")
 	}
 	found := false

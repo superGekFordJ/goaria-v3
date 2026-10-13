@@ -183,10 +183,7 @@ func EvaluateAdmission(p AdmissionParams) AdmissionDecision {
 	}
 
 	// --- 5. Connections: deduct this round's incremental reservations once ---
-	connRemaining := p.DomainWorkerHeadroom - p.Calc.Ledger.ReservedWorkers(p.Calc.Scope, p.Calc.Domain)
-	if connRemaining < 0 {
-		connRemaining = 0
-	}
+	connRemaining := max(p.DomainWorkerHeadroom-p.Calc.Ledger.ReservedWorkers(p.Calc.Scope, p.Calc.Domain), 0)
 	if connRemaining == 0 {
 		return AdmissionDecision{Blocked: AdmissionBlockDomain}
 	}
@@ -204,16 +201,7 @@ func EvaluateAdmission(p AdmissionParams) AdmissionDecision {
 	}
 
 	// Clamp to the caller upper and remaining connections — never widen.
-	split := suggest.Split
-	if split > p.Upper.Split {
-		split = p.Upper.Split
-	}
-	if split > connRemaining {
-		split = connRemaining
-	}
-	if split < 1 {
-		split = 1
-	}
+	split := max(min(min(suggest.Split, p.Upper.Split), connRemaining), 1)
 	suggest.Split = split
 	// MinSize: Upper 0 stays 0; a positive suggested value tightens, a
 	// non-positive one defers to Upper.

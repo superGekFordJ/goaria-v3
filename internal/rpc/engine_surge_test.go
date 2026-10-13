@@ -1013,10 +1013,8 @@ func TestSurgeEngine_AdmissionWakeFiresOnRelease(t *testing.T) {
 	}
 
 	// Wait until the claim is physically visible.
-	for {
-		if len(engine.AdmissionSnapshot().Busy) > 0 {
-			break
-		}
+	for len(engine.AdmissionSnapshot().Busy) == 0 {
+
 		if time.Now().After(deadline) {
 			t.Fatal("admitted task never claimed a busy slot")
 		}

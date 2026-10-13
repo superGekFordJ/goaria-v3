@@ -196,22 +196,16 @@ func ExistingDomainWorkersFromTelemetryExcluding(scope, domain, excludeGID strin
 
 // admissionPrep is one evaluatable candidate with its frozen round inputs.
 type admissionPrep struct {
-	cand          scheduler.AdmissionCandidate
-	entry         *admissionEntry
-	gid           string
-	pending       bool // tracker still holds a live reservation for this key
-	pendingCeil   int  // retained reservation's ThreadCount ceiling; 0 = none
-	scope         string
-	domain        string
-	envKey        string
-	sizeKnown     bool
-	remaining     int64
-	shortAvail    bool
-	scopeEnvCount int
-	domainCount   int
-	headroom      int
-	ledger        *smartthread.BandwidthLedger
-	workerHead    int
+	cand        scheduler.AdmissionCandidate
+	entry       *admissionEntry
+	gid         string
+	pending     bool // tracker still holds a live reservation for this key
+	pendingCeil int  // retained reservation's ThreadCount ceiling; 0 = none
+	scope       string
+	domain      string
+	envKey      string
+	sizeKnown   bool
+	remaining   int64
 }
 
 // reconcileTickets drops self-held entries whose opportunity vanished from
@@ -403,10 +397,7 @@ func (c *AdmissionController) evaluate(now time.Time) {
 		}
 		if cand.TotalSize > 0 {
 			prep.sizeKnown = true
-			prep.remaining = cand.TotalSize - cand.Downloaded
-			if prep.remaining < 0 {
-				prep.remaining = 0
-			}
+			prep.remaining = max(cand.TotalSize-cand.Downloaded, 0)
 		}
 		queue = append(queue, prep)
 	}
@@ -474,10 +465,7 @@ func (c *AdmissionController) evaluate(now time.Time) {
 		if nMax, ok := limits.GetNMax(scopeDomainBucket(p.scope, p.domain)); ok && nMax > 0 {
 			budget = nMax
 		}
-		workerHead := budget - domainBaseline[baselineKey(p)]
-		if workerHead < 0 {
-			workerHead = 0
-		}
+		workerHead := max(budget-domainBaseline[baselineKey(p)], 0)
 
 		shortAvail := false
 		if smart && p.sizeKnown {
@@ -529,10 +517,7 @@ func (c *AdmissionController) evaluate(now time.Time) {
 			continue
 		}
 
-		baseline := p.cand.Downloaded
-		if baseline < 0 {
-			baseline = 0
-		}
+		baseline := max(p.cand.Downloaded, 0)
 		ticket, created := tracker.ReserveAdmission(p.gid, p.cand.Key.Token, decision.Params, now, baseline, true)
 		if ticket.GID == "" {
 			// Row left waiting between snapshot and reserve; no Admit.

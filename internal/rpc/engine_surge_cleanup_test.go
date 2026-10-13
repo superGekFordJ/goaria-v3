@@ -1,11 +1,12 @@
 package rpc
 
 import (
-	"goaria-v3/internal/surge/scheduler"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"goaria-v3/internal/surge/scheduler"
 )
 
 // TestCleanup_ShutdownPausesAllDownloads verifies that Close() triggers
