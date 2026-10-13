@@ -295,6 +295,9 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 
 	if deltaType == "complete" || deltaType == "error" || deltaType == "remove" {
 		m.ScheduleIdleMemoryReclaim()
+		// A terminal/remove acceptance frees a commitment; re-evaluate admission
+		// on this fact rather than waiting for a busy-release edge.
+		m.KickAdmission()
 	}
 }
 
@@ -777,6 +780,8 @@ func (m *Monitor) reconcileSurgeCache() {
 		if !removed {
 			continue
 		}
+		// Accepted removal frees a commitment — notify outside the GID gate.
+		m.KickAdmission()
 		if m.convergence != nil {
 			m.convergence.RemoveTask(gid)
 		}
@@ -811,6 +816,7 @@ func (m *Monitor) reconcileSurgeCache() {
 		var change acceptedTaskChange
 		var accepted *TrackedTask
 		prefetch := false
+		terminalCommitted := false
 		m.tracker.RunUnderLifecycle(gid, func() {
 			if !m.surgePollObservationCurrentLocked(gid, observations) {
 				return
@@ -866,6 +872,7 @@ func (m *Monitor) reconcileSurgeCache() {
 						m.tracker.EnsureTrackedFromEvent(gid, parseInt64(stoppedTask.TotalLength), sourceURLFromTask(stoppedTask), 0, stoppedTask.Status)
 						m.tracker.MarkCompleteFromEvent(gid, stoppedTask.Status)
 					}
+					terminalCommitted = true
 					return
 				case !exists && !live.Known && !freshResume:
 					// A mirror-only waiting/paused row is not enqueue evidence.
@@ -967,6 +974,11 @@ func (m *Monitor) reconcileSurgeCache() {
 			Cache.PrefetchMetadata(gid)
 		}
 		m.publishAcceptedTaskChange(change)
+		if terminalCommitted {
+			// A durable terminal seed committed inside the gate without an
+			// emitted change; still an admission-relevant fact.
+			m.KickAdmission()
+		}
 	}
 }
 

@@ -191,8 +191,8 @@ func addPlaceholderLive(anchor, now time.Time) bool {
 // Real active tasks contribute telem, upgraded to the claim formula while a
 // lease/placeholder/compat claim is live. Ordinary waiting/paused and
 // terminal tasks contribute zero. Explicit AdmissionReserved inputs
-// contribute their reservation regardless of status (scalar expression
-// only — the writer exists but has no production caller yet).
+// (written by the tasks admission controller via tracker.ReserveAdmission)
+// contribute their reservation regardless of status.
 func TaskOccupancy(t TrackedTaskInfo, now time.Time) int64 {
 	if t.GID == "" {
 		return 0
@@ -231,26 +231,15 @@ func TaskOccupancy(t TrackedTaskInfo, now time.Time) int64 {
 	surge := strings.HasPrefix(t.GID, "sg_")
 	switch t.Status {
 	case "waiting":
-		// Surge keeps the retained queued claim (never lease-expired);
-		// authoritative Aria2 waiting is immediately zero even when a
-		// synthetic-active placeholder or cache speed still exists.
-		if surge && t.TargetBandwidth > 0 {
-			return claimContribution(t, telem)
-		}
+		// Ordinary waiting contributes zero — including Surge. The only
+		// waiting occupancy is the explicit AdmissionReserved path above.
 		return 0
 	case "paused":
-		// Only the resume-hold compat lineage claims occupancy while paused;
-		// an add-time claim that merely transitioned to paused, ordinary or
-		// long-paused tasks, and non-Surge paused tasks contribute zero.
-		if surge && t.CompatClaim == CompatSurgeResume {
-			return claimContribution(t, telem)
-		}
+		// Paused tasks hold no claim; admission reservations are the only
+		// paused-row occupancy and are handled above.
 		return 0
 	case "active":
 		if TargetLeaseActive(t.ActivatedAt, t.FirstProgressAt, now) {
-			return claimContribution(t, telem)
-		}
-		if surge && (t.CompatClaim == CompatSurgeClaim || t.CompatClaim == CompatSurgeResume) {
 			return claimContribution(t, telem)
 		}
 		if !surge && t.CompatClaim == CompatAria2Add && addPlaceholderLive(t.AddAnchorAt, now) {
@@ -258,15 +247,12 @@ func TaskOccupancy(t TrackedTaskInfo, now time.Time) int64 {
 		}
 		return telem
 	case "":
-		// Pre-status placeholder: the Target itself is the Surge claim
-		// evidence; Aria2 needs the bounded confirmed-add marker.
+		// Pre-status placeholder: only the bounded confirmed-add marker
+		// claims; a bare Target write on a Surge row is not occupancy.
 		if t.TargetBandwidth <= 0 {
 			return 0
 		}
-		if surge {
-			return claimContribution(t, telem)
-		}
-		if t.CompatClaim == CompatAria2Add && addPlaceholderLive(t.AddAnchorAt, now) {
+		if !surge && t.CompatClaim == CompatAria2Add && addPlaceholderLive(t.AddAnchorAt, now) {
 			return claimContribution(t, telem)
 		}
 		return 0

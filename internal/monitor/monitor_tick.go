@@ -293,6 +293,10 @@ func (m *Monitor) tick() {
 		}
 	}
 
+	// One merged admission notification per successful authoritative
+	// tracker/cache application; RPC-failed ticks never reach this point.
+	m.KickAdmission()
+
 	// Periodic eviction of orphaned Aria2 metadata entries. Runs at most every
 	// metadataCleanupInterval, gated on aria2Recovered. Reuses local slices to
 	// avoid deep-copying cache state. Safe to run concurrently with the Surge

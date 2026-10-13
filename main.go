@@ -22,7 +22,6 @@ import (
 	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/surge"
-	"goaria-v3/internal/surge/progress"
 	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/tasks"
 	"goaria-v3/internal/tray"
@@ -175,12 +174,12 @@ func main() {
 
 	smartthread.SetActiveBandwidthProvider(monitor.MacroOccupancyByScope)
 
+	// The resident admission controller owns managed-pool dispatch for the
+	// app lifetime. All wake edges (busy-release, monitor facts, config
+	// persistence) only notify; evaluation is serialized on its goroutine.
+	var admissionCtl *tasks.AdmissionController
 	if surgeEng, ok := hybrid.SurgeEngineRef(); ok {
 		surgeEng.SetResumeParamsHook(func(cfg *types.DownloadRecord) {
-			if !config.Get().SmartThreadMode {
-				return
-			}
-
 			gid := "sg_" + cfg.ID
 			tracker := monitor.State.GetTracker()
 			if tracker == nil {
@@ -188,25 +187,14 @@ func main() {
 			}
 			scope, domain, prevEnvKey, ok := tracker.GetScopeAndEnv(gid)
 
-			remaining := cfg.TotalSize
-			downloaded := cfg.Downloaded
-			if cp := progress.CfgProgress(cfg); cp != nil {
-				d, _, _, _, _, _ := cp.GetProgress()
-				downloaded = d
-			}
-			if cfg.TotalSize > 0 && downloaded < cfg.TotalSize {
-				remaining = cfg.TotalSize - downloaded
-			}
-			if remaining <= 0 {
-				return
-			}
-
-			// Re-probe TTFB and remote IP on resume; 1s timeout trades
-			// accuracy for latency vs AddUri's 3s. Skipped for custom
-			// headers, skip-origin, and payload-first (presigned URLs).
+			// Re-probe TTFB and remote IP on resume in smart mode; 1s timeout
+			// trades accuracy for latency vs AddUri's 3s. Skipped for custom
+			// headers, skip-origin, payload-first (presigned URLs), and when
+			// smart mode is off — classification still runs so a resume
+			// missing basic grouping metadata gets prepared.
 			var resumeTTFB int64
 			var remoteIP string
-			if !tasks.ShouldSkipResumeHeadProbe(cfg) {
+			if config.Get().SmartThreadMode && !tasks.ShouldSkipResumeHeadProbe(cfg) {
 				probe := rpc.HeadProbe(cfg.URL, 1*time.Second)
 				resumeTTFB = probe.TTFBMs
 				remoteIP = probe.RemoteIP
@@ -229,53 +217,34 @@ func main() {
 				envKey = prevEnvKey
 			}
 
-			maxConn, _ := strconv.Atoi(config.Get().MaxConnections)
-			if maxConn <= 0 {
-				maxConn = 8
-			}
-
-			// One unified occupancy ledger for both reserved dims. The
-			// resuming gid is self-excluded so an already-fired start event
-			// or stale claim cannot charge this task against itself; other
-			// tasks' holds/claims still count.
-			occupancyLedger := smartthread.NewBandwidthLedger(tasks.BuildOccupancyTaskInfosExcluding(gid))
-			params := smartthread.Calculate(smartthread.CalcParams{
-				FileSize:                remaining,
-				MaxConnections:          maxConn,
-				Scope:                   scope,
-				Domain:                  domain,
-				EnvKey:                  envKey,
-				ReservedBandwidth:       occupancyLedger.Reserved(scope, envKey),
-				ReservedDomainBandwidth: occupancyLedger.ReservedByDomain(scope, domain),
-				// Ledger/ActiveMACsFunc/ComputeEnvKeyFunc left nil:
-				// Resume path degrades to logical-only ceiling (no batch ledger).
-			})
-			params = smartthread.ClampToServerLimit(params, remaining, scope, domain,
-				tasks.ExistingDomainWorkersFromTelemetryExcluding(scope, domain, gid),
-				smartthread.GetDefaultServerLimits())
-			if cfg.Runtime == nil {
-				cfg.Runtime = &types.RuntimeConfig{}
-			}
-			if params.Split > 0 {
-				cfg.Runtime.Workers = params.Split
-				tracker.SetThreadInfo(gid, params.Split, false)
-			}
-			if params.MinSize > 0 {
-				cfg.Runtime.MinChunkSize = params.MinSize
-			}
 			tracker.SetScopeAndEnv(gid, scope, resumeTTFB, domain, envKey)
-			if params.Split > 0 || params.TargetBandwidth > 0 {
-				tracker.SetTargetBandwidth(gid, params.TargetBandwidth)
-			}
 		})
-		surgeEng.SetTightenOnPickupHook(func(cfg *types.DownloadRecord) {
-			tasks.ApplyPickupTighten(cfg)
-		})
+
+		admissionCtl = tasks.NewAdmissionController(surgeEng)
+		config.SetSaveKick(admissionCtl.Kick)
+		mon.SetAdmissionKick(admissionCtl.Kick)
+		surgeEng.SetAdmissionWake(admissionCtl.Kick)
+		admissionCtl.Start()
 	}
 
 	// Update shutdown handler to stop monitor
 	app.OnShutdown(func() {
+		// Stop admission entrypoints and join the controller goroutine first;
+		// Stop returns only after the loop can no longer issue Admit calls.
+		if admissionCtl != nil {
+			admissionCtl.Stop()
+		}
+		config.SetSaveKick(nil)
+		mon.SetAdmissionKick(nil)
+		if surgeEng, ok := hybrid.SurgeEngineRef(); ok {
+			surgeEng.SetAdmissionWake(nil)
+		}
+
+		// Drain the engine before stopping the monitor so lifecycle facts
+		// keep flowing while the scheduler finishes physical claims.
+		hybrid.Close()
 		mon.Stop()
+
 		rpc.StopNotifier()
 		rpc.ForceSaveSession()
 
@@ -283,9 +252,6 @@ func main() {
 		if extServer != nil {
 			extServer.Stop()
 		}
-
-		// Gracefully clean up Surge engine background workers
-		hybrid.Close()
 
 		time.Sleep(500 * time.Millisecond)
 

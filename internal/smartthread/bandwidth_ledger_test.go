@@ -10,10 +10,13 @@ import (
 )
 
 func TestBandwidthLedger_SeedsFromActiveBandwidth(t *testing.T) {
-	// Hybrid seed replaces MacroBandwidth lump: seed from per-task TargetBandwidth
-	// while cold, not from activeBandwidthProvider.
+	// Hybrid seed replaces MacroBandwidth lump: a pending admission
+	// reservation seeds its per-task Target floor while its lease is live,
+	// not from activeBandwidthProvider.
 	ledger := NewBandwidthLedger([]TrackedTaskInfo{
-		{GID: "sg_1", Scope: "wan", EnvKey: "env1", Domain: "a.com", TargetBandwidth: 5_000_000, MacroReady: false},
+		{GID: "sg_1", Status: "waiting", Scope: "wan", EnvKey: "env1", Domain: "a.com",
+			TargetBandwidth: 5_000_000, MacroReady: false,
+			AdmissionReserved: true, ActivatedAt: time.Now()},
 	})
 	reserved := ledger.Reserved("wan", "env1")
 	if reserved != 5_000_000 {
@@ -105,13 +108,16 @@ func TestBandwidthLedger_NegativeBandwidthIgnored(t *testing.T) {
 func TestBandwidthLedger_HybridSeed_SurgeColdUsesTarget(t *testing.T) {
 	ledger := NewBandwidthLedger([]TrackedTaskInfo{
 		{
-			GID:             "sg_1",
-			Scope:           "wan",
-			EnvKey:          "env1",
-			Domain:          "a.com",
-			TargetBandwidth: 8_000_000,
-			TelemetryBps:    100_000,
-			MacroReady:      false,
+			GID:               "sg_1",
+			Status:            "waiting",
+			Scope:             "wan",
+			EnvKey:            "env1",
+			Domain:            "a.com",
+			TargetBandwidth:   8_000_000,
+			TelemetryBps:      100_000,
+			MacroReady:        false,
+			AdmissionReserved: true,
+			ActivatedAt:       time.Now(),
 		},
 	})
 	if got := ledger.Reserved("wan", "env1"); got != 8_000_000 {
@@ -182,9 +188,10 @@ func TestBandwidthLedger_HybridSeed_Aria2AgeWindow(t *testing.T) {
 }
 
 func TestBandwidthLedger_HybridSeed_SameDomainAccumulates(t *testing.T) {
+	now := time.Now()
 	ledger := NewBandwidthLedger([]TrackedTaskInfo{
-		{GID: "sg_1", Scope: "wan", EnvKey: "e", Domain: "a.com", TargetBandwidth: 3_000_000, MacroReady: false},
-		{GID: "sg_2", Scope: "wan", EnvKey: "e", Domain: "a.com", TargetBandwidth: 4_000_000, MacroReady: false},
+		{GID: "sg_1", Status: "waiting", Scope: "wan", EnvKey: "e", Domain: "a.com", TargetBandwidth: 3_000_000, MacroReady: false, AdmissionReserved: true, ActivatedAt: now},
+		{GID: "sg_2", Status: "waiting", Scope: "wan", EnvKey: "e", Domain: "a.com", TargetBandwidth: 4_000_000, MacroReady: false, AdmissionReserved: true, ActivatedAt: now},
 	})
 	if got := ledger.ReservedByDomain("wan", "a.com"); got != 7_000_000 {
 		t.Errorf("ReservedByDomain = %d, want 7000000 (sum of cold targets)", got)
@@ -197,9 +204,10 @@ func TestBandwidthLedger_HybridSeed_SameDomainAccumulates(t *testing.T) {
 // Env-blind domain keys: same scope|domain across different envs aggregates
 // into one domain occupancy figure while scope+env stays isolated.
 func TestBandwidthLedger_HybridSeed_DomainEnvBlind(t *testing.T) {
+	now := time.Now()
 	ledger := NewBandwidthLedger([]TrackedTaskInfo{
-		{GID: "sg_1", Scope: "wan", EnvKey: "envA", Domain: "a.com", TargetBandwidth: 3_000_000},
-		{GID: "sg_2", Scope: "wan", EnvKey: "envB", Domain: "a.com", TargetBandwidth: 4_000_000},
+		{GID: "sg_1", Status: "waiting", Scope: "wan", EnvKey: "envA", Domain: "a.com", TargetBandwidth: 3_000_000, AdmissionReserved: true, ActivatedAt: now},
+		{GID: "sg_2", Status: "waiting", Scope: "wan", EnvKey: "envB", Domain: "a.com", TargetBandwidth: 4_000_000, AdmissionReserved: true, ActivatedAt: now},
 	})
 	if got := ledger.ReservedByDomain("wan", "a.com"); got != 7_000_000 {
 		t.Errorf("ReservedByDomain = %d, want 7000000 (env-blind domain sum)", got)
@@ -248,7 +256,8 @@ func TestBandwidthLedger_NoProviderLumpDoubleCount(t *testing.T) {
 		return 99_000_000 // must not be lumped on top of hybrid seed
 	}
 	ledger := NewBandwidthLedger([]TrackedTaskInfo{
-		{GID: "sg_1", Scope: "wan", EnvKey: "env1", Domain: "a.com", TargetBandwidth: 1_000_000, MacroReady: false},
+		{GID: "sg_1", Status: "waiting", Scope: "wan", EnvKey: "env1", Domain: "a.com", TargetBandwidth: 1_000_000, MacroReady: false,
+			AdmissionReserved: true, ActivatedAt: time.Now()},
 	})
 	if got := ledger.Reserved("wan", "env1"); got != 1_000_000 {
 		t.Errorf("Reserved = %d, want 1000000 (hybrid only, no provider lump)", got)
@@ -441,42 +450,34 @@ func TestTaskOccupancy_MeasuredZeroDistinctFromMissing(t *testing.T) {
 }
 
 func TestTaskOccupancy_WaitingAndPausedRules(t *testing.T) {
-	// TRIPWIRE: the "never lease-expired" waiting claim and the paused
-	// resume-hold assertions below encode transitional retained semantics.
-	// When the waiting claim is retired the expectations must flip — the
-	// retirement diff should land here first, not silently pass.
+	// Ordinary waiting/paused rows — Surge included — contribute zero under
+	// managed admission; parameter hints are not claims. The only
+	// waiting/paused occupancy is the explicit AdmissionReserved branch.
 	now := time.Now()
 	surgeWaiting := TrackedTaskInfo{
 		GID: "sg_w", Status: "waiting", Scope: "wan", EnvKey: "e", Domain: "a.com",
 		TargetBandwidth: 5_000_000,
 	}
-	if got := TaskOccupancy(surgeWaiting, now); got != 5_000_000 {
-		t.Errorf("surge waiting claim = %d, want 5000000 (never lease-expired)", got)
+	if got := TaskOccupancy(surgeWaiting, now); got != 0 {
+		t.Errorf("ordinary surge waiting = %d, want 0", got)
 	}
 	aria2Waiting := surgeWaiting
 	aria2Waiting.GID = "ar_w"
 	if got := TaskOccupancy(aria2Waiting, now); got != 0 {
 		t.Errorf("aria2 waiting = %d, want 0 immediately", got)
 	}
-	// Paused + add-time claim → 0 (claim lineage is not the resume hold).
-	addClaimPaused := TrackedTaskInfo{
-		GID: "sg_p", Status: "paused", Scope: "wan", EnvKey: "e", Domain: "a.com",
-		TargetBandwidth: 5_000_000, CompatClaim: CompatSurgeClaim,
+	surgePaused := surgeWaiting
+	surgePaused.Status = "paused"
+	if got := TaskOccupancy(surgePaused, now); got != 0 {
+		t.Errorf("ordinary surge paused = %d, want 0", got)
 	}
-	if got := TaskOccupancy(addClaimPaused, now); got != 0 {
-		t.Errorf("paused add-claim = %d, want 0", got)
-	}
-	// Paused + resume-hold lineage → claim.
-	resumePaused := addClaimPaused
-	resumePaused.CompatClaim = CompatSurgeResume
-	if got := TaskOccupancy(resumePaused, now); got != 5_000_000 {
-		t.Errorf("paused resume-claim = %d, want 5000000", got)
-	}
-	// Active resume-claim pre-start also claims (protection until real start).
-	resumeActive := resumePaused
-	resumeActive.Status = "active"
-	if got := TaskOccupancy(resumeActive, now); got != 5_000_000 {
-		t.Errorf("active resume-claim = %d, want 5000000", got)
+	// The positive case: an admitted-not-started reservation claims its
+	// Target floor while its lease is live.
+	reservedWaiting := surgeWaiting
+	reservedWaiting.AdmissionReserved = true
+	reservedWaiting.ActivatedAt = now
+	if got := TaskOccupancy(reservedWaiting, now); got != 5_000_000 {
+		t.Errorf("admitted waiting reservation = %d, want 5000000", got)
 	}
 }
 

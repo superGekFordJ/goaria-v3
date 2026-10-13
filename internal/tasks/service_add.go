@@ -48,6 +48,18 @@ func ExistingDomainWorkersFromTelemetry(scope, domain string) int {
 	return ExistingDomainWorkersFromTelemetryExcluding(scope, domain, "")
 }
 
+// kickAdmissionIfSurge notifies the resident admission controller through the
+// monitor's single callback slot after a Surge add/enqueue succeeds. Service
+// holds no controller pointer; nil monitor is a no-op.
+func kickAdmissionIfSurge(gid string) {
+	if !strings.HasPrefix(gid, "sg_") {
+		return
+	}
+	if mon := monitor.State.GetMonitor(); mon != nil {
+		mon.KickAdmission()
+	}
+}
+
 // AddUriFromExtension processes a download request from the browser extension.
 // It goes through the directAddTaskCandidate path (extracted=false, protected=false)
 // carrying extension metadata (headers/size/dedupKey) so the task benefits from the
@@ -572,50 +584,78 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			maxConn = 8
 		}
 
+		// Surge admission authorizes real slots through scheduler.Admit; the
+		// add request itself only carries the manual ceiling and a safe chunk
+		// floor — no Calculate/Clamp/ledger claims here.
+		surgeOpts := buildCandidateAddURIOptions(
+			dir, out, headers, maxConn, 0, registerGroup, candidate,
+		)
+
+		var prepared bool
 		var params smartthread.ThreadParams
-		ledger.WithAlloc(func() {
-			params = smartthread.Calculate(smartthread.CalcParams{
-				FileSize:                fileSize,
-				MaxConnections:          maxConn,
-				Scope:                   scope,
-				Domain:                  domain,
-				EnvKey:                  envKey,
-				ReservedBandwidth:       ledger.Reserved(scope, envKey),
-				ReservedDomainBandwidth: ledger.ReservedByDomain(scope, domain),
-				Ledger:                  ledger,
-				ActiveMACsFunc: func() []string {
-					ne := monitor.State.GetNetEnv()
-					if ne == nil {
-						return nil
-					}
-					return ne.GetAllActiveMACs()
-				},
-				ComputeEnvKeyFunc: monitor.ComputeEnvKey,
+		// The Aria2 budget is prepared lazily — exactly once, and only when
+		// the engine actually routes to the daemon. A failed daemon add rolls
+		// back only this batch ledger reserve.
+		prepareAria2 := func() rpc.AddURIOptions {
+			prepared = true
+			ledger.WithAlloc(func() {
+				params = smartthread.Calculate(smartthread.CalcParams{
+					FileSize:                fileSize,
+					MaxConnections:          maxConn,
+					Scope:                   scope,
+					Domain:                  domain,
+					EnvKey:                  envKey,
+					ReservedBandwidth:       ledger.Reserved(scope, envKey),
+					ReservedDomainBandwidth: ledger.ReservedByDomain(scope, domain),
+					Ledger:                  ledger,
+					ActiveMACsFunc: func() []string {
+						ne := monitor.State.GetNetEnv()
+						if ne == nil {
+							return nil
+						}
+						return ne.GetAllActiveMACs()
+					},
+					ComputeEnvKeyFunc: monitor.ComputeEnvKey,
+				})
+				params = smartthread.ClampToServerLimit(params, fileSize, scope, domain,
+					ExistingDomainWorkersFromTelemetry(scope, domain)+ledger.ReservedWorkers(scope, domain),
+					smartthread.GetDefaultServerLimits())
+				ledger.Reserve(scope, envKey, params.TargetBandwidth)
+				ledger.ReserveByDomain(scope, domain, params.TargetBandwidth)
+				ledger.ReserveWorkers(scope, domain, params.Split)
 			})
-			params = smartthread.ClampToServerLimit(params, fileSize, scope, domain,
-				ExistingDomainWorkersFromTelemetry(scope, domain)+ledger.ReservedWorkers(scope, domain),
-				smartthread.GetDefaultServerLimits())
-			ledger.Reserve(scope, envKey, params.TargetBandwidth)
-			ledger.ReserveByDomain(scope, domain, params.TargetBandwidth)
-			ledger.ReserveWorkers(scope, domain, params.Split)
-		})
+			return buildCandidateAddURIOptions(
+				dir, out, headers, params.Split, params.MinSize, registerGroup, candidate,
+			)
+		}
+
 		var err error
-		gid, err = s.Engine.AddUri(candidate.url, buildCandidateAddURIOptions(
-			dir, out, headers, params.Split, params.MinSize, registerGroup, candidate,
-		))
+		switch eng := s.Engine.(type) {
+		case *rpc.HybridEngine:
+			gid, err = eng.AddUriWithAria2Preparation(candidate.url, surgeOpts, prepareAria2)
+		case *rpc.SurgeEngine:
+			gid, err = eng.AddUri(candidate.url, surgeOpts)
+		default:
+			gid, err = s.Engine.AddUri(candidate.url, prepareAria2())
+		}
 		if err != nil {
-			ledger.Release(scope, envKey, params.TargetBandwidth)
-			ledger.ReleaseByDomain(scope, domain, params.TargetBandwidth)
-			ledger.ReleaseWorkers(scope, domain, params.Split)
+			if prepared {
+				ledger.Release(scope, envKey, params.TargetBandwidth)
+				ledger.ReleaseByDomain(scope, domain, params.TargetBandwidth)
+				ledger.ReleaseWorkers(scope, domain, params.Split)
+			}
 			return "", err
 		}
 
 		if gid != "" {
-			if tracker := monitor.State.GetTracker(); tracker != nil {
+			tracker := monitor.State.GetTracker()
+			if tracker != nil {
 				tracker.MarkAdded(gid)
 			}
-			if params.Split > 0 {
-				if tracker := monitor.State.GetTracker(); tracker != nil {
+			if strings.HasPrefix(gid, "ar_") && params.Split > 0 {
+				// Real daemon budget: record the actual Aria2 plan. sg_ rows
+				// carry no add-time claims — admission reservations own them.
+				if tracker != nil {
 					tracker.SetThreadInfo(gid, params.Split, params.IsExploration)
 					// Set IsKeepAlive when initial split < nSat
 					tracker.SetKeepAlive(gid, params.Split < params.NSat)
@@ -623,9 +663,12 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 					tracker.SetTargetBandwidth(gid, params.TargetBandwidth)
 				}
 			}
-			if tracker := monitor.State.GetTracker(); tracker != nil {
+			// Last metadata settle: scope/env write completes admission
+			// readiness before the controller evaluates this opportunity.
+			if tracker != nil {
 				tracker.SetScopeAndEnv(gid, scope, ttfbMs, domain, envKey)
 			}
+			kickAdmissionIfSurge(gid)
 		}
 	} else {
 		maxConn, _ := strconv.Atoi(config.Get().MaxConnections)
@@ -640,9 +683,12 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			return "", err
 		}
 		if gid != "" {
-			if tracker := monitor.State.GetTracker(); tracker != nil {
+			tracker := monitor.State.GetTracker()
+			if tracker != nil {
 				tracker.MarkAdded(gid)
-				tracker.SetThreadInfo(gid, maxConn, false)
+				if strings.HasPrefix(gid, "ar_") {
+					tracker.SetThreadInfo(gid, maxConn, false)
+				}
 			}
 			classificationURL := candidate.finalURL
 			if classificationURL == "" {
@@ -651,9 +697,10 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			finalIP := resolveHostIP(classificationURL)
 			scope, domain := scopeClassifier.ClassifyByURLAndIP(candidate.url, finalIP)
 			envKey := monitor.ComputeEnvKeyForDownload(candidate.url, finalIP)
-			if tracker := monitor.State.GetTracker(); tracker != nil {
+			if tracker != nil {
 				tracker.SetScopeAndEnv(gid, scope, 0, domain, envKey)
 			}
+			kickAdmissionIfSurge(gid)
 		}
 	}
 

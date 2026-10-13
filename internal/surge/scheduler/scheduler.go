@@ -156,11 +156,6 @@ type Scheduler struct {
 	defaultDownloadRateLimitBps int64
 	shutdownOnce                sync.Once
 
-	// FORK-PATCH: tightenOnPickup is host-injected clamp-before-start (nil = no-op).
-	// Separate mutex so the callback runs after p.mu.Unlock without nesting.
-	tightenMu       sync.RWMutex
-	tightenOnPickup func(*types.DownloadRecord)
-
 	// FORK-PATCH: managed admission mode. When true, workers only claim queued
 	// tasks whose current opportunity was authorized via Admit. busy tracks
 	// physical claims from waitForTask handout until end-of-claim bookkeeping;
@@ -420,33 +415,25 @@ func (p *Scheduler) Admit(key AdmissionKey, workers int, minChunkSize int64) Adm
 	return AdmitAccepted
 }
 
-// SetTightenOnPickup installs (or clears, when fn is nil) the pre-RunDownload
-// tighten-only callback. Safe to call concurrently with workers.
-// FORK-PATCH: host clamp-before-start hook used by LifecycleManager.SetEngineHooks.
-func (p *Scheduler) SetTightenOnPickup(fn func(*types.DownloadRecord)) {
-	p.tightenMu.Lock()
-	p.tightenOnPickup = fn
-	p.tightenMu.Unlock()
-}
-
-// TightenOnPickupInstalled reports whether a non-nil pickup tighten callback
-// is installed on the scheduler (the production worker path).
-func (p *Scheduler) TightenOnPickupInstalled() bool {
-	return p.getTightenOnPickup() != nil
-}
-
-// CallTightenOnPickup runs the installed pickup callback if non-nil (nil-safe).
-// Mirrors worker() pre-RunDownload invoke for host-wiring tests.
-func (p *Scheduler) CallTightenOnPickup(cfg *types.DownloadRecord) {
-	if fn := p.getTightenOnPickup(); fn != nil {
-		fn(cfg)
+// managedRuntimeCeiling returns a Runtime copy whose Workers ceiling is always
+// positive so managed Admit never starves on a nil/auto runtime. Sequential and
+// proven range-unsupported downloads stay single-threaded; positive caller
+// ceilings are preserved (never widened) and every other field is kept.
+// FORK-PATCH: managed Add materialization — runs before the queue insert so
+// AdmissionSnapshot/Admit always observe a positive ceiling.
+func managedRuntimeCeiling(cfg types.DownloadRecord) *types.RuntimeConfig {
+	var rt types.RuntimeConfig
+	if cfg.Runtime != nil {
+		rt = *cfg.Runtime
+	} else {
+		rt = *types.DefaultRuntimeConfig()
 	}
-}
-
-func (p *Scheduler) getTightenOnPickup() func(*types.DownloadRecord) {
-	p.tightenMu.RLock()
-	defer p.tightenMu.RUnlock()
-	return p.tightenOnPickup
+	if rt.SequentialDownload || cfg.RangeAcquisitionMode == types.RangeAcquireRangeUnsupported {
+		rt.Workers = 1
+	} else if rt.Workers <= 0 {
+		rt.Workers = rt.GetMaxConnectionsPerDownload()
+	}
+	return &rt
 }
 
 // removeQueueOrderLocked removes an ID from queueOrder preserving the order of other elements.
@@ -531,6 +518,9 @@ func (p *Scheduler) Add(cfg types.DownloadRecord) bool {
 		p.mu.Unlock()
 		utils.Debug("Scheduler: Add refused for %s: admission token space exhausted", cfg.ID)
 		return false
+	}
+	if p.managed {
+		cfg.Runtime = managedRuntimeCeiling(cfg)
 	}
 	p.ensureLimiterForConfigLocked(&cfg)
 	qt := &queuedTask{cfg: cfg, token: token}
@@ -1187,11 +1177,6 @@ func (p *Scheduler) worker() {
 		// Make a local copy for RunDownload to mutate safely
 		localCfg := ad.config
 		p.mu.Unlock()
-
-		// FORK-PATCH: host tighten-only clamp after dequeue, before RunDownload.
-		if fn := p.getTightenOnPickup(); fn != nil {
-			fn(&localCfg)
-		}
 
 		err := RunDownload(ctx, &localCfg)
 		ad.running.Store(false)

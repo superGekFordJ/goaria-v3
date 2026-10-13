@@ -34,6 +34,19 @@ func (h *HybridEngine) splitGid(gid string) (string, string) {
 }
 
 func (h *HybridEngine) AddUri(url string, options AddURIOptions) (string, error) {
+	return h.addUri(url, options, nil)
+}
+
+// AddUriWithAria2Preparation shares the AddUri routing but defers Aria2-bound
+// option building to prepare, invoked exactly once and only when the Aria2
+// path is actually selected — never for a successful Surge accept or a hard
+// disk-space refusal. The returned options replace the request for the Aria2
+// call; BeforeSave is still served from the original options.
+func (h *HybridEngine) AddUriWithAria2Preparation(url string, surgeOptions AddURIOptions, prepare func() AddURIOptions) (string, error) {
+	return h.addUri(url, surgeOptions, prepare)
+}
+
+func (h *HybridEngine) addUri(url string, options AddURIOptions, prepare func() AddURIOptions) (string, error) {
 	subOpts := options
 	subOpts.BeforeSave = nil
 
@@ -57,6 +70,11 @@ func (h *HybridEngine) AddUri(url string, options AddURIOptions) (string, error)
 			return "", err
 		}
 		log.Printf("[Hybrid] Surge failed to add URI %s: %v, falling back to Aria2", sanitizeURLForLog(url), sanitizeErrorForLog(err, url))
+	}
+
+	if prepare != nil {
+		subOpts = prepare()
+		subOpts.BeforeSave = nil
 	}
 
 	// Aria2 hard limit: max-connection-per-server = 16.

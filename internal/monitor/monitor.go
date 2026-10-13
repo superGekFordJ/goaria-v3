@@ -84,6 +84,12 @@ type Monitor struct {
 	idleReclaimTimer   *time.Timer
 	idleReclaimStopped bool
 
+	// Single-slot admission wake notification (not a subscriber bus):
+	// installed once by the composition root, cleared on shutdown. The
+	// callback is copied under kickMu and invoked without holding it.
+	kickMu        sync.Mutex
+	admissionKick func()
+
 	// Network environment fingerprint cache (MAC → envKey)
 	netEnv *NetEnvCache
 
@@ -374,7 +380,13 @@ func (m *Monitor) confirmPauseResumeRequestLocked(gid string) acceptedTaskChange
 }
 
 func (m *Monitor) publishAcceptedTaskChange(change acceptedTaskChange) {
-	if m == nil || m.hub == nil || change.task.GID == "" {
+	if m == nil || change.task.GID == "" {
+		return
+	}
+	// Authoritative status change accepted — notify admission before the
+	// hub/window early-return so headless runs still reach the controller.
+	m.KickAdmission()
+	if m.hub == nil {
 		return
 	}
 	if change.from != "" && change.from != change.to {
@@ -384,6 +396,32 @@ func (m *Monitor) publishAcceptedTaskChange(change acceptedTaskChange) {
 		m.pusher.Queue(events.TaskDelta{Type: change.kind, GID: change.task.GID, Payload: change.task})
 	}
 	m.hub.NotifyInternal(events.TaskDelta{Type: change.kind, GID: change.task.GID, Payload: change.task})
+}
+
+// SetAdmissionKick installs the single admission-controller notification
+// slot; nil clears it. Not a subscriber bus — one owner, one callback.
+func (m *Monitor) SetAdmissionKick(fn func()) {
+	if m == nil {
+		return
+	}
+	m.kickMu.Lock()
+	m.admissionKick = fn
+	m.kickMu.Unlock()
+}
+
+// KickAdmission reports an authoritative fact that may have freed or created
+// a dispatch opportunity. Always invoked outside tracker/cache/monitor locks;
+// nil-safe and idempotent — the callback itself merges redundant edges.
+func (m *Monitor) KickAdmission() {
+	if m == nil {
+		return
+	}
+	m.kickMu.Lock()
+	fn := m.admissionKick
+	m.kickMu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 func (m *Monitor) clearPauseResumeIntentionLocked(gid string) {
@@ -1202,6 +1240,10 @@ func (m *Monitor) InvalidateTask(gid string) {
 		m.hub.EmitTaskDelta(events.TaskDelta{Type: "remove", GID: gid})
 	}
 
+	// Removal frees or voids admission opportunities; notify outside the
+	// lifecycle gate.
+	m.KickAdmission()
+
 	log.Printf("[Monitor] Task invalidated: %s", gid)
 }
 
@@ -1339,10 +1381,6 @@ func trackedTaskInfos(tasks []TrackedTask, speedByGID map[string]int64) []smartt
 	result := make([]smartthread.TrackedTaskInfo, 0, len(tasks))
 	for _, t := range tasks {
 		speed, measured := speedByGID[t.GID]
-		compat := t.compatClaim
-		if compat == smartthread.CompatNone && t.resumeOccupancyHold {
-			compat = smartthread.CompatSurgeResume
-		}
 		result = append(result, smartthread.TrackedTaskInfo{
 			GID:               t.GID,
 			Status:            t.Status,
@@ -1360,7 +1398,7 @@ func trackedTaskInfos(tasks []TrackedTask, speedByGID map[string]int64) []smartt
 			TelemetryValid:    measured,
 			ActivatedAt:       t.ActivatedAt,
 			FirstProgressAt:   t.FirstProgressAt,
-			CompatClaim:       compat,
+			CompatClaim:       t.compatClaim,
 			AddAnchorAt:       t.addAnchorAt,
 			AdmissionReserved: t.admittedNotStarted,
 		})

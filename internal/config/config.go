@@ -212,14 +212,35 @@ func Update(mutate func(*AppConfig)) {
 	}
 }
 
+// saveKick is the single post-persist notification slot (not a subscriber
+// bus): installed once by the composition root, cleared on shutdown.
+var saveKick atomic.Pointer[func()]
+
+// SetSaveKick installs the callback invoked after a committed UpdateChecked
+// store — outside writeMu. Nil clears it. Persistence failures and canonical
+// no-ops never fire it.
+func SetSaveKick(fn func()) {
+	if fn == nil {
+		saveKick.Store(nil)
+		return
+	}
+	saveKick.Store(&fn)
+}
+
+func notifySaveKick() {
+	if fn := saveKick.Load(); fn != nil {
+		(*fn)()
+	}
+}
+
 // UpdateChecked copies the current snapshot, applies mutate to the copy, sanitizes,
 // persists atomically, then publishes. Canonical no-ops neither write nor swap pointers.
 func UpdateChecked(mutate func(*AppConfig)) (UpdateResult, error) {
 	writeMu.Lock()
-	defer writeMu.Unlock()
 
 	oldPtr := current.Load()
 	if oldPtr == nil {
+		writeMu.Unlock()
 		return UpdateResult{}, errNotLoaded
 	}
 	previous := *oldPtr
@@ -227,13 +248,19 @@ func UpdateChecked(mutate func(*AppConfig)) (UpdateResult, error) {
 	mutate(&candidate)
 	candidate = ValidateAndSanitize(candidate)
 	if candidate == previous {
+		writeMu.Unlock()
 		return UpdateResult{Previous: previous, Current: previous}, nil
 	}
 	if err := saveLocked(candidate); err != nil {
+		writeMu.Unlock()
 		return UpdateResult{Previous: previous, Current: previous}, err
 	}
 	committed := candidate
 	current.Store(&committed)
+	writeMu.Unlock()
+	// Post-commit notification runs after the write mutex is released so the
+	// callback may freely re-enter config reads.
+	notifySaveKick()
 	return UpdateResult{Previous: previous, Current: committed, Changed: true}, nil
 }
 

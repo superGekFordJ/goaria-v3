@@ -934,10 +934,10 @@ func TestConvergence_LocalWindow_PreviousOccSurvivesRemove(t *testing.T) {
 }
 
 // TestConvergence_LocalWindow_ReservationsExcluded proves the sampled-active
-// filter: waiting claims, synthetic compat actives and admission reservations
-// never enter the membership diff or Surge processing, yet still count
-// toward the wide occupancy budget; a genuinely-started task is one entry,
-// and a legacy active without an anchor stays a telem-only member.
+// filter: pending reservations, synthetic compat placeholders and admission
+// reservations never enter the membership diff or Surge processing, yet still
+// count toward the wide occupancy budget; a genuinely-started task is one
+// entry, and a legacy active without an anchor stays a telem-only member.
 func TestConvergence_LocalWindow_ReservationsExcluded(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
@@ -946,11 +946,12 @@ func TestConvergence_LocalWindow_ReservationsExcluded(t *testing.T) {
 	rows := []TrackedTaskInfo{
 		{
 			GID: "sg_wait", Status: "waiting", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+			AdmissionReserved: true, ActivatedAt: t0,
 			TargetBandwidth: 5 * 1024 * 1024, TelemetryBps: 1024 * 1024, TelemetryValid: true,
 		},
 		{
-			GID: "sg_syn", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-			CompatClaim: CompatSurgeClaim, TargetBandwidth: 6 * 1024 * 1024,
+			GID: "ar_syn", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+			CompatClaim: CompatAria2Add, AddAnchorAt: t0, TargetBandwidth: 6 * 1024 * 1024,
 		},
 		{
 			GID: "sg_resv", Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
@@ -987,7 +988,7 @@ func TestConvergence_LocalWindow_ReservationsExcluded(t *testing.T) {
 	membership := make(map[string]gidInfo, len(ct.prevActiveGids))
 	maps.Copy(membership, ct.prevActiveGids)
 	ct.mu.Unlock()
-	for _, excluded := range []string{"sg_wait", "sg_syn", "sg_resv"} {
+	for _, excluded := range []string{"sg_wait", "ar_syn", "sg_resv"} {
 		if states[excluded] {
 			t.Fatalf("%s must not create convergence state", excluded)
 		}

@@ -36,7 +36,7 @@ type LifecycleManager struct {
 	aggregator          *ProgressAggregator
 	isNameActive        IsNameActiveFunc
 
-	// FORK-PATCH: host EngineHooks (resume recompute + pickup tighten; RMW via Get/SetEngineHooks).
+	// FORK-PATCH: host EngineHooks (resume metadata prep; RMW via Get/SetEngineHooks).
 	engineHooks EngineHooks
 	hooksMu     sync.RWMutex
 
@@ -121,16 +121,11 @@ func NewLifecycleManager(pool *scheduler.Scheduler, eventBus *EventBus, settings
 }
 
 // SetEngineHooks injects host hooks without replacing LifecycleManager's
-// direct pool/eventBus control flow. Also syncs TightenOnPickup onto the
-// scheduler so EngineHooks and the worker callback cannot drift.
-// FORK-PATCH: mirrors EngineHooks.TightenOnPickup onto pool.SetTightenOnPickup.
+// direct pool/eventBus control flow.
 func (mgr *LifecycleManager) SetEngineHooks(hooks EngineHooks) {
 	mgr.hooksMu.Lock()
 	mgr.engineHooks = hooks
 	mgr.hooksMu.Unlock()
-	if mgr.pool != nil {
-		mgr.pool.SetTightenOnPickup(hooks.TightenOnPickup)
-	}
 }
 
 func (mgr *LifecycleManager) getEngineHooks() EngineHooks {

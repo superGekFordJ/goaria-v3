@@ -256,12 +256,22 @@ func TestSurgeEngine_MapStatus(t *testing.T) {
 // that AddUri correctly maps options.Split → DownloadRequest.Workers and
 // options.MinSplitSize → DownloadRequest.MinChunkSize through the full
 // Enqueue → addFunc → local_service.add chain.
-func TestAddUri_SplitMinSplitSize_Passthrough(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", "104857600")
-		w.Header().Set("Accept-Ranges", "bytes")
+// rangeCapableHandler answers the engine's range probe with a real 206 so the
+// enqueue records a range-supported origin; plain GETs return 200.
+func rangeCapableHandler(size int64) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "" {
+			w.Header().Set("Content-Range", "bytes 0-0/"+strconv.FormatInt(size, 10))
+			w.WriteHeader(http.StatusPartialContent)
+			return
+		}
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 		w.WriteHeader(http.StatusOK)
-	}))
+	}
+}
+
+func TestAddUri_SplitMinSplitSize_Passthrough(t *testing.T) {
+	srv := httptest.NewServer(rangeCapableHandler(104857600))
 	defer srv.Close()
 
 	engine := NewSurgeEngine()
@@ -293,14 +303,12 @@ func TestAddUri_SplitMinSplitSize_Passthrough(t *testing.T) {
 }
 
 // TestAddUri_ZeroSplitMinSplitSize_Defaults verifies that when Split and
-// MinSplitSize are zero (non-smart-thread mode), the engine falls back to
-// √size heuristic (Workers=0) and global default MinChunkSize.
+// MinSplitSize are zero (non-smart-thread mode), the managed pool still
+// materializes a positive ceiling (resolved per-download max) at insertion —
+// the √size heuristic now lives at admission time — and keeps the global
+// default MinChunkSize.
 func TestAddUri_ZeroSplitMinSplitSize_Defaults(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", "104857600")
-		w.Header().Set("Accept-Ranges", "bytes")
-		w.WriteHeader(http.StatusOK)
-	}))
+	srv := httptest.NewServer(rangeCapableHandler(104857600))
 	defer srv.Close()
 
 	engine := NewSurgeEngine()
@@ -320,8 +328,8 @@ func TestAddUri_ZeroSplitMinSplitSize_Defaults(t *testing.T) {
 		t.Fatal("expected config in pool")
 	}
 
-	if cfg.Runtime.Workers != 0 {
-		t.Errorf("Runtime.Workers = %d, want 0 (use √size heuristic)", cfg.Runtime.Workers)
+	if cfg.Runtime.Workers != types.PerDownloadMax {
+		t.Errorf("Runtime.Workers = %d, want resolved ceiling %d", cfg.Runtime.Workers, types.PerDownloadMax)
 	}
 	if cfg.Runtime.MinChunkSize != types.MinChunk {
 		t.Errorf("Runtime.MinChunkSize = %d, want default %d", cfg.Runtime.MinChunkSize, types.MinChunk)
@@ -507,111 +515,6 @@ func TestSurgeEngine_SetResumeParamsHook_NilHook_PreservesValues(t *testing.T) {
 	}
 	if cfg.Runtime.MinChunkSize != 4*1024*1024 {
 		t.Errorf("MinChunkSize = %d, want 4MB (preserved, no hook)", cfg.Runtime.MinChunkSize)
-	}
-}
-
-func TestSurgeEngine_SetTightenOnPickupHook(t *testing.T) {
-	pool := scheduler.NewSchedulerForTesting(nil)
-	engine := NewSurgeEngineForTesting(pool)
-	t.Cleanup(engine.Close)
-
-	var called bool
-	engine.SetTightenOnPickupHook(func(cfg *types.DownloadRecord) {
-		called = true
-		cfg.Runtime.Workers = 1
-	})
-
-	hooks := engine.manager.GetEngineHooks()
-	if hooks.TightenOnPickup == nil {
-		t.Fatal("TightenOnPickup hook not set on EngineHooks")
-	}
-	if !pool.TightenOnPickupInstalled() {
-		t.Fatal("SetTightenOnPickupHook must sync callback onto scheduler")
-	}
-
-	cfg := &types.DownloadRecord{
-		ID:      "test-tighten",
-		Runtime: &types.RuntimeConfig{Workers: 9, MinChunkSize: 1024},
-	}
-	pool.CallTightenOnPickup(cfg)
-	if !called {
-		t.Fatal("scheduler bridge did not invoke hook")
-	}
-	if cfg.Runtime.Workers != 1 {
-		t.Errorf("after scheduler invoke Workers=%d, want 1", cfg.Runtime.Workers)
-	}
-}
-
-func TestSurgeEngine_SetTightenOnPickupHook_PreservesResume(t *testing.T) {
-	engine := NewSurgeEngine()
-	defer engine.Close()
-
-	engine.SetResumeParamsHook(func(cfg *types.DownloadRecord) {
-		cfg.Runtime.Workers = 12
-	})
-	engine.SetTightenOnPickupHook(func(cfg *types.DownloadRecord) {
-		cfg.Runtime.Workers = 1
-	})
-
-	hooks := engine.manager.GetEngineHooks()
-	if hooks.RecomputeResumeParams == nil {
-		t.Fatal("SetTighten must RMW-preserve RecomputeResumeParams")
-	}
-	if hooks.TightenOnPickup == nil {
-		t.Fatal("TightenOnPickup missing after set")
-	}
-	if pool := engine.getScheduler(); pool == nil || !pool.TightenOnPickupInstalled() {
-		t.Fatal("TightenOnPickup must remain installed on scheduler after RMW")
-	}
-
-	cfg := &types.DownloadRecord{Runtime: &types.RuntimeConfig{Workers: 4}}
-	hooks.RecomputeResumeParams(cfg)
-	if cfg.Runtime.Workers != 12 {
-		t.Errorf("Resume hook Workers=%d, want 12", cfg.Runtime.Workers)
-	}
-}
-
-func TestSurgeEngine_SetResumeParamsHook_PreservesTighten(t *testing.T) {
-	engine := NewSurgeEngine()
-	defer engine.Close()
-
-	engine.SetTightenOnPickupHook(func(cfg *types.DownloadRecord) {
-		cfg.Runtime.Workers = 1
-	})
-	engine.SetResumeParamsHook(func(cfg *types.DownloadRecord) {
-		cfg.Runtime.Workers = 12
-	})
-
-	hooks := engine.manager.GetEngineHooks()
-	if hooks.TightenOnPickup == nil {
-		t.Fatal("SetResumeParamsHook must RMW-preserve TightenOnPickup")
-	}
-	if pool := engine.getScheduler(); pool == nil || !pool.TightenOnPickupInstalled() {
-		t.Fatal("scheduler TightenOnPickup must survive SetResumeParamsHook RMW")
-	}
-}
-
-func TestSurgeEngine_SetTightenOnPickupHook_NilClears(t *testing.T) {
-	pool := scheduler.NewSchedulerForTesting(nil)
-	engine := NewSurgeEngineForTesting(pool)
-	t.Cleanup(engine.Close)
-
-	engine.SetTightenOnPickupHook(func(cfg *types.DownloadRecord) {})
-	if !pool.TightenOnPickupInstalled() {
-		t.Fatal("expected scheduler hook after set")
-	}
-	engine.SetTightenOnPickupHook(nil)
-	hooks := engine.manager.GetEngineHooks()
-	if hooks.TightenOnPickup != nil {
-		t.Fatal("nil SetTightenOnPickupHook should clear EngineHooks field")
-	}
-	if pool.TightenOnPickupInstalled() {
-		t.Fatal("nil SetTightenOnPickupHook must clear scheduler callback")
-	}
-	cfg := &types.DownloadRecord{Runtime: &types.RuntimeConfig{Workers: 7}}
-	pool.CallTightenOnPickup(cfg)
-	if cfg.Runtime.Workers != 7 {
-		t.Fatalf("nil-cleared scheduler invoke mutated Workers to %d", cfg.Runtime.Workers)
 	}
 }
 
@@ -983,4 +886,163 @@ func TestSurgeEngine_ActiveCount(t *testing.T) {
 	if count := populatedEngine.ActiveCount(); count != 2 {
 		t.Errorf("populatedEngine.ActiveCount() = %d, want 2 (1 active + 1 queued)", count)
 	}
+}
+
+// ==================== Managed admission surface ====================
+//
+// NewSurgeEngine must run a managed pool at the production capacity bound,
+// and the narrow Go-only seams must forward faithfully: queueing a task is
+// free (no committed slot), authorization happens only via Admit on the
+// snapshot key, and the wake callback fires once the released slot is
+// observable. Nil-pool engines degrade to safe defaults.
+
+func TestSurgeEngine_ManagedPoolCapacity32(t *testing.T) {
+	engine := NewSurgeEngine()
+	defer engine.Close()
+
+	snap := engine.AdmissionSnapshot()
+	if !snap.Managed {
+		t.Fatal("production pool is not managed")
+	}
+	if snap.Capacity != 32 {
+		t.Fatalf("managed capacity = %d, want 32", snap.Capacity)
+	}
+	if snap.CommittedSlots != 0 {
+		t.Fatalf("fresh pool committed %d slots", snap.CommittedSlots)
+	}
+}
+
+func TestSurgeEngine_AddUriQueuesWithoutCommitting(t *testing.T) {
+	engine := NewSurgeEngine()
+	defer engine.Close()
+
+	id, err := engine.AddUri("http://127.0.0.1:1/unreachable.bin", AddURIOptions{
+		Dir:                  t.TempDir(),
+		Out:                  "unreachable.bin",
+		FileSize:             1 << 20,
+		RangeAcquisitionMode: types.RangeAcquirePayloadFirstUnknown,
+		SkipServerProbe:      true,
+	})
+	if err != nil {
+		t.Fatalf("AddUri: %v", err)
+	}
+
+	snap := engine.AdmissionSnapshot()
+	if len(snap.Candidates) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(snap.Candidates))
+	}
+	cand := snap.Candidates[0]
+	if cand.Key.ID != id || cand.Key.Token == 0 {
+		t.Fatalf("candidate key = %+v", cand.Key)
+	}
+	if !cand.RuntimeReady || cand.Workers < 1 {
+		t.Fatalf("candidate has no positive runtime ceiling: %+v", cand)
+	}
+	// Queuing is metadata-only: nothing is committed until Admit accepts.
+	if snap.CommittedSlots != 0 {
+		t.Fatalf("queued task committed %d slots before Admit", snap.CommittedSlots)
+	}
+
+	if res := engine.Admit(scheduler.AdmissionKey{ID: id, Token: 0}, 1, cand.MinChunkSize); res != scheduler.AdmitStale {
+		t.Fatalf("zero-token Admit = %v, want Stale", res)
+	}
+	if res := engine.Admit(scheduler.AdmissionKey{ID: id, Token: cand.Key.Token + 999}, 1, cand.MinChunkSize); res != scheduler.AdmitStale {
+		t.Fatalf("wrong-token Admit = %v, want Stale", res)
+	}
+	if res := engine.Admit(cand.Key, 1, cand.MinChunkSize); res != scheduler.AdmitAccepted {
+		t.Fatalf("Admit = %v, want Accepted", res)
+	}
+	if snap := engine.AdmissionSnapshot(); snap.CommittedSlots != 1 {
+		t.Fatalf("committed after Admit = %d, want 1", snap.CommittedSlots)
+	}
+	// Repeat authorization of the live opportunity is idempotent.
+	if res := engine.Admit(cand.Key, 1, cand.MinChunkSize); res != scheduler.AdmitAlreadyAdmitted {
+		t.Fatalf("repeat Admit = %v, want AlreadyAdmitted", res)
+	}
+}
+
+func TestSurgeEngine_AdmissionWakeFiresOnRelease(t *testing.T) {
+	// A hanging GET keeps the claim busy until Cancel settles it.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1048576")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	engine := NewSurgeEngine()
+	defer engine.Close()
+
+	wake := make(chan struct{}, 8)
+	engine.SetAdmissionWake(func() { wake <- struct{}{} })
+	defer engine.SetAdmissionWake(nil)
+
+	id, err := engine.AddUri(srv.URL+"/hang.bin", AddURIOptions{
+		Dir:                  t.TempDir(),
+		Out:                  "hang.bin",
+		FileSize:             1 << 20,
+		RangeAcquisitionMode: types.RangeAcquirePayloadFirstUnknown,
+		SkipServerProbe:      true,
+	})
+	if err != nil {
+		t.Fatalf("AddUri: %v", err)
+	}
+	var key scheduler.AdmissionKey
+	var minChunk int64
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		found := false
+		for _, cand := range engine.AdmissionSnapshot().Candidates {
+			if cand.Key.ID == id {
+				key, minChunk, found = cand.Key, cand.MinChunkSize, true
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("candidate never appeared in snapshot")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if res := engine.Admit(key, 2, minChunk); res != scheduler.AdmitAccepted {
+		t.Fatalf("Admit = %v, want Accepted", res)
+	}
+
+	// Wait until the claim is physically visible.
+	for {
+		if len(engine.AdmissionSnapshot().Busy) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("admitted task never claimed a busy slot")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	pool := engine.getScheduler()
+	pool.Cancel(id)
+	select {
+	case <-wake:
+		// The freed slot must already be observable when wake fires.
+		if snap := engine.AdmissionSnapshot(); snap.CommittedSlots != 0 {
+			t.Fatalf("wake observed committed=%d, want 0", snap.CommittedSlots)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("slot release did not fire the admission wake")
+	}
+}
+
+func TestSurgeEngine_AdmissionSurfaceNilSafe(t *testing.T) {
+	var engine SurgeEngine
+	if snap := engine.AdmissionSnapshot(); snap.Managed || len(snap.Candidates) != 0 || snap.Capacity != 0 {
+		t.Fatalf("nil-pool snapshot = %+v", snap)
+	}
+	if res := engine.Admit(scheduler.AdmissionKey{ID: "x", Token: 1}, 1, 0); res != scheduler.AdmitUnavailable {
+		t.Fatalf("nil-pool Admit = %v, want Unavailable", res)
+	}
+	engine.SetAdmissionWake(func() { t.Error("wake fired on nil pool") })
 }

@@ -178,31 +178,31 @@ func TestTrackerFacts_ParamWritesNeverRenewLease(t *testing.T) {
 	}
 }
 
-func TestTrackerFacts_ResumeHoldTransfersToCompatClaim(t *testing.T) {
+func TestTrackerFacts_SurgeParamWriteIsNotAClaim(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.EnsureTrackedFromEvent("sg_h", 1000, "https://x", 4, "active")
 	tracker.SetStatusFromEvent("sg_h", "paused")
 	tracker.SetTargetBandwidth("sg_h", 4_000_000)
-	if !tracker.tasks["sg_h"].resumeOccupancyHold {
-		t.Fatal("resume write while paused should set the hold")
+
+	// A params write on a paused Surge row mints no claim: the admission
+	// reservation is the only pending occupancy source.
+	tt := tracker.tasks["sg_h"]
+	if tt.compatClaim != smartthread.CompatNone {
+		t.Errorf("compat = %v, want CompatNone", tt.compatClaim)
 	}
 
-	// Resume-ack "active" clears the private hold but transfers the claim —
-	// no activation time is granted by the status write itself.
+	// A status write still grants no activation.
 	tracker.SetStatusFromEvent("sg_h", "active")
-	tt := tracker.tasks["sg_h"]
-	if tt.resumeOccupancyHold {
-		t.Error("hold should clear on status transition")
-	}
-	if tt.compatClaim != smartthread.CompatSurgeResume {
-		t.Errorf("compat = %v, want CompatSurgeResume (claim survives until real start)", tt.compatClaim)
-	}
+	tt = tracker.tasks["sg_h"]
 	if !tt.ActivatedAt.IsZero() {
 		t.Error("status write alone must not grant activation")
 	}
+	if tt.compatClaim != smartthread.CompatNone {
+		t.Errorf("compat = %v, want CompatNone (no resume lineage)", tt.compatClaim)
+	}
 }
 
-func TestTrackerFacts_ReopenEndsLeaseKeepsClaim(t *testing.T) {
+func TestTrackerFacts_ReopenEndsLease(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.EnsureTrackedFromEvent("sg_ro", 1000, "https://x", 4, "active")
 	tracker.SetTargetBandwidth("sg_ro", 4_000_000)
@@ -214,8 +214,8 @@ func TestTrackerFacts_ReopenEndsLeaseKeepsClaim(t *testing.T) {
 	if !tt.ActivatedAt.IsZero() {
 		t.Error("reopen must end the previous run's lease")
 	}
-	if tt.compatClaim != smartthread.CompatSurgeResume {
-		t.Errorf("compat = %v, want resume claim preserved across reopen", tt.compatClaim)
+	if tt.compatClaim != smartthread.CompatNone {
+		t.Errorf("compat = %v, want none — reopen carries no legacy claim", tt.compatClaim)
 	}
 }
 

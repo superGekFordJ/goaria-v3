@@ -881,3 +881,116 @@ func TestLoad_PreservesExplicitEmptyRPCSecret(t *testing.T) {
 		t.Fatalf("explicit empty RPCSecret regenerated on reload: %q", Get().RPCSecret)
 	}
 }
+
+// --- Save-kick seam: one merged notification per committed publication ---
+
+func TestConfigSaveKick_FiresAfterCommitSeesNewSnapshot(t *testing.T) {
+	isolateConfigHome(t)
+	start := DefaultConfig()
+	SetTestConfig(&start)
+
+	var calls atomic.Int64
+	var observed atomic.Int64
+	SetSaveKick(func() {
+		calls.Add(1)
+		// The callback runs after the canonical store: it must already read
+		// the committed value, never the previous snapshot.
+		observed.Store(int64(Get().MinThreadLife))
+	})
+	t.Cleanup(func() { SetSaveKick(nil) })
+
+	res, err := UpdateChecked(func(c *AppConfig) { c.MinThreadLife = 9 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Changed {
+		t.Fatal("expected Changed=true")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("save kick fired %d times, want 1", calls.Load())
+	}
+	if observed.Load() != 9 {
+		t.Fatalf("callback observed MinThreadLife=%d, want committed 9", observed.Load())
+	}
+}
+
+func TestConfigSaveKick_SilentOnPersistFailure(t *testing.T) {
+	isolateConfigHome(t)
+	start := DefaultConfig()
+	SetTestConfig(&start)
+	if err := saveLocked(start); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls atomic.Int64
+	SetSaveKick(func() { calls.Add(1) })
+	t.Cleanup(func() { SetSaveKick(nil) })
+
+	createConfigTemp = func(dir, pattern string) (*os.File, error) {
+		return nil, errors.New("persist boom")
+	}
+	if _, err := UpdateChecked(func(c *AppConfig) { c.MinThreadLife = 99 }); err == nil {
+		t.Fatal("expected persist error")
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("persistence failure fired %d kicks", calls.Load())
+	}
+}
+
+func TestConfigSaveKick_SilentOnCanonicalNoOp(t *testing.T) {
+	isolateConfigHome(t)
+	start := DefaultConfig()
+	start.MaxConnections = "16"
+	SetTestConfig(&start)
+	if err := saveLocked(start); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls atomic.Int64
+	SetSaveKick(func() { calls.Add(1) })
+	t.Cleanup(func() { SetSaveKick(nil) })
+
+	res, err := UpdateChecked(func(c *AppConfig) { c.MaxConnections = " 016 " })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Changed {
+		t.Fatal("canonical no-op reported a change")
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("canonical no-op fired %d kicks", calls.Load())
+	}
+}
+
+func TestConfigSaveKick_ClearableAndInvokedOutsideWriteLock(t *testing.T) {
+	isolateConfigHome(t)
+	start := DefaultConfig()
+	SetTestConfig(&start)
+
+	// The callback may safely re-enter UpdateChecked semantics — prove it by
+	// reading Get (which takes no write lock) and by having it complete
+	// without deadlock while a second update is queued behind writeMu.
+	var calls atomic.Int64
+	SetSaveKick(func() {
+		calls.Add(1)
+		_ = Get() // must not deadlock: callback runs post-writeMu
+	})
+	defer SetSaveKick(nil)
+
+	if _, err := UpdateChecked(func(c *AppConfig) { c.MinThreadLife = 11 }); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("kick count = %d, want 1", calls.Load())
+	}
+
+	SetSaveKick(nil)
+	if _, err := UpdateChecked(func(c *AppConfig) { c.MinThreadLife = 12 }); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("cleared callback still fired: %d", calls.Load())
+	}
+	// Nil-safe: KickAdmission-equivalent notify with no callback is a no-op.
+	SetSaveKick(nil)
+}

@@ -23,6 +23,7 @@ func TestExistingDomainWorkersFromTelemetry_ThreadCountFallback(t *testing.T) {
 	})
 
 	tr := monitor.NewTaskTracker()
+	tr.EnsureTrackedFromEvent("sg_cold", 100, "https://a.com/f", 7, "active")
 	tr.SetThreadInfo("sg_cold", 7, false)
 	tr.SetScopeAndEnv("sg_cold", "wan", 0, "a.com", "env1")
 	tr.SetTargetBandwidth("sg_cold", 1_000_000)
@@ -52,6 +53,7 @@ func TestExistingDomainWorkersFromTelemetry_MaxSnapshotsAndThreadCount(t *testin
 	})
 
 	tr := monitor.NewTaskTracker()
+	tr.EnsureTrackedFromEvent("sg_a", 100, "https://a.com/f", 7, "active")
 	tr.SetThreadInfo("sg_a", 7, false)
 	tr.SetScopeAndEnv("sg_a", "wan", 0, "a.com", "env1")
 	tr.SetTargetBandwidth("sg_a", 1_000_000)
@@ -86,6 +88,8 @@ func TestBuildOccupancyTaskInfos_SeedsLedger(t *testing.T) {
 	})
 
 	tr := monitor.NewTaskTracker()
+	tr.EnsureTrackedFromEvent("sg_ph", 100, "https://a.com/f", 4, "active")
+	tr.ObserveActivation("sg_ph", 0, false)
 	tr.SetThreadInfo("sg_ph", 4, false)
 	tr.SetScopeAndEnv("sg_ph", "wan", 50, "a.com", "env1")
 	tr.SetTargetBandwidth("sg_ph", 3_000_000)
@@ -118,23 +122,29 @@ func TestBuildOccupancyTaskInfos_ResumeHoldSeedsDomainReserved(t *testing.T) {
 	})
 
 	tr := monitor.NewTaskTracker()
+	// A paused row holding only stale claim parameters contributes nothing;
+	// resume claims now live exclusively on explicit admission reservations.
 	tr.EnsureTrackedFromEvent("sg_paused1", 100, "https://a.com/1", 4, "active")
 	tr.SetScopeAndEnv("sg_paused1", "wan", 0, "a.com", "env1")
 	tr.SetStatusFromEvent("sg_paused1", "paused")
-	// Simulate Resume hook write before EventResumed.
 	tr.SetTargetBandwidth("sg_paused1", 9_000_000)
 
-	tr.EnsureTrackedFromEvent("sg_paused2", 100, "https://a.com/2", 4, "active")
-	tr.SetScopeAndEnv("sg_paused2", "wan", 0, "a.com", "env1")
-	tr.SetStatusFromEvent("sg_paused2", "paused")
-	// Second resume still paused, no Target yet — must see first claim.
+	// The first resumed candidate sits waiting with a live reservation; a
+	// second batch member must see its floor in the domain seed.
+	tr.EnsureTrackedFromEvent("sg_wait1", 100, "https://a.com/2", 4, "waiting")
+	tr.SetScopeAndEnv("sg_wait1", "wan", 0, "a.com", "env1")
+	if _, created := tr.ReserveAdmission("sg_wait1", 1,
+		smartthread.ThreadParams{Split: 4, MinSize: 1 << 20, TargetBandwidth: 9_000_000},
+		time.Now(), 0, false); !created {
+		t.Fatal("reservation for waiting resume candidate refused")
+	}
 	monitor.State.SetTracker(tr)
 	monitor.State.SetMonitor(nil)
 
 	infos := BuildOccupancyTaskInfos()
 	ledger := smartthread.NewBandwidthLedger(infos)
 	if got := ledger.ReservedByDomain("wan", "a.com"); got != 9_000_000 {
-		t.Errorf("ReservedByDomain = %d, want 9000000 (resume-hold seed for ResumeBatch)", got)
+		t.Errorf("ReservedByDomain = %d, want 9000000 (pending reservation seed)", got)
 	}
 }
 
@@ -147,22 +157,30 @@ func TestBuildOccupancyTaskInfos_WaitingClaimSeedsDomainReserved(t *testing.T) {
 	})
 
 	tr := monitor.NewTaskTracker()
-	// First batch waiter holds claim while still queued.
+	// Ordinary waiting rows hold no claim: params alone contribute nothing.
+	tr.EnsureTrackedFromEvent("sg_plain", 0, "https://a.com/0", 9, "waiting")
+	tr.SetScopeAndEnv("sg_plain", "wan", 0, "a.com", "env1")
+	tr.SetThreadInfo("sg_plain", 9, false)
+	tr.SetTargetBandwidth("sg_plain", 3_000_000)
+	// The queued candidate only counts once the controller writes an
+	// explicit admitted-not-started reservation for it.
 	tr.EnsureTrackedFromEvent("sg_wait", 0, "https://a.com/1", 9, "waiting")
 	tr.SetScopeAndEnv("sg_wait", "wan", 0, "a.com", "env1")
-	tr.SetThreadInfo("sg_wait", 9, false)
-	tr.SetTargetBandwidth("sg_wait", 7_000_000)
+	if _, created := tr.ReserveAdmission("sg_wait", 1,
+		smartthread.ThreadParams{Split: 9, MinSize: 1 << 20, TargetBandwidth: 7_000_000},
+		time.Now(), 0, false); !created {
+		t.Fatal("reservation for waiting candidate refused")
+	}
 	monitor.State.SetTracker(tr)
 	monitor.State.SetMonitor(nil)
 
 	infos := BuildOccupancyTaskInfos()
 	ledger := smartthread.NewBandwidthLedger(infos)
 	if got := ledger.ReservedByDomain("wan", "a.com"); got != 7_000_000 {
-		t.Errorf("ReservedByDomain = %d, want 7000000 (waiting claim visible to later AddUri)", got)
+		t.Errorf("ReservedByDomain = %d, want 7000000 (pending reservation visible to later AddUri)", got)
 	}
-	if ExistingDomainWorkersFromTelemetry("wan", "a.com") != 9 {
-		t.Errorf("ExistingDomainWorkers = %d, want 9 from waiting ThreadCount",
-			ExistingDomainWorkersFromTelemetry("wan", "a.com"))
+	if got := ExistingDomainWorkersFromTelemetry("wan", "a.com"); got != 9 {
+		t.Errorf("ExistingDomainWorkers = %d, want 9 from reserved ThreadCount", got)
 	}
 }
 

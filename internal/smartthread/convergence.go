@@ -36,15 +36,6 @@ type CompatKind uint8
 const (
 	// CompatNone: no legacy claim; plain eligibility + real-lease rules apply.
 	CompatNone CompatKind = iota
-	// CompatSurgeClaim: legacy Surge Target claim — synthetic/empty-status
-	// active at add or an early resume-ack active. Counts on empty/active
-	// statuses until real activation, an authoritative non-active status,
-	// or a terminal boundary ends it.
-	CompatSurgeClaim
-	// CompatSurgeResume: resume-hold lineage — the paused resume-hold write
-	// or its post-transition transfer. Counts on paused/active statuses so
-	// a just-resumed task keeps its Target floor until the real start.
-	CompatSurgeResume
 	// CompatAria2Add: bounded confirmed-AddUri placeholder for non-Surge
 	// tasks, anchored at AddAnchorAt for aria2AddPlaceholderWindow.
 	CompatAria2Add

@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"goaria-v3/internal/surge/scheduler"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -38,6 +39,28 @@ func TestCleanup_ShutdownPausesAllDownloads(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("AddUri failed: %v", err)
+	}
+
+	// The managed pool holds the add as a queued candidate until admitted;
+	// authorize the opportunity so shutdown has a live download to pause.
+	pool := engine.getScheduler()
+	var cand scheduler.AdmissionCandidate
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		for _, c := range pool.AdmissionSnapshot().Candidates {
+			if c.Key.ID == gid {
+				cand = c
+			}
+		}
+		if cand.Key.Token != 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if cand.Key.Token == 0 {
+		t.Fatalf("no admission candidate appeared for %s", gid)
+	}
+	if res := pool.Admit(cand.Key, cand.Workers, cand.MinChunkSize); res != scheduler.AdmitAccepted {
+		t.Fatalf("Admit = %v, want Accepted", res)
 	}
 
 	// Give the download time to start

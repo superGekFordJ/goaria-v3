@@ -12,17 +12,13 @@ import (
 )
 
 // EngineHooks is a narrow host-integration hook surface for LifecycleManager.
-// Direct pool/eventBus wiring stays on the manager; these callbacks let GoAria
-// adjust Runtime params at resume and at scheduler pickup.
-// FORK-PATCH: RecomputeResumeParams + TightenOnPickup for host worker clamping.
+// Direct pool/eventBus wiring stays on the manager; this callback lets GoAria
+// prepare resume metadata before the task re-enters the queue.
+// FORK-PATCH: RecomputeResumeParams for host resume metadata.
 type EngineHooks struct {
 	// RecomputeResumeParams, when non-nil, runs before pool.Add on resume paths.
 	// If nil, saved resume parameters are used unchanged.
 	RecomputeResumeParams func(cfg *types.DownloadRecord)
-	// FORK-PATCH: TightenOnPickup, when non-nil, runs in scheduler.worker after a
-	// task leaves the queue and before RunDownload. Tighten-only:
-	// may lower Runtime.Workers; must never raise Workers/MinChunkSize.
-	TightenOnPickup func(cfg *types.DownloadRecord)
 }
 
 // Pause pauses an active download.

@@ -1,187 +1,173 @@
 package scheduler
 
 import (
-	"net/http"
-	"path/filepath"
-	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"goaria-v3/internal/surge/progress"
-	"goaria-v3/internal/surge/testutil"
 	"goaria-v3/internal/surge/types"
 )
 
-// FORK-PATCH: scheduler pickup tighten hook regressions (host clamp-before-start).
+// FORK-PATCH: managed Add runtime materialization + Admit copy-on-write.
+// Replaces the retired TightenOnPickup hook coverage — runtime authorization
+// now happens only through Admit, never in the worker pickup path.
 
-func TestScheduler_TightenOnPickup_InvokedAndShrinks(t *testing.T) {
-	ch := make(chan types.DownloadEvent, 100)
-	pool := New(ch, 1)
-	t.Cleanup(func() { pool.GracefulShutdown() })
-
-	var calls atomic.Int32
-	pool.SetTightenOnPickup(func(cfg *types.DownloadRecord) {
-		calls.Add(1)
-		if cfg.Runtime != nil && cfg.Runtime.Workers > 1 {
-			cfg.Runtime.Workers = 1
-		}
-	})
-
-	entered := make(chan struct{})
-	var enterOnce sync.Once
-	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		enterOnce.Do(func() { close(entered) })
-		w.Header().Set("Content-Length", "1048576")
-		w.Header().Set("Accept-Ranges", "bytes")
-		w.WriteHeader(http.StatusOK)
-		select {
-		case <-r.Context().Done():
-		case <-time.After(10 * time.Second):
-		}
-	}))
-	defer server.Close()
-
-	tmpDir := t.TempDir()
-	id := "tighten-pickup-1"
-	pool.Add(types.DownloadRecord{
-		ID:            id,
-		URL:           server.URL,
-		OutputPath:    tmpDir,
-		Filename:      "hold.bin",
-		DestPath:      filepath.Join(tmpDir, "hold.bin"),
-		ProgressState: progress.New(id, 0),
-		Runtime:       &types.RuntimeConfig{Workers: 9, MinChunkSize: 1024},
-	})
-
-	var startedWorkers int
-	deadline := time.After(5 * time.Second)
-	for startedWorkers == 0 {
-		select {
-		case msg := <-ch:
-			if msg.Type == types.EventStarted {
-				startedWorkers = msg.Workers
-			}
-		case <-deadline:
-			t.Fatal("timed out waiting for EventStarted")
+func managedCandidateFor(t *testing.T, pool *Scheduler, id string) AdmissionCandidate {
+	t.Helper()
+	for _, c := range pool.AdmissionSnapshot().Candidates {
+		if c.Key.ID == id {
+			return c
 		}
 	}
-
-	if calls.Load() < 1 {
-		t.Fatal("TightenOnPickup was not invoked")
-	}
-	if startedWorkers != 1 {
-		t.Fatalf("EventStarted Workers = %d, want 1 after tighten", startedWorkers)
-	}
-
-	select {
-	case <-entered:
-	case <-time.After(3 * time.Second):
-		// Hook + EventStarted already proven; server entry is best-effort.
-	}
-	_ = pool.Cancel(id)
+	t.Fatalf("snapshot missing candidate %s", id)
+	return AdmissionCandidate{}
 }
 
-func TestScheduler_TightenOnPickup_NilLeavesWorkers(t *testing.T) {
-	ch := make(chan types.DownloadEvent, 100)
-	pool := New(ch, 1)
-	t.Cleanup(func() { pool.GracefulShutdown() })
-
-	entered := make(chan struct{})
-	var enterOnce sync.Once
-	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		enterOnce.Do(func() { close(entered) })
-		w.Header().Set("Content-Length", "1048576")
-		w.Header().Set("Accept-Ranges", "bytes")
-		w.WriteHeader(http.StatusOK)
-		select {
-		case <-r.Context().Done():
-		case <-time.After(10 * time.Second):
-		}
-	}))
-	defer server.Close()
-
-	tmpDir := t.TempDir()
-	id := "tighten-nil-1"
-	pool.Add(types.DownloadRecord{
-		ID:            id,
-		URL:           server.URL,
-		OutputPath:    tmpDir,
-		Filename:      "hold.bin",
-		DestPath:      filepath.Join(tmpDir, "hold.bin"),
-		ProgressState: progress.New(id, 0),
-		Runtime:       &types.RuntimeConfig{Workers: 5, MinChunkSize: 1024},
-	})
-
-	var startedWorkers int
-	deadline := time.After(5 * time.Second)
-	for startedWorkers == 0 {
-		select {
-		case msg := <-ch:
-			if msg.Type == types.EventStarted {
-				startedWorkers = msg.Workers
+func TestScheduler_ManagedAddRuntimeReady(t *testing.T) {
+	cases := []struct {
+		name      string
+		runtime   *types.RuntimeConfig
+		rangeMode types.RangeAcquisitionMode
+		wantWork  int
+		wantChunk int64
+	}{
+		{
+			name:      "nil runtime gets positive default ceiling",
+			runtime:   nil,
+			wantWork:  types.PerDownloadMax,
+			wantChunk: types.MinChunk,
+		},
+		{
+			name:      "auto workers materialized",
+			runtime:   &types.RuntimeConfig{Workers: 0},
+			wantWork:  types.PerDownloadMax,
+			wantChunk: 0,
+		},
+		{
+			name:      "explicit workers preserved, never widened",
+			runtime:   &types.RuntimeConfig{Workers: 4, MinChunkSize: 8 << 20},
+			wantWork:  4,
+			wantChunk: 8 << 20,
+		},
+		{
+			name:      "sequential stays single-threaded",
+			runtime:   &types.RuntimeConfig{Workers: 16, SequentialDownload: true},
+			wantWork:  1,
+			wantChunk: 0,
+		},
+		{
+			name:      "range-unsupported stays single-threaded",
+			runtime:   &types.RuntimeConfig{Workers: 8},
+			rangeMode: types.RangeAcquireRangeUnsupported,
+			wantWork:  1,
+			wantChunk: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ch := make(chan types.DownloadEvent, 8)
+			pool, err := NewManaged(ch, 4)
+			if err != nil {
+				t.Fatalf("NewManaged: %v", err)
 			}
-		case <-deadline:
-			t.Fatal("timed out waiting for EventStarted")
-		}
+			t.Cleanup(pool.GracefulShutdown)
+
+			id := "rt-" + tc.name
+			if !pool.Add(types.DownloadRecord{
+				ID:                   id,
+				URL:                  "http://example.com/f",
+				OutputPath:           t.TempDir(),
+				Filename:             "f.bin",
+				ProgressState:        progress.New(id, 0),
+				Runtime:              tc.runtime,
+				RangeAcquisitionMode: tc.rangeMode,
+			}) {
+				t.Fatal("managed Add refused")
+			}
+
+			cand := managedCandidateFor(t, pool, id)
+			if !cand.RuntimeReady || cand.Workers != tc.wantWork || cand.MinChunkSize != tc.wantChunk {
+				t.Fatalf("candidate = %+v, want RuntimeReady/Workers=%d/MinChunk=%d", cand, tc.wantWork, tc.wantChunk)
+			}
+			if res := pool.Admit(cand.Key, tc.wantWork, tc.wantChunk); res != AdmitAccepted {
+				t.Fatalf("Admit = %v, want Accepted", res)
+			}
+		})
 	}
-	if startedWorkers != 5 {
-		t.Fatalf("nil hook EventStarted Workers = %d, want 5", startedWorkers)
-	}
-	_ = pool.Cancel(id)
 }
 
-func TestScheduler_TightenOnPickup_RetryInvokesAgain(t *testing.T) {
-	ch := make(chan types.DownloadEvent, 100)
-	pool := New(ch, 1)
-	t.Cleanup(func() { pool.GracefulShutdown() })
+// Admit must patch a fresh Runtime copy — the caller's original ceiling stays
+// untouched and only Workers/MinChunkSize may tighten.
+func TestScheduler_ManagedAdmitRuntimeCOW(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 8)
+	pool, err := NewManaged(ch, 4)
+	if err != nil {
+		t.Fatalf("NewManaged: %v", err)
+	}
+	t.Cleanup(pool.GracefulShutdown)
 
-	var calls atomic.Int32
-	pool.SetTightenOnPickup(func(cfg *types.DownloadRecord) {
-		calls.Add(1)
-		if cfg.Runtime != nil {
-			cfg.Runtime.Workers = 1
-		}
-	})
-
-	var hits atomic.Int32
-	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := hits.Add(1)
-		if n <= 2 {
-			// Non-permanent failure so worker requeues and picks up again.
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Length", "1048576")
-		w.Header().Set("Accept-Ranges", "bytes")
-		w.WriteHeader(http.StatusOK)
-		select {
-		case <-r.Context().Done():
-		case <-time.After(10 * time.Second):
-		}
-	}))
-	defer server.Close()
-
-	tmpDir := t.TempDir()
-	id := "tighten-retry-1"
-	pool.Add(types.DownloadRecord{
+	const id = "cow-1"
+	orig := &types.RuntimeConfig{
+		Workers:            8,
+		MinChunkSize:       4 << 20,
+		UserAgent:          "ua-mark",
+		SequentialDownload: false,
+	}
+	if !pool.Add(types.DownloadRecord{
 		ID:            id,
-		URL:           server.URL,
-		OutputPath:    tmpDir,
-		Filename:      "hold.bin",
-		DestPath:      filepath.Join(tmpDir, "hold.bin"),
+		URL:           "http://example.com/f",
+		OutputPath:    t.TempDir(),
+		Filename:      "f.bin",
 		ProgressState: progress.New(id, 0),
-		Runtime:       &types.RuntimeConfig{Workers: 9, MinChunkSize: 1024},
-	})
+		Runtime:       orig,
+	}) {
+		t.Fatal("managed Add refused")
+	}
 
-	deadline := time.After(8 * time.Second)
-	for calls.Load() < 2 {
-		select {
-		case <-ch:
-			// drain progress events (Queued/Started/…)
-		case <-deadline:
-			t.Fatalf("TightenOnPickup calls = %d, want >= 2 across retry pickup", calls.Load())
+	cand := managedCandidateFor(t, pool, id)
+	if res := pool.Admit(cand.Key, 2, 1<<20); res != AdmitAccepted {
+		t.Fatalf("Admit = %v, want Accepted", res)
+	}
+
+	pool.mu.RLock()
+	rt := pool.queued[id].cfg.Runtime
+	pool.mu.RUnlock()
+	if rt == nil || rt == orig {
+		t.Fatal("Admit did not copy-on-write the runtime ceiling")
+	}
+	if rt.Workers != 2 || rt.MinChunkSize != 1<<20 || rt.UserAgent != "ua-mark" {
+		t.Fatalf("patched runtime = %+v", rt)
+	}
+	if orig.Workers != 8 || orig.MinChunkSize != 4<<20 {
+		t.Fatalf("caller runtime mutated: %+v", orig)
+	}
+}
+
+// A legacy (non-managed) pool keeps queueing without runtime materialization:
+// candidates report RuntimeReady=false and the worker's own nil-Runtime
+// fallback still applies at claim.
+func TestScheduler_LegacyAddKeepsAutoRuntime(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 8)
+	pool := New(ch, 1)
+	t.Cleanup(pool.GracefulShutdown)
+
+	const id = "legacy-auto"
+	if !pool.Add(types.DownloadRecord{
+		ID:            id,
+		URL:           "http://example.com/f",
+		OutputPath:    t.TempDir(),
+		Filename:      "f.bin",
+		ProgressState: progress.New(id, 0),
+	}) {
+		t.Fatal("legacy Add refused")
+	}
+
+	snap := pool.AdmissionSnapshot()
+	if snap.Managed {
+		t.Fatal("legacy pool reported managed")
+	}
+	for _, c := range snap.Candidates {
+		if c.Key.ID == id && c.RuntimeReady {
+			t.Fatal("legacy candidate runtime was materialized")
 		}
 	}
-	_ = pool.Cancel(id)
 }

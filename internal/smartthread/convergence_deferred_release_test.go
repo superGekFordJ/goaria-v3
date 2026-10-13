@@ -595,6 +595,7 @@ func TestConvergence_Tick_OccupancyProviderClaimsFeedDomainSettle(t *testing.T) 
 	claimTask := TrackedTaskInfo{
 		GID: "sg_wait_claim", Status: "waiting", Scope: "wan", EnvKey: "testenv",
 		Domain: "example.com", TargetBandwidth: 35 * 1024 * 1024,
+		AdmissionReserved: true, ActivatedAt: time.Now(),
 	}
 
 	// With the claim: 5MB raw + 35MB claim occupancy = target → gap=0 → disarm.

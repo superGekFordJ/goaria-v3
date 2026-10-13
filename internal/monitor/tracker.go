@@ -62,16 +62,12 @@ type TrackedTask struct {
 	MinChunk int64
 
 	// TargetBandwidth is the Calculate-clamped occupancy (bytes/s) persisted
-	// after successful AddUri/Resume for hybrid ledger seeding.
+	// after a successful Aria2 AddUri for ledger seeding, or the reservation
+	// floor written by ReserveAdmission for the managed admission pipeline.
 	TargetBandwidth int64
 	// AllocatedAt is when TargetBandwidth was last written (bw>0). Distinct
 	// from CreatedAt, which SetThreadInfo refreshes for grace-period reuse.
 	AllocatedAt time.Time
-	// resumeOccupancyHold is set when SetTargetBandwidth writes while Status
-	// is still "paused" (Resume hook runs before EventResumed). Lets
-	// GetOccupancyTrackedTasks see the claim without treating long-paused
-	// tasks as holding bandwidth. Cleared whenever status changes.
-	resumeOccupancyHold bool
 
 	// AddedAt is when this session observed the user add (MarkAdded). Zero
 	// means unknown (restart recovery, external RPC add). Unlike CreatedAt,
@@ -311,7 +307,6 @@ func (t *TaskTracker) updateActiveTask(task rpc.Task) {
 
 	// 更新进度
 	tracked.Status = task.Status
-	tracked.resumeOccupancyHold = false
 	tracked.CompletedLength = completed
 	tracked.TotalLength = parseInt64(task.TotalLength)
 
@@ -511,7 +506,6 @@ func (t *TaskTracker) observeActivationLocked(tt *TrackedTask, now time.Time, ba
 		tt.progressBaselineKnown = baselineKnown
 		tt.compatClaim = smartthread.CompatNone
 		tt.addAnchorAt = time.Time{}
-		tt.resumeOccupancyHold = false
 	} else if baselineKnown && !tt.progressBaselineKnown {
 		tt.progressBaseline = baseline
 		tt.progressBaselineKnown = true
@@ -556,10 +550,8 @@ func clearActivationFactsLocked(tt *TrackedTask) {
 
 // applyAuthoritativeStatusLocked writes an observed status and settles the
 // per-run occupancy facts: a non-active boundary ends activation eligibility;
-// a terminal status additionally releases compat claims; an authoritative
-// Aria2 (non-sg_) waiting/paused ends the add placeholder; and any
-// non-terminal transition transfers a private resume hold into the explicit
-// compat claim so the claim survives until the real start. Writing "active"
+// a terminal status additionally releases compat claims; and an authoritative
+// Aria2 (non-sg_) waiting/paused ends the add placeholder. Writing "active"
 // never creates activation — that requires ObserveActivation evidence.
 // Caller holds t.mu.
 func applyAuthoritativeStatusLocked(tt *TrackedTask, status string) {
@@ -570,7 +562,6 @@ func applyAuthoritativeStatusLocked(tt *TrackedTask, status string) {
 		clearActivationFactsLocked(tt)
 		tt.compatClaim = smartthread.CompatNone
 		tt.addAnchorAt = time.Time{}
-		tt.resumeOccupancyHold = false
 		if tt.admissionToken > 0 {
 			// Terminal boundary ends the reservation lineage.
 			tt.admittedNotStarted = false
@@ -585,13 +576,7 @@ func applyAuthoritativeStatusLocked(tt *TrackedTask, status string) {
 			return
 		}
 		// Status alone is not start evidence — keep any live activation.
-		// But a legacy resume-ack / synthetic active write on a Surge task
-		// without activation claims the Target floor until the genuine
-		// start (or an authoritative non-active boundary ends it).
-		if tt.ActivatedAt.IsZero() && tt.compatClaim == smartthread.CompatNone &&
-			strings.HasPrefix(tt.GID, "sg_") && tt.TargetBandwidth > 0 {
-			tt.compatClaim = smartthread.CompatSurgeResume
-		}
+		return
 	default:
 		if pending {
 			if status == "waiting" {
@@ -612,13 +597,6 @@ func applyAuthoritativeStatusLocked(tt *TrackedTask, status string) {
 			// immediately; a later re-add must anchor anew.
 			tt.compatClaim = smartthread.CompatNone
 			tt.addAnchorAt = time.Time{}
-		}
-	}
-	if tt.resumeOccupancyHold {
-		tt.resumeOccupancyHold = false
-		if strings.HasPrefix(tt.GID, "sg_") && tt.TargetBandwidth > 0 &&
-			tt.ActivatedAt.IsZero() && tt.compatClaim == smartthread.CompatNone {
-			tt.compatClaim = smartthread.CompatSurgeResume
 		}
 	}
 }
@@ -698,7 +676,6 @@ func (t *TaskTracker) ReserveAdmission(
 		tt.progressBaselineKnown = baselineKnown
 		tt.compatClaim = smartthread.CompatNone
 		tt.addAnchorAt = time.Time{}
-		tt.resumeOccupancyHold = false
 		ticket = AdmissionTicket{GID: gid, Token: token}
 		created = true
 	})
@@ -754,6 +731,22 @@ func (t *TaskTracker) ObserveActivation(gid string, baseline int64, baselineKnow
 		t.tasks[gid] = tt
 	}
 	t.observeActivationLocked(tt, time.Now(), baseline, baselineKnown)
+}
+
+// PendingAdmissionTicket reports the gid's live admitted-not-started ticket,
+// or false when no reservation is pending. Read-only; callers compare the
+// token against the scheduler opportunity they hold.
+func (t *TaskTracker) PendingAdmissionTicket(gid string) (AdmissionTicket, bool) {
+	if t == nil {
+		return AdmissionTicket{}, false
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	tt := t.tasks[gid]
+	if tt == nil || !tt.admittedNotStarted || tt.admissionToken == 0 {
+		return AdmissionTicket{}, false
+	}
+	return AdmissionTicket{GID: gid, Token: tt.admissionToken}, true
 }
 
 // GetTrackedTask returns a value copy of the tracked entry.
@@ -1088,8 +1081,7 @@ func (t *TaskTracker) SetStatusFromEvent(gid string, status string) {
 	}
 	if tracked := t.tasks[gid]; tracked != nil {
 		// Status alone never creates activation; a non-active boundary ends
-		// this run's eligibility and a resume hold transfers to its compat
-		// claim so protection survives until the real start.
+		// this run's eligibility.
 		applyAuthoritativeStatusLocked(tracked, status)
 	}
 }
@@ -1098,8 +1090,8 @@ func (t *TaskTracker) SetStatusFromEvent(gid string, status string) {
 // resume can accept a later complete/error. Call only from authoritative
 // resume paths (alongside history retirement), never from generic pause/status.
 // Bumps lifecycle generation and clears the generation-scoped terminal marker.
-// The explicit reopen ends the previous run's lease facts but keeps a legit
-// resume claim; "active" here never counts as real start evidence.
+// The explicit reopen ends the previous run's lease facts and admission
+// lineage; "active" here never counts as real start evidence.
 func (t *TaskTracker) ReopenAfterStoppedToLive(gid, status string) {
 	if t == nil || gid == "" {
 		return
@@ -1285,12 +1277,11 @@ func (t *TaskTracker) SetMinChunk(gid string, minChunk int64) {
 }
 
 // SetTargetBandwidth persists Calculate occupancy for hybrid ledger seeding.
-// When bw>0, refreshes AllocatedAt (Add/Resume re-allocation). If Status is
-// still empty, sets Status="active" (placeholders then appear in both
-// occupancy seeding and Convergence GetActiveTrackedTasks — intentional
-// defense-in-depth for the AddURI pre-event window). If Status is "paused"
-// (Resume hook before EventResumed), sets resumeOccupancyHold so occupancy
-// seeding sees the claim without flipping paused→active.
+// Aria2-only: Surge admission reservations write their own Target floor via
+// ReserveAdmission, so sg_ rows only receive the scalar values here and never
+// synthesize an active status or compat claim. For non-Surge gids, bw>0 on an
+// empty-status row still sets Status="active" (bounded confirmed-add
+// placeholder: defense-in-depth for the AddURI pre-event window).
 func (t *TaskTracker) SetTargetBandwidth(gid string, bw int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -1300,22 +1291,15 @@ func (t *TaskTracker) SetTargetBandwidth(gid string, bw int64) {
 		t.tasks[gid] = tracked
 	}
 	tracked.TargetBandwidth = bw
-	if bw > 0 {
-		tracked.AllocatedAt = time.Now()
-		switch tracked.Status {
-		case "":
-			tracked.Status = "active"
-			// The synthetic pre-event active is a compat claim, not real
-			// activation — mark the source explicitly so occupancy keeps
-			// the Target floor until a genuine start/authoritative row.
-			// A task that already activated keeps its real lease.
-			if strings.HasPrefix(gid, "sg_") && tracked.ActivatedAt.IsZero() &&
-				tracked.compatClaim == smartthread.CompatNone {
-				tracked.compatClaim = smartthread.CompatSurgeClaim
-			}
-		case "paused":
-			tracked.resumeOccupancyHold = true
-		}
+	if bw <= 0 {
+		return
+	}
+	tracked.AllocatedAt = time.Now()
+	if strings.HasPrefix(gid, "sg_") {
+		return
+	}
+	if tracked.Status == "" {
+		tracked.Status = "active"
 	}
 }
 
@@ -1333,18 +1317,16 @@ func (t *TaskTracker) GetActiveTrackedTasks() []TrackedTask {
 }
 
 // GetOccupancyTrackedTasks returns tracker copies that feed the unified
-// occupancy snapshot: real active tasks, retained Surge waiting claims and
-// paused resume claims, empty-status placeholders (Surge claim evidence or
-// the bounded confirmed-add marker), and any explicit admitted-not-started
-// reservation. Ordinary Aria2 waiting, ordinary paused, and terminal tasks
-// are excluded. The getter never writes times, consumes holds, or widens
-// the active-set semantics used by GetActiveTrackedTasks.
+// occupancy snapshot: real active tasks, bounded confirmed-add placeholders,
+// and any explicit admitted-not-started reservation. Ordinary waiting/paused
+// rows — Surge included — contribute zero unless they hold a reservation;
+// terminal tasks are excluded. The getter never writes times or widens the
+// active-set semantics used by GetActiveTrackedTasks.
 func (t *TaskTracker) GetOccupancyTrackedTasks() []TrackedTask {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	result := make([]TrackedTask, 0, len(t.tasks))
 	for _, tt := range t.tasks {
-		surge := strings.HasPrefix(tt.GID, "sg_")
 		switch tt.Status {
 		case "complete", "error":
 			continue
@@ -1357,21 +1339,7 @@ func (t *TaskTracker) GetOccupancyTrackedTasks() []TrackedTask {
 		case "active":
 			result = append(result, *tt)
 		case "":
-			if tt.TargetBandwidth > 0 &&
-				(surge || tt.compatClaim == smartthread.CompatAria2Add) {
-				result = append(result, *tt)
-			}
-		case "waiting":
-			// Only the retained Surge queued claim counts; an authoritative
-			// Aria2 waiting row contributes zero immediately.
-			if surge && tt.TargetBandwidth > 0 {
-				result = append(result, *tt)
-			}
-		case "paused":
-			// The resume-hold/compat claim survives paused; ordinary or
-			// long-paused tasks without it contribute zero.
-			if surge && tt.TargetBandwidth > 0 &&
-				(tt.resumeOccupancyHold || tt.compatClaim == smartthread.CompatSurgeResume) {
+			if tt.TargetBandwidth > 0 && tt.compatClaim == smartthread.CompatAria2Add {
 				result = append(result, *tt)
 			}
 		}

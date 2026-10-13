@@ -1,6 +1,8 @@
 package monitor
 
 import (
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -113,9 +115,9 @@ func TestHandleSurgeEvent_ProgressStampsFirstGrowthOnce(t *testing.T) {
 }
 
 // TestHandleSurgeEvent_PausedClearsActivation verifies a pause event ends the
-// activation lease. An ordinary paused task holds no occupancy; the claim
-// only returns when Resume rewrites Target on the paused row (the retained
-// paused-Resume hold).
+// activation lease. An ordinary paused task holds no occupancy — a params
+// write on the paused row no longer mints one either; only an explicit
+// admission reservation claims while waiting.
 func TestHandleSurgeEvent_PausedClearsActivation(t *testing.T) {
 	m, tracker := newEventTestMonitor(t)
 
@@ -143,19 +145,12 @@ func TestHandleSurgeEvent_PausedClearsActivation(t *testing.T) {
 		}
 	}
 
-	// Resume hook writes Target while paused → hold becomes the claim.
+	// A params write on the paused row is not an occupancy claim either.
 	tracker.SetTargetBandwidth("sg_x", 4_000_000)
-	if !tracker.tasks["sg_x"].resumeOccupancyHold {
-		t.Fatal("paused Target write must set resumeOccupancyHold")
-	}
-	found := false
 	for _, got := range tracker.GetOccupancyTrackedTasks() {
 		if got.GID == "sg_x" {
-			found = true
+			t.Fatal("paused params write must not occupy")
 		}
-	}
-	if !found {
-		t.Error("paused+resume-hold must remain occupancy-visible")
 	}
 }
 
@@ -326,7 +321,20 @@ func TestReconcileSurgeCache_WaitingClearsActivation(t *testing.T) {
 	if !tt.FirstProgressAt.IsZero() {
 		t.Error("waiting checkpoint must not stamp FirstProgressAt")
 	}
-	// The retained waiting claim keeps the task occupancy-visible.
+	// An ordinary waiting row holds no claim: it must drop out of the
+	// occupancy set. Only explicit admission reservations keep a waiting
+	// row occupancy-visible.
+	for _, got := range tracker.GetOccupancyTrackedTasks() {
+		if got.GID == "sg_w" {
+			t.Error("ordinary surge waiting row must not occupy")
+		}
+	}
+	// With an explicit pending reservation the same row re-enters the set.
+	if _, created := tracker.ReserveAdmission("sg_w", 7,
+		smartthread.ThreadParams{Split: 4, MinSize: 1 << 20, TargetBandwidth: 4_000_000},
+		time.Now(), int64(tt.CompletedLength), true); !created {
+		t.Fatal("reservation on waiting row refused")
+	}
 	found := false
 	for _, got := range tracker.GetOccupancyTrackedTasks() {
 		if got.GID == "sg_w" {
@@ -334,6 +342,145 @@ func TestReconcileSurgeCache_WaitingClearsActivation(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("surge waiting claim must remain occupancy-visible")
+		t.Error("admitted-not-started reservation must remain occupancy-visible")
+	}
+}
+
+// ==================== Admission fact kicks ====================
+//
+// Every authoritative monitor fact that can free or create a dispatch
+// opportunity must reach the admission controller through KickAdmission —
+// before any hub/window early-return, outside locks, nil-safe, and never
+// fired from RPC-failure or progress hot paths.
+
+func TestAdmissionFacts_AcceptedChangeKicksBeforeHubGate(t *testing.T) {
+	m, _ := newEventTestMonitor(t)
+	var kicks atomic.Int64
+	m.SetAdmissionKick(func() { kicks.Add(1) })
+	t.Cleanup(func() { m.SetAdmissionKick(nil) })
+
+	m.publishAcceptedTaskChange(acceptedTaskChange{
+		task: rpc.Task{GID: "sg_k"}, from: "active", to: "paused", kind: "pause",
+	})
+	if kicks.Load() != 1 {
+		t.Fatalf("accepted change fired %d kicks, want 1", kicks.Load())
+	}
+	// Headless/no-hub path: the kick precedes the hub early-return.
+	m.hub = nil
+	m.publishAcceptedTaskChange(acceptedTaskChange{
+		task: rpc.Task{GID: "sg_k2"}, from: "waiting", to: "active", kind: "start",
+	})
+	if kicks.Load() != 2 {
+		t.Fatalf("nil-hub change fired %d kicks, want 2", kicks.Load())
+	}
+	// Empty changes are not facts.
+	m.publishAcceptedTaskChange(acceptedTaskChange{})
+	if kicks.Load() != 2 {
+		t.Fatalf("empty change fired a kick: %d", kicks.Load())
+	}
+}
+
+func TestAdmissionFacts_InvalidateTaskKicks(t *testing.T) {
+	m, tracker := newEventTestMonitor(t)
+	m.deletedGids = make(map[string]time.Time)
+	tracker.EnsureTrackedFromEvent("sg_iv", 100, "http://e/f", 4, "waiting")
+
+	var kicks atomic.Int64
+	m.SetAdmissionKick(func() { kicks.Add(1) })
+	t.Cleanup(func() { m.SetAdmissionKick(nil) })
+
+	m.InvalidateTask("sg_iv")
+	if kicks.Load() == 0 {
+		t.Fatal("InvalidateTask did not notify admission")
+	}
+}
+
+func TestAdmissionFacts_SurgeTerminalEventKicks(t *testing.T) {
+	m, _ := newEventTestMonitor(t)
+	resetHistoryForTest(t)
+
+	m.handleSurgeEvent(startedEvent(0, false))
+	Cache.metadata["sg_x"] = &TaskMetadata{GID: "sg_x", Files: []string{"/d/f.bin"}, Dir: "/d"}
+
+	var kicks atomic.Int64
+	m.SetAdmissionKick(func() { kicks.Add(1) })
+	t.Cleanup(func() { m.SetAdmissionKick(nil) })
+
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventComplete,
+		DownloadID: "x",
+		Total:      1000,
+		Elapsed:    time.Second,
+		AvgSpeed:   1000,
+	})
+	if kicks.Load() == 0 {
+		t.Fatal("accepted terminal event did not notify admission")
+	}
+
+	// Progress events are the 150ms hot path — they must never kick.
+	before := kicks.Load()
+	m.handleSurgeEvent(progressEvent(10))
+	m.handleSurgeEvent(progressEvent(20))
+	if kicks.Load() != before {
+		t.Fatalf("progress events fired kicks: %d -> %d", before, kicks.Load())
+	}
+}
+
+func TestAdmissionFacts_ReconcileRemovalKicks(t *testing.T) {
+	m, reader, _, tracker := newReconcileTestMonitor(t)
+	resetCacheSg()
+	resetHistoryForTest(t)
+
+	Cache.AddSgTask(rpc.Task{GID: "sg_gone", Status: "waiting", TotalLength: "100"}, "waiting")
+	tracker.EnsureTrackedFromEvent("sg_gone", 100, "https://e/g", 4, "waiting")
+	// Deletion requires an explicit absent answer from the scheduler, not
+	// merely an empty bulk read.
+	reader.setLists(nil, nil, nil)
+	reader.setLiveStatus("gone", rpc.SurgeLiveStatus{Absent: true})
+
+	var kicks atomic.Int64
+	m.SetAdmissionKick(func() { kicks.Add(1) })
+	t.Cleanup(func() { m.SetAdmissionKick(nil) })
+
+	m.reconcileSurgeCache()
+	if kicks.Load() == 0 {
+		t.Fatal("reconcile removal did not notify admission")
+	}
+}
+
+func TestAdmissionFacts_TickKicksOnceAfterApply(t *testing.T) {
+	engine := &mockTickEngine{}
+	engine.setLists(nil, nil, nil)
+	m := newTickRecoveryMonitor(t, engine)
+
+	var kicks atomic.Int64
+	m.SetAdmissionKick(func() { kicks.Add(1) })
+	t.Cleanup(func() { m.SetAdmissionKick(nil) })
+
+	m.tick()
+	if got := kicks.Load(); got != 1 {
+		t.Fatalf("successful tick fired %d kicks, want 1", got)
+	}
+
+	// An RPC-failed tick is not a fact and must not notify.
+	engine.setActiveErr(errors.New("aria2c unreachable"))
+	m.tick()
+	if got := kicks.Load(); got != 1 {
+		t.Fatalf("failed tick fired kicks: %d", got)
+	}
+}
+
+func TestAdmissionFacts_KickNilSafe(t *testing.T) {
+	m, _ := newEventTestMonitor(t)
+	m.SetAdmissionKick(nil)
+	m.KickAdmission() // must not panic
+	// Clearing while a kick is in flight stays safe: the callback is copied
+	// under kickMu and invoked outside it.
+	var calls atomic.Int64
+	m.SetAdmissionKick(func() { calls.Add(1) })
+	m.SetAdmissionKick(nil)
+	m.KickAdmission()
+	if calls.Load() != 0 {
+		t.Fatal("cleared callback still fired")
 	}
 }

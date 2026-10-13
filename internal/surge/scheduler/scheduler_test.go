@@ -2271,35 +2271,48 @@ func TestSchedulerAdmission_TightenOnlyShrinks(t *testing.T) {
 	}
 	key := admissionKeyFor(t, pool, id)
 
+	// Managed Add materializes a runtime ceiling copy (SequentialDownload
+	// clamps Workers to 1); rejected Admits must not replace or mutate it.
+	pool.mu.RLock()
+	baseline := pool.queued[id].cfg.Runtime
+	pool.mu.RUnlock()
+	if baseline == rt {
+		t.Fatal("managed Add kept the caller's runtime pointer")
+	}
+	if baseline.Workers != 1 || baseline.MinChunkSize != rt.MinChunkSize {
+		t.Fatalf("materialized ceiling = %+v, want workers 1 minchunk %d", baseline, rt.MinChunkSize)
+	}
+
 	if res := pool.Admit(key, 0, 0); res != AdmitUnavailable {
 		t.Fatalf("workers=0 Admit = %v, want Unavailable", res)
 	}
 	if res := pool.Admit(key, 9, 0); res != AdmitUnavailable {
 		t.Fatalf("workers>upper Admit = %v, want Unavailable", res)
 	}
-	if res := pool.Admit(key, 4, 0); res != AdmitUnavailable {
+	if res := pool.Admit(key, 1, 0); res != AdmitUnavailable {
 		t.Fatalf("minChunk=0 with positive upper Admit = %v, want Unavailable", res)
 	}
-	if res := pool.Admit(key, 4, 8192); res != AdmitUnavailable {
+	if res := pool.Admit(key, 1, 8192); res != AdmitUnavailable {
 		t.Fatalf("minChunk>upper Admit = %v, want Unavailable", res)
 	}
 	pool.mu.RLock()
-	if got := pool.queued[id].cfg.Runtime; got != rt {
-		t.Fatalf("rejected Admit mutated runtime: %+v", got)
-	}
+	sameRuntime := pool.queued[id].cfg.Runtime == baseline
 	pool.mu.RUnlock()
+	if !sameRuntime {
+		t.Fatal("rejected Admit replaced the materialized runtime")
+	}
 
-	if res := pool.Admit(key, 4, 2048); res != AdmitAccepted {
+	if res := pool.Admit(key, 1, 2048); res != AdmitAccepted {
 		t.Fatalf("valid Admit = %v, want Accepted", res)
 	}
 	pool.mu.RLock()
 	got := pool.queued[id].cfg.Runtime
 	pool.mu.RUnlock()
-	if got == rt {
-		t.Fatal("admitted runtime aliases the caller's config")
+	if got == rt || got == baseline {
+		t.Fatal("admitted runtime aliases a pre-existing config")
 	}
-	if got.Workers != 4 || got.MinChunkSize != 2048 {
-		t.Fatalf("tightened fields = workers %d minchunk %d, want 4/2048", got.Workers, got.MinChunkSize)
+	if got.Workers != 1 || got.MinChunkSize != 2048 {
+		t.Fatalf("tightened fields = workers %d minchunk %d, want 1/2048", got.Workers, got.MinChunkSize)
 	}
 	if got.ProxyURL != rt.ProxyURL || got.CustomDNS != rt.CustomDNS ||
 		got.SequentialDownload != rt.SequentialDownload || got.WorkerBufferSize != rt.WorkerBufferSize {

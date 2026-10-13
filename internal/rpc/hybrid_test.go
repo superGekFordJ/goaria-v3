@@ -861,3 +861,153 @@ func TestHybridEngine_PauseMulti_PartialFailure(t *testing.T) {
 		}
 	})
 }
+
+// ==================== Admission-routed write path ====================
+//
+// AddUriWithAria2Preparation keeps Surge-bound adds metadata-only (the
+// admission controller, not the write path, authorizes runtime) while Aria2
+// preparation — its ledger reservation — runs lazily and exactly once, only
+// on paths that actually reach the daemon.
+
+func TestHybridAdmission_PrepareSkippedOnSurgeAccept(t *testing.T) {
+	aria2 := &mockEngine{addResultGid: "should-not-run"}
+	surge := &mockEngine{addResultGid: "sg_ok"}
+	hybrid := NewHybridEngine(aria2, surge)
+
+	var prepareCalls int
+	gid, err := hybrid.AddUriWithAria2Preparation("https://example.com/f.bin",
+		AddURIOptions{Dir: "/dl", Split: 4},
+		func() AddURIOptions {
+			prepareCalls++
+			return AddURIOptions{Dir: "/dl", Split: 8}
+		})
+	if err != nil || gid != "sg_sg_ok" {
+		t.Fatalf("gid=%q err=%v", gid, err)
+	}
+	if prepareCalls != 0 {
+		t.Fatalf("prepare ran %d times on a Surge accept", prepareCalls)
+	}
+	if len(aria2.addedUrls) != 0 {
+		t.Fatalf("aria2 touched on Surge accept: %v", aria2.addedUrls)
+	}
+}
+
+func TestHybridAdmission_PrepareRunsOnceOnFallback(t *testing.T) {
+	aria2 := &mockEngine{addResultGid: "ar_ok"}
+	surge := &mockEngine{addResultErr: errors.New("surge rejected")}
+	hybrid := NewHybridEngine(aria2, surge)
+
+	var prepareCalls int
+	var hookGid string
+	gid, err := hybrid.AddUriWithAria2Preparation("https://example.com/f.bin",
+		AddURIOptions{
+			Dir:   "/dl",
+			Split: 4,
+			BeforeSave: func(g string) error {
+				hookGid = g
+				return nil
+			},
+		},
+		func() AddURIOptions {
+			prepareCalls++
+			return AddURIOptions{Dir: "/alt", Split: 20}
+		})
+	if err != nil || gid != "ar_ar_ok" {
+		t.Fatalf("gid=%q err=%v", gid, err)
+	}
+	if prepareCalls != 1 {
+		t.Fatalf("prepare ran %d times, want exactly 1", prepareCalls)
+	}
+	if len(aria2.addedOptions) != 1 {
+		t.Fatalf("aria2 adds = %d", len(aria2.addedOptions))
+	}
+	got := aria2.addedOptions[0]
+	// Prepared options replace the request; the Aria2 16-conn cap still clamps.
+	if got.Dir != "/alt" || got.Split != 16 {
+		t.Fatalf("aria2 options = %+v, want prepared Split clamped to 16", got)
+	}
+	if got.BeforeSave != nil {
+		t.Fatal("prepared BeforeSave must stay stripped; the original owns it")
+	}
+	if hookGid != "ar_ar_ok" {
+		t.Fatalf("BeforeSave gid = %q, want ar_ar_ok", hookGid)
+	}
+}
+
+func TestHybridAdmission_PrepareSkippedOnDiskSpaceRefusal(t *testing.T) {
+	aria2 := &mockEngine{addResultGid: "should-not-run"}
+	surge := &mockEngine{addResultErr: fmt.Errorf("enqueue: %w", types.ErrInsufficientDiskSpace)}
+	hybrid := NewHybridEngine(aria2, surge)
+
+	var prepareCalls int
+	gid, err := hybrid.AddUriWithAria2Preparation("https://example.com/f.bin",
+		AddURIOptions{Dir: "/dl"},
+		func() AddURIOptions {
+			prepareCalls++
+			return AddURIOptions{Dir: "/alt"}
+		})
+	if !errors.Is(err, types.ErrInsufficientDiskSpace) || gid != "" {
+		t.Fatalf("gid=%q err=%v", gid, err)
+	}
+	if prepareCalls != 0 || len(aria2.addedUrls) != 0 {
+		t.Fatalf("disk-space refusal ran prepare %d times / aria2 %d adds", prepareCalls, len(aria2.addedUrls))
+	}
+}
+
+func TestHybridAdmission_PrepareRunsOnStaticAria2Route(t *testing.T) {
+	aria2 := &mockEngine{addResultGid: "ar_magnet"}
+	surge := &mockEngine{addResultGid: "sg_never"}
+	hybrid := NewHybridEngine(aria2, surge)
+
+	var prepareCalls int
+	gid, err := hybrid.AddUriWithAria2Preparation("magnet:?xt=urn:btih:abc",
+		AddURIOptions{Dir: "/dl"},
+		func() AddURIOptions {
+			prepareCalls++
+			return AddURIOptions{Dir: "/mag"}
+		})
+	if err != nil || gid != "ar_ar_magnet" {
+		t.Fatalf("gid=%q err=%v", gid, err)
+	}
+	if prepareCalls != 1 {
+		t.Fatalf("prepare ran %d times on a static Aria2 route", prepareCalls)
+	}
+	if len(surge.addedUrls) != 0 {
+		t.Fatalf("surge touched on magnet route: %v", surge.addedUrls)
+	}
+	if aria2.addedOptions[0].Dir != "/mag" {
+		t.Fatalf("aria2 options = %+v, want prepared /mag", aria2.addedOptions[0])
+	}
+}
+
+// An Aria2-routed add must never consume Surge admission slots, and a Surge
+// accept queues a ticketed candidate without committing physical capacity.
+func TestHybridAdmission_Aria2NeverConsumesSurgeSlots(t *testing.T) {
+	surge := NewSurgeEngine()
+	defer surge.Close()
+	aria2 := &mockEngine{addResultGid: "ar1"}
+	hybrid := NewHybridEngine(aria2, surge)
+
+	gid, err := hybrid.AddUri("http://127.0.0.1:1/q.bin", AddURIOptions{
+		Dir:                  t.TempDir(),
+		Out:                  "q.bin",
+		FileSize:             1 << 20,
+		RangeAcquisitionMode: types.RangeAcquirePayloadFirstUnknown,
+		SkipServerProbe:      true,
+	})
+	if err != nil || !strings.HasPrefix(gid, "sg_") {
+		t.Fatalf("gid=%q err=%v", gid, err)
+	}
+	snap := surge.AdmissionSnapshot()
+	if len(snap.Candidates) != 1 || snap.CommittedSlots != 0 {
+		t.Fatalf("surge accept committed slots: %+v", snap)
+	}
+
+	if _, err := hybrid.AddUri("magnet:?xt=urn:btih:zzz", AddURIOptions{Dir: t.TempDir()}); err != nil {
+		t.Fatalf("magnet add: %v", err)
+	}
+	snap2 := surge.AdmissionSnapshot()
+	if len(snap2.Candidates) != 1 || snap2.CommittedSlots != 0 {
+		t.Fatalf("aria2 add disturbed surge admission state: %+v", snap2)
+	}
+}

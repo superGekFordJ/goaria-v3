@@ -152,15 +152,18 @@ func buildSurgeIsNameActive(pool *scheduler.Scheduler) orchestrator.IsNameActive
 }
 
 func NewSurgeEngine() *SurgeEngine {
-	maxDownloads := 3
-	if md, err := strconv.Atoi(config.Get().MaxConcurrentDownloads); err == nil && md > 0 {
-		maxDownloads = md
-	}
 	settings := surgeconfig.DefaultSettings()
 	eventBus := orchestrator.NewEventBus()
 	// Pass EventBus.InputCh as the scheduler default so a nil ProgressCh
 	// fallback still reaches the live consumer (Enqueue normally sets it too).
-	pool := scheduler.New(eventBus.InputCh, maxDownloads)
+	// Managed mode: nothing self-picks — every claim needs an Admit ticket.
+	pool, err := scheduler.NewManaged(eventBus.InputCh, config.MaxConcurrentDownloadsUpper)
+	if err != nil {
+		// Capacity is a validated positive constant; unreachable unless the
+		// bound is edited to a non-positive value. Engine seams nil-guard a
+		// missing pool and Hybrid can still fall back to Aria2.
+		log.Printf("[Surge] managed scheduler init failed: %v", err)
+	}
 	mgr := orchestrator.NewLifecycleManager(pool, eventBus, settings, buildSurgeIsNameActive(pool))
 	svc := service.NewLocalDownloadService(mgr)
 
@@ -211,13 +214,14 @@ func NewSurgeEngine() *SurgeEngine {
 }
 
 func (e *SurgeEngine) IsSurgeActive() bool {
-	return e.service != nil
+	return e.service != nil && e.getScheduler() != nil
 }
 
 // SetResumeParamsHook injects the RecomputeResumeParams callback into the
-// LifecycleManager's EngineHooks. This allows GoAria to recompute Workers
-// and MinChunkSize on resume using current BBR/bandwidth state.
-// Uses read-modify-write to preserve any other hooks (including TightenOnPickup).
+// LifecycleManager's EngineHooks. GoAria uses it to prepare resume metadata
+// and runtime upper bounds before the task re-enters the managed queue;
+// final authorization still goes through the admission controller.
+// Uses read-modify-write to preserve any other hooks.
 func (e *SurgeEngine) SetResumeParamsHook(fn func(cfg *types.DownloadRecord)) {
 	if e.manager == nil {
 		return
@@ -227,17 +231,31 @@ func (e *SurgeEngine) SetResumeParamsHook(fn func(cfg *types.DownloadRecord)) {
 	e.manager.SetEngineHooks(hooks)
 }
 
-// SetTightenOnPickupHook injects the TightenOnPickup callback into EngineHooks.
-// SetEngineHooks syncs the callback onto the scheduler worker path (nil clears).
-// Tighten-only: may lower Runtime.Workers before RunDownload; must never raise
-// Workers/MinChunkSize. RMW preserves Resume hook.
-func (e *SurgeEngine) SetTightenOnPickupHook(fn func(cfg *types.DownloadRecord)) {
-	if e.manager == nil {
-		return
+// AdmissionSnapshot forwards the managed scheduler's complete FIFO candidate
+// view. Go-only seam for the tasks admission controller; not a Wails binding.
+func (e *SurgeEngine) AdmissionSnapshot() scheduler.AdmissionSnapshot {
+	if pool := e.getScheduler(); pool != nil {
+		return pool.AdmissionSnapshot()
 	}
-	hooks := e.manager.GetEngineHooks()
-	hooks.TightenOnPickup = fn
-	e.manager.SetEngineHooks(hooks)
+	return scheduler.AdmissionSnapshot{}
+}
+
+// Admit forwards one admission decision (runtime tightening ticket) to the
+// managed scheduler. Nil pool answers AdmitUnavailable.
+func (e *SurgeEngine) Admit(key scheduler.AdmissionKey, workers int, minChunkSize int64) scheduler.AdmitResult {
+	if pool := e.getScheduler(); pool != nil {
+		return pool.Admit(key, workers, minChunkSize)
+	}
+	return scheduler.AdmitUnavailable
+}
+
+// SetAdmissionWake installs (nil clears) the scheduler's slot-release
+// notification. The callback fires after the claim release is visible and
+// outside the scheduler lock.
+func (e *SurgeEngine) SetAdmissionWake(fn func()) {
+	if pool := e.getScheduler(); pool != nil {
+		pool.SetAdmissionWake(fn)
+	}
 }
 
 // getDownloadList returns the Surge download list with a 1s TTL request-scoped
