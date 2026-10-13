@@ -499,3 +499,94 @@ func TestAdmissionRuntime_NilEngineNoDispatch(t *testing.T) {
 	ctl.Start()
 	ctl.Stop()
 }
+
+// A retained reservation (created=false on re-admission) that decides Short
+// must still latch shortUsed — otherwise the scope+env bucket would hand the
+// short exception to a second holder while the first is live.
+func TestAdmissionRuntime_RetainedShortLatchesBucket(t *testing.T) {
+	tr := admissionSwapTracker(t)
+	admissionTestConfig(t, true, "32")
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	pool, _, ctl, _ := admissionTestPool(t, 4)
+
+	// Keep admitted claims busy for the whole observation.
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "4096")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	// Scope+env peak measured at 1MB/s and fully reserved by a foreign-domain
+	// commitment: scope is the only live block, so a progress-lease-sized file
+	// in this bucket qualifies for the short exception.
+	speedstats.AddRecordV2(1<<20, 1, 1<<20, false, 50, "peer.com", "wan", "envx")
+	tr.EnsureTrackedFromEvent("sg_sat", 100, "http://h/sat", 1, "active")
+	tr.ObserveActivation("sg_sat", 0, false)
+	tr.SetThreadInfo("sg_sat", 1, false)
+	tr.SetScopeAndEnv("sg_sat", "wan", 0, "other.com", "envx")
+	tr.SetTargetBandwidth("sg_sat", 1<<20)
+
+	// Queue a small candidate and seed the pending ticket exactly as an
+	// interrupted earlier round leaves it — live reservation on this key.
+	queueShort := func(id string) scheduler.AdmissionKey {
+		t.Helper()
+		gid := "sg_" + id
+		tr.EnsureTrackedFromEvent(gid, 1<<20, server.URL+"/"+id, 1, "waiting")
+		tr.SetScopeAndEnv(gid, "wan", 0, "short.com", "envx")
+		if !pool.Add(types.DownloadRecord{
+			ID:            id,
+			URL:           server.URL + "/" + id,
+			OutputPath:    t.TempDir(),
+			Filename:      id + ".bin",
+			TotalSize:     1 << 20,
+			ProgressState: progress.New(id, 0),
+			Runtime:       &types.RuntimeConfig{Workers: 1},
+		}) {
+			t.Fatalf("managed Add refused for %s", id)
+		}
+		for _, c := range pool.AdmissionSnapshot().Candidates {
+			if c.Key.ID == id {
+				return c.Key
+			}
+		}
+		t.Fatalf("candidate %s missing from snapshot", id)
+		return scheduler.AdmissionKey{}
+	}
+	key1 := queueShort("sh1")
+	if _, created := tr.ReserveAdmission("sg_sh1", key1.Token,
+		smartthread.ThreadParams{Split: 1, MinSize: 0, TargetBandwidth: 100_000},
+		time.Now(), 0, true); !created {
+		t.Fatal("seeded reservation refused")
+	}
+
+	ctl.evaluate(time.Now())
+
+	// R4: the retained ticket is admitted on a Short decision; the bucket
+	// latch must follow the live qualification despite created == false.
+	if entry := ctl.entries[key1]; entry == nil || !entry.shortUsed {
+		t.Fatal("retained short admission did not latch shortUsed")
+	}
+	for _, c := range pool.AdmissionSnapshot().Candidates {
+		if c.Key == key1 && !c.Admitted {
+			t.Fatal("retained short candidate was not admitted")
+		}
+	}
+
+	// A second small candidate in the same bucket: the live holder excludes
+	// it from the short exception, so the scope block stands — no ticket.
+	queueShort("sh2")
+	ctl.evaluate(time.Now())
+	if _, pending := tr.PendingAdmissionTicket("sg_sh2"); pending {
+		t.Fatal("second short candidate in a held bucket holds a reservation")
+	}
+	for _, c := range pool.AdmissionSnapshot().Candidates {
+		if c.Key.ID == "sh2" && c.Admitted {
+			t.Fatal("second short candidate admitted despite held bucket")
+		}
+	}
+}

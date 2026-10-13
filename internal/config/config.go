@@ -235,33 +235,40 @@ func notifySaveKick() {
 
 // UpdateChecked copies the current snapshot, applies mutate to the copy, sanitizes,
 // persists atomically, then publishes. Canonical no-ops neither write nor swap pointers.
-func UpdateChecked(mutate func(*AppConfig)) (UpdateResult, error) {
-	writeMu.Lock()
+func UpdateChecked(mutate func(*AppConfig)) (res UpdateResult, err error) {
+	// The locked section runs in a closure so a panic in mutate or persistence
+	// still releases writeMu, while the save-kick stays outside the lock.
+	func() {
+		writeMu.Lock()
+		defer writeMu.Unlock()
 
-	oldPtr := current.Load()
-	if oldPtr == nil {
-		writeMu.Unlock()
-		return UpdateResult{}, errNotLoaded
+		oldPtr := current.Load()
+		if oldPtr == nil {
+			err = errNotLoaded
+			return
+		}
+		previous := *oldPtr
+		candidate := previous
+		mutate(&candidate)
+		candidate = ValidateAndSanitize(candidate)
+		if candidate == previous {
+			res = UpdateResult{Previous: previous, Current: previous}
+			return
+		}
+		if err = saveLocked(candidate); err != nil {
+			res = UpdateResult{Previous: previous, Current: previous}
+			return
+		}
+		committed := candidate
+		current.Store(&committed)
+		res = UpdateResult{Previous: previous, Current: committed, Changed: true}
+	}()
+	if res.Changed {
+		// Post-commit notification runs after the write mutex is released so
+		// the callback may freely re-enter config reads.
+		notifySaveKick()
 	}
-	previous := *oldPtr
-	candidate := previous
-	mutate(&candidate)
-	candidate = ValidateAndSanitize(candidate)
-	if candidate == previous {
-		writeMu.Unlock()
-		return UpdateResult{Previous: previous, Current: previous}, nil
-	}
-	if err := saveLocked(candidate); err != nil {
-		writeMu.Unlock()
-		return UpdateResult{Previous: previous, Current: previous}, err
-	}
-	committed := candidate
-	current.Store(&committed)
-	writeMu.Unlock()
-	// Post-commit notification runs after the write mutex is released so the
-	// callback may freely re-enter config reads.
-	notifySaveKick()
-	return UpdateResult{Previous: previous, Current: committed, Changed: true}, nil
+	return res, err
 }
 
 // SetTestConfig replaces the global config for test setup. Production code must not call this.

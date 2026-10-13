@@ -85,23 +85,24 @@ func (c *AdmissionController) Start() {
 	go c.run()
 }
 
-// Stop signals the loop and joins the goroutine when it was started. Calling
-// Stop on a never-started controller returns immediately.
+// Stop signals the loop and joins the goroutine when it was started. Every
+// caller — including late or concurrent ones — returns only after the loop
+// has exited, so "no Admit after Stop returns" holds for all of them.
+// Calling Stop on a never-started controller returns immediately.
 func (c *AdmissionController) Stop() {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
-	if c.stopped {
-		c.mu.Unlock()
-		return
-	}
+	first := !c.stopped
 	c.stopped = true
 	join := c.started
 	c.mu.Unlock()
-	close(c.stopCh)
+	if first {
+		close(c.stopCh)
+	}
 	if join {
-		<-c.doneCh
+		<-c.doneCh // closed channel: zero-cost for callers after the first
 	}
 }
 
@@ -318,7 +319,9 @@ func (c *AdmissionController) evaluate(now time.Time) {
 		maxConn = config.MaxConnectionsUpper
 	}
 	smart := cfg.SmartThreadMode
-	slotCap := snap.Capacity
+	// The configured upper bound is authoritative even if scheduler capacity
+	// is ever raised beyond it.
+	slotCap := min(snap.Capacity, config.MaxConcurrentDownloadsUpper)
 	if !smart {
 		// Off is a manual policy: the user's own count normalized to 1..32 is
 		// the global cap. Smart scope/domain/short checks stay disabled.
@@ -388,6 +391,11 @@ func (c *AdmissionController) evaluate(now time.Time) {
 		if ticket, isPending := tracker.PendingAdmissionTicket(gid); isPending && ticket.Token == cand.Key.Token {
 			prep.pending = true
 			prep.pendingCeil = tt.ThreadCount
+			if entry.ticket.GID == "" {
+				// Adoption path: latch the tracker fact so later
+				// reconciliation can retire this key's own ticket.
+				entry.ticket = ticket
+			}
 		} else if entry.ticket.GID != "" {
 			// The reservation fact ended at a monitor boundary; the map keeps
 			// no phantom ticket.
@@ -536,9 +544,11 @@ func (c *AdmissionController) evaluate(now time.Time) {
 			if created {
 				// R1: account the new live reservation exactly once.
 				accountReservation(commonLedger, views, p.gid, p.scope, p.domain, p.envKey, decision.Params)
-				if decision.Short {
-					p.entry.shortUsed = true
-				}
+			}
+			// The qualification latches on any live ticket — a retained
+			// reservation (R4) deciding Short must hold the bucket too.
+			if decision.Short {
+				p.entry.shortUsed = true
 			}
 			// R4 when !created: retained ticket accepted — already in seed.
 			accepted++
@@ -564,9 +574,11 @@ func (c *AdmissionController) evaluate(now time.Time) {
 				// R3: keep the ticket for the next round and account its live
 				// occupancy once — it is already a real tracker reservation.
 				accountReservation(commonLedger, views, p.gid, p.scope, p.domain, p.envKey, decision.Params)
-				if decision.Short {
-					p.entry.shortUsed = true
-				}
+			}
+			// R7 keeps the same key's qualification: a retained reservation
+			// deciding Short latches shortUsed so the bucket stays held.
+			if decision.Short {
+				p.entry.shortUsed = true
 			}
 			// R7 when !created: retained ticket keeps waiting. Both paths end
 			// the round; a fact Kick or the 2s ticker drives the retry.
