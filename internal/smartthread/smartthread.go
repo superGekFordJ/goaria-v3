@@ -65,24 +65,16 @@ func Calculate(p CalcParams) ThreadParams {
 		}
 	}
 
-	// 获取 T_min
+	// 获取 T_min：显式 MinThreadLife 覆盖全局配置，0 保持既有行为。
 	tMin := defaultMinThreadLife
-	if cur := config.Get(); cur != nil && cur.MinThreadLife > 0 {
+	if p.MinThreadLife > 0 {
+		tMin = p.MinThreadLife
+	} else if cur := config.Get(); cur != nil && cur.MinThreadLife > 0 {
 		tMin = cur.MinThreadLife
 	}
 
-	// --- 数据采集 ---
-	// Tier 1: Domain-specific p75 (preferred — no cross-CDN pollution)
-	vThreadAvg, threadAvgOK := speedstats.GetRecentPeakByDomain(p.Domain, p.Scope, p.EnvKey)
-
-	// Tier 2: Fallback to scope-wide p75 with 0.5x conservative penalty
-	// for unknown domains (avoids over-allocation from polluted scope data)
-	if !threadAvgOK {
-		vThreadAvg, threadAvgOK = speedstats.GetRecentPeakByScope(p.Scope, p.EnvKey)
-		if threadAvgOK {
-			vThreadAvg /= 2
-		}
-	}
+	// --- 数据采集：domain p75 → scope p75/2 效率链 ---
+	vThreadAvg, threadAvgOK := threadEfficiency(p.Domain, p.Scope, p.EnvKey)
 
 	vSinglePeak, singlePeakOK := speedstats.GetDomainPeak(p.Domain, p.Scope, p.EnvKey)
 	vGlobalPeak, globalPeakOK := speedstats.GetGlobalPeak(p.Scope, p.EnvKey)
@@ -168,6 +160,22 @@ func Calculate(p CalcParams) ThreadParams {
 		TargetBandwidth: targetBandwidth,
 		NSat:            nSat,
 	}
+}
+
+// threadEfficiency returns the per-thread throughput estimate shared by
+// Calculate and the admission gate. Tier 1 is the domain-specific p75 (no
+// cross-CDN pollution); Tier 2 falls back to scope-wide p75 halved — the
+// conservative penalty for unknown domains. ok=false means no usable
+// history exists; callers apply their own floor.
+func threadEfficiency(domain, scope, envKey string) (int64, bool) {
+	vThreadAvg, ok := speedstats.GetRecentPeakByDomain(domain, scope, envKey)
+	if !ok {
+		vThreadAvg, ok = speedstats.GetRecentPeakByScope(scope, envKey)
+		if ok {
+			vThreadAvg /= 2
+		}
+	}
+	return vThreadAvg, ok
 }
 
 // calculateLegacy is the fallback when BBR data is unavailable (cold start).

@@ -103,8 +103,12 @@ type TrackedTask struct {
 	// once at establishment; reads and parameter writes never extend it.
 	addAnchorAt time.Time
 	// admittedNotStarted is the explicit admitted-not-started reservation
-	// fact. No production writer sets it yet.
+	// fact for the scheduler-managed admission pipeline. admissionToken is
+	// the scheduler-issued opportunity identity it belongs to; the pair is
+	// written/cleared atomically and the token is kept as a high-water mark
+	// afterwards so an older opportunity can never re-reserve the row.
 	admittedNotStarted bool
+	admissionToken     uint64
 
 	// Active time observed on the aria2 tick path; gaps above
 	// activeSampleGapCap are dropped, maxActiveGap bounds the error.
@@ -508,12 +512,15 @@ func (t *TaskTracker) observeActivationLocked(tt *TrackedTask, now time.Time, ba
 		tt.compatClaim = smartthread.CompatNone
 		tt.addAnchorAt = time.Time{}
 		tt.resumeOccupancyHold = false
-		return
-	}
-	if baselineKnown && !tt.progressBaselineKnown {
+	} else if baselineKnown && !tt.progressBaselineKnown {
 		tt.progressBaseline = baseline
 		tt.progressBaselineKnown = true
 	}
+	// A real start consumes the pending reservation wherever it lands —
+	// including the reservation-anchored path where ActivatedAt is already
+	// set. admissionToken stays as the high-water mark so a duplicate or
+	// stale release still refuses.
+	tt.admittedNotStarted = false
 }
 
 // observeCompletedLocked folds a reliable completed-length observation into
@@ -557,14 +564,26 @@ func clearActivationFactsLocked(tt *TrackedTask) {
 // Caller holds t.mu.
 func applyAuthoritativeStatusLocked(tt *TrackedTask, status string) {
 	tt.Status = status
+	pending := tt.admittedNotStarted
 	switch status {
 	case "complete", "error":
 		clearActivationFactsLocked(tt)
 		tt.compatClaim = smartthread.CompatNone
 		tt.addAnchorAt = time.Time{}
 		tt.resumeOccupancyHold = false
+		if tt.admissionToken > 0 {
+			// Terminal boundary ends the reservation lineage.
+			tt.admittedNotStarted = false
+			tt.TargetBandwidth = 0
+			tt.AllocatedAt = time.Time{}
+		}
 		return
 	case "active":
+		if pending {
+			// A status write is not start evidence; ObserveActivation
+			// consumes the pending flag when the real start lands.
+			return
+		}
 		// Status alone is not start evidence — keep any live activation.
 		// But a legacy resume-ack / synthetic active write on a Surge task
 		// without activation claims the Target floor until the genuine
@@ -574,6 +593,19 @@ func applyAuthoritativeStatusLocked(tt *TrackedTask, status string) {
 			tt.compatClaim = smartthread.CompatSurgeResume
 		}
 	default:
+		if pending {
+			if status == "waiting" {
+				// A waiting ack/poll restates the same queueing opportunity,
+				// not a new one — keep the reservation anchor, floor, and flag.
+				return
+			}
+			// Any other non-terminal boundary (paused, unknown) ends the
+			// admitted lineage: clear pending, floor, and anchor so an
+			// expired reservation can never harden into a legacy claim.
+			tt.admittedNotStarted = false
+			tt.TargetBandwidth = 0
+			tt.AllocatedAt = time.Time{}
+		}
 		clearActivationFactsLocked(tt)
 		if !strings.HasPrefix(tt.GID, "sg_") {
 			// Authoritative Aria2 waiting/paused ends the add placeholder
@@ -589,6 +621,109 @@ func applyAuthoritativeStatusLocked(tt *TrackedTask, status string) {
 			tt.compatClaim = smartthread.CompatSurgeResume
 		}
 	}
+}
+
+// AdmissionTicket is the comparable identity of one admitted-not-started
+// reservation: the GID plus the scheduler-issued opportunity token
+// (scheduler.AdmissionKey). The zero value means "no reservation". It is a
+// plain value pair — not an opaque ownership credential; the existing
+// lifecycle gate plus the row's pending token provide conditional release.
+type AdmissionTicket struct {
+	GID   string
+	Token uint64
+}
+
+// ReserveAdmission records an admitted-not-started reservation for one
+// scheduler opportunity against an existing waiting sg_ row. It writes the
+// reservation facts atomically — pending flag plus the reservation's own
+// target floor, anchor, and baseline — without touching Status (the UI never
+// sees a synthesized active) and without minting a compat claim. The token
+// is a per-pool monotonic identity: a lower or already-consumed token is a
+// stale opportunity and refuses. The same ticket applied twice is an
+// idempotent no-op that still reports its ticket. now/anchor must be valid;
+// a zero anchor would lose its lease immediately on every read.
+//
+// created=false + zero ticket means the call left no reservation; callers
+// may ReleaseAdmission only when created=true.
+func (t *TaskTracker) ReserveAdmission(
+	gid string, token uint64, params smartthread.ThreadParams,
+	now time.Time, baseline int64, baselineKnown bool,
+) (ticket AdmissionTicket, created bool) {
+	if t == nil || !IsSgGid(gid) || token == 0 || now.IsZero() {
+		return AdmissionTicket{}, false
+	}
+	if params.Split <= 0 || params.TargetBandwidth < 0 || params.MinSize < 0 || baseline < 0 {
+		return AdmissionTicket{}, false
+	}
+	t.RunUnderLifecycle(gid, func() {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		if t.isTerminalAcceptedLocked(gid) {
+			return
+		}
+		tt := t.tasks[gid]
+		if tt == nil || tt.Status != "waiting" {
+			return
+		}
+		switch {
+		case tt.admissionToken > token:
+			return // older opportunity than the observed high-water mark
+		case tt.admissionToken == token && !tt.admittedNotStarted:
+			return // same opportunity already consumed or rolled back
+		case tt.admissionToken == token:
+			ticket = AdmissionTicket{GID: gid, Token: token} // idempotent reapply
+			return
+		}
+		tt.admissionToken = token
+		tt.admittedNotStarted = true
+		// Parameter hints only — the engine patch is applied solely by a
+		// successful scheduler Admit; these merely describe the reservation.
+		tt.ThreadCount = params.Split
+		tt.MinChunk = params.MinSize
+		tt.IsExploration = params.IsExploration
+		// The reservation owns the Target floor and the activation anchor
+		// (shared lease) for its lifetime; both die with it on release or a
+		// non-waiting boundary — never promoted into a legacy claim.
+		tt.TargetBandwidth = params.TargetBandwidth
+		tt.AllocatedAt = now
+		tt.ActivatedAt = now
+		tt.FirstProgressAt = time.Time{}
+		tt.progressBaseline = baseline
+		tt.progressBaselineKnown = baselineKnown
+		tt.compatClaim = smartthread.CompatNone
+		tt.addAnchorAt = time.Time{}
+		tt.resumeOccupancyHold = false
+		ticket = AdmissionTicket{GID: gid, Token: token}
+		created = true
+	})
+	return ticket, created
+}
+
+// ReleaseAdmission rolls back a still-pending admission reservation for the
+// same lifecycle/token pair: it clears the pending flag, this ticket's
+// Target floor, and the reservation-owned activation anchor. It refuses to
+// disturb a started task (pending was consumed by ObserveActivation), a
+// newer token (a re-admission supersedes stale rollbacks), or a row that
+// never held this ticket — including a same-ID replacement.
+func (t *TaskTracker) ReleaseAdmission(gid string, token uint64) bool {
+	released := false
+	if t == nil || !IsSgGid(gid) || token == 0 {
+		return false
+	}
+	t.RunUnderLifecycle(gid, func() {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		tt := t.tasks[gid]
+		if tt == nil || !tt.admittedNotStarted || tt.admissionToken != token {
+			return
+		}
+		tt.admittedNotStarted = false
+		clearActivationFactsLocked(tt)
+		tt.TargetBandwidth = 0
+		tt.AllocatedAt = time.Time{}
+		released = true
+	})
+	return released
 }
 
 // ObserveActivation records a real engine start for gid — a Surge started
@@ -974,6 +1109,14 @@ func (t *TaskTracker) ReopenAfterStoppedToLive(gid, status string) {
 		status = "active"
 	}
 	if tracked := t.tasks[gid]; tracked != nil {
+		if tracked.admissionToken > 0 {
+			// An explicit reopen ends the admission lineage: pending flag,
+			// floor, and anchor go together so no stale reservation lease
+			// survives into the next run.
+			tracked.admittedNotStarted = false
+			tracked.TargetBandwidth = 0
+			tracked.AllocatedAt = time.Time{}
+		}
 		clearActivationFactsLocked(tracked)
 		applyAuthoritativeStatusLocked(tracked, status)
 	}

@@ -520,14 +520,19 @@ func TestTaskOccupancy_AdmissionReservedScalar(t *testing.T) {
 	if got := TaskOccupancy(reserved, now); got != 5_000_000 {
 		t.Errorf("admitted waiting = %d, want 5000000", got)
 	}
-	// A lease-expired reservation falls through to ordinary eligibility —
-	// here the retained Surge waiting claim still holds the Target floor.
-	// TRIPWIRE: transitional semantics — once the waiting claim retires this
-	// expectation flips to telemetry-only/zero, and the diff must surface.
+	// A lease-expired reservation must never harden into the retained Surge
+	// waiting claim — the explicit AdmissionReserved branch terminates
+	// evaluation, so an expired waiting reservation contributes zero.
 	expiredWaiting := reserved
 	expiredWaiting.ActivatedAt = now.Add(-time.Minute)
-	if got := TaskOccupancy(expiredWaiting, now); got != 5_000_000 {
-		t.Errorf("expired admitted waiting = %d, want 5000000 via waiting claim", got)
+	if got := TaskOccupancy(expiredWaiting, now); got != 0 {
+		t.Errorf("expired admitted waiting = %d, want 0 (no legacy waiting fallback)", got)
+	}
+	// The same expiry holds when no anchor was ever written.
+	anchorless := reserved
+	anchorless.ActivatedAt = time.Time{}
+	if got := TaskOccupancy(anchorless, now); got != 0 {
+		t.Errorf("anchor-less admitted waiting = %d, want 0", got)
 	}
 	// ...but a status without a retained claim drops to telemetry only.
 	expiredActive := expiredWaiting

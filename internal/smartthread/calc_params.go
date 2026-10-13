@@ -78,4 +78,7 @@ type CalcParams struct {
 	Ledger            *BandwidthLedger                   // nil on Resume path → degrade
 	ActiveMACsFunc    func() []string                    // inject monitor.State.GetNetEnv().GetAllActiveMACs
 	ComputeEnvKeyFunc func(routeCode, mac string) string // inject monitor.ComputeEnvKey
+	// MinThreadLife 显式覆盖 config.MinThreadLife（秒）; 0 保持既有
+	// 全局配置/默认行为。准入 gate 注入已确认的最终值，不落盘。
+	MinThreadLife int
 }

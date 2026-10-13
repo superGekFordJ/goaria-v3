@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -1628,9 +1629,14 @@ func TestSchedulerRetryNotRunnableBeforeRetryAt(t *testing.T) {
 	// Scrub fallback for failure paths: if the task was never dequeued (or was
 	// picked up and left inFlight), GracefulShutdown's sweep would skip its
 	// wg.Done and hang — remove it here first (runs before shutdown, LIFO).
+	// A synthetic waitForTask claim also leaves a physical busy slot that the
+	// drain waits on, so release it alongside the queue entry.
 	t.Cleanup(func() {
 		pool.mu.Lock()
-		if _, ok := pool.queued[id]; ok {
+		if q, ok := pool.queued[id]; ok {
+			if wake := pool.releaseBusyLocked(AdmissionKey{ID: id, Token: q.token}); wake != nil {
+				defer wake()
+			}
 			delete(pool.queued, id)
 			pool.wg.Done()
 		}
@@ -1639,7 +1645,8 @@ func TestSchedulerRetryNotRunnableBeforeRetryAt(t *testing.T) {
 
 	gotID := make(chan *queuedTask, 1)
 	go func() {
-		gotID <- pool.waitForTask()
+		qt, _ := pool.waitForTask()
+		gotID <- qt
 	}()
 
 	// At 40ms (before retryAt), task should NOT be popped yet
@@ -1662,6 +1669,7 @@ func TestSchedulerRetryNotRunnableBeforeRetryAt(t *testing.T) {
 
 	pool.mu.Lock()
 	if q, ok := pool.queued[id]; ok {
+		pool.releaseBusyLocked(AdmissionKey{ID: id, Token: q.token})
 		q.inFlight = false
 		delete(pool.queued, id)
 		pool.wg.Done()
@@ -1760,7 +1768,10 @@ func TestSchedulerGracefulShutdownDisarmsRetryTimer(t *testing.T) {
 	pool.mu.Unlock()
 
 	waited := make(chan *queuedTask, 1)
-	go func() { waited <- pool.waitForTask() }()
+	go func() {
+		qt, _ := pool.waitForTask()
+		waited <- qt
+	}()
 
 	// Wait until the scan has actually armed the timer.
 	armDeadline := time.Now().Add(2 * time.Second)
@@ -2009,5 +2020,631 @@ started:
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("GracefulShutdown hung; requeued task wait group was not settled")
+	}
+}
+
+// ==================== Managed admission (opportunity tokens) ====================
+
+// newManagedPool builds a managed scheduler or fails the test.
+func newManagedPool(t *testing.T, ch chan types.DownloadEvent, capacity int) *Scheduler {
+	t.Helper()
+	pool, err := NewManaged(ch, capacity)
+	if err != nil {
+		t.Fatalf("NewManaged(%d) returned error: %v", capacity, err)
+	}
+	t.Cleanup(pool.GracefulShutdown)
+	return pool
+}
+
+// admissionKeyFor returns the candidate key for id from a fresh snapshot.
+func admissionKeyFor(t *testing.T, pool *Scheduler, id string) AdmissionKey {
+	t.Helper()
+	for _, cand := range pool.AdmissionSnapshot().Candidates {
+		if cand.Key.ID == id {
+			return cand.Key
+		}
+	}
+	t.Fatalf("snapshot has no candidate for %s", id)
+	return AdmissionKey{}
+}
+
+// A managed pool never self-picks a queued task; only an accepted Admit of the
+// snapshot key dispatches it. Legacy New() pools keep self-picking.
+func TestSchedulerAdmission_ManagedWaitsForAdmit(t *testing.T) {
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1")
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer server.Close()
+
+	managedCh := make(chan types.DownloadEvent, 16)
+	managed := newManagedPool(t, managedCh, 1)
+
+	const id = "managed-gated"
+	if !managed.Add(types.DownloadRecord{
+		ID:            id,
+		URL:           server.URL,
+		ProgressState: progress.New(id, 0),
+		Runtime:       &types.RuntimeConfig{Workers: 4},
+	}) {
+		t.Fatal("managed Add was refused")
+	}
+
+	// No Admit yet: the worker must not self-pick.
+	select {
+	case ev := <-managedCh:
+		t.Fatalf("managed pool dispatched without Admit: %+v", ev)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	snap := managed.AdmissionSnapshot()
+	if !snap.Managed || snap.Capacity != 1 || snap.CommittedSlots != 0 {
+		t.Fatalf("pre-admit snapshot = %+v", snap)
+	}
+	if len(snap.Candidates) != 1 || !snap.Candidates[0].RuntimeReady || snap.Candidates[0].Workers != 4 {
+		t.Fatalf("candidate = %+v", snap.Candidates)
+	}
+	key := snap.Candidates[0].Key
+	if key.Token == 0 {
+		t.Fatal("candidate token is zero")
+	}
+
+	if res := managed.Admit(key, 2, 0); res != AdmitAccepted {
+		t.Fatalf("Admit = %v, want Accepted", res)
+	}
+	// Duplicate admit of the same live opportunity must not re-account.
+	if res := managed.Admit(key, 2, 0); res != AdmitAlreadyAdmitted {
+		t.Fatalf("repeat Admit = %v, want AlreadyAdmitted", res)
+	}
+	if snap := managed.AdmissionSnapshot(); snap.CommittedSlots != 1 {
+		t.Fatalf("committed after Admit = %d, want 1", snap.CommittedSlots)
+	}
+
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case ev := <-managedCh:
+			if ev.Type == types.EventStarted && ev.DownloadID == id {
+				return
+			}
+		case <-deadline:
+			t.Fatal("admitted task never started")
+		}
+	}
+}
+
+// Legacy pools ignore the admission gate entirely: Admit is Unavailable and
+// queued tasks self-pick as before.
+func TestSchedulerAdmission_LegacyUnchanged(t *testing.T) {
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1")
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer server.Close()
+
+	ch := make(chan types.DownloadEvent, 16)
+	pool := New(ch, 1)
+	t.Cleanup(pool.GracefulShutdown)
+
+	const id = "legacy-selfpick"
+	if !pool.Add(types.DownloadRecord{
+		ID:            id,
+		URL:           server.URL,
+		ProgressState: progress.New(id, 0),
+		Runtime:       &types.RuntimeConfig{Workers: 2},
+	}) {
+		t.Fatal("Add was refused")
+	}
+	key := admissionKeyFor(t, pool, id)
+	if res := pool.Admit(key, 1, 0); res != AdmitUnavailable {
+		t.Fatalf("legacy Admit = %v, want Unavailable", res)
+	}
+
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == types.EventStarted && ev.DownloadID == id {
+				return
+			}
+		case <-deadline:
+			t.Fatal("legacy queued task never self-picked")
+		}
+	}
+}
+
+// Stale tokens, zero/unknown keys, and keys orphaned by a same-ID re-add must
+// never alias the live opportunity; each new queueing round mints a fresh
+// token.
+func TestSchedulerAdmission_StaleKeysAndSameID(t *testing.T) {
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1")
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer server.Close()
+
+	ch := make(chan types.DownloadEvent, 16)
+	pool := newManagedPool(t, ch, 1)
+
+	const id = "sameid-admit"
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "sameid.bin")
+	add := func() bool {
+		if err := os.WriteFile(destPath+types.IncompleteSuffix, nil, 0o644); err != nil {
+			t.Fatalf("pre-create incomplete file: %v", err)
+		}
+		return pool.Add(types.DownloadRecord{
+			ID:            id,
+			URL:           server.URL,
+			OutputPath:    tmpDir,
+			Filename:      "sameid.bin",
+			DestPath:      destPath,
+			ProgressState: progress.New(id, 0),
+			Runtime:       &types.RuntimeConfig{Workers: 2},
+		})
+	}
+	if !add() {
+		t.Fatal("first Add was refused")
+	}
+	key1 := admissionKeyFor(t, pool, id)
+
+	if res := pool.Admit(AdmissionKey{ID: id, Token: 0}, 1, 0); res != AdmitStale {
+		t.Fatalf("zero-token Admit = %v, want Stale", res)
+	}
+	if res := pool.Admit(AdmissionKey{ID: "ghost", Token: key1.Token}, 1, 0); res != AdmitStale {
+		t.Fatalf("unknown-ID Admit = %v, want Stale", res)
+	}
+	if res := pool.Admit(AdmissionKey{ID: id, Token: key1.Token + 999}, 1, 0); res != AdmitStale {
+		t.Fatalf("future-token Admit = %v, want Stale", res)
+	}
+
+	// Pause removes the queued opportunity; a same-ID re-add mints a new token.
+	if res := pool.Pause(id); !res.Found || res.QueuedConfig == nil {
+		t.Fatal("Pause of queued task failed")
+	}
+	if !add() {
+		t.Fatal("same-ID re-add was refused")
+	}
+	key2 := admissionKeyFor(t, pool, id)
+	if key2.Token == key1.Token {
+		t.Fatal("token was reused across queueing rounds")
+	}
+	if res := pool.Admit(key1, 1, 0); res != AdmitStale {
+		t.Fatalf("stale-key Admit = %v, want Stale", res)
+	}
+	if res := pool.Admit(key2, 1, 0); res != AdmitAccepted {
+		t.Fatalf("fresh-key Admit = %v, want Accepted", res)
+	}
+
+	// Wait for the worker to claim and finish so the busy entry leaves; the
+	// retired claim key must not count as authorization afterwards.
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == types.EventComplete && ev.DownloadID == id {
+				goto completed
+			}
+		case <-deadline:
+			t.Fatal("admitted task never completed")
+		}
+	}
+completed:
+	settleDeadline := time.Now().Add(5 * time.Second)
+	for {
+		snap := pool.AdmissionSnapshot()
+		if len(snap.Busy) == 0 && snap.CommittedSlots == 0 {
+			break
+		}
+		if time.Now().After(settleDeadline) {
+			t.Fatalf("busy did not settle: %+v", snap)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if res := pool.Admit(key2, 1, 0); res != AdmitStale {
+		t.Fatalf("post-completion Admit = %v, want Stale", res)
+	}
+}
+
+// Admit parameter contract: tightening only lowers Workers/MinChunkSize and
+// leaves every other runtime field byte-identical; invalid tighten requests
+// are Unavailable and mutate nothing.
+func TestSchedulerAdmission_TightenOnlyShrinks(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 16)
+	pool := newManagedPool(t, ch, 1)
+
+	const id = "tighten-only"
+	rt := &types.RuntimeConfig{
+		Workers:            8,
+		MinChunkSize:       4096,
+		ProxyURL:           "http://127.0.0.1:9",
+		CustomDNS:          "8.8.8.8",
+		SequentialDownload: true,
+		WorkerBufferSize:   12345,
+	}
+	if !pool.Add(types.DownloadRecord{
+		ID:      id,
+		URL:     "http://example.com/tighten.bin",
+		Runtime: rt,
+	}) {
+		t.Fatal("Add was refused")
+	}
+	key := admissionKeyFor(t, pool, id)
+
+	if res := pool.Admit(key, 0, 0); res != AdmitUnavailable {
+		t.Fatalf("workers=0 Admit = %v, want Unavailable", res)
+	}
+	if res := pool.Admit(key, 9, 0); res != AdmitUnavailable {
+		t.Fatalf("workers>upper Admit = %v, want Unavailable", res)
+	}
+	if res := pool.Admit(key, 4, 0); res != AdmitUnavailable {
+		t.Fatalf("minChunk=0 with positive upper Admit = %v, want Unavailable", res)
+	}
+	if res := pool.Admit(key, 4, 8192); res != AdmitUnavailable {
+		t.Fatalf("minChunk>upper Admit = %v, want Unavailable", res)
+	}
+	pool.mu.RLock()
+	if got := pool.queued[id].cfg.Runtime; got != rt {
+		t.Fatalf("rejected Admit mutated runtime: %+v", got)
+	}
+	pool.mu.RUnlock()
+
+	if res := pool.Admit(key, 4, 2048); res != AdmitAccepted {
+		t.Fatalf("valid Admit = %v, want Accepted", res)
+	}
+	pool.mu.RLock()
+	got := pool.queued[id].cfg.Runtime
+	pool.mu.RUnlock()
+	if got == rt {
+		t.Fatal("admitted runtime aliases the caller's config")
+	}
+	if got.Workers != 4 || got.MinChunkSize != 2048 {
+		t.Fatalf("tightened fields = workers %d minchunk %d, want 4/2048", got.Workers, got.MinChunkSize)
+	}
+	if got.ProxyURL != rt.ProxyURL || got.CustomDNS != rt.CustomDNS ||
+		got.SequentialDownload != rt.SequentialDownload || got.WorkerBufferSize != rt.WorkerBufferSize {
+		t.Fatalf("Admit rewrote unrelated runtime fields: %+v", got)
+	}
+}
+
+// A failed run requeues the same queuedTask under a fresh token with
+// admitted=false; the stale key stays Stale, the new key is Unavailable while
+// the backoff is pending, and the wait group is settled on removal.
+func TestSchedulerAdmission_Retry(t *testing.T) {
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	ch := make(chan types.DownloadEvent, 16)
+	pool := newManagedPool(t, ch, 1)
+
+	const id = "admit-retry"
+	if !pool.Add(types.DownloadRecord{
+		ID:            id,
+		URL:           server.URL,
+		ProgressState: progress.New(id, 0),
+		Runtime:       &types.RuntimeConfig{Workers: 2},
+	}) {
+		t.Fatal("Add was refused")
+	}
+	key1 := admissionKeyFor(t, pool, id)
+	if res := pool.Admit(key1, 1, 0); res != AdmitAccepted {
+		t.Fatalf("Admit = %v, want Accepted", res)
+	}
+
+	// Wait for the retry requeue publication.
+	requeueDeadline := time.After(10 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == types.EventQueued && ev.DownloadID == id {
+				goto requeued
+			}
+		case <-requeueDeadline:
+			t.Fatal("failed task was never requeued")
+		}
+	}
+requeued:
+
+	var key2 AdmissionKey
+	findDeadline := time.Now().Add(2 * time.Second)
+	for {
+		snap := pool.AdmissionSnapshot()
+		found := false
+		for _, cand := range snap.Candidates {
+			if cand.Key.ID == id {
+				found = true
+				key2 = cand.Key
+				if cand.Admitted {
+					t.Fatal("requeued opportunity kept the old admission")
+				}
+				if cand.Key.Token == key1.Token {
+					t.Fatal("requeue reused the finished opportunity token")
+				}
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(findDeadline) {
+			t.Fatal("requeued task missing from snapshot")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if res := pool.Admit(key1, 1, 0); res != AdmitStale {
+		t.Fatalf("pre-retry key Admit = %v, want Stale", res)
+	}
+	// Backoff (1s for the first retry) still pending: not yet claimable.
+	if res := pool.Admit(key2, 1, 0); res != AdmitUnavailable {
+		t.Fatalf("in-backoff Admit = %v, want Unavailable", res)
+	}
+
+	// Wait out the backoff, then admit the new opportunity.
+	pool.mu.RLock()
+	wait := time.Until(pool.queued[id].retryAt)
+	pool.mu.RUnlock()
+	if wait > 0 {
+		time.Sleep(wait + 20*time.Millisecond)
+	}
+	if res := pool.Admit(key2, 1, 0); res != AdmitAccepted {
+		t.Fatalf("post-backoff Admit = %v, want Accepted", res)
+	}
+	// The retried run will fail again; Pause drops the queued round so the
+	// wait group settles via the cleanup path.
+	reDeadline := time.Now().Add(10 * time.Second)
+	for {
+		pool.mu.RLock()
+		_, stillQueued := pool.queued[id]
+		pool.mu.RUnlock()
+		if stillQueued {
+			if res := pool.Pause(id); res.Found {
+				return
+			}
+			// Claimed between the check and the Pause; keep polling for the
+			// next requeue round.
+		}
+		if time.Now().After(reDeadline) {
+			t.Fatal("requeued opportunity vanished without settlement")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Capacity ceiling: 64 concurrent Admit calls against a 32-slot managed pool
+// may accept at most 32, and a claimed busy slot is counted exactly once.
+func TestSchedulerAdmission_Capacity(t *testing.T) {
+	release := make(chan struct{})
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1")
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+
+	ch := make(chan types.DownloadEvent, 128)
+	pool := newManagedPool(t, ch, 32)
+
+	const total = 64
+	keys := make([]AdmissionKey, total)
+	for i := range total {
+		id := fmt.Sprintf("cap-%03d", i)
+		if !pool.Add(types.DownloadRecord{
+			ID:            id,
+			URL:           server.URL,
+			ProgressState: progress.New(id, 0),
+			Runtime:       &types.RuntimeConfig{Workers: 2},
+		}) {
+			t.Fatalf("Add %s refused", id)
+		}
+		keys[i] = admissionKeyFor(t, pool, id)
+	}
+
+	var admitWg sync.WaitGroup
+	var accepted, already, unavail, stale atomic.Int64
+	for _, key := range keys {
+		admitWg.Add(1)
+		go func(k AdmissionKey) {
+			defer admitWg.Done()
+			switch pool.Admit(k, 1, 0) {
+			case AdmitAccepted:
+				accepted.Add(1)
+			case AdmitAlreadyAdmitted:
+				already.Add(1)
+			case AdmitUnavailable:
+				unavail.Add(1)
+			default:
+				stale.Add(1)
+			}
+		}(key)
+	}
+	admitWg.Wait()
+
+	if got := accepted.Load(); got != 32 {
+		t.Fatalf("accepted admits = %d, want exactly 32 (oversell)", got)
+	}
+	if stale.Load() != 0 || already.Load() != 0 {
+		t.Fatalf("unexpected admit results: stale=%d already=%d", stale.Load(), already.Load())
+	}
+	if unavail.Load() != total-32 {
+		t.Fatalf("unavailable admits = %d, want %d", unavail.Load(), total-32)
+	}
+
+	// Claims may still be settling; once all admitted opportunities become
+	// busy, the claim must be counted exactly once — CommittedSlots stays 32.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		snap := pool.AdmissionSnapshot()
+		if snap.CommittedSlots > 32 {
+			t.Fatalf("CommittedSlots = %d exceeds capacity 32", snap.CommittedSlots)
+		}
+		admittedQueued := 0
+		for _, cand := range snap.Candidates {
+			if cand.Admitted && !cand.InFlight {
+				admittedQueued++
+			}
+		}
+		if snap.CommittedSlots != len(snap.Busy)+admittedQueued {
+			t.Fatalf("invariant broken: committed=%d busy=%d admitted=%d",
+				snap.CommittedSlots, len(snap.Busy), admittedQueued)
+		}
+		if len(snap.Busy) == 32 {
+			if snap.CommittedSlots != 32 {
+				t.Fatalf("busy counted twice: committed=%d busy=%d", snap.CommittedSlots, len(snap.Busy))
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d/32 claims became busy", len(snap.Busy))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// The wake hook fires after the release is visible: inside the callback a
+// re-entrant AdmissionSnapshot must already show the slot freed.
+func TestSchedulerAdmission_Wake(t *testing.T) {
+	server := testutil.NewHTTPServerT(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1")
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer server.Close()
+
+	ch := make(chan types.DownloadEvent, 16)
+	pool := newManagedPool(t, ch, 1)
+
+	wakeSeen := make(chan AdmissionSnapshot, 4)
+	pool.SetAdmissionWake(func() {
+		// Re-entrant snapshot inside the notification: must not deadlock and
+		// must already observe the freed slot.
+		wakeSeen <- pool.AdmissionSnapshot()
+	})
+
+	const id = "wake-order"
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "wake.bin")
+	if err := os.WriteFile(destPath+types.IncompleteSuffix, nil, 0o644); err != nil {
+		t.Fatalf("pre-create incomplete file: %v", err)
+	}
+	if !pool.Add(types.DownloadRecord{
+		ID:            id,
+		URL:           server.URL,
+		OutputPath:    tmpDir,
+		Filename:      "wake.bin",
+		DestPath:      destPath,
+		ProgressState: progress.New(id, 0),
+		Runtime:       &types.RuntimeConfig{Workers: 2},
+	}) {
+		t.Fatal("Add was refused")
+	}
+	key := admissionKeyFor(t, pool, id)
+	if res := pool.Admit(key, 1, 0); res != AdmitAccepted {
+		t.Fatalf("Admit = %v, want Accepted", res)
+	}
+
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == types.EventComplete && ev.DownloadID == id {
+				goto completed
+			}
+		case snap := <-wakeSeen:
+			// A stray wake before completion must already show post-release state.
+			if len(snap.Busy) > 0 {
+				t.Fatalf("wake fired while busy still held: %+v", snap.Busy)
+			}
+		case <-deadline:
+			t.Fatal("download never completed")
+		}
+	}
+completed:
+	select {
+	case snap := <-wakeSeen:
+		if len(snap.Busy) != 0 || snap.CommittedSlots != 0 {
+			t.Fatalf("wake snapshot still sees claim: %+v", snap)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("release wake never fired")
+	}
+}
+
+// Snapshots carry the complete FIFO queue (no truncation) and are pure
+// values: mutating the returned slices must not leak into pool state.
+func TestSchedulerAdmission_Snapshot(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 16)
+	pool := newManagedPool(t, ch, 4)
+
+	const total = 1100
+	for i := range total {
+		id := fmt.Sprintf("snap-%04d", i)
+		cfg := types.DownloadRecord{ID: id, URL: "http://example.com/" + id, TotalSize: int64(i + 1)}
+		if i == 0 {
+			cfg.Runtime = &types.RuntimeConfig{Workers: 7, MinChunkSize: 1024}
+			cfg.Downloaded = 42
+		}
+		if !pool.Add(cfg) {
+			t.Fatalf("Add %s refused", id)
+		}
+	}
+
+	snap := pool.AdmissionSnapshot()
+	if !snap.Managed || snap.Capacity != 4 || snap.CommittedSlots != 0 || len(snap.Busy) != 0 {
+		t.Fatalf("snapshot header = %+v", snap)
+	}
+	if len(snap.Candidates) != total {
+		t.Fatalf("candidates truncated: %d/%d", len(snap.Candidates), total)
+	}
+	for i, cand := range snap.Candidates {
+		want := fmt.Sprintf("snap-%04d", i)
+		if cand.Key.ID != want || cand.Key.Token != uint64(i+1) {
+			t.Fatalf("candidate[%d] = %+v, want id %s token %d", i, cand.Key, want, i+1)
+		}
+	}
+	first := snap.Candidates[0]
+	if !first.RuntimeReady || first.Workers != 7 || first.MinChunkSize != 1024 ||
+		first.TotalSize != 1 || first.Downloaded != 42 {
+		t.Fatalf("candidate hints = %+v", first)
+	}
+
+	// Mutating the returned values must not alter pool state or later snapshots.
+	snap.Candidates[0].Admitted = true
+	snap.Candidates[0].Key.Token = 99999
+	snap.Busy = append(snap.Busy, BusySlot{Key: AdmissionKey{ID: "fake", Token: 1}})
+	again := pool.AdmissionSnapshot()
+	if len(again.Candidates) != total || len(again.Busy) != 0 {
+		t.Fatalf("mutating snapshot leaked into pool: %+v", again)
+	}
+	if again.Candidates[0].Admitted || again.Candidates[0].Key.Token != 1 {
+		t.Fatalf("mutated candidate persisted: %+v", again.Candidates[0])
+	}
+}
+
+// Stopping rejects new admits and drains commitments on shutdown.
+func TestSchedulerAdmission_StoppingRejects(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 16)
+	pool := newManagedPool(t, ch, 2)
+
+	const id = "stop-admit"
+	if !pool.Add(types.DownloadRecord{
+		ID:            id,
+		URL:           "http://example.com/stop.bin",
+		ProgressState: progress.New(id, 0),
+		Runtime:       &types.RuntimeConfig{Workers: 2},
+	}) {
+		t.Fatal("Add was refused")
+	}
+	key := admissionKeyFor(t, pool, id)
+	pool.GracefulShutdown()
+	if res := pool.Admit(key, 1, 0); res != AdmitUnavailable {
+		t.Fatalf("post-shutdown Admit = %v, want Unavailable", res)
+	}
+	snap := pool.AdmissionSnapshot()
+	if !snap.Stopping || len(snap.Candidates) != 0 || len(snap.Busy) != 0 || snap.CommittedSlots != 0 {
+		t.Fatalf("post-shutdown snapshot = %+v", snap)
 	}
 }

@@ -80,12 +80,12 @@ type TrackedTaskInfo struct {
 	// AddAnchorAt is the confirmed-add anchor for CompatAria2Add. It is
 	// fixed at first establishment; reads/writes never extend it.
 	AddAnchorAt time.Time
-	// AdmissionReserved is the explicit admitted-not-started fact for a
-	// future admission pipeline. The claim reuses ActivatedAt as its anchor
-	// and the same 45s/15s lease — a reservation without an anchor or past
-	// its lease loses the reservation floor and falls back to ordinary
-	// eligibility (a retained waiting claim can still apply). No production
-	// writer sets it in S1.
+	// AdmissionReserved is the explicit admitted-not-started reservation
+	// fact (monitor.ReserveAdmission). The reservation reuses ActivatedAt as
+	// its anchor and the same 45s/15s lease, and terminates occupancy
+	// evaluation on its own: a live lease claims the Target floor, while an
+	// expired or anchor-less reservation contributes only telemetry —
+	// never falling back into a legacy waiting/compat claim.
 	AdmissionReserved bool
 }
 

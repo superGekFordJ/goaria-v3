@@ -3,6 +3,8 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -31,6 +33,82 @@ type queuedTask struct {
 	retries  int
 	inFlight bool
 	retryAt  time.Time // task not eligible for pickup until this time
+	// token is the pool-issued opportunity identity for this queueing round:
+	// allocated at Add and re-minted at each retry requeue, monotonic per pool.
+	token uint64
+	// admitted marks that an external admission decision authorized this
+	// opportunity (managed pools only); legacy pools leave it false and
+	// workers pick up tasks directly.
+	admitted bool
+}
+
+// AdmissionKey identifies one queueing opportunity inside a live pool: the
+// raw download ID plus the token the pool issued at Add or retry requeue.
+// A token is never reused within a pool's lifetime, so a stale or forged key
+// cannot alias a newer opportunity for the same ID.
+type AdmissionKey struct {
+	ID    string
+	Token uint64
+}
+
+// AdmissionCandidate is a scalar snapshot of one queued opportunity in FIFO
+// order. TotalSize/Downloaded are config/checkpoint hints, not live measures.
+type AdmissionCandidate struct {
+	Key          AdmissionKey
+	RetryAt      time.Time
+	Admitted     bool
+	InFlight     bool
+	RuntimeReady bool // Runtime present with a positive Workers ceiling
+	Workers      int
+	MinChunkSize int64
+	TotalSize    int64
+	Downloaded   int64
+}
+
+// BusySlot is one physical claim held by a worker: from waitForTask claim
+// until the worker finishes the claim's bookkeeping. Running flips true once
+// the task registers as an activeDownload and false when RunDownload returns.
+type BusySlot struct {
+	Key     AdmissionKey
+	Running bool
+}
+
+// AdmissionSnapshot is a consistent view of the pool's admission state.
+// Candidates is the complete FIFO queue (including admitted and in-flight
+// entries); Busy lists unsettled physical claims in no particular order.
+// CommittedSlots = len(Busy) + count(admitted && !inFlight) and stays within
+// [0, Capacity] on managed pools.
+type AdmissionSnapshot struct {
+	Candidates     []AdmissionCandidate
+	Busy           []BusySlot
+	Capacity       int
+	CommittedSlots int
+	Managed        bool
+	Stopping       bool
+}
+
+// AdmitResult reports the outcome of an Admit call.
+type AdmitResult uint8
+
+const (
+	// AdmitStale: the key does not match a live opportunity (wrong/ended token).
+	AdmitStale AdmitResult = iota
+	// AdmitAccepted: this call authorized the opportunity.
+	AdmitAccepted
+	// AdmitAlreadyAdmitted: the same opportunity is already authorized or
+	// physically claimed; a repeat call must not re-account or roll back.
+	AdmitAlreadyAdmitted
+	// AdmitUnavailable: mode off, stopping, not yet runnable, capacity full,
+	// or an invalid tighten request — no side effects.
+	AdmitUnavailable
+)
+
+// busySlot is the pool-internal physical claim record keyed by AdmissionKey.
+// ad is set once the claimed task registers as an activeDownload; Running in
+// snapshots is derived from ad.running so claim-before-register windows are
+// visible without extra bookkeeping.
+type busySlot struct {
+	ad *activeDownload
 }
 
 // shouldRetryFailedDownload reports whether a whole-download failure should be
@@ -83,6 +161,18 @@ type Scheduler struct {
 	tightenMu       sync.RWMutex
 	tightenOnPickup func(*types.DownloadRecord)
 
+	// FORK-PATCH: managed admission mode. When true, workers only claim queued
+	// tasks whose current opportunity was authorized via Admit. busy tracks
+	// physical claims from waitForTask handout until end-of-claim bookkeeping;
+	// lastToken mints monotonic per-pool opportunity identities (never reused).
+	managed   bool
+	lastToken uint64
+	busy      map[AdmissionKey]*busySlot
+
+	// FORK-PATCH: optional slot-release notification. Copied under p.mu and
+	// invoked after Unlock so the callback may re-enter AdmissionSnapshot.
+	admissionWake atomic.Pointer[func()]
+
 	// FORK-PATCH: test-only seams for pinning worker windows. workerClaimedGate
 	// fires after waitForTask hands a claimed task to a worker, before it
 	// re-locks p.mu to register it. workerDoneGate fires after RunDownload
@@ -121,12 +211,29 @@ func New(progressCh chan<- types.DownloadEvent, maxDownloads int) *Scheduler {
 	if maxDownloads < 1 {
 		maxDownloads = 3 // Default to 3 if invalid
 	}
+	return newScheduler(progressCh, maxDownloads, false)
+}
+
+// NewManaged creates a Scheduler whose workers only claim opportunities that
+// were explicitly authorized by Admit; queued tasks never self-promote.
+// capacity must be positive — it is the physical slot ceiling the
+// CommittedSlots invariant is checked against.
+func NewManaged(progressCh chan<- types.DownloadEvent, capacity int) (*Scheduler, error) {
+	if capacity < 1 {
+		return nil, fmt.Errorf("scheduler: managed pool requires capacity > 0, got %d", capacity)
+	}
+	return newScheduler(progressCh, capacity, true), nil
+}
+
+func newScheduler(progressCh chan<- types.DownloadEvent, maxDownloads int, managed bool) *Scheduler {
 	pool := &Scheduler{
 		progressCh:       progressCh,
 		progressDone:     make(chan struct{}),
 		downloads:        make(map[string]*activeDownload),
 		queued:           make(map[string]*queuedTask),
 		maxDownloads:     maxDownloads,
+		managed:          managed,
+		busy:             make(map[AdmissionKey]*busySlot),
 		globalLimiter:    transport.NewRateLimiter(0, 0),
 		downloadLimiters: make(map[string]*transport.RateLimiter),
 	}
@@ -135,6 +242,180 @@ func New(progressCh chan<- types.DownloadEvent, maxDownloads int) *Scheduler {
 		go pool.worker()
 	}
 	return pool
+}
+
+// allocTokenLocked mints the next opportunity token. Tokens are monotonic per
+// pool and never reused; exhaustion refuses the call instead of wrapping.
+// Caller holds p.mu.
+func (p *Scheduler) allocTokenLocked() (uint64, bool) {
+	if p.lastToken == math.MaxUint64 {
+		return 0, false
+	}
+	p.lastToken++
+	return p.lastToken, true
+}
+
+// committedSlotsLocked = len(Busy) + count(queued.admitted && !queued.inFlight).
+// A claimed task moves from the admitted term into Busy atomically at claim,
+// so the sum never double-counts. Caller holds p.mu.
+func (p *Scheduler) committedSlotsLocked() int {
+	n := len(p.busy)
+	for _, qt := range p.queued {
+		if qt.admitted && !qt.inFlight {
+			n++
+		}
+	}
+	return n
+}
+
+// releaseBusyLocked drops the physical claim identity for key. It runs once
+// per claim at the end of the worker's bookkeeping; the wake callback (if
+// installed) is copied here and must be invoked after p.mu is released so it
+// can re-enter AdmissionSnapshot without deadlock. Caller holds p.mu.
+func (p *Scheduler) releaseBusyLocked(key AdmissionKey) func() {
+	if _, held := p.busy[key]; !held {
+		return nil
+	}
+	delete(p.busy, key)
+	p.taskCond.Broadcast()
+	if fn := p.admissionWake.Load(); fn != nil {
+		return *fn
+	}
+	return nil
+}
+
+// SetAdmissionWake installs a notification invoked outside the pool lock each
+// time a physical claim is released and the freed slot is already visible to
+// AdmissionSnapshot. Nil-safe; nil clears the hook.
+func (p *Scheduler) SetAdmissionWake(fn func()) {
+	if p == nil {
+		return
+	}
+	if fn == nil {
+		p.admissionWake.Store(nil)
+		return
+	}
+	p.admissionWake.Store(&fn)
+}
+
+// AdmissionSnapshot returns the complete FIFO queue plus unsettled physical
+// claims. Nil receivers yield a stopping empty snapshot.
+func (p *Scheduler) AdmissionSnapshot() AdmissionSnapshot {
+	if p == nil {
+		return AdmissionSnapshot{Stopping: true}
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	snap := AdmissionSnapshot{
+		Capacity: p.maxDownloads,
+		Managed:  p.managed,
+		Stopping: p.isShuttingDown,
+	}
+	snap.Candidates = make([]AdmissionCandidate, 0, len(p.queueOrder))
+	for _, id := range p.queueOrder {
+		qt, ok := p.queued[id]
+		if !ok {
+			continue
+		}
+		cand := AdmissionCandidate{
+			Key:       AdmissionKey{ID: id, Token: qt.token},
+			RetryAt:   qt.retryAt,
+			Admitted:  qt.admitted,
+			InFlight:  qt.inFlight,
+			TotalSize: qt.cfg.TotalSize,
+		}
+		if rt := qt.cfg.Runtime; rt != nil {
+			cand.RuntimeReady = rt.Workers > 0
+			cand.Workers = rt.Workers
+			cand.MinChunkSize = rt.MinChunkSize
+		}
+		if qt.cfg.ProgressState != nil {
+			d, total, _, _, _, _ := progress.CfgProgress(&qt.cfg).GetProgress()
+			cand.Downloaded = d
+			if total > 0 {
+				cand.TotalSize = total
+			}
+		} else {
+			cand.Downloaded = qt.cfg.Downloaded
+		}
+		snap.Candidates = append(snap.Candidates, cand)
+	}
+	snap.Busy = make([]BusySlot, 0, len(p.busy))
+	for key, slot := range p.busy {
+		snap.Busy = append(snap.Busy, BusySlot{Key: key, Running: slot.ad != nil && slot.ad.running.Load()})
+	}
+	snap.CommittedSlots = p.committedSlotsLocked()
+	return snap
+}
+
+// Admit authorizes one queued opportunity for dispatch on a managed pool and
+// tightens its runtime parameters in place. Only keys minted by this pool and
+// still current are honored; stale or replayed keys never alias a newer
+// opportunity for the same ID.
+func (p *Scheduler) Admit(key AdmissionKey, workers int, minChunkSize int64) AdmitResult {
+	if p == nil {
+		return AdmitUnavailable
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.managed || p.isShuttingDown {
+		return AdmitUnavailable
+	}
+	if key.ID == "" || key.Token == 0 {
+		return AdmitStale
+	}
+	qt, queued := p.queued[key.ID]
+	current := queued && qt.token == key.Token
+	if slot, held := p.busy[key]; held {
+		// A claim counts as authorization only while its opportunity is still
+		// live: registered and active under its own ad, or claimed-in-flight
+		// on the current queue entry. A residual claim settling after Cancel,
+		// completion, or token rotation must not authorize the old key.
+		if slot.ad != nil && p.downloads[key.ID] == slot.ad {
+			return AdmitAlreadyAdmitted
+		}
+		if slot.ad == nil && current && qt.inFlight {
+			return AdmitAlreadyAdmitted
+		}
+		return AdmitStale
+	}
+	if !current {
+		return AdmitStale
+	}
+	if qt.admitted {
+		return AdmitAlreadyAdmitted
+	}
+	if qt.inFlight {
+		// A retry-published task between runs is not yet claimable.
+		return AdmitUnavailable
+	}
+	if !qt.retryAt.IsZero() && time.Now().Before(qt.retryAt) {
+		return AdmitUnavailable
+	}
+	rt := qt.cfg.Runtime
+	if rt == nil || rt.Workers <= 0 {
+		return AdmitUnavailable
+	}
+	if workers < 1 || workers > rt.Workers {
+		return AdmitUnavailable
+	}
+	if rt.MinChunkSize > 0 && (minChunkSize <= 0 || minChunkSize > rt.MinChunkSize) {
+		return AdmitUnavailable
+	}
+	if p.committedSlotsLocked() >= p.maxDownloads {
+		return AdmitUnavailable
+	}
+	// Copy-on-write: only Workers/MinChunkSize may tighten; every other field
+	// (headers, range/payload-first mode, rate limits, resume state) is kept.
+	patched := *rt
+	patched.Workers = workers
+	if rt.MinChunkSize > 0 {
+		patched.MinChunkSize = minChunkSize
+	}
+	qt.cfg.Runtime = &patched
+	qt.admitted = true
+	p.taskCond.Broadcast()
+	return AdmitAccepted
 }
 
 // SetTightenOnPickup installs (or clears, when fn is nil) the pre-RunDownload
@@ -243,8 +524,14 @@ func (p *Scheduler) Add(cfg types.DownloadRecord) bool {
 		utils.Debug("Scheduler: Add refused for %s: ID already active", cfg.ID)
 		return false
 	}
+	token, ok := p.allocTokenLocked()
+	if !ok {
+		p.mu.Unlock()
+		utils.Debug("Scheduler: Add refused for %s: admission token space exhausted", cfg.ID)
+		return false
+	}
 	p.ensureLimiterForConfigLocked(&cfg)
-	qt := &queuedTask{cfg: cfg}
+	qt := &queuedTask{cfg: cfg, token: token}
 	p.queued[cfg.ID] = qt
 	p.queueOrder = append(p.queueOrder, cfg.ID)
 	p.wg.Add(1)
@@ -779,29 +1066,41 @@ func (p *Scheduler) armRetryTimerLocked(earliest time.Time) {
 	})
 }
 
-func (p *Scheduler) waitForTask() *queuedTask {
+func (p *Scheduler) waitForTask() (*queuedTask, AdmissionKey) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	for {
 		if p.isShuttingDown {
-			return nil
+			return nil, AdmissionKey{}
 		}
 		now := time.Now()
 		var earliestPending time.Time
 
 		// Skip tasks whose retryAt is still in the future; arm the wake timer
-		// for the earliest pending one.
+		// for the earliest pending one. Managed pools additionally require an
+		// admitted opportunity — the timer only re-scans; Admit wakes waiters.
 		for _, id := range p.queueOrder {
-			if qt, ok := p.queued[id]; ok && !qt.inFlight {
-				if qt.retryAt.IsZero() || !now.Before(qt.retryAt) {
-					qt.inFlight = true
-					return qt
-				}
+			qt, ok := p.queued[id]
+			if !ok || qt.inFlight {
+				continue
+			}
+			if !qt.retryAt.IsZero() && now.Before(qt.retryAt) {
 				if earliestPending.IsZero() || qt.retryAt.Before(earliestPending) {
 					earliestPending = qt.retryAt
 				}
+				continue
 			}
+			if p.managed && !qt.admitted {
+				continue
+			}
+			qt.inFlight = true
+			key := AdmissionKey{ID: id, Token: qt.token}
+			if p.busy == nil {
+				p.busy = make(map[AdmissionKey]*busySlot)
+			}
+			p.busy[key] = &busySlot{}
+			return qt, key
 		}
 
 		p.armRetryTimerLocked(earliestPending)
@@ -811,7 +1110,7 @@ func (p *Scheduler) waitForTask() *queuedTask {
 
 func (p *Scheduler) worker() {
 	for {
-		qt := p.waitForTask()
+		qt, claimKey := p.waitForTask()
 		if qt == nil {
 			return
 		}
@@ -830,9 +1129,13 @@ func (p *Scheduler) worker() {
 		// The claim is tied to this exact queuedTask: a Pause/Cancel/shutdown
 		// removal plus a same-ID re-add must not be adopted by this worker.
 		if qtNow, stillQueued := p.queued[id]; !stillQueued || qtNow != qt {
+			wake := p.releaseBusyLocked(claimKey)
 			p.mu.Unlock()
 			cancel()
 			p.wg.Done()
+			if wake != nil {
+				wake()
+			}
 			continue
 		}
 
@@ -844,9 +1147,13 @@ func (p *Scheduler) worker() {
 		if _, occupied := p.downloads[id]; occupied {
 			delete(p.queued, id)
 			p.removeQueueOrderLocked(id)
+			wake := p.releaseBusyLocked(claimKey)
 			p.mu.Unlock()
 			cancel()
 			p.wg.Done()
+			if wake != nil {
+				wake()
+			}
 			utils.Debug("Scheduler: claim for %s dropped: ID already has an active download", id)
 			continue
 		}
@@ -871,6 +1178,9 @@ func (p *Scheduler) worker() {
 		delete(p.queued, id)
 		p.removeQueueOrderLocked(id)
 		p.downloads[id] = ad
+		if slot, held := p.busy[claimKey]; held {
+			slot.ad = ad
+		}
 
 		// Make a local copy for RunDownload to mutate safely
 		localCfg := ad.config
@@ -977,7 +1287,20 @@ func (p *Scheduler) worker() {
 			_, slotTaken := p.queued[localCfg.ID]
 			foreignActive := p.downloads[localCfg.ID] != nil
 
-			if shouldRetryFailedDownload(err, p.isShuttingDown, qt.retries) && !slotTaken && !foreignActive {
+			// A requeue mints a fresh opportunity token: the old admission must
+			// not carry over, and stale keys for the finished claim must never
+			// alias the new queueing round. On token exhaustion the task takes
+			// the terminal path below — no opportunity, no leak.
+			retryable := shouldRetryFailedDownload(err, p.isShuttingDown, qt.retries) && !slotTaken && !foreignActive
+			var newToken uint64
+			tokenOK := true
+			if retryable {
+				newToken, tokenOK = p.allocTokenLocked()
+				if !tokenOK {
+					utils.Debug("Scheduler: retry for %s cannot mint a new opportunity: admission token space exhausted", localCfg.ID)
+				}
+			}
+			if retryable && tokenOK {
 				qt.retries++
 				// Defer eligibility instead of blocking this worker; the
 				// retry timer wakes waitForTask at retryAt.
@@ -985,6 +1308,8 @@ func (p *Scheduler) worker() {
 				qt.retryAt = time.Now().Add(retryDelay)
 				qt.inFlight = true // Keep in-flight while sending progress outside lock
 				qt.cfg = localCfg
+				qt.token = newToken
+				qt.admitted = false
 				p.queued[localCfg.ID] = qt
 
 				p.removeQueueOrderLocked(localCfg.ID)
@@ -1043,8 +1368,12 @@ func (p *Scheduler) worker() {
 					// wg, so we must; never overwrite a same-ID replacement.
 					p.wg.Done()
 				}
+				wake := p.releaseBusyLocked(claimKey)
 				p.taskCond.Broadcast()
 				p.mu.Unlock()
+				if wake != nil {
+					wake()
+				}
 				continue
 			}
 
@@ -1053,9 +1382,13 @@ func (p *Scheduler) worker() {
 				// settle our own wait-group count silently — no EventQueued or
 				// EventError from a stale task may leak into it. The limiter
 				// entry also belongs to the replacement, so it is kept.
+				wake := p.releaseBusyLocked(claimKey)
 				p.wg.Done()
 				p.taskCond.Broadcast()
 				p.mu.Unlock()
+				if wake != nil {
+					wake()
+				}
 				utils.Debug("Scheduler: worker for %s settles stale claim: ID taken by same-ID replacement", localCfg.ID)
 				continue
 			}
@@ -1114,8 +1447,16 @@ func (p *Scheduler) worker() {
 				safeSendProgress(localCfg.ProgressCh, *errEvent, p.progressDone)
 			}
 		}
-		// If paused, we keep it in downloads map for potential resume
+		// If paused, we keep it in downloads map for potential resume.
+		// Shared tail for success/pause/terminal-error: the physical claim is
+		// settled exactly once, after all event emission and sync-back.
+		p.mu.Lock()
+		wake := p.releaseBusyLocked(claimKey)
+		p.mu.Unlock()
 		p.wg.Done()
+		if wake != nil {
+			wake()
+		}
 	}
 }
 
@@ -1290,6 +1631,7 @@ func NewSchedulerForTesting(configs map[string]types.DownloadRecord) *Scheduler 
 	p := &Scheduler{
 		downloads:        downloads,
 		queued:           make(map[string]*queuedTask),
+		busy:             make(map[AdmissionKey]*busySlot),
 		downloadLimiters: make(map[string]*transport.RateLimiter),
 		progressDone:     make(chan struct{}),
 		progressCh:       make(chan types.DownloadEvent, 8),
@@ -1366,5 +1708,14 @@ func (p *Scheduler) GracefulShutdown() {
 		close(p.progressDone)
 
 		p.wg.Wait() // Blocks until all workers call Done()
+
+		// A worker's physical-claim release trails its last wg.Done by only a
+		// few instructions; drain the committed set so a snapshot taken after
+		// shutdown observes a fully-settled pool.
+		p.mu.Lock()
+		for len(p.busy) > 0 {
+			p.taskCond.Wait()
+		}
+		p.mu.Unlock()
 	})
 }

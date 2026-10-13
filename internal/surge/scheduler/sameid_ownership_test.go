@@ -634,3 +634,178 @@ func TestScheduler_RegistrationOccupiedDefense(t *testing.T) {
 		}
 	}
 }
+
+// ==================== Admission claim lifecycle ====================
+
+// A queued removal in the claim→registration window voids the claim: the busy
+// slot is released exactly once, the committed count never lingers, and no
+// same-ID key minted afterwards is adopted by the old worker.
+func TestSchedulerAdmission_Claim(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 16)
+	pool, err := NewManaged(ch, 1)
+	if err != nil {
+		t.Fatalf("NewManaged: %v", err)
+	}
+
+	oldGate := pool.workerClaimedGate.Load()
+	t.Cleanup(func() { pool.workerClaimedGate.Store(oldGate) })
+	t.Cleanup(pool.GracefulShutdown)
+
+	claimed := make(chan struct{})
+	release := make(chan struct{})
+	gateFn := func() {
+		pool.workerClaimedGate.Store(nil)
+		close(claimed)
+		<-release
+	}
+	pool.workerClaimedGate.Store(&gateFn)
+	var releaseOnce sync.Once
+	releaseWorker := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseWorker()
+
+	const id = "admit-claim"
+	if !pool.Add(types.DownloadRecord{
+		ID:            id,
+		URL:           "http://example.com/claim.bin",
+		ProgressState: progress.New(id, 0),
+		Runtime:       &types.RuntimeConfig{Workers: 2},
+	}) {
+		t.Fatal("Add was refused")
+	}
+	var key AdmissionKey
+	for _, cand := range pool.AdmissionSnapshot().Candidates {
+		if cand.Key.ID == id {
+			key = cand.Key
+		}
+	}
+	if key.Token == 0 {
+		t.Fatal("queued candidate has no token")
+	}
+	if res := pool.Admit(key, 1, 0); res != AdmitAccepted {
+		t.Fatalf("Admit = %v, want Accepted", res)
+	}
+
+	select {
+	case <-claimed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker never claimed the admitted task")
+	}
+
+	// Claimed but not yet registered: busy holds the slot and Running is
+	// still false (no activeDownload attached yet).
+	snap := pool.AdmissionSnapshot()
+	if len(snap.Busy) != 1 || snap.Busy[0].Key != key || snap.Busy[0].Running {
+		t.Fatalf("claim-window busy = %+v", snap.Busy)
+	}
+	if snap.CommittedSlots != 1 {
+		t.Fatalf("committed during claim = %d, want exactly 1", snap.CommittedSlots)
+	}
+	// A duplicate admit of the in-flight opportunity is a no-op recount.
+	if res := pool.Admit(key, 1, 0); res != AdmitAlreadyAdmitted {
+		t.Fatalf("in-flight Admit = %v, want AlreadyAdmitted", res)
+	}
+
+	// Removing the queued entry while claimed voids the worker's claim.
+	if res := pool.Pause(id); !res.Found {
+		t.Fatal("Pause did not find the claimed entry")
+	}
+	releaseWorker()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		snap := pool.AdmissionSnapshot()
+		if len(snap.Busy) == 0 && snap.CommittedSlots == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("voided claim never settled: %+v", snap)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if res := pool.Admit(key, 1, 0); res != AdmitStale {
+		t.Fatalf("admit of voided claim = %v, want Stale", res)
+	}
+	awaitShutdown(t, pool)
+
+	for {
+		select {
+		case ev := <-ch:
+			if ev.DownloadID == id {
+				t.Fatalf("voided claim emitted %+v", ev)
+			}
+		default:
+			return
+		}
+	}
+}
+
+// GracefulShutdown drains physical claims: a worker parked in the claim
+// window releases its busy slot during settlement, and the returned pool
+// reports a fully empty snapshot.
+func TestSchedulerAdmission_Drain(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 16)
+	pool, err := NewManaged(ch, 1)
+	if err != nil {
+		t.Fatalf("NewManaged: %v", err)
+	}
+	t.Cleanup(pool.GracefulShutdown) // once-only; explicit call below wins
+
+	oldGate := pool.workerClaimedGate.Load()
+	t.Cleanup(func() { pool.workerClaimedGate.Store(oldGate) })
+
+	claimed := make(chan struct{})
+	release := make(chan struct{})
+	gateFn := func() {
+		pool.workerClaimedGate.Store(nil)
+		close(claimed)
+		<-release
+	}
+	pool.workerClaimedGate.Store(&gateFn)
+
+	const id = "admit-drain"
+	if !pool.Add(types.DownloadRecord{
+		ID:            id,
+		URL:           "http://example.com/drain.bin",
+		ProgressState: progress.New(id, 0),
+		Runtime:       &types.RuntimeConfig{Workers: 2},
+	}) {
+		t.Fatal("Add was refused")
+	}
+	var key AdmissionKey
+	for _, cand := range pool.AdmissionSnapshot().Candidates {
+		if cand.Key.ID == id {
+			key = cand.Key
+		}
+	}
+	if res := pool.Admit(key, 1, 0); res != AdmitAccepted {
+		t.Fatalf("Admit = %v, want Accepted", res)
+	}
+
+	select {
+	case <-claimed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker never claimed the admitted task")
+	}
+	if snap := pool.AdmissionSnapshot(); len(snap.Busy) != 1 || snap.CommittedSlots != 1 {
+		t.Fatalf("pre-drain snapshot = %+v", snap)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		pool.GracefulShutdown()
+		close(done)
+	}()
+	// The sweep runs while the worker is parked; release it afterwards so the
+	// claim's void path must settle the slot for shutdown to complete.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("GracefulShutdown hung with a parked claim")
+	}
+	if snap := pool.AdmissionSnapshot(); len(snap.Busy) != 0 || snap.CommittedSlots != 0 || !snap.Stopping {
+		t.Fatalf("post-drain snapshot = %+v", snap)
+	}
+}

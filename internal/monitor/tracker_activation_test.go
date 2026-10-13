@@ -240,3 +240,260 @@ func TestGetOccupancyTrackedTasks_AdmissionReservedIncluded(t *testing.T) {
 		t.Error("admitted-not-started must not widen the active set")
 	}
 }
+
+// ==================== Admission reservation (GID/token ticket) ====================
+
+func admissionTestParams() smartthread.ThreadParams {
+	return smartthread.ThreadParams{
+		Split:           4,
+		MinSize:         1 << 20,
+		TargetBandwidth: 3_000_000,
+	}
+}
+
+func TestAdmissionReservation_ReserveWritesPendingFacts(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_r1", 1000, "https://x", 4, "waiting")
+
+	now := time.Now()
+	ticket, created := tracker.ReserveAdmission("sg_r1", 7, admissionTestParams(), now, 200, true)
+	if !created || ticket != (AdmissionTicket{GID: "sg_r1", Token: 7}) {
+		t.Fatalf("reserve = %+v created=%v", ticket, created)
+	}
+
+	tt := tracker.tasks["sg_r1"]
+	if !tt.admittedNotStarted || tt.admissionToken != 7 {
+		t.Fatalf("pending/token = %v/%d, want true/7", tt.admittedNotStarted, tt.admissionToken)
+	}
+	if tt.Status != "waiting" {
+		t.Errorf("reservation synthesized status %q", tt.Status)
+	}
+	if tt.TargetBandwidth != 3_000_000 || !tt.ActivatedAt.Equal(now) || !tt.AllocatedAt.Equal(now) {
+		t.Errorf("floor/anchor = %d/%v/%v", tt.TargetBandwidth, tt.ActivatedAt, tt.AllocatedAt)
+	}
+	if tt.progressBaseline != 200 || !tt.progressBaselineKnown {
+		t.Errorf("baseline = %d/%v", tt.progressBaseline, tt.progressBaselineKnown)
+	}
+	if tt.ThreadCount != 4 || tt.MinChunk != 1<<20 {
+		t.Errorf("param hints = %d/%d", tt.ThreadCount, tt.MinChunk)
+	}
+	if activeSetContains(tracker, "sg_r1") {
+		t.Error("reservation must not widen the active set")
+	}
+}
+
+func TestAdmissionReservation_ReserveRefusals(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_w", 1000, "https://x", 4, "waiting")
+	tracker.EnsureTrackedFromEvent("sg_a", 1000, "https://x", 4, "active")
+	tracker.EnsureTrackedFromEvent("ar_w", 1000, "https://x", 4, "waiting")
+
+	cases := []struct {
+		name  string
+		gid   string
+		token uint64
+		now   time.Time
+	}{
+		{"non-sg gid", "ar_w", 1, time.Now()},
+		{"zero token", "sg_w", 0, time.Now()},
+		{"zero anchor", "sg_w", 1, time.Time{}},
+		{"active row", "sg_a", 1, time.Now()},
+		{"missing row", "sg_ghost", 1, time.Now()},
+	}
+	for _, tc := range cases {
+		if ticket, created := tracker.ReserveAdmission(tc.gid, tc.token, admissionTestParams(), tc.now, 0, false); created {
+			t.Errorf("%s: reserve created %+v", tc.name, ticket)
+		}
+	}
+	if ticket, created := tracker.ReserveAdmission("sg_w", 1, smartthread.ThreadParams{Split: 0}, time.Now(), 0, false); created {
+		t.Errorf("split=0 reserve created %+v", ticket)
+	}
+	// Terminal-accepted row refuses.
+	tracker.MarkCompleteFromEvent("sg_w", "complete")
+	if _, created := tracker.ReserveAdmission("sg_w", 5, admissionTestParams(), time.Now(), 0, false); created {
+		t.Error("terminal-accepted row accepted a reservation")
+	}
+}
+
+func TestAdmissionReservation_TokenMonotonicity(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_tok", 1000, "https://x", 4, "waiting")
+	now := time.Now()
+
+	// High-water token wins; an older token is a stale opportunity.
+	if _, created := tracker.ReserveAdmission("sg_tok", 9, admissionTestParams(), now, 0, false); !created {
+		t.Fatal("initial reserve refused")
+	}
+	if _, created := tracker.ReserveAdmission("sg_tok", 4, admissionTestParams(), now, 0, false); created {
+		t.Fatal("older token reserved over the high-water mark")
+	}
+	if got := tracker.tasks["sg_tok"].admissionToken; got != 9 {
+		t.Fatalf("token moved to %d, want 9", got)
+	}
+
+	// A newer token supersedes (re-admission of a later opportunity).
+	if ticket, created := tracker.ReserveAdmission("sg_tok", 11, admissionTestParams(), now, 0, false); !created || ticket.Token != 11 {
+		t.Fatalf("newer token reserve = %+v/%v", ticket, created)
+	}
+	if got := tracker.tasks["sg_tok"].admissionToken; got != 11 {
+		t.Fatalf("token = %d, want 11", got)
+	}
+
+	// Same-token reapply is an idempotent no-op still reporting the ticket.
+	if ticket, created := tracker.ReserveAdmission("sg_tok", 11, admissionTestParams(), now, 0, false); created || ticket.Token != 11 {
+		t.Fatalf("same-token reapply = %+v/%v, want idempotent ticket", ticket, created)
+	}
+}
+
+func TestAdmissionReservation_ReleaseConditional(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_rel", 1000, "https://x", 4, "waiting")
+	now := time.Now()
+	ticket, created := tracker.ReserveAdmission("sg_rel", 3, admissionTestParams(), now, 50, true)
+	if !created {
+		t.Fatal("reserve refused")
+	}
+
+	// Wrong token / wrong gid leave the reservation untouched.
+	if tracker.ReleaseAdmission("sg_rel", ticket.Token+1) {
+		t.Fatal("release accepted a wrong token")
+	}
+	if tracker.ReleaseAdmission("sg_other", ticket.Token) {
+		t.Fatal("release accepted a different gid")
+	}
+	tt := tracker.tasks["sg_rel"]
+	if !tt.admittedNotStarted || tt.TargetBandwidth != 3_000_000 {
+		t.Fatal("stale release disturbed the live reservation")
+	}
+
+	// Matching ticket releases pending + floor + anchor exactly once.
+	if !tracker.ReleaseAdmission("sg_rel", ticket.Token) {
+		t.Fatal("matching release refused")
+	}
+	tt = tracker.tasks["sg_rel"]
+	if tt.admittedNotStarted || tt.TargetBandwidth != 0 || !tt.ActivatedAt.IsZero() {
+		t.Fatalf("released row keeps reservation facts: pending=%v target=%d anchor=%v",
+			tt.admittedNotStarted, tt.TargetBandwidth, tt.ActivatedAt)
+	}
+	if tt.Status != "waiting" {
+		t.Fatalf("release rewrote status to %q", tt.Status)
+	}
+	// Repeat release of the consumed ticket is a no-op, not a rollback.
+	if tracker.ReleaseAdmission("sg_rel", ticket.Token) {
+		t.Fatal("repeat release of consumed ticket reported success")
+	}
+}
+
+func TestAdmissionReservation_StartedNotReleasable(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_st", 1000, "https://x", 4, "waiting")
+	ticket, created := tracker.ReserveAdmission("sg_st", 6, admissionTestParams(), time.Now(), 0, false)
+	if !created {
+		t.Fatal("reserve refused")
+	}
+
+	// The real start consumes the pending flag; a late release must not roll
+	// back the running task's facts.
+	tracker.ObserveActivation("sg_st", 0, false)
+	tt := tracker.tasks["sg_st"]
+	if tt.admittedNotStarted {
+		t.Fatal("started task still carries pending reservation")
+	}
+	if tracker.ReleaseAdmission("sg_st", ticket.Token) {
+		t.Fatal("release rolled back a started task")
+	}
+	if tt.ActivatedAt.IsZero() {
+		t.Fatal("release wiped the real activation anchor")
+	}
+}
+
+func TestAdmissionReservation_WaitingReAckKeepsReservation(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_wa", 1000, "https://x", 4, "waiting")
+	now := time.Now()
+	if _, created := tracker.ReserveAdmission("sg_wa", 2, admissionTestParams(), now, 0, false); !created {
+		t.Fatal("reserve refused")
+	}
+
+	// Authoritative waiting restates the same opportunity — pending, floor,
+	// and anchor survive.
+	tracker.Update(nil, []rpc.Task{createMockTask("sg_wa", "waiting")}, nil)
+	tt := tracker.tasks["sg_wa"]
+	if !tt.admittedNotStarted || tt.admissionToken != 2 {
+		t.Fatal("waiting re-ack dropped the reservation")
+	}
+	if tt.TargetBandwidth != 3_000_000 || !tt.ActivatedAt.Equal(now) {
+		t.Fatal("waiting re-ack moved the floor or anchor")
+	}
+}
+
+func TestAdmissionReservation_PausedEndsLineage(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_pd", 1000, "https://x", 4, "waiting")
+	now := time.Now()
+	if _, created := tracker.ReserveAdmission("sg_pd", 8, admissionTestParams(), now, 0, false); !created {
+		t.Fatal("reserve refused")
+	}
+
+	tracker.SetStatusFromEvent("sg_pd", "paused")
+	tt := tracker.tasks["sg_pd"]
+	if tt.admittedNotStarted || tt.TargetBandwidth != 0 || !tt.ActivatedAt.IsZero() {
+		t.Fatalf("paused boundary kept reservation facts: %+v", tt.admittedNotStarted)
+	}
+	// The ended lineage does not resurrect a legacy waiting claim either.
+	for _, o := range tracker.GetOccupancyTrackedTasks() {
+		if o.GID == "sg_pd" {
+			t.Error("ended reservation still contributes occupancy")
+		}
+	}
+	// And the same ticket can never reserve again after its consumption.
+	if _, created := tracker.ReserveAdmission("sg_pd", 8, admissionTestParams(), now, 0, false); created {
+		t.Fatal("consumed ticket re-reserved")
+	}
+}
+
+func TestAdmissionReservation_StatusActiveDoesNotStart(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_sa", 1000, "https://x", 4, "waiting")
+	if _, created := tracker.ReserveAdmission("sg_sa", 1, admissionTestParams(), time.Now(), 0, false); !created {
+		t.Fatal("reserve refused")
+	}
+
+	// A status-only "active" write is not a start: pending stays, no compat
+	// claim is minted, and the active set is unchanged.
+	tracker.SetStatusFromEvent("sg_sa", "active")
+	tt := tracker.tasks["sg_sa"]
+	if !tt.admittedNotStarted {
+		t.Fatal("status write consumed the pending reservation")
+	}
+	if tt.compatClaim != smartthread.CompatNone {
+		t.Fatalf("status write minted compat claim %v", tt.compatClaim)
+	}
+}
+
+func TestAdmissionReservation_TerminalAndReopenClear(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.EnsureTrackedFromEvent("sg_tc", 1000, "https://x", 4, "waiting")
+	if _, created := tracker.ReserveAdmission("sg_tc", 5, admissionTestParams(), time.Now(), 0, false); !created {
+		t.Fatal("reserve refused")
+	}
+	tracker.MarkCompleteFromEvent("sg_tc", "error")
+	tt := tracker.tasks["sg_tc"]
+	if tt.admittedNotStarted || tt.TargetBandwidth != 0 {
+		t.Fatal("terminal boundary kept the reservation")
+	}
+
+	tracker.EnsureTrackedFromEvent("sg_rp", 1000, "https://x", 4, "waiting")
+	if _, created := tracker.ReserveAdmission("sg_rp", 5, admissionTestParams(), time.Now(), 0, false); !created {
+		t.Fatal("reserve refused")
+	}
+	tracker.ReopenAfterStoppedToLive("sg_rp", "active")
+	tt = tracker.tasks["sg_rp"]
+	if tt.admittedNotStarted || tt.TargetBandwidth != 0 {
+		t.Fatal("explicit reopen kept the reservation lineage")
+	}
+	// Ended lineage does not mint a resume claim (Target floor is gone).
+	if tt.compatClaim != smartthread.CompatNone {
+		t.Fatalf("reopen minted compat claim %v", tt.compatClaim)
+	}
+}

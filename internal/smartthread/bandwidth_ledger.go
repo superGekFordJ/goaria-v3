@@ -153,13 +153,14 @@ func claimContribution(t TrackedTaskInfo, telem int64) int64 {
 	return max(max(t.TargetBandwidth, 0), telem)
 }
 
-// activationLeaseActive reports whether the real Target floor still holds at
+// TargetLeaseActive reports whether the real Target floor still holds at
 // now: up to activationNoProgressTTL without growth, or progressLeaseTTL
 // past a first growth recorded inside the initial window. Invalid instants
 // (now before activation, first-progress before activation or in the future)
 // never grant a floor; a first growth at/after the initial TTL does not
-// revive the lease.
-func activationLeaseActive(activatedAt, firstProgressAt, now time.Time) bool {
+// revive the lease. Shared with the admission reservation's lease reads and
+// the future eligibility-cleanup path.
+func TargetLeaseActive(activatedAt, firstProgressAt, now time.Time) bool {
 	if activatedAt.IsZero() || now.Before(activatedAt) {
 		return false
 	}
@@ -200,15 +201,28 @@ func TaskOccupancy(t TrackedTaskInfo, now time.Time) int64 {
 	}
 	telem := taskOccupancyTelemetry(t)
 	if t.AdmissionReserved {
-		// Explicit admitted-not-started reuses ActivatedAt as its anchor and
-		// the same 45s/15s lease: while live the reservation claims its
-		// Target floor regardless of the (non-terminal) list status — a
-		// waiting/admitted row counts without entering processTask. Lease
-		// expiry drops the contribution, never the dispatch identity; with
-		// no anchor the row falls through to ordinary eligibility so a
-		// retained waiting claim can still apply.
-		if activationLeaseActive(t.ActivatedAt, t.FirstProgressAt, now) {
-			return claimContribution(t, telem)
+		// Explicit admitted-not-started terminates evaluation here — an
+		// expired or anchor-less reservation must never harden into a legacy
+		// waiting/compat claim. While its lease is live the reservation
+		// claims its Target floor; the floor only, never Target+telem.
+		switch t.Status {
+		case "paused":
+			return 0
+		case "active":
+			// Abnormal overlap (status ran ahead of the pending consume):
+			// keep S1's telemetry pick so an expired reservation still
+			// counts genuine throughput rather than going silent.
+			if TargetLeaseActive(t.ActivatedAt, t.FirstProgressAt, now) {
+				return claimContribution(t, telem)
+			}
+			return telem
+		default:
+			// waiting/empty/other non-started rows treat telemetry as zero;
+			// live lease returns the Target floor, expired returns zero.
+			if TargetLeaseActive(t.ActivatedAt, t.FirstProgressAt, now) {
+				return max(t.TargetBandwidth, 0)
+			}
+			return 0
 		}
 	}
 	surge := strings.HasPrefix(t.GID, "sg_")
@@ -230,7 +244,7 @@ func TaskOccupancy(t TrackedTaskInfo, now time.Time) int64 {
 		}
 		return 0
 	case "active":
-		if activationLeaseActive(t.ActivatedAt, t.FirstProgressAt, now) {
+		if TargetLeaseActive(t.ActivatedAt, t.FirstProgressAt, now) {
 			return claimContribution(t, telem)
 		}
 		if surge && (t.CompatClaim == CompatSurgeClaim || t.CompatClaim == CompatSurgeResume) {
@@ -284,7 +298,7 @@ func (l *BandwidthLedger) Reserve(scope, envKey string, bandwidth int64) {
 	key := scope + envKey
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.reserved[key] += bandwidth
+	l.reserved[key] = saturatingAdd64(l.reserved[key], bandwidth)
 }
 
 // Release subtracts bandwidth from the scope+envKey running total.
@@ -328,7 +342,7 @@ func (l *BandwidthLedger) ReserveByDomain(scope, domain string, bandwidth int64)
 	key := limitKey(scope, domain)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.reservedByDomain[key] += bandwidth
+	l.reservedByDomain[key] = saturatingAdd64(l.reservedByDomain[key], bandwidth)
 }
 
 // ReleaseByDomain subtracts bandwidth from the scope+domain running total.
@@ -377,7 +391,18 @@ func (l *BandwidthLedger) ReserveWorkers(scope, domain string, count int) {
 	key := limitKey(scope, domain)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.reservedWorkers[key] += count
+	l.reservedWorkers[key] = saturatingAddInt(l.reservedWorkers[key], count)
+}
+
+// saturatingAddInt adds non-negative worker counts without overflow.
+func saturatingAddInt(a, b int) int {
+	if b < 0 {
+		return a
+	}
+	if a > math.MaxInt-b {
+		return math.MaxInt
+	}
+	return a + b
 }
 
 // ReleaseWorkers subtracts count from the batch-accumulated worker

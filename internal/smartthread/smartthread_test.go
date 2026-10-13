@@ -3,6 +3,7 @@ package smartthread
 import (
 	"math"
 	"testing"
+	"time"
 
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/speedstats"
@@ -783,5 +784,543 @@ func TestCalculate_LegacyNTminExample(t *testing.T) {
 	// N_tmin = ceil(72.32MB / (5MB/s * 5s)) = 3
 	if params.Split != 3 {
 		t.Fatalf("N_tmin example split=%d, want 3 (params=%+v)", params.Split, params)
+	}
+}
+
+// injection stubs that leave the physical dimension unknown (no MACs).
+func gateFixture() AdmissionParams {
+	return AdmissionParams{
+		Calc: CalcParams{
+			FileSize:       50 << 20,
+			MaxConnections: 16,
+			Scope:          "wan",
+			Domain:         "a.com",
+			EnvKey:         "envA",
+			Ledger:         NewBandwidthLedger(nil),
+			ActiveMACsFunc: func() []string { return nil },
+			ComputeEnvKeyFunc: func(route, mac string) string {
+				return route + "|" + mac
+			},
+			MinThreadLife: 5,
+		},
+		Upper:                ThreadParams{Split: 8, MinSize: 1 << 20, TargetBandwidth: 0},
+		Smart:                true,
+		SizeKnown:            true,
+		SlotHeadroom:         5,
+		DomainWorkerHeadroom: 16,
+	}
+}
+
+// seedEfficiency records one sample: domain p75 = peak/threads, domain peak
+// and scope global peak = peak for (scope, env).
+func seedEfficiency(t *testing.T, peak, threads int64, domain, scope, env string) {
+	t.Helper()
+	speedstats.AddRecordV2(peak, int(threads), 100<<20, false, 50, domain, scope, env)
+}
+
+// --- Off mode: manual params pass through; only slot headroom + basic input gate ---
+
+func TestAdmissionGate_Off(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	upper := ThreadParams{Split: 4, MinSize: 1 << 20, TargetBandwidth: 2 << 20, IsExploration: true, NSat: 7}
+	for _, headroom := range []int{1, 5, 8, 32} {
+		p := AdmissionParams{
+			Calc:         CalcParams{FileSize: 10 << 20}, // no injections at all
+			Upper:        upper,
+			Smart:        false,
+			SizeKnown:    true,
+			SlotHeadroom: headroom,
+		}
+		d := EvaluateAdmission(p)
+		if !d.Allowed || d.Blocked != 0 || d.Short {
+			t.Fatalf("headroom %d: decision = %+v", headroom, d)
+		}
+		if d.Params != upper {
+			t.Fatalf("headroom %d: params = %+v, want exact upper %+v", headroom, d.Params, upper)
+		}
+	}
+
+	// No slots → Global rejection with zero params.
+	p := gateFixture()
+	p.Smart = false
+	p.SlotHeadroom = 0
+	if d := EvaluateAdmission(p); d.Allowed || d.Blocked != AdmissionBlockGlobal || d.Params != (ThreadParams{}) {
+		t.Fatalf("slot=0: %+v", d)
+	}
+	// Invalid bounds → zero decision.
+	for _, headroom := range []int{-1, 33} {
+		p.SlotHeadroom = headroom
+		if d := EvaluateAdmission(p); d != (AdmissionDecision{}) {
+			t.Fatalf("headroom %d: %+v", headroom, d)
+		}
+	}
+	p.SlotHeadroom = 5
+	p.Upper.Split = 0
+	if d := EvaluateAdmission(p); d != (AdmissionDecision{}) {
+		t.Fatalf("split=0: %+v", d)
+	}
+	p.Upper.Split = 257
+	if d := EvaluateAdmission(p); d != (AdmissionDecision{}) {
+		t.Fatalf("split>256: %+v", d)
+	}
+}
+
+// --- Smart input gates: scope/domain/injection requirements and local counts ---
+
+func TestAdmissionGate_Counts(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	// Cold scope (no global peak for lan+envA) with a hot WAN must still
+	// refuse past 5 commitments — scope+env local, not global.
+	seedEfficiency(t, 4<<20, 4, "a.com", "wan", "envA")
+	p := gateFixture()
+	p.Calc.Scope = "lan"
+	p.ScopeEnvCommitted = 5
+	if d := EvaluateAdmission(p); d.Allowed || d.Blocked != AdmissionBlockScope {
+		t.Fatalf("cold scope committed=5: %+v", d)
+	}
+	p.ScopeEnvCommitted = 4
+	// Lan scope unknown + no domain record → exploration; DomainCommitted is
+	// env-blind, so 5 blocks even though envB holds no domain records.
+	p.DomainCommitted = 5
+	if d := EvaluateAdmission(p); d.Allowed || d.Blocked != AdmissionBlockDomain {
+		t.Fatalf("exploration committed=5: %+v", d)
+	}
+	p.DomainCommitted = 4
+	if d := EvaluateAdmission(p); !d.Allowed || d.Blocked != 0 {
+		t.Fatalf("cold scope under limits: %+v", d)
+	}
+
+	// A known (non-exploration) domain ignores the committed ceiling.
+	speedstats.ResetRecordsForTest()
+	seedEfficiency(t, 4<<20, 4, "a.com", "wan", "envA")
+	p = gateFixture()
+	p.DomainCommitted = 99
+	if d := EvaluateAdmission(p); !d.Allowed {
+		t.Fatalf("known domain over-committed: %+v", d)
+	}
+
+	// Smart requires injections and an explicit MinThreadLife.
+	for _, mutate := range []func(*AdmissionParams){
+		func(p *AdmissionParams) { p.Calc.Scope = "global" },
+		func(p *AdmissionParams) { p.Calc.Domain = "" },
+		func(p *AdmissionParams) { p.Calc.Ledger = nil },
+		func(p *AdmissionParams) { p.Calc.ActiveMACsFunc = nil },
+		func(p *AdmissionParams) { p.Calc.ComputeEnvKeyFunc = nil },
+		func(p *AdmissionParams) { p.Calc.MinThreadLife = 0 },
+		func(p *AdmissionParams) { p.ScopeEnvCommitted = -1 },
+		func(p *AdmissionParams) { p.DomainWorkerHeadroom = -1 },
+		func(p *AdmissionParams) { p.Calc.MaxConnections = -1 },
+	} {
+		q := gateFixture()
+		mutate(&q)
+		if d := EvaluateAdmission(q); d != (AdmissionDecision{}) {
+			t.Fatalf("smart input gate: %+v", d)
+		}
+	}
+}
+
+// --- Connections: base headroom minus this round's reservations, once ---
+
+func TestAdmissionGate_Connections(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	seedEfficiency(t, 8<<20, 4, "a.com", "wan", "envA") // eff=2MB/s, peaks=8MB/s
+
+	p := gateFixture()
+	// Base headroom zero rejects outright — no floor=1 rescue.
+	p.DomainWorkerHeadroom = 0
+	if d := EvaluateAdmission(p); d.Allowed || d.Blocked != AdmissionBlockDomain {
+		t.Fatalf("conn headroom 0: %+v", d)
+	}
+
+	// Headroom 1 is valid and tightens the suggestion to one worker.
+	p.DomainWorkerHeadroom = 1
+	d := EvaluateAdmission(p)
+	if !d.Allowed || d.Params.Split != 1 {
+		t.Fatalf("conn headroom 1: %+v", d)
+	}
+
+	// This round's ledger reservations deduct once on top of the base.
+	p.DomainWorkerHeadroom = 5
+	p.Calc.Ledger.ReserveWorkers("wan", "a.com", 3)
+	d = EvaluateAdmission(p)
+	if !d.Allowed || d.Params.Split != 2 {
+		t.Fatalf("conn headroom 5 reserved 3: split=%d %+v", d.Params.Split, d)
+	}
+	// Zero-bandwidth reservations must not erase connection headroom.
+	p.Calc.Ledger.Reserve("wan", "envA", 0)
+	p.Calc.Ledger.ReserveByDomain("wan", "a.com", 0)
+	if d := EvaluateAdmission(p); !d.Allowed || d.Params.Split != 2 {
+		t.Fatalf("zero-bw reserve ate connections: %+v", d)
+	}
+	// The gate never writes the ledger: reservations unchanged.
+	if got := p.Calc.Ledger.ReservedWorkers("wan", "a.com"); got != 3 {
+		t.Fatalf("gate mutated ledger workers to %d", got)
+	}
+}
+
+// --- Bandwidth: each known dimension is checked independently ---
+
+func TestAdmissionGate_Bandwidth(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	// eff = 4MB/s per-thread, peaks 16MB/s on domain a.com wan envA.
+	seedEfficiency(t, 16<<20, 4, "a.com", "wan", "envA")
+
+	// All dimensions satisfied → ordinary allow with Target=eff×split.
+	p := gateFixture()
+	d := EvaluateAdmission(p)
+	if !d.Allowed || d.Blocked != 0 || d.Short {
+		t.Fatalf("clean allow: %+v", d)
+	}
+	wantTarget := saturatingMulPositive(4<<20, int64(d.Params.Split))
+	if d.Params.TargetBandwidth != wantTarget {
+		t.Fatalf("target = %d, want eff*split %d", d.Params.TargetBandwidth, wantTarget)
+	}
+	if d.Params.Split > p.Upper.Split || d.Params.MinSize > p.Upper.MinSize {
+		t.Fatalf("suggestion widened upper: %+v vs %+v", d.Params, p.Upper)
+	}
+
+	// Scope exhausted (reserved ≥ global peak) → Scope block.
+	p = gateFixture()
+	p.Calc.Ledger.Reserve("wan", "envA", 16<<20)
+	if d := EvaluateAdmission(p); d.Allowed || d.Blocked != AdmissionBlockScope {
+		t.Fatalf("scope exhausted: %+v", d)
+	}
+
+	// Domain exhausted → Domain block. Scope is not consulted for rescue.
+	p = gateFixture()
+	p.Calc.Ledger.ReserveByDomain("wan", "a.com", 16<<20)
+	if d := EvaluateAdmission(p); d.Allowed || d.Blocked != AdmissionBlockDomain {
+		t.Fatalf("domain exhausted: %+v", d)
+	}
+
+	// Physical exhausted while logical dimensions stay free → Physical block.
+	p = gateFixture()
+	p.Calc.ActiveMACsFunc = func() []string { return []string{"mac1"} }
+	p.Calc.ComputeEnvKeyFunc = func(route, mac string) string {
+		if mac == "mac1" && route == "0" {
+			return "envA"
+		}
+		return route + "|" + mac
+	}
+	p.Calc.Ledger.Reserve("wan", "envA", 16<<20) // eats the wan|direct bucket
+	if d := EvaluateAdmission(p); d.Allowed || d.Blocked&AdmissionBlockPhysical == 0 {
+		t.Fatalf("physical exhausted: %+v", d)
+	}
+
+	// Unknown scope must not skip a known-exhausted domain.
+	speedstats.ResetRecordsForTest()
+	speedstats.AddRecordV2(16<<20, 4, 100<<20, false, 50, "a.com", "lan", "envB")
+	p = gateFixture()
+	p.Calc.Scope = "lan"
+	p.Calc.EnvKey = "envB"
+	p.DomainCommitted = 0
+	p.Calc.Ledger.ReserveByDomain("lan", "a.com", 16<<20)
+	if d := EvaluateAdmission(p); d.Allowed || d.Blocked != AdmissionBlockDomain {
+		t.Fatalf("unknown scope + exhausted domain: %+v", d)
+	}
+}
+
+// --- Size semantics: known-zero vs unknown ---
+
+func TestAdmissionGate_ZeroRemaining(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	seedEfficiency(t, 16<<20, 4, "a.com", "wan", "envA")
+
+	// Known size 0 is an empty/checkpoint candidate: one thread, no unknown
+	// branch, MinSize inherits Upper.
+	p := gateFixture()
+	p.Calc.FileSize = 0
+	d := EvaluateAdmission(p)
+	if !d.Allowed || d.Params.Split != 1 || d.Params.NSat != 1 || d.Params.MinSize != p.Upper.MinSize {
+		t.Fatalf("known zero remaining: %+v", d)
+	}
+	if d.Params.TargetBandwidth != 4<<20 {
+		t.Fatalf("known-zero target = %d, want eff 4MB/s", d.Params.TargetBandwidth)
+	}
+
+	// Unknown size uses the exploration/upper clamp path and still gets a
+	// saturating efficiency×split target — never a fake "complete".
+	p = gateFixture()
+	p.SizeKnown = false
+	p.Calc.FileSize = 0
+	d = EvaluateAdmission(p)
+	if !d.Allowed {
+		t.Fatalf("unknown size rejected: %+v", d)
+	}
+	if d.Params.TargetBandwidth != saturatingMulPositive(4<<20, int64(d.Params.Split)) {
+		t.Fatalf("unknown target = %d split=%d", d.Params.TargetBandwidth, d.Params.Split)
+	}
+
+	// Mismatched size flags are invalid input.
+	p = gateFixture()
+	p.SizeKnown = false
+	p.Calc.FileSize = 10 << 20
+	if d := EvaluateAdmission(p); d != (AdmissionDecision{}) {
+		t.Fatalf("unknown flag with nonzero size: %+v", d)
+	}
+	p = gateFixture()
+	p.Calc.FileSize = -5
+	if d := EvaluateAdmission(p); d != (AdmissionDecision{}) {
+		t.Fatalf("negative known size: %+v", d)
+	}
+}
+
+// --- Short-candidate exception ---
+
+func TestAdmissionGate_Short(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	// eff = 1MB/s (4MB peak / 4 threads) → short window = 15MB.
+	seedEfficiency(t, 4<<20, 4, "a.com", "wan", "envA")
+	const shortCap = int64(1 << 20 * 15)
+
+	// Scope exhausted + qualified short candidate at the threshold → allowed,
+	// single thread, Target=eff, Blocked retains the real mask.
+	p := gateFixture()
+	p.Calc.FileSize = shortCap
+	p.ShortAvailable = true
+	p.Calc.Ledger.Reserve("wan", "envA", 4<<20)
+	d := EvaluateAdmission(p)
+	if !d.Allowed || !d.Short || d.Blocked != AdmissionBlockScope {
+		t.Fatalf("short at threshold: %+v", d)
+	}
+	if d.Params.Split != 1 || d.Params.TargetBandwidth != 1<<20 {
+		t.Fatalf("short params = %+v", d.Params)
+	}
+
+	// One byte over the threshold → no exception.
+	p.Calc.FileSize = shortCap + 1
+	if d := EvaluateAdmission(p); d.Allowed || d.Blocked != AdmissionBlockScope || d.Short {
+		t.Fatalf("short over threshold: %+v", d)
+	}
+
+	// Domain block is not exemptible.
+	p = gateFixture()
+	p.Calc.FileSize = shortCap
+	p.ShortAvailable = true
+	p.Calc.Ledger.ReserveByDomain("wan", "a.com", 4<<20)
+	if d := EvaluateAdmission(p); d.Allowed || d.Short {
+		t.Fatalf("short with domain block: %+v", d)
+	}
+
+	// No short qualification → plain rejection.
+	p.Calc.Ledger = NewBandwidthLedger(nil)
+	p.Calc.Ledger.Reserve("wan", "envA", 4<<20)
+	p.ShortAvailable = false
+	if d := EvaluateAdmission(p); d.Allowed || d.Short {
+		t.Fatalf("unqualified short: %+v", d)
+	}
+
+	// Unknown size never qualifies.
+	p.ShortAvailable = true
+	p.SizeKnown = false
+	p.Calc.FileSize = 0
+	if d := EvaluateAdmission(p); d.Allowed || d.Short {
+		t.Fatalf("unknown-size short: %+v", d)
+	}
+
+	// Non-exempt earlier gates still decide first: zero connection headroom
+	// blocks even a fully-qualified short candidate.
+	p = gateFixture()
+	p.Calc.FileSize = shortCap
+	p.ShortAvailable = true
+	p.DomainWorkerHeadroom = 0
+	p.Calc.Ledger.Reserve("wan", "envA", 4<<20)
+	if d := EvaluateAdmission(p); d.Allowed || d.Short || d.Blocked != AdmissionBlockDomain {
+		t.Fatalf("short bypassed conn gate: %+v", d)
+	}
+}
+
+// --- Internal resource helper coverage ---
+
+func TestAdmissionResources_EfficiencyChain(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	// No history → floor.
+	res := admissionResourcesFor(gateFixture().Calc)
+	if res.threadEfficiency != minThreadEfficiency {
+		t.Fatalf("no-history eff = %d", res.threadEfficiency)
+	}
+	if !res.exploration {
+		t.Fatal("no domain record must mark exploration")
+	}
+
+	// Scope-only history → halved scope p75.
+	speedstats.AddRecordV2(8<<20, 4, 100<<20, false, 50, "other.com", "wan", "envA")
+	res = admissionResourcesFor(gateFixture().Calc)
+	if res.threadEfficiency != 1<<20 { // (8MB/4)/2
+		t.Fatalf("scope-fallback eff = %d, want 1MB/s", res.threadEfficiency)
+	}
+	if !res.exploration {
+		t.Fatal("domain-without-record must stay exploration")
+	}
+
+	// Domain record wins over the halved scope fallback.
+	seedEfficiency(t, 12<<20, 4, "a.com", "wan", "envA")
+	res = admissionResourcesFor(gateFixture().Calc)
+	if res.threadEfficiency != 3<<20 {
+		t.Fatalf("domain eff = %d, want 3MB/s", res.threadEfficiency)
+	}
+	if res.exploration {
+		t.Fatal("domain record must clear exploration")
+	}
+}
+
+func TestAdmissionResources_Dimensions(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	seedEfficiency(t, 16<<20, 4, "a.com", "wan", "envA")
+
+	calc := gateFixture().Calc
+	res := admissionResourcesFor(calc)
+	if !res.scopeKnown || res.scopeAvailable != 16<<20 {
+		t.Fatalf("scope = %+v", res)
+	}
+	if !res.domainKnown || res.domainAvailable != 16<<20 {
+		t.Fatalf("domain = %+v", res)
+	}
+	if res.physicalKnown {
+		t.Fatal("no-MACs physical must stay unknown")
+	}
+
+	// Ledger reservations subtract symmetrically per dimension.
+	calc.Ledger.Reserve("wan", "envA", 6<<20)
+	calc.Ledger.ReserveByDomain("wan", "a.com", 6<<20)
+	res = admissionResourcesFor(calc)
+	if res.scopeAvailable != 10<<20 || res.domainAvailable != 10<<20 {
+		t.Fatalf("reserved dims = %+v", res)
+	}
+
+	// Physical: matched NIC reports the 4-bucket max minus total reserved.
+	calc.ActiveMACsFunc = func() []string { return []string{"mac1"} }
+	calc.ComputeEnvKeyFunc = func(route, mac string) string {
+		if mac == "mac1" && route == "0" {
+			return "envA"
+		}
+		return route + "|" + mac
+	}
+	res = admissionResourcesFor(calc)
+	if !res.physicalKnown || res.physicalAvailable != 10<<20 {
+		t.Fatalf("physical = %+v", res)
+	}
+
+	// Collision failure → physical unknown again (stale envKey).
+	calc.EnvKey = "stale-env"
+	res = admissionResourcesFor(calc)
+	if res.physicalKnown {
+		t.Fatal("collision-failed physical must be unknown")
+	}
+}
+
+// Lease termination on the explicit reservation branch: live → Target floor;
+// expired/no-anchor → telemetry only (never a legacy waiting/compat claim).
+func TestAdmissionResources_LeaseBoundary(t *testing.T) {
+	now := time.Now()
+	mk := func(status string, activatedAt, firstProgress time.Time) TrackedTaskInfo {
+		return TrackedTaskInfo{
+			GID:               "sg_le",
+			Status:            status,
+			AdmissionReserved: true,
+			TargetBandwidth:   3_000_000,
+			ActivatedAt:       activatedAt,
+			FirstProgressAt:   firstProgress,
+		}
+	}
+
+	// Live lease (44s) claims the floor; expiry (46s) drops to zero.
+	if got := TaskOccupancy(mk("waiting", now.Add(-44*time.Second), time.Time{}), now); got != 3_000_000 {
+		t.Fatalf("live lease occupancy = %d", got)
+	}
+	if got := TaskOccupancy(mk("waiting", now.Add(-46*time.Second), time.Time{}), now); got != 0 {
+		t.Fatalf("expired lease occupancy = %d, want 0 (no legacy fallback)", got)
+	}
+	// No anchor → zero even though a Target is recorded.
+	if got := TaskOccupancy(mk("waiting", time.Time{}, time.Time{}), now); got != 0 {
+		t.Fatalf("anchor-less reservation = %d", got)
+	}
+	// Paused pending contributes zero.
+	if got := TaskOccupancy(mk("paused", now.Add(-10*time.Second), time.Time{}), now); got != 0 {
+		t.Fatalf("paused reservation = %d", got)
+	}
+	// Abnormal active+pending keeps S1 telemetry on expiry, floor while live.
+	m := mk("active", now.Add(-46*time.Second), time.Time{})
+	m.TelemetryBps, m.TelemetryValid = 700_000, true
+	if got := TaskOccupancy(m, now); got != 700_000 {
+		t.Fatalf("active+expired = %d, want telemetry", got)
+	}
+	m.ActivatedAt = now.Add(-10 * time.Second)
+	if got := TaskOccupancy(m, now); got != 3_000_000 {
+		t.Fatalf("active+live = %d, want max(target,telem)", got)
+	}
+	// First-progress extension: growth inside the 45s window extends the
+	// lease to 15s past that growth (activated−58s, first progress−14s →
+	// alive until +1s); growth at/after 45s or past the progress window dies.
+	if got := TaskOccupancy(mk("waiting", now.Add(-58*time.Second), now.Add(-14*time.Second)), now); got != 3_000_000 {
+		t.Fatalf("44s-growth extended lease = %d", got)
+	}
+	if got := TaskOccupancy(mk("waiting", now.Add(-60*time.Second), now.Add(-20*time.Second)), now); got != 0 {
+		t.Fatalf("past progress window = %d", got)
+	}
+	if got := TaskOccupancy(mk("waiting", now.Add(-61*time.Second), now.Add(-16*time.Second)), now); got != 0 {
+		t.Fatalf("growth at/after 45s must not revive the lease = %d", got)
+	}
+}
+
+// Ledger reservation accumulation saturates instead of overflowing.
+func TestAdmissionResources_LedgerSaturation(t *testing.T) {
+	l := NewBandwidthLedger(nil)
+	l.Reserve("wan", "envA", math.MaxInt64)
+	l.Reserve("wan", "envA", 5)
+	if got := l.Reserved("wan", "envA"); got != math.MaxInt64 {
+		t.Fatalf("reserved = %d, want saturated MaxInt64", got)
+	}
+	l.ReserveByDomain("wan", "a.com", math.MaxInt64)
+	l.ReserveByDomain("wan", "a.com", 5)
+	if got := l.ReservedByDomain("wan", "a.com"); got != math.MaxInt64 {
+		t.Fatalf("domain reserved = %d", got)
+	}
+	l.ReserveWorkers("wan", "a.com", math.MaxInt)
+	l.ReserveWorkers("wan", "a.com", 5)
+	if got := l.ReservedWorkers("wan", "a.com"); got != math.MaxInt {
+		t.Fatalf("workers = %d", got)
+	}
+}
+
+// Explicit MinThreadLife overrides the global config; zero keeps it.
+func TestAdmissionResources_MinThreadLife(t *testing.T) {
+	// Large file + low efficiency → nTmin dominates: fileSize/(eff*tMin).
+	// eff = 1MB/s; fileSize = 120MB → tMin=5 → 24; tMin=60 → 2.
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	seedEfficiency(t, 4<<20, 4, "a.com", "wan", "envA")
+
+	base := CalcParams{
+		FileSize:       120 << 20,
+		MaxConnections: 256,
+		Scope:          "wan",
+		Domain:         "a.com",
+		EnvKey:         "envA",
+	}
+
+	fast := base
+	fast.MinThreadLife = 5
+	slow := base
+	slow.MinThreadLife = 60
+	if gotFast, gotSlow := Calculate(fast).Split, Calculate(slow).Split; gotFast <= gotSlow {
+		t.Fatalf("MinThreadLife not honored: tMin5 split=%d tMin60 split=%d", gotFast, gotSlow)
+	}
+	// 0 keeps the config/default path — identical to an unset field.
+	zero := base
+	zero.MinThreadLife = 0
+	if Calculate(zero).Split != Calculate(base).Split {
+		t.Fatal("MinThreadLife=0 changed legacy behavior")
 	}
 }
