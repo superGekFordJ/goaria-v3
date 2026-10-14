@@ -7,8 +7,10 @@
   const searchQuery = defineModel<string>({ default: '' })
   const inputFocused = ref(false)
 
+  const searchInputEl = ref<HTMLInputElement | null>(null)
   const clearSearch = () => {
     searchQuery.value = ''
+    searchInputEl.value?.focus()
   }
 </script>
 
@@ -22,40 +24,44 @@
         inputFocused ? 'search-container-focused' : '',
       ]"
     >
-      <div class="flex items-center gap-3 p-2 w-full h-full">
+      <div class="flex items-center gap-3 p-2 w-full h-full relative">
         <!-- Search Icon -->
         <div
-          class="pl-3 transition-colors duration-300"
+          class="pl-3 transition-colors duration-300 shrink-0 select-none cursor-text"
           :class="inputFocused ? 'text-[var(--neon-primary)]/60' : 'text-[var(--app-text-subtle)]'"
+          @click="searchInputEl?.focus()"
         >
           <Search :size="16" />
         </div>
 
         <!-- Input Field -->
         <input
+          ref="searchInputEl"
           v-model="searchQuery"
           type="text"
           :placeholder="t('taskSearch.placeholder')"
           :aria-label="t('taskSearch.placeholder')"
-          class="flex-1 bg-transparent py-3 text-sm text-[var(--app-text)] font-medium focus:outline-none placeholder:text-[var(--input-placeholder)] placeholder:font-normal select-text"
+          class="flex-1 bg-transparent py-3 text-sm text-[var(--app-text)] font-medium focus:outline-none placeholder:text-[var(--input-placeholder)] placeholder:font-normal select-text min-w-0"
           @focus="inputFocused = true"
           @blur="inputFocused = false"
         />
 
-        <!-- Clear Button -->
-        <button
-          v-if="searchQuery"
-          class="p-2 mr-1 rounded-lg text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--btn-glass-bg)] transition-all duration-200"
-          :aria-label="t('taskSearch.clear')"
-          @click="clearSearch"
-        >
-          <X :size="14" />
-        </button>
+        <!-- Clear Button Slot (Stable right safety buffer preventing capsule curve collision) -->
+        <div class="w-8 h-8 flex items-center justify-center shrink-0 mr-1">
+          <button
+            v-if="searchQuery"
+            class="p-2 rounded-lg text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--btn-glass-bg)] transition-all duration-200"
+            :aria-label="t('taskSearch.clear')"
+            @click="clearSearch"
+          >
+            <X :size="14" />
+          </button>
+        </div>
 
         <!-- Subtle glow line at bottom when focused -->
         <div
           :class="[
-            'absolute bottom-0 left-4 right-4 h-px transition-all duration-500',
+            'absolute bottom-0 left-4 right-4 h-px transition-all duration-500 pointer-events-none',
             inputFocused
               ? 'bg-gradient-to-r from-transparent via-[var(--skin-focus-beam)]/40 to-transparent'
               : 'bg-transparent',

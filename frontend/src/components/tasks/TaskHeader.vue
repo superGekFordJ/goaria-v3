@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { ref, watch, nextTick, computed } from 'vue'
+  import { ref, watch, nextTick, computed, unref } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { useTaskStore } from '../../stores/task'
   import { useUIStore } from '../../stores/ui'
@@ -24,6 +24,12 @@
   const inputFocused = ref(false)
   const errorMessage = ref('')
   const clipboardHint = ref('')
+
+  const hasTasks = computed(() => {
+    const activeList = unref(taskStore.activeTasks) || unref(taskStore.tasks?.active) || []
+    const waitingList = unref(taskStore.waitingTasks) || unref(taskStore.tasks?.waiting) || []
+    return activeList.length + waitingList.length > 0
+  })
 
   // Multi-line state
   const isMultiline = ref(false)
@@ -273,12 +279,13 @@
         inputFocused ? 'input-container-focused' : '',
       ]"
     >
-      <!-- Single-line mode: input (existing design) -->
-      <div v-if="!isMultiline" class="flex-1 relative">
+      <!-- Single-line mode: input -->
+      <div v-if="!isMultiline" class="flex-1 flex items-center gap-3 min-w-0 relative">
         <!-- Icon -->
         <div
-          class="absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none transition-colors duration-300"
+          class="pl-3 transition-colors duration-300 shrink-0 select-none cursor-text"
           :class="inputFocused ? 'text-[var(--neon-primary)]/60' : 'text-[var(--app-text-subtle)]'"
+          @click="urlInputEl?.focus()"
         >
           <Link :size="16" />
         </div>
@@ -289,7 +296,7 @@
           v-model="urlInput"
           type="text"
           :placeholder="t('taskHeader.placeholder')"
-          class="w-full bg-transparent pl-11 pr-4 py-3 text-sm text-[var(--app-text)] font-medium focus:outline-none placeholder:text-[var(--input-placeholder)] placeholder:font-normal select-text"
+          class="flex-1 bg-transparent py-3 pr-4 text-sm text-[var(--app-text)] font-medium focus:outline-none placeholder:text-[var(--input-placeholder)] placeholder:font-normal select-text min-w-0"
           @focus="inputFocused = true"
           @blur="inputFocused = false"
           @keyup.enter="handleAdd"
@@ -299,7 +306,7 @@
         <!-- Subtle glow line at bottom when focused -->
         <div
           :class="[
-            'absolute bottom-0 left-4 right-4 h-px transition-all duration-500',
+            'absolute bottom-0 left-3 right-0 h-px transition-all duration-500 pointer-events-none',
             inputFocused
               ? 'bg-gradient-to-r from-transparent via-[var(--skin-focus-beam)]/40 to-transparent'
               : 'bg-transparent',
@@ -308,11 +315,12 @@
       </div>
 
       <!-- Multi-line mode: textarea -->
-      <div v-else class="flex-1 relative">
+      <div v-else class="flex-1 flex gap-3 min-w-0 relative">
         <!-- Icon -->
         <div
-          class="absolute left-4 top-4 pointer-events-none transition-colors duration-300"
+          class="pl-3 pt-3.5 transition-colors duration-300 shrink-0 select-none cursor-text"
           :class="inputFocused ? 'text-[var(--neon-primary)]/60' : 'text-[var(--app-text-subtle)]'"
+          @click="textareaEl?.focus()"
         >
           <Link :size="16" />
         </div>
@@ -322,7 +330,7 @@
           v-model="textareaValue"
           :placeholder="t('taskHeader.multilinePlaceholder')"
           :rows="textareaRows"
-          class="w-full bg-transparent pl-11 pr-10 py-3 text-sm text-[var(--app-text)] font-medium focus:outline-none placeholder:text-[var(--input-placeholder)] placeholder:font-normal select-text resize-none overflow-auto"
+          class="flex-1 bg-transparent pr-10 py-3 text-sm text-[var(--app-text)] font-medium focus:outline-none placeholder:text-[var(--input-placeholder)] placeholder:font-normal select-text resize-none overflow-auto min-w-0"
           @focus="inputFocused = true"
           @blur="inputFocused = false"
           @keydown.ctrl.enter.prevent="handleBatchAdd"
@@ -476,8 +484,12 @@
           <span>{{ clipboardHint }}</span>
         </div>
 
-        <!-- Default tips -->
-        <div v-else key="tips" class="flex items-center gap-4">
+        <!-- Context-aware Shortcut Tips: State 1 - Focused and has input (Enter Quick Add) -->
+        <div
+          v-else-if="inputFocused && urlInput.trim()"
+          key="tip-has-input"
+          class="flex items-center gap-4"
+        >
           <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
             <kbd
               class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]"
@@ -486,6 +498,10 @@
             </kbd>
             <span>{{ t('taskHeader.quickAdd') }}</span>
           </div>
+        </div>
+
+        <!-- Context-aware Shortcut Tips: State 2 - No input, has tasks (Paste + Select All) -->
+        <div v-else-if="hasTasks" key="tip-has-tasks" class="flex items-center gap-4">
           <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
             <kbd
               class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]"
@@ -501,6 +517,18 @@
               {{ isMac ? 'Cmd+A' : 'Ctrl+A' }}
             </kbd>
             <span>{{ t('taskHeader.selectAllTasks') }}</span>
+          </div>
+        </div>
+
+        <!-- Context-aware Shortcut Tips: State 3 - No input, no tasks (Paste only) -->
+        <div v-else key="tip-empty" class="flex items-center gap-4">
+          <div class="flex items-center gap-2 text-[10px] text-[var(--kbd-text)]">
+            <kbd
+              class="px-1.5 py-0.5 rounded bg-[var(--kbd-bg)] border border-[var(--kbd-border)] font-mono text-[9px]"
+            >
+              {{ isMac ? 'Cmd+V' : 'Ctrl+V' }}
+            </kbd>
+            <span>{{ t('taskHeader.pasteLink') }}</span>
           </div>
         </div>
       </Transition>
@@ -563,10 +591,10 @@
     color: var(--app-text-muted);
   }
 
-  /* Fade transition for error message */
+  /* Fade transition for messages and shortcut tips */
   .fade-enter-active,
   .fade-leave-active {
-    transition: opacity 0.2s ease;
+    transition: opacity 0.15s ease;
   }
   .fade-enter-from,
   .fade-leave-to {
