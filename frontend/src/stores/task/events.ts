@@ -162,6 +162,16 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     }
   }
 
+  // Recovery reads are single-flighted: a burst of deltas that all need a
+  // read collapses to one in-flight GetTasks, not one IPC per delta.
+  let pendingRecovery: Promise<void> | null = null
+  const recoverViaRead = () => {
+    pendingRecovery ??= fetchTasks().finally(() => {
+      pendingRecovery = null
+    })
+    return pendingRecovery
+  }
+
   function scheduleStoppedMetadataCleanup(gid: string) {
     setTimeout(() => {
       if (tasks.value.stopped.some(t => t.gid === gid)) {
@@ -519,6 +529,15 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     const incoming = payload ? { ...payload, gid: payload.gid || gid } : undefined
     const dest = bucketForStatusValue(payload?.status)
 
+    // A queued lifecycle delta can outlive the authoritative move of a faster
+    // transition: folding it backwards would demote a live row. Reconcile via
+    // a read instead — it converges whether the delta or the row is stale.
+    // 'pause' is deliberately unguarded: demoting a live row is its normal
+    // job, and a stale pause would need resume→admit inside one 50ms
+    // debounce — unreachable via the UI, only programmatic batch flows.
+    const staleDemotion = () =>
+      dest === 'waiting' && Boolean(collectCopies(gid).active)
+
     switch (delta.type) {
       case 'progress': {
         if (dest && dest !== 'active') {
@@ -579,7 +598,8 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
         }
 
         if (dest) {
-          if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
+          if (staleDemotion()) await recoverViaRead()
+          else if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
           break
         }
         // Status-less add: merge into an existing non-stopped row, keep stopped
@@ -602,7 +622,8 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
 
       case 'resume': {
         if (dest) {
-          if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
+          if (staleDemotion()) await recoverViaRead()
+          else if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
         } else {
           await fetchTasks()
         }

@@ -833,6 +833,7 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active).toHaveLength(0)
       expect(state.tasks.value.waiting).toHaveLength(1)
       expect(state.tasks.value.waiting[0].status).toBe('waiting')
+      expect(actions.fetchTasks).not.toHaveBeenCalled()
     })
 
     it('WIRE-ACTUAL-STATUS: status-less resume recovers via fetchTasks', async () => {
@@ -842,6 +843,37 @@ describe('setupEvents', () => {
 
       expect(actions.fetchTasks).toHaveBeenCalled()
       expect(state.tasks.value.active).toHaveLength(0)
+    })
+
+    it('STALE-DEMOTION: a resume delta carrying waiting must not demote a live row', async () => {
+      const task = mockTask('gid-stale-resume', { status: 'active' })
+      state.tasks.value.active = [task]
+
+      await events.handleTaskDelta({
+        type: 'resume',
+        gid: 'gid-stale-resume',
+        payload: { gid: 'gid-stale-resume', status: 'waiting', downloadSpeed: '0' },
+      })
+
+      expect(actions.fetchTasks).toHaveBeenCalled()
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.active[0].status).toBe('active')
+      expect(state.tasks.value.waiting).toHaveLength(0)
+    })
+
+    it('STALE-DEMOTION: a queued add delta must not demote a live row', async () => {
+      const task = mockTask('gid-stale-add', { status: 'active' })
+      state.tasks.value.active = [task]
+
+      await events.handleTaskDelta({
+        type: 'add',
+        gid: 'gid-stale-add',
+        payload: { gid: 'gid-stale-add', status: 'waiting', downloadSpeed: '0' },
+      })
+
+      expect(actions.fetchTasks).toHaveBeenCalled()
+      expect(state.tasks.value.active).toHaveLength(1)
+      expect(state.tasks.value.waiting).toHaveLength(0)
     })
 
     it('should move an errored stopped task to active without losing group metadata', async () => {

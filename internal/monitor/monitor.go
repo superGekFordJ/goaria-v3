@@ -351,6 +351,13 @@ func (m *Monitor) publishAcceptedTaskChange(change acceptedTaskChange) {
 	if m == nil || change.task.GID == "" {
 		return
 	}
+	// Attach stored group/metadata facts before publishing: a new-task add
+	// delta must carry DownloadGroup so the frontend can raise its group
+	// placeholder instead of flashing a loose card, and moves keep the row's
+	// group identity across lists.
+	enriched := []rpc.Task{change.task}
+	Cache.EnrichTasks(enriched)
+	change.task = enriched[0]
 	// Authoritative status change accepted — notify admission before the
 	// hub/window early-return so headless runs still reach the controller.
 	m.KickAdmission()
@@ -360,7 +367,13 @@ func (m *Monitor) publishAcceptedTaskChange(change acceptedTaskChange) {
 	if change.from != "" && change.from != change.to {
 		m.hub.EmitTaskMove(events.TaskMove{GID: change.task.GID, From: change.from, To: change.to, Task: change.task})
 	}
-	if State.HasWindow() && m.pusher != nil {
+	// An aria2 resume ack cannot verify where the task landed — there is no
+	// live seam, so the local waiting fold is a guess. Shipping it through the
+	// debounced delta channel lets it arrive after the authoritative
+	// waiting→active move and demote a live row on the frontend; the move and
+	// tick streams own aria2 wire truth. Surge acks keep the prompt delta.
+	staleGuess := change.kind == "resume" && !IsSgGid(change.task.GID)
+	if !staleGuess && State.HasWindow() && m.pusher != nil {
 		m.pusher.Queue(events.TaskDelta{Type: change.kind, GID: change.task.GID, Payload: change.task})
 	}
 	m.hub.NotifyInternal(events.TaskDelta{Type: change.kind, GID: change.task.GID, Payload: change.task})
