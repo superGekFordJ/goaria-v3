@@ -82,6 +82,9 @@ func defaultTaskGroupStorePath() string {
 	return filepath.Join(home, ".goaria", "download_groups.json")
 }
 
+// SetTaskGroupStorePath selects the persisted file and drops in-memory state.
+// An empty path keeps the store enabled and saves fall back to the default
+// config-dir location (unlike test reset, where an empty path disables).
 func SetTaskGroupStorePath(path string) {
 	s := groupStore
 	s.writeMu.Lock()
