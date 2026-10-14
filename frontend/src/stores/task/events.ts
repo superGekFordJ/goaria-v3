@@ -18,14 +18,11 @@ export type TaskBucket = 'active' | 'waiting' | 'stopped'
 export type TaskMovePlacement = {
   gid: string
   dest: 'active' | 'waiting'
-  row?: Task
-  // Authoritative status for held evidence (e.g. 'paused'); defaults to dest.
-  status?: string
 }
 
 // Recognized payload.status owns the destination bucket; delta type and the
 // move's `to` field are only hints. Unknown/empty status returns null so the
-// caller can recover via a guarded read instead of guessing.
+// caller can recover via a read instead of guessing.
 function bucketForStatusValue(status: unknown): TaskBucket | null {
   if (typeof status !== 'string') return null
   switch (status) {
@@ -183,7 +180,6 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       waiting: tasks.value.waiting.filter(t => t.gid !== gid),
       stopped: [task, ...tasks.value.stopped],
     }
-    actions.markLifecycleChanged()
     scheduleStoppedMetadataCleanup(gid)
   }
 
@@ -226,7 +222,6 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       if (hasValidFiles(activeTask) || hasTaskGroupMetadata(activeTask)) {
         cacheMetadata(activeTask)
       }
-      actions.clearStoppedSuppression(gid)
       return { row: activeTask, dest: 'active', prepend: false, patched: false }
     }
 
@@ -261,15 +256,14 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     if (hasValidFiles(survivor) || hasTaskGroupMetadata(survivor)) {
       cacheMetadata(survivor)
     }
-    actions.clearStoppedSuppression(gid)
 
     const inDest = target === 'active' ? survivor === activeTask : survivor === waitingTask
     return { row: survivor, dest: target, prepend: !inDest, patched }
   }
 
-  // Batched mover shared by optimistic waiting and held active evidence.
-  // One GID lands in exactly one list; moved rows keep their identity and
-  // prepend in source-relative order (waiting scan, then stopped).
+  // Batched mover for optimistic waiting placements. One GID lands in
+  // exactly one list; moved rows keep their identity and prepend in
+  // source-relative order (waiting scan, then stopped).
   function moveTasks(placements: TaskMovePlacement[]): { missing: boolean } {
     const byGid = new Map<string, TaskMovePlacement>()
     for (const p of placements) {
@@ -286,19 +280,9 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
         if (!p || resolved.has(t.gid)) continue
         const plan = prepareResumeSurvivor(t.gid, p.dest)
         if (!plan) continue
-        if (p.status !== undefined && plan.row.status !== p.status) {
-          plan.row.status = p.status
-          plan.patched = true
-        }
         resolved.set(t.gid, plan)
         if (plan.patched && !plan.prepend) patchedOnly = true
       }
-    }
-    for (const [gid, p] of byGid) {
-      if (resolved.has(gid) || !p.row) continue
-      const row = applyMetadataFromCache(toTask({ ...p.row, gid }))
-      if (p.status !== undefined) row.status = p.status
-      resolved.set(gid, { row, dest: p.dest, prepend: true, patched: false })
     }
 
     // Unresolved placements are unknown GIDs that arrived without a donor row.
@@ -346,7 +330,6 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     } else if (patchedOnly) {
       tasks.value = { ...tasks.value }
     }
-    if (membershipChanged || patchedOnly) actions.markLifecycleChanged()
 
     return { missing }
   }
@@ -362,37 +345,12 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
         waiting: inWaiting ? tasks.value.waiting.filter(t => t.gid !== gid) : tasks.value.waiting,
         stopped: inStopped ? tasks.value.stopped.filter(t => t.gid !== gid) : tasks.value.stopped,
       }
-      actions.markLifecycleChanged()
     }
     if (selectedGids.value.has(gid)) {
       selectedGids.value.delete(gid)
       selectedGids.value = new Set(selectedGids.value)
     }
     removeMetadata(gid)
-  }
-
-  function patchTaskStatus(gid: string, status: string) {
-    for (const list of [tasks.value.active, tasks.value.waiting]) {
-      const task = list.find(t => t.gid === gid)
-      if (task && task.status !== status) {
-        task.status = status
-        tasks.value = { ...tasks.value }
-        actions.markLifecycleChanged()
-        return
-      }
-    }
-  }
-
-  // Fold every local copy plus the incoming row into one snapshot, preserving
-  // richer donors when incoming metadata is absent or sparse.
-  function computeMergedSnapshot(gid: string, incoming: Partial<Task> | undefined): Task {
-    const copies = collectCopies(gid)
-    let acc: Task | undefined
-    for (const copy of [copies.active, copies.waiting, copies.stopped]) {
-      if (!copy) continue
-      acc = acc ? mergeTaskPreservingRichData(acc, copy) : toTask(copy)
-    }
-    return applyMetadataFromCache(mergeTaskPreservingRichData(acc, incoming ?? { gid }))
   }
 
   // Fields the payload explicitly carries win over folded/kept values:
@@ -428,7 +386,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
   // Fold all copies + incoming into the destination bucket. The destination
   // row keeps its identity; duplicate copies are purged without touching
   // unaffected lists. Returns false when there is no local row and no
-  // meaningful payload — the caller then recovers via a guarded read instead
+  // meaningful payload — the caller then recovers via a read instead
   // of creating an empty placeholder.
   function foldIntoBucket(
     gid: string,
@@ -464,7 +422,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
 
     const purge = (list: Task[]) => list.filter(t => t.gid !== gid)
     // A duplicate twin that changes neither fields nor membership is a no-op:
-    // it must not bump the lifecycle revision or rebuild list identities.
+    // it must not rebuild list identities.
     const membershipChanged = !destRow || copyList.length > 1
     let rowChanged = false
     let active = tasks.value.active
@@ -508,41 +466,18 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     } else if (rowChanged) {
       tasks.value = { ...tasks.value }
     }
-    if (membershipChanged || rowChanged) actions.markLifecycleChanged()
 
     if (dest === 'stopped') {
       scheduleStoppedMetadataCleanup(gid)
     } else {
-      actions.clearStoppedSuppression(gid)
       const row = destRow ?? merged
       if (!hasValidFiles(row)) actions.queueMetadataRecovery(gid)
     }
     return true
   }
 
-  // Status-bearing deltas and moves route by bucket; while a resume op is
-  // pending, nonterminal facts become generation-owned evidence instead of
-  // mutating membership directly.
-  function routeOrHold(gid: string, dest: TaskBucket, incoming: Partial<Task> | undefined) {
-    if (dest === 'stopped') {
-      actions.markResumeSuperseded(gid)
-      if (!foldIntoBucket(gid, 'stopped', incoming)) void fetchTasks()
-      return
-    }
-    if (actions.isResumePending(gid)) {
-      // Superseded (-gen) pendings also pass this check; recordResumeEvidence
-      // no-ops there, so newer nonterminal twins are dropped by design while a
-      // terminal/superseding fact owns the row.
-      const snapshot = computeMergedSnapshot(gid, incoming)
-      const status = incoming?.status === 'paused' ? 'paused' : dest
-      actions.recordResumeEvidence(gid, status, snapshot)
-      return
-    }
-    if (!foldIntoBucket(gid, dest, incoming)) void fetchTasks()
-  }
-
   // Status-less terminal notification: patch the fields that are present and
-  // let a guarded read settle status/membership. Never invent a destination
+  // let a read settle status/membership. Never invent a destination
   // or a status field from the delta type alone.
   function patchStatuslessTerminal(gid: string, payload: TaskDelta['payload']) {
     const copies = collectCopies(gid)
@@ -573,7 +508,6 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       if (!isTaskGroupEqual(beforeGroup, cloneTaskGroupMetadata(row))) updated = true
       if (updated) tasks.value = { ...tasks.value }
     }
-    actions.markLifecycleChanged()
   }
 
   async function handleTaskDelta(delta: TaskDelta) {
@@ -588,7 +522,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     switch (delta.type) {
       case 'progress': {
         if (dest && dest !== 'active') {
-          routeOrHold(gid, dest, incoming)
+          if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
           break
         }
         const task = tasks.value.active.find(t => t.gid === gid)
@@ -627,7 +561,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
             actions.queueMetadataRecovery(gid)
           }
         } else if (!task && dest === 'active') {
-          routeOrHold(gid, 'active', incoming)
+          if (!foldIntoBucket(gid, 'active', incoming)) await fetchTasks()
         }
         break
       }
@@ -645,11 +579,11 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
         }
 
         if (dest) {
-          routeOrHold(gid, dest, incoming)
+          if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
           break
         }
         // Status-less add: merge into an existing non-stopped row, keep stopped
-        // duplicate suppression, otherwise recover via a guarded read.
+        // duplicate suppression, otherwise recover via a read.
         const copies = collectCopies(gid)
         if (copies.stopped) break
         const existing = copies.active ?? copies.waiting
@@ -659,7 +593,6 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
             applyMetadataFromCache(mergeTaskPreservingRichData(existing, incoming)),
           )
           tasks.value = { ...tasks.value }
-          actions.markLifecycleChanged()
           if (!hasValidFiles(existing)) actions.queueMetadataRecovery(gid)
         } else {
           await fetchTasks()
@@ -669,8 +602,8 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
 
       case 'resume': {
         if (dest) {
-          routeOrHold(gid, dest, incoming)
-        } else if (!actions.isResumePending(gid)) {
+          if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
+        } else {
           await fetchTasks()
         }
         useDownloadGroupStore().scheduleAutoSyncImmediate('resume-delta')
@@ -678,12 +611,17 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       }
 
       case 'pause': {
-        // An authoritative paused transition invalidates older resume optimism.
-        actions.markResumeSuperseded(gid)
         if (dest) {
           if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
         } else {
-          patchTaskStatus(gid, 'paused')
+          // Status-less pause: a live row is demoted to waiting/paused with
+          // zero speed; a stopped-only row is not reopened by it.
+          const copies = collectCopies(gid)
+          if (copies.active || copies.waiting) {
+            foldIntoBucket(gid, 'waiting', { gid, status: 'paused', downloadSpeed: '0' })
+          } else if (!copies.stopped) {
+            await fetchTasks()
+          }
         }
         useDownloadGroupStore().scheduleAutoSyncImmediate('pause-delta')
         break
@@ -691,12 +629,10 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
 
       case 'complete':
       case 'error': {
-        // Terminal notifications immediately supersede any pending resume.
-        actions.markResumeSuperseded(gid)
         if (dest === 'stopped') {
           if (!foldIntoBucket(gid, 'stopped', incoming)) await fetchTasks()
         } else if (dest) {
-          routeOrHold(gid, dest, incoming)
+          if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
         } else {
           patchStatuslessTerminal(gid, payload)
           if (!collectCopies(gid).stopped) await fetchTasks()
@@ -705,7 +641,6 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       }
 
       case 'remove': {
-        actions.markResumeSuperseded(gid)
         removeTaskFromState(gid)
         break
       }
@@ -726,23 +661,11 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     const wireDest = to === 'active' || to === 'waiting' || to === 'stopped' ? to : null
     const dest = statusDest ?? wireDest
     if (!dest) {
-      // Malformed/mismatched destinations recover through a guarded read.
+      // Malformed/mismatched destinations recover through a read.
       void fetchTasks()
       return
     }
 
-    if (dest === 'stopped') {
-      actions.markResumeSuperseded(gid)
-    } else if (actions.isResumePending(gid)) {
-      // Held while the resume op is in flight: stash the rich folded row as
-      // generation-owned evidence; settlement applies it exactly once.
-      // Superseded (-gen) pendings also pass this check; recordResumeEvidence
-      // no-ops there, so newer nonterminal twins are dropped by design.
-      const snapshot = computeMergedSnapshot(gid, incoming)
-      const status = payload?.status === 'paused' ? 'paused' : dest
-      actions.recordResumeEvidence(gid, status, snapshot)
-      return
-    }
     if (!foldIntoBucket(gid, dest, incoming)) {
       void fetchTasks()
       return

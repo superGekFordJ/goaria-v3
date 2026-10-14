@@ -117,17 +117,11 @@ function createMockActions(): TaskActions {
     clearSelection: vi.fn(),
     batchPause: vi.fn(),
     batchResume: vi.fn(),
-    runHeldResume: vi.fn(),
     batchRemove: vi.fn(),
     syncFromSnapshot: vi.fn(),
     minimizeToTray: vi.fn(),
     setPollingCallbacks: vi.fn(),
     setTaskMover: vi.fn(),
-    isResumePending: vi.fn(() => false),
-    markResumeSuperseded: vi.fn(),
-    recordResumeEvidence: vi.fn(),
-    markLifecycleChanged: vi.fn(),
-    clearStoppedSuppression: vi.fn(),
     metadataInFlight: vi.fn().mockReturnValue(false),
     setMetadataInFlight: vi.fn(),
     queueMetadataRecovery: vi.fn(),
@@ -580,7 +574,6 @@ describe('setupEvents', () => {
         payload: { completedLength: '100', totalLength: '100' },
       })
 
-      expect(actions.markResumeSuperseded).toHaveBeenCalledWith('gid-map')
       expect(actions.fetchTasks).toHaveBeenCalled()
       // Membership unchanged: the kind alone never moves a row to stopped.
       expect(state.tasks.value.active.map(t => t.gid)).toEqual(['gid-map'])
@@ -771,12 +764,36 @@ describe('setupEvents', () => {
   // handleTaskDelta — pause event
   // =====================================================
   describe('handleTaskDelta — pause', () => {
-    it('should patch task status to paused', async () => {
-      state.tasks.value.active = [mockTask('gid-p', { status: 'active' })]
+    it('a status-less pause folds the live row into waiting as paused with zero speed', async () => {
+      state.tasks.value.active = [
+        mockTask('gid-p', { status: 'active', downloadSpeed: '500' }),
+        mockTask('gid-neighbor', { status: 'active' }),
+      ]
 
       await events.handleTaskDelta({ type: 'pause', gid: 'gid-p' })
 
-      expect(state.tasks.value.active[0].status).toBe('paused')
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['gid-neighbor'])
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['gid-p'])
+      expect(state.tasks.value.waiting[0].status).toBe('paused')
+      expect(state.tasks.value.waiting[0].downloadSpeed).toBe('0')
+      expect(actions.fetchTasks).not.toHaveBeenCalled()
+    })
+
+    it('a status-less pause does not reopen a stopped-only row', async () => {
+      state.tasks.value.stopped = [mockTask('gid-p', { status: 'complete' })]
+
+      await events.handleTaskDelta({ type: 'pause', gid: 'gid-p' })
+
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['gid-p'])
+      expect(state.tasks.value.stopped[0].status).toBe('complete')
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(actions.fetchTasks).not.toHaveBeenCalled()
+    })
+
+    it('a status-less pause on an unknown GID falls back to fetchTasks', async () => {
+      await events.handleTaskDelta({ type: 'pause', gid: 'gid-unknown' })
+
+      expect(actions.fetchTasks).toHaveBeenCalled()
     })
   })
 
@@ -802,7 +819,6 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active[0].gid).toBe('gid-r')
       expect(state.tasks.value.active[0].status).toBe('active')
       expect(state.tasks.value.waiting).toHaveLength(0)
-      expect(actions.clearStoppedSuppression).toHaveBeenCalledWith('gid-r')
     })
 
     it('WIRE-ACTUAL-STATUS: a resume delta carrying status waiting stays in waiting', async () => {
@@ -852,7 +868,6 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active[0].completedLength).toBe('420')
       expect(state.tasks.value.active[0].download_group?.id).toBe('dg-events')
       expect(state.tasks.value.stopped).toHaveLength(0)
-      expect(actions.clearStoppedSuppression).toHaveBeenCalledWith('gid-error-resume')
     })
 
     it('should collapse a stale active and stopped duplicate', async () => {
@@ -1066,7 +1081,6 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active.length).toBe(0)
       expect(state.tasks.value.waiting.length).toBe(1)
       expect(state.tasks.value.waiting[0].gid).toBe('gid-m')
-      expect(actions.clearStoppedSuppression).toHaveBeenCalledWith('gid-m')
     })
 
     it('should move task from waiting to active', () => {
@@ -1081,7 +1095,6 @@ describe('setupEvents', () => {
 
       expect(state.tasks.value.waiting.length).toBe(0)
       expect(state.tasks.value.active.length).toBe(1)
-      expect(actions.clearStoppedSuppression).toHaveBeenCalledWith('gid-m')
     })
 
     it('should cache metadata when fullTask has files', () => {
@@ -1316,35 +1329,7 @@ describe('setupEvents', () => {
       expect(state.tasks.value.active[0].files[0].path).toBe('/downloads/stale.zip')
     })
 
-    it('does not migrate lists while resume is pending for dest-active moves', () => {
-      actions.isResumePending = vi.fn((gid: string) => gid === 'gid-hold')
-      state.tasks.value.waiting = [mockTask('gid-hold', { status: 'paused' })]
-      const waiting = [...state.tasks.value.waiting]
-
-      events.handleTaskMove({
-        gid: 'gid-hold',
-        from: 'waiting',
-        to: 'active',
-        task: {
-          gid: 'gid-hold',
-          status: 'active',
-          files: [{ path: '/downloads/hold-meta.zip', uris: [] }],
-        },
-      })
-
-      expect(state.tasks.value.waiting).toEqual(waiting)
-      expect(state.tasks.value.active).toHaveLength(0)
-      expect(getMetadataCacheSize()).toBeGreaterThan(0)
-      // The rich row is retained as generation-owned evidence, not dropped.
-      expect(actions.recordResumeEvidence).toHaveBeenCalledWith(
-        'gid-hold',
-        'active',
-        expect.objectContaining({ gid: 'gid-hold', status: 'active' }),
-      )
-    })
-
-    it('still migrates to stopped while resume is pending', () => {
-      actions.isResumePending = vi.fn(() => true)
+    it('migrates to stopped on a terminal move', () => {
       state.tasks.value.waiting = [mockTask('gid-term', { status: 'paused' })]
 
       events.handleTaskMove({
@@ -1356,53 +1341,22 @@ describe('setupEvents', () => {
 
       expect(state.tasks.value.waiting).toHaveLength(0)
       expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['gid-term'])
-      expect(actions.markResumeSuperseded).toHaveBeenCalledWith('gid-term')
     })
   })
 
-  describe('resume pending hold', () => {
-    it('skips resume-delta list migration while pending and still schedules group auto-sync', async () => {
-      actions.isResumePending = vi.fn((gid: string) => gid === 'gid-hold-delta')
-      state.tasks.value.waiting = [mockTask('gid-hold-delta', { status: 'paused' })]
+  describe('immediate fold — no resume coordination', () => {
+    it('a status-less resume delta recovers via fetchTasks and still schedules group auto-sync', async () => {
+      state.tasks.value.waiting = [mockTask('gid-statusless', { status: 'paused' })]
 
-      await events.handleTaskDelta({ type: 'resume', gid: 'gid-hold-delta' })
+      await events.handleTaskDelta({ type: 'resume', gid: 'gid-statusless' })
 
-      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['gid-hold-delta'])
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['gid-statusless'])
       expect(state.tasks.value.active).toHaveLength(0)
+      expect(actions.fetchTasks).toHaveBeenCalled()
       expect(downloadGroupMocks.scheduleAutoSyncImmediate).toHaveBeenCalledWith('resume-delta')
     })
 
-    it('still moves to stopped on complete while pending', async () => {
-      actions.isResumePending = vi.fn(() => true)
-      state.tasks.value.waiting = [mockTask('gid-hold-complete', { status: 'paused' })]
-
-      await events.handleTaskDelta({
-        type: 'complete',
-        gid: 'gid-hold-complete',
-        payload: { gid: 'gid-hold-complete', status: 'complete' },
-      })
-
-      expect(state.tasks.value.waiting).toHaveLength(0)
-      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['gid-hold-complete'])
-      expect(actions.markResumeSuperseded).toHaveBeenCalledWith('gid-hold-complete')
-    })
-
-    it('still moves to stopped on error while pending', async () => {
-      actions.isResumePending = vi.fn(() => true)
-      state.tasks.value.waiting = [mockTask('gid-hold-error', { status: 'paused' })]
-
-      await events.handleTaskDelta({
-        type: 'error',
-        gid: 'gid-hold-error',
-        payload: { gid: 'gid-hold-error', status: 'error', errorCode: '1', errorMessage: 'fail' },
-      })
-
-      expect(state.tasks.value.waiting).toHaveLength(0)
-      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['gid-hold-error'])
-    })
-
-    it('records a status-bearing delta as held evidence while pending', async () => {
-      actions.isResumePending = vi.fn(() => true)
+    it('a status-bearing resume delta folds waiting to active immediately', async () => {
       state.tasks.value.waiting = [mockTask('gid-ev', { status: 'paused' })]
 
       await events.handleTaskDelta({
@@ -1411,13 +1365,10 @@ describe('setupEvents', () => {
         payload: { gid: 'gid-ev', status: 'active' },
       })
 
-      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['gid-ev'])
-      expect(state.tasks.value.active).toHaveLength(0)
-      expect(actions.recordResumeEvidence).toHaveBeenCalledWith(
-        'gid-ev',
-        'active',
-        expect.objectContaining({ gid: 'gid-ev', status: 'active' }),
-      )
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['gid-ev'])
+      expect(state.tasks.value.active[0].status).toBe('active')
+      expect(actions.fetchTasks).not.toHaveBeenCalled()
     })
   })
 
@@ -1591,6 +1542,8 @@ describe('setupEvents', () => {
         gid: 'gid-twin',
         payload: { gid: 'gid-twin', status: 'active' },
       })
+      // The delta fold settled the row; no-op twins keep tasks.value identity.
+      const settled = state.tasks.value
       events.handleTaskMove({
         gid: 'gid-twin',
         from: 'waiting',
@@ -1605,12 +1558,10 @@ describe('setupEvents', () => {
         task: { gid: 'gid-twin', status: 'active', files: [], dir: '' },
       })
 
+      expect(state.tasks.value).toBe(settled)
       expect(state.tasks.value.active.map(t => t.gid)).toEqual(['gid-twin'])
       expect(state.tasks.value.waiting).toHaveLength(0)
       expect(state.tasks.value.stopped).toHaveLength(0)
-      // Only the first delivery changed anything; no-op twins skip the
-      // lifecycle bump so in-flight reads are not flagged stale.
-      expect(actions.markLifecycleChanged).toHaveBeenCalledTimes(1)
     })
 
     it('FULL-MOVE-TWIN-FOLD: move-then-delta twins converge to exactly one row', async () => {
@@ -1623,6 +1574,7 @@ describe('setupEvents', () => {
         task: { gid: 'gid-twin-md', status: 'active', files: [], dir: '' },
       })
       const movedRow = state.tasks.value.active[0]
+      const settled = state.tasks.value
       await events.handleTaskDelta({
         type: 'resume',
         gid: 'gid-twin-md',
@@ -1635,13 +1587,13 @@ describe('setupEvents', () => {
         payload: { gid: 'gid-twin-md', status: 'active' },
       })
 
+      // Identical delta twins are no-ops: no row rebuild, no list churn.
+      expect(state.tasks.value).toBe(settled)
       expect(state.tasks.value.active.map(t => t.gid)).toEqual(['gid-twin-md'])
       // The delta twin folds into the row the move created, not a rebuild.
       expect(state.tasks.value.active[0]).toBe(movedRow)
       expect(state.tasks.value.waiting).toHaveLength(0)
       expect(state.tasks.value.stopped).toHaveLength(0)
-      // The move was the only real change; identical delta twins are no-ops.
-      expect(actions.markLifecycleChanged).toHaveBeenCalledTimes(1)
     })
 
     it('IDENTITY-HOT-PATH: progress bursts patch in place and identical deltas are no-ops', async () => {
@@ -1681,7 +1633,6 @@ describe('setupEvents', () => {
       expect(state.tasks.value.stopped).toHaveLength(0)
       expect(actions.fetchTasks).not.toHaveBeenCalled()
       expect(actions.queueMetadataRecovery).not.toHaveBeenCalled()
-      expect(actions.markLifecycleChanged).not.toHaveBeenCalled()
     })
   })
 })

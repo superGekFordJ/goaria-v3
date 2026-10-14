@@ -14,7 +14,6 @@ import {
   normalizeRefreshHint,
   createRejectedOperationResult,
   getTaskDownloadGroupId,
-  snapshotGroupResumeHoldGids,
   succeededOperationItemGids,
   type DownloadGroupOperationAction,
 } from './utils'
@@ -121,28 +120,17 @@ export function useDownloadGroupOperations(
   function resumeGroup(groupKey: string) {
     return runGroupOperation('resume', groupKey, async normalizedKey => {
       const taskStore = useTaskStore()
-      const detail = currentDetail.value
-      const requested = snapshotGroupResumeHoldGids(
-        normalizedKey,
-        taskStore.waitingTasks,
-        currentDetailKey.value,
-        detail?.tasks?.waiting,
-        {
-          stoppedTasks: taskStore.stoppedTasks,
-          detailStopped: detail?.tasks?.stopped,
-          localActiveTasks: taskStore.activeTasks,
-        },
-      )
-      let result: DownloadGroupOperationResult | undefined
-      await taskStore.runHeldResume(
-        requested,
-        async () => {
-          result = await ResumeDownloadGroup(normalizedKey)
-          return succeededOperationItemGids(result)
-        },
-        { recoverSnapshot: false },
-      )
-      return result ?? createRejectedOperationResult('resume', normalizedKey)
+      const result = await ResumeDownloadGroup(normalizedKey)
+      const okGids = succeededOperationItemGids(result)
+      if (okGids.length > 0) {
+        const { missing } = taskStore.moveTasks(okGids.map(gid => ({ gid, dest: 'waiting' as const })))
+        // Members absent from local lists resync through the wrapper's refresh
+        // hint; only an unhinted miss needs its own read.
+        if (missing && !normalizeRefreshHint(result.refresh).tasks) {
+          await taskStore.fetchTasks().catch(() => undefined)
+        }
+      }
+      return result
     })
   }
 

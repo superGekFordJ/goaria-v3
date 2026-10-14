@@ -80,8 +80,8 @@ export const useTaskStore = defineStore('task', () => {
     // Batch Actions
     batchPause: actions.batchPause,
     batchResume: actions.batchResume,
-    runHeldResume: actions.runHeldResume,
     batchRemove: actions.batchRemove,
+    moveTasks: events.moveTasks,
 
     // System Actions
     syncFromSnapshot: actions.syncFromSnapshot,
