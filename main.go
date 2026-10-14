@@ -263,6 +263,11 @@ func main() {
 			log.Printf("[Shutdown] Failed to flush history: %v", err)
 		}
 
+		// Stop the group-store saver (after all producers joined); it flushes pending state.
+		if err := monitor.StopTaskGroupStore(); err != nil {
+			log.Printf("[Shutdown] Failed to stop download group store: %v", err)
+		}
+
 		process.StopAria2()
 	})
 

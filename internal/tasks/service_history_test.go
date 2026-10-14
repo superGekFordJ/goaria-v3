@@ -556,6 +556,9 @@ func TestGetTasks_ReloadsPersistedDownloadGroupForActiveTaskAfterRestart(t *test
 	setupAppTaskHistoryTest(t)
 	group := appHistoryTestDownloadGroup("dg-restart")
 	monitor.RegisterTaskGroup("gid-restart", *group)
+	if err := monitor.FlushGroupStoreForTest(); err != nil {
+		t.Fatalf("flush group store: %v", err)
+	}
 
 	monitor.Cache = monitor.NewTaskCacheForTest()
 	monitor.LoadTaskGroups()

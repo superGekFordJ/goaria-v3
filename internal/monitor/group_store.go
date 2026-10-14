@@ -2,12 +2,15 @@ package monitor
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/rpc"
@@ -15,54 +18,132 @@ import (
 
 var groupStore = newTaskGroupStore()
 
+const (
+	groupStoreSaveDebounce = 100 * time.Millisecond
+	groupStoreSaveMaxBurst = time.Second
+)
+
 func init() {
 	history.SetGroupCleanupHooks(RemoveTaskGroup, RemoveTaskGroups, ClearTaskGroups)
 }
 
+// taskGroupStore orders writers as writeMu then mu; mutations take only mu and
+// never touch disk or wait on a writer.
 type taskGroupStore struct {
 	mu      sync.RWMutex
 	path    string
 	groups  map[string]rpc.DownloadGroup
 	enabled bool
+	stopped bool
+
+	writeMu      sync.Mutex
+	saveChan     chan struct{}
+	stopChan     chan struct{}
+	doneChan     chan struct{}
+	saverOnce    sync.Once
+	saverStarted bool
+
+	saveTriggerCount atomic.Int64
+	lastSavedTrigger atomic.Int64
+	saveWriteCount   atomic.Int64
+
+	// Coalescing windows; fixed before the worker can start, read lock-free.
+	saveDebounce time.Duration
+	saveMaxBurst time.Duration
 }
 
 func newTaskGroupStore() *taskGroupStore {
-	return &taskGroupStore{groups: make(map[string]rpc.DownloadGroup), enabled: true}
+	s := &taskGroupStore{
+		groups:       make(map[string]rpc.DownloadGroup),
+		enabled:      true,
+		saveDebounce: groupStoreSaveDebounce,
+		saveMaxBurst: groupStoreSaveMaxBurst,
+	}
+	s.initSaverLocked()
+	return s
+}
+
+// initSaverLocked rebuilds saver channels/Once/counters; callers hold s.mu.
+func (s *taskGroupStore) initSaverLocked() {
+	s.saveChan = make(chan struct{}, 1)
+	s.stopChan = make(chan struct{})
+	s.doneChan = make(chan struct{})
+	s.saverOnce = sync.Once{}
+	s.saverStarted = false
+	s.stopped = false
+	s.saveTriggerCount.Store(0)
+	s.lastSavedTrigger.Store(0)
+	s.saveWriteCount.Store(0)
 }
 
 func defaultTaskGroupStorePath() string {
 	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".goaria")
-	_ = os.MkdirAll(dir, 0o755)
-	return filepath.Join(dir, "download_groups.json")
+	return filepath.Join(home, ".goaria", "download_groups.json")
 }
 
 func SetTaskGroupStorePath(path string) {
-	groupStore.mu.Lock()
-	defer groupStore.mu.Unlock()
-	groupStore.path = path
-	groupStore.groups = make(map[string]rpc.DownloadGroup)
+	s := groupStore
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.path = path
+	s.groups = make(map[string]rpc.DownloadGroup)
+	s.discardPendingSaveLocked()
 }
 
 func ResetTaskGroupStoreForTest(path string, enabled bool) {
-	groupStore.mu.Lock()
-	defer groupStore.mu.Unlock()
-	groupStore.path = path
-	groupStore.groups = make(map[string]rpc.DownloadGroup)
-	groupStore.enabled = enabled
+	// Namer jobs mutate the store; join them before rebuilding saver state.
+	ResetDownloadGroupNamerForTest()
+	groupStore.resetForTest(path, enabled)
+}
+
+// resetForTest joins the saver, drops pending fixture state without writing
+// it, and rebuilds saver state; empty path forces persistence off.
+func (s *taskGroupStore) resetForTest(path string, enabled bool) {
+	s.stopSaver()
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.path = path
+	s.groups = make(map[string]rpc.DownloadGroup)
+	s.enabled = enabled && path != ""
+	s.initSaverLocked()
 }
 
 func SetTaskGroupStoreEnabled(enabled bool) {
-	groupStore.mu.Lock()
-	defer groupStore.mu.Unlock()
-	groupStore.enabled = enabled
+	s := groupStore
+	// In-flight writes finish first; pending triggers stay handled on re-enable.
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.enabled = enabled
+	if !enabled {
+		s.discardPendingSaveLocked()
+	}
 }
 
 func LoadTaskGroups() {
-	groupStore.mu.Lock()
-	defer groupStore.mu.Unlock()
-	groupStore.groups = make(map[string]rpc.DownloadGroup)
-	data, err := os.ReadFile(groupStore.filePathLocked())
+	groupStore.loadFromDisk()
+}
+
+// loadFromDisk replaces groups from disk under writeMu; pending triggers are
+// discarded so queued signals cannot rewrite the replaced map.
+func (s *taskGroupStore) loadFromDisk() {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.groups = make(map[string]rpc.DownloadGroup)
+	s.discardPendingSaveLocked()
+	path := s.path
+	if path == "" {
+		path = defaultTaskGroupStorePath()
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
@@ -75,7 +156,45 @@ func LoadTaskGroups() {
 		if gid == "" || group.ID == "" {
 			continue
 		}
-		groupStore.groups[gid] = group
+		s.groups[gid] = group
+	}
+}
+
+// FlushGroupStoreForTest persists pending state; disabled/clean stores no-op.
+func FlushGroupStoreForTest() error {
+	return groupStore.performSave()
+}
+
+// StopTaskGroupStore stops the saver and flushes the last pending snapshot.
+func StopTaskGroupStore() error {
+	groupStore.stopSaver()
+	return groupStore.performSave()
+}
+
+// stopSaver marks the store stopped and joins the saver without holding
+// s.mu or writeMu; safe to call repeatedly.
+func (s *taskGroupStore) stopSaver() {
+	s.mu.Lock()
+	if !s.stopped {
+		s.stopped = true
+		close(s.stopChan)
+		if !s.saverStarted {
+			// No worker can run this epoch; close done so join is uniform.
+			close(s.doneChan)
+		}
+	}
+	done := s.doneChan
+	s.mu.Unlock()
+	<-done
+}
+
+// discardPendingSaveLocked marks queued triggers handled and drops a stale
+// buffered signal so old snapshots cannot write a changed path.
+func (s *taskGroupStore) discardPendingSaveLocked() {
+	s.lastSavedTrigger.Store(s.saveTriggerCount.Load())
+	select {
+	case <-s.saveChan:
+	default:
 	}
 }
 
@@ -87,7 +206,7 @@ func RegisterTaskGroup(gid string, group rpc.DownloadGroup) {
 	}
 	groupStore.mu.Lock()
 	groupStore.groups[gid] = group
-	groupStore.saveLocked()
+	groupStore.triggerSaveLocked()
 	groupStore.mu.Unlock()
 	Cache.markPendingStart(gid)
 	queueDownloadGroupNameRefresh(group.ID)
@@ -136,7 +255,7 @@ func UpdateStoredTaskGroupName(groupKey, name, status string) int {
 		changed++
 	}
 	if changed > 0 {
-		groupStore.saveLocked()
+		groupStore.triggerSaveLocked()
 	}
 	return changed
 }
@@ -151,7 +270,7 @@ func RemoveTaskGroup(gid string) {
 		return
 	}
 	delete(groupStore.groups, gid)
-	groupStore.saveLocked()
+	groupStore.triggerSaveLocked()
 }
 
 func RemoveTaskGroups(gids []string) {
@@ -168,7 +287,7 @@ func RemoveTaskGroups(gids []string) {
 		}
 	}
 	if changed {
-		groupStore.saveLocked()
+		groupStore.triggerSaveLocked()
 	}
 }
 
@@ -179,7 +298,7 @@ func ClearTaskGroups() {
 		return
 	}
 	groupStore.groups = make(map[string]rpc.DownloadGroup)
-	groupStore.saveLocked()
+	groupStore.triggerSaveLocked()
 }
 
 func HydrateTaskGroups(tasks []rpc.Task) {
@@ -198,34 +317,173 @@ func HydrateTaskGroups(tasks []rpc.Task) {
 	}
 }
 
-func (s *taskGroupStore) filePathLocked() string {
-	if s.path != "" {
-		return s.path
+// triggerSaveLocked records a mutation and wakes the saver; caller holds s.mu
+// and it never touches disk, writeMu, timers, or a join.
+func (s *taskGroupStore) triggerSaveLocked() {
+	s.saveTriggerCount.Add(1)
+	if !s.enabled {
+		s.lastSavedTrigger.Store(s.saveTriggerCount.Load())
+		return
 	}
-	return defaultTaskGroupStorePath()
+	if s.stopped {
+		return
+	}
+	s.saverOnce.Do(func() {
+		s.saverStarted = true
+		go s.saveLoop(s.saveChan, s.stopChan, s.doneChan)
+	})
+	select {
+	case s.saveChan <- struct{}{}:
+	default:
+	}
 }
 
-func (s *taskGroupStore) saveLocked() {
-	if !s.enabled {
-		return
-	}
-	path := s.filePathLocked()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		log.Printf("[monitor] failed to create download group store dir: %v", err)
-		return
-	}
-	if len(s.groups) == 0 {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			log.Printf("[monitor] failed to remove download group store: %v", err)
+// drainTimer stops t and drains a pending tick.
+func drainTimer(t *time.Timer) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
 		}
-		return
 	}
-	data, err := json.MarshalIndent(s.groups, "", "  ")
+}
+
+// saveLoop coalesces signals under an idle debounce plus a non-extending
+// max-burst timer; channel args pin the worker to its own epoch.
+func (s *taskGroupStore) saveLoop(saveChan, stopChan, doneChan chan struct{}) {
+	defer close(doneChan)
+	for {
+		select {
+		case <-saveChan:
+		case <-stopChan:
+			return
+		}
+
+		idleTimer := time.NewTimer(s.saveDebounce)
+		maxTimer := time.NewTimer(s.saveMaxBurst)
+
+	coalesce:
+		for {
+			select {
+			case <-saveChan:
+				drainTimer(idleTimer)
+				idleTimer.Reset(s.saveDebounce)
+			case <-idleTimer.C:
+				break coalesce
+			case <-maxTimer.C:
+				break coalesce
+			case <-stopChan:
+				break coalesce
+			}
+		}
+		drainTimer(idleTimer)
+		drainTimer(maxTimer)
+
+		// Drop the redundant buffered signal before snapshotting.
+		select {
+		case <-saveChan:
+		default:
+		}
+		select {
+		case <-stopChan:
+			return
+		default:
+		}
+
+		if s.saveTriggerCount.Load() <= s.lastSavedTrigger.Load() {
+			continue
+		}
+		if err := s.performSave(); err != nil {
+			log.Printf("[monitor] background download group save failed: %v", err)
+		}
+	}
+}
+
+// performSave serializes snapshot → write/remove under writeMu so a queued
+// write cannot overwrite a newer Flush; callers must not hold s.mu.
+func (s *taskGroupStore) performSave() error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	s.mu.RLock()
+	if !s.enabled {
+		s.mu.RUnlock()
+		return nil
+	}
+	triggerSnap := s.saveTriggerCount.Load()
+	if triggerSnap <= s.lastSavedTrigger.Load() {
+		s.mu.RUnlock()
+		return nil
+	}
+	path := s.path
+	snapshot := make(map[string]rpc.DownloadGroup, len(s.groups))
+	maps.Copy(snapshot, s.groups)
+	s.mu.RUnlock()
+	if path == "" {
+		path = defaultTaskGroupStorePath()
+	}
+
+	if len(snapshot) == 0 {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove download group store %s: %w", path, err)
+		}
+	} else {
+		data, err := json.MarshalIndent(snapshot, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal download groups: %w", err)
+		}
+		if err := writeDownloadGroupStoreFile(path, data); err != nil {
+			return fmt.Errorf("write download group store %s: %w", path, err)
+		}
+	}
+
+	s.saveWriteCount.Add(1)
+	s.lastSavedTrigger.Store(triggerSnap)
+	return nil
+}
+
+// writeDownloadGroupStoreFile writes via temp + rename so a failed write
+// never truncates the live store.
+func writeDownloadGroupStoreFile(targetPath string, data []byte) error {
+	dir := filepath.Dir(targetPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp(dir, ".download-groups-*.tmp")
 	if err != nil {
-		log.Printf("[monitor] failed to marshal download groups: %v", err)
-		return
+		return err
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		log.Printf("[monitor] failed to save download groups: %v", err)
+	tmpName := tmp.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = tmp.Close()
+		}
+		_ = os.Remove(tmpName)
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		return err
 	}
+	_ = tmp.Chmod(0o644)
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	closed = true
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	backoffs := []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond, 15 * time.Millisecond}
+	var renameErr error
+	for _, sleep := range backoffs {
+		if sleep > 0 {
+			time.Sleep(sleep)
+		}
+		if renameErr = os.Rename(tmpName, targetPath); renameErr == nil {
+			return nil
+		}
+	}
+	return renameErr
 }
