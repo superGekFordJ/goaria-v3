@@ -341,5 +341,10 @@ func (a *App) rollbackConfigAndAria(deps configSaveDeps, old, candidate config.A
 	if deps.rpcInit != nil {
 		deps.rpcInit(restored.RPCPort, restored.RPCSecret)
 	}
+	// The candidate never replaced the old daemon, so the notifier must be
+	// re-anchored to the surviving endpoint before this rollback completes.
+	if a.eventHub != nil && deps.initNotifier != nil {
+		deps.initNotifier(a.eventHub, restored.RPCPort, restored.RPCSecret)
+	}
 	return failedSaveResult(code, liveSnapshot(deps, restored), msg)
 }

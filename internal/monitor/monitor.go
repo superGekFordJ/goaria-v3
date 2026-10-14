@@ -329,6 +329,7 @@ func (m *Monitor) confirmPauseResumeRequestLocked(gid string) acceptedTaskChange
 	m.pauseResumeVersionMu.RUnlock()
 	task, source, exists := Cache.GetTask(gid)
 	status, kind := "paused", "pause"
+	from := ""
 	if action == PauseResumeIntentionResume {
 		status, kind = "waiting", "resume"
 		if exists && source != "stopped" && (source != "waiting" || task.Status != "paused") {
@@ -344,16 +345,18 @@ func (m *Monitor) confirmPauseResumeRequestLocked(gid string) acceptedTaskChange
 			if IsSgGid(gid) {
 				Cache.AddSgTask(task, "stopped")
 			} else {
-				Cache.arMu.Lock()
-				Cache.arStopped = append(Cache.arStopped, task)
-				Cache.arMu.Unlock()
+				// Stage + move share one arMu section — readers only ever see
+				// absent or waiting, never a transient stopped row.
+				from = Cache.RestoreAriaHistoryTaskToWaiting(task, status)
 			}
 		}
 	} else if action != PauseResumeIntentionPause || !exists || source == "stopped" || task.Status == "paused" ||
 		(task.Status != "active" && task.Status != "waiting") || m.tracker.TerminalAcceptedInCurrentGeneration(gid) {
 		return acceptedTaskChange{}
 	}
-	from := Cache.MoveTaskToWaiting(gid, status)
+	if from == "" {
+		from = Cache.MoveTaskToWaiting(gid, status)
+	}
 	if from == "stopped" {
 		if m.tracker.afterMoveBeforeRetire != nil {
 			m.tracker.afterMoveBeforeRetire(gid)

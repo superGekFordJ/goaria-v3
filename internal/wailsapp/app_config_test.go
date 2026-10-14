@@ -1032,3 +1032,127 @@ func TestAriaStartup_CompletionSerializedWithActivation(t *testing.T) {
 		t.Fatalf("old endpoint rebuilt, notifier port %q", h.lastNotifierPort)
 	}
 }
+
+func TestSaveConfig_PreStopFailureRestoresNotifier(t *testing.T) {
+	cur := sampleCanonicalConfig()
+	h := &saveHarness{
+		store: fakeConfigStore{cur: cur},
+		restartErr: &process.Aria2RestartError{
+			Err:     errors.New("download dir unavailable"),
+			Stopped: false,
+		},
+		readyErr: errors.New("should not wait"),
+	}
+	req := cur
+	req.RPCPort = "16810"
+	res := h.app().SaveConfig(req)
+	if res.Success || res.Aria2Restarted || res.ErrorCode != errCodeAriaRestartRolledBack {
+		t.Fatalf("%+v", res)
+	}
+	if h.restarts != 1 {
+		t.Fatalf("restore restart should be skipped, restarts=%d", h.restarts)
+	}
+	if h.stops != 0 || h.portWaits != 0 {
+		t.Fatalf("old daemon untouched: stops=%d portWaits=%d", h.stops, h.portWaits)
+	}
+	if h.rpcInits != 1 || h.lastRPCPort != cur.RPCPort {
+		t.Fatalf("rpc rebound %d times to %q, want once to old %q", h.rpcInits, h.lastRPCPort, cur.RPCPort)
+	}
+	if h.notifiers != 1 || h.lastNotifierPort != cur.RPCPort {
+		t.Fatalf("notifier re-anchored %d times to %q, want once to old %q", h.notifiers, h.lastNotifierPort, cur.RPCPort)
+	}
+	if h.notifierStops != 0 {
+		t.Fatalf("live daemon must keep notifier session, stops=%d", h.notifierStops)
+	}
+	if res.Config.RPCPort != cur.RPCPort || h.store.cur.RPCPort != cur.RPCPort {
+		t.Fatal("config not rolled back")
+	}
+	last := ""
+	for _, s := range h.steps() {
+		if s == "ready" {
+			t.Fatalf("pre-stop rollback must not WaitForReady: %v", h.steps())
+		}
+		if s == "rpc" || s == "notifier" {
+			if last == "" && s == "notifier" {
+				t.Fatalf("notifier rebound before rpcInit: %v", h.steps())
+			}
+			last = s
+		}
+	}
+	if last != "notifier" {
+		t.Fatalf("rollback tail missing notifier re-attach: %v", h.steps())
+	}
+}
+
+func TestAriaStartup_PreStopRollbackRejectsStaleCompletion(t *testing.T) {
+	launch := sampleCanonicalConfig()
+	h := &saveHarness{
+		store: fakeConfigStore{cur: launch},
+		restartErr: &process.Aria2RestartError{
+			Err:     errors.New("candidate port busy"),
+			Stopped: false,
+		},
+	}
+	app := h.app()
+	id := RegisterAriaStartup(app)
+	req := launch
+	req.RPCPort = "16810"
+	res := app.SaveConfig(req)
+	if res.Success || res.ErrorCode != errCodeAriaRestartRolledBack {
+		t.Fatalf("%+v", res)
+	}
+	if h.notifiers != 1 || h.lastNotifierPort != launch.RPCPort {
+		t.Fatalf("old endpoint not re-attached: notifiers=%d port=%q", h.notifiers, h.lastNotifierPort)
+	}
+	// The activation attempt already bumped the epoch: the stale launch
+	// completion must stay invalid and must not rebind over the re-attach.
+	CompleteAriaStartup(app, &events.Hub{}, id, launch, nil)
+	if h.notifiers != 1 {
+		t.Fatalf("stale completion rebound notifier, notifiers=%d", h.notifiers)
+	}
+	if h.lastNotifierPort != launch.RPCPort {
+		t.Fatalf("notifier port %q, want surviving endpoint %q", h.lastNotifierPort, launch.RPCPort)
+	}
+
+	t.Run("nil hub skips re-attach without panic", func(t *testing.T) {
+		store := fakeConfigStore{cur: launch}
+		a := &App{} // no event hub
+		a.configDeps = configSaveDeps{
+			get:           store.get,
+			updateChecked: store.updateChecked,
+			validateDir:   func(string) error { return nil },
+			restartAria2: func(*config.AppConfig) error {
+				return &process.Aria2RestartError{Err: errors.New("pre-stop"), Stopped: false}
+			},
+			rpcInit:         func(string, string) {},
+			stopNotifier:    func() {},
+			extensionStatus: func() (int, bool) { return 0, false },
+		}
+		req := launch
+		req.RPCPort = "16811"
+		if res := a.SaveConfig(req); res.Success || res.ErrorCode != errCodeAriaRestartRolledBack {
+			t.Fatalf("%+v", res)
+		}
+	})
+
+	t.Run("nil initNotifier skips re-attach without panic", func(t *testing.T) {
+		store := fakeConfigStore{cur: launch}
+		a := &App{eventHub: &events.Hub{}}
+		a.configDeps = configSaveDeps{
+			get:           store.get,
+			updateChecked: store.updateChecked,
+			validateDir:   func(string) error { return nil },
+			restartAria2: func(*config.AppConfig) error {
+				return &process.Aria2RestartError{Err: errors.New("pre-stop"), Stopped: false}
+			},
+			rpcInit:         func(string, string) {},
+			stopNotifier:    func() {},
+			extensionStatus: func() (int, bool) { return 0, false },
+		}
+		req := launch
+		req.RPCPort = "16812"
+		if res := a.SaveConfig(req); res.Success || res.ErrorCode != errCodeAriaRestartRolledBack {
+			t.Fatalf("%+v", res)
+		}
+	})
+}

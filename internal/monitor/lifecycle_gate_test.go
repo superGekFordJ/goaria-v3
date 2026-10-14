@@ -889,3 +889,121 @@ func TestLifecycle_TerminalThenResumeThenTerminal_SingleHistory(t *testing.T) {
 		t.Fatalf("want single H1 complete after resume+terminal, got %#v", entries)
 	}
 }
+
+// TestResumeConfirmation_AriaHistoryAtomic covers the D01 fix: an
+// Aria2 history-only resume lands in waiting under one arMu critical
+// section — the intermediate append-to-stopped state is unobservable —
+// while lifecycle from="stopped" semantics and the single retire/reopen
+// are preserved.
+func TestResumeConfirmation_AriaHistoryAtomic(t *testing.T) {
+	t.Run("history-only restore lands waiting and retires exactly once", func(t *testing.T) {
+		resetHistoryForTest(t)
+		m, _, _, tracker := newReconcileTestMonitor(t)
+		const gid = "ar_hist_atomic"
+		t.Cleanup(func() { Cache.RemoveTask(gid) })
+		group := testDownloadGroup("dg-aria-atomic")
+		history.Add(history.HistoryEntry{
+			GID: gid, Title: "aria title", Dir: "/downloads",
+			Path: "/downloads/a.bin", TotalLength: "1000", CompletedLength: "500",
+			Status: "error", DownloadGroup: &group,
+		})
+		tracker.EnsureTrackedFromEvent(gid, 1000, "https://example.com/a.bin", 0, "error")
+		if first := tracker.MarkCompleteFromEvent(gid, "error"); first == nil {
+			t.Fatal("expected terminal mark")
+		}
+
+		var change acceptedTaskChange
+		ticket := m.BeginPauseResumeRequest(gid, "resume")
+		m.RunIfPauseResumeRequestCurrent(ticket, func() {
+			change = m.confirmPauseResumeRequestLocked(gid)
+		})
+		if change.from != "stopped" || change.to != "waiting" || change.kind != "resume" {
+			t.Fatalf("change = %#v, want stopped->waiting resume", change)
+		}
+		got, list, ok := Cache.GetTask(gid)
+		if !ok || list != "waiting" || got.Status != "waiting" || got.DownloadSpeed != "0" {
+			t.Fatalf("restored: %#v in %q", got, list)
+		}
+		if got.Title != "aria title" || got.Dir != "/downloads" || got.TotalLength != "1000" ||
+			got.CompletedLength != "500" || got.DownloadGroup == nil || got.DownloadGroup.ID != group.ID {
+			t.Fatalf("history metadata lost: %#v", got)
+		}
+		if got.ErrorCode != "" || got.ErrorMessage != "" {
+			t.Fatalf("stale terminal error kept: %#v", got)
+		}
+		if _, exists := history.Get(gid); exists {
+			t.Fatal("H0 not retired")
+		}
+		if gen := tracker.LifecycleGeneration(gid); gen != 1 {
+			t.Fatalf("generation = %d, want exactly one reopen", gen)
+		}
+		if tt, _ := tracker.GetTrackedTask(gid); !tt.ActivatedAt.IsZero() {
+			t.Fatal("resume ack fabricated activation")
+		}
+
+		// Repeat/expired confirmation must not resurrect or duplicate.
+		m.ConfirmPauseResumeRequest(ticket)
+		got2, list2, _ := Cache.GetTask(gid)
+		if list2 != "waiting" || got2.Status != "waiting" {
+			t.Fatalf("repeat confirm disturbed waiting row: %#v", got2)
+		}
+		if tracker.LifecycleGeneration(gid) != 1 {
+			t.Fatal("repeat confirm re-reopened the task")
+		}
+		if _, exists := history.Get(gid); exists {
+			t.Fatal("repeat confirm resurrected history")
+		}
+	})
+
+	t.Run("post-move pre-retire window only exposes waiting", func(t *testing.T) {
+		resetHistoryForTest(t)
+		m, _, _, tracker := newReconcileTestMonitor(t)
+		const gid = "ar_hist_barrier"
+		t.Cleanup(func() { Cache.RemoveTask(gid) })
+		history.Add(history.HistoryEntry{
+			GID: gid, Path: "/downloads/b.bin", TotalLength: "1000",
+			CompletedLength: "1000", Status: "complete",
+		})
+		tracker.EnsureTrackedFromEvent(gid, 1000, "https://example.com/b.bin", 0, "complete")
+		if first := tracker.MarkCompleteFromEvent(gid, "complete"); first == nil {
+			t.Fatal("expected terminal mark")
+		}
+
+		started := make(chan struct{})
+		release := make(chan struct{})
+		tracker.afterMoveBeforeRetire = func(string) {
+			close(started)
+			<-release
+		}
+		t.Cleanup(func() { tracker.afterMoveBeforeRetire = nil })
+
+		observed := make(chan string, 1)
+		go func() {
+			<-started
+			active, waiting, stopped := Cache.GetTaskLists()
+			switch {
+			case containsTaskGID(stopped, gid):
+				observed <- "stopped"
+			case containsTaskGID(active, gid):
+				observed <- "active"
+			case !containsTaskGID(waiting, gid):
+				observed <- "missing"
+			default:
+				observed <- "waiting"
+			}
+			close(release)
+		}()
+
+		ticket := m.BeginPauseResumeRequest(gid, "resume")
+		m.ConfirmPauseResumeRequest(ticket)
+		if state := <-observed; state != "waiting" {
+			t.Fatalf("mid-transition snapshot saw %q, want waiting", state)
+		}
+		if _, exists := history.Get(gid); exists {
+			t.Fatal("H0 not retired")
+		}
+		if gen := tracker.LifecycleGeneration(gid); gen != 1 {
+			t.Fatalf("generation = %d, want exactly one reopen", gen)
+		}
+	})
+}

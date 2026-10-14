@@ -455,6 +455,27 @@ func (c *TaskCache) moveTaskToWaiting(gid, status string, refuseStopped bool) st
 	return moveTaskBetweenLists(&c.arActive, &c.arWaiting, &c.arStopped, gid, status, "waiting", refuseStopped)
 }
 
+// RestoreAriaHistoryTaskToWaiting stages a history-only Aria2 row into the
+// stopped list and moves it to waiting inside a single arMu critical
+// section, so readers can only ever observe absent or waiting — never the
+// intermediate append-to-stopped state. Returns the logical source:
+// "stopped" for the staged restore (or a real stopped row), the live list
+// name when a full row already exists, or "" for empty/foreign GIDs. The
+// history snapshot only seeds a row when none exists; an existing live row
+// is folded and moved with its metadata intact.
+func (c *TaskCache) RestoreAriaHistoryTaskToWaiting(task rpc.Task, status string) string {
+	gid := task.GID
+	if gid == "" || enginePrefix(gid) == "sg" {
+		return ""
+	}
+	c.arMu.Lock()
+	defer c.arMu.Unlock()
+	if !containsTaskGID(c.arActive, gid) && !containsTaskGID(c.arWaiting, gid) && !containsTaskGID(c.arStopped, gid) {
+		c.arStopped = append(c.arStopped, copyTask(task))
+	}
+	return moveTaskBetweenLists(&c.arActive, &c.arWaiting, &c.arStopped, gid, status, "waiting", false)
+}
+
 // MoveTaskToActive moves a task into the active list from any of the three
 // engine slices (active / waiting / stopped), setting its status. Returns the
 // source list name, or "" when the GID was not found. When the source is

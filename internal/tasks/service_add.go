@@ -992,9 +992,21 @@ func (s *Service) preflightCandidateAuth(ctx context.Context, candidate addTaskC
 	return nil
 }
 
+// resolveHostIPTimeout bounds the caller-side wait of the add-path DNS
+// lookup. The deadline only limits this caller: it does not claim to kill
+// any resolver internals the OS may keep running.
+const resolveHostIPTimeout = 2 * time.Second
+
 // resolveHostIP extracts the host from url and does a DNS lookup.
 // Returns "" on failure (caller falls back to proxy envKey).
 func resolveHostIP(rawurl string) string {
+	return resolveHostIPWithLookup(rawurl, resolveHostIPTimeout, net.DefaultResolver.LookupHost)
+}
+
+// resolveHostIPWithLookup is the seam behind resolveHostIP: the same
+// URL/host/literal branches with an injectable context-aware lookup so the
+// deadline behavior can be exercised without real DNS.
+func resolveHostIPWithLookup(rawurl string, timeout time.Duration, lookup func(context.Context, string) ([]string, error)) string {
 	u, err := neturl.Parse(rawurl)
 	if err != nil {
 		return ""
@@ -1006,7 +1018,9 @@ func resolveHostIP(rawurl string) string {
 	if ip := net.ParseIP(host); ip != nil {
 		return host
 	}
-	ips, err := net.LookupHost(host)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	ips, err := lookup(ctx, host)
 	if err != nil || len(ips) == 0 {
 		return ""
 	}

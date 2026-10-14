@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1590,4 +1591,204 @@ func TestTaskCache_GetTaskConcurrentWithWrites(t *testing.T) {
 		}
 	})
 	wg.Wait()
+}
+
+// TestTaskCache_RestoreAriaHistoryTaskToWaitingAtomic covers the single-arMu
+// history-only restore: staging into stopped and the waiting move share one
+// critical section, so readers can only ever observe absent or waiting.
+func TestTaskCache_RestoreAriaHistoryTaskToWaitingAtomic(t *testing.T) {
+	ariaStoppedForTest := func(c *TaskCache, task rpc.Task) {
+		c.arMu.Lock()
+		c.arStopped = append(c.arStopped, task)
+		c.arMu.Unlock()
+	}
+	ariaListsForTest := func(c *TaskCache) (active, waiting, stopped []rpc.Task) {
+		c.arMu.RLock()
+		defer c.arMu.RUnlock()
+		return append([]rpc.Task(nil), c.arActive...), append([]rpc.Task(nil), c.arWaiting...), append([]rpc.Task(nil), c.arStopped...)
+	}
+	historyRow := func(gid string) rpc.Task {
+		row := fullRowForTest(gid)
+		row.Status = "error" // projected history status
+		return row
+	}
+
+	t.Run("history full row first restore lands in waiting", func(t *testing.T) {
+		cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+		full := historyRow("ar_hist_full")
+		from := cache.RestoreAriaHistoryTaskToWaiting(full, "waiting")
+		if from != "stopped" {
+			t.Fatalf("from=%q, want logical source stopped", from)
+		}
+		got, list, ok := cache.GetTask("ar_hist_full")
+		if !ok || list != "waiting" || got.Status != "waiting" || got.DownloadSpeed != "0" {
+			t.Fatalf("restored row: %#v list=%s", got, list)
+		}
+		assertFullRowMetadata(t, got, full)
+		if got.ErrorCode != "" || got.ErrorMessage != "" {
+			t.Fatalf("stale terminal error kept: %#v", got)
+		}
+		active, waiting, stopped := ariaListsForTest(cache)
+		if len(active) != 0 || len(waiting) != 1 || len(stopped) != 0 {
+			t.Fatalf("lists: active=%d waiting=%d stopped=%d", len(active), len(waiting), len(stopped))
+		}
+	})
+
+	t.Run("repeat call returns waiting without twins", func(t *testing.T) {
+		cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+		full := historyRow("ar_hist_repeat")
+		if from := cache.RestoreAriaHistoryTaskToWaiting(full, "waiting"); from != "stopped" {
+			t.Fatalf("first from=%q", from)
+		}
+		if from := cache.RestoreAriaHistoryTaskToWaiting(historyRow("ar_hist_repeat"), "waiting"); from != "waiting" {
+			t.Fatalf("repeat from=%q, want waiting", from)
+		}
+		_, waiting, stopped := ariaListsForTest(cache)
+		if len(waiting) != 1 || len(stopped) != 0 {
+			t.Fatalf("twins: waiting=%d stopped=%d", len(waiting), len(stopped))
+		}
+	})
+
+	t.Run("existing full rows keep live metadata over snapshot", func(t *testing.T) {
+		for _, src := range []string{"waiting", "stopped"} {
+			t.Run(src, func(t *testing.T) {
+				cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+				live := fullRowForTest("ar_hist_live")
+				live.Title = "live title"
+				live.Status = "error"
+				if src == "waiting" {
+					live.Status = "paused"
+					cache.arMu.Lock()
+					cache.arWaiting = append(cache.arWaiting, live)
+					cache.arMu.Unlock()
+				} else {
+					ariaStoppedForTest(cache, live)
+				}
+				stale := historyRow("ar_hist_live")
+				stale.Title = "history title"
+				from := cache.RestoreAriaHistoryTaskToWaiting(stale, "waiting")
+				if from != src {
+					t.Fatalf("from=%q, want %q", from, src)
+				}
+				got, list, _ := cache.GetTask("ar_hist_live")
+				if list != "waiting" || got.Title != "live title" || got.Status != "waiting" {
+					t.Fatalf("live row overwritten or lost: %#v list=%s", got, list)
+				}
+				assertFullRowMetadata(t, got, live)
+				if src == "stopped" && (got.ErrorCode != "" || got.ErrorMessage != "") {
+					t.Fatalf("stopped-source stale terminal error kept: %#v", got)
+				}
+			})
+		}
+	})
+
+	t.Run("corrupt twin membership folds to single waiting row", func(t *testing.T) {
+		cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+		cache.arMu.Lock()
+		cache.arActive = append(cache.arActive, rpc.Task{GID: "ar_hist_twin", Status: "active", Dir: "/live"})
+		cache.arStopped = append(cache.arStopped, rpc.Task{
+			GID: "ar_hist_twin", Status: "error", ErrorCode: "1", ErrorMessage: "stale",
+			TotalLength: "1000", Files: []rpc.File{{Path: "/live/f.bin"}},
+		})
+		cache.arMu.Unlock()
+		from := cache.RestoreAriaHistoryTaskToWaiting(historyRow("ar_hist_twin"), "waiting")
+		if from != "active" {
+			t.Fatalf("from=%q, want live source active", from)
+		}
+		active, waiting, stopped := ariaListsForTest(cache)
+		if len(active) != 0 || len(waiting) != 1 || len(stopped) != 0 {
+			t.Fatalf("twin not swept: active=%d waiting=%d stopped=%d", len(active), len(waiting), len(stopped))
+		}
+	})
+
+	t.Run("no-prefix gid is treated as aria2", func(t *testing.T) {
+		cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+		if from := cache.RestoreAriaHistoryTaskToWaiting(historyRow("plain123"), "waiting"); from != "stopped" {
+			t.Fatalf("from=%q, want stopped", from)
+		}
+		_, waiting, _ := ariaListsForTest(cache)
+		if len(waiting) != 1 || waiting[0].GID != "plain123" {
+			t.Fatalf("waiting=%#v", waiting)
+		}
+	})
+
+	t.Run("sg gid and empty gid are refused", func(t *testing.T) {
+		cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+		if from := cache.RestoreAriaHistoryTaskToWaiting(historyRow("sg_x"), "waiting"); from != "" {
+			t.Fatalf("sg from=%q, want empty", from)
+		}
+		if from := cache.RestoreAriaHistoryTaskToWaiting(rpc.Task{}, "waiting"); from != "" {
+			t.Fatalf("empty gid from=%q, want empty", from)
+		}
+		if active, waiting, stopped := ariaListsForTest(cache); len(active)+len(waiting)+len(stopped) != 0 {
+			t.Fatal("foreign/empty gid mutated ar lists")
+		}
+	})
+
+	t.Run("concurrent readers never observe stopped", func(t *testing.T) {
+		cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
+		const writers = 8
+		const gidsPerWriter = 20
+		gids := make([]string, 0, writers*gidsPerWriter)
+		for w := range writers {
+			for i := range gidsPerWriter {
+				gids = append(gids, "ar_atomic_"+strconv.Itoa(w)+"_"+strconv.Itoa(i))
+			}
+		}
+		var stoppedSeen, twinSeen, anomalies atomic.Int64
+		done := make(chan struct{})
+		var readersWg, writersWg sync.WaitGroup
+		for range 3 {
+			readersWg.Go(func() {
+				for {
+					select {
+					case <-done:
+						return
+					default:
+					}
+					active, waiting, stopped := cache.GetTaskLists()
+					for _, gid := range gids {
+						inA := containsTaskGID(active, gid)
+						inW := containsTaskGID(waiting, gid)
+						inS := containsTaskGID(stopped, gid)
+						count := 0
+						for _, hit := range []bool{inA, inW, inS} {
+							if hit {
+								count++
+							}
+						}
+						if count > 1 {
+							twinSeen.Add(1)
+						}
+						if inS {
+							stoppedSeen.Add(1)
+						}
+						if inA {
+							anomalies.Add(1)
+						}
+					}
+				}
+			})
+		}
+		for w := range writers {
+			writersWg.Go(func() {
+				for i := range gidsPerWriter {
+					gid := gids[w*gidsPerWriter+i]
+					if from := cache.RestoreAriaHistoryTaskToWaiting(historyRow(gid), "waiting"); from != "stopped" {
+						anomalies.Add(1)
+					}
+				}
+			})
+		}
+		writersWg.Wait()
+		close(done)
+		readersWg.Wait()
+		if stoppedSeen.Load() != 0 || twinSeen.Load() != 0 || anomalies.Load() != 0 {
+			t.Fatalf("atomicity violated: stopped=%d twins=%d anomalies=%d", stoppedSeen.Load(), twinSeen.Load(), anomalies.Load())
+		}
+		_, waiting, stopped := ariaListsForTest(cache)
+		if len(waiting) != len(gids) || len(stopped) != 0 {
+			t.Fatalf("final: waiting=%d stopped=%d want %d/0", len(waiting), len(stopped), len(gids))
+		}
+	})
 }
