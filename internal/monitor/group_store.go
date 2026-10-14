@@ -59,12 +59,13 @@ func newTaskGroupStore() *taskGroupStore {
 		saveDebounce: groupStoreSaveDebounce,
 		saveMaxBurst: groupStoreSaveMaxBurst,
 	}
-	s.initSaverLocked()
+	s.initSaver()
 	return s
 }
 
-// initSaverLocked rebuilds saver channels/Once/counters; callers hold s.mu.
-func (s *taskGroupStore) initSaverLocked() {
+// initSaver rebuilds saver channels/Once/counters for a new epoch; reset
+// callers hold s.mu after joining any previous worker.
+func (s *taskGroupStore) initSaver() {
 	s.saveChan = make(chan struct{}, 1)
 	s.stopChan = make(chan struct{})
 	s.doneChan = make(chan struct{})
@@ -110,7 +111,7 @@ func (s *taskGroupStore) resetForTest(path string, enabled bool) {
 	s.path = path
 	s.groups = make(map[string]rpc.DownloadGroup)
 	s.enabled = enabled && path != ""
-	s.initSaverLocked()
+	s.initSaver()
 }
 
 func SetTaskGroupStoreEnabled(enabled bool) {

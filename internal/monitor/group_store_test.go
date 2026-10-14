@@ -436,16 +436,23 @@ func TestTaskGroupStore_FlushStopAndReset(t *testing.T) {
 
 	t.Run("load is not overwritten by stale pending", func(t *testing.T) {
 		s, path := newIsolatedGroupStore(t)
-		s.saveDebounce = time.Hour
+		s.saveDebounce = 100 * time.Millisecond
+		s.saveMaxBurst = 300 * time.Millisecond
+
 		s.putForTest("gid-stale", testDownloadGroup("dg-stale"))
 
-		// Simulate an external file arriving before the pending save runs.
+		// An external file lands before the pending save can run; the load
+		// discards its trigger so the worker observes a clean store.
 		if err := os.WriteFile(path, []byte(`{"gid-disk":{"id":"dg-disk","kind":"batch"}}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		s.loadFromDisk()
 
-		time.Sleep(50 * time.Millisecond)
+		// Give the worker a full coalesce cycle after the load.
+		time.Sleep(2 * s.saveMaxBurst)
+		if writes := s.saveWriteCount.Load(); writes != 0 {
+			t.Fatalf("stale pending triggered a post-load write (%d)", writes)
+		}
 		stored := readGroupStoreFile(t, path)
 		if _, ok := stored["gid-stale"]; ok {
 			t.Fatalf("stale pending rewrote loaded content: %#v", stored)
