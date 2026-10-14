@@ -33,7 +33,7 @@ type admissionEntry struct {
 }
 
 // AdmissionController is the single resident admission loop for the managed
-// Surge pool: FIFO snapshot → nine-field gate → Reserve → Admit → in-round
+// Surge pool: FIFO snapshot → eleven-field gate → Reserve → Admit → in-round
 // accounting. It owns no second scheduler, queue, or recovery machinery; one
 // goroutine serializes every decision.
 type AdmissionController struct {
