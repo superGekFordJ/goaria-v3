@@ -467,3 +467,67 @@ func TestHandleTaskComplete_EmptyEnvKeySkipsRecording(t *testing.T) {
 		t.Fatalf("expected 0 new speedstats records (empty envKey skipped), got %d (before=%d, after=%d)", after-before, before, after)
 	}
 }
+
+// TestExplorationSerial_RecordBoundary exercises the real terminal write
+// bridge that admission graduation replays: exactly MinFileSize never lands a
+// record, MinFileSize+1 does, and a resumed completion records its original
+// TotalLength — never the remaining bytes. Skip reasons (empty env,
+// range_unsupported) are covered by their existing cases.
+func TestExplorationSerial_RecordBoundary(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+
+	surge := rpc.NewSurgeEngineForTesting(nil)
+	he := rpc.NewHybridEngine(nil, surge)
+	tracker := NewTaskTracker()
+	m := &Monitor{engine: he, tracker: tracker}
+
+	completeTask := func(gid, domain string, total, completed int64) *TrackedTask {
+		tracker.EnsureTrackedFromEvent(gid, total, "https://"+domain+"/file.bin", 8, "active")
+		task := tracker.tasks[gid]
+		task.Status = "complete"
+		task.PeakSpeed = 20 * 1024 * 1024
+		task.ThreadCount = 8
+		task.Domain = domain
+		task.Scope = "wan"
+		task.FilePath = `D:\Downloads\file.bin`
+		task.PeakEnvKey = "testenv"
+		task.CompletedLength = completed
+		return task
+	}
+
+	// Exactly 50 MiB is not record-level: no record, no graduation.
+	m.handleTaskComplete(completeTask("sg_exact", "edge-boundary.example.com", speedstats.MinFileSize, speedstats.MinFileSize))
+	if speedstatsRecordCount() != 0 {
+		t.Fatalf("exactly-%d task wrote a speedstats record", speedstats.MinFileSize)
+	}
+	if speedstats.HasDomainScopeEnvRecord("edge-boundary.example.com", "wan", "testenv") {
+		t.Fatal("exact-boundary domain falsely registered a record")
+	}
+
+	// One byte over the boundary lands the record.
+	m.handleTaskComplete(completeTask("sg_over", "over-boundary.example.com", speedstats.MinFileSize+1, speedstats.MinFileSize+1))
+	rec := findRecordByDomain("over-boundary.example.com")
+	if rec == nil {
+		t.Fatal("over-boundary completion wrote no record")
+	}
+	if rec.FileSize != speedstats.MinFileSize+1 {
+		t.Errorf("FileSize = %d, want %d", rec.FileSize, speedstats.MinFileSize+1)
+	}
+
+	// A resumed completion writes the original total — the remaining bytes
+	// (1 MiB here) would be far below the boundary.
+	const resumeTotal = int64(80 << 20)
+	m.handleTaskComplete(completeTask("sg_resume", "resume-boundary.example.com", resumeTotal, resumeTotal-(1<<20)))
+	rec = findRecordByDomain("resume-boundary.example.com")
+	if rec == nil {
+		t.Fatal("resumed completion wrote no record")
+	}
+	if rec.FileSize != resumeTotal {
+		t.Errorf("FileSize = %d, want original total %d, not remaining", rec.FileSize, resumeTotal)
+	}
+}

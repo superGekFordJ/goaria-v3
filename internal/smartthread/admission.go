@@ -36,7 +36,7 @@ const (
 )
 
 // AdmissionParams is the complete scalar input for one admission decision.
-// The caller prepares the nine fields from a scheduler snapshot, occupancy,
+// The caller prepares the eleven fields from a scheduler snapshot, occupancy,
 // and configuration; the gate validates them and never reaches back into
 // pool or tracker state.
 type AdmissionParams struct {
@@ -67,6 +67,13 @@ type AdmissionParams struct {
 	// DomainWorkerHeadroom is the base connection headroom for scope|domain
 	// before this round's incremental reservations are deducted.
 	DomainWorkerHeadroom int
+	// DomainMeasuring counts committed record-level measurement opportunities
+	// sharing scope|domain that still hold a live occupancy claim (env-blind,
+	// prepared by the caller from the same occupancy snapshot as the ledger).
+	DomainMeasuring int
+	// RecordEligible marks the candidate's original total size as
+	// record-level (> speedstats.MinFileSize). Total, never remaining.
+	RecordEligible bool
 }
 
 // AdmissionDecision is the gate output. Allowed is the only admission
@@ -136,6 +143,9 @@ func EvaluateAdmission(p AdmissionParams) AdmissionDecision {
 	if p.SlotHeadroom < 0 || p.SlotHeadroom > config.MaxConcurrentDownloadsUpper {
 		return zero
 	}
+	if p.DomainMeasuring < 0 {
+		return zero
+	}
 	if p.Upper.Split < 1 || p.Upper.Split > config.MaxConnectionsUpper ||
 		p.Upper.MinSize < 0 || p.Upper.TargetBandwidth < 0 {
 		return zero
@@ -179,6 +189,14 @@ func EvaluateAdmission(p AdmissionParams) AdmissionDecision {
 		return AdmissionDecision{Blocked: AdmissionBlockScope}
 	}
 	if res.exploration && p.DomainCommitted >= admissionExplorationDomainLimit {
+		return AdmissionDecision{Blocked: AdmissionBlockDomain}
+	}
+	// Record-level serial measurement: while a committed measurement
+	// opportunity still claims this scope|domain, another record-eligible
+	// candidate waits. Small/unknown-size candidates are exempt — they never
+	// write speedstats records — and this check precedes the short-candidate
+	// exception so a large-total short candidate cannot bypass it.
+	if res.exploration && p.RecordEligible && p.DomainMeasuring >= 1 {
 		return AdmissionDecision{Blocked: AdmissionBlockDomain}
 	}
 
@@ -249,4 +267,13 @@ func EvaluateAdmission(p AdmissionParams) AdmissionDecision {
 			TargetBandwidth: res.threadEfficiency,
 		},
 	}
+}
+
+// IsMeasuringTaskOccupancy reports whether a committed measurement
+// opportunity still holds a live claim at now: the shared TaskOccupancy
+// formula meeting the per-thread efficiency floor. Lease, telemetry, and
+// status semantics all stay inside TaskOccupancy — there is deliberately no
+// second health test.
+func IsMeasuringTaskOccupancy(t TrackedTaskInfo, now time.Time) bool {
+	return TaskOccupancy(t, now) >= minThreadEfficiency
 }

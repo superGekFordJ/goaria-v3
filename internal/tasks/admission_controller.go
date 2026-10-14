@@ -9,6 +9,7 @@ import (
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/smartthread"
+	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/surge/scheduler"
 )
 
@@ -26,6 +27,9 @@ type admissionEntry struct {
 	domain    string
 	envKey    string
 	shortUsed bool
+	// recordEligible marks whether this opportunity's original total size is
+	// record-level (> speedstats.MinFileSize) — total, never remaining.
+	recordEligible bool
 }
 
 // AdmissionController is the single resident admission loop for the managed
@@ -272,29 +276,50 @@ func (c *AdmissionController) evaluate(now time.Time) {
 
 	c.reconcileTickets(snap, tracker)
 
+	// Frozen occupancy inputs for this round: one collector pass feeds the
+	// committed-measurement check now and the common seed ledger below.
+	occInfos := BuildOccupancyTaskInfos()
+	occByGID := make(map[string]smartthread.TrackedTaskInfo, len(occInfos))
+	for _, info := range occInfos {
+		occByGID[info.GID] = info
+	}
+	measuringOccupied := func(gid string) bool {
+		info, ok := occByGID[gid]
+		return ok && smartthread.IsMeasuringTaskOccupancy(info, now)
+	}
+
 	// Committed work: admitted-but-unclaimed candidates plus every Busy claim,
 	// deduped by key and classified through the retained entry scalars.
 	scopeEnvCommitted := make(map[string]int)
 	domainCommitted := make(map[string]int)
+	domainMeasuring := make(map[string]int)
 	seenCommitted := make(map[scheduler.AdmissionKey]bool)
 	countCommitted := func(key scheduler.AdmissionKey) {
 		if seenCommitted[key] {
 			return
 		}
 		seenCommitted[key] = true
+		gid := "sg_" + key.ID
 		e := c.entries[key]
 		if e == nil {
 			// A restart drops in-memory entries while committed keys survive
 			// in the snapshot; resolve classification through the tracker row
 			// so a foreign-window claim never escapes the scope/domain caps.
-			if scope, domain, envKey, ok := tracker.GetScopeAndEnv("sg_" + key.ID); ok {
+			if scope, domain, envKey, ok := tracker.GetScopeAndEnv(gid); ok {
 				scopeEnvCommitted[scopeEnvBucket(scope, envKey)]++
 				domainCommitted[scopeDomainBucket(scope, domain)]++
+				if info, ok := occByGID[gid]; ok && info.TotalLength > speedstats.MinFileSize &&
+					smartthread.IsMeasuringTaskOccupancy(info, now) {
+					domainMeasuring[scopeDomainBucket(scope, domain)]++
+				}
 			}
 			return
 		}
 		scopeEnvCommitted[scopeEnvBucket(e.scope, e.envKey)]++
 		domainCommitted[scopeDomainBucket(e.scope, e.domain)]++
+		if e.recordEligible && measuringOccupied(gid) {
+			domainMeasuring[scopeDomainBucket(e.scope, e.domain)]++
+		}
 	}
 	for _, cand := range snap.Candidates {
 		if cand.Admitted && !cand.InFlight {
@@ -303,6 +328,17 @@ func (c *AdmissionController) evaluate(now time.Time) {
 	}
 	for _, slot := range snap.Busy {
 		countCommitted(slot.Key)
+	}
+	// A live Aria2 row with a record-level total holds the same domain
+	// measurement identity for new Surge candidates; small Aria2 rows never
+	// write records and never count.
+	for gid, info := range occByGID {
+		if monitor.IsSgGid(gid) || info.Scope == "" || info.Domain == "" {
+			continue
+		}
+		if info.TotalLength > speedstats.MinFileSize && smartthread.IsMeasuringTaskOccupancy(info, now) {
+			domainMeasuring[scopeDomainBucket(info.Scope, info.Domain)]++
+		}
 	}
 
 	maxConn, _ := strconv.Atoi(cfg.MaxConnections)
@@ -373,6 +409,7 @@ func (c *AdmissionController) evaluate(now time.Time) {
 			c.entries[cand.Key] = entry
 		}
 		entry.scope, entry.domain, entry.envKey = scope, domain, envKey
+		entry.recordEligible = cand.TotalSize > speedstats.MinFileSize
 
 		prep := admissionPrep{
 			cand:   cand,
@@ -406,10 +443,10 @@ func (c *AdmissionController) evaluate(now time.Time) {
 	}
 
 	// Frozen occupancy inputs, captured before any Reserve this round: one
-	// common seed ledger, self-excluding views for retained pendings, and
-	// per-domain worker baselines (ThreadCount vs live telemetry, no
-	// bandwidth>0 filter).
-	commonLedger := smartthread.NewBandwidthLedgerAt(BuildOccupancyTaskInfos(), now)
+	// common seed ledger (the same snapshot the measurement check used),
+	// self-excluding views for retained pendings, and per-domain worker
+	// baselines (ThreadCount vs live telemetry, no bandwidth>0 filter).
+	commonLedger := smartthread.NewBandwidthLedgerAt(occInfos, now)
 	views := make(map[string]*smartthread.BandwidthLedger)
 	domainBaseline := make(map[string]int)
 	baselineKey := func(p admissionPrep) string {
@@ -512,6 +549,8 @@ func (c *AdmissionController) evaluate(now time.Time) {
 			ScopeEnvCommitted:    scopeEnvCommitted[scopeEnvBucket(p.scope, p.envKey)],
 			DomainCommitted:      domainCommitted[scopeDomainBucket(p.scope, p.domain)],
 			DomainWorkerHeadroom: workerHead,
+			DomainMeasuring:      domainMeasuring[scopeDomainBucket(p.scope, p.domain)],
+			RecordEligible:       p.entry.recordEligible,
 		})
 		if !decision.Allowed {
 			continue
@@ -539,6 +578,12 @@ func (c *AdmissionController) evaluate(now time.Time) {
 			accepted++
 			scopeEnvCommitted[scopeEnvBucket(p.scope, p.envKey)]++
 			domainCommitted[scopeDomainBucket(p.scope, p.domain)]++
+			// A fresh smart reservation always anchors a live measurement
+			// claim (its Target floor meets the efficiency bound); a retained
+			// ticket proves liveness against the frozen occupancy snapshot.
+			if smart && p.entry.recordEligible && (created || measuringOccupied(p.gid)) {
+				domainMeasuring[scopeDomainBucket(p.scope, p.domain)]++
+			}
 		case scheduler.AdmitStale:
 			if created {
 				// R2: release only the reservation created this round; the

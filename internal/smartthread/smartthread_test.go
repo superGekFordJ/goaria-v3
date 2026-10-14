@@ -1324,3 +1324,186 @@ func TestAdmissionResources_MinThreadLife(t *testing.T) {
 		t.Fatal("MinThreadLife=0 changed legacy behavior")
 	}
 }
+
+// --- Record-level serial measurement gate (exploration scope|domain) ---
+
+func TestAdmissionGate_ExplorationSerialMeasurement(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	t.Run("record-eligible candidate blocked while a measurement is live", func(t *testing.T) {
+		p := gateFixture()
+		p.RecordEligible = true
+		p.DomainMeasuring = 1
+		d := EvaluateAdmission(p)
+		if d.Allowed || d.Blocked != AdmissionBlockDomain || d.Params != (ThreadParams{}) {
+			t.Fatalf("measuring=1 eligible: %+v", d)
+		}
+	})
+
+	t.Run("no live measurement passes normally", func(t *testing.T) {
+		p := gateFixture()
+		p.RecordEligible = true
+		p.DomainMeasuring = 0
+		if d := EvaluateAdmission(p); !d.Allowed {
+			t.Fatalf("measuring=0 eligible: %+v", d)
+		}
+	})
+
+	t.Run("small candidates are exempt from the serial lock", func(t *testing.T) {
+		p := gateFixture()
+		p.RecordEligible = false
+		p.DomainMeasuring = 3
+		if d := EvaluateAdmission(p); !d.Allowed {
+			t.Fatalf("ineligible with measuring=3: %+v", d)
+		}
+	})
+
+	t.Run("hot domain ignores the serial lock", func(t *testing.T) {
+		speedstats.ResetRecordsForTest()
+		seedEfficiency(t, 4<<20, 4, "a.com", "wan", "envA")
+		p := gateFixture()
+		p.RecordEligible = true
+		p.DomainMeasuring = 1
+		if d := EvaluateAdmission(p); !d.Allowed {
+			t.Fatalf("hot domain with measuring=1: %+v", d)
+		}
+		speedstats.ResetRecordsForTest()
+	})
+
+	t.Run("negative measuring count is invalid input", func(t *testing.T) {
+		p := gateFixture()
+		p.RecordEligible = true
+		p.DomainMeasuring = -1
+		if d := EvaluateAdmission(p); d != (AdmissionDecision{}) {
+			t.Fatalf("measuring=-1: %+v", d)
+		}
+		// Off mode must not swallow the invalid count either.
+		p.Smart = false
+		if d := EvaluateAdmission(p); d != (AdmissionDecision{}) {
+			t.Fatalf("off measuring=-1: %+v", d)
+		}
+	})
+
+	t.Run("off mode ignores the serial lock entirely", func(t *testing.T) {
+		p := gateFixture()
+		p.Smart = false
+		p.RecordEligible = true
+		p.DomainMeasuring = 5
+		if d := EvaluateAdmission(p); !d.Allowed || d.Params != p.Upper {
+			t.Fatalf("off measuring=5: %+v", d)
+		}
+	})
+
+	t.Run("resume with large total and small remaining stays locked", func(t *testing.T) {
+		p := gateFixture()
+		p.RecordEligible = true // total 80MiB even though remaining is 20MiB
+		p.Calc.FileSize = 20 << 20
+		p.DomainMeasuring = 1
+		if d := EvaluateAdmission(p); d.Allowed || d.Blocked != AdmissionBlockDomain {
+			t.Fatalf("resume-total eligible with measuring=1: %+v", d)
+		}
+	})
+
+	t.Run("short exception cannot bypass the serial lock", func(t *testing.T) {
+		p := gateFixture()
+		p.RecordEligible = true
+		p.DomainMeasuring = 1
+		p.ShortAvailable = true
+		// Also saturate scope so only the short path could ever allow:
+		// the decision must stay Domain-blocked, never Short-allowed.
+		speedstats.ResetRecordsForTest()
+		seedEfficiency(t, minThreadEfficiency, 1, "other.com", "wan", "envA")
+		// gateFixture's own domain stays recordless → exploration.
+		d := EvaluateAdmission(p)
+		if d.Allowed || d.Blocked != AdmissionBlockDomain || d.Short {
+			t.Fatalf("short bypass attempt: %+v", d)
+		}
+		speedstats.ResetRecordsForTest()
+	})
+
+	t.Run("IsMeasuringTaskOccupancy lease and telemetry edges", func(t *testing.T) {
+		now := time.Now()
+		base := func() TrackedTaskInfo {
+			return TrackedTaskInfo{
+				GID: "sg_m1", Status: "active",
+				ActivatedAt:     now.Add(-10 * time.Second),
+				TargetBandwidth: minThreadEfficiency,
+			}
+		}
+		// Live activation lease, no telemetry.
+		if !IsMeasuringTaskOccupancy(base(), now) {
+			t.Fatal("live activation lease must measure")
+		}
+		// Lease boundary: exactly 45s is expired (strict <).
+		exp := base()
+		exp.ActivatedAt = now.Add(-activationNoProgressTTL)
+		if IsMeasuringTaskOccupancy(exp, now) {
+			t.Fatal("lease at exact TTL boundary must be expired")
+		}
+		exp.ActivatedAt = now.Add(-activationNoProgressTTL + time.Millisecond)
+		if !IsMeasuringTaskOccupancy(exp, now) {
+			t.Fatal("lease just inside TTL must hold")
+		}
+		// First-progress lease: 15s past first growth.
+		fp := base()
+		fp.ActivatedAt = now.Add(-40 * time.Second)
+		fp.FirstProgressAt = now.Add(-progressLeaseTTL + time.Millisecond)
+		if !IsMeasuringTaskOccupancy(fp, now) {
+			t.Fatal("first-progress lease just inside TTL must hold")
+		}
+		fp.FirstProgressAt = now.Add(-progressLeaseTTL)
+		if IsMeasuringTaskOccupancy(fp, now) {
+			t.Fatal("first-progress lease at exact TTL must be expired")
+		}
+		// A dead lease falls back to telemetry alone.
+		tm := base()
+		tm.ActivatedAt = now.Add(-2 * activationNoProgressTTL)
+		tm.TelemetryValid = true
+		tm.TelemetryBps = minThreadEfficiency
+		if !IsMeasuringTaskOccupancy(tm, now) {
+			t.Fatal("telemetry at exactly the floor must measure")
+		}
+		tm.TelemetryBps = minThreadEfficiency - 1
+		if IsMeasuringTaskOccupancy(tm, now) {
+			t.Fatal("telemetry below the floor must release")
+		}
+		// Surge raw sample wins over cache telemetry when MacroReady —
+		// including a measured zero.
+		raw := tm
+		raw.MacroReady = true
+		raw.RawBps = 0
+		raw.TelemetryBps = minThreadEfficiency
+		if IsMeasuringTaskOccupancy(raw, now) {
+			t.Fatal("macroReady raw-zero must not fall back to cache speed")
+		}
+		raw.RawBps = minThreadEfficiency
+		if !IsMeasuringTaskOccupancy(raw, now) {
+			t.Fatal("macroReady raw at floor must measure")
+		}
+		// Non-active status contributes nothing once the lease is dead.
+		paused := exp
+		paused.Status = "paused"
+		if IsMeasuringTaskOccupancy(paused, now) {
+			t.Fatal("paused row must release")
+		}
+		// Terminal rows are never measuring.
+		done := base()
+		done.Status = "complete"
+		if IsMeasuringTaskOccupancy(done, now) {
+			t.Fatal("terminal row must not measure")
+		}
+		// Admitted-not-started: live lease claims the floor; expired does not.
+		pend := base()
+		pend.Status = "waiting"
+		pend.AdmissionReserved = true
+		pend.ActivatedAt = now.Add(-time.Second)
+		if !IsMeasuringTaskOccupancy(pend, now) {
+			t.Fatal("live pending reservation must measure")
+		}
+		pend.ActivatedAt = now.Add(-activationNoProgressTTL)
+		if IsMeasuringTaskOccupancy(pend, now) {
+			t.Fatal("expired pending reservation must release")
+		}
+	})
+}
