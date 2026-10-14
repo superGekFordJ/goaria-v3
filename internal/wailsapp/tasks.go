@@ -65,36 +65,34 @@ func (a *App) GetTaskDetails(gids []string) map[string]tasks.TaskDetailEnvelope 
 	return a.taskService().GetTaskDetails(gids)
 }
 
-// PauseTask pauses a download task
+// PauseTask pauses a download task. The engine RPC is the only ordering
+// authority: local monitor state is applied solely after a successful
+// acknowledgement; a failed call leaves cache/tracker untouched.
 func (a *App) PauseTask(gid string) {
-	mon := monitor.State.GetMonitor()
-	ticket := mon.BeginPauseResumeRequest(gid, monitor.PauseResumeIntentionPause)
 	if err := a.downloadEngine.Pause(gid); err != nil {
-		mon.ClearPauseResumeIntentionIfCurrent(ticket)
 		log.Printf("[App] Pause %s failed: %v", gid, err)
 		return
 	}
-	mon.ConfirmPauseResumeRequest(ticket)
+	monitor.State.GetMonitor().ApplyPause(gid)
 }
 
 // ResumeTask resumes a paused or stopped task. Returns an error when the engine
 // rejects the resume so the frontend can avoid optimistic moves.
 func (a *App) ResumeTask(gid string) error {
-	mon := monitor.State.GetMonitor()
-	ticket := mon.BeginPauseResumeRequest(gid, monitor.PauseResumeIntentionResume)
 	err := a.downloadEngine.Resume(gid)
-	if err != nil {
-		mon.ClearPauseResumeIntentionIfCurrent(ticket)
-	} else {
-		mon.ConfirmPauseResumeRequest(ticket)
+	if err == nil {
+		monitor.State.GetMonitor().ApplyResume(gid)
 	}
 	return err
 }
 
-// BatchPause pauses multiple tasks
+// BatchPause pauses multiple tasks. Only per-item OK results apply local
+// state; failed or missing results never mutate cache/tracker.
 func (a *App) BatchPause(gids []string) {
-	mon := monitor.State.GetMonitor()
-	tickets := beginPauseResumeBatch(mon, gids, monitor.PauseResumeIntentionPause)
+	requested := make(map[string]bool, len(gids))
+	for _, gid := range gids {
+		requested[gid] = true
+	}
 	var results []rpc.MultiCallItemResult
 	var err error
 	if engine, ok := a.downloadEngine.(interface {
@@ -113,13 +111,18 @@ func (a *App) BatchPause(gids []string) {
 		log.Printf("[App] BatchPause failed: %v", err)
 		results = nil
 	}
-	finishPauseResumeBatch(mon, tickets, results)
+	mon := monitor.State.GetMonitor()
 	seen := make(map[string]bool, len(results))
+	applied := make(map[string]bool, len(results))
 	for _, item := range results {
 		seen[item.GID] = true
+		if item.OK && requested[item.GID] && !applied[item.GID] {
+			mon.ApplyPause(item.GID)
+			applied[item.GID] = true
+		}
 	}
 	if err == nil {
-		for gid := range tickets {
+		for gid := range requested {
 			if !seen[gid] {
 				log.Printf("[App] Pause %s failed: missing batch result", gid)
 			}
@@ -135,37 +138,20 @@ func (a *App) BatchPause(gids []string) {
 // BatchResume resumes multiple tasks and returns per-GID results. Optimistic
 // frontend moves must only apply to OK entries.
 func (a *App) BatchResume(gids []string) []rpc.MultiCallItemResult {
-	mon := monitor.State.GetMonitor()
-	tickets := beginPauseResumeBatch(mon, gids, monitor.PauseResumeIntentionResume)
-	results := a.resumeMultiResults(gids)
-	finishPauseResumeBatch(mon, tickets, results)
-	return results
-}
-
-func beginPauseResumeBatch(mon *monitor.Monitor, gids []string, action string) map[string]monitor.PauseResumeTicket {
-	tickets := make(map[string]monitor.PauseResumeTicket, len(gids))
+	requested := make(map[string]bool, len(gids))
 	for _, gid := range gids {
-		if _, exists := tickets[gid]; !exists {
-			tickets[gid] = mon.BeginPauseResumeRequest(gid, action)
-		}
+		requested[gid] = true
 	}
-	return tickets
-}
-
-func finishPauseResumeBatch(mon *monitor.Monitor, tickets map[string]monitor.PauseResumeTicket, results []rpc.MultiCallItemResult) {
-	okGIDs := make(map[string]bool, len(results))
+	results := a.resumeMultiResults(gids)
+	mon := monitor.State.GetMonitor()
+	applied := make(map[string]bool, len(results))
 	for _, item := range results {
-		if item.OK {
-			okGIDs[item.GID] = true
+		if item.OK && requested[item.GID] && !applied[item.GID] {
+			mon.ApplyResume(item.GID)
+			applied[item.GID] = true
 		}
 	}
-	for gid, ticket := range tickets {
-		if okGIDs[gid] {
-			mon.ConfirmPauseResumeRequest(ticket)
-		} else {
-			mon.ClearPauseResumeIntentionIfCurrent(ticket)
-		}
-	}
+	return results
 }
 
 func (a *App) resumeMultiResults(gids []string) []rpc.MultiCallItemResult {

@@ -1314,18 +1314,8 @@ func pauseResumeDownloadGroup(groupKey string, action string) DownloadGroupOpera
 		gids[i] = target.gid
 	}
 	result.markAttempted()
-	mon := monitor.State.GetMonitor()
-	tickets := make(map[string]monitor.PauseResumeTicket, len(gids))
-	for _, gid := range gids {
-		if _, exists := tickets[gid]; !exists {
-			tickets[gid] = mon.BeginPauseResumeRequest(gid, action)
-		}
-	}
 	multiResults, err := callDownloadGroupPauseResumeRPC(action, gids)
 	if err != nil {
-		for _, ticket := range tickets {
-			mon.ClearPauseResumeIntentionIfCurrent(ticket)
-		}
 		for _, target := range actionable {
 			result.addItem(DownloadGroupOperationItemResult{GID: target.gid, Status: DownloadGroupOperationItemFailed, Code: DownloadGroupOperationCodeRPCError, Message: downloadGroupOperationMessage(DownloadGroupOperationCodeRPCError)})
 		}
@@ -1340,6 +1330,7 @@ func pauseResumeDownloadGroup(groupKey string, action string) DownloadGroupOpera
 			multiByGID[item.GID] = item
 		}
 	}
+	mon := monitor.State.GetMonitor()
 	successCode := DownloadGroupOperationCodePaused
 	if action == DownloadGroupOperationActionResume {
 		successCode = DownloadGroupOperationCodeResumed
@@ -1348,10 +1339,13 @@ func pauseResumeDownloadGroup(groupKey string, action string) DownloadGroupOpera
 		item, ok := multiByGID[target.gid]
 		if ok && item.OK {
 			result.addItem(DownloadGroupOperationItemResult{GID: target.gid, Status: DownloadGroupOperationItemSucceeded, Code: successCode})
-			mon.ConfirmPauseResumeRequest(tickets[target.gid])
+			if action == DownloadGroupOperationActionPause {
+				mon.ApplyPause(target.gid)
+			} else {
+				mon.ApplyResume(target.gid)
+			}
 			continue
 		}
-		mon.ClearPauseResumeIntentionIfCurrent(tickets[target.gid])
 		result.addItem(DownloadGroupOperationItemResult{GID: target.gid, Status: DownloadGroupOperationItemFailed, Code: DownloadGroupOperationCodeRPCError, Message: downloadGroupOperationMessage(DownloadGroupOperationCodeRPCError)})
 	}
 	result.Refresh = downloadGroupRefreshHint(true, true, true, action)

@@ -1,6 +1,7 @@
 package downloadgroups
 
 import (
+	"errors"
 	"runtime"
 	"sync"
 	"testing"
@@ -9,6 +10,9 @@ import (
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/rpc"
+	"goaria-v3/internal/surge/progress"
+	"goaria-v3/internal/surge/scheduler"
+	surgeEvents "goaria-v3/internal/surge/types"
 )
 
 func TestResumeDownloadGroup_StoppedErrorAndPartialConfirmation(t *testing.T) {
@@ -26,12 +30,10 @@ func TestResumeDownloadGroup_StoppedErrorAndPartialConfirmation(t *testing.T) {
 	monitor.Cache.UpdateFromAria2(nil, nil, monitor.Cache.GetStopped())
 	original := ResumeMultiResults
 	defer func() { ResumeMultiResults = original }()
-	var newer monitor.PauseResumeTicket
 	ResumeMultiResults = func(gids []string) ([]rpc.MultiCallItemResult, error) {
 		if len(gids) != 3 {
 			t.Fatalf("wrong eligibility: %v", gids)
 		}
-		newer = monitor.State.GetMonitor().BeginPauseResumeRequest("sg_error_missing", "pause")
 		return []rpc.MultiCallItemResult{{GID: "sg_error_ok", OK: true}, {GID: "sg_error_ok", Error: "duplicate"}, {GID: "sg_complete", OK: true}, {GID: "sg_error_fail", Error: "failed"}}, nil
 	}
 	result := ResumeDownloadGroup(group.ID)
@@ -49,9 +51,6 @@ func TestResumeDownloadGroup_StoppedErrorAndPartialConfirmation(t *testing.T) {
 		if !taskInCacheList(gid, "stopped") {
 			t.Fatal("failed/unknown moved")
 		}
-	}
-	if !monitor.State.GetMonitor().RunIfPauseResumeRequestCurrent(newer, func() {}) {
-		t.Fatal("missing cleared newer")
 	}
 }
 
@@ -146,8 +145,17 @@ func TestPauseDownloadGroup_TerminalDuringRPC_DoesNotRevive(t *testing.T) {
 
 func TestResumeDownloadGroup_TerminalDuringRPC_DoesNotRevive(t *testing.T) {
 	setupDownloadGroupsTest(t)
-	hub, cleanup := mixedGroupTestMonitor(t)
-	defer cleanup()
+	hub := events.NewHub(nil)
+	// The mid-RPC terminal is only refused when the live pool read agrees:
+	// wire a real scheduler/engine so the error lands as known live state.
+	prog := progress.New("resume_toctou", 0)
+	pool := scheduler.NewSchedulerForTesting(map[string]surgeEvents.DownloadRecord{
+		"resume_toctou": {ID: "resume_toctou", ProgressState: prog},
+	})
+	se := rpc.NewSurgeEngineForTesting(pool)
+	t.Cleanup(se.Close)
+	monitor.State.SetMonitor(monitor.NewMonitorWithSurgeEngineForTest(se))
+	t.Cleanup(func() { monitor.State.SetMonitor(nil) })
 
 	var moveEvents []events.TaskMove
 	hub.SubscribeTaskMove(func(move events.TaskMove) {
@@ -191,6 +199,7 @@ func TestResumeDownloadGroup_TerminalDuringRPC_DoesNotRevive(t *testing.T) {
 		_ = tr.MarkCompleteFromEvent(gid, "error")
 	}
 	history.Add(history.HistoryEntry{GID: gid, Path: "/tmp/resume_toctou.bin", Status: "error"})
+	prog.SetError(errors.New("rpc-terminal"))
 
 	for range 32 {
 		runtime.Gosched()

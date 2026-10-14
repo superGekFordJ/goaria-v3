@@ -113,11 +113,15 @@ func TestResumePollSafety_RealPoolConfirmedResume(t *testing.T) {
 	t.Cleanup(se.Close)
 	m.surgeEng, m.surgePollReader = se, se
 	m.engine = rpc.NewHybridEngine(nil, se)
-	ticket := m.BeginPauseResumeRequest(full.GID, "resume")
+	tokBefore := tracker.LifecycleToken(full.GID)
 	if err := se.Resume("pool_resume"); err != nil {
 		t.Fatal(err)
 	}
-	m.ConfirmPauseResumeRequest(ticket)
+	m.ApplyResume(full.GID)
+	reopened := tracker.LifecycleToken(full.GID)
+	if reopened <= tokBefore {
+		t.Fatal("confirmed resume did not reopen the lifecycle")
+	}
 	if live := se.ReadLiveStatus("pool_resume"); !live.Known || live.Status != "queued" {
 		t.Fatalf("not actually queued: %#v", live)
 	}
@@ -127,7 +131,7 @@ func TestResumePollSafety_RealPoolConfirmedResume(t *testing.T) {
 		assertFullRowMetadata(t, got, full)
 		tracked, _ := tracker.GetTrackedTask(full.GID)
 		if list != "waiting" || got.Status != "waiting" || got.TotalLength != "1000" || got.CompletedLength != "500" ||
-			got.ErrorCode != "" || tracked.Status != "waiting" || !tracked.ActivatedAt.IsZero() || tracker.LifecycleGeneration(full.GID) != 1 {
+			got.ErrorCode != "" || tracked.Status != "waiting" || !tracked.ActivatedAt.IsZero() || tracker.LifecycleToken(full.GID) != reopened {
 			t.Fatalf("confirmed queue regressed: %#v / %#v", got, tracked)
 		}
 		if _, ok := history.Get(full.GID); ok {
@@ -160,10 +164,11 @@ func TestResumePollSafety_RealPoolConfirmedResume(t *testing.T) {
 	if !pool.Add(surgeEvents.DownloadRecord{ID: "pool_retry"}) {
 		t.Fatal("real Add refused")
 	}
+	retryBefore := tracker.LifecycleToken(retry.GID)
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventQueued, DownloadID: "pool_retry"})
 	got, list, _ := Cache.GetTask(retry.GID)
 	assertFullRowMetadata(t, got, retry)
-	if list != "waiting" || got.Status != "waiting" || tracker.LifecycleGeneration(retry.GID) != 1 {
+	if list != "waiting" || got.Status != "waiting" || tracker.LifecycleToken(retry.GID) <= retryBefore {
 		t.Fatal("real queued event did not reopen full stopped row")
 	}
 	if _, ok := history.Get(retry.GID); ok {
@@ -228,13 +233,14 @@ func TestResumePollSafety_StaleReadBarriers(t *testing.T) {
 					full.Status = "paused"
 					Cache.AddSgTask(full, "waiting")
 				}
-				m.ConfirmPauseResumeRequest(m.BeginPauseResumeRequest(full.GID, "resume"))
+				// A real resume ack leaves the pool queued: the in-gate
+				// live read is what the stale snapshot races.
+				reader.setLiveStatus("poll_barrier", rpc.SurgeLiveStatus{Known: true, Status: "queued"})
+				m.ApplyResume(full.GID)
 			}
 			m.chunkSnapshots.Set(full.GID, []byte{2}, 4, 100, nil)
 			m.chunkSnapshots.Set("sg_new_chunk", []byte{2}, 4, 100, nil)
-			m.pauseResumeVersionMu.RLock()
-			intention := m.pauseResumeIntentions[full.GID]
-			m.pauseResumeVersionMu.RUnlock()
+			tokenAfterAccept := tracker.LifecycleToken(full.GID)
 			releasePoll()
 			select {
 			case <-done:
@@ -245,11 +251,8 @@ func TestResumePollSafety_StaleReadBarriers(t *testing.T) {
 			assertFullRowMetadata(t, got, full)
 			tracked, _ := tracker.GetTrackedTask(full.GID)
 			master, _ := m.surgeEng.GetMasterCacheEntry("poll_barrier")
-			m.pauseResumeVersionMu.RLock()
-			intentionStable := m.pauseResumeIntentions[full.GID] == intention
-			m.pauseResumeVersionMu.RUnlock()
 			if got.Status != want || list != want || tracked.Status != want || master.Status != masterStatus ||
-				!intentionStable {
+				tracker.LifecycleToken(full.GID) != tokenAfterAccept {
 				t.Fatal("old poll overwrote accepted facts")
 			}
 			if _, ok := history.Get(full.GID); ok {
@@ -294,14 +297,14 @@ func TestResumePollSafety_CurrentLiveFacts(t *testing.T) {
 	full := fullRowForTest("sg_poll_live")
 	full.Status = "paused"
 	Cache.AddSgTask(full, "waiting")
-	m.ConfirmPauseResumeRequest(m.BeginPauseResumeRequest(full.GID, "resume"))
+	m.ApplyResume(full.GID)
 	reader.setLists(nil, nil, []rpc.Task{{GID: "poll_live", Status: "error", CompletedLength: "0"}})
 	var activated time.Time
 	for _, status := range []string{"queued", "downloading", "downloading", "paused"} {
-		if status == "paused" {
-			m.BeginPauseResumeRequest(full.GID, "pause")
-		}
 		reader.setLiveStatus("poll_live", rpc.SurgeLiveStatus{Known: true, Status: status})
+		if status == "paused" {
+			m.ApplyPause(full.GID)
+		}
 		m.reconcileSurgeCache()
 		got, _, _ := Cache.GetTask(full.GID)
 		assertFullRowMetadata(t, got, full)
@@ -324,10 +327,12 @@ func TestResumePollSafety_CurrentLiveFacts(t *testing.T) {
 			t.Fatal("old terminal list wrote history")
 		}
 	}
-	reader.setLiveStatus("poll_live", rpc.SurgeLiveStatus{Known: true, Status: "queued"})
+	// A stale stopped-list snapshot cannot undo the current live pause:
+	// the in-gate live read, not the list projection, is authoritative.
+	reader.setLiveStatus("poll_live", rpc.SurgeLiveStatus{Known: true, Status: "paused"})
 	m.reconcileSurgeCache()
 	if got, _, _ := Cache.GetTask(full.GID); got.Status != "paused" {
-		t.Fatal("queued snapshot undid current Pause")
+		t.Fatal("stale snapshot undid current Pause")
 	}
 	pending := pusher.pendingSnapshot()
 	if len(pending) == 0 {
@@ -1685,98 +1690,6 @@ func TestStartSurgeEventBridge_Aria2Only(t *testing.T) {
 	close(m.stopChan)
 }
 
-// TestReconcileSurgeCache_MissedComplete_ClearsPauseResumeIntention verifies
-// that the reconcile stopped branch clears the pauseResumeIntentions entry for
-// the completed GID, matching handleSurgeEvent's terminal cleanup.
-func TestReconcileSurgeCache_MissedComplete_ClearsPauseResumeIntention(t *testing.T) {
-	m, reader, _, tracker := newReconcileTestMonitor(t)
-	resetCacheSg()
-	resetHistoryForTest(t)
-
-	m.pauseResumeVersionMu.Lock()
-	m.pauseResumeIntentions = map[string]pauseResumeIntention{"sg_task1": {action: "pause"}}
-	m.pauseResumeVersionMu.Unlock()
-
-	Cache.AddSgTask(rpc.Task{
-		GID:         "sg_task1",
-		Status:      "active",
-		TotalLength: "1000",
-	}, "active")
-	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4, "active")
-	Cache.SetMetadataForTest("sg_task1", &TaskMetadata{
-		GID:   "sg_task1",
-		Files: []string{"/downloads/file.zip"},
-		Dir:   "/downloads",
-	})
-
-	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
-
-	m.reconcileSurgeCache()
-
-	m.pauseResumeVersionMu.RLock()
-	_, exists := m.pauseResumeIntentions["sg_task1"]
-	m.pauseResumeVersionMu.RUnlock()
-	if exists {
-		t.Error("expected pauseResumeIntentions[sg_task1] cleared after reconcile stopped")
-	}
-}
-
-// TestReconcileSurgeCache_MissedRemove_ClearsPauseResumeIntention verifies
-// that the reconcile remove path clears the pauseResumeIntentions entry,
-// matching handleSurgeEvent's terminal cleanup.
-func TestReconcileSurgeCache_MissedRemove_ClearsPauseResumeIntention(t *testing.T) {
-	m, reader, _, _ := newReconcileTestMonitor(t)
-	resetCacheSg()
-
-	m.pauseResumeVersionMu.Lock()
-	m.pauseResumeIntentions = map[string]pauseResumeIntention{"sg_task1": {action: "pause"}}
-	m.pauseResumeVersionMu.Unlock()
-
-	Cache.AddSgTask(rpc.Task{GID: "sg_task1", Status: "complete"}, "stopped")
-
-	reader.setLiveStatus("task1", rpc.SurgeLiveStatus{Absent: true})
-	reader.setLists(nil, nil, nil)
-
-	m.reconcileSurgeCache()
-
-	m.pauseResumeVersionMu.RLock()
-	_, exists := m.pauseResumeIntentions["sg_task1"]
-	m.pauseResumeVersionMu.RUnlock()
-	if exists {
-		t.Error("expected pauseResumeIntentions[sg_task1] cleared after reconcile remove")
-	}
-}
-
-// TestReconcileSurgeCache_MissedAddWithComplete_ClearsPauseResumeIntention
-// verifies that the "added missing task" stopped path also clears the
-// pauseResumeIntentions entry.
-func TestReconcileSurgeCache_MissedAddWithComplete_ClearsPauseResumeIntention(t *testing.T) {
-	m, reader, _, _ := newReconcileTestMonitor(t)
-	resetCacheSg()
-	resetHistoryForTest(t)
-
-	m.pauseResumeVersionMu.Lock()
-	m.pauseResumeIntentions = map[string]pauseResumeIntention{"sg_task1": {action: "pause"}}
-	m.pauseResumeVersionMu.Unlock()
-
-	Cache.SetMetadataForTest("sg_task1", &TaskMetadata{
-		GID:   "sg_task1",
-		Files: []string{"/downloads/file.zip"},
-		Dir:   "/downloads",
-	})
-
-	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
-
-	m.reconcileSurgeCache()
-
-	m.pauseResumeVersionMu.RLock()
-	_, exists := m.pauseResumeIntentions["sg_task1"]
-	m.pauseResumeVersionMu.RUnlock()
-	if exists {
-		t.Error("expected pauseResumeIntentions[sg_task1] cleared after missed-add-with-complete")
-	}
-}
-
 // TestReconcileSurgeCache_MissedComplete_UpdatesTrackerTotalLength verifies
 // that the reconcile stopped branch calls EnsureTrackedFromEvent to update the
 // tracker's TotalLength from the engine task before MarkCompleteFromEvent, so
@@ -1900,7 +1813,7 @@ func requireCondition(t *testing.T, cond func() bool, timeout time.Duration, msg
 
 // =========================================================================
 // Recovery / projection matrix: history-loss, cache-loss, unknown-vs-absent,
-// stale-read barriers, orphan sweep, bounded intention shield.
+// stale-read barriers, orphan sweep, in-gate live adjudication.
 // =========================================================================
 
 // A stopped full row with durable H0 plus a cache-lost GID with only history:
@@ -1929,14 +1842,15 @@ func TestResumeRecovery_HistoryAndCacheLoss(t *testing.T) {
 		[]rpc.Task{{GID: "restore_full", Status: "paused"}},
 		nil,
 	)
+	tokBefore := tracker.LifecycleToken(full.GID)
 	m.reconcileSurgeCache()
 
 	got, list, _ := Cache.GetTask(full.GID)
 	assertFullRowMetadata(t, got, full)
 	tracked, _ := tracker.GetTrackedTask(full.GID)
 	if list != "waiting" || got.Status != "waiting" || !tracked.ActivatedAt.IsZero() ||
-		tracker.LifecycleGeneration(full.GID) != 1 {
-		t.Fatalf("queued restore must reopen to waiting once without activation: %#v gen=%d", got, tracker.LifecycleGeneration(full.GID))
+		tracker.LifecycleToken(full.GID) <= tokBefore {
+		t.Fatalf("queued restore must reopen to waiting once without activation: %#v tok=%d", got, tracker.LifecycleToken(full.GID))
 	}
 	if _, ok := history.Get(full.GID); ok {
 		t.Fatal("H0 not retired on restore")
@@ -2003,7 +1917,8 @@ func TestResumeRecovery_UnknownEvidence(t *testing.T) {
 	m.reconcileSurgeCache()
 
 	// History-backed terminal rows are seeded into stopped, never waiting;
-	// H0 stays durable and the generation does not reopen.
+	// H0 stays durable and the lifecycle never reopens.
+	seedTokens := map[string]uint64{}
 	for _, gid := range []string{"sg_h_w", "sg_h_p", "sg_h_nil"} {
 		got, list, ok := Cache.GetTask(gid)
 		if !ok || list != "stopped" {
@@ -2012,8 +1927,12 @@ func TestResumeRecovery_UnknownEvidence(t *testing.T) {
 		if _, ok := history.Get(gid); !ok {
 			t.Fatalf("%s: H0 retired on mirror evidence", gid)
 		}
-		if tracker.LifecycleGeneration(gid) != 0 {
-			t.Fatalf("%s: mirror row reopened the lifecycle", gid)
+		seedTokens[gid] = tracker.LifecycleToken(gid)
+	}
+	m.reconcileSurgeCache()
+	for gid, tok := range seedTokens {
+		if tracker.LifecycleToken(gid) != tok {
+			t.Fatalf("%s: repeat mirror evidence re-minted the lifecycle token", gid)
 		}
 	}
 	// Mirror-only downloading is not activation evidence either.
@@ -2046,29 +1965,20 @@ func TestResumeRecovery_UnknownEvidence(t *testing.T) {
 	}
 }
 
-// Mid-read mutations must retire a captured observation: stale engine lists
-// can no longer overwrite an accepted Started/Complete/Resume fact, and an
-// uncaptured candidate mutated during the read is never blessed.
+// Mid-read mutations win over the snapshot the poll already captured: the
+// in-gate live read adjudicates every candidate, so stale engine lists can no
+// longer overwrite an accepted Started/Complete/Resume fact, and a row that
+// appears mid-read without current evidence is never blessed.
 func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
-	type midFn func(m *Monitor, tracker *TaskTracker)
+	// mid returns the GID's lifecycle token after the mid-read accept; want
+	// asserts the released stale round never re-mints it.
+	type midFn func(m *Monitor, tracker *TaskTracker) uint64
 
 	seedMeta := func(gid string) {
 		Cache.SetMetadataForTest(gid, &TaskMetadata{GID: gid, Files: []string{"/d/f"}, Dir: "/d"})
 	}
 	seedChunk := func(m *Monitor, gid string) {
 		m.chunkSnapshots.Set(gid, []byte{2}, 8, 1024, nil)
-	}
-	intentionOf := func(m *Monitor, gid string) (pauseResumeIntention, bool) {
-		m.pauseResumeVersionMu.RLock()
-		defer m.pauseResumeVersionMu.RUnlock()
-		in, ok := m.pauseResumeIntentions[gid]
-		return in, ok
-	}
-	assertIntentionNone := func(t *testing.T, m *Monitor, gid string) {
-		t.Helper()
-		if in, ok := intentionOf(m, gid); ok && in.seq != 0 {
-			t.Fatalf("unexpected live intention: %#v", in)
-		}
 	}
 	assertChunkGone := func(t *testing.T, m *Monitor, gid string) {
 		t.Helper()
@@ -2090,7 +2000,7 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 		setup func(m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker)
 		lists func() (active, waiting, stopped []rpc.Task)
 		mid   midFn
-		want  func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove)
+		want  func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove, tokAfterMid uint64)
 	}{
 		{
 			name: "old_waiting_vs_started",
@@ -2102,13 +2012,17 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 			lists: func() (a, w, s []rpc.Task) {
 				return nil, []rpc.Task{{GID: "sm", Status: "waiting"}}, nil
 			},
-			mid: func(m *Monitor, tracker *TaskTracker) {
+			mid: func(m *Monitor, tracker *TaskTracker) uint64 {
 				m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, DownloadID: "sm"})
+				return tracker.LifecycleToken("sg_sm")
 			},
-			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove) {
+			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove, tokAfterMid uint64) {
 				got, list, _ := Cache.GetTask("sg_sm")
 				if list != "active" || got.Status != "active" {
 					t.Fatalf("stale waiting overwrote accepted started: %#v %s", got, list)
+				}
+				if tracker.LifecycleToken("sg_sm") != tokAfterMid {
+					t.Fatal("stale poll re-minted the lifecycle token")
 				}
 				for _, d := range pusher.pendingSnapshot() {
 					if d.GID == "sg_sm" {
@@ -2118,7 +2032,6 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 					}
 				}
 				assertChunkGone(t, m, "sg_sm")
-				assertIntentionNone(t, m, "sg_sm")
 				moves := movesOf()
 				assertMovesTo(t, moves, "sg_sm", "active")
 				found := false
@@ -2143,10 +2056,11 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 			lists: func() (a, w, s []rpc.Task) {
 				return []rpc.Task{{GID: "sm", Status: "downloading"}}, nil, nil
 			},
-			mid: func(m *Monitor, tracker *TaskTracker) {
+			mid: func(m *Monitor, tracker *TaskTracker) uint64 {
 				m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, DownloadID: "sm", Total: 100})
+				return tracker.LifecycleToken("sg_sm")
 			},
-			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove) {
+			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove, tokAfterMid uint64) {
 				got, list, _ := Cache.GetTask("sg_sm")
 				if list != "stopped" || got.Status != "complete" {
 					t.Fatalf("stale live list overwrote accepted complete: %#v %s", got, list)
@@ -2155,7 +2069,6 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 					t.Fatalf("want exactly one history write, got %d", n)
 				}
 				assertChunkGone(t, m, "sg_sm")
-				assertIntentionNone(t, m, "sg_sm")
 				assertMovesTo(t, movesOf(), "sg_sm", "stopped")
 			},
 		},
@@ -2170,10 +2083,11 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 			lists: func() (a, w, s []rpc.Task) {
 				return []rpc.Task{{GID: "sm", Status: "downloading"}}, nil, nil
 			},
-			mid: func(m *Monitor, tracker *TaskTracker) {
+			mid: func(m *Monitor, tracker *TaskTracker) uint64 {
 				m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventError, DownloadID: "sm", Err: errors.New("link down")})
+				return tracker.LifecycleToken("sg_sm")
 			},
-			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove) {
+			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove, tokAfterMid uint64) {
 				got, list, _ := Cache.GetTask("sg_sm")
 				if list != "stopped" || got.Status != "error" {
 					t.Fatalf("stale live list overwrote accepted error: %#v %s", got, list)
@@ -2182,7 +2096,6 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 					t.Fatalf("want exactly one error history write, got %#v", entries)
 				}
 				assertChunkGone(t, m, "sg_sm")
-				assertIntentionNone(t, m, "sg_sm")
 				sawError := false
 				for _, d := range pusher.pendingSnapshot() {
 					if d.GID == "sg_sm" && d.Type == "error" {
@@ -2206,10 +2119,11 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 			lists: func() (a, w, s []rpc.Task) {
 				return nil, []rpc.Task{{GID: "sm", Status: "waiting"}}, nil
 			},
-			mid: func(m *Monitor, tracker *TaskTracker) {
+			mid: func(m *Monitor, tracker *TaskTracker) uint64 {
 				m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, DownloadID: "sm", Total: 100})
+				return tracker.LifecycleToken("sg_sm")
 			},
-			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove) {
+			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove, tokAfterMid uint64) {
 				got, list, _ := Cache.GetTask("sg_sm")
 				if list != "stopped" || got.Status != "complete" || got.CompletedLength != "100" {
 					t.Fatalf("stale waiting list overwrote accepted fast-complete: %#v %s", got, list)
@@ -2218,7 +2132,6 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 					t.Fatalf("want exactly one history write, got %d", n)
 				}
 				assertChunkGone(t, m, "sg_sm")
-				assertIntentionNone(t, m, "sg_sm")
 				assertMovesTo(t, movesOf(), "sg_sm", "stopped")
 			},
 		},
@@ -2233,10 +2146,11 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 			lists: func() (a, w, s []rpc.Task) {
 				return nil, []rpc.Task{{GID: "sm", Status: "waiting"}}, nil
 			},
-			mid: func(m *Monitor, tracker *TaskTracker) {
+			mid: func(m *Monitor, tracker *TaskTracker) uint64 {
 				m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventError, DownloadID: "sm", Err: errors.New("link down")})
+				return tracker.LifecycleToken("sg_sm")
 			},
-			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove) {
+			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove, tokAfterMid uint64) {
 				got, list, _ := Cache.GetTask("sg_sm")
 				if list != "stopped" || got.Status != "error" || got.CompletedLength != "500" {
 					t.Fatalf("stale waiting list overwrote accepted error or lost the checkpoint: %#v %s", got, list)
@@ -2245,7 +2159,6 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 					t.Fatalf("want exactly one error history write, got %#v", entries)
 				}
 				assertChunkGone(t, m, "sg_sm")
-				assertIntentionNone(t, m, "sg_sm")
 				assertMovesTo(t, movesOf(), "sg_sm", "stopped")
 			},
 		},
@@ -2263,20 +2176,17 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 			lists: func() (a, w, s []rpc.Task) {
 				return nil, nil, []rpc.Task{{GID: "sm", Status: "error"}}
 			},
-			mid: func(m *Monitor, tracker *TaskTracker) {
-				m.ConfirmPauseResumeRequest(m.BeginPauseResumeRequest("sg_sm", "resume"))
+			mid: func(m *Monitor, tracker *TaskTracker) uint64 {
+				m.ApplyResume("sg_sm")
+				return tracker.LifecycleToken("sg_sm")
 			},
-			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove) {
+			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove, tokAfterMid uint64) {
 				got, list, _ := Cache.GetTask("sg_sm")
 				if list != "waiting" || got.Status != "waiting" {
 					t.Fatalf("stale stopped list overwrote accepted resume: %#v %s", got, list)
 				}
-				if tracker.LifecycleGeneration("sg_sm") != 1 {
-					t.Fatal("stale poll bumped the generation again")
-				}
-				in, ok := intentionOf(m, "sg_sm")
-				if !ok || in.seq == 0 || !in.extended || !in.protectedUntil.After(time.Now()) {
-					t.Fatalf("confirmed intention lost its bounded shield: %#v ok=%v", in, ok)
+				if tokAfterMid == 0 || tracker.LifecycleToken("sg_sm") != tokAfterMid {
+					t.Fatal("stale poll re-minted the reopened lifecycle")
 				}
 				moves := movesOf()
 				assertMovesTo(t, moves, "sg_sm", "waiting")
@@ -2307,48 +2217,44 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 				// The bulk read captured the queued projection before the ack.
 				return nil, []rpc.Task{{GID: "sm", Status: "waiting"}}, nil
 			},
-			mid: func(m *Monitor, tracker *TaskTracker) {
-				m.ConfirmPauseResumeRequest(m.BeginPauseResumeRequest("sg_sm", "resume"))
+			mid: func(m *Monitor, tracker *TaskTracker) uint64 {
+				m.ApplyResume("sg_sm")
+				return tracker.LifecycleToken("sg_sm")
 			},
-			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove) {
+			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove, tokAfterMid uint64) {
 				got, list, _ := Cache.GetTask("sg_sm")
 				if list != "waiting" || got.Status != "waiting" {
 					t.Fatalf("stale queued row overwrote the late ack: %#v %s", got, list)
 				}
-				if tracker.LifecycleGeneration("sg_sm") != 1 {
-					t.Fatal("stale queued row bumped the generation again")
-				}
-				in, ok := intentionOf(m, "sg_sm")
-				if !ok || in.seq == 0 || !in.extended {
-					t.Fatalf("late ack's intention was not renewed once: %#v ok=%v", in, ok)
+				if tokAfterMid == 0 || tracker.LifecycleToken("sg_sm") != tokAfterMid {
+					t.Fatal("stale queued row re-minted the lifecycle")
 				}
 				assertMovesTo(t, movesOf(), "sg_sm", "waiting")
 			},
 		},
 		{
-			name: "uncaptured_mid_read_request",
+			name: "mid_read_row_unknown_live",
 			setup: func(m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker) {
 			},
 			lists: func() (a, w, s []rpc.Task) {
 				return nil, []rpc.Task{{GID: "sm", Status: "paused"}}, nil
 			},
-			mid: func(m *Monitor, tracker *TaskTracker) {
-				// A request + row appear mid-read for a GID the poll never
-				// captured: no observation means no authority to write.
-				m.BeginPauseResumeRequest("sg_sm", "resume")
+			mid: func(m *Monitor, tracker *TaskTracker) uint64 {
+				// A row appears mid-read with no live evidence either way:
+				// the stale paused projection must not write over it.
 				Cache.AddSgTask(rpc.Task{GID: "sg_sm", Status: "waiting", TotalLength: "9"}, "waiting")
+				return tracker.LifecycleToken("sg_sm")
 			},
-			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove) {
+			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove, tokAfterMid uint64) {
 				got, list, ok := Cache.GetTask("sg_sm")
-				if !ok || got.TotalLength != "9" || list != "waiting" {
-					t.Fatalf("mid-read row must not be touched by the stale round: %#v", got)
+				if !ok || got.TotalLength != "9" || got.Status != "waiting" || list != "waiting" {
+					t.Fatalf("mid-read row touched by the stale round: %#v", got)
 				}
-				in, ok := intentionOf(m, "sg_sm")
-				if !ok || in.seq == 0 || in.extended || !in.protectedUntil.After(time.Now()) {
-					t.Fatalf("mid-read request lost or wrongly renewed: %#v ok=%v", in, ok)
+				if tracker.LifecycleToken("sg_sm") != tokAfterMid {
+					t.Fatal("stale round minted a lifecycle for the uncaptured gid")
 				}
 				for _, mv := range movesOf() {
-					if mv.GID == "sg_sm" && mv.To != "waiting" {
+					if mv.GID == "sg_sm" {
 						t.Fatalf("stale round emitted a %q move: %#v", mv.To, mv)
 					}
 				}
@@ -2365,26 +2271,26 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 			lists: func() (a, w, s []rpc.Task) {
 				return nil, []rpc.Task{{GID: "sm", Status: "waiting"}}, nil
 			},
-			mid: func(m *Monitor, tracker *TaskTracker) {
+			mid: func(m *Monitor, tracker *TaskTracker) uint64 {
 				m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventComplete, DownloadID: "sm", Total: 100})
 				tracker.RunUnderLifecycle("sg_sm", func() {
 					retireHistoryAndReopenToStatusLocked(tracker, "sg_sm", "waiting")
 				})
 				Cache.AddSgTask(rpc.Task{GID: "sg_sm", Status: "waiting", TotalLength: "100"}, "waiting")
+				return tracker.LifecycleToken("sg_sm")
 			},
-			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove) {
+			want: func(t *testing.T, m *Monitor, reader *mockSurgeListReader, tracker *TaskTracker, pusher *Pusher, movesOf func() []events.TaskMove, tokAfterMid uint64) {
 				got, list, _ := Cache.GetTask("sg_sm")
 				if list != "waiting" || got.Status != "waiting" {
-					t.Fatalf("stale list disturbed the reopened generation: %#v %s", got, list)
+					t.Fatalf("stale list disturbed the reopened lifecycle: %#v %s", got, list)
 				}
-				if tracker.LifecycleGeneration("sg_sm") != 1 {
-					t.Fatalf("generation = %d, want exactly 1", tracker.LifecycleGeneration("sg_sm"))
+				if tokAfterMid == 0 || tracker.LifecycleToken("sg_sm") != tokAfterMid {
+					t.Fatal("stale round re-minted the reopened lifecycle")
 				}
 				if n := len(historyEntriesForGID("sg_sm")); n != 0 {
 					t.Fatalf("reopen must retire the accepted history row, got %d", n)
 				}
 				assertChunkGone(t, m, "sg_sm")
-				assertIntentionNone(t, m, "sg_sm")
 				assertMovesTo(t, movesOf(), "sg_sm", "waiting")
 			},
 		},
@@ -2435,21 +2341,21 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 			case <-time.After(2 * time.Second):
 				t.Fatal("poll did not reach bulk read")
 			}
-			tc.mid(m, tracker)
+			tokAfterMid := tc.mid(m, tracker)
 			releasePoll()
 			select {
 			case <-done:
 			case <-time.After(2 * time.Second):
 				t.Fatal("poll stuck")
 			}
-			tc.want(t, m, reader, tracker, pusher, movesOf)
+			tc.want(t, m, reader, tracker, pusher, movesOf, tokAfterMid)
 		})
 	}
 }
 
 // Orphan/delete matrix: only explicit absent answers remove local state; the
-// sweep honors fresh observations, bounded resume shields, durable history,
-// and tracker-last removal ordering.
+// sweep honors in-gate live evidence, durable history, and tracker-last
+// removal ordering.
 func TestResumeRecovery_OrphanMatrix(t *testing.T) {
 	m, reader, _, tracker := newReconcileTestMonitor(t)
 	resetCacheSg()
@@ -2470,10 +2376,11 @@ func TestResumeRecovery_OrphanMatrix(t *testing.T) {
 	history.Add(history.HistoryEntry{GID: "sg_hist_orphan", Path: "/d/h.bin", Status: "complete"})
 	reader.setLiveStatus("hist_orphan", rpc.SurgeLiveStatus{Absent: true})
 
+	// A known live row is real evidence: it re-enters the union and survives
+	// the sweep instead of being deleted on bulk-list absence alone.
 	Cache.AddSgTask(rpc.Task{GID: "sg_shield", Status: "paused"}, "waiting")
 	tracker.EnsureTrackedFromEvent("sg_shield", 10, "", 1, "paused")
-	m.BeginPauseResumeRequest("sg_shield", "resume")
-	reader.setLiveStatus("shield", rpc.SurgeLiveStatus{Absent: true})
+	reader.setLiveStatus("shield", rpc.SurgeLiveStatus{Known: true, Status: "queued"})
 
 	reader.setLists(nil, nil, nil)
 	m.reconcileSurgeCache()
@@ -2497,7 +2404,7 @@ func TestResumeRecovery_OrphanMatrix(t *testing.T) {
 		t.Fatal("durable history removed as garbage")
 	}
 	if _, list, ok := Cache.GetTask("sg_shield"); !ok || list != "waiting" {
-		t.Fatal("in-flight resume did not shield the row")
+		t.Fatal("known live evidence did not protect the row from the sweep")
 	}
 
 	// A mid-read Begin on an uncaptured gid must not be deleted either.
@@ -2526,9 +2433,9 @@ func TestResumeRecovery_OrphanMatrix(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("poll did not reach bulk read")
 	}
-	m.BeginPauseResumeRequest("sg_midadd", "resume")
+	// A mid-read row with no live evidence is unknown, not absent: the
+	// released round must not delete it.
 	Cache.AddSgTask(rpc.Task{GID: "sg_midadd", Status: "waiting", TotalLength: "9"}, "waiting")
-	reader.setLiveStatus("midadd", rpc.SurgeLiveStatus{Absent: true})
 	releasePoll()
 	select {
 	case <-done:
@@ -2537,95 +2444,6 @@ func TestResumeRecovery_OrphanMatrix(t *testing.T) {
 	}
 	if _, _, ok := Cache.GetTask("sg_midadd"); !ok {
 		t.Fatal("mid-read add deleted by the stale round")
-	}
-}
-
-// The fact shield is bounded: an in-window resume discards a stale pause and
-// blocks absence deletion; after expiry the same pause applies and a true
-// absence deletes. Tickets (seq/stamp) outlive the fact TTL — a long RPC is
-// never invalidated by the deadline, and old cleanups cannot clear a newer
-// Begin.
-func TestResumeRecovery_BoundedResumeProtection(t *testing.T) {
-	m, reader, _, tracker := newReconcileTestMonitor(t)
-	resetCacheSg()
-	resetHistoryForTest(t)
-
-	Cache.AddSgTask(rpc.Task{GID: "sg_bound", Status: "active", TotalLength: "100"}, "active")
-	tracker.EnsureTrackedFromEvent("sg_bound", 100, "", 1, "active")
-	m.BeginPauseResumeRequest("sg_bound", "resume")
-
-	forceExpiry := func(gid string) {
-		m.pauseResumeVersionMu.Lock()
-		defer m.pauseResumeVersionMu.Unlock()
-		if rec, ok := m.pauseResumeIntentions[gid]; ok {
-			rec.protectedUntil = time.Now().Add(-time.Second)
-			m.pauseResumeIntentions[gid] = rec
-		}
-	}
-
-	// In-window: a stale paused list row is discarded while resume is armed.
-	reader.setLiveStatus("bound", rpc.SurgeLiveStatus{Known: true, Status: "paused"})
-	reader.setLists(nil, []rpc.Task{{GID: "bound", Status: "paused"}}, nil)
-	m.reconcileSurgeCache()
-	if _, list, _ := Cache.GetTask("sg_bound"); list != "active" {
-		t.Fatal("in-window stale pause not discarded")
-	}
-
-	// Expiry restores normal fact handling: the same paused row now applies.
-	forceExpiry("sg_bound")
-	m.reconcileSurgeCache()
-	if _, list, _ := Cache.GetTask("sg_bound"); list != "waiting" {
-		t.Fatal("expired shield still discarded the pause")
-	}
-
-	// ...and an expired shield cannot pin a row against true absence.
-	reader.setLiveStatus("bound", rpc.SurgeLiveStatus{Absent: true})
-	reader.setLists(nil, nil, nil)
-	m.reconcileSurgeCache()
-	if _, _, ok := Cache.GetTask("sg_bound"); ok {
-		t.Fatal("expired resume intention pinned an absent row")
-	}
-
-	// Long-RPC ticket freshness is seq/stamp based — fact TTL never kills it.
-	ticket := m.BeginPauseResumeRequest("sg_rpc", "pause")
-	forceExpiry("sg_rpc")
-	ran := false
-	if !m.RunIfPauseResumeRequestCurrent(ticket, func() { ran = true }) || !ran {
-		t.Fatal("opaque ticket died with the fact TTL")
-	}
-
-	// Duplicate ack does not renew the protection window: the first
-	// confirmation consumes the one-shot extension, the second early-returns.
-	full := fullRowForTest("sg_dup")
-	full.Status = "error"
-	Cache.AddSgTask(full, "stopped")
-	tracker.EnsureTrackedFromEvent(full.GID, 1000, "", 1, "error")
-	tracker.MarkCompleteFromEvent(full.GID, "error")
-	history.Add(history.HistoryEntry{GID: full.GID, Path: full.Files[0].Path, Status: "error"})
-	dupTicket := m.BeginPauseResumeRequest("sg_dup", "resume")
-	m.ConfirmPauseResumeRequest(dupTicket)
-	m.pauseResumeVersionMu.RLock()
-	first := m.pauseResumeIntentions["sg_dup"].protectedUntil
-	m.pauseResumeVersionMu.RUnlock()
-	m.ConfirmPauseResumeRequest(dupTicket)
-	m.pauseResumeVersionMu.RLock()
-	second := m.pauseResumeIntentions["sg_dup"].protectedUntil
-	m.pauseResumeVersionMu.RUnlock()
-	if !second.Equal(first) {
-		t.Fatal("duplicate ack renewed the fact-shield deadline")
-	}
-
-	// A cleanup carrying an old ticket cannot clear a newer Begin.
-	oldTicket := m.BeginPauseResumeRequest("sg_seq", "resume")
-	newTicket := m.BeginPauseResumeRequest("sg_seq", "pause")
-	if m.ClearPauseResumeIntentionIfCurrent(oldTicket) {
-		t.Fatal("stale ticket cleared a newer Begin")
-	}
-	m.pauseResumeVersionMu.RLock()
-	cur := m.pauseResumeIntentions["sg_seq"]
-	m.pauseResumeVersionMu.RUnlock()
-	if cur.seq != newTicket.seq || cur.action != PauseResumeIntentionPause {
-		t.Fatal("newer Begin lost to old cleanup")
 	}
 }
 
@@ -2722,8 +2540,9 @@ func TestReconcileSurgeCache_RealPoolLostEvents(t *testing.T) {
 	if live := se.ReadLiveStatus("lost"); !live.Known || live.Status != "queued" {
 		t.Fatalf("real pool does not report queued: %#v", live)
 	}
-	// No ConfirmPauseResumeRequest and no queued/resumed events reach the
-	// monitor: the poll alone must recover the confirmed resume.
+	// No ApplyResume and no queued/resumed events reach the monitor: the
+	// poll alone must recover the real-pool resume.
+	tokBefore := tracker.LifecycleToken(full.GID)
 	for range 2 {
 		m.reconcileSurgeCache()
 	}
@@ -2731,8 +2550,8 @@ func TestReconcileSurgeCache_RealPoolLostEvents(t *testing.T) {
 	assertFullRowMetadata(t, got, full)
 	tracked, _ := tracker.GetTrackedTask(full.GID)
 	if list != "waiting" || got.Status != "waiting" || !tracked.ActivatedAt.IsZero() ||
-		tracker.LifecycleGeneration(full.GID) != 1 {
-		t.Fatalf("poll did not restore the confirmed resume once: %#v gen=%d", got, tracker.LifecycleGeneration(full.GID))
+		tracker.LifecycleToken(full.GID) <= tokBefore {
+		t.Fatalf("poll did not restore the confirmed resume once: %#v tok=%d", got, tracker.LifecycleToken(full.GID))
 	}
 	if _, ok := history.Get(full.GID); ok {
 		t.Fatal("H0 not retired by the real-pool restore")

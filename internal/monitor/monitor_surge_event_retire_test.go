@@ -12,10 +12,12 @@ import (
 func TestHandleSurgeEvent_ResumeFromStopped_RetiresHistory(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
+	reader := &mockSurgeListReader{}
 	m := &Monitor{
-		hub:                   hub,
-		pusher:                pusher,
-		pauseResumeIntentions: make(map[string]pauseResumeIntention),
+		hub:             hub,
+		pusher:          pusher,
+		tracker:         NewTaskTracker(),
+		surgePollReader: reader,
 	}
 
 	prevWindow := State.HasWindow()
@@ -37,24 +39,24 @@ func TestHandleSurgeEvent_ResumeFromStopped_RetiresHistory(t *testing.T) {
 		GID: "sg_hist-1", Path: "/tmp/hist.bin", Status: "error",
 	})
 
-	m.tracker = NewTaskTracker()
-	m.BeginPauseResumeRequest("sg_hist-1", PauseResumeIntentionResume)
+	// A real queued pool row is the live evidence that admits the resume.
+	reader.setLiveStatus("hist-1", rpc.SurgeLiveStatus{Known: true, Status: "queued"})
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventResumed, DownloadID: "hist-1"})
 
 	if Cache.IsInStopped("sg_hist-1") {
 		t.Fatal("expected task moved out of stopped on resume")
 	}
-	foundActive := false
+	foundWaiting := false
 	for _, task := range Cache.GetWaiting() {
 		if task.GID == "sg_hist-1" {
-			foundActive = true
+			foundWaiting = true
 		}
 	}
-	if !foundActive {
-		t.Fatal("expected task in active after resume from stopped")
+	if !foundWaiting {
+		t.Fatal("expected task in waiting after resume from stopped")
 	}
 	if _, ok := history.Get("sg_hist-1"); ok {
-		t.Fatal("expected history entry retired after stopped→active resume")
+		t.Fatal("expected history entry retired after stopped→waiting resume")
 	}
 }
 
@@ -77,8 +79,7 @@ func TestResumeConfirmation_RehomesDownloadGroup(t *testing.T) {
 
 	tracker := NewTaskTracker()
 	m := &Monitor{
-		tracker:               tracker,
-		pauseResumeIntentions: make(map[string]pauseResumeIntention),
+		tracker: tracker,
 	}
 	prevMon := State.GetMonitor()
 	State.SetMonitor(m)
@@ -92,8 +93,7 @@ func TestResumeConfirmation_RehomesDownloadGroup(t *testing.T) {
 	defer func() { Cache.sgStopped = nil }()
 	defer Cache.DeleteMetadataForTest("sg_grp_resume")
 
-	ticket := m.BeginPauseResumeRequest("sg_grp_resume", PauseResumeIntentionResume)
-	m.ConfirmPauseResumeRequest(ticket)
+	m.ApplyResume("sg_grp_resume")
 
 	if _, ok := history.Get("sg_grp_resume"); ok {
 		t.Fatal("expected history removed")

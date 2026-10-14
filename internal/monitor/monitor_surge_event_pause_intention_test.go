@@ -8,131 +8,110 @@ import (
 	surgeEvents "goaria-v3/internal/surge/types"
 )
 
-// ==================== terminal finish fallback chain + rate limit tests====================
+// A late Paused event loses to known live pool evidence (queued/downloading):
+// cache, list membership, master mirror and deltas stay untouched.
+func TestHandleSurgeEvent_DiscardsLatePauseAgainstLivePool(t *testing.T) {
+	for _, live := range []string{"queued", "downloading"} {
+		t.Run(live, func(t *testing.T) {
+			hub := events.NewHub(nil)
+			pusher := NewPusher(hub)
+			reader := &mockSurgeListReader{}
+			surgeEng := rpc.NewSurgeEngineForTesting(nil)
+			t.Cleanup(surgeEng.Close)
+			m := &Monitor{
+				hub:             hub,
+				pusher:          pusher,
+				tracker:         NewTaskTracker(),
+				surgeEng:        surgeEng,
+				surgePollReader: reader,
+			}
 
-// speedstatsRecordCount returns the number of in-memory speedstats records.
+			prevWindow := State.HasWindow()
+			State.SetWindowExists(true)
+			defer State.SetWindowExists(prevWindow)
 
-func TestHandleSurgeEvent_DiscardsStalePauseAfterResume(t *testing.T) {
-	hub := events.NewHub(nil)
-	pusher := NewPusher(hub)
-	m := &Monitor{
-		hub:                   hub,
-		pusher:                pusher,
-		tracker:               NewTaskTracker(),
-		pauseResumeIntentions: make(map[string]pauseResumeIntention),
-	}
+			gid := "sg_stale-pause"
+			Cache.sgActive = []rpc.Task{{GID: gid, Status: "active", DownloadSpeed: "100"}}
+			defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil }()
+			surgeEng.UpsertMasterCacheEntry(surgeEvents.DownloadRecord{ID: "stale-pause", Status: "downloading"})
+			reader.setLiveStatus("stale-pause", rpc.SurgeLiveStatus{Known: true, Status: live})
 
-	prevWindow := State.HasWindow()
-	State.SetWindowExists(true)
-	defer State.SetWindowExists(prevWindow)
+			m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "stale-pause"})
 
-	Cache.sgActive = []rpc.Task{{GID: "sg_test-1", Status: "active", DownloadSpeed: "100"}}
-	defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil }()
-
-	m.BeginPauseResumeRequest("sg_test-1", "pause")
-	m.BeginPauseResumeRequest("sg_test-1", "resume")
-
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "test-1"})
-
-	for _, d := range pusher.pendingSnapshot() {
-		if d.Type == "pause" && d.GID == "sg_test-1" {
-			t.Fatal("expected no pause delta for stale pause event")
-		}
-	}
-
-	Cache.sgMu.RLock()
-	for _, task := range Cache.sgWaiting {
-		if task.GID == "sg_test-1" {
-			Cache.sgMu.RUnlock()
-			t.Fatal("expected task NOT moved to waiting for stale pause")
-		}
-	}
-	Cache.sgMu.RUnlock()
-}
-
-func TestHandleSurgeEvent_AcceptsPauseWhenLastIntentionIsPause(t *testing.T) {
-	hub := events.NewHub(nil)
-	pusher := NewPusher(hub)
-	m := &Monitor{
-		hub:                   hub,
-		pusher:                pusher,
-		tracker:               NewTaskTracker(),
-		pauseResumeIntentions: make(map[string]pauseResumeIntention),
-	}
-
-	prevWindow := State.HasWindow()
-	State.SetWindowExists(true)
-	defer State.SetWindowExists(prevWindow)
-
-	Cache.sgActive = []rpc.Task{{GID: "sg_test-2", Status: "active", DownloadSpeed: "100"}}
-	defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil }()
-
-	m.BeginPauseResumeRequest("sg_test-2", "pause")
-
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "test-2"})
-
-	found := false
-	for _, d := range pusher.pendingSnapshot() {
-		if d.Type == "pause" && d.GID == "sg_test-2" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("expected pause delta when last intention is pause")
-	}
-
-	Cache.sgMu.RLock()
-	foundInWaiting := false
-	for _, task := range Cache.sgWaiting {
-		if task.GID == "sg_test-2" {
-			foundInWaiting = true
-			break
-		}
-	}
-	Cache.sgMu.RUnlock()
-	if !foundInWaiting {
-		t.Fatal("expected task in waiting list when last intention is pause")
+			for _, d := range pusher.pendingSnapshot() {
+				if d.GID == gid {
+					t.Fatalf("rejected pause emitted a %q delta", d.Type)
+				}
+			}
+			got, list, _ := Cache.GetTask(gid)
+			if list != "active" || got.Status != "active" {
+				t.Fatalf("late pause moved the row: %#v %s", got, list)
+			}
+			if master, ok := surgeEng.GetMasterCacheEntry("stale-pause"); !ok || master.Status != "downloading" {
+				t.Fatalf("rejected pause rewrote the master mirror: %#v ok=%v", master, ok)
+			}
+		})
 	}
 }
 
-func TestHandleSurgeEvent_AcceptsPauseWithNoPriorIntention(t *testing.T) {
-	hub := events.NewHub(nil)
-	pusher := NewPusher(hub)
-	m := &Monitor{
-		hub:                   hub,
-		pusher:                pusher,
-		pauseResumeIntentions: make(map[string]pauseResumeIntention),
-	}
-
-	prevWindow := State.HasWindow()
-	State.SetWindowExists(true)
-	defer State.SetWindowExists(prevWindow)
-
-	Cache.sgActive = []rpc.Task{{GID: "sg_test-3", Status: "active", DownloadSpeed: "100"}}
-	defer func() { Cache.sgActive = nil; Cache.sgWaiting = nil }()
-
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "test-3"})
-
-	found := false
-	for _, d := range pusher.pendingSnapshot() {
-		if d.Type == "pause" && d.GID == "sg_test-3" {
-			found = true
-			break
+// A real Paused event lands on a live row: accepted under live paused/pausing
+// and under an unknown live read (pause acknowledgements legitimately precede
+// the pool status write).
+func TestHandleSurgeEvent_AcceptsPauseOnLivePausedOrUnknown(t *testing.T) {
+	for _, live := range []rpc.SurgeLiveStatus{
+		{Known: true, Status: "paused"},
+		{Known: true, Status: "pausing"},
+		{},
+	} {
+		hub := events.NewHub(nil)
+		pusher := NewPusher(hub)
+		reader := &mockSurgeListReader{}
+		m := &Monitor{
+			hub:             hub,
+			pusher:          pusher,
+			tracker:         NewTaskTracker(),
+			surgePollReader: reader,
 		}
-	}
-	if !found {
-		t.Fatal("expected pause delta with no prior intention")
+
+		prevWindow := State.HasWindow()
+		State.SetWindowExists(true)
+
+		gid := "sg_pause-accept"
+		Cache.sgActive = []rpc.Task{{GID: gid, Status: "active", DownloadSpeed: "100"}}
+		reader.setLiveStatus("pause-accept", live)
+
+		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "pause-accept"})
+
+		State.SetWindowExists(prevWindow)
+		Cache.sgActive = nil
+
+		found := false
+		for _, d := range pusher.pendingSnapshot() {
+			if d.Type == "pause" && d.GID == gid {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected pause delta under live %#v", live)
+		}
+		got, list, _ := Cache.GetTask(gid)
+		if list != "waiting" || got.Status != "paused" {
+			t.Fatalf("pause did not land paused in waiting under live %#v: %#v %s", live, got, list)
+		}
+		Cache.sgWaiting = nil
 	}
 }
 
-func TestHandleSurgeEvent_DiscardsPauseAgainstStoppedWithoutIntention(t *testing.T) {
+// A Paused event against a terminal stopped row is refused: no waiting
+// revival, no error-field churn, no delta.
+func TestHandleSurgeEvent_DiscardsPauseAgainstStopped(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
 	m := &Monitor{
-		hub:                   hub,
-		pusher:                pusher,
-		pauseResumeIntentions: make(map[string]pauseResumeIntention),
+		hub:     hub,
+		pusher:  pusher,
+		tracker: NewTaskTracker(),
 	}
 
 	prevWindow := State.HasWindow()
@@ -155,38 +134,12 @@ func TestHandleSurgeEvent_DiscardsPauseAgainstStoppedWithoutIntention(t *testing
 			t.Fatal("expected late pause not to revive stopped task into waiting")
 		}
 	}
-}
-
-func TestHandleSurgeEvent_DiscardsPauseAgainstStoppedEvenWithPauseIntention(t *testing.T) {
-	hub := events.NewHub(nil)
-	pusher := NewPusher(hub)
-	m := &Monitor{
-		hub:                   hub,
-		pusher:                pusher,
-		tracker:               NewTaskTracker(),
-		pauseResumeIntentions: make(map[string]pauseResumeIntention),
+	if got, _, _ := Cache.GetTask("sg_term-1"); got.ErrorCode != "1" || got.ErrorMessage != "fail" {
+		t.Fatalf("rejected pause rewrote error fields: %#v", got)
 	}
-
-	prevWindow := State.HasWindow()
-	State.SetWindowExists(true)
-	defer State.SetWindowExists(prevWindow)
-
-	Cache.sgStopped = []rpc.Task{{
-		GID: "sg_term-batch", Status: "error",
-		ErrorCode: "1", ErrorMessage: "fail",
-	}}
-	defer func() { Cache.sgStopped = nil; Cache.sgWaiting = nil; Cache.sgActive = nil }()
-
-	// BatchPause re-arms pause intention on terminal GIDs; must still discard.
-	m.BeginPauseResumeRequest("sg_term-batch", "pause")
-	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "term-batch"})
-
-	if !Cache.IsInStopped("sg_term-batch") {
-		t.Fatal("expected stopped task to remain stopped despite pause intention")
-	}
-	for _, task := range Cache.GetWaiting() {
-		if task.GID == "sg_term-batch" {
-			t.Fatal("expected BatchPause-armed pause not to revive stopped→waiting")
+	for _, d := range pusher.pendingSnapshot() {
+		if d.GID == "sg_term-1" {
+			t.Fatalf("rejected pause emitted a %q delta", d.Type)
 		}
 	}
 }

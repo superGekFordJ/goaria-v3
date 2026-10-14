@@ -3,7 +3,6 @@ package wailsapp
 import (
 	"errors"
 	"testing"
-	"time"
 
 	"goaria-v3/internal/downloadgroups"
 	"goaria-v3/internal/events"
@@ -41,83 +40,6 @@ func requestTestMonitor(t *testing.T) *monitor.Monitor {
 	return mon
 }
 
-func TestPauseResumeRequests_InFlight(t *testing.T) {
-	for _, change := range []string{"pause", "resume", "started", "terminal", "recreate", "failure", "old pause", "old pause failure"} {
-		t.Run(change, func(t *testing.T) {
-			mon := requestTestMonitor(t)
-			const gid = "sg_request"
-			monitor.Cache.AddSgTask(rpc.Task{GID: gid, Status: "paused", TotalLength: "100", CompletedLength: "30"}, "waiting")
-			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
-			engine := &controlledResumeEngine{single: func(string) error {
-				close(entered)
-				select {
-				case <-release:
-				case <-time.After(2 * time.Second):
-					return errors.New("RPC barrier deadline")
-				}
-				if change == "failure" || change == "old pause failure" {
-					return errors.New("old failure")
-				}
-				return nil
-			}}
-			app := &App{downloadEngine: engine}
-			go func() {
-				if change == "old pause" || change == "old pause failure" {
-					app.PauseTask(gid)
-					done <- nil
-				} else {
-					done <- app.ResumeTask(gid)
-				}
-			}()
-			select {
-			case <-entered:
-			case <-time.After(2 * time.Second):
-				close(release)
-				t.Fatal("request not entered")
-			}
-			var newer monitor.PauseResumeTicket
-			want := "paused"
-			switch change {
-			case "old pause", "old pause failure":
-				newer = mon.BeginPauseResumeRequest(gid, "resume")
-				mon.ConfirmPauseResumeRequest(newer)
-				want = "waiting"
-			case "pause", "resume", "failure":
-				action := change
-				if change == "failure" {
-					action = "pause"
-				}
-				newer = mon.BeginPauseResumeRequest(gid, action)
-			case "started":
-				monitor.Cache.MoveTaskToActive(gid, "active")
-				want = "active"
-			case "terminal":
-				monitor.Cache.MoveTaskToStopped(gid, "error")
-				monitor.State.GetTracker().MarkCompleteFromEvent(gid, "error")
-				want = "error"
-			case "recreate":
-				monitor.State.GetTracker().RemoveTask(gid)
-				monitor.Cache.AddSgTask(rpc.Task{GID: gid, Status: "paused"}, "waiting")
-			}
-			close(release)
-			select {
-			case <-done:
-			case <-time.After(2 * time.Second):
-				t.Fatal("request stuck")
-			}
-			got, _, _ := monitor.Cache.GetTask(gid)
-			if got.Status != want {
-				t.Fatalf("late ack: %s want %s", got.Status, want)
-			}
-			if change == "pause" || change == "resume" || change == "failure" || change == "old pause" || change == "old pause failure" {
-				if !mon.RunIfPauseResumeRequestCurrent(newer, func() {}) {
-					t.Fatal("new request cleared")
-				}
-			}
-		})
-	}
-}
-
 func TestResumeTask_ConfirmsWaiting(t *testing.T) {
 	requestTestMonitor(t)
 	monitor.Cache.AddSgTask(rpc.Task{GID: "sg_ok", Status: "paused"}, "waiting")
@@ -131,6 +53,36 @@ func TestResumeTask_ConfirmsWaiting(t *testing.T) {
 	}
 }
 
+// A failed single-call RPC is the whole transaction: nothing reaches the
+// monitor, so the paused row keeps its status, tracker and lifecycle.
+func TestResumeTask_FailureWritesNothing(t *testing.T) {
+	requestTestMonitor(t)
+	monitor.Cache.AddSgTask(rpc.Task{GID: "sg_nope", Status: "paused"}, "waiting")
+	app := &App{downloadEngine: &controlledResumeEngine{single: func(string) error {
+		return errors.New("engine rejected")
+	}}}
+	if err := app.ResumeTask("sg_nope"); err == nil {
+		t.Fatal("expected the engine error to propagate")
+	}
+	got, list, _ := monitor.Cache.GetTask("sg_nope")
+	if list != "waiting" || got.Status != "paused" {
+		t.Fatalf("failed resume touched the row: %#v %s", got, list)
+	}
+}
+
+func TestPauseTask_FailureWritesNothing(t *testing.T) {
+	requestTestMonitor(t)
+	monitor.Cache.AddSgTask(rpc.Task{GID: "sg_pno", Status: "active"}, "active")
+	app := &App{downloadEngine: &controlledResumeEngine{single: func(string) error {
+		return errors.New("engine rejected")
+	}}}
+	app.PauseTask("sg_pno")
+	got, list, _ := monitor.Cache.GetTask("sg_pno")
+	if list != "active" || got.Status != "active" {
+		t.Fatalf("failed pause touched the row: %#v %s", got, list)
+	}
+}
+
 func TestBatchResume_ExplicitSuccessSet(t *testing.T) {
 	for _, mode := range []string{"partial", "empty", "overall"} {
 		t.Run(mode, func(t *testing.T) {
@@ -138,12 +90,13 @@ func TestBatchResume_ExplicitSuccessSet(t *testing.T) {
 			for _, gid := range []string{"sg_ok", "sg_missing", "sg_failed", "sg_unknown"} {
 				monitor.Cache.AddSgTask(rpc.Task{GID: gid, Status: "paused"}, "waiting")
 			}
-			var newer monitor.PauseResumeTicket
 			app := &App{downloadEngine: &controlledResumeEngine{batch: func(gids []string) ([]rpc.MultiCallItemResult, error) {
 				if len(gids) != 4 || gids[1] != "sg_ok" {
 					t.Error("original duplicates changed")
 				}
-				newer = mon.BeginPauseResumeRequest("sg_missing", "pause")
+				// A concurrent local mutation on a missing-from-results GID
+				// must survive the batch reply untouched.
+				mon.ApplyResume("sg_missing")
 				if mode == "empty" {
 					return nil, nil
 				}
@@ -159,15 +112,45 @@ func TestBatchResume_ExplicitSuccessSet(t *testing.T) {
 			for _, gid := range []string{"sg_ok", "sg_missing", "sg_failed", "sg_unknown"} {
 				got, _, _ := monitor.Cache.GetTask(gid)
 				want := "paused"
-				if gid == "sg_ok" && mode == "partial" {
+				if (gid == "sg_ok" && mode == "partial") || gid == "sg_missing" {
 					want = "waiting"
 				}
 				if got.Status != want {
 					t.Fatalf("%s: %s", gid, got.Status)
 				}
 			}
-			if !mon.RunIfPauseResumeRequestCurrent(newer, func() {}) {
-				t.Fatal("missing clobbered newer")
+		})
+	}
+}
+
+// BatchPause applies strictly the requested∩OK result set — duplicates,
+// foreign GIDs, missing results and errors never write local state.
+func TestBatchPause_ExplicitSuccessSet(t *testing.T) {
+	for _, mode := range []string{"partial", "empty", "overall"} {
+		t.Run(mode, func(t *testing.T) {
+			requestTestMonitor(t)
+			for _, gid := range []string{"sg_ok", "sg_missing", "sg_failed", "sg_unknown"} {
+				monitor.Cache.AddSgTask(rpc.Task{GID: gid, Status: "active"}, "active")
+			}
+			app := &App{downloadEngine: &controlledResumeEngine{batch: func(gids []string) ([]rpc.MultiCallItemResult, error) {
+				if mode == "empty" {
+					return nil, nil
+				}
+				if mode == "overall" {
+					return nil, errors.New("overall")
+				}
+				return []rpc.MultiCallItemResult{{GID: "sg_ok", OK: true}, {GID: "sg_ok", Error: "duplicate"}, {GID: "sg_unknown", OK: true}, {GID: "sg_failed", Error: "failed"}}, nil
+			}}}
+			app.BatchPause([]string{"sg_ok", "sg_ok", "sg_missing", "sg_failed"})
+			for _, gid := range []string{"sg_ok", "sg_missing", "sg_failed", "sg_unknown"} {
+				got, _, _ := monitor.Cache.GetTask(gid)
+				want := "active"
+				if gid == "sg_ok" && mode == "partial" {
+					want = "paused"
+				}
+				if got.Status != want {
+					t.Fatalf("%s: %s", gid, got.Status)
+				}
 			}
 		})
 	}

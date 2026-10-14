@@ -196,10 +196,9 @@ func TestEventDriven_PauseMovesTaskToWaiting(t *testing.T) {
 	pusher := NewPusher(hub)
 	tracker := NewTaskTracker()
 	m := &Monitor{
-		hub:                   hub,
-		pusher:                pusher,
-		tracker:               tracker,
-		pauseResumeIntentions: make(map[string]pauseResumeIntention),
+		hub:     hub,
+		pusher:  pusher,
+		tracker: tracker,
 	}
 
 	var recordedMove *events.TaskMove
@@ -308,7 +307,6 @@ func TestEventDriven_ResumeMovesTaskToActive(t *testing.T) {
 
 	Cache.sgWaiting = []rpc.Task{{GID: "sg_evt-resume-1", Status: "paused", DownloadSpeed: "0"}}
 	tracker.EnsureTrackedFromEvent("sg_evt-resume-1", 0, "", 0, "paused")
-	m.BeginPauseResumeRequest("sg_evt-resume-1", PauseResumeIntentionResume)
 
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{
 		Type:       surgeEvents.EventResumed,
@@ -750,11 +748,10 @@ func TestEventDriven_RapidPauseResume(t *testing.T) {
 	se := &mockSafeEngine{}
 	hybrid := rpc.NewHybridEngine(nil, se)
 	m := &Monitor{
-		hub:                   hub,
-		pusher:                pusher,
-		tracker:               tracker,
-		engine:                hybrid,
-		pauseResumeIntentions: make(map[string]pauseResumeIntention),
+		hub:     hub,
+		pusher:  pusher,
+		tracker: tracker,
+		engine:  hybrid,
 	}
 
 	prevWindow := State.HasWindow()
@@ -775,7 +772,6 @@ func TestEventDriven_RapidPauseResume(t *testing.T) {
 	// Rapid pause-resume-pause-resume cycle
 	for i := range 10 {
 		// Pause
-		m.BeginPauseResumeRequest("sg_rapid-1", "pause")
 		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "rapid-1"})
 
 		// Verify in waiting
@@ -801,7 +797,6 @@ func TestEventDriven_RapidPauseResume(t *testing.T) {
 		}
 
 		// Resume
-		m.BeginPauseResumeRequest("sg_rapid-1", PauseResumeIntentionResume)
 		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventResumed, DownloadID: "rapid-1"})
 		if task, list, _ := Cache.GetTask("sg_rapid-1"); list != "waiting" || task.Status != "waiting" {
 			t.Fatal("ack activated")

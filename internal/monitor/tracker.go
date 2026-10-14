@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"goaria-v3/internal/rpc"
@@ -116,12 +117,11 @@ type TrackedTask struct {
 	terminalElapsed     time.Duration
 	peakFromAvgFallback bool
 
-	// terminalEntry/terminalGeneration identify the lifecycle entry and
-	// generation that accepted this terminal copy. Set only at acceptance;
-	// private so delayed consumers cannot forge identity — a reopen bumps the
-	// generation, and remove/re-add replaces the entry pointer.
-	terminalEntry      *lifecycleState
-	terminalGeneration uint64
+	// terminalToken is the tracker-global lifecycle token that accepted this
+	// terminal copy. Set only at acceptance; private so delayed consumers
+	// cannot forge identity — a reopen or remove/re-add mints a strictly
+	// larger token, retiring every earlier copy.
+	terminalToken uint64
 }
 
 // activeSampleGapCap is 2x the headless tick; longer gaps mean aria2 was
@@ -129,40 +129,13 @@ type TrackedTask struct {
 const activeSampleGapCap = 10 * time.Second
 
 // lifecycleState is the per-GID gate for stopped→live retirement vs terminal
-// accept/history write. generation bumps only on ReopenAfterStoppedToLive;
-// terminalHandled is scoped to the current generation.
+// accept/history write. token is replaced with a strictly larger value only
+// on ReopenAfterStoppedToLive (or fresh entry creation); terminalHandled is
+// scoped to the current token.
 type lifecycleState struct {
 	mu              sync.Mutex
-	generation      uint64
+	token           uint64
 	terminalHandled bool
-	revision        uint64
-}
-
-// lifecycleStamp includes entry identity, so deletion and same-ID re-add differ.
-type lifecycleStamp struct {
-	entry    *lifecycleState
-	revision uint64
-}
-
-func (t *TaskTracker) captureLifecycleStamp(gid string) lifecycleStamp {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	entry := t.getLifecycle(gid)
-	return lifecycleStamp{entry: entry, revision: entry.revision}
-}
-
-func (t *TaskTracker) lifecycleStampCurrent(gid string, stamp lifecycleStamp) bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	t.lifecycleMu.Lock()
-	entry := t.lifecycle[gid]
-	t.lifecycleMu.Unlock()
-	return entry != nil && entry == stamp.entry && entry.revision == stamp.revision
-}
-
-// Caller holds tracker.mu; even a deduplicated terminal invalidates older reads.
-func (t *TaskTracker) advanceLifecycleRevisionLocked(gid string) {
-	t.getLifecycle(gid).revision++
 }
 
 // TaskTracker 后端任务追踪器
@@ -170,11 +143,16 @@ type TaskTracker struct {
 	mu    sync.RWMutex
 	tasks map[string]*TrackedTask // gid -> task
 
-	// 已处理的完成任务 GID（防止重复处理）；与 lifecycle.terminalHandled 同世代保持一致
+	// 已处理的完成任务 GID（防止重复处理）；与 lifecycle.terminalHandled 同 token 保持一致
 	processedComplete map[string]bool
 
 	lifecycleMu sync.Mutex
 	lifecycle   map[string]*lifecycleState
+
+	// nextLifecycleToken is the single monotone source for every lifecycle
+	// token: first entry creation and each stopped→live reopen draw from it,
+	// so a same-GID rebuild can never collide with a retired copy.
+	nextLifecycleToken atomic.Uint64
 
 	// Test-only: runs inside retire after reopen, before history.Remove.
 	retireBetweenReopenAndRemove func(string)
@@ -231,8 +209,6 @@ func (t *TaskTracker) Update(active, waiting, stopped []rpc.Task) []*TrackedTask
 	for _, task := range stopped {
 		currentGids[task.GID] = true
 		if task.Status == "complete" || task.Status == "error" {
-			t.advanceLifecycleRevisionLocked(task.GID)
-			// Generation-scoped: do not take lifecycle lock here (holds tracker.mu).
 			if t.isTerminalAcceptedLocked(task.GID) {
 				continue
 			}
@@ -626,9 +602,7 @@ type AdmissionTicket struct {
 // created=false + zero ticket means the call left no reservation; callers
 // may ReleaseAdmission only when created=true.
 //
-// Locking: runs under the gid lifecycle gate plus t.mu — NOT reentrant.
-// Callers must not invoke it while already holding the same gid's
-// lifecycle gate (RunUnderLifecycle would deadlock on ls.mu).
+// Locking: takes only t.mu — safe to call inside the gid lifecycle gate.
 func (t *TaskTracker) ReserveAdmission(
 	gid string, token uint64, params smartthread.ThreadParams,
 	now time.Time, baseline int64, baselineKnown bool,
@@ -639,47 +613,42 @@ func (t *TaskTracker) ReserveAdmission(
 	if params.Split <= 0 || params.TargetBandwidth < 0 || params.MinSize < 0 || baseline < 0 {
 		return AdmissionTicket{}, false
 	}
-	t.RunUnderLifecycle(gid, func() {
-		t.mu.Lock()
-		defer t.mu.Unlock()
-		if t.isTerminalAcceptedLocked(gid) {
-			return
-		}
-		tt := t.tasks[gid]
-		if tt == nil || tt.Status != "waiting" {
-			return
-		}
-		switch {
-		case tt.admissionToken > token:
-			return // older opportunity than the observed high-water mark
-		case tt.admissionToken == token && !tt.admittedNotStarted:
-			return // same opportunity already consumed or rolled back
-		case tt.admissionToken == token:
-			ticket = AdmissionTicket{GID: gid, Token: token} // idempotent reapply
-			return
-		}
-		tt.admissionToken = token
-		tt.admittedNotStarted = true
-		// Parameter hints only — the engine patch is applied solely by a
-		// successful scheduler Admit; these merely describe the reservation.
-		tt.ThreadCount = params.Split
-		tt.MinChunk = params.MinSize
-		tt.IsExploration = params.IsExploration
-		// The reservation owns the Target floor and the activation anchor
-		// (shared lease) for its lifetime; both die with it on release or a
-		// non-waiting boundary — never promoted into a legacy claim.
-		tt.TargetBandwidth = params.TargetBandwidth
-		tt.AllocatedAt = now
-		tt.ActivatedAt = now
-		tt.FirstProgressAt = time.Time{}
-		tt.progressBaseline = baseline
-		tt.progressBaselineKnown = baselineKnown
-		tt.compatClaim = smartthread.CompatNone
-		tt.addAnchorAt = time.Time{}
-		ticket = AdmissionTicket{GID: gid, Token: token}
-		created = true
-	})
-	return ticket, created
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.isTerminalAcceptedLocked(gid) {
+		return AdmissionTicket{}, false
+	}
+	tt := t.tasks[gid]
+	if tt == nil || tt.Status != "waiting" {
+		return AdmissionTicket{}, false
+	}
+	switch {
+	case tt.admissionToken > token:
+		return AdmissionTicket{}, false // older opportunity than the observed high-water mark
+	case tt.admissionToken == token && !tt.admittedNotStarted:
+		return AdmissionTicket{}, false // same opportunity already consumed or rolled back
+	case tt.admissionToken == token:
+		return AdmissionTicket{GID: gid, Token: token}, false // idempotent reapply
+	}
+	tt.admissionToken = token
+	tt.admittedNotStarted = true
+	// Parameter hints only — the engine patch is applied solely by a
+	// successful scheduler Admit; these merely describe the reservation.
+	tt.ThreadCount = params.Split
+	tt.MinChunk = params.MinSize
+	tt.IsExploration = params.IsExploration
+	// The reservation owns the Target floor and the activation anchor
+	// (shared lease) for its lifetime; both die with it on release or a
+	// non-waiting boundary — never promoted into a legacy claim.
+	tt.TargetBandwidth = params.TargetBandwidth
+	tt.AllocatedAt = now
+	tt.ActivatedAt = now
+	tt.FirstProgressAt = time.Time{}
+	tt.progressBaseline = baseline
+	tt.progressBaselineKnown = baselineKnown
+	tt.compatClaim = smartthread.CompatNone
+	tt.addAnchorAt = time.Time{}
+	return AdmissionTicket{GID: gid, Token: token}, true
 }
 
 // ReleaseAdmission rolls back a still-pending admission reservation for the
@@ -689,24 +658,20 @@ func (t *TaskTracker) ReserveAdmission(
 // newer token (a re-admission supersedes stale rollbacks), or a row that
 // never held this ticket — including a same-ID replacement.
 func (t *TaskTracker) ReleaseAdmission(gid string, token uint64) bool {
-	released := false
 	if t == nil || !IsSgGid(gid) || token == 0 {
 		return false
 	}
-	t.RunUnderLifecycle(gid, func() {
-		t.mu.Lock()
-		defer t.mu.Unlock()
-		tt := t.tasks[gid]
-		if tt == nil || !tt.admittedNotStarted || tt.admissionToken != token {
-			return
-		}
-		tt.admittedNotStarted = false
-		clearActivationFactsLocked(tt)
-		tt.TargetBandwidth = 0
-		tt.AllocatedAt = time.Time{}
-		released = true
-	})
-	return released
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	tt := t.tasks[gid]
+	if tt == nil || !tt.admittedNotStarted || tt.admissionToken != token {
+		return false
+	}
+	tt.admittedNotStarted = false
+	clearActivationFactsLocked(tt)
+	tt.TargetBandwidth = 0
+	tt.AllocatedAt = time.Time{}
+	return true
 }
 
 // ObserveActivation records a real engine start for gid — a Surge started
@@ -953,14 +918,14 @@ func (t *TaskTracker) getLifecycle(gid string) *lifecycleState {
 	}
 	ls := t.lifecycle[gid]
 	if ls == nil {
-		ls = &lifecycleState{}
+		ls = &lifecycleState{token: t.nextLifecycleToken.Add(1)}
 		t.lifecycle[gid] = ls
 	}
 	return ls
 }
 
 // markTerminalAcceptedLocked records terminal acceptance for the current
-// generation. Caller must hold tracker.mu.
+// token. Caller must hold tracker.mu.
 func (t *TaskTracker) markTerminalAcceptedLocked(gid string) {
 	if t.processedComplete == nil {
 		t.processedComplete = make(map[string]bool)
@@ -970,23 +935,21 @@ func (t *TaskTracker) markTerminalAcceptedLocked(gid string) {
 	ls.terminalHandled = true
 }
 
-// stampTerminalCopyLocked tags an accepted terminal copy with the accepting
-// lifecycle entry and generation. Caller holds tracker.mu.
+// stampTerminalCopyLocked tags an accepted terminal copy with the lifecycle
+// token current at acceptance. Caller holds tracker.mu.
 func (t *TaskTracker) stampTerminalCopyLocked(gid string, copy *TrackedTask) {
 	if copy == nil {
 		return
 	}
-	ls := t.getLifecycle(gid)
-	copy.terminalEntry = ls
-	copy.terminalGeneration = ls.generation
+	copy.terminalToken = t.getLifecycle(gid).token
 }
 
 // TerminalCopyCurrent reports whether task is still the accepted terminal copy
-// of its generation: same lifecycle entry, same generation, still accepted.
-// Call under RunUnderLifecycle for gate ordering; stale copies produced before
-// a reopen/remove/re-add are rejected even when the numeric generation matches.
+// of its lifecycle token: same token, still accepted. Call under
+// RunUnderLifecycle for gate ordering; copies produced before a reopen or a
+// remove/re-add carry a smaller token and are always rejected.
 func (t *TaskTracker) TerminalCopyCurrent(gid string, task *TrackedTask) bool {
-	if t == nil || task == nil || task.terminalEntry == nil {
+	if t == nil || task == nil || task.terminalToken == 0 {
 		return false
 	}
 	t.mu.RLock()
@@ -997,7 +960,7 @@ func (t *TaskTracker) TerminalCopyCurrent(gid string, task *TrackedTask) bool {
 	t.lifecycleMu.Lock()
 	current := t.lifecycle[gid]
 	t.lifecycleMu.Unlock()
-	return current == task.terminalEntry && current.generation == task.terminalGeneration && current.terminalHandled
+	return current != nil && current.token == task.terminalToken && current.terminalHandled
 }
 
 // SurgeGIDs snapshots tracked Surge GIDs so poll reconciliation can union
@@ -1018,7 +981,7 @@ func (t *TaskTracker) SurgeGIDs() []string {
 }
 
 // isTerminalAcceptedLocked reports whether gid already accepted a terminal for
-// the current generation. Caller must hold tracker.mu (or RLock).
+// the current token. Caller must hold tracker.mu (or RLock).
 func (t *TaskTracker) isTerminalAcceptedLocked(gid string) bool {
 	if !t.processedComplete[gid] {
 		return false
@@ -1028,8 +991,8 @@ func (t *TaskTracker) isTerminalAcceptedLocked(gid string) bool {
 }
 
 // TerminalAcceptedInCurrentGeneration reports whether gid is marked complete
-// for the current lifecycle generation (call under RunUnderLifecycle when
-// racing retire).
+// for the current lifecycle token (call under RunUnderLifecycle when
+// racing retire). The name is kept for API stability.
 func (t *TaskTracker) TerminalAcceptedInCurrentGeneration(gid string) bool {
 	if t == nil || gid == "" {
 		return false
@@ -1039,14 +1002,14 @@ func (t *TaskTracker) TerminalAcceptedInCurrentGeneration(gid string) bool {
 	return t.isTerminalAcceptedLocked(gid)
 }
 
-// LifecycleGeneration returns the current stopped→live generation for tests.
-func (t *TaskTracker) LifecycleGeneration(gid string) uint64 {
+// LifecycleToken returns the current stopped→live lifecycle token for tests.
+func (t *TaskTracker) LifecycleToken(gid string) uint64 {
 	if t == nil || gid == "" {
 		return 0
 	}
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return t.getLifecycle(gid).generation
+	return t.getLifecycle(gid).token
 }
 
 // HasLifecycleEntry reports whether a lifecycle map entry exists (tests).
@@ -1063,7 +1026,7 @@ func (t *TaskTracker) HasLifecycleEntry(gid string) bool {
 // SetStatusFromEvent updates a tracked task's status from a Surge lifecycle
 // event (pause/resume) without re-running the full ensure logic. No-op if
 // the task is not yet tracked (reconcileSurgeCache will seed it).
-// Does not bump lifecycle generation.
+// Does not mint a new lifecycle token.
 func (t *TaskTracker) SetStatusFromEvent(gid string, status string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -1082,7 +1045,8 @@ func (t *TaskTracker) SetStatusFromEvent(gid string, status string) {
 // ReopenAfterStoppedToLive clears terminal dedup so a confirmed stopped→live
 // resume can accept a later complete/error. Call only from authoritative
 // resume paths (alongside history retirement), never from generic pause/status.
-// Bumps lifecycle generation and clears the generation-scoped terminal marker.
+// Mints a strictly larger lifecycle token — retiring every terminal copy
+// stamped by the previous run — and clears the token-scoped terminal marker.
 // The explicit reopen ends the previous run's lease facts and admission
 // lineage; "active" here never counts as real start evidence.
 func (t *TaskTracker) ReopenAfterStoppedToLive(gid, status string) {
@@ -1092,8 +1056,7 @@ func (t *TaskTracker) ReopenAfterStoppedToLive(gid, status string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	ls := t.getLifecycle(gid)
-	ls.generation++
-	ls.revision++
+	ls.token = t.nextLifecycleToken.Add(1)
 	ls.terminalHandled = false
 	delete(t.processedComplete, gid)
 	if status == "" {
@@ -1139,11 +1102,10 @@ func (t *TaskTracker) UpdateProgressFromEvent(gid string, totalLength, completed
 }
 
 // MarkCompleteFromEvent 从 Surge complete/error 事件标记完成
-// 返回副本供 finishTerminalCopy 使用；当前世代已接受则返回 nil
+// 返回副本供 finishTerminalCopy 使用；当前 token 已接受则返回 nil
 func (t *TaskTracker) MarkCompleteFromEvent(gid string, status string) *TrackedTask {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.advanceLifecycleRevisionLocked(gid)
 
 	tracked := t.tasks[gid]
 	if tracked == nil {

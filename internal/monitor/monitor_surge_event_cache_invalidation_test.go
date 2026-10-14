@@ -19,11 +19,10 @@ func TestHandleSurgeEvent_InvalidatesListCacheOnPause(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
 	m := &Monitor{
-		hub:                   hub,
-		pusher:                pusher,
-		engine:                hybrid,
-		surgeEng:              surgeEng,
-		pauseResumeIntentions: make(map[string]pauseResumeIntention),
+		hub:      hub,
+		pusher:   pusher,
+		engine:   hybrid,
+		surgeEng: surgeEng,
 	}
 
 	prevWindow := State.HasWindow()
@@ -60,11 +59,13 @@ func TestHandleSurgeEvent_InvalidatesListCacheOnResume(t *testing.T) {
 
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
+	reader := &mockSurgeListReader{}
 	m := &Monitor{
-		hub:      hub,
-		pusher:   pusher,
-		engine:   hybrid,
-		surgeEng: surgeEng,
+		hub:             hub,
+		pusher:          pusher,
+		engine:          hybrid,
+		surgeEng:        surgeEng,
+		surgePollReader: reader,
 	}
 
 	prevWindow := State.HasWindow()
@@ -78,7 +79,8 @@ func TestHandleSurgeEvent_InvalidatesListCacheOnResume(t *testing.T) {
 	}
 
 	m.tracker = NewTaskTracker()
-	m.BeginPauseResumeRequest("sg_inv-2", PauseResumeIntentionResume)
+	// Queued live evidence admits the resume acknowledgement.
+	reader.setLiveStatus("inv-2", rpc.SurgeLiveStatus{Known: true, Status: "queued"})
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventResumed, DownloadID: "inv-2"})
 
 	surgeEng.ListCacheMuForTesting().Lock()

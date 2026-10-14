@@ -155,11 +155,12 @@ func TestHandleSurgeEvent_ErrorResumeError_AllowsSecondTerminal(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
 	tracker := NewTaskTracker()
+	reader := &mockSurgeListReader{}
 	m := &Monitor{
-		hub:                   hub,
-		pusher:                pusher,
-		tracker:               tracker,
-		pauseResumeIntentions: make(map[string]pauseResumeIntention),
+		hub:             hub,
+		pusher:          pusher,
+		tracker:         tracker,
+		surgePollReader: reader,
 	}
 
 	prevWindow := State.HasWindow()
@@ -190,7 +191,7 @@ func TestHandleSurgeEvent_ErrorResumeError_AllowsSecondTerminal(t *testing.T) {
 	}
 	history.Add(history.HistoryEntry{GID: "sg_reerr", Path: "/tmp/reerr.bin", Status: "error"})
 
-	m.BeginPauseResumeRequest("sg_reerr", PauseResumeIntentionResume)
+	reader.setLiveStatus("reerr", rpc.SurgeLiveStatus{Known: true, Status: "queued"})
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventResumed, DownloadID: "reerr"})
 
 	if tracker.processedComplete["sg_reerr"] {

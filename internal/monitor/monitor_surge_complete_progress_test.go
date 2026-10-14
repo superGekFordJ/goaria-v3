@@ -438,7 +438,7 @@ func TestComplete_UnknownLengthFastComplete_WaitingSource(t *testing.T) {
 	}
 	tracker.mu.Unlock()
 
-	m.ConfirmPauseResumeRequest(m.BeginPauseResumeRequest(gid, "resume"))
+	m.ApplyResume(gid)
 	if task, list, _ := Cache.GetTask(gid); list != "waiting" || task.Status != "waiting" {
 		t.Fatalf("resume ack did not land in waiting: %#v %s", task, list)
 	}
@@ -499,7 +499,7 @@ func TestResumeTerminal_WaitingFastComplete(t *testing.T) {
 		Cache.AddSgTask(full, "waiting")
 		tracker.EnsureTrackedFromEvent(gid, 1000, full.Files[0].Uris[0].Uri, 2, "paused")
 		Cache.SetMetadataForTest(gid, &TaskMetadata{GID: gid, Files: []string{full.Files[0].Path}, Dir: full.Dir})
-		m.ConfirmPauseResumeRequest(m.BeginPauseResumeRequest(gid, "resume"))
+		m.ApplyResume(gid)
 		task, list, _ := Cache.GetTask(gid)
 		if list != "waiting" || task.Status != "waiting" {
 			t.Fatalf("resume ack did not land in waiting: %#v %s", task, list)
@@ -618,14 +618,14 @@ func (e *terminalCopyBlockingEngine) TellStatus(gid string, keys []string) (rpc.
 	return task, nil
 }
 
-// TestResumeTerminal_TickCopyGeneration proves tick terminal consumption
-// honors the stamped lifecycle entry+generation on every accepted copy: a
-// copy retired by a reopen or by a remove+same-ID rebuild writes no
-// history/stats and emits no delta even when the generation number collides;
-// a duplicate stopped row that only advances the request revision never
-// blocks the first copy. The emitted delta carries the accepted full cache
-// row, not a single-file rebuild from the sparse tracked copy.
-func TestResumeTerminal_TickCopyGeneration(t *testing.T) {
+// TestResumeTerminal_TickCopyToken proves tick terminal consumption honors
+// the stamped lifecycle token on every accepted copy: a copy retired by a
+// reopen or by a remove+same-ID rebuild writes no history/stats and emits no
+// delta (the rebuilt entry always holds a strictly larger token); a duplicate
+// stopped row that only re-observes the same terminal state never blocks the
+// first copy. The emitted delta carries the accepted full cache row, not a
+// single-file rebuild from the sparse tracked copy.
+func TestResumeTerminal_TickCopyToken(t *testing.T) {
 	setup := func(t *testing.T, gid string, stopped []rpc.Task) (*Monitor, *TaskTracker, *Pusher, *terminalCopyBlockingEngine) {
 		m, _, pusher, tracker := newReconcileTestMonitor(t)
 		eng := &terminalCopyBlockingEngine{
@@ -689,16 +689,18 @@ func TestResumeTerminal_TickCopyGeneration(t *testing.T) {
 		m, tracker, pusher, eng := setup(t, gid, []rpc.Task{sparse})
 		resetHistoryForTest(t)
 
+		var tokBeforeReopen uint64
 		blockedTick(t, m, eng, func() {
+			tokBeforeReopen = tracker.LifecycleToken(gid)
 			tracker.RunUnderLifecycle(gid, func() {
 				retireHistoryAndReopenToStatusLocked(tracker, gid, "waiting")
 			})
 		})
-		if got := tracker.LifecycleGeneration(gid); got != 1 {
-			t.Fatalf("reopen did not advance generation: %d", got)
+		if got := tracker.LifecycleToken(gid); got <= tokBeforeReopen {
+			t.Fatalf("reopen did not mint a larger token: before=%d after=%d", tokBeforeReopen, got)
 		}
 		if n := len(historyEntriesForGID(gid)); n != 0 {
-			t.Fatalf("retired generation wrote history: %d", n)
+			t.Fatalf("retired copy wrote history: %d", n)
 		}
 
 		m.tick()
@@ -710,24 +712,26 @@ func TestResumeTerminal_TickCopyGeneration(t *testing.T) {
 		}
 	})
 
-	// Same-ID rebuild: the new lifecycle entry may restart at generation 0 —
-	// the same number the stale copy was stamped with. Entry identity, not
-	// the numeric generation, must reject it.
+	// Same-ID rebuild: the new lifecycle entry mints a strictly larger token —
+	// the global counter, not the GID, carries the identity that retires the
+	// stale copy.
 	t.Run("remove_readd_rejects_old_entry", func(t *testing.T) {
 		gid := "ar_tg_readd"
 		sparse := rpc.Task{GID: gid, Status: "complete", TotalLength: "100", CompletedLength: "100"}
 		m, tracker, pusher, eng := setup(t, gid, []rpc.Task{sparse})
 		resetHistoryForTest(t)
 
+		var tokBeforeReadd uint64
 		blockedTick(t, m, eng, func() {
+			tokBeforeReadd = tracker.LifecycleToken(gid)
 			tracker.RemoveTask(gid)
 			tracker.EnsureTrackedFromEvent(gid, 100, "https://x/f.bin", 1, "active")
 		})
 		if !tracker.HasLifecycleEntry(gid) {
 			t.Fatal("re-add did not rebuild the lifecycle entry")
 		}
-		if got := tracker.LifecycleGeneration(gid); got != 0 {
-			t.Fatalf("rebuilt entry should collide at generation 0, got %d", got)
+		if got := tracker.LifecycleToken(gid); got <= tokBeforeReadd {
+			t.Fatalf("rebuilt entry must mint a larger token: before=%d after=%d", tokBeforeReadd, got)
 		}
 		if n := len(historyEntriesForGID(gid)); n != 0 {
 			t.Fatalf("rebuilt entry accepted the retired copy: %d", n)
@@ -735,16 +739,17 @@ func TestResumeTerminal_TickCopyGeneration(t *testing.T) {
 
 		m.tick()
 		if entries := historyEntriesForGID(gid); len(entries) != 1 || entries[0].Status != "complete" {
-			t.Fatalf("rebuilt generation did not finish its own copy: %#v", entries)
+			t.Fatalf("rebuilt entry did not finish its own copy: %#v", entries)
 		}
 		if got := countComplete(pusher, gid); got != 1 {
 			t.Fatalf("old entry emitted or new copy lost: %d", got)
 		}
 	})
 
-	// A repeated stopped row only advances the request revision — it mints no
-	// second copy and must not block the first copy's finish or emit.
-	t.Run("dedup_revision_keeps_first_copy", func(t *testing.T) {
+	// A repeated stopped row is just a re-observation of the same terminal
+	// state — it mints no second copy and must not block the first copy's
+	// finish or emit.
+	t.Run("dedup_keeps_first_copy", func(t *testing.T) {
 		gid := "ar_tg_dedup"
 		sparse := rpc.Task{GID: gid, Status: "complete", TotalLength: "100", CompletedLength: "100"}
 		m, tracker, pusher, eng := setup(t, gid, []rpc.Task{sparse})

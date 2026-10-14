@@ -280,10 +280,10 @@ func (m *Monitor) tick() {
 	// 处理已完成任务（写入历史和速度统计）
 	for _, task := range completedTasks {
 		// Update accepted under tracker.mu without the lifecycle lock.
-		// Validate the stamped copy under the gate (entry identity +
-		// generation) so a concurrent retire/reopen drops this snapshot —
-		// do not re-mark it onto the new generation. The finish itself runs
-		// post-gate so blocking recovery never holds the lock.
+		// Validate the stamped copy under the gate (lifecycle token) so a
+		// concurrent retire/reopen drops this snapshot — do not re-mark it
+		// onto the new token. The finish itself runs post-gate so blocking
+		// recovery never holds the lock.
 		accepted := false
 		m.tracker.RunUnderLifecycle(task.GID, func() {
 			accepted = m.tracker.TerminalCopyCurrent(task.GID, task)
@@ -344,8 +344,8 @@ func (m *Monitor) tick() {
 		for _, task := range completedTasks {
 			// Re-validate the stamped copy and capture the row to emit in the
 			// same gate pass: a reopen or remove+same-ID rebuild between
-			// Update and now retires the copy — stale generations must not
-			// emit terminal deltas or leak the next generation's row.
+			// Update and now retires the copy — stale tokens must not
+			// emit terminal deltas or leak the next token's row.
 			copyCurrent := false
 			var cachedTask rpc.Task
 			haveCached := false
@@ -378,7 +378,7 @@ func (m *Monitor) tick() {
 
 			// The emitted payload is the accepted full cache row (multi-Files/
 			// Uris/Title/group survive), captured under the gate above — not a
-			// post-gate reread that could belong to the next generation.
+			// post-gate reread that could belong to the next token.
 			var fullTask rpc.Task
 			if haveCached {
 				fullTask = cachedTask

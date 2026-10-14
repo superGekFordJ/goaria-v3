@@ -12,10 +12,10 @@ import (
 )
 
 // newEventTestMonitor builds a Monitor wired for handleSurgeEvent fact tests.
-func newEventTestMonitor(t *testing.T) (*Monitor, *TaskTracker) {
+func newEventTestMonitor(t *testing.T) (*Monitor, *mockSurgeListReader, *TaskTracker) {
 	t.Helper()
-	m, _, _, tracker := newReconcileTestMonitor(t)
-	return m, tracker
+	m, reader, _, tracker := newReconcileTestMonitor(t)
+	return m, reader, tracker
 }
 
 func startedEvent(downloaded int64, isResume bool) surgeEvents.DownloadEvent {
@@ -42,7 +42,7 @@ func progressEvent(downloaded int64) surgeEvents.DownloadEvent {
 // event stamps ActivatedAt and a reliable baseline — the genuine activation
 // fact the Target-floor lease depends on.
 func TestHandleSurgeEvent_StartedEstablishesActivation(t *testing.T) {
-	m, tracker := newEventTestMonitor(t)
+	m, _, tracker := newEventTestMonitor(t)
 
 	m.handleSurgeEvent(startedEvent(500, true))
 
@@ -65,7 +65,7 @@ func TestHandleSurgeEvent_StartedEstablishesActivation(t *testing.T) {
 // TestHandleSurgeEvent_DuplicateStartedDoesNotReset verifies repeated started
 // observations keep the original activation instant/baseline.
 func TestHandleSurgeEvent_DuplicateStartedDoesNotReset(t *testing.T) {
-	m, tracker := newEventTestMonitor(t)
+	m, _, tracker := newEventTestMonitor(t)
 
 	m.handleSurgeEvent(startedEvent(500, false))
 	first := tracker.tasks["sg_x"].ActivatedAt
@@ -84,7 +84,7 @@ func TestHandleSurgeEvent_DuplicateStartedDoesNotReset(t *testing.T) {
 // the activation baseline stamps FirstProgressAt once; regressions and equal
 // values do not.
 func TestHandleSurgeEvent_ProgressStampsFirstGrowthOnce(t *testing.T) {
-	m, tracker := newEventTestMonitor(t)
+	m, _, tracker := newEventTestMonitor(t)
 
 	m.handleSurgeEvent(startedEvent(500, false))
 
@@ -119,7 +119,7 @@ func TestHandleSurgeEvent_ProgressStampsFirstGrowthOnce(t *testing.T) {
 // write on the paused row no longer mints one either; only an explicit
 // admission reservation claims while waiting.
 func TestHandleSurgeEvent_PausedClearsActivation(t *testing.T) {
-	m, tracker := newEventTestMonitor(t)
+	m, _, tracker := newEventTestMonitor(t)
 
 	m.handleSurgeEvent(startedEvent(0, false))
 	if tracker.tasks["sg_x"].ActivatedAt.IsZero() {
@@ -154,11 +154,11 @@ func TestHandleSurgeEvent_PausedClearsActivation(t *testing.T) {
 	}
 }
 
-// TestHandleSurgeEvent_StartedOnTerminalWithResumeIntention verifies the
-// remove-then-re-add cycle: a started event on a terminal-marked task reopens
-// it (resume-intended) and establishes a fresh activation.
-func TestHandleSurgeEvent_StartedOnTerminalWithResumeIntention(t *testing.T) {
-	m, tracker := newEventTestMonitor(t)
+// TestHandleSurgeEvent_StartedOnTerminalWithLiveActive verifies the
+// remove-then-re-add cycle: a started event on a terminal-marked task backed
+// by live downloading evidence reopens it and establishes a fresh activation.
+func TestHandleSurgeEvent_StartedOnTerminalWithLiveActive(t *testing.T) {
+	m, reader, tracker := newEventTestMonitor(t)
 	resetHistoryForTest(t)
 
 	m.handleSurgeEvent(startedEvent(0, false))
@@ -178,7 +178,7 @@ func TestHandleSurgeEvent_StartedOnTerminalWithResumeIntention(t *testing.T) {
 		t.Fatal("precondition: task should be in cache stopped")
 	}
 
-	m.BeginPauseResumeRequest("sg_x", PauseResumeIntentionResume)
+	reader.setLiveStatus("x", rpc.SurgeLiveStatus{Known: true, Status: "downloading"})
 	m.handleSurgeEvent(startedEvent(0, true))
 
 	tt := tracker.tasks["sg_x"]
@@ -194,11 +194,11 @@ func TestHandleSurgeEvent_StartedOnTerminalWithResumeIntention(t *testing.T) {
 	}
 }
 
-// TestHandleSurgeEvent_StartedOnTerminalWithoutIntention verifies a spurious
-// started event on a stopped task does NOT reopen the tracker row — no
-// intention, no terminal-clear, no activation.
-func TestHandleSurgeEvent_StartedOnTerminalWithoutIntention(t *testing.T) {
-	m, tracker := newEventTestMonitor(t)
+// TestHandleSurgeEvent_StartedOnTerminalWithoutLiveEvidence verifies a
+// spurious started event on a stopped task does NOT reopen the tracker row —
+// no live evidence, no terminal-clear, no activation.
+func TestHandleSurgeEvent_StartedOnTerminalWithoutLiveEvidence(t *testing.T) {
+	m, _, tracker := newEventTestMonitor(t)
 	resetHistoryForTest(t)
 
 	m.handleSurgeEvent(startedEvent(0, false))
@@ -215,7 +215,7 @@ func TestHandleSurgeEvent_StartedOnTerminalWithoutIntention(t *testing.T) {
 
 	tt := tracker.tasks["sg_x"]
 	if tt != nil && tt.Status == "active" {
-		t.Error("started on terminal task without resume intention must not reopen tracker status")
+		t.Error("started on terminal task without live evidence must not reopen tracker status")
 	}
 	if tt != nil && !tt.ActivatedAt.IsZero() {
 		t.Error("no activation may be stamped on a still-terminal row")
@@ -223,7 +223,7 @@ func TestHandleSurgeEvent_StartedOnTerminalWithoutIntention(t *testing.T) {
 	// The stopped cache membership and its full metadata must survive — the
 	// sparse add must not run.
 	if !Cache.IsInStopped("sg_x") {
-		t.Error("non-intended started must not evict the stopped row")
+		t.Error("unbacked started must not evict the stopped row")
 	}
 	if task := findTaskInCache("sg_x"); task == nil || task.Status != "complete" {
 		t.Errorf("stopped row clobbered: %#v", task)
@@ -354,7 +354,7 @@ func TestReconcileSurgeCache_WaitingClearsActivation(t *testing.T) {
 // fired from RPC-failure or progress hot paths.
 
 func TestAdmissionFacts_AcceptedChangeKicksBeforeHubGate(t *testing.T) {
-	m, _ := newEventTestMonitor(t)
+	m, _, _ := newEventTestMonitor(t)
 	var kicks atomic.Int64
 	m.SetAdmissionKick(func() { kicks.Add(1) })
 	t.Cleanup(func() { m.SetAdmissionKick(nil) })
@@ -381,7 +381,7 @@ func TestAdmissionFacts_AcceptedChangeKicksBeforeHubGate(t *testing.T) {
 }
 
 func TestAdmissionFacts_InvalidateTaskKicks(t *testing.T) {
-	m, tracker := newEventTestMonitor(t)
+	m, _, tracker := newEventTestMonitor(t)
 	m.deletedGids = make(map[string]time.Time)
 	tracker.EnsureTrackedFromEvent("sg_iv", 100, "http://e/f", 4, "waiting")
 
@@ -396,7 +396,7 @@ func TestAdmissionFacts_InvalidateTaskKicks(t *testing.T) {
 }
 
 func TestAdmissionFacts_SurgeTerminalEventKicks(t *testing.T) {
-	m, _ := newEventTestMonitor(t)
+	m, _, _ := newEventTestMonitor(t)
 	resetHistoryForTest(t)
 
 	m.handleSurgeEvent(startedEvent(0, false))
@@ -471,7 +471,7 @@ func TestAdmissionFacts_TickKicksOnceAfterApply(t *testing.T) {
 }
 
 func TestAdmissionFacts_KickNilSafe(t *testing.T) {
-	m, _ := newEventTestMonitor(t)
+	m, _, _ := newEventTestMonitor(t)
 	m.SetAdmissionKick(nil)
 	m.KickAdmission() // must not panic
 	// Clearing while a kick is in flight stays safe: the callback is copied

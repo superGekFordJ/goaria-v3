@@ -360,107 +360,99 @@ func mergeSurgeTerminalMaster(surgeEng *rpc.SurgeEngine, ev types.DownloadEvent,
 	}
 }
 
+// handleSurgeLifecycleEvent adjudicates queue/start/pause/resume events under
+// the per-GID lifecycle gate. The live pool read inside the gate is the only
+// authority: a known live status wins over stale cache/list echoes, an
+// explicit absent refuses reopening, and unknown stays conservative —
+// non-terminal rows fold normally while active/terminal rows hold.
 func (m *Monitor) handleSurgeLifecycleEvent(ev types.DownloadEvent) {
 	gid := "sg_" + ev.DownloadID
-	var ticket PauseResumeTicket
-	m.tracker.RunUnderLifecycle(gid, func() {
-		m.pauseResumeVersionMu.RLock()
-		intention := m.pauseResumeIntentions[gid]
-		m.pauseResumeVersionMu.RUnlock()
-		if intention.seq != 0 {
-			ticket = PauseResumeTicket{gid: gid, seq: intention.seq, stamp: m.tracker.captureLifecycleStamp(gid)}
-		}
-	})
 	var change acceptedTaskChange
-	accept := func() {
+	m.tracker.RunUnderLifecycle(gid, func() {
 		task, source, exists := Cache.GetTask(gid)
 		entry, historied := history.Get(gid)
 		terminal := source == "stopped" || historied || m.tracker.TerminalAcceptedInCurrentGeneration(gid)
-		// Only a still-protected request shields facts; an expired or
-		// ticket-less record no longer authorizes recovery or pause refusal.
-		intention := pauseResumeIntention{action: m.pauseResumeProtectedAction(gid)}
-		resume := ticket.seq != 0 && intention.action == PauseResumeIntentionResume
 		live := m.readSurgeLiveStatus(gid)
 		status, kind := "waiting", "add"
 		switch ev.Type {
 		case types.EventResumed:
-			if intention.action == PauseResumeIntentionPause || (exists && (source == "active" || task.Status == "active")) || (!exists && !historied) {
+			kind = "resume"
+			if !exists && !historied {
 				return
 			}
-			if live.Known && live.Status != "waiting" && live.Status != "active" {
-				return
-			}
-			if resume && live.Status != "active" {
-				change = m.confirmPauseResumeRequestLocked(gid)
-				if change.task.GID == "" {
+			switch {
+			case live.Known:
+				if live.Status != "waiting" {
 					return
 				}
-				status, kind = change.task.Status, "resume"
-			} else {
-				if !live.Known || (live.Status != "waiting" && live.Status != "active") {
-					return
-				}
-				status, kind = live.Status, "resume"
-			}
-		case types.EventStarted:
-			status = "active"
-			if terminal && !resume && live.Status != "active" {
+			case live.Absent:
 				return
-			}
-			if intention.action == PauseResumeIntentionPause && task.Status == "paused" && live.Status != "active" {
-				return
-			}
-			if live.Known && live.Status == "paused" {
+			case terminal || (exists && (source == "active" || task.Status == "active")):
+				// Unknown live never downgrades an active row or reopens a
+				// terminal one.
 				return
 			}
 		case types.EventQueued:
-			if intention.action == PauseResumeIntentionPause || live.Status == "active" {
+			switch {
+			case live.Known:
+				if live.Status != "waiting" {
+					return
+				}
+			case live.Absent:
+				return
+			case terminal || (exists && (source == "active" || task.Status == "active" || task.Status == "paused")):
 				return
 			}
-			if terminal && !resume && live.Status != "waiting" {
+		case types.EventStarted:
+			status = "active"
+			switch {
+			case live.Known:
+				if live.Status != "active" {
+					return
+				}
+			case live.Absent:
 				return
-			}
-			if exists && (source == "active" || task.Status == "paused") && live.Status != "waiting" && !resume {
+			case terminal:
 				return
 			}
 		case types.EventPaused:
 			status, kind = "paused", "pause"
-			if !exists || terminal || intention.action == PauseResumeIntentionResume || live.Known && live.Status != "paused" {
+			if !exists || terminal || (live.Known && live.Status != "paused") {
 				return
 			}
+		default:
+			return
 		}
-		if change.task.GID == "" {
-			if !exists && historied {
-				full := history.ToStoppedTask(entry)
-				full.Title = entry.Title
-				Cache.AddSgTask(full, "stopped")
-				source = "stopped"
+		if !exists && historied {
+			full := history.ToStoppedTask(entry)
+			full.Title = entry.Title
+			Cache.AddSgTask(full, "stopped")
+			source = "stopped"
+		}
+		patch := rpc.Task{GID: gid, Status: status, DownloadSpeed: "0"}
+		if ev.Total > 0 {
+			patch.TotalLength = strconv.FormatInt(ev.Total, 10)
+		}
+		if ev.Downloaded > 0 {
+			patch.CompletedLength = strconv.FormatInt(ev.Downloaded, 10)
+		}
+		to := engineListForStatus(status)
+		Cache.AddSgTask(patch, to)
+		if source == "stopped" {
+			if m.tracker != nil && m.tracker.afterMoveBeforeRetire != nil {
+				m.tracker.afterMoveBeforeRetire(gid)
 			}
-			patch := rpc.Task{GID: gid, Status: status, DownloadSpeed: "0"}
-			if ev.Total > 0 {
-				patch.TotalLength = strconv.FormatInt(ev.Total, 10)
-			}
+			retireHistoryAndReopenToStatusLocked(m.tracker, gid, status)
+		}
+		if m.tracker != nil {
+			m.tracker.EnsureTrackedFromEvent(gid, ev.Total, ev.URL, ev.Workers, status)
+			m.tracker.SetStatusFromEvent(gid, status)
 			if ev.Downloaded > 0 {
-				patch.CompletedLength = strconv.FormatInt(ev.Downloaded, 10)
+				m.tracker.UpdateProgressFromEvent(gid, ev.Total, ev.Downloaded)
 			}
-			to := engineListForStatus(status)
-			Cache.AddSgTask(patch, to)
-			if source == "stopped" {
-				if m.tracker != nil && m.tracker.afterMoveBeforeRetire != nil {
-					m.tracker.afterMoveBeforeRetire(gid)
-				}
-				retireHistoryAndReopenToStatusLocked(m.tracker, gid, status)
-			}
-			if m.tracker != nil {
-				m.tracker.EnsureTrackedFromEvent(gid, ev.Total, ev.URL, ev.Workers, status)
-				m.tracker.SetStatusFromEvent(gid, status)
-				if ev.Downloaded > 0 {
-					m.tracker.UpdateProgressFromEvent(gid, ev.Total, ev.Downloaded)
-				}
-			}
-			task, _, _ = Cache.GetTask(gid)
-			change = acceptedTaskChange{task: task, from: source, to: to, kind: kind}
 		}
+		task, _, _ = Cache.GetTask(gid)
+		change = acceptedTaskChange{task: task, from: source, to: to, kind: kind}
 		if status == "active" && m.tracker != nil {
 			completed, known := live.CompletedLength, live.CompletedKnown
 			if ev.State != nil {
@@ -509,12 +501,7 @@ func (m *Monitor) handleSurgeLifecycleEvent(ev types.DownloadEvent) {
 			m.surgeEng.UpsertMasterCacheEntry(master)
 			m.surgeEng.InvalidateListCache()
 		}
-	}
-	if ticket.seq != 0 {
-		m.RunIfPauseResumeRequestCurrent(ticket, accept)
-	} else {
-		m.tracker.RunUnderLifecycle(gid, accept)
-	}
+	})
 	if change.task.GID != "" {
 		Cache.PrefetchMetadata(gid)
 		m.publishAcceptedTaskChange(change)
@@ -625,48 +612,6 @@ func (m *Monitor) reconcileSurgeCache() {
 		return
 	}
 
-	observations := make(map[string]surgePollObservation)
-	var chunkKeys []string
-	if m.chunkSnapshots != nil {
-		chunkKeys = m.chunkSnapshots.GIDs()
-	}
-	active, waiting, stopped := Cache.GetTaskLists()
-	for _, task := range append(append(filterSgOnly(active), filterSgOnly(waiting)...), filterSgOnly(stopped)...) {
-		observations[task.GID] = m.captureSurgePollObservation(task.GID)
-	}
-	for _, gid := range chunkKeys {
-		if _, exists := observations[gid]; !exists {
-			observations[gid] = m.captureSurgePollObservation(gid)
-		}
-	}
-	// Union candidates: tracker rows, durable history, and in-flight requests
-	// keep a GID recoverable even when its cache row was lost.
-	if m.tracker != nil {
-		for _, gid := range m.tracker.SurgeGIDs() {
-			if _, exists := observations[gid]; !exists {
-				observations[gid] = m.captureSurgePollObservation(gid)
-			}
-		}
-	}
-	for _, gid := range historySurgeGIDs() {
-		if _, exists := observations[gid]; !exists {
-			observations[gid] = m.captureSurgePollObservation(gid)
-		}
-	}
-	var requestGids []string
-	m.pauseResumeVersionMu.RLock()
-	for gid := range m.pauseResumeIntentions {
-		if IsSgGid(gid) {
-			requestGids = append(requestGids, gid)
-		}
-	}
-	m.pauseResumeVersionMu.RUnlock()
-	for _, gid := range requestGids {
-		if _, exists := observations[gid]; !exists {
-			observations[gid] = m.captureSurgePollObservation(gid)
-		}
-	}
-
 	// Sync the in-memory masterCache mirror from master.gob and clear the
 	// 1s TTL list cache before reading, so a dropped complete/error event
 	// (which leaves masterCache stale until the next 10s tick refresh) does
@@ -725,9 +670,10 @@ func (m *Monitor) reconcileSurgeCache() {
 		cacheAll[t.GID] = "stopped"
 	}
 
-	// Deletion requires an explicit absent answer from the scheduler, a fresh
-	// observation, and no live request shield. Unknown (nil-state) is not
-	// absence and never removes anything.
+	// Deletion requires an explicit absent answer from the scheduler.
+	// Unknown (nil-state) is not absence and never removes anything; a known
+	// live status is real evidence, so the candidate re-enters the union and
+	// the main loop repairs it from live state.
 	deleteCandidates := make(map[string]string, len(cacheAll))
 	maps.Copy(deleteCandidates, cacheAll)
 	if m.tracker != nil {
@@ -743,9 +689,6 @@ func (m *Monitor) reconcileSurgeCache() {
 		}
 		removed := false
 		m.tracker.RunUnderLifecycle(gid, func() {
-			if !m.surgePollObservationCurrentLocked(gid, observations) {
-				return
-			}
 			live := m.readSurgeLiveStatus(gid)
 			if live.Known {
 				liveTask, _, _ := Cache.GetTask(gid)
@@ -754,11 +697,6 @@ func (m *Monitor) reconcileSurgeCache() {
 				return
 			}
 			if !live.Absent {
-				return
-			}
-			// A bounded in-flight resume shields the row: engine absence can
-			// be a transient gap between scheduler remove and re-add.
-			if m.shouldDiscardStalePause(gid) {
 				return
 			}
 			if m.surgeEng != nil {
@@ -796,15 +734,13 @@ func (m *Monitor) reconcileSurgeCache() {
 	// Snapshot keys absent from every engine list are orphans: their
 	// start/remove events were both lost, so nothing else will ever
 	// visit them. Runs only on a full three-list read (early returns
-	// above protect partial reads) and only on an explicit absent answer.
+	// above protect partial reads) and only on an explicit absent answer —
+	// keys are enumerated after the successful read, never pre-sampled.
 	if m.chunkSnapshots != nil {
-		for _, gid := range chunkKeys {
+		for _, gid := range m.chunkSnapshots.GIDs() {
 			if _, ok := engineAll[gid]; !ok {
 				m.tracker.RunUnderLifecycle(gid, func() {
-					if !m.surgePollObservationCurrentLocked(gid, observations) || !m.readSurgeLiveStatus(gid).Absent || m.surgeResumeLiveLocked(gid) {
-						return
-					}
-					if snap, exists := m.chunkSnapshots.Get(gid); exists && snap.UpdatedAt.Equal(observations[gid].chunkAt) {
+					if m.readSurgeLiveStatus(gid).Absent {
 						m.chunkSnapshots.Remove(gid)
 					}
 				})
@@ -818,9 +754,6 @@ func (m *Monitor) reconcileSurgeCache() {
 		prefetch := false
 		terminalCommitted := false
 		m.tracker.RunUnderLifecycle(gid, func() {
-			if !m.surgePollObservationCurrentLocked(gid, observations) {
-				return
-			}
 			task, source, exists := Cache.GetTask(gid)
 			live := m.readSurgeLiveStatus(gid)
 			status := engineTask.Status
@@ -840,31 +773,23 @@ func (m *Monitor) reconcileSurgeCache() {
 				return
 			}
 			list := engineListForStatus(status)
-			// A stopped-list row is terminal evidence: the engine union only
-			// projects an ID into stopped when its pool no longer tracks the
-			// task, so it wins over a bounded resume shield. The shield still
-			// defers stale non-terminal echoes of a just-confirmed request.
-			resumeLive := list != "stopped" && m.surgeResumeLiveLocked(gid)
-			if !live.Known && (list == "active" || resumeLive ||
+			if !live.Known && (list == "active" ||
 				status == "waiting" && source == "active" || status == "paused" && task.Status == "waiting") {
-				return
-			}
-			if status == "paused" && m.shouldDiscardStalePause(gid) ||
-				status == "waiting" && task.Status == "paused" && observations[gid].protectedAction == PauseResumeIntentionPause {
+				// Unknown live state must not manufacture activation, demote
+				// an active row to waiting, or overwrite a waiting row with
+				// a mirror-only pause.
 				return
 			}
 			histEntry, historied := history.Get(gid)
-			freshResume := m.shouldDiscardStalePause(gid)
 			realQueued := live.Known && live.Status == "waiting"
 			if list == "waiting" {
 				switch {
-				case !exists && historied && !realQueued && !freshResume:
+				case !exists && historied && !realQueued:
 					// A durable terminal row must never rejoin waiting on
 					// mirror evidence alone; seed stopped and mark it terminal.
 					stoppedTask := history.ToStoppedTask(histEntry)
 					stoppedTask.Title = histEntry.Title
 					Cache.AddSgTask(stoppedTask, "stopped")
-					m.clearPauseResumeIntentionLocked(gid)
 					if m.chunkSnapshots != nil {
 						m.chunkSnapshots.Remove(gid)
 					}
@@ -874,10 +799,10 @@ func (m *Monitor) reconcileSurgeCache() {
 					}
 					terminalCommitted = true
 					return
-				case !exists && !live.Known && !freshResume:
+				case !exists && !live.Known:
 					// A mirror-only waiting/paused row is not enqueue evidence.
 					return
-				case source == "stopped" && !realQueued && !freshResume:
+				case source == "stopped" && !realQueued:
 					// Stale waiting/paused projections must not revive a
 					// terminal stopped row.
 					return
@@ -980,98 +905,6 @@ func (m *Monitor) reconcileSurgeCache() {
 			m.KickAdmission()
 		}
 	}
-}
-
-type surgePollObservation struct {
-	stamp     lifecycleStamp
-	intention pauseResumeIntention
-	// protectedAction is the still-bounded shield action at capture time;
-	// an expired or unconfirmed-after-expiry record reads as "".
-	protectedAction string
-	list, status    string
-	chunkAt         time.Time
-	historied       bool
-}
-
-func (m *Monitor) captureSurgePollObservation(gid string) (observation surgePollObservation) {
-	m.tracker.RunUnderLifecycle(gid, func() {
-		if m.tracker != nil {
-			observation.stamp = m.tracker.captureLifecycleStamp(gid)
-		}
-		m.pauseResumeVersionMu.RLock()
-		observation.intention = m.pauseResumeIntentions[gid]
-		if protected, ok := m.pauseResumeProtectedLocked(gid); ok {
-			observation.protectedAction = protected.action
-		}
-		m.pauseResumeVersionMu.RUnlock()
-		task, list, _ := Cache.GetTask(gid)
-		observation.list, observation.status = list, task.Status
-		if m.chunkSnapshots != nil {
-			if snap, ok := m.chunkSnapshots.Get(gid); ok {
-				observation.chunkAt = snap.UpdatedAt
-			}
-		}
-		_, observation.historied = history.Get(gid)
-	})
-	return
-}
-
-// Caller holds the GID gate; never bless a candidate discovered after bulk reads.
-func (m *Monitor) surgePollObservationCurrentLocked(gid string, observations map[string]surgePollObservation) bool {
-	m.pauseResumeVersionMu.RLock()
-	intention := m.pauseResumeIntentions[gid]
-	m.pauseResumeVersionMu.RUnlock()
-	task, list, exists := Cache.GetTask(gid)
-	_, historied := history.Get(gid)
-	observation, captured := observations[gid]
-	if !captured {
-		// Uncaptured candidates have no captured truth to compare; admit only
-		// a genuinely empty pre-read state so a mid-read fact (request,
-		// history, terminal acceptance, chunk write) cannot slip through.
-		if exists || historied || intention.seq != 0 {
-			return false
-		}
-		if m.tracker != nil && m.tracker.TerminalAcceptedInCurrentGeneration(gid) {
-			return false
-		}
-		if m.chunkSnapshots != nil {
-			if _, ok := m.chunkSnapshots.Get(gid); ok {
-				return false
-			}
-		}
-		return true
-	}
-	if intention != observation.intention || historied != observation.historied {
-		return false
-	}
-	if list != observation.list || task.Status != observation.status {
-		return false
-	}
-	var snapAt time.Time
-	if m.chunkSnapshots != nil {
-		if snap, ok := m.chunkSnapshots.Get(gid); ok {
-			snapAt = snap.UpdatedAt
-		}
-	}
-	return snapAt.Equal(observation.chunkAt) &&
-		(m.tracker == nil || m.tracker.lifecycleStampCurrent(gid, observation.stamp))
-}
-
-// historySurgeGIDs lists durable history entries belonging to the Surge engine.
-func historySurgeGIDs() []string {
-	entries := history.GetAll()
-	out := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if IsSgGid(e.GID) {
-			out = append(out, e.GID)
-		}
-	}
-	return out
-}
-
-func (m *Monitor) surgeResumeLiveLocked(gid string) bool {
-	task, list, ok := Cache.GetTask(gid)
-	return ok && (list == "waiting" && task.Status == "waiting" || list == "active" && task.Status == "active") && m.shouldDiscardStalePause(gid)
 }
 
 func prefixSgTasks(tasks []rpc.Task) []rpc.Task {

@@ -11,7 +11,7 @@ import (
 	"goaria-v3/internal/rpc"
 )
 
-func TestResumeConfirmation_SourceAndFreshness(t *testing.T) {
+func TestApplyResume_Sources(t *testing.T) {
 	for _, source := range []string{"paused", "stopped", "history", "unknown", "active"} {
 		t.Run(source, func(t *testing.T) {
 			resetHistoryForTest(t)
@@ -31,9 +31,9 @@ func TestResumeConfirmation_SourceAndFreshness(t *testing.T) {
 			case "active":
 				Cache.AddSgTask(full, "active")
 			}
-			ticket := m.BeginPauseResumeRequest(full.GID, "resume")
-			m.ConfirmPauseResumeRequest(ticket)
-			m.ConfirmPauseResumeRequest(ticket)
+			before := tracker.LifecycleToken(full.GID)
+			m.ApplyResume(full.GID)
+			m.ApplyResume(full.GID) // duplicate ack is a no-op
 			got, list, ok := Cache.GetTask(full.GID)
 			if source == "unknown" {
 				if ok {
@@ -45,10 +45,13 @@ func TestResumeConfirmation_SourceAndFreshness(t *testing.T) {
 				if list != "active" || got.Status != "active" {
 					t.Fatal("ack demoted start")
 				}
+				if tracker.LifecycleToken(full.GID) != before {
+					t.Fatal("no-op resume moved the token")
+				}
 				return
 			}
 			if list != "waiting" || got.Status != "waiting" || got.CompletedLength != full.CompletedLength {
-				t.Fatalf("confirmation: %#v %s", got, list)
+				t.Fatalf("apply resume: %#v %s", got, list)
 			}
 			if source != "history" {
 				assertFullRowMetadata(t, got, full)
@@ -56,36 +59,43 @@ func TestResumeConfirmation_SourceAndFreshness(t *testing.T) {
 			if _, exists := history.Get(full.GID); exists {
 				t.Fatal("H0 not retired")
 			}
-			wantGen := uint64(0)
-			if source != "paused" {
-				wantGen = 1
-			}
-			if tracker.LifecycleGeneration(full.GID) != wantGen {
-				t.Fatal("duplicate reopen")
+			after := tracker.LifecycleToken(full.GID)
+			if source == "paused" {
+				if after != before {
+					t.Fatalf("paused resume must not mint a token: before=%d after=%d", before, after)
+				}
+			} else if after <= before {
+				t.Fatalf("stopped→live resume must mint a larger token exactly once: before=%d after=%d", before, after)
 			}
 			if tt, _ := tracker.GetTrackedTask(full.GID); !tt.ActivatedAt.IsZero() {
 				t.Fatal("ack activated")
 			}
 		})
 	}
-	for _, first := range []string{"pause", "resume"} {
-		m, _, _, _ := newReconcileTestMonitor(t)
-		full := fullRowForTest("sg_supersede")
-		full.Status = "paused"
-		Cache.AddSgTask(full, "waiting")
-		old := m.BeginPauseResumeRequest(full.GID, first)
-		newer := m.BeginPauseResumeRequest(full.GID, "resume")
-		if first == "resume" {
-			newer = m.BeginPauseResumeRequest(full.GID, "pause")
+}
+
+// ApplyPause/ApplyResume are inert on nil or tracker-less monitors, blank and
+// unknown GIDs: no cache row, no history, no tracker entry is manufactured.
+func TestApplyPauseResume_InertInputs(t *testing.T) {
+	resetHistoryForTest(t)
+	m := &Monitor{tracker: NewTaskTracker()}
+	for _, mon := range []*Monitor{nil, {}, m} {
+		for _, gid := range []string{"", " ", "sg_missing", "ar_missing"} {
+			mon.ApplyPause(gid)
+			mon.ApplyResume(gid)
 		}
-		m.ConfirmPauseResumeRequest(old)
-		if m.ClearPauseResumeIntentionIfCurrent(old) || !m.RunIfPauseResumeRequestCurrent(newer, func() {}) {
-			t.Fatal("old cleanup clobbered new request")
-		}
-		got, _, _ := Cache.GetTask(full.GID)
-		if got.Status != "paused" {
-			t.Fatal("stale write")
-		}
+	}
+	if _, _, ok := Cache.GetTask("sg_missing"); ok {
+		t.Fatal("apply manufactured a cache row")
+	}
+	if _, _, ok := Cache.GetTask("ar_missing"); ok {
+		t.Fatal("apply manufactured an aria cache row")
+	}
+	if _, ok := history.Get("sg_missing"); ok {
+		t.Fatal("apply manufactured history")
+	}
+	if tracked, ok := m.tracker.GetTrackedTask("sg_missing"); ok && tracked.Status != "" {
+		t.Fatalf("apply wrote tracker status: %#v", tracked)
 	}
 }
 
@@ -93,6 +103,7 @@ func TestResumeConfirmation_DetachedGateWaiter(t *testing.T) {
 	tracker := NewTaskTracker()
 	const gid = "sg_detached"
 	old := tracker.getLifecycle(gid)
+	oldToken := tracker.LifecycleToken(gid)
 	old.mu.Lock()
 	done := make(chan struct{})
 	go tracker.RunUnderLifecycle(gid, func() {
@@ -108,198 +119,8 @@ func TestResumeConfirmation_DetachedGateWaiter(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("detached waiter stuck")
 	}
-}
-
-func TestLifecycle_FreshnessStamp(t *testing.T) {
-	tracker := NewTaskTracker()
-	const gid = "sg_stamp"
-	tracker.EnsureTrackedFromEvent(gid, 1000, "", 1, "active")
-	stamp := tracker.captureLifecycleStamp(gid)
-	tracker.ObserveActivation(gid, 0, true)
-	tracker.UpdateProgressFromEvent(gid, 1000, 100)
-	tracker.SetStatusFromEvent(gid, "paused")
-	tracker.SetStatusFromEvent(gid, "waiting")
-	if !tracker.lifecycleStampCurrent(gid, stamp) || tracker.LifecycleGeneration(gid) != 0 {
-		t.Fatal("ordinary facts advanced freshness/generation")
-	}
-	for i := range 2 {
-		stamp = tracker.captureLifecycleStamp(gid)
-		accepted := tracker.MarkCompleteFromEvent(gid, "error")
-		if (accepted != nil) != (i == 0) || tracker.lifecycleStampCurrent(gid, stamp) || tracker.LifecycleGeneration(gid) != 0 {
-			t.Fatal("first/dedup terminal freshness changed acceptance or generation")
-		}
-	}
-	stamp = tracker.captureLifecycleStamp(gid)
-	tracker.ReopenAfterStoppedToLive(gid, "waiting")
-	if tracker.lifecycleStampCurrent(gid, stamp) || tracker.LifecycleGeneration(gid) != 1 {
-		t.Fatal("reopen did not advance freshness/generation")
-	}
-	stamp = tracker.captureLifecycleStamp(gid)
-	tracker.RemoveTask(gid)
-	tracker.EnsureTrackedFromEvent(gid, 1000, "", 1, "active")
-	if tracker.lifecycleStampCurrent(gid, stamp) {
-		t.Fatal("same-ID recreation retained stamp")
-	}
-}
-
-func TestPauseResumeTicket_CurrentAndStale(t *testing.T) {
-	changes := []struct {
-		name   string
-		dedup  bool
-		change func(*Monitor, string)
-	}{
-		{"new resume", false, func(m *Monitor, gid string) { m.BeginPauseResumeRequest(gid, "resume") }},
-		{"new pause", false, func(m *Monitor, gid string) { m.BeginPauseResumeRequest(gid, "pause") }},
-		{"direct intention delete", false, func(m *Monitor, gid string) {
-			m.pauseResumeVersionMu.Lock()
-			delete(m.pauseResumeIntentions, gid)
-			m.pauseResumeVersionMu.Unlock()
-		}},
-		{"invalidate", false, func(m *Monitor, gid string) { m.InvalidateTask(gid) }},
-		{"terminal", false, func(m *Monitor, gid string) { m.tracker.MarkCompleteFromEvent(gid, "error") }},
-		{"dedup tracker terminal", true, func(m *Monitor, gid string) { m.tracker.MarkCompleteFromEvent(gid, "error") }},
-		{"dedup terminal", true, func(m *Monitor, gid string) { m.markCompleteAndHandle(gid, "error", nil) }},
-		{"poll terminal", false, func(m *Monitor, gid string) { m.tracker.Update(nil, nil, []rpc.Task{{GID: gid, Status: "error"}}) }},
-		{"dedup poll terminal", true, func(m *Monitor, gid string) { m.tracker.Update(nil, nil, []rpc.Task{{GID: gid, Status: "error"}}) }},
-		{"reopen", true, func(m *Monitor, gid string) { m.tracker.ReopenAfterStoppedToLive(gid, "waiting") }},
-		{"remove same ID", true, func(m *Monitor, gid string) {
-			m.tracker.RemoveTask(gid)
-			m.tracker.EnsureTrackedFromEvent(gid, 1000, "", 1, "paused")
-			m.tracker.MarkCompleteFromEvent(gid, "error")
-		}},
-	}
-	for _, tc := range changes {
-		t.Run(tc.name, func(t *testing.T) {
-			resetHistoryForTest(t)
-			m := &Monitor{tracker: NewTaskTracker(), deletedGids: make(map[string]time.Time)}
-			full := fullRowForTest("sg_ticket")
-			cleanupSgCache(t, full.GID)
-			list := "waiting"
-			full.Status = "paused"
-			if tc.dedup {
-				list, full.Status = "stopped", "error"
-			}
-			Cache.AddSgTask(full, list)
-			m.tracker.EnsureTrackedFromEvent(full.GID, 1000, "", 1, full.Status)
-			if tc.dedup {
-				m.tracker.MarkCompleteFromEvent(full.GID, "error")
-			}
-			history.Add(history.HistoryEntry{GID: full.GID, Path: full.Files[0].Path, Status: "error"})
-			ticket := m.BeginPauseResumeRequest(full.GID, "resume")
-			if !m.RunIfPauseResumeRequestCurrent(ticket, func() {}) {
-				t.Fatal("initial live/stopped ticket rejected")
-			}
-			tc.change(m, full.GID)
-			if m.RunIfPauseResumeRequestCurrent(ticket, func() { Cache.RemoveTask(full.GID); history.Remove(full.GID) }) {
-				t.Fatal("stale confirmation ran")
-			}
-			got, _, ok := Cache.GetTask(full.GID)
-			if !ok {
-				t.Fatal("stale callback removed full")
-			}
-			assertFullRowMetadata(t, got, full)
-			if entry, ok := history.Get(full.GID); !ok || entry.Status != "error" {
-				t.Fatal("stale callback deleted H0")
-			}
-			newTicket := m.BeginPauseResumeRequest(full.GID, "pause")
-			if newTicket.seq <= ticket.seq || m.ClearPauseResumeIntentionIfCurrent(ticket) || !m.RunIfPauseResumeRequestCurrent(newTicket, func() {}) {
-				t.Fatal("old failure cleared newer request or version reused")
-			}
-			m.tracker.MarkCompleteFromEvent(full.GID, "error")
-			if !m.ClearPauseResumeIntentionIfCurrent(newTicket) || m.RunIfPauseResumeRequestCurrent(newTicket, func() {}) {
-				t.Fatal("same-version expired cleanup failed")
-			}
-		})
-	}
-}
-
-func TestPauseResumeTicket_Barriers(t *testing.T) {
-	resetHistoryForTest(t)
-	const gid = "sg_ticket_barrier"
-	cleanupSgCache(t, gid)
-	full := fullRowForTest(gid)
-	full.Status = "paused"
-	Cache.AddSgTask(full, "waiting")
-	m := &Monitor{tracker: NewTaskTracker()}
-	m.tracker.Update(nil, []rpc.Task{full}, nil)
-	old := m.BeginPauseResumeRequest(gid, "resume")
-	ack, done := make(chan struct{}), make(chan bool)
-	go func() {
-		<-ack
-		done <- m.RunIfPauseResumeRequestCurrent(old, func() { Cache.RemoveTask(gid); history.Remove(gid) })
-	}()
-	m.BeginPauseResumeRequest(gid, "resume")
-	m.markCompleteAndHandle(gid, "error", nil)
-	close(ack)
-	if <-done {
-		t.Fatal("late ack accepted")
-	}
-	got, _, _ := Cache.GetTask(gid)
-	assertFullRowMetadata(t, got, full)
-	if entry, ok := history.Get(gid); !ok || entry.Path != full.Files[0].Path || entry.Status != "error" {
-		t.Fatal("H1 changed by old ack")
-	}
-
-	ticket := m.BeginPauseResumeRequest(gid, "resume")
-	entered, release := make(chan struct{}), make(chan struct{})
-	go func() {
-		done <- m.RunIfPauseResumeRequestCurrent(ticket, func() {
-			close(entered)
-			<-release
-			Cache.MoveTaskToActive(gid, "active")
-		})
-	}()
-	<-entered
-	if gate := m.tracker.getLifecycle(gid); gate.mu.TryLock() {
-		gate.mu.Unlock()
-		t.Fatal("callback did not hold lifecycle gate")
-	}
-	begun, scheduled := make(chan PauseResumeTicket), make(chan struct{})
-	go func() { close(scheduled); begun <- m.BeginPauseResumeRequest(gid, "pause") }()
-	<-scheduled
-	close(release)
-	if !<-done {
-		t.Fatal("current guard failed")
-	}
-	next := <-begun
-	if next.seq <= ticket.seq || m.RunIfPauseResumeRequestCurrent(ticket, func() {}) || !m.RunIfPauseResumeRequestCurrent(next, func() {}) {
-		t.Fatal("Begin did not supersede the guarded request")
-	}
-}
-
-func TestPauseResumeTicket_FailClosedAndNoDataWrites(t *testing.T) {
-	resetHistoryForTest(t)
-	m := &Monitor{tracker: NewTaskTracker()}
-	for _, mon := range []*Monitor{nil, {}, m} {
-		for _, input := range [][2]string{{"", "resume"}, {" ", "resume"}, {"sg_missing", "invalid"}} {
-			ticket := mon.BeginPauseResumeRequest(input[0], input[1])
-			if mon.RunIfPauseResumeRequestCurrent(ticket, func() { t.Error("inert callback") }) || mon.ClearPauseResumeIntentionIfCurrent(ticket) {
-				t.Fatal("inert ticket accepted")
-			}
-		}
-	}
-	noTracker := &Monitor{}
-	if ticket := noTracker.BeginPauseResumeRequest("sg_missing", "resume"); ticket != (PauseResumeTicket{}) {
-		t.Fatal("missing gate accepted")
-	}
-	for _, withHistory := range []bool{false, true} {
-		const gid = "sg_ticket_unknown"
-		if withHistory {
-			history.Add(history.HistoryEntry{GID: gid, Path: "/old", Status: "error"})
-		}
-		ticket := m.BeginPauseResumeRequest(gid, "resume")
-		if _, _, ok := Cache.GetTask(gid); ok {
-			t.Fatal("Begin manufactured cache")
-		}
-		if _, ok := history.Get(gid); ok != withHistory {
-			t.Fatal("Begin changed history")
-		}
-		if m.RunIfPauseResumeRequestCurrent(ticket, nil) {
-			t.Fatal("nil callback accepted")
-		}
-		if !m.ClearPauseResumeIntentionIfCurrent(ticket) {
-			t.Fatal("current cleanup failed")
-		}
+	if tok := tracker.LifecycleToken(gid); tok <= oldToken {
+		t.Fatalf("rebuilt entry must mint a larger token: old=%d new=%d", oldToken, tok)
 	}
 }
 
@@ -314,11 +135,12 @@ func TestLifecycle_ExplicitWaitingHistoryTarget(t *testing.T) {
 	tracker := NewTaskTracker()
 	tracker.Update(nil, nil, []rpc.Task{full})
 	history.Add(history.HistoryEntry{GID: gid, Path: full.Files[0].Path, Status: "error", DownloadGroup: full.DownloadGroup})
+	seeded := tracker.LifecycleToken(gid)
 	for _, invalid := range []string{"", "unknown", "complete"} {
 		tracker.RunUnderLifecycle(gid, func() { retireHistoryAndReopenToStatusLocked(tracker, gid, invalid) })
 	}
-	if _, ok := history.Get(gid); !ok || tracker.LifecycleGeneration(gid) != 0 {
-		t.Fatal("invalid target retired history")
+	if _, ok := history.Get(gid); !ok || tracker.LifecycleToken(gid) != seeded {
+		t.Fatal("invalid target retired history or minted a token")
 	}
 	tracker.RunUnderLifecycle(gid, func() {
 		if from := Cache.MoveTaskToWaiting(gid, "waiting"); from != "stopped" {
@@ -329,8 +151,9 @@ func TestLifecycle_ExplicitWaitingHistoryTarget(t *testing.T) {
 	got, list, _ := Cache.GetTask(gid)
 	assertFullRowMetadata(t, got, full)
 	tracked, _ := tracker.GetTrackedTask(gid)
+	reopened := tracker.LifecycleToken(gid)
 	if list != "waiting" || tracked.Status != "waiting" || got.ErrorCode != "" || got.ErrorMessage != "" ||
-		!tracked.ActivatedAt.IsZero() || !tracked.FirstProgressAt.IsZero() || tracker.LifecycleGeneration(gid) != 1 {
+		!tracked.ActivatedAt.IsZero() || !tracked.FirstProgressAt.IsZero() || reopened <= seeded {
 		t.Fatal("waiting reopen facts wrong")
 	}
 	if _, ok := history.Get(gid); ok {
@@ -339,10 +162,9 @@ func TestLifecycle_ExplicitWaitingHistoryTarget(t *testing.T) {
 	if group := GetStoredTaskGroup(gid); group == nil || group.ID != full.DownloadGroup.ID {
 		t.Fatal("group not re-homed")
 	}
-	stamp := tracker.captureLifecycleStamp(gid)
 	Cache.AddSgTask(rpc.Task{GID: gid, Status: "waiting"}, "waiting")
 	tracker.SetStatusFromEvent(gid, "waiting")
-	if !tracker.lifecycleStampCurrent(gid, stamp) || tracker.LifecycleGeneration(gid) != 1 {
+	if tracker.LifecycleToken(gid) != reopened {
 		t.Fatal("same-list patch reopened")
 	}
 
@@ -494,32 +316,32 @@ func TestLifecycle_Interleave_RemoveThenTerminalConcurrent(t *testing.T) {
 	}
 }
 
-func TestLifecycle_NoGenerationBumpOnPauseOrWaiting(t *testing.T) {
+func TestLifecycle_NoTokenBumpOnPauseOrWaiting(t *testing.T) {
 	tracker := NewTaskTracker()
 	const gid = "sg_life_pause"
 	tracker.EnsureTrackedFromEvent(gid, 1000, "https://example.com/p.bin", 0, "active")
 	if first := tracker.MarkCompleteFromEvent(gid, "error"); first == nil {
 		t.Fatal("expected terminal seed")
 	}
-	before := tracker.LifecycleGeneration(gid)
+	before := tracker.LifecycleToken(gid)
 
 	tracker.SetStatusFromEvent(gid, "paused")
-	if tracker.LifecycleGeneration(gid) != before {
-		t.Fatalf("pause must not bump generation: before=%d after=%d", before, tracker.LifecycleGeneration(gid))
+	if tracker.LifecycleToken(gid) != before {
+		t.Fatalf("pause must not mint a token: before=%d after=%d", before, tracker.LifecycleToken(gid))
 	}
 	if !tracker.processedComplete[gid] {
 		t.Fatal("pause must not clear terminal acceptance")
 	}
 
 	tracker.SetStatusFromEvent(gid, "waiting")
-	if tracker.LifecycleGeneration(gid) != before {
-		t.Fatalf("waiting status must not bump generation")
+	if tracker.LifecycleToken(gid) != before {
+		t.Fatalf("waiting status must not mint a token")
 	}
 
 	tracker.ReopenAfterStoppedToLive(gid, "active")
-	after := tracker.LifecycleGeneration(gid)
-	if after != before+1 {
-		t.Fatalf("stopped→live reopen should bump once: before=%d after=%d", before, after)
+	after := tracker.LifecycleToken(gid)
+	if after <= before {
+		t.Fatalf("stopped→live reopen must mint a larger token: before=%d after=%d", before, after)
 	}
 }
 
@@ -531,12 +353,23 @@ func TestLifecycle_RemoveTaskCleansLifecycleEntry(t *testing.T) {
 	if !tracker.HasLifecycleEntry(gid) {
 		t.Fatal("expected lifecycle entry after reopen")
 	}
+	oldToken := tracker.LifecycleToken(gid)
 	tracker.RemoveTask(gid)
 	if tracker.HasLifecycleEntry(gid) {
 		t.Fatal("RemoveTask must drop lifecycle map entry")
 	}
 	if tracker.processedComplete[gid] {
 		t.Fatal("RemoveTask must clear processedComplete")
+	}
+	// Same-GID rebuild never reuses the retired token; a different GID draws
+	// its own from the same global counter.
+	tracker.EnsureTrackedFromEvent(gid, 100, "", 0, "active")
+	newToken := tracker.LifecycleToken(gid)
+	if newToken <= oldToken {
+		t.Fatalf("rebuilt entry reused token: old=%d new=%d", oldToken, newToken)
+	}
+	if other := tracker.LifecycleToken("sg_life_other"); other == newToken {
+		t.Fatal("cross-GID token collision")
 	}
 }
 
@@ -548,10 +381,9 @@ func TestLifecycle_ErrorResumeError_ViaMarkCompleteAndHandle(t *testing.T) {
 	hub := events.NewHub(nil)
 	tracker := NewTaskTracker()
 	m := &Monitor{
-		hub:                   hub,
-		pusher:                NewPusher(hub),
-		tracker:               tracker,
-		pauseResumeIntentions: make(map[string]pauseResumeIntention),
+		hub:     hub,
+		pusher:  NewPusher(hub),
+		tracker: tracker,
 	}
 	prevMon := State.GetMonitor()
 	State.SetMonitor(m)
@@ -570,8 +402,7 @@ func TestLifecycle_ErrorResumeError_ViaMarkCompleteAndHandle(t *testing.T) {
 
 	cleanupSgCache(t, "sg_life_err")
 	Cache.AddSgTask(rpc.Task{GID: "sg_life_err", Status: "error", ErrorCode: "1", ErrorMessage: "old"}, "stopped")
-	ticket := m.BeginPauseResumeRequest("sg_life_err", PauseResumeIntentionResume)
-	m.ConfirmPauseResumeRequest(ticket)
+	m.ApplyResume("sg_life_err")
 	if _, ok := history.Get("sg_life_err"); ok {
 		t.Fatal("expected history retired")
 	}
@@ -634,10 +465,10 @@ func TestLifecycle_TickReacceptUnderGate(t *testing.T) {
 	if len(completed2) != 1 {
 		t.Fatal("expected second Update complete after reopen")
 	}
-	genAfterUpdate := tracker.LifecycleGeneration(gid)
+	tokAfterUpdate := tracker.LifecycleToken(gid)
 	tracker.RunUnderLifecycle(gid, func() { retireHistoryAndReopenToStatusLocked(tracker, gid, "active") })
-	if tracker.LifecycleGeneration(gid) != genAfterUpdate+1 {
-		t.Fatal("expected retire to bump generation after Update accept")
+	if tracker.LifecycleToken(gid) <= tokAfterUpdate {
+		t.Fatal("expected retire to mint a larger token after Update accept")
 	}
 	for _, task := range completed2 {
 		m.finishTerminalCopy(task)
@@ -646,9 +477,9 @@ func TestLifecycle_TickReacceptUnderGate(t *testing.T) {
 		t.Fatalf("after retire-between-Update-and-handle want 0 history, got %d %#v", len(entries), entries)
 	}
 	if tracker.TerminalAcceptedInCurrentGeneration(gid) {
-		t.Fatal("stale Update must not plant terminal marker on new generation")
+		t.Fatal("stale Update must not plant terminal marker on new token")
 	}
-	// Real terminal for the new generation must still be accept-able.
+	// Real terminal for the new token must still be accept-able.
 	if second := tracker.MarkCompleteFromEvent(gid, "error"); second == nil {
 		t.Fatal("expected real terminal after dropped stale tick snapshot")
 	}
@@ -743,8 +574,7 @@ func TestLifecycle_CacheMoveRetire_SerializesWithTerminal(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		ticket := m.BeginPauseResumeRequest(gid, PauseResumeIntentionResume)
-		m.ConfirmPauseResumeRequest(ticket)
+		m.ApplyResume(gid)
 	})
 	<-started
 
@@ -795,8 +625,7 @@ func TestLifecycle_TerminalThenResumeThenTerminal_SingleHistory(t *testing.T) {
 		t.Fatalf("old-generation terminal must remain H0 error, got %#v", entries)
 	}
 
-	ticket := m.BeginPauseResumeRequest(gid, PauseResumeIntentionResume)
-	m.ConfirmPauseResumeRequest(ticket)
+	m.ApplyResume(gid)
 	if _, ok := history.Get(gid); ok {
 		t.Fatal("expected H0 retired after resume")
 	}
@@ -830,13 +659,16 @@ func TestResumeConfirmation_AriaHistoryAtomic(t *testing.T) {
 			t.Fatal("expected terminal mark")
 		}
 
-		var change acceptedTaskChange
-		ticket := m.BeginPauseResumeRequest(gid, "resume")
-		m.RunIfPauseResumeRequestCurrent(ticket, func() {
-			change = m.confirmPauseResumeRequestLocked(gid)
+		var moves []events.TaskMove
+		m.hub.SubscribeTaskMove(func(mv events.TaskMove) {
+			if mv.GID == gid {
+				moves = append(moves, mv)
+			}
 		})
-		if change.from != "stopped" || change.to != "waiting" || change.kind != "resume" {
-			t.Fatalf("change = %#v, want stopped->waiting resume", change)
+		before := tracker.LifecycleToken(gid)
+		m.ApplyResume(gid)
+		if len(moves) != 1 || moves[0].From != "stopped" || moves[0].To != "waiting" {
+			t.Fatalf("moves = %#v, want one stopped->waiting", moves)
 		}
 		got, list, ok := Cache.GetTask(gid)
 		if !ok || list != "waiting" || got.Status != "waiting" || got.DownloadSpeed != "0" {
@@ -852,24 +684,25 @@ func TestResumeConfirmation_AriaHistoryAtomic(t *testing.T) {
 		if _, exists := history.Get(gid); exists {
 			t.Fatal("H0 not retired")
 		}
-		if gen := tracker.LifecycleGeneration(gid); gen != 1 {
-			t.Fatalf("generation = %d, want exactly one reopen", gen)
+		reopened := tracker.LifecycleToken(gid)
+		if reopened <= before {
+			t.Fatalf("reopen must mint a larger token: before=%d after=%d", before, reopened)
 		}
 		if tt, _ := tracker.GetTrackedTask(gid); !tt.ActivatedAt.IsZero() {
 			t.Fatal("resume ack fabricated activation")
 		}
 
-		// Repeat/expired confirmation must not resurrect or duplicate.
-		m.ConfirmPauseResumeRequest(ticket)
+		// A duplicate ack must not resurrect or re-reopen.
+		m.ApplyResume(gid)
 		got2, list2, _ := Cache.GetTask(gid)
 		if list2 != "waiting" || got2.Status != "waiting" {
-			t.Fatalf("repeat confirm disturbed waiting row: %#v", got2)
+			t.Fatalf("repeat apply disturbed waiting row: %#v", got2)
 		}
-		if tracker.LifecycleGeneration(gid) != 1 {
-			t.Fatal("repeat confirm re-reopened the task")
+		if tracker.LifecycleToken(gid) != reopened {
+			t.Fatal("repeat apply re-reopened the task")
 		}
 		if _, exists := history.Get(gid); exists {
-			t.Fatal("repeat confirm resurrected history")
+			t.Fatal("repeat apply resurrected history")
 		}
 	})
 
@@ -912,16 +745,61 @@ func TestResumeConfirmation_AriaHistoryAtomic(t *testing.T) {
 			close(release)
 		}()
 
-		ticket := m.BeginPauseResumeRequest(gid, "resume")
-		m.ConfirmPauseResumeRequest(ticket)
+		before := tracker.LifecycleToken(gid)
+		m.ApplyResume(gid)
 		if state := <-observed; state != "waiting" {
 			t.Fatalf("mid-transition snapshot saw %q, want waiting", state)
 		}
 		if _, exists := history.Get(gid); exists {
 			t.Fatal("H0 not retired")
 		}
-		if gen := tracker.LifecycleGeneration(gid); gen != 1 {
-			t.Fatalf("generation = %d, want exactly one reopen", gen)
+		if tok := tracker.LifecycleToken(gid); tok <= before {
+			t.Fatalf("reopen must mint a larger token: before=%d after=%d", before, tok)
 		}
 	})
+}
+
+// TestApplyPauseResume_AriaNoLiveSeam covers the aria2 path: no live seam
+// exists, so an ack folds unconditionally — active→paused→waiting keeps the
+// token and full metadata, a duplicate ack is a no-op, and a resume ack on an
+// already active row never demotes it.
+func TestApplyPauseResume_AriaNoLiveSeam(t *testing.T) {
+	resetHistoryForTest(t)
+	m, _, _, tracker := newReconcileTestMonitor(t)
+	const gid = "ar_no_seam"
+	t.Cleanup(func() { Cache.RemoveTask(gid) })
+	full := fullRowForTest(gid)
+	full.Status = "active"
+	Cache.UpdateFromAria2([]rpc.Task{full}, nil, nil)
+	tracker.EnsureTrackedFromEvent(gid, 1000, "https://example.com/f.bin", 0, "active")
+	before := tracker.LifecycleToken(gid)
+
+	m.ApplyPause(gid)
+	got, list, ok := Cache.GetTask(gid)
+	if !ok || list != "waiting" || got.Status != "paused" {
+		t.Fatalf("pause ack: %#v %s", got, list)
+	}
+	assertFullRowMetadata(t, got, full)
+	m.ApplyPause(gid) // duplicate ack is a no-op
+	m.ApplyResume(gid)
+	m.ApplyResume(gid)
+	got, list, ok = Cache.GetTask(gid)
+	if !ok || list != "waiting" || got.Status != "waiting" {
+		t.Fatalf("resume ack: %#v %s", got, list)
+	}
+	assertFullRowMetadata(t, got, full)
+	if tok := tracker.LifecycleToken(gid); tok != before {
+		t.Fatalf("pause/resume must not mint a token: before=%d after=%d", before, tok)
+	}
+	if _, exists := history.Get(gid); exists {
+		t.Fatal("pause/resume manufactured history")
+	}
+
+	// An ack on a live active row never demotes it.
+	full.Status = "active"
+	Cache.UpdateFromAria2([]rpc.Task{full}, nil, nil)
+	m.ApplyResume(gid)
+	if got, list, _ := Cache.GetTask(gid); list != "active" || got.Status != "active" {
+		t.Fatalf("ack demoted live active row: %#v %s", got, list)
+	}
 }
