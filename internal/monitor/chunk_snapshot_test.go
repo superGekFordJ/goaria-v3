@@ -317,7 +317,7 @@ func TestMoveToStoppedAndHandle_NilTrackerStillClearsSnapshot(t *testing.T) {
 	m := &Monitor{chunkSnapshots: NewChunkSnapshotCache()}
 	m.chunkSnapshots.Set("sg_ghost", []byte{0x55}, 4, 512, nil)
 
-	m.moveToStoppedAndHandle("sg_ghost", "complete", "", "", 0, nil)
+	m.moveToStoppedAndHandleGate("sg_ghost", "complete", "", "", 0, nil, nil)
 	if _, ok := m.chunkSnapshots.Get("sg_ghost"); ok {
 		t.Fatal("stopped move must clear snapshot even with nil tracker")
 	}
@@ -364,7 +364,7 @@ func TestReconcileSurgeCache_MissedTerminalClearsChunkSnapshot(t *testing.T) {
 
 	Cache.AddSgTask(rpc.Task{GID: "sg_task1", Status: "active", TotalLength: "1000"}, "active")
 	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/f.zip", 4, "active")
-	Cache.metadata["sg_task1"] = &TaskMetadata{GID: "sg_task1", Files: []string{"/d/f.zip"}, Dir: "/d"}
+	Cache.SetMetadataForTest("sg_task1", &TaskMetadata{GID: "sg_task1", Files: []string{"/d/f.zip"}, Dir: "/d"})
 	m.chunkSnapshots.Set("sg_task1", []byte{0x55}, 4, 512, nil)
 
 	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})

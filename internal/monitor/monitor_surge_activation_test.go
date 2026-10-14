@@ -162,8 +162,8 @@ func TestHandleSurgeEvent_StartedOnTerminalWithResumeIntention(t *testing.T) {
 	resetHistoryForTest(t)
 
 	m.handleSurgeEvent(startedEvent(0, false))
-	// Give the task resolvable metadata so handleTaskComplete can proceed.
-	Cache.metadata["sg_x"] = &TaskMetadata{GID: "sg_x", Files: []string{"/d/f.bin"}, Dir: "/d"}
+	// Give the task resolvable metadata so the terminal finish can proceed.
+	Cache.SetMetadataForTest("sg_x", &TaskMetadata{GID: "sg_x", Files: []string{"/d/f.bin"}, Dir: "/d"})
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{
 		Type:       surgeEvents.EventComplete,
 		DownloadID: "x",
@@ -202,7 +202,7 @@ func TestHandleSurgeEvent_StartedOnTerminalWithoutIntention(t *testing.T) {
 	resetHistoryForTest(t)
 
 	m.handleSurgeEvent(startedEvent(0, false))
-	Cache.metadata["sg_x"] = &TaskMetadata{GID: "sg_x", Files: []string{"/d/f.bin"}, Dir: "/d"}
+	Cache.SetMetadataForTest("sg_x", &TaskMetadata{GID: "sg_x", Files: []string{"/d/f.bin"}, Dir: "/d"})
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{
 		Type:       surgeEvents.EventComplete,
 		DownloadID: "x",
@@ -400,7 +400,7 @@ func TestAdmissionFacts_SurgeTerminalEventKicks(t *testing.T) {
 	resetHistoryForTest(t)
 
 	m.handleSurgeEvent(startedEvent(0, false))
-	Cache.metadata["sg_x"] = &TaskMetadata{GID: "sg_x", Files: []string{"/d/f.bin"}, Dir: "/d"}
+	Cache.SetMetadataForTest("sg_x", &TaskMetadata{GID: "sg_x", Files: []string{"/d/f.bin"}, Dir: "/d"})
 
 	var kicks atomic.Int64
 	m.SetAdmissionKick(func() { kicks.Add(1) })

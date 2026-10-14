@@ -78,7 +78,7 @@ func TestTaskCache_FullRowMerge(t *testing.T) {
 			c.sgStopped = []rpc.Task{full, {GID: "sg_tail"}, full}
 			if add {
 				c.AddSgTask(rpc.Task{GID: full.GID, Status: "waiting"}, "waiting")
-			} else if from := c.MoveTaskToWaitingFromLive(full.GID, "waiting"); from != "waiting" {
+			} else if from := c.MoveTaskToWaiting(full.GID, "waiting"); from != "waiting" {
 				t.Fatalf("from=%s", from)
 			}
 			full.Title, full.Dir = "target", "/target"
@@ -121,18 +121,6 @@ func TestTaskCache_FullRowMerge(t *testing.T) {
 		if got.Title != "new" || got.TotalLength != "900" || got.CompletedLength != "400" || got.DownloadSpeed != "0" || len(got.Files) != 3 ||
 			got.Files[2].Path != "/downloads/c" || got.Files[2].Uris[0].Uri != "https://example.com/c" || got.DownloadGroup.ID != "new-group" {
 			t.Fatalf("reliable patch/copy failed: %#v files=%#v", got, got.Files)
-		}
-	})
-	t.Run("UnlessStopped is mutation free", func(t *testing.T) {
-		c := NewTaskCacheForTest()
-		full := fullRowForTest("sg_refused")
-		c.sgStopped = []rpc.Task{full, full}
-		c.sgWaiting = []rpc.Task{{GID: full.GID, Title: "live twin"}}
-		a, w, s := c.GetTaskLists()
-		c.AddSgTaskUnlessStopped(rpc.Task{GID: full.GID, Status: "active", Title: "new"}, "active")
-		afterA, afterW, afterS := c.GetTaskLists()
-		if !reflect.DeepEqual(a, afterA) || !reflect.DeepEqual(w, afterW) || !reflect.DeepEqual(s, afterS) {
-			t.Fatal("refused write mutated lists")
 		}
 	})
 }
@@ -201,7 +189,7 @@ func TestTaskCache_WaitingFastCompletePreservesFullRow(t *testing.T) {
 		t.Fatalf("completed=%v", completed)
 	}
 	m := &Monitor{tracker: tracker}
-	m.handleTaskComplete(completed[0])
+	m.finishTerminalCopy(completed[0])
 	entry, ok := history.Get(full.GID)
 	if !ok || entry.Path != full.Files[0].Path || entry.Source != full.Files[0].Uris[0].Uri || entry.Dir != full.Dir ||
 		entry.TotalLength != "1000" || entry.CompletedLength != "1000" || !reflect.DeepEqual(entry.DownloadGroup, full.DownloadGroup) {
@@ -663,56 +651,6 @@ func TestTaskCache_MoveTaskToWaiting_FromStopped(t *testing.T) {
 	}
 	if len(cache.GetStopped()) != 0 {
 		t.Fatalf("expected stopped empty, got %d", len(cache.GetStopped()))
-	}
-}
-
-func TestTaskCache_MoveTaskToWaitingFromLive_RefusesStoppedPreservesError(t *testing.T) {
-	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
-	cache.AddSgTask(rpc.Task{
-		GID:          "sg_term_refuse",
-		Status:       "error",
-		ErrorCode:    "1",
-		ErrorMessage: "fail",
-	}, "stopped")
-
-	from := cache.MoveTaskToWaitingFromLive("sg_term_refuse", "paused")
-	if from != "" {
-		t.Fatalf("expected refuse-stopped move to return empty, got %q", from)
-	}
-	if !cache.IsInStopped("sg_term_refuse") {
-		t.Fatal("expected task to remain stopped")
-	}
-	stopped := cache.GetStopped()
-	if len(stopped) != 1 || stopped[0].ErrorCode != "1" || stopped[0].ErrorMessage != "fail" {
-		t.Fatalf("expected ErrorCode preserved on refuse, got %#v", stopped)
-	}
-	if len(cache.GetWaiting()) != 0 {
-		t.Fatalf("expected waiting empty, got %#v", cache.GetWaiting())
-	}
-}
-
-func TestTaskCache_MoveTaskToActiveFromLive_RefusesStoppedPreservesError(t *testing.T) {
-	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
-	cache.AddSgTask(rpc.Task{
-		GID:          "sg_term_active_refuse",
-		Status:       "error",
-		ErrorCode:    "1",
-		ErrorMessage: "fail",
-	}, "stopped")
-
-	from := cache.MoveTaskToActiveFromLive("sg_term_active_refuse", "active")
-	if from != "" {
-		t.Fatalf("expected refuse-stopped move to return empty, got %q", from)
-	}
-	if !cache.IsInStopped("sg_term_active_refuse") {
-		t.Fatal("expected task to remain stopped")
-	}
-	stopped := cache.GetStopped()
-	if len(stopped) != 1 || stopped[0].ErrorCode != "1" || stopped[0].ErrorMessage != "fail" {
-		t.Fatalf("expected ErrorCode preserved on refuse, got %#v", stopped)
-	}
-	if len(cache.GetActive()) != 0 {
-		t.Fatalf("expected active empty, got %#v", cache.GetActive())
 	}
 }
 
@@ -1340,54 +1278,6 @@ func TestTaskCache_AddSgTask_MovesBetweenSlices(t *testing.T) {
 	}
 }
 
-// TestTaskCache_AddSgTaskUnlessStopped covers the atomic refuse-stopped
-// variant used by the Surge started path: a gid already in stopped is left
-// untouched (full row preserved), while absent/live gids add normally.
-func TestTaskCache_AddSgTaskUnlessStopped(t *testing.T) {
-	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
-	cache.AddSgTask(rpc.Task{
-		GID: "sg_term-1", Status: "complete", TotalLength: "2000",
-		CompletedLength: "2000", DownloadSpeed: "0",
-	}, "stopped")
-
-	// Stopped gid: refused — row and metadata must survive intact.
-	cache.AddSgTaskUnlessStopped(rpc.Task{
-		GID: "sg_term-1", Status: "active",
-	}, "active")
-
-	if !cache.IsInStopped("sg_term-1") {
-		t.Fatal("stopped row must survive the refused add")
-	}
-	if containsGid(gidsFromTasks(cache.GetActive()), "sg_term-1") {
-		t.Fatal("refused add must not create an active row")
-	}
-	for _, task := range cache.GetStopped() {
-		if task.GID == "sg_term-1" && (task.Status != "complete" || task.CompletedLength != "2000") {
-			t.Fatalf("stopped row clobbered: %#v", task)
-		}
-	}
-
-	// Absent gid: adds normally.
-	cache.AddSgTaskUnlessStopped(rpc.Task{
-		GID: "sg_new-1", Status: "active", TotalLength: "500",
-	}, "active")
-	if !containsGid(gidsFromTasks(cache.GetActive()), "sg_new-1") {
-		t.Fatal("new gid must be added when not stopped")
-	}
-
-	// Live (waiting) gid: still adds — only stopped refuses.
-	cache.AddSgTask(rpc.Task{GID: "sg_wait-1", Status: "paused"}, "waiting")
-	cache.AddSgTaskUnlessStopped(rpc.Task{
-		GID: "sg_wait-1", Status: "active",
-	}, "active")
-	if !containsGid(gidsFromTasks(cache.GetActive()), "sg_wait-1") {
-		t.Fatal("live gid must move to active")
-	}
-	if containsGid(gidsFromTasks(cache.GetWaiting()), "sg_wait-1") {
-		t.Fatal("moved gid must leave waiting")
-	}
-}
-
 func TestTaskCache_AddSgTask_DoesNotTouchAriaSlices(t *testing.T) {
 	cache := &TaskCache{metadata: make(map[string]*TaskMetadata)}
 	cache.UpdateFromAria2(
@@ -1791,4 +1681,77 @@ func TestTaskCache_RestoreAriaHistoryTaskToWaitingAtomic(t *testing.T) {
 			t.Fatalf("final: waiting=%d stopped=%d want %d/0", len(waiting), len(stopped), len(gids))
 		}
 	})
+}
+
+// SetMetadataForTest stores a defensive copy of meta under the cache lock.
+func (c *TaskCache) SetMetadataForTest(gid string, meta *TaskMetadata) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.metadata == nil {
+		c.metadata = make(map[string]*TaskMetadata)
+	}
+	c.metadata[gid] = copyTaskMetadata(meta)
+}
+
+// GetMetadataForTest returns a defensive copy of the cached metadata.
+func (c *TaskCache) GetMetadataForTest(gid string) *TaskMetadata {
+	return c.GetMetadata(gid)
+}
+
+// DeleteMetadataForTest removes only the metadata entry, leaving
+// pendingStartGids untouched (unlike InvalidateMetadata).
+func (c *TaskCache) DeleteMetadataForTest(gid string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.metadata, gid)
+}
+
+// ResetMetadataForTest swaps in a fresh empty metadata map, leaving
+// pendingStartGids untouched.
+func (c *TaskCache) ResetMetadataForTest() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.metadata = make(map[string]*TaskMetadata)
+}
+
+func TestTaskCache_MetadataForTestHelpers(t *testing.T) {
+	cache := &TaskCache{}
+	group := testDownloadGroup("dg-helper")
+
+	cache.SetMetadataForTest("gid_helper", &TaskMetadata{
+		GID: "gid_helper", Files: []string{"/tmp/a.bin"}, Dir: "/tmp",
+		DownloadGroup: &group, FetchedAt: time.Now(),
+	})
+	got := cache.GetMetadataForTest("gid_helper")
+	if got == nil || got.Files[0] != "/tmp/a.bin" || got.DownloadGroup == nil || got.DownloadGroup.ID != group.ID {
+		t.Fatalf("expected stored metadata, got %#v", got)
+	}
+
+	// Mutations through the returned copy must not leak into the map.
+	got.Files[0] = "mutated"
+	got.DownloadGroup.ID = "mutated"
+	again := cache.GetMetadataForTest("gid_helper")
+	if again.Files[0] != "/tmp/a.bin" || again.DownloadGroup.ID != group.ID {
+		t.Fatalf("expected defensive copies, got %#v", again)
+	}
+
+	// Delete/Reset must not touch pendingStartGids.
+	cache.mu.Lock()
+	cache.pendingStartGids = map[string]time.Time{"gid_pending": time.Now()}
+	cache.mu.Unlock()
+	cache.DeleteMetadataForTest("gid_helper")
+	if meta := cache.GetMetadataForTest("gid_helper"); meta != nil {
+		t.Fatalf("expected metadata deleted, got %#v", meta)
+	}
+	cache.SetMetadataForTest("gid_reset", &TaskMetadata{GID: "gid_reset"})
+	cache.ResetMetadataForTest()
+	if meta := cache.GetMetadataForTest("gid_reset"); meta != nil {
+		t.Fatalf("expected metadata reset, got %#v", meta)
+	}
+	cache.mu.RLock()
+	_, pendingAlive := cache.pendingStartGids["gid_pending"]
+	cache.mu.RUnlock()
+	if !pendingAlive {
+		t.Fatal("metadata helpers must not clear pendingStartGids")
+	}
 }

@@ -438,12 +438,6 @@ func (c *TaskCache) MoveTaskToWaiting(gid, status string) string {
 	return c.moveTaskToWaiting(gid, status, false)
 }
 
-// MoveTaskToWaitingFromLive moves only from active/waiting. If the GID is
-// solely in stopped, returns "" without mutating (refuses cleared-error TOCTOU).
-func (c *TaskCache) MoveTaskToWaitingFromLive(gid, status string) string {
-	return c.moveTaskToWaiting(gid, status, true)
-}
-
 func (c *TaskCache) moveTaskToWaiting(gid, status string, refuseStopped bool) string {
 	if enginePrefix(gid) == "sg" {
 		c.sgMu.Lock()
@@ -482,12 +476,6 @@ func (c *TaskCache) RestoreAriaHistoryTaskToWaiting(task rpc.Task, status string
 // stopped, ErrorCode/ErrorMessage are cleared.
 func (c *TaskCache) MoveTaskToActive(gid, status string) string {
 	return c.moveTaskToActive(gid, status, false)
-}
-
-// MoveTaskToActiveFromLive moves only from active/waiting. If the GID is
-// solely in stopped, returns "" without mutating (refuses cleared-error TOCTOU).
-func (c *TaskCache) MoveTaskToActiveFromLive(gid, status string) string {
-	return c.moveTaskToActive(gid, status, true)
 }
 
 func (c *TaskCache) moveTaskToActive(gid, status string, refuseStopped bool) string {
@@ -652,20 +640,6 @@ func storeFoldedTask(list *[]rpc.Task, task rpc.Task) {
 func (c *TaskCache) AddSgTask(task rpc.Task, list string) {
 	c.sgMu.Lock()
 	defer c.sgMu.Unlock()
-	c.addSgTaskLocked(task, list)
-}
-
-// AddSgTaskUnlessStopped is AddSgTask with an atomic refuse-stopped guard:
-// when the GID currently sits in sgStopped the write is skipped entirely, so
-// a caller's stopped check cannot be raced by a concurrent move into stopped
-// (same single-mutex critical section). Used by event paths where a
-// non-authoritative started must never evict a terminal row.
-func (c *TaskCache) AddSgTaskUnlessStopped(task rpc.Task, list string) {
-	c.sgMu.Lock()
-	defer c.sgMu.Unlock()
-	if containsTaskGID(c.sgStopped, task.GID) {
-		return
-	}
 	c.addSgTaskLocked(task, list)
 }
 

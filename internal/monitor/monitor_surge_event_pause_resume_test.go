@@ -18,7 +18,6 @@ func TestResumeBackend_EventAcceptance(t *testing.T) {
 		{"terminal queued refused", "error", "", "", surgeEvents.EventQueued, "error"},
 		{"terminal real queued", "error", "queued", "", surgeEvents.EventQueued, "waiting"},
 		{"running late queued", "active", "downloading", "", surgeEvents.EventQueued, "active"},
-		{"terminal residual start", "error", "", "legacy", surgeEvents.EventStarted, "error"},
 		{"terminal real start", "error", "downloading", "", surgeEvents.EventStarted, "active"},
 		{"resume queued ack", "paused", "", "resume", surgeEvents.EventResumed, "waiting"},
 		{"late ack after start", "active", "queued", "resume", surgeEvents.EventResumed, "active"},
@@ -45,9 +44,7 @@ func TestResumeBackend_EventAcceptance(t *testing.T) {
 			m.chunkSnapshots.Set(full.GID, []byte{1}, 4, 100, nil)
 			m.surgeEng.UpsertMasterCacheEntry(surgeEvents.DownloadRecord{ID: "accept", Status: "old", URL: "https://example.com/full", DestPath: "/dl/full", Filename: "full", TotalSize: 1000, Downloaded: 200, CreatedAt: 42, SkipServerProbe: true})
 			reader.setLiveStatus("accept", rpc.SurgeLiveStatus{Status: tc.live, Known: tc.live != ""})
-			if tc.action == "legacy" {
-				m.BumpPauseResumeIntention(full.GID, "resume")
-			} else if tc.action != "" {
+			if tc.action != "" {
 				m.BeginPauseResumeRequest(full.GID, tc.action)
 			}
 			m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: tc.event, DownloadID: "accept"})

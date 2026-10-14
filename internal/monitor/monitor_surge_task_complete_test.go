@@ -12,7 +12,7 @@ import (
 	"goaria-v3/internal/surge/types"
 )
 
-// TestHandleTaskComplete_PeakThreadCountFallback verifies that handleTaskComplete
+// TestHandleTaskComplete_PeakThreadCountFallback verifies that finishTerminalCopy
 // uses PeakThreadCount (from convergence) as the primary source for speedstats ThreadCount.
 func TestHandleTaskComplete_PeakThreadCountFallback(t *testing.T) {
 	speedstats.ResetRecordsForTest()
@@ -42,7 +42,7 @@ func TestHandleTaskComplete_PeakThreadCountFallback(t *testing.T) {
 	task.PeakEnvKey = "testenv"
 
 	before := speedstatsRecordCount()
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 	after := speedstatsRecordCount()
 
 	if after != before+1 {
@@ -62,7 +62,7 @@ func TestHandleTaskComplete_PeakThreadCountFallback(t *testing.T) {
 }
 
 // TestHandleTaskComplete_ThreadCountFallback verifies that when PeakThreadCount is 0,
-// handleTaskComplete falls back to ThreadCount.
+// finishTerminalCopy falls back to ThreadCount.
 func TestHandleTaskComplete_ThreadCountFallback(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
@@ -90,7 +90,7 @@ func TestHandleTaskComplete_ThreadCountFallback(t *testing.T) {
 	task.PeakEnvKey = "testenv"
 
 	before := speedstatsRecordCount()
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 	after := speedstatsRecordCount()
 
 	if after != before+1 {
@@ -107,7 +107,7 @@ func TestHandleTaskComplete_ThreadCountFallback(t *testing.T) {
 }
 
 // TestHandleTaskComplete_ConfigFallback verifies that when both PeakThreadCount and
-// ThreadCount are 0, handleTaskComplete falls back to config.MaxConnections.
+// ThreadCount are 0, finishTerminalCopy falls back to config.MaxConnections.
 func TestHandleTaskComplete_ConfigFallback(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
@@ -140,7 +140,7 @@ func TestHandleTaskComplete_ConfigFallback(t *testing.T) {
 	task.PeakEnvKey = "testenv"
 
 	before := speedstatsRecordCount()
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 	after := speedstatsRecordCount()
 
 	if after != before+1 {
@@ -190,7 +190,7 @@ func TestHandleTaskComplete_RangeUnsupportedSkipsSpeedstats(t *testing.T) {
 	task.PeakEnvKey = "testenv"
 
 	before := speedstatsRecordCount()
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 	after := speedstatsRecordCount()
 
 	if after != before {
@@ -239,7 +239,7 @@ func TestHandleTaskComplete_EmptyCacheModeReadsStoreRangeUnsupported(t *testing.
 	task.PeakEnvKey = "testenv"
 
 	before := speedstatsRecordCount()
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 	after := speedstatsRecordCount()
 
 	if after != before {
@@ -276,7 +276,7 @@ func TestHandleTaskComplete_Aria2PeakThreadCountZeroUsesThreadCount(t *testing.T
 	task.PeakEnvKey = "testenv"
 
 	before := speedstatsRecordCount()
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 	after := speedstatsRecordCount()
 
 	if after != before+1 {
@@ -330,7 +330,7 @@ func TestHandleTaskComplete_RateLimitSkip(t *testing.T) {
 	task.PeakEnvKey = "testenv"
 
 	before := speedstatsRecordCount()
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 	after := speedstatsRecordCount()
 
 	if after != before {
@@ -376,7 +376,7 @@ func TestHandleTaskComplete_ZeroRateLimitStillRecords(t *testing.T) {
 	task.PeakEnvKey = "testenv"
 
 	before := speedstatsRecordCount()
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 	after := speedstatsRecordCount()
 
 	if after != before+1 {
@@ -423,7 +423,7 @@ func TestHandleTaskComplete_RateLimitNotSet_RecordsNormally(t *testing.T) {
 	task.PeakEnvKey = "testenv"
 
 	before := speedstatsRecordCount()
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 	after := speedstatsRecordCount()
 
 	if after != before+1 {
@@ -460,7 +460,7 @@ func TestHandleTaskComplete_EmptyEnvKeySkipsRecording(t *testing.T) {
 	task.PeakEnvKey = "" // no envKey — should skip AddRecordV2
 
 	before := speedstatsRecordCount()
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 	after := speedstatsRecordCount()
 
 	if after != before {
@@ -501,7 +501,7 @@ func TestExplorationSerial_RecordBoundary(t *testing.T) {
 	}
 
 	// Exactly 50 MiB is not record-level: no record, no graduation.
-	m.handleTaskComplete(completeTask("sg_exact", "edge-boundary.example.com", speedstats.MinFileSize, speedstats.MinFileSize))
+	m.finishTerminalCopy(completeTask("sg_exact", "edge-boundary.example.com", speedstats.MinFileSize, speedstats.MinFileSize))
 	if speedstatsRecordCount() != 0 {
 		t.Fatalf("exactly-%d task wrote a speedstats record", speedstats.MinFileSize)
 	}
@@ -510,7 +510,7 @@ func TestExplorationSerial_RecordBoundary(t *testing.T) {
 	}
 
 	// One byte over the boundary lands the record.
-	m.handleTaskComplete(completeTask("sg_over", "over-boundary.example.com", speedstats.MinFileSize+1, speedstats.MinFileSize+1))
+	m.finishTerminalCopy(completeTask("sg_over", "over-boundary.example.com", speedstats.MinFileSize+1, speedstats.MinFileSize+1))
 	rec := findRecordByDomain("over-boundary.example.com")
 	if rec == nil {
 		t.Fatal("over-boundary completion wrote no record")
@@ -522,7 +522,7 @@ func TestExplorationSerial_RecordBoundary(t *testing.T) {
 	// A resumed completion writes the original total — the remaining bytes
 	// (1 MiB here) would be far below the boundary.
 	const resumeTotal = int64(80 << 20)
-	m.handleTaskComplete(completeTask("sg_resume", "resume-boundary.example.com", resumeTotal, resumeTotal-(1<<20)))
+	m.finishTerminalCopy(completeTask("sg_resume", "resume-boundary.example.com", resumeTotal, resumeTotal-(1<<20)))
 	rec = findRecordByDomain("resume-boundary.example.com")
 	if rec == nil {
 		t.Fatal("resumed completion wrote no record")

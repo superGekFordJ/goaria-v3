@@ -13,24 +13,22 @@ import (
 // resetCacheMetadataForTest clears the global Cache metadata and pending maps
 // so tests start from a known state.
 func resetCacheMetadataForTest() {
+	Cache.ResetMetadataForTest()
 	Cache.mu.Lock()
-	Cache.metadata = make(map[string]*TaskMetadata)
 	Cache.pendingStartGids = make(map[string]time.Time)
 	Cache.mu.Unlock()
 }
 
-// seedOrphanMetadata populates Cache.metadata with n orphan ar_ entries past
-// the FetchedAt grace window and returns the seeded GIDs.
+// seedOrphanMetadata populates the metadata fixture with n orphan ar_ entries
+// past the FetchedAt grace window and returns the seeded GIDs.
 func seedOrphanMetadata(n int) []string {
 	gids := make([]string, 0, n)
 	old := time.Now().Add(-2 * metadataCleanupGrace)
-	Cache.mu.Lock()
 	for i := range n {
 		gid := fmt.Sprintf("ar_orphan_%d", i)
-		Cache.metadata[gid] = &TaskMetadata{GID: gid, FetchedAt: old}
+		Cache.SetMetadataForTest(gid, &TaskMetadata{GID: gid, FetchedAt: old})
 		gids = append(gids, gid)
 	}
-	Cache.mu.Unlock()
 	return gids
 }
 
@@ -97,9 +95,7 @@ func TestMonitor_MetadataCleanup_RetainsActiveGids(t *testing.T) {
 	seedOrphanMetadata(1)
 
 	active := []rpc.Task{{GID: "ar_keep", Status: "active"}}
-	Cache.mu.Lock()
-	Cache.metadata["ar_keep"] = &TaskMetadata{GID: "ar_keep", FetchedAt: time.Now().Add(-2 * metadataCleanupGrace)}
-	Cache.mu.Unlock()
+	Cache.SetMetadataForTest("ar_keep", &TaskMetadata{GID: "ar_keep", FetchedAt: time.Now().Add(-2 * metadataCleanupGrace)})
 
 	m := &Monitor{}
 	m.aria2Recovered.Store(true)

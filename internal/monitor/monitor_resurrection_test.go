@@ -199,7 +199,7 @@ func TestRemoveGroupCompletedTaskReappears_ConcurrentInvalidateTask(t *testing.T
 	Cache.engine = engine
 
 	// Pre-process fillers in the tracker so they are not returned as newly
-	// completed (avoids 50k handleTaskComplete calls during the test tick).
+	// completed (avoids 50k terminal finishes during the test tick).
 	tracker.Update(nil, nil, allStopped[:numFillers])
 
 	// Seed Cache.arStopped directly — simulates a prior tick's UpdateFromAria2

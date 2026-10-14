@@ -484,7 +484,7 @@ func resetHistoryForTest(t *testing.T) {
 
 // TestReconcileSurgeCache_MissedComplete verifies that a task the engine
 // reports as complete but Cache still has active is moved to stopped,
-// handleTaskComplete runs (writing history), and a complete delta is pushed
+// the terminal finish runs (writing history), and a complete delta is pushed
 // to the frontend (matching the handleSurgeEvent event path).
 func TestReconcileSurgeCache_MissedComplete(t *testing.T) {
 	m, reader, pusher, tracker := newReconcileTestMonitor(t)
@@ -497,12 +497,12 @@ func TestReconcileSurgeCache_MissedComplete(t *testing.T) {
 		TotalLength: "1000",
 	}, "active")
 	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4, "active")
-	// Provide file metadata so handleTaskComplete can write history.
-	Cache.metadata["sg_task1"] = &TaskMetadata{
+	// Provide file metadata so the terminal finish can write history.
+	Cache.SetMetadataForTest("sg_task1", &TaskMetadata{
 		GID:   "sg_task1",
 		Files: []string{"/downloads/file.zip"},
 		Dir:   "/downloads",
-	}
+	})
 
 	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
 
@@ -523,7 +523,7 @@ func TestReconcileSurgeCache_MissedComplete(t *testing.T) {
 	}
 
 	if historyCount() != before+1 {
-		t.Errorf("history count = %d, want %d (handleTaskComplete should write history)", historyCount(), before+1)
+		t.Errorf("history count = %d, want %d (terminal finish should write history)", historyCount(), before+1)
 	}
 
 	if !tracker.processedComplete["sg_task1"] {
@@ -543,7 +543,7 @@ func TestReconcileSurgeCache_MissedComplete(t *testing.T) {
 
 // TestReconcileSurgeCache_MissedComplete_AlreadyProcessed verifies that when
 // the event path already processed a complete, the poll does not call
-// handleTaskComplete again (history count unchanged).
+// the terminal finish again (history count unchanged).
 func TestReconcileSurgeCache_MissedComplete_AlreadyProcessed(t *testing.T) {
 	m, reader, _, tracker := newReconcileTestMonitor(t)
 	resetCacheSg()
@@ -579,11 +579,11 @@ func TestReconcileSurgeCache_MissedComplete_EmitsDeltaWithPayload(t *testing.T) 
 		Status:      "active",
 		TotalLength: "1000",
 	}, "active")
-	Cache.metadata["sg_task1"] = &TaskMetadata{
+	Cache.SetMetadataForTest("sg_task1", &TaskMetadata{
 		GID:   "sg_task1",
 		Files: []string{"/downloads/file.zip"},
 		Dir:   "/downloads",
-	}
+	})
 
 	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
 
@@ -724,11 +724,11 @@ func TestReconcileSurgeCache_MissedComplete_EmptyTotalLength(t *testing.T) {
 		GID:    "sg_task1",
 		Status: "active",
 	}, "active")
-	Cache.metadata["sg_task1"] = &TaskMetadata{
+	Cache.SetMetadataForTest("sg_task1", &TaskMetadata{
 		GID:   "sg_task1",
 		Files: []string{"/downloads/file.zip"},
 		Dir:   "/downloads",
-	}
+	})
 
 	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete"}})
 
@@ -767,11 +767,11 @@ func TestReconcileSurgeCache_MissedComplete_HeadlessNoDelta(t *testing.T) {
 		Status:      "active",
 		TotalLength: "1000",
 	}, "active")
-	Cache.metadata["sg_task1"] = &TaskMetadata{
+	Cache.SetMetadataForTest("sg_task1", &TaskMetadata{
 		GID:   "sg_task1",
 		Files: []string{"/downloads/file.zip"},
 		Dir:   "/downloads",
-	}
+	})
 
 	// Register a delta listener to verify NotifyInternal fires.
 	var internalFired atomic.Bool
@@ -809,11 +809,11 @@ func TestReconcileSurgeCache_MissedComplete_DuplicateDeltaDedup(t *testing.T) {
 		Status:      "active",
 		TotalLength: "1000",
 	}, "active")
-	Cache.metadata["sg_task1"] = &TaskMetadata{
+	Cache.SetMetadataForTest("sg_task1", &TaskMetadata{
 		GID:   "sg_task1",
 		Files: []string{"/downloads/file.zip"},
 		Dir:   "/downloads",
-	}
+	})
 
 	// Simulate the event path already queuing a complete delta.
 	pusher.Queue(events.TaskDelta{
@@ -1114,11 +1114,11 @@ func TestReconcileSurgeCache_ErrorResumeError_AllowsSecondTerminal(t *testing.T)
 		t.Fatal("expected first MarkCompleteFromEvent")
 	}
 	history.Add(history.HistoryEntry{GID: "sg_task1", Path: "/tmp/a.bin", Status: "error"})
-	Cache.metadata["sg_task1"] = &TaskMetadata{
+	Cache.SetMetadataForTest("sg_task1", &TaskMetadata{
 		GID:   "sg_task1",
 		Files: []string{"/tmp/a.bin"},
 		Dir:   "/tmp",
-	}
+	})
 
 	reader.setLiveStatus("task1", rpc.SurgeLiveStatus{Known: true, Status: "downloading"})
 	reader.setLists([]rpc.Task{{GID: "task1", Status: "downloading", TotalLength: "1000"}}, nil, nil)
@@ -1318,18 +1318,18 @@ func TestReconcileSurgeCache_MissedAdd(t *testing.T) {
 
 // TestReconcileSurgeCache_MissedAddWithComplete verifies that a task the engine
 // reports as complete but is absent from Cache (both add and complete events
-// dropped, or startup) is added to stopped AND has handleTaskComplete run so
+// dropped, or startup) is added to stopped AND has the terminal finish run so
 // history/speed stats are not permanently lost.
 func TestReconcileSurgeCache_MissedAddWithComplete(t *testing.T) {
 	m, reader, _, tracker := newReconcileTestMonitor(t)
 	resetCacheSg()
 	resetHistoryForTest(t)
 
-	Cache.metadata["sg_task1"] = &TaskMetadata{
+	Cache.SetMetadataForTest("sg_task1", &TaskMetadata{
 		GID:   "sg_task1",
 		Files: []string{"/downloads/file.zip"},
 		Dir:   "/downloads",
-	}
+	})
 
 	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
 
@@ -1350,7 +1350,7 @@ func TestReconcileSurgeCache_MissedAddWithComplete(t *testing.T) {
 	}
 
 	if got := historyCount(); got != before+1 {
-		t.Errorf("history count = %d, want %d (handleTaskComplete should run for missed complete)", got, before+1)
+		t.Errorf("history count = %d, want %d (terminal finish should run for missed complete)", got, before+1)
 	}
 	if !tracker.processedComplete["sg_task1"] {
 		t.Error("expected processedComplete[sg_task1] = true")
@@ -1371,11 +1371,11 @@ func TestReconcileSurgeCache_RapidStateChange(t *testing.T) {
 		TotalLength: "1000",
 	}, "active")
 	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4, "active")
-	Cache.metadata["sg_task1"] = &TaskMetadata{
+	Cache.SetMetadataForTest("sg_task1", &TaskMetadata{
 		GID:   "sg_task1",
 		Files: []string{"/downloads/file.zip"},
 		Dir:   "/downloads",
-	}
+	})
 
 	// Simulate intermediate states the poll never observed; only the final
 	// engine state matters for reconciliation.
@@ -1482,11 +1482,11 @@ func TestReconcileSurgeCache_ConcurrentWithEvent(t *testing.T) {
 		TotalLength: "1000",
 	}, "active")
 	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4, "active")
-	Cache.metadata["sg_task1"] = &TaskMetadata{
+	Cache.SetMetadataForTest("sg_task1", &TaskMetadata{
 		GID:   "sg_task1",
 		Files: []string{"/downloads/file.zip"},
 		Dir:   "/downloads",
-	}
+	})
 
 	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
 
@@ -1515,7 +1515,7 @@ func TestReconcileSurgeCache_ConcurrentWithEvent(t *testing.T) {
 		t.Error("expected processedComplete[sg_task1] = true")
 	}
 
-	// Dedup must prevent double handleTaskComplete: exactly one history write.
+	// Dedup must prevent a double terminal finish: exactly one history write.
 	if got := historyCount(); got != before+1 {
 		t.Errorf("history count = %d, want %d (complete should be processed exactly once)", got, before+1)
 	}
@@ -1703,11 +1703,11 @@ func TestReconcileSurgeCache_MissedComplete_ClearsPauseResumeIntention(t *testin
 		TotalLength: "1000",
 	}, "active")
 	tracker.EnsureTrackedFromEvent("sg_task1", 1000, "https://example.com/file.zip", 4, "active")
-	Cache.metadata["sg_task1"] = &TaskMetadata{
+	Cache.SetMetadataForTest("sg_task1", &TaskMetadata{
 		GID:   "sg_task1",
 		Files: []string{"/downloads/file.zip"},
 		Dir:   "/downloads",
-	}
+	})
 
 	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
 
@@ -1759,11 +1759,11 @@ func TestReconcileSurgeCache_MissedAddWithComplete_ClearsPauseResumeIntention(t 
 	m.pauseResumeIntentions = map[string]pauseResumeIntention{"sg_task1": {action: "pause"}}
 	m.pauseResumeVersionMu.Unlock()
 
-	Cache.metadata["sg_task1"] = &TaskMetadata{
+	Cache.SetMetadataForTest("sg_task1", &TaskMetadata{
 		GID:   "sg_task1",
 		Files: []string{"/downloads/file.zip"},
 		Dir:   "/downloads",
-	}
+	})
 
 	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "1000"}})
 
@@ -1780,7 +1780,7 @@ func TestReconcileSurgeCache_MissedAddWithComplete_ClearsPauseResumeIntention(t 
 // TestReconcileSurgeCache_MissedComplete_UpdatesTrackerTotalLength verifies
 // that the reconcile stopped branch calls EnsureTrackedFromEvent to update the
 // tracker's TotalLength from the engine task before MarkCompleteFromEvent, so
-// handleTaskComplete records accurate history. This matches handleSurgeEvent's
+// the terminal finish records accurate history. This matches handleSurgeEvent's
 // complete case which calls EnsureTrackedFromEvent(completeTotal) first.
 func TestReconcileSurgeCache_MissedComplete_UpdatesTrackerTotalLength(t *testing.T) {
 	m, reader, _, tracker := newReconcileTestMonitor(t)
@@ -1794,11 +1794,11 @@ func TestReconcileSurgeCache_MissedComplete_UpdatesTrackerTotalLength(t *testing
 		Status:      "active",
 		TotalLength: "1000",
 	}, "active")
-	Cache.metadata["sg_task1"] = &TaskMetadata{
+	Cache.SetMetadataForTest("sg_task1", &TaskMetadata{
 		GID:   "sg_task1",
 		Files: []string{"/downloads/file.zip"},
 		Dir:   "/downloads",
-	}
+	})
 
 	// Engine reports the task as complete with TotalLength=5000.
 	reader.setLists(nil, nil, []rpc.Task{{GID: "task1", Status: "complete", TotalLength: "5000"}})
@@ -2053,9 +2053,7 @@ func TestResumeRecovery_StaleReadMatrix(t *testing.T) {
 	type midFn func(m *Monitor, tracker *TaskTracker)
 
 	seedMeta := func(gid string) {
-		Cache.mu.Lock()
-		Cache.metadata[gid] = &TaskMetadata{GID: gid, Files: []string{"/d/f"}, Dir: "/d"}
-		Cache.mu.Unlock()
+		Cache.SetMetadataForTest(gid, &TaskMetadata{GID: gid, Files: []string{"/d/f"}, Dir: "/d"})
 	}
 	seedChunk := func(m *Monitor, gid string) {
 		m.chunkSnapshots.Set(gid, []byte{2}, 8, 1024, nil)
@@ -2899,9 +2897,7 @@ func TestReconcileSurgeCache_RealWorkerLostStarted(t *testing.T) {
 
 	// File metadata lets the terminal path write history for the completed row.
 	bDestPath := filepath.Join(tmpDir, "b.bin")
-	Cache.mu.Lock()
-	Cache.metadata["sg_late"] = &TaskMetadata{GID: "sg_late", Files: []string{bDestPath}, Dir: tmpDir}
-	Cache.mu.Unlock()
+	Cache.SetMetadataForTest("sg_late", &TaskMetadata{GID: "sg_late", Files: []string{bDestPath}, Dir: tmpDir})
 
 	// Release the second body; the worker emits a real EventComplete — the one
 	// real event delivered to the monitor drives the full terminal pipeline.

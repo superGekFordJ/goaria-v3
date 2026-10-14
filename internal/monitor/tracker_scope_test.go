@@ -113,18 +113,18 @@ func TestTrackerAdapter_GetActiveTrackedTasks_PassesMinChunkThrough(t *testing.T
 	}
 }
 
-func TestTaskTracker_GetScope(t *testing.T) {
+func TestTaskTracker_GetScopeAndEnv(t *testing.T) {
 	tracker := NewTaskTracker()
 
-	// Before SetScope, GetScope returns ok=false
-	_, _, ok := tracker.GetScope("gid-scope-001")
+	// Before SetScope, GetScopeAndEnv returns ok=false
+	_, _, _, ok := tracker.GetScopeAndEnv("gid-scope-001")
 	if ok {
 		t.Error("Expected ok=false before SetScope")
 	}
 
 	tracker.SetScope("gid-scope-001", "wan", 120, "example.com")
 
-	scope, domain, ok := tracker.GetScope("gid-scope-001")
+	scope, domain, _, ok := tracker.GetScopeAndEnv("gid-scope-001")
 	if !ok {
 		t.Fatal("Expected ok=true after SetScope")
 	}
@@ -136,19 +136,19 @@ func TestTaskTracker_GetScope(t *testing.T) {
 	}
 
 	// Unknown gid
-	_, _, ok = tracker.GetScope("nonexistent")
+	_, _, _, ok = tracker.GetScopeAndEnv("nonexistent")
 	if ok {
 		t.Error("Expected ok=false for nonexistent gid")
 	}
 }
 
-func TestTaskTracker_GetScope_EmptyScope(t *testing.T) {
+func TestTaskTracker_GetScopeAndEnv_EmptyScope(t *testing.T) {
 	tracker := NewTaskTracker()
 
 	// SetThreadInfo creates a tracked task with empty Scope
 	tracker.SetThreadInfo("gid-empty-scope", 4, false)
 
-	_, _, ok := tracker.GetScope("gid-empty-scope")
+	_, _, _, ok := tracker.GetScopeAndEnv("gid-empty-scope")
 	if ok {
 		t.Error("Expected ok=false when Scope is empty")
 	}

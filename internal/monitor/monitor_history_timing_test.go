@@ -71,7 +71,7 @@ func TestHistoryTiming_ArSessionAddedSufficientSamples(t *testing.T) {
 	if len(completed) != 1 {
 		t.Fatalf("completed = %d, want 1", len(completed))
 	}
-	m.handleTaskComplete(completed[0])
+	m.finishTerminalCopy(completed[0])
 
 	e := mustHistory(t, gid)
 	if e.DurationMs < 12_000 || e.DurationMs > 13_000 {
@@ -95,7 +95,7 @@ func TestHistoryTiming_ArInsufficientSamplesNotWritten(t *testing.T) {
 
 	tr.MarkAdded(gid)
 	completed := runArTicks(tr, gid, 3, 2*time.Second) // 6s < 10×2s
-	m.handleTaskComplete(completed[0])
+	m.finishTerminalCopy(completed[0])
 
 	if e := mustHistory(t, gid); e.DurationMs != 0 || e.AvgSpeed != 0 {
 		t.Fatalf("sparse sampling wrote timing: %+v", e)
@@ -111,7 +111,7 @@ func TestHistoryTiming_ArNotAddedThisSessionNotWritten(t *testing.T) {
 	// Seen active by tick only (external RPC add / restart resume).
 	tr.Update([]rpc.Task{timingTask(gid, "active")}, nil, nil)
 	completed := runArTicks(tr, gid, 20, time.Second)
-	m.handleTaskComplete(completed[0])
+	m.finishTerminalCopy(completed[0])
 
 	if e := mustHistory(t, gid); e.DurationMs != 0 {
 		t.Fatalf("DurationMs = %d, want 0 without AddedAt", e.DurationMs)
@@ -137,7 +137,7 @@ func TestHistoryTiming_RestartReplayKeepsExistingTiming(t *testing.T) {
 	if len(completed) != 1 {
 		t.Fatalf("completed = %d, want 1", len(completed))
 	}
-	m.handleTaskComplete(completed[0])
+	m.finishTerminalCopy(completed[0])
 
 	e := mustHistory(t, gid)
 	if e.CompletedAt != oldCompletedAt || e.DurationMs != 42_000 || e.AvgSpeed != 1234 || e.PeakSpeed != 5678 {
@@ -282,7 +282,7 @@ func TestHistoryTiming_ReadersConcurrentWithWriters(t *testing.T) {
 				tr.Update([]rpc.Task{active}, nil, nil)
 			}
 			for _, c := range tr.Update(nil, nil, []rpc.Task{timingTask(gid, "complete")}) {
-				m.handleTaskComplete(c)
+				m.finishTerminalCopy(c)
 			}
 		})
 		wg.Go(func() {

@@ -28,13 +28,11 @@ func TestHandleSurgeEvent_ProgressMsg_QueuesProgressDelta(t *testing.T) {
 		Speed:      50.0,
 	})
 
-	pusher.mu.Lock()
-	if len(pusher.pending) != 1 {
-		pusher.mu.Unlock()
-		t.Fatalf("expected 1 pending delta, got %d", len(pusher.pending))
+	pending := pusher.pendingSnapshot()
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending delta, got %d", len(pending))
 	}
-	delta := pusher.pending[0]
-	pusher.mu.Unlock()
+	delta := pending[0]
 
 	if delta.Type != "progress" {
 		t.Errorf("delta type = %q, want progress", delta.Type)
@@ -72,13 +70,11 @@ func TestHandleSurgeEvent_BatchProgressMsg_QueuesAllProgressDeltas(t *testing.T)
 		{DownloadID: "b", Downloaded: 300, Total: 600, Speed: 20.0},
 	}})
 
-	pusher.mu.Lock()
-	if len(pusher.pending) != 2 {
-		pusher.mu.Unlock()
-		t.Fatalf("expected 2 pending deltas, got %d", len(pusher.pending))
+	pending := pusher.pendingSnapshot()
+	if len(pending) != 2 {
+		t.Fatalf("expected 2 pending deltas, got %d", len(pending))
 	}
-	gids := map[string]bool{pusher.pending[0].GID: true, pusher.pending[1].GID: true}
-	pusher.mu.Unlock()
+	gids := map[string]bool{pending[0].GID: true, pending[1].GID: true}
 
 	if !gids["sg_a"] || !gids["sg_b"] {
 		t.Errorf("expected gids sg_a and sg_b, got %v", gids)
@@ -214,9 +210,7 @@ func TestHandleSurgeEvent_ProgressMsg_NoWindow_DoesNotPush(t *testing.T) {
 		Speed:      10.0,
 	})
 
-	pusher.mu.Lock()
-	count := len(pusher.pending)
-	pusher.mu.Unlock()
+	count := len(pusher.pendingSnapshot())
 
 	if count != 0 {
 		t.Errorf("expected 0 pending deltas when window is hidden, got %d", count)
@@ -286,13 +280,11 @@ func TestHandleSurgeEvent_BatchProgress_LiveConnectionsDecoupled(t *testing.T) {
 	if tc, _, _ := tracker.GetThreadInfo(gid); tc != 8 {
 		t.Fatalf("expected ThreadCount = 8, got %d", tc)
 	}
-	pusher.mu.Lock()
-	if len(pusher.pending) == 0 {
-		pusher.mu.Unlock()
+	pending := pusher.pendingSnapshot()
+	if len(pending) == 0 {
 		t.Fatal("expected pending delta in pusher for batch progress")
 	}
-	batchDelta := pusher.pending[len(pusher.pending)-1]
-	pusher.mu.Unlock()
+	batchDelta := pending[len(pending)-1]
 
 	batchPayload, ok := batchDelta.Payload.(map[string]string)
 	if !ok {

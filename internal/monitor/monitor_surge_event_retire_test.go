@@ -58,7 +58,9 @@ func TestHandleSurgeEvent_ResumeFromStopped_RetiresHistory(t *testing.T) {
 	}
 }
 
-func TestRetireHistoryIfResumedFromStopped_RehomesDownloadGroup(t *testing.T) {
+// The live stopped→live retirement path re-homes the durable history entry's
+// download_group into the group store (and live cache) before removal.
+func TestResumeConfirmation_RehomesDownloadGroup(t *testing.T) {
 	setupTaskGroupStoreTest(t)
 	history.DisableSaveForTest()
 	history.Clear()
@@ -73,10 +75,25 @@ func TestRetireHistoryIfResumedFromStopped_RehomesDownloadGroup(t *testing.T) {
 	})
 	history.SetGroupCleanupHooks(RemoveTaskGroup, RemoveTaskGroups, ClearTaskGroups)
 
-	Cache.sgActive = []rpc.Task{{GID: "sg_grp_resume", Status: "active"}}
-	defer func() { Cache.sgActive = nil; Cache.metadata = make(map[string]*TaskMetadata) }()
+	tracker := NewTaskTracker()
+	m := &Monitor{
+		tracker:               tracker,
+		pauseResumeIntentions: make(map[string]pauseResumeIntention),
+	}
+	prevMon := State.GetMonitor()
+	State.SetMonitor(m)
+	t.Cleanup(func() { State.SetMonitor(prevMon) })
 
-	RetireHistoryIfResumedFromStopped("sg_grp_resume", "stopped")
+	tracker.EnsureTrackedFromEvent("sg_grp_resume", 1000, "https://example.com/g.bin", 0, "error")
+	if tracker.MarkCompleteFromEvent("sg_grp_resume", "error") == nil {
+		t.Fatal("expected terminal accepted")
+	}
+	Cache.sgStopped = []rpc.Task{{GID: "sg_grp_resume", Status: "error"}}
+	defer func() { Cache.sgStopped = nil }()
+	defer Cache.DeleteMetadataForTest("sg_grp_resume")
+
+	ticket := m.BeginPauseResumeRequest("sg_grp_resume", PauseResumeIntentionResume)
+	m.ConfirmPauseResumeRequest(ticket)
 
 	if _, ok := history.Get("sg_grp_resume"); ok {
 		t.Fatal("expected history removed")
@@ -84,6 +101,9 @@ func TestRetireHistoryIfResumedFromStopped_RehomesDownloadGroup(t *testing.T) {
 	stored := GetStoredTaskGroup("sg_grp_resume")
 	if stored == nil || stored.ID != group.ID {
 		t.Fatalf("expected download_group re-homed to group store, got %#v", stored)
+	}
+	if got := Cache.GetTaskGroup("sg_grp_resume"); got == nil || got.ID != group.ID {
+		t.Fatalf("expected live cache group preserved, got %#v", got)
 	}
 }
 

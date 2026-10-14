@@ -8,7 +8,7 @@ import (
 	surgeEvents "goaria-v3/internal/surge/types"
 )
 
-// ==================== handleTaskComplete fallback chain + rate limit tests====================
+// ==================== terminal finish fallback chain + rate limit tests====================
 
 // speedstatsRecordCount returns the number of in-memory speedstats records.
 
@@ -34,14 +34,11 @@ func TestHandleSurgeEvent_DiscardsStalePauseAfterResume(t *testing.T) {
 
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "test-1"})
 
-	pusher.mu.Lock()
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "pause" && d.GID == "sg_test-1" {
-			pusher.mu.Unlock()
 			t.Fatal("expected no pause delta for stale pause event")
 		}
 	}
-	pusher.mu.Unlock()
 
 	Cache.sgMu.RLock()
 	for _, task := range Cache.sgWaiting {
@@ -74,15 +71,13 @@ func TestHandleSurgeEvent_AcceptsPauseWhenLastIntentionIsPause(t *testing.T) {
 
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "test-2"})
 
-	pusher.mu.Lock()
 	found := false
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "pause" && d.GID == "sg_test-2" {
 			found = true
 			break
 		}
 	}
-	pusher.mu.Unlock()
 	if !found {
 		t.Fatal("expected pause delta when last intention is pause")
 	}
@@ -119,15 +114,13 @@ func TestHandleSurgeEvent_AcceptsPauseWithNoPriorIntention(t *testing.T) {
 
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "test-3"})
 
-	pusher.mu.Lock()
 	found := false
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "pause" && d.GID == "sg_test-3" {
 			found = true
 			break
 		}
 	}
-	pusher.mu.Unlock()
 	if !found {
 		t.Fatal("expected pause delta with no prior intention")
 	}

@@ -1116,26 +1116,6 @@ func engineListForStatus(status string) string {
 	}
 }
 
-// engineStatusForTask maps an engine-side status string to the tracker status
-// string. Distinct from engineListForStatus (which maps to cache list names)
-// because tracker status preserves paused/complete/error granularity.
-func engineStatusForTask(status string) string {
-	switch status {
-	case "active", "downloading":
-		return "active"
-	case "waiting":
-		return "waiting"
-	case "paused":
-		return "paused"
-	case "complete":
-		return "complete"
-	case "error":
-		return "error"
-	default:
-		return "active"
-	}
-}
-
 // surgeActivationBaseline picks the run baseline for a real Surge start or
 // authoritative engine-active poll row: prefer the engine-supplied completed
 // value when it is a reliable observation, then the tracker's stored

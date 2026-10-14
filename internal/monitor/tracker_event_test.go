@@ -172,7 +172,7 @@ func TestTaskTracker_UpdateProgressFromEvent_UpdatesTotalAndCompleted(t *testing
 }
 
 // TestEventAndTickPath_NoDoubleComplete 验证事件路径先标记完成后，
-// tick 路径 Update 不会重复触发 handleTaskComplete。
+// tick 路径 Update 不会重复触发终态处理。
 func TestEventAndTickPath_NoDoubleComplete(t *testing.T) {
 	tracker := NewTaskTracker()
 

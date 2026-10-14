@@ -300,7 +300,7 @@ func (m *Monitor) tick() {
 	// Periodic eviction of orphaned Aria2 metadata entries. Runs at most every
 	// metadataCleanupInterval, gated on aria2Recovered. Reuses local slices to
 	// avoid deep-copying cache state. Safe to run concurrently with the Surge
-	// event path's handleTaskComplete: both use the same mu RWMutex (Lock here
+	// event path's terminal finish: both use the same mu RWMutex (Lock here
 	// vs RLock in GetMetadata), serialized with no nesting.
 	m.runMetadataCleanup(active, waiting, stopped)
 

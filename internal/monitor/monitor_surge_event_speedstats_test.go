@@ -135,13 +135,11 @@ func TestHandleSurgeEvent_ShortTaskSpeedstatsDrainRegression(t *testing.T) {
 	if tc, _, _ := tracker.GetThreadInfo(gid); tc != 6 {
 		t.Fatalf("expected ThreadCount to remain 6 after drain under HasWindow(true), got %d", tc)
 	}
-	pusher.mu.Lock()
-	if len(pusher.pending) == 0 {
-		pusher.mu.Unlock()
+	pending := pusher.pendingSnapshot()
+	if len(pending) == 0 {
 		t.Fatal("expected pending delta in pusher")
 	}
-	delta := pusher.pending[len(pusher.pending)-1]
-	pusher.mu.Unlock()
+	delta := pending[len(pending)-1]
 
 	payload, ok := delta.Payload.(map[string]string)
 	if !ok {
@@ -166,13 +164,11 @@ func TestHandleSurgeEvent_ShortTaskSpeedstatsDrainRegression(t *testing.T) {
 	if tc, _, _ := tracker.GetThreadInfo(gid); tc != 6 {
 		t.Fatalf("expected ThreadCount to remain 6 after drain to 0 under HasWindow(true), got %d", tc)
 	}
-	pusher.mu.Lock()
-	if len(pusher.pending) == 0 {
-		pusher.mu.Unlock()
+	pending = pusher.pendingSnapshot()
+	if len(pending) == 0 {
 		t.Fatal("expected pending delta in pusher on worker drain")
 	}
-	delta = pusher.pending[len(pusher.pending)-1]
-	pusher.mu.Unlock()
+	delta = pending[len(pending)-1]
 
 	payload, ok = delta.Payload.(map[string]string)
 	if !ok {

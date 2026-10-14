@@ -150,8 +150,6 @@ func TestPauseResumeTicket_CurrentAndStale(t *testing.T) {
 	}{
 		{"new resume", false, func(m *Monitor, gid string) { m.BeginPauseResumeRequest(gid, "resume") }},
 		{"new pause", false, func(m *Monitor, gid string) { m.BeginPauseResumeRequest(gid, "pause") }},
-		{"legacy bump", false, func(m *Monitor, gid string) { m.BumpPauseResumeIntention(gid, "resume") }},
-		{"legacy clear", false, func(m *Monitor, gid string) { m.ClearPauseResumeIntention(gid) }},
 		{"direct intention delete", false, func(m *Monitor, gid string) {
 			m.pauseResumeVersionMu.Lock()
 			delete(m.pauseResumeIntentions, gid)
@@ -284,14 +282,6 @@ func TestPauseResumeTicket_FailClosedAndNoDataWrites(t *testing.T) {
 	if ticket := noTracker.BeginPauseResumeRequest("sg_missing", "resume"); ticket != (PauseResumeTicket{}) {
 		t.Fatal("missing gate accepted")
 	}
-	noTracker.BumpPauseResumeIntention("sg_missing", "resume")
-	if !noTracker.shouldDiscardStalePause("sg_missing") {
-		t.Fatal("legacy nil-tracker bump changed")
-	}
-	noTracker.ClearPauseResumeIntention("sg_missing")
-	if noTracker.shouldDiscardStalePause("sg_missing") {
-		t.Fatal("legacy clear changed")
-	}
 	for _, withHistory := range []bool{false, true} {
 		const gid = "sg_ticket_unknown"
 		if withHistory {
@@ -357,7 +347,7 @@ func TestLifecycle_ExplicitWaitingHistoryTarget(t *testing.T) {
 	}
 
 	m := &Monitor{tracker: tracker}
-	m.moveToStoppedAndHandle(gid, "error", "1", "new error", 1000, nil)
+	m.moveToStoppedAndHandleGate(gid, "error", "1", "new error", 1000, nil, nil)
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	tracker.retireBetweenReopenAndRemove = func(string) { close(entered); <-release }
 	go func() {
@@ -406,8 +396,8 @@ func TestLifecycle_Interleave_ReopenThenTerminalThenRemove(t *testing.T) {
 	if first := tracker.MarkCompleteFromEvent(gid, "error"); first == nil {
 		t.Fatal("expected first terminal")
 	}
-	Cache.metadata[gid] = &TaskMetadata{GID: gid, Files: []string{"/tmp/a.bin"}, Dir: "/tmp"}
-	t.Cleanup(func() { delete(Cache.metadata, gid) })
+	Cache.SetMetadataForTest(gid, &TaskMetadata{GID: gid, Files: []string{"/tmp/a.bin"}, Dir: "/tmp"})
+	t.Cleanup(func() { Cache.DeleteMetadataForTest(gid) })
 	history.Add(history.HistoryEntry{GID: gid, Path: "/tmp/a.bin", Status: "error"})
 
 	started := make(chan struct{})
@@ -462,8 +452,8 @@ func TestLifecycle_Interleave_RemoveThenTerminalConcurrent(t *testing.T) {
 	if first := tracker.MarkCompleteFromEvent(gid, "error"); first == nil {
 		t.Fatal("expected first terminal")
 	}
-	Cache.metadata[gid] = &TaskMetadata{GID: gid, Files: []string{"/tmp/b.bin"}, Dir: "/tmp"}
-	t.Cleanup(func() { delete(Cache.metadata, gid) })
+	Cache.SetMetadataForTest(gid, &TaskMetadata{GID: gid, Files: []string{"/tmp/b.bin"}, Dir: "/tmp"})
+	t.Cleanup(func() { Cache.DeleteMetadataForTest(gid) })
 	history.Add(history.HistoryEntry{GID: gid, Path: "/tmp/b.bin", Status: "error"})
 
 	// Concurrent retire vs terminal: force retire to hold the gate through
@@ -550,72 +540,6 @@ func TestLifecycle_RemoveTaskCleansLifecycleEntry(t *testing.T) {
 	}
 }
 
-func TestLifecycle_GroupIPC_PackageRetireSharesGate(t *testing.T) {
-	history.DisableSaveForTest()
-	history.Clear()
-	defer history.Clear()
-
-	tracker := NewTaskTracker()
-	prevMon := State.GetMonitor()
-	State.SetMonitor(&Monitor{tracker: tracker})
-	t.Cleanup(func() { State.SetMonitor(prevMon) })
-
-	const gid = "sg_life_grp"
-	tracker.EnsureTrackedFromEvent(gid, 1000, "https://example.com/g.bin", 0, "error")
-	if first := tracker.MarkCompleteFromEvent(gid, "error"); first == nil {
-		t.Fatal("expected first terminal")
-	}
-	before := tracker.LifecycleGeneration(gid)
-	history.Add(history.HistoryEntry{GID: gid, Path: "/tmp/g.bin", Status: "error"})
-
-	cleanupSgCache(t, gid)
-	Cache.AddSgTask(rpc.Task{GID: gid, Status: "waiting"}, "waiting")
-	RetireHistoryIfResumedFromStopped(gid, "stopped")
-	RetireHistoryIfResumedFromStopped(gid, "stopped")
-	if task, _ := tracker.GetTrackedTask(gid); task.Status != "waiting" {
-		t.Fatal("lost actual target")
-	}
-
-	if _, ok := history.Get(gid); ok {
-		t.Fatal("expected history removed via package retire")
-	}
-	after := tracker.LifecycleGeneration(gid)
-	if after != before+1 {
-		t.Fatalf("package retire must bump generation once: before=%d after=%d", before, after)
-	}
-	if tracker.processedComplete[gid] {
-		t.Fatal("expected terminal marker cleared")
-	}
-
-	// Second package call without intervening terminal still reopens once more
-	// (idempotent API for from!=stopped only); from==stopped is a real transition.
-	RetireHistoryIfResumedFromStopped(gid, "waiting")
-	if tracker.LifecycleGeneration(gid) != after {
-		t.Fatal("from!=stopped must not bump generation")
-	}
-}
-
-func TestLifecycle_RetireHistory_MethodNoDoubleReopen(t *testing.T) {
-	tracker := NewTaskTracker()
-	m := &Monitor{tracker: tracker}
-	prevMon := State.GetMonitor()
-	State.SetMonitor(m)
-	t.Cleanup(func() { State.SetMonitor(prevMon) })
-
-	const gid = "sg_life_e7"
-	tracker.EnsureTrackedFromEvent(gid, 100, "", 0, "error")
-	_ = tracker.MarkCompleteFromEvent(gid, "error")
-	before := tracker.LifecycleGeneration(gid)
-
-	cleanupSgCache(t, gid)
-	Cache.AddSgTask(rpc.Task{GID: gid, Status: "paused"}, "waiting")
-	m.RetireHistoryIfResumedFromStopped(gid, "stopped")
-	after := tracker.LifecycleGeneration(gid)
-	if after != before+1 {
-		t.Fatalf("method retire must reopen exactly once (E7): before=%d after=%d", before, after)
-	}
-}
-
 func TestLifecycle_ErrorResumeError_ViaMarkCompleteAndHandle(t *testing.T) {
 	history.DisableSaveForTest()
 	history.Clear()
@@ -633,10 +557,10 @@ func TestLifecycle_ErrorResumeError_ViaMarkCompleteAndHandle(t *testing.T) {
 	State.SetMonitor(m)
 	t.Cleanup(func() { State.SetMonitor(prevMon) })
 
-	Cache.metadata["sg_life_err"] = &TaskMetadata{
+	Cache.SetMetadataForTest("sg_life_err", &TaskMetadata{
 		GID: "sg_life_err", Files: []string{"/tmp/reerr.bin"}, Dir: "/tmp",
-	}
-	defer delete(Cache.metadata, "sg_life_err")
+	})
+	defer Cache.DeleteMetadataForTest("sg_life_err")
 
 	tracker.EnsureTrackedFromEvent("sg_life_err", 1000, "https://example.com/reerr.bin", 0, "error")
 	m.markCompleteAndHandle("sg_life_err", "error", nil)
@@ -645,10 +569,14 @@ func TestLifecycle_ErrorResumeError_ViaMarkCompleteAndHandle(t *testing.T) {
 	}
 
 	cleanupSgCache(t, "sg_life_err")
-	Cache.AddSgTask(rpc.Task{GID: "sg_life_err", Status: "waiting"}, "waiting")
-	m.RetireHistoryIfResumedFromStopped("sg_life_err", "stopped")
+	Cache.AddSgTask(rpc.Task{GID: "sg_life_err", Status: "error", ErrorCode: "1", ErrorMessage: "old"}, "stopped")
+	ticket := m.BeginPauseResumeRequest("sg_life_err", PauseResumeIntentionResume)
+	m.ConfirmPauseResumeRequest(ticket)
 	if _, ok := history.Get("sg_life_err"); ok {
 		t.Fatal("expected history retired")
+	}
+	if _, list, ok := Cache.GetTask("sg_life_err"); !ok || list != "waiting" {
+		t.Fatalf("expected confirmed resume to land in waiting, got list=%q ok=%v", list, ok)
 	}
 
 	m.markCompleteAndHandle("sg_life_err", "error", nil)
@@ -671,8 +599,8 @@ func TestLifecycle_TickReacceptUnderGate(t *testing.T) {
 	t.Cleanup(func() { State.SetMonitor(prevMon) })
 
 	const gid = "ar_life_tick"
-	Cache.metadata[gid] = &TaskMetadata{GID: gid, Files: []string{"/tmp/tick.bin"}, Dir: "/tmp"}
-	t.Cleanup(func() { delete(Cache.metadata, gid) })
+	Cache.SetMetadataForTest(gid, &TaskMetadata{GID: gid, Files: []string{"/tmp/tick.bin"}, Dir: "/tmp"})
+	t.Cleanup(func() { Cache.DeleteMetadataForTest(gid) })
 
 	completed := tracker.Update(nil, nil, []rpc.Task{{
 		GID: gid, Status: "complete",
@@ -683,20 +611,18 @@ func TestLifecycle_TickReacceptUnderGate(t *testing.T) {
 		t.Fatalf("Update should detect first complete, got %d", len(completed))
 	}
 
-	// No concurrent retire: current-generation acceptance still valid → handle.
+	// No concurrent retire: the stamped copy is still current → finish writes
+	// history. finishTerminalCopy validates the copy under its own gate.
 	for _, task := range completed {
-		tracker.RunUnderLifecycle(task.GID, func() {
-			if tracker.TerminalAcceptedInCurrentGeneration(task.GID) {
-				m.handleTaskComplete(task)
-			}
-		})
+		m.finishTerminalCopy(task)
 	}
 	if entries := historyEntriesForGID(gid); len(entries) != 1 {
-		t.Fatalf("want 1 history from tick handle, got %d", len(entries))
+		t.Fatalf("want 1 history from tick finish, got %d", len(entries))
 	}
 
-	// Retire between Update and handle: generation advanced, acceptance cleared.
-	// Tick must drop the stale snapshot (no ghost history / no new-gen marker).
+	// Retire between Update and finish: generation advanced, acceptance cleared.
+	// The stale copy fails TerminalCopyCurrent inside finishTerminalCopy (no
+	// ghost history / no new-gen marker).
 	history.Clear()
 	tracker.ReopenAfterStoppedToLive(gid, "active")
 	tracker.tasks[gid].Status = "active"
@@ -714,11 +640,7 @@ func TestLifecycle_TickReacceptUnderGate(t *testing.T) {
 		t.Fatal("expected retire to bump generation after Update accept")
 	}
 	for _, task := range completed2 {
-		tracker.RunUnderLifecycle(task.GID, func() {
-			if tracker.TerminalAcceptedInCurrentGeneration(task.GID) {
-				m.handleTaskComplete(task)
-			}
-		})
+		m.finishTerminalCopy(task)
 	}
 	if entries := historyEntriesForGID(gid); len(entries) != 0 {
 		t.Fatalf("after retire-between-Update-and-handle want 0 history, got %d %#v", len(entries), entries)
@@ -743,7 +665,7 @@ func seedStoppedTerminalHistory(t *testing.T, tracker *TaskTracker, gid, path st
 	Cache.sgActive = nil
 	Cache.sgWaiting = nil
 	Cache.sgMu.Unlock()
-	Cache.metadata[gid] = &TaskMetadata{GID: gid, Files: []string{path}, Dir: "/tmp"}
+	Cache.SetMetadataForTest(gid, &TaskMetadata{GID: gid, Files: []string{path}, Dir: "/tmp"})
 	tracker.EnsureTrackedFromEvent(gid, 1000, "https://example.com/"+gid, 0, "error")
 	if first := tracker.MarkCompleteFromEvent(gid, "error"); first == nil {
 		t.Fatal("expected seed terminal mark")
@@ -759,7 +681,7 @@ func cleanupSgCache(t *testing.T, gid string) {
 		Cache.sgActive = nil
 		Cache.sgWaiting = nil
 		Cache.sgMu.Unlock()
-		delete(Cache.metadata, gid)
+		Cache.DeleteMetadataForTest(gid)
 	})
 }
 
@@ -821,17 +743,15 @@ func TestLifecycle_CacheMoveRetire_SerializesWithTerminal(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		from := m.moveToActiveAndRetireIfStopped(gid, "active")
-		if from != "stopped" {
-			t.Errorf("from=%q, want stopped", from)
-		}
+		ticket := m.BeginPauseResumeRequest(gid, PauseResumeIntentionResume)
+		m.ConfirmPauseResumeRequest(ticket)
 	})
 	<-started
 
 	terminalScheduled := make(chan struct{})
 	wg.Go(func() {
 		close(terminalScheduled)
-		m.moveToStoppedAndHandle(gid, "complete", "", "", 1000, nil)
+		m.moveToStoppedAndHandleGate(gid, "complete", "", "", 1000, nil, nil)
 	})
 	<-terminalScheduled
 	for range 64 {
@@ -870,20 +790,18 @@ func TestLifecycle_TerminalThenResumeThenTerminal_SingleHistory(t *testing.T) {
 
 	// Opposite order: terminal attempted while still on old generation (no-op),
 	// then resume retires H0, then a real new-generation terminal writes H1.
-	m.moveToStoppedAndHandle(gid, "complete", "", "", 1000, nil)
+	m.moveToStoppedAndHandleGate(gid, "complete", "", "", 1000, nil, nil)
 	if entries := historyEntriesForGID(gid); len(entries) != 1 || entries[0].Status != "error" {
 		t.Fatalf("old-generation terminal must remain H0 error, got %#v", entries)
 	}
 
-	from := m.moveToActiveAndRetireIfStopped(gid, "active")
-	if from != "stopped" {
-		t.Fatalf("from=%q, want stopped", from)
-	}
+	ticket := m.BeginPauseResumeRequest(gid, PauseResumeIntentionResume)
+	m.ConfirmPauseResumeRequest(ticket)
 	if _, ok := history.Get(gid); ok {
 		t.Fatal("expected H0 retired after resume")
 	}
 
-	m.moveToStoppedAndHandle(gid, "complete", "", "", 1000, nil)
+	m.moveToStoppedAndHandleGate(gid, "complete", "", "", 1000, nil, nil)
 	entries := historyEntriesForGID(gid)
 	if len(entries) != 1 || entries[0].Status != "complete" {
 		t.Fatalf("want single H1 complete after resume+terminal, got %#v", entries)

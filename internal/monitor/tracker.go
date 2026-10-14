@@ -25,8 +25,8 @@ type TrackedTask struct {
 	SustainedCount int
 
 	// PeakThreadCount records the worker count at the time PeakSpeed was achieved.
-	// Written by RecordPeakEfficiency (convergence layer); read by handleTaskComplete
-	// to write accurate ThreadCount into speedstats.
+	// Written by RecordPeakEfficiency (convergence layer); read by the terminal
+	// finish path to write accurate ThreadCount into speedstats.
 	PeakThreadCount int
 
 	// BestEff is the session-anchored best single-thread efficiency (only increases).
@@ -807,13 +807,6 @@ func (t *TaskTracker) GetLiveConnections(gid string) int {
 	return 0
 }
 
-// UpdateThreadCount is deprecated: use UpdateLiveConnections instead.
-// Retained for compatibility; delegates to UpdateLiveConnections to ensure
-// ThreadCount is never mutated by progress updates.
-func (t *TaskTracker) UpdateThreadCount(gid string, threadCount int) {
-	t.UpdateLiveConnections(gid, threadCount)
-}
-
 func (t *TaskTracker) SetTaskGroup(gid string, group rpc.DownloadGroup) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -1146,7 +1139,7 @@ func (t *TaskTracker) UpdateProgressFromEvent(gid string, totalLength, completed
 }
 
 // MarkCompleteFromEvent 从 Surge complete/error 事件标记完成
-// 返回副本供 handleTaskComplete 使用；当前世代已接受则返回 nil
+// 返回副本供 finishTerminalCopy 使用；当前世代已接受则返回 nil
 func (t *TaskTracker) MarkCompleteFromEvent(gid string, status string) *TrackedTask {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -1213,12 +1206,6 @@ func (t *TaskTracker) SetTTFB(gid string, ms int64) {
 	if tracked != nil && ms > 0 {
 		tracked.TTFBMs = ms
 	}
-}
-
-// GetScope returns the task's scope/domain info (backward-compatible wrapper).
-func (t *TaskTracker) GetScope(gid string) (scope, domain string, ok bool) {
-	s, d, _, ok := t.GetScopeAndEnv(gid)
-	return s, d, ok
 }
 
 // GetScopeAndEnv returns the task's scope/domain/envKey info.

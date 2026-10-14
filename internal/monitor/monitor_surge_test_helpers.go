@@ -19,10 +19,7 @@ func (e *mockSurgeActiveEngine) IsSurgeActive() bool {
 }
 
 // mockSafeEngine returns errors from TellStatus without panicking,
-// for tests that trigger handleTaskComplete but don't need real RPC.
-
-// mockSafeEngine returns errors from TellStatus without panicking,
-// for tests that trigger handleTaskComplete but don't need real RPC.
+// for tests that trigger terminal finishing but don't need real RPC.
 type mockSafeEngine struct {
 	mockSurgeActiveEngine
 }
@@ -71,9 +68,6 @@ func findRecordByDomain(domain string) *speedstats.SpeedRecord {
 	}
 	return nil
 }
-
-// TestHandleTaskComplete_PeakThreadCountFallback verifies that handleTaskComplete
-// uses PeakThreadCount (from convergence) as the primary source for speedstats ThreadCount.
 
 // mockStoppedEngine returns a fixed set of stopped tasks from TellStopped/
 // TellStoppedLite, allowing tick-level tests to simulate a Surge engine whose

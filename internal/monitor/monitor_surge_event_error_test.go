@@ -109,12 +109,11 @@ func TestHandleSurgeEvent_ErrorEvent_DiskSpacePersistsErrorAndDelta(t *testing.T
 		t.Fatalf("masterCache Error = %q, want sentinel", entry.Error)
 	}
 
-	pusher.mu.Lock()
-	defer pusher.mu.Unlock()
+	pending := pusher.pendingSnapshot()
 	var errDelta *events.TaskDelta
-	for i := range pusher.pending {
-		if pusher.pending[i].Type == "error" && pusher.pending[i].GID == "sg_disk-err" {
-			errDelta = &pusher.pending[i]
+	for i := range pending {
+		if pending[i].Type == "error" && pending[i].GID == "sg_disk-err" {
+			errDelta = &pending[i]
 			break
 		}
 	}
@@ -176,13 +175,13 @@ func TestHandleSurgeEvent_ErrorResumeError_AllowsSecondTerminal(t *testing.T) {
 		ErrorCode: "1", ErrorMessage: "fail",
 		Files: []rpc.File{{Path: "/tmp/reerr.bin"}},
 	}}
-	Cache.metadata["sg_reerr"] = &TaskMetadata{
+	Cache.SetMetadataForTest("sg_reerr", &TaskMetadata{
 		GID: "sg_reerr", Files: []string{"/tmp/reerr.bin"}, Dir: "/tmp",
-	}
+	})
 	defer func() {
 		Cache.sgStopped = nil
 		Cache.sgActive = nil
-		delete(Cache.metadata, "sg_reerr")
+		Cache.DeleteMetadataForTest("sg_reerr")
 	}()
 
 	tracker.EnsureTrackedFromEvent("sg_reerr", 1000, "https://example.com/reerr.bin", 0, "error")
@@ -205,7 +204,7 @@ func TestHandleSurgeEvent_ErrorResumeError_AllowsSecondTerminal(t *testing.T) {
 	if second == nil {
 		t.Fatal("expected second MarkCompleteFromEvent after reopen")
 	}
-	m.handleTaskComplete(second)
+	m.finishTerminalCopy(second)
 	entry, ok := history.Get("sg_reerr")
 	if !ok || entry.Status != "error" {
 		t.Fatalf("expected second history error entry, got ok=%v entry=%#v", ok, entry)

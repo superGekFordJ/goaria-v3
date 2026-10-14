@@ -49,7 +49,7 @@ func TestTaskTracker_ThreadInfoTracking(t *testing.T) {
 	}
 }
 
-func TestTaskTracker_UpdateThreadCount(t *testing.T) {
+func TestTaskTracker_UpdateLiveConnections(t *testing.T) {
 	tracker := NewTaskTracker()
 	gid := "sg_test_update"
 
@@ -70,17 +70,7 @@ func TestTaskTracker_UpdateThreadCount(t *testing.T) {
 		t.Fatalf("expected live connections 6; got %d", live)
 	}
 
-	// 3. Deprecated UpdateThreadCount delegates to UpdateLiveConnections and also preserves ThreadCount
-	tracker.UpdateThreadCount(gid, 8)
-	tc, isExp, ok = tracker.GetThreadInfo(gid)
-	if !ok || tc != 2 || !isExp {
-		t.Fatalf("expected ThreadCount to remain 2; got %d, %v, %v", tc, isExp, ok)
-	}
-	if live := tracker.GetLiveConnections(gid); live != 8 {
-		t.Fatalf("expected live connections 8; got %d", live)
-	}
-
-	// 4. UpdateLiveConnections on unknown task creates it with LiveConnections, not ThreadCount
+	// 3. UpdateLiveConnections on unknown task creates it with LiveConnections, not ThreadCount
 	tracker.UpdateLiveConnections("sg_unknown", 4)
 	if live := tracker.GetLiveConnections("sg_unknown"); live != 4 {
 		t.Fatalf("expected 4 live connections on unknown; got %d", live)

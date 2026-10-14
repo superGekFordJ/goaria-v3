@@ -52,14 +52,12 @@ func TestEventDriven_AddQueuedMsg_InsertsCacheWaiting(t *testing.T) {
 	}
 
 	// Verify add delta was pushed
-	pusher.mu.Lock()
 	deltaFound := false
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "add" && d.GID == "sg_evt-queued-1" {
 			deltaFound = true
 		}
 	}
-	pusher.mu.Unlock()
 	if !deltaFound {
 		t.Fatal("expected add delta pushed for sg_evt-queued-1")
 	}
@@ -109,14 +107,12 @@ func TestEventDriven_AddStartedMsg_InsertsCacheActive(t *testing.T) {
 	}
 
 	// Verify add delta was pushed
-	pusher.mu.Lock()
 	deltaFound := false
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "add" && d.GID == "sg_evt-started-1" {
 			deltaFound = true
 		}
 	}
-	pusher.mu.Unlock()
 	if !deltaFound {
 		t.Fatal("expected add delta pushed for sg_evt-started-1")
 	}
@@ -176,14 +172,12 @@ func TestEventDriven_RemoveMsg_DeletesCacheAndPushesRemoveDelta(t *testing.T) {
 	}
 
 	// Verify remove delta was pushed
-	pusher.mu.Lock()
 	deltaFound := false
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.Type == "remove" && d.GID == "sg_evt-remove-1" {
 			deltaFound = true
 		}
 	}
-	pusher.mu.Unlock()
 	if !deltaFound {
 		t.Fatal("expected remove delta pushed for sg_evt-remove-1")
 	}
@@ -974,7 +968,7 @@ func TestEventDriven_PrefetchMetadata_EnrichesSgSliceEntry(t *testing.T) {
 		Cache.sgWaiting = nil
 		Cache.sgStopped = nil
 		Cache.engine = nil
-		Cache.metadata = make(map[string]*TaskMetadata)
+		Cache.ResetMetadataForTest()
 	}()
 
 	Cache.engine = hybrid
@@ -1258,14 +1252,11 @@ func TestHandleSurgeEvent_FirstByteMsg_NoDeltaPush(t *testing.T) {
 		TTFBMs:     50,
 	})
 
-	pusher.mu.Lock()
-	for _, d := range pusher.pending {
+	for _, d := range pusher.pendingSnapshot() {
 		if d.GID == "sg_fb-2" {
-			pusher.mu.Unlock()
 			t.Fatalf("expected no delta push for sg_fb-2, got type=%q", d.Type)
 		}
 	}
-	pusher.mu.Unlock()
 }
 
 // TestHandleSurgeEvent_FirstByteMsg_BeforeStarted_SilentSkip verifies that

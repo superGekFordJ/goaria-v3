@@ -25,14 +25,13 @@ func findSgStoppedTask(gid string) *rpc.Task {
 	return nil
 }
 
-// findCompleteDelta searches the pusher pending queue for a complete delta
-// with the given GID and returns it, or nil.
+// findCompleteDelta searches a drained pending snapshot for a complete delta
+// with the given GID and returns the local copy element, or nil.
 func findCompleteDelta(pusher *Pusher, gid string) *events.TaskDelta {
-	pusher.mu.Lock()
-	defer pusher.mu.Unlock()
-	for i := range pusher.pending {
-		if pusher.pending[i].Type == "complete" && pusher.pending[i].GID == gid {
-			return &pusher.pending[i]
+	pending := pusher.pendingSnapshot()
+	for i := range pending {
+		if pending[i].Type == "complete" && pending[i].GID == gid {
+			return &pending[i]
 		}
 	}
 	return nil
@@ -499,9 +498,7 @@ func TestResumeTerminal_WaitingFastComplete(t *testing.T) {
 		full.DownloadSpeed = "0"
 		Cache.AddSgTask(full, "waiting")
 		tracker.EnsureTrackedFromEvent(gid, 1000, full.Files[0].Uris[0].Uri, 2, "paused")
-		Cache.mu.Lock()
-		Cache.metadata[gid] = &TaskMetadata{GID: gid, Files: []string{full.Files[0].Path}, Dir: full.Dir}
-		Cache.mu.Unlock()
+		Cache.SetMetadataForTest(gid, &TaskMetadata{GID: gid, Files: []string{full.Files[0].Path}, Dir: full.Dir})
 		m.ConfirmPauseResumeRequest(m.BeginPauseResumeRequest(gid, "resume"))
 		task, list, _ := Cache.GetTask(gid)
 		if list != "waiting" || task.Status != "waiting" {
@@ -578,9 +575,7 @@ func TestResumeTerminal_WaitingFastComplete(t *testing.T) {
 	errFull.DownloadSpeed = "0"
 	Cache.AddSgTask(errFull, "waiting")
 	tracker.EnsureTrackedFromEvent("sg_wf_err", 1000, errFull.Files[0].Uris[0].Uri, 2, "paused")
-	Cache.mu.Lock()
-	Cache.metadata["sg_wf_err"] = &TaskMetadata{GID: "sg_wf_err", Files: []string{errFull.Files[0].Path}, Dir: errFull.Dir}
-	Cache.mu.Unlock()
+	Cache.SetMetadataForTest("sg_wf_err", &TaskMetadata{GID: "sg_wf_err", Files: []string{errFull.Files[0].Path}, Dir: errFull.Dir})
 	m.handleSurgeEvent(surgeEvents.DownloadEvent{
 		Type: surgeEvents.EventError, DownloadID: "wf_err",
 		Err: errors.New("connection reset"),
@@ -649,9 +644,7 @@ func TestResumeTerminal_TickCopyGeneration(t *testing.T) {
 			Cache.arMu.Lock()
 			Cache.arActive, Cache.arWaiting, Cache.arStopped = nil, nil, nil
 			Cache.arMu.Unlock()
-			Cache.mu.Lock()
-			delete(Cache.metadata, gid)
-			Cache.mu.Unlock()
+			Cache.DeleteMetadataForTest(gid)
 		})
 		return m, tracker, pusher, eng
 	}

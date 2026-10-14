@@ -249,25 +249,3 @@ func TestTaskTracker_Update_CleansArTasks(t *testing.T) {
 		t.Fatal("expected ar_clean-2 to be cleaned up (not in current lists)")
 	}
 }
-
-func TestEngineStatusForTask_Mapping(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"active", "active"},
-		{"downloading", "active"},
-		{"waiting", "waiting"},
-		{"paused", "paused"},
-		{"complete", "complete"},
-		{"error", "error"},
-		{"", "active"},
-		{"unknown", "active"},
-	}
-	for _, c := range cases {
-		t.Run(c.in, func(t *testing.T) {
-			if got := engineStatusForTask(c.in); got != c.want {
-				t.Errorf("engineStatusForTask(%q) = %q, want %q", c.in, got, c.want)
-			}
-		})
-	}
-}

@@ -218,7 +218,7 @@ func (m *Monitor) HasPendingIdleReclaimForTesting() bool {
 	return m.idleReclaimTimer != nil && !m.idleReclaimStopped
 }
 
-// Intention strings recorded by BumpPauseResumeIntention and checked by
+// Intention strings recorded by BeginPauseResumeRequest and checked by
 // shouldDiscardStalePause. Shared across packages to avoid stringly-typed drift.
 const (
 	PauseResumeIntentionPause  = "pause"
@@ -488,22 +488,6 @@ func (m *Monitor) readSurgeLiveStatus(gid string) rpc.SurgeLiveStatus {
 	return live
 }
 
-// BumpPauseResumeIntention is a legacy compat record (no ticket). Its fact
-// shield is bounded like a real request so a forgotten bump cannot pin a row.
-func (m *Monitor) BumpPauseResumeIntention(gid string, action string) {
-	if m == nil || gid == "" {
-		return
-	}
-	m.tracker.RunUnderLifecycle(gid, func() {
-		m.pauseResumeVersionMu.Lock()
-		defer m.pauseResumeVersionMu.Unlock()
-		if m.pauseResumeIntentions == nil {
-			m.pauseResumeIntentions = make(map[string]pauseResumeIntention)
-		}
-		m.pauseResumeIntentions[gid] = pauseResumeIntention{action: action, protectedUntil: time.Now().Add(TaskGracePeriod)}
-	})
-}
-
 // pauseResumeProtectedLocked returns the recorded intention while its fact
 // shield is still inside its deadline. An expired or deadline-less record no
 // longer shields; the ticket validity check stays seq-based elsewhere.
@@ -537,58 +521,6 @@ func (m *Monitor) shouldDiscardStalePause(gid string) bool {
 	return m.pauseResumeProtectedAction(gid) == PauseResumeIntentionResume
 }
 
-// ClearPauseResumeIntention drops a stale intention after a failed user resume
-// so later pause events are not misclassified against a dead resume bump.
-func (m *Monitor) ClearPauseResumeIntention(gid string) {
-	if m == nil || gid == "" {
-		return
-	}
-	m.tracker.RunUnderLifecycle(gid, func() {
-		m.pauseResumeVersionMu.Lock()
-		defer m.pauseResumeVersionMu.Unlock()
-		delete(m.pauseResumeIntentions, gid)
-	})
-}
-
-// RetireHistoryIfResumedFromStopped removes durable history when a GID leaves
-// stopped for a live list (active/waiting). Safe no-op when from != "stopped".
-// Re-homes download_group into the durable group store before removal so resume
-// does not wipe live group ownership via history cleanup hooks. Tracker reopen
-// (generation bump + clear terminal marker) and history.Remove run under the
-// same per-GID lifecycle lock as terminal acceptance.
-func RetireHistoryIfResumedFromStopped(gid, from string) {
-	if from != "stopped" || gid == "" {
-		return
-	}
-	var tracker *TaskTracker
-	if mon := State.GetMonitor(); mon != nil {
-		tracker = mon.tracker
-	}
-	retireHistoryAndReopen(tracker, gid)
-}
-
-// RetireHistoryIfResumedFromStopped is the Monitor method form of the package helper.
-func (m *Monitor) RetireHistoryIfResumedFromStopped(gid, from string) {
-	if from != "stopped" || gid == "" {
-		return
-	}
-	var tracker *TaskTracker
-	if m != nil {
-		tracker = m.tracker
-	}
-	if tracker == nil {
-		if mon := State.GetMonitor(); mon != nil {
-			tracker = mon.tracker
-		}
-	}
-	retireHistoryAndReopen(tracker, gid)
-}
-
-// retireHistoryAndReopenLocked retains the legacy active reopening target.
-func retireHistoryAndReopenLocked(tracker *TaskTracker, gid string) {
-	retireHistoryAndReopenToStatusLocked(tracker, gid, "active")
-}
-
 // Caller holds the GID gate and has accepted a real stopped→live transition.
 // This helper supplies neither authorization nor duplicate-ack detection.
 func retireHistoryAndReopenToStatusLocked(tracker *TaskTracker, gid, targetStatus string) {
@@ -606,26 +538,6 @@ func retireHistoryAndReopenToStatusLocked(tracker *TaskTracker, gid, targetStatu
 		Cache.SetTaskGroup(gid, *entry.DownloadGroup)
 	}
 	history.RemoveKeepingGroupStore(gid)
-}
-
-func retireHistoryAndReopen(tracker *TaskTracker, gid string) {
-	body := func() {
-		task, list, ok := Cache.GetTask(gid)
-		if !ok || (list != "active" && list != "waiting") {
-			return
-		}
-		if tracker != nil && !tracker.TerminalAcceptedInCurrentGeneration(gid) {
-			if _, exists := history.Get(gid); !exists {
-				return
-			}
-		}
-		retireHistoryAndReopenToStatusLocked(tracker, gid, task.Status)
-	}
-	if tracker != nil {
-		tracker.RunUnderLifecycle(gid, body)
-		return
-	}
-	body()
 }
 
 // markCompleteAndHandleLocked accepts terminal under the GID gate and returns
@@ -675,50 +587,12 @@ func (m *Monitor) markCompleteAndHandle(gid, status string, prep func(*TrackedTa
 	m.finishTerminalCopy(m.markCompleteAndHandleLocked(gid, status, prep))
 }
 
-// moveToActiveAndRetireIfStopped serializes SetStatus + MoveTaskToActive with
-// stopped→live retirement under one lifecycle gate so a concurrent terminal
-// cannot observe "cache already live" while the old terminal marker remains.
-func (m *Monitor) moveToActiveAndRetireIfStopped(gid, status string) (from string) {
-	if m == nil || gid == "" {
-		return ""
-	}
-	if status == "" {
-		status = "active"
-	}
-	body := func() {
-		if m.tracker != nil {
-			m.tracker.SetStatusFromEvent(gid, status)
-		}
-		from = Cache.MoveTaskToActive(gid, "active")
-		if from == "" || from == "active" {
-			return
-		}
-		if m.tracker != nil && m.tracker.afterMoveBeforeRetire != nil {
-			m.tracker.afterMoveBeforeRetire(gid)
-		}
-		if from == "stopped" {
-			retireHistoryAndReopenLocked(m.tracker, gid)
-		}
-	}
-	if m.tracker != nil {
-		m.tracker.RunUnderLifecycle(gid, body)
-	} else {
-		body()
-	}
-	return from
-}
-
-// moveToStoppedAndHandle serializes cache stopped membership with terminal
-// acceptance and history.Add under one lifecycle gate. With no tracker there
-// is no gate to take; the Locked body still runs so the snapshot dies with
-// the generation either way.
-func (m *Monitor) moveToStoppedAndHandle(gid, status, errorCode, errorMessage string, ensureTotal int64, prep func(*TrackedTask)) {
-	m.moveToStoppedAndHandleGate(gid, status, errorCode, errorMessage, ensureTotal, nil, prep)
-}
-
-// moveToStoppedAndHandleGate is moveToStoppedAndHandle plus gateFn, extra
+// moveToStoppedAndHandleGate serializes cache stopped membership with terminal
+// acceptance and history.Add under one lifecycle gate. gateFn runs extra
 // in-gate bookkeeping (e.g. the terminal master-mirror merge) that must run
-// inside the acceptance section even for already-accepted repeats.
+// inside the acceptance section even for already-accepted repeats. With no
+// tracker there is no gate to take; the Locked body still runs so the chunk
+// snapshot dies with the generation either way.
 func (m *Monitor) moveToStoppedAndHandleGate(gid, status, errorCode, errorMessage string, ensureTotal int64, gateFn func(), prep func(*TrackedTask)) {
 	if m == nil || gid == "" {
 		return
@@ -755,47 +629,6 @@ func (m *Monitor) moveToStoppedAndHandleGate(gid, status, errorCode, errorMessag
 	}
 	body()
 	m.finishTerminalCopy(accepted)
-}
-
-// MoveTaskToWaitingFromLive is the group-IPC post-RPC pause move: under the
-// per-GID lifecycle gate, refuse a current-generation terminal marker and an
-// atomic stopped source. Does not retire history (group IPC has no legitimate
-// stopped→live transition).
-func MoveTaskToWaitingFromLive(gid, status string) string {
-	return moveFromLiveUnderLifecycle(gid, status, false)
-}
-
-// MoveTaskToActiveFromLive is the group-IPC post-RPC resume move: same gate and
-// refuse-stopped semantics as MoveTaskToWaitingFromLive. Does not retire history.
-func MoveTaskToActiveFromLive(gid, status string) string {
-	return moveFromLiveUnderLifecycle(gid, status, true)
-}
-
-func moveFromLiveUnderLifecycle(gid, status string, toActive bool) string {
-	if gid == "" {
-		return ""
-	}
-	var tracker *TaskTracker
-	if mon := State.GetMonitor(); mon != nil {
-		tracker = mon.tracker
-	}
-	var from string
-	body := func() {
-		if tracker != nil && tracker.TerminalAcceptedInCurrentGeneration(gid) {
-			return
-		}
-		if toActive {
-			from = Cache.MoveTaskToActiveFromLive(gid, status)
-		} else {
-			from = Cache.MoveTaskToWaitingFromLive(gid, status)
-		}
-	}
-	if tracker != nil {
-		tracker.RunUnderLifecycle(gid, body)
-	} else {
-		body()
-	}
-	return from
 }
 
 // RecoveryComplete reports whether at least one available engine has completed
@@ -929,17 +762,6 @@ func (m *Monitor) runLoop() {
 			ticker.Reset(m.currentTickInterval())
 		}
 	}
-}
-
-// handleTaskComplete 处理任务完成：恢复信息 + 速度统计 + 历史写入，全部在
-// 调用方当前上下文中执行（在 GID gate 内被调用时，兜底 RPC 随之在 gate 内）。
-func (m *Monitor) handleTaskComplete(task *TrackedTask) {
-	if task == nil {
-		return
-	}
-	m.recoverTerminalInfo(task)
-	m.recordTerminalSpeedStats(task)
-	m.writeTerminalHistoryLocked(task)
 }
 
 // finishTerminalCopy performs the post-gate finish for a copy accepted under
@@ -1248,27 +1070,6 @@ func (m *Monitor) InvalidateTask(gid string) {
 	m.KickAdmission()
 
 	log.Printf("[Monitor] Task invalidated: %s", gid)
-}
-
-// EmitTaskMoveForGroupOp emits a task:move event for a group pause/resume
-// operation on a Surge GID. Called by downloadgroups.pauseResumeDownloadGroup
-// after Cache.MoveTaskTo* so the frontend list migration synchronizes with
-// Cache immediately, without waiting for the Surge event path's EmitTaskMove
-// (which is an idempotent no-op if the task has already moved).
-func (m *Monitor) EmitTaskMoveForGroupOp(gid, from, to string) {
-	if m == nil || m.hub == nil || gid == "" {
-		return
-	}
-	task := findTaskInCache(gid)
-	if task == nil {
-		return
-	}
-	m.hub.EmitTaskMove(events.TaskMove{
-		GID:  gid,
-		From: from,
-		To:   to,
-		Task: *task,
-	})
 }
 
 // collectTelemetry gathers per-worker telemetry from the Surge engine for active Surge tasks.

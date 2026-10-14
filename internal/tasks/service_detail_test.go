@@ -159,7 +159,7 @@ func TestTaskDetail_HistoryOnlyRow(t *testing.T) {
 func TestTaskDetail_FastCompleteTrackerOnlyIsSparseFound(t *testing.T) {
 	f := setupTaskDetailTest(t)
 	gid := "ar_fast"
-	// No cache row, no history (handleTaskComplete skipped for missing path).
+	// No cache row, no history (terminal finish skipped for missing path).
 	f.tracker.MarkAdded(gid)
 
 	d := detailFor(t, f.svc, gid)

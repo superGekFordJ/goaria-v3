@@ -46,7 +46,7 @@ func TestEnsureScopeDomain_FallbackFromLANURL(t *testing.T) {
 		SourceURL:       "http://192.168.1.1/file.zip",
 	}
 
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 
 	if task.Domain != "192.168.1.1" {
 		t.Errorf("Domain = %q, want 192.168.1.1", task.Domain)
@@ -83,7 +83,7 @@ func TestEnsureScopeDomain_FallbackFromWANURL(t *testing.T) {
 		SourceURL:       "http://example.com/file.zip",
 	}
 
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 
 	if task.Domain != "example.com" {
 		t.Errorf("Domain = %q, want example.com", task.Domain)
@@ -115,7 +115,7 @@ func TestEnsureScopeDomain_SkipWhenNoURL(t *testing.T) {
 		SourceURL:   "",
 	}
 
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 
 	if task.Domain != "" {
 		t.Errorf("Domain = %q, want empty (no fallback)", task.Domain)
@@ -148,7 +148,7 @@ func TestEnsureScopeDomain_NoopWhenDomainSet(t *testing.T) {
 		SourceURL:       "http://other.com/file.zip",
 	}
 
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 
 	if task.Domain != "existing.com" {
 		t.Errorf("Domain = %q, want existing.com (fallback should not trigger)", task.Domain)
@@ -181,7 +181,7 @@ func TestHandleTaskComplete_SkipsRecordWhenDomainEmpty(t *testing.T) {
 		SourceURL:   "",
 	}
 
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 
 	records := speedstats.GetAllRecords()
 	if len(records) != 0 {
@@ -206,7 +206,7 @@ func TestHandleTaskComplete_FallbackClassifiesAndRecords(t *testing.T) {
 		SourceURL:       "http://example.com/file.zip",
 	}
 
-	m.handleTaskComplete(task)
+	m.finishTerminalCopy(task)
 
 	records := speedstats.GetAllRecords()
 	if len(records) != 1 {
