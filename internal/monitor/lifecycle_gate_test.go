@@ -169,7 +169,7 @@ func TestLifecycle_ExplicitWaitingHistoryTarget(t *testing.T) {
 	}
 
 	m := &Monitor{tracker: tracker}
-	m.moveToStoppedAndHandleGate(gid, "error", "1", "new error", 1000, nil, nil)
+	m.moveToStoppedAndHandleGate(gid, "error", "1", "new error", 1000, nil, nil, nil)
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	tracker.retireBetweenReopenAndRemove = func(string) { close(entered); <-release }
 	go func() {
@@ -581,7 +581,7 @@ func TestLifecycle_CacheMoveRetire_SerializesWithTerminal(t *testing.T) {
 	terminalScheduled := make(chan struct{})
 	wg.Go(func() {
 		close(terminalScheduled)
-		m.moveToStoppedAndHandleGate(gid, "complete", "", "", 1000, nil, nil)
+		m.moveToStoppedAndHandleGate(gid, "complete", "", "", 1000, nil, nil, nil)
 	})
 	<-terminalScheduled
 	for range 64 {
@@ -620,7 +620,7 @@ func TestLifecycle_TerminalThenResumeThenTerminal_SingleHistory(t *testing.T) {
 
 	// Opposite order: terminal attempted while still on old generation (no-op),
 	// then resume retires H0, then a real new-generation terminal writes H1.
-	m.moveToStoppedAndHandleGate(gid, "complete", "", "", 1000, nil, nil)
+	m.moveToStoppedAndHandleGate(gid, "complete", "", "", 1000, nil, nil, nil)
 	if entries := historyEntriesForGID(gid); len(entries) != 1 || entries[0].Status != "error" {
 		t.Fatalf("old-generation terminal must remain H0 error, got %#v", entries)
 	}
@@ -630,7 +630,7 @@ func TestLifecycle_TerminalThenResumeThenTerminal_SingleHistory(t *testing.T) {
 		t.Fatal("expected H0 retired after resume")
 	}
 
-	m.moveToStoppedAndHandleGate(gid, "complete", "", "", 1000, nil, nil)
+	m.moveToStoppedAndHandleGate(gid, "complete", "", "", 1000, nil, nil, nil)
 	entries := historyEntriesForGID(gid)
 	if len(entries) != 1 || entries[0].Status != "complete" {
 		t.Fatalf("want single H1 complete after resume+terminal, got %#v", entries)

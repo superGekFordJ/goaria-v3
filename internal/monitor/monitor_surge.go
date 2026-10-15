@@ -211,6 +211,11 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 				surgeEng.RemoveMasterCacheEntry(ev.DownloadID)
 			}
 			m.removeLocalTaskLocked(gid)
+			// Queue inside the removal's own gate so the remove delta's
+			// enqueue order matches the commit order for this GID.
+			if State.HasWindow() && m.pusher != nil {
+				m.pusher.Queue(events.TaskDelta{Type: "remove", GID: gid})
+			}
 		})
 	default:
 		return
@@ -232,7 +237,12 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		}
 		// Accepted terminal transaction under the GID gate: narrow master
 		// mirror merge (identity/range/rate preserved) + cache move +
-		// terminal field commit + acceptance, then post-gate finish.
+		// terminal field commit + acceptance + delta publish, then post-gate
+		// finish. The delta queues inside the same gate section so its enqueue
+		// order matches the commit order against any concurrent same-GID
+		// commit (e.g. an immediate ApplyResume) — queueing after the blocking
+		// finish would let a newer commit's delta land first and then be
+		// displaced by this stale one.
 		m.moveToStoppedAndHandleGate(gid, deltaType, errCode, errMsg, completeTotal, func() {
 			mergeSurgeTerminalMaster(surgeEng, ev, deltaType, completeTotal, completeAvgSpeed, errorMessage)
 		}, func(completed *TrackedTask) {
@@ -246,11 +256,13 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 				// Speedstats only: history must not persist this as a peak.
 				completed.peakFromAvgFallback = true
 			}
-		})
-		if State.HasWindow() && m.pusher != nil {
+		}, func(committedTotal int64) {
+			if !State.HasWindow() || m.pusher == nil {
+				return
+			}
 			switch {
-			case deltaType == "complete" && completeTotal > 0:
-				totalStr := strconv.FormatInt(completeTotal, 10)
+			case deltaType == "complete" && committedTotal > 0:
+				totalStr := strconv.FormatInt(committedTotal, 10)
 				m.pusher.Queue(events.TaskDelta{
 					Type: deltaType, GID: gid,
 					Payload: map[string]string{
@@ -270,20 +282,18 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			default:
 				m.pusher.Queue(events.TaskDelta{Type: deltaType, GID: gid})
 			}
-		}
+		})
 
 	case "remove":
 		// Group delete operations on sg_ GIDs go through RemoveDownloadGroup
 		// -> BatchRemove -> cleanupRemovedTask -> InvalidateTask, which
 		// already removed the task from Cache, tracker, and per-GID caches
-		// (telemetry, chunk snapshots) and emitted a remove delta. The
-		// cleanup and pusher.Queue below are idempotent no-ops for those GIDs.
+		// (telemetry, chunk snapshots) and emitted a remove delta. The gate
+		// removal and its in-gate remove delta above are idempotent no-ops
+		// for those GIDs.
 
 		if m.convergence != nil {
 			m.convergence.RemoveTask(gid)
-		}
-		if State.HasWindow() && m.pusher != nil {
-			m.pusher.Queue(events.TaskDelta{Type: "remove", GID: gid})
 		}
 
 	}
@@ -715,6 +725,11 @@ func (m *Monitor) reconcileSurgeCache() {
 			}
 			m.removeLocalTaskLocked(gid)
 			removed = true
+			// Same commit-order rule as the event path: the remove delta
+			// queues inside this GID's gate, not after it.
+			if cacheList != "" && State.HasWindow() && m.pusher != nil {
+				m.pusher.Queue(events.TaskDelta{Type: "remove", GID: gid})
+			}
 		})
 		if !removed {
 			continue
@@ -723,9 +738,6 @@ func (m *Monitor) reconcileSurgeCache() {
 		m.KickAdmission()
 		if m.convergence != nil {
 			m.convergence.RemoveTask(gid)
-		}
-		if cacheList != "" && State.HasWindow() && m.pusher != nil {
-			m.pusher.Queue(events.TaskDelta{Type: "remove", GID: gid})
 		}
 		if cacheList != "" {
 			log.Printf("[Monitor] Surge poll: removed stale task %s (was in %s)", gid, cacheList)

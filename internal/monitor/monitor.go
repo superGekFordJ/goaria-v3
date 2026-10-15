@@ -526,10 +526,14 @@ func (m *Monitor) markCompleteAndHandle(gid, status string, prep func(*TrackedTa
 // moveToStoppedAndHandleGate serializes cache stopped membership with terminal
 // acceptance and history.Add under one lifecycle gate. gateFn runs extra
 // in-gate bookkeeping (e.g. the terminal master-mirror merge) that must run
-// inside the acceptance section even for already-accepted repeats. With no
-// tracker there is no gate to take; the Locked body still runs so the chunk
-// snapshot dies with the generation either way.
-func (m *Monitor) moveToStoppedAndHandleGate(gid, status, errorCode, errorMessage string, ensureTotal int64, gateFn func(), prep func(*TrackedTask)) {
+// inside the acceptance section even for already-accepted repeats. publish
+// also runs inside the same gate section — after acceptance, handed the
+// committed canonical total — so per-GID delta emits serialize in commit
+// order and the pusher's arrival-order dedup cannot be inverted by post-gate
+// work (finishTerminalCopy blocks on recovery RPCs). With no tracker there is
+// no gate to take; the Locked body still runs so the chunk snapshot dies with
+// the generation either way.
+func (m *Monitor) moveToStoppedAndHandleGate(gid, status, errorCode, errorMessage string, ensureTotal int64, gateFn func(), prep func(*TrackedTask), publish func(committedTotal int64)) {
 	if m == nil || gid == "" {
 		return
 	}
@@ -557,6 +561,9 @@ func (m *Monitor) moveToStoppedAndHandleGate(gid, status, errorCode, errorMessag
 			}
 		}
 		accepted = m.markCompleteAndHandleLocked(gid, status, prep)
+		if publish != nil {
+			publish(total)
+		}
 	}
 	if m.tracker != nil {
 		m.tracker.RunUnderLifecycle(gid, body)
@@ -992,12 +999,15 @@ func (m *Monitor) InvalidateTask(gid string) {
 		if m.chunkSnapshots != nil {
 			m.chunkSnapshots.Remove(gid)
 		}
+		// Emit inside the gate so the remove emit serializes with concurrent
+		// same-GID commits in commit order. m.mu is already released above;
+		// delta listeners only take m.mu / push a bounded channel.
+		if m.hub != nil {
+			m.hub.EmitTaskDelta(events.TaskDelta{Type: "remove", GID: gid})
+		}
 	})
 	if m.convergence != nil {
 		m.convergence.RemoveTask(gid)
-	}
-	if m.hub != nil {
-		m.hub.EmitTaskDelta(events.TaskDelta{Type: "remove", GID: gid})
 	}
 
 	// Removal frees or voids admission opportunities; notify outside the

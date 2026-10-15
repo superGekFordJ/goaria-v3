@@ -317,7 +317,7 @@ func TestMoveToStoppedAndHandle_NilTrackerStillClearsSnapshot(t *testing.T) {
 	m := &Monitor{chunkSnapshots: NewChunkSnapshotCache()}
 	m.chunkSnapshots.Set("sg_ghost", []byte{0x55}, 4, 512, nil)
 
-	m.moveToStoppedAndHandleGate("sg_ghost", "complete", "", "", 0, nil, nil)
+	m.moveToStoppedAndHandleGate("sg_ghost", "complete", "", "", 0, nil, nil, nil)
 	if _, ok := m.chunkSnapshots.Get("sg_ghost"); ok {
 		t.Fatal("stopped move must clear snapshot even with nil tracker")
 	}
