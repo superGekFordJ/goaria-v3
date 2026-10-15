@@ -740,18 +740,21 @@ func TestEventDriven_CompletePersistenceRace(t *testing.T) {
 
 // TestEventDriven_RapidPauseResume verifies that rapid pause-resume-pause-resume
 // sequences correctly move the task between active and waiting in the cache
-// without losing the task or duplicating it.
+// without losing the task or duplicating it. The live pool read is flipped
+// before each event so every step exercises the known-live arbitration path.
 func TestEventDriven_RapidPauseResume(t *testing.T) {
 	hub := events.NewHub(nil)
 	pusher := NewPusher(hub)
 	tracker := NewTaskTracker()
 	se := &mockSafeEngine{}
 	hybrid := rpc.NewHybridEngine(nil, se)
+	reader := &mockSurgeListReader{}
 	m := &Monitor{
-		hub:     hub,
-		pusher:  pusher,
-		tracker: tracker,
-		engine:  hybrid,
+		hub:             hub,
+		pusher:          pusher,
+		tracker:         tracker,
+		engine:          hybrid,
+		surgePollReader: reader,
 	}
 
 	prevWindow := State.HasWindow()
@@ -769,9 +772,14 @@ func TestEventDriven_RapidPauseResume(t *testing.T) {
 		Status: "active",
 	}, "active")
 
+	paused := rpc.SurgeLiveStatus{Known: true, Status: "paused"}
+	queued := rpc.SurgeLiveStatus{Known: true, Status: "queued"}
+	downloading := rpc.SurgeLiveStatus{Known: true, Status: "downloading"}
+
 	// Rapid pause-resume-pause-resume cycle
 	for i := range 10 {
-		// Pause
+		// Pause (pool already paused)
+		reader.setLiveStatus("rapid-1", paused)
 		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventPaused, DownloadID: "rapid-1"})
 
 		// Verify in waiting
@@ -796,11 +804,14 @@ func TestEventDriven_RapidPauseResume(t *testing.T) {
 			t.Fatalf("iteration %d: expected sg_rapid-1 NOT in active after pause", i)
 		}
 
-		// Resume
+		// Resume acknowledgement lands waiting while the pool reports queued;
+		// the real start arrives once the pool is downloading.
+		reader.setLiveStatus("rapid-1", queued)
 		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventResumed, DownloadID: "rapid-1"})
 		if task, list, _ := Cache.GetTask("sg_rapid-1"); list != "waiting" || task.Status != "waiting" {
 			t.Fatal("ack activated")
 		}
+		reader.setLiveStatus("rapid-1", downloading)
 		m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventStarted, DownloadID: "rapid-1"})
 
 		// Verify in active

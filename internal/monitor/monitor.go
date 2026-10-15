@@ -228,7 +228,6 @@ func (m *Monitor) ApplyPause(gid string) {
 	if m == nil || m.tracker == nil || strings.TrimSpace(gid) == "" {
 		return
 	}
-	var change acceptedTaskChange
 	m.tracker.RunUnderLifecycle(gid, func() {
 		if live := m.readSurgeLiveStatus(gid); live.Known && live.Status != "paused" {
 			return
@@ -249,9 +248,8 @@ func (m *Monitor) ApplyPause(gid string) {
 			m.tracker.UpdateProgressFromEvent(gid, parseInt64(task.TotalLength), completed)
 		}
 		task, _, _ = Cache.GetTask(gid)
-		change = acceptedTaskChange{task: task, from: from, to: "waiting", kind: "pause"}
+		m.publishAcceptedTaskChange(acceptedTaskChange{task: task, from: from, to: "waiting", kind: "pause"})
 	})
-	m.publishAcceptedTaskChange(change)
 }
 
 // ApplyResume folds a successful engine resume acknowledgement into local
@@ -267,7 +265,6 @@ func (m *Monitor) ApplyResume(gid string) {
 	if m == nil || m.tracker == nil || strings.TrimSpace(gid) == "" {
 		return
 	}
-	var change acceptedTaskChange
 	m.tracker.RunUnderLifecycle(gid, func() {
 		target := "waiting"
 		live := m.readSurgeLiveStatus(gid)
@@ -342,11 +339,14 @@ func (m *Monitor) ApplyResume(gid string) {
 		if target == "active" {
 			to = "active"
 		}
-		change = acceptedTaskChange{task: task, from: from, to: to, kind: "resume"}
+		m.publishAcceptedTaskChange(acceptedTaskChange{task: task, from: from, to: to, kind: "resume"})
 	})
-	m.publishAcceptedTaskChange(change)
 }
 
+// publishAcceptedTaskChange emits an accepted change. Callers run it inside
+// the per-GID lifecycle gate so move/delta publishes serialize in commit
+// order; everything below is non-blocking or a leaf lock, and hub listeners
+// must not re-enter RunUnderLifecycle for the same GID.
 func (m *Monitor) publishAcceptedTaskChange(change acceptedTaskChange) {
 	if m == nil || change.task.GID == "" {
 		return
@@ -391,8 +391,9 @@ func (m *Monitor) SetAdmissionKick(fn func()) {
 }
 
 // KickAdmission reports an authoritative fact that may have freed or created
-// a dispatch opportunity. Always invoked outside tracker/cache/monitor locks;
-// nil-safe and idempotent — the callback itself merges redundant edges.
+// a dispatch opportunity. The callback is a capacity-1 non-blocking wake, so
+// it is safe to invoke under any lock including the GID gate; nil-safe and
+// idempotent — the callback itself merges redundant edges.
 func (m *Monitor) KickAdmission() {
 	if m == nil {
 		return

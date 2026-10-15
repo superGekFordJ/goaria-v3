@@ -307,14 +307,10 @@ func TestHandleSurgeEvent_PauseResumePauseSequence(t *testing.T) {
 	fire(surgeEvents.EventPaused, rpc.SurgeLiveStatus{}, "paused")
 	fire(surgeEvents.EventQueued, queued, "waiting")
 	fire(surgeEvents.EventPaused, paused, "paused")
-	fire(surgeEvents.EventResumed, queued, "waiting")
-	// Late pause after the resume acknowledgement: pool says queued → refuse.
-	fire(surgeEvents.EventPaused, queued, "waiting")
-
-	if got, list, _ := Cache.GetTask(gid); list != "waiting" || got.Status != "waiting" {
-		t.Fatalf("late pause disturbed the resumed row: %#v %s", got, list)
-	}
-	var pauseDelta bool
+	// The debounced batch folds to the newest committed fact per GID, so
+	// drain now: the accepted pause must have queued its own delta before
+	// the following resume replaces it.
+	pauseDelta := false
 	for _, d := range pusher.pendingSnapshot() {
 		if d.GID == gid && d.Type == "pause" {
 			pauseDelta = true
@@ -322,6 +318,13 @@ func TestHandleSurgeEvent_PauseResumePauseSequence(t *testing.T) {
 	}
 	if !pauseDelta {
 		t.Fatal("accepted pauses emitted no delta")
+	}
+	fire(surgeEvents.EventResumed, queued, "waiting")
+	// Late pause after the resume acknowledgement: pool says queued → refuse.
+	fire(surgeEvents.EventPaused, queued, "waiting")
+
+	if got, list, _ := Cache.GetTask(gid); list != "waiting" || got.Status != "waiting" {
+		t.Fatalf("late pause disturbed the resumed row: %#v %s", got, list)
 	}
 }
 

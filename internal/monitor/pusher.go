@@ -53,10 +53,9 @@ func (p *Pusher) Queue(delta events.TaskDelta) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// 去重：相同 GID 的新事件覆盖旧事件
+	// 去重：相同 GID 的新事件覆盖旧事件（Queue 在 p.mu 下串行，到达序即提交序）
 	if idx, exists := p.dedupMap[delta.GID]; exists {
-		// 保留更高优先级的事件
-		if p.shouldReplace(p.pending[idx].Type, delta.Type) {
+		if shouldReplace(p.pending[idx].Type, delta.Type) {
 			p.pending[idx] = delta
 		}
 	} else {
@@ -70,19 +69,11 @@ func (p *Pusher) Queue(delta events.TaskDelta) {
 	}
 }
 
-// shouldReplace 判断新事件是否应替换旧事件
-func (p *Pusher) shouldReplace(old, new string) bool {
-	// 优先级：complete > error > pause > resume > add > progress
-	priority := map[string]int{
-		"progress": 0,
-		"add":      1,
-		"resume":   2,
-		"pause":    3,
-		"error":    4,
-		"complete": 5,
-		"remove":   6,
-	}
-	return priority[new] >= priority[old]
+// shouldReplace 判断新事件是否应替换 pending 中的旧事件。
+// 入队串行 ⇒ 后到的事件总是更新的事实：lifecycle 事件恒置换 pending；
+// progress 只折叠同类，永不覆盖 lifecycle（保留折叠语义）。
+func shouldReplace(old, new string) bool {
+	return new != string(DeltaProgress) || old == string(DeltaProgress)
 }
 
 // flush 批量推送

@@ -367,7 +367,6 @@ func mergeSurgeTerminalMaster(surgeEng *rpc.SurgeEngine, ev types.DownloadEvent,
 // non-terminal rows fold normally while active/terminal rows hold.
 func (m *Monitor) handleSurgeLifecycleEvent(ev types.DownloadEvent) {
 	gid := "sg_" + ev.DownloadID
-	var change acceptedTaskChange
 	m.tracker.RunUnderLifecycle(gid, func() {
 		task, source, exists := Cache.GetTask(gid)
 		entry, historied := history.Get(gid)
@@ -452,7 +451,7 @@ func (m *Monitor) handleSurgeLifecycleEvent(ev types.DownloadEvent) {
 			}
 		}
 		task, _, _ = Cache.GetTask(gid)
-		change = acceptedTaskChange{task: task, from: source, to: to, kind: kind}
+		change := acceptedTaskChange{task: task, from: source, to: to, kind: kind}
 		if status == "active" && m.tracker != nil {
 			completed, known := live.CompletedLength, live.CompletedKnown
 			if ev.State != nil {
@@ -501,11 +500,13 @@ func (m *Monitor) handleSurgeLifecycleEvent(ev types.DownloadEvent) {
 			m.surgeEng.UpsertMasterCacheEntry(master)
 			m.surgeEng.InvalidateListCache()
 		}
+		// Publish inside the gate so the emit order of concurrent commits
+		// for this GID matches the commit order.
+		if change.task.GID != "" {
+			Cache.PrefetchMetadata(gid)
+			m.publishAcceptedTaskChange(change)
+		}
 	})
-	if change.task.GID != "" {
-		Cache.PrefetchMetadata(gid)
-		m.publishAcceptedTaskChange(change)
-	}
 }
 
 var (
@@ -749,9 +750,7 @@ func (m *Monitor) reconcileSurgeCache() {
 	}
 
 	for gid, engineTask := range engineAll {
-		var change acceptedTaskChange
 		var accepted *TrackedTask
-		prefetch := false
 		terminalCommitted := false
 		m.tracker.RunUnderLifecycle(gid, func() {
 			task, source, exists := Cache.GetTask(gid)
@@ -876,7 +875,8 @@ func (m *Monitor) reconcileSurgeCache() {
 					}
 				}
 			}
-			prefetch = !exists
+			prefetch := !exists
+			var change acceptedTaskChange
 			if !exists || source != list || task.Status != status {
 				kind := "resume"
 				if !exists {
@@ -891,14 +891,16 @@ func (m *Monitor) reconcileSurgeCache() {
 				task, _, _ = Cache.GetTask(gid)
 				change = acceptedTaskChange{task: task, from: source, to: list, kind: kind}
 			}
+			// Prefetch + publish inside the gate so per-GID emits serialize
+			// in commit order.
+			if prefetch {
+				Cache.PrefetchMetadata(gid)
+			}
+			m.publishAcceptedTaskChange(change)
 		})
 		if accepted != nil {
 			m.finishTerminalCopy(accepted)
 		}
-		if prefetch {
-			Cache.PrefetchMetadata(gid)
-		}
-		m.publishAcceptedTaskChange(change)
 		if terminalCommitted {
 			// A durable terminal seed committed inside the gate without an
 			// emitted change; still an admission-relevant fact.

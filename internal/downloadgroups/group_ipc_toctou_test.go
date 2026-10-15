@@ -4,6 +4,7 @@ import (
 	"errors"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"goaria-v3/internal/events"
@@ -145,7 +146,6 @@ func TestPauseDownloadGroup_TerminalDuringRPC_DoesNotRevive(t *testing.T) {
 
 func TestResumeDownloadGroup_TerminalDuringRPC_DoesNotRevive(t *testing.T) {
 	setupDownloadGroupsTest(t)
-	hub := events.NewHub(nil)
 	// The mid-RPC terminal is only refused when the live pool read agrees:
 	// wire a real scheduler/engine so the error lands as known live state.
 	prog := progress.New("resume_toctou", 0)
@@ -154,13 +154,16 @@ func TestResumeDownloadGroup_TerminalDuringRPC_DoesNotRevive(t *testing.T) {
 	})
 	se := rpc.NewSurgeEngineForTesting(pool)
 	t.Cleanup(se.Close)
-	monitor.State.SetMonitor(monitor.NewMonitorWithSurgeEngineForTest(se))
+	mon := monitor.NewMonitorWithSurgeEngineForTest(se)
+	monitor.State.SetMonitor(mon)
 	t.Cleanup(func() { monitor.State.SetMonitor(nil) })
 
-	var moveEvents []events.TaskMove
-	hub.SubscribeTaskMove(func(move events.TaskMove) {
-		moveEvents = append(moveEvents, move)
-	})
+	// The test monitor owns an internal hub, so a refused transition is
+	// observed through the admission kick instead: publishAcceptedTaskChange
+	// kicks only for accepted changes, making zero kicks proof that nothing
+	// (no task:move, no delta) was published.
+	var kicks atomic.Int32
+	mon.SetAdmissionKick(func() { kicks.Add(1) })
 
 	group := groupReadTestGroup("dg-resume-toctou", 2)
 	const gid = "sg_resume_toctou"
@@ -233,9 +236,7 @@ func TestResumeDownloadGroup_TerminalDuringRPC_DoesNotRevive(t *testing.T) {
 	if !ok || entry.Status != "error" {
 		t.Fatalf("expected H1 error history retained, got ok=%v entry=%#v", ok, entry)
 	}
-	for _, mv := range moveEvents {
-		if mv.GID == gid {
-			t.Fatalf("unexpected group task:move after refused transition: %#v", mv)
-		}
+	if n := kicks.Load(); n != 0 {
+		t.Fatalf("refused resume published %d accepted changes", n)
 	}
 }
