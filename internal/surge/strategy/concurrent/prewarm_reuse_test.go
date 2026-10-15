@@ -34,9 +34,10 @@ func TestPrewarmConnections_Reuse(t *testing.T) {
 	ctx := context.Background()
 	mirrors := []string{server.URL()}
 
-	// 1. Prewarm connections
-	// This should populate the idle pool with one connection
-	downloader.prewarmConnections(ctx, client, 1, 0, mirrors)
+	// 1. Prewarm connections via the ScaleUp bounded path (the surviving
+	// prewarm mechanism after initial-download prewarming was removed).
+	// This should populate the idle pool with one connection.
+	downloader.prewarmConnectionsBounded(ctx, client, 1, mirrors, types.DialTimeout)
 
 	// 2. Perform a request and check for reuse
 	reused := false

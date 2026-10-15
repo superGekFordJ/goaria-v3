@@ -653,12 +653,6 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 	}
 	d.pfFullMirrors = fullMirrors
 
-	// Pre-warm connections if configured
-	hedgeCount := d.Runtime.GetDialHedgeCount()
-	if hedgeCount > 0 && !isResume && !d.skipRangePrewarm.Load() {
-		d.prewarmConnections(downloadCtx, client, numConns, hedgeCount, workerMirrors)
-	}
-
 	// Open existing output file with .surge suffix (must be created by processing layer)
 	outFile, err := os.OpenFile(workingPath, os.O_RDWR, 0)
 	if err != nil {
@@ -1748,12 +1742,6 @@ func (d *ConcurrentDownloader) bootstrapMetadata(ctx context.Context, client *ht
 // FORK-PATCH: ScaleUp prewarm wait budget (hard cap). Not DialTimeout.
 // Bounds Convergence tick stall; timeout degrades to today's worker dial.
 const scalePrewarmBudget = 300 * time.Millisecond
-
-// prewarmConnections fires off concurrent pings to populate the idle pool.
-// Initial Download path: wait budget is DialTimeout; total pings = numRequired+hedgeCount.
-func (d *ConcurrentDownloader) prewarmConnections(ctx context.Context, client *http.Client, numRequired, hedgeCount int, mirrors []string) {
-	_ = d.prewarmConnectionsWithBudget(ctx, client, numRequired, numRequired+hedgeCount, mirrors, types.DialTimeout)
-}
 
 // FORK-PATCH: ScaleUp bounded prewarm — count capped at 128, no DialHedge, caller-supplied budget.
 func (d *ConcurrentDownloader) prewarmConnectionsBounded(ctx context.Context, client *http.Client, count int, mirrors []string, budget time.Duration) int {

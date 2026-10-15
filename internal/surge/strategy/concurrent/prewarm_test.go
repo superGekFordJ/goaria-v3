@@ -19,7 +19,11 @@ import (
 	"goaria-v3/internal/surge/utils"
 )
 
-func TestConcurrentDownloader_PrewarmConnections(t *testing.T) {
+// Contract test: fresh Download() with a known size must not emit bytes=0-0
+// prewarm pings, even with DialHedgeCount>0 (initial-handshake prewarming was
+// removed upstream in 737941e). Other layers still legitimately send 0-0:
+// bootstrapMetadata (fileSize<=0), mirror probing, and ScaleUp bounded prewarm.
+func TestConcurrentDownloader_DoesNotPrewarmConnections(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
@@ -75,7 +79,7 @@ func TestConcurrentDownloader_PrewarmConnections(t *testing.T) {
 	state := progress.New("prewarm-test", fileSize)
 	runtime := &types.RuntimeConfig{
 		MaxConnectionsPerDownload: 2,
-		DialHedgeCount:            2, // Enable hedging
+		DialHedgeCount:            2, // Legacy setting; must not re-enable prewarming
 		MinChunkSize:              256 * utils.KiB,
 	}
 
@@ -92,8 +96,8 @@ func TestConcurrentDownloader_PrewarmConnections(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if !prewarmSeen {
-		t.Error("Expected to see pre-warm request (bytes=0-0), but none were recorded")
+	if prewarmSeen {
+		t.Error("Unexpected pre-warm request (bytes=0-0)")
 	}
 	if !downloadSeen {
 		t.Error("Expected to see download requests, but none were recorded")

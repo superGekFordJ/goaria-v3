@@ -56,9 +56,10 @@ type NetworkSettings struct {
 	SequentialDownload        *Setting
 	MinChunkSize              *Setting
 	WorkerBufferSize          *Setting
-	DialHedgeCount            *Setting
-	GlobalRateLimit           *Setting
-	DefaultDownloadRateLimit  *Setting
+	// Deprecated: retained so existing configuration files continue to load.
+	DialHedgeCount           *Setting
+	GlobalRateLimit          *Setting
+	DefaultDownloadRateLimit *Setting
 }
 
 type PerformanceSettings struct {
@@ -122,7 +123,7 @@ func DefaultSettings() *Settings {
 			SequentialDownload:        &Setting{Key: "sequential_download", Type: "bool", DefaultValue: false, Value: false},
 			MinChunkSize:              &Setting{Key: "min_chunk_size", Type: "int64", DefaultValue: int64(2 * 1024 * 1024), Value: int64(2 * 1024 * 1024)},
 			WorkerBufferSize:          &Setting{Key: "worker_buffer_size", Type: "int", DefaultValue: 512 * 1024, Value: 512 * 1024},
-			DialHedgeCount:            &Setting{Key: "dial_hedge_count", Type: "int", DefaultValue: 4, Value: 4},
+			DialHedgeCount:            &Setting{Key: "dial_hedge_count", Type: "int", DefaultValue: 4, Value: 4, Description: "Deprecated and ignored; connection prewarming is no longer performed."},
 			GlobalRateLimit:           &Setting{Key: "global_rate_limit", Type: "string", DefaultValue: "0", Value: "0"},
 			DefaultDownloadRateLimit:  &Setting{Key: "default_download_rate_limit", Type: "string", DefaultValue: "0", Value: "0"},
 		},
