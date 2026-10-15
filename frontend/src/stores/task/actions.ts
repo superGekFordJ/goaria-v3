@@ -252,6 +252,7 @@ export function setupActions(state: TaskState) {
     hasActiveTasks: boolean
     taskCompleted: boolean
   }> {
+    const membershipAtSend = liveBucketByGid()
     try {
       const res = await GetActiveTasks()
       consecutiveErrors.value = 0
@@ -302,23 +303,26 @@ export function setupActions(state: TaskState) {
         )
       }
 
-      const nextActive = activeResult.merged
-      const nextWaiting = waitingResult.merged
-      const newCount = nextActive.length + nextWaiting.length
+      const merged = {
+        active: activeResult.merged,
+        waiting: waitingResult.merged,
+        stopped: nextStopped,
+      }
+      // Rows events re-seated mid-flight keep their event-side bucket even
+      // when that bucket is one this read does not rewrite (e.g. stopped).
+      const next = preserveInflightMoves(membershipAtSend, merged)
+
+      const newCount = next.active.length + next.waiting.length
       const taskCompleted = newCount < oldCount
 
-      if (activeResult.changed || waitingResult.changed || stoppedChanged) {
-        tasks.value = {
-          active: nextActive,
-          waiting: nextWaiting,
-          stopped: nextStopped,
-        }
+      if (activeResult.changed || waitingResult.changed || stoppedChanged || next !== merged) {
+        tasks.value = next
       }
 
-      queueMissingMetadataFromLists(nextActive, nextWaiting)
+      queueMissingMetadataFromLists(next.active, next.waiting)
 
       throttledUpdateTrayIcon()
-      return { hasActiveTasks: nextActive.length > 0 || nextWaiting.length > 0, taskCompleted }
+      return { hasActiveTasks: next.active.length > 0 || next.waiting.length > 0, taskCompleted }
     } catch (err) {
       handleFetchError(err)
       return { hasActiveTasks: false, taskCompleted: false }
@@ -326,6 +330,7 @@ export function setupActions(state: TaskState) {
   }
 
   async function fetchStoppedTasks() {
+    const membershipAtSend = liveBucketByGid()
     try {
       const res = await GetStoppedTasks()
       const stopped = dedupByGid(res || [])
@@ -339,14 +344,23 @@ export function setupActions(state: TaskState) {
         t => !_activeGidSet.has(t.gid) && !_waitingGidSet.has(t.gid),
       )
 
-      const stoppedResult = mergeTasks(tasks.value.stopped, filteredStopped)
-      const nextStopped = stoppedResult.merged
+      // Active/waiting pass through untouched; the reconcile only re-homes
+      // rows events folded mid-flight (e.g. a completion landing in stopped
+      // that a pre-move stopped snapshot does not know yet).
+      const merged = {
+        active: tasks.value.active,
+        waiting: tasks.value.waiting,
+        stopped: mergeTasks(tasks.value.stopped, filteredStopped).merged,
+      }
+      const next = preserveInflightMoves(membershipAtSend, merged)
 
       const unchanged =
-        nextStopped.length === tasks.value.stopped.length &&
-        nextStopped.every((t, i) => t === tasks.value.stopped[i])
+        next.active === tasks.value.active &&
+        next.waiting === tasks.value.waiting &&
+        next.stopped.length === tasks.value.stopped.length &&
+        next.stopped.every((t, i) => t === tasks.value.stopped[i])
       if (!unchanged) {
-        tasks.value = { ...tasks.value, stopped: nextStopped }
+        tasks.value = next
       }
       lastStoppedFetchTime = Date.now()
     } catch (err) {
@@ -383,7 +397,12 @@ export function setupActions(state: TaskState) {
     if (reseat.size === 0 && dropped.size === 0) return next
 
     const moved = new Set<string>([...reseat.keys(), ...dropped])
-    const strip = (list: Task[]) => list.filter(t => !moved.has(t.gid))
+    // Untouched buckets keep their array identity so partial writers can
+    // tell a reconciled list from an unchanged one by reference.
+    const strip = (list: Task[]) => {
+      const kept = list.filter(t => !moved.has(t.gid))
+      return kept.length === list.length ? list : kept
+    }
     const nextLists: Record<TaskBucket, Task[]> = {
       active: strip(next.active),
       waiting: strip(next.waiting),
@@ -399,6 +418,13 @@ export function setupActions(state: TaskState) {
       if (row) {
         nextLists[bucket] = applyLocalOrder(currentLists[bucket], [...nextLists[bucket], row])
       }
+    }
+    if (
+      nextLists.active === next.active &&
+      nextLists.waiting === next.waiting &&
+      nextLists.stopped === next.stopped
+    ) {
+      return next
     }
     return nextLists
   }
@@ -649,6 +675,7 @@ export function setupActions(state: TaskState) {
   // --- System Actions ---
 
   async function syncFromSnapshot() {
+    const membershipAtSend = liveBucketByGid()
     try {
       const snapshot = await GetFullSnapshot()
       const { active, waiting, stopped } = partitionTaskLists(
@@ -659,11 +686,11 @@ export function setupActions(state: TaskState) {
 
       for (const t of [...active, ...waiting, ...stopped]) cacheMetadata(t)
 
-      tasks.value = {
+      tasks.value = preserveInflightMoves(membershipAtSend, {
         active: applyLocalOrder(tasks.value.active, active).map(applyMetadataFromCache),
         waiting: applyLocalOrder(tasks.value.waiting, waiting).map(applyMetadataFromCache),
         stopped: stopped.map(applyMetadataFromCache),
-      }
+      })
 
       if (!pollingEnabled.value && _restartPollingCallback) {
         _restartPollingCallback() // This is actually startPolling

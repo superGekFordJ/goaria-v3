@@ -1621,5 +1621,166 @@ describe('setupActions — integration', () => {
       expect(state.tasks.value.waiting).toHaveLength(0)
       expect(state.tasks.value.stopped).toHaveLength(0)
     })
+
+    // Same in-flight overwrite window as SNAPSHOT-TRANSPARENT, exercised on
+    // the three narrower reads: each captures membership at send and must
+    // re-home rows events folded while the read was in flight.
+    it('ACTIVE-READ-RESEAT: an in-flight active→stopped move survives a pre-move GetActiveTasks snapshot', async () => {
+      const events = wireMover(state, actions)
+      state.tasks.value = { active: [mockTask('mv_a')], waiting: [], stopped: [] }
+      const first = createControlledPromise<{ active: Task[]; waiting: Task[] }>()
+      mockGetActiveTasks.mockReturnValueOnce(asCancellable(first.promise) as never)
+
+      const pending = actions.fetchActiveTasks()
+      events.handleTaskMove({
+        gid: 'mv_a',
+        from: 'active',
+        to: 'stopped',
+        task: { gid: 'mv_a', status: 'complete', downloadSpeed: '0' },
+      })
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['mv_a'])
+      const foldedRow = state.tasks.value.stopped[0]
+
+      first.resolve({ active: [mockTask('mv_a')], waiting: [] })
+      const result = await pending
+
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['mv_a'])
+      expect(state.tasks.value.stopped[0]).toBe(foldedRow)
+      expect(result.hasActiveTasks).toBe(false)
+    })
+
+    it('ACTIVE-READ-RESEAT-OTHER-SIDE: an in-flight stopped→active move is not dropped by GetActiveTasks', async () => {
+      const events = wireMover(state, actions)
+      state.tasks.value = {
+        active: [],
+        waiting: [],
+        stopped: [mockTask('mv_s', { status: 'error', errorCode: '1' })],
+      }
+      const first = createControlledPromise<{ active: Task[]; waiting: Task[] }>()
+      mockGetActiveTasks.mockReturnValueOnce(asCancellable(first.promise) as never)
+
+      const pending = actions.fetchActiveTasks()
+      events.handleTaskMove({
+        gid: 'mv_s',
+        from: 'stopped',
+        to: 'active',
+        task: { gid: 'mv_s', status: 'active' },
+      })
+      const liveRow = state.tasks.value.active[0]
+      expect(liveRow).toBeDefined()
+
+      // The snapshot predates the move: the read does not know the GID at all.
+      first.resolve({ active: [], waiting: [] })
+      await pending
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['mv_s'])
+      expect(state.tasks.value.active[0]).toBe(liveRow)
+      expect(state.tasks.value.stopped).toHaveLength(0)
+    })
+
+    it('ACTIVE-READ-DROP: an in-flight remove is not resurrected by a pre-remove GetActiveTasks snapshot', async () => {
+      const events = wireMover(state, actions)
+      state.tasks.value = { active: [mockTask('mv_x')], waiting: [], stopped: [] }
+      const first = createControlledPromise<{ active: Task[]; waiting: Task[] }>()
+      mockGetActiveTasks.mockReturnValueOnce(asCancellable(first.promise) as never)
+
+      const pending = actions.fetchActiveTasks()
+      await events.handleTaskDelta({ type: 'remove', gid: 'mv_x' })
+      expect(state.tasks.value.active).toHaveLength(0)
+
+      first.resolve({ active: [mockTask('mv_x')], waiting: [] })
+      await pending
+
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.stopped).toHaveLength(0)
+    })
+
+    it('STOPPED-READ-RESEAT: an in-flight waiting→stopped move is not dropped by GetStoppedTasks', async () => {
+      const events = wireMover(state, actions)
+      state.tasks.value = {
+        active: [],
+        waiting: [mockTask('mv_w', { status: 'paused' })],
+        stopped: [mockTask('s_keep', { status: 'complete' })],
+      }
+      const first = createControlledPromise<Task[]>()
+      mockGetStoppedTasks.mockReturnValueOnce(asCancellable(first.promise) as never)
+
+      const pending = actions.fetchStoppedTasks()
+      events.handleTaskMove({
+        gid: 'mv_w',
+        from: 'waiting',
+        to: 'stopped',
+        task: { gid: 'mv_w', status: 'complete', completedLength: '1000' },
+      })
+      const liveRow = state.tasks.value.stopped[0]
+      expect(liveRow?.gid).toBe('mv_w')
+
+      // Pre-move snapshot: only the long-stopped row is known.
+      first.resolve([mockTask('s_keep', { status: 'complete' })])
+      await pending
+
+      // The live row keeps its event-side seat at the head of stopped.
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['mv_w', 's_keep'])
+      expect(state.tasks.value.stopped[0]).toBe(liveRow)
+      expect(state.tasks.value.waiting).toHaveLength(0)
+    })
+
+    it('STOPPED-READ-DROP: an in-flight remove is not resurrected by a pre-remove GetStoppedTasks snapshot', async () => {
+      const events = wireMover(state, actions)
+      state.tasks.value = {
+        active: [],
+        waiting: [],
+        stopped: [mockTask('mv_r', { status: 'complete' })],
+      }
+      const first = createControlledPromise<Task[]>()
+      mockGetStoppedTasks.mockReturnValueOnce(asCancellable(first.promise) as never)
+
+      const pending = actions.fetchStoppedTasks()
+      await events.handleTaskDelta({ type: 'remove', gid: 'mv_r' })
+      expect(state.tasks.value.stopped).toHaveLength(0)
+
+      first.resolve([mockTask('mv_r', { status: 'complete' })])
+      await pending
+
+      expect(state.tasks.value.stopped).toHaveLength(0)
+    })
+
+    it('SNAPSHOT-READ-RESEAT: an in-flight waiting→active move survives GetFullSnapshot landing', async () => {
+      const events = wireMover(state, actions)
+      state.tasks.value = {
+        active: [],
+        waiting: [mockTask('mv_f', { status: 'paused' })],
+        stopped: [],
+      }
+      const first = createControlledPromise<{
+        tasks: { active: Task[]; waiting: Task[]; stopped: Task[] }
+      }>()
+      mockGetFullSnapshot.mockReturnValueOnce(asCancellable(first.promise) as never)
+
+      const pending = actions.syncFromSnapshot()
+      events.handleTaskMove({
+        gid: 'mv_f',
+        from: 'waiting',
+        to: 'active',
+        task: { gid: 'mv_f', status: 'active' },
+      })
+      const liveRow = state.tasks.value.active[0]
+      expect(liveRow).toBeDefined()
+
+      first.resolve({
+        tasks: {
+          active: [],
+          waiting: [mockTask('mv_f', { status: 'paused' })],
+          stopped: [],
+        },
+      })
+      await pending
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['mv_f'])
+      expect(state.tasks.value.active[0]).toBe(liveRow)
+      expect(state.tasks.value.waiting).toHaveLength(0)
+    })
   })
 })
