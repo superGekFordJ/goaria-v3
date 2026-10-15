@@ -143,6 +143,33 @@ func NewTaskCacheForTest() *TaskCache {
 	}
 }
 
+// retainedRow holds only the fields retainMetadata consumes. At 64 bytes it
+// stays under the map inline-value threshold, avoiding per-entry heap boxing
+// that a full rpc.Task (176 bytes) would incur.
+type retainedRow struct {
+	Title         string
+	Dir           string
+	Files         []rpc.File
+	DownloadGroup *rpc.DownloadGroup
+}
+
+func retainedRowOf(task rpc.Task) retainedRow {
+	return retainedRow{Title: task.Title, Dir: task.Dir, Files: task.Files, DownloadGroup: task.DownloadGroup}
+}
+
+func (r retainedRow) task() rpc.Task {
+	return rpc.Task{Title: r.Title, Dir: r.Dir, Files: r.Files, DownloadGroup: r.DownloadGroup}
+}
+
+// fillFrom merges src through fillTaskMetadata on a projected task so the
+// merge rules stay identical; r's Files/DownloadGroup may alias src rows
+// because fillTaskMetadata copies before mutating.
+func (r *retainedRow) fillFrom(src rpc.Task) {
+	t := r.task()
+	fillTaskMetadata(&t, src)
+	*r = retainedRowOf(t)
+}
+
 // UpdateFromAria2 从引擎更新缓存（批量获取）。
 // 仅替换 aria2 (ar_) 切片；Surge (sg_) 切片由事件驱动路径维护
 // （AddSgTask/MoveTaskTo*/RemoveTask/PatchTaskProgress）。
@@ -160,38 +187,48 @@ func (c *TaskCache) UpdateFromAria2(active, waiting, stopped []rpc.Task) {
 			prevStopped[gid] = struct{}{}
 		}
 	}
-	old := make(map[string]rpc.Task)
+	old := make(map[string]retainedRow, len(c.arActive)+len(c.arWaiting)+len(c.arStopped))
 	for _, list := range [][]rpc.Task{c.arActive, c.arWaiting, c.arStopped} {
 		for _, task := range list {
 			row, exists := old[task.GID]
 			if !exists {
-				row = copyTask(task)
+				row = retainedRowOf(task)
 			} else {
-				fillTaskMetadata(&row, task)
+				row.fillFrom(task)
 			}
 			old[task.GID] = row
 		}
 	}
 	retainMetadata := func(tasks, previous []rpc.Task) []rpc.Task {
-		sameList := make(map[string]rpc.Task, len(previous))
+		// sameList keeps same-list rows authoritative for metadata when a GID
+		// has corrupt twins across lists; old folds all three lists in
+		// active/waiting/stopped order and only fills what remains missing.
+		sameList := make(map[string]retainedRow, len(previous))
 		for _, task := range previous {
 			row, exists := sameList[task.GID]
 			if !exists {
-				row = copyTask(task)
+				row = retainedRowOf(task)
 			} else {
-				fillTaskMetadata(&row, task)
+				row.fillFrom(task)
 			}
 			sameList[task.GID] = row
 		}
 		rows := copyTaskSlice(tasks)
 		for i := range rows {
 			previous := sameList[rows[i].GID]
-			fillTaskMetadata(&previous, old[rows[i].GID])
-			rows[i].Files = mergeTaskFiles(rows[i].Files, nil)
-			if len(rows[i].Files) < len(previous.Files) {
+			previous.fillFrom(old[rows[i].GID].task())
+			// mergeTaskFiles cleanses dst on every later merge, so only the
+			// valid-path count is needed to pick the merge direction here.
+			validCount := 0
+			for _, file := range rows[i].Files {
+				if metadataPathValid(file.Path) {
+					validCount++
+				}
+			}
+			if validCount < len(previous.Files) {
 				rows[i].Files = mergeTaskFiles(previous.Files, rows[i].Files)
 			}
-			fillTaskMetadata(&rows[i], previous)
+			fillTaskMetadata(&rows[i], previous.task())
 		}
 		return rows
 	}
@@ -909,7 +946,11 @@ func (c *TaskCache) EnrichTasks(tasks []rpc.Task) {
 			if len(files) > 0 && metadataPathValid(meta.SourceURL) {
 				files[0].Uris = []rpc.Uri{{Uri: meta.SourceURL}}
 			}
-			tasks[i].Files = mergeTaskFiles(tasks[i].Files, files)
+			if len(tasks[i].Files) == 0 {
+				tasks[i].Files = files
+			} else {
+				tasks[i].Files = mergeTaskFiles(tasks[i].Files, files)
+			}
 		}
 	}
 }

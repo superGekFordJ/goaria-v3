@@ -50,6 +50,10 @@ func BenchmarkTaskCache_EnrichTasks_100(b *testing.B) {
 
 	b.ReportAllocs()
 	for b.Loop() {
+		// EnrichTasks writes Files in place; reset to keep the Lite input shape.
+		for i := range tasks {
+			tasks[i].Files = nil
+		}
 		cache.EnrichTasks(tasks)
 	}
 }
@@ -59,6 +63,10 @@ func BenchmarkTaskCache_EnrichTasks_500(b *testing.B) {
 
 	b.ReportAllocs()
 	for b.Loop() {
+		// EnrichTasks writes Files in place; reset to keep the Lite input shape.
+		for i := range tasks {
+			tasks[i].Files = nil
+		}
 		cache.EnrichTasks(tasks)
 	}
 }
