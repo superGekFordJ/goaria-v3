@@ -126,14 +126,14 @@
   "performance": {
     "title": "パフォーマンス",
     "description": "ダウンロード速度とリソースの最適化",
-    "smartThreadMode": "スマートスレッドモード",
-    "smartThreadDesc": "ネットワーク状況に応じてスレッド数を自動調整",
+    "smartThreadMode": "スマートスケジューリング",
+    "smartThreadDesc": "同時タスク数と最適スレッドを自動調整",
     "maxConnections": "タスクごとの最大接続数",
     "threads": "スレッド",
     "maxConcurrent": "最大同時タスク数",
     "surgeBadge": "Surge",
     "surgeExclusiveTooltip": "プリセットは速度制限を防ぐため高速ネットワーク向けに最適化されています。より高い並列数が必要な場合は、GoAriaを終了後に ~/.goaria/config.json で max_connections を最大256まで設定できます（再起動後に有効）。",
-    "concurrentTooltip": "スマートスレッドモードがオンの間、最大同時タスク数はシステムポリシーにより自動で最適化されます（カスタム値は保持され、オフにすると復元されます）。モードを手動で切り替えて設定を保存した際、有効な同時タスク数に変更がある場合のみ Aria2 デーモンが自動的に再読み込みされます。"
+    "concurrentTooltip": "スマートスケジューリングが有効な場合、同時ダウンロード数はシステムによって自動的に最適化されます（設定値は保持され、無効時に復元されます）。手動で切り替えて設定を保存した際、実際の同時接続数に変更がある場合のみ Aria2 デーモンが再読み込みされます。"
   },
   "ua": {
     "description": "カスタム User-Agent",

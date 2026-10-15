@@ -126,14 +126,14 @@
   "performance": {
     "title": "Rendimiento",
     "description": "Optimizar velocidad y recursos",
-    "smartThreadMode": "Hilos Inteligentes",
-    "smartThreadDesc": "Ajustar hilos automáticamente según la red",
+    "smartThreadMode": "Programación inteligente",
+    "smartThreadDesc": "Optimiza tareas simultáneas y asignación de hilos",
     "maxConnections": "Conexiones máx. por tarea",
     "threads": "Hilos",
     "maxConcurrent": "Tareas concurrentes máx.",
     "surgeBadge": "Surge",
     "surgeExclusiveTooltip": "Los preajustes están optimizados para redes de alta velocidad para evitar límites de tasa. Si necesita mayor concurrencia, cierre GoAria y configure max_connections hasta 256 en ~/.goaria/config.json (se aplica tras reiniciar).",
-    "concurrentTooltip": "Con Hilos Inteligentes activados, la concurrencia máxima se optimiza automáticamente según la política del sistema; su valor personalizado se conserva y se restaura al desactivar el modo. Al cambiar el modo manualmente y guardar los ajustes, el daemon de Aria2 se recarga solo si cambia la concurrencia efectiva."
+    "concurrentTooltip": "Con la programación inteligente activada, las descargas simultáneas máximas se optimizan automáticamente mediante la política del sistema; su valor personalizado se conserva y restaura al desactivarla. El demonio de Aria2 solo se recarga si cambia la concurrencia efectiva."
   },
   "ua": {
     "description": "User-Agent Personalizado",

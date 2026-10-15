@@ -126,14 +126,14 @@
   "performance": {
     "title": "Performance",
     "description": "Optimize download speed and resource usage",
-    "smartThreadMode": "Smart Thread Mode",
-    "smartThreadDesc": "Automatically adjust threads based on network",
+    "smartThreadMode": "Smart Scheduling Mode",
+    "smartThreadDesc": "Auto-manages concurrent tasks and optimal threads",
     "maxConnections": "Max Connections per Task",
     "threads": "Threads",
     "maxConcurrent": "Max Concurrent Tasks",
     "surgeBadge": "Surge",
     "surgeExclusiveTooltip": "Preset options are optimized for high-speed networks to avoid rate limits. If you require higher concurrency, quit GoAria and set max_connections up to 256 in ~/.goaria/config.json (takes effect after restart).",
-    "concurrentTooltip": "With Smart Thread Mode on, max concurrency is automatically optimized by system policy — your custom value is kept and restored when the mode is off. When you toggle the mode manually and save settings, the Aria2 daemon reloads only if the effective concurrency changes."
+    "concurrentTooltip": "With Smart Scheduling Mode on, max concurrency is automatically optimized by system policy — your custom value is kept and restored when the mode is off. When you toggle the mode manually and save settings, the Aria2 daemon reloads only if the effective concurrency changes."
   },
   "ua": {
     "description": "Custom User Agent",

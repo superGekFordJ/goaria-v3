@@ -126,14 +126,14 @@
   "performance": {
     "title": "Leistung",
     "description": "Geschwindigkeit und Ressourcen optimieren",
-    "smartThreadMode": "Intelligente Threads",
-    "smartThreadDesc": "Threads automatisch an Netzwerk anpassen",
+    "smartThreadMode": "Intelligente Ablaufsteuerung",
+    "smartThreadDesc": "Optimiert parallele Tasks und Thread-Zuteilung",
     "maxConnections": "Max. Verbindungen pro Task",
     "threads": "Threads",
     "maxConcurrent": "Max. gleichzeitige Tasks",
     "surgeBadge": "Surge",
     "surgeExclusiveTooltip": "Die Voreinstellungen sind für Highspeed-Netze optimiert, um Ratenbegrenzungen zu vermeiden. Wenn Sie eine höhere Parallelität benötigen, beenden Sie GoAria und setzen Sie max_connections in ~/.goaria/config.json auf bis zu 256 (gilt nach Neustart).",
-    "concurrentTooltip": "Bei aktivem Smart-Thread-Modus wird die maximale Parallelität automatisch durch die Systemrichtlinie optimiert – Ihr Wert bleibt gespeichert und wird beim Ausschalten wiederhergestellt. Wenn Sie den Modus manuell umschalten und die Einstellungen speichern, wird der Aria2-Daemon nur neu geladen, wenn sich die effektive Parallelität ändert."
+    "concurrentTooltip": "Bei aktiver intelligenter Ablaufsteuerung wird die maximale Anzahl gleichzeitiger Downloads automatisch optimiert – Ihr eigener Wert bleibt gespeichert und wird beim Deaktivieren wiederhergestellt. Der Aria2-Dienst wird nur neu geladen, wenn sich die wirksame Parallelität ändert."
   },
   "ua": {
     "description": "Benutzerdefinierter User-Agent",
