@@ -1782,5 +1782,120 @@ describe('setupActions — integration', () => {
       expect(state.tasks.value.active[0]).toBe(liveRow)
       expect(state.tasks.value.waiting).toHaveLength(0)
     })
+
+    // Same-bucket round trips: before/after buckets match, so only the row
+    // identity swap proves a fold happened mid-flight.
+    it('FULL-READ-ROUNDTRIP: an in-flight active→waiting→active fold keeps the event-side row', async () => {
+      const events = wireMover(state, actions)
+      state.tasks.value = { active: [mockTask('rt_a')], waiting: [], stopped: [] }
+      const first = createControlledPromise<{
+        active: Task[]
+        waiting: Task[]
+        stopped: Task[]
+      }>()
+      mockGetTasks.mockReturnValueOnce(asCancellable(first.promise) as never)
+      mockGetTaskMetadata.mockResolvedValue({} as Record<string, Task>)
+
+      const pending = actions.fetchTasks()
+      events.handleTaskMove({
+        gid: 'rt_a',
+        from: 'active',
+        to: 'waiting',
+        task: { gid: 'rt_a', status: 'paused', downloadSpeed: '0' },
+      })
+      events.handleTaskMove({
+        gid: 'rt_a',
+        from: 'waiting',
+        to: 'active',
+        task: { gid: 'rt_a', status: 'active' },
+      })
+      const liveRow = state.tasks.value.active[0]
+      expect(liveRow?.gid).toBe('rt_a')
+
+      // The snapshot was captured between the legs: paused, still waiting.
+      first.resolve({
+        active: [],
+        waiting: [mockTask('rt_a', { status: 'paused', downloadSpeed: '0' })],
+        stopped: [],
+      })
+      await pending
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['rt_a'])
+      expect(state.tasks.value.active[0]).toBe(liveRow)
+      expect(state.tasks.value.active[0].status).toBe('active')
+      expect(state.tasks.value.waiting).toHaveLength(0)
+    })
+
+    it('FULL-READ-READD: an in-flight remove→re-add into the same bucket survives a snapshot that never saw it', async () => {
+      const events = wireMover(state, actions)
+      state.tasks.value = {
+        active: [],
+        waiting: [mockTask('rt_r', { status: 'paused' })],
+        stopped: [],
+      }
+      const first = createControlledPromise<{
+        active: Task[]
+        waiting: Task[]
+        stopped: Task[]
+      }>()
+      mockGetTasks.mockReturnValueOnce(asCancellable(first.promise) as never)
+      mockGetTaskMetadata.mockResolvedValue({} as Record<string, Task>)
+
+      const pending = actions.fetchTasks()
+      await events.handleTaskDelta({ type: 'remove', gid: 'rt_r' })
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      await events.handleTaskDelta({
+        type: 'add',
+        gid: 'rt_r',
+        payload: mockTask('rt_r', {
+          status: 'paused',
+          downloadSpeed: '0',
+        }) as unknown as Record<string, unknown>,
+      })
+      const liveRow = state.tasks.value.waiting[0]
+      expect(liveRow?.gid).toBe('rt_r')
+
+      // The snapshot predates both events: the gid is absent entirely.
+      first.resolve({ active: [], waiting: [], stopped: [] })
+      await pending
+
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['rt_r'])
+      expect(state.tasks.value.waiting[0]).toBe(liveRow)
+      expect(state.tasks.value.active).toHaveLength(0)
+      expect(state.tasks.value.stopped).toHaveLength(0)
+    })
+
+    it('ACTIVE-READ-ROUNDTRIP: an in-flight active→waiting→active fold survives a mid-trip GetActiveTasks snapshot', async () => {
+      const events = wireMover(state, actions)
+      state.tasks.value = { active: [mockTask('rt_b')], waiting: [], stopped: [] }
+      const first = createControlledPromise<{ active: Task[]; waiting: Task[] }>()
+      mockGetActiveTasks.mockReturnValueOnce(asCancellable(first.promise) as never)
+      mockGetTaskMetadata.mockResolvedValue({} as Record<string, Task>)
+
+      const pending = actions.fetchActiveTasks()
+      events.handleTaskMove({
+        gid: 'rt_b',
+        from: 'active',
+        to: 'waiting',
+        task: { gid: 'rt_b', status: 'paused', downloadSpeed: '0' },
+      })
+      events.handleTaskMove({
+        gid: 'rt_b',
+        from: 'waiting',
+        to: 'active',
+        task: { gid: 'rt_b', status: 'active' },
+      })
+      const liveRow = state.tasks.value.active[0]
+      expect(liveRow?.gid).toBe('rt_b')
+
+      first.resolve({ active: [], waiting: [mockTask('rt_b', { status: 'paused' })] })
+      const result = await pending
+
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['rt_b'])
+      expect(state.tasks.value.active[0]).toBe(liveRow)
+      expect(state.tasks.value.active[0].status).toBe('active')
+      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(result.hasActiveTasks).toBe(true)
+    })
   })
 })

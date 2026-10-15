@@ -98,7 +98,6 @@ function createMockEvents(): TaskEvents {
     handleTaskDelta: vi.fn(),
     handleTaskMove: vi.fn(),
     moveTasks: vi.fn(),
-    moveTaskToStopped: vi.fn(),
   } as unknown as TaskEvents
 }
 

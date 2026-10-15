@@ -368,28 +368,37 @@ export function setupActions(state: TaskState) {
     }
   }
 
-  // Bucket ownership per GID at call time; compared after an awaited read to
-  // detect rows event folds re-seated while the snapshot was in flight.
-  function liveBucketByGid(): Map<string, TaskBucket> {
-    const map = new Map<string, TaskBucket>()
-    for (const t of tasks.value.active) if (t?.gid) map.set(t.gid, 'active')
-    for (const t of tasks.value.waiting) if (t?.gid) map.set(t.gid, 'waiting')
-    for (const t of tasks.value.stopped) if (t?.gid) map.set(t.gid, 'stopped')
+  type LiveSeat = { bucket: TaskBucket; row: Task }
+
+  // Bucket+row ownership per GID at call time; compared after an awaited read
+  // to detect rows event folds re-seated while the snapshot was in flight.
+  function liveBucketByGid(): Map<string, LiveSeat> {
+    const map = new Map<string, LiveSeat>()
+    for (const t of tasks.value.active) if (t?.gid) map.set(t.gid, { bucket: 'active', row: t })
+    for (const t of tasks.value.waiting) if (t?.gid) map.set(t.gid, { bucket: 'waiting', row: t })
+    for (const t of tasks.value.stopped) if (t?.gid) map.set(t.gid, { bucket: 'stopped', row: t })
     return map
   }
 
   // GIDs re-seated by event folds during a read are newer facts than the
   // snapshot: strip their snapshot seats and re-home the live row in the
   // bucket the events chose. Everything else lands verbatim.
+  // Seats are (bucket, row identity): re-seating folds always swap the row
+  // object, so a same-bucket round trip still counts. Same-bucket in-place
+  // field patches keep the row and let the snapshot seat land (transparent).
+  // With overlapping reads a later landing is judged against the seats the
+  // earlier one left — a bounded approximation the next authoritative
+  // event or read converges.
   function preserveInflightMoves(
-    before: Map<string, TaskBucket>,
+    before: Map<string, LiveSeat>,
     next: { active: Task[]; waiting: Task[]; stopped: Task[] },
   ): { active: Task[]; waiting: Task[]; stopped: Task[] } {
     const after = liveBucketByGid()
-    const reseat = new Map<string, TaskBucket>()
+    const reseat = new Map<string, LiveSeat>()
     const dropped = new Set<string>()
-    for (const [gid, bucket] of after) {
-      if (before.get(gid) !== bucket) reseat.set(gid, bucket)
+    for (const [gid, cur] of after) {
+      const prev = before.get(gid)
+      if (!prev || prev.bucket !== cur.bucket || prev.row !== cur.row) reseat.set(gid, cur)
     }
     for (const gid of before.keys()) {
       if (!after.has(gid)) dropped.add(gid)
@@ -413,11 +422,11 @@ export function setupActions(state: TaskState) {
       waiting: tasks.value.waiting,
       stopped: tasks.value.stopped,
     }
-    for (const [gid, bucket] of reseat) {
-      const row = currentLists[bucket].find(t => t.gid === gid)
-      if (row) {
-        nextLists[bucket] = applyLocalOrder(currentLists[bucket], [...nextLists[bucket], row])
-      }
+    for (const seat of reseat.values()) {
+      nextLists[seat.bucket] = applyLocalOrder(currentLists[seat.bucket], [
+        ...nextLists[seat.bucket],
+        seat.row,
+      ])
     }
     if (
       nextLists.active === next.active &&
@@ -453,11 +462,21 @@ export function setupActions(state: TaskState) {
       }
 
       // Assign tasks FIRST so the async metadata callback operates on current state
-      tasks.value = preserveInflightMoves(membershipAtSend, {
+      const next = preserveInflightMoves(membershipAtSend, {
         active: nextActive,
         waiting: nextWaiting,
         stopped: nextStopped,
       })
+      const unchanged =
+        next.active.length === tasks.value.active.length &&
+        next.active.every((t, i) => t === tasks.value.active[i]) &&
+        next.waiting.length === tasks.value.waiting.length &&
+        next.waiting.every((t, i) => t === tasks.value.waiting[i]) &&
+        next.stopped.length === tasks.value.stopped.length &&
+        next.stopped.every((t, i) => t === tasks.value.stopped[i])
+      if (!unchanged) {
+        tasks.value = next
+      }
 
       queueMissingMetadataFromLists(tasks.value.active, tasks.value.waiting)
       immediateUpdateTrayIcon()
@@ -728,9 +747,9 @@ export function setupActions(state: TaskState) {
     minimizeToTray,
     setPollingCallbacks,
     setTaskMover,
-    metadataPending, // Shared with events
-    metadataInFlight: () => metadataInFlight, // Getter
-    setMetadataInFlight: (val: boolean) => (metadataInFlight = val),
+    metadataPending, // Test-only seam; production writes go through queueMetadataRecovery
+    metadataInFlight: () => metadataInFlight, // Test-only
+    setMetadataInFlight: (val: boolean) => (metadataInFlight = val), // Test-only
     queueMetadataRecovery,
     getLastStoppedFetchTime: () => lastStoppedFetchTime,
   }

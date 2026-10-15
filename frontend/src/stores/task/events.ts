@@ -180,19 +180,6 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     }, 5000)
   }
 
-  function moveTaskToStopped(gid: string) {
-    const { active: activeTask, waiting: waitingTask } = collectCopies(gid)
-    const task = activeTask ?? waitingTask
-    if (!task) return
-    if (task.status !== 'error') task.status = 'complete'
-    tasks.value = {
-      active: tasks.value.active.filter(t => t.gid !== gid),
-      waiting: tasks.value.waiting.filter(t => t.gid !== gid),
-      stopped: [task, ...tasks.value.stopped],
-    }
-    scheduleStoppedMetadataCleanup(gid)
-  }
-
   function backfillRichFields(retained: Task, donor: Task) {
     const backfill: Partial<Task> = {}
     if (!hasValidFiles(retained) && hasValidFiles(donor)) {
@@ -541,7 +528,8 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     switch (delta.type) {
       case 'progress': {
         if (dest && dest !== 'active') {
-          if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
+          if (staleDemotion()) await recoverViaRead()
+          else if (!foldIntoBucket(gid, dest, incoming)) await recoverViaRead()
           break
         }
         const task = tasks.value.active.find(t => t.gid === gid)
@@ -580,7 +568,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
             actions.queueMetadataRecovery(gid)
           }
         } else if (!task && dest === 'active') {
-          if (!foldIntoBucket(gid, 'active', incoming)) await fetchTasks()
+          if (!foldIntoBucket(gid, 'active', incoming)) await recoverViaRead()
         }
         break
       }
@@ -599,7 +587,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
 
         if (dest) {
           if (staleDemotion()) await recoverViaRead()
-          else if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
+          else if (!foldIntoBucket(gid, dest, incoming)) await recoverViaRead()
           break
         }
         // Status-less add: merge into an existing non-stopped row, keep stopped
@@ -615,7 +603,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
           tasks.value = { ...tasks.value }
           if (!hasValidFiles(existing)) actions.queueMetadataRecovery(gid)
         } else {
-          await fetchTasks()
+          await recoverViaRead()
         }
         break
       }
@@ -623,9 +611,9 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       case 'resume': {
         if (dest) {
           if (staleDemotion()) await recoverViaRead()
-          else if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
+          else if (!foldIntoBucket(gid, dest, incoming)) await recoverViaRead()
         } else {
-          await fetchTasks()
+          await recoverViaRead()
         }
         useDownloadGroupStore().scheduleAutoSyncImmediate('resume-delta')
         break
@@ -634,7 +622,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       case 'pause': {
         if (dest) {
           if (staleDemotion()) await recoverViaRead()
-          else if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
+          else if (!foldIntoBucket(gid, dest, incoming)) await recoverViaRead()
         } else {
           // Status-less pause: a waiting-internal flip folds in place; a row
           // still parked in active means the delta outlived its move, so it
@@ -645,7 +633,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
           } else if (copies.waiting) {
             foldIntoBucket(gid, 'waiting', { gid, status: 'paused', downloadSpeed: '0' })
           } else if (!copies.stopped) {
-            await fetchTasks()
+            await recoverViaRead()
           }
         }
         useDownloadGroupStore().scheduleAutoSyncImmediate('pause-delta')
@@ -655,12 +643,12 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       case 'complete':
       case 'error': {
         if (dest === 'stopped') {
-          if (!foldIntoBucket(gid, 'stopped', incoming)) await fetchTasks()
+          if (!foldIntoBucket(gid, 'stopped', incoming)) await recoverViaRead()
         } else if (dest) {
-          if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
+          if (!foldIntoBucket(gid, dest, incoming)) await recoverViaRead()
         } else {
           patchStatuslessTerminal(gid, payload)
-          if (!collectCopies(gid).stopped) await fetchTasks()
+          if (!collectCopies(gid).stopped) await recoverViaRead()
         }
         break
       }
@@ -687,12 +675,12 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     const dest = statusDest ?? wireDest
     if (!dest) {
       // Malformed/mismatched destinations recover through a read.
-      void fetchTasks()
+      void recoverViaRead()
       return
     }
 
     if (!foldIntoBucket(gid, dest, incoming)) {
-      void fetchTasks()
+      void recoverViaRead()
       return
     }
     immediateUpdateTrayIcon()
@@ -702,7 +690,6 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     handleTaskDelta,
     handleTaskMove,
     moveTasks,
-    moveTaskToStopped, // Exposed for tests/polling
   }
 }
 
