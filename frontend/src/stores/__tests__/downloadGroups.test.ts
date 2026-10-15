@@ -1289,4 +1289,19 @@ describe('group operation item helpers', () => {
     expect(succeededOperationItemGids(null)).toEqual([])
     expect(succeededOperationItemGids(undefined)).toEqual([])
   })
+
+  it('dedupes repeated succeeded items by gid', () => {
+    expect(
+      succeededOperationItemGids(
+        operationResult({
+          items: [
+            { gid: 'gid-ok', status: 'succeeded', code: 'resumed' },
+            { gid: 'gid-ok', status: 'succeeded', code: 'resumed' },
+            { gid: 'gid-other', status: 'succeeded', code: 'resumed' },
+            { gid: 'gid-ok', status: 'succeeded', code: 'paused' },
+          ],
+        }),
+      ),
+    ).toEqual(['gid-ok', 'gid-other'])
+  })
 })

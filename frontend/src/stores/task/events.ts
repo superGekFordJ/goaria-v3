@@ -532,9 +532,9 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     // A queued lifecycle delta can outlive the authoritative move of a faster
     // transition: folding it backwards would demote a live row. Reconcile via
     // a read instead — it converges whether the delta or the row is stale.
-    // 'pause' is deliberately unguarded: demoting a live row is its normal
-    // job, and a stale pause would need resume→admit inside one 50ms
-    // debounce — unreachable via the UI, only programmatic batch flows.
+    // Pause is guarded too: every real pause emits its move before the delta
+    // flushes, so a pause finding the row still in active is by definition a
+    // leftover from a superseded transition.
     const staleDemotion = () =>
       dest === 'waiting' && Boolean(collectCopies(gid).active)
 
@@ -633,12 +633,16 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
 
       case 'pause': {
         if (dest) {
-          if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
+          if (staleDemotion()) await recoverViaRead()
+          else if (!foldIntoBucket(gid, dest, incoming)) await fetchTasks()
         } else {
-          // Status-less pause: a live row is demoted to waiting/paused with
-          // zero speed; a stopped-only row is not reopened by it.
+          // Status-less pause: a waiting-internal flip folds in place; a row
+          // still parked in active means the delta outlived its move, so it
+          // reconciles through a read. A stopped-only row is not reopened.
           const copies = collectCopies(gid)
-          if (copies.active || copies.waiting) {
+          if (copies.active) {
+            await recoverViaRead()
+          } else if (copies.waiting) {
             foldIntoBucket(gid, 'waiting', { gid, status: 'paused', downloadSpeed: '0' })
           } else if (!copies.stopped) {
             await fetchTasks()

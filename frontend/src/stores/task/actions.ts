@@ -21,7 +21,7 @@ import type { BatchAddResult } from '../../../bindings/goaria-v3/internal/tasks/
 import { cacheMetadata, applyMetadataFromCache } from './metadata'
 import { mergeTasks, dedupByGid, applyLocalOrder } from './utils'
 import { cloneTaskGroupMetadata } from './grouping'
-import type { TaskMovePlacement } from './events'
+import type { TaskBucket, TaskMovePlacement } from './events'
 import { useDownloadGroupStore } from '../downloadGroups'
 
 export function setupActions(state: TaskState) {
@@ -354,7 +354,57 @@ export function setupActions(state: TaskState) {
     }
   }
 
+  // Bucket ownership per GID at call time; compared after an awaited read to
+  // detect rows event folds re-seated while the snapshot was in flight.
+  function liveBucketByGid(): Map<string, TaskBucket> {
+    const map = new Map<string, TaskBucket>()
+    for (const t of tasks.value.active) if (t?.gid) map.set(t.gid, 'active')
+    for (const t of tasks.value.waiting) if (t?.gid) map.set(t.gid, 'waiting')
+    for (const t of tasks.value.stopped) if (t?.gid) map.set(t.gid, 'stopped')
+    return map
+  }
+
+  // GIDs re-seated by event folds during a read are newer facts than the
+  // snapshot: strip their snapshot seats and re-home the live row in the
+  // bucket the events chose. Everything else lands verbatim.
+  function preserveInflightMoves(
+    before: Map<string, TaskBucket>,
+    next: { active: Task[]; waiting: Task[]; stopped: Task[] },
+  ): { active: Task[]; waiting: Task[]; stopped: Task[] } {
+    const after = liveBucketByGid()
+    const reseat = new Map<string, TaskBucket>()
+    const dropped = new Set<string>()
+    for (const [gid, bucket] of after) {
+      if (before.get(gid) !== bucket) reseat.set(gid, bucket)
+    }
+    for (const gid of before.keys()) {
+      if (!after.has(gid)) dropped.add(gid)
+    }
+    if (reseat.size === 0 && dropped.size === 0) return next
+
+    const moved = new Set<string>([...reseat.keys(), ...dropped])
+    const strip = (list: Task[]) => list.filter(t => !moved.has(t.gid))
+    const nextLists: Record<TaskBucket, Task[]> = {
+      active: strip(next.active),
+      waiting: strip(next.waiting),
+      stopped: strip(next.stopped),
+    }
+    const currentLists: Record<TaskBucket, Task[]> = {
+      active: tasks.value.active,
+      waiting: tasks.value.waiting,
+      stopped: tasks.value.stopped,
+    }
+    for (const [gid, bucket] of reseat) {
+      const row = currentLists[bucket].find(t => t.gid === gid)
+      if (row) {
+        nextLists[bucket] = applyLocalOrder(currentLists[bucket], [...nextLists[bucket], row])
+      }
+    }
+    return nextLists
+  }
+
   async function fetchTasks(options?: { prependUnknownFrom?: Set<string> }) {
+    const membershipAtSend = liveBucketByGid()
     try {
       const res = await GetTasks()
       consecutiveErrors.value = 0
@@ -377,11 +427,11 @@ export function setupActions(state: TaskState) {
       }
 
       // Assign tasks FIRST so the async metadata callback operates on current state
-      tasks.value = {
+      tasks.value = preserveInflightMoves(membershipAtSend, {
         active: nextActive,
         waiting: nextWaiting,
         stopped: nextStopped,
-      }
+      })
 
       queueMissingMetadataFromLists(tasks.value.active, tasks.value.waiting)
       immediateUpdateTrayIcon()

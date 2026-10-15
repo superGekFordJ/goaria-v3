@@ -1130,11 +1130,12 @@ describe('setupActions — integration', () => {
       const pending = actions.fetchTasks()
       // A real lifecycle event lands while the read is in flight.
       await events.handleTaskDelta({
-        type: 'pause',
+        type: 'complete',
         gid: 'a1',
-        payload: { gid: 'a1', status: 'paused' },
+        payload: { gid: 'a1', status: 'complete', downloadSpeed: '0' },
       })
-      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['a1'])
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['a1'])
+      const foldedRow = state.tasks.value.stopped[0]
 
       first.resolve({
         active: [mockTask('a1')],
@@ -1145,24 +1146,23 @@ describe('setupActions — integration', () => {
       await flushPromises()
 
       // The snapshot applies transparently: no veto, no recovery re-read.
+      // The row events re-seated mid-flight keeps its newer event-side
+      // membership and identity; every other seat lands verbatim.
       expect(mockGetTasks).toHaveBeenCalledTimes(1)
-      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['a1'])
+      expect(state.tasks.value.active).toHaveLength(0)
       expect(state.tasks.value.waiting).toHaveLength(0)
-      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['stale-only'])
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['stale-only', 'a1'])
+      expect(state.tasks.value.stopped.find(t => t.gid === 'a1')).toBe(foldedRow)
+      expect(state.tasks.value.stopped.find(t => t.gid === 'a1')?.status).toBe('complete')
 
       // Later authoritative events keep folding normally on top.
-      await events.handleTaskDelta({
-        type: 'pause',
-        gid: 'a1',
-        payload: { gid: 'a1', status: 'paused' },
-      })
       await events.handleTaskDelta({
         type: 'resume',
         gid: 'a1',
         payload: { gid: 'a1', status: 'active' },
       })
       expect(state.tasks.value.active.map(t => t.gid)).toEqual(['a1'])
-      expect(state.tasks.value.waiting).toHaveLength(0)
+      expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['stale-only'])
       expect(mockGetTasks).toHaveBeenCalledTimes(1)
     })
 
@@ -1499,8 +1499,15 @@ describe('setupActions — integration', () => {
       expect(mockPauseTask.mock.invocationCallOrder[1]).toBe(order[2])
       expect(mockResumeTask.mock.invocationCallOrder[1]).toBe(order[3])
 
-      // A late status-less pause folds immediately: waiting + paused + 0 speed,
-      // metadata preserved, active duplicate removed, no read needed.
+      // The pause move commits first, then the queued status-less delta
+      // flushes and folds in place: waiting + paused + 0 speed, metadata
+      // preserved, active duplicate removed, no read needed.
+      events.handleTaskMove({
+        gid: 'ar_rapid',
+        from: 'active',
+        to: 'waiting',
+        task: { gid: 'ar_rapid', status: 'paused', downloadSpeed: '0' },
+      })
       await events.handleTaskDelta({ type: 'pause', gid: 'ar_rapid' })
       expect(state.tasks.value.active.map(t => t.gid)).toEqual(['ar_neighbor'])
       expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['ar_rapid'])
@@ -1572,8 +1579,15 @@ describe('setupActions — integration', () => {
       ]
       await flushPromises()
 
-      // Late status-less pause folds first, then the authoritative
-      // waiting-to-active fact lands while the final resume is still in flight.
+      // The pause move commits first, then the queued status-less delta
+      // folds in place; the authoritative waiting-to-active fact lands while
+      // the final resume is still in flight.
+      events.handleTaskMove({
+        gid: 'sg_rapid',
+        from: 'active',
+        to: 'waiting',
+        task: { gid: 'sg_rapid', status: 'paused', downloadSpeed: '0' },
+      })
       await events.handleTaskDelta({ type: 'pause', gid: 'sg_rapid' })
       expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['sg_rapid'])
       events.handleTaskMove({

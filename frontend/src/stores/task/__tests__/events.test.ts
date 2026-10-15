@@ -764,7 +764,7 @@ describe('setupEvents', () => {
   // handleTaskDelta — pause event
   // =====================================================
   describe('handleTaskDelta — pause', () => {
-    it('a status-less pause folds the live row into waiting as paused with zero speed', async () => {
+    it('a status-less pause on an active-only row recovers via read instead of demoting it', async () => {
       state.tasks.value.active = [
         mockTask('gid-p', { status: 'active', downloadSpeed: '500' }),
         mockTask('gid-neighbor', { status: 'active' }),
@@ -772,10 +772,41 @@ describe('setupEvents', () => {
 
       await events.handleTaskDelta({ type: 'pause', gid: 'gid-p' })
 
-      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['gid-neighbor'])
-      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['gid-p'])
+      // Real pauses emit their move before the delta flushes, so a pause
+      // finding the row still active is stale: read, never a backward fold.
+      expect(actions.fetchTasks).toHaveBeenCalled()
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['gid-p', 'gid-neighbor'])
+      expect(state.tasks.value.waiting).toHaveLength(0)
+    })
+
+    it('a pause delta carrying paused status on an active-only row recovers via read', async () => {
+      state.tasks.value.active = [mockTask('gid-ps', { status: 'active' })]
+
+      await events.handleTaskDelta({
+        type: 'pause',
+        gid: 'gid-ps',
+        payload: { gid: 'gid-ps', status: 'paused', downloadSpeed: '0' },
+      })
+
+      expect(actions.fetchTasks).toHaveBeenCalled()
+      expect(state.tasks.value.active.map(t => t.gid)).toEqual(['gid-ps'])
+      expect(state.tasks.value.waiting).toHaveLength(0)
+    })
+
+    it('a status-less pause flips a waiting row to paused in place', async () => {
+      state.tasks.value.waiting = [
+        mockTask('gid-p', { status: 'waiting', downloadSpeed: '0' }),
+        mockTask('gid-neighbor', { status: 'paused', downloadSpeed: '0' }),
+      ]
+      const row = state.tasks.value.waiting[0]
+
+      await events.handleTaskDelta({ type: 'pause', gid: 'gid-p' })
+
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['gid-p', 'gid-neighbor'])
+      expect(state.tasks.value.waiting[0]).toBe(row)
       expect(state.tasks.value.waiting[0].status).toBe('paused')
       expect(state.tasks.value.waiting[0].downloadSpeed).toBe('0')
+      expect(state.tasks.value.active).toHaveLength(0)
       expect(actions.fetchTasks).not.toHaveBeenCalled()
     })
 
